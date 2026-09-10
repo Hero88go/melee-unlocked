@@ -17,6 +17,7 @@ uint32_t g_bp_mask = 0xFFFFFF;
 int32_t g_tev_colors[4][4], g_tev_kcolors[4][4];
 Backend* g_backend = nullptr;
 Frame g_frame;
+TextureSnapshotCache g_texture_snapshots;
 uint64_t g_frame_sequence = 0;
 std::vector<uint8_t> g_buf;
 uint64_t g_commands = 0, g_draws = 0, g_vertices = 0;
@@ -188,12 +189,10 @@ void snapshot_textures(DrawCall& dc) {
     t.mode0 = g_bp.texmode0(map);
     t.mode1 = g_bp.texmode1(map);
     uint32_t min_filter = (t.mode0 >> 5) & 7;
-    bool mips = (min_filter & 3) != 0 && (min_filter & 4) == 0 ? false : (min_filter >= 4 || (min_filter & 2));
-    // Dolphin: mipmaps used when min_filter has the mip bits (values 4..7 = linear mip variants, 2/3 = point mip).
-    bool use_mips = (min_filter & 3) != 0;  // 0/4 = none, 1/5 = mip point, 2/6 = mip linear... approximate
-    (void)mips;
+    // GX low two filter bits select mip filtering; high bit selects minification.
+    bool use_mips = (min_filter & 3) != 0;
     uint32_t max_lod = (t.mode1 >> 8) & 0xFF;
-    t.mip_levels = use_mips ? ((max_lod + 0xF) / 0x10) + 1 : 1;
+    t.mip_levels = texture_mip_count(t.width, t.height, use_mips ? ((max_lod + 15) / 16) + 1 : 1);
   }
   // Indirect stages reference textures too.
   uint32_t ind = g_bp.numindstages();
@@ -209,6 +208,16 @@ void snapshot_textures(DrawCall& dc) {
     t.tlut_addr = (tl & 0x3FF) << 9; t.tlut_format = (tl >> 10) & 3;
     t.mode0 = g_bp.texmode0(map); t.mode1 = g_bp.texmode1(map);
     t.mip_levels = 1;
+  }
+  for (TextureRef& t : dc.textures) {
+    if (!t.used) continue;
+    uint32_t total = texture_chain_bytes(t.width, t.height, t.format, t.mip_levels);
+    uint32_t offset = t.addr & 0x3FFFFFFFu;
+    uint32_t palette_bytes = t.format == 8 ? 32 : t.format == 9 ? 512 : t.format == 10 ? 32768 : 0;
+    if (offset >= ppc::RAM_SIZE || total > ppc::RAM_SIZE - offset ||
+        t.tlut_addr > sizeof g_tmem || palette_bytes > sizeof g_tmem - t.tlut_addr)
+      host::die("GX texture range invalid: %08X+%X, palette %X+%X", t.addr, total, t.tlut_addr, palette_bytes);
+    t.data = g_texture_snapshots.capture(host::ram + offset, total, g_tmem + t.tlut_addr, palette_bytes);
   }
 }
 
@@ -263,7 +272,7 @@ void bp_write(uint32_t value) {
       uint32_t tmem_addr = (masked & 0x3FF) << 9;
       uint32_t count = (masked & 0x1FFC00) >> 5;
       uint32_t src = (g_bp.reg[BP_LOADTLUT0] << 5) & 0x01FFFFFF;
-      if (tmem_addr + count <= sizeof g_tmem) std::memcpy(g_tmem + tmem_addr, host::ptr(0x80000000u | src), count);
+      if (tmem_addr + count <= sizeof g_tmem) std::memcpy(g_tmem + tmem_addr, host::ptr(0x80000000u | src, count), count);
       break;
     }
     case BP_TRIGGER_EFB_COPY: {
@@ -293,8 +302,9 @@ void bp_write(uint32_t value) {
       ++g_efb_copies;
       if (c.to_xfb) {
         g_frame.sequence = ++g_frame_sequence;
-        if (g_backend) g_backend->submit_frame(g_frame, g_tmem);
+        if (g_backend) g_backend->submit_frame(g_frame);
         g_frame.clear();
+        g_texture_snapshots.clear();
       }
       break;
     }
@@ -323,7 +333,7 @@ size_t parse_command(const uint8_t* d, size_t len);
 
 void run_display_list(uint32_t addr, uint32_t size) {
   if ((addr & 0x3FFFFFFFu) + size > 0x01800000u) { host::log("gx: display list outside RAM %08X+%X", addr, size); return; }
-  const uint8_t* p = host::ptr(addr);
+  const uint8_t* p = host::ptr(addr, size);
   size_t used = 0;
   while (used < size) {
     size_t n = parse_command(p + used, size - used);

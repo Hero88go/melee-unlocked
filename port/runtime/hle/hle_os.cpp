@@ -17,12 +17,12 @@ HLE(__read_console) { host::wr32(ARG2, 0); RET(0); }
 HLE(exit) {
   host::log("guest called exit(%d)", (int)ARG0);
   host::request_exit((int)ARG0);
-  std::exit((int)ARG0);
+  throw ExitRequested{(int)ARG0};
 }
 HLE(OSResetSystem) {
   host::log("OSResetSystem(%u, %u, %u)", ARG0, ARG1, ARG2);
   host::request_exit(0);
-  std::exit(0);
+  throw ExitRequested{0};
 }
 HLE(OSPanic) {
   std::string file = host::cstr(ARG0), msg = host::cstr(ARG2);

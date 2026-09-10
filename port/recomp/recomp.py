@@ -51,6 +51,8 @@ def main():
     args = ap.parse_args()
 
     t0 = time.time()
+    if hashlib.sha1(Path(args.dol).read_bytes()).hexdigest() != "08e0bf20134dfcb260699671004527b2d6bb1a45":
+        ap.error("this port requires the verified vanilla Melee NTSC 1.02 DOL")
     dol = Dol(args.dol)
     symbols = SymbolMap(args.symbols)
     infos, extra = analyze_all(dol, symbols)

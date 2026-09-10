@@ -1,5 +1,19 @@
 # Native Melee port: recompiled guest code + host runtime.
 cmake_minimum_required(VERSION 3.15)
+add_executable(port_frame_queue_test tests/frame_queue_test.cpp)
+target_include_directories(port_frame_queue_test PRIVATE runtime/gx)
+target_compile_features(port_frame_queue_test PRIVATE cxx_std_17)
+add_test(NAME port_frame_queue COMMAND port_frame_queue_test)
+set_tests_properties(port_frame_queue PROPERTIES TIMEOUT 10)
+add_executable(port_memory_range_test tests/memory_range_test.cpp)
+target_include_directories(port_memory_range_test PRIVATE runtime/host)
+target_compile_features(port_memory_range_test PRIVATE cxx_std_17)
+add_test(NAME port_memory_ranges COMMAND port_memory_range_test)
+add_test(NAME port_dol_validation COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/dol_validation_test.py")
+add_executable(port_texture_test tests/texture_snapshot_test.cpp runtime/gx/gx_texture.cpp)
+target_include_directories(port_texture_test PRIVATE runtime/gx)
+target_compile_features(port_texture_test PRIVATE cxx_std_17)
+add_test(NAME port_texture_snapshots COMMAND port_texture_test)
 set(PORT_LOAD_TEST "${CMAKE_CURRENT_BINARY_DIR}/generated/load_test.cpp")
 add_custom_command(OUTPUT "${PORT_LOAD_TEST}"
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/generate_load_test.py" "${PORT_LOAD_TEST}"
@@ -29,9 +43,14 @@ target_include_directories(runtime PUBLIC runtime/ppc runtime/host runtime/hle r
 target_compile_features(runtime PUBLIC cxx_std_17)
 target_compile_options(runtime PRIVATE /EHsc /arch:AVX2 /fp:precise /W3)
 target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
-target_link_libraries(runtime PUBLIC d3d12 dxgi d3dcompiler xinput9_1_0 user32 gdi32)
+target_link_libraries(runtime PUBLIC bcrypt d3d12 dxgi d3dcompiler xinput9_1_0 user32 gdi32)
 
 add_executable(melee_port app/main.cpp)
 target_link_libraries(melee_port PRIVATE runtime guest)
 target_compile_options(melee_port PRIVATE /EHsc)
 target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+if(EXISTS "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
+  add_test(NAME port_image_identity COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/image_identity_test.py" "$<TARGET_FILE:melee_port>"
+    "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
+endif()

@@ -9,7 +9,7 @@ constexpr uint32_t DVD_COMMAND_READ = 1;
 
 // DVDFileInfo: cb (0x30 bytes) + startAddr(0x30) + length(0x34) + callback(0x38)
 void do_read(uint32_t block, uint32_t addr, uint32_t length, uint32_t disc_offset) {
-  if (!host::disc_read(disc_offset, host::ptr(addr), length))
+  if (!host::disc_read(disc_offset, host::ptr(addr, length), length))
     host::die("disc read failed: offset %08X length %X to %08X", disc_offset, length, addr);
   host::wr32(block + 0x08, DVD_COMMAND_READ);
   host::wr32(block + 0x0C, DVD_STATE_END);

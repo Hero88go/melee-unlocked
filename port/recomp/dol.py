@@ -19,7 +19,10 @@ class Section:
 
 class Dol:
     def __init__(self, path):
-        data = open(path, "rb").read()
+        with open(path, "rb") as stream:
+            data = stream.read()
+        if len(data) < 0x100:
+            raise ValueError("truncated DOL header")
         text_off = struct.unpack(">7I", data[0:28])
         data_off = struct.unpack(">11I", data[28:72])
         text_addr = struct.unpack(">7I", data[72:100])
@@ -36,6 +39,8 @@ class Dol:
                 self.sections.append(Section("data", i, data_addr[i], data_size[i], data_off[i]))
         self.ram = bytearray(RAM_SIZE)
         for s in self.sections:
+            if s.offset < 0x100 or s.offset > len(data) or s.size > len(data) - s.offset:
+                raise ValueError("truncated or invalid DOL section: %r" % s)
             if s.addr < RAM_BASE or s.end > RAM_BASE + RAM_SIZE:
                 raise ValueError("section outside RAM: %r" % s)
             self.ram[s.addr - RAM_BASE:s.end - RAM_BASE] = data[s.offset:s.offset + s.size]

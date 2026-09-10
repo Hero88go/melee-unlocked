@@ -3,6 +3,12 @@
 **Active direction: actual native geometry rendering. Image interpolation and generated
 frames are rejected; the old prototype launcher is disabled.**
 
+The native port now boots and renders gameplay with immutable texture snapshots.
+Run `run-native.bat` for the local development build, or add `--threaded-renderer`
+to test the separate render thread. See [NATIVE_DEVELOPMENT.md](NATIVE_DEVELOPMENT.md).
+Eleven tests pass, and 2,400 state checkpoints match with headless, synchronous and
+threaded rendering. Independent high-FPS poses, audio and online play remain unfinished.
+
 Fable's native recompilation/D3D12 prototype has been selectively incorporated behind
 `MELEE_BUILD_EXPERIMENTAL_PORT=ON`. See [FABLE_REVIEW.md](FABLE_REVIEW.md) for fixes,
 known defects, build instructions and validation. It is not yet an unlocked-FPS or

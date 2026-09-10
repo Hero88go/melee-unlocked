@@ -11,7 +11,7 @@ namespace host {
 
 struct Options {
   std::string iso;
-  std::string dol;               // optional override; default: DOL extracted from the ISO
+  std::string state_trace;        // optional per-retrace CPU/RAM/ARAM verification CSV
   uint32_t frames = 0;           // stop after N retraces (0 = run until exit)
   bool fast = false;             // no real-time pacing
   bool trace_calls = false;      // log HLE calls
@@ -37,7 +37,7 @@ uint8_t rd8(uint32_t addr);
 void wr32(uint32_t addr, uint32_t v);
 void wr16(uint32_t addr, uint16_t v);
 void wr8(uint32_t addr, uint8_t v);
-uint8_t* ptr(uint32_t addr);     // host pointer for a RAM address (no bounds checks beyond RAM)
+uint8_t* ptr(uint32_t addr, uint32_t bytes = 1); // checks the complete RAM span
 std::string cstr(uint32_t addr, size_t max = 256);
 
 // ---- disc ----
@@ -62,6 +62,7 @@ void retrace();                        // one VI retrace: time, alarms, VI inter
 void deliver_interrupt(uint32_t number);
 bool exit_requested();
 void request_exit(int code);
+int exit_code();
 uint32_t retrace_count();
 
 // ---- time ----
@@ -91,3 +92,6 @@ void call_guest(uint32_t addr, uint32_t r3 = 0, uint32_t r4 = 0, uint32_t r5 = 0
 
 // Thrown by hle::OSLoadContext to unwind a guest interrupt/exception handler.
 struct LoadContextUnwind { uint32_t context; };
+
+// Unwind a normal game stop so renderer threads can drain and join.
+struct ExitRequested { int code; };

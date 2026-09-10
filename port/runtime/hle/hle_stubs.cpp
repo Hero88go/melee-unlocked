@@ -2,6 +2,7 @@
 // These return "no device / done" so the game's init paths complete without hardware.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "hle.h"
+#include "memory_range.h"
 #include <cstring>
 #include <deque>
 
@@ -113,9 +114,9 @@ HLE(ARFree) {
 HLE(ARGetSize) { RET(0x01000000); }
 HLE(ARRegisterDMACallback) { RET(s_ar_dma_callback); s_ar_dma_callback = ARG0; }
 static void aram_dma(uint32_t type, uint32_t mainmem, uint32_t aram, uint32_t length) {
-  if (aram + length > 0x01000000) host::die("ARAM DMA out of range %08X+%X", aram, length);
-  if (type == 0) std::memcpy(host::aram + aram, host::ptr(mainmem), length);   // MRAM -> ARAM
-  else std::memcpy(host::ptr(mainmem), host::aram + aram, length);            // ARAM -> MRAM
+  if (!host::valid_range(aram, length, 0x01000000)) host::die("ARAM DMA out of range %08X+%X", aram, length);
+  if (type == 0) std::memcpy(host::aram + aram, host::ptr(mainmem, length), length);   // MRAM -> ARAM
+  else std::memcpy(host::ptr(mainmem, length), host::aram + aram, length);            // ARAM -> MRAM
 }
 HLE(ARStartDMA) {
   aram_dma(ARG0, ARG1, ARG2, ARG3);

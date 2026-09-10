@@ -4,9 +4,10 @@
 
 namespace host {
 using ResizeCallback = std::function<void(int, int)>;
-void* window_create(int w, int h, const wchar_t* title);
+void* window_create(int w, int h, const wchar_t* title, bool visible = true);
 void window_set_resize_callback(ResizeCallback cb);
 void window_pump();
+void window_destroy();
 void window_set_title(const wchar_t* title);
 bool window_closed();
 void window_client_size(int* w, int* h);

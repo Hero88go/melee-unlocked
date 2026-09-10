@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <mutex>
 #include "host.h"
 #include "window.h"
 
@@ -18,6 +19,7 @@ namespace host {
 namespace {
 HWND g_hwnd = nullptr;
 bool g_keys[256];
+std::mutex g_keys_mutex;
 bool g_closed = false;
 int g_client_w = 1280, g_client_h = 960;
 ResizeCallback g_on_resize;
@@ -26,21 +28,21 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
     case WM_CLOSE: g_closed = true; request_exit(0); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
-    case WM_KEYDOWN: if (w < 256) g_keys[w] = true; return 0;
-    case WM_KEYUP: if (w < 256) g_keys[w] = false; return 0;
+    case WM_KEYDOWN: { std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = true; return 0; }
+    case WM_KEYUP: { std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = false; return 0; }
     case WM_SIZE:
       if (w != SIZE_MINIMIZED) {
         g_client_w = LOWORD(l); g_client_h = HIWORD(l);
         if (g_on_resize && g_client_w > 0 && g_client_h > 0) g_on_resize(g_client_w, g_client_h);
       }
       return 0;
-    case WM_KILLFOCUS: std::memset(g_keys, 0, sizeof g_keys); return 0;
+    case WM_KILLFOCUS: { std::lock_guard<std::mutex> lock(g_keys_mutex); std::memset(g_keys, 0, sizeof g_keys); return 0; }
   }
   return DefWindowProcW(h, m, w, l);
 }
 }  // namespace
 
-void* window_create(int w, int h, const wchar_t* title) {
+void* window_create(int w, int h, const wchar_t* title, bool visible) {
   HINSTANCE inst = GetModuleHandleW(nullptr);
   WNDCLASSW wc{};
   wc.hInstance = inst; wc.lpfnWndProc = wnd_proc; wc.lpszClassName = L"MeleePortWindow"; wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
@@ -49,12 +51,15 @@ void* window_create(int w, int h, const wchar_t* title) {
   AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
   g_hwnd = CreateWindowExW(0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                            r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
+  if (!g_hwnd) die("cannot create native window");
   g_client_w = w; g_client_h = h;
-  ShowWindow(g_hwnd, SW_SHOW);
+  if (visible) ShowWindow(g_hwnd, SW_SHOW);
   return g_hwnd;
 }
 
 void window_set_resize_callback(ResizeCallback cb) { g_on_resize = std::move(cb); }
+
+void window_destroy() { if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; } }
 
 void window_pump() {
   MSG msg;
@@ -122,6 +127,7 @@ void input_poll(PadState out[4]) {
     return;
   }
   // Keyboard (player 1): arrows = stick, IJKL = c-stick, Z=A X=B C=X V=Y, Enter=Start, Q=L W=R E=Z, D-pad = TFGH
+  std::lock_guard<std::mutex> lock(g_keys_mutex);
   auto key = [](int vk) { return g_keys[vk & 0xFF]; };
   int sx = 0, sy = 0, cx = 0, cy = 0;
   if (key(VK_LEFT)) sx -= 127; if (key(VK_RIGHT)) sx += 127; if (key(VK_UP)) sy += 127; if (key(VK_DOWN)) sy -= 127;

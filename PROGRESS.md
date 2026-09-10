@@ -1,5 +1,28 @@
 # Development checkpoint — September 10, 2026
 
+## Native fidelity and thread isolation
+
+- Texture and palette bytes (including mip chains) are now captured into immutable
+  host-owned snapshots at each draw. Duplicate contents share storage; deferred
+  rendering no longer reads guest RAM or TMEM. Mip counts are bounded to 1x1.
+- Native 1280x960 Classic gameplay captures show clean fighter/stage/HUD rendering
+  in the tested scene (`reports/native-validation/classic_01800.png`). Other scenes
+  and remaining EFB copy behavior still need validation.
+- `--threaded-renderer` moves the window and D3D12 work onto their own thread.
+  Keyboard state is synchronized; normal shutdown drains and joins the renderer.
+  A two-frame ordered queue preserves EFB dependencies. It can still back-pressure
+  simulation and does not produce fractional animation frames yet.
+- Generator/runtime verify the stock DOL; host RAM copies validate complete ranges.
+- Release build and 11 CTest checks pass. With the same script/clock, headless,
+  synchronous and threaded rendering matched all 2,400 CPU/RAM/ARAM/event checkpoints.
+  The worker drained all 2,399 submitted source frames on shutdown. This is local
+  renderer isolation evidence, not stock-Dolphin equivalence or netplay validation.
+- `run-native.bat`, `tools/validate_native.py` and `NATIVE_DEVELOPMENT.md` provide
+  the native launch and repeatable validation paths. Existing Slippi is untouched.
+
+Project remains incomplete: independent authored sub-frame rendering, audio,
+memory cards, full deterministic rollback and Slippi networking are still absent.
+
 ## Fable review integration
 
 The experimental native recompiler and D3D12 renderer are imported on

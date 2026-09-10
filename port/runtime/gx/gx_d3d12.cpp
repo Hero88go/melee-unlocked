@@ -78,8 +78,8 @@ class Ring {
 class D3D12Backend : public Backend {
  public:
   D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); }
-  ~D3D12Backend() override { wait_gpu(); }
-  void submit_frame(const Frame& frame, const uint8_t* tmem) override;
+  ~D3D12Backend() override { wait_gpu(); if (fence_event_) CloseHandle(fence_event_); }
+  void submit_frame(const Frame& frame) override;
   void resize(int w, int h) { wait_gpu(); client_w_ = w; client_h_ = h; create_swapchain_targets(true); }
   uint32_t frames_presented() const { return frames_presented_; }
   uint32_t pipeline_count() const { return (uint32_t)psos_.size(); }
@@ -91,10 +91,10 @@ class D3D12Backend : public Backend {
   void create_efb();
   void wait_gpu();
   ID3D12PipelineState* get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo);
-  ID3D12Resource* get_texture(const TextureRef& t, const uint8_t* tmem, uint32_t* w, uint32_t* h);
-  D3D12_GPU_DESCRIPTOR_HANDLE bind_textures(const DrawCall& dc, const uint8_t* tmem);
+  ID3D12Resource* get_texture(const TextureRef& t, uint32_t* w, uint32_t* h);
+  D3D12_GPU_DESCRIPTOR_HANDLE bind_textures(const DrawCall& dc);
   D3D12_GPU_DESCRIPTOR_HANDLE bind_samplers(const DrawCall& dc);
-  void execute_draw(const Frame& frame, const DrawCall& dc, const uint8_t* tmem);
+  void execute_draw(const Frame& frame, const DrawCall& dc);
   void execute_copy(const EfbCopy& copy);
   void present_efb(const EfbCopy& copy);
   void clear_efb(const EfbCopy& copy);
@@ -134,7 +134,6 @@ class D3D12Backend : public Backend {
   EfbCopy pending_clear_{};
   std::vector<ComPtr<ID3D12Resource>> frame_garbage_;
   std::vector<uint8_t> decode_scratch_;
-  std::unordered_map<uint32_t, uint64_t> hash_cache_;   // addr -> hash for this frame
 };
 
 void D3D12Backend::init() {
@@ -367,32 +366,18 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
 }
 
 // ---------------- textures ----------------
-ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, const uint8_t* tmem, uint32_t* w, uint32_t* h) {
+ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint32_t* h) {
   auto ec = efb_copies_.find(t.addr);
   if (ec != efb_copies_.end() && ec->second.resource) {
     ec->second.last_used = frame_counter_;
     *w = ec->second.width; *h = ec->second.height;
     return ec->second.resource.Get();
   }
-  uint32_t level_bytes = texture_level_bytes(t.width, t.height, t.format);
-  uint32_t total = 0, lw = t.width, lh = t.height;
-  for (uint32_t l = 0; l < t.mip_levels && lw && lh; ++l) { total += texture_level_bytes(lw, lh, t.format); lw = std::max(1u, lw / 2); lh = std::max(1u, lh / 2); }
-  if ((t.addr & 0x3FFFFFFFu) + total > 0x01800000u) return nullptr;
-  const uint8_t* src = host::ptr(0x80000000u | (t.addr & 0x01FFFFFF));
-  uint64_t key = hash_bytes(&t.addr, 4);
-  auto hc = hash_cache_.find(t.addr);
-  uint64_t data_hash;
-  if (hc != hash_cache_.end()) data_hash = hc->second;
-  else { data_hash = hash_bytes(src, std::min<uint32_t>(total, 1 << 20)); hash_cache_[t.addr] = data_hash; }
-  key ^= data_hash * 0x9E3779B97F4A7C15ull;
-  uint32_t meta = t.width | (t.height << 12) | (t.format << 24);
-  key ^= hash_bytes(&meta, 4) * 31;
-  bool paletted = t.format == 8 || t.format == 9 || t.format == 10;
-  uint32_t tlut_bytes = t.format == 8 ? 32 : t.format == 9 ? 512 : 32768;
-  if (paletted) {
-    key ^= hash_bytes(tmem + t.tlut_addr, std::min<uint32_t>(tlut_bytes, (1u << 20) - t.tlut_addr)) * 7;
-    key ^= (uint64_t)t.tlut_format << 60;
-  }
+  if (!t.data) return nullptr;
+  const uint8_t* src = t.data->image.data();
+  uint32_t lw = t.width, lh = t.height;
+  const uint32_t meta[] = {t.width, t.height, t.format, t.mip_levels, t.tlut_format};
+  uint64_t key = t.data->hash ^ hash_bytes(meta, sizeof meta);
   auto it = textures_.find(key);
   if (it != textures_.end()) { it->second.last_used = frame_counter_; *w = it->second.width; *h = it->second.height; return it->second.resource.Get(); }
 
@@ -407,7 +392,7 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, const uint8_t* tm
   lw = t.width; lh = t.height;
   const uint8_t* level_src = src;
   for (uint32_t l = 0; l < t.mip_levels && lw && lh; ++l) {
-    decode_texture(level_src, lw, lh, t.format, tmem + t.tlut_addr, t.tlut_format, decode_scratch_);
+    decode_texture(level_src, lw, lh, t.format, t.data->palette.data(), t.tlut_format, decode_scratch_);
     uint32_t pitch = (lw * 4 + 255) & ~255u;
     uint8_t* cpu; D3D12_GPU_VIRTUAL_ADDRESS gpu;
     if (!upload_ring_.alloc((size_t)pitch * lh, 512, &cpu, &gpu)) { host::log("d3d12: upload ring full"); break; }
@@ -427,11 +412,10 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, const uint8_t* tm
   ID3D12Resource* res = e.resource.Get();
   textures_[key] = std::move(e);
   *w = t.width; *h = t.height;
-  (void)level_bytes;
   return res;
 }
 
-D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_textures(const DrawCall& dc, const uint8_t* tmem) {
+D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_textures(const DrawCall& dc) {
   if (srv_cursor_ + 8 > 65536) srv_cursor_ = 0;
   uint32_t base = srv_cursor_;
   srv_cursor_ += 8;
@@ -440,7 +424,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_textures(const DrawCall& dc, cons
     D3D12_CPU_DESCRIPTOR_HANDLE h = cpu; h.ptr += (base + i) * srv_size_;
     ID3D12Resource* res = nullptr;
     uint32_t w = 1, hgt = 1;
-    if (dc.textures[i].used) res = get_texture(dc.textures[i], tmem, &w, &hgt);
+    if (dc.textures[i].used) res = get_texture(dc.textures[i], &w, &hgt);
     D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
     sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; sd.Texture2D.MipLevels = res ? -1 : 1;
@@ -490,7 +474,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
 }
 
 // ---------------- draws ----------------
-void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const uint8_t* tmem) {
+void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc) {
   // Build index list (triangle list / line list) from the GX primitive.
   std::vector<uint32_t> idx;
   uint32_t n = dc.vertex_count;
@@ -537,7 +521,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const ui
   fill_ps_constants(dc, *(PSConstants*)ccpu, opts_.efb_scale);
   // Pipeline
   ID3D12PipelineState* pso = get_pso(dc, topo);
-  D3D12_GPU_DESCRIPTOR_HANDLE srvs = bind_textures(dc, tmem);
+  D3D12_GPU_DESCRIPTOR_HANDLE srvs = bind_textures(dc);
   D3D12_GPU_DESCRIPTOR_HANDLE samps = bind_samplers(dc);
   // Viewport / scissor
   const float* vp = (const float*)&dc.xf_regs[0x1A];
@@ -765,10 +749,14 @@ static void dump_frame(const Frame& frame, const std::string& path) {
   fclose(f);
 }
 
-void D3D12Backend::submit_frame(const Frame& frame, const uint8_t* tmem) {
+void D3D12Backend::submit_frame(const Frame& frame) {
+  struct FloatEnvironment {
+    unsigned saved = _mm_getcsr();
+    FloatEnvironment() { _mm_setcsr(0x1f80); }
+    ~FloatEnvironment() { _mm_setcsr(saved); }
+  } float_environment;
   ++frame_counter_;
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
-  hash_cache_.clear();
   vertex_ring_.reset(); index_ring_.reset(); constant_ring_.reset(); upload_ring_.reset();
   srv_cursor_ = 0;
   frame_garbage_.clear();
@@ -783,7 +771,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const uint8_t* tmem) {
   bool presented = false;
   for (const FrameCommand& cmd : frame.commands) {
     if (cmd.kind == FrameCommand::Draw) {
-      execute_draw(frame, frame.draws[cmd.index], tmem);
+      execute_draw(frame, frame.draws[cmd.index]);
     } else {
       const EfbCopy& c = frame.copies[cmd.index];
       if (c.to_xfb) { present_efb(c); presented = true; }

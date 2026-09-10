@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 #include "gx_regs.h"
+#include "texture_snapshot.h"
 
 namespace gx {
 
@@ -38,6 +39,7 @@ struct TextureRef {
   uint32_t addr = 0, width = 0, height = 0, format = 0, tlut_addr = 0, tlut_format = 0;
   uint32_t mode0 = 0, mode1 = 0;   // wrap/filter/lod
   uint32_t mip_levels = 1;
+  std::shared_ptr<const TextureSnapshot> data;
   bool used = false;
 };
 
@@ -85,7 +87,7 @@ struct Frame {
 // Renderer interface implemented by the D3D12 backend (or a null backend).
 struct Backend {
   virtual ~Backend() = default;
-  virtual void submit_frame(const Frame& frame, const uint8_t* tmem) = 0;   // called at XFB copy
+  virtual void submit_frame(const Frame& frame) = 0;   // called at XFB copy
 };
 
 void init(Backend* backend);

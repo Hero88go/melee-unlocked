@@ -1,11 +1,15 @@
 // Host services: memory, disc, boot, event delivery, time, MMIO, logging.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
+#include "memory_range.h"
+#include <windows.h>
+#include <bcrypt.h>
 #include "functions.h"
 #include "guest_symbols.h"
 #include "gx_core.h"
 #include "window.h"
 #include <chrono>
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -27,14 +31,15 @@ uint8_t* aram = nullptr;
 ppc::Context* cpu = nullptr;
 
 static FILE* g_disc = nullptr;
+static FILE* g_state_trace = nullptr;
 static uint32_t g_fst_offset, g_fst_size, g_fst_max;
 static std::deque<Completion> g_completions;
 static bool g_pe_finish_pending = false;
 static bool g_pe_token_pending = false;
 static uint16_t g_pe_token = 0;
 static uint32_t g_retraces = 0;
-static bool g_exit = false;
-static int g_exit_code = 0;
+static std::atomic<bool> g_exit{false};
+static std::atomic<int> g_exit_code{0};
 static std::chrono::steady_clock::time_point g_next_frame;
 static uint8_t g_mmio[0x10000];      // 0xCC000000 - 0xCC00FFFF register file (big-endian bytes)
 static bool g_in_interrupt = false;
@@ -77,16 +82,16 @@ const char* symbol_name(uint32_t addr) {
 }
 
 // ---------------- memory ----------------
-uint8_t* ptr(uint32_t addr) {
+uint8_t* ptr(uint32_t addr, uint32_t bytes) {
   uint32_t off = addr & 0x3FFFFFFFu;
-  if (off >= ppc::RAM_SIZE) die("host access outside RAM: %08X", addr);
+  if (!valid_range(off, bytes, ppc::RAM_SIZE)) die("host access outside RAM: %08X+%X", addr, bytes);
   return ram + off;
 }
-uint32_t rd32(uint32_t a) { uint32_t v; std::memcpy(&v, ptr(a), 4); return _byteswap_ulong(v); }
-uint16_t rd16(uint32_t a) { uint16_t v; std::memcpy(&v, ptr(a), 2); return _byteswap_ushort(v); }
+uint32_t rd32(uint32_t a) { uint32_t v; std::memcpy(&v, ptr(a, 4), 4); return _byteswap_ulong(v); }
+uint16_t rd16(uint32_t a) { uint16_t v; std::memcpy(&v, ptr(a, 2), 2); return _byteswap_ushort(v); }
 uint8_t rd8(uint32_t a) { return *ptr(a); }
-void wr32(uint32_t a, uint32_t v) { v = _byteswap_ulong(v); std::memcpy(ptr(a), &v, 4); }
-void wr16(uint32_t a, uint16_t v) { v = _byteswap_ushort(v); std::memcpy(ptr(a), &v, 2); }
+void wr32(uint32_t a, uint32_t v) { v = _byteswap_ulong(v); std::memcpy(ptr(a, 4), &v, 4); }
+void wr16(uint32_t a, uint16_t v) { v = _byteswap_ushort(v); std::memcpy(ptr(a, 2), &v, 2); }
 void wr8(uint32_t a, uint8_t v) { *ptr(a) = v; }
 std::string cstr(uint32_t addr, size_t max) {
   std::string s;
@@ -122,15 +127,27 @@ uint32_t disc_fst_max_size() { return g_fst_max; }
 // ---------------- boot ----------------
 static void load_dol_from_disc() {
   uint8_t hdr[0x20];
-  disc_read(0x420, hdr, 4);
+  if (!disc_read(0x420, hdr, 4)) die("cannot read disc DOL offset");
   uint32_t dol_offset = ((uint32_t)hdr[0] << 24) | ((uint32_t)hdr[1] << 16) | ((uint32_t)hdr[2] << 8) | hdr[3];
+  constexpr uint32_t dol_size = 0x4385E0u;
+  std::vector<uint8_t> image(dol_size);
+  if (!disc_read(dol_offset, image.data(), dol_size)) die("cannot read full Melee DOL");
+  BCRYPT_ALG_HANDLE algorithm = nullptr;
+  uint8_t digest[20];
+  const uint8_t expected[20] = {0x08,0xe0,0xbf,0x20,0x13,0x4d,0xfc,0xb2,0x60,0x69,0x96,0x71,0x00,0x45,0x27,0xb2,0xd6,0xbb,0x1a,0x45};
+  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA1_ALGORITHM, nullptr, 0) < 0)
+    die("cannot initialize game-image verification");
+  NTSTATUS hash_status = BCryptHash(algorithm, nullptr, 0, image.data(), dol_size, digest, sizeof digest);
+  BCryptCloseAlgorithmProvider(algorithm, 0);
+  if (hash_status < 0 || std::memcmp(digest, expected, sizeof digest))
+    die("ISO DOL does not match vanilla Melee NTSC 1.02; recompiled code cannot run this image");
   uint8_t dh[0x100];
   if (!disc_read(dol_offset, dh, sizeof dh)) die("cannot read DOL header");
   auto be = [&](int o) { return ((uint32_t)dh[o] << 24) | ((uint32_t)dh[o + 1] << 16) | ((uint32_t)dh[o + 2] << 8) | dh[o + 3]; };
   for (int i = 0; i < 18; ++i) {
     uint32_t off = be(i * 4), addr = be(0x48 + i * 4), size = be(0x90 + i * 4);
     if (!size) continue;
-    if (!disc_read(dol_offset + off, ptr(addr), size)) die("cannot read DOL section %d", i);
+    if (!disc_read(dol_offset + off, ptr(addr, size), size)) die("cannot read DOL section %d", i);
   }
   // The DOL header's bss range overlaps the loaded .sdata section; the guest's own
   // __init_data zeroes .bss/.sbss precisely and RAM starts zeroed, so do not memset here.
@@ -138,6 +155,11 @@ static void load_dol_from_disc() {
 }
 
 void boot_setup() {
+  if (!options.state_trace.empty()) {
+    g_state_trace = std::fopen(options.state_trace.c_str(), "w");
+    if (!g_state_trace) die("cannot open state trace");
+    std::fprintf(g_state_trace, "retrace,cpu,ram,aram,events\n");
+  }
   ram = (uint8_t*)std::calloc(ppc::RAM_SIZE + 64, 1);
   aram = (uint8_t*)std::calloc(0x01000000, 1);
   cpu = new ppc::Context();
@@ -148,7 +170,7 @@ void boot_setup() {
   load_dol_from_disc();
 
   // Low memory, mirroring Dolphin's Boot_BS2Emu.cpp (GC path) plus what the apploader leaves.
-  disc_read(0, ptr(0x80000000), 0x20);              // disc id
+  disc_read(0, ptr(0x80000000, 0x20), 0x20);              // disc id
   wr32(0x80000020, 0x0D15EA5E);                      // booted from bootrom
   wr32(0x80000028, ppc::RAM_SIZE);                   // physical memory size
   wr32(0x8000002C, 0x10000006);                      // console type (Dolphin reports devkit)
@@ -176,8 +198,9 @@ void boot_setup() {
   cpu->tb = 0;
 
   // Apploader: FST at the top of RAM, arena hi below it.
+  if (!valid_range(0, g_fst_max, ppc::RAM_SIZE) || g_fst_size > g_fst_max) die("invalid FST size");
   uint32_t fst_addr = (0x81800000u - g_fst_max) & ~31u;
-  if (!disc_read(g_fst_offset, ptr(fst_addr), g_fst_size)) die("cannot read FST");
+  if (!disc_read(g_fst_offset, ptr(fst_addr, g_fst_size), g_fst_size)) die("cannot read FST");
   wr32(0x80000038, fst_addr);
   wr32(0x8000003C, g_fst_max);
   wr32(0x80000034, fst_addr);                        // arena hi
@@ -204,7 +227,8 @@ void post_completion(Completion fn) { g_completions.push_back(std::move(fn)); }
 void set_pe_finish_pending() { g_pe_finish_pending = true; }
 void set_pe_token_pending(uint16_t token) { g_pe_token = token; g_pe_token_pending = true; }
 bool exit_requested() { return g_exit; }
-void request_exit(int code) { g_exit = true; g_exit_code = code; }
+void request_exit(int code) { g_exit_code.store(code); g_exit.store(true); }
+int exit_code() { return g_exit_code.load(); }
 uint32_t retrace_count() { return g_retraces; }
 void advance_time(uint64_t ticks) { cpu->tb += ticks; }
 
@@ -225,6 +249,7 @@ void deliver_interrupt(uint32_t number) {
   uint64_t tb = c.tb;
   c = saved;
   c.tb = tb;
+  ppc::update_mxcsr(c);
 }
 
 static void fire_due_alarms(bool force);
@@ -273,11 +298,28 @@ static void fire_due_alarms(bool force) {
     uint64_t tb = c.tb;
     c = saved;
     c.tb = tb;
+    ppc::update_mxcsr(c);
   }
   firing = false;
 }
 
 bool g_has_window = false;
+
+// Field-wise CPU hash excludes C++ padding and diagnostic counters/trace history.
+static void trace_state() {
+  if (!g_state_trace) return;
+  uint64_t h = 0;
+  auto add = [&](const auto& v) { h = (h ^ gx::hash_bytes(&v, sizeof v)) * 0x100000001b3ull; };
+  const auto& c = *cpu;
+  add(c.r); add(c.f); add(c.cr); add(c.lr); add(c.ctr);
+  add(c.ca); add(c.so); add(c.ov); add(c.fpscr); add(c.gqr);
+  add(c.msr); add(c.hid0); add(c.hid2); add(c.dec); add(c.tb); add(c.spr);
+  uint64_t events = (uint64_t)g_completions.size() << 32 |
+      (uint64_t)g_pe_token << 8 | (g_pe_finish_pending ? 1 : 0) | (g_pe_token_pending ? 2 : 0);
+  std::fprintf(g_state_trace, "%u,%016llX,%016llX,%016llX,%016llX\n", g_retraces,
+      h, gx::hash_bytes(ram, ppc::RAM_SIZE), gx::hash_bytes(aram, 0x01000000), events);
+  std::fflush(g_state_trace);
+}
 
 void retrace() {
   ++g_retraces;
@@ -295,6 +337,7 @@ void retrace() {
   di0 |= 0x8000;
   g_mmio[0x2030] = (uint8_t)(di0 >> 8); g_mmio[0x2031] = (uint8_t)di0;
   deliver_interrupt(24);  // __OS_INTERRUPT_PI_VI
+  trace_state();
   if (g_retraces % 60 == 0 || (options.frames && g_retraces >= options.frames)) {
     uint64_t commands, draws, vertices; uint32_t copies;
     gx_stats(&commands, &draws, &vertices, &copies);
@@ -305,7 +348,7 @@ void retrace() {
   if (g_exit) {
     log("exit requested after %u retraces", g_retraces);
     std::fflush(stdout);
-    std::exit(g_exit_code);
+    throw ExitRequested{g_exit_code.load()};
   }
 }
 
@@ -324,6 +367,7 @@ static void deliver_completions(bool force) {
   uint64_t tb = cpu->tb;
   *cpu = saved;
   cpu->tb = tb;
+  ppc::update_mxcsr(*cpu);
   pumping = false;
 }
 
