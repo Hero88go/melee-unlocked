@@ -1,7 +1,12 @@
 backups/
-runtime/
+/runtime/
 reports/
 build/
 *.log
 __pycache__/
 dependencies/
+
+/port/generated/
+/build-review/
+/melee/
+/slippi/

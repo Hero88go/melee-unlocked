@@ -1,0 +1,37 @@
+# Native Melee port: recompiled guest code + host runtime.
+cmake_minimum_required(VERSION 3.15)
+set(PORT_LOAD_TEST "${CMAKE_CURRENT_BINARY_DIR}/generated/load_test.cpp")
+add_custom_command(OUTPUT "${PORT_LOAD_TEST}"
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/generate_load_test.py" "${PORT_LOAD_TEST}"
+  DEPENDS tests/generate_load_test.py recomp/emit.py recomp/gekko.py)
+add_executable(port_load_test "${PORT_LOAD_TEST}")
+target_include_directories(port_load_test PRIVATE runtime/ppc)
+target_compile_features(port_load_test PRIVATE cxx_std_17)
+add_test(NAME port_signed_halfword_loads COMMAND port_load_test)
+
+set(PORT_GEN "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+if(NOT EXISTS "${PORT_GEN}/guest_sources.cmake")
+  message(FATAL_ERROR "port: generated code missing; run python port/recomp/recomp.py")
+endif()
+include("${PORT_GEN}/guest_sources.cmake")
+
+# Guest library: large generated translation units.
+add_library(guest STATIC ${GUEST_SOURCES} "${PORT_GEN}/function_names.cpp")
+target_include_directories(guest PUBLIC "${PORT_GEN}" runtime/ppc)
+target_compile_features(guest PUBLIC cxx_std_17)
+target_compile_options(guest PRIVATE /bigobj /MP /EHsc /arch:AVX2 /fp:precise /wd4102 /wd4101 /wd4189 /W1)
+target_compile_definitions(guest PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+
+# Host runtime: CPU helpers, memory, HLE, host services.
+file(GLOB RUNTIME_SOURCES runtime/ppc/*.cpp runtime/hle/*.cpp runtime/host/*.cpp runtime/gx/*.cpp)
+add_library(runtime STATIC ${RUNTIME_SOURCES})
+target_include_directories(runtime PUBLIC runtime/ppc runtime/host runtime/hle runtime/gx "${PORT_GEN}")
+target_compile_features(runtime PUBLIC cxx_std_17)
+target_compile_options(runtime PRIVATE /EHsc /arch:AVX2 /fp:precise /W3)
+target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(runtime PUBLIC d3d12 dxgi d3dcompiler xinput9_1_0 user32 gdi32)
+
+add_executable(melee_port app/main.cpp)
+target_link_libraries(melee_port PRIVATE runtime guest)
+target_compile_options(melee_port PRIVATE /EHsc)
+target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)

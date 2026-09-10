@@ -1,0 +1,409 @@
+// GX command processor: FIFO -> register state -> captured frames.
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "gx_core.h"
+#include "host.h"
+#include <cmath>
+#include <cstring>
+
+namespace gx {
+
+namespace {
+
+BPMemory g_bp;
+CPMemory g_cp;
+XFMemory g_xf;
+uint8_t g_tmem[1024 * 1024];
+uint32_t g_bp_mask = 0xFFFFFF;
+int32_t g_tev_colors[4][4], g_tev_kcolors[4][4];
+Backend* g_backend = nullptr;
+Frame g_frame;
+uint64_t g_frame_sequence = 0;
+std::vector<uint8_t> g_buf;
+uint64_t g_commands = 0, g_draws = 0, g_vertices = 0;
+uint32_t g_efb_copies = 0;
+
+inline uint32_t be32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+inline uint32_t be16(const uint8_t* p) { return ((uint32_t)p[0] << 8) | p[1]; }
+
+// ---------------- vertex attribute description ----------------
+struct AttrDesc {
+  uint32_t type;      // 0 none, 1 direct, 2 index8, 3 index16
+  uint32_t format;    // component format
+  uint32_t count;     // elements flag
+  uint32_t frac;
+  uint32_t array;     // CP array index for indexed
+};
+
+struct VertexDesc {
+  bool posmtx;
+  bool texmtx[8];
+  AttrDesc pos, nrm, col[2], tex[8];
+  uint32_t nrm_index3;
+  uint32_t size;      // bytes per vertex in the stream
+};
+
+uint32_t comp_bytes(uint32_t format) { static const uint32_t b[] = {1, 1, 2, 2, 4, 4, 4, 4}; return b[format & 7]; }
+
+VertexDesc build_desc(uint32_t fmt) {
+  VertexDesc d{};
+  uint32_t lo = g_cp.vcd_lo(), hi = g_cp.vcd_hi();
+  uint32_t a = g_cp.vat_a(fmt), b = g_cp.vat_b(fmt), c = g_cp.vat_c(fmt);
+  d.posmtx = lo & 1;
+  for (int i = 0; i < 8; ++i) d.texmtx[i] = (lo >> (1 + i)) & 1;
+  d.pos = {bits(lo, 9, 2), bits(a, 1, 3), bits(a, 0, 1), bits(a, 4, 5), 0};
+  d.nrm = {bits(lo, 11, 2), bits(a, 10, 3), bits(a, 9, 1), 0, 1};
+  d.nrm_index3 = bits(a, 31, 1);
+  d.col[0] = {bits(lo, 13, 2), bits(a, 14, 3), bits(a, 13, 1), 0, 2};
+  d.col[1] = {bits(lo, 15, 2), bits(a, 18, 3), bits(a, 17, 1), 0, 3};
+  d.tex[0] = {bits(hi, 0, 2), bits(a, 22, 3), bits(a, 21, 1), bits(a, 25, 5), 4};
+  d.tex[1] = {bits(hi, 2, 2), bits(b, 1, 3), bits(b, 0, 1), bits(b, 4, 5), 5};
+  d.tex[2] = {bits(hi, 4, 2), bits(b, 10, 3), bits(b, 9, 1), bits(b, 13, 5), 6};
+  d.tex[3] = {bits(hi, 6, 2), bits(b, 19, 3), bits(b, 18, 1), bits(b, 22, 5), 7};
+  d.tex[4] = {bits(hi, 8, 2), bits(b, 28, 3), bits(b, 27, 1), bits(c, 0, 5), 8};
+  d.tex[5] = {bits(hi, 10, 2), bits(c, 6, 3), bits(c, 5, 1), bits(c, 9, 5), 9};
+  d.tex[6] = {bits(hi, 12, 2), bits(c, 15, 3), bits(c, 14, 1), bits(c, 18, 5), 10};
+  d.tex[7] = {bits(hi, 14, 2), bits(c, 24, 3), bits(c, 23, 1), bits(c, 27, 5), 11};
+  uint32_t size = 0;
+  if (d.posmtx) size += 1;
+  for (int i = 0; i < 8; ++i) if (d.texmtx[i]) size += 1;
+  auto attr = [&](const AttrDesc& x, uint32_t direct) {
+    if (x.type == 1) size += direct; else if (x.type == 2) size += 1; else if (x.type == 3) size += 2;
+  };
+  attr(d.pos, comp_bytes(d.pos.format) * (d.pos.count ? 3 : 2));
+  if (d.nrm.type == 1) size += comp_bytes(d.nrm.format) * (d.nrm.count ? 9 : 3);
+  else if (d.nrm.type == 2) size += (d.nrm.count && d.nrm_index3) ? 3 : 1;
+  else if (d.nrm.type == 3) size += (d.nrm.count && d.nrm_index3) ? 6 : 2;
+  static const uint32_t csize[] = {2, 3, 4, 2, 3, 4, 4, 4};
+  for (int i = 0; i < 2; ++i) attr(d.col[i], csize[d.col[i].format]);
+  for (int i = 0; i < 8; ++i) attr(d.tex[i], comp_bytes(d.tex[i].format) * (d.tex[i].count ? 2 : 1));
+  d.size = size;
+  return d;
+}
+
+float read_component(const uint8_t* p, uint32_t format, uint32_t frac) {
+  switch (format) {
+    case 0: return (float)p[0] * std::ldexp(1.0f, -(int)frac);
+    case 1: return (float)(int8_t)p[0] * std::ldexp(1.0f, -(int)frac);
+    case 2: return (float)(uint16_t)be16(p) * std::ldexp(1.0f, -(int)frac);
+    case 3: return (float)(int16_t)be16(p) * std::ldexp(1.0f, -(int)frac);
+    default: { uint32_t u = be32(p); float f; std::memcpy(&f, &u, 4); return f; }
+  }
+}
+
+void read_color(const uint8_t* p, uint32_t format, uint8_t out[4]) {
+  switch (format) {
+    case 0: { uint32_t v = be16(p); out[0] = (uint8_t)((v >> 11) * 255 / 31); out[1] = (uint8_t)(((v >> 5) & 63) * 255 / 63); out[2] = (uint8_t)((v & 31) * 255 / 31); out[3] = 255; break; }
+    case 1: out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; out[3] = 255; break;
+    case 2: out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; out[3] = 255; break;
+    case 3: { uint32_t v = be16(p); out[0] = (uint8_t)(((v >> 12) & 15) * 17); out[1] = (uint8_t)(((v >> 8) & 15) * 17); out[2] = (uint8_t)(((v >> 4) & 15) * 17); out[3] = (uint8_t)((v & 15) * 17); break; }
+    case 4: { uint32_t v = ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
+      out[0] = (uint8_t)(((v >> 18) & 63) * 255 / 63); out[1] = (uint8_t)(((v >> 12) & 63) * 255 / 63); out[2] = (uint8_t)(((v >> 6) & 63) * 255 / 63); out[3] = (uint8_t)((v & 63) * 255 / 63); break; }
+    default: out[0] = p[0]; out[1] = p[1]; out[2] = p[2]; out[3] = p[3]; break;
+  }
+}
+
+const uint8_t* array_ptr(uint32_t array, uint32_t index) {
+  uint32_t base = g_cp.array_base(array), stride = g_cp.array_stride(array);
+  return host::ptr(0x80000000u | ((base + stride * index) & 0x01FFFFFFu));
+}
+
+// Decodes `count` vertices of format `fmt` from `src` into the frame. Returns components mask.
+uint32_t decode_vertices(const VertexDesc& d, const uint8_t* src, uint32_t count, uint32_t fmt) {
+  uint32_t components = 0;
+  uint32_t mia = g_cp.matrix_index_a(), mib = g_cp.matrix_index_b();
+  for (uint32_t v = 0; v < count; ++v) {
+    Vertex out{};
+    const uint8_t* p = src + (size_t)v * d.size;
+    // matrix indices
+    if (d.posmtx) { out.posmtx = *p++; components |= VB_HAS_POSMTXIDX; }
+    else out.posmtx = (uint8_t)(mia & 63);
+    for (int i = 0; i < 8; ++i) {
+      if (d.texmtx[i]) { out.texmtx[i] = *p++; components |= VB_HAS_TEXMTXIDX0 << i; }
+      else out.texmtx[i] = (uint8_t)(i < 4 ? bits(mia, 6 + 6 * i, 6) : bits(mib, 6 * (i - 4), 6));
+    }
+    auto fetch = [&](const AttrDesc& x, uint32_t direct_size) -> const uint8_t* {
+      const uint8_t* q = nullptr;
+      if (x.type == 1) { q = p; p += direct_size; }
+      else if (x.type == 2) { q = array_ptr(x.array, *p); p += 1; }
+      else if (x.type == 3) { q = array_ptr(x.array, be16(p)); p += 2; }
+      return q;
+    };
+    // position
+    {
+      uint32_t n = d.pos.count ? 3 : 2, cb = comp_bytes(d.pos.format);
+      const uint8_t* q = fetch(d.pos, cb * n);
+      if (q) for (uint32_t k = 0; k < n; ++k) out.pos[k] = read_component(q + k * cb, d.pos.format, d.pos.frac);
+    }
+    // normal (first vector only; binormal/tangent ignored for now)
+    if (d.nrm.type) {
+      uint32_t cb = comp_bytes(d.nrm.format), frac = d.nrm.format == 1 ? 6 : d.nrm.format == 3 ? 14 : d.nrm.format == 0 ? 7 : d.nrm.format == 2 ? 15 : 0;
+      uint32_t nvec = d.nrm.count ? 3 : 1;
+      const uint8_t* q = nullptr;
+      if (d.nrm.type == 1) { q = p; p += cb * 3 * nvec; }
+      else if (d.nrm.type == 2) { q = array_ptr(1, *p); p += (d.nrm.count && d.nrm_index3) ? 3 : 1; }
+      else { q = array_ptr(1, be16(p)); p += (d.nrm.count && d.nrm_index3) ? 6 : 2; }
+      if (q) for (int k = 0; k < 3; ++k) out.nrm[k] = read_component(q + k * cb, d.nrm.format, frac);
+      components |= VB_HAS_NRM0;
+    }
+    // colors
+    static const uint32_t csize[] = {2, 3, 4, 2, 3, 4, 4, 4};
+    for (int i = 0; i < 2; ++i) {
+      if (!d.col[i].type) { continue; }
+      const uint8_t* q = fetch(d.col[i], csize[d.col[i].format]);
+      uint8_t* dst = i ? out.col1 : out.col0;
+      if (q) read_color(q, d.col[i].format, dst);
+      if (!d.col[i].count) dst[3] = 255;
+      components |= i ? VB_HAS_COL1 : VB_HAS_COL0;
+    }
+    // texcoords
+    for (int i = 0; i < 8; ++i) {
+      if (!d.tex[i].type) continue;
+      uint32_t n = d.tex[i].count ? 2 : 1, cb = comp_bytes(d.tex[i].format);
+      const uint8_t* q = fetch(d.tex[i], cb * n);
+      if (q) for (uint32_t k = 0; k < n; ++k) out.uv[i][k] = read_component(q + k * cb, d.tex[i].format, d.tex[i].frac);
+      components |= VB_HAS_UV0 << i;
+    }
+    g_frame.vertices.push_back(out);
+  }
+  return components;
+}
+
+// ---------------- draw snapshot ----------------
+void snapshot_textures(DrawCall& dc) {
+  uint32_t stages = g_bp.numtevstages() + 1;
+  for (uint32_t s = 0; s < stages; ++s) {
+    if (!g_bp.order_enable(s)) continue;
+    int map = g_bp.order_texmap(s);
+    TextureRef& t = dc.textures[map];
+    if (t.used) continue;
+    t.used = true;
+    uint32_t i0 = g_bp.teximage0(map);
+    t.width = (i0 & 0x3FF) + 1;
+    t.height = ((i0 >> 10) & 0x3FF) + 1;
+    t.format = (i0 >> 20) & 0xF;
+    t.addr = (g_bp.teximage3(map) & 0xFFFFFF) << 5;
+    uint32_t tl = g_bp.textlut(map);
+    t.tlut_addr = (tl & 0x3FF) << 9;
+    t.tlut_format = (tl >> 10) & 3;
+    t.mode0 = g_bp.texmode0(map);
+    t.mode1 = g_bp.texmode1(map);
+    uint32_t min_filter = (t.mode0 >> 5) & 7;
+    bool mips = (min_filter & 3) != 0 && (min_filter & 4) == 0 ? false : (min_filter >= 4 || (min_filter & 2));
+    // Dolphin: mipmaps used when min_filter has the mip bits (values 4..7 = linear mip variants, 2/3 = point mip).
+    bool use_mips = (min_filter & 3) != 0;  // 0/4 = none, 1/5 = mip point, 2/6 = mip linear... approximate
+    (void)mips;
+    uint32_t max_lod = (t.mode1 >> 8) & 0xFF;
+    t.mip_levels = use_mips ? ((max_lod + 0xF) / 0x10) + 1 : 1;
+  }
+  // Indirect stages reference textures too.
+  uint32_t ind = g_bp.numindstages();
+  for (uint32_t i = 0; i < ind; ++i) {
+    int map = bits(g_bp.iref(), 6 * i, 3);
+    TextureRef& t = dc.textures[map];
+    if (t.used) continue;
+    t.used = true;
+    uint32_t i0 = g_bp.teximage0(map);
+    t.width = (i0 & 0x3FF) + 1; t.height = ((i0 >> 10) & 0x3FF) + 1; t.format = (i0 >> 20) & 0xF;
+    t.addr = (g_bp.teximage3(map) & 0xFFFFFF) << 5;
+    uint32_t tl = g_bp.textlut(map);
+    t.tlut_addr = (tl & 0x3FF) << 9; t.tlut_format = (tl >> 10) & 3;
+    t.mode0 = g_bp.texmode0(map); t.mode1 = g_bp.texmode1(map);
+    t.mip_levels = 1;
+  }
+}
+
+void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t components) {
+  DrawCall dc{};
+  dc.primitive = primitive;
+  dc.first_vertex = first;
+  dc.vertex_count = count;
+  dc.components = components;
+  dc.bp = g_bp;
+  std::memcpy(dc.posMatrices, g_xf.posMatrices, sizeof dc.posMatrices);
+  std::memcpy(dc.normalMatrices, g_xf.normalMatrices, sizeof dc.normalMatrices);
+  std::memcpy(dc.postMatrices, g_xf.postMatrices, sizeof dc.postMatrices);
+  std::memcpy(dc.lights, g_xf.lights, sizeof dc.lights);
+  std::memcpy(dc.xf_regs, &g_xf.raw[0x1000], sizeof dc.xf_regs);
+  dc.matrix_index_a = g_cp.matrix_index_a();
+  dc.matrix_index_b = g_cp.matrix_index_b();
+  std::memcpy(dc.tev_colors, g_tev_colors, sizeof g_tev_colors);
+  std::memcpy(dc.tev_kcolors, g_tev_kcolors, sizeof g_tev_kcolors);
+  snapshot_textures(dc);
+  g_frame.draws.push_back(std::move(dc));
+  g_frame.commands.push_back({FrameCommand::Draw, (uint32_t)g_frame.draws.size() - 1});
+  ++g_draws;
+  g_vertices += count;
+}
+
+// ---------------- BP side effects ----------------
+void bp_write(uint32_t value) {
+  uint8_t r = (uint8_t)(value >> 24);
+  uint32_t v = value & 0xFFFFFF;
+  if (r == BP_BP_MASK) { g_bp_mask = v; return; }
+  uint32_t masked = (g_bp.reg[r] & ~g_bp_mask) | (v & g_bp_mask);
+  g_bp_mask = 0xFFFFFF;
+  g_bp.reg[r] = masked;
+  if (r >= BP_TEV_COLOR_RA && r <= BP_TEV_COLOR_RA + 7) {
+    // TEV color/konst registers share BP slots; the type bit selects the destination at write time.
+    int idx = (r - BP_TEV_COLOR_RA) / 2;
+    bool bg = r & 1;
+    int32_t (*dst)[4] = (masked & (1 << 23)) ? g_tev_kcolors : g_tev_colors;
+    if (bg) { dst[idx][2] = sbits(masked, 0, 11); dst[idx][1] = sbits(masked, 12, 11); }
+    else { dst[idx][0] = sbits(masked, 0, 11); dst[idx][3] = sbits(masked, 12, 11); }
+    return;
+  }
+  switch (r) {
+    case BP_SETDRAWDONE:
+      if (masked & 2) host::set_pe_finish_pending();
+      break;
+    case BP_PE_TOKEN_INT_ID:
+      host::set_pe_token_pending((uint16_t)masked);
+      break;
+    case BP_LOADTLUT1: {
+      uint32_t tmem_addr = (masked & 0x3FF) << 9;
+      uint32_t count = (masked & 0x1FFC00) >> 5;
+      uint32_t src = (g_bp.reg[BP_LOADTLUT0] << 5) & 0x01FFFFFF;
+      if (tmem_addr + count <= sizeof g_tmem) std::memcpy(g_tmem + tmem_addr, host::ptr(0x80000000u | src), count);
+      break;
+    }
+    case BP_TRIGGER_EFB_COPY: {
+      EfbCopy c{};
+      c.dest_addr = g_bp.reg[BP_EFB_ADDR] << 5;
+      c.dest_stride = g_bp.reg[BP_MIPMAP_STRIDE] << 5;
+      uint32_t tl = g_bp.reg[BP_EFB_TL], br = g_bp.reg[BP_EFB_BR];
+      c.src_x = tl & 0x3FF; c.src_y = (tl >> 10) & 0x3FF;
+      c.src_w = (br & 0x3FF) + 1; c.src_h = ((br >> 10) & 0x3FF) + 1;
+      uint32_t tpf = bits(masked, 3, 4);
+      c.format = tpf / 2 + (tpf & 1) * 8;
+      c.to_xfb = bits(masked, 14, 1);
+      c.clear = bits(masked, 11, 1);
+      c.intensity = bits(masked, 15, 1);
+      c.half_scale = bits(masked, 9, 1);
+      c.is_depth = (g_bp.zcontrol() & 7) == 3;
+      c.clear_color = ((g_bp.reg[BP_CLEAR_AR] & 0xFF) << 24) | ((g_bp.reg[BP_CLEAR_AR] & 0xFF00) << 8) |
+                      ((g_bp.reg[BP_CLEAR_GB] & 0xFF00) >> 8 << 8) | (g_bp.reg[BP_CLEAR_GB] & 0xFF);
+      // clear_color layout: A(31..24) R(23..16) G(15..8) B(7..0)
+      c.clear_color = ((g_bp.reg[BP_CLEAR_AR] >> 8) & 0xFF) << 24 | (g_bp.reg[BP_CLEAR_AR] & 0xFF) << 16 |
+                      ((g_bp.reg[BP_CLEAR_GB] >> 8) & 0xFF) << 8 | (g_bp.reg[BP_CLEAR_GB] & 0xFF);
+      c.clear_z = g_bp.reg[BP_CLEAR_Z] & 0xFFFFFF;
+      uint32_t yscale = g_bp.reg[BP_COPYYSCALE];
+      c.y_scale = bits(masked, 10, 1) ? 256.0f / (float)yscale : (float)yscale / 256.0f;
+      g_frame.copies.push_back(c);
+      g_frame.commands.push_back({FrameCommand::Copy, (uint32_t)g_frame.copies.size() - 1});
+      ++g_efb_copies;
+      if (c.to_xfb) {
+        g_frame.sequence = ++g_frame_sequence;
+        if (g_backend) g_backend->submit_frame(g_frame, g_tmem);
+        g_frame.clear();
+      }
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+// ---------------- XF ----------------
+void xf_load(uint32_t address, uint32_t count, const uint8_t* data) {
+  for (uint32_t i = 0; i < count; ++i) {
+    uint32_t a = address + i;
+    if (a < 0x1058) g_xf.raw[a] = be32(data + i * 4);
+  }
+}
+
+void xf_indexed_load(uint32_t op, uint32_t value) {
+  uint32_t index = value >> 16, address = value & 0xFFF, size = ((value >> 12) & 0xF) + 1;
+  uint32_t array = 12 + (op - 0x20) / 8;
+  const uint8_t* src = array_ptr(array, index);
+  xf_load(address, size, src);
+}
+
+// ---------------- command parsing ----------------
+size_t parse_command(const uint8_t* d, size_t len);
+
+void run_display_list(uint32_t addr, uint32_t size) {
+  if ((addr & 0x3FFFFFFFu) + size > 0x01800000u) { host::log("gx: display list outside RAM %08X+%X", addr, size); return; }
+  const uint8_t* p = host::ptr(addr);
+  size_t used = 0;
+  while (used < size) {
+    size_t n = parse_command(p + used, size - used);
+    if (!n) break;
+    used += n;
+  }
+}
+
+size_t parse_command(const uint8_t* d, size_t len) {
+  uint8_t op = d[0];
+  if (op == 0x00) return 1;
+  if (op == 0x08) { if (len < 6) return 0; g_cp.reg[d[1]] = be32(d + 2); return 6; }
+  if (op == 0x10) {
+    if (len < 5) return 0;
+    uint32_t count = (be16(d + 1) & 0xF) + 1, address = be16(d + 3);
+    size_t need = 5 + count * 4;
+    if (len < need) return 0;
+    xf_load(address, count, d + 5);
+    return need;
+  }
+  if (op == 0x20 || op == 0x28 || op == 0x30 || op == 0x38) {
+    if (len < 5) return 0;
+    xf_indexed_load(op, be32(d + 1));
+    return 5;
+  }
+  if (op == 0x40) {
+    if (len < 9) return 0;
+    run_display_list(be32(d + 1), be32(d + 5));
+    return 9;
+  }
+  if (op == 0x48) return 1;
+  if (op == 0x61) { if (len < 5) return 0; bp_write(be32(d + 1)); return 5; }
+  if (op >= 0x80 && op < 0xC0) {
+    if (len < 3) return 0;
+    uint32_t fmt = op & 7, count = be16(d + 1);
+    VertexDesc desc = build_desc(fmt);
+    size_t need = 3 + (size_t)count * desc.size;
+    if (len < need) return 0;
+    if (count) {
+      uint32_t first = (uint32_t)g_frame.vertices.size();
+      uint32_t components = decode_vertices(desc, d + 3, count, fmt);
+      record_draw(op & 0xF8, first, count, components);
+    }
+    return need;
+  }
+  static int reported = 0;
+  if (reported++ < 10) host::log("gx: unknown opcode %02X", op);
+  return 1;
+}
+
+}  // namespace
+
+void init(Backend* backend) {
+  g_backend = backend;
+  std::memset(&g_bp, 0, sizeof g_bp);
+  std::memset(&g_cp, 0, sizeof g_cp);
+  std::memset(&g_xf, 0, sizeof g_xf);
+  std::memset(g_tmem, 0, sizeof g_tmem);
+  g_frame.clear();
+}
+
+void write_fifo(uint32_t value, int bytes) {
+  for (int i = bytes - 1; i >= 0; --i) g_buf.push_back((uint8_t)(value >> (8 * i)));
+  size_t pos = 0;
+  while (pos < g_buf.size()) {
+    size_t n = parse_command(g_buf.data() + pos, g_buf.size() - pos);
+    if (!n) break;
+    pos += n;
+    ++g_commands;
+  }
+  if (pos) g_buf.erase(g_buf.begin(), g_buf.begin() + pos);
+}
+
+void stats(uint64_t* commands, uint64_t* draws, uint64_t* vertices, uint32_t* efb_copies) {
+  if (commands) *commands = g_commands;
+  if (draws) *draws = g_draws;
+  if (vertices) *vertices = g_vertices;
+  if (efb_copies) *efb_copies = g_efb_copies;
+}
+
+const uint8_t* tmem() { return g_tmem; }
+
+}  // namespace gx

@@ -3,6 +3,11 @@
 **Active direction: actual native geometry rendering. Image interpolation and generated
 frames are rejected; the old prototype launcher is disabled.**
 
+Fable's native recompilation/D3D12 prototype has been selectively incorporated behind
+`MELEE_BUILD_EXPERIMENTAL_PORT=ON`. See [FABLE_REVIEW.md](FABLE_REVIEW.md) for fixes,
+known defects, build instructions and validation. It is not yet an unlocked-FPS or
+Slippi-compatible client; `--fast` accelerates simulation.
+
 `native/AnimationTrack.h` evaluates authored animation curves at fractional times in
 host-owned data. Synthetic tests pass; real packed-track decoding and model drawing
 are not implemented. The asset inspector reads Falco's model and 222 animation archives

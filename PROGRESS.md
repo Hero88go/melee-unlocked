@@ -1,5 +1,14 @@
 # Development checkpoint — September 10, 2026
 
+## Fable review integration
+
+The experimental native recompiler and D3D12 renderer are imported on
+`codex/fable-review`; Fable's separate branch and working changes are preserved.
+Signed halfword instruction loads were corrected, the racy watchdog was removed,
+and unfinished texture-cache patches were excluded. See `FABLE_REVIEW.md` for the
+current acceptance limits and validation. Earlier sections below describe the
+pre-integration checkpoint and retired experiment.
+
 ## Active work after direction correction
 
 The user rejected image interpolation. Both old prototype launchers are disabled;
