@@ -1,0 +1,7 @@
+backups/
+runtime/
+reports/
+build/
+*.log
+__pycache__/
+dependencies/
