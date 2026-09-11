@@ -7,7 +7,8 @@
 namespace gx {
 
 struct D3D12Options {
-  int efb_scale = 2;          // internal resolution multiplier
+  int efb_scale = 2;          // internal resolution multiplier; 0 = auto (integer scale covering the window, like Dolphin "Auto (Window Size)")
+  int window_w = 1280, window_h = 960;  // initial client size
   bool vsync = false;
   std::string capture_path;   // write a PPM of the presented image at capture_frame
   uint32_t capture_frame = 0;

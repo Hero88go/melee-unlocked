@@ -17,8 +17,8 @@ public:
     worker = std::thread([this, options, visible, init = std::move(initialized)]() mutable {
       bool started = false;
       try {
-        void* window = host::window_create(1280, 960, L"Melee Port (development)", visible);
-        std::unique_ptr<Backend> renderer(create_d3d12_backend(window, 1280, 960, options));
+        void* window = host::window_create(options.window_w, options.window_h, L"Melee Port (development)", visible);
+        std::unique_ptr<Backend> renderer(create_d3d12_backend(window, options.window_w, options.window_h, options));
         host::window_set_resize_callback([&renderer](int w, int h) { d3d12_resize(renderer.get(), w, h); });
         init.set_value(); started = true;
         uint64_t submitted = 0;

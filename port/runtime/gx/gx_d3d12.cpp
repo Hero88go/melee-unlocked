@@ -7,6 +7,7 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <unordered_map>
@@ -80,7 +81,13 @@ class D3D12Backend : public Backend {
   D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); }
   ~D3D12Backend() override { wait_gpu(); if (fence_event_) CloseHandle(fence_event_); }
   void submit_frame(const Frame& frame) override;
-  void resize(int w, int h) { wait_gpu(); client_w_ = w; client_h_ = h; create_swapchain_targets(true); }
+  void resize(int w, int h) {
+    wait_gpu(); client_w_ = w; client_h_ = h; create_swapchain_targets(true);
+    // Auto scale follows the window like Dolphin's "Auto (Window Size)" integral mode: the EFB is
+    // re-created at the new multiplier and scaled EFB-copy textures are dropped (their size changed).
+    if (opts_.efb_scale == 0 && pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
+  }
+  int scale() const { return scale_; }
   uint32_t frames_presented() const { return frames_presented_; }
   uint32_t pipeline_count() const { return (uint32_t)psos_.size(); }
   uint32_t texture_count() const { return (uint32_t)textures_.size(); }
@@ -89,6 +96,7 @@ class D3D12Backend : public Backend {
   void init();
   void create_swapchain_targets(bool resize);
   void create_efb();
+  int pick_scale() const;
   void wait_gpu();
   ID3D12PipelineState* get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo);
   ID3D12Resource* get_texture(const TextureRef& t, uint32_t* w, uint32_t* h);
@@ -103,6 +111,7 @@ class D3D12Backend : public Backend {
   HWND hwnd_;
   D3D12Options opts_;
   int client_w_, client_h_;
+  int scale_ = 1;                                // current internal-resolution multiplier
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
   ComPtr<ID3D12Device> device_;
   ComPtr<ID3D12CommandQueue> queue_;
@@ -246,8 +255,22 @@ void D3D12Backend::create_swapchain_targets(bool resize) {
   }
 }
 
+// Mirrors Dolphin Renderer::CalculateTargetSize: an explicit multiplier, or (auto) the smallest
+// integer multiplier whose scaled 640x480 visible area covers the 4:3 output rectangle in the window.
+int D3D12Backend::pick_scale() const {
+  constexpr int max_scale = 16384 / EFB_WIDTH;   // D3D12 texture limit
+  if (opts_.efb_scale > 0) return std::clamp(opts_.efb_scale, 1, max_scale);
+  float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
+  float vw = ww, vh = ww * 3.0f / 4.0f;
+  if (vh > wh) { vh = wh; vw = wh * 4.0f / 3.0f; }
+  int s = std::max((int)std::ceil(vw / 640.0f), (int)std::ceil(vh / 480.0f));
+  return std::clamp(s, 1, max_scale);
+}
+
 void D3D12Backend::create_efb() {
-  efb_w_ = EFB_WIDTH * opts_.efb_scale; efb_h_ = EFB_HEIGHT * opts_.efb_scale;
+  scale_ = pick_scale();
+  efb_w_ = EFB_WIDTH * scale_; efb_h_ = EFB_HEIGHT * scale_;
+  host::log("d3d12: internal resolution %dx%d (EFB x%d, window %dx%d)", efb_w_, efb_h_, scale_, client_w_, client_h_);
   D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
   D3D12_RESOURCE_DESC rd{};
   rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = efb_w_; rd.Height = efb_h_; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
@@ -516,16 +539,16 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc) {
   // Constants
   uint8_t* ccpu; D3D12_GPU_VIRTUAL_ADDRESS vs_gpu, ps_gpu;
   if (!constant_ring_.alloc(sizeof(VSConstants), 256, &ccpu, &vs_gpu)) { host::log("d3d12: constant ring full"); return; }
-  fill_vs_constants(dc, *(VSConstants*)ccpu, opts_.efb_scale);
+  fill_vs_constants(dc, *(VSConstants*)ccpu, scale_);
   if (!constant_ring_.alloc(sizeof(PSConstants), 256, &ccpu, &ps_gpu)) return;
-  fill_ps_constants(dc, *(PSConstants*)ccpu, opts_.efb_scale);
+  fill_ps_constants(dc, *(PSConstants*)ccpu, scale_);
   // Pipeline
   ID3D12PipelineState* pso = get_pso(dc, topo);
   D3D12_GPU_DESCRIPTOR_HANDLE srvs = bind_textures(dc);
   D3D12_GPU_DESCRIPTOR_HANDLE samps = bind_samplers(dc);
   // Viewport / scissor
   const float* vp = (const float*)&dc.xf_regs[0x1A];
-  float s = (float)opts_.efb_scale;
+  float s = (float)scale_;
   float X = (vp[3] - vp[0] - 342.0f) * s, Y = (vp[4] + vp[1] - 342.0f) * s, W = 2.0f * vp[0] * s, H = -2.0f * vp[1] * s;
   if (W < 0) { X += W; W = -W; }
   if (H < 0) { Y += H; H = -H; }
@@ -540,7 +563,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc) {
   int sr = (int)bits(br, 12, 12) - xoff - 341, sb = (int)bits(br, 0, 12) - yoff - 341;
   sl = std::clamp(sl, 0, EFB_WIDTH); sr = std::clamp(sr, 0, EFB_WIDTH); st = std::clamp(st, 0, EFB_HEIGHT); sb = std::clamp(sb, 0, EFB_HEIGHT);
   if (sr <= sl || sb <= st) return;
-  D3D12_RECT scissor{(LONG)(sl * opts_.efb_scale), (LONG)(st * opts_.efb_scale), (LONG)(sr * opts_.efb_scale), (LONG)(sb * opts_.efb_scale)};
+  D3D12_RECT scissor{(LONG)(sl * scale_), (LONG)(st * scale_), (LONG)(sr * scale_), (LONG)(sb * scale_)};
 
   list_->SetPipelineState(pso);
   list_->SetGraphicsRootSignature(root_.Get());
@@ -559,7 +582,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc) {
 }
 
 void D3D12Backend::clear_efb(const EfbCopy& c) {
-  float s = (float)opts_.efb_scale;
+  float s = (float)scale_;
   D3D12_RECT r{(LONG)(c.src_x * s), (LONG)(c.src_y * s), (LONG)((c.src_x + c.src_w) * s), (LONG)((c.src_y + c.src_h) * s)};
   float color[4] = {((c.clear_color >> 16) & 0xFF) / 255.0f, ((c.clear_color >> 8) & 0xFF) / 255.0f, (c.clear_color & 0xFF) / 255.0f, ((c.clear_color >> 24) & 0xFF) / 255.0f};
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += 3 * rtv_size_;
@@ -569,41 +592,70 @@ void D3D12Backend::clear_efb(const EfbCopy& c) {
 
 void D3D12Backend::execute_copy(const EfbCopy& c) {
   // EFB -> texture at guest address: keep a GPU copy and register it for texture lookups.
+  // Like Dolphin with "scaled EFB copies": the copy keeps the internal resolution (native size x scale_).
+  // A half-scale copy (GX_TRUE mipmap flag on GXCopyTex) is a filtered 2:1 downscale, drawn with the
+  // linear blit pipeline as Dolphin's FromRenderTarget does; a 1:1 copy is an exact texture copy.
   uint32_t w = c.src_w, h = c.src_h;
   if (c.half_scale) { w = std::max(1u, w / 2); h = std::max(1u, h / 2); }
-  D3D12_RESOURCE_BARRIER b{};
-  b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  b.Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
-  list_->ResourceBarrier(1, &b);
+  uint32_t sw = w * scale_, sh = h * scale_;
   TextureEntry& e = efb_copies_[c.dest_addr];
-  uint32_t sw = c.src_w * opts_.efb_scale, sh = c.src_h * opts_.efb_scale;
+  const D3D12_RESOURCE_STATES dst_state = c.half_scale ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_DEST;
+  const D3D12_RESOURCE_STATES src_state = c.half_scale ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_COPY_SOURCE;
+  D3D12_RESOURCE_BARRIER b[2]{};
+  b[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  b[0].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, src_state};
   if (!e.resource || e.width != sw || e.height != sh) {
     if (e.resource) frame_garbage_.push_back(e.resource);
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     D3D12_RESOURCE_DESC rd{};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = sw; rd.Height = sh; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
-    rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
-    check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&e.resource)), "efb copy tex");
+    rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, dst_state, nullptr, IID_PPV_ARGS(&e.resource)), "efb copy tex");
     e.width = sw; e.height = sh;
+    list_->ResourceBarrier(1, b);
   } else {
-    D3D12_RESOURCE_BARRIER t{};
-    t.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-    t.Transition = {e.resource.Get(), 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST};
-    list_->ResourceBarrier(1, &t);
+    b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    b[1].Transition = {e.resource.Get(), 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, dst_state};
+    list_->ResourceBarrier(2, b);
   }
   e.last_used = frame_counter_;
-  D3D12_TEXTURE_COPY_LOCATION dst{e.resource.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-  D3D12_TEXTURE_COPY_LOCATION src{efb_color_.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-  D3D12_BOX box{c.src_x * (UINT)opts_.efb_scale, c.src_y * (UINT)opts_.efb_scale, 0, (c.src_x + c.src_w) * (UINT)opts_.efb_scale, (c.src_y + c.src_h) * (UINT)opts_.efb_scale, 1};
-  box.right = std::min<UINT>(box.right, efb_w_); box.bottom = std::min<UINT>(box.bottom, efb_h_);
-  list_->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+  if (c.half_scale) {
+    if (srv_cursor_ + 1 > 65536) srv_cursor_ = 0;
+    uint32_t slot = srv_cursor_++;
+    D3D12_CPU_DESCRIPTOR_HANDLE sh_cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart(); sh_cpu.ptr += slot * srv_size_;
+    device_->CreateShaderResourceView(efb_color_.Get(), nullptr, sh_cpu);
+    D3D12_GPU_DESCRIPTOR_HANDLE sh_gpu = srv_heap_->GetGPUDescriptorHandleForHeapStart(); sh_gpu.ptr += slot * srv_size_;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += 4 * rtv_size_;  // transient slot
+    device_->CreateRenderTargetView(e.resource.Get(), nullptr, rtv);
+    list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    D3D12_VIEWPORT vp{0, 0, (float)sw, (float)sh, 0, 1};
+    D3D12_RECT sc{0, 0, (LONG)sw, (LONG)sh};
+    list_->RSSetViewports(1, &vp);
+    list_->RSSetScissorRects(1, &sc);
+    list_->SetPipelineState(blit_pso_.Get());
+    list_->SetGraphicsRootSignature(blit_root_.Get());
+    list_->SetGraphicsRootDescriptorTable(0, sh_gpu);
+    float rect[4] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT};
+    list_->SetGraphicsRoot32BitConstants(1, 4, rect, 0);
+    list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list_->DrawInstanced(3, 1, 0, 0);
+    // Restore the EFB as the render target; execute_draw re-sets viewport/scissor per draw.
+    D3D12_CPU_DESCRIPTOR_HANDLE ertv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); ertv.ptr += 3 * rtv_size_;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
+    list_->OMSetRenderTargets(1, &ertv, FALSE, &dsv);
+  } else {
+    D3D12_TEXTURE_COPY_LOCATION dst{e.resource.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    D3D12_TEXTURE_COPY_LOCATION src{efb_color_.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+    D3D12_BOX box{c.src_x * (UINT)scale_, c.src_y * (UINT)scale_, 0, (c.src_x + c.src_w) * (UINT)scale_, (c.src_y + c.src_h) * (UINT)scale_, 1};
+    box.right = std::min<UINT>(box.right, efb_w_); box.bottom = std::min<UINT>(box.bottom, efb_h_);
+    list_->CopyTextureRegion(&dst, 0, 0, 0, &src, &box);
+  }
   D3D12_RESOURCE_BARRIER back[2]{};
   back[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  back[0].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET};
+  back[0].Transition = {efb_color_.Get(), 0, src_state, D3D12_RESOURCE_STATE_RENDER_TARGET};
   back[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  back[1].Transition = {e.resource.Get(), 0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+  back[1].Transition = {e.resource.Get(), 0, dst_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
   list_->ResourceBarrier(2, back);
-  (void)w; (void)h;
 }
 
 void D3D12Backend::present_efb(const EfbCopy& c) {
