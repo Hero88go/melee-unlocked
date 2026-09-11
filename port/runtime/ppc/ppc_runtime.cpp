@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <thread>
 #include <vector>
 
 namespace ppc {
@@ -15,17 +16,20 @@ namespace ppc {
 static std::vector<Fn> g_dispatch;   // indexed by (addr - RAM_BASE) / 4
 static uint8_t g_locked_cache[LC_SIZE];
 
+// Covers all of RAM: Gecko caves live below .text (bootloader at 0x800028B8) and in the heap
+// (the main code table the game loads), and their subroutines are called through pointers.
 void init_dispatch() {
-  g_dispatch.assign(0x400000 / 4, nullptr);
+  g_dispatch.assign(RAM_SIZE / 4, nullptr);
   for (size_t i = 0; i < guest::fn_table_count; ++i) {
     const auto& e = guest::fn_table[i];
-    g_dispatch[(e.addr - RAM_BASE) / 4] = e.fn;
+    uint32_t off = e.addr - RAM_BASE;
+    if (off < RAM_SIZE) g_dispatch[off / 4] = e.fn;
   }
 }
 
 Fn lookup(uint32_t addr) {
   uint32_t off = addr - RAM_BASE;
-  if (off >= 0x400000 || (addr & 3)) return nullptr;
+  if (off >= RAM_SIZE || (addr & 3)) return nullptr;
   return g_dispatch[off / 4];
 }
 
@@ -38,6 +42,42 @@ void call(Context& c, uint8_t* m, uint32_t addr) {
 }
 
 uint64_t g_enter_count = 0;
+bool g_trace_funcs = false;
+static std::vector<std::pair<uint32_t, uint32_t>> g_traced;   // (addr, remaining prints)
+void add_trace_func(uint32_t addr, uint32_t limit) { g_traced.push_back({addr, limit}); g_trace_funcs = true; }
+void trace_enter(Context& c, uint32_t pc) {
+  for (auto& t : g_traced) {
+    if (t.first != pc || !t.second) continue;
+    --t.second;
+    host::log("[trace] frame %u %s(%08X) r3=%08X r4=%08X r5=%08X lr=%08X (from %s)", host::retrace_count(), host::symbol_name(pc), pc,
+              c.r[3], c.r[4], c.r[5], c.lr, host::symbol_name(c.lr));
+  }
+}
+
+// Opt-in diagnostic (--hang-watch): a thread that reads the (racy, diagnostics-only) last entry
+// address and trace ring when simulation time stops advancing, then aborts the process.
+void start_hang_watch(Context* c, double seconds) {
+  std::thread([c, seconds] {
+    uint32_t last = host::retrace_count();
+    double since = host::now_seconds();
+    for (;;) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(500));
+      uint32_t now_retraces = host::retrace_count();
+      double now = host::now_seconds();
+      if (now_retraces != last) { last = now_retraces; since = now; continue; }
+      if (now - since < seconds) continue;
+      host::log("hang-watch: no retrace for %.0f s; guest is in %s (%08X), lr=%08X, msr=%08X, r3=%08X r4=%08X r5=%08X",
+                now - since, host::symbol_name(c->last_pc), c->last_pc, c->lr, c->msr, c->r[3], c->r[4], c->r[5]);
+      host::log("recent function entries (oldest first):");
+      for (uint32_t i = 0; i < 64; ++i) {
+        uint32_t pc = c->trace[(c->trace_pos + i) & 63];
+        if (pc) host::log("  %08X %s", pc, host::symbol_name(pc));
+      }
+      std::fflush(stdout);
+      std::_Exit(4);
+    }
+  }).detach();
+}
 
 void hang_check(Context& c) {
   // No retrace for `hang_watch` seconds while the guest keeps calling functions: report where.

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
 #include "render_observer.h"
+#include "exi_slippi.h"
 #include "audio.h"
 #include "functions.h"
 #include "guest_symbols.h"
@@ -15,6 +16,11 @@
 #include <string>
 
 namespace ppc { void init_dispatch(); }
+namespace guest {
+struct NameEntry { uint32_t addr; const char* name; };
+extern const NameEntry name_table[];
+extern const size_t name_table_count;
+}
 
 static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
@@ -63,6 +69,14 @@ int main(int argc, char** argv) {
     else if (a == "--script") { if (!host::input_load_script(next())) { std::fprintf(stderr, "cannot load input script\n"); return 1; } }
     else if (a == "--dump") gfx.dump_path = next();
     else if (a == "--shader-cache") gfx.shader_cache = next();
+    else if (a == "--trace-func") { const char* spec = next(); uint32_t addr = (uint32_t)std::strtoul(spec, nullptr, 16); uint32_t limit = 40;
+      if (const char* colon = std::strchr(spec, ':')) limit = (uint32_t)std::strtoul(colon + 1, nullptr, 10);
+      if (!addr) { std::string name(spec, std::strchr(spec, ':') ? std::strchr(spec, ':') - spec : std::strlen(spec));
+        for (size_t i = 0; i < guest::name_table_count; ++i) if (name == guest::name_table[i].name) { addr = guest::name_table[i].addr; break; } }
+      if (!addr) { std::fprintf(stderr, "unknown function %s\n", spec); return 2; }
+      ppc::add_trace_func(addr, limit); }
+    else if (a == "--sys-dir") o.sys_dir = next();
+    else if (a == "--replay-dir") o.replay_dir = next();
     else if (a == "--dump-frame") gfx.dump_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;
@@ -89,6 +103,7 @@ int main(int argc, char** argv) {
     host::g_has_window = true;
   }
   gx::set_authored_capture(gfx.subframe == gx::SubFrameMode::Authored);
+  if (o.hang_watch > 0) ppc::start_hang_watch(host::cpu, o.hang_watch);
   gx::init(backend.get());
   host::audio_open(o.volume, o.audio_dump.c_str(), !headless);
 
@@ -107,5 +122,8 @@ int main(int argc, char** argv) {
   }
   host::log("audio: %llu frames played, %llu blocks dropped", (unsigned long long)host::audio_pushed_frames(), (unsigned long long)host::audio_dropped_blocks());
   host::audio_close();
+  slippi::shutdown();
+  host::log("slippi: %llu EXI commands, %llu replays written, GCT at %08X", (unsigned long long)slippi::commands_seen(),
+            (unsigned long long)slippi::replays_written(), slippi::gct_load_address());
   return code;
 }

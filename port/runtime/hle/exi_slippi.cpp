@@ -1,0 +1,303 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+#include "exi_slippi.h"
+#include "gecko_data.h"
+#include "host.h"
+#include "vcdiff.h"
+#define NOMINMAX
+#include <windows.h>
+#include <cstdio>
+#include <cstring>
+#include <ctime>
+#include <map>
+#include <unordered_map>
+#include <vector>
+
+namespace slippi {
+namespace {
+
+enum Cmd : uint8_t {
+  CMD_RECEIVE_COMMANDS = 0x35, CMD_RECEIVE_GAME_INFO = 0x36, CMD_RECEIVE_POST_FRAME_UPDATE = 0x38, CMD_RECEIVE_GAME_END = 0x39,
+  CMD_RECEIVE_INITIAL_RNG = 0x3A, CMD_RECEIVE_ITEM = 0x3B, CMD_FRAME_BOOKEND = 0x3C, CMD_GECKO_LIST = 0x3D, CMD_MENU_FRAME = 0x3E,
+  CMD_RECEIVE_FOD_INFO = 0x3F, CMD_RECEIVE_DL_INFO = 0x40, CMD_RECEIVE_PS_INFO = 0x41, CMD_RECEIVE_BONES = 0x60,
+  CMD_PREPARE_REPLAY = 0x75, CMD_READ_FRAME = 0x76, CMD_GET_LOCATION = 0x77, CMD_IS_FILE_READY = 0x88, CMD_IS_STOCK_STEAL = 0x89, CMD_GET_GECKO_CODES = 0x8A,
+  CMD_ONLINE_INPUTS = 0xB0, CMD_CAPTURE_SAVESTATE = 0xB1, CMD_LOAD_SAVESTATE = 0xB2, CMD_GET_MATCH_STATE = 0xB3, CMD_FIND_OPPONENT = 0xB4,
+  CMD_SET_MATCH_SELECTIONS = 0xB5, CMD_OPEN_LOGIN = 0xB6, CMD_LOGOUT = 0xB7, CMD_UPDATE = 0xB8, CMD_GET_ONLINE_STATUS = 0xB9,
+  CMD_CLEANUP_CONNECTION = 0xBA, CMD_SEND_CHAT_MESSAGE = 0xBB, CMD_GET_NEW_SEED = 0xBC, CMD_REPORT_GAME = 0xBD, CMD_FETCH_CODE_SUGGESTION = 0xBE,
+  CMD_OVERWRITE_SELECTIONS = 0xBF, CMD_GP_COMPLETE_STEP = 0xC0, CMD_GP_FETCH_STEP = 0xC1, CMD_REPORT_SET_COMPLETE = 0xC2,
+  CMD_GET_PLAYER_SETTINGS = 0xC3, CMD_REPORT_MATCH_STATUS_UPDATE = 0xC4,
+  CMD_LOG_MESSAGE = 0xD0, CMD_FILE_LENGTH = 0xD1, CMD_FILE_LOAD = 0xD2, CMD_GCT_LENGTH = 0xD3, CMD_GCT_LOAD = 0xD4, CMD_GET_DELAY = 0xD5,
+  CMD_PLAY_MUSIC = 0xD6, CMD_STOP_MUSIC = 0xD7, CMD_CHANGE_MUSIC_VOLUME = 0xD8, CMD_PREMADE_TEXT_LENGTH = 0xE1, CMD_PREMADE_TEXT_LOAD = 0xE2,
+  CMD_GET_RANK = 0xE3, CMD_FETCH_RANK = 0xE4, CMD_GET_RANK_VISIBILITY = 0xE5,
+};
+
+// Fixed payload sizes (bytes after the command byte), from CEXISlippi::payloadSizes.
+std::unordered_map<uint8_t, uint32_t> g_payload_sizes = {
+    {CMD_RECEIVE_COMMANDS, 1}, {CMD_PREPARE_REPLAY, 0xFFFF}, {CMD_READ_FRAME, 4}, {CMD_IS_STOCK_STEAL, 5}, {CMD_GET_LOCATION, 6},
+    {CMD_IS_FILE_READY, 0}, {CMD_GET_GECKO_CODES, 0}, {CMD_ONLINE_INPUTS, 25}, {CMD_CAPTURE_SAVESTATE, 32}, {CMD_LOAD_SAVESTATE, 32},
+    {CMD_GET_MATCH_STATE, 0}, {CMD_FIND_OPPONENT, 19}, {CMD_SET_MATCH_SELECTIONS, 9}, {CMD_SEND_CHAT_MESSAGE, 2}, {CMD_OPEN_LOGIN, 0},
+    {CMD_LOGOUT, 0}, {CMD_UPDATE, 0}, {CMD_GET_ONLINE_STATUS, 0}, {CMD_CLEANUP_CONNECTION, 0}, {CMD_GET_NEW_SEED, 0},
+    {CMD_REPORT_GAME, 1 + 4 + 4 + 4 + 1 + 1 + 1 + 4 + 4 * 9 + 312 - 1}, {CMD_FETCH_CODE_SUGGESTION, 31}, {CMD_OVERWRITE_SELECTIONS, 2 + 12},
+    {CMD_GP_COMPLETE_STEP, 5}, {CMD_GP_FETCH_STEP, 1}, {CMD_REPORT_SET_COMPLETE, 1}, {CMD_GET_PLAYER_SETTINGS, 0}, {CMD_REPORT_MATCH_STATUS_UPDATE, 1},
+    {CMD_LOG_MESSAGE, 0xFFFF}, {CMD_FILE_LENGTH, 0x40}, {CMD_FILE_LOAD, 0x40}, {CMD_GCT_LENGTH, 0}, {CMD_GCT_LOAD, 4}, {CMD_GET_DELAY, 0},
+    {CMD_PLAY_MUSIC, 8}, {CMD_STOP_MUSIC, 0}, {CMD_CHANGE_MUSIC_VOLUME, 1}, {CMD_PREMADE_TEXT_LENGTH, 2}, {CMD_PREMADE_TEXT_LOAD, 2},
+    {CMD_GET_RANK, 0}, {CMD_FETCH_RANK, 0}, {CMD_GET_RANK_VISIBILITY, 0},
+};
+// Sizes of the recording commands are configured by CMD_RECEIVE_COMMANDS at game start.
+std::unordered_map<uint8_t, uint32_t> g_record_sizes;
+
+std::vector<uint8_t> g_read_queue;
+uint32_t g_gct_address = 0;
+uint64_t g_commands = 0;
+std::string g_replay_dir = "replays";
+uint8_t g_frame_delay = 2;   // Slippi Online input delay setting (frames)
+
+inline void append_u32(std::vector<uint8_t>& q, uint32_t v) { q.push_back((uint8_t)(v >> 24)); q.push_back((uint8_t)(v >> 16)); q.push_back((uint8_t)(v >> 8)); q.push_back((uint8_t)v); }
+inline uint32_t be32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
+
+// ---- .slp replay recording (UBJSON container, exactly as CEXISlippi::writeToFile) ----
+FILE* g_file = nullptr;
+uint32_t g_written = 0;
+int32_t g_last_frame = -123;
+time_t g_start_time = 0;
+std::map<uint8_t, std::map<uint8_t, uint32_t>> g_char_usage;   // player index -> internal character -> frames
+std::string g_replay_path;
+uint64_t g_replays_written = 0;
+
+std::vector<uint8_t> generate_metadata() {
+  std::vector<uint8_t> m({'U', 8, 'm', 'e', 't', 'a', 'd', 'a', 't', 'a', '{'});
+  char stamp[32];
+  std::strftime(stamp, sizeof stamp, "%Y-%m-%dT%H:%M:%SZ", std::gmtime(&g_start_time));
+  std::string date(stamp);
+  m.insert(m.end(), {'U', 7, 's', 't', 'a', 'r', 't', 'A', 't', 'S', 'U', (uint8_t)date.size()});
+  m.insert(m.end(), date.begin(), date.end());
+  m.insert(m.end(), {'U', 9, 'l', 'a', 's', 't', 'F', 'r', 'a', 'm', 'e', 'l'});
+  append_u32(m, (uint32_t)g_last_frame);
+  m.insert(m.end(), {'U', 7, 'p', 'l', 'a', 'y', 'e', 'r', 's', '{'});
+  for (auto& [player, usage] : g_char_usage) {
+    std::string idx = std::to_string(player);
+    m.push_back('U'); m.push_back((uint8_t)idx.size()); m.insert(m.end(), idx.begin(), idx.end()); m.push_back('{');
+    m.insert(m.end(), {'U', 5, 'n', 'a', 'm', 'e', 's', '{', '}'});
+    m.insert(m.end(), {'U', 10, 'c', 'h', 'a', 'r', 'a', 'c', 't', 'e', 'r', 's', '{'});
+    for (auto& [character, frames] : usage) {
+      std::string cid = std::to_string(character);
+      m.push_back('U'); m.push_back((uint8_t)cid.size()); m.insert(m.end(), cid.begin(), cid.end());
+      m.push_back('l'); append_u32(m, frames);
+    }
+    m.push_back('}'); m.push_back('}');
+  }
+  m.push_back('}');
+  m.insert(m.end(), {'U', 8, 'p', 'l', 'a', 'y', 'e', 'd', 'O', 'n', 'S', 'U', 7, 'd', 'o', 'l', 'p', 'h', 'i', 'n'});
+  m.push_back('}');
+  return m;
+}
+
+void close_file() {
+  if (!g_file) return;
+  std::fclose(g_file); g_file = nullptr;
+  ++g_replays_written;
+  host::log("slippi: replay written: %s (%u raw bytes, last frame %d)", g_replay_path.c_str(), g_written, g_last_frame);
+}
+
+void create_file() {
+  close_file();
+  CreateDirectoryA(g_replay_dir.c_str(), nullptr);
+  char stamp[32];
+  std::strftime(stamp, sizeof stamp, "%Y%m%dT%H%M%S", std::localtime(&g_start_time));
+  g_replay_path = g_replay_dir + "\\Game_" + stamp + ".slp";
+  g_file = std::fopen(g_replay_path.c_str(), "wb");
+  if (!g_file) { host::log("slippi: cannot create %s", g_replay_path.c_str()); return; }
+  const uint8_t header[] = {'{', 'U', 3, 'r', 'a', 'w', '[', '$', 'U', '#', 'l', 0, 0, 0, 0};
+  std::fwrite(header, 1, sizeof header, g_file);
+  g_written = 0;
+  g_char_usage.clear();
+  g_last_frame = -123;
+}
+
+void write_to_file(const uint8_t* payload, uint32_t length, const char* option) {
+  if (std::strcmp(option, "create") == 0) create_file();
+  if (!g_file) return;
+  if (length > 0 && payload[0] == CMD_RECEIVE_POST_FRAME_UPDATE && length >= 8) {
+    g_last_frame = (int32_t)be32(payload + 1);
+    g_char_usage[payload[5]][payload[7]] += 1;
+  }
+  std::fwrite(payload, 1, length, g_file);
+  g_written += length;
+  if (std::strcmp(option, "close") == 0) {
+    std::vector<uint8_t> closing = generate_metadata();
+    closing.push_back('}');
+    std::fwrite(closing.data(), 1, closing.size(), g_file);
+    uint8_t size_bytes[4] = {(uint8_t)(g_written >> 24), (uint8_t)(g_written >> 16), (uint8_t)(g_written >> 8), (uint8_t)g_written};
+    std::fseek(g_file, 11, SEEK_SET);
+    std::fwrite(size_bytes, 1, 4, g_file);
+    close_file();
+  }
+}
+
+void configure_commands(const uint8_t* payload, uint8_t length) {
+  // payload[0] is this command's own size byte; then (command, u16 size) triples.
+  for (uint32_t i = 1; i + 2 < (uint32_t)length + 1; i += 3) {
+    uint8_t cmd = payload[i];
+    uint32_t size = ((uint32_t)payload[i + 1] << 8) | payload[i + 2];
+    g_record_sizes[cmd] = size;
+  }
+  host::log("slippi: recording command sizes configured (%zu commands)", g_record_sizes.size());
+}
+
+void prepare_gct_length() {
+  g_read_queue.clear();
+  append_u32(g_read_queue, (uint32_t)gecko::slippi_gct_size);
+}
+
+void prepare_gct_load(const uint8_t* payload) {
+  g_read_queue.clear();
+  g_gct_address = be32(payload);
+  host::log("slippi: game loads the GCT (%zu bytes) at %08X%s", gecko::slippi_gct_size, g_gct_address,
+            gecko::gct_base_used == g_gct_address ? "" : " (recompile with --gct-base to translate C0 caves at this address)");
+  g_read_queue.insert(g_read_queue.end(), gecko::slippi_gct, gecko::slippi_gct + gecko::slippi_gct_size);
+}
+
+void log_message(const uint8_t* payload, uint32_t max) {
+  std::string s;
+  for (uint32_t i = 0; i < max && payload[i]; ++i) s += (char)payload[i];
+  host::log("slippi[game]: %s", s.c_str());
+}
+
+// Game files: Sys/GameFiles/GALE01/<name> served as-is, or <name>.diff (VCDIFF) applied to the
+// file of the same name from the ISO. Port of SlippiGameFileLoader::LoadFile.
+std::unordered_map<std::string, std::vector<uint8_t>> g_file_cache;
+
+bool read_whole_file(const std::string& path, std::vector<uint8_t>& out) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) return false;
+  std::fseek(f, 0, SEEK_END); long n = std::ftell(f); std::fseek(f, 0, SEEK_SET);
+  out.resize(n > 0 ? (size_t)n : 0);
+  bool ok = n <= 0 || std::fread(out.data(), 1, out.size(), f) == out.size();
+  std::fclose(f);
+  return ok;
+}
+
+const std::vector<uint8_t>& load_game_file(const std::string& name) {
+  auto it = g_file_cache.find(name);
+  if (it != g_file_cache.end()) return it->second;
+  std::vector<uint8_t>& out = g_file_cache[name];
+  std::string base = host::options.sys_dir + "/GameFiles/GALE01/" + name;
+  std::vector<uint8_t> blob;
+  if (name != "MxDt.dat" && read_whole_file(base, blob)) {
+    out = std::move(blob);
+    host::log("slippi: served %s (%zu bytes)", name.c_str(), out.size());
+    return out;
+  }
+  if (read_whole_file(base + ".diff", blob)) {
+    uint32_t off = 0, size = 0;
+    std::vector<uint8_t> source;
+    if (host::disc_find_file(name, &off, &size)) {
+      source.resize(size);
+      if (!host::disc_read(off, source.data(), size)) source.clear();
+    }
+    std::string err;
+    if (source.empty() || !host::vcdiff_decode(source.data(), source.size(), blob.data(), blob.size(), out, &err)) {
+      host::log("slippi: cannot apply %s.diff (%s)", name.c_str(), source.empty() ? "file not on disc" : err.c_str());
+      out.clear();
+    } else {
+      host::log("slippi: served %s (%zu bytes from ISO + %zu byte diff)", name.c_str(), out.size(), blob.size());
+    }
+    return out;
+  }
+  host::log("slippi: game file %s not found in %s", name.c_str(), host::options.sys_dir.c_str());
+  return out;
+}
+
+void prepare_file(const uint8_t* payload, bool load) {
+  g_read_queue.clear();
+  std::string name((const char*)payload, strnlen((const char*)payload, 0x40));
+  const std::vector<uint8_t>& data = load_game_file(name);
+  if (!load) append_u32(g_read_queue, (uint32_t)data.size());
+  else g_read_queue.insert(g_read_queue.end(), data.begin(), data.end());
+}
+
+void prepare_online_status() {
+  g_read_queue.clear();
+  // Byte 0: app state (0 logged out, 1 logged in, 2 update needed), 31 bytes display name,
+  // 10 bytes connect code. Logged out until the user/login system is ported.
+  g_read_queue.push_back(0);
+  g_read_queue.resize(1 + 31 + 10, 0);
+}
+
+}  // namespace
+
+void init() { g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; }
+void shutdown() { if (g_file) { uint8_t empty[1]; write_to_file(empty, 0, "close"); } }
+uint64_t replays_written() { return g_replays_written; }
+uint32_t gct_load_address() { return g_gct_address; }
+uint64_t commands_seen() { return g_commands; }
+const std::string& replay_directory() { return g_replay_dir; }
+
+void imm_write(uint32_t, uint32_t) {}
+uint32_t imm_read(uint32_t) { return 0; }
+
+void dma_write(uint32_t addr, uint32_t size) {
+  const uint8_t* mem = host::ptr(addr, size);
+  uint32_t loc = 0;
+  uint8_t byte = mem[0];
+  if (byte == CMD_RECEIVE_COMMANDS) {
+    std::time(&g_start_time);
+    uint8_t len = mem[1];
+    configure_commands(&mem[1], len);
+    write_to_file(&mem[0], len + 1, "create");
+    loc += len + 1;
+    ++g_commands;
+  }
+  if (byte == CMD_MENU_FRAME) { ++g_commands; return; }
+  uint8_t prev = 0;
+  while (loc < size) {
+    byte = mem[loc];
+    uint32_t payload = 0;
+    auto fixed = g_payload_sizes.find(byte);
+    auto rec = g_record_sizes.find(byte);
+    if (fixed != g_payload_sizes.end()) payload = fixed->second;
+    else if (rec != g_record_sizes.end()) payload = rec->second;
+    else { host::log("slippi: invalid command byte %02X (previous %02X)", byte, prev); return; }
+    ++g_commands;
+    switch (byte) {
+      case CMD_GCT_LENGTH: prepare_gct_length(); break;
+      case CMD_GCT_LOAD: prepare_gct_load(&mem[loc + 1]); break;
+      case CMD_LOG_MESSAGE: log_message(&mem[loc + 1], size - loc - 1); break;
+      case CMD_FILE_LENGTH: prepare_file(&mem[loc + 1], false); break;
+      case CMD_FILE_LOAD: prepare_file(&mem[loc + 1], true); break;
+      case CMD_GET_DELAY: g_read_queue.clear(); g_read_queue.push_back(g_frame_delay); break;
+      case CMD_GET_ONLINE_STATUS: prepare_online_status(); break;
+      case CMD_GET_NEW_SEED: { g_read_queue.clear(); uint32_t seed = (uint32_t)(host::now_seconds() * 1000.0) * 2654435761u; append_u32(g_read_queue, seed); break; }
+      case CMD_PREMADE_TEXT_LENGTH: g_read_queue.clear(); append_u32(g_read_queue, 0); break;
+      case CMD_PREMADE_TEXT_LOAD: g_read_queue.clear(); break;
+      case CMD_GET_RANK_VISIBILITY: g_read_queue.clear(); g_read_queue.push_back(0); break;
+      case CMD_GET_RANK: g_read_queue.clear(); g_read_queue.resize(16, 0); break;
+      case CMD_GET_PLAYER_SETTINGS: g_read_queue.clear(); g_read_queue.resize(4 * 16 * 51, 0); break;
+      case CMD_PLAY_MUSIC: case CMD_STOP_MUSIC: case CMD_CHANGE_MUSIC_VOLUME: break;   // jukebox: game audio path instead
+      case CMD_RECEIVE_COMMANDS: break;   // handled above
+      case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); break;
+      case CMD_FRAME_BOOKEND: write_to_file(&mem[loc], payload + 1, ""); break;
+      case CMD_PREPARE_REPLAY: case CMD_READ_FRAME: case CMD_IS_STOCK_STEAL: case CMD_IS_FILE_READY: case CMD_GET_GECKO_CODES:
+        g_read_queue.clear(); g_read_queue.resize(8, 0); break;   // replay playback: not supported in this build
+      case CMD_ONLINE_INPUTS: case CMD_CAPTURE_SAVESTATE: case CMD_LOAD_SAVESTATE: case CMD_GET_MATCH_STATE: case CMD_FIND_OPPONENT:
+      case CMD_SET_MATCH_SELECTIONS: case CMD_OPEN_LOGIN: case CMD_LOGOUT: case CMD_UPDATE: case CMD_CLEANUP_CONNECTION:
+      case CMD_SEND_CHAT_MESSAGE: case CMD_REPORT_GAME: case CMD_FETCH_CODE_SUGGESTION: case CMD_OVERWRITE_SELECTIONS:
+      case CMD_GP_COMPLETE_STEP: case CMD_GP_FETCH_STEP: case CMD_REPORT_SET_COMPLETE: case CMD_REPORT_MATCH_STATUS_UPDATE: case CMD_FETCH_RANK:
+        g_read_queue.clear(); g_read_queue.resize(64, 0);   // online: ported in the next step
+        break;
+      default:
+        // Recording payloads (game info, frames, items, bones...) go to the replay file.
+        write_to_file(&mem[loc], payload + 1, "");
+        break;
+    }
+    prev = byte;
+    loc += payload + 1;
+  }
+}
+
+void dma_read(uint32_t addr, uint32_t size) {
+  if (g_read_queue.empty()) { host::log("slippi: DMA read of %u bytes with an empty response queue", size); return; }
+  g_read_queue.resize(size, 0);
+  std::memcpy(host::ptr(addr, size), g_read_queue.data(), size);
+}
+
+}  // namespace slippi

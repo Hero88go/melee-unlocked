@@ -14,6 +14,13 @@ class FuncInfo:
     def __init__(self, func):
         self.func = func
         self.insns = []           # decoded instructions (None for undecodable words)
+        self.addrs = []           # address of each instruction (Gecko caves are spliced in, so not contiguous)
+        self.addr_set = set()
+        self.aliases = {}         # cave first address -> hooked address it replaced (branches to the hook enter the cave)
+        self.local_returns = set()  # return addresses of `bl`s whose target is inside this function (local subroutines)
+        self.ctr_targets = {}     # bctr addr -> statically known CTR value (lis/ori/mtctr sequences, Gecko caves)
+        self.ctr_calls = {}       # bctrl addr -> statically known CTR value
+        self.entries = set()      # addresses (besides func.addr) the dispatch table may enter this function at
         self.labels = set()       # addresses inside this function that are branch targets
         self.calls = set()        # direct call targets (bl)
         self.tail_targets = set() # `b` targets outside the function
@@ -64,6 +71,17 @@ def _const_value(insns, reg, pos, depth=0):
         if ins.op == "lmw" and f["rd"] <= reg:
             return None
         m -= 1
+    return None
+
+
+def _ctr_constant(insns, idx):
+    """Value of CTR at instruction `idx` when it was loaded from a constant (mtctr rX after lis/ori)."""
+    j = idx - 1
+    while j >= max(0, idx - 24):
+        ins = insns[j]
+        if ins is not None and ins.op == "mtspr" and ins.f["spr"] == 9:
+            return _const_value(insns, ins.f["rs"], j)
+        j -= 1
     return None
 
 
@@ -155,34 +173,66 @@ def _data_scan_tables(dol, func, claimed):
     return sorted(targets)
 
 
-def analyze_function(dol, symbols, func):
+def analyze_function(dol, symbols, func, hooks=None, body=None):
+    """`hooks`: {hook addr: Hook} (Gecko C2 caves spliced in place of the hooked instruction).
+    `body`: optional explicit (addr, word) sequence for synthetic functions (caves)."""
     info = FuncInfo(func)
-    for a in range(func.addr, func.end, 4):
-        w = dol.u32(a)
+    seq = []
+    if body is not None:
+        seq = list(body)
+    else:
+        for a in range(func.addr, func.end, 4):
+            hook = hooks.get(a) if hooks else None
+            if hook is not None:
+                info.aliases[hook.cave_addr] = a
+                for k, w in enumerate(hook.words):
+                    seq.append((hook.cave_addr + k * 4, w))
+            else:
+                seq.append((a, dol.u32(a)))
+    for a, w in seq:
         ins = decode(a, w)
         if ins is None:
             info.bad.append((a, w))
         info.insns.append(ins)
+        info.addrs.append(a)
+    info.addr_set = set(info.addrs) | set(info.aliases.values())
     for idx, ins in enumerate(info.insns):
         if ins is None:
             continue
-        if ins.op == "b":
+        if ins.op in ("b", "bc"):
             t = ins.branch_target
-            if ins.lk:
-                info.calls.add(t)
-            elif func.addr <= t < func.end:
+            in_body = lambda a: func.addr <= a < func.end
+            if ins.lk and t in info.addr_set and not (in_body(t) and in_body(ins.addr)):
+                # Local subroutine inside Gecko cave code (or the `bl` to a `blrl` self-address
+                # trick): jump with LR set; the matching blr/blrl dispatches back on LR. Ordinary
+                # recursion within the function body keeps the real call path.
                 info.labels.add(t)
-            else:
-                info.tail_targets.add(t)
-        elif ins.op == "bc":
-            t = ins.branch_target
-            if ins.lk:
+                info.labels.add(ins.addr + 4)
+                info.local_returns.add(ins.addr + 4)
+            elif ins.lk:
                 info.calls.add(t)
-            elif func.addr <= t < func.end:
+            elif t in info.addr_set:
                 info.labels.add(t)
             else:
                 info.tail_targets.add(t)
         elif ins.op == "bcctr":
+            const = _ctr_constant(info.insns, idx)
+            if const is not None and const != 0 and (const & 3) == 0 and (const in info.addr_set or symbols.containing(const) is not None):
+                # Absolute jump/call through CTR with a known constant (Gecko caves do this to
+                # re-enter the hooked function or call helpers): resolve statically.
+                if ins.lk:
+                    info.ctr_calls[ins.addr] = const
+                    if const in info.addr_set and not (func.addr <= const < func.end and func.addr <= ins.addr < func.end):
+                        info.labels.add(const); info.labels.add(ins.addr + 4); info.local_returns.add(ins.addr + 4)
+                    else:
+                        info.calls.add(const)
+                else:
+                    info.ctr_targets[ins.addr] = const
+                    if const in info.addr_set:
+                        info.labels.add(const)
+                    else:
+                        info.tail_targets.add(const)
+                continue
             if ins.lk:
                 info.has_bctrl = True
             else:
@@ -202,12 +252,106 @@ def analyze_function(dol, symbols, func):
     return info
 
 
-def analyze_all(dol, symbols):
+def analyze_all(dol, symbols, gecko=None):
+    """`gecko`: optional object with `.hooks` (list of Hook) and `.caves` (list of Cave)."""
+    from symbols import Function
+    hooks = {}
+    synthetic = []   # (Function, body sequence)
+    if gecko is not None:
+        for h in gecko.hooks:
+            owner = symbols.containing(h.hook)
+            if owner is not None and dol.in_text(owner.addr):
+                hooks[h.hook] = h
+            else:
+                # Hook outside any known function: the cave is the function (Slippi plants EXI
+                # helpers this way in unused .init space). It falls through to hook+4 only if the
+                # cave never returns, which these do not.
+                f = Function("gecko_hook_%08X" % h.hook, h.hook, 4, ".text", "global")
+                body = [(h.cave_addr + k * 4, w) for k, w in enumerate(h.words)]
+                synthetic.append((f, body))
+        for cv in gecko.caves:
+            f = Function("gecko_cave_%08X" % cv.cave_addr, cv.cave_addr, len(cv.words) * 4, ".text", "global")
+            synthetic.append((f, [(cv.cave_addr + k * 4, w) for k, w in enumerate(cv.words)]))
+        # Slippi's code table is one assembled blob: caves call helper routines that live inside
+        # other caves (relative `bl`, `b` between caves, lis/ori/mtctr pointers) and take their own
+        # address with `bl x; x: blrl` to hand callbacks around. Every such in-cave target is an
+        # entry reached through the dispatch table, so the cave tail from that address becomes a
+        # function of its own (it returns with blr long before the cave's branch-back).
+        cave_list = [(h.cave_addr, h.words) for h in gecko.hooks] + [(c.cave_addr, c.words) for c in gecko.caves]
+        cave_list.sort()
+        starts = [s for s, _ in cave_list]
+        import bisect
+
+        def find_cave(a):
+            i = bisect.bisect_right(starts, a) - 1
+            if i >= 0:
+                s, w = cave_list[i]
+                if s <= a < s + len(w) * 4:
+                    return s, w
+            return None
+
+        entries = set()
+        for start, words in cave_list:
+            insns = [decode(start + k * 4, w) for k, w in enumerate(words)]
+            for i, ins in enumerate(insns):
+                if ins is None:
+                    continue
+                if ins.op == "bclr" and ins.lk and i + 1 < len(words):
+                    entries.add(start + (i + 1) * 4)
+                    continue
+                if ins.op in ("b", "bc"):
+                    t = ins.branch_target
+                elif ins.op == "bcctr":
+                    t = _ctr_constant(insns, i)
+                else:
+                    continue
+                if t is None:
+                    continue
+                c = find_cave(t)
+                if c is None:
+                    continue
+                if ins.lk or c[0] != start:
+                    entries.add(t)
+        existing = {f.addr for f, _ in synthetic}
+        for entry in sorted(entries):
+            if entry in existing or entry in symbols.by_addr:
+                continue
+            start, words = find_cave(entry)
+            tail = words[(entry - start) // 4:]
+            f = Function("gecko_fn_%08X" % entry, entry, len(tail) * 4, ".text", "global")
+            synthetic.append((f, [(entry + i * 4, ww) for i, ww in enumerate(tail)]))
     infos = {}
     for func in symbols.functions:
         if not dol.in_text(func.addr):
             continue
-        infos[func.addr] = analyze_function(dol, symbols, func)
+        infos[func.addr] = analyze_function(dol, symbols, func, hooks)
+    for f, body in synthetic:
+        symbols.add_function(f)
+        infos[f.addr] = analyze_function(dol, symbols, f, None, body)
+    # Gecko cave code is entered at arbitrary addresses at run time: Slippi's helper-table trick
+    # (`bl x; x: blrl`, then `mflr; addi; mtctr; bctrl` into a table of branches), function
+    # pointers handed to the game, and computed resumes at hook+4. Every cave instruction, every
+    # hook address and hook+4 therefore gets a dispatch-table thunk that enters the owning
+    # function at that label (see Emitter: the function starts with an entry if-chain).
+    thunks = {}   # entry addr -> owning function addr (only addresses that are not functions themselves)
+    for addr in sorted(infos, key=lambda a: (infos[a].func.name.startswith("gecko_fn_"), a)):
+        info = infos[addr]
+        f = info.func
+        synthetic = f.name.startswith("gecko_")
+        cand = set()
+        for a in info.addrs:
+            if a != f.addr and (synthetic or not (f.addr <= a < f.end)):
+                cand.add(a)
+        for cave, hook in info.aliases.items():
+            if hook != f.addr:
+                cand.add(hook)
+            if f.addr < hook + 4 < f.end and (hook + 4) in info.addr_set:
+                cand.add(hook + 4)
+        info.entries = cand
+        info.labels.update(cand)
+        for a in cand:
+            if a not in infos and a not in thunks:
+                thunks[a] = f.addr
     # Extra entry points: targets of calls/tail branches that land mid-function.
     extra_entries = {}  # containing function addr -> set(entry addrs)
     for info in infos.values():
@@ -219,4 +363,15 @@ def analyze_all(dol, symbols):
                 extra_entries.setdefault(None, set()).add(t)
             else:
                 extra_entries.setdefault(owner.addr, set()).add(t)
-    return infos, extra_entries
+    # Mid-function targets of calls/tail branches (Gecko caves jump into a hooked function's
+    # epilogue with lis/ori/mtctr/bctr) enter the owner through a thunk as well.
+    for owner, targets in extra_entries.items():
+        if owner is None or owner not in infos:
+            continue
+        info = infos[owner]
+        for t in targets:
+            if t in info.addr_set and t not in infos and t not in thunks:
+                info.entries.add(t)
+                info.labels.add(t)
+                thunks[t] = owner
+    return infos, extra_entries, thunks

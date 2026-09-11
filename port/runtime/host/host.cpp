@@ -9,6 +9,8 @@
 #include "gx_core.h"
 #include "window.h"
 #include "ax_ucode.h"
+#include "exi_slippi.h"
+#include "gecko_data.h"
 #include <chrono>
 #include <atomic>
 #include <cstdarg>
@@ -124,6 +126,38 @@ bool disc_read(uint32_t offset, void* dst, uint32_t size) {
 }
 uint32_t disc_fst_offset() { return g_fst_offset; }
 uint32_t disc_fst_size() { return g_fst_size; }
+
+// Looks a file up by name in the disc's FST (root and nested directories; exact match first,
+// then case-insensitive). Used to serve ISO files to host-side loaders (Slippi game files).
+bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size) {
+  static std::vector<uint8_t> fst;
+  if (fst.empty()) {
+    if (!g_fst_size) return false;
+    fst.resize(g_fst_size);
+    if (!disc_read(g_fst_offset, fst.data(), g_fst_size)) { fst.clear(); return false; }
+  }
+  auto be32 = [&](size_t o) { return o + 4 <= fst.size() ? ((uint32_t)fst[o] << 24) | ((uint32_t)fst[o + 1] << 16) | ((uint32_t)fst[o + 2] << 8) | fst[o + 3] : 0u; };
+  uint32_t entries = be32(8);
+  size_t strings = (size_t)entries * 12;
+  if (strings > fst.size()) return false;
+  for (int pass = 0; pass < 2; ++pass) {
+    for (uint32_t i = 1; i < entries; ++i) {
+      uint32_t a = be32(i * 12);
+      if (a >> 24) continue;   // directory
+      size_t so = strings + (a & 0xFFFFFF);
+      if (so >= fst.size()) continue;
+      const char* n = (const char*)&fst[so];
+      size_t maxlen = fst.size() - so;
+      bool match = pass == 0 ? (std::strncmp(n, name.c_str(), maxlen) == 0) : (_strnicmp(n, name.c_str(), maxlen) == 0);
+      if (match && std::strlen(n) == name.size()) {
+        if (offset) *offset = be32(i * 12 + 4);
+        if (size) *size = be32(i * 12 + 8);
+        return true;
+      }
+    }
+  }
+  return false;
+}
 uint32_t disc_fst_max_size() { return g_fst_max; }
 
 // ---------------- boot ----------------
@@ -154,6 +188,32 @@ static void load_dol_from_disc() {
   // The DOL header's bss range overlaps the loaded .sdata section; the guest's own
   // __init_data zeroes .bss/.sbss precisely and RAM starts zeroed, so do not memset here.
   log("boot: DOL loaded from disc offset %08X, bss %08X+%X, entry %08X", dol_offset, be(0xD8), be(0xDC), be(0xE0));
+}
+
+// Reproduces Slippi Dolphin's boot-time Gecko installation in guest RAM: codehandler.bin at
+// 0x80001800, bootloader.gct at 0x800028B8, then the effect of running the handler once (its
+// 32-bit writes and the C2 hook branches into the caves inside the table). The recompiled code
+// already contains these patches; this keeps RAM identical to what the game expects to read.
+static void install_gecko_boot() {
+  if (!gecko::codehandler_bin_size) { log("boot: translated without Slippi code tables"); return; }
+  std::memcpy(ptr(0x80001800u, (uint32_t)gecko::codehandler_bin_size), gecko::codehandler_bin, gecko::codehandler_bin_size);
+  wr32(0x80001D6Cu, 0x4E800020u);   // USB Gecko I/O replaced by blr, as Slippi does
+  wr32(0x80001800u, 0xD01F1BADu);   // handler magic
+  std::memcpy(ptr(0x800028B8u, (uint32_t)gecko::bootloader_gct_size), gecko::bootloader_gct, gecko::bootloader_gct_size);
+  wr8(0x80001807u, 1);              // codes on
+  for (size_t i = 0; i < gecko::boot_writes_count; ++i) {
+    const gecko::Write& w = gecko::boot_writes[i];
+    std::memcpy(ptr(w.addr, w.size), w.data, w.size);
+  }
+  for (size_t i = 0; i < gecko::boot_hooks_count; ++i) {
+    const gecko::HookInstall& h = gecko::boot_hooks[i];
+    wr32(h.hook, 0x48000000u | ((h.cave_addr - h.hook) & 0x03FFFFFCu));
+    uint32_t last = h.cave_addr + (h.words - 1) * 4;
+    wr32(last, 0x48000000u | (((h.hook + 4) - last) & 0x03FFFFFCu));
+  }
+  slippi::init();
+  log("boot: Slippi code tables installed (%zu boot writes, %zu boot hooks, main GCT %zu bytes served over EXI)",
+      gecko::boot_writes_count, gecko::boot_hooks_count, gecko::slippi_gct_size);
 }
 
 void boot_setup() {
@@ -209,6 +269,7 @@ void boot_setup() {
   wr32(0x8000003C, g_fst_max);
   wr32(0x80000034, fst_addr);                        // arena hi
   log("boot: FST %u bytes at %08X (max %X), arena hi %08X", g_fst_size, fst_addr, g_fst_max, fst_addr);
+  install_gecko_boot();
 
   cpu->msr = 0x00002030u | 0x8000u;                  // FP | DR | IR | EE
   cpu->fpscr = 0;
@@ -234,15 +295,17 @@ bool exit_requested() { return g_exit; }
 void request_exit(int code) { g_exit_code.store(code); g_exit.store(true); }
 int exit_code() { return g_exit_code.load(); }
 uint32_t retrace_count() { return g_retraces; }
-// Time inside a frame flows in small steps at HLE entry points and loop polls; the retrace then
-// tops the frame up to exactly TB_PER_FRAME so the timebase (and the audio DMA clock derived
-// from it) advances one frame per retrace regardless of how often the guest polled.
-static uint64_t g_frame_ticks = 0;
-void advance_time(uint64_t ticks) { cpu->tb += ticks; g_frame_ticks += ticks; }
+// The VI retrace is periodic in virtual time, like the hardware interrupt: `g_next_retrace_tb`
+// is the timebase value of the next retrace. A sleeping guest (wait_event) jumps time straight
+// to that boundary; a guest that busy-waits with interrupts enabled advances time in small steps
+// at HLE entry points and loop polls and takes the retrace when it crosses the boundary (Slippi's
+// lag-reduction code waits for pad data that the retrace path produces).
+static uint64_t g_next_retrace_tb = TB_PER_FRAME;
+static bool g_in_retrace = false;
+void advance_time(uint64_t ticks) { cpu->tb += ticks; }
 static void advance_frame() {
-  uint64_t add = TB_PER_FRAME > g_frame_ticks ? TB_PER_FRAME - g_frame_ticks : 0;
-  cpu->tb += add;
-  g_frame_ticks = 0;
+  if (cpu->tb < g_next_retrace_tb) cpu->tb = g_next_retrace_tb;   // idle: jump to the boundary
+  g_next_retrace_tb += TB_PER_FRAME;
 }
 
 void deliver_interrupt(uint32_t number) {
@@ -277,6 +340,7 @@ void pump_completions() {
   fire_due_alarms(false);
   hle::audio_tick(false);
   deliver_completions(false);
+  if (cpu->tb >= g_next_retrace_tb && !g_in_retrace) retrace();   // periodic VI interrupt during busy waits
 }
 
 static void fire_due_alarms(bool force) {
@@ -340,6 +404,7 @@ double now_seconds() { return std::chrono::duration<double>(std::chrono::steady_
 double frame_time() { return g_frame_time; }
 
 void retrace() {
+  struct Guard { Guard() { g_in_retrace = true; } ~Guard() { g_in_retrace = false; } } guard;
   ++g_retraces;
   advance_frame();
   if (g_has_window) window_pump();

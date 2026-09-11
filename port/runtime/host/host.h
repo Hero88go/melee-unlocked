@@ -19,6 +19,8 @@ struct Options {
   uint64_t time_base = 0;        // preset timebase (0 = derive from wall clock like Dolphin)
   int volume = 0;                // audio output volume percent (0 = muted, the development default)
   double hang_watch = 0.0;       // seconds without a retrace before the guest is declared hung (0 = off)
+  std::string sys_dir = "slippi/Data/Sys";   // Slippi Sys folder (GameFiles served over the EXI device)
+  std::string replay_dir = "replays";        // where .slp recordings are written
   std::string audio_dump;        // optional WAV file receiving everything the AI DMA plays
 };
 
@@ -50,6 +52,7 @@ bool disc_read(uint32_t offset, void* dst, uint32_t size);
 uint32_t disc_fst_offset();
 uint32_t disc_fst_size();
 uint32_t disc_fst_max_size();
+bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size);
 
 // ---- boot ----
 void boot_setup();               // low memory, FST placement, DOL load, registers

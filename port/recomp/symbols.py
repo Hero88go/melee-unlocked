@@ -47,6 +47,18 @@ class SymbolMap:
             self.by_name.setdefault(f.name, f)
         self._starts = [f.addr for f in self.functions]
 
+    def add_function(self, func):
+        """Registers a synthetic function (Gecko caves / hooks outside any symbol)."""
+        import bisect
+        if func.addr in self.by_addr:
+            return
+        self.functions.append(func)
+        self.functions.sort(key=lambda f: f.addr)
+        self.by_addr[func.addr] = func
+        self.by_name.setdefault(func.name, func)
+        self.names.setdefault(func.addr, func.name)
+        self._starts = [f.addr for f in self.functions]
+
     def containing(self, addr):
         import bisect
         i = bisect.bisect_right(self._starts, addr) - 1

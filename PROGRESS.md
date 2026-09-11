@@ -1,4 +1,27 @@
-# Development checkpoint ? September 10, 2026
+# Development checkpoint, September 11, 2026
+
+## Authored sub-frame rendering, frames in flight, Slippi re-integration
+
+- `--frame-mode authored` re-poses captured draws from the game's own animation
+  tracks (joint generations from recompiled `HSD_JObjAlloc`/`JObjRelease`, draw
+  pairing through `HSD_JObjDisp`/`SetupRigidModelMtx`, AObj/FObj chains read from
+  guest RAM, packed tracks re-sampled at fractional frames on the render thread).
+  Draws the authored path declines fall back to the geometric estimate. A match on
+  Yoshi's Story sampled about 310k authored poses per minute with phases spread
+  across the display timeline; burst captures show distinct intermediate frames.
+- D3D12 keeps three frames in flight (per-slot upload rings, allocator and
+  descriptor recycling), caches the pipeline per draw, and persists shader blobs
+  plus the pipeline library under `shadercache/`. Warm runs: menus 240 fps, match
+  126-135 fps on the RTX 5070 (submit about 4.7 ms per frame, solver about 1.7 ms).
+- Validation after these changes: 15/15 CTest, 2,400 checkpoints identical across
+  headless, hidden and threaded rendering.
+- The archived Slippi/Gecko work is merged back: Gecko applier and code-table
+  generation in the recompiler, EXI channel 1 Slippi device (GCT serving, game
+  files with VCDIFF, log, delay, online status stub, .slp recording), and the
+  in-cave subroutine/constant-CTR handling in the emitter. The crash on the
+  helper-table trick (`call to unmapped guest address 80668588`) is addressed by
+  dispatch-table thunks for every cave instruction, hook address and hook+4, so
+  computed entries into cave code resolve at run time.
 
 ## Second Fable handoff review
 
