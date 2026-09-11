@@ -19,5 +19,11 @@ uint32_t gct_load_address();
 uint64_t commands_seen();
 uint64_t replays_written();
 const std::string& replay_directory();
+// Widescreen 16:9 (Slippi's optional code, compiled in both ways). request_* is thread-safe and
+// takes effect on the simulation thread at the next retrace; the initial value comes from the
+// command line / settings before the game loads the code table.
+void request_widescreen(bool on);
+bool widescreen();
+void poll_options();
 
 }  // namespace slippi

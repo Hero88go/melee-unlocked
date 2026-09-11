@@ -22,6 +22,7 @@ struct D3D12Options {
   int efb_scale = 2;          // internal resolution multiplier; 0 = auto (integer scale covering the window, like Dolphin "Auto (Window Size)")
   int window_w = 1280, window_h = 960;  // initial client size
   bool vsync = false;
+  bool widescreen = false;    // Slippi Widescreen 16:9 code on (present at 16:9 and tell the game)
   std::string capture_path;   // write a PPM of the presented image at capture_frame
   uint32_t capture_frame = 0;
   uint32_t capture_every = 0;  // if set, capture every N presented frames as <capture_path>_<frame>.ppm

@@ -21,3 +21,6 @@ replays/
 
 # Packaged releases (tools/package_release.py)
 /release/
+
+# Port run-time user data (memory card, Slippi user folder)
+/User/

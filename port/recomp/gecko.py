@@ -18,11 +18,17 @@ CODEHANDLER_BASE = 0x80001800
 BOOTLOADER_BASE = 0x800028B8   # codehandler.bin length (4288) - 8, per Gecko::InstallCodeHandler
 
 
+# Codes the port compiles in but lets the player switch at run time (PC settings). Their table
+# entries go last in the GCT so every other cave keeps its address whether they are on or off.
+RUNTIME_OPTIONAL = {"Optional: Widescreen 16:9": "widescreen"}
+
+
 class GeckoCode:
     def __init__(self, name):
         self.name = name
         self.codes = []      # (address_word, data_word)
         self.enabled = False
+        self.optional = RUNTIME_OPTIONAL.get(name)   # flag name when switchable at run time
 
 
 def load_ini(path):
@@ -56,26 +62,34 @@ def load_ini(path):
         if m:
             current.codes.append((int(m.group(1), 16), int(m.group(2), 16)))
     for code in codes:
-        code.enabled = code.name in enabled
+        code.enabled = code.name in enabled or code.optional is not None
     return codes
 
 
-def generate_gct(codes):
-    """Byte-for-byte Gecko::GenerateGct for the enabled codes."""
+def generate_gct(codes, include_optional=True):
+    """Byte-for-byte Gecko::GenerateGct for the enabled codes, with the run-time optional codes
+    moved to the end. Returns (table, offset of the optional section)."""
     out = bytearray(struct.pack(">II", 0x00D0C0DE, 0x00D0C0DE))
     for code in codes:
-        if code.enabled:
+        if code.enabled and code.optional is None:
             for a, d in code.codes:
                 out += struct.pack(">II", a, d)
+    offset = len(out)
+    if include_optional:
+        for code in codes:
+            if code.enabled and code.optional is not None:
+                for a, d in code.codes:
+                    out += struct.pack(">II", a, d)
     out += struct.pack(">II", 0xFF000000, 0)
-    return bytes(out)
+    return bytes(out), offset
 
 
 class Hook:
-    __slots__ = ("hook", "cave_addr", "words")
+    __slots__ = ("hook", "cave_addr", "words", "optional")
 
     def __init__(self, hook, cave_addr, words):
         self.hook, self.cave_addr, self.words = hook, cave_addr, words
+        self.optional = None   # flag name when the hook belongs to a run-time optional code
 
 
 class Cave:

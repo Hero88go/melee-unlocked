@@ -28,20 +28,24 @@ Quick start
 1. Put your ISO next to MeleePort.bat and name it melee.iso (or edit the batch file).
 2. Run MeleePort.bat. The first launch compiles shaders for a few seconds.
 3. Press F1 (or Back+Start on the controller) for settings: fullscreen, frame rate cap,
-   VSync, internal resolution, DLSS, volume. Settings persist in port-settings.ini.
+   VSync, widescreen 16:9, internal resolution, DLSS, volume. Settings persist in port-settings.ini.
 
 Controllers: a GameCube adapter (WUP-028, official or Mayflash in Wii U mode) is used
 automatically if it has the WinUSB driver that Slippi installs. Close Slippi Dolphin first.
 Keyboard: arrows = stick, IJKL = C-stick, Z/X/C/V = A/B/X/Y, Enter = Start, Q/W = L/R, E = Z.
 
 Slippi online: the port uses the account you are logged into in the Slippi Launcher
-(user.json in the Launcher's netplay folder). Log in there once.
+(user.json in the Launcher's netplay folder). Log in there once. Unranked, Direct codes and
+Teams work against players on regular Slippi Dolphin; ranked play is not reported yet.
 
 Bug reports: open an issue on the GitHub releases page with your port-settings.ini, the
 console log (run from a command prompt to see it) and the steps to reproduce.
 
-Known gaps in this version: memory card saves are not implemented (settings and unlocks do
-not persist), game reporting for ranked play is not sent, audio is an approximate mixer.
+Saves: memory card slot A is the folder User\GC\CardA, one .gci per file (Dolphin's GCI folder
+format). Copy your Slippi Dolphin save (GALE01-*.gci) there to keep your unlocks and settings.
+
+Known gaps in this version: game reporting for ranked play is not sent, audio is an approximate
+mixer.
 """
 
 BAT = """@echo off
@@ -51,7 +55,7 @@ if not exist "melee.iso" (
   pause
   exit /b 1
 )
-melee_port.exe --iso "%~dp0melee.iso" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\\Slippi" --replay-dir "%~dp0Replays" --threaded-renderer --fps unlocked --frame-mode authored --fullscreen --volume 70 %*
+melee_port.exe --iso "%~dp0melee.iso" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\\Slippi" --replay-dir "%~dp0Replays" --card-dir "%~dp0User\GC\CardA" --threaded-renderer --fps unlocked --frame-mode authored --fullscreen --volume 70 %*
 if errorlevel 1 pause
 """
 

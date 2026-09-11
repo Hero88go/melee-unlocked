@@ -66,6 +66,19 @@ void hang_check(Context& c) {
   if (now - stuck_since > host::options.hang_watch) fatal(c, "no retrace for too long (guest spin loop?)", retraces);
 }
 
+void longjmp_restore(Context& c, uint8_t* m, uint32_t buf, uint32_t val) {
+  // MSL jmp_buf: +0 LR, +4 CR, +8 r1, +12 r2, +20 r13..r31, +96 f14..f31, +240 FPSCR (as a double).
+  c.lr = ld32(c, m, buf);
+  mtcrf(c, 0xFFu, ld32(c, m, buf + 4));
+  c.r[1] = ld32(c, m, buf + 8);
+  c.r[2] = ld32(c, m, buf + 12);
+  for (int i = 13, ea = (int)buf + 20; i < 32; ++i, ea += 4) c.r[i] = ld32(c, m, (uint32_t)ea);
+  for (int i = 14; i < 32; ++i) c.f[i].u0 = ld64(c, m, buf + 96 + 8 * (uint32_t)(i - 14));
+  c.f[0].u0 = ld64(c, m, buf + 240);
+  c.fpscr = (uint32_t)c.f[0].u0; update_mxcsr(c);
+  c.r[3] = val ? val : 1u;
+}
+
 void fatal(Context& c, const char* what, uint32_t a) {
   host::log("recent function entries (oldest first):");
   for (uint32_t i = 0; i < 64; ++i) {

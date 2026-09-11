@@ -26,7 +26,9 @@ def main():
     if args.fps and args.frame_mode not in ("interpolate", "extrapolate", "authored"):
         ap.error("--fps requires explicit experimental --frame-mode interpolate, extrapolate or authored")
     if args.frames < 0: ap.error("frames cannot be negative")
-    executable = ROOT / "build-review/port/Release/melee_port.exe"
+    # A "Play" snapshot (tools/snapshot_play.bat) is a tested copy that development rebuilds do not touch.
+    executable = ROOT / "build-review/port/Play/melee_port.exe"
+    if not executable.is_file(): executable = ROOT / "build-review/port/Release/melee_port.exe"
     if not executable.is_file(): ap.error("native build missing; follow NATIVE_DEVELOPMENT.md")
     if not args.iso.is_file(): ap.error(f"ISO not found: {args.iso}")
     command = [str(executable), "--iso", str(args.iso.resolve()), "--scale", args.scale, "--window", args.window]

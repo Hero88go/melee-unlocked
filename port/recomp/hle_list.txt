@@ -3,6 +3,7 @@
 
 # --- MSL / runtime ---
 __write_console
+__longjmp
 __read_console
 exit
 
@@ -187,6 +188,8 @@ CARDWrite
 CARDCreateAsync
 CARDCreate
 CARDDeleteAsync
+CARDFastDelete
+CARDFastDeleteAsync
 CARDDelete
 CARDFormatAsync
 CARDFormat

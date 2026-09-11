@@ -331,16 +331,42 @@ void deliver_interrupt(uint32_t number) {
 static void fire_due_alarms(bool force);
 static bool deliver_completions(bool force);
 
+static void validate_alarm_queue(const char* where);
 void pump_completions() {
   // Called from HLE entry points the guest polls. Virtual time flows a little so periodic
   // alarms (pad sampling) fire even in loops that never sleep. Nothing is delivered while the
   // guest has interrupts disabled; ppc::mtmsr flushes when they come back on.
   advance_time(2048);
+  validate_alarm_queue("hle entry");
   if (!ppc::interrupts_on(*cpu)) return;
   fire_due_alarms(false);
   hle::audio_tick(false);
   deliver_completions(false);
   if (cpu->tb >= g_next_retrace_tb && !g_in_retrace) retrace();   // periodic VI interrupt during busy waits
+}
+
+// Diagnostic: the OSAlarm queue must only ever link alarms whose handlers are code. A corrupt
+// link is reported at the first HLE entry after it appears so the call trace points at the writer.
+static void validate_alarm_queue(const char* where) {
+  static bool reported = false;
+  if (reported) return;
+  uint32_t a = rd32(gs::AlarmQueue), prev = 0;
+  for (int guard = 0; a && guard < 64; ++guard) {
+    bool bad = a < 0x80003000u || a >= 0x81800000u;
+    uint32_t handler = bad ? 0 : rd32(a);
+    // Handlers live in the DOL's text or in the Slippi code table caves; nothing else is code.
+    bool code = (handler >= 0x80003100u && handler < 0x803B7240u) || (handler >= 0x8065C000u && handler < 0x8071B000u);
+    if (!bad) bad = !code || (handler & 3) || rd32(a + 16) != prev;
+    if (bad) {
+      reported = true;
+      log("ALARM QUEUE CORRUPT (%s): entry %08X handler %08X prev %08X (expected %08X) next %08X head %08X tail %08X retrace %u",
+          where, a, handler, bad && a >= 0x80003000u && a < 0x81800000u ? rd32(a + 16) : 0, prev, a >= 0x80003000u && a < 0x81800000u ? rd32(a + 20) : 0,
+          rd32(gs::AlarmQueue), rd32(gs::AlarmQueue + 4), g_retraces);
+      ppc::fatal(*cpu, "alarm queue corrupt", a);
+      return;
+    }
+    prev = a; a = rd32(a + 20);
+  }
 }
 
 static void fire_due_alarms(bool force) {
@@ -354,6 +380,7 @@ static void fire_due_alarms(bool force) {
   if (!force && !ppc::interrupts_on(*cpu)) return;
   firing = true;
   for (int guard = 0; guard < 16; ++guard) {
+    validate_alarm_queue(guard ? "after previous alarm handler" : "entry");
     uint32_t head = rd32(gs::AlarmQueue);
     if (!head) break;
     uint64_t fire = ((uint64_t)rd32(head + 8) << 32) | rd32(head + 12);
@@ -377,6 +404,9 @@ static void fire_due_alarms(bool force) {
     c = saved;
     c.tb = tb;
     ppc::update_mxcsr(c);
+    static char where[64];
+    std::snprintf(where, sizeof where, "after alarm %08X handler %08X", head, rd32(head));
+    validate_alarm_queue(where);
   }
   firing = false;
 }
@@ -409,6 +439,7 @@ double frame_time() { return g_frame_time; }
 void retrace() {
   struct Guard { Guard() { g_in_retrace = true; } ~Guard() { g_in_retrace = false; } } guard;
   ++g_retraces;
+  slippi::poll_options();
   advance_frame();
   if (g_has_window) window_pump();
   if (!options.fast) {

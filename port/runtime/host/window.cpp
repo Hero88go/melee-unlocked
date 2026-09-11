@@ -140,10 +140,16 @@ enum : uint16_t {
 };
 
 namespace {
-struct ScriptEntry { uint32_t frame; uint16_t buttons; int8_t sx, sy, cx, cy; int port; };
+struct ScriptEntry { uint32_t frame; uint16_t buttons; int8_t sx, sy, cx, cy; int port;  bool relative = false; };
 std::vector<ScriptEntry> g_script;
 uint32_t g_script_ports = 1;
+// `@match` makes later entries relative to the retrace at which an online match reached frame 1
+// (they stay silent until then); `@loop N` repeats the relative section every N frames.
+static bool g_script_relative_section = false;
+static uint32_t g_script_loop = 0;
+static std::atomic<uint32_t> g_match_start_retrace{0};
 }  // namespace
+void input_mark_match_start() { g_match_start_retrace.store(retrace_count()); }
 
 bool input_load_script(const char* path) {
   FILE* f = fopen(path, "r");
@@ -153,6 +159,9 @@ bool input_load_script(const char* path) {
     ScriptEntry e{};
     char* p = line;
     if (*p == '#' || *p == '\n' || *p == '\r') continue;
+    if (!strncmp(p, "@match", 6)) { g_script_relative_section = true; continue; }
+    if (!strncmp(p, "@loop", 5)) { g_script_loop = (uint32_t)strtoul(p + 5, nullptr, 10); continue; }
+    e.relative = g_script_relative_section;
     e.frame = (uint32_t)strtoul(p, &p, 10);
     while (*p) {
       while (*p == ' ' || *p == '\t') ++p;
@@ -191,11 +200,19 @@ void input_poll(PadState out[4]) {
   if (!g_script.empty()) {
     // Scripts drive port 1 by default; entries with p=N drive port N (a port with any entry counts as plugged in).
     uint32_t frame = retrace_count();
+    uint32_t start = g_match_start_retrace.load();
+    bool in_match = start && frame >= start;
+    uint32_t rel = in_match ? frame - start : 0;
+    if (in_match && g_script_loop) rel %= g_script_loop;
     for (int port = 0; port < 4; ++port) {
       if (port && !(g_script_ports & (1u << port))) continue;
       out[port].err = 0;
       const ScriptEntry* cur = nullptr;
-      for (const ScriptEntry& e : g_script) if (e.port == port && e.frame <= frame) cur = &e;
+      for (const ScriptEntry& e : g_script) {
+        if (e.port != port) continue;
+        if (e.relative) { if (in_match && e.frame <= rel) cur = &e; }
+        else if (!in_match && e.frame <= frame) cur = &e;
+      }
       if (cur) { PadState& q = out[port]; q.button = cur->buttons; q.stick_x = cur->sx; q.stick_y = cur->sy; q.sub_x = cur->cx; q.sub_y = cur->cy; }
     }
     return;

@@ -1,6 +1,7 @@
 // Native Melee port entry point.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
+#include "gecko_data.h"
 #include "render_observer.h"
 #include "exi_slippi.h"
 #include "slippi_online.h"
@@ -100,6 +101,7 @@ int main(int argc, char** argv) {
       ppc::add_trace_func(addr, limit); }
     else if (a == "--sys-dir") o.sys_dir = next();
     else if (a == "--replay-dir") o.replay_dir = next();
+    else if (a == "--card-dir") o.card_dir = next();
     else if (a == "--user-dir") slippi::online::config().user_dir = next();
     else if (a == "--online-delay") slippi::online::config().delay = std::atoi(next());
     else if (a == "--chat") { std::string v = next(); slippi::online::config().chat = v == "off" ? 2 : v == "direct" ? 1 : 0; }
@@ -116,10 +118,12 @@ int main(int argc, char** argv) {
     else if (a == "--quiet") o.quiet = true;
     else if (a == "--time-base") o.time_base = std::strtoull(next(), nullptr, 0);
     else if (a == "--volume") o.volume = std::atoi(next());
+    else if (a == "--widescreen") gfx.widescreen = true;
     else if (a == "--hang-watch") o.hang_watch = std::atof(next());
     else if (a == "--audio-dump") o.audio_dump = next();
     else { usage(); return 2; }
   }
+  gecko::option_widescreen = gfx.widescreen;   // before the game loads the code table
   if (fps_requested && gfx.subframe == gx::SubFrameMode::Off) {
     std::fprintf(stderr, "--fps requires explicit experimental --frame-mode interpolate, extrapolate or authored\n");
     return 2;

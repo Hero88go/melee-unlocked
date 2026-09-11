@@ -6,6 +6,7 @@
 #include "slippi_online.h"
 #include "slippi_net.h"
 #include "host.h"
+#include "window.h"
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -135,6 +136,11 @@ bool g_currently_skipping = false, g_currently_advancing = false;
 std::mt19937 g_rng((uint32_t)time_ms());
 uint64_t g_rollbacks = 0;
 bool g_in_online_match = false;
+// Determinism oracle: the game hands us a checksum of its finalized state each frame and the
+// opponent's client sends theirs; a mismatch is a desync between the two simulations.
+std::map<int32_t, uint32_t> g_local_checksums;
+uint32_t g_checksums_compared = 0, g_checksums_mismatched = 0;
+int32_t g_last_checksum_frame = 0;
 
 bool is_disconnected() { return !g_netplay || g_netplay->GetSlippiConnectStatus() != NetplayClient::ConnectStatus::CONNECTED; }
 bool chat_enabled() { return g_last_search.mode == Matchmaking::DIRECT ? (g_config.chat == 0 || g_config.chat == 1) : g_config.chat == 0; }
@@ -272,6 +278,15 @@ void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_
   for (int i = 0; i < remote_count; ++i) {
     results[i] = g_netplay->GetSlippiRemotePad(i, ROLLBACK_MAX_FRAMES);
     if (results[i]->is_disconnected) continue;
+    int32_t cf = results[i]->checksum_frame;
+    if (cf > g_last_checksum_frame && results[i]->checksum) {
+      auto it = g_local_checksums.find(cf);
+      if (it != g_local_checksums.end()) {
+        g_last_checksum_frame = cf; ++g_checksums_compared;
+        if (it->second != results[i]->checksum) { ++g_checksums_mismatched; host::log("slippi: DESYNC: checksum mismatch at frame %d (ours %08X, player %u %08X)", cf, it->second, results[i]->player_idx, results[i]->checksum); }
+        else if (g_checksums_compared % 20 == 0) host::log("slippi: checksums agree through frame %d (%u compared, %u mismatched)", cf, g_checksums_compared, g_checksums_mismatched);
+      }
+    }
     if (results[i]->latest_frame > latest_from_opps) {
       last_checksum_frame = (uint32_t)results[i]->checksum_frame;
       last_checksum = results[i]->checksum;
@@ -328,6 +343,8 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     g_local_selections.Reset();
     if (g_netplay) g_netplay->StartSlippiGame();
     g_in_online_match = true;
+    host::input_mark_match_start();
+    g_local_checksums.clear(); g_checksums_compared = 0; g_checksums_mismatched = 0; g_last_checksum_frame = 0;
   }
   if (is_disconnected()) {
     if (g_netplay && g_netplay->GetDisconnectReason() == NetplayClient::DisconnectReason::POOR_PERFORMANCE)
@@ -335,6 +352,8 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     q.push_back(3);
     return;
   }
+  if (frame % 30 == 0) host::log("slippi: online frame %d wall %.3f s retrace %u rollbacks %llu", frame, host::now_seconds(), host::retrace_count(), (unsigned long long)g_rollbacks);
+  if (finalized > 0 && finalized_checksum) { g_local_checksums[finalized] = finalized_checksum; while (g_local_checksums.size() > 600) g_local_checksums.erase(g_local_checksums.begin()); }
   g_netplay->DropOldRemoteInputs(finalized);
   bool skip = should_skip_online_frame(frame, finalized);
   if (skip) g_netplay->SendSlippiPad(nullptr);
