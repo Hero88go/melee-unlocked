@@ -18,3 +18,6 @@ replays/
 
 # Streamline runtime binaries are copied from the SDK zip; keep headers/libs/docs only
 /port/third_party/streamline/bin/
+
+# Packaged releases (tools/package_release.py)
+/release/

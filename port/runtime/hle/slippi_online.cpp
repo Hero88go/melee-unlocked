@@ -8,6 +8,8 @@
 #include "host.h"
 #include <algorithm>
 #include <array>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <map>
@@ -722,7 +724,18 @@ Config& config() { return g_config; }
 uint64_t rollback_count() { return g_rollbacks; }
 bool is_online_match() { return g_in_online_match; }
 
+static bool file_exists(const std::string& p) { FILE* f = std::fopen(p.c_str(), "rb"); if (!f) return false; std::fclose(f); return true; }
+
 void init() {
+  // Without a user.json in the configured folder, use the Slippi Launcher's own login so a fresh
+  // install of the port shares the account the user already signed into.
+  if (!file_exists(g_config.user_dir + "/user.json")) {
+    const char* appdata = std::getenv("APPDATA");
+    if (appdata) {
+      std::string launcher = std::string(appdata) + "/Slippi Launcher/netplay/User/Slippi";
+      if (file_exists(launcher + "/user.json")) { host::log("slippi: using the Slippi Launcher login at %s", launcher.c_str()); g_config.user_dir = launcher; }
+    }
+  }
   g_user = std::make_unique<User>(g_config.user_dir);
   g_matchmaking = std::make_unique<Matchmaking>(g_user.get());
   g_direct_codes = std::make_unique<DirectCodes>(g_config.user_dir + "/direct-codes.json");
