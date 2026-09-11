@@ -111,3 +111,21 @@ Evidence: `reports/high-refresh-first/summary.json`,
 `reports/high-refresh-upload/summary.json`, and
 `reports/completion-isolation/render-state-comparison.json` (local artifacts).
 The full handoff is preserved byte-for-byte in `reports/handoffs/fablework3.txt`.
+
+## Distribution (2026-09-11, Fable)
+
+Decision: GitHub Releases for downloads (unlimited bandwidth, no site to host), GitHub Issues for bug
+reports (template in `.github/ISSUE_TEMPLATE/bug_report.yml`). A launcher with an updater can come
+later; a zip is enough for the first Reddit post.
+
+- `python tools/package_release.py --version X.Y.Z` writes `release/MeleePort-X.Y.Z-win64.zip`
+  (about 38 MB): `melee_port.exe`, Streamline/DLSS DLLs, `Sys/` (GameSettings ini, codehandler,
+  bootloader, GameFiles diffs), `MeleePort.bat`, README, licenses. No ISO, no DOL, no generated
+  code. The user drops `melee.iso` next to the batch file.
+- Verified: the packaged exe boots from its own folder, serves game files from `Sys/`, and logs in
+  with the Slippi Launcher's `user.json` (fallback added in `slippi_online.cpp` `init()`).
+- Repo hygiene stays: the public repo carries the recompiler and runtime, never the ISO, DOL or
+  `port/generated/`. A clone rebuilds `port/generated/` from the user's own ISO.
+- Online status for the release notes: wire-compatible with Slippi 3.6.4 (matchmaking ticket
+  accepted by mm.slippi.gg, port-vs-port matches complete with identical replays). Port-vs-Dolphin
+  determinism is unproven: label online play "experimental, direct codes with a partner first".
