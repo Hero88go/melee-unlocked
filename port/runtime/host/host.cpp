@@ -49,18 +49,36 @@ static uint8_t g_mmio[0x10000];      // 0xCC000000 - 0xCC00FFFF register file (b
 static bool g_in_interrupt = false;
 
 // ---------------- logging ----------------
+// Every line also goes to melee_port.log in the working directory (truncated at start), so a play
+// session can be inspected afterwards without the console window.
+static FILE* g_log_file = nullptr;
+static void open_log_file() {
+  static bool tried = false;
+  if (tried) return;
+  tried = true;
+  g_log_file = std::fopen("melee_port.log", "w");
+}
 void log(const char* fmt, ...) {
   if (options.quiet) return;
+  open_log_file();
   va_list ap; va_start(ap, fmt);
   std::vfprintf(stdout, fmt, ap);
   va_end(ap);
   std::fputc('\n', stdout);
   std::fflush(stdout);
+  if (g_log_file) {
+    va_list ap2; va_start(ap2, fmt);
+    std::vfprintf(g_log_file, fmt, ap2);
+    va_end(ap2);
+    std::fputc('\n', g_log_file);
+    std::fflush(g_log_file);
+  }
 }
 
 void log_guest_text(const char* data, size_t len) {
   std::fwrite(data, 1, len, stdout);
   std::fflush(stdout);
+  if (g_log_file) { std::fwrite(data, 1, len, g_log_file); std::fflush(g_log_file); }
 }
 
 [[noreturn]] void die(const char* fmt, ...) {
@@ -69,6 +87,14 @@ void log_guest_text(const char* data, size_t len) {
   std::vfprintf(stderr, fmt, ap);
   std::fprintf(stderr, "\n");
   va_end(ap);
+  if (g_log_file) {
+    va_list ap2; va_start(ap2, fmt);
+    std::fprintf(g_log_file, "\nFATAL: ");
+    std::vfprintf(g_log_file, fmt, ap2);
+    std::fprintf(g_log_file, "\n");
+    va_end(ap2);
+    std::fflush(g_log_file);
+  }
   std::fflush(stderr);
   std::fflush(stdout);
   std::exit(3);
