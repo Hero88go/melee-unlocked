@@ -189,10 +189,13 @@ std::string generate_vertex_shader(const VSUid& uid) {
   bool lightingEnabled = numColorChans > 0;
   o.w("cbuffer VSBlock : register(b0) {\n"
       "float4 projection[4];\nfloat4 depthparams;\nfloat4 viewparams;\nfloat4 materials[4];\nfloat4 lights[40];\n"
-      "float4 texmatrices[24];\nfloat4 transformmatrices[64];\nfloat4 normalmatrices[32];\nfloat4 posttransformmatrices[64];\n};\n");
+      "float4 texmatrices[24];\nfloat4 transformmatrices[64];\nfloat4 normalmatrices[32];\nfloat4 posttransformmatrices[64];\n"
+      "float4 unjittered_projection[4];\nfloat4 prev_projection[4];\nfloat4 prev_transformmatrices[64];\n};\n");
   o.w("struct VS_OUTPUT {\nfloat4 pos : SV_Position;\nfloat4 colors_0 : COLOR0;\nfloat4 colors_1 : COLOR1;\n");
   for (uint32_t i = 0; i < numTexGens; ++i) o.w("float3 tex%d : TEXCOORD%d;\n", i, i);
-  o.w("float4 clipPos : TEXCOORD%d;\n};\n", numTexGens);
+  o.w("float4 clipPos : TEXCOORD%d;\n", numTexGens);
+  if (uid.motion_vectors) o.w("float4 curPos : TEXCOORD%d;\nfloat4 prevPos : TEXCOORD%d;\n", numTexGens + 1, numTexGens + 2);
+  o.w("};\n");
   o.w("VS_OUTPUT main(float3 rawpos : POSITION, float3 rawnorm0 : NORMAL0, float4 color0 : COLOR0, float4 color1 : COLOR1,\n");
   for (int i = 0; i < 8; ++i) o.w("  float2 rawtex%d : TEXCOORD%d,\n", i, i);
   o.w("  uint4 blend_indices : BLENDINDICES, uint4 blend_indices2 : BLENDINDICES1) {\n");
@@ -208,6 +211,11 @@ std::string generate_vertex_shader(const VSUid& uid) {
     o.w("float3 _norm0 = float3(0.0, 0.0, 0.0);\n");
   }
   o.w("o.pos = float4(dot(projection[0], pos), dot(projection[1], pos), dot(projection[2], pos), dot(projection[3], pos));\n");
+  if (uid.motion_vectors) {
+    o.w("o.curPos = float4(dot(unjittered_projection[0], pos), dot(unjittered_projection[1], pos), dot(unjittered_projection[2], pos), dot(unjittered_projection[3], pos));\n");
+    o.w("float4 ppos = float4(dot(prev_transformmatrices[posmtx], rawpos4), dot(prev_transformmatrices[posmtx+1], rawpos4), dot(prev_transformmatrices[posmtx+2], rawpos4), 1);\n");
+    o.w("o.prevPos = float4(dot(prev_projection[0], ppos), dot(prev_projection[1], ppos), dot(prev_projection[2], ppos), dot(prev_projection[3], ppos));\n");
+  }
   if (lightingEnabled) o.w("float4 mat, lacc;\nfloat3 ldir, h;\nfloat dist, dist2, attn;\nint4 ilacc;\n");
   if (!lightingEnabled) {
     if (components & VB_HAS_COL0) o.w("o.colors_0 = color0;\n"); else o.w("o.colors_0 = float4(1.0, 1.0, 1.0, 1.0);\n");
@@ -393,11 +401,13 @@ std::string generate_pixel_shader(const PSUid& uid) {
       "wu3 wuround(float3 x) { return wu3(round(x)); }\nwu4 wuround(float4 x) { return wu4(round(x)); }\n");
   o.w("SamplerState samp[8] : register(s0);\nTexture2D Tex[8] : register(t0);\n");
   o.w("cbuffer PSBlock : register(b1) {\nint4 colors[4];\nint4 kcolors[4];\nint4 alpharef;\nfloat4 texdims[8];\nint4 zbias[2];\n"
-      "int4 indtexscale[2];\nint4 indtexmtx[6];\nint4 fogcolor;\nint4 fogi;\nfloat4 fogf[2];\nfloat4 zslope;\nint4 flags;\nfloat4 efbscale;\n};\n");
+      "int4 indtexscale[2];\nint4 indtexmtx[6];\nint4 fogcolor;\nint4 fogi;\nfloat4 fogf[2];\nfloat4 zslope;\nint4 flags;\nfloat4 efbscale;\nfloat4 mvscale;\n};\n");
   if (forced_early_z) o.w("[earlydepthstencil]\n");
-  o.w("void main(out float4 ocol0 : SV_Target0, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
+  if (uid.motion_vectors) o.w("void main(out float4 ocol0 : SV_Target0, out float2 omv : SV_Target1, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
+  else o.w("void main(out float4 ocol0 : SV_Target0, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
   for (uint32_t i = 0; i < numTexgen; ++i) o.w(", in float3 uv%d : TEXCOORD%d", i, i);
-  o.w(", in float4 clipPos : TEXCOORD%d) {\n", numTexgen);
+  if (uid.motion_vectors) o.w(", in float4 clipPos : TEXCOORD%d, in float4 curPos : TEXCOORD%d, in float4 prevPos : TEXCOORD%d) {\n", numTexgen, numTexgen + 1, numTexgen + 2);
+  else o.w(", in float4 clipPos : TEXCOORD%d) {\n", numTexgen);
   o.w("int2 ditherindex = int2(rawpos.xy) & 3;\n");
   o.w("wu4 c0 = colors[1], c1 = colors[2], c2 = colors[3], prev = colors[0];\n"
       "wu4 tex_ta[%d], tex_t = wu4(0,0,0,0), ras_t = wu4(0,0,0,0), konst_t = wu4(0,0,0,0);\n"
@@ -577,19 +587,17 @@ std::string generate_pixel_shader(const PSUid& uid) {
     o.w("prev.rgb = BSHR(prev.rgb * (wu(256) - ifog) + fogcolor.rgb * ifog, wu(8));\n");
   }
   o.w("ocol0 = float4(prev) / 255.0;\n");
+  if (uid.motion_vectors) o.w("omv = (prevPos.xy / prevPos.w - curPos.xy / curPos.w) * mvscale.xy;\n");
   o.w("}\n");
   return o.s;
 }
 
 // ---------------------------------------------------------------- constants
-void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const DrawMatrices* override_matrices) {
-  std::memset(&c, 0, sizeof c);
-  const float* pos_matrices = override_matrices ? override_matrices->pos : dc.posMatrices;
-  const float* nrm_matrices = override_matrices ? override_matrices->nrm : dc.normalMatrices;
+void build_projection(const DrawCall& dc, float m[16]) {
   const float* vp = (const float*)&dc.xf_regs[0x1A];
   const float* proj = (const float*)&dc.xf_regs[0x20];
   uint32_t type = dc.xf_regs[0x26];
-  float m[16] = {};
+  std::memset(m, 0, 16 * sizeof(float));
   if (type == 0) {  // perspective
     m[0] = proj[0]; m[2] = proj[1]; m[5] = proj[2]; m[6] = proj[3]; m[10] = proj[4]; m[11] = proj[5]; m[14] = -1.0f;
   } else {
@@ -597,9 +605,28 @@ void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const 
   }
   if (vp[0] < 0.0f) for (int i = 0; i < 4; ++i) m[i] *= -1.0f;
   if (vp[1] > 0.0f) for (int i = 4; i < 8; ++i) m[i] *= -1.0f;
-  std::memcpy(c.projection, m, sizeof m);
+}
+
+void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const DrawMatrices* override_matrices, const MotionInfo* motion) {
+  std::memset(&c, 0, sizeof c);
+  const float* pos_matrices = override_matrices ? override_matrices->pos : dc.posMatrices;
+  const float* nrm_matrices = override_matrices ? override_matrices->nrm : dc.normalMatrices;
+  const float* vp = (const float*)&dc.xf_regs[0x1A];
+  float m[16];
+  build_projection(dc, m);
+  std::memcpy(c.unjittered_projection, m, sizeof m);
   const float pixel_center_correction = 0.5f - 7.0f / 12.0f;
   float viewport_width = 2.0f * vp[0] * efb_scale, viewport_height = 2.0f * vp[1] * efb_scale;
+  if (motion) {
+    // Sub-pixel jitter: shift clip space by the jitter in NDC (row 3 is the w row), so the
+    // rasterized samples move while the reported matrices stay unjittered.
+    float jx = viewport_width != 0.0f ? 2.0f * motion->jitter_x / viewport_width : 0.0f;
+    float jy = viewport_height != 0.0f ? 2.0f * motion->jitter_y / viewport_height : 0.0f;
+    for (int i = 0; i < 4; ++i) { m[i] += jx * m[12 + i]; m[4 + i] += jy * m[12 + i]; }
+    std::memcpy(c.prev_projection, motion->prev_proj ? motion->prev_proj : &c.unjittered_projection[0][0], sizeof c.prev_projection);
+    std::memcpy(c.prev_transformmatrices, motion->prev_pos ? motion->prev_pos : pos_matrices, sizeof c.prev_transformmatrices);
+  }
+  std::memcpy(c.projection, m, sizeof m);
   float psx = 2.0f / viewport_width, psy = 2.0f / viewport_height;
   c.depthparams[0] = 0.0f; c.depthparams[1] = 1.0f;
   c.depthparams[2] = pixel_center_correction * psx; c.depthparams[3] = pixel_center_correction * psy;
@@ -679,6 +706,7 @@ void fill_ps_constants(const DrawCall& dc, PSConstants& c, int efb_scale) {
     c.fogf[0][0] = 0.0f; c.fogf[0][1] = 1.0f; c.fogf[0][2] = 1.0f;
   }
   c.efbscale[0] = 1.0f / efb_scale; c.efbscale[1] = 1.0f / efb_scale;
+  { const float* vp = (const float*)&dc.xf_regs[0x1A]; c.mvscale[0] = vp[0] * efb_scale; c.mvscale[1] = vp[1] * efb_scale; }
 }
 
 }  // namespace gx

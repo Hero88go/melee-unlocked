@@ -25,6 +25,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "fullscreen") options.fullscreen = value == "1";
       else if (key == "vsync") options.vsync = value == "1";
       else if (key == "performance") options.performance_overlay = value == "1";
+      else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
       else if (key == "volume") volume = std::clamp(std::stoi(value), 0, 100);
     } catch (...) { /* Ignore a malformed preference, retaining the safe default. */ }
   }
@@ -115,6 +116,9 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     changed |= ImGui::Checkbox("VSync", &options.vsync);
     const char* scales[] = {"Auto", "Native (1x)", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
     changed |= ImGui::Combo("Internal resolution", &options.efb_scale, scales, 9);
+    const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance"};
+    if (ImGui::Combo("Upscaling (NVIDIA)", &options.dlss_mode, upscalers, 6)) changed = true;
+    if (options.dlss_mode) ImGui::TextUnformatted("DLSS picks the internal resolution; anti-aliasing is DLSS while it is on.");
     state.volume = host::audio_volume();
     if (ImGui::SliderInt("Volume", &state.volume, 0, 100, "%d%%")) host::audio_set_volume(state.volume);
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
@@ -123,7 +127,8 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";
       std::ofstream file(temporary);
       file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
-           << "\nvsync " << options.vsync << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay << '\n';
+           << "\nvsync " << options.vsync << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
+           << "\ndlss " << options.dlss_mode << '\n';
       file.close();
       state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     }

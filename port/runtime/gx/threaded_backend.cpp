@@ -150,8 +150,8 @@ class ThreadedBackend final : public Backend {
       if (now - stats_time >= 1.0) {
         const SubFrameStats& s = solver.stats();
         wchar_t title[160];
-        _snwprintf_s(title, _TRUNCATE, L"Melee Port  |  sim %.0f Hz  |  display %.0f fps  |  %s  |  draws %u paired %u",
-                     stats_sim / (now - stats_time), stats_presented / (now - stats_time),
+        _snwprintf_s(title, _TRUNCATE, L"Melee Port  |  DISPLAY %.0f fps%s  |  game logic %.0f Hz (always 60, like Rivals' physics)  |  %s  |  draws %u paired %u",
+                     stats_presented / (now - stats_time), cap_period > 0 ? L" (capped)" : L" (uncapped)", stats_sim / (now - stats_time),
                      !subframes ? L"locked" : authored ? L"authored" : interpolate ? L"interpolate" : L"extrapolate", s.draws, s.paired);
         host::window_set_title(title);
         if (++stats_lines % 5 == 0) {
