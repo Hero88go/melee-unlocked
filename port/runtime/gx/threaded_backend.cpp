@@ -1,7 +1,7 @@
 // Render thread: owns the window and the D3D12 backend, consumes simulation frames from a bounded
 // queue, and presents on its own timeline. With a sub-frame mode enabled it renders new frames
 // between 60 Hz simulation frames from re-posed geometry (see subframe.h); the simulation is never
-// touched and never waits for a display refresh.
+// touched. The bounded source queue can back-pressure simulation when rendering is slow.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "threaded_backend.h"
 #include "frame_queue.h"
@@ -39,10 +39,10 @@ class ThreadedBackend final : public Backend {
     for (;;) {
       host::window_pump();
       if (host::window_closed()) { queue.finish(true); break; }
-      // Take every simulation frame that has arrived; the newest becomes current.
+      // Render every source at least once: EFB resources can depend on earlier commands.
       bool got_new = false;
       Frame incoming;
-      while (queue.try_pop(incoming)) {
+      if ((cur < 0 || frames[cur].sequence == rendered_sequence) && queue.try_pop(incoming)) {
         int next = cur < 0 ? 0 : cur ^ 1;
         frames[next] = std::move(incoming);
         have_prev = cur >= 0;

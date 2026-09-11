@@ -2,8 +2,9 @@
 
 This is a working development executable, not the finished competitive client.
 It boots the stock Melee 1.02 executable through static recompilation and renders
-native geometry with D3D12. Audio, memory cards, Slippi/netplay, rollback, and
-independent sub-frame animation are not implemented. Do not use `--fast` for normal
+native geometry with D3D12. Approximate AX audio and experimental transform-based
+sub-frame rendering are implemented. Memory cards, Slippi/netplay, rollback, and
+authored fractional-time animation remain unfinished. Do not use `--fast` for normal
 play: it accelerates simulation.
 
 ## Launch
@@ -13,19 +14,21 @@ play: it accelerates simulation.
 .\run-native.bat --scale 3
 .\run-native.bat --scale auto --window 2560x1440
 .\run-native.bat --threaded-renderer
-.\run-native.bat --fps unlocked
+.\run-native.bat --fps unlocked --frame-mode extrapolate
 .\run-native.bat --fps 240 --frame-mode interpolate
 ```
 
-`--fps N|unlocked` presents on the render thread's own timeline (uncapped, or capped
-at N per second; add `--vsync` to lock to the monitor). The simulation stays at 60 Hz
-with unchanged physics. Each presented frame between two simulation frames is
-rasterized from re-posed geometry: every draw's position matrices get the fraction of
-their per-frame rigid delta (rotation about the true screw axis, slide, scale), so a
-240 Hz display shows four distinct native frames per simulation frame. `--frame-mode
-extrapolate` (default) adds no latency and continues the last motion; `interpolate`
-shows the exact in-between pose one frame late; `off` presents each simulation frame
-once. The window title shows the simulation and display rates.
+`--fps N|unlocked` requires an explicit experimental `--frame-mode interpolate`
+or `--frame-mode extrapolate`. It presents on the render thread's timeline; add
+`--vsync` to synchronize presentation to the monitor. Simulation targets 60 Hz.
+Intermediate views rasterize geometry with estimated matrix motion between
+compatible adjacent draws. They do not sample authored animation curves, and draw
+identities are heuristic. Interpolation delays the estimated pose by one simulation
+frame; extrapolation predicts motion and can be wrong. Cuts, changing geometry,
+and orthographic HUD draws retain the current pose. Normal launch uses `off`,
+which presents each simulation frame once. Slow rendering can delay simulation.
+The reviewed Classic capture paired no draws under the conservative checks; it
+does not demonstrate intermediate gameplay animation or sustained high FPS.
 
 The launcher uses this project's native executable and existing clean ISO. It does
 not open or modify the installed Slippi client. `--iso "path"` overrides the local
@@ -40,13 +43,14 @@ integer multiplier that covers the window's 4:3 area (Dolphin's "Auto (Window
 Size)") and re-allocates the EFB when the window is resized. `--window WxH` sets the
 initial client size (default 1280x960). The experimental render thread has its own window
 and graphics resources, with a bounded ordered queue; a slow renderer can still
-back-pressure simulation. It does not yet add intermediate animation frames.
+back-pressure simulation. Every source frame is processed to preserve EFB copies.
 
 Keyboard: arrows move, I/J/K/L control C-stick, Z/X/C/V map to A/B/X/Y, Enter is
 Start, Q/W are L/R, E is Z, and T/F/G/H are D-pad. XInput controller 0 is supported.
-Audio is mixed by the emulated AX DSP and played through WinMM; the session starts
+Audio uses an approximate AX DSP HLE mixer and WinMM output; the session starts
 muted (`--volume 0`), raise it with `--volume 50`. `--audio-dump out.wav` records the
-mix. Closing its own window stops the game;
+unscaled mix. Volume applies only to this client's output samples. DSP resampling
+and command coverage still need fidelity work. Closing its own window stops the game;
 unrelated Dolphin windows and processes are not touched.
 
 ## Build

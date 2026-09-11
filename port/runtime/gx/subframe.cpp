@@ -73,10 +73,18 @@ void SubFrameSolver::fractional(const float prev[12], const float cur[12], doubl
                                 const float cur_nrm[9], const float prev_nrm[9], SubFrameStats* stats) {
   const float* base = interpolate ? prev : cur;
   const float* base_nrm = interpolate ? prev_nrm : cur_nrm;
-  auto exact = [&]() {
-    std::memcpy(out_pos, base, 12 * sizeof(float));
-    if (out_nrm && base_nrm) std::memcpy(out_nrm, base_nrm, 9 * sizeof(float));
+  auto exact = [&](bool current = true) {
+    std::memcpy(out_pos, current ? cur : base, 12 * sizeof(float));
+    const float* normals = current ? cur_nrm : base_nrm;
+    if (out_nrm && normals) std::memcpy(out_nrm, normals, 9 * sizeof(float));
   };
+  if (!std::isfinite(t)) { exact(); if (stats) ++stats->cuts; return; }
+  for (int i = 0; i < 12; ++i) if (!std::isfinite(prev[i]) || !std::isfinite(cur[i])) {
+    exact(); if (stats) ++stats->cuts; return;
+  }
+  if (interpolate && t >= 1.0) { exact(); return; }
+  if (t <= 0.0) { exact(false); return; }
+  t = std::min(t, 1.0);
   if (std::memcmp(prev, cur, 12 * sizeof(float)) == 0) { exact(); return; }
   Affine P, C, Pi;
   std::memcpy(P.m, prev, sizeof P.m); std::memcpy(C.m, cur, sizeof C.m);
@@ -139,23 +147,25 @@ void SubFrameSolver::fractional(const float prev[12], const float cur[12], doubl
     }
     if (stats) ++stats->rigid;
   } else {
-    // Linear blend of the delta toward identity (bounded, exact at t = 0 and t = 1).
-    for (int i = 0; i < 3; ++i)
-      for (int j = 0; j < 4; ++j) F.m[i * 4 + j] = (float)((i == j ? 1.0 : 0.0) * (1.0 - t) + D.m[i * 4 + j] * t);
-    if (stats) ++stats->blended;
+    // Shear/reflection/large scale deltas are not a reliable animation path.
+    exact(); if (stats) ++stats->cuts; return;
   }
   Affine B; std::memcpy(B.m, base, sizeof B.m);
   Affine R = mul(F, B);
   std::memcpy(out_pos, R.m, sizeof R.m);
   if (out_nrm && base_nrm) {
-    // Normal matrices carry the rotation only: rotate the base normal matrix by F's 3x3.
+    // Normals transform by inverse transpose, including non-uniform scale.
+    Affine inverse;
+    if (!invert(F, inverse)) { exact(); if (stats) ++stats->cuts; return; }
     for (int i = 0; i < 3; ++i)
       for (int j = 0; j < 3; ++j)
-        out_nrm[i * 3 + j] = F.m[i * 4 + 0] * base_nrm[0 * 3 + j] + F.m[i * 4 + 1] * base_nrm[1 * 3 + j] + F.m[i * 4 + 2] * base_nrm[2 * 3 + j];
+        out_nrm[i * 3 + j] = inverse.m[i] * base_nrm[j] +
+            inverse.m[4 + i] * base_nrm[3 + j] + inverse.m[8 + i] * base_nrm[6 + j];
   }
 }
 
 void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
+  if (prev && cur && cur->sequence != prev->sequence + 1) prev = nullptr;
   prev_ = prev; cur_ = cur;
   pairs_.clear(); prev_index_.clear();
   stats_ = SubFrameStats{};
@@ -169,21 +179,28 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
     auto it = prev_index_.find(d.identity);
     if (it != prev_index_.end()) {
       const DrawCall& pd = prev->draws[it->second];
-      if (pd.vertex_count == d.vertex_count && pd.primitive == d.primitive && pd.components == d.components) {
+      bool vertex_ranges_valid = pd.first_vertex <= prev->vertices.size() && pd.vertex_count <= prev->vertices.size() - pd.first_vertex &&
+          d.first_vertex <= cur->vertices.size() && d.vertex_count <= cur->vertices.size() - d.first_vertex;
+      if (d.xf_regs[0x26] == 0 && vertex_ranges_valid && pd.vertex_count == d.vertex_count &&
+          pd.primitive == d.primitive && pd.components == d.components &&
+          !std::memcmp(&pd.bp, &d.bp, sizeof d.bp) &&
+          !std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 7 * sizeof(uint32_t)) &&
+          !std::memcmp(prev->vertices.data() + pd.first_vertex, cur->vertices.data() + d.first_vertex,
+                       d.vertex_count * sizeof(Vertex))) {
         p.prev_draw = it->second;
         // Collect used position matrix slots: per-vertex indices or the CP default, plus texgen matrices.
         if (d.components & VB_HAS_POSMTXIDX) {
           for (uint32_t v = 0; v < d.vertex_count; ++v) {
             uint32_t idx = cur->vertices[d.first_vertex + v].posmtx;
-            if (idx < 64) p.used_slots |= 1ull << (idx / 3);
+            if (idx < 64) p.used_slots |= 1ull << idx;
           }
         } else {
-          p.used_slots |= 1ull << ((d.matrix_index_a & 63) / 3);
+          p.used_slots |= 1ull << (d.matrix_index_a & 63);
         }
         uint32_t texgens = d.xf_regs[0x3F] & 15;
         for (uint32_t k = 0; k < texgens && k < 8; ++k) {
           uint32_t idx = k < 4 ? bits(d.matrix_index_a, 6 + 6 * k, 6) : bits(d.matrix_index_b, 6 * (k - 4), 6);
-          if (idx < 64) p.used_slots |= 1ull << (idx / 3);
+          if (idx < 64) p.used_slots |= 1ull << idx;
         }
         ++stats_.paired;
       }
@@ -195,7 +212,7 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
 void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>& out) const {
   out.resize(cur_ ? cur_->draws.size() : 0);
   if (!cur_) return;
-  SubFrameStats* stats = const_cast<SubFrameStats*>(&stats_);
+  SubFrameStats* stats = &stats_;
   stats->rigid = stats->blended = stats->cuts = 0;
   for (size_t i = 0; i < cur_->draws.size(); ++i) {
     const DrawCall& d = cur_->draws[i];
@@ -206,9 +223,8 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
     std::memcpy(o.pos, base.posMatrices, sizeof o.pos);
     std::memcpy(o.nrm, base.normalMatrices, sizeof o.nrm);
     if (!pd) continue;
-    for (int slot = 0; slot < 22; ++slot) {
-      if (!(p.used_slots & (1ull << slot))) continue;
-      int row = slot * 3;
+    for (int row = 0; row < 64; ++row) {
+      if (!(p.used_slots & (1ull << row))) continue;
       if (row + 3 > 64) break;
       const float* prev_m = &pd->posMatrices[row * 4];
       const float* cur_m = &d.posMatrices[row * 4];

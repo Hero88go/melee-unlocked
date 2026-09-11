@@ -5,9 +5,9 @@
 // vertex count and primitive), every position matrix slot the draw uses gets the delta transform
 //   D = M_cur * inverse(M_prev)
 // decomposed into rotation / uniform-ish scale / translation. The fraction t of that delta is applied
-// on top of M_cur (extrapolation, zero added latency) or M_prev (interpolation, one frame of latency).
-// Non-rigid deltas fall back to a linear matrix blend; camera cuts and teleports (large deltas) keep
-// the exact simulation pose so nothing ever overshoots into a wrong place.
+// on top of M_cur (extrapolation, predicted motion) or M_prev (interpolation, one frame of latency).
+// Non-rigid deltas and detected cuts retain the latest pose. Pairing is heuristic, not
+// object-generation tracking; this remains an opt-in approximation, not authored animation.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
@@ -39,12 +39,12 @@ class SubFrameSolver {
                          const float cur_nrm[9], const float prev_nrm[9], SubFrameStats* stats);
 
  private:
-  struct Pair { int prev_draw; uint64_t used_slots; };   // bit i set: pos matrix row 3*i used (i < 22)
+  struct Pair { int prev_draw; uint64_t used_slots; };   // bit i set: pos matrix starts at row i
   const Frame* prev_ = nullptr;
   const Frame* cur_ = nullptr;
   std::vector<Pair> pairs_;
   std::unordered_map<uint64_t, int> prev_index_;
-  SubFrameStats stats_;
+  mutable SubFrameStats stats_;
 };
 
 }  // namespace gx

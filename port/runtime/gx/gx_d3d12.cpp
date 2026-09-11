@@ -234,7 +234,7 @@ Texture2D src : register(t0); SamplerState samp : register(s0);
 cbuffer C : register(b0) { float4 rect; };  // xy = uv scale, zw = uv offset (source rect)
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
-float4 PS(O i) : SV_Target { return float4(src.Sample(samp, i.uv).rgb, 1); })";
+float4 PS(O i) : SV_Target { return src.Sample(samp, i.uv); })";
   ComPtr<ID3DBlob> bvs, bps;
   check(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &bvs, &err), "blit vs");
   check(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "PS", "ps_5_0", 0, 0, &bps, &err), "blit ps");

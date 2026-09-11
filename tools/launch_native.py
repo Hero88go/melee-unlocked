@@ -23,6 +23,8 @@ def main():
         ap.error("scale must be 'auto' or between 1 and 25")
     import re
     if not re.fullmatch(r"\d{3,5}x\d{3,5}", args.window): ap.error("window must look like 1920x1080")
+    if args.fps and args.frame_mode not in ("interpolate", "extrapolate"):
+        ap.error("--fps requires explicit experimental --frame-mode interpolate or extrapolate")
     if args.frames < 0: ap.error("frames cannot be negative")
     executable = ROOT / "build-review/port/Release/melee_port.exe"
     if not executable.is_file(): ap.error("native build missing; follow NATIVE_DEVELOPMENT.md")

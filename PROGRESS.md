@@ -1,53 +1,26 @@
-# Development checkpoint — September 10, 2026
+# Development checkpoint ? September 10, 2026
 
-## Audio (AX DSP high-level emulation)
+## Second Fable handoff review
 
-- The recompiled AX library now runs for real (`__AXOutInit` is no longer stubbed):
-  `DSPAddTask` fires the task's init callback synchronously, `DSPAssertTask` runs the
-  resume callback (which builds the command list), and `DSPSendMailToDSP` feeds
-  `port/runtime/hle/ax_ucode.cpp`, a port of Dolphin's AX HLE (ucode 0x4e8a8b21, the
-  CRC the DOL's ucode image hashes to) that mixes voices from ARAM into guest RAM and
-  writes the parameter blocks back. The AI DMA clock is derived from the guest
-  timebase (one 640-byte frame per 5 ms), so the whole sequence is deterministic.
-- Host output: WinMM 32 kHz stereo (`--volume 0-100`, default 0 keeps the session
-  muted), `--audio-dump out.wav` records exactly what the DMA played;
-  `tools/wav_stats.py` reports signal per second. The headless Classic run produced
-  30.3 s of audio for 1,800 frames with 26 audible seconds (boot jingle, menu music,
-  the match); a paced muted run dropped 27 of ~3,000 blocks.
-- Two runtime fixes this uncovered: generated code now polls for host events at loop
-  back-edges (`ppc::backedge`, every 1,024 iterations) so guest spin loops on flags
-  set by interrupt callbacks terminate (the SFX bank sync loop hung otherwise), and
-  the timebase is topped up to exactly one frame per retrace regardless of how many
-  polls happened. `--hang-watch S` reports the stuck function if a retrace stalls.
-- Callback registration HLE returned the old callback before storing the new one for
-  AI and ARAM DMA callbacks; fixed.
+The resolution/window controls, filtered half-scale EFB copies, approximate AX
+mixer, and opt-in transform-based sub-frame renderer are retained. The complete
+handoff, including the crashing uncommitted Slippi/Gecko experiment, is preserved
+on `archive/fable-second-handoff` (`c2341e994b24337e38e333ce472ce7f9961fd8c0`).
+The normal build uses the regenerated stock DOL and excludes that experiment.
+See `FABLE_REVIEW_2.md` for review decisions and validation.
 
-## Native unlocked frame rate (sub-frame presentation)
+Review fixes preserve every source frame in the render queue, remove the detached
+CPU-reading watchdog, preserve filtered-copy alpha, and apply volume only to this
+client's PCM samples. Sub-frame pairing rejects frame gaps, changed geometry,
+projection/state changes and orthographic HUD draws. Normal transforms use inverse
+transpose; unsafe transform deltas keep the current pose. `--fps` now requires an
+explicit experimental interpolation or extrapolation mode.
 
-- `--fps N|unlocked` (with `--frame-mode extrapolate|interpolate|off`) runs the
-  render thread on its own timeline. Every draw captured from the GX FIFO carries a
-  stable identity (display-list address, call ordinal, draw ordinal; immediate-mode
-  draws use texture/size/ordinal). Between two 60 Hz simulation frames the presenter
-  pairs each draw with its previous instance, takes the per-slot delta of the XF
-  position matrices, decomposes it into a screw motion (rotation about an axis plus
-  slide) with per-axis scale, and applies the fraction `t` of that delta on top of the
-  current pose (extrapolate, zero added latency) or the previous pose (interpolate,
-  one frame of latency). Normal matrices follow the rotation. Non-rigid deltas use a
-  bounded linear blend; teleports and camera cuts keep the exact simulation pose.
-  Nothing blends images and nothing touches guest state (`port/runtime/gx/subframe.*`).
-- Evidence (`reports/native-validation/unlocked.log`, `burst_*.ppm`): a paced run
-  presented 35,090 frames for 1,799 simulation frames; captured presented frames
-  34952 and 34953 both belong to simulation frame 1721 (phases 0.416 and 0.987) and
-  differ in 90% of pixels: the falling item, both fighters and the camera advanced.
-  `port_subframe_test` covers the fractional screw math, cut detection, blend fallback
-  and identity pairing. Simulation state traces with the unlocked presenter match the
-  locked run (see `unlocked_trace.csv` versus `scale_s1.csv`).
-- Internal resolution follows Dolphin: `--scale N|auto` rasterizes the EFB at
-  640x528 x N (auto follows the window), scaled viewport/scissor/clears/EFB copies,
-  half-scale copies filtered. Window size via `--window WxH`.
-- Not yet done: GPU frames in flight (the presenter still waits for each frame's GPU
-  work), display-rate input sampling is unchanged (the game samples at 60 Hz), and
-  particles that are re-created every frame (new identities) do not extrapolate.
+These modes estimate matrix motion; they do not provide stable object generations
+or authored fractional animation. Audio resampling and DSP command coverage remain
+approximate. Guest polling advances the timebase; retrace pacing tops up only when
+below its target and does not undo excess polling time. Stock timing equivalence
+has not been established. `--hang-watch` now uses synchronous poll diagnostics only.
 
 ## Native fidelity and thread isolation
 
@@ -60,7 +33,7 @@
 - `--threaded-renderer` moves the window and D3D12 work onto their own thread.
   Keyboard state is synchronized; normal shutdown drains and joins the renderer.
   A two-frame ordered queue preserves EFB dependencies. It can still back-pressure
-  simulation and does not produce fractional animation frames yet.
+  simulation. Fractional matrix estimates require an explicit experimental mode.
 - Generator/runtime verify the stock DOL; host RAM copies validate complete ranges.
 - Release build and 11 CTest checks pass. With the same script/clock, headless,
   synchronous and threaded rendering matched all 2,400 CPU/RAM/ARAM/event checkpoints.
@@ -69,8 +42,8 @@
 - `run-native.bat`, `tools/validate_native.py` and `NATIVE_DEVELOPMENT.md` provide
   the native launch and repeatable validation paths. Existing Slippi is untouched.
 
-Project remains incomplete: independent authored sub-frame rendering, audio,
-memory cards, full deterministic rollback and Slippi networking are still absent.
+Project remains incomplete: authored fractional animation, faithful audio, memory
+cards, full deterministic rollback and Slippi networking remain unfinished.
 
 ## Fable review integration
 

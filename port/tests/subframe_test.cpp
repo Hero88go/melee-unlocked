@@ -40,12 +40,15 @@ int main() {
   rot_z(0, 500, cur); st = {};
   gx::SubFrameSolver::fractional(prev, cur, 0.5, false, 40, 3.0f, out, nullptr, nullptr, nullptr, &st);
   check(std::memcmp(out, cur, sizeof out) == 0 && st.cuts == 1, "large delta treated as a cut");
-  // Non-rigid delta (anisotropic scale x3) uses the bounded linear blend.
+  st = {};
+  gx::SubFrameSolver::fractional(prev, cur, 0.5, true, 40, 3.0f, out, nullptr, nullptr, nullptr, &st);
+  check(std::memcmp(out, cur, sizeof out) == 0 && st.cuts == 1, "interpolation cut retains current pose");
+  // Non-rigid delta (anisotropic scale x3) retains the current pose.
   float scaled[12] = {3, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0}; st = {};
   gx::SubFrameSolver::fractional(prev, scaled, 0.5, true, 40, 3.0f, out, nullptr, nullptr, nullptr, &st);
-  check(st.blended == 1 && near(out[0], 2.0f), "non-rigid delta blends linearly");
+  check(st.cuts == 1 && near(out[0], 3.0f), "non-rigid delta retains current pose");
   // Draw pairing by identity through the solver.
-  gx::Frame a, b;
+  gx::Frame a, b; a.sequence = 1; b.sequence = 2; a.vertices.resize(3); b.vertices.resize(3);
   gx::DrawCall d{}; d.identity = 7; d.vertex_count = 3; d.primitive = 0x90; d.components = 0; d.matrix_index_a = 0;
   d.xf_regs[0x3F] = 0;
   rot_z(0, 0, d.posMatrices); std::memcpy(d.normalMatrices, ident_n, sizeof ident_n);
@@ -61,5 +64,14 @@ int main() {
               mats[0].pos[4], mats[0].pos[5], mats[0].pos[6], mats[0].pos[7], solver.stats().paired, solver.stats().rigid, solver.stats().blended, solver.stats().cuts);
   check(mats.size() == 2 && near(mats[0].pos[3], 4.0f), "paired draw gets the fractional pose");
   check(std::memcmp(mats[1].pos, unpaired.posMatrices, sizeof mats[1].pos) == 0, "unpaired draw keeps its pose");
+  b.sequence = 4; solver.set_frames(&a, &b);
+  check(solver.stats().paired == 0, "frame gaps invalidate pairing");
+  b.sequence = 2; b.vertices[0].pos[0] = 10; solver.set_frames(&a, &b);
+  check(solver.stats().paired == 0, "changed geometry cannot reuse a draw identity");
+  b.vertices[0].pos[0] = 0; b.draws[0].xf_regs[0x26] = 1; solver.set_frames(&a, &b);
+  check(solver.stats().paired == 0, "orthographic HUD draws retain exact pose");
+  float scale2[12] = {2,0,0,0, 0,1,0,0, 0,0,1,0};
+  gx::SubFrameSolver::fractional(prev, scale2, 0.5, true, 40, 3.0f, out, nrm, ident_n, ident_n, &st);
+  check(near(nrm[0], 1.0f / std::sqrt(2.0f)), "normal delta uses inverse transpose");
   std::puts("sub-frame rigid fractions, cuts, blends and pairing passed");
 }

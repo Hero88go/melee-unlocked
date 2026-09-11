@@ -24,7 +24,7 @@ static void usage() {
 
 int main(int argc, char** argv) {
   host::Options& o = host::options;
-  bool headless = false, hidden = false, threaded = false;
+  bool headless = false, hidden = false, threaded = false, fps_requested = false;
   gx::D3D12Options gfx;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -40,7 +40,7 @@ int main(int argc, char** argv) {
       std::string v = next(); gfx.fps_cap = v == "unlocked" ? 0 : std::atoi(v.c_str());
       if (v != "unlocked" && gfx.fps_cap < 1) { usage(); return 2; }
       threaded = true;
-      if (gfx.subframe == gx::SubFrameMode::Off) gfx.subframe = gx::SubFrameMode::Extrapolate;
+      fps_requested = true;
     }
     else if (a == "--frame-mode") {
       std::string v = next();
@@ -69,6 +69,10 @@ int main(int argc, char** argv) {
     else if (a == "--audio-dump") o.audio_dump = next();
     else { usage(); return 2; }
   }
+  if (fps_requested && gfx.subframe == gx::SubFrameMode::Off) {
+    std::fprintf(stderr, "--fps requires explicit experimental --frame-mode interpolate or extrapolate\n");
+    return 2;
+  }
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
 
@@ -87,7 +91,6 @@ int main(int argc, char** argv) {
   ppc::init_dispatch();
   host::boot_setup();
   host::log("boot: entering __start at %08X", 0x8000522Cu);
-  if (o.hang_watch > 0) ppc::start_hang_watch(host::cpu, o.hang_watch);
   int code = 0;
   try {
     ppc::call(*host::cpu, host::ram, 0x8000522Cu);
