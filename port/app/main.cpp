@@ -1,6 +1,7 @@
 // Native Melee port entry point.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
+#include "audio.h"
 #include "functions.h"
 #include "guest_symbols.h"
 #include "gx_core.h"
@@ -17,6 +18,7 @@ namespace ppc { void init_dispatch(); }
 static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
               "           [--fps N|unlocked] [--frame-mode extrapolate|interpolate|off] [--threaded-renderer]\n"
+              "           [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
 }
 
@@ -62,6 +64,9 @@ int main(int argc, char** argv) {
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;
     else if (a == "--time-base") o.time_base = std::strtoull(next(), nullptr, 0);
+    else if (a == "--volume") o.volume = std::atoi(next());
+    else if (a == "--hang-watch") o.hang_watch = std::atof(next());
+    else if (a == "--audio-dump") o.audio_dump = next();
     else { usage(); return 2; }
   }
   if (o.iso.empty()) { usage(); return 2; }
@@ -77,18 +82,23 @@ int main(int argc, char** argv) {
     host::g_has_window = true;
   }
   gx::init(backend.get());
+  host::audio_open(o.volume, o.audio_dump.c_str(), !headless);
 
   ppc::init_dispatch();
   host::boot_setup();
   host::log("boot: entering __start at %08X", 0x8000522Cu);
+  if (o.hang_watch > 0) ppc::start_hang_watch(host::cpu, o.hang_watch);
+  int code = 0;
   try {
     ppc::call(*host::cpu, host::ram, 0x8000522Cu);
+    host::log("guest returned from __start after %u retraces", host::retrace_count());
   } catch (const ExitRequested& stop) {
     backend.reset();
-    return stop.code;
+    code = stop.code;
   } catch (const LoadContextUnwind&) {
     host::log("OSLoadContext reached top level");
   }
-  host::log("guest returned from __start after %u retraces", host::retrace_count());
-  return 0;
+  host::log("audio: %llu frames played, %llu blocks dropped", (unsigned long long)host::audio_pushed_frames(), (unsigned long long)host::audio_dropped_blocks());
+  host::audio_close();
+  return code;
 }

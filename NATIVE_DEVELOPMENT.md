@@ -44,7 +44,9 @@ back-pressure simulation. It does not yet add intermediate animation frames.
 
 Keyboard: arrows move, I/J/K/L control C-stick, Z/X/C/V map to A/B/X/Y, Enter is
 Start, Q/W are L/R, E is Z, and T/F/G/H are D-pad. XInput controller 0 is supported.
-No audio is produced by the current port. Closing its own window stops the game;
+Audio is mixed by the emulated AX DSP and played through WinMM; the session starts
+muted (`--volume 0`), raise it with `--volume 50`. `--audio-dump out.wav` records the
+mix. Closing its own window stops the game;
 unrelated Dolphin windows and processes are not touched.
 
 ## Build

@@ -1,5 +1,27 @@
 # Development checkpoint — September 10, 2026
 
+## Audio (AX DSP high-level emulation)
+
+- The recompiled AX library now runs for real (`__AXOutInit` is no longer stubbed):
+  `DSPAddTask` fires the task's init callback synchronously, `DSPAssertTask` runs the
+  resume callback (which builds the command list), and `DSPSendMailToDSP` feeds
+  `port/runtime/hle/ax_ucode.cpp`, a port of Dolphin's AX HLE (ucode 0x4e8a8b21, the
+  CRC the DOL's ucode image hashes to) that mixes voices from ARAM into guest RAM and
+  writes the parameter blocks back. The AI DMA clock is derived from the guest
+  timebase (one 640-byte frame per 5 ms), so the whole sequence is deterministic.
+- Host output: WinMM 32 kHz stereo (`--volume 0-100`, default 0 keeps the session
+  muted), `--audio-dump out.wav` records exactly what the DMA played;
+  `tools/wav_stats.py` reports signal per second. The headless Classic run produced
+  30.3 s of audio for 1,800 frames with 26 audible seconds (boot jingle, menu music,
+  the match); a paced muted run dropped 27 of ~3,000 blocks.
+- Two runtime fixes this uncovered: generated code now polls for host events at loop
+  back-edges (`ppc::backedge`, every 1,024 iterations) so guest spin loops on flags
+  set by interrupt callbacks terminate (the SFX bank sync loop hung otherwise), and
+  the timebase is topped up to exactly one frame per retrace regardless of how many
+  polls happened. `--hang-watch S` reports the stuck function if a retrace stalls.
+- Callback registration HLE returned the old callback before storing the new one for
+  AI and ARAM DMA callbacks; fixed.
+
 ## Native unlocked frame rate (sub-frame presentation)
 
 - `--fps N|unlocked` (with `--frame-mode extrapolate|interpolate|off`) runs the

@@ -148,8 +148,6 @@ DSPUnhalt
 DSPGetDMAStatus
 DSPGetCurrentTask
 DSPAssertInt
-__AXOutInit
-__AXOutQuit
 ARInit
 ARAlloc
 ARFree

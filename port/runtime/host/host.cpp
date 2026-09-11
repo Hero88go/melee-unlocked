@@ -8,6 +8,7 @@
 #include "guest_symbols.h"
 #include "gx_core.h"
 #include "window.h"
+#include "ax_ucode.h"
 #include <chrono>
 #include <atomic>
 #include <cstdarg>
@@ -22,6 +23,7 @@ struct NameEntry { uint32_t addr; const char* name; };
 extern const NameEntry name_table[];
 extern const size_t name_table_count;
 }
+namespace hle { void audio_tick(bool force); }
 
 namespace host {
 
@@ -162,6 +164,8 @@ void boot_setup() {
   }
   ram = (uint8_t*)std::calloc(ppc::RAM_SIZE + 64, 1);
   aram = (uint8_t*)std::calloc(0x01000000, 1);
+  ax::set_memory({rd16, rd32, wr16, wr32, aram, 0x01000000});
+  ax::reset();
   cpu = new ppc::Context();
   std::memset(cpu, 0, sizeof *cpu);
   if (!ram || !aram) die("out of memory");
@@ -230,7 +234,16 @@ bool exit_requested() { return g_exit; }
 void request_exit(int code) { g_exit_code.store(code); g_exit.store(true); }
 int exit_code() { return g_exit_code.load(); }
 uint32_t retrace_count() { return g_retraces; }
-void advance_time(uint64_t ticks) { cpu->tb += ticks; }
+// Time inside a frame flows in small steps at HLE entry points and loop polls; the retrace then
+// tops the frame up to exactly TB_PER_FRAME so the timebase (and the audio DMA clock derived
+// from it) advances one frame per retrace regardless of how often the guest polled.
+static uint64_t g_frame_ticks = 0;
+void advance_time(uint64_t ticks) { cpu->tb += ticks; g_frame_ticks += ticks; }
+static void advance_frame() {
+  uint64_t add = TB_PER_FRAME > g_frame_ticks ? TB_PER_FRAME - g_frame_ticks : 0;
+  cpu->tb += add;
+  g_frame_ticks = 0;
+}
 
 void deliver_interrupt(uint32_t number) {
   // __OSInterruptHandlerTable lives at 0x80003040 (OS_INTERRUPTTABLE_ADDR).
@@ -253,7 +266,7 @@ void deliver_interrupt(uint32_t number) {
 }
 
 static void fire_due_alarms(bool force);
-static void deliver_completions(bool force);
+static bool deliver_completions(bool force);
 
 void pump_completions() {
   // Called from HLE entry points the guest polls. Virtual time flows a little so periodic
@@ -262,6 +275,7 @@ void pump_completions() {
   advance_time(2048);
   if (!ppc::interrupts_on(*cpu)) return;
   fire_due_alarms(false);
+  hle::audio_tick(false);
   deliver_completions(false);
 }
 
@@ -327,7 +341,7 @@ double frame_time() { return g_frame_time; }
 
 void retrace() {
   ++g_retraces;
-  advance_time(TB_PER_FRAME);
+  advance_frame();
   if (g_has_window) window_pump();
   if (!options.fast) {
     g_next_frame += std::chrono::microseconds(16667);
@@ -339,6 +353,7 @@ void retrace() {
     g_frame_time = now_seconds();
   }
   fire_due_alarms(true);
+  hle::audio_tick(true);
   // VI: mark display-interrupt 0 as pending (bit 15 of DI0 status, VI reg index 0x18).
   uint16_t di0 = ((uint16_t)g_mmio[0x2030] << 8) | g_mmio[0x2031];
   di0 |= 0x8000;
@@ -359,11 +374,15 @@ void retrace() {
   }
 }
 
-static void deliver_completions(bool force) {
-  static bool pumping = false;
-  if (pumping || g_completions.empty()) return;
-  if (!force && !ppc::interrupts_on(*cpu)) return;
-  pumping = true;
+// Nesting: a callback that sleeps (OSSleepThread inside a DVD/ARQ chain) is a wait point where
+// hardware would run further completions, so forced delivery may nest; polled entry points
+// (force = false) never nest so callback order stays as posted.
+static int g_pump_depth = 0;
+static bool deliver_completions(bool force) {
+  if (g_completions.empty()) return false;
+  if (!force && (g_pump_depth > 0 || !ppc::interrupts_on(*cpu))) return false;
+  if (g_pump_depth >= 16) return false;
+  ++g_pump_depth;
   size_t n = g_completions.size();
   ppc::Context saved = *cpu;
   for (size_t i = 0; i < n && !g_completions.empty(); ++i) {
@@ -375,7 +394,8 @@ static void deliver_completions(bool force) {
   *cpu = saved;
   cpu->tb = tb;
   ppc::update_mxcsr(*cpu);
-  pumping = false;
+  --g_pump_depth;
+  return true;
 }
 
 void wait_event() {
@@ -393,20 +413,22 @@ void wait_event() {
     deliver_interrupt(18);  // __OS_INTERRUPT_PI_PE_TOKEN
     return;
   }
-  if (!g_completions.empty()) {
-    // The sleeping thread yields: interrupts are effectively enabled during the switch.
-    deliver_completions(true);
-    return;
-  }
+  // The sleeping thread yields: interrupts are effectively enabled during the switch, so pending
+  // completions run now (nested if this sleep happens inside another callback). Otherwise time moves on.
+  if (deliver_completions(true)) return;
   retrace();
 }
 
 }  // namespace host
 
 namespace ppc {
+void loop_poll(Context& c) {
+  (void)c;
+  host::pump_completions();   // advances time; fires alarms / audio frames / completions when EE is set
+}
 void interrupts_enabled(Context& c) {
   // Called from mtmsr when EE goes 0 -> 1: flush events that arrived while masked.
-  host::deliver_completions(true);
+  if (host::g_pump_depth == 0) host::deliver_completions(true);   // never nest from inside a callback here
 }
 }  // namespace ppc
 
