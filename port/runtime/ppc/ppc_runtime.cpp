@@ -35,9 +35,9 @@ Fn lookup(uint32_t addr) {
 
 void call(Context& c, uint8_t* m, uint32_t addr) {
   Fn fn = lookup(addr);
-  if (!fn) fatal(c, "call to unmapped guest address", addr);
   if (++c.call_depth > 20000) fatal(c, "guest call depth exceeded", addr);
-  fn(c, m);
+  if (fn) fn(c, m);
+  else interpret(c, m, addr);   // code that only exists in RAM (dat-loaded routines)
   --c.call_depth;
 }
 

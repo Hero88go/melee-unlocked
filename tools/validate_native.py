@@ -15,7 +15,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--iso", type=Path, required=True)
     ap.add_argument("--exe", type=Path, default=ROOT / "build-review/port/Release/melee_port.exe")
-    ap.add_argument("--script", type=Path, default=ROOT / "port/scripts/classic_fox.txt")
+    ap.add_argument("--script", type=Path, default=ROOT / "port/scripts/vs_match.txt")
     ap.add_argument("--out", type=Path, default=ROOT / "reports/native-validation")
     ap.add_argument("--frames", type=int, default=2400)
     ap.add_argument("--timeout", type=float, default=240)

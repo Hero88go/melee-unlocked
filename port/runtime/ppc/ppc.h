@@ -71,6 +71,8 @@ using Fn = void (*)(Context&, uint8_t*);
 
 // ---- runtime services implemented in ppc_runtime.cpp ----
 void call(Context& c, uint8_t* m, uint32_t addr);         // indirect call by guest address
+void interpret(Context& c, uint8_t* m, uint32_t addr);    // run RAM-resident code until it returns (interp.cpp)
+void interpreter_stats(uint64_t* calls, uint64_t* insns);
 void fatal(Context& c, const char* what, uint32_t a);
 uint32_t mmio_read(Context& c, uint32_t ea, int bytes);
 void mmio_write(Context& c, uint32_t ea, uint32_t value, int bytes);

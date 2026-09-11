@@ -80,8 +80,9 @@ enum : uint16_t {
 };
 
 namespace {
-struct ScriptEntry { uint32_t frame; uint16_t buttons; int8_t sx, sy, cx, cy; };
+struct ScriptEntry { uint32_t frame; uint16_t buttons; int8_t sx, sy, cx, cy; int port; };
 std::vector<ScriptEntry> g_script;
+uint32_t g_script_ports = 1;
 }  // namespace
 
 bool input_load_script(const char* path) {
@@ -108,6 +109,7 @@ bool input_load_script(const char* path) {
       else if (!strcmp(tok, "DL")) e.buttons |= PAD_LEFT; else if (!strcmp(tok, "DR")) e.buttons |= PAD_RIGHT;
       else if (!strncmp(tok, "sx=", 3)) e.sx = (int8_t)atoi(tok + 3); else if (!strncmp(tok, "sy=", 3)) e.sy = (int8_t)atoi(tok + 3);
       else if (!strncmp(tok, "cx=", 3)) e.cx = (int8_t)atoi(tok + 3); else if (!strncmp(tok, "cy=", 3)) e.cy = (int8_t)atoi(tok + 3);
+      else if (!strncmp(tok, "p=", 2)) { e.port = atoi(tok + 2) - 1; if (e.port < 0 || e.port > 3) e.port = 0; g_script_ports |= 1u << e.port; }
     }
     g_script.push_back(e);
   }
@@ -120,10 +122,15 @@ void input_poll(PadState out[4]) {
   PadState& p = out[0];
   p.err = 0;
   if (!g_script.empty()) {
+    // Scripts drive port 1 by default; entries with p=N drive port N (a port with any entry counts as plugged in).
     uint32_t frame = retrace_count();
-    const ScriptEntry* cur = nullptr;
-    for (const ScriptEntry& e : g_script) if (e.frame <= frame) cur = &e;
-    if (cur) { p.button = cur->buttons; p.stick_x = cur->sx; p.stick_y = cur->sy; p.sub_x = cur->cx; p.sub_y = cur->cy; }
+    for (int port = 0; port < 4; ++port) {
+      if (port && !(g_script_ports & (1u << port))) continue;
+      out[port].err = 0;
+      const ScriptEntry* cur = nullptr;
+      for (const ScriptEntry& e : g_script) if (e.port == port && e.frame <= frame) cur = &e;
+      if (cur) { PadState& q = out[port]; q.button = cur->buttons; q.stick_x = cur->sx; q.stick_y = cur->sy; q.sub_x = cur->cx; q.sub_y = cur->cy; }
+    }
     return;
   }
   // Keyboard (player 1): arrows = stick, IJKL = c-stick, Z=A X=B C=X V=Y, Enter=Start, Q=L W=R E=Z, D-pad = TFGH
