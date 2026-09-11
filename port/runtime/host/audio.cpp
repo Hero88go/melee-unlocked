@@ -21,6 +21,7 @@ HWAVEOUT g_out = nullptr;
 WAVEHDR g_headers[BLOCKS];
 int16_t g_blocks[BLOCKS][BLOCK_BYTES / 2];
 int g_next = 0;
+int g_volume = 0;
 std::mutex g_mutex;
 uint64_t g_frames = 0, g_dropped = 0;
 bool g_open = false;
@@ -59,8 +60,7 @@ bool audio_open(int volume_percent, const char* wav_dump_path, bool open_device)
     g_headers[i].dwFlags |= WHDR_DONE;   // free
   }
   int v = std::clamp(volume_percent, 0, 100);
-  DWORD vol16 = (DWORD)(0xFFFF * v / 100);
-  waveOutSetVolume(g_out, vol16 | (vol16 << 16));   // per-session volume on modern Windows
+  g_volume = v; // software gain applies only to our PCM blocks
   g_open = true;
   log("audio: WinMM 32 kHz stereo, volume %d%%", v);
   return true;
@@ -94,7 +94,8 @@ void audio_push(const uint8_t* be_samples, size_t bytes) {
     if (!g_out) { g_frames += BLOCK_BYTES / 4; continue; }
     WAVEHDR& h = g_headers[g_next];
     if (!(h.dwFlags & WHDR_DONE)) { ++g_dropped; continue; }   // queue full: drop instead of stalling the simulation
-    std::memcpy(g_blocks[g_next], converted, BLOCK_BYTES);
+    for (int i = 0; i < BLOCK_BYTES / 2; ++i)
+      g_blocks[g_next][i] = (int16_t)((int32_t)converted[i] * g_volume / 100);
     h.dwFlags &= ~WHDR_DONE;
     if (waveOutWrite(g_out, &h, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) { h.dwFlags |= WHDR_DONE; ++g_dropped; continue; }
     g_next = (g_next + 1) % BLOCKS;

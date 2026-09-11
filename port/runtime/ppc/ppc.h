@@ -47,7 +47,6 @@ inline void backedge(Context& c) { if ((++c.backedges & 0x3FFu) == 0) loop_poll(
 // advances (diagnostics for guest spin loops; see host::hang_check).
 extern uint64_t g_enter_count;
 void hang_check(Context& c);
-void start_hang_watch(Context* c, double seconds);
 inline void enter(Context& c, uint32_t pc) {
   c.last_pc = pc; c.trace[c.trace_pos++ & 63] = pc;
   if ((++g_enter_count & 0xFFFFFu) == 0) hang_check(c);
