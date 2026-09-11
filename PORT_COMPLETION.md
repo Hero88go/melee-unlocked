@@ -129,3 +129,38 @@ later; a zip is enough for the first Reddit post.
 - Online status for the release notes: wire-compatible with Slippi 3.6.4 (matchmaking ticket
   accepted by mm.slippi.gg, port-vs-port matches complete with identical replays). Port-vs-Dolphin
   determinism is unproven: label online play "experimental, direct codes with a partner first".
+
+## Online verification against real Slippi (2026-09-11, Fable)
+
+Chandler's requirement: real Slippi online, Dolphin players connect to the port with their normal
+codes, nothing to change on their side.
+
+- Real server, real opponent: one port instance queued Unranked at mm.slippi.gg and was matched
+  with a Slippi Dolphin player (log `reports/native-validation/mmA/log.txt`). Ticket, match id,
+  peer connection, character selections, game start, remote inputs and damage all worked. The
+  opponent quit after 5 s because the scripted port player stood still (its inputs had run out
+  before the match started).
+- Checksum oracle: the game hands the EXI device a checksum of its finalized state every frame and
+  each client sends its latest checksum to the peer. The port now compares the opponent's checksum
+  with its own for the same frame and logs `DESYNC` on mismatch, `checksums agree through frame N`
+  every 20 comparisons. Against a Dolphin player this is a direct bit-exactness test.
+- Bot script: `port/scripts/online_bot.txt` uses the new `@match` / `@loop N` directives (input
+  frames relative to online frame 1, repeating) so the port plays a whole game by itself.
+- Time sync: the port's advance/skip works (measured with `tools/online_pair.py`: two local
+  instances stay within a few ms of each other for a full game).
+- Crash found and fixed: matches on stages with animated backgrounds died after about 30 s with a
+  corrupted OS alarm queue. Root cause: MSL `__longjmp` had been translated as an ordinary
+  function, so after restoring the guest registers it returned to its host caller instead of the
+  `__setjmp` site (the game uses setjmp/longjmp to abort `HSD_ForeachAnim` walks in granime.c and
+  hsd_3B34/3B5C). `__longjmp` is now an HLE that throws `ppc::GuestLongJmp`; the recompiler wraps
+  every function that calls `__setjmp` in a retry loop with a catch that restores the registers
+  (`ppc::longjmp_restore`) and re-enters at the saved return address through the entry dispatch.
+
+## Widescreen 16:9 (2026-09-11, Fable)
+
+Slippi's "Optional: Widescreen 16:9" code is compiled in as a run-time option (PC settings
+checkbox, `--widescreen`, `widescreen 1` in port-settings.ini): the recompiler emits both variants
+of its 3 patched instructions and 2 hooks behind `gecko::option_widescreen`, its table entries sit
+at the end of the GCT so the port can hide them from the in-game code handler (terminator at
+`optional_gct_offset`), and its 8 data writes are applied or restored at run time. The presenter
+letterboxes at 16:9 while it is on. Online safe (same as Dolphin users toggling it).

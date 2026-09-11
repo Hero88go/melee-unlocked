@@ -99,6 +99,8 @@ HLE(AIStartDMA) {
 }
 
 namespace hle {
+// longjmp cannot return through the host call stack; the setjmp caller catches this (ppc.h).
+void __longjmp(ppc::Context& c, uint8_t*) { throw ppc::GuestLongJmp{c.r[3], c.r[4]}; }
 // Called at interrupt-safe points (see host::pump_completions / host::retrace).
 void audio_tick(bool force) {
   static bool ticking = false;
@@ -217,26 +219,4 @@ HLE(ARQPostRequest) {
   if (callback) host::post_completion([callback, task] { host::call_guest(callback, task); });
 }
 
-// ---------------- CARD: no card inserted ----------------
-static const uint32_t CARD_RESULT_NOCARD = (uint32_t)-3;
-HLE(CARDInit) {}
-HLE(CARDCheckAsync) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDProbe) { host::pump_completions(); RET(0); }
-HLE(CARDProbeEx) { host::pump_completions(); RET(CARD_RESULT_NOCARD); }
-HLE(CARDMountAsync) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDUnmount) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDOpen) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDFastOpen) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDClose) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDReadAsync) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDRead) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDWriteAsync) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDWrite) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDCreateAsync) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDDeleteAsync) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDFormatAsync) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDGetStatus) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDSetStatusAsync) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDGetXferredBytes) { RET(0); }
-HLE(CARDFreeBlocks) { RET(CARD_RESULT_NOCARD); }
-HLE(CARDRenameAsync) { RET(CARD_RESULT_NOCARD); }
+// CARD: see hle_card.cpp (GCI-folder memory card in slot A).

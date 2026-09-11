@@ -22,4 +22,5 @@ void window_client_size(int* w, int* h);
 // Scripted input: text file with lines "FRAME BUTTON+BUTTON [sx=N] [sy=N] [cx=N] [cy=N]"; state holds
 // until the next line. Buttons: A B X Y Z L R START DU DD DL DR. A line with only a frame releases all.
 bool input_load_script(const char* path);
+void input_mark_match_start();   // online match reached frame 1: `@match` script sections begin now
 }  // namespace host

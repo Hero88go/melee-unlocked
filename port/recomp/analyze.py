@@ -1,4 +1,5 @@
 """Per-function control-flow analysis: labels, calls, jump tables, extra entry points."""
+SETJMP_ADDR = 0x803227CC   # MSL __setjmp: callers get a longjmp catch wrapper (see emit.py)
 from gekko import decode
 from dol import RAM_BASE
 
@@ -22,6 +23,9 @@ class FuncInfo:
         self.ctr_calls = {}       # bctrl addr -> statically known CTR value
         self.entries = set()      # addresses (besides func.addr) the dispatch table may enter this function at
         self.labels = set()       # addresses inside this function that are branch targets
+        self.optional_hooks = {}  # hook addr -> (original Insn, flag): cave runs only while the flag is set
+        self.setjmp_returns = set()  # return addresses of `bl __setjmp`: longjmp re-enters the function here
+        self.optional_text = {}   # addr -> (patched Insn, flag): patched instruction while the flag is set
         self.calls = set()        # direct call targets (bl)
         self.tail_targets = set() # `b` targets outside the function
         self.jumptables = {}      # bctr addr -> JumpTable
@@ -173,9 +177,10 @@ def _data_scan_tables(dol, func, claimed):
     return sorted(targets)
 
 
-def analyze_function(dol, symbols, func, hooks=None, body=None):
+def analyze_function(dol, symbols, func, hooks=None, body=None, optional_text=None):
     """`hooks`: {hook addr: Hook} (Gecko C2 caves spliced in place of the hooked instruction).
-    `body`: optional explicit (addr, word) sequence for synthetic functions (caves)."""
+    `body`: optional explicit (addr, word) sequence for synthetic functions (caves).
+    `optional_text`: {addr: (patched word, flag)} instructions translated both ways."""
     info = FuncInfo(func)
     seq = []
     if body is not None:
@@ -185,10 +190,15 @@ def analyze_function(dol, symbols, func, hooks=None, body=None):
             hook = hooks.get(a) if hooks else None
             if hook is not None:
                 info.aliases[hook.cave_addr] = a
+                if hook.optional:
+                    info.optional_hooks[a] = (decode(a, dol.u32(a)), hook.optional)
                 for k, w in enumerate(hook.words):
                     seq.append((hook.cave_addr + k * 4, w))
             else:
                 seq.append((a, dol.u32(a)))
+                if optional_text and a in optional_text:
+                    word, flag = optional_text[a]
+                    info.optional_text[a] = (decode(a, word), flag)
     for a, w in seq:
         ins = decode(a, w)
         if ins is None:
@@ -196,6 +206,12 @@ def analyze_function(dol, symbols, func, hooks=None, body=None):
         info.insns.append(ins)
         info.addrs.append(a)
     info.addr_set = set(info.addrs) | set(info.aliases.values())
+    # Two-way instructions: both variants must find their branch targets as labels.
+    for a, (ins, flag) in list(info.optional_text.items()) + list(info.optional_hooks.items()):
+        if ins is not None and ins.op in ("b", "bc") and not ins.lk and ins.branch_target in info.addr_set:
+            info.labels.add(ins.branch_target)
+        if a in info.optional_hooks and (a + 4) in info.addr_set:
+            info.labels.add(a + 4)
     for idx, ins in enumerate(info.insns):
         if ins is None:
             continue
@@ -211,6 +227,9 @@ def analyze_function(dol, symbols, func, hooks=None, body=None):
                 info.local_returns.add(ins.addr + 4)
             elif ins.lk:
                 info.calls.add(t)
+                if t == SETJMP_ADDR:
+                    info.setjmp_returns.add(ins.addr + 4)
+                    info.labels.add(ins.addr + 4)
             elif t in info.addr_set:
                 info.labels.add(t)
             else:
@@ -324,7 +343,7 @@ def analyze_all(dol, symbols, gecko=None):
     for func in symbols.functions:
         if not dol.in_text(func.addr):
             continue
-        infos[func.addr] = analyze_function(dol, symbols, func, hooks)
+        infos[func.addr] = analyze_function(dol, symbols, func, hooks, None, getattr(gecko, "optional_text", None))
     for f, body in synthetic:
         symbols.add_function(f)
         infos[f.addr] = analyze_function(dol, symbols, f, None, body)
@@ -347,6 +366,7 @@ def analyze_all(dol, symbols, gecko=None):
                 cand.add(hook)
             if f.addr < hook + 4 < f.end and (hook + 4) in info.addr_set:
                 cand.add(hook + 4)
+        cand |= info.setjmp_returns
         info.entries = cand
         info.labels.update(cand)
         for a in cand:

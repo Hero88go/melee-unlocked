@@ -93,6 +93,10 @@ class Emitter:
             # blrl jumps to LR and re-links: when LR is still this invocation's return address the
             # instruction is a return that leaves a new LR behind (Slippi's helper-table trick).
             out.append("  const uint32_t entry_lr = c.lr;")
+        if info.setjmp_returns:
+            # __longjmp throws; this function called __setjmp, so catch, restore and re-enter at
+            # the saved return address through the entry dispatch (a goto cannot enter a try block).
+            out.append("  for (;;) { try {")
         if info.entries:
             # Dispatch thunks set c.entry before calling; a plain if-chain (a switch with gotos
             # trips the MSVC backend).
@@ -107,14 +111,29 @@ class Emitter:
             alias = info.aliases.get(addr)
             if alias is not None and alias in info.labels:
                 out.append("L_%08X:" % alias)
+            if alias is not None and alias in info.optional_hooks:
+                # Run-time optional cave: with the option off the hooked instruction runs as
+                # shipped and execution resumes after it, skipping the cave entirely.
+                orig, flag = info.optional_hooks[alias]
+                out.append("  if (!gecko::option_%s) { %s goto L_%08X; }  // optional hook %08x" % (
+                    flag, self.emit_insn(info, idx, orig) if orig is not None else "", alias + 4, alias))
             if ins is None:
                 out.append("  ppc::fatal(c, \"undecodable instruction\", %s);" % hexs(addr))
                 continue
             try:
                 line = self.emit_insn(info, idx, ins)
+                if addr in info.optional_text:
+                    patched, flag = info.optional_text[addr]
+                    line = "if (gecko::option_%s) { %s } else { %s }" % (flag, self.emit_insn(info, idx, patched) if patched is not None else "", line)
             except KeyError as e:
                 raise RuntimeError("emit failed at %08x %s: %s" % (addr, ins.op, e))
             out.append("  " + line + "  // %08x" % addr if line else "  // %08x %s" % (addr, ins.op))
+        if info.setjmp_returns:
+            out.append("  } catch (ppc::GuestLongJmp& j) {")
+            out.append("    const uint32_t ret = ppc::ld32(c, m, j.buf);")
+            out.append("    if (!(%s)) throw;" % " || ".join("ret == %s" % hexs(r) for r in sorted(info.setjmp_returns)))
+            out.append("    ppc::longjmp_restore(c, m, j.buf, j.val); c.entry = ret;")
+            out.append("  } }")
         out.append("}")
         return "\n".join(out) + "\n"
 

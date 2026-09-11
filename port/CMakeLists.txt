@@ -46,6 +46,7 @@ include("${PORT_GEN}/guest_sources.cmake")
 # Guest library: large generated translation units.
 add_library(guest STATIC ${GUEST_SOURCES} "${PORT_GEN}/function_names.cpp")
 target_include_directories(guest PUBLIC "${PORT_GEN}" runtime/ppc)
+target_include_directories(guest PRIVATE runtime/hle)   # gecko_data.h: run-time optional code flags
 target_compile_features(guest PUBLIC cxx_std_17)
 target_compile_options(guest PRIVATE /bigobj /MP /EHsc /arch:AVX2 /fp:precise /wd4102 /wd4101 /wd4189 /W1)
 target_compile_definitions(guest PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)

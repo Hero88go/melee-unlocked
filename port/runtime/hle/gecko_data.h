@@ -13,4 +13,9 @@ extern const Write boot_writes[];       extern const size_t boot_writes_count;
 struct HookInstall { uint32_t hook; uint32_t cave_addr; uint32_t words; };
 extern const HookInstall boot_hooks[];  extern const size_t boot_hooks_count;
 extern const uint32_t gct_base_used;
+// Run-time optional codes (compiled both ways by the recompiler; see gecko.py RUNTIME_OPTIONAL).
+extern bool option_widescreen;                 // read by translated code at the patched instructions
+extern const uint32_t optional_gct_offset;     // where the optional codes start inside slippi_gct
+struct OptionalWrite { uint32_t addr; uint32_t size; const uint8_t* patched; const uint8_t* original; };
+extern const OptionalWrite optional_writes[]; extern const size_t optional_writes_count;
 }  // namespace gecko

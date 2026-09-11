@@ -7,6 +7,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <cstdio>
+#include <atomic>
 #include <cstring>
 #include <ctime>
 #include <map>
@@ -144,6 +145,31 @@ void configure_commands(const uint8_t* payload, uint8_t length) {
   host::log("slippi: recording command sizes configured (%zu commands)", g_record_sizes.size());
 }
 
+// Run-time optional codes sit at the end of the table; ending the table early hides them from
+// the in-game code handler (which re-applies the table every frame), restoring it shows them.
+void terminate_optional_codes(uint8_t* table) {
+  uint32_t off = gecko::optional_gct_offset;
+  if (off + 8 > gecko::slippi_gct_size) return;
+  table[off] = 0xFF; table[off + 1] = 0; table[off + 2] = 0; table[off + 3] = 0;
+  table[off + 4] = 0; table[off + 5] = 0; table[off + 6] = 0; table[off + 7] = 0;
+}
+
+std::atomic<int> g_widescreen_request{-1};
+
+void apply_widescreen(bool on) {
+  gecko::option_widescreen = on;
+  if (g_gct_address) {
+    uint8_t* table = host::ptr(g_gct_address, (uint32_t)gecko::slippi_gct_size);
+    std::memcpy(table + gecko::optional_gct_offset, gecko::slippi_gct + gecko::optional_gct_offset, gecko::slippi_gct_size - gecko::optional_gct_offset);
+    if (!on) terminate_optional_codes(table);
+  }
+  for (size_t i = 0; i < gecko::optional_writes_count; ++i) {
+    const gecko::OptionalWrite& w = gecko::optional_writes[i];
+    std::memcpy(host::ptr(w.addr, w.size), on ? w.patched : w.original, w.size);
+  }
+  host::log("slippi: widescreen 16:9 %s", on ? "on" : "off");
+}
+
 void prepare_gct_length() {
   g_read_queue.clear();
   append_u32(g_read_queue, (uint32_t)gecko::slippi_gct_size);
@@ -155,6 +181,7 @@ void prepare_gct_load(const uint8_t* payload) {
   host::log("slippi: game loads the GCT (%zu bytes) at %08X%s", gecko::slippi_gct_size, g_gct_address,
             gecko::gct_base_used == g_gct_address ? "" : " (recompile with --gct-base to translate C0 caves at this address)");
   g_read_queue.insert(g_read_queue.end(), gecko::slippi_gct, gecko::slippi_gct + gecko::slippi_gct_size);
+  if (!gecko::option_widescreen) terminate_optional_codes(g_read_queue.data());
 }
 
 void log_message(const uint8_t* payload, uint32_t max) {
@@ -220,6 +247,12 @@ void prepare_file(const uint8_t* payload, bool load) {
 }  // namespace
 
 void init() { g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; online::init(); }
+void request_widescreen(bool on) { g_widescreen_request.store(on ? 1 : 0); }
+bool widescreen() { return gecko::option_widescreen; }
+void poll_options() {
+  int r = g_widescreen_request.exchange(-1);
+  if (r >= 0 && (r != 0) != gecko::option_widescreen) apply_widescreen(r != 0);
+}
 void shutdown() { if (g_file) { uint8_t empty[1]; write_to_file(empty, 0, "close"); } online::shutdown(); }
 uint64_t replays_written() { return g_replays_written; }
 uint32_t gct_load_address() { return g_gct_address; }

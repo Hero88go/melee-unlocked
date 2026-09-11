@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <vector>
 #include "gx_d3d12.h"
+#include "exi_slippi.h"
 #include "gx_shader.h"
 #include "gx_texture.h"
 #include "gx_streamline.h"
@@ -181,6 +182,7 @@ class D3D12Backend : public Backend {
   // previous presented pose per draw identity for motion vectors, per-frame jitter.
   bool dlss_active_ = false;
   int dlss_mode_active_ = 0;
+  bool widescreen_sent_ = false;
   int forced_scale_ = 0;
   ComPtr<ID3D12Resource> mvec_, dlss_out_;
   uint32_t dlss_out_w_ = 0, dlss_out_h_ = 0;
@@ -202,6 +204,7 @@ class D3D12Backend : public Backend {
   void create_swapchain_targets(bool resize);
   void create_efb();
   int pick_scale() const;
+  float output_aspect() const;
   void wait_gpu();
   uint32_t reserve_srvs(uint32_t count);
   void rotate_heap(D3D12_DESCRIPTOR_HEAP_TYPE type);
@@ -400,11 +403,16 @@ int D3D12Backend::pick_scale() const {
   if (forced_scale_ > 0) return std::clamp(forced_scale_, 1, max_scale);
   if (opts_.efb_scale > 0) return std::clamp(opts_.efb_scale, 1, max_scale);
   float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
-  float vw = ww, vh = ww * 3.0f / 4.0f;
-  if (vh > wh) { vh = wh; vw = wh * 4.0f / 3.0f; }
-  int s = std::max((int)std::ceil(vw / 640.0f), (int)std::ceil(vh / 480.0f));
+  float aspect = output_aspect();
+  float vw = ww, vh = ww / aspect;
+  if (vh > wh) { vh = wh; vw = wh * aspect; }
+  int s = std::max((int)std::ceil(vw / (480.0f * aspect)), (int)std::ceil(vh / 480.0f));
   return std::clamp(s, 1, max_scale);
 }
+
+// The game renders the same 640x480 field either way; Slippi's widescreen code widens the camera
+// so the image is meant to be shown at 16:9 (Dolphin: Aspect Ratio "Force 16:9").
+float D3D12Backend::output_aspect() const { return opts_.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f; }
 
 void D3D12Backend::create_efb() {
   scale_ = pick_scale();
@@ -441,8 +449,9 @@ void D3D12Backend::bind_efb_targets() {
 
 void D3D12Backend::output_size(int* vw, int* vh) const {
   float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
-  float w = ww, h = ww * 3.0f / 4.0f;
-  if (h > wh) { h = wh; w = wh * 4.0f / 3.0f; }
+  float aspect = output_aspect();
+  float w = ww, h = ww / aspect;
+  if (h > wh) { h = wh; w = wh * aspect; }
   *vw = std::max(1, (int)w); *vh = std::max(1, (int)h);
 }
 
@@ -970,10 +979,11 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   float border[4] = {0.05f, 0.05f, 0.15f, 1};
   list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
   list_->ClearRenderTargetView(rtv, border, 0, nullptr);
-  // Letterbox 4:3 output (XFB region c.src_w x lines)
+  // Letterbox the output at the game's aspect (XFB region c.src_w x lines); the widescreen
+  // setting also drives the Slippi code on the simulation side.
+  if (opts_.widescreen != widescreen_sent_) { widescreen_sent_ = opts_.widescreen; slippi::request_widescreen(opts_.widescreen); }
   float src_h_lines = (float)c.src_h * c.y_scale;
-  float aspect = (float)c.src_w / std::max(1.0f, src_h_lines) * (480.0f / 528.0f) * (528.0f / 480.0f);
-  aspect = 4.0f / 3.0f;
+  float aspect = output_aspect();
   float ww = (float)client_w_, wh = (float)client_h_;
   float vw = ww, vh = ww / aspect;
   if (vh > wh) { vh = wh; vw = wh * aspect; }
