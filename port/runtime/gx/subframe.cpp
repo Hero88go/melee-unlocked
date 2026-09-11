@@ -96,6 +96,10 @@ void rotation_from_quat(const Quat& q, double r[9]) {
 
 }  // namespace
 
+void SubFrameSolver::extrapolate_matrix(const float prev[12], const float cur[12], double t, float out[12]) {
+  fractional(prev, cur, t, false, 40.0f, 1.2f, out, nullptr, nullptr, nullptr, nullptr);
+}
+
 void SubFrameSolver::fractional(const float prev[12], const float cur[12], double t, bool interpolate,
                                 float max_translation, float max_rotation, float out_pos[12], float out_nrm[9],
                                 const float cur_nrm[9], const float prev_nrm[9], SubFrameStats* stats) {
@@ -261,9 +265,14 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
     if (authored) {
       // Sample forward from the latest state. Unsupported/discontinuous draws hold
       // their current matrices instead of inventing motion or adding a frame of delay.
-      if (d.authored_pose && pd->authored_pose && !(d.components & VB_HAS_POSMTXIDX) &&
-          !(d.matrix_index_a & 63) && sample_authored(*pd->authored_pose, *d.authored_pose, t,
-              d.posMatrices, o.pos, o.nrm, d.normalMatrices, &chain_cache)) { ++stats->authored; continue; }
+      if (d.authored_pose && pd->authored_pose) {
+        if (d.authored_pose->envelope) {
+          if (sample_authored_envelope(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, d.normalMatrices, o.pos, o.nrm, &chain_cache)) ++stats->authored;
+        } else if (!(d.components & VB_HAS_POSMTXIDX) && !(d.matrix_index_a & 63) &&
+                   sample_authored(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, o.pos, o.nrm, d.normalMatrices, &chain_cache)) {
+          ++stats->authored;
+        }
+      }
       continue;
     }
     for (int row = 0; row < 64; ++row) {

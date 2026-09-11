@@ -23,6 +23,9 @@ struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, c
 class SubFrameSolver {
  public:
   // Thresholds for treating a per-frame delta as a discontinuity (world units / radians).
+  // Screw-motion extrapolation of a 3x4 matrix `t` frames past `cur` given `prev` (t in [0,1]);
+  // holds `cur` at discontinuities. Used for camera motion by the authored path.
+  static void extrapolate_matrix(const float prev[12], const float cur[12], double t, float out[12]);
   float max_translation = 40.0f;
   float max_rotation = 1.2f;
 

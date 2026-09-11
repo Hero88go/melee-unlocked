@@ -45,6 +45,23 @@ additional verification. These changes do not yet
 establish the first milestone. CPU submission intervals are not GPU completion or
 physical display intervals. Authored draw counts do not establish pixel uniqueness.
 
+## Fighter sub-frame animation (2026-09-11, Fable)
+
+Skinned (envelope) draws are now authored-sampled: `SetupEnvelopeModelMtx` is observed with
+its PObj and view matrix, the capture mirrors the game's slot construction (weighted bones,
+inverse-bind matrices, the skeleton-root "right" transform from `_HSD_mkEnvelopeModelNodeMtx`,
+and the bare single-bone case), and the render thread rebuilds every matrix slot at the
+fractional frame after proving the reconstruction reproduces the matrices the game loaded.
+Joint chains are captured once per joint per frame and shared. Motion that has no authored
+track (fighter positions, knockback, items) advances by the last simulated per-frame delta,
+bounded to 30 units so respawns and teleports hold. The camera advances by screw
+extrapolation of its last change, applied to rigid and skinned draws alike (static stage
+geometry therefore moves with the camera between ticks). Evidence: `reports/native-validation/
+envb_sheet.png`, six consecutive presentations at 240 fps spanning two ticks; presentations
+within one tick differ by 33k to 51k pixels, before this change by fewer than 10.
+Remaining declines: looping/paused animations at wrap (s3), animated scale (s9), joints with
+RObj constraints or quaternion flags (c4), other track channels (c8).
+
 ## DLSS (2026-09-11, Fable)
 
 Streamline 2.10.3 is integrated (`port/runtime/gx/gx_streamline.*`): signed interposer
