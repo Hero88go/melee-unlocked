@@ -34,8 +34,8 @@ bool g_have_report = false;
 std::chrono::steady_clock::time_point g_next_scan;
 bool g_logged_missing = false;
 struct Origin { bool set = false; uint8_t sx = 128, sy = 128, cx = 128, cy = 128, tl = 0, tr = 0; } g_origin[4];
-uint8_t g_rumble[4] = {};
-bool g_rumble_dirty = false;
+std::atomic<uint8_t> g_rumble[4]{};
+std::atomic<bool> g_rumble_dirty{false};
 
 std::string find_adapter_path() {
   HDEVINFO devs = SetupDiGetClassDevsA(&GUID_DEVINTERFACE_USB_DEVICE, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
@@ -77,9 +77,8 @@ void reader_thread() {
       if (err == ERROR_SEM_TIMEOUT || err == WAIT_TIMEOUT) continue;
       if (++failures > 20) { log("gc adapter: read failed (%lu), adapter disconnected", err); break; }
     }
-    if (g_rumble_dirty) {
+    if (g_rumble_dirty.exchange(false)) {
       uint8_t cmd[5] = {0x11, g_rumble[0], g_rumble[1], g_rumble[2], g_rumble[3]};
-      g_rumble_dirty = false;
       WinUsb_WritePipe(g_usb, 0x02, cmd, sizeof cmd, &n, nullptr);
     }
   }

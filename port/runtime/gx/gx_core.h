@@ -69,6 +69,7 @@ struct DrawCall {
   // Render-thread cache: the pipeline resolved for this draw (valid for the backend that set it).
   // Sub-frames re-present the same draws, so the shader UIDs are hashed once per simulation frame.
   mutable void* cached_pipeline = nullptr;
+  mutable uint64_t cached_pipeline_owner = 0;
 };
 
 // Replacement transform state for one draw when a sub-frame is rendered between simulation frames.
@@ -103,6 +104,8 @@ struct Frame {
 // Renderer interface implemented by the D3D12 backend (or a null backend).
 struct Backend {
   virtual ~Backend() = default;
+  virtual void set_present_deadline(double) {}
+  virtual double presentation_wait_seconds() const { return 0; }
   virtual void submit_frame(const Frame& frame) = 0;   // called at XFB copy
   // Render `frame` with per-draw transform overrides (one entry per frame.draws element); the
   // default ignores the overrides. Used by the sub-frame presenter for unlocked frame rates.

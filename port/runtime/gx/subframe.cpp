@@ -259,13 +259,12 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
     std::memcpy(o.nrm, base.normalMatrices, sizeof o.nrm);
     if (!pd) continue;
     if (authored) {
-      // Authored tracks re-sampled at the fractional frame when the whole joint chain validates;
-      // otherwise the draw falls through to the geometric (screw) interpolation of its matrices.
+      // Sample forward from the latest state. Unsupported/discontinuous draws hold
+      // their current matrices instead of inventing motion or adding a frame of delay.
       if (d.authored_pose && pd->authored_pose && !(d.components & VB_HAS_POSMTXIDX) &&
           !(d.matrix_index_a & 63) && sample_authored(*pd->authored_pose, *d.authored_pose, t,
               d.posMatrices, o.pos, o.nrm, d.normalMatrices, &chain_cache)) { ++stats->authored; continue; }
-      std::memcpy(o.pos, pd->posMatrices, sizeof o.pos);
-      std::memcpy(o.nrm, pd->normalMatrices, sizeof o.nrm);
+      continue;
     }
     for (int row = 0; row < 64; ++row) {
       if (!(p.used_slots & (1ull << row))) continue;

@@ -11,7 +11,11 @@ enum class SubFrameMode { Off, Extrapolate, Interpolate, Authored };
 struct D3D12Options {
   // Presentation timeline (threaded renderer only). fps_cap 0 = uncapped. With a SubFrameMode other
   // than Off the renderer presents new sub-frames between 60 Hz simulation frames.
-  int fps_cap = 60;
+  double fps_cap = 60; // -1 follows the active monitor
+  bool fullscreen = false;
+  bool pc_settings = false, settings_open = false, performance_overlay = false;
+  std::string settings_path = "port-settings.ini";
+  std::string frame_times; // optional buffered CSV of CPU presentation timing
   SubFrameMode subframe = SubFrameMode::Off;
   int efb_scale = 2;          // internal resolution multiplier; 0 = auto (integer scale covering the window, like Dolphin "Auto (Window Size)")
   int window_w = 1280, window_h = 960;  // initial client size
@@ -27,6 +31,7 @@ struct D3D12Options {
 };
 
 Backend* create_d3d12_backend(void* hwnd, int client_w, int client_h, const D3D12Options& options);
+const D3D12Options& d3d12_options(Backend* backend);
 void d3d12_resize(Backend* backend, int w, int h);
 void d3d12_stats(Backend* backend, uint32_t* frames_presented, uint32_t* pipelines, uint32_t* textures);
 // Per-section CPU cost of execute_draw since the last call (diagnostics), as a one-line summary.

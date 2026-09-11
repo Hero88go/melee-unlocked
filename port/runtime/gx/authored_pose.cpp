@@ -35,7 +35,7 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
       const auto& j=current.joints[i]; const auto& p=previous.joints[i];
       if(!j.generation||j.generation!=p.generation||j.flags!=p.flags||j.tracks.size()!=p.tracks.size()){ ++authored_stats().sample[2]; return false; }
       auto scale=j.scale,rot=j.rotation,pos=j.translation;
-      if(!j.tracks.empty()&&(!near(j.frame-p.frame,j.rate)||j.frame-(1-phase)*j.rate<0||j.frame>j.end)){ ++authored_stats().sample[3]; return false; }
+      if(!j.tracks.empty()&&(!near(j.frame-p.frame,j.rate)||j.frame+phase*j.rate<0||j.frame+phase*j.rate>j.end)){ ++authored_stats().sample[3]; return false; }
       for(size_t k=0;k<j.tracks.size();++k) {
         const auto& t=j.tracks[k]; if(!same_track(t,p.tracks[k])){ ++authored_stats().sample[4]; return false; }
         float* component=nullptr;
@@ -45,7 +45,7 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
         else { ++authored_stats().sample[5]; return false; }
         float at_current, value;
         if(!NativeMelee::SamplePacked(t,j.frame,at_current)||!near(at_current,*component)){ ++authored_stats().sample[6]; return false; }
-        if(!NativeMelee::SamplePacked(t,float(j.frame-(1-phase)*j.rate),value)){ ++authored_stats().sample[7]; return false; }
+        if(!NativeMelee::SamplePacked(t,float(j.frame+phase*j.rate),value)){ ++authored_stats().sample[7]; return false; }
         *component=value; animated=true;
       }
       exact=NativeMelee::Multiply(exact,NativeMelee::SRT(j.scale,j.rotation,j.translation,inherited));

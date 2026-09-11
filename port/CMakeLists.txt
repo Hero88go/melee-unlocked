@@ -93,3 +93,24 @@ target_compile_features(port_render_observer_test PRIVATE cxx_std_17)
 target_compile_definitions(port_render_observer_test PRIVATE NOMINMAX)
 target_link_libraries(port_render_observer_test PRIVATE native_animation)
 add_test(NAME port_render_observer COMMAND port_render_observer_test)
+
+# Cache identity follows shader generation, constant layout and pipeline setup.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  runtime/gx/gx_shader.cpp runtime/gx/gx_shader.h runtime/gx/gx_d3d12.cpp)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/gx_shader.cpp" GX_SHADER_HASH)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/gx_shader.h" GX_LAYOUT_HASH)
+file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/gx_d3d12.cpp" GX_PIPELINE_HASH)
+string(SHA256 GX_CACHE_HASH "${GX_SHADER_HASH}${GX_LAYOUT_HASH}${GX_PIPELINE_HASH}")
+foreach(cache_target runtime port_gpu_resource_test)
+  target_compile_definitions(${cache_target} PRIVATE GX_SHADER_CACHE_VERSION="${GX_CACHE_HASH}")
+endforeach()
+
+add_library(port_imgui STATIC
+  third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
+  third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
+  third_party/imgui/backends/imgui_impl_dx12.cpp third_party/imgui/backends/imgui_impl_win32.cpp)
+target_include_directories(port_imgui PUBLIC third_party/imgui)
+target_compile_features(port_imgui PUBLIC cxx_std_17)
+target_link_libraries(port_imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
+target_compile_definitions(runtime PRIVATE GX_PC_SETTINGS)
+target_link_libraries(runtime PUBLIC port_imgui)

@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstring>
 #include <future>
+#include <cmath>
 #include <thread>
 namespace gx {
 namespace {
@@ -37,14 +38,35 @@ class ThreadedBackend final : public Backend {
     uint64_t rendered_sequence = 0, submitted = 0, presented = 0, burst_logged = 0;
     const bool subframes = options_.subframe != SubFrameMode::Off;
     const bool authored = options_.subframe == SubFrameMode::Authored;
-    const bool interpolate = authored || options_.subframe == SubFrameMode::Interpolate;
-    const double cap_period = options_.fps_cap > 0 ? 1.0 / options_.fps_cap : 0.0;
+    const bool interpolate = options_.subframe == SubFrameMode::Interpolate;
+    double cap_period = options_.fps_cap > 0 ? 1.0 / options_.fps_cap : 0.0;
+    double refresh_check = 0;
+    double render_budget = 0.004;
+    struct Trace {
+      FILE* file = nullptr;
+      explicit Trace(const std::string& path) {
+        if (!path.empty()) {
+          file = std::fopen(path.c_str(), "w");
+          if (!file) throw std::runtime_error("cannot open frame timing CSV");
+          std::setvbuf(file, nullptr, _IOFBF, 1024 * 1024);
+          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws\n", file);
+        }
+      }
+      ~Trace() { if (file) std::fclose(file); }
+    } trace(options_.frame_times);
+    double last_submission = 0;
     double next_present = host::now_seconds();
     double stats_time = next_present; uint64_t stats_presented = 0, stats_sim = 0, stats_lines = 0;
     uint32_t phase_bins[5] = {};
     double build_seconds = 0, submit_seconds = 0; uint64_t cost_presented = 0;   // presented phases: [0,.25) [.25,.5) [.5,.75) [.75,1) exactly 1
     for (;;) {
       host::window_pump();
+      const auto& live_options = d3d12_options(renderer);
+      if (live_options.fps_cap >= 0) cap_period = live_options.fps_cap > 0 ? 1.0/live_options.fps_cap : 0;
+      if (live_options.fps_cap < 0 && host::now_seconds() >= refresh_check) {
+        cap_period = 1.0 / host::window_refresh_rate();
+        refresh_check = host::now_seconds() + 1.0;
+      }
       if (host::window_closed()) { queue.finish(true); break; }
       // Render every source at least once: EFB resources can depend on earlier commands.
       bool got_new = false;
@@ -78,10 +100,11 @@ class ThreadedBackend final : public Backend {
         t = (now - current.time) / SIM_PERIOD;
         if (interpolate) t = std::min(std::max(t, 0.0), 1.0);
         else t = std::min(std::max(t, 0.0), 1.0);   // never extrapolate more than one frame ahead
-        if (cap_period > 0 && now < next_present) {
-          // Wait for the cap deadline, but wake early for a new simulation frame.
-          double wait = next_present - now;
-          if (wait > 0.0005) queue.wait_available(std::chrono::microseconds((long long)((wait - 0.0003) * 1e6)));
+        if (cap_period > 0 && now < next_present - render_budget) {
+          // Start early enough to finish GPU submission before the presentation deadline.
+          double wait = next_present - render_budget - now;
+          if (wait > 0.0005) std::this_thread::sleep_for(std::chrono::microseconds((long long)(std::min(wait - 0.0003, 0.001) * 1e6)));
+          else std::this_thread::yield();
           continue;
         }
         should_render = true;
@@ -91,10 +114,14 @@ class ThreadedBackend final : public Backend {
         host::log("present %llu: sim frame %llu phase %.3f", presented + 1, (unsigned long long)current.sequence, t);
         ++burst_logged;
       }
+      renderer->set_present_deadline(subframes && cap_period > 0 ? next_present : 0);
+      const double render_start = host::now_seconds();
+      double solver_ms = 0;
       if (subframes && have_prev) {
         double t0 = host::now_seconds();
         solver.build(t, interpolate, overrides, authored);
         double t1 = host::now_seconds();
+        solver_ms = (t1-t0)*1000.0;
         renderer->submit_frame(current, overrides.data());
         build_seconds += t1 - t0; submit_seconds += host::now_seconds() - t1; ++cost_presented;
       } else {
@@ -102,12 +129,22 @@ class ThreadedBackend final : public Backend {
         renderer->submit_frame(current);
         submit_seconds += host::now_seconds() - t1; ++cost_presented;
       }
+      const double render_end = host::now_seconds();
+      const double present_wait = renderer->presentation_wait_seconds();
+      render_budget = std::max(render_budget * 0.95, render_end-render_start-present_wait+0.0002);
+      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u\n",
+          (unsigned long long)(presented+1), (unsigned long long)current.sequence, t,
+          (render_start-current.time)*1000.0, last_submission ? (render_end-last_submission)*1000.0 : 0.0,
+          solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired);
+      last_submission = render_end;
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
       ++phase_bins[t >= 1.0 ? 4 : (int)(t * 4.0)];
       if (cap_period > 0) {
         double now = host::now_seconds();
-        next_present = std::max(next_present + cap_period, now - cap_period);
+        // Skip missed slots; never emit catch-up bursts after a stall.
+        next_present += cap_period;
+        if (next_present <= now) next_present += (std::floor((now-next_present)/cap_period)+1.0)*cap_period;
       }
       double now = host::now_seconds();
       if (now - stats_time >= 1.0) {
@@ -148,6 +185,7 @@ class ThreadedBackend final : public Backend {
       bool started = false;
       try {
         void* window = host::window_create(options.window_w, options.window_h, L"Melee Port (development)", visible);
+        if (options.fullscreen) host::window_set_fullscreen(true);
         std::unique_ptr<Backend> renderer(create_d3d12_backend(window, options.window_w, options.window_h, options));
         host::window_set_resize_callback([&renderer](int w, int h) { d3d12_resize(renderer.get(), w, h); });
         init.set_value(); started = true;

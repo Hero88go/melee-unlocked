@@ -10,6 +10,7 @@
 #include "guest_symbols.h"
 #include "gx_core.h"
 #include "gx_d3d12.h"
+#include "pc_settings.h"
 #include "threaded_backend.h"
 #include "window.h"
 #include <chrono>
@@ -26,8 +27,8 @@ extern const size_t name_table_count;
 
 static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
-              "           [--fps N|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
-              "           [--volume 0-100] [--audio-dump out.wav]\n"
+              "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
+              "           [--fullscreen] [--frame-times out.csv] [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
 }
 
@@ -35,6 +36,19 @@ int main(int argc, char** argv) {
   host::Options& o = host::options;
   bool headless = false, hidden = false, threaded = false, fps_requested = false;
   gx::D3D12Options gfx;
+  bool automated = false, explicit_frame_mode = false;
+  for (int i = 1; i < argc; ++i) {
+    std::string arg = argv[i];
+    if (arg == "--hidden" || arg == "--headless") automated = true;
+    if (arg == "--settings-path" && i+1 < argc) gfx.settings_path = argv[++i];
+    if (arg == "--frame-mode") explicit_frame_mode = true;
+  }
+  gfx.pc_settings = !automated;
+  if (!automated) {
+    gx::load_pc_settings(gfx, o.volume);
+    threaded = true;
+    if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::Authored;
+  }
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
@@ -46,8 +60,8 @@ int main(int argc, char** argv) {
     else if (a == "--hidden") hidden = true;
     else if (a == "--threaded-renderer") threaded = true;
     else if (a == "--fps") {   // display rate: N or "unlocked"; enables the render thread
-      std::string v = next(); gfx.fps_cap = v == "unlocked" ? 0 : std::atoi(v.c_str());
-      if (v != "unlocked" && gfx.fps_cap < 1) { usage(); return 2; }
+      std::string v = next(); gfx.fps_cap = v == "unlocked" ? 0 : v == "monitor" ? -1 : std::atoi(v.c_str());
+      if (v != "unlocked" && v != "monitor" && (gfx.fps_cap < 1 || v.find_first_not_of("0123456789") != std::string::npos)) { usage(); return 2; }
       threaded = true;
       fps_requested = true;
     }
@@ -62,6 +76,10 @@ int main(int argc, char** argv) {
     }
     else if (a == "--scale") { std::string v = next(); gfx.efb_scale = v == "auto" ? 0 : std::atoi(v.c_str()); if (v != "auto" && gfx.efb_scale < 1) { usage(); return 2; } }
     else if (a == "--window") { if (std::sscanf(next(), "%dx%d", &gfx.window_w, &gfx.window_h) != 2 || gfx.window_w < 320 || gfx.window_h < 240) { usage(); return 2; } }
+    else if (a == "--settings-path") gfx.settings_path = next();
+    else if (a == "--pc-settings-open") { gfx.pc_settings = true; gfx.settings_open = true; }
+    else if (a == "--fullscreen") gfx.fullscreen = true;
+    else if (a == "--frame-times") gfx.frame_times = next();
     else if (a == "--vsync") gfx.vsync = true;
     else if (a == "--capture") gfx.capture_path = next();
     else if (a == "--capture-frame") gfx.capture_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
@@ -111,12 +129,12 @@ int main(int argc, char** argv) {
     backend = gx::create_threaded_backend(gfx, !hidden);
   } else if (!headless) {
     void* hwnd = host::window_create(gfx.window_w, gfx.window_h, L"Melee Port (development)", !hidden);
+    if (gfx.fullscreen) host::window_set_fullscreen(true);
     backend.reset(gx::create_d3d12_backend(hwnd, gfx.window_w, gfx.window_h, gfx));
     host::window_set_resize_callback([renderer = backend.get()](int w, int h) { gx::d3d12_resize(renderer, w, h); });
     host::g_has_window = true;
   }
   gx::set_authored_capture(gfx.subframe == gx::SubFrameMode::Authored);
-  if (o.hang_watch > 0) ppc::start_hang_watch(host::cpu, o.hang_watch);
   gx::init(backend.get());
   host::audio_open(o.volume, o.audio_dump.c_str(), !headless);
 

@@ -12,3 +12,6 @@ dependencies/
 /slippi/
 shadercache/
 replays/
+
+/port-settings.ini
+/port-settings.ini.tmp

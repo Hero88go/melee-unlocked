@@ -8,6 +8,7 @@
 #include <cstring>
 #include <vector>
 #include <mutex>
+#include <atomic>
 #include "host.h"
 #include "window.h"
 
@@ -23,8 +24,14 @@ std::mutex g_keys_mutex;
 bool g_closed = false;
 int g_client_w = 1280, g_client_h = 960;
 ResizeCallback g_on_resize;
+MessageCallback g_on_message;
+std::atomic<bool> g_ui_capture{false};
+std::mutex g_ui_pad_mutex;
+PadState g_ui_pad{};
+bool g_ui_gamecube = false;
 
 LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  if (g_on_message && g_on_message(h, m, w, l)) return 1;
   switch (m) {
     case WM_CLOSE: g_closed = true; request_exit(0); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
@@ -52,11 +59,64 @@ void* window_create(int w, int h, const wchar_t* title, bool visible) {
   g_hwnd = CreateWindowExW(0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                            r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
   if (!g_hwnd) die("cannot create native window");
+  g_closed = false;
   g_client_w = w; g_client_h = h;
   if (visible) ShowWindow(g_hwnd, SW_SHOW);
   return g_hwnd;
 }
 
+void window_set_fullscreen(bool enabled) {
+  static WINDOWPLACEMENT saved{sizeof(WINDOWPLACEMENT)};
+  static bool fullscreen = false;
+  if (!g_hwnd || enabled == fullscreen) return;
+  if (enabled) {
+    GetWindowPlacement(g_hwnd, &saved);
+    MONITORINFO info{sizeof(info)};
+    if (!GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &info)) return;
+    SetWindowLongPtrW(g_hwnd, GWL_STYLE, WS_POPUP);
+    SetWindowPos(g_hwnd, nullptr, info.rcMonitor.left, info.rcMonitor.top,
+                 info.rcMonitor.right-info.rcMonitor.left, info.rcMonitor.bottom-info.rcMonitor.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  } else {
+    SetWindowLongPtrW(g_hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW);
+    SetWindowPlacement(g_hwnd, &saved);
+    SetWindowPos(g_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+  }
+  fullscreen = enabled;
+}
+
+double window_refresh_rate() {
+  MONITORINFOEXW monitor{}; monitor.cbSize = sizeof(monitor);
+  if (!GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) return 60.0;
+  // DisplayConfig retains rational rates (e.g. 60000/1001) that DEVMODE rounds.
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    UINT32 paths_count = 0, modes_count = 0;
+    if (GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &paths_count, &modes_count) != ERROR_SUCCESS) break;
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(paths_count);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(modes_count);
+    LONG status = QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &paths_count, paths.data(), &modes_count, modes.data(), nullptr);
+    if (status == ERROR_INSUFFICIENT_BUFFER) continue;
+    if (status != ERROR_SUCCESS) break;
+    for (UINT32 i = 0; i < paths_count; ++i) {
+      const auto& path = paths[i];
+      DISPLAYCONFIG_SOURCE_DEVICE_NAME source{};
+      source.header.type = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+      source.header.size = sizeof(source); source.header.adapterId = path.sourceInfo.adapterId;
+      source.header.id = path.sourceInfo.id;
+      if (DisplayConfigGetDeviceInfo(&source.header) != ERROR_SUCCESS || wcscmp(source.viewGdiDeviceName, monitor.szDevice)) continue;
+      const auto rate = path.targetInfo.refreshRate;
+      if (rate.Numerator && rate.Denominator) return double(rate.Numerator) / rate.Denominator;
+    }
+    break;
+  }
+  DEVMODEW mode{}; mode.dmSize = sizeof(mode);
+  if (EnumDisplaySettingsW(monitor.szDevice, ENUM_CURRENT_SETTINGS, &mode) && mode.dmDisplayFrequency > 1) return mode.dmDisplayFrequency;
+  return 60.0;
+}
+
+void window_set_message_callback(MessageCallback cb) { g_on_message = std::move(cb); }
+void window_input_capture(bool capture) { g_ui_capture.store(capture); }
+bool window_ui_gamecube_pad(PadState& pad) { std::lock_guard<std::mutex> lock(g_ui_pad_mutex); pad = g_ui_pad; return g_ui_gamecube; }
 void window_set_resize_callback(ResizeCallback cb) { g_on_resize = std::move(cb); }
 
 void window_destroy() { if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; } }
@@ -118,6 +178,13 @@ bool input_load_script(const char* path) {
 }
 
 void input_poll(PadState out[4]) {
+  struct UiSnapshot {
+    PadState* pads; bool gamecube = false;
+    ~UiSnapshot() {
+      std::lock_guard<std::mutex> lock(g_ui_pad_mutex); g_ui_pad = pads[0]; g_ui_gamecube = gamecube;
+      if (g_ui_capture.load()) { pads[0] = {}; pads[0].err = 0; }
+    }
+  } ui{out};
   for (int i = 0; i < 4; ++i) { std::memset(&out[i], 0, sizeof out[i]); out[i].err = -1; }
   PadState& p = out[0];
   p.err = 0;
@@ -135,6 +202,7 @@ void input_poll(PadState out[4]) {
   }
   // GameCube adapter ports take precedence; keyboard/XInput drive port 1 only while no controller is in adapter port 1.
   uint32_t adapter_mask = gcadapter_poll(out);
+  ui.gamecube = (adapter_mask & 1u) != 0;
   if (adapter_mask & 1u) return;
   // Keyboard (player 1): arrows = stick, IJKL = c-stick, Z=A X=B C=X V=Y, Enter=Start, Q=L W=R E=Z, D-pad = TFGH
   std::lock_guard<std::mutex> lock(g_keys_mutex);
