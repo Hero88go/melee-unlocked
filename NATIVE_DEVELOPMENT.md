@@ -11,14 +11,22 @@ play: it accelerates simulation.
 ```powershell
 .\run-native.bat
 .\run-native.bat --scale 3
+.\run-native.bat --scale auto --window 2560x1440
 .\run-native.bat --threaded-renderer
 ```
 
 The launcher uses this project's native executable and existing clean ISO. It does
 not open or modify the installed Slippi client. `--iso "path"` overrides the local
-default. Internal resolution scales actual rasterization; the window starts at
-1280x960 and can be resized. `--scale 1` is native GameCube EFB resolution, `2` is
-twice each dimension, and so on. The experimental render thread has its own window
+default. Internal resolution scales actual rasterization, the same way Dolphin's
+"Internal Resolution" does: the EFB colour/depth targets are allocated at
+640x528 times the multiplier, every viewport, scissor rectangle, clear and EFB copy
+is scaled by the same factor, and the game's geometry is rasterized directly at that
+size. Nothing is upscaled from a 640x480 image; textures stay at their authored
+size and are simply sampled by more pixels. `--scale 1` is native GameCube EFB
+resolution, `2` is twice each dimension (up to 25), and `auto` picks the smallest
+integer multiplier that covers the window's 4:3 area (Dolphin's "Auto (Window
+Size)") and re-allocates the EFB when the window is resized. `--window WxH` sets the
+initial client size (default 1280x960). The experimental render thread has its own window
 and graphics resources, with a bounded ordered queue; a slow renderer can still
 back-pressure simulation. It does not yet add intermediate animation frames.
 

@@ -15,7 +15,7 @@
 namespace ppc { void init_dispatch(); }
 
 static void usage() {
-  std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N] [--vsync]\n"
+  std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
 }
 
@@ -33,7 +33,8 @@ int main(int argc, char** argv) {
     else if (a == "--headless") headless = true;
     else if (a == "--hidden") hidden = true;
     else if (a == "--threaded-renderer") threaded = true;
-    else if (a == "--scale") gfx.efb_scale = std::atoi(next());
+    else if (a == "--scale") { std::string v = next(); gfx.efb_scale = v == "auto" ? 0 : std::atoi(v.c_str()); if (v != "auto" && gfx.efb_scale < 1) { usage(); return 2; } }
+    else if (a == "--window") { if (std::sscanf(next(), "%dx%d", &gfx.window_w, &gfx.window_h) != 2 || gfx.window_w < 320 || gfx.window_h < 240) { usage(); return 2; } }
     else if (a == "--vsync") gfx.vsync = true;
     else if (a == "--capture") gfx.capture_path = next();
     else if (a == "--capture-frame") gfx.capture_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
@@ -47,15 +48,14 @@ int main(int argc, char** argv) {
     else { usage(); return 2; }
   }
   if (o.iso.empty()) { usage(); return 2; }
-  if (gfx.efb_scale < 1) gfx.efb_scale = 1;
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
 
   std::unique_ptr<gx::Backend> backend;
   if (!headless && threaded) {
     backend = gx::create_threaded_backend(gfx, !hidden);
   } else if (!headless) {
-    void* hwnd = host::window_create(1280, 960, L"Melee Port (development)", !hidden);
-    backend.reset(gx::create_d3d12_backend(hwnd, 1280, 960, gfx));
+    void* hwnd = host::window_create(gfx.window_w, gfx.window_h, L"Melee Port (development)", !hidden);
+    backend.reset(gx::create_d3d12_backend(hwnd, gfx.window_w, gfx.window_h, gfx));
     host::window_set_resize_callback([renderer = backend.get()](int w, int h) { gx::d3d12_resize(renderer, w, h); });
     host::g_has_window = true;
   }
