@@ -177,7 +177,7 @@ void set_device(ID3D12Device* device) {
   if (res != sl::Result::eOk) { host::log("dlss: slSetD3DDevice failed (%d)", (int)res); g_dlss_ok = false; return; }
   sl::FeatureRequirements req{};
   g_dlss_ok = slGetFeatureRequirements(sl::kFeatureDLSS, req) == sl::Result::eOk;
-  host::log("dlss: %s after device creation", g_dlss_ok ? "DLSS feature ready" : "DLSS feature failed to initialise");
+  host::log("dlss: %s", g_dlss_ok ? "available (off until selected under Upscaling in PC settings)" : "feature failed to initialise; native rendering only");
 }
 bool dlss_supported(IDXGIAdapter* adapter) {
   if (!g_ready) return false;

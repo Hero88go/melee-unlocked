@@ -85,6 +85,14 @@ def main():
     shutil.copy2(sys_src / "codehandler.bin", sys_dst / "codehandler.bin")
     shutil.copy2(sys_src / "bootloader.gct", sys_dst / "bootloader.gct")
     shutil.copytree(sys_src / "GameFiles", sys_dst / "GameFiles")
+    # Warmed pipeline recipes: the newest cache namespace that has them (the exe's shader sources
+    # decide the namespace, so this must come from the same build).
+    caches = sorted((ROOT / "shadercache").glob("*/recipes.bin"), key=lambda p: p.stat().st_mtime)
+    if caches:
+        dst = folder / "shadercache" / caches[-1].parent.name
+        dst.mkdir(parents=True)
+        shutil.copy2(caches[-1], dst / "recipes.bin")
+        print(f"pipeline recipes: {caches[-1]} ({caches[-1].stat().st_size} bytes)")
     (folder / "User/Slippi").mkdir(parents=True)
     (folder / "Replays").mkdir()
     (folder / "MeleePort.bat").write_bytes(BAT.replace("\n", "\r\n").encode("utf-8"))

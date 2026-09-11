@@ -102,9 +102,12 @@ void fill_info(uint32_t info, int32_t no, const File& f) {
   host::wr32(info + 12, (uint32_t)f.data.size()); host::wr16(info + 16, be16(f.dir + 0x36));
 }
 
+// File timestamps use the guest's OS clock (timebase + the OS adjust at 0x800030D8, seconds since
+// 2000-01-01), not the host clock: the value lands in guest RAM and must be deterministic for a
+// given timebase (validation runs with a preset one).
 uint32_t now_2000() {
-  std::time_t t = std::time(nullptr);
-  return (uint32_t)std::max<int64_t>(0, (int64_t)t - 946684800);   // seconds since 2000-01-01
+  uint64_t adjust = ((uint64_t)host::rd32(0x800030D8u) << 32) | host::rd32(0x800030DCu);
+  return (uint32_t)((host::cpu->tb + adjust) / host::TB_HZ);
 }
 
 // __CARDUpdateIconOffsets: where the banner, icons and data sit relative to iconAddr.

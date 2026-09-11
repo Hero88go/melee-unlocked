@@ -138,6 +138,14 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     if (state.saved) ImGui::TextUnformatted("Settings saved");
     ImGui::End();
   }
+  if (!state.open && ImGui::GetTime() < 15.0) {
+    // First seconds after launch: tell the player where the PC settings live.
+    ImGui::SetNextWindowPos(ImVec2(12, ImGui::GetIO().DisplaySize.y - 40), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.6f);
+    ImGui::Begin("Hint", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs);
+    ImGui::TextUnformatted("F1 or Z + Start: PC settings (frame rate, fullscreen, widescreen, DLSS, volume)");
+    ImGui::End();
+  }
   if (options.performance_overlay) {
     ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.75f);
