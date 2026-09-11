@@ -123,6 +123,8 @@ int main(int argc, char** argv) {
   host::log("audio: %llu frames played, %llu blocks dropped", (unsigned long long)host::audio_pushed_frames(), (unsigned long long)host::audio_dropped_blocks());
   host::audio_close();
   slippi::shutdown();
+  { uint64_t calls = 0, insns = 0; ppc::interpreter_stats(&calls, &insns);
+    if (calls) host::log("interpreter: %llu calls into RAM-resident code, %llu instructions", (unsigned long long)calls, (unsigned long long)insns); }
   host::log("slippi: %llu EXI commands, %llu replays written, GCT at %08X", (unsigned long long)slippi::commands_seen(),
             (unsigned long long)slippi::replays_written(), slippi::gct_load_address());
   return code;
