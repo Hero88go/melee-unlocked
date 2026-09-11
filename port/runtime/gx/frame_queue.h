@@ -16,7 +16,7 @@ class FrameQueue {
 public:
   bool push(Frame frame) {
     std::unique_lock<std::mutex> lock(mutex);
-    changed.wait(lock, [&] { return finished || frames.size() < 2; });
+    changed.wait(lock, [&] { return finished || frames.size() < 4; });   // a short renderer hitch must not stall the simulation
     if (finished) return false;
     frames.push_back(std::move(frame));
     changed.notify_all();

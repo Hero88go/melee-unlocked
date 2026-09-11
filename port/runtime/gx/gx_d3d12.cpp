@@ -15,6 +15,11 @@
 #include <fstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <thread>
+#include <mutex>
+#include <deque>
+#include <condition_variable>
 #include <vector>
 #include "gx_d3d12.h"
 #include "exi_slippi.h"
@@ -48,7 +53,7 @@ namespace {
 #endif
 
 // execute_draw section costs (seconds) and draw count since the last profile line.
-double g_prof[8]; uint64_t g_prof_draws = 0, g_pso_hits = 0, g_pso_lookups = 0, g_pso_creates = 0;
+double g_prof[8]; uint64_t g_prof_draws = 0, g_pso_hits = 0, g_pso_lookups = 0, g_pso_creates = 0, g_pso_skips = 0;
 struct Stopwatch {
   static double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
   double t = now(); double lap() { double n = now(), d = n - t; t = n; return d; }
@@ -146,7 +151,7 @@ struct PipelineRecipe {
 static std::atomic<uint64_t> next_backend_id{1};
 class D3D12Backend : public Backend {
  public:
-  D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); prewarm_pipelines();
+  D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); prewarm_pipelines(); start_pso_workers();
 #ifdef GX_PC_SETTINGS
     if (opts_.pc_settings) settings_ui_ = std::make_unique<PcSettingsUI>(hwnd, device_.Get(), queue_.Get(), opts_);
 #endif
@@ -155,7 +160,7 @@ class D3D12Backend : public Backend {
 #ifdef GX_PC_SETTINGS
     settings_ui_.reset();
 #endif
- flush_captures(); save_pipeline_recipes(); save_pipeline_library(); if (fence_event_) CloseHandle(fence_event_); if (present_timer_) CloseHandle(present_timer_);
+ stop_pso_workers(); integrate_compiled_psos(); flush_captures(); save_pipeline_recipes(); save_pipeline_library(); if (fence_event_) CloseHandle(fence_event_); if (present_timer_) CloseHandle(present_timer_);
     last_poses_.clear(); mvec_.Reset(); dlss_out_.Reset(); streamline::shutdown(); }
   const D3D12Options& options() const { return opts_; }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
@@ -197,6 +202,31 @@ class D3D12Backend : public Backend {
   double present_deadline_ = 0, present_wait_ = 0;
   std::vector<PipelineRecipe> pipeline_recipes_;
   bool prewarming_ = false;
+  // Asynchronous pipeline creation (see get_pso).
+  struct PsoJob { PsoKey key; VSUid vsu; PSUid psu; D3D12_PRIMITIVE_TOPOLOGY_TYPE topo; PipelineRecipe recipe; };
+  struct PsoResult { PsoKey key; ComPtr<ID3D12PipelineState> pso; ComPtr<ID3DBlob> vs, ps; PipelineRecipe recipe; };
+  std::unordered_set<PsoKey, PsoKeyHash> psos_pending_;
+  std::mutex pso_mutex_, pipeline_library_mutex_;
+  std::condition_variable pso_cv_;
+  std::deque<PsoJob> pso_jobs_;
+  std::vector<PsoResult> pso_done_;
+  std::vector<std::thread> pso_threads_;
+  bool pso_quit_ = false;
+  ComPtr<ID3D12PipelineState> build_pso(const PsoKey& key, const VSUid& vsu, const PSUid& psu, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo,
+                                        ComPtr<ID3DBlob>& vs, ComPtr<ID3DBlob>& ps);
+  void pso_worker();
+  void integrate_compiled_psos();
+  void start_pso_workers() {
+    // Many pipelines appear together at match start; spread the compiles over the spare cores.
+    int workers = std::clamp((int)std::thread::hardware_concurrency() - 2, 2, 6);
+    for (int i = 0; i < workers; ++i) pso_threads_.emplace_back([this] { pso_worker(); });
+  }
+  void stop_pso_workers() {
+    { std::lock_guard<std::mutex> lk(pso_mutex_); pso_quit_ = true; }
+    pso_cv_.notify_all();
+    for (auto& t : pso_threads_) t.join();
+    pso_threads_.clear();
+  }
   void prewarm_pipelines();
   void save_pipeline_recipes();
   std::vector<uint32_t> index_scratch_;
@@ -505,24 +535,15 @@ void D3D12Backend::wait_gpu() {
 }
 
 // ---------------- pipelines ----------------
-ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
-  if (dc.cached_pipeline && dc.cached_pipeline_owner == backend_id_) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
-  Stopwatch sw;
-  VSUid vsu = make_vs_uid(dc);
-  PSUid psu = make_ps_uid(dc);
-  vsu.motion_vectors = psu.motion_vectors = dlss_active_ ? 1u : 0u;
-  uint64_t vh = vsu.hash(), ph = psu.hash();
-  PsoKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode(), (uint32_t)topo, dc.bp.zcontrol() & 7, dlss_active_ ? 1u : 0u};
-  g_prof[6] += sw.lap(); ++g_pso_lookups;   // uid build + hash
-  auto it = psos_.find(key);
-  g_prof[7] += sw.lap();                    // map lookup
-  if (it != psos_.end()) { dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = it->second.Get(); return it->second.Get(); }
-  ++g_pso_creates;
-
+// Pipeline creation (shader compile + CreateGraphicsPipelineState) can take tens of milliseconds,
+// so outside the startup prewarm it runs on worker threads: the draw that needs a new pipeline is
+// skipped until it is ready (a few presented frames) instead of stalling the renderer and, behind
+// it, the simulation and audio.
+ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSUid& vsu, const PSUid& psu, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo,
+                                                    ComPtr<ID3DBlob>& vs, ComPtr<ID3DBlob>& ps) {
   char vs_name[64], ps_name[64];
-  snprintf(vs_name, sizeof vs_name, "vs_%016llX.dxbc", (unsigned long long)vh);
-  snprintf(ps_name, sizeof ps_name, "ps_%016llX.dxbc", (unsigned long long)ph);
-  ComPtr<ID3DBlob>& vs = vs_blobs_[vh];
+  snprintf(vs_name, sizeof vs_name, "vs_%016llX.dxbc", (unsigned long long)key.vs);
+  snprintf(ps_name, sizeof ps_name, "ps_%016llX.dxbc", (unsigned long long)key.ps);
   if (!vs && !load_shader_blob(opts_.shader_cache + "/" + vs_name, vs)) {
     std::string src = generate_vertex_shader(vsu);
     ComPtr<ID3DBlob> err;
@@ -532,7 +553,6 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
     }
     save_shader_blob(opts_.shader_cache + "/" + vs_name, vs.Get());
   }
-  ComPtr<ID3DBlob>& ps = ps_blobs_[ph];
   if (!ps && !load_shader_blob(opts_.shader_cache + "/" + ps_name, ps)) {
     std::string src = generate_pixel_shader(psu);
     ComPtr<ID3DBlob> err;
@@ -565,8 +585,8 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   pd.InputLayout = {layout, _countof(layout)};
   pd.SampleMask = UINT_MAX;
   // Blend
-  uint32_t bm = dc.bp.blendmode();
-  bool alpha_in_efb = (dc.bp.zcontrol() & 7) == 1;  // RGBA6_Z24
+  uint32_t bm = key.blend;
+  bool alpha_in_efb = key.pixel_format == 1;  // RGBA6_Z24
   static const D3D12_BLEND src_factors[] = {D3D12_BLEND_ZERO, D3D12_BLEND_ONE, D3D12_BLEND_DEST_COLOR, D3D12_BLEND_INV_DEST_COLOR,
                                             D3D12_BLEND_SRC_ALPHA, D3D12_BLEND_INV_SRC_ALPHA, D3D12_BLEND_DEST_ALPHA, D3D12_BLEND_INV_DEST_ALPHA};
   static const D3D12_BLEND dst_factors[] = {D3D12_BLEND_ZERO, D3D12_BLEND_ONE, D3D12_BLEND_SRC_COLOR, D3D12_BLEND_INV_SRC_COLOR,
@@ -588,11 +608,11 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   // Rasterizer
   static const D3D12_CULL_MODE cull_modes[] = {D3D12_CULL_MODE_NONE, D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_FRONT, D3D12_CULL_MODE_BACK};
   pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-  pd.RasterizerState.CullMode = cull_modes[dc.bp.cullmode()];
+  pd.RasterizerState.CullMode = cull_modes[key.cull & 3];
   pd.RasterizerState.FrontCounterClockwise = FALSE;
   pd.RasterizerState.DepthClipEnable = TRUE;
   // Depth (reversed range: GC near = 1.0)
-  uint32_t zm = dc.bp.zmode();
+  uint32_t zm = key.zmode;
   static const D3D12_COMPARISON_FUNC cmp[] = {D3D12_COMPARISON_FUNC_NEVER, D3D12_COMPARISON_FUNC_GREATER, D3D12_COMPARISON_FUNC_EQUAL,
                                               D3D12_COMPARISON_FUNC_GREATER_EQUAL, D3D12_COMPARISON_FUNC_LESS, D3D12_COMPARISON_FUNC_NOT_EQUAL,
                                               D3D12_COMPARISON_FUNC_LESS_EQUAL, D3D12_COMPARISON_FUNC_ALWAYS};
@@ -610,17 +630,73 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   pd.SampleDesc.Count = 1;
   ComPtr<ID3D12PipelineState> pso;
   wchar_t pso_name[96];
-  swprintf_s(pso_name, L"%016llX-%016llX-%X-%X-%X-%X-%X-%X", (unsigned long long)vh, (unsigned long long)ph, key.blend, key.zmode, key.cull, key.topology, key.pixel_format, key.mvec);
+  swprintf_s(pso_name, L"%016llX-%016llX-%X-%X-%X-%X-%X-%X", (unsigned long long)key.vs, (unsigned long long)key.ps, key.blend, key.zmode, key.cull, key.topology, key.pixel_format, key.mvec);
+  std::lock_guard<std::mutex> lk(pipeline_library_mutex_);
   if (!pipeline_library_ || FAILED(pipeline_library_->LoadGraphicsPipeline(pso_name, &pd, IID_PPV_ARGS(&pso)))) {
     check(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)), "pso");
     if (pipeline_library_ && SUCCEEDED(pipeline_library_->StorePipeline(pso_name, pso.Get()))) pipeline_library_dirty_ = true;
   }
-  psos_[key] = pso;
-  if (!prewarming_ && pipeline_recipes_.size() < 4096) {
-    PipelineRecipe recipe{}; recipe.topology = (uint32_t)topo; recipe.components = dc.components;
-    recipe.bp = dc.bp; std::memcpy(recipe.xf, dc.xf_regs, sizeof(recipe.xf));
-    pipeline_recipes_.push_back(recipe);
+  return pso;
+}
+
+void D3D12Backend::pso_worker() {
+  for (;;) {
+    PsoJob job;
+    {
+      std::unique_lock<std::mutex> lk(pso_mutex_);
+      pso_cv_.wait(lk, [&] { return pso_quit_ || !pso_jobs_.empty(); });
+      if (pso_quit_) return;
+      job = pso_jobs_.front(); pso_jobs_.pop_front();
+    }
+    PsoResult r; r.key = job.key; r.recipe = job.recipe;
+    r.pso = build_pso(job.key, job.vsu, job.psu, job.topo, r.vs, r.ps);
+    std::lock_guard<std::mutex> lk(pso_mutex_);
+    pso_done_.push_back(std::move(r));
   }
+}
+
+void D3D12Backend::integrate_compiled_psos() {
+  std::vector<PsoResult> done;
+  { std::lock_guard<std::mutex> lk(pso_mutex_); done.swap(pso_done_); }
+  for (auto& r : done) {
+    psos_[r.key] = r.pso;
+    psos_pending_.erase(r.key);
+    if (r.vs && !vs_blobs_[r.key.vs]) vs_blobs_[r.key.vs] = r.vs;
+    if (r.ps && !ps_blobs_[r.key.ps]) ps_blobs_[r.key.ps] = r.ps;
+    if (pipeline_recipes_.size() < 4096) pipeline_recipes_.push_back(r.recipe);
+  }
+}
+
+ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
+  if (dc.cached_pipeline && dc.cached_pipeline_owner == backend_id_) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
+  Stopwatch sw;
+  VSUid vsu = make_vs_uid(dc);
+  PSUid psu = make_ps_uid(dc);
+  vsu.motion_vectors = psu.motion_vectors = dlss_active_ ? 1u : 0u;
+  uint64_t vh = vsu.hash(), ph = psu.hash();
+  PsoKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode(), (uint32_t)topo, dc.bp.zcontrol() & 7, dlss_active_ ? 1u : 0u};
+  g_prof[6] += sw.lap(); ++g_pso_lookups;   // uid build + hash
+  auto it = psos_.find(key);
+  g_prof[7] += sw.lap();                    // map lookup
+  if (it != psos_.end()) { dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = it->second.Get(); return it->second.Get(); }
+  PipelineRecipe recipe{}; recipe.topology = (uint32_t)topo; recipe.components = dc.components;
+  recipe.bp = dc.bp; std::memcpy(recipe.xf, dc.xf_regs, sizeof(recipe.xf));
+  if (!prewarming_ && !pso_threads_.empty()) {
+    if (psos_pending_.insert(key).second) {
+      ++g_pso_creates;
+      std::lock_guard<std::mutex> lk(pso_mutex_);
+      pso_jobs_.push_back(PsoJob{key, vsu, psu, topo, recipe});
+      pso_cv_.notify_one();
+    }
+    ++g_pso_skips;
+    return nullptr;   // the draw is skipped until the worker delivers the pipeline
+  }
+  ++g_pso_creates;
+  ComPtr<ID3DBlob>& vs = vs_blobs_[vh];
+  ComPtr<ID3DBlob>& ps = ps_blobs_[ph];
+  ComPtr<ID3D12PipelineState> pso = build_pso(key, vsu, psu, topo, vs, ps);
+  psos_[key] = pso;
+  if (!prewarming_ && pipeline_recipes_.size() < 4096) pipeline_recipes_.push_back(recipe);
   dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = pso.Get();
   return pso.Get();
 }
@@ -832,6 +908,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   // Pipeline
   ID3D12PipelineState* pso = get_pso(dc, topo);
   g_prof[3] += sw.lap();   // pso
+  if (!pso) return;        // being compiled on a worker thread
   D3D12_GPU_DESCRIPTOR_HANDLE srvs = bind_textures(dc);
   D3D12_GPU_DESCRIPTOR_HANDLE samps = bind_samplers(dc);
   g_prof[4] += sw.lap();   // textures + samplers
@@ -1133,6 +1210,7 @@ static void dump_frame(const Frame& frame, const std::string& path) {
 }
 
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
+  integrate_compiled_psos();
   struct FloatEnvironment {
     unsigned saved = _mm_getcsr();
     FloatEnvironment() { _mm_setcsr(0x1f80); }
@@ -1324,10 +1402,10 @@ std::string d3d12_profile_line() {
   char buf[512];
   double n = (double)std::max<uint64_t>(1, g_prof_draws);
   double l = (double)std::max<uint64_t>(1, g_pso_lookups);
-  snprintf(buf, sizeof buf, "%llu draws: index %.2f, upload %.2f, constants %.2f, pso %.2f, bind %.2f, draw %.2f us/draw | pso cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu",
+  snprintf(buf, sizeof buf, "%llu draws: index %.2f, upload %.2f, constants %.2f, pso %.2f, bind %.2f, draw %.2f us/draw | pso cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu, draws skipped while compiling %llu",
            (unsigned long long)g_prof_draws, 1e6 * g_prof[0] / n, 1e6 * g_prof[1] / n, 1e6 * g_prof[2] / n, 1e6 * g_prof[3] / n, 1e6 * g_prof[4] / n, 1e6 * g_prof[5] / n,
-           (unsigned long long)g_pso_hits, (unsigned long long)g_pso_lookups, 1e6 * g_prof[6] / l, 1e6 * g_prof[7] / l, (unsigned long long)g_pso_creates);
-  std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pso_hits = g_pso_lookups = g_pso_creates = 0;
+           (unsigned long long)g_pso_hits, (unsigned long long)g_pso_lookups, 1e6 * g_prof[6] / l, 1e6 * g_prof[7] / l, (unsigned long long)g_pso_creates, (unsigned long long)g_pso_skips);
+  std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pso_hits = g_pso_lookups = g_pso_creates = g_pso_skips = 0;
   return buf;
 }
 

@@ -6,6 +6,7 @@ import argparse
 import csv
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import time
 
@@ -30,8 +31,12 @@ def main():
         log_path = args.out / (mode + "-trace.log")
         mode_flags = ["--hidden", "--threaded-renderer"] if mode == "threaded" else ["--" + mode]
         if mode == "authored": mode_flags = ["--hidden", "--threaded-renderer", "--fps", "240", "--frame-mode", "authored"]
+        # Each run gets an empty memory card: the game's boot path differs with and without a save.
+        card_dir = (args.out / (mode + "-card")).resolve()
+        shutil.rmtree(card_dir, ignore_errors=True)
         command = [str(args.exe.resolve()), "--iso", str(args.iso.resolve()), *mode_flags,
                    "--volume", "0", "--fast", "--frames", str(args.frames), "--time-base", "1",
+                   "--card-dir", str(card_dir),
                    "--script", str(args.script.resolve()), "--state-trace", str(trace)]
         start = time.monotonic()
         with log_path.open("w", encoding="utf-8") as log:
