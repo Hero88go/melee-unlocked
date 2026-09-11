@@ -33,6 +33,14 @@ and `python tools/validate_native.py --iso <iso>` (VS match script, 3 render mod
 | Slight freezes on certain moves (Bowser) | Pipeline state creation on first use of a shader combination (~9 ms each, includes HLSL compile) | Asynchronous shader/PSO compilation on a worker thread; the draw is skipped until its pipeline is ready (Dolphin's "async shaders" behaviour). Synchronous when capturing/hidden/headless so validation stays deterministic. The on-disk cache (`shadercache/`) makes later runs stutter-free |
 | Where are DLSS / ray tracing options | Not implemented (milestone M7) | Roadmap below |
 
+## Update (later on 2026-09-11)
+
+Codex continued on `codex/port-completion` (pacing, prewarm, ImGui settings overlay, F1)
+and was cut off; I built, tested and committed that tree (1945291), then added DLSS
+through Streamline (137c2e9). See PORT_COMPLETION.md for the current state. Chandler's
+answer on "sim 60 Hz": the game logic runs at 60 Hz by design (like Rivals' physics);
+the display rate is the separate number in the window title, now shown first.
+
 ## Remaining roadmap (priority order)
 
 1. Finish the fixes above if any are still uncommitted (check `git status`), rebuild, re-run
@@ -53,7 +61,9 @@ and `python tools/validate_native.py --iso <iso>` (VS match script, 3 render mod
    sim/present), motion vectors from the sub-frame matrices (previous/current per draw), DXR
    shadows/reflections with BLAS refit per frame, AA selector disabled while DLSS is on, separate
    sharpness slider. Settings UI: an in-window overlay or a config file `port.ini` read at start.
-9. Packaging: standalone folder, README, no ISO/DOL/generated code in the repo.
+9. Widescreen 16:9 (Chandler's request, after smoothness): Slippi's Widescreen Gecko code at
+   recompile time plus a 16:9 present path.
+10. Packaging: standalone folder, README, no ISO/DOL/generated code in the repo.
 
 ## Standing rules
 

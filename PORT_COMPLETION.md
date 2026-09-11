@@ -45,6 +45,26 @@ additional verification. These changes do not yet
 establish the first milestone. CPU submission intervals are not GPU completion or
 physical display intervals. Authored draw counts do not establish pixel uniqueness.
 
+## DLSS (2026-09-11, Fable)
+
+Streamline 2.10.3 is integrated (`port/runtime/gx/gx_streamline.*`): signed interposer
+loaded from the executable folder, DXGI/D3D12 creation proxied, per-frame jitter,
+constants, tagged colour/depth/motion vectors and `slEvaluateFeature` before the
+present blit. Motion vectors are rendered into a second target from each draw's
+previous presented pose (kept per draw identity). Modes: DLAA, Quality, Balanced,
+Performance, Ultra Performance (`--dlss`, settings overlay, `dlss=` in the ini). The
+EFB integer scale is derived from the mode's optimal render size, so on a 1280x960
+window Quality renders at EFB x2 (1280x960); on a 1440p fullscreen output it renders
+1280x960 into 1920x1440. Verified: a windowed DLSS Quality match rendered cleanly
+with the HUD crisp; a 3-frame burst during movement showed no obvious ghost trail.
+Unverified: jitter sign against NVIDIA's convention (`--dlss-jitter-sign -1` flips
+it if shimmer/blur appears on static edges), HUD-less input (the HUD is upscaled with
+the scene), exposure (auto), Reflex (not started).
+
+Requested next by Chandler: proper widescreen (16:9) once gameplay is smooth: enable
+Slippi's "Widescreen 16:9" Gecko code at recompile time and present 16:9 instead of
+the 4:3 letterbox (output size, projection and culling follow the code).
+
 ## Required validation
 
 Run all CTests and renderer-isolation traces, then demanding matches at each cap.
