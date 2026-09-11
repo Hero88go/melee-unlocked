@@ -3,6 +3,10 @@
 #include "authored_pose.h"
 #include <cmath>
 #include <cstring>
+#include <thread>
+#include <mutex>
+#include <functional>
+#include <condition_variable>
 
 namespace gx {
 namespace {
@@ -247,34 +251,104 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   }
 }
 
+namespace {
+// Persistent workers for the authored solver: every presented frame re-poses ~1000 draws, which
+// are independent apart from the per-chain sample cache (kept per chunk; draws of one object are
+// contiguous so chains rarely repeat across chunks).
+class SolverPool {
+ public:
+  explicit SolverPool(int workers) {
+    for (int i = 0; i < workers; ++i) threads_.emplace_back([this, i] { loop(i + 1); });
+  }
+  ~SolverPool() {
+    { std::lock_guard<std::mutex> lk(m_); quit_ = true; }
+    cv_.notify_all();
+    for (auto& t : threads_) t.join();
+  }
+  int chunks() const { return (int)threads_.size() + 1; }
+  // Runs fn(chunk) for chunk in [0, chunks()); the caller executes chunk 0.
+  void run(const std::function<void(int)>& fn) {
+    { std::lock_guard<std::mutex> lk(m_); job_ = &fn; pending_ = (int)threads_.size(); ++generation_; }
+    cv_.notify_all();
+    fn(0);
+    std::unique_lock<std::mutex> lk(m_);
+    done_.wait(lk, [&] { return pending_ == 0; });
+    job_ = nullptr;
+  }
+ private:
+  void loop(int chunk) {
+    uint64_t seen = 0;
+    for (;;) {
+      const std::function<void(int)>* job;
+      {
+        std::unique_lock<std::mutex> lk(m_);
+        cv_.wait(lk, [&] { return quit_ || generation_ != seen; });
+        if (quit_) return;
+        seen = generation_;
+        job = job_;
+      }
+      (*job)(chunk);
+      std::lock_guard<std::mutex> lk(m_);
+      if (--pending_ == 0) done_.notify_one();
+    }
+  }
+  std::vector<std::thread> threads_;
+  std::mutex m_;
+  std::condition_variable cv_, done_;
+  const std::function<void(int)>* job_ = nullptr;
+  int pending_ = 0;
+  uint64_t generation_ = 0;
+  bool quit_ = false;
+};
+SolverPool& solver_pool() { static SolverPool pool(3); return pool; }
+}  // namespace
+
 void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>& out, bool authored) const {
   out.resize(cur_ ? cur_->draws.size() : 0);
   if (!cur_) return;
   SubFrameStats* stats = &stats_;
   stats->rigid = stats->blended = stats->cuts = stats->authored = 0;
-  AuthoredCache chain_cache;   // one sampled chain per object per presented frame
+  if (authored) {
+    // Sample forward from the latest state. Unsupported/discontinuous draws hold their current
+    // matrices instead of inventing motion or adding a frame of delay. Chunks run in parallel.
+    const size_t n = cur_->draws.size();
+    SolverPool& pool = solver_pool();
+    const int chunks = n >= 128 ? pool.chunks() : 1;
+    std::vector<uint32_t> counts((size_t)chunks, 0);
+    auto work = [&](int chunk) {
+      AuthoredCache chain_cache;   // one sampled chain per object per chunk per presented frame
+      size_t begin = n * (size_t)chunk / (size_t)chunks, end = n * (size_t)(chunk + 1) / (size_t)chunks;
+      uint32_t count = 0;
+      for (size_t i = begin; i < end; ++i) {
+        const DrawCall& d = cur_->draws[i];
+        DrawMatrices& o = out[i];
+        const Pair& p = pairs_[i];
+        const DrawCall* pd = p.prev_draw >= 0 ? &prev_->draws[p.prev_draw] : nullptr;
+        std::memcpy(o.pos, d.posMatrices, sizeof o.pos);
+        std::memcpy(o.nrm, d.normalMatrices, sizeof o.nrm);
+        if (!pd || !d.authored_pose || !pd->authored_pose) continue;
+        if (d.authored_pose->envelope) {
+          if (sample_authored_envelope(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, d.normalMatrices, o.pos, o.nrm, &chain_cache)) ++count;
+        } else if (!(d.components & VB_HAS_POSMTXIDX) && !(d.matrix_index_a & 63) &&
+                   sample_authored(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, o.pos, o.nrm, d.normalMatrices, &chain_cache)) {
+          ++count;
+        }
+      }
+      counts[(size_t)chunk] = count;
+    };
+    if (chunks == 1) work(0); else pool.run(work);
+    for (uint32_t c : counts) stats->authored += c;
+    return;
+  }
   for (size_t i = 0; i < cur_->draws.size(); ++i) {
     const DrawCall& d = cur_->draws[i];
     DrawMatrices& o = out[i];
     const Pair& p = pairs_[i];
     const DrawCall* pd = p.prev_draw >= 0 ? &prev_->draws[p.prev_draw] : nullptr;
-    const DrawCall& base = (interpolate && pd && !authored) ? *pd : d;
+    const DrawCall& base = (interpolate && pd) ? *pd : d;
     std::memcpy(o.pos, base.posMatrices, sizeof o.pos);
     std::memcpy(o.nrm, base.normalMatrices, sizeof o.nrm);
     if (!pd) continue;
-    if (authored) {
-      // Sample forward from the latest state. Unsupported/discontinuous draws hold
-      // their current matrices instead of inventing motion or adding a frame of delay.
-      if (d.authored_pose && pd->authored_pose) {
-        if (d.authored_pose->envelope) {
-          if (sample_authored_envelope(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, d.normalMatrices, o.pos, o.nrm, &chain_cache)) ++stats->authored;
-        } else if (!(d.components & VB_HAS_POSMTXIDX) && !(d.matrix_index_a & 63) &&
-                   sample_authored(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, o.pos, o.nrm, d.normalMatrices, &chain_cache)) {
-          ++stats->authored;
-        }
-      }
-      continue;
-    }
     for (int row = 0; row < 64; ++row) {
       if (!(p.used_slots & (1ull << row))) continue;
       if (row + 3 > 64) break;
