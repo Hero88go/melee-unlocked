@@ -186,14 +186,23 @@ class ThreadedBackend final : public Backend {
       try {
         void* window = host::window_create(options.window_w, options.window_h, L"Melee Port (development)", visible);
         if (options.fullscreen) host::window_set_fullscreen(true);
-        std::unique_ptr<Backend> renderer(create_d3d12_backend(window, options.window_w, options.window_h, options));
+        // The swapchain must match the window as it is now (fullscreen covers the monitor, not window_w x window_h).
+        int client_w = options.window_w, client_h = options.window_h;
+        host::window_client_size(&client_w, &client_h);
+        std::unique_ptr<Backend> renderer(create_d3d12_backend(window, std::max(client_w, 1), std::max(client_h, 1), options));
         host::window_set_resize_callback([&renderer](int w, int h) { d3d12_resize(renderer.get(), w, h); });
         init.set_value(); started = true;
         present_loop(renderer.get());
         host::window_set_resize_callback({});
         renderer.reset();
         host::window_destroy();
+      } catch (const std::exception& e) {
+        host::log("renderer: fatal error on the render thread: %s", e.what());
+        if (!started) init.set_exception(std::current_exception());
+        else host::request_exit(3);
+        queue.finish(true);
       } catch (...) {
+        host::log("renderer: fatal error on the render thread");
         if (!started) init.set_exception(std::current_exception());
         else host::request_exit(3);
         queue.finish(true);

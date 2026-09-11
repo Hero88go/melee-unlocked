@@ -24,3 +24,4 @@ replays/
 
 # Port run-time user data (memory card, Slippi user folder)
 /User/
+/melee_port.log
