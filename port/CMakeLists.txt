@@ -14,6 +14,11 @@ add_executable(port_texture_test tests/texture_snapshot_test.cpp runtime/gx/gx_t
 target_include_directories(port_texture_test PRIVATE runtime/gx)
 target_compile_features(port_texture_test PRIVATE cxx_std_17)
 add_test(NAME port_texture_snapshots COMMAND port_texture_test)
+add_executable(port_subframe_test tests/subframe_test.cpp runtime/gx/subframe.cpp runtime/gx/gx_texture.cpp)
+target_include_directories(port_subframe_test PRIVATE runtime/gx)
+target_compile_features(port_subframe_test PRIVATE cxx_std_17)
+target_compile_definitions(port_subframe_test PRIVATE NOMINMAX)
+add_test(NAME port_subframe COMMAND port_subframe_test)
 set(PORT_LOAD_TEST "${CMAKE_CURRENT_BINARY_DIR}/generated/load_test.cpp")
 add_custom_command(OUTPUT "${PORT_LOAD_TEST}"
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/generate_load_test.py" "${PORT_LOAD_TEST}"

@@ -55,7 +55,7 @@ std::string generate_vertex_shader(const VSUid& uid);
 std::string generate_pixel_shader(const PSUid& uid);
 
 // Fill constants for a draw.
-void fill_vs_constants(const DrawCall& dc, VSConstants& out, int efb_scale);
+void fill_vs_constants(const DrawCall& dc, VSConstants& out, int efb_scale, const DrawMatrices* override_matrices = nullptr);
 void fill_ps_constants(const DrawCall& dc, PSConstants& out, int efb_scale);
 
 }  // namespace gx

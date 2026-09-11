@@ -79,8 +79,9 @@ class Ring {
 class D3D12Backend : public Backend {
  public:
   D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); }
-  ~D3D12Backend() override { wait_gpu(); if (fence_event_) CloseHandle(fence_event_); }
-  void submit_frame(const Frame& frame) override;
+  ~D3D12Backend() override { wait_gpu(); flush_captures(); if (fence_event_) CloseHandle(fence_event_); }
+  void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
+  void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
   void resize(int w, int h) {
     wait_gpu(); client_w_ = w; client_h_ = h; create_swapchain_targets(true);
     // Auto scale follows the window like Dolphin's "Auto (Window Size)" integral mode: the EFB is
@@ -102,11 +103,15 @@ class D3D12Backend : public Backend {
   ID3D12Resource* get_texture(const TextureRef& t, uint32_t* w, uint32_t* h);
   D3D12_GPU_DESCRIPTOR_HANDLE bind_textures(const DrawCall& dc);
   D3D12_GPU_DESCRIPTOR_HANDLE bind_samplers(const DrawCall& dc);
-  void execute_draw(const Frame& frame, const DrawCall& dc);
+  void execute_draw(const Frame& frame, const DrawCall& dc, const DrawMatrices* override_matrices);
   void execute_copy(const EfbCopy& copy);
   void present_efb(const EfbCopy& copy);
   void clear_efb(const EfbCopy& copy);
   void capture_backbuffer();
+  void flush_captures();
+  struct PendingCapture { std::string path; UINT w, h, pitch; uint64_t sequence; std::vector<uint8_t> data; };
+  std::vector<PendingCapture> pending_captures_;
+  uint64_t capture_sequence_ = 0;
 
   HWND hwnd_;
   D3D12Options opts_;
@@ -497,7 +502,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
 }
 
 // ---------------- draws ----------------
-void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc) {
+void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const DrawMatrices* override_matrices) {
   // Build index list (triangle list / line list) from the GX primitive.
   std::vector<uint32_t> idx;
   uint32_t n = dc.vertex_count;
@@ -539,7 +544,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc) {
   // Constants
   uint8_t* ccpu; D3D12_GPU_VIRTUAL_ADDRESS vs_gpu, ps_gpu;
   if (!constant_ring_.alloc(sizeof(VSConstants), 256, &ccpu, &vs_gpu)) { host::log("d3d12: constant ring full"); return; }
-  fill_vs_constants(dc, *(VSConstants*)ccpu, scale_);
+  fill_vs_constants(dc, *(VSConstants*)ccpu, scale_, override_matrices);
   if (!constant_ring_.alloc(sizeof(PSConstants), 256, &ccpu, &ps_gpu)) return;
   fill_ps_constants(dc, *(PSConstants*)ccpu, scale_);
   // Pipeline
@@ -734,11 +739,31 @@ void D3D12Backend::capture_backbuffer() {
   queue_->ExecuteCommandLists(1, lists);
   wait_gpu();
   uint8_t* data; staging->Map(0, nullptr, (void**)&data);
+  if (opts_.capture_burst) {
+    // Keep burst captures in memory so consecutive presented frames stay microseconds apart; the
+    // files are written when the burst ends (or at shutdown).
+    PendingCapture pc; pc.path = opts_.capture_path; pc.w = (UINT)desc.Width; pc.h = desc.Height; pc.pitch = pitch; pc.sequence = capture_sequence_;
+    pc.data.assign(data, data + (size_t)pitch * desc.Height);
+    pending_captures_.push_back(std::move(pc));
+    staging->Unmap(0, nullptr);
+    if (pending_captures_.size() >= opts_.capture_burst) flush_captures();
+    return;
+  }
   std::ofstream f(opts_.capture_path, std::ios::binary);
   f << "P6\n" << desc.Width << ' ' << desc.Height << "\n255\n";
   for (UINT y = 0; y < desc.Height; ++y) for (UINT x = 0; x < desc.Width; ++x) f.write((const char*)data + (size_t)y * pitch + x * 4, 3);
   staging->Unmap(0, nullptr);
-  host::log("captured %s", opts_.capture_path.c_str());
+  host::log("captured %s (sim frame %llu)", opts_.capture_path.c_str(), (unsigned long long)capture_sequence_);
+}
+
+void D3D12Backend::flush_captures() {
+  for (const PendingCapture& pc : pending_captures_) {
+    std::ofstream f(pc.path, std::ios::binary);
+    f << "P6\n" << pc.w << ' ' << pc.h << "\n255\n";
+    for (UINT y = 0; y < pc.h; ++y) for (UINT x = 0; x < pc.w; ++x) f.write((const char*)pc.data.data() + (size_t)y * pc.pitch + x * 4, 3);
+    host::log("captured %s (sim frame %llu)", pc.path.c_str(), (unsigned long long)pc.sequence);
+  }
+  pending_captures_.clear();
 }
 
 static void dump_frame(const Frame& frame, const std::string& path) {
@@ -801,7 +826,7 @@ static void dump_frame(const Frame& frame, const std::string& path) {
   fclose(f);
 }
 
-void D3D12Backend::submit_frame(const Frame& frame) {
+void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
   struct FloatEnvironment {
     unsigned saved = _mm_getcsr();
     FloatEnvironment() { _mm_setcsr(0x1f80); }
@@ -823,7 +848,7 @@ void D3D12Backend::submit_frame(const Frame& frame) {
   bool presented = false;
   for (const FrameCommand& cmd : frame.commands) {
     if (cmd.kind == FrameCommand::Draw) {
-      execute_draw(frame, frame.draws[cmd.index]);
+      execute_draw(frame, frame.draws[cmd.index], overrides ? overrides + cmd.index : nullptr);
     } else {
       const EfbCopy& c = frame.copies[cmd.index];
       if (c.to_xfb) { present_efb(c); presented = true; }
@@ -840,8 +865,11 @@ void D3D12Backend::submit_frame(const Frame& frame) {
   }
   wait_gpu();
   if (presented && !opts_.capture_path.empty()) {
-    if (frames_presented_ == opts_.capture_frame) capture_backbuffer();
-    else if (opts_.capture_every && frames_presented_ % opts_.capture_every == 0) {
+    capture_sequence_ = frame.sequence;
+    if (opts_.capture_sim_frame && !opts_.capture_frame && frame.sequence >= opts_.capture_sim_frame) opts_.capture_frame = frames_presented_;
+    bool burst = opts_.capture_burst && opts_.capture_frame && frames_presented_ >= opts_.capture_frame && frames_presented_ < opts_.capture_frame + opts_.capture_burst;
+    if (frames_presented_ == opts_.capture_frame && !burst) capture_backbuffer();
+    else if (burst || (opts_.capture_every && frames_presented_ % opts_.capture_every == 0)) {
       std::string saved = opts_.capture_path;
       char suffix[32]; snprintf(suffix, sizeof suffix, "_%05u.ppm", frames_presented_);
       opts_.capture_path = saved.substr(0, saved.size() > 4 && saved.compare(saved.size() - 4, 4, ".ppm") == 0 ? saved.size() - 4 : saved.size()) + suffix;

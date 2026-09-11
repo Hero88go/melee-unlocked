@@ -321,6 +321,10 @@ static void trace_state() {
   std::fflush(g_state_trace);
 }
 
+static double g_frame_time = 0.0;
+double now_seconds() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+double frame_time() { return g_frame_time; }
+
 void retrace() {
   ++g_retraces;
   advance_time(TB_PER_FRAME);
@@ -330,6 +334,9 @@ void retrace() {
     auto now = std::chrono::steady_clock::now();
     if (g_next_frame > now) std::this_thread::sleep_until(g_next_frame);
     else if (now - g_next_frame > std::chrono::milliseconds(200)) g_next_frame = now;
+    g_frame_time = std::chrono::duration<double>(g_next_frame.time_since_epoch()).count();
+  } else {
+    g_frame_time = now_seconds();
   }
   fire_due_alarms(true);
   // VI: mark display-interrupt 0 as pending (bit 15 of DI0 status, VI reg index 0x18).

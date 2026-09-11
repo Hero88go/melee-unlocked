@@ -12,6 +12,9 @@ def main():
     ap.add_argument("--scale", default="2", help="internal resolution multiplier 1-25, or 'auto' to follow the window")
     ap.add_argument("--window", default="1280x960", help="initial client size WxH")
     ap.add_argument("--threaded-renderer", action="store_true")
+    ap.add_argument("--fps", help="display rate: a number or 'unlocked' (enables sub-frame presentation)")
+    ap.add_argument("--frame-mode", choices=["extrapolate", "interpolate", "off"])
+    ap.add_argument("--vsync", action="store_true")
     ap.add_argument("--hidden", action="store_true")
     ap.add_argument("--frames", type=int, default=0)
     args = ap.parse_args()
@@ -25,6 +28,11 @@ def main():
     if not args.iso.is_file(): ap.error(f"ISO not found: {args.iso}")
     command = [str(executable), "--iso", str(args.iso.resolve()), "--scale", args.scale, "--window", args.window]
     if args.threaded_renderer: command.append("--threaded-renderer")
+    if args.fps:
+        if args.fps != "unlocked" and not (args.fps.isdigit() and int(args.fps) >= 1): ap.error("fps must be 'unlocked' or a positive number")
+        command += ["--fps", args.fps]
+    if args.frame_mode: command += ["--frame-mode", args.frame_mode]
+    if args.vsync: command.append("--vsync")
     if args.frames: command += ["--frames", str(args.frames)]
     if args.hidden: command.append("--hidden")
     return subprocess.call(command, cwd=ROOT,

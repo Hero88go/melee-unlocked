@@ -4,6 +4,7 @@
 #include "host.h"
 #include <cmath>
 #include <cstring>
+#include <unordered_map>
 
 namespace gx {
 
@@ -20,6 +21,10 @@ Frame g_frame;
 TextureSnapshotCache g_texture_snapshots;
 uint64_t g_frame_sequence = 0;
 std::vector<uint8_t> g_buf;
+// Draw identity bookkeeping (reset per frame).
+uint32_t g_dl_addr = 0, g_dl_draw_ordinal = 0, g_dl_call_ordinal = 0;
+std::unordered_map<uint32_t, uint32_t> g_dl_calls;        // display list address -> calls this frame
+std::unordered_map<uint64_t, uint32_t> g_immediate_draws;  // (tex0, count, prim) -> ordinal this frame
 uint64_t g_commands = 0, g_draws = 0, g_vertices = 0;
 uint32_t g_efb_copies = 0;
 
@@ -238,6 +243,14 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
   std::memcpy(dc.tev_colors, g_tev_colors, sizeof g_tev_colors);
   std::memcpy(dc.tev_kcolors, g_tev_kcolors, sizeof g_tev_kcolors);
   snapshot_textures(dc);
+  if (g_dl_addr) {
+    dc.identity = hash_bytes(&g_dl_addr, 4) ^ ((uint64_t)g_dl_call_ordinal << 40) ^ ((uint64_t)g_dl_draw_ordinal << 20) ^ 1;
+    ++g_dl_draw_ordinal;
+  } else {
+    uint64_t k = ((uint64_t)dc.textures[0].addr << 32) ^ ((uint64_t)count << 8) ^ primitive;
+    uint32_t ordinal = g_immediate_draws[k]++;
+    dc.identity = hash_bytes(&k, 8) ^ ((uint64_t)ordinal << 44) ^ 2;
+  }
   g_frame.draws.push_back(std::move(dc));
   g_frame.commands.push_back({FrameCommand::Draw, (uint32_t)g_frame.draws.size() - 1});
   ++g_draws;
@@ -302,9 +315,11 @@ void bp_write(uint32_t value) {
       ++g_efb_copies;
       if (c.to_xfb) {
         g_frame.sequence = ++g_frame_sequence;
+        g_frame.time = host::frame_time();
         if (g_backend) g_backend->submit_frame(g_frame);
         g_frame.clear();
         g_texture_snapshots.clear();
+        g_dl_calls.clear(); g_immediate_draws.clear();
       }
       break;
     }
@@ -334,12 +349,15 @@ size_t parse_command(const uint8_t* d, size_t len);
 void run_display_list(uint32_t addr, uint32_t size) {
   if ((addr & 0x3FFFFFFFu) + size > 0x01800000u) { host::log("gx: display list outside RAM %08X+%X", addr, size); return; }
   const uint8_t* p = host::ptr(addr, size);
+  uint32_t saved_addr = g_dl_addr, saved_draw = g_dl_draw_ordinal, saved_call = g_dl_call_ordinal;
+  g_dl_addr = addr; g_dl_draw_ordinal = 0; g_dl_call_ordinal = g_dl_calls[addr]++;
   size_t used = 0;
   while (used < size) {
     size_t n = parse_command(p + used, size - used);
     if (!n) break;
     used += n;
   }
+  g_dl_addr = saved_addr; g_dl_draw_ordinal = saved_draw; g_dl_call_ordinal = saved_call;
 }
 
 size_t parse_command(const uint8_t* d, size_t len) {

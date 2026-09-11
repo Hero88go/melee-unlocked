@@ -69,6 +69,10 @@ uint32_t retrace_count();
 constexpr uint64_t TB_HZ = 40500000ull;   // bus clock / 4
 constexpr uint64_t TB_PER_FRAME = TB_HZ / 60;
 void advance_time(uint64_t ticks);
+// Host steady-clock seconds of the current simulation frame's retrace (the scheduled deadline when
+// paced, wall time when --fast). Sub-frame presentation measures its phase from this.
+double frame_time();
+double now_seconds();
 
 // ---- GX FIFO sink ----
 void gx_write(uint32_t value, int bytes);  // write-gather pipe data

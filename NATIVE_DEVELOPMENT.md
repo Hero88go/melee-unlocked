@@ -13,7 +13,19 @@ play: it accelerates simulation.
 .\run-native.bat --scale 3
 .\run-native.bat --scale auto --window 2560x1440
 .\run-native.bat --threaded-renderer
+.\run-native.bat --fps unlocked
+.\run-native.bat --fps 240 --frame-mode interpolate
 ```
+
+`--fps N|unlocked` presents on the render thread's own timeline (uncapped, or capped
+at N per second; add `--vsync` to lock to the monitor). The simulation stays at 60 Hz
+with unchanged physics. Each presented frame between two simulation frames is
+rasterized from re-posed geometry: every draw's position matrices get the fraction of
+their per-frame rigid delta (rotation about the true screw axis, slide, scale), so a
+240 Hz display shows four distinct native frames per simulation frame. `--frame-mode
+extrapolate` (default) adds no latency and continues the last motion; `interpolate`
+shows the exact in-between pose one frame late; `off` presents each simulation frame
+once. The window title shows the simulation and display rates.
 
 The launcher uses this project's native executable and existing clean ISO. It does
 not open or modify the installed Slippi client. `--iso "path"` overrides the local
