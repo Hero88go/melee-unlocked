@@ -28,7 +28,7 @@ int main() {
     RegisterClassW(&wc);
     window=CreateWindowW(wc.lpszClassName,L"GPU resource regression",WS_OVERLAPPEDWINDOW,0,0,640,480,nullptr,nullptr,wc.hInstance,nullptr);
     check(window!=nullptr,"hidden window creation");
-    gx::D3D12Options options; options.efb_scale=1; options.capture_frame=1; options.capture_path="gpu-resource-test.ppm";
+    gx::D3D12Options options; options.efb_scale=1; options.capture_frame=6; options.capture_path="gpu-resource-test.ppm";
     std::unique_ptr<gx::Backend> renderer(gx::create_d3d12_backend(window,640,480,options));
     gx::Frame frame; frame.sequence=1;
     // The first red quad must survive every subsequent descriptor/page rollover.
@@ -63,7 +63,14 @@ int main() {
     }
     gx::EfbCopy present{}; present.to_xfb=true; present.src_w=640; present.src_h=480; present.y_scale=1;
     frame.copies.push_back(present); frame.commands.push_back({gx::FrameCommand::Copy,1});
-    renderer->submit_frame(frame);
+    for (unsigned n=0; n<6; ++n) { frame.sequence=n+1; renderer->submit_frame(frame); }
+    // Replay the same immutable packets through a new device/backend: their
+    // cached PSO pointers must never be reused after the original owner dies.
+    renderer.reset();
+    renderer.reset(gx::create_d3d12_backend(window,640,480,options));
+    uint32_t warmed = 0; gx::d3d12_stats(renderer.get(), nullptr, &warmed, nullptr);
+    check(warmed > 0, "recorded pipelines prewarm before the next draw");
+    for (unsigned n=0; n<6; ++n) { frame.sequence=n+1; renderer->submit_frame(frame); }
     renderer.reset(); DestroyWindow(window); window=nullptr;
     std::ifstream file(options.capture_path,std::ios::binary); std::string magic; int w,h,max;
     file>>magic>>w>>h>>max; file.get(); check(magic=="P6"&&w==640&&h==480&&max==255,"capture header");

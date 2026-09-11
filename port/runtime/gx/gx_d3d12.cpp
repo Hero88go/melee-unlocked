@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -19,6 +20,10 @@
 #include "gx_shader.h"
 #include "gx_texture.h"
 #include "host.h"
+#ifdef GX_PC_SETTINGS
+#include "pc_settings.h"
+#include "window.h"
+#endif
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -130,10 +135,27 @@ class Ring {
   ID3D12Resource* resource() { return pages()[current_].buffer.Get(); }
 };
 
+struct PipelineRecipe {
+  uint32_t topology = 0, components = 0;
+  BPMemory bp{};
+  uint32_t xf[0x58]{};
+};
+static std::atomic<uint64_t> next_backend_id{1};
 class D3D12Backend : public Backend {
  public:
-  D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); }
-  ~D3D12Backend() override { wait_gpu(); flush_captures(); save_pipeline_library(); if (fence_event_) CloseHandle(fence_event_); }
+  D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); prewarm_pipelines();
+#ifdef GX_PC_SETTINGS
+    if (opts_.pc_settings) settings_ui_ = std::make_unique<PcSettingsUI>(hwnd, device_.Get(), queue_.Get(), opts_);
+#endif
+  }
+  ~D3D12Backend() override { wait_gpu();
+#ifdef GX_PC_SETTINGS
+    settings_ui_.reset();
+#endif
+ flush_captures(); save_pipeline_recipes(); save_pipeline_library(); if (fence_event_) CloseHandle(fence_event_); if (present_timer_) CloseHandle(present_timer_); }
+  const D3D12Options& options() const { return opts_; }
+  void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
+  double presentation_wait_seconds() const override { return present_wait_; }
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
   void resize(int w, int h) {
@@ -148,6 +170,17 @@ class D3D12Backend : public Backend {
   uint32_t texture_count() const { return (uint32_t)textures_.size(); }
 
  private:
+  const uint64_t backend_id_ = next_backend_id.fetch_add(1);
+#ifdef GX_PC_SETTINGS
+  std::unique_ptr<PcSettingsUI> settings_ui_;
+#endif
+  HANDLE present_timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* high resolution */, TIMER_ALL_ACCESS);
+  double present_deadline_ = 0, present_wait_ = 0;
+  std::vector<PipelineRecipe> pipeline_recipes_;
+  bool prewarming_ = false;
+  void prewarm_pipelines();
+  void save_pipeline_recipes();
+  std::vector<uint32_t> index_scratch_;
   void init();
   void create_swapchain_targets(bool resize);
   void create_efb();
@@ -378,7 +411,7 @@ void D3D12Backend::wait_gpu() {
 
 // ---------------- pipelines ----------------
 ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
-  if (dc.cached_pipeline) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
+  if (dc.cached_pipeline && dc.cached_pipeline_owner == backend_id_) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
   Stopwatch sw;
   VSUid vsu = make_vs_uid(dc);
   PSUid psu = make_ps_uid(dc);
@@ -387,7 +420,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   g_prof[6] += sw.lap(); ++g_pso_lookups;   // uid build + hash
   auto it = psos_.find(key);
   g_prof[7] += sw.lap();                    // map lookup
-  if (it != psos_.end()) { dc.cached_pipeline = it->second.Get(); return it->second.Get(); }
+  if (it != psos_.end()) { dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = it->second.Get(); return it->second.Get(); }
   ++g_pso_creates;
 
   char vs_name[64], ps_name[64];
@@ -481,7 +514,12 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
     if (pipeline_library_ && SUCCEEDED(pipeline_library_->StorePipeline(pso_name, pso.Get()))) pipeline_library_dirty_ = true;
   }
   psos_[key] = pso;
-  dc.cached_pipeline = pso.Get();
+  if (!prewarming_ && pipeline_recipes_.size() < 4096) {
+    PipelineRecipe recipe{}; recipe.topology = (uint32_t)topo; recipe.components = dc.components;
+    recipe.bp = dc.bp; std::memcpy(recipe.xf, dc.xf_regs, sizeof(recipe.xf));
+    pipeline_recipes_.push_back(recipe);
+  }
+  dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = pso.Get();
   return pso.Get();
 }
 
@@ -624,7 +662,8 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
 // ---------------- draws ----------------
 void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const DrawMatrices* override_matrices) {
   // Build index list (triangle list / line list) from the GX primitive.
-  std::vector<uint32_t> idx;
+  Stopwatch sw;
+  auto& idx = index_scratch_; idx.clear();
   uint32_t n = dc.vertex_count;
   D3D12_PRIMITIVE_TOPOLOGY_TYPE topo = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   D3D12_PRIMITIVE_TOPOLOGY prim = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
@@ -653,7 +692,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
       return;  // points not supported yet
   }
   if (idx.empty()) return;
-  Stopwatch sw; ++g_prof_draws; g_prof[0] += sw.lap();   // index generation
+  ++g_prof_draws; g_prof[0] += sw.lap();   // index generation
   // Vertices
   uint8_t* vcpu; D3D12_GPU_VIRTUAL_ADDRESS vgpu;
   size_t vbytes = (size_t)n * sizeof(Vertex);
@@ -666,9 +705,16 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   // Constants
   uint8_t* ccpu; D3D12_GPU_VIRTUAL_ADDRESS vs_gpu, ps_gpu;
   if (!constant_ring_.alloc(sizeof(VSConstants), 256, &ccpu, &vs_gpu)) { host::log("d3d12: constant ring full"); return; }
-  fill_vs_constants(dc, *(VSConstants*)ccpu, scale_, override_matrices);
+  // Upload heaps can be write-combined: build scattered constants in normal
+  // CPU memory, then copy contiguously rather than touching the mapped heap
+  // repeatedly with partial writes.
+  VSConstants vs_constants;
+  fill_vs_constants(dc, vs_constants, scale_, override_matrices);
+  std::memcpy(ccpu, &vs_constants, sizeof(vs_constants));
   if (!constant_ring_.alloc(sizeof(PSConstants), 256, &ccpu, &ps_gpu)) return;
-  fill_ps_constants(dc, *(PSConstants*)ccpu, scale_);
+  PSConstants ps_constants;
+  fill_ps_constants(dc, ps_constants, scale_);
+  std::memcpy(ccpu, &ps_constants, sizeof(ps_constants));
   g_prof[2] += sw.lap();   // constants
   // Pipeline
   ID3D12PipelineState* pso = get_pso(dc, topo);
@@ -823,6 +869,13 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   list_->SetGraphicsRoot32BitConstants(1, 4, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
+#ifdef GX_PC_SETTINGS
+  if (settings_ui_) {
+    settings_ui_->draw(list_.Get());
+    ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
+    list_->SetDescriptorHeaps(2, heaps);
+  }
+#endif
   D3D12_RESOURCE_BARRIER back[2]{};
   back[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   back[0].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET};
@@ -957,6 +1010,12 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     FloatEnvironment() { _mm_setcsr(0x1f80); }
     ~FloatEnvironment() { _mm_setcsr(saved); }
   } float_environment;
+#ifdef GX_PC_SETTINGS
+  if (settings_ui_ && settings_ui_->begin(opts_)) {
+    host::window_set_fullscreen(opts_.fullscreen);
+    if (pick_scale() != scale_) { wait_gpu(); efb_copies_.clear(); create_efb(); }
+  }
+#endif
   ++frame_counter_;
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
   slot_ = (int)(frame_counter_ % FRAME_SLOTS);
@@ -986,7 +1045,19 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   check(list_->Close(), "list close");
   ID3D12CommandList* lists[] = {list_.Get()};
   queue_->ExecuteCommandLists(1, lists);
+  present_wait_ = 0;
   if (presented) {
+    const double wait_start = Stopwatch::now();
+    for (;;) {
+      double remaining = present_deadline_ - Stopwatch::now();
+      if (remaining <= 0) break;
+      if (present_timer_ && remaining > 0.0004) {
+        LARGE_INTEGER due; due.QuadPart = -(LONGLONG)((remaining-0.0002)*1e7);
+        if (SetWaitableTimer(present_timer_, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(present_timer_, INFINITE);
+        else SwitchToThread();
+      } else YieldProcessor();
+    }
+    present_wait_ = Stopwatch::now()-wait_start;
     swapchain_->Present(opts_.vsync ? 1 : 0, opts_.vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING);
     ++frames_presented_;
   }
@@ -1011,7 +1082,52 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
 
 }  // namespace
 
+// Atomically publish complete cache files. Concurrent instances may replace one
+// another's cache, but cannot expose a truncated file to a reader.
+static void write_cache(const std::string& path, const void* data, size_t size) {
+  std::string temporary = path + "." + std::to_string(GetCurrentProcessId()) + ".tmp";
+  FILE* file = std::fopen(temporary.c_str(), "wb");
+  if (!file) return;
+  bool ok = std::fwrite(data, 1, size, file) == size;
+  ok = std::fclose(file) == 0 && ok;
+  if (ok) ok = MoveFileExA(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
+  if (!ok) DeleteFileA(temporary.c_str());
+}
+
+void D3D12Backend::prewarm_pipelines() {
+  std::ifstream file(opts_.shader_cache + "/recipes.bin", std::ios::binary);
+  uint64_t header[3]{};
+  if (!file.read((char*)header, sizeof(header)) || header[0] != 0x3150535247505847ull || header[1] > 4096) return;
+  std::vector<PipelineRecipe> recipes((size_t)header[1]);
+  if (!file.read((char*)recipes.data(), recipes.size()*sizeof(PipelineRecipe)) ||
+      hash_bytes(recipes.data(), recipes.size()*sizeof(PipelineRecipe)) != header[2]) return;
+  Stopwatch timer;
+  prewarming_ = true;
+  for (const auto& recipe : recipes) {
+    if ((recipe.topology != D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && recipe.topology != D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE) ||
+        (recipe.xf[0x3F] & 15) > 8 || (recipe.xf[9] & 3) > 2) continue;
+    DrawCall draw{}; draw.components = recipe.components; draw.bp = recipe.bp;
+    std::memcpy(draw.xf_regs, recipe.xf, sizeof(recipe.xf));
+    get_pso(draw, (D3D12_PRIMITIVE_TOPOLOGY_TYPE)recipe.topology);
+    pipeline_recipes_.push_back(recipe);
+  }
+  prewarming_ = false;
+  host::log("d3d12: prewarmed %zu pipelines before guest startup in %.1f ms", psos_.size(), timer.lap()*1000.0);
+}
+
+void D3D12Backend::save_pipeline_recipes() {
+  if (pipeline_recipes_.empty()) return;
+  uint64_t header[3] = {0x3150535247505847ull, pipeline_recipes_.size(),
+    hash_bytes(pipeline_recipes_.data(), pipeline_recipes_.size()*sizeof(PipelineRecipe))};
+  std::vector<uint8_t> data(sizeof(header)+pipeline_recipes_.size()*sizeof(PipelineRecipe));
+  std::memcpy(data.data(), header, sizeof(header));
+  std::memcpy(data.data()+sizeof(header), pipeline_recipes_.data(), data.size()-sizeof(header));
+  write_cache(opts_.shader_cache+"/recipes.bin", data.data(), data.size());
+}
+
 void D3D12Backend::open_pipeline_library() {
+  CreateDirectoryA(opts_.shader_cache.c_str(), nullptr);
+  opts_.shader_cache += "/" GX_SHADER_CACHE_VERSION;
   CreateDirectoryA(opts_.shader_cache.c_str(), nullptr);
   ComPtr<ID3D12Device1> device1;
   if (FAILED(device_.As(&device1))) { host::log("d3d12: pipeline library unsupported"); return; }
@@ -1019,6 +1135,7 @@ void D3D12Backend::open_pipeline_library() {
   FILE* f = std::fopen(path.c_str(), "rb");
   if (f) {
     std::fseek(f, 0, SEEK_END); long n = std::ftell(f); std::fseek(f, 0, SEEK_SET);
+    if (n > (256 << 20)) n = 0;
     pipeline_library_data_.resize(n > 0 ? (size_t)n : 0);
     if (n > 0 && std::fread(pipeline_library_data_.data(), 1, (size_t)n, f) != (size_t)n) pipeline_library_data_.clear();
     std::fclose(f);
@@ -1039,9 +1156,7 @@ void D3D12Backend::save_pipeline_library() {
   std::vector<uint8_t> data(size);
   if (FAILED(pipeline_library_->Serialize(data.data(), size))) return;
   std::string path = opts_.shader_cache + "/pipelines.bin";
-  FILE* f = std::fopen(path.c_str(), "wb");
-  if (!f) return;
-  std::fwrite(data.data(), 1, size, f); std::fclose(f);
+  write_cache(path, data.data(), size);
   host::log("d3d12: pipeline library saved (%zu bytes, %zu pipelines)", size, psos_.size());
   pipeline_library_dirty_ = false;
 }
@@ -1050,7 +1165,7 @@ bool D3D12Backend::load_shader_blob(const std::string& path, ComPtr<ID3DBlob>& b
   FILE* f = std::fopen(path.c_str(), "rb");
   if (!f) return false;
   std::fseek(f, 0, SEEK_END); long n = std::ftell(f); std::fseek(f, 0, SEEK_SET);
-  if (n <= 0 || FAILED(D3DCreateBlob((SIZE_T)n, &blob))) { std::fclose(f); return false; }
+  if (n <= 0 || n > (16 << 20) || FAILED(D3DCreateBlob((SIZE_T)n, &blob))) { std::fclose(f); return false; }
   bool ok = std::fread(blob->GetBufferPointer(), 1, (size_t)n, f) == (size_t)n;
   std::fclose(f);
   if (!ok) blob.Reset();
@@ -1058,9 +1173,7 @@ bool D3D12Backend::load_shader_blob(const std::string& path, ComPtr<ID3DBlob>& b
 }
 
 void D3D12Backend::save_shader_blob(const std::string& path, ID3DBlob* blob) {
-  FILE* f = std::fopen(path.c_str(), "wb");
-  if (!f) return;
-  std::fwrite(blob->GetBufferPointer(), 1, blob->GetBufferSize(), f); std::fclose(f);
+  write_cache(path, blob->GetBufferPointer(), blob->GetBufferSize());
 }
 
 std::string d3d12_profile_line() {
@@ -1077,6 +1190,7 @@ std::string d3d12_profile_line() {
 Backend* create_d3d12_backend(void* hwnd, int w, int h, const D3D12Options& options) {
   return new D3D12Backend((HWND)hwnd, w, h, options);
 }
+const D3D12Options& d3d12_options(Backend* backend) { return static_cast<D3D12Backend*>(backend)->options(); }
 void d3d12_resize(Backend* backend, int w, int h) { static_cast<D3D12Backend*>(backend)->resize(w, h); }
 void d3d12_stats(Backend* backend, uint32_t* frames, uint32_t* pipelines, uint32_t* textures) {
   auto* b = static_cast<D3D12Backend*>(backend);

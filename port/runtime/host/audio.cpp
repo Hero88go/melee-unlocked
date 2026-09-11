@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <atomic>
 #include <vector>
 #include "audio.h"
 #include "host.h"
@@ -21,7 +22,7 @@ HWAVEOUT g_out = nullptr;
 WAVEHDR g_headers[BLOCKS];
 int16_t g_blocks[BLOCKS][BLOCK_BYTES / 2];
 int g_next = 0;
-int g_volume = 0;
+std::atomic<int> g_volume{0};
 std::mutex g_mutex;
 uint64_t g_frames = 0, g_dropped = 0;
 bool g_open = false;
@@ -36,6 +37,9 @@ void wav_header(FILE* f, uint32_t data_bytes) {
   std::fwrite("data", 1, 4, f); u32(data_bytes);
 }
 }  // namespace
+
+void audio_set_volume(int volume) { g_volume.store(std::clamp(volume, 0, 100)); }
+int audio_volume() { return g_volume.load(); }
 
 bool audio_open(int volume_percent, const char* wav_dump_path, bool open_device) {
   if (wav_dump_path && *wav_dump_path) {

@@ -50,7 +50,7 @@ extern uint64_t g_enter_count;
 extern bool g_trace_funcs;          // --trace-func: log entries of selected guest functions
 void hang_check(Context& c);
 void trace_enter(Context& c, uint32_t pc);
-void start_hang_watch(Context* c, double seconds);
+
 void add_trace_func(uint32_t addr, uint32_t limit);
 inline void enter(Context& c, uint32_t pc) {
   c.last_pc = pc; c.trace[c.trace_pos++ & 63] = pc;

@@ -24,12 +24,14 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     results = {"frames": args.frames, "kind": "native renderer isolation", "runs": {}}
     rows = []
-    for mode in ("headless", "hidden", "threaded"):
+    modes = ("headless", "hidden", "threaded", "authored")
+    for mode in modes:
         trace = (args.out / (mode + ".csv")).resolve()
         log_path = args.out / (mode + "-trace.log")
         mode_flags = ["--hidden", "--threaded-renderer"] if mode == "threaded" else ["--" + mode]
+        if mode == "authored": mode_flags = ["--hidden", "--threaded-renderer", "--fps", "240", "--frame-mode", "authored"]
         command = [str(args.exe.resolve()), "--iso", str(args.iso.resolve()), *mode_flags,
-                   "--fast", "--frames", str(args.frames), "--time-base", "1",
+                   "--volume", "0", "--fast", "--frames", str(args.frames), "--time-base", "1",
                    "--script", str(args.script.resolve()), "--state-trace", str(trace)]
         start = time.monotonic()
         with log_path.open("w", encoding="utf-8") as log:
@@ -46,8 +48,9 @@ def main():
         if "mmio read " in text or "mmio write " in text or "FATAL" in text:
             raise SystemExit(f"{mode}: invalid-access diagnostics; see {log_path}")
         print(f"{mode}: {len(rows[-1])} checkpoints", flush=True)
-    differences = [{"frame": i + 1, "headless": a, "rendered": b, "threaded": c}
-                   for i, (a, b, c) in enumerate(zip(*rows)) if a != b or a != c]
+    differences = [{"frame": i + 1, **dict(zip(modes, checkpoint))}
+                   for i, checkpoint in enumerate(zip(*rows))
+                   if any(row != checkpoint[0] for row in checkpoint[1:])]
     results["mismatch_count"] = len(differences)
     results["first_differences"] = differences[:10]
     (args.out / "render-state-comparison.json").write_text(json.dumps(results, indent=2))

@@ -54,31 +54,7 @@ void trace_enter(Context& c, uint32_t pc) {
   }
 }
 
-// Opt-in diagnostic (--hang-watch): a thread that reads the (racy, diagnostics-only) last entry
-// address and trace ring when simulation time stops advancing, then aborts the process.
-void start_hang_watch(Context* c, double seconds) {
-  std::thread([c, seconds] {
-    uint32_t last = host::retrace_count();
-    double since = host::now_seconds();
-    for (;;) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(500));
-      uint32_t now_retraces = host::retrace_count();
-      double now = host::now_seconds();
-      if (now_retraces != last) { last = now_retraces; since = now; continue; }
-      if (now - since < seconds) continue;
-      host::log("hang-watch: no retrace for %.0f s; guest is in %s (%08X), lr=%08X, msr=%08X, r3=%08X r4=%08X r5=%08X",
-                now - since, host::symbol_name(c->last_pc), c->last_pc, c->lr, c->msr, c->r[3], c->r[4], c->r[5]);
-      host::log("recent function entries (oldest first):");
-      for (uint32_t i = 0; i < 64; ++i) {
-        uint32_t pc = c->trace[(c->trace_pos + i) & 63];
-        if (pc) host::log("  %08X %s", pc, host::symbol_name(pc));
-      }
-      std::fflush(stdout);
-      std::_Exit(4);
-    }
-  }).detach();
-}
-
+// Hang diagnostics run on the simulation thread through hang_check.
 void hang_check(Context& c) {
   // No retrace for `hang_watch` seconds while the guest keeps calling functions: report where.
   static uint32_t last_retraces = 0;

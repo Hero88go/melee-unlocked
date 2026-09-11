@@ -1,12 +1,20 @@
 // Host window services.
 #pragma once
 #include <functional>
+#include <cstdint>
 
 namespace host {
+using MessageCallback = std::function<bool(void*, uint32_t, uintptr_t, intptr_t)>;
+void window_set_message_callback(MessageCallback cb);
+void window_input_capture(bool capture);
+struct PadState;
+bool window_ui_gamecube_pad(PadState& pad);
 using ResizeCallback = std::function<void(int, int)>;
 void* window_create(int w, int h, const wchar_t* title, bool visible = true);
 void window_set_resize_callback(ResizeCallback cb);
 void window_pump();
+void window_set_fullscreen(bool enabled);
+double window_refresh_rate();
 void window_destroy();
 void window_set_title(const wchar_t* title);
 bool window_closed();

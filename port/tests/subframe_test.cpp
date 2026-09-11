@@ -1,3 +1,5 @@
+#include "authored_pose.h"
+#include "Geometry.h"
 #include "gx_shader.h"
 // Sub-frame solver: fractional rigid deltas, cut detection, draw pairing.
 #include "subframe.h"
@@ -74,6 +76,8 @@ int main() {
               mats[0].pos[4], mats[0].pos[5], mats[0].pos[6], mats[0].pos[7], solver.stats().paired, solver.stats().rigid, solver.stats().blended, solver.stats().cuts);
   check(mats.size() == 2 && near(mats[0].pos[3], 4.0f), "paired draw gets the fractional pose");
   check(std::memcmp(mats[1].pos, unpaired.posMatrices, sizeof mats[1].pos) == 0, "unpaired draw keeps its pose");
+  solver.build(0.5, false, mats, true);
+  check(std::memcmp(mats[0].pos, b.draws[0].posMatrices, sizeof mats[0].pos) == 0, "unsupported authored draw holds latest pose without delay");
   b.draws[0].bp.reg[gx::BP_PE_TOKEN_ID] = 123;
   b.draws[0].bp.reg[gx::BP_EFB_ADDR] = 0x12345;
   b.draws[0].bp.reg[gx::BP_TX_SETIMAGE1] = 0x100;
@@ -92,5 +96,19 @@ int main() {
   float scale2[12] = {2,0,0,0, 0,1,0,0, 0,0,1,0};
   gx::SubFrameSolver::fractional(prev, scale2, 0.5, true, 40, 3.0f, out, nrm, ident_n, ident_n, &st);
   check(near(nrm[0], 1.0f / std::sqrt(2.0f)), "normal delta uses inverse transpose");
+  // A linear authored track: forward sampling must start at the current pose,
+  // and refuse to predict across its animation boundary.
+  gx::AuthoredJoint joint;
+  joint.generation = 1; joint.scale = {1,1,1}; joint.frame = 0; joint.rate = 1; joint.end = 2;
+  joint.world = NativeMelee::Identity();
+  NativeMelee::PackedTrack track; track.channel = 5; track.value_format = 128;
+  track.bytes = {0x12,0,2,10}; joint.tracks.push_back(track);
+  gx::AuthoredPose previous_pose, current_pose; previous_pose.joints.push_back(joint);
+  joint.frame = 1; joint.translation[0] = 5; joint.world[3] = 5;
+  current_pose.joints.push_back(joint);
+  check(gx::sample_authored(previous_pose, current_pose, 0.5, joint.world.data(), out, nrm, ident_n), "valid forward authored track");
+  check(near(out[3], 7.5f), "authored sampling advances beyond current rather than previous frame");
+  current_pose.joints[0].end = 1;
+  check(!gx::sample_authored(previous_pose, current_pose, 0.5, joint.world.data(), out, nrm, ident_n), "authored sampling holds at animation boundary");
   std::puts("sub-frame rigid fractions, cuts, blends and pairing passed");
 }

@@ -6,8 +6,9 @@
 //   D = M_cur * inverse(M_prev)
 // decomposed into rotation / uniform-ish scale / translation. The fraction t of that delta is applied
 // on top of M_cur (extrapolation, predicted motion) or M_prev (interpolation, one frame of latency).
-// Non-rigid deltas and detected cuts retain the latest pose. Pairing is heuristic, not
-// object-generation tracking; this remains an opt-in approximation, not authored animation.
+// Non-rigid deltas and detected cuts retain the latest pose. Experimental matrix modes
+// use heuristic pairing; authored mode samples validated tracks forward and holds all
+// unsupported draws at the latest pose. Guest object generations guard address reuse.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>

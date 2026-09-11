@@ -5,6 +5,8 @@
 #include <cstdint>
 
 namespace host {
+void audio_set_volume(int volume);
+int audio_volume();
 // volume_percent 0..100; 0 keeps the session muted (default for development).
 bool audio_open(int volume_percent, const char* wav_dump_path = nullptr, bool open_device = true);
 void audio_close();
