@@ -34,11 +34,24 @@ struct Context {
   uint64_t tb;
   uint32_t spr[1024];  // anything else, by number
   uint32_t call_depth;
+  uint32_t backedges;  // loop back-edge counter for event polling (see backedge)
   uint32_t last_pc;    // diagnostics only (function entry address)
   uint32_t trace_pos;
   uint32_t trace[64];  // ring of recently entered functions (diagnostics)
 };
-inline void enter(Context& c, uint32_t pc) { c.last_pc = pc; c.trace[c.trace_pos++ & 63] = pc; }
+// Loop back-edge poll: every 1024 iterations of any guest loop, let virtual time advance and
+// deliver due host events (alarms, AI DMA frames, completions) if interrupts are enabled.
+void loop_poll(Context& c);
+inline void backedge(Context& c) { if ((++c.backedges & 0x3FFu) == 0) loop_poll(c); }
+// Hang watchdog: every 2^20 function entries the host checks whether simulation time still
+// advances (diagnostics for guest spin loops; see host::hang_check).
+extern uint64_t g_enter_count;
+void hang_check(Context& c);
+void start_hang_watch(Context* c, double seconds);
+inline void enter(Context& c, uint32_t pc) {
+  c.last_pc = pc; c.trace[c.trace_pos++ & 63] = pc;
+  if ((++g_enter_count & 0xFFFFFu) == 0) hang_check(c);
+}
 // MSR writes: when the guest re-enables external interrupts (EE), deliver pending host events,
 // exactly where a real interrupt would have been taken.
 void interrupts_enabled(Context& c);

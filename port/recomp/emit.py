@@ -296,12 +296,16 @@ class Emitter:
         if op == "psq_stux":
             return "{ uint32_t ea = %s + %s; ppc::psq_store(c, m, ea, %d, %d, %d); %s = ea; }" % (ra, rb, f["fs"], f["w"], f["i"], ra)
         # ---------------- branches ----------------
+        # Loop back-edges poll for pending host events every N iterations (ppc::backedge), so a
+        # guest that spins on a memory flag set by an interrupt callback (AI DMA, ARQ, alarms)
+        # still receives it, like a real CPU taking the interrupt mid-loop.
         if op == "b":
             t = ins.branch_target
             if ins.lk:
                 return self._call(t, ins.addr + 4)
             if func.addr <= t < func.end:
-                return "goto L_%08X;" % t
+                poll = "ppc::backedge(c); " if t <= ins.addr else ""
+                return "%sgoto L_%08X;" % (poll, t)
             return self._tail(t)
         if op == "bc":
             t = ins.branch_target
@@ -309,7 +313,8 @@ class Emitter:
             if ins.lk:
                 body = self._call(t, ins.addr + 4)
             elif func.addr <= t < func.end:
-                body = "goto L_%08X;" % t
+                poll = "ppc::backedge(c); " if t <= ins.addr else ""
+                body = "%sgoto L_%08X;" % (poll, t)
             else:
                 body = self._tail(t)
             return body if cond is None else "if (%s) { %s }" % (cond, body)

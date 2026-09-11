@@ -2,6 +2,8 @@
 // These return "no device / done" so the game's init paths complete without hardware.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "hle.h"
+#include "ax_ucode.h"
+#include "audio.h"
 #include "memory_range.h"
 #include <cstring>
 #include <deque>
@@ -53,11 +55,49 @@ HLE(SIUnregisterPollingHandler) { RET(1); }
 HLE(SISetXY) {}
 
 // ---------------- AI / DSP / AX ----------------
+// The recompiled AX library drives audio exactly as on hardware: every AI DMA completion (5 ms)
+// its callback asserts the DSP task, the resume callback builds the next command list and mails
+// it, and the DSP mixes voices into RAM. Here the "DSP" is ax_ucode (Dolphin's AX HLE) run
+// synchronously when the command-list mail arrives, and the AI DMA clock is derived from the
+// guest timebase so the sequence is deterministic and independent of host audio.
 static uint32_t s_ai_dma_callback, s_ai_dma_addr, s_ai_dma_len;
+static bool s_ai_dma_running = false;
+static uint64_t s_ai_next_tb = 0;
+static uint32_t s_dsp_task = 0;
 HLE(AIInit) {}
-HLE(AIRegisterDMACallback) { RET(s_ai_dma_callback); s_ai_dma_callback = ARG0; }
+HLE(AIRegisterDMACallback) { uint32_t cb = ARG0; RET(s_ai_dma_callback); s_ai_dma_callback = cb; host::log("audio: AI DMA callback %08X", cb); }
 HLE(AIInitDMA) { s_ai_dma_addr = ARG0; s_ai_dma_len = ARG1; }
-HLE(AIStartDMA) {}
+HLE(AIStartDMA) {
+  if (!s_ai_dma_running) {
+    s_ai_next_tb = host::cpu->tb + (uint64_t)s_ai_dma_len * host::TB_HZ / 128000;
+    host::log("audio: AI DMA started at %08X+%X (period %llu ticks)", s_ai_dma_addr, s_ai_dma_len, (unsigned long long)s_ai_dma_len * host::TB_HZ / 128000);
+  }
+  s_ai_dma_running = true;
+}
+
+namespace hle {
+// Called at interrupt-safe points (see host::pump_completions / host::retrace).
+void audio_tick(bool force) {
+  static bool ticking = false;
+  if (ticking || !s_ai_dma_running || !s_ai_dma_callback || !s_ai_dma_len) return;
+  if (!force && !ppc::interrupts_on(*host::cpu)) return;
+  ticking = true;
+  uint64_t period = (uint64_t)s_ai_dma_len * host::TB_HZ / 128000;   // bytes / (32 kHz * 4 bytes)
+  if (host::cpu->tb > s_ai_next_tb + period * 20) s_ai_next_tb = host::cpu->tb;   // long stall: skip ahead
+  for (int guard = 0; guard < 8 && host::cpu->tb >= s_ai_next_tb; ++guard) {
+    s_ai_next_tb += period;
+    // The DMA that just completed played the buffer AX set up last time.
+    host::audio_push(host::ptr(s_ai_dma_addr, s_ai_dma_len), s_ai_dma_len);
+    ppc::Context saved = *host::cpu;
+    try { host::call_guest(s_ai_dma_callback); } catch (const LoadContextUnwind&) {}
+    uint64_t tb = host::cpu->tb;
+    *host::cpu = saved;
+    host::cpu->tb = tb;
+    ppc::update_mxcsr(*host::cpu);
+  }
+  ticking = false;
+}
+}  // namespace hle
 HLE(AISetStreamVolLeft) {}
 HLE(AISetStreamVolRight) {}
 HLE(AIGetStreamVolLeft) { RET(0); }
@@ -69,13 +109,26 @@ HLE(AISetDSPSampleRate) {}
 HLE(AIGetDSPSampleRate) { RET(0); }
 HLE(DSPInit) {}
 HLE(DSPCheckInit) { RET(1); }
-HLE(DSPSendMailToDSP) {}
+HLE(DSPSendMailToDSP) { ax::handle_mail(ARG0); }
 HLE(DSPCheckMailToDSP) { RET(0); }
 HLE(DSPCheckMailFromDSP) { RET(0); }
 HLE(DSPReadMailFromDSP) { RET(0); }
-HLE(DSPAddTask) { RET(ARG0); }
-HLE(DSPAssertTask) { RET(ARG0); }
-HLE(__AXOutInit) {}
+// DSPTaskInfo: +0 state, +4 priority, +8 flags, +0x28 init_cb, +0x2C res_cb, +0x30 done_cb, +0x34 req_cb.
+HLE(DSPAddTask) {
+  uint32_t task = ARG0;
+  s_dsp_task = task;
+  host::wr32(task + 0, 1);   // DSP_TASK_STATE_RUN
+  uint32_t init_cb = host::rd32(task + 0x28);
+  host::log("audio: DSP task %08X added (init_cb %08X, res_cb %08X)", task, init_cb, host::rd32(task + 0x2C));
+  if (init_cb) host::call_guest(init_cb, task);   // the ucode's init-done mail, delivered at once
+  RET(task);
+}
+HLE(DSPAssertTask) {
+  uint32_t task = ARG0;
+  uint32_t res_cb = host::rd32(task + 0x2C);
+  if (res_cb) host::call_guest(res_cb, task);      // DSP resumed: run the task's resume callback
+  RET(task);
+}
 
 // ---------------- ARAM ----------------
 static uint32_t s_ar_stack_index_addr, s_ar_num_entries, s_ar_stack_pointer, s_ar_free_blocks, s_ar_block_length;
@@ -112,7 +165,7 @@ HLE(ARFree) {
   RET(s_ar_stack_pointer);
 }
 HLE(ARGetSize) { RET(0x01000000); }
-HLE(ARRegisterDMACallback) { RET(s_ar_dma_callback); s_ar_dma_callback = ARG0; }
+HLE(ARRegisterDMACallback) { uint32_t cb = ARG0; RET(s_ar_dma_callback); s_ar_dma_callback = cb; }
 static void aram_dma(uint32_t type, uint32_t mainmem, uint32_t aram, uint32_t length) {
   if (!host::valid_range(aram, length, 0x01000000)) host::die("ARAM DMA out of range %08X+%X", aram, length);
   if (type == 0) std::memcpy(host::aram + aram, host::ptr(mainmem, length), length);   // MRAM -> ARAM

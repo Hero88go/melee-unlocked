@@ -17,6 +17,9 @@ struct Options {
   bool trace_calls = false;      // log HLE calls
   bool quiet = false;
   uint64_t time_base = 0;        // preset timebase (0 = derive from wall clock like Dolphin)
+  int volume = 0;                // audio output volume percent (0 = muted, the development default)
+  double hang_watch = 0.0;       // seconds without a retrace before the guest is declared hung (0 = off)
+  std::string audio_dump;        // optional WAV file receiving everything the AI DMA plays
 };
 
 extern Options options;

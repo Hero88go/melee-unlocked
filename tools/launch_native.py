@@ -15,6 +15,7 @@ def main():
     ap.add_argument("--fps", help="display rate: a number or 'unlocked' (enables sub-frame presentation)")
     ap.add_argument("--frame-mode", choices=["extrapolate", "interpolate", "off"])
     ap.add_argument("--vsync", action="store_true")
+    ap.add_argument("--volume", type=int, default=0, help="audio volume percent (default 0: muted)")
     ap.add_argument("--hidden", action="store_true")
     ap.add_argument("--frames", type=int, default=0)
     args = ap.parse_args()
@@ -33,6 +34,8 @@ def main():
         command += ["--fps", args.fps]
     if args.frame_mode: command += ["--frame-mode", args.frame_mode]
     if args.vsync: command.append("--vsync")
+    if not 0 <= args.volume <= 100: ap.error("volume must be 0-100")
+    command += ["--volume", str(args.volume)]
     if args.frames: command += ["--frames", str(args.frames)]
     if args.hidden: command.append("--hidden")
     return subprocess.call(command, cwd=ROOT,
