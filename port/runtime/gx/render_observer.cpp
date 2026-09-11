@@ -11,56 +11,30 @@ namespace gx {
 namespace {
 std::unordered_map<uint32_t, uint64_t> joints;
 std::unordered_map<uint64_t, uint32_t> passes;
+// Joint chains captured this simulation frame (root..joint), shared by every draw that skins with them.
+std::unordered_map<uint32_t, std::shared_ptr<const AuthoredPose>> chains_this_frame;
 uint64_t next_generation = 1, current_generation = 0, current_pass = 0;
 uint32_t current_draw = 0, current_joint = 0;
 uint8_t* current_memory = nullptr;
-bool rigid = false, authored_enabled = false;
+bool rigid = false, envelope = false, authored_enabled = false;
+uint32_t envelope_pobj = 0, envelope_vmtx = 0, rigid_vmtx = 0;
 std::shared_ptr<const AuthoredPose> current_pose;
 struct Reader {
   uint8_t* memory; bool valid = true;
   bool span(uint32_t a,uint32_t n) { if(a<ppc::RAM_BASE||a-ppc::RAM_BASE>ppc::RAM_SIZE||n>ppc::RAM_SIZE-(a-ppc::RAM_BASE))valid=false;return valid; }
   uint32_t word(uint32_t a) { if(!span(a,4))return 0;const auto* p=memory+a-ppc::RAM_BASE;return uint32_t(p[0])<<24|uint32_t(p[1])<<16|uint32_t(p[2])<<8|p[3]; }
   float real(uint32_t a) { uint32_t v=word(a);float f;std::memcpy(&f,&v,4);return f; }
+  bool matrix(uint32_t a, std::array<float,12>& m) { if(!span(a,48))return false; for(int k=0;k<12;++k)m[k]=real(a+4*k); return true; }
 };
-}
-RenderObserver::RenderObserver(ppc::Context& cpu, Observe kind, uint8_t* memory) : cpu_(cpu), kind_(kind) {
-  if (kind == Observe::ReleaseJoint) joints.erase(cpu.r[3]);
-  if (kind == Observe::RigidMatrix) rigid = true;
-  if (kind == Observe::OtherMatrix) rigid = false;
-  if (kind != Observe::DisplayJoint) return;
-  saved_joint_ = current_joint; current_joint = cpu.r[3];
-  saved_memory_ = current_memory; current_memory = memory;
-  saved_rigid_ = rigid; rigid = false;
-  saved_pose_ = std::move(current_pose); current_pose.reset();
-  saved_generation_ = current_generation; saved_pass_ = current_pass; saved_draw_ = current_draw;
-  auto it = joints.find(cpu.r[3]);
-  current_generation = it == joints.end() ? 0 : it->second;
-  const uint64_t key[] = {current_generation, cpu.r[5], cpu.r[6]};
-  uint64_t pass_key = hash_bytes(key, sizeof key);
-  const uint64_t pass[] = {pass_key, passes[pass_key]++};
-  current_pass = hash_bytes(pass, sizeof pass); current_draw = 0;
-}
-RenderObserver::~RenderObserver() {
-  if (kind_ == Observe::AllocateJoint && cpu_.r[3]) joints[cpu_.r[3]] = next_generation++;
-  if (kind_ == Observe::DisplayJoint) {
-    current_joint = saved_joint_; current_memory = saved_memory_; rigid = saved_rigid_; current_pose = std::move(saved_pose_);
-    current_generation = saved_generation_; current_pass = saved_pass_; current_draw = saved_draw_;
-  }
-}
-uint64_t observed_draw_identity(uint64_t fallback, uint64_t& generation) {
-  generation = current_generation;
-  if (!generation) return fallback;
-  const uint64_t key[] = {generation, current_pass, current_draw++};
-  return hash_bytes(key, sizeof key);
-}
-void set_authored_capture(bool enabled) { authored_enabled = enabled; }
-std::shared_ptr<const AuthoredPose> capture_authored_pose() {
-  if(!authored_enabled||!rigid||!current_generation||!current_memory){ ++authored_stats().capture[1]; return {}; }
-  if(current_pose)return current_pose;
-  Reader r{current_memory};
+
+// Captures the joint chain root..address (local SRT, world matrix, authored tracks). Returns null
+// (and counts the reason) when any joint needs an evaluator this path does not have.
+std::shared_ptr<const AuthoredPose> capture_chain(Reader& r, uint32_t address) {
+  auto cached = chains_this_frame.find(address);
+  if (cached != chains_this_frame.end()) return cached->second;
   auto pose=std::make_shared<AuthoredPose>();
-  uint32_t address=current_joint;
   size_t byte_count=0;
+  uint32_t start = address;
   while(address && pose->joints.size()<128) {
     if(!r.span(address,0x88)){ ++authored_stats().capture[2]; return {}; }
     AuthoredJoint j;
@@ -95,7 +69,113 @@ std::shared_ptr<const AuthoredPose> capture_authored_pose() {
     pose->joints.push_back(std::move(j)); address=r.word(address+12);
   }
   if(address||!r.valid){ ++authored_stats().capture[10]; return {}; }
-  std::reverse(pose->joints.begin(),pose->joints.end()); ++authored_stats().captured; current_pose=pose; return pose;
+  std::reverse(pose->joints.begin(),pose->joints.end());
+  chains_this_frame[start] = pose;
+  return pose;
 }
-void finish_observed_frame() { passes.clear(); }
+
+// Envelope (skinned) draw: the view matrix, the skeleton "right" transform and, per matrix slot,
+// the weighted bones with their inverse-bind matrices. Mirrors SetupEnvelopeModelMtx and
+// _HSD_mkEnvelopeModelNodeMtx so the render thread can rebuild every slot at a fractional frame.
+std::shared_ptr<const AuthoredPose> capture_envelope(Reader& r) {
+  auto pose=std::make_shared<AuthoredPose>();
+  pose->envelope = true;
+  if(!r.matrix(envelope_vmtx, pose->view)){ ++authored_stats().capture[11]; return {}; }
+  pose->has_view = true;
+  // right (HSD_JObjFindSkeleton walk)
+  uint32_t m = current_joint;
+  if(!r.span(m,0x88)){ ++authored_stats().capture[11]; return {}; }
+  uint32_t mflags = r.word(m+0x14);
+  if(!(mflags & 2u)) {   // not JOBJ_SKELETON_ROOT
+    uint32_t x = m;
+    for(int guard=0; x && guard<128; ++guard) { if(!r.span(x,0x88)){ ++authored_stats().capture[11]; return {}; } if(r.word(x+0x14)&3u)break; x=r.word(x+0xC); }
+    if(!x){ ++authored_stats().capture[12]; return {}; }
+    pose->right_chain_m = capture_chain(r, m);
+    pose->right_chain_x = capture_chain(r, x);
+    if(!pose->right_chain_m||!pose->right_chain_x){ ++authored_stats().capture[12]; return {}; }
+    uint32_t xflags = r.word(x+0x14);
+    uint32_t xenv = r.word(x+0x78);
+    if(x==m) { pose->right_kind = 1; if(!xenv||!r.matrix(xenv,pose->right_envelope)){ ++authored_stats().capture[12]; return {}; } }
+    else if(xflags & 2u) pose->right_kind = 2;
+    else { pose->right_kind = 3; if(!xenv||!r.matrix(xenv,pose->right_envelope)){ ++authored_stats().capture[12]; return {}; } }
+  }
+  // HSD_PObj: class (4), next, verts, flags/n_display, display, u.envelope_list at +0x14.
+  if(!r.span(envelope_pobj,0x18)){ ++authored_stats().capture[13]; return {}; }
+  uint32_t list = r.word(envelope_pobj+0x14);
+  for(int slot=0; slot<10 && list; ++slot, list=r.word(list)) {
+    if(!r.span(list,8)){ ++authored_stats().capture[13]; return {}; }
+    AuthoredSlot s;
+    uint32_t env = r.word(list+4);
+    if(!env){ ++authored_stats().capture[13]; return {}; }
+    if(!r.span(env,12)){ ++authored_stats().capture[13]; return {}; }
+    float first_weight = r.real(env+8);
+    bool single = first_weight >= (1.0f - 1.1920929e-7f);
+    for(int guard=0; env && guard<64; ++guard, env=single?0:r.word(env)) {
+      if(!r.span(env,12)){ ++authored_stats().capture[13]; return {}; }
+      AuthoredBone b;
+      uint32_t jobj = r.word(env+4);
+      b.weight = single ? 1.0f : r.real(env+8);
+      uint32_t envmtx = jobj ? r.word(jobj+0x78) : 0;
+      if(!jobj||!envmtx||!r.matrix(envmtx,b.envelope)){ ++authored_stats().capture[14]; return {}; }
+      b.chain = capture_chain(r, jobj);
+      if(!b.chain){ ++authored_stats().capture[15]; return {}; }
+      s.bones.push_back(std::move(b));
+    }
+    if(s.bones.empty()){ ++authored_stats().capture[13]; return {}; }
+    pose->slots.push_back(std::move(s));
+  }
+  if(pose->slots.empty()||!r.valid){ ++authored_stats().capture[13]; return {}; }
+  return pose;
+}
+}
+RenderObserver::RenderObserver(ppc::Context& cpu, Observe kind, uint8_t* memory) : cpu_(cpu), kind_(kind) {
+  if (kind == Observe::ReleaseJoint) joints.erase(cpu.r[3]);
+  if (kind == Observe::RigidMatrix) { rigid = true; envelope = false; rigid_vmtx = cpu.r[4]; }
+  if (kind == Observe::OtherMatrix) { rigid = false; envelope = false; }
+  if (kind == Observe::EnvelopeMatrix) { rigid = false; envelope = true; envelope_pobj = cpu.r[3]; envelope_vmtx = cpu.r[4]; }
+  if (kind != Observe::DisplayJoint) return;
+  saved_joint_ = current_joint; current_joint = cpu.r[3];
+  saved_memory_ = current_memory; current_memory = memory;
+  saved_rigid_ = rigid; rigid = false; saved_envelope_ = envelope; envelope = false;
+  saved_pose_ = std::move(current_pose); current_pose.reset();
+  saved_generation_ = current_generation; saved_pass_ = current_pass; saved_draw_ = current_draw;
+  auto it = joints.find(cpu.r[3]);
+  current_generation = it == joints.end() ? 0 : it->second;
+  const uint64_t key[] = {current_generation, cpu.r[5], cpu.r[6]};
+  uint64_t pass_key = hash_bytes(key, sizeof key);
+  const uint64_t pass[] = {pass_key, passes[pass_key]++};
+  current_pass = hash_bytes(pass, sizeof pass); current_draw = 0;
+}
+RenderObserver::~RenderObserver() {
+  if (kind_ == Observe::AllocateJoint && cpu_.r[3]) joints[cpu_.r[3]] = next_generation++;
+  if (kind_ == Observe::DisplayJoint) {
+    current_joint = saved_joint_; current_memory = saved_memory_; rigid = saved_rigid_; envelope = saved_envelope_; current_pose = std::move(saved_pose_);
+    current_generation = saved_generation_; current_pass = saved_pass_; current_draw = saved_draw_;
+  }
+}
+uint64_t observed_draw_identity(uint64_t fallback, uint64_t& generation) {
+  generation = current_generation;
+  if (!generation) return fallback;
+  const uint64_t key[] = {generation, current_pass, current_draw++};
+  return hash_bytes(key, sizeof key);
+}
+void set_authored_capture(bool enabled) { authored_enabled = enabled; }
+std::shared_ptr<const AuthoredPose> capture_authored_pose() {
+  if(!authored_enabled||!current_generation||!current_memory||!(rigid||envelope)){ ++authored_stats().capture[1]; return {}; }
+  Reader r{current_memory};
+  if(envelope) {
+    // Every PObj of a skinned model has its own envelope list, so this is per draw (chains are shared).
+    auto pose = capture_envelope(r);
+    if(pose) ++authored_stats().captured;
+    return pose;
+  }
+  if(current_pose)return current_pose;
+  auto chain = capture_chain(r, current_joint);
+  if(!chain) return {};
+  auto pose = std::make_shared<AuthoredPose>();
+  pose->chain = chain;
+  pose->has_view = rigid_vmtx && r.matrix(rigid_vmtx, pose->view);
+  ++authored_stats().captured; current_pose=pose; return pose;
+}
+void finish_observed_frame() { passes.clear(); chains_this_frame.clear(); }
 }

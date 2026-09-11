@@ -87,7 +87,7 @@ target_link_libraries(port_gpu_resource_test PRIVATE d3d12 dxgi d3dcompiler user
 add_test(NAME port_gpu_resources COMMAND port_gpu_resource_test)
 set_tests_properties(port_gpu_resources PROPERTIES TIMEOUT 60)
 
-add_executable(port_render_observer_test tests/render_observer_test.cpp runtime/gx/render_observer.cpp runtime/gx/gx_texture.cpp runtime/gx/authored_pose.cpp)
+add_executable(port_render_observer_test tests/render_observer_test.cpp runtime/gx/render_observer.cpp runtime/gx/gx_texture.cpp runtime/gx/authored_pose.cpp runtime/gx/subframe.cpp runtime/gx/gx_shader.cpp)
 target_include_directories(port_render_observer_test PRIVATE runtime/ppc runtime/gx "${PROJECT_SOURCE_DIR}/native")
 target_compile_features(port_render_observer_test PRIVATE cxx_std_17)
 target_compile_definitions(port_render_observer_test PRIVATE NOMINMAX)

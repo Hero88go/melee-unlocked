@@ -45,10 +45,8 @@ the display rate is the separate number in the window title, now shown first.
 
 1. Finish the fixes above if any are still uncommitted (check `git status`), rebuild, re-run
    `tools/validate_native.py`, commit.
-2. Authored mode covers only rigid draws (`c1` capture failures are envelope-skinned fighters).
-   Extend `capture_authored_pose` to envelope draws: SetupEnvelopeModelMtx observer already fires;
-   capture the JObj chain per skin matrix (posMatrices index -> joint) and re-sample all joints.
-   This is what makes fighters truly sub-frame animated instead of matrix-extrapolated.
+2. DONE: authored mode covers skinned fighters, game-driven root motion and the camera (see
+   PORT_COMPLETION.md). Left: looping animation wrap, animated scale, RObj/quaternion joints.
 3. Rollback and the render observer: a savestate load restores heap contents without JObjAlloc/
    Release hooks firing. Consider `gx::observer_reset()` on load (`slippi::online::rollback_count()`).
 4. One differing byte (post-frame state bits 5, frame 1413, player 0) between the two local peers'

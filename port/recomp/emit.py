@@ -86,7 +86,7 @@ class Emitter:
         out.append("  ppc::enter(c, %s);" % hexs(func.addr))
         observer = {"HSD_JObjAlloc": "AllocateJoint", "JObjRelease": "ReleaseJoint",
                     "HSD_JObjDisp": "DisplayJoint", "SetupRigidModelMtx": "RigidMatrix",
-                    "SetupSharedVtxModelMtx": "OtherMatrix", "SetupEnvelopeModelMtx": "OtherMatrix"}.get(func.name)
+                    "SetupSharedVtxModelMtx": "OtherMatrix", "SetupEnvelopeModelMtx": "EnvelopeMatrix"}.get(func.name)
         if observer:
             out.append("  gx::RenderObserver render_observer(c, gx::Observe::%s, m);" % observer)
         if info.has_blrl:
