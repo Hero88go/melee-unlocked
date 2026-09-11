@@ -8,9 +8,13 @@
 #include "gx_d3d12.h"
 #include "host.h"
 #include "subframe.h"
+#include "authored_pose.h"
 #include "window.h"
+#include <algorithm>
 #include <chrono>
+#include <string>
 #include <cstdio>
+#include <cstring>
 #include <future>
 #include <thread>
 namespace gx {
@@ -32,10 +36,13 @@ class ThreadedBackend final : public Backend {
     bool have_prev = false;
     uint64_t rendered_sequence = 0, submitted = 0, presented = 0, burst_logged = 0;
     const bool subframes = options_.subframe != SubFrameMode::Off;
-    const bool interpolate = options_.subframe == SubFrameMode::Interpolate;
+    const bool authored = options_.subframe == SubFrameMode::Authored;
+    const bool interpolate = authored || options_.subframe == SubFrameMode::Interpolate;
     const double cap_period = options_.fps_cap > 0 ? 1.0 / options_.fps_cap : 0.0;
     double next_present = host::now_seconds();
     double stats_time = next_present; uint64_t stats_presented = 0, stats_sim = 0, stats_lines = 0;
+    uint32_t phase_bins[5] = {};
+    double build_seconds = 0, submit_seconds = 0; uint64_t cost_presented = 0;   // presented phases: [0,.25) [.25,.5) [.5,.75) [.75,1) exactly 1
     for (;;) {
       host::window_pump();
       if (host::window_closed()) { queue.finish(true); break; }
@@ -85,13 +92,19 @@ class ThreadedBackend final : public Backend {
         ++burst_logged;
       }
       if (subframes && have_prev) {
-        solver.build(t, interpolate, overrides);
+        double t0 = host::now_seconds();
+        solver.build(t, interpolate, overrides, authored);
+        double t1 = host::now_seconds();
         renderer->submit_frame(current, overrides.data());
+        build_seconds += t1 - t0; submit_seconds += host::now_seconds() - t1; ++cost_presented;
       } else {
+        double t1 = host::now_seconds();
         renderer->submit_frame(current);
+        submit_seconds += host::now_seconds() - t1; ++cost_presented;
       }
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
+      ++phase_bins[t >= 1.0 ? 4 : (int)(t * 4.0)];
       if (cap_period > 0) {
         double now = host::now_seconds();
         next_present = std::max(next_present + cap_period, now - cap_period);
@@ -102,11 +115,25 @@ class ThreadedBackend final : public Backend {
         wchar_t title[160];
         _snwprintf_s(title, _TRUNCATE, L"Melee Port  |  sim %.0f Hz  |  display %.0f fps  |  %s  |  draws %u paired %u",
                      stats_sim / (now - stats_time), stats_presented / (now - stats_time),
-                     !subframes ? L"locked" : interpolate ? L"interpolate" : L"extrapolate", s.draws, s.paired);
+                     !subframes ? L"locked" : authored ? L"authored" : interpolate ? L"interpolate" : L"extrapolate", s.draws, s.paired);
         host::window_set_title(title);
-        if (++stats_lines % 5 == 0)
+        if (++stats_lines % 5 == 0) {
           host::log("display: %.0f fps (sim %.0f Hz, %s, %u draws, %u paired, %u cuts)", stats_presented / (now - stats_time), stats_sim / (now - stats_time),
-                    !subframes ? "locked" : interpolate ? "interpolate" : "extrapolate", s.draws, s.paired, s.cuts);
+                    !subframes ? "locked" : authored ? "authored" : interpolate ? "interpolate" : "extrapolate", s.draws, s.paired, s.cuts);
+          if (subframes) host::log("pair rejection: missing %u, HUD %u, geometry %u, state %u (last BP %02X), projection %u, authored %u | phases <.25:%u <.5:%u <.75:%u <1:%u =1:%u",
+                                   s.missing, s.hud, s.geometry, s.state, s.state_register, s.projection, s.authored, phase_bins[0], phase_bins[1], phase_bins[2], phase_bins[3], phase_bins[4]);
+          if (subframes) std::memset(phase_bins, 0, sizeof phase_bins);
+          host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), d3d12_profile_line().c_str());
+          build_seconds = submit_seconds = 0; cost_presented = 0;
+          if (authored) {
+            const AuthoredStats& a = authored_stats();
+            std::string line = "authored: captured " + std::to_string(a.captured) + " sampled " + std::to_string(a.sampled) + " | capture fails:";
+            for (int i = 1; i < 24; ++i) if (a.capture[i]) line += " c" + std::to_string(i) + "=" + std::to_string(a.capture[i]);
+            line += " | sample fails:";
+            for (int i = 1; i < 24; ++i) if (a.sample[i]) line += " s" + std::to_string(i) + "=" + std::to_string(a.sample[i]);
+            host::log("%s", line.c_str());
+          }
+        }
         stats_time = now; stats_presented = 0; stats_sim = 0;
       }
     }

@@ -17,7 +17,7 @@
 
 namespace gx {
 
-struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, cuts = 0; };
+struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, cuts = 0; uint32_t missing = 0, hud = 0, state = 0, geometry = 0, projection = 0, state_register = 256, authored = 0; };
 
 class SubFrameSolver {
  public:
@@ -30,7 +30,7 @@ class SubFrameSolver {
   void set_frames(const Frame* prev, const Frame* cur);
   // Fills `out` (resized to cur->draws.size()) for phase t in [0, 1]. Interpolate: pose between
   // prev (t = 0) and cur (t = 1). Extrapolate: pose t frames beyond cur.
-  void build(double t, bool interpolate, std::vector<DrawMatrices>& out) const;
+  void build(double t, bool interpolate, std::vector<DrawMatrices>& out, bool authored = false) const;
   const SubFrameStats& stats() const { return stats_; }
 
   // Exposed for tests: apply fraction t of the rigid/blended delta between prev and cur 3x4 matrices.

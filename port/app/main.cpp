@@ -1,6 +1,7 @@
 // Native Melee port entry point.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
+#include "render_observer.h"
 #include "audio.h"
 #include "functions.h"
 #include "guest_symbols.h"
@@ -17,7 +18,7 @@ namespace ppc { void init_dispatch(); }
 
 static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
-              "           [--fps N|unlocked] [--frame-mode extrapolate|interpolate|off] [--threaded-renderer]\n"
+              "           [--fps N|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
               "           [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
 }
@@ -46,6 +47,7 @@ int main(int argc, char** argv) {
       std::string v = next();
       if (v == "extrapolate") gfx.subframe = gx::SubFrameMode::Extrapolate;
       else if (v == "interpolate") gfx.subframe = gx::SubFrameMode::Interpolate;
+      else if (v == "authored") gfx.subframe = gx::SubFrameMode::Authored;
       else if (v == "off") gfx.subframe = gx::SubFrameMode::Off;
       else { usage(); return 2; }
       threaded = true;
@@ -60,6 +62,7 @@ int main(int argc, char** argv) {
     else if (a == "--capture-sim-frame") gfx.capture_sim_frame = std::strtoull(next(), nullptr, 0);
     else if (a == "--script") { if (!host::input_load_script(next())) { std::fprintf(stderr, "cannot load input script\n"); return 1; } }
     else if (a == "--dump") gfx.dump_path = next();
+    else if (a == "--shader-cache") gfx.shader_cache = next();
     else if (a == "--dump-frame") gfx.dump_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;
@@ -70,7 +73,7 @@ int main(int argc, char** argv) {
     else { usage(); return 2; }
   }
   if (fps_requested && gfx.subframe == gx::SubFrameMode::Off) {
-    std::fprintf(stderr, "--fps requires explicit experimental --frame-mode interpolate or extrapolate\n");
+    std::fprintf(stderr, "--fps requires explicit experimental --frame-mode interpolate, extrapolate or authored\n");
     return 2;
   }
   if (o.iso.empty()) { usage(); return 2; }
@@ -85,6 +88,7 @@ int main(int argc, char** argv) {
     host::window_set_resize_callback([renderer = backend.get()](int w, int h) { gx::d3d12_resize(renderer, w, h); });
     host::g_has_window = true;
   }
+  gx::set_authored_capture(gfx.subframe == gx::SubFrameMode::Authored);
   gx::init(backend.get());
   host::audio_open(o.volume, o.audio_dump.c_str(), !headless);
 

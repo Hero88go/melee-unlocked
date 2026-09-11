@@ -84,6 +84,11 @@ class Emitter:
             return "\n".join(out) + "\n"
         out.append("void %s(ppc::Context& __restrict c, uint8_t* __restrict m) {" % name)
         out.append("  ppc::enter(c, %s);" % hexs(func.addr))
+        observer = {"HSD_JObjAlloc": "AllocateJoint", "JObjRelease": "ReleaseJoint",
+                    "HSD_JObjDisp": "DisplayJoint", "SetupRigidModelMtx": "RigidMatrix",
+                    "SetupSharedVtxModelMtx": "OtherMatrix", "SetupEnvelopeModelMtx": "OtherMatrix"}.get(func.name)
+        if observer:
+            out.append("  gx::RenderObserver render_observer(c, gx::Observe::%s, m);" % observer)
         for idx, ins in enumerate(info.insns):
             addr = func.addr + idx * 4
             if addr in info.labels:

@@ -13,7 +13,7 @@ def main():
     ap.add_argument("--window", default="1280x960", help="initial client size WxH")
     ap.add_argument("--threaded-renderer", action="store_true")
     ap.add_argument("--fps", help="display rate: a number or 'unlocked' (enables sub-frame presentation)")
-    ap.add_argument("--frame-mode", choices=["extrapolate", "interpolate", "off"])
+    ap.add_argument("--frame-mode", choices=["extrapolate", "interpolate", "authored", "off"])
     ap.add_argument("--vsync", action="store_true")
     ap.add_argument("--volume", type=int, default=0, help="audio volume percent (default 0: muted)")
     ap.add_argument("--hidden", action="store_true")
@@ -24,7 +24,7 @@ def main():
     import re
     if not re.fullmatch(r"\d{3,5}x\d{3,5}", args.window): ap.error("window must look like 1920x1080")
     if args.fps and args.frame_mode not in ("interpolate", "extrapolate"):
-        ap.error("--fps requires explicit experimental --frame-mode interpolate or extrapolate")
+        ap.error("--fps requires explicit experimental --frame-mode interpolate, extrapolate or authored")
     if args.frames < 0: ap.error("frames cannot be negative")
     executable = ROOT / "build-review/port/Release/melee_port.exe"
     if not executable.is_file(): ap.error("native build missing; follow NATIVE_DEVELOPMENT.md")

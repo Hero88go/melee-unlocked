@@ -1,3 +1,4 @@
+#include "gx_shader.h"
 // Sub-frame solver: fractional rigid deltas, cut detection, draw pairing.
 #include "subframe.h"
 #include <cmath>
@@ -12,6 +13,15 @@ static void rot_z(float deg, float tx, float out[12]) {
   std::memcpy(out, m, sizeof m);
 }
 int main() {
+  gx::DrawCall shader_draw{};
+  auto uid = gx::make_vs_uid(shader_draw);
+  shader_draw.xf_regs[0x0A] = 0xff00ff00;
+  shader_draw.xf_regs[0x0C] = 0x12345678;
+  auto recolored = gx::make_vs_uid(shader_draw);
+  check(uid == recolored && uid.hash() == recolored.hash(), "color constants reuse the vertex shader");
+  check(gx::generate_vertex_shader(uid) == gx::generate_vertex_shader(recolored), "recolored shader source is unchanged");
+  shader_draw.xf_regs[0x0E] = 1;
+  check(!(uid == gx::make_vs_uid(shader_draw)), "lighting controls remain in shader identity");
   const float ident_n[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
   float prev[12], cur[12], out[12], nrm[9];
   gx::SubFrameStats st;
@@ -64,6 +74,15 @@ int main() {
               mats[0].pos[4], mats[0].pos[5], mats[0].pos[6], mats[0].pos[7], solver.stats().paired, solver.stats().rigid, solver.stats().blended, solver.stats().cuts);
   check(mats.size() == 2 && near(mats[0].pos[3], 4.0f), "paired draw gets the fractional pose");
   check(std::memcmp(mats[1].pos, unpaired.posMatrices, sizeof mats[1].pos) == 0, "unpaired draw keeps its pose");
+  b.draws[0].bp.reg[gx::BP_PE_TOKEN_ID] = 123;
+  b.draws[0].bp.reg[gx::BP_EFB_ADDR] = 0x12345;
+  b.draws[0].bp.reg[gx::BP_TX_SETIMAGE1] = 0x100;
+  solver.set_frames(&a, &b);
+  check(solver.stats().paired == 1, "FIFO token and XFB destination do not change draw identity");
+  b.draws[0].bp.reg[gx::BP_BLENDMODE] = 1;
+  solver.set_frames(&a, &b);
+  check(solver.stats().paired == 0, "material blend changes invalidate pairing");
+  b.draws[0].bp.reg[gx::BP_BLENDMODE] = 0;
   b.sequence = 4; solver.set_frames(&a, &b);
   check(solver.stats().paired == 0, "frame gaps invalidate pairing");
   b.sequence = 2; b.vertices[0].pos[0] = 10; solver.set_frames(&a, &b);

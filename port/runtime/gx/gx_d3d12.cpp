@@ -7,9 +7,12 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <chrono>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include "gx_d3d12.h"
@@ -27,19 +30,47 @@ namespace gx {
 
 namespace {
 
+#ifndef GX_SRV_HEAP_SIZE
+#define GX_SRV_HEAP_SIZE 65536
+#endif
+#ifndef GX_SAMPLER_HEAP_SIZE
+#define GX_SAMPLER_HEAP_SIZE 2048
+#endif
+#ifndef GX_CONSTANT_PAGE_SIZE
+#define GX_CONSTANT_PAGE_SIZE (32 << 20)
+#endif
+
+// execute_draw section costs (seconds) and draw count since the last profile line.
+double g_prof[8]; uint64_t g_prof_draws = 0, g_pso_hits = 0, g_pso_lookups = 0, g_pso_creates = 0;
+struct Stopwatch {
+  static double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+  double t = now(); double lap() { double n = now(), d = n - t; t = n; return d; }
+};
+
 void check(HRESULT hr, const char* what) { if (FAILED(hr)) host::die("D3D12: %s failed (%08X)", what, (unsigned)hr); }
 
 struct PsoKey {
   uint64_t vs, ps;
   uint32_t blend, zmode, cull, topology, pixel_format;
-  bool operator==(const PsoKey& o) const { return memcmp(this, &o, sizeof *this) == 0; }
+  bool operator==(const PsoKey& o) const {
+    return vs == o.vs && ps == o.ps && blend == o.blend && zmode == o.zmode &&
+        cull == o.cull && topology == o.topology && pixel_format == o.pixel_format;
+  }
 };
-struct PsoKeyHash { size_t operator()(const PsoKey& k) const { return (size_t)hash_bytes(&k, sizeof k); } };
+struct PsoKeyHash { size_t operator()(const PsoKey& k) const {
+  const uint64_t fields[] = {k.vs, k.ps, k.blend, k.zmode, k.cull, k.topology, k.pixel_format};
+  return (size_t)hash_bytes(fields, sizeof fields);
+} };
 
 struct TextureEntry {
   ComPtr<ID3D12Resource> resource;
   uint32_t width = 0, height = 0, levels = 1;
   uint64_t last_used = 0;
+};
+
+using TextureSetKey = std::array<ID3D12Resource*, 8>;
+struct TextureSetHash {
+  size_t operator()(const TextureSetKey& k) const { return (size_t)hash_bytes(k.data(), sizeof(ID3D12Resource*) * k.size()); }
 };
 
 struct SamplerSetKey {
@@ -48,38 +79,61 @@ struct SamplerSetKey {
 };
 struct SamplerSetHash { size_t operator()(const SamplerSetKey& k) const { return (size_t)hash_bytes(&k, sizeof k); } };
 
+// Upload pages remain alive until the frame fence completes. Grow instead of
+// dropping draws or exposing an incompletely uploaded texture when a page fills.
 class Ring {
- public:
-  void init(ID3D12Device* dev, size_t size) {
-    size_ = size;
+  struct Page {
+    ComPtr<ID3D12Resource> buffer;
+    uint8_t* cpu = nullptr;
+    size_t size = 0, offset = 0;
+  };
+  ID3D12Device* device_ = nullptr;
+  size_t page_size_ = 0, current_ = 0, slot_ = 0;
+  std::vector<Page> slots_[3];      // one page set per frame in flight
+  std::vector<Page>& pages() { return slots_[slot_]; }
+  Page make_page(size_t size) {
+    Page p; p.size = size;
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_UPLOAD};
     D3D12_RESOURCE_DESC rd{};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = size; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
-    rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    check(dev->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&buffer_)), "ring buffer");
-    check(buffer_->Map(0, nullptr, (void**)&cpu_), "ring map");
-    gpu_ = buffer_->GetGPUVirtualAddress();
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = size; rd.Height = 1;
+    rd.DepthOrArraySize = 1; rd.MipLevels = 1; rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&p.buffer)), "upload page");
+    check(p.buffer->Map(0, nullptr, (void**)&p.cpu), "upload page map");
+    return p;
   }
-  void reset() { offset_ = 0; }
-  // Returns CPU pointer and GPU address for `bytes` aligned to `align`.
+ public:
+  void init(ID3D12Device* dev, size_t size) {
+    device_ = dev; page_size_ = size;
+    for (auto& set : slots_) set.push_back(make_page(size));
+  }
+  // Selects the page set of frame slot `slot` (whose previous GPU work has completed).
+  void reset(size_t slot) {
+    slot_ = slot; current_ = 0;
+    for (auto& p : pages()) p.offset = 0;
+    // Retire exceptional overflow pages now that this slot's fence has passed.
+    if (pages().size() > 1) pages().resize(1);
+  }
   bool alloc(size_t bytes, size_t align, uint8_t** cpu, D3D12_GPU_VIRTUAL_ADDRESS* gpu) {
-    size_t off = (offset_ + align - 1) & ~(align - 1);
-    if (off + bytes > size_) return false;
-    *cpu = cpu_ + off; *gpu = gpu_ + off; offset_ = off + bytes;
+    size_t off = (pages()[current_].offset + align - 1) & ~(align - 1);
+    if (off > pages()[current_].size || bytes > pages()[current_].size - off) {
+      ++current_;
+      pages().push_back(make_page(std::max(page_size_, (bytes + align - 1) & ~(align - 1))));
+      off = 0;
+    }
+    auto& p = pages()[current_];
+    *cpu = p.cpu + off; *gpu = p.buffer->GetGPUVirtualAddress() + off;
+    p.offset = off + bytes;
     return true;
   }
-  ID3D12Resource* resource() { return buffer_.Get(); }
- private:
-  ComPtr<ID3D12Resource> buffer_;
-  uint8_t* cpu_ = nullptr;
-  D3D12_GPU_VIRTUAL_ADDRESS gpu_ = 0;
-  size_t size_ = 0, offset_ = 0;
+  ID3D12Resource* resource() { return pages()[current_].buffer.Get(); }
 };
 
 class D3D12Backend : public Backend {
  public:
   D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); }
-  ~D3D12Backend() override { wait_gpu(); flush_captures(); if (fence_event_) CloseHandle(fence_event_); }
+  ~D3D12Backend() override { wait_gpu(); flush_captures(); save_pipeline_library(); if (fence_event_) CloseHandle(fence_event_); }
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
   void resize(int w, int h) {
@@ -99,6 +153,8 @@ class D3D12Backend : public Backend {
   void create_efb();
   int pick_scale() const;
   void wait_gpu();
+  uint32_t reserve_srvs(uint32_t count);
+  void rotate_heap(D3D12_DESCRIPTOR_HEAP_TYPE type);
   ID3D12PipelineState* get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo);
   ID3D12Resource* get_texture(const TextureRef& t, uint32_t* w, uint32_t* h);
   D3D12_GPU_DESCRIPTOR_HANDLE bind_textures(const DrawCall& dc);
@@ -119,16 +175,33 @@ class D3D12Backend : public Backend {
   int scale_ = 1;                                // current internal-resolution multiplier
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
   ComPtr<ID3D12Device> device_;
+  // Persistent caches (opts_.shader_cache): compiled shader blobs as files, pipelines in a D3D12
+  // pipeline library serialized at shutdown. First sessions compile; later ones load instantly.
+  ComPtr<ID3D12PipelineLibrary> pipeline_library_;
+  std::vector<uint8_t> pipeline_library_data_;
+  bool pipeline_library_dirty_ = false;
+  void open_pipeline_library();
+  void save_pipeline_library();
+  bool load_shader_blob(const std::string& path, ComPtr<ID3DBlob>& blob);
+  void save_shader_blob(const std::string& path, ID3DBlob* blob);
   ComPtr<ID3D12CommandQueue> queue_;
   ComPtr<IDXGISwapChain3> swapchain_;
   ComPtr<ID3D12DescriptorHeap> rtv_heap_, dsv_heap_, srv_heap_, sampler_heap_;
   ComPtr<ID3D12Resource> backbuffers_[3];
   ComPtr<ID3D12Resource> efb_color_, efb_depth_;
-  ComPtr<ID3D12CommandAllocator> allocator_;
+  // Frames in flight: each slot owns a command allocator, upload rings and the resources it
+  // retired; a slot is reused only after the fence value recorded at its submission completes.
+  static constexpr int FRAME_SLOTS = 3;
+  ComPtr<ID3D12CommandAllocator> allocators_[FRAME_SLOTS];
+  uint64_t slot_fence_[FRAME_SLOTS] = {};
+  int slot_ = 0;
   ComPtr<ID3D12GraphicsCommandList> list_;
   ComPtr<ID3D12Fence> fence_;
   HANDLE fence_event_ = nullptr;
   uint64_t fence_value_ = 0;
+  void wait_fence(uint64_t value) {
+    if (value && fence_->GetCompletedValue() < value) { fence_->SetEventOnCompletion(value, fence_event_); WaitForSingleObject(fence_event_, INFINITE); }
+  }
   ComPtr<ID3D12RootSignature> root_;
   ComPtr<ID3D12RootSignature> blit_root_;
   ComPtr<ID3D12PipelineState> blit_pso_;
@@ -141,12 +214,14 @@ class D3D12Backend : public Backend {
   std::unordered_map<SamplerSetKey, uint32_t, SamplerSetHash> sampler_sets_;  // -> heap slot base
   uint32_t sampler_slots_used_ = 0;
   uint32_t srv_cursor_ = 0;
+  std::unordered_map<TextureSetKey, uint32_t, TextureSetHash> texture_sets_;
+  std::vector<ComPtr<ID3D12DescriptorHeap>> descriptor_garbage_[FRAME_SLOTS];
   uint64_t frame_counter_ = 0;
   uint32_t frames_presented_ = 0;
   bool efb_is_rt_ = true;
   bool have_clear_ = false;
   EfbCopy pending_clear_{};
-  std::vector<ComPtr<ID3D12Resource>> frame_garbage_;
+  std::vector<ComPtr<ID3D12Resource>> frame_garbage_[FRAME_SLOTS];
   std::vector<uint8_t> decode_scratch_;
 };
 
@@ -183,25 +258,26 @@ void D3D12Backend::init() {
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtv_heap_)), "rtv heap");
   hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV; hd.NumDescriptors = 2;
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&dsv_heap_)), "dsv heap");
-  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = 65536; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV; hd.NumDescriptors = GX_SRV_HEAP_SIZE; hd.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&srv_heap_)), "srv heap");
-  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER; hd.NumDescriptors = 2048;
+  hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER; hd.NumDescriptors = GX_SAMPLER_HEAP_SIZE;
   check(device_->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&sampler_heap_)), "sampler heap");
   rtv_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
   srv_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
   sampler_size_ = device_->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
 
-  check(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocator_)), "allocator");
-  check(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator_.Get(), nullptr, IID_PPV_ARGS(&list_)), "list");
+  for (auto& a : allocators_) check(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a)), "allocator");
+  check(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocators_[0].Get(), nullptr, IID_PPV_ARGS(&list_)), "list");
   list_->Close();
   check(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)), "fence");
   fence_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
   create_swapchain_targets(false);
   create_efb();
+  open_pipeline_library();
   vertex_ring_.init(device_.Get(), 48 << 20);
   index_ring_.init(device_.Get(), 24 << 20);
-  constant_ring_.init(device_.Get(), 32 << 20);
+  constant_ring_.init(device_.Get(), GX_CONSTANT_PAGE_SIZE);
   upload_ring_.init(device_.Get(), 64 << 20);
 
   // Root signature: b0 (VS constants), b1 (PS constants), t0-7, s0-7.
@@ -302,30 +378,40 @@ void D3D12Backend::wait_gpu() {
 
 // ---------------- pipelines ----------------
 ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
+  if (dc.cached_pipeline) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
+  Stopwatch sw;
   VSUid vsu = make_vs_uid(dc);
   PSUid psu = make_ps_uid(dc);
   uint64_t vh = vsu.hash(), ph = psu.hash();
   PsoKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode(), (uint32_t)topo, dc.bp.zcontrol() & 7};
+  g_prof[6] += sw.lap(); ++g_pso_lookups;   // uid build + hash
   auto it = psos_.find(key);
-  if (it != psos_.end()) return it->second.Get();
+  g_prof[7] += sw.lap();                    // map lookup
+  if (it != psos_.end()) { dc.cached_pipeline = it->second.Get(); return it->second.Get(); }
+  ++g_pso_creates;
 
+  char vs_name[64], ps_name[64];
+  snprintf(vs_name, sizeof vs_name, "vs_%016llX.dxbc", (unsigned long long)vh);
+  snprintf(ps_name, sizeof ps_name, "ps_%016llX.dxbc", (unsigned long long)ph);
   ComPtr<ID3DBlob>& vs = vs_blobs_[vh];
-  if (!vs) {
+  if (!vs && !load_shader_blob(opts_.shader_cache + "/" + vs_name, vs)) {
     std::string src = generate_vertex_shader(vsu);
     ComPtr<ID3DBlob> err;
     if (FAILED(D3DCompile(src.c_str(), src.size(), "vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs, &err))) {
       host::log("vertex shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
       host::die("vertex shader compile failed");
     }
+    save_shader_blob(opts_.shader_cache + "/" + vs_name, vs.Get());
   }
   ComPtr<ID3DBlob>& ps = ps_blobs_[ph];
-  if (!ps) {
+  if (!ps && !load_shader_blob(opts_.shader_cache + "/" + ps_name, ps)) {
     std::string src = generate_pixel_shader(psu);
     ComPtr<ID3DBlob> err;
     if (FAILED(D3DCompile(src.c_str(), src.size(), "ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &err))) {
       host::log("pixel shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
       host::die("pixel shader compile failed");
     }
+    save_shader_blob(opts_.shader_cache + "/" + ps_name, ps.Get());
   }
   static const D3D12_INPUT_ELEMENT_DESC layout[] = {
     {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -388,8 +474,14 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   pd.NumRenderTargets = 1; pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; pd.DSVFormat = DXGI_FORMAT_D32_FLOAT;
   pd.SampleDesc.Count = 1;
   ComPtr<ID3D12PipelineState> pso;
-  check(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)), "pso");
+  wchar_t pso_name[96];
+  swprintf_s(pso_name, L"%016llX-%016llX-%X-%X-%X-%X-%X", (unsigned long long)vh, (unsigned long long)ph, key.blend, key.zmode, key.cull, key.topology, key.pixel_format);
+  if (!pipeline_library_ || FAILED(pipeline_library_->LoadGraphicsPipeline(pso_name, &pd, IID_PPV_ARGS(&pso)))) {
+    check(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)), "pso");
+    if (pipeline_library_ && SUCCEEDED(pipeline_library_->StorePipeline(pso_name, pso.Get()))) pipeline_library_dirty_ = true;
+  }
   psos_[key] = pso;
+  dc.cached_pipeline = pso.Get();
   return pso.Get();
 }
 
@@ -443,21 +535,49 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
   return res;
 }
 
+// Recorded descriptor tables stay valid until the GPU finishes this frame.
+// Never wrap and overwrite descriptors referenced by an earlier draw.
+void D3D12Backend::rotate_heap(D3D12_DESCRIPTOR_HEAP_TYPE type) {
+  const bool sampler = type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+  auto& heap = sampler ? sampler_heap_ : srv_heap_;
+  descriptor_garbage_[slot_].push_back(heap);
+  D3D12_DESCRIPTOR_HEAP_DESC desc = heap->GetDesc();
+  ComPtr<ID3D12DescriptorHeap> replacement;
+  check(device_->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&replacement)), "descriptor rollover");
+  heap = std::move(replacement);
+  if (sampler) { sampler_sets_.clear(); sampler_slots_used_ = 0; }
+  else { srv_cursor_ = 0; texture_sets_.clear(); }
+  ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
+  list_->SetDescriptorHeaps(2, heaps);
+}
+
+uint32_t D3D12Backend::reserve_srvs(uint32_t count) {
+  if (srv_cursor_ + count > GX_SRV_HEAP_SIZE) rotate_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+  uint32_t base = srv_cursor_; srv_cursor_ += count;
+  return base;
+}
+
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_textures(const DrawCall& dc) {
-  if (srv_cursor_ + 8 > 65536) srv_cursor_ = 0;
-  uint32_t base = srv_cursor_;
-  srv_cursor_ += 8;
-  D3D12_CPU_DESCRIPTOR_HANDLE cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart();
+  TextureSetKey resources{};
   for (int i = 0; i < 8; ++i) {
-    D3D12_CPU_DESCRIPTOR_HANDLE h = cpu; h.ptr += (base + i) * srv_size_;
-    ID3D12Resource* res = nullptr;
-    uint32_t w = 1, hgt = 1;
-    if (dc.textures[i].used) res = get_texture(dc.textures[i], &w, &hgt);
-    D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
-    sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; sd.Texture2D.MipLevels = res ? -1 : 1;
-    if (res) device_->CreateShaderResourceView(res, &sd, h);
-    else device_->CreateShaderResourceView(nullptr, &sd, h);   // null descriptor
+    uint32_t w = 1, h = 1;
+    if (dc.textures[i].used) resources[i] = get_texture(dc.textures[i], &w, &h);
+  }
+  auto existing = texture_sets_.find(resources);
+  uint32_t base;
+  if (existing != texture_sets_.end()) base = existing->second;
+  else {
+    base = reserve_srvs(8);
+    texture_sets_[resources] = base;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart();
+    for (int i = 0; i < 8; ++i) {
+      D3D12_CPU_DESCRIPTOR_HANDLE h = cpu; h.ptr += (base + i) * srv_size_;
+      D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+      sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+      sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+      sd.Texture2D.MipLevels = resources[i] ? -1 : 1;
+      device_->CreateShaderResourceView(resources[i], &sd, h);
+    }
   }
   D3D12_GPU_DESCRIPTOR_HANDLE g = srv_heap_->GetGPUDescriptorHandleForHeapStart();
   g.ptr += base * srv_size_;
@@ -471,7 +591,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
   uint32_t base;
   if (it != sampler_sets_.end()) base = it->second;
   else {
-    if (sampler_slots_used_ + 8 > 2048) { sampler_sets_.clear(); sampler_slots_used_ = 0; }
+    if (sampler_slots_used_ + 8 > GX_SAMPLER_HEAP_SIZE) rotate_heap(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
     base = sampler_slots_used_; sampler_slots_used_ += 8;
     sampler_sets_[key] = base;
     for (int i = 0; i < 8; ++i) {
@@ -533,6 +653,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
       return;  // points not supported yet
   }
   if (idx.empty()) return;
+  Stopwatch sw; ++g_prof_draws; g_prof[0] += sw.lap();   // index generation
   // Vertices
   uint8_t* vcpu; D3D12_GPU_VIRTUAL_ADDRESS vgpu;
   size_t vbytes = (size_t)n * sizeof(Vertex);
@@ -541,16 +662,20 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   uint8_t* icpu; D3D12_GPU_VIRTUAL_ADDRESS igpu;
   if (!index_ring_.alloc(idx.size() * 4, 4, &icpu, &igpu)) { host::log("d3d12: index ring full"); return; }
   memcpy(icpu, idx.data(), idx.size() * 4);
+  g_prof[1] += sw.lap();   // vertex/index upload
   // Constants
   uint8_t* ccpu; D3D12_GPU_VIRTUAL_ADDRESS vs_gpu, ps_gpu;
   if (!constant_ring_.alloc(sizeof(VSConstants), 256, &ccpu, &vs_gpu)) { host::log("d3d12: constant ring full"); return; }
   fill_vs_constants(dc, *(VSConstants*)ccpu, scale_, override_matrices);
   if (!constant_ring_.alloc(sizeof(PSConstants), 256, &ccpu, &ps_gpu)) return;
   fill_ps_constants(dc, *(PSConstants*)ccpu, scale_);
+  g_prof[2] += sw.lap();   // constants
   // Pipeline
   ID3D12PipelineState* pso = get_pso(dc, topo);
+  g_prof[3] += sw.lap();   // pso
   D3D12_GPU_DESCRIPTOR_HANDLE srvs = bind_textures(dc);
   D3D12_GPU_DESCRIPTOR_HANDLE samps = bind_samplers(dc);
+  g_prof[4] += sw.lap();   // textures + samplers
   // Viewport / scissor
   const float* vp = (const float*)&dc.xf_regs[0x1A];
   float s = (float)scale_;
@@ -584,6 +709,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   list_->IASetIndexBuffer(&ibv);
   list_->IASetPrimitiveTopology(prim);
   list_->DrawIndexedInstanced((UINT)idx.size(), 1, 0, 0, 0);
+  g_prof[5] += sw.lap();   // state + draw calls
 }
 
 void D3D12Backend::clear_efb(const EfbCopy& c) {
@@ -610,7 +736,7 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   b[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[0].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, src_state};
   if (!e.resource || e.width != sw || e.height != sh) {
-    if (e.resource) frame_garbage_.push_back(e.resource);
+    if (e.resource) frame_garbage_[slot_].push_back(e.resource);
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     D3D12_RESOURCE_DESC rd{};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = sw; rd.Height = sh; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
@@ -625,8 +751,7 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   }
   e.last_used = frame_counter_;
   if (c.half_scale) {
-    if (srv_cursor_ + 1 > 65536) srv_cursor_ = 0;
-    uint32_t slot = srv_cursor_++;
+    uint32_t slot = reserve_srvs(1);
     D3D12_CPU_DESCRIPTOR_HANDLE sh_cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart(); sh_cpu.ptr += slot * srv_size_;
     device_->CreateShaderResourceView(efb_color_.Get(), nullptr, sh_cpu);
     D3D12_GPU_DESCRIPTOR_HANDLE sh_gpu = srv_heap_->GetGPUDescriptorHandleForHeapStart(); sh_gpu.ptr += slot * srv_size_;
@@ -672,8 +797,7 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   b[1].Transition = {backbuffers_[bb].Get(), 0, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET};
   list_->ResourceBarrier(2, b);
   // SRV for the EFB
-  if (srv_cursor_ + 1 > 65536) srv_cursor_ = 0;
-  uint32_t slot = srv_cursor_++;
+  uint32_t slot = reserve_srvs(1);
   D3D12_CPU_DESCRIPTOR_HANDLE h = srv_heap_->GetCPUDescriptorHandleForHeapStart(); h.ptr += slot * srv_size_;
   device_->CreateShaderResourceView(efb_color_.Get(), nullptr, h);
   D3D12_GPU_DESCRIPTOR_HANDLE g = srv_heap_->GetGPUDescriptorHandleForHeapStart(); g.ptr += slot * srv_size_;
@@ -723,7 +847,8 @@ void D3D12Backend::capture_backbuffer() {
   rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
   ComPtr<ID3D12Resource> staging;
   check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&staging)), "readback");
-  allocator_->Reset(); list_->Reset(allocator_.Get(), nullptr);
+  wait_gpu();   // the readback reuses this slot's allocator: every in-flight frame must be done
+  allocators_[slot_]->Reset(); list_->Reset(allocators_[slot_].Get(), nullptr);
   D3D12_RESOURCE_BARRIER b{};
   b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b.Transition = {src, 0, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_COPY_SOURCE};
@@ -834,11 +959,13 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   } float_environment;
   ++frame_counter_;
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
-  vertex_ring_.reset(); index_ring_.reset(); constant_ring_.reset(); upload_ring_.reset();
-  srv_cursor_ = 0;
-  frame_garbage_.clear();
-  check(allocator_->Reset(), "allocator reset");
-  check(list_->Reset(allocator_.Get(), nullptr), "list reset");
+  slot_ = (int)(frame_counter_ % FRAME_SLOTS);
+  wait_fence(slot_fence_[slot_]);   // this slot's previous frame (FRAME_SLOTS frames ago) is complete
+  vertex_ring_.reset(slot_); index_ring_.reset(slot_); constant_ring_.reset(slot_); upload_ring_.reset(slot_);
+  frame_garbage_[slot_].clear();
+  descriptor_garbage_[slot_].clear();
+  check(allocators_[slot_]->Reset(), "allocator reset");
+  check(list_->Reset(allocators_[slot_].Get(), nullptr), "list reset");
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
   list_->SetDescriptorHeaps(2, heaps);
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += 3 * rtv_size_;
@@ -863,7 +990,10 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     swapchain_->Present(opts_.vsync ? 1 : 0, opts_.vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING);
     ++frames_presented_;
   }
-  wait_gpu();
+  // Signal, do not wait: the next frames render while the GPU finishes this one.
+  ++fence_value_;
+  queue_->Signal(fence_.Get(), fence_value_);
+  slot_fence_[slot_] = fence_value_;
   if (presented && !opts_.capture_path.empty()) {
     capture_sequence_ = frame.sequence;
     if (opts_.capture_sim_frame && !opts_.capture_frame && frame.sequence >= opts_.capture_sim_frame) opts_.capture_frame = frames_presented_;
@@ -880,6 +1010,69 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
 }
 
 }  // namespace
+
+void D3D12Backend::open_pipeline_library() {
+  CreateDirectoryA(opts_.shader_cache.c_str(), nullptr);
+  ComPtr<ID3D12Device1> device1;
+  if (FAILED(device_.As(&device1))) { host::log("d3d12: pipeline library unsupported"); return; }
+  std::string path = opts_.shader_cache + "/pipelines.bin";
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (f) {
+    std::fseek(f, 0, SEEK_END); long n = std::ftell(f); std::fseek(f, 0, SEEK_SET);
+    pipeline_library_data_.resize(n > 0 ? (size_t)n : 0);
+    if (n > 0 && std::fread(pipeline_library_data_.data(), 1, (size_t)n, f) != (size_t)n) pipeline_library_data_.clear();
+    std::fclose(f);
+  }
+  HRESULT hr = pipeline_library_data_.empty() ? E_FAIL : device1->CreatePipelineLibrary(pipeline_library_data_.data(), pipeline_library_data_.size(), IID_PPV_ARGS(&pipeline_library_));
+  if (FAILED(hr)) {   // absent, or built by another driver/adapter version: start a fresh library
+    pipeline_library_data_.clear();
+    if (FAILED(device1->CreatePipelineLibrary(nullptr, 0, IID_PPV_ARGS(&pipeline_library_)))) { pipeline_library_.Reset(); host::log("d3d12: pipeline library unavailable"); return; }
+    host::log("d3d12: new pipeline library in %s", opts_.shader_cache.c_str());
+  } else {
+    host::log("d3d12: pipeline library loaded from %s (%zu bytes)", path.c_str(), pipeline_library_data_.size());
+  }
+}
+
+void D3D12Backend::save_pipeline_library() {
+  if (!pipeline_library_ || !pipeline_library_dirty_) return;
+  size_t size = pipeline_library_->GetSerializedSize();
+  std::vector<uint8_t> data(size);
+  if (FAILED(pipeline_library_->Serialize(data.data(), size))) return;
+  std::string path = opts_.shader_cache + "/pipelines.bin";
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) return;
+  std::fwrite(data.data(), 1, size, f); std::fclose(f);
+  host::log("d3d12: pipeline library saved (%zu bytes, %zu pipelines)", size, psos_.size());
+  pipeline_library_dirty_ = false;
+}
+
+bool D3D12Backend::load_shader_blob(const std::string& path, ComPtr<ID3DBlob>& blob) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) return false;
+  std::fseek(f, 0, SEEK_END); long n = std::ftell(f); std::fseek(f, 0, SEEK_SET);
+  if (n <= 0 || FAILED(D3DCreateBlob((SIZE_T)n, &blob))) { std::fclose(f); return false; }
+  bool ok = std::fread(blob->GetBufferPointer(), 1, (size_t)n, f) == (size_t)n;
+  std::fclose(f);
+  if (!ok) blob.Reset();
+  return ok;
+}
+
+void D3D12Backend::save_shader_blob(const std::string& path, ID3DBlob* blob) {
+  FILE* f = std::fopen(path.c_str(), "wb");
+  if (!f) return;
+  std::fwrite(blob->GetBufferPointer(), 1, blob->GetBufferSize(), f); std::fclose(f);
+}
+
+std::string d3d12_profile_line() {
+  char buf[512];
+  double n = (double)std::max<uint64_t>(1, g_prof_draws);
+  double l = (double)std::max<uint64_t>(1, g_pso_lookups);
+  snprintf(buf, sizeof buf, "%llu draws: index %.2f, upload %.2f, constants %.2f, pso %.2f, bind %.2f, draw %.2f us/draw | pso cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu",
+           (unsigned long long)g_prof_draws, 1e6 * g_prof[0] / n, 1e6 * g_prof[1] / n, 1e6 * g_prof[2] / n, 1e6 * g_prof[3] / n, 1e6 * g_prof[4] / n, 1e6 * g_prof[5] / n,
+           (unsigned long long)g_pso_hits, (unsigned long long)g_pso_lookups, 1e6 * g_prof[6] / l, 1e6 * g_prof[7] / l, (unsigned long long)g_pso_creates);
+  std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pso_hits = g_pso_lookups = g_pso_creates = 0;
+  return buf;
+}
 
 Backend* create_d3d12_backend(void* hwnd, int w, int h, const D3D12Options& options) {
   return new D3D12Backend((HWND)hwnd, w, h, options);

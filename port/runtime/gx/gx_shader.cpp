@@ -1,6 +1,7 @@
 // HLSL generation for GX pipelines. Ported from Dolphin VideoCommon (GPL-2.0-or-later):
 // VertexShaderGen.cpp, LightingShaderGen.h, PixelShaderGen.cpp (D3D11 integer-math path).
 #include "gx_shader.h"
+#include "gx_texture.h"
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -142,9 +143,9 @@ void gen_lighting(Code& o, uint32_t numColorChans, const LightUid& u, uint32_t c
 }  // namespace
 
 // ---------------------------------------------------------------- uids
-uint64_t VSUid::hash() const { return fnv(this, sizeof *this); }
+uint64_t VSUid::hash() const { return hash_bytes(this, sizeof *this); }
 bool VSUid::operator==(const VSUid& o) const { return std::memcmp(this, &o, sizeof *this) == 0; }
-uint64_t PSUid::hash() const { return fnv(this, sizeof *this); }
+uint64_t PSUid::hash() const { return hash_bytes(this, sizeof *this); }
 bool PSUid::operator==(const PSUid& o) const { return std::memcmp(this, &o, sizeof *this) == 0; }
 
 VSUid make_vs_uid(const DrawCall& dc) {
@@ -153,7 +154,7 @@ VSUid make_vs_uid(const DrawCall& dc) {
   u.numTexGens = dc.xf_regs[0x3F] & 15;
   u.numColorChans = dc.xf_regs[0x09] & 3;
   // Only the registers that influence codegen.
-  for (int i = 0x09; i <= 0x12; ++i) u.xf_regs[i] = dc.xf_regs[i] & 0x7FFF;
+  for (int i = 0x0E; i <= 0x11; ++i) u.xf_regs[i] = dc.xf_regs[i] & 0x7FFF;
   u.xf_regs[0x09] = dc.xf_regs[0x09] & 3;
   u.xf_regs[0x12] = dc.xf_regs[0x12] & 1;
   for (int i = 0; i < 8; ++i) { u.xf_regs[0x40 + i] = dc.xf_regs[0x40 + i]; u.xf_regs[0x50 + i] = dc.xf_regs[0x50 + i]; }
