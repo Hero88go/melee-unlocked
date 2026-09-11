@@ -75,6 +75,9 @@ uint32_t retrace_count();
 constexpr uint64_t TB_HZ = 40500000ull;   // bus clock / 4
 constexpr uint64_t TB_PER_FRAME = TB_HZ / 60;
 void advance_time(uint64_t ticks);
+// Retrace pacing multiplier (Slippi Online nudges it by up to 1% to keep peers in step).
+void set_emulation_speed(double speed);
+double emulation_speed();
 // Host steady-clock seconds of the current simulation frame's retrace (the scheduled deadline when
 // paced, wall time when --fast). Sub-frame presentation measures its phase from this.
 double frame_time();

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "exi_slippi.h"
+#include "slippi_online.h"
 #include "gecko_data.h"
 #include "host.h"
 #include "vcdiff.h"
@@ -36,7 +37,7 @@ std::unordered_map<uint8_t, uint32_t> g_payload_sizes = {
     {CMD_IS_FILE_READY, 0}, {CMD_GET_GECKO_CODES, 0}, {CMD_ONLINE_INPUTS, 25}, {CMD_CAPTURE_SAVESTATE, 32}, {CMD_LOAD_SAVESTATE, 32},
     {CMD_GET_MATCH_STATE, 0}, {CMD_FIND_OPPONENT, 19}, {CMD_SET_MATCH_SELECTIONS, 9}, {CMD_SEND_CHAT_MESSAGE, 2}, {CMD_OPEN_LOGIN, 0},
     {CMD_LOGOUT, 0}, {CMD_UPDATE, 0}, {CMD_GET_ONLINE_STATUS, 0}, {CMD_CLEANUP_CONNECTION, 0}, {CMD_GET_NEW_SEED, 0},
-    {CMD_REPORT_GAME, 1 + 4 + 4 + 4 + 1 + 1 + 1 + 4 + 4 * 9 + 312 - 1}, {CMD_FETCH_CODE_SUGGESTION, 31}, {CMD_OVERWRITE_SELECTIONS, 2 + 12},
+    {CMD_REPORT_GAME, 368}, {CMD_FETCH_CODE_SUGGESTION, 31}, {CMD_OVERWRITE_SELECTIONS, 2 + 12},
     {CMD_GP_COMPLETE_STEP, 5}, {CMD_GP_FETCH_STEP, 1}, {CMD_REPORT_SET_COMPLETE, 1}, {CMD_GET_PLAYER_SETTINGS, 0}, {CMD_REPORT_MATCH_STATUS_UPDATE, 1},
     {CMD_LOG_MESSAGE, 0xFFFF}, {CMD_FILE_LENGTH, 0x40}, {CMD_FILE_LOAD, 0x40}, {CMD_GCT_LENGTH, 0}, {CMD_GCT_LOAD, 4}, {CMD_GET_DELAY, 0},
     {CMD_PLAY_MUSIC, 8}, {CMD_STOP_MUSIC, 0}, {CMD_CHANGE_MUSIC_VOLUME, 1}, {CMD_PREMADE_TEXT_LENGTH, 2}, {CMD_PREMADE_TEXT_LOAD, 2},
@@ -215,18 +216,11 @@ void prepare_file(const uint8_t* payload, bool load) {
   else g_read_queue.insert(g_read_queue.end(), data.begin(), data.end());
 }
 
-void prepare_online_status() {
-  g_read_queue.clear();
-  // Byte 0: app state (0 logged out, 1 logged in, 2 update needed), 31 bytes display name,
-  // 10 bytes connect code. Logged out until the user/login system is ported.
-  g_read_queue.push_back(0);
-  g_read_queue.resize(1 + 31 + 10, 0);
-}
 
 }  // namespace
 
-void init() { g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; }
-void shutdown() { if (g_file) { uint8_t empty[1]; write_to_file(empty, 0, "close"); } }
+void init() { g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; online::init(); }
+void shutdown() { if (g_file) { uint8_t empty[1]; write_to_file(empty, 0, "close"); } online::shutdown(); }
 uint64_t replays_written() { return g_replays_written; }
 uint32_t gct_load_address() { return g_gct_address; }
 uint64_t commands_seen() { return g_commands; }
@@ -264,14 +258,8 @@ void dma_write(uint32_t addr, uint32_t size) {
       case CMD_LOG_MESSAGE: log_message(&mem[loc + 1], size - loc - 1); break;
       case CMD_FILE_LENGTH: prepare_file(&mem[loc + 1], false); break;
       case CMD_FILE_LOAD: prepare_file(&mem[loc + 1], true); break;
-      case CMD_GET_DELAY: g_read_queue.clear(); g_read_queue.push_back(g_frame_delay); break;
-      case CMD_GET_ONLINE_STATUS: prepare_online_status(); break;
-      case CMD_GET_NEW_SEED: { g_read_queue.clear(); uint32_t seed = (uint32_t)(host::now_seconds() * 1000.0) * 2654435761u; append_u32(g_read_queue, seed); break; }
       case CMD_PREMADE_TEXT_LENGTH: g_read_queue.clear(); append_u32(g_read_queue, 0); break;
       case CMD_PREMADE_TEXT_LOAD: g_read_queue.clear(); break;
-      case CMD_GET_RANK_VISIBILITY: g_read_queue.clear(); g_read_queue.push_back(0); break;
-      case CMD_GET_RANK: g_read_queue.clear(); g_read_queue.resize(16, 0); break;
-      case CMD_GET_PLAYER_SETTINGS: g_read_queue.clear(); g_read_queue.resize(4 * 16 * 51, 0); break;
       case CMD_PLAY_MUSIC: case CMD_STOP_MUSIC: case CMD_CHANGE_MUSIC_VOLUME: break;   // jukebox: game audio path instead
       case CMD_RECEIVE_COMMANDS: break;   // handled above
       case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); break;
@@ -282,7 +270,8 @@ void dma_write(uint32_t addr, uint32_t size) {
       case CMD_SET_MATCH_SELECTIONS: case CMD_OPEN_LOGIN: case CMD_LOGOUT: case CMD_UPDATE: case CMD_CLEANUP_CONNECTION:
       case CMD_SEND_CHAT_MESSAGE: case CMD_REPORT_GAME: case CMD_FETCH_CODE_SUGGESTION: case CMD_OVERWRITE_SELECTIONS:
       case CMD_GP_COMPLETE_STEP: case CMD_GP_FETCH_STEP: case CMD_REPORT_SET_COMPLETE: case CMD_REPORT_MATCH_STATUS_UPDATE: case CMD_FETCH_RANK:
-        g_read_queue.clear(); g_read_queue.resize(64, 0);   // online: ported in the next step
+      case CMD_GET_DELAY: case CMD_GET_ONLINE_STATUS: case CMD_GET_NEW_SEED: case CMD_GET_PLAYER_SETTINGS: case CMD_GET_RANK: case CMD_GET_RANK_VISIBILITY:
+        online::handle(byte, &mem[loc + 1], payload, g_read_queue);
         break;
       default:
         // Recording payloads (game info, frames, items, bones...) go to the replay file.

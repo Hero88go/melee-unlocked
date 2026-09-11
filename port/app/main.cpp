@@ -3,6 +3,8 @@
 #include "host.h"
 #include "render_observer.h"
 #include "exi_slippi.h"
+#include "slippi_online.h"
+#include "slippi_net.h"
 #include "audio.h"
 #include "functions.h"
 #include "guest_symbols.h"
@@ -77,6 +79,17 @@ int main(int argc, char** argv) {
       ppc::add_trace_func(addr, limit); }
     else if (a == "--sys-dir") o.sys_dir = next();
     else if (a == "--replay-dir") o.replay_dir = next();
+    else if (a == "--user-dir") slippi::online::config().user_dir = next();
+    else if (a == "--online-delay") slippi::online::config().delay = std::atoi(next());
+    else if (a == "--chat") { std::string v = next(); slippi::online::config().chat = v == "off" ? 2 : v == "direct" ? 1 : 0; }
+    else if (a == "--netplay-port") slippi::Matchmaking::forced_port = (uint16_t)std::atoi(next());
+    else if (a == "--local-peer") {
+      // idx:local_port:remote_ip:remote_port; two instances peer directly without the matchmaking server.
+      std::string v = next(); auto& lp = slippi::Matchmaking::local_peer;
+      size_t a1 = v.find(':'), a2 = v.find(':', a1 + 1), a3 = v.find(':', a2 + 1);
+      if (a1 == std::string::npos || a2 == std::string::npos || a3 == std::string::npos) { std::fprintf(stderr, "--local-peer idx:port:ip:port"); return 2; }
+      lp.enabled = true; lp.local_index = std::atoi(v.substr(0, a1).c_str()); lp.local_port = (uint16_t)std::atoi(v.substr(a1 + 1, a2 - a1 - 1).c_str());
+      lp.remote_ip = v.substr(a2 + 1, a3 - a2 - 1); lp.remote_port = (uint16_t)std::atoi(v.substr(a3 + 1).c_str()); }
     else if (a == "--dump-frame") gfx.dump_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;
