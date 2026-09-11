@@ -400,6 +400,9 @@ static void trace_state() {
 }
 
 static double g_frame_time = 0.0;
+static double g_emulation_speed = 1.0;
+void set_emulation_speed(double speed) { g_emulation_speed = speed < 0.5 ? 0.5 : speed > 2.0 ? 2.0 : speed; }
+double emulation_speed() { return g_emulation_speed; }
 double now_seconds() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 double frame_time() { return g_frame_time; }
 
@@ -409,7 +412,7 @@ void retrace() {
   advance_frame();
   if (g_has_window) window_pump();
   if (!options.fast) {
-    g_next_frame += std::chrono::microseconds(16667);
+    g_next_frame += std::chrono::microseconds((long long)(16667.0 / g_emulation_speed));
     auto now = std::chrono::steady_clock::now();
     if (g_next_frame > now) std::this_thread::sleep_until(g_next_frame);
     else if (now - g_next_frame > std::chrono::milliseconds(200)) g_next_frame = now;
