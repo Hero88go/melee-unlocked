@@ -1,0 +1,39 @@
+name: Bug report
+description: Something in the port crashes, freezes, desyncs or looks wrong
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Port version
+      description: The version from the zip name or the window title
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where
+      options: [Boot or menus, Offline match, Slippi online, Graphics or DLSS, Audio, Controller, Performance, Other]
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Character, stage, what you pressed, whether it happens every time
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected and what happened instead
+  - type: input
+    id: gpu
+    attributes:
+      label: GPU, driver version, monitor refresh rate
+  - type: textarea
+    id: log
+    attributes:
+      label: Console log and port-settings.ini
+      description: Run MeleePort.bat from a command prompt and paste the last 50 lines. Attach a .slp replay if the bug is in a match.
+      render: text
