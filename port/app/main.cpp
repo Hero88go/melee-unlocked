@@ -28,7 +28,7 @@ extern const size_t name_table_count;
 static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
-              "           [--fullscreen] [--frame-times out.csv] [--volume 0-100] [--audio-dump out.wav]\n"
+              "           [--fullscreen] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
 }
 
@@ -79,6 +79,9 @@ int main(int argc, char** argv) {
     else if (a == "--settings-path") gfx.settings_path = next();
     else if (a == "--pc-settings-open") { gfx.pc_settings = true; gfx.settings_open = true; }
     else if (a == "--fullscreen") gfx.fullscreen = true;
+    else if (a == "--dlss") { std::string v = next(); gfx.dlss_mode = v == "off" ? 0 : v == "dlaa" ? 1 : v == "quality" ? 2 : v == "balanced" ? 3 : v == "performance" ? 4 : v == "ultra" ? 5 : -1;
+      if (gfx.dlss_mode < 0) { std::fprintf(stderr, "--dlss off|dlaa|quality|balanced|performance|ultra\n"); return 2; } }
+    else if (a == "--dlss-jitter-sign") gfx.dlss_jitter_sign = (float)std::atof(next());
     else if (a == "--frame-times") gfx.frame_times = next();
     else if (a == "--vsync") gfx.vsync = true;
     else if (a == "--capture") gfx.capture_path = next();

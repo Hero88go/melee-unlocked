@@ -15,3 +15,6 @@ replays/
 
 /port-settings.ini
 /port-settings.ini.tmp
+
+# Streamline runtime binaries are copied from the SDK zip; keep headers/libs/docs only
+/port/third_party/streamline/bin/

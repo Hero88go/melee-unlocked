@@ -13,6 +13,8 @@ struct D3D12Options {
   // than Off the renderer presents new sub-frames between 60 Hz simulation frames.
   double fps_cap = 60; // -1 follows the active monitor
   bool fullscreen = false;
+  int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
+  float dlss_jitter_sign = 1.0f;  // calibration: sign of the jitter reported to Streamline
   bool pc_settings = false, settings_open = false, performance_overlay = false;
   std::string settings_path = "port-settings.ini";
   std::string frame_times; // optional buffered CSV of CPU presentation timing
