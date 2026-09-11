@@ -1,5 +1,32 @@
 # Development checkpoint — September 10, 2026
 
+## Native unlocked frame rate (sub-frame presentation)
+
+- `--fps N|unlocked` (with `--frame-mode extrapolate|interpolate|off`) runs the
+  render thread on its own timeline. Every draw captured from the GX FIFO carries a
+  stable identity (display-list address, call ordinal, draw ordinal; immediate-mode
+  draws use texture/size/ordinal). Between two 60 Hz simulation frames the presenter
+  pairs each draw with its previous instance, takes the per-slot delta of the XF
+  position matrices, decomposes it into a screw motion (rotation about an axis plus
+  slide) with per-axis scale, and applies the fraction `t` of that delta on top of the
+  current pose (extrapolate, zero added latency) or the previous pose (interpolate,
+  one frame of latency). Normal matrices follow the rotation. Non-rigid deltas use a
+  bounded linear blend; teleports and camera cuts keep the exact simulation pose.
+  Nothing blends images and nothing touches guest state (`port/runtime/gx/subframe.*`).
+- Evidence (`reports/native-validation/unlocked.log`, `burst_*.ppm`): a paced run
+  presented 35,090 frames for 1,799 simulation frames; captured presented frames
+  34952 and 34953 both belong to simulation frame 1721 (phases 0.416 and 0.987) and
+  differ in 90% of pixels: the falling item, both fighters and the camera advanced.
+  `port_subframe_test` covers the fractional screw math, cut detection, blend fallback
+  and identity pairing. Simulation state traces with the unlocked presenter match the
+  locked run (see `unlocked_trace.csv` versus `scale_s1.csv`).
+- Internal resolution follows Dolphin: `--scale N|auto` rasterizes the EFB at
+  640x528 x N (auto follows the window), scaled viewport/scissor/clears/EFB copies,
+  half-scale copies filtered. Window size via `--window WxH`.
+- Not yet done: GPU frames in flight (the presenter still waits for each frame's GPU
+  work), display-rate input sampling is unchanged (the game samples at 60 Hz), and
+  particles that are re-created every frame (new identities) do not extrapolate.
+
 ## Native fidelity and thread isolation
 
 - Texture and palette bytes (including mip chains) are now captured into immutable

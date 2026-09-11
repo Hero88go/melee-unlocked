@@ -581,8 +581,10 @@ std::string generate_pixel_shader(const PSUid& uid) {
 }
 
 // ---------------------------------------------------------------- constants
-void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale) {
+void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const DrawMatrices* override_matrices) {
   std::memset(&c, 0, sizeof c);
+  const float* pos_matrices = override_matrices ? override_matrices->pos : dc.posMatrices;
+  const float* nrm_matrices = override_matrices ? override_matrices->nrm : dc.normalMatrices;
   const float* vp = (const float*)&dc.xf_regs[0x1A];
   const float* proj = (const float*)&dc.xf_regs[0x20];
   uint32_t type = dc.xf_regs[0x26];
@@ -628,10 +630,10 @@ void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale) {
   uint32_t mia = dc.matrix_index_a, mib = dc.matrix_index_b;
   for (int i = 0; i < 8; ++i) {
     uint32_t idx = i < 4 ? bits(mia, 6 + 6 * i, 6) : bits(mib, 6 * (i - 4), 6);
-    std::memcpy(c.texmatrices[3 * i], &dc.posMatrices[idx * 4], 12 * sizeof(float));
+    std::memcpy(c.texmatrices[3 * i], &pos_matrices[idx * 4], 12 * sizeof(float));
   }
-  std::memcpy(c.transformmatrices, dc.posMatrices, sizeof dc.posMatrices);
-  for (int i = 0; i < 32; ++i) std::memcpy(c.normalmatrices[i], &dc.normalMatrices[3 * i], 12);
+  std::memcpy(c.transformmatrices, pos_matrices, sizeof dc.posMatrices);
+  for (int i = 0; i < 32; ++i) std::memcpy(c.normalmatrices[i], &nrm_matrices[3 * i], 12);
   std::memcpy(c.posttransformmatrices, dc.postMatrices, sizeof dc.postMatrices);
 }
 

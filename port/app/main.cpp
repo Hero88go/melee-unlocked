@@ -16,6 +16,7 @@ namespace ppc { void init_dispatch(); }
 
 static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
+              "           [--fps N|unlocked] [--frame-mode extrapolate|interpolate|off] [--threaded-renderer]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
 }
 
@@ -33,12 +34,28 @@ int main(int argc, char** argv) {
     else if (a == "--headless") headless = true;
     else if (a == "--hidden") hidden = true;
     else if (a == "--threaded-renderer") threaded = true;
+    else if (a == "--fps") {   // display rate: N or "unlocked"; enables the render thread
+      std::string v = next(); gfx.fps_cap = v == "unlocked" ? 0 : std::atoi(v.c_str());
+      if (v != "unlocked" && gfx.fps_cap < 1) { usage(); return 2; }
+      threaded = true;
+      if (gfx.subframe == gx::SubFrameMode::Off) gfx.subframe = gx::SubFrameMode::Extrapolate;
+    }
+    else if (a == "--frame-mode") {
+      std::string v = next();
+      if (v == "extrapolate") gfx.subframe = gx::SubFrameMode::Extrapolate;
+      else if (v == "interpolate") gfx.subframe = gx::SubFrameMode::Interpolate;
+      else if (v == "off") gfx.subframe = gx::SubFrameMode::Off;
+      else { usage(); return 2; }
+      threaded = true;
+    }
     else if (a == "--scale") { std::string v = next(); gfx.efb_scale = v == "auto" ? 0 : std::atoi(v.c_str()); if (v != "auto" && gfx.efb_scale < 1) { usage(); return 2; } }
     else if (a == "--window") { if (std::sscanf(next(), "%dx%d", &gfx.window_w, &gfx.window_h) != 2 || gfx.window_w < 320 || gfx.window_h < 240) { usage(); return 2; } }
     else if (a == "--vsync") gfx.vsync = true;
     else if (a == "--capture") gfx.capture_path = next();
     else if (a == "--capture-frame") gfx.capture_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--capture-every") gfx.capture_every = (uint32_t)std::strtoul(next(), nullptr, 0);
+    else if (a == "--capture-burst") gfx.capture_burst = (uint32_t)std::strtoul(next(), nullptr, 0);
+    else if (a == "--capture-sim-frame") gfx.capture_sim_frame = std::strtoull(next(), nullptr, 0);
     else if (a == "--script") { if (!host::input_load_script(next())) { std::fprintf(stderr, "cannot load input script\n"); return 1; } }
     else if (a == "--dump") gfx.dump_path = next();
     else if (a == "--dump-frame") gfx.dump_frame = (uint32_t)std::strtoul(next(), nullptr, 0);

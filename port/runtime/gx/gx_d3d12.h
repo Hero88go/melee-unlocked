@@ -6,13 +6,21 @@
 
 namespace gx {
 
+enum class SubFrameMode { Off, Extrapolate, Interpolate };
+
 struct D3D12Options {
+  // Presentation timeline (threaded renderer only). fps_cap 0 = uncapped. With a SubFrameMode other
+  // than Off the renderer presents new sub-frames between 60 Hz simulation frames.
+  int fps_cap = 60;
+  SubFrameMode subframe = SubFrameMode::Off;
   int efb_scale = 2;          // internal resolution multiplier; 0 = auto (integer scale covering the window, like Dolphin "Auto (Window Size)")
   int window_w = 1280, window_h = 960;  // initial client size
   bool vsync = false;
   std::string capture_path;   // write a PPM of the presented image at capture_frame
   uint32_t capture_frame = 0;
   uint32_t capture_every = 0;  // if set, capture every N presented frames as <capture_path>_<frame>.ppm
+  uint32_t capture_burst = 0;  // if set, capture this many consecutive presented frames from capture_frame
+  uint64_t capture_sim_frame = 0;  // if set, the burst starts at the first presented frame whose simulation sequence >= this
   std::string dump_path;      // write a text dump of draw state + shaders at dump_frame
   uint32_t dump_frame = 0;
 };

@@ -30,6 +30,20 @@ public:
     changed.notify_all();
     return true;
   }
+  // Non-blocking variant for a presenter that renders between frames.
+  bool try_pop(Frame& frame) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (frames.empty()) return false;
+    frame = std::move(frames.front()); frames.pop_front();
+    changed.notify_all();
+    return true;
+  }
+  // Blocks up to `wait` for a frame to become available (or finish).
+  template <class Rep, class Period>
+  bool wait_available(std::chrono::duration<Rep, Period> wait) {
+    std::unique_lock<std::mutex> lock(mutex);
+    return changed.wait_for(lock, wait, [&] { return finished || !frames.empty(); }) && !frames.empty();
+  }
   void finish(bool discard = false) {
     std::lock_guard<std::mutex> lock(mutex);
     finished = true;

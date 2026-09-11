@@ -60,6 +60,15 @@ struct DrawCall {
   int32_t tev_kcolors[4][4];  // RGBA (type 1 writes)
   TextureRef textures[8];
   int viewport_x, viewport_y, viewport_w, viewport_h;  // unused placeholders (computed by backend)
+  // Stable identity of this draw across frames (display-list address + call ordinal + draw ordinal,
+  // or texture/size/ordinal for immediate-mode draws). Used to pair draws for sub-frame rendering.
+  uint64_t identity = 0;
+};
+
+// Replacement transform state for one draw when a sub-frame is rendered between simulation frames.
+struct DrawMatrices {
+  float pos[256];
+  float nrm[96];
 };
 
 struct EfbCopy {
@@ -81,6 +90,7 @@ struct Frame {
   std::vector<EfbCopy> copies;
   std::vector<FrameCommand> commands;
   uint64_t sequence = 0;
+  double time = 0.0;   // host seconds of the retrace this frame belongs to (see host::frame_time)
   void clear() { vertices.clear(); draws.clear(); copies.clear(); commands.clear(); }
 };
 
@@ -88,6 +98,9 @@ struct Frame {
 struct Backend {
   virtual ~Backend() = default;
   virtual void submit_frame(const Frame& frame) = 0;   // called at XFB copy
+  // Render `frame` with per-draw transform overrides (one entry per frame.draws element); the
+  // default ignores the overrides. Used by the sub-frame presenter for unlocked frame rates.
+  virtual void submit_frame(const Frame& frame, const DrawMatrices* overrides) { (void)overrides; submit_frame(frame); }
 };
 
 void init(Backend* backend);
