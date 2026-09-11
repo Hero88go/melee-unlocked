@@ -6,7 +6,7 @@
 
 namespace gx {
 
-enum class SubFrameMode { Off, Extrapolate, Interpolate };
+enum class SubFrameMode { Off, Extrapolate, Interpolate, Authored };
 
 struct D3D12Options {
   // Presentation timeline (threaded renderer only). fps_cap 0 = uncapped. With a SubFrameMode other
@@ -21,6 +21,7 @@ struct D3D12Options {
   uint32_t capture_every = 0;  // if set, capture every N presented frames as <capture_path>_<frame>.ppm
   uint32_t capture_burst = 0;  // if set, capture this many consecutive presented frames from capture_frame
   uint64_t capture_sim_frame = 0;  // if set, the burst starts at the first presented frame whose simulation sequence >= this
+  std::string shader_cache = "shadercache";   // directory for compiled shader blobs and the D3D12 pipeline library
   std::string dump_path;      // write a text dump of draw state + shaders at dump_frame
   uint32_t dump_frame = 0;
 };
@@ -28,5 +29,7 @@ struct D3D12Options {
 Backend* create_d3d12_backend(void* hwnd, int client_w, int client_h, const D3D12Options& options);
 void d3d12_resize(Backend* backend, int w, int h);
 void d3d12_stats(Backend* backend, uint32_t* frames_presented, uint32_t* pipelines, uint32_t* textures);
+// Per-section CPU cost of execute_draw since the last call (diagnostics), as a one-line summary.
+std::string d3d12_profile_line();
 
 }  // namespace gx

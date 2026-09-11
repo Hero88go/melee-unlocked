@@ -1,10 +1,38 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "subframe.h"
+#include "authored_pose.h"
 #include <cmath>
 #include <cstring>
 
 namespace gx {
 namespace {
+
+// Command latches describe earlier FIFO operations, not the draw's material.
+// In particular PE tokens and alternating XFB destinations change every frame.
+bool same_draw_bp(const BPMemory& a, const BPMemory& b, uint32_t& changed) {
+  for (unsigned i = 0; i < 256; ++i) {
+    if (i == BP_SETDRAWDONE || i == BP_PE_TOKEN_ID || i == BP_PE_TOKEN_INT_ID ||
+        (i >= BP_EFB_TL && i <= 0x54) || (i >= BP_PRELOAD_ADDR && i <= BP_TEXINVALIDATE) ||
+        i == BP_BP_MASK || (i >= 0x8C && i <= 0x93) || (i >= 0xAC && i <= 0xB3)) continue;
+    if (a.reg[i] != b.reg[i]) { changed = i; return false; }
+  }
+  return true;
+}
+
+bool same_textures(const DrawCall& a, const DrawCall& b) {
+  for (unsigned i = 0; i < 8; ++i) {
+    const auto& x = a.textures[i]; const auto& y = b.textures[i];
+    if (x.used != y.used) return false;
+    if (!x.used) continue;
+    if (x.addr != y.addr || x.width != y.width || x.height != y.height ||
+        x.format != y.format || x.mip_levels != y.mip_levels || x.tlut_format != y.tlut_format ||
+        x.mode0 != y.mode0 || x.mode1 != y.mode1) return false;
+    if (x.data == y.data) continue;
+    if (!x.data || !y.data || x.data->hash != y.data->hash ||
+        x.data->image != y.data->image || x.data->palette != y.data->palette) return false;
+  }
+  return true;
+}
 
 // 3x4 row-major affine (XF layout): rows r0..r2, translation in column 3.
 struct Affine { float m[12]; };
@@ -181,12 +209,17 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
       const DrawCall& pd = prev->draws[it->second];
       bool vertex_ranges_valid = pd.first_vertex <= prev->vertices.size() && pd.vertex_count <= prev->vertices.size() - pd.first_vertex &&
           d.first_vertex <= cur->vertices.size() && d.vertex_count <= cur->vertices.size() - d.first_vertex;
-      if (d.xf_regs[0x26] == 0 && vertex_ranges_valid && pd.vertex_count == d.vertex_count &&
-          pd.primitive == d.primitive && pd.components == d.components &&
-          !std::memcmp(&pd.bp, &d.bp, sizeof d.bp) &&
-          !std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 7 * sizeof(uint32_t)) &&
-          !std::memcmp(prev->vertices.data() + pd.first_vertex, cur->vertices.data() + d.first_vertex,
-                       d.vertex_count * sizeof(Vertex))) {
+      bool valid = false;
+      if (d.object_generation != pd.object_generation) ++stats_.missing;
+      else if (d.xf_regs[0x26] != 0) ++stats_.hud;
+      else if (!vertex_ranges_valid || !d.vertex_count || pd.vertex_count != d.vertex_count ||
+          pd.primitive != d.primitive || pd.components != d.components ||
+          std::memcmp(prev->vertices.data() + pd.first_vertex, cur->vertices.data() + d.first_vertex,
+                      d.vertex_count * sizeof(Vertex))) ++stats_.geometry;
+      else if (!same_draw_bp(pd.bp, d.bp, stats_.state_register) || !same_textures(pd, d)) ++stats_.state;
+      else if (std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 7 * sizeof(uint32_t))) ++stats_.projection;
+      else valid = true;
+      if (valid) {
         p.prev_draw = it->second;
         // Collect used position matrix slots: per-vertex indices or the CP default, plus texgen matrices.
         if (d.components & VB_HAS_POSMTXIDX) {
@@ -205,24 +238,35 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
         ++stats_.paired;
       }
     }
+    if (it == prev_index_.end()) ++stats_.missing;
     pairs_[i] = p;
   }
 }
 
-void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>& out) const {
+void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>& out, bool authored) const {
   out.resize(cur_ ? cur_->draws.size() : 0);
   if (!cur_) return;
   SubFrameStats* stats = &stats_;
-  stats->rigid = stats->blended = stats->cuts = 0;
+  stats->rigid = stats->blended = stats->cuts = stats->authored = 0;
+  AuthoredCache chain_cache;   // one sampled chain per object per presented frame
   for (size_t i = 0; i < cur_->draws.size(); ++i) {
     const DrawCall& d = cur_->draws[i];
     DrawMatrices& o = out[i];
     const Pair& p = pairs_[i];
     const DrawCall* pd = p.prev_draw >= 0 ? &prev_->draws[p.prev_draw] : nullptr;
-    const DrawCall& base = (interpolate && pd) ? *pd : d;
+    const DrawCall& base = (interpolate && pd && !authored) ? *pd : d;
     std::memcpy(o.pos, base.posMatrices, sizeof o.pos);
     std::memcpy(o.nrm, base.normalMatrices, sizeof o.nrm);
     if (!pd) continue;
+    if (authored) {
+      // Authored tracks re-sampled at the fractional frame when the whole joint chain validates;
+      // otherwise the draw falls through to the geometric (screw) interpolation of its matrices.
+      if (d.authored_pose && pd->authored_pose && !(d.components & VB_HAS_POSMTXIDX) &&
+          !(d.matrix_index_a & 63) && sample_authored(*pd->authored_pose, *d.authored_pose, t,
+              d.posMatrices, o.pos, o.nrm, d.normalMatrices, &chain_cache)) { ++stats->authored; continue; }
+      std::memcpy(o.pos, pd->posMatrices, sizeof o.pos);
+      std::memcpy(o.nrm, pd->normalMatrices, sizeof o.nrm);
+    }
     for (int row = 0; row < 64; ++row) {
       if (!(p.used_slots & (1ull << row))) continue;
       if (row + 3 > 64) break;

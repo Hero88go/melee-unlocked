@@ -43,6 +43,7 @@ struct TextureRef {
   bool used = false;
 };
 
+struct AuthoredPose;
 struct DrawCall {
   uint32_t primitive;              // GX primitive opcode & 0xF8
   uint32_t first_vertex, vertex_count;
@@ -63,6 +64,11 @@ struct DrawCall {
   // Stable identity of this draw across frames (display-list address + call ordinal + draw ordinal,
   // or texture/size/ordinal for immediate-mode draws). Used to pair draws for sub-frame rendering.
   uint64_t identity = 0;
+  std::shared_ptr<const AuthoredPose> authored_pose;
+  uint64_t object_generation = 0; // Allocated JObj lifetime; zero means unobserved.
+  // Render-thread cache: the pipeline resolved for this draw (valid for the backend that set it).
+  // Sub-frames re-present the same draws, so the shader UIDs are hashed once per simulation frame.
+  mutable void* cached_pipeline = nullptr;
 };
 
 // Replacement transform state for one draw when a sub-frame is rendered between simulation frames.
