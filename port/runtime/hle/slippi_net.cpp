@@ -161,8 +161,9 @@ bool User::AttemptLogin() {
     info_.chat_messages.clear();
     if (j.count("chatMessages") && j["chatMessages"].is_array()) for (auto& m : j["chatMessages"]) info_.chat_messages.push_back(m.get<std::string>());
     if (info_.chat_messages.size() != 16) info_.chat_messages = GetDefaultChatMessages();
+    bool was = logged_in_;
     logged_in_ = !info_.uid.empty() && !info_.play_key.empty();
-    if (logged_in_) host::log("slippi: logged in as %s (%s)", info_.display_name.c_str(), info_.connect_code.c_str());
+    if (logged_in_ && !was) host::log("slippi: logged in as %s (%s)", info_.display_name.c_str(), info_.connect_code.c_str());
   } catch (const std::exception& e) {
     host::log("slippi: cannot parse %s/user.json: %s", dir_.c_str(), e.what());
     logged_in_ = false;

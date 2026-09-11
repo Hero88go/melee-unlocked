@@ -58,6 +58,12 @@ initial client size (default 1280x960). The experimental render thread has its o
 and graphics resources, with a bounded ordered queue; a slow renderer can still
 back-pressure simulation. Every source frame is processed to preserve EFB copies.
 
+GameCube controllers: a WUP-028 adapter (official or Mayflash in Wii U mode) with the
+WinUSB driver that Slippi's setup installs through Zadig is opened automatically; its
+four ports map to game ports 1-4 with stick/trigger origins taken when a controller is
+plugged in, and rumble follows the game. Close Slippi Dolphin first: the adapter can be
+held by only one program. Without an adapter the keyboard and XInput drive port 1.
+
 Keyboard: arrows move, I/J/K/L control C-stick, Z/X/C/V map to A/B/X/Y, Enter is
 Start, Q/W are L/R, E is Z, and T/F/G/H are D-pad. XInput controller 0 is supported.
 Audio uses an approximate AX DSP HLE mixer and WinMM output; the session starts
@@ -93,6 +99,16 @@ resolve at run time. `--gct-base` is the address the game reports when it loads 
 main table over the EXI device (`slippi: game loads the GCT ... at ADDR` in the log);
 pass `--no-slippi` for a vanilla build. `--sys-dir` and `--replay-dir` point the EXI
 device at the Slippi Sys folder (game files, VCDIFF patches) and the .slp output.
+
+Slippi Online is ported: `--user-dir DIR` names the folder holding the Launcher's
+`user.json` (default `runtime/slippi/User/Slippi`, the isolated copy), `--online-delay N`
+sets the input delay (default 2), `--chat on|direct|off` the quick chat setting and
+`--netplay-port N` fixes the UDP port. Matchmaking talks to mm.slippi.gg exactly like
+Dolphin (create/get ticket over ENet, JSON), the netplay client exchanges pads/acks/
+selections/chat on the same wire format, and rollbacks use Dolphin's savestate regions.
+`--local-peer idx:port:ip:port` on two instances peers them without the server for
+local rollback tests (`port/scripts/online_unranked.txt` drives a full match). Game
+reports and rank fetching are logged, not sent, so ranked play is incomplete.
 
 ## Reproducible validation
 

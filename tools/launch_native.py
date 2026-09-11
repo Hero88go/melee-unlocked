@@ -18,7 +18,7 @@ def main():
     ap.add_argument("--volume", type=int, default=0, help="audio volume percent (default 0: muted)")
     ap.add_argument("--hidden", action="store_true")
     ap.add_argument("--frames", type=int, default=0)
-    args = ap.parse_args()
+    args, extra = ap.parse_known_args()   # unknown options pass straight to melee_port (e.g. --user-dir, --online-delay, --local-peer)
     if args.scale != "auto" and not (args.scale.isdigit() and 1 <= int(args.scale) <= 25):
         ap.error("scale must be 'auto' or between 1 and 25")
     import re
@@ -39,6 +39,7 @@ def main():
     if not 0 <= args.volume <= 100: ap.error("volume must be 0-100")
     command += ["--volume", str(args.volume)]
     if args.frames: command += ["--frames", str(args.frames)]
+    command += extra
     if args.hidden: command.append("--hidden")
     return subprocess.call(command, cwd=ROOT,
                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if args.hidden else 0)

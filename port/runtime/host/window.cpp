@@ -133,6 +133,9 @@ void input_poll(PadState out[4]) {
     }
     return;
   }
+  // GameCube adapter ports take precedence; keyboard/XInput drive port 1 only while no controller is in adapter port 1.
+  uint32_t adapter_mask = gcadapter_poll(out);
+  if (adapter_mask & 1u) return;
   // Keyboard (player 1): arrows = stick, IJKL = c-stick, Z=A X=B C=X V=Y, Enter=Start, Q=L W=R E=Z, D-pad = TFGH
   std::lock_guard<std::mutex> lock(g_keys_mutex);
   auto key = [](int vk) { return g_keys[vk & 0xFF]; };

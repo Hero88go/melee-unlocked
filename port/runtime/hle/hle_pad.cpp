@@ -8,8 +8,9 @@ static uint32_t s_spec = 5;
 HLE(PADInit) { RET(1); }
 HLE(PADReset) { RET(1); }
 HLE(PADRecalibrate) { RET(1); }
-HLE(PADControlMotor) {}
-HLE(PADControlAllMotors) {}
+// PADControlMotor(chan, command): 0 stop, 1 rumble, 2 stop hard.
+HLE(PADControlMotor) { host::gcadapter_rumble((int)ARG0, ARG1 == 1); }
+HLE(PADControlAllMotors) { for (int i = 0; i < 4; ++i) host::gcadapter_rumble(i, host::rd32(ARG0 + 4 * i) == 1); }
 HLE(PADSetSpec) { s_spec = ARG0; }
 HLE(PADGetSpec) { RET(s_spec); }
 HLE(PADGetType) { if (ARG1) host::wr32(ARG1, 0x08000000); RET(1); }
