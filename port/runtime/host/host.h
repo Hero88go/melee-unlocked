@@ -97,6 +97,10 @@ void mmio_write(uint32_t addr, uint32_t value, int bytes);
 // ---- input ----
 struct PadState { uint16_t button; int8_t stick_x, stick_y, sub_x, sub_y; uint8_t trig_l, trig_r, analog_a, analog_b; int8_t err; };
 void input_poll(PadState out[4]);
+// GameCube controller adapter (WUP-028 over WinUSB): fills plugged ports, returns their mask.
+uint32_t gcadapter_poll(PadState out[4]);
+void gcadapter_rumble(int port, bool on);
+void gcadapter_shutdown();
 
 // Guest call helpers for HLE code.
 void call_guest(uint32_t addr, uint32_t r3 = 0, uint32_t r4 = 0, uint32_t r5 = 0, uint32_t r6 = 0);

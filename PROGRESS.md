@@ -15,6 +15,14 @@
   126-135 fps on the RTX 5070 (submit about 4.7 ms per frame, solver about 1.7 ms).
 - Validation after these changes: 15/15 CTest, 2,400 checkpoints identical across
   headless, hidden and threaded rendering.
+- Slippi Online runs: netplay client, matchmaking and rollback savestates are ported
+  wire-compatible with Dolphin. Two port instances peered locally (`--local-peer`)
+  played an unranked match with rollbacks; both replays agree on 10,212 pre/post-frame
+  records over 2,483 frames (one differing state-flag byte on a single frame is under
+  investigation). A direct-mode ticket was accepted by mm.slippi.gg with the Launcher
+  credentials. Mixed display rates (one peer at unlocked authored FPS, one at 60 Hz)
+  stayed in sync. A WUP-028 GameCube adapter is supported over WinUSB, with rumble.
+- Dynamically loaded code (SlippiCSS.dat) runs through a Gekko interpreter fallback.
 - The archived Slippi/Gecko work is merged back: Gecko applier and code-table
   generation in the recompiler, EXI channel 1 Slippi device (GCT serving, game
   files with VCDIFF, log, delay, online status stub, .slp recording), and the
