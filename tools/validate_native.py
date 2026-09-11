@@ -37,6 +37,7 @@ def main():
         command = [str(args.exe.resolve()), "--iso", str(args.iso.resolve()), *mode_flags,
                    "--volume", "0", "--fast", "--frames", str(args.frames), "--time-base", "1",
                    "--card-dir", str(card_dir),
+                   "--log-file", str((args.out / (mode + "-port.log")).resolve()),
                    "--script", str(args.script.resolve()), "--state-trace", str(trace)]
         start = time.monotonic()
         with log_path.open("w", encoding="utf-8") as log:

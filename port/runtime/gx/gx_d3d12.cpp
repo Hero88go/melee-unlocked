@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <filesystem>
 #include <unordered_map>
 #include <unordered_set>
 #include <thread>
@@ -151,7 +152,7 @@ struct PipelineRecipe {
 static std::atomic<uint64_t> next_backend_id{1};
 class D3D12Backend : public Backend {
  public:
-  D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); prewarm_pipelines(); start_pso_workers();
+  D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); start_pso_workers(); prewarm_pipelines();
 #ifdef GX_PC_SETTINGS
     if (opts_.pc_settings) settings_ui_ = std::make_unique<PcSettingsUI>(hwnd, device_.Get(), queue_.Get(), opts_);
 #endif
@@ -201,6 +202,7 @@ class D3D12Backend : public Backend {
   HANDLE present_timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* high resolution */, TIMER_ALL_ACCESS);
   double present_deadline_ = 0, present_wait_ = 0;
   std::vector<PipelineRecipe> pipeline_recipes_;
+  std::string shader_cache_root_;   // recipes.bin lives here, above the per-shader-version namespace
   bool prewarming_ = false;
   // Asynchronous pipeline creation (see get_pso).
   struct PsoJob { PsoKey key; VSUid vsu; PSUid psu; D3D12_PRIMITIVE_TOPOLOGY_TYPE topo; PipelineRecipe recipe; };
@@ -663,7 +665,7 @@ void D3D12Backend::integrate_compiled_psos() {
     psos_pending_.erase(r.key);
     if (r.vs && !vs_blobs_[r.key.vs]) vs_blobs_[r.key.vs] = r.vs;
     if (r.ps && !ps_blobs_[r.key.ps]) ps_blobs_[r.key.ps] = r.ps;
-    if (pipeline_recipes_.size() < 4096) pipeline_recipes_.push_back(r.recipe);
+    if (pipeline_recipes_.size() < 16384) pipeline_recipes_.push_back(r.recipe);
   }
 }
 
@@ -1316,39 +1318,79 @@ static void write_cache(const std::string& path, const void* data, size_t size) 
   if (!ok) DeleteFileA(temporary.c_str());
 }
 
-void D3D12Backend::prewarm_pipelines() {
-  std::ifstream file(opts_.shader_cache + "/recipes.bin", std::ios::binary);
+// Pipeline recipes (the game-side state a pipeline was built from) do not depend on the shader
+// sources, so they live at the cache root and survive every shader/namespace change; older
+// per-namespace files are merged in. This is what lets a fresh build precompile before boot.
+static bool read_recipe_file(const std::string& path, std::vector<PipelineRecipe>& out) {
+  std::ifstream file(path, std::ios::binary);
   uint64_t header[3]{};
-  if (!file.read((char*)header, sizeof(header)) || header[0] != 0x3150535247505847ull || header[1] > 4096) return;
+  if (!file.read((char*)header, sizeof(header)) || header[0] != 0x3150535247505847ull || header[1] > 16384) return false;
   std::vector<PipelineRecipe> recipes((size_t)header[1]);
   if (!file.read((char*)recipes.data(), recipes.size()*sizeof(PipelineRecipe)) ||
-      hash_bytes(recipes.data(), recipes.size()*sizeof(PipelineRecipe)) != header[2]) return;
+      hash_bytes(recipes.data(), recipes.size()*sizeof(PipelineRecipe)) != header[2]) return false;
+  out.insert(out.end(), recipes.begin(), recipes.end());
+  return true;
+}
+
+void D3D12Backend::prewarm_pipelines() {
+  std::vector<PipelineRecipe> recipes;
+  read_recipe_file(shader_cache_root_ + "/recipes.bin", recipes);
+  std::error_code ec;
+  for (auto& entry : std::filesystem::directory_iterator(shader_cache_root_, ec))
+    if (entry.is_directory(ec)) read_recipe_file(entry.path().string() + "/recipes.bin", recipes);
+  if (recipes.empty()) return;
+  std::unordered_set<std::string> seen;
+  std::unordered_set<PsoKey, PsoKeyHash> keys_seen;
   Stopwatch timer;
-  prewarming_ = true;
+  // All recipes go to the compile workers at once (the pipeline library makes known ones cheap);
+  // the window title shows progress while the game waits to boot.
+  size_t queued = 0;
   for (const auto& recipe : recipes) {
     if ((recipe.topology != D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE && recipe.topology != D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE) ||
         (recipe.xf[0x3F] & 15) > 8 || (recipe.xf[9] & 3) > 2) continue;
+    if (!seen.insert(std::string((const char*)&recipe, sizeof recipe)).second) continue;
+    if (pipeline_recipes_.size() >= 16384) break;
     DrawCall draw{}; draw.components = recipe.components; draw.bp = recipe.bp;
     std::memcpy(draw.xf_regs, recipe.xf, sizeof(recipe.xf));
-    get_pso(draw, (D3D12_PRIMITIVE_TOPOLOGY_TYPE)recipe.topology);
-    pipeline_recipes_.push_back(recipe);
+    VSUid vsu = make_vs_uid(draw); PSUid psu = make_ps_uid(draw);
+    vsu.motion_vectors = psu.motion_vectors = 0;
+    auto topo = (D3D12_PRIMITIVE_TOPOLOGY_TYPE)recipe.topology;
+    PsoKey key{vsu.hash(), psu.hash(), draw.bp.blendmode() & 0xFFFF, draw.bp.zmode() & 0x1F, draw.bp.cullmode(), (uint32_t)topo, draw.bp.zcontrol() & 7, 0u};
+    // One recipe per pipeline: recipes that only differ in state the pipeline key ignores are dropped.
+    if (psos_.count(key)) { if (keys_seen.insert(key).second) pipeline_recipes_.push_back(recipe); continue; }
+    if (!psos_pending_.insert(key).second) continue;
+    keys_seen.insert(key);
+    { std::lock_guard<std::mutex> lk(pso_mutex_); pso_jobs_.push_back(PsoJob{key, vsu, psu, topo, recipe}); }
+    ++queued;
   }
-  prewarming_ = false;
-  host::log("d3d12: prewarmed %zu pipelines before guest startup in %.1f ms", psos_.size(), timer.lap()*1000.0);
+  pso_cv_.notify_all();
+  const size_t total = psos_.size() + queued;
+  for (;;) {
+    integrate_compiled_psos();
+    size_t pending = psos_pending_.size();
+    wchar_t title[128]; swprintf_s(title, L"Melee Port  |  compiling shaders %zu / %zu", total - pending, total);
+    host::window_set_title(title);
+    if (!pending) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  host::log("d3d12: prewarmed %zu pipelines from %zu recipes before guest startup in %.1f ms", psos_.size(), pipeline_recipes_.size(), timer.lap()*1000.0);
 }
 
 void D3D12Backend::save_pipeline_recipes() {
   if (pipeline_recipes_.empty()) return;
-  uint64_t header[3] = {0x3150535247505847ull, pipeline_recipes_.size(),
-    hash_bytes(pipeline_recipes_.data(), pipeline_recipes_.size()*sizeof(PipelineRecipe))};
-  std::vector<uint8_t> data(sizeof(header)+pipeline_recipes_.size()*sizeof(PipelineRecipe));
+  std::unordered_set<std::string> seen;
+  std::vector<PipelineRecipe> unique;
+  for (const auto& r : pipeline_recipes_) if (seen.insert(std::string((const char*)&r, sizeof r)).second) unique.push_back(r);
+  uint64_t header[3] = {0x3150535247505847ull, unique.size(), hash_bytes(unique.data(), unique.size()*sizeof(PipelineRecipe))};
+  std::vector<uint8_t> data(sizeof(header)+unique.size()*sizeof(PipelineRecipe));
   std::memcpy(data.data(), header, sizeof(header));
-  std::memcpy(data.data()+sizeof(header), pipeline_recipes_.data(), data.size()-sizeof(header));
-  write_cache(opts_.shader_cache+"/recipes.bin", data.data(), data.size());
+  std::memcpy(data.data()+sizeof(header), unique.data(), data.size()-sizeof(header));
+  write_cache(shader_cache_root_+"/recipes.bin", data.data(), data.size());
 }
 
 void D3D12Backend::open_pipeline_library() {
   CreateDirectoryA(opts_.shader_cache.c_str(), nullptr);
+  shader_cache_root_ = opts_.shader_cache;
   opts_.shader_cache += "/" GX_SHADER_CACHE_VERSION;
   CreateDirectoryA(opts_.shader_cache.c_str(), nullptr);
   ComPtr<ID3D12Device1> device1;

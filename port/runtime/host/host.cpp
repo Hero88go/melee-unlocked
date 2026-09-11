@@ -56,7 +56,7 @@ static void open_log_file() {
   static bool tried = false;
   if (tried) return;
   tried = true;
-  g_log_file = std::fopen("melee_port.log", "w");
+  g_log_file = std::fopen(options.log_file.empty() ? "melee_port.log" : options.log_file.c_str(), "w");
 }
 void log(const char* fmt, ...) {
   if (options.quiet) return;

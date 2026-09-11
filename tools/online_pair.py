@@ -48,7 +48,7 @@ def main():
         d = out / f"peer{name}"
         d.mkdir(parents=True, exist_ok=True)
         cmd = [str(EXE), "--iso", str(ISO), "--hidden", "--volume", "0", "--frames", str(args.frames),
-               "--script", str(ROOT / args.script), "--replay-dir", str(d)]
+               "--script", str(ROOT / args.script), "--replay-dir", str(d), "--log-file", str(d / "port.log")]
         if args.real:
             user = args.user_a if name == "A" else args.user_b
             if user:

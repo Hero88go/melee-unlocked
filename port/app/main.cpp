@@ -102,6 +102,7 @@ int main(int argc, char** argv) {
     else if (a == "--sys-dir") o.sys_dir = next();
     else if (a == "--replay-dir") o.replay_dir = next();
     else if (a == "--card-dir") o.card_dir = next();
+    else if (a == "--log-file") o.log_file = next();
     else if (a == "--user-dir") slippi::online::config().user_dir = next();
     else if (a == "--online-delay") slippi::online::config().delay = std::atoi(next());
     else if (a == "--chat") { std::string v = next(); slippi::online::config().chat = v == "off" ? 2 : v == "direct" ? 1 : 0; }
