@@ -18,17 +18,30 @@ play: it accelerates simulation.
 .\run-native.bat --fps 240 --frame-mode interpolate
 ```
 
-`--fps N|unlocked` requires an explicit experimental `--frame-mode interpolate`
-or `--frame-mode extrapolate`. It presents on the render thread's timeline; add
-`--vsync` to synchronize presentation to the monitor. Simulation targets 60 Hz.
-Intermediate views rasterize geometry with estimated matrix motion between
-compatible adjacent draws. They do not sample authored animation curves, and draw
-identities are heuristic. Interpolation delays the estimated pose by one simulation
-frame; extrapolation predicts motion and can be wrong. Cuts, changing geometry,
-and orthographic HUD draws retain the current pose. Normal launch uses `off`,
-which presents each simulation frame once. Slow rendering can delay simulation.
-The reviewed Classic capture paired no draws under the conservative checks; it
-does not demonstrate intermediate gameplay animation or sustained high FPS.
+`--fps N|unlocked` requires an explicit experimental `--frame-mode authored`,
+`--frame-mode interpolate` or `--frame-mode extrapolate`. It presents on the render
+thread's timeline; add `--vsync` to synchronize presentation to the monitor.
+Simulation targets 60 Hz and is never modified by presentation.
+
+`authored` is the native path. Recompiled `HSD_JObjAlloc`/`JObjRelease` give every
+joint a stable generation, `HSD_JObjDisp` and the rigid matrix setup pair each draw
+with its joint, and the capture reads the joint chain's AObj/FObj tracks from guest
+RAM. The render thread re-samples those packed tracks at `frame + phase * rate`
+for each display deadline, rebuilds the chain's world matrix and applies the delta
+to the captured draw (chain samples are cached per draw pair). Draws the authored
+path declines (envelope-skinned and shared-vertex draws, looping or paused
+animations, animated scale, static joints) fall back to the geometric estimate of
+the selected mode; `interpolate` delays that estimate by one simulation frame,
+`extrapolate` predicts it. Cuts, changing geometry and orthographic HUD draws keep
+the current pose. Normal launch uses `off`, which presents each simulation frame
+once. The threaded backend logs pairing rejections, phase histograms, authored
+capture/sample counters and per-frame solver/submit cost every 5 s.
+
+Rendering keeps three frames in flight with per-slot upload rings and descriptor
+recycling. Compiled shader blobs and the D3D12 pipeline library persist under
+`--shader-cache DIR` (default `shadercache/`, ignored by Git); the first match after
+a clean cache stutters while pipelines compile, later runs do not. Measured on the
+RTX 5070 with a warm cache: menus hold 240 fps, a match runs about 126-135 fps.
 
 The launcher uses this project's native executable and existing clean ISO. It does
 not open or modify the installed Slippi client. `--iso "path"` overrides the local
@@ -59,7 +72,7 @@ Use Windows x64, VS 2022 Build Tools with C++, CMake, and Python 3.12 x64.
 The generator needs the existing local decomp symbol map and verified stock DOL.
 
 ```powershell
-python port/recomp/recomp.py
+python port/recomp/recomp.py --gct-base 0x8065CC80
 cmake -S . -B build-review -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON
 cmake --build build-review --config Release --parallel 4
 ctest --test-dir build-review -C Release --output-on-failure
@@ -68,6 +81,18 @@ ctest --test-dir build-review -C Release --output-on-failure
 The generator and runtime both reject a non-matching DOL. Generated guest source
 and all game data remain local and ignored by Git. Default foundation builds still
 exclude the experimental port.
+
+The generator applies Slippi's code tables (`slippi/Data/Sys/bootloader.gct` plus
+the enabled codes of `GameSettings/GALE01r2.ini`, assembled exactly like Dolphin's
+`GenerateGct`) before translation: memory writes patch the image, C2 caves are
+spliced in place of the hooked instruction, hooks outside any function and C0 caves
+become synthetic functions, and every cave instruction, hook address and hook+4 gets
+a dispatch-table thunk so Slippi's helper-table trick (`bl x; x: blrl`, then a
+computed `bctrl` into a table of branches) and function pointers into cave code
+resolve at run time. `--gct-base` is the address the game reports when it loads the
+main table over the EXI device (`slippi: game loads the GCT ... at ADDR` in the log);
+pass `--no-slippi` for a vanilla build. `--sys-dir` and `--replay-dir` point the EXI
+device at the Slippi Sys folder (game files, VCDIFF patches) and the .slp output.
 
 ## Reproducible validation
 

@@ -4,30 +4,53 @@
 #include "hle.h"
 #include "ax_ucode.h"
 #include "audio.h"
+#include "exi_slippi.h"
 #include "memory_range.h"
 #include <cstring>
 #include <deque>
 
 // ---------------- EXI ----------------
+// Channel 1 (memory card slot B) carries the Slippi device; other channels have no device.
+static constexpr uint32_t SLIPPI_CHANNEL = 1;
+static uint32_t s_exi_selected_dev[3] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF};
 HLE(EXIInit) {}
-HLE(EXIProbe) { RET(0); }
-HLE(EXIProbeEx) { RET((uint32_t)-1); }
-HLE(EXIGetID) { RET(0); }
+HLE(EXIProbe) { RET(ARG0 == SLIPPI_CHANNEL ? 1 : 0); }
+HLE(EXIProbeEx) { RET(ARG0 == SLIPPI_CHANNEL ? 1 : (uint32_t)-1); }
+HLE(EXIGetID) { if (ARG0 == SLIPPI_CHANNEL && ARG1 == 0 && ARG2) host::wr32(ARG2, 0); RET(ARG0 == SLIPPI_CHANNEL ? 1 : 0); }
 HLE(EXILock) { RET(1); }
 HLE(EXIUnlock) { RET(1); }
-HLE(EXISelect) { RET(1); }
-HLE(EXIDeselect) { RET(1); }
+HLE(EXISelect) { if (ARG0 < 3) s_exi_selected_dev[ARG0] = ARG1; RET(1); }
+HLE(EXIDeselect) { if (ARG0 < 3) s_exi_selected_dev[ARG0] = 0xFFFFFFFF; RET(1); }
+static bool exi_is_slippi(uint32_t chan) { return chan == SLIPPI_CHANNEL && s_exi_selected_dev[chan] == 0; }
 HLE(EXIImm) {
-  // (chan, buf, len, type, callback): reads return zeros, writes are dropped.
-  if (ARG3 == 0 /* EXI_READ */) { for (uint32_t i = 0; i < ARG2 && i < 4; ++i) host::wr8(ARG1 + i, 0); }
+  // (chan, buf, len, type, callback): type 0 read, 1 write, 2 read/write.
+  uint32_t chan = ARG0, buf = ARG1, len = ARG2, type = ARG3;
+  if (exi_is_slippi(chan)) {
+    if (type != 0) { uint32_t data = 0; for (uint32_t i = 0; i < len && i < 4; ++i) data |= (uint32_t)host::rd8(buf + i) << (24 - 8 * i); slippi::imm_write(data, len); }
+    if (type != 1) { uint32_t data = slippi::imm_read(len); for (uint32_t i = 0; i < len && i < 4; ++i) host::wr8(buf + i, (uint8_t)(data >> (24 - 8 * i))); }
+  } else if (type != 1) {
+    for (uint32_t i = 0; i < len && i < 4; ++i) host::wr8(buf + i, 0);
+  }
   RET(1);
 }
 HLE(EXIImmEx) {
-  if (ARG3 == 0) { for (uint32_t i = 0; i < ARG2; ++i) host::wr8(ARG1 + i, 0); }
+  uint32_t chan = ARG0, buf = ARG1, len = ARG2, type = ARG3;
+  if (exi_is_slippi(chan)) {
+    if (type != 0) slippi::dma_write(buf, len);
+    if (type != 1) slippi::dma_read(buf, len);
+  } else if (type != 1) {
+    for (uint32_t i = 0; i < len; ++i) host::wr8(buf + i, 0);
+  }
   RET(1);
 }
 HLE(EXIDma) {
-  if (ARG3 == 0) { for (uint32_t i = 0; i < ARG2; ++i) host::wr8(ARG1 + i, 0); }
+  uint32_t chan = ARG0, buf = ARG1, len = ARG2, type = ARG3;
+  if (exi_is_slippi(chan)) {
+    if (type == 1) slippi::dma_write(buf, len);
+    else slippi::dma_read(buf, len);
+  } else if (type == 0) {
+    for (uint32_t i = 0; i < len; ++i) host::wr8(buf + i, 0);
+  }
   RET(1);
 }
 HLE(EXISync) { RET(1); }

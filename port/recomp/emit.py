@@ -80,7 +80,7 @@ class Emitter:
         name = self.func_names[func.addr]
         out.append("// %s @ %08x size %x" % (func.name, func.addr, func.size))
         if func.name in self.hle:
-            out.append("void %s(ppc::Context& c, uint8_t* m) { hle::%s(c, m); }" % (name, func.name))
+            out.append("void %s(ppc::Context& c, uint8_t* m) { c.entry = 0; hle::%s(c, m); }" % (name, func.name))
             return "\n".join(out) + "\n"
         out.append("void %s(ppc::Context& __restrict c, uint8_t* __restrict m) {" % name)
         out.append("  ppc::enter(c, %s);" % hexs(func.addr))
@@ -89,10 +89,24 @@ class Emitter:
                     "SetupSharedVtxModelMtx": "OtherMatrix", "SetupEnvelopeModelMtx": "OtherMatrix"}.get(func.name)
         if observer:
             out.append("  gx::RenderObserver render_observer(c, gx::Observe::%s, m);" % observer)
+        if info.has_blrl:
+            # blrl jumps to LR and re-links: when LR is still this invocation's return address the
+            # instruction is a return that leaves a new LR behind (Slippi's helper-table trick).
+            out.append("  const uint32_t entry_lr = c.lr;")
+        if info.entries:
+            # Dispatch thunks set c.entry before calling; a plain if-chain (a switch with gotos
+            # trips the MSVC backend).
+            out.append("  if (c.entry) { const uint32_t e = c.entry; c.entry = 0;")
+            for e in sorted(info.entries):
+                out.append("    if (e == %s) goto L_%08X;" % (hexs(e), e))
+            out.append("    ppc::fatal(c, \"bad function entry\", e); }")
         for idx, ins in enumerate(info.insns):
-            addr = func.addr + idx * 4
+            addr = info.addrs[idx]
             if addr in info.labels:
                 out.append("L_%08X:" % addr)
+            alias = info.aliases.get(addr)
+            if alias is not None and alias in info.labels:
+                out.append("L_%08X:" % alias)
             if ins is None:
                 out.append("  ppc::fatal(c, \"undecodable instruction\", %s);" % hexs(addr))
                 continue
@@ -306,18 +320,22 @@ class Emitter:
         # still receives it, like a real CPU taking the interrupt mid-loop.
         if op == "b":
             t = ins.branch_target
+            if ins.lk and (ins.addr + 4) in info.local_returns:
+                return "c.lr = %s; goto L_%08X;" % (hexs(ins.addr + 4), t)
             if ins.lk:
                 return self._call(t, ins.addr + 4)
-            if func.addr <= t < func.end:
+            if t in info.addr_set:
                 poll = "ppc::backedge(c); " if t <= ins.addr else ""
                 return "%sgoto L_%08X;" % (poll, t)
             return self._tail(t)
         if op == "bc":
             t = ins.branch_target
             cond = cond_expr(f["bo"], f["bi"])
-            if ins.lk:
+            if ins.lk and (ins.addr + 4) in info.local_returns:
+                body = "c.lr = %s; goto L_%08X;" % (hexs(ins.addr + 4), t)
+            elif ins.lk:
                 body = self._call(t, ins.addr + 4)
-            elif func.addr <= t < func.end:
+            elif t in info.addr_set:
                 poll = "ppc::backedge(c); " if t <= ins.addr else ""
                 body = "%sgoto L_%08X;" % (poll, t)
             else:
@@ -325,15 +343,31 @@ class Emitter:
             return body if cond is None else "if (%s) { %s }" % (cond, body)
         if op == "bclr":
             cond = cond_expr(f["bo"], f["bi"])
+            # Local subroutine returns: dispatch on LR with a plain if-chain (a switch here trips
+            # the MSVC backend). Only functions containing cave-local calls have any.
+            local = " ".join("if (t == %s) goto L_%08X;" % (hexs(r), r) for r in sorted(info.local_returns))
             if ins.lk:
-                body = "{ uint32_t t = c.lr; c.lr = %s; ppc::call(c, m, t); }" % hexs(ins.addr + 4)
+                body = "{ uint32_t t = c.lr; c.lr = %s; %s if (t == entry_lr) return; ppc::call(c, m, t); }" % (hexs(ins.addr + 4), local)
             else:
-                body = "return;"
+                body = "{ uint32_t t = c.lr; %s return; }" % local if local else "return;"
             return body if cond is None else "if (%s) { %s }" % (cond, body)
         if op == "bcctr":
             cond = cond_expr(f["bo"], f["bi"])
-            if ins.lk:
+            if ins.lk and ins.addr in info.ctr_calls:
+                t = info.ctr_calls[ins.addr]
+                if (ins.addr + 4) in info.local_returns:
+                    body = "c.lr = %s; goto L_%08X;" % (hexs(ins.addr + 4), t)
+                else:
+                    body = self._call(t, ins.addr + 4)
+            elif ins.lk:
                 body = "{ uint32_t t = c.ctr; c.lr = %s; ppc::call(c, m, t); }" % hexs(ins.addr + 4)
+            elif ins.addr in info.ctr_targets:
+                t = info.ctr_targets[ins.addr]
+                if t in info.addr_set:
+                    poll = "ppc::backedge(c); " if t <= ins.addr else ""
+                    body = "%sgoto L_%08X;" % (poll, t)
+                else:
+                    body = self._tail(t)
             else:
                 jt = info.jumptables.get(ins.addr)
                 if jt:
