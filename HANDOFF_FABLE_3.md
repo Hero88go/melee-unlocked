@@ -43,25 +43,23 @@ the display rate is the separate number in the window title, now shown first.
 
 ## Remaining roadmap (priority order)
 
-1. Finish the fixes above if any are still uncommitted (check `git status`), rebuild, re-run
-   `tools/validate_native.py`, commit.
-2. DONE: authored mode covers skinned fighters, game-driven root motion and the camera (see
-   PORT_COMPLETION.md). Left: looping animation wrap, animated scale, RObj/quaternion joints.
-3. Rollback and the render observer: a savestate load restores heap contents without JObjAlloc/
+Done since the last handoff (see PORT_COMPLETION.md): real Slippi online verified against a
+Dolphin player, longjmp fix, checksum oracle, widescreen 16:9 option, memory card (GCI folder),
+WASAPI audio, melee_port.log, fullscreen startup fix, release packaging + bug report template.
+
+1. Render-thread throughput: Chandler's session shows 140-156 presented fps on a 200 Hz monitor
+   in a match (solver 2-2.7 ms + submit 3-4 ms per presented frame, ~1350 draws). Parallelise the
+   authored solver across draws (independent per draw) and batch constant uploads.
+2. Rollback and the render observer: a savestate load restores heap contents without JObjAlloc/
    Release hooks firing. Consider `gx::observer_reset()` on load (`slippi::online::rollback_count()`).
-4. One differing byte (post-frame state bits 5, frame 1413, player 0) between the two local peers'
-   replays: check whether Dolphin shows the same (it may be a non-synced visual flag).
-5. Game reporting (`slprs_game_report_*` in Rust) and rank fetch: HTTP POST to Slippi's API with
+3. Game reporting (`slprs_game_report_*` in Rust) and rank fetch: HTTP POST to Slippi's API with
    uid/playKey; needed for ranked. Stubbed with log lines in `slippi_online.cpp`.
-6. Memory card (CARD HLE backed by an image in the user folder) so settings/unlocks persist.
-7. Audio fidelity: AX mixer is approximate (resampling, some DSP commands).
-8. RTX/DLSS/Reflex (M7): D3D12 already; add NVIDIA Streamline (DLSS SR/DLAA + Reflex markers around
-   sim/present), motion vectors from the sub-frame matrices (previous/current per draw), DXR
-   shadows/reflections with BLAS refit per frame, AA selector disabled while DLSS is on, separate
-   sharpness slider. Settings UI: an in-window overlay or a config file `port.ini` read at start.
-9. Widescreen 16:9 (Chandler's request, after smoothness): Slippi's Widescreen Gecko code at
-   recompile time plus a 16:9 present path.
-10. Packaging: standalone folder, README, no ISO/DOL/generated code in the repo.
+4. Authored mode gaps: looping animation wrap, animated scale, RObj/quaternion joints.
+5. One differing byte (post-frame state bits 5, frame 1413, player 0) between the two local peers'
+   replays: check whether Dolphin shows the same (it may be a non-synced visual flag).
+6. Audio fidelity: AX mixer is approximate (resampling, some DSP commands).
+7. Reflex markers, DXR shadows/reflections (RTX), AA selector + sharpness slider.
+8. Direct-code / Teams online test against Dolphin, ranked once reporting exists.
 
 ## Standing rules
 
