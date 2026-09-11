@@ -17,6 +17,8 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM,
 namespace gx {
 void load_pc_settings(D3D12Options& options, int& volume) {
   std::ifstream file(options.settings_path);
+  // First launch (no saved settings yet): open the PC settings panel so nobody has to find it.
+  if (!file) options.settings_open = true;
   std::string key, value;
   while (file >> key >> value) {
     try {
