@@ -238,3 +238,23 @@ side; it still needs a real ranked set against a Dolphin player to confirm the r
 
 Calibrated by capturing the same static menu frame with `--dlss-jitter-sign 1` and `-1`: +1 blurs
 text, -1 reconstructs it sharp (Laplacian energy 52 vs 155). Default is now -1.
+
+## Flicker, stutter and sound at match start (2026-09-11 20:30, Fable)
+
+Chandler's session log showed bursts of 70-98 new pipelines during a match even with 31k
+prewarmed (new character/stage combinations), and each burst skipped 2k-20k draws while the
+workers compiled: objects popped in and out ("a TON of flickering"). The simulation also stalled
+on synchronous disc reads at match load (50 MB) and then ran at 61-63 Hz to catch up, which is
+where the sound crackled.
+
+- Fallback pipelines: a draw whose real pipeline is still compiling now renders with a generic
+  pipeline (position, vertex colour, texture 0; one per raster state, built synchronously from
+  tiny shaders) instead of being skipped. Approximate shading for a few frames, nothing vanishes.
+- Disc reads are asynchronous on a worker thread; completion is delivered at a fixed virtual
+  time (a quarter frame after the request, in order) so timing stays deterministic across runs
+  (validate_native) while the simulation no longer blocks on the file system.
+- After a stall the simulation resumes at 60 Hz instead of sprinting to catch up (the catch-up
+  threshold went from 200 ms to 34 ms): no more fast-forwarded audio.
+- In-client updater (`host/updater.cpp`, settings panel): checks the newest GitHub release,
+  downloads the zip and hands over to `update.bat` (waits for exit, unpacks with tar, copies over,
+  relaunches). `VERSION` at the repo root is the single source of the version string.

@@ -210,6 +210,11 @@ class D3D12Backend : public Backend {
   struct PsoJob { PsoKey key; VSUid vsu; PSUid psu; D3D12_PRIMITIVE_TOPOLOGY_TYPE topo; PipelineRecipe recipe; };
   struct PsoResult { PsoKey key; ComPtr<ID3D12PipelineState> pso; ComPtr<ID3DBlob> vs, ps; PipelineRecipe recipe; };
   std::unordered_set<PsoKey, PsoKeyHash> psos_pending_;
+  struct FallbackKey { uint32_t blend, zmode, cull, topology, pixel_format, mvec, variant;
+    bool operator==(const FallbackKey& o) const { return blend == o.blend && zmode == o.zmode && cull == o.cull && topology == o.topology && pixel_format == o.pixel_format && mvec == o.mvec && variant == o.variant; } };
+  struct FallbackKeyHash { size_t operator()(const FallbackKey& k) const { return hash_bytes(&k, sizeof k); } };
+  std::unordered_map<FallbackKey, ComPtr<ID3D12PipelineState>, FallbackKeyHash> fallback_psos_;
+  ID3D12PipelineState* fallback_pso(const PsoKey& key, const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo);
   std::mutex pso_mutex_, pipeline_library_mutex_;
   std::condition_variable pso_cv_;
   std::deque<PsoJob> pso_jobs_;
@@ -560,29 +565,9 @@ void D3D12Backend::wait_gpu() {
 // so outside the startup prewarm it runs on worker threads: the draw that needs a new pipeline is
 // skipped until it is ready (a few presented frames) instead of stalling the renderer and, behind
 // it, the simulation and audio.
-ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSUid& vsu, const PSUid& psu, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo,
-                                                    ComPtr<ID3DBlob>& vs, ComPtr<ID3DBlob>& ps) {
-  char vs_name[64], ps_name[64];
-  snprintf(vs_name, sizeof vs_name, "vs_%016llX.dxbc", (unsigned long long)key.vs);
-  snprintf(ps_name, sizeof ps_name, "ps_%016llX.dxbc", (unsigned long long)key.ps);
-  if (!vs && !load_shader_blob(opts_.shader_cache + "/" + vs_name, vs)) {
-    std::string src = generate_vertex_shader(vsu);
-    ComPtr<ID3DBlob> err;
-    if (FAILED(D3DCompile(src.c_str(), src.size(), "vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs, &err))) {
-      host::log("vertex shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
-      host::die("vertex shader compile failed");
-    }
-    save_shader_blob(opts_.shader_cache + "/" + vs_name, vs.Get());
-  }
-  if (!ps && !load_shader_blob(opts_.shader_cache + "/" + ps_name, ps)) {
-    std::string src = generate_pixel_shader(psu);
-    ComPtr<ID3DBlob> err;
-    if (FAILED(D3DCompile(src.c_str(), src.size(), "ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &err))) {
-      host::log("pixel shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
-      host::die("pixel shader compile failed");
-    }
-    save_shader_blob(opts_.shader_cache + "/" + ps_name, ps.Get());
-  }
+// Everything of a pipeline description that does not depend on the shaders' contents.
+static void describe_pipeline(D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, const PsoKey& key, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo,
+                              ID3D12RootSignature* root, ID3DBlob* vs, ID3DBlob* ps) {
   static const D3D12_INPUT_ELEMENT_DESC layout[] = {
     {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
@@ -599,8 +584,7 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
     {"BLENDINDICES", 0, DXGI_FORMAT_R8G8B8A8_UINT, 0, 96, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     {"BLENDINDICES", 1, DXGI_FORMAT_R8G8B8A8_UINT, 0, 100, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
   };
-  D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
-  pd.pRootSignature = root_.Get();
+  pd.pRootSignature = root;
   pd.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
   pd.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
   pd.InputLayout = {layout, _countof(layout)};
@@ -649,6 +633,33 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
     pd.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN;
   }
   pd.SampleDesc.Count = 1;
+}
+
+ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSUid& vsu, const PSUid& psu, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo,
+                                                    ComPtr<ID3DBlob>& vs, ComPtr<ID3DBlob>& ps) {
+  char vs_name[64], ps_name[64];
+  snprintf(vs_name, sizeof vs_name, "vs_%016llX.dxbc", (unsigned long long)key.vs);
+  snprintf(ps_name, sizeof ps_name, "ps_%016llX.dxbc", (unsigned long long)key.ps);
+  if (!vs && !load_shader_blob(opts_.shader_cache + "/" + vs_name, vs)) {
+    std::string src = generate_vertex_shader(vsu);
+    ComPtr<ID3DBlob> err;
+    if (FAILED(D3DCompile(src.c_str(), src.size(), "vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs, &err))) {
+      host::log("vertex shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
+      host::die("vertex shader compile failed");
+    }
+    save_shader_blob(opts_.shader_cache + "/" + vs_name, vs.Get());
+  }
+  if (!ps && !load_shader_blob(opts_.shader_cache + "/" + ps_name, ps)) {
+    std::string src = generate_pixel_shader(psu);
+    ComPtr<ID3DBlob> err;
+    if (FAILED(D3DCompile(src.c_str(), src.size(), "ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &err))) {
+      host::log("pixel shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
+      host::die("pixel shader compile failed");
+    }
+    save_shader_blob(opts_.shader_cache + "/" + ps_name, ps.Get());
+  }
+  D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
+  describe_pipeline(pd, key, topo, root_.Get(), vs.Get(), ps.Get());
   ComPtr<ID3D12PipelineState> pso;
   wchar_t pso_name[96];
   swprintf_s(pso_name, L"%016llX-%016llX-%X-%X-%X-%X-%X-%X", (unsigned long long)key.vs, (unsigned long long)key.ps, key.blend, key.zmode, key.cull, key.topology, key.pixel_format, key.mvec);
@@ -688,6 +699,68 @@ void D3D12Backend::integrate_compiled_psos() {
   }
 }
 
+
+// While a draw's real pipeline compiles on a worker, draw it with a generic one (position, vertex
+// colour, texture 0) instead of skipping it: a few frames of approximate shading beat objects
+// popping in and out. Built synchronously (the shaders are tiny), one per raster state.
+ID3D12PipelineState* D3D12Backend::fallback_pso(const PsoKey& key, const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
+  const bool textured = (dc.xf_regs[0x3F] & 15) != 0 && (dc.components & VB_HAS_UV0);
+  const bool colored = (dc.components & VB_HAS_COL0) != 0;
+  FallbackKey fk{key.blend, key.zmode, key.cull, key.topology, key.pixel_format, key.mvec, (uint32_t)textured | ((uint32_t)colored << 1)};
+  auto it = fallback_psos_.find(fk);
+  if (it != fallback_psos_.end()) return it->second.Get();
+  static const char* vs_src = R"(
+cbuffer VSBlock : register(b0) {
+float4 projection[4]; float4 depthparams; float4 viewparams; float4 materials[4]; float4 lights[40];
+float4 texmatrices[24]; float4 transformmatrices[64]; float4 normalmatrices[32]; float4 posttransformmatrices[64];
+float4 unjittered_projection[4]; float4 prev_projection[4]; float4 prev_transformmatrices[64]; };
+struct VS_OUTPUT { float4 pos : SV_Position; float4 color : COLOR0; float2 uv : TEXCOORD0; };
+VS_OUTPUT main(float3 rawpos : POSITION, float3 rawnorm0 : NORMAL0, float4 color0 : COLOR0, float4 color1 : COLOR1,
+  float2 rawtex0 : TEXCOORD0, float2 rawtex1 : TEXCOORD1, float2 rawtex2 : TEXCOORD2, float2 rawtex3 : TEXCOORD3,
+  float2 rawtex4 : TEXCOORD4, float2 rawtex5 : TEXCOORD5, float2 rawtex6 : TEXCOORD6, float2 rawtex7 : TEXCOORD7,
+  uint4 blend_indices : BLENDINDICES, uint4 blend_indices2 : BLENDINDICES1) {
+  VS_OUTPUT o;
+  int posmtx = int(blend_indices.x);
+  float4 rawpos4 = float4(rawpos, 1.0);
+  float4 pos = float4(dot(transformmatrices[posmtx], rawpos4), dot(transformmatrices[posmtx+1], rawpos4), dot(transformmatrices[posmtx+2], rawpos4), 1);
+  o.pos = float4(dot(projection[0], pos), dot(projection[1], pos), dot(projection[2], pos), dot(projection[3], pos));
+  o.color = COLOR_EXPR;
+  float4 coord = float4(rawtex0, 1.0, 1.0);
+  o.uv = float2(dot(coord, texmatrices[0]), dot(coord, texmatrices[1]));
+  o.pos.z = o.pos.w * depthparams.x - o.pos.z * depthparams.y;
+  o.pos.xy *= sign(depthparams.zw * float2(-1.0, 1.0));
+  o.pos.xy = o.pos.xy + o.pos.w * depthparams.zw;
+  if (o.pos.w == 1.0) { o.pos.xy = round(o.pos.xy * viewparams.xy) * viewparams.zw; }
+  return o;
+})";
+  static const char* ps_src = R"(
+SamplerState samp[8] : register(s0); Texture2D Tex[8] : register(t0);
+void main(out float4 ocol0 : SV_Target0 MVEC_OUT, in float4 rawpos : SV_Position, in float4 color : COLOR0, in float2 uv : TEXCOORD0) {
+  float4 c = color;
+  TEX_EXPR
+  if (c.a <= 0.0) discard;
+  ocol0 = c;
+  MVEC_WRITE
+})";
+  std::string vs = vs_src, ps = ps_src;
+  vs.replace(vs.find("COLOR_EXPR"), 10, colored ? "color0" : "float4(1.0, 1.0, 1.0, 1.0)");
+  ps.replace(ps.find("TEX_EXPR"), 8, textured ? "c *= Tex[0].Sample(samp[0], uv);" : "");
+  ps.replace(ps.find("MVEC_OUT"), 8, key.mvec ? ", out float2 omv : SV_Target1" : "");
+  ps.replace(ps.find("MVEC_WRITE"), 10, key.mvec ? "omv = float2(0.0, 0.0);" : "");
+  ComPtr<ID3DBlob> vsb, psb, err;
+  if (FAILED(D3DCompile(vs.c_str(), vs.size(), "fallback_vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vsb, &err)) ||
+      FAILED(D3DCompile(ps.c_str(), ps.size(), "fallback_ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psb, &err))) {
+    host::log("d3d12: fallback shader compile failed: %s", err ? (const char*)err->GetBufferPointer() : "?");
+    fallback_psos_[fk] = nullptr; return nullptr;
+  }
+  D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
+  describe_pipeline(pd, key, topo, root_.Get(), vsb.Get(), psb.Get());
+  ComPtr<ID3D12PipelineState> pso;
+  if (FAILED(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)))) { host::log("d3d12: fallback pipeline creation failed"); fallback_psos_[fk] = nullptr; return nullptr; }
+  fallback_psos_[fk] = pso;
+  return pso.Get();
+}
+
 ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
   if (dc.cached_pipeline && dc.cached_pipeline_owner == backend_id_) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
   Stopwatch sw;
@@ -710,7 +783,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
       pso_cv_.notify_one();
     }
     ++g_pso_skips;
-    return nullptr;   // the draw is skipped until the worker delivers the pipeline
+    return fallback_pso(key, dc, topo);   // approximate shading until the worker delivers the pipeline
   }
   ++g_pso_creates;
   ComPtr<ID3DBlob>& vs = vs_blobs_[vh];
@@ -1481,7 +1554,7 @@ std::string d3d12_profile_line() {
   char buf[512];
   double n = (double)std::max<uint64_t>(1, g_prof_draws);
   double l = (double)std::max<uint64_t>(1, g_pso_lookups);
-  snprintf(buf, sizeof buf, "%llu draws: index %.2f, upload %.2f, constants %.2f, pso %.2f, bind %.2f, draw %.2f us/draw | pso cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu, draws skipped while compiling %llu",
+  snprintf(buf, sizeof buf, "%llu draws: index %.2f, upload %.2f, constants %.2f, pso %.2f, bind %.2f, draw %.2f us/draw | pso cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu, draws on the fallback pipeline while compiling %llu",
            (unsigned long long)g_prof_draws, 1e6 * g_prof[0] / n, 1e6 * g_prof[1] / n, 1e6 * g_prof[2] / n, 1e6 * g_prof[3] / n, 1e6 * g_prof[4] / n, 1e6 * g_prof[5] / n,
            (unsigned long long)g_pso_hits, (unsigned long long)g_pso_lookups, 1e6 * g_prof[6] / l, 1e6 * g_prof[7] / l, (unsigned long long)g_pso_creates, (unsigned long long)g_pso_skips);
   std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pso_hits = g_pso_lookups = g_pso_creates = g_pso_skips = 0;

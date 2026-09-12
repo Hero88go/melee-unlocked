@@ -12,6 +12,7 @@
 #include "exi_slippi.h"
 #include "gecko_data.h"
 #include <chrono>
+#include <mutex>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -27,6 +28,7 @@ extern const size_t name_table_count;
 }
 namespace hle { void audio_tick(bool force); }
 
+namespace hle { void dvd_poll(); }
 namespace host {
 
 Options options;
@@ -143,7 +145,9 @@ bool disc_open(const std::string& path) {
   return true;
 }
 uint64_t g_disc_reads = 0, g_disc_bytes = 0;
+static std::mutex g_disc_mutex;   // the DVD worker and the simulation thread share the file
 bool disc_read(uint32_t offset, void* dst, uint32_t size) {
+  std::lock_guard<std::mutex> lk(g_disc_mutex);
   if (!g_disc) return false;
   if (_fseeki64(g_disc, offset, SEEK_SET) != 0) return false;
   ++g_disc_reads;
@@ -363,6 +367,7 @@ void pump_completions() {
   // alarms (pad sampling) fire even in loops that never sleep. Nothing is delivered while the
   // guest has interrupts disabled; ppc::mtmsr flushes when they come back on.
   advance_time(2048);
+  hle::dvd_poll();
   validate_alarm_queue("hle entry");
   if (!ppc::interrupts_on(*cpu)) return;
   fire_due_alarms(false);
@@ -472,7 +477,7 @@ void retrace() {
     g_next_frame += std::chrono::microseconds((long long)(16667.0 / g_emulation_speed));
     auto now = std::chrono::steady_clock::now();
     if (g_next_frame > now) std::this_thread::sleep_until(g_next_frame);
-    else if (now - g_next_frame > std::chrono::milliseconds(200)) g_next_frame = now;
+    else if (now - g_next_frame > std::chrono::milliseconds(34)) g_next_frame = now;   // after a stall, resume at 60 Hz instead of sprinting to catch up (audio would crackle)
     g_frame_time = std::chrono::duration<double>(g_next_frame.time_since_epoch()).count();
   } else {
     g_frame_time = now_seconds();
@@ -540,6 +545,7 @@ void wait_event() {
   }
   // The sleeping thread yields: interrupts are effectively enabled during the switch, so pending
   // completions run now (nested if this sleep happens inside another callback). Otherwise time moves on.
+  hle::dvd_poll();
   if (deliver_completions(true)) return;
   retrace();
 }
