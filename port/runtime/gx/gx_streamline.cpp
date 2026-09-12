@@ -8,6 +8,7 @@
 #include <dxgi1_6.h>
 #include <cmath>
 #include <cstring>
+#include <atomic>
 #include <string>
 
 #ifdef GX_STREAMLINE
@@ -71,6 +72,9 @@ bool g_have_prev = false;
 
 void log_callback(sl::LogType type, const char* msg) {
   if (type == sl::LogType::eInfo) return;
+  static std::atomic<uint64_t> count{0};
+  uint64_t n = count.fetch_add(1);
+  if (n >= 20 && n % 1000 != 0) return;   // a failing feature logs every frame; keep the log usable
   std::string s(msg);
   while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
   host::log("streamline: %s", s.c_str());

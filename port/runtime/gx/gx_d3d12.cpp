@@ -189,6 +189,8 @@ class D3D12Backend : public Backend {
   bool dlss_active_ = false;
   int dlss_mode_active_ = 0;
   bool widescreen_sent_ = false;
+  int dlss_failures_ = 0;
+  int anisotropy_applied_ = 0, ssaa_applied_ = 0;
   int forced_scale_ = 0;
   ComPtr<ID3D12Resource> mvec_, dlss_out_;
   uint32_t dlss_out_w_ = 0, dlss_out_h_ = 0;
@@ -393,16 +395,28 @@ void D3D12Backend::init() {
   D3D12_ROOT_PARAMETER bp[2]{};
   bp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; D3D12_DESCRIPTOR_RANGE br{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0};
   bp[0].DescriptorTable = {1, &br}; bp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 4; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
+  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 8; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
   D3D12_ROOT_SIGNATURE_DESC brsd{2, bp, 1, &ss, D3D12_ROOT_SIGNATURE_FLAG_NONE};
   check(D3D12SerializeRootSignature(&brsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err), "blit root");
   check(device_->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&blit_root_)), "blit root sig");
   const char* blit = R"(
 Texture2D src : register(t0); SamplerState samp : register(s0);
-cbuffer C : register(b0) { float4 rect; };  // xy = uv scale, zw = uv offset (source rect)
+cbuffer C : register(b0) { float4 rect; float4 sharp; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
-float4 PS(O i) : SV_Target { return src.Sample(samp, i.uv); })";
+float4 PS(O i) : SV_Target {
+  float4 c = src.Sample(samp, i.uv);
+  if (sharp.z <= 0.0) return c;
+  // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it.
+  float3 n = src.Sample(samp, i.uv + float2(0, -sharp.y)).rgb, s = src.Sample(samp, i.uv + float2(0, sharp.y)).rgb;
+  float3 w = src.Sample(samp, i.uv + float2(-sharp.x, 0)).rgb, e = src.Sample(samp, i.uv + float2(sharp.x, 0)).rgb;
+  float3 mn = min(min(min(n, s), min(w, e)), c.rgb), mx = max(max(max(n, s), max(w, e)), c.rgb);
+  float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
+  float peak = -1.0 / lerp(8.0, 5.0, saturate(sharp.z));
+  float3 wgt = amp * peak;
+  float3 r = (c.rgb + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt);
+  return float4(saturate(r), c.a);
+})";
   ComPtr<ID3DBlob> bvs, bps;
   check(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &bvs, &err), "blit vs");
   check(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "PS", "ps_5_0", 0, 0, &bps, &err), "blit ps");
@@ -433,13 +447,14 @@ void D3D12Backend::create_swapchain_targets(bool resize) {
 int D3D12Backend::pick_scale() const {
   constexpr int max_scale = 16384 / EFB_WIDTH;   // D3D12 texture limit
   if (forced_scale_ > 0) return std::clamp(forced_scale_, 1, max_scale);
-  if (opts_.efb_scale > 0) return std::clamp(opts_.efb_scale, 1, max_scale);
+  const int ssaa = std::clamp(opts_.ssaa, 1, 2);
+  if (opts_.efb_scale > 0) return std::clamp(opts_.efb_scale * ssaa, 1, max_scale);
   float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
   float aspect = output_aspect();
   float vw = ww, vh = ww / aspect;
   if (vh > wh) { vh = wh; vw = wh * aspect; }
   int s = std::max((int)std::ceil(vw / (480.0f * aspect)), (int)std::ceil(vh / 480.0f));
-  return std::clamp(s, 1, max_scale);
+  return std::clamp(s * ssaa, 1, max_scale);
 }
 
 // The game renders the same 640x480 field either way; Slippi's widescreen code widens the camera
@@ -508,7 +523,11 @@ void D3D12Backend::configure_dlss() {
   }
   // Smallest integer EFB multiplier whose 640x480 render area reaches the optimal size, within the allowed range.
   int scale = std::max(1, (int)std::ceil(std::max(rw / 640.0, rh / 480.0)));
-  if (max_w && 640u * scale > max_w) scale = std::max(1, (int)(max_w / 640));
+  while (scale > 1 && ((max_w && 640u * scale > max_w) || (max_h && 480u * scale > max_h))) --scale;
+  if ((max_w && 640u * scale > max_w) || (max_h && 480u * scale > max_h) || 640u * scale > (uint32_t)vw || 480u * scale > (uint32_t)vh) {
+    host::log("dlss: the window (%dx%d output) is too small for the 640x480 render size; staying native", vw, vh);
+    opts_.dlss_mode = 0; return;
+  }
   if (min_w && 640u * scale < min_w) scale = (int)((min_w + 639) / 640);
   wait_gpu();
   forced_scale_ = scale;
@@ -825,10 +844,12 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
       D3D12_FILTER_TYPE mg = mag_linear ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
       D3D12_FILTER_TYPE mp = mip == 2 ? D3D12_FILTER_TYPE_LINEAR : D3D12_FILTER_TYPE_POINT;
       sd.Filter = D3D12_ENCODE_BASIC_FILTER(mn, mg, mp, D3D12_FILTER_REDUCTION_TYPE_STANDARD);
+      // Anisotropic filtering where the game asked for linear sampling (Dolphin's "Anisotropic Filtering").
+      if (opts_.anisotropy > 1 && min_linear && mag_linear) sd.Filter = D3D12_FILTER_ANISOTROPIC;
       sd.MipLODBias = (float)(int32_t)((int32_t)sbits(m0, 9, 8)) / 32.0f;
       sd.MinLOD = bits(m1, 0, 8) / 16.0f;
       sd.MaxLOD = mip ? bits(m1, 8, 8) / 16.0f : 0.0f;
-      sd.MaxAnisotropy = 1;
+      sd.MaxAnisotropy = (UINT)std::clamp(opts_.anisotropy, 1, 16);
       sd.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
       D3D12_CPU_DESCRIPTOR_HANDLE h = sampler_heap_->GetCPUDescriptorHandleForHeapStart(); h.ptr += (base + i) * sampler_size_;
       device_->CreateSampler(&sd, h);
@@ -1003,8 +1024,8 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
     list_->SetPipelineState(blit_pso_.Get());
     list_->SetGraphicsRootSignature(blit_root_.Get());
     list_->SetGraphicsRootDescriptorTable(0, sh_gpu);
-    float rect[4] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT};
-    list_->SetGraphicsRoot32BitConstants(1, 4, rect, 0);
+    float rect[8] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT, 0, 0, 0, 0};
+    list_->SetGraphicsRoot32BitConstants(1, 8, rect, 0);
     list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list_->DrawInstanced(3, 1, 0, 0);
     // Restore the EFB as the render target; execute_draw re-sets viewport/scissor per draw.
@@ -1038,6 +1059,10 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     in.in_w = std::min<uint32_t>(c.src_w * scale_, efb_w_ - in.in_left); in.in_h = std::min<uint32_t>(c.src_h * scale_, efb_h_ - in.in_top);
     in.out_w = dlss_out_w_; in.out_h = dlss_out_h_;
     upscaled = streamline::evaluate(list_.Get(), in);
+    if (!upscaled && ++dlss_failures_ >= 30) {
+      host::log("dlss: evaluation keeps failing; switching Upscaling back to Native");
+      opts_.dlss_mode = 0; dlss_failures_ = 0;
+    } else if (upscaled) dlss_failures_ = 0;
     ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
     list_->SetDescriptorHeaps(2, heaps);
   }
@@ -1073,9 +1098,11 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   list_->SetPipelineState(blit_pso_.Get());
   list_->SetGraphicsRootSignature(blit_root_.Get());
   list_->SetGraphicsRootDescriptorTable(0, g);
-  float rect[4] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT};
+  float src_w = upscaled ? (float)dlss_out_w_ : (float)efb_w_, src_h = upscaled ? (float)dlss_out_h_ : (float)efb_h_;
+  float rect[8] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+                   1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f};
   if (upscaled) { rect[0] = 1.0f; rect[1] = 1.0f; rect[2] = 0.0f; rect[3] = 0.0f; }
-  list_->SetGraphicsRoot32BitConstants(1, 4, rect, 0);
+  list_->SetGraphicsRoot32BitConstants(1, 8, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
 #ifdef GX_PC_SETTINGS
@@ -1213,6 +1240,11 @@ static void dump_frame(const Frame& frame, const std::string& path) {
 
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
   integrate_compiled_psos();
+  if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; wait_gpu(); sampler_sets_.clear(); }
+  if (opts_.ssaa != ssaa_applied_ || (!dlss_active_ && pick_scale() != scale_)) {
+    ssaa_applied_ = opts_.ssaa;
+    if (pick_scale() != scale_) { wait_gpu(); efb_copies_.clear(); create_efb(); host::log("d3d12: internal resolution now EFB x%d", scale_); }
+  }
   struct FloatEnvironment {
     unsigned saved = _mm_getcsr();
     FloatEnvironment() { _mm_setcsr(0x1f80); }

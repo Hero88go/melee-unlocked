@@ -164,3 +164,33 @@ of its 3 patched instructions and 2 hooks behind `gecko::option_widescreen`, its
 at the end of the GCT so the port can hide them from the in-game code handler (terminator at
 `optional_gct_offset`), and its 8 data writes are applied or restored at run time. The presenter
 letterboxes at 16:9 while it is on. Online safe (same as Dolphin users toggling it).
+
+## Beta 0.1 work (2026-09-11 evening, Fable)
+
+Chandler's second play test: hitches on moves and match load, audio crackle, 130-150 fps, no
+settings found, later a black screen after enabling DLSS, no menu music, "Dolphin looks sharper".
+
+- Hitches: pipelines now compile on worker threads (draw skipped until ready), frame queue depth 4,
+  recipes merged across shader versions at `shadercache/recipes.bin` and prewarmed in parallel
+  with progress in the title (6555 pipelines: 10-13 s cold, 0.6 s warm). Scripted match at
+  unlocked fps: 270-310 fps.
+- Black screen: DLSS chose an EFB scale whose render height exceeded the output (1280x960 render
+  into a 1280x720 16:9 output) so NGX evaluate failed every frame (0xBAD00005) at 1000 fps for
+  three hours, writing a 2.7 GB log. Fixed: scale must fit both dimensions, repeated evaluate
+  failures switch back to native, Streamline errors are rate limited.
+- Controller: his log showed `gc adapter: found but cannot open (5)`: another program (Dolphin)
+  held the adapter. The port retries every 2 s once it is free.
+- Sharpness: default internal resolution is now Auto (integer scale covering the window, like his
+  Dolphin 3x at 1080p), anisotropic filtering 16x, optional 4x SSAA (EFB at 2x the chosen scale,
+  box filtered on present), contrast-adaptive sharpening slider in the present pass (Streamline's
+  DLSS sharpness is deprecated, so this works with and without DLSS).
+- Music: Slippi Jukebox ported (`port/runtime/hle/jukebox.cpp`, HPS DSP-ADPCM decoder from
+  hps_decode 0.3.0), mixed into the WASAPI/WinMM output; Music slider in PC settings.
+- Settings: panel opens on first launch; Anti-aliasing, Anisotropic filtering, Sharpening,
+  Sub-frame animation toggle (live), Music volume added; `--sharpness/--ssaa/--anisotropy`.
+- Release: `MeleePort.bat` accepts a dropped ISO (`%1`) or `melee.iso`; zip ships the warmed
+  recipes; README rewritten for the public repo; LICENSE (GPL-2.0).
+
+Not done / answered: replay playback validation against Dolphin needs the Slippi Playback code set
+(a second recompile variant) and is not implemented; ranked reporting; RTX; "DLSS 5" does not
+exist in the SDK we ship (Streamline 2.10.3, DLSS 4 era; the NVIDIA App can override the DLL).
