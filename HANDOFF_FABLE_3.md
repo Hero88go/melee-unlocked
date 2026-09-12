@@ -80,7 +80,8 @@ https://github.com/Hero88go/melee-port (public, main) and release v0.1.0-beta (p
 notes). gh CLI is logged in as Hero88go on this machine: `git push origin HEAD:main`,
 `gh release create vX.Y.Z release/MeleePort-X.Y.Z-win64.zip --notes-file ... --prerelease`.
 Since the beta: Interpolate sub-frame mode, game reporting + replay upload, rank fetch (all on
-main). Next release should be v0.1.1-beta after Chandler confirms the Play build.
+main). v0.1.1-beta released 2026-09-11 20:00 (reporting, rank, Interpolate mode, jitter -1, resolution
+labels, build.bat/play.bat).
 
 ## GitHub publish recipe (historical)
 
