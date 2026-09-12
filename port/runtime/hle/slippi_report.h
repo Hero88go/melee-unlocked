@@ -28,4 +28,19 @@ void init(const std::string& iso_path, const std::string& cache_dir);   // start
 void shutdown();                                                         // flushes queued reports (one attempt each)
 void log_game(const GameReport& report);
 void match_status(const std::string& uid, const std::string& play_key, const std::string& match_id, const std::string& status, bool background);
+
+// Ranked: the player's rank (port of the Rust user crate's rank fetcher). fetch_user_rank runs at
+// login (users REST API), fetch_match_result after a ranked game (GraphQL), both in the background.
+struct RankInfo {
+  int8_t rank = 0;              // SlippiRank index (0 unranked ... 19 grandmaster)
+  float rating_ordinal = 0;
+  uint16_t global_placing = 0, regional_placing = 0;
+  uint32_t rating_update_count = 0;
+  float rating_change = 0;
+  int8_t rank_change = 0;
+};
+enum class RankFetchStatus : uint8_t { Fetching = 0, Fetched = 1, Error = 2 };
+void fetch_user_rank(const std::string& uid);
+void fetch_match_result(const std::string& match_id, const std::string& uid, const std::string& play_key);
+RankFetchStatus rank_info(RankInfo* out);
 }  // namespace slippi::report
