@@ -5,6 +5,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "slippi_online.h"
 #include "slippi_net.h"
+#include "slippi_report.h"
+#include "exi_slippi.h"
 #include "host.h"
 #include "window.h"
 #include <algorithm>
@@ -185,6 +187,7 @@ void handle_poor_match_performance(int32_t frame) {
   g_perf_debt = std::max(0, g_perf_debt + std::max(speed_debt, ping_debt));
   if (g_perf_debt >= 30) {
     host::log("slippi: match terminated due to poor performance (%d)", g_perf_debt);
+    { UserInfo me = g_user->GetUserInfo(); report::match_status(me.uid, me.play_key, g_recent_mm_result.id, "poor_performance", true); }
     g_netplay->ForceDisconnect(NetplayClient::DisconnectReason::POOR_PERFORMANCE);
   }
 }
@@ -710,8 +713,26 @@ void handle_report_game(const uint8_t* p) {
   const uint8_t* players = p + 20;
   const uint8_t* info_block = players + 4 * 9;
   int stage = be16(info_block + 0xE);
-  host::log("slippi: game report: mode %u, %u frames, game %u, tiebreak %u, winner %d, end %u, lras %d, stage %d (not sent: reporting is not ported)",
+  host::log("slippi: game report: mode %u, %u frames, game %u, tiebreak %u, winner %d, end %u, lras %d, stage %d",
             mode, frames, game_index, tiebreak, winner, end_method, lras, stage);
+  {
+    // Exactly CEXISlippi::handleReportGame: one report per game with every slot's result.
+    UserInfo me = g_user->GetUserInfo();
+    report::GameReport r;
+    r.uid = me.uid; r.play_key = me.play_key; r.match_id = g_recent_mm_result.id; r.replay_path = slippi::last_replay_path();
+    r.online_mode = mode; r.duration_frames = frames; r.game_index = game_index; r.tiebreak_index = tiebreak;
+    r.winner_index = winner; r.game_end_method = end_method; r.lras_initiator = lras; r.stage_id = stage;
+    for (int i = 0; i < 4; ++i) {
+      report::PlayerReport pr;
+      pr.uid = g_recent_mm_result.players.size() > (size_t)i ? g_recent_mm_result.players[i].uid : "";
+      pr.slot_type = players[i * 9]; pr.stocks_remaining = players[i * 9 + 1];
+      uint32_t dmg = be32(players + i * 9 + 2); float dmg_f; std::memcpy(&dmg_f, &dmg, 4); pr.damage_done = dmg_f;
+      pr.character_id = info_block[0x60 + 0x24 * i]; pr.color_id = info_block[0x63 + 0x24 * i];
+      pr.starting_stocks = info_block[0x62 + 0x24 * i]; pr.starting_percent = be16(info_block + 0x70 + 0x24 * i);
+      r.players.push_back(pr);
+    }
+    report::log_game(r);
+  }
   if (mode == Matchmaking::RANKED && end_method == 7 && g_netplay) {
     SyncedGameState s;
     s.match_id = g_recent_mm_result.id;
@@ -746,6 +767,7 @@ bool is_online_match() { return g_in_online_match; }
 static bool file_exists(const std::string& p) { FILE* f = std::fopen(p.c_str(), "rb"); if (!f) return false; std::fclose(f); return true; }
 
 void init() {
+  report::init(host::options.iso, g_config.user_dir);
   // Without a user.json in the configured folder, use the Slippi Launcher's own login so a fresh
   // install of the port shares the account the user already signed into.
   if (!file_exists(g_config.user_dir + "/user.json")) {
@@ -765,6 +787,11 @@ void init() {
 }
 
 void shutdown() {
+  // Leaving during a ranked game counts as abandoning it (same as Dolphin).
+  if (g_in_online_match && g_recent_mm_result.id.find("mode.ranked") != std::string::npos && g_user) {
+    UserInfo me = g_user->GetUserInfo(); report::match_status(me.uid, me.play_key, g_recent_mm_result.id, "abandoned", false);
+  }
+  report::shutdown();
   if (g_matchmaking) {
     std::string id = g_matchmaking->GetMatchmakeResult().id;
     if (id.find("mode.ranked") != std::string::npos) host::log("slippi: exit during ranked match %s", id.c_str());
@@ -823,8 +850,26 @@ bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vect
       }
       return true;
     }
-    case CMD_REPORT_SET_COMPLETE: host::log("slippi: set complete (end mode %u)", payload[0]); return true;
-    case CMD_REPORT_MATCH_STATUS_UPDATE: return true;
+    case CMD_REPORT_SET_COMPLETE: {
+      host::log("slippi: set complete (end mode %u)", payload[0]);
+      if (g_recent_mm_result.id.find("mode.ranked") != std::string::npos) {
+        UserInfo me = g_user->GetUserInfo();
+        report::match_status(me.uid, me.play_key, g_recent_mm_result.id, payload[0] == 0 ? "normal_completion" : "abnormal_completion", true);
+      }
+      return true;
+    }
+    case CMD_REPORT_MATCH_STATUS_UPDATE: {
+      if (g_recent_mm_result.id.find("mode.ranked") == std::string::npos) return true;
+      static const std::map<uint8_t, const char*> status_names = {
+          {1, "connecting"}, {10, "game_setup_1"}, {11, "game_setup_2"}, {12, "game_setup_3"}, {13, "game_setup_4"}, {14, "game_setup_5"},
+          {15, "game_setup_6"}, {16, "game_setup_7"}, {20, "game_start_1"}, {21, "game_start_2"}, {22, "game_start_3"}, {23, "game_start_4"},
+          {24, "game_start_5"}, {25, "game_start_6"}, {26, "game_start_7"}, {30, "normal_completion"}, {31, "abnormal_completion"}, {40, "abandoned"}};
+      auto it = status_names.find(payload[0]);
+      if (it == status_names.end()) { host::log("slippi: invalid match status index %u", payload[0]); return true; }
+      UserInfo me = g_user->GetUserInfo();
+      report::match_status(me.uid, me.play_key, g_recent_mm_result.id, it->second, true);
+      return true;
+    }
     case CMD_GET_PLAYER_SETTINGS: handle_get_player_settings(q); return true;
     case CMD_GET_DELAY: q.clear(); q.push_back(1); q.push_back((uint8_t)g_config.delay); return true;
     case CMD_GET_RANK: {
