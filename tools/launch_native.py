@@ -1,14 +1,17 @@
 """Launch the isolated development native port at normal simulation speed."""
 import argparse
-from pathlib import Path
 import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from melee_iso import require_iso
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ISO = Path(r"C:\Games\Smash\DOLPHIN AND SMASH GAMES\Super Smash Bros. Melee (v1.02).iso")
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--iso", type=Path, default=DEFAULT_ISO)
+    ap.add_argument("--iso", type=Path, default=None)
     ap.add_argument("--scale", default="auto", help="internal resolution multiplier 1-25, or 'auto' to follow the window")
     ap.add_argument("--window", default="1280x960", help="initial client size WxH")
     ap.add_argument("--threaded-renderer", action="store_true")
@@ -30,7 +33,7 @@ def main():
     executable = ROOT / "build-review/port/Play/melee_port.exe"
     if not executable.is_file(): executable = ROOT / "build-review/port/Release/melee_port.exe"
     if not executable.is_file(): ap.error("native build missing; build it first (README: Build from source)")
-    if not args.iso.is_file(): ap.error(f"ISO not found: {args.iso}")
+    args.iso = require_iso(args.iso)
     command = [str(executable), "--iso", str(args.iso.resolve()), "--scale", args.scale, "--window", args.window]
     if args.threaded_renderer: command.append("--threaded-renderer")
     if args.fps:
