@@ -78,6 +78,15 @@ target_link_libraries(melee_port PRIVATE runtime guest)
 target_compile_options(melee_port PRIVATE /EHsc)
 target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 
+# Melee Unlocked client: Win32 launcher (Play page, Build tab, self-update). No runtime dependency.
+add_executable(melee_unlocked WIN32 app/launcher.cpp runtime/host/updater.cpp)
+set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlocked)
+target_include_directories(melee_unlocked PRIVATE runtime/host runtime/ppc runtime/hle runtime/gx "${PORT_GEN}" third_party)
+target_compile_features(melee_unlocked PRIVATE cxx_std_17)
+target_compile_options(melee_unlocked PRIVATE /EHsc)
+target_compile_definitions(melee_unlocked PRIVATE NOMINMAX UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
+target_link_libraries(melee_unlocked PRIVATE comctl32 winhttp user32 gdi32 shell32 comdlg32)
+
 # Replay playback build: the same runtime with the game translated against the Slippi Playback
 # code set (python port/recomp/recomp.py --sys-dir port/slippi_sys_playback --out port/generated_playback).
 set(PORT_GEN_PLAYBACK "${CMAKE_CURRENT_SOURCE_DIR}/generated_playback")

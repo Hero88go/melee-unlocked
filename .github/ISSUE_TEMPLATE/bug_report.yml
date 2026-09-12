@@ -35,5 +35,5 @@ body:
     id: log
     attributes:
       label: Console log and port-settings.ini
-      description: Run MeleePort.bat from a command prompt and paste the last 50 lines. Attach a .slp replay if the bug is in a match.
+      description: Attach melee_port.log from the game folder (or paste its last 50 lines). Attach a .slp replay if the bug is in a match.
       render: text

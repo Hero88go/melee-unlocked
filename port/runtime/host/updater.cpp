@@ -15,7 +15,8 @@
 
 namespace host::updater {
 namespace {
-const char* REPO_API = "https://api.github.com/repos/hero88go/melee-port/releases/latest";
+// The release list rather than /releases/latest: that endpoint skips pre-releases (betas).
+const char* REPO_API = "https://api.github.com/repos/hero88go/melee-unlocked/releases?per_page=10";
 std::atomic<State> g_state{State::Idle};
 std::mutex g_mutex;
 std::string g_current, g_latest, g_zip_url, g_message, g_zip_path;
@@ -31,7 +32,7 @@ bool http_get(const std::string& url, std::string* out, int* status) {
   wchar_t host[256]{}, path[4096]{};
   uc.lpszHostName = host; uc.dwHostNameLength = 256; uc.lpszUrlPath = path; uc.dwUrlPathLength = 4096;
   if (!WinHttpCrackUrl(wurl.c_str(), 0, 0, &uc)) return false;
-  HINTERNET session = WinHttpOpen(L"MeleePort updater", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  HINTERNET session = WinHttpOpen(L"MeleeUnlocked updater", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
   if (!session) return false;
   WinHttpSetTimeouts(session, 8000, 8000, 30000, 120000);
   bool ok = false;
@@ -41,7 +42,7 @@ bool http_get(const std::string& url, std::string* out, int* status) {
     if (req) {
       DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
       WinHttpSetOption(req, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof redirect);
-      if (WinHttpSendRequest(req, L"User-Agent: MeleePort\r\nAccept: application/vnd.github+json\r\n", (DWORD)-1, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(req, nullptr)) {
+      if (WinHttpSendRequest(req, L"User-Agent: MeleeUnlocked\r\nAccept: application/vnd.github+json\r\n", (DWORD)-1, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(req, nullptr)) {
         DWORD code = 0, size = sizeof code;
         WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &code, &size, WINHTTP_NO_HEADER_INDEX);
         if (status) *status = (int)code;
@@ -82,9 +83,11 @@ void check(const std::string& current_version) {
   g_state = State::Checking;
   g_thread = std::thread([] {
     std::string body; int status = 0;
-    if (!http_get(REPO_API, &body, &status) || status != 200) { set_message("Update check failed (no connection)"); g_state = State::Failed; return; }
-    auto j = nlohmann::json::parse(body, nullptr, false);
-    if (j.is_discarded() || !j.is_object() || !j.count("tag_name")) { set_message("Update check failed (bad response)"); g_state = State::Failed; return; }
+    if (!http_get(REPO_API, &body, &status) || status != 200) { set_message(status ? "Update check failed (HTTP " + std::to_string(status) + ")" : "Update check failed (no connection)"); host::log("updater: GET %s failed, HTTP %d, error %lu", REPO_API, status, (unsigned long)GetLastError()); g_state = State::Failed; return; }
+    auto list = nlohmann::json::parse(body, nullptr, false);
+    nlohmann::json j;
+    if (list.is_array()) for (auto& r : list) if (r.is_object() && r.count("tag_name") && !r.value("draft", false)) { j = r; break; }
+    if (!j.is_object()) { set_message("Update check failed (bad response)"); g_state = State::Failed; return; }
     std::string tag = j["tag_name"].get<std::string>();
     if (!tag.empty() && tag[0] == 'v') tag.erase(0, 1);
     std::string zip;
@@ -120,10 +123,11 @@ void download_and_install() {
       << ":wait\r\ntasklist /FI \"PID eq " << GetCurrentProcessId() << "\" 2>nul | find \"" << GetCurrentProcessId() << "\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n"
       << "rmdir /s /q update_tmp 2>nul\r\nmkdir update_tmp\r\n"
       << "tar -xf update.zip -C update_tmp || (echo Could not unpack the update & pause & exit /b 1)\r\n"
-      << "for /d %%d in (update_tmp\\MeleePort-*) do set SRC=%%d\r\n"
+      << "for /d %%d in (update_tmp\\MeleeUnlocked-* update_tmp\\MeleePort-*) do set SRC=%%d\r\n"
       << "xcopy /e /y /q \"%SRC%\\*\" \".\\\" >nul\r\n"
       << "rmdir /s /q update_tmp\r\ndel update.zip\r\n"
-      << "echo Updated. Starting the game.\r\nstart \"\" MeleePort.bat\r\n"
+      << "echo Updated to the newest release.\r\n"
+      << "if exist MeleeUnlocked.exe (start \"\" MeleeUnlocked.exe) else (start \"\" MeleeUnlocked.bat)\r\n"
       << "del \"%~f0\"\r\n";
     b.close();
     set_message("Update downloaded; restarting to install");

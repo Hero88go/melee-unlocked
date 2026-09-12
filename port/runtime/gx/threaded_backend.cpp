@@ -160,7 +160,7 @@ class ThreadedBackend final : public Backend {
       if (now - stats_time >= 1.0) {
         const SubFrameStats& s = solver.stats();
         wchar_t title[160];
-        _snwprintf_s(title, _TRUNCATE, L"Melee Port  |  DISPLAY %.0f fps%s  |  game logic %.0f Hz (always 60, like Rivals' physics)  |  %s  |  draws %u paired %u",
+        _snwprintf_s(title, _TRUNCATE, L"Melee Unlocked  |  DISPLAY %.0f fps%s  |  game logic %.0f Hz (always 60, like Rivals' physics)  |  %s  |  draws %u paired %u",
                      stats_presented / (now - stats_time), cap_period > 0 ? L" (capped)" : L" (uncapped)", stats_sim / (now - stats_time),
                      !subframes ? L"locked" : authored ? L"authored" : interpolate ? L"interpolate" : L"extrapolate", s.draws, s.paired);
         host::window_set_title(title);
@@ -194,7 +194,7 @@ class ThreadedBackend final : public Backend {
     worker = std::thread([this, options, visible, init = std::move(initialized)]() mutable {
       bool started = false;
       try {
-        void* window = host::window_create(options.window_w, options.window_h, L"Melee Port (development)", visible);
+        void* window = host::window_create(options.window_w, options.window_h, L"Melee Unlocked (development)", visible);
         if (options.fullscreen) host::window_set_fullscreen(true);
         // The swapchain must match the window as it is now (fullscreen covers the monitor, not window_w x window_h).
         int client_w = options.window_w, client_h = options.window_h;
