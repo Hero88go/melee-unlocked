@@ -54,6 +54,16 @@ instead of asking Chandler to paste the console.
    adapter opened and WinMM audio at 70%; my test instance may have held the adapter at that
    moment. Unconfirmed after the relaunch.
 
+## Beta 0.1 state (2026-09-11 18:20)
+
+Packaged: `release/MeleePort-0.1.0-beta-win64.zip` (tools/package_release.py). Latest commit
+63df903. Done since the plan below was written: P1 (async pipelines, merged recipes, prewarm with
+progress), P2 partially (parallel solver; scripted match 270-310 fps), P3 (panel opens on first
+launch, sharpening, SSAA, anisotropic, auto resolution, DLSS size fix + fallback), music
+(jukebox), Slippi Sys vendored, README/LICENSE. Open: Chandler's "sprint looks weird" and
+"backgrounds sped up" (sub-frame path; toggle exists), replay-vs-Dolphin validation (needs
+Slippi Playback code set), ranked reporting, RTX, GitHub publish (needs his repo URL).
+
 ## Plan (priority order)
 
 ### P1. Kill the hitches (his items 1 and 2)
