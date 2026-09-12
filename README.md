@@ -1,5 +1,4 @@
-# Discord / Help
-Discord can be found here https://discord.gg/K7HHs3r8ty
+
 
 # Melee Unlocked - Alpha
 
@@ -13,6 +12,9 @@ In-between frames come from the game's own animation data and physics state, not
 interpolation, so an unlocked 200 Hz display shows real intermediate poses with no added latency.
 
 Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO.
+
+## Discord / Help
+Discord can be found here https://discord.gg/K7HHs3r8ty
 
 ## Install
 
