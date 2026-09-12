@@ -14,4 +14,5 @@ void audio_close();
 void audio_push(const uint8_t* be_samples, size_t bytes);
 uint64_t audio_pushed_frames();
 uint64_t audio_dropped_blocks();
+uint64_t audio_underruns(uint64_t* silent_ms);   // output gaps (ring empty), and the total silence they inserted
 }  // namespace host

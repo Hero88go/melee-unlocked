@@ -216,7 +216,8 @@ class D3D12Backend : public Backend {
   std::unordered_map<FallbackKey, ComPtr<ID3D12PipelineState>, FallbackKeyHash> fallback_psos_;
   ID3D12PipelineState* fallback_pso(const PsoKey& key, const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo);
   std::mutex pso_mutex_, pipeline_library_mutex_;
-  std::condition_variable pso_cv_;
+  std::condition_variable pso_cv_, pso_done_cv_;
+  int pso_wait_budget_us_ = 0;   // per presented frame: how long draws may wait for their real pipeline
   std::deque<PsoJob> pso_jobs_;
   std::vector<PsoResult> pso_done_;
   std::vector<std::thread> pso_threads_;
@@ -406,15 +407,31 @@ void D3D12Backend::init() {
   check(device_->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&blit_root_)), "blit root sig");
   const char* blit = R"(
 Texture2D src : register(t0); SamplerState samp : register(s0);
-cbuffer C : register(b0) { float4 rect; float4 sharp; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount
+cbuffer C : register(b0) { float4 rect; float4 sharp; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount, w = box taps per axis
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
+// Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
+// samples) instead of one bilinear sample, which at 3x or more would skip most of the rendered
+// pixels (shimmering, jagged edges). This is what makes a 4x or 6x internal resolution look
+// supersampled on a 1080p screen.
+float4 box(float2 uv) {
+  int taps = (int)sharp.w;
+  if (taps <= 1) return src.Sample(samp, uv);
+  float2 foot = sharp.xy * taps;   // footprint of one output pixel in uv
+  float4 acc = 0;
+  for (int y = 0; y < taps; ++y)
+    for (int x = 0; x < taps; ++x)
+      acc += src.Sample(samp, uv + (float2(x, y) + 0.5) / taps * foot - 0.5 * foot);
+  return acc / (taps * taps);
+}
 float4 PS(O i) : SV_Target {
-  float4 c = src.Sample(samp, i.uv);
+  float4 c = box(i.uv);
   if (sharp.z <= 0.0) return c;
-  // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it.
-  float3 n = src.Sample(samp, i.uv + float2(0, -sharp.y)).rgb, s = src.Sample(samp, i.uv + float2(0, sharp.y)).rgb;
-  float3 w = src.Sample(samp, i.uv + float2(-sharp.x, 0)).rgb, e = src.Sample(samp, i.uv + float2(sharp.x, 0)).rgb;
+  // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
+  // over neighbours one output pixel away.
+  float2 step = sharp.xy * max(sharp.w, 1.0);
+  float3 n = src.Sample(samp, i.uv + float2(0, -step.y)).rgb, s = src.Sample(samp, i.uv + float2(0, step.y)).rgb;
+  float3 w = src.Sample(samp, i.uv + float2(-step.x, 0)).rgb, e = src.Sample(samp, i.uv + float2(step.x, 0)).rgb;
   float3 mn = min(min(min(n, s), min(w, e)), c.rgb), mx = max(max(max(n, s), max(w, e)), c.rgb);
   float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
   float peak = -1.0 / lerp(8.0, 5.0, saturate(sharp.z));
@@ -682,8 +699,8 @@ void D3D12Backend::pso_worker() {
     }
     PsoResult r; r.key = job.key; r.recipe = job.recipe;
     r.pso = build_pso(job.key, job.vsu, job.psu, job.topo, r.vs, r.ps);
-    std::lock_guard<std::mutex> lk(pso_mutex_);
-    pso_done_.push_back(std::move(r));
+    { std::lock_guard<std::mutex> lk(pso_mutex_); pso_done_.push_back(std::move(r)); }
+    pso_done_cv_.notify_all();
   }
 }
 
@@ -779,8 +796,22 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
     if (psos_pending_.insert(key).second) {
       ++g_pso_creates;
       std::lock_guard<std::mutex> lk(pso_mutex_);
-      pso_jobs_.push_back(PsoJob{key, vsu, psu, topo, recipe});
+      pso_jobs_.push_front(PsoJob{key, vsu, psu, topo, recipe});   // a draw is waiting on it: ahead of prewarm work
       pso_cv_.notify_one();
+    }
+    // Give the workers a bounded slice of this presented frame to deliver the real pipeline (a
+    // compile is usually 2 to 10 ms). Only past the budget does the draw fall back to the generic
+    // pipeline, so a new matchup costs a short display hitch instead of black or missing surfaces.
+    while (pso_wait_budget_us_ > 0) {
+      Stopwatch wait_sw;
+      {
+        std::unique_lock<std::mutex> lk(pso_mutex_);
+        pso_done_cv_.wait_for(lk, std::chrono::microseconds(std::min(pso_wait_budget_us_, 2000)), [&] { return !pso_done_.empty(); });
+      }
+      pso_wait_budget_us_ -= (int)(wait_sw.lap() * 1e6);
+      integrate_compiled_psos();
+      auto ready = psos_.find(key);
+      if (ready != psos_.end()) { dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = ready->second.Get(); return ready->second.Get(); }
     }
     ++g_pso_skips;
     return fallback_pso(key, dc, topo);   // approximate shading until the worker delivers the pipeline
@@ -1173,7 +1204,9 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   list_->SetGraphicsRootDescriptorTable(0, g);
   float src_w = upscaled ? (float)dlss_out_w_ : (float)efb_w_, src_h = upscaled ? (float)dlss_out_h_ : (float)efb_h_;
   float rect[8] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                   1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f};
+                   1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 1.0f};
+  // Box taps per axis when the rendered image is larger than the output (supersampling); capped at 4x4.
+  if (!upscaled) rect[7] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
   if (upscaled) { rect[0] = 1.0f; rect[1] = 1.0f; rect[2] = 0.0f; rect[3] = 0.0f; }
   list_->SetGraphicsRoot32BitConstants(1, 8, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -1329,7 +1362,13 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (pick_scale() != scale_) { wait_gpu(); efb_copies_.clear(); create_efb(); }
   }
 #endif
+  if (host::window_take_fullscreen_toggle()) {   // Alt+Enter
+    opts_.fullscreen = !opts_.fullscreen;
+    host::window_set_fullscreen(opts_.fullscreen);
+    if (pick_scale() != scale_) { wait_gpu(); efb_copies_.clear(); create_efb(); }
+  }
   configure_dlss();
+  pso_wait_budget_us_ = 12000;
   ++frame_counter_;
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
   slot_ = (int)(frame_counter_ % FRAME_SLOTS);

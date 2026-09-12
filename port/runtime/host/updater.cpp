@@ -99,6 +99,7 @@ void check(const std::string& current_version) {
   });
 }
 
+void shutdown() { join(); }
 State state() { return g_state.load(); }
 std::string latest_version() { std::lock_guard<std::mutex> lk(g_mutex); return g_latest; }
 std::string message() { std::lock_guard<std::mutex> lk(g_mutex); return g_message; }

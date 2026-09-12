@@ -13,6 +13,11 @@ interpolation, so an unlocked 200 Hz display shows real intermediate poses with 
 
 Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO.
 
+This project is not affiliated with, endorsed by, or supported by the Slippi team, Nintendo or
+HAL Laboratory. Slippi netplay compatibility is implemented from Slippi's open source code
+(GPL). Questions and bugs about this build go to this repository or the Discord below, not to
+the Slippi team.
+
 ## Discord / Help
 Discord can be found here https://discord.gg/K7HHs3r8ty
 
@@ -68,10 +73,12 @@ Everything Slippi Dolphin does for netplay is built in: matchmaking, rollback ne
 Slippi code set, replay recording, game reporting. Slippi Dolphin itself is not needed and is
 not touched.
 
-What is needed is a Slippi account. Accounts are created and logged in through the
-[Slippi Launcher](https://slippi.gg/downloads). Install it, log in once, and the game picks
-up that login automatically (the optional launcher shows the account on its Play page and links
-to the download if none is found). The **SLIPPI** Launcher also installs the WinUSB driver that a GameCube adapter needs. NOTE: **We are not affiliated with the Slippi team
+**Is the Slippi Launcher required?** For online play, yes: a Slippi account is required and
+accounts are created and logged in only through the [Slippi Launcher](https://slippi.gg/downloads).
+Install it, log in once, and the game picks up that login automatically (the optional Melee
+Unlocked Launcher shows the account on its Play page and links to the download if none is
+found). The **Slippi** Launcher also installs the WinUSB driver a GameCube adapter needs. For
+offline play the Slippi Launcher is not required. NOTE: **we are not affiliated with the Slippi team.**
 
 Unranked, Direct codes and Teams work against players on regular Slippi Dolphin; they change
 nothing on their side. Replays (.slp) are written to `Replays\`.

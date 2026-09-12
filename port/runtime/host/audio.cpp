@@ -41,7 +41,10 @@ int g_next = 0;
 
 // ---- WASAPI: ring of stereo frames fed by the simulation, drained by an event-driven thread.
 constexpr size_t RING_FRAMES = SAMPLE_RATE * 120 / 1000;   // 120 ms
+constexpr size_t PREFILL_FRAMES = SAMPLE_RATE * 48 / 1000;  // 48 ms of headroom before output resumes after an underrun
 int16_t g_ring[RING_FRAMES * 2];
+bool g_prefilling = true;
+uint64_t g_underruns = 0, g_underrun_frames = 0;                // guarded by g_mutex
 size_t g_ring_read = 0, g_ring_count = 0;                   // guarded by g_mutex
 IAudioClient* g_client = nullptr;
 IAudioRenderClient* g_render = nullptr;
@@ -72,7 +75,12 @@ void wasapi_thread() {
     int volume = g_volume.load();
     {
       std::lock_guard<std::mutex> lock(g_mutex);
+      // After an underrun (or at start) hold silence until the ring has PREFILL again, so a single
+      // simulation hitch costs one gap instead of a burst of crackles while the ring stays near empty.
+      if (g_prefilling && g_ring_count < PREFILL_FRAMES) { std::memset(dst, 0, want * 4); g_render->ReleaseBuffer(want, 0); continue; }
+      g_prefilling = false;
       UINT32 have = (UINT32)std::min<size_t>(g_ring_count, want);
+      if (have < want) { ++g_underruns; g_underrun_frames += want - have; g_prefilling = true; }
       for (UINT32 i = 0; i < have; ++i) {
         size_t idx = (g_ring_read + i) % RING_FRAMES;
         out[i * 2] = (int16_t)((int32_t)g_ring[idx * 2] * volume / 100);
@@ -223,5 +231,6 @@ void audio_push(const uint8_t* be_samples, size_t bytes) {
 
 uint64_t audio_pushed_frames() { return g_frames; }
 uint64_t audio_dropped_blocks() { return g_dropped; }
+uint64_t audio_underruns(uint64_t* silent_ms) { std::lock_guard<std::mutex> lock(g_mutex); if (silent_ms) *silent_ms = g_underrun_frames * 1000 / SAMPLE_RATE; return g_underruns; }
 
 }  // namespace host

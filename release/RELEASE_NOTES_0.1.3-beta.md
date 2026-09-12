@@ -1,4 +1,4 @@
-# Melee Unlocked 0.1.2 beta
+# Melee Unlocked 0.1.3 beta
 
 The project is now called Melee Unlocked (repository: hero88go/melee-unlocked; the old melee-port links redirect).
 
@@ -12,7 +12,15 @@ Extract the zip anywhere. **The launcher is optional.** The game does not depend
 
 Slippi online needs a Slippi account, so for online play the Slippi Launcher is required (install it, log in once); for offline play it is not. Slippi Dolphin itself is never needed. This project is not affiliated with the Slippi team. Settings and saves from 0.1.x carry over.
 
-## New since 0.1.1
+## Stability fixes in 0.1.3 (textures turning black, flicker, audio cut-outs, fullscreen, sharpness)
+
+- Pipelines were being compiled forever: shader identities included register state of unused TEV stages and texgens, so one session produced 32000 pipelines and kept compiling 30 to 50 new ones every 10 seconds mid-match. Fixed; a whole cold match now needs about 100.
+- Surfaces no longer turn black while a pipeline compiles: draws wait briefly for their real pipeline instead of using the generic one.
+- Audio: output gaps are now counted in the log, and after a gap playback waits for 48 ms of buffer instead of crackling.
+- Borderless fullscreen went black because the window lost its visible flag when its style changed. Fixed. Alt+Enter toggles fullscreen.
+- Downsampling from a high internal resolution now averages every rendered pixel (box filter, up to 4x4) instead of one bilinear tap, so 3x to 8x with SSAA looks properly supersampled. Note: DLSS Quality/Balanced/Performance render below the window size by design (about 1280x960 at 1080p); for the sharpest image use Native with 3x or higher plus SSAA, or DLAA. The settings panel explains this next to the DLSS control.
+- The game no longer crashes at exit after the settings panel checked for updates.
+
 
 - Melee Unlocked Launcher (optional): Play page, Build tab, built-in updater. The in-game settings panel also shows the version and an update button.
 - Flicker fix: while a new graphics pipeline is still compiling, its draws are rendered with a generic pipeline instead of being skipped, so characters and stage parts no longer pop in and out during the first seconds of a new matchup.

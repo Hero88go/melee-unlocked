@@ -15,6 +15,7 @@
 #include "pc_settings.h"
 #include "threaded_backend.h"
 #include "window.h"
+#include "updater.h"
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -165,8 +166,10 @@ int main(int argc, char** argv) {
   } catch (const LoadContextUnwind&) {
     host::log("OSLoadContext reached top level");
   }
-  host::log("audio: %llu frames played, %llu blocks dropped", (unsigned long long)host::audio_pushed_frames(), (unsigned long long)host::audio_dropped_blocks());
+  { uint64_t silent_ms = 0, underruns = host::audio_underruns(&silent_ms);
+    host::log("audio: %llu frames played, %llu blocks dropped, %llu output gaps (%llu ms of silence)", (unsigned long long)host::audio_pushed_frames(), (unsigned long long)host::audio_dropped_blocks(), (unsigned long long)underruns, (unsigned long long)silent_ms); }
   host::audio_close();
+  host::updater::shutdown();   // the settings panel may have started an update check; join it before exit
   host::gcadapter_shutdown();
   slippi::shutdown();
   { uint64_t calls = 0, insns = 0; ppc::interpreter_stats(&calls, &insns);

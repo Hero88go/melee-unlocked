@@ -24,6 +24,7 @@ std::mutex g_keys_mutex;
 bool g_closed = false;
 int g_client_w = 1280, g_client_h = 960;
 ResizeCallback g_on_resize;
+std::atomic<bool> g_fullscreen_toggle{false};
 MessageCallback g_on_message;
 std::atomic<bool> g_ui_capture{false};
 std::mutex g_ui_pad_mutex;
@@ -35,6 +36,10 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
     case WM_CLOSE: g_closed = true; request_exit(0); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
+    case WM_SYSKEYDOWN:
+      if (w == VK_RETURN && (l & (1 << 29)) && !(l & (1 << 30))) { g_fullscreen_toggle.store(true); return 0; }   // Alt+Enter, first press only
+      break;
+    case WM_SYSCHAR: if (w == VK_RETURN) return 0; break;   // no beep for Alt+Enter
     case WM_KEYDOWN: { std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = true; return 0; }
     case WM_KEYUP: { std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = false; return 0; }
     case WM_SIZE:
@@ -74,14 +79,16 @@ void window_set_fullscreen(bool enabled) {
     GetWindowPlacement(g_hwnd, &saved);
     MONITORINFO info{sizeof(info)};
     if (!GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &info)) return;
-    SetWindowLongPtrW(g_hwnd, GWL_STYLE, WS_POPUP);
-    SetWindowPos(g_hwnd, nullptr, info.rcMonitor.left, info.rcMonitor.top,
+    // Keep WS_VISIBLE: replacing the style with a bare WS_POPUP hid the window, so the desktop
+    // compositor stopped showing our frames (black screen with a stale frame of the old window).
+    SetWindowLongPtrW(g_hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+    SetWindowPos(g_hwnd, HWND_TOP, info.rcMonitor.left, info.rcMonitor.top,
                  info.rcMonitor.right-info.rcMonitor.left, info.rcMonitor.bottom-info.rcMonitor.top,
-                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+                 SWP_FRAMECHANGED | SWP_SHOWWINDOW);
   } else {
-    SetWindowLongPtrW(g_hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW);
+    SetWindowLongPtrW(g_hwnd, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
     SetWindowPlacement(g_hwnd, &saved);
-    SetWindowPos(g_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    SetWindowPos(g_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
   }
   fullscreen = enabled;
 }
@@ -119,6 +126,7 @@ void window_set_message_callback(MessageCallback cb) { g_on_message = std::move(
 void window_input_capture(bool capture) { g_ui_capture.store(capture); }
 bool window_ui_gamecube_pad(PadState& pad) { std::lock_guard<std::mutex> lock(g_ui_pad_mutex); pad = g_ui_pad; return g_ui_gamecube; }
 void window_set_resize_callback(ResizeCallback cb) { g_on_resize = std::move(cb); }
+bool window_take_fullscreen_toggle() { return g_fullscreen_toggle.exchange(false); }
 
 void window_destroy() { if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; } }
 

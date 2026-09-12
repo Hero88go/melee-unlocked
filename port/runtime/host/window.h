@@ -14,6 +14,7 @@ void* window_create(int w, int h, const wchar_t* title, bool visible = true);
 void window_set_resize_callback(ResizeCallback cb);
 void window_pump();
 void window_set_fullscreen(bool enabled);
+bool window_take_fullscreen_toggle();   // true once per Alt+Enter press in the game window
 double window_refresh_rate();
 void window_destroy();
 void window_set_title(const wchar_t* title);
