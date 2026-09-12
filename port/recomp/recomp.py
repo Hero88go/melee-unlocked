@@ -18,7 +18,7 @@ from emit import Emitter
 import gecko
 
 ROOT = Path(__file__).resolve().parents[2]
-SLIPPI_SYS = ROOT / "slippi/Data/Sys"
+SLIPPI_SYS = ROOT / "port/slippi_sys"   # Slippi's Sys files (GPL-2.0, from the Slippi Ishiiruka repo), vendored so a clone builds
 
 
 class GeckoSet:
