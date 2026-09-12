@@ -39,13 +39,29 @@ WAVEHDR g_headers[BLOCKS];
 int16_t g_blocks[BLOCKS][BLOCK_BYTES / 2];
 int g_next = 0;
 
-// ---- WASAPI: ring of stereo frames fed by the simulation, drained by an event-driven thread.
-constexpr size_t RING_FRAMES = SAMPLE_RATE * 120 / 1000;   // 120 ms
-constexpr size_t PREFILL_FRAMES = SAMPLE_RATE * 48 / 1000;  // 48 ms of headroom before output resumes after an underrun
-int16_t g_ring[RING_FRAMES * 2];
-bool g_prefilling = true;
-uint64_t g_underruns = 0, g_underrun_frames = 0;                // guarded by g_mutex
-size_t g_ring_read = 0, g_ring_count = 0;                   // guarded by g_mutex
+// ---- WASAPI: single-producer single-consumer ring, written by the simulation and read by an
+// event-driven thread. No lock: the audio thread must never wait on the simulation thread.
+//
+// The two run off different clocks (the game's timebase against the sound card's crystal), so the
+// consumer resamples with a ratio nudged by how full the ring is, the way Dolphin's mixer does.
+// Without that the ring slowly fills or empties until it drops a block or runs dry, which is heard
+// as a click or a gap.
+constexpr size_t RING_FRAMES = 8192;                            // 256 ms, power of two
+constexpr size_t RING_MASK = RING_FRAMES - 1;
+// Sized from the device once it is open: one full device request plus a simulation frame, so a
+// single large callback cannot outrun the ring and the 5 ms blocks arriving in per-frame bursts
+// always have somewhere to land.
+size_t g_target_frames = SAMPLE_RATE * 35 / 1000;
+bool g_priming = true;                                          // fill the ring before the first sample goes out
+constexpr double MAX_RATE_SHIFT = 0.015;                        // at most 1.5%: enough range to track a simulation that runs a little under 60 Hz, and still far below a pitch change anyone notices on game audio
+int16_t g_ring[RING_FRAMES][2];
+std::atomic<uint64_t> g_ring_write{0}, g_ring_read{0};          // frame counters, never wrap in practice
+double g_ring_phase = 0.0;                                      // consumer only: position inside the current frame
+double g_rate = 1.0;                                            // consumer only: input frames consumed per output frame
+double g_fill_average = 0.0;                                    // consumer only: slow average of the fill level
+int16_t g_last_output[2] = {0, 0};                              // held through a starved moment instead of silence
+std::atomic<uint64_t> g_underruns{0}, g_underrun_frames{0};
+std::atomic<double> g_rate_min{1.0}, g_rate_max{1.0};
 IAudioClient* g_client = nullptr;
 IAudioRenderClient* g_render = nullptr;
 HANDLE g_event = nullptr;
@@ -61,6 +77,12 @@ void wav_header(FILE* f, uint32_t data_bytes) {
   std::fwrite("data", 1, 4, f); u32(data_bytes);
 }
 
+// Catmull-Rom through four consecutive samples: smooth enough that a continuously varying rate
+// introduces no audible artefacts (Dolphin uses the same shape).
+inline double cubic(double a, double b, double c, double d, double t) {
+  return b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a)));
+}
+
 void wasapi_thread() {
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   while (g_running.load()) {
@@ -72,24 +94,52 @@ void wasapi_thread() {
     BYTE* dst = nullptr;
     if (FAILED(g_render->GetBuffer(want, &dst))) continue;
     int16_t* out = (int16_t*)dst;
-    int volume = g_volume.load();
-    {
-      std::lock_guard<std::mutex> lock(g_mutex);
-      // After an underrun (or at start) hold silence until the ring has PREFILL again, so a single
-      // simulation hitch costs one gap instead of a burst of crackles while the ring stays near empty.
-      if (g_prefilling && g_ring_count < PREFILL_FRAMES) { std::memset(dst, 0, want * 4); g_render->ReleaseBuffer(want, 0); continue; }
-      g_prefilling = false;
-      UINT32 have = (UINT32)std::min<size_t>(g_ring_count, want);
-      if (have < want) { ++g_underruns; g_underrun_frames += want - have; g_prefilling = true; }
-      for (UINT32 i = 0; i < have; ++i) {
-        size_t idx = (g_ring_read + i) % RING_FRAMES;
-        out[i * 2] = (int16_t)((int32_t)g_ring[idx * 2] * volume / 100);
-        out[i * 2 + 1] = (int16_t)((int32_t)g_ring[idx * 2 + 1] * volume / 100);
-      }
-      g_ring_read = (g_ring_read + have) % RING_FRAMES;
-      g_ring_count -= have;
-      if (have < want) std::memset(out + have * 2, 0, (want - have) * 4);   // underrun: silence
+    const int volume = g_volume.load();
+    uint64_t read = g_ring_read.load(std::memory_order_relaxed);
+
+    // Rate control: steer the ring towards the target fill instead of letting it drift into an
+    // overflow (a dropped block) or a gap.
+    const uint64_t buffered = g_ring_write.load(std::memory_order_acquire) - read;
+    if (g_priming) {
+      if (buffered < g_target_frames) { std::memset(dst, 0, (size_t)want * 4); g_render->ReleaseBuffer(want, 0); continue; }
+      g_priming = false;
     }
+    // The simulation delivers a frame's worth of audio in one burst, so the instantaneous fill
+    // swings by 16 ms either way. Steer on a slow average of it, which leaves only the real drift
+    // between the game's clock and the sound card's.
+    if (g_fill_average == 0.0) g_fill_average = (double)buffered;
+    g_fill_average += ((double)buffered - g_fill_average) * 0.02;
+    const double error = (g_fill_average - (double)g_target_frames) / (double)g_target_frames;
+    const double target_rate = 1.0 + std::clamp(error * 0.25, -MAX_RATE_SHIFT, MAX_RATE_SHIFT);
+    g_rate += (target_rate - g_rate) * 0.05;   // ease in, so the pitch never steps
+    if (g_rate < g_rate_min.load()) g_rate_min.store(g_rate);
+    if (g_rate > g_rate_max.load()) g_rate_max.store(g_rate);
+
+    uint32_t starved = 0;
+    for (UINT32 i = 0; i < want; ++i) {
+      const uint64_t write = g_ring_write.load(std::memory_order_acquire);
+      if (write - read < 4) {
+        // Nothing to read: hold the last sample. A repeated sample for a moment is far less
+        // audible than silence, and the rate control refills the ring within a few callbacks.
+        out[i * 2] = (int16_t)((int32_t)g_last_output[0] * volume / 100);
+        out[i * 2 + 1] = (int16_t)((int32_t)g_last_output[1] * volume / 100);
+        ++starved;
+        continue;
+      }
+      for (int channel = 0; channel < 2; ++channel) {
+        const double a = g_ring[(read - 1) & RING_MASK][channel];
+        const double b = g_ring[read & RING_MASK][channel];
+        const double c = g_ring[(read + 1) & RING_MASK][channel];
+        const double d = g_ring[(read + 2) & RING_MASK][channel];
+        const double v = cubic(a, b, c, d, g_ring_phase);
+        g_last_output[channel] = (int16_t)std::clamp(v, -32768.0, 32767.0);
+        out[i * 2 + channel] = (int16_t)((int32_t)g_last_output[channel] * volume / 100);
+      }
+      g_ring_phase += g_rate;
+      while (g_ring_phase >= 1.0) { g_ring_phase -= 1.0; ++read; }
+    }
+    g_ring_read.store(read, std::memory_order_release);
+    if (starved) { g_underruns.fetch_add(1); g_underrun_frames.fetch_add(starved); }
     if (volume > 0) slippi::jukebox::mix(out, want);
     g_render->ReleaseBuffer(want, 0);
   }
@@ -119,6 +169,10 @@ bool wasapi_open() {
       FAILED(g_client->GetService(__uuidof(IAudioRenderClient), (void**)&g_render))) {
     log("audio: IAudioClient setup failed"); g_client->Release(); g_client = nullptr; return false;
   }
+  g_target_frames = (size_t)g_buffer_frames + SAMPLE_RATE * 17 / 1000;
+  if (g_target_frames > RING_FRAMES / 2) g_target_frames = RING_FRAMES / 2;
+  g_priming = true;
+  g_fill_average = 0.0;
   g_running.store(true);
   g_thread = std::thread(wasapi_thread);
   if (FAILED(g_client->Start())) { log("audio: IAudioClient start failed"); g_running.store(false); g_thread.join(); g_render->Release(); g_render = nullptr; g_client->Release(); g_client = nullptr; return false; }
@@ -194,7 +248,8 @@ void audio_close() {
 
 void audio_push(const uint8_t* be_samples, size_t bytes) {
   if (!g_open) return;
-  std::lock_guard<std::mutex> lock(g_mutex);
+  std::unique_lock<std::mutex> winmm_lock(g_mutex, std::defer_lock);
+  if (!g_client) winmm_lock.lock();   // the WASAPI path is lock free; only the fallback needs this
   for (size_t off = 0; off + BLOCK_BYTES <= bytes; off += BLOCK_BYTES) {
     int16_t converted[BLOCK_BYTES / 2];
     const uint8_t* src = be_samples + off;
@@ -206,13 +261,13 @@ void audio_push(const uint8_t* be_samples, size_t bytes) {
     if (g_wav) { std::fwrite(converted, 1, BLOCK_BYTES, g_wav); g_wav_bytes += BLOCK_BYTES; }
     if (g_client) {
       constexpr size_t frames = BLOCK_BYTES / 4;
-      if (g_ring_count + frames > RING_FRAMES) { ++g_dropped; continue; }   // queue full: drop instead of stalling the simulation
-      size_t write = (g_ring_read + g_ring_count) % RING_FRAMES;
+      uint64_t write = g_ring_write.load(std::memory_order_relaxed);
+      if (write + frames - g_ring_read.load(std::memory_order_acquire) > RING_FRAMES - 4) { ++g_dropped; continue; }
       for (size_t i = 0; i < frames; ++i) {
-        size_t idx = (write + i) % RING_FRAMES;
-        g_ring[idx * 2] = converted[i * 2]; g_ring[idx * 2 + 1] = converted[i * 2 + 1];
+        g_ring[(write + i) & RING_MASK][0] = converted[i * 2];
+        g_ring[(write + i) & RING_MASK][1] = converted[i * 2 + 1];
       }
-      g_ring_count += frames;
+      g_ring_write.store(write + frames, std::memory_order_release);
       g_frames += frames;
       continue;
     }
@@ -231,6 +286,8 @@ void audio_push(const uint8_t* be_samples, size_t bytes) {
 
 uint64_t audio_pushed_frames() { return g_frames; }
 uint64_t audio_dropped_blocks() { return g_dropped; }
-uint64_t audio_underruns(uint64_t* silent_ms) { std::lock_guard<std::mutex> lock(g_mutex); if (silent_ms) *silent_ms = g_underrun_frames * 1000 / SAMPLE_RATE; return g_underruns; }
+uint64_t audio_underruns(uint64_t* silent_ms) { if (silent_ms) *silent_ms = g_underrun_frames.load() * 1000 / SAMPLE_RATE; return g_underruns.load(); }
+void audio_rate_range(double* low, double* high) { if (low) *low = g_rate_min.load(); if (high) *high = g_rate_max.load(); }
+uint32_t audio_buffered_ms() { return (uint32_t)((g_ring_write.load() - g_ring_read.load()) * 1000 / SAMPLE_RATE); }
 
 }  // namespace host
