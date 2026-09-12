@@ -49,7 +49,8 @@ std::shared_ptr<const AuthoredPose> capture_chain(Reader& r, uint32_t address) {
     if(aobj) {
       if(!r.span(aobj,28)||r.word(aobj+24)){ ++authored_stats().capture[5]; return {}; }
       uint32_t flags=r.word(aobj);
-      j.frame=r.real(aobj+4); j.end=r.real(aobj+12);
+      j.anim_flags=flags;
+      j.frame=r.real(aobj+4); j.rewind=r.real(aobj+8); j.end=r.real(aobj+12);
       if(!(flags&0x50000000u)) {
         j.rate=r.real(aobj+16); uint32_t fobj=r.word(aobj+20);
         while(fobj && j.tracks.size()<32) {

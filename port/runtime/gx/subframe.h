@@ -18,7 +18,7 @@
 
 namespace gx {
 
-struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, cuts = 0; uint32_t missing = 0, hud = 0, state = 0, geometry = 0, projection = 0, state_register = 256, authored = 0; };
+struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, cuts = 0; uint32_t missing = 0, hud = 0, state = 0, geometry = 0, projection = 0, state_register = 256, authored = 0, carried = 0, vertex_blended = 0; };
 
 class SubFrameSolver {
  public:
@@ -44,10 +44,13 @@ class SubFrameSolver {
                          const float cur_nrm[9], const float prev_nrm[9], SubFrameStats* stats);
 
  private:
-  struct Pair { int prev_draw; uint64_t used_slots; };   // bit i set: pos matrix starts at row i
+  // bit i set: a 3x4 matrix starts at row i. Position and texture-coordinate matrices share the
+  // array but are advanced differently, so they are tracked apart.
+  struct Pair { int prev_draw; uint64_t used_slots; uint64_t pos_slots; uint64_t tex_slots; bool blend_vertices; size_t blend_offset; };
   const Frame* prev_ = nullptr;
   const Frame* cur_ = nullptr;
   std::vector<Pair> pairs_;
+  mutable std::vector<Vertex> vertex_blend_;   // per presented frame: blended streams, one disjoint range per draw
   std::unordered_map<uint64_t, int> prev_index_;
   mutable SubFrameStats stats_;
 };

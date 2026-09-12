@@ -17,7 +17,13 @@ bool same_draw_bp(const BPMemory& a, const BPMemory& b, uint32_t& changed) {
   for (unsigned i = 0; i < 256; ++i) {
     if (i == BP_SETDRAWDONE || i == BP_PE_TOKEN_ID || i == BP_PE_TOKEN_INT_ID ||
         (i >= BP_EFB_TL && i <= 0x54) || (i >= BP_PRELOAD_ADDR && i <= BP_TEXINVALIDATE) ||
-        i == BP_BP_MASK || (i >= 0x8C && i <= 0x93) || (i >= 0xAC && i <= 0xB3)) continue;
+        i == BP_BP_MASK || (i >= 0x8C && i <= 0x97) || (i >= 0xAC && i <= 0xB3) ||
+        (i >= BP_TEV_COLOR_RA && i <= BP_TEV_COLOR_RA + 7)) continue;
+    // 0xE0..0xE7 are the TEV constant colours: a draw that fades or flashes is still the same
+    // object, and the colours actually rendered come from the current frame's draw either way.
+    // 0x8C..0x97 are the texture TMEM layout and source address: where the texture lives, not what
+    // it is. Effects regenerate their textures into a different buffer every frame, and comparing
+    // the addresses made every one of those draws unpairable. same_textures compares the content.
     if (a.reg[i] != b.reg[i]) { changed = i; return false; }
   }
   return true;
@@ -28,7 +34,9 @@ bool same_textures(const DrawCall& a, const DrawCall& b) {
     const auto& x = a.textures[i]; const auto& y = b.textures[i];
     if (x.used != y.used) return false;
     if (!x.used) continue;
-    if (x.addr != y.addr || x.width != y.width || x.height != y.height ||
+    // The address is deliberately not compared: the same material can be regenerated into a
+    // different buffer each frame. Shape, format and sampler state must still match.
+    if (x.width != y.width || x.height != y.height ||
         x.format != y.format || x.mip_levels != y.mip_levels || x.tlut_format != y.tlut_format ||
         x.mode0 != y.mode0 || x.mode1 != y.mode1) return false;
     if (x.data == y.data) continue;
@@ -215,44 +223,94 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   pairs_.resize(cur->draws.size());
   for (size_t i = 0; i < cur->draws.size(); ++i) {
     const DrawCall& d = cur->draws[i];
-    Pair p{-1, 0};
+    Pair p{-1, 0, 0, 0, false, 0};
     auto it = prev_index_.find(d.identity);
     if (it != prev_index_.end()) {
       const DrawCall& pd = prev->draws[it->second];
       bool vertex_ranges_valid = pd.first_vertex <= prev->vertices.size() && pd.vertex_count <= prev->vertices.size() - pd.first_vertex &&
           d.first_vertex <= cur->vertices.size() && d.vertex_count <= cur->vertices.size() - d.first_vertex;
+      // Same stream, byte for byte: the draw moves by its matrices alone. Otherwise the geometry
+      // itself is animated, and the two streams are blended per presented frame (below) as long as
+      // they still describe the same primitive with the same layout.
+      bool same_vertices = vertex_ranges_valid && d.vertex_count && pd.vertex_count == d.vertex_count &&
+          !std::memcmp(prev->vertices.data() + pd.first_vertex, cur->vertices.data() + d.first_vertex,
+                       (size_t)d.vertex_count * sizeof(Vertex));
       bool valid = false;
       if (d.object_generation != pd.object_generation) ++stats_.missing;
       else if (d.xf_regs[0x26] != 0) ++stats_.hud;
       else if (!vertex_ranges_valid || !d.vertex_count || pd.vertex_count != d.vertex_count ||
-          pd.primitive != d.primitive || pd.components != d.components ||
-          std::memcmp(prev->vertices.data() + pd.first_vertex, cur->vertices.data() + d.first_vertex,
-                      d.vertex_count * sizeof(Vertex))) ++stats_.geometry;
+          pd.primitive != d.primitive || pd.components != d.components) ++stats_.geometry;
       else if (!same_draw_bp(pd.bp, d.bp, stats_.state_register) || !same_textures(pd, d)) ++stats_.state;
       else if (std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 7 * sizeof(uint32_t))) ++stats_.projection;
-      else valid = true;
+      else { valid = true; p.blend_vertices = !same_vertices; }
       if (valid) {
         p.prev_draw = it->second;
         // Collect used position matrix slots: per-vertex indices or the CP default, plus texgen matrices.
         if (d.components & VB_HAS_POSMTXIDX) {
           for (uint32_t v = 0; v < d.vertex_count; ++v) {
             uint32_t idx = cur->vertices[d.first_vertex + v].posmtx;
-            if (idx < 64) p.used_slots |= 1ull << idx;
+            if (idx < 64) p.pos_slots |= 1ull << idx;
           }
         } else {
-          p.used_slots |= 1ull << (d.matrix_index_a & 63);
+          p.pos_slots |= 1ull << (d.matrix_index_a & 63);
         }
         uint32_t texgens = d.xf_regs[0x3F] & 15;
         for (uint32_t k = 0; k < texgens && k < 8; ++k) {
           uint32_t idx = k < 4 ? bits(d.matrix_index_a, 6 + 6 * k, 6) : bits(d.matrix_index_b, 6 * (k - 4), 6);
-          if (idx < 64) p.used_slots |= 1ull << idx;
+          if (idx < 64) p.tex_slots |= 1ull << idx;
         }
+        p.used_slots = p.pos_slots | p.tex_slots;
         ++stats_.paired;
       }
     }
     if (it == prev_index_.end()) ++stats_.missing;
     pairs_[i] = p;
   }
+  // Reserve a disjoint range of the blend buffer for every draw whose geometry is animated, so the
+  // parallel solver chunks can fill them without sharing anything.
+  size_t blended_vertices = 0;
+  for (size_t i = 0; i < pairs_.size(); ++i) {
+    if (!pairs_[i].blend_vertices) continue;
+    pairs_[i].blend_offset = blended_vertices;
+    blended_vertices += cur->draws[i].vertex_count;
+  }
+  vertex_blend_.resize(blended_vertices);
+}
+
+// Blends one draw's vertex stream between the two simulation frames. Sparks, shields, hit flashes
+// and similar effects rewrite their vertices every frame rather than moving a matrix, so this is
+// the only way they can move between simulation frames. Returns false when a vertex jumps far
+// enough that the buffer is showing different geometry rather than the same geometry in motion.
+static bool blend_vertex_stream(const Vertex* previous, const Vertex* current, uint32_t count,
+                                double t, bool interpolate, float max_translation, Vertex* out) {
+  const float phase = (float)t;
+  for (uint32_t v = 0; v < count; ++v) {
+    for (int k = 0; k < 3; ++k) {
+      const float delta = current[v].pos[k] - previous[v].pos[k];
+      if (!std::isfinite(delta) || std::abs(delta) > max_translation) return false;
+    }
+  }
+  for (uint32_t v = 0; v < count; ++v) {
+    const Vertex& a = previous[v];
+    const Vertex& b = current[v];
+    Vertex& o = out[v];
+    o = b;   // indices, matrix selects and anything not blended come from the current frame
+    const float* base_pos = interpolate ? a.pos : b.pos;
+    for (int k = 0; k < 3; ++k) o.pos[k] = base_pos[k] + phase * (b.pos[k] - a.pos[k]);
+    const float* base_nrm = interpolate ? a.nrm : b.nrm;
+    for (int k = 0; k < 3; ++k) o.nrm[k] = base_nrm[k] + phase * (b.nrm[k] - a.nrm[k]);
+    for (int k = 0; k < 8; ++k) {
+      const float* base_uv = interpolate ? a.uv[k] : b.uv[k];
+      o.uv[k][0] = base_uv[0] + phase * (b.uv[k][0] - a.uv[k][0]);
+      o.uv[k][1] = base_uv[1] + phase * (b.uv[k][1] - a.uv[k][1]);
+    }
+    for (int k = 0; k < 4; ++k) {
+      const int base0 = interpolate ? a.col0[k] : b.col0[k], base1 = interpolate ? a.col1[k] : b.col1[k];
+      o.col0[k] = (uint8_t)std::min(255.0f, std::max(0.0f, base0 + phase * ((int)b.col0[k] - (int)a.col0[k])));
+      o.col1[k] = (uint8_t)std::min(255.0f, std::max(0.0f, base1 + phase * ((int)b.col1[k] - (int)a.col1[k])));
+    }
+  }
+  return true;
 }
 
 namespace {
@@ -311,7 +369,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
   out.resize(cur_ ? cur_->draws.size() : 0);
   if (!cur_) return;
   SubFrameStats* stats = &stats_;
-  stats->rigid = stats->blended = stats->cuts = stats->authored = 0;
+  stats->rigid = stats->blended = stats->cuts = stats->authored = stats->carried = stats->vertex_blended = 0;
   if (authored) {
     // Sample forward from the latest state. Unsupported/discontinuous draws hold their current
     // matrices instead of inventing motion or adding a frame of delay. Chunks run in parallel.
@@ -319,11 +377,11 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
     set_authored_interpolate(interpolate);
     SolverPool& pool = solver_pool();
     const int chunks = n >= 128 ? pool.chunks() : 1;
-    std::vector<uint32_t> counts((size_t)chunks, 0);
+    std::vector<uint32_t> counts((size_t)chunks, 0), carries((size_t)chunks, 0), blends((size_t)chunks, 0);
     auto work = [&](int chunk) {
       AuthoredCache chain_cache;   // one sampled chain per object per chunk per presented frame
       size_t begin = n * (size_t)chunk / (size_t)chunks, end = n * (size_t)(chunk + 1) / (size_t)chunks;
-      uint32_t count = 0;
+      uint32_t count = 0, carried = 0, blended = 0;
       for (size_t i = begin; i < end; ++i) {
         const DrawCall& d = cur_->draws[i];
         DrawMatrices& o = out[i];
@@ -334,18 +392,61 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
         const DrawCall& hold = (interpolate && pd) ? *pd : d;
         std::memcpy(o.pos, hold.posMatrices, sizeof o.pos);
         std::memcpy(o.nrm, hold.normalMatrices, sizeof o.nrm);
-        if (!pd || !d.authored_pose || !pd->authored_pose) continue;
-        if (d.authored_pose->envelope) {
-          if (sample_authored_envelope(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, d.normalMatrices, o.pos, o.nrm, &chain_cache)) ++count;
-        } else if (!(d.components & VB_HAS_POSMTXIDX) && !(d.matrix_index_a & 63) &&
-                   sample_authored(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, o.pos, o.nrm, d.normalMatrices, &chain_cache)) {
-          ++count;
+        o.vertices = nullptr;
+        if (!pd) continue;
+        if (p.blend_vertices && p.blend_offset + d.vertex_count <= vertex_blend_.size() &&
+            blend_vertex_stream(&prev_->vertices[pd->first_vertex], &cur_->vertices[d.first_vertex], d.vertex_count,
+                                t, interpolate, max_translation, &vertex_blend_[p.blend_offset])) {
+          o.vertices = &vertex_blend_[p.blend_offset];
+          ++blended;
         }
+        // Texture-coordinate matrices animate independently of geometry: scrolling skies, water and
+        // backdrops are driven entirely by them, and they used to advance only once per simulation
+        // frame, which left most of the moving image stepping at 60 Hz. They are not rigid
+        // transforms, so they advance by a straight per-element blend; a large jump holds.
+        if (uint64_t texgen_only = p.tex_slots & ~p.pos_slots) {
+          for (int row = 0; row + 3 <= 64; ++row) {
+            if (!(texgen_only & (1ull << row))) continue;
+            const float* previous_row = &pd->posMatrices[row * 4];
+            const float* current_row = &d.posMatrices[row * 4];
+            const float* base_row = &hold.posMatrices[row * 4];
+            for (int k = 0; k < 12; ++k) {
+              const float delta = current_row[k] - previous_row[k];
+              if (delta != 0.0f && std::isfinite(delta) && std::abs(delta) <= 16.0f) o.pos[row * 4 + k] = base_row[k] + (float)t * delta;
+            }
+          }
+        }
+        if (!d.authored_pose || !pd->authored_pose) continue;
+        bool posed = false;
+        if (d.authored_pose->envelope) {
+          posed = sample_authored_envelope(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, d.normalMatrices, o.pos, o.nrm, &chain_cache);
+        } else if (!(d.components & VB_HAS_POSMTXIDX)) {
+          // One chain, so one position matrix: the draw's own row, not necessarily row 0. Stage and
+          // effect geometry commonly sits at a higher index and used to be skipped outright.
+          const uint32_t row = d.matrix_index_a & 63;
+          if (row + 3 <= 64) {
+            const bool has_normals = row + 3 <= 32;
+            static const float identity_normals[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+            float sampled_pos[12], sampled_nrm[9];
+            if (sample_authored(*pd->authored_pose, *d.authored_pose, t, &d.posMatrices[row * 4], sampled_pos, sampled_nrm,
+                                has_normals ? &d.normalMatrices[row * 3] : identity_normals, &chain_cache)) {
+              std::memcpy(&o.pos[row * 4], sampled_pos, sizeof sampled_pos);
+              if (has_normals) std::memcpy(&o.nrm[row * 3], sampled_nrm, sizeof sampled_nrm);
+              posed = true;
+            }
+          }
+        }
+        if (posed) ++count;
+        else if (carry_camera(*pd->authored_pose, *d.authored_pose, t, hold.posMatrices, hold.normalMatrices, p.pos_slots, o.pos, o.nrm)) ++carried;
       }
       counts[(size_t)chunk] = count;
+      carries[(size_t)chunk] = carried;
+      blends[(size_t)chunk] = blended;
     };
     if (chunks == 1) work(0); else pool.run(work);
     for (uint32_t c : counts) stats->authored += c;
+    for (uint32_t c : carries) stats->carried += c;
+    for (uint32_t c : blends) stats->vertex_blended += c;
     return;
   }
   for (size_t i = 0; i < cur_->draws.size(); ++i) {

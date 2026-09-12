@@ -11,9 +11,10 @@ namespace gx {
 struct AuthoredJoint {
   uint64_t generation = 0;
   uint32_t flags = 0;
+  uint32_t anim_flags = 0;             // HSD_AObj flags (AOBJ_LOOP and friends)
   std::array<float,3> scale{}, rotation{}, translation{};
   std::array<float,12> world{};
-  float frame = 0, rate = 0, end = 0;
+  float frame = 0, rate = 0, end = 0, rewind = 0;
   std::vector<NativeMelee::PackedTrack> tracks;
 };
 struct AuthoredPose;
@@ -40,9 +41,16 @@ AuthoredStats& authored_stats();
 void set_authored_interpolate(bool on);
 // Per-presented-frame cache of sampled joint chains: draws of one object share the chain.
 struct AuthoredChain { bool ok = false; std::array<float,12> world{}, inverse_current{}; };
-struct AuthoredPairHash { size_t operator()(const std::pair<const AuthoredPose*, const AuthoredPose*>& p) const {
-  return std::hash<const void*>()(p.first) * 31u ^ std::hash<const void*>()(p.second); } };
-using AuthoredCache = std::unordered_map<std::pair<const AuthoredPose*, const AuthoredPose*>, AuthoredChain, AuthoredPairHash>;
+// `allow_static` changes the outcome for a chain with no animation, so it belongs in the key:
+// without it, whichever draw reached the chain first decided whether every other draw of that
+// object moved with the camera or held.
+struct AuthoredChainKey {
+  const AuthoredPose* previous; const AuthoredPose* current; bool allow_static;
+  bool operator==(const AuthoredChainKey& o) const { return previous == o.previous && current == o.current && allow_static == o.allow_static; }
+};
+struct AuthoredPairHash { size_t operator()(const AuthoredChainKey& k) const {
+  return (std::hash<const void*>()(k.previous) * 31u) ^ std::hash<const void*>()(k.current) ^ (k.allow_static ? 0x9e3779b9u : 0u); } };
+using AuthoredCache = std::unordered_map<AuthoredChainKey, AuthoredChain, AuthoredPairHash>;
 // Phase is [0,1] frames forward from current. Returns false at unsupported state or
 // animation boundaries; callers must retain the current pose. Never calls guest code.
 bool sample_authored(const AuthoredPose& previous, const AuthoredPose& current,
@@ -54,4 +62,10 @@ bool sample_authored(const AuthoredPose& previous, const AuthoredPose& current,
 bool sample_authored_envelope(const AuthoredPose& previous, const AuthoredPose& current, double phase,
                               const float current_pos[256], const float current_nrm[96], float out_pos[256], float out_nrm[96],
                               AuthoredCache* cache);
+// Applies only the camera's motion to a draw that could not be re-posed, so it still moves with a
+// panning camera instead of holding for a whole simulation frame. `pos_slots` marks the rows that
+// hold position matrices (texture-coordinate matrices share the array and must not be touched).
+bool carry_camera(const AuthoredPose& previous, const AuthoredPose& current, double phase,
+                  const float in_pos[256], const float in_nrm[96], uint64_t pos_slots,
+                  float out_pos[256], float out_nrm[96]);
 }

@@ -45,11 +45,12 @@ struct TextureRef {
 
 struct AuthoredPose;
 struct DrawCall {
-  // ~5 KB of register and matrix snapshots, recorded ~1400 times per simulation frame. The default
-  // constructor deliberately leaves those arrays uninitialised (record_draw overwrites every one of
-  // them); zeroing them cost milliseconds of the 16.7 ms simulation budget. Members that are not
-  // written unconditionally keep their initialisers below.
-  DrawCall() {}
+  // ~5 KB of register and matrix snapshots, recorded ~1400 times per simulation frame. Zeroing all
+  // of that costs real time on the simulation thread, so record_draw (which overwrites every one of
+  // those arrays) opts out with the tag below. Every other caller gets the safe zeroed default.
+  struct SkipInit {};
+  DrawCall() = default;
+  explicit DrawCall(SkipInit) {}
   uint32_t primitive;              // GX primitive opcode & 0xF8
   uint32_t first_vertex, vertex_count;
   uint32_t components;
@@ -81,6 +82,9 @@ struct DrawCall {
 struct DrawMatrices {
   float pos[256];
   float nrm[96];
+  // Effects that rewrite their vertex stream every simulation frame (sparks, shields, hit flashes)
+  // cannot be moved by a matrix. When set, the renderer draws these vertices instead of the frame's.
+  const Vertex* vertices = nullptr;
 };
 
 struct EfbCopy {

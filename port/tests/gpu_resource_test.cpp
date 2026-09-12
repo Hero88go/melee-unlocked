@@ -12,7 +12,12 @@
 namespace host {
 void log(const char* fmt, ...) { va_list args; va_start(args, fmt); vprintf(fmt,args); va_end(args); puts(""); }
 [[noreturn]] void die(const char* fmt, ...) { char buf[1024]; va_list args; va_start(args,fmt); vsnprintf(buf,sizeof buf,fmt,args); va_end(args); throw std::runtime_error(buf); }
+// The renderer reaches back into the window for fullscreen changes; this test owns a bare HWND.
+bool window_take_fullscreen_toggle() { return false; }
+void window_set_fullscreen(bool) {}
+void window_set_title(const wchar_t*) {}
 }
+namespace slippi { void request_widescreen(bool) {} }
 static void check(bool b, const char* why) { if(!b) throw std::runtime_error(why); }
 static void f32(uint32_t& out, float f) { memcpy(&out,&f,4); }
 static gx::TextureRef texture(uint32_t addr, uint8_t r, uint8_t b) {
