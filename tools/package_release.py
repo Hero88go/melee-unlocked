@@ -81,7 +81,7 @@ if not exist "%ISO%" (
   pause
   exit /b 1
 )
-melee_port.exe --iso "%ISO%" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\Slippi" --replay-dir "%~dp0Replays" --card-dir "%~dp0User\GC\CardA" --threaded-renderer --fps unlocked --frame-mode authored --scale auto --volume 70
+melee_port.exe --iso "%ISO%" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\Slippi" --discover-launcher-login --replay-dir "%~dp0Replays" --card-dir "%~dp0User\GC\CardA" --threaded-renderer --fps unlocked --frame-mode authored --scale auto --volume 70
 if errorlevel 1 pause
 """
 

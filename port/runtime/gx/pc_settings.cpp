@@ -151,11 +151,12 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance"};
     if (ImGui::Combo("Upscaling (NVIDIA DLSS)", &options.dlss_mode, upscalers, 6)) changed = true;
     if (options.dlss_mode) {
-      static const char* ratios[] = {"", "100% (DLAA: full resolution, anti-aliasing only)", "67% (Quality)", "58% (Balanced)", "50% (Performance)", "33% (Ultra Performance)"};
-      ImGui::TextWrapped("DLSS renders the game at %s of the window size (at 1080p about 1280x960) and upscales it. That is what DLSS is for in heavy games; Melee is cheap to render, so here it is a downgrade in sharpness, and Internal resolution and Anti-aliasing above are ignored while it is on. For the sharpest image choose Native, set Internal resolution to 3x or higher and Anti-aliasing to 4x SSAA (the Dolphin look), or choose DLAA (full resolution, DLSS used only as anti-aliasing).", ratios[options.dlss_mode]);
+      ImGui::TextWrapped("DLSS/DLAA are experimental. Image quality and performance depend on the scene and GPU. DLAA is a quality option and can reduce FPS. Native rendering remains available for comparison.");
     }
+    if (options.actual_render_w) ImGui::Text("Rendering: %u x %u   Output: %u x %u", options.actual_render_w, options.actual_render_h, options.actual_output_w, options.actual_output_h);
     int sharp = (int)std::lround(options.sharpness * 100.0f);
     if (ImGui::SliderInt("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }
+    ImGui::TextUnformatted("0% disables sharpening. Applied after scaling at output resolution.");
     const char* subframe_modes[] = {"Off (60 Hz poses only)", "Predict ahead (no delay, can overshoot on speed changes)", "Interpolate (exact, one frame of delay)"};
     int sf = options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1;
     if (ImGui::Combo("Sub-frame animation", &sf, subframe_modes, 3)) { options.subframe = sf == 0 ? SubFrameMode::Off : sf == 2 ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored; changed = true; }

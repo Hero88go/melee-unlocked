@@ -110,6 +110,18 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
         }
         if(sampled){ scale=ts; rot=tr; pos=tp; animated=true; } else partial=true;
       }
+      if(interp && !sampled) {
+        // Keep a held joint on the same previous-to-current timeline as its
+        // sampled siblings. Large changes are discrete cuts, not interpolation.
+        for(int k=0;k<3;++k) {
+          const float dp=j.translation[k]-p.translation[k], dr=j.rotation[k]-p.rotation[k], ds=j.scale[k]-p.scale[k];
+          if(!std::isfinite(dp)||!std::isfinite(dr)||!std::isfinite(ds)||std::abs(dp)>30.0f||std::abs(dr)>0.5f) return false;
+          pos[k]=p.translation[k]+float(phase)*dp;
+          rot[k]=p.rotation[k]+float(phase)*dr;
+          scale[k]=p.scale[k]+float(phase)*ds;
+          animated |= dp!=0 || dr!=0 || ds!=0;
+        }
+      }
       // Game-driven motion (fighter positions, items, knockback) has no track: predict it forward by
       // the last simulated per-frame delta, bounded so teleports and respawns hold instead.
       for(int k=0;k<3;++k){

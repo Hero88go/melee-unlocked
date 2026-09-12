@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import subprocess
 import tempfile
+import shutil
 from PIL import Image, ImageChops, ImageStat
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,7 @@ def main():
     ap.add_argument('--exe', type=Path, default=ROOT / 'build-review/port/Release/melee_port.exe')
     ap.add_argument('--out', type=Path, default=ROOT / 'reports/sharpening')
     ap.add_argument('--frame', type=int, default=1800)
+    ap.add_argument('--card-fixture', type=Path, help='copy a prepared test card into every run')
     args = ap.parse_args()
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -31,6 +33,8 @@ def main():
         run = out / str(strength)
         run.mkdir(exist_ok=True)
         isolated = Path(tempfile.mkdtemp(prefix='state-', dir=run))
+        if args.card_fixture:
+            shutil.copytree(args.card_fixture, isolated / 'cards')
         capture = run / 'capture.ppm'
         cmd = [str(args.exe.resolve()), '--iso', str(args.iso.resolve()), '--hidden', '--fast',
                '--volume', '0', '--time-base', '1', '--frames', str(args.frame+300),
@@ -38,6 +42,7 @@ def main():
                '--window', '1920x1080', '--widescreen', '--dlss', 'off', '--sharpness', str(strength),
                '--capture', str(capture), '--capture-sim-frame', str(args.frame),
                '--card-dir', str(isolated / 'cards'), '--user-dir', str(isolated / 'User'),
+               '--replay-dir', str(run / 'replays'),
                '--log-file', str(run / 'port.log'),
                '--shader-cache', str(out / 'cache')]
         with (run / 'process.log').open('w') as log:

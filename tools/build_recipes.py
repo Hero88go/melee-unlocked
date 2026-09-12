@@ -11,6 +11,7 @@ from pathlib import Path
 import struct
 import subprocess
 import tempfile
+import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 MAGIC = 0x3150535247505847
@@ -61,6 +62,7 @@ def main():
     ap.add_argument('--out', type=Path, default=ROOT / 'reports/recipe-collection')
     ap.add_argument('--merge', type=Path, nargs='+', help='merge existing caches without launching the game')
     ap.add_argument('--timeout', type=float, default=240)
+    ap.add_argument('--card-fixture', type=Path, help='prepared card required by the scenario manifest')
     args = ap.parse_args()
     output = args.out.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -85,6 +87,8 @@ def main():
         run_dir = output / f'case-{index:03d}'
         run_dir.mkdir(exist_ok=True)
         isolated = Path(tempfile.mkdtemp(prefix='state-', dir=run_dir))
+        if args.card_fixture:
+            shutil.copytree(args.card_fixture, isolated / 'cards')
         command = [str(args.exe.resolve()), '--iso', str(args.iso.resolve()),
                    '--volume', '0', '--hidden', '--fast', '--frame-mode', 'off', '--dlss', 'off',
                    '--time-base', '1', '--frames', str(frames), '--script', str(script),

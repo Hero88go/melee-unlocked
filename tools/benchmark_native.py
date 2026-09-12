@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import time
 import tempfile
+import shutil
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,6 +35,7 @@ def main():
     ap.add_argument('--timeout', type=float, default=180)
     ap.add_argument('--window', default='1920x1080')
     ap.add_argument('--scale', type=int, default=3)
+    ap.add_argument('--card-fixture', type=Path, help='prepared card required by the selected scenario')
     args = ap.parse_args()
     if args.frames <= args.match_start or args.repeats < 1:
         ap.error('need frames beyond match-start and at least one repeat')
@@ -51,6 +53,8 @@ def main():
         for repeat in range(args.repeats):
             label = f'{cap}-{repeat}'
             isolated = Path(tempfile.mkdtemp(prefix=label+'-state-', dir=args.out)).resolve()
+            if args.card_fixture:
+                shutil.copytree(args.card_fixture, isolated / 'cards')
             trace = (args.out / (label + '.csv')).resolve()
             command = [str(args.exe.resolve()), '--iso', str(args.iso.resolve()),
                        '--volume', '0', '--hidden', '--threaded-renderer', '--fps', cap,

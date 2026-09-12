@@ -17,7 +17,7 @@ bool same_draw_bp(const BPMemory& a, const BPMemory& b, uint32_t& changed) {
   for (unsigned i = 0; i < 256; ++i) {
     if (i == BP_SETDRAWDONE || i == BP_PE_TOKEN_ID || i == BP_PE_TOKEN_INT_ID ||
         (i >= BP_EFB_TL && i <= 0x54) || (i >= BP_PRELOAD_ADDR && i <= BP_TEXINVALIDATE) ||
-        i == BP_BP_MASK || (i >= 0x8C && i <= 0x97) || (i >= 0xAC && i <= 0xB3) ||
+        i == BP_BP_MASK || (i >= 0x8C && i <= 0x97) || (i >= 0xAC && i <= 0xB7) ||
         (i >= BP_TEV_COLOR_RA && i <= BP_TEV_COLOR_RA + 7)) continue;
     // 0xE0..0xE7 are the TEV constant colours: a draw that fades or flashes is still the same
     // object, and the colours actually rendered come from the current frame's draw either way.
@@ -285,6 +285,10 @@ static bool blend_vertex_stream(const Vertex* previous, const Vertex* current, u
                                 double t, bool interpolate, float max_translation, Vertex* out) {
   const float phase = (float)t;
   for (uint32_t v = 0; v < count; ++v) {
+    // Matrix selectors are discrete bindings, not animation channels. Blending
+    // positions across a changed binding deforms a newly assigned primitive.
+    if (previous[v].posmtx != current[v].posmtx ||
+        std::memcmp(previous[v].texmtx, current[v].texmtx, sizeof current[v].texmtx)) return false;
     for (int k = 0; k < 3; ++k) {
       const float delta = current[v].pos[k] - previous[v].pos[k];
       if (!std::isfinite(delta) || std::abs(delta) > max_translation) return false;
@@ -394,9 +398,16 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
         std::memcpy(o.nrm, hold.normalMatrices, sizeof o.nrm);
         o.vertices = nullptr;
         if (!pd) continue;
-        if (p.blend_vertices && p.blend_offset + d.vertex_count <= vertex_blend_.size() &&
-            blend_vertex_stream(&prev_->vertices[pd->first_vertex], &cur_->vertices[d.first_vertex], d.vertex_count,
-                                t, interpolate, max_translation, &vertex_blend_[p.blend_offset])) {
+        if (p.blend_vertices) {
+          if (p.blend_offset + d.vertex_count > vertex_blend_.size() ||
+              !blend_vertex_stream(&prev_->vertices[pd->first_vertex], &cur_->vertices[d.first_vertex], d.vertex_count,
+                                   t, interpolate, max_translation, &vertex_blend_[p.blend_offset])) {
+            // A rejected stream must also hold its current matrices. Combining
+            // current vertices with an advanced or delayed matrix mixes timelines.
+            std::memcpy(o.pos, d.posMatrices, sizeof o.pos);
+            std::memcpy(o.nrm, d.normalMatrices, sizeof o.nrm);
+            continue;
+          }
           o.vertices = &vertex_blend_[p.blend_offset];
           ++blended;
         }
@@ -455,6 +466,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
     const Pair& p = pairs_[i];
     const DrawCall* pd = p.prev_draw >= 0 ? &prev_->draws[p.prev_draw] : nullptr;
     const DrawCall& base = (interpolate && pd) ? *pd : d;
+    o.vertices = nullptr;
     std::memcpy(o.pos, base.posMatrices, sizeof o.pos);
     std::memcpy(o.nrm, base.normalMatrices, sizeof o.nrm);
     if (!pd) continue;

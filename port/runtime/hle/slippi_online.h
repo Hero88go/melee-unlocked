@@ -10,6 +10,7 @@ namespace slippi::online {
 
 struct Config {
   std::string user_dir = "runtime/slippi/User/Slippi";   // user.json, direct-codes.json (Slippi Launcher layout)
+  bool discover_launcher_login = true; // explicit --user-dir disables fallback outside that directory
   int delay = 2;                 // Slippi Online input delay (frames)
   int chat = 0;                  // 0 enabled, 1 direct only, 2 disabled
   bool show_local_rank = true, show_opponent_rank = true;

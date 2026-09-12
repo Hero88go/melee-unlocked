@@ -4,6 +4,7 @@
 // touched. The bounded source queue can back-pressure simulation when rendering is slow.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "threaded_backend.h"
+#include "drain_policy.h"
 #include "frame_queue.h"
 #include "gx_d3d12.h"
 #include "host.h"
@@ -59,6 +60,7 @@ class ThreadedBackend final : public Backend {
     double stats_time = next_present; uint64_t stats_presented = 0, stats_sim = 0, stats_lines = 0;
     uint32_t phase_bins[5] = {};
     double build_seconds = 0, submit_seconds = 0; uint64_t cost_presented = 0;   // presented phases: [0,.25) [.25,.5) [.5,.75) [.75,1) exactly 1
+    DrainPolicy drain_policy;
     for (;;) {
       host::window_pump();
       const auto& live_options = d3d12_options(renderer);
@@ -95,13 +97,10 @@ class ThreadedBackend final : public Backend {
         queue.wait_available(std::chrono::milliseconds(2));
         continue;
       }
-      // Pairing must follow every new frame, including drained ones: the index maps this frame's
-      // draws onto the previous frame's, and the ring slots are refilled underneath it.
-      if (got_new && subframes) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);
       // Backlog (the renderer fell behind, or a compile burst): execute older frames without
       // the solver or a present so their EFB copies exist, then catch up to the newest one. The
       // simulation never waits on this.
-      if (got_new && queue.size() > 0) {
+      if (got_new && drain_policy.drain(queue.size())) {
         renderer->set_skip_present(true);
         renderer->submit_frame(frames[cur]);
         renderer->set_skip_present(false);
@@ -110,6 +109,9 @@ class ThreadedBackend final : public Backend {
         if (drained == 1 || drained % 300 == 0) host::log("renderer: draining a backlog of %zu queued frames (%llu drained so far)", queue.size() + 1, (unsigned long long)drained);
         continue;
       }
+      // No solver reads drained frames. Rebuild pairing just before the next
+      // presentation, against the two retained source frames, even after a drain.
+      if (got_new && subframes) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);
       const Frame& current = frames[cur];
       bool should_render;
       double t = 0.0;
@@ -175,7 +177,7 @@ class ThreadedBackend final : public Backend {
       if (now - stats_time >= 1.0) {
         const SubFrameStats& s = solver.stats();
         wchar_t title[160];
-        _snwprintf_s(title, _TRUNCATE, L"Melee Unlocked  |  DISPLAY %.0f fps%s  |  game logic %.0f Hz (always 60, like Rivals' physics)  |  %s  |  draws %u paired %u",
+        _snwprintf_s(title, _TRUNCATE, L"Melee Unlocked  |  PRESENT %.0f fps%s  |  source frames %.0f Hz  |  %s  |  draws %u paired %u",
                      stats_presented / (now - stats_time), cap_period > 0 ? L" (capped)" : L" (uncapped)", stats_sim / (now - stats_time),
                      !subframes ? L"locked" : authored ? L"authored" : interpolate ? L"interpolate" : L"extrapolate", s.draws, s.paired);
         host::window_set_title(title);

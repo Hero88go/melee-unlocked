@@ -770,7 +770,7 @@ void init() {
   report::init(host::options.iso, g_config.user_dir);
   // Without a user.json in the configured folder, use the Slippi Launcher's own login so a fresh
   // install of the port shares the account the user already signed into.
-  if (!file_exists(g_config.user_dir + "/user.json")) {
+  if (g_config.discover_launcher_login && !file_exists(g_config.user_dir + "/user.json")) {
     const char* appdata = std::getenv("APPDATA");
     if (appdata) {
       std::string launcher = std::string(appdata) + "/Slippi Launcher/netplay/User/Slippi";
