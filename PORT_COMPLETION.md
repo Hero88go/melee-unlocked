@@ -222,3 +222,14 @@ frame 221 on, so `--extra-gct` is required for playback builds.
 Two more of Chandler's replays: Game_20260321T214328 (8161 frames, 1 mismatch: the same spawn ulp)
 and Game_20260321T214020 (10035 frames, 29688 player-frames, 0 mismatches). All three carry the same
 code list except one data word, so one playback build covers a Slippi version.
+
+## Game reporting and ranked (2026-09-11 19:40, Fable)
+
+Ported SlippiRustExtensions' game reporter and rank fetcher to C++ (`slippi_report.cpp`, WinHTTP,
+nlohmann json): `reportOnlineGame` GraphQL mutation after every online game with the replay
+upload (stored-block gzip) when the server returns an upload URL, `reportOnlineMatchStatus` for
+set completion / game setup and start / abandoned on exit / poor performance, ISO MD5 (BCrypt,
+cached by path+size+mtime), rank at login from the users REST API and after ranked games from
+`getRankedMatchPersonalResult`, answered to the game through CMD_GET_RANK. A local test match's
+report was accepted by internal.slippi.gg. Ranked mode is therefore no longer blocked on the port
+side; it still needs a real ranked set against a Dolphin player to confirm the rank display.
