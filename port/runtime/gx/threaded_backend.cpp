@@ -49,12 +49,12 @@ class ThreadedBackend final : public Backend {
           file = std::fopen(path.c_str(), "w");
           if (!file) throw std::runtime_error("cannot open frame timing CSV");
           std::setvbuf(file, nullptr, _IOFBF, 1024 * 1024);
-          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws\n", file);
+          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms\n", file);
         }
       }
       ~Trace() { if (file) std::fclose(file); }
     } trace(options_.frame_times);
-    double last_submission = 0;
+    double last_submission = 0; uint64_t drained = 0;
     double next_present = host::now_seconds();
     double stats_time = next_present; uint64_t stats_presented = 0, stats_sim = 0, stats_lines = 0;
     uint32_t phase_bins[5] = {};
@@ -83,6 +83,7 @@ class ThreadedBackend final : public Backend {
       Frame incoming;
       if ((cur < 0 || frames[cur].sequence == rendered_sequence) && queue.try_pop(incoming)) {
         int next = cur < 0 ? 0 : cur ^ 1;
+        queue.recycle(std::move(frames[next]));   // return the buffers this slot is about to drop
         frames[next] = std::move(incoming);
         have_prev = cur >= 0;
         cur = next;
@@ -94,7 +95,21 @@ class ThreadedBackend final : public Backend {
         queue.wait_available(std::chrono::milliseconds(2));
         continue;
       }
+      // Pairing must follow every new frame, including drained ones: the index maps this frame's
+      // draws onto the previous frame's, and the ring slots are refilled underneath it.
       if (got_new && subframes) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);
+      // Backlog (the renderer fell behind, or a compile burst): execute older frames without
+      // the solver or a present so their EFB copies exist, then catch up to the newest one. The
+      // simulation never waits on this.
+      if (got_new && queue.size() > 0) {
+        renderer->set_skip_present(true);
+        renderer->submit_frame(frames[cur]);
+        renderer->set_skip_present(false);
+        rendered_sequence = frames[cur].sequence;
+        ++drained;
+        if (drained == 1 || drained % 300 == 0) host::log("renderer: draining a backlog of %zu queued frames (%llu drained so far)", queue.size() + 1, (unsigned long long)drained);
+        continue;
+      }
       const Frame& current = frames[cur];
       bool should_render;
       double t = 0.0;
@@ -142,10 +157,10 @@ class ThreadedBackend final : public Backend {
       const double render_end = host::now_seconds();
       const double present_wait = renderer->presentation_wait_seconds();
       render_budget = std::max(render_budget * 0.95, render_end-render_start-present_wait+0.0002);
-      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u\n",
+      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f\n",
           (unsigned long long)(presented+1), (unsigned long long)current.sequence, t,
           (render_start-current.time)*1000.0, last_submission ? (render_end-last_submission)*1000.0 : 0.0,
-          solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired);
+          solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired, host::last_sim_frame_ms());
       last_submission = render_end;
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
@@ -184,7 +199,7 @@ class ThreadedBackend final : public Backend {
         stats_time = now; stats_presented = 0; stats_sim = 0;
       }
     }
-    host::log("renderer: %llu simulation frames, %llu presented frames on its own thread", submitted, presented);
+    host::log("renderer: %llu simulation frames, %llu presented frames on its own thread, %llu drained without presenting", submitted, presented, (unsigned long long)drained);
   }
 
  public:
@@ -223,7 +238,12 @@ class ThreadedBackend final : public Backend {
   }
   ~ThreadedBackend() override { queue.finish(); worker.join(); }
   void submit_frame(const Frame& frame) override {
+    host::SimCostScope cost(host::SIM_QUEUE);
     if (!queue.push(frame)) throw ExitRequested{host::exit_code()};
+  }
+  void submit_and_recycle(Frame& frame) override {
+    host::SimCostScope cost(host::SIM_QUEUE);
+    if (!queue.push_and_recycle(frame)) throw ExitRequested{host::exit_code()};
   }
 };
 }

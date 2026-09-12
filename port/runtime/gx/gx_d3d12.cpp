@@ -175,6 +175,8 @@ class D3D12Backend : public Backend {
     if (opts_.efb_scale == 0 && pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
   }
   int scale() const { return scale_; }
+  void set_skip_present(bool skip) override { skip_present_ = skip; }
+  bool skip_present_ = false;
   uint32_t frames_presented() const { return frames_presented_; }
   uint32_t pipeline_count() const { return (uint32_t)psos_.size(); }
   uint32_t texture_count() const { return (uint32_t)textures_.size(); }
@@ -1405,7 +1407,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       execute_draw(frame, frame.draws[cmd.index], overrides ? overrides + cmd.index : nullptr);
     } else {
       const EfbCopy& c = frame.copies[cmd.index];
-      if (c.to_xfb) { present_efb(c); presented = true; }
+      if (c.to_xfb) { if (!skip_present_) { present_efb(c); presented = true; } }
       else execute_copy(c);
       if (c.clear) clear_efb(c);
     }

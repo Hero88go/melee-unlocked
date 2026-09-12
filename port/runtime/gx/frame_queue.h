@@ -1,5 +1,7 @@
-// Bounded ordered transfer. Preserve every EFB command until resource dependencies
-// are self-contained; never silently drop a simulation frame to report higher FPS.
+// Ordered transfer from the simulation to the renderer. Every frame is executed (EFB copies
+// made in one frame feed later ones), never dropped; a backlog is drained by the renderer
+// without presenting (threaded_backend.cpp), so the simulation only waits in the pathological
+// case of a renderer that has stopped consuming altogether (cap 32 frames, half a second).
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "gx_core.h"
@@ -12,15 +14,36 @@ class FrameQueue {
   std::mutex mutex;
   std::condition_variable changed;
   std::deque<Frame> frames;
+  std::deque<Frame> recycled;   // buffers returned by the renderer, capacity preserved
   bool finished = false;
 public:
   bool push(Frame frame) {
     std::unique_lock<std::mutex> lock(mutex);
-    changed.wait(lock, [&] { return finished || frames.size() < 4; });   // a short renderer hitch must not stall the simulation
+    changed.wait(lock, [&] { return finished || frames.size() < 32; });   // the renderer drains backlogs; this only trips if it is stuck
     if (finished) return false;
     frames.push_back(std::move(frame));
     changed.notify_all();
     return true;
+  }
+  // Hands the simulation's frame to the renderer without copying it, and hands back a cleared
+  // frame that still owns its buffers (a few MB of vertices and draw state), so the simulation
+  // thread refills them instead of reallocating every frame.
+  bool push_and_recycle(Frame& frame) {
+    std::unique_lock<std::mutex> lock(mutex);
+    changed.wait(lock, [&] { return finished || frames.size() < 32; });
+    if (finished) return false;
+    frames.push_back(std::move(frame));
+    if (!recycled.empty()) { frame = std::move(recycled.back()); recycled.pop_back(); }
+    frame.clear();
+    changed.notify_all();
+    return true;
+  }
+  // The renderer returns buffers it is about to overwrite.
+  void recycle(Frame&& frame) {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (recycled.size() >= 4) return;
+    frame.clear();
+    recycled.push_back(std::move(frame));
   }
   bool pop(Frame& frame) {
     std::unique_lock<std::mutex> lock(mutex);
@@ -30,6 +53,7 @@ public:
     changed.notify_all();
     return true;
   }
+  size_t size() { std::lock_guard<std::mutex> lock(mutex); return frames.size(); }
   // Non-blocking variant for a presenter that renders between frames.
   bool try_pop(Frame& frame) {
     std::lock_guard<std::mutex> lock(mutex);

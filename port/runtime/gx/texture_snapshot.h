@@ -14,8 +14,11 @@ struct TextureSnapshot {
 };
 
 class TextureSnapshotCache {
-  std::unordered_multimap<uint64_t, std::shared_ptr<const TextureSnapshot>> entries;
-  std::unordered_map<const uint8_t*, std::shared_ptr<const TextureSnapshot>> last_source;
+  struct Entry { std::shared_ptr<const TextureSnapshot> snapshot; uint64_t used = 0; };
+  std::unordered_multimap<uint64_t, Entry> entries;
+  std::unordered_map<const uint8_t*, Entry> last_source;
+  uint64_t generation = 0;
+  static constexpr uint64_t KEEP_FRAMES = 3;   // a texture unused for this long is dropped
   static bool equal(const TextureSnapshot& s, const uint8_t* image, size_t image_size,
                     const uint8_t* palette, size_t palette_size) {
     return s.image.size() == image_size && s.palette.size() == palette_size &&
@@ -24,28 +27,41 @@ class TextureSnapshotCache {
   }
 public:
   void clear() { entries.clear(); last_source.clear(); }
+  // End of a simulation frame. The cache survives it: Melee reuses the same texture memory every
+  // frame, so keeping the entries makes an unchanged texture cost one vectorized memcmp instead of
+  // a full rehash and copy (that rehash was costing whole milliseconds per simulation frame).
+  // Entries not seen for a few frames are dropped, so memory stays bounded.
+  void end_frame() {
+    ++generation;
+    for (auto it = entries.begin(); it != entries.end();)
+      it = it->second.used + KEEP_FRAMES < generation ? entries.erase(it) : std::next(it);
+    for (auto it = last_source.begin(); it != last_source.end();)
+      it = it->second.used + KEEP_FRAMES < generation ? last_source.erase(it) : std::next(it);
+  }
   std::shared_ptr<const TextureSnapshot> capture(const uint8_t* image, size_t image_size,
                                                 const uint8_t* palette, size_t palette_size) {
-    // Most adjacent draws reuse their source. Vectorized memcmp avoids rehashing
+    // Most draws reuse their source. Vectorized memcmp avoids rehashing
     // every byte with a serial hash recurrence; changes still receive a new copy.
     auto previous = last_source.find(image);
-    if (previous != last_source.end() && equal(*previous->second, image, image_size, palette, palette_size))
-      return previous->second;
+    if (previous != last_source.end() && equal(*previous->second.snapshot, image, image_size, palette, palette_size)) {
+      previous->second.used = generation;
+      return previous->second.snapshot;
+    }
     uint64_t hash = hash_bytes(image, image_size) ^ (hash_bytes(palette, palette_size) * 31);
     auto range = entries.equal_range(hash);
     for (auto i = range.first; i != range.second; ++i) {
-      const auto& s = i->second;
-      if (equal(*s, image, image_size, palette, palette_size)) {
-        last_source[image] = s;
-        return s;
+      if (equal(*i->second.snapshot, image, image_size, palette, palette_size)) {
+        i->second.used = generation;
+        last_source[image] = i->second;
+        return i->second.snapshot;
       }
     }
     auto s = std::make_shared<TextureSnapshot>();
     s->image.assign(image, image + image_size);
     if (palette_size) s->palette.assign(palette, palette + palette_size);
     s->hash = hash;
-    entries.emplace(hash, s);
-    last_source[image] = s;
+    entries.emplace(hash, Entry{s, generation});
+    last_source[image] = Entry{s, generation};
     return s;
   }
 };

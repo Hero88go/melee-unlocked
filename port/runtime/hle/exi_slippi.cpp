@@ -12,6 +12,9 @@
 #include <atomic>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
+#include <mutex>
+#include <thread>
 #include <map>
 #include <unordered_map>
 #include <vector>
@@ -196,6 +199,7 @@ void log_message(const uint8_t* payload, uint32_t max) {
 // Game files: Sys/GameFiles/GALE01/<name> served as-is, or <name>.diff (VCDIFF) applied to the
 // file of the same name from the ISO. Port of SlippiGameFileLoader::LoadFile.
 std::unordered_map<std::string, std::vector<uint8_t>> g_file_cache;
+std::mutex g_file_cache_mutex;   // the boot-time preload thread and the simulation thread share it
 
 bool read_whole_file(const std::string& path, std::vector<uint8_t>& out) {
   FILE* f = std::fopen(path.c_str(), "rb");
@@ -207,10 +211,10 @@ bool read_whole_file(const std::string& path, std::vector<uint8_t>& out) {
   return ok;
 }
 
-const std::vector<uint8_t>& load_game_file(const std::string& name) {
-  auto it = g_file_cache.find(name);
-  if (it != g_file_cache.end()) return it->second;
-  std::vector<uint8_t>& out = g_file_cache[name];
+// Reads and patches one file. Runs without the cache lock held: the preload worker must never
+// make the simulation thread wait behind a multi-megabyte read plus VCDIFF.
+std::vector<uint8_t> build_game_file(const std::string& name) {
+  std::vector<uint8_t> out;
   std::string base = host::options.sys_dir + "/GameFiles/GALE01/" + name;
   std::vector<uint8_t> blob;
   if (name != "MxDt.dat" && read_whole_file(base, blob)) {
@@ -238,6 +242,18 @@ const std::vector<uint8_t>& load_game_file(const std::string& name) {
   return out;
 }
 
+const std::vector<uint8_t>& load_game_file(const std::string& name) {
+  {
+    std::lock_guard<std::mutex> lock(g_file_cache_mutex);   // node-based map: element references survive later inserts
+    auto it = g_file_cache.find(name);
+    if (it != g_file_cache.end()) return it->second;
+  }
+  host::SimCostScope cost(host::SIM_EXI);
+  std::vector<uint8_t> built = build_game_file(name);
+  std::lock_guard<std::mutex> lock(g_file_cache_mutex);
+  return g_file_cache.emplace(name, std::move(built)).first->second;   // a racing preload already inserted: keep that copy
+}
+
 void prepare_file(const uint8_t* payload, bool load) {
   g_read_queue.clear();
   std::string name((const char*)payload, strnlen((const char*)payload, 0x40));
@@ -249,7 +265,23 @@ void prepare_file(const uint8_t* payload, bool load) {
 
 }  // namespace
 
-void init() { g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; online::init(); }
+// Every game file the Sys folder can serve is read and patched on a worker at boot, so the first
+// request from the game (menus, CSS) is a cache hit instead of a multi-megabyte read plus VCDIFF
+// on the simulation thread.
+static void preload_game_files() {
+  std::error_code ec;
+  std::filesystem::path dir = std::filesystem::path(host::options.sys_dir) / "GameFiles" / "GALE01";
+  std::vector<std::string> names;
+  for (auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+    if (!entry.is_regular_file(ec)) continue;
+    std::string name = entry.path().filename().string();
+    if (name.size() > 5 && name.compare(name.size() - 5, 5, ".diff") == 0) name.resize(name.size() - 5);
+    names.push_back(name);
+  }
+  std::thread([names] { for (const auto& n : names) load_game_file(n); }).detach();
+}
+
+void init() { g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; preload_game_files(); online::init(); }
 void request_widescreen(bool on) { g_widescreen_request.store(on ? 1 : 0); }
 bool widescreen() { return gecko::option_widescreen; }
 void poll_options() {

@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <deque>
 #include <thread>
 
@@ -467,9 +468,49 @@ double emulation_speed() { return g_emulation_speed; }
 double now_seconds() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 double frame_time() { return g_frame_time; }
 
+// Simulation-thread cost accounting: HLE entry points add their time to a slot; at the next
+// retrace the frame's work time (sleep excluded) is logged when it exceeds 20 ms, with the
+// slots that explain it, so a hitch is attributed instead of guessed.
+static double g_sim_costs[SIM_COST_COUNT];
+static double g_sim_costs_window[SIM_COST_COUNT];   // accumulated over the 60-frame log interval
+static double g_sim_ms_window = 0, g_sim_ms_worst = 0;
+static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe"};
+static double g_sim_frame_start = 0.0, g_last_sim_ms = 0.0;
+void sim_cost_add(int slot, double seconds) { if (slot >= 0 && slot < SIM_COST_COUNT) { g_sim_costs[slot] += seconds; g_sim_costs_window[slot] += seconds; } }
+// "sim: 3.1 ms/frame (worst 12.4) | observe 0.9 texsnap 0.4" for the periodic frame log.
+static std::string sim_cost_line(uint32_t frames) {
+  char buf[320];
+  size_t n = (size_t)std::snprintf(buf, sizeof buf, "sim: %.1f ms/frame (worst %.1f)", g_sim_ms_window / std::max(1u, frames), g_sim_ms_worst);
+  bool first = true;
+  for (int i = 0; i < SIM_COST_COUNT; ++i) {
+    double ms = g_sim_costs_window[i] * 1000.0 / std::max(1u, frames);
+    if (ms < 0.05) continue;
+    n += (size_t)std::snprintf(buf + n, sizeof buf - n, "%s %s %.2f", first ? " |" : "", g_sim_cost_names[i], ms);
+    first = false;
+  }
+  std::memset(g_sim_costs_window, 0, sizeof g_sim_costs_window);
+  g_sim_ms_window = 0; g_sim_ms_worst = 0;
+  return buf;
+}
+double last_sim_frame_ms() { return g_last_sim_ms; }
+
 void retrace() {
   struct Guard { Guard() { g_in_retrace = true; } ~Guard() { g_in_retrace = false; } } guard;
   ++g_retraces;
+  {
+    double now = now_seconds();
+    if (g_sim_frame_start > 0.0) {
+      g_last_sim_ms = (now - g_sim_frame_start) * 1000.0;
+      g_sim_ms_window += g_last_sim_ms;
+      if (g_last_sim_ms > g_sim_ms_worst) g_sim_ms_worst = g_last_sim_ms;
+      if (g_last_sim_ms > 20.0) {
+        char detail[256] = ""; size_t n = 0;
+        for (int i = 0; i < SIM_COST_COUNT; ++i) if (g_sim_costs[i] * 1000.0 >= 0.5) n += (size_t)std::snprintf(detail + n, sizeof detail - n, " %s %.1f", g_sim_cost_names[i], g_sim_costs[i] * 1000.0);
+        log("sim frame %u took %.1f ms (ms:%s%s)", g_retraces, g_last_sim_ms, detail, n ? "" : " guest code");
+      }
+    }
+    std::memset(g_sim_costs, 0, sizeof g_sim_costs);
+  }
   slippi::poll_options();
   advance_frame();
   if (g_has_window) window_pump();
@@ -482,6 +523,7 @@ void retrace() {
   } else {
     g_frame_time = now_seconds();
   }
+  g_sim_frame_start = now_seconds();
   fire_due_alarms(true);
   hle::audio_tick(true);
   // VI: mark display-interrupt 0 as pending (bit 15 of DI0 status, VI reg index 0x18).
@@ -493,8 +535,8 @@ void retrace() {
   if (g_retraces % 60 == 0 || (options.frames && g_retraces >= options.frames)) {
     uint64_t commands, draws, vertices; uint32_t copies;
     gx_stats(&commands, &draws, &vertices, &copies);
-    log("[frame %u] gx: %llu cmds %llu draws %llu verts %u efb-copies | disc: %llu reads %.1f MB | tb=%llu",
-        g_retraces, commands, draws, vertices, copies, g_disc_reads, g_disc_bytes / 1048576.0, cpu->tb);
+    log("[frame %u] gx: %llu cmds %llu draws %llu verts %u efb-copies | disc: %llu reads %.1f MB | %s",
+        g_retraces, commands, draws, vertices, copies, g_disc_reads, g_disc_bytes / 1048576.0, sim_cost_line(60).c_str());
   }
   if (options.frames && g_retraces >= options.frames) request_exit(0);
   if (g_exit) {

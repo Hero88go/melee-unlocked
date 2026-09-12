@@ -134,7 +134,7 @@ HLE(AISetDSPSampleRate) {}
 HLE(AIGetDSPSampleRate) { RET(0); }
 HLE(DSPInit) {}
 HLE(DSPCheckInit) { RET(1); }
-HLE(DSPSendMailToDSP) { ax::handle_mail(ARG0); }
+HLE(DSPSendMailToDSP) { host::SimCostScope cost(host::SIM_AX); ax::handle_mail(ARG0); }
 HLE(DSPCheckMailToDSP) { RET(0); }
 HLE(DSPCheckMailFromDSP) { RET(0); }
 HLE(DSPReadMailFromDSP) { RET(0); }
