@@ -182,8 +182,8 @@ class ThreadedBackend final : public Backend {
         if (++stats_lines % 5 == 0) {
           host::log("display: %.0f fps (sim %.0f Hz, %s, %u draws, %u paired, %u cuts)", stats_presented / (now - stats_time), stats_sim / (now - stats_time),
                     !subframes ? "locked" : authored ? "authored" : interpolate ? "interpolate" : "extrapolate", s.draws, s.paired, s.cuts);
-          if (subframes) host::log("pair rejection: missing %u, HUD %u, geometry %u, state %u (last BP %02X), projection %u, authored %u | phases <.25:%u <.5:%u <.75:%u <1:%u =1:%u",
-                                   s.missing, s.hud, s.geometry, s.state, s.state_register, s.projection, s.authored, phase_bins[0], phase_bins[1], phase_bins[2], phase_bins[3], phase_bins[4]);
+          if (subframes) host::log("pair rejection: missing %u, HUD %u, geometry %u, state %u (last BP %02X), projection %u, authored %u, camera-only %u, vertex-blended %u | phases <.25:%u <.5:%u <.75:%u <1:%u =1:%u",
+                                   s.missing, s.hud, s.geometry, s.state, s.state_register, s.projection, s.authored, s.carried, s.vertex_blended, phase_bins[0], phase_bins[1], phase_bins[2], phase_bins[3], phase_bins[4]);
           if (subframes) std::memset(phase_bins, 0, sizeof phase_bins);
           host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), d3d12_profile_line().c_str());
           build_seconds = submit_seconds = 0; cost_presented = 0;

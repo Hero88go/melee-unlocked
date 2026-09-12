@@ -28,9 +28,9 @@
 #include "gx_texture.h"
 #include "gx_streamline.h"
 #include "host.h"
+#include "window.h"   // fullscreen toggling lives on the window, not the settings panel
 #ifdef GX_PC_SETTINGS
 #include "pc_settings.h"
-#include "window.h"
 #endif
 
 #pragma comment(lib, "d3d12.lib")
@@ -1004,7 +1004,8 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   uint8_t* vcpu; D3D12_GPU_VIRTUAL_ADDRESS vgpu;
   size_t vbytes = (size_t)n * sizeof(Vertex);
   if (!vertex_ring_.alloc(vbytes, 16, &vcpu, &vgpu)) { host::log("d3d12: vertex ring full"); return; }
-  memcpy(vcpu, &frame.vertices[dc.first_vertex], vbytes);
+  const Vertex* vsrc = (override_matrices && override_matrices->vertices) ? override_matrices->vertices : &frame.vertices[dc.first_vertex];
+  memcpy(vcpu, vsrc, vbytes);
   uint8_t* icpu; D3D12_GPU_VIRTUAL_ADDRESS igpu;
   if (!index_ring_.alloc(idx.size() * 4, 4, &icpu, &igpu)) { host::log("d3d12: index ring full"); return; }
   memcpy(icpu, idx.data(), idx.size() * 4);

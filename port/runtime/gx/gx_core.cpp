@@ -231,7 +231,7 @@ void snapshot_textures(DrawCall& dc) {
 void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t components) {
   // Built on the stack (hot in cache), then moved in: filling the vector element directly measured
   // worse, because each field write lands in cold memory instead of one sequential copy.
-  DrawCall dc{};
+  DrawCall dc{DrawCall::SkipInit{}};
   dc.primitive = primitive;
   dc.first_vertex = first;
   dc.vertex_count = count;

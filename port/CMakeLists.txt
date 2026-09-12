@@ -111,7 +111,7 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
 endif()
 
 add_executable(port_gpu_resource_test tests/gpu_resource_test.cpp runtime/gx/gx_d3d12.cpp runtime/gx/gx_shader.cpp runtime/gx/gx_texture.cpp runtime/gx/gx_streamline.cpp)
-target_include_directories(port_gpu_resource_test PRIVATE runtime/gx runtime/host runtime/ppc)
+target_include_directories(port_gpu_resource_test PRIVATE runtime/gx runtime/host runtime/ppc runtime/hle third_party)
 target_compile_features(port_gpu_resource_test PRIVATE cxx_std_17)
 target_compile_definitions(port_gpu_resource_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS GX_SRV_HEAP_SIZE=32 GX_SAMPLER_HEAP_SIZE=16 GX_CONSTANT_PAGE_SIZE=4096)
 target_link_libraries(port_gpu_resource_test PRIVATE d3d12 dxgi d3dcompiler user32)
