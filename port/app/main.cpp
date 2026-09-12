@@ -1,5 +1,7 @@
 // Native Melee port entry point.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#define NOMINMAX
+#include <windows.h>
 #include "host.h"
 #include "gecko_data.h"
 #include "slippi_playback.h"
@@ -35,7 +37,16 @@ static void usage() {
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
 }
 
+// Windows hands out ~15.6 ms timer granularity by default, so every pacing sleep (the 60 Hz
+// retrace, the presentation deadline, the audio device wait) overshoots by up to a frame. One
+// millisecond is what games ask for, and it is what makes 60 Hz land on 60 Hz.
+struct TimerResolution {
+  bool raised = timeBeginPeriod(1) == TIMERR_NOERROR;
+  ~TimerResolution() { if (raised) timeEndPeriod(1); }
+};
+
 int main(int argc, char** argv) {
+  TimerResolution timer_resolution;
   host::Options& o = host::options;
   bool headless = false, hidden = false, threaded = false, fps_requested = false;
   gx::D3D12Options gfx;
@@ -167,7 +178,10 @@ int main(int argc, char** argv) {
     host::log("OSLoadContext reached top level");
   }
   { uint64_t silent_ms = 0, underruns = host::audio_underruns(&silent_ms);
-    host::log("audio: %llu frames played, %llu blocks dropped, %llu output gaps (%llu ms of silence)", (unsigned long long)host::audio_pushed_frames(), (unsigned long long)host::audio_dropped_blocks(), (unsigned long long)underruns, (unsigned long long)silent_ms); }
+    double rate_low = 1.0, rate_high = 1.0; host::audio_rate_range(&rate_low, &rate_high);
+    host::log("audio: %llu frames played, %llu blocks dropped, %llu gaps (%llu ms held), clock tracking %+.3f%% to %+.3f%%",
+              (unsigned long long)host::audio_pushed_frames(), (unsigned long long)host::audio_dropped_blocks(),
+              (unsigned long long)underruns, (unsigned long long)silent_ms, (rate_low - 1.0) * 100.0, (rate_high - 1.0) * 100.0); }
   host::audio_close();
   host::updater::shutdown();   // the settings panel may have started an update check; join it before exit
   host::gcadapter_shutdown();
