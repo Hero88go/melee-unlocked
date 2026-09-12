@@ -49,6 +49,23 @@ struct TimerResolution {
 #define MELEE_PORT_VERSION "dev"
 #endif
 
+// Records the disc this run used, next to the launcher's own settings. However the game was
+// started (a batch file, a shortcut, the launcher, a development command line), the launcher can
+// then offer that disc instead of leaving Play greyed out with an empty box.
+static void remember_iso(const std::string& iso) {
+  char full[MAX_PATH];
+  if (!GetFullPathNameA(iso.c_str(), MAX_PATH, full, nullptr)) return;
+  char* local = nullptr; size_t n = 0;
+  if (_dupenv_s(&local, &n, "LOCALAPPDATA") != 0 || !local) return;
+  std::string dir = std::string(local) + "\\MeleeUnlocked";
+  free(local);
+  CreateDirectoryA(dir.c_str(), nullptr);
+  FILE* f = std::fopen((dir + "\\launcher.ini").c_str(), "w");
+  if (!f) return;
+  std::fprintf(f, "iso=%s\n", full);
+  std::fclose(f);
+}
+
 int main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i)
     if (std::string(argv[i]) == "--version") { std::printf("%s\n", MELEE_PORT_VERSION); return 0; }
@@ -155,6 +172,7 @@ int main(int argc, char** argv) {
   }
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
+  remember_iso(o.iso);   // so the launcher can offer this disc without being told again
 
   std::unique_ptr<gx::Backend> backend;
   if (!headless && threaded) {

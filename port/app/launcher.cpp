@@ -54,13 +54,43 @@ void log_line(const char* fmt, ...) {
   PostMessageW(g_main, WM_APP_LOG, 0, (LPARAM) new std::string(std::string(buf) + "\r\n"));
 }
 
+std::string repo_root();   // defined below; load_ini looks for a disc beside a source checkout
 std::string ini_path() { return g_dir + "\\launcher.ini"; }
-void load_ini() {
-  std::ifstream f(ini_path()); std::string line;
-  while (std::getline(f, line)) { if (!line.empty() && line.back() == '\r') line.pop_back(); if (line.rfind("iso=", 0) == 0) g_iso = line.substr(4); }
-  if (g_iso.empty() && file_exists(g_dir + "\\melee.iso")) g_iso = g_dir + "\\melee.iso";
+// A second copy outside the game folder, so the ISO path survives an update, a re-extracted zip
+// or a second copy of the game, and so the launcher knows the disc the game itself was last
+// started with (melee_port records it there too).
+std::string shared_ini_path() {
+  char* local = nullptr; size_t n = 0;
+  if (_dupenv_s(&local, &n, "LOCALAPPDATA") != 0 || !local) return "";
+  std::string dir = std::string(local) + "\\MeleeUnlocked";
+  free(local);
+  CreateDirectoryW(widen(dir).c_str(), nullptr);
+  return dir + "\\launcher.ini";
 }
-void save_ini() { std::ofstream f(ini_path()); f << "iso=" << g_iso << "\n"; }
+std::string read_iso_from(const std::string& path) {
+  std::ifstream f(path); std::string line;
+  while (std::getline(f, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.rfind("iso=", 0) == 0) return line.substr(4);
+  }
+  return "";
+}
+void load_ini() {
+  g_iso = read_iso_from(ini_path());
+  if (g_iso.empty() || !file_exists(g_iso)) {
+    std::string remembered = read_iso_from(shared_ini_path());
+    if (!remembered.empty() && file_exists(remembered)) g_iso = remembered;
+  }
+  if (g_iso.empty() && file_exists(g_dir + "\\melee.iso")) g_iso = g_dir + "\\melee.iso";
+  std::string root = repo_root();
+  if (g_iso.empty() && !root.empty() && file_exists(root + "\\melee.iso")) g_iso = root + "\\melee.iso";
+  if (!g_iso.empty() && !file_exists(g_iso)) g_iso.clear();
+}
+void save_ini() {
+  { std::ofstream f(ini_path()); f << "iso=" << g_iso << "\n"; }
+  const std::string shared = shared_ini_path();
+  if (!shared.empty()) { std::ofstream f(shared); f << "iso=" << g_iso << "\n"; }
+}
 
 // Header check: game id GALE01 at offset 0, revision byte 2 at offset 7 (NTSC 1.02).
 bool verify_iso(const std::string& path, std::string* why) {
@@ -231,7 +261,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       TCITEMW it{}; it.mask = TCIF_TEXT; it.pszText = (LPWSTR)L"  Play  "; TabCtrl_InsertItem(g_tabs, 0, &it); it.pszText = (LPWSTR)L"  Build  "; TabCtrl_InsertItem(g_tabs, 1, &it);
       // Play page
       int i = 0;
-      g_play[i++] = make(L"STATIC", L"Melee NTSC 1.02 ISO", 0, 24, 48, 200, 18, 0);
+      g_play[i++] = make(L"STATIC", L"Melee NTSC 1.02 ISO", 0, 24, 48, 300, 18, 0);
       g_play[i++] = g_iso_edit = make(L"EDIT", L"", WS_BORDER | ES_AUTOHSCROLL | ES_READONLY, 24, 68, 480, 24, ID_ISO_EDIT);
       g_play[i++] = make(L"BUTTON", L"Browse...", BS_PUSHBUTTON, 512, 67, 84, 26, ID_BROWSE);
       g_play[i++] = g_play_btn = make(L"BUTTON", L"PLAY", BS_PUSHBUTTON, 24, 110, 572, 64, ID_PLAY, g_font_big);
@@ -251,6 +281,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       show_tab(0);
       load_ini();
       set_iso(g_iso);
+      if (!g_iso.empty()) save_ini();   // remember wherever it came from
       set_text(g_slippi_text, slippi_account_line());
       g_slippi_missing = slippi_account_line().rfind("Slippi account:", 0) != 0;
       ShowWindow(g_slippi_btn, g_slippi_missing ? SW_SHOW : SW_HIDE);
