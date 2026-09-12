@@ -1,3 +1,6 @@
+# Discord / Help
+Discord can be found here https://discord.gg/K7HHs3r8ty
+
 # Melee Unlocked - Alpha
 
 An **EXPERIMENTAL** native Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online play and an
@@ -38,7 +41,7 @@ updates and the Slippi account check in one place.
 
 ### Build from source
 
-Windows 10/11, your own ISO, about 30 minutes the first time. The game is translated to C++
+Windows 10/11, your own ISO, about 5-10 minutes the first time. The game is translated to C++
 and compiled on your machine; nothing from the ISO enters the repository.
 
 Either drag the ISO onto `play.bat` in a clone of this repo (it installs Python, CMake and the
