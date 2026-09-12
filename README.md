@@ -1,6 +1,6 @@
-# Melee Unlocked
+# Melee Unlocked - Alpha
 
-A native Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online play and an
+An **EXPERIMENTAL** native Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online play and an
 unlocked display frame rate.
 
 The game's own PowerPC code is translated ahead of time into C++ (static recompilation of the
