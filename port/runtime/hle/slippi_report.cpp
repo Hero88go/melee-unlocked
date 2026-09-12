@@ -223,10 +223,12 @@ void init(const std::string& iso_path, const std::string& cache_dir) {
   g_thread = std::thread(worker);
 }
 
+void join_rank_thread_for_shutdown();
 void shutdown() {
   { std::lock_guard<std::mutex> lk(g_mutex); g_quit = true; }
   g_cv.notify_all();
   if (g_thread.joinable()) g_thread.join();
+  join_rank_thread_for_shutdown();   // a joinable std::thread at static destruction would terminate the process
 }
 
 void log_game(const GameReport& report) {
@@ -275,6 +277,7 @@ int8_t decide_rank(float o, uint16_t global, uint16_t regional, uint32_t updates
 
 void join_rank_thread() { if (g_rank_thread.joinable()) g_rank_thread.join(); }
 }  // namespace
+void join_rank_thread_for_shutdown() { join_rank_thread(); }
 
 void fetch_user_rank(const std::string& uid) {
   if (uid.empty()) return;

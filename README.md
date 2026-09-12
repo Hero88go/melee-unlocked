@@ -33,28 +33,37 @@ you launched from, your `port-settings.ini`, and the .slp replay if the bug happ
 
 ## Building from source
 
-Requirements: Windows 10/11, Visual Studio 2022 (C++ desktop workload), CMake 3.24+,
-Python 3.8+, an NVIDIA or other D3D12-capable GPU, and your own Melee NTSC 1.02 ISO.
+Two ways. Both need Windows 10/11, your own Melee NTSC 1.02 ISO, and about 30 minutes the
+first time (the game is translated to C++ and compiled). Nothing from the ISO is written into
+the repository.
+
+**Option 1, drop the ISO:** clone the repo, then drag your ISO onto `play.bat`. It installs the
+tools it needs with winget if they are missing (Python 3, CMake, Visual Studio 2022 Build Tools
+with the C++ workload), extracts `main.dol`, translates, compiles and starts the game. `build.bat`
+does the same without starting the game.
+
+**Option 2, command line:**
 
 ```powershell
 git clone https://github.com/hero88go/melee-port.git melee-unlocked
 cd melee-unlocked
-python port/recomp/recomp.py --dol <path to main.dol extracted from your ISO> --gct-base 0x8065CC80
+python tools/extract_dol.py "C:/path/to/melee.iso" build/main.dol
+python port/recomp/recomp.py --dol build/main.dol --gct-base 0x8065CC80
 cmake -S . -B build-review -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON
-cmake --build build-review --config Release --target melee_port
-python tools/launch_native.py --threaded-renderer --fps unlocked --frame-mode authored --volume 70
+cmake --build build-review --config Release --target melee_port --parallel
+build-review/port/Release/melee_port.exe --iso "C:/path/to/melee.iso" --threaded-renderer --fps unlocked --frame-mode authored --scale auto --volume 70
 ```
 
 `port/recomp/` is the recompiler (Python): it reads the DOL and the Slippi code tables
-(`port/slippi_sys/`, vendored from Slippi) and writes `port/generated/` (not committed). Extract
-`main.dol` from your ISO with Dolphin (right click the game, Properties, Filesystem) or any GC ISO
-tool. `port/runtime/` is the host runtime: PowerPC helpers,
-HLE of the GameCube SDK (OS, VI, PAD, DVD, AI/AX audio, CARD, EXI), the Slippi EXI device and
-netcode, the D3D12 renderer and the sub-frame solver. `tools/` holds validation, benchmarking
-and packaging scripts. See `PORT_COMPLETION.md` for the technical state and evidence,
-`HANDOFF_FABLE_3.md` for the roadmap.
+(`port/slippi_sys/`, vendored from Slippi) and writes `port/generated/` (not committed).
+`port/runtime/` is the host runtime: PowerPC helpers, HLE of the GameCube SDK (OS, VI, PAD, DVD,
+AI/AX audio, CARD, EXI), the Slippi EXI device, netcode, game reporting, the D3D12 renderer and
+the sub-frame solver. `tools/` holds validation, benchmarking and packaging scripts. See
+`PORT_COMPLETION.md` for the technical state and evidence, `HANDOFF_FABLE_3.md` for the roadmap.
 
-`tools/package_release.py --version X.Y.Z` produces the release zip.
+`tools/package_release.py --version X.Y.Z` produces the release zip. The replay playback build
+(`melee_port_playback`, used to verify frame-exactness against Dolphin replays) is described in
+`PORT_COMPLETION.md`.
 
 ## Verification
 
