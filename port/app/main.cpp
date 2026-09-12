@@ -53,8 +53,9 @@ struct TimerResolution {
 // started (a batch file, a shortcut, the launcher, a development command line), the launcher can
 // then offer that disc instead of leaving Play greyed out with an empty box.
 static void remember_iso(const std::string& iso) {
-  char full[MAX_PATH];
-  if (!GetFullPathNameA(iso.c_str(), MAX_PATH, full, nullptr)) return;
+  char full[MAX_PATH]{};
+  DWORD length = GetFullPathNameA(iso.c_str(), MAX_PATH, full, nullptr);
+  if (!length || length >= MAX_PATH) return;
   char* local = nullptr; size_t n = 0;
   if (_dupenv_s(&local, &n, "LOCALAPPDATA") != 0 || !local) return;
   std::string dir = std::string(local) + "\\MeleeUnlocked";
@@ -141,7 +142,11 @@ int main(int argc, char** argv) {
     else if (a == "--card-dir") o.card_dir = next();
     else if (a == "--log-file") o.log_file = next();
     else if (a == "--replay") slippi::playback::set_replay(next());   // playback build: play this .slp
-    else if (a == "--user-dir") slippi::online::config().user_dir = next();
+    else if (a == "--user-dir") {
+      slippi::online::config().user_dir = next();
+      slippi::online::config().discover_launcher_login = false;
+    }
+    else if (a == "--discover-launcher-login") slippi::online::config().discover_launcher_login = true;
     else if (a == "--online-delay") slippi::online::config().delay = std::atoi(next());
     else if (a == "--chat") { std::string v = next(); slippi::online::config().chat = v == "off" ? 2 : v == "direct" ? 1 : 0; }
     else if (a == "--netplay-port") slippi::Matchmaking::forced_port = (uint16_t)std::atoi(next());
@@ -172,7 +177,7 @@ int main(int argc, char** argv) {
   }
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
-  remember_iso(o.iso);   // so the launcher can offer this disc without being told again
+  if (!automated) remember_iso(o.iso); // isolated captures must not rewrite launcher preferences
 
   std::unique_ptr<gx::Backend> backend;
   if (!headless && threaded) {

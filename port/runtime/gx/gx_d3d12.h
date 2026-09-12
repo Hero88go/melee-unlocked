@@ -26,6 +26,7 @@ struct D3D12Options {
   bool vsync = false;
   bool widescreen = false;    // Slippi Widescreen 16:9 code on (present at 16:9 and tell the game)
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
+  uint32_t actual_render_w = 0, actual_render_h = 0, actual_output_w = 0, actual_output_h = 0; // runtime diagnostics, not persisted
   int anisotropy = 16;        // texture anisotropic filtering 1..16
   int ssaa = 1;               // supersampling factor: 1 off, 2 = 4x SSAA (EFB rendered at 2x the chosen scale, box filtered)
   std::string capture_path;   // write a PPM of the presented image at capture_frame

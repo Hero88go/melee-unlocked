@@ -20,6 +20,7 @@ def main():
     ap.add_argument("--out", type=Path, default=ROOT / "reports/native-validation")
     ap.add_argument("--frames", type=int, default=2400)
     ap.add_argument("--timeout", type=float, default=240)
+    ap.add_argument('--card-fixture', type=Path, help='prepared card copied separately for each mode')
     args = ap.parse_args()
     if args.frames < 1 or args.timeout <= 0: ap.error("frames and timeout must be positive")
     args.out.mkdir(parents=True, exist_ok=True)
@@ -34,6 +35,8 @@ def main():
         # Each run gets an empty memory card: the game's boot path differs with and without a save.
         card_dir = (args.out / (mode + "-card")).resolve()
         shutil.rmtree(card_dir, ignore_errors=True)
+        if args.card_fixture:
+            shutil.copytree(args.card_fixture, card_dir)
         command = [str(args.exe.resolve()), "--iso", str(args.iso.resolve()), *mode_flags,
                    "--volume", "0", "--fast", "--frames", str(args.frames), "--time-base", "1",
                    "--card-dir", str(card_dir),

@@ -81,6 +81,7 @@ int main() {
   b.draws[0].bp.reg[gx::BP_PE_TOKEN_ID] = 123;
   b.draws[0].bp.reg[gx::BP_EFB_ADDR] = 0x12345;
   b.draws[0].bp.reg[gx::BP_TX_SETIMAGE1] = 0x100;
+  b.draws[0].bp.reg[0xB4] = 0x200; // unit 4 storage address, same captured texture content
   solver.set_frames(&a, &b);
   check(solver.stats().paired == 1, "FIFO token and XFB destination do not change draw identity");
   b.draws[0].bp.reg[gx::BP_BLENDMODE] = 1;
@@ -90,7 +91,19 @@ int main() {
   b.sequence = 4; solver.set_frames(&a, &b);
   check(solver.stats().paired == 0, "frame gaps invalidate pairing");
   b.sequence = 2; b.vertices[0].pos[0] = 10; solver.set_frames(&a, &b);
-  check(solver.stats().paired == 0, "changed geometry cannot reuse a draw identity");
+  check(solver.stats().paired == 1, "matching rewritten primitive can pair");
+  solver.build(0.5, true, mats, true);
+  check(mats[0].vertices && near(mats[0].vertices[0].pos[0], 5), "rewritten geometry samples between known positions");
+  solver.build(0.5, true, mats, false);
+  check(!mats[0].vertices, "switching away from authored mode clears the vertex override");
+  b.vertices[0].posmtx = 3; solver.set_frames(&a, &b);
+  solver.build(0.5, true, mats, true);
+  check(!mats[0].vertices && std::memcmp(mats[0].pos, b.draws[0].posMatrices, sizeof mats[0].pos) == 0,
+        "changed matrix binding holds the complete current draw");
+  b.vertices[0].posmtx = 0; b.vertices[0].pos[0] = solver.max_translation + 1; solver.set_frames(&a, &b);
+  solver.build(0.5, true, mats, true);
+  check(!mats[0].vertices && std::memcmp(mats[0].pos, b.draws[0].posMatrices, sizeof mats[0].pos) == 0,
+        "geometry discontinuity holds current vertices and matrices together");
   b.vertices[0].pos[0] = 0; b.draws[0].xf_regs[0x26] = 1; solver.set_frames(&a, &b);
   check(solver.stats().paired == 0, "orthographic HUD draws retain exact pose");
   float scale2[12] = {2,0,0,0, 0,1,0,0, 0,0,1,0};
@@ -98,6 +111,7 @@ int main() {
   check(near(nrm[0], 1.0f / std::sqrt(2.0f)), "normal delta uses inverse transpose");
   // A linear authored track: forward sampling must start at the current pose,
   // and refuse to predict across its animation boundary.
+  gx::set_authored_interpolate(false);
   gx::AuthoredJoint joint;
   joint.generation = 1; joint.scale = {1,1,1}; joint.frame = 0; joint.rate = 1; joint.end = 2;
   joint.world = NativeMelee::Identity();
@@ -110,5 +124,13 @@ int main() {
   check(near(out[3], 7.5f), "authored sampling advances beyond current rather than previous frame");
   current_pose.joints[0].end = 1;
   check(!gx::sample_authored(previous_pose, current_pose, 0.5, joint.world.data(), out, nrm, ident_n), "authored sampling holds at animation boundary");
+  current_pose.joints[0].end = 2;
+  previous_pose.joints[0].tracks[0].channel = current_pose.joints[0].tracks[0].channel = 11;
+  gx::set_authored_interpolate(true);
+  for (double phase : {0.0, 0.5, 1.0}) {
+    check(gx::sample_authored(previous_pose, current_pose, phase, joint.world.data(), out, nrm, ident_n), "unsupported local track can use continuous captured SRT");
+    check(near(out[3], float(5*phase)), "held local joint shares interpolation endpoints and timeline");
+  }
+  gx::set_authored_interpolate(false);
   std::puts("sub-frame rigid fractions, cuts, blends and pairing passed");
 }

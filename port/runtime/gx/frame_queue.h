@@ -17,9 +17,10 @@ class FrameQueue {
   std::deque<Frame> recycled;   // buffers returned by the renderer, capacity preserved
   bool finished = false;
 public:
+  static constexpr size_t capacity = 32;
   bool push(Frame frame) {
     std::unique_lock<std::mutex> lock(mutex);
-    changed.wait(lock, [&] { return finished || frames.size() < 32; });   // the renderer drains backlogs; this only trips if it is stuck
+    changed.wait(lock, [&] { return finished || frames.size() < capacity; });   // the renderer drains backlogs; this only trips if it is stuck
     if (finished) return false;
     frames.push_back(std::move(frame));
     changed.notify_all();
@@ -30,7 +31,7 @@ public:
   // thread refills them instead of reallocating every frame.
   bool push_and_recycle(Frame& frame) {
     std::unique_lock<std::mutex> lock(mutex);
-    changed.wait(lock, [&] { return finished || frames.size() < 32; });
+    changed.wait(lock, [&] { return finished || frames.size() < capacity; });
     if (finished) return false;
     frames.push_back(std::move(frame));
     if (!recycled.empty()) { frame = std::move(recycled.back()); recycled.pop_back(); }
