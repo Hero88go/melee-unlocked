@@ -233,3 +233,8 @@ cached by path+size+mtime), rank at login from the users REST API and after rank
 `getRankedMatchPersonalResult`, answered to the game through CMD_GET_RANK. A local test match's
 report was accepted by internal.slippi.gg. Ranked mode is therefore no longer blocked on the port
 side; it still needs a real ranked set against a Dolphin player to confirm the rank display.
+
+## DLSS jitter sign (2026-09-11 19:50)
+
+Calibrated by capturing the same static menu frame with `--dlss-jitter-sign 1` and `-1`: +1 blurs
+text, -1 reconstructs it sharp (Laplacian energy 52 vs 155). Default is now -1.
