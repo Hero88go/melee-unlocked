@@ -69,7 +69,7 @@ build-review/port/Release/melee_port.exe --iso "C:/path/to/melee.iso" --threaded
 
 ## FAQ
 
-**Was this "vibe coded"? **
+**Was this "vibe coded"?**
 
 This was developed using Fable 5.1 and GPT 6 Astra, much like the 100% decomp. 
 You can either complain about it or enjoy it, the truth is the decomp + PC port would not have been possible or would have taken infinitely longer without the latest AI coding models
