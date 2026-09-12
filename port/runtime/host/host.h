@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
+#include <atomic>
 #include <functional>
 #include <string>
 #include <vector>
@@ -95,7 +96,7 @@ struct SimCostScope { int slot; double t0; explicit SimCostScope(int s) : slot(s
 void gx_write(uint32_t value, int bytes);  // write-gather pipe data
 void gx_frame_present(uint32_t xfb_addr);
 void gx_stats(uint64_t* commands, uint64_t* draws, uint64_t* vertices, uint32_t* efb_copies);
-extern uint64_t g_disc_reads, g_disc_bytes;
+extern std::atomic<uint64_t> g_disc_reads, g_disc_bytes;
 extern bool g_has_window;
 
 // ---- MMIO (0xCC000000 range) ----

@@ -200,6 +200,11 @@ void log_message(const uint8_t* payload, uint32_t max) {
 // file of the same name from the ISO. Port of SlippiGameFileLoader::LoadFile.
 std::unordered_map<std::string, std::vector<uint8_t>> g_file_cache;
 std::mutex g_file_cache_mutex;   // the boot-time preload thread and the simulation thread share it
+struct PreloadWorker {
+  std::thread thread;
+  void join() { if (thread.joinable()) thread.join(); }
+  ~PreloadWorker() { join(); }
+} g_file_preload; // destroyed before the cache and its mutex
 
 bool read_whole_file(const std::string& path, std::vector<uint8_t>& out) {
   FILE* f = std::fopen(path.c_str(), "rb");
@@ -278,7 +283,8 @@ static void preload_game_files() {
     if (name.size() > 5 && name.compare(name.size() - 5, 5, ".diff") == 0) name.resize(name.size() - 5);
     names.push_back(name);
   }
-  std::thread([names] { for (const auto& n : names) load_game_file(n); }).detach();
+  g_file_preload.join();
+  g_file_preload.thread = std::thread([names] { for (const auto& n : names) load_game_file(n); });
 }
 
 void init() { g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; preload_game_files(); online::init(); }
@@ -288,7 +294,12 @@ void poll_options() {
   int r = g_widescreen_request.exchange(-1);
   if (r >= 0 && (r != 0) != gecko::option_widescreen) apply_widescreen(r != 0);
 }
-void shutdown() { if (g_file) { uint8_t empty[1]; write_to_file(empty, 0, "close"); } online::shutdown(); }
+void shutdown() {
+  g_file_preload.join();
+  jukebox::shutdown();
+  if (g_file) { uint8_t empty[1]; write_to_file(empty, 0, "close"); }
+  online::shutdown();
+}
 uint64_t replays_written() { return g_replays_written; }
 uint32_t gct_load_address() { return g_gct_address; }
 uint64_t commands_seen() { return g_commands; }

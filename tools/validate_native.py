@@ -41,6 +41,7 @@ def main():
                    "--volume", "0", "--fast", "--frames", str(args.frames), "--time-base", "1",
                    "--card-dir", str(card_dir),
                    "--user-dir", str(card_dir / 'User'),
+                   "--replay-dir", str((args.out / (mode + '-replays')).resolve()),
                    "--log-file", str((args.out / (mode + "-port.log")).resolve()),
                    "--script", str(args.script.resolve()), "--state-trace", str(trace)]
         start = time.monotonic()
