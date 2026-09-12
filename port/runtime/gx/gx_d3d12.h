@@ -6,7 +6,9 @@
 
 namespace gx {
 
-enum class SubFrameMode { Off, Extrapolate, Interpolate, Authored };
+// Authored = predict ahead from the latest game frame (no delay); AuthoredInterpolate = exact
+// in-betweens of the last two game frames (one frame of display delay, no overshoot).
+enum class SubFrameMode { Off, Extrapolate, Interpolate, Authored, AuthoredInterpolate };
 
 struct D3D12Options {
   // Presentation timeline (threaded renderer only). fps_cap 0 = uncapped. With a SubFrameMode other

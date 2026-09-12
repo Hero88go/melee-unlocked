@@ -72,6 +72,7 @@ int main(int argc, char** argv) {
       if (v == "extrapolate") gfx.subframe = gx::SubFrameMode::Extrapolate;
       else if (v == "interpolate") gfx.subframe = gx::SubFrameMode::Interpolate;
       else if (v == "authored") gfx.subframe = gx::SubFrameMode::Authored;
+      else if (v == "authored-interpolate") gfx.subframe = gx::SubFrameMode::AuthoredInterpolate;
       else if (v == "off") gfx.subframe = gx::SubFrameMode::Off;
       else { usage(); return 2; }
       threaded = true;
@@ -147,7 +148,7 @@ int main(int argc, char** argv) {
     host::window_set_resize_callback([renderer = backend.get()](int w, int h) { gx::d3d12_resize(renderer, w, h); });
     host::g_has_window = true;
   }
-  gx::set_authored_capture(gfx.subframe == gx::SubFrameMode::Authored);
+  gx::set_authored_capture(gfx.subframe == gx::SubFrameMode::Authored || gfx.subframe == gx::SubFrameMode::AuthoredInterpolate);
   gx::init(backend.get());
   host::audio_open(o.volume, o.audio_dump.c_str(), !headless);
 

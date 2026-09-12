@@ -2,10 +2,13 @@
 #include "authored_pose.h"
 #include "Geometry.h"
 #include "subframe.h"
+#include <atomic>
 #include <cmath>
 #include <cstring>
 namespace gx {
 AuthoredStats& authored_stats() { static AuthoredStats st; return st; }
+static std::atomic<bool> g_interpolate{false};
+void set_authored_interpolate(bool on) { g_interpolate.store(on, std::memory_order_relaxed); }
 namespace {
 using NativeMelee::Matrix;
 bool near(float a,float b) { return std::isfinite(a)&&std::isfinite(b)&&std::abs(a-b)<=0.002f*(1+std::abs(b)); }
@@ -40,7 +43,8 @@ bool camera_motion(const AuthoredPose& previous,const AuthoredPose& current,doub
   view_new=cur; carry=NativeMelee::Identity();
   if(!previous.has_view||previous.view==current.view) return true;
   Matrix prev=from12(previous.view.data());
-  SubFrameSolver::extrapolate_matrix(prev.data(),cur.data(),phase,view_new.data());
+  if(g_interpolate.load(std::memory_order_relaxed)) SubFrameSolver::interpolate_matrix(prev.data(),cur.data(),phase,view_new.data());
+  else SubFrameSolver::extrapolate_matrix(prev.data(),cur.data(),phase,view_new.data());
   Matrix inv_cur; if(!inverse(cur,inv_cur)){ view_new=cur; return true; }
   carry=NativeMelee::Multiply(view_new,inv_cur);
   moved=view_new!=cur;
@@ -60,10 +64,14 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
     for(size_t i=0;i<current.joints.size();++i) {
       const auto& j=current.joints[i]; const auto& p=previous.joints[i];
       if(!j.generation||j.generation!=p.generation||j.flags!=p.flags||j.tracks.size()!=p.tracks.size()){ ++authored_stats().sample[2]; return false; }
+      const bool interp=g_interpolate.load(std::memory_order_relaxed);
+      // Predict: sample `phase` frames past the current frame. Interpolate: sample `phase` frames
+      // past the previous frame (exact at both ends, shown one frame late).
+      const float sample_frame=interp?float(p.frame+phase*j.rate):float(j.frame+phase*j.rate);
       auto scale=j.scale,rot=j.rotation,pos=j.translation;
       bool driven[3]={false,false,false};
       for(const auto& t:j.tracks)if(t.channel>=5&&t.channel<=7)driven[t.channel-5]=true;
-      if(!j.tracks.empty()&&(!near(j.frame-p.frame,j.rate)||j.frame+phase*j.rate<0||j.frame+phase*j.rate>j.end)){ ++authored_stats().sample[3]; return false; }
+      if(!j.tracks.empty()&&(!near(j.frame-p.frame,j.rate)||sample_frame<0||sample_frame>j.end)){ ++authored_stats().sample[3]; return false; }
       for(size_t k=0;k<j.tracks.size();++k) {
         const auto& t=j.tracks[k]; if(!same_track(t,p.tracks[k])){ ++authored_stats().sample[4]; return false; }
         float* component=nullptr;
@@ -73,7 +81,7 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
         else { ++authored_stats().sample[5]; return false; }
         float at_current, value;
         if(!NativeMelee::SamplePacked(t,j.frame,at_current)||!near(at_current,*component)){ ++authored_stats().sample[6]; return false; }
-        if(!NativeMelee::SamplePacked(t,float(j.frame+phase*j.rate),value)){ ++authored_stats().sample[7]; return false; }
+        if(!NativeMelee::SamplePacked(t,sample_frame,value)){ ++authored_stats().sample[7]; return false; }
         *component=value; animated=true;
       }
       // Game-driven motion (fighter positions, items, knockback) has no track: predict it forward by
@@ -81,14 +89,14 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
       for(int k=0;k<3;++k){
         if(driven[k])continue;
         float delta=j.translation[k]-p.translation[k];
-        if(delta!=0.0f&&std::isfinite(delta)&&std::abs(delta)<=30.0f){ pos[k]=j.translation[k]+float(phase)*delta; animated=true; }
+        if(delta!=0.0f&&std::isfinite(delta)&&std::abs(delta)<=30.0f){ pos[k]=interp?p.translation[k]+float(phase)*delta:j.translation[k]+float(phase)*delta; animated=true; }
       }
       exact=NativeMelee::Multiply(exact,NativeMelee::SRT(j.scale,j.rotation,j.translation,inherited));
       for(int k=0;k<12;++k)if(!near(exact[k],j.world[k])){ ++authored_stats().sample[8]; return false; }
-      // Animated scale changes affect inherited scale; do not approximate that special case yet.
-      if(scale!=j.scale){ ++authored_stats().sample[9]; return false; }
+      // Sampled scale feeds the children's inherited scale exactly as the current scale does in
+      // the validated reconstruction above.
       world=NativeMelee::Multiply(world,NativeMelee::SRT(scale,rot,pos,inherited));
-      if(!(j.flags&8))for(int k=0;k<3;++k)inherited[k]*=j.scale[k];
+      if(!(j.flags&8))for(int k=0;k<3;++k)inherited[k]*=scale[k];
     }
   } catch(const std::exception&) { { ++authored_stats().sample[10]; return false; } }
   if(!animated&&!allow_static){ ++authored_stats().sample[11]; return false; }
