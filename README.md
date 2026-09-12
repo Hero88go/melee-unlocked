@@ -67,6 +67,30 @@ build-review/port/Release/melee_port.exe --iso "C:/path/to/melee.iso" --threaded
 (Add the target `melee_unlocked` to the build line if you want the optional launcher; run
 `build-review/port/Release/MeleeUnlockedLauncher.exe` from the checkout and it finds the repo.)
 
+## FAQ
+
+**Was this "vibe coded"? **
+
+This was developed using Fable 5.1 and GPT 6 Astra, much like the 100% decomp. 
+You can either complain about it or enjoy it, the truth is the decomp + PC port would not have been possible or would have taken infinitely longer without the latest AI coding models
+As humans we can either work with the robots or against them, I believe in technlogical progress and making cool shit, if we do not use all tools available we are choosing to limit our results.
+I will not handicap myself and theres no reason anyone has to wait any longer for ports and advancements like this. If I were to shy away from every new technology I would not be the person I am today. 
+
+I am interested in collabing with other developers but so far have found no collective space for this type of dicussion; PC port dicussion is actively discouraged in the Melee decomp discord
+My vision for the project is keeping it open source so anyone can view the work and make it better. 
+
+## Features
+
+- Unlocked frame rate (monitor rate, a fixed cap, or fully unlocked) with sub-frame animation
+- Slippi online against regular Slippi Dolphin players, using your Slippi Launcher login
+- GameCube adapter (WUP-028 with the WinUSB driver), keyboard fallback
+- DLSS / DLAA (NVIDIA Streamline), internal resolution up to 8x, SSAA, anisotropic filtering,
+  sharpening, borderless fullscreen, VSync
+- Widescreen 16:9 (Slippi's own optional code, online safe)
+- Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
+- PC settings overlay in the game window: F1 or Z + Start
+- Optional launcher with self-update
+
 ## Slippi online
 
 Everything Slippi Dolphin does for netplay is built in: matchmaking, rollback netcode, the
@@ -83,17 +107,6 @@ offline play the Slippi Launcher is not required. NOTE: **we are not affiliated 
 Unranked, Direct codes and Teams work against players on regular Slippi Dolphin; they change
 nothing on their side. Replays (.slp) are written to `Replays\`.
 
-## Features
-
-- Unlocked frame rate (monitor rate, a fixed cap, or fully unlocked) with sub-frame animation
-- Slippi online against regular Slippi Dolphin players, using your Slippi Launcher login
-- GameCube adapter (WUP-028 with the WinUSB driver), keyboard fallback
-- DLSS / DLAA (NVIDIA Streamline), internal resolution up to 8x, SSAA, anisotropic filtering,
-  sharpening, borderless fullscreen, VSync
-- Widescreen 16:9 (Slippi's own optional code, online safe)
-- Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
-- PC settings overlay in the game window: F1 or Z + Start
-- Optional launcher with self-update
 
 ## Bug reports
 
@@ -114,6 +127,8 @@ evidence, `HANDOFF_FABLE_3.md` for the roadmap.
 `tools/package_release.py` produces the release zip (version from `VERSION`). The replay
 playback build (`melee_port_playback`, used to verify frame-exactness against Dolphin replays)
 is described in `PORT_COMPLETION.md`.
+
+
 
 ## Verification
 
