@@ -66,7 +66,7 @@ not touched.
 What is needed is a Slippi account. Accounts are created and logged in through the
 [Slippi Launcher](https://slippi.gg/downloads). Install it, log in once, and the game picks
 up that login automatically (the optional launcher shows the account on its Play page and links
-to the download if none is found). The Launcher also installs the WinUSB driver that a GameCube adapter needs.
+to the download if none is found). The **SLIPPI** Launcher also installs the WinUSB driver that a GameCube adapter needs. NOTE: **We are not affiliated with the Slippi team
 
 Unranked, Direct codes and Teams work against players on regular Slippi Dolphin; they change
 nothing on their side. Replays (.slp) are written to `Replays\`.
