@@ -126,8 +126,18 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     if (ImGui::Combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
     changed |= ImGui::Checkbox("VSync", &options.vsync);
     changed |= ImGui::Checkbox("Widescreen 16:9 (Slippi code, online safe)", &options.widescreen);
-    const char* scales[] = {"Auto (window size)", "Native (1x)", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
+    // Same numbers Dolphin shows (EFB 640x528 per multiplier). Auto = the smallest multiplier
+    // whose 640x480 image covers the window, like Dolphin's "Auto (Window Size)".
+    float win_w = ImGui::GetIO().DisplaySize.x, win_h = ImGui::GetIO().DisplaySize.y;
+    float aspect = options.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+    float vw = win_w, vh = win_w / aspect; if (vh > win_h) { vh = win_h; vw = win_h * aspect; }
+    int auto_scale = std::clamp(std::max((int)std::ceil(vw / (480.0f * aspect)), (int)std::ceil(vh / 480.0f)), 1, 8);
+    char auto_label[64]; std::snprintf(auto_label, sizeof auto_label, "Auto (%dx = %dx%d for this window)", auto_scale, 640 * auto_scale, 528 * auto_scale);
+    const char* scales[] = {auto_label, "Native (640x528)", "2x (1280x1056) for 720p", "3x (1920x1584) for 1080p", "4x (2560x2112) for 1440p",
+                            "5x (3200x2640)", "6x (3840x3168) for 4K", "7x (4480x3696)", "8x (5120x4224)"};
+    if (options.dlss_mode) ImGui::BeginDisabled();
     changed |= ImGui::Combo("Internal resolution", &options.efb_scale, scales, 9);
+    if (options.dlss_mode) ImGui::EndDisabled();
     const char* aa[] = {"None", "4x SSAA (supersampling)"};
     int aa_index = options.ssaa == 2 ? 1 : 0;
     if (ImGui::Combo("Anti-aliasing", &aa_index, aa, 2)) { options.ssaa = aa_index ? 2 : 1; changed = true; }
@@ -136,7 +146,10 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     if (ImGui::Combo("Anisotropic filtering", &an_index, anis, 5)) { options.anisotropy = 1 << an_index; changed = true; }
     const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance"};
     if (ImGui::Combo("Upscaling (NVIDIA DLSS)", &options.dlss_mode, upscalers, 6)) changed = true;
-    if (options.dlss_mode) ImGui::TextUnformatted("DLSS picks the render resolution and does the anti-aliasing while it is on.");
+    if (options.dlss_mode) {
+      static const char* ratios[] = {"", "100% (DLAA: full resolution, anti-aliasing only)", "67% (Quality)", "58% (Balanced)", "50% (Performance)", "33% (Ultra Performance)"};
+      ImGui::TextWrapped("DLSS is on: the game renders at %s of the window size and DLSS upscales it, so Internal resolution and Anti-aliasing above are ignored. For the sharpest image choose Native or DLAA here and set Internal resolution.", ratios[options.dlss_mode]);
+    }
     int sharp = (int)std::lround(options.sharpness * 100.0f);
     if (ImGui::SliderInt("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }
     const char* subframe_modes[] = {"Off (60 Hz poses only)", "Predict ahead (no delay, can overshoot on speed changes)", "Interpolate (exact, one frame of delay)"};
