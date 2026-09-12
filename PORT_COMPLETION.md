@@ -218,3 +218,7 @@ percent and stocks, except one value: Samus's y at frame -113 (spawn animation) 
 float ulp (0x41E05C00 vs 0x41E05BFF) and does not propagate. 19220 player-frames compared,
 1 mismatch. Without the replay's own code list translated in (first run) the game diverged from
 frame 221 on, so `--extra-gct` is required for playback builds.
+
+Two more of Chandler's replays: Game_20260321T214328 (8161 frames, 1 mismatch: the same spawn ulp)
+and Game_20260321T214020 (10035 frames, 29688 player-frames, 0 mismatches). All three carry the same
+code list except one data word, so one playback build covers a Slippi version.
