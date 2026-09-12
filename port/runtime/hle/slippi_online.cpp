@@ -778,6 +778,7 @@ void init() {
     }
   }
   g_user = std::make_unique<User>(g_config.user_dir);
+  if (g_user->IsLoggedIn()) report::fetch_user_rank(g_user->GetUserInfo().uid);
   g_matchmaking = std::make_unique<Matchmaking>(g_user.get());
   g_direct_codes = std::make_unique<DirectCodes>(g_config.user_dir + "/direct-codes.json");
   g_teams_codes = std::make_unique<DirectCodes>(g_config.user_dir + "/teams-codes.json");
@@ -873,13 +874,17 @@ bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vect
     case CMD_GET_PLAYER_SETTINGS: handle_get_player_settings(q); return true;
     case CMD_GET_DELAY: q.clear(); q.push_back(1); q.push_back((uint8_t)g_config.delay); return true;
     case CMD_GET_RANK: {
+      // CEXISlippi::handleGetRank: visibility, fetch status, rank, ordinal, update count, change, rank change.
       q.clear();
       q.push_back((uint8_t)((g_config.show_local_rank ? 1 : 0) | (g_config.show_opponent_rank ? 2 : 0)));
-      q.push_back(0);   // fetch status: nothing fetched (rank fetching is not ported)
-      q.push_back(0); append_u32(q, 0); append_u32(q, 0); append_u32(q, 0); q.push_back(0);
+      report::RankInfo ri; auto st = report::rank_info(&ri);
+      q.push_back((uint8_t)st);
+      q.push_back((uint8_t)ri.rank);
+      uint32_t ord, chg; std::memcpy(&ord, &ri.rating_ordinal, 4); std::memcpy(&chg, &ri.rating_change, 4);
+      append_u32(q, ord); append_u32(q, ri.rating_update_count); append_u32(q, chg); q.push_back((uint8_t)ri.rank_change);
       return true;
     }
-    case CMD_FETCH_RANK: return true;
+    case CMD_FETCH_RANK: { UserInfo me = g_user->GetUserInfo(); report::fetch_match_result(g_recent_mm_result.id, me.uid, me.play_key); return true; }
     case CMD_GET_RANK_VISIBILITY: q.clear(); q.push_back((uint8_t)((g_config.show_local_rank ? 1 : 0) | (g_config.show_opponent_rank ? 2 : 0))); return true;
     default: return false;
   }
