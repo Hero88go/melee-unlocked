@@ -32,7 +32,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "sharpness") options.sharpness = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "anisotropy") { int a = std::stoi(value); if (a == 1 || a == 2 || a == 4 || a == 8 || a == 16) options.anisotropy = a; }
       else if (key == "ssaa") { int a = std::stoi(value); if (a == 1 || a == 2) options.ssaa = a; }
-      else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : SubFrameMode::Authored;
+      else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "startup") options.settings_open = value != "0";
@@ -139,8 +139,9 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     if (options.dlss_mode) ImGui::TextUnformatted("DLSS picks the render resolution and does the anti-aliasing while it is on.");
     int sharp = (int)std::lround(options.sharpness * 100.0f);
     if (ImGui::SliderInt("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }
-    bool subframe = options.subframe != SubFrameMode::Off;
-    if (ImGui::Checkbox("Sub-frame animation (motion between 60 Hz game frames)", &subframe)) { options.subframe = subframe ? SubFrameMode::Authored : SubFrameMode::Off; changed = true; }
+    const char* subframe_modes[] = {"Off (60 Hz poses only)", "Predict ahead (no delay, can overshoot on speed changes)", "Interpolate (exact, one frame of delay)"};
+    int sf = options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1;
+    if (ImGui::Combo("Sub-frame animation", &sf, subframe_modes, 3)) { options.subframe = sf == 0 ? SubFrameMode::Off : sf == 2 ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored; changed = true; }
     int music = slippi::jukebox::user_volume();
     if (ImGui::SliderInt("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
     state.volume = host::audio_volume();
@@ -154,7 +155,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
            << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
            << "\ndlss " << options.dlss_mode << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
-           << "\nsubframe " << (options.subframe != SubFrameMode::Off ? 1 : 0) << "\nmusic " << slippi::jukebox::user_volume()
+           << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
            << "\nstartup " << (options.settings_open ? 1 : 0) << '\n';
       file.close();
       state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);

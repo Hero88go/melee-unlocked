@@ -37,8 +37,8 @@ class ThreadedBackend final : public Backend {
     bool have_prev = false;
     uint64_t rendered_sequence = 0, submitted = 0, presented = 0, burst_logged = 0;
     bool subframes = options_.subframe != SubFrameMode::Off;
-    bool authored = options_.subframe == SubFrameMode::Authored;
-    bool interpolate = options_.subframe == SubFrameMode::Interpolate;
+    bool authored = options_.subframe == SubFrameMode::Authored || options_.subframe == SubFrameMode::AuthoredInterpolate;
+    bool interpolate = options_.subframe == SubFrameMode::Interpolate || options_.subframe == SubFrameMode::AuthoredInterpolate;
     double cap_period = options_.fps_cap > 0 ? 1.0 / options_.fps_cap : 0.0;
     double refresh_check = 0;
     double render_budget = 0.004;
@@ -72,10 +72,12 @@ class ThreadedBackend final : public Backend {
         // The PC settings panel can switch sub-frame animation at run time.
         bool now_sub = live_options.subframe != SubFrameMode::Off;
         if (now_sub != subframes) {
-          subframes = now_sub; authored = live_options.subframe == SubFrameMode::Authored; interpolate = live_options.subframe == SubFrameMode::Interpolate;
+          subframes = now_sub;
           if (subframes && cur >= 0) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);
         }
       }
+      authored = live_options.subframe == SubFrameMode::Authored || live_options.subframe == SubFrameMode::AuthoredInterpolate;
+      interpolate = live_options.subframe == SubFrameMode::Interpolate || live_options.subframe == SubFrameMode::AuthoredInterpolate;
       // Render every source at least once: EFB resources can depend on earlier commands.
       bool got_new = false;
       Frame incoming;

@@ -26,6 +26,7 @@ class SubFrameSolver {
   // Screw-motion extrapolation of a 3x4 matrix `t` frames past `cur` given `prev` (t in [0,1]);
   // holds `cur` at discontinuities. Used for camera motion by the authored path.
   static void extrapolate_matrix(const float prev[12], const float cur[12], double t, float out[12]);
+  static void interpolate_matrix(const float prev[12], const float cur[12], double t, float out[12]);   // between prev and cur
   float max_translation = 40.0f;
   float max_rotation = 1.2f;
 

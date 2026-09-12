@@ -35,6 +35,9 @@ struct AuthoredPose {
 // Diagnostics: why capture/sampling declined a draw (indexed by rejection site; see the sources).
 struct AuthoredStats { std::atomic<uint32_t> capture[24]{}; std::atomic<uint32_t> sample[24]{}; std::atomic<uint32_t> captured{0}, sampled{0}; };
 AuthoredStats& authored_stats();
+// Interpolate (exact in-betweens of the previous and current game frames, one frame late) instead
+// of predicting ahead of the current frame. Set by the solver before sampling.
+void set_authored_interpolate(bool on);
 // Per-presented-frame cache of sampled joint chains: draws of one object share the chain.
 struct AuthoredChain { bool ok = false; std::array<float,12> world{}, inverse_current{}; };
 struct AuthoredPairHash { size_t operator()(const std::pair<const AuthoredPose*, const AuthoredPose*>& p) const {

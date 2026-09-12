@@ -100,6 +100,10 @@ void rotation_from_quat(const Quat& q, double r[9]) {
 
 }  // namespace
 
+void SubFrameSolver::interpolate_matrix(const float prev[12], const float cur[12], double t, float out[12]) {
+  fractional(prev, cur, t, true, 40.0f, 1.2f, out, nullptr, nullptr, nullptr, nullptr);
+}
+
 void SubFrameSolver::extrapolate_matrix(const float prev[12], const float cur[12], double t, float out[12]) {
   fractional(prev, cur, t, false, 40.0f, 1.2f, out, nullptr, nullptr, nullptr, nullptr);
 }
@@ -312,6 +316,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
     // Sample forward from the latest state. Unsupported/discontinuous draws hold their current
     // matrices instead of inventing motion or adding a frame of delay. Chunks run in parallel.
     const size_t n = cur_->draws.size();
+    set_authored_interpolate(interpolate);
     SolverPool& pool = solver_pool();
     const int chunks = n >= 128 ? pool.chunks() : 1;
     std::vector<uint32_t> counts((size_t)chunks, 0);
@@ -324,8 +329,11 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
         DrawMatrices& o = out[i];
         const Pair& p = pairs_[i];
         const DrawCall* pd = p.prev_draw >= 0 ? &prev_->draws[p.prev_draw] : nullptr;
-        std::memcpy(o.pos, d.posMatrices, sizeof o.pos);
-        std::memcpy(o.nrm, d.normalMatrices, sizeof o.nrm);
+        // Draws that cannot be sampled hold: at the current pose when predicting, at the previous
+        // pose when interpolating, so every object stays on the same timeline.
+        const DrawCall& hold = (interpolate && pd) ? *pd : d;
+        std::memcpy(o.pos, hold.posMatrices, sizeof o.pos);
+        std::memcpy(o.nrm, hold.normalMatrices, sizeof o.nrm);
         if (!pd || !d.authored_pose || !pd->authored_pose) continue;
         if (d.authored_pose->envelope) {
           if (sample_authored_envelope(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, d.normalMatrices, o.pos, o.nrm, &chain_cache)) ++count;
