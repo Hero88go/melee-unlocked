@@ -87,7 +87,7 @@ labels, build.bat/play.bat).
 
 Renamed to Melee Unlocked: repo https://github.com/hero88go/melee-unlocked (old melee-port URL
 redirects; `git remote` updated), release zip `MeleeUnlocked-<ver>-win64.zip`, launcher
-`MeleeUnlocked.exe` + `MeleeUnlocked.bat`, window titles. `VERSION` at the repo root is the one
+`MeleeUnlockedLauncher.exe` (optional, "Melee Unlocked Launcher") + `MeleeUnlocked.bat`, window titles. `VERSION` at the repo root is the one
 version string (CMake defines MELEE_PORT_VERSION; package_release.py reads it).
 
 - Client `port/app/launcher.cpp` (target `melee_unlocked`, plain Win32, no runtime dependency):

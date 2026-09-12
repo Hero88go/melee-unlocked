@@ -1,4 +1,4 @@
-// Melee Unlocked client: a small Win32 launcher with a Play page (ISO, Slippi account, version
+// Melee Unlocked Launcher: an optional Win32 client with a Play page (ISO, Slippi account, version
 // and self-update) and a Build tab (drop the ISO: verify it, run the source build when this is a
 // checkout, precompile the pipeline library, remember the path). Starts melee_port.exe with the
 // release settings. Plain Win32 so it has no dependencies beyond the OS.
@@ -176,7 +176,7 @@ void start_game() {
   std::string cwd = work_dir();
   std::string cmd = "\"" + g_game_exe + "\"" + game_args();
   STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
-  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi)) { MessageBoxW(g_main, L"Could not start melee_port.exe", L"Melee Unlocked", MB_ICONERROR); return; }
+  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi)) { MessageBoxW(g_main, L"Could not start melee_port.exe", L"Melee Unlocked Launcher", MB_ICONERROR); return; }
   CloseHandle(pi.hThread);
   g_playing = true;
   EnableWindow(g_play_btn, FALSE);
@@ -326,7 +326,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   WNDCLASSW wc{}; wc.lpfnWndProc = wnd_proc; wc.hInstance = inst; wc.lpszClassName = L"MeleeUnlockedLauncher"; wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)); wc.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
   RegisterClassW(&wc);
   RECT r{0, 0, S(620), S(416)}; AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
-  std::wstring title = widen(std::string("Melee Unlocked ") + MELEE_PORT_VERSION);
+  std::wstring title = widen(std::string("Melee Unlocked Launcher ") + MELEE_PORT_VERSION);
   HWND hwnd = CreateWindowExW(0, wc.lpszClassName, title.c_str(), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
   ShowWindow(hwnd, show);
   MSG m;

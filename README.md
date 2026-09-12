@@ -13,21 +13,30 @@ Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO.
 
 ## Install
 
-There are two ways to get it running.
+Download `MeleeUnlocked-<version>-win64.zip` from [Releases](https://github.com/hero88go/melee-unlocked/releases)
+and extract it anywhere. Then pick one of two ways to run it. **The launcher is optional**;
+the game does not depend on it, and the manual way is complete on its own.
 
-### 1. The client (recommended)
+### Manual (no launcher)
 
-Download `MeleeUnlocked-<version>-win64.zip` from [Releases](https://github.com/hero88go/melee-unlocked/releases),
-extract it anywhere, and run `MeleeUnlocked.exe`.
+1. Drag your Melee NTSC 1.02 ISO onto `MeleeUnlocked.bat`, or put the ISO next to it named
+   `melee.iso` and double-click `MeleeUnlocked.bat`.
+2. Play. The first launch precompiles the graphics pipelines (15 to 30 seconds, progress in
+   the title bar). In game, F1 (or Z + Start) opens the PC settings.
+3. To update, extract a newer zip over the folder. Settings, saves and replays are kept.
 
-- **Build tab**: drop your Melee NTSC 1.02 ISO onto the window. The client checks the disc,
-  precompiles the graphics pipelines for your GPU (15 to 30 seconds, once) and remembers the
-  path. The ISO is never copied.
-- **Play**: press PLAY. In game, F1 (or Z + Start) opens the PC settings.
-- **Updates**: the client checks for a new release every time it starts. "Update and restart"
-  installs it in place; your settings, saves and replays stay.
+### Melee Unlocked Launcher (optional)
 
-### 2. Manual, from source
+A small window in the same zip, `MeleeUnlockedLauncher.exe`, for people who want setup,
+updates and the Slippi account check in one place.
+
+- **Build tab**: drop the ISO onto the window. It checks the disc, precompiles the graphics
+  pipelines for your GPU once and remembers the path. The ISO is never copied.
+- **Play**: press PLAY. It shows which Slippi account will be used.
+- **Updates**: it checks for a new release on every start. "Update and restart" installs it in
+  place; settings, saves and replays stay.
+
+### Build from source
 
 Windows 10/11, your own ISO, about 30 minutes the first time. The game is translated to C++
 and compiled on your machine; nothing from the ISO enters the repository.
@@ -41,13 +50,12 @@ cd melee-unlocked
 python tools/extract_dol.py "C:/path/to/melee.iso" build/main.dol
 python port/recomp/recomp.py --dol build/main.dol --gct-base 0x8065CC80
 cmake -S . -B build-review -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON
-cmake --build build-review --config Release --target melee_port melee_unlocked --parallel
-build-review/port/Release/MeleeUnlocked.exe
+cmake --build build-review --config Release --target melee_port --parallel
+build-review/port/Release/melee_port.exe --iso "C:/path/to/melee.iso" --threaded-renderer --fps unlocked --frame-mode authored --scale auto --volume 70
 ```
 
-The last line starts the client from the checkout (it finds the repo and the built game). Or
-run the game directly with `melee_port.exe --iso <iso> --threaded-renderer --fps unlocked
---frame-mode authored --scale auto`.
+(Add the target `melee_unlocked` to the build line if you want the optional launcher; run
+`build-review/port/Release/MeleeUnlockedLauncher.exe` from the checkout and it finds the repo.)
 
 ## Slippi online
 
@@ -56,9 +64,9 @@ Slippi code set, replay recording, game reporting. Slippi Dolphin itself is not 
 not touched.
 
 What is needed is a Slippi account. Accounts are created and logged in through the
-[Slippi Launcher](https://slippi.gg/downloads). Install it, log in once, and the client picks
-up that login automatically (it shows the account on the Play page; if none is found it links
-to the download). The Launcher also installs the WinUSB driver that a GameCube adapter needs.
+[Slippi Launcher](https://slippi.gg/downloads). Install it, log in once, and the game picks
+up that login automatically (the optional launcher shows the account on its Play page and links
+to the download if none is found). The Launcher also installs the WinUSB driver that a GameCube adapter needs.
 
 Unranked, Direct codes and Teams work against players on regular Slippi Dolphin; they change
 nothing on their side. Replays (.slp) are written to `Replays\`.
@@ -73,7 +81,7 @@ nothing on their side. Replays (.slp) are written to `Replays\`.
 - Widescreen 16:9 (Slippi's own optional code, online safe)
 - Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
 - PC settings overlay in the game window: F1 or Z + Start
-- Self-updating client
+- Optional launcher with self-update
 
 ## Bug reports
 
@@ -87,7 +95,7 @@ the bug happened in a match.
 (`port/slippi_sys/`, vendored from Slippi) and writes `port/generated/` (not committed).
 `port/runtime/` is the host runtime: PowerPC helpers, HLE of the GameCube SDK (OS, VI, PAD, DVD,
 AI/AX audio, CARD, EXI), the Slippi EXI device, netcode, game reporting, the D3D12 renderer and
-the sub-frame solver. `port/app/launcher.cpp` is the client. `tools/` holds validation,
+the sub-frame solver. `port/app/launcher.cpp` is the optional launcher. `tools/` holds validation,
 benchmarking and packaging scripts. See `PORT_COMPLETION.md` for the technical state and
 evidence, `HANDOFF_FABLE_3.md` for the roadmap.
 
