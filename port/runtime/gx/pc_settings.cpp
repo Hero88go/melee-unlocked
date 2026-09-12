@@ -152,7 +152,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     if (ImGui::Combo("Upscaling (NVIDIA DLSS)", &options.dlss_mode, upscalers, 6)) changed = true;
     if (options.dlss_mode) {
       static const char* ratios[] = {"", "100% (DLAA: full resolution, anti-aliasing only)", "67% (Quality)", "58% (Balanced)", "50% (Performance)", "33% (Ultra Performance)"};
-      ImGui::TextWrapped("DLSS is on: the game renders at %s of the window size and DLSS upscales it, so Internal resolution and Anti-aliasing above are ignored. For the sharpest image choose Native or DLAA here and set Internal resolution.", ratios[options.dlss_mode]);
+      ImGui::TextWrapped("DLSS renders the game at %s of the window size (at 1080p about 1280x960) and upscales it. That is what DLSS is for in heavy games; Melee is cheap to render, so here it is a downgrade in sharpness, and Internal resolution and Anti-aliasing above are ignored while it is on. For the sharpest image choose Native, set Internal resolution to 3x or higher and Anti-aliasing to 4x SSAA (the Dolphin look), or choose DLAA (full resolution, DLSS used only as anti-aliasing).", ratios[options.dlss_mode]);
     }
     int sharp = (int)std::lround(options.sharpness * 100.0f);
     if (ImGui::SliderInt("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }

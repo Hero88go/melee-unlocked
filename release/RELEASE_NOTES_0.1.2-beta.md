@@ -10,7 +10,7 @@ Extract the zip anywhere. **The launcher is optional.** The game does not depend
 
 **Melee Unlocked Launcher (optional):** run `MeleeUnlockedLauncher.exe`, drop the ISO onto its window (Build tab), press PLAY. It checks the disc, precompiles the graphics pipelines once, shows which Slippi account will be used, and offers "Update and restart" when a new release exists.
 
-Slippi online needs a Slippi account: install the Slippi Launcher and log in once. Slippi Dolphin itself is not needed. Settings and saves from 0.1.x carry over.
+Slippi online needs a Slippi account, so for online play the Slippi Launcher is required (install it, log in once); for offline play it is not. Slippi Dolphin itself is never needed. This project is not affiliated with the Slippi team. Settings and saves from 0.1.x carry over.
 
 ## New since 0.1.1
 

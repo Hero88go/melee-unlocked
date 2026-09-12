@@ -23,6 +23,10 @@ online play.
 
 You need your own Melee NTSC 1.02 ISO. Nothing from the game is included.
 
+Not affiliated with, endorsed by, or supported by the Slippi team, Nintendo or HAL Laboratory.
+Bugs and questions about this build go to https://github.com/hero88go/melee-unlocked/issues,
+not to the Slippi team.
+
 Install: two ways, pick one
 ---------------------------
 The launcher is OPTIONAL. Nothing in the game depends on it.
@@ -51,9 +55,10 @@ Keyboard: arrows = stick, IJKL = C-stick, Z/X/C/V = A/B/X/Y, Enter = Start, Q/W 
 
 Slippi online: everything Slippi Dolphin does for netplay (matchmaking, rollback netcode, the
 Slippi code set, replays, game reporting) is built into this program, so Slippi Dolphin is not
-needed. What is needed is a Slippi account, and accounts are created and logged in through the
-Slippi Launcher (https://slippi.gg/downloads): install it, log in once, and the game picks up
-the login automatically (the Slippi Launcher also installs the GameCube adapter driver). Unranked, Direct codes
+needed. Is the Slippi Launcher required? For online play, yes: a Slippi account is required and
+accounts are created and logged in only through the Slippi Launcher (https://slippi.gg/downloads).
+Install it, log in once, and the game picks up the login automatically (the Slippi Launcher also
+installs the GameCube adapter driver). For offline play it is not required. Unranked, Direct codes
 and Teams work against players on regular Slippi Dolphin.
 
 Bug reports: https://github.com/hero88go/melee-unlocked/issues with melee_port.log,

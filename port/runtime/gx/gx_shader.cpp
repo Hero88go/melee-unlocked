@@ -157,7 +157,7 @@ VSUid make_vs_uid(const DrawCall& dc) {
   for (int i = 0x0E; i <= 0x11; ++i) u.xf_regs[i] = dc.xf_regs[i] & 0x7FFF;
   u.xf_regs[0x09] = dc.xf_regs[0x09] & 3;
   u.xf_regs[0x12] = dc.xf_regs[0x12] & 1;
-  for (int i = 0; i < 8; ++i) { u.xf_regs[0x40 + i] = dc.xf_regs[0x40 + i]; u.xf_regs[0x50 + i] = dc.xf_regs[0x50 + i]; }
+  for (uint32_t i = 0; i < u.numTexGens; ++i) { u.xf_regs[0x40 + i] = dc.xf_regs[0x40 + i]; u.xf_regs[0x50 + i] = dc.xf_regs[0x50 + i]; }   // unused texgens: leftover state, not codegen
   u.xf_regs[0x3F] = u.numTexGens;
   return u;
 }
@@ -166,9 +166,21 @@ PSUid make_ps_uid(const DrawCall& dc) {
   PSUid u{};
   const BPMemory& b = dc.bp;
   // Copy only codegen-relevant registers so equal pipelines share shaders.
-  u.bp.reg[0] = b.reg[0] & 0xFFFFF;
-  for (int i = 0; i < 16; ++i) { u.bp.reg[BP_TEV_COLOR_ENV + 2 * i] = b.reg[BP_TEV_COLOR_ENV + 2 * i] & 0xFFFFFF; u.bp.reg[BP_TEV_ALPHA_ENV + 2 * i] = b.reg[BP_TEV_ALPHA_ENV + 2 * i] & 0xFFFFFF; u.bp.reg[BP_IND_CMD + i] = b.reg[BP_IND_CMD + i] & 0x1FFFFF; }
-  for (int i = 0; i < 8; ++i) { u.bp.reg[BP_TREF + i] = b.reg[BP_TREF + i] & 0xFFFFFF; u.bp.reg[BP_TEV_KSEL + i] = b.reg[BP_TEV_KSEL + i] & 0xFFFFFF; }
+  // genmode: texgens, colour channels, TEV and indirect stage counts (cull mode and zfreeze do not reach the shader).
+  u.bp.reg[0] = b.reg[0] & 0x7FFFF & ~0xC000u;
+  // Only the stages the shader emits: registers of unused stages carry leftover state that
+  // would otherwise multiply pipelines (32k pipelines in one session) and keep compiling mid-match.
+  const int stages = (int)b.numtevstages() + 1;
+  const int indstages = (int)b.numindstages();
+  for (int i = 0; i < stages; ++i) { u.bp.reg[BP_TEV_COLOR_ENV + 2 * i] = b.reg[BP_TEV_COLOR_ENV + 2 * i] & 0xFFFFFF; u.bp.reg[BP_TEV_ALPHA_ENV + 2 * i] = b.reg[BP_TEV_ALPHA_ENV + 2 * i] & 0xFFFFFF; u.bp.reg[BP_IND_CMD + i] = indstages ? b.reg[BP_IND_CMD + i] & 0x1FFFFF : 0; }
+  for (int i = 0; i < 8; ++i) {
+    // tref i covers stages 2i (bits 0-9) and 2i+1 (bits 12-21); ksel i holds konst selects for the
+    // same two stages (bits 4-13 and 14-23) plus swap-table entries in bits 0-3 that any stage may use.
+    uint32_t tref_mask = (2 * i + 1 < stages) ? 0xFFFFFF : (2 * i < stages) ? 0xFFF : 0;
+    uint32_t ksel_mask = (2 * i + 1 < stages) ? 0xFFFFFF : (2 * i < stages) ? 0x3FFF : 0xF;
+    u.bp.reg[BP_TREF + i] = b.reg[BP_TREF + i] & tref_mask;
+    u.bp.reg[BP_TEV_KSEL + i] = b.reg[BP_TEV_KSEL + i] & ksel_mask;
+  }
   u.bp.reg[BP_IREF] = b.reg[BP_IREF];
   u.bp.reg[BP_ALPHACOMPARE] = b.reg[BP_ALPHACOMPARE] & 0xFF0000;   // comparison ops/logic only (refs are constants)
   u.bp.reg[BP_ZTEX2] = b.reg[BP_ZTEX2] & 0xF;

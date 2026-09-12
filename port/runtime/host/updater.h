@@ -12,4 +12,5 @@ State state();
 std::string latest_version();                     // tag of the newest release when known (without the leading v)
 std::string message();                            // short status text for the settings panel
 void download_and_install();                      // background download, then writes update.bat and exits the game to run it
+void shutdown();                                  // joins the background thread; call before process exit
 }  // namespace host::updater

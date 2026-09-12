@@ -1,0 +1,39 @@
+name: Announce release on Discord
+
+# Posts every published GitHub release to a Discord channel through a webhook.
+# One-time setup by the server owner:
+#   1. Discord: Server Settings > Integrations > Webhooks > New Webhook, pick the updates
+#      channel, Copy Webhook URL.
+#   2. GitHub: repository Settings > Secrets and variables > Actions > New repository secret,
+#      name DISCORD_WEBHOOK, value = that URL (or: gh secret set DISCORD_WEBHOOK).
+# Nothing is posted until the secret exists.
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  announce:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          TAG: ${{ github.event.release.tag_name }}
+          NAME: ${{ github.event.release.name }}
+          URL: ${{ github.event.release.html_url }}
+          BODY: ${{ github.event.release.body }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then echo "DISCORD_WEBHOOK secret not set; skipping"; exit 0; fi
+          python3 - <<'EOF'
+          import json, os, urllib.request
+          body = os.environ["BODY"]
+          if len(body) > 1500: body = body[:1500] + "\n..."
+          payload = {
+            "username": "Melee Unlocked",
+            "content": f"**{os.environ['NAME'] or os.environ['TAG']}** is out: {os.environ['URL']}",
+            "embeds": [{"title": os.environ["TAG"], "url": os.environ["URL"], "description": body, "color": 0x5865F2}],
+          }
+          req = urllib.request.Request(os.environ["WEBHOOK"], data=json.dumps(payload).encode(), headers={"Content-Type": "application/json", "User-Agent": "melee-unlocked-release"})
+          with urllib.request.urlopen(req) as r: print("discord:", r.status)
+          EOF

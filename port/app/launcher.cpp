@@ -199,9 +199,17 @@ void show_tab(int idx) {
   for (HWND h : g_build) if (h) ShowWindow(h, idx == 1 ? SW_SHOW : SW_HIDE);
 }
 
+bool g_update_prompted = false;
 void refresh_updater() {
   using host::updater::State;
   auto st = host::updater::state();
+  // One yes/no prompt per launch when a newer release exists. Nothing installs without a Yes.
+  if (st == State::UpdateAvailable && !g_update_prompted) {
+    g_update_prompted = true;
+    std::string text = "Melee Unlocked " + host::updater::latest_version() + " is available (you have " MELEE_PORT_VERSION ").\n\nUpdate now? The game folder is updated in place; settings, saves and replays are kept.\n\nNo keeps this version; the Update button stays on the Play page.";
+    if (MessageBoxW(g_main, widen(text).c_str(), L"Melee Unlocked Launcher", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) host::updater::download_and_install();
+    st = host::updater::state();
+  }
   std::string line = "Version " MELEE_PORT_VERSION ". " + host::updater::message();
   if (st == State::Checking) line = "Version " MELEE_PORT_VERSION ". Checking for updates...";
   set_text(g_version_text, line);
@@ -300,7 +308,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       if ((HWND)lp == g_drop) { SetBkColor(dc, RGB(236, 240, 246)); static HBRUSH b = CreateSolidBrush(RGB(236, 240, 246)); return (LRESULT)b; }
       return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
     }
-    case WM_DESTROY: KillTimer(hwnd, ID_TIMER); PostQuitMessage(0); return 0;
+    case WM_DESTROY: KillTimer(hwnd, ID_TIMER); host::updater::shutdown(); PostQuitMessage(0); return 0;
   }
   return DefWindowProcW(hwnd, msg, wp, lp);
 }
