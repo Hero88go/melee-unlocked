@@ -45,7 +45,13 @@ struct TimerResolution {
   ~TimerResolution() { if (raised) timeEndPeriod(1); }
 };
 
+#ifndef MELEE_PORT_VERSION
+#define MELEE_PORT_VERSION "dev"
+#endif
+
 int main(int argc, char** argv) {
+  for (int i = 1; i < argc; ++i)
+    if (std::string(argv[i]) == "--version") { std::printf("%s\n", MELEE_PORT_VERSION); return 0; }
   TimerResolution timer_resolution;
   host::Options& o = host::options;
   bool headless = false, hidden = false, threaded = false, fps_requested = false;

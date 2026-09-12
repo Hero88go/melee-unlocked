@@ -76,7 +76,7 @@ target_compile_options(port_mm_probe PRIVATE /EHsc)
 target_compile_definitions(port_mm_probe PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(melee_port PRIVATE runtime guest)
 target_compile_options(melee_port PRIVATE /EHsc)
-target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
 
 # Melee Unlocked client: Win32 launcher (Play page, Build tab, self-update). No runtime dependency.
 add_executable(melee_unlocked WIN32 app/launcher.cpp runtime/host/updater.cpp)
