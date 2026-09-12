@@ -37,7 +37,7 @@ Requirements: Windows 10/11, Visual Studio 2022 (C++ desktop workload), CMake 3.
 Python 3.8+, an NVIDIA or other D3D12-capable GPU, and your own Melee NTSC 1.02 ISO.
 
 ```powershell
-git clone <this repo> melee-unlocked
+git clone https://github.com/hero88go/melee-port.git melee-unlocked
 cd melee-unlocked
 python port/recomp/recomp.py --dol <path to main.dol extracted from your ISO> --gct-base 0x8065CC80
 cmake -S . -B build-review -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON
