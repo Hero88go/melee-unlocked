@@ -29,7 +29,7 @@ def main():
     # A "Play" snapshot (tools/snapshot_play.bat) is a tested copy that development rebuilds do not touch.
     executable = ROOT / "build-review/port/Play/melee_port.exe"
     if not executable.is_file(): executable = ROOT / "build-review/port/Release/melee_port.exe"
-    if not executable.is_file(): ap.error("native build missing; follow NATIVE_DEVELOPMENT.md")
+    if not executable.is_file(): ap.error("native build missing; build it first (README: Build from source)")
     if not args.iso.is_file(): ap.error(f"ISO not found: {args.iso}")
     command = [str(executable), "--iso", str(args.iso.resolve()), "--scale", args.scale, "--window", args.window]
     if args.threaded_renderer: command.append("--threaded-renderer")
