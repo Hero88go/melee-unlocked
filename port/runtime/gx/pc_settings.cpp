@@ -20,7 +20,7 @@ namespace gx {
 void load_pc_settings(D3D12Options& options, int& volume) {
   std::ifstream file(options.settings_path);
   // First launch (no saved settings yet): open the PC settings panel so nobody has to find it.
-  if (!file) options.settings_open = true;
+  options.settings_open = true;   // opens at every launch unless "startup 0" was saved
   std::string key, value;
   while (file >> key >> value) {
     try {
@@ -35,6 +35,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : SubFrameMode::Authored;
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
       else if (key == "performance") options.performance_overlay = value == "1";
+      else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
       else if (key == "volume") volume = std::clamp(std::stoi(value), 0, 100);
     } catch (...) { /* Ignore a malformed preference, retaining the safe default. */ }
@@ -145,6 +146,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     state.volume = host::audio_volume();
     if (ImGui::SliderInt("Volume", &state.volume, 0, 100, "%d%%")) host::audio_set_volume(state.volume);
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
+    ImGui::Checkbox("Open this panel at startup", &options.settings_open);
     ImGui::Separator();
     if (ImGui::Button("Save settings")) {
       std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";
@@ -152,7 +154,8 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
            << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
            << "\ndlss " << options.dlss_mode << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
-           << "\nsubframe " << (options.subframe != SubFrameMode::Off ? 1 : 0) << "\nmusic " << slippi::jukebox::user_volume() << '\n';
+           << "\nsubframe " << (options.subframe != SubFrameMode::Off ? 1 : 0) << "\nmusic " << slippi::jukebox::user_volume()
+           << "\nstartup " << (options.settings_open ? 1 : 0) << '\n';
       file.close();
       state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     }
@@ -160,12 +163,12 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     if (state.saved) ImGui::TextUnformatted("Settings saved");
     ImGui::End();
   }
-  if (!state.open && ImGui::GetTime() < 15.0) {
-    // First seconds after launch: tell the player where the PC settings live.
-    ImGui::SetNextWindowPos(ImVec2(12, ImGui::GetIO().DisplaySize.y - 40), ImGuiCond_Always);
-    ImGui::SetNextWindowBgAlpha(0.6f);
-    ImGui::Begin("Hint", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs);
-    ImGui::TextUnformatted("F1 or Z + Start: PC settings (frame rate, fullscreen, widescreen, DLSS, volume)");
+  if (!state.open) {
+    // Always-visible way in: a small button in the corner (mouse), plus the key hint.
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 12, 12), ImGuiCond_Always, ImVec2(1, 0));
+    ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
+    ImGui::Begin("SettingsButton", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
+    if (ImGui::Button("Settings  (F1 / Z+Start)")) state.open = true;
     ImGui::End();
   }
   if (options.performance_overlay) {
