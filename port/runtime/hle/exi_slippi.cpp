@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "exi_slippi.h"
 #include "jukebox.h"
+#include "slippi_playback.h"
 #include "slippi_online.h"
 #include "gecko_data.h"
 #include "host.h"
@@ -50,6 +51,7 @@ std::unordered_map<uint8_t, uint32_t> g_record_sizes;
 
 std::vector<uint8_t> g_read_queue;
 uint32_t g_gct_address = 0;
+bool g_gecko_list_pending = false;   // next DMA read fetches the replay code list (playback)
 uint64_t g_commands = 0;
 std::string g_replay_dir = "replays";
 uint8_t g_frame_delay = 2;   // Slippi Online input delay setting (frames)
@@ -300,8 +302,11 @@ void dma_write(uint32_t addr, uint32_t size) {
       case CMD_RECEIVE_COMMANDS: break;   // handled above
       case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); break;
       case CMD_FRAME_BOOKEND: write_to_file(&mem[loc], payload + 1, ""); break;
-      case CMD_PREPARE_REPLAY: case CMD_READ_FRAME: case CMD_IS_STOCK_STEAL: case CMD_IS_FILE_READY: case CMD_GET_GECKO_CODES:
-        g_read_queue.clear(); g_read_queue.resize(8, 0); break;   // replay playback: not supported in this build
+      case CMD_PREPARE_REPLAY: playback::prepare_game_info(&mem[loc + 1], g_read_queue); break;
+      case CMD_READ_FRAME: playback::prepare_frame_data(&mem[loc + 1], g_read_queue); break;
+      case CMD_IS_STOCK_STEAL: playback::prepare_is_stock_steal(&mem[loc + 1], g_read_queue); break;
+      case CMD_IS_FILE_READY: playback::prepare_is_file_ready(g_read_queue); break;
+      case CMD_GET_GECKO_CODES: playback::prepare_gecko_codes(g_read_queue); g_gecko_list_pending = true; break;
       case CMD_ONLINE_INPUTS: case CMD_CAPTURE_SAVESTATE: case CMD_LOAD_SAVESTATE: case CMD_GET_MATCH_STATE: case CMD_FIND_OPPONENT:
       case CMD_SET_MATCH_SELECTIONS: case CMD_OPEN_LOGIN: case CMD_LOGOUT: case CMD_UPDATE: case CMD_CLEANUP_CONNECTION:
       case CMD_SEND_CHAT_MESSAGE: case CMD_REPORT_GAME: case CMD_FETCH_CODE_SUGGESTION: case CMD_OVERWRITE_SELECTIONS:
@@ -320,6 +325,7 @@ void dma_write(uint32_t addr, uint32_t size) {
 }
 
 void dma_read(uint32_t addr, uint32_t size) {
+  if (g_gecko_list_pending) { g_gecko_list_pending = false; playback::note_gecko_list_dma(addr, size); }
   if (g_read_queue.empty()) { host::log("slippi: DMA read of %u bytes with an empty response queue", size); return; }
   g_read_queue.resize(size, 0);
   std::memcpy(host::ptr(addr, size), g_read_queue.data(), size);

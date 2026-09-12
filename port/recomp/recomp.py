@@ -23,16 +23,20 @@ SLIPPI_SYS = ROOT / "port/slippi_sys"   # Slippi's Sys files (GPL-2.0, from the 
 
 class GeckoSet:
     """Everything the recompiler and runtime need for the Slippi code tables."""
-    def __init__(self, gct_base):
+    def __init__(self, gct_base, sys_dir=None, extra_gct=None, extra_base=0):
+        sys_dir = Path(sys_dir) if sys_dir else SLIPPI_SYS
         self.hooks, self.caves = [], []
-        self.codehandler = (SLIPPI_SYS / "codehandler.bin").read_bytes()
-        self.bootloader = (SLIPPI_SYS / "bootloader.gct").read_bytes()
+        self.codehandler = (sys_dir / "codehandler.bin").read_bytes()
+        self.bootloader = (sys_dir / "bootloader.gct").read_bytes()
         assert len(self.codehandler) == 4288, "unexpected codehandler.bin"
-        self.codes = gecko.load_ini(SLIPPI_SYS / "GameSettings/GALE01r2.ini")
+        self.codes = gecko.load_ini(sys_dir / "GameSettings/GALE01r2.ini")
         self.gct, self.optional_offset = gecko.generate_gct(self.codes)
         self.boot = gecko.parse_gct(self.bootloader, gecko.BOOTLOADER_BASE)
         self.gct_base = gct_base
         self.main = gecko.parse_gct(self.gct, gct_base if gct_base else 0x81900000)
+        # Playback: the list a replay carries (served over EXI, installed by the Playback code at
+        # `extra_base`) is translated too, so its caves run as compiled code.
+        self.extra = gecko.parse_gct(Path(extra_gct).read_bytes(), extra_base) if extra_gct else None
         # Run-time optional codes: everything the full table adds over the base table.
         base_gct, _ = gecko.generate_gct(self.codes, include_optional=False)
         base = gecko.parse_gct(base_gct, gct_base if gct_base else 0x81900000)
@@ -52,7 +56,7 @@ class GeckoSet:
         """Applies the memory writes to the image and collects hooks/caves for translation."""
         text_writes = data_writes = 0
         optional = set(self.optional_write_list)
-        for p in (self.boot, self.main):
+        for p in [self.boot, self.main] + ([self.extra] if self.extra else []):
             for addr, blob in p.writes:
                 if not dol.in_ram(addr) or not dol.in_ram(addr + len(blob) - 1):
                     continue
@@ -71,14 +75,14 @@ class GeckoSet:
                 else:
                     data_writes += 1
         seen = {}
-        for p in (self.boot, self.main):
+        for p in [self.boot, self.main] + ([self.extra] if self.extra else []):
             for h in p.hooks:
                 if h.hook in seen:
                     print("warning: two Gecko hooks at %08X; the later table wins" % h.hook)
                 seen[h.hook] = h
         self.hooks = list(seen.values())
         if self.gct_base:
-            self.caves = list(self.main.c0) + list(self.boot.c0)
+            self.caves = list(self.main.c0) + list(self.boot.c0) + (list(self.extra.c0) if self.extra else [])
         return text_writes, data_writes
 
     def enabled_names(self):
@@ -149,6 +153,9 @@ def main():
     ap.add_argument("--hle", default=str(ROOT / "port/recomp/hle_list.txt"))
     ap.add_argument("--tu-insns", type=int, default=7000)
     ap.add_argument("--no-slippi", action="store_true", help="translate the vanilla game without the Slippi code tables")
+    ap.add_argument("--extra-gct", help="playback: the replay code list (gecko_list.bin the port wrote) to translate as well")
+    ap.add_argument("--extra-gct-base", default="0", help="guest address where the Playback code installs that list (from the port log)")
+    ap.add_argument("--sys-dir", default=str(SLIPPI_SYS), help="Slippi Sys folder with the code list to bake (port/slippi_sys, or port/slippi_sys_playback for the playback build)")
     ap.add_argument("--gct-base", default="0", help="guest address where the game loads the main GCT (from a previous run's log); "
                                                      "enables translation of C0 caves at their real addresses")
     args = ap.parse_args()
@@ -160,7 +167,7 @@ def main():
     symbols = SymbolMap(args.symbols)
     gs = None
     if not args.no_slippi:
-        gs = GeckoSet(int(args.gct_base, 0))
+        gs = GeckoSet(int(args.gct_base, 0), args.sys_dir, args.extra_gct, int(args.extra_gct_base, 0))
         text_writes, data_writes = gs.apply(dol)
         print("slippi: %d codes enabled (%s); GCT %d bytes; %d hooks, %d C0 caves%s; %d text + %d data writes; %d unsupported lines" % (
             len(gs.enabled_names()), ", ".join(gs.enabled_names()), len(gs.gct), len(gs.hooks), len(gs.main.c0) + len(gs.boot.c0),
