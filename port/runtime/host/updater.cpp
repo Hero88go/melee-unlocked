@@ -117,25 +117,43 @@ void download_and_install() {
     std::string dir(exe); dir.resize(dir.find_last_of("\\/"));
     std::string zip = dir + "\\update.zip", bat = dir + "\\update.bat";
     { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) { set_message("Cannot write update.zip"); g_state = State::Failed; return; } }
+    // Relaunch exactly what was started, so this works the same from the release batch file, the
+    // launcher, or a development shortcut with its own arguments. Percent signs would be eaten by
+    // the batch interpreter.
+    std::string relaunch = GetCommandLineA();
+    for (size_t i = relaunch.find('%'); i != std::string::npos; i = relaunch.find('%', i + 2)) relaunch.insert(i, 1, '%');
+
     // The script waits for this process to exit, unpacks the zip (Windows 10+ ships tar for zips),
-    // copies the release folder over this one (keeping User\, settings, saves, replays) and relaunches.
-    std::ofstream b(bat);
+    // copies the release folder over this one (keeping User\, settings, saves, replays) and starts
+    // the game again. Written in binary: text mode would turn every \r\n into \r\r\n, and the
+    // stray carriage return becomes part of the last argument on each line, which is what stopped
+    // the relaunch from working.
+    std::ofstream b(bat, std::ios::binary);
     b << "@echo off\r\ncd /d \"" << dir << "\"\r\n"
+      << "set LOG=\"" << dir << "\\update.log\"\r\n"
+      << "echo update started %DATE% %TIME%> %LOG%\r\n"
       << ":wait\r\ntasklist /FI \"PID eq " << GetCurrentProcessId() << "\" 2>nul | find \"" << GetCurrentProcessId() << "\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n"
       << "rmdir /s /q update_tmp 2>nul\r\nmkdir update_tmp\r\n"
-      << "tar -xf update.zip -C update_tmp || (echo Could not unpack the update & pause & exit /b 1)\r\n"
+      << "tar -xf update.zip -C update_tmp\r\n"
+      << "if errorlevel 1 (echo could not unpack update.zip>> %LOG% & echo Could not unpack the update. & pause & exit /b 1)\r\n"
+      << "set SRC=\r\n"
       << "for /d %%d in (update_tmp\\MeleeUnlocked-* update_tmp\\MeleePort-*) do set SRC=%%d\r\n"
-      << "xcopy /e /y /q \"%SRC%\\*\" \".\\\" >nul\r\n"
+      << "if not defined SRC (echo no release folder inside update.zip>> %LOG% & echo The update did not contain a release folder. & pause & exit /b 1)\r\n"
+      << "echo copying from %SRC%>> %LOG%\r\n"
+      << "xcopy /e /y /q \"%SRC%\\*\" \".\\\" >> %LOG% 2>&1\r\n"
+      << "if errorlevel 1 (echo copy failed>> %LOG% & echo Could not copy the update into place. & pause & exit /b 1)\r\n"
       << "rmdir /s /q update_tmp\r\ndel update.zip\r\n"
-      << "echo Updated to the newest release.\r\n"
-      << "if exist MeleeUnlockedLauncher.exe (start \"\" MeleeUnlockedLauncher.exe) else (start \"\" MeleeUnlocked.bat)\r\n"
+      << "echo restarting: " << relaunch << ">> %LOG%\r\n"
+      << "start \"\" " << relaunch << "\r\n"
+      << "echo done>> %LOG%\r\n"
       << "del \"%~f0\"\r\n";
     b.close();
     set_message("Update downloaded; restarting to install");
     g_state = State::ReadyToInstall;
     host::log("updater: %zu bytes downloaded, installing via update.bat", body.size());
     STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
-    std::string cmd = "cmd /c \"" + bat + "\"";
+    // Doubled quotes: cmd strips one layer, and the path contains spaces.
+    std::string cmd = "cmd /c \"\"" + bat + "\"\"";
     if (CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, dir.c_str(), &si, &pi)) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
     host::request_exit(0);
   });

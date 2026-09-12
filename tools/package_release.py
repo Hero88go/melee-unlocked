@@ -8,6 +8,7 @@ the user supplies their own Melee NTSC 1.02 ISO. Usage:
 """
 import argparse
 import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -93,6 +94,11 @@ def main():
     args = ap.parse_args()
     if not args.exe.is_file():
         raise SystemExit(f"missing executable: {args.exe}")
+    # The version is compiled into the executable, so a build made before VERSION changed would
+    # ship reporting the old number and offer itself the update forever. Catch that here.
+    built = subprocess.run([str(args.exe), "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
+    if built != args.version:
+        raise SystemExit(f"{args.exe.name} reports version {built!r} but the release is {args.version!r}; rebuild it first")
     name = f"MeleeUnlocked-{args.version}"
     folder = args.out / name
     if folder.exists():
