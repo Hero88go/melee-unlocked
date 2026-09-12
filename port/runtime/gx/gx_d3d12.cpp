@@ -684,7 +684,7 @@ void D3D12Backend::integrate_compiled_psos() {
     psos_pending_.erase(r.key);
     if (r.vs && !vs_blobs_[r.key.vs]) vs_blobs_[r.key.vs] = r.vs;
     if (r.ps && !ps_blobs_[r.key.ps]) ps_blobs_[r.key.ps] = r.ps;
-    if (pipeline_recipes_.size() < 16384) pipeline_recipes_.push_back(r.recipe);
+    if (r.key.mvec == 0 && pipeline_recipes_.size() < 16384) pipeline_recipes_.push_back(r.recipe);
   }
 }
 
@@ -1384,16 +1384,21 @@ void D3D12Backend::prewarm_pipelines() {
     if (pipeline_recipes_.size() >= 16384) break;
     DrawCall draw{}; draw.components = recipe.components; draw.bp = recipe.bp;
     std::memcpy(draw.xf_regs, recipe.xf, sizeof(recipe.xf));
-    VSUid vsu = make_vs_uid(draw); PSUid psu = make_ps_uid(draw);
-    vsu.motion_vectors = psu.motion_vectors = 0;
     auto topo = (D3D12_PRIMITIVE_TOPOLOGY_TYPE)recipe.topology;
-    PsoKey key{vsu.hash(), psu.hash(), draw.bp.blendmode() & 0xFFFF, draw.bp.zmode() & 0x1F, draw.bp.cullmode(), (uint32_t)topo, draw.bp.zcontrol() & 7, 0u};
-    // One recipe per pipeline: recipes that only differ in state the pipeline key ignores are dropped.
-    if (psos_.count(key)) { if (keys_seen.insert(key).second) pipeline_recipes_.push_back(recipe); continue; }
-    if (!psos_pending_.insert(key).second) continue;
-    keys_seen.insert(key);
-    { std::lock_guard<std::mutex> lk(pso_mutex_); pso_jobs_.push_back(PsoJob{key, vsu, psu, topo, recipe}); }
-    ++queued;
+    // Both pipeline variants: plain, and with motion vectors for DLSS (otherwise the first match
+    // with DLSS on would compile everything again and skip draws meanwhile).
+    const int variants = streamline::available() ? 2 : 1;
+    for (int mvec = 0; mvec < variants; ++mvec) {
+      VSUid vsu = make_vs_uid(draw); PSUid psu = make_ps_uid(draw);
+      vsu.motion_vectors = psu.motion_vectors = (uint32_t)mvec;
+      PsoKey key{vsu.hash(), psu.hash(), draw.bp.blendmode() & 0xFFFF, draw.bp.zmode() & 0x1F, draw.bp.cullmode(), (uint32_t)topo, draw.bp.zcontrol() & 7, (uint32_t)mvec};
+      // One recipe per pipeline: recipes that only differ in state the pipeline key ignores are dropped.
+      if (psos_.count(key)) { if (mvec == 0 && keys_seen.insert(key).second) pipeline_recipes_.push_back(recipe); continue; }
+      if (!psos_pending_.insert(key).second) continue;
+      if (mvec == 0) keys_seen.insert(key);
+      { std::lock_guard<std::mutex> lk(pso_mutex_); pso_jobs_.push_back(PsoJob{key, vsu, psu, topo, recipe}); }
+      ++queued;
+    }
   }
   pso_cv_.notify_all();
   const size_t total = psos_.size() + queued;
