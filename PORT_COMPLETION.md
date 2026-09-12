@@ -194,3 +194,17 @@ settings found, later a black screen after enabling DLSS, no menu music, "Dolphi
 Not done / answered: replay playback validation against Dolphin needs the Slippi Playback code set
 (a second recompile variant) and is not implemented; ranked reporting; RTX; "DLSS 5" does not
 exist in the SDK we ship (Streamline 2.10.3, DLSS 4 era; the NVIDIA App can override the DLL).
+
+## Replay playback build (2026-09-11 night, Fable, in progress)
+
+Chandler's validation request: play one of his Slippi Dolphin replays in both clients and require
+identical positions, damage and results. Approach: a second translation of the game against the
+Slippi Playback code set (`port/slippi_sys_playback`, from the Launcher's playback Dolphin) built
+as `melee_port_playback.exe`; the EXI side of playback (prepareGameInfo, prepareFrameData,
+IsStockSteal, IsFileReady, gecko list with Dolphin's denylist from the injection lists) is ported
+in `port/runtime/hle/slippi_playback.cpp` over the vendored SlippiLib parser
+(`port/third_party/slippilib`). The recording path records the played-back game, and
+`tools/replay_compare.py <replay.slp>` diffs the recording against the original per player-frame
+(state, position, facing, percent, stocks). Since the game installs the replay's own code list at
+run time, the recompiler takes `--extra-gct gecko_list.bin --extra-gct-base <addr>` (the port logs
+where the game put the list) so those caves run as translated code too.
