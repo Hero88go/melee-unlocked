@@ -17,7 +17,7 @@ older roadmap), `README.md` (public). Memory file for Claude: `melee-pc-port.md`
 
 ## Where things stand (all verified unless marked)
 
-Working and released (v0.1.2-beta, about to be superseded by v0.1.3-beta):
+Working and released (v0.1.3-beta, 2026-09-11 22:50, tag 102b01d):
 - Static recompilation of the 1.02 DOL + Slippi Gecko codes, native D3D12 renderer, 60 Hz game
   logic with unlocked display rate and authored sub-frame animation (Predict / Interpolate modes).
 - Slippi online against real Dolphin players (mm.slippi.gg), game reporting + replay upload, rank
