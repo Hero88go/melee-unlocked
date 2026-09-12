@@ -4,6 +4,10 @@
 #include "window.h"
 #include "audio.h"
 #include "host.h"
+#include "updater.h"
+#ifndef MELEE_PORT_VERSION
+#define MELEE_PORT_VERSION "dev"
+#endif
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx12.h"
@@ -161,6 +165,14 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     if (ImGui::SliderInt("Volume", &state.volume, 0, 100, "%d%%")) host::audio_set_volume(state.volume);
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
     ImGui::Checkbox("Open this panel at startup", &options.settings_open);
+    ImGui::Separator();
+    {
+      auto st = host::updater::state();
+      if (st == host::updater::State::Idle) host::updater::check(MELEE_PORT_VERSION);
+      ImGui::Text("Version %s. %s", MELEE_PORT_VERSION, host::updater::message().c_str());
+      if (st == host::updater::State::UpdateAvailable) { ImGui::SameLine(); if (ImGui::Button("Update and restart")) host::updater::download_and_install(); }
+      if (st == host::updater::State::Failed) { ImGui::SameLine(); if (ImGui::Button("Retry")) host::updater::check(MELEE_PORT_VERSION); }
+    }
     ImGui::Separator();
     if (ImGui::Button("Save settings")) {
       std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";

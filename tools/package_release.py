@@ -66,7 +66,7 @@ if errorlevel 1 pause
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--version", required=True)
+    ap.add_argument("--version", default=(ROOT / "VERSION").read_text().strip())
     ap.add_argument("--exe", type=Path, default=ROOT / "build-review/port/Release/melee_port.exe")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
