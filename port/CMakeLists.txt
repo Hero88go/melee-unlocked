@@ -44,7 +44,7 @@ endif()
 include("${PORT_GEN}/guest_sources.cmake")
 
 # Guest library: large generated translation units.
-add_library(guest STATIC ${GUEST_SOURCES} "${PORT_GEN}/function_names.cpp")
+add_library(guest STATIC ${GUEST_SOURCES} "${PORT_GEN}/function_names.cpp" "${PORT_GEN}/gecko_data.cpp")
 target_include_directories(guest PUBLIC "${PORT_GEN}" runtime/ppc)
 target_include_directories(guest PRIVATE runtime/hle)   # gecko_data.h: run-time optional code flags
 target_compile_features(guest PUBLIC cxx_std_17)
@@ -59,11 +59,11 @@ add_library(port_enet STATIC ${ENET_SOURCES})
 target_include_directories(port_enet PUBLIC third_party/enet/include)
 target_compile_definitions(port_enet PRIVATE _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
 target_link_libraries(port_enet PUBLIC ws2_32 winmm)
-add_library(runtime STATIC ${RUNTIME_SOURCES} "${PORT_GEN}/gecko_data.cpp")
+add_library(runtime STATIC ${RUNTIME_SOURCES} third_party/slippilib/SlippiGame.cpp)
 target_include_directories(runtime PUBLIC runtime/ppc runtime/host runtime/hle runtime/gx "${PORT_GEN}" "${PROJECT_SOURCE_DIR}/native" third_party)
 target_compile_features(runtime PUBLIC cxx_std_17)
 target_compile_options(runtime PRIVATE /EHsc /arch:AVX2 /fp:precise /W3)
-target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
 target_link_libraries(runtime PUBLIC native_animation port_enet bcrypt d3d12 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb)
 
 add_executable(melee_port app/main.cpp)
@@ -74,6 +74,24 @@ target_compile_definitions(port_mm_probe PRIVATE NOMINMAX _CRT_SECURE_NO_WARNING
 target_link_libraries(melee_port PRIVATE runtime guest)
 target_compile_options(melee_port PRIVATE /EHsc)
 target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+
+# Replay playback build: the same runtime with the game translated against the Slippi Playback
+# code set (python port/recomp/recomp.py --sys-dir port/slippi_sys_playback --out port/generated_playback).
+set(PORT_GEN_PLAYBACK "${CMAKE_CURRENT_SOURCE_DIR}/generated_playback")
+if(EXISTS "${PORT_GEN_PLAYBACK}/guest_sources.cmake")
+  include("${PORT_GEN_PLAYBACK}/guest_sources.cmake")
+  add_library(guest_playback STATIC ${GUEST_SOURCES} "${PORT_GEN_PLAYBACK}/function_names.cpp" "${PORT_GEN_PLAYBACK}/gecko_data.cpp")
+  target_include_directories(guest_playback BEFORE PUBLIC "${PORT_GEN_PLAYBACK}")
+  target_include_directories(guest_playback PUBLIC runtime/ppc)
+  target_include_directories(guest_playback PRIVATE runtime/hle)
+  target_compile_features(guest_playback PUBLIC cxx_std_17)
+  target_compile_options(guest_playback PRIVATE /bigobj /MP /EHsc /arch:AVX2 /fp:precise /wd4102 /wd4101 /wd4189 /W1)
+  target_compile_definitions(guest_playback PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+  add_executable(melee_port_playback app/main.cpp)
+  target_link_libraries(melee_port_playback PRIVATE runtime guest_playback)
+  target_compile_options(melee_port_playback PRIVATE /EHsc)
+  target_compile_definitions(melee_port_playback PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+endif()
 if(EXISTS "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
   add_test(NAME port_image_identity COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/image_identity_test.py" "$<TARGET_FILE:melee_port>"
