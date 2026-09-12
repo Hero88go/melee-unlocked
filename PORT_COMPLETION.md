@@ -208,3 +208,13 @@ in `port/runtime/hle/slippi_playback.cpp` over the vendored SlippiLib parser
 (state, position, facing, percent, stocks). Since the game installs the replay's own code list at
 run time, the recompiler takes `--extra-gct gecko_list.bin --extra-gct-base <addr>` (the port logs
 where the game put the list) so those caves run as translated code too.
+
+### Result (2026-09-11 18:50)
+
+`tools/replay_compare.py Game_20260321T214554.slp` (Marth vs Samus, Yoshi's Story, Slippi 3.19.0,
+recorded on Slippi Dolphin in March 2026): all 9610 frames play back in the port and the port's
+own recording matches the original on every player-frame for action state, x/y position, facing,
+percent and stocks, except one value: Samus's y at frame -113 (spawn animation) differs by one
+float ulp (0x41E05C00 vs 0x41E05BFF) and does not propagate. 19220 player-frames compared,
+1 mismatch. Without the replay's own code list translated in (first run) the game diverged from
+frame 221 on, so `--extra-gct` is required for playback builds.
