@@ -16,6 +16,7 @@
 #include <vector>
 #include "audio.h"
 #include "host.h"
+#include "jukebox.h"
 
 #pragma comment(lib, "winmm.lib")
 #pragma comment(lib, "ole32.lib")
@@ -81,6 +82,7 @@ void wasapi_thread() {
       g_ring_count -= have;
       if (have < want) std::memset(out + have * 2, 0, (want - have) * 4);   // underrun: silence
     }
+    if (volume > 0) slippi::jukebox::mix(out, want);
     g_render->ReleaseBuffer(want, 0);
   }
   CoUninitialize();
@@ -211,6 +213,7 @@ void audio_push(const uint8_t* be_samples, size_t bytes) {
     if (!(h.dwFlags & WHDR_DONE)) { ++g_dropped; continue; }
     for (int i = 0; i < BLOCK_BYTES / 2; ++i)
       g_blocks[g_next][i] = (int16_t)((int32_t)converted[i] * g_volume / 100);
+    if (g_volume > 0) slippi::jukebox::mix(g_blocks[g_next], BLOCK_BYTES / 4);
     h.dwFlags &= ~WHDR_DONE;
     if (waveOutWrite(g_out, &h, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) { h.dwFlags |= WHDR_DONE; ++g_dropped; continue; }
     g_next = (g_next + 1) % BLOCKS;

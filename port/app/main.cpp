@@ -120,6 +120,9 @@ int main(int argc, char** argv) {
     else if (a == "--time-base") o.time_base = std::strtoull(next(), nullptr, 0);
     else if (a == "--volume") o.volume = std::atoi(next());
     else if (a == "--widescreen") gfx.widescreen = true;
+    else if (a == "--sharpness") gfx.sharpness = std::clamp((float)std::atof(next()), 0.0f, 1.0f);
+    else if (a == "--ssaa") gfx.ssaa = std::atoi(next()) >= 2 ? 2 : 1;
+    else if (a == "--anisotropy") gfx.anisotropy = std::clamp(std::atoi(next()), 1, 16);
     else if (a == "--hang-watch") o.hang_watch = std::atof(next());
     else if (a == "--audio-dump") o.audio_dump = next();
     else { usage(); return 2; }

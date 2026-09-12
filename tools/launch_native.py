@@ -9,7 +9,7 @@ DEFAULT_ISO = Path(r"C:\Games\Smash\DOLPHIN AND SMASH GAMES\Super Smash Bros. Me
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--iso", type=Path, default=DEFAULT_ISO)
-    ap.add_argument("--scale", default="2", help="internal resolution multiplier 1-25, or 'auto' to follow the window")
+    ap.add_argument("--scale", default="auto", help="internal resolution multiplier 1-25, or 'auto' to follow the window")
     ap.add_argument("--window", default="1280x960", help="initial client size WxH")
     ap.add_argument("--threaded-renderer", action="store_true")
     ap.add_argument("--fps", help="display rate: a number, 'monitor', or 'unlocked' (enables sub-frame presentation)")

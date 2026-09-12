@@ -25,10 +25,12 @@ You need your own Melee NTSC 1.02 ISO. Nothing from the game is included.
 
 Quick start
 -----------
-1. Put your ISO next to MeleePort.bat and name it melee.iso (or edit the batch file).
-2. Run MeleePort.bat. The first launch compiles shaders for a few seconds.
-3. Press F1 (or Back+Start on the controller) for settings: fullscreen, frame rate cap,
-   VSync, widescreen 16:9, internal resolution, DLSS, volume. Settings persist in port-settings.ini.
+1. Drag your Melee NTSC 1.02 ISO onto MeleePort.bat (or put it next to it named melee.iso).
+2. The first launch precompiles the shader list (about 15 seconds, progress in the title bar).
+3. The PC settings panel opens on the first launch; later press F1 (or Z + Start on the
+   controller): fullscreen, frame rate cap, VSync, widescreen 16:9, internal resolution,
+   anti-aliasing (SSAA), anisotropic filtering, DLSS/DLAA, sharpening, sub-frame animation,
+   game and music volume. Settings persist in port-settings.ini.
 
 Controllers: a GameCube adapter (WUP-028, official or Mayflash in Wii U mode) is used
 automatically if it has the WinUSB driver that Slippi installs. Close Slippi Dolphin first.
@@ -50,12 +52,14 @@ mixer.
 
 BAT = """@echo off
 cd /d "%~dp0"
-if not exist "melee.iso" (
-  echo Put your Melee NTSC 1.02 ISO next to this file and name it melee.iso
+set ISO=%~dp0melee.iso
+if not "%~1"=="" if exist "%~1" set ISO=%~1
+if not exist "%ISO%" (
+  echo Drop your Melee NTSC 1.02 ISO onto this file, or put it next to it named melee.iso
   pause
   exit /b 1
 )
-melee_port.exe --iso "%~dp0melee.iso" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\\Slippi" --replay-dir "%~dp0Replays" --card-dir "%~dp0User\GC\CardA" --threaded-renderer --fps unlocked --frame-mode authored --fullscreen --volume 70 %*
+melee_port.exe --iso "%ISO%" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\Slippi" --replay-dir "%~dp0Replays" --card-dir "%~dp0User\GC\CardA" --threaded-renderer --fps unlocked --frame-mode authored --scale auto --volume 70
 if errorlevel 1 pause
 """
 

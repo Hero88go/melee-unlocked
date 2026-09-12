@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "pc_settings.h"
+#include "jukebox.h"
 #include "window.h"
 #include "audio.h"
 #include "host.h"
@@ -13,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <cmath>
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 namespace gx {
 void load_pc_settings(D3D12Options& options, int& volume) {
@@ -27,6 +29,11 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "fullscreen") options.fullscreen = value == "1";
       else if (key == "vsync") options.vsync = value == "1";
       else if (key == "widescreen") options.widescreen = value == "1";
+      else if (key == "sharpness") options.sharpness = std::clamp(std::stof(value), 0.0f, 1.0f);
+      else if (key == "anisotropy") { int a = std::stoi(value); if (a == 1 || a == 2 || a == 4 || a == 8 || a == 16) options.anisotropy = a; }
+      else if (key == "ssaa") { int a = std::stoi(value); if (a == 1 || a == 2) options.ssaa = a; }
+      else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : SubFrameMode::Authored;
+      else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
       else if (key == "volume") volume = std::clamp(std::stoi(value), 0, 100);
@@ -118,11 +125,23 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     if (ImGui::Combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
     changed |= ImGui::Checkbox("VSync", &options.vsync);
     changed |= ImGui::Checkbox("Widescreen 16:9 (Slippi code, online safe)", &options.widescreen);
-    const char* scales[] = {"Auto", "Native (1x)", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
+    const char* scales[] = {"Auto (window size)", "Native (1x)", "2x", "3x", "4x", "5x", "6x", "7x", "8x"};
     changed |= ImGui::Combo("Internal resolution", &options.efb_scale, scales, 9);
+    const char* aa[] = {"None", "4x SSAA (supersampling)"};
+    int aa_index = options.ssaa == 2 ? 1 : 0;
+    if (ImGui::Combo("Anti-aliasing", &aa_index, aa, 2)) { options.ssaa = aa_index ? 2 : 1; changed = true; }
+    const char* anis[] = {"1x", "2x", "4x", "8x", "16x"};
+    int an_index = options.anisotropy >= 16 ? 4 : options.anisotropy >= 8 ? 3 : options.anisotropy >= 4 ? 2 : options.anisotropy >= 2 ? 1 : 0;
+    if (ImGui::Combo("Anisotropic filtering", &an_index, anis, 5)) { options.anisotropy = 1 << an_index; changed = true; }
     const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance"};
-    if (ImGui::Combo("Upscaling (NVIDIA)", &options.dlss_mode, upscalers, 6)) changed = true;
-    if (options.dlss_mode) ImGui::TextUnformatted("DLSS picks the internal resolution; anti-aliasing is DLSS while it is on.");
+    if (ImGui::Combo("Upscaling (NVIDIA DLSS)", &options.dlss_mode, upscalers, 6)) changed = true;
+    if (options.dlss_mode) ImGui::TextUnformatted("DLSS picks the render resolution and does the anti-aliasing while it is on.");
+    int sharp = (int)std::lround(options.sharpness * 100.0f);
+    if (ImGui::SliderInt("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }
+    bool subframe = options.subframe != SubFrameMode::Off;
+    if (ImGui::Checkbox("Sub-frame animation (motion between 60 Hz game frames)", &subframe)) { options.subframe = subframe ? SubFrameMode::Authored : SubFrameMode::Off; changed = true; }
+    int music = slippi::jukebox::user_volume();
+    if (ImGui::SliderInt("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
     state.volume = host::audio_volume();
     if (ImGui::SliderInt("Volume", &state.volume, 0, 100, "%d%%")) host::audio_set_volume(state.volume);
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
@@ -132,7 +151,8 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       std::ofstream file(temporary);
       file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
            << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
-           << "\ndlss " << options.dlss_mode << '\n';
+           << "\ndlss " << options.dlss_mode << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
+           << "\nsubframe " << (options.subframe != SubFrameMode::Off ? 1 : 0) << "\nmusic " << slippi::jukebox::user_volume() << '\n';
       file.close();
       state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     }

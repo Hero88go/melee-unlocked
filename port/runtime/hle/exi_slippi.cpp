@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "exi_slippi.h"
+#include "jukebox.h"
 #include "slippi_online.h"
 #include "gecko_data.h"
 #include "host.h"
@@ -293,7 +294,9 @@ void dma_write(uint32_t addr, uint32_t size) {
       case CMD_FILE_LOAD: prepare_file(&mem[loc + 1], true); break;
       case CMD_PREMADE_TEXT_LENGTH: g_read_queue.clear(); append_u32(g_read_queue, 0); break;
       case CMD_PREMADE_TEXT_LOAD: g_read_queue.clear(); break;
-      case CMD_PLAY_MUSIC: case CMD_STOP_MUSIC: case CMD_CHANGE_MUSIC_VOLUME: break;   // jukebox: game audio path instead
+      case CMD_PLAY_MUSIC: jukebox::start_song(be32(&mem[loc + 1]), be32(&mem[loc + 5])); break;
+      case CMD_STOP_MUSIC: jukebox::stop(); break;
+      case CMD_CHANGE_MUSIC_VOLUME: jukebox::set_melee_volume(mem[loc + 1]); break;
       case CMD_RECEIVE_COMMANDS: break;   // handled above
       case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); break;
       case CMD_FRAME_BOOKEND: write_to_file(&mem[loc], payload + 1, ""); break;
