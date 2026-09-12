@@ -39,14 +39,16 @@ Python 3.8+, an NVIDIA or other D3D12-capable GPU, and your own Melee NTSC 1.02 
 ```powershell
 git clone <this repo> melee-unlocked
 cd melee-unlocked
-python port/recomp/recomp.py --dol <path to the ISO's main.dol or extracted DOL> --gct-base 0x8065CC80
+python port/recomp/recomp.py --dol <path to main.dol extracted from your ISO> --gct-base 0x8065CC80
 cmake -S . -B build-review -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON
 cmake --build build-review --config Release --target melee_port
 python tools/launch_native.py --threaded-renderer --fps unlocked --frame-mode authored --volume 70
 ```
 
-`port/recomp/` is the recompiler (Python): it reads the DOL and the Slippi code tables and
-writes `port/generated/` (not committed). `port/runtime/` is the host runtime: PowerPC helpers,
+`port/recomp/` is the recompiler (Python): it reads the DOL and the Slippi code tables
+(`port/slippi_sys/`, vendored from Slippi) and writes `port/generated/` (not committed). Extract
+`main.dol` from your ISO with Dolphin (right click the game, Properties, Filesystem) or any GC ISO
+tool. `port/runtime/` is the host runtime: PowerPC helpers,
 HLE of the GameCube SDK (OS, VI, PAD, DVD, AI/AX audio, CARD, EXI), the Slippi EXI device and
 netcode, the D3D12 renderer and the sub-frame solver. `tools/` holds validation, benchmarking
 and packaging scripts. See `PORT_COMPLETION.md` for the technical state and evidence,

@@ -20,7 +20,7 @@ struct Options {
   uint64_t time_base = 0;        // preset timebase (0 = derive from wall clock like Dolphin)
   int volume = 0;                // audio output volume percent (0 = muted, the development default)
   double hang_watch = 0.0;       // seconds without a retrace before the guest is declared hung (0 = off)
-  std::string sys_dir = "slippi/Data/Sys";   // Slippi Sys folder (GameFiles served over the EXI device)
+  std::string sys_dir = "port/slippi_sys";   // Slippi Sys folder (code tables, GameFiles served over the EXI device)
   std::string replay_dir = "replays";        // where .slp recordings are written
   std::string card_dir = "User/GC/CardA";    // memory card slot A as a folder of .gci files
   std::string audio_dump;        // optional WAV file receiving everything the AI DMA plays

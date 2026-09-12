@@ -82,7 +82,7 @@ def main():
         src = args.exe.parent / dll
         if src.is_file():
             shutil.copy2(src, folder / dll)
-    sys_src = ROOT / "slippi/Data/Sys"
+    sys_src = ROOT / "port/slippi_sys"
     sys_dst = folder / "Sys"
     (sys_dst / "GameSettings").mkdir(parents=True)
     shutil.copy2(sys_src / "GameSettings/GALE01r2.ini", sys_dst / "GameSettings/GALE01r2.ini")
