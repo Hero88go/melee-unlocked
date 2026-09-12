@@ -12,8 +12,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from melee_iso import require_iso
+
 ROOT = Path(__file__).resolve().parents[1]
-ISO = Path(r"C:/Games/Smash/DOLPHIN AND SMASH GAMES/Super Smash Bros. Melee (v1.02).iso")
 
 
 def parse_slp(path):
@@ -61,11 +63,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("replay", type=Path)
     ap.add_argument("--exe", type=Path, default=ROOT / "build-review/port/Release/melee_port_playback.exe")
-    ap.add_argument("--iso", type=Path, default=ISO)
+    ap.add_argument("--iso", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=ROOT / "reports/native-validation/playback")
     ap.add_argument("--timeout", type=float, default=900)
     ap.add_argument("--visible", action="store_true", help="show the window instead of running hidden and fast")
     args = ap.parse_args()
+    args.iso = require_iso(args.iso)
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
     for old in glob.glob(str(out / "*.slp")):

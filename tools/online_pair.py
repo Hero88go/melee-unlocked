@@ -12,9 +12,11 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from melee_iso import require_iso
+
 ROOT = Path(__file__).resolve().parents[1]
 EXE = ROOT / "build-review/port/Release/melee_port.exe"
-ISO = Path(r"C:/Games/Smash/DOLPHIN AND SMASH GAMES/Super Smash Bros. Melee (v1.02).iso")
 
 
 def parse(path):
@@ -38,8 +40,10 @@ def main():
     ap.add_argument("--user-a")
     ap.add_argument("--user-b")
     ap.add_argument("--only", choices=["A", "B"], help="launch a single instance (the other side is external)")
+    ap.add_argument("--iso")
     ap.add_argument("--extra", nargs=argparse.REMAINDER, default=[])
     args = ap.parse_args()
+    iso = require_iso(args.iso)
     out = ROOT / args.out
     procs = {}
     for name, idx, port, other in (("A", 0, 41100, 41101), ("B", 1, 41101, 41100)):
@@ -47,7 +51,7 @@ def main():
             continue
         d = out / f"peer{name}"
         d.mkdir(parents=True, exist_ok=True)
-        cmd = [str(EXE), "--iso", str(ISO), "--hidden", "--volume", "0", "--frames", str(args.frames),
+        cmd = [str(EXE), "--iso", str(iso), "--hidden", "--volume", "0", "--frames", str(args.frames),
                "--script", str(ROOT / args.script), "--replay-dir", str(d), "--log-file", str(d / "port.log")]
         if args.real:
             user = args.user_a if name == "A" else args.user_b

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import time
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -31,6 +32,8 @@ def main():
     ap.add_argument('--script', type=Path, default=ROOT / 'port/scripts/vs_match.txt')
     ap.add_argument('--repeats', type=int, default=2)
     ap.add_argument('--timeout', type=float, default=180)
+    ap.add_argument('--window', default='1920x1080')
+    ap.add_argument('--scale', type=int, default=3)
     args = ap.parse_args()
     if args.frames <= args.match_start or args.repeats < 1:
         ap.error('need frames beyond match-start and at least one repeat')
@@ -40,17 +43,22 @@ def main():
     result = {'kind': 'CPU presentation submission timing; not physical display latency',
               'exe_sha256': hashlib.sha256(args.exe.read_bytes()).hexdigest(),
               'script_sha256': hashlib.sha256(args.script.read_bytes()).hexdigest(), 'runs': []}
+    result['graphics'] = dict(window=args.window, scale=args.scale, dlss='off', ssaa=1, sharpness=0)
     # Separate cache per cap. A fresh output directory gives cold then warm trials.
     for cap in args.caps:
         cache = (args.out / ('cache-' + cap)).resolve()
         existed = cache.exists()
         for repeat in range(args.repeats):
             label = f'{cap}-{repeat}'
+            isolated = Path(tempfile.mkdtemp(prefix=label+'-state-', dir=args.out)).resolve()
             trace = (args.out / (label + '.csv')).resolve()
             command = [str(args.exe.resolve()), '--iso', str(args.iso.resolve()),
                        '--volume', '0', '--hidden', '--threaded-renderer', '--fps', cap,
                        '--frame-mode', 'authored', '--frames', str(args.frames), '--time-base', '1',
+                       '--window', args.window, '--scale', str(args.scale), '--dlss', 'off', '--ssaa', '1', '--sharpness', '0',
                        '--script', str(args.script.resolve()), '--frame-times', str(trace),
+                       '--log-file', str((args.out / (label + '-port.log')).resolve()),
+                       '--card-dir', str(isolated / 'cards'), '--user-dir', str(isolated / 'User'),
                        '--shader-cache', str(cache), '--replay-dir', str((args.out / 'replays').resolve())]
             start = time.monotonic()
             with (args.out / (label + '.log')).open('w') as log:
