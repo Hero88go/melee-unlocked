@@ -1,21 +1,46 @@
 """Plays a .slp replay back through the playback build and compares the recording it writes with
 the original, frame by frame: positions, action states, percent, stocks, facing for every
-player. This is the frame-exactness oracle against Slippi Dolphin (which recorded the original).
+player. A Dolphin-recorded input can serve as a reference; a port-recorded input
+only checks playback consistency. Missing frames or players fail the comparison.
 
     python tools/replay_compare.py <replay.slp> [--exe build-review/port/Release/melee_port_playback.exe]
 """
 import argparse
 import glob
-import os
 import struct
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from melee_iso import require_iso
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def compare_post_frames(original, recorded):
+    """Require every reference frame and its complete player/follower set."""
+    mismatches, first, compared = 0, None, 0
+    for frame, players in sorted(original.items()):
+        actual = recorded.get(frame)
+        if actual is None:
+            mismatches += len(players)
+            first = first or (frame, None, "missing frame in recording")
+            continue
+        for key in sorted(players.keys() | actual.keys()):
+            a, b = players.get(key), actual.get(key)
+            if a is None or b is None:
+                mismatches += 1
+                first = first or (frame, key, "player/follower coverage differs")
+                continue
+            compared += 1
+            for field in ("state", "x", "y", "facing", "percent", "shield", "stocks", "char"):
+                if a[field] != b[field]:
+                    mismatches += 1
+                    first = first or (frame, key, f"{field}: reference {a[field]} vs port {b[field]}")
+                    break
+    return compared, mismatches, first
 
 
 def parse_slp(path):
@@ -69,18 +94,21 @@ def main():
     ap.add_argument("--visible", action="store_true", help="show the window instead of running hidden and fast")
     args = ap.parse_args()
     args.iso = require_iso(args.iso)
-    out = args.out
+    # Preserve earlier recordings and keep credentials/cards local to this trial.
+    out = (args.out / uuid.uuid4().hex).resolve()
     out.mkdir(parents=True, exist_ok=True)
-    for old in glob.glob(str(out / "*.slp")):
-        os.remove(old)
+    (out / "User").mkdir()
     cmd = [str(args.exe), "--iso", str(args.iso), "--sys-dir", str(ROOT / "port/slippi_sys_playback"), "--replay", str(args.replay.resolve()),
-           "--volume", "0", "--replay-dir", str(out), "--card-dir", str(out / "card"), "--log-file", str(out / "port.log")]
+           "--volume", "0", "--replay-dir", str(out), "--card-dir", str(out / "card"),
+           "--user-dir", str(out / "User"), "--log-file", str(out / "port.log")]
     if not args.visible:
         cmd += ["--hidden", "--fast"]
     print("running:", " ".join(cmd[1:]))
     try:
         run = subprocess.run(cmd, cwd=ROOT, timeout=args.timeout, capture_output=True)
         print("exit", run.returncode)
+        if run.returncode:
+            return 2
     except subprocess.TimeoutExpired:
         print("timed out")
         return 2
@@ -90,26 +118,15 @@ def main():
         return 2
     orig_start, orig_post, orig_pre = parse_slp(args.replay)
     new_start, new_post, new_pre = parse_slp(recorded[-1])
+    if not orig_post or not new_post:
+        print("reference or recording has no post-frame data")
+        return 2
     print(f"original frames {min(orig_post)}..{max(orig_post)} ({len(orig_post)}), recorded {min(new_post)}..{max(new_post)} ({len(new_post)})")
-    frames = sorted(set(orig_post) & set(new_post))
-    mismatches = 0
-    first = None
-    for f in frames:
-        for key, a in orig_post[f].items():
-            b = new_post[f].get(key)
-            if b is None:
-                mismatches += 1; first = first or (f, key, "missing in recording"); continue
-            for field in ("state", "x", "y", "facing", "percent", "stocks", "char"):
-                if a[field] != b[field]:
-                    mismatches += 1
-                    if first is None:
-                        first = (f, key, f"{field}: original {a[field]} vs port {b[field]}")
-                    break
-    compared = sum(len(orig_post[f]) for f in frames)
-    print(f"{compared} player-frames compared over {len(frames)} frames; {mismatches} mismatches")
+    compared, mismatches, first = compare_post_frames(orig_post, new_post)
+    print(f"{compared} player-frames compared over {len(orig_post)} required frames; {mismatches} mismatches")
     if first:
         print("first divergence: frame", first[0], "player/follower", first[1], first[2])
-    return 0 if mismatches == 0 and frames else 1
+    return 0 if mismatches == 0 and compared else 1
 
 
 if __name__ == "__main__":

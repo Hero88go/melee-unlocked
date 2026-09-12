@@ -132,5 +132,32 @@ int main() {
     check(near(out[3], float(5*phase)), "held local joint shares interpolation endpoints and timeline");
   }
   gx::set_authored_interpolate(false);
+  // A late envelope rejection must not leave earlier slots advanced. This
+  // happens on a stationary camera when a later bone cannot be reconstructed.
+  previous_pose.joints[0].tracks[0].channel = current_pose.joints[0].tracks[0].channel = 5;
+  gx::AuthoredPose previous_skin, current_skin;
+  previous_skin.envelope = current_skin.envelope = true;
+  previous_skin.has_view = current_skin.has_view = true;
+  previous_skin.view = current_skin.view = NativeMelee::Identity();
+  gx::AuthoredBone previous_bone, current_bone;
+  previous_bone.chain = std::make_shared<gx::AuthoredPose>(previous_pose);
+  current_bone.chain = std::make_shared<gx::AuthoredPose>(current_pose);
+  previous_bone.envelope = current_bone.envelope = NativeMelee::Identity();
+  previous_skin.slots = {{{previous_bone}}, {{previous_bone}}};
+  current_skin.slots = {{{current_bone}}, {{current_bone}}};
+  current_skin.slots[1].bones[0].weight = 0.5f;
+  float skin_pos[256]{}, skin_nrm[96]{}, sampled_pos[256], sampled_nrm[96];
+  std::memcpy(skin_pos, current_pose.joints[0].world.data(), 12*sizeof(float));
+  for (float& value : sampled_pos) value = -7;
+  for (float& value : sampled_nrm) value = -9;
+  check(!gx::sample_authored_envelope(previous_skin, current_skin, .5, skin_pos, skin_nrm,
+                                    sampled_pos, sampled_nrm, nullptr), "later skin slot rejects changed weights");
+  for (float value : sampled_pos) check(value == -7, "failed envelope leaves all position slots unchanged");
+  for (float value : sampled_nrm) check(value == -9, "failed envelope leaves all normal slots unchanged");
+  current_skin.slots[1].bones[0].weight = 1;
+  std::memcpy(skin_pos + 12, current_pose.joints[0].world.data(), 12*sizeof(float));
+  check(gx::sample_authored_envelope(previous_skin, current_skin, .5, skin_pos, skin_nrm,
+                                   sampled_pos, sampled_nrm, nullptr), "valid skin publishes all sampled slots");
+  check(near(sampled_pos[3], 7.5f) && near(sampled_pos[15], 7.5f), "both skin slots advance together");
   std::puts("sub-frame rigid fractions, cuts, blends and pairing passed");
 }

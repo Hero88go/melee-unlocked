@@ -4,6 +4,8 @@
 #include "host.h"
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
+#include <exception>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -108,6 +110,47 @@ std::shared_ptr<Song> decode_hps(const std::vector<uint8_t>& file) {
   host::log("jukebox: song %u Hz, %zu frames, %s", rate, song->samples.size() / 2, song->loop_frame == SIZE_MAX ? "no loop" : "loops");
   return song;
 }
+// One owned worker, with a latest-request mailbox. Scene changes can replace a
+// pending song without creating unbounded detached threads or blocking gameplay.
+class SongDecoder {
+  struct Request { uint32_t offset=0, size=0, generation=0; } pending_;
+  std::mutex mutex_;
+  std::condition_variable changed_;
+  bool quit_ = false;
+  std::thread thread_;
+  void run() {
+    for (;;) {
+      Request request;
+      {
+        std::unique_lock<std::mutex> lock(mutex_);
+        changed_.wait(lock, [&] { return quit_ || pending_.size; });
+        if (quit_) return;
+        request = pending_; pending_.size = 0;
+      }
+      try {
+        std::vector<uint8_t> file(request.size);
+        if (!host::disc_read(request.offset, file.data(), request.size)) {
+          host::log("jukebox: cannot read song at %08X", request.offset); continue;
+        }
+        auto song = decode_hps(file);
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_song_generation.load() == request.generation) g_song = std::move(song);
+      } catch (const std::exception& error) { host::log("jukebox: decode failed: %s", error.what()); }
+    }
+  }
+public:
+  SongDecoder() : thread_([this] { run(); }) {}
+  ~SongDecoder() {
+    { std::lock_guard<std::mutex> lock(mutex_); quit_ = true; }
+    changed_.notify_one();
+    if (thread_.joinable()) thread_.join();
+  }
+  void submit(uint32_t offset, uint32_t size, uint32_t generation) {
+    { std::lock_guard<std::mutex> lock(mutex_); pending_ = {offset, size, generation}; }
+    changed_.notify_one();
+  }
+};
+std::unique_ptr<SongDecoder> g_decoder; // joins before song storage/mutex destruction
 }  // namespace
 
 // The disc read and HPS decode (tens of ms for a full track) run on a worker: music start time
@@ -116,16 +159,12 @@ void start_song(uint32_t disc_offset, uint32_t size) {
   host::SimCostScope cost(host::SIM_JUKEBOX);
   if (size == 0 || size > 64u * 1024 * 1024) { host::log("jukebox: bad song size %u", size); return; }
   const uint32_t generation = ++g_song_generation;
-  std::thread([disc_offset, size, generation] {
-    std::vector<uint8_t> file(size);
-    if (!host::disc_read(disc_offset, file.data(), size)) { host::log("jukebox: cannot read song at %08X", disc_offset); return; }
-    auto song = decode_hps(file);
-    std::lock_guard<std::mutex> lk(g_mutex);
-    if (g_song_generation.load() == generation) g_song = song;
-  }).detach();
+  if (!g_decoder) g_decoder = std::make_unique<SongDecoder>();
+  g_decoder->submit(disc_offset, size, generation);
 }
 
 void stop() { ++g_song_generation; std::lock_guard<std::mutex> lk(g_mutex); g_song.reset(); }
+void shutdown() { stop(); g_decoder.reset(); }
 void set_melee_volume(uint8_t volume) { g_melee_volume.store(volume); }
 void set_user_volume(int percent) { g_user_volume.store(std::clamp(percent, 0, 100)); }
 int user_volume() { return g_user_volume.load(); }
