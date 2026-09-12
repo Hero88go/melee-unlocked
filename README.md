@@ -132,6 +132,9 @@ is described in `PORT_COMPLETION.md`.
 
 ## Verification
 
+Development launcher: `run-native.bat` (or `python tools/launch_native.py --iso <iso> ...`) starts the
+build in `build-review/port/Play/` if present, else the Release build, muted and windowed by default.
+
 - `ctest --test-dir build-review -C Release`: unit tests
 - `python tools/validate_native.py --iso <iso>`: 2400 simulation checkpoints must match across
   headless, hidden, threaded and authored rendering
