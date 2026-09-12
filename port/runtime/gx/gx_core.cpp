@@ -177,6 +177,7 @@ uint32_t decode_vertices(const VertexDesc& d, const uint8_t* src, uint32_t count
 
 // ---------------- draw snapshot ----------------
 void snapshot_textures(DrawCall& dc) {
+  host::SimCostScope cost(host::SIM_SNAPSHOT);
   uint32_t stages = g_bp.numtevstages() + 1;
   for (uint32_t s = 0; s < stages; ++s) {
     if (!g_bp.order_enable(s)) continue;
@@ -228,6 +229,8 @@ void snapshot_textures(DrawCall& dc) {
 }
 
 void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t components) {
+  // Built on the stack (hot in cache), then moved in: filling the vector element directly measured
+  // worse, because each field write lands in cold memory instead of one sequential copy.
   DrawCall dc{};
   dc.primitive = primitive;
   dc.first_vertex = first;
@@ -252,8 +255,9 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
     uint32_t ordinal = g_immediate_draws[k]++;
     dc.identity = hash_bytes(&k, 8) ^ ((uint64_t)ordinal << 44) ^ 2;
   }
-  dc.identity = observed_draw_identity(dc.identity, dc.object_generation);
-  dc.authored_pose = capture_authored_pose();
+  { host::SimCostScope cost(host::SIM_OBSERVE);
+    dc.identity = observed_draw_identity(dc.identity, dc.object_generation);
+    dc.authored_pose = capture_authored_pose(); }
   g_frame.draws.push_back(std::move(dc));
   g_frame.commands.push_back({FrameCommand::Draw, (uint32_t)g_frame.draws.size() - 1});
   ++g_draws;
@@ -319,9 +323,9 @@ void bp_write(uint32_t value) {
       if (c.to_xfb) {
         g_frame.sequence = ++g_frame_sequence;
         g_frame.time = host::now_seconds(); // completed snapshot availability anchors presentation
-        if (g_backend) g_backend->submit_frame(g_frame);
-        g_frame.clear();
-        g_texture_snapshots.clear();
+        if (g_backend) g_backend->submit_and_recycle(g_frame);   // hands over the buffers, returns recycled ones
+        else g_frame.clear();
+        g_texture_snapshots.end_frame();
         g_dl_calls.clear(); g_immediate_draws.clear(); finish_observed_frame();
       }
       break;

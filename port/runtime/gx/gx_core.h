@@ -45,6 +45,11 @@ struct TextureRef {
 
 struct AuthoredPose;
 struct DrawCall {
+  // ~5 KB of register and matrix snapshots, recorded ~1400 times per simulation frame. The default
+  // constructor deliberately leaves those arrays uninitialised (record_draw overwrites every one of
+  // them); zeroing them cost milliseconds of the 16.7 ms simulation budget. Members that are not
+  // written unconditionally keep their initialisers below.
+  DrawCall() {}
   uint32_t primitive;              // GX primitive opcode & 0xF8
   uint32_t first_vertex, vertex_count;
   uint32_t components;
@@ -59,8 +64,8 @@ struct DrawCall {
   uint32_t matrix_index_a, matrix_index_b;
   int32_t tev_colors[4][4];   // RGBA, signed 11-bit (BP E0-E7 writes with type 0)
   int32_t tev_kcolors[4][4];  // RGBA (type 1 writes)
-  TextureRef textures[8];
-  int viewport_x, viewport_y, viewport_w, viewport_h;  // unused placeholders (computed by backend)
+  TextureRef textures[8] = {};     // snapshot_textures relies on `used` starting false
+  int viewport_x = 0, viewport_y = 0, viewport_w = 0, viewport_h = 0;  // unused placeholders (computed by backend)
   // Stable identity of this draw across frames (display-list address + call ordinal + draw ordinal,
   // or texture/size/ordinal for immediate-mode draws). Used to pair draws for sub-frame rendering.
   uint64_t identity = 0;
@@ -107,9 +112,14 @@ struct Backend {
   virtual void set_present_deadline(double) {}
   virtual double presentation_wait_seconds() const { return 0; }
   virtual void submit_frame(const Frame& frame) = 0;   // called at XFB copy
+  // Queueing backends take the frame's buffers and hand back recycled ones (no copy, no
+  // per-frame reallocation on the simulation thread); `frame` comes back cleared either way.
+  virtual void submit_and_recycle(Frame& frame) { submit_frame(frame); frame.clear(); }
   // Render `frame` with per-draw transform overrides (one entry per frame.draws element); the
   // default ignores the overrides. Used by the sub-frame presenter for unlocked frame rates.
   virtual void submit_frame(const Frame& frame, const DrawMatrices* overrides) { (void)overrides; submit_frame(frame); }
+  // Drain mode: execute the frame's commands (copies, clears, uploads) but do not blit or present it.
+  virtual void set_skip_present(bool) {}
 };
 
 void init(Backend* backend);

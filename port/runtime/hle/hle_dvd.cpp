@@ -25,6 +25,7 @@ void finish_read(uint32_t block, uint32_t addr, uint32_t length, uint32_t disc_o
   host::wr32(block + 0x20, length);
 }
 void do_read(uint32_t block, uint32_t addr, uint32_t length, uint32_t disc_offset) {
+  host::SimCostScope cost(host::SIM_DVD);
   if (!host::disc_read(disc_offset, host::ptr(addr, length), length))
     host::die("disc read failed: offset %08X length %X to %08X", disc_offset, length, addr);
   finish_read(block, addr, length, disc_offset);
@@ -40,7 +41,7 @@ struct AsyncRead {
   std::shared_ptr<std::atomic<bool>> done;
 };
 std::mutex g_dvd_mutex;
-std::condition_variable g_dvd_cv;
+std::condition_variable g_dvd_cv, g_dvd_done_cv;
 std::deque<AsyncRead> g_dvd_queue;      // for the worker
 std::deque<AsyncRead> g_dvd_pending;    // in request order, waiting for their virtual completion time (sim thread only)
 std::thread g_dvd_thread;
@@ -51,7 +52,8 @@ void dvd_worker() {
     AsyncRead r;
     { std::unique_lock<std::mutex> lk(g_dvd_mutex); g_dvd_cv.wait(lk, [] { return !g_dvd_queue.empty(); }); r = g_dvd_queue.front(); g_dvd_queue.pop_front(); }
     if (!host::disc_read(r.disc_offset, host::ptr(r.addr, r.length), r.length)) host::die("disc read failed: offset %08X length %X to %08X", r.disc_offset, r.length, r.addr);
-    r.done->store(true, std::memory_order_release);
+    { std::lock_guard<std::mutex> lk(g_dvd_mutex); r.done->store(true, std::memory_order_release); }
+    g_dvd_done_cv.notify_all();
   }
 }
 void start_read(AsyncRead r) {
@@ -73,7 +75,7 @@ void dvd_poll() {
   while (!g_dvd_pending.empty()) {
     AsyncRead& r = g_dvd_pending.front();
     if (host::cpu->tb < r.ready_tb) return;
-    while (!r.done->load(std::memory_order_acquire)) std::this_thread::sleep_for(std::chrono::microseconds(50));
+    if (!r.done->load(std::memory_order_acquire)) { host::SimCostScope cost(host::SIM_DVD); std::unique_lock<std::mutex> lk(g_dvd_mutex); g_dvd_done_cv.wait(lk, [&] { return r.done->load(std::memory_order_acquire); }); }
     finish_read(r.block, r.addr, r.length, r.disc_offset);
     if (r.callback) { uint32_t cb = r.callback, len = r.length, blk = r.block; host::post_completion([cb, len, blk] { host::call_guest(cb, len, blk); }); }
     g_dvd_pending.pop_front();

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 namespace slippi::jukebox {
@@ -22,6 +23,7 @@ struct Song {
 
 std::mutex g_mutex;
 std::shared_ptr<Song> g_song;     // replaced atomically under the mutex; the mixer holds a copy
+std::atomic<uint32_t> g_song_generation{0};   // a stop() or a newer start_song() cancels an in-flight decode
 std::atomic<int> g_melee_volume{254}, g_user_volume{100};
 
 uint32_t be32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
@@ -108,16 +110,22 @@ std::shared_ptr<Song> decode_hps(const std::vector<uint8_t>& file) {
 }
 }  // namespace
 
+// The disc read and HPS decode (tens of ms for a full track) run on a worker: music start time
+// is not part of the deterministic simulation, and the game's own audio must not hitch for it.
 void start_song(uint32_t disc_offset, uint32_t size) {
+  host::SimCostScope cost(host::SIM_JUKEBOX);
   if (size == 0 || size > 64u * 1024 * 1024) { host::log("jukebox: bad song size %u", size); return; }
-  std::vector<uint8_t> file(size);
-  if (!host::disc_read(disc_offset, file.data(), size)) { host::log("jukebox: cannot read song at %08X", disc_offset); return; }
-  auto song = decode_hps(file);
-  std::lock_guard<std::mutex> lk(g_mutex);
-  g_song = song;
+  const uint32_t generation = ++g_song_generation;
+  std::thread([disc_offset, size, generation] {
+    std::vector<uint8_t> file(size);
+    if (!host::disc_read(disc_offset, file.data(), size)) { host::log("jukebox: cannot read song at %08X", disc_offset); return; }
+    auto song = decode_hps(file);
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (g_song_generation.load() == generation) g_song = song;
+  }).detach();
 }
 
-void stop() { std::lock_guard<std::mutex> lk(g_mutex); g_song.reset(); }
+void stop() { ++g_song_generation; std::lock_guard<std::mutex> lk(g_mutex); g_song.reset(); }
 void set_melee_volume(uint8_t volume) { g_melee_volume.store(volume); }
 void set_user_volume(int percent) { g_user_volume.store(std::clamp(percent, 0, 100)); }
 int user_volume() { return g_user_volume.load(); }
