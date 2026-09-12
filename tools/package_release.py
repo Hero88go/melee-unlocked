@@ -1,6 +1,6 @@
 """Assembles a standalone release folder and zip of the native port.
 
-Contents: MeleeUnlocked.exe (client), melee_port.exe, the Streamline/DLSS runtime DLLs, the Slippi Sys files the EXI device
+Contents: MeleeUnlockedLauncher.exe (optional client), melee_port.exe, the Streamline/DLSS runtime DLLs, the Slippi Sys files the EXI device
 serves (code tables, game file diffs), a launcher batch file, README and licenses. No game data:
 the user supplies their own Melee NTSC 1.02 ISO. Usage:
 
@@ -23,18 +23,27 @@ online play.
 
 You need your own Melee NTSC 1.02 ISO. Nothing from the game is included.
 
-Quick start
------------
-1. Run MeleeUnlocked.exe and drop your Melee NTSC 1.02 ISO onto its window (Build tab). It checks
-   the disc, precompiles the graphics pipelines for your GPU (about 15 to 30 seconds) and
-   remembers the path. The ISO is never copied.
-2. Press PLAY. The client checks for new releases on every start; "Update and restart"
-   installs one in place (your settings, saves and replays are kept).
-   Without the client: drag the ISO onto MeleeUnlocked.bat, or name it melee.iso next to it.
-3. The PC settings panel opens on the first launch; later press F1 (or Z + Start on the
-   controller): fullscreen, frame rate cap, VSync, widescreen 16:9, internal resolution,
-   anti-aliasing (SSAA), anisotropic filtering, DLSS/DLAA, sharpening, sub-frame animation,
-   game and music volume. Settings persist in port-settings.ini.
+Install: two ways, pick one
+---------------------------
+The launcher is OPTIONAL. Nothing in the game depends on it.
+
+A. Manual (no launcher)
+   1. Drag your Melee NTSC 1.02 ISO onto MeleeUnlocked.bat, or put the ISO next to it named
+      melee.iso and double-click MeleeUnlocked.bat.
+   2. That is it. The first launch precompiles the graphics pipelines (15 to 30 seconds,
+      progress in the title bar). To update, extract a newer zip over this folder; your
+      settings, saves and replays are kept.
+
+B. Melee Unlocked Launcher (optional convenience)
+   1. Run MeleeUnlockedLauncher.exe and drop the ISO onto its window (Build tab). It checks
+      the disc, precompiles the graphics pipelines and remembers the path.
+   2. Press PLAY. The launcher checks for new releases on every start and "Update and
+      restart" installs one in place. It also shows which Slippi account will be used.
+
+Either way, the PC settings panel opens on the first launch; later press F1 (or Z + Start on
+the controller): fullscreen, frame rate cap, VSync, widescreen 16:9, internal resolution,
+anti-aliasing (SSAA), anisotropic filtering, DLSS/DLAA, sharpening, sub-frame animation,
+game and music volume. Settings persist in port-settings.ini.
 
 Controllers: a GameCube adapter (WUP-028, official or Mayflash in Wii U mode) is used
 automatically if it has the WinUSB driver that Slippi installs. Close Slippi Dolphin first.
@@ -43,8 +52,8 @@ Keyboard: arrows = stick, IJKL = C-stick, Z/X/C/V = A/B/X/Y, Enter = Start, Q/W 
 Slippi online: everything Slippi Dolphin does for netplay (matchmaking, rollback netcode, the
 Slippi code set, replays, game reporting) is built into this program, so Slippi Dolphin is not
 needed. What is needed is a Slippi account, and accounts are created and logged in through the
-Slippi Launcher (https://slippi.gg/downloads): install it, log in once, and this client picks up
-the login automatically (it also installs the GameCube adapter driver). Unranked, Direct codes
+Slippi Launcher (https://slippi.gg/downloads): install it, log in once, and the game picks up
+the login automatically (the Slippi Launcher also installs the GameCube adapter driver). Unranked, Direct codes
 and Teams work against players on regular Slippi Dolphin.
 
 Bug reports: https://github.com/hero88go/melee-unlocked/issues with melee_port.log,
@@ -85,10 +94,10 @@ def main():
         shutil.rmtree(folder)
     folder.mkdir(parents=True)
     shutil.copy2(args.exe, folder / "melee_port.exe")
-    launcher = args.exe.parent / "MeleeUnlocked.exe"
+    launcher = args.exe.parent / "MeleeUnlockedLauncher.exe"
     if not launcher.is_file():
         raise SystemExit(f"missing launcher: {launcher} (build target melee_unlocked)")
-    shutil.copy2(launcher, folder / "MeleeUnlocked.exe")
+    shutil.copy2(launcher, folder / "MeleeUnlockedLauncher.exe")
     for dll in ("sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll"):
         src = args.exe.parent / dll
         if src.is_file():

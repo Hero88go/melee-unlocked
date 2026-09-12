@@ -127,7 +127,7 @@ void download_and_install() {
       << "xcopy /e /y /q \"%SRC%\\*\" \".\\\" >nul\r\n"
       << "rmdir /s /q update_tmp\r\ndel update.zip\r\n"
       << "echo Updated to the newest release.\r\n"
-      << "if exist MeleeUnlocked.exe (start \"\" MeleeUnlocked.exe) else (start \"\" MeleeUnlocked.bat)\r\n"
+      << "if exist MeleeUnlockedLauncher.exe (start \"\" MeleeUnlockedLauncher.exe) else (start \"\" MeleeUnlocked.bat)\r\n"
       << "del \"%~f0\"\r\n";
     b.close();
     set_message("Update downloaded; restarting to install");
