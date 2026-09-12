@@ -148,9 +148,14 @@ struct Duplicator {
   }
 };
 
-int difference(const Grid& a, const Grid& b) {
+// Menus animate constantly, so a plain whole-screen difference is swamped by the background. Only
+// the cells that hold still while nothing is pressed are watched; the response (a cursor moving, a
+// panel highlighting) lands in those.
+using Mask = std::array<bool, GRID_W * GRID_H>;
+
+int difference(const Grid& a, const Grid& b, const Mask& mask) {
   int total = 0;
-  for (size_t i = 0; i < a.size(); ++i) total += std::abs((int)a[i] - (int)b[i]);
+  for (size_t i = 0; i < a.size(); ++i) if (mask[i]) total += std::abs((int)a[i] - (int)b[i]);
   return total;
 }
 
@@ -176,13 +181,14 @@ WORD parse_key(const std::string& name) {
 }  // namespace
 
 int main(int argc, char** argv) {
-  std::string title = "Melee", key_name = "down";
+  std::string title = "Melee", key_name = "down", key2_name;
   int trials = 30, settle_ms = 600, timeout_ms = 400;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() { return i + 1 < argc ? argv[++i] : ""; };
     if (a == "--title") title = next();
     else if (a == "--key") key_name = next();
+    else if (a == "--key2") key2_name = next();   // alternated with --key, so a menu cursor keeps moving
     else if (a == "--trials") trials = std::atoi(next());
     else if (a == "--settle") settle_ms = std::atoi(next());
     else if (a == "--timeout") timeout_ms = std::atoi(next());
@@ -190,6 +196,8 @@ int main(int argc, char** argv) {
   }
   const WORD key = parse_key(key_name);
   if (!key) { std::fprintf(stderr, "unknown key %s\n", key_name.c_str()); return 2; }
+  const WORD key2 = key2_name.empty() ? key : parse_key(key2_name);
+  if (!key2) { std::fprintf(stderr, "unknown key %s\n", key2_name.c_str()); return 2; }
 
   g_wanted.assign(title.begin(), title.end());
   EnumWindows(enum_window, 0);
@@ -202,18 +210,33 @@ int main(int argc, char** argv) {
   if (!capture.start(g_found.window)) return 1;
   const double frequency = qpc_frequency();
 
-  // Noise floor: the largest frame-to-frame change the scene makes on its own.
+  // Watch the idle scene: per cell, how much it moves on its own.
   Grid previous{}, current{};
   long long present = 0;
-  int noise = 0, frames = 0;
+  int frames = 0;
+  std::array<int, GRID_W * GRID_H> cell_noise{};
   const long long noise_until = qpc_now() + (long long)(frequency * settle_ms / 1000.0);
   while (qpc_now() < noise_until) {
     if (!capture.next(current, &present, 100)) continue;
-    if (frames++) noise = std::max(noise, difference(previous, current));
+    if (frames++)
+      for (size_t i = 0; i < current.size(); ++i) cell_noise[i] = std::max(cell_noise[i], std::abs((int)previous[i] - (int)current[i]));
     previous = current;
   }
-  const int threshold = std::max(noise * 4, 400);
-  std::printf("idle change up to %d over %d frames; counting a response above %d\n", noise, frames, threshold);
+  Mask mask{};
+  int still = 0;
+  for (size_t i = 0; i < cell_noise.size(); ++i) { mask[i] = cell_noise[i] <= 2; still += mask[i] ? 1 : 0; }
+  if (still < GRID_W * GRID_H / 8) { mask.fill(true); still = GRID_W * GRID_H; }   // nothing is still: watch everything
+  // How much those still cells move on their own (compression and dithering keep it small but nonzero).
+  int noise = 0;
+  const long long recheck_until = qpc_now() + (long long)(frequency * settle_ms / 1000.0);
+  while (qpc_now() < recheck_until) {
+    if (!capture.next(current, &present, 100)) continue;
+    noise = std::max(noise, difference(previous, current, mask));
+    previous = current;
+  }
+  const int threshold = std::max(noise * 3, 150);
+  std::printf("%d of %d cells hold still; idle change in them up to %d; response counts above %d\n",
+              still, GRID_W * GRID_H, noise, threshold);
 
   std::vector<double> results;
   for (int trial = 0; trial < trials; ++trial) {
@@ -221,12 +244,12 @@ int main(int argc, char** argv) {
     while (capture.next(previous, &present, 50)) {}
     SetForegroundWindow(g_found.window);
     const long long pressed = qpc_now();
-    press(key);
+    press(trial % 2 ? key2 : key);
     double latency = -1;
     const long long give_up = pressed + (long long)(frequency * timeout_ms / 1000.0);
     while (qpc_now() < give_up) {
       if (!capture.next(current, &present, 50)) continue;
-      if (difference(previous, current) >= threshold) {
+      if (difference(previous, current, mask) >= threshold) {
         if (present > pressed) latency = (double)(present - pressed) * 1000.0 / frequency;
         break;
       }

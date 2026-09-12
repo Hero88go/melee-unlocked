@@ -403,35 +403,35 @@ void D3D12Backend::init() {
   D3D12_ROOT_PARAMETER bp[2]{};
   bp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; D3D12_DESCRIPTOR_RANGE br{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0};
   bp[0].DescriptorTable = {1, &br}; bp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 8; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 12; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
   D3D12_ROOT_SIGNATURE_DESC brsd{2, bp, 1, &ss, D3D12_ROOT_SIGNATURE_FLAG_NONE};
   check(D3D12SerializeRootSignature(&brsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err), "blit root");
   check(device_->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&blit_root_)), "blit root sig");
   const char* blit = R"(
 Texture2D src : register(t0); SamplerState samp : register(s0);
-cbuffer C : register(b0) { float4 rect; float4 sharp; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount, w = box taps per axis
+cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
 // Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
 // samples) instead of one bilinear sample, which at 3x or more would skip most of the rendered
 // pixels (shimmering, jagged edges). This is what makes a 4x or 6x internal resolution look
 // supersampled on a 1080p screen.
-float4 box(float2 uv) {
-  int taps = (int)sharp.w;
-  if (taps <= 1) return src.Sample(samp, uv);
-  float2 foot = sharp.xy * taps;   // footprint of one output pixel in uv
+float4 downsample(float2 uv) {
+  int nx = (int)box.x, ny = (int)box.y;
+  if (nx <= 1 && ny <= 1) return src.Sample(samp, uv);
+  float2 foot = sharp.xy * float2(nx, ny);   // footprint of one output pixel in uv
   float4 acc = 0;
-  for (int y = 0; y < taps; ++y)
-    for (int x = 0; x < taps; ++x)
-      acc += src.Sample(samp, uv + (float2(x, y) + 0.5) / taps * foot - 0.5 * foot);
-  return acc / (taps * taps);
+  for (int y = 0; y < ny; ++y)
+    for (int x = 0; x < nx; ++x)
+      acc += src.Sample(samp, uv + (float2(x, y) + 0.5) / float2(nx, ny) * foot - 0.5 * foot);
+  return acc / (nx * ny);
 }
 float4 PS(O i) : SV_Target {
-  float4 c = box(i.uv);
+  float4 c = downsample(i.uv);
   if (sharp.z <= 0.0) return c;
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
-  float2 step = sharp.xy * max(sharp.w, 1.0);
+  float2 step = sharp.xy * max(box.xy, 1.0);
   float3 n = src.Sample(samp, i.uv + float2(0, -step.y)).rgb, s = src.Sample(samp, i.uv + float2(0, step.y)).rgb;
   float3 w = src.Sample(samp, i.uv + float2(-step.x, 0)).rgb, e = src.Sample(samp, i.uv + float2(step.x, 0)).rgb;
   float3 mn = min(min(min(n, s), min(w, e)), c.rgb), mx = max(max(max(n, s), max(w, e)), c.rgb);
@@ -1131,8 +1131,9 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
     list_->SetPipelineState(blit_pso_.Get());
     list_->SetGraphicsRootSignature(blit_root_.Get());
     list_->SetGraphicsRootDescriptorTable(0, sh_gpu);
-    float rect[8] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT, 0, 0, 0, 0};
-    list_->SetGraphicsRoot32BitConstants(1, 8, rect, 0);
+    float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+                      0, 0, 0, 0, 1.0f, 1.0f, 0, 0};   // no sharpening or averaging on this path
+    list_->SetGraphicsRoot32BitConstants(1, 12, rect, 0);
     list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list_->DrawInstanced(3, 1, 0, 0);
     // Restore the EFB as the render target; execute_draw re-sets viewport/scissor per draw.
@@ -1206,12 +1207,18 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   list_->SetGraphicsRootSignature(blit_root_.Get());
   list_->SetGraphicsRootDescriptorTable(0, g);
   float src_w = upscaled ? (float)dlss_out_w_ : (float)efb_w_, src_h = upscaled ? (float)dlss_out_h_ : (float)efb_h_;
-  float rect[8] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                   1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 1.0f};
-  // Box taps per axis when the rendered image is larger than the output (supersampling); capped at 4x4.
-  if (!upscaled) rect[7] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
+  float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+                    1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
+                    1.0f, 1.0f, 0.0f, 0.0f};
+  // Averaging box when the rendered image is larger than the output. The two axes shrink by
+  // different amounts (the picture is letterboxed to 16:9 inside the window), so they get their
+  // own tap counts; using the horizontal count for both left vertical edges aliasing.
+  if (!upscaled) {
+    rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
+    rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
+  }
   if (upscaled) { rect[0] = 1.0f; rect[1] = 1.0f; rect[2] = 0.0f; rect[3] = 0.0f; }
-  list_->SetGraphicsRoot32BitConstants(1, 8, rect, 0);
+  list_->SetGraphicsRoot32BitConstants(1, 12, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
 #ifdef GX_PC_SETTINGS
