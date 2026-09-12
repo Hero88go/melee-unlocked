@@ -118,9 +118,9 @@ Decision: GitHub Releases for downloads (unlimited bandwidth, no site to host), 
 reports (template in `.github/ISSUE_TEMPLATE/bug_report.yml`). A launcher with an updater can come
 later; a zip is enough for the first Reddit post.
 
-- `python tools/package_release.py --version X.Y.Z` writes `release/MeleePort-X.Y.Z-win64.zip`
+- `python tools/package_release.py --version X.Y.Z` writes `release/MeleeUnlocked-X.Y.Z-win64.zip` (version from `VERSION`), with `MeleeUnlocked.exe` (client)
   (about 38 MB): `melee_port.exe`, Streamline/DLSS DLLs, `Sys/` (GameSettings ini, codehandler,
-  bootloader, GameFiles diffs), `MeleePort.bat`, README, licenses. No ISO, no DOL, no generated
+  bootloader, GameFiles diffs), `MeleeUnlocked.bat`, README, licenses. No ISO, no DOL, no generated
   code. The user drops `melee.iso` next to the batch file.
 - Verified: the packaged exe boots from its own folder, serves game files from `Sys/`, and logs in
   with the Slippi Launcher's `user.json` (fallback added in `slippi_online.cpp` `init()`).
@@ -188,7 +188,7 @@ settings found, later a black screen after enabling DLSS, no menu music, "Dolphi
   hps_decode 0.3.0), mixed into the WASAPI/WinMM output; Music slider in PC settings.
 - Settings: panel opens on first launch; Anti-aliasing, Anisotropic filtering, Sharpening,
   Sub-frame animation toggle (live), Music volume added; `--sharpness/--ssaa/--anisotropy`.
-- Release: `MeleePort.bat` accepts a dropped ISO (`%1`) or `melee.iso`; zip ships the warmed
+- Release: `MeleeUnlocked.bat` accepts a dropped ISO (`%1`) or `melee.iso`; zip ships the warmed
   recipes; README rewritten for the public repo; LICENSE (GPL-2.0).
 
 Not done / answered: replay playback validation against Dolphin needs the Slippi Playback code set

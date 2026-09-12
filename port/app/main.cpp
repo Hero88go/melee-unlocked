@@ -142,7 +142,7 @@ int main(int argc, char** argv) {
   if (!headless && threaded) {
     backend = gx::create_threaded_backend(gfx, !hidden);
   } else if (!headless) {
-    void* hwnd = host::window_create(gfx.window_w, gfx.window_h, L"Melee Port (development)", !hidden);
+    void* hwnd = host::window_create(gfx.window_w, gfx.window_h, L"Melee Unlocked (development)", !hidden);
     if (gfx.fullscreen) host::window_set_fullscreen(true);
     backend.reset(gx::create_d3d12_backend(hwnd, gfx.window_w, gfx.window_h, gfx));
     host::window_set_resize_callback([renderer = backend.get()](int w, int h) { gx::d3d12_resize(renderer, w, h); });

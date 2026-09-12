@@ -1,4 +1,4 @@
-// In-client updater: asks GitHub for the latest release of hero88go/melee-port, and on request
+// In-client updater: asks GitHub for the latest release of hero88go/melee-unlocked, and on request
 // downloads its zip and hands over to a small batch script that swaps the files in after the
 // game exits and relaunches. Everything network-side runs on a background thread.
 // SPDX-License-Identifier: GPL-2.0-or-later

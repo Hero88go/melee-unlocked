@@ -1,6 +1,6 @@
 """Assembles a standalone release folder and zip of the native port.
 
-Contents: melee_port.exe, the Streamline/DLSS runtime DLLs, the Slippi Sys files the EXI device
+Contents: MeleeUnlocked.exe (client), melee_port.exe, the Streamline/DLSS runtime DLLs, the Slippi Sys files the EXI device
 serves (code tables, game file diffs), a launcher batch file, README and licenses. No game data:
 the user supplies their own Melee NTSC 1.02 ISO. Usage:
 
@@ -13,8 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
-README = """Melee Port {version}
-====================
+README = """Melee Unlocked {version}
+========================
 
 A native Windows build of Super Smash Bros. Melee NTSC 1.02 with Slippi: the game logic runs
 exactly as on the GameCube at 60 Hz, the display renders at any rate (unlocked, monitor rate
@@ -25,8 +25,12 @@ You need your own Melee NTSC 1.02 ISO. Nothing from the game is included.
 
 Quick start
 -----------
-1. Drag your Melee NTSC 1.02 ISO onto MeleePort.bat (or put it next to it named melee.iso).
-2. The first launch precompiles the shader list (about 15 seconds, progress in the title bar).
+1. Run MeleeUnlocked.exe and drop your Melee NTSC 1.02 ISO onto its window (Build tab). It checks
+   the disc, precompiles the graphics pipelines for your GPU (about 15 to 30 seconds) and
+   remembers the path. The ISO is never copied.
+2. Press PLAY. The client checks for new releases on every start; "Update and restart"
+   installs one in place (your settings, saves and replays are kept).
+   Without the client: drag the ISO onto MeleeUnlocked.bat, or name it melee.iso next to it.
 3. The PC settings panel opens on the first launch; later press F1 (or Z + Start on the
    controller): fullscreen, frame rate cap, VSync, widescreen 16:9, internal resolution,
    anti-aliasing (SSAA), anisotropic filtering, DLSS/DLAA, sharpening, sub-frame animation,
@@ -36,18 +40,21 @@ Controllers: a GameCube adapter (WUP-028, official or Mayflash in Wii U mode) is
 automatically if it has the WinUSB driver that Slippi installs. Close Slippi Dolphin first.
 Keyboard: arrows = stick, IJKL = C-stick, Z/X/C/V = A/B/X/Y, Enter = Start, Q/W = L/R, E = Z.
 
-Slippi online: the port uses the account you are logged into in the Slippi Launcher
-(user.json in the Launcher's netplay folder). Log in there once. Unranked, Direct codes and
-Teams work against players on regular Slippi Dolphin; ranked play is not reported yet.
+Slippi online: everything Slippi Dolphin does for netplay (matchmaking, rollback netcode, the
+Slippi code set, replays, game reporting) is built into this program, so Slippi Dolphin is not
+needed. What is needed is a Slippi account, and accounts are created and logged in through the
+Slippi Launcher (https://slippi.gg/downloads): install it, log in once, and this client picks up
+the login automatically (it also installs the GameCube adapter driver). Unranked, Direct codes
+and Teams work against players on regular Slippi Dolphin.
 
-Bug reports: open an issue on the GitHub releases page with your port-settings.ini, the
-console log (run from a command prompt to see it) and the steps to reproduce.
+Bug reports: https://github.com/hero88go/melee-unlocked/issues with melee_port.log,
+port-settings.ini and the steps to reproduce.
 
 Saves: memory card slot A is the folder User\GC\CardA, one .gci per file (Dolphin's GCI folder
 format). Copy your Slippi Dolphin save (GALE01-*.gci) there to keep your unlocks and settings.
 
-Known gaps in this version: game reporting for ranked play is not sent, audio is an approximate
-mixer.
+Known gaps in this version: audio is an approximate mixer; ranked play reports results but has
+not been tested in a live ranked set.
 """
 
 BAT = """@echo off
@@ -72,12 +79,16 @@ def main():
     args = ap.parse_args()
     if not args.exe.is_file():
         raise SystemExit(f"missing executable: {args.exe}")
-    name = f"MeleePort-{args.version}"
+    name = f"MeleeUnlocked-{args.version}"
     folder = args.out / name
     if folder.exists():
         shutil.rmtree(folder)
     folder.mkdir(parents=True)
     shutil.copy2(args.exe, folder / "melee_port.exe")
+    launcher = args.exe.parent / "MeleeUnlocked.exe"
+    if not launcher.is_file():
+        raise SystemExit(f"missing launcher: {launcher} (build target melee_unlocked)")
+    shutil.copy2(launcher, folder / "MeleeUnlocked.exe")
     for dll in ("sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll"):
         src = args.exe.parent / dll
         if src.is_file():
@@ -98,7 +109,7 @@ def main():
         print(f"pipeline recipes: {recipes} ({recipes.stat().st_size} bytes)")
     (folder / "User/Slippi").mkdir(parents=True)
     (folder / "Replays").mkdir()
-    (folder / "MeleePort.bat").write_bytes(BAT.replace("\n", "\r\n").encode("utf-8"))
+    (folder / "MeleeUnlocked.bat").write_bytes(BAT.replace("\n", "\r\n").encode("utf-8"))
     (folder / "README.txt").write_text(README.format(version=args.version), encoding="utf-8")
     licenses = folder / "licenses"
     licenses.mkdir()

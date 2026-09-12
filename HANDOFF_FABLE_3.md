@@ -83,6 +83,34 @@ Since the beta: Interpolate sub-frame mode, game reporting + replay upload, rank
 main). v0.1.1-beta released 2026-09-11 20:00 (reporting, rank, Interpolate mode, jitter -1, resolution
 labels, build.bat/play.bat).
 
+## 0.1.2-beta: Melee Unlocked, client, updater, flicker fixes (2026-09-11 21:30)
+
+Renamed to Melee Unlocked: repo https://github.com/hero88go/melee-unlocked (old melee-port URL
+redirects; `git remote` updated), release zip `MeleeUnlocked-<ver>-win64.zip`, launcher
+`MeleeUnlocked.exe` + `MeleeUnlocked.bat`, window titles. `VERSION` at the repo root is the one
+version string (CMake defines MELEE_PORT_VERSION; package_release.py reads it).
+
+- Client `port/app/launcher.cpp` (target `melee_unlocked`, plain Win32, no runtime dependency):
+  Play page (ISO path + Browse, PLAY, Slippi account line from `User\Slippi\user.json` or the
+  Slippi Launcher's `%APPDATA%\Slippi Launcher\netplay\User\Slippi\user.json`, "Get Slippi
+  Launcher" button when none, version line + "Update and restart"/"Retry"), Build tab (drop the
+  ISO: header check GALE01 rev 2 + size, save `launcher.ini`, run `build.bat` when it lives in a
+  source checkout without a built exe, precompile pipelines by running the game
+  `--hidden --frames 30 --volume 0 --log-file launcher_build.log`, log box). Working directory
+  is the release folder (Sys next to it) or the repo root of a checkout. Verified by screenshots
+  (Play/Build tabs) and a real Build run with Chandler's ISO.
+- Updater `port/runtime/host/updater.cpp`: GitHub release list (`/releases?per_page=10`, first
+  non-draft; `/releases/latest` skips pre-releases and 404s), `win64.zip` asset, download via
+  WinHTTP, `update.bat` waits on the PID, `tar -xf`, xcopy over, relaunches `MeleeUnlocked.exe`.
+  Used by both the client and the in-game settings panel. Verified: "Up to date (0.1.2-beta)".
+- Flicker: `fallback_pso` in gx_d3d12.cpp renders draws whose pipeline is still compiling with a
+  generic pipeline. Async deterministic disc reads (hle_dvd.cpp), catch-up sprint removed
+  (host.cpp retrace clamp 34 ms). validate_native 2400/0; cold-cache match: 3 fallback draws,
+  0 audio drops.
+- Chandler's answer on Slippi: Dolphin is not needed (netplay, codes, replays, reporting are
+  built in); the Slippi Launcher is needed once for the account login (user.json) and the
+  adapter driver. README and the client say so.
+
 ## GitHub publish recipe (historical)
 
 `gh auth login --web --git-protocol https` as hero88go, then: `gh repo create hero88go/melee-port

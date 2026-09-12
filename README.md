@@ -1,6 +1,7 @@
-# Melee Port
+# Melee Unlocked
 
-A native Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online play.
+A native Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online play and an
+unlocked display frame rate.
 
 The game's own PowerPC code is translated ahead of time into C++ (static recompilation of the
 retail executable plus Slippi's Gecko codes) and runs against a native D3D12 renderer, so the
@@ -8,62 +9,91 @@ game logic stays exactly what the GameCube ran, at 60 Hz, while the display runs
 In-between frames come from the game's own animation data and physics state, not from image
 interpolation, so an unlocked 200 Hz display shows real intermediate poses with no added latency.
 
-Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO; the build step
-translates it on your machine.
+Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO.
 
-## Features
+## Install
 
-- Unlocked frame rate (monitor rate, a fixed cap, or fully unlocked) with sub-frame animation
-- Slippi online: Unranked, Direct codes and Teams against players on regular Slippi Dolphin,
-  using your existing Slippi Launcher login; replays (.slp) are written as usual
-- GameCube adapter (WUP-028 with the WinUSB driver), keyboard fallback
-- DLSS / DLAA (NVIDIA Streamline), internal resolution up to 8x, borderless fullscreen, VSync
-- Widescreen 16:9 (Slippi's own optional code, online safe)
-- Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
-- PC settings overlay in the game window: F1 or Z + Start
+There are two ways to get it running.
 
-## Playing a release
+### 1. The client (recommended)
 
-1. Download the zip from Releases and extract it.
-2. Put your Melee NTSC 1.02 ISO next to `MeleePort.bat`, named `melee.iso`.
-3. Run `MeleePort.bat`. Press F1 for settings.
+Download `MeleeUnlocked-<version>-win64.zip` from [Releases](https://github.com/hero88go/melee-unlocked/releases),
+extract it anywhere, and run `MeleeUnlocked.exe`.
 
-Bug reports: open a GitHub issue using the template. Attach `melee_port.log` from the folder
-you launched from, your `port-settings.ini`, and the .slp replay if the bug happened in a match.
+- **Build tab**: drop your Melee NTSC 1.02 ISO onto the window. The client checks the disc,
+  precompiles the graphics pipelines for your GPU (15 to 30 seconds, once) and remembers the
+  path. The ISO is never copied.
+- **Play**: press PLAY. In game, F1 (or Z + Start) opens the PC settings.
+- **Updates**: the client checks for a new release every time it starts. "Update and restart"
+  installs it in place; your settings, saves and replays stay.
 
-## Building from source
+### 2. Manual, from source
 
-Two ways. Both need Windows 10/11, your own Melee NTSC 1.02 ISO, and about 30 minutes the
-first time (the game is translated to C++ and compiled). Nothing from the ISO is written into
-the repository.
+Windows 10/11, your own ISO, about 30 minutes the first time. The game is translated to C++
+and compiled on your machine; nothing from the ISO enters the repository.
 
-**Option 1, drop the ISO:** clone the repo, then drag your ISO onto `play.bat`. It installs the
-tools it needs with winget if they are missing (Python 3, CMake, Visual Studio 2022 Build Tools
-with the C++ workload), extracts `main.dol`, translates, compiles and starts the game. `build.bat`
-does the same without starting the game.
-
-**Option 2, command line:**
+Either drag the ISO onto `play.bat` in a clone of this repo (it installs Python, CMake and the
+Visual Studio 2022 Build Tools with winget if missing, then builds and starts the game), or:
 
 ```powershell
-git clone https://github.com/hero88go/melee-port.git melee-unlocked
+git clone https://github.com/hero88go/melee-unlocked.git
 cd melee-unlocked
 python tools/extract_dol.py "C:/path/to/melee.iso" build/main.dol
 python port/recomp/recomp.py --dol build/main.dol --gct-base 0x8065CC80
 cmake -S . -B build-review -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON
-cmake --build build-review --config Release --target melee_port --parallel
-build-review/port/Release/melee_port.exe --iso "C:/path/to/melee.iso" --threaded-renderer --fps unlocked --frame-mode authored --scale auto --volume 70
+cmake --build build-review --config Release --target melee_port melee_unlocked --parallel
+build-review/port/Release/MeleeUnlocked.exe
 ```
+
+The last line starts the client from the checkout (it finds the repo and the built game). Or
+run the game directly with `melee_port.exe --iso <iso> --threaded-renderer --fps unlocked
+--frame-mode authored --scale auto`.
+
+## Slippi online
+
+Everything Slippi Dolphin does for netplay is built in: matchmaking, rollback netcode, the
+Slippi code set, replay recording, game reporting. Slippi Dolphin itself is not needed and is
+not touched.
+
+What is needed is a Slippi account. Accounts are created and logged in through the
+[Slippi Launcher](https://slippi.gg/downloads). Install it, log in once, and the client picks
+up that login automatically (it shows the account on the Play page; if none is found it links
+to the download). The Launcher also installs the WinUSB driver that a GameCube adapter needs.
+
+Unranked, Direct codes and Teams work against players on regular Slippi Dolphin; they change
+nothing on their side. Replays (.slp) are written to `Replays\`.
+
+## Features
+
+- Unlocked frame rate (monitor rate, a fixed cap, or fully unlocked) with sub-frame animation
+- Slippi online against regular Slippi Dolphin players, using your Slippi Launcher login
+- GameCube adapter (WUP-028 with the WinUSB driver), keyboard fallback
+- DLSS / DLAA (NVIDIA Streamline), internal resolution up to 8x, SSAA, anisotropic filtering,
+  sharpening, borderless fullscreen, VSync
+- Widescreen 16:9 (Slippi's own optional code, online safe)
+- Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
+- PC settings overlay in the game window: F1 or Z + Start
+- Self-updating client
+
+## Bug reports
+
+Open a [GitHub issue](https://github.com/hero88go/melee-unlocked/issues) using the template.
+Attach `melee_port.log` from the game folder, your `port-settings.ini`, and the .slp replay if
+the bug happened in a match.
+
+## Repository layout
 
 `port/recomp/` is the recompiler (Python): it reads the DOL and the Slippi code tables
 (`port/slippi_sys/`, vendored from Slippi) and writes `port/generated/` (not committed).
 `port/runtime/` is the host runtime: PowerPC helpers, HLE of the GameCube SDK (OS, VI, PAD, DVD,
 AI/AX audio, CARD, EXI), the Slippi EXI device, netcode, game reporting, the D3D12 renderer and
-the sub-frame solver. `tools/` holds validation, benchmarking and packaging scripts. See
-`PORT_COMPLETION.md` for the technical state and evidence, `HANDOFF_FABLE_3.md` for the roadmap.
+the sub-frame solver. `port/app/launcher.cpp` is the client. `tools/` holds validation,
+benchmarking and packaging scripts. See `PORT_COMPLETION.md` for the technical state and
+evidence, `HANDOFF_FABLE_3.md` for the roadmap.
 
-`tools/package_release.py --version X.Y.Z` produces the release zip. The replay playback build
-(`melee_port_playback`, used to verify frame-exactness against Dolphin replays) is described in
-`PORT_COMPLETION.md`.
+`tools/package_release.py` produces the release zip (version from `VERSION`). The replay
+playback build (`melee_port_playback`, used to verify frame-exactness against Dolphin replays)
+is described in `PORT_COMPLETION.md`.
 
 ## Verification
 

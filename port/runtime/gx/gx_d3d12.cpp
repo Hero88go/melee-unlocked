@@ -1478,7 +1478,7 @@ void D3D12Backend::prewarm_pipelines() {
   for (;;) {
     integrate_compiled_psos();
     size_t pending = psos_pending_.size();
-    wchar_t title[128]; swprintf_s(title, L"Melee Port  |  compiling shaders %zu / %zu", total - pending, total);
+    wchar_t title[128]; swprintf_s(title, L"Melee Unlocked  |  compiling shaders %zu / %zu", total - pending, total);
     host::window_set_title(title);
     if (!pending) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
