@@ -74,7 +74,15 @@ float ulp. Rebuild recipe when a replay carries a different code list (another S
 --gct-base 0x8065CC80 --extra-gct <replay-dir>/gecko_list.bin --extra-gct-base 0x80BE08A0`
 (the port logs "game placed the replay code list at ..."), then build target melee_port_playback.
 
-## GitHub publish (blocked on Chandler)
+## Published (2026-09-11 19:15)
+
+https://github.com/Hero88go/melee-port (public, main) and release v0.1.0-beta (pre-release, zip +
+notes). gh CLI is logged in as Hero88go on this machine: `git push origin HEAD:main`,
+`gh release create vX.Y.Z release/MeleePort-X.Y.Z-win64.zip --notes-file ... --prerelease`.
+Since the beta: Interpolate sub-frame mode, game reporting + replay upload, rank fetch (all on
+main). Next release should be v0.1.1-beta after Chandler confirms the Play build.
+
+## GitHub publish recipe (historical)
 
 `gh auth login --web --git-protocol https` as hero88go, then: `gh repo create hero88go/melee-port
 --public --source . --push`, `gh release create v0.1.0-beta release/MeleePort-0.1.0-beta-win64.zip
