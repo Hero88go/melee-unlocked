@@ -64,6 +64,22 @@ launch, sharpening, SSAA, anisotropic, auto resolution, DLSS size fix + fallback
 "backgrounds sped up" (sub-frame path; toggle exists), replay-vs-Dolphin validation (needs
 Slippi Playback code set), ranked reporting, RTX, GitHub publish (needs his repo URL).
 
+## Replay playback validation (2026-09-11 18:50): PASSED
+
+`tools/replay_compare.py <replay.slp>` plays a Slippi Dolphin replay through
+`melee_port_playback.exe` and diffs the port's recording against the original: Chandler's
+Marth vs Samus replay (9610 frames) matched on every player-frame except one non-propagating
+float ulp. Rebuild recipe when a replay carries a different code list (another Slippi version):
+`python port/recomp/recomp.py --sys-dir port/slippi_sys_playback --out port/generated_playback
+--gct-base 0x8065CC80 --extra-gct <replay-dir>/gecko_list.bin --extra-gct-base 0x80BE08A0`
+(the port logs "game placed the replay code list at ..."), then build target melee_port_playback.
+
+## GitHub publish (blocked on Chandler)
+
+`gh auth login --web --git-protocol https` as hero88go, then: `gh repo create hero88go/melee-port
+--public --source . --push`, `gh release create v0.1.0-beta release/MeleePort-0.1.0-beta-win64.zip
+--notes-file release/RELEASE_NOTES_0.1.0-beta.md --title "Melee Port 0.1.0 beta"`.
+
 ## Plan (priority order)
 
 ### P1. Kill the hitches (his items 1 and 2)
