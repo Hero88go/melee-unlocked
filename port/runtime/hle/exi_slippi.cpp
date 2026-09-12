@@ -261,6 +261,7 @@ uint64_t replays_written() { return g_replays_written; }
 uint32_t gct_load_address() { return g_gct_address; }
 uint64_t commands_seen() { return g_commands; }
 const std::string& replay_directory() { return g_replay_dir; }
+const std::string& last_replay_path() { return g_replay_path; }
 
 void imm_write(uint32_t, uint32_t) {}
 uint32_t imm_read(uint32_t) { return 0; }

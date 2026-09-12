@@ -19,6 +19,7 @@ uint32_t gct_load_address();
 uint64_t commands_seen();
 uint64_t replays_written();
 const std::string& replay_directory();
+const std::string& last_replay_path();   // the .slp most recently written (for the game report upload)
 // Widescreen 16:9 (Slippi's optional code, compiled in both ways). request_* is thread-safe and
 // takes effect on the simulation thread at the next retrace; the initial value comes from the
 // command line / settings before the game loads the code table.
