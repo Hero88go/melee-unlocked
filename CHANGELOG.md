@@ -17,6 +17,9 @@ rejects incomplete replay comparisons, and adds isolated Dolphin captures plus
 a verified contact/shield regression scenario.
 It also repairs the eighth texture generator's per-vertex matrix index, with
 an image regression and repeated resize/sharpening resource checks.
+GPU timing is now available in frame traces. Detailed draw timers are opt-in;
+disabling their normal-rendering overhead saved about 0.23 ms of median CPU
+submission time in two paired combat trials. Frame-time spikes remain.
 
 This is an unreleased development update. Existing Fable releases are preserved.
 DLSS quality, Dolphin parity and demanding high-refresh acceptance are still

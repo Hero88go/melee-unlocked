@@ -50,7 +50,7 @@ class ThreadedBackend final : public Backend {
           file = std::fopen(path.c_str(), "w");
           if (!file) throw std::runtime_error("cannot open frame timing CSV");
           std::setvbuf(file, nullptr, _IOFBF, 1024 * 1024);
-          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms\n", file);
+          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms,gpu_submission,gpu_simulation,gpu_ms,gpu_presented\n", file);
         }
       }
       ~Trace() { if (file) std::fclose(file); }
@@ -159,10 +159,12 @@ class ThreadedBackend final : public Backend {
       const double render_end = host::now_seconds();
       const double present_wait = renderer->presentation_wait_seconds();
       render_budget = std::max(render_budget * 0.95, render_end-render_start-present_wait+0.0002);
-      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f\n",
+      const GpuTiming gpu = d3d12_gpu_timing(renderer);
+      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f,%llu,%llu,%.6f,%u\n",
           (unsigned long long)(presented+1), (unsigned long long)current.sequence, t,
           (render_start-current.time)*1000.0, last_submission ? (render_end-last_submission)*1000.0 : 0.0,
-          solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired, host::last_sim_frame_ms());
+          solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired, host::last_sim_frame_ms(),
+          (unsigned long long)gpu.submission, (unsigned long long)gpu.simulation, gpu.milliseconds, unsigned(gpu.presented));
       last_submission = render_end;
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
@@ -187,7 +189,7 @@ class ThreadedBackend final : public Backend {
           if (subframes) host::log("pair rejection: missing %u, HUD %u, geometry %u, state %u (last BP %02X), projection %u, authored %u, camera-only %u, vertex-blended %u | phases <.25:%u <.5:%u <.75:%u <1:%u =1:%u",
                                    s.missing, s.hud, s.geometry, s.state, s.state_register, s.projection, s.authored, s.carried, s.vertex_blended, phase_bins[0], phase_bins[1], phase_bins[2], phase_bins[3], phase_bins[4]);
           if (subframes) std::memset(phase_bins, 0, sizeof phase_bins);
-          host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), d3d12_profile_line().c_str());
+          host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), d3d12_profile_line(live_options.profile_draws).c_str());
           build_seconds = submit_seconds = 0; cost_presented = 0;
           if (authored) {
             const AuthoredStats& a = authored_stats();

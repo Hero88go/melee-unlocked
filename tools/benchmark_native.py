@@ -36,6 +36,8 @@ def main():
     ap.add_argument('--window', default='1920x1080')
     ap.add_argument('--scale', type=int, default=3)
     ap.add_argument('--card-fixture', type=Path, help='prepared card required by the selected scenario')
+    ap.add_argument('--recipes', type=Path, help='prewarm these collected shader recipes in each isolated cache')
+    ap.add_argument('--profile-draws', action='store_true', help='enable expensive per-draw timing for overhead comparison')
     args = ap.parse_args()
     if args.frames <= args.match_start or args.repeats < 1:
         ap.error('need frames beyond match-start and at least one repeat')
@@ -46,10 +48,16 @@ def main():
               'exe_sha256': hashlib.sha256(args.exe.read_bytes()).hexdigest(),
               'script_sha256': hashlib.sha256(args.script.read_bytes()).hexdigest(), 'runs': []}
     result['graphics'] = dict(window=args.window, scale=args.scale, dlss='off', ssaa=1, sharpness=0)
+    result['profile_draws'] = args.profile_draws
+    if args.recipes:
+        result['recipes_sha256'] = hashlib.sha256(args.recipes.read_bytes()).hexdigest()
     # Separate cache per cap. A fresh output directory gives cold then warm trials.
     for cap in args.caps:
         cache = (args.out / ('cache-' + cap)).resolve()
         existed = cache.exists()
+        if args.recipes:
+            cache.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(args.recipes, cache / 'recipes.bin')
         for repeat in range(args.repeats):
             label = f'{cap}-{repeat}'
             isolated = Path(tempfile.mkdtemp(prefix=label+'-state-', dir=args.out)).resolve()
@@ -65,6 +73,8 @@ def main():
                        '--card-dir', str(isolated / 'cards'), '--user-dir', str(isolated / 'User'),
                        '--shader-cache', str(cache), '--replay-dir', str((args.out / 'replays').resolve())]
             start = time.monotonic()
+            if args.profile_draws:
+                command.append('--profile-draws')
             with (args.out / (label + '.log')).open('w') as log:
                 run = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
                                      timeout=args.timeout, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
@@ -78,6 +88,12 @@ def main():
             for field in ('interval_ms', 'solver_ms', 'submit_ms', 'source_age_ms'):
                 record[field] = distribution([float(r[field]) for r in match])
             record['presentations_with_authored_draws'] = sum(int(r['authored_draws']) > 0 for r in match)
+            # GPU queries complete a few submissions later. Filter by their own
+            # source frame, exclude drained work, and never count one query twice.
+            gpu = {int(r['gpu_submission']): float(r['gpu_ms']) for r in rows
+                   if int(r.get('gpu_submission', 0)) > 0 and int(r.get('gpu_presented', 0))
+                   and int(r.get('gpu_simulation', 0)) >= args.match_start}
+            record['gpu_execution_ms'] = distribution(list(gpu.values()))
             result['runs'].append(record)
             (args.out / 'summary.json').write_text(json.dumps(result, indent=2))
             print(json.dumps(record), flush=True)
