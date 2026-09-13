@@ -34,7 +34,8 @@ static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
               "           [--fullscreen] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--volume 0-100] [--audio-dump out.wav]\n"
-              "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
+              "           [--capture out.ppm --capture-frame N] [--frame-times out.csv] [--profile-draws]\n"
+              "           [--trace-calls] [--quiet]\n");
 }
 
 // Windows hands out ~15.6 ms timer granularity by default, so every pacing sleep (the 60 Hz
@@ -124,6 +125,7 @@ int main(int argc, char** argv) {
     else if (a == "--frame-times") gfx.frame_times = next();
     else if (a == "--vsync") gfx.vsync = true;
     else if (a == "--capture") gfx.capture_path = next();
+    else if (a == "--profile-draws") gfx.profile_draws = true;
     else if (a == "--capture-frame") gfx.capture_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--capture-every") gfx.capture_every = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--capture-burst") gfx.capture_burst = (uint32_t)std::strtoul(next(), nullptr, 0);

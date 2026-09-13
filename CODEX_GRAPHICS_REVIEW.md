@@ -60,6 +60,13 @@ launcher and updater remain the foundation.
 - Added `tools/build_recipes.py`: muted offline collection, checksummed cache
   merging, manifest-driven scenarios and explicit coverage reporting. Default
   scenarios are not an exhaustive character/stage matrix.
+- `--frame-times` now includes GPU command-list duration and the completed
+  submission/source identifiers. Timestamp readback follows the existing slot
+  fence, adding no new GPU wait. Drained work is labeled separately. This follows
+  [Microsoft's D3D12 timestamp guidance](https://learn.microsoft.com/en-us/windows/win32/direct3d12/timing).
+- Detailed per-draw timers are opt-in with `--profile-draws`; normal rendering
+  retains coarse frame timing and pipeline counts without repeated timer queries
+  around every draw section. The obsolete fallback-draw counter is removed.
 - Loading workers now have explicit lifetimes: the Slippi file preloader joins
   at shutdown, and music decoding uses one owned worker with a latest-request
   mailbox. Disc-directory initialization is serialized. Disc counters and the
@@ -127,6 +134,30 @@ sampled time is idle. No target passes the demanding-match smoothness gate from
 these results. A separate combat fixture now verifies landed damage and shield
 depletion from the recording, instead of assuming the input script exercised them.
 
+### Combat profiling and timer overhead
+
+The verified combat recipe manifest collected 132 pipelines. With those recipes
+prewarmed, a separate 3,000-retrace combat sweep recorded no additional pipeline
+creation in the logged gameplay intervals. At 120 FPS, warm median GPU work was
+0.424 ms (P99 0.726); at 240 FPS it was 0.432 ms (P99 0.710). CPU pose solving
+plus submission took roughly 3.4–3.6 ms. This fixture is primarily CPU-limited;
+the measurements do not predict DLSS gains in other GPU-heavy workloads.
+
+Four alternating 240-FPS runs of the same executable, with/without detailed
+draw timers, used the prepared card and 132 prewarmed recipes for 2,700 retraces:
+
+| Trial | CPU submission median ms | Presentation interval P99 ms |
+| --- | ---: | ---: |
+| Timers on, first | 2.478 | 7.179 |
+| Timers off, first | 2.248 | 6.870 |
+| Timers on, second | 2.549 | 8.037 |
+| Timers off, second | 2.314 | 7.265 |
+
+Disabling detailed timers saved about 0.23 ms, or 9% of median CPU submission
+time, in both comparisons. GPU medians remained around 0.43–0.44 ms. Spikes
+remain: this improvement does not satisfy the sustained-240-FPS gate. Normal
+rendering now defaults to timers off; diagnostic runs can explicitly enable them.
+
 ### First matched Dolphin captures
 
 An isolated Slippi playback copy and the native playback build used the same
@@ -165,8 +196,8 @@ Reproduce and eliminate remaining graphics defects against matched Dolphin
 captures; validate animation discontinuities, rewritten geometry and rollback;
 complete genuine high-refresh coverage and sustained frame-time checks; repair
 DLSS sizing, motion/depth/camera inputs and HUD composition; finish shader coverage,
-updater lifecycle and clean-package tests. Audio-device recovery and runtime
-resize/DLSS transitions remain outstanding.
+updater lifecycle and clean-package tests. Audio-device recovery, full runtime
+display/DLSS transitions and GPU pass-by-pass profiling remain outstanding.
 Rivals of Aether II is the feel reference, but its exact rendering implementation
 has not been verified. No image frame generation is part of the primary path.
 

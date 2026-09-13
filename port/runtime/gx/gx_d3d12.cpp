@@ -54,10 +54,12 @@ namespace {
 #endif
 
 // execute_draw section costs (seconds) and draw count since the last profile line.
-double g_prof[8]; uint64_t g_prof_draws = 0, g_pso_hits = 0, g_pso_lookups = 0, g_pso_creates = 0, g_pso_skips = 0;
+double g_prof[8]; uint64_t g_prof_draws = 0, g_pso_hits = 0, g_pso_lookups = 0, g_pso_creates = 0;
 struct Stopwatch {
   static double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
-  double t = now(); double lap() { double n = now(), d = n - t; t = n; return d; }
+  bool active; double t;
+  explicit Stopwatch(bool enabled = true) : active(enabled), t(enabled ? now() : 0) {}
+  double lap() { if (!active) return 0; double n = now(), d = n - t; t = n; return d; }
 };
 
 void check(HRESULT hr, const char* what) { if (FAILED(hr)) host::die("D3D12: %s failed (%08X)", what, (unsigned)hr); }
@@ -184,6 +186,7 @@ class D3D12Backend : public Backend {
   uint32_t frames_presented() const { return frames_presented_; }
   uint32_t pipeline_count() const { return (uint32_t)psos_.size(); }
   uint32_t texture_count() const { return (uint32_t)textures_.size(); }
+  GpuTiming gpu_timing() const { return last_gpu_timing_; }
 
  private:
   const uint64_t backend_id_ = next_backend_id.fetch_add(1);
@@ -286,6 +289,12 @@ class D3D12Backend : public Backend {
   // Frames in flight: each slot owns a command allocator, upload rings and the resources it
   // retired; a slot is reused only after the fence value recorded at its submission completes.
   static constexpr int FRAME_SLOTS = 3;
+  ComPtr<ID3D12QueryHeap> timing_heap_;
+  ComPtr<ID3D12Resource> timing_readback_;
+  uint64_t timing_frequency_ = 0;
+  GpuTiming timing_slots_[FRAME_SLOTS]{}, last_gpu_timing_{};
+  void init_gpu_timing();
+  void read_gpu_timing();
   ComPtr<ID3D12CommandAllocator> allocators_[FRAME_SLOTS];
   uint64_t slot_fence_[FRAME_SLOTS] = {};
   int slot_ = 0;
@@ -345,6 +354,7 @@ void D3D12Backend::init() {
   if (!device_) host::die("D3D12: no adapter");
   D3D12_COMMAND_QUEUE_DESC qd{}; qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
   check(device_->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue_)), "queue");
+  if (!opts_.frame_times.empty()) init_gpu_timing();
   DXGI_SWAP_CHAIN_DESC1 sd{};
   sd.Width = client_w_; sd.Height = client_h_; sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.SampleDesc.Count = 1;
   sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.BufferCount = 3; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -729,7 +739,7 @@ void D3D12Backend::integrate_compiled_psos() {
 
 ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
   if (dc.cached_pipeline && dc.cached_pipeline_owner == (backend_id_ * 2 + (dlss_active_ ? 1 : 0))) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
-  Stopwatch sw;
+  Stopwatch sw(opts_.profile_draws);
   VSUid vsu = make_vs_uid(dc);
   PSUid psu = make_ps_uid(dc);
   vsu.motion_vectors = psu.motion_vectors = dlss_active_ ? 1u : 0u;
@@ -916,7 +926,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
 // ---------------- draws ----------------
 void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const DrawMatrices* override_matrices) {
   // Build index list (triangle list / line list) from the GX primitive.
-  Stopwatch sw;
+  Stopwatch sw(opts_.profile_draws);
   auto& idx = index_scratch_; idx.clear();
   uint32_t n = dc.vertex_count;
   D3D12_PRIMITIVE_TOPOLOGY_TYPE topo = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
@@ -1329,6 +1339,37 @@ static void dump_frame(const Frame& frame, const std::string& path) {
   fclose(f);
 }
 
+void D3D12Backend::init_gpu_timing() {
+  check(queue_->GetTimestampFrequency(&timing_frequency_), "GPU timestamp frequency");
+  if (!timing_frequency_) host::die("GPU timestamp frequency is zero");
+  D3D12_QUERY_HEAP_DESC query{};
+  query.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+  query.Count = FRAME_SLOTS * 2;
+  check(device_->CreateQueryHeap(&query, IID_PPV_ARGS(&timing_heap_)), "GPU timestamp heap");
+  D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_READBACK};
+  D3D12_RESOURCE_DESC desc{};
+  desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  desc.Width = FRAME_SLOTS * 2 * sizeof(uint64_t);
+  desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
+  desc.SampleDesc.Count = 1; desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  check(device_->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+      D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&timing_readback_)), "GPU timestamp readback");
+}
+
+void D3D12Backend::read_gpu_timing() {
+  if (!timing_heap_ || !timing_slots_[slot_].submission) return;
+  // submit_frame has already waited for this slot's fence. No new GPU wait.
+  const SIZE_T offset = slot_ * 2 * sizeof(uint64_t);
+  D3D12_RANGE read{offset, offset + 2 * sizeof(uint64_t)};
+  void* mapped = nullptr;
+  check(timing_readback_->Map(0, &read, &mapped), "map GPU timestamps");
+  uint64_t stamps[2]; std::memcpy(stamps, (const uint8_t*)mapped + offset, sizeof stamps);
+  D3D12_RANGE written{0, 0}; timing_readback_->Unmap(0, &written);
+  last_gpu_timing_ = timing_slots_[slot_];
+  if (stamps[1] < stamps[0]) { last_gpu_timing_ = {}; return; }
+  last_gpu_timing_.milliseconds = 1000.0 * double(stamps[1] - stamps[0]) / double(timing_frequency_);
+}
+
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
   integrate_compiled_psos();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; wait_gpu(); sampler_sets_.clear(); }
@@ -1357,11 +1398,13 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
   slot_ = (int)(frame_counter_ % FRAME_SLOTS);
   wait_fence(slot_fence_[slot_]);   // this slot's previous frame (FRAME_SLOTS frames ago) is complete
+  read_gpu_timing();
   vertex_ring_.reset(slot_); index_ring_.reset(slot_); constant_ring_.reset(slot_); upload_ring_.reset(slot_);
   frame_garbage_[slot_].clear();
   descriptor_garbage_[slot_].clear();
   check(allocators_[slot_]->Reset(), "allocator reset");
   check(list_->Reset(allocators_[slot_].Get(), nullptr), "list reset");
+  if (timing_heap_) list_->EndQuery(timing_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 2);
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
   list_->SetDescriptorHeaps(2, heaps);
   bind_efb_targets();
@@ -1395,6 +1438,12 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       else execute_copy(c);
       if (c.clear) clear_efb(c);
     }
+  }
+  if (timing_heap_) {
+    list_->EndQuery(timing_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 2 + 1);
+    list_->ResolveQueryData(timing_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 2, 2,
+                           timing_readback_.Get(), slot_ * 2 * sizeof(uint64_t));
+    timing_slots_[slot_] = {frame_counter_, frame.sequence, 0, presented};
   }
   check(list_->Close(), "list close");
   ID3D12CommandList* lists[] = {list_.Get()};
@@ -1575,14 +1624,17 @@ void D3D12Backend::save_shader_blob(const std::string& path, ID3DBlob* blob) {
   write_cache(path, blob->GetBufferPointer(), blob->GetBufferSize());
 }
 
-std::string d3d12_profile_line() {
+std::string d3d12_profile_line(bool detailed) {
   char buf[512];
   double n = (double)std::max<uint64_t>(1, g_prof_draws);
   double l = (double)std::max<uint64_t>(1, g_pso_lookups);
-  snprintf(buf, sizeof buf, "%llu draws: index %.2f, upload %.2f, constants %.2f, pso %.2f, bind %.2f, draw %.2f us/draw | pso cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu, draws on the fallback pipeline while compiling %llu",
+  if (detailed) snprintf(buf, sizeof buf, "%llu draws: index %.2f, upload %.2f, constants %.2f, pso %.2f, bind %.2f, draw %.2f us/draw | pso cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu",
            (unsigned long long)g_prof_draws, 1e6 * g_prof[0] / n, 1e6 * g_prof[1] / n, 1e6 * g_prof[2] / n, 1e6 * g_prof[3] / n, 1e6 * g_prof[4] / n, 1e6 * g_prof[5] / n,
-           (unsigned long long)g_pso_hits, (unsigned long long)g_pso_lookups, 1e6 * g_prof[6] / l, 1e6 * g_prof[7] / l, (unsigned long long)g_pso_creates, (unsigned long long)g_pso_skips);
-  std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pso_hits = g_pso_lookups = g_pso_creates = g_pso_skips = 0;
+           (unsigned long long)g_pso_hits, (unsigned long long)g_pso_lookups, 1e6 * g_prof[6] / l, 1e6 * g_prof[7] / l, (unsigned long long)g_pso_creates);
+  else snprintf(buf, sizeof buf, "%llu draws; detailed timers off | pso cache hits %llu, lookups %llu, created %llu",
+                (unsigned long long)g_prof_draws, (unsigned long long)g_pso_hits,
+                (unsigned long long)g_pso_lookups, (unsigned long long)g_pso_creates);
+  std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pso_hits = g_pso_lookups = g_pso_creates = 0;
   return buf;
 }
 
@@ -1590,6 +1642,7 @@ Backend* create_d3d12_backend(void* hwnd, int w, int h, const D3D12Options& opti
   return new D3D12Backend((HWND)hwnd, w, h, options);
 }
 const D3D12Options& d3d12_options(Backend* backend) { return static_cast<D3D12Backend*>(backend)->options(); }
+GpuTiming d3d12_gpu_timing(Backend* backend) { return static_cast<D3D12Backend*>(backend)->gpu_timing(); }
 void d3d12_resize(Backend* backend, int w, int h) { static_cast<D3D12Backend*>(backend)->resize(w, h); }
 void d3d12_stats(Backend* backend, uint32_t* frames, uint32_t* pipelines, uint32_t* textures) {
   auto* b = static_cast<D3D12Backend*>(backend);
