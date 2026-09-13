@@ -1,0 +1,5 @@
+{
+  "cases": [
+    {"name": "mario-luigi-battlefield-contact-shield", "script": "port/scripts/graphics_combat.txt", "frames": 3000}
+  ]
+}

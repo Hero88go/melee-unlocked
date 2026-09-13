@@ -34,6 +34,10 @@ launcher and updater remain the foundation.
   A late rejection previously left earlier slots advanced when camera carry did
   nothing, mixing different poses within one draw. The new regression failed on
   the old implementation and passes with the complete-pose commit.
+- Texture generator 7 now receives its own per-vertex matrix index. The old
+  vertex shader reused generator 6's byte. A GPU regression selects different
+  colored texture regions with the two indices: it fails before the fix and
+  passes after. The same resource test exercises resizing with output sharpening.
 - Downsampling uses the actual output-pixel footprint rather than rounding it
   to the sampling tap count, avoiding footprint distortion at fractional ratios.
 - Sharpening runs on a separate output-resolution image after scaling or
@@ -97,6 +101,8 @@ The loading-worker follow-up passed another full Release build, 14/14 CTest,
 the same 2,400-checkpoint comparison with zero mismatches, and three isolated
 one-retrace exits during background preload (all exited successfully in about
 2.3 seconds). These checks do not prove recovery from every device/fatal error.
+The texture-generator follow-up also passed the full build and 14/14 CTest;
+108 native combat captures remained pixel-identical to the previous baseline.
 
 ### Initial refresh sweep
 
