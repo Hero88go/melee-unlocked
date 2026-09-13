@@ -15,6 +15,8 @@ changes, tests, attribution and outstanding release gates are recorded in
 The follow-up owns and joins loading workers, fixes shared timing/data races,
 rejects incomplete replay comparisons, and adds isolated Dolphin captures plus
 a verified contact/shield regression scenario.
+It also repairs the eighth texture generator's per-vertex matrix index, with
+an image regression and repeated resize/sharpening resource checks.
 
 This is an unreleased development update. Existing Fable releases are preserved.
 DLSS quality, Dolphin parity and demanding high-refresh acceptance are still
