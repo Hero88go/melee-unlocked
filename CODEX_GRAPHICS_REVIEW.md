@@ -38,6 +38,20 @@ launcher and updater remain the foundation.
   vertex shader reused generator 6's byte. A GPU regression selects different
   colored texture regions with the two indices: it fails before the fix and
   passes after. The same resource test exercises resizing with output sharpening.
+- Subframe history rejects changed CP matrix bindings and texture-generation
+  controls. Texture animation follows all eight per-vertex matrix selectors,
+  holds complete transforms at discontinuities, and avoids overlapping position
+  rows. Skinning publishes before independent texture animation, preventing its
+  complete-array copy from erasing sampled UV transforms. Focused regressions
+  cover these cases and both presentation timelines; the binding regression
+  fails on the old implementation. These are demonstrated defects, not a proven
+  diagnosis of the user's intermittent warm-cache report.
+  Validation: full build and 14/14 tests pass; 2,400 combat-script state
+  checkpoints match across all four renderer-isolation modes. The 108-frame
+  native combat capture is byte-identical to the prior baseline. An 80-frame
+  authored replay burst still shows distinct fighter poses within source frame
+  590 (phases 0.279408 and 0.661434). Capture readbacks affect pacing, so this is
+  visual evidence only, not a sustainable-refresh benchmark.
 - Downsampling uses the actual output-pixel footprint rather than rounding it
   to the sampling tap count, avoiding footprint distortion at fractional ratios.
 - Sharpening runs on a separate output-resolution image after scaling or
