@@ -18,6 +18,8 @@ HAL Laboratory. Slippi netplay compatibility is implemented from Slippi's open s
 (GPL). Questions and bugs about this build go to this repository or the Discord below, not to
 the Slippi team.
 
+First gameplay footage can be found here: https://youtu.be/y2KN3s7uvqM
+
 ## Discord / Help
 Discord can be found here https://discord.gg/K7HHs3r8ty
 
