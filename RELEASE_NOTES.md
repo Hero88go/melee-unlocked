@@ -1,4 +1,11 @@
-# v0.1.6-codex-preview — Codex graphics correctness update
+# v0.1.6 — Codex graphics correctness update
+
+The launcher and game now report **0.1.6**, matching the GitHub tag and download.
+This replaces the initially uploaded build's `0.1.6-codex-preview` version label;
+the graphics changes and known limitations below are unchanged. Existing 0.1.5
+and older installations can discover this release through the updater. Users
+already running `0.1.6-codex-preview` need to download this package manually:
+that updater compares only the three numeric version components.
 
 This **Codex update** builds on Fable's implementation. It fixes demonstrated
 rendering and lifecycle defects and adds measurements for the remaining work.

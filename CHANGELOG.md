@@ -1,6 +1,11 @@
 # Changelog
 
-## 0.1.6-codex-preview — Codex graphics correctness update
+## 0.1.6 — Codex graphics correctness update
+
+- Rebuilt the game and launcher with version `0.1.6` to match the renamed GitHub
+  release. The previous preview label is removed from the app; graphics behavior
+  and documented limitations are unchanged. Preview users need a manual download
+  because their updater ignores version suffixes.
 
 Retains Fable's rendering, authored animation, audio, launcher, updater and
 Streamline foundation. Repairs presentation starvation under sustained backlog,
