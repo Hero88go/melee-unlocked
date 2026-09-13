@@ -22,6 +22,23 @@ def distribution(values):
                 p99=percentile(.99), maximum=values[-1])
 
 
+def simulation_summary(rows, start):
+    rows = [r for r in rows if int(r['retrace']) >= start]
+    if len(rows) < 2:
+        raise ValueError('not enough simulation timing checkpoints')
+    ticks = [int(r['retrace']) for r in rows]
+    times = [float(r['wall_seconds']) for r in rows]
+    if any(b != a + 1 for a, b in zip(ticks, ticks[1:])) or any(b <= a for a, b in zip(times, times[1:])):
+        raise ValueError('incomplete or non-monotonic simulation timing trace')
+    return dict(retraces=len(rows), retraces_per_second=(ticks[-1]-ticks[0])/(times[-1]-times[0]),
+                sixty_tick_hz=distribution([60/(times[i]-times[i-60]) for i in range(60, len(times))]),
+                interval_ms=distribution([float(r['interval_ms']) for r in rows[1:]]),
+                requested_speed_min=min(float(r['speed']) for r in rows),
+                requested_speed_max=max(float(r['speed']) for r in rows),
+                fast_retraces=sum(int(r['fast']) for r in rows),
+                clock_resyncs=sum(int(r['resynced']) for r in rows))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--iso', type=Path, required=True)
@@ -35,6 +52,7 @@ def main():
     ap.add_argument('--timeout', type=float, default=180)
     ap.add_argument('--window', default='1920x1080')
     ap.add_argument('--scale', type=int, default=3)
+    ap.add_argument('--frame-mode', choices=['off', 'authored', 'authored-interpolate'], default='authored')
     ap.add_argument('--card-fixture', type=Path, help='prepared card required by the selected scenario')
     ap.add_argument('--recipes', type=Path, help='prewarm these collected shader recipes in each isolated cache')
     ap.add_argument('--profile-draws', action='store_true', help='enable expensive per-draw timing for overhead comparison')
@@ -49,6 +67,7 @@ def main():
               'script_sha256': hashlib.sha256(args.script.read_bytes()).hexdigest(), 'runs': []}
     result['graphics'] = dict(window=args.window, scale=args.scale, dlss='off', ssaa=1, sharpness=0)
     result['profile_draws'] = args.profile_draws
+    result['frame_mode'] = args.frame_mode
     if args.recipes:
         result['recipes_sha256'] = hashlib.sha256(args.recipes.read_bytes()).hexdigest()
     # Separate cache per cap. A fresh output directory gives cold then warm trials.
@@ -64,11 +83,12 @@ def main():
             if args.card_fixture:
                 shutil.copytree(args.card_fixture, isolated / 'cards')
             trace = (args.out / (label + '.csv')).resolve()
+            sim_trace = (args.out / (label + '-simulation.csv')).resolve()
             command = [str(args.exe.resolve()), '--iso', str(args.iso.resolve()),
                        '--volume', '0', '--hidden', '--threaded-renderer', '--fps', cap,
-                       '--frame-mode', 'authored', '--frames', str(args.frames), '--time-base', '1',
+                       '--frame-mode', args.frame_mode, '--frames', str(args.frames), '--time-base', '1',
                        '--window', args.window, '--scale', str(args.scale), '--dlss', 'off', '--ssaa', '1', '--sharpness', '0',
-                       '--script', str(args.script.resolve()), '--frame-times', str(trace),
+                       '--script', str(args.script.resolve()), '--frame-times', str(trace), '--sim-times', str(sim_trace),
                        '--log-file', str((args.out / (label + '-port.log')).resolve()),
                        '--card-dir', str(isolated / 'cards'), '--user-dir', str(isolated / 'User'),
                        '--shader-cache', str(cache), '--replay-dir', str((args.out / 'replays').resolve())]
@@ -94,6 +114,8 @@ def main():
                    if int(r.get('gpu_submission', 0)) > 0 and int(r.get('gpu_presented', 0))
                    and int(r.get('gpu_simulation', 0)) >= args.match_start}
             record['gpu_execution_ms'] = distribution(list(gpu.values()))
+            with sim_trace.open() as f:
+                record['simulation_clock'] = simulation_summary(list(csv.DictReader(f)), args.match_start)
             result['runs'].append(record)
             (args.out / 'summary.json').write_text(json.dumps(result, indent=2))
             print(json.dumps(record), flush=True)

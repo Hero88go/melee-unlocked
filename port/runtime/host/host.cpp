@@ -13,6 +13,7 @@
 #include "gecko_data.h"
 #include <chrono>
 #include <mutex>
+#include <memory>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -40,6 +41,7 @@ ppc::Context* cpu = nullptr;
 
 static FILE* g_disc = nullptr;
 static FILE* g_state_trace = nullptr;
+static std::unique_ptr<FILE, decltype(&std::fclose)> g_sim_trace(nullptr, &std::fclose);
 static uint32_t g_fst_offset, g_fst_size, g_fst_max;
 static std::deque<Completion> g_completions;
 static bool g_pe_finish_pending = false;
@@ -252,6 +254,12 @@ static void install_gecko_boot() {
 
 void boot_setup() {
   g_collect_sim_cost = true;
+  if (!options.sim_times.empty()) {
+    g_sim_trace.reset(std::fopen(options.sim_times.c_str(), "w"));
+    if (!g_sim_trace) die("cannot open simulation timing trace");
+    std::setvbuf(g_sim_trace.get(), nullptr, _IOFBF, 1024 * 1024);
+    std::fputs("retrace,wall_seconds,interval_ms,work_ms,deadline_late_ms,timebase,speed,fast,resynced\n", g_sim_trace.get());
+  }
   if (!options.state_trace.empty()) {
     g_state_trace = std::fopen(options.state_trace.c_str(), "w");
     if (!g_state_trace) die("cannot open state trace");
@@ -520,16 +528,22 @@ void retrace() {
   slippi::poll_options();
   advance_frame();
   if (g_has_window) window_pump();
+  bool resynced = false;
   if (!options.fast) {
     g_next_frame += std::chrono::microseconds((long long)(16667.0 / g_emulation_speed));
     auto now = std::chrono::steady_clock::now();
     if (g_next_frame > now) std::this_thread::sleep_until(g_next_frame);
-    else if (now - g_next_frame > std::chrono::milliseconds(34)) g_next_frame = now;   // after a stall, resume at 60 Hz instead of sprinting to catch up (audio would crackle)
+    else if (now - g_next_frame > std::chrono::milliseconds(34)) { g_next_frame = now; resynced = true; } // resume after a stall without sprinting to catch up
     g_frame_time = std::chrono::duration<double>(g_next_frame.time_since_epoch()).count();
   } else {
     g_frame_time = now_seconds();
   }
+  const double previous_start = g_sim_frame_start;
   g_sim_frame_start = now_seconds();
+  if (g_sim_trace) std::fprintf(g_sim_trace.get(), "%u,%.9f,%.6f,%.6f,%.6f,%llu,%.6f,%u,%u\n",
+      g_retraces, g_sim_frame_start, previous_start ? (g_sim_frame_start - previous_start) * 1000.0 : 0.0,
+      g_last_sim_ms, (g_sim_frame_start - g_frame_time) * 1000.0, (unsigned long long)cpu->tb,
+      g_emulation_speed, unsigned(options.fast), unsigned(resynced));
   fire_due_alarms(true);
   hle::audio_tick(true);
   // VI: mark display-interrupt 0 as pending (bit 15 of DI0 status, VI reg index 0x18).

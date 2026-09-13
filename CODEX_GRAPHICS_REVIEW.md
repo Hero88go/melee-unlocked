@@ -81,6 +81,14 @@ launcher and updater remain the foundation.
 - Detailed per-draw timers are opt-in with `--profile-draws`; normal rendering
   retains coarse frame timing and pipeline counts without repeated timer queries
   around every draw section. The obsolete fallback-draw counter is removed.
+- `--sim-times` records actual VI intervals separately from presentation FPS,
+  including requested speed and pacing resynchronizations. The benchmark reports
+  wall-clock retrace rate and sliding 60-tick windows, and supports forward/delayed
+  authored comparisons. Timing-analysis tests reject missing and reordered ticks.
+- Added a four-player Battlefield fixture; a 3,000-retrace isolated headless run
+  records all four players and the existing 15-damage / 50.27-minimum-shield
+  contact sequence. Two additional fighters are mostly idle, so demanding
+  four-player performance is still an outstanding gate.
 - Loading workers now have explicit lifetimes: the Slippi file preloader joins
   at shutdown, and music decoding uses one owned worker with a latest-request
   mailbox. Disc-directory initialization is serialized. Disc counters and the
