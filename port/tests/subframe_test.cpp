@@ -106,6 +106,62 @@ int main() {
         "geometry discontinuity holds current vertices and matrices together");
   b.vertices[0].pos[0] = 0; b.draws[0].xf_regs[0x26] = 1; solver.set_frames(&a, &b);
   check(solver.stats().paired == 0, "orthographic HUD draws retain exact pose");
+  // Matrix selectors are discrete even when the vertex stream is unchanged.
+  gx::Frame texture_previous, texture_current;
+  texture_previous.sequence = 1; texture_current.sequence = 2;
+  texture_previous.vertices.resize(3); texture_current.vertices.resize(3);
+  gx::DrawCall texture_draw{}; texture_draw.identity = 15; texture_draw.vertex_count = 3;
+  texture_draw.primitive = 0x90; texture_draw.xf_regs[0x3F] = 1;
+  texture_draw.matrix_index_a = 6u << 6;
+  rot_z(0, 0, texture_draw.posMatrices);
+  rot_z(0, 0, texture_draw.posMatrices + 24);
+  texture_previous.draws.push_back(texture_draw); texture_current.draws.push_back(texture_draw);
+  texture_current.draws[0].matrix_index_a |= 3;
+  solver.set_frames(&texture_previous, &texture_current);
+  check(solver.stats().paired == 0, "changed CP position binding invalidates subframe history");
+  texture_current.draws[0].matrix_index_a = 9u << 6;
+  solver.set_frames(&texture_previous, &texture_current);
+  check(solver.stats().paired == 0, "changed active CP texture binding invalidates subframe history");
+  texture_current.draws[0].matrix_index_a = texture_draw.matrix_index_a;
+  texture_current.draws[0].matrix_index_b = 12; // inactive texture generator
+  solver.set_frames(&texture_previous, &texture_current);
+  check(solver.stats().paired == 1, "inactive texture bindings do not reject a draw");
+  texture_current.draws[0].xf_regs[0x40] = 2;
+  solver.set_frames(&texture_previous, &texture_current);
+  check(solver.stats().paired == 0, "changed texture projection invalidates subframe history");
+  texture_current.draws[0].xf_regs[0x40] = 0;
+  texture_current.draws[0].matrix_index_b = 0;
+  // All eight per-vertex selectors must drive their own texture matrices. CP
+  // defaults point elsewhere, so accidentally using them is observable.
+  for (unsigned generator = 0; generator < 8; ++generator) {
+    texture_previous.draws[0].xf_regs[0x3F] = texture_current.draws[0].xf_regs[0x3F] = generator + 1;
+    texture_previous.draws[0].components = texture_current.draws[0].components = gx::VB_HAS_TEXMTXIDX0 << generator;
+    for (auto& v : texture_previous.vertices) v.texmtx[generator] = 12;
+    for (auto& v : texture_current.vertices) v.texmtx[generator] = 12;
+    rot_z(0, 0, texture_previous.draws[0].posMatrices + 48);
+    rot_z(0, 4, texture_current.draws[0].posMatrices + 48);
+    solver.set_frames(&texture_previous, &texture_current);
+    solver.build(.5, false, mats, true);
+    check(near(mats[0].pos[51], 6), "per-vertex texture selector advances the matrix actually used by the shader");
+    solver.build(.5, true, mats, true);
+    check(near(mats[0].pos[51], 2), "per-vertex texture transform shares interpolation timeline");
+  }
+  // A large change to one coefficient rejects the complete texture transform.
+  texture_current.draws[0].posMatrices[48] = 30;
+  solver.set_frames(&texture_previous, &texture_current);
+  solver.build(.5, false, mats, true);
+  check(std::memcmp(mats[0].pos + 48, texture_current.draws[0].posMatrices + 48, 12 * sizeof(float)) == 0,
+        "texture discontinuity holds all coefficients together");
+  solver.build(.5, true, mats, true);
+  check(std::memcmp(mats[0].pos + 48, texture_current.draws[0].posMatrices + 48, 12 * sizeof(float)) == 0,
+        "texture interpolation cut also holds the complete current transform");
+  texture_previous.draws[0].components = texture_current.draws[0].components = 0;
+  texture_previous.draws[0].xf_regs[0x3F] = texture_current.draws[0].xf_regs[0x3F] = 1;
+  texture_previous.draws[0].matrix_index_a = texture_current.draws[0].matrix_index_a = 1u << 6;
+  texture_current.draws[0].posMatrices[7] = 4;
+  solver.set_frames(&texture_previous, &texture_current);
+  solver.build(.5, false, mats, true);
+  check(near(mats[0].pos[7], 4), "partially overlapping texture rows do not overwrite a held position matrix");
   float scale2[12] = {2,0,0,0, 0,1,0,0, 0,0,1,0};
   gx::SubFrameSolver::fractional(prev, scale2, 0.5, true, 40, 3.0f, out, nrm, ident_n, ident_n, &st);
   check(near(nrm[0], 1.0f / std::sqrt(2.0f)), "normal delta uses inverse transpose");
@@ -159,5 +215,18 @@ int main() {
   check(gx::sample_authored_envelope(previous_skin, current_skin, .5, skin_pos, skin_nrm,
                                    sampled_pos, sampled_nrm, nullptr), "valid skin publishes all sampled slots");
   check(near(sampled_pos[3], 7.5f) && near(sampled_pos[15], 7.5f), "both skin slots advance together");
+  // Skin publication copies the complete matrix array; disjoint UV animation
+  // must survive it and finish on the same presentation phase.
+  texture_previous.draws[0].authored_pose = std::make_shared<gx::AuthoredPose>(previous_skin);
+  texture_current.draws[0].authored_pose = std::make_shared<gx::AuthoredPose>(current_skin);
+  texture_previous.draws[0].matrix_index_a = texture_current.draws[0].matrix_index_a = 12u << 6;
+  std::memcpy(texture_current.draws[0].posMatrices, skin_pos, sizeof skin_pos);
+  std::memcpy(texture_current.draws[0].normalMatrices, skin_nrm, sizeof skin_nrm);
+  rot_z(0, 0, texture_previous.draws[0].posMatrices + 48);
+  rot_z(0, 4, texture_current.draws[0].posMatrices + 48);
+  solver.set_frames(&texture_previous, &texture_current);
+  solver.build(.5, false, mats, true);
+  check(solver.stats().authored == 1 && near(mats[0].pos[3], 7.5f) && near(mats[0].pos[51], 6),
+        "skin and independent texture animation both survive complete pose publication");
   std::puts("sub-frame rigid fractions, cuts, blends and pairing passed");
 }
