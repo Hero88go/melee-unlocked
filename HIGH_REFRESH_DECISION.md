@@ -25,10 +25,38 @@ Rivals II is the requested feel reference. The official workshop material
 describes Unreal assets and animation imports with a 60 Hz sample rate:
 [official workshop documentation](https://rivals2.com/workshop/).
 An asset import rate does not prove the shipping game's simulation or
-presentation algorithm. No verified developer description of its exact
-high-refresh implementation was found in this review. Community explanations
-are insufficient to attribute a particular technique to it. Remove the old
-window-title assertion about matching Rivals' physics.
+presentation algorithm. Further primary-source research on September 13 found:
+
+- Dan Fornace describes custom C++ collision/update logic and confirms SnapNet in
+  his [developer interview](https://softwareengineeringdaily.com/podcasts/rivals-of-aether-with-dan-fornace/),
+  around 21:29–24:32 in its original transcript. Standard Unreal physics settings
+  therefore do not establish Rivals II's gameplay implementation.
+- Its hosting provider independently confirms the
+  [SnapNet/dedicated-server integration](https://edgegap.com/blog/rivals-of-aether-2-how-is-its-online-experience-is-so-good-netcode-rollback-dedicated-server-orchestration).
+- SnapNet explicitly documents [simulation-frame interpolation for high-refresh presentation](https://www.snapnet.dev/docs/core-concepts/simulation-vs-presentation/),
+  including the example of 60 Hz simulation and 144 Hz rendering. This is stronger
+  evidence than an animation import rate, but it describes SDK behavior rather
+  than every shipping Rivals II setting or override.
+- [Network prediction](https://www.snapnet.dev/docs/core-concepts/interpolation-vs-prediction/)
+  and presentation interpolation are separate decisions. Predicting networked
+  gameplay does not imply that visual geometry extrapolates beyond the latest
+  locally simulated pose.
+
+Verified: custom gameplay, SnapNet, a simulation/presentation split in that SDK,
+and SDK support for interpolation between simulation frames. Still unverified:
+Rivals II's exact render-phase offset, per-object interpolation overrides,
+skeleton/camera evaluation, input sampling phase and render-queue settings.
+Do not claim we have reproduced its exact implementation or measured its latency.
+The former blanket assertion that no technical implementation evidence was found
+is superseded by these sources; the exact per-object implementation remains open.
+
+For this port, coherent delayed interpolation must be compared seriously with
+forward authored sampling. The preview retains the existing forward default;
+the eventual choice must account for both motion errors and measured response.
+A standard interpolation path can add one physics step of visual delay, while
+extrapolation can overshoot and require correction; see
+[Unity's explanation of both modes](https://docs.unity3d.com/6000.0/Documentation/Manual/rigidbody-interpolation.html).
+Neither is universally best independent of the game's constraints.
 
 ## What counts as passing
 

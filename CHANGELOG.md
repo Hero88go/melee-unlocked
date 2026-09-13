@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Codex graphics correctness update
+## 0.1.6-codex-preview — Codex graphics correctness update
 
 Retains Fable's rendering, authored animation, audio, launcher, updater and
 Streamline foundation. Repairs presentation starvation under sustained backlog,
@@ -24,6 +24,6 @@ Further subframe fixes reject changed matrix bindings, follow per-vertex texture
 selectors, hold complete UV transforms at cuts, and preserve texture animation
 when publishing a skinned pose.
 
-This is an unreleased development update. Existing Fable releases are preserved.
+This is a development preview. Existing Fable releases are preserved.
 DLSS quality, Dolphin parity and demanding high-refresh acceptance are still
 under validation; this entry is not a completion claim.

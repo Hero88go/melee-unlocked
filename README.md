@@ -7,9 +7,13 @@ unlocked display frame rate.
 
 The game's own PowerPC code is translated ahead of time into C++ (static recompilation of the
 retail executable plus Slippi's Gecko codes) and runs against a native D3D12 renderer, so the
-game logic stays exactly what the GameCube ran, at 60 Hz, while the display runs at any rate.
-In-between frames come from the game's own animation data and physics state, not from image
-interpolation, so an unlocked 200 Hz display shows real intermediate poses with no added latency.
+authoritative gameplay and presentation run separately. The original fixed-step gameplay is
+preserved while the renderer samples supported animation between simulation frames.
+Forward authored sampling avoids an additional buffered simulation frame; unsupported cases
+hold their pose. Smoothness, visual coverage and latency are still being validated.
+
+**Codex preview 0.1.6:** graphics correctness fixes and measured CPU-rendering improvements.
+See [release notes](RELEASE_NOTES.md) for every change and the remaining limitations.
 
 Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO.
 

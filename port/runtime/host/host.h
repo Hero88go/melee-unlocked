@@ -13,6 +13,7 @@ namespace host {
 struct Options {
   std::string iso;
   std::string state_trace;        // optional per-retrace CPU/RAM/ARAM verification CSV
+  std::string sim_times;          // optional actual VI cadence / pacing CSV, independent of render FPS
   std::string log_file;           // console log copy (default melee_port.log in the working directory)
   uint32_t frames = 0;           // stop after N retraces (0 = run until exit)
   bool fast = false;             // no real-time pacing

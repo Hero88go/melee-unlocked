@@ -93,6 +93,7 @@ int main(int argc, char** argv) {
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
     if (a == "--iso") o.iso = next();
     else if (a == "--state-trace") o.state_trace = next();
+    else if (a == "--sim-times") o.sim_times = next();
     else if (a == "--frames") o.frames = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--fast") o.fast = true;
     else if (a == "--headless") headless = true;
