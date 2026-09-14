@@ -34,7 +34,8 @@ static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
               "           [--fullscreen] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--volume 0-100] [--audio-dump out.wav]\n"
-              "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
+              "           [--capture out.ppm --capture-frame N] [--frame-times out.csv] [--profile-draws]\n"
+              "           [--trace-calls] [--quiet]\n");
 }
 
 // Windows hands out ~15.6 ms timer granularity by default, so every pacing sleep (the 60 Hz
@@ -53,8 +54,9 @@ struct TimerResolution {
 // started (a batch file, a shortcut, the launcher, a development command line), the launcher can
 // then offer that disc instead of leaving Play greyed out with an empty box.
 static void remember_iso(const std::string& iso) {
-  char full[MAX_PATH];
-  if (!GetFullPathNameA(iso.c_str(), MAX_PATH, full, nullptr)) return;
+  char full[MAX_PATH]{};
+  DWORD length = GetFullPathNameA(iso.c_str(), MAX_PATH, full, nullptr);
+  if (!length || length >= MAX_PATH) return;
   char* local = nullptr; size_t n = 0;
   if (_dupenv_s(&local, &n, "LOCALAPPDATA") != 0 || !local) return;
   std::string dir = std::string(local) + "\\MeleeUnlocked";
@@ -91,6 +93,7 @@ int main(int argc, char** argv) {
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
     if (a == "--iso") o.iso = next();
     else if (a == "--state-trace") o.state_trace = next();
+    else if (a == "--sim-times") o.sim_times = next();
     else if (a == "--frames") o.frames = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--fast") o.fast = true;
     else if (a == "--headless") headless = true;
@@ -123,6 +126,7 @@ int main(int argc, char** argv) {
     else if (a == "--frame-times") gfx.frame_times = next();
     else if (a == "--vsync") gfx.vsync = true;
     else if (a == "--capture") gfx.capture_path = next();
+    else if (a == "--profile-draws") gfx.profile_draws = true;
     else if (a == "--capture-frame") gfx.capture_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--capture-every") gfx.capture_every = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--capture-burst") gfx.capture_burst = (uint32_t)std::strtoul(next(), nullptr, 0);
@@ -141,7 +145,11 @@ int main(int argc, char** argv) {
     else if (a == "--card-dir") o.card_dir = next();
     else if (a == "--log-file") o.log_file = next();
     else if (a == "--replay") slippi::playback::set_replay(next());   // playback build: play this .slp
-    else if (a == "--user-dir") slippi::online::config().user_dir = next();
+    else if (a == "--user-dir") {
+      slippi::online::config().user_dir = next();
+      slippi::online::config().discover_launcher_login = false;
+    }
+    else if (a == "--discover-launcher-login") slippi::online::config().discover_launcher_login = true;
     else if (a == "--online-delay") slippi::online::config().delay = std::atoi(next());
     else if (a == "--chat") { std::string v = next(); slippi::online::config().chat = v == "off" ? 2 : v == "direct" ? 1 : 0; }
     else if (a == "--netplay-port") slippi::Matchmaking::forced_port = (uint16_t)std::atoi(next());
@@ -172,7 +180,7 @@ int main(int argc, char** argv) {
   }
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
-  remember_iso(o.iso);   // so the launcher can offer this disc without being told again
+  if (!automated) remember_iso(o.iso); // isolated captures must not rewrite launcher preferences
 
   std::unique_ptr<gx::Backend> backend;
   if (!headless && threaded) {

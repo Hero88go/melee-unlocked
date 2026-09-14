@@ -41,6 +41,19 @@ float wrap_frame(const AuthoredJoint& j,float frame) {
   if((j.anim_flags&AOBJ_LOOP)&&j.rewind<j.end&&frame>=j.end) return std::fmod(frame-j.rewind,j.end-j.rewind)+j.rewind;
   return frame;
 }
+bool continuous_clock(const AuthoredJoint& previous, const AuthoredJoint& current) {
+  // Spatial reconstruction tolerates error proportional to world coordinates.
+  // Applying that tolerance to an animation clock accepts an entire missing tick
+  // after frame 500, advancing paused tracks and snapping back every source frame.
+  constexpr uint32_t clock_flags = (1u << 27) | (1u << 28) | AOBJ_LOOP | (1u << 30);
+  if (!std::isfinite(current.rate) || current.rate == 0 || previous.rate != current.rate ||
+      previous.frame == current.frame || previous.end != current.end || previous.rewind != current.rewind ||
+      ((previous.anim_flags ^ current.anim_flags) & clock_flags) ||
+      (current.anim_flags & ((1u << 27) | (1u << 28) | (1u << 30)))) return false;
+  const float expected = wrap_frame(current, previous.frame + current.rate);
+  return std::isfinite(expected) && std::isfinite(current.frame) &&
+      std::abs(expected - current.frame) <= 0.0001f;
+}
 const AuthoredPose& chain_of(const AuthoredPose& p) { return p.chain ? *p.chain : p; }
 // Camera: the view matrix advanced `phase` frames by screw extrapolation of its last change. Returns
 // the sampled view and the transform that carries a current view-space matrix to it.
@@ -92,7 +105,7 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
       // hitch once per stride.
       // Looping animations wrap back into range above; a non-looping one that has run past its last
       // keyframe holds rather than extrapolating a track beyond what it authored.
-      bool sampled=!j.tracks.empty()&&near(wrap_frame(j,p.frame+j.rate),j.frame)&&sample_frame>=0&&sample_frame<=j.end;
+      bool sampled=!j.tracks.empty()&&continuous_clock(p,j)&&sample_frame>=0&&sample_frame<=j.end;
       if(!j.tracks.empty()&&!sampled){ ++authored_stats().sample[3]; partial=true; }
       if(sampled) {
         auto ts=scale,tr=rot,tp=pos;   // commit only if every track of this joint samples
@@ -109,6 +122,18 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
           *component=value;
         }
         if(sampled){ scale=ts; rot=tr; pos=tp; animated=true; } else partial=true;
+      }
+      if(interp && !sampled) {
+        // Keep a held joint on the same previous-to-current timeline as its
+        // sampled siblings. Large changes are discrete cuts, not interpolation.
+        for(int k=0;k<3;++k) {
+          const float dp=j.translation[k]-p.translation[k], dr=j.rotation[k]-p.rotation[k], ds=j.scale[k]-p.scale[k];
+          if(!std::isfinite(dp)||!std::isfinite(dr)||!std::isfinite(ds)||std::abs(dp)>30.0f||std::abs(dr)>0.5f) return false;
+          pos[k]=p.translation[k]+float(phase)*dp;
+          rot[k]=p.rotation[k]+float(phase)*dr;
+          scale[k]=p.scale[k]+float(phase)*ds;
+          animated |= dp!=0 || dr!=0 || ds!=0;
+        }
       }
       // Game-driven motion (fighter positions, items, knockback) has no track: predict it forward by
       // the last simulated per-frame delta, bounded so teleports and respawns hold instead.
@@ -228,8 +253,11 @@ bool sample_authored_envelope(const AuthoredPose& previous,const AuthoredPose& c
     };
     if(!make(wm_cur,wx_cur,right_cur)||!make(wm_new,wx_new,right_new)){ ++authored_stats().sample[17]; return false; }
   }
-  std::memcpy(out_pos,current_pos,256*sizeof(float));
-  std::memcpy(out_nrm,current_nrm,96*sizeof(float));
+  // Validate every slot before publishing any matrix. A later rejection must
+  // leave the caller's held pose intact, including when camera carry is a no-op.
+  float staged_pos[256], staged_nrm[96];
+  std::memcpy(staged_pos,current_pos,sizeof staged_pos);
+  std::memcpy(staged_nrm,current_nrm,sizeof staged_nrm);
   for(size_t s=0;s<current.slots.size();++s) {
     const auto& slot=current.slots[s]; const auto& pslot=previous.slots[s];
     if(slot.bones.size()!=pslot.bones.size()||slot.bones.empty()){ ++authored_stats().sample[18]; return false; }
@@ -255,9 +283,11 @@ bool sample_authored_envelope(const AuthoredPose& previous,const AuthoredPose& c
     for(float v:m_new)if(!std::isfinite(v)){ ++authored_stats().sample[21]; return false; }
     float nrm[9];
     if(!normal_matrix(m_new,nrm)){ ++authored_stats().sample[22]; return false; }
-    std::memcpy(out_pos+12*s,m_new.data(),48);
-    if(9*s+9<=96)std::memcpy(out_nrm+9*s,nrm,sizeof nrm);
+    std::memcpy(staged_pos+12*s,m_new.data(),48);
+    if(9*s+9<=96)std::memcpy(staged_nrm+9*s,nrm,sizeof nrm);
   }
+  std::memcpy(out_pos,staged_pos,sizeof staged_pos);
+  std::memcpy(out_nrm,staged_nrm,sizeof staged_nrm);
   ++authored_stats().sampled;
   return true;
 }

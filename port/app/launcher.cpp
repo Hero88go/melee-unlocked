@@ -78,6 +78,7 @@ std::string read_iso_from(const std::string& path) {
 void load_ini() {
   g_iso = read_iso_from(ini_path());
   if (g_iso.empty() || !file_exists(g_iso)) {
+    g_iso.clear();
     std::string remembered = read_iso_from(shared_ini_path());
     if (!remembered.empty() && file_exists(remembered)) g_iso = remembered;
   }
@@ -161,31 +162,30 @@ std::string work_dir() {
   std::string root = repo_root();
   return root.empty() ? g_dir : root;
 }
-std::string game_args() {
+std::string game_args(const std::string& iso) {
   std::string base = g_dir;
-  std::string a = " --iso \"" + g_iso + "\" --threaded-renderer --fps unlocked --frame-mode authored --scale auto --volume 70";
+  std::string a = " --iso \"" + iso + "\" --threaded-renderer --fps unlocked --frame-mode authored --scale auto --volume 70";
   if (file_exists(g_dir + "\\Sys\\codehandler.bin"))
     a += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + base + "\\User\\Slippi\" --replay-dir \"" + base + "\\Replays\" --card-dir \"" + base + "\\User\\GC\\CardA\"";
-  return a;
+  return a + " --discover-launcher-login";
 }
 
-void build_thread() {
+void build_thread(std::string iso) {
   std::string why;
-  log_line("Checking %s", g_iso.c_str());
-  if (!verify_iso(g_iso, &why)) { log_line("Rejected: %s.", why.c_str()); PostMessageW(g_main, WM_APP_BUILD_DONE, 1, 0); return; }
+  log_line("Checking %s", iso.c_str());
+  if (!verify_iso(iso, &why)) { log_line("Rejected: %s.", why.c_str()); PostMessageW(g_main, WM_APP_BUILD_DONE, 1, 0); return; }
   log_line("Melee NTSC 1.02 disc image: OK");
-  save_ini();
-  g_game_exe = game_exe();
-  if (!file_exists(g_game_exe)) {
+  const std::string executable = game_exe();
+  if (!file_exists(executable)) {
     std::string root = repo_root();
     if (root.empty()) { log_line("melee_port.exe is missing next to this launcher and this is not a source checkout."); PostMessageW(g_main, WM_APP_BUILD_DONE, 1, 0); return; }
     log_line("Source checkout at %s: running build.bat (20 to 40 minutes the first time)", root.c_str());
-    DWORD code = run_logged("cmd /c \"\"" + root + "\\build.bat\" \"" + g_iso + "\"\" <nul", root);
-    if (code != 0 || !file_exists(g_game_exe)) { log_line("Build failed (exit code %lu).", code); PostMessageW(g_main, WM_APP_BUILD_DONE, 1, 0); return; }
+    DWORD code = run_logged("cmd /c \"\"" + root + "\\build.bat\" \"" + iso + "\"\" <nul", root);
+    if (code != 0 || !file_exists(executable)) { log_line("Build failed (exit code %lu).", code); PostMessageW(g_main, WM_APP_BUILD_DONE, 1, 0); return; }
   }
   log_line("Precompiling the graphics pipelines for this GPU (this runs once, about 15 to 30 seconds)");
   std::string cwd = work_dir();
-  DWORD code = run_logged("\"" + g_game_exe + "\"" + game_args() + " --hidden --frames 30 --volume 0 --log-file launcher_build.log", cwd);
+  DWORD code = run_logged("\"" + executable + "\"" + game_args(iso) + " --hidden --frames 30 --volume 0 --log-file launcher_build.log", cwd);
   if (code != 0) log_line("The game exited with code %lu during the pipeline precompile; see launcher_build.log.", code);
   log_line("Done. Press Play.");
   PostMessageW(g_main, WM_APP_BUILD_DONE, code, 0);
@@ -196,7 +196,8 @@ void start_build() {
   g_building = true;
   EnableWindow(g_build_btn, FALSE); EnableWindow(g_play_btn, FALSE);
   SetWindowTextW(g_log, L"");
-  std::thread(build_thread).detach();
+  save_ini(); // UI thread owns the selected ISO and settings writes.
+  std::thread(build_thread, g_iso).detach();
 }
 
 void start_game() {
@@ -204,7 +205,7 @@ void start_game() {
   g_game_exe = game_exe();
   if (!file_exists(g_game_exe)) { TabCtrl_SetCurSel(g_tabs, 1); PostMessageW(g_main, WM_COMMAND, MAKEWPARAM(ID_TABS, 0), 0); start_build(); return; }
   std::string cwd = work_dir();
-  std::string cmd = "\"" + g_game_exe + "\"" + game_args();
+  std::string cmd = "\"" + g_game_exe + "\"" + game_args(g_iso);
   STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
   if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi)) { MessageBoxW(g_main, L"Could not start melee_port.exe", L"Melee Unlocked Launcher", MB_ICONERROR); return; }
   CloseHandle(pi.hThread);
@@ -269,7 +270,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_play[i++] = g_slippi_btn = make(L"BUTTON", L"Get Slippi Launcher", BS_PUSHBUTTON, 452, 194, 144, 26, ID_SLIPPI_GET);
       g_play[i++] = g_version_text = make(L"STATIC", L"", 0, 24, 250, 420, 40, ID_VERSION_TEXT);
       g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_PUSHBUTTON, 452, 248, 144, 26, ID_UPDATE);
-      make(L"STATIC", L"In game: F1 or Z + Start opens the PC settings (fullscreen, frame rate, resolution, DLSS, anti-aliasing, widescreen, audio).\nA GameCube adapter is used automatically when it has the WinUSB driver (the Slippi Launcher installs it). Keyboard: arrows, IJKL, Z X C V, Enter, Q W E.",
+      make(L"STATIC", L"In game: F1 opens the PC settings (fullscreen, frame rate, resolution, DLSS, anti-aliasing, widescreen, audio).\nA GameCube adapter is used automatically when it has the WinUSB driver (the Slippi Launcher installs it). Keyboard: arrows, IJKL, Z X C V, Enter, Q W E.",
            0, 24, 300, 572, 96, ID_HINT);
       g_play[7] = GetDlgItem(hwnd, ID_HINT);
       // Build page

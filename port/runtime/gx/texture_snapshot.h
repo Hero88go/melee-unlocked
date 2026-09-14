@@ -45,6 +45,9 @@ public:
     auto previous = last_source.find(image);
     if (previous != last_source.end() && equal(*previous->second.snapshot, image, image_size, palette, palette_size)) {
       previous->second.used = generation;
+      auto live = entries.equal_range(previous->second.snapshot->hash);
+      for (auto it = live.first; it != live.second; ++it)
+        if (it->second.snapshot == previous->second.snapshot) { it->second.used = generation; break; }
       return previous->second.snapshot;
     }
     uint64_t hash = hash_bytes(image, image_size) ^ (hash_bytes(palette, palette_size) * 31);

@@ -4,6 +4,7 @@
 // touched. The bounded source queue can back-pressure simulation when rendering is slow.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "threaded_backend.h"
+#include "drain_policy.h"
 #include "frame_queue.h"
 #include "gx_d3d12.h"
 #include "host.h"
@@ -49,7 +50,7 @@ class ThreadedBackend final : public Backend {
           file = std::fopen(path.c_str(), "w");
           if (!file) throw std::runtime_error("cannot open frame timing CSV");
           std::setvbuf(file, nullptr, _IOFBF, 1024 * 1024);
-          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms\n", file);
+          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms,gpu_submission,gpu_simulation,gpu_ms,gpu_presented\n", file);
         }
       }
       ~Trace() { if (file) std::fclose(file); }
@@ -59,6 +60,7 @@ class ThreadedBackend final : public Backend {
     double stats_time = next_present; uint64_t stats_presented = 0, stats_sim = 0, stats_lines = 0;
     uint32_t phase_bins[5] = {};
     double build_seconds = 0, submit_seconds = 0; uint64_t cost_presented = 0;   // presented phases: [0,.25) [.25,.5) [.5,.75) [.75,1) exactly 1
+    DrainPolicy drain_policy;
     for (;;) {
       host::window_pump();
       const auto& live_options = d3d12_options(renderer);
@@ -95,13 +97,10 @@ class ThreadedBackend final : public Backend {
         queue.wait_available(std::chrono::milliseconds(2));
         continue;
       }
-      // Pairing must follow every new frame, including drained ones: the index maps this frame's
-      // draws onto the previous frame's, and the ring slots are refilled underneath it.
-      if (got_new && subframes) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);
       // Backlog (the renderer fell behind, or a compile burst): execute older frames without
       // the solver or a present so their EFB copies exist, then catch up to the newest one. The
       // simulation never waits on this.
-      if (got_new && queue.size() > 0) {
+      if (got_new && drain_policy.drain(queue.size())) {
         renderer->set_skip_present(true);
         renderer->submit_frame(frames[cur]);
         renderer->set_skip_present(false);
@@ -110,6 +109,9 @@ class ThreadedBackend final : public Backend {
         if (drained == 1 || drained % 300 == 0) host::log("renderer: draining a backlog of %zu queued frames (%llu drained so far)", queue.size() + 1, (unsigned long long)drained);
         continue;
       }
+      // No solver reads drained frames. Rebuild pairing just before the next
+      // presentation, against the two retained source frames, even after a drain.
+      if (got_new && subframes) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);
       const Frame& current = frames[cur];
       bool should_render;
       double t = 0.0;
@@ -157,10 +159,12 @@ class ThreadedBackend final : public Backend {
       const double render_end = host::now_seconds();
       const double present_wait = renderer->presentation_wait_seconds();
       render_budget = std::max(render_budget * 0.95, render_end-render_start-present_wait+0.0002);
-      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f\n",
+      const GpuTiming gpu = d3d12_gpu_timing(renderer);
+      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f,%llu,%llu,%.6f,%u\n",
           (unsigned long long)(presented+1), (unsigned long long)current.sequence, t,
           (render_start-current.time)*1000.0, last_submission ? (render_end-last_submission)*1000.0 : 0.0,
-          solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired, host::last_sim_frame_ms());
+          solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired, host::last_sim_frame_ms(),
+          (unsigned long long)gpu.submission, (unsigned long long)gpu.simulation, gpu.milliseconds, unsigned(gpu.presented));
       last_submission = render_end;
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
@@ -175,7 +179,7 @@ class ThreadedBackend final : public Backend {
       if (now - stats_time >= 1.0) {
         const SubFrameStats& s = solver.stats();
         wchar_t title[160];
-        _snwprintf_s(title, _TRUNCATE, L"Melee Unlocked  |  DISPLAY %.0f fps%s  |  game logic %.0f Hz (always 60, like Rivals' physics)  |  %s  |  draws %u paired %u",
+        _snwprintf_s(title, _TRUNCATE, L"Melee Unlocked  |  PRESENT %.0f fps%s  |  source frames %.0f Hz  |  %s  |  draws %u paired %u",
                      stats_presented / (now - stats_time), cap_period > 0 ? L" (capped)" : L" (uncapped)", stats_sim / (now - stats_time),
                      !subframes ? L"locked" : authored ? L"authored" : interpolate ? L"interpolate" : L"extrapolate", s.draws, s.paired);
         host::window_set_title(title);
@@ -185,7 +189,7 @@ class ThreadedBackend final : public Backend {
           if (subframes) host::log("pair rejection: missing %u, HUD %u, geometry %u, state %u (last BP %02X), projection %u, authored %u, camera-only %u, vertex-blended %u | phases <.25:%u <.5:%u <.75:%u <1:%u =1:%u",
                                    s.missing, s.hud, s.geometry, s.state, s.state_register, s.projection, s.authored, s.carried, s.vertex_blended, phase_bins[0], phase_bins[1], phase_bins[2], phase_bins[3], phase_bins[4]);
           if (subframes) std::memset(phase_bins, 0, sizeof phase_bins);
-          host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), d3d12_profile_line().c_str());
+          host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), d3d12_profile_line(live_options.profile_draws).c_str());
           build_seconds = submit_seconds = 0; cost_presented = 0;
           if (authored) {
             const AuthoredStats& a = authored_stats();

@@ -9,6 +9,7 @@
 namespace slippi::jukebox {
 void start_song(uint32_t disc_offset, uint32_t size);   // CMD_PLAY_MUSIC
 void stop();                                            // CMD_STOP_MUSIC
+void shutdown();                                        // cancel and join background decoding
 void set_melee_volume(uint8_t volume);                  // CMD_CHANGE_MUSIC_VOLUME (0..254)
 void set_user_volume(int percent);                      // PC settings "Music" (0..100)
 int user_volume();

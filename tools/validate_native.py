@@ -20,24 +20,31 @@ def main():
     ap.add_argument("--out", type=Path, default=ROOT / "reports/native-validation")
     ap.add_argument("--frames", type=int, default=2400)
     ap.add_argument("--timeout", type=float, default=240)
+    ap.add_argument('--card-fixture', type=Path, help='prepared card copied separately for each mode')
     args = ap.parse_args()
     if args.frames < 1 or args.timeout <= 0: ap.error("frames and timeout must be positive")
     args.out.mkdir(parents=True, exist_ok=True)
     results = {"frames": args.frames, "kind": "native renderer isolation", "runs": {}}
     rows = []
-    modes = ("headless", "hidden", "threaded", "authored")
+    modes = ("headless", "hidden", "threaded", "authored", "authored-interpolate")
     for mode in modes:
         trace = (args.out / (mode + ".csv")).resolve()
         log_path = args.out / (mode + "-trace.log")
         mode_flags = ["--hidden", "--threaded-renderer"] if mode == "threaded" else ["--" + mode]
-        if mode == "authored": mode_flags = ["--hidden", "--threaded-renderer", "--fps", "240", "--frame-mode", "authored"]
+        if mode in ("authored", "authored-interpolate"):
+            mode_flags = ["--hidden", "--threaded-renderer", "--fps", "240", "--frame-mode", mode]
         # Each run gets an empty memory card: the game's boot path differs with and without a save.
         card_dir = (args.out / (mode + "-card")).resolve()
-        shutil.rmtree(card_dir, ignore_errors=True)
+        if card_dir.exists():
+            raise SystemExit(f"trial state already exists: {card_dir}; use a fresh output directory")
+        if args.card_fixture:
+            shutil.copytree(args.card_fixture, card_dir)
         command = [str(args.exe.resolve()), "--iso", str(args.iso.resolve()), *mode_flags,
                    "--volume", "0", "--fast", "--frames", str(args.frames), "--time-base", "1",
                    "--card-dir", str(card_dir),
                    "--user-dir", str(card_dir / 'User'),
+                   "--shader-cache", str((args.out / (mode + '-cache')).resolve()),
+                   "--replay-dir", str((args.out / (mode + '-replays')).resolve()),
                    "--log-file", str((args.out / (mode + "-port.log")).resolve()),
                    "--script", str(args.script.resolve()), "--state-trace", str(trace)]
         start = time.monotonic()

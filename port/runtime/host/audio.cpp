@@ -165,17 +165,22 @@ bool wasapi_open() {
   hr = g_client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 40 * 10000 /* 40 ms, 100 ns units */, 0, &fmt, nullptr);
   if (FAILED(hr)) { log("audio: IAudioClient initialize failed (%08X)", (unsigned)hr); g_client->Release(); g_client = nullptr; return false; }
   g_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-  if (FAILED(g_client->SetEventHandle(g_event)) || FAILED(g_client->GetBufferSize(&g_buffer_frames)) ||
+  if (!g_event || FAILED(g_client->SetEventHandle(g_event)) || FAILED(g_client->GetBufferSize(&g_buffer_frames)) ||
       FAILED(g_client->GetService(__uuidof(IAudioRenderClient), (void**)&g_render))) {
-    log("audio: IAudioClient setup failed"); g_client->Release(); g_client = nullptr; return false;
+    log("audio: IAudioClient setup failed");
+    if (g_event) { CloseHandle(g_event); g_event = nullptr; }
+    g_client->Release(); g_client = nullptr; return false;
   }
   g_target_frames = (size_t)g_buffer_frames + SAMPLE_RATE * 17 / 1000;
   if (g_target_frames > RING_FRAMES / 2) g_target_frames = RING_FRAMES / 2;
   g_priming = true;
   g_fill_average = 0.0;
+  g_ring_write = 0; g_ring_read = 0; g_ring_phase = 0; g_rate = 1;
+  g_last_output[0] = g_last_output[1] = 0;
+  g_rate_min = 1; g_rate_max = 1;
   g_running.store(true);
   g_thread = std::thread(wasapi_thread);
-  if (FAILED(g_client->Start())) { log("audio: IAudioClient start failed"); g_running.store(false); g_thread.join(); g_render->Release(); g_render = nullptr; g_client->Release(); g_client = nullptr; return false; }
+  if (FAILED(g_client->Start())) { log("audio: IAudioClient start failed"); g_running.store(false); g_thread.join(); g_render->Release(); g_render = nullptr; g_client->Release(); g_client = nullptr; CloseHandle(g_event); g_event = nullptr; return false; }
   return true;
 }
 
@@ -288,6 +293,10 @@ uint64_t audio_pushed_frames() { return g_frames; }
 uint64_t audio_dropped_blocks() { return g_dropped; }
 uint64_t audio_underruns(uint64_t* silent_ms) { if (silent_ms) *silent_ms = g_underrun_frames.load() * 1000 / SAMPLE_RATE; return g_underruns.load(); }
 void audio_rate_range(double* low, double* high) { if (low) *low = g_rate_min.load(); if (high) *high = g_rate_max.load(); }
-uint32_t audio_buffered_ms() { return (uint32_t)((g_ring_write.load() - g_ring_read.load()) * 1000 / SAMPLE_RATE); }
+uint32_t audio_buffered_ms() {
+  const auto read = g_ring_read.load(std::memory_order_acquire);
+  const auto write = g_ring_write.load(std::memory_order_acquire);
+  return (uint32_t)(std::min<uint64_t>(write >= read ? write-read : 0, RING_FRAMES) * 1000 / SAMPLE_RATE);
+}
 
 }  // namespace host

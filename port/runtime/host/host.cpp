@@ -13,6 +13,7 @@
 #include "gecko_data.h"
 #include <chrono>
 #include <mutex>
+#include <memory>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -33,12 +34,14 @@ namespace hle { void dvd_poll(); }
 namespace host {
 
 Options options;
+static thread_local bool g_collect_sim_cost = false;
 uint8_t* ram = nullptr;
 uint8_t* aram = nullptr;
 ppc::Context* cpu = nullptr;
 
 static FILE* g_disc = nullptr;
 static FILE* g_state_trace = nullptr;
+static std::unique_ptr<FILE, decltype(&std::fclose)> g_sim_trace(nullptr, &std::fclose);
 static uint32_t g_fst_offset, g_fst_size, g_fst_max;
 static std::deque<Completion> g_completions;
 static bool g_pe_finish_pending = false;
@@ -145,7 +148,7 @@ bool disc_open(const std::string& path) {
   if (std::memcmp(hdr, "GALE01", 6) != 0) log("warning: disc id is not GALE01");
   return true;
 }
-uint64_t g_disc_reads = 0, g_disc_bytes = 0;
+std::atomic<uint64_t> g_disc_reads{0}, g_disc_bytes{0};
 static std::mutex g_disc_mutex;   // the DVD worker and the simulation thread share the file
 bool disc_read(uint32_t offset, void* dst, uint32_t size) {
   std::lock_guard<std::mutex> lk(g_disc_mutex);
@@ -161,6 +164,8 @@ uint32_t disc_fst_size() { return g_fst_size; }
 // Looks a file up by name in the disc's FST (root and nested directories; exact match first,
 // then case-insensitive). Used to serve ISO files to host-side loaders (Slippi game files).
 bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size) {
+  static std::mutex fst_mutex;
+  std::lock_guard<std::mutex> lock(fst_mutex);
   static std::vector<uint8_t> fst;
   if (fst.empty()) {
     if (!g_fst_size) return false;
@@ -248,6 +253,13 @@ static void install_gecko_boot() {
 }
 
 void boot_setup() {
+  g_collect_sim_cost = true;
+  if (!options.sim_times.empty()) {
+    g_sim_trace.reset(std::fopen(options.sim_times.c_str(), "w"));
+    if (!g_sim_trace) die("cannot open simulation timing trace");
+    std::setvbuf(g_sim_trace.get(), nullptr, _IOFBF, 1024 * 1024);
+    std::fputs("retrace,wall_seconds,interval_ms,work_ms,deadline_late_ms,timebase,speed,fast,resynced\n", g_sim_trace.get());
+  }
   if (!options.state_trace.empty()) {
     g_state_trace = std::fopen(options.state_trace.c_str(), "w");
     if (!g_state_trace) die("cannot open state trace");
@@ -476,7 +488,8 @@ static double g_sim_costs_window[SIM_COST_COUNT];   // accumulated over the 60-f
 static double g_sim_ms_window = 0, g_sim_ms_worst = 0;
 static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe"};
 static double g_sim_frame_start = 0.0, g_last_sim_ms = 0.0;
-void sim_cost_add(int slot, double seconds) { if (slot >= 0 && slot < SIM_COST_COUNT) { g_sim_costs[slot] += seconds; g_sim_costs_window[slot] += seconds; } }
+static std::atomic<double> g_published_sim_ms{0};
+void sim_cost_add(int slot, double seconds) { if (g_collect_sim_cost && slot >= 0 && slot < SIM_COST_COUNT) { g_sim_costs[slot] += seconds; g_sim_costs_window[slot] += seconds; } }
 // "sim: 3.1 ms/frame (worst 12.4) | observe 0.9 texsnap 0.4" for the periodic frame log.
 static std::string sim_cost_line(uint32_t frames) {
   char buf[320];
@@ -492,7 +505,7 @@ static std::string sim_cost_line(uint32_t frames) {
   g_sim_ms_window = 0; g_sim_ms_worst = 0;
   return buf;
 }
-double last_sim_frame_ms() { return g_last_sim_ms; }
+double last_sim_frame_ms() { return g_published_sim_ms.load(std::memory_order_relaxed); }
 
 void retrace() {
   struct Guard { Guard() { g_in_retrace = true; } ~Guard() { g_in_retrace = false; } } guard;
@@ -501,6 +514,7 @@ void retrace() {
     double now = now_seconds();
     if (g_sim_frame_start > 0.0) {
       g_last_sim_ms = (now - g_sim_frame_start) * 1000.0;
+      g_published_sim_ms.store(g_last_sim_ms, std::memory_order_relaxed);
       g_sim_ms_window += g_last_sim_ms;
       if (g_last_sim_ms > g_sim_ms_worst) g_sim_ms_worst = g_last_sim_ms;
       if (g_last_sim_ms > 20.0) {
@@ -514,16 +528,22 @@ void retrace() {
   slippi::poll_options();
   advance_frame();
   if (g_has_window) window_pump();
+  bool resynced = false;
   if (!options.fast) {
     g_next_frame += std::chrono::microseconds((long long)(16667.0 / g_emulation_speed));
     auto now = std::chrono::steady_clock::now();
     if (g_next_frame > now) std::this_thread::sleep_until(g_next_frame);
-    else if (now - g_next_frame > std::chrono::milliseconds(34)) g_next_frame = now;   // after a stall, resume at 60 Hz instead of sprinting to catch up (audio would crackle)
+    else if (now - g_next_frame > std::chrono::milliseconds(34)) { g_next_frame = now; resynced = true; } // resume after a stall without sprinting to catch up
     g_frame_time = std::chrono::duration<double>(g_next_frame.time_since_epoch()).count();
   } else {
     g_frame_time = now_seconds();
   }
+  const double previous_start = g_sim_frame_start;
   g_sim_frame_start = now_seconds();
+  if (g_sim_trace) std::fprintf(g_sim_trace.get(), "%u,%.9f,%.6f,%.6f,%.6f,%llu,%.6f,%u,%u\n",
+      g_retraces, g_sim_frame_start, previous_start ? (g_sim_frame_start - previous_start) * 1000.0 : 0.0,
+      g_last_sim_ms, (g_sim_frame_start - g_frame_time) * 1000.0, (unsigned long long)cpu->tb,
+      g_emulation_speed, unsigned(options.fast), unsigned(resynced));
   fire_due_alarms(true);
   hle::audio_tick(true);
   // VI: mark display-interrupt 0 as pending (bit 15 of DI0 status, VI reg index 0x18).
@@ -536,7 +556,7 @@ void retrace() {
     uint64_t commands, draws, vertices; uint32_t copies;
     gx_stats(&commands, &draws, &vertices, &copies);
     log("[frame %u] gx: %llu cmds %llu draws %llu verts %u efb-copies | disc: %llu reads %.1f MB | %s",
-        g_retraces, commands, draws, vertices, copies, g_disc_reads, g_disc_bytes / 1048576.0, sim_cost_line(60).c_str());
+        g_retraces, commands, draws, vertices, copies, g_disc_reads.load(), g_disc_bytes.load() / 1048576.0, sim_cost_line(60).c_str());
   }
   if (options.frames && g_retraces >= options.frames) request_exit(0);
   if (g_exit) {

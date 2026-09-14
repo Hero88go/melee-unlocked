@@ -26,6 +26,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
   // First launch (no saved settings yet): open the PC settings panel so nobody has to find it.
   options.settings_open = true;   // opens at every launch unless "startup 0" was saved
   std::string key, value;
+  bool native_default_acknowledged = false;
   while (file >> key >> value) {
     try {
       if (key == "fps") { double rate = std::stod(value); if (rate == -1 || rate == 0 || (rate >= 30 && rate <= 2000)) options.fps_cap = rate; }
@@ -41,9 +42,14 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
+      else if (key == "native_default") native_default_acknowledged = value == "1";
       else if (key == "volume") volume = std::clamp(std::stoi(value), 0, 100);
     } catch (...) { /* Ignore a malformed preference, retaining the safe default. */ }
   }
+  // Older releases saved experimental reconstruction modes. Start those profiles
+  // in native rendering; Save settings acknowledges this migration and preserves
+  // any subsequently selected DLSS/DLAA mode. Explicit CLI options still win.
+  if (!native_default_acknowledged) options.dlss_mode = 0;
 }
 
 struct PcSettingsUI::Impl {
@@ -98,6 +104,9 @@ PcSettingsUI::~PcSettingsUI() {
 
 bool PcSettingsUI::begin(D3D12Options& options) {
   auto& state = *impl_;
+  auto& io = ImGui::GetIO();
+  if (state.open) io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+  else io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
   ImGui_ImplDX12_NewFrame(); ImGui_ImplWin32_NewFrame();
   host::PadState pad{};
   if (host::window_ui_gamecube_pad(pad)) {
@@ -112,8 +121,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.button & 2) || pad.stick_x > 40);
   }
   ImGui::NewFrame();
-  if (ImGui::IsKeyPressed(ImGuiKey_F1) ||
-      (ImGui::IsKeyDown(ImGuiKey_GamepadBack) && ImGui::IsKeyPressed(ImGuiKey_GamepadStart))) state.open = !state.open;
+  if (ImGui::IsKeyPressed(ImGuiKey_F1)) state.open = !state.open;
   if (state.open && ImGui::IsKeyPressed(ImGuiKey_Escape)) state.open = false;
   host::window_input_capture(state.open);
   state.intervals[state.cursor++ % state.intervals.size()] = ImGui::GetIO().DeltaTime*1000.f;
@@ -121,7 +129,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
   if (state.open) {
     ImGui::SetNextWindowSize(ImVec2(510, 430), ImGuiCond_FirstUseEver);
     ImGui::Begin("PC settings", &state.open, ImGuiWindowFlags_NoCollapse);
-    ImGui::TextUnformatted("F1 / Back + Start / Z + Start: settings    Escape: return to game");
+    ImGui::TextUnformatted("F1: settings    Escape: return to game");
     ImGui::Separator();
     changed |= ImGui::Checkbox("Borderless fullscreen", &options.fullscreen);
     const double rates[] = {-1, 0, 60, 120, 144, 165, 200, 240, 360, 480};
@@ -151,14 +159,17 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance"};
     if (ImGui::Combo("Upscaling (NVIDIA DLSS)", &options.dlss_mode, upscalers, 6)) changed = true;
     if (options.dlss_mode) {
-      static const char* ratios[] = {"", "100% (DLAA: full resolution, anti-aliasing only)", "67% (Quality)", "58% (Balanced)", "50% (Performance)", "33% (Ultra Performance)"};
-      ImGui::TextWrapped("DLSS renders the game at %s of the window size (at 1080p about 1280x960) and upscales it. That is what DLSS is for in heavy games; Melee is cheap to render, so here it is a downgrade in sharpness, and Internal resolution and Anti-aliasing above are ignored while it is on. For the sharpest image choose Native, set Internal resolution to 3x or higher and Anti-aliasing to 4x SSAA (the Dolphin look), or choose DLAA (full resolution, DLSS used only as anti-aliasing).", ratios[options.dlss_mode]);
+      ImGui::TextWrapped("DLSS/DLAA are experimental. Image quality and performance depend on the scene and GPU. DLAA is a quality option and can reduce FPS. Native rendering remains available for comparison.");
     }
+    if (options.actual_render_w) ImGui::Text("Rendering: %u x %u   Output: %u x %u", options.actual_render_w, options.actual_render_h, options.actual_output_w, options.actual_output_h);
     int sharp = (int)std::lround(options.sharpness * 100.0f);
     if (ImGui::SliderInt("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }
-    const char* subframe_modes[] = {"Off (60 Hz poses only)", "Predict ahead (no delay, can overshoot on speed changes)", "Interpolate (exact, one frame of delay)"};
+    ImGui::TextUnformatted("0% disables sharpening. Applied after scaling at output resolution.");
+    const char* subframe_modes[] = {"Off (60 Hz poses only)", "Forward sampling (can overshoot)", "Interpolate (previous/current poses)"};
     int sf = options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1;
     if (ImGui::Combo("Sub-frame animation", &sf, subframe_modes, 3)) { options.subframe = sf == 0 ? SubFrameMode::Off : sf == 2 ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored; changed = true; }
+    if (sf == 1) ImGui::TextWrapped("Samples supported animation beyond the latest pose. Sudden stops can require correction.");
+    if (sf == 2) ImGui::TextWrapped("Samples between completed poses. This adds up to one simulation tick of visual delay; unsupported motion may hold.");
     int music = slippi::jukebox::user_volume();
     if (ImGui::SliderInt("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
     state.volume = host::audio_volume();
@@ -179,7 +190,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       std::ofstream file(temporary);
       file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
            << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
-           << "\ndlss " << options.dlss_mode << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
+           << "\nnative_default 1\ndlss " << options.dlss_mode << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
            << "\nstartup " << (options.settings_open ? 1 : 0) << '\n';
       file.close();
@@ -194,7 +205,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 12, 12), ImGuiCond_Always, ImVec2(1, 0));
     ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
     ImGui::Begin("SettingsButton", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
-    if (ImGui::Button("Settings  (F1 / Z+Start)")) state.open = true;
+    if (ImGui::Button("Settings  (F1)")) state.open = true;
     ImGui::End();
   }
   if (options.performance_overlay) {

@@ -54,10 +54,12 @@ namespace {
 #endif
 
 // execute_draw section costs (seconds) and draw count since the last profile line.
-double g_prof[8]; uint64_t g_prof_draws = 0, g_pso_hits = 0, g_pso_lookups = 0, g_pso_creates = 0, g_pso_skips = 0;
+double g_prof[8]; uint64_t g_prof_draws = 0, g_pso_hits = 0, g_pso_lookups = 0, g_pso_creates = 0;
 struct Stopwatch {
   static double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
-  double t = now(); double lap() { double n = now(), d = n - t; t = n; return d; }
+  bool active; double t;
+  explicit Stopwatch(bool enabled = true) : active(enabled), t(enabled ? now() : 0) {}
+  double lap() { if (!active) return 0; double n = now(), d = n - t; t = n; return d; }
 };
 
 void check(HRESULT hr, const char* what) { if (FAILED(hr)) host::die("D3D12: %s failed (%08X)", what, (unsigned)hr); }
@@ -175,11 +177,16 @@ class D3D12Backend : public Backend {
     if (opts_.efb_scale == 0 && pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
   }
   int scale() const { return scale_; }
-  void set_skip_present(bool skip) override { skip_present_ = skip; }
+  void set_skip_present(bool skip) override {
+    // Drained frames execute resource work but are not temporal display history.
+    if (skip || skip_present_) { dlss_reset_ = true; last_poses_.clear(); }
+    skip_present_ = skip;
+  }
   bool skip_present_ = false;
   uint32_t frames_presented() const { return frames_presented_; }
   uint32_t pipeline_count() const { return (uint32_t)psos_.size(); }
   uint32_t texture_count() const { return (uint32_t)textures_.size(); }
+  GpuTiming gpu_timing() const { return last_gpu_timing_; }
 
  private:
   const uint64_t backend_id_ = next_backend_id.fetch_add(1);
@@ -212,14 +219,8 @@ class D3D12Backend : public Backend {
   struct PsoJob { PsoKey key; VSUid vsu; PSUid psu; D3D12_PRIMITIVE_TOPOLOGY_TYPE topo; PipelineRecipe recipe; };
   struct PsoResult { PsoKey key; ComPtr<ID3D12PipelineState> pso; ComPtr<ID3DBlob> vs, ps; PipelineRecipe recipe; };
   std::unordered_set<PsoKey, PsoKeyHash> psos_pending_;
-  struct FallbackKey { uint32_t blend, zmode, cull, topology, pixel_format, mvec, variant;
-    bool operator==(const FallbackKey& o) const { return blend == o.blend && zmode == o.zmode && cull == o.cull && topology == o.topology && pixel_format == o.pixel_format && mvec == o.mvec && variant == o.variant; } };
-  struct FallbackKeyHash { size_t operator()(const FallbackKey& k) const { return hash_bytes(&k, sizeof k); } };
-  std::unordered_map<FallbackKey, ComPtr<ID3D12PipelineState>, FallbackKeyHash> fallback_psos_;
-  ID3D12PipelineState* fallback_pso(const PsoKey& key, const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo);
   std::mutex pso_mutex_, pipeline_library_mutex_;
   std::condition_variable pso_cv_, pso_done_cv_;
-  int pso_wait_budget_us_ = 0;   // per presented frame: how long draws may wait for their real pipeline
   std::deque<PsoJob> pso_jobs_;
   std::vector<PsoResult> pso_done_;
   std::vector<std::thread> pso_threads_;
@@ -284,9 +285,16 @@ class D3D12Backend : public Backend {
   ComPtr<ID3D12DescriptorHeap> rtv_heap_, dsv_heap_, srv_heap_, sampler_heap_;
   ComPtr<ID3D12Resource> backbuffers_[3];
   ComPtr<ID3D12Resource> efb_color_, efb_depth_;
+  ComPtr<ID3D12Resource> presentation_color_; // output-resolution image before optional sharpening
   // Frames in flight: each slot owns a command allocator, upload rings and the resources it
   // retired; a slot is reused only after the fence value recorded at its submission completes.
   static constexpr int FRAME_SLOTS = 3;
+  ComPtr<ID3D12QueryHeap> timing_heap_;
+  ComPtr<ID3D12Resource> timing_readback_;
+  uint64_t timing_frequency_ = 0;
+  GpuTiming timing_slots_[FRAME_SLOTS]{}, last_gpu_timing_{};
+  void init_gpu_timing();
+  void read_gpu_timing();
   ComPtr<ID3D12CommandAllocator> allocators_[FRAME_SLOTS];
   uint64_t slot_fence_[FRAME_SLOTS] = {};
   int slot_ = 0;
@@ -346,6 +354,7 @@ void D3D12Backend::init() {
   if (!device_) host::die("D3D12: no adapter");
   D3D12_COMMAND_QUEUE_DESC qd{}; qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
   check(device_->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue_)), "queue");
+  if (!opts_.frame_times.empty()) init_gpu_timing();
   DXGI_SWAP_CHAIN_DESC1 sd{};
   sd.Width = client_w_; sd.Height = client_h_; sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.SampleDesc.Count = 1;
   sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.BufferCount = 3; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -419,7 +428,7 @@ O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.p
 float4 downsample(float2 uv) {
   int nx = (int)box.x, ny = (int)box.y;
   if (nx <= 1 && ny <= 1) return src.Sample(samp, uv);
-  float2 foot = sharp.xy * float2(nx, ny);   // footprint of one output pixel in uv
+  float2 foot = all(box.zw > 0) ? box.zw : sharp.xy * float2(nx, ny); // exact output-pixel footprint, not rounded tap count
   float4 acc = 0;
   for (int y = 0; y < ny; ++y)
     for (int x = 0; x < nx; ++x)
@@ -431,15 +440,15 @@ float4 PS(O i) : SV_Target {
   if (sharp.z <= 0.0) return c;
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
-  float2 step = sharp.xy * max(box.xy, 1.0);
-  float3 n = src.Sample(samp, i.uv + float2(0, -step.y)).rgb, s = src.Sample(samp, i.uv + float2(0, step.y)).rgb;
-  float3 w = src.Sample(samp, i.uv + float2(-step.x, 0)).rgb, e = src.Sample(samp, i.uv + float2(step.x, 0)).rgb;
+  float2 step = all(box.zw > 0) ? box.zw : sharp.xy * max(box.xy, 1.0);
+  float3 n = downsample(i.uv + float2(0, -step.y)).rgb, s = downsample(i.uv + float2(0, step.y)).rgb;
+  float3 w = downsample(i.uv + float2(-step.x, 0)).rgb, e = downsample(i.uv + float2(step.x, 0)).rgb;
   float3 mn = min(min(min(n, s), min(w, e)), c.rgb), mx = max(max(max(n, s), max(w, e)), c.rgb);
   float3 amp = sqrt(saturate(min(mn, 1.0 - mx) / max(mx, 1e-4)));
-  float peak = -1.0 / lerp(8.0, 5.0, saturate(sharp.z));
+  float peak = -1.0 / 5.0;
   float3 wgt = amp * peak;
   float3 r = (c.rgb + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt);
-  return float4(saturate(r), c.a);
+  return float4(lerp(c.rgb, saturate(r), saturate(sharp.z)), c.a);
 })";
   ComPtr<ID3DBlob> bvs, bps;
   check(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &bvs, &err), "blit vs");
@@ -464,6 +473,14 @@ void D3D12Backend::create_swapchain_targets(bool resize) {
     h.ptr += i * rtv_size_;
     device_->CreateRenderTargetView(backbuffers_[i].Get(), nullptr, h);
   }
+  presentation_color_.Reset();
+  D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+  auto desc = backbuffers_[0]->GetDesc();
+  desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+  check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &desc,
+        D3D12_RESOURCE_STATE_RENDER_TARGET, nullptr, IID_PPV_ARGS(&presentation_color_)), "presentation color");
+  auto target = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); target.ptr += 6 * rtv_size_;
+  device_->CreateRenderTargetView(presentation_color_.Get(), nullptr, target);
 }
 
 // Mirrors Dolphin Renderer::CalculateTargetSize: an explicit multiplier, or (auto) the smallest
@@ -602,6 +619,7 @@ static void describe_pipeline(D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, const PsoK
     {"TEXCOORD", 7, DXGI_FORMAT_R32G32_FLOAT, 0, 88, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     {"BLENDINDICES", 0, DXGI_FORMAT_R8G8B8A8_UINT, 0, 96, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
     {"BLENDINDICES", 1, DXGI_FORMAT_R8G8B8A8_UINT, 0, 100, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+    {"BLENDINDICES", 2, DXGI_FORMAT_R8_UINT, 0, 104, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
   };
   pd.pRootSignature = root;
   pd.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
@@ -719,70 +737,9 @@ void D3D12Backend::integrate_compiled_psos() {
 }
 
 
-// While a draw's real pipeline compiles on a worker, draw it with a generic one (position, vertex
-// colour, texture 0) instead of skipping it: a few frames of approximate shading beat objects
-// popping in and out. Built synchronously (the shaders are tiny), one per raster state.
-ID3D12PipelineState* D3D12Backend::fallback_pso(const PsoKey& key, const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
-  const bool textured = (dc.xf_regs[0x3F] & 15) != 0 && (dc.components & VB_HAS_UV0);
-  const bool colored = (dc.components & VB_HAS_COL0) != 0;
-  FallbackKey fk{key.blend, key.zmode, key.cull, key.topology, key.pixel_format, key.mvec, (uint32_t)textured | ((uint32_t)colored << 1)};
-  auto it = fallback_psos_.find(fk);
-  if (it != fallback_psos_.end()) return it->second.Get();
-  static const char* vs_src = R"(
-cbuffer VSBlock : register(b0) {
-float4 projection[4]; float4 depthparams; float4 viewparams; float4 materials[4]; float4 lights[40];
-float4 texmatrices[24]; float4 transformmatrices[64]; float4 normalmatrices[32]; float4 posttransformmatrices[64];
-float4 unjittered_projection[4]; float4 prev_projection[4]; float4 prev_transformmatrices[64]; };
-struct VS_OUTPUT { float4 pos : SV_Position; float4 color : COLOR0; float2 uv : TEXCOORD0; };
-VS_OUTPUT main(float3 rawpos : POSITION, float3 rawnorm0 : NORMAL0, float4 color0 : COLOR0, float4 color1 : COLOR1,
-  float2 rawtex0 : TEXCOORD0, float2 rawtex1 : TEXCOORD1, float2 rawtex2 : TEXCOORD2, float2 rawtex3 : TEXCOORD3,
-  float2 rawtex4 : TEXCOORD4, float2 rawtex5 : TEXCOORD5, float2 rawtex6 : TEXCOORD6, float2 rawtex7 : TEXCOORD7,
-  uint4 blend_indices : BLENDINDICES, uint4 blend_indices2 : BLENDINDICES1) {
-  VS_OUTPUT o;
-  int posmtx = int(blend_indices.x);
-  float4 rawpos4 = float4(rawpos, 1.0);
-  float4 pos = float4(dot(transformmatrices[posmtx], rawpos4), dot(transformmatrices[posmtx+1], rawpos4), dot(transformmatrices[posmtx+2], rawpos4), 1);
-  o.pos = float4(dot(projection[0], pos), dot(projection[1], pos), dot(projection[2], pos), dot(projection[3], pos));
-  o.color = COLOR_EXPR;
-  float4 coord = float4(rawtex0, 1.0, 1.0);
-  o.uv = float2(dot(coord, texmatrices[0]), dot(coord, texmatrices[1]));
-  o.pos.z = o.pos.w * depthparams.x - o.pos.z * depthparams.y;
-  o.pos.xy *= sign(depthparams.zw * float2(-1.0, 1.0));
-  o.pos.xy = o.pos.xy + o.pos.w * depthparams.zw;
-  if (o.pos.w == 1.0) { o.pos.xy = round(o.pos.xy * viewparams.xy) * viewparams.zw; }
-  return o;
-})";
-  static const char* ps_src = R"(
-SamplerState samp[8] : register(s0); Texture2D Tex[8] : register(t0);
-void main(out float4 ocol0 : SV_Target0 MVEC_OUT, in float4 rawpos : SV_Position, in float4 color : COLOR0, in float2 uv : TEXCOORD0) {
-  float4 c = color;
-  TEX_EXPR
-  if (c.a <= 0.0) discard;
-  ocol0 = c;
-  MVEC_WRITE
-})";
-  std::string vs = vs_src, ps = ps_src;
-  vs.replace(vs.find("COLOR_EXPR"), 10, colored ? "color0" : "float4(1.0, 1.0, 1.0, 1.0)");
-  ps.replace(ps.find("TEX_EXPR"), 8, textured ? "c *= Tex[0].Sample(samp[0], uv);" : "");
-  ps.replace(ps.find("MVEC_OUT"), 8, key.mvec ? ", out float2 omv : SV_Target1" : "");
-  ps.replace(ps.find("MVEC_WRITE"), 10, key.mvec ? "omv = float2(0.0, 0.0);" : "");
-  ComPtr<ID3DBlob> vsb, psb, err;
-  if (FAILED(D3DCompile(vs.c_str(), vs.size(), "fallback_vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vsb, &err)) ||
-      FAILED(D3DCompile(ps.c_str(), ps.size(), "fallback_ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psb, &err))) {
-    host::log("d3d12: fallback shader compile failed: %s", err ? (const char*)err->GetBufferPointer() : "?");
-    fallback_psos_[fk] = nullptr; return nullptr;
-  }
-  D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
-  describe_pipeline(pd, key, topo, root_.Get(), vsb.Get(), psb.Get());
-  ComPtr<ID3D12PipelineState> pso;
-  if (FAILED(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)))) { host::log("d3d12: fallback pipeline creation failed"); fallback_psos_[fk] = nullptr; return nullptr; }
-  fallback_psos_[fk] = pso;
-  return pso.Get();
-}
-
 ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
-  if (dc.cached_pipeline && dc.cached_pipeline_owner == backend_id_) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
-  Stopwatch sw;
+  if (dc.cached_pipeline && dc.cached_pipeline_owner == (backend_id_ * 2 + (dlss_active_ ? 1 : 0))) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
+  Stopwatch sw(opts_.profile_draws);
   VSUid vsu = make_vs_uid(dc);
   PSUid psu = make_ps_uid(dc);
   vsu.motion_vectors = psu.motion_vectors = dlss_active_ ? 1u : 0u;
@@ -791,7 +748,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   g_prof[6] += sw.lap(); ++g_pso_lookups;   // uid build + hash
   auto it = psos_.find(key);
   g_prof[7] += sw.lap();                    // map lookup
-  if (it != psos_.end()) { dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = it->second.Get(); return it->second.Get(); }
+  if (it != psos_.end()) { dc.cached_pipeline_owner = backend_id_ * 2 + (dlss_active_ ? 1 : 0); dc.cached_pipeline = it->second.Get(); return it->second.Get(); }
   PipelineRecipe recipe{}; recipe.topology = (uint32_t)topo; recipe.components = dc.components;
   recipe.bp = dc.bp; std::memcpy(recipe.xf, dc.xf_regs, sizeof(recipe.xf));
   if (!prewarming_ && !pso_threads_.empty()) {
@@ -801,22 +758,22 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
       pso_jobs_.push_front(PsoJob{key, vsu, psu, topo, recipe});   // a draw is waiting on it: ahead of prewarm work
       pso_cv_.notify_one();
     }
-    // Give the workers a bounded slice of this presented frame to deliver the real pipeline (a
-    // compile is usually 2 to 10 ms). Only past the budget does the draw fall back to the generic
-    // pipeline, so a new matchup costs a short display hitch instead of black or missing surfaces.
-    while (pso_wait_budget_us_ > 0) {
-      Stopwatch wait_sw;
+    // Codex correctness fix: approximate TEV/lighting/alpha shading produces
+    // visible material changes when the specialized pipeline arrives. Keep the
+    // worker and recipe prewarming, but wait for the correct draw on cache misses.
+    // Cold compile stalls are measured separately; never hide them with wrong pixels.
+    for (;;) {
       {
         std::unique_lock<std::mutex> lk(pso_mutex_);
-        pso_done_cv_.wait_for(lk, std::chrono::microseconds(std::min(pso_wait_budget_us_, 2000)), [&] { return !pso_done_.empty(); });
+        pso_done_cv_.wait(lk, [&] { return !pso_done_.empty(); });
       }
-      pso_wait_budget_us_ -= (int)(wait_sw.lap() * 1e6);
       integrate_compiled_psos();
       auto ready = psos_.find(key);
-      if (ready != psos_.end()) { dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = ready->second.Get(); return ready->second.Get(); }
+      if (ready != psos_.end()) {
+        dc.cached_pipeline_owner = backend_id_ * 2 + (dlss_active_ ? 1 : 0);
+        dc.cached_pipeline = ready->second.Get(); return ready->second.Get();
+      }
     }
-    ++g_pso_skips;
-    return fallback_pso(key, dc, topo);   // approximate shading until the worker delivers the pipeline
   }
   ++g_pso_creates;
   ComPtr<ID3DBlob>& vs = vs_blobs_[vh];
@@ -824,7 +781,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   ComPtr<ID3D12PipelineState> pso = build_pso(key, vsu, psu, topo, vs, ps);
   psos_[key] = pso;
   if (!prewarming_ && pipeline_recipes_.size() < 4096) pipeline_recipes_.push_back(recipe);
-  dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = pso.Get();
+  dc.cached_pipeline_owner = backend_id_ * 2 + (dlss_active_ ? 1 : 0); dc.cached_pipeline = pso.Get();
   return pso.Get();
 }
 
@@ -969,7 +926,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
 // ---------------- draws ----------------
 void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const DrawMatrices* override_matrices) {
   // Build index list (triangle list / line list) from the GX primitive.
-  Stopwatch sw;
+  Stopwatch sw(opts_.profile_draws);
   auto& idx = index_scratch_; idx.clear();
   uint32_t n = dc.vertex_count;
   D3D12_PRIMITIVE_TOPOLOGY_TYPE topo = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
@@ -1020,7 +977,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   if (dlss_active_) {
     MotionInfo motion; motion.jitter_x = jitter_x_; motion.jitter_y = jitter_y_;
     LastPose& last = last_poses_[dc.identity];
-    bool had = last.frame != 0 && last.frame + 2 >= frame_counter_;
+    bool had = !dlss_reset_ && last.frame != 0 && last.frame + 1 == frame_counter_;
     if (had) { motion.prev_pos = last.pos; motion.prev_proj = last.proj; }
     fill_vs_constants(dc, vs_constants, scale_, override_matrices, &motion);
     std::memcpy(last.pos, override_matrices ? override_matrices->pos : dc.posMatrices, sizeof last.pos);
@@ -1038,7 +995,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   // Pipeline
   ID3D12PipelineState* pso = get_pso(dc, topo);
   g_prof[3] += sw.lap();   // pso
-  if (!pso) return;        // being compiled on a worker thread
+  if (!pso) host::die("D3D12: required pipeline unavailable");
   D3D12_GPU_DESCRIPTOR_HANDLE srvs = bind_textures(dc);
   D3D12_GPU_DESCRIPTOR_HANDLE samps = bind_samplers(dc);
   g_prof[4] += sw.lap();   // textures + samplers
@@ -1155,6 +1112,7 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
 
 void D3D12Backend::present_efb(const EfbCopy& c) {
   UINT bb = swapchain_->GetCurrentBackBufferIndex();
+  const bool sharpen = opts_.sharpness > 0.0f;
   // DLSS: upscale the jittered EFB region (with depth and motion vectors) into the output texture first.
   bool upscaled = false;
   if (dlss_active_ && dlss_out_) {
@@ -1187,7 +1145,7 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   D3D12_CPU_DESCRIPTOR_HANDLE h = srv_heap_->GetCPUDescriptorHandleForHeapStart(); h.ptr += slot * srv_size_;
   device_->CreateShaderResourceView(source, nullptr, h);
   D3D12_GPU_DESCRIPTOR_HANDLE g = srv_heap_->GetGPUDescriptorHandleForHeapStart(); g.ptr += slot * srv_size_;
-  D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += bb * rtv_size_;
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += (sharpen ? 6 : bb) * rtv_size_;
   float border[4] = {0.05f, 0.05f, 0.15f, 1};
   list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
   list_->ClearRenderTargetView(rtv, border, 0, nullptr);
@@ -1200,6 +1158,8 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   float vw = ww, vh = ww / aspect;
   if (vh > wh) { vh = wh; vw = wh * aspect; }
   D3D12_VIEWPORT vp{(ww - vw) * 0.5f, (wh - vh) * 0.5f, vw, vh, 0, 1};
+  opts_.actual_render_w = c.src_w * scale_; opts_.actual_render_h = c.src_h * scale_;
+  opts_.actual_output_w = (uint32_t)vw; opts_.actual_output_h = (uint32_t)vh;
   D3D12_RECT sc{0, 0, client_w_, client_h_};
   list_->RSSetViewports(1, &vp);
   list_->RSSetScissorRects(1, &sc);
@@ -1208,7 +1168,7 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   list_->SetGraphicsRootDescriptorTable(0, g);
   float src_w = upscaled ? (float)dlss_out_w_ : (float)efb_w_, src_h = upscaled ? (float)dlss_out_h_ : (float)efb_h_;
   float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                    1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
+                    1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), 0.0f, 0.0f,
                     1.0f, 1.0f, 0.0f, 0.0f};
   // Averaging box when the rendered image is larger than the output. The two axes shrink by
   // different amounts (the picture is letterboxed to 16:9 inside the window), so they get their
@@ -1218,9 +1178,34 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
   }
   if (upscaled) { rect[0] = 1.0f; rect[1] = 1.0f; rect[2] = 0.0f; rect[3] = 0.0f; }
+  rect[10] = rect[0] / std::max(vw, 1.0f);
+  rect[11] = rect[1] / std::max(vh, 1.0f);
   list_->SetGraphicsRoot32BitConstants(1, 12, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
+  if (sharpen) {
+    // Work on the already scaled/reconstructed output. A zero setting bypasses
+    // this pass entirely; PC settings are composited afterwards and stay crisp.
+    D3D12_RESOURCE_BARRIER transition{};
+    transition.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    transition.Transition = {presentation_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+    list_->ResourceBarrier(1, &transition);
+    uint32_t output_slot = reserve_srvs(1);
+    auto cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart(); cpu.ptr += output_slot * srv_size_;
+    auto gpu = srv_heap_->GetGPUDescriptorHandleForHeapStart(); gpu.ptr += output_slot * srv_size_;
+    device_->CreateShaderResourceView(presentation_color_.Get(), nullptr, cpu);
+    rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += bb * rtv_size_;
+    list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    D3D12_VIEWPORT output_view{0, 0, ww, wh, 0, 1};
+    list_->RSSetViewports(1, &output_view);
+    list_->SetGraphicsRootDescriptorTable(0, gpu);
+    float output_rect[12] = {1, 1, 0, 0, 1.0f/ww, 1.0f/wh,
+                            std::clamp(opts_.sharpness, 0.0f, 1.0f), 0, 1, 1, 1.0f/ww, 1.0f/wh};
+    list_->SetGraphicsRoot32BitConstants(1, 12, output_rect, 0);
+    list_->DrawInstanced(3, 1, 0, 0);
+    std::swap(transition.Transition.StateBefore, transition.Transition.StateAfter);
+    list_->ResourceBarrier(1, &transition);
+  }
 #ifdef GX_PC_SETTINGS
   if (settings_ui_) {
     settings_ui_->draw(list_.Get());
@@ -1354,6 +1339,37 @@ static void dump_frame(const Frame& frame, const std::string& path) {
   fclose(f);
 }
 
+void D3D12Backend::init_gpu_timing() {
+  check(queue_->GetTimestampFrequency(&timing_frequency_), "GPU timestamp frequency");
+  if (!timing_frequency_) host::die("GPU timestamp frequency is zero");
+  D3D12_QUERY_HEAP_DESC query{};
+  query.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+  query.Count = FRAME_SLOTS * 2;
+  check(device_->CreateQueryHeap(&query, IID_PPV_ARGS(&timing_heap_)), "GPU timestamp heap");
+  D3D12_HEAP_PROPERTIES heap{D3D12_HEAP_TYPE_READBACK};
+  D3D12_RESOURCE_DESC desc{};
+  desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+  desc.Width = FRAME_SLOTS * 2 * sizeof(uint64_t);
+  desc.Height = 1; desc.DepthOrArraySize = 1; desc.MipLevels = 1;
+  desc.SampleDesc.Count = 1; desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+  check(device_->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc,
+      D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&timing_readback_)), "GPU timestamp readback");
+}
+
+void D3D12Backend::read_gpu_timing() {
+  if (!timing_heap_ || !timing_slots_[slot_].submission) return;
+  // submit_frame has already waited for this slot's fence. No new GPU wait.
+  const SIZE_T offset = slot_ * 2 * sizeof(uint64_t);
+  D3D12_RANGE read{offset, offset + 2 * sizeof(uint64_t)};
+  void* mapped = nullptr;
+  check(timing_readback_->Map(0, &read, &mapped), "map GPU timestamps");
+  uint64_t stamps[2]; std::memcpy(stamps, (const uint8_t*)mapped + offset, sizeof stamps);
+  D3D12_RANGE written{0, 0}; timing_readback_->Unmap(0, &written);
+  last_gpu_timing_ = timing_slots_[slot_];
+  if (stamps[1] < stamps[0]) { last_gpu_timing_ = {}; return; }
+  last_gpu_timing_.milliseconds = 1000.0 * double(stamps[1] - stamps[0]) / double(timing_frequency_);
+}
+
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
   integrate_compiled_psos();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; wait_gpu(); sampler_sets_.clear(); }
@@ -1378,16 +1394,17 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (pick_scale() != scale_) { wait_gpu(); efb_copies_.clear(); create_efb(); }
   }
   configure_dlss();
-  pso_wait_budget_us_ = 12000;
   ++frame_counter_;
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
   slot_ = (int)(frame_counter_ % FRAME_SLOTS);
   wait_fence(slot_fence_[slot_]);   // this slot's previous frame (FRAME_SLOTS frames ago) is complete
+  read_gpu_timing();
   vertex_ring_.reset(slot_); index_ring_.reset(slot_); constant_ring_.reset(slot_); upload_ring_.reset(slot_);
   frame_garbage_[slot_].clear();
   descriptor_garbage_[slot_].clear();
   check(allocators_[slot_]->Reset(), "allocator reset");
   check(list_->Reset(allocators_[slot_].Get(), nullptr), "list reset");
+  if (timing_heap_) list_->EndQuery(timing_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 2);
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
   list_->SetDescriptorHeaps(2, heaps);
   bind_efb_targets();
@@ -1404,7 +1421,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (!found && !frame.draws.empty()) { build_projection(frame.draws[0], fc.projection); fc.orthographic = true; }
     fc.jitter_x = jitter_x_ * opts_.dlss_jitter_sign; fc.jitter_y = jitter_y_ * opts_.dlss_jitter_sign;
     fc.render_w = 640 * scale_; fc.render_h = 480 * scale_;
-    fc.reset = dlss_reset_; dlss_reset_ = false;
+    fc.reset = dlss_reset_;
+    if (dlss_reset_) last_poses_.clear();
+    dlss_reset_ = false;
     streamline::set_constants(fc);
     if (frame_counter_ % 600 == 0) for (auto it = last_poses_.begin(); it != last_poses_.end();) { if (it->second.frame + 4 < frame_counter_) it = last_poses_.erase(it); else ++it; }
   }
@@ -1419,6 +1438,12 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       else execute_copy(c);
       if (c.clear) clear_efb(c);
     }
+  }
+  if (timing_heap_) {
+    list_->EndQuery(timing_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 2 + 1);
+    list_->ResolveQueryData(timing_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 2, 2,
+                           timing_readback_.Get(), slot_ * 2 * sizeof(uint64_t));
+    timing_slots_[slot_] = {frame_counter_, frame.sequence, 0, presented};
   }
   check(list_->Close(), "list close");
   ID3D12CommandList* lists[] = {list_.Get()};
@@ -1599,14 +1624,17 @@ void D3D12Backend::save_shader_blob(const std::string& path, ID3DBlob* blob) {
   write_cache(path, blob->GetBufferPointer(), blob->GetBufferSize());
 }
 
-std::string d3d12_profile_line() {
+std::string d3d12_profile_line(bool detailed) {
   char buf[512];
   double n = (double)std::max<uint64_t>(1, g_prof_draws);
   double l = (double)std::max<uint64_t>(1, g_pso_lookups);
-  snprintf(buf, sizeof buf, "%llu draws: index %.2f, upload %.2f, constants %.2f, pso %.2f, bind %.2f, draw %.2f us/draw | pso cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu, draws on the fallback pipeline while compiling %llu",
+  if (detailed) snprintf(buf, sizeof buf, "%llu draws: index %.2f, upload %.2f, constants %.2f, pso %.2f, bind %.2f, draw %.2f us/draw | pso cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu",
            (unsigned long long)g_prof_draws, 1e6 * g_prof[0] / n, 1e6 * g_prof[1] / n, 1e6 * g_prof[2] / n, 1e6 * g_prof[3] / n, 1e6 * g_prof[4] / n, 1e6 * g_prof[5] / n,
-           (unsigned long long)g_pso_hits, (unsigned long long)g_pso_lookups, 1e6 * g_prof[6] / l, 1e6 * g_prof[7] / l, (unsigned long long)g_pso_creates, (unsigned long long)g_pso_skips);
-  std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pso_hits = g_pso_lookups = g_pso_creates = g_pso_skips = 0;
+           (unsigned long long)g_pso_hits, (unsigned long long)g_pso_lookups, 1e6 * g_prof[6] / l, 1e6 * g_prof[7] / l, (unsigned long long)g_pso_creates);
+  else snprintf(buf, sizeof buf, "%llu draws; detailed timers off | pso cache hits %llu, lookups %llu, created %llu",
+                (unsigned long long)g_prof_draws, (unsigned long long)g_pso_hits,
+                (unsigned long long)g_pso_lookups, (unsigned long long)g_pso_creates);
+  std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pso_hits = g_pso_lookups = g_pso_creates = 0;
   return buf;
 }
 
@@ -1614,6 +1642,7 @@ Backend* create_d3d12_backend(void* hwnd, int w, int h, const D3D12Options& opti
   return new D3D12Backend((HWND)hwnd, w, h, options);
 }
 const D3D12Options& d3d12_options(Backend* backend) { return static_cast<D3D12Backend*>(backend)->options(); }
+GpuTiming d3d12_gpu_timing(Backend* backend) { return static_cast<D3D12Backend*>(backend)->gpu_timing(); }
 void d3d12_resize(Backend* backend, int w, int h) { static_cast<D3D12Backend*>(backend)->resize(w, h); }
 void d3d12_stats(Backend* backend, uint32_t* frames, uint32_t* pipelines, uint32_t* textures) {
   auto* b = static_cast<D3D12Backend*>(backend);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
+#include <atomic>
 #include <functional>
 #include <string>
 #include <vector>
@@ -12,6 +13,7 @@ namespace host {
 struct Options {
   std::string iso;
   std::string state_trace;        // optional per-retrace CPU/RAM/ARAM verification CSV
+  std::string sim_times;          // optional actual VI cadence / pacing CSV, independent of render FPS
   std::string log_file;           // console log copy (default melee_port.log in the working directory)
   uint32_t frames = 0;           // stop after N retraces (0 = run until exit)
   bool fast = false;             // no real-time pacing
@@ -95,7 +97,7 @@ struct SimCostScope { int slot; double t0; explicit SimCostScope(int s) : slot(s
 void gx_write(uint32_t value, int bytes);  // write-gather pipe data
 void gx_frame_present(uint32_t xfb_addr);
 void gx_stats(uint64_t* commands, uint64_t* draws, uint64_t* vertices, uint32_t* efb_copies);
-extern uint64_t g_disc_reads, g_disc_bytes;
+extern std::atomic<uint64_t> g_disc_reads, g_disc_bytes;
 extern bool g_has_window;
 
 // ---- MMIO (0xCC000000 range) ----

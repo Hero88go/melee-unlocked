@@ -1,0 +1,76 @@
+# Codex regression: four players on Battlefield, prepared offline card.
+# Ports 1/2 perform the verified contact/shield sequence; ports 3/4 are
+# additional fighters. This is a coverage fixture, not exhaustive stress.
+300 B
+310
+380 B
+390
+460 sy=-127
+466
+500 A
+510
+580 A
+590
+700 p=2
+700 p=3
+700 p=4
+1000 sx=61 sy=127
+1000 p=2 sy=127
+1000 p=3 sx=-61 sy=127
+1000 p=4 sx=-90 sy=127
+1017
+1017 p=2
+1017 p=3
+1017 p=4
+1040 A
+1040 p=2 A
+1040 p=3 A
+1040 p=4 A
+1050
+1050 p=2
+1050 p=3
+1050 p=4
+1100 START
+1110
+1300 sy=100
+1305
+1330 A
+1340
+1900 sx=80
+1960 X
+1965
+1990 A
+1995
+2020 p=2 R
+2030 A
+2035
+2060 A
+2065
+2090 B
+2095
+2120 p=2
+2140 A
+2145
+2170 A
+2175
+2200 B
+2205
+2240 B
+2245
+2280 B
+2285
+2320 p=2 B sy=-127
+2330 p=2
+2360 A
+2365
+2400 B
+2405
+2440 B
+2445
+2480 A
+2485
+2520 B
+2525
+2560 B
+2565
+2600
