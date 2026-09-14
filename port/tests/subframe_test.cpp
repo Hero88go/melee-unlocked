@@ -61,7 +61,7 @@ int main() {
   check(st.cuts == 1 && near(out[0], 3.0f), "non-rigid delta retains current pose");
   // Draw pairing by identity through the solver.
   gx::Frame a, b; a.sequence = 1; b.sequence = 2; a.vertices.resize(3); b.vertices.resize(3);
-  gx::DrawCall d{}; d.identity = 7; d.vertex_count = 3; d.primitive = 0x90; d.components = 0; d.matrix_index_a = 0;
+  gx::DrawCall d{}; d.identity = 7; d.object_generation = 1; d.vertex_count = 3; d.primitive = 0x90; d.components = 0; d.matrix_index_a = 0;
   d.xf_regs[0x3F] = 0;
   rot_z(0, 0, d.posMatrices); std::memcpy(d.normalMatrices, ident_n, sizeof ident_n);
   a.draws.push_back(d);
@@ -94,6 +94,14 @@ int main() {
   check(solver.stats().paired == 1, "matching rewritten primitive can pair");
   solver.build(0.5, true, mats, true);
   check(mats[0].vertices && near(mats[0].vertices[0].pos[0], 5), "rewritten geometry samples between known positions");
+  a.draws[0].object_generation = b.draws[0].object_generation = 0;
+  solver.set_frames(&a, &b);
+  solver.build(.5, false, mats, true);
+  check(solver.stats().paired == 0 && !mats[0].vertices &&
+        std::memcmp(mats[0].pos, b.draws[0].posMatrices, sizeof mats[0].pos) == 0,
+        "unidentified rewritten glyph/primitive cannot pair by submission ordinal alone");
+  a.draws[0].object_generation = b.draws[0].object_generation = 1;
+  solver.set_frames(&a, &b);
   solver.build(0.5, true, mats, false);
   check(!mats[0].vertices, "switching away from authored mode clears the vertex override");
   b.vertices[0].posmtx = 3; solver.set_frames(&a, &b);
@@ -178,6 +186,23 @@ int main() {
   current_pose.joints.push_back(joint);
   check(gx::sample_authored(previous_pose, current_pose, 0.5, joint.world.data(), out, nrm, ident_n), "valid forward authored track");
   check(near(out[3], 7.5f), "authored sampling advances beyond current rather than previous frame");
+  // Animation-clock continuity cannot use the world-position tolerance: at
+  // frame 1001 that tolerance admits a whole paused tick as forward motion.
+  {
+    auto paused_previous = current_pose, paused_current = current_pose;
+    for (auto* pose : {&paused_previous, &paused_current}) {
+      auto& j = pose->joints[0];
+      j.frame = 1001; j.end = 1002; j.tracks[0].start_frame = -1000;
+    }
+    check(!gx::sample_authored(paused_previous, paused_current, .5, joint.world.data(), out, nrm, ident_n),
+          "paused long-running animation does not predict another half tick");
+    paused_previous.joints[0].frame = 1000;
+    check(gx::sample_authored(paused_previous, paused_current, .5, joint.world.data(), out, nrm, ident_n) && near(out[3], 7.5f),
+          "advancing long-running animation still samples at its declared rate");
+    paused_previous.joints[0].rate = .5f;
+    check(!gx::sample_authored(paused_previous, paused_current, .5, joint.world.data(), out, nrm, ident_n),
+          "retimed animation waits for a continuous pair before predicting");
+  }
   current_pose.joints[0].end = 1;
   check(!gx::sample_authored(previous_pose, current_pose, 0.5, joint.world.data(), out, nrm, ident_n), "authored sampling holds at animation boundary");
   current_pose.joints[0].end = 2;
