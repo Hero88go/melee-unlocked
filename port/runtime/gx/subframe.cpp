@@ -17,7 +17,7 @@ bool same_draw_bp(const BPMemory& a, const BPMemory& b, uint32_t& changed) {
   for (unsigned i = 0; i < 256; ++i) {
     if (i == BP_SETDRAWDONE || i == BP_PE_TOKEN_ID || i == BP_PE_TOKEN_INT_ID ||
         (i >= BP_EFB_TL && i <= 0x54) || (i >= BP_PRELOAD_ADDR && i <= BP_TEXINVALIDATE) ||
-        i == BP_BP_MASK || (i >= 0x8C && i <= 0x97) || (i >= 0xAC && i <= 0xB3) ||
+        i == BP_BP_MASK || (i >= 0x8C && i <= 0x97) || (i >= 0xAC && i <= 0xB7) ||
         (i >= BP_TEV_COLOR_RA && i <= BP_TEV_COLOR_RA + 7)) continue;
     // 0xE0..0xE7 are the TEV constant colours: a draw that fades or flashes is still the same
     // object, and the colours actually rendered come from the current frame's draw either way.
@@ -42,6 +42,23 @@ bool same_textures(const DrawCall& a, const DrawCall& b) {
     if (x.data == y.data) continue;
     if (!x.data || !y.data || x.data->hash != y.data->hash ||
         x.data->image != y.data->image || x.data->palette != y.data->palette) return false;
+  }
+  return true;
+}
+
+uint32_t texture_matrix_index(const DrawCall& d, unsigned generator) {
+  return generator < 4 ? bits(d.matrix_index_a, 6 + 6 * generator, 6)
+                       : bits(d.matrix_index_b, 6 * (generator - 4), 6);
+}
+
+bool same_matrix_bindings(const DrawCall& a, const DrawCall& b) {
+  if (!(b.components & VB_HAS_POSMTXIDX) && (a.matrix_index_a & 63) != (b.matrix_index_a & 63)) return false;
+  if (a.xf_regs[0x3F] != b.xf_regs[0x3F] || (a.xf_regs[0x12] & 1) != (b.xf_regs[0x12] & 1)) return false;
+  for (unsigned k = 0; k < std::min(8u, b.xf_regs[0x3F] & 15); ++k) {
+    if (a.xf_regs[0x40 + k] != b.xf_regs[0x40 + k]) return false;
+    if ((b.xf_regs[0x12] & 1) && a.xf_regs[0x50 + k] != b.xf_regs[0x50 + k]) return false;
+    if (!(b.components & (VB_HAS_TEXMTXIDX0 << k)) &&
+        texture_matrix_index(a, k) != texture_matrix_index(b, k)) return false;
   }
   return true;
 }
@@ -238,9 +255,15 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
       bool valid = false;
       if (d.object_generation != pd.object_generation) ++stats_.missing;
       else if (d.xf_regs[0x26] != 0) ++stats_.hud;
+      // Immediate-mode text and other unobserved primitives use texture/count/
+      // submission-ordinal identities. Inserting or removing a glyph can reuse
+      // that key for a different primitive. A changing stream needs an observed
+      // object lifetime before it is safe to invent geometry between the draws.
+      else if (!d.object_generation && !same_vertices) ++stats_.geometry;
       else if (!vertex_ranges_valid || !d.vertex_count || pd.vertex_count != d.vertex_count ||
           pd.primitive != d.primitive || pd.components != d.components) ++stats_.geometry;
-      else if (!same_draw_bp(pd.bp, d.bp, stats_.state_register) || !same_textures(pd, d)) ++stats_.state;
+      else if (!same_draw_bp(pd.bp, d.bp, stats_.state_register) || !same_textures(pd, d) ||
+               !same_matrix_bindings(pd, d)) ++stats_.state;
       else if (std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 7 * sizeof(uint32_t))) ++stats_.projection;
       else { valid = true; p.blend_vertices = !same_vertices; }
       if (valid) {
@@ -256,8 +279,16 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
         }
         uint32_t texgens = d.xf_regs[0x3F] & 15;
         for (uint32_t k = 0; k < texgens && k < 8; ++k) {
-          uint32_t idx = k < 4 ? bits(d.matrix_index_a, 6 + 6 * k, 6) : bits(d.matrix_index_b, 6 * (k - 4), 6);
-          if (idx < 64) p.tex_slots |= 1ull << idx;
+          const uint32_t type = tmi_texgentype(d.xf_regs[0x40 + k]);
+          if (type >= 1 && type <= 3) continue; // emboss/colour generators do not read these matrices
+          if (d.components & (VB_HAS_TEXMTXIDX0 << k)) {
+            for (uint32_t v = 0; v < d.vertex_count; ++v) {
+              const uint32_t idx = cur->vertices[d.first_vertex + v].texmtx[k];
+              if (idx < 64) p.tex_slots |= 1ull << idx;
+            }
+          } else {
+            p.tex_slots |= 1ull << texture_matrix_index(d, k);
+          }
         }
         p.used_slots = p.pos_slots | p.tex_slots;
         ++stats_.paired;
@@ -285,6 +316,10 @@ static bool blend_vertex_stream(const Vertex* previous, const Vertex* current, u
                                 double t, bool interpolate, float max_translation, Vertex* out) {
   const float phase = (float)t;
   for (uint32_t v = 0; v < count; ++v) {
+    // Matrix selectors are discrete bindings, not animation channels. Blending
+    // positions across a changed binding deforms a newly assigned primitive.
+    if (previous[v].posmtx != current[v].posmtx ||
+        std::memcmp(previous[v].texmtx, current[v].texmtx, sizeof current[v].texmtx)) return false;
     for (int k = 0; k < 3; ++k) {
       const float delta = current[v].pos[k] - previous[v].pos[k];
       if (!std::isfinite(delta) || std::abs(delta) > max_translation) return false;
@@ -394,9 +429,16 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
         std::memcpy(o.nrm, hold.normalMatrices, sizeof o.nrm);
         o.vertices = nullptr;
         if (!pd) continue;
-        if (p.blend_vertices && p.blend_offset + d.vertex_count <= vertex_blend_.size() &&
-            blend_vertex_stream(&prev_->vertices[pd->first_vertex], &cur_->vertices[d.first_vertex], d.vertex_count,
-                                t, interpolate, max_translation, &vertex_blend_[p.blend_offset])) {
+        if (p.blend_vertices) {
+          if (p.blend_offset + d.vertex_count > vertex_blend_.size() ||
+              !blend_vertex_stream(&prev_->vertices[pd->first_vertex], &cur_->vertices[d.first_vertex], d.vertex_count,
+                                   t, interpolate, max_translation, &vertex_blend_[p.blend_offset])) {
+            // A rejected stream must also hold its current matrices. Combining
+            // current vertices with an advanced or delayed matrix mixes timelines.
+            std::memcpy(o.pos, d.posMatrices, sizeof o.pos);
+            std::memcpy(o.nrm, d.normalMatrices, sizeof o.nrm);
+            continue;
+          }
           o.vertices = &vertex_blend_[p.blend_offset];
           ++blended;
         }
@@ -404,19 +446,25 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
         // backdrops are driven entirely by them, and they used to advance only once per simulation
         // frame, which left most of the moving image stepping at 60 Hz. They are not rigid
         // transforms, so they advance by a straight per-element blend; a large jump holds.
-        if (uint64_t texgen_only = p.tex_slots & ~p.pos_slots) {
+        auto sample_textures = [&] {
+          // A different starting row can still overlap a position matrix. Never
+          // overwrite any of its rows with an independently sampled UV transform.
+          const uint64_t position_rows = p.pos_slots | (p.pos_slots << 1) | (p.pos_slots << 2);
           for (int row = 0; row + 3 <= 64; ++row) {
-            if (!(texgen_only & (1ull << row))) continue;
+            if (!(p.tex_slots & (1ull << row)) || (position_rows & (7ull << row))) continue;
             const float* previous_row = &pd->posMatrices[row * 4];
             const float* current_row = &d.posMatrices[row * 4];
             const float* base_row = &hold.posMatrices[row * 4];
+            bool continuous = true;
             for (int k = 0; k < 12; ++k) {
               const float delta = current_row[k] - previous_row[k];
-              if (delta != 0.0f && std::isfinite(delta) && std::abs(delta) <= 16.0f) o.pos[row * 4 + k] = base_row[k] + (float)t * delta;
+              if (!std::isfinite(delta) || std::abs(delta) > 16.0f) { continuous = false; break; }
             }
+            if (!continuous) { std::memcpy(&o.pos[row * 4], current_row, 12 * sizeof(float)); continue; }
+            for (int k = 0; k < 12; ++k) o.pos[row * 4 + k] = base_row[k] + (float)t * (current_row[k] - previous_row[k]);
           }
-        }
-        if (!d.authored_pose || !pd->authored_pose) continue;
+        };
+        if (!d.authored_pose || !pd->authored_pose) { sample_textures(); continue; }
         bool posed = false;
         if (d.authored_pose->envelope) {
           posed = sample_authored_envelope(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, d.normalMatrices, o.pos, o.nrm, &chain_cache);
@@ -438,6 +486,9 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
         }
         if (posed) ++count;
         else if (carry_camera(*pd->authored_pose, *d.authored_pose, t, hold.posMatrices, hold.normalMatrices, p.pos_slots, o.pos, o.nrm)) ++carried;
+        // Envelope sampling publishes a complete matrix array. Apply disjoint UV
+        // animation afterwards so that publication cannot erase the sampled UVs.
+        sample_textures();
       }
       counts[(size_t)chunk] = count;
       carries[(size_t)chunk] = carried;
@@ -455,6 +506,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
     const Pair& p = pairs_[i];
     const DrawCall* pd = p.prev_draw >= 0 ? &prev_->draws[p.prev_draw] : nullptr;
     const DrawCall& base = (interpolate && pd) ? *pd : d;
+    o.vertices = nullptr;
     std::memcpy(o.pos, base.posMatrices, sizeof o.pos);
     std::memcpy(o.nrm, base.normalMatrices, sizeof o.nrm);
     if (!pd) continue;

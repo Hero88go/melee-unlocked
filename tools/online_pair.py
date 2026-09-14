@@ -41,6 +41,7 @@ def main():
     ap.add_argument("--user-b")
     ap.add_argument("--only", choices=["A", "B"], help="launch a single instance (the other side is external)")
     ap.add_argument("--iso")
+    ap.add_argument("--exe", type=Path, default=EXE)
     ap.add_argument("--extra", nargs=argparse.REMAINDER, default=[])
     args = ap.parse_args()
     iso = require_iso(args.iso)
@@ -51,7 +52,7 @@ def main():
             continue
         d = out / f"peer{name}"
         d.mkdir(parents=True, exist_ok=True)
-        cmd = [str(EXE), "--iso", str(iso), "--hidden", "--volume", "0", "--frames", str(args.frames),
+        cmd = [str(args.exe.resolve()), "--iso", str(iso), "--hidden", "--volume", "0", "--frames", str(args.frames),
                "--script", str(ROOT / args.script), "--replay-dir", str(d), "--log-file", str(d / "port.log")]
         if args.real:
             user = args.user_a if name == "A" else args.user_b

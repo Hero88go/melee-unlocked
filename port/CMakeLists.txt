@@ -43,13 +43,22 @@ if(NOT EXISTS "${PORT_GEN}/guest_sources.cmake")
 endif()
 include("${PORT_GEN}/guest_sources.cmake")
 
-# Guest library: large generated translation units.
+# Guest library: large generated translation units. A second checkout of the same generated code can
+# link an existing guest.lib instead of compiling it again (several GB of objects).
+set(MELEE_PREBUILT_GUEST "" CACHE FILEPATH "Link this guest.lib (built from identical port/generated) instead of compiling it")
+if(MELEE_PREBUILT_GUEST)
+  add_library(guest STATIC IMPORTED GLOBAL)
+  set_target_properties(guest PROPERTIES IMPORTED_LOCATION "${MELEE_PREBUILT_GUEST}")
+  target_include_directories(guest INTERFACE "${PORT_GEN}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppc")
+  target_compile_features(guest INTERFACE cxx_std_17)
+else()
 add_library(guest STATIC ${GUEST_SOURCES} "${PORT_GEN}/function_names.cpp" "${PORT_GEN}/gecko_data.cpp")
 target_include_directories(guest PUBLIC "${PORT_GEN}" runtime/ppc)
 target_include_directories(guest PRIVATE runtime/hle)   # gecko_data.h: run-time optional code flags
 target_compile_features(guest PUBLIC cxx_std_17)
 target_compile_options(guest PRIVATE /bigobj /MP /EHsc /arch:AVX2 /fp:precise /wd4102 /wd4101 /wd4189 /W1)
 target_compile_definitions(guest PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+endif()
 
 # Host runtime: CPU helpers, memory, HLE, host services.
 file(GLOB RUNTIME_SOURCES runtime/ppc/*.cpp runtime/hle/*.cpp runtime/host/*.cpp runtime/gx/*.cpp)

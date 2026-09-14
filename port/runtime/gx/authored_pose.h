@@ -26,6 +26,7 @@ struct AuthoredPose {
   // Envelope (skinned) draws: view matrix, skeleton root transform and the weighted bones per matrix slot.
   bool envelope = false;
   bool has_view = false;               // `view` holds the draw's camera (view) matrix
+  bool quake = false;                  // a camera quake was running when the view was captured
   std::array<float,12> view{};
   std::shared_ptr<const AuthoredPose> chain;   // rigid draws: the joint chain root..joint (shared per joint per frame)
   int right_kind = 0;                  // 0 none, 1 inverse(x.env), 2 inverse(x.world)*m.world, 3 inverse(x.world*x.env)*m.world

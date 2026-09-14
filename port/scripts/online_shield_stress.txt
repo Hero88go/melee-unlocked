@@ -1,0 +1,31 @@
+# Desync repro for shield drop and spotdodge (Discord report). Same menu prelude as online_bot.txt,
+# then a loop that shields, spotdodges out of shield, shield drops (down on the stick while shielding,
+# UCF Shield Drop) and spotdodges from standing, with direction changes in between so the other
+# instance mispredicts these inputs and has to roll back through them.
+300 A
+310
+600 sx=61 sy=127
+617
+640 A
+650
+700 START
+710
+@match
+@loop 120
+0 L
+12 L sy=-127
+15
+30 L
+40 L sy=-80
+44 L sy=-80 sx=10
+50
+60 sx=80
+66 sx=-80
+72 L
+78 L sy=-127
+82
+95 sy=-127 L
+99
+108 sx=-80 L
+114 L sy=-80
+119
