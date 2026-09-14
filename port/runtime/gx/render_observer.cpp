@@ -26,6 +26,13 @@ struct Reader {
   float real(uint32_t a) { uint32_t v=word(a);float f;std::memcpy(&f,&v,4);return f; }
   bool matrix(uint32_t a, std::array<float,12>& m) { if(!span(a,48))return false; for(int k=0;k<12;++k)m[k]=real(a+4*k); return true; }
 };
+// game_camera (0x80452C68): quake_frames_left[5] at +0x8C, quake_gobj at +0xA0. Camera_ApplyQuake
+// clears quake_offset once it is applied, so the counters are what still show a shake at draw time.
+bool camera_quaking(Reader& r) {
+  const uint32_t camera = 0x80452C68;
+  for(int k=0;k<5;++k) if(r.word(camera+0x8C+4*k)) return true;
+  return r.word(camera+0xA0)!=0;
+}
 
 // Captures the joint chain root..address (local SRT, world matrix, authored tracks). Returns null
 // (and counts the reason) when any joint needs an evaluator this path does not have.
@@ -83,6 +90,7 @@ std::shared_ptr<const AuthoredPose> capture_envelope(Reader& r) {
   pose->envelope = true;
   if(!r.matrix(envelope_vmtx, pose->view)){ ++authored_stats().capture[11]; return {}; }
   pose->has_view = true;
+  pose->quake = camera_quaking(r);
   // right (HSD_JObjFindSkeleton walk)
   uint32_t m = current_joint;
   if(!r.span(m,0x88)){ ++authored_stats().capture[11]; return {}; }
@@ -176,6 +184,7 @@ std::shared_ptr<const AuthoredPose> capture_authored_pose() {
   auto pose = std::make_shared<AuthoredPose>();
   pose->chain = chain;
   pose->has_view = rigid_vmtx && r.matrix(rigid_vmtx, pose->view);
+  pose->quake = pose->has_view && camera_quaking(r);
   ++authored_stats().captured; current_pose=pose; return pose;
 }
 void finish_observed_frame() { passes.clear(); chains_this_frame.clear(); }
