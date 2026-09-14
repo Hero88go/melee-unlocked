@@ -110,12 +110,19 @@ def main():
     built = subprocess.run([str(args.exe), "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
     if built != args.version:
         raise SystemExit(f"{args.exe.name} reports version {built!r} but the release is {args.version!r}; rebuild it first")
+    # Every release body includes both supported installation routes.
+    install = (ROOT / "RELEASE_INSTALL.md").read_text(encoding="utf-8").replace("<version>", args.version)
+    release_notes = (ROOT / "RELEASE_NOTES.md").read_text(encoding="utf-8").split("\n---\n", 1)[0]
+    if "## Install - launcher or BAT" not in release_notes:
+        release_notes = install + "\n" + release_notes
+    release_notes = release_notes.replace("<version>", args.version)
     name = f"MeleeUnlocked-{args.version}"
     folder = args.out / name
     zip_path = args.out / f"{name}-win64.zip"
     if folder.exists() or zip_path.exists():
         raise SystemExit('release output already exists; use a fresh output directory')
     folder.mkdir(parents=True)
+    (args.out / "github-release-notes.md").write_text(release_notes, encoding="utf-8")
     shutil.copy2(args.exe, folder / "melee_port.exe")
     launcher = args.exe.parent / "MeleeUnlockedLauncher.exe"
     if not launcher.is_file():
