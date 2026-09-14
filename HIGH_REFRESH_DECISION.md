@@ -58,6 +58,85 @@ extrapolation can overshoot and require correction; see
 [Unity's explanation of both modes](https://docs.unity3d.com/6000.0/Documentation/Manual/rigidbody-interpolation.html).
 Neither is universally best independent of the game's constraints.
 
+### Further SDK detail and the 0.2 implementation decision
+
+SnapNet's [entity and renderer manual](https://www.snapnet.dev/docs/unreal-engine-sdk/manual/entities/)
+explicitly separates three operations: interpolation of entity transforms between
+fixed ticks, reduction of network prediction errors, and optional renderer
+position/rotation smoothing. `MarkTeleported()` suppresses interpolation across
+a teleport. Optional renderer smoothing is disabled by default and applies to
+non-local predicted entities. A renderer receives its entity update before the
+main world's actors tick. These are documented SDK behaviors, not verified
+Rivals II configuration values.
+
+The [official Rivals II animation guide](https://rivals2.com/workshop/knowledge-base/character-creation/animation-overview/)
+also says that the main character mesh plays clips directly without animation
+blending/dynamic postprocessing; separate meshes can carry dynamic bones. That
+rules out assuming that every visible component uses one generic pose-blending
+algorithm. It does not document the fractional clip time or camera offset.
+
+**0.2 decision:** repair and evaluate the existing `authored-interpolate` path
+alongside forward authored sampling. Both render geometry; neither is image
+frame generation. This is an implementation of the documented *method family*,
+not a claim to copy Rivals II's private settings. Do not switch the default just
+because a method sounds more authentic. Compare motion coherence and response
+under the same CPU load, queue policy, refresh target and gameplay input.
+
+At source tick `n`, conventional interpolation shows poses between `n-1` and
+`n`; forward sampling shows the latest pose plus a bounded fraction of the
+next authored/estimated motion. The former has known endpoints but an older
+visual timeline. The latter avoids that specific buffered tick but can be wrong
+at a stop, collision or animation change. Neither fixes a simulation that cannot
+finish its own tick budget. Network prediction of gameplay is a separate axis.
+
+## Method survey for this port
+
+This table compares useful algorithm families rather than every proprietary
+implementation. The project decisions below are engineering judgments, not
+claims about Rivals II's shipping internals.
+
+| Method | Motion and response tradeoff | Decision |
+| --- | --- | --- |
+| Hold/repeat the latest 60 Hz pose | Preserves captured geometry; repeated presentations cannot supply intermediate motion. | Keep as correctness and response baseline. |
+| Interpolate completed poses | Linear positions and quaternion rotations use known endpoints; curved trajectories may require more information. A previous/current timeline adds visual age. | Implement and validate coherent object, camera and effect timelines; compare with forward mode. |
+| Sample authored clips fractionally | Recovers animation curvature from the game's actual tracks. It still needs a validated clock and action identity; it cannot predict a future interrupt. | Retain as the common skeleton/animation foundation in both modes. |
+| Extrapolate latest continuous motion | Can reduce visual age; collisions, hitstop, angle wraps and acceleration can produce overshoot/corrections. | Bound the horizon and require observed continuity; hold uncertain cases. |
+| Interpolate rewritten vertices | Produces new geometry but vertex count and draw ordinal alone do not identify the same primitive. Atlas changes can represent a new glyph. | Require stable identity/bindings; reject uncertain streams rather than deforming text or effects. |
+| Hybrid per-component rendering | Supported poses can advance while unsupported components hold; inconsistent timelines can make a fighter slide against its platform or effects. | Permit only with explicit coverage and synchronized camera/event handling. |
+| Higher-rate cosmetic simulation | Cosmetic particles or secondary motion can update independently if they never feed gameplay. | Later, after proving which state is cosmetic and how rollback resets it. |
+| Shadow simulation / run-ahead | Repeated save/advance/restore work can hide some internal response delay. It does not itself create correct fractional geometry and adds substantial state/CPU work. | Defer: existing simulation budget, external side effects and rollback fidelity must be solved first. |
+| Raise authoritative physics rate or use variable steps | Changes the meaning of Melee's frame-based rules unless a much larger equivalence proof is supplied. | Exclude: preserve original input windows, hitstop, timers, RNG and online timing. |
+| Optical-flow / AI frame generation | Synthesizes images without an additional authoritative input result; occlusions, text and fast effects need separate treatment. | Exclude from the primary gameplay path. |
+| Late camera reprojection / frame warp | May refresh camera orientation, but cannot reconstruct a new fighter attack, platform collision or concealed geometry. | Not a replacement for character/stage rendering. |
+
+For the fixed-step/accumulator model see
+[Fix Your Timestep](https://gafferongames.com/post/fix_your_timestep/).
+For save/advance/restore and its performance requirements see the implementation
+author's [Libretro run-ahead guide](https://docs.libretro.com/guides/runahead/).
+
+## Presentation delivery is a separate problem
+
+An accurate pose can still feel poor if it waits in a queue or reaches the display
+at irregular intervals. VSync, VRR, caps, unlocked operation, frame queue depth,
+and when input/state are sampled must be measured separately from pose generation.
+[Microsoft's waitable-swap-chain guidance](https://learn.microsoft.com/en-us/windows/uwp/gaming/reduce-latency-with-dxgi-1-3-swap-chains)
+describes waiting for presentation capacity before preparing the next frame, with
+a latency/throughput tradeoff. The current port uses three resource slots and has
+not yet validated a waitable-swap-chain delivery path. Resource-slot count alone
+is not a measurement of the display queue.
+
+For 0.2, compare source-rate, forward and interpolated modes using both actual VI
+cadence and presentation timing. Report median and tail intervals, source age,
+prediction/hold coverage and input-to-visible-response separately. Include a
+matched Slippi control before declaring responsiveness improved. Software/GPU
+timestamps do not measure the monitor panel or physical button-to-photon latency.
+
+The new Yoshi's Story fixture and main-menu/character-select captures target the
+reported background speed and text instability. Long-running animation clocks
+must not use a spatial relative-error tolerance: at large frame numbers that
+can accept a paused tick as continuous playback. Neither a high FPS counter nor
+a changing background passes these tests.
+
 ## What counts as passing
 
 Capture consecutive frames with source sequence and sampling phase. Inspect

@@ -41,6 +41,19 @@ float wrap_frame(const AuthoredJoint& j,float frame) {
   if((j.anim_flags&AOBJ_LOOP)&&j.rewind<j.end&&frame>=j.end) return std::fmod(frame-j.rewind,j.end-j.rewind)+j.rewind;
   return frame;
 }
+bool continuous_clock(const AuthoredJoint& previous, const AuthoredJoint& current) {
+  // Spatial reconstruction tolerates error proportional to world coordinates.
+  // Applying that tolerance to an animation clock accepts an entire missing tick
+  // after frame 500, advancing paused tracks and snapping back every source frame.
+  constexpr uint32_t clock_flags = (1u << 27) | (1u << 28) | AOBJ_LOOP | (1u << 30);
+  if (!std::isfinite(current.rate) || current.rate == 0 || previous.rate != current.rate ||
+      previous.frame == current.frame || previous.end != current.end || previous.rewind != current.rewind ||
+      ((previous.anim_flags ^ current.anim_flags) & clock_flags) ||
+      (current.anim_flags & ((1u << 27) | (1u << 28) | (1u << 30)))) return false;
+  const float expected = wrap_frame(current, previous.frame + current.rate);
+  return std::isfinite(expected) && std::isfinite(current.frame) &&
+      std::abs(expected - current.frame) <= 0.0001f;
+}
 const AuthoredPose& chain_of(const AuthoredPose& p) { return p.chain ? *p.chain : p; }
 // Camera: the view matrix advanced `phase` frames by screw extrapolation of its last change. Returns
 // the sampled view and the transform that carries a current view-space matrix to it.
@@ -92,7 +105,7 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
       // hitch once per stride.
       // Looping animations wrap back into range above; a non-looping one that has run past its last
       // keyframe holds rather than extrapolating a track beyond what it authored.
-      bool sampled=!j.tracks.empty()&&near(wrap_frame(j,p.frame+j.rate),j.frame)&&sample_frame>=0&&sample_frame<=j.end;
+      bool sampled=!j.tracks.empty()&&continuous_clock(p,j)&&sample_frame>=0&&sample_frame<=j.end;
       if(!j.tracks.empty()&&!sampled){ ++authored_stats().sample[3]; partial=true; }
       if(sampled) {
         auto ts=scale,tr=rot,tp=pos;   // commit only if every track of this joint samples

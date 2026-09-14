@@ -255,6 +255,11 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
       bool valid = false;
       if (d.object_generation != pd.object_generation) ++stats_.missing;
       else if (d.xf_regs[0x26] != 0) ++stats_.hud;
+      // Immediate-mode text and other unobserved primitives use texture/count/
+      // submission-ordinal identities. Inserting or removing a glyph can reuse
+      // that key for a different primitive. A changing stream needs an observed
+      // object lifetime before it is safe to invent geometry between the draws.
+      else if (!d.object_generation && !same_vertices) ++stats_.geometry;
       else if (!vertex_ranges_valid || !d.vertex_count || pd.vertex_count != d.vertex_count ||
           pd.primitive != d.primitive || pd.components != d.components) ++stats_.geometry;
       else if (!same_draw_bp(pd.bp, d.bp, stats_.state_register) || !same_textures(pd, d) ||
