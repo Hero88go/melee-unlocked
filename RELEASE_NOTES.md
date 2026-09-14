@@ -1,3 +1,19 @@
+# v0.1.7 ? Codex settings hotfix
+
+Builds on Fable's existing implementation and the 0.1.6 Codex fixes.
+
+- Controllers no longer open PC settings: removed Back+Start / Z+Start and disabled controller navigation while the panel is closed. Use F1 or the mouse Settings button. Controller navigation remains available inside the opened panel.
+- Native rendering is the default. Older settings files reset their experimental DLSS/DLAA selection until Save settings is used. After saving, explicitly selected modes persist normally. Other preferences are retained; explicit --dlss arguments still override saved preferences.
+- Updated launcher/package instructions and documented the decomp contribution, current static-recompiled gameplay, and staged migration toward directly compiled source gameplay.
+
+XInput and GameCube adapter support are retained. Direct DualSense USB support and rebinding are not added. Reported particle placement/timing, menu flicker, Yoshi's Story animation and low-FPS issues remain under investigation for 0.2; this hotfix does not claim to resolve them. DLSS/DLAA remain experimental.
+
+The updater's numeric comparison recognizes 0.1.7 as newer than both 0.1.6 and 0.1.6-codex-preview. Full automatic installation/restart is not end-to-end certified.
+
+Validation: Release build and 14/14 CTest checks passed. A compiled harness using the actual settings loader passed old-profile migration, saved-mode persistence in either key order, malformed values and missing-file defaults. Physical controller interaction and full updater restart were not tested for this hotfix.
+
+---
+
 # v0.1.6 — Codex graphics correctness update
 
 The launcher and game now report **0.1.6**, matching the GitHub tag and download.

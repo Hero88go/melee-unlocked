@@ -12,8 +12,10 @@ preserved while the renderer samples supported animation between simulation fram
 Forward authored sampling avoids an additional buffered simulation frame; unsupported cases
 hold their pose. Smoothness, visual coverage and latency are still being validated.
 
-**Codex preview 0.1.6:** graphics correctness fixes and measured CPU-rendering improvements.
+**0.1.7 ? Codex hotfix:** native rendering defaults and keyboard/mouse-only settings opening.
 See [release notes](RELEASE_NOTES.md) for every change and the remaining limitations.
+
+This implementation uses the [doldecomp Melee decompilation](https://github.com/doldecomp/melee) for symbols and adapted animation source. Most gameplay is currently statically recompiled from the retail executable, **not directly compiled from decomp C**. Our goal is a directly compiled source port with Slippi and independent high-refresh rendering. See [architecture and migration plan](ARCHITECTURE.md).
 
 Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO.
 
@@ -36,7 +38,7 @@ the game does not depend on it, and the manual way is complete on its own.
 1. Drag your Melee NTSC 1.02 ISO onto `MeleeUnlocked.bat`, or put the ISO next to it named
    `melee.iso` and double-click `MeleeUnlocked.bat`.
 2. Play. The first launch precompiles the graphics pipelines (15 to 30 seconds, progress in
-   the title bar). In game, F1 (or Z + Start) opens the PC settings.
+   the title bar). In game, F1 opens the PC settings.
 3. To update, extract a newer zip over the folder. Settings, saves and replays are kept.
 
 ### Melee Unlocked Launcher (optional)
@@ -75,13 +77,13 @@ build-review/port/Release/melee_port.exe --iso "C:/path/to/melee.iso" --threaded
 
 **Was this "vibe coded"?**
 
-This was developed using Fable 5.1 and GPT 6 Astra, much like the 100% decomp. 
-You can either complain about it or enjoy it, the truth is the decomp + PC port would not have been possible or would have taken infinitely longer without the latest AI coding models.
+This project was developed with Fable 5.1 and GPT 6 Astra. The upstream decomp is a separate project; we do not claim its development used these tools.
+AI coding tools contributed to this port; credit for the upstream decomp belongs to its contributors.
 As humans we can either work with the robots or against them, I believe in technlogical progress and making cool shit, if we do not use all tools available we are choosing to limit our results.
-I will not handicap myself and theres no reason anyone has to wait any longer for ports and advancements like this. If I were to shy away from every new technology I would not be the person I am today. 
+I will not handicap myself and theres no reason anyone has to wait any longer for ports and advancements like this. If I were to shy away from every new technology I would not be the person I am today.
 
 I am interested in collabing with other developers but so far have found no collective space for this type of dicussion; PC port dicussion is actively discouraged in the Melee decomp discord
-My vision for the project is keeping it open source so anyone can view the work and make it better. 
+My vision for the project is keeping it open source so anyone can view the work and make it better.
 
 ## Features
 
@@ -92,7 +94,7 @@ My vision for the project is keeping it open source so anyone can view the work 
   sharpening, borderless fullscreen, VSync
 - Widescreen 16:9 (Slippi's own optional code, online safe)
 - Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
-- PC settings overlay in the game window: F1 or Z + Start
+- PC settings overlay in the game window: F1
 - Optional launcher with self-update
 
 ## Slippi online
@@ -125,12 +127,11 @@ the bug happened in a match.
 `port/runtime/` is the host runtime: PowerPC helpers, HLE of the GameCube SDK (OS, VI, PAD, DVD,
 AI/AX audio, CARD, EXI), the Slippi EXI device, netcode, game reporting, the D3D12 renderer and
 the sub-frame solver. `port/app/launcher.cpp` is the optional launcher. `tools/` holds validation,
-benchmarking and packaging scripts. See `PORT_COMPLETION.md` for the technical state and
-evidence, `HANDOFF_FABLE_3.md` for the roadmap.
+benchmarking and packaging scripts. See [architecture](ARCHITECTURE.md) and [release notes](RELEASE_NOTES.md) for the technical state and remaining work.
 
 `tools/package_release.py` produces the release zip (version from `VERSION`). The replay
 playback build (`melee_port_playback`, used to verify frame-exactness against Dolphin replays)
-is described in `PORT_COMPLETION.md`.
+is described in `CODEX_GRAPHICS_REVIEW.md`.
 
 
 
