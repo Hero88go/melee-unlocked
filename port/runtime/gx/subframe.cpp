@@ -509,19 +509,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
               if (!std::isfinite(delta) || std::abs(delta) > 16.0f) { continuous = false; break; }
             }
             if (!continuous) { std::memcpy(&o.pos[row * 4], current_row, 12 * sizeof(float)); continue; }
-            // Stage layers commonly share one texture matrix row. Advancing it from each draw's own
-            // previous copy let those copies drift apart, so the layers slid against each other and
-            // flickered. Every draw that uses the row now advances from the same source, the first
-            // draw of the frame that used it, so the row is identical everywhere it appears.
-            const uint32_t slot = (uint32_t)row;
-            auto& shared = texture_rows_[slot];
-            if (shared.sequence != cur_->sequence) {
-              shared.sequence = cur_->sequence;
-              std::memcpy(shared.previous, previous_row, 12 * sizeof(float));
-              std::memcpy(shared.current, current_row, 12 * sizeof(float));
-            }
-            for (int k = 0; k < 12; ++k)
-              o.pos[row * 4 + k] = (interpolate ? shared.previous[k] : shared.current[k]) + (float)t * (shared.current[k] - shared.previous[k]);
+            for (int k = 0; k < 12; ++k) o.pos[row * 4 + k] = base_row[k] + (float)t * (current_row[k] - previous_row[k]);
           }
         };
         if (!d.authored_pose || !pd->authored_pose) { sample_textures(); continue; }
