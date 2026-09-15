@@ -2,7 +2,7 @@
 # Melee Unlocked - Alpha
 
 An **EXPERIMENTAL** native Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online play and an
-unlocked display frame rate. No Monetization. No Donos. No Patreon. **FREE FOREVER**
+unlocked display frame rate.
 
 The game's own PowerPC code is translated ahead of time into C++ (static recompilation of the
 retail executable plus Slippi's Gecko codes) and runs against a native D3D12 renderer, so the
@@ -17,6 +17,8 @@ HAL Laboratory. Slippi netplay compatibility is implemented from Slippi's open s
 (GPL). Questions and bugs about this build go to this repository or the Discord below, not to
 the Slippi team.
 
+No Monetization. No Donos. No Patreon. **FREE FOREVER**
+ 
 First gameplay footage can be found here: https://youtu.be/y2KN3s7uvqM
 
 ## Discord / Help
