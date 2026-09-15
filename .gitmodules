@@ -1,0 +1,6 @@
+[submodule "sourceport/extern/aurora"]
+	path = sourceport/extern/aurora
+	url = https://github.com/encounter/aurora.git
+[submodule "sourceport/extern/melee"]
+	path = sourceport/extern/melee
+	url = https://github.com/doldecomp/melee.git
