@@ -149,7 +149,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "port/generated"))
     ap.add_argument("--dol", default=str(ROOT / "melee/orig/GALE01/sys/main.dol"))
-    ap.add_argument("--symbols", default=str(ROOT / "melee/config/GALE01/symbols.txt"))
+    ap.add_argument("--symbols", default=str(ROOT / "port/recomp/GALE01_symbols.txt"))
     ap.add_argument("--hle", default=str(ROOT / "port/recomp/hle_list.txt"))
     ap.add_argument("--tu-insns", type=int, default=7000)
     ap.add_argument("--no-slippi", action="store_true", help="translate the vanilla game without the Slippi code tables")
