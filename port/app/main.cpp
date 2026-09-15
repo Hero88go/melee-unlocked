@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
 #include <windows.h>
+#include <dbghelp.h>
 #include "host.h"
 #include "gecko_data.h"
 #include "slippi_playback.h"
@@ -22,6 +23,11 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <algorithm>
+#include <atomic>
+#include <thread>
+#include <unordered_map>
+#include <vector>
 
 namespace ppc { void init_dispatch(); }
 namespace guest {
@@ -49,6 +55,127 @@ struct TimerResolution {
 #define MELEE_PORT_VERSION "dev"
 #endif
 
+// Crash report: a native crash used to close the console with nothing on screen. Any unhandled
+// exception now leaves melee_port_crash.txt (exception, module offset, last guest functions), a
+// minidump, the same lines in melee_port.log, and a dialog pointing at them when a player launched it.
+static bool g_crash_dialog = true;
+
+// --profile: samples where the simulation thread is ~1000 times a second and logs the hottest
+// functions at exit. Translated game functions are named through the dispatch table, everything
+// else through the executable's debug symbols. The sample buffer is reserved up front: the sampler
+// must not allocate while the simulation thread (which may hold the heap lock) is suspended.
+struct SimProfiler {
+  HANDLE target = nullptr;
+  std::atomic<bool> running{false};
+  std::thread sampler;
+  std::vector<uint64_t> samples;
+  std::vector<uint64_t> returns;   // [rsp] at the sample: the caller when the sample is in a leaf system routine
+  void start() {
+    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &target, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    samples.reserve(1u << 22);
+    returns.reserve(1u << 22);
+    running = true;
+    sampler = std::thread([this] {
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+      while (running.load(std::memory_order_relaxed) && samples.size() < samples.capacity()) {
+        if (SuspendThread(target) != (DWORD)-1) {
+          CONTEXT ctx{}; ctx.ContextFlags = CONTEXT_CONTROL;
+          if (GetThreadContext(target, &ctx)) { samples.push_back(ctx.Rip); returns.push_back(*(uint64_t*)ctx.Rsp); }
+          ResumeThread(target);
+        }
+        Sleep(1);
+      }
+    });
+  }
+  void report() {
+    if (!running) return;
+    running = false;
+    if (sampler.joinable()) sampler.join();
+    std::vector<std::pair<uintptr_t, uint32_t>> fns;
+    fns.reserve(guest::fn_table_count);
+    for (size_t i = 0; i < guest::fn_table_count; ++i) fns.push_back({(uintptr_t)guest::fn_table[i].fn, guest::fn_table[i].addr});
+    std::sort(fns.begin(), fns.end());
+    HANDLE process = GetCurrentProcess();
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+    SymInitialize(process, nullptr, TRUE);
+    std::unordered_map<std::string, uint64_t> hits, system_callers;
+    const uintptr_t exe_base = (uintptr_t)GetModuleHandleA(nullptr);
+    IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(exe_base + ((IMAGE_DOS_HEADER*)exe_base)->e_lfanew);
+    const uintptr_t exe_end = exe_base + nt->OptionalHeader.SizeOfImage;
+    std::unordered_map<uint64_t, std::string> host_names;
+    auto host_name = [&](uint64_t addr) -> std::string {
+      auto cached = host_names.find(addr);
+      if (cached != host_names.end()) return cached->second;
+      char buf[sizeof(SYMBOL_INFO) + 256]{}; SYMBOL_INFO* sym = (SYMBOL_INFO*)buf; sym->SizeOfStruct = sizeof(SYMBOL_INFO); sym->MaxNameLen = 255;
+      DWORD64 disp = 0;
+      std::string name = SymFromAddr(process, addr, &disp, sym) ? std::string(sym->Name) : "?";
+      return host_names.emplace(addr, name).first->second;
+    };
+    uint64_t guest_hits = 0;
+    for (size_t si = 0; si < samples.size(); ++si) {
+      const uint64_t rip = samples[si];
+      auto it = std::upper_bound(fns.begin(), fns.end(), std::make_pair((uintptr_t)rip, UINT32_MAX));
+      if (it != fns.begin() && rip < fns.back().first + 0x10000) {
+        --it;
+        ++guest_hits;
+        ++hits[std::string("game ") + host::symbol_name(it->second)];
+        continue;
+      }
+      const bool in_exe = rip >= exe_base && rip < exe_end;
+      ++hits[std::string(in_exe ? "host " : "system ") + host_name(rip)];
+      // A system DLL has no symbols here, so its exported names are only nearest guesses; the
+      // return address shows which of our functions called into it.
+      if (!in_exe && returns[si] >= exe_base && returns[si] < exe_end) ++system_callers[host_name(returns[si])];
+    }
+    std::vector<std::pair<uint64_t, std::string>> top;
+    for (auto& kv : hits) top.push_back({kv.second, kv.first});
+    std::sort(top.rbegin(), top.rend());
+    const double total = (double)std::max<size_t>(1, samples.size());
+    host::log("profile: %zu samples of the simulation thread, game code %.1f%%, runtime %.1f%%", samples.size(),
+              100.0 * guest_hits / total, 100.0 * (samples.size() - guest_hits) / total);
+    for (size_t i = 0; i < top.size() && i < 40; ++i) host::log("profile: %5.1f%%  %s", 100.0 * top[i].first / total, top[i].second.c_str());
+    std::vector<std::pair<uint64_t, std::string>> callers;
+    for (auto& kv : system_callers) callers.push_back({kv.second, kv.first});
+    std::sort(callers.rbegin(), callers.rend());
+    for (size_t i = 0; i < callers.size() && i < 15; ++i) host::log("profile: %5.1f%%  system call from %s", 100.0 * callers[i].first / total, callers[i].second.c_str());
+  }
+};
+static SimProfiler g_profiler;
+static bool g_profile = false;
+static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
+  static volatile LONG entered = 0;
+  if (InterlockedExchange(&entered, 1)) return EXCEPTION_CONTINUE_SEARCH;
+  const EXCEPTION_RECORD* er = info->ExceptionRecord;
+  HMODULE module = nullptr; char module_name[MAX_PATH] = "?";
+  if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)er->ExceptionAddress, &module))
+    GetModuleFileNameA(module, module_name, MAX_PATH);
+  const uintptr_t offset = (uintptr_t)er->ExceptionAddress - (uintptr_t)module;
+  char head[512];
+  std::snprintf(head, sizeof head, "CRASH: exception %08lX at %p (%s+0x%llX), version %s", er->ExceptionCode, er->ExceptionAddress,
+                std::strrchr(module_name, '\\') ? std::strrchr(module_name, '\\') + 1 : module_name, (unsigned long long)offset, MELEE_PORT_VERSION);
+  host::log("%s", head);
+  if (FILE* f = std::fopen("melee_port_crash.txt", "w")) {
+    std::fprintf(f, "%s\n", head);
+    if (host::cpu) {
+      std::fprintf(f, "last guest function %08X %s, lr %08X\nrecent guest functions (oldest first):\n", host::cpu->last_pc, host::symbol_name(host::cpu->last_pc), host::cpu->lr);
+      for (uint32_t i = 0; i < 64; ++i) { uint32_t pc = host::cpu->trace[(host::cpu->trace_pos + i) & 63]; if (pc) std::fprintf(f, "  %08X %s\n", pc, host::symbol_name(pc)); }
+    }
+    std::fclose(f);
+  }
+  HANDLE dump = CreateFileA("melee_port_crash.dmp", GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (dump != INVALID_HANDLE_VALUE) {
+    MINIDUMP_EXCEPTION_INFORMATION mei{GetCurrentThreadId(), info, FALSE};
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), dump, MiniDumpNormal, &mei, nullptr, nullptr);
+    CloseHandle(dump);
+  }
+  if (g_crash_dialog) {
+    std::string text = std::string(head) + "\n\nMelee Unlocked crashed. Please send melee_port.log, melee_port_crash.txt and melee_port_crash.dmp "
+                       "from the game folder with your bug report (https://github.com/hero88go/melee-unlocked/issues).";
+    MessageBoxA(nullptr, text.c_str(), "Melee Unlocked", MB_ICONERROR | MB_OK);
+  }
+  return EXCEPTION_EXECUTE_HANDLER;
+}
+
 // Records the disc this run used, next to the launcher's own settings. However the game was
 // started (a batch file, a shortcut, the launcher, a development command line), the launcher can
 // then offer that disc instead of leaving Play greyed out with an empty box.
@@ -66,7 +193,23 @@ static void remember_iso(const std::string& iso) {
   std::fclose(f);
 }
 
+// The runtime and the translated game are built for AVX2. Without it the first AVX2 instruction
+// kills the process before anything is logged, so say so plainly instead (this file is not AVX2).
+static bool cpu_has_avx2() {
+  int r[4];
+  __cpuid(r, 0); if (r[0] < 7) return false;
+  __cpuid(r, 1); const bool osxsave = (r[2] >> 27) & 1, avx = (r[2] >> 28) & 1;
+  if (!osxsave || !avx || (_xgetbv(0) & 6) != 6) return false;
+  __cpuidex(r, 7, 0); return (r[1] >> 5) & 1;
+}
+
 int main(int argc, char** argv) {
+  if (!cpu_has_avx2()) {
+    const char* msg = "Melee Unlocked needs a CPU with AVX2 (Intel Haswell 2013 or newer, AMD Ryzen or newer). This CPU does not support it.";
+    std::fprintf(stderr, "%s\n", msg);
+    MessageBoxA(nullptr, msg, "Melee Unlocked", MB_ICONERROR | MB_OK);
+    return 3;
+  }
   for (int i = 1; i < argc; ++i)
     if (std::string(argv[i]) == "--version") { std::printf("%s\n", MELEE_PORT_VERSION); return 0; }
   TimerResolution timer_resolution;
@@ -81,6 +224,8 @@ int main(int argc, char** argv) {
     if (arg == "--frame-mode") explicit_frame_mode = true;
   }
   gfx.pc_settings = !automated;
+  g_crash_dialog = !automated;
+  SetUnhandledExceptionFilter(crash_filter);
   if (!automated) {
     gx::load_pc_settings(gfx, o.volume);
     threaded = true;
@@ -163,6 +308,7 @@ int main(int argc, char** argv) {
     else if (a == "--anisotropy") gfx.anisotropy = std::clamp(std::atoi(next()), 1, 16);
     else if (a == "--hang-watch") o.hang_watch = std::atof(next());
     else if (a == "--audio-dump") o.audio_dump = next();
+    else if (a == "--profile") g_profile = true;
     else { usage(); return 2; }
   }
   gecko::option_widescreen = gfx.widescreen;   // before the game loads the code table
@@ -192,6 +338,7 @@ int main(int argc, char** argv) {
   host::boot_setup();
   host::log("boot: entering __start at %08X", 0x8000522Cu);
   int code = 0;
+  if (g_profile) g_profiler.start();
   try {
     ppc::call(*host::cpu, host::ram, 0x8000522Cu);
     host::log("guest returned from __start after %u retraces", host::retrace_count());
@@ -201,6 +348,7 @@ int main(int argc, char** argv) {
   } catch (const LoadContextUnwind&) {
     host::log("OSLoadContext reached top level");
   }
+  g_profiler.report();
   { uint64_t silent_ms = 0, underruns = host::audio_underruns(&silent_ms);
     double rate_low = 1.0, rate_high = 1.0; host::audio_rate_range(&rate_low, &rate_high);
     host::log("audio: %llu frames played, %llu blocks dropped, %llu gaps (%llu ms held), clock tracking %+.3f%% to %+.3f%%",

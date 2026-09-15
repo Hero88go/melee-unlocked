@@ -620,7 +620,8 @@ void build_projection(const DrawCall& dc, float m[16]) {
 }
 
 void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const DrawMatrices* override_matrices, const MotionInfo* motion) {
-  std::memset(&c, 0, sizeof c);
+  // No blanket zeroing of the 4.9 KB block: every field is written below, and the sections a draw
+  // does not use (lights, post-transform, previous pose) are zeroed individually.
   const float* pos_matrices = override_matrices ? override_matrices->pos : dc.posMatrices;
   const float* nrm_matrices = override_matrices ? override_matrices->nrm : dc.normalMatrices;
   const float* vp = (const float*)&dc.xf_regs[0x1A];
@@ -637,6 +638,9 @@ void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const 
     for (int i = 0; i < 4; ++i) { m[i] += jx * m[12 + i]; m[4 + i] += jy * m[12 + i]; }
     std::memcpy(c.prev_projection, motion->prev_proj ? motion->prev_proj : &c.unjittered_projection[0][0], sizeof c.prev_projection);
     std::memcpy(c.prev_transformmatrices, motion->prev_pos ? motion->prev_pos : pos_matrices, sizeof c.prev_transformmatrices);
+  } else {
+    std::memset(c.prev_projection, 0, sizeof c.prev_projection);
+    std::memset(c.prev_transformmatrices, 0, sizeof c.prev_transformmatrices);
   }
   std::memcpy(c.projection, m, sizeof m);
   float psx = 2.0f / viewport_width, psy = 2.0f / viewport_height;
@@ -648,7 +652,13 @@ void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const 
     c.materials[i][0] = (float)((amb >> 24) & 0xFF); c.materials[i][1] = (float)((amb >> 16) & 0xFF); c.materials[i][2] = (float)((amb >> 8) & 0xFF); c.materials[i][3] = (float)(amb & 0xFF);
     c.materials[i + 2][0] = (float)((mat >> 24) & 0xFF); c.materials[i + 2][1] = (float)((mat >> 16) & 0xFF); c.materials[i + 2][2] = (float)((mat >> 8) & 0xFF); c.materials[i + 2][3] = (float)(mat & 0xFF);
   }
-  for (int i = 0; i < 8; ++i) {
+  // Light and post-transform constants only matter when the shader uses them (same tests as the
+  // vertex shader uid); the block is already zeroed, and record_draw skips copying them otherwise.
+  const uint32_t lit_chans = dc.xf_regs[0x09] & 3;
+  bool lit = false;
+  for (uint32_t j = 0; j < lit_chans; ++j) lit = lit || lit_enable(dc.xf_regs[0x0E + j]) || lit_enable(dc.xf_regs[0x10 + j]);
+  if (!lit) std::memset(c.lights, 0, sizeof c.lights);
+  for (int i = 0; lit && i < 8; ++i) {
     const uint8_t* L = dc.lights[i];
     // Light struct: useless[3] (12), color[4] (16), cosatt[3] (28), distatt[3] (40), dpos[3] (52), ddir[3] (64)
     uint32_t colorword; std::memcpy(&colorword, L + 12, 4);   // stored as big-endian u32 -> host u32 already swapped by xf_load
@@ -666,6 +676,7 @@ void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const 
     double norm = (double)d[0] * d[0] + (double)d[1] * d[1] + (double)d[2] * d[2];
     float nf = norm > 0 ? (float)(1.0 / std::sqrt(norm)) : 0.0f;
     c.lights[5 * i + 4][0] = d[0] * nf; c.lights[5 * i + 4][1] = d[1] * nf; c.lights[5 * i + 4][2] = d[2] * nf;
+    for (int row = 1; row <= 4; ++row) c.lights[5 * i + row][3] = 0.0f;   // .w of these rows is never set above
   }
   uint32_t mia = dc.matrix_index_a, mib = dc.matrix_index_b;
   for (int i = 0; i < 8; ++i) {
@@ -673,8 +684,9 @@ void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const 
     std::memcpy(c.texmatrices[3 * i], &pos_matrices[idx * 4], 12 * sizeof(float));
   }
   std::memcpy(c.transformmatrices, pos_matrices, sizeof dc.posMatrices);
-  for (int i = 0; i < 32; ++i) std::memcpy(c.normalmatrices[i], &nrm_matrices[3 * i], 12);
-  std::memcpy(c.posttransformmatrices, dc.postMatrices, sizeof dc.postMatrices);
+  for (int i = 0; i < 32; ++i) { std::memcpy(c.normalmatrices[i], &nrm_matrices[3 * i], 12); c.normalmatrices[i][3] = 0; }
+  if (dc.xf_regs[0x12] & 1) std::memcpy(c.posttransformmatrices, dc.postMatrices, sizeof dc.postMatrices);
+  else std::memset(c.posttransformmatrices, 0, sizeof c.posttransformmatrices);
 }
 
 void fill_ps_constants(const DrawCall& dc, PSConstants& c, int efb_scale) {

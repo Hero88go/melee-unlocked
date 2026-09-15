@@ -74,7 +74,7 @@ int exit_code();
 uint32_t retrace_count();
 
 // ---- simulation-thread cost accounting (per retrace; logged when a frame exceeds 20 ms) ----
-enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, SIM_OBSERVE, SIM_COST_COUNT };
+enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, SIM_OBSERVE, SIM_RECORD, SIM_COST_COUNT };
 void sim_cost_add(int slot, double seconds);
 double last_sim_frame_ms();            // work time of the most recent simulation frame (sleep excluded)
 
@@ -89,7 +89,10 @@ double emulation_speed();
 // paced, wall time when --fast). Sub-frame presentation measures its phase from this.
 double frame_time();
 double now_seconds();
-struct SimCostScope { int slot; double t0; explicit SimCostScope(int s) : slot(s), t0(now_seconds()) {} ~SimCostScope() { sim_cost_add(slot, now_seconds() - t0); } };
+// Per-draw scopes run tens of thousands of times a frame, so they read the CPU time stamp counter
+// (one instruction) instead of QueryPerformanceCounter; tsc_seconds is calibrated once at startup.
+extern const double tsc_seconds;
+struct SimCostScope { int slot; uint64_t t0; explicit SimCostScope(int s) : slot(s), t0(__rdtsc()) {} ~SimCostScope() { sim_cost_add(slot, (double)(__rdtsc() - t0) * tsc_seconds); } };
 
 // ---- GX FIFO sink ----
 void gx_write(uint32_t value, int bytes);  // write-gather pipe data
