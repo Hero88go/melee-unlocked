@@ -59,7 +59,13 @@ static void open_log_file() {
   static bool tried = false;
   if (tried) return;
   tried = true;
-  g_log_file = std::fopen(options.log_file.empty() ? "melee_port.log" : options.log_file.c_str(), "w");
+  // Keep the previous session's log (a desync or crash report is often noticed only after relaunching).
+  const std::string path = options.log_file.empty() ? "melee_port.log" : options.log_file;
+  const std::string previous = path.size() > 4 && path.compare(path.size() - 4, 4, ".log") == 0
+      ? path.substr(0, path.size() - 4) + ".prev.log" : path + ".prev";
+  std::remove(previous.c_str());
+  std::rename(path.c_str(), previous.c_str());
+  g_log_file = std::fopen(path.c_str(), "w");
 }
 void log(const char* fmt, ...) {
   if (options.quiet) return;

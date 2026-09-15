@@ -74,6 +74,8 @@ void call(Context& c, uint8_t* m, uint32_t addr);         // indirect call by gu
 void interpret(Context& c, uint8_t* m, uint32_t addr);    // run RAM-resident code until it returns (interp.cpp)
 void interpreter_stats(uint64_t* calls, uint64_t* insns);
 void fatal(Context& c, const char* what, uint32_t a);
+// Releases one level of guest call depth when the call returns or is unwound by an exception.
+struct CallDepthScope { Context& c; ~CallDepthScope() { --c.call_depth; } };
 // __longjmp: thrown by the HLE, caught by the translated function that called __setjmp on
 // `buf` (its body is wrapped in a retry loop; see Emitter). The catch restores the registers
 // the MSL longjmp would and resumes at the setjmp return address saved in the buffer.

@@ -44,8 +44,7 @@ struct Interp {
     for (;;) {
       if (Fn fn = lookup(t)) {
         if (++c.call_depth > 20000) fatal(c, "guest call depth exceeded", t);
-        fn(c, m);
-        --c.call_depth;
+        { CallDepthScope scope{c}; fn(c, m); }   // released on exception unwinds too
         if (linked) { pc += 4; return; }         // bl to host code: continue after the call
         t = c.lr;                                 // tail transfer: the host function returned to LR
         if (t == entry_lr) { done = true; return; }
