@@ -505,11 +505,12 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     ImGui::End();
   }
   if (!state.open) {
-    // Always-visible way in: a small button in the corner (mouse), plus the key hint.
+    // Keep the closed state passive: opening is intentionally F1-only so controller
+    // navigation cannot activate a settings button by accident.
     ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 12, 12), ImGuiCond_Always, ImVec2(1, 0));
     ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
     ImGui::Begin("SettingsButton", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
-    if (ImGui::Button("Settings  (F1 / Z+Start)")) state.open = true;
+    ImGui::TextUnformatted("Settings: F1");
     ImGui::End();
   }
   if (options.performance_overlay) {
