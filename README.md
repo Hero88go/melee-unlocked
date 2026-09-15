@@ -1,4 +1,5 @@
-
+No Monetization. No Donos. No Patreon. 
+FREE FOREVER
 
 # Melee Unlocked - Alpha
 
