@@ -1,11 +1,8 @@
-No Monetization. No Donos. No Patreon. 
-
-**FREE FOREVER**
 
 # Melee Unlocked - Alpha
 
 An **EXPERIMENTAL** native Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online play and an
-unlocked display frame rate.
+unlocked display frame rate. No Monetization. No Donos. No Patreon. **FREE FOREVER**
 
 The game's own PowerPC code is translated ahead of time into C++ (static recompilation of the
 retail executable plus Slippi's Gecko codes) and runs against a native D3D12 renderer, so the
