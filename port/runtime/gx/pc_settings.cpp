@@ -284,8 +284,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.button & 2) || pad.stick_x > 40);
   }
   ImGui::NewFrame();
-  if (ImGui::IsKeyPressed(ImGuiKey_F1) ||
-      (ImGui::IsKeyDown(ImGuiKey_GamepadBack) && ImGui::IsKeyPressed(ImGuiKey_GamepadStart))) state.open = !state.open;
+  if (ImGui::IsKeyPressed(ImGuiKey_F1)) state.open = !state.open;
   if (state.open && ImGui::IsKeyPressed(ImGuiKey_Escape)) state.open = false;
   host::window_input_capture(state.open);
   state.intervals[state.cursor++ % state.intervals.size()] = ImGui::GetIO().DeltaTime*1000.f;
