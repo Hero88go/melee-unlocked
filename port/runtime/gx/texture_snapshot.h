@@ -43,6 +43,11 @@ public:
     // Most draws reuse their source. Vectorized memcmp avoids rehashing
     // every byte with a serial hash recurrence; changes still receive a new copy.
     auto previous = last_source.find(image);
+    // Already compared against this source earlier in the same simulation frame: many draws share a
+    // texture, and repeating the full memcmp for each was a measurable share of the simulation thread.
+    if (previous != last_source.end() && previous->second.used == generation &&
+        previous->second.snapshot->image.size() == image_size && previous->second.snapshot->palette.size() == palette_size)
+      return previous->second.snapshot;
     if (previous != last_source.end() && equal(*previous->second.snapshot, image, image_size, palette, palette_size)) {
       previous->second.used = generation;
       return previous->second.snapshot;

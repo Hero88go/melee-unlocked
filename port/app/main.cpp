@@ -3,6 +3,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <dbghelp.h>
+#include <tlhelp32.h>
 #include "host.h"
 #include "gecko_data.h"
 #include "slippi_playback.h"
@@ -68,15 +69,47 @@ struct SimProfiler {
   HANDLE target = nullptr;
   std::atomic<bool> running{false};
   std::thread sampler;
+  bool render_thread = false;   // --profile-render: after warm-up, sample the busiest other thread instead
+  DWORD main_thread_id = 0;
+  // CPU time (100 ns units) of every other thread of this process, by thread id.
+  std::unordered_map<DWORD, uint64_t> thread_times() {
+    std::unordered_map<DWORD, uint64_t> out;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return out;
+    THREADENTRY32 te{}; te.dwSize = sizeof te;
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+      if (te.th32OwnerProcessID != GetCurrentProcessId() || te.th32ThreadID == main_thread_id || te.th32ThreadID == GetCurrentThreadId()) continue;
+      HANDLE h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
+      if (!h) continue;
+      FILETIME c, e, k, u;
+      if (GetThreadTimes(h, &c, &e, &k, &u))
+        out[te.th32ThreadID] = (((uint64_t)k.dwHighDateTime << 32) | k.dwLowDateTime) + (((uint64_t)u.dwHighDateTime << 32) | u.dwLowDateTime);
+      CloseHandle(h);
+    }
+    CloseHandle(snap);
+    return out;
+  }
   std::vector<uint64_t> samples;
   std::vector<uint64_t> returns;   // [rsp] at the sample: the caller when the sample is in a leaf system routine
   void start() {
-    DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &target, 0, FALSE, DUPLICATE_SAME_ACCESS);
+    main_thread_id = GetCurrentThreadId();
+    if (!render_thread) DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &target, 0, FALSE, DUPLICATE_SAME_ACCESS);
     samples.reserve(1u << 22);
     returns.reserve(1u << 22);
     running = true;
     sampler = std::thread([this] {
       SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+      if (render_thread) {
+        Sleep(8000);   // past boot and menus into the match
+        auto before = thread_times();
+        Sleep(1000);
+        auto after = thread_times();
+        DWORD busiest = 0; uint64_t most = 0;
+        for (auto& kv : after) { auto b = before.find(kv.first); uint64_t d = kv.second - (b == before.end() ? 0 : b->second); if (d > most) { most = d; busiest = kv.first; } }
+        if (busiest) target = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, busiest);
+        host::log("profile: sampling thread %lu (%.0f%% of a core over 1 s)", busiest, most / 1e5);
+        if (!target) return;
+      }
       while (running.load(std::memory_order_relaxed) && samples.size() < samples.capacity()) {
         if (SuspendThread(target) != (DWORD)-1) {
           CONTEXT ctx{}; ctx.ContextFlags = CONTEXT_CONTROL;
@@ -131,7 +164,7 @@ struct SimProfiler {
     for (auto& kv : hits) top.push_back({kv.second, kv.first});
     std::sort(top.rbegin(), top.rend());
     const double total = (double)std::max<size_t>(1, samples.size());
-    host::log("profile: %zu samples of the simulation thread, game code %.1f%%, runtime %.1f%%", samples.size(),
+    host::log("profile: %zu samples of the %s thread, game code %.1f%%, runtime %.1f%%", samples.size(), render_thread ? "busiest non-simulation" : "simulation",
               100.0 * guest_hits / total, 100.0 * (samples.size() - guest_hits) / total);
     for (size_t i = 0; i < top.size() && i < 40; ++i) host::log("profile: %5.1f%%  %s", 100.0 * top[i].first / total, top[i].second.c_str());
     std::vector<std::pair<uint64_t, std::string>> callers;
@@ -309,6 +342,7 @@ int main(int argc, char** argv) {
     else if (a == "--hang-watch") o.hang_watch = std::atof(next());
     else if (a == "--audio-dump") o.audio_dump = next();
     else if (a == "--profile") g_profile = true;
+    else if (a == "--profile-render") { g_profile = true; g_profiler.render_thread = true; }
     else { usage(); return 2; }
   }
   gecko::option_widescreen = gfx.widescreen;   // before the game loads the code table
