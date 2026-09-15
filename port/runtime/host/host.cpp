@@ -477,16 +477,27 @@ double frame_time() { return g_frame_time; }
 // Simulation-thread cost accounting: HLE entry points add their time to a slot; at the next
 // retrace the frame's work time (sleep excluded) is logged when it exceeds 20 ms, with the
 // slots that explain it, so a hitch is attributed instead of guessed.
+// Seconds per time stamp counter tick, measured against the performance counter over 20 ms at startup.
+const double tsc_seconds = [] {
+  LARGE_INTEGER freq, q0, q1; QueryPerformanceFrequency(&freq);
+  QueryPerformanceCounter(&q0); const uint64_t t0 = __rdtsc();
+  Sleep(20);
+  QueryPerformanceCounter(&q1); const uint64_t t1 = __rdtsc();
+  return t1 > t0 ? (double)(q1.QuadPart - q0.QuadPart) / (double)freq.QuadPart / (double)(t1 - t0) : 0.0;
+}();
 static double g_sim_costs[SIM_COST_COUNT];
 static double g_sim_costs_window[SIM_COST_COUNT];   // accumulated over the 60-frame log interval
 static double g_sim_ms_window = 0, g_sim_ms_worst = 0;
-static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe"};
+static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record"};   // record includes texsnap and observe
 static double g_sim_frame_start = 0.0, g_last_sim_ms = 0.0;
 void sim_cost_add(int slot, double seconds) { if (slot >= 0 && slot < SIM_COST_COUNT) { g_sim_costs[slot] += seconds; g_sim_costs_window[slot] += seconds; } }
 // "sim: 3.1 ms/frame (worst 12.4) | observe 0.9 texsnap 0.4" for the periodic frame log.
 static std::string sim_cost_line(uint32_t frames) {
   char buf[320];
-  size_t n = (size_t)std::snprintf(buf, sizeof buf, "sim: %.1f ms/frame (worst %.1f)", g_sim_ms_window / std::max(1u, frames), g_sim_ms_worst);
+  static uint64_t last_enters = 0;
+  const uint64_t enters = ppc::g_enter_count - last_enters; last_enters = ppc::g_enter_count;
+  size_t n = (size_t)std::snprintf(buf, sizeof buf, "sim: %.1f ms/frame (worst %.1f), %llu guest calls/frame", g_sim_ms_window / std::max(1u, frames), g_sim_ms_worst,
+                                   (unsigned long long)(enters / std::max(1u, frames)));
   bool first = true;
   for (int i = 0; i < SIM_COST_COUNT; ++i) {
     double ms = g_sim_costs_window[i] * 1000.0 / std::max(1u, frames);

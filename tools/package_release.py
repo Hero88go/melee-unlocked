@@ -116,6 +116,14 @@ def main():
         src = args.exe.parent / dll
         if src.is_file():
             shutil.copy2(src, folder / dll)
+    # App-local Visual C++ runtime (Microsoft permits redistributing these next to the exe): without it
+    # a PC that never installed the VC++ 2015-2022 redistributable closes the game before it can log.
+    redist = sorted(Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC").glob("*/x64/Microsoft.VC143.CRT"))
+    if not redist:
+        raise SystemExit("Visual C++ runtime redistributable not found (VC\\Redist\\MSVC\\*\\x64\\Microsoft.VC143.CRT)")
+    for dll in redist[-1].glob("*.dll"):
+        shutil.copy2(dll, folder / dll.name)
+    print(f"visual c++ runtime: {redist[-1]}")
     sys_src = ROOT / "port/slippi_sys"
     sys_dst = folder / "Sys"
     (sys_dst / "GameSettings").mkdir(parents=True)
