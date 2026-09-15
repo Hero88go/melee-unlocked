@@ -49,7 +49,7 @@ class ThreadedBackend final : public Backend {
           file = std::fopen(path.c_str(), "w");
           if (!file) throw std::runtime_error("cannot open frame timing CSV");
           std::setvbuf(file, nullptr, _IOFBF, 1024 * 1024);
-          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms\n", file);
+          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms,draws,missing,hud,state,geometry,projection,state_register,skinned\n", file);
         }
       }
       ~Trace() { if (file) std::fclose(file); }
@@ -78,6 +78,11 @@ class ThreadedBackend final : public Backend {
       }
       authored = live_options.subframe == SubFrameMode::Authored || live_options.subframe == SubFrameMode::AuthoredInterpolate;
       interpolate = live_options.subframe == SubFrameMode::Interpolate || live_options.subframe == SubFrameMode::AuthoredInterpolate;
+      // Menus, character select and stage select have no skinned character models. Their panels and
+      // cursors are moved by game code that stops without warning, so predicting ahead overshoots and
+      // snaps back; interpolating between the last two frames never overshoots, and a menu does not
+      // need the frame of latency Predict avoids.
+      if (authored && subframes && cur >= 0 && solver.stats().draws && !solver.stats().skinned) interpolate = true;
       // Render every source at least once: EFB resources can depend on earlier commands.
       bool got_new = false;
       Frame incoming;
@@ -157,10 +162,12 @@ class ThreadedBackend final : public Backend {
       const double render_end = host::now_seconds();
       const double present_wait = renderer->presentation_wait_seconds();
       render_budget = std::max(render_budget * 0.95, render_end-render_start-present_wait+0.0002);
-      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f\n",
+      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f,%u,%u,%u,%u,%u,%u,%u,%u\n",
           (unsigned long long)(presented+1), (unsigned long long)current.sequence, t,
           (render_start-current.time)*1000.0, last_submission ? (render_end-last_submission)*1000.0 : 0.0,
-          solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired, host::last_sim_frame_ms());
+          solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired, host::last_sim_frame_ms(),
+          solver.stats().draws, solver.stats().missing, solver.stats().hud, solver.stats().state, solver.stats().geometry,
+          solver.stats().projection, solver.stats().state_register, solver.stats().skinned);
       last_submission = render_end;
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;

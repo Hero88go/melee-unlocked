@@ -123,6 +123,7 @@ bool open_adapter() {
 
 // Fills ports that have a controller plugged into the adapter; returns the mask of those ports.
 uint32_t gcadapter_poll(PadState out[4]) {
+  if (options.no_gc_adapter) return 0;
   auto now = std::chrono::steady_clock::now();
   if (!g_usb || !g_running.load()) {
     if (g_usb && !g_running.load()) close_adapter();
@@ -142,7 +143,12 @@ uint32_t gcadapter_poll(PadState out[4]) {
     uint8_t status = c[0] & 0x30;
     if (!status) { g_origin[port].set = false; continue; }
     Origin& o = g_origin[port];
-    if (!o.set) { o.set = true; o.sx = c[3]; o.sy = c[4]; o.cx = c[5]; o.cy = c[6]; o.tl = c[7]; o.tr = c[8]; }
+    if (!o.set) {
+      o.set = true; o.sx = c[3]; o.sy = c[4]; o.cx = c[5]; o.cy = c[6]; o.tl = c[7]; o.tr = c[8];
+      // The neutral point is taken from this first report; a stick held while the controller
+      // connects shifts every later reading, so record it for input reports.
+      log("gc adapter: port %d connected, neutral stick %u,%u c-stick %u,%u triggers %u,%u", port + 1, o.sx, o.sy, o.cx, o.cy, o.tl, o.tr);
+    }
     PadState& p = out[port];
     std::memset(&p, 0, sizeof p);
     p.err = 0;

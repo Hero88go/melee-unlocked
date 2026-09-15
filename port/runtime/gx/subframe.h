@@ -15,10 +15,13 @@
 #include <unordered_map>
 #include <vector>
 #include "gx_core.h"
+#include "authored_pose.h"
 
 namespace gx {
 
-struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, cuts = 0; uint32_t missing = 0, hud = 0, state = 0, geometry = 0, projection = 0, state_register = 256, authored = 0, carried = 0, vertex_blended = 0; };
+struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, cuts = 0; uint32_t missing = 0, hud = 0, state = 0, geometry = 0, projection = 0, state_register = 256, authored = 0, carried = 0, vertex_blended = 0;
+  uint32_t skinned = 0;   // skinned (character model) draws in the current frame; zero on menus and stage select
+};
 
 class SubFrameSolver {
  public:
@@ -54,6 +57,14 @@ class SubFrameSolver {
   // Previous frame draws by identity, sorted; reused across simulation frames so pairing does not
   // allocate a hash node per draw every tick.
   std::vector<std::pair<uint64_t, int>> prev_index_;
+  // This frame's camera (from the first paired draw that carries a view): used to move draws that
+  // have no pair onto the same timeline as the rest of the frame.
+  const AuthoredPose* camera_previous_ = nullptr;
+  const AuthoredPose* camera_current_ = nullptr;
+  // One advanced copy per texture matrix row per simulation frame, so every draw sharing a row
+  // (stage layers of the same surface) gets exactly the same transform.
+  struct SharedTextureRow { uint64_t sequence = 0; float previous[12]{}; float current[12]{}; };
+  mutable SharedTextureRow texture_rows_[64];
   mutable SubFrameStats stats_;
 };
 
