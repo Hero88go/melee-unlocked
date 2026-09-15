@@ -61,10 +61,6 @@ class SubFrameSolver {
   // have no pair onto the same timeline as the rest of the frame.
   const AuthoredPose* camera_previous_ = nullptr;
   const AuthoredPose* camera_current_ = nullptr;
-  // One advanced copy per texture matrix row per simulation frame, so every draw sharing a row
-  // (stage layers of the same surface) gets exactly the same transform.
-  struct SharedTextureRow { uint64_t sequence = 0; float previous[12]{}; float current[12]{}; };
-  mutable SharedTextureRow texture_rows_[64];
   mutable SubFrameStats stats_;
 };
 
