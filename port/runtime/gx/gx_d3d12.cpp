@@ -1188,7 +1188,7 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   device_->CreateShaderResourceView(source, nullptr, h);
   D3D12_GPU_DESCRIPTOR_HANDLE g = srv_heap_->GetGPUDescriptorHandleForHeapStart(); g.ptr += slot * srv_size_;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += bb * rtv_size_;
-  float border[4] = {0.05f, 0.05f, 0.15f, 1};
+  float border[4] = {0, 0, 0, 1};   // letterbox/pillarbox bars (black, as on Dolphin and a TV)
   list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
   list_->ClearRenderTargetView(rtv, border, 0, nullptr);
   // Letterbox the output at the game's aspect (XFB region c.src_w x lines); the widescreen

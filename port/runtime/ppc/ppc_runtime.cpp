@@ -36,9 +36,12 @@ Fn lookup(uint32_t addr) {
 void call(Context& c, uint8_t* m, uint32_t addr) {
   Fn fn = lookup(addr);
   if (++c.call_depth > 20000) fatal(c, "guest call depth exceeded", addr);
+  // Guest longjmp and OSLoadContext unwind through here as C++ exceptions. The depth must drop on
+  // that path too, or every unwind leaks the skipped frames until an ordinary call hits the limit
+  // (seen after thousands of rollbacks in a long online session).
+  CallDepthScope scope{c};
   if (fn) fn(c, m);
   else interpret(c, m, addr);   // code that only exists in RAM (dat-loaded routines)
-  --c.call_depth;
 }
 
 uint64_t g_enter_count = 0;

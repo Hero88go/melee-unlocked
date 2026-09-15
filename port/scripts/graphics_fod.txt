@@ -1,0 +1,69 @@
+# Regression fixture: prepared offline card; Mario/Luigi on Fountain of Dreams.
+# Same entry as graphics_yoshi.txt; the stage cursor stops on the top row (Fountain of Dreams)
+# instead of stepping down into the Yoshi's Story tile. Covers the water reflection and
+# fountain effects, which render through EFB copies.
+300 B
+310
+380 B
+390
+460 sy=-127
+466
+500 A
+510
+580 A
+590
+700 p=2
+1000 sx=61 sy=127
+1000 p=2 sy=127
+1017
+1017 p=2
+1040 A
+1040 p=2 A
+1050
+1050 p=2
+1100 START
+1110
+1300 sy=100
+1367
+1380 sx=100
+1382
+1410 A
+1420
+1900 sx=80
+1960 X
+1965
+1990 A
+1995
+2020 p=2 R
+2030 A
+2035
+2060 A
+2065
+2090 B
+2095
+2120 p=2
+2140 A
+2145
+2170 A
+2175
+2200 B
+2205
+2240 B
+2245
+2280 B
+2285
+2320 p=2 B sy=-127
+2330 p=2
+2360 A
+2365
+2400 B
+2405
+2440 B
+2445
+2480 A
+2485
+2520 B
+2525
+2560 B
+2565
+2600
