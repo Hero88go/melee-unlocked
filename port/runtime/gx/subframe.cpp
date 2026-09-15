@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <thread>
+#include <algorithm>
 #include <mutex>
 #include <functional>
 #include <condition_variable>
@@ -236,12 +237,18 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   stats_ = SubFrameStats{};
   if (!cur) return;
   stats_.draws = (uint32_t)cur->draws.size();
-  if (prev) for (size_t i = 0; i < prev->draws.size(); ++i) prev_index_.emplace(prev->draws[i].identity, (int)i);
+  if (prev) {
+    prev_index_.reserve(prev->draws.size());
+    for (size_t i = 0; i < prev->draws.size(); ++i) prev_index_.push_back({prev->draws[i].identity, (int)i});
+    // Stable order keeps the first draw for a repeated identity, as the hash map did.
+    std::stable_sort(prev_index_.begin(), prev_index_.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+  }
   pairs_.resize(cur->draws.size());
   for (size_t i = 0; i < cur->draws.size(); ++i) {
     const DrawCall& d = cur->draws[i];
     Pair p{-1, 0, 0, 0, false, 0};
-    auto it = prev_index_.find(d.identity);
+    auto it = std::lower_bound(prev_index_.begin(), prev_index_.end(), d.identity, [](const std::pair<uint64_t, int>& e, uint64_t id) { return e.first < id; });
+    if (it != prev_index_.end() && it->first != d.identity) it = prev_index_.end();
     if (it != prev_index_.end()) {
       const DrawCall& pd = prev->draws[it->second];
       bool vertex_ranges_valid = pd.first_vertex <= prev->vertices.size() && pd.vertex_count <= prev->vertices.size() - pd.first_vertex &&

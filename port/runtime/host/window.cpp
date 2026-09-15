@@ -240,8 +240,11 @@ void ds4_input(HRAWINPUT raw) {
   if (face & 0x01) buttons |= DS4_L1; if (face & 0x02) buttons |= DS4_R1;
   if (system & 0x01) buttons |= DS4_SHARE; if (system & 0x02) buttons |= DS4_OPTIONS;
   if (system & 0x04) buttons |= DS4_L3; if (system & 0x08) buttons |= DS4_R3;
-  PadState pad{}; pad.err = 0; pad.stick_x = (int8_t)((int)report[offset] - 128); pad.stick_y = (int8_t)(128 - (int)report[offset + 1]);
-  pad.sub_x = (int8_t)((int)report[offset + 2] - 128); pad.sub_y = (int8_t)(128 - (int)report[offset + 3]);
+  // Y is inverted: 128 - raw reaches +128 at full up, which wrapped to -128 in an int8 and turned a
+  // full tilt up into a full tilt down. Clamp to the int8 range first.
+  auto up_axis = [](uint8_t raw) { return (int8_t)std::min(127, 128 - (int)raw); };
+  PadState pad{}; pad.err = 0; pad.stick_x = (int8_t)((int)report[offset] - 128); pad.stick_y = up_axis(report[offset + 1]);
+  pad.sub_x = (int8_t)((int)report[offset + 2] - 128); pad.sub_y = up_axis(report[offset + 3]);
   if (report[offset + 8] > 30) { buttons |= DS4_R2; pad.trig_r = report[offset + 8]; }
   if (report[offset + 7] > 30) { buttons |= DS4_L2; pad.trig_l = report[offset + 7]; }
   std::lock_guard<std::mutex> lock(g_ds4_mutex); g_ds4_buttons[slot] = buttons; g_ds4_pads[slot] = pad;

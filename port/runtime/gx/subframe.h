@@ -51,7 +51,9 @@ class SubFrameSolver {
   const Frame* cur_ = nullptr;
   std::vector<Pair> pairs_;
   mutable std::vector<Vertex> vertex_blend_;   // per presented frame: blended streams, one disjoint range per draw
-  std::unordered_map<uint64_t, int> prev_index_;
+  // Previous frame draws by identity, sorted; reused across simulation frames so pairing does not
+  // allocate a hash node per draw every tick.
+  std::vector<std::pair<uint64_t, int>> prev_index_;
   mutable SubFrameStats stats_;
 };
 
