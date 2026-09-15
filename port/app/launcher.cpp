@@ -269,7 +269,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_play[i++] = g_slippi_btn = make(L"BUTTON", L"Get Slippi Launcher", BS_PUSHBUTTON, 452, 194, 144, 26, ID_SLIPPI_GET);
       g_play[i++] = g_version_text = make(L"STATIC", L"", 0, 24, 250, 420, 40, ID_VERSION_TEXT);
       g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_PUSHBUTTON, 452, 248, 144, 26, ID_UPDATE);
-      make(L"STATIC", L"In game: F1 or Z + Start opens the PC settings (fullscreen, frame rate, resolution, DLSS, anti-aliasing, widescreen, audio).\nA GameCube adapter is used automatically when it has the WinUSB driver (the Slippi Launcher installs it). Keyboard: arrows, IJKL, Z X C V, Enter, Q W E.",
+      make(L"STATIC", L"In game: F1 opens the PC settings (fullscreen, frame rate, resolution, DLSS, anti-aliasing, widescreen, audio).\nA GameCube adapter is used automatically when it has the WinUSB driver (the Slippi Launcher installs it). Keyboard: arrows, IJKL, Z X C V, Enter, Q W E.",
            0, 24, 300, 572, 96, ID_HINT);
       g_play[7] = GetDlgItem(hwnd, ID_HINT);
       // Build page

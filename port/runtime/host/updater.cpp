@@ -20,6 +20,7 @@ const char* REPO_API = "https://api.github.com/repos/hero88go/melee-unlocked/rel
 std::atomic<State> g_state{State::Idle};
 std::mutex g_mutex;
 std::string g_current, g_latest, g_zip_url, g_message, g_zip_path;
+size_t g_zip_size = 0;
 std::thread g_thread;
 
 std::wstring widen(const std::string& s) { int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0); std::wstring w(n ? n - 1 : 0, 0); if (n) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n); return w; }
@@ -47,15 +48,20 @@ bool http_get(const std::string& url, std::string* out, int* status) {
         WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &code, &size, WINHTTP_NO_HEADER_INDEX);
         if (status) *status = (int)code;
         std::string body;
+        DWORD expected = 0, expected_size = sizeof expected;
+        bool have_length = WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH | WINHTTP_QUERY_FLAG_NUMBER,
+            WINHTTP_HEADER_NAME_BY_INDEX, &expected, &expected_size, WINHTTP_NO_HEADER_INDEX) != FALSE;
+        bool complete = false;
         for (;;) {
           DWORD avail = 0;
-          if (!WinHttpQueryDataAvailable(req, &avail) || !avail) break;
+          if (!WinHttpQueryDataAvailable(req, &avail)) break;
+          if (!avail) { complete = true; break; }
           std::string chunk(avail, 0); DWORD got = 0;
-          if (!WinHttpReadData(req, chunk.data(), avail, &got)) break;
+          if (!WinHttpReadData(req, chunk.data(), avail, &got) || !got) break;
           body.append(chunk.data(), got);
         }
-        if (out) *out = std::move(body);
-        ok = true;
+        ok = complete && (!have_length || body.size() == expected);
+        if (out && ok) *out = std::move(body);
       }
       WinHttpCloseHandle(req);
     }
@@ -91,9 +97,10 @@ void check(const std::string& current_version) {
     std::string tag = j["tag_name"].get<std::string>();
     if (!tag.empty() && tag[0] == 'v') tag.erase(0, 1);
     std::string zip;
+    size_t zip_size = 0;
     if (j.count("assets") && j["assets"].is_array())
-      for (auto& a : j["assets"]) if (a.is_object() && a.value("name", std::string()).find("win64.zip") != std::string::npos) zip = a.value("browser_download_url", std::string());
-    { std::lock_guard<std::mutex> lk(g_mutex); g_latest = tag; g_zip_url = zip; }
+      for (auto& a : j["assets"]) if (a.is_object() && a.value("name", std::string()).find("win64.zip") != std::string::npos) { zip = a.value("browser_download_url", std::string()); zip_size = a.value("size", size_t(0)); }
+    { std::lock_guard<std::mutex> lk(g_mutex); g_latest = tag; g_zip_url = zip; g_zip_size = zip_size; }
     if (newer(tag, g_current) && !zip.empty()) { set_message("Update available: " + tag); g_state = State::UpdateAvailable; host::log("updater: version %s available (running %s)", tag.c_str(), g_current.c_str()); }
     else { set_message("Up to date (" + g_current + ")"); g_state = State::UpToDate; }
   });
@@ -110,11 +117,15 @@ void download_and_install() {
   g_state = State::Downloading;
   set_message("Downloading update...");
   g_thread = std::thread([] {
-    std::string url; { std::lock_guard<std::mutex> lk(g_mutex); url = g_zip_url; }
+    std::string url; size_t expected;
+    { std::lock_guard<std::mutex> lk(g_mutex); url = g_zip_url; expected = g_zip_size; }
     std::string body; int status = 0;
-    if (!http_get(url, &body, &status) || status != 200 || body.size() < 1000000) { set_message("Download failed"); g_state = State::Failed; return; }
-    char exe[MAX_PATH]; GetModuleFileNameA(nullptr, exe, MAX_PATH);
-    std::string dir(exe); dir.resize(dir.find_last_of("\\/"));
+    if (!http_get(url, &body, &status) || status != 200 || body.size() < 1000000 || (expected && body.size() != expected)) { set_message("Download failed or incomplete"); g_state = State::Failed; return; }
+    char exe[MAX_PATH]{}; DWORD length = GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    if (!length || length >= MAX_PATH) { set_message("Cannot resolve application path"); g_state = State::Failed; return; }
+    std::string dir(exe); auto separator = dir.find_last_of("\\/");
+    if (separator == std::string::npos) { set_message("Cannot resolve application directory"); g_state = State::Failed; return; }
+    dir.resize(separator);
     std::string zip = dir + "\\update.zip", bat = dir + "\\update.bat";
     { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) { set_message("Cannot write update.zip"); g_state = State::Failed; return; } }
     // Relaunch exactly what was started, so this works the same from the release batch file, the
@@ -148,13 +159,17 @@ void download_and_install() {
       << "echo done>> %LOG%\r\n"
       << "del \"%~f0\"\r\n";
     b.close();
+    if (!b) { set_message("Cannot write update installer"); g_state = State::Failed; return; }
     set_message("Update downloaded; restarting to install");
     g_state = State::ReadyToInstall;
     host::log("updater: %zu bytes downloaded, installing via update.bat", body.size());
     STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
     // Doubled quotes: cmd strips one layer, and the path contains spaces.
     std::string cmd = "cmd /c \"\"" + bat + "\"\"";
-    if (CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NEW_CONSOLE, nullptr, dir.c_str(), &si, &pi)) { CloseHandle(pi.hProcess); CloseHandle(pi.hThread); }
+    if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, dir.c_str(), &si, &pi)) {
+      set_message("Cannot start update installer"); g_state = State::Failed; return;
+    }
+    CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
     host::request_exit(0);
   });
 }

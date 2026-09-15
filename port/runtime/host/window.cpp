@@ -11,6 +11,7 @@
 #include <atomic>
 #include "host.h"
 #include "window.h"
+#include "input_bindings.h"
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "xinput9_1_0.lib")
@@ -148,6 +149,68 @@ enum : uint16_t {
   PAD_A = 0x0100, PAD_B = 0x0200, PAD_X = 0x0400, PAD_Y = 0x0800, PAD_START = 0x1000,
 };
 
+KeyBindings g_key_bindings = default_key_bindings();
+std::array<PadBindings, 4> g_pad_bindings = default_pad_bindings();
+std::array<GCBindings, 4> g_gc_bindings = default_gc_bindings();
+std::array<PortSource, 4> g_port_sources = default_port_sources();
+
+namespace {
+std::atomic<bool> g_capturing{false};
+bool g_capture_key_baseline[256]{};
+unsigned short g_capture_pad_baseline[4]{};
+PadState g_capture_gc_baseline[4]{};
+}  // namespace
+
+void input_begin_capture() {
+  { std::lock_guard<std::mutex> lock(g_keys_mutex); std::memcpy(g_capture_key_baseline, g_keys, sizeof g_keys); }
+  for (int idx = 0; idx < 4; ++idx) {
+    XINPUT_STATE xs{};
+    g_capture_pad_baseline[idx] = (XInputGetState(idx, &xs) == ERROR_SUCCESS) ? xs.Gamepad.wButtons : 0;
+    PadState gc{}; gc.err = -1;
+    gcadapter_poll(&gc); // poll once to prime baseline for any GC adapter port if present
+    g_capture_gc_baseline[idx] = gc;
+  }
+  g_capturing.store(true);
+}
+
+void input_cancel_capture() { g_capturing.store(false); }
+
+bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
+  if (!g_capturing.load()) return false;
+  {
+    std::lock_guard<std::mutex> lock(g_keys_mutex);
+    if (g_keys[VK_ESCAPE] && !g_capture_key_baseline[VK_ESCAPE]) {
+      g_capturing.store(false); device = CaptureDevice::None; value = 0; device_index = 0; return true;
+    }
+    for (int vk = 0; vk < 256; ++vk) {
+      if (vk == VK_ESCAPE) continue;
+      if (g_keys[vk] && !g_capture_key_baseline[vk]) {
+        g_capturing.store(false); device = CaptureDevice::Keyboard; value = vk; device_index = 0; return true;
+      }
+    }
+  }
+  for (int idx = 0; idx < 4; ++idx) {
+    XINPUT_STATE xs{};
+    if (XInputGetState(idx, &xs) != ERROR_SUCCESS) continue;
+    unsigned short newly = xs.Gamepad.wButtons & ~g_capture_pad_baseline[idx];
+    if (newly) {
+      unsigned short lowest = newly & (~(newly - 1));
+      g_capturing.store(false); device = CaptureDevice::XInputPad; value = lowest; device_index = idx; return true;
+    }
+  }
+  PadState gc[4];
+  uint32_t mask = gcadapter_poll(gc);
+  for (int idx = 0; idx < 4; ++idx) {
+    if (!(mask & (1u << idx))) continue;
+    uint16_t newly = gc[idx].button & ~g_capture_gc_baseline[idx].button;
+    if (newly) {
+      unsigned short lowest = newly & (~(newly - 1));
+      g_capturing.store(false); device = CaptureDevice::GCAdapter; value = lowest; device_index = idx; return true;
+    }
+  }
+  return false;
+}
+
 namespace {
 struct ScriptEntry { uint32_t frame; uint16_t buttons; int8_t sx, sy, cx, cy; int port;  bool relative = false; };
 std::vector<ScriptEntry> g_script;
@@ -204,8 +267,6 @@ void input_poll(PadState out[4]) {
     }
   } ui{out};
   for (int i = 0; i < 4; ++i) { std::memset(&out[i], 0, sizeof out[i]); out[i].err = -1; }
-  PadState& p = out[0];
-  p.err = 0;
   if (!g_script.empty()) {
     // Scripts drive port 1 by default; entries with p=N drive port N (a port with any entry counts as plugged in).
     uint32_t frame = retrace_count();
@@ -226,41 +287,150 @@ void input_poll(PadState out[4]) {
     }
     return;
   }
-  // GameCube adapter ports take precedence; keyboard/XInput drive port 1 only while no controller is in adapter port 1.
-  uint32_t adapter_mask = gcadapter_poll(out);
-  ui.gamecube = (adapter_mask & 1u) != 0;
-  if (adapter_mask & 1u) return;
-  // Keyboard (player 1): arrows = stick, IJKL = c-stick, Z=A X=B C=X V=Y, Enter=Start, Q=L W=R E=Z, D-pad = TFGH
-  std::lock_guard<std::mutex> lock(g_keys_mutex);
-  auto key = [](int vk) { return g_keys[vk & 0xFF]; };
-  int sx = 0, sy = 0, cx = 0, cy = 0;
-  if (key(VK_LEFT)) sx -= 127; if (key(VK_RIGHT)) sx += 127; if (key(VK_UP)) sy += 127; if (key(VK_DOWN)) sy -= 127;
-  if (key('J')) cx -= 127; if (key('L')) cx += 127; if (key('I')) cy += 127; if (key('K')) cy -= 127;
-  if (key('Z')) p.button |= PAD_A; if (key('X')) p.button |= PAD_B; if (key('C')) p.button |= PAD_X; if (key('V')) p.button |= PAD_Y;
-  if (key(VK_RETURN)) p.button |= PAD_START;
-  if (key('Q')) { p.button |= PAD_L; p.trig_l = 255; } if (key('W')) { p.button |= PAD_R; p.trig_r = 255; } if (key('E')) p.button |= PAD_Z;
-  if (key('T')) p.button |= PAD_UP; if (key('G')) p.button |= PAD_DOWN; if (key('F')) p.button |= PAD_LEFT; if (key('H')) p.button |= PAD_RIGHT;
-  // XInput pad 0 overrides/adds
-  XINPUT_STATE xs{};
-  if (XInputGetState(0, &xs) == ERROR_SUCCESS) {
+  // Poll every physical source unconditionally, then route each in-game port to
+  // whichever device g_port_sources[port] assigns it to. This lets keyboard, an
+  // Xbox pad, and the GC adapter all drive different ports at the same time.
+  PadState gc[4];
+  for (auto& s : gc) { s = {}; s.err = -1; }
+  uint32_t gc_mask = gcadapter_poll(gc);
+  ui.gamecube = gc_mask != 0;
+
+  InputDebugSnapshot debug{};
+  debug.gc_mask = gc_mask;
+
+  PadState kb{}; kb.err = 0;
+  {
+    // Keyboard: arrows = stick, IJKL = c-stick, rest from g_key_bindings.
+    std::lock_guard<std::mutex> lock(g_keys_mutex);
+    auto key = [](int vk) { return g_keys[vk & 0xFF]; };
+    int sx = 0, sy = 0, cx = 0, cy = 0;
+    if (key(VK_LEFT)) sx -= 127; if (key(VK_RIGHT)) sx += 127; if (key(VK_UP)) sy += 127; if (key(VK_DOWN)) sy -= 127;
+    if (key('J')) cx -= 127; if (key('L')) cx += 127; if (key('I')) cy += 127; if (key('K')) cy -= 127;
+    for (int i = 0; i < (int)BindAction::Count; ++i) {
+      int vk = g_key_bindings.vk[i];
+      if (vk && key(vk)) kb.button |= kActionPadBit[i];
+    }
+    if (int vk = g_key_bindings.vk[(size_t)BindAction::L]; vk && key(vk)) kb.trig_l = 255;
+    if (int vk = g_key_bindings.vk[(size_t)BindAction::R]; vk && key(vk)) kb.trig_r = 255;
+    kb.stick_x = (int8_t)sx; kb.stick_y = (int8_t)sy; kb.sub_x = (int8_t)cx; kb.sub_y = (int8_t)cy;
+  }
+
+  PadState xin[4];
+  bool xin_connected[4] = {};
+  for (int idx = 0; idx < 4; ++idx) {
+    PadState& x = xin[idx]; x = {}; x.err = -1;
+    XINPUT_STATE xs{};
+    if (XInputGetState(idx, &xs) != ERROR_SUCCESS) continue;
+    xin_connected[idx] = true;
+    debug.xinput_connected[idx] = true;
+    x.err = 0;
     auto& g = xs.Gamepad;
     auto axis = [](SHORT v) { int a = v / 258; return a > 127 ? 127 : a < -127 ? -127 : a; };
+    int sx = 0, sy = 0, cx = 0, cy = 0;
     if (abs(g.sThumbLX) > 7849 || abs(g.sThumbLY) > 7849) { sx = axis(g.sThumbLX); sy = axis(g.sThumbLY); }
     if (abs(g.sThumbRX) > 8689 || abs(g.sThumbRY) > 8689) { cx = axis(g.sThumbRX); cy = axis(g.sThumbRY); }
-    if (g.wButtons & XINPUT_GAMEPAD_A) p.button |= PAD_A;
-    if (g.wButtons & XINPUT_GAMEPAD_B) p.button |= PAD_B;
-    if (g.wButtons & XINPUT_GAMEPAD_X) p.button |= PAD_X;
-    if (g.wButtons & XINPUT_GAMEPAD_Y) p.button |= PAD_Y;
-    if (g.wButtons & XINPUT_GAMEPAD_START) p.button |= PAD_START;
-    if (g.wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER) p.button |= PAD_Z;
-    if (g.wButtons & XINPUT_GAMEPAD_DPAD_UP) p.button |= PAD_UP;
-    if (g.wButtons & XINPUT_GAMEPAD_DPAD_DOWN) p.button |= PAD_DOWN;
-    if (g.wButtons & XINPUT_GAMEPAD_DPAD_LEFT) p.button |= PAD_LEFT;
-    if (g.wButtons & XINPUT_GAMEPAD_DPAD_RIGHT) p.button |= PAD_RIGHT;
-    if (g.bLeftTrigger > 30) { p.trig_l = g.bLeftTrigger; if (g.bLeftTrigger > 200) p.button |= PAD_L; }
-    if (g.bRightTrigger > 30) { p.trig_r = g.bRightTrigger; if (g.bRightTrigger > 200) p.button |= PAD_R; }
+    for (int i = 0; i < (int)BindAction::Count; ++i) {
+      unsigned short mask = g_pad_bindings[idx].mask[i];
+      if (mask && (g.wButtons & mask)) x.button |= kActionPadBit[i];
+    }
+    if (g.bLeftTrigger > 30) { x.trig_l = g.bLeftTrigger; if (g.bLeftTrigger > 200) x.button |= PAD_L; }
+    if (g.bRightTrigger > 30) { x.trig_r = g.bRightTrigger; if (g.bRightTrigger > 200) x.button |= PAD_R; }
+    x.stick_x = (int8_t)sx; x.stick_y = (int8_t)sy; x.sub_x = (int8_t)cx; x.sub_y = (int8_t)cy;
+    for (int i = 0; i < (int)BindAction::Count; ++i)
+      if ((x.button & kActionPadBit[i]) != 0) debug.xinput_actions[idx] |= (uint16_t)(1u << i);
   }
-  p.stick_x = (int8_t)sx; p.stick_y = (int8_t)sy; p.sub_x = (int8_t)cx; p.sub_y = (int8_t)cy;
+
+  for (int idx = 0; idx < 4; ++idx)
+    if (gc_mask & (1u << idx))
+      for (int i = 0; i < (int)BindAction::Count; ++i)
+        if (gc[idx].button & kActionPadBit[i]) debug.gc_actions[idx] |= (uint16_t)(1u << i);
+
+  for (int port = 0; port < 4; ++port) {
+    const PortSource& src = g_port_sources[port];
+    switch (src.kind) {
+      case DeviceKind::Keyboard: out[port] = kb; break;
+      case DeviceKind::XInputPad:
+        if (src.index >= 0 && src.index < 4 && xin_connected[src.index]) out[port] = xin[src.index];
+        break;
+      case DeviceKind::GCAdapter:
+        if (src.index >= 0 && src.index < 4 && (gc_mask & (1u << src.index))) out[port] = gc[src.index];
+        break;
+      case DeviceKind::None: default: break;
+    }
+    debug.ports[port] = out[port];
+  }
+
+  debug.keyboard_actions = 0;
+  for (int i = 0; i < (int)BindAction::Count; ++i) if (kb.button & kActionPadBit[i]) debug.keyboard_actions |= (uint16_t)(1u << i);
+  for (int idx = 0; idx < 4; ++idx) if (xin_connected[idx]) debug.xinput_connected[idx] = true;
+  input_debug_snapshot(debug);
+}
+
+void input_debug_snapshot(InputDebugSnapshot& snapshot) {
+  snapshot = {};
+  PadState gc[4];
+  for (auto& s : gc) { s = {}; s.err = -1; }
+  uint32_t gc_mask = gcadapter_poll(gc);
+  snapshot.gc_mask = gc_mask;
+
+  PadState kb{}; kb.err = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_keys_mutex);
+    auto key = [](int vk) { return g_keys[vk & 0xFF]; };
+    int sx = 0, sy = 0, cx = 0, cy = 0;
+    if (key(VK_LEFT)) sx -= 127; if (key(VK_RIGHT)) sx += 127; if (key(VK_UP)) sy += 127; if (key(VK_DOWN)) sy -= 127;
+    if (key('J')) cx -= 127; if (key('L')) cx += 127; if (key('I')) cy += 127; if (key('K')) cy -= 127;
+    for (int i = 0; i < (int)BindAction::Count; ++i) {
+      int vk = g_key_bindings.vk[i];
+      if (vk && key(vk)) kb.button |= kActionPadBit[i];
+    }
+    if (int vk = g_key_bindings.vk[(size_t)BindAction::L]; vk && key(vk)) kb.trig_l = 255;
+    if (int vk = g_key_bindings.vk[(size_t)BindAction::R]; vk && key(vk)) kb.trig_r = 255;
+    kb.stick_x = (int8_t)sx; kb.stick_y = (int8_t)sy; kb.sub_x = (int8_t)cx; kb.sub_y = (int8_t)cy;
+  }
+  snapshot.keyboard_actions = 0;
+  for (int i = 0; i < (int)BindAction::Count; ++i) if (kb.button & kActionPadBit[i]) snapshot.keyboard_actions |= (uint16_t)(1u << i);
+
+  PadState xin[4];
+  for (int idx = 0; idx < 4; ++idx) {
+    xin[idx] = {}; xin[idx].err = -1;
+    XINPUT_STATE xs{};
+    if (XInputGetState(idx, &xs) != ERROR_SUCCESS) continue;
+    snapshot.xinput_connected[idx] = true;
+    auto& g = xs.Gamepad;
+    auto axis = [](SHORT v) { int a = v / 258; return a > 127 ? 127 : a < -127 ? -127 : a; };
+    int sx = 0, sy = 0, cx = 0, cy = 0;
+    if (abs(g.sThumbLX) > 7849 || abs(g.sThumbLY) > 7849) { sx = axis(g.sThumbLX); sy = axis(g.sThumbLY); }
+    if (abs(g.sThumbRX) > 8689 || abs(g.sThumbRY) > 8689) { cx = axis(g.sThumbRX); cy = axis(g.sThumbRY); }
+    for (int i = 0; i < (int)BindAction::Count; ++i) {
+      unsigned short mask = g_pad_bindings[idx].mask[i];
+      if (mask && (g.wButtons & mask)) xin[idx].button |= kActionPadBit[i];
+    }
+    if (g.bLeftTrigger > 30) { xin[idx].trig_l = g.bLeftTrigger; if (g.bLeftTrigger > 200) xin[idx].button |= PAD_L; }
+    if (g.bRightTrigger > 30) { xin[idx].trig_r = g.bRightTrigger; if (g.bRightTrigger > 200) xin[idx].button |= PAD_R; }
+    xin[idx].stick_x = (int8_t)sx; xin[idx].stick_y = (int8_t)sy; xin[idx].sub_x = (int8_t)cx; xin[idx].sub_y = (int8_t)cy;
+    for (int i = 0; i < (int)BindAction::Count; ++i) if (xin[idx].button & kActionPadBit[i]) snapshot.xinput_actions[idx] |= (uint16_t)(1u << i);
+  }
+
+  for (int idx = 0; idx < 4; ++idx) {
+    snapshot.gc_actions[idx] = 0;
+    if (!(gc_mask & (1u << idx))) continue;
+    for (int i = 0; i < (int)BindAction::Count; ++i) if (gc[idx].button & kActionPadBit[i]) snapshot.gc_actions[idx] |= (uint16_t)(1u << i);
+    snapshot.ports[idx] = gc[idx];
+  }
+  for (int port = 0; port < 4; ++port) {
+    const PortSource& src = g_port_sources[port];
+    switch (src.kind) {
+      case DeviceKind::Keyboard: snapshot.ports[port] = kb; break;
+      case DeviceKind::XInputPad:
+        if (src.index >= 0 && src.index < 4 && snapshot.xinput_connected[src.index]) snapshot.ports[port] = xin[src.index];
+        break;
+      case DeviceKind::GCAdapter:
+        if (src.index >= 0 && src.index < 4 && (gc_mask & (1u << src.index))) snapshot.ports[port] = gc[src.index];
+        break;
+      case DeviceKind::None: default: break;
+    }
+  }
 }
 
 }  // namespace host

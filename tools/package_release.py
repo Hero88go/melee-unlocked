@@ -45,8 +45,8 @@ B. Melee Unlocked Launcher (optional convenience)
    2. Press PLAY. The launcher checks for new releases on every start and "Update and
       restart" installs one in place. It also shows which Slippi account will be used.
 
-Either way, the PC settings panel opens on the first launch; later press F1 (or Z + Start on
-the controller): fullscreen, frame rate cap, VSync, widescreen 16:9, internal resolution,
+Either way, the PC settings panel opens on the first launch; later press F1 or click Settings:
+fullscreen, frame rate cap, VSync, widescreen 16:9, internal resolution,
 anti-aliasing (SSAA), anisotropic filtering, DLSS/DLAA, sharpening, sub-frame animation,
 game and music volume. Settings persist in port-settings.ini.
 

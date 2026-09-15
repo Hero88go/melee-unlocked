@@ -4,6 +4,7 @@
 #include "window.h"
 #include "audio.h"
 #include "host.h"
+#include "input_bindings.h"
 #include "updater.h"
 #ifndef MELEE_PORT_VERSION
 #define MELEE_PORT_VERSION "dev"
@@ -12,15 +13,119 @@
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx12.h"
 #include <windows.h>
+#include <xinput.h>
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <array>
+#include <string>
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
 #include <cmath>
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 namespace gx {
+
+// Names used both when drawing the Controls list and when saving/loading bindings
+// to port-settings.ini (as "key_<name>" / "pad<idx>_<name>" / "gc<idx>_<name>" lines).
+// Order must match host::BindAction exactly.
+static const char* kActionNames[(size_t)host::BindAction::Count] = {
+  "A", "B", "X", "Y", "Z", "Start", "L", "R", "DUp", "DDown", "DLeft", "DRight"
+};
+
+// ---- Port-source <-> combo-box index, shared by load/save and the Port assignment UI ----
+// 0 = None, 1 = Keyboard, 2..5 = Xbox Pad 1..4, 6..9 = GC Adapter 1..4.
+static const char* kPortSourceNames[10] = {
+  "None", "Keyboard",
+  "Xbox Pad 1", "Xbox Pad 2", "Xbox Pad 3", "Xbox Pad 4",
+  "GC Adapter 1", "GC Adapter 2", "GC Adapter 3", "GC Adapter 4"
+};
+
+static int port_source_to_combo(const host::PortSource& s) {
+  switch (s.kind) {
+    case host::DeviceKind::Keyboard:  return 1;
+    case host::DeviceKind::XInputPad: return 2 + std::clamp(s.index, 0, 3);
+    case host::DeviceKind::GCAdapter: return 6 + std::clamp(s.index, 0, 3);
+    case host::DeviceKind::None: default: return 0;
+  }
+}
+
+static host::PortSource combo_to_port_source(int idx) {
+  if (idx == 1) return { host::DeviceKind::Keyboard, 0 };
+  if (idx >= 2 && idx <= 5) return { host::DeviceKind::XInputPad, idx - 2 };
+  if (idx >= 6 && idx <= 9) return { host::DeviceKind::GCAdapter, idx - 6 };
+  return { host::DeviceKind::None, 0 };
+}
+
+// ---- binding -> label helpers, used by the Controls tabs ----
+static void format_key_label(int vk, char* buf, size_t n) {
+  if (!vk) { std::snprintf(buf, n, "Unbound"); return; }
+  if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) { std::snprintf(buf, n, "%c", (char)vk); return; }
+  switch (vk) {
+    case VK_RETURN: std::snprintf(buf, n, "Enter"); return;
+    case VK_SPACE:  std::snprintf(buf, n, "Space"); return;
+    case VK_TAB:    std::snprintf(buf, n, "Tab"); return;
+    case VK_SHIFT:  std::snprintf(buf, n, "Shift"); return;
+    case VK_CONTROL:std::snprintf(buf, n, "Ctrl"); return;
+    case VK_LEFT:   std::snprintf(buf, n, "Left"); return;
+    case VK_RIGHT:  std::snprintf(buf, n, "Right"); return;
+    case VK_UP:     std::snprintf(buf, n, "Up"); return;
+    case VK_DOWN:   std::snprintf(buf, n, "Down"); return;
+    default:        std::snprintf(buf, n, "VK 0x%02X", vk); return;
+  }
+}
+
+// XInput wButtons is a different bit layout than the GC-style kActionPadBit table,
+// so it needs its own name lookup (unlike the GC adapter, whose raw mask already
+// matches kActionPadBit -- see gc_button_name below).
+static const char* xinput_button_name(unsigned short mask) {
+  switch (mask) {
+    case 0: return "Unbound";
+    case XINPUT_GAMEPAD_DPAD_UP: return "D-Up";
+    case XINPUT_GAMEPAD_DPAD_DOWN: return "D-Down";
+    case XINPUT_GAMEPAD_DPAD_LEFT: return "D-Left";
+    case XINPUT_GAMEPAD_DPAD_RIGHT: return "D-Right";
+    case XINPUT_GAMEPAD_START: return "Start";
+    case XINPUT_GAMEPAD_BACK: return "Back";
+    case XINPUT_GAMEPAD_LEFT_THUMB: return "L3";
+    case XINPUT_GAMEPAD_RIGHT_THUMB: return "R3";
+    case XINPUT_GAMEPAD_LEFT_SHOULDER: return "LB";
+    case XINPUT_GAMEPAD_RIGHT_SHOULDER: return "RB";
+    case XINPUT_GAMEPAD_A: return "A";
+    case XINPUT_GAMEPAD_B: return "B";
+    case XINPUT_GAMEPAD_X: return "X";
+    case XINPUT_GAMEPAD_Y: return "Y";
+    default: return "?";
+  }
+}
+
+// GC adapter raw button bits match kActionPadBit exactly (see input_bindings.h /
+// default_gc_bindings comments), so this is a reverse lookup into kActionNames.
+static const char* gc_button_name(unsigned short mask) {
+  if (!mask) return "Unbound";
+  for (int i = 0; i < (int)host::BindAction::Count; ++i)
+    if (host::kActionPadBit[i] == mask) return kActionNames[i];
+  return "?";
+}
+
+// Space-joined list of action names whose bit is set, for the live "what's this
+// device pressing right now" overlay lines. Bit i corresponds to BindAction i.
+static std::string active_actions_label(uint16_t bits) {
+  std::string s;
+  for (int i = 0; i < (int)host::BindAction::Count; ++i)
+    if (bits & (uint16_t)(1u << i)) { if (!s.empty()) s += " "; s += kActionNames[i]; }
+  return s.empty() ? std::string("-") : s;
+}
+
+// Same idea but decoding a final PadState.button field, which uses the GC-native
+// bits (kActionPadBit), not the BindAction-bit-index encoding active_actions_label
+// reads -- used for the per-port output overlay.
+static std::string active_pad_buttons_label(uint16_t button) {
+  std::string s;
+  for (int i = 0; i < (int)host::BindAction::Count; ++i)
+    if (button & host::kActionPadBit[i]) { if (!s.empty()) s += " "; s += kActionNames[i]; }
+  return s.empty() ? std::string("-") : s;
+}
+
 void load_pc_settings(D3D12Options& options, int& volume) {
   std::ifstream file(options.settings_path);
   // First launch (no saved settings yet): open the PC settings panel so nobody has to find it.
@@ -42,6 +147,42 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
       else if (key == "volume") volume = std::clamp(std::stoi(value), 0, 100);
+      else if (key.rfind("key_", 0) == 0) {
+        for (int i = 0; i < (int)host::BindAction::Count; ++i)
+          if (key == std::string("key_") + kActionNames[i]) host::g_key_bindings.vk[i] = std::stoi(value);
+      }
+      // Legacy pre-multi-device format: a single unindexed "pad_<Action>" line.
+      // Migrate it onto XInput pad 0 so upgrading doesn't silently reset bindings.
+      else if (key.rfind("pad_", 0) == 0) {
+        for (int i = 0; i < (int)host::BindAction::Count; ++i)
+          if (key == std::string("pad_") + kActionNames[i]) host::g_pad_bindings[0].mask[i] = (unsigned short)std::stoi(value);
+      }
+      // Current format: "pad<idx>_<Action>" / "gc<idx>_<Action>", idx 0-3.
+      else if (key.size() > 4 && key.rfind("pad", 0) == 0 && std::isdigit((unsigned char)key[3])) {
+        size_t us = key.find('_');
+        if (us != std::string::npos) {
+          int idx = std::stoi(key.substr(3, us - 3));
+          std::string action = key.substr(us + 1);
+          if (idx >= 0 && idx < 4)
+            for (int i = 0; i < (int)host::BindAction::Count; ++i)
+              if (action == kActionNames[i]) host::g_pad_bindings[idx].mask[i] = (unsigned short)std::stoi(value);
+        }
+      }
+      else if (key.size() > 3 && key.rfind("gc", 0) == 0 && std::isdigit((unsigned char)key[2])) {
+        size_t us = key.find('_');
+        if (us != std::string::npos) {
+          int idx = std::stoi(key.substr(2, us - 2));
+          std::string action = key.substr(us + 1);
+          if (idx >= 0 && idx < 4)
+            for (int i = 0; i < (int)host::BindAction::Count; ++i)
+              if (action == kActionNames[i]) host::g_gc_bindings[idx].mask[i] = (unsigned short)std::stoi(value);
+        }
+      }
+      // "port<n> <comboIndex>" - comboIndex uses the same 0-9 encoding as the UI combo box.
+      else if (key.size() > 4 && key.rfind("port", 0) == 0 && std::isdigit((unsigned char)key[4])) {
+        int n = std::stoi(key.substr(4));
+        if (n >= 0 && n < 4) host::g_port_sources[n] = combo_to_port_source(std::stoi(value));
+      }
     } catch (...) { /* Ignore a malformed preference, retaining the safe default. */ }
   }
 }
@@ -54,6 +195,9 @@ struct PcSettingsUI::Impl {
   int volume = 0;
   std::array<float, 180> intervals{};
   unsigned cursor = 0;
+  int rebind_action = -1;                                         // index into BindAction while a "press a button" capture is in progress, -1 = none
+  host::CaptureDevice rebind_kind = host::CaptureDevice::None;     // which device tab the in-progress capture belongs to
+  int rebind_index = 0;                                            // XInput pad / GC adapter port index for that tab (unused for Keyboard)
 };
 
 PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const D3D12Options& options)
@@ -119,9 +263,9 @@ bool PcSettingsUI::begin(D3D12Options& options) {
   state.intervals[state.cursor++ % state.intervals.size()] = ImGui::GetIO().DeltaTime*1000.f;
   bool changed = false;
   if (state.open) {
-    ImGui::SetNextWindowSize(ImVec2(510, 430), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(560, 560), ImGuiCond_FirstUseEver);
     ImGui::Begin("PC settings", &state.open, ImGuiWindowFlags_NoCollapse);
-    ImGui::TextUnformatted("F1 / Back + Start / Z + Start: settings    Escape: return to game");
+    ImGui::TextUnformatted("F1: settings    Escape: return to game");
     ImGui::Separator();
     changed |= ImGui::Checkbox("Borderless fullscreen", &options.fullscreen);
     const double rates[] = {-1, 0, 60, 120, 144, 165, 200, 240, 360, 480};
@@ -166,6 +310,123 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
     ImGui::Checkbox("Open this panel at startup", &options.settings_open);
     ImGui::Separator();
+
+    // ---- Controls (rebinding) ----
+    ImGui::TextUnformatted("Controls");
+    ImGui::TextWrapped("Pick a device tab to rebind its actions. Each tab's top line shows what that device is pressing right now; the Port assignment section below shows what actually reaches the game.");
+
+    static const char* kDeviceTabNames[9] = {
+      "Keyboard", "Xbox Pad 1", "Xbox Pad 2", "Xbox Pad 3", "Xbox Pad 4",
+      "GC Adapter 1", "GC Adapter 2", "GC Adapter 3", "GC Adapter 4"
+    };
+
+    host::InputDebugSnapshot snap;
+    host::input_debug_snapshot(snap);
+
+    if (ImGui::BeginTabBar("device_tabs")) {
+      for (int tab = 0; tab < 9; ++tab) {
+        if (!ImGui::BeginTabItem(kDeviceTabNames[tab])) continue;
+
+        host::CaptureDevice tab_kind;
+        int tab_index = 0;
+        if (tab == 0) { tab_kind = host::CaptureDevice::Keyboard; }
+        else if (tab <= 4) { tab_kind = host::CaptureDevice::XInputPad; tab_index = tab - 1; }
+        else { tab_kind = host::CaptureDevice::GCAdapter; tab_index = tab - 5; }
+
+        // Live "what's this device pressing right now" line.
+        if (tab_kind == host::CaptureDevice::Keyboard) {
+          ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.35f, 1.0f), "[+] Connected");
+          ImGui::SameLine();
+          ImGui::Text("Active: %s", active_actions_label(snap.keyboard_actions).c_str());
+        } else if (tab_kind == host::CaptureDevice::XInputPad) {
+          const bool connected = snap.xinput_connected[tab_index];
+          ImGui::TextColored(connected ? ImVec4(0.25f, 0.85f, 0.35f, 1.0f) : ImVec4(0.95f, 0.3f, 0.25f, 1.0f),
+                             connected ? "[+] Connected" : "[-] Not connected");
+          ImGui::SameLine();
+          ImGui::Text("Active: %s", active_actions_label(snap.xinput_actions[tab_index]).c_str());
+        } else {
+          bool plugged = (snap.gc_mask & (1u << tab_index)) != 0;
+          ImGui::TextColored(plugged ? ImVec4(0.25f, 0.85f, 0.35f, 1.0f) : ImVec4(0.95f, 0.3f, 0.25f, 1.0f),
+                             plugged ? "[+] Plugged in" : "[-] Not plugged in");
+          ImGui::SameLine();
+          ImGui::Text("Active: %s", active_actions_label(snap.gc_actions[tab_index]).c_str());
+        }
+        ImGui::Separator();
+
+        for (int i = 0; i < (int)host::BindAction::Count; ++i) {
+          ImGui::PushID(i);
+          bool this_row_capturing = state.rebind_action == i && state.rebind_kind == tab_kind && state.rebind_index == tab_index;
+          if (this_row_capturing) {
+            ImGui::Text("%-8s Press a key or button (Esc to cancel)...", kActionNames[i]);
+            host::CaptureDevice dev; int value; int device_index;
+            if (host::input_poll_capture(dev, value, device_index)) {
+              if (dev == host::CaptureDevice::None) {
+                state.rebind_action = -1;   // Escape cancelled; binding unchanged.
+              } else if (dev == tab_kind && (tab_kind == host::CaptureDevice::Keyboard || device_index == tab_index)) {
+                if (dev == host::CaptureDevice::Keyboard) host::g_key_bindings.vk[i] = value;
+                else if (dev == host::CaptureDevice::XInputPad) host::g_pad_bindings[tab_index].mask[i] = (unsigned short)value;
+                else host::g_gc_bindings[tab_index].mask[i] = (unsigned short)value;
+                state.rebind_action = -1;
+                changed = true;
+              } else {
+                // A different device than the one being rebound fired (e.g. you bumped
+                // the keyboard while rebinding Xbox Pad 2). Ignore it, keep listening.
+                host::input_begin_capture();
+              }
+            }
+          } else {
+            char label[32];
+            if (tab_kind == host::CaptureDevice::Keyboard) format_key_label(host::g_key_bindings.vk[i], label, sizeof label);
+            else if (tab_kind == host::CaptureDevice::XInputPad) std::snprintf(label, sizeof label, "%s", xinput_button_name(host::g_pad_bindings[tab_index].mask[i]));
+            else std::snprintf(label, sizeof label, "%s", gc_button_name(host::g_gc_bindings[tab_index].mask[i]));
+            ImGui::Text("%-8s %-10s", kActionNames[i], label);
+            ImGui::SameLine();
+            if (ImGui::Button("Rebind")) {
+              host::input_begin_capture();
+              state.rebind_action = i; state.rebind_kind = tab_kind; state.rebind_index = tab_index;
+            }
+          }
+          ImGui::PopID();
+        }
+        ImGui::EndTabItem();
+      }
+      ImGui::EndTabBar();
+    }
+    ImGui::Separator();
+
+    // ---- Port assignment + live per-port output ----
+    ImGui::TextUnformatted("Port assignment");
+    ImGui::TextWrapped("Which physical device feeds each of the 4 in-game controller ports.");
+    for (int port = 0; port < 4; ++port) {
+      ImGui::PushID(100 + port);
+      int combo = port_source_to_combo(host::g_port_sources[port]);
+      char port_label[16]; std::snprintf(port_label, sizeof port_label, "Port %d", port + 1);
+      if (ImGui::Combo(port_label, &combo, kPortSourceNames, 10)) {
+        host::g_port_sources[port] = combo_to_port_source(combo);
+        changed = true;
+      }
+      const host::PortSource& source = host::g_port_sources[port];
+      bool source_available = false;
+      const char* source_status = "[-] Disconnected";
+      if (source.kind == host::DeviceKind::Keyboard) {
+        source_available = true;
+        source_status = "[+] Connected";
+      } else if (source.kind == host::DeviceKind::XInputPad && source.index >= 0 && source.index < 4) {
+        source_available = snap.xinput_connected[source.index];
+        source_status = source_available ? "[+] Connected" : "[-] Disconnected";
+      } else if (source.kind == host::DeviceKind::GCAdapter && source.index >= 0 && source.index < 4) {
+        source_available = (snap.gc_mask & (1u << source.index)) != 0;
+        source_status = source_available ? "[+] Plugged in" : "[-] Disconnected";
+      }
+      ImGui::SameLine();
+      ImGui::TextColored(source_available ? ImVec4(0.25f, 0.85f, 0.35f, 1.0f) : ImVec4(0.95f, 0.3f, 0.25f, 1.0f), "%s", source_status);
+      const host::PadState& p = snap.ports[port];
+      ImGui::TextDisabled("  Output: %-16s Stick %4d,%4d  C-Stick %4d,%4d  L/R %3d/%3d",
+                           active_pad_buttons_label(p.button).c_str(), p.stick_x, p.stick_y, p.sub_x, p.sub_y, p.trig_l, p.trig_r);
+      ImGui::PopID();
+    }
+    ImGui::Separator();
+
     {
       auto st = host::updater::state();
       if (st == host::updater::State::Idle) host::updater::check(MELEE_PORT_VERSION);
@@ -181,7 +442,18 @@ bool PcSettingsUI::begin(D3D12Options& options) {
            << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
            << "\ndlss " << options.dlss_mode << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
-           << "\nstartup " << (options.settings_open ? 1 : 0) << '\n';
+           << "\nstartup " << (options.settings_open ? 1 : 0);
+      for (int i = 0; i < (int)host::BindAction::Count; ++i)
+        file << "\nkey_" << kActionNames[i] << " " << host::g_key_bindings.vk[i];
+      for (int idx = 0; idx < 4; ++idx)
+        for (int i = 0; i < (int)host::BindAction::Count; ++i)
+          file << "\npad" << idx << "_" << kActionNames[i] << " " << host::g_pad_bindings[idx].mask[i];
+      for (int idx = 0; idx < 4; ++idx)
+        for (int i = 0; i < (int)host::BindAction::Count; ++i)
+          file << "\ngc" << idx << "_" << kActionNames[i] << " " << host::g_gc_bindings[idx].mask[i];
+      for (int n = 0; n < 4; ++n)
+        file << "\nport" << n << " " << port_source_to_combo(host::g_port_sources[n]);
+      file << '\n';
       file.close();
       state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     }
