@@ -3,6 +3,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <xinput.h>
+#include <hidsdi.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -31,11 +32,14 @@ std::atomic<bool> g_ui_capture{false};
 std::mutex g_ui_pad_mutex;
 PadState g_ui_pad{};
 bool g_ui_gamecube = false;
+void ds4_input(HRAWINPUT raw);
+void ds4_init_defaults();
 
 LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (g_on_message && g_on_message(h, m, w, l)) return 1;
   switch (m) {
     case WM_CLOSE: g_closed = true; request_exit(0); return 0;
+    case WM_INPUT: ds4_input((HRAWINPUT)l); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     case WM_SYSKEYDOWN:
       if (w == VK_RETURN && (l & (1 << 29)) && !(l & (1 << 30))) { g_fullscreen_toggle.store(true); return 0; }   // Alt+Enter, first press only
@@ -61,11 +65,19 @@ void* window_create(int w, int h, const wchar_t* title, bool visible) {
   wc.hInstance = inst; wc.lpfnWndProc = wnd_proc; wc.lpszClassName = L"MeleePortWindow"; wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
   wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);   // black, not white, before the first present
   RegisterClassW(&wc);
+  ds4_init_defaults();
+  RAWINPUTDEVICE rid{};
+  rid.usUsagePage = 0x01;
+  rid.usUsage = 0x05;
+  rid.dwFlags = RIDEV_INPUTSINK;
+  rid.hwndTarget = g_hwnd;
   RECT r{0, 0, w, h};
   AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
   g_hwnd = CreateWindowExW(0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                            r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
   if (!g_hwnd) die("cannot create native window");
+  rid.hwndTarget = g_hwnd;
+  RegisterRawInputDevices(&rid, 1, sizeof rid);
   g_closed = false;
   g_client_w = w; g_client_h = h;
   if (visible) ShowWindow(g_hwnd, SW_SHOW);
@@ -152,6 +164,7 @@ enum : uint16_t {
 KeyBindings g_key_bindings = default_key_bindings();
 std::array<PadBindings, 4> g_pad_bindings = default_pad_bindings();
 std::array<GCBindings, 4> g_gc_bindings = default_gc_bindings();
+std::array<PadBindings, 4> g_ds4_bindings = {};
 std::array<PortSource, 4> g_port_sources = default_port_sources();
 
 namespace {
@@ -159,6 +172,80 @@ std::atomic<bool> g_capturing{false};
 bool g_capture_key_baseline[256]{};
 unsigned short g_capture_pad_baseline[4]{};
 PadState g_capture_gc_baseline[4]{};
+uint16_t g_capture_ds4_baseline[4]{};
+HANDLE g_ds4_devices[4]{};
+uint16_t g_ds4_buttons[4]{};
+PadState g_ds4_pads[4]{};
+std::mutex g_ds4_mutex;
+
+constexpr uint16_t ds4_action_mask(BindAction action) {
+  switch (action) {
+    case BindAction::A: return DS4_CROSS;
+    case BindAction::B: return DS4_CIRCLE;
+    case BindAction::X: return DS4_SQUARE;
+    case BindAction::Y: return DS4_TRIANGLE;
+    case BindAction::Start: return DS4_OPTIONS;
+    case BindAction::L: return DS4_L1;
+    case BindAction::R: return DS4_R1;
+    case BindAction::Z: return DS4_R2;
+    case BindAction::DUp: return DS4_DPAD_UP;
+    case BindAction::DDown: return DS4_DPAD_DOWN;
+    case BindAction::DLeft: return DS4_DPAD_LEFT;
+    case BindAction::DRight: return DS4_DPAD_RIGHT;
+    default: return 0;
+  }
+}
+
+void ds4_init_defaults() {
+  for (auto& bindings : g_ds4_bindings)
+    for (int i = 0; i < (int)BindAction::Count; ++i) bindings.mask[i] = ds4_action_mask((BindAction)i);
+}
+
+int ds4_slot(HANDLE device) {
+  for (int i = 0; i < 4; ++i) if (g_ds4_devices[i] == device) return i;
+  for (int i = 0; i < 4; ++i) if (!g_ds4_devices[i]) { g_ds4_devices[i] = device; return i; }
+  return -1;
+}
+
+bool ds4_device(HANDLE device) {
+  RID_DEVICE_INFO info{}; info.cbSize = sizeof info;
+  UINT size = sizeof info;
+  if (GetRawInputDeviceInfoW(device, RIDI_DEVICEINFO, &info, &size) == (UINT)-1 || info.dwType != RIM_TYPEHID) return false;
+  return info.hid.dwVendorId == 0x054C && (info.hid.dwProductId == 0x05C4 || info.hid.dwProductId == 0x09CC);
+}
+
+void ds4_input(HRAWINPUT raw) {
+  UINT size = 0;
+  if (GetRawInputData(raw, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)) == (UINT)-1 || !size) return;
+  std::vector<uint8_t> bytes(size);
+  if (GetRawInputData(raw, RID_INPUT, bytes.data(), &size, sizeof(RAWINPUTHEADER)) != size) return;
+  RAWINPUT* input = reinterpret_cast<RAWINPUT*>(bytes.data());
+  if (input->header.dwType != RIM_TYPEHID || !ds4_device(input->header.hDevice)) return;
+  int slot = ds4_slot(input->header.hDevice);
+  if (slot < 0 || !input->data.hid.dwSizeHid || !input->data.hid.dwCount) return;
+  const uint8_t* report = input->data.hid.bRawData;
+  // USB reports use ID 0x01 with axes at byte 1; Bluetooth reports use ID
+  // 0x11, a counter byte, then axes at byte 2.
+  size_t offset = report[0] == 0x11 ? 2 : report[0] == 0x01 ? 1 : 0;
+  if (input->data.hid.dwSizeHid < offset + 9) return;
+  const uint8_t dpad = report[offset + 4] & 0x0F;
+  uint16_t buttons = 0;
+  if (dpad == 0 || dpad == 1 || dpad == 7) buttons |= DS4_DPAD_UP;
+  if (dpad == 3 || dpad == 4 || dpad == 5) buttons |= DS4_DPAD_DOWN;
+  if (dpad == 5 || dpad == 6 || dpad == 7) buttons |= DS4_DPAD_LEFT;
+  if (dpad == 1 || dpad == 2 || dpad == 3) buttons |= DS4_DPAD_RIGHT;
+  const uint8_t face = report[offset + 5], system = report[offset + 6];
+  if (face & 0x10) buttons |= DS4_SQUARE; if (face & 0x20) buttons |= DS4_CROSS;
+  if (face & 0x40) buttons |= DS4_CIRCLE; if (face & 0x80) buttons |= DS4_TRIANGLE;
+  if (face & 0x01) buttons |= DS4_L1; if (face & 0x02) buttons |= DS4_R1;
+  if (system & 0x01) buttons |= DS4_SHARE; if (system & 0x02) buttons |= DS4_OPTIONS;
+  if (system & 0x04) buttons |= DS4_L3; if (system & 0x08) buttons |= DS4_R3;
+  PadState pad{}; pad.err = 0; pad.stick_x = (int8_t)((int)report[offset] - 128); pad.stick_y = (int8_t)(128 - (int)report[offset + 1]);
+  pad.sub_x = (int8_t)((int)report[offset + 2] - 128); pad.sub_y = (int8_t)(128 - (int)report[offset + 3]);
+  if (report[offset + 8] > 30) { buttons |= DS4_R2; pad.trig_r = report[offset + 8]; }
+  if (report[offset + 7] > 30) { buttons |= DS4_L2; pad.trig_l = report[offset + 7]; }
+  std::lock_guard<std::mutex> lock(g_ds4_mutex); g_ds4_buttons[slot] = buttons; g_ds4_pads[slot] = pad;
+}
 }  // namespace
 
 void input_begin_capture() {
@@ -170,6 +257,7 @@ void input_begin_capture() {
     gcadapter_poll(&gc); // poll once to prime baseline for any GC adapter port if present
     g_capture_gc_baseline[idx] = gc;
   }
+  { std::lock_guard<std::mutex> lock(g_ds4_mutex); for (int idx = 0; idx < 4; ++idx) g_capture_ds4_baseline[idx] = g_ds4_buttons[idx]; }
   g_capturing.store(true);
 }
 
@@ -206,6 +294,16 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
     if (newly) {
       unsigned short lowest = newly & (~(newly - 1));
       g_capturing.store(false); device = CaptureDevice::GCAdapter; value = lowest; device_index = idx; return true;
+    }
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_ds4_mutex);
+    for (int idx = 0; idx < 4; ++idx) {
+      uint16_t newly = g_ds4_buttons[idx] & ~g_capture_ds4_baseline[idx];
+      if (newly) {
+        uint16_t lowest = newly & (uint16_t)(~(newly - 1));
+        g_capturing.store(false); device = CaptureDevice::DS4Pad; value = lowest; device_index = idx; return true;
+      }
     }
   }
   return false;
@@ -340,6 +438,24 @@ void input_poll(PadState out[4]) {
       if ((x.button & kActionPadBit[i]) != 0) debug.xinput_actions[idx] |= (uint16_t)(1u << i);
   }
 
+  PadState ds4[4]{};
+  uint16_t ds4_buttons[4]{};
+  bool ds4_connected[4]{};
+  {
+    std::lock_guard<std::mutex> lock(g_ds4_mutex);
+    for (int idx = 0; idx < 4; ++idx) {
+      ds4_buttons[idx] = g_ds4_buttons[idx]; ds4[idx] = g_ds4_pads[idx];
+      ds4_connected[idx] = g_ds4_devices[idx] != nullptr;
+      ds4[idx].err = ds4_connected[idx] ? 0 : -1;
+      if (!ds4_connected[idx]) continue;
+      for (int i = 0; i < (int)BindAction::Count; ++i)
+        if (g_ds4_bindings[idx].mask[i] & ds4_buttons[idx]) ds4[idx].button |= kActionPadBit[i];
+      debug.ds4_connected[idx] = true;
+      for (int i = 0; i < (int)BindAction::Count; ++i)
+        if (ds4[idx].button & kActionPadBit[i]) debug.ds4_actions[idx] |= (uint16_t)(1u << i);
+    }
+  }
+
   for (int idx = 0; idx < 4; ++idx)
     if (gc_mask & (1u << idx))
       for (int i = 0; i < (int)BindAction::Count; ++i)
@@ -351,6 +467,9 @@ void input_poll(PadState out[4]) {
       case DeviceKind::Keyboard: out[port] = kb; break;
       case DeviceKind::XInputPad:
         if (src.index >= 0 && src.index < 4 && xin_connected[src.index]) out[port] = xin[src.index];
+        break;
+      case DeviceKind::DS4Pad:
+        if (src.index >= 0 && src.index < 4 && ds4_connected[src.index]) out[port] = ds4[src.index];
         break;
       case DeviceKind::GCAdapter:
         if (src.index >= 0 && src.index < 4 && (gc_mask & (1u << src.index))) out[port] = gc[src.index];
@@ -412,6 +531,19 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     for (int i = 0; i < (int)BindAction::Count; ++i) if (xin[idx].button & kActionPadBit[i]) snapshot.xinput_actions[idx] |= (uint16_t)(1u << i);
   }
 
+  PadState ds4[4]{};
+  uint16_t ds4_buttons[4]{};
+  for (int idx = 0; idx < 4; ++idx) {
+    std::lock_guard<std::mutex> lock(g_ds4_mutex);
+    ds4_buttons[idx] = g_ds4_buttons[idx]; ds4[idx] = g_ds4_pads[idx];
+    if (!g_ds4_devices[idx]) { ds4[idx].err = -1; continue; }
+    snapshot.ds4_connected[idx] = true; ds4[idx].err = 0;
+    for (int i = 0; i < (int)BindAction::Count; ++i) {
+      if (g_ds4_bindings[idx].mask[i] & ds4_buttons[idx]) ds4[idx].button |= kActionPadBit[i];
+      if (ds4[idx].button & kActionPadBit[i]) snapshot.ds4_actions[idx] |= (uint16_t)(1u << i);
+    }
+  }
+
   for (int idx = 0; idx < 4; ++idx) {
     snapshot.gc_actions[idx] = 0;
     if (!(gc_mask & (1u << idx))) continue;
@@ -424,6 +556,9 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
       case DeviceKind::Keyboard: snapshot.ports[port] = kb; break;
       case DeviceKind::XInputPad:
         if (src.index >= 0 && src.index < 4 && snapshot.xinput_connected[src.index]) snapshot.ports[port] = xin[src.index];
+        break;
+      case DeviceKind::DS4Pad:
+        if (src.index >= 0 && src.index < 4 && snapshot.ds4_connected[src.index]) snapshot.ports[port] = ds4[src.index];
         break;
       case DeviceKind::GCAdapter:
         if (src.index >= 0 && src.index < 4 && (gc_mask & (1u << src.index))) snapshot.ports[port] = gc[src.index];

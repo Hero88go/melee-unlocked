@@ -33,10 +33,11 @@ static const char* kActionNames[(size_t)host::BindAction::Count] = {
 };
 
 // ---- Port-source <-> combo-box index, shared by load/save and the Port assignment UI ----
-// 0 = None, 1 = Keyboard, 2..5 = Xbox Pad 1..4, 6..9 = GC Adapter 1..4.
-static const char* kPortSourceNames[10] = {
+// 0 = None, 1 = Keyboard, 2..5 = XInput, 6..9 = DS4, 10..13 = GC Adapter.
+static const char* kPortSourceNames[14] = {
   "None", "Keyboard",
-  "Xbox Pad 1", "Xbox Pad 2", "Xbox Pad 3", "Xbox Pad 4",
+  "XInput Pad 1", "XInput Pad 2", "XInput Pad 3", "XInput Pad 4",
+  "DS4 1", "DS4 2", "DS4 3", "DS4 4",
   "GC Adapter 1", "GC Adapter 2", "GC Adapter 3", "GC Adapter 4"
 };
 
@@ -44,7 +45,8 @@ static int port_source_to_combo(const host::PortSource& s) {
   switch (s.kind) {
     case host::DeviceKind::Keyboard:  return 1;
     case host::DeviceKind::XInputPad: return 2 + std::clamp(s.index, 0, 3);
-    case host::DeviceKind::GCAdapter: return 6 + std::clamp(s.index, 0, 3);
+    case host::DeviceKind::DS4Pad:     return 6 + std::clamp(s.index, 0, 3);
+    case host::DeviceKind::GCAdapter: return 10 + std::clamp(s.index, 0, 3);
     case host::DeviceKind::None: default: return 0;
   }
 }
@@ -52,7 +54,8 @@ static int port_source_to_combo(const host::PortSource& s) {
 static host::PortSource combo_to_port_source(int idx) {
   if (idx == 1) return { host::DeviceKind::Keyboard, 0 };
   if (idx >= 2 && idx <= 5) return { host::DeviceKind::XInputPad, idx - 2 };
-  if (idx >= 6 && idx <= 9) return { host::DeviceKind::GCAdapter, idx - 6 };
+  if (idx >= 6 && idx <= 9) return { host::DeviceKind::DS4Pad, idx - 6 };
+  if (idx >= 10 && idx <= 13) return { host::DeviceKind::GCAdapter, idx - 10 };
   return { host::DeviceKind::None, 0 };
 }
 
@@ -94,6 +97,21 @@ static const char* xinput_button_name(unsigned short mask) {
     case XINPUT_GAMEPAD_B: return "B";
     case XINPUT_GAMEPAD_X: return "X";
     case XINPUT_GAMEPAD_Y: return "Y";
+    default: return "?";
+  }
+}
+
+static const char* ds4_button_name(unsigned short mask) {
+  switch (mask) {
+    case 0: return "Unbound";
+    case host::DS4_DPAD_UP: return "D-Up"; case host::DS4_DPAD_DOWN: return "D-Down";
+    case host::DS4_DPAD_LEFT: return "D-Left"; case host::DS4_DPAD_RIGHT: return "D-Right";
+    case host::DS4_SQUARE: return "Square"; case host::DS4_CROSS: return "Cross";
+    case host::DS4_CIRCLE: return "Circle"; case host::DS4_TRIANGLE: return "Triangle";
+    case host::DS4_L1: return "L1"; case host::DS4_R1: return "R1";
+    case host::DS4_L2: return "L2"; case host::DS4_R2: return "R2";
+    case host::DS4_SHARE: return "Share"; case host::DS4_OPTIONS: return "Options";
+    case host::DS4_L3: return "L3"; case host::DS4_R3: return "R3";
     default: return "?";
   }
 }
@@ -176,6 +194,16 @@ void load_pc_settings(D3D12Options& options, int& volume) {
           if (idx >= 0 && idx < 4)
             for (int i = 0; i < (int)host::BindAction::Count; ++i)
               if (action == kActionNames[i]) host::g_gc_bindings[idx].mask[i] = (unsigned short)std::stoi(value);
+        }
+      }
+      else if (key.size() > 4 && key.rfind("ds4", 0) == 0 && std::isdigit((unsigned char)key[3])) {
+        size_t us = key.find('_');
+        if (us != std::string::npos) {
+          int idx = std::stoi(key.substr(3, us - 3));
+          std::string action = key.substr(us + 1);
+          if (idx >= 0 && idx < 4)
+            for (int i = 0; i < (int)host::BindAction::Count; ++i)
+              if (action == kActionNames[i]) host::g_ds4_bindings[idx].mask[i] = (unsigned short)std::stoi(value);
         }
       }
       // "port<n> <comboIndex>" - comboIndex uses the same 0-9 encoding as the UI combo box.
@@ -315,8 +343,9 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     ImGui::TextUnformatted("Controls");
     ImGui::TextWrapped("Pick a device tab to rebind its actions. Each tab's top line shows what that device is pressing right now; the Port assignment section below shows what actually reaches the game.");
 
-    static const char* kDeviceTabNames[9] = {
-      "Keyboard", "Xbox Pad 1", "Xbox Pad 2", "Xbox Pad 3", "Xbox Pad 4",
+    static const char* kDeviceTabNames[13] = {
+      "Keyboard", "XInput Pad 1", "XInput Pad 2", "XInput Pad 3", "XInput Pad 4",
+      "DS4 1", "DS4 2", "DS4 3", "DS4 4",
       "GC Adapter 1", "GC Adapter 2", "GC Adapter 3", "GC Adapter 4"
     };
 
@@ -324,14 +353,15 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     host::input_debug_snapshot(snap);
 
     if (ImGui::BeginTabBar("device_tabs")) {
-      for (int tab = 0; tab < 9; ++tab) {
+      for (int tab = 0; tab < 13; ++tab) {
         if (!ImGui::BeginTabItem(kDeviceTabNames[tab])) continue;
 
         host::CaptureDevice tab_kind;
         int tab_index = 0;
         if (tab == 0) { tab_kind = host::CaptureDevice::Keyboard; }
         else if (tab <= 4) { tab_kind = host::CaptureDevice::XInputPad; tab_index = tab - 1; }
-        else { tab_kind = host::CaptureDevice::GCAdapter; tab_index = tab - 5; }
+        else if (tab <= 8) { tab_kind = host::CaptureDevice::DS4Pad; tab_index = tab - 5; }
+        else { tab_kind = host::CaptureDevice::GCAdapter; tab_index = tab - 9; }
 
         // Live "what's this device pressing right now" line.
         if (tab_kind == host::CaptureDevice::Keyboard) {
@@ -344,6 +374,12 @@ bool PcSettingsUI::begin(D3D12Options& options) {
                              connected ? "[+] Connected" : "[-] Not connected");
           ImGui::SameLine();
           ImGui::Text("Active: %s", active_actions_label(snap.xinput_actions[tab_index]).c_str());
+        } else if (tab_kind == host::CaptureDevice::DS4Pad) {
+          const bool connected = snap.ds4_connected[tab_index];
+          ImGui::TextColored(connected ? ImVec4(0.25f, 0.85f, 0.35f, 1.0f) : ImVec4(0.95f, 0.3f, 0.25f, 1.0f),
+                             connected ? "[+] Connected" : "[-] Not connected");
+          ImGui::SameLine();
+          ImGui::Text("Active: %s", active_actions_label(snap.ds4_actions[tab_index]).c_str());
         } else {
           bool plugged = (snap.gc_mask & (1u << tab_index)) != 0;
           ImGui::TextColored(plugged ? ImVec4(0.25f, 0.85f, 0.35f, 1.0f) : ImVec4(0.95f, 0.3f, 0.25f, 1.0f),
@@ -365,6 +401,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
               } else if (dev == tab_kind && (tab_kind == host::CaptureDevice::Keyboard || device_index == tab_index)) {
                 if (dev == host::CaptureDevice::Keyboard) host::g_key_bindings.vk[i] = value;
                 else if (dev == host::CaptureDevice::XInputPad) host::g_pad_bindings[tab_index].mask[i] = (unsigned short)value;
+                else if (dev == host::CaptureDevice::DS4Pad) host::g_ds4_bindings[tab_index].mask[i] = (unsigned short)value;
                 else host::g_gc_bindings[tab_index].mask[i] = (unsigned short)value;
                 state.rebind_action = -1;
                 changed = true;
@@ -378,6 +415,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
             char label[32];
             if (tab_kind == host::CaptureDevice::Keyboard) format_key_label(host::g_key_bindings.vk[i], label, sizeof label);
             else if (tab_kind == host::CaptureDevice::XInputPad) std::snprintf(label, sizeof label, "%s", xinput_button_name(host::g_pad_bindings[tab_index].mask[i]));
+            else if (tab_kind == host::CaptureDevice::DS4Pad) std::snprintf(label, sizeof label, "%s", ds4_button_name(host::g_ds4_bindings[tab_index].mask[i]));
             else std::snprintf(label, sizeof label, "%s", gc_button_name(host::g_gc_bindings[tab_index].mask[i]));
             ImGui::Text("%-8s %-10s", kActionNames[i], label);
             ImGui::SameLine();
@@ -401,7 +439,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       ImGui::PushID(100 + port);
       int combo = port_source_to_combo(host::g_port_sources[port]);
       char port_label[16]; std::snprintf(port_label, sizeof port_label, "Port %d", port + 1);
-      if (ImGui::Combo(port_label, &combo, kPortSourceNames, 10)) {
+      if (ImGui::Combo(port_label, &combo, kPortSourceNames, 14)) {
         host::g_port_sources[port] = combo_to_port_source(combo);
         changed = true;
       }
@@ -413,6 +451,9 @@ bool PcSettingsUI::begin(D3D12Options& options) {
         source_status = "[+] Connected";
       } else if (source.kind == host::DeviceKind::XInputPad && source.index >= 0 && source.index < 4) {
         source_available = snap.xinput_connected[source.index];
+        source_status = source_available ? "[+] Connected" : "[-] Disconnected";
+      } else if (source.kind == host::DeviceKind::DS4Pad && source.index >= 0 && source.index < 4) {
+        source_available = snap.ds4_connected[source.index];
         source_status = source_available ? "[+] Connected" : "[-] Disconnected";
       } else if (source.kind == host::DeviceKind::GCAdapter && source.index >= 0 && source.index < 4) {
         source_available = (snap.gc_mask & (1u << source.index)) != 0;
@@ -451,6 +492,9 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       for (int idx = 0; idx < 4; ++idx)
         for (int i = 0; i < (int)host::BindAction::Count; ++i)
           file << "\ngc" << idx << "_" << kActionNames[i] << " " << host::g_gc_bindings[idx].mask[i];
+      for (int idx = 0; idx < 4; ++idx)
+        for (int i = 0; i < (int)host::BindAction::Count; ++i)
+          file << "\nds4" << idx << "_" << kActionNames[i] << " " << host::g_ds4_bindings[idx].mask[i];
       for (int n = 0; n < 4; ++n)
         file << "\nport" << n << " " << port_source_to_combo(host::g_port_sources[n]);
       file << '\n';

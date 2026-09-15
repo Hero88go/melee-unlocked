@@ -37,6 +37,10 @@ the game does not depend on it, and the manual way is complete on its own.
    the title bar). In game, F1 (or Z + Start) opens the PC settings.
 3. To update, extract a newer zip over the folder. Settings, saves and replays are kept.
 
+Native DualShock 4 support is experimental. Connect a DS4 by USB or Bluetooth, open PC
+settings with F1, select a DS4 tab, rebind its actions if needed, and assign it to a game
+port. It uses Windows Raw Input directly; DS4Windows is not required.
+
 ### Melee Unlocked Launcher (optional)
 
 A small window in the same zip, `MeleeUnlockedLauncher.exe`, for people who want setup,
