@@ -203,5 +203,24 @@ int main() {
   }
   current_pose.joints[0].end = 1;
   check(!gx::sample_authored(previous_pose, current_pose, 0.5, joint.world.data(), out, nrm, ident_n), "authored sampling holds at animation boundary");
+  // Camera quakes: a panning view is carried forward, a shaking one holds its exact tick.
+  {
+    gx::AuthoredPose view_previous, view_current;
+    view_previous.has_view = view_current.has_view = true;
+    view_previous.view = NativeMelee::Identity(); view_current.view = NativeMelee::Identity();
+    view_current.view[3] = 2;
+    float held_pos[256]{}, held_nrm[96]{}, carried_pos[256], carried_nrm[96];
+    std::memcpy(held_pos, NativeMelee::Identity().data(), 12 * sizeof(float));
+    std::memcpy(carried_pos, held_pos, sizeof carried_pos);
+    check(gx::carry_camera(view_previous, view_current, .5, held_pos, held_nrm, 1, carried_pos, carried_nrm) && near(carried_pos[3], 1),
+          "panning camera carries held draws forward");
+    view_current.quake = true;
+    std::memcpy(carried_pos, held_pos, sizeof carried_pos);
+    check(!gx::carry_camera(view_previous, view_current, .5, held_pos, held_nrm, 1, carried_pos, carried_nrm) && carried_pos[3] == 0,
+          "shaking camera is not extrapolated along the quake");
+    view_current.quake = false; view_previous.quake = true;
+    check(!gx::carry_camera(view_previous, view_current, .5, held_pos, held_nrm, 1, carried_pos, carried_nrm),
+          "the tick after a quake still holds");
+  }
   std::puts("sub-frame rigid fractions, cuts, blends and pairing passed");
 }
