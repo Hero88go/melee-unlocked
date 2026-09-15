@@ -52,6 +52,9 @@ game and music volume. Settings persist in port-settings.ini.
 
 Controllers: a GameCube adapter (WUP-028, official or Mayflash in Wii U mode) is used
 automatically if it has the WinUSB driver that Slippi installs. Close Slippi Dolphin first.
+Native DualShock 4 support is experimental: connect by USB or Bluetooth, then select a DS4
+tab in PC settings and assign it to a game port. The DS4 is read directly through Windows
+Raw Input and does not require DS4Windows. USB and Bluetooth report layouts are supported.
 Keyboard: arrows = stick, IJKL = C-stick, Z/X/C/V = A/B/X/Y, Enter = Start, Q/W = L/R, E = Z.
 
 Slippi online: everything Slippi Dolphin does for netplay (matchmaking, rollback netcode, the

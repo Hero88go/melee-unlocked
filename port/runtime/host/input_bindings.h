@@ -1,4 +1,4 @@
-// Remappable keyboard/XInput -> GameCube action bindings, and which physical
+// Remappable keyboard/XInput/DS4 -> GameCube action bindings, and which physical
 // device feeds each of the 4 in-game controller ports.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
@@ -16,6 +16,15 @@ enum class BindAction : uint8_t {
 struct KeyBindings { int vk[(size_t)BindAction::Count]; };
 struct PadBindings { unsigned short mask[(size_t)BindAction::Count]; };  // 0 = unbound
 struct GCBindings { unsigned short mask[(size_t)BindAction::Count]; };  // GC adapter raw button mask, same layout as kActionPadBit
+
+// Native DualShock 4 HID button masks. These are independent of XInput and are
+// populated from the controller's USB/Bluetooth Raw Input report.
+enum : uint16_t {
+  DS4_DPAD_UP = 1u << 0, DS4_DPAD_DOWN = 1u << 1, DS4_DPAD_LEFT = 1u << 2, DS4_DPAD_RIGHT = 1u << 3,
+  DS4_SQUARE = 1u << 4, DS4_CROSS = 1u << 5, DS4_CIRCLE = 1u << 6, DS4_TRIANGLE = 1u << 7,
+  DS4_L1 = 1u << 8, DS4_R1 = 1u << 9, DS4_L2 = 1u << 10, DS4_R2 = 1u << 11,
+  DS4_SHARE = 1u << 12, DS4_OPTIONS = 1u << 13, DS4_L3 = 1u << 14, DS4_R3 = 1u << 15,
+};
 
 inline constexpr uint16_t kActionPadBit[(size_t)BindAction::Count] = {
   0x0100, 0x0200, 0x0400, 0x0800, 0x0010, 0x1000, 0x0040, 0x0020, 0x0008, 0x0004, 0x0001, 0x0002
@@ -77,13 +86,14 @@ inline std::array<GCBindings, 4> default_gc_bindings() {
 extern KeyBindings g_key_bindings;
 extern std::array<PadBindings, 4> g_pad_bindings;
 extern std::array<GCBindings, 4> g_gc_bindings;
+extern std::array<PadBindings, 4> g_ds4_bindings;
 
 // ---- port assignment: which physical device feeds each in-game port ----
-enum class DeviceKind : uint8_t { None, Keyboard, XInputPad, GCAdapter };
+enum class DeviceKind : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter };
 
 struct PortSource {
   DeviceKind kind = DeviceKind::None;
-  int index = 0;   // XInput pad index (0-3) or GC adapter physical port (0-3); unused for Keyboard/None
+  int index = 0;   // physical controller index; unused for Keyboard/None
 };
 
 // Default: keyboard -> port 1, Xbox pad 0 -> port 2, GC adapter port 0 -> port 3, port 4 unassigned.
@@ -99,7 +109,7 @@ inline std::array<PortSource, 4> default_port_sources() {
 extern std::array<PortSource, 4> g_port_sources;
 
 // ---- rebind capture ----
-enum class CaptureDevice : uint8_t { None, Keyboard, XInputPad, GCAdapter };
+enum class CaptureDevice : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter };
 
 // Starts listening. Call once when the settings UI enters "press a button" mode.
 void input_begin_capture();
@@ -115,8 +125,10 @@ struct InputDebugSnapshot {
   PadState ports[4]{};
   uint16_t keyboard_actions = 0;
   uint16_t xinput_actions[4]{};
+  uint16_t ds4_actions[4]{};
   uint16_t gc_actions[4]{};
   bool xinput_connected[4]{};
+  bool ds4_connected[4]{};
   uint32_t gc_mask = 0;
 };
 void input_debug_snapshot(InputDebugSnapshot& snapshot);
