@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "subframe.h"
 #include "authored_pose.h"
+#include "gx_shader.h"
 #include <cmath>
 #include <cstring>
 #include <thread>
@@ -12,20 +13,28 @@
 namespace gx {
 namespace {
 
-// Command latches describe earlier FIFO operations, not the draw's material.
-// In particular PE tokens and alternating XFB destinations change every frame.
-bool same_draw_bp(const BPMemory& a, const BPMemory& b, uint32_t& changed) {
-  for (unsigned i = 0; i < 256; ++i) {
-    if (i == BP_SETDRAWDONE || i == BP_PE_TOKEN_ID || i == BP_PE_TOKEN_INT_ID ||
-        (i >= BP_EFB_TL && i <= 0x54) || (i >= BP_PRELOAD_ADDR && i <= BP_TEXINVALIDATE) ||
-        i == BP_BP_MASK || (i >= 0x8C && i <= 0x97) || (i >= 0xAC && i <= 0xB7) ||
-        (i >= BP_TEV_COLOR_RA && i <= BP_TEV_COLOR_RA + 7)) continue;
-    // 0xE0..0xE7 are the TEV constant colours: a draw that fades or flashes is still the same
-    // object, and the colours actually rendered come from the current frame's draw either way.
-    // 0x8C..0x97 are the texture TMEM layout and source address: where the texture lives, not what
-    // it is. Effects regenerate their textures into a different buffer every frame, and comparing
-    // the addresses made every one of those draws unpairable. same_textures compares the content.
-    if (a.reg[i] != b.reg[i]) { changed = i; return false; }
+// Whether two draws render with the same material, looking only at state that reaches the output.
+// Comparing every BP register rejected most of a frame whenever an earlier draw (a hit spark, a
+// stage effect, menu text) left different values in TEV stages, texture coordinates or indirect
+// stages that these draws do not use: whole scenes then lost their in-between frames for one tick
+// and snapped (Yoshi's Story, Fountain of Dreams, menus, the stage select cursor). The shader uid
+// already filters out unused stages; add the pipeline state it leaves out and the texture
+// coordinate scales of the generators the draw actually uses. Constants (TEV colours, fog, alpha
+// references) are not compared: the presented draw always takes them from the current frame.
+bool same_draw_state(const DrawCall& a, const DrawCall& b, uint32_t& changed) {
+  const PSUid ua = make_ps_uid(a), ub = make_ps_uid(b);
+  if (!(ua == ub)) {
+    changed = 0;
+    for (unsigned i = 0; i < 256; ++i) if (ua.bp.reg[i] != ub.bp.reg[i]) { changed = i; break; }
+    return false;
+  }
+  if (a.bp.blendmode() != b.bp.blendmode()) { changed = BP_BLENDMODE; return false; }
+  if (a.bp.dstalpha() != b.bp.dstalpha()) { changed = BP_CONSTANTALPHA; return false; }
+  if (a.bp.cullmode() != b.bp.cullmode()) { changed = 0; return false; }
+  const unsigned generators = std::min(8u, b.xf_regs[0x3F] & 15);
+  for (unsigned i = 0; i < generators; ++i) {
+    if (a.bp.texcoord_s((int)i) != b.bp.texcoord_s((int)i)) { changed = BP_SU_SSIZE + 2 * i; return false; }
+    if (a.bp.texcoord_t((int)i) != b.bp.texcoord_t((int)i)) { changed = BP_SU_SSIZE + 2 * i + 1; return false; }
   }
   return true;
 }
@@ -234,6 +243,7 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   if (prev && cur && cur->sequence != prev->sequence + 1) prev = nullptr;
   prev_ = prev; cur_ = cur;
   pairs_.clear(); prev_index_.clear();
+  camera_previous_ = camera_current_ = nullptr;
   stats_ = SubFrameStats{};
   if (!cur) return;
   stats_.draws = (uint32_t)cur->draws.size();
@@ -246,6 +256,7 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   pairs_.resize(cur->draws.size());
   for (size_t i = 0; i < cur->draws.size(); ++i) {
     const DrawCall& d = cur->draws[i];
+    if (d.authored_pose && d.authored_pose->envelope) ++stats_.skinned;
     Pair p{-1, 0, 0, 0, false, 0};
     auto it = std::lower_bound(prev_index_.begin(), prev_index_.end(), d.identity, [](const std::pair<uint64_t, int>& e, uint64_t id) { return e.first < id; });
     if (it != prev_index_.end() && it->first != d.identity) it = prev_index_.end();
@@ -269,7 +280,7 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
       else if (!d.object_generation && !same_vertices) ++stats_.geometry;
       else if (!vertex_ranges_valid || !d.vertex_count || pd.vertex_count != d.vertex_count ||
           pd.primitive != d.primitive || pd.components != d.components) ++stats_.geometry;
-      else if (!same_draw_bp(pd.bp, d.bp, stats_.state_register) || !same_textures(pd, d) ||
+      else if (!same_draw_state(pd, d, stats_.state_register) || !same_textures(pd, d) ||
                !same_matrix_bindings(pd, d)) ++stats_.state;
       else if (std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 7 * sizeof(uint32_t))) ++stats_.projection;
       else { valid = true; p.blend_vertices = !same_vertices; }
@@ -298,6 +309,11 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
           }
         }
         p.used_slots = p.pos_slots | p.tex_slots;
+        // One camera per frame: keep the first paired pair of poses that carries a view, so draws
+        // that cannot be paired at all can still be moved onto this frame's timeline (below).
+        if (!camera_previous_ && d.authored_pose && pd.authored_pose && d.authored_pose->has_view && pd.authored_pose->has_view) {
+          camera_previous_ = pd.authored_pose.get(); camera_current_ = d.authored_pose.get();
+        }
         ++stats_.paired;
       }
     }
@@ -415,6 +431,13 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
   if (authored) {
     // Sample forward from the latest state. Unsupported/discontinuous draws hold their current
     // matrices instead of inventing motion or adding a frame of delay. Chunks run in parallel.
+    // Stage geometry (ground, platforms, bushes, backdrops) does not move in the world: only the
+    // camera does. Re-posing each of those objects on its own gave neighbouring layers of the same
+    // surface slightly different positions between ticks, so coplanar faces fought over depth: the
+    // Yoshi's Story ground flashed black and looked see-through, and bushes flickered. One identical
+    // camera transform for every unskinned draw keeps the whole stage rigid together. Skinned
+    // characters keep their own animation sampling, which is where sub-frame motion matters.
+    constexpr bool kSampleRigidObjects = true;   // stage objects keep their own sub-frame motion
     const size_t n = cur_->draws.size();
     set_authored_interpolate(interpolate);
     SolverPool& pool = solver_pool();
@@ -435,7 +458,25 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
         std::memcpy(o.pos, hold.posMatrices, sizeof o.pos);
         std::memcpy(o.nrm, hold.normalMatrices, sizeof o.nrm);
         o.vertices = nullptr;
-        if (!pd) continue;
+        if (!pd) {
+          // No pair at all (stage bushes and similar rewrite their geometry every frame). Leaving
+          // these at their exact current pose while every paired draw is shown between frames puts
+          // them on a different timeline, which is visible as flicker against a moving camera.
+          // The camera carry of this frame moves them with everything else.
+          if (d.authored_pose && camera_previous_ && camera_current_) {
+            uint64_t slots = 0;
+            if (d.components & VB_HAS_POSMTXIDX) {
+              for (uint32_t v = 0; v < d.vertex_count; ++v) {
+                const uint32_t idx = cur_->vertices[d.first_vertex + v].posmtx;
+                if (idx < 64) slots |= 1ull << idx;
+              }
+            } else {
+              slots |= 1ull << (d.matrix_index_a & 63);
+            }
+            if (slots && carry_camera(*camera_previous_, *camera_current_, t, hold.posMatrices, hold.normalMatrices, slots, o.pos, o.nrm)) ++carried;
+          }
+          continue;
+        }
         if (p.blend_vertices) {
           if (p.blend_offset + d.vertex_count > vertex_blend_.size() ||
               !blend_vertex_stream(&prev_->vertices[pd->first_vertex], &cur_->vertices[d.first_vertex], d.vertex_count,
@@ -468,14 +509,26 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
               if (!std::isfinite(delta) || std::abs(delta) > 16.0f) { continuous = false; break; }
             }
             if (!continuous) { std::memcpy(&o.pos[row * 4], current_row, 12 * sizeof(float)); continue; }
-            for (int k = 0; k < 12; ++k) o.pos[row * 4 + k] = base_row[k] + (float)t * (current_row[k] - previous_row[k]);
+            // Stage layers commonly share one texture matrix row. Advancing it from each draw's own
+            // previous copy let those copies drift apart, so the layers slid against each other and
+            // flickered. Every draw that uses the row now advances from the same source, the first
+            // draw of the frame that used it, so the row is identical everywhere it appears.
+            const uint32_t slot = (uint32_t)row;
+            auto& shared = texture_rows_[slot];
+            if (shared.sequence != cur_->sequence) {
+              shared.sequence = cur_->sequence;
+              std::memcpy(shared.previous, previous_row, 12 * sizeof(float));
+              std::memcpy(shared.current, current_row, 12 * sizeof(float));
+            }
+            for (int k = 0; k < 12; ++k)
+              o.pos[row * 4 + k] = (interpolate ? shared.previous[k] : shared.current[k]) + (float)t * (shared.current[k] - shared.previous[k]);
           }
         };
         if (!d.authored_pose || !pd->authored_pose) { sample_textures(); continue; }
         bool posed = false;
         if (d.authored_pose->envelope) {
           posed = sample_authored_envelope(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, d.normalMatrices, o.pos, o.nrm, &chain_cache);
-        } else if (!(d.components & VB_HAS_POSMTXIDX)) {
+        } else if (kSampleRigidObjects && !(d.components & VB_HAS_POSMTXIDX)) {
           // One chain, so one position matrix: the draw's own row, not necessarily row 0. Stage and
           // effect geometry commonly sits at a higher index and used to be skipped outright.
           const uint32_t row = d.matrix_index_a & 63;

@@ -1,6 +1,7 @@
 // PAD HLE: controller state from the host input layer.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "hle.h"
+#include <cstdio>
 #include <cstring>
 
 static uint32_t s_spec = 5;
@@ -40,6 +41,18 @@ HLE(PADRead) {
     host::wr8(p + 10, (uint8_t)pads[i].err);
     host::wr8(p + 11, 0);
     if (pads[i].err == 0) mask |= 0x80000000u >> i;
+  }
+  if (!host::options.input_log.empty()) {
+    static FILE* input_log = std::fopen(host::options.input_log.c_str(), "w");
+    if (input_log) {
+      static bool header = (std::fputs("retrace,port,buttons,stick_x,stick_y,cstick_x,cstick_y,trigger_l,trigger_r\n", input_log), true);
+      (void)header;
+      for (int i = 0; i < 4; ++i)
+        if (pads[i].err == 0)
+          std::fprintf(input_log, "%u,%d,%04X,%d,%d,%d,%d,%u,%u\n", host::retrace_count(), i + 1, pads[i].button, pads[i].stick_x, pads[i].stick_y,
+                       pads[i].sub_x, pads[i].sub_y, pads[i].trig_l, pads[i].trig_r);
+      std::fflush(input_log);
+    }
   }
   RET(mask);
 }

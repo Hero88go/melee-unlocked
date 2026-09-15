@@ -258,11 +258,14 @@ int main(int argc, char** argv) {
   }
   gfx.pc_settings = !automated;
   g_crash_dialog = !automated;
+  o.no_gc_adapter = automated;   // a hidden test run must not take the adapter from a game the player is running
   SetUnhandledExceptionFilter(crash_filter);
   if (!automated) {
     gx::load_pc_settings(gfx, o.volume);
     threaded = true;
-    if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::Authored;
+    // Interpolate by default: it never overshoots a stop, so menus, cursors and stage geometry stay
+    // on one timeline. Predict avoids its one tick of delay but can overshoot and snap back.
+    if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::AuthoredInterpolate;
   }
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -342,6 +345,7 @@ int main(int argc, char** argv) {
     else if (a == "--hang-watch") o.hang_watch = std::atof(next());
     else if (a == "--audio-dump") o.audio_dump = next();
     else if (a == "--profile") g_profile = true;
+    else if (a == "--input-log") o.input_log = next();
     else if (a == "--profile-render") { g_profile = true; g_profiler.render_thread = true; }
     else { usage(); return 2; }
   }
