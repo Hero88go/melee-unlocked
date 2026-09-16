@@ -28,6 +28,4 @@ or by extracting the zip over your folder, and it stops.
 
 ## Thanks
 
-- **Stache** for reporting it precisely: that the update kept being offered, that installing it
-  left the version at 0.1.14, and that updating manually from GitHub did the same. Those three
-  facts together are what identified it as the launcher rather than the game.
+Thanks Stache.
