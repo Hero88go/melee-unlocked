@@ -19,7 +19,8 @@ struct D3D12Options {
   float dlss_jitter_sign = -1.0f; // calibrated 2026-09-11: -1 reconstructs sharp text, +1 blurs (see PORT_COMPLETION.md)
   bool pc_settings = false, settings_open = false, performance_overlay = false;
   bool input_overlay = false;     // on-screen controller display, for streaming
-  int input_overlay_port = 0;     // which controller port it shows, 0-3
+  int input_overlay_ports = 1;    // bitmask of the controller ports it shows (bit 0 = port 1)
+  bool input_overlay_hide_border = false;  // draw the pads with no panel background or resize grip
   // Drop in-world translucent effects to buy frame rate on weak machines: 0 everything, 1 skips
   // effects that do not write depth (sparks, glow, smoke), 2 skips translucent world geometry too.
   // Purely presentational, so unlike a Gecko code it cannot desync and both players may differ.

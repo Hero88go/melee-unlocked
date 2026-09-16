@@ -189,6 +189,9 @@ class D3D12Backend : public Backend {
   // DLSS: motion-vector target at EFB resolution, upscaled output at the letterboxed window size,
   // previous presented pose per draw identity for motion vectors, per-frame jitter.
   bool dlss_active_ = false;
+  // DLAA renders and outputs at the same size, so it anti-aliases the EFB in place and the ordinary
+  // present blit letterboxes the result, instead of DLSS producing a window-sized image.
+  bool dlss_in_place_ = false;
   int dlss_mode_active_ = 0;
   bool widescreen_sent_ = false;
   int dlss_failures_ = 0;
@@ -533,41 +536,80 @@ void D3D12Backend::configure_dlss() {
   bool want = opts_.dlss_mode != 0 && streamline::available();
   if (!want) {
     if (dlss_active_ || forced_scale_) {
-      wait_gpu(); dlss_active_ = false; dlss_mode_active_ = 0; forced_scale_ = 0; dlss_out_.Reset(); dlss_out_w_ = dlss_out_h_ = 0;
+      wait_gpu(); dlss_active_ = false; dlss_in_place_ = false; dlss_mode_active_ = 0; forced_scale_ = 0; dlss_out_.Reset(); dlss_out_w_ = dlss_out_h_ = 0;
       streamline::dlss_set_options(DlssMode::Off, vw, vh);
       if (pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
       host::log("dlss: off (native rendering at EFB x%d)", scale_);
     }
     return;
   }
-  if (dlss_active_ && dlss_mode_active_ == opts_.dlss_mode && (int)dlss_out_w_ == vw && (int)dlss_out_h_ == vh) return;
+  const bool in_place = (DlssMode)opts_.dlss_mode == DlssMode::DLAA;
+  // DLAA only accepts a render size equal to its output size. The EFB is always a 640x480 multiple,
+  // which can never equal a 16:9 window, so asking for a window-sized DLAA output left the render
+  // larger than the mode's own maximum and it produced an empty image (a black screen). Anti-alias
+  // the EFB in place instead, at the scale the player chose, and let the present blit letterbox it.
+  int out_w = vw, out_h = vh, in_place_scale = 0;
+  if (in_place) {
+    // pick_scale() reports any scale a previous mode forced, so clear it first to get the EFB scale
+    // the player actually chose (switching straight from DLSS Quality to DLAA would otherwise size
+    // DLAA from the scale Quality had forced).
+    const int saved = forced_scale_;
+    forced_scale_ = 0;
+    in_place_scale = pick_scale();
+    forced_scale_ = saved;
+    out_w = EFB_WIDTH * in_place_scale; out_h = EFB_HEIGHT * in_place_scale;
+  }
+  if (dlss_active_ && dlss_mode_active_ == opts_.dlss_mode && (int)dlss_out_w_ == out_w && (int)dlss_out_h_ == out_h) return;
   uint32_t rw = 0, rh = 0, min_w = 0, min_h = 0, max_w = 0, max_h = 0;
-  if (!streamline::dlss_optimal_size((DlssMode)opts_.dlss_mode, (uint32_t)vw, (uint32_t)vh, &rw, &rh, &min_w, &min_h, &max_w, &max_h)) {
+  if (!streamline::dlss_optimal_size((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh, &min_w, &min_h, &max_w, &max_h)) {
     host::log("dlss: optimal settings unavailable, staying native"); opts_.dlss_mode = 0; return;
   }
-  // Smallest integer EFB multiplier whose 640x480 render area reaches the optimal size, within the allowed range.
-  int scale = std::max(1, (int)std::ceil(std::max(rw / 640.0, rh / 480.0)));
-  while (scale > 1 && ((max_w && 640u * scale > max_w) || (max_h && 480u * scale > max_h))) --scale;
-  if ((max_w && 640u * scale > max_w) || (max_h && 480u * scale > max_h) || 640u * scale > (uint32_t)vw || 480u * scale > (uint32_t)vh) {
-    host::log("dlss: the window (%dx%d output) is too small for the 640x480 render size; staying native", vw, vh);
-    opts_.dlss_mode = 0; return;
+  int scale;
+  if (in_place) {
+    // DLAA is handed the whole EFB and writes an image the same size, so the render size is the EFB
+    // itself (640x528 per step), not the 640x480 visible region the upscaling modes feed it. Running
+    // the multiplier arithmetic below on a 480-tall assumption made the height constraint
+    // unsatisfiable and DLAA never ran at all; the scale is simply the one the player chose.
+    scale = in_place_scale;
+    if ((min_w && (uint32_t)out_w < min_w) || (min_h && (uint32_t)out_h < min_h) ||
+        (max_w && (uint32_t)out_w > max_w) || (max_h && (uint32_t)out_h > max_h)) {
+      host::log("dlss: DLAA cannot render %dx%d (it accepts %ux%u to %ux%u); staying native",
+                out_w, out_h, min_w, min_h, max_w, max_h);
+      opts_.dlss_mode = 0; return;
+    }
+  } else {
+    // Smallest integer EFB multiplier whose 640x480 visible region reaches the optimal size, within
+    // the allowed range. The upscaling modes are fed that region, not the full EFB.
+    scale = std::max(1, (int)std::ceil(std::max(rw / 640.0, rh / 480.0)));
+    while (scale > 1 && ((max_w && 640u * scale > max_w) || (max_h && 480u * scale > max_h))) --scale;
+    if (min_w && 640u * scale < min_w) scale = (int)((min_w + 639) / 640);
+    if (min_h && 480u * scale < min_h) scale = std::max(scale, (int)((min_h + 479) / 480));
+    // Raising the scale to reach the minimum can push it back past the maximum: when no multiplier
+    // satisfies both, the mode cannot run at this output size, so stay native rather than render blind.
+    if ((max_w && 640u * scale > max_w) || (max_h && 480u * scale > max_h) ||
+        640u * scale > (uint32_t)out_w || 480u * scale > (uint32_t)out_h) {
+      host::log("dlss: %s needs a render size between %ux%u and %ux%u for a %dx%d output and no EFB multiple fits; staying native",
+                dlss_mode_name((DlssMode)opts_.dlss_mode), min_w, min_h, max_w, max_h, out_w, out_h);
+      opts_.dlss_mode = 0; return;
+    }
   }
-  if (min_w && 640u * scale < min_w) scale = (int)((min_w + 639) / 640);
   wait_gpu();
   forced_scale_ = scale;
   if (pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
-  if (!dlss_out_ || (int)dlss_out_w_ != vw || (int)dlss_out_h_ != vh) {
+  if (!dlss_out_ || (int)dlss_out_w_ != out_w || (int)dlss_out_h_ != out_h) {
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     D3D12_RESOURCE_DESC rd{};
-    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = vw; rd.Height = vh; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = out_w; rd.Height = out_h; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
     rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     dlss_out_.Reset();
     check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&dlss_out_)), "dlss output");
-    dlss_out_w_ = vw; dlss_out_h_ = vh;
+    dlss_out_w_ = out_w; dlss_out_h_ = out_h;
   }
-  if (!streamline::dlss_set_options((DlssMode)opts_.dlss_mode, (uint32_t)vw, (uint32_t)vh)) { opts_.dlss_mode = 0; forced_scale_ = 0; dlss_active_ = false; return; }
-  dlss_active_ = true; dlss_mode_active_ = opts_.dlss_mode; dlss_reset_ = true; last_poses_.clear();
-  host::log("dlss: %s, render %dx%d (EFB x%d, optimal %ux%u) -> output %dx%d", dlss_mode_name((DlssMode)opts_.dlss_mode), 640 * scale, 480 * scale, scale, rw, rh, vw, vh);
+  if (!streamline::dlss_set_options((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h)) { opts_.dlss_mode = 0; forced_scale_ = 0; dlss_active_ = false; return; }
+  dlss_active_ = true; dlss_in_place_ = in_place; dlss_mode_active_ = opts_.dlss_mode; dlss_reset_ = true; last_poses_.clear();
+  host::log("dlss: %s, render %dx%d (EFB x%d, optimal %ux%u) -> %s %dx%d%s", dlss_mode_name((DlssMode)opts_.dlss_mode),
+            in_place ? out_w : 640 * scale, in_place ? out_h : 480 * scale, scale, rw, rh,
+            in_place ? "anti-aliased in place at" : "output", out_w, out_h, in_place ? ", letterboxed to the window by the present blit" : "");
 }
 
 void D3D12Backend::wait_gpu() {
@@ -1190,8 +1232,13 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     in.depth = efb_depth_.Get(); in.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     in.mvec = mvec_.Get(); in.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     in.color_out = dlss_out_.Get(); in.out_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-    in.in_left = c.src_x * scale_; in.in_top = c.src_y * scale_;
-    in.in_w = std::min<uint32_t>(c.src_w * scale_, efb_w_ - in.in_left); in.in_h = std::min<uint32_t>(c.src_h * scale_, efb_h_ - in.in_top);
+    // In place (DLAA) the render and output sizes must match exactly, so feed the whole EFB and let
+    // the present blit pick the displayed region out of the result, exactly as it does without DLSS.
+    if (dlss_in_place_) { in.in_left = 0; in.in_top = 0; in.in_w = efb_w_; in.in_h = efb_h_; }
+    else {
+      in.in_left = c.src_x * scale_; in.in_top = c.src_y * scale_;
+      in.in_w = std::min<uint32_t>(c.src_w * scale_, efb_w_ - in.in_left); in.in_h = std::min<uint32_t>(c.src_h * scale_, efb_h_ - in.in_top);
+    }
     in.out_w = dlss_out_w_; in.out_h = dlss_out_h_;
     upscaled = streamline::evaluate(list_.Get(), in);
     if (!upscaled && ++dlss_failures_ >= 30) {
@@ -1233,6 +1280,9 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   list_->SetPipelineState(blit_pso_.Get());
   list_->SetGraphicsRootSignature(blit_root_.Get());
   list_->SetGraphicsRootDescriptorTable(0, g);
+  // In-place DLAA leaves a full-size EFB image, so it is presented exactly like the un-upscaled EFB:
+  // same displayed sub-region, same box filter when the render is larger than the window.
+  const bool fills_output = upscaled && !dlss_in_place_;
   float src_w = upscaled ? (float)dlss_out_w_ : (float)efb_w_, src_h = upscaled ? (float)dlss_out_h_ : (float)efb_h_;
   float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
                     1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
@@ -1240,11 +1290,11 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   // Averaging box when the rendered image is larger than the output. The two axes shrink by
   // different amounts (the picture is letterboxed to 16:9 inside the window), so they get their
   // own tap counts; using the horizontal count for both left vertical edges aliasing.
-  if (!upscaled) {
+  if (!fills_output) {
     rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
     rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
   }
-  if (upscaled) { rect[0] = 1.0f; rect[1] = 1.0f; rect[2] = 0.0f; rect[3] = 0.0f; }
+  if (fills_output) { rect[0] = 1.0f; rect[1] = 1.0f; rect[2] = 0.0f; rect[3] = 0.0f; }
   list_->SetGraphicsRoot32BitConstants(1, 12, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
