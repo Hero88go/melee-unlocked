@@ -210,7 +210,9 @@ std::string generate_vertex_shader(const VSUid& uid) {
   o.w("};\n");
   o.w("VS_OUTPUT main(float3 rawpos : POSITION, float3 rawnorm0 : NORMAL0, float4 color0 : COLOR0, float4 color1 : COLOR1,\n");
   for (int i = 0; i < 8; ++i) o.w("  float2 rawtex%d : TEXCOORD%d,\n", i, i);
-  o.w("  uint4 blend_indices : BLENDINDICES, uint4 blend_indices2 : BLENDINDICES1) {\n");
+  // BLENDINDICES packs Vertex::posmtx and Vertex::texmtx[0..6]; texmtx[7] sits alone at offset 104
+  // and needs its own element, or texture generator 7 reads generator 6's matrix index.
+  o.w("  uint4 blend_indices : BLENDINDICES, uint4 blend_indices2 : BLENDINDICES1, uint blend_index7 : BLENDINDICES2) {\n");
   o.w("VS_OUTPUT o;\n");
   o.w("int posmtx = int(blend_indices.x);\n");
   o.w("float4 rawpos4 = float4(rawpos, 1.0);\n");
@@ -267,7 +269,7 @@ std::string generate_vertex_shader(const VSUid& uid) {
       default: {
         if (components & (VB_HAS_TEXMTXIDX0 << i)) {
           o.w("int tmp = int(%s);\n", i < 4 ? (i == 0 ? "blend_indices.y" : i == 1 ? "blend_indices.z" : i == 2 ? "blend_indices.w" : "blend_indices2.x")
-                                          : (i == 4 ? "blend_indices2.y" : i == 5 ? "blend_indices2.z" : i == 6 ? "blend_indices2.w" : "blend_indices2.w"));
+                                          : (i == 4 ? "blend_indices2.y" : i == 5 ? "blend_indices2.z" : i == 6 ? "blend_indices2.w" : "blend_index7"));
           if (projection == 1) o.w("o.tex%d.xyz = float3(dot(coord, transformmatrices[tmp]), dot(coord, transformmatrices[tmp+1]), dot(coord, transformmatrices[tmp+2]));\n", i);
           else o.w("o.tex%d.xyz = float3(dot(coord, transformmatrices[tmp]), dot(coord, transformmatrices[tmp+1]), 1);\n", i);
         } else {

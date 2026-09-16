@@ -253,8 +253,13 @@ bool sample_authored_envelope(const AuthoredPose& previous,const AuthoredPose& c
     };
     if(!make(wm_cur,wx_cur,right_cur)||!make(wm_new,wx_new,right_new)){ ++authored_stats().sample[17]; return false; }
   }
-  std::memcpy(out_pos,current_pos,256*sizeof(float));
-  std::memcpy(out_nrm,current_nrm,96*sizeof(float));
+  // Staged, not published in place: a slot that fails after earlier slots were written would leave
+  // the caller holding a pose that is fractional for some bones and current for the rest, which is
+  // not a pose the game ever had. With a still camera nothing downstream overwrites it, so the
+  // mixture would be drawn. Nothing reaches the caller unless every slot validates.
+  float staged_pos[256]; float staged_nrm[96];
+  std::memcpy(staged_pos,current_pos,sizeof staged_pos);
+  std::memcpy(staged_nrm,current_nrm,sizeof staged_nrm);
   for(size_t s=0;s<current.slots.size();++s) {
     const auto& slot=current.slots[s]; const auto& pslot=previous.slots[s];
     if(slot.bones.size()!=pslot.bones.size()||slot.bones.empty()){ ++authored_stats().sample[18]; return false; }
@@ -280,9 +285,11 @@ bool sample_authored_envelope(const AuthoredPose& previous,const AuthoredPose& c
     for(float v:m_new)if(!std::isfinite(v)){ ++authored_stats().sample[21]; return false; }
     float nrm[9];
     if(!normal_matrix(m_new,nrm)){ ++authored_stats().sample[22]; return false; }
-    std::memcpy(out_pos+12*s,m_new.data(),48);
-    if(9*s+9<=96)std::memcpy(out_nrm+9*s,nrm,sizeof nrm);
+    std::memcpy(staged_pos+12*s,m_new.data(),48);
+    if(9*s+9<=96)std::memcpy(staged_nrm+9*s,nrm,sizeof nrm);
   }
+  std::memcpy(out_pos,staged_pos,sizeof staged_pos);
+  std::memcpy(out_nrm,staged_nrm,sizeof staged_nrm);
   ++authored_stats().sampled;
   return true;
 }

@@ -32,5 +32,8 @@ bool is_online_match();
 int session_mode();
 // In-game player slot of the local player in an online match (0..3).
 int local_player_index();
+// True while the game is polling the online menus (mode select, the online character select screen,
+// waiting for an opponent) and not running a match.
+bool in_online_menus();
 
 }  // namespace slippi::online
