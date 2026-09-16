@@ -30,3 +30,11 @@ replays/
 # Private working notes, never published
 HANDOFF_*.md
 NOTE_FOR_*.md
+
+# Discord webhook URL for release announcements (secret, never commit)
+discord-webhook.txt
+.discord-webhook
+
+# Per-agent and per-feature build directories
+build-*/
+*-build.err
