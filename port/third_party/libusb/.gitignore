@@ -1,0 +1,6 @@
+# Vendored libusb 1.0.27 (LGPL-2.1). Only what the Windows build needs is kept in tree so a plain
+# clone builds; the upstream tests, examples and platform backends we do not compile are excluded.
+android/
+examples/
+tests/
+doc/
