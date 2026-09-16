@@ -414,7 +414,8 @@ void paint_rail(HDC dc) {
   const wchar_t* names[3] = {L"Play", L"Settings", L"Build"};
   for (int i = 0; i < 3; ++i) {
     RECT nr = nav_rect(i);
-    if (g_tab == i) {
+    const int page = i == 0 ? 0 : (i == 2 ? 1 : -1);
+    if (page >= 0 && g_tab == page) {
       round_rect(dc, nr, 8, C_NAV_ON, C_NAV_ON, NO_FILL);
       RECT bar = LR(12, NAV_Y + i * NAV_GAP + 8, 4, 18);
       round_rect(dc, bar, 2, C_ACC_HI, C_ACC_LO, NO_FILL);
@@ -422,7 +423,7 @@ void paint_rail(HDC dc) {
       round_rect(dc, nr, 8, C_NAV_HOT, C_NAV_HOT, NO_FILL);
     }
     RECT tr{nr.left + S(18), nr.top, nr.right, nr.bottom};
-    draw_text(dc, names[i], tr, g_font_nav, g_tab == i ? C_TEXT : C_DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    draw_text(dc, names[i], tr, g_font_nav, (page >= 0 && g_tab == page) ? C_TEXT : C_DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
   }
 }
 
@@ -443,95 +444,7 @@ void paint_play(HDC dc) {
 }
 
 
-// ---- Game settings, written to the same port-settings.ini the in-game F1 panel uses -----------
-//
-// The game reads that file at startup from its working directory, and the launcher starts it with
-// exactly that directory, so anything set here is in effect before the window opens. This is the
-// only safe channel: passing the same values on the command line is what broke 0.2.1 and 0.2.2,
-// because the command line is applied AFTER the settings file and silently undid whatever the
-// player had saved in game.
-//
-// Only the keys below are touched. The same file also holds controller bindings and overlay
-// positions, so the write is read-modify-write: unknown lines are preserved exactly.
-struct Choice { const wchar_t* label; const char* value; };
-struct Setting {
-  const char* key;
-  const wchar_t* label;
-  std::vector<Choice> choices;
-  int index = 0;
-};
-std::vector<Setting> g_settings = {
-  {"fps", L"Frame rate", {{L"Unlocked", "0"}, {L"Match monitor", "-1"}, {L"60", "60"}, {L"120", "120"},
-                          {L"144", "144"}, {L"165", "165"}, {L"240", "240"}, {L"360", "360"}}},
-  {"subframe", L"Sub-frame animation", {{L"Interpolate", "2"}, {L"Predict ahead", "1"}, {L"Off", "0"}}},
-  {"scale", L"Internal resolution", {{L"Auto", "0"}, {L"Native 640x528", "1"}, {L"2x", "2"}, {L"3x", "3"}, {L"4x", "4"}, {L"6x", "6"}}},
-  {"ssaa", L"Anti-aliasing", {{L"Off", "1"}, {L"4x SSAA", "2"}}},
-  {"aspect", L"Aspect ratio", {{L"Auto", "0"}, {L"73:60 (Melee)", "1"}, {L"4:3", "2"}, {L"16:9", "3"}, {L"Stretch", "4"}}},
-  {"widescreen", L"Widescreen (Slippi code)", {{L"Off", "0"}, {L"On", "1"}}},
-  {"truewidescreen", L"True 16:9 (experimental)", {{L"Off", "0"}, {L"On", "1"}}},
-  {"fullscreen", L"Fullscreen", {{L"Off", "0"}, {L"On", "1"}}},
-  {"vsync", L"VSync", {{L"Off", "0"}, {L"On", "1"}}},
-  {"volume", L"Volume", {{L"70%", "70"}, {L"85%", "85"}, {L"100%", "100"}, {L"0%", "0"}, {L"25%", "25"}, {L"50%", "50"}}},
-};
-std::string settings_ini_path();
 
-void load_settings() {
-  std::ifstream f(settings_ini_path());
-  std::string line;
-  while (std::getline(f, line)) {
-    if (!line.empty() && line.back() == '\r') line.pop_back();
-    const size_t sp = line.find(' ');
-    if (sp == std::string::npos) continue;
-    const std::string key = line.substr(0, sp), value = line.substr(sp + 1);
-    for (auto& st : g_settings)
-      if (key == st.key)
-        for (size_t i = 0; i < st.choices.size(); ++i)
-          if (value == st.choices[i].value) { st.index = (int)i; break; }
-  }
-}
-
-// Rewrites only our keys; every other line survives byte for byte, so controller bindings and
-// overlay positions saved from the in-game panel are never lost.
-void save_settings() {
-  const std::string path = settings_ini_path();
-  std::vector<std::string> lines;
-  { std::ifstream f(path); std::string line;
-    while (std::getline(f, line)) { if (!line.empty() && line.back() == '\r') line.pop_back(); lines.push_back(line); } }
-  for (auto& st : g_settings) {
-    const std::string want = std::string(st.key) + " " + st.choices[st.index].value;
-    bool found = false;
-    for (auto& line : lines) {
-      const size_t sp = line.find(' ');
-      if (sp != std::string::npos && line.compare(0, sp, st.key) == 0) { line = want; found = true; break; }
-    }
-    if (!found) lines.push_back(want);
-  }
-  std::ofstream f(path, std::ios::trunc);
-  for (auto& line : lines) f << line << "\n";
-}
-
-RECT setting_row(int i) { return LR(CX, 30 + i * 30, CW, 26); }
-RECT setting_value_rect(int i) { RECT r = setting_row(i); r.left = r.right - S(210); return r; }
-
-void paint_settings(HDC dc) {
-  draw_text(dc, L"APPLIED THE NEXT TIME YOU PRESS PLAY", LR(CX, 8, CW, 18), g_font_label, C_FAINT,
-            DT_LEFT | DT_SINGLELINE, S(1));
-  for (int i = 0; i < (int)g_settings.size(); ++i) {
-    const Setting& st = g_settings[i];
-    RECT row = setting_row(i);
-    draw_text(dc, st.label, row, g_font, C_DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    RECT v = setting_value_rect(i);
-    round_rect(dc, v, 6, C_FIELD, C_FIELD, C_FIELD_BORDER);
-    RECT t{v.left + S(10), v.top, v.right - S(10), v.bottom};
-    draw_text(dc, st.choices[st.index].label, t, g_font, C_TEXT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-  }
-  const int below = 30 + (int)g_settings.size() * 30 + 6;
-  RECT sep = LR(CX, below, CW, 1);
-  fill(dc, sep, C_SEP);
-  draw_text(dc, L"Click a value to change it. Saved straight away into port-settings.ini, the same file the\n"
-                L"in-game F1 panel writes, so the game reads these before it opens a window.",
-            LR(CX, below + 8, CW, 40), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
-}
 
 void paint_build(HDC dc) {
   round_rect(dc, LR(CX, 36, CW, 84), 10, RGB(0x14, 0x1C, 0x2C), RGB(0x14, 0x1C, 0x2C),
@@ -555,7 +468,7 @@ void paint(HWND hwnd, HDC target, RECT dirty) {
   RECT content{S(RAIL_W), 0, cr.right, cr.bottom};
   vgrad(dc, content, C_CONTENT_TOP, C_CONTENT_BOT);
   paint_rail(dc);
-  if (g_tab == 0) paint_play(dc); else if (g_tab == 1) paint_settings(dc); else paint_build(dc);
+  if (g_tab == 0) paint_play(dc); else paint_build(dc);
 
   BitBlt(target, dirty.left, dirty.top, dirty.right - dirty.left, dirty.bottom - dirty.top, dc, dirty.left, dirty.top, SRCCOPY);
   SelectObject(dc, oldb);
@@ -598,11 +511,12 @@ void draw_button(DRAWITEMSTRUCT* di) {
 // ---------------------------------------------------------------------------- behaviour
 
 void refresh_updater();
+void open_settings();
 
 void select_tab(int idx) {
   g_tab = idx;
   for (HWND h : g_play) if (h) ShowWindow(h, idx == 0 ? SW_SHOW : SW_HIDE);
-  for (HWND h : g_build) if (h) ShowWindow(h, idx == 2 ? SW_SHOW : SW_HIDE);
+  for (HWND h : g_build) if (h) ShowWindow(h, idx == 1 ? SW_SHOW : SW_HIDE);
   if (idx == 0 && !g_slippi_missing) ShowWindow(g_slippi_btn, SW_HIDE);
   if (idx != 0) ShowWindow(g_update_btn, SW_HIDE);
   if (g_main) InvalidateRect(g_main, nullptr, FALSE);
@@ -637,6 +551,24 @@ void start_build() {
   SetWindowTextW(g_log, L"");
   InvalidateRect(g_main, nullptr, FALSE);
   std::thread(build_thread).detach();
+}
+
+// Opens the game straight into its own PC settings panel. Same binary, same panel, same file: what
+// is changed here is what the next launch uses, because the game reads port-settings.ini from this
+// working directory before it opens a window.
+void open_settings() {
+  if (g_playing || g_iso.empty()) return;
+  g_game_exe = game_exe();
+  if (!file_exists(g_game_exe)) { select_tab(1); refresh_updater(); start_build(); return; }
+  std::string cwd = work_dir();
+  std::string cmd = "\"" + g_game_exe + "\"" + game_args() + " --pc-settings-open";
+  STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
+  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi)) {
+    MessageBoxW(g_main, L"Could not start melee_port.exe", L"Melee Unlocked Launcher", MB_ICONERROR);
+    return;
+  }
+  CloseHandle(pi.hThread);
+  CloseHandle(pi.hProcess);
 }
 
 void start_game() {
@@ -703,7 +635,6 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CREATE: {
       g_main = hwnd;
       load_rail_art();
-      load_settings();
       // Play page
       int i = 0;
       g_play[i++] = g_iso_edit = make(L"EDIT", L"", ES_AUTOHSCROLL | ES_READONLY, CX + 10, 66, 360, 18, ID_ISO_EDIT);
@@ -757,22 +688,17 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       break;
     case WM_LBUTTONDOWN: {
       POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-      for (int i = 0; i < 3; ++i) { RECT r = nav_rect(i); if (PtInRect(&r, p) && g_tab != i) { select_tab(i); refresh_updater(); return 0; } }
-      if (g_tab == 1)
-        for (int i = 0; i < (int)g_settings.size(); ++i) {
-          RECT r = setting_row(i);
-          if (!PtInRect(&r, p)) continue;
-          Setting& st = g_settings[i];
-          st.index = (st.index + 1) % (int)st.choices.size();
-          // Widescreen and True 16:9 both widen the frame, so one turns the other off, as in game.
-          if (st.index && std::string(st.key) == "widescreen")
-            for (auto& o : g_settings) if (std::string(o.key) == "truewidescreen") o.index = 0;
-          if (st.index && std::string(st.key) == "truewidescreen")
-            for (auto& o : g_settings) if (std::string(o.key) == "widescreen") o.index = 0;
-          save_settings();
-          InvalidateRect(hwnd, nullptr, FALSE);
-          return 0;
-        }
+      for (int i = 0; i < 3; ++i) {
+        RECT r = nav_rect(i);
+        if (!PtInRect(&r, p)) continue;
+        // Settings is not a page here. The launcher used to draw its own copy of the options, which
+        // is a second settings UI to keep in step with the real one; this opens the game's own F1
+        // panel instead, so it is the same UI by construction and cannot drift from it.
+        if (i == 1) { open_settings(); return 0; }
+        const int tab = i == 0 ? 0 : 1;
+        if (g_tab != tab) { select_tab(tab); refresh_updater(); }
+        return 0;
+      }
       return 0;
     }
     case WM_COMMAND:
