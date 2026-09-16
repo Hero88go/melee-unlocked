@@ -6,6 +6,7 @@
 #include "host.h"
 #include "input_bindings.h"
 #include "updater.h"
+#include "discord_presence.h"
 #ifndef MELEE_PORT_VERSION
 #define MELEE_PORT_VERSION "dev"
 #endif
@@ -164,6 +165,9 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
+      else if (key == "discord") options.discord_presence = value == "1";
+      // A Discord application id is a snowflake; anything else would only be rejected by Discord.
+      else if (key == "discord_app_id") { if (value.find_first_not_of("0123456789") == std::string::npos && value.size() <= 24) options.discord_app_id = value; }
       else if (key == "volume") volume = std::clamp(std::stoi(value), 0, 100);
       else if (key.rfind("key_", 0) == 0) {
         for (int i = 0; i < (int)host::BindAction::Count; ++i)
@@ -340,6 +344,31 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     ImGui::Checkbox("Open this panel at startup", &options.settings_open);
     ImGui::Separator();
 
+    // ---- Discord presence ----
+    // Off by default, and inert without an application ID. Nothing reaches Discord until the box
+    // below is ticked. See scratchpad/discord_invite_design.md for the whole design.
+    ImGui::TextUnformatted("Discord");
+    char app_id[32];
+    std::snprintf(app_id, sizeof app_id, "%s", options.discord_app_id.c_str());
+    if (ImGui::InputText("Application ID", app_id, sizeof app_id, ImGuiInputTextFlags_CharsDecimal)) {
+      options.discord_app_id = app_id;
+      host::discord::configure(options.discord_app_id);
+    }
+    const bool discord_was = options.discord_presence;
+    ImGui::Checkbox("Discord presence (show what you are playing; friends can press Join)", &options.discord_presence);
+    if (options.discord_presence != discord_was) {
+      host::discord::configure(options.discord_app_id);
+      host::discord::enable(options.discord_presence);   // starts or stops one background thread
+    }
+    if (options.discord_presence) {
+      ImGui::TextWrapped("%s", host::discord::status().c_str());
+      ImGui::TextDisabled("A new Application ID is picked up the next time you switch this off and on.");
+      ImGui::TextWrapped("Your Slippi connect code is published as the join secret so a friend who presses Join gets it filled in under Online > Direct. Your IP address is never published. Rich Presence is visible to anyone who can see your Discord profile.");
+    } else {
+      ImGui::TextDisabled("Off. Nothing is sent to Discord. Needs an Application ID from discord.com/developers/applications.");
+    }
+    ImGui::Separator();
+
     // ---- Controls (rebinding) ----
     ImGui::TextUnformatted("Controls");
     ImGui::TextWrapped("Pick a device tab to rebind its actions. Each tab's top line shows what that device is pressing right now; the Port assignment section below shows what actually reaches the game.");
@@ -484,7 +513,10 @@ bool PcSettingsUI::begin(D3D12Options& options) {
            << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
            << "\ndlss " << options.dlss_mode << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
-           << "\nstartup " << (options.settings_open ? 1 : 0);
+           << "\nstartup " << (options.settings_open ? 1 : 0)
+           << "\ndiscord " << (options.discord_presence ? 1 : 0);
+      // Only when set: "key value" parsing would swallow the next line on an empty value.
+      if (!options.discord_app_id.empty()) file << "\ndiscord_app_id " << options.discord_app_id;
       for (int i = 0; i < (int)host::BindAction::Count; ++i)
         file << "\nkey_" << kActionNames[i] << " " << host::g_key_bindings.vk[i];
       for (int idx = 0; idx < 4; ++idx)
