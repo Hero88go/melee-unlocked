@@ -240,6 +240,11 @@ static bool cpu_has_avx2() {
 // Anything started from a command line still prints there: this reattaches to the parent console when
 // one exists, so `melee_port.exe --help` and scripted runs behave exactly as before.
 static void attach_parent_console() {
+  // Never take over output that is already going somewhere. A script running `--version` hands us a
+  // pipe, and reopening CONOUT$ over it sends the answer to the terminal instead of back to the
+  // caller, which is how this first broke the release packaging.
+  const HANDLE existing = GetStdHandle(STD_OUTPUT_HANDLE);
+  if (existing && existing != INVALID_HANDLE_VALUE && GetFileType(existing) != FILE_TYPE_UNKNOWN) return;
   if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
   FILE* f = nullptr;
   freopen_s(&f, "CONOUT$", "w", stdout);
