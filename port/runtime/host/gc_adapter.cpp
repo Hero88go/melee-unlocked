@@ -71,7 +71,7 @@ void reader_thread() {
   auto send_start = [&] {
     uint8_t start = 0x13;
     int wrote = 0;
-    const int rc = libusb_interrupt_transfer(g_dev, 0x02, &start, 1, &wrote, 100);
+    const int rc = libusb_interrupt_transfer(g_dev, g_ep_out, &start, 1, &wrote, 100);
     if (rc != 0) log("gc adapter: start command failed (%s)", libusb_error_name(rc));
   };
   send_start();
@@ -79,7 +79,7 @@ void reader_thread() {
   while (g_running.load()) {
     uint8_t buf[37];
     int got = 0;
-    const int rc = libusb_interrupt_transfer(g_dev, 0x81, buf, (int)sizeof buf, &got, 100);
+    const int rc = libusb_interrupt_transfer(g_dev, g_ep_in, buf, (int)sizeof buf, &got, 100);
     if (rc == 0) {
       failures = 0; silent = 0;
       if (got == 37 && buf[0] == 0x21) { std::lock_guard<std::mutex> lk(g_mutex); std::memcpy(g_report, buf, 37); g_have_report = true; }
@@ -91,7 +91,7 @@ void reader_thread() {
         // does exactly this. Reset the read pipe and ask it to start again about once a second.
         if (++silent >= 10) {
           silent = 0;
-          libusb_clear_halt(g_dev, 0x81);
+          libusb_clear_halt(g_dev, g_ep_in);
           send_start();
           if (!g_logged_restart) { log("gc adapter: no reports yet, clearing the pipe and re-sending start"); g_logged_restart = true; }
         }
@@ -102,7 +102,7 @@ void reader_thread() {
     if (g_rumble_dirty.exchange(false)) {
       uint8_t cmd[5] = {0x11, g_rumble[0], g_rumble[1], g_rumble[2], g_rumble[3]};
       int wrote = 0;
-      libusb_interrupt_transfer(g_dev, 0x02, cmd, (int)sizeof cmd, &wrote, 100);
+      libusb_interrupt_transfer(g_dev, g_ep_out, cmd, (int)sizeof cmd, &wrote, 100);
     }
   }
   g_running.store(false);
