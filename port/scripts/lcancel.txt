@@ -1,0 +1,72 @@
+# L-cancel fixture. Same prelude as graphics_yoshi.txt (Mario/Luigi on Yoshi's Story),
+# then P1 does eight short-hop neutral airs straight into the ground. P2 stands still.
+#
+# The script never presses L, R or Z, so with auto L-cancel off every one of these lands
+# with full landing lag. Run it twice with --time-base 1 and --lcancel-log, once with
+# --auto-lcancel and once without, and compare how many frames P1 spends in the
+# LandingAirN state (motion_id 70). See tools/lcancel_measure.py.
+300 B
+310
+380 B
+390
+460 sy=-127
+466
+500 A
+510
+580 A
+590
+700 p=2
+1000 sx=61 sy=127
+1000 p=2 sy=127
+1017
+1017 p=2
+1040 A
+1040 p=2 A
+1050
+1050 p=2
+1100 START
+1110
+1300 sy=100
+1367
+1380 sx=100
+1382
+1390 sy=-100
+1392
+1410 A
+1420
+# ---- in match ----
+# One repetition: tap X for a single frame (short hop), then press A a few frames after
+# take-off so the neutral air is still mid-animation when the fighter hits the ground.
+1600 X
+1601
+1606 A
+1608
+1690 X
+1691
+1696 A
+1698
+1780 X
+1781
+1786 A
+1788
+1870 X
+1871
+1876 A
+1878
+1960 X
+1961
+1966 A
+1968
+2050 X
+2051
+2056 A
+2058
+2140 X
+2141
+2146 A
+2148
+2230 X
+2231
+2236 A
+2238
+2400

@@ -836,6 +836,15 @@ Config& config() { return g_config; }
 uint64_t rollback_count() { return g_rollbacks; }
 bool is_online_match() { return g_in_online_match; }
 
+// g_last_search keeps the mode of the last search for the whole session, so it only means anything
+// while an online session is actually up: searching, set up (the online character select screen),
+// or in the match. Everywhere else this is offline and the answer is -1.
+int session_mode() {
+  const bool session = g_in_online_match || g_play_session_active || (g_matchmaking && g_matchmaking->IsSearching());
+  return session ? (int)g_last_search.mode : -1;
+}
+int local_player_index() { return (int)g_local_player_index; }
+
 static bool file_exists(const std::string& p) { FILE* f = std::fopen(p.c_str(), "rb"); if (!f) return false; std::fclose(f); return true; }
 
 void init() {
