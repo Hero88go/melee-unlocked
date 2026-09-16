@@ -33,12 +33,17 @@ static const char* kActionNames[(size_t)host::BindAction::Count] = {
 };
 
 // ---- Port-source <-> combo-box index, shared by load/save and the Port assignment UI ----
-// 0 = None, 1 = Keyboard, 2..5 = XInput, 6..9 = DS4, 10..13 = GC Adapter.
-static const char* kPortSourceNames[14] = {
+// 0 = None, 1 = Keyboard, 2..5 = XInput, 6..9 = DS4, 10..13 = GC Adapter, 14..17 = Switch Pro.
+// Saved settings store the index, so new devices are appended and the existing ones never move.
+// Switch Pro says "experimental" because it has never been tried against the hardware.
+static const int kPortSourceCount = 18;
+static const char* kPortSourceNames[kPortSourceCount] = {
   "None", "Keyboard",
   "XInput Pad 1", "XInput Pad 2", "XInput Pad 3", "XInput Pad 4",
   "DS4 1", "DS4 2", "DS4 3", "DS4 4",
-  "GC Adapter 1", "GC Adapter 2", "GC Adapter 3", "GC Adapter 4"
+  "GC Adapter 1", "GC Adapter 2", "GC Adapter 3", "GC Adapter 4",
+  "Switch Pro 1 (experimental)", "Switch Pro 2 (experimental)",
+  "Switch Pro 3 (experimental)", "Switch Pro 4 (experimental)"
 };
 
 static int port_source_to_combo(const host::PortSource& s) {
@@ -47,6 +52,7 @@ static int port_source_to_combo(const host::PortSource& s) {
     case host::DeviceKind::XInputPad: return 2 + std::clamp(s.index, 0, 3);
     case host::DeviceKind::DS4Pad:     return 6 + std::clamp(s.index, 0, 3);
     case host::DeviceKind::GCAdapter: return 10 + std::clamp(s.index, 0, 3);
+    case host::DeviceKind::SwitchPro: return 14 + std::clamp(s.index, 0, 3);
     case host::DeviceKind::None: default: return 0;
   }
 }
@@ -56,6 +62,7 @@ static host::PortSource combo_to_port_source(int idx) {
   if (idx >= 2 && idx <= 5) return { host::DeviceKind::XInputPad, idx - 2 };
   if (idx >= 6 && idx <= 9) return { host::DeviceKind::DS4Pad, idx - 6 };
   if (idx >= 10 && idx <= 13) return { host::DeviceKind::GCAdapter, idx - 10 };
+  if (idx >= 14 && idx <= 17) return { host::DeviceKind::SwitchPro, idx - 14 };
   return { host::DeviceKind::None, 0 };
 }
 
@@ -116,6 +123,21 @@ static const char* ds4_button_name(unsigned short mask) {
   }
 }
 
+static const char* swpro_button_name(unsigned short mask) {
+  switch (mask) {
+    case 0: return "Unbound";
+    case host::SWPRO_DPAD_UP: return "D-Up"; case host::SWPRO_DPAD_DOWN: return "D-Down";
+    case host::SWPRO_DPAD_LEFT: return "D-Left"; case host::SWPRO_DPAD_RIGHT: return "D-Right";
+    case host::SWPRO_B: return "B"; case host::SWPRO_A: return "A";
+    case host::SWPRO_Y: return "Y"; case host::SWPRO_X: return "X";
+    case host::SWPRO_L: return "L"; case host::SWPRO_R: return "R";
+    case host::SWPRO_ZL: return "ZL"; case host::SWPRO_ZR: return "ZR";
+    case host::SWPRO_MINUS: return "Minus"; case host::SWPRO_PLUS: return "Plus";
+    case host::SWPRO_L3: return "L-Stick"; case host::SWPRO_R3: return "R-Stick";
+    default: return "?";
+  }
+}
+
 // GC adapter raw button bits match kActionPadBit exactly (see input_bindings.h /
 // default_gc_bindings comments), so this is a reverse lookup into kActionNames.
 static const char* gc_button_name(unsigned short mask) {
@@ -147,26 +169,61 @@ static std::string active_pad_buttons_label(uint16_t button) {
 // On-screen controller display for streaming: the octagonal gate, C-stick, analog triggers and the
 // face buttons, drawn from the state the game read on its last PADRead rather than a fresh poll, so
 // it shows what the game acted on and device polling stays on one thread at one rate.
-static void draw_input_overlay(int port) {
+// `row` stacks several overlays upward so two to four players can be shown at once. `editable` is on
+// while the settings panel is open, which is when the overlay may be dragged and resized.
+static void draw_input_overlay(int port, int row, bool lone, bool editable, bool borderless) {
   host::PadState pads[4]{};
   host::input_last_pads(pads);
-  const host::PadState& pad = pads[port < 0 || port > 3 ? 0 : port];
+  int slot = port < 0 || port > 3 ? 0 : port;
+  // An adapter socket the player is not using reports nothing, and the overlay then drew an empty
+  // controller with no hint why. With a single port selected, show the first one that has a device
+  // instead, so picking the wrong one (or plugging into socket 3) is not mistaken for a broken
+  // overlay. With several selected the player asked for specific ports, so leave them as they are.
+  if (lone && pads[slot].err != 0)
+    for (int i = 0; i < 4; ++i)
+      if (pads[i].err == 0) { slot = i; break; }
+  const host::PadState& pad = pads[slot];
 
-  const float gate = 46.f, cgate = 30.f, pad_w = 300.f, pad_h = 132.f;
-  ImGui::SetNextWindowPos(ImVec2(16, ImGui::GetIO().DisplaySize.y - 16), ImGuiCond_Always, ImVec2(0, 1));
-  ImGui::SetNextWindowSize(ImVec2(pad_w, pad_h), ImGuiCond_Always);
-  ImGui::SetNextWindowBgAlpha(0.30f);
-  ImGui::Begin("Controller", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings);
+  const float pad_w = 300.f, pad_h = 132.f;
+  char title[32];
+  std::snprintf(title, sizeof title, "Controller%d", slot);
+  // Laid out for this size and scaled to whatever the window is dragged to, so it can be sized to
+  // taste for a stream layout. While the settings panel is open it can be moved and resized; the
+  // rest of the time it ignores the mouse entirely so it can never swallow a click meant for the
+  // game. ImGui remembers each overlay's position and size between launches by window name.
+  ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar |
+                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoNav;
+  if (!editable) flags |= ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
+  if (borderless) flags |= ImGuiWindowFlags_NoBackground;
+  ImGui::SetNextWindowPos(ImVec2(16, ImGui::GetIO().DisplaySize.y - 16 - row * (pad_h + 6)), ImGuiCond_FirstUseEver, ImVec2(0, 1));
+  ImGui::SetNextWindowSize(ImVec2(pad_w, pad_h), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowBgAlpha(borderless ? 0.0f : 0.30f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, borderless ? 0.0f : 1.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  // The resize grip draws even with the background off, leaving a triangle in the bottom right of an
+  // otherwise invisible overlay. Hidden in borderless mode; the window edges still resize it.
+  if (borderless) {
+    ImGui::PushStyleColor(ImGuiCol_ResizeGrip, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ResizeGripHovered, IM_COL32(255, 255, 255, 40));
+    ImGui::PushStyleColor(ImGuiCol_ResizeGripActive, IM_COL32(255, 255, 255, 70));
+  }
+  ImGui::Begin(title, nullptr, flags);
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 o = ImGui::GetCursorScreenPos();
+  // Everything below is authored against a 300x132 controller and scaled to the current size.
+  const ImVec2 avail = ImGui::GetContentRegionAvail();
+  const float k = std::max(0.25f, std::min(avail.x / pad_w, avail.y / pad_h));
+  auto P = [&](float x, float y) { return ImVec2(o.x + x * k, o.y + y * k); };
+  auto S = [&](float v) { return v * k; };
+  const float gate = S(46.f), cgate = S(30.f);
   const ImU32 line = IM_COL32(255, 255, 255, 190), dim = IM_COL32(255, 255, 255, 70);
   const ImU32 yellow = IM_COL32(245, 215, 65, 235), green = IM_COL32(120, 225, 150, 240), red = IM_COL32(235, 95, 95, 240);
 
   // Analog triggers: the bar fills with how far it is pressed, so light presses are visible.
   auto trigger = [&](float x, uint8_t value) {
-    const ImVec2 a(o.x + x, o.y + 4), b(o.x + x + 58, o.y + 12);
-    dl->AddRectFilled(a, ImVec2(a.x + 58 * (value / 255.f), b.y), line, 4.f);
-    dl->AddRect(a, b, dim, 4.f);
+    const ImVec2 a = P(x, 4), b = P(x + 58, 12);
+    dl->AddRectFilled(a, ImVec2(a.x + S(58) * (value / 255.f), b.y), line, S(4.f));
+    dl->AddRect(a, b, dim, S(4.f));
   };
   trigger(6, pad.trig_l);
   trigger(74, pad.trig_r);
@@ -174,14 +231,14 @@ static void draw_input_overlay(int port) {
   // Melee's gate is an octagon with vertices on the cardinals and diagonals, which is what an eight
   // sided ImGui n-gon gives. Stick values are signed and screen Y grows downward.
   auto stick = [&](ImVec2 c, float r, int8_t sx, int8_t sy, ImU32 colour) {
-    dl->AddNgon(c, r, colour, 8, 2.f);
-    dl->AddCircle(c, 2.f, dim, 8, 1.f);
+    dl->AddNgon(c, r, colour, 8, S(2.f));
+    dl->AddCircle(c, S(2.f), dim, 8, 1.f);
     const ImVec2 tip(c.x + (sx / 128.f) * r, c.y - (sy / 128.f) * r);
-    dl->AddLine(c, tip, colour, 1.5f);
-    dl->AddCircleFilled(tip, 5.f, colour, 12);
+    // Sized off the gate so the knob reads like the real stick rather than a small marker.
+    dl->AddCircleFilled(tip, std::max(S(5.f), r * 0.20f), colour, 16);
   };
-  stick(ImVec2(o.x + 52, o.y + 74), gate, pad.stick_x, pad.stick_y, line);
-  stick(ImVec2(o.x + 146, o.y + 82), cgate, pad.sub_x, pad.sub_y, yellow);
+  stick(P(52, 74), gate, pad.stick_x, pad.stick_y, line);
+  stick(P(146, 82), cgate, pad.sub_x, pad.sub_y, yellow);
 
   auto button = [&](ImVec2 c, float r, ImU32 colour, bool down, const char* label) {
     if (down) dl->AddCircleFilled(c, r, colour, 16);
@@ -192,20 +249,23 @@ static void draw_input_overlay(int port) {
     }
   };
   const uint16_t b = pad.button;
-  button(ImVec2(o.x + 232, o.y + 78), 19.f, green, (b & 0x0100) != 0, "A");
-  button(ImVec2(o.x + 200, o.y + 104), 10.f, red, (b & 0x0200) != 0, "B");
-  button(ImVec2(o.x + 262, o.y + 44), 10.f, line, (b & 0x0400) != 0, "X");
-  button(ImVec2(o.x + 202, o.y + 46), 10.f, line, (b & 0x0800) != 0, "Y");
-  button(ImVec2(o.x + 240, o.y + 24), 9.f, IM_COL32(170, 130, 235, 240), (b & 0x0010) != 0, "Z");
-  button(ImVec2(o.x + 150, o.y + 24), 7.f, line, (b & 0x1000) != 0, nullptr);
+  // GameCube face layout: A large in the middle, B low and left of it, X out to the right and Y up
+  // over the top (the two kidney buttons wrap around A rather than sitting on the diagonals).
+  button(P(232, 76), S(19.f), green, (b & 0x0100) != 0, "A");
+  button(P(202, 101), S(10.f), red, (b & 0x0200) != 0, "B");
+  button(P(267, 69), S(10.f), line, (b & 0x0400) != 0, "X");
+  button(P(221, 42), S(10.f), line, (b & 0x0800) != 0, "Y");
+  button(P(254, 28), S(9.f), IM_COL32(170, 130, 235, 240), (b & 0x0010) != 0, "Z");
+  button(P(150, 24), S(7.f), line, (b & 0x1000) != 0, nullptr);
 
   // D-pad, small, only drawn when held: it is rarely used and should not clutter a stream.
-  const ImVec2 d(o.x + 104, o.y + 112);
-  if (b & 0x0008) dl->AddTriangleFilled(ImVec2(d.x, d.y - 12), ImVec2(d.x - 5, d.y - 4), ImVec2(d.x + 5, d.y - 4), line);
-  if (b & 0x0004) dl->AddTriangleFilled(ImVec2(d.x, d.y + 12), ImVec2(d.x - 5, d.y + 4), ImVec2(d.x + 5, d.y + 4), line);
-  if (b & 0x0001) dl->AddTriangleFilled(ImVec2(d.x - 12, d.y), ImVec2(d.x - 4, d.y - 5), ImVec2(d.x - 4, d.y + 5), line);
-  if (b & 0x0002) dl->AddTriangleFilled(ImVec2(d.x + 12, d.y), ImVec2(d.x + 4, d.y - 5), ImVec2(d.x + 4, d.y + 5), line);
+  if (b & 0x0008) dl->AddTriangleFilled(P(104, 100), P(99, 108), P(109, 108), line);
+  if (b & 0x0004) dl->AddTriangleFilled(P(104, 124), P(99, 116), P(109, 116), line);
+  if (b & 0x0001) dl->AddTriangleFilled(P(92, 112), P(100, 107), P(100, 117), line);
+  if (b & 0x0002) dl->AddTriangleFilled(P(116, 112), P(108, 107), P(108, 117), line);
   ImGui::End();
+  if (borderless) ImGui::PopStyleColor(3);
+  ImGui::PopStyleVar(2);
 }
 
 void load_pc_settings(D3D12Options& options, int& volume) {
@@ -228,7 +288,10 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
-      else if (key == "inputoverlayport") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 4) options.input_overlay_port = n; }
+      // Settings saved before the overlay could show several ports name a single port number.
+      else if (key == "inputoverlayport") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 4) options.input_overlay_ports = 1 << n; }
+      else if (key == "inputoverlayports") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 16) options.input_overlay_ports = n; }
+      else if (key == "inputoverlayhideborder") options.input_overlay_hide_border = value == "1";
       else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
       else if (key == "volume") volume = std::clamp(std::stoi(value), 0, 100);
@@ -271,6 +334,16 @@ void load_pc_settings(D3D12Options& options, int& volume) {
           if (idx >= 0 && idx < 4)
             for (int i = 0; i < (int)host::BindAction::Count; ++i)
               if (action == kActionNames[i]) host::g_ds4_bindings[idx].mask[i] = (unsigned short)std::stoi(value);
+        }
+      }
+      else if (key.size() > 6 && key.rfind("swpro", 0) == 0 && std::isdigit((unsigned char)key[5])) {
+        size_t us = key.find('_');
+        if (us != std::string::npos) {
+          int idx = std::stoi(key.substr(5, us - 5));
+          std::string action = key.substr(us + 1);
+          if (idx >= 0 && idx < 4)
+            for (int i = 0; i < (int)host::BindAction::Count; ++i)
+              if (action == kActionNames[i]) host::g_swpro_bindings[idx].mask[i] = (unsigned short)std::stoi(value);
         }
       }
       // "port<n> <comboIndex>" - comboIndex uses the same 0-9 encoding as the UI combo box.
@@ -337,6 +410,20 @@ PcSettingsUI::~PcSettingsUI() {
 
 bool PcSettingsUI::begin(D3D12Options& options) {
   auto& state = *impl_;
+  // Dear ImGui's Win32 backend polls XInput itself whenever gamepad navigation is enabled, and maps
+  // the Xbox X button to its "menu" key, which pops up ImGui's window switcher for as long as the
+  // button is held. Players pressing X mid-match got a little window they could not get rid of.
+  // Controller navigation is only wanted while this panel is open, so it is switched off otherwise,
+  // before the backend's NewFrame does that polling.
+  {
+    auto& io = ImGui::GetIO();
+    if (state.open) {
+      io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    } else {
+      io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
+      io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
+    }
+  }
   ImGui_ImplDX12_NewFrame(); ImGui_ImplWin32_NewFrame();
   host::PadState pad{};
   if (host::window_ui_gamecube_pad(pad)) {
@@ -377,19 +464,29 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     char auto_label[64]; std::snprintf(auto_label, sizeof auto_label, "Auto (%dx = %dx%d for this window)", auto_scale, 640 * auto_scale, 528 * auto_scale);
     const char* scales[] = {auto_label, "Native (640x528)", "2x (1280x1056) for 720p", "3x (1920x1584) for 1080p", "4x (2560x2112) for 1440p",
                             "5x (3200x2640)", "6x (3840x3168) for 4K", "7x (4480x3696)", "8x (5120x4224)"};
-    if (options.dlss_mode) ImGui::BeginDisabled();
+    // DLSS chooses its own render size, so the internal resolution and supersampling settings do
+    // nothing while it is on and are shown greyed out. DLAA renders at the internal resolution the
+    // player picked and only anti-aliases it, so it leaves both of them working.
+    const bool dlss_picks_resolution = options.dlss_mode >= 2;
+    if (dlss_picks_resolution) ImGui::BeginDisabled();
     changed |= ImGui::Combo("Internal resolution", &options.efb_scale, scales, 9);
-    if (options.dlss_mode) ImGui::EndDisabled();
+    // DLSS (DLAA included) does its own anti-aliasing, so supersampling on top would render larger
+    // for a second pass over the same edges: grey it out rather than let the two stack.
     const char* aa[] = {"None", "4x SSAA (supersampling)"};
     int aa_index = options.ssaa == 2 ? 1 : 0;
+    if (options.dlss_mode && !dlss_picks_resolution) ImGui::BeginDisabled();
     if (ImGui::Combo("Anti-aliasing", &aa_index, aa, 2)) { options.ssaa = aa_index ? 2 : 1; changed = true; }
+    if (options.dlss_mode && !dlss_picks_resolution) ImGui::EndDisabled();
+    if (dlss_picks_resolution) ImGui::EndDisabled();
     const char* anis[] = {"1x", "2x", "4x", "8x", "16x"};
     int an_index = options.anisotropy >= 16 ? 4 : options.anisotropy >= 8 ? 3 : options.anisotropy >= 4 ? 2 : options.anisotropy >= 2 ? 1 : 0;
     if (ImGui::Combo("Anisotropic filtering", &an_index, anis, 5)) { options.anisotropy = 1 << an_index; changed = true; }
     const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance"};
     if (ImGui::Combo("Upscaling (NVIDIA DLSS)", &options.dlss_mode, upscalers, 6)) changed = true;
-    if (options.dlss_mode) {
-      static const char* ratios[] = {"", "100% (DLAA: full resolution, anti-aliasing only)", "67% (Quality)", "58% (Balanced)", "50% (Performance)", "33% (Ultra Performance)"};
+    if (options.dlss_mode == 1) {
+      ImGui::TextWrapped("DLAA anti-aliases the game at the Internal resolution above without changing it, then the picture is fitted to the window as usual. Internal resolution and Anti-aliasing keep working, so DLAA stacks with 4x SSAA if you want both.");
+    } else if (dlss_picks_resolution) {
+      static const char* ratios[] = {"", "", "67% (Quality)", "58% (Balanced)", "50% (Performance)", "33% (Ultra Performance)"};
       ImGui::TextWrapped("DLSS renders the game at %s of the window size (at 1080p about 1280x960) and upscales it. That is what DLSS is for in heavy games; Melee is cheap to render, so here it is a downgrade in sharpness, and Internal resolution and Anti-aliasing above are ignored while it is on. For the sharpest image choose Native, set Internal resolution to 3x or higher and Anti-aliasing to 4x SSAA (the Dolphin look), or choose DLAA (full resolution, DLSS used only as anti-aliasing).", ratios[options.dlss_mode]);
     }
     int sharp = (int)std::lround(options.sharpness * 100.0f);
@@ -413,10 +510,21 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
     changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
     if (options.input_overlay) {
+      // Several ports can be shown at once (doubles and crew streams want every player visible);
+      // they stack upward from the bottom left corner.
+      for (int i = 0; i < 4; ++i) {
+        ImGui::SameLine();
+        char label[16];
+        std::snprintf(label, sizeof label, "P%d", i + 1);
+        bool on = (options.input_overlay_ports & (1 << i)) != 0;
+        if (ImGui::Checkbox(label, &on)) {
+          options.input_overlay_ports = on ? (options.input_overlay_ports | (1 << i)) : (options.input_overlay_ports & ~(1 << i));
+          changed = true;
+        }
+      }
       ImGui::SameLine();
-      ImGui::SetNextItemWidth(110);
-      const char* ports[] = {"Port 1", "Port 2", "Port 3", "Port 4"};
-      changed |= ImGui::Combo("##overlayport", &options.input_overlay_port, ports, 4);
+      changed |= ImGui::Checkbox("Hide border", &options.input_overlay_hide_border);
+      ImGui::TextDisabled("  Drag an overlay to move it, and its edges to resize, while this panel is open.");
     }
     ImGui::Checkbox("Open this panel at startup", &options.settings_open);
     ImGui::Separator();
@@ -425,17 +533,19 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     ImGui::TextUnformatted("Controls");
     ImGui::TextWrapped("Pick a device tab to rebind its actions. Each tab's top line shows what that device is pressing right now; the Port assignment section below shows what actually reaches the game.");
 
-    static const char* kDeviceTabNames[13] = {
+    static const int kDeviceTabCount = 17;
+    static const char* kDeviceTabNames[kDeviceTabCount] = {
       "Keyboard", "XInput Pad 1", "XInput Pad 2", "XInput Pad 3", "XInput Pad 4",
       "DS4 1", "DS4 2", "DS4 3", "DS4 4",
-      "GC Adapter 1", "GC Adapter 2", "GC Adapter 3", "GC Adapter 4"
+      "GC Adapter 1", "GC Adapter 2", "GC Adapter 3", "GC Adapter 4",
+      "Switch Pro 1", "Switch Pro 2", "Switch Pro 3", "Switch Pro 4"
     };
 
     host::InputDebugSnapshot snap;
     host::input_debug_snapshot(snap);
 
     if (ImGui::BeginTabBar("device_tabs")) {
-      for (int tab = 0; tab < 13; ++tab) {
+      for (int tab = 0; tab < kDeviceTabCount; ++tab) {
         if (!ImGui::BeginTabItem(kDeviceTabNames[tab])) continue;
 
         host::CaptureDevice tab_kind;
@@ -443,7 +553,8 @@ bool PcSettingsUI::begin(D3D12Options& options) {
         if (tab == 0) { tab_kind = host::CaptureDevice::Keyboard; }
         else if (tab <= 4) { tab_kind = host::CaptureDevice::XInputPad; tab_index = tab - 1; }
         else if (tab <= 8) { tab_kind = host::CaptureDevice::DS4Pad; tab_index = tab - 5; }
-        else { tab_kind = host::CaptureDevice::GCAdapter; tab_index = tab - 9; }
+        else if (tab <= 12) { tab_kind = host::CaptureDevice::GCAdapter; tab_index = tab - 9; }
+        else { tab_kind = host::CaptureDevice::SwitchPro; tab_index = tab - 13; }
 
         // Live "what's this device pressing right now" line.
         if (tab_kind == host::CaptureDevice::Keyboard) {
@@ -462,6 +573,15 @@ bool PcSettingsUI::begin(D3D12Options& options) {
                              connected ? "[+] Connected" : "[-] Not connected");
           ImGui::SameLine();
           ImGui::Text("Active: %s", active_actions_label(snap.ds4_actions[tab_index]).c_str());
+        } else if (tab_kind == host::CaptureDevice::SwitchPro) {
+          const bool connected = snap.swpro_connected[tab_index];
+          ImGui::TextColored(connected ? ImVec4(0.25f, 0.85f, 0.35f, 1.0f) : ImVec4(0.95f, 0.3f, 0.25f, 1.0f),
+                             connected ? "[+] Connected" : "[-] Not connected");
+          ImGui::SameLine();
+          ImGui::Text("Active: %s", active_actions_label(snap.swpro_actions[tab_index]).c_str());
+          ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "Experimental: written from the protocol documentation and never tried");
+          ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "against a real controller. If it does not work, Steam Input or BetterJoy");
+          ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "present the pad as an Xbox controller, which the XInput tabs above handle.");
         } else {
           bool plugged = (snap.gc_mask & (1u << tab_index)) != 0;
           ImGui::TextColored(plugged ? ImVec4(0.25f, 0.85f, 0.35f, 1.0f) : ImVec4(0.95f, 0.3f, 0.25f, 1.0f),
@@ -484,6 +604,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
                 if (dev == host::CaptureDevice::Keyboard) host::g_key_bindings.vk[i] = value;
                 else if (dev == host::CaptureDevice::XInputPad) host::g_pad_bindings[tab_index].mask[i] = (unsigned short)value;
                 else if (dev == host::CaptureDevice::DS4Pad) host::g_ds4_bindings[tab_index].mask[i] = (unsigned short)value;
+                else if (dev == host::CaptureDevice::SwitchPro) host::g_swpro_bindings[tab_index].mask[i] = (unsigned short)value;
                 else host::g_gc_bindings[tab_index].mask[i] = (unsigned short)value;
                 state.rebind_action = -1;
                 changed = true;
@@ -498,6 +619,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
             if (tab_kind == host::CaptureDevice::Keyboard) format_key_label(host::g_key_bindings.vk[i], label, sizeof label);
             else if (tab_kind == host::CaptureDevice::XInputPad) std::snprintf(label, sizeof label, "%s", xinput_button_name(host::g_pad_bindings[tab_index].mask[i]));
             else if (tab_kind == host::CaptureDevice::DS4Pad) std::snprintf(label, sizeof label, "%s", ds4_button_name(host::g_ds4_bindings[tab_index].mask[i]));
+            else if (tab_kind == host::CaptureDevice::SwitchPro) std::snprintf(label, sizeof label, "%s", swpro_button_name(host::g_swpro_bindings[tab_index].mask[i]));
             else std::snprintf(label, sizeof label, "%s", gc_button_name(host::g_gc_bindings[tab_index].mask[i]));
             ImGui::Text("%-8s %-10s", kActionNames[i], label);
             ImGui::SameLine();
@@ -521,7 +643,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       ImGui::PushID(100 + port);
       int combo = port_source_to_combo(host::g_port_sources[port]);
       char port_label[16]; std::snprintf(port_label, sizeof port_label, "Port %d", port + 1);
-      if (ImGui::Combo(port_label, &combo, kPortSourceNames, 14)) {
+      if (ImGui::Combo(port_label, &combo, kPortSourceNames, kPortSourceCount)) {
         host::g_port_sources[port] = combo_to_port_source(combo);
         changed = true;
       }
@@ -536,6 +658,9 @@ bool PcSettingsUI::begin(D3D12Options& options) {
         source_status = source_available ? "[+] Connected" : "[-] Disconnected";
       } else if (source.kind == host::DeviceKind::DS4Pad && source.index >= 0 && source.index < 4) {
         source_available = snap.ds4_connected[source.index];
+        source_status = source_available ? "[+] Connected" : "[-] Disconnected";
+      } else if (source.kind == host::DeviceKind::SwitchPro && source.index >= 0 && source.index < 4) {
+        source_available = snap.swpro_connected[source.index];
         source_status = source_available ? "[+] Connected" : "[-] Disconnected";
       } else if (source.kind == host::DeviceKind::GCAdapter && source.index >= 0 && source.index < 4) {
         source_available = (snap.gc_mask & (1u << source.index)) != 0;
@@ -566,7 +691,8 @@ bool PcSettingsUI::begin(D3D12Options& options) {
            << "\ndlss " << options.dlss_mode << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
            << "\nstartup " << (options.settings_open ? 1 : 0)
-           << "\ninputoverlay " << options.input_overlay << "\ninputoverlayport " << options.input_overlay_port
+           << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
+           << "\ninputoverlayhideborder " << options.input_overlay_hide_border
            << "\neffects " << options.effects_level;
       for (int i = 0; i < (int)host::BindAction::Count; ++i)
         file << "\nkey_" << kActionNames[i] << " " << host::g_key_bindings.vk[i];
@@ -579,6 +705,9 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       for (int idx = 0; idx < 4; ++idx)
         for (int i = 0; i < (int)host::BindAction::Count; ++i)
           file << "\nds4" << idx << "_" << kActionNames[i] << " " << host::g_ds4_bindings[idx].mask[i];
+      for (int idx = 0; idx < 4; ++idx)
+        for (int i = 0; i < (int)host::BindAction::Count; ++i)
+          file << "\nswpro" << idx << "_" << kActionNames[i] << " " << host::g_swpro_bindings[idx].mask[i];
       for (int n = 0; n < 4; ++n)
         file << "\nport" << n << " " << port_source_to_combo(host::g_port_sources[n]);
       file << '\n';
@@ -602,7 +731,13 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     ImGui::TextUnformatted("Settings: F1");
     ImGui::End();
   }
-  if (options.input_overlay) draw_input_overlay(options.input_overlay_port);
+  if (options.input_overlay) {
+    const int mask = options.input_overlay_ports ? options.input_overlay_ports : 1;
+    const bool lone = (mask & (mask - 1)) == 0;   // exactly one port selected
+    int row = 0;
+    for (int i = 0; i < 4; ++i)
+      if (mask & (1 << i)) draw_input_overlay(i, row++, lone, state.open, options.input_overlay_hide_border);
+  }
   if (options.performance_overlay) {
     ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.75f);
