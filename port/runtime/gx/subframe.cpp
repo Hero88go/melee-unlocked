@@ -4,6 +4,7 @@
 #include "gx_shader.h"
 #include <cmath>
 #include <cstring>
+#include <cstdlib>   // TEMPORARY DIAGNOSTIC (getenv)
 #include <thread>
 #include <algorithm>
 #include <mutex>
@@ -141,6 +142,29 @@ void rotation_from_quat(const Quat& q, double r[9]) {
   r[3] = 2 * (xy + wz);     r[4] = 1 - 2 * (xx + zz); r[5] = 2 * (yz - wx);
   r[6] = 2 * (xz - wy);     r[7] = 2 * (yz + wx);     r[8] = 1 - 2 * (xx + yy);
 }
+
+// ===== TEMPORARY DIAGNOSTIC (remove before shipping) =====
+// MELEE_DIAG_SHOW=posed|carried|held keeps only draws of that class and collapses every other draw
+// to a point, so a capture shows exactly which objects are on which sub-frame timeline.
+enum { kDiagPosed = 0, kDiagCarried = 1, kDiagHeld = 2 };
+int diag_show_class() {
+  static int cls = [] {
+    const char* v = std::getenv("MELEE_DIAG_SHOW");
+    if (!v) return -1;
+    if (!std::strcmp(v, "posed")) return (int)kDiagPosed;
+    if (!std::strcmp(v, "carried")) return (int)kDiagCarried;
+    if (!std::strcmp(v, "held")) return (int)kDiagHeld;
+    return -1;
+  }();
+  return cls;
+}
+void diag_hide(DrawMatrices& o, int cls) {
+  const int want = diag_show_class();
+  if (want < 0 || cls == want) return;
+  std::memset(o.pos, 0, sizeof o.pos);
+  std::memset(o.nrm, 0, sizeof o.nrm);
+}
+// ===== END TEMPORARY DIAGNOSTIC =====
 
 }  // namespace
 
@@ -448,7 +472,8 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
     // Yoshi's Story ground flashed black and looked see-through, and bushes flickered. One identical
     // camera transform for every unskinned draw keeps the whole stage rigid together. Skinned
     // characters keep their own animation sampling, which is where sub-frame motion matters.
-    constexpr bool kSampleRigidObjects = true;   // stage objects keep their own sub-frame motion
+    // TEMPORARY DIAGNOSTIC: MELEE_RIGID_SAMPLE=0 reverts to camera-carrying every unskinned draw.
+    static const bool kSampleRigidObjects = [] { const char* v = std::getenv("MELEE_RIGID_SAMPLE"); return !v || v[0] != '0'; }();
     const size_t n = cur_->draws.size();
     set_authored_interpolate(interpolate);
     SolverPool& pool = solver_pool();
@@ -462,6 +487,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
         const DrawCall& d = cur_->draws[i];
         DrawMatrices& o = out[i];
         const Pair& p = pairs_[i];
+        int diag_class = kDiagHeld;   // TEMPORARY DIAGNOSTIC
         const DrawCall* pd = p.prev_draw >= 0 ? &prev_->draws[p.prev_draw] : nullptr;
         // Draws that cannot be sampled hold: at the current pose when predicting, at the previous
         // pose when interpolating, so every object stays on the same timeline.
@@ -484,8 +510,9 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
             } else {
               slots |= 1ull << (d.matrix_index_a & 63);
             }
-            if (slots && carry_camera(*camera_previous_, *camera_current_, t, hold.posMatrices, hold.normalMatrices, slots, o.pos, o.nrm)) ++carried;
+            if (slots && carry_camera(*camera_previous_, *camera_current_, t, hold.posMatrices, hold.normalMatrices, slots, o.pos, o.nrm)) { ++carried; diag_class = kDiagCarried; }
           }
+          diag_hide(o, diag_class);   // TEMPORARY DIAGNOSTIC
           continue;
         }
         if (p.blend_vertices) {
@@ -496,6 +523,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
             // current vertices with an advanced or delayed matrix mixes timelines.
             std::memcpy(o.pos, d.posMatrices, sizeof o.pos);
             std::memcpy(o.nrm, d.normalMatrices, sizeof o.nrm);
+            diag_hide(o, diag_class);   // TEMPORARY DIAGNOSTIC
             continue;
           }
           o.vertices = &vertex_blend_[p.blend_offset];
@@ -523,7 +551,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
             for (int k = 0; k < 12; ++k) o.pos[row * 4 + k] = base_row[k] + (float)t * (current_row[k] - previous_row[k]);
           }
         };
-        if (!d.authored_pose || !pd->authored_pose) { sample_textures(); continue; }
+        if (!d.authored_pose || !pd->authored_pose) { sample_textures(); diag_hide(o, diag_class); continue; }
         bool posed = false;
         if (d.authored_pose->envelope) {
           posed = sample_authored_envelope(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, d.normalMatrices, o.pos, o.nrm, &chain_cache);
@@ -543,11 +571,12 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
             }
           }
         }
-        if (posed) ++count;
-        else if (carry_camera(*pd->authored_pose, *d.authored_pose, t, hold.posMatrices, hold.normalMatrices, p.pos_slots, o.pos, o.nrm)) ++carried;
+        if (posed) { ++count; diag_class = kDiagPosed; }
+        else if (carry_camera(*pd->authored_pose, *d.authored_pose, t, hold.posMatrices, hold.normalMatrices, p.pos_slots, o.pos, o.nrm)) { ++carried; diag_class = kDiagCarried; }
         // Envelope sampling publishes a complete matrix array. Apply disjoint UV
         // animation afterwards so that publication cannot erase the sampled UVs.
         sample_textures();
+        diag_hide(o, diag_class);   // TEMPORARY DIAGNOSTIC
       }
       counts[(size_t)chunk] = count;
       carries[(size_t)chunk] = carried;

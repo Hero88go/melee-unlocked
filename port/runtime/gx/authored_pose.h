@@ -35,7 +35,9 @@ struct AuthoredPose {
   std::vector<AuthoredSlot> slots;
 };
 // Diagnostics: why capture/sampling declined a draw (indexed by rejection site; see the sources).
-struct AuthoredStats { std::atomic<uint32_t> capture[24]{}; std::atomic<uint32_t> sample[24]{}; std::atomic<uint32_t> captured{0}, sampled{0}; };
+struct AuthoredStats { std::atomic<uint32_t> capture[24]{}; std::atomic<uint32_t> sample[24]{}; std::atomic<uint32_t> captured{0}, sampled{0};
+  // TEMPORARY DIAGNOSTIC: chain reconstruction residual, in 1e-4 world units (max and running mean).
+  std::atomic<uint32_t> residual_max{0}, residual_sum{0}, residual_count{0}; };
 AuthoredStats& authored_stats();
 // Interpolate (exact in-betweens of the previous and current game frames, one frame late) instead
 // of predicting ahead of the current frame. Set by the solver before sampling.

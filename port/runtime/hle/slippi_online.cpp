@@ -9,6 +9,7 @@
 #include "exi_slippi.h"
 #include "host.h"
 #include "window.h"
+#include "discord_presence.h"
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -155,6 +156,74 @@ uint16_t random_stage() {
   return s;
 }
 
+// ---------------------------------------------------------------- Discord presence
+// Both of these return on a single atomic load when the player has not enabled Discord presence,
+// and neither ever touches a socket, a pipe or the filesystem on this thread: the presence module
+// owns one thread of its own and these only hand it a small struct.
+const char* mode_name(Matchmaking::OnlinePlayMode mode) {
+  switch (mode) {
+    case Matchmaking::RANKED: return "Ranked";
+    case Matchmaking::UNRANKED: return "Unranked";
+    case Matchmaking::DIRECT: return "Direct match";
+    case Matchmaking::TEAMS: return "Teams";
+    case Matchmaking::PARTY: return "Party";
+  }
+  return "Online";
+}
+
+void update_discord_presence(bool force = false) {
+  if (!host::discord::enabled()) return;
+  // prepare_online_match_state runs this every frame the online menus are up. Rebuilding twice a
+  // second is already far more often than Discord accepts an update. Every caller is on the
+  // simulation thread (all of them are reached through handle()), so the static needs no guard.
+  static uint64_t last_ms = 0;
+  const uint64_t now = time_ms();
+  if (!force && now - last_ms < 2000) return;
+  last_ms = now;
+
+  host::discord::Presence p;
+  // The join secret is this player's own Slippi connect code and never anything else. A presence is
+  // public, and a connect code carries no network location; an IP address must never end up here.
+  const std::string my_code = g_user && g_user->IsLoggedIn() ? g_user->GetUserInfo().connect_code : std::string();
+  const bool searching = g_matchmaking && g_matchmaking->IsSearching();
+  const bool in_match = g_in_online_match && !is_disconnected();
+
+  if (in_match) {
+    p.details = mode_name(g_last_search.mode);
+    std::string opponent;
+    if (g_matchmaking)
+      for (int i = 0; i < 4 && opponent.empty(); ++i)
+        if (i != (int)g_local_player_index) opponent = g_matchmaking->GetPlayerName((uint8_t)i);
+    p.state = opponent.empty() ? "In a match" : "vs " + opponent;
+    p.party_size = 2; p.party_max = 2;
+    // Keeps the Discord party id stable across the whole session. The party is full, so this only
+    // names the party: no join secret is published while a match is running.
+    p.join_code = my_code;
+  } else if (searching) {
+    const bool by_code = g_last_search.mode == Matchmaking::DIRECT || g_last_search.mode == Matchmaking::TEAMS;
+    p.details = mode_name(g_last_search.mode);
+    p.state = by_code ? "Waiting for a friend" : "Searching";
+    p.party_size = 1; p.party_max = 2;
+    if (by_code) p.join_code = my_code;   // nobody gets to join a ranked queue
+  } else {
+    p.details = "In the menus";
+    p.state = my_code;
+    if (!my_code.empty()) { p.party_size = 1; p.party_max = 2; p.join_code = my_code; }
+  }
+  host::discord::publish(p);
+}
+
+void consume_discord_join() {
+  if (!host::discord::enabled()) return;
+  const std::string code = host::discord::take_join_code();
+  if (code.empty() || !g_direct_codes) return;
+  // The in-game Online > Direct name entry autocompletes out of this list (handle_name_entry_load
+  // serves CMD_FETCH_CODE_SUGGESTION from it), so putting the host's code at the front is all it
+  // takes for the friend to find it already waiting on screen.
+  g_direct_codes->AddOrUpdateCode(code);
+  host::log("slippi: Discord invite from %s; it is now the first suggestion under Online > Direct", code.c_str());
+}
+
 void cleanup_connection() {
   host::log("slippi: connection cleanup");
   if (g_matchmaking || g_netplay) {
@@ -169,6 +238,7 @@ void cleanup_connection() {
   g_play_session_active = false;
   g_in_online_match = false;
   host::set_emulation_speed(1.0);
+  update_discord_presence(true);   // back to "In the menus" straight away, not two seconds later
 }
 
 // ---------------------------------------------------------------- per-frame online flow
@@ -410,6 +480,7 @@ void start_find_match(const uint8_t* payload) {
   }
   if (!enet_ready()) { g_forced_error = "Networking unavailable"; return; }
   g_matchmaking->FindMatch(search);
+  update_discord_presence(true);
 }
 
 bool tag_matches_input(const uint8_t* input, uint8_t len, const std::string& tag) {
@@ -480,6 +551,7 @@ void prepare_online_match_state(std::vector<uint8_t>& q);
 
 void prepare_online_match_state(std::vector<uint8_t>& q) {
   host::set_emulation_speed(1.0);
+  update_discord_presence();   // rate limited internally; the game polls this every frame
   static std::vector<uint8_t> block = {
       0x32, 0x01, 0x86, 0x4C, 0xC3, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x6E, 0x00, 0x1F, 0x00, 0x00,
       0x01, 0xE0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF,
@@ -785,6 +857,7 @@ void init() {
   g_local_selections.Reset();
   Savestate::force_init = true;
   if (!g_user->IsLoggedIn()) host::log("slippi: not logged in (no %s/user.json); log in with the Slippi Launcher and point --user-dir at its Slippi folder", g_config.user_dir.c_str());
+  update_discord_presence(true);   // the connect code is only known once user.json has been read
 }
 
 void shutdown() {
@@ -801,10 +874,12 @@ void shutdown() {
   g_matchmaking.reset();
   g_active_savestates.clear();
   g_available_savestates.clear();
+  host::discord::clear();   // no stale "In a match" left on the profile
 }
 
 bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vector<uint8_t>& q) {
   if (!g_user) init();
+  consume_discord_join();   // one atomic load unless a friend's Discord invite is actually waiting
   switch (cmd) {
     case CMD_ONLINE_INPUTS: handle_online_inputs(payload, q); return true;
     case CMD_CAPTURE_SAVESTATE: handle_capture_savestate(payload); return true;

@@ -111,6 +111,14 @@ def main():
     launcher = args.exe.parent / "MeleeUnlockedLauncher.exe"
     if not launcher.is_file():
         raise SystemExit(f"missing launcher: {launcher} (build target melee_unlocked)")
+    # The launcher is what shows the version and checks for updates, and it is a separate
+    # executable with the version compiled into it just like the game. 0.2.0 shipped with a
+    # launcher built before VERSION changed, so it called itself 0.1.14, saw 0.2.0 on GitHub and
+    # offered the same update forever, which updating could never fix. It is a GUI program and
+    # cannot answer --version on a pipe, so look for the version string in the binary instead.
+    if args.version.encode() not in launcher.read_bytes():
+        raise SystemExit(f"{launcher.name} does not contain the string {args.version!r}, so it was built "
+                         f"before VERSION changed; build the melee_unlocked target and try again")
     shutil.copy2(launcher, folder / "MeleeUnlockedLauncher.exe")
     for dll in ("sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll"):
         src = args.exe.parent / dll
