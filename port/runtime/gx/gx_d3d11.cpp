@@ -1403,6 +1403,21 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
         capture = true;
       }
     }
+    // F2: write the next N presented frames out, whatever the capture options say. This backend
+    // needs its own copy of the hook: the first version only had it in D3D12, so pressing F2 on a
+    // D3D11 machine logged the request and produced nothing.
+    if (unsigned want = gx_capture_request()) {
+      gx_capture_request_set(want - 1);
+      CreateDirectoryA("capture", nullptr);
+      char req[64];
+      snprintf(req, sizeof req, "capture\blink_%05u.ppm", frames_presented_ + 1);
+      const std::string saved = opts_.capture_path;
+      opts_.capture_path = req;
+      capture_backbuffer();
+      opts_.capture_path = saved;
+      if (want == 1) host::log("capture: wrote the requested frames into capture\\");
+      capture = false;   // already written for this frame
+    }
     // The flip model discards the back buffer on Present, so a capture is copied out first.
     if (capture) capture_backbuffer();
     const double wait_start = Stopwatch::now();
