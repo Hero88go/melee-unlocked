@@ -2,6 +2,8 @@
 // VertexShaderGen.cpp, LightingShaderGen.h, PixelShaderGen.cpp (D3D11 integer-math path).
 #include "gx_shader.h"
 #include "gx_texture.h"
+#include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -10,6 +12,15 @@
 namespace gx {
 
 namespace {
+
+// Display-only per-player tint, written by the simulation thread and read per draw by the render
+// thread. Six slots because Melee's player table has six (four players plus the two Ice Climber
+// followers). Relaxed atomics: a tint that lands one frame late is invisible, and nothing else in
+// the frame depends on it.
+constexpr size_t kPlayerTintSlots = 6;
+struct PlayerTint { std::atomic<float> r{1.f}, g{1.f}, b{1.f}, amount{0.f}; };
+std::array<PlayerTint, kPlayerTintSlots> g_player_tints;
+
 
 struct Code {
   std::string s;
@@ -415,7 +426,7 @@ std::string generate_pixel_shader(const PSUid& uid) {
       "wu3 wuround(float3 x) { return wu3(round(x)); }\nwu4 wuround(float4 x) { return wu4(round(x)); }\n");
   o.w("SamplerState samp[8] : register(s0);\nTexture2D Tex[8] : register(t0);\n");
   o.w("cbuffer PSBlock : register(b1) {\nint4 colors[4];\nint4 kcolors[4];\nint4 alpharef;\nfloat4 texdims[8];\nint4 zbias[2];\n"
-      "int4 indtexscale[2];\nint4 indtexmtx[6];\nint4 fogcolor;\nint4 fogi;\nfloat4 fogf[2];\nfloat4 zslope;\nint4 flags;\nfloat4 efbscale;\nfloat4 mvscale;\n};\n");
+      "int4 indtexscale[2];\nint4 indtexmtx[6];\nint4 fogcolor;\nint4 fogi;\nfloat4 fogf[2];\nfloat4 zslope;\nint4 flags;\nfloat4 efbscale;\nfloat4 mvscale;\nfloat4 tint;\n};\n");
   if (forced_early_z) o.w("[earlydepthstencil]\n");
   if (uid.motion_vectors) o.w("void main(out float4 ocol0 : SV_Target0, out float2 omv : SV_Target1, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
   else o.w("void main(out float4 ocol0 : SV_Target0, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
@@ -601,6 +612,10 @@ std::string generate_pixel_shader(const PSUid& uid) {
     o.w("prev.rgb = BSHR(prev.rgb * (wu(256) - ifog) + fogcolor.rgb * ifog, wu(8));\n");
   }
   o.w("ocol0 = float4(prev) / 255.0;\n");
+  // Display-only fighter tint. tint.w is 0 for every draw unless the host asked for one, and
+  // lerping by 0 returns ocol0.rgb unchanged, so this costs a multiply and changes nothing
+  // otherwise. It is deliberately not part of PSUid: there is one pipeline either way.
+  o.w("ocol0.rgb = lerp(ocol0.rgb, ocol0.rgb * tint.rgb + tint.rgb * 0.35, tint.w);\n");
   if (uid.motion_vectors) o.w("omv = (prevPos.xy / prevPos.w - curPos.xy / curPos.w) * mvscale.xy;\n");
   o.w("}\n");
   return o.s;
@@ -740,6 +755,25 @@ void fill_ps_constants(const DrawCall& dc, PSConstants& c, int efb_scale) {
   }
   c.efbscale[0] = 1.0f / efb_scale; c.efbscale[1] = 1.0f / efb_scale;
   { const float* vp = (const float*)&dc.xf_regs[0x1A]; c.mvscale[0] = vp[0] * efb_scale; c.mvscale[1] = vp[1] * efb_scale; }
+  c.tint[0] = c.tint[1] = c.tint[2] = 1.0f; c.tint[3] = 0.0f;
+  if (dc.owner_player < kPlayerTintSlots) {
+    const PlayerTint& t = g_player_tints[dc.owner_player];
+    const float amount = t.amount.load(std::memory_order_relaxed);
+    if (amount > 0.0f) {
+      c.tint[0] = t.r.load(std::memory_order_relaxed);
+      c.tint[1] = t.g.load(std::memory_order_relaxed);
+      c.tint[2] = t.b.load(std::memory_order_relaxed);
+      c.tint[3] = amount;
+    }
+  }
 }
+
+void set_player_tint(int player, float r, float g, float b, float amount) {
+  if (player < 0 || player >= (int)kPlayerTintSlots) return;
+  PlayerTint& t = g_player_tints[player];
+  t.r.store(r, std::memory_order_relaxed); t.g.store(g, std::memory_order_relaxed); t.b.store(b, std::memory_order_relaxed);
+  t.amount.store(amount, std::memory_order_relaxed);
+}
+void clear_player_tints() { for (auto& t : g_player_tints) t.amount.store(0.0f, std::memory_order_relaxed); }
 
 }  // namespace gx

@@ -273,35 +273,11 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
   ImGui::PopStyleVar(2);
 }
 
-// The two L-cancel on-screen pieces: the missed-L-cancel flash, and the notice that says the
-// automatic press is switched off because this is a matchmaking mode. Both are ImGui overlays: the
-// fighter tint the Slippi playback build uses is a write into the fighter, and this must not write
-// anything the game could read.
+// The missed L-cancel itself is shown by tinting the fighter red in the renderer (see lcancel.cpp
+// and the tint in gx_d3d12.cpp / gx_d3d11.cpp), not here: an on-screen panel was replaced by the
+// red flash players already know from the Gecko code. What is left here is the notice that says
+// the automatic press is switched off because this is a matchmaking mode.
 static void draw_lcancel_overlays() {
-  const lcancel::Flash flash = lcancel::flash();
-  if (flash.active) {
-    const float a = flash.alpha;
-    // Below the match clock, so the two never overlap.
-    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.26f),
-                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowBgAlpha(0.55f * a);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18, 10));
-    ImGui::Begin("LCancelFlash", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                                              ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
-    ImGui::SetWindowFontScale(2.4f);
-    ImGui::TextColored(ImVec4(1.0f, 0.22f, 0.18f, a), "NO L-CANCEL");
-    ImGui::SetWindowFontScale(1.3f);
-    // frames_since_press is the fighter's own counter: 255 means no trigger press at all since the
-    // last reset, anything else is how many frames early the press was.
-    if (flash.frames_since_press < 255)
-      ImGui::TextColored(ImVec4(1.0f, 0.68f, 0.6f, a), "pressed %d frames too early (P%d)", flash.frames_since_press, flash.port);
-    else
-      ImGui::TextColored(ImVec4(1.0f, 0.68f, 0.6f, a), "no trigger press (P%d)", flash.port);
-    ImGui::SetWindowFontScale(1.0f);
-    ImGui::End();
-    ImGui::PopStyleVar();
-  }
-
   // Character select of a matchmaking mode, with the setting on: say plainly that it is off here.
   if (lcancel::automatic_enabled() && lcancel::online_session_pending()) {
     if (const char* mode = lcancel::auto_suppressed_mode()) {
@@ -330,6 +306,15 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "fullscreen") options.fullscreen = value == "1";
       else if (key == "vsync") options.vsync = value == "1";
       else if (key == "widescreen") options.widescreen = value == "1";
+      else if (key == "aspect") { int a = std::stoi(value); if (a >= 0 && a <= 4) options.aspect = (AspectMode)a; }
+      // "window <w>x<h>", or "window follow" for the old behaviour of using whatever size the
+      // window has been dragged to.
+      else if (key == "window") {
+        int w = 0, h = 0;
+        if (std::sscanf(value.c_str(), "%dx%d", &w, &h) == 2 && w >= 320 && h >= 240) {
+          options.window_w = w; options.window_h = h; options.window_pinned = true;
+        } else options.window_pinned = false;
+      }
       else if (key == "sharpness") options.sharpness = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "anisotropy") { int a = std::stoi(value); if (a == 1 || a == 2 || a == 4 || a == 8 || a == 16) options.anisotropy = a; }
       else if (key == "ssaa") { int a = std::stoi(value); if (a == 1 || a == 2) options.ssaa = a; }
@@ -346,6 +331,17 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "autolcancel") lcancel::set_automatic(value == "1");
       else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
+      // Low spec: the switch, then what the player had before it was turned on, so turning it off
+      // after a restart still restores their own settings rather than the defaults.
+      else if (key == "lowspec") options.low_spec = value == "1";
+      else if (key == "lowspec_prev_backend") options.low_spec_previous.api = value == "d3d11" ? RenderApi::D3D11 : RenderApi::D3D12;
+      else if (key == "lowspec_prev_fps") { double rate = std::stod(value); if (rate == -1 || rate == 0 || (rate >= 30 && rate <= 2000)) options.low_spec_previous.fps_cap = rate; }
+      else if (key == "lowspec_prev_scale") { int n = std::stoi(value); if (n >= 0 && n <= 8) options.low_spec_previous.efb_scale = n; }
+      else if (key == "lowspec_prev_ssaa") { int n = std::stoi(value); if (n == 1 || n == 2) options.low_spec_previous.ssaa = n; }
+      else if (key == "lowspec_prev_anisotropy") { int n = std::stoi(value); if (n == 1 || n == 2 || n == 4 || n == 8 || n == 16) options.low_spec_previous.anisotropy = n; }
+      else if (key == "lowspec_prev_effects") { int n = std::stoi(value); if (n >= 0 && n <= 2) options.low_spec_previous.effects_level = n; }
+      else if (key == "lowspec_prev_dlss") { int n = std::stoi(value); if (n >= 0 && n <= 5) options.low_spec_previous.dlss_mode = n; }
+      else if (key == "lowspec_prev_subframe") options.low_spec_previous.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "discord") options.discord_presence = value == "1";
       // A Discord application id is a snowflake; anything else would only be rejected by Discord.
       else if (key == "discord_app_id") { if (value.find_first_not_of("0123456789") == std::string::npos && value.size() <= 24) options.discord_app_id = value; }
@@ -509,25 +505,11 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   state.intervals[state.cursor++ % state.intervals.size()] = ImGui::GetIO().DeltaTime*1000.f;
   bool changed = false;
   if (state.open) {
-    ImGui::SetNextWindowSize(ImVec2(560, 560), ImGuiCond_FirstUseEver);
+    // Tall enough that the Low spec switch at the end of the settings section is on screen when the
+    // panel is first opened, and still short enough for a 768-line laptop display.
+    ImGui::SetNextWindowSize(ImVec2(560, 620), ImGuiCond_FirstUseEver);
     ImGui::Begin("PC settings", &state.open, ImGuiWindowFlags_NoCollapse);
     ImGui::TextUnformatted("F1: settings    Escape: return to game");
-    ImGui::Separator();
-    // One press puts every setting that costs frames at its cheapest. Nothing here is permanent:
-    // each control below still works afterwards, and the panel only writes to disk on Save settings.
-    if (ImGui::Button("Low spec")) {
-      if (d3d11_available()) options.api = RenderApi::D3D11;   // better exercised driver path on old integrated GPUs
-      options.efb_scale = 1;                  // native 640x528, the floor
-      options.ssaa = 1;                       // no supersampling
-      options.anisotropy = 1;                 // no anisotropic filtering
-      options.effects_level = 2;              // skip sparks, glow and translucent world geometry
-      options.subframe = SubFrameMode::Off;   // the sub-frame solver is the largest CPU cost here
-      options.dlss_mode = 0;                  // NVIDIA only
-      options.fps_cap = 60;
-      changed = true;
-    }
-    ImGui::SameLine();
-    ImGui::TextDisabled("For integrated graphics and older laptops. Everything below still works after.");
     ImGui::Separator();
     changed |= ImGui::Checkbox("Borderless fullscreen", &options.fullscreen);
     const double rates[] = {-1, 0, 60, 120, 144, 165, 200, 240, 360, 480};
@@ -536,10 +518,72 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::Combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
     changed |= ImGui::Checkbox("VSync", &options.vsync);
     changed |= ImGui::Checkbox("Widescreen 16:9 (Slippi code, online safe)", &options.widescreen);
+    float win_w = ImGui::GetIO().DisplaySize.x, win_h = ImGui::GetIO().DisplaySize.y;
+
+    // Aspect ratio and window size are presentation only: they change nothing the game computes,
+    // so they cannot desync and the two players in a match may each pick their own.
+    {
+      const char* aspects[] = {"Auto (Melee's own: 73:60, or 16:9 with widescreen on)",
+                               "73:60 (Melee's native)", "4:3", "16:9", "Stretch to window (no black bars)"};
+      int index = std::clamp((int)options.aspect, 0, 4);
+      if (ImGui::Combo("Aspect ratio", &index, aspects, 5)) { options.aspect = (AspectMode)index; changed = true; }
+      if (options.aspect == AspectMode::Stretch)
+        ImGui::TextDisabled("Fills the whole window or screen, so the picture is stretched. Pick a 4:3 window\n"
+                            "size below and a wider screen to get the stretched resolution players use.");
+      else
+        ImGui::TextDisabled("Melee's camera asks for 73:60, not 4:3; the Slippi widescreen code widens it to 16:9.\n"
+                            "Auto follows the checkbox above, which is what Slippi Dolphin does.");
+
+      // Window size, the way Dolphin lets a player choose one. 4:3 sizes first: those are what
+      // Melee players run (1440x1080 is the common one), then the 16:9 sizes.
+      struct Size { int w, h; const char* name; };
+      static const Size kSizes[] = {
+        {0, 0, nullptr},                     // slot 0 is the "follow window" label, built below
+        {640, 480, "640x480 (4:3)"},         {960, 720, "960x720 (4:3)"},
+        {1280, 960, "1280x960 (4:3)"},       {1440, 1080, "1440x1080 (4:3)"},
+        {1600, 1200, "1600x1200 (4:3)"},     {1920, 1440, "1920x1440 (4:3)"},
+        {1280, 720, "1280x720 (16:9)"},      {1920, 1080, "1920x1080 (16:9)"},
+        {2560, 1440, "2560x1440 (16:9)"},
+      };
+      const int kPresets = (int)(sizeof kSizes / sizeof kSizes[0]);
+      char follow[80], custom[80];
+      std::snprintf(follow, sizeof follow, "Follow window (now %dx%d)", (int)win_w, (int)win_h);
+      std::snprintf(custom, sizeof custom, "Custom (%dx%d)", options.window_w, options.window_h);
+      const char* items[kPresets + 1];
+      items[0] = follow;
+      for (int i = 1; i < kPresets; ++i) items[i] = kSizes[i].name;
+      int count = kPresets, size_index = 0;
+      if (options.window_pinned) {
+        size_index = -1;
+        for (int i = 1; i < kPresets; ++i)
+          if (kSizes[i].w == options.window_w && kSizes[i].h == options.window_h) size_index = i;
+        if (size_index < 0) { items[kPresets] = custom; count = kPresets + 1; size_index = kPresets; }
+      }
+      const bool full = options.fullscreen || host::window_is_fullscreen();
+      if (full) ImGui::BeginDisabled();
+      if (ImGui::Combo("Window size", &size_index, items, count)) {
+        if (size_index == 0) options.window_pinned = false;
+        else if (size_index < kPresets) {
+          options.window_pinned = true;
+          options.window_w = kSizes[size_index].w; options.window_h = kSizes[size_index].h;
+          host::window_set_client_size(options.window_w, options.window_h);
+        }
+        changed = true;
+      }
+      if (full) { ImGui::EndDisabled(); ImGui::TextDisabled("Fullscreen uses the whole screen. Stretch above fills it; the other aspects add bars."); }
+      // A window bigger than the desktop cannot be shown with its title bar on screen, so Windows
+      // (and the clamp in window_set_client_size) gives back a smaller one. The player can also just
+      // have dragged the edge since. Either way, say what the window actually is.
+      else if (options.window_pinned && ((int)win_w != options.window_w || (int)win_h != options.window_h))
+        ImGui::TextDisabled("Picked %dx%d, window is %dx%d (dragged, or capped to your desktop).\nFullscreen is never capped.",
+                            options.window_w, options.window_h, (int)win_w, (int)win_h);
+      ImGui::TextDisabled("Aspect ratio and window size only change how the picture is fitted to your screen.\n"
+                          "They cannot desync, and your opponent can be on different ones.");
+    }
+
     // Same numbers Dolphin shows (EFB 640x528 per multiplier). Auto = the smallest multiplier
     // whose 640x480 image covers the window, like Dolphin's "Auto (Window Size)".
-    float win_w = ImGui::GetIO().DisplaySize.x, win_h = ImGui::GetIO().DisplaySize.y;
-    float aspect = options.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f;
+    float aspect = presented_aspect(options, (int)win_w, (int)win_h);
     float vw = win_w, vh = win_w / aspect; if (vh > win_h) { vh = win_h; vw = win_h * aspect; }
     int auto_scale = std::clamp(std::max((int)std::ceil(vw / (480.0f * aspect)), (int)std::ceil(vh / 480.0f)), 1, 8);
     char auto_label[64]; std::snprintf(auto_label, sizeof auto_label, "Auto (%dx = %dx%d for this window)", auto_scale, 640 * auto_scale, 528 * auto_scale);
@@ -617,6 +661,48 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       ImGui::TextDisabled("  Drag an overlay to move it, and its edges to resize, while this panel is open.");
     }
     ImGui::Checkbox("Open this panel at startup", &options.settings_open);
+
+    // ---- Low spec ----
+    // One switch for every setting above that costs frames. Turning it on remembers what the player
+    // had; turning it off puts exactly that back, not a hardcoded default. Both halves are saved, so
+    // the switch and the remembered settings survive a restart. Everything it changes takes effect
+    // immediately except the graphics backend, which needs a new device and so a new launch.
+    {
+      bool low = options.low_spec;
+      if (ImGui::Checkbox("Low spec", &low)) {
+        if (low) {
+          options.low_spec_previous = {options.api, options.fps_cap, options.efb_scale, options.ssaa,
+                                       options.anisotropy, options.effects_level, options.dlss_mode, options.subframe};
+          if (d3d11_available()) options.api = RenderApi::D3D11;   // the better exercised driver path on old integrated GPUs
+          options.fps_cap = 60;
+          options.efb_scale = 1;                  // native 640x528, the floor
+          options.ssaa = 1;                       // no supersampling
+          options.anisotropy = 1;                 // no anisotropic filtering
+          options.effects_level = 2;              // skip sparks, glow and overlay draws
+          options.dlss_mode = 0;                  // NVIDIA and Direct3D 12 only
+          options.subframe = SubFrameMode::Off;   // the sub-frame solver is the largest CPU cost here
+        } else {
+          const auto& p = options.low_spec_previous;
+          options.api = p.api; options.fps_cap = p.fps_cap; options.efb_scale = p.efb_scale;
+          options.ssaa = p.ssaa; options.anisotropy = p.anisotropy; options.effects_level = p.effects_level;
+          options.dlss_mode = p.dlss_mode; options.subframe = p.subframe;
+        }
+        options.low_spec = low;
+        changed = true;
+      }
+      ImGui::SameLine();
+      ImGui::TextDisabled("For integrated graphics and older laptops.");
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Puts internal resolution, anti-aliasing, anisotropic filtering, visual effects,\n"
+                          "sub-frame animation, DLSS and the frame cap at their cheapest settings.\n"
+                          "Every control above keeps working, and turning this off puts back exactly\n"
+                          "what you had before rather than the defaults.");
+      // The backend is the one thing here that cannot change while the game is running.
+      const RenderApi running = state.running_d3d11 ? RenderApi::D3D11 : RenderApi::D3D12;
+      if (options.api != running)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Graphics backend: %s at the next launch. Save settings, then restart.",
+                           options.api == RenderApi::D3D11 ? "Direct3D 11" : "Direct3D 12");
+    }
     ImGui::Separator();
 
     // ---- L-cancel helpers ----
@@ -628,9 +714,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     ImGui::TextUnformatted("L-cancel");
     {
       bool indicator = lcancel::indicator_enabled();
-      if (ImGui::Checkbox("Missed L-cancel indicator", &indicator)) lcancel::set_indicator(indicator);
+      if (ImGui::Checkbox("Flash red on missed L-cancel", &indicator)) lcancel::set_indicator(indicator);
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Flashes on screen when an aerial lands without the landing lag halved.\nDisplay only: it never touches the game, so it is safe in every mode.");
+        ImGui::SetTooltip("Flashes the fighter red when an aerial lands without the landing lag halved.\n"
+                          "Display only: the tint is applied by the renderer and never written into the\n"
+                          "game, so it is safe in every mode. It is skipped while auto L-cancel is doing\n"
+                          "the press for you, since there is then nothing to report.");
       bool automatic = lcancel::automatic_enabled();
       if (ImGui::Checkbox("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
       ImGui::SameLine();
@@ -828,7 +917,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";
       std::ofstream file(temporary);
       file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
-           << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
+           << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen << "\naspect " << (int)options.aspect
+           << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
+           << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
            << "\ndlss " << options.dlss_mode << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
            << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
@@ -836,6 +927,16 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
            << "\ninputoverlayhideborder " << options.input_overlay_hide_border
            << "\neffects " << options.effects_level
+           // Low spec: the switch, and the settings it is holding for the player while it is on.
+           << "\nlowspec " << (options.low_spec ? 1 : 0)
+           << "\nlowspec_prev_backend " << (options.low_spec_previous.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
+           << "\nlowspec_prev_fps " << options.low_spec_previous.fps_cap
+           << "\nlowspec_prev_scale " << options.low_spec_previous.efb_scale
+           << "\nlowspec_prev_ssaa " << options.low_spec_previous.ssaa
+           << "\nlowspec_prev_anisotropy " << options.low_spec_previous.anisotropy
+           << "\nlowspec_prev_effects " << options.low_spec_previous.effects_level
+           << "\nlowspec_prev_dlss " << options.low_spec_previous.dlss_mode
+           << "\nlowspec_prev_subframe " << (options.low_spec_previous.subframe == SubFrameMode::Off ? 0 : options.low_spec_previous.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1)
            << "\nlcancelindicator " << (lcancel::indicator_enabled() ? 1 : 0)
            << "\nautolcancel " << (lcancel::automatic_enabled() ? 1 : 0)
            << "\ndiscord " << (options.discord_presence ? 1 : 0);

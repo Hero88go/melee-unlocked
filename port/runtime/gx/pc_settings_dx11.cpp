@@ -226,6 +226,7 @@ struct PcSettingsUID3D11::Impl {
 PcSettingsUID3D11::PcSettingsUID3D11(void* window, ID3D11Device* device, ID3D11DeviceContext* context, const D3D12Options& options)
     : impl_(std::make_unique<Impl>()) {
   impl_->state.open = options.settings_open;
+  impl_->state.running_d3d11 = true;   // so the panel can say a backend change needs a restart
   impl_->renderer.device = device;
   impl_->renderer.context = context;
   settings_context_create(window, options.settings_open);

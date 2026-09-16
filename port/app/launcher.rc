@@ -1,0 +1,6 @@
+// Launcher resources. The launcher has its own icon (Bailey) rather than the game's MU mark, so the
+// two are easy to tell apart in the taskbar when both are open.
+#define IDI_LAUNCHER   1
+#define IDB_LAUNCHER_BG 2
+IDI_LAUNCHER    ICON   "launcher.ico"
+IDB_LAUNCHER_BG BITMAP "launcher_bg.bmp"

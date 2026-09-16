@@ -95,7 +95,14 @@ My vision for the project is keeping it open source so anyone can view the work 
   sharpening, borderless fullscreen, VSync
 - Direct3D 12 by default, with a Direct3D 11 renderer for machines where D3D12 will not start
   (`--backend d3d11`, or Graphics backend in the PC settings panel; needs a restart, no DLSS)
+- "Low spec" switch in the PC settings panel: one control that puts internal resolution,
+  anti-aliasing, anisotropic filtering, visual effects, sub-frame animation and the frame cap at
+  their cheapest, for integrated graphics and older laptops. Turning it off restores exactly what
+  you had before. It reduces rendering cost only; the simulation runs at the same price either way.
 - Widescreen 16:9 (Slippi's own optional code, online safe)
+- Aspect ratio and window size pickers (`--aspect`, `--window`): Melee's native 73:60 by default,
+  4:3, 16:9, or stretched to fill the window with no black bars. Presentation only, so it cannot
+  desync and the two players in a match may each pick their own.
 - Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
 - PC settings overlay in the game window: F1 or Z + Start
 - Optional launcher with self-update

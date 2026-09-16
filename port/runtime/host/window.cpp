@@ -61,10 +61,17 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
 
 void* window_create(int w, int h, const wchar_t* title, bool visible) {
   HINSTANCE inst = GetModuleHandleW(nullptr);
-  WNDCLASSW wc{};
+  WNDCLASSEXW wc{};
+  wc.cbSize = sizeof wc;
   wc.hInstance = inst; wc.lpfnWndProc = wnd_proc; wc.lpszClassName = L"MeleePortWindow"; wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  // Resource id 1 is the application icon compiled in from app/melee_unlocked.rc. hIcon is the large
+  // one (Alt-Tab, the window menu) and hIconSm the 16px one in the title bar; without these the
+  // window shows Windows' default application icon even though Explorer shows ours.
+  wc.hIcon = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED);
+  wc.hIconSm = (HICON)LoadImageW(inst, MAKEINTRESOURCEW(1), IMAGE_ICON,
+                                 GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED);
   wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);   // black, not white, before the first present
-  RegisterClassW(&wc);
+  RegisterClassExW(&wc);
   ds4_init_defaults();
   // Usage 0x05 is Game Pad, which is what a DualShock calls itself. A Switch Pro Controller calls
   // itself usage 0x04, Joystick, so registering only 0x05 means its reports never arrive at all.
@@ -85,9 +92,13 @@ void* window_create(int w, int h, const wchar_t* title, bool visible) {
   return g_hwnd;
 }
 
+namespace {
+bool g_fullscreen = false;
+}
+
 void window_set_fullscreen(bool enabled) {
   static WINDOWPLACEMENT saved{sizeof(WINDOWPLACEMENT)};
-  static bool fullscreen = false;
+  bool& fullscreen = g_fullscreen;
   if (!g_hwnd || enabled == fullscreen) return;
   if (enabled) {
     GetWindowPlacement(g_hwnd, &saved);
@@ -105,6 +116,52 @@ void window_set_fullscreen(bool enabled) {
     SetWindowPos(g_hwnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW);
   }
   fullscreen = enabled;
+}
+
+bool window_is_fullscreen() { return g_fullscreen; }
+
+namespace {
+std::atomic<uint64_t> g_pending_client_size{0};   // (w << 32) | h, 0 = nothing requested
+
+// SetWindowPos on a window owned by another thread blocks until that thread pumps, so the request
+// is applied from window_pump instead: PeekMessage only ever succeeds on the owning thread.
+void apply_client_size(int w, int h) {
+  if (!g_hwnd || g_fullscreen || w < 320 || h < 240) return;
+  MONITORINFO info{sizeof(info)};
+  if (GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &info)) {
+    // A client area larger than the monitor's work area leaves the title bar off screen with no way
+    // to drag it back, so cap it at what the desktop can actually show.
+    RECT frame{0, 0, w, h};
+    AdjustWindowRect(&frame, WS_OVERLAPPEDWINDOW, FALSE);
+    long max_w = info.rcWork.right - info.rcWork.left - ((frame.right - frame.left) - w);
+    long max_h = info.rcWork.bottom - info.rcWork.top - ((frame.bottom - frame.top) - h);
+    if (w > max_w) w = (int)max_w;
+    if (h > max_h) h = (int)max_h;
+  }
+  if (w == g_client_w && h == g_client_h) return;
+  RECT r{0, 0, w, h};
+  AdjustWindowRect(&r, (DWORD)GetWindowLongPtrW(g_hwnd, GWL_STYLE), FALSE);
+  SetWindowPos(g_hwnd, nullptr, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+  // AdjustWindowRect uses the system DPI, which is not this window's DPI on a scaled display, so
+  // measure what the client area actually became and correct the frame by the difference. Windows
+  // also caps a resizable window at its maximum tracking size, and that cap is not ours to beat:
+  // one correction, not a loop.
+  RECT client{};
+  if (!GetClientRect(g_hwnd, &client)) return;
+  int got_w = client.right, got_h = client.bottom;
+  if (got_w == w && got_h == h) return;
+  RECT frame{};
+  if (!GetWindowRect(g_hwnd, &frame)) return;
+  SetWindowPos(g_hwnd, nullptr, 0, 0, (frame.right - frame.left) + (w - got_w), (frame.bottom - frame.top) + (h - got_h),
+               SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+}
+}  // namespace
+
+// The resolution picker in the PC settings panel. WM_SIZE then reaches the resize callback, which
+// recreates the swapchain buffers and the EFB, so the new size applies without a restart.
+void window_set_client_size(int w, int h) {
+  if (w < 320 || h < 240) return;
+  g_pending_client_size.store(((uint64_t)(uint32_t)w << 32) | (uint32_t)h);
 }
 
 double window_refresh_rate() {
@@ -145,6 +202,8 @@ bool window_take_fullscreen_toggle() { return g_fullscreen_toggle.exchange(false
 void window_destroy() { if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; } }
 
 void window_pump() {
+  if (uint64_t want = g_pending_client_size.exchange(0))
+    apply_client_size((int)(want >> 32), (int)(want & 0xFFFFFFFFu));
   MSG msg;
   while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
     TranslateMessage(&msg);

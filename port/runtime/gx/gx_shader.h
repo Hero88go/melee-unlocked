@@ -44,6 +44,10 @@ struct PSConstants {
   int32_t flags[4];
   float efbscale[4];
   float mvscale[4];   // ndc delta -> pixel motion vector scale (DLSS)
+  // Display-only colour multiply applied to the finished pixel, xyz, with w the blend amount.
+  // (1,1,1,0) for every draw unless a per-player tint is set, and an amount of 0 leaves the pixel
+  // exactly as it was.
+  float tint[4];
 };
 
 struct VSUid {
@@ -74,5 +78,12 @@ struct MotionInfo { float jitter_x = 0, jitter_y = 0; const float* prev_pos = nu
 void build_projection(const DrawCall& dc, float m[16]);   // row-major, as dotted in the vertex shader
 void fill_vs_constants(const DrawCall& dc, VSConstants& out, int efb_scale, const DrawMatrices* override_matrices = nullptr, const MotionInfo* motion = nullptr);
 void fill_ps_constants(const DrawCall& dc, PSConstants& out, int efb_scale);
+
+// Display-only per-player fighter tint (the missed-L-cancel red flash). `amount` 0 disables it.
+// Nothing here reads or writes guest memory: the draw already carries the player slot that rendered
+// it (DrawCall::owner_player), so this only decides a colour. Set from the simulation thread, read
+// by fill_ps_constants on the render thread.
+void set_player_tint(int player, float r, float g, float b, float amount);
+void clear_player_tints();
 
 }  // namespace gx

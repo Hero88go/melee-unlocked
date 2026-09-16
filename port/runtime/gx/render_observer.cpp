@@ -5,6 +5,7 @@
 #include "gx_texture.h"
 #include "authored_pose.h"
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <unordered_map>
 namespace gx {
@@ -26,6 +27,36 @@ struct Reader {
   float real(uint32_t a) { uint32_t v=word(a);float f;std::memcpy(&f,&v,4);return f; }
   bool matrix(uint32_t a, std::array<float,12>& m) { if(!span(a,48))return false; for(int k=0;k<12;++k)m[k]=real(a+4*k); return true; }
 };
+// Which player's fighter is being rendered right now, for the display-only fighter tint.
+//
+// HSD_GObj_804D7814 (0x804D7814) is the GObj whose render_cb is running: baselib/gobj.c's
+// render_gobj saves it, sets it to the object it is about to render, and restores it. So inside
+// HSD_JObjDisp it names the object that owns these draws. A fighter GObj's user_data is its
+// Fighter, the Fighter points back at its own GObj, and player_slots[slot].player_entity[0] is
+// that GObj, which gives the slot. Every one of those is a read; nothing here writes guest memory,
+// which is the whole point of doing the tint here instead of in the fighter the way the Gecko code
+// does. All three checks have to agree, so anything that is not a player's fighter resolves to
+// 0xFF and is never tinted.
+std::atomic<bool> owner_tracking{false};
+uint32_t owner_cache_gobj = 0;
+uint8_t owner_cache_player = 0xFF, current_owner = 0xFF;
+
+uint8_t resolve_owner(uint8_t* memory) {
+  Reader r{memory};   // its own reader: a miss here must not mark the pose capture's reader invalid
+  const uint32_t gobj = r.word(0x804D7814);
+  if (!gobj) return 0xFF;
+  if (gobj == owner_cache_gobj) return owner_cache_player;
+  uint8_t player = 0xFF;
+  const uint32_t fighter = r.word(gobj + 0x2C);          // HSD_GObj::user_data
+  if (fighter && r.word(fighter) == gobj) {              // Fighter::gobj points back at it
+    for (uint32_t slot = 0; slot < 6; ++slot)            // StaticPlayer player_slots[6], stride 0xE90
+      if (r.word(0x80453080 + slot * 0xE90 + 0xB0) == gobj) { player = (uint8_t)slot; break; }
+  }
+  owner_cache_gobj = gobj;
+  owner_cache_player = player;
+  return player;
+}
+
 // game_camera (0x80452C68): quake_frames_left[5] at +0x8C, quake_gobj at +0xA0. Camera_ApplyQuake
 // clears quake_offset once it is applied, so the counters are what still show a shake at draw time.
 bool camera_quaking(Reader& r) {
@@ -161,6 +192,8 @@ RenderObserver::RenderObserver(ppc::Context& cpu, Observe kind, uint8_t* memory)
   if (kind != Observe::DisplayJoint) return;
   saved_joint_ = current_joint; current_joint = cpu.r[3];
   saved_memory_ = current_memory; current_memory = memory;
+  saved_owner_ = current_owner;
+  current_owner = owner_tracking.load(std::memory_order_relaxed) ? resolve_owner(memory) : (uint8_t)0xFF;
   saved_rigid_ = rigid; rigid = false; saved_envelope_ = envelope; envelope = false;
   saved_pose_ = std::move(current_pose); current_pose.reset();
   saved_generation_ = current_generation; saved_pass_ = current_pass; saved_draw_ = current_draw;
@@ -175,7 +208,7 @@ RenderObserver::~RenderObserver() {
   if (kind_ == Observe::AllocateJoint && cpu_.r[3]) joints[cpu_.r[3]] = next_generation++;
   if (kind_ == Observe::DisplayJoint) {
     current_joint = saved_joint_; current_memory = saved_memory_; rigid = saved_rigid_; envelope = saved_envelope_; current_pose = std::move(saved_pose_);
-    current_generation = saved_generation_; current_pass = saved_pass_; current_draw = saved_draw_;
+    current_generation = saved_generation_; current_pass = saved_pass_; current_draw = saved_draw_; current_owner = saved_owner_;
   }
 }
 uint64_t observed_draw_identity(uint64_t fallback, uint64_t& generation) {
@@ -185,6 +218,8 @@ uint64_t observed_draw_identity(uint64_t fallback, uint64_t& generation) {
   return hash_bytes(key, sizeof key);
 }
 void set_authored_capture(bool enabled) { authored_enabled = enabled; }
+void set_owner_tracking(bool enabled) { owner_tracking.store(enabled, std::memory_order_relaxed); }
+uint8_t observed_owner() { return current_owner; }
 std::shared_ptr<const AuthoredPose> capture_authored_pose() {
   if(!authored_enabled||!current_generation||!current_memory||!(rigid||envelope)){ ++authored_stats().capture[1]; return {}; }
   Reader r{current_memory};
@@ -203,5 +238,7 @@ std::shared_ptr<const AuthoredPose> capture_authored_pose() {
   pose->quake = pose->has_view && camera_quaking(r);
   ++authored_stats().captured; current_pose=pose; return pose;
 }
-void finish_observed_frame() { passes.clear(); chains_this_frame.clear(); }
+// The one-entry owner cache is keyed on a GObj address, and an address can be freed and handed to
+// a different object, so it only lives for one frame.
+void finish_observed_frame() { passes.clear(); chains_this_frame.clear(); owner_cache_gobj = 0; owner_cache_player = 0xFF; }
 }

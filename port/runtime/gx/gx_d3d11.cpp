@@ -582,7 +582,9 @@ int D3D11Backend::pick_scale() const {
   return std::clamp(s * ssaa, 1, max_scale);
 }
 
-float D3D11Backend::output_aspect() const { return opts_.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f; }
+// Melee's camera asks for a 73:60 frustum, which the Slippi widescreen code widens to exactly
+// 16:9. See presented_aspect in gx_d3d12.h for the evidence and the player's override.
+float D3D11Backend::output_aspect() const { return presented_aspect(opts_, client_w_, client_h_); }
 
 void D3D11Backend::output_size(int* vw, int* vh) const {
   float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
@@ -1292,7 +1294,11 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (opts_.effects_level > 0 && dc.xf_regs[0x26] == 0 && (dc.bp.blendmode() & 1)) {
       const bool writes_depth = (dc.bp.zmode() & 0x10) != 0;
       const bool additive = ((dc.bp.blendmode() >> 5) & 7) == 1;   // destination factor ONE: glow, sparks, flashes
-      if (!writes_depth && (additive || opts_.effects_level >= 2)) continue;   // plan.valid stays false
+      // Level 2 takes draws that neither write nor test depth: those cannot be scene geometry.
+      // Taking every blended draw that does not write depth removed the whole world and left a
+      // blank screen, because in Melee most of the world is blended and depth-write-disabled.
+      const bool overlay = !writes_depth && (dc.bp.zmode() & 1) == 0;
+      if ((additive && !writes_depth) || (opts_.effects_level >= 2 && overlay)) continue;   // plan.valid stays false
     }
     uint32_t n = dc.vertex_count;
     const uint32_t first = (uint32_t)index_scratch_.size();
