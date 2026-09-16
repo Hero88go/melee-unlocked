@@ -32,14 +32,14 @@ std::atomic<bool> g_ui_capture{false};
 std::mutex g_ui_pad_mutex;
 PadState g_ui_pad{};
 bool g_ui_gamecube = false;
-void ds4_input(HRAWINPUT raw);
+void raw_input(HRAWINPUT raw);
 void ds4_init_defaults();
 
 LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (g_on_message && g_on_message(h, m, w, l)) return 1;
   switch (m) {
     case WM_CLOSE: g_closed = true; request_exit(0); return 0;
-    case WM_INPUT: ds4_input((HRAWINPUT)l); return 0;
+    case WM_INPUT: raw_input((HRAWINPUT)l); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     case WM_SYSKEYDOWN:
       if (w == VK_RETURN && (l & (1 << 29)) && !(l & (1 << 30))) { g_fullscreen_toggle.store(true); return 0; }   // Alt+Enter, first press only
@@ -66,18 +66,19 @@ void* window_create(int w, int h, const wchar_t* title, bool visible) {
   wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);   // black, not white, before the first present
   RegisterClassW(&wc);
   ds4_init_defaults();
-  RAWINPUTDEVICE rid{};
-  rid.usUsagePage = 0x01;
-  rid.usUsage = 0x05;
-  rid.dwFlags = RIDEV_INPUTSINK;
-  rid.hwndTarget = g_hwnd;
+  // Usage 0x05 is Game Pad, which is what a DualShock calls itself. A Switch Pro Controller calls
+  // itself usage 0x04, Joystick, so registering only 0x05 means its reports never arrive at all.
+  // Anything else on 0x04 is filtered out by device id below, as it already was on 0x05.
+  RAWINPUTDEVICE rid[2]{};
+  rid[0].usUsagePage = 0x01; rid[0].usUsage = 0x05; rid[0].dwFlags = RIDEV_INPUTSINK;
+  rid[1].usUsagePage = 0x01; rid[1].usUsage = 0x04; rid[1].dwFlags = RIDEV_INPUTSINK;
   RECT r{0, 0, w, h};
   AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
   g_hwnd = CreateWindowExW(0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
                            r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
   if (!g_hwnd) die("cannot create native window");
-  rid.hwndTarget = g_hwnd;
-  RegisterRawInputDevices(&rid, 1, sizeof rid);
+  rid[0].hwndTarget = g_hwnd; rid[1].hwndTarget = g_hwnd;
+  RegisterRawInputDevices(rid, 2, sizeof rid[0]);
   g_closed = false;
   g_client_w = w; g_client_h = h;
   if (visible) ShowWindow(g_hwnd, SW_SHOW);
@@ -165,6 +166,10 @@ KeyBindings g_key_bindings = default_key_bindings();
 std::array<PadBindings, 4> g_pad_bindings = default_pad_bindings();
 std::array<GCBindings, 4> g_gc_bindings = default_gc_bindings();
 std::array<PadBindings, 4> g_ds4_bindings = {};
+// Unlike the DS4 table above, this one takes its defaults here rather than in window_create, so a
+// binding read out of port-settings.ini (which is loaded before the window exists) is not written
+// over by the defaults a moment later.
+std::array<PadBindings, 4> g_swpro_bindings = default_swpro_bindings();
 std::array<PortSource, 4> g_port_sources = default_port_sources();
 // The last state the game actually read, for the on-screen controller overlay. Taken here rather
 // than polled again by the renderer, so the overlay shows what the game saw and polling the devices
@@ -178,6 +183,7 @@ bool g_capture_key_baseline[256]{};
 unsigned short g_capture_pad_baseline[4]{};
 PadState g_capture_gc_baseline[4]{};
 uint16_t g_capture_ds4_baseline[4]{};
+uint16_t g_capture_swpro_baseline[4]{};
 HANDLE g_ds4_devices[4]{};
 uint16_t g_ds4_buttons[4]{};
 PadState g_ds4_pads[4]{};
@@ -219,13 +225,7 @@ bool ds4_device(HANDLE device) {
   return info.hid.dwVendorId == 0x054C && (info.hid.dwProductId == 0x05C4 || info.hid.dwProductId == 0x09CC);
 }
 
-void ds4_input(HRAWINPUT raw) {
-  UINT size = 0;
-  if (GetRawInputData(raw, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)) == (UINT)-1 || !size) return;
-  std::vector<uint8_t> bytes(size);
-  if (GetRawInputData(raw, RID_INPUT, bytes.data(), &size, sizeof(RAWINPUTHEADER)) != size) return;
-  RAWINPUT* input = reinterpret_cast<RAWINPUT*>(bytes.data());
-  if (input->header.dwType != RIM_TYPEHID || !ds4_device(input->header.hDevice)) return;
+void ds4_report(RAWINPUT* input) {
   int slot = ds4_slot(input->header.hDevice);
   if (slot < 0 || !input->data.hid.dwSizeHid || !input->data.hid.dwCount) return;
   const uint8_t* report = input->data.hid.bRawData;
@@ -254,18 +254,44 @@ void ds4_input(HRAWINPUT raw) {
   if (report[offset + 7] > 30) { buttons |= DS4_L2; pad.trig_l = report[offset + 7]; }
   std::lock_guard<std::mutex> lock(g_ds4_mutex); g_ds4_buttons[slot] = buttons; g_ds4_pads[slot] = pad;
 }
+
+// One WM_INPUT report, handed to whichever device path recognises it. Devices we do not know about
+// (an Xbox pad, which is read through XInput instead, or a flight stick on usage 0x04) fall out of
+// both and cost only the fetch.
+void raw_input(HRAWINPUT raw) {
+  UINT size = 0;
+  if (GetRawInputData(raw, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)) == (UINT)-1 || !size) return;
+  std::vector<uint8_t> bytes(size);
+  if (GetRawInputData(raw, RID_INPUT, bytes.data(), &size, sizeof(RAWINPUTHEADER)) != size) return;
+  RAWINPUT* input = reinterpret_cast<RAWINPUT*>(bytes.data());
+  if (input->header.dwType != RIM_TYPEHID) return;
+  if (ds4_device(input->header.hDevice)) { ds4_report(input); return; }
+  switchpro_raw_input(input->header.hDevice, input->data.hid.bRawData,
+                      input->data.hid.dwSizeHid, input->data.hid.dwCount);
+}
 }  // namespace
 
 void input_begin_capture() {
   { std::lock_guard<std::mutex> lock(g_keys_mutex); std::memcpy(g_capture_key_baseline, g_keys, sizeof g_keys); }
+  // gcadapter_poll fills four pads. It used to be handed the address of a single PadState, once per
+  // iteration, so with an adapter connected it wrote three pads past the end of a stack variable
+  // every time the rebinding UI opened, and every port ended up with port 1's baseline. Poll once,
+  // into four.
+  PadState gc[4]{};
+  for (int i = 0; i < 4; ++i) gc[i].err = -1;
+  gcadapter_poll(gc);
   for (int idx = 0; idx < 4; ++idx) {
     XINPUT_STATE xs{};
     g_capture_pad_baseline[idx] = (XInputGetState(idx, &xs) == ERROR_SUCCESS) ? xs.Gamepad.wButtons : 0;
-    PadState gc{}; gc.err = -1;
-    gcadapter_poll(&gc); // poll once to prime baseline for any GC adapter port if present
-    g_capture_gc_baseline[idx] = gc;
+    g_capture_gc_baseline[idx] = gc[idx];
   }
   { std::lock_guard<std::mutex> lock(g_ds4_mutex); for (int idx = 0; idx < 4; ++idx) g_capture_ds4_baseline[idx] = g_ds4_buttons[idx]; }
+  {
+    PadState swpro[4]; for (auto& s : swpro) { s = {}; s.err = -1; }
+    uint16_t buttons[4]{};
+    switchpro_poll(swpro, buttons);
+    for (int idx = 0; idx < 4; ++idx) g_capture_swpro_baseline[idx] = buttons[idx];
+  }
   g_capturing.store(true);
 }
 
@@ -314,11 +340,26 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
       }
     }
   }
+  {
+    PadState swpro[4]; for (auto& s : swpro) { s = {}; s.err = -1; }
+    uint16_t buttons[4]{};
+    uint32_t mask = switchpro_poll(swpro, buttons);
+    for (int idx = 0; idx < 4; ++idx) {
+      if (!(mask & (1u << idx))) continue;
+      uint16_t newly = buttons[idx] & ~g_capture_swpro_baseline[idx];
+      if (newly) {
+        uint16_t lowest = newly & (uint16_t)(~(newly - 1));
+        g_capturing.store(false); device = CaptureDevice::SwitchPro; value = lowest; device_index = idx; return true;
+      }
+    }
+  }
   return false;
 }
 
 namespace {
-struct ScriptEntry { uint32_t frame; uint16_t buttons; int8_t sx, sy, cx, cy; int port;  bool relative = false; };
+// tl/tr are the analog triggers. Melee shields from the analog value, not the digital L/R bit, so a
+// script that only pressed L never actually shielded and shield behaviour could not be tested at all.
+struct ScriptEntry { uint32_t frame; uint16_t buttons; int8_t sx, sy, cx, cy; uint8_t tl, tr; int port;  bool relative = false; };
 std::vector<ScriptEntry> g_script;
 uint32_t g_script_ports = 1;
 // `@match` makes later entries relative to the retrace at which an online match reached frame 1
@@ -326,6 +367,22 @@ uint32_t g_script_ports = 1;
 static bool g_script_relative_section = false;
 static uint32_t g_script_loop = 0;
 static std::atomic<uint32_t> g_match_start_retrace{0};
+
+// Turns a Switch controller's raw SWPRO_* bits into GameCube buttons through slot `idx`'s
+// remappable table, and returns the same thing as BindAction bit indices for the settings panel.
+// The L/R shoulders are digital on this pad, so a press bottoms the analog trigger out the way a
+// digital press does on hardware: Melee shields from the trigger value, not from the L/R bit.
+uint16_t swpro_apply_bindings(int idx, uint16_t buttons, PadState& pad) {
+  uint16_t actions = 0;
+  for (int i = 0; i < (int)BindAction::Count; ++i) {
+    if (!(g_swpro_bindings[idx].mask[i] & buttons)) continue;
+    pad.button |= kActionPadBit[i];
+    actions |= (uint16_t)(1u << i);
+  }
+  if (pad.button & kActionPadBit[(size_t)BindAction::L]) pad.trig_l = 255;
+  if (pad.button & kActionPadBit[(size_t)BindAction::R]) pad.trig_r = 255;
+  return actions;
+}
 }  // namespace
 void input_mark_match_start() { g_match_start_retrace.store(retrace_count()); }
 
@@ -352,6 +409,8 @@ bool input_load_script(const char* path) {
       else if (!strcmp(tok, "X")) e.buttons |= PAD_X; else if (!strcmp(tok, "Y")) e.buttons |= PAD_Y;
       else if (!strcmp(tok, "Z")) e.buttons |= PAD_Z; else if (!strcmp(tok, "L")) e.buttons |= PAD_L;
       else if (!strcmp(tok, "R")) e.buttons |= PAD_R; else if (!strcmp(tok, "START")) e.buttons |= PAD_START;
+      else if (!strncmp(tok, "l=", 2)) e.tl = (uint8_t)std::min(255, std::max(0, atoi(tok + 2)));
+      else if (!strncmp(tok, "r=", 2)) e.tr = (uint8_t)std::min(255, std::max(0, atoi(tok + 2)));
       else if (!strcmp(tok, "DU")) e.buttons |= PAD_UP; else if (!strcmp(tok, "DD")) e.buttons |= PAD_DOWN;
       else if (!strcmp(tok, "DL")) e.buttons |= PAD_LEFT; else if (!strcmp(tok, "DR")) e.buttons |= PAD_RIGHT;
       else if (!strncmp(tok, "sx=", 3)) e.sx = (int8_t)atoi(tok + 3); else if (!strncmp(tok, "sy=", 3)) e.sy = (int8_t)atoi(tok + 3);
@@ -389,8 +448,19 @@ void input_poll(PadState out[4]) {
         if (e.relative) { if (in_match && e.frame <= rel) cur = &e; }
         else if (!in_match && e.frame <= frame) cur = &e;
       }
-      if (cur) { PadState& q = out[port]; q.button = cur->buttons; q.stick_x = cur->sx; q.stick_y = cur->sy; q.sub_x = cur->cx; q.sub_y = cur->cy; }
+      if (cur) {
+        PadState& q = out[port];
+        q.button = cur->buttons; q.stick_x = cur->sx; q.stick_y = cur->sy; q.sub_x = cur->cx; q.sub_y = cur->cy;
+        // A digital L/R press on hardware bottoms the trigger out, so mirror that when the script
+        // did not ask for a specific analog value (light shield needs the explicit l=/r= token).
+        q.trig_l = cur->tl ? cur->tl : (uint8_t)((cur->buttons & PAD_L) ? 255 : 0);
+        q.trig_r = cur->tr ? cur->tr : (uint8_t)((cur->buttons & PAD_R) ? 255 : 0);
+      }
     }
+    // Scripted runs took this return before the overlay's copy was made below, so the controller
+    // overlay stayed blank whenever a script was driving. It is the only way to see the overlay
+    // without a controller in hand, so keep it fed here too.
+    { std::lock_guard<std::mutex> lock(g_last_pads_mutex); for (int p = 0; p < 4; ++p) g_last_pads[p] = out[p]; }
     return;
   }
   // Poll every physical source unconditionally, then route each in-game port to
@@ -464,6 +534,20 @@ void input_poll(PadState out[4]) {
     }
   }
 
+  PadState swpro[4];
+  bool swpro_connected[4]{};
+  {
+    for (auto& s : swpro) { s = {}; s.err = -1; }
+    uint16_t buttons[4]{};
+    uint32_t swpro_mask = switchpro_poll(swpro, buttons);
+    for (int idx = 0; idx < 4; ++idx) {
+      if (!(swpro_mask & (1u << idx))) { swpro[idx] = {}; swpro[idx].err = -1; continue; }
+      swpro_connected[idx] = true;
+      debug.swpro_connected[idx] = true;
+      debug.swpro_actions[idx] = swpro_apply_bindings(idx, buttons[idx], swpro[idx]);
+    }
+  }
+
   for (int idx = 0; idx < 4; ++idx)
     if (gc_mask & (1u << idx))
       for (int i = 0; i < (int)BindAction::Count; ++i)
@@ -482,6 +566,7 @@ void input_poll(PadState out[4]) {
     const PadState* pad = nullptr;
     for (int i = 0; i < 4 && !pad; ++i) if (xin_connected[i] && !routed(DeviceKind::XInputPad, i)) pad = &xin[i];
     for (int i = 0; i < 4 && !pad; ++i) if (ds4_connected[i] && !routed(DeviceKind::DS4Pad, i)) pad = &ds4[i];
+    for (int i = 0; i < 4 && !pad; ++i) if (swpro_connected[i] && !routed(DeviceKind::SwitchPro, i)) pad = &swpro[i];
     // The keyboard keeps working; the pad takes over whenever it is actually being used.
     if (pad && (pad->button || pad->stick_x || pad->stick_y || pad->sub_x || pad->sub_y ||
                 pad->trig_l > 20 || pad->trig_r > 20)) result = *pad;
@@ -496,6 +581,9 @@ void input_poll(PadState out[4]) {
         break;
       case DeviceKind::DS4Pad:
         if (src.index >= 0 && src.index < 4 && ds4_connected[src.index]) out[port] = ds4[src.index];
+        break;
+      case DeviceKind::SwitchPro:
+        if (src.index >= 0 && src.index < 4 && swpro_connected[src.index]) out[port] = swpro[src.index];
         break;
       case DeviceKind::GCAdapter:
         if (src.index >= 0 && src.index < 4 && (gc_mask & (1u << src.index))) out[port] = gc[src.index];
@@ -579,6 +667,18 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     }
   }
 
+  PadState swpro[4];
+  {
+    for (auto& s : swpro) { s = {}; s.err = -1; }
+    uint16_t buttons[4]{};
+    uint32_t swpro_mask = switchpro_poll(swpro, buttons);
+    for (int idx = 0; idx < 4; ++idx) {
+      if (!(swpro_mask & (1u << idx))) { swpro[idx] = {}; swpro[idx].err = -1; continue; }
+      snapshot.swpro_connected[idx] = true;
+      snapshot.swpro_actions[idx] = swpro_apply_bindings(idx, buttons[idx], swpro[idx]);
+    }
+  }
+
   for (int idx = 0; idx < 4; ++idx) {
     snapshot.gc_actions[idx] = 0;
     if (!(gc_mask & (1u << idx))) continue;
@@ -594,6 +694,9 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
         break;
       case DeviceKind::DS4Pad:
         if (src.index >= 0 && src.index < 4 && snapshot.ds4_connected[src.index]) snapshot.ports[port] = ds4[src.index];
+        break;
+      case DeviceKind::SwitchPro:
+        if (src.index >= 0 && src.index < 4 && snapshot.swpro_connected[src.index]) snapshot.ports[port] = swpro[src.index];
         break;
       case DeviceKind::GCAdapter:
         if (src.index >= 0 && src.index < 4 && (gc_mask & (1u << src.index))) snapshot.ports[port] = gc[src.index];
