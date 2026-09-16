@@ -10,7 +10,12 @@ namespace gx {
 // in-betweens of the last two game frames (one frame of display delay, no overshoot).
 enum class SubFrameMode { Off, Extrapolate, Interpolate, Authored, AuthoredInterpolate };
 
+// Which graphics API renders the game. D3D12 is the default and the only one with DLSS; D3D11 is
+// for machines whose driver cannot start D3D12. Switching takes effect at the next launch.
+enum class RenderApi { D3D12, D3D11 };
+
 struct D3D12Options {
+  RenderApi api = RenderApi::D3D12;   // --backend d3d11|d3d12, or "backend" in port-settings.ini
   // Presentation timeline (threaded renderer only). fps_cap 0 = uncapped. With a SubFrameMode other
   // than Off the renderer presents new sub-frames between 60 Hz simulation frames.
   double fps_cap = 60; // -1 follows the active monitor

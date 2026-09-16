@@ -91,25 +91,38 @@ def main():
     orig_start, orig_post, orig_pre = parse_slp(args.replay)
     new_start, new_post, new_pre = parse_slp(recorded[-1])
     print(f"original frames {min(orig_post)}..{max(orig_post)} ({len(orig_post)}), recorded {min(new_post)}..{max(new_post)} ({len(new_post)})")
-    frames = sorted(set(orig_post) & set(new_post))
+    # Every reference frame has to be accounted for. Comparing the intersection let a recording that
+    # stopped early pass on its overlapping prefix alone, which is worthless as a determinism oracle.
+    # Shield health is compared too: a shield that differs is exactly the kind of divergence the
+    # shield-drop desync reports describe.
+    fields = ("state", "x", "y", "facing", "percent", "shield", "stocks", "char")
     mismatches = 0
     first = None
-    for f in frames:
-        for key, a in orig_post[f].items():
-            b = new_post[f].get(key)
-            if b is None:
-                mismatches += 1; first = first or (f, key, "missing in recording"); continue
-            for field in ("state", "x", "y", "facing", "percent", "stocks", "char"):
+    compared = 0
+    for f in sorted(orig_post):
+        actual = new_post.get(f)
+        if actual is None:
+            mismatches += len(orig_post[f])
+            first = first or (f, None, "frame missing from the recording")
+            continue
+        for key in sorted(orig_post[f].keys() | actual.keys()):
+            a = orig_post[f].get(key)
+            b = actual.get(key)
+            if a is None or b is None:
+                mismatches += 1
+                first = first or (f, key, "player/follower present in one recording only")
+                continue
+            compared += 1
+            for field in fields:
                 if a[field] != b[field]:
                     mismatches += 1
                     if first is None:
                         first = (f, key, f"{field}: original {a[field]} vs port {b[field]}")
                     break
-    compared = sum(len(orig_post[f]) for f in frames)
-    print(f"{compared} player-frames compared over {len(frames)} frames; {mismatches} mismatches")
+    print(f"{compared} player-frames compared over {len(orig_post)} reference frames; {mismatches} mismatches")
     if first:
         print("first divergence: frame", first[0], "player/follower", first[1], first[2])
-    return 0 if mismatches == 0 and frames else 1
+    return 0 if mismatches == 0 and orig_post else 1
 
 
 if __name__ == "__main__":

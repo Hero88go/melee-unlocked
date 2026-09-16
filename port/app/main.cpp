@@ -14,6 +14,7 @@
 #include "audio.h"
 #include "functions.h"
 #include "guest_symbols.h"
+#include "gx_backend.h"
 #include "gx_core.h"
 #include "gx_d3d12.h"
 #include "pc_settings.h"
@@ -42,7 +43,7 @@ extern const size_t name_table_count;
 static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
-              "           [--fullscreen] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--volume 0-100] [--audio-dump out.wav]\n"
+              "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
 }
 
@@ -289,14 +290,16 @@ static int melee_main(int argc, char** argv) {
   o.no_gc_adapter = automated;   // a hidden test run must not take the adapter from a game the player is running
   SetUnhandledExceptionFilter(crash_filter);
   if (!automated) {
+    // Interpolate by default: it never overshoots a stop, so menus, cursors and stage geometry stay
+    // on one timeline. Predict avoids its one tick of delay but can overshoot and snap back.
+    // Set before the settings file is read, so a saved "subframe" (Off in the Low spec preset) wins
+    // over this default and an explicit --frame-mode, parsed below, still wins over both.
+    if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::AuthoredInterpolate;
     gx::load_pc_settings(gfx, o.volume);
     // Opt-in, and only ever from a saved setting: an automated or headless run never gets here, so
     // it can never publish. With the setting off no thread is started and no pipe is opened.
     if (gfx.discord_presence) { host::discord::configure(gfx.discord_app_id); host::discord::enable(true); }
     threaded = true;
-    // Interpolate by default: it never overshoots a stop, so menus, cursors and stage geometry stay
-    // on one timeline. Predict avoids its one tick of delay but can overshoot and snap back.
-    if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::AuthoredInterpolate;
   }
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
@@ -333,6 +336,10 @@ static int melee_main(int argc, char** argv) {
     // scripted run can screenshot an overlay.
     else if (a == "--pc-settings") gfx.pc_settings = true;
     else if (a == "--fullscreen") gfx.fullscreen = true;
+    else if (a == "--backend") { std::string v = next();
+      if (v == "d3d11" || v == "dx11" || v == "11") gfx.api = gx::RenderApi::D3D11;
+      else if (v == "d3d12" || v == "dx12" || v == "12") gfx.api = gx::RenderApi::D3D12;
+      else { std::fprintf(stderr, "--backend d3d12|d3d11\n"); return 2; } }
     else if (a == "--dlss") { std::string v = next(); gfx.dlss_mode = v == "off" ? 0 : v == "dlaa" ? 1 : v == "quality" ? 2 : v == "balanced" ? 3 : v == "performance" ? 4 : v == "ultra" ? 5 : -1;
       if (gfx.dlss_mode < 0) { std::fprintf(stderr, "--dlss off|dlaa|quality|balanced|performance|ultra\n"); return 2; } }
     else if (a == "--dlss-jitter-sign") gfx.dlss_jitter_sign = (float)std::atof(next());
@@ -406,8 +413,8 @@ static int melee_main(int argc, char** argv) {
   } else if (!headless) {
     void* hwnd = host::window_create(gfx.window_w, gfx.window_h, L"Melee Unlocked (development)", !hidden);
     if (gfx.fullscreen) host::window_set_fullscreen(true);
-    backend.reset(gx::create_d3d12_backend(hwnd, gfx.window_w, gfx.window_h, gfx));
-    host::window_set_resize_callback([renderer = backend.get()](int w, int h) { gx::d3d12_resize(renderer, w, h); });
+    backend.reset(gx::create_render_backend(hwnd, gfx.window_w, gfx.window_h, gfx));
+    host::window_set_resize_callback([renderer = backend.get()](int w, int h) { gx::render_resize(renderer, w, h); });
     host::g_has_window = true;
   }
   gx::set_authored_capture(gfx.subframe == gx::SubFrameMode::Authored || gfx.subframe == gx::SubFrameMode::AuthoredInterpolate);

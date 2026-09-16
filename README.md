@@ -93,6 +93,8 @@ My vision for the project is keeping it open source so anyone can view the work 
 - GameCube adapter (WUP-028 with the WinUSB driver), keyboard fallback
 - DLSS / DLAA (NVIDIA Streamline), internal resolution up to 8x, SSAA, anisotropic filtering,
   sharpening, borderless fullscreen, VSync
+- Direct3D 12 by default, with a Direct3D 11 renderer for machines where D3D12 will not start
+  (`--backend d3d11`, or Graphics backend in the PC settings panel; needs a restart, no DLSS)
 - Widescreen 16:9 (Slippi's own optional code, online safe)
 - Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
 - PC settings overlay in the game window: F1 or Z + Start
@@ -126,8 +128,8 @@ the bug happened in a match.
 `port/recomp/` is the recompiler (Python): it reads the DOL and the Slippi code tables
 (`port/slippi_sys/`, vendored from Slippi) and writes `port/generated/` (not committed).
 `port/runtime/` is the host runtime: PowerPC helpers, HLE of the GameCube SDK (OS, VI, PAD, DVD,
-AI/AX audio, CARD, EXI), the Slippi EXI device, netcode, game reporting, the D3D12 renderer and
-the sub-frame solver. `port/app/launcher.cpp` is the optional launcher. `tools/` holds validation,
+AI/AX audio, CARD, EXI), the Slippi EXI device, netcode, game reporting, the D3D12 and D3D11
+renderers and the sub-frame solver. `port/app/launcher.cpp` is the optional launcher. `tools/` holds validation,
 benchmarking and packaging scripts. See `PORT_COMPLETION.md` for the technical state and
 evidence, `HANDOFF_FABLE_3.md` for the roadmap.
 

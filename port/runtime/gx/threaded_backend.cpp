@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "threaded_backend.h"
 #include "frame_queue.h"
+#include "gx_backend.h"
 #include "gx_d3d12.h"
 #include "host.h"
 #include "subframe.h"
@@ -61,7 +62,7 @@ class ThreadedBackend final : public Backend {
     double build_seconds = 0, submit_seconds = 0; uint64_t cost_presented = 0;   // presented phases: [0,.25) [.25,.5) [.5,.75) [.75,1) exactly 1
     for (;;) {
       host::window_pump();
-      const auto& live_options = d3d12_options(renderer);
+      const auto& live_options = render_options(renderer);
       if (live_options.fps_cap >= 0) cap_period = live_options.fps_cap > 0 ? 1.0/live_options.fps_cap : 0;
       if (live_options.fps_cap < 0 && host::now_seconds() >= refresh_check) {
         cap_period = 1.0 / host::window_refresh_rate();
@@ -192,7 +193,7 @@ class ThreadedBackend final : public Backend {
           if (subframes) host::log("pair rejection: missing %u, HUD %u, geometry %u, state %u (last BP %02X), projection %u, authored %u, camera-only %u, vertex-blended %u | phases <.25:%u <.5:%u <.75:%u <1:%u =1:%u",
                                    s.missing, s.hud, s.geometry, s.state, s.state_register, s.projection, s.authored, s.carried, s.vertex_blended, phase_bins[0], phase_bins[1], phase_bins[2], phase_bins[3], phase_bins[4]);
           if (subframes) std::memset(phase_bins, 0, sizeof phase_bins);
-          host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), d3d12_profile_line().c_str());
+          host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), render_profile_line().c_str());
           build_seconds = submit_seconds = 0; cost_presented = 0;
           if (authored) {
             const AuthoredStats& a = authored_stats();
@@ -221,8 +222,8 @@ class ThreadedBackend final : public Backend {
         // The swapchain must match the window as it is now (fullscreen covers the monitor, not window_w x window_h).
         int client_w = options.window_w, client_h = options.window_h;
         host::window_client_size(&client_w, &client_h);
-        std::unique_ptr<Backend> renderer(create_d3d12_backend(window, std::max(client_w, 1), std::max(client_h, 1), options));
-        host::window_set_resize_callback([&renderer](int w, int h) { d3d12_resize(renderer.get(), w, h); });
+        std::unique_ptr<Backend> renderer(create_render_backend(window, std::max(client_w, 1), std::max(client_h, 1), options));
+        host::window_set_resize_callback([&renderer](int w, int h) { render_resize(renderer.get(), w, h); });
         init.set_value(); started = true;
         present_loop(renderer.get());
         host::window_set_resize_callback({});

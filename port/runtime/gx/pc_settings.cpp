@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "pc_settings.h"
+#include "pc_settings_shared.h"
+#include "gx_backend.h"
 #include "jukebox.h"
 #include "window.h"
 #include "audio.h"
@@ -279,21 +281,25 @@ static void draw_lcancel_overlays() {
   const lcancel::Flash flash = lcancel::flash();
   if (flash.active) {
     const float a = flash.alpha;
-    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.14f),
+    // Below the match clock, so the two never overlap.
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.26f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowBgAlpha(0.45f * a);
+    ImGui::SetNextWindowBgAlpha(0.55f * a);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18, 10));
     ImGui::Begin("LCancelFlash", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                               ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
-    ImGui::SetWindowFontScale(1.6f);
+    ImGui::SetWindowFontScale(2.4f);
     ImGui::TextColored(ImVec4(1.0f, 0.22f, 0.18f, a), "NO L-CANCEL");
-    ImGui::SetWindowFontScale(1.0f);
+    ImGui::SetWindowFontScale(1.3f);
     // frames_since_press is the fighter's own counter: 255 means no trigger press at all since the
     // last reset, anything else is how many frames early the press was.
     if (flash.frames_since_press < 255)
-      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.5f, a), "pressed %d frames too early (P%d)", flash.frames_since_press, flash.port);
+      ImGui::TextColored(ImVec4(1.0f, 0.68f, 0.6f, a), "pressed %d frames too early (P%d)", flash.frames_since_press, flash.port);
     else
-      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.5f, a), "no trigger press (P%d)", flash.port);
+      ImGui::TextColored(ImVec4(1.0f, 0.68f, 0.6f, a), "no trigger press (P%d)", flash.port);
+    ImGui::SetWindowFontScale(1.0f);
     ImGui::End();
+    ImGui::PopStyleVar();
   }
 
   // Character select of a matchmaking mode, with the setting on: say plainly that it is off here.
@@ -343,6 +349,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "discord") options.discord_presence = value == "1";
       // A Discord application id is a snowflake; anything else would only be rejected by Discord.
       else if (key == "discord_app_id") { if (value.find_first_not_of("0123456789") == std::string::npos && value.size() <= 24) options.discord_app_id = value; }
+      else if (key == "backend") options.api = value == "d3d11" ? RenderApi::D3D11 : RenderApi::D3D12;
       else if (key == "volume") volume = std::clamp(std::stoi(value), 0, 100);
       else if (key.rfind("key_", 0) == 0) {
         for (int i = 0; i < (int)host::BindAction::Count; ++i)
@@ -404,32 +411,40 @@ void load_pc_settings(D3D12Options& options, int& volume) {
   }
 }
 
+// The ImGui context and the Win32 platform backend are the same for every renderer backend.
+void settings_context_create(void* window, bool open_at_startup) {
+  (void)open_at_startup;
+  IMGUI_CHECKVERSION(); ImGui::CreateContext();
+  auto& io = ImGui::GetIO(); io.IniFilename = nullptr;
+  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+  ImGui::StyleColorsDark(); ImGui::GetStyle().ScaleAllSizes(1.25f);
+  ImGui_ImplWin32_Init(window);
+  host::window_set_message_callback([](void* w, uint32_t m, uintptr_t a, intptr_t b) {
+    return ImGui_ImplWin32_WndProcHandler((HWND)w, m, a, b) != 0;
+  });
+}
+
+void settings_context_destroy() {
+  host::window_set_message_callback({}); host::window_input_capture(false);
+  ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
+}
+
 struct PcSettingsUI::Impl {
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
   std::array<bool, 64> used{};
   UINT stride = 0;
-  bool open = false, saved = false;
-  int volume = 0;
-  std::array<float, 180> intervals{};
-  unsigned cursor = 0;
-  int rebind_action = -1;                                         // index into BindAction while a "press a button" capture is in progress, -1 = none
-  host::CaptureDevice rebind_kind = host::CaptureDevice::None;     // which device tab the in-progress capture belongs to
-  int rebind_index = 0;                                            // XInput pad / GC adapter port index for that tab (unused for Keyboard)
+  SettingsState state;
 };
 
 PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const D3D12Options& options)
     : impl_(std::make_unique<Impl>()) {
   auto& state = *impl_;
-  state.open = options.settings_open;
-  IMGUI_CHECKVERSION(); ImGui::CreateContext();
-  auto& io = ImGui::GetIO(); io.IniFilename = nullptr;
-  io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
-  ImGui::StyleColorsDark(); ImGui::GetStyle().ScaleAllSizes(1.25f);
+  state.state.open = options.settings_open;
+  settings_context_create(window, options.settings_open);
   D3D12_DESCRIPTOR_HEAP_DESC desc{}; desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
   desc.NumDescriptors = (UINT)state.used.size(); desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
   if (FAILED(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&state.heap)))) host::die("PC settings descriptor heap creation failed");
   state.stride = device->GetDescriptorHandleIncrementSize(desc.Type);
-  ImGui_ImplWin32_Init(window);
   ImGui_ImplDX12_InitInfo info{}; info.Device = device; info.CommandQueue = queue; info.NumFramesInFlight = 3;
   info.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM; info.DSVFormat = DXGI_FORMAT_UNKNOWN;
   info.SrvDescriptorHeap = state.heap.Get(); info.UserData = &state;
@@ -447,18 +462,19 @@ PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueu
     if (slot < s.used.size()) s.used[slot] = false;
   };
   if (!ImGui_ImplDX12_Init(&info)) host::die("PC settings renderer initialization failed");
-  host::window_set_message_callback([](void* w, uint32_t m, uintptr_t a, intptr_t b) {
-    return ImGui_ImplWin32_WndProcHandler((HWND)w, m, a, b) != 0;
-  });
 }
 
 PcSettingsUI::~PcSettingsUI() {
-  host::window_set_message_callback({}); host::window_input_capture(false);
-  ImGui_ImplDX12_Shutdown(); ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
+  ImGui_ImplDX12_Shutdown();
+  settings_context_destroy();
 }
 
 bool PcSettingsUI::begin(D3D12Options& options) {
-  auto& state = *impl_;
+  ImGui_ImplDX12_NewFrame();
+  return settings_frame(impl_->state, options);
+}
+
+bool settings_frame(SettingsState& state, D3D12Options& options) {
   // Dear ImGui's Win32 backend polls XInput itself whenever gamepad navigation is enabled, and maps
   // the Xbox X button to its "menu" key, which pops up ImGui's window switcher for as long as the
   // button is held. Players pressing X mid-match got a little window they could not get rid of.
@@ -473,7 +489,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
     }
   }
-  ImGui_ImplDX12_NewFrame(); ImGui_ImplWin32_NewFrame();
+  ImGui_ImplWin32_NewFrame();
   host::PadState pad{};
   if (host::window_ui_gamecube_pad(pad)) {
     auto& io = ImGui::GetIO(); io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
@@ -496,6 +512,22 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     ImGui::SetNextWindowSize(ImVec2(560, 560), ImGuiCond_FirstUseEver);
     ImGui::Begin("PC settings", &state.open, ImGuiWindowFlags_NoCollapse);
     ImGui::TextUnformatted("F1: settings    Escape: return to game");
+    ImGui::Separator();
+    // One press puts every setting that costs frames at its cheapest. Nothing here is permanent:
+    // each control below still works afterwards, and the panel only writes to disk on Save settings.
+    if (ImGui::Button("Low spec")) {
+      if (d3d11_available()) options.api = RenderApi::D3D11;   // better exercised driver path on old integrated GPUs
+      options.efb_scale = 1;                  // native 640x528, the floor
+      options.ssaa = 1;                       // no supersampling
+      options.anisotropy = 1;                 // no anisotropic filtering
+      options.effects_level = 2;              // skip sparks, glow and translucent world geometry
+      options.subframe = SubFrameMode::Off;   // the sub-frame solver is the largest CPU cost here
+      options.dlss_mode = 0;                  // NVIDIA only
+      options.fps_cap = 60;
+      changed = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("For integrated graphics and older laptops. Everything below still works after.");
     ImGui::Separator();
     changed |= ImGui::Checkbox("Borderless fullscreen", &options.fullscreen);
     const double rates[] = {-1, 0, 60, 120, 144, 165, 200, 240, 360, 480};
@@ -530,8 +562,17 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     const char* anis[] = {"1x", "2x", "4x", "8x", "16x"};
     int an_index = options.anisotropy >= 16 ? 4 : options.anisotropy >= 8 ? 3 : options.anisotropy >= 4 ? 2 : options.anisotropy >= 2 ? 1 : 0;
     if (ImGui::Combo("Anisotropic filtering", &an_index, anis, 5)) { options.anisotropy = 1 << an_index; changed = true; }
+    // Creating a device and a swapchain on another API means restarting; the choice is saved and
+    // read again at the next launch (see load_pc_settings and --backend).
+    const char* backends[] = {"Direct3D 12 (default)", "Direct3D 11 (older GPUs and drivers)"};
+    int api_index = options.api == RenderApi::D3D11 ? 1 : 0;
+    if (ImGui::Combo("Graphics backend", &api_index, backends, 2)) { options.api = api_index ? RenderApi::D3D11 : RenderApi::D3D12; changed = true; }
+    ImGui::TextDisabled("Takes effect at the next launch: save settings, then restart.");
+    const bool d3d11 = options.api == RenderApi::D3D11;
     const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance"};
+    if (d3d11) ImGui::BeginDisabled();
     if (ImGui::Combo("Upscaling (NVIDIA DLSS)", &options.dlss_mode, upscalers, 6)) changed = true;
+    if (d3d11) { ImGui::EndDisabled(); ImGui::TextDisabled("DLSS needs Direct3D 12 and an NVIDIA GPU."); }
     if (options.dlss_mode == 1) {
       ImGui::TextWrapped("DLAA anti-aliases the game at the Internal resolution above without changing it, then the picture is fitted to the window as usual. Internal resolution and Anti-aliasing keep working, so DLAA stacks with 4x SSAA if you want both.");
     } else if (dlss_picks_resolution) {
@@ -788,7 +829,8 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       std::ofstream file(temporary);
       file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
            << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
-           << "\ndlss " << options.dlss_mode << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
+           << "\ndlss " << options.dlss_mode << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
+           << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
            << "\nstartup " << (options.settings_open ? 1 : 0)
            << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports

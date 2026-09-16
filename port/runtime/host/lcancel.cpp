@@ -248,7 +248,10 @@ const char* auto_suppressed_mode() {
 }
 
 bool online_session_pending() {
-  return slippi::online::session_mode() >= 0 && !slippi::online::is_online_match();
+  // The mode only becomes known when the search starts, which happens on the character select
+  // screen once the player has locked a character in, and the notice then stays up through
+  // matchmaking, the opponent connecting and the rest of that screen.
+  return slippi::online::session_mode() >= 0 && slippi::online::in_online_menus();
 }
 
 Flash flash() {
@@ -263,7 +266,9 @@ Flash flash() {
   const double age = now - t;
   if (age < 0.0 || age > kFlashSeconds) return f;
   f.active = true;
-  f.alpha = (float)(1.0 - age / kFlashSeconds);
+  // Hold it solid for the first half, then fade, so a glance catches it at full contrast.
+  const double hold = kFlashSeconds * 0.5;
+  f.alpha = age <= hold ? 1.0f : (float)(1.0 - (age - hold) / (kFlashSeconds - hold));
   return f;
 }
 
@@ -286,7 +291,17 @@ void apply(host::PadState pads[4]) {
   const PadCal cal = read_pad_cal();
   const uint8_t press = inject_value(cal);
   const int window = read_lcancel_window();
-  const bool auto_allowed = want_auto && auto_suppressed_mode() == nullptr;
+  const char* suppressed = auto_suppressed_mode();
+  const bool auto_allowed = want_auto && suppressed == nullptr;
+  if (g_log) {
+    static int last_mode = -2;
+    const int mode = slippi::online::session_mode();
+    if (mode != last_mode) {
+      last_mode = mode;
+      host::log("lcancel: session mode %d (%s), auto L-cancel %s", mode, suppressed ? suppressed : "offline or Direct",
+                want_auto ? (auto_allowed ? "allowed" : "suppressed") : "off");
+    }
+  }
 
   uint32_t fighters[4];
   local_fighters(fighters);

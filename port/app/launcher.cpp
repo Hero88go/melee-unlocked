@@ -163,7 +163,13 @@ std::string work_dir() {
 }
 std::string game_args() {
   std::string base = g_dir;
-  std::string a = " --iso \"" + g_iso + "\" --threaded-renderer --fps unlocked --frame-mode authored --scale auto --volume 70";
+  std::string a = " --iso \"" + g_iso + "\" --threaded-renderer";
+  // Frame rate, sub-frame mode, internal resolution and volume are exactly what the PC settings
+  // panel saves. Passing them on every launch overrode what the player had saved, so the Low spec
+  // preset (60 Hz, sub-frame off, native resolution) came back as unlocked and authored at the next
+  // start. Once a settings file exists the game reads them from it; a first run still gets these.
+  if (!file_exists(work_dir() + "\\port-settings.ini"))
+    a += " --fps unlocked --frame-mode authored --scale auto --volume 70";
   if (file_exists(g_dir + "\\Sys\\codehandler.bin"))
     a += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + base + "\\User\\Slippi\" --replay-dir \"" + base + "\\Replays\" --card-dir \"" + base + "\\User\\GC\\CardA\"";
   return a;

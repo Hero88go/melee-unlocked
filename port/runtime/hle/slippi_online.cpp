@@ -549,7 +549,13 @@ void set_match_selections(const uint8_t* payload) {
 
 void prepare_online_match_state(std::vector<uint8_t>& q);
 
+// Retrace of the last CMD_GET_MATCH_STATE. The game polls it every frame the online menus are up
+// (mode select, the online character select, waiting for the opponent) and never during a match,
+// so it is the signal for "the player is in the online menus right now".
+uint32_t g_last_match_state_retrace = 0;
+
 void prepare_online_match_state(std::vector<uint8_t>& q) {
+  g_last_match_state_retrace = host::retrace_count();
   host::set_emulation_speed(1.0);
   update_discord_presence();   // rate limited internally; the game polls this every frame
   static std::vector<uint8_t> block = {
@@ -844,6 +850,10 @@ int session_mode() {
   return session ? (int)g_last_search.mode : -1;
 }
 int local_player_index() { return (int)g_local_player_index; }
+bool in_online_menus() {
+  const uint32_t now = host::retrace_count();
+  return g_last_match_state_retrace && now - g_last_match_state_retrace < 10;
+}
 
 static bool file_exists(const std::string& p) { FILE* f = std::fopen(p.c_str(), "rb"); if (!f) return false; std::fclose(f); return true; }
 
