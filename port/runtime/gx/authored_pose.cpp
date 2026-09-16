@@ -117,8 +117,22 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
       // hitch once per stride.
       // Looping animations wrap back into range above; a non-looping one that has run past its last
       // keyframe holds rather than extrapolating a track beyond what it authored.
-      bool sampled=!j.tracks.empty()&&continuous_clock(p,j)&&sample_frame>=0&&sample_frame<=j.end;
-      if(!j.tracks.empty()&&!sampled){ ++authored_stats().sample[3]; partial=true; }
+      // s3 used to count every hold here, which buried the real defect: an animation that has
+      // simply finished, or that the game paused, holds its last pose because that IS the pose,
+      // and counting those as failures made the counter read 38% when almost none of it was wrong.
+      // Split by cause so only a genuine clock discontinuity (restart, retime, swap) reads as s3.
+      bool sampled=false;
+      if(!j.tracks.empty()) {
+        const bool clock=continuous_clock(p,j);
+        sampled=clock&&sample_frame>=0&&sample_frame<=j.end;
+        if(!sampled) {
+          if(p.frame==j.frame) ++authored_stats().sample[24];        // paused: holding is correct
+          else if(!clock) ++authored_stats().sample[3];              // restarted/retimed: the real defect
+          else if(sample_frame>j.end) ++authored_stats().sample[25]; // finished, non-looping: hold is correct
+          else ++authored_stats().sample[26];                        // before the first keyframe
+          partial=true;
+        }
+      }
       if(sampled) {
         auto ts=scale,tr=rot,tp=pos;   // commit only if every track of this joint samples
         for(size_t k=0;k<j.tracks.size();++k) {

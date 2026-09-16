@@ -45,7 +45,7 @@ enum CaptureFeature {
   FEAT_USER_DEF_MTX, FEAT_MTX_INDEP_PARENT, FEAT_MTX_INDEP_SRT, FEAT_ROBJ, FEAT_COUNT
 };
 extern const char* const kCaptureFeatureNames[FEAT_COUNT];
-struct AuthoredStats { std::atomic<uint32_t> capture[24]{}; std::atomic<uint32_t> sample[24]{}; std::atomic<uint32_t> feature[FEAT_COUNT]{}; std::atomic<uint32_t> captured{0}, sampled{0}; };
+struct AuthoredStats { std::atomic<uint32_t> capture[24]{}; std::atomic<uint32_t> sample[32]{}; std::atomic<uint32_t> feature[FEAT_COUNT]{}; std::atomic<uint32_t> captured{0}, sampled{0}; };
 AuthoredStats& authored_stats();
 // Interpolate (exact in-betweens of the previous and current game frames, one frame late) instead
 // of predicting ahead of the current frame. Set by the solver before sampling.
