@@ -73,6 +73,20 @@ Steam Input or BetterJoy will present the controller as an Xbox pad, which has a
   translated into the game when it is built, so the file records what was built in rather than
   controlling it. Run-time toggles are possible (Widescreen already is one) and more can be added.
 
+## Thanks
+
+Every fix in this release came from someone taking the time to report what they saw.
+
+- **fern** for the airdodge report, and for sticking with it when the first attempt did not help.
+  "Blinks a lot and it looks like you might move slower" turned out to be one bug, and that
+  description is what located it.
+- **Asukafriend** for the X button popping up a window mid-match, including the detail that it
+  stayed while the button was held, which is what identified it.
+- **Stache** for spotting that enabling codes in `GALE01r2.ini` does nothing.
+- **manassm** for the Switch Pro Controller report (issue #2).
+- The testers who pinned the shield drop problem down to Unranked and worked out that the drop
+  succeeds on Dolphin and fails here. That is what turned a vague desync into something findable.
+
 ## For developers
 
 Input scripts can now set the analog triggers (`l=` and `r=`), so shield behaviour can be tested
