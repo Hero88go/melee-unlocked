@@ -8,6 +8,15 @@
 #include <unordered_map>
 #include <vector>
 namespace gx {
+struct AuthoredPose;
+// One HSD_RObj entry on a joint: a constraint HSD_RObjUpdateAll applies after the joint's own SRT.
+// Only the reference types the sampler can evaluate are captured (see capture_robj_list); anything
+// else declines the chain, so a constraint present here is one the evaluator knows how to run.
+struct AuthoredConstraint {
+  uint32_t flags = 0;                          // the RObj flags word: reference type, subtype, active bit
+  uint64_t target_generation = 0;              // identity of the referenced HSD_JObj
+  std::shared_ptr<const AuthoredPose> target;  // root..target chain, so the target re-poses with everything else
+};
 struct AuthoredJoint {
   uint64_t generation = 0;
   uint32_t flags = 0;
@@ -16,8 +25,8 @@ struct AuthoredJoint {
   std::array<float,12> world{};
   float frame = 0, rate = 0, end = 0, rewind = 0;
   std::vector<NativeMelee::PackedTrack> tracks;
+  std::vector<AuthoredConstraint> constraints;   // HSD_JObj::robj, empty for an unconstrained joint
 };
-struct AuthoredPose;
 // One bone of a skinned matrix slot: its joint chain, blend weight and inverse-bind (envelope) matrix.
 struct AuthoredBone { std::shared_ptr<const AuthoredPose> chain; float weight = 1; std::array<float,12> envelope{}; };
 struct AuthoredSlot { std::vector<AuthoredBone> bones; };
@@ -40,12 +49,24 @@ struct AuthoredPose {
 // effectors, independent matrices and constraints into one number and so cannot be used to decide
 // which evaluator to write first. These count each feature separately, and a joint carrying several
 // is counted in each, so the totals are per feature rather than per joint.
+// The robj_* entries break the constraint lists down by HSD_RObj reference type and constraint
+// subtype (robj.h), counted per RObj entry rather than per joint, for the same reason: "this joint
+// has a constraint" does not say which evaluator would pay for itself. The last four are the
+// reasons a constraint this path does understand still could not be captured.
 enum CaptureFeature {
   FEAT_BILLBOARD, FEAT_PBILLBOARD, FEAT_INSTANCE, FEAT_QUATERNION, FEAT_JOINT1, FEAT_JOINT2,
-  FEAT_USER_DEF_MTX, FEAT_MTX_INDEP_PARENT, FEAT_MTX_INDEP_SRT, FEAT_ROBJ, FEAT_COUNT
+  FEAT_USER_DEF_MTX, FEAT_MTX_INDEP_PARENT, FEAT_MTX_INDEP_SRT, FEAT_ROBJ,
+  FEAT_ROBJ_POSITION, FEAT_ROBJ_DIR, FEAT_ROBJ_UP, FEAT_ROBJ_ORIENT, FEAT_ROBJ_JOBJ_OTHER,
+  FEAT_ROBJ_LIMIT, FEAT_ROBJ_IKHINT, FEAT_ROBJ_EXP, FEAT_ROBJ_INACTIVE, FEAT_ROBJ_UNKNOWN,
+  FEAT_ROBJ_ANIMATED, FEAT_ROBJ_DEEP, FEAT_ROBJ_TARGET, FEAT_ROBJ_CYCLE,
+  FEAT_COUNT
 };
 extern const char* const kCaptureFeatureNames[FEAT_COUNT];
-struct AuthoredStats { std::atomic<uint32_t> capture[24]{}; std::atomic<uint32_t> sample[32]{}; std::atomic<uint32_t> feature[FEAT_COUNT]{}; std::atomic<uint32_t> captured{0}, sampled{0}; };
+struct AuthoredStats { std::atomic<uint32_t> capture[24]{}; std::atomic<uint32_t> sample[32]{}; std::atomic<uint32_t> feature[FEAT_COUNT]{};
+  std::atomic<uint32_t> captured{0}, sampled{0};
+  // Constraint work, so the evaluator can be seen running rather than inferred from a falling
+  // rejection count: chains captured carrying an HSD_RObj, and constraints evaluated while sampling.
+  std::atomic<uint32_t> robj_chains{0}, robj_applied{0}; };
 AuthoredStats& authored_stats();
 // Interpolate (exact in-betweens of the previous and current game frames, one frame late) instead
 // of predicting ahead of the current frame. Set by the solver before sampling.

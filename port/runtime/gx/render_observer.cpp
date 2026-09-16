@@ -5,7 +5,6 @@
 #include "gx_texture.h"
 #include "authored_pose.h"
 #include <algorithm>
-#include <atomic>
 #include <cstring>
 #include <unordered_map>
 namespace gx {
@@ -65,25 +64,122 @@ bool camera_quaking(Reader& r) {
   return r.word(camera+0xA0)!=0;
 }
 
-// Captures the joint chain root..address (local SRT, world matrix, authored tracks). Returns null
-// (and counts the reason) when any joint needs an evaluator this path does not have.
+// HSD_RObj (robj.h): next +0x00, flags +0x04, union u +0x08 (jobj / limit f32 / ik_hint
+// {bone_length f32, rotate_x f32} / exp {expr, rvalue, nb_args, is_bytecode}), aobj +0x18.
+// The reference type is flags & 0x70000000 and the constraint subtype flags & 0x0FFFFFFF; bit
+// 0x80000000 is the "active" bit HSD_RObjGetByType and HSD_RObjGetGlobalPosition both require.
+constexpr uint32_t ROBJ_TYPE_MASK = 0x70000000u, ROBJ_SUBTYPE_MASK = 0x0FFFFFFFu, ROBJ_ACTIVE = 0x80000000u;
+constexpr uint32_t REFTYPE_EXP = 0x00000000u, REFTYPE_JOBJ = 0x10000000u, REFTYPE_LIMIT = 0x20000000u,
+                   REFTYPE_IKHINT = 0x40000000u;
+// Constraint subtypes HSD_RObjUpdateAll asks for: 1 position, 2 direction, 3 up, 4 orientation.
+constexpr uint32_t CNS_POSITION = 1, CNS_DIR = 2, CNS_UP = 3, CNS_ORIENT = 4;
+// Only a position constraint is evaluated. In a 2600 frame Yoshi's Story match every one of the
+// 44314 constraints that declined a chain was REFTYPE_JOBJ subtype 1 and active; direction, up,
+// orientation, limit, IK hint and expression entries never appeared once. The rest keep declining
+// with their own counter rather than being guessed at: an evaluator nothing exercises cannot be
+// shown to reproduce the guest matrix, and would be dead code.
+constexpr int kConstraintDepthLimit = 4;   // constraint targets whose own chains carry constraints
+int constraint_depth = 0;
+// Chains whose capture has not finished. A constraint that reaches back into one of them would be a
+// cycle: HSD_RObjGetGlobalPosition resolves its target by calling the guest's HSD_JObjSetupMatrix,
+// which this path must never do, so a cycle cannot be evaluated and the chain holds instead.
+std::vector<uint32_t> chains_in_progress;
+
+// Counts one RObj list by reference type and subtype. Diagnostics only: it decides which evaluators
+// are worth writing, and keeps reporting the ones still declined once they are written.
+void count_robj_list(Reader& r, uint32_t robj) {
+  for(int guard=0; robj && guard<16; ++guard, robj=r.word(robj)) {
+    if(!r.span(robj,0x1C)) { ++authored_stats().feature[FEAT_ROBJ_UNKNOWN]; return; }
+    const uint32_t flags=r.word(robj+4), type=flags&ROBJ_TYPE_MASK, sub=flags&ROBJ_SUBTYPE_MASK;
+    if(r.word(robj+0x18)) ++authored_stats().feature[FEAT_ROBJ_ANIMATED];   // an AObj drives the active bit
+    if(type==REFTYPE_JOBJ) {
+      // An inactive constraint contributes nothing at all: HSD_RObjGetGlobalPosition and
+      // HSD_RObjGetByType both test the active bit before looking at the reference.
+      if(!(flags&ROBJ_ACTIVE)) { ++authored_stats().feature[FEAT_ROBJ_INACTIVE]; continue; }
+      if(sub==CNS_POSITION) ++authored_stats().feature[FEAT_ROBJ_POSITION];
+      else if(sub==CNS_DIR) ++authored_stats().feature[FEAT_ROBJ_DIR];
+      else if(sub==CNS_UP) ++authored_stats().feature[FEAT_ROBJ_UP];
+      else if(sub==CNS_ORIENT) ++authored_stats().feature[FEAT_ROBJ_ORIENT];
+      else ++authored_stats().feature[FEAT_ROBJ_JOBJ_OTHER];
+    }
+    else if(type==REFTYPE_LIMIT) ++authored_stats().feature[FEAT_ROBJ_LIMIT];
+    else if(type==REFTYPE_IKHINT) ++authored_stats().feature[FEAT_ROBJ_IKHINT];
+    // A bytecode expression has its type mask cleared at load (HSD_RObjLoadDesc), so both kinds of
+    // expression arrive as REFTYPE_EXP and only the active ones are ever evaluated.
+    else if(type==REFTYPE_EXP) { if(flags&ROBJ_ACTIVE) ++authored_stats().feature[FEAT_ROBJ_EXP]; else ++authored_stats().feature[FEAT_ROBJ_INACTIVE]; }
+    else ++authored_stats().feature[FEAT_ROBJ_UNKNOWN];
+  }
+}
+
+std::shared_ptr<const AuthoredPose> capture_chain(Reader& r, uint32_t address);
+
+// Captures a joint's HSD_RObj list into `out`, with the chain of every referenced joint so the
+// sampler can re-pose the target as well. Returns false, having counted the offending entry, when
+// the list holds anything this path cannot evaluate; the caller then declines the whole chain.
+// Read-only: it walks guest memory through the reader and never calls guest code.
+bool capture_robj_list(Reader& r, uint32_t robj, std::vector<AuthoredConstraint>& out) {
+  if(constraint_depth>=kConstraintDepthLimit){ ++authored_stats().feature[FEAT_ROBJ_DEEP]; return false; }
+  for(int guard=0; robj && guard<16; ++guard, robj=r.word(robj)) {
+    if(!r.span(robj,0x1C)){ ++authored_stats().feature[FEAT_ROBJ_UNKNOWN]; return false; }
+    const uint32_t flags=r.word(robj+4), type=flags&ROBJ_TYPE_MASK, sub=flags&ROBJ_SUBTYPE_MASK;
+    // An AObj on the RObj drives the active bit through RObjUpdateFunc, so the constraint can switch
+    // on or off partway through the pair of frames being interpolated. None was ever observed.
+    if(r.word(robj+0x18)){ ++authored_stats().feature[FEAT_ROBJ_ANIMATED]; return false; }
+    if(type!=REFTYPE_JOBJ||!(flags&ROBJ_ACTIVE)||sub!=CNS_POSITION) {
+      if(type==REFTYPE_JOBJ&&!(flags&ROBJ_ACTIVE)) ++authored_stats().feature[FEAT_ROBJ_INACTIVE];
+      else if(type==REFTYPE_JOBJ&&sub==CNS_DIR) ++authored_stats().feature[FEAT_ROBJ_DIR];
+      else if(type==REFTYPE_JOBJ&&sub==CNS_UP) ++authored_stats().feature[FEAT_ROBJ_UP];
+      else if(type==REFTYPE_JOBJ&&sub==CNS_ORIENT) ++authored_stats().feature[FEAT_ROBJ_ORIENT];
+      else if(type==REFTYPE_JOBJ) ++authored_stats().feature[FEAT_ROBJ_JOBJ_OTHER];
+      else if(type==REFTYPE_LIMIT) ++authored_stats().feature[FEAT_ROBJ_LIMIT];
+      else if(type==REFTYPE_IKHINT) ++authored_stats().feature[FEAT_ROBJ_IKHINT];
+      else if(type==REFTYPE_EXP) ++authored_stats().feature[flags&ROBJ_ACTIVE?FEAT_ROBJ_EXP:FEAT_ROBJ_INACTIVE];
+      else ++authored_stats().feature[FEAT_ROBJ_UNKNOWN];
+      return false;
+    }
+    AuthoredConstraint c;
+    c.flags=flags;
+    const uint32_t target=r.word(robj+8);
+    auto g=target?joints.find(target):joints.end();
+    if(!target||g==joints.end()){ ++authored_stats().feature[FEAT_ROBJ_TARGET]; return false; }
+    c.target_generation=g->second;
+    ++constraint_depth;
+    c.target=capture_chain(r,target);
+    --constraint_depth;
+    if(!c.target){ ++authored_stats().feature[FEAT_ROBJ_TARGET]; return false; }
+    out.push_back(std::move(c));
+  }
+  if(robj){ ++authored_stats().feature[FEAT_ROBJ_UNKNOWN]; return false; }   // list longer than the guard
+  return true;
+}
+
+// Captures the joint chain root..address (local SRT, world matrix, authored tracks, constraints).
+// Returns null (and counts the reason) when any joint needs an evaluator this path does not have.
 std::shared_ptr<const AuthoredPose> capture_chain(Reader& r, uint32_t address) {
   auto cached = chains_this_frame.find(address);
   if (cached != chains_this_frame.end()) return cached->second;
+  for(uint32_t open : chains_in_progress) if(open==address){ ++authored_stats().feature[FEAT_ROBJ_CYCLE]; return {}; }
   auto pose=std::make_shared<AuthoredPose>();
   size_t byte_count=0;
   uint32_t start = address;
+  // Unwound on every return, so a declined chain cannot leave the guard poisoned for the frame.
+  struct OpenChain {
+    explicit OpenChain(uint32_t a) { chains_in_progress.push_back(a); }
+    ~OpenChain() { chains_in_progress.pop_back(); }
+  } open_guard(address);
+  bool constrained=false;
   while(address && pose->joints.size()<128) {
     if(!r.span(address,0x88)){ ++authored_stats().capture[2]; return {}; }
     AuthoredJoint j;
     auto g=joints.find(address); if(g==joints.end()){ ++authored_stats().capture[3]; return {}; } j.generation=g->second;
     j.flags=r.word(address+0x14)&~0x40u;
-    // Billboards, instances, constraints, quaternion/IK and independent matrices
-    // require their own authored evaluators, so retain exact captured draws.
-    if((j.flags & (0x2E00u|0x1000u|0x20000u|0x600000u|0x3800000u))||r.word(address+0x80)){
+    // Billboards, instances, quaternion/IK and independent matrices require their own authored
+    // evaluators, so retain exact captured draws. Constraints (HSD_RObj) no longer decline the chain
+    // on sight: the list is captured below and the sampler declines only what it cannot evaluate.
+    const uint32_t robj=r.word(address+0x80);
+    if(j.flags & (0x2E00u|0x1000u|0x20000u|0x600000u|0x3800000u)){
       // Record which feature it was, not just that there was one, so the next evaluator to write is
       // chosen by what real matches actually use. A joint can carry several; count each.
-      const uint32_t robj=r.word(address+0x80);
       auto note=[&](bool hit,CaptureFeature f){ if(hit) ++authored_stats().feature[f]; };
       note(j.flags&0x0E00u,FEAT_BILLBOARD);        // JOBJ billboard field
       note(j.flags&0x2000u,FEAT_PBILLBOARD);       // JOBJ_PBILLBOARD
@@ -95,10 +191,18 @@ std::shared_ptr<const AuthoredPose> capture_chain(Reader& r, uint32_t address) {
       note(j.flags&0x1000000u,FEAT_MTX_INDEP_PARENT);
       note(j.flags&0x2000000u,FEAT_MTX_INDEP_SRT);
       note(robj!=0,FEAT_ROBJ);                     // HSD_RObj: constraints, IK hints, expressions
+      count_robj_list(r,robj);
       ++authored_stats().capture[4]; return {};
     }
     for(int k=0;k<3;++k) {j.rotation[k]=r.real(address+0x1C+k*4);j.scale[k]=r.real(address+0x2C+k*4);j.translation[k]=r.real(address+0x38+k*4);}
     for(int k=0;k<12;++k)j.world[k]=r.real(address+0x44+k*4);
+    // HSD_JObjSetupMatrixSub runs HSD_RObjUpdateAll after make_mtx, so the captured world matrix
+    // above already has the constraint in it. Capturing the list (and its targets) is what lets the
+    // sampler reproduce that same world matrix at a fractional frame, and prove it did.
+    if(robj) {
+      if(!capture_robj_list(r,robj,j.constraints)) { ++authored_stats().feature[FEAT_ROBJ]; ++authored_stats().capture[4]; return {}; }
+      constrained=true;
+    }
     uint32_t aobj=r.word(address+0x7C);
     if(aobj) {
       if(!r.span(aobj,28)||r.word(aobj+24)){ ++authored_stats().capture[5]; return {}; }
@@ -125,6 +229,7 @@ std::shared_ptr<const AuthoredPose> capture_chain(Reader& r, uint32_t address) {
   }
   if(address||!r.valid){ ++authored_stats().capture[10]; return {}; }
   std::reverse(pose->joints.begin(),pose->joints.end());
+  if(constrained) ++authored_stats().robj_chains;
   chains_this_frame[start] = pose;
   return pose;
 }
@@ -238,7 +343,5 @@ std::shared_ptr<const AuthoredPose> capture_authored_pose() {
   pose->quake = pose->has_view && camera_quaking(r);
   ++authored_stats().captured; current_pose=pose; return pose;
 }
-// The one-entry owner cache is keyed on a GObj address, and an address can be freed and handed to
-// a different object, so it only lives for one frame.
-void finish_observed_frame() { passes.clear(); chains_this_frame.clear(); owner_cache_gobj = 0; owner_cache_player = 0xFF; }
+void finish_observed_frame() { passes.clear(); chains_this_frame.clear(); chains_in_progress.clear(); constraint_depth = 0; }
 }
