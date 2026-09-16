@@ -1,0 +1,5 @@
+// Application icon for melee_port.exe and MeleeUnlockedLauncher.exe.
+// Resource id 1 is what Windows Explorer shows for the executable, and what LoadIconW picks up for
+// the window, the taskbar and Alt-Tab.
+#define IDI_MELEE_UNLOCKED 1
+IDI_MELEE_UNLOCKED ICON "melee_unlocked.ico"

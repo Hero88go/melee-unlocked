@@ -22,17 +22,11 @@ void set_log_path(const std::string& path);
 
 // Called from HLE(PADRead) with the freshly polled pads, before the guest sees them. Observes the
 // local fighters, raises the analog L trigger when the automatic press is enabled and allowed, and
-// records a missed L-cancel for the indicator.
+// flashes a fighter red when it landed an aerial without the landing lag halved.
 void apply(host::PadState pads[4]);
 
-// ---- indicator, read by the renderer thread ----
-struct Flash {
-  bool active = false;       // something to draw
-  int port = 0;              // 1..4
-  int frames_since_press = 0;  // the fighter's "frames since any trigger press" at the landing frame
-  float alpha = 0.f;         // 1 at the landing frame, fading to 0
-};
-Flash flash();
+// The indicator itself needs nothing from the UI: a missed L-cancel flashes the fighter red through
+// gx::set_player_tint, which is a renderer-side colour and never a write into the game.
 
 // ---- gating, for the panel and the character-select notice ----
 // nullptr when the automatic press is allowed right now (offline, or an online Direct session);

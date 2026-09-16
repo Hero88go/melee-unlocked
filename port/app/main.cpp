@@ -42,6 +42,7 @@ extern const size_t name_table_count;
 
 static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
+              "           [--aspect auto|73:60|4:3|16:9|stretch]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
               "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
@@ -295,6 +296,12 @@ static int melee_main(int argc, char** argv) {
     // Set before the settings file is read, so a saved "subframe" (Off in the Low spec preset) wins
     // over this default and an explicit --frame-mode, parsed below, still wins over both.
     if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::AuthoredInterpolate;
+    // A person launching the game wants to hear it. The zero default is there for automated runs,
+    // which never reach this branch, and it used to be hidden by the launcher passing --volume 70 on
+    // every start; that override was removed because it also overwrote the player's saved settings,
+    // which left anyone without a saved volume silent. Set before the file is read, so a saved
+    // volume still wins, and an explicit --volume below wins over both.
+    o.volume = 70;
     gx::load_pc_settings(gfx, o.volume);
     // Opt-in, and only ever from a saved setting: an automated or headless run never gets here, so
     // it can never publish. With the setting off no thread is started and no pipe is opened.
@@ -328,7 +335,13 @@ static int melee_main(int argc, char** argv) {
       threaded = true;
     }
     else if (a == "--scale") { std::string v = next(); gfx.efb_scale = v == "auto" ? 0 : std::atoi(v.c_str()); if (v != "auto" && gfx.efb_scale < 1) { usage(); return 2; } }
-    else if (a == "--window") { if (std::sscanf(next(), "%dx%d", &gfx.window_w, &gfx.window_h) != 2 || gfx.window_w < 320 || gfx.window_h < 240) { usage(); return 2; } }
+    else if (a == "--window") { if (std::sscanf(next(), "%dx%d", &gfx.window_w, &gfx.window_h) != 2 || gfx.window_w < 320 || gfx.window_h < 240) { usage(); return 2; } gfx.window_pinned = true; }
+    // Presentation only, so it cannot desync and the two players in a match may differ.
+    else if (a == "--aspect") { std::string v = next();
+      gfx.aspect = v == "auto" ? gx::AspectMode::Auto : v == "73:60" || v == "native" ? gx::AspectMode::Native
+                 : v == "4:3" ? gx::AspectMode::Force4_3 : v == "16:9" ? gx::AspectMode::Force16_9
+                 : v == "stretch" ? gx::AspectMode::Stretch : (gx::AspectMode)-1;
+      if ((int)gfx.aspect < 0) { std::fprintf(stderr, "--aspect auto|73:60|4:3|16:9|stretch\n"); return 2; } }
     else if (a == "--settings-path") gfx.settings_path = next();
     else if (a == "--pc-settings-open") { gfx.pc_settings = true; gfx.settings_open = true; }
     // The overlay layer without the panel. An automated run turns the UI off entirely, which also

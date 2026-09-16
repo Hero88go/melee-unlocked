@@ -484,9 +484,9 @@ int D3D12Backend::pick_scale() const {
   return std::clamp(s * ssaa, 1, max_scale);
 }
 
-// The game renders the same 640x480 field either way; Slippi's widescreen code widens the camera
-// so the image is meant to be shown at 16:9 (Dolphin: Aspect Ratio "Force 16:9").
-float D3D12Backend::output_aspect() const { return opts_.widescreen ? 16.0f / 9.0f : 4.0f / 3.0f; }
+// The game renders the same 640x480 field either way, but its camera asks for a 73:60 frustum, and
+// Slippi's widescreen code widens that to exactly 16:9. See presented_aspect in gx_d3d12.h.
+float D3D12Backend::output_aspect() const { return presented_aspect(opts_, client_w_, client_h_); }
 
 void D3D12Backend::create_efb() {
   scale_ = pick_scale();
@@ -1022,6 +1022,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   // world-space draws qualify: HUD and menus use a different projection (xf_regs[0x26]) and are left
   // alone, so percentages, stocks and the timer are never affected. This changes only what is drawn,
   // never guest memory, so it cannot desync and two players may run different settings.
+  static uint64_t g_effects_submitted = 0;   // world draws that survived the effects filter
   if (opts_.effects_level > 0 && dc.xf_regs[0x26] == 0 && (dc.bp.blendmode() & 1)) {
     const uint32_t blend = dc.bp.blendmode();
     const bool writes_depth = (dc.bp.zmode() & 0x10) != 0;
@@ -1030,15 +1031,20 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
     // is a different setting from the one intended.
     const uint32_t dst_factor = (blend >> 5) & 7;
     const bool additive = dst_factor == 1;
-    if ((additive && !writes_depth) || (opts_.effects_level >= 2 && !writes_depth)) {
+    // Level 2 used to skip every blended draw that does not write depth, which in Melee is most of
+    // the world: it removed the entire scene and left a blank screen. A draw that neither writes nor
+    // tests depth cannot be part of the scene's geometry, so that is the safe wider category.
+    const bool tests_depth = (dc.bp.zmode() & 1) != 0;
+    const bool overlay = !writes_depth && !tests_depth;
+    if ((additive && !writes_depth) || (opts_.effects_level >= 2 && overlay)) {
       // Counted so the setting can be shown to do something: a filter that silently matches nothing
       // looks exactly like one that works but is lost in frame-rate noise.
-      static uint64_t skipped = 0, seen = 0;
+      static uint64_t skipped = 0;
       if (++skipped % 20000 == 0) host::log("effects: skipped %llu draws of %llu submitted at level %d",
-                                            (unsigned long long)skipped, (unsigned long long)seen, opts_.effects_level);
-      (void)seen;
+                                            (unsigned long long)skipped, (unsigned long long)g_effects_submitted, opts_.effects_level);
       return;
     }
+    ++g_effects_submitted;
   }
   // Build index list (triangle list / line list) from the GX primitive.
   Stopwatch sw;

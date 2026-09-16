@@ -17,6 +17,7 @@ struct SettingsState {
   int rebind_action = -1;                                       // BindAction index while a "press a button" capture runs, -1 = none
   host::CaptureDevice rebind_kind = host::CaptureDevice::None;  // which device tab that capture belongs to
   int rebind_index = 0;                                         // pad / adapter port index for that tab
+  bool running_d3d11 = false;                                   // which backend owns this panel, so it can say when a backend change needs a restart
 };
 
 // ImGui context plus the Win32 platform backend; the renderer backend is set up by the caller.

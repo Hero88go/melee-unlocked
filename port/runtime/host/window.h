@@ -14,6 +14,10 @@ void* window_create(int w, int h, const wchar_t* title, bool visible = true);
 void window_set_resize_callback(ResizeCallback cb);
 void window_pump();
 void window_set_fullscreen(bool enabled);
+bool window_is_fullscreen();
+// Resize the client area, as the resolution picker in the PC settings panel does. Ignored while
+// the window is fullscreen (there the client area is the monitor) and clamped to the monitor.
+void window_set_client_size(int w, int h);
 bool window_take_fullscreen_toggle();   // true once per Alt+Enter press in the game window
 double window_refresh_rate();
 void window_destroy();

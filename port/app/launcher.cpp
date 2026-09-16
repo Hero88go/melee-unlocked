@@ -28,6 +28,9 @@
 #define MELEE_PORT_VERSION "dev"
 #endif
 
+#define IDI_LAUNCHER 1
+#define IDB_LAUNCHER_BG 2
+
 namespace {
 enum { ID_TABS = 100, ID_ISO_EDIT, ID_BROWSE, ID_PLAY, ID_SLIPPI_TEXT, ID_SLIPPI_GET, ID_VERSION_TEXT, ID_UPDATE, ID_HINT,
        ID_BUILD_TEXT, ID_DROP, ID_BUILD, ID_LOG, ID_TIMER = 1 };
@@ -275,7 +278,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_play[i++] = g_slippi_btn = make(L"BUTTON", L"Get Slippi Launcher", BS_PUSHBUTTON, 452, 194, 144, 26, ID_SLIPPI_GET);
       g_play[i++] = g_version_text = make(L"STATIC", L"", 0, 24, 250, 420, 40, ID_VERSION_TEXT);
       g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_PUSHBUTTON, 452, 248, 144, 26, ID_UPDATE);
-      make(L"STATIC", L"In game: F1 opens the PC settings (fullscreen, frame rate, resolution, DLSS, anti-aliasing, widescreen, audio).\nA GameCube adapter is used automatically when it has the WinUSB driver (the Slippi Launcher installs it). Keyboard: arrows, IJKL, Z X C V, Enter, Q W E.",
+      make(L"STATIC", L"In game: F1 opens the PC settings (fullscreen, frame rate, window size, aspect ratio, resolution, DLSS, anti-aliasing, widescreen, audio).\nA GameCube adapter is used automatically when it has the WinUSB driver (the Slippi Launcher installs it). Keyboard: arrows, IJKL, Z X C V, Enter, Q W E.",
            0, 24, 300, 572, 96, ID_HINT);
       g_play[7] = GetDlgItem(hwnd, ID_HINT);
       // Build page
@@ -368,7 +371,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   ncm.lfMessageFont.lfHeight = -S(12); g_font = CreateFontIndirectW(&ncm.lfMessageFont);
   ncm.lfMessageFont.lfHeight = -S(20); ncm.lfMessageFont.lfWeight = FW_BOLD; g_font_big = CreateFontIndirectW(&ncm.lfMessageFont);
   g_font_mono = CreateFontW(-S(11), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
-  WNDCLASSW wc{}; wc.lpfnWndProc = wnd_proc; wc.hInstance = inst; wc.lpszClassName = L"MeleeUnlockedLauncher"; wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512)); wc.hIcon = LoadIconW(nullptr, MAKEINTRESOURCEW(32512));
+  WNDCLASSW wc{}; wc.lpfnWndProc = wnd_proc; wc.hInstance = inst; wc.lpszClassName = L"MeleeUnlockedLauncher";
+  wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1); wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
+  wc.hIcon = LoadIconW(inst, MAKEINTRESOURCEW(IDI_LAUNCHER));
   RegisterClassW(&wc);
   RECT r{0, 0, S(620), S(416)}; AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
   std::wstring title = widen(std::string("Melee Unlocked Launcher ") + MELEE_PORT_VERSION);

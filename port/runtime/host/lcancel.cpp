@@ -1,4 +1,13 @@
-// L-cancel indicator (display only) and automatic L-cancel (input injection).
+// Missed-L-cancel indicator (display only) and automatic L-cancel (input injection).
+//
+// THE INDICATOR WRITES NOTHING INTO THE GAME
+// The Gecko code that flashes a fighter red for a missed L-cancel does it by storing a colour
+// overlay into the fighter (External/FlashRedFailedLCancel/TriggerColor.asm writes fp+0x564), which
+// is a change to state both clients simulate. This does the same thing from outside: it reads the
+// action state, and when an aerial lands without the halving it asks the renderer to tint that
+// player's draws red (gx::set_player_tint). A draw knows which player rendered it because the
+// observer resolves HSD_GObj_804D7814 at capture time (render_observer.cpp). The whole path is
+// reads plus a colour in a constant buffer, so the simulation is byte for byte what it was.
 //
 // WHY INPUT INJECTION AND NOTHING ELSE
 // Slippi netplay has every client simulate both fighters from exchanged inputs, so any change to
@@ -34,9 +43,10 @@
 #include <atomic>
 #include <cstdio>
 #include <cstring>
-#include <mutex>
 
+#include "gx_shader.h"
 #include "ppc.h"
+#include "render_observer.h"
 #include "slippi_net.h"
 #include "slippi_online.h"
 
@@ -73,7 +83,13 @@ constexpr int32_t kLandingAirN = 70, kLandingAirLw = 74;
 // GameCube pad bits, as window.cpp:159 defines them.
 constexpr uint16_t kPadZ = 0x0010, kPadR = 0x0020, kPadL = 0x0040, kPadA = 0x0100;
 
-constexpr double kFlashSeconds = 0.9;
+// The Gecko code (External/FlashRedFailedLCancel) hands the fighter to Melee's own colour-overlay
+// effect, so its length lives in PlCo.dat rather than in the code: it reads as a short pop of red.
+// These match that by eye, in simulation frames so the flash is frame locked rather than wall-clock
+// locked and a paused or slowed game holds it.
+constexpr uint32_t kFlashFrames = 10, kFlashSolidFrames = 6;
+constexpr float kFlashAmount = 0.85f;
+constexpr float kFlashRed = 1.0f, kFlashGreen = 0.06f, kFlashBlue = 0.05f;
 
 // ---- safe guest reads. host::rd32 kills the process on a bad address, and every pointer here
 // comes out of guest memory that is garbage until the game has booted a match.
@@ -91,10 +107,12 @@ std::atomic<bool> g_indicator{false}, g_automatic{false};
 std::string g_log_path;
 FILE* g_log = nullptr;
 
-// ---- indicator state, written on the simulation thread and read by the renderer
-std::mutex g_flash_mutex;
-int g_flash_port = 0, g_flash_frames = 0;
-double g_flash_time = -1e9;
+// ---- indicator state. One entry per Melee player slot, because that is what a draw carries.
+constexpr int kPlayerSlotCount = 6;
+struct SlotFlash { bool active = false; uint32_t start_retrace = 0; };
+SlotFlash g_flash[kPlayerSlotCount];
+bool g_tints_set = false;       // something was handed to the renderer and has to be taken back
+bool g_owner_tracking = false;  // last value pushed to the observer
 
 // ---- pad calibration, exactly as HSD_PadClamp/HSD_PadScale in sysdolphin/baselib/controller.c
 struct PadCal {
@@ -176,11 +194,13 @@ uint32_t fighter_of_slot(int slot) {
   return fp;
 }
 
-// Fill in, per controller port, the fighter that port drives locally. Online only the local
+// Fill in, per controller port, the fighter that port drives locally and the player slot it sits
+// in (the slot is what a draw carries, so it is what the tint is keyed on). Online only the local
 // player's fighter is filled in: the opponent's pad comes off the network, so injecting into it
 // would do nothing at all, and reading their fighter is not our business.
-void local_fighters(uint32_t out[4]) {
-  out[0] = out[1] = out[2] = out[3] = 0;
+struct Target { uint32_t fighter = 0; int slot = -1; };
+void local_fighters(Target out[4]) {
+  for (int p = 0; p < 4; ++p) out[p] = Target{};
   const int mode = slippi::online::session_mode();
   if (mode >= 0) {
     int slot = slippi::online::local_player_index();
@@ -189,7 +209,7 @@ void local_fighters(uint32_t out[4]) {
     if (!fp) return;
     int port = (int8_t)rd8(kPlayerSlots + (uint32_t)slot * kPlayerStride + kSpCtrl);
     if (port < 0 || port > 3) port = 0;
-    out[port] = fp;
+    out[port] = Target{fp, slot};
     return;
   }
   for (int slot = 0; slot < 4; ++slot) {
@@ -197,20 +217,46 @@ void local_fighters(uint32_t out[4]) {
     if (!mapped(base, kPlayerStride)) continue;
     if (rd32(base + kSpType) != 0) continue;   // Gm_PKind_Human
     int port = (int8_t)rd8(base + kSpCtrl);
-    if (port < 0 || port > 3 || out[port]) continue;
-    out[port] = fighter_of_slot(slot);
+    if (port < 0 || port > 3 || out[port].fighter) continue;
+    uint32_t fp = fighter_of_slot(slot);
+    if (fp) out[port] = Target{fp, slot};
   }
 }
 
-void raise_flash(int port, int frames_since_press) {
-  {
-    std::lock_guard<std::mutex> lock(g_flash_mutex);
-    g_flash_port = port + 1;
-    g_flash_frames = frames_since_press;
-    g_flash_time = host::now_seconds();
-  }
+void raise_flash(int slot, int port, int frames_since_press, uint32_t retrace) {
+  if (slot < 0 || slot >= kPlayerSlotCount) return;
+  g_flash[slot] = {true, retrace};
   // Only while the diagnostic log is on: during normal play this fires several times a minute.
-  if (g_log) host::log("lcancel: P%d missed, %d frames since a trigger press", port + 1, frames_since_press);
+  if (g_log) host::log("lcancel: P%d (slot %d) missed, %d frames since a trigger press", port + 1, slot, frames_since_press);
+}
+
+// Hand the renderer the colour for every flashing slot and take it back when the flash is over.
+// This is the only thing the indicator does: a colour in a constant buffer, no guest write.
+void publish_tints(uint32_t retrace) {
+  bool any = false;
+  for (int slot = 0; slot < kPlayerSlotCount; ++slot) {
+    SlotFlash& f = g_flash[slot];
+    if (!f.active) continue;
+    const uint32_t age = retrace - f.start_retrace;
+    if (age >= kFlashFrames) {
+      f.active = false;
+      gx::set_player_tint(slot, 1.f, 1.f, 1.f, 0.f);
+      continue;
+    }
+    const float fade = age < kFlashSolidFrames
+                           ? 1.0f
+                           : 1.0f - (float)(age - kFlashSolidFrames) / (float)(kFlashFrames - kFlashSolidFrames);
+    gx::set_player_tint(slot, kFlashRed, kFlashGreen, kFlashBlue, kFlashAmount * fade);
+    any = true;
+  }
+  g_tints_set = any;
+}
+
+// Put the renderer back exactly as it was: no tints, and no owner resolution cost per draw.
+void release_renderer() {
+  if (g_tints_set) { gx::clear_player_tints(); g_tints_set = false; }
+  for (auto& f : g_flash) f.active = false;
+  if (g_owner_tracking) { gx::set_owner_tracking(false); g_owner_tracking = false; }
 }
 
 void log_row(uint32_t retrace, int port, int32_t motion, uint32_t ground_air, uint8_t x67f, float anim, bool injected) {
@@ -254,29 +300,11 @@ bool online_session_pending() {
   return slippi::online::session_mode() >= 0 && slippi::online::in_online_menus();
 }
 
-Flash flash() {
-  Flash f;
-  double t, now = host::now_seconds();
-  {
-    std::lock_guard<std::mutex> lock(g_flash_mutex);
-    t = g_flash_time;
-    f.port = g_flash_port;
-    f.frames_since_press = g_flash_frames;
-  }
-  const double age = now - t;
-  if (age < 0.0 || age > kFlashSeconds) return f;
-  f.active = true;
-  // Hold it solid for the first half, then fade, so a glance catches it at full contrast.
-  const double hold = kFlashSeconds * 0.5;
-  f.alpha = age <= hold ? 1.0f : (float)(1.0 - (age - hold) / (kFlashSeconds - hold));
-  return f;
-}
-
 void apply(host::PadState pads[4]) {
   const bool want_indicator = indicator_enabled();
   const bool want_auto = automatic_enabled();
   // Default state: not one guest read, not one byte changed, so the game is bit for bit the game.
-  if (!want_indicator && !want_auto && !g_log) return;
+  if (!want_indicator && !want_auto && !g_log) { release_renderer(); return; }
 
   const uint32_t retrace = host::retrace_count();
   if (retrace == g_last_retrace) {
@@ -293,6 +321,12 @@ void apply(host::PadState pads[4]) {
   const int window = read_lcancel_window();
   const char* suppressed = auto_suppressed_mode();
   const bool auto_allowed = want_auto && suppressed == nullptr;
+  // With the automatic press actually doing the L-cancel there is nothing to report, so the flash
+  // is off entirely rather than merely never firing. It comes back the moment the press is
+  // suppressed (a matchmaking mode), which is exactly when the player wants the feedback again.
+  const bool indicate = want_indicator && !auto_allowed;
+  if (indicate != g_owner_tracking) { gx::set_owner_tracking(indicate); g_owner_tracking = indicate; }
+  if (!indicate && g_tints_set) { gx::clear_player_tints(); g_tints_set = false; for (auto& f : g_flash) f.active = false; }
   if (g_log) {
     static int last_mode = -2;
     const int mode = slippi::online::session_mode();
@@ -303,14 +337,14 @@ void apply(host::PadState pads[4]) {
     }
   }
 
-  uint32_t fighters[4];
-  local_fighters(fighters);
+  Target targets[4];
+  local_fighters(targets);
 
   for (int p = 0; p < 4; ++p) {
     PortState& st = g_ports[p];
     host::PadState& pad = pads[p];
     st.cached_inject = false;
-    const uint32_t fp = fighters[p];
+    const uint32_t fp = targets[p].fighter;
     if (!fp) {
       st.last_motion = -1;
       st.last_effective_lr = effective_lr(pad, cal);
@@ -324,9 +358,9 @@ void apply(host::PadState pads[4]) {
 
     // Indicator: the frame the fighter enters a LandingAir* state is the frame the game ran the
     // x67F < window test, and x67F has not moved since. Display only, so it is safe in every mode.
-    if (want_indicator && motion >= kLandingAirN && motion <= kLandingAirLw && motion != st.last_motion &&
+    if (indicate && motion >= kLandingAirN && motion <= kLandingAirLw && motion != st.last_motion &&
         since >= (uint8_t)std::min(window, 255))
-      raise_flash(p, since);
+      raise_flash(targets[p].slot, p, since, retrace);
 
     // Automatic press: only while the fighter is airborne in one of the five aerial attacks. An
     // aerial cannot be interrupted into an air dodge or a shield, so a shoulder input there has no
@@ -351,6 +385,8 @@ void apply(host::PadState pads[4]) {
     st.last_effective_lr = effective_lr(pad, cal);
     st.last_button = pad.button;
   }
+
+  if (indicate || g_tints_set) publish_tints(retrace);
 }
 
 }  // namespace lcancel

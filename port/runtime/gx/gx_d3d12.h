@@ -14,6 +14,13 @@ enum class SubFrameMode { Off, Extrapolate, Interpolate, Authored, AuthoredInter
 // for machines whose driver cannot start D3D12. Switching takes effect at the next launch.
 enum class RenderApi { D3D12, D3D11 };
 
+// How the 640x480 image is fitted to the window. Presentation only: it changes nothing the game
+// computes, so it cannot desync and two players in one match may pick different values.
+//   Auto    73:60 normally, 16:9 with the Slippi widescreen code on (see presented_aspect).
+//   Native  73:60, the aspect Melee's own camera asks for (Slippi Dolphin: "Force 73:60 (Melee)").
+//   Stretch fills the window edge to edge with no bars, the "stretched res" some players prefer.
+enum class AspectMode { Auto = 0, Native = 1, Force4_3 = 2, Force16_9 = 3, Stretch = 4 };
+
 struct D3D12Options {
   RenderApi api = RenderApi::D3D12;   // --backend d3d11|d3d12, or "backend" in port-settings.ini
   // Presentation timeline (threaded renderer only). fps_cap 0 = uncapped. With a SubFrameMode other
@@ -30,6 +37,18 @@ struct D3D12Options {
   // effects that do not write depth (sparks, glow, smoke), 2 skips translucent world geometry too.
   // Purely presentational, so unlike a Gecko code it cannot desync and both players may differ.
   int effects_level = 0;
+  // "Low spec": one switch that puts every setting which costs frames at its cheapest, for
+  // integrated graphics and older laptops. Turning it off must give the player their own settings
+  // back rather than a hardcoded default, so what they had is kept here while it is on. Both the
+  // switch and the kept values are saved in port-settings.ini, so the state survives a restart.
+  struct LowSpecPrevious {
+    RenderApi api = RenderApi::D3D12;
+    double fps_cap = 60;
+    int efb_scale = 0, ssaa = 1, anisotropy = 16, effects_level = 0, dlss_mode = 0;
+    SubFrameMode subframe = SubFrameMode::AuthoredInterpolate;
+  };
+  bool low_spec = false;
+  LowSpecPrevious low_spec_previous;
   // Discord Rich Presence, off by default: it tells the player's Discord friends what they are
   // playing. The application id is Melee Unlocked's own, registered once for the whole game rather
   // than per player, and it is not a secret (Rich Presence needs no token). A player can override it
@@ -41,6 +60,10 @@ struct D3D12Options {
   SubFrameMode subframe = SubFrameMode::Off;
   int efb_scale = 0;          // internal resolution multiplier; 0 = auto (integer scale covering the window, like Dolphin "Auto (Window Size)")
   int window_w = 1280, window_h = 960;  // initial client size
+  // The player picked a fixed window size ("window WxH" in the ini, or --window): the panel keeps
+  // the window at it. Off = the window is whatever size it has been dragged to.
+  bool window_pinned = false;
+  AspectMode aspect = AspectMode::Auto;   // --aspect, or "aspect" in port-settings.ini
   bool vsync = false;
   bool widescreen = false;    // Slippi Widescreen 16:9 code on (present at 16:9 and tell the game)
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
@@ -55,6 +78,28 @@ struct D3D12Options {
   std::string dump_path;      // write a text dump of draw state + shaders at dump_frame
   uint32_t dump_frame = 0;
 };
+
+// Aspect the presented image is letterboxed to, for these options and this client size.
+//
+// Melee does not render 4:3. Every camera in the game asks C_MTXPerspective for aspect
+// 1.2173333f (melee/src/melee/cm/camera.c, written 913.0f/750.0f in melee/src/melee/ty/toy.c),
+// which the captured XF projection registers confirm at runtime: 4.51071/3.70743 = 1.216668 on
+// the menus and 5.67128/4.65877 = 1.217334 in a match, both 73:60 to within a rounding error.
+// The console agrees: the VI paints Melee's 640 framebuffer columns into 640 of the 720 BT.601
+// samples of an NTSC active line, which is why Dolphin's VI derived aspect comes out at 1.2154
+// and why Slippi Dolphin ships "Force 73:60 (Melee)" as its default (VideoConfig.cpp).
+// The Slippi widescreen Gecko code multiplies that camera aspect by 320/219, and 73/60 * 320/219
+// is exactly 16/9, so with the code on the correct presentation is 16:9.
+inline float presented_aspect(const D3D12Options& options, int client_w, int client_h) {
+  switch (options.aspect) {
+    case AspectMode::Native:    return 73.0f / 60.0f;
+    case AspectMode::Force4_3:  return 4.0f / 3.0f;
+    case AspectMode::Force16_9: return 16.0f / 9.0f;
+    // No bars at all: claiming the window's own aspect makes the letterbox maths fill it exactly.
+    case AspectMode::Stretch:   return (float)(client_w > 0 ? client_w : 1) / (float)(client_h > 0 ? client_h : 1);
+    default:                    return options.widescreen ? 16.0f / 9.0f : 73.0f / 60.0f;
+  }
+}
 
 Backend* create_d3d12_backend(void* hwnd, int client_w, int client_h, const D3D12Options& options);
 const D3D12Options& d3d12_options(Backend* backend);

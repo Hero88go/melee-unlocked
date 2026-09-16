@@ -274,6 +274,7 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
   }
   { host::SimCostScope cost(host::SIM_OBSERVE);
     dc.identity = observed_draw_identity(dc.identity, dc.object_generation);
+    dc.owner_player = observed_owner();   // SkipInit above means this has to be written every draw
     dc.authored_pose = capture_authored_pose(); }
   g_frame.draws.push_back(std::move(dc));
   g_frame.commands.push_back({FrameCommand::Draw, (uint32_t)g_frame.draws.size() - 1});

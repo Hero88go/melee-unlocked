@@ -72,6 +72,9 @@ struct DrawCall {
   uint64_t identity = 0;
   std::shared_ptr<const AuthoredPose> authored_pose;
   uint64_t object_generation = 0; // Allocated JObj lifetime; zero means unobserved.
+  // Player slot (0..5) whose fighter rendered this draw, 0xFF for everything else. Display only:
+  // it feeds the per-player tint, is not part of `identity` and never reaches a shader UID.
+  uint8_t owner_player = 0xFF;
   // Render-thread cache: the pipeline resolved for this draw (valid for the backend that set it).
   // Sub-frames re-present the same draws, so the shader UIDs are hashed once per simulation frame.
   mutable void* cached_pipeline = nullptr;

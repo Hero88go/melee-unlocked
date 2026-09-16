@@ -99,7 +99,7 @@ target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcry
 
 # WIN32: no console window when the game is double-clicked or started from the launcher. Command-line
 # use still works, because main() reattaches to a parent console when there is one (see app/main.cpp).
-add_executable(melee_port WIN32 app/main.cpp)
+add_executable(melee_port WIN32 app/main.cpp app/melee_unlocked.rc)
 add_executable(port_mm_probe tests/mm_probe.cpp)
 target_link_libraries(port_mm_probe PRIVATE runtime guest)
 target_compile_options(port_mm_probe PRIVATE /EHsc)
@@ -109,7 +109,7 @@ target_compile_options(melee_port PRIVATE /EHsc)
 target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
 
 # Melee Unlocked client: Win32 launcher (Play page, Build tab, self-update). No runtime dependency.
-add_executable(melee_unlocked WIN32 app/launcher.cpp runtime/host/updater.cpp)
+add_executable(melee_unlocked WIN32 app/launcher.cpp runtime/host/updater.cpp app/launcher.rc)
 set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
 target_include_directories(melee_unlocked PRIVATE runtime/host runtime/ppc runtime/hle runtime/gx "${PORT_GEN}" third_party)
 target_compile_features(melee_unlocked PRIVATE cxx_std_17)
