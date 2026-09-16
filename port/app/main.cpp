@@ -42,7 +42,7 @@ extern const size_t name_table_count;
 
 static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
-              "           [--aspect auto|73:60|4:3|16:9|stretch]\n"
+              "           [--aspect auto|73:60|4:3|16:9|stretch] [--widescreen|--true-widescreen]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
               "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
@@ -393,7 +393,10 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--quiet") o.quiet = true;
     else if (a == "--time-base") o.time_base = std::strtoull(next(), nullptr, 0);
     else if (a == "--volume") o.volume = std::atoi(next());
-    else if (a == "--widescreen") gfx.widescreen = true;
+    else if (a == "--widescreen") { gfx.widescreen = true; gfx.true_widescreen = false; }
+    // Experimental true 16:9: widens the frustum in the renderer, no game code. Mutually exclusive
+    // with --widescreen, so whichever comes last on the command line wins rather than both applying.
+    else if (a == "--true-widescreen") { gfx.true_widescreen = true; gfx.widescreen = false; }
     else if (a == "--sharpness") gfx.sharpness = std::clamp((float)std::atof(next()), 0.0f, 1.0f);
     else if (a == "--ssaa") gfx.ssaa = std::atoi(next()) >= 2 ? 2 : 1;
     else if (a == "--anisotropy") gfx.anisotropy = std::clamp(std::atoi(next()), 1, 16);

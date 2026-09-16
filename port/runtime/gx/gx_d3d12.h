@@ -66,6 +66,10 @@ struct D3D12Options {
   AspectMode aspect = AspectMode::Auto;   // --aspect, or "aspect" in port-settings.ini
   bool vsync = false;
   bool widescreen = false;    // Slippi Widescreen 16:9 code on (present at 16:9 and tell the game)
+  // EXPERIMENTAL: widen the frustum in the renderer rather than running the Gecko code, so the HUD
+  // and the 2D layer keep their authored size and nothing is written to guest memory. Mutually
+  // exclusive with `widescreen`: both together would widen twice. See gx_shader.h.
+  bool true_widescreen = false;
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
   int anisotropy = 16;        // texture anisotropic filtering 1..16
   int ssaa = 1;               // supersampling factor: 1 off, 2 = 4x SSAA (EFB rendered at 2x the chosen scale, box filtered)
@@ -97,7 +101,7 @@ inline float presented_aspect(const D3D12Options& options, int client_w, int cli
     case AspectMode::Force16_9: return 16.0f / 9.0f;
     // No bars at all: claiming the window's own aspect makes the letterbox maths fill it exactly.
     case AspectMode::Stretch:   return (float)(client_w > 0 ? client_w : 1) / (float)(client_h > 0 ? client_h : 1);
-    default:                    return options.widescreen ? 16.0f / 9.0f : 73.0f / 60.0f;
+    default:                    return options.widescreen || options.true_widescreen ? 16.0f / 9.0f : 73.0f / 60.0f;
   }
 }
 

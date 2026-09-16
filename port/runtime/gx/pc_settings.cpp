@@ -306,6 +306,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "fullscreen") options.fullscreen = value == "1";
       else if (key == "vsync") options.vsync = value == "1";
       else if (key == "widescreen") options.widescreen = value == "1";
+      else if (key == "truewidescreen") options.true_widescreen = value == "1";
       else if (key == "aspect") { int a = std::stoi(value); if (a >= 0 && a <= 4) options.aspect = (AspectMode)a; }
       // "window <w>x<h>", or "window follow" for the old behaviour of using whatever size the
       // window has been dragged to.
@@ -511,13 +512,33 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     ImGui::Begin("PC settings", &state.open, ImGuiWindowFlags_NoCollapse);
     ImGui::TextUnformatted("F1: settings    Escape: return to game");
     ImGui::Separator();
+    // Grouped into tabs so the panel is scannable: it had grown to one long column where the
+    // audio sliders sat between the sub-frame mode and the visual effects level. Save settings and
+    // the version line stay outside the tabs, so Save is reachable from whichever tab is open.
+    if (ImGui::BeginTabBar("settings_tabs")) {
+      if (ImGui::BeginTabItem("Video")) {
     changed |= ImGui::Checkbox("Borderless fullscreen", &options.fullscreen);
     const double rates[] = {-1, 0, 60, 120, 144, 165, 200, 240, 360, 480};
     const char* names[] = {"Match monitor", "Unlocked", "60", "120", "144", "165", "200", "240", "360", "480"};
     int selected = -1; for (int i = 0; i < 10; ++i) if (options.fps_cap == rates[i]) selected = i;
     if (ImGui::Combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
     changed |= ImGui::Checkbox("VSync", &options.vsync);
-    changed |= ImGui::Checkbox("Widescreen 16:9 (Slippi code, online safe)", &options.widescreen);
+    if (ImGui::Checkbox("Widescreen 16:9 (Slippi code, online safe)", &options.widescreen)) {
+      if (options.widescreen) options.true_widescreen = false;   // one or the other, never both
+      changed = true;
+    }
+    // True 16:9 widens the frustum here in the renderer instead of running the Gecko code, so the
+    // HUD and every 2D element keep the size they were authored at rather than stretching with the
+    // frame. Experimental because the game still lays out and culls for 73:60: geometry can be
+    // missing or pop in at the new edges, which is the part only play testing finds.
+    if (ImGui::Checkbox("True 16:9 (experimental, no game code)", &options.true_widescreen)) {
+      if (options.true_widescreen) options.widescreen = false;
+      changed = true;
+    }
+    if (options.true_widescreen)
+      ImGui::TextDisabled("Widens the camera in the renderer: the HUD stays the right size and nothing is\n"
+                          "written to game memory, so it cannot desync. Watch the edges for missing or\n"
+                          "popping scenery, which is what makes this experimental.");
     float win_w = ImGui::GetIO().DisplaySize.x, win_h = ImGui::GetIO().DisplaySize.y;
 
     // Aspect ratio and window size are presentation only: they change nothing the game computes,
@@ -630,10 +651,6 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::Combo("Sub-frame animation", &sf, subframe_modes, 3)) { options.subframe = sf == 0 ? SubFrameMode::Off : sf == 2 ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored; changed = true; }
     if (sf == 1) ImGui::TextWrapped("Samples supported animation beyond the latest pose. Sudden stops can require correction.");
     if (sf == 2) ImGui::TextWrapped("Samples between completed poses. This adds up to one simulation tick of visual delay; unsupported motion may hold.");
-    int music = slippi::jukebox::user_volume();
-    if (ImGui::SliderInt("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
-    state.volume = host::audio_volume();
-    if (ImGui::SliderInt("Volume", &state.volume, 0, 100, "%d%%")) host::audio_set_volume(state.volume);
     {
       const char* levels[] = {"Full", "Reduced (no sparks or glow)", "Minimal (no translucent effects)"};
       ImGui::SetNextItemWidth(260);
@@ -641,26 +658,6 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       if (options.effects_level > 0 && ImGui::IsItemHovered())
         ImGui::SetTooltip("Skips decorative draws to raise frame rate on slower machines.\nDisplay only: safe online, and players may use different settings.");
     }
-    ImGui::Checkbox("Performance overlay", &options.performance_overlay);
-    changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
-    if (options.input_overlay) {
-      // Several ports can be shown at once (doubles and crew streams want every player visible);
-      // they stack upward from the bottom left corner.
-      for (int i = 0; i < 4; ++i) {
-        ImGui::SameLine();
-        char label[16];
-        std::snprintf(label, sizeof label, "P%d", i + 1);
-        bool on = (options.input_overlay_ports & (1 << i)) != 0;
-        if (ImGui::Checkbox(label, &on)) {
-          options.input_overlay_ports = on ? (options.input_overlay_ports | (1 << i)) : (options.input_overlay_ports & ~(1 << i));
-          changed = true;
-        }
-      }
-      ImGui::SameLine();
-      changed |= ImGui::Checkbox("Hide border", &options.input_overlay_hide_border);
-      ImGui::TextDisabled("  Drag an overlay to move it, and its edges to resize, while this panel is open.");
-    }
-    ImGui::Checkbox("Open this panel at startup", &options.settings_open);
 
     // ---- Low spec ----
     // One switch for every setting above that costs frames. Turning it on remembers what the player
@@ -703,61 +700,38 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Graphics backend: %s at the next launch. Save settings, then restart.",
                            options.api == RenderApi::D3D11 ? "Direct3D 11" : "Direct3D 12");
     }
-    ImGui::Separator();
-
-    // ---- L-cancel helpers ----
-    // The indicator reads the fighter's action state and never writes anything, so it is display
-    // only and safe in every mode. The automatic press is a real analog trigger press injected into
-    // the local pad before the game reads it, so it is transmitted like any other input and both
-    // clients compute the same landing lag: it cannot desync. It is still gated to offline and
-    // Direct because it is a fairness question, not a safety one.
-    ImGui::TextUnformatted("L-cancel");
-    {
-      bool indicator = lcancel::indicator_enabled();
-      if (ImGui::Checkbox("Flash red on missed L-cancel", &indicator)) lcancel::set_indicator(indicator);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Flashes the fighter red when an aerial lands without the landing lag halved.\n"
-                          "Display only: the tint is applied by the renderer and never written into the\n"
-                          "game, so it is safe in every mode. It is skipped while auto L-cancel is doing\n"
-                          "the press for you, since there is then nothing to report.");
-      bool automatic = lcancel::automatic_enabled();
-      if (ImGui::Checkbox("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
-      ImGui::SameLine();
-      ImGui::TextDisabled("(NOTE: Will not work in Unranked or Ranked, only offline and direct)");
-      if (automatic) {
-        ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
-                           "network like any other, so it cannot desync. In a Direct match both players should agree "
-                           "to use it: it is a fairness question, not a safety one.");
-        if (const char* mode = lcancel::auto_suppressed_mode())
-          ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Disabled right now: this is %s.", mode);
+        ImGui::EndTabItem();
       }
+      if (ImGui::BeginTabItem("Audio")) {
+    int music = slippi::jukebox::user_volume();
+    if (ImGui::SliderInt("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
+    state.volume = host::audio_volume();
+    if (ImGui::SliderInt("Volume", &state.volume, 0, 100, "%d%%")) host::audio_set_volume(state.volume);
+        ImGui::EndTabItem();
+      }
+      if (ImGui::BeginTabItem("Overlays")) {
+    ImGui::Checkbox("Performance overlay", &options.performance_overlay);
+    changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
+    if (options.input_overlay) {
+      // Several ports can be shown at once (doubles and crew streams want every player visible);
+      // they stack upward from the bottom left corner.
+      for (int i = 0; i < 4; ++i) {
+        ImGui::SameLine();
+        char label[16];
+        std::snprintf(label, sizeof label, "P%d", i + 1);
+        bool on = (options.input_overlay_ports & (1 << i)) != 0;
+        if (ImGui::Checkbox(label, &on)) {
+          options.input_overlay_ports = on ? (options.input_overlay_ports | (1 << i)) : (options.input_overlay_ports & ~(1 << i));
+          changed = true;
+        }
+      }
+      ImGui::SameLine();
+      changed |= ImGui::Checkbox("Hide border", &options.input_overlay_hide_border);
+      ImGui::TextDisabled("  Drag an overlay to move it, and its edges to resize, while this panel is open.");
     }
-    ImGui::Separator();
-
-    // ---- Discord presence ----
-    // Off by default, and inert without an application ID. Nothing reaches Discord until the box
-    // below is ticked. See scratchpad/discord_invite_design.md for the whole design.
-    ImGui::TextUnformatted("Discord");
-    char app_id[32];
-    std::snprintf(app_id, sizeof app_id, "%s", options.discord_app_id.c_str());
-    if (ImGui::InputText("Application ID", app_id, sizeof app_id, ImGuiInputTextFlags_CharsDecimal)) {
-      options.discord_app_id = app_id;
-      host::discord::configure(options.discord_app_id);
-    }
-    const bool discord_was = options.discord_presence;
-    ImGui::Checkbox("Discord presence (show what you are playing; friends can press Join)", &options.discord_presence);
-    if (options.discord_presence != discord_was) {
-      host::discord::configure(options.discord_app_id);
-      host::discord::enable(options.discord_presence);   // starts or stops one background thread
-    }
-    if (options.discord_presence) {
-      ImGui::TextWrapped("%s", host::discord::status().c_str());
-      ImGui::TextDisabled("A new Application ID is picked up the next time you switch this off and on.");
-      ImGui::TextWrapped("Your Slippi connect code is published as the join secret so a friend who presses Join gets it filled in under Online > Direct. Your IP address is never published. Rich Presence is visible to anyone who can see your Discord profile.");
-    } else {
-      ImGui::TextDisabled("Off. Nothing is sent to Discord. Needs an Application ID from discord.com/developers/applications.");
-    }
-    ImGui::Separator();
+        ImGui::EndTabItem();
+      }
+      if (ImGui::BeginTabItem("Controls")) {
 
     // ---- Controls (rebinding) ----
     ImGui::TextUnformatted("Controls");
@@ -903,6 +877,69 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                            active_pad_buttons_label(p.button).c_str(), p.stick_x, p.stick_y, p.sub_x, p.sub_y, p.trig_l, p.trig_r);
       ImGui::PopID();
     }
+        ImGui::EndTabItem();
+      }
+      if (ImGui::BeginTabItem("Game")) {
+
+    // ---- L-cancel helpers ----
+    // The indicator reads the fighter's action state and never writes anything, so it is display
+    // only and safe in every mode. The automatic press is a real analog trigger press injected into
+    // the local pad before the game reads it, so it is transmitted like any other input and both
+    // clients compute the same landing lag: it cannot desync. It is still gated to offline and
+    // Direct because it is a fairness question, not a safety one.
+    ImGui::TextUnformatted("L-cancel");
+    {
+      bool indicator = lcancel::indicator_enabled();
+      if (ImGui::Checkbox("Flash red on missed L-cancel", &indicator)) lcancel::set_indicator(indicator);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Flashes the fighter red when an aerial lands without the landing lag halved.\n"
+                          "Display only: the tint is applied by the renderer and never written into the\n"
+                          "game, so it is safe in every mode. It is skipped while auto L-cancel is doing\n"
+                          "the press for you, since there is then nothing to report.");
+      bool automatic = lcancel::automatic_enabled();
+      if (ImGui::Checkbox("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
+      ImGui::SameLine();
+      ImGui::TextDisabled("(NOTE: Will not work in Unranked or Ranked, only offline and direct)");
+      if (automatic) {
+        ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
+                           "network like any other, so it cannot desync. In a Direct match both players should agree "
+                           "to use it: it is a fairness question, not a safety one.");
+        if (const char* mode = lcancel::auto_suppressed_mode())
+          ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Disabled right now: this is %s.", mode);
+      }
+    }
+
+
+    // ---- Discord presence ----
+    // Off by default, and inert without an application ID. Nothing reaches Discord until the box
+    // below is ticked. See scratchpad/discord_invite_design.md for the whole design.
+    ImGui::TextUnformatted("Discord");
+    char app_id[32];
+    std::snprintf(app_id, sizeof app_id, "%s", options.discord_app_id.c_str());
+    if (ImGui::InputText("Application ID", app_id, sizeof app_id, ImGuiInputTextFlags_CharsDecimal)) {
+      options.discord_app_id = app_id;
+      host::discord::configure(options.discord_app_id);
+    }
+    const bool discord_was = options.discord_presence;
+    ImGui::Checkbox("Discord presence (show what you are playing; friends can press Join)", &options.discord_presence);
+    if (options.discord_presence != discord_was) {
+      host::discord::configure(options.discord_app_id);
+      host::discord::enable(options.discord_presence);   // starts or stops one background thread
+    }
+    if (options.discord_presence) {
+      ImGui::TextWrapped("%s", host::discord::status().c_str());
+      ImGui::TextDisabled("A new Application ID is picked up the next time you switch this off and on.");
+      ImGui::TextWrapped("Your Slippi connect code is published as the join secret so a friend who presses Join gets it filled in under Online > Direct. Your IP address is never published. Rich Presence is visible to anyone who can see your Discord profile.");
+    } else {
+      ImGui::TextDisabled("Off. Nothing is sent to Discord. Needs an Application ID from discord.com/developers/applications.");
+    }
+
+    ImGui::Checkbox("Open this panel at startup", &options.settings_open);
+        ImGui::EndTabItem();
+      }
+      ImGui::EndTabBar();
+    }
+
     ImGui::Separator();
 
     {
@@ -917,7 +954,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";
       std::ofstream file(temporary);
       file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
-           << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen << "\naspect " << (int)options.aspect
+           << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen
+           << "\ntruewidescreen " << options.true_widescreen << "\naspect " << (int)options.aspect
            << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
            << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
            << "\ndlss " << options.dlss_mode << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")

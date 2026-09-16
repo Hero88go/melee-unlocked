@@ -86,4 +86,13 @@ void fill_ps_constants(const DrawCall& dc, PSConstants& out, int efb_scale);
 void set_player_tint(int player, float r, float g, float b, float amount);
 void clear_player_tints();
 
+// EXPERIMENTAL true 16:9: widen the camera frustum in the renderer instead of injecting the Slippi
+// widescreen Gecko code. Melee's camera asks for 73:60 and 73/60 * 320/219 is exactly 16/9, so the
+// horizontal half of a perspective projection is scaled by 219/320 and nothing else changes.
+// Orthographic projections (the HUD, the magnifier, every 2D element) are left alone, which is the
+// part the Gecko code cannot do: it widens the whole frame, so 2D authored for 73:60 stretches.
+// Nothing is written to guest memory, so this cannot desync; it is mutually exclusive with the
+// Gecko code because applying both would widen twice.
+void set_true_widescreen(bool on);
+
 }  // namespace gx
