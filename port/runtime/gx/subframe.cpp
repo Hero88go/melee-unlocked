@@ -21,12 +21,21 @@ namespace {
 // already filters out unused stages; add the pipeline state it leaves out and the texture
 // coordinate scales of the generators the draw actually uses. Constants (TEV colours, fog, alpha
 // references) are not compared: the presented draw always takes them from the current frame.
-bool same_draw_state(const DrawCall& a, const DrawCall& b, uint32_t& changed) {
-  const PSUid ua = make_ps_uid(a), ub = make_ps_uid(b);
-  if (!(ua == ub)) {
-    changed = 0;
-    for (unsigned i = 0; i < 256; ++i) if (ua.bp.reg[i] != ub.bp.reg[i]) { changed = i; break; }
-    return false;
+bool same_draw_state(const DrawCall& a, const DrawCall& b, uint32_t& changed, bool compare_shader) {
+  // The shader identity is only needed to tell two draws apart when nothing else can. It is the
+  // wrong test for a draw the observer tracked, because a material change on the same object then
+  // reads as a different object: Melee's intangibility flash adds a TEV stage to the fighter
+  // (GENMODE numtevstages 2 <-> 3) twice per six-frame flash cycle, which unpaired an airdodging
+  // fighter for two whole ticks per cycle. He held still while the scene advanced, then snapped, a
+  // 20 Hz stall in time with the flash. Blend, alpha, cull and texcoord scale are still compared
+  // below, so a genuinely different material still breaks the pair.
+  if (compare_shader) {
+    const PSUid ua = make_ps_uid(a), ub = make_ps_uid(b);
+    if (!(ua == ub)) {
+      changed = 0;
+      for (unsigned i = 0; i < 256; ++i) if (ua.bp.reg[i] != ub.bp.reg[i]) { changed = i; break; }
+      return false;
+    }
   }
   if (a.bp.blendmode() != b.bp.blendmode()) { changed = BP_BLENDMODE; return false; }
   if (a.bp.dstalpha() != b.bp.dstalpha()) { changed = BP_CONSTANTALPHA; return false; }
@@ -280,8 +289,10 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
       else if (!d.object_generation && !same_vertices) ++stats_.geometry;
       else if (!vertex_ranges_valid || !d.vertex_count || pd.vertex_count != d.vertex_count ||
           pd.primitive != d.primitive || pd.components != d.components) ++stats_.geometry;
-      else if (!same_draw_state(pd, d, stats_.state_register) || !same_textures(pd, d) ||
-               !same_matrix_bindings(pd, d)) ++stats_.state;
+      // The shader identity is only compared for draws the observer did not see; an observed draw is
+      // already identified by generation, pass and draw ordinal (see same_draw_state).
+      else if (!same_draw_state(pd, d, stats_.state_register, !d.object_generation) ||
+               !same_textures(pd, d) || !same_matrix_bindings(pd, d)) ++stats_.state;
       else if (std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 7 * sizeof(uint32_t))) ++stats_.projection;
       else { valid = true; p.blend_vertices = !same_vertices; }
       if (valid) {

@@ -1,0 +1,58 @@
+# Airdodge diagnosis fixture. Same prelude as graphics_yoshi.txt (Mario/Luigi on
+# Yoshi's Story), then P1 runs (reference animation) and performs four airdodges.
+# P2 stands still the whole match as an unchanging reference fighter.
+300 B
+310
+380 B
+390
+460 sy=-127
+466
+500 A
+510
+580 A
+590
+700 p=2
+1000 sx=61 sy=127
+1000 p=2 sy=127
+1017
+1017 p=2
+1040 A
+1040 p=2 A
+1050
+1050 p=2
+1100 START
+1110
+1300 sy=100
+1367
+1380 sx=100
+1382
+1390 sy=-100
+1392
+1410 A
+1420
+# ---- in match ----
+# run right, then left: a known-good animation reference
+1600 sx=100
+1660 sx=-100
+1720
+# airdodge 1: full jump, airdodge right
+1750 X
+1758
+1775 L sx=80
+1785
+# airdodge 2: full jump, airdodge left
+1950 X
+1958
+1975 L sx=-80
+1985
+# airdodge 3: full jump, airdodge right
+2150 X
+2158
+2175 L sx=80
+2185
+# airdodge 4: full jump, airdodge left
+2350 X
+2358
+2375 L sx=-80
+2385
+2550
