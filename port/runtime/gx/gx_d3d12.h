@@ -105,6 +105,12 @@ inline float presented_aspect(const D3D12Options& options, int client_w, int cli
   }
 }
 
+// Ask the renderer to write the next `frames` presented frames to capture/blink_<n>.ppm. Bound to
+// F2 so a defect that only appears in a real session can be caught by the person watching it:
+// four scripted captures of the stage blinking reproduced nothing, because a headless run never
+// falls behind and never sees the conditions it needs.
+void request_frame_capture(unsigned frames);
+
 Backend* create_d3d12_backend(void* hwnd, int client_w, int client_h, const D3D12Options& options);
 const D3D12Options& d3d12_options(Backend* backend);
 void d3d12_resize(Backend* backend, int w, int h);

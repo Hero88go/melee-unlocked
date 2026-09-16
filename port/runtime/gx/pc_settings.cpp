@@ -501,6 +501,10 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   }
   ImGui::NewFrame();
   if (ImGui::IsKeyPressed(ImGuiKey_F1)) state.open = !state.open;
+  // F2: write the next ~90 presented frames into capture\. For defects that only show in a real
+  // session, where scripted runs reproduce nothing: press it while the problem is happening and
+  // the frames themselves can be read afterwards.
+  if (ImGui::IsKeyPressed(ImGuiKey_F2)) { request_frame_capture(90); host::log("capture: F2, writing the next 90 presented frames into capture\\"); }
   if (state.open && ImGui::IsKeyPressed(ImGuiKey_Escape)) state.open = false;
   host::window_input_capture(state.open);
   state.intervals[state.cursor++ % state.intervals.size()] = ImGui::GetIO().DeltaTime*1000.f;

@@ -1366,6 +1366,9 @@ void D3D12Backend::flush_captures() {
   pending_captures_.clear();
 }
 
+// Set from the settings UI's key handling (F2), read on the render thread.
+std::atomic<unsigned> g_capture_request{0};
+
 static void dump_frame(const Frame& frame, const std::string& path) {
   FILE* f = fopen(path.c_str(), "w");
   if (!f) return;
@@ -1515,6 +1518,21 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   ++fence_value_;
   queue_->Signal(fence_.Get(), fence_value_);
   slot_fence_[slot_] = fence_value_;
+  // F2: write the next N presented frames out, whatever the capture options say.
+  if (presented) {
+    unsigned want = g_capture_request.load(std::memory_order_relaxed);
+    if (want) {
+      g_capture_request.store(want - 1, std::memory_order_relaxed);
+      CreateDirectoryA("capture", nullptr);
+      const std::string saved = opts_.capture_path;
+      char path[64];
+      snprintf(path, sizeof path, "capture\blink_%05u.ppm", frames_presented_);
+      opts_.capture_path = path;
+      capture_backbuffer();
+      opts_.capture_path = saved;
+      if (want == 1) { flush_captures(); host::log("capture: wrote the requested frames into capture\\"); }
+    }
+  }
   if (presented && !opts_.capture_path.empty()) {
     capture_sequence_ = frame.sequence;
     if (opts_.capture_sim_frame && !opts_.capture_frame && frame.sequence >= opts_.capture_sim_frame) opts_.capture_frame = frames_presented_;
@@ -1531,6 +1549,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
 }
 
 }  // namespace
+
+// Outside the anonymous namespace: the settings UI calls this from another translation unit.
+void request_frame_capture(unsigned frames) { g_capture_request.store(frames, std::memory_order_relaxed); }
 
 // Atomically publish complete cache files. Concurrent instances may replace one
 // another's cache, but cannot expose a truncated file to a reader.
