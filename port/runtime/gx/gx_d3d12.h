@@ -18,6 +18,10 @@ struct D3D12Options {
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
   float dlss_jitter_sign = -1.0f; // calibrated 2026-09-11: -1 reconstructs sharp text, +1 blurs (see PORT_COMPLETION.md)
   bool pc_settings = false, settings_open = false, performance_overlay = false;
+  // Discord Rich Presence. Off by default and inert without an application ID, which the owner of
+  // the game has to create at discord.com/developers/applications; nothing is baked into the binary.
+  bool discord_presence = false;
+  std::string discord_app_id;
   std::string settings_path = "port-settings.ini";
   std::string frame_times; // optional buffered CSV of CPU presentation timing
   SubFrameMode subframe = SubFrameMode::Off;

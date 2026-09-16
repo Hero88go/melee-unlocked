@@ -20,6 +20,7 @@
 #include "threaded_backend.h"
 #include "window.h"
 #include "updater.h"
+#include "discord_presence.h"
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -262,6 +263,9 @@ int main(int argc, char** argv) {
   SetUnhandledExceptionFilter(crash_filter);
   if (!automated) {
     gx::load_pc_settings(gfx, o.volume);
+    // Opt-in, and only ever from a saved setting: an automated or headless run never gets here, so
+    // it can never publish. With the setting off no thread is started and no pipe is opened.
+    if (gfx.discord_presence) { host::discord::configure(gfx.discord_app_id); host::discord::enable(true); }
     threaded = true;
     // Interpolate by default: it never overshoots a stop, so menus, cursors and stage geometry stay
     // on one timeline. Predict avoids its one tick of delay but can overshoot and snap back.
@@ -394,6 +398,7 @@ int main(int argc, char** argv) {
               (unsigned long long)underruns, (unsigned long long)silent_ms, (rate_low - 1.0) * 100.0, (rate_high - 1.0) * 100.0); }
   host::audio_close();
   host::updater::shutdown();   // the settings panel may have started an update check; join it before exit
+  host::discord::shutdown();   // clears the presence and joins its thread; a no-op when never enabled
   host::gcadapter_shutdown();
   slippi::shutdown();
   { uint64_t calls = 0, insns = 0; ppc::interpreter_stats(&calls, &insns);
