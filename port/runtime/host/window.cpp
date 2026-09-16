@@ -464,10 +464,28 @@ void input_poll(PadState out[4]) {
       for (int i = 0; i < (int)BindAction::Count; ++i)
         if (gc[idx].button & kActionPadBit[i]) debug.gc_actions[idx] |= (uint16_t)(1u << i);
 
+  // 0.1.7 drove port 1 from the keyboard and the first pad together. The port-source table replaced
+  // that with the keyboard alone, so a lone Xbox pad landed on port 2 and a DS4 on no port at all,
+  // and players who had been port 1 reported their controller had stopped working. Keep the table,
+  // but let the first unrouted pad also drive a port still on the default keyboard source.
+  auto routed = [&](DeviceKind kind, int index) {
+    for (int q = 0; q < 4; ++q) if (g_port_sources[q].kind == kind && g_port_sources[q].index == index) return true;
+    return false;
+  };
+  auto keyboard_and_pad = [&](int) {
+    PadState result = kb;
+    const PadState* pad = nullptr;
+    for (int i = 0; i < 4 && !pad; ++i) if (xin_connected[i] && !routed(DeviceKind::XInputPad, i)) pad = &xin[i];
+    for (int i = 0; i < 4 && !pad; ++i) if (ds4_connected[i] && !routed(DeviceKind::DS4Pad, i)) pad = &ds4[i];
+    // The keyboard keeps working; the pad takes over whenever it is actually being used.
+    if (pad && (pad->button || pad->stick_x || pad->stick_y || pad->sub_x || pad->sub_y ||
+                pad->trig_l > 20 || pad->trig_r > 20)) result = *pad;
+    return result;
+  };
   for (int port = 0; port < 4; ++port) {
     const PortSource& src = g_port_sources[port];
     switch (src.kind) {
-      case DeviceKind::Keyboard: out[port] = kb; break;
+      case DeviceKind::Keyboard: out[port] = keyboard_and_pad(port); break;
       case DeviceKind::XInputPad:
         if (src.index >= 0 && src.index < 4 && xin_connected[src.index]) out[port] = xin[src.index];
         break;
@@ -476,6 +494,9 @@ void input_poll(PadState out[4]) {
         break;
       case DeviceKind::GCAdapter:
         if (src.index >= 0 && src.index < 4 && (gc_mask & (1u << src.index))) out[port] = gc[src.index];
+        // Nothing in that adapter socket: port 1 falls back to the keyboard and the first unrouted
+        // pad, so a player without an adapter is still player 1.
+        else if (port == 0) out[port] = keyboard_and_pad(port);
         break;
       case DeviceKind::None: default: break;
     }
