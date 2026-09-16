@@ -96,13 +96,19 @@ struct PortSource {
   int index = 0;   // physical controller index; unused for Keyboard/None
 };
 
-// Default: keyboard -> port 1, Xbox pad 0 -> port 2, GC adapter port 0 -> port 3, port 4 unassigned.
+// Default: GameCube adapter port N drives game port N, as it did through 0.1.7. Port 1 falls back to
+// the keyboard and the first unrouted pad when adapter port 1 is empty, so a keyboard-only or
+// pad-only player is still player 1.
+//
+// The previous default (keyboard -> port 1, Xbox pad -> port 2, adapter port 1 -> port 3) silently
+// made adapter users player 3 and pad users player 2: their controller was read but drove a port
+// nobody was playing, so it looked like it "never becomes active" no matter which socket they used.
 inline std::array<PortSource, 4> default_port_sources() {
   return {{
-    { DeviceKind::Keyboard, 0 },
-    { DeviceKind::XInputPad, 0 },
     { DeviceKind::GCAdapter, 0 },
-    { DeviceKind::None, 0 },
+    { DeviceKind::GCAdapter, 1 },
+    { DeviceKind::GCAdapter, 2 },
+    { DeviceKind::GCAdapter, 3 },
   }};
 }
 
