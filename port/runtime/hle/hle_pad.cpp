@@ -3,6 +3,7 @@
 #include "hle.h"
 #include <cstdio>
 #include <cstring>
+#include "lcancel.h"
 
 static uint32_t s_spec = 5;
 
@@ -33,6 +34,10 @@ HLE(PADRead) {
   if (host::options.trace_calls && reported++ < 10) host::log("[pad] PADRead(%08X)", ARG0);
   host::PadState pads[4];
   host::input_poll(pads);
+  // Automatic L-cancel, if the player turned it on: it presses the analog trigger here, one step
+  // upstream of everything the game does with the pad, so the press is sampled, recorded into the
+  // replay and sent to the opponent exactly like a press the player made.
+  lcancel::apply(pads);
   uint32_t base = ARG0, mask = 0;
   for (int i = 0; i < 4; ++i) {
     uint32_t p = base + i * 12;

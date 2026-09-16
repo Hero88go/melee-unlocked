@@ -15,7 +15,6 @@
 #include <string>
 #include <cstdio>
 #include <cstring>
-#include <cstdlib>   // TEMPORARY DIAGNOSTIC (getenv)
 #include <future>
 #include <cmath>
 #include <thread>
@@ -50,7 +49,7 @@ class ThreadedBackend final : public Backend {
           file = std::fopen(path.c_str(), "w");
           if (!file) throw std::runtime_error("cannot open frame timing CSV");
           std::setvbuf(file, nullptr, _IOFBF, 1024 * 1024);
-          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms,draws,missing,hud,state,geometry,projection,state_register,skinned,carried\n", file);   // TEMPORARY DIAGNOSTIC: carried
+          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms,draws,missing,hud,state,geometry,projection,state_register,skinned\n", file);
         }
       }
       ~Trace() { if (file) std::fclose(file); }
@@ -131,8 +130,6 @@ class ThreadedBackend final : public Backend {
         t = (now - current.time) / SIM_PERIOD;
         if (interpolate) t = std::min(std::max(t, 0.0), 1.0);
         else t = std::min(std::max(t, 0.0), 1.0);   // never extrapolate more than one frame ahead
-        // TEMPORARY DIAGNOSTIC: MELEE_FORCE_PHASE pins the sub-frame phase so two runs are comparable.
-        { static const char* forced = std::getenv("MELEE_FORCE_PHASE"); if (forced) t = std::atof(forced); }
         if (cap_period > 0 && now < next_present - render_budget) {
           // Start early enough to finish GPU submission before the presentation deadline.
           double wait = next_present - render_budget - now;
@@ -165,12 +162,12 @@ class ThreadedBackend final : public Backend {
       const double render_end = host::now_seconds();
       const double present_wait = renderer->presentation_wait_seconds();
       render_budget = std::max(render_budget * 0.95, render_end-render_start-present_wait+0.0002);
-      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",   // TEMPORARY DIAGNOSTIC: trailing carried column
+      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f,%u,%u,%u,%u,%u,%u,%u,%u\n",
           (unsigned long long)(presented+1), (unsigned long long)current.sequence, t,
           (render_start-current.time)*1000.0, last_submission ? (render_end-last_submission)*1000.0 : 0.0,
           solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired, host::last_sim_frame_ms(),
           solver.stats().draws, solver.stats().missing, solver.stats().hud, solver.stats().state, solver.stats().geometry,
-          solver.stats().projection, solver.stats().state_register, solver.stats().skinned, solver.stats().carried);   // TEMPORARY DIAGNOSTIC
+          solver.stats().projection, solver.stats().state_register, solver.stats().skinned);
       last_submission = render_end;
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
@@ -203,11 +200,6 @@ class ThreadedBackend final : public Backend {
             for (int i = 1; i < 24; ++i) if (a.capture[i]) line += " c" + std::to_string(i) + "=" + std::to_string(a.capture[i]);
             line += " | sample fails:";
             for (int i = 1; i < 24; ++i) if (a.sample[i]) line += " s" + std::to_string(i) + "=" + std::to_string(a.sample[i]);
-            // TEMPORARY DIAGNOSTIC: chain reconstruction residual in world units.
-            { const uint32_t n = a.residual_count.load(), s = a.residual_sum.load(), m = a.residual_max.load();
-              char buf[128]; std::snprintf(buf, sizeof buf, " | residual max %.4f mean %.5f units over %u joints",
-                                           m / 10000.0, n ? (s / 10000.0) / n : 0.0, n);
-              line += buf; }
             host::log("%s", line.c_str());
           }
         }

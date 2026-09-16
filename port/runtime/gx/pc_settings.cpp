@@ -5,6 +5,7 @@
 #include "audio.h"
 #include "host.h"
 #include "input_bindings.h"
+#include "lcancel.h"
 #include "updater.h"
 #include "discord_presence.h"
 #ifndef MELEE_PORT_VERSION
@@ -22,6 +23,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 namespace gx {
@@ -269,6 +271,47 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
   ImGui::PopStyleVar(2);
 }
 
+// The two L-cancel on-screen pieces: the missed-L-cancel flash, and the notice that says the
+// automatic press is switched off because this is a matchmaking mode. Both are ImGui overlays: the
+// fighter tint the Slippi playback build uses is a write into the fighter, and this must not write
+// anything the game could read.
+static void draw_lcancel_overlays() {
+  const lcancel::Flash flash = lcancel::flash();
+  if (flash.active) {
+    const float a = flash.alpha;
+    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, ImGui::GetIO().DisplaySize.y * 0.14f),
+                            ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowBgAlpha(0.45f * a);
+    ImGui::Begin("LCancelFlash", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                              ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
+    ImGui::SetWindowFontScale(1.6f);
+    ImGui::TextColored(ImVec4(1.0f, 0.22f, 0.18f, a), "NO L-CANCEL");
+    ImGui::SetWindowFontScale(1.0f);
+    // frames_since_press is the fighter's own counter: 255 means no trigger press at all since the
+    // last reset, anything else is how many frames early the press was.
+    if (flash.frames_since_press < 255)
+      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.5f, a), "pressed %d frames too early (P%d)", flash.frames_since_press, flash.port);
+    else
+      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.5f, a), "no trigger press (P%d)", flash.port);
+    ImGui::End();
+  }
+
+  // Character select of a matchmaking mode, with the setting on: say plainly that it is off here.
+  if (lcancel::automatic_enabled() && lcancel::online_session_pending()) {
+    if (const char* mode = lcancel::auto_suppressed_mode()) {
+      std::string lower = mode;
+      for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+      ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, 10), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+      ImGui::SetNextWindowBgAlpha(0.75f);
+      ImGui::Begin("LCancelModeNotice", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                                     ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
+      ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
+                         "You currently have auto L-cancel on, but we have disabled it for %s mode", lower.c_str());
+      ImGui::End();
+    }
+  }
+}
+
 void load_pc_settings(D3D12Options& options, int& volume) {
   std::ifstream file(options.settings_path);
   // First launch (no saved settings yet): open the PC settings panel so nobody has to find it.
@@ -293,6 +336,8 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "inputoverlayport") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 4) options.input_overlay_ports = 1 << n; }
       else if (key == "inputoverlayports") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 16) options.input_overlay_ports = n; }
       else if (key == "inputoverlayhideborder") options.input_overlay_hide_border = value == "1";
+      else if (key == "lcancelindicator") lcancel::set_indicator(value == "1");
+      else if (key == "autolcancel") lcancel::set_automatic(value == "1");
       else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
       else if (key == "discord") options.discord_presence = value == "1";
@@ -533,6 +578,32 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     ImGui::Checkbox("Open this panel at startup", &options.settings_open);
     ImGui::Separator();
 
+    // ---- L-cancel helpers ----
+    // The indicator reads the fighter's action state and never writes anything, so it is display
+    // only and safe in every mode. The automatic press is a real analog trigger press injected into
+    // the local pad before the game reads it, so it is transmitted like any other input and both
+    // clients compute the same landing lag: it cannot desync. It is still gated to offline and
+    // Direct because it is a fairness question, not a safety one.
+    ImGui::TextUnformatted("L-cancel");
+    {
+      bool indicator = lcancel::indicator_enabled();
+      if (ImGui::Checkbox("Missed L-cancel indicator", &indicator)) lcancel::set_indicator(indicator);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Flashes on screen when an aerial lands without the landing lag halved.\nDisplay only: it never touches the game, so it is safe in every mode.");
+      bool automatic = lcancel::automatic_enabled();
+      if (ImGui::Checkbox("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
+      ImGui::SameLine();
+      ImGui::TextDisabled("(NOTE: Will not work in Unranked or Ranked, only offline and direct)");
+      if (automatic) {
+        ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
+                           "network like any other, so it cannot desync. In a Direct match both players should agree "
+                           "to use it: it is a fairness question, not a safety one.");
+        if (const char* mode = lcancel::auto_suppressed_mode())
+          ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Disabled right now: this is %s.", mode);
+      }
+    }
+    ImGui::Separator();
+
     // ---- Discord presence ----
     // Off by default, and inert without an application ID. Nothing reaches Discord until the box
     // below is ticked. See scratchpad/discord_invite_design.md for the whole design.
@@ -723,6 +794,8 @@ bool PcSettingsUI::begin(D3D12Options& options) {
            << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
            << "\ninputoverlayhideborder " << options.input_overlay_hide_border
            << "\neffects " << options.effects_level
+           << "\nlcancelindicator " << (lcancel::indicator_enabled() ? 1 : 0)
+           << "\nautolcancel " << (lcancel::automatic_enabled() ? 1 : 0)
            << "\ndiscord " << (options.discord_presence ? 1 : 0);
       // Only when set: "key value" parsing would swallow the next line on an empty value.
       if (!options.discord_app_id.empty()) file << "\ndiscord_app_id " << options.discord_app_id;
@@ -770,6 +843,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     for (int i = 0; i < 4; ++i)
       if (mask & (1 << i)) draw_input_overlay(i, row++, lone, state.open, options.input_overlay_hide_border);
   }
+  draw_lcancel_overlays();
   if (options.performance_overlay) {
     ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.75f);

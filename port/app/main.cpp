@@ -19,6 +19,7 @@
 #include "pc_settings.h"
 #include "threaded_backend.h"
 #include "window.h"
+#include "lcancel.h"
 #include "updater.h"
 #include "discord_presence.h"
 #include <chrono>
@@ -327,6 +328,10 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--window") { if (std::sscanf(next(), "%dx%d", &gfx.window_w, &gfx.window_h) != 2 || gfx.window_w < 320 || gfx.window_h < 240) { usage(); return 2; } }
     else if (a == "--settings-path") gfx.settings_path = next();
     else if (a == "--pc-settings-open") { gfx.pc_settings = true; gfx.settings_open = true; }
+    // The overlay layer without the panel. An automated run turns the UI off entirely, which also
+    // takes the on-screen overlays with it; this brings them back without capturing the pad, so a
+    // scripted run can screenshot an overlay.
+    else if (a == "--pc-settings") gfx.pc_settings = true;
     else if (a == "--fullscreen") gfx.fullscreen = true;
     else if (a == "--dlss") { std::string v = next(); gfx.dlss_mode = v == "off" ? 0 : v == "dlaa" ? 1 : v == "quality" ? 2 : v == "balanced" ? 3 : v == "performance" ? 4 : v == "ultra" ? 5 : -1;
       if (gfx.dlss_mode < 0) { std::fprintf(stderr, "--dlss off|dlaa|quality|balanced|performance|ultra\n"); return 2; } }
@@ -378,6 +383,11 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--audio-dump") o.audio_dump = next();
     else if (a == "--profile") g_profile = true;
     else if (a == "--input-log") o.input_log = next();
+    // L-cancel helpers, both off unless asked for. --lcancel-log writes a per-frame CSV of the
+    // local fighters' action state and trigger timer, which is how the landing lag is measured.
+    else if (a == "--auto-lcancel") lcancel::set_automatic(true);
+    else if (a == "--lcancel-indicator") lcancel::set_indicator(true);
+    else if (a == "--lcancel-log") lcancel::set_log_path(next());
     else if (a == "--profile-render") { g_profile = true; g_profiler.render_thread = true; }
     else { usage(); return 2; }
   }

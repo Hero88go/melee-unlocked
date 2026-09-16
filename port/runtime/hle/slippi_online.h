@@ -24,5 +24,13 @@ bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vect
 // Counts rollback loads so the renderer can treat them as discontinuities.
 uint64_t rollback_count();
 bool is_online_match();
+// The online mode of the session that is running or being set up, as a Matchmaking::OnlinePlayMode
+// value (RANKED 0, UNRANKED 1, DIRECT 2, TEAMS 3, PARTY 4). -1 when there is no online session at
+// all, which is what "offline" means to the rest of the port. Covers matchmaking, the online
+// character select screen and the match itself, so a feature can be gated on the mode before the
+// match starts rather than only once it is running.
+int session_mode();
+// In-game player slot of the local player in an online match (0..3).
+int local_player_index();
 
 }  // namespace slippi::online
