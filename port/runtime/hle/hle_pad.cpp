@@ -8,7 +8,9 @@ static uint32_t s_spec = 5;
 
 HLE(PADInit) { RET(1); }
 HLE(PADReset) { RET(1); }
-HLE(PADRecalibrate) { RET(1); }
+// The game asks for the controller's neutral to be re-read. We used to accept and do nothing, so a
+// stick deflected when the adapter first reported kept a wrong neutral for the whole session.
+HLE(PADRecalibrate) { host::gcadapter_recalibrate(ARG0 == 0xFFFFFFFFu ? -1 : (int)ARG0); RET(1); }
 // PADControlMotor(chan, command): 0 stop, 1 rumble, 2 stop hard.
 HLE(PADControlMotor) { host::gcadapter_rumble((int)ARG0, ARG1 == 1); }
 HLE(PADControlAllMotors) { for (int i = 0; i < 4; ++i) host::gcadapter_rumble(i, host::rd32(ARG0 + 4 * i) == 1); }

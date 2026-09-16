@@ -29,6 +29,12 @@ enum : uint16_t {
 libusb_context* g_ctx = nullptr;
 libusb_device_handle* g_dev = nullptr;
 bool g_claimed = false;
+// Nintendo's WUP-028 puts its data on interface 0 with endpoints 0x81 in and 0x02 out, and we used to
+// assume that. Third-party adapters (the Hand Held Legend GC Pocket+) report the same USB identity but
+// use different numbers, so every transfer failed with LIBUSB_ERROR_NOT_FOUND while the device opened
+// perfectly: detected, claimed, and silent. These are discovered from the descriptors instead.
+int g_iface = 0;
+uint8_t g_ep_in = 0x81, g_ep_out = 0x02;
 std::thread g_thread;
 std::atomic<bool> g_running{false};
 std::mutex g_mutex;
@@ -106,7 +112,7 @@ void close_adapter() {
   g_running.store(false);
   if (g_thread.joinable()) g_thread.join();
   if (g_dev) {
-    if (g_claimed) libusb_release_interface(g_dev, 0);
+    if (g_claimed) libusb_release_interface(g_dev, g_iface);
     libusb_close(g_dev);
     g_dev = nullptr;
   }
@@ -136,6 +142,29 @@ bool open_adapter() {
     libusb_free_device_list(list, 1);
     return false;
   }
+  // Read the endpoint layout from the device before the list is freed. An adapter whose interrupt
+  // endpoints sit elsewhere still works; one we talk to on the wrong numbers does not.
+  g_iface = 0; g_ep_in = 0x81; g_ep_out = 0x02;
+  libusb_config_descriptor* cfg = nullptr;
+  if (libusb_get_active_config_descriptor(adapter, &cfg) == 0 && cfg) {
+    bool found = false;
+    for (uint8_t i = 0; i < cfg->bNumInterfaces && !found; ++i) {
+      const libusb_interface& itf = cfg->interface[i];
+      for (int a = 0; a < itf.num_altsetting && !found; ++a) {
+        const libusb_interface_descriptor& alt = itf.altsetting[a];
+        uint8_t in = 0, out = 0;
+        for (uint8_t e = 0; e < alt.bNumEndpoints; ++e) {
+          const libusb_endpoint_descriptor& ep = alt.endpoint[e];
+          if ((ep.bmAttributes & 0x03) != LIBUSB_TRANSFER_TYPE_INTERRUPT) continue;
+          if (ep.bEndpointAddress & 0x80) { if (!in) in = ep.bEndpointAddress; }
+          else if (!out) out = ep.bEndpointAddress;
+        }
+        if (in && out) { g_iface = alt.bInterfaceNumber; g_ep_in = in; g_ep_out = out; found = true; }
+      }
+    }
+    libusb_free_config_descriptor(cfg);
+    if (!found) log("gc adapter: no interrupt endpoint pair in the descriptors; trying the standard interface 0 with 0x81/0x02");
+  }
   int rc = libusb_open(adapter, &g_dev);
   libusb_free_device_list(list, 1);
   if (rc != 0) {
@@ -146,7 +175,7 @@ bool open_adapter() {
     }
     return false;
   }
-  rc = libusb_claim_interface(g_dev, 0);
+  rc = libusb_claim_interface(g_dev, g_iface);
   if (rc != 0) {
     if (!g_logged_missing) {
       log("gc adapter: cannot claim the adapter (%s): another program (Dolphin or Slippi?) is using it. Close it and try again.", libusb_error_name(rc));
@@ -159,9 +188,9 @@ bool open_adapter() {
   // A run that exited without closing the adapter (a crash) leaves it mid-stream: the next open
   // succeeds but the read pipe delivers nothing, so the adapter looks absent until it is physically
   // unplugged. Clearing both pipes does by software what a replug was doing by hand.
-  libusb_clear_halt(g_dev, 0x81);
-  libusb_clear_halt(g_dev, 0x02);
-  log("gc adapter: opened through libusb");
+  libusb_clear_halt(g_dev, g_ep_in);
+  libusb_clear_halt(g_dev, g_ep_out);
+  log("gc adapter: opened through libusb (interface %d, endpoints in 0x%02X out 0x%02X)", g_iface, g_ep_in, g_ep_out);
   g_logged_missing = false;
   g_logged_restart = false;
   g_running.store(true);
@@ -215,6 +244,16 @@ uint32_t gcadapter_poll(PadState out[4]) {
     mask |= 1u << port;
   }
   return mask;
+}
+
+// PADRecalibrate on hardware re-reads the controller's neutral position. Our neutral is taken from
+// the first report after a controller connects, so a stick that was deflected at that moment shifts
+// every later reading, which makes precise inputs like UCF shield drops work only sometimes.
+// Dropping the stored origin makes the next report re-establish it.
+void gcadapter_recalibrate(int port) {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (port < 0 || port > 3) { for (auto& o : g_origin) o.set = false; return; }
+  g_origin[port].set = false;
 }
 
 void gcadapter_rumble(int port, bool on) {

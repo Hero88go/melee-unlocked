@@ -8,6 +8,13 @@
 namespace gx {
 
 // Constant buffer layouts shared with the generated HLSL.
+// Bytes of VSConstants a draw's shader can actually read. The trailing blocks are conditional: the
+// post-transform matrices only when dual-texture transform is on, and the previous-pose matrices and
+// projections only when motion vectors are generated (DLSS). Uploading the whole 4.9 KB for every
+// draw made constants the single largest cost in the renderer, 0.72 us of a 1.57 us draw, most of it
+// matrices the draw never reads.
+size_t vs_constants_bytes(const DrawCall& dc, bool motion_vectors);
+
 struct VSConstants {
   float projection[4][4];
   float depthparams[4];

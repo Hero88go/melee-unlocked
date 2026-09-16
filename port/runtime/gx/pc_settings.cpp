@@ -144,6 +144,70 @@ static std::string active_pad_buttons_label(uint16_t button) {
   return s.empty() ? std::string("-") : s;
 }
 
+// On-screen controller display for streaming: the octagonal gate, C-stick, analog triggers and the
+// face buttons, drawn from the state the game read on its last PADRead rather than a fresh poll, so
+// it shows what the game acted on and device polling stays on one thread at one rate.
+static void draw_input_overlay(int port) {
+  host::PadState pads[4]{};
+  host::input_last_pads(pads);
+  const host::PadState& pad = pads[port < 0 || port > 3 ? 0 : port];
+
+  const float gate = 46.f, cgate = 30.f, pad_w = 300.f, pad_h = 132.f;
+  ImGui::SetNextWindowPos(ImVec2(16, ImGui::GetIO().DisplaySize.y - 16), ImGuiCond_Always, ImVec2(0, 1));
+  ImGui::SetNextWindowSize(ImVec2(pad_w, pad_h), ImGuiCond_Always);
+  ImGui::SetNextWindowBgAlpha(0.30f);
+  ImGui::Begin("Controller", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 o = ImGui::GetCursorScreenPos();
+  const ImU32 line = IM_COL32(255, 255, 255, 190), dim = IM_COL32(255, 255, 255, 70);
+  const ImU32 yellow = IM_COL32(245, 215, 65, 235), green = IM_COL32(120, 225, 150, 240), red = IM_COL32(235, 95, 95, 240);
+
+  // Analog triggers: the bar fills with how far it is pressed, so light presses are visible.
+  auto trigger = [&](float x, uint8_t value) {
+    const ImVec2 a(o.x + x, o.y + 4), b(o.x + x + 58, o.y + 12);
+    dl->AddRectFilled(a, ImVec2(a.x + 58 * (value / 255.f), b.y), line, 4.f);
+    dl->AddRect(a, b, dim, 4.f);
+  };
+  trigger(6, pad.trig_l);
+  trigger(74, pad.trig_r);
+
+  // Melee's gate is an octagon with vertices on the cardinals and diagonals, which is what an eight
+  // sided ImGui n-gon gives. Stick values are signed and screen Y grows downward.
+  auto stick = [&](ImVec2 c, float r, int8_t sx, int8_t sy, ImU32 colour) {
+    dl->AddNgon(c, r, colour, 8, 2.f);
+    dl->AddCircle(c, 2.f, dim, 8, 1.f);
+    const ImVec2 tip(c.x + (sx / 128.f) * r, c.y - (sy / 128.f) * r);
+    dl->AddLine(c, tip, colour, 1.5f);
+    dl->AddCircleFilled(tip, 5.f, colour, 12);
+  };
+  stick(ImVec2(o.x + 52, o.y + 74), gate, pad.stick_x, pad.stick_y, line);
+  stick(ImVec2(o.x + 146, o.y + 82), cgate, pad.sub_x, pad.sub_y, yellow);
+
+  auto button = [&](ImVec2 c, float r, ImU32 colour, bool down, const char* label) {
+    if (down) dl->AddCircleFilled(c, r, colour, 16);
+    else dl->AddCircle(c, r, colour, 16, 1.5f);
+    if (label) {
+      const ImVec2 size = ImGui::CalcTextSize(label);
+      dl->AddText(ImVec2(c.x - size.x * 0.5f, c.y - size.y * 0.5f), down ? IM_COL32(20, 20, 20, 230) : colour, label);
+    }
+  };
+  const uint16_t b = pad.button;
+  button(ImVec2(o.x + 232, o.y + 78), 19.f, green, (b & 0x0100) != 0, "A");
+  button(ImVec2(o.x + 200, o.y + 104), 10.f, red, (b & 0x0200) != 0, "B");
+  button(ImVec2(o.x + 262, o.y + 44), 10.f, line, (b & 0x0400) != 0, "X");
+  button(ImVec2(o.x + 202, o.y + 46), 10.f, line, (b & 0x0800) != 0, "Y");
+  button(ImVec2(o.x + 240, o.y + 24), 9.f, IM_COL32(170, 130, 235, 240), (b & 0x0010) != 0, "Z");
+  button(ImVec2(o.x + 150, o.y + 24), 7.f, line, (b & 0x1000) != 0, nullptr);
+
+  // D-pad, small, only drawn when held: it is rarely used and should not clutter a stream.
+  const ImVec2 d(o.x + 104, o.y + 112);
+  if (b & 0x0008) dl->AddTriangleFilled(ImVec2(d.x, d.y - 12), ImVec2(d.x - 5, d.y - 4), ImVec2(d.x + 5, d.y - 4), line);
+  if (b & 0x0004) dl->AddTriangleFilled(ImVec2(d.x, d.y + 12), ImVec2(d.x - 5, d.y + 4), ImVec2(d.x + 5, d.y + 4), line);
+  if (b & 0x0001) dl->AddTriangleFilled(ImVec2(d.x - 12, d.y), ImVec2(d.x - 4, d.y - 5), ImVec2(d.x - 4, d.y + 5), line);
+  if (b & 0x0002) dl->AddTriangleFilled(ImVec2(d.x + 12, d.y), ImVec2(d.x + 4, d.y - 5), ImVec2(d.x + 4, d.y + 5), line);
+  ImGui::End();
+}
+
 void load_pc_settings(D3D12Options& options, int& volume) {
   std::ifstream file(options.settings_path);
   // First launch (no saved settings yet): open the PC settings panel so nobody has to find it.
@@ -162,6 +226,9 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
       else if (key == "performance") options.performance_overlay = value == "1";
+      else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
+      else if (key == "inputoverlay") options.input_overlay = value == "1";
+      else if (key == "inputoverlayport") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 4) options.input_overlay_port = n; }
       else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
       else if (key == "volume") volume = std::clamp(std::stoi(value), 0, 100);
@@ -336,7 +403,21 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     if (ImGui::SliderInt("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
     state.volume = host::audio_volume();
     if (ImGui::SliderInt("Volume", &state.volume, 0, 100, "%d%%")) host::audio_set_volume(state.volume);
+    {
+      const char* levels[] = {"Full", "Reduced (no sparks or glow)", "Minimal (no translucent effects)"};
+      ImGui::SetNextItemWidth(260);
+      changed |= ImGui::Combo("Visual effects", &options.effects_level, levels, 3);
+      if (options.effects_level > 0 && ImGui::IsItemHovered())
+        ImGui::SetTooltip("Skips decorative draws to raise frame rate on slower machines.\nDisplay only: safe online, and players may use different settings.");
+    }
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
+    changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
+    if (options.input_overlay) {
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(110);
+      const char* ports[] = {"Port 1", "Port 2", "Port 3", "Port 4"};
+      changed |= ImGui::Combo("##overlayport", &options.input_overlay_port, ports, 4);
+    }
     ImGui::Checkbox("Open this panel at startup", &options.settings_open);
     ImGui::Separator();
 
@@ -484,7 +565,9 @@ bool PcSettingsUI::begin(D3D12Options& options) {
            << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
            << "\ndlss " << options.dlss_mode << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
-           << "\nstartup " << (options.settings_open ? 1 : 0);
+           << "\nstartup " << (options.settings_open ? 1 : 0)
+           << "\ninputoverlay " << options.input_overlay << "\ninputoverlayport " << options.input_overlay_port
+           << "\neffects " << options.effects_level;
       for (int i = 0; i < (int)host::BindAction::Count; ++i)
         file << "\nkey_" << kActionNames[i] << " " << host::g_key_bindings.vk[i];
       for (int idx = 0; idx < 4; ++idx)
@@ -503,6 +586,10 @@ bool PcSettingsUI::begin(D3D12Options& options) {
       state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     }
     ImGui::SameLine(); if (ImGui::Button("Return to game")) state.open = false;
+    // Quitting from here shuts down the same way closing the window does, so the replay is finalised,
+    // the pipeline cache is written and the adapter is released rather than left mid-stream.
+    ImGui::SameLine();
+    if (ImGui::Button("Quit game")) host::request_exit(0);
     if (state.saved) ImGui::TextUnformatted("Settings saved");
     ImGui::End();
   }
@@ -515,6 +602,7 @@ bool PcSettingsUI::begin(D3D12Options& options) {
     ImGui::TextUnformatted("Settings: F1");
     ImGui::End();
   }
+  if (options.input_overlay) draw_input_overlay(options.input_overlay_port);
   if (options.performance_overlay) {
     ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_Always);
     ImGui::SetNextWindowBgAlpha(0.75f);
