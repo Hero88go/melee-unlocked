@@ -15,6 +15,7 @@ namespace ppc {
 
 static std::vector<Fn> g_dispatch;   // indexed by (addr - RAM_BASE) / 4
 static uint8_t g_locked_cache[LC_SIZE];
+uint64_t g_resumed_returns = 0;      // see ppc.h
 
 // Covers all of RAM: Gecko caves live below .text (bootloader at 0x800028B8) and in the heap
 // (the main code table the game loads), and their subroutines are called through pointers.

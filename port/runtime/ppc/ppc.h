@@ -73,6 +73,10 @@ using Fn = void (*)(Context&, uint8_t*);
 void call(Context& c, uint8_t* m, uint32_t addr);         // indirect call by guest address
 void interpret(Context& c, uint8_t* m, uint32_t addr);    // run RAM-resident code until it returns (interp.cpp)
 void interpreter_stats(uint64_t* calls, uint64_t* insns);
+// Counts the times a callee asked its caller to resume past the call instead of at it (a Gecko cave
+// unwinding the function it was spliced into: see analyze._computed_return_delta). Reported at exit,
+// so a run can be checked for whether those code paths were reached at all.
+extern uint64_t g_resumed_returns;
 void fatal(Context& c, const char* what, uint32_t a);
 // Releases one level of guest call depth when the call returns or is unwound by an exception.
 struct CallDepthScope { Context& c; ~CallDepthScope() { --c.call_depth; } };

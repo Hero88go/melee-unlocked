@@ -342,7 +342,7 @@ class Emitter:
             if ins.lk and (ins.addr + 4) in info.local_returns:
                 return "c.lr = %s; goto L_%08X;" % (hexs(ins.addr + 4), t)
             if ins.lk:
-                return self._call(t, ins.addr + 4)
+                return self._call(t, ins.addr + 4, info)
             if t in info.addr_set:
                 poll = "ppc::backedge(c); " if t <= ins.addr else ""
                 return "%sgoto L_%08X;" % (poll, t)
@@ -353,7 +353,7 @@ class Emitter:
             if ins.lk and (ins.addr + 4) in info.local_returns:
                 body = "c.lr = %s; goto L_%08X;" % (hexs(ins.addr + 4), t)
             elif ins.lk:
-                body = self._call(t, ins.addr + 4)
+                body = self._call(t, ins.addr + 4, info)
             elif t in info.addr_set:
                 poll = "ppc::backedge(c); " if t <= ins.addr else ""
                 body = "%sgoto L_%08X;" % (poll, t)
@@ -377,7 +377,7 @@ class Emitter:
                 if (ins.addr + 4) in info.local_returns:
                     body = "c.lr = %s; goto L_%08X;" % (hexs(ins.addr + 4), t)
                 else:
-                    body = self._call(t, ins.addr + 4)
+                    body = self._call(t, ins.addr + 4, info)
             elif ins.lk:
                 body = "{ uint32_t t = c.ctr; c.lr = %s; ppc::call(c, m, t); }" % hexs(ins.addr + 4)
             elif ins.addr in info.ctr_targets:
@@ -452,10 +452,20 @@ class Emitter:
     def _store(self, kind, ea, val):
         return {"w": "ppc::st32", "b": "ppc::st8", "h": "ppc::st16"}[kind] + "(c, m, %s, %s)" % (ea, val)
 
-    def _call(self, target, ret):
+    def _call(self, target, ret, info=None):
         if target in self.func_names and target in self.infos:
-            return "c.lr = %s; %s(c, m);" % (hexs(ret), self.fname(target))
-        return "c.lr = %s; ppc::call(c, m, %s);" % (hexs(ret), hexs(target))
+            out = "c.lr = %s; %s(c, m);" % (hexs(ret), self.fname(target))
+        else:
+            out = "c.lr = %s; ppc::call(c, m, %s);" % (hexs(ret), hexs(target))
+        # A Gecko cave can unwind the callee by hand and ask to resume past the call (see
+        # analyze._computed_return_delta). The callee leaves that address in LR; an ordinary
+        # return leaves the address of the next instruction, so the test costs one compare.
+        callee = self.infos.get(target)
+        if callee is not None and info is not None:
+            for k in sorted(getattr(callee, "computed_returns", ())):
+                if ret + k in info.labels:
+                    out += " if (c.lr == %s) { ++ppc::g_resumed_returns; goto L_%08X; }" % (hexs(ret + k), ret + k)
+        return out
 
     def _tail(self, target):
         if target in self.func_names and target in self.infos:
