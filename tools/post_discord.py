@@ -64,6 +64,10 @@ def to_discord(text, version, repo="Hero88go/melee-unlocked"):
     the post in half.
     """
     blocks, para = [], []
+    # Sections the GitHub release keeps but the announcement does not want. Install instructions
+    # belong on the release page people land on, not in a chat message.
+    skip_sections = {"install"}
+    skipping = False
 
     def flush():
         if para:
@@ -82,7 +86,12 @@ def to_discord(text, version, repo="Hero88go/melee-unlocked"):
             continue                                   # the title is carried by the header below
         if stripped.startswith("## "):
             flush()
-            blocks.append("**%s**" % stripped[3:].strip())
+            heading = stripped[3:].strip()
+            skipping = heading.lower() in skip_sections
+            if not skipping:
+                blocks.append("**%s**" % heading)
+            continue
+        if skipping:
             continue
         if stripped.startswith("### "):
             flush()

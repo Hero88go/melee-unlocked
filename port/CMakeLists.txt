@@ -115,7 +115,7 @@ target_include_directories(melee_unlocked PRIVATE runtime/host runtime/ppc runti
 target_compile_features(melee_unlocked PRIVATE cxx_std_17)
 target_compile_options(melee_unlocked PRIVATE /EHsc)
 target_compile_definitions(melee_unlocked PRIVATE NOMINMAX UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
-target_link_libraries(melee_unlocked PRIVATE comctl32 winhttp user32 gdi32 shell32 comdlg32)
+target_link_libraries(melee_unlocked PRIVATE comctl32 winhttp user32 gdi32 shell32 comdlg32 msimg32 uxtheme)
 
 # Replay playback build: the same runtime with the game translated against the Slippi Playback
 # code set (python port/recomp/recomp.py --sys-dir port/slippi_sys_playback --out port/generated_playback).

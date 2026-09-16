@@ -302,6 +302,14 @@ static int melee_main(int argc, char** argv) {
     // which left anyone without a saved volume silent. Set before the file is read, so a saved
     // volume still wins, and an explicit --volume below wins over both.
     o.volume = 70;
+    // Unlocked is the whole point of the port, so a fresh install must not present at 60. The
+    // struct default is 60 for automated runs, which never reach this branch. The launcher used to
+    // pass --fps unlocked on every start, which also overrode what the player had saved (0.2.1 and
+    // 0.2.2), so it was removed from the launcher; without a default here a new player got a 60 Hz
+    // build with sub-frame animation on and no way to tell why it felt wrong. Set before the
+    // settings file is read, so a saved cap (60 in the Low spec preset) still wins, and an explicit
+    // --fps below wins over both.
+    gfx.fps_cap = 0;   // 0 = uncapped
     gx::load_pc_settings(gfx, o.volume);
     // Opt-in, and only ever from a saved setting: an automated or headless run never gets here, so
     // it can never publish. With the setting off no thread is started and no pipe is opened.

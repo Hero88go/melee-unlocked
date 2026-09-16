@@ -1017,35 +1017,15 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
 
 // ---------------- draws ----------------
 void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const DrawMatrices* override_matrices) {
-  // Optional quality reduction, for machines that cannot hold the frame rate. Submitting draws is the
-  // largest cost per frame, so dropping decorative ones is the most direct saving available. Only
-  // world-space draws qualify: HUD and menus use a different projection (xf_regs[0x26]) and are left
-  // alone, so percentages, stocks and the timer are never affected. This changes only what is drawn,
-  // never guest memory, so it cannot desync and two players may run different settings.
-  static uint64_t g_effects_submitted = 0;   // world draws that survived the effects filter
-  if (opts_.effects_level > 0 && dc.xf_regs[0x26] == 0 && (dc.bp.blendmode() & 1)) {
-    const uint32_t blend = dc.bp.blendmode();
-    const bool writes_depth = (dc.bp.zmode() & 0x10) != 0;
-    // Additive blending (destination factor ONE) is what glow, sparks and flashes use. Matching any
-    // blending at all removed about 830 of 1936 draws per frame, most of the translucent stage, which
-    // is a different setting from the one intended.
-    const uint32_t dst_factor = (blend >> 5) & 7;
-    const bool additive = dst_factor == 1;
-    // Level 2 used to skip every blended draw that does not write depth, which in Melee is most of
-    // the world: it removed the entire scene and left a blank screen. A draw that neither writes nor
-    // tests depth cannot be part of the scene's geometry, so that is the safe wider category.
-    const bool tests_depth = (dc.bp.zmode() & 1) != 0;
-    const bool overlay = !writes_depth && !tests_depth;
-    if ((additive && !writes_depth) || (opts_.effects_level >= 2 && overlay)) {
-      // Counted so the setting can be shown to do something: a filter that silently matches nothing
-      // looks exactly like one that works but is lost in frame-rate noise.
-      static uint64_t skipped = 0;
-      if (++skipped % 20000 == 0) host::log("effects: skipped %llu draws of %llu submitted at level %d",
-                                            (unsigned long long)skipped, (unsigned long long)g_effects_submitted, opts_.effects_level);
-      return;
-    }
-    ++g_effects_submitted;
-  }
+  // The "Visual effects" quality reduction used to sit here and has been removed. It skipped
+  // world-space additive draws that do not write depth, on the theory that those are glow, sparks
+  // and flashes. In Melee they are also the stage select pointer (reported missing whenever effects
+  // were reduced) and, at the wider level 2 rule, menu text. Nothing in a draw distinguishes a hit
+  // spark from a cursor: both are 3D, additive and depth-less, so the filter cannot be narrowed into
+  // correctness. It was also aimed at machines that turn out to be limited by the simulation rather
+  // than by draw submission, so it was removing required UI to buy time that was not the bottleneck.
+  // The "effects" key is still parsed from settings files written by older builds, and ignored.
+
   // Build index list (triangle list / line list) from the GX primitive.
   Stopwatch sw;
   auto& idx = index_scratch_; idx.clear();
