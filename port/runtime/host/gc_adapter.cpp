@@ -33,6 +33,7 @@ uint8_t g_report[37] = {};
 bool g_have_report = false;
 std::chrono::steady_clock::time_point g_next_scan;
 bool g_logged_missing = false;
+bool g_logged_restart = false;   // logged once per open when the adapter is silent and we retry
 struct Origin { bool set = false; uint8_t sx = 128, sy = 128, cx = 128, cy = 128, tl = 0, tr = 0; } g_origin[4];
 std::atomic<uint8_t> g_rumble[4]{};
 std::atomic<bool> g_rumble_dirty{false};
@@ -62,19 +63,34 @@ std::string find_adapter_path() {
 void reader_thread() {
   ULONG timeout = 100;
   WinUsb_SetPipePolicy(g_usb, 0x81, PIPE_TRANSFER_TIMEOUT, sizeof timeout, &timeout);
-  uint8_t start = 0x13;
   ULONG n = 0;
-  if (!WinUsb_WritePipe(g_usb, 0x02, &start, 1, &n, nullptr)) log("gc adapter: start command failed (%lu)", GetLastError());
-  int failures = 0;
+  auto send_start = [&] {
+    uint8_t start = 0x13;
+    if (!WinUsb_WritePipe(g_usb, 0x02, &start, 1, &n, nullptr)) log("gc adapter: start command failed (%lu)", GetLastError());
+  };
+  send_start();
+  int failures = 0, silent = 0;
   while (g_running.load()) {
     uint8_t buf[37];
     ULONG got = 0;
     if (WinUsb_ReadPipe(g_usb, 0x81, buf, sizeof buf, &got, nullptr)) {
-      failures = 0;
+      failures = 0; silent = 0;
       if (got == 37 && buf[0] == 0x21) { std::lock_guard<std::mutex> lk(g_mutex); std::memcpy(g_report, buf, 37); g_have_report = true; }
     } else {
       DWORD err = GetLastError();
-      if (err == ERROR_SEM_TIMEOUT || err == WAIT_TIMEOUT) continue;
+      if (err == ERROR_SEM_TIMEOUT || err == WAIT_TIMEOUT) {
+        // A timeout used to loop forever without counting, so an adapter that was connected but not
+        // streaming was never retried and never reported: it stayed dead until it was physically
+        // unplugged, which is what made replugging "fix" it. An adapter left mid-stream by a crash
+        // does exactly this. Reset the read pipe and ask it to start again about once a second.
+        if (++silent >= 10) {
+          silent = 0;
+          WinUsb_ResetPipe(g_usb, 0x81);
+          send_start();
+          if (!g_logged_restart) { log("gc adapter: no reports yet, resetting the pipe and re-sending start"); g_logged_restart = true; }
+        }
+        continue;
+      }
       if (++failures > 20) { log("gc adapter: read failed (%lu), adapter disconnected", err); break; }
     }
     if (g_rumble_dirty.exchange(false)) {
@@ -112,8 +128,14 @@ bool open_adapter() {
     CloseHandle(g_file); g_file = INVALID_HANDLE_VALUE;
     return false;
   }
+  // A run that exited without closing the adapter (a crash) leaves it mid-stream: the next open
+  // succeeds but the read pipe delivers nothing, so the adapter looks absent until it is physically
+  // unplugged. Resetting both pipes clears that state, which is what a replug was doing by hand.
+  WinUsb_ResetPipe(g_usb, 0x81);
+  WinUsb_ResetPipe(g_usb, 0x02);
   log("gc adapter: opened %s", path.c_str());
   g_logged_missing = false;
+  g_logged_restart = false;
   g_running.store(true);
   g_thread = std::thread(reader_thread);
   return true;
