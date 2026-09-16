@@ -110,6 +110,9 @@ inline float presented_aspect(const D3D12Options& options, int client_w, int cli
 // four scripted captures of the stage blinking reproduced nothing, because a headless run never
 // falls behind and never sees the conditions it needs.
 void request_frame_capture(unsigned frames);
+// The pending count, shared by both backends so F2 behaves identically on each.
+unsigned gx_capture_request();
+void gx_capture_request_set(unsigned frames);
 
 Backend* create_d3d12_backend(void* hwnd, int client_w, int client_h, const D3D12Options& options);
 const D3D12Options& d3d12_options(Backend* backend);

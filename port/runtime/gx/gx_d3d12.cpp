@@ -1552,6 +1552,8 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
 
 // Outside the anonymous namespace: the settings UI calls this from another translation unit.
 void request_frame_capture(unsigned frames) { g_capture_request.store(frames, std::memory_order_relaxed); }
+unsigned gx_capture_request() { return g_capture_request.load(std::memory_order_relaxed); }
+void gx_capture_request_set(unsigned frames) { g_capture_request.store(frames, std::memory_order_relaxed); }
 
 // Atomically publish complete cache files. Concurrent instances may replace one
 // another's cache, but cannot expose a truncated file to a reader.
