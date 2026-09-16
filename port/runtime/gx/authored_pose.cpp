@@ -2,6 +2,7 @@
 #include "authored_pose.h"
 #include "Geometry.h"
 #include "subframe.h"
+#include <algorithm>   // TEMPORARY DIAGNOSTIC (std::max)
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -142,6 +143,13 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
       }
       exact=NativeMelee::Multiply(exact,NativeMelee::SRT(j.scale,j.rotation,j.translation,inherited_exact));
       for(int k=0;k<12;++k)if(!near(exact[k],j.world[k])){ ++authored_stats().sample[8]; return false; }
+      // TEMPORARY DIAGNOSTIC: how far the rebuilt chain lands from the matrix the game built.
+      { float worst=0; for(int k : {3,7,11}) worst=std::max(worst,std::abs(exact[k]-j.world[k]));
+        const uint32_t e4=(uint32_t)(worst*10000.0f);
+        auto& mx=authored_stats().residual_max; uint32_t prev=mx.load(std::memory_order_relaxed);
+        while(e4>prev && !mx.compare_exchange_weak(prev,e4,std::memory_order_relaxed)) {}
+        authored_stats().residual_sum.fetch_add(e4,std::memory_order_relaxed);
+        authored_stats().residual_count.fetch_add(1,std::memory_order_relaxed); }
       world=NativeMelee::Multiply(world,NativeMelee::SRT(scale,rot,pos,inherited));
       if(!(j.flags&8)){ for(int k=0;k<3;++k){ inherited[k]*=scale[k]; inherited_exact[k]*=j.scale[k]; } }
     }

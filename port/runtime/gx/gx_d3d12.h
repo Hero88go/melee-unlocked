@@ -25,6 +25,12 @@ struct D3D12Options {
   // effects that do not write depth (sparks, glow, smoke), 2 skips translucent world geometry too.
   // Purely presentational, so unlike a Gecko code it cannot desync and both players may differ.
   int effects_level = 0;
+  // Discord Rich Presence, off by default: it tells the player's Discord friends what they are
+  // playing. The application id is Melee Unlocked's own, registered once for the whole game rather
+  // than per player, and it is not a secret (Rich Presence needs no token). A player can override it
+  // in the settings to point the presence at an application of their own.
+  bool discord_presence = false;
+  std::string discord_app_id = "1549608280949792790";
   std::string settings_path = "port-settings.ini";
   std::string frame_times; // optional buffered CSV of CPU presentation timing
   SubFrameMode subframe = SubFrameMode::Off;
