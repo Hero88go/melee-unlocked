@@ -474,7 +474,12 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
           // these at their exact current pose while every paired draw is shown between frames puts
           // them on a different timeline, which is visible as flicker against a moving camera.
           // The camera carry of this frame moves them with everything else.
-          if (d.authored_pose && camera_previous_ && camera_current_) {
+          // Never the HUD. An orthographic draw (xf_regs[0x26]) is in screen space: the timer, the
+          // percentages, the stock icons and the magnifier do not sit in the world and must not be
+          // moved by the camera. They are unpaired by design (see the hud counter above), so without
+          // this they fell into the carry below and were shifted a fraction of the camera's motion
+          // on every presented frame, which reads as the HUD juddering while the game is smooth.
+          if (d.authored_pose && camera_previous_ && camera_current_ && d.xf_regs[0x26] == 0) {
             uint64_t slots = 0;
             if (d.components & VB_HAS_POSMTXIDX) {
               for (uint32_t v = 0; v < d.vertex_count; ++v) {

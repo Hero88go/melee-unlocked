@@ -241,11 +241,24 @@ bool sample_authored(const AuthoredPose& previous,const AuthoredPose& current,do
   Matrix base_inv;
   if(!inverse(base,base_inv)){ ++authored_stats().sample[13]; return false; }
   auto delta=NativeMelee::Multiply(output,base_inv);
-  Matrix delta_inv; if(!inverse(delta,delta_inv)){ ++authored_stats().sample[14]; return false; }
+  // `delta` is only ever used to carry the normal matrix forward. Declining the whole draw when it
+  // cannot be inverted threw away a correct re-pose because of the lighting: flat geometry (foliage
+  // cards, billboards, anything with a zero scale axis) has a singular delta by construction, and on
+  // Yoshi's Story that was 17,870 draws per interval, every frame, which is what made the bushes and
+  // trees flash. The positions are already computed and finite, so keep them and hold the normals
+  // for this frame instead. A frame-old normal matrix is a lighting difference no one can see; the
+  // object vanishing onto a different timeline is not.
+  Matrix delta_inv;
+  const bool have_normals = inverse(delta, delta_inv);
+  if(!have_normals) ++authored_stats().sample[14];
   for(float v:output)if(!std::isfinite(v)){ ++authored_stats().sample[15]; return false; }
   std::memcpy(result,output.data(),48);
-  for(int r=0;r<3;++r)for(int c=0;c<3;++c)
-    normals[r*3+c]=delta_inv[r]*current_normals[c]+delta_inv[4+r]*current_normals[3+c]+delta_inv[8+r]*current_normals[6+c];
+  if(have_normals) {
+    for(int r=0;r<3;++r)for(int c=0;c<3;++c)
+      normals[r*3+c]=delta_inv[r]*current_normals[c]+delta_inv[4+r]*current_normals[3+c]+delta_inv[8+r]*current_normals[6+c];
+  } else {
+    std::memcpy(normals,current_normals,9*sizeof(float));
+  }
   ++authored_stats().sampled;
   return true;
 }
