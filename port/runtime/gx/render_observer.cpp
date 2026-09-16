@@ -49,7 +49,23 @@ std::shared_ptr<const AuthoredPose> capture_chain(Reader& r, uint32_t address) {
     j.flags=r.word(address+0x14)&~0x40u;
     // Billboards, instances, constraints, quaternion/IK and independent matrices
     // require their own authored evaluators, so retain exact captured draws.
-    if((j.flags & (0x2E00u|0x1000u|0x20000u|0x600000u|0x3800000u))||r.word(address+0x80)){ ++authored_stats().capture[4]; return {}; }
+    if((j.flags & (0x2E00u|0x1000u|0x20000u|0x600000u|0x3800000u))||r.word(address+0x80)){
+      // Record which feature it was, not just that there was one, so the next evaluator to write is
+      // chosen by what real matches actually use. A joint can carry several; count each.
+      const uint32_t robj=r.word(address+0x80);
+      auto note=[&](bool hit,CaptureFeature f){ if(hit) ++authored_stats().feature[f]; };
+      note(j.flags&0x0E00u,FEAT_BILLBOARD);        // JOBJ billboard field
+      note(j.flags&0x2000u,FEAT_PBILLBOARD);       // JOBJ_PBILLBOARD
+      note(j.flags&0x1000u,FEAT_INSTANCE);         // JOBJ_INSTANCE
+      note(j.flags&0x20000u,FEAT_QUATERNION);      // JOBJ_USE_QUATERNION
+      note(j.flags&0x200000u,FEAT_JOINT1);         // JOBJ_JOINT1
+      note(j.flags&0x400000u,FEAT_JOINT2);         // JOBJ_JOINT2 (with JOINT1 the EFFECTOR mask)
+      note(j.flags&0x800000u,FEAT_USER_DEF_MTX);   // JOBJ_USER_DEF_MTX
+      note(j.flags&0x1000000u,FEAT_MTX_INDEP_PARENT);
+      note(j.flags&0x2000000u,FEAT_MTX_INDEP_SRT);
+      note(robj!=0,FEAT_ROBJ);                     // HSD_RObj: constraints, IK hints, expressions
+      ++authored_stats().capture[4]; return {};
+    }
     for(int k=0;k<3;++k) {j.rotation[k]=r.real(address+0x1C+k*4);j.scale[k]=r.real(address+0x2C+k*4);j.translation[k]=r.real(address+0x38+k*4);}
     for(int k=0;k<12;++k)j.world[k]=r.real(address+0x44+k*4);
     uint32_t aobj=r.word(address+0x7C);

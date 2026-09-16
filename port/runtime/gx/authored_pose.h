@@ -35,7 +35,17 @@ struct AuthoredPose {
   std::vector<AuthoredSlot> slots;
 };
 // Diagnostics: why capture/sampling declined a draw (indexed by rejection site; see the sources).
-struct AuthoredStats { std::atomic<uint32_t> capture[24]{}; std::atomic<uint32_t> sample[24]{}; std::atomic<uint32_t> captured{0}, sampled{0}; };
+// Which HSD joint features actually cost us poses. capture[4] counts "this chain had a feature the
+// capture path has no evaluator for", which lumps billboards, instances, quaternion joints, IK
+// effectors, independent matrices and constraints into one number and so cannot be used to decide
+// which evaluator to write first. These count each feature separately, and a joint carrying several
+// is counted in each, so the totals are per feature rather than per joint.
+enum CaptureFeature {
+  FEAT_BILLBOARD, FEAT_PBILLBOARD, FEAT_INSTANCE, FEAT_QUATERNION, FEAT_JOINT1, FEAT_JOINT2,
+  FEAT_USER_DEF_MTX, FEAT_MTX_INDEP_PARENT, FEAT_MTX_INDEP_SRT, FEAT_ROBJ, FEAT_COUNT
+};
+extern const char* const kCaptureFeatureNames[FEAT_COUNT];
+struct AuthoredStats { std::atomic<uint32_t> capture[24]{}; std::atomic<uint32_t> sample[24]{}; std::atomic<uint32_t> feature[FEAT_COUNT]{}; std::atomic<uint32_t> captured{0}, sampled{0}; };
 AuthoredStats& authored_stats();
 // Interpolate (exact in-betweens of the previous and current game frames, one frame late) instead
 // of predicting ahead of the current frame. Set by the solver before sampling.

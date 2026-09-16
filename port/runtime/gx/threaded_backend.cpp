@@ -201,6 +201,12 @@ class ThreadedBackend final : public Backend {
             for (int i = 1; i < 24; ++i) if (a.capture[i]) line += " c" + std::to_string(i) + "=" + std::to_string(a.capture[i]);
             line += " | sample fails:";
             for (int i = 1; i < 24; ++i) if (a.sample[i]) line += " s" + std::to_string(i) + "=" + std::to_string(a.sample[i]);
+            // c4 only says "some joint feature has no evaluator". This says which, so the next
+            // evaluator to write is chosen by what real matches use rather than by guesswork.
+            std::string features;
+            for (int i = 0; i < FEAT_COUNT; ++i)
+              if (a.feature[i]) features += std::string(" ") + kCaptureFeatureNames[i] + "=" + std::to_string(a.feature[i]);
+            if (!features.empty()) line += " | unevaluated joint features:" + features;
             host::log("%s", line.c_str());
           }
         }
