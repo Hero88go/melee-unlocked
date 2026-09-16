@@ -18,6 +18,10 @@ struct SettingsState {
   host::CaptureDevice rebind_kind = host::CaptureDevice::None;  // which device tab that capture belongs to
   int rebind_index = 0;                                         // pad / adapter port index for that tab
   bool running_d3d11 = false;                                   // which backend owns this panel, so it can say when a backend change needs a restart
+  // Restart and Quit confirm rather than acting on the click: both end the current match, and the
+  // panel is reachable mid-game.
+  enum class Confirm { None, Restart, Quit };
+  Confirm confirm = Confirm::None;
 };
 
 // ImGui context plus the Win32 platform backend; the renderer backend is set up by the caller.

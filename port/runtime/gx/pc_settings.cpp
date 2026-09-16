@@ -522,24 +522,27 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     const char* names[] = {"Match monitor", "Unlocked", "60", "120", "144", "165", "200", "240", "360", "480"};
     int selected = -1; for (int i = 0; i < 10; ++i) if (options.fps_cap == rates[i]) selected = i;
     if (ImGui::Combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
+    // Two checkboxes per row, second column at a fixed offset so the rows line up with each other.
+    const float kCol2 = 200.0f;
     changed |= ImGui::Checkbox("VSync", &options.vsync);
+    ImGui::SameLine(kCol2);
     changed |= ImGui::Checkbox("Borderless fullscreen", &options.fullscreen);
-    if (ImGui::Checkbox("Widescreen 16:9 (Slippi code, online safe)", &options.widescreen)) {
+    if (ImGui::Checkbox("Widescreen 16:9 (Slippi)", &options.widescreen)) {
       if (options.widescreen) options.true_widescreen = false;   // one or the other, never both
       changed = true;
     }
-    // True 16:9 widens the frustum here in the renderer instead of running the Gecko code, so the
-    // HUD and every 2D element keep the size they were authored at rather than stretching with the
-    // frame. Experimental because the game still lays out and culls for 73:60: geometry can be
-    // missing or pop in at the new edges, which is the part only play testing finds.
-    if (ImGui::Checkbox("True 16:9 (experimental, no game code)", &options.true_widescreen)) {
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Slippi widescreen Gecko code. Online safe.");
+    ImGui::SameLine(kCol2);
+    // True 16:9 widens the frustum here in the renderer instead of running the Gecko code, so
+    // nothing is written to guest memory and it cannot desync. Experimental because the game still
+    // lays out and culls for 73:60: geometry can be missing or pop in at the new edges.
+    if (ImGui::Checkbox("True 16:9 (experimental)", &options.true_widescreen)) {
       if (options.true_widescreen) options.widescreen = false;
       changed = true;
     }
-    if (options.true_widescreen)
-      ImGui::TextDisabled("Widens the camera in the renderer: the HUD stays the right size and nothing is\n"
-                          "written to game memory, so it cannot desync. Watch the edges for missing or\n"
-                          "popping scenery, which is what makes this experimental.");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Widens the camera in the renderer instead of running game code, so it cannot desync.\n"
+                        "Watch the edges for missing or popping scenery: the game still culls for 73:60.");
     float win_w = ImGui::GetIO().DisplaySize.x, win_h = ImGui::GetIO().DisplaySize.y;
 
     // Aspect ratio and window size are presentation only: they change nothing the game computes,
@@ -997,11 +1000,51 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     }
     ImGui::SameLine(); if (ImGui::Button("Return to game")) state.open = false;
-    // Quitting from here shuts down the same way closing the window does, so the replay is finalised,
-    // the pipeline cache is written and the adapter is released rather than left mid-stream.
+    // Restarting and quitting both shut down the same way closing the window does, so the replay is
+    // finalised, the pipeline cache is written and the adapter is released rather than left
+    // mid-stream. Both ask first: the panel opens mid-match, and a stray click would end it.
     ImGui::SameLine();
-    if (ImGui::Button("Quit game")) host::request_exit(0);
+    if (ImGui::Button("Restart game")) state.confirm = SettingsState::Confirm::Restart;
+    ImGui::SameLine();
+    if (ImGui::Button("Quit game")) state.confirm = SettingsState::Confirm::Quit;
     if (state.saved) ImGui::TextUnformatted("Settings saved");
+
+    // A backend change is the one setting the running device cannot adopt, so it is the one that
+    // needs the process to come back. Offered here rather than only described, so the player does
+    // not have to work out how to act on it.
+    const RenderApi running_api = state.running_d3d11 ? RenderApi::D3D11 : RenderApi::D3D12;
+    if (options.api != running_api && state.confirm == SettingsState::Confirm::None) {
+      ImGui::Separator();
+      ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                         "The graphics backend will not be applied until after a restart.");
+      ImGui::SameLine();
+      if (ImGui::Button("Restart now")) state.confirm = SettingsState::Confirm::Restart;
+    }
+
+    if (state.confirm != SettingsState::Confirm::None) {
+      const bool restart = state.confirm == SettingsState::Confirm::Restart;
+      ImGui::OpenPopup(restart ? "Restart game?" : "Quit game?");
+      const ImVec2 screen = ImGui::GetIO().DisplaySize;
+      ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+      if (ImGui::BeginPopupModal(restart ? "Restart game?" : "Quit game?", nullptr,
+                                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+        ImGui::TextUnformatted(restart ? "Restart now? The current match will end."
+                                       : "Quit now? The current match will end.");
+        if (!state.saved) ImGui::TextDisabled("Unsaved changes in this panel will be lost.");
+        ImGui::Separator();
+        if (ImGui::Button(restart ? "Restart" : "Quit", ImVec2(110, 0))) {
+          state.confirm = SettingsState::Confirm::None;
+          ImGui::CloseCurrentPopup();
+          if (restart) host::request_restart(); else host::request_exit(0);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(110, 0))) {
+          state.confirm = SettingsState::Confirm::None;
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+      }
+    }
     ImGui::End();
   }
   if (!state.open) {

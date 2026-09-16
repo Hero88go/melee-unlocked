@@ -330,6 +330,22 @@ void set_pe_finish_pending() { g_pe_finish_pending = true; }
 void set_pe_token_pending(uint16_t token) { g_pe_token = token; g_pe_token_pending = true; }
 bool exit_requested() { return g_exit; }
 void request_exit(int code) { g_exit_code.store(code); g_exit.store(true); }
+void request_restart() {
+  // Start the replacement first and only then ask for a clean shutdown: if the launch fails there
+  // is nothing to recover to, so the running game is left alone rather than closed into nothing.
+  wchar_t exe[MAX_PATH];
+  if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) { log("restart: cannot find this executable"); return; }
+  std::wstring cmd = GetCommandLineW();
+  STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
+  // The new process must not inherit the window or the adapter, so it waits for this one to go.
+  if (!CreateProcessW(exe, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+    log("restart: CreateProcess failed, error %lu", (unsigned long)GetLastError());
+    return;
+  }
+  CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
+  log("restart: relaunched, shutting down this instance");
+  request_exit(0);
+}
 int exit_code() { return g_exit_code.load(); }
 uint32_t retrace_count() { return g_retraces; }
 // The VI retrace is periodic in virtual time, like the hardware interrupt: `g_next_retrace_tb`

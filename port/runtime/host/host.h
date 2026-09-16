@@ -72,6 +72,11 @@ void retrace();                        // one VI retrace: time, alarms, VI inter
 void deliver_interrupt(uint32_t number);
 bool exit_requested();
 void request_exit(int code);
+// Relaunch this executable with the same command line, then shut down the way request_exit does,
+// so the replay is finalised and the pipeline cache written before the new process takes over.
+// Used for settings a running device cannot adopt, the graphics backend being the one that
+// matters today.
+void request_restart();
 int exit_code();
 uint32_t retrace_count();
 
