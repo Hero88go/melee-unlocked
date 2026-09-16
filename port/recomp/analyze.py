@@ -27,6 +27,7 @@ class FuncInfo:
         self.setjmp_returns = set()  # return addresses of `bl __setjmp`: longjmp re-enters the function here
         self.optional_text = {}   # addr -> (patched Insn, flag): patched instruction while the flag is set
         self.calls = set()        # direct call targets (bl)
+        self.computed_returns = set()  # deltas K: this function can return to caller_lr + K (see _computed_return_delta)
         self.tail_targets = set() # `b` targets outside the function
         self.jumptables = {}      # bctr addr -> JumpTable
         self.unresolved_bctr = [] # bctr addresses with no table
@@ -268,7 +269,41 @@ def analyze_function(dol, symbols, func, hooks=None, body=None, optional_text=No
                     info.unresolved_bctr.append(ins.addr)
         elif ins.op == "bclr" and ins.lk:
             info.has_blrl = True
+        elif ins.op == "bclr":
+            k = _computed_return_delta(info.insns, idx)
+            if k:
+                info.computed_returns.add(k)
     return info
+
+
+def _computed_return_delta(insns, idx):
+    """A Gecko cave can end the function it was spliced into by hand: it reloads the caller's
+    saved LR off the stack, adds a constant and returns there, so the caller resumes past the
+    call instead of at it. UCF Shield Drop does this to skip the two instructions that answer
+    "true", making the predicate answer "false" when a shield drop should happen. A plain
+    `return` would drop the adjustment and keep the original answer, so report the constant and
+    let the call site resume at the address the cave asked for.
+
+    Returns the constant for that shape, None for an ordinary return (LR straight off the stack).
+    """
+    reg, delta = None, 0
+    for j in range(idx - 1, max(idx - 12, -1), -1):
+        ins = insns[j]
+        if ins is None or ins.op in ("b", "bc", "bclr", "bcctr"):
+            return None
+        if reg is None:
+            if ins.op == "mtspr" and ins.f["spr"] == 8:
+                reg = ins.f["rs"]
+            continue
+        if ins.op == "mtspr" or ins.f.get("rd") != reg:
+            continue
+        if ins.op == "addi" and ins.f["ra"] == reg:
+            delta += ins.f["simm"]
+            continue
+        if ins.op == "lwz" and ins.f["ra"] == 1:
+            return delta if delta and delta > 0 and delta % 4 == 0 and delta < 256 else None
+        return None
+    return None
 
 
 def analyze_all(dol, symbols, gecko=None):
@@ -394,4 +429,16 @@ def analyze_all(dol, symbols, gecko=None):
                 info.entries.add(t)
                 info.labels.add(t)
                 thunks[t] = owner
+    # A callee that can return to caller_lr + K needs that address to be a label in every caller,
+    # so the call site can resume there instead of at the instruction after the call.
+    for info in infos.values():
+        for idx, ins in enumerate(info.insns):
+            if ins is None or ins.op not in ("b", "bc") or not ins.lk:
+                continue
+            callee = infos.get(ins.branch_target)
+            if callee is None or not callee.computed_returns:
+                continue
+            for k in callee.computed_returns:
+                if ins.addr + 4 + k in info.addr_set:
+                    info.labels.add(ins.addr + 4 + k)
     return infos, extra_entries, thunks

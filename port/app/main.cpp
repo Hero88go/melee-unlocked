@@ -423,9 +423,12 @@ static int melee_main(int argc, char** argv) {
   host::audio_close();
   host::updater::shutdown();   // the settings panel may have started an update check; join it before exit
   host::gcadapter_shutdown();
+  host::switchpro_shutdown();   // joins the init thread and hands any Switch pad back to the system
   slippi::shutdown();
   { uint64_t calls = 0, insns = 0; ppc::interpreter_stats(&calls, &insns);
     if (calls) host::log("interpreter: %llu calls into RAM-resident code, %llu instructions", (unsigned long long)calls, (unsigned long long)insns); }
+  if (ppc::g_resumed_returns)
+    host::log("gecko: %llu code-cave returns resumed past the call (UCF Shield Drop and the like)", (unsigned long long)ppc::g_resumed_returns);
   host::log("slippi: %llu EXI commands, %llu replays written, GCT at %08X", (unsigned long long)slippi::commands_seen(),
             (unsigned long long)slippi::replays_written(), slippi::gct_load_address());
   return code;
