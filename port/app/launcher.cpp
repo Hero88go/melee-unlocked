@@ -163,9 +163,15 @@ std::string work_dir() {
 }
 std::string game_args() {
   std::string base = g_dir;
-  std::string a = " --iso \"" + g_iso + "\" --threaded-renderer --fps unlocked --frame-mode authored --scale auto --volume 70";
+  std::string a = " --iso \"" + g_iso + "\" --threaded-renderer";
   if (file_exists(g_dir + "\\Sys\\codehandler.bin"))
     a += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + base + "\\User\\Slippi\" --replay-dir \"" + base + "\\Replays\" --card-dir \"" + base + "\\User\\GC\\CardA\"";
+  // Frame rate, frame mode, internal resolution and volume are saved in port-settings.ini, and the
+  // command line is applied after the file is read, so passing them on every launch silently undid
+  // whatever the player set in the F1 panel. They are only used to seed a first run, before any
+  // settings file exists.
+  if (!file_exists(work_dir() + "\\port-settings.ini"))
+    a += " --fps unlocked --frame-mode authored-interpolate --scale auto --volume 70";
   return a;
 }
 
