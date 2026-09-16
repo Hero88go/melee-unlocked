@@ -110,7 +110,11 @@ struct Frame {
   std::vector<FrameCommand> commands;
   uint64_t sequence = 0;
   double time = 0.0;   // host seconds of the retrace this frame belongs to (see host::frame_time)
-  void clear() { vertices.clear(); draws.clear(); copies.clear(); commands.clear(); }
+  // sequence and time are reset too: a recycled frame is handed back to the producer as "cleared",
+  // and the renderer decides when to present by comparing sequences. Leaving a stale one on a
+  // buffer that is about to be refilled is only harmless while every producer remembers to assign
+  // one before pushing.
+  void clear() { vertices.clear(); draws.clear(); copies.clear(); commands.clear(); sequence = 0; time = 0.0; }
 };
 
 // Renderer interface implemented by the D3D12 backend (or a null backend).

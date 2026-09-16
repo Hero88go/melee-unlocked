@@ -43,11 +43,12 @@ public:
     // Most draws reuse their source. Vectorized memcmp avoids rehashing
     // every byte with a serial hash recurrence; changes still receive a new copy.
     auto previous = last_source.find(image);
-    // Already compared against this source earlier in the same simulation frame: many draws share a
-    // texture, and repeating the full memcmp for each was a measurable share of the simulation thread.
-    if (previous != last_source.end() && previous->second.used == generation &&
-        previous->second.snapshot->image.size() == image_size && previous->second.snapshot->palette.size() == palette_size)
-      return previous->second.snapshot;
+    // There used to be a fast path here that returned the cached snapshot for a source already seen
+    // this frame, comparing only the address and the two sizes. Melee rewrites texture and palette
+    // memory in place, so any draw after such a write rendered the bytes from before it: a texture
+    // or palette animated within a single frame showed its previous contents, which is one way a
+    // draw ends up looking wrong for exactly one frame. Correctness needs the comparison, and the
+    // comparison below is a vectorized memcmp of a few KB, so the cost is bounded.
     if (previous != last_source.end() && equal(*previous->second.snapshot, image, image_size, palette, palette_size)) {
       previous->second.used = generation;
       return previous->second.snapshot;
