@@ -1184,6 +1184,8 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   const float border[4] = {0, 0, 0, 1};   // letterbox/pillarbox bars
   context_->ClearRenderTargetView(rtv, border);
   if (opts_.widescreen != widescreen_sent_) { widescreen_sent_ = opts_.widescreen; slippi::request_widescreen(opts_.widescreen); }
+  // The Gecko code wins if both are somehow set, so the two can never widen the same frame twice.
+  set_true_widescreen(opts_.true_widescreen && !opts_.widescreen);
   float aspect = output_aspect();
   float ww = (float)client_w_, wh = (float)client_h_;
   float vw = ww, vh = ww / aspect;

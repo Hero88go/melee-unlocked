@@ -622,6 +622,9 @@ std::string generate_pixel_shader(const PSUid& uid) {
 }
 
 // ---------------------------------------------------------------- constants
+std::atomic<bool> g_true_widescreen{false};
+void set_true_widescreen(bool on) { g_true_widescreen.store(on, std::memory_order_relaxed); }
+
 void build_projection(const DrawCall& dc, float m[16]) {
   const float* vp = (const float*)&dc.xf_regs[0x1A];
   const float* proj = (const float*)&dc.xf_regs[0x20];
@@ -629,8 +632,22 @@ void build_projection(const DrawCall& dc, float m[16]) {
   std::memset(m, 0, 16 * sizeof(float));
   if (type == 0) {  // perspective
     m[0] = proj[0]; m[2] = proj[1]; m[5] = proj[2]; m[6] = proj[3]; m[10] = proj[4]; m[11] = proj[5]; m[14] = -1.0f;
+    // True 16:9 (see set_true_widescreen). Scaling the whole first row rather than the x term alone
+    // keeps an off-centre frustum centred: Melee shifts the projection horizontally in places, and
+    // scaling only m[0] would move the picture as well as widen it. Perspective draws only: the
+    // orthographic branch below is the HUD and the 2D layer, which must keep its authored size.
+    if (g_true_widescreen.load(std::memory_order_relaxed)) {
+      constexpr float kWiden = 219.0f / 320.0f;   // (73/60) * (320/219) == 16/9
+      for (int i = 0; i < 4; ++i) m[i] *= kWiden;
+    }
   } else {
     m[0] = proj[0]; m[3] = proj[1]; m[5] = proj[2]; m[7] = proj[3]; m[10] = proj[4]; m[11] = proj[5]; m[15] = 1.0f;
+    // Deliberately NOT widened. The obvious argument says it should be: the 2D layer covers the
+    // whole framebuffer, so presenting at 16:9 ought to stretch it. Measured against a capture, that
+    // is wrong. Melee's HUD (timer, percentages, stock icons, the P1/P2 markers) goes through the
+    // perspective path above and comes out correct on its own, and what is actually orthographic is
+    // the shadow and silhouette layer, which has to stay aligned with the 3D it sits under.
+    // Compensating it here compressed those shadows away from the platforms they belong to.
   }
   if (vp[0] < 0.0f) for (int i = 0; i < 4; ++i) m[i] *= -1.0f;
   if (vp[1] > 0.0f) for (int i = 4; i < 8; ++i) m[i] *= -1.0f;

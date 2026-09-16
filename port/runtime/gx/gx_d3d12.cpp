@@ -1281,6 +1281,8 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   // Letterbox the output at the game's aspect (XFB region c.src_w x lines); the widescreen
   // setting also drives the Slippi code on the simulation side.
   if (opts_.widescreen != widescreen_sent_) { widescreen_sent_ = opts_.widescreen; slippi::request_widescreen(opts_.widescreen); }
+  // The Gecko code wins if both are somehow set, so the two can never widen the same frame twice.
+  set_true_widescreen(opts_.true_widescreen && !opts_.widescreen);
   float src_h_lines = (float)c.src_h * c.y_scale;
   float aspect = output_aspect();
   float ww = (float)client_w_, wh = (float)client_h_;
