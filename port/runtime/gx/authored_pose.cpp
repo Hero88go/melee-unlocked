@@ -84,11 +84,50 @@ bool camera_motion(const AuthoredPose& previous,const AuthoredPose& current,doub
   return true;
 }
 }
+static bool cached_chain(const AuthoredPose& previous,const AuthoredPose& current,double phase,Matrix& world,Matrix& inv,AuthoredCache* cache,bool allow_static);
+
+// HSD_RObjUpdateAll's first step, and the only constraint kind captured: a joint carrying one or
+// more active REFTYPE_JOBJ subtype 1 entries keeps its own orientation and scale and takes the
+// average world position of their target joints. HSD_RObjGetGlobalPosition sums the targets'
+// mtx[i][3] over the entries it matched and multiplies by 1/n; JObjUpdateFunc type 0x35 writes that
+// into the joint's matrix. The type 0x38 that follows recomputes jobj->translate from the
+// parent-relative matrix, which cannot change this matrix and is read back only by the limit and
+// expression paths, neither of which occurs, so it is not reproduced.
+// `exact` is the reconstruction of the current frame and is what the endpoint proof below compares
+// against the matrix the game actually produced; `world` is the same arithmetic on sampled targets.
+static bool constrain(const AuthoredJoint& previous,const AuthoredJoint& current,double phase,
+                      AuthoredCache* cache,Matrix& exact,Matrix& world,bool& animated) {
+  if(previous.constraints.size()!=current.constraints.size()){ ++authored_stats().sample[9]; return false; }
+  float sum_exact[3]={0,0,0}, sum_new[3]={0,0,0}; int n=0;
+  for(size_t k=0;k<current.constraints.size();++k) {
+    const auto& c=current.constraints[k]; const auto& pc=previous.constraints[k];
+    // The same constraint on the same joint in both frames, or there is nothing to interpolate: a
+    // joint freed and reallocated at the same address gets a new generation and declines here.
+    if(c.flags!=pc.flags||!c.target_generation||c.target_generation!=pc.target_generation||
+       !c.target||!pc.target||c.target->joints.empty()||pc.target->joints.empty()){ ++authored_stats().sample[9]; return false; }
+    Matrix target_new,target_inv;
+    // allow_static: a target that is not moving this frame still has a position to be pinned to.
+    if(!cached_chain(*pc.target,*c.target,phase,target_new,target_inv,cache,true)){ ++authored_stats().sample[9]; return false; }
+    const auto& target_now=c.target->joints.back().world;
+    const auto& target_was=pc.target->joints.back().world;
+    for(int a=0;a<3;++a){ sum_exact[a]+=target_now[a*4+3]; sum_new[a]+=target_new[a*4+3]; }
+    // A joint whose own tracks are still can be moved entirely by its target, and then the chain is
+    // not static: it must sample rather than hold, exactly like a game-driven translation delta.
+    if(target_was[3]!=target_now[3]||target_was[7]!=target_now[7]||target_was[11]!=target_now[11]) animated=true;
+    ++n;
+  }
+  if(!n) return true;
+  const float average=1.0f/(float)n;
+  for(int a=0;a<3;++a){ exact[a*4+3]=average*sum_exact[a]; world[a*4+3]=average*sum_new[a]; }
+  authored_stats().robj_applied+=(uint32_t)n;
+  return true;
+}
+
 // The expensive part: re-sample every joint's authored tracks at the fractional frame and
 // rebuild the chain's world matrix. Shared by all draws of the same object in a presented frame.
 // `allow_static` accepts chains with no animated track (their world matrix simply holds), which
 // skinned models need for bones that are not moving this frame.
-static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& current,double phase,Matrix& world,Matrix& inv,bool allow_static) {
+static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& current,double phase,Matrix& world,Matrix& inv,bool allow_static,AuthoredCache* cache) {
   if(!std::isfinite(phase)||phase<0||phase>1||current.joints.empty()||previous.joints.size()!=current.joints.size()){ ++authored_stats().sample[1]; return false; }
   world=NativeMelee::Identity(); Matrix exact=world;
   // The captured pose and the sampled pose each accumulate their own inherited scale; sharing one
@@ -163,8 +202,11 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
         if(delta!=0.0f&&std::isfinite(delta)&&std::abs(delta)<=0.5f){ rot[k]=interp?p.rotation[k]+float(phase)*delta:j.rotation[k]+float(phase)*delta; animated=true; }
       }
       exact=NativeMelee::Multiply(exact,NativeMelee::SRT(j.scale,j.rotation,j.translation,inherited_exact));
-      for(int k=0;k<12;++k)if(!near(exact[k],j.world[k])){ ++authored_stats().sample[8]; return false; }
       world=NativeMelee::Multiply(world,NativeMelee::SRT(scale,rot,pos,inherited));
+      // HSD_JObjSetupMatrixSub applies the joint's constraints after make_mtx, so they land here,
+      // on both the reconstruction and the sampled pose, and before the reconstruction is checked.
+      if(!j.constraints.empty()&&!constrain(p,j,phase,cache,exact,world,animated)) return false;
+      for(int k=0;k<12;++k)if(!near(exact[k],j.world[k])){ ++authored_stats().sample[8]; return false; }
       if(!(j.flags&8)){ for(int k=0;k<3;++k){ inherited[k]*=scale[k]; inherited_exact[k]*=j.scale[k]; } }
     }
   } catch(const std::exception&) { { ++authored_stats().sample[10]; return false; } }
@@ -174,13 +216,15 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
   return true;
 }
 static bool cached_chain(const AuthoredPose& previous,const AuthoredPose& current,double phase,Matrix& world,Matrix& inv,AuthoredCache* cache,bool allow_static) {
-  if(!cache)return sample_chain(previous,current,phase,world,inv,allow_static);
+  if(!cache)return sample_chain(previous,current,phase,world,inv,allow_static,cache);
   AuthoredChainKey key{&previous,&current,allow_static};
-  auto it=cache->find(key);
-  if(it==cache->end()) {
-    AuthoredChain chain; chain.ok=sample_chain(previous,current,phase,chain.world,chain.inverse_current,allow_static);
-    it=cache->emplace(key,chain).first;
+  // A constrained chain samples its targets through this same cache, so the insert has to follow the
+  // nested sampling: the iterator from the lookup above is only compared, never held across it.
+  if(cache->find(key)==cache->end()) {
+    AuthoredChain chain; chain.ok=sample_chain(previous,current,phase,chain.world,chain.inverse_current,allow_static,cache);
+    cache->emplace(key,chain);
   }
+  auto it=cache->find(key);
   if(!it->second.ok)return false;
   world=it->second.world; inv=it->second.inverse_current;
   return true;
@@ -311,6 +355,9 @@ bool sample_authored_envelope(const AuthoredPose& previous,const AuthoredPose& c
 namespace gx {
 const char* const kCaptureFeatureNames[FEAT_COUNT] = {
   "billboard", "pbillboard", "instance", "quaternion", "joint1", "joint2",
-  "user_def_mtx", "mtx_indep_parent", "mtx_indep_srt", "robj"
+  "user_def_mtx", "mtx_indep_parent", "mtx_indep_srt", "robj",
+  "robj_position", "robj_dir", "robj_up", "robj_orient", "robj_jobj_other",
+  "robj_limit", "robj_ikhint", "robj_exp", "robj_inactive", "robj_unknown",
+  "robj_animated", "robj_deep", "robj_target", "robj_cycle"
 };
 }
