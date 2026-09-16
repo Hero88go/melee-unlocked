@@ -72,7 +72,15 @@ bool camera_motion(const AuthoredPose& previous,const AuthoredPose& current,doub
   else SubFrameSolver::extrapolate_matrix(prev.data(),cur.data(),phase,view_new.data());
   Matrix inv_cur; if(!inverse(cur,inv_cur)){ view_new=cur; return true; }
   carry=NativeMelee::Multiply(view_new,inv_cur);
-  moved=view_new!=cur;
+  // "moved" asks whether the sampled view differs from the one the held matrices already embed, and
+  // that base is the current frame in Predict but the previous frame in Interpolate (carry_camera
+  // makes the same distinction). Comparing against the current frame in both modes made Interpolate
+  // report "not moved" at phase 1, where the sampled view is exactly the current one. Static chains
+  // were then declined and the camera carry skipped, so every unanimated piece of the stage held the
+  // previous frame while the fighters advanced: the whole of Yoshi's Story jumped back a frame and
+  // forward again on the 4% of presented frames that land on phase 1, several times a second, worst
+  // on the foliage because its woven texture shows a one pixel shift most.
+  moved=g_interpolate.load(std::memory_order_relaxed)?view_new!=prev:view_new!=cur;
   return true;
 }
 }
