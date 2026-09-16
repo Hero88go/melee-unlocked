@@ -119,6 +119,13 @@ void gcadapter_rumble(int port, bool on);
 // asks for this through PADRecalibrate.
 void gcadapter_recalibrate(int port);
 void gcadapter_shutdown();
+// EXPERIMENTAL, untested against hardware. Nintendo Switch Pro Controller (also the Joy-Cons and
+// the SNES Online pad) over USB or Bluetooth HID. Fills the slots that are sending input and returns
+// their mask, plus the raw SWPRO_* button bits for the remappable binding table. See switch_pro.cpp
+// for why this needs more than Raw Input.
+uint32_t switchpro_poll(PadState out[4], uint16_t buttons[4]);
+void switchpro_recalibrate(int slot);
+void switchpro_shutdown();
 
 // Guest call helpers for HLE code.
 void call_guest(uint32_t addr, uint32_t r3 = 0, uint32_t r4 = 0, uint32_t r5 = 0, uint32_t r6 = 0);
