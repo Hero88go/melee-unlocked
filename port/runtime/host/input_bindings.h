@@ -26,6 +26,20 @@ enum : uint16_t {
   DS4_SHARE = 1u << 12, DS4_OPTIONS = 1u << 13, DS4_L3 = 1u << 14, DS4_R3 = 1u << 15,
 };
 
+// EXPERIMENTAL. Native Nintendo Switch Pro Controller HID button masks, decoded from the
+// controller's own 0x30 (or 0x3F) report by switch_pro.cpp. Home and Capture are left out: there is
+// no room in a 16 bit mask and neither is useful in a match.
+enum : uint16_t {
+  SWPRO_DPAD_UP = 1u << 0, SWPRO_DPAD_DOWN = 1u << 1, SWPRO_DPAD_LEFT = 1u << 2, SWPRO_DPAD_RIGHT = 1u << 3,
+  SWPRO_B = 1u << 4, SWPRO_A = 1u << 5, SWPRO_Y = 1u << 6, SWPRO_X = 1u << 7,
+  SWPRO_L = 1u << 8, SWPRO_R = 1u << 9, SWPRO_ZL = 1u << 10, SWPRO_ZR = 1u << 11,
+  SWPRO_MINUS = 1u << 12, SWPRO_PLUS = 1u << 13, SWPRO_L3 = 1u << 14, SWPRO_R3 = 1u << 15,
+};
+
+// The window's WM_INPUT handler passes on every HID report that was not a DualShock's; this returns
+// true when the report belonged to a Switch controller. `count` is Raw Input's report batch count.
+bool switchpro_raw_input(void* device, const uint8_t* report, size_t size, size_t count);
+
 inline constexpr uint16_t kActionPadBit[(size_t)BindAction::Count] = {
   0x0100, 0x0200, 0x0400, 0x0800, 0x0010, 0x1000, 0x0040, 0x0020, 0x0008, 0x0004, 0x0001, 0x0002
 };
@@ -83,13 +97,40 @@ inline std::array<GCBindings, 4> default_gc_bindings() {
   return gc;
 }
 
+// Switch face buttons sit where a Melee player's thumb expects the GameCube ones, not where their
+// letters say: B is the low button under the thumb, which is the GameCube A, so the pair is
+// swapped. ZR is the natural grab button, and the L/R shoulders stay L/R (they are digital on this
+// pad, so a press reports a fully pressed analog trigger, which is what Melee shields from). ZL is
+// left unbound on purpose: the GameCube has no fourth shoulder, and it is free to rebind.
+inline std::array<PadBindings, 4> default_swpro_bindings() {
+  std::array<PadBindings, 4> pads{};
+  for (auto& p : pads) {
+    p.mask[(size_t)BindAction::A]      = SWPRO_B;
+    p.mask[(size_t)BindAction::B]      = SWPRO_A;
+    p.mask[(size_t)BindAction::X]      = SWPRO_X;
+    p.mask[(size_t)BindAction::Y]      = SWPRO_Y;
+    p.mask[(size_t)BindAction::Z]      = SWPRO_ZR;
+    p.mask[(size_t)BindAction::Start]  = SWPRO_PLUS;
+    p.mask[(size_t)BindAction::L]      = SWPRO_L;
+    p.mask[(size_t)BindAction::R]      = SWPRO_R;
+    p.mask[(size_t)BindAction::DUp]    = SWPRO_DPAD_UP;
+    p.mask[(size_t)BindAction::DDown]  = SWPRO_DPAD_DOWN;
+    p.mask[(size_t)BindAction::DLeft]  = SWPRO_DPAD_LEFT;
+    p.mask[(size_t)BindAction::DRight] = SWPRO_DPAD_RIGHT;
+  }
+  return pads;
+}
+
 extern KeyBindings g_key_bindings;
 extern std::array<PadBindings, 4> g_pad_bindings;
 extern std::array<GCBindings, 4> g_gc_bindings;
 extern std::array<PadBindings, 4> g_ds4_bindings;
+extern std::array<PadBindings, 4> g_swpro_bindings;
 
 // ---- port assignment: which physical device feeds each in-game port ----
-enum class DeviceKind : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter };
+// Appended to, never reordered: the settings file stores a port's source as the index of the
+// combo-box entry built from this in pc_settings.cpp.
+enum class DeviceKind : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter, SwitchPro };
 
 struct PortSource {
   DeviceKind kind = DeviceKind::None;
@@ -115,7 +156,7 @@ inline std::array<PortSource, 4> default_port_sources() {
 extern std::array<PortSource, 4> g_port_sources;
 
 // ---- rebind capture ----
-enum class CaptureDevice : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter };
+enum class CaptureDevice : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter, SwitchPro };
 
 // Starts listening. Call once when the settings UI enters "press a button" mode.
 void input_begin_capture();
@@ -133,8 +174,10 @@ struct InputDebugSnapshot {
   uint16_t xinput_actions[4]{};
   uint16_t ds4_actions[4]{};
   uint16_t gc_actions[4]{};
+  uint16_t swpro_actions[4]{};
   bool xinput_connected[4]{};
   bool ds4_connected[4]{};
+  bool swpro_connected[4]{};
   uint32_t gc_mask = 0;
 };
 void input_debug_snapshot(InputDebugSnapshot& snapshot);
