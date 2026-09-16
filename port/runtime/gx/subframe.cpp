@@ -252,6 +252,9 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   if (prev && cur && cur->sequence != prev->sequence + 1) prev = nullptr;
   prev_ = prev; cur_ = cur;
   pairs_.clear(); prev_index_.clear();
+  // Roll the pairing record forward one simulation frame, so pair_flips compares like with like.
+  pair_history_.swap(pair_seen_);
+  pair_seen_.clear();
   camera_previous_ = camera_current_ = nullptr;
   stats_ = SubFrameStats{};
   if (!cur) return;
@@ -295,6 +298,13 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
                !same_textures(pd, d) || !same_matrix_bindings(pd, d)) ++stats_.state;
       else if (std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 7 * sizeof(uint32_t))) ++stats_.projection;
       else { valid = true; p.blend_vertices = !same_vertices; }
+      // Did this identity pair last frame? Flipping between held and re-posed is what the eye
+      // reads as an object flashing; a steady hold is invisible.
+      {
+        auto was = pair_history_.find(d.identity);
+        if (was != pair_history_.end() && was->second != valid) ++stats_.pair_flips;
+        pair_seen_[d.identity] = valid;
+      }
       if (valid) {
         p.prev_draw = it->second;
         // Collect used position matrix slots: per-vertex indices or the CP default, plus texgen matrices.

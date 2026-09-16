@@ -21,6 +21,10 @@ namespace gx {
 
 struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, cuts = 0; uint32_t missing = 0, hud = 0, state = 0, geometry = 0, projection = 0, state_register = 256, authored = 0, carried = 0, vertex_blended = 0;
   uint32_t skinned = 0;   // skinned (character model) draws in the current frame; zero on menus and stage select
+  // Draws whose pairing outcome differs from the previous simulation frame. A total says how many
+  // objects are held; this says how many are CHANGING between held and re-posed, which is what an
+  // object flashing actually is: a steady hold is invisible, alternating is not.
+  uint32_t pair_flips = 0;
 };
 
 class SubFrameSolver {
@@ -57,6 +61,8 @@ class SubFrameSolver {
   // Previous frame draws by identity, sorted; reused across simulation frames so pairing does not
   // allocate a hash node per draw every tick.
   std::vector<std::pair<uint64_t, int>> prev_index_;
+  // Pairing outcome per draw identity, last simulation frame and this one, for pair_flips.
+  std::unordered_map<uint64_t, bool> pair_history_, pair_seen_;
   // This frame's camera (from the first paired draw that carries a view): used to move draws that
   // have no pair onto the same timeline as the rest of the frame.
   const AuthoredPose* camera_previous_ = nullptr;

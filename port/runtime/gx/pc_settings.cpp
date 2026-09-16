@@ -517,13 +517,20 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // the version line stay outside the tabs, so Save is reachable from whichever tab is open.
     if (ImGui::BeginTabBar("settings_tabs")) {
       if (ImGui::BeginTabItem("Video")) {
+    // One width for every combo and slider on this tab, so their labels all begin at the same x.
+    // Left to itself ImGui sizes each control from the space its own label needs, which staggered
+    // the labels down the column.
+    ImGui::PushItemWidth(330.0f);
     // Frame rate first: it is the setting this port exists for, and the one people look for.
     const double rates[] = {-1, 0, 60, 120, 144, 165, 200, 240, 360, 480};
     const char* names[] = {"Match monitor", "Unlocked", "60", "120", "144", "165", "200", "240", "360", "480"};
     int selected = -1; for (int i = 0; i < 10; ++i) if (options.fps_cap == rates[i]) selected = i;
     if (ImGui::Combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
-    // Two checkboxes per row, second column at a fixed offset so the rows line up with each other.
-    const float kCol2 = 200.0f;
+    // Two checkboxes per row. The second column is measured from the widest label in the first one
+    // rather than guessed: a fixed offset put "True 16:9" hard against the bracket of "Widescreen
+    // 16:9 (Slippi)" and would break again the moment a label or the font changed.
+    const float kCol2 = ImGui::GetCursorPosX() + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
+                        ImGui::CalcTextSize("Widescreen 16:9 (Slippi)").x + ImGui::GetStyle().ItemSpacing.x * 3.0f;
     changed |= ImGui::Checkbox("VSync", &options.vsync);
     ImGui::SameLine(kCol2);
     changed |= ImGui::Checkbox("Borderless fullscreen", &options.fullscreen);
@@ -699,13 +706,16 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Graphics backend: %s at the next launch. Save settings, then restart.",
                            options.api == RenderApi::D3D11 ? "Direct3D 11" : "Direct3D 12");
     }
+        ImGui::PopItemWidth();
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Audio")) {
+    ImGui::PushItemWidth(330.0f);
     int music = slippi::jukebox::user_volume();
     if (ImGui::SliderInt("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
     state.volume = host::audio_volume();
     if (ImGui::SliderInt("Volume", &state.volume, 0, 100, "%d%%")) host::audio_set_volume(state.volume);
+        ImGui::PopItemWidth();
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Overlays")) {
