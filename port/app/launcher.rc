@@ -2,5 +2,17 @@
 // two are easy to tell apart in the taskbar when both are open.
 #define IDI_LAUNCHER   1
 #define IDB_LAUNCHER_BG 2
+#define IDI_MELEE_MARK 3
 IDI_LAUNCHER    ICON   "launcher.ico"
 IDB_LAUNCHER_BG BITMAP "launcher_bg.bmp"
+// The game's MU mark, drawn over the background so the launcher is branded by the logo itself
+// rather than by a line of text.
+IDI_MELEE_MARK  ICON   "melee_unlocked.ico"
+// Both of these are 32bpp with a premultiplied alpha channel, cut off the flat plate each was
+// composited on (the mark off navy, Bailey off white) before the build, so the launcher just
+// blends them onto the rail. The mark is kept at full resolution: the .ico tops out at 256 and
+// drawing it at 84 is what made it look pixelated.
+#define IDB_MELEE_MARK 4
+#define IDB_BAILEY 5
+IDB_MELEE_MARK  BITMAP "melee_mark.bmp"
+IDB_BAILEY      BITMAP "bailey_cut.bmp"

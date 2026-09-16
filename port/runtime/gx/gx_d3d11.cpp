@@ -1289,19 +1289,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
     const DrawCall& dc = frame.draws[cmd.index];
     DrawPlan& plan = plans_[cmd.index];
-    // Same quality reduction as the D3D12 backend (see gx_d3d12.cpp execute_draw). Dropping the
-    // draw here rather than at submission also skips building its indices and constants. Only
-    // world-space draws qualify (xf_regs[0x26] == 0), so the HUD is never touched, and nothing
-    // about guest memory changes, so it cannot desync and two players may use different levels.
-    if (opts_.effects_level > 0 && dc.xf_regs[0x26] == 0 && (dc.bp.blendmode() & 1)) {
-      const bool writes_depth = (dc.bp.zmode() & 0x10) != 0;
-      const bool additive = ((dc.bp.blendmode() >> 5) & 7) == 1;   // destination factor ONE: glow, sparks, flashes
-      // Level 2 takes draws that neither write nor test depth: those cannot be scene geometry.
-      // Taking every blended draw that does not write depth removed the whole world and left a
-      // blank screen, because in Melee most of the world is blended and depth-write-disabled.
-      const bool overlay = !writes_depth && (dc.bp.zmode() & 1) == 0;
-      if ((additive && !writes_depth) || (opts_.effects_level >= 2 && overlay)) continue;   // plan.valid stays false
-    }
+    // The "Visual effects" quality reduction was removed from both backends; see gx_d3d12.cpp.
     uint32_t n = dc.vertex_count;
     const uint32_t first = (uint32_t)index_scratch_.size();
     auto& idx = index_scratch_;

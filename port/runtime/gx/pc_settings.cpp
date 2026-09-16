@@ -517,12 +517,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // the version line stay outside the tabs, so Save is reachable from whichever tab is open.
     if (ImGui::BeginTabBar("settings_tabs")) {
       if (ImGui::BeginTabItem("Video")) {
-    changed |= ImGui::Checkbox("Borderless fullscreen", &options.fullscreen);
+    // Frame rate first: it is the setting this port exists for, and the one people look for.
     const double rates[] = {-1, 0, 60, 120, 144, 165, 200, 240, 360, 480};
     const char* names[] = {"Match monitor", "Unlocked", "60", "120", "144", "165", "200", "240", "360", "480"};
     int selected = -1; for (int i = 0; i < 10; ++i) if (options.fps_cap == rates[i]) selected = i;
     if (ImGui::Combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
     changed |= ImGui::Checkbox("VSync", &options.vsync);
+    changed |= ImGui::Checkbox("Borderless fullscreen", &options.fullscreen);
     if (ImGui::Checkbox("Widescreen 16:9 (Slippi code, online safe)", &options.widescreen)) {
       if (options.widescreen) options.true_widescreen = false;   // one or the other, never both
       changed = true;
@@ -651,13 +652,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::Combo("Sub-frame animation", &sf, subframe_modes, 3)) { options.subframe = sf == 0 ? SubFrameMode::Off : sf == 2 ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored; changed = true; }
     if (sf == 1) ImGui::TextWrapped("Samples supported animation beyond the latest pose. Sudden stops can require correction.");
     if (sf == 2) ImGui::TextWrapped("Samples between completed poses. This adds up to one simulation tick of visual delay; unsupported motion may hold.");
-    {
-      const char* levels[] = {"Full", "Reduced (no sparks or glow)", "Minimal (no translucent effects)"};
-      ImGui::SetNextItemWidth(260);
-      changed |= ImGui::Combo("Visual effects", &options.effects_level, levels, 3);
-      if (options.effects_level > 0 && ImGui::IsItemHovered())
-        ImGui::SetTooltip("Skips decorative draws to raise frame rate on slower machines.\nDisplay only: safe online, and players may use different settings.");
-    }
+    // The "Visual effects" control was removed: the filter it drove deleted the stage select
+    // pointer and menu text, and nothing in a draw separates a hit spark from a cursor.
 
     // ---- Low spec ----
     // One switch for every setting above that costs frames. Turning it on remembers what the player
@@ -675,7 +671,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
           options.efb_scale = 1;                  // native 640x528, the floor
           options.ssaa = 1;                       // no supersampling
           options.anisotropy = 1;                 // no anisotropic filtering
-          options.effects_level = 2;              // skip sparks, glow and overlay draws
+
           options.dlss_mode = 0;                  // NVIDIA and Direct3D 12 only
           options.subframe = SubFrameMode::Off;   // the sub-frame solver is the largest CPU cost here
         } else {
