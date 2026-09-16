@@ -144,6 +144,9 @@ void download_and_install() {
       << "set LOG=\"" << dir << "\\update.log\"\r\n"
       << "echo update started %DATE% %TIME%> %LOG%\r\n"
       << ":wait\r\ntasklist /FI \"PID eq " << GetCurrentProcessId() << "\" 2>nul | find \"" << GetCurrentProcessId() << "\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n"
+      // The game holds its own exe open. Updating from the launcher while a match is running used to
+      // fail the copy with a locked file, so wait for it too rather than fighting it.
+      << ":waitgame\r\ntasklist /FI \"IMAGENAME eq melee_port.exe\" 2>nul | find /i \"melee_port.exe\" >nul && (echo waiting for the game to close>> %LOG% & timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
       << "rmdir /s /q update_tmp 2>nul\r\nmkdir update_tmp\r\n"
       << "tar -xf update.zip -C update_tmp\r\n"
       << "if errorlevel 1 (echo could not unpack update.zip>> %LOG% & echo Could not unpack the update. & pause & exit /b 1)\r\n"
@@ -151,8 +154,22 @@ void download_and_install() {
       << "for /d %%d in (update_tmp\\MeleeUnlocked-* update_tmp\\MeleePort-*) do set SRC=%%d\r\n"
       << "if not defined SRC (echo no release folder inside update.zip>> %LOG% & echo The update did not contain a release folder. & pause & exit /b 1)\r\n"
       << "echo copying from %SRC%>> %LOG%\r\n"
-      << "xcopy /e /y /q \"%SRC%\\*\" \".\\\" >> %LOG% 2>&1\r\n"
-      << "if errorlevel 1 (echo copy failed>> %LOG% & echo Could not copy the update into place. & pause & exit /b 1)\r\n"
+      // /r overwrites read-only files: Windows marks files unpacked from a downloaded zip read-only
+      // often enough that the copy failed outright with "Could not copy the update into place".
+      // A file can also still be held for a moment by the process that just exited, so retry.
+      << "set TRIES=0\r\n"
+      << ":copy\r\n"
+      << "set /a TRIES+=1\r\n"
+      << "attrib -r \"*.*\" /s >nul 2>&1\r\n"
+      << "xcopy /e /y /q /r \"%SRC%\\*\" \".\\\" >> %LOG% 2>&1\r\n"
+      << "if not errorlevel 1 goto copied\r\n"
+      << "if %TRIES% lss 5 (echo copy attempt %TRIES% failed, retrying>> %LOG% & timeout /t 2 /nobreak >nul & goto copy)\r\n"
+      << "echo copy failed after %TRIES% attempts>> %LOG%\r\n"
+      << "echo Could not copy the update into place.\r\n"
+      << "echo Close the game and any open Explorer window on this folder, then try again.\r\n"
+      << "echo Details: %LOG%\r\n"
+      << "pause & exit /b 1\r\n"
+      << ":copied\r\n"
       << "rmdir /s /q update_tmp\r\ndel update.zip\r\n"
       << "echo restarting: " << relaunch << ">> %LOG%\r\n"
       << "start \"\" " << relaunch << "\r\n"
