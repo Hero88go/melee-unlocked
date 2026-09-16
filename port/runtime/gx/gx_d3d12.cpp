@@ -825,7 +825,12 @@ void main(out float4 ocol0 : SV_Target0 MVEC_OUT, in float4 rawpos : SV_Position
 }
 
 ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
-  if (dc.cached_pipeline && dc.cached_pipeline_owner == backend_id_) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
+  // The motion-vector variant is part of the real pipeline key: it changes shader generation and the
+  // render target count. Caching on the backend alone handed a draw the other variant's pipeline
+  // the moment DLSS was switched on or off, so the variant belongs in the cached owner as well.
+  // Doubling keeps these ids far below the D3D11 backend's id base, so the two spaces stay disjoint.
+  const uint64_t owner = backend_id_ * 2 + (dlss_active_ ? 1u : 0u);
+  if (dc.cached_pipeline && dc.cached_pipeline_owner == owner) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
   Stopwatch sw;
   VSUid vsu = make_vs_uid(dc);
   PSUid psu = make_ps_uid(dc);
@@ -835,7 +840,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   g_prof[6] += sw.lap(); ++g_pso_lookups;   // uid build + hash
   auto it = psos_.find(key);
   g_prof[7] += sw.lap();                    // map lookup
-  if (it != psos_.end()) { dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = it->second.Get(); return it->second.Get(); }
+  if (it != psos_.end()) { dc.cached_pipeline_owner = owner; dc.cached_pipeline = it->second.Get(); return it->second.Get(); }
   PipelineRecipe recipe{}; recipe.topology = (uint32_t)topo; recipe.components = dc.components;
   recipe.bp = dc.bp; std::memcpy(recipe.xf, dc.xf_regs, sizeof(recipe.xf));
   if (!prewarming_ && !pso_threads_.empty()) {
@@ -857,7 +862,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
       pso_wait_budget_us_ -= (int)(wait_sw.lap() * 1e6);
       integrate_compiled_psos();
       auto ready = psos_.find(key);
-      if (ready != psos_.end()) { dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = ready->second.Get(); return ready->second.Get(); }
+      if (ready != psos_.end()) { dc.cached_pipeline_owner = owner; dc.cached_pipeline = ready->second.Get(); return ready->second.Get(); }
     }
     ++g_pso_skips;
     return fallback_pso(key, dc, topo);   // approximate shading until the worker delivers the pipeline
@@ -868,7 +873,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   ComPtr<ID3D12PipelineState> pso = build_pso(key, vsu, psu, topo, vs, ps);
   psos_[key] = pso;
   if (!prewarming_ && pipeline_recipes_.size() < 4096) pipeline_recipes_.push_back(recipe);
-  dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = pso.Get();
+  dc.cached_pipeline_owner = owner; dc.cached_pipeline = pso.Get();
   return pso.Get();
 }
 

@@ -3,11 +3,14 @@
 #define NOMINMAX
 #include <windows.h>
 #include "gx_d3d12.h"
+#include "gx_shader.h"
 #include "gx_texture.h"
 #include <cstdarg>
+#include <cstddef>
 #include <cstdio>
 #include <fstream>
 #include <stdexcept>
+#include <string>
 #include <vector>
 namespace host {
 void log(const char* fmt, ...) { va_list args; va_start(args, fmt); vprintf(fmt,args); va_end(args); puts(""); }
@@ -69,6 +72,7 @@ int main() {
     gx::EfbCopy present{}; present.to_xfb=true; present.src_w=640; present.src_h=480; present.y_scale=1;
     frame.copies.push_back(present); frame.commands.push_back({gx::FrameCommand::Copy,1});
     for (unsigned n=0; n<6; ++n) { frame.sequence=n+1; renderer->submit_frame(frame); }
+    const uint64_t owner_a = frame.draws[0].cached_pipeline_owner;
     // Replay the same immutable packets through a new device/backend: their
     // cached PSO pointers must never be reused after the original owner dies.
     renderer.reset();
@@ -76,6 +80,45 @@ int main() {
     uint32_t warmed = 0; gx::d3d12_stats(renderer.get(), nullptr, &warmed, nullptr);
     check(warmed > 0, "recorded pipelines prewarm before the next draw");
     for (unsigned n=0; n<6; ++n) { frame.sequence=n+1; renderer->submit_frame(frame); }
+    const uint64_t owner_b = frame.draws[0].cached_pipeline_owner;
+    // A draw's cached pipeline belongs to one backend AND one motion-vector (DLSS) variant: the
+    // variant changes shader generation and the render target count, so a pipeline built for the
+    // other one must never be handed back after DLSS is switched on or off. The owner is
+    // backend_id*2 + variant, so the no-motion-vector variant is always even and two backends
+    // created in sequence step by two. Without the variant in the owner the step was one.
+    printf("pso cache owners: %llu then %llu\n",(unsigned long long)owner_a,(unsigned long long)owner_b);
+    check(owner_a!=0&&owner_b!=0,"draws resolved a real pipeline");
+    check(owner_a%2==0&&owner_b%2==0,"pipelines without motion vectors cache under the even owner");
+    check(owner_b==owner_a+2,"each backend owns one cache identity per motion-vector variant");
+
+    // Texture generator 7 must read Vertex::texmtx[7] (offset 104), not generator 6's index.
+    static_assert(offsetof(gx::Vertex,texmtx)+7==104,"texmtx[7] byte offset");
+    {
+      gx::DrawCall t=d;
+      t.components|=(gx::VB_HAS_TEXMTXIDX0<<6)|(gx::VB_HAS_TEXMTXIDX0<<7);   // per-vertex matrix index for texgens 6 and 7
+      t.xf_regs[0x3F]=8;                                                     // eight texture generators
+      for(int i=0;i<8;++i) t.xf_regs[0x40+i]=5u<<7;                          // all of them from TEXCOORD0
+      const std::string vs=gx::generate_vertex_shader(gx::make_vs_uid(t));
+      check(vs.find("uint blend_index7 : BLENDINDICES2")!=std::string::npos,"texgen 7 has its own vertex input");
+      const size_t six=vs.find("o.tex6.xyz"), seven=vs.find("o.tex7.xyz");
+      check(six!=std::string::npos&&seven!=std::string::npos,"eight texture generators emitted");
+      // Each assignment is preceded by the "int tmp = int(<input>);" line naming the input it reads.
+      const std::string src6=vs.substr(vs.rfind("int tmp = int(",six),40), src7=vs.substr(vs.rfind("int tmp = int(",seven),40);
+      printf("texgen 6 reads %s\ntexgen 7 reads %s\n",src6.c_str(),src7.c_str());
+      check(src6!=src7,"texgens 6 and 7 read different matrix indices");
+      check(src7.find("blend_index7")!=std::string::npos,"texgen 7 reads texmtx[7]");
+      // And the input layout really feeds it: D3D12 refuses a pipeline whose vertex shader reads an
+      // element the layout does not provide, so building this draw's pipeline proves the wiring.
+      gx::Frame texgen_frame; texgen_frame.sequence=7;
+      texgen_frame.copies.push_back(clear); texgen_frame.commands.push_back({gx::FrameCommand::Copy,0});
+      t.first_vertex=0; t.textures[0]=red;
+      const float xy[4][2]={{-1,-1},{1,-1},{1,1},{-1,1}};
+      for(auto& p:xy) { gx::Vertex v{}; v.pos[0]=p[0]; v.pos[1]=p[1]; v.uv[0][0]=v.uv[0][1]=0.5f; v.texmtx[6]=57; v.texmtx[7]=60; texgen_frame.vertices.push_back(v); }
+      t.cached_pipeline=nullptr; t.cached_pipeline_owner=0;
+      texgen_frame.draws.push_back(t); texgen_frame.commands.push_back({gx::FrameCommand::Draw,0});
+      for(unsigned n=0;n<6;++n) { texgen_frame.sequence=7+n; renderer->submit_frame(texgen_frame); }
+      check(texgen_frame.draws[0].cached_pipeline!=nullptr,"eight-texgen pipeline built against the new input layout");
+    }
     renderer.reset(); DestroyWindow(window); window=nullptr;
     std::ifstream file(options.capture_path,std::ios::binary); std::string magic; int w,h,max;
     file>>magic>>w>>h>>max; file.get(); check(magic=="P6"&&w==640&&h==480&&max==255,"capture header");

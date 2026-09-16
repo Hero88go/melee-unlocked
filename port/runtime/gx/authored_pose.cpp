@@ -294,3 +294,9 @@ bool sample_authored_envelope(const AuthoredPose& previous,const AuthoredPose& c
   return true;
 }
 }
+namespace gx {
+const char* const kCaptureFeatureNames[FEAT_COUNT] = {
+  "billboard", "pbillboard", "instance", "quaternion", "joint1", "joint2",
+  "user_def_mtx", "mtx_indep_parent", "mtx_indep_srt", "robj"
+};
+}
