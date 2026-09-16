@@ -110,9 +110,14 @@ void mmio_write(uint32_t addr, uint32_t value, int bytes);
 // ---- input ----
 struct PadState { uint16_t button; int8_t stick_x, stick_y, sub_x, sub_y; uint8_t trig_l, trig_r, analog_a, analog_b; int8_t err; };
 void input_poll(PadState out[4]);
+// The state the game read on the last PADRead, for the on-screen controller overlay.
+void input_last_pads(PadState out[4]);
 // GameCube controller adapter (WUP-028 over WinUSB): fills plugged ports, returns their mask.
 uint32_t gcadapter_poll(PadState out[4]);
 void gcadapter_rumble(int port, bool on);
+// Forget a port's stored neutral so the next report re-establishes it (-1 for every port). The game
+// asks for this through PADRecalibrate.
+void gcadapter_recalibrate(int port);
 void gcadapter_shutdown();
 
 // Guest call helpers for HLE code.

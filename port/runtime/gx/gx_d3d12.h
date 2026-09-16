@@ -18,6 +18,12 @@ struct D3D12Options {
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
   float dlss_jitter_sign = -1.0f; // calibrated 2026-09-11: -1 reconstructs sharp text, +1 blurs (see PORT_COMPLETION.md)
   bool pc_settings = false, settings_open = false, performance_overlay = false;
+  bool input_overlay = false;     // on-screen controller display, for streaming
+  int input_overlay_port = 0;     // which controller port it shows, 0-3
+  // Drop in-world translucent effects to buy frame rate on weak machines: 0 everything, 1 skips
+  // effects that do not write depth (sparks, glow, smoke), 2 skips translucent world geometry too.
+  // Purely presentational, so unlike a Gecko code it cannot desync and both players may differ.
+  int effects_level = 0;
   std::string settings_path = "port-settings.ini";
   std::string frame_times; // optional buffered CSV of CPU presentation timing
   SubFrameMode subframe = SubFrameMode::Off;

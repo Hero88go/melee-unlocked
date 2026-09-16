@@ -166,6 +166,11 @@ std::array<PadBindings, 4> g_pad_bindings = default_pad_bindings();
 std::array<GCBindings, 4> g_gc_bindings = default_gc_bindings();
 std::array<PadBindings, 4> g_ds4_bindings = {};
 std::array<PortSource, 4> g_port_sources = default_port_sources();
+// The last state the game actually read, for the on-screen controller overlay. Taken here rather
+// than polled again by the renderer, so the overlay shows what the game saw and polling the devices
+// stays on one thread at one rate.
+std::mutex g_last_pads_mutex;
+PadState g_last_pads[4]{};
 
 namespace {
 std::atomic<bool> g_capturing{false};
@@ -502,11 +507,17 @@ void input_poll(PadState out[4]) {
     }
     debug.ports[port] = out[port];
   }
+  { std::lock_guard<std::mutex> lock(g_last_pads_mutex); for (int port = 0; port < 4; ++port) g_last_pads[port] = out[port]; }
 
   debug.keyboard_actions = 0;
   for (int i = 0; i < (int)BindAction::Count; ++i) if (kb.button & kActionPadBit[i]) debug.keyboard_actions |= (uint16_t)(1u << i);
   for (int idx = 0; idx < 4; ++idx) if (xin_connected[idx]) debug.xinput_connected[idx] = true;
   input_debug_snapshot(debug);
+}
+
+void input_last_pads(PadState out[4]) {
+  std::lock_guard<std::mutex> lock(g_last_pads_mutex);
+  for (int port = 0; port < 4; ++port) out[port] = g_last_pads[port];
 }
 
 void input_debug_snapshot(InputDebugSnapshot& snapshot) {

@@ -619,6 +619,12 @@ void build_projection(const DrawCall& dc, float m[16]) {
   if (vp[1] > 0.0f) for (int i = 4; i < 8; ++i) m[i] *= -1.0f;
 }
 
+size_t vs_constants_bytes(const DrawCall& dc, bool motion_vectors) {
+  if (motion_vectors) return sizeof(VSConstants);
+  if (dc.xf_regs[0x12] & 1) return offsetof(VSConstants, unjittered_projection);
+  return offsetof(VSConstants, posttransformmatrices);
+}
+
 void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const DrawMatrices* override_matrices, const MotionInfo* motion) {
   // No blanket zeroing of the 4.9 KB block: every field is written below, and the sections a draw
   // does not use (lights, post-transform, previous pose) are zeroed individually.
@@ -640,7 +646,7 @@ void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const 
     std::memcpy(c.prev_transformmatrices, motion->prev_pos ? motion->prev_pos : pos_matrices, sizeof c.prev_transformmatrices);
   } else {
     std::memset(c.prev_projection, 0, sizeof c.prev_projection);
-    std::memset(c.prev_transformmatrices, 0, sizeof c.prev_transformmatrices);
+    // Left untouched rather than zeroed: without motion vectors the upload stops before it.
   }
   std::memcpy(c.projection, m, sizeof m);
   float psx = 2.0f / viewport_width, psy = 2.0f / viewport_height;
@@ -685,8 +691,9 @@ void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const 
   }
   std::memcpy(c.transformmatrices, pos_matrices, sizeof dc.posMatrices);
   for (int i = 0; i < 32; ++i) { std::memcpy(c.normalmatrices[i], &nrm_matrices[3 * i], 12); c.normalmatrices[i][3] = 0; }
+  // Not zeroed when unused: vs_constants_bytes() stops the upload before this block, so nothing
+  // downstream can observe it.
   if (dc.xf_regs[0x12] & 1) std::memcpy(c.posttransformmatrices, dc.postMatrices, sizeof dc.postMatrices);
-  else std::memset(c.posttransformmatrices, 0, sizeof c.posttransformmatrices);
 }
 
 void fill_ps_constants(const DrawCall& dc, PSConstants& c, int efb_scale) {
