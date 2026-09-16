@@ -97,7 +97,9 @@ target_compile_options(runtime PRIVATE /EHsc /arch:AVX2 /fp:precise /W3)
 target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
 target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcrypt d3d12 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb)
 
-add_executable(melee_port app/main.cpp)
+# WIN32: no console window when the game is double-clicked or started from the launcher. Command-line
+# use still works, because main() reattaches to a parent console when there is one (see app/main.cpp).
+add_executable(melee_port WIN32 app/main.cpp)
 add_executable(port_mm_probe tests/mm_probe.cpp)
 target_link_libraries(port_mm_probe PRIVATE runtime guest)
 target_compile_options(port_mm_probe PRIVATE /EHsc)

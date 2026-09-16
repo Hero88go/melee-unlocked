@@ -236,7 +236,28 @@ static bool cpu_has_avx2() {
   __cpuidex(r, 7, 0); return (r[1] >> 5) & 1;
 }
 
-int main(int argc, char** argv) {
+// Built for the Windows subsystem so double-clicking the game does not open a terminal alongside it.
+// Anything started from a command line still prints there: this reattaches to the parent console when
+// one exists, so `melee_port.exe --help` and scripted runs behave exactly as before.
+static void attach_parent_console() {
+  if (!AttachConsole(ATTACH_PARENT_PROCESS)) return;
+  FILE* f = nullptr;
+  freopen_s(&f, "CONOUT$", "w", stdout);
+  freopen_s(&f, "CONOUT$", "w", stderr);
+  freopen_s(&f, "CONIN$", "r", stdin);
+}
+
+static int melee_main(int argc, char** argv);
+
+// Both entry points exist so the executable links whichever subsystem it is built for: WinMain for the
+// windowed build (no terminal alongside the game), main if it is ever built as a console program.
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+  attach_parent_console();
+  return melee_main(__argc, __argv);
+}
+int main(int argc, char** argv) { return melee_main(argc, argv); }
+
+static int melee_main(int argc, char** argv) {
   if (!cpu_has_avx2()) {
     const char* msg = "Melee Unlocked needs a CPU with AVX2 (Intel Haswell 2013 or newer, AMD Ryzen or newer). This CPU does not support it.";
     std::fprintf(stderr, "%s\n", msg);
