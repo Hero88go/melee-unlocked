@@ -12,6 +12,7 @@
 #include <libusb.h>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -40,61 +41,24 @@ struct Origin { bool set = false; uint8_t sx = 128, sy = 128, cx = 128, cy = 128
 std::atomic<uint8_t> g_rumble[4]{};
 std::atomic<bool> g_rumble_dirty{false};
 
-// `others`, when given, collects the VID/PID of every USB device that was not a match. Third-party
-// adapters (the Hand Held Legend GC Pocket+ and similar) use their own USB identity rather than
-// Nintendo's, so "no adapter found" told a user nothing about what they actually had plugged in.
-// Listing what was there makes the log enough to add support without asking them to run commands.
-std::string find_adapter_path(std::string* others = nullptr) {
-  HDEVINFO devs = SetupDiGetClassDevsA(&GUID_DEVINTERFACE_USB_DEVICE, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-  if (devs == INVALID_HANDLE_VALUE) return "";
-  std::string found;
+// Finds the adapter and records the VID:PID of everything else, so a log from someone whose adapter
+// is not recognised says what they actually had plugged in.
+libusb_device* find_adapter(libusb_device** list, ssize_t count, std::string* others) {
+  libusb_device* adapter = nullptr;
   int listed = 0;
-  SP_DEVICE_INTERFACE_DATA iface{}; iface.cbSize = sizeof iface;
-  for (DWORD i = 0; SetupDiEnumDeviceInterfaces(devs, nullptr, &GUID_DEVINTERFACE_USB_DEVICE, i, &iface); ++i) {
-    DWORD needed = 0;
-    SetupDiGetDeviceInterfaceDetailA(devs, &iface, nullptr, 0, &needed, nullptr);
-    if (!needed) continue;
-    std::string buf(needed, '\0');
-    auto* detail = (SP_DEVICE_INTERFACE_DETAIL_DATA_A*)buf.data();
-    detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_A);
-    if (!SetupDiGetDeviceInterfaceDetailA(devs, &iface, detail, needed, nullptr, nullptr)) continue;
-    std::string path(detail->DevicePath);
-    std::string lower(path);
-    for (auto& c : lower) c = (char)tolower((unsigned char)c);
-    if (lower.find("vid_057e&pid_0337") != std::string::npos) { found = path; break; }
-    if (others && listed < 20) {
-      const size_t vid = lower.find("vid_");
-      // "vid_xxxx&pid_xxxx" is 17 characters; anything shorter is not a VID/PID pair.
-      if (vid != std::string::npos && lower.size() >= vid + 17) {
-        if (!others->empty()) *others += ", ";
-        *others += lower.substr(vid, 17);
-        ++listed;
-      }
+  for (ssize_t i = 0; i < count; ++i) {
+    libusb_device_descriptor desc{};
+    if (libusb_get_device_descriptor(list[i], &desc) != 0) continue;
+    if (desc.idVendor == 0x057E && desc.idProduct == 0x0337) { adapter = list[i]; break; }
+    if (others && listed < 16) {
+      char id[16];
+      std::snprintf(id, sizeof id, "%04x:%04x", desc.idVendor, desc.idProduct);
+      if (!others->empty()) *others += ", ";
+      *others += id;
+      ++listed;
     }
   }
-  SetupDiDestroyDeviceInfoList(devs);
-  return found;
-}
-
-// True when a WUP-028 is plugged in but not reachable through WinUSB. Dolphin talks to adapters with
-// libusb, which also drives libusbK and libusb-win32, and libusbK is a common Zadig choice for Melee.
-// Those register a different device interface, so the WinUSB enumeration above finds nothing while
-// Dolphin reports the adapter detected: saying "no adapter found" then sends people hunting for
-// hardware faults instead of changing the driver.
-bool adapter_present_on_another_driver() {
-  HDEVINFO devs = SetupDiGetClassDevsA(nullptr, "USB", nullptr, DIGCF_PRESENT | DIGCF_ALLCLASSES);
-  if (devs == INVALID_HANDLE_VALUE) return false;
-  SP_DEVINFO_DATA info{}; info.cbSize = sizeof info;
-  bool present = false;
-  for (DWORD i = 0; !present && SetupDiEnumDeviceInfo(devs, i, &info); ++i) {
-    char id[512]{};
-    if (!SetupDiGetDeviceInstanceIdA(devs, &info, id, sizeof id, nullptr)) continue;
-    std::string lower(id);
-    for (auto& c : lower) c = (char)tolower((unsigned char)c);
-    if (lower.find("vid_057e&pid_0337") != std::string::npos) present = true;
-  }
-  SetupDiDestroyDeviceInfoList(devs);
-  return present;
+  return adapter;
 }
 
 void reader_thread() {
@@ -141,46 +105,63 @@ void reader_thread() {
 void close_adapter() {
   g_running.store(false);
   if (g_thread.joinable()) g_thread.join();
-  if (g_usb) { WinUsb_Free(g_usb); g_usb = nullptr; }
-  if (g_file != INVALID_HANDLE_VALUE) { CloseHandle(g_file); g_file = INVALID_HANDLE_VALUE; }
+  if (g_dev) {
+    if (g_claimed) libusb_release_interface(g_dev, 0);
+    libusb_close(g_dev);
+    g_dev = nullptr;
+  }
+  g_claimed = false;
   std::lock_guard<std::mutex> lk(g_mutex);
   g_have_report = false;
   for (auto& o : g_origin) o.set = false;
 }
 
 bool open_adapter() {
+  if (!g_ctx && libusb_init(&g_ctx) != 0) {
+    if (!g_logged_missing) { log("gc adapter: libusb could not start; keyboard/XInput stay active"); g_logged_missing = true; }
+    g_ctx = nullptr;
+    return false;
+  }
+  libusb_device** list = nullptr;
+  const ssize_t count = libusb_get_device_list(g_ctx, &list);
+  if (count < 0) return false;
   std::string others;
-  std::string path = find_adapter_path(&others);
-  if (path.empty()) {
+  libusb_device* adapter = find_adapter(list, count, &others);
+  if (!adapter) {
     if (!g_logged_missing) {
-      if (adapter_present_on_another_driver()) {
-        log("gc adapter: a WUP-028 adapter (VID 057E PID 0337) is plugged in but is not on the WinUSB driver.");
-        log("gc adapter: run Zadig, select the adapter, choose WinUSB and click Replace Driver. Dolphin also accepts libusbK, which this port does not read yet.");
-      } else {
-        log("gc adapter: no WUP-028 adapter found (VID 057E PID 0337 with the WinUSB driver); keyboard/XInput stay active");
-        if (!others.empty()) log("gc adapter: USB devices present instead: %s", others.c_str());
-      }
+      log("gc adapter: no WUP-028 adapter found (VID 057E PID 0337); keyboard/XInput stay active");
+      if (!others.empty()) log("gc adapter: USB devices present instead: %s", others.c_str());
+      g_logged_missing = true;
+    }
+    libusb_free_device_list(list, 1);
+    return false;
+  }
+  int rc = libusb_open(adapter, &g_dev);
+  libusb_free_device_list(list, 1);
+  if (rc != 0) {
+    g_dev = nullptr;
+    if (!g_logged_missing) {
+      log("gc adapter: found but cannot open (%s): it may have no usable driver. Install WinUSB, libusbK or libusb-win32 on it with Zadig, as Slippi does.", libusb_error_name(rc));
       g_logged_missing = true;
     }
     return false;
   }
-  g_file = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
-                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
-  if (g_file == INVALID_HANDLE_VALUE) {
-    if (!g_logged_missing) { log("gc adapter: found but cannot open (%lu): another program (Dolphin?) may hold it, or the driver is not WinUSB", GetLastError()); g_logged_missing = true; }
+  rc = libusb_claim_interface(g_dev, 0);
+  if (rc != 0) {
+    if (!g_logged_missing) {
+      log("gc adapter: cannot claim the adapter (%s): another program (Dolphin or Slippi?) is using it. Close it and try again.", libusb_error_name(rc));
+      g_logged_missing = true;
+    }
+    libusb_close(g_dev); g_dev = nullptr;
     return false;
   }
-  if (!WinUsb_Initialize(g_file, &g_usb)) {
-    if (!g_logged_missing) { log("gc adapter: WinUsb_Initialize failed (%lu): install the WinUSB driver with Zadig as for Slippi", GetLastError()); g_logged_missing = true; }
-    CloseHandle(g_file); g_file = INVALID_HANDLE_VALUE;
-    return false;
-  }
+  g_claimed = true;
   // A run that exited without closing the adapter (a crash) leaves it mid-stream: the next open
   // succeeds but the read pipe delivers nothing, so the adapter looks absent until it is physically
-  // unplugged. Resetting both pipes clears that state, which is what a replug was doing by hand.
-  WinUsb_ResetPipe(g_usb, 0x81);
-  WinUsb_ResetPipe(g_usb, 0x02);
-  log("gc adapter: opened %s", path.c_str());
+  // unplugged. Clearing both pipes does by software what a replug was doing by hand.
+  libusb_clear_halt(g_dev, 0x81);
+  libusb_clear_halt(g_dev, 0x02);
+  log("gc adapter: opened through libusb");
   g_logged_missing = false;
   g_logged_restart = false;
   g_running.store(true);
@@ -194,8 +175,8 @@ bool open_adapter() {
 uint32_t gcadapter_poll(PadState out[4]) {
   if (options.no_gc_adapter) return 0;
   auto now = std::chrono::steady_clock::now();
-  if (!g_usb || !g_running.load()) {
-    if (g_usb && !g_running.load()) close_adapter();
+  if (!g_dev || !g_running.load()) {
+    if (g_dev && !g_running.load()) close_adapter();
     if (now < g_next_scan) return 0;
     g_next_scan = now + std::chrono::seconds(2);
     if (!open_adapter()) return 0;
@@ -242,6 +223,9 @@ void gcadapter_rumble(int port, bool on) {
   if (g_rumble[port] != v) { g_rumble[port] = v; g_rumble_dirty = true; }
 }
 
-void gcadapter_shutdown() { close_adapter(); }
+void gcadapter_shutdown() {
+  close_adapter();
+  if (g_ctx) { libusb_exit(g_ctx); g_ctx = nullptr; }
+}
 
 }  // namespace host

@@ -68,6 +68,25 @@ add_library(port_enet STATIC ${ENET_SOURCES})
 target_include_directories(port_enet PUBLIC third_party/enet/include)
 target_compile_definitions(port_enet PRIVATE _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
 target_link_libraries(port_enet PUBLIC ws2_32 winmm)
+# libusb, as Dolphin uses for the GameCube adapter. Talking to WinUSB directly meant an adapter on
+# libusbK or libusb-win32 was invisible to us while Dolphin reported it detected, and players were
+# being asked to swap drivers for hardware that already worked. libusb's Windows backend covers all
+# three, so an adapter that works in Slippi works here.
+add_library(port_libusb STATIC
+  third_party/libusb/libusb/core.c
+  third_party/libusb/libusb/descriptor.c
+  third_party/libusb/libusb/hotplug.c
+  third_party/libusb/libusb/io.c
+  third_party/libusb/libusb/strerror.c
+  third_party/libusb/libusb/sync.c
+  third_party/libusb/libusb/os/events_windows.c
+  third_party/libusb/libusb/os/threads_windows.c
+  third_party/libusb/libusb/os/windows_common.c
+  third_party/libusb/libusb/os/windows_usbdk.c
+  third_party/libusb/libusb/os/windows_winusb.c)
+target_include_directories(port_libusb PUBLIC third_party/libusb/libusb PRIVATE third_party/libusb/msvc)
+target_compile_definitions(port_libusb PRIVATE _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(port_libusb PUBLIC advapi32 ole32 setupapi)
 file(STRINGS "${PROJECT_SOURCE_DIR}/VERSION" MELEE_PORT_VERSION LIMIT_COUNT 1)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/VERSION")
 add_library(runtime STATIC ${RUNTIME_SOURCES} third_party/slippilib/SlippiGame.cpp)
@@ -76,7 +95,7 @@ target_include_directories(runtime PUBLIC runtime/ppc runtime/host runtime/hle r
 target_compile_features(runtime PUBLIC cxx_std_17)
 target_compile_options(runtime PRIVATE /EHsc /arch:AVX2 /fp:precise /W3)
 target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
-target_link_libraries(runtime PUBLIC native_animation port_enet bcrypt d3d12 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb)
+target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcrypt d3d12 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb)
 
 add_executable(melee_port app/main.cpp)
 add_executable(port_mm_probe tests/mm_probe.cpp)
