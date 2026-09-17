@@ -5,7 +5,7 @@
 #include <memory>
 namespace ppc { struct Context; }
 namespace gx {
-enum class Observe { AllocateJoint, ReleaseJoint, DisplayJoint, RigidMatrix, OtherMatrix, EnvelopeMatrix };
+enum class Observe { AllocateJoint, LoadJoint, ReleaseJoint, DisplayJoint, RigidMatrix, OtherMatrix, EnvelopeMatrix };
 struct AuthoredPose;
 class RenderObserver {
   ppc::Context& cpu_;
@@ -14,6 +14,7 @@ class RenderObserver {
   uint32_t saved_draw_ = 0, saved_joint_ = 0;
   uint8_t* saved_memory_ = nullptr;
   uint8_t saved_owner_ = 0xFF;
+  uint32_t loaded_joint_ = 0;   // JObjLoad: the joint, taken at entry
   bool saved_rigid_ = false, saved_envelope_ = false;
   std::shared_ptr<const AuthoredPose> saved_pose_;
  public:
