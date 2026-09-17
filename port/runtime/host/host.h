@@ -81,7 +81,7 @@ int exit_code();
 uint32_t retrace_count();
 
 // ---- simulation-thread cost accounting (per retrace; logged when a frame exceeds 20 ms) ----
-enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, SIM_OBSERVE, SIM_RECORD, SIM_COST_COUNT };
+enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, SIM_OBSERVE, SIM_RECORD, SIM_DECODE, SIM_COST_COUNT };
 void sim_cost_add(int slot, double seconds);
 double last_sim_frame_ms();            // work time of the most recent simulation frame (sleep excluded)
 

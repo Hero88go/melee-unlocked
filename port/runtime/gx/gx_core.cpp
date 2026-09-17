@@ -445,6 +445,7 @@ void write_fifo(uint32_t value, int bytes) {
   for (int i = 0; i < bytes; ++i) g_buf[at + i] = (uint8_t)(value >> (8 * (bytes - 1 - i)));
   if (g_buf.size() - g_buf_pos < g_parse_need) return;   // the pending command is still incomplete
   g_parse_need = 0;
+  host::SimCostScope cost(host::SIM_DECODE);   // everything the simulation thread spends turning FIFO bytes into draws
   while (g_buf_pos < g_buf.size()) {
     size_t n = parse_command(g_buf.data() + g_buf_pos, g_buf.size() - g_buf_pos);
     if (!n) break;               // parse_command recorded how many bytes it needs

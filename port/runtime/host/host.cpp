@@ -504,7 +504,7 @@ const double tsc_seconds = [] {
 static double g_sim_costs[SIM_COST_COUNT];
 static double g_sim_costs_window[SIM_COST_COUNT];   // accumulated over the 60-frame log interval
 static double g_sim_ms_window = 0, g_sim_ms_worst = 0;
-static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record"};   // record includes texsnap and observe
+static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record", "gxdecode"};   // record includes texsnap and observe; gxdecode includes record and queue
 static double g_sim_frame_start = 0.0, g_last_sim_ms = 0.0;
 void sim_cost_add(int slot, double seconds) { if (slot >= 0 && slot < SIM_COST_COUNT) { g_sim_costs[slot] += seconds; g_sim_costs_window[slot] += seconds; } }
 // "sim: 3.1 ms/frame (worst 12.4) | observe 0.9 texsnap 0.4" for the periodic frame log.
