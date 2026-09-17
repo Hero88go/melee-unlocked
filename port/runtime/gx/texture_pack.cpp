@@ -215,14 +215,20 @@ void build_index() {
   std::filesystem::path base = exe_directory();
   g.root = find_root(base);
   g.roots = find_roots(base);
-  if (g.root.empty()) {
+  if (g.roots.empty()) {
+    // Fall back to the working directory, which is not the executable's folder when the game is
+    // started from a shortcut or from the launcher's own directory.
     std::error_code ec;
     std::filesystem::path cwd = std::filesystem::current_path(ec);
-    if (!ec) g.root = find_root(cwd);
+    if (!ec) { g.root = find_root(cwd); g.roots = find_roots(cwd); }
   }
-  if (g.root.empty()) {
-    host::log("textures: no pack folder; create %s and drop a Dolphin pack in it",
-              (base / "Load" / "Textures" / "GALE01").string().c_str());
+  // Only give up when there is nowhere at all to look. This used to test the Dolphin-style
+  // Load/Textures/GALE01 folder alone, so a player who put a pack in TexturePacks and had never
+  // created a Load folder got no scan at all and an empty list, which is the one case the
+  // TexturePacks folder exists to serve.
+  if (g.roots.empty()) {
+    host::log("textures: no pack folder; create %s and drop a pack in it",
+              (base / "TexturePacks").string().c_str());
     return;
   }
   std::error_code ec;
@@ -278,8 +284,10 @@ void build_index() {
       g.packs[(size_t)index].files += g.files_indexed - before;
     }
   }
+  std::string where;
+  for (const auto& root : g.roots) { if (!where.empty()) where += " and "; where += root.string(); }
   host::log("textures: %llu replacements in %llu files under %s",
-            (unsigned long long)g.index.size(), (unsigned long long)g.files_indexed, g.root.string().c_str());
+            (unsigned long long)g.index.size(), (unsigned long long)g.files_indexed, where.c_str());
   if (g.dds_skipped)
     host::log("textures: %llu DDS files ignored (only PNG is decoded; re-save them as PNG)", (unsigned long long)g.dds_skipped);
   if (g.legacy_skipped)
