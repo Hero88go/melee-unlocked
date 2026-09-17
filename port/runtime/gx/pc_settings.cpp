@@ -322,6 +322,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
       else if (key == "performance") options.performance_overlay = value == "1";
+      else if (key == "settingshint") options.settings_hint = value != "0";
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
       // Settings saved before the overlay could show several ports name a single port number.
@@ -723,6 +724,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Overlays")) {
+    changed |= ImGui::Checkbox("Show the \"Settings: F1\" reminder", &options.settings_hint);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1 still opens this panel with it off.");
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
     changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
     if (options.input_overlay) {
@@ -1064,6 +1067,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   if (!state.open) {
     // Keep the closed state passive: opening is intentionally F1-only so controller
     // navigation cannot activate a settings button by accident.
+    if (!options.settings_hint) return changed;   // hidden on request: F1 still opens the panel
     ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 12, 12), ImGuiCond_Always, ImVec2(1, 0));
     ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
     ImGui::Begin("SettingsButton", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);

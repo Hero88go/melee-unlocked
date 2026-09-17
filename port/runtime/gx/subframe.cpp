@@ -2,6 +2,7 @@
 #include "subframe.h"
 #include "authored_pose.h"
 #include "gx_shader.h"
+#include <intrin.h>
 #include <cmath>
 #include <cstring>
 #include <thread>
@@ -11,6 +12,10 @@
 #include <condition_variable>
 
 namespace gx {
+// How far a single presented frame may move a draw before the result is treated as wrong. One
+// simulation frame of the fastest legitimate motion in Melee is far below this; a
+// reconstruction error is far above it.
+static constexpr float kMaxCarryTranslation = 600.0f;
 namespace {
 
 // Whether two draws render with the same material, looking only at state that reaches the output.
@@ -560,6 +565,31 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
         }
         if (posed) ++count;
         else if (carry_camera(*pd->authored_pose, *d.authored_pose, t, hold.posMatrices, hold.normalMatrices, p.pos_slots, o.pos, o.nrm)) ++carried;
+        // Sanity: a re-posed or carried draw must land near where it was. Nothing downstream checks
+        // this, so a single bad matrix (a chain that reconstructed wrong, a camera carry taken
+        // across a cut or a sharp zoom) puts an object somewhere else entirely for one presented
+        // frame. On screen that is stage geometry vanishing and coming back: the blink. If it
+        // happens, hold this draw instead, which is always a safe answer because it is what the
+        // simulation itself last produced.
+        {
+          uint64_t slots = p.pos_slots;
+          bool sane = true;
+          while (slots && sane) {
+            unsigned long bit = 0; _BitScanForward64(&bit, slots);
+            const int row = (int)bit;
+            slots &= slots - 1;
+            if (row + 3 > 64) continue;
+            for (int r = 0; r < 3 && sane; ++r) {
+              const float have = o.pos[row * 4 + r * 4 + 3], was = hold.posMatrices[row * 4 + r * 4 + 3];
+              if (!std::isfinite(have) || std::abs(have - was) > kMaxCarryTranslation) sane = false;
+            }
+          }
+          if (!sane) {
+            ++stats_.insane;
+            std::memcpy(o.pos, hold.posMatrices, sizeof o.pos);
+            std::memcpy(o.nrm, hold.normalMatrices, sizeof o.nrm);
+          }
+        }
         // Envelope sampling publishes a complete matrix array. Apply disjoint UV
         // animation afterwards so that publication cannot erase the sampled UVs.
         sample_textures();

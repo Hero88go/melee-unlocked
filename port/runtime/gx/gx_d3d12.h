@@ -30,6 +30,9 @@ struct D3D12Options {
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
   float dlss_jitter_sign = -1.0f; // calibrated 2026-09-11: -1 reconstructs sharp text, +1 blurs (see PORT_COMPLETION.md)
   bool pc_settings = false, settings_open = false, performance_overlay = false;
+  // The "Settings: F1" reminder in the corner. On for a new player, off for anyone who knows the
+  // key and does not want it in a recording.
+  bool settings_hint = true;
   bool input_overlay = false;     // on-screen controller display, for streaming
   int input_overlay_ports = 1;    // bitmask of the controller ports it shows (bit 0 = port 1)
   bool input_overlay_hide_border = false;  // draw the pads with no panel background or resize grip

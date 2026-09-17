@@ -6,6 +6,9 @@
 #include <cmath>
 #include <cstring>
 namespace gx {
+// Furthest the view may travel in one simulation frame before it is treated as a cut rather than
+// motion. Melee's camera tracks fighters; a cut jumps far beyond anything tracking produces.
+static constexpr float kMaxViewStep = 120.0f;
 AuthoredStats& authored_stats() { static AuthoredStats st; return st; }
 static std::atomic<bool> g_interpolate{false};
 void set_authored_interpolate(bool on) { g_interpolate.store(on, std::memory_order_relaxed); }
@@ -66,8 +69,18 @@ bool camera_motion(const AuthoredPose& previous,const AuthoredPose& current,doub
   // A quake jolts the view back and forth every tick. Advancing along that jolt overshoots it
   // (an alternating offset of a is drawn as up to 3a), so the shaking camera holds its exact
   // 60 Hz view as the console shows it.
-  if(!g_interpolate.load(std::memory_order_relaxed)&&(previous.quake||current.quake)) return true;
+  // This used to apply to Predict only, so Interpolate, the mode most people run, blended every
+  // quake and rendered the whole scene through camera positions the game never showed.
+  if(previous.quake||current.quake) return true;
   Matrix prev=from12(previous.view.data());
+  // A cut (respawn, a zoom snap, a new stock) moves the view further in one tick than tracking ever
+  // does. There is nothing between the two views to show, so blending across it slides the whole
+  // stage through positions that never existed: the level rendering wrong for a split second.
+  {
+    float moved=0;
+    for(int r=0;r<3;++r){ const float d=cur[r*4+3]-prev[r*4+3]; moved+=d*d; }
+    if(!(moved<kMaxViewStep*kMaxViewStep)) return true;   // also catches NaN
+  }
   if(g_interpolate.load(std::memory_order_relaxed)) SubFrameSolver::interpolate_matrix(prev.data(),cur.data(),phase,view_new.data());
   else SubFrameSolver::extrapolate_matrix(prev.data(),cur.data(),phase,view_new.data());
   Matrix inv_cur; if(!inverse(cur,inv_cur)){ view_new=cur; return true; }
