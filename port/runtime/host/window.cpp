@@ -799,6 +799,23 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     }
   }
 
+  // This function does not read back what input_poll computed: it rebuilds the whole snapshot from
+  // the devices itself, which is why every family above is polled again here. A generic pad added
+  // to input_poll alone therefore showed its name and its live axes, which are read straight from
+  // the device, while reporting "not connected" and refusing to rebind, because those two come
+  // from the snapshot.
+  PadState hid[4];
+  {
+    for (auto& s : hid) { s = {}; s.err = -1; }
+    uint32_t buttons[4]{};
+    uint32_t hid_mask = hidpad_poll(hid, buttons);
+    for (int idx = 0; idx < 4; ++idx) {
+      if (!(hid_mask & (1u << idx))) { hid[idx] = {}; hid[idx].err = -1; continue; }
+      snapshot.hid_connected[idx] = true;
+      snapshot.hid_actions[idx] = hid_apply_bindings(idx, buttons[idx], hid[idx]);
+    }
+  }
+
   for (int idx = 0; idx < 4; ++idx) {
     snapshot.gc_actions[idx] = 0;
     if (!(gc_mask & (1u << idx))) continue;
