@@ -494,7 +494,14 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
           // moved by the camera. They are unpaired by design (see the hud counter above), so without
           // this they fell into the carry below and were shifted a fraction of the camera's motion
           // on every presented frame, which reads as the HUD juddering while the game is smooth.
-          if (d.authored_pose && camera_previous_ && camera_current_ && d.xf_regs[0x26] == 0) {
+          // The carry does not need this draw's own pose: it uses the frame's camera, which is
+          // already passed in below. Requiring an authored pose meant every draw the observer never
+          // captured got no carry at all, and Yoshi's Story logs 51,115 of those per interval. Each
+          // one kept its exact matrices while the rest of the scene advanced with the camera, so it
+          // drifted by the full camera delta, and the drift swings with the sub-frame phase: on
+          // screen that is the stage sliding against itself, worst while the camera moves, in both
+          // sub-frame modes, and absent at a locked frame rate because there are no sub-frames.
+          if (camera_previous_ && camera_current_ && d.xf_regs[0x26] == 0) {
             uint64_t slots = 0;
             if (d.components & VB_HAS_POSMTXIDX) {
               for (uint32_t v = 0; v < d.vertex_count; ++v) {
