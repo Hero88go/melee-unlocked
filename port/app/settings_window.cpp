@@ -111,7 +111,7 @@ int run_settings_d3d11(gx::D3D12Options& options, void* hwnd) {
     if (GetForegroundWindow() != (HWND)hwnd) Sleep(120);
     // Closing the panel from inside it (Return to game, or the title bar X) ends the process, since
     // there is no game to return to.
-    if (!options.settings_open) break;
+    if (gx::settings_close_requested()) break;
   }
   options.settings_open = was_open;   // do not let opening this window change the saved startup choice
   return 0;
@@ -215,7 +215,7 @@ int run_settings_d3d12(gx::D3D12Options& options, void* hwnd) {
       swapchain->Present(1, 0);
       wait_gpu();
       if (GetForegroundWindow() != (HWND)hwnd) Sleep(120);
-      if (!options.settings_open) break;
+      if (gx::settings_close_requested()) break;
     }
     wait_gpu();
   }
