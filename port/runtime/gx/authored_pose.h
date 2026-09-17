@@ -22,6 +22,11 @@ struct AuthoredJoint {
   uint32_t flags = 0;
   uint32_t anim_flags = 0;             // HSD_AObj flags (AOBJ_LOOP and friends)
   std::array<float,3> scale{}, rotation{}, translation{};
+  // JOBJ_USE_QUATERNION: HSD_JObj::rotate is a Quaternion, not Euler angles (jobj.h, +0x1C), and
+  // the local matrix comes from MTXQuat instead of the sin/cos chain. Stage models use these
+  // heavily, so without an evaluator none of that geometry could be re-posed.
+  bool quaternion = false;
+  std::array<float,4> quat{};   // x, y, z, w
   std::array<float,12> world{};
   float frame = 0, rate = 0, end = 0, rewind = 0;
   std::vector<NativeMelee::PackedTrack> tracks;

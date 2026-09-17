@@ -432,10 +432,10 @@ void paint_play(HDC dc) {
             DT_LEFT | DT_SINGLELINE | DT_VCENTER, S(1));
   round_rect(dc, LR(CX, 58, 380, 34), 7, C_FIELD, C_FIELD, C_FIELD_BORDER);
 
-  dot(dc, CX, 218, g_slippi_missing ? C_WARN : C_OK);
+  dot(dc, CX, 215, g_slippi_missing ? C_WARN : C_OK);   // centred on the first line of slippi_text_rect
   draw_text(dc, widen(g_slippi_line), slippi_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
 
-  dot(dc, CX, 250, g_version_dot);
+  dot(dc, CX, 247, g_version_dot);   // centred on the first line of version_text_rect
   draw_text(dc, widen(g_version_line), version_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
 
   RECT sep = LR(CX, 282, CW, 1);
@@ -561,7 +561,8 @@ void open_settings() {
   g_game_exe = game_exe();
   if (!file_exists(g_game_exe)) { select_tab(1); refresh_updater(); start_build(); return; }
   std::string cwd = work_dir();
-  std::string cmd = "\"" + g_game_exe + "\"" + game_args() + " --pc-settings-open";
+  // --settings-window: the panel alone, no disc, no match engine, no prewarm.
+  std::string cmd = "\"" + g_game_exe + "\" --settings-window";
   STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
   if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi)) {
     MessageBoxW(g_main, L"Could not start melee_port.exe", L"Melee Unlocked Launcher", MB_ICONERROR);
@@ -618,7 +619,7 @@ void refresh_updater() {
   // label's rect from the background every tick is what stops old text showing through the new.
   if (line != g_version_line || d != g_version_dot) {
     g_version_line = line; g_version_dot = d;
-    if (g_tab == 0) { invalidate(version_text_rect()); invalidate(LR(CX, 264, 8, 8)); }
+    if (g_tab == 0) { invalidate(version_text_rect()); invalidate(LR(CX, 247, 8, 8)); }
   }
   ShowWindow(g_update_btn, (st == State::UpdateAvailable || st == State::Failed) && g_tab == 0 ? SW_SHOW : SW_HIDE);
   set_text(g_update_btn, st == State::Failed ? "Retry" : "Update and restart");

@@ -73,6 +73,12 @@ struct D3D12Options {
   // and the 2D layer keep their authored size and nothing is written to guest memory. Mutually
   // exclusive with `widescreen`: both together would widen twice. See gx_shader.h.
   bool true_widescreen = false;
+  // Custom texture packs: replace game textures with PNGs from Load/Textures/GALE01, using
+  // Dolphin's filenames and hashes so existing packs work unchanged. Off by default, and while it
+  // is off no pack directory is opened or scanned. Display only, so it is safe online and the two
+  // players may differ. dump_textures writes what the game drew, with the names a pack must use.
+  bool custom_textures = false;
+  bool dump_textures = false;
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
   int anisotropy = 16;        // texture anisotropic filtering 1..16
   int ssaa = 1;               // supersampling factor: 1 off, 2 = 4x SSAA (EFB rendered at 2x the chosen scale, box filtered)

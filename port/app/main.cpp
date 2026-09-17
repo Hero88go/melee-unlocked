@@ -23,6 +23,7 @@
 #include "lcancel.h"
 #include "updater.h"
 #include "discord_presence.h"
+namespace app { int run_settings_window(gx::D3D12Options& options); }
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -279,12 +280,13 @@ static int melee_main(int argc, char** argv) {
   host::Options& o = host::options;
   bool headless = false, hidden = false, threaded = false, fps_requested = false;
   gx::D3D12Options gfx;
-  bool automated = false, explicit_frame_mode = false;
+  bool automated = false, explicit_frame_mode = false, settings_window_only = false;
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
     if (arg == "--hidden" || arg == "--headless") automated = true;
     if (arg == "--settings-path" && i+1 < argc) gfx.settings_path = argv[++i];
     if (arg == "--frame-mode") explicit_frame_mode = true;
+    if (arg == "--settings-window") settings_window_only = true;
   }
   gfx.pc_settings = !automated;
   g_crash_dialog = !automated;
@@ -405,6 +407,10 @@ static int melee_main(int argc, char** argv) {
     // Experimental true 16:9: widens the frustum in the renderer, no game code. Mutually exclusive
     // with --widescreen, so whichever comes last on the command line wins rather than both applying.
     else if (a == "--true-widescreen") { gfx.true_widescreen = true; gfx.widescreen = false; }
+    // Texture packs are a settings-panel feature; these exist so automated runs, which start with
+    // the panel disabled, can exercise the same paths.
+    else if (a == "--custom-textures") gfx.custom_textures = true;
+    else if (a == "--dump-textures") gfx.dump_textures = true;
     else if (a == "--sharpness") gfx.sharpness = std::clamp((float)std::atof(next()), 0.0f, 1.0f);
     else if (a == "--ssaa") gfx.ssaa = std::atoi(next()) >= 2 ? 2 : 1;
     else if (a == "--anisotropy") gfx.anisotropy = std::clamp(std::atoi(next()), 1, 16);
@@ -420,12 +426,21 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--lcancel-indicator") lcancel::set_indicator(true);
     else if (a == "--lcancel-log") lcancel::set_log_path(next());
     else if (a == "--profile-render") { g_profile = true; g_profiler.render_thread = true; }
+    // Recognised in the pre-scan above; listed here so it is not rejected as unknown.
+    else if (a == "--settings-window") {}
     else { usage(); return 2; }
   }
   gecko::option_widescreen = gfx.widescreen;   // before the game loads the code table
   if (fps_requested && gfx.subframe == gx::SubFrameMode::Off) {
     std::fprintf(stderr, "--fps requires explicit experimental --frame-mode interpolate, extrapolate or authored\n");
     return 2;
+  }
+  // The settings panel with no game behind it: the launcher opens this instead of booting the
+  // whole game to change a setting. Before the disc check, because it needs no disc.
+  if (settings_window_only) {
+    gfx.pc_settings = true;
+    gx::load_pc_settings(gfx, o.volume);
+    return app::run_settings_window(gfx);
   }
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
