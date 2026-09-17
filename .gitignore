@@ -38,3 +38,6 @@ discord-webhook.txt
 # Per-agent and per-feature build directories
 build-*/
 *-build.err
+
+# Cygwin/MSYS crash dumps, written into whatever directory the shell was in
+*.stackdump
