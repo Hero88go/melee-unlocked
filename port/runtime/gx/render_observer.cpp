@@ -331,6 +331,7 @@ uint64_t observed_draw_identity(uint64_t fallback, uint64_t& generation) {
 void set_authored_capture(bool enabled) { authored_enabled = enabled; }
 void set_owner_tracking(bool enabled) { owner_tracking.store(enabled, std::memory_order_relaxed); }
 uint8_t observed_owner() { return current_owner; }
+bool observed_skinned() { return envelope; }
 std::shared_ptr<const AuthoredPose> capture_authored_pose() {
   if(!authored_enabled||!current_generation||!current_memory||!(rigid||envelope)){ ++authored_stats().capture[1]; return {}; }
   Reader r{current_memory};

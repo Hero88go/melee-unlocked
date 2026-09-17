@@ -32,4 +32,8 @@ std::shared_ptr<const AuthoredPose> capture_authored_pose();
 // only the display-only fighter tint needs it. Reads guest memory, never writes it.
 void set_owner_tracking(bool enabled);
 uint8_t observed_owner();
+// Whether the draw being recorded is skinned (SetupEnvelopeModelMtx). A fighter's model is skinned;
+// its shadow and its effects are not, which is what separates the model from everything else drawn
+// under the same player.
+bool observed_skinned();
 }

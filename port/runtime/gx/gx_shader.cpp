@@ -773,7 +773,9 @@ void fill_ps_constants(const DrawCall& dc, PSConstants& c, int efb_scale) {
   c.efbscale[0] = 1.0f / efb_scale; c.efbscale[1] = 1.0f / efb_scale;
   { const float* vp = (const float*)&dc.xf_regs[0x1A]; c.mvscale[0] = vp[0] * efb_scale; c.mvscale[1] = vp[1] * efb_scale; }
   c.tint[0] = c.tint[1] = c.tint[2] = 1.0f; c.tint[3] = 0.0f;
-  if (dc.owner_player < kPlayerTintSlots) {
+  // The model only, as the Gecko code does. Tinting every draw the player owns also caught the
+  // shadow and the effects around the fighter, which is the tint appearing where it should not.
+  if (dc.skinned && dc.owner_player < kPlayerTintSlots) {
     const PlayerTint& t = g_player_tints[dc.owner_player];
     const float amount = t.amount.load(std::memory_order_relaxed);
     if (amount > 0.0f) {

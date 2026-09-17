@@ -75,6 +75,9 @@ struct DrawCall {
   // Player slot (0..5) whose fighter rendered this draw, 0xFF for everything else. Display only:
   // it feeds the per-player tint, is not part of `identity` and never reaches a shader UID.
   uint8_t owner_player = 0xFF;
+  // Skinned (envelope) draw: the fighter's model. Its shadow and its effects are rigid draws, so
+  // this is what tells the model apart from everything else the same player renders.
+  bool skinned = false;
   // Render-thread cache: the pipeline resolved for this draw (valid for the backend that set it).
   // Sub-frames re-present the same draws, so the shader UIDs are hashed once per simulation frame.
   mutable void* cached_pipeline = nullptr;
