@@ -316,6 +316,7 @@ class D3D12Backend : public Backend {
   std::vector<ComPtr<ID3D12DescriptorHeap>> descriptor_garbage_[FRAME_SLOTS];
   uint64_t frame_counter_ = 0;
   uint32_t frames_presented_ = 0;
+  uint64_t copies_done_sequence_ = ~0ull;   // EFB copies run once per simulation frame, not per present
   bool efb_is_rt_ = true;
   bool have_clear_ = false;
   EfbCopy pending_clear_{};
@@ -1491,9 +1492,17 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     } else {
       const EfbCopy& c = frame.copies[cmd.index];
       if (c.to_xfb) { if (!skip_present_) { present_efb(c); presented = true; } }
-      else execute_copy(c);
+      // An EFB copy is a property of the simulation frame, not of the presented sub-frame. With a
+      // sub-frame mode on this command stream is replayed several times per simulation frame, and on
+      // a replay the EFB does not start from the state the first pass left: it holds whatever the
+      // previous present put there. Re-running the copy then captured the wrong picture into the
+      // texture that reflections and stage effects sample, which is the whole level looking wrong for
+      // a split second on Fountain of Dreams and Yoshi's Story. Run them once per simulation frame
+      // and let the replays sample what that produced: a reflection one sub-frame old is invisible.
+      else if (frame.sequence != copies_done_sequence_) execute_copy(c);
       if (c.clear) clear_efb(c);
     }
+  copies_done_sequence_ = frame.sequence;
   }
   check(list_->Close(), "list close");
   ID3D12CommandList* lists[] = {list_.Get()};
