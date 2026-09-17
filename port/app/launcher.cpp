@@ -770,7 +770,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_playing = false;
       set_text(g_play_btn, "PLAY");
       set_iso(g_iso);
-      ShowWindow(hwnd, SW_RESTORE);
+      // Restore, but never take the foreground. The game restarting itself looks exactly like the
+      // game exiting from here, so activating would put the launcher in front of the new instance
+      // the moment it started.
+      ShowWindow(hwnd, SW_SHOWNOACTIVATE);
       return 0;
     case WM_TIMER: refresh_updater(); return 0;
     case WM_CTLCOLORSTATIC:
