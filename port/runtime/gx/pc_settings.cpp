@@ -438,6 +438,8 @@ std::string texpack_disabled_lines() {
   return out;
 }
 std::atomic<bool> g_fill_window{false};
+std::atomic<bool> g_close_requested{false};
+bool settings_close_requested() { return g_close_requested.exchange(false, std::memory_order_relaxed); }
 void settings_fill_window(bool on) { g_fill_window.store(on, std::memory_order_relaxed); }
 bool settings_textures_dirty() { return g_textures_dirty.exchange(false, std::memory_order_relaxed); }
 
@@ -1120,7 +1122,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // command line it was started with, which is --settings-window, so it reopened the settings.
     if (state.fill_window) {
       ImGui::SameLine();
-      if (ImGui::Button("Close")) state.open = false;
+      // The window itself has to be told: state.open is the panel's own flag and the standalone
+      // window loop cannot see it, so pressing Close left the window sitting there open.
+      if (ImGui::Button("Close")) { state.open = false; g_close_requested.store(true, std::memory_order_relaxed); }
     } else {
     ImGui::SameLine(); if (ImGui::Button("Return to game")) state.open = false;
     // Restarting and quitting both shut down the same way closing the window does, so the replay is
