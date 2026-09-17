@@ -87,6 +87,14 @@ int g_dog_w = 0, g_dog_h = 0;
 HBITMAP g_wordmark = nullptr;    // the MU mark cut off its navy plate, at full resolution
 int g_wordmark_w = 0, g_wordmark_h = 0;
 std::string g_dir, g_iso, g_game_exe;
+// Which of the two builds to run. Asking the processor is right for everyone, so there is no control
+// for this: nobody should have to know what an instruction set is to start a game, and a player who
+// picked the wrong one by hand would be worse off than the detector ever leaves them.
+// "cpubuild=1" or "cpubuild=2" in launcher.ini forces the standard or the compatibility build. That
+// is deliberately undocumented and exists only so a wrong answer from the detector can be worked
+// around without waiting for a release.
+enum CpuBuild { CPU_AUTO = 0, CPU_STANDARD = 1, CPU_COMPAT = 2 };
+int g_cpu_build = CPU_AUTO;
 std::string g_slippi_line, g_version_line;
 COLORREF g_version_dot = C_FAINT;
 std::atomic<bool> g_building{false}, g_playing{false};
@@ -134,6 +142,16 @@ std::string read_iso_from(const std::string& path) {
   return "";
 }
 void load_ini() {
+  {
+    std::ifstream f(ini_path());
+    std::string line;
+    while (std::getline(f, line)) {
+      if (!line.empty() && line.back() == '') line.pop_back();
+      if (line.rfind("cpubuild=", 0) != 0) continue;
+      const int v = std::atoi(line.c_str() + 9);
+      if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
+    }
+  }
   g_iso = read_iso_from(ini_path());
   if (g_iso.empty() || !file_exists(g_iso)) {
     std::string remembered = read_iso_from(shared_ini_path());
@@ -145,7 +163,12 @@ void load_ini() {
   if (!g_iso.empty() && !file_exists(g_iso)) g_iso.clear();
 }
 void save_ini() {
-  { std::ofstream f(ini_path()); f << "iso=" << g_iso << "\n"; }
+  {
+    std::ofstream f(ini_path());
+    f << "iso=" << g_iso << "\n";
+    // Kept so that browsing for a disc does not silently undo a hand-set override.
+    if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
+  }
   const std::string shared = shared_ini_path();
   if (!shared.empty()) { std::ofstream f(shared); f << "iso=" << g_iso << "\n"; }
 }
@@ -251,8 +274,12 @@ bool cpu_has_avx2() {
 }
 
 std::string game_exe() {
-  // Only when this processor cannot run the ordinary build. A machine that can, keeps it.
-  if (!cpu_has_avx2() && file_exists(g_dir + "\\melee_port_compat.exe"))
+  // Automatic only hands over the compatibility build to a processor that cannot run the other one.
+  // A machine that can, keeps it. The two explicit choices exist so that a player who knows their
+  // machine is not stuck arguing with a detector.
+  const bool want_compat = g_cpu_build == CPU_COMPAT ||
+                           (g_cpu_build == CPU_AUTO && !cpu_has_avx2());
+  if (want_compat && file_exists(g_dir + "\\melee_port_compat.exe"))
     return g_dir + "\\melee_port_compat.exe";
   if (file_exists(g_dir + "\\melee_port.exe")) return g_dir + "\\melee_port.exe";
   std::string root = repo_root();
