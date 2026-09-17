@@ -118,6 +118,13 @@ target_link_libraries(port_mm_probe PRIVATE runtime guest)
 target_compile_options(port_mm_probe PRIVATE /EHsc)
 target_compile_definitions(port_mm_probe PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(melee_port PRIVATE runtime guest dbghelp)   # dbghelp: crash minidump
+# Holds native routines (a GCC-built parity library, see sourceport/game) to the translated game bit
+# for bit, routine by routine. Needs the disc.
+add_executable(port_native_parity tests/native_parity.cpp)
+target_link_libraries(port_native_parity PRIVATE runtime guest)
+target_include_directories(port_native_parity PRIVATE runtime)
+target_compile_options(port_native_parity PRIVATE /EHsc)
+target_compile_definitions(port_native_parity PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(melee_port PRIVATE /EHsc)
 target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
   MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}")
