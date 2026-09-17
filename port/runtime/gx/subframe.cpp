@@ -550,7 +550,51 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
             for (int k = 0; k < 12; ++k) o.pos[row * 4 + k] = base_row[k] + (float)t * (current_row[k] - previous_row[k]);
           }
         };
-        if (!d.authored_pose || !pd->authored_pose) { sample_textures(); continue; }
+        if (!d.authored_pose || !pd->authored_pose) {
+          // No authored pose, but the draw is paired, so its position matrices can still be advanced
+          // between the two frames the same way the texture matrices are. Without this they were left
+          // at the held pose while everything around them moved, so any stage geometry the observer
+          // does not capture but the game does move sat a whole frame behind and snapped forward once
+          // per simulation frame: Yoshi's Story's trees, Fountain of Dreams' rising platforms, the
+          // stage itself. At a high presented frame rate that is a 60 Hz stutter on exactly those
+          // objects while the rest of the scene is smooth, which is what the blinking is.
+          // Bounded like the texture path: a jump larger than a plausible frame of motion holds,
+          // so a matrix reused for something else cannot drag geometry across the screen.
+          // Interpolate only. There the base pose is the previous frame, so advancing by the delta
+          // lands exactly on the current pose at phase 1: no overshoot is possible. In Predict the
+          // base is the current frame, so the same arithmetic would extrapolate past it, and for a
+          // matrix with no authored meaning that can throw geometry anywhere. Predict keeps holding
+          // the latest pose, which is what the unit test pins.
+          uint64_t slots = interpolate ? p.pos_slots : 0;
+          while (slots) {
+            unsigned long bit = 0; _BitScanForward64(&bit, slots);
+            slots &= slots - 1;
+            const int row = (int)bit;
+            if (row + 3 > 64) continue;
+            const float* previous_row = &pd->posMatrices[row * 4];
+            const float* current_row = &d.posMatrices[row * 4];
+            const float* base_row = &hold.posMatrices[row * 4];
+            bool continuous = true;
+            for (int k = 0; k < 12; ++k) {
+              const float delta = current_row[k] - previous_row[k];
+              if (!std::isfinite(delta) || std::abs(delta) > max_translation) { continuous = false; break; }
+            }
+            if (!continuous) continue;   // keep the held pose for this row
+            for (int k = 0; k < 12; ++k)
+              o.pos[row * 4 + k] = base_row[k] + (float)t * (current_row[k] - previous_row[k]);
+            if (row < 32) {
+              const float* pn = &pd->normalMatrices[row * 3];
+              const float* cn = &d.normalMatrices[row * 3];
+              const float* bn = &hold.normalMatrices[row * 3];
+              bool n_ok = true;
+              for (int k = 0; k < 9; ++k) if (!std::isfinite(cn[k] - pn[k])) { n_ok = false; break; }
+              if (n_ok) for (int k = 0; k < 9; ++k) o.nrm[row * 3 + k] = bn[k] + (float)t * (cn[k] - pn[k]);
+            }
+          }
+          ++count;
+          sample_textures();
+          continue;
+        }
         bool posed = false;
         if (d.authored_pose->envelope) {
           posed = sample_authored_envelope(*pd->authored_pose, *d.authored_pose, t, d.posMatrices, d.normalMatrices, o.pos, o.nrm, &chain_cache);
