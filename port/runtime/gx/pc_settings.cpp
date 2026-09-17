@@ -10,6 +10,7 @@
 #include "host.h"
 #include "input_bindings.h"
 #include "lcancel.h"
+#include "tapjump.h"
 #include "hid_pad.h"
 #include "updater.h"
 #include "discord_presence.h"
@@ -374,6 +375,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "inputoverlayhideborder") options.input_overlay_hide_border = value == "1";
       else if (key == "lcancelindicator") lcancel::set_indicator(value == "1");
       else if (key == "autolcancel") lcancel::set_automatic(value == "1");
+      else if (key == "tapjumpoff") tapjump::set_enabled(value == "1");
       else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
       // Low spec: the switch, then what the player had before it was turned on, so turning it off
@@ -886,9 +888,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     ImGui::PushItemWidth(330.0f);
     int music = slippi::jukebox::user_volume();
     if (ImGui::SliderInt("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
-    state.volume = host::audio_volume();
-    if (ImGui::SliderInt("Volume", &state.volume, 0, 100, "%d%%")) { host::audio_set_volume(state.volume); g_volume = state.volume; }
-    g_volume = state.volume;
+    // With a game running the device holds the live value. Without one, which is the settings
+    // window the launcher opens, the saved value is all there is: reading back from an audio module
+    // that was never opened returned zero every frame and dragged the slider back to it.
+    if (host::audio_running()) g_volume = host::audio_volume();
+    if (ImGui::SliderInt("Volume", &g_volume, 0, 100, "%d%%")) host::audio_set_volume(g_volume);
+    state.volume = g_volume;
         ImGui::PopItemWidth();
         ImGui::EndTabItem();
       }
@@ -919,6 +924,22 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                            "to use it: it is a fairness question, not a safety one.");
         if (const char* mode = lcancel::auto_suppressed_mode())
           ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Disabled right now: this is %s.", mode);
+      }
+
+      bool tap_jump_off = tapjump::enabled();
+      if (ImGui::Checkbox("Tap jump off", &tap_jump_off)) { tapjump::set_enabled(tap_jump_off); changed = true; }
+      ImGui::SameLine();
+      ImGui::TextDisabled("(works in every mode, including online)");
+      if (tap_jump_off) {
+        ImGui::TextWrapped("Pushing the stick up no longer jumps. X and Y still do, and up-tilt and up-smash are "
+                           "unchanged: the game tells an up-smash from a tap jump by whether A is pressed on the "
+                           "same frame, so the stick is only held back on the frames it is not.");
+        ImGui::TextWrapped("This is done to the controller, not to the game, so it is sent over the network like "
+                           "any other input and cannot desync. While A is not pressed the stick reads just under "
+                           "the jump threshold instead of fully up, which is what a box controller does too.");
+        if (const int raw = tapjump::threshold_raw())
+          ImGui::TextDisabled("Holding the stick at %d instead of 127; the game jumps at %.4f.",
+                              raw, tapjump::threshold_normalised());
       }
     }
 
@@ -1204,6 +1225,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\nlowspec_prev_subframe " << (options.low_spec_previous.subframe == SubFrameMode::Off ? 0 : options.low_spec_previous.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1)
            << "\nlcancelindicator " << (lcancel::indicator_enabled() ? 1 : 0)
            << "\nautolcancel " << (lcancel::automatic_enabled() ? 1 : 0)
+           << "\ntapjumpoff " << (tapjump::enabled() ? 1 : 0)
            << "\ndiscord " << (options.discord_presence ? 1 : 0);
       // Only when set: "key value" parsing would swallow the next line on an empty value.
       if (!options.discord_app_id.empty()) file << "\ndiscord_app_id " << options.discord_app_id;
