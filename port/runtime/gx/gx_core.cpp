@@ -123,7 +123,7 @@ void read_color(const uint8_t* p, uint32_t format, uint8_t out[4]) {
 
 const uint8_t* array_ptr(uint32_t array, uint32_t index) {
   uint32_t base = g_cp.array_base(array), stride = g_cp.array_stride(array);
-  return host::ptr(0x80000000u | ((base + stride * index) & 0x01FFFFFFu));
+  return host::ptr(0x80000000u | ((base + stride * index) & 0x3FFFFFFFu));
 }
 
 // Decodes `count` vertices of format `fmt` from `src` into the frame. Returns components mask.
@@ -233,7 +233,7 @@ void snapshot_textures(DrawCall& dc) {
     uint32_t total = texture_chain_bytes(t.width, t.height, t.format, t.mip_levels);
     uint32_t offset = t.addr & 0x3FFFFFFFu;
     uint32_t palette_bytes = t.format == 8 ? 32 : t.format == 9 ? 512 : t.format == 10 ? 32768 : 0;
-    if (offset >= ppc::RAM_SIZE || total > ppc::RAM_SIZE - offset ||
+    if (offset >= host::ram_size || total > host::ram_size - offset ||
         t.tlut_addr > sizeof g_tmem || palette_bytes > sizeof g_tmem - t.tlut_addr)
       host::die("GX texture range invalid: %08X+%X, palette %X+%X", t.addr, total, t.tlut_addr, palette_bytes);
     t.data = g_texture_snapshots.capture(host::ram + offset, total, g_tmem + t.tlut_addr, palette_bytes);
@@ -310,7 +310,7 @@ void bp_write(uint32_t value) {
     case BP_LOADTLUT1: {
       uint32_t tmem_addr = (masked & 0x3FF) << 9;
       uint32_t count = (masked & 0x1FFC00) >> 5;
-      uint32_t src = (g_bp.reg[BP_LOADTLUT0] << 5) & 0x01FFFFFF;
+      uint32_t src = (g_bp.reg[BP_LOADTLUT0] << 5) & 0x3FFFFFFFu;
       if (tmem_addr + count <= sizeof g_tmem) std::memcpy(g_tmem + tmem_addr, host::ptr(0x80000000u | src, count), count);
       break;
     }
@@ -373,7 +373,7 @@ void xf_indexed_load(uint32_t op, uint32_t value) {
 size_t parse_command(const uint8_t* d, size_t len);
 
 void run_display_list(uint32_t addr, uint32_t size) {
-  if ((addr & 0x3FFFFFFFu) + size > 0x01800000u) { host::log("gx: display list outside RAM %08X+%X", addr, size); return; }
+  if ((uint64_t)(addr & 0x3FFFFFFFu) + size > host::ram_size) { host::log("gx: display list outside RAM %08X+%X", addr, size); return; }
   const uint8_t* p = host::ptr(addr, size);
   uint32_t saved_addr = g_dl_addr, saved_draw = g_dl_draw_ordinal, saved_call = g_dl_call_ordinal;
   g_dl_addr = addr; g_dl_draw_ordinal = 0; g_dl_call_ordinal = g_dl_calls[addr]++;
@@ -439,10 +439,23 @@ void init(Backend* backend) {
   g_frame.clear();
 }
 
+// Parses whatever complete commands g_buf now holds.
+static void drain_fifo();
+
 void write_fifo(uint32_t value, int bytes) {
   const size_t at = g_buf.size();
   g_buf.resize(at + (size_t)bytes);   // one size update per write instead of a push_back per byte
   for (int i = 0; i < bytes; ++i) g_buf[at + i] = (uint8_t)(value >> (8 * (bytes - 1 - i)));
+  drain_fifo();
+}
+
+// The same stream handed over in bulk, already in the pipe's big-endian byte order.
+void write_fifo_bytes(const uint8_t* data, size_t bytes) {
+  g_buf.insert(g_buf.end(), data, data + bytes);
+  drain_fifo();
+}
+
+static void drain_fifo() {
   if (g_buf.size() - g_buf_pos < g_parse_need) return;   // the pending command is still incomplete
   g_parse_need = 0;
   host::SimCostScope cost(host::SIM_DECODE);   // everything the simulation thread spends turning FIFO bytes into draws
