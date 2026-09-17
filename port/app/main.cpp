@@ -374,7 +374,14 @@ static int melee_main(int argc, char** argv) {
     // build with sub-frame animation on and no way to tell why it felt wrong. Set before the
     // settings file is read, so a saved cap (60 in the Low spec preset) still wins, and an explicit
     // --fps below wins over both.
-    gfx.fps_cap = 0;   // 0 = uncapped
+    //
+    // Monitor rate, not uncapped. 0.3.0 defaulted this to uncapped, which renders as fast as the
+    // hardware can and does it hardest on the menus, where there is almost nothing to draw: a
+    // player reported the fans winding up to a jet engine a minute after reaching the main menu and
+    // settling once a match loaded. Frames beyond the refresh rate are never shown, so all of that
+    // heat and power bought nothing, and free-running also paces worse than following the display.
+    // Following the monitor is still unlocked in the sense that matters: a 144 Hz display gets 144.
+    gfx.fps_cap = -1;   // -1 = follow the monitor, 0 = uncapped
     gx::load_pc_settings(gfx, o.volume);
     // Opt-in, and only ever from a saved setting: an automated or headless run never gets here, so
     // it can never publish. With the setting off no thread is started and no pipe is opened.

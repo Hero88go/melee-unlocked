@@ -37,7 +37,7 @@ class ThreadedBackend final : public Backend {
     int cur = -1;                // index of the current frame in `frames`, -1 until the first arrives
     bool have_prev = false;
     uint64_t rendered_sequence = 0, submitted = 0, presented = 0, burst_logged = 0;
-    bool subframes = options_.subframe != SubFrameMode::Off && subframe_useful(options_.fps_cap);
+    bool subframes = options_.subframe != SubFrameMode::Off;
     bool authored = options_.subframe == SubFrameMode::Authored || options_.subframe == SubFrameMode::AuthoredInterpolate;
     bool interpolate = options_.subframe == SubFrameMode::Interpolate || options_.subframe == SubFrameMode::AuthoredInterpolate;
     double cap_period = options_.fps_cap > 0 ? 1.0 / options_.fps_cap : 0.0;
@@ -71,7 +71,13 @@ class ThreadedBackend final : public Backend {
       if (host::window_closed()) { queue.finish(true); break; }
       {
         // The PC settings panel can switch sub-frame animation at run time.
-        bool now_sub = live_options.subframe != SubFrameMode::Off && subframe_useful(live_options.fps_cap);
+        // Judged on the rate actually being presented, not on the setting: "follow the monitor" on
+        // a 60 Hz display presents 60 frames a second, which is the same one-frame-per-tick case as
+        // an explicit cap of 60 and has the same problem. Re-posing then buys no smoothness and
+        // costs delay and accuracy, which is what the stage glitch reports at 60 were.
+        const double presented_rate = cap_period > 0.0 ? 1.0 / cap_period : 0.0;
+        const bool rate_worth_it = presented_rate <= 0.0 || presented_rate > 60.5;
+        bool now_sub = live_options.subframe != SubFrameMode::Off && rate_worth_it;
         if (now_sub != subframes) {
           subframes = now_sub;
           if (subframes && cur >= 0) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);
