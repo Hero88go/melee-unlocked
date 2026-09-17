@@ -253,7 +253,7 @@ class D3D11Backend : public Backend {
     if (w == client_w_ && h == client_h_) return;
     client_w_ = w; client_h_ = h;
     create_swapchain_targets(true);
-    if (opts_.efb_scale == 0 && pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
+    if (opts_.efb_scale == 0 && pick_scale() != scale_) { host::log("d3d11: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
   }
   uint32_t frames_presented() const { return frames_presented_; }
   uint32_t pipeline_count() const { return (uint32_t)pipelines_.size(); }
@@ -1257,7 +1257,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; samplers_.clear(); reset_bound(); }
   if (opts_.ssaa != ssaa_applied_ || pick_scale() != scale_) {
     ssaa_applied_ = opts_.ssaa;
-    if (pick_scale() != scale_) { efb_copies_.clear(); create_efb(); host::log("d3d11: internal resolution now EFB x%d", scale_); }
+    if (pick_scale() != scale_) { host::log("d3d11: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); host::log("d3d11: internal resolution now EFB x%d", scale_); }
   }
   struct FloatEnvironment {
     unsigned saved = _mm_getcsr();
@@ -1267,13 +1267,13 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
 #ifdef GX_PC_SETTINGS
   if (settings_ui_ && settings_ui_->begin(opts_)) {
     host::window_set_fullscreen(opts_.fullscreen);
-    if (pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
+    if (pick_scale() != scale_) { host::log("d3d11: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
   }
 #endif
   if (host::window_take_fullscreen_toggle()) {   // Alt+Enter
     opts_.fullscreen = !opts_.fullscreen;
     host::window_set_fullscreen(opts_.fullscreen);
-    if (pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
+    if (pick_scale() != scale_) { host::log("d3d11: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
   }
   shader_wait_budget_us_ = 12000;
   ++frame_counter_;
