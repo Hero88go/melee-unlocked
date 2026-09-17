@@ -13,5 +13,9 @@ void set_melee_volume(uint8_t volume);                  // CMD_CHANGE_MUSIC_VOLU
 void set_user_volume(int percent);                      // PC settings "Music" (0..100)
 int user_volume();
 // Mixes `frames` stereo 32 kHz samples into `out` (adds to what is there). Audio-thread safe.
-void mix(int16_t* out, size_t frames);
+// `master` is the Volume setting as a fraction, applied on top of Melee's own music volume and the
+// Music slider. Without it the master volume only ever gated the music on or off, because the
+// caller scaled its own PCM and then had the music added underneath at full level: turning Volume
+// down quietened the game and left the music where it was.
+void mix(int16_t* out, size_t frames, double master);
 }  // namespace slippi::jukebox
