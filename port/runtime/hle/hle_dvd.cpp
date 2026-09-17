@@ -81,6 +81,17 @@ void dvd_poll() {
     g_dvd_pending.pop_front();
   }
 }
+// The worker copies into guest RAM on its own clock, so a read that straddles a retrace is either in
+// RAM or not when the state trace hashes it, depending on how busy the machine is. The game cannot
+// tell (it does not look before the completion), but the trace can, and it showed up as one
+// mismatching checkpoint in a loaded run. Only the trace calls this.
+void dvd_settle() {
+  for (AsyncRead& r : g_dvd_pending) {
+    if (r.done->load(std::memory_order_acquire)) continue;
+    std::unique_lock<std::mutex> lk(g_dvd_mutex);
+    g_dvd_done_cv.wait(lk, [&] { return r.done->load(std::memory_order_acquire); });
+  }
+}
 }  // namespace hle
 
 HLE(DVDInit) {

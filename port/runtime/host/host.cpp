@@ -29,7 +29,7 @@ extern const size_t name_table_count;
 }
 namespace hle { void audio_tick(bool force); }
 
-namespace hle { void dvd_poll(); }
+namespace hle { void dvd_poll(); void dvd_settle(); }
 namespace host {
 
 Options options;
@@ -471,6 +471,7 @@ bool g_has_window = false;
 // Field-wise CPU hash excludes C++ padding and diagnostic counters/trace history.
 static void trace_state() {
   if (!g_state_trace) return;
+  hle::dvd_settle();   // a disc read still being copied in would make the RAM hash depend on the machine's load
   uint64_t h = 0;
   auto add = [&](const auto& v) { h = (h ^ gx::hash_bytes(&v, sizeof v)) * 0x100000001b3ull; };
   const auto& c = *cpu;
