@@ -172,7 +172,7 @@ class D3D12Backend : public Backend {
     wait_gpu(); client_w_ = w; client_h_ = h; create_swapchain_targets(true);
     // Auto scale follows the window like Dolphin's "Auto (Window Size)" integral mode: the EFB is
     // re-created at the new multiplier and scaled EFB-copy textures are dropped (their size changed).
-    if (opts_.efb_scale == 0 && pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
+    if (opts_.efb_scale == 0 && pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
   }
   int scale() const { return scale_; }
   void set_skip_present(bool skip) override { skip_present_ = skip; }
@@ -538,7 +538,7 @@ void D3D12Backend::configure_dlss() {
     if (dlss_active_ || forced_scale_) {
       wait_gpu(); dlss_active_ = false; dlss_in_place_ = false; dlss_mode_active_ = 0; forced_scale_ = 0; dlss_out_.Reset(); dlss_out_w_ = dlss_out_h_ = 0;
       streamline::dlss_set_options(DlssMode::Off, vw, vh);
-      if (pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
+      if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
       host::log("dlss: off (native rendering at EFB x%d)", scale_);
     }
     return;
@@ -595,7 +595,7 @@ void D3D12Backend::configure_dlss() {
   }
   wait_gpu();
   forced_scale_ = scale;
-  if (pick_scale() != scale_) { efb_copies_.clear(); create_efb(); }
+  if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
   if (!dlss_out_ || (int)dlss_out_w_ != out_w || (int)dlss_out_h_ != out_h) {
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     D3D12_RESOURCE_DESC rd{};
@@ -1434,7 +1434,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; wait_gpu(); sampler_sets_.clear(); }
   if (opts_.ssaa != ssaa_applied_ || (!dlss_active_ && pick_scale() != scale_)) {
     ssaa_applied_ = opts_.ssaa;
-    if (pick_scale() != scale_) { wait_gpu(); efb_copies_.clear(); create_efb(); host::log("d3d12: internal resolution now EFB x%d", scale_); }
+    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); host::log("d3d12: internal resolution now EFB x%d", scale_); }
   }
   struct FloatEnvironment {
     unsigned saved = _mm_getcsr();
@@ -1444,13 +1444,13 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
 #ifdef GX_PC_SETTINGS
   if (settings_ui_ && settings_ui_->begin(opts_)) {
     host::window_set_fullscreen(opts_.fullscreen);
-    if (pick_scale() != scale_) { wait_gpu(); efb_copies_.clear(); create_efb(); }
+    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
   }
 #endif
   if (host::window_take_fullscreen_toggle()) {   // Alt+Enter
     opts_.fullscreen = !opts_.fullscreen;
     host::window_set_fullscreen(opts_.fullscreen);
-    if (pick_scale() != scale_) { wait_gpu(); efb_copies_.clear(); create_efb(); }
+    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
   }
   configure_dlss();
   pso_wait_budget_us_ = 12000;
