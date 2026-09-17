@@ -242,6 +242,26 @@ static bool cpu_has_avx2() {
   __cpuidex(r, 7, 0); return (r[1] >> 5) & 1;
 }
 
+// ...and the check in melee_main is too late to catch it. The runtime and guest libraries are built
+// for AVX2, and their C++ static initialisers run before main does, so a CPU without AVX2 died
+// during CRT startup: exit code 0xC000001D, no log file written, and the message below never shown.
+// A player reported exactly that, and the empty folder they were asked to find the log in is what
+// gave it away.
+//
+// .CRT$XIB is a C initialiser slot, and every one of those runs before any C++ static constructor,
+// which is early enough to be ahead of the libraries. Nothing here touches them.
+static int __cdecl check_avx2_before_anything_else() {
+  if (cpu_has_avx2()) return 0;
+  const char* msg = "Melee Unlocked needs a processor with AVX2.\n\n"
+                    "That means Intel Core 4th generation (Haswell, 2013) or newer, or AMD Ryzen or "
+                    "newer. This computer's processor does not have it, so the game cannot run here.";
+  MessageBoxA(nullptr, msg, "Melee Unlocked", MB_ICONERROR | MB_OK);
+  ExitProcess(3);
+  return 0;
+}
+#pragma section(".CRT$XIB", long, read)
+__declspec(allocate(".CRT$XIB")) static int (__cdecl* g_avx2_guard)() = check_avx2_before_anything_else;
+
 // Built for the Windows subsystem so double-clicking the game does not open a terminal alongside it.
 // Anything started from a command line still prints there: this reattaches to the parent console when
 // one exists, so `melee_port.exe --help` and scripted runs behave exactly as before.
