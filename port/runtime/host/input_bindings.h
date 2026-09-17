@@ -16,6 +16,10 @@ enum class BindAction : uint8_t {
 struct KeyBindings { int vk[(size_t)BindAction::Count]; };
 struct PadBindings { unsigned short mask[(size_t)BindAction::Count]; };  // 0 = unbound
 struct GCBindings { unsigned short mask[(size_t)BindAction::Count]; };  // GC adapter raw button mask, same layout as kActionPadBit
+// Generic HID gamepads (B0XX, Frame1, vJoy, third-party pads). Thirty-two bits rather than sixteen
+// because a box controller really does have more than sixteen buttons, and the numbering is the
+// device's own: bit N is HID button N+1, whatever that button happens to be labelled.
+struct HidBindings { uint32_t mask[(size_t)BindAction::Count]; };
 
 // Native DualShock 4 HID button masks. These are independent of XInput and are
 // populated from the controller's USB/Bluetooth Raw Input report.
@@ -121,16 +125,36 @@ inline std::array<PadBindings, 4> default_swpro_bindings() {
   return pads;
 }
 
+// There is no standard button order across HID gamepads, so this is a starting point rather than a
+// correct mapping: buttons 1-4 as the face buttons, 5 and 6 as the shoulders, 8 as grab and 10 as
+// Start, which is the order most pads and most vJoy feeder configurations report. A device that
+// differs gets rebound, which is why the Controls tab shows the buttons and raw axes live.
+inline std::array<HidBindings, 4> default_hid_bindings() {
+  std::array<HidBindings, 4> pads{};
+  for (auto& p : pads) {
+    p.mask[(size_t)BindAction::B]      = 1u << 0;   // HID button 1
+    p.mask[(size_t)BindAction::A]      = 1u << 1;
+    p.mask[(size_t)BindAction::X]      = 1u << 2;
+    p.mask[(size_t)BindAction::Y]      = 1u << 3;
+    p.mask[(size_t)BindAction::L]      = 1u << 4;
+    p.mask[(size_t)BindAction::R]      = 1u << 5;
+    p.mask[(size_t)BindAction::Z]      = 1u << 7;
+    p.mask[(size_t)BindAction::Start]  = 1u << 9;
+  }
+  return pads;
+}
+
 extern KeyBindings g_key_bindings;
 extern std::array<PadBindings, 4> g_pad_bindings;
 extern std::array<GCBindings, 4> g_gc_bindings;
 extern std::array<PadBindings, 4> g_ds4_bindings;
 extern std::array<PadBindings, 4> g_swpro_bindings;
+extern std::array<HidBindings, 4> g_hid_bindings;
 
 // ---- port assignment: which physical device feeds each in-game port ----
 // Appended to, never reordered: the settings file stores a port's source as the index of the
 // combo-box entry built from this in pc_settings.cpp.
-enum class DeviceKind : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter, SwitchPro };
+enum class DeviceKind : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter, SwitchPro, HidPad };
 
 struct PortSource {
   DeviceKind kind = DeviceKind::None;
@@ -156,7 +180,7 @@ inline std::array<PortSource, 4> default_port_sources() {
 extern std::array<PortSource, 4> g_port_sources;
 
 // ---- rebind capture ----
-enum class CaptureDevice : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter, SwitchPro };
+enum class CaptureDevice : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter, SwitchPro, HidPad };
 
 // Starts listening. Call once when the settings UI enters "press a button" mode.
 void input_begin_capture();
@@ -175,9 +199,11 @@ struct InputDebugSnapshot {
   uint16_t ds4_actions[4]{};
   uint16_t gc_actions[4]{};
   uint16_t swpro_actions[4]{};
+  uint16_t hid_actions[4]{};
   bool xinput_connected[4]{};
   bool ds4_connected[4]{};
   bool swpro_connected[4]{};
+  bool hid_connected[4]{};
   uint32_t gc_mask = 0;
 };
 void input_debug_snapshot(InputDebugSnapshot& snapshot);

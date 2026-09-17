@@ -10,6 +10,7 @@
 #include "host.h"
 #include "input_bindings.h"
 #include "lcancel.h"
+#include "hid_pad.h"
 #include "updater.h"
 #include "discord_presence.h"
 #ifndef MELEE_PORT_VERSION
@@ -40,17 +41,19 @@ static const char* kActionNames[(size_t)host::BindAction::Count] = {
 };
 
 // ---- Port-source <-> combo-box index, shared by load/save and the Port assignment UI ----
-// 0 = None, 1 = Keyboard, 2..5 = XInput, 6..9 = DS4, 10..13 = GC Adapter, 14..17 = Switch Pro.
+// 0 = None, 1 = Keyboard, 2..5 = XInput, 6..9 = DS4, 10..13 = GC Adapter, 14..17 = Switch Pro,
+// 18..21 = generic HID (B0XX, Frame1, vJoy and any other pad without a reader of its own).
 // Saved settings store the index, so new devices are appended and the existing ones never move.
 // Switch Pro says "experimental" because it has never been tried against the hardware.
-static const int kPortSourceCount = 18;
+static const int kPortSourceCount = 22;
 static const char* kPortSourceNames[kPortSourceCount] = {
   "None", "Keyboard",
   "XInput Pad 1", "XInput Pad 2", "XInput Pad 3", "XInput Pad 4",
   "DS4 1", "DS4 2", "DS4 3", "DS4 4",
   "GC Adapter 1", "GC Adapter 2", "GC Adapter 3", "GC Adapter 4",
   "Switch Pro 1 (experimental)", "Switch Pro 2 (experimental)",
-  "Switch Pro 3 (experimental)", "Switch Pro 4 (experimental)"
+  "Switch Pro 3 (experimental)", "Switch Pro 4 (experimental)",
+  "HID Pad 1", "HID Pad 2", "HID Pad 3", "HID Pad 4"
 };
 
 static int port_source_to_combo(const host::PortSource& s) {
@@ -60,6 +63,7 @@ static int port_source_to_combo(const host::PortSource& s) {
     case host::DeviceKind::DS4Pad:     return 6 + std::clamp(s.index, 0, 3);
     case host::DeviceKind::GCAdapter: return 10 + std::clamp(s.index, 0, 3);
     case host::DeviceKind::SwitchPro: return 14 + std::clamp(s.index, 0, 3);
+    case host::DeviceKind::HidPad:    return 18 + std::clamp(s.index, 0, 3);
     case host::DeviceKind::None: default: return 0;
   }
 }
@@ -70,10 +74,20 @@ static host::PortSource combo_to_port_source(int idx) {
   if (idx >= 6 && idx <= 9) return { host::DeviceKind::DS4Pad, idx - 6 };
   if (idx >= 10 && idx <= 13) return { host::DeviceKind::GCAdapter, idx - 10 };
   if (idx >= 14 && idx <= 17) return { host::DeviceKind::SwitchPro, idx - 14 };
+  if (idx >= 18 && idx <= 21) return { host::DeviceKind::HidPad, idx - 18 };
   return { host::DeviceKind::None, 0 };
 }
 
 // ---- binding -> label helpers, used by the Controls tabs ----
+// A generic HID pad publishes no names for its buttons, only numbers, so that is what is shown.
+// The number is the device's own: button 1 is what the device calls button 1.
+static std::string hid_button_name(uint32_t mask) {
+  if (!mask) return "Unbound";
+  int bit = 0;
+  while (bit < 31 && !(mask & (1u << bit))) ++bit;
+  return "Button " + std::to_string(bit + 1);
+}
+
 static void format_key_label(int vk, char* buf, size_t n) {
   if (!vk) { std::snprintf(buf, n, "Unbound"); return; }
   if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) { std::snprintf(buf, n, "%c", (char)vk); return; }
@@ -296,6 +310,12 @@ static void draw_lcancel_overlays() {
   }
 }
 
+// The volume the settings file holds. state.volume is only assigned while the Audio tab is being
+// drawn, and ImGui runs a tab's body only when it is the selected one, so saving from any other
+// tab used to write whatever that field happened to start as, which is zero. Players saw the
+// volume set itself to 0 on a later launch.
+int g_volume = 100;
+
 void load_pc_settings(D3D12Options& options, int& volume) {
   std::ifstream file(options.settings_path);
   // First launch (no saved settings yet): open the PC settings panel so nobody has to find it.
@@ -371,7 +391,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       // A Discord application id is a snowflake; anything else would only be rejected by Discord.
       else if (key == "discord_app_id") { if (value.find_first_not_of("0123456789") == std::string::npos && value.size() <= 24) options.discord_app_id = value; }
       else if (key == "backend") options.api = value == "d3d11" ? RenderApi::D3D11 : RenderApi::D3D12;
-      else if (key == "volume") volume = std::clamp(std::stoi(value), 0, 100);
+      else if (key == "volume") { volume = std::clamp(std::stoi(value), 0, 100); g_volume = volume; }
       else if (key.rfind("key_", 0) == 0) {
         for (int i = 0; i < (int)host::BindAction::Count; ++i)
           if (key == std::string("key_") + kActionNames[i]) host::g_key_bindings.vk[i] = std::stoi(value);
@@ -421,6 +441,28 @@ void load_pc_settings(D3D12Options& options, int& volume) {
           if (idx >= 0 && idx < 4)
             for (int i = 0; i < (int)host::BindAction::Count; ++i)
               if (action == kActionNames[i]) host::g_swpro_bindings[idx].mask[i] = (unsigned short)std::stoi(value);
+        }
+      }
+      // Generic HID pads. The mask is 32 bits, so this parses as unsigned rather than int.
+      else if (key.size() > 4 && key.rfind("hid", 0) == 0 && std::isdigit((unsigned char)key[3])) {
+        size_t us = key.find('_');
+        if (us != std::string::npos) {
+          int idx = std::stoi(key.substr(3, us - 3));
+          std::string action = key.substr(us + 1);
+          if (idx >= 0 && idx < 4)
+            for (int i = 0; i < (int)host::BindAction::Count; ++i)
+              if (action == kActionNames[i]) host::g_hid_bindings[idx].mask[i] = (uint32_t)std::stoul(value);
+        }
+      }
+      // Generic HID pads. The mask is 32 bits, so this parses as unsigned rather than int.
+      else if (key.size() > 4 && key.rfind("hid", 0) == 0 && std::isdigit((unsigned char)key[3])) {
+        size_t us = key.find('_');
+        if (us != std::string::npos) {
+          int idx = std::stoi(key.substr(3, us - 3));
+          std::string action = key.substr(us + 1);
+          if (idx >= 0 && idx < 4)
+            for (int i = 0; i < (int)host::BindAction::Count; ++i)
+              if (action == kActionNames[i]) host::g_hid_bindings[idx].mask[i] = (uint32_t)std::stoul(value);
         }
       }
       // "port<n> <comboIndex>" - comboIndex uses the same 0-9 encoding as the UI combo box.
@@ -842,7 +884,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     int music = slippi::jukebox::user_volume();
     if (ImGui::SliderInt("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
     state.volume = host::audio_volume();
-    if (ImGui::SliderInt("Volume", &state.volume, 0, 100, "%d%%")) host::audio_set_volume(state.volume);
+    if (ImGui::SliderInt("Volume", &state.volume, 0, 100, "%d%%")) { host::audio_set_volume(state.volume); g_volume = state.volume; }
+    g_volume = state.volume;
         ImGui::PopItemWidth();
         ImGui::EndTabItem();
       }
@@ -910,12 +953,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     ImGui::TextUnformatted("Controls");
     ImGui::TextWrapped("Pick a device tab to rebind its actions. Each tab's top line shows what that device is pressing right now; the Port assignment section below shows what actually reaches the game.");
 
-    static const int kDeviceTabCount = 17;
+    static const int kDeviceTabCount = 21;
     static const char* kDeviceTabNames[kDeviceTabCount] = {
       "Keyboard", "XInput Pad 1", "XInput Pad 2", "XInput Pad 3", "XInput Pad 4",
       "DS4 1", "DS4 2", "DS4 3", "DS4 4",
       "GC Adapter 1", "GC Adapter 2", "GC Adapter 3", "GC Adapter 4",
-      "Switch Pro 1", "Switch Pro 2", "Switch Pro 3", "Switch Pro 4"
+      "Switch Pro 1", "Switch Pro 2", "Switch Pro 3", "Switch Pro 4",
+      "HID Pad 1", "HID Pad 2", "HID Pad 3", "HID Pad 4"
     };
 
     host::InputDebugSnapshot snap;
@@ -931,7 +975,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         else if (tab <= 4) { tab_kind = host::CaptureDevice::XInputPad; tab_index = tab - 1; }
         else if (tab <= 8) { tab_kind = host::CaptureDevice::DS4Pad; tab_index = tab - 5; }
         else if (tab <= 12) { tab_kind = host::CaptureDevice::GCAdapter; tab_index = tab - 9; }
-        else { tab_kind = host::CaptureDevice::SwitchPro; tab_index = tab - 13; }
+        else if (tab <= 16) { tab_kind = host::CaptureDevice::SwitchPro; tab_index = tab - 13; }
+        else { tab_kind = host::CaptureDevice::HidPad; tab_index = tab - 17; }
 
         // Live "what's this device pressing right now" line.
         if (tab_kind == host::CaptureDevice::Keyboard) {
@@ -959,6 +1004,29 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
           ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "Experimental: written from the protocol documentation and never tried");
           ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "against a real controller. If it does not work, Steam Input or BetterJoy");
           ImGui::TextColored(ImVec4(0.95f, 0.75f, 0.2f, 1.0f), "present the pad as an Xbox controller, which the XInput tabs above handle.");
+        } else if (tab_kind == host::CaptureDevice::HidPad) {
+          const bool connected = snap.hid_connected[tab_index];
+          ImGui::TextColored(connected ? ImVec4(0.25f, 0.85f, 0.35f, 1.0f) : ImVec4(0.95f, 0.3f, 0.25f, 1.0f),
+                             connected ? "[+] Connected" : "[-] Not connected");
+          ImGui::SameLine();
+          const std::string name = host::hidpad_name(tab_index);
+          ImGui::Text("%s", name.empty() ? "no device" : name.c_str());
+          ImGui::Text("Active: %s", active_actions_label(snap.hid_actions[tab_index]).c_str());
+          // Cheap pads describe themselves wrongly in their own report descriptor, and the only way
+          // anyone finds that out is by watching the numbers while moving the stick. No deadzone is
+          // applied to these: a box reports exact coordinates and rounding them toward centre is
+          // precisely what would ruin a wavedash angle.
+          const host::HidPadAxes axes = host::hidpad_axes(tab_index);
+          if (axes.count) {
+            std::string line = "Axes:";
+            for (int a = 0; a < axes.count; ++a)
+              line += "  " + std::string(axes.name[a]) + " " + std::to_string(axes.value[a]);
+            ImGui::TextUnformatted(line.c_str());
+          }
+          ImGui::TextDisabled("B0XX, Frame1, vJoy and other pads without a reader of their own. The "
+                              "device computes its own stick coordinates and this passes them "
+                              "through untouched, with no deadzone. Buttons are numbered as the "
+                              "device numbers them.");
         } else {
           bool plugged = (snap.gc_mask & (1u << tab_index)) != 0;
           ImGui::TextColored(plugged ? ImVec4(0.25f, 0.85f, 0.35f, 1.0f) : ImVec4(0.95f, 0.3f, 0.25f, 1.0f),
@@ -982,6 +1050,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                 else if (dev == host::CaptureDevice::XInputPad) host::g_pad_bindings[tab_index].mask[i] = (unsigned short)value;
                 else if (dev == host::CaptureDevice::DS4Pad) host::g_ds4_bindings[tab_index].mask[i] = (unsigned short)value;
                 else if (dev == host::CaptureDevice::SwitchPro) host::g_swpro_bindings[tab_index].mask[i] = (unsigned short)value;
+                else if (dev == host::CaptureDevice::HidPad) host::g_hid_bindings[tab_index].mask[i] = (uint32_t)value;
                 else host::g_gc_bindings[tab_index].mask[i] = (unsigned short)value;
                 state.rebind_action = -1;
                 changed = true;
@@ -997,6 +1066,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
             else if (tab_kind == host::CaptureDevice::XInputPad) std::snprintf(label, sizeof label, "%s", xinput_button_name(host::g_pad_bindings[tab_index].mask[i]));
             else if (tab_kind == host::CaptureDevice::DS4Pad) std::snprintf(label, sizeof label, "%s", ds4_button_name(host::g_ds4_bindings[tab_index].mask[i]));
             else if (tab_kind == host::CaptureDevice::SwitchPro) std::snprintf(label, sizeof label, "%s", swpro_button_name(host::g_swpro_bindings[tab_index].mask[i]));
+            else if (tab_kind == host::CaptureDevice::HidPad) std::snprintf(label, sizeof label, "%s", hid_button_name(host::g_hid_bindings[tab_index].mask[i]).c_str());
             else std::snprintf(label, sizeof label, "%s", gc_button_name(host::g_gc_bindings[tab_index].mask[i]));
             ImGui::Text("%-8s %-10s", kActionNames[i], label);
             ImGui::SameLine();
@@ -1096,11 +1166,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen
            << "\ntruewidescreen " << options.true_widescreen << "\naspect " << (int)options.aspect
            << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
-           << "\nvolume " << state.volume << "\nperformance " << options.performance_overlay
+           << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
            << "\ndlss " << options.dlss_mode << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
            << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
            << "\nstartup " << (options.settings_open ? 1 : 0)
+           // Read since it was added and never written, so hiding the reminder lasted one session.
+           << "\nsettingshint " << (options.settings_hint ? 1 : 0)
            << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
            << "\ninputoverlayhideborder " << options.input_overlay_hide_border
            << "\neffects " << options.effects_level
@@ -1143,6 +1215,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       for (int idx = 0; idx < 4; ++idx)
         for (int i = 0; i < (int)host::BindAction::Count; ++i)
           file << "\nswpro" << idx << "_" << kActionNames[i] << " " << host::g_swpro_bindings[idx].mask[i];
+      for (int idx = 0; idx < 4; ++idx)
+        for (int i = 0; i < (int)host::BindAction::Count; ++i)
+          file << "\nhid" << idx << "_" << kActionNames[i] << " " << host::g_hid_bindings[idx].mask[i];
       for (int n = 0; n < 4; ++n)
         file << "\nport" << n << " " << port_source_to_combo(host::g_port_sources[n]);
       file << '\n';
@@ -1230,20 +1305,27 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     for (int i = 0; i < 4; ++i)
       if (mask & (1 << i)) draw_input_overlay(i, row++, lone, state.open, options.input_overlay_hide_border);
   }
-  // The overlays describe a running game: the controller display, the L-cancel readout and the
-  // frame time graph all report on a match. The standalone settings window has no game behind it,
-  // so they would sit there reporting on the settings window itself and covering the panel.
-  if (state.fill_window) { host::window_input_capture(state.open); return changed; }
-  draw_lcancel_overlays();
-  if (options.performance_overlay) {
-    // Draggable, and it remembers where it was put: pinned at the top left with no input it covered
-    // the settings panel and there was no way to move it out of the way.
-    ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowBgAlpha(0.75f);
-    ImGui::Begin("Performance", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize);
-    ImGui::Text("%.0f presentations/s | %.2f ms", ImGui::GetIO().Framerate, 1000.f/std::max(1.f, ImGui::GetIO().Framerate));
-    ImGui::PlotLines("##frametimes", state.intervals.data(), (int)state.intervals.size(), state.cursor % state.intervals.size(), nullptr, 0, 33.4f, ImVec2(250, 60));
-    ImGui::End();
+  // Below here are the two overlays that only make sense with a match behind them: the L-cancel
+  // notice, which is about a mode the player is queuing for, and the frame time graph, which in the
+  // standalone settings window would report that window's own frame rate on top of the panel.
+  // The controller display above is deliberately left on: it shows live pad input, which is exactly
+  // what someone checking their bindings in this window wants to see.
+  // Skipped as a block, never by returning: ImGui::Render() is below, and a frame that leaves this
+  // function without it hands the renderer draw data that was never built, which is an access
+  // violation on the next present. 0.3.2 shipped exactly that as an early return here and crashed
+  // the launcher's settings window. The warning was already in this file, twenty lines up.
+  if (!state.fill_window) {
+    draw_lcancel_overlays();
+    if (options.performance_overlay) {
+      // Draggable, and it remembers where it was put: pinned at the top left with no input it covered
+      // the settings panel and there was no way to move it out of the way.
+      ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
+      ImGui::SetNextWindowBgAlpha(0.75f);
+      ImGui::Begin("Performance", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize);
+      ImGui::Text("%.0f presentations/s | %.2f ms", ImGui::GetIO().Framerate, 1000.f/std::max(1.f, ImGui::GetIO().Framerate));
+      ImGui::PlotLines("##frametimes", state.intervals.data(), (int)state.intervals.size(), state.cursor % state.intervals.size(), nullptr, 0, 33.4f, ImVec2(250, 60));
+      ImGui::End();
+    }
   }
   host::window_input_capture(state.open);
   ImGui::Render();
