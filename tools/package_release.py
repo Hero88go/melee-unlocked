@@ -98,6 +98,10 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--version", default=(ROOT / "VERSION").read_text().strip())
     ap.add_argument("--exe", type=Path, default=ROOT / "build-review/port/Release/melee_port.exe")
+    # The same game built for processors without AVX2, shipped alongside so the ordinary build
+    # keeps its instruction set. The launcher picks between them by asking the processor.
+    ap.add_argument("--compat-exe", type=Path, default=None,
+                    help="melee_port.exe built with -DMELEE_CPU_BASELINE=SSE2")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
     if not args.exe.is_file():
@@ -113,6 +117,15 @@ def main():
         shutil.rmtree(folder)
     folder.mkdir(parents=True)
     shutil.copy2(args.exe, folder / "melee_port.exe")
+    if args.compat_exe:
+        if not args.compat_exe.is_file():
+            raise SystemExit(f"missing compatibility executable: {args.compat_exe}")
+        compat_version = subprocess.run([str(args.compat_exe), "--version"], capture_output=True,
+                                        text=True, timeout=60).stdout.strip()
+        if compat_version != args.version:
+            raise SystemExit(f"the compatibility build reports {compat_version!r}, not {args.version!r}")
+        shutil.copy2(args.compat_exe, folder / "melee_port_compat.exe")
+        print(f"compatibility build: {args.compat_exe}")
     launcher = args.exe.parent / "MeleeUnlockedLauncher.exe"
     if not launcher.is_file():
         raise SystemExit(f"missing launcher: {launcher} (build target melee_unlocked)")

@@ -596,7 +596,10 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   // session, where scripted runs reproduce nothing: press it while the problem is happening and
   // the frames themselves can be read afterwards.
   if (ImGui::IsKeyPressed(ImGuiKey_F2)) { request_frame_capture(90); host::log("capture: F2, writing the next 90 presented frames into capture\\"); }
-  if (state.open && ImGui::IsKeyPressed(ImGuiKey_Escape)) state.open = false;
+  // While a rebind is waiting for a button, Escape means "cancel that", which the capture itself
+  // watches for. Closing the whole panel on the same key took the window away instead and left the
+  // capture running, so there was no way to back out of a rebind.
+  if (state.open && state.rebind_action < 0 && ImGui::IsKeyPressed(ImGuiKey_Escape)) state.open = false;
   host::window_input_capture(state.open);
   state.intervals[state.cursor++ % state.intervals.size()] = ImGui::GetIO().DeltaTime*1000.f;
   bool changed = false;
@@ -1069,6 +1072,19 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
             else if (tab_kind == host::CaptureDevice::HidPad) std::snprintf(label, sizeof label, "%s", hid_button_name(host::g_hid_bindings[tab_index].mask[i]).c_str());
             else std::snprintf(label, sizeof label, "%s", gc_button_name(host::g_gc_bindings[tab_index].mask[i]));
             ImGui::Text("%-8s %-10s", kActionNames[i], label);
+            ImGui::SameLine();
+            // Clearing an action matters on a box or a vJoy setup, where there are fewer buttons
+            // than the GameCube has and some of them are meant to be left with nothing on them.
+            // Without this the only way to free one was to bind it to something else.
+            if (ImGui::Button("Unbind")) {
+              if (tab_kind == host::CaptureDevice::Keyboard) host::g_key_bindings.vk[i] = 0;
+              else if (tab_kind == host::CaptureDevice::XInputPad) host::g_pad_bindings[tab_index].mask[i] = 0;
+              else if (tab_kind == host::CaptureDevice::DS4Pad) host::g_ds4_bindings[tab_index].mask[i] = 0;
+              else if (tab_kind == host::CaptureDevice::SwitchPro) host::g_swpro_bindings[tab_index].mask[i] = 0;
+              else if (tab_kind == host::CaptureDevice::HidPad) host::g_hid_bindings[tab_index].mask[i] = 0;
+              else host::g_gc_bindings[tab_index].mask[i] = 0;
+              changed = true;
+            }
             ImGui::SameLine();
             if (ImGui::Button("Rebind")) {
               host::input_begin_capture();

@@ -37,6 +37,19 @@ target_include_directories(port_load_test PRIVATE runtime/ppc)
 target_compile_features(port_load_test PRIVATE cxx_std_17)
 add_test(NAME port_signed_halfword_loads COMMAND port_load_test)
 
+# The instruction set the translated game and the runtime are built for. AVX2 is the default and
+# what every release so far has used; it needs Intel Haswell (2013) or AMD Ryzen. "AVX" reaches
+# back to 2011, and "SSE2" is every x64 processor ever made. A player on a processor without AVX2
+# cannot start the game at all, so this exists to build them something that runs.
+set(MELEE_CPU_BASELINE "AVX2" CACHE STRING "Instruction set baseline: AVX2, AVX or SSE2")
+set_property(CACHE MELEE_CPU_BASELINE PROPERTY STRINGS AVX2 AVX SSE2)
+if(MELEE_CPU_BASELINE STREQUAL "SSE2")
+  set(MELEE_ARCH_FLAG "")          # the x64 default; naming it explicitly is an error in MSVC
+else()
+  set(MELEE_ARCH_FLAG "/arch:${MELEE_CPU_BASELINE}")
+endif()
+message(STATUS "melee: CPU baseline ${MELEE_CPU_BASELINE}")
+
 set(PORT_GEN "${CMAKE_CURRENT_SOURCE_DIR}/generated")
 if(NOT EXISTS "${PORT_GEN}/guest_sources.cmake")
   message(FATAL_ERROR "port: generated code missing; run python port/recomp/recomp.py")
@@ -56,7 +69,7 @@ add_library(guest STATIC ${GUEST_SOURCES} "${PORT_GEN}/function_names.cpp" "${PO
 target_include_directories(guest PUBLIC "${PORT_GEN}" runtime/ppc)
 target_include_directories(guest PRIVATE runtime/hle)   # gecko_data.h: run-time optional code flags
 target_compile_features(guest PUBLIC cxx_std_17)
-target_compile_options(guest PRIVATE /bigobj /MP /EHsc /arch:AVX2 /fp:precise /wd4102 /wd4101 /wd4189 /W1)
+target_compile_options(guest PRIVATE /bigobj /MP /EHsc ${MELEE_ARCH_FLAG} /fp:precise /wd4102 /wd4101 /wd4189 /W1)
 target_compile_definitions(guest PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 endif()
 
@@ -93,7 +106,7 @@ add_library(runtime STATIC ${RUNTIME_SOURCES} third_party/slippilib/SlippiGame.c
 target_compile_definitions(runtime PRIVATE MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
 target_include_directories(runtime PUBLIC runtime/ppc runtime/host runtime/hle runtime/gx "${PORT_GEN}" "${PROJECT_SOURCE_DIR}/native" third_party)
 target_compile_features(runtime PUBLIC cxx_std_17)
-target_compile_options(runtime PRIVATE /EHsc /arch:AVX2 /fp:precise /W3)
+target_compile_options(runtime PRIVATE /EHsc ${MELEE_ARCH_FLAG} /fp:precise /W3)
 target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
 target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcrypt d3d12 d3d11 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb hid)
 
@@ -106,7 +119,11 @@ target_compile_options(port_mm_probe PRIVATE /EHsc)
 target_compile_definitions(port_mm_probe PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(melee_port PRIVATE runtime guest dbghelp)   # dbghelp: crash minidump
 target_compile_options(melee_port PRIVATE /EHsc)
-target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
+target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
+  MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}")
+if(MELEE_CPU_BASELINE STREQUAL "AVX2")
+  target_compile_definitions(melee_port PRIVATE MELEE_NEEDS_AVX2)
+endif()
 
 # Melee Unlocked client: Win32 launcher (Play page, Build tab, self-update). No runtime dependency.
 add_executable(melee_unlocked WIN32 app/launcher.cpp runtime/host/updater.cpp app/launcher.rc)
@@ -135,7 +152,7 @@ if(EXISTS "${PORT_GEN_PLAYBACK}/guest_sources.cmake")
   target_include_directories(guest_playback PUBLIC runtime/ppc)
   target_include_directories(guest_playback PRIVATE runtime/hle)
   target_compile_features(guest_playback PUBLIC cxx_std_17)
-  target_compile_options(guest_playback PRIVATE /bigobj /MP /EHsc /arch:AVX2 /fp:precise /wd4102 /wd4101 /wd4189 /W1)
+  target_compile_options(guest_playback PRIVATE /bigobj /MP /EHsc ${MELEE_ARCH_FLAG} /fp:precise /wd4102 /wd4101 /wd4189 /W1)
   target_compile_definitions(guest_playback PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
   endif()
   add_executable(melee_port_playback app/main.cpp app/settings_window.cpp)
