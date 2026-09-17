@@ -211,6 +211,7 @@ bool winmm_open() {
 
 void audio_set_volume(int volume) { g_volume.store(std::clamp(volume, 0, 100)); }
 int audio_volume() { return g_volume.load(); }
+bool audio_running() { return g_open; }
 
 bool audio_open(int volume_percent, const char* wav_dump_path, bool open_device) {
   if (wav_dump_path && *wav_dump_path) {

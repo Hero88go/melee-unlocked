@@ -7,6 +7,10 @@
 namespace host {
 void audio_set_volume(int volume);
 int audio_volume();
+// Whether an audio device (or a WAV dump) is actually running. The settings window opened from the
+// launcher has neither, and its volume slider must not read itself back from a device that is not
+// there: doing so pinned it to zero every frame, so it appeared to do nothing.
+bool audio_running();
 // volume_percent 0..100; 0 keeps the session muted (default for development).
 bool audio_open(int volume_percent, const char* wav_dump_path = nullptr, bool open_device = true);
 void audio_close();

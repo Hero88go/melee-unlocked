@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include "lcancel.h"
+#include "tapjump.h"
 
 static uint32_t s_spec = 5;
 
@@ -38,6 +39,10 @@ HLE(PADRead) {
   // upstream of everything the game does with the pad, so the press is sampled, recorded into the
   // replay and sent to the opponent exactly like a press the player made.
   lcancel::apply(pads);
+  // Tap jump off, same idea and the same place: it holds the stick just under the threshold the
+  // game jumps at, so the clamp is sampled, recorded and sent exactly like a stick position the
+  // player chose. Applied after the L-cancel press, which only touches the triggers.
+  tapjump::apply(pads);
   uint32_t base = ARG0, mask = 0;
   for (int i = 0; i < 4; ++i) {
     uint32_t p = base + i * 12;

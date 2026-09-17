@@ -22,6 +22,7 @@
 #include "threaded_backend.h"
 #include "window.h"
 #include "lcancel.h"
+#include "tapjump.h"
 #include "updater.h"
 #include "discord_presence.h"
 namespace app { int run_settings_window(gx::D3D12Options& options); }
@@ -432,6 +433,7 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--frame-times") gfx.frame_times = next();
     else if (a == "--vsync") gfx.vsync = true;
     else if (a == "--flicker-scan") gfx.flicker_scan = true;
+    else if (a == "--tap-jump-off") tapjump::set_enabled(true);
     else if (a == "--capture") gfx.capture_path = next();
     else if (a == "--capture-frame") gfx.capture_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--capture-every") gfx.capture_every = (uint32_t)std::strtoul(next(), nullptr, 0);
