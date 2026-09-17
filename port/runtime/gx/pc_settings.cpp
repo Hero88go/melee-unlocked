@@ -773,11 +773,21 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (sf == 2) ImGui::TextWrapped("Samples between completed poses. This adds up to one simulation tick of visual delay; unsupported motion may hold.");
     // Say it rather than quietly ignoring the setting: a player who picked a mode and sees no
     // difference should be told why, and this pairing is what several stage glitch reports were.
-    if (sf != 0 && !subframe_useful(options.fps_cap))
+    // Judged on what is actually being presented: "follow the monitor" on a 60 Hz display is the
+    // same one-frame-per-tick case as an explicit cap of 60.
+    const double shown_rate = options.fps_cap > 0 ? options.fps_cap
+                            : options.fps_cap < 0 ? (double)host::window_refresh_rate() : 0.0;
+    if (sf != 0 && shown_rate > 0.0 && shown_rate <= 60.5)
       ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
-                         "Not in use: the frame rate is capped at %.0f. There is one frame per tick "
-                         "either way, so this would cost delay and accuracy and buy no smoothness. "
-                         "Raise the frame rate above 60, or leave this off.", options.fps_cap);
+                         "Not in use: only %.0f frames a second are being shown. There is one frame "
+                         "per tick either way, so this would cost delay and accuracy and buy no "
+                         "smoothness. Raise the frame rate above 60, or leave this off.", shown_rate);
+    if (options.fps_cap == 0)
+      ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                         "Uncapped draws frames no display can show, and on light scenes it takes "
+                         "enough of the machine to slow the game down: measured at 1394 fps on a menu "
+                         "with the simulation falling to 44 Hz, against 193 fps and a full-rate "
+                         "simulation following the monitor. Follow the monitor unless you are testing.");
     // The "Visual effects" control was removed: the filter it drove deleted the stage select
     // pointer and menu text, and nothing in a draw separates a hit spark from a cursor.
 
