@@ -6,7 +6,7 @@
 #include "threaded_backend.h"
 #include "frame_queue.h"
 #include "gx_backend.h"
-#include "gx_d3d12.h"
+#include "render_options.h"
 #include "host.h"
 #include "subframe.h"
 #include "authored_pose.h"
@@ -27,7 +27,7 @@ constexpr double SIM_PERIOD = 1.0 / 60.0;
 class ThreadedBackend final : public Backend {
   FrameQueue queue;
   std::thread worker;
-  D3D12Options options_;
+  RenderOptions options_;
 
   // Runs on the render thread.
   void present_loop(Backend* renderer) {
@@ -223,7 +223,7 @@ class ThreadedBackend final : public Backend {
   }
 
  public:
-  ThreadedBackend(D3D12Options options, bool visible) : options_(options) {
+  ThreadedBackend(RenderOptions options, bool visible) : options_(options) {
     std::promise<void> initialized;
     auto ready = initialized.get_future();
     worker = std::thread([this, options, visible, init = std::move(initialized)]() mutable {
@@ -267,7 +267,7 @@ class ThreadedBackend final : public Backend {
   }
 };
 }
-std::unique_ptr<Backend> create_threaded_backend(const D3D12Options& options, bool visible) {
+std::unique_ptr<Backend> create_threaded_backend(const RenderOptions& options, bool visible) {
   return std::make_unique<ThreadedBackend>(options, visible);
 }
 }

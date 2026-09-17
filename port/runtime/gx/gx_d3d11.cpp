@@ -224,7 +224,7 @@ static std::atomic<uint64_t> next_backend_id{0x100000000ull};
 
 class D3D11Backend : public Backend {
  public:
-  D3D11Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) {
+  D3D11Backend(HWND hwnd, int w, int h, const RenderOptions& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) {
     init();
     try {
       start_shader_workers();
@@ -248,7 +248,7 @@ class D3D11Backend : public Backend {
     if (context_) context_->ClearState();
     if (present_timer_) CloseHandle(present_timer_);
   }
-  const D3D12Options& options() const { return opts_; }
+  const RenderOptions& options() const { return opts_; }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
@@ -318,7 +318,7 @@ class D3D11Backend : public Backend {
   uint64_t capture_sequence_ = 0;
 
   HWND hwnd_;
-  D3D12Options opts_;
+  RenderOptions opts_;
   int client_w_, client_h_;
   int scale_ = 1;
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
@@ -613,7 +613,7 @@ int D3D11Backend::pick_scale() const {
 }
 
 // Melee's camera asks for a 73:60 frustum, which the Slippi widescreen code widens to exactly
-// 16:9. See presented_aspect in gx_d3d12.h for the evidence and the player's override.
+// 16:9. See presented_aspect in render_options.h for the evidence and the player's override.
 float D3D11Backend::output_aspect() const { return presented_aspect(opts_, client_w_, client_h_); }
 
 void D3D11Backend::output_size(int* vw, int* vh) const {
@@ -1687,7 +1687,7 @@ std::string d3d11_profile_line() {
   return buf;
 }
 
-Backend* create_d3d11_backend(void* hwnd, int w, int h, const D3D12Options& options) {
+Backend* create_d3d11_backend(void* hwnd, int w, int h, const RenderOptions& options) {
   try {
     return new D3D11Backend((HWND)hwnd, w, h, options);
   } catch (const std::exception& e) {
@@ -1695,7 +1695,7 @@ Backend* create_d3d11_backend(void* hwnd, int w, int h, const D3D12Options& opti
     return nullptr;
   }
 }
-const D3D12Options& d3d11_options(Backend* backend) { return static_cast<D3D11Backend*>(backend)->options(); }
+const RenderOptions& d3d11_options(Backend* backend) { return static_cast<D3D11Backend*>(backend)->options(); }
 void d3d11_resize(Backend* backend, int w, int h) { static_cast<D3D11Backend*>(backend)->resize(w, h); }
 void d3d11_stats(Backend* backend, uint32_t* frames, uint32_t* pipelines, uint32_t* textures) {
   auto* b = static_cast<D3D11Backend*>(backend);

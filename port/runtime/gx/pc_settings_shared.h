@@ -2,7 +2,8 @@
 // The panel itself is pure ImGui; only the platform/renderer bindings differ per backend.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
-#include "gx_d3d12.h"
+#include "gx_core.h"
+#include "render_options.h"
 #include "host.h"            // host::PadState, which input_bindings.h uses without declaring
 #include "input_bindings.h"
 #include <array>
@@ -34,6 +35,6 @@ struct SettingsState {
 void settings_context_create(void* window, bool open_at_startup);
 void settings_context_destroy();
 // Everything between ImGui::NewFrame() and ImGui::Render(); true when render configuration changed.
-bool settings_frame(SettingsState& state, D3D12Options& options);
+bool settings_frame(SettingsState& state, RenderOptions& options);
 
 }  // namespace gx

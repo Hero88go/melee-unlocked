@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gx_backend.h"
 #include "gx_d3d11.h"
+#include "gx_d3d12.h"
 #include "host.h"
 #include <d3d11.h>
 #include <mutex>
@@ -39,9 +40,9 @@ bool d3d11_available() {
   return available;
 }
 
-Backend* create_render_backend(void* hwnd, int client_w, int client_h, const D3D12Options& options) {
+Backend* create_render_backend(void* hwnd, int client_w, int client_h, const RenderOptions& options) {
   if (options.api == RenderApi::D3D11) {
-    D3D12Options d3d11_options = options;
+    RenderOptions d3d11_options = options;
     if (d3d11_options.dlss_mode) host::log("d3d11: DLSS is a Direct3D 12 feature; rendering natively");
     d3d11_options.dlss_mode = 0;
     if (Backend* backend = create_d3d11_backend(hwnd, client_w, client_h, d3d11_options)) {
@@ -54,7 +55,7 @@ Backend* create_render_backend(void* hwnd, int client_w, int client_h, const D3D
   return create_d3d12_backend(hwnd, client_w, client_h, options);
 }
 
-const D3D12Options& render_options(Backend* backend) {
+const RenderOptions& render_options(Backend* backend) {
   return is_d3d11(backend) ? d3d11_options(backend) : d3d12_options(backend);
 }
 void render_resize(Backend* backend, int w, int h) {
