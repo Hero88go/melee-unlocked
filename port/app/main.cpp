@@ -248,19 +248,57 @@ static bool cpu_has_avx2() {
 // A player reported exactly that, and the empty folder they were asked to find the log in is what
 // gave it away.
 //
-// .CRT$XIB is a C initialiser slot, and every one of those runs before any C++ static constructor,
-// which is early enough to be ahead of the libraries. Nothing here touches them.
+// The initialiser slots run in this order: XCC (compiler), XCL (library), XCU (user). Every static
+// constructor in the runtime and guest libraries is XCU, so XCC is ahead of all of them and is
+// still after the C runtime has set itself up.
+//
+// The first attempt used .CRT$XIB, which is a slot the CRT uses for its own early initialisation,
+// and it ran before the CRT was ready. That is a plausible way to get a wrong answer out of a
+// check that is correct everywhere else, which is why the message below prints what the processor
+// actually reported rather than only the conclusion.
 static int __cdecl check_avx2_before_anything_else() {
   if (cpu_has_avx2()) return 0;
-  const char* msg = "Melee Unlocked needs a processor with AVX2.\n\n"
-                    "That means Intel Core 4th generation (Haswell, 2013) or newer, or AMD Ryzen or "
-                    "newer. This computer's processor does not have it, so the game cannot run here.";
+  // Say which processor and which of the four conditions failed. A player who is told "your CPU is
+  // too old" and believes otherwise has no way to settle it, and neither do we: this makes the
+  // screenshot itself the answer, instead of a round of guessing about what machine it is.
+  char brand[64] = "unknown";
+  int r[4];
+  __cpuid(r, 0x80000000);
+  if ((unsigned)r[0] >= 0x80000004u) {
+    for (int i = 0; i < 3; ++i) { __cpuid(r, 0x80000002 + i); std::memcpy(brand + i * 16, r, 16); }
+    brand[48] = '\0';
+  }
+  __cpuid(r, 0);
+  const int max_leaf = r[0];
+  int leaf1[4] = {};
+  if (max_leaf >= 1) __cpuid(leaf1, 1);
+  const bool osxsave = (leaf1[2] >> 27) & 1, avx = (leaf1[2] >> 28) & 1;
+  const unsigned long long xcr0 = osxsave ? _xgetbv(0) : 0;
+  int leaf7[4] = {};
+  if (max_leaf >= 7) __cpuidex(leaf7, 7, 0);
+  const bool avx2 = max_leaf >= 7 && ((leaf7[1] >> 5) & 1);
+
+  // wsprintfA rather than snprintf: this runs from a CRT initialiser slot, before the C runtime
+  // has finished setting itself up, and wsprintfA lives in user32 with no such dependency. The
+  // last thing this should do is fault inside the code explaining a fault.
+  char msg[768];
+  wsprintfA(msg,
+                "Melee Unlocked needs a processor with AVX2, and this one reports that it does not "
+                "have it.\n\nAVX2 means Intel Core 4th generation (Haswell, 2013) or newer, or AMD "
+                "Ryzen or newer. Every version of Melee Unlocked has been built for it; older "
+                "versions crashed here without a message instead of showing this one.\n\n"
+                "Processor: %s\n"
+                "AVX: %s   AVX2: %s   OS support: %s\n\n"
+                "If you believe this is wrong, send this window to the developer: these four values "
+                "say exactly what the processor reported.",
+                brand, avx ? "yes" : "no", avx2 ? "yes" : "no",
+                (osxsave && (xcr0 & 6) == 6) ? "yes" : "no");
   MessageBoxA(nullptr, msg, "Melee Unlocked", MB_ICONERROR | MB_OK);
   ExitProcess(3);
   return 0;
 }
-#pragma section(".CRT$XIB", long, read)
-__declspec(allocate(".CRT$XIB")) static int (__cdecl* g_avx2_guard)() = check_avx2_before_anything_else;
+#pragma section(".CRT$XCC", long, read)
+__declspec(allocate(".CRT$XCC")) static int (__cdecl* g_avx2_guard)() = check_avx2_before_anything_else;
 
 // Built for the Windows subsystem so double-clicking the game does not open a terminal alongside it.
 // Anything started from a command line still prints there: this reattaches to the parent console when
