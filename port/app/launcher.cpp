@@ -20,6 +20,7 @@
 #include <shlobj.h>
 #include <dwmapi.h>
 #include <uxtheme.h>
+#include <intrin.h>
 #include <nlohmann/json.hpp>
 #include <atomic>
 #include <cstdarg>
@@ -236,7 +237,23 @@ std::string repo_root() {
   for (int i = 0; i < 4; ++i) { if (file_exists(d + "\\build.bat") && file_exists(d + "\\tools\\extract_dol.py")) return d; auto p = d.find_last_of("\\/"); if (p == std::string::npos) break; d.resize(p); }
   return "";
 }
+// The game is built for AVX2, which a processor older than Intel Haswell (2013) or AMD Ryzen does
+// not have, and on such a machine it cannot start at all: it died during startup with no message
+// until 0.3.3 and with one after it. A second build for those processors ships beside the ordinary
+// one. Choosing between them here, rather than asking the player to work out which they need, is
+// what lets the ordinary build keep its instruction set so nobody else gives anything up.
+bool cpu_has_avx2() {
+  int r[4];
+  __cpuid(r, 0); if (r[0] < 7) return false;
+  __cpuid(r, 1); const bool osxsave = (r[2] >> 27) & 1, avx = (r[2] >> 28) & 1;
+  if (!osxsave || !avx || (_xgetbv(0) & 6) != 6) return false;
+  __cpuidex(r, 7, 0); return (r[1] >> 5) & 1;
+}
+
 std::string game_exe() {
+  // Only when this processor cannot run the ordinary build. A machine that can, keeps it.
+  if (!cpu_has_avx2() && file_exists(g_dir + "\\melee_port_compat.exe"))
+    return g_dir + "\\melee_port_compat.exe";
   if (file_exists(g_dir + "\\melee_port.exe")) return g_dir + "\\melee_port.exe";
   std::string root = repo_root();
   if (!root.empty()) return root + "\\build-review\\port\\Release\\melee_port.exe";

@@ -257,6 +257,9 @@ static bool cpu_has_avx2() {
 // check that is correct everywhere else, which is why the message below prints what the processor
 // actually reported rather than only the conclusion.
 static int __cdecl check_avx2_before_anything_else() {
+#ifndef MELEE_NEEDS_AVX2
+  return 0;   // built for an older baseline: nothing here to require
+#else
   if (cpu_has_avx2()) return 0;
   // Say which processor and which of the four conditions failed. A player who is told "your CPU is
   // too old" and believes otherwise has no way to settle it, and neither do we: this makes the
@@ -296,6 +299,7 @@ static int __cdecl check_avx2_before_anything_else() {
   MessageBoxA(nullptr, msg, "Melee Unlocked", MB_ICONERROR | MB_OK);
   ExitProcess(3);
   return 0;
+#endif
 }
 #pragma section(".CRT$XCC", long, read)
 __declspec(allocate(".CRT$XCC")) static int (__cdecl* g_avx2_guard)() = check_avx2_before_anything_else;
