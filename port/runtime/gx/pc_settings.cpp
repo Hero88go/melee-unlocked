@@ -822,28 +822,62 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         ImGui::PopItemWidth();
         ImGui::EndTabItem();
       }
-      if (ImGui::BeginTabItem("Overlays")) {
-    changed |= ImGui::Checkbox("Show the \"Settings: F1\" reminder", &options.settings_hint);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1 still opens this panel with it off.");
-    ImGui::Checkbox("Performance overlay", &options.performance_overlay);
-    changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
-    if (options.input_overlay) {
-      // Several ports can be shown at once (doubles and crew streams want every player visible);
-      // they stack upward from the bottom left corner.
-      for (int i = 0; i < 4; ++i) {
-        ImGui::SameLine();
-        char label[16];
-        std::snprintf(label, sizeof label, "P%d", i + 1);
-        bool on = (options.input_overlay_ports & (1 << i)) != 0;
-        if (ImGui::Checkbox(label, &on)) {
-          options.input_overlay_ports = on ? (options.input_overlay_ports | (1 << i)) : (options.input_overlay_ports & ~(1 << i));
-          changed = true;
-        }
-      }
+      if (ImGui::BeginTabItem("Game")) {
+
+    // ---- L-cancel helpers ----
+    // The indicator reads the fighter's action state and never writes anything, so it is display
+    // only and safe in every mode. The automatic press is a real analog trigger press injected into
+    // the local pad before the game reads it, so it is transmitted like any other input and both
+    // clients compute the same landing lag: it cannot desync. It is still gated to offline and
+    // Direct because it is a fairness question, not a safety one.
+    ImGui::TextUnformatted("L-cancel");
+    {
+      bool indicator = lcancel::indicator_enabled();
+      if (ImGui::Checkbox("Flash red on missed L-cancel", &indicator)) lcancel::set_indicator(indicator);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Flashes the fighter red when an aerial lands without the landing lag halved.\n"
+                          "Display only: the tint is applied by the renderer and never written into the\n"
+                          "game, so it is safe in every mode. It is skipped while auto L-cancel is doing\n"
+                          "the press for you, since there is then nothing to report.");
+      bool automatic = lcancel::automatic_enabled();
+      if (ImGui::Checkbox("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
       ImGui::SameLine();
-      changed |= ImGui::Checkbox("Hide border", &options.input_overlay_hide_border);
-      ImGui::TextDisabled("  Drag an overlay to move it, and its edges to resize, while this panel is open.");
+      ImGui::TextDisabled("(NOTE: Will not work in Unranked or Ranked, only offline and direct)");
+      if (automatic) {
+        ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
+                           "network like any other, so it cannot desync. In a Direct match both players should agree "
+                           "to use it: it is a fairness question, not a safety one.");
+        if (const char* mode = lcancel::auto_suppressed_mode())
+          ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Disabled right now: this is %s.", mode);
+      }
     }
+
+
+    // ---- Discord presence ----
+    // Off by default, and inert without an application ID. Nothing reaches Discord until the box
+    // below is ticked. See scratchpad/discord_invite_design.md for the whole design.
+    ImGui::TextUnformatted("Discord");
+    char app_id[32];
+    std::snprintf(app_id, sizeof app_id, "%s", options.discord_app_id.c_str());
+    if (ImGui::InputText("Application ID", app_id, sizeof app_id, ImGuiInputTextFlags_CharsDecimal)) {
+      options.discord_app_id = app_id;
+      host::discord::configure(options.discord_app_id);
+    }
+    const bool discord_was = options.discord_presence;
+    ImGui::Checkbox("Discord presence (show what you are playing; friends can press Join)", &options.discord_presence);
+    if (options.discord_presence != discord_was) {
+      host::discord::configure(options.discord_app_id);
+      host::discord::enable(options.discord_presence);   // starts or stops one background thread
+    }
+    if (options.discord_presence) {
+      ImGui::TextWrapped("%s", host::discord::status().c_str());
+      ImGui::TextDisabled("A new Application ID is picked up the next time you switch this off and on.");
+      ImGui::TextWrapped("Your Slippi connect code is published as the join secret so a friend who presses Join gets it filled in under Online > Direct. Your IP address is never published. Rich Presence is visible to anyone who can see your Discord profile.");
+    } else {
+      ImGui::TextDisabled("Off. Nothing is sent to Discord. Needs an Application ID from discord.com/developers/applications.");
+    }
+
+    ImGui::Checkbox("Open this panel at startup", &options.settings_open);
         ImGui::EndTabItem();
       }
       if (ImGui::BeginTabItem("Controls")) {
@@ -994,62 +1028,28 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     }
         ImGui::EndTabItem();
       }
-      if (ImGui::BeginTabItem("Game")) {
-
-    // ---- L-cancel helpers ----
-    // The indicator reads the fighter's action state and never writes anything, so it is display
-    // only and safe in every mode. The automatic press is a real analog trigger press injected into
-    // the local pad before the game reads it, so it is transmitted like any other input and both
-    // clients compute the same landing lag: it cannot desync. It is still gated to offline and
-    // Direct because it is a fairness question, not a safety one.
-    ImGui::TextUnformatted("L-cancel");
-    {
-      bool indicator = lcancel::indicator_enabled();
-      if (ImGui::Checkbox("Flash red on missed L-cancel", &indicator)) lcancel::set_indicator(indicator);
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Flashes the fighter red when an aerial lands without the landing lag halved.\n"
-                          "Display only: the tint is applied by the renderer and never written into the\n"
-                          "game, so it is safe in every mode. It is skipped while auto L-cancel is doing\n"
-                          "the press for you, since there is then nothing to report.");
-      bool automatic = lcancel::automatic_enabled();
-      if (ImGui::Checkbox("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
-      ImGui::SameLine();
-      ImGui::TextDisabled("(NOTE: Will not work in Unranked or Ranked, only offline and direct)");
-      if (automatic) {
-        ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
-                           "network like any other, so it cannot desync. In a Direct match both players should agree "
-                           "to use it: it is a fairness question, not a safety one.");
-        if (const char* mode = lcancel::auto_suppressed_mode())
-          ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Disabled right now: this is %s.", mode);
+      if (ImGui::BeginTabItem("Overlays")) {
+    changed |= ImGui::Checkbox("Show the \"Settings: F1\" reminder", &options.settings_hint);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1 still opens this panel with it off.");
+    ImGui::Checkbox("Performance overlay", &options.performance_overlay);
+    changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
+    if (options.input_overlay) {
+      // Several ports can be shown at once (doubles and crew streams want every player visible);
+      // they stack upward from the bottom left corner.
+      for (int i = 0; i < 4; ++i) {
+        ImGui::SameLine();
+        char label[16];
+        std::snprintf(label, sizeof label, "P%d", i + 1);
+        bool on = (options.input_overlay_ports & (1 << i)) != 0;
+        if (ImGui::Checkbox(label, &on)) {
+          options.input_overlay_ports = on ? (options.input_overlay_ports | (1 << i)) : (options.input_overlay_ports & ~(1 << i));
+          changed = true;
+        }
       }
+      ImGui::SameLine();
+      changed |= ImGui::Checkbox("Hide border", &options.input_overlay_hide_border);
+      ImGui::TextDisabled("  Drag an overlay to move it, and its edges to resize, while this panel is open.");
     }
-
-
-    // ---- Discord presence ----
-    // Off by default, and inert without an application ID. Nothing reaches Discord until the box
-    // below is ticked. See scratchpad/discord_invite_design.md for the whole design.
-    ImGui::TextUnformatted("Discord");
-    char app_id[32];
-    std::snprintf(app_id, sizeof app_id, "%s", options.discord_app_id.c_str());
-    if (ImGui::InputText("Application ID", app_id, sizeof app_id, ImGuiInputTextFlags_CharsDecimal)) {
-      options.discord_app_id = app_id;
-      host::discord::configure(options.discord_app_id);
-    }
-    const bool discord_was = options.discord_presence;
-    ImGui::Checkbox("Discord presence (show what you are playing; friends can press Join)", &options.discord_presence);
-    if (options.discord_presence != discord_was) {
-      host::discord::configure(options.discord_app_id);
-      host::discord::enable(options.discord_presence);   // starts or stops one background thread
-    }
-    if (options.discord_presence) {
-      ImGui::TextWrapped("%s", host::discord::status().c_str());
-      ImGui::TextDisabled("A new Application ID is picked up the next time you switch this off and on.");
-      ImGui::TextWrapped("Your Slippi connect code is published as the join secret so a friend who presses Join gets it filled in under Online > Direct. Your IP address is never published. Rich Presence is visible to anyone who can see your Discord profile.");
-    } else {
-      ImGui::TextDisabled("Off. Nothing is sent to Discord. Needs an Application ID from discord.com/developers/applications.");
-    }
-
-    ImGui::Checkbox("Open this panel at startup", &options.settings_open);
         ImGui::EndTabItem();
       }
       ImGui::EndTabBar();
@@ -1115,6 +1115,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       file.close();
       state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
     }
+    // Standalone: there is no game behind this window, so "return", "restart" and "quit the game"
+    // are all the same thing, closing it. Restart in particular relaunched this process with the
+    // command line it was started with, which is --settings-window, so it reopened the settings.
+    if (state.fill_window) {
+      ImGui::SameLine();
+      if (ImGui::Button("Close")) state.open = false;
+    } else {
     ImGui::SameLine(); if (ImGui::Button("Return to game")) state.open = false;
     // Restarting and quitting both shut down the same way closing the window does, so the replay is
     // finalised, the pipeline cache is written and the adapter is released rather than left
@@ -1123,6 +1130,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::Button("Restart game")) state.confirm = SettingsState::Confirm::Restart;
     ImGui::SameLine();
     if (ImGui::Button("Quit game")) state.confirm = SettingsState::Confirm::Quit;
+    }
     if (state.saved) ImGui::TextUnformatted("Settings saved");
 
     // A backend change is the one setting the running device cannot adopt, so it is the one that
@@ -1133,8 +1141,10 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       ImGui::Separator();
       ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
                          "The graphics backend will not be applied until after a restart.");
-      ImGui::SameLine();
-      if (ImGui::Button("Restart now")) state.confirm = SettingsState::Confirm::Restart;
+      if (!state.fill_window) {
+        ImGui::SameLine();
+        if (ImGui::Button("Restart now")) state.confirm = SettingsState::Confirm::Restart;
+      }
     }
 
     if (state.confirm != SettingsState::Confirm::None) {
