@@ -473,6 +473,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
       AuthoredCache chain_cache;   // one sampled chain per object per chunk per presented frame
       size_t begin = n * (size_t)chunk / (size_t)chunks, end = n * (size_t)(chunk + 1) / (size_t)chunks;
       uint32_t count = 0, carried = 0, blended = 0;
+      uint32_t lagged = 0, worst_kind = 0, worst_verts = 0; float worst_err = 0;
       for (size_t i = begin; i < end; ++i) {
         const DrawCall& d = cur_->draws[i];
         DrawMatrices& o = out[i];
@@ -615,7 +616,46 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
           }
         }
         if (posed) ++count;
-        else if (carry_camera(*pd->authored_pose, *d.authored_pose, t, hold.posMatrices, hold.normalMatrices, p.pos_slots, o.pos, o.nrm)) ++carried;
+        else {
+          // The re-pose failed. Carrying only the camera leaves the object at the PREVIOUS frame's
+          // own pose, so at phase 1, where the presented frame is the current simulation frame, it is
+          // a whole frame behind: measured at up to 301 draws per presented frame and 96 world units
+          // out. As the phase sweeps 0 to 1 each simulation frame that object swings against
+          // everything around it, sixty times a second, which is the stage flicker.
+          //
+          // posMatrices are model-view, so blending them between the two frames carries the object's
+          // own motion and the camera's together, and lands exactly on the current pose at phase 1.
+          // Interpolate only: in Predict the base is the current frame and the same arithmetic would
+          // extrapolate past it. Bounded, so a matrix reused for something else holds instead.
+          bool advanced = false;
+          if (interpolate) {
+            uint64_t slots = p.pos_slots;
+            while (slots) {
+              unsigned long bit = 0; _BitScanForward64(&bit, slots);
+              slots &= slots - 1;
+              const int row = (int)bit;
+              if (row + 3 > 64) continue;
+              const float* previous_row = &pd->posMatrices[row * 4];
+              const float* current_row = &d.posMatrices[row * 4];
+              bool continuous = true;
+              for (int k = 0; k < 12; ++k) {
+                const float delta = current_row[k] - previous_row[k];
+                if (!std::isfinite(delta) || std::abs(delta) > max_translation) { continuous = false; break; }
+              }
+              if (!continuous) continue;
+              for (int k = 0; k < 12; ++k)
+                o.pos[row * 4 + k] = previous_row[k] + (float)t * (current_row[k] - previous_row[k]);
+              if (row < 32) {
+                const float* pn = &pd->normalMatrices[row * 3];
+                const float* cn = &d.normalMatrices[row * 3];
+                for (int k = 0; k < 9; ++k) o.nrm[row * 3 + k] = pn[k] + (float)t * (cn[k] - pn[k]);
+              }
+              advanced = true;
+            }
+          }
+          if (advanced) ++carried;
+          else if (carry_camera(*pd->authored_pose, *d.authored_pose, t, hold.posMatrices, hold.normalMatrices, p.pos_slots, o.pos, o.nrm)) ++carried;
+        }
         // Sanity: a re-posed or carried draw must land near where it was. Nothing downstream checks
         // this, so a single bad matrix (a chain that reconstructed wrong, a camera carry taken
         // across a cut or a sharp zoom) puts an object somewhere else entirely for one presented
