@@ -420,6 +420,18 @@ void load_pc_settings(D3D12Options& options, int& volume) {
 // The ImGui context and the Win32 platform backend are the same for every renderer backend.
 std::atomic<bool> g_textures_dirty{false};
 // "texpackoff <name>" per pack the player switched off, written with the rest of the settings.
+// Tooltips are clipped to the OS window, and the standalone settings window is deliberately narrow,
+// so a long one ran off the right edge. Wrapping them at a fixed width keeps every line on screen
+// whatever the window size.
+void wrapped_tooltip(const char* text) {
+  if (!ImGui::IsItemHovered()) return;
+  ImGui::BeginTooltip();
+  ImGui::PushTextWrapPos(380.0f);
+  ImGui::TextUnformatted(text);
+  ImGui::PopTextWrapPos();
+  ImGui::EndTooltip();
+}
+
 std::string texpack_disabled_lines() {
   std::string out;
   for (const auto& name : texpack::disabled_packs()) out += std::string("\n") + "texpackoff " + name;
@@ -711,10 +723,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     ImGui::TextUnformatted("Texture packs");
     ImGui::SameLine();
     if (ImGui::SmallButton("+ Add")) texpack::open_packs_folder();
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Opens the TexturePacks folder. Put a pack folder in there and it appears in this list.");
+    wrapped_tooltip("Opens the TexturePacks folder. Put a pack folder in there and it appears in this list.");
     if (installed.empty()) {
-      ImGui::TextDisabled("None installed. Press + Add and drop a pack folder in.");
+      ImGui::TextWrapped("None installed. Press + Add and drop a pack folder in.");
     } else {
       changed |= ImGui::Checkbox("Use texture packs", &options.custom_textures);
       if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -1155,12 +1166,16 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   if (!state.open) {
     // Keep the closed state passive: opening is intentionally F1-only so controller
     // navigation cannot activate a settings button by accident.
-    if (!options.settings_hint) return changed;   // hidden on request: F1 still opens the panel
-    ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 12, 12), ImGuiCond_Always, ImVec2(1, 0));
-    ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
-    ImGui::Begin("SettingsButton", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
-    ImGui::TextUnformatted("Settings: F1");
-    ImGui::End();
+    // Hidden on request; F1 still opens the panel. This must not return early: ImGui::Render() is
+    // at the end of this function, and skipping it left draw() handing the renderer draw data that
+    // was never built for this frame, which crashed on the next F1.
+    if (options.settings_hint) {
+      ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 12, 12), ImGuiCond_Always, ImVec2(1, 0));
+      ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
+      ImGui::Begin("SettingsButton", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
+      ImGui::TextUnformatted("Settings: F1");
+      ImGui::End();
+    }
   }
   if (options.input_overlay) {
     const int mask = options.input_overlay_ports ? options.input_overlay_ports : 1;
@@ -1171,9 +1186,11 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   }
   draw_lcancel_overlays();
   if (options.performance_overlay) {
-    ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_Always);
+    // Draggable, and it remembers where it was put: pinned at the top left with no input it covered
+    // the settings panel and there was no way to move it out of the way.
+    ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowBgAlpha(0.75f);
-    ImGui::Begin("Performance", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoInputs);
+    ImGui::Begin("Performance", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize);
     ImGui::Text("%.0f presentations/s | %.2f ms", ImGui::GetIO().Framerate, 1000.f/std::max(1.f, ImGui::GetIO().Framerate));
     ImGui::PlotLines("##frametimes", state.intervals.data(), (int)state.intervals.size(), state.cursor % state.intervals.size(), nullptr, 0, 33.4f, ImVec2(250, 60));
     ImGui::End();
