@@ -314,7 +314,18 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "prefetchtextures") options.prefetch_textures = value != "0";
       // One line per pack the player switched off; anything not listed is on, so a pack installed
       // later starts enabled rather than silently doing nothing.
-      else if (key == "texpackoff") { auto off = texpack::disabled_packs(); off.push_back(value); texpack::set_disabled_packs(std::move(off)); }
+      else if (key == "texpackoff") {
+        // A pack is a folder, and a folder name can contain spaces ("HD Textures"). This file is
+        // parsed as whitespace-separated tokens, so taking only the first one would both lose the
+        // name and leave the rest of it to be read as the next key, which desyncs every setting
+        // after it. Take the remainder of the line instead.
+        std::string rest;
+        std::getline(file, rest);
+        while (!rest.empty() && (rest.back() == '\r' || rest.back() == ' ')) rest.pop_back();
+        auto off = texpack::disabled_packs();
+        off.push_back(value + rest);
+        texpack::set_disabled_packs(std::move(off));
+      }
       else if (key == "aspect") { int a = std::stoi(value); if (a >= 0 && a <= 4) options.aspect = (AspectMode)a; }
       // "window <w>x<h>", or "window follow" for the old behaviour of using whatever size the
       // window has been dragged to.
@@ -1097,6 +1108,10 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\ndiscord " << (options.discord_presence ? 1 : 0);
       // Only when set: "key value" parsing would swallow the next line on an empty value.
       if (!options.discord_app_id.empty()) file << "\ndiscord_app_id " << options.discord_app_id;
+      // One line per pack that is switched off. Without this the loader parsed "texpackoff" but
+      // nothing ever wrote it, so switching a pack off lasted only until the next launch. The
+      // loader reads the name to end of line, so a name with spaces in it round-trips.
+      file << texpack_disabled_lines();
       for (int i = 0; i < (int)host::BindAction::Count; ++i)
         file << "\nkey_" << kActionNames[i] << " " << host::g_key_bindings.vk[i];
       for (int idx = 0; idx < 4; ++idx)
