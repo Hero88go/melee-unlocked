@@ -316,7 +316,7 @@ static void draw_lcancel_overlays() {
 // volume set itself to 0 on a later launch.
 int g_volume = 100;
 
-void load_pc_settings(D3D12Options& options, int& volume) {
+void load_pc_settings(RenderOptions& options, int& volume) {
   std::ifstream file(options.settings_path);
   // First launch (no saved settings yet): open the PC settings panel so nobody has to find it.
   options.settings_open = true;   // opens at every launch unless "startup 0" was saved
@@ -361,7 +361,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
       else if (key == "performance") options.performance_overlay = value == "1";
-      // Diagnostic, off unless someone is hunting a one-frame glitch: see D3D12Options::flicker_scan.
+      // Diagnostic, off unless someone is hunting a one-frame glitch: see RenderOptions::flicker_scan.
       // Settings-file only rather than a control in the panel, because it costs a readback on every
       // presented frame and nobody should switch it on by browsing.
       else if (key == "flickerscan") options.flicker_scan = value == "1";
@@ -524,7 +524,7 @@ struct PcSettingsUI::Impl {
   SettingsState state;
 };
 
-PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const D3D12Options& options)
+PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const RenderOptions& options)
     : impl_(std::make_unique<Impl>()) {
   auto& state = *impl_;
   state.state.open = options.settings_open;
@@ -557,12 +557,12 @@ PcSettingsUI::~PcSettingsUI() {
   settings_context_destroy();
 }
 
-bool PcSettingsUI::begin(D3D12Options& options) {
+bool PcSettingsUI::begin(RenderOptions& options) {
   ImGui_ImplDX12_NewFrame();
   return settings_frame(impl_->state, options);
 }
 
-bool settings_frame(SettingsState& state, D3D12Options& options) {
+bool settings_frame(SettingsState& state, RenderOptions& options) {
   // Dear ImGui's Win32 backend polls XInput itself whenever gamepad navigation is enabled, and maps
   // the Xbox X button to its "menu" key, which pops up ImGui's window switcher for as long as the
   // button is held. Players pressing X mid-match got a little window they could not get rid of.

@@ -16,7 +16,7 @@
 #include "guest_symbols.h"
 #include "gx_backend.h"
 #include "gx_core.h"
-#include "gx_d3d12.h"
+#include "render_options.h"
 #include "pc_settings.h"
 #include "texture_pack.h"
 #include "threaded_backend.h"
@@ -24,7 +24,7 @@
 #include "lcancel.h"
 #include "updater.h"
 #include "discord_presence.h"
-namespace app { int run_settings_window(gx::D3D12Options& options); }
+namespace app { int run_settings_window(gx::RenderOptions& options); }
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -342,7 +342,7 @@ static int melee_main(int argc, char** argv) {
   TimerResolution timer_resolution;
   host::Options& o = host::options;
   bool headless = false, hidden = false, threaded = false, fps_requested = false;
-  gx::D3D12Options gfx;
+  gx::RenderOptions gfx;
   bool automated = false, explicit_frame_mode = false, settings_window_only = false;
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];

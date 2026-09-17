@@ -36,7 +36,7 @@ int main() {
     RegisterClassW(&wc);
     window=CreateWindowW(wc.lpszClassName,L"GPU resource regression",WS_OVERLAPPEDWINDOW,0,0,640,480,nullptr,nullptr,wc.hInstance,nullptr);
     check(window!=nullptr,"hidden window creation");
-    gx::D3D12Options options; options.efb_scale=1; options.capture_frame=6; options.capture_path="gpu-resource-test.ppm";
+    gx::RenderOptions options; options.efb_scale=1; options.capture_frame=6; options.capture_path="gpu-resource-test.ppm";
     std::unique_ptr<gx::Backend> renderer(gx::create_d3d12_backend(window,640,480,options));
     gx::Frame frame; frame.sequence=1;
     // The first red quad must survive every subsequent descriptor/page rollover.

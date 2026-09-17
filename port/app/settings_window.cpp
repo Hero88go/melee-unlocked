@@ -16,7 +16,7 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
-#include "gx_d3d12.h"
+#include "render_options.h"
 #include "pc_settings.h"
 #include "window.h"
 #include "host.h"
@@ -29,10 +29,10 @@ namespace app {
 
 using Microsoft::WRL::ComPtr;
 
-int run_settings_d3d11(gx::D3D12Options& options, void* hwnd);
-int run_settings_d3d12(gx::D3D12Options& options, void* hwnd);
+int run_settings_d3d11(gx::RenderOptions& options, void* hwnd);
+int run_settings_d3d12(gx::RenderOptions& options, void* hwnd);
 
-int run_settings_window(gx::D3D12Options& options) {
+int run_settings_window(gx::RenderOptions& options) {
   gx::settings_fill_window(true);   // the panel IS this window, not a box floating inside it
   void* hwnd = host::window_create(620, 700, L"Melee Unlocked settings", true);
   if (!hwnd) { host::log("settings: cannot create a window"); return 1; }
@@ -48,7 +48,7 @@ int run_settings_window(gx::D3D12Options& options) {
 }
 
 // Returns 2 when this API could not start, so the caller can try the other.
-int run_settings_d3d11(gx::D3D12Options& options, void* hwnd) {
+int run_settings_d3d11(gx::RenderOptions& options, void* hwnd) {
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   DXGI_SWAP_CHAIN_DESC scd{};
@@ -120,7 +120,7 @@ int run_settings_d3d11(gx::D3D12Options& options, void* hwnd) {
 
 // The same panel on Direct3D 12. One command allocator and list, one fence, two back buffers: a
 // settings box has no pipelining to do, so each frame is recorded, submitted and waited on.
-int run_settings_d3d12(gx::D3D12Options& options, void* hwnd) {
+int run_settings_d3d12(gx::RenderOptions& options, void* hwnd) {
   ComPtr<ID3D12Device> device;
   if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
     host::log("settings: no Direct3D 12 device");
