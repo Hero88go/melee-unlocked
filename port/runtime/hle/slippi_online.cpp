@@ -171,6 +171,41 @@ const char* mode_name(Matchmaking::OnlinePlayMode mode) {
   return "Online";
 }
 
+// What the player is doing when they are not online. Melee routes every mode through one state
+// machine (gm_1A3F.c, `static struct stateMachine state_machine` at 0x80479D30) whose first byte is
+// routingInfo::curr_mode, a GameModeKind. Reading that one byte is how the presence can say
+// "Training" instead of calling everything outside a netplay match "In the menus", which is what a
+// player in training mode saw. Read only, on the simulation thread, and nothing is written back.
+constexpr uint32_t kStateMachine = 0x80479D30;
+const char* offline_mode_name() {
+  switch (host::rd8(kStateMachine)) {
+    case 0x02: return "VS Mode";
+    case 0x03: return "Classic";
+    case 0x04: return "Adventure";
+    case 0x05: return "All-Star";
+    case 0x0F: return "Target Test";
+    case 0x10: return "Super Sudden Death";
+    case 0x11: return "Invisible Melee";
+    case 0x12: return "Slo-Mo Melee";
+    case 0x13: return "Lightning Melee";
+    case 0x1B: return "Tournament";
+    case 0x1C: return "Training";
+    case 0x1D: return "Tiny Melee";
+    case 0x1E: return "Giant Melee";
+    case 0x1F: return "Stamina Mode";
+    case 0x20: return "Home-Run Contest";
+    case 0x21: return "10-Man Melee";
+    case 0x22: return "100-Man Melee";
+    case 0x23: return "3-Minute Melee";
+    case 0x24: return "15-Minute Melee";
+    case 0x25: return "Endless Melee";
+    case 0x26: return "Cruel Melee";
+    case 0x2B: return "Event Match";
+    // Title, menus, trophy gallery, boot and the rest are all honestly "the menus".
+    default: return nullptr;
+  }
+}
+
 void update_discord_presence(bool force = false) {
   if (!host::discord::enabled()) return;
   // prepare_online_match_state runs this every frame the online menus are up. Rebuilding twice a
@@ -205,6 +240,11 @@ void update_discord_presence(bool force = false) {
     p.state = by_code ? "Waiting for a friend" : "Searching";
     p.party_size = 1; p.party_max = 2;
     if (by_code) p.join_code = my_code;   // nobody gets to join a ranked queue
+  } else if (const char* offline = offline_mode_name()) {
+    p.details = offline;
+    p.state = my_code;
+    // Still joinable: someone in training is exactly the person a friend wants to pull into a game.
+    if (!my_code.empty()) { p.party_size = 1; p.party_max = 2; p.join_code = my_code; }
   } else {
     p.details = "In the menus";
     p.state = my_code;

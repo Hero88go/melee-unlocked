@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <string>
+#include <vector>
 #include "gx_core.h"
 
 namespace gx {
@@ -58,6 +59,16 @@ struct D3D12Options {
   // in the settings to point the presence at an application of their own.
   bool discord_presence = false;
   std::string discord_app_id = "1549608280949792790";
+  // Gecko codes switched on by the player: Slippi's own switchable codes by id, and codes the
+  // player supplied in the GeckoCodes folder. Both default to off, so a list holds what is on.
+  // Widescreen is not in here: it has its own setting and its own control under Video.
+  std::vector<std::string> gecko_enabled;
+  std::vector<std::string> user_gecko_enabled;
+  // Watches every presented frame for a single frame that differs from the one before and the one
+  // after it while those two agree, which is what a one-frame visual glitch looks like and what no
+  // human can catch with a screenshot key. Diagnostic only: it costs a small downsample and readback
+  // per presented frame, so it is off unless --flicker-scan asks for it.
+  bool flicker_scan = false;
   std::string settings_path = "port-settings.ini";
   std::string frame_times; // optional buffered CSV of CPU presentation timing
   SubFrameMode subframe = SubFrameMode::Off;
@@ -95,6 +106,17 @@ struct D3D12Options {
   std::string dump_path;      // write a text dump of draw state + shaders at dump_frame
   uint32_t dump_frame = 0;
 };
+
+// Sub-frame animation only means anything when the display shows more frames than the simulation
+// produces. At a cap of 60 or below there is one presented frame per 60 Hz tick either way, so
+// re-posing buys no smoothness at all and costs three things: the solver's time, a frame of display
+// delay in the Interpolate modes, and poses taken at an arbitrary fraction of a tick instead of the
+// exact ones the game computed. That last one is visible: players running a 60 cap with sub-frame
+// animation on reported stage geometry glitching on Yoshi's Story, Dream Land and Fountain of
+// Dreams, and switching sub-frame animation off fixed it. So the two are not allowed to combine.
+//
+// A cap of 0 is uncapped and -1 follows the monitor, and both of those can exceed 60.
+inline bool subframe_useful(double fps_cap) { return fps_cap <= 0.0 || fps_cap > 60.0; }
 
 // Aspect the presented image is letterboxed to, for these options and this client size.
 //

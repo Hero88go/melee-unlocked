@@ -68,6 +68,9 @@ enum : uint32_t { TOPO_LINE = 2, TOPO_TRIANGLE = 3 };
 constexpr size_t VS_CONSTANT_BYTES = offsetof(VSConstants, prev_projection);
 
 double g_prof[8]; uint64_t g_prof_draws = 0, g_pipe_hits = 0, g_pipe_lookups = 0, g_pipe_creates = 0, g_pipe_skips = 0;
+// Sampling an address the game has copied the EFB into: found in the copy registry, or not found
+// and therefore decoded from guest RAM, which for a render target holds nothing the GPU wrote.
+uint64_t g_efb_tex_hit = 0, g_efb_tex_miss = 0;
 struct Stopwatch {
   static double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
   double t = now(); double lap() { double n = now(), d = n - t; t = n; return d; }
@@ -361,6 +364,25 @@ class D3D11Backend : public Backend {
   std::unordered_map<SamplerKey, ComPtr<ID3D11SamplerState>, SamplerKeyHash> samplers_;
   std::unordered_map<uint64_t, TextureEntry> textures_;
   std::unordered_map<uint32_t, TextureEntry> efb_copies_;
+  // Diagnostic for the Fountain of Dreams reflection, which exists only as an EFB copy: the stage
+  // renders a mirrored camera pass, copies it into an 80x60 image, and the water samples that
+  // address. If the lookup below ever misses, the water samples whatever stale bytes guest RAM
+  // holds at that address instead, which is a frame with no reflection in it.
+  std::unordered_set<uint32_t> copy_dests_;      // every address ever used as a copy destination
+
+  // ---- flicker scan (--flicker-scan) ----
+  // A one-frame glitch is invisible to a screenshot key and too rare to catch by dumping frames: at
+  // an unlocked rate a few thousand dumped frames cover a fraction of a second. So the check runs in
+  // the renderer instead, on a 16x16 downsample of every presented frame, and only says something
+  // when a frame pops out and comes back.
+  static constexpr int kScanGrid = 64;   // coarse, but enough to recognise what changed on a hit
+  static constexpr int kScanRing = 3;   // readback is mapped two frames later, so it never stalls
+  void flicker_scan();
+  ComPtr<ID3D11Texture2D> scan_rt_, scan_staging_[kScanRing];
+  ComPtr<ID3D11RenderTargetView> scan_rtv_;
+  uint32_t scan_ring_ = 0, scan_ready_ = 0, scan_history_ = 0;
+  uint64_t scan_hits_ = 0;
+  float scan_sig_[3][kScanGrid * kScanGrid] = {};
 
   std::mutex shader_mutex_;
   std::condition_variable shader_cv_, shader_done_cv_;
@@ -934,7 +956,14 @@ Pipeline* D3D11Backend::get_pipeline(const DrawCall& dc, uint32_t topo_type, D3D
 // ---------------------------------------------------------------- textures
 TextureEntry* D3D11Backend::get_texture(const TextureRef& t) {
   auto ec = efb_copies_.find(t.addr);
-  if (ec != efb_copies_.end() && ec->second.resource) { ec->second.last_used = frame_counter_; return &ec->second; }
+  if (ec != efb_copies_.end() && ec->second.resource) {
+    ec->second.last_used = frame_counter_;
+    if (copy_dests_.count(t.addr)) ++g_efb_tex_hit;
+    return &ec->second;
+  }
+  // An address the game has copied the EFB into, being sampled without the copy being found. The
+  // fallback below decodes guest RAM, which for a render target holds nothing the GPU ever wrote.
+  if (copy_dests_.count(t.addr)) ++g_efb_tex_miss;
   if (!t.data) return nullptr;
   const uint32_t meta[] = {t.width, t.height, t.format, t.mip_levels, t.tlut_format};
   uint64_t key = t.data->hash ^ hash_bytes(meta, sizeof meta);
@@ -1119,6 +1148,9 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
   uint32_t w = c.src_w, h = c.src_h;
   if (c.half_scale) { w = std::max(1u, w / 2); h = std::max(1u, h / 2); }
   uint32_t sw = w * scale_, sh = h * scale_;
+  if (copy_dests_.insert(c.dest_addr).second)
+    host::log("efb copy: new destination %08X, %ux%u from (%u,%u) %ux%u, half %d, y_scale %.3f, format %u",
+              c.dest_addr, sw, sh, c.src_x, c.src_y, c.src_w, c.src_h, (int)c.half_scale, c.y_scale, c.format);
   TextureEntry& e = efb_copies_[c.dest_addr];
   if (!e.resource || e.width != sw || e.height != sh) {
     D3D11_TEXTURE2D_DESC td{};
@@ -1218,6 +1250,95 @@ void D3D11Backend::capture_backbuffer() {
     if (FAILED(device_->CreateTexture2D(&sd, nullptr, &capture_staging_))) return;
   }
   context_->CopyResource(capture_staging_.Get(), back.Get());
+}
+
+// Downsamples the presented image to a 16x16 signature and compares the frame before last against
+// its two neighbours. A frame in normal motion sits between them: the distance from each neighbour
+// is about half the distance between the neighbours themselves. A frame that is wrong sits outside
+// both, so min(to previous, to next) exceeds the distance between previous and next. That ratio is
+// the test, and it does not care whether the frame is too bright, too dark or in the wrong place.
+void D3D11Backend::flicker_scan() {
+  if (!scan_rt_) {
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = td.Height = kScanGrid; td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET;
+    if (FAILED(device_->CreateTexture2D(&td, nullptr, &scan_rt_))) return;
+    if (FAILED(device_->CreateRenderTargetView(scan_rt_.Get(), nullptr, &scan_rtv_))) { scan_rt_.Reset(); return; }
+    D3D11_TEXTURE2D_DESC sd = td;
+    sd.Usage = D3D11_USAGE_STAGING; sd.BindFlags = 0; sd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    for (int i = 0; i < kScanRing; ++i)
+      if (FAILED(device_->CreateTexture2D(&sd, nullptr, &scan_staging_[i]))) { scan_rt_.Reset(); return; }
+  }
+  // Shrink the EFB through the blit shader rather than the swapchain: the back buffer has already
+  // been letterboxed, and the bars would dominate a 16x16 average.
+  unbind_shader_resources();
+  ID3D11RenderTargetView* rtv = scan_rtv_.Get();
+  context_->OMSetRenderTargets(1, &rtv, nullptr);
+  D3D11_VIEWPORT vp{0, 0, (float)kScanGrid, (float)kScanGrid, 0, 1};
+  D3D11_RECT sc{0, 0, kScanGrid, kScanGrid};
+  context_->RSSetViewports(1, &vp);
+  context_->RSSetScissorRects(1, &sc);
+  const float rect[12] = {1, 1, 0, 0, 0, 0, 0, 0, 1.0f, 1.0f, 0, 0};
+  blit(efb_srv_.Get(), rect);
+  context_->CopyResource(scan_staging_[scan_ring_].Get(), scan_rt_.Get());
+  scan_ring_ = (scan_ring_ + 1) % kScanRing;
+  if (scan_ready_ < kScanRing) { ++scan_ready_; bind_efb_targets(); return; }
+
+  // Map the oldest copy in the ring, which the GPU finished two frames ago.
+  D3D11_MAPPED_SUBRESOURCE m{};
+  if (SUCCEEDED(context_->Map(scan_staging_[scan_ring_].Get(), 0, D3D11_MAP_READ, 0, &m))) {
+    float* slot = scan_sig_[scan_history_ % 3];
+    const uint8_t* src = (const uint8_t*)m.pData;
+    for (int y = 0; y < kScanGrid; ++y)
+      for (int x = 0; x < kScanGrid; ++x) {
+        const uint8_t* p = src + (size_t)y * m.RowPitch + (size_t)x * 4;
+        slot[y * kScanGrid + x] = p[0] * 0.25f + p[1] * 0.6f + p[2] * 0.15f;
+      }
+    context_->Unmap(scan_staging_[scan_ring_].Get(), 0);
+    ++scan_history_;
+    if (scan_history_ >= 3) {
+      const float* a = scan_sig_[(scan_history_ - 3) % 3];
+      const float* b = scan_sig_[(scan_history_ - 2) % 3];
+      const float* c = scan_sig_[(scan_history_ - 1) % 3];
+      float d_prev = 0, d_next = 0, d_skip = 0;
+      for (int i = 0; i < kScanGrid * kScanGrid; ++i) {
+        d_prev += std::abs(b[i] - a[i]); d_next += std::abs(b[i] - c[i]); d_skip += std::abs(c[i] - a[i]);
+      }
+      const float n = kScanGrid * kScanGrid;
+      d_prev /= n; d_next /= n; d_skip /= n;
+      const float out = std::min(d_prev, d_next);
+      // The floor keeps a still image, where every difference is near zero, from reporting noise.
+      if (out > 1.5f && out > d_skip * 1.25f) {
+        ++scan_hits_;
+        host::log("flicker: presented frame %u pops out and back (prev %.2f, next %.2f, neighbours %.2f, ratio %.1f); %llu so far",
+                  frames_presented_ - 1, d_prev, d_next, d_skip, out / (d_skip > 0.01f ? d_skip : 0.01f),
+                  (unsigned long long)scan_hits_);
+        // Write the three signatures so a hit can be classified by someone who was not watching:
+        // a hit spark is a small bright patch, the defect we are chasing is the whole stage.
+        if (scan_hits_ <= 40) {
+          CreateDirectoryA("flicker", nullptr);
+          const float* trio[3] = {a, b, c};
+          for (int k = 0; k < 3; ++k) {
+            char path[160];
+            snprintf(path, sizeof path, "flicker/hit%03llu_%u_%s.ppm", (unsigned long long)scan_hits_,
+                     frames_presented_ - 1, k == 0 ? "1prev" : k == 1 ? "2BAD" : "3next");
+            if (FILE* f = fopen(path, "wb")) {
+              fprintf(f, "P6\n%d %d\n255\n", kScanGrid, kScanGrid);
+              for (int i = 0; i < kScanGrid * kScanGrid; ++i) {
+                const float value = trio[k][i];
+                const unsigned char v = (unsigned char)(value < 0 ? 0 : value > 255 ? 255 : value);
+                const unsigned char rgb[3] = {v, v, v};
+                fwrite(rgb, 1, 3, f);
+              }
+              fclose(f);
+            }
+          }
+        }
+      }
+    }
+  }
+  bind_efb_targets();
 }
 
 void D3D11Backend::write_capture(const std::string& path, uint64_t sequence) {
@@ -1381,7 +1502,9 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       if (cmd.index < frame.draws.size() && plans_[cmd.index].valid) execute_draw(frame.draws[cmd.index], plans_[cmd.index]);
     } else {
       const EfbCopy& c = frame.copies[cmd.index];
-      if (c.to_xfb) { if (!skip_present_) { present_efb(c); presented = true; } }
+      // The EFB holds the finished image at the copy to the display buffer, which is the moment the
+      // frame is what the player will see and before anything clears it for the next one.
+      if (c.to_xfb) { if (!skip_present_) { if (opts_.flicker_scan) flicker_scan(); present_efb(c); presented = true; } }
       else execute_copy(c);
       if (c.clear) clear_efb(c);
     }
@@ -1506,10 +1629,12 @@ std::string d3d11_profile_line() {
   char buf[512];
   double n = (double)std::max<uint64_t>(1, g_prof_draws);
   double l = (double)std::max<uint64_t>(1, g_pipe_lookups);
-  snprintf(buf, sizeof buf, "%llu draws: plan+constants %.2f, upload %.2f, pipeline %.2f, bind %.2f, draw %.2f us/draw | pipeline cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu, draws on the fallback pipeline while compiling %llu",
+  snprintf(buf, sizeof buf, "%llu draws: plan+constants %.2f, upload %.2f, pipeline %.2f, bind %.2f, draw %.2f us/draw | pipeline cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu, draws on the fallback pipeline while compiling %llu | EFB-copy textures: found %llu, MISSED %llu",
            (unsigned long long)g_prof_draws, 1e6 * g_prof[0] / n, 1e6 * g_prof[1] / n, 1e6 * g_prof[3] / n, 1e6 * g_prof[4] / n, 1e6 * g_prof[5] / n,
-           (unsigned long long)g_pipe_hits, (unsigned long long)g_pipe_lookups, 1e6 * g_prof[6] / l, 1e6 * g_prof[7] / l, (unsigned long long)g_pipe_creates, (unsigned long long)g_pipe_skips);
+           (unsigned long long)g_pipe_hits, (unsigned long long)g_pipe_lookups, 1e6 * g_prof[6] / l, 1e6 * g_prof[7] / l, (unsigned long long)g_pipe_creates, (unsigned long long)g_pipe_skips,
+           (unsigned long long)g_efb_tex_hit, (unsigned long long)g_efb_tex_miss);
   std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pipe_hits = g_pipe_lookups = g_pipe_creates = g_pipe_skips = 0;
+  g_efb_tex_hit = g_efb_tex_miss = 0;
   return buf;
 }
 

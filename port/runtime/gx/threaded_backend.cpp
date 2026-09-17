@@ -37,7 +37,7 @@ class ThreadedBackend final : public Backend {
     int cur = -1;                // index of the current frame in `frames`, -1 until the first arrives
     bool have_prev = false;
     uint64_t rendered_sequence = 0, submitted = 0, presented = 0, burst_logged = 0;
-    bool subframes = options_.subframe != SubFrameMode::Off;
+    bool subframes = options_.subframe != SubFrameMode::Off && subframe_useful(options_.fps_cap);
     bool authored = options_.subframe == SubFrameMode::Authored || options_.subframe == SubFrameMode::AuthoredInterpolate;
     bool interpolate = options_.subframe == SubFrameMode::Interpolate || options_.subframe == SubFrameMode::AuthoredInterpolate;
     double cap_period = options_.fps_cap > 0 ? 1.0 / options_.fps_cap : 0.0;
@@ -71,7 +71,7 @@ class ThreadedBackend final : public Backend {
       if (host::window_closed()) { queue.finish(true); break; }
       {
         // The PC settings panel can switch sub-frame animation at run time.
-        bool now_sub = live_options.subframe != SubFrameMode::Off;
+        bool now_sub = live_options.subframe != SubFrameMode::Off && subframe_useful(live_options.fps_cap);
         if (now_sub != subframes) {
           subframes = now_sub;
           if (subframes && cur >= 0) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);

@@ -1,7 +1,15 @@
-# Regression fixture: prepared offline card; Mario/Luigi on Fountain of Dreams.
-# Same entry as graphics_yoshi.txt; the stage cursor stops on the top row (Fountain of Dreams)
-# instead of stepping down into the Yoshi's Story tile. Covers the water reflection and
-# fountain effects, which render through EFB copies.
+# BROKEN: this lands on Onett, not Fountain of Dreams. Verified 2026-09-16 by reading the stage id
+# out of the replay it writes (id 9). Do not use it as a Fountain of Dreams fixture and do not trust
+# a result taken with it.
+#
+# The Vs stage select is an analog pointer, not a grid cursor, so the two-frame stick taps below
+# move it nowhere and the A press takes whatever tile it started on. Holding a direction to an edge
+# does work and gives a repeatable anchor: up-left lands on Icicle Mountain, up-right on Flat Zone.
+# Whoever fixes this should anchor to a corner and step from there, then confirm the stage from the
+# replay rather than from the tile they think they picked.
+#
+# graphics_yoshi.txt and graphics_yoshi_move.txt were checked the same way and do reach Yoshi's
+# Story, so only this fixture is wrong.
 300 B
 310
 380 B
