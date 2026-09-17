@@ -13,6 +13,7 @@
 #include "host.h"
 #include "window.h"
 #include "input_bindings.h"
+#include "hid_pad.h"
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "xinput9_1_0.lib")
@@ -229,6 +230,7 @@ std::array<PadBindings, 4> g_ds4_bindings = {};
 // binding read out of port-settings.ini (which is loaded before the window exists) is not written
 // over by the defaults a moment later.
 std::array<PadBindings, 4> g_swpro_bindings = default_swpro_bindings();
+std::array<HidBindings, 4> g_hid_bindings = default_hid_bindings();
 std::array<PortSource, 4> g_port_sources = default_port_sources();
 // The last state the game actually read, for the on-screen controller overlay. Taken here rather
 // than polled again by the renderer, so the overlay shows what the game saw and polling the devices
@@ -243,6 +245,7 @@ unsigned short g_capture_pad_baseline[4]{};
 PadState g_capture_gc_baseline[4]{};
 uint16_t g_capture_ds4_baseline[4]{};
 uint16_t g_capture_swpro_baseline[4]{};
+uint32_t g_capture_hid_baseline[4]{};
 HANDLE g_ds4_devices[4]{};
 uint16_t g_ds4_buttons[4]{};
 PadState g_ds4_pads[4]{};
@@ -325,8 +328,12 @@ void raw_input(HRAWINPUT raw) {
   RAWINPUT* input = reinterpret_cast<RAWINPUT*>(bytes.data());
   if (input->header.dwType != RIM_TYPEHID) return;
   if (ds4_device(input->header.hDevice)) { ds4_report(input); return; }
-  switchpro_raw_input(input->header.hDevice, input->data.hid.bRawData,
-                      input->data.hid.dwSizeHid, input->data.hid.dwCount);
+  if (switchpro_raw_input(input->header.hDevice, input->data.hid.bRawData,
+                          input->data.hid.dwSizeHid, input->data.hid.dwCount)) return;
+  // Anything else that calls itself a gamepad: a B0XX, a Frame1, a vJoy feeder, a third-party pad.
+  // It goes last so a device with a reader of its own is never taken by the generic path.
+  hidpad_raw_input(input->header.hDevice, input->data.hid.bRawData,
+                   input->data.hid.dwSizeHid, input->data.hid.dwCount);
 }
 }  // namespace
 
@@ -350,6 +357,12 @@ void input_begin_capture() {
     uint16_t buttons[4]{};
     switchpro_poll(swpro, buttons);
     for (int idx = 0; idx < 4; ++idx) g_capture_swpro_baseline[idx] = buttons[idx];
+  }
+  {
+    PadState hid[4]; for (auto& s : hid) { s = {}; s.err = -1; }
+    uint32_t buttons[4]{};
+    hidpad_poll(hid, buttons);
+    for (int idx = 0; idx < 4; ++idx) g_capture_hid_baseline[idx] = buttons[idx];
   }
   g_capturing.store(true);
 }
@@ -412,6 +425,21 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
       }
     }
   }
+  {
+    PadState hid[4]; for (auto& s : hid) { s = {}; s.err = -1; }
+    uint32_t buttons[4]{};
+    uint32_t mask = hidpad_poll(hid, buttons);
+    for (int idx = 0; idx < 4; ++idx) {
+      if (!(mask & (1u << idx))) continue;
+      // Bit 31 is left out: the capture result travels as an int, and a mask with the top bit set
+      // would arrive negative. Thirty-one buttons is more than any box controller has.
+      uint32_t newly = buttons[idx] & ~g_capture_hid_baseline[idx] & 0x7FFFFFFFu;
+      if (newly) {
+        uint32_t lowest = newly & ~(newly - 1);
+        g_capturing.store(false); device = CaptureDevice::HidPad; value = (int)lowest; device_index = idx; return true;
+      }
+    }
+  }
   return false;
 }
 
@@ -431,6 +459,21 @@ static std::atomic<uint32_t> g_match_start_retrace{0};
 // remappable table, and returns the same thing as BindAction bit indices for the settings panel.
 // The L/R shoulders are digital on this pad, so a press bottoms the analog trigger out the way a
 // digital press does on hardware: Melee shields from the trigger value, not from the L/R bit.
+uint16_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad) {
+  uint16_t actions = 0;
+  for (int i = 0; i < (int)BindAction::Count; ++i) {
+    if (!(g_hid_bindings[idx].mask[i] & buttons)) continue;
+    pad.button |= kActionPadBit[i];
+    actions |= (uint16_t)(1u << i);
+  }
+  // A box has no analog triggers: its L and R are buttons, and the game needs a full press to see
+  // a shield. Light shield on such a device is a firmware feature, reported on an analog axis when
+  // the device has one, which the axis path above has already put into trig_l/trig_r.
+  if (pad.button & kActionPadBit[(size_t)BindAction::L] && !pad.trig_l) pad.trig_l = 255;
+  if (pad.button & kActionPadBit[(size_t)BindAction::R] && !pad.trig_r) pad.trig_r = 255;
+  return actions;
+}
+
 uint16_t swpro_apply_bindings(int idx, uint16_t buttons, PadState& pad) {
   uint16_t actions = 0;
   for (int i = 0; i < (int)BindAction::Count; ++i) {
@@ -607,6 +650,20 @@ void input_poll(PadState out[4]) {
     }
   }
 
+  PadState hid[4];
+  bool hid_connected[4]{};
+  {
+    for (auto& s : hid) { s = {}; s.err = -1; }
+    uint32_t buttons[4]{};
+    uint32_t hid_mask = hidpad_poll(hid, buttons);
+    for (int idx = 0; idx < 4; ++idx) {
+      if (!(hid_mask & (1u << idx))) { hid[idx] = {}; hid[idx].err = -1; continue; }
+      hid_connected[idx] = true;
+      debug.hid_connected[idx] = true;
+      debug.hid_actions[idx] = hid_apply_bindings(idx, buttons[idx], hid[idx]);
+    }
+  }
+
   for (int idx = 0; idx < 4; ++idx)
     if (gc_mask & (1u << idx))
       for (int i = 0; i < (int)BindAction::Count; ++i)
@@ -626,6 +683,7 @@ void input_poll(PadState out[4]) {
     for (int i = 0; i < 4 && !pad; ++i) if (xin_connected[i] && !routed(DeviceKind::XInputPad, i)) pad = &xin[i];
     for (int i = 0; i < 4 && !pad; ++i) if (ds4_connected[i] && !routed(DeviceKind::DS4Pad, i)) pad = &ds4[i];
     for (int i = 0; i < 4 && !pad; ++i) if (swpro_connected[i] && !routed(DeviceKind::SwitchPro, i)) pad = &swpro[i];
+    for (int i = 0; i < 4 && !pad; ++i) if (hid_connected[i] && !routed(DeviceKind::HidPad, i)) pad = &hid[i];
     // The keyboard keeps working; the pad takes over whenever it is actually being used.
     if (pad && (pad->button || pad->stick_x || pad->stick_y || pad->sub_x || pad->sub_y ||
                 pad->trig_l > 20 || pad->trig_r > 20)) result = *pad;
@@ -643,6 +701,9 @@ void input_poll(PadState out[4]) {
         break;
       case DeviceKind::SwitchPro:
         if (src.index >= 0 && src.index < 4 && swpro_connected[src.index]) out[port] = swpro[src.index];
+        break;
+      case DeviceKind::HidPad:
+        if (src.index >= 0 && src.index < 4 && hid_connected[src.index]) out[port] = hid[src.index];
         break;
       case DeviceKind::GCAdapter:
         if (src.index >= 0 && src.index < 4 && (gc_mask & (1u << src.index))) out[port] = gc[src.index];

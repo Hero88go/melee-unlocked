@@ -44,6 +44,7 @@
 #include "exi_slippi.h"
 #include "gx_shader.h"
 #include "gx_texture.h"
+#include "texture_pack.h"
 #include "host.h"
 #include "window.h"
 #ifdef GX_PC_SETTINGS
@@ -235,6 +236,7 @@ class D3D11Backend : public Backend {
     starting_ = false;
   }
   ~D3D11Backend() override {
+    texpack::report();   // last word on how many of the pack's textures the game actually drew
     render_backend_unregister(this);
 #ifdef GX_PC_SETTINGS
     settings_ui_.reset();
@@ -421,6 +423,12 @@ class D3D11Backend : public Backend {
   HANDLE present_timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* high resolution */, TIMER_ALL_ACCESS);
   double present_deadline_ = 0, present_wait_ = 0;
   uint64_t frame_counter_ = 0;
+  // Replacement textures are decoded PNGs, far bigger than the originals, so they get a budget
+  // rather than being allowed to fill video memory. Same figures as the D3D12 backend.
+  // Replacement textures are decoded PNGs and far bigger than the originals, so they get a budget
+  // rather than being allowed to fill video memory. Same figures as the D3D12 backend.
+  uint64_t replacement_bytes_ = 0, replacement_budget_ = 512ull * 1024 * 1024;
+  uint64_t texpack_report_frame_ = ~0ull;
   uint32_t frames_presented_ = 0;
   bool capture_pending_ = false;
   std::string capture_pending_path_;
@@ -970,6 +978,22 @@ TextureEntry* D3D11Backend::get_texture(const TextureRef& t) {
   auto it = textures_.find(key);
   if (it != textures_.end()) { it->second.last_used = frame_counter_; return &it->second; }
 
+  // Custom texture pack, exactly as the D3D12 backend does it: Dolphin's name for this texture,
+  // then its PNG if a pack has one. Both happen once per unique texture on this cache-miss path,
+  // never per draw, and neither runs with the setting off. This was missing entirely until 0.3.3,
+  // so packs were scanned, listed and reported as active on D3D11 while every draw still used the
+  // game's own texture.
+  std::string pack_name;
+  std::unique_ptr<texpack::Replacement> replacement;
+  if (texpack::enabled() || texpack::dumping()) {
+    pack_name = texpack::base_name(t, *t.data);
+    if (texpack::enabled()) {
+      replacement = texpack::load(pack_name, replacement_bytes_ < replacement_budget_
+                                                 ? replacement_budget_ - replacement_bytes_ : 0);
+      texpack::note_lookup(replacement != nullptr);
+    }
+  }
+
   // Decode every level into one scratch block so the texture can be created with its full
   // contents (paletted formats decode through the snapshot's TLUT copy, as on D3D12).
   uint32_t levels = std::max(1u, t.mip_levels);
@@ -978,16 +1002,29 @@ TextureEntry* D3D11Backend::get_texture(const TextureRef& t) {
   std::array<size_t, 16> offsets{};
   std::array<uint32_t, 16> widths{}, heights{};
   const uint8_t* level_src = t.data->image.data();
-  uint32_t lw = t.width, lh = t.height, actual = 0;
+  if (replacement) levels = std::max(1u, replacement->levels);
+  uint32_t lw = replacement ? replacement->width : t.width;
+  uint32_t lh = replacement ? replacement->height : t.height;
+  uint32_t actual = 0;
   for (uint32_t l = 0; l < levels && l < 16 && lw && lh; ++l) {
-    decode_texture(level_src, lw, lh, t.format, t.data->palette.data(), t.tlut_format, decode_scratch_);
+    const uint8_t* rgba;
+    if (replacement) {
+      // A replacement arrives already RGBA8, so it skips the GX decoder.
+      rgba = replacement->pixels.data() + replacement->level_offset[l];
+      lw = replacement->level_width[l]; lh = replacement->level_height[l];
+    } else {
+      decode_texture(level_src, lw, lh, t.format, t.data->palette.data(), t.tlut_format, decode_scratch_);
+      rgba = decode_scratch_.data();
+      if (texpack::dumping()) texpack::dump_level(pack_name, l, rgba, lw, lh);
+    }
     offsets[l] = image.size();
     widths[l] = lw; heights[l] = lh;
-    image.insert(image.end(), decode_scratch_.begin(), decode_scratch_.begin() + (size_t)lw * lh * 4);
-    level_src += texture_level_bytes(lw, lh, t.format);
+    image.insert(image.end(), rgba, rgba + (size_t)lw * lh * 4);
+    if (!replacement) level_src += texture_level_bytes(lw, lh, t.format);
     lw = std::max(1u, lw / 2); lh = std::max(1u, lh / 2);
     ++actual;
   }
+  if (replacement) replacement_bytes_ += image.size();
   if (!actual) return nullptr;
   for (uint32_t l = 0; l < actual; ++l) {
     initial[l].pSysMem = image.data() + offsets[l];
@@ -995,9 +1032,9 @@ TextureEntry* D3D11Backend::get_texture(const TextureRef& t) {
     initial[l].SysMemSlicePitch = widths[l] * heights[l] * 4;
   }
   TextureEntry e;
-  e.width = t.width; e.height = t.height; e.levels = actual; e.last_used = frame_counter_;
+  e.width = widths[0]; e.height = heights[0]; e.levels = actual; e.last_used = frame_counter_;
   D3D11_TEXTURE2D_DESC td{};
-  td.Width = t.width; td.Height = t.height; td.MipLevels = actual; td.ArraySize = 1;
+  td.Width = widths[0]; td.Height = heights[0]; td.MipLevels = actual; td.ArraySize = 1;
   td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
   td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
   if (FAILED(device_->CreateTexture2D(&td, initial.data(), &e.resource))) { host::log("d3d11: texture creation failed (%ux%u fmt %u)", t.width, t.height, t.format); return nullptr; }
@@ -1391,6 +1428,18 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (pick_scale() != scale_) { host::log("d3d11: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
   }
 #endif
+  // Switching packs on or off in the panel invalidates every cached texture, because each was
+  // built with or without its replacement. D3D11 holds its own references until the cache is
+  // cleared, so there is no explicit GPU wait to do here.
+  if (texpack::configure(opts_.custom_textures, opts_.dump_textures)) {
+    textures_.clear();
+    replacement_bytes_ = 0;
+    texpack_report_frame_ = frame_counter_ + 600;
+  }
+  if (texpack::enabled() && frame_counter_ >= texpack_report_frame_) {
+    texpack::report();
+    texpack_report_frame_ = frame_counter_ + 3600;
+  }
   if (host::window_take_fullscreen_toggle()) {   // Alt+Enter
     opts_.fullscreen = !opts_.fullscreen;
     host::window_set_fullscreen(opts_.fullscreen);
