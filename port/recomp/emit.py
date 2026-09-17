@@ -84,7 +84,13 @@ class Emitter:
             return "\n".join(out) + "\n"
         out.append("void %s(ppc::Context& __restrict c, uint8_t* __restrict m) {" % name)
         out.append("  ppc::enter(c, %s);" % hexs(func.addr))
-        observer = {"HSD_JObjAlloc": "AllocateJoint", "JObjRelease": "ReleaseJoint",
+        # JObjLoad as well as HSD_JObjAlloc: JObjLoadJointSub (jobj.c) creates a joint with
+        # HSD_JObjAlloc only when its descriptor names no class, and with hsdNew(info) when it does.
+        # Hooking the allocator alone therefore gave no identity to any joint built from a named
+        # class, which is how stage models describe animated scenery and moving platforms, so none of
+        # that geometry could ever be re-posed between simulation frames. JObjLoad runs for every
+        # joint from both branches.
+        observer = {"HSD_JObjAlloc": "AllocateJoint", "JObjLoad": "LoadJoint", "JObjRelease": "ReleaseJoint",
                     "HSD_JObjDisp": "DisplayJoint", "SetupRigidModelMtx": "RigidMatrix",
                     "SetupSharedVtxModelMtx": "OtherMatrix", "SetupEnvelopeModelMtx": "EnvelopeMatrix"}.get(func.name)
         if observer:
