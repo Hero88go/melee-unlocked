@@ -71,6 +71,11 @@ using Fn = void (*)(Context&, uint8_t*);
 
 // ---- runtime services implemented in ppc_runtime.cpp ----
 void call(Context& c, uint8_t* m, uint32_t addr);         // indirect call by guest address
+Fn lookup(uint32_t addr);                                 // the function that runs at this address
+// Puts a host function in front of the translated one at `addr` and returns what was there, so the
+// caller can still run the original. Every guest call reaches this table, so one swap covers the
+// whole game. Changes what the simulation computes: see the note in ppc_runtime.cpp.
+Fn set_hook(uint32_t addr, Fn fn);
 void interpret(Context& c, uint8_t* m, uint32_t addr);    // run RAM-resident code until it returns (interp.cpp)
 void interpreter_stats(uint64_t* calls, uint64_t* insns);
 // Counts the times a callee asked its caller to resume past the call instead of at it (a Gecko cave

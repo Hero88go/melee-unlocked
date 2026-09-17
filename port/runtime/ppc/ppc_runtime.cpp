@@ -34,6 +34,25 @@ Fn lookup(uint32_t addr) {
   return g_dispatch[off / 4];
 }
 
+// Replaces the function called at `addr` and hands back what was there, so a host implementation can
+// stand in front of a translated one and still call it. Every `bl` the recompiler emits goes through
+// ppc::call, which reads this table (emit.py), so a swap here is seen by the whole game.
+//
+// This is how a feature that has to change what the game decides gets built without regenerating
+// port/generated: the alternative is a two-way instruction baked in at translation time, which costs
+// a full rebuild of the guest library for every such feature and cannot be switched off afterwards.
+// A hook is not free of consequences, though: it changes what the simulation computes, so anything
+// built on it has to be held back online exactly as automatic L-cancel is.
+Fn set_hook(uint32_t addr, Fn fn) {
+  uint32_t off = addr - RAM_BASE;
+  // The table does not exist until init_dispatch has run. A setting restored at startup can reach
+  // this before the guest is ready, and indexing an empty vector here would be silent corruption.
+  if (g_dispatch.empty() || off >= RAM_SIZE || (addr & 3)) return nullptr;
+  Fn previous = g_dispatch[off / 4];
+  g_dispatch[off / 4] = fn;
+  return previous;
+}
+
 void call(Context& c, uint8_t* m, uint32_t addr) {
   Fn fn = lookup(addr);
   if (++c.call_depth > 20000) fatal(c, "guest call depth exceeded", addr);

@@ -341,6 +341,10 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
       else if (key == "performance") options.performance_overlay = value == "1";
+      // Diagnostic, off unless someone is hunting a one-frame glitch: see D3D12Options::flicker_scan.
+      // Settings-file only rather than a control in the panel, because it costs a readback on every
+      // presented frame and nobody should switch it on by browsing.
+      else if (key == "flickerscan") options.flicker_scan = value == "1";
       else if (key == "settingshint") options.settings_hint = value != "0";
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
@@ -722,6 +726,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::Combo("Sub-frame animation", &sf, subframe_modes, 3)) { options.subframe = sf == 0 ? SubFrameMode::Off : sf == 2 ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored; changed = true; }
     if (sf == 1) ImGui::TextWrapped("Samples supported animation beyond the latest pose. Sudden stops can require correction.");
     if (sf == 2) ImGui::TextWrapped("Samples between completed poses. This adds up to one simulation tick of visual delay; unsupported motion may hold.");
+    // Say it rather than quietly ignoring the setting: a player who picked a mode and sees no
+    // difference should be told why, and this pairing is what several stage glitch reports were.
+    if (sf != 0 && !subframe_useful(options.fps_cap))
+      ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                         "Not in use: the frame rate is capped at %.0f. There is one frame per tick "
+                         "either way, so this would cost delay and accuracy and buy no smoothness. "
+                         "Raise the frame rate above 60, or leave this off.", options.fps_cap);
     // The "Visual effects" control was removed: the filter it drove deleted the stage select
     // pointer and menu text, and nothing in a draw separates a hit spark from a cursor.
 
@@ -1111,6 +1122,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       // One line per pack that is switched off. Without this the loader parsed "texpackoff" but
       // nothing ever wrote it, so switching a pack off lasted only until the next launch. The
       // loader reads the name to end of line, so a name with spaces in it round-trips.
+      // The texture settings themselves. The loader has always parsed these three, but nothing ever
+      // wrote them, so "Use texture packs" came back unchecked at every launch and a player who had
+      // set it up correctly was told their packs were off. Same omission that hid texpackoff.
+      file << "\ncustomtextures " << (options.custom_textures ? 1 : 0)
+           << "\ndumptextures " << (options.dump_textures ? 1 : 0)
+           << "\nprefetchtextures " << (options.prefetch_textures ? 1 : 0);
       file << texpack_disabled_lines();
       for (int i = 0; i < (int)host::BindAction::Count; ++i)
         file << "\nkey_" << kActionNames[i] << " " << host::g_key_bindings.vk[i];
@@ -1213,6 +1230,10 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     for (int i = 0; i < 4; ++i)
       if (mask & (1 << i)) draw_input_overlay(i, row++, lone, state.open, options.input_overlay_hide_border);
   }
+  // The overlays describe a running game: the controller display, the L-cancel readout and the
+  // frame time graph all report on a match. The standalone settings window has no game behind it,
+  // so they would sit there reporting on the settings window itself and covering the panel.
+  if (state.fill_window) { host::window_input_capture(state.open); return changed; }
   draw_lcancel_overlays();
   if (options.performance_overlay) {
     // Draggable, and it remembers where it was put: pinned at the top left with no input it covered

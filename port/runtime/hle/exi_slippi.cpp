@@ -287,6 +287,14 @@ bool widescreen() { return gecko::option_widescreen; }
 void poll_options() {
   int r = g_widescreen_request.exchange(-1);
   if (r >= 0 && (r != 0) != gecko::option_widescreen) apply_widescreen(r != 0);
+  // One line per game mode change. Melee routes every mode through the state machine at 0x80479D30
+  // (gm_1A3F.c) whose first byte is routingInfo::curr_mode. Logging it costs one read per retrace
+  // and answers "what were you doing when that happened" on a report without having to ask.
+  static uint8_t last_mode = 0xFF;
+  if (const uint8_t now = host::rd8(0x80479D30); now != last_mode) {
+    last_mode = now;
+    host::log("game mode: 0x%02X", now);
+  }
 }
 void shutdown() { if (g_file) { uint8_t empty[1]; write_to_file(empty, 0, "close"); } online::shutdown(); }
 uint64_t replays_written() { return g_replays_written; }
