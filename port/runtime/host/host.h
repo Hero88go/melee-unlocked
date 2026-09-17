@@ -29,7 +29,8 @@ struct Options {
 };
 
 extern Options options;
-extern uint8_t* ram;             // 24 MB guest RAM
+extern uint8_t* ram;             // guest RAM (MEM1)
+extern uint32_t ram_size;        // its size in bytes: 24 MB, the console's, unless a build gives the game more
 extern uint8_t* aram;            // 16 MB audio RAM (host side)
 extern ppc::Context* cpu;
 

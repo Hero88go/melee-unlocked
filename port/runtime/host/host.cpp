@@ -34,6 +34,7 @@ namespace host {
 
 Options options;
 uint8_t* ram = nullptr;
+uint32_t ram_size = ppc::RAM_SIZE;
 uint8_t* aram = nullptr;
 ppc::Context* cpu = nullptr;
 
@@ -123,7 +124,7 @@ const char* symbol_name(uint32_t addr) {
 // ---------------- memory ----------------
 uint8_t* ptr(uint32_t addr, uint32_t bytes) {
   uint32_t off = addr & 0x3FFFFFFFu;
-  if (!valid_range(off, bytes, ppc::RAM_SIZE)) die("host access outside RAM: %08X+%X", addr, bytes);
+  if (!valid_range(off, bytes, ram_size)) die("host access outside RAM: %08X+%X", addr, bytes);
   return ram + off;
 }
 uint32_t rd32(uint32_t a) { uint32_t v; std::memcpy(&v, ptr(a, 4), 4); return _byteswap_ulong(v); }

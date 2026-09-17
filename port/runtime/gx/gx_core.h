@@ -138,6 +138,7 @@ struct Backend {
 
 void init(Backend* backend);
 void write_fifo(uint32_t value, int bytes);   // write-gather pipe byte stream
+void write_fifo_bytes(const uint8_t* data, size_t bytes);   // the same stream in bulk, big-endian as the pipe carries it
 void stats(uint64_t* commands, uint64_t* draws, uint64_t* vertices, uint32_t* efb_copies);
 const uint8_t* tmem();
 
