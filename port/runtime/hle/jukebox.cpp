@@ -130,11 +130,11 @@ void set_melee_volume(uint8_t volume) { g_melee_volume.store(volume); }
 void set_user_volume(int percent) { g_user_volume.store(std::clamp(percent, 0, 100)); }
 int user_volume() { return g_user_volume.load(); }
 
-void mix(int16_t* out, size_t frames) {
+void mix(int16_t* out, size_t frames, double master) {
   std::shared_ptr<Song> song;
   { std::lock_guard<std::mutex> lk(g_mutex); song = g_song; }
   if (!song || song->samples.empty()) return;
-  double gain = (g_melee_volume.load() / 254.0) * (g_user_volume.load() / 100.0) * VOLUME_REDUCTION;
+  double gain = (g_melee_volume.load() / 254.0) * (g_user_volume.load() / 100.0) * VOLUME_REDUCTION * master;
   if (gain <= 0.0) return;
   size_t total = song->samples.size() / 2;
   for (size_t i = 0; i < frames; ++i) {
