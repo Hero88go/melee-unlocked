@@ -41,3 +41,6 @@ build-*/
 
 # Cygwin/MSYS crash dumps, written into whatever directory the shell was in
 *.stackdump
+
+# Vanilla (no Gecko) translated game, the reference for the native build
+/port/generated_vanilla/
