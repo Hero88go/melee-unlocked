@@ -25,6 +25,9 @@ struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, c
   // objects are held; this says how many are CHANGING between held and re-posed, which is what an
   // object flashing actually is: a steady hold is invisible, alternating is not.
   uint32_t pair_flips = 0;
+  // Draws whose re-posed or carried matrices landed implausibly far from where they were, and were
+  // held instead. Any non-zero value is geometry that would have been drawn in the wrong place.
+  uint32_t insane = 0;
 };
 
 class SubFrameSolver {
