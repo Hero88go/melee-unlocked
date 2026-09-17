@@ -16,6 +16,9 @@
 #include "texture_pack.h"
 
 #include <algorithm>
+#include <thread>
+#include <shellapi.h>
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -336,24 +339,22 @@ bool decode_png(const std::string& path, std::vector<uint8_t>& out, uint32_t* wi
 bool enabled() { return g.on; }
 bool dumping() { return g.dump; }
 
+// Scanning is separate from replacing. A player who has a pack installed should see it listed
+// without having to switch anything on first: the index is filenames only, and building it is a
+// directory walk, not the expensive part. Decoding the PNGs is what costs, and that still happens
+// only when replacement is on.
+void refresh_packs() {
+  if (!g.index.empty() || !g.packs.empty()) return;   // already scanned this run
+  build_index();
+}
+
 bool configure(bool on, bool dump) {
   if (on == g.on && dump == g.dump) return false;
   const bool was_on = g.on;
   if (was_on && !on) report();   // last word on what the pack did before its counters are dropped
   g.on = on;
   g.dump = dump;
-  if (!on) {
-    // Off means off: drop the index and never look at the file system again.
-    g.index.clear();
-    g.index.rehash(0);
-    g.files_indexed = g.dds_skipped = g.legacy_skipped = g.material_skipped = g.other_skipped = 0;
-    g.lookups = g.matched = g.decoded = g.decode_failed = g.mips_ignored = 0;
-    g.reported_budget = false;
-    g.dumped.clear();
-    g.root.clear();
-  } else if (!was_on) {
-    build_index();
-  }
+  if (on && g.index.empty()) build_index();
   if (dump) {
     g.dump_root = exe_directory() / "Dump" / "Textures" / "GALE01";
     std::error_code ec;
@@ -451,6 +452,56 @@ void set_disabled_packs(std::vector<std::string> names) {
   for (auto& p : g.packs) p.enabled = pack_enabled_default(p.name);
 }
 
+
+
+// Prefetch runs on its own thread: the decode is pure CPU work on files, touches no device object,
+// and the only thing it shares is the cache below, so the game keeps booting while it works.
+std::thread g_prefetch;
+std::atomic<bool> g_prefetching{false};
+std::atomic<uint64_t> g_prefetch_done{0}, g_prefetch_total{0};
+
+
+void open_packs_folder() {
+  const std::filesystem::path folder = exe_directory() / "TexturePacks";
+  std::error_code ec;
+  std::filesystem::create_directories(folder, ec);
+  // A pack is a folder of PNGs and can be gigabytes; copying one into place would duplicate it for
+  // no reason. Opening the folder lets the player move or link their own copy where it belongs.
+  ShellExecuteW(nullptr, L"open", folder.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  g.packs.clear();
+  g.index.clear();
+  build_index();   // pick up anything already there, so the list is right the moment it opens
+}
+
+void prefetch_begin() {
+  if (g_prefetching.load(std::memory_order_relaxed)) return;
+  refresh_packs();
+  if (!g.on || g.index.empty()) return;
+  if (g_prefetch.joinable()) g_prefetch.join();
+  g_prefetch_done.store(0, std::memory_order_relaxed);
+  g_prefetch_total.store(g.index.size(), std::memory_order_relaxed);
+  g_prefetching.store(true, std::memory_order_release);
+  g_prefetch = std::thread([] {
+    std::vector<std::string> names;
+    names.reserve(g.index.size());
+    for (const auto& kv : g.index) names.push_back(kv.first);
+    for (const auto& name : names) {
+      if (!g.on) break;   // switched off mid-run: stop rather than finish work nobody wants
+      load(name, ~0ull);  // decoded into the cache; the draw path then finds it ready
+      g_prefetch_done.fetch_add(1, std::memory_order_relaxed);
+    }
+    host::log("textures: prefetched %llu of %llu replacements",
+              (unsigned long long)g_prefetch_done.load(), (unsigned long long)g_prefetch_total.load());
+    g_prefetching.store(false, std::memory_order_release);
+  });
+}
+
+bool prefetching() { return g_prefetching.load(std::memory_order_relaxed); }
+
+void prefetch_progress(uint64_t* done, uint64_t* total) {
+  if (done) *done = g_prefetch_done.load(std::memory_order_relaxed);
+  if (total) *total = g_prefetch_total.load(std::memory_order_relaxed);
+}
 
 void note_lookup(bool was_matched) {
   ++g.lookups;

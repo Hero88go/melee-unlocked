@@ -44,6 +44,12 @@ struct PackInfo {
   bool enabled = true;
   uint64_t files = 0;   // usable replacements this pack contributes
 };
+// Scans for installed packs without turning replacement on, so the list can be shown to someone
+// who has not enabled anything yet. Cheap: filenames only, no PNG is decoded.
+void refresh_packs();
+// Creates TexturePacks if it is missing and shows it in Explorer, so "+ Add" means "here is where
+// they go" rather than a file dialog that copies gigabytes of PNGs to a second place on disk.
+void open_packs_folder();
 std::vector<PackInfo> packs();
 // Switching a pack changes what the next texture lookup returns; it needs no rescan. Returns true
 // when the state changed, so the caller can drop textures it has already uploaded.
@@ -52,6 +58,15 @@ bool set_pack_enabled(const std::string& name, bool enabled);
 // disabled set so a pack installed later is on by default.
 std::vector<std::string> disabled_packs();
 void set_disabled_packs(std::vector<std::string> names);
+
+// Prefetch: decode every replacement up front instead of on the first draw that needs it, which is
+// what Dolphin's "Prefetch Custom Textures" does. Without it a big pack pays for each texture the
+// first time it appears, which is a stutter spread through the first minutes of play; with it the
+// wait happens once, before the game starts, and the window title says so while it runs.
+void prefetch_begin();
+bool prefetching();
+// Decoded so far and the total to decode, for the progress the title bar shows.
+void prefetch_progress(uint64_t* done, uint64_t* total);
 
 // Counters behind the "installed a pack and nothing changed" report.
 void note_lookup(bool matched);

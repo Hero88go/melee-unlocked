@@ -79,6 +79,10 @@ struct D3D12Options {
   // players may differ. dump_textures writes what the game drew, with the names a pack must use.
   bool custom_textures = false;
   bool dump_textures = false;
+  // Decode every replacement when the game starts rather than the first time each texture appears,
+  // as Dolphin's "Prefetch Custom Textures" does. A large pack costs about half a minute once here
+  // instead of a stutter each time a new texture comes on screen.
+  bool prefetch_textures = true;
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
   int anisotropy = 16;        // texture anisotropic filtering 1..16
   int ssaa = 1;               // supersampling factor: 1 off, 2 = 4x SSAA (EFB rendered at 2x the chosen scale, box filtered)

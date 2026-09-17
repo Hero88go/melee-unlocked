@@ -18,6 +18,7 @@
 #include "gx_core.h"
 #include "gx_d3d12.h"
 #include "pc_settings.h"
+#include "texture_pack.h"
 #include "threaded_backend.h"
 #include "window.h"
 #include "lcancel.h"
@@ -455,6 +456,24 @@ static int melee_main(int argc, char** argv) {
     backend.reset(gx::create_render_backend(hwnd, gfx.window_w, gfx.window_h, gfx));
     host::window_set_resize_callback([renderer = backend.get()](int w, int h) { gx::render_resize(renderer, w, h); });
     host::g_has_window = true;
+  }
+  // Texture packs: scan before the game starts so the settings list is right, and decode up front
+  // when the player asked for that, with the wait shown in the title bar rather than as a silent
+  // half minute. Decoding runs on its own thread, so the game keeps booting while it works.
+  gx::texpack::configure(gfx.custom_textures, gfx.dump_textures);
+  gx::texpack::refresh_packs();
+  if (gfx.custom_textures && gfx.prefetch_textures) {
+    gx::texpack::prefetch_begin();
+    while (gx::texpack::prefetching()) {
+      uint64_t done = 0, total = 0;
+      gx::texpack::prefetch_progress(&done, &total);
+      wchar_t title[128];
+      swprintf_s(title, L"Melee Unlocked  |  loading textures %llu / %llu",
+                 (unsigned long long)done, (unsigned long long)total);
+      host::window_set_title(title);
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    host::window_set_title(L"Melee Unlocked");
   }
   gx::set_authored_capture(gfx.subframe == gx::SubFrameMode::Authored || gfx.subframe == gx::SubFrameMode::AuthoredInterpolate);
   gx::init(backend.get());

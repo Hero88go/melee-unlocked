@@ -311,6 +311,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "truewidescreen") options.true_widescreen = value == "1";
       else if (key == "customtextures") options.custom_textures = value == "1";
       else if (key == "dumptextures") options.dump_textures = value == "1";
+      else if (key == "prefetchtextures") options.prefetch_textures = value != "0";
       // One line per pack the player switched off; anything not listed is on, so a pack installed
       // later starts enabled rather than silently doing nothing.
       else if (key == "texpackoff") { auto off = texpack::disabled_packs(); off.push_back(value); texpack::set_disabled_packs(std::move(off)); }
@@ -418,6 +419,12 @@ void load_pc_settings(D3D12Options& options, int& volume) {
 
 // The ImGui context and the Win32 platform backend are the same for every renderer backend.
 std::atomic<bool> g_textures_dirty{false};
+// "texpackoff <name>" per pack the player switched off, written with the rest of the settings.
+std::string texpack_disabled_lines() {
+  std::string out;
+  for (const auto& name : texpack::disabled_packs()) out += std::string("\n") + "texpackoff " + name;
+  return out;
+}
 std::atomic<bool> g_fill_window{false};
 void settings_fill_window(bool on) { g_fill_window.store(on, std::memory_order_relaxed); }
 bool settings_textures_dirty() { return g_textures_dirty.exchange(false, std::memory_order_relaxed); }
@@ -694,50 +701,62 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // pointer and menu text, and nothing in a draw separates a hit spark from a cursor.
 
     // ---- Texture packs ----
-    // Dolphin-compatible: drop a pack into TexturePacks\ or Load\Textures\GALE01\ beside the game
-    // and every folder in there is listed here. Replacing a texture changes nothing the simulation
-    // computes, so this is safe online and two players may run different packs.
+    // The list is always here, whether or not replacement is switched on: someone who has already
+    // put a pack in the folder should see it without having to find a checkbox first. Scanning is
+    // filenames only, so showing it costs nothing; decoding the PNGs is the expensive part and
+    // still happens only when packs are on.
     ImGui::Separator();
-    if (ImGui::Checkbox("Custom texture packs", &options.custom_textures)) {
-      changed = true;
-      texpack::configure(options.custom_textures, options.dump_textures);
-      g_textures_dirty.store(true, std::memory_order_relaxed);   // drop what is already uploaded
-    }
-    if (options.custom_textures) {
-      ImGui::SameLine();
-      if (ImGui::Checkbox("Dump textures", &options.dump_textures)) {
-        changed = true;
+    texpack::refresh_packs();
+    const auto installed = texpack::packs();
+    ImGui::TextUnformatted("Texture packs");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Add")) texpack::open_packs_folder();
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Opens the TexturePacks folder. Put a pack folder in there and it appears in this list.");
+    if (installed.empty()) {
+      ImGui::TextDisabled("None installed. Press + Add and drop a pack folder in.");
+    } else {
+      changed |= ImGui::Checkbox("Use texture packs", &options.custom_textures);
+      if (ImGui::IsItemDeactivatedAfterEdit()) {
         texpack::configure(options.custom_textures, options.dump_textures);
+        g_textures_dirty.store(true, std::memory_order_relaxed);
       }
+      ImGui::SameLine();
+      changed |= ImGui::Checkbox("Load them at startup", &options.prefetch_textures);
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Writes every texture the game draws into Dump\Textures\GALE01, named the way a pack must name them.");
-      const auto installed = texpack::packs();
-      if (installed.empty()) {
-        ImGui::TextDisabled("No packs found. Put one in TexturePacks\<your pack>\ beside the game,");
-        ImGui::TextDisabled("or in Load\Textures\GALE01\ if you already have a Dolphin pack.");
-      } else {
-        for (const auto& pack : installed) {
-          // Green when the pack is on, red when it is off, so the state reads at a glance.
-          const ImVec4 on(0.35f, 0.78f, 0.45f, 1.0f), off(0.85f, 0.32f, 0.30f, 1.0f);
-          ImGui::PushStyleColor(ImGuiCol_Button, pack.enabled ? on : off);
-          ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pack.enabled ? on : off);
-          ImGui::PushStyleColor(ImGuiCol_ButtonActive, pack.enabled ? on : off);
-          ImGui::PushID(pack.name.c_str());
-          if (ImGui::Button(pack.enabled ? "ON " : "OFF", ImVec2(46, 0))) {
-            texpack::set_pack_enabled(pack.name, !pack.enabled);
-            g_textures_dirty.store(true, std::memory_order_relaxed);
-            changed = true;
-          }
-          ImGui::PopID();
-          ImGui::PopStyleColor(3);
-          ImGui::SameLine();
-          ImGui::Text("%s", pack.name.c_str());
-          ImGui::SameLine();
-          ImGui::TextDisabled("(%llu textures)", (unsigned long long)pack.files);
+        ImGui::SetTooltip("Decodes every replacement once when the game starts instead of the first time each\n"
+                          "texture appears. One wait up front rather than stutters through the first minutes.");
+      // A box per pack: green while it is on, red while it is off, so the state reads at a glance.
+      for (const auto& pack : installed) {
+        const ImVec4 on(0.25f, 0.62f, 0.35f, 1.0f), off(0.62f, 0.24f, 0.22f, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_Button, pack.enabled ? on : off);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pack.enabled ? on : off);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, pack.enabled ? on : off);
+        ImGui::PushID(pack.name.c_str());
+        if (ImGui::Button(pack.enabled ? "ON" : "OFF", ImVec2(44, 0))) {
+          texpack::set_pack_enabled(pack.name, !pack.enabled);
+          g_textures_dirty.store(true, std::memory_order_relaxed);
+          changed = true;
         }
+        ImGui::PopID();
+        ImGui::PopStyleColor(3);
+        ImGui::SameLine();
+        ImGui::Text("%s", pack.name.c_str());
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%llu textures)", (unsigned long long)pack.files);
       }
+      if (texpack::prefetching()) {
+        uint64_t done = 0, total = 0;
+        texpack::prefetch_progress(&done, &total);
+        ImGui::Text("Loading textures %llu / %llu", (unsigned long long)done, (unsigned long long)total);
+      }
+      // For pack authors, not for playing: writes what the game drew, named the way a pack must.
+      changed |= ImGui::Checkbox("Dump textures (for making a pack)", &options.dump_textures);
+      if (ImGui::IsItemDeactivatedAfterEdit()) texpack::configure(options.custom_textures, options.dump_textures);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Saves every texture the game draws into Dump\Textures\GALE01 with the exact\n"
+                          "filenames a replacement has to use. Only useful if you are making a pack.");
     }
-
 
     // ---- Low spec ----
     // One switch for every setting above that costs frames. Turning it on remembers what the player
