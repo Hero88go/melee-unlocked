@@ -400,7 +400,6 @@ class D3D11Backend : public Backend {
   double present_deadline_ = 0, present_wait_ = 0;
   uint64_t frame_counter_ = 0;
   uint32_t frames_presented_ = 0;
-  uint64_t copies_done_sequence_ = ~0ull;   // EFB copies run once per simulation frame, not per present
   bool capture_pending_ = false;
   std::string capture_pending_path_;
 };
@@ -1383,17 +1382,9 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     } else {
       const EfbCopy& c = frame.copies[cmd.index];
       if (c.to_xfb) { if (!skip_present_) { present_efb(c); presented = true; } }
-      // An EFB copy is a property of the simulation frame, not of the presented sub-frame. With a
-      // sub-frame mode on this command stream is replayed several times per simulation frame, and on
-      // a replay the EFB does not start from the state the first pass left: it holds whatever the
-      // previous present put there. Re-running the copy then captured the wrong picture into the
-      // texture that reflections and stage effects sample, which is the whole level looking wrong for
-      // a split second on Fountain of Dreams and Yoshi's Story. Run them once per simulation frame
-      // and let the replays sample what that produced: a reflection one sub-frame old is invisible.
-      else if (frame.sequence != copies_done_sequence_) execute_copy(c);
+      else execute_copy(c);
       if (c.clear) clear_efb(c);
     }
-  copies_done_sequence_ = frame.sequence;
   }
 
   present_wait_ = 0;
