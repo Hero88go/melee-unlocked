@@ -34,7 +34,7 @@ int run_settings_d3d12(gx::D3D12Options& options, void* hwnd);
 
 int run_settings_window(gx::D3D12Options& options) {
   gx::settings_fill_window(true);   // the panel IS this window, not a box floating inside it
-  void* hwnd = host::window_create(560, 660, L"Melee Unlocked settings", true);
+  void* hwnd = host::window_create(620, 700, L"Melee Unlocked settings", true);
   if (!hwnd) { host::log("settings: cannot create a window"); return 1; }
   // The backend the game is set to, so the panel runs on the renderer this machine will use. If it
   // cannot be created the other one still opens the settings rather than leaving no way in.
