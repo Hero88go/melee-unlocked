@@ -22,6 +22,12 @@ struct SettingsState {
   // panel is reachable mid-game.
   enum class Confirm { None, Restart, Quit };
   Confirm confirm = Confirm::None;
+  // A texture pack was switched on or off: the backend drops what it has uploaded so the next
+  // draw rebuilds it with (or without) its replacement.
+  bool textures_dirty = false;
+  // Standalone settings window: the panel fills the OS window instead of floating inside one, so
+  // what opens is the settings box itself rather than a box inside an empty frame.
+  bool fill_window = false;
 };
 
 // ImGui context plus the Win32 platform backend; the renderer backend is set up by the caller.

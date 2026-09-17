@@ -27,6 +27,7 @@
 #include "gx_shader.h"
 #include "gx_texture.h"
 #include "gx_streamline.h"
+#include "texture_pack.h"
 #include "host.h"
 #include "window.h"   // fullscreen toggling lives on the window, not the settings panel
 #ifdef GX_PC_SETTINGS
@@ -157,7 +158,7 @@ class D3D12Backend : public Backend {
     if (opts_.pc_settings) settings_ui_ = std::make_unique<PcSettingsUI>(hwnd, device_.Get(), queue_.Get(), opts_);
 #endif
   }
-  ~D3D12Backend() override { wait_gpu();
+  ~D3D12Backend() override { wait_gpu(); texpack::report();
 #ifdef GX_PC_SETTINGS
     settings_ui_.reset();
 #endif
@@ -196,6 +197,11 @@ class D3D12Backend : public Backend {
   bool widescreen_sent_ = false;
   int dlss_failures_ = 0;
   int anisotropy_applied_ = 0, ssaa_applied_ = 0;
+  // Custom texture packs. An HD pack can hold far more pixels than this machine has video memory,
+  // and textures_ is never evicted, so replacements stop once they have spent their share of the
+  // adapter and the rest of the game keeps its native textures instead of running the GPU dry.
+  uint64_t replacement_bytes_ = 0, replacement_budget_ = 512ull * 1024 * 1024;
+  uint64_t texpack_report_frame_ = ~0ull;
   int forced_scale_ = 0;
   ComPtr<ID3D12Resource> mvec_, dlss_out_;
   uint32_t dlss_out_w_ = 0, dlss_out_h_ = 0;
@@ -341,6 +347,10 @@ void D3D12Backend::init() {
     if (SUCCEEDED(streamline::d3d12_create_device(adapter.Get(), D3D_FEATURE_LEVEL_11_0, &IID_PPV_ARGS_Helper_IID<ID3D12Device>(), (void**)device_.GetAddressOf()))) {
       char name[128]; WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof name, nullptr, nullptr);
       host::log("d3d12: using %s", name);
+      // A quarter of the adapter, floor 256 MB, ceiling 2 GB: enough for a stage plus a full
+      // character pack at 4x, and small enough that the game never competes with itself for VRAM.
+      replacement_budget_ = std::clamp<uint64_t>((uint64_t)desc.DedicatedVideoMemory / 4,
+                                                 256ull * 1024 * 1024, 2048ull * 1024 * 1024);
       streamline::set_device(device_.Get());
       streamline::dlss_supported(adapter.Get());
       break;
@@ -893,37 +903,69 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
   auto it = textures_.find(key);
   if (it != textures_.end()) { it->second.last_used = frame_counter_; *w = it->second.width; *h = it->second.height; return it->second.resource.Get(); }
 
+  // Custom texture pack: Dolphin's name for this texture, then its PNG if the pack has one. Both
+  // the name and the lookup happen once per unique texture (this is the cache-miss path), never
+  // per draw. With the setting off neither runs and no file is opened.
+  std::string pack_name;
+  std::unique_ptr<texpack::Replacement> replacement;
+  if (texpack::enabled() || texpack::dumping()) {
+    pack_name = texpack::base_name(t, *t.data);
+    if (texpack::enabled()) {
+      replacement = texpack::load(pack_name, replacement_bytes_ < replacement_budget_
+                                                 ? replacement_budget_ - replacement_bytes_ : 0);
+      texpack::note_lookup(replacement != nullptr);
+      if (replacement && replacement->levels < t.mip_levels && t.mip_levels > 1)
+        host::log("textures: %s replaced at %ux%u with %u of %u mip levels", pack_name.c_str(),
+                  replacement->width, replacement->height, replacement->levels, t.mip_levels);
+    }
+  }
+
   TextureEntry e;
-  e.width = t.width; e.height = t.height; e.levels = t.mip_levels; e.last_used = frame_counter_;
+  const uint32_t res_w = replacement ? replacement->width : t.width;
+  const uint32_t res_h = replacement ? replacement->height : t.height;
+  const uint32_t res_levels = replacement ? replacement->levels : t.mip_levels;
+  e.width = res_w; e.height = res_h; e.levels = res_levels; e.last_used = frame_counter_;
   D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
   D3D12_RESOURCE_DESC rd{};
-  rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = t.width; rd.Height = t.height; rd.DepthOrArraySize = 1;
-  rd.MipLevels = (UINT16)t.mip_levels; rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
+  rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = res_w; rd.Height = res_h; rd.DepthOrArraySize = 1;
+  rd.MipLevels = (UINT16)res_levels; rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
   check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&e.resource)), "texture");
-  // Decode each level and copy through the upload ring.
-  lw = t.width; lh = t.height;
+  // Decode each level and copy through the upload ring. A replacement arrives already RGBA8, so it
+  // skips the GX decoder and is copied straight out of the decoded PNG.
+  lw = res_w; lh = res_h;
   const uint8_t* level_src = src;
-  for (uint32_t l = 0; l < t.mip_levels && lw && lh; ++l) {
-    decode_texture(level_src, lw, lh, t.format, t.data->palette.data(), t.tlut_format, decode_scratch_);
+  for (uint32_t l = 0; l < res_levels && lw && lh; ++l) {
+    const uint8_t* rgba;
+    if (replacement) {
+      rgba = replacement->pixels.data() + replacement->level_offset[l];
+      lw = replacement->level_width[l]; lh = replacement->level_height[l];
+    } else {
+      decode_texture(level_src, lw, lh, t.format, t.data->palette.data(), t.tlut_format, decode_scratch_);
+      rgba = decode_scratch_.data();
+      if (texpack::dumping()) texpack::dump_level(pack_name, l, rgba, lw, lh);
+    }
     uint32_t pitch = (lw * 4 + 255) & ~255u;
     uint8_t* cpu; D3D12_GPU_VIRTUAL_ADDRESS gpu;
     if (!upload_ring_.alloc((size_t)pitch * lh, 512, &cpu, &gpu)) { host::log("d3d12: upload ring full"); break; }
-    for (uint32_t y = 0; y < lh; ++y) memcpy(cpu + (size_t)y * pitch, &decode_scratch_[(size_t)y * lw * 4], lw * 4);
+    for (uint32_t y = 0; y < lh; ++y) memcpy(cpu + (size_t)y * pitch, rgba + (size_t)y * lw * 4, lw * 4);
     D3D12_TEXTURE_COPY_LOCATION dst{e.resource.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX}; dst.SubresourceIndex = l;
     D3D12_TEXTURE_COPY_LOCATION srcloc{upload_ring_.resource(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
     srcloc.PlacedFootprint.Offset = gpu - upload_ring_.resource()->GetGPUVirtualAddress();
     srcloc.PlacedFootprint.Footprint = {DXGI_FORMAT_R8G8B8A8_UNORM, lw, lh, 1, pitch};
     list_->CopyTextureRegion(&dst, 0, 0, 0, &srcloc, nullptr);
-    level_src += texture_level_bytes(lw, lh, t.format);
-    lw = std::max(1u, lw / 2); lh = std::max(1u, lh / 2);
+    if (!replacement) {
+      level_src += texture_level_bytes(lw, lh, t.format);
+      lw = std::max(1u, lw / 2); lh = std::max(1u, lh / 2);
+    }
   }
+  if (replacement) replacement_bytes_ += replacement->bytes();
   D3D12_RESOURCE_BARRIER b{};
   b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b.Transition = {e.resource.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
   list_->ResourceBarrier(1, &b);
   ID3D12Resource* res = e.resource.Get();
   textures_[key] = std::move(e);
-  *w = t.width; *h = t.height;
+  *w = res_w; *h = res_h;
   return res;
 }
 
@@ -1442,11 +1484,28 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     ~FloatEnvironment() { _mm_setcsr(saved); }
   } float_environment;
 #ifdef GX_PC_SETTINGS
+  // A texture pack was switched on or off in the panel: everything already uploaded was built with
+  // the old set, so drop it and let the next draw rebuild what it needs.
+  if (settings_ui_ && settings_textures_dirty()) { wait_gpu(); textures_.clear(); }
   if (settings_ui_ && settings_ui_->begin(opts_)) {
     host::window_set_fullscreen(opts_.fullscreen);
     if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
   }
 #endif
+  // Texture packs can be switched on and off while the game runs. Every texture already uploaded
+  // was built with (or without) its replacement, so the cache has to go; the GPU may still be
+  // reading those resources this frame, hence the wait.
+  if (texpack::configure(opts_.custom_textures, opts_.dump_textures)) {
+    wait_gpu();
+    textures_.clear();
+    texture_sets_.clear();
+    replacement_bytes_ = 0;
+    texpack_report_frame_ = frame_counter_ + 600;
+  }
+  if (texpack::enabled() && frame_counter_ >= texpack_report_frame_) {
+    texpack::report();
+    texpack_report_frame_ = frame_counter_ + 3600;
+  }
   if (host::window_take_fullscreen_toggle()) {   // Alt+Enter
     opts_.fullscreen = !opts_.fullscreen;
     host::window_set_fullscreen(opts_.fullscreen);

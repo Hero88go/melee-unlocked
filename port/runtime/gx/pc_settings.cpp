@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "pc_settings.h"
+#include "texture_pack.h"
+#include <atomic>
 #include "pc_settings_shared.h"
 #include "gx_backend.h"
 #include "jukebox.h"
@@ -307,6 +309,11 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "vsync") options.vsync = value == "1";
       else if (key == "widescreen") options.widescreen = value == "1";
       else if (key == "truewidescreen") options.true_widescreen = value == "1";
+      else if (key == "customtextures") options.custom_textures = value == "1";
+      else if (key == "dumptextures") options.dump_textures = value == "1";
+      // One line per pack the player switched off; anything not listed is on, so a pack installed
+      // later starts enabled rather than silently doing nothing.
+      else if (key == "texpackoff") { auto off = texpack::disabled_packs(); off.push_back(value); texpack::set_disabled_packs(std::move(off)); }
       else if (key == "aspect") { int a = std::stoi(value); if (a >= 0 && a <= 4) options.aspect = (AspectMode)a; }
       // "window <w>x<h>", or "window follow" for the old behaviour of using whatever size the
       // window has been dragged to.
@@ -410,6 +417,11 @@ void load_pc_settings(D3D12Options& options, int& volume) {
 }
 
 // The ImGui context and the Win32 platform backend are the same for every renderer backend.
+std::atomic<bool> g_textures_dirty{false};
+std::atomic<bool> g_fill_window{false};
+void settings_fill_window(bool on) { g_fill_window.store(on, std::memory_order_relaxed); }
+bool settings_textures_dirty() { return g_textures_dirty.exchange(false, std::memory_order_relaxed); }
+
 void settings_context_create(void* window, bool open_at_startup) {
   (void)open_at_startup;
   IMGUI_CHECKVERSION(); ImGui::CreateContext();
@@ -513,9 +525,20 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   if (state.open) {
     // Tall enough that the Low spec switch at the end of the settings section is on screen when the
     // panel is first opened, and still short enough for a 768-line laptop display.
-    ImGui::SetNextWindowSize(ImVec2(560, 620), ImGuiCond_FirstUseEver);
-    ImGui::Begin("PC settings", &state.open, ImGuiWindowFlags_NoCollapse);
-    ImGui::TextUnformatted("F1: settings    Escape: return to game");
+    state.fill_window = g_fill_window.load(std::memory_order_relaxed);
+    if (state.fill_window) {
+      // Standalone: no game behind it, so the panel is the window. No title bar of its own, no
+      // moving or resizing inside the frame, and the OS window supplies the chrome.
+      ImGui::SetNextWindowPos(ImVec2(0, 0));
+      ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+      ImGui::Begin("PC settings", nullptr,
+                   ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                   ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
+    } else {
+      ImGui::SetNextWindowSize(ImVec2(560, 620), ImGuiCond_FirstUseEver);
+      ImGui::Begin("PC settings", &state.open, ImGuiWindowFlags_NoCollapse);
+      ImGui::TextUnformatted("F1: settings    Escape: return to game");
+    }
     ImGui::Separator();
     // Grouped into tabs so the panel is scannable: it had grown to one long column where the
     // audio sliders sat between the sub-frame mode and the visual effects level. Save settings and
@@ -669,6 +692,52 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (sf == 2) ImGui::TextWrapped("Samples between completed poses. This adds up to one simulation tick of visual delay; unsupported motion may hold.");
     // The "Visual effects" control was removed: the filter it drove deleted the stage select
     // pointer and menu text, and nothing in a draw separates a hit spark from a cursor.
+
+    // ---- Texture packs ----
+    // Dolphin-compatible: drop a pack into TexturePacks\ or Load\Textures\GALE01\ beside the game
+    // and every folder in there is listed here. Replacing a texture changes nothing the simulation
+    // computes, so this is safe online and two players may run different packs.
+    ImGui::Separator();
+    if (ImGui::Checkbox("Custom texture packs", &options.custom_textures)) {
+      changed = true;
+      texpack::configure(options.custom_textures, options.dump_textures);
+      g_textures_dirty.store(true, std::memory_order_relaxed);   // drop what is already uploaded
+    }
+    if (options.custom_textures) {
+      ImGui::SameLine();
+      if (ImGui::Checkbox("Dump textures", &options.dump_textures)) {
+        changed = true;
+        texpack::configure(options.custom_textures, options.dump_textures);
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Writes every texture the game draws into Dump\Textures\GALE01, named the way a pack must name them.");
+      const auto installed = texpack::packs();
+      if (installed.empty()) {
+        ImGui::TextDisabled("No packs found. Put one in TexturePacks\<your pack>\ beside the game,");
+        ImGui::TextDisabled("or in Load\Textures\GALE01\ if you already have a Dolphin pack.");
+      } else {
+        for (const auto& pack : installed) {
+          // Green when the pack is on, red when it is off, so the state reads at a glance.
+          const ImVec4 on(0.35f, 0.78f, 0.45f, 1.0f), off(0.85f, 0.32f, 0.30f, 1.0f);
+          ImGui::PushStyleColor(ImGuiCol_Button, pack.enabled ? on : off);
+          ImGui::PushStyleColor(ImGuiCol_ButtonHovered, pack.enabled ? on : off);
+          ImGui::PushStyleColor(ImGuiCol_ButtonActive, pack.enabled ? on : off);
+          ImGui::PushID(pack.name.c_str());
+          if (ImGui::Button(pack.enabled ? "ON " : "OFF", ImVec2(46, 0))) {
+            texpack::set_pack_enabled(pack.name, !pack.enabled);
+            g_textures_dirty.store(true, std::memory_order_relaxed);
+            changed = true;
+          }
+          ImGui::PopID();
+          ImGui::PopStyleColor(3);
+          ImGui::SameLine();
+          ImGui::Text("%s", pack.name.c_str());
+          ImGui::SameLine();
+          ImGui::TextDisabled("(%llu textures)", (unsigned long long)pack.files);
+        }
+      }
+    }
+
 
     // ---- Low spec ----
     // One switch for every setting above that costs frames. Turning it on remembers what the player

@@ -9,6 +9,11 @@ struct ID3D11Device;
 struct ID3D11DeviceContext;
 namespace gx {
 void load_pc_settings(D3D12Options& options, int& volume);
+// True once after a texture pack is switched on or off, so the backend can drop the textures it
+// uploaded under the old set. Reading it clears it.
+bool settings_textures_dirty();
+// Standalone settings window: the panel fills the OS window instead of floating inside it.
+void settings_fill_window(bool on);
 class PcSettingsUI {
   struct Impl;
   std::unique_ptr<Impl> impl_;

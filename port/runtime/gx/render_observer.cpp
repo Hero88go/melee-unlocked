@@ -177,7 +177,7 @@ std::shared_ptr<const AuthoredPose> capture_chain(Reader& r, uint32_t address) {
     // evaluators, so retain exact captured draws. Constraints (HSD_RObj) no longer decline the chain
     // on sight: the list is captured below and the sampler declines only what it cannot evaluate.
     const uint32_t robj=r.word(address+0x80);
-    if(j.flags & (0x2E00u|0x1000u|0x20000u|0x600000u|0x3800000u)){
+    if(j.flags & (0x2E00u|0x1000u|0x600000u|0x3800000u)){   // 0x20000 (quaternion) is evaluated below
       // Record which feature it was, not just that there was one, so the next evaluator to write is
       // chosen by what real matches actually use. A joint can carry several; count each.
       auto note=[&](bool hit,CaptureFeature f){ if(hit) ++authored_stats().feature[f]; };
@@ -195,6 +195,9 @@ std::shared_ptr<const AuthoredPose> capture_chain(Reader& r, uint32_t address) {
       ++authored_stats().capture[4]; return {};
     }
     for(int k=0;k<3;++k) {j.rotation[k]=r.real(address+0x1C+k*4);j.scale[k]=r.real(address+0x2C+k*4);j.translation[k]=r.real(address+0x38+k*4);}
+    // The same four words are a Quaternion when JOBJ_USE_QUATERNION is set: w follows x, y, z.
+    j.quaternion = (j.flags & 0x20000u) != 0;
+    if(j.quaternion) for(int k=0;k<4;++k) j.quat[k]=r.real(address+0x1C+k*4);
     for(int k=0;k<12;++k)j.world[k]=r.real(address+0x44+k*4);
     // HSD_JObjSetupMatrixSub runs HSD_RObjUpdateAll after make_mtx, so the captured world matrix
     // above already has the constraint in it. Capturing the list (and its targets) is what lets the

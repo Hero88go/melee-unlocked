@@ -99,7 +99,7 @@ target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcry
 
 # WIN32: no console window when the game is double-clicked or started from the launcher. Command-line
 # use still works, because main() reattaches to a parent console when there is one (see app/main.cpp).
-add_executable(melee_port WIN32 app/main.cpp app/melee_unlocked.rc)
+add_executable(melee_port WIN32 app/main.cpp app/settings_window.cpp app/melee_unlocked.rc)
 add_executable(port_mm_probe tests/mm_probe.cpp)
 target_link_libraries(port_mm_probe PRIVATE runtime guest)
 target_compile_options(port_mm_probe PRIVATE /EHsc)
@@ -138,7 +138,7 @@ if(EXISTS "${PORT_GEN_PLAYBACK}/guest_sources.cmake")
   target_compile_options(guest_playback PRIVATE /bigobj /MP /EHsc /arch:AVX2 /fp:precise /wd4102 /wd4101 /wd4189 /W1)
   target_compile_definitions(guest_playback PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
   endif()
-  add_executable(melee_port_playback app/main.cpp)
+  add_executable(melee_port_playback app/main.cpp app/settings_window.cpp)
   target_link_libraries(melee_port_playback PRIVATE runtime guest_playback dbghelp)
   target_compile_options(melee_port_playback PRIVATE /EHsc)
   target_compile_definitions(melee_port_playback PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
@@ -149,7 +149,7 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
     "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
 endif()
 
-add_executable(port_gpu_resource_test tests/gpu_resource_test.cpp runtime/gx/gx_d3d12.cpp runtime/gx/gx_shader.cpp runtime/gx/gx_texture.cpp runtime/gx/gx_streamline.cpp)
+add_executable(port_gpu_resource_test tests/gpu_resource_test.cpp runtime/gx/gx_d3d12.cpp runtime/gx/gx_shader.cpp runtime/gx/gx_texture.cpp runtime/gx/gx_streamline.cpp runtime/gx/texture_pack.cpp)
 target_include_directories(port_gpu_resource_test PRIVATE runtime/gx runtime/host runtime/ppc runtime/hle third_party)
 target_compile_features(port_gpu_resource_test PRIVATE cxx_std_17)
 target_compile_definitions(port_gpu_resource_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS GX_SRV_HEAP_SIZE=32 GX_SAMPLER_HEAP_SIZE=16 GX_CONSTANT_PAGE_SIZE=4096)

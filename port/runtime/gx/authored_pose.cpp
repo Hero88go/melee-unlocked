@@ -57,6 +57,40 @@ bool continuous_clock(const AuthoredJoint& previous, const AuthoredJoint& curren
   return std::isfinite(expected) && std::isfinite(current.frame) &&
       std::abs(expected - current.frame) <= 0.0001f;
 }
+
+// The local matrix of a JOBJ_USE_QUATERNION joint. MTXQuat (mtx.c) builds the rotation from the
+// quaternion; HSD_MtxSRT then applies scale before it and the translation after, and the inherited
+// scale is divided out per row exactly as the Euler path in Geometry.h does. Quaternions are blended
+// with a normalised lerp along the shorter arc: over one simulation frame the two are a few degrees
+// apart, where nlerp and slerp agree to far better than the 0.002 the reconstruction is checked to.
+Matrix quat_srt(const NativeMelee::Vec& scale, const std::array<float,4>& q,
+                const NativeMelee::Vec& position, const NativeMelee::Vec& parent_scale) {
+  const float x = q[0], y = q[1], z = q[2], w = q[3];
+  const float xx = x * x, yy = y * y, zz = z * z;
+  const float xy = x * y, xz = x * z, yz = y * z;
+  const float wx = w * x, wy = w * y, wz = w * z;
+  Matrix m = {{1 - 2 * (yy + zz), 2 * (xy - wz),     2 * (xz + wy),     position[0],
+               2 * (xy + wz),     1 - 2 * (xx + zz), 2 * (yz - wx),     position[1],
+               2 * (xz - wy),     2 * (yz + wx),     1 - 2 * (xx + yy), position[2]}};
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c) {
+      if (std::abs(parent_scale[r]) < 1e-10f) throw std::runtime_error("Zero inherited scale");
+      m[r * 4 + c] *= scale[c] * parent_scale[c] / parent_scale[r];
+    }
+  return m;
+}
+
+std::array<float,4> quat_blend(const std::array<float,4>& a, const std::array<float,4>& b, float t) {
+  float dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3];
+  const float sign = dot < 0 ? -1.0f : 1.0f;   // shorter arc: q and -q are the same rotation
+  std::array<float,4> out{};
+  for (int k = 0; k < 4; ++k) out[k] = a[k] + t * (sign * b[k] - a[k]);
+  float n = std::sqrt(out[0]*out[0] + out[1]*out[1] + out[2]*out[2] + out[3]*out[3]);
+  if (!(n > 1e-8f)) return b;
+  for (int k = 0; k < 4; ++k) out[k] /= n;
+  return out;
+}
+
 const AuthoredPose& chain_of(const AuthoredPose& p) { return p.chain ? *p.chain : p; }
 // Camera: the view matrix advanced `phase` frames by screw extrapolation of its last change. Returns
 // the sampled view and the transform that carries a current view-space matrix to it.
@@ -215,7 +249,14 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
         if(delta!=0.0f&&std::isfinite(delta)&&std::abs(delta)<=0.5f){ rot[k]=interp?p.rotation[k]+float(phase)*delta:j.rotation[k]+float(phase)*delta; animated=true; }
       }
       exact=NativeMelee::Multiply(exact,NativeMelee::SRT(j.scale,j.rotation,j.translation,inherited_exact));
-      world=NativeMelee::Multiply(world,NativeMelee::SRT(scale,rot,pos,inherited));
+      if(j.quaternion&&p.quaternion) {
+        // Blend between the two frames' quaternions, the same way the Euler path blends angles.
+        const auto q=quat_blend(interp?p.quat:j.quat, j.quat, interp?float(phase):0.0f);
+        world=NativeMelee::Multiply(world,quat_srt(scale,q,pos,inherited));
+        if(interp&&phase>0&&p.quat!=j.quat) animated=true;
+      } else {
+        world=NativeMelee::Multiply(world,NativeMelee::SRT(scale,rot,pos,inherited));
+      }
       // HSD_JObjSetupMatrixSub applies the joint's constraints after make_mtx, so they land here,
       // on both the reconstruction and the sampled pose, and before the reconstruction is checked.
       if(!j.constraints.empty()&&!constrain(p,j,phase,cache,exact,world,animated)) return false;
