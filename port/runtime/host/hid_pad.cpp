@@ -166,17 +166,20 @@ int slot_for(HANDLE device) {
   return -1;
 }
 
-// Scales a declared axis range onto the signed range the GameCube pad uses, from the centre out,
-// the way Dolphin does: centre -> 0, either end -> 127. No deadzone: a box reports exact values and
-// rounding them toward centre is precisely the wrong thing to do. Scaling across the whole span
-// instead (t * 255 - 128) put b0xx-ahk's full push (vJoy 16384 + 10271) at 79 rather than the 80
-// Dolphin gives it, so a B0XX on vJoy never reached the edge of the stick.
-int8_t to_signed(const Axis& a, LONG raw) {
+// Scales a declared axis range onto the signed range the GameCube pad uses exactly as Dolphin does:
+// from the centre out (centre -> 0, either end -> 127), the axis flipped first where the stick's
+// direction is reversed, then ROUNDED DOWN. Box scripts are tuned against that: b0xx-ahk sends
+// 10271 * c + 16448 on X and -10271 * c + 16320 on Y, and its +-64 offsets only land on the right
+// values (80 at a full press either way, 0 at rest) when the result is floored. Rounding to nearest
+// gave 79 for a full left press, and scaling across the whole span gave 79 for a full right one.
+// No deadzone: a box reports exact values and rounding them toward centre is precisely wrong.
+int8_t to_signed(const Axis& a, LONG raw, bool flip = false) {
   const double half = ((double)a.logical_max - (double)a.logical_min) / 2.0;
   if (half <= 0) return 0;
   const double mid = ((double)a.logical_max + (double)a.logical_min) / 2.0;
-  const int scaled = (int)std::lround(((double)raw - mid) / half * 127.0);
-  return (int8_t)std::clamp(scaled, -128, 127);
+  double v = ((double)raw - mid) / half * 127.0;
+  if (flip) v = -v;
+  return (int8_t)std::clamp((int)std::floor(v), -128, 127);
 }
 
 }  // namespace
@@ -260,13 +263,13 @@ bool hidpad_raw_input(void* device_handle, const uint8_t* report, uint32_t size,
   // the common choices are accepted: Rx/Ry when present, otherwise Z/Rz, which is what most cheap
   // pads and most vJoy feeder configurations use.
   if (read_axis(0, value)) pad.stick_x = to_signed(s.axes[0], value);
-  if (read_axis(1, value)) pad.stick_y = (int8_t)-std::max<int>(-127, to_signed(s.axes[1], value));
+  if (read_axis(1, value)) pad.stick_y = to_signed(s.axes[1], value, true);
   if (s.axes[3].present && s.axes[4].present) {
     if (read_axis(3, value)) pad.sub_x = to_signed(s.axes[3], value);
-    if (read_axis(4, value)) pad.sub_y = (int8_t)-std::max<int>(-127, to_signed(s.axes[4], value));
+    if (read_axis(4, value)) pad.sub_y = to_signed(s.axes[4], value, true);
   } else {
     if (read_axis(2, value)) pad.sub_x = to_signed(s.axes[2], value);
-    if (read_axis(5, value)) pad.sub_y = (int8_t)-std::max<int>(-127, to_signed(s.axes[5], value));
+    if (read_axis(5, value)) pad.sub_y = to_signed(s.axes[5], value, true);
   }
   // Triggers, when the device has spare analog axes for them. A box reports these as buttons
   // instead, which the binding table picks up.

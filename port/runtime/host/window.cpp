@@ -48,6 +48,9 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (g_on_message && g_on_message(h, m, w, l)) return 1;
   switch (m) {
     case WM_CLOSE: g_closed = true; request_exit(0); return 0;
+    case WM_APP + 7:   // kCursorRefresh, see window_input_capture
+      if (GetForegroundWindow() == h) SetCursor(w ? LoadCursor(nullptr, IDC_ARROW) : nullptr);
+      return 0;
     case WM_INPUT: raw_input((HRAWINPUT)l); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     case WM_SYSKEYDOWN:
@@ -229,7 +232,13 @@ static double query_refresh_rate() {
 }
 
 void window_set_message_callback(MessageCallback cb) { g_on_message = std::move(cb); }
-void window_input_capture(bool capture) { g_ui_capture.store(capture); }
+// The pointer is hidden over the game and shown while a menu has input. Windows only asks for the
+// cursor again when the mouse moves, so opening the settings or the Esc menu with the mouse still
+// left it invisible; a change now tells the window thread to set it straight away.
+constexpr UINT kCursorRefresh = WM_APP + 7;
+void window_input_capture(bool capture) {
+  if (g_ui_capture.exchange(capture) != capture && g_hwnd) PostMessageW(g_hwnd, kCursorRefresh, capture ? 1 : 0, 0);
+}
 bool window_ui_gamecube_pad(PadState& pad) { std::lock_guard<std::mutex> lock(g_ui_pad_mutex); pad = g_ui_pad; return g_ui_gamecube; }
 void window_set_resize_callback(ResizeCallback cb) { g_on_resize = std::move(cb); }
 bool window_take_fullscreen_toggle() { return g_fullscreen_toggle.exchange(false); }
@@ -272,6 +281,10 @@ std::array<HidBindings, 4> g_hid_bindings = default_hid_bindings();
 std::array<Deadzone, (size_t)PadFamily::Count> g_deadzones{};
 std::array<PortSource, 4> g_port_sources = default_port_sources();
 std::array<std::string, 4> g_port_device_names;
+// The device that actually fed each port on the last poll. Usually its port source; but a port whose
+// source is missing (say "GC Adapter 1" while a program like Delfinovin holds the adapter and offers
+// it as an Xbox pad) falls back to the first free pad, and rumble has to go where the input came from.
+std::array<PortSource, 4> g_port_feeding{};
 // The last state the game actually read, for the on-screen controller overlay. Taken here rather
 // than polled again by the renderer, so the overlay shows what the game saw and polling the devices
 // stays on one thread at one rate.
@@ -777,13 +790,15 @@ void input_poll(PadState out[4]) {
     for (int q = 0; q < 4; ++q) if (g_port_sources[q].kind == kind && g_port_sources[q].index == index) return true;
     return false;
   };
-  auto keyboard_and_pad = [&](int) {
+  auto keyboard_and_pad = [&](int port) {
     PadState result = kb;
     const PadState* pad = nullptr;
-    for (int i = 0; i < 4 && !pad; ++i) if (xin_connected[i] && !routed(DeviceKind::XInputPad, i)) pad = &xin[i];
-    for (int i = 0; i < 4 && !pad; ++i) if (ds4_connected[i] && !routed(DeviceKind::DS4Pad, i)) pad = &ds4[i];
-    for (int i = 0; i < 4 && !pad; ++i) if (swpro_connected[i] && !routed(DeviceKind::SwitchPro, i)) pad = &swpro[i];
-    for (int i = 0; i < 4 && !pad; ++i) if (hid_connected[i] && !routed(DeviceKind::HidPad, i)) pad = &hid[i];
+    PortSource feeding{DeviceKind::Keyboard, 0};
+    for (int i = 0; i < 4 && !pad; ++i) if (xin_connected[i] && !routed(DeviceKind::XInputPad, i)) { pad = &xin[i]; feeding = {DeviceKind::XInputPad, i}; }
+    for (int i = 0; i < 4 && !pad; ++i) if (ds4_connected[i] && !routed(DeviceKind::DS4Pad, i)) { pad = &ds4[i]; feeding = {DeviceKind::DS4Pad, i}; }
+    for (int i = 0; i < 4 && !pad; ++i) if (swpro_connected[i] && !routed(DeviceKind::SwitchPro, i)) { pad = &swpro[i]; feeding = {DeviceKind::SwitchPro, i}; }
+    for (int i = 0; i < 4 && !pad; ++i) if (hid_connected[i] && !routed(DeviceKind::HidPad, i)) { pad = &hid[i]; feeding = {DeviceKind::HidPad, i}; }
+    g_port_feeding[port] = feeding;
     // The keyboard keeps working; the pad takes over whenever it is actually being used. "Used" means
     // past the game's own deadzone (0.2875 of 80), not merely non-zero: pad values carry no deadzone
     // now, and a worn stick resting a few units off centre would otherwise lock the keyboard out.
@@ -808,6 +823,7 @@ void input_poll(PadState out[4]) {
   }
   for (int port = 0; port < 4; ++port) {
     const PortSource& src = g_port_sources[port];
+    g_port_feeding[port] = src;   // replaced below when the port falls back to another device
     switch (src.kind) {
       case DeviceKind::Keyboard: out[port] = keyboard_and_pad(port); break;
       case DeviceKind::XInputPad:
@@ -872,7 +888,7 @@ void log_first_rumble(int game_port, const char* where) {
 void input_rumble(int game_port, bool on) {
   if (game_port < 0 || game_port > 3) return;
   if (!g_rumble_enabled) on = false;
-  const PortSource& src = g_port_sources[game_port];
+  const PortSource& src = g_port_feeding[game_port];   // where the input came from, fallback included
   const bool valid = src.index >= 0 && src.index < 4;
   if (src.kind == DeviceKind::GCAdapter && valid) { gcadapter_rumble(src.index, on); if (on) log_first_rumble(game_port, "GameCube adapter"); }
   else if (src.kind == DeviceKind::XInputPad && valid) { xinput_rumble(src.index, on); if (on) log_first_rumble(game_port, "Xbox controller"); }
