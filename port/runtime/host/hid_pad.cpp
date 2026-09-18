@@ -50,6 +50,7 @@ struct Slot {
   // Latest decoded state.
   PadState pad{};
   uint32_t buttons = 0;
+  int log_reports = 0;   // first few reports after a device appears, for diagnosing a pad that will not bind
   int32_t raw[8]{};
   bool fresh = false;
 };
@@ -203,8 +204,15 @@ bool hidpad_raw_input(void* device_handle, const uint8_t* report, uint32_t size,
     s.device = device;
     s.name = friendly_name(path, info.hid);
     s.ready = true;
-    host::log("hid pad %d: %s (%d axes, buttons %u..%u)", index + 1, s.name.c_str(), s.axis_count,
-              (unsigned)s.button_min, (unsigned)s.button_max);
+    // Everything needed to tell, from a log alone, why a pad does not bind: how the device
+    // described itself and what the first report actually contained. A box controller reports its
+    // buttons in ways that differ from a normal pad, and without this the only symptom is a rebind
+    // that waits forever.
+    HIDP_CAPS caps{};
+    const unsigned collections = HidP_GetCaps(preparsed_of(s), &caps) == HIDP_STATUS_SUCCESS ? caps.NumberLinkCollectionNodes : 0;
+    host::log("hid pad %d: %s (%d axes, buttons %u..%u, %u collections, report %u bytes)", index + 1, s.name.c_str(),
+              s.axis_count, (unsigned)s.button_min, (unsigned)s.button_max, collections, caps.InputReportByteLength);
+    s.log_reports = 3;
   }
   if (!s.ready) return false;
 
@@ -241,20 +249,29 @@ bool hidpad_raw_input(void* device_handle, const uint8_t* report, uint32_t size,
     pad.trig_r = to_trigger(s.axes[2], value);
 
   uint32_t mask = 0;
-  if (s.button_max >= s.button_min) {
-    ULONG usage_count = HidP_MaxUsageListLength(HidP_Input, kUsagePageButton, preparsed_of(s));
+  {
+    // Every button pressed anywhere in the report, whatever collection it sits in. Asking for the
+    // Button page in link collection 0 only missed buttons a device keeps in a nested collection,
+    // and a vJoy device fed by a box controller can be laid out that way: its axes read (they are
+    // top level) while not one of its buttons ever registered, so a rebind waited forever.
+    ULONG usage_count = HidP_MaxUsageListLength(HidP_Input, 0, preparsed_of(s));
     if (usage_count) {
-      std::vector<USAGE> pressed(usage_count);
-      if (HidP_GetUsages(HidP_Input, kUsagePageButton, 0, pressed.data(), &usage_count, preparsed_of(s),
-                         (PCHAR)report, size) == HIDP_STATUS_SUCCESS) {
+      std::vector<USAGE_AND_PAGE> pressed(usage_count);
+      if (HidP_GetUsagesEx(HidP_Input, 0, pressed.data(), &usage_count, preparsed_of(s), (PCHAR)report, size) == HIDP_STATUS_SUCCESS) {
         for (ULONG i = 0; i < usage_count; ++i) {
-          const int bit = (int)pressed[i] - (int)s.button_min;
+          if (pressed[i].UsagePage != kUsagePageButton) continue;
+          const int bit = (int)pressed[i].Usage - (int)s.button_min;
           if (bit >= 0 && bit < 32) mask |= 1u << bit;
         }
       }
     }
   }
 
+  if (s.log_reports) {
+    --s.log_reports;
+    host::log("hid pad %d: report buttons %08X, stick %d,%d c-stick %d,%d, triggers %u/%u",
+              index + 1, mask, pad.stick_x, pad.stick_y, pad.sub_x, pad.sub_y, pad.trig_l, pad.trig_r);
+  }
   s.pad = pad;
   s.buttons = mask;
   s.fresh = true;

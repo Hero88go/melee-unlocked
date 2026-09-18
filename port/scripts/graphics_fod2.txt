@@ -1,0 +1,37 @@
+# Fountain of Dreams for graphics work: same opening as graphics_yoshi_move, with the stage
+# cursor pushed to a different tile. Verify the stage id in the replay before trusting a capture
+# (the Vs stage select is an analog pointer, not a grid, so a tap moves nothing).
+300 B
+310
+380 B
+390
+460 sy=-127
+466
+500 A
+510
+580 A
+590
+700 p=2
+1000 sx=61 sy=127
+1000 p=2 sy=127
+1017
+1017 p=2
+1040 A
+1040 p=2 A
+1050
+1050 p=2
+1100 START
+1110
+1300 sx=-127 sy=127
+1360
+1380 sx=0 sy=0
+1390
+1410 A
+1420
+1900 sx=80
+1960 X
+1965
+1990 A
+1995
+2020 p=2 R
+2030 A

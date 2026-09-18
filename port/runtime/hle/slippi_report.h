@@ -28,6 +28,8 @@ void init(const std::string& iso_path, const std::string& cache_dir);   // start
 void shutdown();                                                         // flushes queued reports (one attempt each)
 void log_game(const GameReport& report);
 void match_status(const std::string& uid, const std::string& play_key, const std::string& match_id, const std::string& status, bool background);
+// Plain GET with this client's identification, for the user profile API. Blocking; call off the sim thread.
+bool http_get(const std::string& url, std::string* response, int* status);
 
 // Ranked: the player's rank (port of the Rust user crate's rank fetcher). fetch_user_rank runs at
 // login (users REST API), fetch_match_result after a ranked game (GraphQL), both in the background.

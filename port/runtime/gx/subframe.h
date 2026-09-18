@@ -28,7 +28,31 @@ struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, c
   // Draws whose re-posed or carried matrices landed implausibly far from where they were, and were
   // held instead. Any non-zero value is geometry that would have been drawn in the wrong place.
   uint32_t insane = 0;
+  // Draws found to be standing still in the world and therefore advanced by the camera alone, as one
+  // rigid piece. Large on a stage seen with a moving camera; zero when the camera is still.
+  uint32_t stage_locked = 0;
 };
+
+// The endpoint invariant. In Interpolate a presented frame at phase 1 IS the current simulation
+// frame, so every draw must leave the solver with exactly the matrices the game loaded. A draw that
+// does not is a draw that jumps at the simulation boundary, once every tick, which is what an object
+// flickering is. Checked only on the frames that land on phase 1, so it costs nothing the rest of
+// the time, and accumulated across the run so the presentation loop can print the change per second.
+// `worst` is the largest position error in world units and `worst_identity` names the draw.
+struct EndpointStats { uint64_t checked = 0, off = 0; float worst = 0; uint64_t worst_identity = 0; };
+EndpointStats& subframe_endpoint_stats();
+
+// Development measurement, filled only when MELEE_AUDIT_STAGE_SPLIT is in the environment. Counts
+// the draws standing still in the world that the solver's other routes would have placed away from
+// the one camera transform the rest of the static stage uses, and by how far in world units. That
+// gap is what makes coplanar layers of a stage fight over depth on the frames between ticks.
+struct StageSplitAudit { uint64_t checked = 0, split = 0; float worst = 0; };
+// Draws whose route changed between two presented frames of the SAME simulation frame, where the
+// phase is the only difference. Each one is an object drawn on one timeline and then the other
+// inside a single tick.
+struct PhaseFlipStats { uint64_t compared = 0, flipped = 0, flipped_skinned = 0; };
+PhaseFlipStats& subframe_phase_flips();
+StageSplitAudit& subframe_stage_split_audit();
 
 class SubFrameSolver {
  public:
@@ -47,6 +71,15 @@ class SubFrameSolver {
   // prev (t = 0) and cur (t = 1). Extrapolate: pose t frames beyond cur.
   void build(double t, bool interpolate, std::vector<DrawMatrices>& out, bool authored = false) const;
   const SubFrameStats& stats() const { return stats_; }
+  // Menus, character select, stage select and everything else that is not a running match. There
+  // the solver sticks to the treatment that was in place before the stage and geometry work: no
+  // blending of rebuilt vertex streams, no camera-locked static geometry, and a stream that cannot
+  // be blended holds its own current matrices. The reason is consistency rather than accuracy. A
+  // menu rebuilds its text and panels on some ticks and not others, so anything that treats a
+  // rebuilt draw differently from a moved one makes that element alternate between two timelines
+  // from tick to tick, and alternating is what the eye reads as flicker. Matrix-driven motion
+  // (cursors, sliding panels, the rotating background) still gets full sub-frame motion.
+  void set_menu_mode(bool on) { menu_mode_ = on; }
 
   // Exposed for tests: apply fraction t of the rigid/blended delta between prev and cur 3x4 matrices.
   static void fractional(const float prev[12], const float cur[12], double t, bool interpolate,
@@ -70,6 +103,14 @@ class SubFrameSolver {
   // have no pair onto the same timeline as the rest of the frame.
   const AuthoredPose* camera_previous_ = nullptr;
   const AuthoredPose* camera_current_ = nullptr;
+  // Which draws were re-posed on the previous presented frame OF THE SAME simulation frame. The
+  // phase is the only thing that changes between those frames, so a draw that is re-posed at one
+  // phase and held at the next is being drawn on two different timelines within a single tick,
+  // which is an object flashing several times per tick rather than once.
+  mutable std::vector<uint8_t> last_posed_, routes_;
+  std::vector<int> pair_reason_;   // development dump only
+  mutable double last_build_phase_ = -1;
+  bool menu_mode_ = false;
   mutable SubFrameStats stats_;
 };
 

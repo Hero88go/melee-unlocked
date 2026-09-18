@@ -2,6 +2,7 @@
 #include "pc_settings.h"
 #include "texture_pack.h"
 #include <atomic>
+#include <cstdarg>
 #include "pc_settings_shared.h"
 #include "gx_backend.h"
 #include "jukebox.h"
@@ -10,6 +11,7 @@
 #include "host.h"
 #include "input_bindings.h"
 #include "lcancel.h"
+#include "slippi_online.h"
 #include "hid_pad.h"
 #include "updater.h"
 #include "discord_presence.h"
@@ -361,6 +363,8 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
       else if (key == "performance") options.performance_overlay = value == "1";
+      else if (key == "showfps") options.show_fps = value == "1";
+      else if (key == "showping") options.show_ping = value == "1";
       // Diagnostic, off unless someone is hunting a one-frame glitch: see D3D12Options::flicker_scan.
       // Settings-file only rather than a control in the panel, because it costs a readback on every
       // presented frame and nobody should switch it on by browsing.
@@ -777,17 +781,23 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // same one-frame-per-tick case as an explicit cap of 60.
     const double shown_rate = options.fps_cap > 0 ? options.fps_cap
                             : options.fps_cap < 0 ? (double)host::window_refresh_rate() : 0.0;
+    // Warnings wrap like every other explanation here. TextColored does not wrap, so both of these
+    // ran off the right edge of the panel and were cut mid-word, which is how a warning ends up
+    // reading as a rendering fault.
+    auto warning = [](const char* fmt, ...) {
+      va_list args; va_start(args, fmt);
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.25f, 1.0f));
+      ImGui::TextWrappedV(fmt, args);
+      ImGui::PopStyleColor();
+      va_end(args);
+    };
     if (sf != 0 && shown_rate > 0.0 && shown_rate <= 60.5)
-      ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
-                         "Not in use: only %.0f frames a second are being shown. There is one frame "
-                         "per tick either way, so this would cost delay and accuracy and buy no "
-                         "smoothness. Raise the frame rate above 60, or leave this off.", shown_rate);
+      warning("Not in use: only %.0f frames a second are being shown. There is one frame "
+              "per tick either way, so this would cost delay and accuracy and buy no "
+              "smoothness. Raise the frame rate above 60, or leave this off.", shown_rate);
     if (options.fps_cap == 0)
-      ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
-                         "Uncapped draws frames no display can show, and on light scenes it takes "
-                         "enough of the machine to slow the game down: measured at 1394 fps on a menu "
-                         "with the simulation falling to 44 Hz, against 193 fps and a full-rate "
-                         "simulation following the monitor. Follow the monitor unless you are testing.");
+      warning("Uncapped draws frames no display can show, and on light scenes it takes "
+              "enough of the machine to slow the game down.");
     // The "Visual effects" control was removed: the filter it drove deleted the stage select
     // pointer and menu text, and nothing in a draw separates a hit spark from a cursor.
 
@@ -1155,6 +1165,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     changed |= ImGui::Checkbox("Show the \"Settings: F1\" reminder", &options.settings_hint);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1 still opens this panel with it off.");
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
+    changed |= ImGui::Checkbox("FPS counter (top left)", &options.show_fps);
+    changed |= ImGui::Checkbox("Ping while online (top left)", &options.show_ping);
     changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
     if (options.input_overlay) {
       // Several ports can be shown at once (doubles and crew streams want every player visible);
@@ -1188,7 +1200,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       if (st == host::updater::State::Failed) { ImGui::SameLine(); if (ImGui::Button("Retry")) host::updater::check(MELEE_PORT_VERSION); }
     }
     ImGui::Separator();
-    if (ImGui::Button("Save settings")) {
+    // Every change is saved on its own, once the control that changed it is released (a slider
+    // being dragged writes once, at the end, not sixty times a second). The button stays for
+    // anyone who wants to be sure, and for the few controls that do not report a change.
+    if (changed) state.dirty = true;
+    const bool autosave = state.dirty && !ImGui::IsAnyItemActive();
+    if (ImGui::Button("Save settings") || autosave) {
+      state.dirty = false;
       std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";
       std::ofstream file(temporary);
       file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
@@ -1196,6 +1214,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\ntruewidescreen " << options.true_widescreen << "\naspect " << (int)options.aspect
            << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
            << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
+           << "\nshowfps " << options.show_fps << "\nshowping " << options.show_ping
            << "\ndlss " << options.dlss_mode << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
            << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
@@ -1345,6 +1364,16 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   // the launcher's settings window. The warning was already in this file, twenty lines up.
   if (!state.fill_window) {
     draw_lcancel_overlays();
+    // The plain readouts: frame rate and, while online, the ping. Small, top left, no window
+    // chrome, the way a Dolphin OSD line looks, and separate from the performance graph.
+    if (options.show_fps || (options.show_ping && slippi::online::is_online_match())) {
+      ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_Always);
+      ImGui::SetNextWindowBgAlpha(0.35f);
+      ImGui::Begin("Readout", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing);
+      if (options.show_fps) ImGui::Text("%.0f FPS", ImGui::GetIO().Framerate);
+      if (options.show_ping && slippi::online::is_online_match()) ImGui::Text("Ping %d ms", slippi::online::ping_ms());
+      ImGui::End();
+    }
     if (options.performance_overlay) {
       // Draggable, and it remembers where it was put: pinned at the top left with no input it covered
       // the settings panel and there was no way to move it out of the way.

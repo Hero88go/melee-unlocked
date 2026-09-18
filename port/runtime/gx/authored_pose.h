@@ -102,7 +102,18 @@ bool sample_authored_envelope(const AuthoredPose& previous, const AuthoredPose& 
 // Applies only the camera's motion to a draw that could not be re-posed, so it still moves with a
 // panning camera instead of holding for a whole simulation frame. `pos_slots` marks the rows that
 // hold position matrices (texture-coordinate matrices share the array and must not be touched).
+// `base` is the pose whose view `in_pos`/`in_nrm` were taken from: the previous frame for a draw
+// that paired and is holding its previous matrices, the current frame for one that did not pair.
 bool carry_camera(const AuthoredPose& previous, const AuthoredPose& current, double phase,
+                  const AuthoredPose& base,
                   const float in_pos[256], const float in_nrm[96], uint64_t pos_slots,
                   float out_pos[256], float out_nrm[96]);
+// The same camera transform built once for a whole presented frame, for the many draws that share
+// it, and its application to one draw's matrices. `carry` takes a CURRENT-frame model-view matrix
+// onto the sub-frame view; false means the view is not moving and the matrices already stand.
+bool camera_sub_frame_carry(const AuthoredPose& previous, const AuthoredPose& current, double phase,
+                            float carry[12], float carry_inverse[12], bool& has_inverse);
+bool apply_carry(const float carry[12], const float carry_inverse[12],
+                 const float in_pos[256], const float in_nrm[96], uint64_t pos_slots,
+                 float out_pos[256], float out_nrm[96]);
 }

@@ -384,6 +384,7 @@ class D3D11Backend : public Backend {
   ComPtr<ID3D11RenderTargetView> scan_rtv_;
   uint32_t scan_ring_ = 0, scan_ready_ = 0, scan_history_ = 0;
   uint64_t scan_hits_ = 0;
+  uint64_t scan_cell_hits_ = 0, scan_dumps_ = 0;
   float scan_sig_[3][kScanGrid * kScanGrid] = {};
 
   std::mutex shader_mutex_;
@@ -1345,6 +1346,55 @@ void D3D11Backend::flicker_scan() {
       const float n = kScanGrid * kScanGrid;
       d_prev /= n; d_next /= n; d_skip /= n;
       const float out = std::min(d_prev, d_next);
+      // Averaging over the whole picture only finds a defect that covers the whole picture. What a
+      // flickering stage actually does is change one part of the screen and change it back, which
+      // an average buries: a patch of ground trading places with the layer under it moves a few
+      // dozen cells of this grid and leaves the rest identical. So count cells that pop out and
+      // come back on their own, and report where they are.
+      {
+        int cells = 0, min_x = kScanGrid, min_y = kScanGrid, max_x = -1, max_y = -1;
+        float loudest = 0;
+        for (int y = 0; y < kScanGrid; ++y)
+          for (int x = 0; x < kScanGrid; ++x) {
+            const int i = y * kScanGrid + x;
+            const float pop = std::min(std::abs(b[i] - a[i]), std::abs(b[i] - c[i]));
+            const float across = std::abs(c[i] - a[i]);
+            if (pop > 8.0f && pop > across * 3.0f + 1.0f) {
+              ++cells;
+              min_x = std::min(min_x, x); max_x = std::max(max_x, x);
+              min_y = std::min(min_y, y); max_y = std::max(max_y, y);
+              loudest = std::max(loudest, pop);
+            }
+          }
+        if (cells >= 4) {
+          ++scan_cell_hits_;
+          host::log("flicker: presented frame %u has %d of %d cells popping out and back, x %d-%d y %d-%d of %d, loudest %.0f; %llu so far",
+                    frames_presented_ - 1, cells, kScanGrid * kScanGrid, min_x, max_x, min_y, max_y, kScanGrid,
+                    loudest, (unsigned long long)scan_cell_hits_);
+          // The three signatures around the hit, so what popped can be recognised afterwards: the
+          // frame before, the frame that popped, and the frame after.
+          if (frames_presented_ > 6000 && scan_dumps_ < 30) {
+            ++scan_dumps_;
+            CreateDirectoryA("flicker", nullptr);
+            const float* trio[3] = {a, b, c};
+            for (int k = 0; k < 3; ++k) {
+              char path[160];
+              snprintf(path, sizeof path, "flicker/cell%03llu_%u_%s.ppm", (unsigned long long)scan_dumps_,
+                       frames_presented_ - 1, k == 0 ? "1prev" : k == 1 ? "2BAD" : "3next");
+              if (FILE* f = fopen(path, "wb")) {
+                fprintf(f, "P6\n%d %d\n255\n", kScanGrid, kScanGrid);
+                for (int i = 0; i < kScanGrid * kScanGrid; ++i) {
+                  const float value = trio[k][i];
+                  const unsigned char v = (unsigned char)(value < 0 ? 0 : value > 255 ? 255 : value);
+                  const unsigned char rgb[3] = {v, v, v};
+                  fwrite(rgb, 1, 3, f);
+                }
+                fclose(f);
+              }
+            }
+          }
+        }
+      }
       // The floor keeps a still image, where every difference is near zero, from reporting noise.
       if (out > 1.5f && out > d_skip * 1.25f) {
         ++scan_hits_;
@@ -1569,7 +1619,11 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       bool burst = opts_.capture_burst && opts_.capture_frame && next_presented >= opts_.capture_frame && next_presented < opts_.capture_frame + opts_.capture_burst;
       if (next_presented == opts_.capture_frame && !burst) { capture = true; path = opts_.capture_path; }
       else if (burst || (opts_.capture_every && next_presented % opts_.capture_every == 0)) {
-        char suffix[32]; snprintf(suffix, sizeof suffix, "_%05u.ppm", next_presented);
+        // A pinned-phase run names each picture by its simulation frame, so two runs line up by
+        // name even if one of them skipped a present while draining a backlog.
+        char suffix[48];
+        if (opts_.pin_phase >= 0) snprintf(suffix, sizeof suffix, "_s%06llu.ppm", (unsigned long long)frame.sequence);
+        else snprintf(suffix, sizeof suffix, "_%05u.ppm", next_presented);
         const std::string& base = opts_.capture_path;
         path = base.substr(0, base.size() > 4 && base.compare(base.size() - 4, 4, ".ppm") == 0 ? base.size() - 4 : base.size()) + suffix;
         capture = true;
