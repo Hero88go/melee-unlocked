@@ -36,5 +36,6 @@ static inline void mu_dcbz(void* base, int offset)
 #define __dcbz(base, offset) mu_dcbz((void*) (base), (int) (offset))
 
 #include "math_native.h"
+#include "mu_disc.h"
 
 #endif

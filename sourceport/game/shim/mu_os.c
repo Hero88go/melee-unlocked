@@ -289,7 +289,8 @@ OSThread* OSGetCurrentThread(void) { return &mu_main_thread; }
 /* ---- contexts ----
  * Saving and restoring processor state, which the game does around its own exception handler. The
  * host's stack is not the guest's and nothing here can unwind, so these keep the pointer only. */
-static OSContext* mu_current_context;
+static OSContext mu_main_context;   /* the one the game's main runs in; it edits its fpscr */
+static OSContext* mu_current_context = &mu_main_context;
 
 u32 OSSaveContext(OSContext* context) { (void) context; return 0; }
 void OSClearContext(OSContext* context) { (void) context; }
@@ -337,8 +338,11 @@ unsigned long OSGetResetCode(void) { return (unsigned long) mu_host->reset_code(
 BOOL OSGetResetSwitchState(void) { return mu_host->reset_switch(); }
 
 /* ---- machine ---- */
-u32 OSGetPhysicalMemSize(void) { return mu_host->mem1_size(); }
-u32 OSGetConsoleSimulatedMemSize(void) { return mu_host->mem1_size(); }
+/* The console's 24 MB, which is what the game sizes its choices by (a 48 MB development unit takes a
+ * different path). The arena below is the host's whole reservation, larger because native pointers
+ * are twice the size. */
+u32 OSGetPhysicalMemSize(void) { return 24u << 20; }
+u32 OSGetConsoleSimulatedMemSize(void) { return 24u << 20; }
 u32 OSGetSoundMode(void) { return (u32) mu_host->sound_mode(); }
 void OSSetSoundMode(unsigned long mode) { mu_host->set_sound_mode((int32_t) mode); }
 unsigned long OSGetProgressiveMode(void) { return (unsigned long) mu_host->progressive_mode(); }
@@ -349,6 +353,9 @@ void OSSetProgressiveMode(u32 mode) { mu_host->set_progressive_mode((int32_t) mo
  * pieces of state the game reads back. */
 void OSInit(void)
 {
+    /* Low memory (the first 64 KB) holds the disc header and what the host puts there for the game. */
+    OSSetArenaLo((void*) (uintptr_t) 0x80010000u);
+    OSSetArenaHi((void*) (uintptr_t) (0x80000000u + mu_host->mem1_size()));
     OSInitAlarm();
     mu_interrupt_level = 1;
 }

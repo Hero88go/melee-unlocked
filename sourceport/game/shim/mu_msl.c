@@ -93,3 +93,10 @@ void __longjmp(void* env, int val)
 
 /* ---- debugger ---- */
 int DBIsDebuggerPresent(void) { return 0; }
+
+/* A pointer that had to fit a 32-bit slot did not (see mu_disc.h). */
+void mu_addr32_failed(const void* ptr, const char* file, int line)
+{
+    (void) ptr;
+    mu_host->panic(file, line, "a pointer does not fit its 32-bit slot");
+}
