@@ -228,6 +228,44 @@ MuHostApi make_host() {
   return h;
 }
 
+// A crash inside the game: the faulting address and the game's return addresses on the stack, as
+// offsets into melee_game.dll (resolve with addr2line -e melee_game.dbg). The application's own
+// crash report still runs afterwards.
+LONG CALLBACK on_game_exception(EXCEPTION_POINTERS* info) {
+  const DWORD code = info->ExceptionRecord->ExceptionCode;
+  if (code < 0x80000000u || code == 0xE06D7363u /* C++ exception */) return EXCEPTION_CONTINUE_SEARCH;
+  const uint64_t base = GAME_IMAGE_BASE, end = base + host::game_image_size;
+  const uint64_t rip = info->ContextRecord->Rip;
+  if (rip < base || rip >= end) return EXCEPTION_CONTINUE_SEARCH;
+  host::log("game crash %08lX at melee_game.dll+0x%llX", code, (unsigned long long)(rip - base));
+  const CONTEXT& r = *info->ContextRecord;
+  if (code == EXCEPTION_ACCESS_VIOLATION && info->ExceptionRecord->NumberParameters >= 2)
+    host::log("  %s address %016llX", info->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
+              (unsigned long long)info->ExceptionRecord->ExceptionInformation[1]);
+  host::log("  rax %016llX rbx %016llX rcx %016llX rdx %016llX", r.Rax, r.Rbx, r.Rcx, r.Rdx);
+  host::log("  rsi %016llX rdi %016llX r8  %016llX r9  %016llX", r.Rsi, r.Rdi, r.R8, r.R9);
+  // The real call chain, from the unwind tables GCC writes into the DLL (.pdata), so frames are
+  // callers rather than whatever return-address-looking values happen to sit on the stack.
+  CONTEXT ctx = r;
+  for (int depth = 0; depth < 24; ++depth) {
+    DWORD64 image = 0;
+    PRUNTIME_FUNCTION fn = RtlLookupFunctionEntry(ctx.Rip, &image, nullptr);
+    __try {
+      if (fn) {
+        void* handler_data = nullptr; DWORD64 frame = 0;
+        RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, ctx.Rip, fn, &ctx, &handler_data, &frame, nullptr);
+      } else {
+        ctx.Rip = *(const DWORD64*)ctx.Rsp;   // a leaf: the return address is on top
+        ctx.Rsp += 8;
+      }
+    } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+    if (ctx.Rip == 0) break;
+    if (ctx.Rip >= base && ctx.Rip < end) host::log("  stack: melee_game.dll+0x%llX", (unsigned long long)(ctx.Rip - 1 - base));
+    else { host::log("  (leaves the game at %016llX)", (unsigned long long)ctx.Rip); break; }
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
 }  // namespace
 
 bool reserve_memory() {
@@ -262,6 +300,7 @@ int run(void (*shutdown)(int)) {
   static MuHostApi api = make_host();
   if (entry(&api, &g_game) != 0) host::die("%s refused host API version %u", g_dll.c_str(), api.version);
   host::native_retrace = native_retrace;
+  AddVectoredExceptionHandler(1, on_game_exception);
   host::log("source port: %s at %p, MEM1 %u MB at %08llX", g_dll.c_str(), (void*)module, MEM1_SIZE >> 20, (unsigned long long)MEM1_BASE);
   int code = 0;
   guarded([&] { code = g_game.run(); });
