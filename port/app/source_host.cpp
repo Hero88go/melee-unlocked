@@ -26,10 +26,12 @@ namespace source_port {
 namespace {
 
 constexpr uintptr_t MEM1_BASE = 0x80000000u;
-constexpr uint32_t MEM1_SIZE = 64u << 20;   // the console's 24 MB, grown for 8-byte pointers
+constexpr uint32_t MEM1_SIZE = 40u << 20;   // the console's 24 MB, grown for 8-byte pointers; the game image follows
 constexpr uintptr_t LOCKED_CACHE_BASE = 0xE0000000u;
 constexpr uint32_t LOCKED_CACHE_SIZE = 16u << 10;
-constexpr uintptr_t GAME_IMAGE_BASE = 0x50000000u;
+// Right after MEM1, so the game's own statics (the font atlas, static textures) have a physical
+// address the GX texture and display-list registers can hold: 26 bits, the first 64 MB.
+constexpr uintptr_t GAME_IMAGE_BASE = 0x82800000u;
 
 MuGameApi g_game{};
 std::string g_dll = "melee_game.dll";
@@ -240,7 +242,7 @@ bool reserve_memory() {
     return false;
   }
   host::ram = (uint8_t*)MEM1_BASE;
-  host::ram_size = MEM1_SIZE;
+  host::ram_size = 64u << 20;   // MEM1 and the game image after it: everything GX can address
   return true;
 }
 

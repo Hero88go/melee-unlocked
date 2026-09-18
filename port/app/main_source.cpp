@@ -24,10 +24,12 @@
 namespace {
 
 constexpr uintptr_t MEM1_BASE = 0x80000000u;
-constexpr uint32_t MEM1_SIZE = 64u << 20;          // the console's 24 MB, grown for 8-byte pointers
+constexpr uint32_t MEM1_SIZE = 40u << 20;          // the console's 24 MB, grown for 8-byte pointers
 constexpr uintptr_t LOCKED_CACHE_BASE = 0xE0000000u;
 constexpr uint32_t LOCKED_CACHE_SIZE = 16u << 10;
-constexpr uintptr_t GAME_IMAGE_BASE = 0x50000000u;
+// Right after MEM1, so the game's own statics (the font atlas, static textures) have a physical
+// address the GX texture and display-list registers can hold: 26 bits, the first 64 MB.
+constexpr uintptr_t GAME_IMAGE_BASE = 0x82800000u;
 constexpr uint32_t ARAM_SIZE = 16u << 20;
 
 FILE* g_log = nullptr;
@@ -249,7 +251,7 @@ MuHostApi make_host() {
 
 // ---- diagnostics: where the game is, as an offset into its image (resolve with addr2line) ----
 void describe_address(const char* what, uint64_t rip) {
-  if (rip >= GAME_IMAGE_BASE && rip < GAME_IMAGE_BASE + 0x10000000u)
+  if (rip >= GAME_IMAGE_BASE && rip < GAME_IMAGE_BASE + 0x01800000u)
     logf("%s: game+0x%llX (%llX)\n", what, (unsigned long long)(rip - GAME_IMAGE_BASE), (unsigned long long)rip);
   else
     logf("%s: %llX (outside the game image)\n", what, (unsigned long long)rip);
@@ -270,7 +272,7 @@ LONG CALLBACK on_exception(EXCEPTION_POINTERS* info) {
   for (int i = 0; i < 512 && shown < 16; ++i) {
     uint64_t v = 0;
     __try { v = sp[i]; } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
-    if (v >= GAME_IMAGE_BASE + 0x1000 && v < GAME_IMAGE_BASE + 0x400000) { describe_address("  stack", v); ++shown; }
+    if (v >= GAME_IMAGE_BASE + 0x1000 && v < GAME_IMAGE_BASE + 0x800000) { describe_address("  stack", v); ++shown; }
   }
   std::fflush(nullptr);
   ExitProcess(4);

@@ -27,7 +27,7 @@ void mu_poll(void);
  * back in 32-bit arithmetic recovers the pointer exactly, wherever it lives. */
 static inline void* mu_phys_ptr(unsigned int phys) { return (void*) (uintptr_t) (unsigned int) (phys + 0x80000000u); }
 /* Hardware that took either form (ARAM DMA, audio DMA). The game's memory is the image at
- * 0x50000000 and MEM1 at 0x80000000, both well under 1 GB long, so a value below 0x40000000 or at
+ * 0x82800000 (right after MEM1 at 0x80000000), under 64 MB together, so a value below 0x40000000 or at
  * 0xC0000000 and up can only be one of them with the segment bit taken off. */
 static inline void* mu_mem_ptr(unsigned int addr)
 {
