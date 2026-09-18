@@ -49,8 +49,8 @@ static const MuParityEntry table[] = {
     { "lbVector_sqrtf_accurate", lbVector_sqrtf_accurate, 0, { 0 }, { 0 }, 0, 1, 0, MU_RET_REAL },
     { "atan2f", atan2f, 0, { 0 }, { 0 }, 0, 2, 0, MU_RET_REAL },
     { "atanf", atanf, 0, { 0 }, { 0 }, 0, 1, 0, MU_RET_REAL },
-    { "acosf", acosf, 0, { 0 }, { 0 }, 0, 1, 0, MU_RET_REAL },
-    { "asinf", asinf, 0, { 0 }, { 0 }, 0, 1, 0, MU_RET_REAL },
+    { "acosf", acosf, 0, { 0 }, { 0 }, 0, 1, 0, MU_RET_REAL, { -1 }, { 1 } },
+    { "asinf", asinf, 0, { 0 }, { 0 }, 0, 1, 0, MU_RET_REAL, { -1 }, { 1 } },
     { "expf", expf, 0, { 0 }, { 0 }, 0, 1, 0, MU_RET_REAL, { -10 }, { 10 } },   /* a Taylor series that overflows to NaN and never converges past about 30 */
     { "powf", powf, 0, { 0 }, { 0 }, 0, 2, 0, MU_RET_REAL, { 0.1f, -2 }, { 10, 2 } },   /* a log series, so a positive base, and expf after it */
     { "logf", logf, 0, { 0 }, { 0 }, 0, 1, 0, MU_RET_REAL },
