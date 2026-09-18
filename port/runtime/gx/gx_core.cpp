@@ -231,12 +231,11 @@ void snapshot_textures(DrawCall& dc) {
   for (TextureRef& t : dc.textures) {
     if (!t.used) continue;
     uint32_t total = texture_chain_bytes(t.width, t.height, t.format, t.mip_levels);
-    uint32_t offset = t.addr & 0x3FFFFFFFu;
     uint32_t palette_bytes = t.format == 8 ? 32 : t.format == 9 ? 512 : t.format == 10 ? 32768 : 0;
-    if (offset >= host::ram_size || total > host::ram_size - offset ||
-        t.tlut_addr > sizeof g_tmem || palette_bytes > sizeof g_tmem - t.tlut_addr)
+    const uint8_t* texels = host::try_ptr(t.addr, total);
+    if (!texels || t.tlut_addr > sizeof g_tmem || palette_bytes > sizeof g_tmem - t.tlut_addr)
       host::die("GX texture range invalid: %08X+%X, palette %X+%X", t.addr, total, t.tlut_addr, palette_bytes);
-    t.data = g_texture_snapshots.capture(host::ram + offset, total, g_tmem + t.tlut_addr, palette_bytes);
+    t.data = g_texture_snapshots.capture(texels, total, g_tmem + t.tlut_addr, palette_bytes);
   }
 }
 
@@ -373,8 +372,8 @@ void xf_indexed_load(uint32_t op, uint32_t value) {
 size_t parse_command(const uint8_t* d, size_t len);
 
 void run_display_list(uint32_t addr, uint32_t size) {
-  if ((uint64_t)(addr & 0x3FFFFFFFu) + size > host::ram_size) { host::log("gx: display list outside RAM %08X+%X", addr, size); return; }
-  const uint8_t* p = host::ptr(addr, size);
+  const uint8_t* p = host::try_ptr(addr, size);
+  if (!p) { host::log("gx: display list outside RAM %08X+%X", addr, size); return; }
   uint32_t saved_addr = g_dl_addr, saved_draw = g_dl_draw_ordinal, saved_call = g_dl_call_ordinal;
   g_dl_addr = addr; g_dl_draw_ordinal = 0; g_dl_call_ordinal = g_dl_calls[addr]++;
   size_t used = 0;
