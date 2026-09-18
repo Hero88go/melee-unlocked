@@ -113,10 +113,17 @@ target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcry
 # WIN32: no console window when the game is double-clicked or started from the launcher. Command-line
 # use still works, because main() reattaches to a parent console when there is one (see app/main.cpp).
 add_executable(melee_port WIN32 app/main.cpp app/settings_window.cpp app/melee_unlocked.rc)
-# The source port's host (first stage): loads melee_game.dll, the game built from source by
-# sourceport/game with GCC. Depends on nothing in the runtime yet; see app/main_source.cpp.
-add_executable(melee_source app/main_source.cpp)
-target_include_directories(melee_source PRIVATE runtime/abi)
+# The source port: the whole application (renderers, DLSS, sub-frame, input, panel) with the game
+# coming from melee_game.dll, built from the decompiled sources by sourceport/game with GCC.
+# melee_source_probe is the bare first stage (no window, no runtime), for chasing boot crashes.
+add_executable(melee_source WIN32 app/main.cpp app/settings_window.cpp app/source_host.cpp app/melee_unlocked.rc)
+target_include_directories(melee_source PRIVATE runtime/abi app)
+target_link_libraries(melee_source PRIVATE runtime guest dbghelp)
+target_compile_options(melee_source PRIVATE /EHsc)
+target_compile_definitions(melee_source PRIVATE MELEE_SOURCE_PORT NOMINMAX _CRT_SECURE_NO_WARNINGS
+  MELEE_PORT_VERSION="${MELEE_PORT_VERSION}" MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}")
+add_executable(melee_source_probe app/main_source.cpp)
+target_include_directories(melee_source_probe PRIVATE runtime/abi)
 add_executable(port_mm_probe tests/mm_probe.cpp)
 target_link_libraries(port_mm_probe PRIVATE runtime guest)
 target_compile_options(port_mm_probe PRIVATE /EHsc)
@@ -219,6 +226,7 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/include/sl.h")
   target_include_directories(runtime PRIVATE third_party/streamline/include)
   target_link_libraries(runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/lib/x64/sl.interposer.lib" wintrust crypt32 delayimp)
   target_link_options(melee_port PRIVATE /DELAYLOAD:sl.interposer.dll)
+  target_link_options(melee_source PRIVATE /DELAYLOAD:sl.interposer.dll)   # same folder, same DLLs
   foreach(sl_dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll)
     add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/bin/x64/${sl_dll}" "$<TARGET_FILE_DIR:melee_port>/${sl_dll}")

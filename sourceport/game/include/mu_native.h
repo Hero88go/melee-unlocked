@@ -38,4 +38,8 @@ static inline void mu_dcbz(void* base, int offset)
 #include "math_native.h"
 #include "mu_disc.h"
 
+/* Deliver the handler the game installed for a hardware interrupt, the next time interrupts are on
+ * (shim/mu_os.c). Used where the native build knows the hardware event has happened. */
+void mu_raise_interrupt(int interrupt);
+
 #endif

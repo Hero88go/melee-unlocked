@@ -88,14 +88,32 @@ void mu_poll(void)
     mu_deliver_pending();
 }
 
-/* Interrupt handlers: the host delivers the events these would have fired, so registering one is
- * bookkeeping. The VI retrace handler is the only one the game installs that still matters, and
- * mu_vi.c owns that. */
+/* Interrupt handlers. The ones that still matter natively are the pixel engine's (draw done and
+ * draw sync), raised by the GX library itself once the host has taken the stream (mu_raise_interrupt).
+ * The VI retrace goes through mu_vi.c. */
+static __OSInterruptHandler mu_handlers[32];
+
 __OSInterruptHandler __OSSetInterruptHandler(__OSInterrupt interrupt, __OSInterruptHandler handler)
 {
-    (void) interrupt;
-    (void) handler;
-    return 0;
+    __OSInterruptHandler previous = 0;
+    if (interrupt >= 0 && interrupt < 32) {
+        previous = mu_handlers[interrupt];
+        mu_handlers[interrupt] = handler;
+    }
+    return previous;
+}
+
+static void mu_interrupt_event(void* a, intptr_t interrupt)
+{
+    (void) a;
+    if (mu_handlers[interrupt])
+        mu_handlers[interrupt]((__OSInterrupt) interrupt, OSGetCurrentContext());
+}
+
+void mu_raise_interrupt(int interrupt)
+{
+    if (interrupt >= 0 && interrupt < 32)
+        mu_post(mu_interrupt_event, 0, interrupt);
 }
 
 OSInterruptMask __OSUnmaskInterrupts(OSInterruptMask mask) { return mask; }

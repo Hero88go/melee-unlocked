@@ -122,10 +122,19 @@ const char* symbol_name(uint32_t addr) {
 }
 
 // ---------------- memory ----------------
-uint8_t* ptr(uint32_t addr, uint32_t bytes) {
+uint8_t* game_image = nullptr;
+uint32_t game_image_size = 0;
+uint8_t* try_ptr(uint32_t addr, uint32_t bytes) {
   uint32_t off = addr & 0x3FFFFFFFu;
-  if (!valid_range(off, bytes, ram_size)) die("host access outside RAM: %08X+%X", addr, bytes);
-  return ram + off;
+  if (valid_range(off, bytes, ram_size)) return ram + off;
+  constexpr uint32_t IMAGE_PHYS = 0x10000000u;
+  if (game_image && off >= IMAGE_PHYS && valid_range(off - IMAGE_PHYS, bytes, game_image_size)) return game_image + (off - IMAGE_PHYS);
+  return nullptr;
+}
+uint8_t* ptr(uint32_t addr, uint32_t bytes) {
+  uint8_t* p = try_ptr(addr, bytes);
+  if (!p) die("host access outside RAM: %08X+%X", addr, bytes);
+  return p;
 }
 uint32_t rd32(uint32_t a) { uint32_t v; std::memcpy(&v, ptr(a, 4), 4); return _byteswap_ulong(v); }
 uint16_t rd16(uint32_t a) { uint16_t v; std::memcpy(&v, ptr(a, 2), 2); return _byteswap_ushort(v); }
@@ -356,6 +365,8 @@ uint32_t retrace_count() { return g_retraces; }
 // lag-reduction code waits for pad data that the retrace path produces).
 static uint64_t g_next_retrace_tb = TB_PER_FRAME;
 static bool g_in_retrace = false;
+void (*native_retrace)() = nullptr;
+bool retrace_due() { return cpu->tb >= g_next_retrace_tb && !g_in_retrace; }
 void advance_time(uint64_t ticks) { cpu->tb += ticks; }
 static void advance_frame() {
   if (cpu->tb < g_next_retrace_tb) cpu->tb = g_next_retrace_tb;   // idle: jump to the boundary
@@ -559,14 +570,18 @@ void retrace() {
     g_frame_time = now_seconds();
   }
   g_sim_frame_start = now_seconds();
-  fire_due_alarms(true);
-  hle::audio_tick(true);
-  // VI: mark display-interrupt 0 as pending (bit 15 of DI0 status, VI reg index 0x18).
-  uint16_t di0 = ((uint16_t)g_mmio[0x2030] << 8) | g_mmio[0x2031];
-  di0 |= 0x8000;
-  g_mmio[0x2030] = (uint8_t)(di0 >> 8); g_mmio[0x2031] = (uint8_t)di0;
-  deliver_interrupt(24);  // __OS_INTERRUPT_PI_VI
-  trace_state();
+  if (native_retrace) {
+    native_retrace();
+  } else {
+    fire_due_alarms(true);
+    hle::audio_tick(true);
+    // VI: mark display-interrupt 0 as pending (bit 15 of DI0 status, VI reg index 0x18).
+    uint16_t di0 = ((uint16_t)g_mmio[0x2030] << 8) | g_mmio[0x2031];
+    di0 |= 0x8000;
+    g_mmio[0x2030] = (uint8_t)(di0 >> 8); g_mmio[0x2031] = (uint8_t)di0;
+    deliver_interrupt(24);  // __OS_INTERRUPT_PI_VI
+    trace_state();
+  }
   if (g_retraces % 60 == 0 || (options.frames && g_retraces >= options.frames)) {
     uint64_t commands, draws, vertices; uint32_t copies;
     gx_stats(&commands, &draws, &vertices, &copies);

@@ -48,6 +48,12 @@ void wr32(uint32_t addr, uint32_t v);
 void wr16(uint32_t addr, uint16_t v);
 void wr8(uint32_t addr, uint8_t v);
 uint8_t* ptr(uint32_t addr, uint32_t bytes = 1); // checks the complete RAM span
+// The same lookup without dying: nullptr when the span is not the game's memory. The source port
+// also has the game's own image, whose statics the console build kept in RAM; its physical form
+// (address & 0x3FFFFFFF) is 0x10000000 + offset for an image at 0x50000000.
+uint8_t* try_ptr(uint32_t addr, uint32_t bytes = 1);
+extern uint8_t* game_image;       // null for the recompiled build
+extern uint32_t game_image_size;
 std::string cstr(uint32_t addr, size_t max = 256);
 
 // ---- disc ----
@@ -70,6 +76,11 @@ void set_pe_token_pending(uint16_t token);
 void wait_event();                     // one OSSleepThread step
 void pump_completions();               // deliver queued callbacks now (from HLE entry points)
 void retrace();                        // one VI retrace: time, alarms, VI interrupt
+bool retrace_due();                    // the timebase has reached the next retrace boundary
+// Source port: the game is native code, not the recompiled guest. When set, retrace() calls this in
+// place of the guest's alarm, audio and VI interrupt delivery (everything else, pacing, window,
+// logging, exit, is shared).
+extern void (*native_retrace)();
 void deliver_interrupt(uint32_t number);
 bool exit_requested();
 void request_exit(int code);

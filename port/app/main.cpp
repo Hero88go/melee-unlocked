@@ -25,6 +25,9 @@
 #include "updater.h"
 #include "discord_presence.h"
 namespace app { int run_settings_window(gx::RenderOptions& options); }
+#ifdef MELEE_SOURCE_PORT
+#include "source_host.h"
+#endif
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -339,6 +342,9 @@ static int melee_main(int argc, char** argv) {
   }
   for (int i = 1; i < argc; ++i)
     if (std::string(argv[i]) == "--version") { std::printf("%s\n", MELEE_PORT_VERSION); return 0; }
+#ifdef MELEE_SOURCE_PORT
+  if (!source_port::reserve_memory()) return 1;
+#endif
   TimerResolution timer_resolution;
   host::Options& o = host::options;
   bool headless = false, hidden = false, threaded = false, fps_requested = false;
@@ -549,6 +555,22 @@ static int melee_main(int argc, char** argv) {
   gx::init(backend.get());
   host::audio_open(o.volume, o.audio_dump.c_str(), !headless);
 
+#ifdef MELEE_SOURCE_PORT
+  // The game from source: nothing below this point applies (it is the recompiled guest's boot).
+  static std::unique_ptr<gx::Backend>* backend_at_exit = &backend;
+  auto shutdown = [](int) {
+    backend_at_exit->reset();
+    host::audio_close();
+    host::updater::shutdown();
+    host::discord::shutdown();
+    host::gcadapter_shutdown();
+    host::switchpro_shutdown();
+    slippi::shutdown();
+  };
+  const int source_code = source_port::run(shutdown);
+  shutdown(source_code);
+  return source_code;
+#endif
   ppc::init_dispatch();
   host::boot_setup();
   host::log("boot: entering __start at %08X", 0x8000522Cu);

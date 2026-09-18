@@ -8,7 +8,7 @@ rel="$1"
 obj="CMakeFiles/melee_game.dir/C_/Users/Chandler/NEW_project/melee-sourceport/sourceport/extern/melee/$rel.obj"
 cmd=$(cd "$ROOT" && $N -C build-sourceport-gcc -t commands "$obj" | tail -1)
 [ -z "$cmd" ] && { echo "no build command for $rel"; exit 2; }
-out="${TMP:-/tmp}/cc1_$$_$(basename "$rel").obj"
+out="$(cygpath -m "${TMP:-/tmp}")/cc1_$$_$(basename "$rel").obj"
 cmd=$(printf '%s' "$cmd" | tr '\' '/' | sed -E "s# -o [^ ]+# -o \"$out\"#; s# -MD -MT [^ ]+ -MF [^ ]+##")
 cd "$ROOT/build-sourceport-gcc" && eval "$cmd" 2>&1 | grep -E "error|note: in expansion" | sed 's#C:/Users/Chandler/NEW project/melee-sourceport/sourceport/extern/melee/##'
 rc=${PIPESTATUS:-0}
