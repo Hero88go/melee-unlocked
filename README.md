@@ -20,7 +20,6 @@ the Slippi team.
 No Monetization. No Donos. No Patreon. **FREE FOREVER**
  
 v0.5.0 Gameplay footage can be found here: https://www.youtube.com/watch?v=JlmTDW6wQms
-First gameplay footage can be found here: https://youtu.be/y2KN3s7uvqM
 
 ## Discord / Help
 Discord can be found here https://discord.gg/K7HHs3r8ty
