@@ -25,6 +25,9 @@ typedef struct MuParityEntry {
     uint8_t n_scalar;        /* 0..3 */
     uint8_t is_double;
     uint8_t ret;             /* MU_RET_* */
+    /* Per scalar, the range the routine is meant for; both zero means the harness's own spread of
+     * magnitudes. A series that converges for the game's inputs may never converge for others. */
+    float scalar_min[3], scalar_max[3];
 } MuParityEntry;
 
 /* Exported by the library as "mu_parity_table". */
