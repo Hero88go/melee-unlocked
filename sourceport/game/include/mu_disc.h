@@ -60,6 +60,7 @@ typedef struct { __INT16_TYPE__ v; } DISC_STRUCT be_s16;
 
 /* Big-endian twins of the maths types, for use inside disc structs. */
 typedef struct { float x, y, z; } DISC_STRUCT Vec3_BE;
+typedef struct { float x, y, z, w; } DISC_STRUCT Vec4_BE;
 typedef struct { float x, y; } DISC_STRUCT Vec2_BE;
 typedef struct { float x, y, z, w; } DISC_STRUCT Quaternion_BE;
 typedef struct { float m[3][4]; } DISC_STRUCT Mtx_BE;

@@ -80,7 +80,14 @@ list(APPEND SHIM_SOURCES ${GXNATIVE_SOURCES})
 add_library(melee_game SHARED ${GAME_SOURCES} ${LIBC_SOURCES} ${SDK_SOURCES} ${SHIM_SOURCES} $<TARGET_OBJECTS:ppcleaf>)
 set_target_properties(melee_game PROPERTIES PREFIX "" C_STANDARD 11 C_EXTENSIONS ON EXCLUDE_FROM_ALL ON)
 target_link_libraries(melee_game PRIVATE game_flags)
-target_link_options(melee_game PRIVATE ${LOW_IMAGE_LINK_OPTIONS} -Wl,--image-base,0x50000000)
+# Right after MEM1 (see port/app/source_host.cpp): the image's statics then have physical addresses
+# GX can hold. The debug information goes to melee_game.dbg so the loaded image stays small enough
+# to fit below 64 MB physical; addr2line reads the .dbg.
+target_link_options(melee_game PRIVATE ${LOW_IMAGE_LINK_OPTIONS} -Wl,--image-base,0x82800000)
+add_custom_command(TARGET melee_game POST_BUILD
+  COMMAND "${CMAKE_OBJCOPY}" --only-keep-debug $<TARGET_FILE:melee_game> $<TARGET_FILE_DIR:melee_game>/melee_game.dbg
+  COMMAND "${CMAKE_OBJCOPY}" --strip-debug --add-gnu-debuglink=$<TARGET_FILE_DIR:melee_game>/melee_game.dbg $<TARGET_FILE:melee_game>
+  VERBATIM)
 
 # ---- parity library ----
 # Native routines that are meant to agree bit for bit with the translated game, offered to the MSVC

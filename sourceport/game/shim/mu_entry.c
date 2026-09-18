@@ -26,8 +26,11 @@ __declspec(dllexport) int32_t mu_game_entry(const MuHostApi* host, MuGameApi* ga
     return 0;
 }
 
+void mu_fill_from_dol(void);
+
 static int32_t mu_run(void)
 {
+    mu_fill_from_dol();   /* the font atlases the sources take from the retail binary */
     return main();
 }
 

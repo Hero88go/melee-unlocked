@@ -42,4 +42,9 @@ static inline void mu_dcbz(void* base, int offset)
  * (shim/mu_os.c). Used where the native build knows the hardware event has happened. */
 void mu_raise_interrupt(int interrupt);
 
+/* A wait the console left to the hardware: let the host run (retrace, disc, audio) and take what it
+ * delivered. Placed in the game's busy-wait loops, which otherwise never see their flag change. */
+void mu_poll(void);
+#define HOST_POLL() mu_poll()
+
 #endif
