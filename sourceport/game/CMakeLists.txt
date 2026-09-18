@@ -65,7 +65,7 @@ target_compile_options(ppcleaf PRIVATE -O2 -g -std=gnu++17 -mavx2 -mfma -ffp-con
 # ---- what is compiled ----
 file(GLOB_RECURSE GAME_SOURCES CONFIGURE_DEPENDS "${D}/src/melee/*.c" "${D}/src/sysdolphin/*.c")
 # The console's C library is kept only where its results reach the simulation: the maths, and rand.
-set(LIBC_SOURCES "${D}/src/MSL/math.c" "${D}/src/MSL/math_1.c" "${D}/src/MSL/math_data.c" "${D}/src/MSL/trigf.c" "${D}/src/MSL/rand.c")
+set(LIBC_SOURCES "${D}/src/MSL/math.c" "${D}/src/MSL/math_1.c" "${D}/src/MSL/math_data.c" "${D}/src/MSL/trigf.c" "${D}/src/MSL/float.c" "${D}/src/MSL/rand.c")
 # The halves of the SDK that sit above the hardware. What sat below it is the host's job.
 file(GLOB SDK_SOURCES CONFIGURE_DEPENDS "${SDK}/gx/*.c" "${SDK}/ax/*.c" "${SDK}/axfx/*.c" "${SDK}/mtx/*.c")
 list(APPEND SDK_SOURCES "${SDK}/os/OSAlloc.c" "${SDK}/os/OSArena.c")
@@ -81,8 +81,9 @@ target_link_options(melee_game PRIVATE ${LOW_IMAGE_LINK_OPTIONS} -Wl,--image-bas
 # ---- parity library ----
 # Native routines that are meant to agree bit for bit with the translated game, offered to the MSVC
 # harness (port/tests/native_parity.cpp), which runs each against its twin with the same inputs.
-add_library(mu_parity SHARED parity/parity_table.c $<TARGET_OBJECTS:ppcleaf>
-  "${D}/src/MSL/trigf.c" "${D}/src/MSL/math_data.c" "${D}/src/MSL/math_1.c")
+add_library(mu_parity SHARED parity/parity_table.c parity/parity_stubs.c shim/mu_math.c $<TARGET_OBJECTS:ppcleaf>
+  "${D}/src/MSL/trigf.c" "${D}/src/MSL/math_data.c" "${D}/src/MSL/math_1.c" "${D}/src/MSL/math.c" "${D}/src/MSL/float.c"
+  "${D}/src/melee/lb/lbvector.c" "${D}/src/melee/lb/lbtrigf.c" "${D}/src/melee/lb/lb_00CE.c")
 set_target_properties(mu_parity PROPERTIES PREFIX "" C_STANDARD 11 C_EXTENSIONS ON)
 target_link_libraries(mu_parity PRIVATE game_flags)
 target_link_options(mu_parity PRIVATE ${LOW_IMAGE_LINK_OPTIONS} -Wl,--image-base,0x58000000)

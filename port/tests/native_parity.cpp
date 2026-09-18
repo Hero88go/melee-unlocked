@@ -233,7 +233,11 @@ int main(int argc, char** argv) {
         }
         static const char axes[] = {'x', 'y', 'z', 'X', 'Y', 'Z'};
         native.chr = guest.chr = axes[rng.next() % 6];
-        for (int i = 0; i < e.n_scalar; ++i) native.scalar[i] = guest.scalar[i] = e.is_double ? rng.range(-8.0, 8.0) : (double)gen_float(rng);
+        for (int i = 0; i < e.n_scalar; ++i) {
+          double v = e.is_double ? rng.range(-8.0, 8.0) : (double)gen_float(rng);
+          if (e.scalar_min[i] != 0.0f || e.scalar_max[i] != 0.0f) v = (double)(float)rng.range(e.scalar_min[i], e.scalar_max[i]);
+          native.scalar[i] = guest.scalar[i] = v;
+        }
         std::vector<std::vector<float>> native_bufs = inputs;
         if (!call_native(native, native_bufs)) { shape_ok = false; break; }
         call_guest(guest, addr, inputs);
