@@ -113,6 +113,10 @@ target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcry
 # WIN32: no console window when the game is double-clicked or started from the launcher. Command-line
 # use still works, because main() reattaches to a parent console when there is one (see app/main.cpp).
 add_executable(melee_port WIN32 app/main.cpp app/settings_window.cpp app/melee_unlocked.rc)
+# The source port's host (first stage): loads melee_game.dll, the game built from source by
+# sourceport/game with GCC. Depends on nothing in the runtime yet; see app/main_source.cpp.
+add_executable(melee_source app/main_source.cpp)
+target_include_directories(melee_source PRIVATE runtime/abi)
 add_executable(port_mm_probe tests/mm_probe.cpp)
 target_link_libraries(port_mm_probe PRIVATE runtime guest)
 target_compile_options(port_mm_probe PRIVATE /EHsc)
