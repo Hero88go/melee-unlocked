@@ -166,13 +166,16 @@ int slot_for(HANDLE device) {
   return -1;
 }
 
-// Scales a declared axis range onto the signed range the GameCube pad uses. No deadzone: a box
-// reports exact values and rounding them toward centre is precisely the wrong thing to do.
+// Scales a declared axis range onto the signed range the GameCube pad uses, from the centre out,
+// the way Dolphin does: centre -> 0, either end -> 127. No deadzone: a box reports exact values and
+// rounding them toward centre is precisely the wrong thing to do. Scaling across the whole span
+// instead (t * 255 - 128) put b0xx-ahk's full push (vJoy 16384 + 10271) at 79 rather than the 80
+// Dolphin gives it, so a B0XX on vJoy never reached the edge of the stick.
 int8_t to_signed(const Axis& a, LONG raw) {
-  const double span = (double)a.logical_max - (double)a.logical_min;
-  if (span <= 0) return 0;
-  const double t = ((double)raw - (double)a.logical_min) / span;        // 0..1
-  const int scaled = (int)std::lround(t * 255.0) - 128;
+  const double half = ((double)a.logical_max - (double)a.logical_min) / 2.0;
+  if (half <= 0) return 0;
+  const double mid = ((double)a.logical_max + (double)a.logical_min) / 2.0;
+  const int scaled = (int)std::lround(((double)raw - mid) / half * 127.0);
   return (int8_t)std::clamp(scaled, -128, 127);
 }
 

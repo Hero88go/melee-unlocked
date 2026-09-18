@@ -23,6 +23,9 @@ struct SettingsState {
   // panel is reachable mid-game.
   enum class Confirm { None, Restart, Quit };
   Confirm confirm = Confirm::None;
+  // The Esc menu (back to game, settings, quit), for keyboards without an F1 key and so quitting
+  // does not need Alt-Tab. menu_quit: showing "Quit Melee Unlocked?" instead of the buttons.
+  bool menu_open = false, menu_quit = false;
   // A texture pack was switched on or off: the backend drops what it has uploaded so the next
   // draw rebuilds it with (or without) its replacement.
   bool textures_dirty = false;

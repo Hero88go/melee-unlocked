@@ -30,6 +30,7 @@ int g_client_w = 1280, g_client_h = 960;
 ResizeCallback g_on_resize;
 std::atomic<bool> g_fullscreen_toggle{false};
 std::atomic<bool> g_settings_toggle{false};
+std::atomic<bool> g_escape_press{false};
 MessageCallback g_on_message;
 std::atomic<bool> g_ui_capture{false};
 std::mutex g_ui_pad_mutex;
@@ -59,6 +60,7 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
       // frames that are drawn, so presses made during a load queued up and were replayed afterwards,
       // and ImGui's repeat turned a held key into the panel flickering open and shut.
       if (w == VK_F1 && !(l & (1 << 30))) g_settings_toggle.store(true);
+      if (w == VK_ESCAPE && !(l & (1 << 30))) g_escape_press.store(true);   // the in-game menu, same rules as F1
       std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = true; return 0;
     }
     case WM_KEYUP: { std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = false; return 0; }
@@ -234,6 +236,7 @@ bool window_take_fullscreen_toggle() { return g_fullscreen_toggle.exchange(false
 // Several presses while nothing was being drawn count as one: the player pressed F1 again because
 // nothing seemed to happen, and wants the panel, not an even number of toggles.
 bool window_take_settings_toggle() { return g_settings_toggle.exchange(false); }
+bool window_take_escape() { return g_escape_press.exchange(false); }
 
 void window_destroy() { if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; } }
 
@@ -268,6 +271,7 @@ std::array<PadBindings, 4> g_swpro_bindings = default_swpro_bindings();
 std::array<HidBindings, 4> g_hid_bindings = default_hid_bindings();
 std::array<Deadzone, (size_t)PadFamily::Count> g_deadzones{};
 std::array<PortSource, 4> g_port_sources = default_port_sources();
+std::array<std::string, 4> g_port_device_names;
 // The last state the game actually read, for the on-screen controller overlay. Taken here rather
 // than polled again by the renderer, so the overlay shows what the game saw and polling the devices
 // stays on one thread at one rate.
@@ -788,6 +792,20 @@ void input_poll(PadState out[4]) {
                 pad->trig_l > 20 || pad->trig_r > 20)) result = *pad;
     return result;
   };
+  // A port given a named box follows that box to whatever HID slot it is in this time.
+  for (int port = 0; port < 4; ++port) {
+    PortSource& src = g_port_sources[port];
+    const std::string& want = g_port_device_names[port];
+    if (src.kind != DeviceKind::HidPad || want.empty()) continue;
+    const bool here = src.index >= 0 && src.index < 4 && hid_connected[src.index] && port_device_key(hidpad_name(src.index)) == want;
+    if (here) continue;
+    for (int i = 0; i < 4; ++i) {
+      if (!hid_connected[i] || port_device_key(hidpad_name(i)) != want) continue;
+      log("controls: port %d follows %s to HID slot %d (it was listed as slot %d)", port + 1, want.c_str(), i + 1, src.index + 1);
+      src.index = i;
+      break;
+    }
+  }
   for (int port = 0; port < 4; ++port) {
     const PortSource& src = g_port_sources[port];
     switch (src.kind) {
@@ -828,11 +846,37 @@ void input_poll(PadState out[4]) {
 bool g_rumble_enabled = true;
 bool g_background_input = true;
 
+namespace {
+// An Xbox pad's motors: both at full while the game asks for rumble, off otherwise. Only written
+// when the state changes, since XInputSetState is a call into the driver.
+void xinput_rumble(int index, bool on) {
+  static bool state[4] = {};
+  if (index < 0 || index > 3 || state[index] == on) return;
+  state[index] = on;
+  XINPUT_VIBRATION v{};
+  v.wLeftMotorSpeed = v.wRightMotorSpeed = on ? 65535 : 0;
+  XInputSetState((DWORD)index, &v);
+}
+// The first rumble each port asks for, and where it went: players report "rumble does not work"
+// without saying which controller, and this line answers that from their log.
+void log_first_rumble(int game_port, const char* where) {
+  static bool logged[5] = {};
+  const int i = game_port < 0 ? 4 : game_port;
+  if (logged[i]) return;
+  logged[i] = true;
+  log("rumble: %s%d -> %s%s", game_port < 0 ? "local player" : "port ", game_port < 0 ? 0 : game_port + 1, where,
+      g_rumble_enabled ? "" : " (switched off in Controls)");
+}
+}  // namespace
+
 void input_rumble(int game_port, bool on) {
   if (game_port < 0 || game_port > 3) return;
   if (!g_rumble_enabled) on = false;
   const PortSource& src = g_port_sources[game_port];
-  if (src.kind == DeviceKind::GCAdapter && src.index >= 0 && src.index < 4) gcadapter_rumble(src.index, on);
+  const bool valid = src.index >= 0 && src.index < 4;
+  if (src.kind == DeviceKind::GCAdapter && valid) { gcadapter_rumble(src.index, on); if (on) log_first_rumble(game_port, "GameCube adapter"); }
+  else if (src.kind == DeviceKind::XInputPad && valid) { xinput_rumble(src.index, on); if (on) log_first_rumble(game_port, "Xbox controller"); }
+  else if (on) log_first_rumble(game_port, "a controller without rumble support (keyboard, PlayStation, Switch or box)");
 }
 
 void input_rumble_local(bool on) {
@@ -841,6 +885,12 @@ void input_rumble_local(bool on) {
   for (auto& s : gc) { s = {}; s.err = -1; }
   const uint32_t mask = gcadapter_poll(gc);
   for (int i = 0; i < 4; ++i) if (mask & (1u << i)) gcadapter_rumble(i, on);
+  // The local player may be on an Xbox pad instead: rumble whichever ones are connected.
+  for (int i = 0; i < 4; ++i) {
+    XINPUT_STATE xs{};
+    if (XInputGetState((DWORD)i, &xs) == ERROR_SUCCESS) xinput_rumble(i, on);
+  }
+  if (on) log_first_rumble(-1, mask ? "GameCube adapter" : "any connected Xbox controller");
 }
 
 void input_last_pads(PadState out[4]) {
