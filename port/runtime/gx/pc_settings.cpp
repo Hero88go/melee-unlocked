@@ -488,6 +488,10 @@ static void migrate_profiles() {
 struct CustomPreset { bool set = false; int efb = 0, ssaa = 1, aniso = 16, dlss = 0; double fps = -1; int sub = 1; };
 static CustomPreset g_custom_preset;
 
+// The controller last shown in the Controls tab (its device number), so the tab opens on it again
+// rather than on whatever plays as port 1. -1: nothing saved yet.
+static int g_saved_edit_tab = -1;
+
 // Width left on the current row after the last item, so a hint that would be cut off is left out.
 static float room_after_last_item() {
   return ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x - ImGui::GetItemRectMax().x;
@@ -1319,6 +1323,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "swpro_gc_picture") g_swpro_gc_picture = value == "1";
       else if (key == "rumble") host::g_rumble_enabled = value != "0";
       else if (key == "backgroundinput") host::g_background_input = value != "0";
+      else if (key == "editdevice") g_saved_edit_tab = std::atoi(value.c_str());
       else if (key == "custompreset") {
         CustomPreset c; c.set = true;
         if (std::sscanf(value.c_str(), "%d %d %d %d %lf %d", &c.efb, &c.ssaa, &c.aniso, &c.dlss, &c.fps, &c.sub) == 6) g_custom_preset = c;
@@ -1456,6 +1461,10 @@ void settings_context_create(void* window, bool open_at_startup) {
   IMGUI_CHECKVERSION(); ImGui::CreateContext();
   auto& io = ImGui::GetIO(); io.IniFilename = nullptr;
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+  // Every input change is handled in the frame it arrives. ImGui otherwise takes one change per key
+  // per frame, and with two sources feeding the same gamepad keys (our GameCube pad and ImGui's own
+  // XInput polling) the queue grew faster than it drained: holding a stick froze the panel for a while.
+  io.ConfigInputTrickleEventQueue = false;
   ImGui::StyleColorsDark(); ImGui::GetStyle().ScaleAllSizes(1.25f);
   ImGui_ImplWin32_Init(window);
   host::window_set_message_callback([](void* w, uint32_t m, uintptr_t a, intptr_t b) {
@@ -2100,6 +2109,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         for (int i = 0; i < kFamilies[f].count; ++i) if (tab_connected(kFamilies[f].first_tab + i)) { device_sel[f] = i; break; }
       const int t = tab_of_source(host::g_port_sources[0]);
       if (t >= 0 && tab_connected(t)) select_tab(t);
+      if (g_saved_edit_tab >= 0 && g_saved_edit_tab < kDeviceTabs) select_tab(g_saved_edit_tab);
       // Test hook for panel screenshots: MELEE_SETTINGS_EDIT=<device number> opens on that device.
       if (const char* e = std::getenv("MELEE_SETTINGS_EDIT")) select_tab(std::atoi(e));
     }
@@ -2185,6 +2195,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       return "Box";
     };
     const int edit_tab = kFamilies[family_sel].first_tab + device_sel[family_sel];
+    if (edit_tab != g_saved_edit_tab) { g_saved_edit_tab = edit_tab; changed = true; }   // kept in the settings file
 
     // ---- Players: the game's four ports. Each card says what plays as that port; clicking a card
     // edits that controller, and its arrow changes what plays there. ----
@@ -2549,6 +2560,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << family_options_text()
            << "\nrumble " << (host::g_rumble_enabled ? 1 : 0)
            << "\nbackgroundinput " << (host::g_background_input ? 1 : 0)
+           << "\neditdevice " << g_saved_edit_tab
            << (g_custom_preset.set ? "\ncustompreset " + std::to_string(g_custom_preset.efb) + " " + std::to_string(g_custom_preset.ssaa) + " " +
                                          std::to_string(g_custom_preset.aniso) + " " + std::to_string(g_custom_preset.dlss) + " " +
                                          std::to_string(g_custom_preset.fps) + " " + std::to_string(g_custom_preset.sub)
