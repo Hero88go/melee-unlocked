@@ -1,5 +1,5 @@
 
-# Melee Unlocked - Alpha
+# Melee Unlocked - Beta
 
 A native Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online play and an
 unlocked display frame rate.

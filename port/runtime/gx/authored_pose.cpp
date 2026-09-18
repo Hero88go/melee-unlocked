@@ -321,30 +321,65 @@ bool sample_authored(const AuthoredPose& previous,const AuthoredPose& current,do
 // whole simulation frame while everything around it advances, and jumps a full frame at the
 // boundary. This applies only the camera's motion, leaving the object's own pose held.
 bool carry_camera(const AuthoredPose& previous,const AuthoredPose& current,double phase,
+                  const AuthoredPose& base,
                   const float in_pos[256],const float in_nrm[96],uint64_t pos_slots,
                   float out_pos[256],float out_nrm[96]) {
-  if(!previous.has_view||!current.has_view||!pos_slots)return false;
-  const bool interp=g_interpolate.load(std::memory_order_relaxed);
+  if(!previous.has_view||!current.has_view||!base.has_view||!pos_slots)return false;
   Matrix view_new,unused_carry; bool moved=false;
   camera_motion(previous,current,phase,view_new,unused_carry,moved);
-  if(!moved)return false;
-  // The held matrices embed the view of whichever frame they were held at.
-  const Matrix base_view=from12((interp?previous:current).view.data());
+  // The held matrices embed the view of the frame they were taken from, and which frame that is
+  // depends on the caller, not on the mode: a paired draw holds the previous frame in Interpolate,
+  // but a draw with no pair at all has only the current frame to hold. Inferring it from the mode
+  // carried every unpaired draw off the previous frame's view while its matrices carried the
+  // current one, which left the whole inverse camera step in the result: on Yoshi's Story that is
+  // 51,115 draws per interval (the bushes, trees and backdrop) drawn a full camera frame away from
+  // the rest of the stage whenever the camera moves, snapping back to the right place whenever it
+  // stops. `base` is now the pose the caller actually held, so the carry cancels exactly the view
+  // that is in the matrices and nothing else.
+  const Matrix base_view=from12(base.view.data());
+  if(view_new==base_view)return false;   // the matrices already embed the sampled view
   Matrix inv_base; if(!inverse(base_view,inv_base))return false;
   const Matrix carry=NativeMelee::Multiply(view_new,inv_base);
   Matrix carry_inv; const bool have_normals=inverse(carry,carry_inv);
+  return apply_carry(carry.data(),have_normals?carry_inv.data():nullptr,in_pos,in_nrm,pos_slots,out_pos,out_nrm);
+}
+
+// The camera part of the work above, done once for a presented frame instead of once per draw. The
+// whole of a stage that is standing still shares this transform, and building it per draw meant a
+// matrix inverse and a screw interpolation (acos, sin, pow) for every piece of scenery on screen.
+bool camera_sub_frame_carry(const AuthoredPose& previous,const AuthoredPose& current,double phase,
+                            float carry[12],float carry_inverse[12],bool& has_inverse) {
+  has_inverse=false;
+  if(!previous.has_view||!current.has_view)return false;
+  Matrix view_new,unused_carry; bool moved=false;
+  camera_motion(previous,current,phase,view_new,unused_carry,moved);
+  const Matrix cur_view=from12(current.view.data());
+  if(view_new==cur_view)return false;
+  Matrix inv_cur; if(!inverse(cur_view,inv_cur))return false;
+  const Matrix c=NativeMelee::Multiply(view_new,inv_cur);
+  std::memcpy(carry,c.data(),48);
+  Matrix c_inv;
+  if(inverse(c,c_inv)){ std::memcpy(carry_inverse,c_inv.data(),48); has_inverse=true; }
+  return true;
+}
+
+bool apply_carry(const float carry[12],const float carry_inverse[12],
+                 const float in_pos[256],const float in_nrm[96],uint64_t pos_slots,
+                 float out_pos[256],float out_nrm[96]) {
+  if(!pos_slots)return false;
+  const Matrix c=from12(carry);
   bool any=false;
   for(int row=0;row+3<=64;++row) {
     if(!(pos_slots&(1ull<<row)))continue;
-    const Matrix out=NativeMelee::Multiply(carry,from12(in_pos+row*4));
+    const Matrix out=NativeMelee::Multiply(c,from12(in_pos+row*4));
     bool finite=true; for(float v:out)if(!std::isfinite(v))finite=false;
     if(!finite)continue;
     std::memcpy(out_pos+row*4,out.data(),48);
     any=true;
-    if(have_normals&&row+3<=32) {
+    if(carry_inverse&&row+3<=32) {
       const float* n=in_nrm+row*3; float updated[9];
-      for(int r=0;r<3;++r)for(int c=0;c<3;++c)
-        updated[r*3+c]=carry_inv[r]*n[c]+carry_inv[4+r]*n[3+c]+carry_inv[8+r]*n[6+c];
+      for(int r=0;r<3;++r)for(int c2=0;c2<3;++c2)
+        updated[r*3+c2]=carry_inverse[r]*n[c2]+carry_inverse[4+r]*n[3+c2]+carry_inverse[8+r]*n[6+c2];
       std::memcpy(out_nrm+row*3,updated,sizeof updated);
     }
   }

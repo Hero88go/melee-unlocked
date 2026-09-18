@@ -2,6 +2,7 @@
 // SlippiNetplayClient, SlippiMatchmaking and the user record.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "slippi_net.h"
+#include "slippi_report.h"
 #include "host.h"
 #define NOMINMAX
 #include <winsock2.h>
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <random>
 #include <sstream>
+#include <thread>
 
 using json = nlohmann::json;
 
@@ -147,12 +149,38 @@ void PlayerSelections::Merge(const PlayerSelections& s) {
 void PlayerSelections::Reset() { character_id = character_color = team_id = 0; is_character_selected = false; stage_id = 0; is_stage_selected = false; rng_offset = 0; }
 
 // ---------------------------------------------------------------- user
-User::User(std::string user_dir) : dir_(std::move(user_dir)) { AttemptLogin(); }
+User::User(std::string user_dir) : dir_(std::move(user_dir)) { if (AttemptLogin()) RefreshFromServer(); }
+void User::RefreshFromServer() {
+  UserInfo me = GetUserInfo();
+  if (me.uid.empty()) return;
+  std::shared_ptr<std::atomic<bool>> alive = alive_;
+  std::thread([this, me, alive] {
+    std::string response; int status = 0;
+    if (!report::http_get("https://users.slippi.gg/user/" + me.uid, &response, &status) || status != 200) {
+      host::log("slippi: profile refresh unavailable (HTTP %d); keeping user.json", status);
+      return;
+    }
+    json j = json::parse(response, nullptr, false);
+    if (j.is_discarded() || !alive->load()) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    const std::string name = j.value("displayName", ""), code = j.value("connectCode", "");
+    if (!name.empty()) info_.display_name = name;
+    if (!code.empty()) info_.connect_code = code;
+    const std::string latest = j.value("latestVersion", "");
+    if (!latest.empty()) info_.latest_version = latest;
+    if (j.count("chatMessages") && j["chatMessages"].is_array() && j["chatMessages"].size() == 16) {
+      info_.chat_messages.clear();
+      for (auto& m : j["chatMessages"]) info_.chat_messages.push_back(m.get<std::string>());
+    }
+    host::log("slippi: profile refreshed from server: %s (%s)", info_.display_name.c_str(), info_.connect_code.c_str());
+  }).detach();
+}
 bool User::AttemptLogin() {
   std::ifstream f(dir_ + "/user.json");
   if (!f) { logged_in_ = false; return false; }
   try {
     json j = json::parse(f);
+    std::lock_guard<std::mutex> lock(mutex_);
     info_.uid = j.value("uid", "");
     info_.play_key = j.value("playKey", "");
     info_.display_name = j.value("displayName", "");
@@ -170,8 +198,8 @@ bool User::AttemptLogin() {
   }
   return logged_in_;
 }
-void User::LogOut() { logged_in_ = false; info_ = UserInfo(); host::log("slippi: logged out (user.json left in place)"); }
-std::vector<std::string> User::GetUserChatMessages() const { return info_.chat_messages.size() == 16 ? info_.chat_messages : GetDefaultChatMessages(); }
+void User::LogOut() { std::lock_guard<std::mutex> lock(mutex_); logged_in_ = false; info_ = UserInfo(); host::log("slippi: logged out (user.json left in place)"); }
+std::vector<std::string> User::GetUserChatMessages() const { UserInfo me = GetUserInfo(); return me.chat_messages.size() == 16 ? me.chat_messages : GetDefaultChatMessages(); }
 std::vector<std::string> User::GetDefaultChatMessages() {
   return {"ggs", "one more", "brb", "good luck", "well played", "that was fun", "thanks", "too good",
           "sorry", "my b", "lol", "wow", "gotta go", "one sec", "let's play again later", "bad connection"};
@@ -312,6 +340,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       ping_us_[pidx] = time_us() - send_time;
       ping_sample_sum_us_.fetch_add(ping_us_[pidx], std::memory_order_relaxed);
       ping_sample_count_.fetch_add(1, std::memory_order_relaxed);
+      if (pidx == 0) last_ping_ms_.store((uint32_t)(ping_us_[pidx] / 1000), std::memory_order_relaxed);
       if (frame % 600 == 0 && pidx == 0) host::log("slippi: ping %llu ms", (unsigned long long)(ping_us_[0] / 1000));
       break;
     }

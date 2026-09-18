@@ -881,6 +881,8 @@ void handle_get_player_settings(std::vector<uint8_t>& q) {
 Config& config() { return g_config; }
 uint64_t rollback_count() { return g_rollbacks; }
 bool is_online_match() { return g_in_online_match; }
+int local_player_slot() { return g_local_player_index; }
+int ping_ms() { return g_netplay ? g_netplay->LastPingMs() : 0; }
 
 // g_last_search keeps the mode of the last search for the whole session, so it only means anything
 // while an online session is actually up: searching, set up (the online character select screen),

@@ -112,6 +112,11 @@ struct Frame {
   std::vector<EfbCopy> copies;
   std::vector<FrameCommand> commands;
   uint64_t sequence = 0;
+  // The game's scene controller when this frame was finished: major scene (2 VS, 0x1C training,
+  // 1 the menus) and the minor scene within it (2 is in-game for the match modes; the character and
+  // stage selects come before it). Read on the simulation thread; the presentation thread decides
+  // from it whether there is a match on screen.
+  uint8_t scene_major = 0, scene_minor = 0;
   double time = 0.0;   // host seconds of the retrace this frame belongs to (see host::frame_time)
   // sequence and time are reset too: a recycled frame is handed back to the producer as "cleared",
   // and the renderer decides when to present by comparing sequences. Leaving a stale one on a

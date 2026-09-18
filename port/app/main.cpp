@@ -439,6 +439,7 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--frame-times") gfx.frame_times = next();
     else if (a == "--vsync") gfx.vsync = true;
     else if (a == "--flicker-scan") gfx.flicker_scan = true;
+    else if (a == "--pin-phase") gfx.pin_phase = std::atof(next());
     else if (a == "--capture") gfx.capture_path = next();
     else if (a == "--capture-frame") gfx.capture_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--capture-every") gfx.capture_every = (uint32_t)std::strtoul(next(), nullptr, 0);

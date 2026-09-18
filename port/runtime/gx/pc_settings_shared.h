@@ -11,6 +11,7 @@ namespace gx {
 
 struct SettingsState {
   bool open = false, saved = false;
+  bool dirty = false;   // a setting changed since the last write; saved once the control is released
   int volume = 0;
   std::array<float, 180> intervals{};
   unsigned cursor = 0;

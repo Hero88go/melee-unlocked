@@ -32,6 +32,17 @@ using Microsoft::WRL::ComPtr;
 int run_settings_d3d11(gx::D3D12Options& options, void* hwnd);
 int run_settings_d3d12(gx::D3D12Options& options, void* hwnd);
 
+// The controller display draws what the game read on its last PADRead, which is the right source in
+// game: it shows what the simulation acted on. Here there is no game and nothing ever calls
+// input_poll, so every port stayed at its zero-initialised state and the controller on screen never
+// moved, in the one window whose whole purpose is checking that a controller works. Polling once per
+// drawn frame publishes the same routed per-port state the game would, so the display, the port
+// assignment section and the live "what is this device pressing" lines all work here too.
+static void poll_pads_for_panel() {
+  host::PadState pads[4];
+  host::input_poll(pads);
+}
+
 int run_settings_window(gx::D3D12Options& options) {
   gx::settings_fill_window(true);   // the panel IS this window, not a box floating inside it
   void* hwnd = host::window_create(620, 700, L"Melee Unlocked settings", true);
@@ -85,6 +96,7 @@ int run_settings_d3d11(gx::D3D12Options& options, void* hwnd) {
 
   while (!host::window_closed()) {
     host::window_pump();
+    poll_pads_for_panel();
     // Resizing releases the back buffer, so the view is rebuilt from whatever size it is now.
     RECT rc{}; GetClientRect((HWND)hwnd, &rc);
     const UINT w = (UINT)(rc.right - rc.left), h = (UINT)(rc.bottom - rc.top);
@@ -180,6 +192,7 @@ int run_settings_d3d12(gx::D3D12Options& options, void* hwnd) {
     gx::PcSettingsUI ui(hwnd, device.Get(), queue.Get(), options);
     while (!host::window_closed()) {
       host::window_pump();
+      poll_pads_for_panel();
       RECT rc{}; GetClientRect((HWND)hwnd, &rc);
       const UINT w = (UINT)(rc.right - rc.left), h = (UINT)(rc.bottom - rc.top);
       DXGI_SWAP_CHAIN_DESC1 have{}; swapchain->GetDesc1(&have);

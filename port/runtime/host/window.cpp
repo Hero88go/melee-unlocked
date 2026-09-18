@@ -37,6 +37,11 @@ void raw_input(HRAWINPUT raw);
 void ds4_init_defaults();
 
 LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  // No mouse pointer over the game while it has focus and the settings panel is closed. The pointer
+  // has nothing to do there, and after alt-tabbing back from a music player it sat in the middle of
+  // the screen for the rest of the match. It comes back the moment the panel opens or focus leaves.
+  // Before the ImGui handler, which would otherwise set the arrow itself.
+  if (m == WM_SETCURSOR && LOWORD(l) == HTCLIENT && !g_ui_capture.load() && GetForegroundWindow() == h) { SetCursor(nullptr); return TRUE; }
   if (g_on_message && g_on_message(h, m, w, l)) return 1;
   switch (m) {
     case WM_CLOSE: g_closed = true; request_exit(0); return 0;
@@ -723,6 +728,19 @@ void input_poll(PadState out[4]) {
   input_debug_snapshot(debug);
 }
 
+void input_rumble(int game_port, bool on) {
+  if (game_port < 0 || game_port > 3) return;
+  const PortSource& src = g_port_sources[game_port];
+  if (src.kind == DeviceKind::GCAdapter && src.index >= 0 && src.index < 4) gcadapter_rumble(src.index, on);
+}
+
+void input_rumble_local(bool on) {
+  PadState gc[4];
+  for (auto& s : gc) { s = {}; s.err = -1; }
+  const uint32_t mask = gcadapter_poll(gc);
+  for (int i = 0; i < 4; ++i) if (mask & (1u << i)) gcadapter_rumble(i, on);
+}
+
 void input_last_pads(PadState out[4]) {
   std::lock_guard<std::mutex> lock(g_last_pads_mutex);
   for (int port = 0; port < 4; ++port) out[port] = g_last_pads[port];
@@ -834,6 +852,9 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
         break;
       case DeviceKind::SwitchPro:
         if (src.index >= 0 && src.index < 4 && snapshot.swpro_connected[src.index]) snapshot.ports[port] = swpro[src.index];
+        break;
+      case DeviceKind::HidPad:
+        if (src.index >= 0 && src.index < 4 && snapshot.hid_connected[src.index]) snapshot.ports[port] = hid[src.index];
         break;
       case DeviceKind::GCAdapter:
         if (src.index >= 0 && src.index < 4 && (gc_mask & (1u << src.index))) snapshot.ports[port] = gc[src.index];

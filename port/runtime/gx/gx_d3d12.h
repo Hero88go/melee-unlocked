@@ -31,6 +31,7 @@ struct D3D12Options {
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
   float dlss_jitter_sign = -1.0f; // calibrated 2026-09-11: -1 reconstructs sharp text, +1 blurs (see PORT_COMPLETION.md)
   bool pc_settings = false, settings_open = false, performance_overlay = false;
+  bool show_fps = false, show_ping = true;   // small top-left readouts: presented frame rate; netplay ping while online
   // The "Settings: F1" reminder in the corner. On for a new player, off for anyone who knows the
   // key and does not want it in a recording.
   bool settings_hint = true;
@@ -69,6 +70,9 @@ struct D3D12Options {
   // human can catch with a screenshot key. Diagnostic only: it costs a small downsample and readback
   // per presented frame, so it is off unless --flicker-scan asks for it.
   bool flicker_scan = false;
+  // Development: hold the sub-frame phase at this value and present once per simulation frame, so a
+  // captured run is repeatable and can be compared picture for picture against another run.
+  double pin_phase = -1;
   std::string settings_path = "port-settings.ini";
   std::string frame_times; // optional buffered CSV of CPU presentation timing
   SubFrameMode subframe = SubFrameMode::Off;
