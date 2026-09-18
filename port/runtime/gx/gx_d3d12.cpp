@@ -210,6 +210,7 @@ class D3D12Backend : public Backend {
   struct LastPose { float pos[256]; float proj[16]; uint64_t frame; };
   std::unordered_map<uint64_t, LastPose> last_poses_;
   void configure_dlss();
+  void set_dlss_mip_bias(float bias);
   void bind_efb_targets();
   void output_size(int* vw, int* vh) const;
   HANDLE present_timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* high resolution */, TIMER_ALL_ACCESS);
@@ -277,6 +278,10 @@ class D3D12Backend : public Backend {
   D3D12Options opts_;
   int client_w_, client_h_;
   int scale_ = 1;                                // current internal-resolution multiplier
+  // Texture LOD bias for the DLSS upscaling modes, log2(render width / output width) as NVIDIA's
+  // guide asks: without it textures are sampled at the detail of the smaller render and stay soft
+  // after the upscale. Zero for native and DLAA.
+  float dlss_mip_bias_ = 0.0f;
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
   ComPtr<ID3D12Device> device_;
   // Persistent caches (opts_.shader_cache): compiled shader blobs as files, pipelines in a D3D12
@@ -541,12 +546,20 @@ void D3D12Backend::output_size(int* vw, int* vh) const {
 
 // Reconciles the DLSS mode with the window: picks the integer EFB scale whose render size fits
 // the mode's optimal/allowed range, allocates the output texture and tells Streamline.
+void D3D12Backend::set_dlss_mip_bias(float bias) {
+  if (bias == dlss_mip_bias_) return;
+  dlss_mip_bias_ = bias;
+  sampler_sets_.clear();   // samplers carry the bias: build them again on next use
+  host::log("dlss: texture LOD bias %.2f", bias);
+}
+
 void D3D12Backend::configure_dlss() {
   int vw, vh; output_size(&vw, &vh);
   bool want = opts_.dlss_mode != 0 && streamline::available();
   if (!want) {
     if (dlss_active_ || forced_scale_) {
       wait_gpu(); dlss_active_ = false; dlss_in_place_ = false; dlss_mode_active_ = 0; forced_scale_ = 0; dlss_out_.Reset(); dlss_out_w_ = dlss_out_h_ = 0;
+      set_dlss_mip_bias(0.0f);
       streamline::dlss_set_options(DlssMode::Off, vw, vh);
       if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
       host::log("dlss: off (native rendering at EFB x%d)", scale_);
@@ -617,6 +630,7 @@ void D3D12Backend::configure_dlss() {
   }
   if (!streamline::dlss_set_options((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h)) { opts_.dlss_mode = 0; forced_scale_ = 0; dlss_active_ = false; return; }
   dlss_active_ = true; dlss_in_place_ = in_place; dlss_mode_active_ = opts_.dlss_mode; dlss_reset_ = true; last_poses_.clear();
+  set_dlss_mip_bias(in_place ? 0.0f : std::log2((640.0f * scale) / (float)out_w));
   host::log("dlss: %s, render %dx%d (EFB x%d, optimal %ux%u) -> %s %dx%d%s", dlss_mode_name((DlssMode)opts_.dlss_mode),
             in_place ? out_w : 640 * scale, in_place ? out_h : 480 * scale, scale, rw, rh,
             in_place ? "anti-aliased in place at" : "output", out_w, out_h, in_place ? ", letterboxed to the window by the present blit" : "");
@@ -1043,7 +1057,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
       sd.Filter = D3D12_ENCODE_BASIC_FILTER(mn, mg, mp, D3D12_FILTER_REDUCTION_TYPE_STANDARD);
       // Anisotropic filtering where the game asked for linear sampling (Dolphin's "Anisotropic Filtering").
       if (opts_.anisotropy > 1 && min_linear && mag_linear) sd.Filter = D3D12_FILTER_ANISOTROPIC;
-      sd.MipLODBias = (float)(int32_t)((int32_t)sbits(m0, 9, 8)) / 32.0f;
+      sd.MipLODBias = (float)(int32_t)((int32_t)sbits(m0, 9, 8)) / 32.0f + dlss_mip_bias_;
       sd.MinLOD = bits(m1, 0, 8) / 16.0f;
       sd.MaxLOD = mip ? bits(m1, 8, 8) / 16.0f : 0.0f;
       sd.MaxAnisotropy = (UINT)std::clamp(opts_.anisotropy, 1, 16);
@@ -1585,7 +1599,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       CreateDirectoryA("capture", nullptr);
       const std::string saved = opts_.capture_path;
       char path[64];
-      snprintf(path, sizeof path, "capture\blink_%05u.ppm", frames_presented_);
+      snprintf(path, sizeof path, "capture\\blink_%05u.ppm", frames_presented_);
       opts_.capture_path = path;
       capture_backbuffer();
       opts_.capture_path = saved;

@@ -3,12 +3,12 @@
 # short hops, attacks and shields so the opponent has something to play against for the whole game.
 300 A
 310
-600 sx=61 sy=127
-617
-640 A
-650
-700 START
-710
+840 sx=61 sy=127
+857
+880 A
+890
+940 START
+950
 @match
 @loop 360
 0

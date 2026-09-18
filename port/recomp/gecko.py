@@ -22,6 +22,17 @@ BOOTLOADER_BASE = 0x800028B8   # codehandler.bin length (4288) - 8, per Gecko::I
 # entries go last in the GCT so every other cave keeps its address whether they are on or off.
 RUNTIME_OPTIONAL = {"Optional: Widescreen 16:9": "widescreen"}
 
+# Codes the port adds to the table itself (they are not in Slippi's code list). Each is always in
+# the table, at the end of the part that is never cut, so its cave and data sit in RAM at a fixed
+# address; its hook is translated two ways and runs only while the named flag is on.
+PORT_CODES = [
+    # PAL stock icons: the stock row's root joint at 0.85 scale and y -21, as on PAL (UnclePunch).
+    ("Port: PAL Stock Icons", "pal_stock_icons", [
+        (0xC22F9A3C, 0x00000007), (0x48000021, 0x7C8802A6), (0x80640000, 0x907D002C),
+        (0x907D0030, 0x80640004), (0x907D003C, 0x48000010), (0x4E800021, 0x3F59999A),
+        (0xC1A80000, 0x801D0014), (0x60000000, 0x00000000)]),
+]
+
 
 class GeckoCode:
     def __init__(self, name):
@@ -29,6 +40,7 @@ class GeckoCode:
         self.codes = []      # (address_word, data_word)
         self.enabled = False
         self.optional = RUNTIME_OPTIONAL.get(name)   # flag name when switchable at run time
+        self.port_flag = None                        # PORT_CODES: hook gated by this flag
 
 
 def load_ini(path):
@@ -63,6 +75,12 @@ def load_ini(path):
             current.codes.append((int(m.group(1), 16), int(m.group(2), 16)))
     for code in codes:
         code.enabled = code.name in enabled or code.optional is not None
+    for name, flag, lines in PORT_CODES:
+        code = GeckoCode(name)
+        code.codes = list(lines)
+        code.enabled = True
+        code.port_flag = flag
+        codes.append(code)
     return codes
 
 

@@ -118,12 +118,20 @@ struct Frame {
   // from it whether there is a match on screen.
   uint8_t scene_major = 0, scene_minor = 0;
   double time = 0.0;   // host seconds of the retrace this frame belongs to (see host::frame_time)
+  // The game's timeline jumped between the previous frame and this one: an online rollback loaded
+  // an older state and simulated forward again. The two frames are not neighbours in time, so
+  // nothing may be blended between them (see mark_discontinuity).
+  bool discontinuous = false;
   // sequence and time are reset too: a recycled frame is handed back to the producer as "cleared",
   // and the renderer decides when to present by comparing sequences. Leaving a stale one on a
   // buffer that is about to be refilled is only harmless while every producer remembers to assign
   // one before pushing.
-  void clear() { vertices.clear(); draws.clear(); copies.clear(); commands.clear(); sequence = 0; time = 0.0; }
+  void clear() { vertices.clear(); draws.clear(); copies.clear(); commands.clear(); sequence = 0; time = 0.0; discontinuous = false; }
 };
+
+// Marks the next finished frame as discontinuous. Called on the simulation thread when the game's
+// state is replaced wholesale (a rollback's savestate load), which only the host knows about.
+void mark_discontinuity();
 
 // Renderer interface implemented by the D3D12 backend (or a null backend).
 struct Backend {

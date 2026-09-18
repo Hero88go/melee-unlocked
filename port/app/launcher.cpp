@@ -72,7 +72,9 @@ const COLORREF C_ACC_HI = RGB(0xEF, 0xA0, 0x54), C_ACC_LO = RGB(0xD9, 0x7B, 0x2C
 const COLORREF C_BTN = RGB(0x21, 0x2B, 0x42), C_BTN_BORDER = RGB(0x35, 0x41, 0x5F), C_BTN_DOWN = RGB(0x18, 0x21, 0x34);
 const COLORREF C_NAV_ON = RGB(0x1F, 0x2A, 0x40), C_NAV_HOT = RGB(0x18, 0x21, 0x34);
 const COLORREF C_LOG_BG = RGB(0x0A, 0x0F, 0x1A), C_LOG_TEXT = RGB(0x9F, 0xB4, 0xCE);
-const COLORREF C_PLAY_TEXT = RGB(0x24, 0x16, 0x05);
+const COLORREF C_PLAY_TEXT = RGB(0xFF, 0xFF, 0xFF);
+// The PLAY button: a saturated purple gradient, as bold as the amber it replaced.
+const COLORREF C_PLAY_HI = RGB(0xA8, 0x7A, 0xFF), C_PLAY_LO = RGB(0x7A, 0x3F, 0xE8), C_PLAY_DOWN = RGB(0x68, 0x32, 0xCC);
 const COLORREF C_OK = RGB(0x5A, 0xC8, 0x8A), C_WARN = RGB(0xE5, 0xA8, 0x4A), C_BAD = RGB(0xE0, 0x6B, 0x5B);
 const COLORREF NO_FILL = CLR_INVALID;
 
@@ -565,9 +567,9 @@ void draw_button(DRAWITEMSTRUCT* di) {
 
   COLORREF top, bot, border = NO_FILL, text;
   if (primary) {
-    top = C_ACC_HI; bot = C_ACC_LO; text = C_PLAY_TEXT;
-    if (down) { top = C_ACC_LO; bot = C_ACC_LO; }
-    if (disabled) { top = RGB(0x3A, 0x35, 0x30); bot = RGB(0x33, 0x2E, 0x2A); text = RGB(0x7C, 0x74, 0x6B); }
+    top = C_PLAY_HI; bot = C_PLAY_LO; text = C_PLAY_TEXT;
+    if (down) top = bot = C_PLAY_DOWN;
+    if (disabled) { top = RGB(0x36, 0x33, 0x40); bot = RGB(0x30, 0x2D, 0x3A); text = RGB(0x78, 0x74, 0x84); }
   } else {
     top = bot = down ? C_BTN_DOWN : C_BTN; border = C_BTN_BORDER; text = C_TEXT;
     if (disabled) { top = bot = RGB(0x1A, 0x21, 0x32); border = RGB(0x28, 0x31, 0x47); text = RGB(0x5C, 0x68, 0x7E); }
@@ -575,7 +577,7 @@ void draw_button(DRAWITEMSTRUCT* di) {
   round_rect(di->hDC, r, primary ? 10 : 7, top, bot, border);
   if (di->itemState & ODS_FOCUS) {
     RECT f{r.left + S(3), r.top + S(3), r.right - S(3), r.bottom - S(3)};
-    round_rect(di->hDC, f, primary ? 8 : 5, NO_FILL, NO_FILL, primary ? C_PLAY_TEXT : C_ACC_LO);
+    round_rect(di->hDC, f, primary ? 8 : 5, NO_FILL, NO_FILL, primary ? C_PLAY_TEXT : C_ACC_LO);   // focus ring
   }
   wchar_t cap[128]{}; GetWindowTextW(di->hwndItem, cap, 128);
   draw_text(di->hDC, cap, r, primary ? g_font_big : g_font, text,

@@ -19,6 +19,10 @@
 #include <unordered_map>
 #include <vector>
 
+// See gecko_data.h: the fallback for a translation that predates the PAL stock icons flag.
+namespace gecko { bool option_pal_stock_icons_default = false; }
+#pragma comment(linker, "/alternatename:?option_pal_stock_icons@gecko@@3_NA=?option_pal_stock_icons_default@gecko@@3_NA")
+
 namespace slippi {
 namespace {
 

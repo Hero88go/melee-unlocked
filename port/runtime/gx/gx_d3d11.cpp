@@ -1636,7 +1636,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       gx_capture_request_set(want - 1);
       CreateDirectoryA("capture", nullptr);
       char req[64];
-      snprintf(req, sizeof req, "capture\blink_%05u.ppm", frames_presented_ + 1);
+      snprintf(req, sizeof req, "capture\\blink_%05u.ppm", frames_presented_ + 1);
       const std::string saved = opts_.capture_path;
       opts_.capture_path = req;
       capture_backbuffer();

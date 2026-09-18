@@ -21,6 +21,31 @@ No Monetization. No Donos. No Patreon. **FREE FOREVER**
  
 v0.5.0 Gameplay footage can be found here: https://www.youtube.com/watch?v=JlmTDW6wQms
 
+## Screenshots
+
+Taken in the game with DLAA on, at the window's full resolution. No textures or other game files
+are included with Melee Unlocked.
+
+![Four-player match on Jungle Japes](docs/screenshots/gameplay-jungle-japes.jpg)
+
+| | |
+|---|---|
+| ![Title screen](docs/screenshots/title.jpg) | ![Slippi online menu](docs/screenshots/online-menu.jpg) |
+| Title screen | Slippi online play |
+| ![Character select](docs/screenshots/character-select.jpg) | ![Stage select](docs/screenshots/stage-select.jpg) |
+| Character select | Stage select |
+| ![Fountain of Dreams](docs/screenshots/gameplay-fountain.jpg) | ![Opening movie](docs/screenshots/opening-movie.jpg) |
+| Fountain of Dreams | The opening movie |
+
+### PC settings (F1)
+
+| | |
+|---|---|
+| ![GameCube controller](docs/screenshots/settings-controls-gc.png) | ![Switch Pro controller](docs/screenshots/settings-controls-switch.png) |
+| Controls: click a button on the controller to rebind it | Switch Pro controllers get their own layout |
+| ![Video settings](docs/screenshots/settings-video.png) | ![Game settings](docs/screenshots/settings-game.png) |
+| Video: one-click quality presets, DLSS and DLAA | Game: L-cancel helpers, PAL stock icons, frame delay |
+
 ## Discord / Help
 Discord can be found here https://discord.gg/K7HHs3r8ty
 

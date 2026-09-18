@@ -88,7 +88,7 @@ rem Frame rate, frame mode, internal resolution and volume are saved in port-set
 rem command line is applied after that file is read, so passing them every time would undo whatever
 rem was set in the F1 panel. They only seed a first run, before a settings file exists.
 set FIRSTRUN=
-if not exist "%~dp0port-settings.ini" set FIRSTRUN=--fps unlocked --frame-mode authored-interpolate --scale auto --volume 70
+if not exist "%~dp0port-settings.ini" set FIRSTRUN=--fps unlocked --frame-mode authored --scale auto --volume 70
 melee_port.exe --iso "%ISO%" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\Slippi" --replay-dir "%~dp0Replays" --card-dir "%~dp0User\GC\CardA" --threaded-renderer %FIRSTRUN%
 if errorlevel 1 pause
 """
