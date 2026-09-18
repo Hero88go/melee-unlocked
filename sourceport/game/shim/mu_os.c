@@ -13,7 +13,6 @@
  * callback the console would have delivered by interrupt. Nothing here is atomic because nothing
  * else runs: the simulation is one thread. */
 static int mu_interrupt_level = 1;   /* 1 = enabled, as the game finds the machine */
-static int mu_deferred;
 
 int mu_interrupts_enabled(void) { return mu_interrupt_level != 0; }
 
@@ -28,14 +27,66 @@ BOOL OSRestoreInterrupts(BOOL level)
 {
     BOOL previous = mu_interrupt_level;
     mu_interrupt_level = level;
-    if (level && mu_deferred) {
-        mu_deferred = 0;
-        mu_host->poll();
-    }
+    if (level)
+        mu_deliver_pending();
     return previous;
 }
 
 BOOL OSEnableInterrupts(void) { return OSRestoreInterrupts(1); }
+
+/* ---- events ----
+ * What the console delivered by interrupt (a disc read finishing, a card operation, an audio
+ * buffer played) the host reports from inside poll(). Each one is queued here and run once the
+ * game has interrupts on, which is when the console would have taken the interrupt. */
+#define MU_EVENT_MAX 256
+static struct { MuEventFn fn; void* a; intptr_t b; } mu_events[MU_EVENT_MAX];
+static int mu_event_head, mu_event_count;
+static int mu_delivering;
+
+void mu_post(MuEventFn fn, void* a, intptr_t b)
+{
+    int slot;
+    if (mu_event_count == MU_EVENT_MAX) {
+        mu_host->panic(__FILE__, __LINE__, "event queue full");
+        return;
+    }
+    slot = (mu_event_head + mu_event_count) % MU_EVENT_MAX;
+    mu_events[slot].fn = fn;
+    mu_events[slot].a = a;
+    mu_events[slot].b = b;
+    mu_event_count++;
+}
+
+static void mu_run_events(void)
+{
+    if (mu_delivering)
+        return;
+    mu_delivering = 1;
+    while (mu_event_count) {
+        MuEventFn fn = mu_events[mu_event_head].fn;
+        void* a = mu_events[mu_event_head].a;
+        intptr_t b = mu_events[mu_event_head].b;
+        mu_event_head = (mu_event_head + 1) % MU_EVENT_MAX;
+        mu_event_count--;
+        /* A handler runs as an interrupt did: with interrupts off. */
+        mu_interrupt_level = 0;
+        fn(a, b);
+        mu_interrupt_level = 1;
+    }
+    mu_delivering = 0;
+}
+
+void mu_deliver_pending(void)
+{
+    if (mu_interrupt_level)
+        mu_run_events();
+}
+
+void mu_poll(void)
+{
+    mu_host->poll();
+    mu_deliver_pending();
+}
 
 /* Interrupt handlers: the host delivers the events these would have fired, so registering one is
  * bookkeeping. The VI retrace handler is the only one the game installs that still matters, and
@@ -212,8 +263,11 @@ void OSInitThreadQueue(OSThreadQueue* queue)
 
 void OSSleepThread(OSThreadQueue* queue)
 {
+    /* The console switched threads here with interrupts on, so whatever the sleeper waits for
+     * arrives even though it went to sleep with them off. */
     (void) queue;
     mu_host->poll();
+    mu_run_events();
 }
 
 void OSWakeupThread(OSThreadQueue* queue) { (void) queue; }
