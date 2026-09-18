@@ -72,6 +72,9 @@ list(APPEND SDK_SOURCES "${SDK}/os/OSAlloc.c" "${SDK}/os/OSArena.c")
 # Written for the hardware itself, or in its assembly; the native build has its own versions of these.
 list(REMOVE_ITEM SDK_SOURCES "${SDK}/gx/GXFifo.c" "${SDK}/mtx/psmtx.c")
 file(GLOB_RECURSE SHIM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shim/*.c")
+# Replacements for SDK files written against the hardware itself (see the REMOVE_ITEM above).
+file(GLOB GXNATIVE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gxnative/*.c")
+list(APPEND SHIM_SOURCES ${GXNATIVE_SOURCES})
 
 add_library(melee_game SHARED ${GAME_SOURCES} ${LIBC_SOURCES} ${SDK_SOURCES} ${SHIM_SOURCES} $<TARGET_OBJECTS:ppcleaf>)
 set_target_properties(melee_game PROPERTIES PREFIX "" C_STANDARD 11 C_EXTENSIONS ON EXCLUDE_FROM_ALL ON)
