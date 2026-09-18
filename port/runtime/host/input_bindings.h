@@ -228,6 +228,16 @@ struct PortSource {
 // The previous default (keyboard -> port 1, Xbox pad -> port 2, adapter port 1 -> port 3) silently
 // made adapter users player 3 and pad users player 2: their controller was read but drove a port
 // nobody was playing, so it looked like it "never becomes active" no matter which socket they used.
+// Which box controller a port was given, by name. A HID pad's slot number is only the order Windows
+// happened to list the devices in this time, which can change between launches (a vJoy device and a
+// GRAM, say), so a port keeps following its named device to whatever slot it lands in. Empty for
+// anything but a HID pad. Saved with spaces as underscores, since a settings value is one word.
+extern std::array<std::string, 4> g_port_device_names;
+inline std::string port_device_key(std::string name) {
+  for (char& c : name) if (c == ' ') c = '_';
+  return name;
+}
+
 inline std::array<PortSource, 4> default_port_sources() {
   return {{
     { DeviceKind::GCAdapter, 0 },

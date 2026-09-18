@@ -935,7 +935,7 @@ static int draw_gc_bind_picture(uint16_t live, int capturing, int* right_clicked
 // physical button has a box naming what it does in Melee. Click a button or its box and pick from
 // the list; right-click to clear. The right stick carries the C-stick mode, as the C-stick does on the
 // GameCube picture. Authored on a 960x432 canvas.
-constexpr float kSwCanvasH = 352;
+constexpr float kSwCanvasH = 392;
 bool g_swpro_gc_picture = false;   // "Use GameCube controller picture" for Switch controllers
 
 static bool draw_swpro_bind_picture(int index, uint16_t raw, ImVec2 lstick, ImVec2 rstick, float dz_main, float dz_c) {
@@ -949,9 +949,12 @@ static bool draw_swpro_bind_picture(int index, uint16_t raw, ImVec2 lstick, ImVe
   const bool left_click = ImGui::IsItemClicked(ImGuiMouseButton_Left), right_click = ImGui::IsItemClicked(ImGuiMouseButton_Right);
   ImDrawList* dl = ImGui::GetWindowDrawList();
   auto P = [&](float x, float y) { return ImVec2(o.x + x * k, o.y + y * k); };
-  // The controller was authored too wide: pull it in sideways to a Pro Controller's proportions, and
-  // sit it 30 lower than its outline was drawn.
-  auto S = [&](float x, float y) { return P(480 + (x - 480) * 0.80f, (y > 240 ? 240 + (y - 240) * 0.55f : y) + 30); };   // and short grips
+  // Traced, not drawn by eye: the body is the silhouette of the Pro Controller in a 1280x720 capture
+  // of Ultimate's button settings screen (left half, mirrored: boxes cover the right grip there), and
+  // every part sits where it measures in that capture. Coordinates are that capture's pixels.
+  constexpr float kP = 0.85f, kMid = 582.5f;
+  auto S = [&](float x, float y) { return P(480 + (x - kMid) * kP, 70 + (y - 222) * kP); };
+  const float kp = kP * k;   // a controller-space length in screen pixels
   const ImVec2 mouse = ImGui::GetMousePos();
   const ImU32 cyan = IM_COL32(40, 200, 225, 255), white = IM_COL32(255, 255, 255, 255);
   host::PadBindings& bind = host::g_swpro_bindings[(size_t)index];
@@ -959,86 +962,106 @@ static bool draw_swpro_bind_picture(int index, uint16_t raw, ImVec2 lstick, ImVe
   dl->AddRectFilled(P(0, 0), P(960, kSwCanvasH), IM_COL32(222, 223, 229, 255), 12 * k);
 
   // ---- the controller ----
-  static const float right_half[][2] = {
-    {480, 78}, {540, 76}, {600, 72}, {640, 70}, {670, 74}, {695, 86}, {712, 106}, {722, 134}, {728, 170},
-    {734, 210}, {742, 250}, {748, 290}, {746, 320}, {734, 340}, {712, 348}, {690, 342}, {672, 322},
-    {656, 292}, {640, 262}, {620, 244}, {590, 236}, {550, 234}, {486, 234}};
-  constexpr int kHalf = (int)(sizeof right_half / sizeof right_half[0]);
+  static const float left_half[][2] = {
+    {582, 229}, {541, 229}, {502, 231}, {494, 228}, {476, 222}, {448, 224}, {424, 228}, {412, 232},
+    {391, 245}, {385, 251}, {376, 265}, {365, 278}, {360, 289}, {351, 319}, {337, 393}, {336, 410},
+    {333, 416}, {324, 470}, {320, 501}, {319, 523}, {322, 546}, {324, 553}, {330, 563}, {332, 566},
+    {336, 571}, {341, 575}, {346, 579}, {357, 584}, {371, 585}, {382, 583}, {389, 579}, {399, 570},
+    {413, 548}, {434, 505}, {443, 490}, {449, 484}, {456, 480}, {582, 479}};
+  constexpr int kHalf = (int)(sizeof left_half / sizeof left_half[0]);
   ImVec2 pts[kHalf * 2];
   int n = 0;
-  for (int i = 0; i < kHalf; ++i) pts[n++] = S(right_half[i][0], right_half[i][1]);
-  for (int i = kHalf - 1; i >= 0; --i) pts[n++] = S(960 - right_half[i][0], right_half[i][1]);
+  for (int i = 0; i < kHalf; ++i) pts[n++] = S(left_half[i][0], left_half[i][1]);
+  for (int i = kHalf - 2; i >= 1; --i) pts[n++] = S(2 * kMid - left_half[i][0], left_half[i][1]);
   auto down = [&](uint16_t bit) { return (raw & bit) != 0; };
   const ImU32 shoulder = IM_COL32(70, 70, 76, 255), shoulder_on = IM_COL32(240, 150, 40, 255);
-  // Triggers behind the bumpers, bumpers behind the body.
-  dl->AddRectFilled(S(272, 34), S(362, 60), down(host::SWPRO_ZL) ? shoulder_on : IM_COL32(58, 58, 64, 255), 10 * k);
-  dl->AddRectFilled(S(598, 34), S(688, 60), down(host::SWPRO_ZR) ? shoulder_on : IM_COL32(58, 58, 64, 255), 10 * k);
-  dl->AddEllipseFilled(S(322, 72), ImVec2(50 * k, 14 * k), down(host::SWPRO_L) ? shoulder_on : shoulder, -0.08f, 32);
-  dl->AddEllipseFilled(S(638, 72), ImVec2(50 * k, 14 * k), down(host::SWPRO_R) ? shoulder_on : shoulder, 0.08f, 32);
-  dl->AddConcavePolyFilled(pts, n, IM_COL32(52, 52, 57, 255));
+  // Triggers above the bumpers, bumpers peeking over the top edge (their places on the controller's
+  // top edge: the bumps at x 424..500).
+  dl->AddRectFilled(S(404, 182), S(500, 212), down(host::SWPRO_ZL) ? shoulder_on : IM_COL32(58, 58, 64, 255), 10 * kp);
+  dl->AddRectFilled(S(665, 182), S(761, 212), down(host::SWPRO_ZR) ? shoulder_on : IM_COL32(58, 58, 64, 255), 10 * kp);
+  dl->AddEllipseFilled(S(452, 228), ImVec2(58 * kp, 14 * kp), down(host::SWPRO_L) ? shoulder_on : shoulder, -0.05f, 32);
+  dl->AddEllipseFilled(S(713, 228), ImVec2(58 * kp, 14 * kp), down(host::SWPRO_R) ? shoulder_on : shoulder, 0.05f, 32);
+  // Filled a pixel row at a time between the edge crossings, then outlined on top.
+  {
+    float y0 = pts[0].y, y1 = pts[0].y;
+    for (int i = 1; i < n; ++i) { y0 = std::min(y0, pts[i].y); y1 = std::max(y1, pts[i].y); }
+    std::vector<float> xs;
+    for (float y = std::floor(y0) + 0.5f; y < y1; y += 1.0f) {
+      xs.clear();
+      for (int i = 0; i < n; ++i) {
+        const ImVec2 a = pts[i], b = pts[(i + 1) % n];
+        if ((a.y <= y && b.y > y) || (b.y <= y && a.y > y)) xs.push_back(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
+      }
+      std::sort(xs.begin(), xs.end());
+      for (size_t j = 0; j + 1 < xs.size(); j += 2)
+        dl->AddRectFilled(ImVec2(xs[j], y - 0.5f), ImVec2(xs[j + 1], y + 0.5f), IM_COL32(60, 60, 64, 255));
+    }
+  }
   dl->AddPolyline(pts, n, IM_COL32(28, 28, 31, 255), ImDrawFlags_Closed, 2.0f * k);
   auto centred_text = [&](ImVec2 c, const char* t, ImU32 col) {
     const ImVec2 sz = ImGui::CalcTextSize(t);
     dl->AddText(ImVec2(c.x - sz.x / 2, c.y - sz.y / 2), col, t);
   };
-  centred_text(S(317, 47), "ZL", IM_COL32(200, 200, 206, 255));
-  centred_text(S(643, 47), "ZR", IM_COL32(200, 200, 206, 255));
+  centred_text(S(452, 197), "ZL", IM_COL32(200, 200, 206, 255));
+  centred_text(S(713, 197), "ZR", IM_COL32(200, 200, 206, 255));
 
-  // Parts.
-  const ImVec2 ls = S(352, 125), dpad = S(415, 192), face = S(608, 125), rs = S(545, 192);
-  const ImVec2 minus_c = S(425, 100), plus_c = S(535, 100);
+  // ---- parts, at their measured centres, drawn as Ultimate draws them: black, white letters ----
+  const ImVec2 ls = S(437, 330), dpad = S(497, 405), face = S(719, 332), rs = S(650, 406);
+  const ImVec2 minus_c = S(518, 293), plus_c = S(646, 293);
+  const ImU32 black = IM_COL32(22, 22, 24, 255);
   auto stick = [&](ImVec2 c, ImVec2 pos, float dz, bool c_stick) {
-    dl->AddCircleFilled(c, 32 * k, IM_COL32(66, 66, 72, 255), 40);
-    dl->AddCircleFilled(c, 26 * k, IM_COL32(95, 95, 102, 255), 40);
     const ImVec2 game = inside_deadzone(pos, dz) ? ImVec2(0, 0) : pos;
-    const ImVec2 cap(c.x + game.x * 10 * k, c.y - game.y * 10 * k);
-    dl->AddCircleFilled(cap, 20 * k, IM_COL32(34, 34, 38, 255), 32);
-    dl->AddCircle(cap, 13 * k, IM_COL32(70, 70, 76, 255), 32, 2.0f * k);
-    draw_deadzone_view(dl, c, 30 * k, pos, dz, k, c_stick);
+    const ImVec2 cap(c.x + game.x * 8 * kp, c.y - game.y * 8 * kp);
+    dl->AddCircleFilled(cap, 29 * kp, black, 40);
+    dl->AddCircle(cap, 20 * kp, IM_COL32(52, 52, 56, 255), 40, 2.0f * k);
+    draw_deadzone_view(dl, c, 29 * kp, pos, dz, k, c_stick);
   };
   stick(ls, lstick, dz_main, false);
   stick(rs, rstick, dz_c, true);
-  // D-pad.
-  const float arm = 24, half = 8.5f;
+  // D-pad: a black plus with white arrows.
+  const float arm = 30, half = 10;
   struct Arm { uint16_t bit; float x0, y0, x1, y1; };
   const Arm arms[] = {{host::SWPRO_DPAD_UP, -half, -arm, half, -half}, {host::SWPRO_DPAD_DOWN, -half, half, half, arm},
                       {host::SWPRO_DPAD_LEFT, -arm, -half, -half, half}, {host::SWPRO_DPAD_RIGHT, half, -half, arm, half}};
-  dl->AddCircleFilled(dpad, 34 * k, IM_COL32(62, 62, 68, 255), 40);
-  dl->AddRectFilled(ImVec2(dpad.x - half * k, dpad.y - half * k), ImVec2(dpad.x + half * k, dpad.y + half * k), IM_COL32(34, 34, 38, 255));
+  dl->AddRectFilled(ImVec2(dpad.x - half * kp, dpad.y - half * kp), ImVec2(dpad.x + half * kp, dpad.y + half * kp), black);
   for (const Arm& a : arms)
-    dl->AddRectFilled(ImVec2(dpad.x + a.x0 * k, dpad.y + a.y0 * k), ImVec2(dpad.x + a.x1 * k, dpad.y + a.y1 * k),
-                      down(a.bit) ? white : IM_COL32(34, 34, 38, 255), 2 * k);
-  // Face buttons: X top, A right, B bottom, Y left.
+    dl->AddRectFilled(ImVec2(dpad.x + a.x0 * kp, dpad.y + a.y0 * kp), ImVec2(dpad.x + a.x1 * kp, dpad.y + a.y1 * kp),
+                      down(a.bit) ? IM_COL32(120, 120, 128, 255) : black, 3 * kp);
+  auto dpad_arrow = [&](float dx, float dy) {
+    const ImVec2 tip(dpad.x + dx * 25 * kp, dpad.y + dy * 25 * kp), base(dpad.x + dx * 17 * kp, dpad.y + dy * 17 * kp);
+    const ImVec2 side(-dy * 5.5f * kp, dx * 5.5f * kp);
+    dl->AddTriangleFilled(tip, ImVec2(base.x + side.x, base.y + side.y), ImVec2(base.x - side.x, base.y - side.y), white);
+  };
+  dpad_arrow(0, -1); dpad_arrow(0, 1); dpad_arrow(-1, 0); dpad_arrow(1, 0);
+  // Face buttons: X top, A right, B bottom, Y left (measured 37 to 39 px from the centre).
   struct Face { uint16_t bit; float dx, dy; const char* t; };
-  const Face faces[] = {{host::SWPRO_X, 0, -26, "X"}, {host::SWPRO_A, 26, 0, "A"}, {host::SWPRO_B, 0, 26, "B"}, {host::SWPRO_Y, -26, 0, "Y"}};
-  dl->AddCircleFilled(face, 48 * k, IM_COL32(62, 62, 68, 255), 40);
+  const Face faces[] = {{host::SWPRO_X, 0, -37, "X"}, {host::SWPRO_A, 40, 0, "A"}, {host::SWPRO_B, 0, 38, "B"}, {host::SWPRO_Y, -39, 0, "Y"}};
   for (const Face& f : faces) {
-    const ImVec2 c(face.x + f.dx * k, face.y + f.dy * k);
-    dl->AddCircleFilled(c, 14 * k, down(f.bit) ? white : IM_COL32(34, 34, 38, 255), 24);
-    centred_text(c, f.t, down(f.bit) ? IM_COL32(30, 30, 30, 255) : IM_COL32(220, 220, 225, 255));
+    const ImVec2 c(face.x + f.dx * kp, face.y + f.dy * kp);
+    dl->AddCircleFilled(c, 17 * kp, down(f.bit) ? white : black, 24);
+    centred_text(c, f.t, down(f.bit) ? IM_COL32(20, 20, 20, 255) : white);
   }
-  // Minus, Plus, and the Capture and Home buttons (not bindable).
-  dl->AddRectFilled(ImVec2(minus_c.x - 8 * k, minus_c.y - 2.5f * k), ImVec2(minus_c.x + 8 * k, minus_c.y + 2.5f * k), down(host::SWPRO_MINUS) ? white : IM_COL32(170, 170, 176, 255));
-  const ImU32 plus_col = down(host::SWPRO_PLUS) ? white : IM_COL32(170, 170, 176, 255);
-  dl->AddRectFilled(ImVec2(plus_c.x - 8 * k, plus_c.y - 2.5f * k), ImVec2(plus_c.x + 8 * k, plus_c.y + 2.5f * k), plus_col);
-  dl->AddRectFilled(ImVec2(plus_c.x - 2.5f * k, plus_c.y - 8 * k), ImVec2(plus_c.x + 2.5f * k, plus_c.y + 8 * k), plus_col);
-  dl->AddRectFilled(S(446, 122), S(460, 136), IM_COL32(80, 80, 86, 255), 2 * k);
-  dl->AddCircleFilled(S(514, 129), 8 * k, IM_COL32(80, 80, 86, 255), 20);
+  // Minus and Plus (grey dots on Ultimate's picture), Capture and Home (not bindable).
+  const ImU32 dim_btn = IM_COL32(95, 95, 100, 255);
+  dl->AddCircleFilled(minus_c, 11 * kp, down(host::SWPRO_MINUS) ? white : dim_btn, 20);
+  dl->AddCircleFilled(plus_c, 11 * kp, down(host::SWPRO_PLUS) ? white : dim_btn, 20);
+  dl->AddRectFilled(S(532, 325), S(550, 343), dim_btn, 2 * kp);
+  dl->AddCircleFilled(S(616, 334), 11 * kp, dim_btn, 20);
 
   // ---- which physical button is under the mouse ----
-  auto in_circle = [&](ImVec2 c, float r) { const float dx = mouse.x - c.x, dy = mouse.y - c.y; return dx * dx + dy * dy <= r * r * k * k; };
+  auto in_circle = [&](ImVec2 c, float r) { const float dx = mouse.x - c.x, dy = mouse.y - c.y; return dx * dx + dy * dy <= r * r * kp * kp; };
   auto in_rect = [&](ImVec2 a, ImVec2 z) { return mouse.x >= a.x && mouse.x <= z.x && mouse.y >= a.y && mouse.y <= z.y; };
   enum { kRStick = 0x10000 };
   auto part_at_mouse = [&]() -> int {
-    for (const Face& f : faces) if (in_circle(ImVec2(face.x + f.dx * k, face.y + f.dy * k), 16)) return f.bit;
+    for (const Face& f : faces) if (in_circle(ImVec2(face.x + f.dx * kp, face.y + f.dy * kp), 20)) return f.bit;
     for (const Arm& a : arms)
-      if (in_rect(ImVec2(dpad.x + (a.x0 - 3) * k, dpad.y + (a.y0 - 3) * k), ImVec2(dpad.x + (a.x1 + 3) * k, dpad.y + (a.y1 + 3) * k))) return a.bit;
-    if (in_circle(minus_c, 13)) return host::SWPRO_MINUS;
-    if (in_circle(plus_c, 13)) return host::SWPRO_PLUS;
-    if (in_rect(S(272, 34), S(362, 60))) return host::SWPRO_ZL;
-    if (in_rect(S(598, 34), S(688, 60))) return host::SWPRO_ZR;
-    if (in_rect(S(262, 60), S(384, 86))) return host::SWPRO_L;
-    if (in_rect(S(576, 60), S(698, 86))) return host::SWPRO_R;
+      if (in_rect(ImVec2(dpad.x + (a.x0 - 3) * kp, dpad.y + (a.y0 - 3) * kp), ImVec2(dpad.x + (a.x1 + 3) * kp, dpad.y + (a.y1 + 3) * kp))) return a.bit;
+    if (in_circle(minus_c, 15)) return host::SWPRO_MINUS;
+    if (in_circle(plus_c, 15)) return host::SWPRO_PLUS;
+    if (in_rect(S(404, 182), S(500, 212))) return host::SWPRO_ZL;
+    if (in_rect(S(665, 182), S(761, 212))) return host::SWPRO_ZR;
+    if (in_rect(S(394, 213), S(510, 230))) return host::SWPRO_L;
+    if (in_rect(S(655, 213), S(771, 230))) return host::SWPRO_R;
     return -1;
   };
 
@@ -1076,14 +1099,14 @@ static bool draw_swpro_bind_picture(int index, uint16_t raw, ImVec2 lstick, ImVe
     return -1;
   };
   auto target_of = [&](int part) -> ImVec2 {
-    for (const Face& f : faces) if (f.bit == part) return ImVec2(face.x + f.dx * k, face.y + f.dy * k);
+    for (const Face& f : faces) if (f.bit == part) return ImVec2(face.x + f.dx * kp, face.y + f.dy * kp);
     for (const Arm& a : arms)
-      if (a.bit == part) return ImVec2(dpad.x + (a.x0 + a.x1) / 2 * k, dpad.y + (a.y0 + a.y1) / 2 * k);
+      if (a.bit == part) return ImVec2(dpad.x + (a.x0 + a.x1) / 2 * kp, dpad.y + (a.y0 + a.y1) / 2 * kp);
     switch (part) {
-      case host::SWPRO_ZL: return S(290, 47);
-      case host::SWPRO_L: return S(280, 72);
-      case host::SWPRO_ZR: return S(670, 47);
-      case host::SWPRO_R: return S(680, 72);
+      case host::SWPRO_ZL: return S(404, 197);
+      case host::SWPRO_L: return S(396, 226);
+      case host::SWPRO_ZR: return S(761, 197);
+      case host::SWPRO_R: return S(769, 226);
       case host::SWPRO_MINUS: return minus_c;
       case host::SWPRO_PLUS: return plus_c;
       case kRStick: return ImVec2(rs.x, rs.y + 32 * k);
@@ -1105,16 +1128,16 @@ static bool draw_swpro_bind_picture(int index, uint16_t raw, ImVec2 lstick, ImVe
     int dir = -1;
     for (const Arm& a : arms) if (active(a.bit)) dir = a.bit;
     const ImU32 col = dir >= 0 ? white : cyan;
-    const ImVec2 from = P(234, 236), corner(dpad.x - 40 * k, from.y);
+    const ImVec2 from = P(234, 236), corner(dpad.x - 50 * kp, from.y);
     dl->AddLine(from, corner, col, 2.0f * k);
-    dl->AddLine(corner, dir >= 0 ? target_of(dir) : ImVec2(dpad.x - 24 * k, dpad.y), col, 2.0f * k);
+    dl->AddLine(corner, dir >= 0 ? target_of(dir) : ImVec2(dpad.x - 30 * kp, dpad.y), col, 2.0f * k);
     dl->AddCircleFilled(from, 3.5f * k, col, 12);
   }
   {  // face buttons: to the cluster, then to the button being pointed at
     int btn = -1;
     for (const Face& f : faces) if (active(f.bit)) btn = f.bit;
     const ImU32 col = btn >= 0 ? white : cyan;
-    const ImVec2 from = P(726, 236), corner(face.x + 60 * k, from.y), edge(face.x + 48 * k, face.y);
+    const ImVec2 from = P(726, 236), corner(face.x + 80 * kp, from.y), edge(face.x + 60 * kp, face.y);
     dl->AddLine(from, corner, col, 2.0f * k);
     dl->AddLine(corner, edge, col, 2.0f * k);
     if (btn >= 0) dl->AddLine(edge, target_of(btn), col, 2.0f * k);
@@ -1130,16 +1153,16 @@ static bool draw_swpro_bind_picture(int index, uint16_t raw, ImVec2 lstick, ImVe
     if (part < 0) continue;
     const ImU32 col = cyan; const float th = 3.0f * k;
     bool drawn = false;
-    for (const Face& f : faces) if (f.bit == part) { dl->AddCircle(ImVec2(face.x + f.dx * k, face.y + f.dy * k), 17 * k, col, 24, th); drawn = true; }
+    for (const Face& f : faces) if (f.bit == part) { dl->AddCircle(ImVec2(face.x + f.dx * kp, face.y + f.dy * kp), 21 * kp, col, 24, th); drawn = true; }
     for (const Arm& a : arms)
-      if (a.bit == part) { dl->AddRect(ImVec2(dpad.x + (a.x0 - 2) * k, dpad.y + (a.y0 - 2) * k), ImVec2(dpad.x + (a.x1 + 2) * k, dpad.y + (a.y1 + 2) * k), col, 3 * k, 0, th); drawn = true; }
+      if (a.bit == part) { dl->AddRect(ImVec2(dpad.x + (a.x0 - 2) * kp, dpad.y + (a.y0 - 2) * kp), ImVec2(dpad.x + (a.x1 + 2) * kp, dpad.y + (a.y1 + 2) * kp), col, 3 * kp, 0, th); drawn = true; }
     if (drawn) continue;
-    if (part == host::SWPRO_ZL) dl->AddRect(S(270, 32), S(364, 62), col, 10 * k, 0, th);
-    else if (part == host::SWPRO_ZR) dl->AddRect(S(596, 32), S(690, 62), col, 10 * k, 0, th);
-    else if (part == host::SWPRO_L) dl->AddEllipse(S(322, 72), ImVec2(54 * k, 18 * k), col, -0.08f, 32, th);
-    else if (part == host::SWPRO_R) dl->AddEllipse(S(638, 72), ImVec2(54 * k, 18 * k), col, 0.08f, 32, th);
-    else if (part == host::SWPRO_MINUS) dl->AddCircle(minus_c, 13 * k, col, 20, th);
-    else if (part == host::SWPRO_PLUS) dl->AddCircle(plus_c, 13 * k, col, 20, th);
+    if (part == host::SWPRO_ZL) dl->AddRect(S(400, 178), S(504, 216), col, 10 * kp, 0, th);
+    else if (part == host::SWPRO_ZR) dl->AddRect(S(661, 178), S(765, 216), col, 10 * kp, 0, th);
+    else if (part == host::SWPRO_L) dl->AddEllipse(S(452, 228), ImVec2(62 * kp, 18 * kp), col, -0.05f, 32, th);
+    else if (part == host::SWPRO_R) dl->AddEllipse(S(713, 228), ImVec2(62 * kp, 18 * kp), col, 0.05f, 32, th);
+    else if (part == host::SWPRO_MINUS) dl->AddCircle(minus_c, 15 * kp, col, 20, th);
+    else if (part == host::SWPRO_PLUS) dl->AddCircle(plus_c, 15 * kp, col, 20, th);
     else if (part == kRStick) dl->AddCircle(rs, 34 * k, col, 32, th);
   }
 
@@ -1393,6 +1416,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
         }
       }
       // "port<n> <comboIndex>" - comboIndex uses the same 0-9 encoding as the UI combo box.
+      else if (key.size() == 9 && key.rfind("portname", 0) == 0 && key[8] >= '0' && key[8] <= '3') host::g_port_device_names[key[8] - '0'] = value;
       else if (key.size() > 4 && key.rfind("port", 0) == 0 && std::isdigit((unsigned char)key[4])) {
         int n = std::stoi(key.substr(4));
         if (n >= 0 && n < 4) host::g_port_sources[n] = combo_to_port_source(std::stoi(value));
@@ -1505,8 +1529,19 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     }
   }
   ImGui_ImplWin32_NewFrame();
+  // The GameCube pad drives the panel only while it is open. Fed in while closed, a whole match of
+  // presses queued up in ImGui and played back the moment the panel opened: the cursor ran through
+  // the settings on its own, A presses switched them, and one of those took the game down. Opening
+  // clears whatever is queued, and the pad counts again only once it has been let go.
+  static bool was_open = false, pad_armed = false;
   host::PadState pad{};
-  if (host::window_ui_gamecube_pad(pad)) {
+  const bool have_pad = host::window_ui_gamecube_pad(pad);
+  if (state.open && !was_open) { ImGui::GetIO().ClearEventsQueue(); ImGui::GetIO().ClearInputKeys(); pad_armed = false; }
+  was_open = state.open;
+  if (!state.open) pad_armed = false;
+  else if (!pad_armed && have_pad)
+    pad_armed = pad.button == 0 && std::abs(pad.stick_x) < 30 && std::abs(pad.stick_y) < 30;
+  if (have_pad && state.open && pad_armed) {
     auto& io = ImGui::GetIO(); io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     io.AddKeyEvent(ImGuiKey_GamepadStart, (pad.button & 0x1000) != 0);
     io.AddKeyEvent(ImGuiKey_GamepadBack, (pad.button & 0x10) != 0);
@@ -1523,11 +1558,15 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   // session, where scripted runs reproduce nothing: press it while the problem is happening and
   // the frames themselves can be read afterwards.
   if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) { request_frame_capture(90); host::log("capture: F2, writing the next 90 presented frames into capture\\"); }
-  // While a rebind is waiting for a button, Escape means "cancel that", which the capture itself
-  // watches for. Closing the whole panel on the same key took the window away instead and left the
-  // capture running, so there was no way to back out of a rebind.
-  if (state.open && state.rebind_action < 0 && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) state.open = false;
-  host::window_input_capture(state.open);
+  // Esc: closes the panel if it is open; otherwise opens or closes the Esc menu. While a rebind is
+  // waiting for a button, Escape means "cancel that", which the capture itself watches for, so it
+  // does nothing here then (closing the panel on the same key left the capture running).
+  if (host::window_take_escape() && state.rebind_action < 0) {
+    if (state.open) state.open = false;
+    else if (!state.fill_window) { state.menu_open = !state.menu_open; state.menu_quit = false; }
+  }
+  if (state.open) state.menu_open = false;   // F1 with the menu up goes straight to the panel
+  host::window_input_capture(state.open || state.menu_open);
   state.intervals[state.cursor++ % state.intervals.size()] = ImGui::GetIO().DeltaTime*1000.f;
   bool changed = false;
   if (state.open) {
@@ -1545,7 +1584,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     } else {
       ImGui::SetNextWindowSize(ImVec2(560, 620), ImGuiCond_FirstUseEver);
       ImGui::Begin("PC settings", &state.open, ImGuiWindowFlags_NoCollapse);
-      ImGui::TextUnformatted("F1: settings    Escape: return to game");
+      ImGui::TextUnformatted("F1 or Esc: return to game");
     }
     ImGui::Separator();
     // Grouped into tabs so the panel is scannable: it had grown to one long column where the
@@ -2200,6 +2239,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
             item += "##src" + std::to_string(c);   // unnamed boxes share a label
             if (ImGui::Selectable(item.c_str(), c == cur)) {
               host::g_port_sources[port] = src;
+              host::g_port_device_names[port] = src.kind == host::DeviceKind::HidPad ? host::port_device_key(host::hidpad_name(src.index)) : std::string();
               changed = true;
               if (st >= 0) select_tab(st);
             }
@@ -2545,6 +2585,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
           file << "\nhid" << idx << "_" << kActionNames[i] << " " << host::g_hid_bindings[idx].mask[i];
       for (int n = 0; n < 4; ++n)
         file << "\nport" << n << " " << port_source_to_combo(host::g_port_sources[n]);
+      for (int n = 0; n < 4; ++n)
+        if (!host::g_port_device_names[n].empty()) file << "\nportname" << n << " " << host::g_port_device_names[n];
       file << '\n';
       file.close();
       state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
@@ -2606,6 +2648,30 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         }
         ImGui::EndPopup();
       }
+    }
+    ImGui::End();
+  }
+  // ---- the Esc menu ----
+  if (state.menu_open && !state.open) {
+    const ImVec2 screen = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::Begin("##esc_menu", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
+    const ImVec2 wide(240, 34), half_w(116, 34);
+    if (!state.menu_quit) {
+      ImGui::TextUnformatted("Melee Unlocked");
+      ImGui::Separator();
+      if (ImGui::Button("Back to game", wide)) state.menu_open = false;
+      if (ImGui::Button("Settings", wide)) { state.menu_open = false; state.open = true; }
+      if (ImGui::Button("Quit game", wide)) state.menu_quit = true;
+      ImGui::TextDisabled("Esc: back to game    F1: settings");
+    } else {
+      ImGui::TextUnformatted("Quit Melee Unlocked?");
+      ImGui::TextDisabled("The current match will end.");
+      ImGui::Separator();
+      if (ImGui::Button("Quit", half_w)) { state.menu_open = false; host::request_exit(0); }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", half_w)) state.menu_quit = false;
     }
     ImGui::End();
   }
