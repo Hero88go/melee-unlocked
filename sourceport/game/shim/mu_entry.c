@@ -9,9 +9,9 @@ static void mu_retrace_from_host(void);
 void mu_fire_alarms(uint64_t now);
 void mu_ai_dma_done(void);
 
-/* The game's own entry point, built from the decomp (Runtime/__start calls it after the C runtime
- * is up; natively the shim stands in for that, see mu_start.c). */
-void mu_game_main(void);
+/* The game's own main (gm/gmmain.c). On the console __start ran it after bringing up the C runtime;
+ * natively the host has done that part. */
+int main(void);
 
 __declspec(dllexport) int32_t mu_game_entry(const MuHostApi* host, MuGameApi* game)
 {
@@ -28,8 +28,7 @@ __declspec(dllexport) int32_t mu_game_entry(const MuHostApi* host, MuGameApi* ga
 
 static int32_t mu_run(void)
 {
-    mu_game_main();
-    return 0;
+    return main();
 }
 
 static void mu_retrace_from_host(void)

@@ -59,3 +59,17 @@ int mu_rlwimi(int dst, int src, int sh, int mb, int me)
     unsigned int m = ppc_mask(mb, me);
     return (int) ((rotl32((unsigned int) src, sh) & m) | ((unsigned int) dst & ~m));
 }
+
+/* Two paired-single vector routines no shipped code path reaches (they are absent from the retail
+ * program), kept so the SDK's C wrappers link. Written as the assembly computes them: x*x, then y
+ * and z folded in with fused multiply-adds. */
+typedef struct { float x, y, z; } MuVec;
+float PSVECSquareMag(MuVec* v)
+{
+    return __builtin_fmaf(v->z, v->z, __builtin_fmaf(v->y, v->y, v->x * v->x));
+}
+float PSVECSquareDistance(MuVec* a, MuVec* b)
+{
+    const float dx = a->x - b->x, dy = a->y - b->y, dz = a->z - b->z;
+    return __builtin_fmaf(dz, dz, __builtin_fmaf(dy, dy, dx * dx));
+}

@@ -80,7 +80,7 @@ typedef struct MuHostApi {
      * The host owns the image. Paths are resolved through the disc's own filesystem table, so the
      * game's entry numbers are the console's. */
     int32_t (*disc_entrynum)(const char* path);
-    int32_t (*disc_file)(int32_t entrynum, uint32_t* start, uint32_t* length);
+    int32_t (*disc_file)(int32_t entrynum, uint32_t* start, uint32_t* length);   /* nonzero: found */
     /* Completion is delivered from poll(), after the same virtual delay the recompiled build uses,
      * so the game sees the timing it saw on the console. */
     void (*disc_read)(uint32_t offset, void* dst, uint32_t size, MuDiscDone done, void* user);

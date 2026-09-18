@@ -27,6 +27,14 @@ int mu_rlwimi(int dst, int src, int sh, int mb, int me);
 #define __rlwinm mu_rlwinm
 #define __rlwimi mu_rlwimi
 
+/* dcbz: zero the 32-byte cache block holding base + offset. The THP decoder uses it to clear buffers. */
+static inline void mu_dcbz(void* base, int offset)
+{
+    char* block = (char*) (((unsigned long long) (__UINTPTR_TYPE__) base + offset) & ~31ull);
+    __builtin_memset(block, 0, 32);
+}
+#define __dcbz(base, offset) mu_dcbz((void*) (base), (int) (offset))
+
 #include "math_native.h"
 
 #endif

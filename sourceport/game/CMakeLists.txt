@@ -67,8 +67,9 @@ file(GLOB_RECURSE GAME_SOURCES CONFIGURE_DEPENDS "${D}/src/melee/*.c" "${D}/src/
 # The console's C library is kept only where its results reach the simulation: the maths, and rand.
 set(LIBC_SOURCES "${D}/src/MSL/math.c" "${D}/src/MSL/math_1.c" "${D}/src/MSL/math_data.c" "${D}/src/MSL/trigf.c" "${D}/src/MSL/float.c" "${D}/src/MSL/rand.c")
 # The halves of the SDK that sit above the hardware. What sat below it is the host's job.
-file(GLOB SDK_SOURCES CONFIGURE_DEPENDS "${SDK}/gx/*.c" "${SDK}/ax/*.c" "${SDK}/axfx/*.c" "${SDK}/mtx/*.c")
-list(APPEND SDK_SOURCES "${SDK}/os/OSAlloc.c" "${SDK}/os/OSArena.c")
+file(GLOB SDK_SOURCES CONFIGURE_DEPENDS "${SDK}/gx/*.c" "${SDK}/ax/*.c" "${SDK}/axfx/*.c" "${SDK}/mtx/*.c"
+  "${SDK}/thp/*.c")   # THP is a video decoder: computation, no hardware. MCC/FIO: see shim/mu_devkit.c
+list(APPEND SDK_SOURCES "${SDK}/os/OSAlloc.c" "${SDK}/os/OSArena.c" "${SDK}/pad/PadClamp.c")
 # Written for the hardware itself, or in its assembly; the native build has its own versions of these.
 list(REMOVE_ITEM SDK_SOURCES "${SDK}/gx/GXFifo.c" "${SDK}/mtx/psmtx.c")
 file(GLOB_RECURSE SHIM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shim/*.c")
