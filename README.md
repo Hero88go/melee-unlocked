@@ -21,6 +21,9 @@ No Monetization. No Donos. No Patreon. **FREE FOREVER**
  
 v0.5.0 Gameplay footage can be found here: https://www.youtube.com/watch?v=JlmTDW6wQms
 
+## Discord / Help
+Discord can be found here https://discord.gg/K7HHs3r8ty
+
 ## Screenshots
 
 Taken in the game with DLAA on, at the window's full resolution. No textures or other game files
@@ -45,9 +48,6 @@ are included with Melee Unlocked.
 | Controls: click a button on the controller to rebind it | Switch Pro controllers get their own layout |
 | ![Video settings](docs/screenshots/settings-video.png) | ![Game settings](docs/screenshots/settings-game.png) |
 | Video: one-click quality presets, DLSS and DLAA | Game: L-cancel helpers, PAL stock icons, frame delay |
-
-## Discord / Help
-Discord can be found here https://discord.gg/K7HHs3r8ty
 
 ## Install
 
