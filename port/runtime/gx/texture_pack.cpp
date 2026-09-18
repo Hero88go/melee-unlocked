@@ -19,6 +19,7 @@
 #include <thread>
 #include <shellapi.h>
 #include <atomic>
+#include <chrono>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -125,6 +126,9 @@ struct State {
   uint64_t mips_ignored = 0;       // packs that supplied mips we did not use
   bool reported_budget = false;
   std::unordered_map<std::string, bool> dumped;
+  // When the last look found nothing, and whether "no pack folder" has been said already.
+  std::chrono::steady_clock::time_point last_empty_scan{};
+  bool scanned_empty = false, reported_no_folder = false;
 };
 State g;
 
@@ -227,8 +231,10 @@ void build_index() {
   // created a Load folder got no scan at all and an empty list, which is the one case the
   // TexturePacks folder exists to serve.
   if (g.roots.empty()) {
-    host::log("textures: no pack folder; create %s and drop a pack in it",
-              (base / "TexturePacks").string().c_str());
+    if (!g.reported_no_folder)
+      host::log("textures: no pack folder; create %s and drop a pack in it",
+                (base / "TexturePacks").string().c_str());
+    g.reported_no_folder = true;
     return;
   }
   std::error_code ec;
@@ -353,6 +359,15 @@ bool dumping() { return g.dump; }
 // only when replacement is on.
 void refresh_packs() {
   if (!g.index.empty() || !g.packs.empty()) return;   // already scanned this run
+  // Nothing found so far. The settings panel calls this on every frame it draws the Video tab, and
+  // "found nothing" used to mean "look again", so a player with no pack (nearly everyone) had the
+  // folders probed at the monitor's refresh rate, on the render thread, for as long as the panel
+  // was open: the game stuttered whenever the panel was up. Look again now and then instead, which
+  // still picks up a pack dropped in while the panel is open.
+  const auto now = std::chrono::steady_clock::now();
+  if (g.scanned_empty && now - g.last_empty_scan < std::chrono::seconds(3)) return;
+  g.last_empty_scan = now;
+  g.scanned_empty = true;
   build_index();
 }
 

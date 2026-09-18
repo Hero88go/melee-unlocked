@@ -55,7 +55,7 @@ class ThreadedBackend final : public Backend {
       }
       ~Trace() { if (file) std::fclose(file); }
     } trace(options_.frame_times);
-    double last_submission = 0; uint64_t drained = 0;
+    double last_submission = 0; uint64_t drained = 0, discontinuities = 0;
     double next_present = host::now_seconds();
     double stats_time = next_present; uint64_t stats_presented = 0, stats_sim = 0, stats_lines = 0;
     uint32_t phase_bins[5] = {};
@@ -116,7 +116,10 @@ class ThreadedBackend final : public Backend {
         int next = cur < 0 ? 0 : cur ^ 1;
         queue.recycle(std::move(frames[next]));   // return the buffers this slot is about to drop
         frames[next] = std::move(incoming);
-        have_prev = cur >= 0;
+        // A frame that follows a rollback is not the neighbour of the one before it (Frame::discontinuous),
+        // so it is shown as it is, unpaired, and pairing resumes from it on the next frame.
+        have_prev = cur >= 0 && !frames[next].discontinuous;
+        if (frames[next].discontinuous) ++discontinuities;
         cur = next;
         got_new = true;
         ++submitted; ++stats_sim;
@@ -270,7 +273,8 @@ class ThreadedBackend final : public Backend {
         stats_time = now; stats_presented = 0; stats_sim = 0;
       }
     }
-    host::log("renderer: %llu simulation frames, %llu presented frames on its own thread, %llu drained without presenting", submitted, presented, (unsigned long long)drained);
+    host::log("renderer: %llu simulation frames, %llu presented frames on its own thread, %llu drained without presenting, %llu shown unblended after a rollback",
+              submitted, presented, (unsigned long long)drained, (unsigned long long)discontinuities);
   }
 
  public:

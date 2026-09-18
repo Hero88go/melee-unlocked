@@ -354,13 +354,14 @@ static int melee_main(int argc, char** argv) {
   gfx.pc_settings = !automated;
   g_crash_dialog = !automated;
   o.no_gc_adapter = automated;   // a hidden test run must not take the adapter from a game the player is running
+  if (std::getenv("MELEE_NO_GC_ADAPTER")) o.no_gc_adapter = true;   // same, for a visible test window
   SetUnhandledExceptionFilter(crash_filter);
   if (!automated) {
     // Interpolate by default: it never overshoots a stop, so menus, cursors and stage geometry stay
     // on one timeline. Predict avoids its one tick of delay but can overshoot and snap back.
     // Set before the settings file is read, so a saved "subframe" (Off in the Low spec preset) wins
     // over this default and an explicit --frame-mode, parsed below, still wins over both.
-    if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::AuthoredInterpolate;
+    if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::Authored;   // Predict (the default since 0.5.5)
     // A person launching the game wants to hear it. The zero default is there for automated runs,
     // which never reach this branch, and it used to be hidden by the launcher passing --volume 70 on
     // every start; that override was removed because it also overwrote the player's saved settings,
@@ -476,6 +477,7 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--time-base") o.time_base = std::strtoull(next(), nullptr, 0);
     else if (a == "--volume") o.volume = std::atoi(next());
     else if (a == "--widescreen") { gfx.widescreen = true; gfx.true_widescreen = false; }
+    else if (a == "--pal-stock-icons") gecko::option_pal_stock_icons = true;
     // Experimental true 16:9: widens the frustum in the renderer, no game code. Mutually exclusive
     // with --widescreen, so whichever comes last on the command line wins rather than both applying.
     else if (a == "--true-widescreen") { gfx.true_widescreen = true; gfx.widescreen = false; }
@@ -512,7 +514,18 @@ static int melee_main(int argc, char** argv) {
   if (settings_window_only) {
     gfx.pc_settings = true;
     gx::load_pc_settings(gfx, o.volume);
-    return app::run_settings_window(gfx);
+    const int rc = app::run_settings_window(gfx);
+    // The panel polls every controller so its live readouts work, which starts the adapter and
+    // Switch Pro threads, and it can start an update check. Returning straight from here left those
+    // threads running into static destruction, where a joinable std::thread ends the process: every
+    // close of this window was a crash (0xC0000409), and with Windows Error Reporting collecting it,
+    // the window took a long time to go away. Same shutdown as the game's, below.
+    host::updater::shutdown();
+    host::discord::shutdown();
+    host::gcadapter_shutdown();
+    host::switchpro_shutdown();
+    slippi::shutdown();
+    return rc;
   }
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }

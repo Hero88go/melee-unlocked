@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <chrono>
 #include <climits>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -505,8 +506,28 @@ void NetplayClient::ThreadFunc() {
     }
   }
 
+  // Test only. MELEE_NET_LAG_MS=N holds every received match packet for N ms before it is handled,
+  // so two instances on one machine (tools/online_pair.py) see the late inputs that cause rollbacks,
+  // which a loopback connection never produces. Unset, as it always is for a player, nothing changes.
+  static const uint64_t lag_ms = [] {
+    const char* s = std::getenv("MELEE_NET_LAG_MS");
+    const long v = s ? std::atol(s) : 0;
+    if (v > 0) host::log("slippi: MELEE_NET_LAG_MS: holding received packets %ld ms (testing)", v);
+    return v > 0 ? (uint64_t)v : 0;
+  }();
+  struct Held { uint64_t due; std::vector<uint8_t> data; ENetPeer* peer; };
+  std::deque<Held> held;
+  auto deliver_due = [&] {
+    while (!held.empty() && held.front().due <= time_ms()) {
+      Packet rpac(held.front().data.data(), held.front().data.size());
+      OnData(rpac, held.front().peer);
+      held.pop_front();
+    }
+  };
+
   while (do_loop_.load()) {
     if (status_.load(std::memory_order_acquire) == ConnectStatus::DISCONNECTED) break;
+    deliver_due();
     for (auto& conn : active_connections_) {
       for (auto& peer : conn.second) {
         if (peer.second.is_disconnected || player_active_[peer.second.player_idx].load(std::memory_order_acquire)) continue;
@@ -515,7 +536,7 @@ void NetplayClient::ThreadFunc() {
       }
     }
     ENetEvent ev;
-    int net = enet_host_service(client_, &ev, 250);
+    int net = enet_host_service(client_, &ev, held.empty() ? 250 : 1);
     for (;;) {
       std::unique_ptr<Packet> p;
       { std::lock_guard<std::mutex> lk(async_mutex_); if (async_queue_.empty()) break; p = std::move(async_queue_.front()); async_queue_.pop_front(); }
@@ -524,12 +545,18 @@ void NetplayClient::ThreadFunc() {
     if (net <= 0) continue;
     switch (ev.type) {
       case ENET_EVENT_TYPE_RECEIVE: {
+        if (lag_ms) {
+          held.push_back({time_ms() + lag_ms, std::vector<uint8_t>(ev.packet->data, ev.packet->data + ev.packet->dataLength), ev.peer});
+          enet_packet_destroy(ev.packet);
+          break;
+        }
         Packet rpac(ev.packet->data, ev.packet->dataLength);
         OnData(rpac, ev.peer);
         enet_packet_destroy(ev.packet);
         break;
       }
       case ENET_EVENT_TYPE_DISCONNECT: {
+        held.clear();   // their peer is going away; nothing held for it may be handled after
         std::string key = peer_key(ev.peer);
         if (active_connections_.count(key) && active_connections_[key].count(ev.peer)) active_connections_[key][ev.peer].is_disconnected = true;
         bool all_peers_gone = AreAllPeersDisconnectedForKey(key);

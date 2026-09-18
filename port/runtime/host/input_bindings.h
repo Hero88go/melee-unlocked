@@ -10,8 +10,12 @@
 namespace host {
 
 enum class BindAction : uint8_t {
-  A, B, X, Y, Z, Start, L, R, DUp, DDown, DLeft, DRight, Count
+  A, B, X, Y, Z, Start, L, R, DUp, DDown, DLeft, DRight,
+  // C-stick directions, for devices that have them as buttons (keyboard, box controllers). A pad
+  // with an analog C-stick keeps using it; a bound direction pushes the C-stick all the way.
+  CUp, CDown, CLeft, CRight, Count
 };
+inline constexpr bool is_cstick_action(int i) { return i >= (int)BindAction::CUp && i <= (int)BindAction::CRight; }
 
 struct KeyBindings { int vk[(size_t)BindAction::Count]; };
 struct PadBindings { unsigned short mask[(size_t)BindAction::Count]; };  // 0 = unbound
@@ -45,8 +49,17 @@ enum : uint16_t {
 bool switchpro_raw_input(void* device, const uint8_t* report, size_t size, size_t count);
 
 inline constexpr uint16_t kActionPadBit[(size_t)BindAction::Count] = {
-  0x0100, 0x0200, 0x0400, 0x0800, 0x0010, 0x1000, 0x0040, 0x0020, 0x0008, 0x0004, 0x0001, 0x0002
+  0x0100, 0x0200, 0x0400, 0x0800, 0x0010, 0x1000, 0x0040, 0x0020, 0x0008, 0x0004, 0x0001, 0x0002,
+  0, 0, 0, 0   // C-stick directions are not buttons (see apply_cstick_actions)
 };
+
+// Pushes the C-stick for bound C-stick directions in `actions` (BindAction bit indices).
+inline void apply_cstick_actions(uint16_t actions, int8_t& sub_x, int8_t& sub_y) {
+  const bool up = actions & (1u << (int)BindAction::CUp), down = actions & (1u << (int)BindAction::CDown);
+  const bool left = actions & (1u << (int)BindAction::CLeft), right = actions & (1u << (int)BindAction::CRight);
+  if (up != down) sub_y = up ? 127 : -127;
+  if (left != right) sub_x = right ? 127 : -127;
+}
 
 inline KeyBindings default_key_bindings() {
   KeyBindings k{};
@@ -62,6 +75,10 @@ inline KeyBindings default_key_bindings() {
   k.vk[(size_t)BindAction::DDown]  = 'G';
   k.vk[(size_t)BindAction::DLeft]  = 'F';
   k.vk[(size_t)BindAction::DRight] = 'H';
+  k.vk[(size_t)BindAction::CUp]    = 'I';
+  k.vk[(size_t)BindAction::CDown]  = 'K';
+  k.vk[(size_t)BindAction::CLeft]  = 'J';
+  k.vk[(size_t)BindAction::CRight] = 'L';
   return k;
 }
 
@@ -144,6 +161,49 @@ inline std::array<HidBindings, 4> default_hid_bindings() {
   return pads;
 }
 
+// The hat switch of a HID pad, as four buttons above the device's own: many box controllers report
+// their D-pad there (HID button numbers 29 to 32 are free on every device seen so far).
+enum : uint32_t { HID_HAT_UP = 1u << 28, HID_HAT_RIGHT = 1u << 29, HID_HAT_DOWN = 1u << 30, HID_HAT_LEFT = 1u << 31 };
+
+// Box controller layouts, from the Dolphin profiles their firmware or feeder ships (Dolphin numbers
+// DInput buttons from 0, which is bit N here).
+// B0XX-layout boxes on HayBox firmware in DInput mode (Arduino based: B0XX R1-R3, LBX), from
+// HayBox_DInput.ini. Pico-based HayBox boxes default to XInput and need nothing.
+inline HidBindings haybox_dinput_bindings() {
+  HidBindings b{};
+  b.mask[(size_t)BindAction::A] = 1u << 1;  b.mask[(size_t)BindAction::B] = 1u << 0;
+  b.mask[(size_t)BindAction::X] = 1u << 3;  b.mask[(size_t)BindAction::Y] = 1u << 2;
+  b.mask[(size_t)BindAction::Z] = 1u << 4;  b.mask[(size_t)BindAction::Start] = 1u << 9;
+  b.mask[(size_t)BindAction::L] = 1u << 7;  b.mask[(size_t)BindAction::R] = 1u << 5;
+  b.mask[(size_t)BindAction::DUp] = HID_HAT_UP;     b.mask[(size_t)BindAction::DDown] = HID_HAT_DOWN;
+  b.mask[(size_t)BindAction::DLeft] = HID_HAT_LEFT; b.mask[(size_t)BindAction::DRight] = HID_HAT_RIGHT;
+  return b;
+}
+// vJoy fed as a B0XX (the b0xx-ahk keyboard setup and others that use its profile), from
+// b0xx-keyboard.ini.
+inline HidBindings vjoy_b0xx_bindings() {
+  HidBindings b{};
+  b.mask[(size_t)BindAction::L] = 1u << 0;  b.mask[(size_t)BindAction::Y] = 1u << 1;
+  b.mask[(size_t)BindAction::R] = 1u << 2;  b.mask[(size_t)BindAction::B] = 1u << 3;
+  b.mask[(size_t)BindAction::A] = 1u << 4;  b.mask[(size_t)BindAction::X] = 1u << 5;
+  b.mask[(size_t)BindAction::Z] = 1u << 6;  b.mask[(size_t)BindAction::Start] = 1u << 7;
+  b.mask[(size_t)BindAction::DUp] = 1u << 8;    b.mask[(size_t)BindAction::DLeft] = 1u << 9;
+  b.mask[(size_t)BindAction::DDown] = 1u << 10; b.mask[(size_t)BindAction::DRight] = 1u << 11;
+  return b;
+}
+
+// Stick deadzones per controller family, in the game's units (a full push is 127). Zero, the
+// default, passes the stick through untouched. Inside the deadzone the stick reads as centred;
+// outside it is left exactly as the device sent it, so no angle a box or a notched pad produces
+// is moved.
+enum class PadFamily : uint8_t { GameCube, Xbox, PlayStation, Switch, Box, Count };
+struct Deadzone { int main = 0, c = 0; };
+extern std::array<Deadzone, (size_t)PadFamily::Count> g_deadzones;
+inline void apply_deadzone(const Deadzone& dz, int8_t& x, int8_t& y, bool c) {
+  const int r = c ? dz.c : dz.main;
+  if (r > 0 && (int)x * x + (int)y * y < r * r) { x = 0; y = 0; }
+}
+
 extern KeyBindings g_key_bindings;
 extern std::array<PadBindings, 4> g_pad_bindings;
 extern std::array<GCBindings, 4> g_gc_bindings;
@@ -183,6 +243,13 @@ extern std::array<PortSource, 4> g_port_sources;
 enum class CaptureDevice : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapter, SwitchPro, HidPad };
 
 // Starts listening. Call once when the settings UI enters "press a button" mode.
+// Starts listening for the next press on ONE device: the kind and index of the tab being rebound.
+// It used to listen to everything at once, and a press seen on a different device than the tab
+// restarted the capture, which re-recorded every baseline with the button still held down. A box
+// controller that also shows up as an XInput pad (or sits beside one) fired XInput first on every
+// press, so the press on the device actually being rebound was swallowed into the new baseline and
+// the rebind waited forever. Escape always cancels, whatever is being rebound.
+void input_begin_capture(CaptureDevice want, int want_index);
 void input_begin_capture();
 // Call every frame while waiting. Returns true once something new was pressed
 // (or Escape was pressed to cancel — in that case device == None).
@@ -205,6 +272,10 @@ struct InputDebugSnapshot {
   bool swpro_connected[4]{};
   bool hid_connected[4]{};
   uint32_t gc_mask = 0;
+  // Each device's own sticks and buttons, whether or not it plays as a port (settings picture).
+  PadState keyboard_pad{};
+  PadState xinput_pad[4]{}, ds4_pad[4]{}, gc_pad[4]{}, swpro_pad[4]{}, hid_pad[4]{};
+  uint16_t swpro_buttons[4]{};   // raw SWPRO_* bits, for the Switch Pro picture
 };
 void input_debug_snapshot(InputDebugSnapshot& snapshot);
 

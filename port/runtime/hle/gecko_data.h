@@ -15,6 +15,10 @@ extern const HookInstall boot_hooks[];  extern const size_t boot_hooks_count;
 extern const uint32_t gct_base_used;
 // Run-time optional codes (compiled both ways by the recompiler; see gecko.py RUNTIME_OPTIONAL).
 extern bool option_widescreen;                 // read by translated code at the patched instructions
+extern bool option_pal_stock_icons;            // PAL-sized stock icons (a port code, see recomp/gecko.py)
+// A translation generated before a flag existed (the playback guest can be an older prebuilt one)
+// does not define it; the linker then takes this default instead (see exi_slippi.cpp).
+extern bool option_pal_stock_icons_default;
 extern const uint32_t optional_gct_offset;     // where the optional codes start inside slippi_gct
 struct OptionalWrite { uint32_t addr; uint32_t size; const uint8_t* patched; const uint8_t* original; };
 extern const OptionalWrite optional_writes[]; extern const size_t optional_writes_count;

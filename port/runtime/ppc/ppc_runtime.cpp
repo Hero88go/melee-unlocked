@@ -134,7 +134,41 @@ uint32_t spr_read(Context& c, uint32_t n) {
   }
 }
 
-void spr_write(Context& c, uint32_t n, uint32_t v) { c.spr[n & 1023] = v; }
+// The locked cache's DMA engine. The THP movie decoder (the opening, the special movie, the Classic
+// and Adventure endings) builds each frame in the 16 KB locked cache and moves it out to the texture
+// buffers with LCStoreData, which programs DMA_U (922) then DMA_L (923) with its trigger bit set.
+// Writing these used to only store the value, so the copy never happened and every movie showed
+// whatever was in those buffers before. Done here, synchronously and at once, so the transfer queue
+// HID2 reports stays empty and LCQueueWait returns straight away, as Dolphin behaves.
+//   DMA_U: memory address (32-byte aligned) | length bits 6..2 in lines
+//   DMA_L: locked cache address | LD (0x10, memory to cache) | length bits 1..0 << 2 | T (0x2)
+static void locked_cache_dma(Context& c, uint32_t dmal) {
+  const uint32_t dmau = c.spr[922];
+  uint32_t lines = ((dmau & 0x1Fu) << 2) | ((dmal >> 2) & 3u);
+  if (!lines) lines = 128;
+  const uint32_t bytes = lines * 32u;
+  const uint32_t lc = dmal & 0xFFFFFFE0u, mem = (dmau & 0xFFFFFFE0u) & 0x3FFFFFFFu;
+  const uint32_t lc_offset = lc & (LC_SIZE - 1);
+  if ((lc & 0xFFFFC000u) != LC_BASE || lc_offset + bytes > LC_SIZE) {
+    host::log("locked cache DMA outside the cache: %08X+%X", lc, bytes);
+    return;
+  }
+  uint8_t* ram = host::ptr(0x80000000u | mem, bytes);   // checks the whole span
+  static uint64_t transfers = 0;
+  if (++transfers == 1 || transfers % 100000 == 0)
+    host::log("locked cache DMA: %llu transfers (%s %08X+%X)", (unsigned long long)transfers, (dmal & 0x10u) ? "load" : "store", 0x80000000u | mem, bytes);
+  if (dmal & 0x10u) std::memcpy(g_locked_cache + lc_offset, ram, bytes);   // LCLoadData
+  else std::memcpy(ram, g_locked_cache + lc_offset, bytes);               // LCStoreData
+}
+
+void spr_write(Context& c, uint32_t n, uint32_t v) {
+  n &= 1023;
+  if (n == 923 && (v & 2u)) {
+    locked_cache_dma(c, v);
+    v &= ~2u;   // the trigger bit reads back clear once the transfer is done
+  }
+  c.spr[n] = v;
+}
 
 void syscall(Context& c, uint8_t* m) {
   // Melee only uses sc for cache maintenance from OS code; nothing to do.

@@ -19,6 +19,7 @@ bool window_is_fullscreen();
 // the window is fullscreen (there the client area is the monitor) and clamped to the monitor.
 void window_set_client_size(int w, int h);
 bool window_take_fullscreen_toggle();   // true once per Alt+Enter press in the game window
+bool window_take_settings_toggle();     // true once per F1 press (auto-repeat ignored), however late it is read
 double window_refresh_rate();
 void window_destroy();
 void window_set_title(const wchar_t* title);
