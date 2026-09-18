@@ -5,7 +5,7 @@ A native Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online
 unlocked display frame rate.
 
 The game's own PowerPC code is translated ahead of time into C++ (static recompilation of the
-retail executable plus Slippi's Gecko codes) and runs against a native D3D12 renderer, so the
+retail executable plus Slippi's Gecko codes) and runs against a native D3D12 or D3D11 renderer, so the
 game logic stays exactly what the GameCube ran, at 60 Hz, while the display runs at any rate.
 In-between frames come from the game's own animation data and physics state, not from image
 interpolation, so an unlocked 200 Hz display shows real intermediate poses with no added latency.
