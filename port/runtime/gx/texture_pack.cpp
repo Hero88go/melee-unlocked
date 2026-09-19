@@ -25,6 +25,7 @@
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <mutex>
 #include <system_error>
 #include <unordered_map>
 
@@ -371,12 +372,20 @@ void refresh_packs() {
   build_index();
 }
 
+std::mutex g_cache_mutex;
+std::unordered_map<std::string, std::unique_ptr<Replacement>> g_cache;
+uint64_t g_cache_bytes = 0;
+constexpr uint64_t kCacheBudget = 1536ull * 1024 * 1024;
+void clear_cache();   // defined with load()
+std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes);
+
 bool configure(bool on, bool dump) {
   if (on == g.on && dump == g.dump) return false;
   const bool was_on = g.on;
   if (was_on && !on) report();   // last word on what the pack did before its counters are dropped
   g.on = on;
   g.dump = dump;
+  if (!on) clear_cache();
   if (on && g.index.empty()) build_index();
   if (dump) {
     g.dump_root = exe_directory() / "Dump" / "Textures" / "GALE01";
@@ -510,11 +519,22 @@ void prefetch_begin() {
     for (const auto& kv : g.index) names.push_back(kv.first);
     for (const auto& name : names) {
       if (!g.on) break;   // switched off mid-run: stop rather than finish work nobody wants
-      load(name, ~0ull);  // decoded into the cache; the draw path then finds it ready
+      {
+        std::lock_guard<std::mutex> lk(g_cache_mutex);
+        if (g_cache_bytes >= kCacheBudget || g_cache.count(name)) { g_prefetch_done.fetch_add(1, std::memory_order_relaxed); continue; }
+      }
+      if (auto r = decode_entry(name, ~0ull)) {   // decoded into the cache; the draw path then finds it ready
+        std::lock_guard<std::mutex> lk(g_cache_mutex);
+        if (g_cache_bytes + r->pixels.size() <= kCacheBudget) { g_cache_bytes += r->pixels.size(); g_cache.emplace(name, std::move(r)); }
+      }
       g_prefetch_done.fetch_add(1, std::memory_order_relaxed);
     }
-    host::log("textures: prefetched %llu of %llu replacements",
-              (unsigned long long)g_prefetch_done.load(), (unsigned long long)g_prefetch_total.load());
+    {
+      std::lock_guard<std::mutex> lk(g_cache_mutex);
+      host::log("textures: prefetched %llu of %llu replacements, %zu kept decoded (%.0f MB)",
+                (unsigned long long)g_prefetch_done.load(), (unsigned long long)g_prefetch_total.load(),
+                g_cache.size(), g_cache_bytes / 1048576.0);
+    }
     g_prefetching.store(false, std::memory_order_release);
   });
 }
@@ -531,7 +551,41 @@ void note_lookup(bool was_matched) {
   if (was_matched) ++g.matched;
 }
 
+// Decoded replacements kept for the draw path. "Load them at startup" used to decode every PNG and
+// throw the result away, so it cost a core at startup and every texture was still decoded again on
+// the render thread the first time it appeared (a hitch per new texture, such as the time-up
+// graphics at the end of a match). Prefetch now fills this, and load() takes from it. Capped so a
+// large pack cannot take all of RAM; past the cap the rest decode on first use as before.
+
+void clear_cache() {
+  std::lock_guard<std::mutex> lk(g_cache_mutex);
+  g_cache.clear();
+  g_cache_bytes = 0;
+}
+
+std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes);
+
 std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes) {
+  if (!g.on || base.empty()) return nullptr;
+  {
+    std::lock_guard<std::mutex> lk(g_cache_mutex);
+    auto hit = g_cache.find(base);
+    if (hit != g_cache.end()) {
+      std::unique_ptr<Replacement> r = std::move(hit->second);
+      g_cache_bytes -= r->pixels.size();
+      g_cache.erase(hit);
+      auto found = g.index.find(base);
+      if (found != g.index.end()) {
+        const int pack = found->second.pack;
+        if (pack >= 0 && pack < (int)g.packs.size() && !g.packs[(size_t)pack].enabled) return nullptr;
+      }
+      return r->pixels.size() <= budget_bytes ? std::move(r) : nullptr;
+    }
+  }
+  return decode_entry(base, budget_bytes);
+}
+
+std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes) {
   if (!g.on || base.empty()) return nullptr;
   auto found = g.index.find(base);
   if (found == g.index.end()) return nullptr;
