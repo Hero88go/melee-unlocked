@@ -636,6 +636,18 @@ bool is_scene_draw(const DrawCall& dc) {
   return g_main_proj_valid && std::memcmp(&dc.xf_regs[0x20], g_main_proj, sizeof g_main_proj) == 0;
 }
 
+// A perspective camera whose frustum is exactly the 4:3 box its content was authored to fill: the
+// screen flash and its wipes (lb/lbbgflash.c, a 640x480 quad at fov 60, aspect 4:3). proj[] holds
+// the GX projection as x scale, x shift, y scale, y shift, and the shifts are zero for a camera
+// that is not looking off to one side. Melee's own 3D cameras shift horizontally in places and do
+// not sit at this ratio once widened, so this stays specific to the overlays.
+bool is_authored_fullscreen(const float* proj) {
+  if (proj[1] != 0.0f || proj[3] != 0.0f) return false;          // off-centre: a real camera
+  if (proj[0] <= 0.0f || proj[2] <= 0.0f) return false;
+  const float ratio = proj[2] / proj[0];                          // y scale over x scale
+  return std::fabs(ratio - 4.0f / 3.0f) < 0.001f;
+}
+
 void build_projection(const DrawCall& dc, float m[16]) {
   const float* vp = (const float*)&dc.xf_regs[0x1A];
   const float* proj = (const float*)&dc.xf_regs[0x20];
@@ -647,7 +659,14 @@ void build_projection(const DrawCall& dc, float m[16]) {
     // keeps an off-centre frustum centred: Melee shifts the projection horizontally in places, and
     // scaling only m[0] would move the picture as well as widen it. Perspective draws only: the
     // orthographic branch below is the HUD and the 2D layer, which must keep its authored size.
-    if (g_true_widescreen.load(std::memory_order_relaxed)) {
+    // Widen the world, not the overlays that are authored to cover the screen. The screen flash
+    // (lbbgflash) and the wipes built on it use their own perspective camera placed so that a
+    // 640x480 quad exactly fills a 4:3 frustum. Widening that camera makes it see 935 units while
+    // the quad is still 640, so the flash stops 16% short on each side and appears as a 4:3 square
+    // over a 16:9 picture. Such a camera is recognisable without guessing: it is axis-aligned (no
+    // off-centre shift) and its x and y scales are in exactly the 4:3 ratio the quad was drawn for,
+    // which the game's own cameras never are once the player's aspect is applied.
+    if (g_true_widescreen.load(std::memory_order_relaxed) && !is_authored_fullscreen(proj)) {
       constexpr float kWiden = 219.0f / 320.0f;   // (73/60) * (320/219) == 16/9
       for (int i = 0; i < 4; ++i) m[i] *= kWiden;
     }
