@@ -28,6 +28,7 @@
 #include "gx_texture.h"
 #include "gx_streamline.h"
 #include "gx_xess.h"
+#include "flicker_scan.h"
 #include "texture_pack.h"
 #include "host.h"
 #include "window.h"   // fullscreen toggling lives on the window, not the settings panel
@@ -327,6 +328,16 @@ class D3D12Backend : public Backend {
   static constexpr int FRAME_SLOTS = 3;
   ComPtr<ID3D12CommandAllocator> allocators_[FRAME_SLOTS];
   uint64_t slot_fence_[FRAME_SLOTS] = {};
+  // --flicker-scan: each presented frame's EFB is copied into its slot's readback buffer, and read
+  // when that slot comes round again (its fence has passed, so the read never stalls the GPU).
+  FlickerScanner scanner_;
+  ComPtr<ID3D12Resource> scan_rb_[FRAME_SLOTS];
+  uint64_t scan_rb_size_[FRAME_SLOTS] = {};
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT scan_fp_[FRAME_SLOTS] = {};
+  bool scan_pending_[FRAME_SLOTS] = {};
+  uint32_t scan_frame_[FRAME_SLOTS] = {};
+  void record_flicker_scan();
+  void read_flicker_scan();
   int slot_ = 0;
   ComPtr<ID3D12GraphicsCommandList> list_;
   ComPtr<ID3D12Fence> fence_;
@@ -812,7 +823,8 @@ static void describe_pipeline(D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, const PsoK
     // them. A translucent layer (smoke, sparks, fades, a stage's see-through planes) drawn over a
     // moving fighter used to replace that pixel's motion with its own, usually none, and DLSS then
     // blended last frame's image at the wrong place: the smearing on moving characters.
-    const bool writes_depth = bits(zm, 0, 1) && bits(zm, 4, 1);
+    static const bool all_write_mvec = [] { const char* e = std::getenv("MELEE_DEBUG_MVEC_ALL"); return e && e[0] == '1'; }();   // A/B: the old rule
+    const bool writes_depth = all_write_mvec || (bits(zm, 0, 1) && bits(zm, 4, 1));
     pd.BlendState.RenderTarget[1].RenderTargetWriteMask = writes_depth ? (D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN) : 0;
     pd.BlendState.RenderTarget[2] = D3D12_RENDER_TARGET_BLEND_DESC{};
     pd.BlendState.RenderTarget[2].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED;
@@ -1171,14 +1183,8 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
 
 // ---------------- draws ----------------
 void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const DrawMatrices* override_matrices) {
-  // The "Visual effects" quality reduction used to sit here and has been removed. It skipped
-  // world-space additive draws that do not write depth, on the theory that those are glow, sparks
-  // and flashes. In Melee they are also the stage select pointer (reported missing whenever effects
-  // were reduced) and, at the wider level 2 rule, menu text. Nothing in a draw distinguishes a hit
-  // spark from a cursor: both are 3D, additive and depth-less, so the filter cannot be narrowed into
-  // correctness. It was also aimed at machines that turn out to be limited by the simulation rather
-  // than by draw submission, so it was removing required UI to buy time that was not the bottleneck.
-  // The "effects" key is still parsed from settings files written by older builds, and ignored.
+  // "Visual effects" below Full: decorative draws in a match are skipped (see skip_for_effects).
+  if (skip_for_effects(frame, dc, opts_.effects_level)) return;
 
   // Build index list (triangle list / line list) from the GX primitive.
   Stopwatch sw;
@@ -1424,6 +1430,7 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   // output next to the input it came from, so a trail left by the upscaler can be measured.
   static const bool debug_show_input = [] { const char* e = std::getenv("MELEE_DEBUG_DLSS_INPUT_ODD"); return e && e[0] == '1'; }();
   if (debug_show_input && upscaled && dlss_in_place_ && (frames_presented_ & 1)) upscaled = false;
+  if (opts_.flicker_scan) record_flicker_scan();
   ID3D12Resource* source = upscaled ? dlss_out_.Get() : efb_color_.Get();
   D3D12_RESOURCE_STATES source_state = upscaled ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_RENDER_TARGET;
   // With DLSS the current EFB and the HUD mask are read too (HUD composite).
@@ -1512,6 +1519,62 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   list_->ResourceBarrier(hud_composite ? 4 : 2, back);
   // Restore EFB as the render target for any later commands in this frame.
   bind_efb_targets();
+}
+
+void D3D12Backend::record_flicker_scan() {
+  const D3D12_RESOURCE_DESC desc = efb_color_->GetDesc();
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+  UINT64 total = 0;
+  device_->GetCopyableFootprints(&desc, 0, 1, 0, &fp, nullptr, nullptr, &total);
+  if (!scan_rb_[slot_] || scan_rb_size_[slot_] < total) {
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = total; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+    rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    scan_rb_[slot_].Reset();
+    if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&scan_rb_[slot_])))) return;
+    scan_rb_size_[slot_] = total;
+  }
+  D3D12_RESOURCE_BARRIER b{};
+  b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  b.Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
+  list_->ResourceBarrier(1, &b);
+  D3D12_TEXTURE_COPY_LOCATION dst{scan_rb_[slot_].Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+  dst.PlacedFootprint = fp;
+  D3D12_TEXTURE_COPY_LOCATION src{efb_color_.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+  src.SubresourceIndex = 0;
+  list_->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+  std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+  list_->ResourceBarrier(1, &b);
+  scan_fp_[slot_] = fp; scan_pending_[slot_] = true; scan_frame_[slot_] = frames_presented_;
+}
+
+// Reduces the copied EFB to the scanner's grid: each cell averages a 4x4 spread of pixels from its
+// block of the picture (the visible 640x480 part; the rows below it are never shown).
+void D3D12Backend::read_flicker_scan() {
+  scan_pending_[slot_] = false;
+  const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& fp = scan_fp_[slot_];
+  const D3D12_RANGE range{0, (SIZE_T)scan_rb_size_[slot_]};
+  void* mapped = nullptr;
+  if (FAILED(scan_rb_[slot_]->Map(0, &range, &mapped))) return;
+  const uint8_t* base = (const uint8_t*)mapped + fp.Offset;
+  const uint32_t w = fp.Footprint.Width, h = std::min<uint32_t>(fp.Footprint.Height, fp.Footprint.Width * 480 / 640);
+  constexpr int G = FlickerScanner::kGrid;
+  static float grid[G * G];
+  for (int gy = 0; gy < G; ++gy)
+    for (int gx = 0; gx < G; ++gx) {
+      float sum = 0;
+      for (int sy = 0; sy < 4; ++sy)
+        for (int sx = 0; sx < 4; ++sx) {
+          const uint32_t x = (uint32_t)((gx + (sx + 0.5f) / 4.0f) * w / G), y = (uint32_t)((gy + (sy + 0.5f) / 4.0f) * h / G);
+          const uint8_t* p = base + (size_t)y * fp.Footprint.RowPitch + (size_t)x * 4;
+          sum += p[0] * 0.25f + p[1] * 0.6f + p[2] * 0.15f;
+        }
+      grid[gy * G + gx] = sum / 16.0f;
+    }
+  const D3D12_RANGE none{0, 0};
+  scan_rb_[slot_]->Unmap(0, &none);
+  scanner_.push(grid, scan_frame_[slot_]);
 }
 
 void D3D12Backend::capture_backbuffer() {
@@ -1665,6 +1728,10 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     texpack_report_frame_ = frame_counter_ + 600;
   }
   if (adapter3_ && (frame_counter_ % 30) == 0) update_vram();
+  if (adapter3_ && frame_counter_ && (frame_counter_ % 3600) == 0) {
+    float used = 0, budget = 0;
+    if (vram_usage(&used, &budget)) host::log("vram: %.2f of %.2f GB in use (EFB %dx%d, replacement textures %.0f MB)", used, budget, efb_w_, efb_h_, replacement_bytes_ / 1048576.0);
+  }
   if (texpack::enabled() && frame_counter_ >= texpack_report_frame_) {
     texpack::report();
     float used = 0, budget = 0;
@@ -1683,6 +1750,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
   slot_ = (int)(frame_counter_ % FRAME_SLOTS);
   wait_fence(slot_fence_[slot_]);   // this slot's previous frame (FRAME_SLOTS frames ago) is complete
+  if (scan_pending_[slot_]) read_flicker_scan();
   vertex_ring_.reset(slot_); index_ring_.reset(slot_); constant_ring_.reset(slot_); upload_ring_.reset(slot_);
   frame_garbage_[slot_].clear();
   descriptor_garbage_[slot_].clear();

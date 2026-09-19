@@ -1853,6 +1853,14 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     const char* anis[] = {"1x", "2x", "4x", "8x", "16x"};
     int an_index = options.anisotropy >= 16 ? 4 : options.anisotropy >= 8 ? 3 : options.anisotropy >= 4 ? 2 : options.anisotropy >= 2 ? 1 : 0;
     if (ImGui::Combo("Anisotropic filtering", &an_index, anis, 5)) { options.anisotropy = 1 << an_index; changed = true; }
+    {
+      const char* levels[] = {"Full", "Reduced (no sparks or glow)", "Minimal (no screen overlays)"};
+      if (ImGui::Combo("Visual effects", &options.effects_level, levels, 3)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Skips decorative effects during matches to help slower PCs: glow, sparks and\n"
+                          "flashes (Reduced), plus full-screen overlays (Minimal). Menus, fighters, the\n"
+                          "stage and the HUD always draw. Display only: safe online.");
+    }
     // Creating a device and a swapchain on another API means restarting; the choice is saved and
     // read again at the next launch (see load_pc_settings and --backend).
     const char* backends[] = {"Direct3D 12 (default)", "Direct3D 11 (older GPUs and drivers)"};
@@ -2101,37 +2109,6 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("The camera no longer shakes on hard hits, explosions and stage effects.\n"
                         "Camera only: fighters and hits are unchanged. Takes effect immediately.");
-
-    // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
-    ImGui::Separator();
-    ImGui::TextUnformatted("Gecko codes");
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Your own codes, in Dolphin's format, from:\n%s\n"
-                        "Codes that write game data work. Codes that patch the game's code (C2 and\n"
-                        "writes into the code) cannot run in this build and are shown greyed out.",
-                        user_gecko::path().c_str());
-    if (user_gecko::codes().empty()) {
-      ImGui::TextDisabled("No codes. Put a GeckoCodes.ini next to port-settings.ini.");
-    } else {
-      if (user_gecko::any_enabled())
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f),
-                           "Codes change the game. Online, both players need the exact same codes\n"
-                           "or the match will desync.");
-      for (user_gecko::Code& c : user_gecko::codes()) {
-        ImGui::PushID(&c);
-        ImGui::BeginDisabled(!c.supported);
-        if (ImGui::Checkbox(c.name.c_str(), &c.enabled)) { changed = true; g_gecko_chosen = true; }
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-          std::string tip;
-          for (const std::string& n : c.notes) tip += n + "\n";
-          if (!c.supported) tip += "Cannot run here: this code " + c.reason + ".";
-          else tip += "Desyncs online unless your opponent runs it too.";
-          ImGui::SetTooltip("%s", tip.c_str());
-        }
-        ImGui::PopID();
-      }
-    }
 
 
     // ---- Online ----
@@ -2645,6 +2622,39 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       ImGui::SameLine();
       changed |= ImGui::Checkbox("Hide border", &options.input_overlay_hide_border);
       ImGui::TextDisabled("  Drag an overlay to move it, and its edges to resize, while this panel is open.");
+    }
+        ImGui::EndTabItem();
+      }
+      if (ImGui::BeginTabItem("Gecko Codes", nullptr, tab_flags("Gecko Codes"))) {
+    // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
+    // Always shown: a code the other player does not have desyncs the match.
+    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "WARNING: Gecko codes can cause DESYNCS online.");
+    ImGui::TextWrapped("Codes change the game itself. Online, both players need exactly the same codes switched on, "
+                       "or the match falls out of sync. Switch codes off before playing online unless your opponent has them too.");
+    ImGui::Separator();
+    ImGui::TextUnformatted("Your codes");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Your own codes, in Dolphin's format, from:\n%s\n"
+                        "Codes that write game data work. Codes that patch the game's code (C2 and\n"
+                        "writes into the code) cannot run in this build and are shown greyed out.",
+                        user_gecko::path().c_str());
+    if (user_gecko::codes().empty()) {
+      ImGui::TextDisabled("No codes. Put a GeckoCodes.ini next to port-settings.ini.");
+    } else {
+      for (user_gecko::Code& c : user_gecko::codes()) {
+        ImGui::PushID(&c);
+        ImGui::BeginDisabled(!c.supported);
+        if (ImGui::Checkbox(c.name.c_str(), &c.enabled)) { changed = true; g_gecko_chosen = true; }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+          std::string tip;
+          for (const std::string& n : c.notes) tip += n + "\n";
+          if (!c.supported) tip += "Cannot run here: this code " + c.reason + ".";
+          else tip += "Desyncs online unless your opponent runs it too.";
+          ImGui::SetTooltip("%s", tip.c_str());
+        }
+        ImGui::PopID();
+      }
     }
         ImGui::EndTabItem();
       }

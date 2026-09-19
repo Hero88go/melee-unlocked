@@ -40,6 +40,7 @@
 #include <condition_variable>
 #include <vector>
 #include "gx_d3d11.h"
+#include "flicker_scan.h"
 #include "gx_backend.h"
 #include "exi_slippi.h"
 #include "gx_shader.h"
@@ -377,15 +378,14 @@ class D3D11Backend : public Backend {
   // an unlocked rate a few thousand dumped frames cover a fraction of a second. So the check runs in
   // the renderer instead, on a 16x16 downsample of every presented frame, and only says something
   // when a frame pops out and comes back.
-  static constexpr int kScanGrid = 64;   // coarse, but enough to recognise what changed on a hit
+  static constexpr int kScanGrid = FlickerScanner::kGrid;   // coarse, but enough to recognise what changed on a hit
   static constexpr int kScanRing = 3;   // readback is mapped two frames later, so it never stalls
   void flicker_scan();
   ComPtr<ID3D11Texture2D> scan_rt_, scan_staging_[kScanRing];
   ComPtr<ID3D11RenderTargetView> scan_rtv_;
-  uint32_t scan_ring_ = 0, scan_ready_ = 0, scan_history_ = 0;
-  uint64_t scan_hits_ = 0;
-  uint64_t scan_cell_hits_ = 0, scan_dumps_ = 0;
-  float scan_sig_[3][kScanGrid * kScanGrid] = {};
+  uint32_t scan_ring_ = 0, scan_ready_ = 0;
+  FlickerScanner scanner_;   // the analysis, shared with D3D12 (flicker_scan.cpp)
+
 
   std::mutex shader_mutex_;
   std::condition_variable shader_cv_, shader_done_cv_;
@@ -1326,104 +1326,15 @@ void D3D11Backend::flicker_scan() {
   // Map the oldest copy in the ring, which the GPU finished two frames ago.
   D3D11_MAPPED_SUBRESOURCE m{};
   if (SUCCEEDED(context_->Map(scan_staging_[scan_ring_].Get(), 0, D3D11_MAP_READ, 0, &m))) {
-    float* slot = scan_sig_[scan_history_ % 3];
+    static float grid[FlickerScanner::kGrid * FlickerScanner::kGrid];
     const uint8_t* src = (const uint8_t*)m.pData;
     for (int y = 0; y < kScanGrid; ++y)
       for (int x = 0; x < kScanGrid; ++x) {
         const uint8_t* p = src + (size_t)y * m.RowPitch + (size_t)x * 4;
-        slot[y * kScanGrid + x] = p[0] * 0.25f + p[1] * 0.6f + p[2] * 0.15f;
+        grid[y * kScanGrid + x] = p[0] * 0.25f + p[1] * 0.6f + p[2] * 0.15f;
       }
     context_->Unmap(scan_staging_[scan_ring_].Get(), 0);
-    ++scan_history_;
-    if (scan_history_ >= 3) {
-      const float* a = scan_sig_[(scan_history_ - 3) % 3];
-      const float* b = scan_sig_[(scan_history_ - 2) % 3];
-      const float* c = scan_sig_[(scan_history_ - 1) % 3];
-      float d_prev = 0, d_next = 0, d_skip = 0;
-      for (int i = 0; i < kScanGrid * kScanGrid; ++i) {
-        d_prev += std::abs(b[i] - a[i]); d_next += std::abs(b[i] - c[i]); d_skip += std::abs(c[i] - a[i]);
-      }
-      const float n = kScanGrid * kScanGrid;
-      d_prev /= n; d_next /= n; d_skip /= n;
-      const float out = std::min(d_prev, d_next);
-      // Averaging over the whole picture only finds a defect that covers the whole picture. What a
-      // flickering stage actually does is change one part of the screen and change it back, which
-      // an average buries: a patch of ground trading places with the layer under it moves a few
-      // dozen cells of this grid and leaves the rest identical. So count cells that pop out and
-      // come back on their own, and report where they are.
-      {
-        int cells = 0, min_x = kScanGrid, min_y = kScanGrid, max_x = -1, max_y = -1;
-        float loudest = 0;
-        for (int y = 0; y < kScanGrid; ++y)
-          for (int x = 0; x < kScanGrid; ++x) {
-            const int i = y * kScanGrid + x;
-            const float pop = std::min(std::abs(b[i] - a[i]), std::abs(b[i] - c[i]));
-            const float across = std::abs(c[i] - a[i]);
-            if (pop > 8.0f && pop > across * 3.0f + 1.0f) {
-              ++cells;
-              min_x = std::min(min_x, x); max_x = std::max(max_x, x);
-              min_y = std::min(min_y, y); max_y = std::max(max_y, y);
-              loudest = std::max(loudest, pop);
-            }
-          }
-        if (cells >= 4) {
-          ++scan_cell_hits_;
-          host::log("flicker: presented frame %u has %d of %d cells popping out and back, x %d-%d y %d-%d of %d, loudest %.0f; %llu so far",
-                    frames_presented_ - 1, cells, kScanGrid * kScanGrid, min_x, max_x, min_y, max_y, kScanGrid,
-                    loudest, (unsigned long long)scan_cell_hits_);
-          // The three signatures around the hit, so what popped can be recognised afterwards: the
-          // frame before, the frame that popped, and the frame after.
-          if (frames_presented_ > 6000 && scan_dumps_ < 30) {
-            ++scan_dumps_;
-            CreateDirectoryA("flicker", nullptr);
-            const float* trio[3] = {a, b, c};
-            for (int k = 0; k < 3; ++k) {
-              char path[160];
-              snprintf(path, sizeof path, "flicker/cell%03llu_%u_%s.ppm", (unsigned long long)scan_dumps_,
-                       frames_presented_ - 1, k == 0 ? "1prev" : k == 1 ? "2BAD" : "3next");
-              if (FILE* f = fopen(path, "wb")) {
-                fprintf(f, "P6\n%d %d\n255\n", kScanGrid, kScanGrid);
-                for (int i = 0; i < kScanGrid * kScanGrid; ++i) {
-                  const float value = trio[k][i];
-                  const unsigned char v = (unsigned char)(value < 0 ? 0 : value > 255 ? 255 : value);
-                  const unsigned char rgb[3] = {v, v, v};
-                  fwrite(rgb, 1, 3, f);
-                }
-                fclose(f);
-              }
-            }
-          }
-        }
-      }
-      // The floor keeps a still image, where every difference is near zero, from reporting noise.
-      if (out > 1.5f && out > d_skip * 1.25f) {
-        ++scan_hits_;
-        host::log("flicker: presented frame %u pops out and back (prev %.2f, next %.2f, neighbours %.2f, ratio %.1f); %llu so far",
-                  frames_presented_ - 1, d_prev, d_next, d_skip, out / (d_skip > 0.01f ? d_skip : 0.01f),
-                  (unsigned long long)scan_hits_);
-        // Write the three signatures so a hit can be classified by someone who was not watching:
-        // a hit spark is a small bright patch, the defect we are chasing is the whole stage.
-        if (scan_hits_ <= 40) {
-          CreateDirectoryA("flicker", nullptr);
-          const float* trio[3] = {a, b, c};
-          for (int k = 0; k < 3; ++k) {
-            char path[160];
-            snprintf(path, sizeof path, "flicker/hit%03llu_%u_%s.ppm", (unsigned long long)scan_hits_,
-                     frames_presented_ - 1, k == 0 ? "1prev" : k == 1 ? "2BAD" : "3next");
-            if (FILE* f = fopen(path, "wb")) {
-              fprintf(f, "P6\n%d %d\n255\n", kScanGrid, kScanGrid);
-              for (int i = 0; i < kScanGrid * kScanGrid; ++i) {
-                const float value = trio[k][i];
-                const unsigned char v = (unsigned char)(value < 0 ? 0 : value > 255 ? 255 : value);
-                const unsigned char rgb[3] = {v, v, v};
-                fwrite(rgb, 1, 3, f);
-              }
-              fclose(f);
-            }
-          }
-        }
-      }
-    }
+    scanner_.push(grid, frames_presented_ - kScanRing);   // this copy was made kScanRing frames ago
   }
   bind_efb_targets();
 }
@@ -1509,7 +1420,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
     const DrawCall& dc = frame.draws[cmd.index];
     DrawPlan& plan = plans_[cmd.index];
-    // The "Visual effects" quality reduction was removed from both backends; see gx_d3d12.cpp.
+    if (skip_for_effects(frame, dc, opts_.effects_level)) continue;   // "Visual effects"; plan.valid stays false
     uint32_t n = dc.vertex_count;
     const uint32_t first = (uint32_t)index_scratch_.size();
     auto& idx = index_scratch_;
