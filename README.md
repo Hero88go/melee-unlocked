@@ -1,7 +1,7 @@
 
 # Melee Unlocked - Beta
 
-A native Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online play and an
+A **native** Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online play and an
 unlocked display frame rate.
 
 The game's own PowerPC code is translated ahead of time into C++ (static recompilation of the
@@ -20,6 +20,7 @@ the Slippi team.
 No Monetization. No Donos. No Patreon. **FREE FOREVER**
 
 **v0.6.1 DLSS5 Footage** can be found here https://www.youtube.com/watch?v=qZXsNr7HmAo
+
 **v0.5.0 Gameplay footage** can be found here: https://www.youtube.com/watch?v=JlmTDW6wQms
 
 ## Discord / Help
