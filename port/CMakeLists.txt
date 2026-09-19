@@ -118,6 +118,14 @@ file(STRINGS "${PROJECT_SOURCE_DIR}/VERSION" MELEE_PORT_VERSION LIMIT_COUNT 1)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/VERSION")
 add_library(runtime STATIC ${RUNTIME_SOURCES} third_party/slippilib/SlippiGame.cpp)
 target_compile_definitions(runtime PRIVATE MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
+# The replay code list a playback build was translated against, so it can tell a player when a
+# replay comes from a different Slippi version instead of quietly diverging. Set these to the
+# --extra-gct-base and the list's size when generating port/generated_playback; left at zero, the
+# playback build says it has none, which is the honest answer for a build made without them.
+set(MELEE_PLAYBACK_GCT_BASE "0" CACHE STRING "Guest address of the replay code list this playback build was translated for")
+set(MELEE_PLAYBACK_GCT_SIZE "0" CACHE STRING "Size in bytes of that replay code list")
+target_compile_definitions(runtime PRIVATE
+  MELEE_PLAYBACK_GCT_BASE=${MELEE_PLAYBACK_GCT_BASE}u MELEE_PLAYBACK_GCT_SIZE=${MELEE_PLAYBACK_GCT_SIZE}u)
 target_include_directories(runtime PUBLIC runtime/ppc runtime/host runtime/hle runtime/gx "${PORT_GEN}" "${PROJECT_SOURCE_DIR}/native" third_party)
 target_compile_features(runtime PUBLIC cxx_std_17)
 target_compile_options(runtime PRIVATE /EHsc ${MELEE_ARCH_FLAG} /fp:precise /W3)
@@ -178,7 +186,10 @@ if(EXISTS "${PORT_GEN_PLAYBACK}/guest_sources.cmake")
   add_executable(melee_port_playback app/main.cpp app/settings_window.cpp)
   target_link_libraries(melee_port_playback PRIVATE runtime guest_playback dbghelp)
   target_compile_options(melee_port_playback PRIVATE /EHsc)
-  target_compile_definitions(melee_port_playback PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+  # It ships in the release now, and the packager refuses an executable that does not report the
+  # release's own version, so it needs the same definition the other builds get.
+  target_compile_definitions(melee_port_playback PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
 endif()
 if(EXISTS "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
   add_test(NAME port_image_identity COMMAND "${Python3_EXECUTABLE}"
