@@ -102,10 +102,21 @@ def main():
     # keeps its instruction set. The launcher picks between them by asking the processor.
     ap.add_argument("--compat-exe", type=Path, default=None,
                     help="melee_port.exe built with -DMELEE_CPU_BASELINE=SSE2")
+    ap.add_argument("--experimental-exe", type=Path, required=True,
+                    help="experimental game executable, built with MELEE_ENABLE_DLSS5=ON")
+    ap.add_argument("--experimental-compat-exe", type=Path, required=True,
+                    help="experimental game executable, built with SSE2")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
     if not args.exe.is_file():
         raise SystemExit(f"missing executable: {args.exe}")
+    for experimental in (args.experimental_exe, args.experimental_compat_exe):
+        if not experimental.is_file():
+            raise SystemExit(f"missing experimental executable: {experimental}")
+        built_experimental = subprocess.run([str(experimental), "--version"], capture_output=True,
+                                            text=True, timeout=60).stdout.strip()
+        if built_experimental != args.version:
+            raise SystemExit(f"{experimental} reports {built_experimental!r}, not {args.version!r}")
     # The version is compiled into the executable, so a build made before VERSION changed would
     # ship reporting the old number and offer itself the update forever. Catch that here.
     built = subprocess.run([str(args.exe), "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
@@ -177,12 +188,26 @@ def main():
                      (ROOT / "port/third_party/xess/LICENSE.txt", "intel-xess.txt")):
         if src.is_file():
             shutil.copy2(src, licenses / dst)
-    zip_path = args.out / f"{name}-win64.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-        for path in folder.rglob("*"):
-            z.write(path, path.relative_to(args.out))
-    total = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
-    print(f"{zip_path} ({zip_path.stat().st_size / 1e6:.1f} MB zipped, {total / 1e6:.1f} MB unpacked)")
+    def zip_folder(zip_path):
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+            for path in folder.rglob("*"):
+                z.write(path, path.relative_to(args.out))
+        total = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
+        print(f"{zip_path} ({zip_path.stat().st_size / 1e6:.1f} MB zipped, {total / 1e6:.1f} MB unpacked)")
+
+    zip_folder(args.out / f"{name}-win64.zip")
+    shutil.copy2(args.experimental_exe, folder / "melee_port_dlss5.exe")
+    shutil.copy2(args.experimental_compat_exe, folder / "melee_port_dlss5_compat.exe")
+    forwarder = args.experimental_exe.parent / "nvngx.dll_meleedlss5.dll"
+    if not forwarder.is_file():
+        raise SystemExit(f"missing experimental forwarder: {forwarder}")
+    shutil.copy2(forwarder, folder / forwarder.name)
+    (folder / "README.txt").write_text(README.format(version=args.version) +
+        "\nEXPERIMENTAL DLSS 5: Choose DLSS 5 Experimental in the launcher. Requires an RTX 50-series GPU or newer.\n"
+        "The neural model is not included. The game checks the NVIDIA driver or a user-supplied\n"
+        "nvngx_dlssnr.dll beside melee_port_dlss5.exe. Source: https://github.com/rakanki911/DLSS5-Swapper\n",
+        encoding="utf-8")
+    zip_folder(args.out / f"{name}-DLSS5-Experimental.zip")
 
 
 if __name__ == "__main__":

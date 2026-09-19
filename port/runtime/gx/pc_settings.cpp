@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "pc_settings.h"
 #include "gx_streamline.h"
+#ifdef GX_DLSS5
 #include "gx_dlss5.h"
+#endif
 #include <unordered_map>
 #include "texture_pack.h"
 #include <atomic>
@@ -301,9 +303,15 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
     float fx = sx / 80.f, fy = sy / 80.f;
     const float mag = std::sqrt(fx * fx + fy * fy);
     if (mag > 1.f) { fx /= mag; fy /= mag; }
-    const ImVec2 tip(c.x + fx * r, c.y - fy * r);
     // Sized off the gate; "Stick size" 5 is the look the overlay has always had (a fifth of the gate).
-    dl->AddCircleFilled(tip, std::max(S(3.f), r * 0.04f * std::clamp(knob, 1, 10)), colour, 20);
+    const float knob_r = std::max(S(3.f), r * 0.04f * std::clamp(knob, 1, 10));
+    // The knob is drawn as a circle around its centre, so at a full press the centre alone reaching
+    // the gate's radius let the far side of a big knob bulge past the outline. Pull the centre's own
+    // travel in by the knob's radius so the whole knob stays inside the gate and just touches the
+    // edge at full tilt, rather than overlapping it -- the larger "Stick size" is, the more this matters.
+    const float reach = std::max(0.f, r - knob_r);
+    const ImVec2 tip(c.x + fx * reach, c.y - fy * reach);
+    dl->AddCircleFilled(tip, knob_r, colour, 20);
   };
   stick(P(52, 74), gate, pad.stick_x, pad.stick_y, line);
   stick(P(146, 82), cgate, pad.sub_x, pad.sub_y, yellow);
@@ -438,6 +446,12 @@ constexpr int kDeviceTabs = 21;
 static host::ProfileBindings g_default_bindings[kDeviceTabs];   // captured before the settings file is read
 static bool g_defaults_captured = false;
 static std::string g_active_profile[kDeviceTabs];
+// Whether a named profile (rather than "Default") is the active selection. Kept separate from
+// comparing live bindings to the defaults: a profile whose saved buttons happen to equal the
+// defaults (a fresh "New" profile nobody has rebound yet) must still show and highlight as itself,
+// not silently read back as "Default" the next time the panel draws. Zero-initialised false, which
+// is correct at first boot: nothing has been picked yet, so "Default" is what is showing.
+static bool g_named_profile_active[kDeviceTabs];
 
 static host::CaptureDevice tab_kind_of(int tab, int* index) {
   *index = 0;
@@ -480,6 +494,7 @@ static void autosave_profile(int tab) {
   if (!g_defaults_captured || bindings_are_default(tab)) return;
   const host::ProfileDevice device = profile_device_of_tab(tab);
   host::profile_save(device, active_profile_name(tab), bindings_of(tab));
+  g_named_profile_active[tab] = true;
   cached_profiles(device, true);
 }
 // Upgrading: layouts an older version saved (in port-settings.ini, before profiles existed or before
@@ -498,8 +513,10 @@ static void migrate_profiles() {
         if (host::profile_save(device, name, b)) host::log("controls: kept this controller's saved buttons as %s", name.c_str());
         saved.push_back(b);
         g_active_profile[t] = name;
+        g_named_profile_active[t] = true;
       } else {
         g_active_profile[t] = "Profile " + std::to_string(it - saved.begin() + 1);
+        g_named_profile_active[t] = true;
       }
     }
   }
@@ -508,7 +525,7 @@ static void migrate_profiles() {
 // The player's own video settings, kept as the "Custom" quality preset: updated whenever the settings
 // match none of the presets, so picking a preset and then Custom puts them back (and the two can be
 // compared by switching). Saved as "custompreset efb ssaa aniso dlss fps subframe".
-struct CustomPreset { bool set = false; int efb = 0, ssaa = 1, aniso = 16, dlss = 0; double fps = -1; int sub = 1; };
+struct CustomPreset { bool set = false; int efb = 0, ssaa = 1, aniso = 16, dlss = 0; double fps = -1; int sub = 1; bool dlss5 = false; };
 static CustomPreset g_custom_preset;
 // The panel has saved which user Gecko codes are on (until then GeckoCodes.ini's own list is used).
 static bool g_gecko_chosen = false;
@@ -528,7 +545,9 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
   const host::ProfileDevice device = profile_device_for(kind);
   bool changed = false;
   const std::vector<std::string>& list = cached_profiles(device, false);
-  const bool is_default = bindings_are_default(tab);
+  // What the dropdown shows: whichever entry the player picked, not whether the live buttons happen
+  // to match the factory defaults right now (a profile can legitimately hold default-equal buttons).
+  const bool is_default = !g_named_profile_active[tab];
   const std::string current = is_default ? std::string("Default") : active_profile_name(tab);
 
   // One line: the layout in use (picking another loads it at once), a new one, delete.
@@ -542,6 +561,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
     if (ImGui::Selectable("Default", is_default)) {
       set_bindings_of(tab, g_default_bindings[tab]);
       g_active_profile[tab] = next_free_profile_name(device);
+      g_named_profile_active[tab] = false;
       status[tab] = "Back to the default buttons.";
       changed = true;
     }
@@ -551,6 +571,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
         if (host::profile_load(device, name, pb)) {
           for (int i = 0; i < (int)host::BindAction::Count; ++i) binding_set(kind, index, i, pb[i]);
           g_active_profile[tab] = name;
+          g_named_profile_active[tab] = true;
           status[tab] = "Loaded " + name + ".";
           changed = true;
         } else {
@@ -575,6 +596,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
     g_active_profile[tab].clear();
     cached_profiles(device, true);
     g_active_profile[tab] = next_free_profile_name(device);
+    g_named_profile_active[tab] = false;
     changed = true;
   }
   ImGui::EndDisabled();
@@ -588,6 +610,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
     if ((ImGui::Button("Save") || enter) && !clean.empty()) {
       status[tab] = host::profile_save(device, clean, bindings_of(tab)) ? "Saved " + clean + "." : "Could not save to " + host::profiles_folder() + ".";
       g_active_profile[tab] = clean;
+      g_named_profile_active[tab] = true;
       cached_profiles(device, true);
       changed = true;   // the profile in use is kept in the settings file
       ImGui::CloseCurrentPopup();
@@ -1330,6 +1353,9 @@ void load_pc_settings(D3D12Options& options, int& volume) {
         } else options.window_pinned = false;
       }
       else if (key == "sharpness") options.sharpness = std::clamp(std::stof(value), 0.0f, 1.0f);
+      else if (key == "brightness") options.brightness = std::clamp(std::stof(value), 0.5f, 1.5f);
+      else if (key == "contrast") options.contrast = std::clamp(std::stof(value), 0.5f, 1.5f);
+      else if (key == "vibrance") options.vibrance = std::clamp(std::stof(value), 0.0f, 2.0f);
       else if (key == "anisotropy") { int a = std::stoi(value); if (a == 1 || a == 2 || a == 4 || a == 8 || a == 16) options.anisotropy = a; }
       else if (key == "ssaa") { int a = std::stoi(value); if (a == 1 || a == 2) options.ssaa = a; }
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
@@ -1366,7 +1392,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       // shown (and the one changes are saved to) after a restart.
       else if (key.rfind("activeprofile", 0) == 0 && key.size() > 13 && std::isdigit((unsigned char)key[13])) {
         const int t = std::atoi(key.c_str() + 13);
-        if (t >= 0 && t < kDeviceTabs) g_active_profile[t] = value;
+        if (t >= 0 && t < kDeviceTabs) { g_active_profile[t] = value; g_named_profile_active[t] = true; }
       }
       else if (key == "custompreset") {
         CustomPreset c; c.set = true;
@@ -1375,10 +1401,12 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (load_family_option(key, value)) {}
       else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 10) options.dlss_mode = m; }
-      else if (key == "framegen") options.frame_generation = value == "1";
+      // Pre-multiplier saves wrote 0 or 1; both still mean what they always meant (off / 2x).
+      else if (key == "framegen") options.frame_generation_mode = std::clamp(std::stoi(value), 0, 4);
       else if (key == "reflex") options.reflex_mode = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "reflexstats") options.reflex_stats = value == "1";
       else if (key == "reflexflash") options.reflex_flash = value == "1";
+#ifdef GX_DLSS5
       else if (key == "dlss5") options.dlss5 = value == "1";
       else if (key == "dlss5intensity") options.dlss5_tuning.intensity = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "dlss5detail") options.dlss5_tuning.detail = std::clamp(std::stof(value), 0.0f, 2.0f);
@@ -1387,7 +1415,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "dlss5style") options.dlss5_tuning.style = std::clamp(std::stoi(value), 0, 3);
       else if (key == "dlss5preset") options.dlss5_tuning.preset = std::clamp(std::stoi(value), 0, 3);
       else if (key == "dlss5automask") options.dlss5_tuning.auto_mask = value == "1";
-      else if (key == "dlss5compare") options.dlss5_compare = value == "1";
+#endif
       // Low spec: the switch, then what the player had before it was turned on, so turning it off
       // after a restart still restores their own settings rather than the defaults.
       else if (key == "lowspec") options.low_spec = value == "1";
@@ -1492,6 +1520,9 @@ void load_pc_settings(D3D12Options& options, int& volume) {
   std::filesystem::path codes = std::filesystem::path(options.settings_path).parent_path() / "GeckoCodes.ini";
   user_gecko::load(codes.string(), gecko_on, gecko_chosen);
   g_gecko_chosen = gecko_chosen;
+#ifdef GX_DLSS5
+  dlss5::profile_set_folder(options.settings_path);
+#endif
 }
 
 // The ImGui context and the Win32 platform backend are the same for every renderer backend.
@@ -1641,6 +1672,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   if (state.open) state.menu_open = false;   // F1 with the menu up goes straight to the panel
   host::window_input_capture(state.open || state.menu_open);
   state.intervals[state.cursor++ % state.intervals.size()] = ImGui::GetIO().DeltaTime*1000.f;
+  if (streamline::reflex_available())
+    state.latencies[state.latency_cursor++ % state.latencies.size()] = streamline::reflex_latency_ms();
   bool changed = false;
   if (state.open) {
     // Tall enough that the Low spec switch at the end of the settings section is on screen when the
@@ -1680,31 +1713,52 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // Each sets the image settings and the frame rate; the controls below still show and change
     // every value, and the row says "Custom" once any of them differs from all four.
     {
-      struct Preset { const char* name; const char* tip; int efb; int ssaa; int aniso; int dlss; double fps; SubFrameMode sub; };
+      struct Preset { const char* name; const char* tip; int efb; int ssaa; int aniso; int dlss; double fps; SubFrameMode sub; bool dlss5; };
       const bool dlaa_ok = streamline::available() && !state.running_d3d11;
+#ifdef GX_DLSS5
+      const bool dlss5_ok = dlaa_ok && !state.running_d3d11;
+#endif
       const Preset presets[] = {
-        {"Low", "For laptops and integrated graphics: native resolution, no anti-aliasing,\n60 frames per second, no sub-frame animation.", 1, 1, 1, 0, 60, SubFrameMode::Off},
-        {"Medium", "For most older PCs: 2x resolution, 4x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 2, 1, 4, 0, -1, SubFrameMode::Authored},
-        {"High", "Recommended, and the default: resolution matched to your window, 16x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 0, 1, 16, 0, -1, SubFrameMode::Authored},
+        {"Low", "For laptops and integrated graphics: native resolution, no anti-aliasing,\n60 frames per second, no sub-frame animation.", 1, 1, 1, 0, 60, SubFrameMode::Off, false},
+        {"Medium", "For most older PCs: 2x resolution, 4x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 2, 1, 4, 0, -1, SubFrameMode::Authored, false},
+        {"High", "Recommended, and the default: resolution matched to your window, 16x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 0, 1, 16, 0, -1, SubFrameMode::Authored, false},
         // DLAA already smooths every edge, so Ultra uses it alone where it exists. Stacked on 4x
         // supersampling it ran DLAA over an image several times 4K: a large drop in frame rate, and
         // out of video memory on 8 GB cards once a recorder was running too.
         {"Ultra", dlaa_ok ? "High, plus NVIDIA DLAA for the smoothest edges."
                           : "High, plus 4x supersampling for the smoothest edges.",
-         0, dlaa_ok ? 1 : 2, 16, dlaa_ok ? 1 : 0, -1, SubFrameMode::Authored},
+         0, dlaa_ok ? 1 : 2, 16, dlaa_ok ? 1 : 0, -1, SubFrameMode::Authored, false},
+#ifdef GX_DLSS5
+        // Resolution matched to your window (the same "native for your machine" Auto that High and
+        // Ultra use) plus DLAA plus DLSS 5 on top of that. Costs real frame rate -- see the DLSS 5
+        // panel below for what it is actually adding once this is on.
+        {"Insane", "Ultra, plus DLSS 5 Neural Rendering (experimental). Heavy: watch the render\nlatency line below Upscaling after picking this.",
+         0, 1, 16, dlaa_ok ? 1 : 0, -1, SubFrameMode::Authored, dlss5_ok},
+#endif
       };
+      constexpr int kPresetCount = sizeof(presets) / sizeof(presets[0]);
       auto matches = [&](const Preset& pr) {
         return options.efb_scale == pr.efb && options.ssaa == pr.ssaa && options.anisotropy == pr.aniso &&
-               options.dlss_mode == pr.dlss && options.fps_cap == pr.fps && options.subframe == pr.sub;
+               options.dlss_mode == pr.dlss && options.fps_cap == pr.fps && options.subframe == pr.sub
+#ifdef GX_DLSS5
+               && options.dlss5 == pr.dlss5
+#endif
+               ;
       };
       int current = -1;
-      for (int i = 3; i >= 0 && current < 0; --i) if (matches(presets[i])) current = i;
+      for (int i = kPresetCount - 1; i >= 0 && current < 0; --i) if (matches(presets[i])) current = i;
       // Settings that match no preset are the player's own: keep them as Custom.
       if (current < 0)
-        g_custom_preset = {true, options.efb_scale, options.ssaa, options.anisotropy, options.dlss_mode, options.fps_cap, (int)options.subframe};
+        g_custom_preset = {true, options.efb_scale, options.ssaa, options.anisotropy, options.dlss_mode, options.fps_cap, (int)options.subframe,
+#ifdef GX_DLSS5
+                           options.dlss5
+#else
+                           false
+#endif
+        };
       ImGui::AlignTextToFramePadding();
       ImGui::TextUnformatted("Quality");
-      for (int i = 0; i < 4; ++i) {
+      for (int i = 0; i < kPresetCount; ++i) {
         ImGui::SameLine();
         const bool on = i == current;
         if (on) {
@@ -1715,6 +1769,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
           const Preset& pr = presets[i];
           options.efb_scale = pr.efb; options.ssaa = pr.ssaa; options.anisotropy = pr.aniso;
           options.dlss_mode = pr.dlss; options.fps_cap = pr.fps; options.subframe = pr.sub;
+#ifdef GX_DLSS5
+          options.dlss5 = pr.dlss5;
+#endif
           options.low_spec = false;   // the presets replace it; the backend is left as it is
           changed = true;
         }
@@ -1733,6 +1790,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         const CustomPreset& c = g_custom_preset;
         options.efb_scale = c.efb; options.ssaa = c.ssaa; options.anisotropy = c.aniso;
         options.dlss_mode = c.dlss; options.fps_cap = c.fps; options.subframe = (SubFrameMode)c.sub;
+#ifdef GX_DLSS5
+        options.dlss5 = c.dlss5;
+#endif
         options.low_spec = false;
         changed = true;
       }
@@ -1864,6 +1924,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     const char* anis[] = {"1x", "2x", "4x", "8x", "16x"};
     int an_index = options.anisotropy >= 16 ? 4 : options.anisotropy >= 8 ? 3 : options.anisotropy >= 4 ? 2 : options.anisotropy >= 2 ? 1 : 0;
     if (ImGui::Combo("Anisotropic filtering", &an_index, anis, 5)) { options.anisotropy = 1 << an_index; changed = true; }
+    // Live, right where the settings that move it are, rather than only in an on-screen overlay
+    // during play: raise Internal resolution, Anti-aliasing or a DLSS mode and watch this move.
+    {
+      float used = 0, total = 0;
+      if (vram_usage(&used, &total)) ImGui::TextDisabled("Video memory in use: %.1f / %.1f GB", used, total);
+    }
     {
       const char* levels[] = {"Full", "Reduced (no sparks or glow)", "Minimal (no screen overlays)"};
       if (ImGui::Combo("Visual effects", &options.effects_level, levels, 3)) changed = true;
@@ -1888,15 +1954,57 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                         "AA modes (DLAA, XeSS AA) keep the full resolution and only smooth edges.\n"
                         "DLSS Ultra Performance would render below the GameCube's own resolution on\n"
                         "anything short of an 8K display, so there it switches to Performance.");
-    // Frame generation reuses DLSS's depth and motion vectors, so it needs a DLSS mode.
+    // What each of these is actually costing, right where the settings that cost it are, instead of
+    // only in the separate performance graph. Render latency is Reflex's measured total (works at
+    // Native too, see gx_streamline.h); the two "adds" numbers are GPU-timestamp measured costs of
+    // each pass (see gx_d3d12.cpp read_gpu_timers), and "Native (estimated)" is the total with both
+    // subtracted out -- an estimate, since it assumes the two costs are simply additive to the total,
+    // which is usually close but not exact (queueing and driver overhead do not scale perfectly linearly).
+    if (streamline::reflex_available()) {
+      float dlaa_ms = 0, dlss5_ms = 0;
+      gpu_pass_cost(&dlaa_ms, &dlss5_ms);
+      const float total = streamline::reflex_latency_ms();
+      const float native_est = std::max(0.0f, total - dlaa_ms - dlss5_ms);
+      char line[192];
+      int n = std::snprintf(line, sizeof line, "Render latency: %.1f ms", total);
+      if (dlaa_ms > 0.0f || dlss5_ms > 0.0f) {
+        n += std::snprintf(line + n, sizeof(line) - n, "  (Native est. %.1f ms", native_est);
+        if (dlaa_ms > 0.0f) n += std::snprintf(line + n, sizeof(line) - n, ", DLAA/DLSS +%.1f ms", dlaa_ms);
+#ifdef GX_DLSS5
+        if (dlss5_ms > 0.0f) n += std::snprintf(line + n, sizeof(line) - n, ", DLSS 5 +%.1f ms", dlss5_ms);
+#endif
+        std::snprintf(line + n, sizeof(line) - n, ")");
+      }
+      ImGui::TextDisabled("%s", line);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("An average of the last measured frames, so it lags a change by a second or\n"
+                          "two, not instant. \"Native (estimated)\" is the total with the two measured\n"
+                          "GPU costs subtracted out -- an estimate, not a separate measurement.");
+    }
+    // Frame generation reuses DLSS's depth and motion vectors, so it needs a DLSS mode. The choices
+    // on offer follow the hardware: RTX 40 series only ever answers "2x" for the maximum, RTX 50
+    // (Multi Frame Generation) up to "4x", and Dynamic (the driver picks the multiplier) only where
+    // the SDK reports it supported.
     ImGui::BeginDisabled(options.dlss_mode == 0 || options.dlss_mode >= 6);
-    if (ImGui::Checkbox("Frame generation", &options.frame_generation)) changed = true;
+    {
+      const uint32_t max_mult = streamline::frame_generation_max_multiplier();   // 1=2x, 2=3x, 3=4x
+      const bool dynamic_ok = streamline::frame_generation_dynamic_supported();
+      static const char* all_modes[] = {"Off", "2x", "3x", "4x", "Dynamic"};
+      const char* modes[5]; int n = 1; modes[0] = all_modes[0];
+      for (uint32_t m = 1; m <= max_mult && n < 4; ++m) modes[n++] = all_modes[m];
+      if (dynamic_ok) modes[n++] = all_modes[4];
+      if (options.frame_generation_mode >= n) options.frame_generation_mode = n - 1;
+      ImGui::SetNextItemWidth(160.0f);
+      if (ImGui::Combo("Frame generation", &options.frame_generation_mode, modes, n)) changed = true;
+    }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("NVIDIA DLSS Frame Generation (RTX 40 series and newer): an extra generated frame\n"
-                        "between each rendered one. Smoother, but it holds a frame back, which adds input\n"
-                        "delay: for single player and casual play, not competitive or online.\n"
-                        "Needs an Upscaling mode other than Native. Reflex is switched on with it.");
+      ImGui::SetTooltip("NVIDIA DLSS Frame Generation (RTX 40 series and newer): extra generated frames\n"
+                        "between each rendered one -- 2x is one generated frame per real one, 4x is\n"
+                        "three (RTX 50 series, Multi Frame Generation). Smoother, but it holds a frame\n"
+                        "back, which adds input delay: for single player and casual play, not\n"
+                        "competitive or online. Needs an Upscaling mode other than Native. Reflex is\n"
+                        "switched on with it.");
     // NVIDIA Reflex, laid out the way games offer it.
     {
       const char* modes[] = {"Off", "On", "On + Boost"};
@@ -1906,15 +2014,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         ImGui::SetTooltip("On: the GPU stops queueing frames ahead of the game, so what you press shows sooner.\n"
                           "On + Boost: also keeps the GPU clocks up, trading power for a little more.\n"
                           "Frame generation always runs with Reflex at least On. NVIDIA cards only.");
-      if (ImGui::Checkbox("Reflex latency", &options.reflex_stats)) changed = true;
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shows Reflex's measured render latency under the FPS counter.");
-      ImGui::SameLine();
       if (ImGui::Checkbox("Reflex flash indicator", &options.reflex_flash)) changed = true;
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Flashes a white square in the top left corner when A is pressed on port 1,\n"
                           "for monitors with the NVIDIA Reflex Latency Analyzer and for LDAT.");
     }
     if (d3d11) { ImGui::EndDisabled(); ImGui::TextDisabled("DLSS needs Direct3D 12 and an NVIDIA GPU."); }
+#ifdef GX_DLSS5
     {
       // EXPERIMENTAL: DLSS 5 rides on the DLSS/DLAA pass (it needs its depth and motion vectors).
       const bool nr_blocked = d3d11 || options.dlss_mode == 0 || options.dlss_mode >= 6;
@@ -1932,7 +2038,6 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
           if (ImGui::IsItemActive()) held[&v] = shown;
           else if (it != held.end()) { held.erase(it); v = shown / 100.0f; changed = true; }
         };
-        ImGui::Indent();
         percent("Intensity", t.intensity, 0, 100);
         percent("Surface detail", t.detail, 0, 200);
         percent("Lighting and tone", t.tone, 0, 200);
@@ -1940,18 +2045,69 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         if (ImGui::Checkbox("Skin detail: automatic", &skin_auto)) { t.skin = skin_auto ? -1.0f : 1.0f; changed = true; }
         if (!skin_auto) percent("Skin detail", t.skin, 0, 200);
         const char* styles[] = {"Style 0 (default)", "Style 1", "Style 2", "Style 3"};
+        ImGui::SetNextItemWidth(160.0f);
         if (ImGui::Combo("Style", &t.style, styles, 4)) changed = true;
         const char* presets[] = {"Model default", "Preset 1", "Preset 2", "Preset 3"};
+        ImGui::SetNextItemWidth(160.0f);
         if (ImGui::Combo("Model preset", &t.preset, presets, 4)) changed = true;
         if (ImGui::Checkbox("Protect HUD and flat areas (auto mask)", &t.auto_mask)) changed = true;
-        if (ImGui::Checkbox("Split-screen compare (left off, right on)", &options.dlss5_compare)) changed = true;
-        if (ImGui::Button("Reset DLSS 5 controls")) { t = dlss5::Tuning{}; options.dlss5_compare = false; changed = true; }
-        ImGui::Unindent();
+        if (ImGui::Button("Reset DLSS 5 controls")) { t = dlss5::Tuning{}; changed = true; }
+        // Named tuning profiles: a saved sliders-and-all setup under a name, one text file per name
+        // in Dlss5Profiles beside port-settings.ini. Loading one applies it immediately.
+        {
+          static std::string active_name;
+          static char new_name[48] = "";
+          static std::string status;
+          const std::vector<std::string> list = dlss5::profile_list();
+          ImGui::AlignTextToFramePadding();
+          ImGui::TextUnformatted("Profile");
+          ImGui::SameLine();
+          ImGui::SetNextItemWidth(200.0f);
+          if (ImGui::BeginCombo("##dlss5_profile", active_name.empty() ? "(unsaved)" : active_name.c_str())) {
+            for (const std::string& name : list) {
+              if (ImGui::Selectable(name.c_str(), name == active_name)) {
+                if (dlss5::profile_load(name, t)) { active_name = name; status = "Loaded " + name + "."; changed = true; }
+                else status = "Could not read " + name + ".";
+              }
+            }
+            ImGui::EndCombo();
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Save as...")) { new_name[0] = 0; status.clear(); ImGui::OpenPopup("dlss5_save"); }
+          if (ImGui::BeginPopup("dlss5_save")) {
+            ImGui::TextUnformatted("Name");
+            ImGui::SetNextItemWidth(220.0f);
+            if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+            const bool enter = ImGui::InputText("##dlss5_name", new_name, sizeof new_name, ImGuiInputTextFlags_EnterReturnsTrue);
+            if ((ImGui::Button("Save") || enter) && new_name[0]) {
+              if (dlss5::profile_save(new_name, t)) { active_name = new_name; status = "Saved " + active_name + "."; }
+              else status = "Could not save. Check the name.";
+              ImGui::CloseCurrentPopup();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+            ImGui::EndPopup();
+          }
+          ImGui::SameLine();
+          ImGui::BeginDisabled(active_name.empty());
+          if (ImGui::Button("Delete")) {
+            status = dlss5::profile_delete(active_name) ? "Deleted " + active_name + "." : "Could not delete " + active_name + ".";
+            active_name.clear();
+          }
+          ImGui::EndDisabled();
+          if (!status.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", status.c_str()); }
+        }
       }
       if (nr_blocked) ImGui::EndDisabled();
       if (nr_blocked) ImGui::TextDisabled("DLSS 5 needs Direct3D 12 and Upscaling set to DLAA or a DLSS mode.");
-      else if (options.dlss5) ImGui::TextWrapped("DLSS 5: %s. RTX 50 series, driver 616.64 or newer. It runs on every frame shown, so expect a lower frame rate.", dlss5::status());
+      else if (options.dlss5) {
+        ImGui::TextWrapped("DLSS 5: %s. Experimental; intended for RTX 50 series or newer. It runs on every frame shown, so expect a lower frame rate.", dlss5::status());
+        float dlaa_ms = 0, dlss5_ms = 0;
+        gpu_pass_cost(&dlaa_ms, &dlss5_ms);
+        if (dlss5_ms > 0.0f) ImGui::TextDisabled("Costing about %.1f ms of GPU time per frame right now.", dlss5_ms);
+      }
     }
+#endif
     if (options.dlss_mode == 1 || options.dlss_mode == 6) {
       ImGui::TextWrapped("DLAA anti-aliases the game at the Internal resolution above without changing it, then the picture is fitted to the window as usual. Internal resolution and Anti-aliasing keep working, so DLAA stacks with 4x SSAA if you want both.");
     } else if (dlss_picks_resolution) {
@@ -1961,6 +2117,14 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     }
     int sharp = (int)std::lround(options.sharpness * 100.0f);
     if (ImGui::SliderInt("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }
+    // Display adjustment over the finished picture, HUD included; 100% is neutral on all three.
+    int bright = (int)std::lround(options.brightness * 100.0f);
+    if (ImGui::SliderInt("Brightness", &bright, 50, 150, "%d%%")) { options.brightness = bright / 100.0f; changed = true; }
+    int contrast = (int)std::lround(options.contrast * 100.0f);
+    if (ImGui::SliderInt("Contrast", &contrast, 50, 150, "%d%%")) { options.contrast = contrast / 100.0f; changed = true; }
+    int vibrance = (int)std::lround(options.vibrance * 100.0f);
+    if (ImGui::SliderInt("Vibrance", &vibrance, 0, 200, "%d%%")) { options.vibrance = vibrance / 100.0f; changed = true; }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("0%% is greyscale, 100%% is native, above that is more saturated.");
     const char* subframe_modes[] = {"Off (60 Hz poses only)", "Predict ahead (no delay, can overshoot on speed changes)", "Interpolate (exact, one frame of delay)"};
     int sf = options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1;
     if (ImGui::Combo("Sub-frame animation", &sf, subframe_modes, 3)) { options.subframe = sf == 0 ? SubFrameMode::Off : sf == 2 ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored; changed = true; }
@@ -2640,13 +2804,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1 still opens this panel with it off.");
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
     changed |= ImGui::Checkbox("FPS counter (top left)", &options.show_fps);
-    ImGui::SameLine();
-    changed |= ImGui::Checkbox("VRAM meter", &options.show_vram);
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Video memory in use, out of what Windows lets the game have (it shares the card\n"
-                        "with everything else running). Near the limit, lower Resolution or supersampling,\n"
-                        "or switch texture packs off.");
+    // VRAM has its own line in the Video tab, right by the settings that move it; no overlay needed.
     changed |= ImGui::Checkbox("Ping while online (under the FPS)", &options.show_ping);
+    changed |= ImGui::Checkbox("Render latency (under the FPS)", &options.reflex_stats);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Shows the measured render latency under the FPS counter. Works whether or\n"
+                        "not NVIDIA Reflex Low Latency (Video tab) is On, so Off has a number too --\n"
+                        "the full breakdown by stage is on the performance graph.");
     changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
     if (options.input_overlay) {
       ImGui::SameLine();
@@ -2668,7 +2832,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         }
       }
       ImGui::SameLine();
-      changed |= ImGui::Checkbox("Hide border", &options.input_overlay_hide_border);
+      changed |= ImGui::Checkbox("Hide background", &options.input_overlay_hide_border);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Removes the panel behind the overlay, leaving only the buttons and sticks.");
       ImGui::TextDisabled("  Drag an overlay to move it, and its edges to resize, while this panel is open.");
     }
         ImGui::EndTabItem();
@@ -2687,10 +2852,14 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                         "writes into the code) cannot run in this build and are shown greyed out.",
                         user_gecko::path().c_str());
     if (user_gecko::codes().empty()) {
-      ImGui::TextDisabled("No codes. Put a GeckoCodes.ini next to port-settings.ini.");
+      ImGui::TextDisabled("No codes yet. Paste one below, or put a GeckoCodes.ini next to port-settings.ini.");
     } else {
+      std::string to_remove;
       for (user_gecko::Code& c : user_gecko::codes()) {
         ImGui::PushID(&c);
+        if (ImGui::SmallButton("-")) to_remove = c.name;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this code.");
+        ImGui::SameLine();
         ImGui::BeginDisabled(!c.supported);
         if (ImGui::Checkbox(c.name.c_str(), &c.enabled)) { changed = true; g_gecko_chosen = true; }
         ImGui::EndDisabled();
@@ -2702,6 +2871,33 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
           ImGui::SetTooltip("%s", tip.c_str());
         }
         ImGui::PopID();
+      }
+      if (!to_remove.empty()) { user_gecko::remove(to_remove); user_gecko::save(); changed = true; }
+    }
+    ImGui::Separator();
+    // Paste in a code without needing to find and edit GeckoCodes.ini by hand. A pasted block may
+    // carry its own "$Name" line (Dolphin's format, what most sites hand out); if it does, that name
+    // is used and the typed one below is just what is offered until then.
+    {
+      static char add_name[64] = "";
+      static char add_body[2048] = "";
+      static std::string add_error;
+      if (ImGui::Button("+ Add Gecko code")) { add_name[0] = 0; add_body[0] = 0; add_error.clear(); ImGui::OpenPopup("add_gecko_code"); }
+      if (ImGui::BeginPopup("add_gecko_code")) {
+        ImGui::TextUnformatted("Name");
+        ImGui::SetNextItemWidth(300.0f);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::InputText("##gecko_name", add_name, sizeof add_name);
+        ImGui::TextUnformatted("Code (XXXXXXXX YYYYYYYY, one pair per line -- paste the whole thing, name line and all, and it wins)");
+        ImGui::InputTextMultiline("##gecko_body", add_body, sizeof add_body, ImVec2(400.0f, 140.0f));
+        if (!add_error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", add_error.c_str());
+        if (ImGui::Button("Add")) {
+          add_error = user_gecko::add(add_name, add_body);
+          if (add_error.empty()) { user_gecko::save(); changed = true; ImGui::CloseCurrentPopup(); }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
       }
     }
         ImGui::EndTabItem();
@@ -2734,15 +2930,19 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
            << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
            << "\nshowfps " << options.show_fps << "\nshowvram " << (options.show_vram ? 1 : 0) << "\nshowping " << options.show_ping
-           << "\ndlss " << options.dlss_mode << "\nframegen " << (options.frame_generation ? 1 : 0)
+           << "\ndlss " << options.dlss_mode << "\nframegen " << options.frame_generation_mode
            << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
            << "\nreflexflash " << (options.reflex_flash ? 1 : 0)
+#ifdef GX_DLSS5
            << "\ndlss5 " << (options.dlss5 ? 1 : 0) << "\ndlss5intensity " << options.dlss5_tuning.intensity
            << "\ndlss5detail " << options.dlss5_tuning.detail << "\ndlss5tone " << options.dlss5_tuning.tone
            << "\ndlss5skin " << options.dlss5_tuning.skin << "\ndlss5style " << options.dlss5_tuning.style
            << "\ndlss5preset " << options.dlss5_tuning.preset << "\ndlss5automask " << (options.dlss5_tuning.auto_mask ? 1 : 0)
-           << "\ndlss5compare " << (options.dlss5_compare ? 1 : 0) << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
-           << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
+#endif
+           << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
+           << "\nsharpness " << options.sharpness << "\nbrightness " << options.brightness
+           << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
+           << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
            << "\nonlinedelay " << slippi::online::config().delay
            << "\nstartup " << (options.settings_open ? 1 : 0)
@@ -2816,8 +3016,11 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         file << "\nport" << n << " " << port_source_to_combo(host::g_port_sources[n]);
       for (int n = 0; n < 4; ++n)
         if (!host::g_port_device_names[n].empty()) file << "\nportname" << n << " " << host::g_port_device_names[n];
+      // Only while a named profile (not "Default") is actually active: g_active_profile also holds a
+      // pre-allocated name while Default is selected (so an unprompted rebind has somewhere to save
+      // to), and writing that out would read back next launch as if that profile were chosen.
       for (int t = 0; t < kDeviceTabs; ++t)
-        if (!g_active_profile[t].empty()) file << "\nactiveprofile" << t << " " << g_active_profile[t];
+        if (g_named_profile_active[t] && !g_active_profile[t].empty()) file << "\nactiveprofile" << t << " " << g_active_profile[t];
       file << '\n';
       file.close();
       state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
@@ -2966,16 +3169,16 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     const float line_h = ImGui::GetTextLineHeight() + 2.0f;
     const float readout_h = 8.0f + line_h * 4;       // room for every line, so the graph never moves
     const bool latency_line = options.reflex_stats && streamline::reflex_latency_ms() > 0.0f;
-    float vram_used = 0, vram_budget = 0;
-    const bool vram_line = options.show_vram && vram_usage(&vram_used, &vram_budget);
+    float vram_used = 0, vram_total = 0;
+    const bool vram_line = options.show_vram && vram_usage(&vram_used, &vram_total);
     if (options.show_fps || ping_line || latency_line || vram_line) {
       char lines[4][40];
       int n = 0;
       if (options.show_fps) std::snprintf(lines[n++], sizeof lines[0], "FPS: %.0f", ImGui::GetIO().Framerate);
       if (ping_line) std::snprintf(lines[n++], sizeof lines[0], "Ping: %d ms", slippi::online::ping_ms());
       if (options.reflex_stats && streamline::reflex_latency_ms() > 0.0f && n < 3)
-        std::snprintf(lines[n++], sizeof lines[0], "Latency: %.1f ms", streamline::reflex_latency_ms());
-      if (vram_line) std::snprintf(lines[n++], sizeof lines[0], "VRAM: %.1f / %.1f GB", vram_used, vram_budget);
+        std::snprintf(lines[n++], sizeof lines[0], "Render latency: %.1f ms", streamline::reflex_latency_ms());
+      if (vram_line) std::snprintf(lines[n++], sizeof lines[0], "VRAM: %.1f / %.1f GB", vram_used, vram_total);
       ImVec2 at(10, 8);
       float wide = 0;
       for (int i = 0; i < n; ++i) wide = std::max(wide, ImGui::CalcTextSize(lines[i]).x);
@@ -2990,13 +3193,28 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       }
     }
     if (options.performance_overlay) {
-      // Draggable: pinned in place with no input it covered the settings panel and there was no way
-      // to move it out of the way. Opens under the FPS and ping lines.
+      // Draggable, and resizable by its bottom-right corner (drag it smaller if it is in the way);
+      // NoTitleBar keeps it out of the way otherwise. Opens under the FPS and ping lines.
       ImGui::SetNextWindowPos(ImVec2(12, (options.show_fps || options.show_ping) ? 8.0f + readout_h : 12.0f), ImGuiCond_FirstUseEver);
+      ImGui::SetNextWindowSize(ImVec2(266, 0), ImGuiCond_FirstUseEver);
+      ImGui::SetNextWindowSizeConstraints(ImVec2(120, 40), ImVec2(FLT_MAX, FLT_MAX));
       ImGui::SetNextWindowBgAlpha(0.75f);
-      ImGui::Begin("Performance", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize);
+      ImGui::Begin("Performance", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse);
+      const float plot_w = ImGui::GetContentRegionAvail().x;
       ImGui::Text("%.0f presentations/s | %.2f ms", ImGui::GetIO().Framerate, 1000.f/std::max(1.f, ImGui::GetIO().Framerate));
-      ImGui::PlotLines("##frametimes", state.intervals.data(), (int)state.intervals.size(), state.cursor % state.intervals.size(), nullptr, 0, 33.4f, ImVec2(250, 60));
+      ImGui::PlotLines("##frametimes", state.intervals.data(), (int)state.intervals.size(), state.cursor % state.intervals.size(), nullptr, 0, 33.4f, ImVec2(plot_w, 60));
+      // Render latency: works whether or not Reflex's low-latency mode is on, so Native has a number
+      // to show too (and something to compare "On" against). The breakdown adds up to roughly the
+      // total; osRenderQueue and driver overlap the other stages a little, per NVIDIA's own report.
+      if (streamline::reflex_available()) {
+        const float lat = streamline::reflex_latency_ms();
+        ImGui::Text("Render latency: %.2f ms%s", lat, options.reflex_mode == 0 ? " (Reflex off)" : "");
+        ImGui::PlotLines("##latency", state.latencies.data(), (int)state.latencies.size(),
+                         state.latency_cursor % state.latencies.size(), nullptr, 0, std::max(8.0f, lat * 2.0f), ImVec2(plot_w, 60));
+        const streamline::ReflexBreakdown b = streamline::reflex_breakdown();
+        ImGui::TextWrapped("Sim %.2f | Submit %.2f | Driver %.2f | OS queue %.2f | GPU %.2f ms",
+                           b.sim, b.render_submit, b.driver, b.os_queue, b.gpu_render);
+      }
       perf_min = ImGui::GetWindowPos();
       perf_max = ImVec2(perf_min.x + ImGui::GetWindowSize().x, perf_min.y + ImGui::GetWindowSize().y);
       ImGui::End();

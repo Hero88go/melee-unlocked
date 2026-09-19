@@ -310,7 +310,7 @@ class D3D11Backend : public Backend {
   void execute_copy(const EfbCopy& copy);
   void present_efb(const EfbCopy& copy);
   void clear_efb(const EfbCopy& copy);
-  void blit(ID3D11ShaderResourceView* src, const float rect[12]);
+  void blit(ID3D11ShaderResourceView* src, const float rect[16]);
   void capture_backbuffer();
   void write_capture(const std::string& path, uint64_t sequence);
   void flush_captures();
@@ -510,7 +510,7 @@ void D3D11Backend::init() {
   // with the root constants replaced by a constant buffer.
   const char* blit = R"(
 Texture2D src : register(t0); SamplerState samp : register(s0);
-cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis
+cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 color; };  // color: brightness, contrast, vibrance
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
 // Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
@@ -529,7 +529,11 @@ float4 downsample(float2 uv) {
 }
 float4 PS(O i) : SV_Target {
   float4 c = downsample(i.uv);
-  if (sharp.z <= 0.0) return c;
+  if (sharp.z <= 0.0) {
+    float3 rgb = (c.rgb * color.x - 0.5) * color.y + 0.5;
+    float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+    return float4(saturate(lerp(luma.xxx, rgb, color.z)), c.a);
+  }
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
   float2 step = sharp.xy * max(box.xy, 1.0);
@@ -540,7 +544,9 @@ float4 PS(O i) : SV_Target {
   float peak = -1.0 / lerp(8.0, 5.0, saturate(sharp.z));
   float3 wgt = amp * peak;
   float3 r = (c.rgb + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt);
-  return float4(saturate(r), c.a);
+  r = (saturate(r) * color.x - 0.5) * color.y + 0.5;
+  float luma = dot(r, float3(0.2126, 0.7152, 0.0722));
+  return float4(saturate(lerp(luma.xxx, r, color.z)), c.a);
 })";
   ComPtr<ID3DBlob> bvs, bps, err;
   fail(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &bvs, &err), "blit vs");
@@ -562,7 +568,7 @@ float4 PS() : SV_Target { return clear_color; })";
   fail(device_->CreatePixelShader(cps->GetBufferPointer(), cps->GetBufferSize(), nullptr, &clear_ps_), "clear ps object");
 
   D3D11_BUFFER_DESC cbd{};
-  cbd.ByteWidth = 48; cbd.Usage = D3D11_USAGE_DYNAMIC; cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+  cbd.ByteWidth = 64; cbd.Usage = D3D11_USAGE_DYNAMIC; cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   fail(device_->CreateBuffer(&cbd, nullptr, &blit_cb_), "blit cb");
   cbd.ByteWidth = 32;
   fail(device_->CreateBuffer(&cbd, nullptr, &clear_cb_), "clear cb");
@@ -1210,8 +1216,8 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
     D3D11_RECT sc{0, 0, (LONG)sw, (LONG)sh};
     context_->RSSetViewports(1, &vp);
     context_->RSSetScissorRects(1, &sc);
-    const float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                            0, 0, 0, 0, 1.0f, 1.0f, 0, 0};   // no sharpening or averaging on this path
+    const float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+                            0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 1.0f, 1.0f, 1.0f, 0};   // no sharpening, grading or averaging on this path
     blit(efb_srv_.Get(), rect);
     bind_efb_targets();
   } else {
@@ -1224,10 +1230,10 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
 
 // One full-screen triangle through the shared blit/sharpen shader. The caller has already set
 // the render target, viewport and scissor.
-void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[12]) {
+void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[16]) {
   D3D11_MAPPED_SUBRESOURCE m{};
   if (FAILED(context_->Map(blit_cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
-  std::memcpy(m.pData, rect, 48);
+  std::memcpy(m.pData, rect, 64);
   context_->Unmap(blit_cb_.Get(), 0);
   ID3D11Buffer* buffer = blit_cb_.Get();
   ID3D11SamplerState* sampler = blit_sampler_.Get();
@@ -1264,9 +1270,9 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   D3D11_RECT sc{0, 0, client_w_, client_h_};
   context_->RSSetViewports(1, &vp);
   context_->RSSetScissorRects(1, &sc);
-  float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+  float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
                     1.0f / std::max((float)efb_w_, 1.0f), 1.0f / std::max((float)efb_h_, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
-                    1.0f, 1.0f, 0.0f, 0.0f};
+                    1.0f, 1.0f, 0.0f, 0.0f, opts_.brightness, opts_.contrast, opts_.vibrance, 0.0f};
   // Averaging box when the rendered image is larger than the output (see the D3D12 backend).
   rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
   rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
@@ -1317,7 +1323,7 @@ void D3D11Backend::flicker_scan() {
   D3D11_RECT sc{0, 0, kScanGrid, kScanGrid};
   context_->RSSetViewports(1, &vp);
   context_->RSSetScissorRects(1, &sc);
-  const float rect[12] = {1, 1, 0, 0, 0, 0, 0, 0, 1.0f, 1.0f, 0, 0};
+  const float rect[16] = {1, 1, 0, 0, 0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 1.0f, 1.0f, 1.0f, 0};
   blit(efb_srv_.Get(), rect);
   context_->CopyResource(scan_staging_[scan_ring_].Get(), scan_rt_.Get());
   scan_ring_ = (scan_ring_ + 1) % kScanRing;

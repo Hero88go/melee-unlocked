@@ -435,9 +435,12 @@ static int melee_main(int argc, char** argv) {
       if (v == "d3d11" || v == "dx11" || v == "11") gfx.api = gx::RenderApi::D3D11;
       else if (v == "d3d12" || v == "dx12" || v == "12") gfx.api = gx::RenderApi::D3D12;
       else { std::fprintf(stderr, "--backend d3d12|d3d11\n"); return 2; } }
+#ifdef GX_DLSS5
+    else if (a == "--dlss5") gfx.dlss5 = true;                  // EXPERIMENTAL (gx_dlss5.h); needs --dlss
+#endif
     else if (a == "--dlss") { std::string v = next(); gfx.dlss_mode = v == "off" ? 0 : v == "dlaa" ? 1 : v == "quality" ? 2 : v == "balanced" ? 3 : v == "performance" ? 4 : v == "ultra" ? 5 : v == "xess-aa" ? 6 : v == "xess-ultra" ? 7 : v == "xess-quality" ? 8 : v == "xess-balanced" ? 9 : v == "xess-performance" ? 10 : -1;
       if (gfx.dlss_mode < 0) { std::fprintf(stderr, "--dlss off|dlaa|quality|balanced|performance|ultra\n"); return 2; } }
-    else if (a == "--frame-generation") gfx.frame_generation = true;
+    else if (a == "--frame-generation") gfx.frame_generation_mode = 1;   // 2x
     else if (a == "--reflex") gfx.reflex_mode = 2;
     else if (a == "--dlss-jitter-sign") gfx.dlss_jitter_sign = (float)std::atof(next());
     else if (a == "--frame-times") gfx.frame_times = next();

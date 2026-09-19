@@ -29,7 +29,9 @@
 #include "gx_streamline.h"
 #include "gx_xess.h"
 #include "flicker_scan.h"
+#ifdef GX_DLSS5
 #include "gx_dlss5.h"
+#endif
 #include "texture_pack.h"
 #include "host.h"
 #include "window.h"   // fullscreen toggling lives on the window, not the settings panel
@@ -45,10 +47,30 @@ using Microsoft::WRL::ComPtr;
 
 namespace gx {
 // VRAM meter (see vram_usage): written by the renderer, read by the settings overlay.
-std::atomic<float> g_vram_used{0.0f}, g_vram_budget{0.0f};
-bool vram_usage(float* used_gb, float* budget_gb) {
-  *used_gb = g_vram_used.load(std::memory_order_relaxed); *budget_gb = g_vram_budget.load(std::memory_order_relaxed);
-  return *budget_gb > 0.0f;
+// g_vram_budget is Windows' current allowance for this process (DXGI_QUERY_VIDEO_MEMORY_INFO::Budget):
+// it moves with whatever else is asking the GPU for memory (a browser, an overlay, another game) and
+// is usually a bit under the card's real size, which reads as "missing" VRAM to someone who knows
+// their card's number. g_vram_total is the adapter's own installed size instead, captured once.
+std::atomic<float> g_vram_used{0.0f}, g_vram_budget{0.0f}, g_vram_total{0.0f};
+bool vram_usage(float* used_gb, float* total_gb) {
+  *used_gb = g_vram_used.load(std::memory_order_relaxed); *total_gb = g_vram_total.load(std::memory_order_relaxed);
+  return *total_gb > 0.0f;
+}
+
+// GPU time actually spent in the DLAA/DLSS pass and the DLSS 5 pass, in milliseconds, each frame
+// either ran (see D3D12Backend::read_gpu_timers). 0 for a pass that has not run yet. For the
+// settings panel: what a setting is actually costing, not the total render latency alone.
+std::atomic<float> g_dlaa_pass_ms{0.0f};
+#ifdef GX_DLSS5
+std::atomic<float> g_dlss5_pass_ms{0.0f};
+#endif
+void gpu_pass_cost(float* dlaa_ms, float* neural_ms) {
+  *dlaa_ms = g_dlaa_pass_ms.load(std::memory_order_relaxed);
+#ifdef GX_DLSS5
+  *neural_ms = g_dlss5_pass_ms.load(std::memory_order_relaxed);
+#else
+  *neural_ms = 0.0f;
+#endif
 }
 
 
@@ -173,7 +195,11 @@ class D3D12Backend : public Backend {
     settings_ui_.reset();
 #endif
  stop_pso_workers(); integrate_compiled_psos(); flush_captures(); save_pipeline_recipes(); save_pipeline_library(); if (fence_event_) CloseHandle(fence_event_); if (present_timer_) CloseHandle(present_timer_);
-    last_poses_.clear(); dlss5::shutdown(); mvec_.Reset(); hud_mask_.Reset(); dlss_out_.Reset(); xess::shutdown(); streamline::shutdown(); }
+    last_poses_.clear();
+#ifdef GX_DLSS5
+    dlss5::shutdown();
+#endif
+    mvec_.Reset(); hud_mask_.Reset(); dlss_out_.Reset(); xess::shutdown(); streamline::shutdown(); }
   const D3D12Options& options() const { return opts_; }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
@@ -220,7 +246,9 @@ class D3D12Backend : public Backend {
   uint32_t dlss_out_w_ = 0, dlss_out_h_ = 0;
   float jitter_x_ = 0, jitter_y_ = 0;
   bool dlss_reset_ = true;
+#ifdef GX_DLSS5
   bool dlss5_reset_ = true;
+#endif
   // A draw's pose this frame and in the frame before. A model drawn in several passes in one frame
   // (fighters are) must compare every pass with the previous frame; comparing a second pass with the
   // first pass's pose gave zero motion, and DLSS/DLAA blended the moving fighter into the background.
@@ -301,7 +329,7 @@ class D3D12Backend : public Backend {
   // after the upscale. Zero for native and DLAA.
   float dlss_mip_bias_ = 0.0f;
   uint64_t mv_draws_ = 0, mv_matched_ = 0;
-  bool fg_applied_ = false; int reflex_applied_ = 0;   // what Streamline was last told
+  int fg_applied_ = -1; int reflex_applied_ = -1;   // what Streamline was last told; -1 forces the first call through even when the setting is "off"
   bool xess_reset_ = true;
   bool dlss_in_match_ = false;
   ComPtr<IDXGIAdapter3> adapter3_;   // video memory queries   // last frame's frame_in_match: the upscaler's history restarts on a change
@@ -340,6 +368,15 @@ class D3D12Backend : public Backend {
   uint32_t scan_frame_[FRAME_SLOTS] = {};
   void record_flicker_scan();
   void read_flicker_scan();
+  // GPU-timed cost of the DLAA/DLSS pass and the DLSS 5 pass, each frame, read back the same way as
+  // the flicker scan above (same slot_, so it is already fence-safe). For the settings panel: "how
+  // much is this setting actually costing", not just the total render latency Reflex reports.
+  ComPtr<ID3D12QueryHeap> timer_heap_;
+  ComPtr<ID3D12Resource> timer_rb_[FRAME_SLOTS];
+  uint8_t timer_mask_[FRAME_SLOTS] = {};   // bit 0: DLAA/DLSS queried this slot; bit 1: DLSS 5 queried
+  bool timer_pending_[FRAME_SLOTS] = {};
+  uint64_t timer_freq_ = 0;
+  void read_gpu_timers();
   int slot_ = 0;
   ComPtr<ID3D12GraphicsCommandList> list_;
   ComPtr<ID3D12Fence> fence_;
@@ -375,7 +412,7 @@ void D3D12Backend::init() {
 #ifdef _DEBUG
   { ComPtr<ID3D12Debug> dbg; if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) dbg->EnableDebugLayer(); }
 #endif
-  if (opts_.pc_settings || opts_.dlss_mode != 0 || opts_.reflex_mode != 0 || opts_.frame_generation) {
+  if (opts_.pc_settings || opts_.dlss_mode != 0 || opts_.reflex_mode != 0 || opts_.frame_generation_mode != 0) {
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring dir(exe); size_t slash = dir.find_last_of(L"\\/"); if (slash != std::wstring::npos) dir.resize(slash);
     streamline::init(dir);
@@ -394,6 +431,7 @@ void D3D12Backend::init() {
       // character pack at 4x, and small enough that the game never competes with itself for VRAM.
       replacement_budget_ = std::clamp<uint64_t>((uint64_t)desc.DedicatedVideoMemory / 4,
                                                  256ull * 1024 * 1024, 2048ull * 1024 * 1024);
+      g_vram_total = (float)((double)desc.DedicatedVideoMemory / 1073741824.0);   // the card's own size, for the VRAM meter
       adapter.As(&adapter3_);   // for the VRAM meter (Windows 10 and later)
       streamline::set_device(device_.Get());
       streamline::dlss_supported(adapter.Get());
@@ -432,6 +470,23 @@ void D3D12Backend::init() {
   check(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)), "fence");
   fence_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
+  // GPU timers for the settings panel's latency breakdown (see gpu_pass_cost). Timer 0 = DLAA/DLSS
+  // start, 1 = its end, 2 = DLSS 5 start, 3 = its end, per frame slot. queue_->GetTimestampFrequency
+  // can fail on hardware/drivers that do not support GPU timestamps; the readouts just stay at 0.
+  D3D12_QUERY_HEAP_DESC qhd{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, FRAME_SLOTS * 4};
+  if (SUCCEEDED(device_->CreateQueryHeap(&qhd, IID_PPV_ARGS(&timer_heap_))) &&
+      SUCCEEDED(queue_->GetTimestampFrequency(&timer_freq_))) {
+    for (int i = 0; i < FRAME_SLOTS; ++i) {
+      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
+      D3D12_RESOURCE_DESC rd{};
+      rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = 4 * sizeof(uint64_t); rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+      rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+      device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&timer_rb_[i]));
+    }
+  } else {
+    timer_heap_.Reset(); timer_freq_ = 0;
+  }
+
   create_swapchain_targets(false);
   create_efb();
   open_pipeline_library();
@@ -461,7 +516,7 @@ void D3D12Backend::init() {
   D3D12_ROOT_PARAMETER bp[2]{};
   bp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; D3D12_DESCRIPTOR_RANGE br{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0, 0, 0};   // t0 image, t1 current EFB, t2 HUD mask
   bp[0].DescriptorTable = {1, &br}; bp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 16; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 20; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
   D3D12_ROOT_SIGNATURE_DESC brsd{2, bp, 1, &ss, D3D12_ROOT_SIGNATURE_FLAG_NONE};
   check(D3D12SerializeRootSignature(&brsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err), "blit root");
   check(device_->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&blit_root_)), "blit root sig");
@@ -470,7 +525,7 @@ Texture2D src : register(t0); Texture2D efb : register(t1); Texture2D hudmask : 
 // box.z > 0: DLSS HUD composite. Pixels a flat 2D draw wrote this frame (HUD, text, player tags) come
 // from this frame's own render instead of DLSS, which rebuilds from history and ghosted the ticking
 // timer and moving tags; NVIDIA's guide puts UI after DLSS. hudr maps output uv to EFB uv.
-cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 hudr; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis
+cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 hudr; float4 color; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis; color: x = brightness gain, y = contrast gain, z = vibrance gain
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
 // Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
@@ -494,9 +549,20 @@ float4 hud(float2 uv, float4 c) {
   float m = hudmask.Sample(samp, e).r;
   return m > 0.0 ? lerp(c, efb.Sample(samp, e), saturate(m)) : c;
 }
+// Brightness/contrast/vibrance: a display adjustment over the finished picture, HUD included (a
+// brightness slider that left percentages at native brightness while dimming everything else would
+// read as a bug, not a feature). Neutral at (1,1,1), so this is a no-op when nobody has touched it.
+float3 grade(float3 c) {
+  if (color.x == 1.0 && color.y == 1.0 && color.z == 1.0) return c;
+  c *= color.x;
+  c = (c - 0.5) * color.y + 0.5;
+  float luma = dot(c, float3(0.2126, 0.7152, 0.0722));
+  c = lerp(luma.xxx, c, color.z);
+  return saturate(c);
+}
 float4 PS(O i) : SV_Target {
   float4 c = hud(i.uv, downsample(i.uv));
-  if (sharp.z <= 0.0) return c;
+  if (sharp.z <= 0.0) return float4(grade(c.rgb), c.a);
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
   float2 step = sharp.xy * max(box.xy, 1.0);
@@ -507,7 +573,8 @@ float4 PS(O i) : SV_Target {
   float peak = -1.0 / lerp(8.0, 5.0, saturate(sharp.z));
   float3 wgt = amp * peak;
   float3 r = (c.rgb + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt);
-  return hud(i.uv, float4(saturate(r), c.a));
+  float4 sharpened = hud(i.uv, float4(saturate(r), c.a));
+  return float4(grade(sharpened.rgb), sharpened.a);
 })";
   ComPtr<ID3DBlob> bvs, bps;
   check(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &bvs, &err), "blit vs");
@@ -1360,9 +1427,12 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
     list_->SetPipelineState(blit_pso_.Get());
     list_->SetGraphicsRootSignature(blit_root_.Get());
     list_->SetGraphicsRootDescriptorTable(0, sh_gpu);
-    float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                      0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 0, 0, 0, 0};   // no sharpening, averaging or HUD composite here
-    list_->SetGraphicsRoot32BitConstants(1, 16, rect, 0);
+    // Neutral grade (1,1,1): this reads the EFB back into a texture the game itself samples from
+    // (reflections, effects), not the presented image, so brightness/contrast/vibrance must not
+    // touch it -- only the final blit to the backbuffer, below, applies those.
+    float rect[20] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+                      0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 0, 0, 0, 0, 1.0f, 1.0f, 1.0f, 0};   // no sharpening, averaging, HUD composite or grading here
+    list_->SetGraphicsRoot32BitConstants(1, 20, rect, 0);
     list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list_->DrawInstanced(3, 1, 0, 0);
     // Restore the EFB as the render target; execute_draw re-sets viewport/scissor per draw.
@@ -1402,6 +1472,9 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
       in.in_w = std::min<uint32_t>(c.src_w * scale_, efb_w_ - in.in_left); in.in_h = std::min<uint32_t>(c.src_h * scale_, efb_h_ - in.in_top);
     }
     in.out_w = dlss_out_w_; in.out_h = dlss_out_h_;
+    const bool timing = timer_heap_ != nullptr;
+    timer_mask_[slot_] = 0;
+    if (timing) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 0);
     if (xess_active()) {
       // XeSS takes its inputs as non-pixel-shader resources; DLSS takes them in place.
       D3D12_RESOURCE_BARRIER xb[3]{};
@@ -1420,10 +1493,12 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     } else {
       upscaled = streamline::evaluate(list_.Get(), in);
     }
+    if (timing) { list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 1); timer_mask_[slot_] |= 1; }
     if (!upscaled && ++dlss_failures_ >= 30) {
       host::log("dlss: evaluation keeps failing; switching Upscaling back to Native");
       opts_.dlss_mode = 0; dlss_failures_ = 0;
     } else if (upscaled) dlss_failures_ = 0;
+#ifdef GX_DLSS5
     // EXPERIMENTAL DLSS 5 Neural Rendering over the DLSS/DLAA result, before it is presented.
     if (upscaled && opts_.dlss5) {
       dlss5::Inputs n{};
@@ -1432,11 +1507,18 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
       n.depth = efb_depth_.Get(); n.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
       n.mvec = mvec_.Get(); n.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
       n.guide_x = in.in_left; n.guide_y = in.in_top; n.guide_w = in.in_w; n.guide_h = in.in_h;
-      n.reset = dlss5_reset_; n.tuning = opts_.dlss5_tuning; n.compare = opts_.dlss5_compare;
+      n.reset = dlss5_reset_; n.tuning = opts_.dlss5_tuning;
+      if (timing) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 2);
       dlss5::evaluate(n);
+      if (timing) { list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 3); timer_mask_[slot_] |= 2; }
       dlss5_reset_ = false;
     } else {
       dlss5_reset_ = true;
+    }
+#endif
+    if (timing && timer_mask_[slot_]) {
+      list_->ResolveQueryData(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4, 4, timer_rb_[slot_].Get(), 0);
+      timer_pending_[slot_] = true;
     }
     ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
     list_->SetDescriptorHeaps(2, heaps);
@@ -1494,12 +1576,13 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   // same displayed sub-region, same box filter when the render is larger than the window.
   const bool fills_output = upscaled && !dlss_in_place_;
   float src_w = upscaled ? (float)dlss_out_w_ : (float)efb_w_, src_h = upscaled ? (float)dlss_out_h_ : (float)efb_h_;
-  float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+  float rect[20] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
                     1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
                     1.0f, 1.0f, hud_composite ? 1.0f : 0.0f, std::getenv("MELEE_DEBUG_HUDMASK") ? 1.0f : 0.0f,
                     // Output uv to EFB uv: DLAA's image already is EFB-sized, so identity there.
                     dlss_in_place_ ? 1.0f : (float)c.src_w / EFB_WIDTH, dlss_in_place_ ? 1.0f : (float)c.src_h / EFB_HEIGHT,
-                    dlss_in_place_ ? 0.0f : (float)c.src_x / EFB_WIDTH, dlss_in_place_ ? 0.0f : (float)c.src_y / EFB_HEIGHT};
+                    dlss_in_place_ ? 0.0f : (float)c.src_x / EFB_WIDTH, dlss_in_place_ ? 0.0f : (float)c.src_y / EFB_HEIGHT,
+                    opts_.brightness, opts_.contrast, opts_.vibrance, 0.0f};
   // Averaging box when the rendered image is larger than the output. The two axes shrink by
   // different amounts (the picture is letterboxed to 16:9 inside the window), so they get their
   // own tap counts; using the horizontal count for both left vertical edges aliasing.
@@ -1513,7 +1596,7 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     rect[8] = (float)std::clamp((int)std::lround((double)dlss_out_w_ / std::max(vw, 1.0f)), 1, 4);
     rect[9] = (float)std::clamp((int)std::lround((double)dlss_out_h_ / std::max(vh, 1.0f)), 1, 4);
   }
-  list_->SetGraphicsRoot32BitConstants(1, 16, rect, 0);
+  list_->SetGraphicsRoot32BitConstants(1, 20, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
 #ifdef GX_PC_SETTINGS
@@ -1591,6 +1674,39 @@ void D3D12Backend::read_flicker_scan() {
   const D3D12_RANGE none{0, 0};
   scan_rb_[slot_]->Unmap(0, &none);
   scanner_.push(grid, scan_frame_[slot_]);
+}
+
+// Reads back the previous use of this frame slot's query pair(s), fence-safe for the same reason
+// read_flicker_scan is: this only runs after wait_fence(slot_fence_[slot_]) at the top of the frame.
+void D3D12Backend::read_gpu_timers() {
+  timer_pending_[slot_] = false;
+  const uint8_t mask = timer_mask_[slot_];
+  if (!timer_freq_) return;
+  // A pass that did not run this frame (its mask bit clear) goes back to 0 rather than keeping its
+  // last measurement: a stale "DLSS 5 +9ms" sitting in the breakdown after DLSS 5 was turned off
+  // would misreport what is actually happening, and would throw off the "Native (estimated)" number
+  // too, since that subtracts these from the total.
+  if (!(mask & 1)) g_dlaa_pass_ms = 0.0f;
+#ifdef GX_DLSS5
+  if (!(mask & 2)) g_dlss5_pass_ms = 0.0f;
+#endif
+  if (!mask) return;
+  const D3D12_RANGE range{0, 4 * sizeof(uint64_t)};
+  uint64_t* ts = nullptr;
+  if (FAILED(timer_rb_[slot_]->Map(0, &range, (void**)&ts))) return;
+  auto ms = [&](int a, int b) { return ts[b] > ts[a] ? (float)((double)(ts[b] - ts[a]) * 1000.0 / (double)timer_freq_) : -1.0f; };
+  if (mask & 1) { const float v = ms(0, 1); if (v >= 0.0f) g_dlaa_pass_ms = v; }
+#ifdef GX_DLSS5
+  if (mask & 2) { const float v = ms(2, 3); if (v >= 0.0f) g_dlss5_pass_ms = v; }
+#endif
+  static uint64_t logged = 0;
+#ifdef GX_DLSS5
+  if (++logged % 180 == 1) host::log("gputimer: mask %u freq %llu dlaa %.2f ms dlss5 %.2f ms", mask, (unsigned long long)timer_freq_, g_dlaa_pass_ms.load(), g_dlss5_pass_ms.load());
+#else
+  if (++logged % 180 == 1) host::log("gputimer: mask %u freq %llu dlaa %.2f ms", mask, (unsigned long long)timer_freq_, g_dlaa_pass_ms.load());
+#endif
+  const D3D12_RANGE none{0, 0};
+  timer_rb_[slot_]->Unmap(0, &none);
 }
 
 void D3D12Backend::capture_backbuffer() {
@@ -1745,13 +1861,13 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   }
   if (adapter3_ && (frame_counter_ % 30) == 0) update_vram();
   if (adapter3_ && frame_counter_ && (frame_counter_ % 3600) == 0) {
-    float used = 0, budget = 0;
-    if (vram_usage(&used, &budget)) host::log("vram: %.2f of %.2f GB in use (EFB %dx%d, replacement textures %.0f MB)", used, budget, efb_w_, efb_h_, replacement_bytes_ / 1048576.0);
+    float used = 0, total = 0;
+    if (vram_usage(&used, &total)) host::log("vram: %.2f of %.2f GB in use (EFB %dx%d, replacement textures %.0f MB)", used, total, efb_w_, efb_h_, replacement_bytes_ / 1048576.0);
   }
   if (texpack::enabled() && frame_counter_ >= texpack_report_frame_) {
     texpack::report();
-    float used = 0, budget = 0;
-    if (vram_usage(&used, &budget)) host::log("vram: %.2f of %.2f GB (replacement textures %.0f MB of %.0f MB)", used, budget,
+    float used = 0, total = 0;
+    if (vram_usage(&used, &total)) host::log("vram: %.2f of %.2f GB (replacement textures %.0f MB of %.0f MB)", used, total,
                                                replacement_bytes_ / 1048576.0, replacement_budget_ / 1048576.0);
     texpack_report_frame_ = frame_counter_ + 3600;
   }
@@ -1767,6 +1883,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   slot_ = (int)(frame_counter_ % FRAME_SLOTS);
   wait_fence(slot_fence_[slot_]);   // this slot's previous frame (FRAME_SLOTS frames ago) is complete
   if (scan_pending_[slot_]) read_flicker_scan();
+  if (timer_pending_[slot_]) read_gpu_timers();
   vertex_ring_.reset(slot_); index_ring_.reset(slot_); constant_ring_.reset(slot_); upload_ring_.reset(slot_);
   frame_garbage_[slot_].clear();
   descriptor_garbage_[slot_].clear();
@@ -1803,15 +1920,20 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (frame_counter_ % 600 == 0 && mv_draws_) { host::log("dlss: %.1f%% of draws had a previous pose (%llu of %llu)", 100.0 * mv_matched_ / mv_draws_, (unsigned long long)mv_matched_, (unsigned long long)mv_draws_); mv_draws_ = mv_matched_ = 0; }
     if (frame_counter_ % 600 == 0) for (auto it = last_poses_.begin(); it != last_poses_.end();) { if (it->second.frame + 4 < frame_counter_) it = last_poses_.erase(it); else ++it; }
   }
-  // Reflex and frame generation: a frame token is needed for the markers even without DLSS. Applied
-  // here, on the presenting thread, as Streamline asks.
-  if (!dlss_active_ && opts_.reflex_mode > 0 && streamline::reflex_available()) streamline::new_frame((uint32_t)frame_counter_);
+  // Reflex and frame generation: a frame token is needed for the markers even without DLSS, and even
+  // with Reflex's own low-latency mode left Off -- the PC Latency markers below are what feeds the
+  // latency reading, and that keeps working at Native so there is something to compare On against.
+  if (!dlss_active_ && streamline::reflex_available()) streamline::new_frame((uint32_t)frame_counter_);
   {
-    const bool want_fg = opts_.frame_generation && dlss_active_ && !xess_active() && streamline::frame_generation_available();
+    const int want_fg = opts_.frame_generation_mode > 0 && dlss_active_ && !xess_active() && streamline::frame_generation_available()
+                        ? opts_.frame_generation_mode : 0;
     // Frame generation needs Reflex on: it takes at least "On" while frame generation runs.
     const int want_reflex = streamline::reflex_available() ? std::max(opts_.reflex_mode, want_fg ? 1 : 0) : 0;
     if (want_reflex != reflex_applied_) { streamline::set_reflex(want_reflex); reflex_applied_ = want_reflex; }
-    if (want_reflex && (frame_counter_ % 30) == 0) streamline::update_reflex_stats();
+    // Sampled regardless of mode: the PC Latency markers run every frame either way (below), so the
+    // measurement stays available running plain Native -- Reflex's low-latency algorithm is a
+    // separate thing from being told how long a frame is taking.
+    if (streamline::reflex_available() && (frame_counter_ % 30) == 0) streamline::update_reflex_stats();
     if (want_reflex && (frame_counter_ % 600) == 0) host::log("reflex: render latency %.2f ms", streamline::reflex_latency_ms());
     if (want_fg != fg_applied_) { streamline::set_frame_generation(want_fg); fg_applied_ = want_fg; }
   }

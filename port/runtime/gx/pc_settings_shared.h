@@ -15,6 +15,10 @@ struct SettingsState {
   int volume = 0;
   std::array<float, 180> intervals{};
   unsigned cursor = 0;
+  // Reflex's measured render latency, same rolling-buffer shape as intervals, for the performance
+  // graph. Filled whether or not Reflex's low-latency mode is on (see gx_streamline.h).
+  std::array<float, 180> latencies{};
+  unsigned latency_cursor = 0;
   int rebind_action = -1;                                       // BindAction index while a "press a button" capture runs, -1 = none
   host::CaptureDevice rebind_kind = host::CaptureDevice::None;  // which device tab that capture belongs to
   int rebind_index = 0;                                         // pad / adapter port index for that tab

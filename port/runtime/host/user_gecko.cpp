@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <fstream>
 #include <regex>
+#include <sstream>
 
 namespace user_gecko {
 namespace {
@@ -89,6 +90,59 @@ void load(const std::string& path, const std::vector<std::string>& enabled_names
 const std::string& path() { return g_path; }
 std::vector<Code>& codes() { return g_codes; }
 bool any_enabled() { return std::any_of(g_codes.begin(), g_codes.end(), [](const Code& c) { return c.enabled; }); }
+
+std::string add(const std::string& name, const std::string& body) {
+  Code c; c.name = name;
+  std::istringstream in(body);
+  std::string line;
+  bool first = true;
+  while (std::getline(in, line)) {
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) line.pop_back();
+    const size_t start = line.find_first_not_of(" \t");
+    if (start == std::string::npos) { first = false; continue; }
+    line = line.substr(start);
+    // A pasted whole code (Dolphin's own "$Name" line included) names itself; the typed Name field
+    // is then only what is offered until the paste says otherwise.
+    if (first && line[0] == '$') { c.name = line.substr(1); first = false; continue; }
+    first = false;
+    if (line[0] == '$') continue;   // a second header inside one paste: only the first code is kept
+    if (line[0] == '*') { c.notes.push_back(line.substr(1)); continue; }
+    std::smatch m;
+    static const std::regex code_line(R"(^\s*([0-9A-Fa-f]{8})\s+([0-9A-Fa-f]{8}))");
+    if (std::regex_search(line, m, code_line))
+      c.lines.push_back({(uint32_t)std::stoul(m[1].str(), nullptr, 16), (uint32_t)std::stoul(m[2].str(), nullptr, 16)});
+  }
+  while (!c.name.empty() && c.name.back() == ' ') c.name.pop_back();
+  if (c.name.empty()) return "needs a name";
+  if (std::any_of(g_codes.begin(), g_codes.end(), [&](const Code& e) { return e.name == c.name; }))
+    return "a code named \"" + c.name + "\" already exists";
+  if (c.lines.empty()) return "no XXXXXXXX YYYYYYYY code lines found";
+  classify(c);
+  g_codes.push_back(c);
+  return "";
+}
+
+void remove(const std::string& name) {
+  g_codes.erase(std::remove_if(g_codes.begin(), g_codes.end(), [&](const Code& c) { return c.name == name; }), g_codes.end());
+}
+
+bool save() {
+  if (g_path.empty()) return false;
+  std::ofstream f(g_path, std::ios::trunc);
+  if (!f) return false;
+  f << "[Gecko]\n";
+  for (const Code& c : g_codes) {
+    f << "$" << c.name << "\n";
+    for (const std::string& n : c.notes) f << "*" << n << "\n";
+    for (const auto& l : c.lines) { char b[20]; std::snprintf(b, sizeof b, "%08X %08X", l.first, l.second); f << b << "\n"; }
+  }
+  // Kept for Dolphin and other tools that read this file directly; this app tracks enabled codes in
+  // port-settings.ini instead (a code's on/off state should not depend on which game folder it is
+  // playing from), so this section is written but never read back by load() once `chosen` is true.
+  f << "\n[Gecko_Enabled]\n";
+  for (const Code& c : g_codes) if (c.enabled) f << "$" << c.name << "\n";
+  return f.good();
+}
 
 void apply() {
   for (const Code& c : g_codes) {
