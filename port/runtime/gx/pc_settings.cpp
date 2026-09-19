@@ -1365,7 +1365,9 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 10) options.dlss_mode = m; }
       else if (key == "framegen") options.frame_generation = value == "1";
-      else if (key == "reflex") options.reflex = value == "1";
+      else if (key == "reflex") options.reflex_mode = std::clamp(std::atoi(value.c_str()), 0, 2);
+      else if (key == "reflexstats") options.reflex_stats = value == "1";
+      else if (key == "reflexflash") options.reflex_flash = value == "1";
       // Low spec: the switch, then what the player had before it was turned on, so turning it off
       // after a restart still restores their own settings rather than the defaults.
       else if (key == "lowspec") options.low_spec = value == "1";
@@ -1855,10 +1857,23 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                         "between each rendered one. Smoother, but it holds a frame back, which adds input\n"
                         "delay: for single player and casual play, not competitive or online.\n"
                         "Needs an Upscaling mode other than Native. Reflex is switched on with it.");
-    ImGui::SameLine();
-    if (ImGui::Checkbox("NVIDIA Reflex", &options.reflex)) changed = true;
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("Low latency mode with boost: keeps the GPU from queueing frames ahead of the game.");
+    // NVIDIA Reflex, laid out the way games offer it.
+    {
+      const char* modes[] = {"Off", "On", "On + Boost"};
+      ImGui::SetNextItemWidth(160.0f);
+      if (ImGui::Combo("NVIDIA Reflex Low Latency", &options.reflex_mode, modes, 3)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("On: the GPU stops queueing frames ahead of the game, so what you press shows sooner.\n"
+                          "On + Boost: also keeps the GPU clocks up, trading power for a little more.\n"
+                          "Frame generation always runs with Reflex at least On. NVIDIA cards only.");
+      if (ImGui::Checkbox("Reflex latency", &options.reflex_stats)) changed = true;
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shows Reflex's measured render latency under the FPS counter.");
+      ImGui::SameLine();
+      if (ImGui::Checkbox("Reflex flash indicator", &options.reflex_flash)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Flashes a white square in the top left corner when A is pressed on port 1,\n"
+                          "for monitors with the NVIDIA Reflex Latency Analyzer and for LDAT.");
+    }
     if (d3d11) { ImGui::EndDisabled(); ImGui::TextDisabled("DLSS needs Direct3D 12 and an NVIDIA GPU."); }
     if (options.dlss_mode == 1 || options.dlss_mode == 6) {
       ImGui::TextWrapped("DLAA anti-aliases the game at the Internal resolution above without changing it, then the picture is fitted to the window as usual. Internal resolution and Anti-aliasing keep working, so DLAA stacks with 4x SSAA if you want both.");
@@ -2599,7 +2614,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
            << "\nshowfps " << options.show_fps << "\nshowping " << options.show_ping
            << "\ndlss " << options.dlss_mode << "\nframegen " << (options.frame_generation ? 1 : 0)
-           << "\nreflex " << (options.reflex ? 1 : 0) << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
+           << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
+           << "\nreflexflash " << (options.reflex_flash ? 1 : 0) << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
            << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
            << "\nonlinedelay " << slippi::online::config().delay
@@ -2794,6 +2810,19 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     draw_lcancel_overlays();
     // The plain readouts: frame rate and, while online, the ping. Small, top left, no window
     // chrome, the way a Dolphin OSD line looks, and separate from the performance graph.
+    // Reflex flash indicator: a white square on the frame A goes down on port 1, and the matching
+    // marker, which a latency analyzer monitor or LDAT times against the photons.
+    if (options.reflex_flash && options.reflex_mode > 0) {
+      static bool a_was_down = false;
+      host::PadState pads[4]{};
+      host::input_last_pads(pads);
+      const bool a_down = (pads[0].button & 0x0100) != 0;
+      if (a_down && !a_was_down) {
+        ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2(64, 64), IM_COL32(255, 255, 255, 255));
+        streamline::pcl_marker(7);   // eTriggerFlash
+      }
+      a_was_down = a_down;
+    }
     // Drawn as lines of text like Dolphin's: the frame rate, and the ping on the line under it.
     // The performance graph opens below them; if it is dragged over them, they move below it.
     static ImVec2 perf_min(0, 0), perf_max(0, 0);   // the graph's rectangle last frame, if shown
@@ -2802,12 +2831,15 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (test_readout) { options.show_fps = true; options.show_ping = true; options.performance_overlay = true; }
     const bool ping_line = options.show_ping && (slippi::online::is_online_match() || test_readout);
     const float line_h = ImGui::GetTextLineHeight() + 2.0f;
-    const float readout_h = 8.0f + line_h * 2;       // room for both lines, so the graph never moves
-    if (options.show_fps || ping_line) {
-      char lines[2][32];
+    const float readout_h = 8.0f + line_h * 3;       // room for every line, so the graph never moves
+    const bool latency_line = options.reflex_stats && streamline::reflex_latency_ms() > 0.0f;
+    if (options.show_fps || ping_line || latency_line) {
+      char lines[3][32];
       int n = 0;
       if (options.show_fps) std::snprintf(lines[n++], sizeof lines[0], "FPS: %.0f", ImGui::GetIO().Framerate);
       if (ping_line) std::snprintf(lines[n++], sizeof lines[0], "Ping: %d ms", slippi::online::ping_ms());
+      if (options.reflex_stats && streamline::reflex_latency_ms() > 0.0f && n < 3)
+        std::snprintf(lines[n++], sizeof lines[0], "Latency: %.1f ms", streamline::reflex_latency_ms());
       ImVec2 at(10, 8);
       float wide = 0;
       for (int i = 0; i < n; ++i) wide = std::max(wide, ImGui::CalcTextSize(lines[i]).x);
