@@ -127,6 +127,12 @@ add_executable(port_mm_probe tests/mm_probe.cpp)
 target_link_libraries(port_mm_probe PRIVATE runtime guest)
 target_compile_options(port_mm_probe PRIVATE /EHsc)
 target_compile_definitions(port_mm_probe PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+add_executable(port_settings_load_test tests/settings_load_test.cpp)
+target_link_libraries(port_settings_load_test PRIVATE runtime guest)
+target_include_directories(port_settings_load_test PRIVATE runtime)
+target_compile_options(port_settings_load_test PRIVATE /EHsc)
+target_compile_definitions(port_settings_load_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+add_test(NAME port_settings_load COMMAND port_settings_load_test)
 target_link_libraries(melee_port PRIVATE runtime guest dbghelp)   # dbghelp: crash minidump
 target_compile_options(melee_port PRIVATE /EHsc)
 target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"

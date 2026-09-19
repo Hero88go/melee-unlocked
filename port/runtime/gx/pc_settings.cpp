@@ -289,10 +289,15 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
 
   // Melee's gate is an octagon with vertices on the cardinals and diagonals, which is what an eight
   // sided ImGui n-gon gives. Stick values are signed and screen Y grows downward.
+  // Scaled like the settings panel's sticks: 80 is the game's full tilt, so a stick at the rim reads
+  // at the rim. It used to be 128, the raw range, which drew a full press at under two thirds out.
   auto stick = [&](ImVec2 c, float r, int8_t sx, int8_t sy, ImU32 colour) {
     dl->AddNgon(c, r, colour, 8, S(2.f));
     dl->AddCircle(c, S(2.f), dim, 8, 1.f);
-    const ImVec2 tip(c.x + (sx / 128.f) * r, c.y - (sy / 128.f) * r);
+    float fx = sx / 80.f, fy = sy / 80.f;
+    const float mag = std::sqrt(fx * fx + fy * fy);
+    if (mag > 1.f) { fx /= mag; fy /= mag; }
+    const ImVec2 tip(c.x + fx * r, c.y - fy * r);
     // Sized off the gate so the knob reads like the real stick rather than a small marker.
     dl->AddCircleFilled(tip, std::max(S(5.f), r * 0.20f), colour, 16);
   };
@@ -564,6 +569,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
       status[tab] = host::profile_save(device, clean, bindings_of(tab)) ? "Saved " + clean + "." : "Could not save to " + host::profiles_folder() + ".";
       g_active_profile[tab] = clean;
       cached_profiles(device, true);
+      changed = true;   // the profile in use is kept in the settings file
       ImGui::CloseCurrentPopup();
     }
     ImGui::EndDisabled();
@@ -1262,8 +1268,17 @@ void load_pc_settings(D3D12Options& options, int& volume) {
   std::ifstream file(options.settings_path);
   // First launch (no saved settings yet): open the PC settings panel so nobody has to find it.
   options.settings_open = true;   // opens at every launch unless "startup 0" was saved
+  // One setting per line: the key, then everything after it on that line. Reading the value as a
+  // single token lost the multi-number "custompreset" line (0.5.5 and later) and shifted every
+  // setting after it by one token, so the controller bindings, port choices and profiles saved
+  // below it were never read back for anyone who had used the Custom video preset.
   std::string key, value;
-  while (file >> key >> value) {
+  while (file >> key) {
+    std::getline(file, value);
+    const size_t first = value.find_first_not_of(" \t");
+    value = first == std::string::npos ? std::string() : value.substr(first);
+    while (!value.empty() && (value.back() == '\r' || value.back() == ' ' || value.back() == '\t')) value.pop_back();
+    if (value.empty()) continue;
     try {
       if (key == "fps") { double rate = std::stod(value); if (rate == -1 || rate == 0 || (rate >= 30 && rate <= 2000)) options.fps_cap = rate; }
       else if (key == "scale") { int scale = std::stoi(value); if (scale >= 0 && scale <= 8) options.efb_scale = scale; }
@@ -1277,15 +1292,10 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       // One line per pack the player switched off; anything not listed is on, so a pack installed
       // later starts enabled rather than silently doing nothing.
       else if (key == "texpackoff") {
-        // A pack is a folder, and a folder name can contain spaces ("HD Textures"). This file is
-        // parsed as whitespace-separated tokens, so taking only the first one would both lose the
-        // name and leave the rest of it to be read as the next key, which desyncs every setting
-        // after it. Take the remainder of the line instead.
-        std::string rest;
-        std::getline(file, rest);
-        while (!rest.empty() && (rest.back() == '\r' || rest.back() == ' ')) rest.pop_back();
+        // A pack is a folder, and a folder name can contain spaces ("HD Textures"); the value is the
+        // whole rest of the line.
         auto off = texpack::disabled_packs();
-        off.push_back(value + rest);
+        off.push_back(value);
         texpack::set_disabled_packs(std::move(off));
       }
       else if (key == "aspect") { int a = std::stoi(value); if (a >= 0 && a <= 4) options.aspect = (AspectMode)a; }
@@ -1324,6 +1334,12 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "rumble") host::g_rumble_enabled = value != "0";
       else if (key == "backgroundinput") host::g_background_input = value != "0";
       else if (key == "editdevice") g_saved_edit_tab = std::atoi(value.c_str());
+      // "activeprofile<device> <name>": the profile each controller uses, so it is still the one
+      // shown (and the one changes are saved to) after a restart.
+      else if (key.rfind("activeprofile", 0) == 0 && key.size() > 13 && std::isdigit((unsigned char)key[13])) {
+        const int t = std::atoi(key.c_str() + 13);
+        if (t >= 0 && t < kDeviceTabs) g_active_profile[t] = value;
+      }
       else if (key == "custompreset") {
         CustomPreset c; c.set = true;
         if (std::sscanf(value.c_str(), "%d %d %d %d %lf %d", &c.efb, &c.ssaa, &c.aniso, &c.dlss, &c.fps, &c.sub) == 6) g_custom_preset = c;
@@ -2206,7 +2222,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       for (int port = 0; port < 4; ++port) {
         if (port) ImGui::SameLine();
         ImGui::PushID(100 + port);
-        const int t = tab_of_source(host::g_port_sources[port]);
+        int t = tab_of_source(host::g_port_sources[port]);
+        // A port left on the keyboard is also played by the first spare pad (window.cpp); show that
+        // pad, so someone with only an Xbox controller sees it on P1 without having to pick it.
+        if (host::g_port_sources[port].kind == host::DeviceKind::Keyboard) {
+          const int ft = tab_of_source(host::g_port_feeding[port]);
+          if (ft > 0 && tab_connected(ft)) t = ft;
+        }
         const bool connected = t >= 0 && tab_connected(t);
         const bool editing = t >= 0 && t == edit_tab;
         const ImVec2 o = ImGui::GetCursorScreenPos();
@@ -2484,7 +2506,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1 still opens this panel with it off.");
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
     changed |= ImGui::Checkbox("FPS counter (top left)", &options.show_fps);
-    changed |= ImGui::Checkbox("Ping while online (top left)", &options.show_ping);
+    changed |= ImGui::Checkbox("Ping while online (under the FPS)", &options.show_ping);
     changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
     if (options.input_overlay) {
       // Several ports can be shown at once (doubles and crew streams want every player visible);
@@ -2599,6 +2621,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         file << "\nport" << n << " " << port_source_to_combo(host::g_port_sources[n]);
       for (int n = 0; n < 4; ++n)
         if (!host::g_port_device_names[n].empty()) file << "\nportname" << n << " " << host::g_port_device_names[n];
+      for (int t = 0; t < kDeviceTabs; ++t)
+        if (!g_active_profile[t].empty()) file << "\nactiveprofile" << t << " " << g_active_profile[t];
       file << '\n';
       file.close();
       state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
@@ -2721,23 +2745,46 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     draw_lcancel_overlays();
     // The plain readouts: frame rate and, while online, the ping. Small, top left, no window
     // chrome, the way a Dolphin OSD line looks, and separate from the performance graph.
-    if (options.show_fps || (options.show_ping && slippi::online::is_online_match())) {
-      ImGui::SetNextWindowPos(ImVec2(8, 8), ImGuiCond_Always);
-      ImGui::SetNextWindowBgAlpha(0.35f);
-      ImGui::Begin("Readout", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoFocusOnAppearing);
-      if (options.show_fps) ImGui::Text("%.0f FPS", ImGui::GetIO().Framerate);
-      if (options.show_ping && slippi::online::is_online_match()) ImGui::Text("Ping %d ms", slippi::online::ping_ms());
-      ImGui::End();
+    // Drawn as lines of text like Dolphin's: the frame rate, and the ping on the line under it.
+    // The performance graph opens below them; if it is dragged over them, they move below it.
+    static ImVec2 perf_min(0, 0), perf_max(0, 0);   // the graph's rectangle last frame, if shown
+    // Test hook for screenshots: MELEE_TEST_READOUT=1 shows both lines and the graph.
+    static const bool test_readout = std::getenv("MELEE_TEST_READOUT") != nullptr;
+    if (test_readout) { options.show_fps = true; options.show_ping = true; options.performance_overlay = true; }
+    const bool ping_line = options.show_ping && (slippi::online::is_online_match() || test_readout);
+    const float line_h = ImGui::GetTextLineHeight() + 2.0f;
+    const float readout_h = 8.0f + line_h * 2;       // room for both lines, so the graph never moves
+    if (options.show_fps || ping_line) {
+      char lines[2][32];
+      int n = 0;
+      if (options.show_fps) std::snprintf(lines[n++], sizeof lines[0], "FPS: %.0f", ImGui::GetIO().Framerate);
+      if (ping_line) std::snprintf(lines[n++], sizeof lines[0], "Ping: %d ms", slippi::online::ping_ms());
+      ImVec2 at(10, 8);
+      float wide = 0;
+      for (int i = 0; i < n; ++i) wide = std::max(wide, ImGui::CalcTextSize(lines[i]).x);
+      const bool graph_there = options.performance_overlay && perf_max.x > perf_min.x &&
+                               at.x < perf_max.x && at.x + wide > perf_min.x && at.y < perf_max.y && at.y + line_h * n > perf_min.y;
+      if (graph_there) at.y = perf_max.y + 6;
+      ImDrawList* fg = ImGui::GetForegroundDrawList();
+      for (int i = 0; i < n; ++i) {
+        const ImVec2 p(at.x, at.y + line_h * i);
+        fg->AddText(ImVec2(p.x + 1, p.y + 1), IM_COL32(0, 0, 0, 200), lines[i]);
+        fg->AddText(p, IM_COL32(0, 255, 255, 255), lines[i]);
+      }
     }
     if (options.performance_overlay) {
-      // Draggable, and it remembers where it was put: pinned at the top left with no input it covered
-      // the settings panel and there was no way to move it out of the way.
-      ImGui::SetNextWindowPos(ImVec2(12, 12), ImGuiCond_FirstUseEver);
+      // Draggable: pinned in place with no input it covered the settings panel and there was no way
+      // to move it out of the way. Opens under the FPS and ping lines.
+      ImGui::SetNextWindowPos(ImVec2(12, (options.show_fps || options.show_ping) ? 8.0f + readout_h : 12.0f), ImGuiCond_FirstUseEver);
       ImGui::SetNextWindowBgAlpha(0.75f);
       ImGui::Begin("Performance", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize);
       ImGui::Text("%.0f presentations/s | %.2f ms", ImGui::GetIO().Framerate, 1000.f/std::max(1.f, ImGui::GetIO().Framerate));
       ImGui::PlotLines("##frametimes", state.intervals.data(), (int)state.intervals.size(), state.cursor % state.intervals.size(), nullptr, 0, 33.4f, ImVec2(250, 60));
+      perf_min = ImGui::GetWindowPos();
+      perf_max = ImVec2(perf_min.x + ImGui::GetWindowSize().x, perf_min.y + ImGui::GetWindowSize().y);
       ImGui::End();
+    } else {
+      perf_min = perf_max = ImVec2(0, 0);
     }
   }
   host::window_input_capture(state.open);

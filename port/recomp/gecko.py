@@ -31,6 +31,25 @@ PORT_CODES = [
         (0xC22F9A3C, 0x00000007), (0x48000021, 0x7C8802A6), (0x80640000, 0x907D002C),
         (0x907D0030, 0x80640004), (0x907D003C, 0x48000010), (0x4E800021, 0x3F59999A),
         (0xC1A80000, 0x801D0014), (0x60000000, 0x00000000)]),
+    # With the row scaled down, a lost stock's icon ends its drop still on screen (its drop is part
+    # of the scaled animation), so hide it once the drop reaches its last frame: at 802F84C8, in the
+    # lost-stock branch of ifStock_802F8298 where r3 + 521 addresses that icon's drop counter and
+    # r27 is the icon joint, call HSD_JObjSetFlagsAll(icon, JOBJ_HIDDEN) when the counter is 9 or
+    # more (it becomes 10, the final frame, in this pass). A stock that comes back is unhidden by the
+    # game's own loop, which clears the flag on every icon still in play each frame.
+    ("Port: PAL Stock Icons, lost stocks leave the screen", "pal_stock_icons", [
+        (0xC22F84C8, 0x0000000B),
+        (0x38830209, 0x89840000),   # addi r4,r3,521 (the replaced instruction); lbz r12,0(r4)
+        (0x280C0009, 0x41800044),   # cmplwi r12,9; blt skip
+        (0x7C0802A6, 0x9421FFE0),   # mflr r0; stwu r1,-32(r1)
+        (0x90010024, 0x90610008),   # stw r0,36(r1); stw r3,8(r1)
+        (0x9081000C, 0x7F63DB78),   # stw r4,12(r1); mr r3,r27
+        (0x38800010, 0x3D808037),   # li r4,16 (JOBJ_HIDDEN); lis r12,0x8037
+        (0x618C1D9C, 0x7D8903A6),   # ori r12,r12,0x1D9C (HSD_JObjSetFlagsAll); mtctr r12
+        (0x4E800421, 0x80610008),   # bctrl; lwz r3,8(r1)
+        (0x8081000C, 0x80010024),   # lwz r4,12(r1); lwz r0,36(r1)
+        (0x7C0803A6, 0x38210020),   # mtlr r0; addi r1,r1,32
+        (0x60000000, 0x00000000)]), # skip: nop; (branch back)
 ]
 
 

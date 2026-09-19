@@ -233,6 +233,9 @@ struct PortSource {
 // GRAM, say), so a port keeps following its named device to whatever slot it lands in. Empty for
 // anything but a HID pad. Saved with spaces as underscores, since a settings value is one word.
 extern std::array<std::string, 4> g_port_device_names;
+// The device that actually fed each port on the last poll (window.cpp): its source, or the first
+// spare pad for a port left on the keyboard.
+extern std::array<PortSource, 4> g_port_feeding;
 inline std::string port_device_key(std::string name) {
   for (char& c : name) if (c == ' ') c = '_';
   return name;
