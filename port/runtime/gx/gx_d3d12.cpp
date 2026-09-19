@@ -205,11 +205,16 @@ class D3D12Backend : public Backend {
   double presentation_wait_seconds() const override { return present_wait_; }
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
+  // EFB copies are about to be freed. texture_sets_ is keyed by resource pointer, so its entries for
+  // them must go too: a new texture allocated at a freed address would otherwise match a descriptor
+  // table that still points at the freed one, and the GPU reads released memory (the crash on
+  // changing internal resolution mid-match).
+  void drop_efb_copies() { efb_copies_.clear(); texture_sets_.clear(); }
   void resize(int w, int h) {
     wait_gpu(); client_w_ = w; client_h_ = h; create_swapchain_targets(true);
     // Auto scale follows the window like Dolphin's "Auto (Window Size)" integral mode: the EFB is
     // re-created at the new multiplier and scaled EFB-copy textures are dropped (their size changed).
-    if (opts_.efb_scale == 0 && pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
+    if (opts_.efb_scale == 0 && pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
   int scale() const { return scale_; }
   void set_skip_present(bool skip) override { skip_present_ = skip; }
@@ -696,7 +701,7 @@ void D3D12Backend::configure_dlss() {
       wait_gpu(); dlss_active_ = false; dlss_in_place_ = false; dlss_mode_active_ = 0; forced_scale_ = 0; dlss_out_.Reset(); dlss_out_w_ = dlss_out_h_ = 0;
       set_dlss_mip_bias(0.0f);
       streamline::dlss_set_options(DlssMode::Off, vw, vh);
-      if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
+      if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
       host::log("dlss: off (native rendering at EFB x%d)", scale_);
     }
     return;
@@ -780,7 +785,7 @@ void D3D12Backend::configure_dlss() {
   }
   wait_gpu();
   forced_scale_ = scale;
-  if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
+  if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   if (!dlss_out_ || (int)dlss_out_w_ != out_w || (int)dlss_out_h_ != out_h) {
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     D3D12_RESOURCE_DESC rd{};
@@ -975,6 +980,13 @@ ID3D12PipelineState* D3D12Backend::fallback_pso(const PsoKey& key, const DrawCal
   FallbackKey fk{key.blend, key.zmode, key.cull, key.topology, key.pixel_format, key.mvec, (uint32_t)textured | ((uint32_t)colored << 1)};
   auto it = fallback_psos_.find(fk);
   if (it != fallback_psos_.end()) return it->second.Get();
+  // Untextured and uncoloured: the colour lives in TEV state this stand-in cannot read, and drawing
+  // it plain white flashed the screen. Skip it until the real pipeline arrives.
+  if (!textured && !colored) return nullptr;
+  // Blended draws likewise: their transparency usually comes from TEV state too (screen fades and
+  // transitions, shadows, glows), so the stand-in drew them fully opaque and the first frame of a new
+  // screen flashed bright. Missing a translucent layer for a frame or two is not visible.
+  if (dc.bp.blendmode() & 1) return nullptr;
   static const char* vs_src = R"(
 cbuffer VSBlock : register(b0) {
 float4 projection[4]; float4 depthparams; float4 viewparams; float4 materials[4]; float4 lights[40];
@@ -1398,7 +1410,7 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   b[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[0].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, src_state};
   if (!e.resource || e.width != sw || e.height != sh) {
-    if (e.resource) frame_garbage_[slot_].push_back(e.resource);
+    if (e.resource) { frame_garbage_[slot_].push_back(e.resource); texture_sets_.clear(); }
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     D3D12_RESOURCE_DESC rd{};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = sw; rd.Height = sh; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
@@ -1833,7 +1845,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; wait_gpu(); sampler_sets_.clear(); }
   if (opts_.ssaa != ssaa_applied_ || (!dlss_active_ && pick_scale() != scale_)) {
     ssaa_applied_ = opts_.ssaa;
-    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); host::log("d3d12: internal resolution now EFB x%d", scale_); }
+    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); host::log("d3d12: internal resolution now EFB x%d", scale_); }
   }
   struct FloatEnvironment {
     unsigned saved = _mm_getcsr();
@@ -1843,10 +1855,10 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
 #ifdef GX_PC_SETTINGS
   // A texture pack was switched on or off in the panel: everything already uploaded was built with
   // the old set, so drop it and let the next draw rebuild what it needs.
-  if (settings_ui_ && settings_textures_dirty()) { wait_gpu(); textures_.clear(); }
+  if (settings_ui_ && settings_textures_dirty()) { wait_gpu(); textures_.clear(); texture_sets_.clear(); }
   if (settings_ui_ && settings_ui_->begin(opts_)) {
     host::window_set_fullscreen(opts_.fullscreen);
-    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
+    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
 #endif
   // Texture packs can be switched on and off while the game runs. Every texture already uploaded
@@ -1874,7 +1886,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (host::window_take_fullscreen_toggle()) {   // Alt+Enter
     opts_.fullscreen = !opts_.fullscreen;
     host::window_set_fullscreen(opts_.fullscreen);
-    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
+    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
   configure_dlss();
   pso_wait_budget_us_ = 12000;
