@@ -29,7 +29,9 @@ struct D3D12Options {
   double fps_cap = 60; // -1 follows the active monitor
   bool fullscreen = false;
   bool frame_generation = false;  // DLSS Frame Generation (RTX 40+): needs an Upscaling mode; adds latency
-  bool reflex = false;            // NVIDIA Reflex low latency + boost (on whenever frame generation is)
+  int reflex_mode = 0;            // NVIDIA Reflex: 0 off, 1 on, 2 on + boost (at least on whenever frame generation is)
+  bool reflex_stats = false;      // show Reflex's measured render latency under the FPS counter
+  bool reflex_flash = false;      // Reflex flash indicator (latency analyzer monitors, LDAT): flashes on the A button
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
   float dlss_jitter_sign = -1.0f; // calibrated 2026-09-11: -1 reconstructs sharp text, +1 blurs (see PORT_COMPLETION.md)
   bool pc_settings = false, settings_open = false, performance_overlay = false;

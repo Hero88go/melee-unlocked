@@ -60,7 +60,9 @@ bool evaluate(ID3D12GraphicsCommandList*, const EvaluateInputs&) { return false;
 bool frame_generation_available() { return false; }
 bool reflex_available() { return false; }
 void set_frame_generation(bool) {}
-void set_reflex(bool) {}
+void set_reflex(int) {}
+float reflex_latency_ms() { return 0.0f; }
+void update_reflex_stats() {}
 void pcl_marker(int) {}
 void log_frame_generation() {}
 #else
@@ -300,14 +302,26 @@ bool set_constants(const FrameConstants& c) {
 
 bool frame_generation_available() { return g_ready && g_fg_ok; }
 bool reflex_available() { return g_ready && g_reflex_ok; }
-void set_reflex(bool on) {
+std::atomic<float> g_latency_ms{0.0f};
+void set_reflex(int mode) {
   if (!reflex_available()) return;
   sl::ReflexOptions r{};
-  r.mode = on ? sl::ReflexMode::eLowLatencyWithBoost : sl::ReflexMode::eOff;
-  r.useMarkersToOptimize = on;
+  r.mode = mode >= 2 ? sl::ReflexMode::eLowLatencyWithBoost : mode == 1 ? sl::ReflexMode::eLowLatency : sl::ReflexMode::eOff;
+  r.useMarkersToOptimize = mode > 0;
   const sl::Result res = slReflexSetOptions(r);
-  g_reflex_on = on && res == sl::Result::eOk;
-  host::log("reflex: %s (%d)", on ? "low latency + boost" : "off", (int)res);
+  g_reflex_on = mode > 0 && res == sl::Result::eOk;
+  if (!g_reflex_on) g_latency_ms = 0.0f;
+  host::log("reflex: %s (%d)", mode >= 2 ? "on + boost" : mode == 1 ? "on" : "off", (int)res);
+}
+float reflex_latency_ms() { return g_latency_ms.load(std::memory_order_relaxed); }
+void update_reflex_stats() {
+  if (!g_reflex_on) return;
+  sl::ReflexState st{};
+  if (slReflexGetState(st) != sl::Result::eOk || !st.latencyReportAvailable) return;
+  double sum = 0; int n = 0;
+  for (const auto& r : st.frameReport)
+    if (r.simStartTime && r.gpuRenderEndTime > r.simStartTime) { sum += (double)(r.gpuRenderEndTime - r.simStartTime); ++n; }
+  if (n) g_latency_ms = (float)(sum / n / 1000.0);   // report times are in microseconds
 }
 void set_frame_generation(bool on) {
   if (!frame_generation_available()) return;

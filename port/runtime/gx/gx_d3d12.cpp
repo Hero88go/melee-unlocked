@@ -287,7 +287,7 @@ class D3D12Backend : public Backend {
   // after the upscale. Zero for native and DLAA.
   float dlss_mip_bias_ = 0.0f;
   uint64_t mv_draws_ = 0, mv_matched_ = 0;
-  bool fg_applied_ = false, reflex_applied_ = false;   // what Streamline was last told
+  bool fg_applied_ = false; int reflex_applied_ = 0;   // what Streamline was last told
   bool xess_reset_ = true;
   std::wstring exe_dir_;   // for loading the upscaler libraries
   bool xess_active() const { return xess::is_xess_mode(opts_.dlss_mode); }
@@ -349,7 +349,7 @@ void D3D12Backend::init() {
 #ifdef _DEBUG
   { ComPtr<ID3D12Debug> dbg; if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) dbg->EnableDebugLayer(); }
 #endif
-  if (opts_.pc_settings || opts_.dlss_mode != 0) {
+  if (opts_.pc_settings || opts_.dlss_mode != 0 || opts_.reflex_mode != 0 || opts_.frame_generation) {
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring dir(exe); size_t slash = dir.find_last_of(L"\\/"); if (slash != std::wstring::npos) dir.resize(slash);
     streamline::init(dir);
@@ -1663,11 +1663,14 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   }
   // Reflex and frame generation: a frame token is needed for the markers even without DLSS. Applied
   // here, on the presenting thread, as Streamline asks.
-  if (!dlss_active_ && opts_.reflex && streamline::reflex_available()) streamline::new_frame((uint32_t)frame_counter_);
+  if (!dlss_active_ && opts_.reflex_mode > 0 && streamline::reflex_available()) streamline::new_frame((uint32_t)frame_counter_);
   {
     const bool want_fg = opts_.frame_generation && dlss_active_ && !xess_active() && streamline::frame_generation_available();
-    const bool want_reflex = (opts_.reflex || want_fg) && streamline::reflex_available();
+    // Frame generation needs Reflex on: it takes at least "On" while frame generation runs.
+    const int want_reflex = streamline::reflex_available() ? std::max(opts_.reflex_mode, want_fg ? 1 : 0) : 0;
     if (want_reflex != reflex_applied_) { streamline::set_reflex(want_reflex); reflex_applied_ = want_reflex; }
+    if (want_reflex && (frame_counter_ % 30) == 0) streamline::update_reflex_stats();
+    if (want_reflex && (frame_counter_ % 600) == 0) host::log("reflex: render latency %.2f ms", streamline::reflex_latency_ms());
     if (want_fg != fg_applied_) { streamline::set_frame_generation(want_fg); fg_applied_ = want_fg; }
   }
   streamline::pcl_marker(0); streamline::pcl_marker(1); streamline::pcl_marker(2);

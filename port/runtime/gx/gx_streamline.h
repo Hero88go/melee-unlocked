@@ -63,7 +63,11 @@ bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in);
 bool frame_generation_available();
 bool reflex_available();
 void set_frame_generation(bool on);
-void set_reflex(bool on);
+void set_reflex(int mode);   // 0 off, 1 low latency, 2 low latency + boost
+// Reflex's measured render latency (simulation start to GPU finished), averaged over the recent frame
+// reports, in milliseconds; 0 when Reflex has no report yet. Refreshed by update_reflex_stats().
+float reflex_latency_ms();
+void update_reflex_stats();
 // Reflex latency markers for the current frame token (0 sim start, 1 sim end, 2 render submit
 // start, 3 render submit end, 4 present start, 5 present end). No-op without a token or Reflex.
 void pcl_marker(int marker);
