@@ -29,6 +29,7 @@
 #include "gx_streamline.h"
 #include "gx_xess.h"
 #include "flicker_scan.h"
+#include "gx_dlss5.h"
 #include "texture_pack.h"
 #include "host.h"
 #include "window.h"   // fullscreen toggling lives on the window, not the settings panel
@@ -172,7 +173,7 @@ class D3D12Backend : public Backend {
     settings_ui_.reset();
 #endif
  stop_pso_workers(); integrate_compiled_psos(); flush_captures(); save_pipeline_recipes(); save_pipeline_library(); if (fence_event_) CloseHandle(fence_event_); if (present_timer_) CloseHandle(present_timer_);
-    last_poses_.clear(); mvec_.Reset(); hud_mask_.Reset(); dlss_out_.Reset(); xess::shutdown(); streamline::shutdown(); }
+    last_poses_.clear(); dlss5::shutdown(); mvec_.Reset(); hud_mask_.Reset(); dlss_out_.Reset(); xess::shutdown(); streamline::shutdown(); }
   const D3D12Options& options() const { return opts_; }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
@@ -219,6 +220,7 @@ class D3D12Backend : public Backend {
   uint32_t dlss_out_w_ = 0, dlss_out_h_ = 0;
   float jitter_x_ = 0, jitter_y_ = 0;
   bool dlss_reset_ = true;
+  bool dlss5_reset_ = true;
   // A draw's pose this frame and in the frame before. A model drawn in several passes in one frame
   // (fighters are) must compare every pass with the previous frame; comparing a second pass with the
   // first pass's pose gave zero motion, and DLSS/DLAA blended the moving fighter into the background.
@@ -1422,6 +1424,20 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
       host::log("dlss: evaluation keeps failing; switching Upscaling back to Native");
       opts_.dlss_mode = 0; dlss_failures_ = 0;
     } else if (upscaled) dlss_failures_ = 0;
+    // EXPERIMENTAL DLSS 5 Neural Rendering over the DLSS/DLAA result, before it is presented.
+    if (upscaled && opts_.dlss5) {
+      dlss5::Inputs n{};
+      n.device = device_.Get(); n.list = list_.Get();
+      n.color = dlss_out_.Get(); n.w = dlss_out_w_; n.h = dlss_out_h_;
+      n.depth = efb_depth_.Get(); n.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+      n.mvec = mvec_.Get(); n.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+      n.guide_x = in.in_left; n.guide_y = in.in_top; n.guide_w = in.in_w; n.guide_h = in.in_h;
+      n.reset = dlss5_reset_; n.tuning = opts_.dlss5_tuning; n.compare = opts_.dlss5_compare;
+      dlss5::evaluate(n);
+      dlss5_reset_ = false;
+    } else {
+      dlss5_reset_ = true;
+    }
     ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
     list_->SetDescriptorHeaps(2, heaps);
   }

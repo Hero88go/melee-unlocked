@@ -30,6 +30,10 @@ bool available();
 long create_dxgi_factory2(uint32_t flags, const void* riid, void** out);
 long d3d12_create_device(void* adapter, int feature_level, const void* riid, void** out);
 void set_device(ID3D12Device* device);
+// The driver's own interface behind a Streamline proxy (device, command list), for code that talks
+// to NVIDIA NGX directly. Returns the argument unchanged when Streamline is not in use. Borrowed: the
+// proxy keeps it alive.
+void* native_interface(void* proxy);
 bool dlss_supported(IDXGIAdapter* adapter);
 
 // Per-mode optimal render size for an output size. Returns false when DLSS is unavailable.

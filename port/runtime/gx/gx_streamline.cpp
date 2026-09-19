@@ -51,6 +51,7 @@ bool available() { return false; }
 long create_dxgi_factory2(uint32_t flags, const void* riid, void** out) { return CreateDXGIFactory2(flags, *(const IID*)riid, out); }
 long d3d12_create_device(void* adapter, int fl, const void* riid, void** out) { return D3D12CreateDevice((IUnknown*)adapter, (D3D_FEATURE_LEVEL)fl, *(const IID*)riid, out); }
 void set_device(ID3D12Device*) {}
+void* native_interface(void* proxy) { return proxy; }
 bool dlss_supported(IDXGIAdapter*) { return false; }
 bool dlss_optimal_size(DlssMode, uint32_t, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*) { return false; }
 bool dlss_set_options(DlssMode, uint32_t, uint32_t) { return false; }
@@ -196,6 +197,14 @@ void set_device(ID3D12Device* device) {
   g_fg_ok = slGetFeatureRequirements(sl::kFeatureDLSS_G, fg_req) == sl::Result::eOk;
   g_reflex_ok = slGetFeatureRequirements(sl::kFeatureReflex, rx_req) == sl::Result::eOk;
   host::log("dlss: %s", g_dlss_ok ? "available (off until selected under Upscaling in PC settings)" : "feature failed to initialise; native rendering only");
+}
+void* native_interface(void* proxy) {
+  if (!g_ready || !proxy) return proxy;
+  void* base = nullptr;
+  if (slGetNativeInterface(proxy, &base) != sl::Result::eOk || !base) return proxy;
+  // slGetNativeInterface adds a reference; the proxy already holds one for as long as we use it.
+  ((IUnknown*)base)->Release();
+  return base;
 }
 bool dlss_supported(IDXGIAdapter* adapter) {
   if (!g_ready) return false;
