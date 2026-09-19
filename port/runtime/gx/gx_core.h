@@ -133,9 +133,28 @@ struct Frame {
 // stage selects are minor scenes 0 and 1 of every mode that plays a match, the match is 2 and up.
 inline bool frame_in_match(const Frame& f) {
   const uint8_t major = f.scene_major, minor = f.scene_minor;
+  // Slippi online play is major scene 08: its character select is minor 0, the match minor 2, and
+  // the screens around them (splash, results) other minors. Missing from the list below, an online
+  // match used to be treated as a menu: sub-frame animation ran in its menu mode for whole matches.
+  if (major == 0x08) return minor == 2;
   const bool match_mode = major == 0x02 || major == 0x03 || major == 0x04 || major == 0x05 ||
                           major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C;
   return match_mode && minor >= 2;
+}
+
+// "Visual effects" (Reduced / Minimal): whether a draw is decoration the player chose to skip. Only
+// during a match, so menus are never touched: an earlier version applied everywhere and hid the
+// stage select pointer and menu text, which are drawn the same way as a hit spark. Only world-space
+// blended draws that do not write depth qualify, so fighters, the stage and the HUD always draw.
+// Reduced skips additive ones (glow, sparks, flashes); Minimal also skips any that neither write nor
+// test depth (screen overlays in the world). Display only: guest memory is untouched, so it cannot
+// desync and two players may use different levels.
+inline bool skip_for_effects(const Frame& f, const DrawCall& dc, int level) {
+  if (level <= 0 || dc.xf_regs[0x26] != 0 || !(dc.bp.blendmode() & 1) || !frame_in_match(f)) return false;
+  const uint32_t zmode = dc.bp.zmode();
+  if (zmode & 0x10) return false;                                   // writes depth: part of the scene
+  const bool additive = ((dc.bp.blendmode() >> 5) & 7) == 1;         // destination factor ONE
+  return additive || (level >= 2 && !(zmode & 1));
 }
 
 // Marks the next finished frame as discontinuous. Called on the simulation thread when the game's
