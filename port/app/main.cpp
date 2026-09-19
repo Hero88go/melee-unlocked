@@ -504,6 +504,10 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--lcancel-log") lcancel::set_log_path(next());
     else if (a == "--profile-render") { g_profile = true; g_profiler.render_thread = true; }
     // Recognised in the pre-scan above; listed here so it is not rejected as unknown.
+#ifdef MELEE_SOURCE_PORT
+    else if (a == "--match") { if (!source_port::set_match(next())) {
+      std::fprintf(stderr, "--match <stage>:<p1>[:<p2>...], each player <kind>[/c<level>][/x<costume>]\n"); return 2; } }
+#endif
     else if (a == "--settings-window") {}
     else { usage(); return 2; }
   }

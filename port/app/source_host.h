@@ -8,4 +8,10 @@ bool reserve_memory();
 // Loads melee_game.dll and runs the game. `shutdown` runs the application's exit sequence when the
 // game ends from inside (it cannot unwind through the game's frames), then the process exits.
 int run(void (*shutdown)(int code));
+
+// --match <stage>:<p1>[:<p2>...], each player <kind>[/c<level>][/x<costume>]. The sweep uses this
+// so it does not have to drive the character and stage screens by cursor position for every
+// combination. The menus still run; only the resulting match is forced. Returns false on a
+// malformed spec, which main reports and treats as a usage error.
+bool set_match(const char* spec);
 }
