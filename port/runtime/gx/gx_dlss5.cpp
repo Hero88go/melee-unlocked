@@ -295,7 +295,7 @@ void set_tuning(const Tuning& t) {
   set_float("DLSSNR.Intensity", t.intensity);
   set_uint("DLSSNR.Style", (unsigned)t.style);
   set_float("DLSSNR.LocalStructureStrength", t.detail);
-  set_float("DLSSNR.LocalToneStrength", t.tone);
+  set_float("DLSSNR.LocalToneStrength", t.tone > 1.5f ? 1.5f : t.tone);   // above 1.5 backdrops flicker
   set_float("DLSSNR.SkinStructureStrength", t.skin);
   set_uint("DLSSNR.UseAutoMask", t.auto_mask ? 1 : 0);
 }

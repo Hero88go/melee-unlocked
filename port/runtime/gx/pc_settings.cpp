@@ -1410,7 +1410,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "dlss5") options.dlss5 = value == "1";
       else if (key == "dlss5intensity") options.dlss5_tuning.intensity = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "dlss5detail") options.dlss5_tuning.detail = std::clamp(std::stof(value), 0.0f, 2.0f);
-      else if (key == "dlss5tone") options.dlss5_tuning.tone = std::clamp(std::stof(value), 0.0f, 2.0f);
+      else if (key == "dlss5tone") options.dlss5_tuning.tone = std::clamp(std::stof(value), 0.0f, 1.5f);
       else if (key == "dlss5skin") options.dlss5_tuning.skin = std::clamp(std::stof(value), -1.0f, 2.0f);
       else if (key == "dlss5style") options.dlss5_tuning.style = std::clamp(std::stoi(value), 0, 3);
       else if (key == "dlss5preset") options.dlss5_tuning.preset = std::clamp(std::stoi(value), 0, 3);
@@ -2040,7 +2040,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         };
         percent("Intensity", t.intensity, 0, 100);
         percent("Surface detail", t.detail, 0, 200);
-        percent("Lighting and tone", t.tone, 0, 200);
+        // Capped at 150%: above that the model's lighting swings frame to frame and large flat
+        // backdrops (Yoshi's Story, Dream Land) flicker.
+        percent("Lighting and tone", t.tone, 0, 150);
         bool skin_auto = t.skin < 0.0f;
         if (ImGui::Checkbox("Skin detail: automatic", &skin_auto)) { t.skin = skin_auto ? -1.0f : 1.0f; changed = true; }
         if (!skin_auto) percent("Skin detail", t.skin, 0, 200);

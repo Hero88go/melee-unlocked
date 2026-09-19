@@ -104,13 +104,13 @@ def main():
                     help="melee_port.exe built with -DMELEE_CPU_BASELINE=SSE2")
     ap.add_argument("--experimental-exe", type=Path, required=True,
                     help="experimental game executable, built with MELEE_ENABLE_DLSS5=ON")
-    ap.add_argument("--experimental-compat-exe", type=Path, required=True,
-                    help="experimental game executable, built with SSE2")
+    ap.add_argument("--experimental-compat-exe", type=Path, default=None,
+                    help="optional: experimental game executable built with SSE2 (RTX 50 machines have AVX2)")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
     if not args.exe.is_file():
         raise SystemExit(f"missing executable: {args.exe}")
-    for experimental in (args.experimental_exe, args.experimental_compat_exe):
+    for experimental in [e for e in (args.experimental_exe, args.experimental_compat_exe) if e]:
         if not experimental.is_file():
             raise SystemExit(f"missing experimental executable: {experimental}")
         built_experimental = subprocess.run([str(experimental), "--version"], capture_output=True,
@@ -197,7 +197,8 @@ def main():
 
     zip_folder(args.out / f"{name}-win64.zip")
     shutil.copy2(args.experimental_exe, folder / "melee_port_dlss5.exe")
-    shutil.copy2(args.experimental_compat_exe, folder / "melee_port_dlss5_compat.exe")
+    if args.experimental_compat_exe:
+        shutil.copy2(args.experimental_compat_exe, folder / "melee_port_dlss5_compat.exe")
     forwarder = args.experimental_exe.parent / "nvngx.dll_meleedlss5.dll"
     if not forwarder.is_file():
         raise SystemExit(f"missing experimental forwarder: {forwarder}")
