@@ -68,6 +68,12 @@ and Teams work against players on regular Slippi Dolphin.
 Bug reports: https://github.com/hero88go/melee-unlocked/issues with melee_port.log,
 port-settings.ini and the steps to reproduce.
 
+Watching replays: drop a .slp file onto WatchReplay.bat. That runs melee_port_playback.exe, a
+separate build of the game made for playback, so Slippi Dolphin is not needed to watch a replay
+either. Your ISO has to be next to it named melee.iso. A replay recorded by a much newer or older
+Slippi version may not line up with this build; when that happens the log says so rather than
+playing something subtly wrong.
+
 Saves: memory card slot A is the folder User\GC\CardA, one .gci per file (Dolphin's GCI folder
 format). Copy your Slippi Dolphin save (GALE01-*.gci) there to keep your unlocks and settings.
 
@@ -93,6 +99,31 @@ melee_port.exe --iso "%ISO%" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\Slippi" 
 if errorlevel 1 pause
 """
 
+# Playback is its own program (a second translation of the game against the Slippi Playback code
+# set), so it gets its own launcher: drop a .slp on it, or leave one next to it.
+PLAYBACK_BAT = """@echo off
+cd /d "%~dp0"
+set ISO=%~dp0melee.iso
+if not exist "%ISO%" (
+  echo Put your Melee NTSC 1.02 ISO next to this file, named melee.iso
+  pause
+  exit /b 1
+)
+set REPLAY=%~1
+if "%REPLAY%"=="" (
+  echo Drop a Slippi replay ^(.slp^) onto this file to watch it.
+  pause
+  exit /b 1
+)
+if not exist "%REPLAY%" (
+  echo Cannot find "%REPLAY%"
+  pause
+  exit /b 1
+)
+melee_port_playback.exe --iso "%ISO%" --replay "%REPLAY%" --sys-dir "%~dp0SysPlayback" --card-dir "%~dp0User\\GC\\CardA" --threaded-renderer
+if errorlevel 1 pause
+"""
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
@@ -106,6 +137,11 @@ def main():
                     help="experimental game executable, built with MELEE_ENABLE_DLSS5=ON")
     ap.add_argument("--experimental-compat-exe", type=Path, default=None,
                     help="optional: experimental game executable built with SSE2 (RTX 50 machines have AVX2)")
+    # Replay playback: a second translation of the game against the Slippi Playback code set, so
+    # the release can play a .slp back. It carries its own Sys folder because its code list differs
+    # from the online one (see PORT_COMPLETION.md, "Replay playback build").
+    ap.add_argument("--playback-exe", type=Path, default=None,
+                    help="melee_port_playback.exe, built from port/generated_playback")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
     if not args.exe.is_file():
@@ -137,6 +173,21 @@ def main():
             raise SystemExit(f"the compatibility build reports {compat_version!r}, not {args.version!r}")
         shutil.copy2(args.compat_exe, folder / "melee_port_compat.exe")
         print(f"compatibility build: {args.compat_exe}")
+    if args.playback_exe:
+        if not args.playback_exe.is_file():
+            raise SystemExit(f"missing playback executable: {args.playback_exe}")
+        playback_version = subprocess.run([str(args.playback_exe), "--version"], capture_output=True,
+                                          text=True, timeout=60).stdout.strip()
+        if playback_version != args.version:
+            raise SystemExit(f"the playback build reports {playback_version!r}, not {args.version!r}")
+        shutil.copy2(args.playback_exe, folder / "melee_port_playback.exe")
+        # It reads the playback code set, not the online one, so both ship.
+        playback_sys = ROOT / "port/slippi_sys_playback"
+        if not (playback_sys / "codehandler.bin").is_file():
+            raise SystemExit(f"missing playback Sys folder: {playback_sys}")
+        shutil.copytree(playback_sys, folder / "SysPlayback",
+                        ignore=shutil.ignore_patterns("README.md", ".git*"))
+        print(f"playback build: {args.playback_exe}")
     launcher = args.exe.parent / "MeleeUnlockedLauncher.exe"
     if not launcher.is_file():
         raise SystemExit(f"missing launcher: {launcher} (build target melee_unlocked)")
@@ -178,6 +229,8 @@ def main():
     (folder / "User/Slippi").mkdir(parents=True)
     (folder / "Replays").mkdir()
     (folder / "MeleeUnlocked.bat").write_bytes(BAT.replace("\n", "\r\n").encode("utf-8"))
+    if args.playback_exe:
+        (folder / "WatchReplay.bat").write_bytes(PLAYBACK_BAT.replace("\n", "\r\n").encode("utf-8"))
     (folder / "README.txt").write_text(README.format(version=args.version), encoding="utf-8")
     licenses = folder / "licenses"
     licenses.mkdir()

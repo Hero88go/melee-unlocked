@@ -4,6 +4,18 @@
 #include "slippi_playback.h"
 #include "slippi_playback_legacy.h"
 #include "host.h"
+// Which replay code list this build was translated against. A playback build has exactly one
+// translated into it; a replay from a different Slippi version carries a different list, whose
+// code caves this build never compiled. Those would run as writes nothing was built against and
+// the replay would drift apart from the original without ever failing, which is the one kind of
+// wrong a player cannot see. The build passes the values it used; zero means none, which is
+// equally worth saying.
+#ifndef MELEE_PLAYBACK_GCT_BASE
+#define MELEE_PLAYBACK_GCT_BASE 0u
+#endif
+#ifndef MELEE_PLAYBACK_GCT_SIZE
+#define MELEE_PLAYBACK_GCT_SIZE 0u
+#endif
 #include "slippilib/SlippiGame.h"
 #include <nlohmann/json.hpp>
 #include <algorithm>
@@ -173,7 +185,21 @@ void prepare_game_info(const uint8_t*, std::vector<uint8_t>& q) {
 void prepare_gecko_codes(std::vector<uint8_t>& q) { q.assign(g_gecko_list.begin(), g_gecko_list.end()); }
 
 void note_gecko_list_dma(uint32_t addr, uint32_t size) {
-  if (g_gecko_list_addr != addr) { g_gecko_list_addr = addr; host::log("playback: game placed the replay code list at %08X (%u bytes)", addr, size); }
+  if (g_gecko_list_addr == addr) return;
+  g_gecko_list_addr = addr;
+  host::log("playback: game placed the replay code list at %08X (%u bytes)", addr, size);
+  // A playback build has one replay code list translated into it. A replay from a different Slippi
+  // version carries a different list, whose code caves this build never translated: they would run
+  // as writes nothing was compiled against and the replay would drift apart from the original
+  // without ever failing. Say so, because silent divergence is the one failure a player cannot see.
+  if (MELEE_PLAYBACK_GCT_SIZE == 0u) {
+    host::log("playback: WARNING no replay code list is translated into this build, so this replay will"
+              " diverge. Rebuild with --extra-gct <list> --extra-gct-base %08X.", addr);
+  } else if (addr != MELEE_PLAYBACK_GCT_BASE || size != MELEE_PLAYBACK_GCT_SIZE) {
+    host::log("playback: WARNING this replay carries %u bytes of code at %08X, but this build was made"
+              " for %u bytes at %08X. It is from a different Slippi version and will diverge.",
+              size, addr, (unsigned)MELEE_PLAYBACK_GCT_SIZE, (unsigned)MELEE_PLAYBACK_GCT_BASE);
+  }
 }
 
 void prepare_frame_data(const uint8_t* payload, std::vector<uint8_t>& q) {
