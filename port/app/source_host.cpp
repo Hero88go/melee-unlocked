@@ -95,6 +95,14 @@ void h_log(const char* text) {
   if (!line.empty()) host::log("[game] %s", line.c_str());
 }
 void h_panic(const char* file, int32_t line, const char* message) {
+  host::log("game panic at %s:%d", file ? file : "?", line);
+  void* frames[32];
+  const USHORT count = CaptureStackBackTrace(0, 32, frames, nullptr);
+  for (USHORT i = 0; i < count; ++i) {
+    const uintptr_t pc = reinterpret_cast<uintptr_t>(frames[i]);
+    if (pc > GAME_IMAGE_BASE && pc < GAME_IMAGE_BASE + host::game_image_size)
+      host::log("  stack: melee_game.dll+0x%llX", (unsigned long long)(pc - 1 - GAME_IMAGE_BASE));
+  }
   host::die("game stopped at %s:%d: %s", file ? file : "?", line, message ? message : "");
 }
 uint64_t h_ticks() { return host::cpu->tb; }
@@ -236,11 +244,29 @@ LONG CALLBACK on_game_exception(EXCEPTION_POINTERS* info) {
   if (code < 0x80000000u || code == 0xE06D7363u /* C++ exception */) return EXCEPTION_CONTINUE_SEARCH;
   const uint64_t base = GAME_IMAGE_BASE, end = base + host::game_image_size;
   const uint64_t rip = info->ContextRecord->Rip;
-  if (rip < base || rip >= end) return EXCEPTION_CONTINUE_SEARCH;
-  host::log("game crash %08lX at melee_game.dll+0x%llX", code, (unsigned long long)(rip - base));
+  const bool in_game = rip >= base && rip < end;
+  if (!in_game) {
+    // A bad indirect call has already left the DLL. Its return address still
+    // identifies the game caller, and the unwind below starts from that frame.
+    bool called_by_game = false;
+    if (code == EXCEPTION_ACCESS_VIOLATION &&
+        info->ExceptionRecord->NumberParameters >= 2 &&
+        info->ExceptionRecord->ExceptionInformation[0] == 8) {
+      __try {
+        const uint64_t caller = *(const uint64_t*)info->ContextRecord->Rsp;
+        called_by_game = caller >= base && caller < end;
+      } __except (EXCEPTION_EXECUTE_HANDLER) { }
+    }
+    if (!called_by_game) return EXCEPTION_CONTINUE_SEARCH;
+  }
+  if (in_game)
+    host::log("game crash %08lX at melee_game.dll+0x%llX", code, (unsigned long long)(rip - base));
+  else
+    host::log("game crash %08lX calling %016llX", code, (unsigned long long)rip);
   const CONTEXT& r = *info->ContextRecord;
   if (code == EXCEPTION_ACCESS_VIOLATION && info->ExceptionRecord->NumberParameters >= 2)
-    host::log("  %s address %016llX", info->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading",
+    host::log("  %s address %016llX", info->ExceptionRecord->ExceptionInformation[0] == 8 ? "executing" :
+              (info->ExceptionRecord->ExceptionInformation[0] ? "writing" : "reading"),
               (unsigned long long)info->ExceptionRecord->ExceptionInformation[1]);
   host::log("  rax %016llX rbx %016llX rcx %016llX rdx %016llX", r.Rax, r.Rbx, r.Rcx, r.Rdx);
   host::log("  rsi %016llX rdi %016llX r8  %016llX r9  %016llX", r.Rsi, r.Rdi, r.R8, r.R9);
