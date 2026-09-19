@@ -204,8 +204,8 @@ def main():
     shutil.copy2(forwarder, folder / forwarder.name)
     (folder / "README.txt").write_text(README.format(version=args.version) +
         "\nEXPERIMENTAL DLSS 5: Choose DLSS 5 Experimental in the launcher. Requires an RTX 50-series GPU or newer.\n"
-        "The neural model is not included. The game checks the NVIDIA driver or a user-supplied\n"
-        "nvngx_dlssnr.dll beside melee_port_dlss5.exe. Source: https://github.com/rakanki911/DLSS5-Swapper\n",
+        "DLSS 5 will not work without NVIDIA's DLSS 5 file (nvngx_dlssnr.dll). It is not included and\n"
+        "we do not provide it. Without it the game runs normally and F1 says DLSS 5 could not start.\n",
         encoding="utf-8")
     zip_folder(args.out / f"{name}-DLSS5-Experimental.zip")
 
