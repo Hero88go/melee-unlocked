@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "pc_settings.h"
 #include "gx_streamline.h"
+#include "gx_dlss5.h"
+#include <unordered_map>
 #include "texture_pack.h"
 #include <atomic>
 #include <cstdarg>
@@ -1377,6 +1379,15 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "reflex") options.reflex_mode = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "reflexstats") options.reflex_stats = value == "1";
       else if (key == "reflexflash") options.reflex_flash = value == "1";
+      else if (key == "dlss5") options.dlss5 = value == "1";
+      else if (key == "dlss5intensity") options.dlss5_tuning.intensity = std::clamp(std::stof(value), 0.0f, 1.0f);
+      else if (key == "dlss5detail") options.dlss5_tuning.detail = std::clamp(std::stof(value), 0.0f, 2.0f);
+      else if (key == "dlss5tone") options.dlss5_tuning.tone = std::clamp(std::stof(value), 0.0f, 2.0f);
+      else if (key == "dlss5skin") options.dlss5_tuning.skin = std::clamp(std::stof(value), -1.0f, 2.0f);
+      else if (key == "dlss5style") options.dlss5_tuning.style = std::clamp(std::stoi(value), 0, 3);
+      else if (key == "dlss5preset") options.dlss5_tuning.preset = std::clamp(std::stoi(value), 0, 3);
+      else if (key == "dlss5automask") options.dlss5_tuning.auto_mask = value == "1";
+      else if (key == "dlss5compare") options.dlss5_compare = value == "1";
       // Low spec: the switch, then what the player had before it was turned on, so turning it off
       // after a restart still restores their own settings rather than the defaults.
       else if (key == "lowspec") options.low_spec = value == "1";
@@ -1904,6 +1915,43 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                           "for monitors with the NVIDIA Reflex Latency Analyzer and for LDAT.");
     }
     if (d3d11) { ImGui::EndDisabled(); ImGui::TextDisabled("DLSS needs Direct3D 12 and an NVIDIA GPU."); }
+    {
+      // EXPERIMENTAL: DLSS 5 rides on the DLSS/DLAA pass (it needs its depth and motion vectors).
+      const bool nr_blocked = d3d11 || options.dlss_mode == 0 || options.dlss_mode >= 6;
+      if (nr_blocked) ImGui::BeginDisabled();
+      if (ImGui::Checkbox("DLSS 5 Neural Rendering (experimental)", &options.dlss5)) changed = true;
+      if (options.dlss5) {
+        // Sliders apply when released: every change rebuilds the model's feature, and doing that on
+        // each pixel of a drag would stall the frame repeatedly.
+        dlss5::Tuning& t = options.dlss5_tuning;
+        auto percent = [&](const char* label, float& v, int lo, int hi) {
+          static std::unordered_map<const float*, int> held;
+          auto it = held.find(&v);
+          int shown = it != held.end() ? it->second : (int)std::lround(v * 100.0f);
+          ImGui::SliderInt(label, &shown, lo, hi, "%d%%");
+          if (ImGui::IsItemActive()) held[&v] = shown;
+          else if (it != held.end()) { held.erase(it); v = shown / 100.0f; changed = true; }
+        };
+        ImGui::Indent();
+        percent("Intensity", t.intensity, 0, 100);
+        percent("Surface detail", t.detail, 0, 200);
+        percent("Lighting and tone", t.tone, 0, 200);
+        bool skin_auto = t.skin < 0.0f;
+        if (ImGui::Checkbox("Skin detail: automatic", &skin_auto)) { t.skin = skin_auto ? -1.0f : 1.0f; changed = true; }
+        if (!skin_auto) percent("Skin detail", t.skin, 0, 200);
+        const char* styles[] = {"Style 0 (default)", "Style 1", "Style 2", "Style 3"};
+        if (ImGui::Combo("Style", &t.style, styles, 4)) changed = true;
+        const char* presets[] = {"Model default", "Preset 1", "Preset 2", "Preset 3"};
+        if (ImGui::Combo("Model preset", &t.preset, presets, 4)) changed = true;
+        if (ImGui::Checkbox("Protect HUD and flat areas (auto mask)", &t.auto_mask)) changed = true;
+        if (ImGui::Checkbox("Split-screen compare (left off, right on)", &options.dlss5_compare)) changed = true;
+        if (ImGui::Button("Reset DLSS 5 controls")) { t = dlss5::Tuning{}; options.dlss5_compare = false; changed = true; }
+        ImGui::Unindent();
+      }
+      if (nr_blocked) ImGui::EndDisabled();
+      if (nr_blocked) ImGui::TextDisabled("DLSS 5 needs Direct3D 12 and Upscaling set to DLAA or a DLSS mode.");
+      else if (options.dlss5) ImGui::TextWrapped("DLSS 5: %s. RTX 50 series, driver 616.64 or newer. It runs on every frame shown, so expect a lower frame rate.", dlss5::status());
+    }
     if (options.dlss_mode == 1 || options.dlss_mode == 6) {
       ImGui::TextWrapped("DLAA anti-aliases the game at the Internal resolution above without changing it, then the picture is fitted to the window as usual. Internal resolution and Anti-aliasing keep working, so DLAA stacks with 4x SSAA if you want both.");
     } else if (dlss_picks_resolution) {
@@ -2688,7 +2736,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\nshowfps " << options.show_fps << "\nshowvram " << (options.show_vram ? 1 : 0) << "\nshowping " << options.show_ping
            << "\ndlss " << options.dlss_mode << "\nframegen " << (options.frame_generation ? 1 : 0)
            << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
-           << "\nreflexflash " << (options.reflex_flash ? 1 : 0) << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
+           << "\nreflexflash " << (options.reflex_flash ? 1 : 0)
+           << "\ndlss5 " << (options.dlss5 ? 1 : 0) << "\ndlss5intensity " << options.dlss5_tuning.intensity
+           << "\ndlss5detail " << options.dlss5_tuning.detail << "\ndlss5tone " << options.dlss5_tuning.tone
+           << "\ndlss5skin " << options.dlss5_tuning.skin << "\ndlss5style " << options.dlss5_tuning.style
+           << "\ndlss5preset " << options.dlss5_tuning.preset << "\ndlss5automask " << (options.dlss5_tuning.auto_mask ? 1 : 0)
+           << "\ndlss5compare " << (options.dlss5_compare ? 1 : 0) << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
            << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
            << "\nonlinedelay " << slippi::online::config().delay

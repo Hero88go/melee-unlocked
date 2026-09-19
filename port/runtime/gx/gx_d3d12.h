@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include "gx_core.h"
+#include "gx_dlss5.h"
 
 namespace gx {
 // Video memory the game is using and the budget Windows gives it, in GB (D3D12 only; false until
@@ -36,6 +37,11 @@ struct D3D12Options {
   bool reflex_stats = false;      // show Reflex's measured render latency under the FPS counter
   bool reflex_flash = false;      // Reflex flash indicator (latency analyzer monitors, LDAT): flashes on the A button
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
+  // EXPERIMENTAL DLSS 5 Neural Rendering over the DLSS/DLAA output (gx_dlss5.h). Needs D3D12, an
+  // Upscaling mode other than Native, and NVIDIA's model on the machine; off by default.
+  bool dlss5 = false;
+  dlss5::Tuning dlss5_tuning;
+  bool dlss5_compare = false;   // split view: left half without DLSS 5, right half with it
   float dlss_jitter_sign = -1.0f; // calibrated 2026-09-11: -1 reconstructs sharp text, +1 blurs (see PORT_COMPLETION.md)
   bool pc_settings = false, settings_open = false, performance_overlay = false;
   bool show_vram = false;          // video memory in use and the budget Windows gives the game, under the FPS
