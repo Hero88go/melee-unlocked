@@ -328,7 +328,7 @@ void OSReport(char* fmt, ...)
     mu_host->log(line);
 }
 
-void OSPanic(char* file, int line, char* msg, ...)
+void OSPanic(const char* file, int line, const char* msg, ...)
 {
     char text[512];
     va_list args;

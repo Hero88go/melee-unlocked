@@ -60,7 +60,7 @@ static void mu_card_set_file(CARDFileInfo* fileInfo, s32 chan, int32_t file_no)
     fileInfo->iBlock = 0;
 }
 
-s32 CARDOpen(s32 chan, char* fileName, CARDFileInfo* fileInfo)
+s32 CARDOpen(s32 chan, const char* fileName, CARDFileInfo* fileInfo)
 {
     int32_t file_no = -1;
     uint32_t length = 0;
