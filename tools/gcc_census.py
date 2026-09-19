@@ -32,7 +32,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--gcc", default=os.environ.get("MELEE_GCC", "gcc"))
     ap.add_argument("--dirs", nargs="+", default=["src/melee", "src/sysdolphin"])
-    ap.add_argument("--include", nargs="*", default=["src", "src/MSL", "extern/dolphin/include"], help="include path, in order, relative to the decomp")
+    ap.add_argument("--include", nargs="*", default=["src", "src/MSL", "libs/dolphin/include"], help="include path, in order, relative to the decomp")
     ap.add_argument("--define", nargs="*", default=["VERSION_GALE01", "BUILD_VERSION=0"])
     ap.add_argument("--flag", nargs="*", default=[], help="extra compiler flags, written without the leading dash pair issue: pass as =-flag")
     ap.add_argument("--werror", nargs="*", default=[], help="warnings to count as errors, e.g. pointer-to-int-cast int-to-pointer-cast")

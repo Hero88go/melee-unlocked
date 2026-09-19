@@ -17,7 +17,7 @@ set(MELEE_DOL "${REPO}/melee/orig/GALE01/sys/main.dol" CACHE FILEPATH "the playe
 set(MELEE_TRANSLATION "${REPO}/port/generated_vanilla" CACHE PATH "the recompiler's translation of the game without code tables (recomp.py --no-slippi)")
 set(MELEE_PYTHON "python" CACHE FILEPATH "Python 3 interpreter for the generators")
 set(D "${MELEE_DECOMP_DIR}")
-set(SDK "${D}/extern/dolphin/src/dolphin")
+set(SDK "${D}/libs/dolphin/src/dolphin")
 if(NOT EXISTS "${D}/src/melee/gm/gmmain.c")
   message(FATAL_ERROR "melee_game: no game sources at ${D}")
 endif()
@@ -25,7 +25,7 @@ endif()
 # ---- how game code is compiled: one definition, shared by the game and by the parity library ----
 add_library(game_flags INTERFACE)
 target_include_directories(game_flags INTERFACE
-  "${CMAKE_CURRENT_SOURCE_DIR}/include" "${D}/src" "${D}/src/MSL" "${D}/extern/dolphin/include" "${SDK}"
+  "${CMAKE_CURRENT_SOURCE_DIR}/include" "${D}/src" "${D}/src/MSL" "${D}/libs/dolphin/include" "${SDK}"
   "${CMAKE_CURRENT_SOURCE_DIR}/include_stub" "${REPO}/port/runtime/abi")
 target_compile_definitions(game_flags INTERFACE MU_NATIVE VERSION_GALE01 BUILD_VERSION=0)
 target_compile_options(game_flags INTERFACE

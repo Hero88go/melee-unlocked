@@ -98,7 +98,7 @@ def main():
     flags = ["-std=gnu11", "-O2", "-w", "-mno-ms-bitfields", "-fno-strict-aliasing", "-fwrapv", "-fno-builtin", f"-ffp-contract={args.contract}",
              "-mavx2", "-mfma", "-fexec-charset=CP932", "-include", str(GAME / "include/mu_native.h"),
              "-DMU_NATIVE", "-DVERSION_GALE01", "-DBUILD_VERSION=0",
-             f"-I{GAME}/include", "-Isrc", "-Isrc/MSL", "-Iextern/dolphin/include", f"-I{GAME}/include_stub", f"-I{ROOT}/port/runtime/abi"]
+             f"-I{GAME}/include", "-Isrc", "-Isrc/MSL", "-Ilibs/dolphin/include", f"-I{GAME}/include_stub", f"-I{ROOT}/port/runtime/abi"]
     files = sorted(p for d in ("src/melee", "src/sysdolphin") for p in (DECOMP / d).rglob("*.c"))
     gcc, failed = {}, []
     with concurrent.futures.ThreadPoolExecutor(args.jobs) as pool:
