@@ -96,14 +96,10 @@ Two builds are available, picked from the **GAME BUILD** dropdown on the launche
   experimental zip once, then launches it; after that it is just the other choice in the
   dropdown. Switching back to Legacy needs nothing extra.
 
-  DLSS 5's neural model is **not included** in either zip and is not shipped by this project.
-  The game looks for it in the NVIDIA driver first; if the driver does not carry one, drop a
-  `nvngx_dlssnr.dll` next to `melee_port_dlss5.exe` (or the `_compat` executable) yourself. One
-  place this model has turned up is the [DLSS5-Swapper](https://github.com/rakanki911/DLSS5-Swapper)
-  project (v2.2.7 at the time of writing) — that tool's own Streamline integration is unrelated;
-  only the model file is relevant here. Whatever you supply, DLSS 5 status in the PC settings
-  panel always reflects what actually loaded (off, starting, running, or why it failed), not a
-  fixed claim about your driver.
+  **DLSS 5 will not work without NVIDIA's DLSS 5 file (`nvngx_dlssnr.dll`). It is not included
+  in either zip, and this project does not provide it.** The game looks for it in the NVIDIA
+  driver first, then next to `melee_port_dlss5.exe` (or the `_compat` executable). Without it the
+  game runs normally, and the PC settings panel says DLSS 5 could not start and why.
 
 ### Build from source
 
