@@ -50,6 +50,9 @@ def convert_body(body, report):
             out.append(f"{indent}{slot} {field}{arrays};{rest}")
             continue
         m = PLAIN.match(line)
+        if m and m.group(2) in ("UNK_T", "MtxPtr"):   # pointer typedefs: 8 bytes natively, 4 on disc
+            out.append(f"{m.group(1)}DISC_PTR({'void' if m.group(2) == 'UNK_T' else 'Mtx_BE'}) {m.group(3)}{m.group(4)};{m.group(5)}")
+            continue
         if m and m.group(2) in BE_TWINS:
             out.append(f"{m.group(1)}{BE_TWINS[m.group(2)]} {m.group(3)}{m.group(4)};{m.group(5)}")
             continue
