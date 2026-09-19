@@ -57,6 +57,17 @@ struct EvaluateInputs {
   uint32_t out_w, out_h;
 };
 bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in);
+// DLSS Frame Generation and Reflex (NVIDIA, RTX 40+ for frame generation). Call on the presenting
+// thread. Frame generation needs the upscaler running (it reuses DLSS's depth and motion vectors)
+// and always runs with Reflex on, as NVIDIA requires.
+bool frame_generation_available();
+bool reflex_available();
+void set_frame_generation(bool on);
+void set_reflex(bool on);
+// Reflex latency markers for the current frame token (0 sim start, 1 sim end, 2 render submit
+// start, 3 render submit end, 4 present start, 5 present end). No-op without a token or Reflex.
+void pcl_marker(int marker);
+void log_frame_generation();   // diagnostic: status and frames presented per rendered frame
 // Halton (2,3) jitter for a frame index, centred, in pixels.
 void jitter(uint32_t index, float* jx, float* jy);
 

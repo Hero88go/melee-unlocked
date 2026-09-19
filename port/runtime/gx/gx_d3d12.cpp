@@ -27,6 +27,7 @@
 #include "gx_shader.h"
 #include "gx_texture.h"
 #include "gx_streamline.h"
+#include "gx_xess.h"
 #include "texture_pack.h"
 #include "host.h"
 #include "window.h"   // fullscreen toggling lives on the window, not the settings panel
@@ -163,7 +164,7 @@ class D3D12Backend : public Backend {
     settings_ui_.reset();
 #endif
  stop_pso_workers(); integrate_compiled_psos(); flush_captures(); save_pipeline_recipes(); save_pipeline_library(); if (fence_event_) CloseHandle(fence_event_); if (present_timer_) CloseHandle(present_timer_);
-    last_poses_.clear(); mvec_.Reset(); hud_mask_.Reset(); dlss_out_.Reset(); streamline::shutdown(); }
+    last_poses_.clear(); mvec_.Reset(); hud_mask_.Reset(); dlss_out_.Reset(); xess::shutdown(); streamline::shutdown(); }
   const D3D12Options& options() const { return opts_; }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
@@ -285,7 +286,13 @@ class D3D12Backend : public Backend {
   // guide asks: without it textures are sampled at the detail of the smaller render and stay soft
   // after the upscale. Zero for native and DLAA.
   float dlss_mip_bias_ = 0.0f;
-  uint64_t mv_draws_ = 0, mv_matched_ = 0;   // draws with motion history (diagnostic, logged with DLSS on)
+  uint64_t mv_draws_ = 0, mv_matched_ = 0;
+  bool fg_applied_ = false, reflex_applied_ = false;   // what Streamline was last told
+  bool xess_reset_ = true;
+  std::wstring exe_dir_;   // for loading the upscaler libraries
+  bool xess_active() const { return xess::is_xess_mode(opts_.dlss_mode); }
+  // The name of the upscaling mode for the log, whichever vendor it belongs to.
+  const char* upscaler_name() const { return xess_active() ? xess::mode_name(opts_.dlss_mode) : dlss_mode_name((DlssMode)opts_.dlss_mode); }   // draws with motion history (diagnostic, logged with DLSS on)
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
   ComPtr<ID3D12Device> device_;
   // Persistent caches (opts_.shader_cache): compiled shader blobs as files, pipelines in a D3D12
@@ -346,6 +353,7 @@ void D3D12Backend::init() {
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring dir(exe); size_t slash = dir.find_last_of(L"\\/"); if (slash != std::wstring::npos) dir.resize(slash);
     streamline::init(dir);
+    exe_dir_ = dir;
   }
   ComPtr<IDXGIFactory4> factory;
   check(streamline::create_dxgi_factory2(0, &IID_PPV_ARGS_Helper_IID<IDXGIFactory4>(), (void**)factory.GetAddressOf()), "factory");
@@ -362,6 +370,7 @@ void D3D12Backend::init() {
                                                  256ull * 1024 * 1024, 2048ull * 1024 * 1024);
       streamline::set_device(device_.Get());
       streamline::dlss_supported(adapter.Get());
+      if (!exe_dir_.empty()) xess::init(exe_dir_, device_.Get());
       break;
     }
   }
@@ -529,10 +538,13 @@ void D3D12Backend::create_efb() {
   check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &cv, IID_PPV_ARGS(&efb_color_)), "efb color");
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += 3 * rtv_size_;
   device_->CreateRenderTargetView(efb_color_.Get(), nullptr, rtv);
-  rd.Format = DXGI_FORMAT_D32_FLOAT; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+  // Typeless with a D32 view: Streamline copies depth for frame generation and cannot size a
+  // depth-only D32_FLOAT resource ("Don't know the size for resource ... native 40").
+  rd.Format = DXGI_FORMAT_R32_TYPELESS; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
   D3D12_CLEAR_VALUE dv{DXGI_FORMAT_D32_FLOAT}; dv.DepthStencil.Depth = 0.0f;
   check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &dv, IID_PPV_ARGS(&efb_depth_)), "efb depth");
-  device_->CreateDepthStencilView(efb_depth_.Get(), nullptr, dsv_heap_->GetCPUDescriptorHandleForHeapStart());
+  D3D12_DEPTH_STENCIL_VIEW_DESC dsvd{}; dsvd.Format = DXGI_FORMAT_D32_FLOAT; dsvd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+  device_->CreateDepthStencilView(efb_depth_.Get(), &dsvd, dsv_heap_->GetCPUDescriptorHandleForHeapStart());
   rd.Format = DXGI_FORMAT_R16G16_FLOAT; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
   D3D12_CLEAR_VALUE mv{DXGI_FORMAT_R16G16_FLOAT, {0, 0, 0, 0}};
   check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &mv, IID_PPV_ARGS(&mvec_)), "motion vectors");
@@ -575,7 +587,7 @@ void D3D12Backend::set_dlss_mip_bias(float bias) {
 
 void D3D12Backend::configure_dlss() {
   int vw, vh; output_size(&vw, &vh);
-  bool want = opts_.dlss_mode != 0 && streamline::available();
+  bool want = opts_.dlss_mode != 0 && (xess_active() ? xess::available() : streamline::available());
   if (!want) {
     if (dlss_active_ || forced_scale_) {
       wait_gpu(); dlss_active_ = false; dlss_in_place_ = false; dlss_mode_active_ = 0; forced_scale_ = 0; dlss_out_.Reset(); dlss_out_w_ = dlss_out_h_ = 0;
@@ -586,7 +598,7 @@ void D3D12Backend::configure_dlss() {
     }
     return;
   }
-  const bool in_place = (DlssMode)opts_.dlss_mode == DlssMode::DLAA;
+  const bool in_place = (DlssMode)opts_.dlss_mode == DlssMode::DLAA || xess::is_in_place(opts_.dlss_mode);
   // DLAA only accepts a render size equal to its output size. The EFB is always a 640x480 multiple,
   // which can never equal a 16:9 window, so asking for a window-sized DLAA output left the render
   // larger than the mode's own maximum and it produced an empty image (a black screen). Anti-alias
@@ -618,7 +630,10 @@ void D3D12Backend::configure_dlss() {
   }
   if (dlss_active_ && dlss_mode_active_ == opts_.dlss_mode && (int)dlss_out_w_ == out_w && (int)dlss_out_h_ == out_h) return;
   uint32_t rw = 0, rh = 0, min_w = 0, min_h = 0, max_w = 0, max_h = 0;
-  if (!streamline::dlss_optimal_size((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh, &min_w, &min_h, &max_w, &max_h)) {
+  const bool sized = xess_active()
+      ? xess::optimal_size(opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh, &min_w, &min_h, &max_w, &max_h)
+      : streamline::dlss_optimal_size((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh, &min_w, &min_h, &max_w, &max_h);
+  if (!sized) {
     host::log("dlss: optimal settings unavailable, staying native"); opts_.dlss_mode = 0; return;
   }
   int scale;
@@ -646,7 +661,7 @@ void D3D12Backend::configure_dlss() {
     if ((max_w && 640u * scale > max_w) || (max_h && 480u * scale > max_h) ||
         640u * scale > (uint32_t)out_w || 480u * scale > (uint32_t)out_h) {
       host::log("dlss: %s needs a render size between %ux%u and %ux%u for a %dx%d output and no EFB multiple fits; staying native",
-                dlss_mode_name((DlssMode)opts_.dlss_mode), min_w, min_h, max_w, max_h, out_w, out_h);
+                upscaler_name(), min_w, min_h, max_w, max_h, out_w, out_h);
       opts_.dlss_mode = 0; return;
     }
   }
@@ -662,8 +677,10 @@ void D3D12Backend::configure_dlss() {
     check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&dlss_out_)), "dlss output");
     dlss_out_w_ = out_w; dlss_out_h_ = out_h;
   }
-  if (!streamline::dlss_set_options((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h)) { opts_.dlss_mode = 0; forced_scale_ = 0; dlss_active_ = false; return; }
-  dlss_active_ = true; dlss_in_place_ = in_place; dlss_mode_active_ = opts_.dlss_mode; dlss_reset_ = true; last_poses_.clear();
+  const bool configured = xess_active() ? xess::set_options(opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h)
+                                        : streamline::dlss_set_options((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h);
+  if (!configured) { opts_.dlss_mode = 0; forced_scale_ = 0; dlss_active_ = false; return; }
+  dlss_active_ = true; dlss_in_place_ = in_place; dlss_mode_active_ = opts_.dlss_mode; dlss_reset_ = true; xess_reset_ = true; last_poses_.clear();
   // NVIDIA's texture LOD bias for DLSS: log2(render / display) - 1. The -1 samples textures as if at
   // the output resolution so DLSS has the detail to reconstruct; without it faces and cloth came out
   // soft next to native. DLAA renders at the output size, so its bias is the -1 alone.
@@ -671,7 +688,7 @@ void D3D12Backend::configure_dlss() {
   float bias_extra = -1.0f;
   if (const char* e = std::getenv("MELEE_DLSS_BIAS_EXTRA")) bias_extra = (float)std::atof(e);
   set_dlss_mip_bias((in_place ? 0.0f : std::log2((640.0f * scale) / (float)out_w)) + bias_extra);
-  host::log("dlss: %s, render %dx%d (EFB x%d, optimal %ux%u) -> %s %dx%d%s", dlss_mode_name((DlssMode)opts_.dlss_mode),
+  host::log("dlss: %s, render %dx%d (EFB x%d, optimal %ux%u) -> %s %dx%d%s", upscaler_name(),
             in_place ? out_w : 640 * scale, in_place ? out_h : 480 * scale, scale, rw, rh,
             in_place ? "anti-aliased in place at" : "output", out_w, out_h, in_place ? ", letterboxed to the window by the present blit" : "");
 }
@@ -1334,7 +1351,24 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
       in.in_w = std::min<uint32_t>(c.src_w * scale_, efb_w_ - in.in_left); in.in_h = std::min<uint32_t>(c.src_h * scale_, efb_h_ - in.in_top);
     }
     in.out_w = dlss_out_w_; in.out_h = dlss_out_h_;
-    upscaled = streamline::evaluate(list_.Get(), in);
+    if (xess_active()) {
+      // XeSS takes its inputs as non-pixel-shader resources; DLSS takes them in place.
+      D3D12_RESOURCE_BARRIER xb[3]{};
+      xb[0].Type = xb[1].Type = xb[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      xb[0].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+      xb[1].Transition = {efb_depth_.Get(), 0, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+      xb[2].Transition = {mvec_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+      list_->ResourceBarrier(3, xb);
+      xess::Inputs xi{efb_color_.Get(), efb_depth_.Get(), mvec_.Get(), dlss_out_.Get(), in.in_left, in.in_top, in.in_w, in.in_h,
+                      // XeSS takes the jitter the opposite way round to DLSS (measured: 277 vs 209 sharpness).
+                      -jitter_x_ * opts_.dlss_jitter_sign, -jitter_y_ * opts_.dlss_jitter_sign, xess_reset_};
+      xess_reset_ = false;
+      upscaled = xess::evaluate(list_.Get(), xi);
+      for (auto& b : xb) std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+      list_->ResourceBarrier(3, xb);
+    } else {
+      upscaled = streamline::evaluate(list_.Get(), in);
+    }
     if (!upscaled && ++dlss_failures_ >= 30) {
       host::log("dlss: evaluation keeps failing; switching Upscaling back to Native");
       opts_.dlss_mode = 0; dlss_failures_ = 0;
@@ -1611,7 +1645,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     list_->ClearRenderTargetView(mrtv, zero, 0, nullptr);
     D3D12_CPU_DESCRIPTOR_HANDLE hrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); hrtv.ptr += 6 * rtv_size_;
     list_->ClearRenderTargetView(hrtv, zero, 0, nullptr);
-    streamline::new_frame((uint32_t)frame_counter_);
+    if (!xess_active()) streamline::new_frame((uint32_t)frame_counter_);
     streamline::jitter(frames_presented_, &jitter_x_, &jitter_y_);
     // The main camera projection: the first perspective draw of the frame (menus and HUD are orthographic).
     streamline::FrameConstants fc{};
@@ -1622,10 +1656,21 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     fc.jitter_x = jitter_x_ * opts_.dlss_jitter_sign; fc.jitter_y = jitter_y_ * opts_.dlss_jitter_sign;
     fc.render_w = 640 * scale_; fc.render_h = 480 * scale_;
     fc.reset = dlss_reset_; dlss_reset_ = false;
-    streamline::set_constants(fc);
+    if (!xess_active()) streamline::set_constants(fc);
+    if (frame_counter_ % 600 == 0) streamline::log_frame_generation();
     if (frame_counter_ % 600 == 0 && mv_draws_) { host::log("dlss: %.1f%% of draws had a previous pose (%llu of %llu)", 100.0 * mv_matched_ / mv_draws_, (unsigned long long)mv_matched_, (unsigned long long)mv_draws_); mv_draws_ = mv_matched_ = 0; }
     if (frame_counter_ % 600 == 0) for (auto it = last_poses_.begin(); it != last_poses_.end();) { if (it->second.frame + 4 < frame_counter_) it = last_poses_.erase(it); else ++it; }
   }
+  // Reflex and frame generation: a frame token is needed for the markers even without DLSS. Applied
+  // here, on the presenting thread, as Streamline asks.
+  if (!dlss_active_ && opts_.reflex && streamline::reflex_available()) streamline::new_frame((uint32_t)frame_counter_);
+  {
+    const bool want_fg = opts_.frame_generation && dlss_active_ && !xess_active() && streamline::frame_generation_available();
+    const bool want_reflex = (opts_.reflex || want_fg) && streamline::reflex_available();
+    if (want_reflex != reflex_applied_) { streamline::set_reflex(want_reflex); reflex_applied_ = want_reflex; }
+    if (want_fg != fg_applied_) { streamline::set_frame_generation(want_fg); fg_applied_ = want_fg; }
+  }
+  streamline::pcl_marker(0); streamline::pcl_marker(1); streamline::pcl_marker(2);
   if (have_clear_) { clear_efb(pending_clear_); have_clear_ = false; }
   bool presented = false;
   for (const FrameCommand& cmd : frame.commands) {
@@ -1654,7 +1699,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       } else YieldProcessor();
     }
     present_wait_ = Stopwatch::now()-wait_start;
+    streamline::pcl_marker(3); streamline::pcl_marker(4);
     swapchain_->Present(opts_.vsync ? 1 : 0, opts_.vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING);
+    streamline::pcl_marker(5);
     ++frames_presented_;
   }
   // Signal, do not wait: the next frames render while the GPU finishes this one.
@@ -1747,7 +1794,7 @@ void D3D12Backend::prewarm_pipelines() {
     auto topo = (D3D12_PRIMITIVE_TOPOLOGY_TYPE)recipe.topology;
     // Both pipeline variants: plain, and with motion vectors for DLSS (otherwise the first match
     // with DLSS on would compile everything again and skip draws meanwhile).
-    const int variants = streamline::available() ? 2 : 1;
+    const int variants = streamline::available() || xess::available() ? 2 : 1;
     for (int mvec = 0; mvec < variants; ++mvec) {
       VSUid vsu = make_vs_uid(draw); PSUid psu = make_ps_uid(draw);
       vsu.motion_vectors = psu.motion_vectors = (uint32_t)mvec;
