@@ -18,8 +18,9 @@ HAL Laboratory. Slippi netplay compatibility is implemented from Slippi's open s
 the Slippi team.
 
 No Monetization. No Donos. No Patreon. **FREE FOREVER**
-v0.6.1 DLSS5 Footage can be found here https://www.youtube.com/watch?v=qZXsNr7HmAo
-v0.5.0 Gameplay footage can be found here: https://www.youtube.com/watch?v=JlmTDW6wQms
+
+**v0.6.1 DLSS5 Footage** can be found here https://www.youtube.com/watch?v=qZXsNr7HmAo
+**v0.5.0 Gameplay footage** can be found here: https://www.youtube.com/watch?v=JlmTDW6wQms
 
 ## Discord / Help
 
