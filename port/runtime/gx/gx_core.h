@@ -129,6 +129,15 @@ struct Frame {
   void clear() { vertices.clear(); draws.clear(); copies.clear(); commands.clear(); sequence = 0; time = 0.0; discontinuous = false; }
 };
 
+// Whether a frame certainly shows a running match. Anything else counts as a menu: the character and
+// stage selects are minor scenes 0 and 1 of every mode that plays a match, the match is 2 and up.
+inline bool frame_in_match(const Frame& f) {
+  const uint8_t major = f.scene_major, minor = f.scene_minor;
+  const bool match_mode = major == 0x02 || major == 0x03 || major == 0x04 || major == 0x05 ||
+                          major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C;
+  return match_mode && minor >= 2;
+}
+
 // Marks the next finished frame as discontinuous. Called on the simulation thread when the game's
 // state is replaced wholesale (a rollback's savestate load), which only the host knows about.
 void mark_discontinuity();

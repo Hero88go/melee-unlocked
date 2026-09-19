@@ -6,6 +6,9 @@
 #include "gx_core.h"
 
 namespace gx {
+// Video memory the game is using and the budget Windows gives it, in GB (D3D12 only; false until
+// the renderer has measured it). Refreshed about twice a second.
+bool vram_usage(float* used_gb, float* budget_gb);
 
 // Authored = predict ahead from the latest game frame (no delay); AuthoredInterpolate = exact
 // in-betweens of the last two game frames (one frame of display delay, no overshoot).
@@ -35,6 +38,7 @@ struct D3D12Options {
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
   float dlss_jitter_sign = -1.0f; // calibrated 2026-09-11: -1 reconstructs sharp text, +1 blurs (see PORT_COMPLETION.md)
   bool pc_settings = false, settings_open = false, performance_overlay = false;
+  bool show_vram = false;          // video memory in use and the budget Windows gives the game, under the FPS
   bool show_fps = false, show_ping = true;   // small top-left readouts: presented frame rate; netplay ping while online
   // The "Settings: F1" reminder in the corner. On for a new player, off for anyone who knows the
   // key and does not want it in a recording.

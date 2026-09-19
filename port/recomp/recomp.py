@@ -221,7 +221,7 @@ def main():
                                     "const uint8_t slippi_gct[1] = {0}; const size_t slippi_gct_size = 0;\n"
                                     "const Write boot_writes[1] = {{0, 0, nullptr}}; const size_t boot_writes_count = 0;\n"
                                     "const HookInstall boot_hooks[1] = {{0, 0, 0}}; const size_t boot_hooks_count = 0;\nconst uint32_t gct_base_used = 0;\n"
-                                    "const uint32_t optional_gct_offset = 0; bool option_widescreen = false; bool option_pal_stock_icons = false;\n"
+                                    "const uint32_t optional_gct_offset = 0; bool option_widescreen = false; bool option_pal_stock_icons = false; bool option_no_screen_shake = false;\n"
                                     "const OptionalWrite optional_writes[1] = {{0, 0, nullptr, nullptr}}; const size_t optional_writes_count = 0;\n}\n")
 
     # Prototypes for every function.

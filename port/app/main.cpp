@@ -22,6 +22,7 @@
 #include "threaded_backend.h"
 #include "window.h"
 #include "lcancel.h"
+#include "user_gecko.h"
 #include "updater.h"
 #include "discord_presence.h"
 namespace app { int run_settings_window(gx::D3D12Options& options); }
@@ -480,6 +481,8 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--volume") o.volume = std::atoi(next());
     else if (a == "--widescreen") { gfx.widescreen = true; gfx.true_widescreen = false; }
     else if (a == "--pal-stock-icons") gecko::option_pal_stock_icons = true;
+    else if (a == "--no-screen-shake") gecko::option_no_screen_shake = true;
+    else if (a == "--gecko-codes") user_gecko::load(next(), {}, false);   // scripted runs: that file's enabled codes
     // Experimental true 16:9: widens the frustum in the renderer, no game code. Mutually exclusive
     // with --widescreen, so whichever comes last on the command line wins rather than both applying.
     else if (a == "--true-widescreen") { gfx.true_widescreen = true; gfx.widescreen = false; }
@@ -532,6 +535,10 @@ static int melee_main(int argc, char** argv) {
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
   remember_iso(o.iso);   // so the launcher can offer this disc without being told again
+  // Controllers do not count as activity to Windows, so a session played only on a pad let the
+  // display power off after the idle timeout (monitors going black mid-game until the mouse moved).
+  // Held by this thread for as long as the game runs; Windows drops it when the process exits.
+  if (!hidden) SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
 
   std::unique_ptr<gx::Backend> backend;
   if (!headless && threaded) {

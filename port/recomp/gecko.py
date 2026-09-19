@@ -50,6 +50,15 @@ PORT_CODES = [
         (0x8081000C, 0x80010024),   # lwz r4,12(r1); lwz r0,36(r1)
         (0x7C0803A6, 0x38210020),   # mtlr r0; addi r1,r1,32
         (0x60000000, 0x00000000)]), # skip: nop; (branch back)
+    # No screen shake: Camera_ApplyQuake (cm/camera.c) moves the camera by quake_offset * quake_scale
+    # and then zeroes quake_offset. At 8002A104, where r27 is game_camera (0x80452C68), zero
+    # quake_offset.x/y (+0xA4/+0xA8) first, so the camera moves by nothing and the game's own
+    # bookkeeping (counters, the clear at the end) runs unchanged. r0 is free until 8002A170.
+    ("Port: No Screen Shake", "no_screen_shake", [
+        (0xC202A104, 0x00000003),
+        (0x38000000, 0x901B00A4),   # li r0,0; stw r0,164(r27)
+        (0x901B00A8, 0xC07B00AC),   # stw r0,168(r27); lfs f3,172(r27) (the replaced instruction)
+        (0x60000000, 0x00000000)]), # nop; (branch back)
 ]
 
 

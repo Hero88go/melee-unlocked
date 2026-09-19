@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include "lcancel.h"
+#include "user_gecko.h"
 #include "slippi_online.h"
 
 static uint32_t s_spec = 5;
@@ -50,6 +51,8 @@ HLE(PADRead) {
   // upstream of everything the game does with the pad, so the press is sampled, recorded into the
   // replay and sent to the opponent exactly like a press the player made.
   lcancel::apply(pads);
+  // The player's own Gecko codes (data writes only), re-applied each frame like the Gecko handler.
+  user_gecko::apply();
   uint32_t base = ARG0, mask = 0;
   for (int i = 0; i < 4; ++i) {
     uint32_t p = base + i * 12;

@@ -99,10 +99,7 @@ class ThreadedBackend final : public Backend {
         // slightly less smooth. The scene controller's major scene is the mode and the minor scene
         // is the stage within it; in every mode that plays a match, 0 and 1 are the character and
         // stage selects and the match itself is 2 and up.
-        const uint8_t major = frames[cur].scene_major, minor = frames[cur].scene_minor;
-        const bool match_mode = major == 0x02 || major == 0x03 || major == 0x04 || major == 0x05 ||
-                                major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C;
-        const bool in_menus = !(match_mode && minor >= 2);
+        const bool in_menus = !frame_in_match(frames[cur]);
         // A cursor that stops is overshot by prediction and snaps back, which is the menu overshoot
         // reported on the stage select. Interpolating never overshoots and a menu does not need the
         // frame of latency Predict avoids, so menus interpolate whichever mode is selected.
