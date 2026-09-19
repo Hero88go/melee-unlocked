@@ -1,0 +1,175 @@
+# Native source-port build: the menu path of native_vs.txt, then a long match that actually
+# resolves. P1 walks into P2 and attacks repeatedly so damage accumulates to a KO, which exercises
+# the death, respawn and platform-drop paths that nothing past frame 3000 had ever reached.
+#
+#   sh run-source/vs.sh native_vs_ko.txt 9000
+#
+# Menu: A through the card prompts, START at the title, VS -> Melee -> two human ports pick
+# characters -> stage select -> match. Identical to native_vs.txt up to frame 1870.
+360 A
+368
+420 A
+428
+480 A
+488
+540 A
+548
+1100 START
+1110
+1200 sy=-127
+1206
+1260 A
+1268
+1330 A
+1338
+1340 p=2
+1500 sx=61 sy=127
+1500 p=2 sy=127
+1530
+1530 p=2
+1540 A
+1540 p=2 A
+1550
+1550 p=2
+1600 START
+1610
+1800 sy=100
+1840
+1860 A
+1870
+
+# Match. P1 (Ness) starts left of P2 (Pikachu), so walk right to close the gap, then attack on a
+# loop. Each pair is press then release: holding a button across frames would only buffer one input.
+2400 sx=80
+2460 X
+2465
+2500 sx=-80
+2560 A
+2565
+2600
+
+# Close in and keep hitting. Pikachu is a light character, so repeated hits reach KO percent well
+# inside this window.
+2700 sx=90
+2760 A
+2765
+2800 sx=90
+2860 A
+2865
+2900 sx=90
+2960 A
+2965
+3000 sx=90
+3060 A
+3065
+3100 sx=90
+3160 A
+3165
+3200 sx=90
+3260 A
+3265
+3300 sx=90
+3360 A
+3365
+3400 sx=90
+3460 A
+3465
+
+# Smash attacks: C-stick sideways does far more knockback than jabs, which is what actually sends
+# someone past the blast zone.
+3500 sx=90
+3560 cx=127
+3570
+3600 sx=90
+3660 cx=127
+3670
+3700 sx=90
+3760 cx=127
+3770
+3800 sx=90
+3860 cx=127
+3870
+3900 sx=90
+3960 cx=127
+3970
+4000 sx=90
+4060 cx=127
+4070
+4100 sx=90
+4160 cx=127
+4170
+4200 sx=90
+4260 cx=127
+4270
+
+# After a KO the loser respawns on the platform above the stage and drops in. Keep pressing so the
+# match continues through the respawn rather than idling.
+4400 sx=90
+4460 cx=127
+4470
+4600 sx=90
+4660 cx=127
+4670
+4800 sx=90
+4860 cx=127
+4870
+5000 sx=90
+5060 cx=127
+5070
+5200 sx=90
+5260 cx=127
+5270
+5400 sx=90
+5460 cx=127
+5470
+5600 sx=90
+5660 cx=127
+5670
+5800 sx=90
+5860 cx=127
+5870
+6000 sx=90
+6060 cx=127
+6070
+6200 sx=90
+6260 cx=127
+6270
+6400 sx=90
+6460 cx=127
+6470
+6600 sx=90
+6660 cx=127
+6670
+6800 sx=90
+6860 cx=127
+6870
+7000 sx=90
+7060 cx=127
+7070
+7200 sx=90
+7260 cx=127
+7270
+7400 sx=90
+7460 cx=127
+7470
+7600 sx=90
+7660 cx=127
+7670
+7800 sx=90
+7860 cx=127
+7870
+8000 sx=90
+8060 cx=127
+8070
+8200 sx=90
+8260 cx=127
+8270
+8400 sx=90
+8460 cx=127
+8470
+8600 sx=90
+8660 cx=127
+8670
+8800 sx=90
+8860 cx=127
+8870
