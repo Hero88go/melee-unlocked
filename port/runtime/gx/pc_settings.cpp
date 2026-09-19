@@ -230,7 +230,7 @@ static std::string active_pad_buttons_label(uint16_t button) {
 // it shows what the game acted on and device polling stays on one thread at one rate.
 // `row` stacks several overlays upward so two to four players can be shown at once. `editable` is on
 // while the settings panel is open, which is when the overlay may be dragged and resized.
-static void draw_input_overlay(int port, int row, bool lone, bool editable, bool borderless) {
+static void draw_input_overlay(int port, int row, bool lone, bool editable, bool borderless, bool values, int knob) {
   host::PadState pads[4]{};
   host::input_last_pads(pads);
   int slot = port < 0 || port > 3 ? 0 : port;
@@ -243,7 +243,8 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
       if (pads[i].err == 0) { slot = i; break; }
   const host::PadState& pad = pads[slot];
 
-  const float pad_w = 300.f, pad_h = 132.f;
+  // Taller with the stick values on, so the numbers get their own row under the sticks.
+  const float pad_w = 300.f, pad_h = values ? 150.f : 132.f;
   char title[32];
   std::snprintf(title, sizeof title, "Controller%d", slot);
   // Laid out for this size and scaled to whatever the window is dragged to, so it can be sized to
@@ -298,11 +299,25 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
     const float mag = std::sqrt(fx * fx + fy * fy);
     if (mag > 1.f) { fx /= mag; fy /= mag; }
     const ImVec2 tip(c.x + fx * r, c.y - fy * r);
-    // Sized off the gate so the knob reads like the real stick rather than a small marker.
-    dl->AddCircleFilled(tip, std::max(S(5.f), r * 0.20f), colour, 16);
+    // Sized off the gate; "Stick size" 5 is the look the overlay has always had (a fifth of the gate).
+    dl->AddCircleFilled(tip, std::max(S(3.f), r * 0.04f * std::clamp(knob, 1, 10)), colour, 20);
   };
   stick(P(52, 74), gate, pad.stick_x, pad.stick_y, line);
   stick(P(146, 82), cgate, pad.sub_x, pad.sub_y, yellow);
+  // The values the game works with: 1/80 steps, the vector clamped to length 1 as the game does,
+  // so a full press reads 1.0000 and any B0XX or GRAM coordinate can be checked against its chart.
+  if (values) {
+    auto text = [&](float x, int8_t sx, int8_t sy, ImU32 colour) {
+      float fx = sx / 80.f, fy = sy / 80.f;
+      const float mag = std::sqrt(fx * fx + fy * fy);
+      if (mag > 1.f) { fx /= mag; fy /= mag; }
+      char s[32];
+      std::snprintf(s, sizeof s, "%.4f %.4f", fx, fy);
+      dl->AddText(ImGui::GetFont(), ImGui::GetFontSize() * k, P(x, 134), colour, s);
+    };
+    text(6, pad.stick_x, pad.stick_y, line);
+    text(150, pad.sub_x, pad.sub_y, yellow);
+  }
 
   auto button = [&](ImVec2 c, float r, ImU32 colour, bool down, const char* label) {
     if (down) dl->AddCircleFilled(c, r, colour, 16);
@@ -1327,6 +1342,8 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "inputoverlayport") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 4) options.input_overlay_ports = 1 << n; }
       else if (key == "inputoverlayports") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 16) options.input_overlay_ports = n; }
       else if (key == "inputoverlayhideborder") options.input_overlay_hide_border = value == "1";
+      else if (key == "inputoverlayvalues") options.input_overlay_values = value == "1";
+      else if (key == "inputoverlaystick") options.input_overlay_stick = std::clamp(std::atoi(value.c_str()), 1, 10);
       else if (key == "lcancelindicator") lcancel::set_indicator(value == "1");
       else if (key == "autolcancel") lcancel::set_automatic(value == "1");
       else if (key == "palstockicons") gecko::option_pal_stock_icons = value == "1";
@@ -2509,6 +2526,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     changed |= ImGui::Checkbox("Ping while online (under the FPS)", &options.show_ping);
     changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
     if (options.input_overlay) {
+      ImGui::SameLine();
+      changed |= ImGui::Checkbox("Show values", &options.input_overlay_values);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each stick's position as the game reads it. A full press is 1.0000.");
+      ImGui::SameLine();
+      ImGui::SetNextItemWidth(110.0f);
+      changed |= ImGui::SliderInt("Stick size", &options.input_overlay_stick, 1, 10);
       // Several ports can be shown at once (doubles and crew streams want every player visible);
       // they stack upward from the bottom left corner.
       for (int i = 0; i < 4; ++i) {
@@ -2564,6 +2587,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\nsettingshint " << (options.settings_hint ? 1 : 0)
            << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
            << "\ninputoverlayhideborder " << options.input_overlay_hide_border
+           << "\ninputoverlayvalues " << options.input_overlay_values
+           << "\ninputoverlaystick " << options.input_overlay_stick
            << "\neffects " << options.effects_level
            // Low spec: the switch, and the settings it is holding for the player while it is on.
            << "\nlowspec " << (options.low_spec ? 1 : 0)
@@ -2725,12 +2750,15 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       ImGui::End();
     }
   }
+  // Test hook for screenshots: MELEE_TEST_OVERLAY=1 shows the controller overlay with its values.
+  static const bool test_overlay = std::getenv("MELEE_TEST_OVERLAY") != nullptr;
+  if (test_overlay) { options.input_overlay = true; options.input_overlay_values = true; if (const char* k = std::getenv("MELEE_TEST_KNOB")) options.input_overlay_stick = std::atoi(k); }
   if (options.input_overlay) {
     const int mask = options.input_overlay_ports ? options.input_overlay_ports : 1;
     const bool lone = (mask & (mask - 1)) == 0;   // exactly one port selected
     int row = 0;
     for (int i = 0; i < 4; ++i)
-      if (mask & (1 << i)) draw_input_overlay(i, row++, lone, state.open, options.input_overlay_hide_border);
+      if (mask & (1 << i)) draw_input_overlay(i, row++, lone, state.open, options.input_overlay_hide_border, options.input_overlay_values, options.input_overlay_stick);
   }
   // Below here are the two overlays that only make sense with a match behind them: the L-cancel
   // notice, which is about a mode the player is queuing for, and the frame time graph, which in the

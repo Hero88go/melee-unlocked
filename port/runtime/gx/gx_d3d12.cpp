@@ -163,7 +163,7 @@ class D3D12Backend : public Backend {
     settings_ui_.reset();
 #endif
  stop_pso_workers(); integrate_compiled_psos(); flush_captures(); save_pipeline_recipes(); save_pipeline_library(); if (fence_event_) CloseHandle(fence_event_); if (present_timer_) CloseHandle(present_timer_);
-    last_poses_.clear(); mvec_.Reset(); dlss_out_.Reset(); streamline::shutdown(); }
+    last_poses_.clear(); mvec_.Reset(); hud_mask_.Reset(); dlss_out_.Reset(); streamline::shutdown(); }
   const D3D12Options& options() const { return opts_; }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
@@ -204,6 +204,9 @@ class D3D12Backend : public Backend {
   uint64_t texpack_report_frame_ = ~0ull;
   int forced_scale_ = 0;
   ComPtr<ID3D12Resource> mvec_, dlss_out_;
+  // DLSS "bias current colour" hint: 1 where a flat 2D draw (HUD, text, player tags) wrote, so DLSS
+  // keeps no history there. Without it a ticking timer or a tag following a fighter ghosted.
+  ComPtr<ID3D12Resource> hud_mask_;
   uint32_t dlss_out_w_ = 0, dlss_out_h_ = 0;
   float jitter_x_ = 0, jitter_y_ = 0;
   bool dlss_reset_ = true;
@@ -282,6 +285,7 @@ class D3D12Backend : public Backend {
   // guide asks: without it textures are sampled at the detail of the smaller render and stay soft
   // after the upscale. Zero for native and DLAA.
   float dlss_mip_bias_ = 0.0f;
+  uint64_t mv_draws_ = 0, mv_matched_ = 0;   // draws with motion history (diagnostic, logged with DLSS on)
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
   ComPtr<ID3D12Device> device_;
   // Persistent caches (opts_.shader_cache): compiled shader blobs as files, pipelines in a D3D12
@@ -419,15 +423,18 @@ void D3D12Backend::init() {
   ss.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR; ss.AddressU = ss.AddressV = ss.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
   ss.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
   D3D12_ROOT_PARAMETER bp[2]{};
-  bp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; D3D12_DESCRIPTOR_RANGE br{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0};
+  bp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; D3D12_DESCRIPTOR_RANGE br{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0, 0, 0};   // t0 image, t1 current EFB, t2 HUD mask
   bp[0].DescriptorTable = {1, &br}; bp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 12; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 16; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
   D3D12_ROOT_SIGNATURE_DESC brsd{2, bp, 1, &ss, D3D12_ROOT_SIGNATURE_FLAG_NONE};
   check(D3D12SerializeRootSignature(&brsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err), "blit root");
   check(device_->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&blit_root_)), "blit root sig");
   const char* blit = R"(
-Texture2D src : register(t0); SamplerState samp : register(s0);
-cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis
+Texture2D src : register(t0); Texture2D efb : register(t1); Texture2D hudmask : register(t2); SamplerState samp : register(s0);
+// box.z > 0: DLSS HUD composite. Pixels a flat 2D draw wrote this frame (HUD, text, player tags) come
+// from this frame's own render instead of DLSS, which rebuilds from history and ghosted the ticking
+// timer and moving tags; NVIDIA's guide puts UI after DLSS. hudr maps output uv to EFB uv.
+cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 hudr; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
 // Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
@@ -444,8 +451,15 @@ float4 downsample(float2 uv) {
       acc += src.Sample(samp, uv + (float2(x, y) + 0.5) / float2(nx, ny) * foot - 0.5 * foot);
   return acc / (nx * ny);
 }
+float4 hud(float2 uv, float4 c) {
+  if (box.z <= 0.0) return c;
+  float2 e = uv * hudr.xy + hudr.zw;
+  if (box.w > 0.0) return float4(hudmask.Sample(samp, e).rrr, 1);   // MELEE_DEBUG_HUDMASK
+  float m = hudmask.Sample(samp, e).r;
+  return m > 0.0 ? lerp(c, efb.Sample(samp, e), saturate(m)) : c;
+}
 float4 PS(O i) : SV_Target {
-  float4 c = downsample(i.uv);
+  float4 c = hud(i.uv, downsample(i.uv));
   if (sharp.z <= 0.0) return c;
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
@@ -457,7 +471,7 @@ float4 PS(O i) : SV_Target {
   float peak = -1.0 / lerp(8.0, 5.0, saturate(sharp.z));
   float3 wgt = amp * peak;
   float3 r = (c.rgb + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt);
-  return float4(saturate(r), c.a);
+  return hud(i.uv, float4(saturate(r), c.a));
 })";
   ComPtr<ID3DBlob> bvs, bps;
   check(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &bvs, &err), "blit vs");
@@ -524,16 +538,22 @@ void D3D12Backend::create_efb() {
   check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &mv, IID_PPV_ARGS(&mvec_)), "motion vectors");
   D3D12_CPU_DESCRIPTOR_HANDLE mrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); mrtv.ptr += 5 * rtv_size_;
   device_->CreateRenderTargetView(mvec_.Get(), nullptr, mrtv);
+  rd.Format = DXGI_FORMAT_R8_UNORM;
+  D3D12_CLEAR_VALUE hv{DXGI_FORMAT_R8_UNORM, {0, 0, 0, 0}};
+  check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &hv, IID_PPV_ARGS(&hud_mask_)), "hud mask");
+  D3D12_CPU_DESCRIPTOR_HANDLE hrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); hrtv.ptr += 6 * rtv_size_;
+  device_->CreateRenderTargetView(hud_mask_.Get(), nullptr, hrtv);
   last_poses_.clear(); dlss_reset_ = true;
   efb_is_rt_ = true;
 }
 
 void D3D12Backend::bind_efb_targets() {
-  D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2];
+  D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3];
   rtvs[0] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtvs[0].ptr += 3 * rtv_size_;
   rtvs[1] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtvs[1].ptr += 5 * rtv_size_;
+  rtvs[2] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtvs[2].ptr += 6 * rtv_size_;
   D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-  list_->OMSetRenderTargets(dlss_active_ ? 2 : 1, rtvs, FALSE, &dsv);
+  list_->OMSetRenderTargets(dlss_active_ ? 3 : 1, rtvs, FALSE, &dsv);
 }
 
 void D3D12Backend::output_size(int* vw, int* vh) const {
@@ -572,6 +592,20 @@ void D3D12Backend::configure_dlss() {
   // larger than the mode's own maximum and it produced an empty image (a black screen). Anti-alias
   // the EFB in place instead, at the scale the player chose, and let the present blit letterbox it.
   int out_w = vw, out_h = vh, in_place_scale = 0;
+  // The upscaling modes output at the size native rendering would use (the EFB multiple the player's
+  // resolution setting picks, 3x at 1080p), and the present blit shrinks that to the window exactly as
+  // it does native. Output at the window size, DLSS had nothing to supersample and looked soft next to
+  // native for the same render cost. Kept as an experiment: MELEE_DLSS_SUPERSAMPLE=1.
+  // Off by default: measured no visible gain over window-sized output, only more GPU work.
+  const char* supersample = std::getenv("MELEE_DLSS_SUPERSAMPLE");
+  if (!in_place && supersample && *supersample == '1') {
+    const int saved = forced_scale_;
+    forced_scale_ = 0;
+    const int native_scale = pick_scale();
+    forced_scale_ = saved;
+    const double k = std::max(1.0, (480.0 * native_scale) / (double)std::max(vh, 1));
+    out_w = (int)std::lround(vw * k); out_h = (int)std::lround(vh * k);
+  }
   if (in_place) {
     // pick_scale() reports any scale a previous mode forced, so clear it first to get the EFB scale
     // the player actually chose (switching straight from DLSS Quality to DLAA would otherwise size
@@ -630,7 +664,13 @@ void D3D12Backend::configure_dlss() {
   }
   if (!streamline::dlss_set_options((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h)) { opts_.dlss_mode = 0; forced_scale_ = 0; dlss_active_ = false; return; }
   dlss_active_ = true; dlss_in_place_ = in_place; dlss_mode_active_ = opts_.dlss_mode; dlss_reset_ = true; last_poses_.clear();
-  set_dlss_mip_bias(in_place ? 0.0f : std::log2((640.0f * scale) / (float)out_w));
+  // NVIDIA's texture LOD bias for DLSS: log2(render / display) - 1. The -1 samples textures as if at
+  // the output resolution so DLSS has the detail to reconstruct; without it faces and cloth came out
+  // soft next to native. DLAA renders at the output size, so its bias is the -1 alone.
+  // MELEE_DLSS_BIAS_EXTRA overrides the -1 for testing.
+  float bias_extra = -1.0f;
+  if (const char* e = std::getenv("MELEE_DLSS_BIAS_EXTRA")) bias_extra = (float)std::atof(e);
+  set_dlss_mip_bias((in_place ? 0.0f : std::log2((640.0f * scale) / (float)out_w)) + bias_extra);
   host::log("dlss: %s, render %dx%d (EFB x%d, optimal %ux%u) -> %s %dx%d%s", dlss_mode_name((DlssMode)opts_.dlss_mode),
             in_place ? out_w : 640 * scale, in_place ? out_h : 480 * scale, scale, rw, rh,
             in_place ? "anti-aliased in place at" : "output", out_w, out_h, in_place ? ", letterboxed to the window by the present blit" : "");
@@ -712,12 +752,15 @@ static void describe_pipeline(D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, const PsoK
   pd.DepthStencilState.DepthWriteMask = (bits(zm, 0, 1) && bits(zm, 4, 1)) ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
   pd.DepthStencilState.DepthFunc = bits(zm, 0, 1) ? cmp[bits(zm, 1, 3)] : D3D12_COMPARISON_FUNC_ALWAYS;
   pd.PrimitiveTopologyType = topo;
-  pd.NumRenderTargets = key.mvec ? 2 : 1; pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; pd.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+  pd.NumRenderTargets = key.mvec ? 3 : 1; pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; pd.DSVFormat = DXGI_FORMAT_D32_FLOAT;
   if (key.mvec) {
     pd.RTVFormats[1] = DXGI_FORMAT_R16G16_FLOAT;
+    pd.RTVFormats[2] = DXGI_FORMAT_R8_UNORM;
     pd.BlendState.IndependentBlendEnable = TRUE;
     pd.BlendState.RenderTarget[1] = D3D12_RENDER_TARGET_BLEND_DESC{};
     pd.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN;
+    pd.BlendState.RenderTarget[2] = D3D12_RENDER_TARGET_BLEND_DESC{};
+    pd.BlendState.RenderTarget[2].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED;
   }
   pd.SampleDesc.Count = 1;
 }
@@ -832,8 +875,8 @@ void main(out float4 ocol0 : SV_Target0 MVEC_OUT, in float4 rawpos : SV_Position
   std::string vs = vs_src, ps = ps_src;
   vs.replace(vs.find("COLOR_EXPR"), 10, colored ? "color0" : "float4(1.0, 1.0, 1.0, 1.0)");
   ps.replace(ps.find("TEX_EXPR"), 8, textured ? "c *= Tex[0].Sample(samp[0], uv);" : "");
-  ps.replace(ps.find("MVEC_OUT"), 8, key.mvec ? ", out float2 omv : SV_Target1" : "");
-  ps.replace(ps.find("MVEC_WRITE"), 10, key.mvec ? "omv = float2(0.0, 0.0);" : "");
+  ps.replace(ps.find("MVEC_OUT"), 8, key.mvec ? ", out float2 omv : SV_Target1, out float ohud : SV_Target2" : "");
+  ps.replace(ps.find("MVEC_WRITE"), 10, key.mvec ? "omv = float2(0.0, 0.0); ohud = 0.0;" : "");
   ComPtr<ID3DBlob> vsb, psb, err;
   if (FAILED(D3DCompile(vs.c_str(), vs.size(), "fallback_vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vsb, &err)) ||
       FAILED(D3DCompile(ps.c_str(), ps.size(), "fallback_ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psb, &err))) {
@@ -1140,6 +1183,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
     LastPose& last = last_poses_[dc.identity];
     bool had = last.frame != 0 && last.frame + 2 >= frame_counter_;
     if (had) { motion.prev_pos = last.pos; motion.prev_proj = last.proj; }
+    ++mv_draws_; if (had) ++mv_matched_;
     fill_vs_constants(dc, vs_constants, scale_, override_matrices, &motion);
     std::memcpy(last.pos, override_matrices ? override_matrices->pos : dc.posMatrices, sizeof last.pos);
     std::memcpy(last.proj, vs_constants.unjittered_projection, sizeof last.proj);
@@ -1235,9 +1279,9 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   }
   e.last_used = frame_counter_;
   if (c.half_scale) {
-    uint32_t slot = reserve_srvs(1);
+    uint32_t slot = reserve_srvs(3);
     D3D12_CPU_DESCRIPTOR_HANDLE sh_cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart(); sh_cpu.ptr += slot * srv_size_;
-    device_->CreateShaderResourceView(efb_color_.Get(), nullptr, sh_cpu);
+    for (int k = 0; k < 3; ++k) { D3D12_CPU_DESCRIPTOR_HANDLE hk = sh_cpu; hk.ptr += k * srv_size_; device_->CreateShaderResourceView(efb_color_.Get(), nullptr, hk); }
     D3D12_GPU_DESCRIPTOR_HANDLE sh_gpu = srv_heap_->GetGPUDescriptorHandleForHeapStart(); sh_gpu.ptr += slot * srv_size_;
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += 4 * rtv_size_;  // transient slot
     device_->CreateRenderTargetView(e.resource.Get(), nullptr, rtv);
@@ -1249,9 +1293,9 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
     list_->SetPipelineState(blit_pso_.Get());
     list_->SetGraphicsRootSignature(blit_root_.Get());
     list_->SetGraphicsRootDescriptorTable(0, sh_gpu);
-    float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                      0, 0, 0, 0, 1.0f, 1.0f, 0, 0};   // no sharpening or averaging on this path
-    list_->SetGraphicsRoot32BitConstants(1, 12, rect, 0);
+    float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+                      0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 0, 0, 0, 0};   // no sharpening, averaging or HUD composite here
+    list_->SetGraphicsRoot32BitConstants(1, 16, rect, 0);
     list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list_->DrawInstanced(3, 1, 0, 0);
     // Restore the EFB as the render target; execute_draw re-sets viewport/scissor per draw.
@@ -1280,6 +1324,7 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     in.color_in = efb_color_.Get(); in.color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     in.depth = efb_depth_.Get(); in.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     in.mvec = mvec_.Get(); in.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    in.hud_mask = hud_mask_.Get(); in.hud_mask_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     in.color_out = dlss_out_.Get(); in.out_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     // In place (DLAA) the render and output sizes must match exactly, so feed the whole EFB and let
     // the present blit pick the displayed region out of the result, exactly as it does without DLSS.
@@ -1299,16 +1344,25 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   }
   ID3D12Resource* source = upscaled ? dlss_out_.Get() : efb_color_.Get();
   D3D12_RESOURCE_STATES source_state = upscaled ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_RENDER_TARGET;
-  D3D12_RESOURCE_BARRIER b[2]{};
+  // With DLSS the current EFB and the HUD mask are read too (HUD composite).
+  const bool hud_composite = upscaled && hud_mask_;
+  D3D12_RESOURCE_BARRIER b[4]{};
   b[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[0].Transition = {source, 0, source_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
   b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[1].Transition = {backbuffers_[bb].Get(), 0, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET};
-  list_->ResourceBarrier(2, b);
-  // SRV for the presented image
-  uint32_t slot = reserve_srvs(1);
+  b[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  b[2].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+  b[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  b[3].Transition = {hud_composite ? hud_mask_.Get() : nullptr, 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+  list_->ResourceBarrier(hud_composite ? 4 : 2, b);
+  // SRVs: the presented image, then (DLSS HUD composite) the current EFB and the HUD mask.
+  uint32_t slot = reserve_srvs(3);
   D3D12_CPU_DESCRIPTOR_HANDLE h = srv_heap_->GetCPUDescriptorHandleForHeapStart(); h.ptr += slot * srv_size_;
   device_->CreateShaderResourceView(source, nullptr, h);
+  { D3D12_CPU_DESCRIPTOR_HANDLE h1 = h; h1.ptr += srv_size_; D3D12_CPU_DESCRIPTOR_HANDLE h2 = h1; h2.ptr += srv_size_;
+    device_->CreateShaderResourceView(hud_composite ? efb_color_.Get() : source, nullptr, h1);
+    device_->CreateShaderResourceView(hud_composite ? hud_mask_.Get() : source, nullptr, h2); }
   D3D12_GPU_DESCRIPTOR_HANDLE g = srv_heap_->GetGPUDescriptorHandleForHeapStart(); g.ptr += slot * srv_size_;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += bb * rtv_size_;
   float border[4] = {0, 0, 0, 1};   // letterbox/pillarbox bars (black, as on Dolphin and a TV)
@@ -1335,9 +1389,12 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   // same displayed sub-region, same box filter when the render is larger than the window.
   const bool fills_output = upscaled && !dlss_in_place_;
   float src_w = upscaled ? (float)dlss_out_w_ : (float)efb_w_, src_h = upscaled ? (float)dlss_out_h_ : (float)efb_h_;
-  float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+  float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
                     1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
-                    1.0f, 1.0f, 0.0f, 0.0f};
+                    1.0f, 1.0f, hud_composite ? 1.0f : 0.0f, std::getenv("MELEE_DEBUG_HUDMASK") ? 1.0f : 0.0f,
+                    // Output uv to EFB uv: DLAA's image already is EFB-sized, so identity there.
+                    dlss_in_place_ ? 1.0f : (float)c.src_w / EFB_WIDTH, dlss_in_place_ ? 1.0f : (float)c.src_h / EFB_HEIGHT,
+                    dlss_in_place_ ? 0.0f : (float)c.src_x / EFB_WIDTH, dlss_in_place_ ? 0.0f : (float)c.src_y / EFB_HEIGHT};
   // Averaging box when the rendered image is larger than the output. The two axes shrink by
   // different amounts (the picture is letterboxed to 16:9 inside the window), so they get their
   // own tap counts; using the horizontal count for both left vertical edges aliasing.
@@ -1345,8 +1402,13 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
     rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
   }
-  if (fills_output) { rect[0] = 1.0f; rect[1] = 1.0f; rect[2] = 0.0f; rect[3] = 0.0f; }
-  list_->SetGraphicsRoot32BitConstants(1, 12, rect, 0);
+  if (fills_output) {
+    rect[0] = 1.0f; rect[1] = 1.0f; rect[2] = 0.0f; rect[3] = 0.0f;
+    // DLSS output larger than the window (supersampled): the same averaging box native gets.
+    rect[8] = (float)std::clamp((int)std::lround((double)dlss_out_w_ / std::max(vw, 1.0f)), 1, 4);
+    rect[9] = (float)std::clamp((int)std::lround((double)dlss_out_h_ / std::max(vh, 1.0f)), 1, 4);
+  }
+  list_->SetGraphicsRoot32BitConstants(1, 16, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
 #ifdef GX_PC_SETTINGS
@@ -1356,12 +1418,16 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     list_->SetDescriptorHeaps(2, heaps);
   }
 #endif
-  D3D12_RESOURCE_BARRIER back[2]{};
+  D3D12_RESOURCE_BARRIER back[4]{};
   back[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   back[0].Transition = {source, 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, source_state};
   back[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   back[1].Transition = {backbuffers_[bb].Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT};
-  list_->ResourceBarrier(2, back);
+  back[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  back[2].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET};
+  back[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  back[3].Transition = {hud_composite ? hud_mask_.Get() : nullptr, 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET};
+  list_->ResourceBarrier(hud_composite ? 4 : 2, back);
   // Restore EFB as the render target for any later commands in this frame.
   bind_efb_targets();
 }
@@ -1543,17 +1609,21 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     D3D12_CPU_DESCRIPTOR_HANDLE mrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); mrtv.ptr += 5 * rtv_size_;
     const float zero[4] = {0, 0, 0, 0};
     list_->ClearRenderTargetView(mrtv, zero, 0, nullptr);
+    D3D12_CPU_DESCRIPTOR_HANDLE hrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); hrtv.ptr += 6 * rtv_size_;
+    list_->ClearRenderTargetView(hrtv, zero, 0, nullptr);
     streamline::new_frame((uint32_t)frame_counter_);
     streamline::jitter(frames_presented_, &jitter_x_, &jitter_y_);
     // The main camera projection: the first perspective draw of the frame (menus and HUD are orthographic).
     streamline::FrameConstants fc{};
     bool found = false;
-    for (const DrawCall& d : frame.draws) if (d.xf_regs[0x26] == 0) { build_projection(d, fc.projection); found = true; break; }
+    for (const DrawCall& d : frame.draws) if (d.xf_regs[0x26] == 0) { build_projection(d, fc.projection); set_main_projection(&d); found = true; break; }
+    if (!found) set_main_projection(nullptr);
     if (!found && !frame.draws.empty()) { build_projection(frame.draws[0], fc.projection); fc.orthographic = true; }
     fc.jitter_x = jitter_x_ * opts_.dlss_jitter_sign; fc.jitter_y = jitter_y_ * opts_.dlss_jitter_sign;
     fc.render_w = 640 * scale_; fc.render_h = 480 * scale_;
     fc.reset = dlss_reset_; dlss_reset_ = false;
     streamline::set_constants(fc);
+    if (frame_counter_ % 600 == 0 && mv_draws_) { host::log("dlss: %.1f%% of draws had a previous pose (%llu of %llu)", 100.0 * mv_matched_ / mv_draws_, (unsigned long long)mv_matched_, (unsigned long long)mv_draws_); mv_draws_ = mv_matched_ = 0; }
     if (frame_counter_ % 600 == 0) for (auto it = last_poses_.begin(); it != last_poses_.end();) { if (it->second.frame + 4 < frame_counter_) it = last_poses_.erase(it); else ++it; }
   }
   if (have_clear_) { clear_efb(pending_clear_); have_clear_ = false; }

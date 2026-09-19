@@ -76,6 +76,11 @@ std::string generate_pixel_shader(const PSUid& uid);
 // presented pose of this draw (position matrices + unjittered projection), both optional.
 struct MotionInfo { float jitter_x = 0, jitter_y = 0; const float* prev_pos = nullptr; const float* prev_proj = nullptr; };
 void build_projection(const DrawCall& dc, float m[16]);   // row-major, as dotted in the vertex shader
+// DLSS: the frame's main 3D camera projection (null when the frame has none, e.g. menus). Only draws
+// with exactly this projection are the scene DLSS reconstructs; everything else (Melee's HUD camera
+// with the timer, stocks and percentages, player tags, overlays) is shown as rendered.
+void set_main_projection(const DrawCall* scene);
+bool is_scene_draw(const DrawCall& dc);
 void fill_vs_constants(const DrawCall& dc, VSConstants& out, int efb_scale, const DrawMatrices* override_matrices = nullptr, const MotionInfo* motion = nullptr);
 void fill_ps_constants(const DrawCall& dc, PSConstants& out, int efb_scale);
 

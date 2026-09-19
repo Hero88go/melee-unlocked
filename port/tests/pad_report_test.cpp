@@ -118,6 +118,24 @@ int main() {
   check_layout(Kind::DualSenseBtFull, "DualSense Bluetooth");
   check_layout(Kind::DualSenseBtShort, "DualSense Bluetooth short");
   check_triggers();
+  // A pad that calls itself a DualShock 4 (dualsense = false) but sends a DualSense USB report:
+  // Cross must read as Cross, not as the left trigger (a player saw every button as L2).
+  {
+    uint8_t r[64] = {};
+    r[0] = 0x01; r[1] = r[2] = r[3] = r[4] = 0x80;   // sticks centred
+    r[5] = 0; r[6] = 0;                             // triggers released
+    r[8] = 0x20 | 0x08;                             // Cross held, d-pad released
+    host::PadState p{}; uint16_t b = 0;
+    CHECK(host::playstation_parse(r, sizeof r, false, p, b));
+    CHECK((b & host::DS4_CROSS) && !(b & host::DS4_L2) && p.trig_l == 0);
+    // And a real DualShock 4 report with Cross held still reads the same way.
+    uint8_t q[64] = {};
+    q[0] = 0x01; q[1] = q[2] = q[3] = q[4] = 0x80; q[5] = 0x20 | 0x08; q[8] = 0; q[9] = 0;
+    CHECK(host::playstation_parse(q, sizeof q, false, p, b));
+    CHECK((b & host::DS4_CROSS) && !(b & host::DS4_L2));
+    CHECK(host::playstation_parse(q, sizeof q, true, p, b));   // even if it claimed to be a DualSense
+    CHECK((b & host::DS4_CROSS) && !(b & host::DS4_L2));
+  }
   // Too short to hold the fields: refused, not read past the end.
   host::PadState pad{}; uint16_t buttons = 0;
   const uint8_t tiny[4] = {0x01, 0x80, 0x80, 0x80};
