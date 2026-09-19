@@ -60,6 +60,12 @@ set_target_properties(mu_command_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
 target_link_libraries(mu_command_test PRIVATE game_flags)
 add_test(NAME native_command_loop COMMAND mu_command_test)
 
+add_executable(mu_match_test EXCLUDE_FROM_ALL tests/match_override.c shim/mu_match.c)
+set_target_properties(mu_match_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+target_link_libraries(mu_match_test PRIVATE game_flags)
+target_include_directories(mu_match_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${REPO}/port/runtime/abi")
+add_test(NAME native_match_override COMMAND mu_match_test)
+
 add_executable(mu_setjmp_test EXCLUDE_FROM_ALL tests/setjmp.c shim/mu_setjmp.c)
 set_target_properties(mu_setjmp_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
 target_link_libraries(mu_setjmp_test PRIVATE game_flags)

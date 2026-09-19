@@ -213,6 +213,12 @@ void h_stop(int32_t reason, int32_t code) {
   guarded([] { host::retrace(); });
 }
 
+// --match sets this once, before the game starts. An ordinary run never touches it, and the game
+// only asks for it where a VS match's rules are finalised.
+MuMatchOverride g_match{};
+bool g_match_set = false;
+const MuMatchOverride* h_match_override() { return g_match_set ? &g_match : nullptr; }
+
 MuHostApi make_host() {
   MuHostApi h{};
   h.version = MU_HOST_API_VERSION;
@@ -233,6 +239,7 @@ MuHostApi make_host() {
   h.mem1_size = h_mem1_size; h.sound_mode = h_sound_mode; h.set_sound_mode = h_set_sound_mode;
   h.progressive_mode = h_progressive_mode; h.set_progressive_mode = h_set_progressive_mode;
   h.reset_code = h_reset_code; h.reset_switch = h_reset_switch; h.stop = h_stop;
+  h.match_override = h_match_override;
   return h;
 }
 
@@ -293,6 +300,48 @@ LONG CALLBACK on_game_exception(EXCEPTION_POINTERS* info) {
 }
 
 }  // namespace
+
+// --match <stage>:<p1>[:<p2>...], each player <kind>[/c<level>][/x<costume>], all numbers decimal
+// or 0x-hex. For example "0x14:9:12/c9" is Onett, one human, one level 9 CPU.
+bool set_match(const char* spec) {
+  if (!spec || !*spec) return false;
+  MuMatchOverride m{};
+  for (auto& p : m.players) p.kind = -1;
+
+  const char* p = spec;
+  char* end = nullptr;
+  const long stage = std::strtol(p, &end, 0);
+  if (end == p || stage < 0) return false;
+  m.stage = (int32_t)stage;
+  p = end;
+
+  size_t slot = 0;
+  while (*p == ':') {
+    ++p;
+    if (slot >= sizeof m.players / sizeof m.players[0]) return false;
+    const long kind = std::strtol(p, &end, 0);
+    if (end == p || kind < 0) return false;
+    m.players[slot].kind = (int32_t)kind;
+    p = end;
+    // Each player's options, in any order: /c<level> makes it a CPU, /x<costume> picks a costume.
+    while (*p == '/') {
+      const char opt = p[1];
+      if (opt != 'c' && opt != 'x') return false;
+      p += 2;
+      const long v = std::strtol(p, &end, 0);
+      if (end == p || v < 0) return false;
+      if (opt == 'c') { m.players[slot].cpu = 1; m.players[slot].cpu_level = (int32_t)v; }
+      else { m.players[slot].costume = (int32_t)v; }
+      p = end;
+    }
+    ++slot;
+  }
+  if (*p != '\0' || slot == 0) return false;   // trailing junk, or no players at all
+
+  g_match = m;
+  g_match_set = true;
+  return true;
+}
 
 bool reserve_memory() {
   // First, before anything else in the process can take the range: the game's 32-bit disc pointers

@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 1
+#define MU_HOST_API_VERSION 2
 #define MU_GAME_API_VERSION 1
 
 /* The console's 40.5 MHz timebase, which the host advances deterministically. */
@@ -36,6 +36,21 @@ typedef struct MuPadStatus {
 
 typedef void (*MuDiscDone)(int32_t result, void* user);
 typedef void (*MuCardDone)(int32_t result, void* user);
+
+/* What a scripted run wants a VS match to be, so the sweep does not have to
+ * drive the character and stage screens by cursor position for every
+ * combination. The menus still run; only the result is forced. */
+typedef struct MuMatchPlayer {
+    int32_t kind;        /* CharacterKind, or negative for an empty slot */
+    int32_t cpu;         /* 0 human, 1 CPU */
+    int32_t cpu_level;   /* 1..9, ignored for a human */
+    int32_t costume;
+} MuMatchPlayer;
+
+typedef struct MuMatchOverride {
+    int32_t stage;       /* the rules' stage kind */
+    MuMatchPlayer players[6];
+} MuMatchOverride;
 
 typedef struct MuHostApi {
     uint32_t version;   /* MU_HOST_API_VERSION */
@@ -127,6 +142,10 @@ typedef struct MuHostApi {
     int32_t (*reset_code)(void);
     int32_t (*reset_switch)(void);
     void (*stop)(int32_t reason, int32_t code);   /* MU_STOP_* */
+
+    /* ---- scripted runs (version 2) ---- */
+    /* The match a --match run asked for, or NULL for an ordinary run. */
+    const MuMatchOverride* (*match_override)(void);
 } MuHostApi;
 
 typedef struct MuGameApi {
