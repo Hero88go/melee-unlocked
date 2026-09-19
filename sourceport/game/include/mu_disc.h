@@ -29,6 +29,8 @@ typedef __UINTPTR_TYPE__ mu_uptr;
 #define DISC_GET(T, slot) ((T*) (mu_uptr) (slot).raw)
 #define DISC_SET(slot, ptr) ((slot).raw = mu_addr32(ptr))
 #define DISC_NULL(slot) ((slot).raw == 0)
+/* A slot the decompilation types as a pointer (UNK_T) but the game uses as a 32-bit number. */
+#define DISC_RAW(slot) ((slot).raw)
 /* A slot in static data that is initialised with an address. A 32-bit address is not a constant the
  * compiler can emit, so the initialiser holds 0 and a constructor in the same file sets the slot at
  * load time with DISC_SET (see the MU_NATIVE block at the end of such files). */
@@ -49,6 +51,11 @@ static inline mu_u32 mu_addr32_checked(const void* ptr, const char* file, int li
     return (mu_u32) value;
 }
 #define mu_addr32(ptr) mu_addr32_checked((ptr), __FILE__, __LINE__)
+
+/* A 32-bit word that holds an address, widened for a cast to a pointer. The game keeps addresses in
+ * s32 and int words all over; they all have bit 31 set here, and a signed word would come back
+ * sign-extended. tools/cast_census.py --fix puts this on every narrow int-to-pointer cast. */
+#define MU_Z(x) ((mu_uptr) (mu_u32) (x))
 #define MU_ADDR32(ptr) mu_addr32(ptr)
 
 /* Elements of a scalar array reached through a pointer: f32* weights becomes be_f32* weights. */
@@ -68,5 +75,10 @@ typedef struct { float m[4][4]; } DISC_STRUCT Mtx44_BE;
 
 /* The value of a be_* element. */
 #define BEV(x) ((x).v)
+
+/* A host-order copy of a big-endian vector (the maths types are visible wherever these are used). */
+#define BE_VEC2(v) ({ __typeof__(v) be_ = (v); (Vec2) { be_.x, be_.y }; })
+#define BE_VEC3(v) ({ __typeof__(v) be_ = (v); (Vec3) { be_.x, be_.y, be_.z }; })
+#define BE_QUAT(v) ({ __typeof__(v) be_ = (v); (Quaternion) { be_.x, be_.y, be_.z, be_.w }; })
 
 #endif
