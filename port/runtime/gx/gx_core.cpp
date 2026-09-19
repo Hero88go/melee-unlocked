@@ -309,7 +309,12 @@ void bp_write(uint32_t value) {
     case BP_LOADTLUT1: {
       uint32_t tmem_addr = (masked & 0x3FF) << 9;
       uint32_t count = (masked & 0x1FFC00) >> 5;
-      uint32_t src = (g_bp.reg[BP_LOADTLUT0] << 5) & 0x3FFFFFFFu;
+      // BP_LOADTLUT0 carries the source address in bits 0..20 only; bits 21..23 are
+      // reserved and the GP ignores them. GXInitTlutObj writes just the 21-bit field
+      // and the 8-bit register id, so whatever the caller's uninitialised GXTlutObj
+      // held in between rides along (tobj.c and psdisp.c both use a stack local).
+      // Mask to the real field or those stale bits become a wild address.
+      uint32_t src = ((g_bp.reg[BP_LOADTLUT0] & 0x1FFFFFu) << 5) & 0x3FFFFFFFu;
       if (tmem_addr + count <= sizeof g_tmem) std::memcpy(g_tmem + tmem_addr, host::ptr(0x80000000u | src, count), count);
       break;
     }
