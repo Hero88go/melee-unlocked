@@ -336,7 +336,9 @@ class D3D12Backend : public Backend {
   uint64_t mv_draws_ = 0, mv_matched_ = 0;
   int fg_applied_ = -1; int reflex_applied_ = -1;   // what Streamline was last told; -1 forces the first call through even when the setting is "off"
   bool xess_reset_ = true;
+  bool in_match_ = false;   // the frame being submitted shows a running match (set in submit_frame)
   bool dlss_in_match_ = false;
+  bool dlss_menus_ = false;   // run DLAA on menus too: DLSS 5 is on and wants the look everywhere
   ComPtr<IDXGIAdapter3> adapter3_;   // video memory queries   // last frame's frame_in_match: the upscaler's history restarts on a change
   std::wstring exe_dir_;   // for loading the upscaler libraries
   bool xess_active() const { return xess::is_xess_mode(opts_.dlss_mode); }
@@ -403,6 +405,10 @@ class D3D12Backend : public Backend {
   uint32_t sampler_slots_used_ = 0;
   uint32_t srv_cursor_ = 0;
   std::unordered_map<TextureSetKey, uint32_t, TextureSetHash> texture_sets_;
+  // Textures drawn at native resolution while their pack replacement loads in the background, by
+  // texture cache key: once the replacement is ready the native one is dropped and rebuilt with it.
+  std::unordered_map<uint64_t, std::string> pending_hd_;
+  void swap_in_ready_replacements();
   std::vector<ComPtr<ID3D12DescriptorHeap>> descriptor_garbage_[FRAME_SLOTS];
   uint64_t frame_counter_ = 0;
   uint32_t frames_presented_ = 0;
@@ -980,13 +986,13 @@ ID3D12PipelineState* D3D12Backend::fallback_pso(const PsoKey& key, const DrawCal
   FallbackKey fk{key.blend, key.zmode, key.cull, key.topology, key.pixel_format, key.mvec, (uint32_t)textured | ((uint32_t)colored << 1)};
   auto it = fallback_psos_.find(fk);
   if (it != fallback_psos_.end()) return it->second.Get();
-  // Untextured and uncoloured: the colour lives in TEV state this stand-in cannot read, and drawing
-  // it plain white flashed the screen. Skip it until the real pipeline arrives.
-  if (!textured && !colored) return nullptr;
-  // Blended draws likewise: their transparency usually comes from TEV state too (screen fades and
-  // transitions, shadows, glows), so the stand-in drew them fully opaque and the first frame of a new
-  // screen flashed bright. Missing a translucent layer for a frame or two is not visible.
-  if (dc.bp.blendmode() & 1) return nullptr;
+  // On menus and transitions only: an untextured, uncoloured draw has its colour in TEV state this
+  // stand-in cannot read and came out plain white, and a blended one (fades, transitions) came out
+  // opaque, so the first frame of a new screen flashed. Skipping them there is invisible. In a match
+  // the same kinds of draw are a stage's sky and cloud layers, and skipping one for a frame is a
+  // visible flicker (Yoshi's Story), so there the stand-in draws as it always did.
+  if (!in_match_ && (!textured && !colored)) return nullptr;
+  if (!in_match_ && (dc.bp.blendmode() & 1)) return nullptr;
   static const char* vs_src = R"(
 cbuffer VSBlock : register(b0) {
 float4 projection[4]; float4 depthparams; float4 viewparams; float4 materials[4]; float4 lights[40];
@@ -1115,7 +1121,11 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
   std::unique_ptr<texpack::Replacement> replacement;
   if (texpack::enabled() || texpack::dumping()) {
     pack_name = texpack::base_name(t, *t.data);
-    if (texpack::enabled()) {
+    if (texpack::enabled() && texpack::has(pack_name) && !texpack::ready(pack_name)) {
+      // Not decoded yet: draw the original now and load the replacement in the background.
+      texpack::request(pack_name);
+      pending_hd_[key] = pack_name;
+    } else if (texpack::enabled()) {
       replacement = texpack::load(pack_name, replacement_bytes_ < replacement_budget_
                                                  ? replacement_budget_ - replacement_bytes_ : 0);
       texpack::note_lookup(replacement != nullptr);
@@ -1410,7 +1420,7 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   b[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[0].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, src_state};
   if (!e.resource || e.width != sw || e.height != sh) {
-    if (e.resource) { frame_garbage_[slot_].push_back(e.resource); texture_sets_.clear(); }
+    if (e.resource) frame_garbage_[slot_].push_back(e.resource);
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     D3D12_RESOURCE_DESC rd{};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = sw; rd.Height = sh; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
@@ -1469,7 +1479,7 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   // DLSS: upscale the jittered EFB region (with depth and motion vectors) into the output texture first.
   bool upscaled = false;
   // Menus skip the upscaler and are presented from the EFB like native (see dlss_in_match_).
-  if (dlss_active_ && dlss_out_ && dlss_in_match_) {
+  if (dlss_active_ && dlss_out_ && (dlss_in_match_ || dlss_menus_)) {
     streamline::EvaluateInputs in{};
     in.color_in = efb_color_.Get(); in.color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     in.depth = efb_depth_.Get(); in.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
@@ -1535,6 +1545,24 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
     list_->SetDescriptorHeaps(2, heaps);
   }
+#ifdef GX_DLSS5
+  // DLSS 5 runs only in matches, and building it on the first match frame froze the countdown for a
+  // tenth of a second. On a menu, build it and run it once with the picture left untouched.
+  else if (opts_.dlss5 && dlss_active_ && dlss_out_ && !xess_active() &&
+           dlss5::needs_warmup(dlss_out_w_, dlss_out_h_, opts_.dlss5_tuning)) {
+    dlss5::Inputs n{};
+    n.device = device_.Get(); n.list = list_.Get();
+    n.color = dlss_out_.Get(); n.w = dlss_out_w_; n.h = dlss_out_h_;
+    n.depth = efb_depth_.Get(); n.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    n.mvec = mvec_.Get(); n.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    n.guide_x = 0; n.guide_y = 0; n.guide_w = (uint32_t)efb_w_; n.guide_h = (uint32_t)efb_h_;
+    n.reset = true; n.tuning = opts_.dlss5_tuning; n.warm_only = true;
+    dlss5::evaluate(n);
+    dlss5_reset_ = true;
+    ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
+    list_->SetDescriptorHeaps(2, heaps);
+  }
+#endif
   // Diagnostics (in-place DLAA / XeSS AA only): every other presented frame shows the upscaler's own
   // input instead of its output, while it keeps running every frame. A capture burst then puts each
   // output next to the input it came from, so a trail left by the upscaler can be measured.
@@ -1721,6 +1749,24 @@ void D3D12Backend::read_gpu_timers() {
   timer_rb_[slot_]->Unmap(0, &none);
 }
 
+// A replacement that finished loading in the background: drop the native texture drawn meanwhile so
+// the next use builds it again from the replacement (which load() now returns at once). The old
+// resource is kept until the GPU is done with it, and descriptor tables name resources by pointer.
+void D3D12Backend::swap_in_ready_replacements() {
+  if (pending_hd_.empty() || (frame_counter_ & 1)) return;
+  bool dropped = false;
+  for (auto it = pending_hd_.begin(); it != pending_hd_.end();) {
+    auto tex = textures_.find(it->first);
+    if (tex == textures_.end()) { it = pending_hd_.erase(it); continue; }
+    if (!texpack::ready(it->second)) { ++it; continue; }
+    frame_garbage_[slot_].push_back(tex->second.resource);
+    textures_.erase(tex);
+    it = pending_hd_.erase(it);
+    dropped = true;
+  }
+  if (dropped) texture_sets_.clear();
+}
+
 void D3D12Backend::capture_backbuffer() {
   // Read back the last presented back buffer into a PPM (development aid).
   UINT bb = (swapchain_->GetCurrentBackBufferIndex() + 2) % 3;
@@ -1841,6 +1887,7 @@ static void dump_frame(const Frame& frame, const std::string& path) {
 }
 
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
+  in_match_ = frame_in_match(frame);
   integrate_compiled_psos();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; wait_gpu(); sampler_sets_.clear(); }
   if (opts_.ssaa != ssaa_applied_ || (!dlss_active_ && pick_scale() != scale_)) {
@@ -1899,6 +1946,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   vertex_ring_.reset(slot_); index_ring_.reset(slot_); constant_ring_.reset(slot_); upload_ring_.reset(slot_);
   frame_garbage_[slot_].clear();
   descriptor_garbage_[slot_].clear();
+  swap_in_ready_replacements();
   check(allocators_[slot_]->Reset(), "allocator reset");
   check(list_->Reset(allocators_[slot_].Get(), nullptr), "list reset");
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
@@ -1920,6 +1968,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     // 2D screens, and the character select cursor left trails through it.
     const bool in_match = frame_in_match(frame);
     if (in_match != dlss_in_match_) { dlss_in_match_ = in_match; fc.reset = true; dlss_reset_ = true; xess_reset_ = true; }
+    // Tried: menus through DLAA and DLSS 5 when DLSS 5 is on. The neural pass put blocks around the
+    // flat menu art and the cursor, so menus stay as rendered and DLSS 5 waits for a match.
+    dlss_menus_ = false;
     if (in_match)
       for (const DrawCall& d : frame.draws) if (d.xf_regs[0x26] == 0) { build_projection(d, fc.projection); set_main_projection(&d); found = true; break; }
     if (!found) set_main_projection(nullptr);

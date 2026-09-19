@@ -26,6 +26,14 @@ struct Replacement {
 // Returns true when the state changed, meaning the caller must drop textures it already uploaded so
 // they are rebuilt with (or without) their replacements.
 bool configure(bool enabled, bool dump);
+
+// Background loading, so a replacement is never decoded on the render thread in the middle of a
+// frame (a 100 ms freeze at match start when the stage's textures were not prefetched yet).
+// has(): the pack has an enabled replacement under this name. ready(): it is decoded and waiting, so
+// load() returns at once. request(): decode it on the loader thread; ready() turns true when done.
+bool has(const std::string& base);
+bool ready(const std::string& base);
+void request(const std::string& base);
 bool enabled();
 bool dumping();
 

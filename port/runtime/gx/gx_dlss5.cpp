@@ -92,6 +92,7 @@ bool profile_delete(const std::string& name) {
 
 #ifndef GX_DLSS5
 bool evaluate(const Inputs&) { return false; }
+bool needs_warmup(uint32_t, uint32_t, const Tuning&) { return false; }
 bool running() { return false; }
 const char* status() { return "not built into this version"; }
 void shutdown() {}
@@ -319,6 +320,16 @@ bool create_feature(ID3D12GraphicsCommandList* list, uint32_t w, uint32_t h, con
 }
 }  // namespace
 
+static Tuning clamped(Tuning t) {
+  t.intensity = t.intensity < 0.0f ? 0.0f : t.intensity > 1.0f ? 1.0f : t.intensity;
+  return t;
+}
+
+bool needs_warmup(uint32_t w, uint32_t h, const Tuning& t) {
+  if (g.failed) return false;
+  return !g.feature || g.feature_w != w || g.feature_h != h || g.feature_tuning != clamped(t) || g.evaluations == 0;
+}
+
 bool evaluate(const Inputs& in) {
   if (g.release) collect_retired();
   if (g.failed || !in.color || !in.depth || !in.mvec || !in.w || !in.h || !in.guide_w || !in.guide_h) return false;
@@ -337,9 +348,8 @@ bool evaluate(const Inputs& in) {
     if (!make_texture(g.depth_copy, (uint32_t)dd.Width, dd.Height, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, "depth copy")) return false;
     g.depth_w = (uint32_t)dd.Width; g.depth_h = dd.Height;
   }
-  Tuning t = in.tuning;
-  t.intensity = t.intensity < 0.0f ? 0.0f : t.intensity > 1.0f ? 1.0f : t.intensity;
-  bool reset = in.reset;
+  Tuning t = clamped(in.tuning);
+  bool reset = in.reset || in.warm_only;
   if (!g.feature || g.feature_w != in.w || g.feature_h != in.h || g.feature_tuning != t) {
     if (!create_feature(list, in.w, in.h, t)) return false;
     reset = true;
@@ -382,6 +392,13 @@ bool evaluate(const Inputs& in) {
   const bool ok = r == NVSDK_NGX_Result_Success;
 
   barrier(list, in.mvec, npsr, mvec_state);
+  if (ok && in.warm_only) {
+    // Warm-up on a menu: the model has run once, the picture is left as it was.
+    barrier(list, in.color, npsr, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    if (g.evaluations++ == 0) host::log("dlss5: warmed up on a menu (ready before the match)");
+    g.failures = 0;
+    return false;
+  }
   barrier(list, in.color, npsr, ok ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   if (ok) {
     barrier(list, g.out.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -402,7 +419,7 @@ bool running() { return g.ready && g.feature && !g.failed; }
 const char* status() {
   if (g.failed) return g.reason.c_str();
   if (running()) return g.running_line.c_str();
-  return g.tried ? "starting" : "off";
+  return g.tried ? "starting" : "waiting for a match (menus are shown without it)";
 }
 
 void shutdown() {

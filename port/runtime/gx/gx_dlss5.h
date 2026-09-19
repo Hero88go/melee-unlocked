@@ -53,7 +53,13 @@ struct Inputs {
   uint32_t guide_x, guide_y, guide_w, guide_h;   // region of depth/mvec that maps onto the whole color image
   bool reset;                                    // no relation to the previous frame
   Tuning tuning;
+  bool warm_only = false;                        // build and run the model but leave in.color untouched
 };
+
+// Whether the model still has to be built (or rebuilt) for this size and tuning. The first build and
+// the first evaluation take about a tenth of a second; doing them on a menu frame with warm_only set
+// keeps that stall out of the match countdown.
+bool needs_warmup(uint32_t w, uint32_t h, const Tuning& t);
 
 // Runs the model over in.color. Returns true when the image was edited.
 bool evaluate(const Inputs& in);

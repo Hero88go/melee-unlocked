@@ -26,6 +26,9 @@
 #include <filesystem>
 #include <iterator>
 #include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <unordered_set>
 #include <system_error>
 #include <unordered_map>
 
@@ -641,6 +644,62 @@ std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budg
   }
   ++g.decoded;
   return out;
+}
+
+// ---- background loader ----
+std::mutex g_req_mutex;
+std::condition_variable g_req_cv;
+std::deque<std::string> g_req_queue;
+std::unordered_set<std::string> g_req_pending;
+std::thread g_req_thread;
+bool g_req_started = false;
+
+bool has(const std::string& base) {
+  if (!g.on || base.empty()) return false;
+  auto found = g.index.find(base);
+  if (found == g.index.end()) return false;
+  const Entry& entry = found->second;
+  if (entry.pack >= 0 && entry.pack < (int)g.packs.size() && !g.packs[(size_t)entry.pack].enabled) return false;
+  return !entry.levels.empty() && !entry.levels[0].empty();
+}
+
+bool ready(const std::string& base) {
+  std::lock_guard<std::mutex> lk(g_cache_mutex);
+  return g_cache.count(base) != 0;
+}
+
+void request(const std::string& base) {
+  std::lock_guard<std::mutex> lk(g_req_mutex);
+  if (!g_req_pending.insert(base).second) return;
+  g_req_queue.push_back(base);
+  if (!g_req_started) {
+    g_req_started = true;
+    g_req_thread = std::thread([] {
+      for (;;) {
+        std::string name;
+        {
+          std::unique_lock<std::mutex> lk(g_req_mutex);
+          g_req_cv.wait(lk, [] { return !g_req_queue.empty(); });
+          name = std::move(g_req_queue.front());
+          g_req_queue.pop_front();
+        }
+        bool cached;
+        { std::lock_guard<std::mutex> lk(g_cache_mutex); cached = g_cache.count(name) != 0; }
+        if (!cached && g.on) {
+          // Wanted right now, so it goes in past the prefetch cap; load() takes it out again.
+          if (auto r = decode_entry(name, ~0ull)) {
+            std::lock_guard<std::mutex> lk(g_cache_mutex);
+            g_cache_bytes += r->pixels.size();
+            g_cache.emplace(name, std::move(r));
+          }
+        }
+        std::lock_guard<std::mutex> lk(g_req_mutex);
+        g_req_pending.erase(name);
+      }
+    });
+    g_req_thread.detach();
+  }
+  g_req_cv.notify_one();
 }
 
 void dump_level(const std::string& base, uint32_t level, const uint8_t* level_rgba,
