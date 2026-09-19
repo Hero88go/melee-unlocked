@@ -8,6 +8,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
+#include <string>
+#include <vector>
 
 struct ID3D12Device;
 struct ID3D12Resource;
@@ -32,6 +34,16 @@ struct Tuning {
   }
 };
 
+// Named DLSS 5 tuning presets, one text file per name in a Dlss5Profiles folder beside
+// port-settings.ini (same convention as ControllerProfiles). Different games, different taste in
+// the picture, different opponents to compare against -- a name is easier to get back to than
+// remembering seven slider positions.
+void profile_set_folder(const std::string& settings_path);
+std::vector<std::string> profile_list();
+bool profile_save(const std::string& name, const Tuning& t);
+bool profile_load(const std::string& name, Tuning& t);   // false, t untouched, if the file is missing or unreadable
+bool profile_delete(const std::string& name);
+
 struct Inputs {
   ID3D12Device* device;
   ID3D12GraphicsCommandList* list;
@@ -41,7 +53,6 @@ struct Inputs {
   uint32_t guide_x, guide_y, guide_w, guide_h;   // region of depth/mvec that maps onto the whole color image
   bool reset;                                    // no relation to the previous frame
   Tuning tuning;
-  bool compare;                                  // left half as DLSS produced it, right half with DLSS 5
 };
 
 // Runs the model over in.color. Returns true when the image was edited.

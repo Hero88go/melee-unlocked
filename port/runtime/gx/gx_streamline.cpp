@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <atomic>
@@ -60,9 +61,12 @@ bool set_constants(const FrameConstants&) { return false; }
 bool evaluate(ID3D12GraphicsCommandList*, const EvaluateInputs&) { return false; }
 bool frame_generation_available() { return false; }
 bool reflex_available() { return false; }
-void set_frame_generation(bool) {}
+uint32_t frame_generation_max_multiplier() { return 1; }
+bool frame_generation_dynamic_supported() { return false; }
+void set_frame_generation(int) {}
 void set_reflex(int) {}
 float reflex_latency_ms() { return 0.0f; }
+ReflexBreakdown reflex_breakdown() { return {}; }
 void update_reflex_stats() {}
 void pcl_marker(int) {}
 void log_frame_generation() {}
@@ -70,7 +74,12 @@ void log_frame_generation() {}
 
 namespace {
 HMODULE g_module = nullptr;
-bool g_ready = false, g_dlss_ok = false, g_fg_ok = false, g_reflex_ok = false, g_fg_on = false, g_reflex_on = false;
+bool g_ready = false, g_dlss_ok = false, g_fg_ok = false, g_reflex_ok = false, g_fg_on = false;
+// Whether the Reflex plugin has been handed options at all (any mode, including Off) and can be
+// asked for a report. Separate from whether the low-latency algorithm is actually throttling
+// anything (ReflexOptions::mode): the PC Latency markers and the telemetry they produce run
+// regardless of that, so the latency reading works at Native too.
+bool g_reflex_ready = false;
 sl::FrameToken* g_token = nullptr;
 sl::ViewportHandle g_viewport{0u};
 typedef HRESULT(WINAPI* PFunCreateDXGIFactory2)(UINT, REFIID, void**);
@@ -318,28 +327,72 @@ void set_reflex(int mode) {
   r.mode = mode >= 2 ? sl::ReflexMode::eLowLatencyWithBoost : mode == 1 ? sl::ReflexMode::eLowLatency : sl::ReflexMode::eOff;
   r.useMarkersToOptimize = mode > 0;
   const sl::Result res = slReflexSetOptions(r);
-  g_reflex_on = mode > 0 && res == sl::Result::eOk;
-  if (!g_reflex_on) g_latency_ms = 0.0f;
+  g_reflex_ready = res == sl::Result::eOk;   // markers/telemetry can flow now, whatever the mode is
   host::log("reflex: %s (%d)", mode >= 2 ? "on + boost" : mode == 1 ? "on" : "off", (int)res);
 }
 float reflex_latency_ms() { return g_latency_ms.load(std::memory_order_relaxed); }
+std::atomic<float> g_sim_ms{0}, g_render_submit_ms{0}, g_driver_ms{0}, g_os_queue_ms{0}, g_gpu_render_ms{0};
+ReflexBreakdown reflex_breakdown() {
+  ReflexBreakdown b;
+  b.sim = g_sim_ms.load(std::memory_order_relaxed); b.render_submit = g_render_submit_ms.load(std::memory_order_relaxed);
+  b.driver = g_driver_ms.load(std::memory_order_relaxed); b.os_queue = g_os_queue_ms.load(std::memory_order_relaxed);
+  b.gpu_render = g_gpu_render_ms.load(std::memory_order_relaxed);
+  return b;
+}
 void update_reflex_stats() {
-  if (!g_reflex_on) return;
+  if (!g_reflex_ready) return;
   sl::ReflexState st{};
   if (slReflexGetState(st) != sl::Result::eOk || !st.latencyReportAvailable) return;
-  double sum = 0; int n = 0;
-  for (const auto& r : st.frameReport)
-    if (r.simStartTime && r.gpuRenderEndTime > r.simStartTime) { sum += (double)(r.gpuRenderEndTime - r.simStartTime); ++n; }
-  if (n) g_latency_ms = (float)(sum / n / 1000.0);   // report times are in microseconds
+  double total = 0, sim = 0, submit = 0, drv = 0, queue = 0, gpu = 0;
+  int n = 0, ns = 0, nu = 0, nd = 0, nq = 0, ng = 0;
+  auto span = [](uint64_t a, uint64_t b) { return b > a ? (double)(b - a) : -1.0; };
+  for (const auto& r : st.frameReport) {
+    if (r.simStartTime && r.gpuRenderEndTime > r.simStartTime) { total += (double)(r.gpuRenderEndTime - r.simStartTime); ++n; }
+    double v;
+    if ((v = span(r.simStartTime, r.simEndTime)) >= 0) { sim += v; ++ns; }
+    if ((v = span(r.renderSubmitStartTime, r.renderSubmitEndTime)) >= 0) { submit += v; ++nu; }
+    if ((v = span(r.driverStartTime, r.driverEndTime)) >= 0) { drv += v; ++nd; }
+    if ((v = span(r.osRenderQueueStartTime, r.osRenderQueueEndTime)) >= 0) { queue += v; ++nq; }
+    if ((v = span(r.gpuRenderStartTime, r.gpuRenderEndTime)) >= 0) { gpu += v; ++ng; }
+  }
+  // Report times are in microseconds.
+  if (n) g_latency_ms = (float)(total / n / 1000.0);
+  if (ns) g_sim_ms = (float)(sim / ns / 1000.0);
+  if (nu) g_render_submit_ms = (float)(submit / nu / 1000.0);
+  if (nd) g_driver_ms = (float)(drv / nd / 1000.0);
+  if (nq) g_os_queue_ms = (float)(queue / nq / 1000.0);
+  if (ng) g_gpu_render_ms = (float)(gpu / ng / 1000.0);
 }
-void set_frame_generation(bool on) {
+// What the hardware allows: numFramesToGenerateMax 1 means only a 2x multiplier is available (RTX
+// 40 series), higher means Multi Frame Generation (RTX 50 series, up to 4x = max 3). Queried once,
+// the first time frame generation is asked for, since it needs no active session to answer.
+std::atomic<uint32_t> g_fg_max{1};
+std::atomic<bool> g_fg_dynamic_ok{false};
+bool g_fg_queried = false;
+void query_frame_generation_limits() {
+  if (g_fg_queried || !frame_generation_available()) return;
+  g_fg_queried = true;
+  sl::DLSSGState st{};
+  if (slDLSSGGetState(g_viewport, st, nullptr) != sl::Result::eOk) return;
+  g_fg_max = std::max<uint32_t>(1, st.numFramesToGenerateMax);
+  g_fg_dynamic_ok = st.bIsDynamicMFGSupported == sl::Boolean::eTrue;
+  host::log("dlss: frame generation up to %ux%s", g_fg_max.load() + 1, g_fg_dynamic_ok.load() ? ", Dynamic available" : "");
+}
+uint32_t frame_generation_max_multiplier() { query_frame_generation_limits(); return g_fg_max.load(); }
+bool frame_generation_dynamic_supported() { query_frame_generation_limits(); return g_fg_dynamic_ok.load(); }
+
+// mode: 0 off, 1 2x, 2 3x, 3 4x, 4 Dynamic (the driver picks the multiplier, up to what the hardware allows).
+void set_frame_generation(int mode) {
   if (!frame_generation_available()) return;
+  query_frame_generation_limits();
   sl::DLSSGOptions o{};
-  o.mode = on ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
-  o.numFramesToGenerate = 1;
+  const bool dynamic = mode == 4 && g_fg_dynamic_ok.load();
+  o.mode = mode == 0 ? sl::DLSSGMode::eOff : dynamic ? sl::DLSSGMode::eDynamic : sl::DLSSGMode::eOn;
+  o.numFramesToGenerate = dynamic ? g_fg_max.load() : (uint32_t)std::clamp(mode, 1, (int)g_fg_max.load());
   const sl::Result res = slDLSSGSetOptions(g_viewport, o);
-  g_fg_on = on && res == sl::Result::eOk;
-  host::log("dlss: frame generation %s (%d)", on ? "on" : "off", (int)res);
+  g_fg_on = mode != 0 && res == sl::Result::eOk;
+  static const char* names[] = {"off", "2x", "3x", "4x", "dynamic"};
+  host::log("dlss: frame generation %s (%d)", names[std::clamp(mode, 0, 4)], (int)res);
 }
 void log_frame_generation() {
   if (!g_fg_on) return;
@@ -348,7 +401,7 @@ void log_frame_generation() {
   host::log("dlss: frame generation status %u, %u frames presented per rendered frame", (unsigned)st.status, st.numFramesActuallyPresented);
 }
 void pcl_marker(int marker) {
-  if (!g_token || !g_reflex_on) return;
+  if (!g_token || !g_reflex_ready) return;
   slPCLSetMarker((sl::PCLMarker)marker, *g_token);
 }
 

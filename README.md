@@ -78,6 +78,33 @@ updates and the Slippi account check in one place.
 - **Updates**: it checks for a new release on every start. "Update and restart" installs it in
   place; settings, saves and replays stay.
 
+### Legacy vs. DLSS 5 Experimental
+
+Two builds are available, picked from the **GAME BUILD** dropdown on the launcher's Play page
+(remembered between launches; the manual `.bat` files always run Legacy):
+
+- **Legacy** (`MeleeUnlocked-<version>-win64.zip`): the regular game. Ordinary NVIDIA DLSS / DLAA
+  upscaling, Frame Generation and Reflex are all here; none of it needs DLSS 5.
+- **DLSS 5 Experimental** (`MeleeUnlocked-<version>-DLSS5-Experimental.zip`): everything in
+  Legacy, plus an extra, optional neural-rendering pass over the DLSS/DLAA image
+  (`melee_port_dlss5.exe` / `melee_port_dlss5_compat.exe`, on by picking "Insane" in the Quality
+  presets or the DLSS 5 controls in PC settings). It is experimental, intended for RTX 50-series
+  GPUs or newer, and is not included in or reachable from the Legacy build at all: the Legacy
+  executables are compiled without this code.
+
+  Picking DLSS 5 Experimental from a Legacy-only install downloads and installs the complete
+  experimental zip once, then launches it; after that it is just the other choice in the
+  dropdown. Switching back to Legacy needs nothing extra.
+
+  DLSS 5's neural model is **not included** in either zip and is not shipped by this project.
+  The game looks for it in the NVIDIA driver first; if the driver does not carry one, drop a
+  `nvngx_dlssnr.dll` next to `melee_port_dlss5.exe` (or the `_compat` executable) yourself. One
+  place this model has turned up is the [DLSS5-Swapper](https://github.com/rakanki911/DLSS5-Swapper)
+  project (v2.2.7 at the time of writing) — that tool's own Streamline integration is unrelated;
+  only the model file is relevant here. Whatever you supply, DLSS 5 status in the PC settings
+  panel always reflects what actually loaded (off, starting, running, or why it failed), not a
+  fixed claim about your driver.
+
 ### Build from source
 
 Windows 10/11, your own ISO, about 5-10 minutes the first time. The game is translated to C++

@@ -66,11 +66,22 @@ bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in);
 // and always runs with Reflex on, as NVIDIA requires.
 bool frame_generation_available();
 bool reflex_available();
-void set_frame_generation(bool on);
+// What the hardware allows: 1 (2x only, RTX 40) up to 3 (4x, Multi Frame Generation, RTX 50).
+// Answered once queried; 1 until then.
+uint32_t frame_generation_max_multiplier();
+bool frame_generation_dynamic_supported();   // whether DLSSGMode::eDynamic (an auto-picked multiplier) is offered
+void set_frame_generation(int mode);   // 0 off, 1 2x, 2 3x, 3 4x, 4 Dynamic
 void set_reflex(int mode);   // 0 off, 1 low latency, 2 low latency + boost
 // Reflex's measured render latency (simulation start to GPU finished), averaged over the recent frame
 // reports, in milliseconds; 0 when Reflex has no report yet. Refreshed by update_reflex_stats().
+// Populated whether or not Reflex's low-latency mode is on: the PC Latency markers run every frame
+// regardless (see pcl_marker), so this keeps working running plain Native.
 float reflex_latency_ms();
+// Where that time goes, each stage's share in milliseconds, same averaging and same availability as
+// reflex_latency_ms(). Sums to close to the total (osRenderQueue and driver overlap the others a
+// little, which NVIDIA's own report structure allows for).
+struct ReflexBreakdown { float sim = 0, render_submit = 0, driver = 0, os_queue = 0, gpu_render = 0; };
+ReflexBreakdown reflex_breakdown();
 void update_reflex_stats();
 // Reflex latency markers for the current frame token (0 sim start, 1 sim end, 2 render submit
 // start, 3 render submit end, 4 present start, 5 present end). No-op without a token or Reflex.

@@ -4,12 +4,17 @@
 #include <string>
 #include <vector>
 #include "gx_core.h"
+#ifdef GX_DLSS5
 #include "gx_dlss5.h"
+#endif
 
 namespace gx {
-// Video memory the game is using and the budget Windows gives it, in GB (D3D12 only; false until
-// the renderer has measured it). Refreshed about twice a second.
-bool vram_usage(float* used_gb, float* budget_gb);
+// Video memory the game is using and the adapter's own installed size, in GB (D3D12 only; false
+// until the renderer has measured it). Refreshed about twice a second.
+bool vram_usage(float* used_gb, float* total_gb);
+// GPU-measured cost of the DLAA/DLSS pass and the DLSS 5 pass, in milliseconds; 0 for a pass that
+// has not run since launch. See D3D12Backend::read_gpu_timers.
+void gpu_pass_cost(float* dlaa_ms, float* neural_ms);
 
 // Authored = predict ahead from the latest game frame (no delay); AuthoredInterpolate = exact
 // in-betweens of the last two game frames (one frame of display delay, no overshoot).
@@ -32,16 +37,19 @@ struct D3D12Options {
   // than Off the renderer presents new sub-frames between 60 Hz simulation frames.
   double fps_cap = 60; // -1 follows the active monitor
   bool fullscreen = false;
-  bool frame_generation = false;  // DLSS Frame Generation (RTX 40+): needs an Upscaling mode; adds latency
+  // DLSS Frame Generation (RTX 40+): needs an Upscaling mode; adds latency. 0 off, 1 2x, 2 3x, 3 4x
+  // (Multi Frame Generation, RTX 50 only), 4 Dynamic (the driver picks the multiplier).
+  int frame_generation_mode = 0;
   int reflex_mode = 0;            // NVIDIA Reflex: 0 off, 1 on, 2 on + boost (at least on whenever frame generation is)
   bool reflex_stats = false;      // show Reflex's measured render latency under the FPS counter
   bool reflex_flash = false;      // Reflex flash indicator (latency analyzer monitors, LDAT): flashes on the A button
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
   // EXPERIMENTAL DLSS 5 Neural Rendering over the DLSS/DLAA output (gx_dlss5.h). Needs D3D12, an
   // Upscaling mode other than Native, and NVIDIA's model on the machine; off by default.
+#ifdef GX_DLSS5
   bool dlss5 = false;
   dlss5::Tuning dlss5_tuning;
-  bool dlss5_compare = false;   // split view: left half without DLSS 5, right half with it
+#endif
   float dlss_jitter_sign = -1.0f; // calibrated 2026-09-11: -1 reconstructs sharp text, +1 blurs (see PORT_COMPLETION.md)
   bool pc_settings = false, settings_open = false, performance_overlay = false;
   bool show_vram = false;          // video memory in use and the budget Windows gives the game, under the FPS
@@ -115,6 +123,9 @@ struct D3D12Options {
   // instead of a stutter each time a new texture comes on screen.
   bool prefetch_textures = true;
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
+  // Display adjustment in the present pass, over the whole picture including the HUD. 1.0 is neutral
+  // (untouched) for all three; the shader skips the work entirely when nobody has moved them.
+  float brightness = 1.0f, contrast = 1.0f, vibrance = 1.0f;
   int anisotropy = 16;        // texture anisotropic filtering 1..16
   int ssaa = 1;               // supersampling factor: 1 off, 2 = 4x SSAA (EFB rendered at 2x the chosen scale, box filtered)
   std::string capture_path;   // write a PPM of the presented image at capture_frame

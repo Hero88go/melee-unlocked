@@ -9,6 +9,9 @@
 #include <wrl/client.h>
 #include <string>
 #include <vector>
+#include <algorithm>
+#include <filesystem>
+#include <fstream>
 
 #ifdef GX_DLSS5
 #include <nvsdk_ngx.h>
@@ -16,6 +19,76 @@
 
 namespace gx {
 namespace dlss5 {
+
+namespace {
+std::string g_profile_dir;
+std::string clean_profile_name(const std::string& name) {
+  std::string out;
+  for (char c : name) if (isalnum((unsigned char)c) || c == ' ' || c == '-' || c == '_' || c == '.') out += c;
+  while (!out.empty() && out.back() == ' ') out.pop_back();
+  size_t start = out.find_first_not_of(' ');
+  if (start == std::string::npos) return "";
+  out = out.substr(start);
+  if (out.size() > 40) out.resize(40);
+  return out;
+}
+std::filesystem::path profile_path(const std::string& name) {
+  return std::filesystem::path(g_profile_dir) / (clean_profile_name(name) + ".txt");
+}
+}  // namespace
+
+void profile_set_folder(const std::string& settings_path) {
+  std::filesystem::path p(settings_path);
+  g_profile_dir = (p.parent_path() / "Dlss5Profiles").string();
+}
+std::vector<std::string> profile_list() {
+  std::vector<std::string> out;
+  if (g_profile_dir.empty()) return out;
+  std::error_code ec;
+  for (const auto& e : std::filesystem::directory_iterator(g_profile_dir, ec)) {
+    if (!e.is_regular_file()) continue;
+    const std::filesystem::path& p = e.path();
+    if (p.extension() == ".txt") out.push_back(p.stem().string());
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+bool profile_save(const std::string& name, const Tuning& t) {
+  if (g_profile_dir.empty() || clean_profile_name(name).empty()) return false;
+  std::error_code ec;
+  std::filesystem::create_directories(g_profile_dir, ec);
+  std::ofstream f(profile_path(name));
+  if (!f) return false;
+  f << "# Melee Unlocked DLSS 5 profile\n"
+       "intensity " << t.intensity << "\ndetail " << t.detail << "\ntone " << t.tone << "\nskin " << t.skin
+    << "\nstyle " << t.style << "\npreset " << t.preset << "\nautomask " << (t.auto_mask ? 1 : 0) << "\n";
+  return f.good();
+}
+bool profile_load(const std::string& name, Tuning& t) {
+  if (g_profile_dir.empty()) return false;
+  std::ifstream f(profile_path(name));
+  if (!f) return false;
+  Tuning loaded;
+  std::string key; std::string value;
+  while (f >> key >> value) {
+    try {
+      if (key == "intensity") loaded.intensity = std::stof(value);
+      else if (key == "detail") loaded.detail = std::stof(value);
+      else if (key == "tone") loaded.tone = std::stof(value);
+      else if (key == "skin") loaded.skin = std::stof(value);
+      else if (key == "style") loaded.style = std::stoi(value);
+      else if (key == "preset") loaded.preset = std::stoi(value);
+      else if (key == "automask") loaded.auto_mask = value == "1";
+    } catch (...) { return false; }
+  }
+  t = loaded;
+  return true;
+}
+bool profile_delete(const std::string& name) {
+  if (g_profile_dir.empty()) return false;
+  std::error_code ec;
+  return std::filesystem::remove(profile_path(name), ec);
+}
 
 #ifndef GX_DLSS5
 bool evaluate(const Inputs&) { return false; }
@@ -162,7 +235,7 @@ bool ensure_ready(ID3D12Device* proxy_device) {
   if (NVSDK_NGX_FAILED(r) || !g.caps) return fail("NVIDIA NGX gave no parameters (" + hex((unsigned)r) + ")");
 
   const std::wstring model = find_model();
-  if (model.empty()) return fail("DLSS 5 model not found: update the NVIDIA driver to 616.64 or newer, or put nvngx_dlssnr.dll next to melee_port.exe");
+  if (model.empty()) return fail("DLSS 5 model not found in the NVIDIA driver or beside the game executable (nvngx_dlssnr.dll)");
   host::log("dlss5: model %s", narrow(model).c_str());
   if (!g.load(model.c_str())) return fail("nvngx_dlssnr.dll would not load (" + narrow(model) + ")");
 
@@ -312,15 +385,7 @@ bool evaluate(const Inputs& in) {
   barrier(list, in.color, npsr, ok ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
   if (ok) {
     barrier(list, g.out.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    if (in.compare) {
-      // Split view: only the right half takes the model's result; the left keeps the DLSS frame.
-      D3D12_TEXTURE_COPY_LOCATION dst{in.color, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-      D3D12_TEXTURE_COPY_LOCATION src{g.out.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
-      D3D12_BOX box{in.w / 2, 0, 0, in.w, in.h, 1};
-      list->CopyTextureRegion(&dst, in.w / 2, 0, 0, &src, &box);
-    } else {
-      list->CopyResource(in.color, g.out.Get());
-    }
+    list->CopyResource(in.color, g.out.Get());
     barrier(list, g.out.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     barrier(list, in.color, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     g.failures = 0;

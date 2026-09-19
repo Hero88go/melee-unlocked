@@ -35,6 +35,18 @@ void load(const std::string& path, const std::vector<std::string>& enabled_names
 const std::string& path();
 std::vector<Code>& codes();
 bool any_enabled();
+
+// Parses a pasted or typed code and appends it, so a player can bring in a code without editing
+// GeckoCodes.ini by hand. `body` is the code's hex lines, one "XXXXXXXX YYYYYYYY" pair per line
+// (blank lines and "*" note lines are fine and kept); if its first line is "$Name", that name is
+// used instead of `name`. Returns empty on success, or why it was refused (a duplicate name, or no
+// hex-pair line found). Does not write the file; call save() afterwards.
+std::string add(const std::string& name, const std::string& body);
+// Removes a code by name. Does not write the file; call save() afterwards.
+void remove(const std::string& name);
+// Writes every current code back to GeckoCodes.ini, in Dolphin's format, so the file on disk always
+// matches what the panel shows (and stays readable by Dolphin or another tool). True on success.
+bool save();
 // Called once per game frame (from HLE(PADRead)) to apply the enabled codes' writes.
 void apply();
 
