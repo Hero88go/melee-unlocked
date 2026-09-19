@@ -49,7 +49,7 @@
 #define IDB_BAILEY 5
 
 namespace {
-enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_TIMER = 1 };
+enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_ENGINE, ID_TIMER = 1 };
 const UINT WM_APP_LOG = WM_APP + 1;      // lParam: heap std::string* to append to the log
 const UINT WM_APP_BUILD_DONE = WM_APP + 2;
 const UINT WM_APP_GAME_DONE = WM_APP + 3;
@@ -77,7 +77,7 @@ const COLORREF C_OK = RGB(0x5A, 0xC8, 0x8A), C_WARN = RGB(0xE5, 0xA8, 0x4A), C_B
 const COLORREF NO_FILL = CLR_INVALID;
 
 HWND g_main;
-HWND g_play[5], g_build[2];
+HWND g_play[6], g_build[2];
 HWND g_iso_edit, g_play_btn, g_slippi_btn, g_update_btn, g_log, g_build_btn;
 HFONT g_font, g_font_big, g_font_mono, g_font_mark, g_font_nav, g_font_label, g_font_small;
 HICON g_mark = nullptr;          // IDI_MELEE_MARK, the wordmark drawn at the top of the rail
@@ -95,6 +95,13 @@ std::string g_dir, g_iso, g_game_exe;
 // around without waiting for a release.
 enum CpuBuild { CPU_AUTO = 0, CPU_STANDARD = 1, CPU_COMPAT = 2 };
 int g_cpu_build = CPU_AUTO;
+// Which engine runs the game. The source build (melee_source.exe + melee_game.dll) is the native
+// one; Legacy is the recompilation that every release so far has shipped. Both read the same
+// port-settings.ini from the same working directory, so switching does not move anyone's settings.
+// Slippi online only exists in Legacy, so an online session starts Legacy whatever this says.
+enum Engine { ENGINE_LEGACY = 0, ENGINE_SOURCE = 1 };
+int g_engine = ENGINE_LEGACY;
+HWND g_engine_btn = nullptr;
 std::string g_slippi_line, g_version_line;
 COLORREF g_version_dot = C_FAINT;
 std::atomic<bool> g_building{false}, g_playing{false};
@@ -147,6 +154,11 @@ void load_ini() {
     std::string line;
     while (std::getline(f, line)) {
       if (!line.empty() && line.back() == '') line.pop_back();
+      if (line.rfind("engine=", 0) == 0) {
+        const int v = std::atoi(line.c_str() + 7);
+        if (v >= ENGINE_LEGACY && v <= ENGINE_SOURCE) g_engine = v;
+        continue;
+      }
       if (line.rfind("cpubuild=", 0) != 0) continue;
       const int v = std::atoi(line.c_str() + 9);
       if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
@@ -168,6 +180,7 @@ void save_ini() {
     f << "iso=" << g_iso << "\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
     if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
+    if (g_engine != ENGINE_LEGACY) f << "engine=" << g_engine << "\n";
   }
   const std::string shared = shared_ini_path();
   if (!shared.empty()) { std::ofstream f(shared); f << "iso=" << g_iso << "\n"; }
@@ -273,10 +286,30 @@ bool cpu_has_avx2() {
   __cpuidex(r, 7, 0); return (r[1] >> 5) & 1;
 }
 
+// The source build is two files: the host and the game library beside it. A release that predates
+// it, or a source checkout that has not built it, has neither, so the engine choice is only offered
+// when both are actually there.
+std::string source_exe_dir() {
+  if (file_exists(g_dir + "\\melee_source.exe") && file_exists(g_dir + "\\melee_game.dll")) return g_dir;
+  const std::string root = repo_root();
+  if (!root.empty()) {
+    const std::string d = root + "\\build-sourceport\\port\\Release";
+    if (file_exists(d + "\\melee_source.exe") && file_exists(d + "\\melee_game.dll")) return d;
+  }
+  return "";
+}
+bool source_available() { return !source_exe_dir().empty(); }
+
 std::string game_exe() {
   // Automatic only hands over the compatibility build to a processor that cannot run the other one.
   // A machine that can, keeps it. The two explicit choices exist so that a player who knows their
   // machine is not stuck arguing with a detector.
+  if (g_engine == ENGINE_SOURCE) {
+    const std::string d = source_exe_dir();
+    if (!d.empty()) return d + "\\melee_source.exe";
+    // Chosen but no longer present, most likely an update that dropped it. Fall through to Legacy
+    // rather than failing to start.
+  }
   const bool want_compat = g_cpu_build == CPU_COMPAT ||
                            (g_cpu_build == CPU_AUTO && !cpu_has_avx2());
   if (want_compat && file_exists(g_dir + "\\melee_port_compat.exe"))
@@ -594,6 +627,7 @@ void select_tab(int idx) {
   for (HWND h : g_play) if (h) ShowWindow(h, idx == 0 ? SW_SHOW : SW_HIDE);
   for (HWND h : g_build) if (h) ShowWindow(h, idx == 1 ? SW_SHOW : SW_HIDE);
   if (idx == 0 && !g_slippi_missing) ShowWindow(g_slippi_btn, SW_HIDE);
+  if (idx == 0 && g_engine_btn && !source_available()) ShowWindow(g_engine_btn, SW_HIDE);
   if (idx != 0) ShowWindow(g_update_btn, SW_HIDE);
   if (g_main) InvalidateRect(g_main, nullptr, FALSE);
 }
@@ -646,6 +680,37 @@ void open_settings() {
   }
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
+}
+
+// The button says which engine the next launch uses, and only appears when there is a choice to
+// make. Legacy is still the default: the source build has not been through the parity sweep, and
+// until its sub-frame work lands it runs at 60 Hz, which is the one thing this project will not
+// make anyone accept by default.
+void refresh_engine() {
+  if (!g_engine_btn) return;
+  const bool have = source_available();
+  if (!have && g_engine != ENGINE_LEGACY) { g_engine = ENGINE_LEGACY; save_ini(); }
+  ShowWindow(g_engine_btn, have ? SW_SHOW : SW_HIDE);
+  set_text(g_engine_btn, g_engine == ENGINE_SOURCE ? "Engine: Source" : "Engine: Legacy");
+  // The source build has no Slippi in it at all, so the account line would be telling the player
+  // about something this launch cannot reach.
+  if (g_engine == ENGINE_SOURCE) {
+    g_slippi_line = "Source engine: offline modes only. Switch to Legacy for online.";
+    g_slippi_missing = false;   // not a problem to fix, just what this engine is
+    ShowWindow(g_slippi_btn, SW_HIDE);
+  } else {
+    g_slippi_line = slippi_account_line();
+    g_slippi_missing = g_slippi_line.rfind("Slippi account:", 0) != 0;
+    ShowWindow(g_slippi_btn, g_slippi_missing ? SW_SHOW : SW_HIDE);
+  }
+  InvalidateRect(g_main, nullptr, FALSE);
+}
+
+void toggle_engine() {
+  if (g_playing || !source_available()) return;
+  g_engine = g_engine == ENGINE_SOURCE ? ENGINE_LEGACY : ENGINE_SOURCE;
+  save_ini();
+  refresh_engine();
 }
 
 void start_game() {
@@ -717,6 +782,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_play[i++] = g_iso_edit = make(L"EDIT", L"", ES_AUTOHSCROLL | ES_READONLY, CX + 10, 66, 360, 18, ID_ISO_EDIT);
       g_play[i++] = make(L"BUTTON", L"Browse...", BS_OWNERDRAW, 602, 58, 96, 34, ID_BROWSE);
       g_play[i++] = g_play_btn = make(L"BUTTON", L"PLAY", BS_OWNERDRAW, CX, 118, CW, 76, ID_PLAY, g_font_big);
+      g_play[i++] = g_engine_btn = make(L"BUTTON", L"Engine", BS_OWNERDRAW, CX, 280, 160, 30, ID_ENGINE);
       g_play[i++] = g_slippi_btn = make(L"BUTTON", L"Get Slippi Launcher", BS_OWNERDRAW, 554, 214, 144, 30, ID_SLIPPI_GET);
       g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_OWNERDRAW, 554, 246, 144, 30, ID_UPDATE);
       // Build page
@@ -727,9 +793,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       load_ini();
       set_iso(g_iso);
       if (!g_iso.empty()) save_ini();   // remember wherever it came from
-      g_slippi_line = slippi_account_line();
-      g_slippi_missing = g_slippi_line.rfind("Slippi account:", 0) != 0;
-      ShowWindow(g_slippi_btn, g_slippi_missing ? SW_SHOW : SW_HIDE);
+      refresh_engine();   // sets the account line and the Get-Slippi button for the chosen engine
       host::updater::check(MELEE_PORT_VERSION);
       refresh_updater();
       SetTimer(hwnd, ID_TIMER, 500, nullptr);
@@ -788,6 +852,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           else host::updater::download_and_install();
           refresh_updater();
           break;
+        case ID_ENGINE: toggle_engine(); break;
         case ID_SLIPPI_GET: ShellExecuteW(hwnd, L"open", L"https://slippi.gg/downloads", nullptr, nullptr, SW_SHOWNORMAL); break;
       }
       return 0;
