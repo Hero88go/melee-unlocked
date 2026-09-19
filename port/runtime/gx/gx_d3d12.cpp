@@ -42,6 +42,13 @@
 using Microsoft::WRL::ComPtr;
 
 namespace gx {
+// VRAM meter (see vram_usage): written by the renderer, read by the settings overlay.
+std::atomic<float> g_vram_used{0.0f}, g_vram_budget{0.0f};
+bool vram_usage(float* used_gb, float* budget_gb) {
+  *used_gb = g_vram_used.load(std::memory_order_relaxed); *budget_gb = g_vram_budget.load(std::memory_order_relaxed);
+  return *budget_gb > 0.0f;
+}
+
 
 namespace {
 
@@ -211,9 +218,13 @@ class D3D12Backend : public Backend {
   uint32_t dlss_out_w_ = 0, dlss_out_h_ = 0;
   float jitter_x_ = 0, jitter_y_ = 0;
   bool dlss_reset_ = true;
-  struct LastPose { float pos[256]; float proj[16]; uint64_t frame; };
+  // A draw's pose this frame and in the frame before. A model drawn in several passes in one frame
+  // (fighters are) must compare every pass with the previous frame; comparing a second pass with the
+  // first pass's pose gave zero motion, and DLSS/DLAA blended the moving fighter into the background.
+  struct LastPose { float pos[256]; float proj[16]; uint64_t frame; float prev_pos[256]; float prev_proj[16]; uint64_t prev_frame; };
   std::unordered_map<uint64_t, LastPose> last_poses_;
   void configure_dlss();
+  void update_vram();
   void set_dlss_mip_bias(float bias);
   void bind_efb_targets();
   void output_size(int* vw, int* vh) const;
@@ -289,6 +300,8 @@ class D3D12Backend : public Backend {
   uint64_t mv_draws_ = 0, mv_matched_ = 0;
   bool fg_applied_ = false; int reflex_applied_ = 0;   // what Streamline was last told
   bool xess_reset_ = true;
+  bool dlss_in_match_ = false;
+  ComPtr<IDXGIAdapter3> adapter3_;   // video memory queries   // last frame's frame_in_match: the upscaler's history restarts on a change
   std::wstring exe_dir_;   // for loading the upscaler libraries
   bool xess_active() const { return xess::is_xess_mode(opts_.dlss_mode); }
   // The name of the upscaling mode for the log, whichever vendor it belongs to.
@@ -368,6 +381,7 @@ void D3D12Backend::init() {
       // character pack at 4x, and small enough that the game never competes with itself for VRAM.
       replacement_budget_ = std::clamp<uint64_t>((uint64_t)desc.DedicatedVideoMemory / 4,
                                                  256ull * 1024 * 1024, 2048ull * 1024 * 1024);
+      adapter.As(&adapter3_);   // for the VRAM meter (Windows 10 and later)
       streamline::set_device(device_.Get());
       streamline::dlss_supported(adapter.Get());
       if (!exe_dir_.empty()) xess::init(exe_dir_, device_.Get());
@@ -585,6 +599,15 @@ void D3D12Backend::set_dlss_mip_bias(float bias) {
   host::log("dlss: texture LOD bias %.2f", bias);
 }
 
+
+void D3D12Backend::update_vram() {
+  DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+  if (FAILED(adapter3_->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) return;
+  g_vram_used = (float)(info.CurrentUsage / 1073741824.0);
+  g_vram_budget = (float)(info.Budget / 1073741824.0);
+}
+
+
 void D3D12Backend::configure_dlss() {
   int vw, vh; output_size(&vw, &vh);
   bool want = opts_.dlss_mode != 0 && (xess_active() ? xess::available() : streamline::available());
@@ -660,8 +683,18 @@ void D3D12Backend::configure_dlss() {
     // satisfies both, the mode cannot run at this output size, so stay native rather than render blind.
     if ((max_w && 640u * scale > max_w) || (max_h && 480u * scale > max_h) ||
         640u * scale > (uint32_t)out_w || 480u * scale > (uint32_t)out_h) {
-      host::log("dlss: %s needs a render size between %ux%u and %ux%u for a %dx%d output and no EFB multiple fits; staying native",
+      host::log("dlss: %s needs a render size between %ux%u and %ux%u for a %dx%d output and no EFB multiple fits",
                 upscaler_name(), min_w, min_h, max_w, max_h, out_w, out_h);
+      // Ultra Performance renders at exactly a third of the output, which is below the GameCube's
+      // own 640x480 at any display under 8K, so it can almost never fit. Step up to Performance
+      // (what it would have looked like anyway) instead of dropping all the way to native.
+      if (!xess_active() && opts_.dlss_mode == (int)DlssMode::UltraPerformance) {
+        host::log("dlss: using Performance instead");
+        opts_.dlss_mode = (int)DlssMode::Performance;
+        configure_dlss();
+        return;
+      }
+      host::log("dlss: staying native");
       opts_.dlss_mode = 0; return;
     }
   }
@@ -775,7 +808,12 @@ static void describe_pipeline(D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, const PsoK
     pd.RTVFormats[2] = DXGI_FORMAT_R8_UNORM;
     pd.BlendState.IndependentBlendEnable = TRUE;
     pd.BlendState.RenderTarget[1] = D3D12_RENDER_TARGET_BLEND_DESC{};
-    pd.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN;
+    // Motion vectors belong to the surface in the depth buffer, so only draws that write depth write
+    // them. A translucent layer (smoke, sparks, fades, a stage's see-through planes) drawn over a
+    // moving fighter used to replace that pixel's motion with its own, usually none, and DLSS then
+    // blended last frame's image at the wrong place: the smearing on moving characters.
+    const bool writes_depth = bits(zm, 0, 1) && bits(zm, 4, 1);
+    pd.BlendState.RenderTarget[1].RenderTargetWriteMask = writes_depth ? (D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN) : 0;
     pd.BlendState.RenderTarget[2] = D3D12_RENDER_TARGET_BLEND_DESC{};
     pd.BlendState.RenderTarget[2].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED;
   }
@@ -1198,8 +1236,12 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   if (dlss_active_) {
     MotionInfo motion; motion.jitter_x = jitter_x_; motion.jitter_y = jitter_y_;
     LastPose& last = last_poses_[dc.identity];
-    bool had = last.frame != 0 && last.frame + 2 >= frame_counter_;
-    if (had) { motion.prev_pos = last.pos; motion.prev_proj = last.proj; }
+    if (last.frame != 0 && last.frame != frame_counter_) {   // first pass this frame: last frame's pose moves back
+      std::memcpy(last.prev_pos, last.pos, sizeof last.pos); std::memcpy(last.prev_proj, last.proj, sizeof last.proj);
+      last.prev_frame = last.frame;
+    }
+    bool had = last.prev_frame != 0 && last.prev_frame + 2 >= frame_counter_ && last.prev_frame != frame_counter_;
+    if (had) { motion.prev_pos = last.prev_pos; motion.prev_proj = last.prev_proj; }
     ++mv_draws_; if (had) ++mv_matched_;
     fill_vs_constants(dc, vs_constants, scale_, override_matrices, &motion);
     std::memcpy(last.pos, override_matrices ? override_matrices->pos : dc.posMatrices, sizeof last.pos);
@@ -1336,7 +1378,8 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   UINT bb = swapchain_->GetCurrentBackBufferIndex();
   // DLSS: upscale the jittered EFB region (with depth and motion vectors) into the output texture first.
   bool upscaled = false;
-  if (dlss_active_ && dlss_out_) {
+  // Menus skip the upscaler and are presented from the EFB like native (see dlss_in_match_).
+  if (dlss_active_ && dlss_out_ && dlss_in_match_) {
     streamline::EvaluateInputs in{};
     in.color_in = efb_color_.Get(); in.color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     in.depth = efb_depth_.Get(); in.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
@@ -1376,6 +1419,11 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
     list_->SetDescriptorHeaps(2, heaps);
   }
+  // Diagnostics (in-place DLAA / XeSS AA only): every other presented frame shows the upscaler's own
+  // input instead of its output, while it keeps running every frame. A capture burst then puts each
+  // output next to the input it came from, so a trail left by the upscaler can be measured.
+  static const bool debug_show_input = [] { const char* e = std::getenv("MELEE_DEBUG_DLSS_INPUT_ODD"); return e && e[0] == '1'; }();
+  if (debug_show_input && upscaled && dlss_in_place_ && (frames_presented_ & 1)) upscaled = false;
   ID3D12Resource* source = upscaled ? dlss_out_.Get() : efb_color_.Get();
   D3D12_RESOURCE_STATES source_state = upscaled ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_RENDER_TARGET;
   // With DLSS the current EFB and the HUD mask are read too (HUD composite).
@@ -1616,8 +1664,12 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     replacement_bytes_ = 0;
     texpack_report_frame_ = frame_counter_ + 600;
   }
+  if (adapter3_ && (frame_counter_ % 30) == 0) update_vram();
   if (texpack::enabled() && frame_counter_ >= texpack_report_frame_) {
     texpack::report();
+    float used = 0, budget = 0;
+    if (vram_usage(&used, &budget)) host::log("vram: %.2f of %.2f GB (replacement textures %.0f MB of %.0f MB)", used, budget,
+                                               replacement_bytes_ / 1048576.0, replacement_budget_ / 1048576.0);
     texpack_report_frame_ = frame_counter_ + 3600;
   }
   if (host::window_take_fullscreen_toggle()) {   // Alt+Enter
@@ -1650,7 +1702,13 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     // The main camera projection: the first perspective draw of the frame (menus and HUD are orthographic).
     streamline::FrameConstants fc{};
     bool found = false;
-    for (const DrawCall& d : frame.draws) if (d.xf_regs[0x26] == 0) { build_projection(d, fc.projection); set_main_projection(&d); found = true; break; }
+    // Menus are shown exactly as rendered: with no main scene, no draw is jittered or given motion,
+    // and the present blit takes every pixel from the EFB. The upscaler has nothing to add to flat
+    // 2D screens, and the character select cursor left trails through it.
+    const bool in_match = frame_in_match(frame);
+    if (in_match != dlss_in_match_) { dlss_in_match_ = in_match; fc.reset = true; dlss_reset_ = true; xess_reset_ = true; }
+    if (in_match)
+      for (const DrawCall& d : frame.draws) if (d.xf_regs[0x26] == 0) { build_projection(d, fc.projection); set_main_projection(&d); found = true; break; }
     if (!found) set_main_projection(nullptr);
     if (!found && !frame.draws.empty()) { build_projection(frame.draws[0], fc.projection); fc.orthographic = true; }
     fc.jitter_x = jitter_x_ * opts_.dlss_jitter_sign; fc.jitter_y = jitter_y_ * opts_.dlss_jitter_sign;

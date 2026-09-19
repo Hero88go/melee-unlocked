@@ -19,6 +19,8 @@ extern bool option_pal_stock_icons;            // PAL-sized stock icons (a port 
 // A translation generated before a flag existed (the playback guest can be an older prebuilt one)
 // does not define it; the linker then takes this default instead (see exi_slippi.cpp).
 extern bool option_pal_stock_icons_default;
+extern bool option_no_screen_shake;            // camera shake off (a port code, see recomp/gecko.py)
+extern bool option_no_screen_shake_default;
 extern const uint32_t optional_gct_offset;     // where the optional codes start inside slippi_gct
 struct OptionalWrite { uint32_t addr; uint32_t size; const uint8_t* patched; const uint8_t* original; };
 extern const OptionalWrite optional_writes[]; extern const size_t optional_writes_count;

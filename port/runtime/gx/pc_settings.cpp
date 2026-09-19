@@ -12,6 +12,7 @@
 #include "host.h"
 #include "input_bindings.h"
 #include "lcancel.h"
+#include "user_gecko.h"
 #include "gecko_data.h"
 #include "slippi_online.h"
 #include "hid_pad.h"
@@ -507,6 +508,8 @@ static void migrate_profiles() {
 // compared by switching). Saved as "custompreset efb ssaa aniso dlss fps subframe".
 struct CustomPreset { bool set = false; int efb = 0, ssaa = 1, aniso = 16, dlss = 0; double fps = -1; int sub = 1; };
 static CustomPreset g_custom_preset;
+// The panel has saved which user Gecko codes are on (until then GeckoCodes.ini's own list is used).
+static bool g_gecko_chosen = false;
 
 // The controller last shown in the Controls tab (its device number), so the tab opens on it again
 // rather than on whatever plays as port 1. -1: nothing saved yet.
@@ -1288,6 +1291,8 @@ void load_pc_settings(D3D12Options& options, int& volume) {
   // setting after it by one token, so the controller bindings, port choices and profiles saved
   // below it were never read back for anyone who had used the Custom video preset.
   std::string key, value;
+  std::vector<std::string> gecko_on;   // the user's Gecko codes saved as on
+  bool gecko_chosen = false;           // the panel has saved a choice (even "none")
   while (file >> key) {
     std::getline(file, value);
     const size_t first = value.find_first_not_of(" \t");
@@ -1330,6 +1335,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "onlinedelay") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 9) slippi::online::config().delay = d; }
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "showfps") options.show_fps = value == "1";
+      else if (key == "showvram") options.show_vram = value == "1";
       else if (key == "showping") options.show_ping = value == "1";
       // Diagnostic, off unless someone is hunting a one-frame glitch: see D3D12Options::flicker_scan.
       // Settings-file only rather than a control in the panel, because it costs a readback on every
@@ -1347,6 +1353,9 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "lcancelindicator") lcancel::set_indicator(value == "1");
       else if (key == "autolcancel") lcancel::set_automatic(value == "1");
       else if (key == "palstockicons") gecko::option_pal_stock_icons = value == "1";
+      else if (key == "noscreenshake") gecko::option_no_screen_shake = value == "1";
+      else if (key == "geckocode") gecko_on.push_back(value);
+      else if (key == "geckochosen") gecko_chosen = value == "1";
       else if (key == "swpro_gc_picture") g_swpro_gc_picture = value == "1";
       else if (key == "rumble") host::g_rumble_enabled = value != "0";
       else if (key == "backgroundinput") host::g_background_input = value != "0";
@@ -1465,6 +1474,13 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       }
     } catch (...) { /* Ignore a malformed preference, retaining the safe default. */ }
   }
+  // The old Ultra preset (4x supersampling under DLAA) becomes the new one (DLAA alone); see the
+  // presets. Only that exact combination is changed.
+  if (options.efb_scale == 0 && options.ssaa == 2 && options.anisotropy == 16 && options.dlss_mode == 1) options.ssaa = 1;
+  // The player's Gecko codes live beside the settings file.
+  std::filesystem::path codes = std::filesystem::path(options.settings_path).parent_path() / "GeckoCodes.ini";
+  user_gecko::load(codes.string(), gecko_on, gecko_chosen);
+  g_gecko_chosen = gecko_chosen;
 }
 
 // The ImGui context and the Win32 platform backend are the same for every renderer backend.
@@ -1659,9 +1675,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         {"Low", "For laptops and integrated graphics: native resolution, no anti-aliasing,\n60 frames per second, no sub-frame animation.", 1, 1, 1, 0, 60, SubFrameMode::Off},
         {"Medium", "For most older PCs: 2x resolution, 4x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 2, 1, 4, 0, -1, SubFrameMode::Authored},
         {"High", "Recommended, and the default: resolution matched to your window, 16x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 0, 1, 16, 0, -1, SubFrameMode::Authored},
-        {"Ultra", dlaa_ok ? "High, plus 4x supersampling and NVIDIA DLAA for the smoothest edges."
+        // DLAA already smooths every edge, so Ultra uses it alone where it exists. Stacked on 4x
+        // supersampling it ran DLAA over an image several times 4K: a large drop in frame rate, and
+        // out of video memory on 8 GB cards once a recorder was running too.
+        {"Ultra", dlaa_ok ? "High, plus NVIDIA DLAA for the smoothest edges."
                           : "High, plus 4x supersampling for the smoothest edges.",
-         0, 2, 16, dlaa_ok ? 1 : 0, -1, SubFrameMode::Authored},
+         0, dlaa_ok ? 1 : 2, 16, dlaa_ok ? 1 : 0, -1, SubFrameMode::Authored},
       };
       auto matches = [&](const Preset& pr) {
         return options.efb_scale == pr.efb && options.ssaa == pr.ssaa && options.anisotropy == pr.aniso &&
@@ -1847,7 +1866,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::Combo("Upscaling (DLSS / XeSS)", &options.dlss_mode, upscalers, 11)) changed = true;
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("DLSS: NVIDIA RTX cards. XeSS: Intel's upscaler, works on Intel, NVIDIA and AMD cards.\n"
-                        "AA modes (DLAA, XeSS AA) keep the full resolution and only smooth edges.");
+                        "AA modes (DLAA, XeSS AA) keep the full resolution and only smooth edges.\n"
+                        "DLSS Ultra Performance would render below the GameCube's own resolution on\n"
+                        "anything short of an 8K display, so there it switches to Performance.");
     // Frame generation reuses DLSS's depth and motion vectors, so it needs a DLSS mode.
     ImGui::BeginDisabled(options.dlss_mode == 0 || options.dlss_mode >= 6);
     if (ImGui::Checkbox("Frame generation", &options.frame_generation)) changed = true;
@@ -2075,6 +2096,42 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Smaller stock icons, set a little higher, as in the PAL version.\n"
                         "Display only. Applies from the next match.");
+    // Also a port code: zeroes the camera's shake offset before the game applies it.
+    if (ImGui::Checkbox("Disable screen shake", &gecko::option_no_screen_shake)) changed = true;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("The camera no longer shakes on hard hits, explosions and stage effects.\n"
+                        "Camera only: fighters and hits are unchanged. Takes effect immediately.");
+
+    // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
+    ImGui::Separator();
+    ImGui::TextUnformatted("Gecko codes");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Your own codes, in Dolphin's format, from:\n%s\n"
+                        "Codes that write game data work. Codes that patch the game's code (C2 and\n"
+                        "writes into the code) cannot run in this build and are shown greyed out.",
+                        user_gecko::path().c_str());
+    if (user_gecko::codes().empty()) {
+      ImGui::TextDisabled("No codes. Put a GeckoCodes.ini next to port-settings.ini.");
+    } else {
+      if (user_gecko::any_enabled())
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.2f, 1.0f),
+                           "Codes change the game. Online, both players need the exact same codes\n"
+                           "or the match will desync.");
+      for (user_gecko::Code& c : user_gecko::codes()) {
+        ImGui::PushID(&c);
+        ImGui::BeginDisabled(!c.supported);
+        if (ImGui::Checkbox(c.name.c_str(), &c.enabled)) { changed = true; g_gecko_chosen = true; }
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+          std::string tip;
+          for (const std::string& n : c.notes) tip += n + "\n";
+          if (!c.supported) tip += "Cannot run here: this code " + c.reason + ".";
+          else tip += "Desyncs online unless your opponent runs it too.";
+          ImGui::SetTooltip("%s", tip.c_str());
+        }
+        ImGui::PopID();
+      }
+    }
 
 
     // ---- Online ----
@@ -2558,6 +2615,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1 still opens this panel with it off.");
     ImGui::Checkbox("Performance overlay", &options.performance_overlay);
     changed |= ImGui::Checkbox("FPS counter (top left)", &options.show_fps);
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("VRAM meter", &options.show_vram);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Video memory in use, out of what Windows lets the game have (it shares the card\n"
+                        "with everything else running). Near the limit, lower Resolution or supersampling,\n"
+                        "or switch texture packs off.");
     changed |= ImGui::Checkbox("Ping while online (under the FPS)", &options.show_ping);
     changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
     if (options.input_overlay) {
@@ -2612,7 +2675,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\ntruewidescreen " << options.true_widescreen << "\naspect " << (int)options.aspect
            << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
            << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
-           << "\nshowfps " << options.show_fps << "\nshowping " << options.show_ping
+           << "\nshowfps " << options.show_fps << "\nshowvram " << (options.show_vram ? 1 : 0) << "\nshowping " << options.show_ping
            << "\ndlss " << options.dlss_mode << "\nframegen " << (options.frame_generation ? 1 : 0)
            << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
            << "\nreflexflash " << (options.reflex_flash ? 1 : 0) << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
@@ -2640,6 +2703,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\nlcancelindicator " << (lcancel::indicator_enabled() ? 1 : 0)
            << "\nautolcancel " << (lcancel::automatic_enabled() ? 1 : 0)
            << "\npalstockicons " << (gecko::option_pal_stock_icons ? 1 : 0)
+           << "\nnoscreenshake " << (gecko::option_no_screen_shake ? 1 : 0)
            << "\nswpro_gc_picture " << (g_swpro_gc_picture ? 1 : 0)
            << family_options_text()
            << "\nrumble " << (host::g_rumble_enabled ? 1 : 0)
@@ -2662,6 +2726,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\ndumptextures " << (options.dump_textures ? 1 : 0)
            << "\nprefetchtextures " << (options.prefetch_textures ? 1 : 0);
       file << texpack_disabled_lines();
+      // The player's Gecko codes switched on, by name (names can hold spaces; read to end of line).
+      if (g_gecko_chosen) {
+        file << "\ngeckochosen 1";
+        for (const user_gecko::Code& c : user_gecko::codes())
+          if (c.enabled) file << "\ngeckocode " << c.name;
+      }
       for (int i = 0; i < (int)host::BindAction::Count; ++i)
         file << "\nkey_" << kActionNames[i] << " " << host::g_key_bindings.vk[i];
       for (int idx = 0; idx < 4; ++idx)
@@ -2831,15 +2901,18 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (test_readout) { options.show_fps = true; options.show_ping = true; options.performance_overlay = true; }
     const bool ping_line = options.show_ping && (slippi::online::is_online_match() || test_readout);
     const float line_h = ImGui::GetTextLineHeight() + 2.0f;
-    const float readout_h = 8.0f + line_h * 3;       // room for every line, so the graph never moves
+    const float readout_h = 8.0f + line_h * 4;       // room for every line, so the graph never moves
     const bool latency_line = options.reflex_stats && streamline::reflex_latency_ms() > 0.0f;
-    if (options.show_fps || ping_line || latency_line) {
-      char lines[3][32];
+    float vram_used = 0, vram_budget = 0;
+    const bool vram_line = options.show_vram && vram_usage(&vram_used, &vram_budget);
+    if (options.show_fps || ping_line || latency_line || vram_line) {
+      char lines[4][40];
       int n = 0;
       if (options.show_fps) std::snprintf(lines[n++], sizeof lines[0], "FPS: %.0f", ImGui::GetIO().Framerate);
       if (ping_line) std::snprintf(lines[n++], sizeof lines[0], "Ping: %d ms", slippi::online::ping_ms());
       if (options.reflex_stats && streamline::reflex_latency_ms() > 0.0f && n < 3)
         std::snprintf(lines[n++], sizeof lines[0], "Latency: %.1f ms", streamline::reflex_latency_ms());
+      if (vram_line) std::snprintf(lines[n++], sizeof lines[0], "VRAM: %.1f / %.1f GB", vram_used, vram_budget);
       ImVec2 at(10, 8);
       float wide = 0;
       for (int i = 0; i < n; ++i) wide = std::max(wide, ImGui::CalcTextSize(lines[i]).x);
@@ -2868,7 +2941,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       perf_min = perf_max = ImVec2(0, 0);
     }
   }
-  host::window_input_capture(state.open);
+  // Same rule as at the top of the frame. With only the in-game (Esc) menu open, this used to say
+  // "not captured" while the top said "captured", so the pointer was shown and hidden every frame.
+  host::window_input_capture(state.open || state.menu_open);
   ImGui::Render();
   return changed;
 }
