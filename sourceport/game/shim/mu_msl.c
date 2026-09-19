@@ -67,30 +67,6 @@ unsigned long long __cvt_dbl_usll(double value)
     return (unsigned long long) value;
 }
 
-/* ---- setjmp ----
- * The console version saved the PowerPC registers by hand. Natively the host compiler's own
- * setjmp does the equivalent, and the game's buffer is large enough to hold it. */
-typedef struct mu_jmp_buf_tag {
-    unsigned long pc, cr, sp, rtoc, reserved, gprs[19];
-    double fp[18], fpscr;
-    int pad[8];
-} mu_jmp_buf_tag;
-
-int __builtin_setjmp_wrapper(void* env);
-
-int __setjmp(void* env)
-{
-    /* GCC's __builtin_setjmp needs a five-word buffer and pairs with __builtin_longjmp; the game's
-     * buffer is far larger, so it is used as the storage. */
-    return __builtin_setjmp((void**) env);
-}
-
-void __longjmp(void* env, int val)
-{
-    (void) val;   /* the game only ever longjmps with 1, and __builtin_longjmp requires it */
-    __builtin_longjmp((void**) env, 1);
-}
-
 /* ---- debugger ---- */
 int DBIsDebuggerPresent(void) { return 0; }
 

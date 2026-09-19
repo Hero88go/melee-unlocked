@@ -7,6 +7,8 @@
 cmake_minimum_required(VERSION 3.25)
 project(melee_game C CXX)
 
+enable_testing()
+
 if(NOT CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_VERSION VERSION_LESS 14)
   message(FATAL_ERROR "melee_game needs GCC 14 or newer: scalar_storage_order, and -ffp-contract=on meaning what the standard says")
 endif()
@@ -47,6 +49,21 @@ endif()
 # Disc pointers are 32-bit slots holding real addresses, so everything the game can point at has to
 # sit below 4 GB: the image at a fixed base with relocation off, MEM1 placed by the host.
 set(LOW_IMAGE_LINK_OPTIONS -static-libgcc -static-libstdc++ -Wl,--disable-dynamicbase -Wl,--disable-high-entropy-va)
+
+add_executable(mu_disc_layout_test EXCLUDE_FROM_ALL tests/disc_layout.c shim/mu_disc_layout.c)
+set_target_properties(mu_disc_layout_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+target_link_libraries(mu_disc_layout_test PRIVATE game_flags)
+add_test(NAME native_disc_layout COMMAND mu_disc_layout_test)
+
+add_executable(mu_command_test EXCLUDE_FROM_ALL tests/command.c "${D}/src/melee/lb/lbcommand.c")
+set_target_properties(mu_command_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+target_link_libraries(mu_command_test PRIVATE game_flags)
+add_test(NAME native_command_loop COMMAND mu_command_test)
+
+add_executable(mu_setjmp_test EXCLUDE_FROM_ALL tests/setjmp.c shim/mu_setjmp.c)
+set_target_properties(mu_setjmp_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+target_link_libraries(mu_setjmp_test PRIVATE game_flags)
+add_test(NAME native_setjmp COMMAND mu_setjmp_test)
 
 # ---- routines that exist only as paired-single assembly ----
 # Compiled from the recompiler's own translation of them, so they match the console by construction

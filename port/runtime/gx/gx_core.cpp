@@ -373,7 +373,7 @@ size_t parse_command(const uint8_t* d, size_t len);
 
 void run_display_list(uint32_t addr, uint32_t size) {
   const uint8_t* p = host::try_ptr(addr, size);
-  if (!p) { host::log("gx: display list outside RAM %08X+%X", addr, size); return; }
+  if (!p) { host::log("gx: display list outside RAM %08X+%X (parent %08X, vcd %08X/%08X)", addr, size, g_dl_addr, g_cp.reg[0x50], g_cp.reg[0x60]); return; }
   uint32_t saved_addr = g_dl_addr, saved_draw = g_dl_draw_ordinal, saved_call = g_dl_call_ordinal;
   g_dl_addr = addr; g_dl_draw_ordinal = 0; g_dl_call_ordinal = g_dl_calls[addr]++;
   size_t used = 0;
@@ -423,7 +423,7 @@ size_t parse_command(const uint8_t* d, size_t len) {
     return need;
   }
   static int reported = 0;
-  if (reported++ < 10) host::log("gx: unknown opcode %02X", op);
+  if (reported++ < 10) host::log("gx: unknown opcode %02X (list %08X, data %p, vcd %08X/%08X)", op, g_dl_addr, d, g_cp.reg[0x50], g_cp.reg[0x60]);
   return 1;
 }
 
