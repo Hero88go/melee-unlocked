@@ -192,13 +192,19 @@ void note_gecko_list_dma(uint32_t addr, uint32_t size) {
   // version carries a different list, whose code caves this build never translated: they would run
   // as writes nothing was compiled against and the replay would drift apart from the original
   // without ever failing. Say so, because silent divergence is the one failure a player cannot see.
+  //
+  // Only the address is worth checking. Replays from one Slippi version carry lists of slightly
+  // different sizes (5728 and 5632 bytes were both seen from 3.19.1, because the denylist drops a
+  // different number of injections per game), and a 5632-byte replay plays back on a build made
+  // from a 5728-byte one with zero mismatches over 25126 player-frames. What actually matters is
+  // whether the caves are where this build translated them.
   if (MELEE_PLAYBACK_GCT_SIZE == 0u) {
     host::log("playback: WARNING no replay code list is translated into this build, so this replay will"
               " diverge. Rebuild with --extra-gct <list> --extra-gct-base %08X.", addr);
-  } else if (addr != MELEE_PLAYBACK_GCT_BASE || size != MELEE_PLAYBACK_GCT_SIZE) {
-    host::log("playback: WARNING this replay carries %u bytes of code at %08X, but this build was made"
-              " for %u bytes at %08X. It is from a different Slippi version and will diverge.",
-              size, addr, (unsigned)MELEE_PLAYBACK_GCT_SIZE, (unsigned)MELEE_PLAYBACK_GCT_BASE);
+  } else if (addr != MELEE_PLAYBACK_GCT_BASE) {
+    host::log("playback: WARNING this replay installs its code at %08X, but this build translated a"
+              " list at %08X, so those caves are not compiled in and this replay will diverge.",
+              addr, (unsigned)MELEE_PLAYBACK_GCT_BASE);
   }
 }
 
