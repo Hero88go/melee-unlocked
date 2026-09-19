@@ -1363,7 +1363,9 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       }
       else if (load_family_option(key, value)) {}
       else if (key == "startup") options.settings_open = value != "0";
-      else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 5) options.dlss_mode = m; }
+      else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 10) options.dlss_mode = m; }
+      else if (key == "framegen") options.frame_generation = value == "1";
+      else if (key == "reflex") options.reflex = value == "1";
       // Low spec: the switch, then what the player had before it was turned on, so turning it off
       // after a restart still restores their own settings rather than the defaults.
       else if (key == "lowspec") options.low_spec = value == "1";
@@ -1373,7 +1375,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "lowspec_prev_ssaa") { int n = std::stoi(value); if (n == 1 || n == 2) options.low_spec_previous.ssaa = n; }
       else if (key == "lowspec_prev_anisotropy") { int n = std::stoi(value); if (n == 1 || n == 2 || n == 4 || n == 8 || n == 16) options.low_spec_previous.anisotropy = n; }
       else if (key == "lowspec_prev_effects") { int n = std::stoi(value); if (n >= 0 && n <= 2) options.low_spec_previous.effects_level = n; }
-      else if (key == "lowspec_prev_dlss") { int n = std::stoi(value); if (n >= 0 && n <= 5) options.low_spec_previous.dlss_mode = n; }
+      else if (key == "lowspec_prev_dlss") { int n = std::stoi(value); if (n >= 0 && n <= 10) options.low_spec_previous.dlss_mode = n; }
       else if (key == "lowspec_prev_subframe") options.low_spec_previous.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "discord") options.discord_presence = value == "1";
       // A Discord application id is a snowflake; anything else would only be rejected by Discord.
@@ -1816,7 +1818,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // DLSS chooses its own render size, so the internal resolution and supersampling settings do
     // nothing while it is on and are shown greyed out. DLAA renders at the internal resolution the
     // player picked and only anti-aliases it, so it leaves both of them working.
-    const bool dlss_picks_resolution = options.dlss_mode >= 2;
+    const bool dlss_picks_resolution = options.dlss_mode >= 2 && options.dlss_mode != 6;   // not DLAA / XeSS AA
     if (dlss_picks_resolution) ImGui::BeginDisabled();
     changed |= ImGui::Combo("Internal resolution", &options.efb_scale, scales, 9);
     // DLSS (DLAA included) does its own anti-aliasing, so supersampling on top would render larger
@@ -1837,14 +1839,32 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (ImGui::Combo("Graphics backend", &api_index, backends, 2)) { options.api = api_index ? RenderApi::D3D11 : RenderApi::D3D12; changed = true; }
     ImGui::TextDisabled("Takes effect at the next launch: save settings, then restart.");
     const bool d3d11 = options.api == RenderApi::D3D11;
-    const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance"};
+    const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance",
+                               "XeSS AA", "XeSS Ultra Quality", "XeSS Quality", "XeSS Balanced", "XeSS Performance"};
     if (d3d11) ImGui::BeginDisabled();
-    if (ImGui::Combo("Upscaling (NVIDIA DLSS)", &options.dlss_mode, upscalers, 6)) changed = true;
+    if (ImGui::Combo("Upscaling (DLSS / XeSS)", &options.dlss_mode, upscalers, 11)) changed = true;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("DLSS: NVIDIA RTX cards. XeSS: Intel's upscaler, works on Intel, NVIDIA and AMD cards.\n"
+                        "AA modes (DLAA, XeSS AA) keep the full resolution and only smooth edges.");
+    // Frame generation reuses DLSS's depth and motion vectors, so it needs a DLSS mode.
+    ImGui::BeginDisabled(options.dlss_mode == 0 || options.dlss_mode >= 6);
+    if (ImGui::Checkbox("Frame generation", &options.frame_generation)) changed = true;
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("NVIDIA DLSS Frame Generation (RTX 40 series and newer): an extra generated frame\n"
+                        "between each rendered one. Smoother, but it holds a frame back, which adds input\n"
+                        "delay: for single player and casual play, not competitive or online.\n"
+                        "Needs an Upscaling mode other than Native. Reflex is switched on with it.");
+    ImGui::SameLine();
+    if (ImGui::Checkbox("NVIDIA Reflex", &options.reflex)) changed = true;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Low latency mode with boost: keeps the GPU from queueing frames ahead of the game.");
     if (d3d11) { ImGui::EndDisabled(); ImGui::TextDisabled("DLSS needs Direct3D 12 and an NVIDIA GPU."); }
-    if (options.dlss_mode == 1) {
+    if (options.dlss_mode == 1 || options.dlss_mode == 6) {
       ImGui::TextWrapped("DLAA anti-aliases the game at the Internal resolution above without changing it, then the picture is fitted to the window as usual. Internal resolution and Anti-aliasing keep working, so DLAA stacks with 4x SSAA if you want both.");
     } else if (dlss_picks_resolution) {
-      static const char* ratios[] = {"", "", "67% (Quality)", "58% (Balanced)", "50% (Performance)", "33% (Ultra Performance)"};
+      static const char* ratios[] = {"", "", "67% (Quality)", "58% (Balanced)", "50% (Performance)", "33% (Ultra Performance)",
+                                     "", "77% (Ultra Quality)", "67% (Quality)", "59% (Balanced)", "50% (Performance)"};
       ImGui::TextWrapped("DLSS renders the game at %s of the window size (at 1080p about 1280x960) and upscales it. That is what DLSS is for in heavy games; Melee is cheap to render, so here it is a downgrade in sharpness, and Internal resolution and Anti-aliasing above are ignored while it is on. For the sharpest image choose Native, set Internal resolution to 3x or higher and Anti-aliasing to 4x SSAA (the Dolphin look), or choose DLAA (full resolution, DLSS used only as anti-aliasing).", ratios[options.dlss_mode]);
     }
     int sharp = (int)std::lround(options.sharpness * 100.0f);
@@ -2578,7 +2598,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
            << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
            << "\nshowfps " << options.show_fps << "\nshowping " << options.show_ping
-           << "\ndlss " << options.dlss_mode << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
+           << "\ndlss " << options.dlss_mode << "\nframegen " << (options.frame_generation ? 1 : 0)
+           << "\nreflex " << (options.reflex ? 1 : 0) << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
            << "\nsharpness " << options.sharpness << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
            << "\nonlinedelay " << slippi::online::config().delay

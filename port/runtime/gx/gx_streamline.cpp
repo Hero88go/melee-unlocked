@@ -15,6 +15,9 @@
 #include <sl.h>
 #include <sl_consts.h>
 #include <sl_dlss.h>
+#include <sl_dlss_g.h>
+#include <sl_reflex.h>
+#include <sl_pcl.h>
 #include <sl_security.h>
 #endif
 
@@ -54,11 +57,17 @@ bool dlss_set_options(DlssMode, uint32_t, uint32_t) { return false; }
 void new_frame(uint32_t) {}
 bool set_constants(const FrameConstants&) { return false; }
 bool evaluate(ID3D12GraphicsCommandList*, const EvaluateInputs&) { return false; }
+bool frame_generation_available() { return false; }
+bool reflex_available() { return false; }
+void set_frame_generation(bool) {}
+void set_reflex(bool) {}
+void pcl_marker(int) {}
+void log_frame_generation() {}
 #else
 
 namespace {
 HMODULE g_module = nullptr;
-bool g_ready = false, g_dlss_ok = false;
+bool g_ready = false, g_dlss_ok = false, g_fg_ok = false, g_reflex_ok = false, g_fg_on = false, g_reflex_on = false;
 sl::FrameToken* g_token = nullptr;
 sl::ViewportHandle g_viewport{0u};
 typedef HRESULT(WINAPI* PFunCreateDXGIFactory2)(UINT, REFIID, void**);
@@ -138,7 +147,7 @@ bool init(const std::wstring& exe_dir) {
   static std::wstring dir_copy;
   dir_copy = exe_dir;
   plugin_dirs[0] = dir_copy.c_str();
-  static const sl::Feature features[] = {sl::kFeatureDLSS};
+  static const sl::Feature features[] = {sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
   sl::Preferences pref{};
   pref.showConsole = false;
   pref.logLevel = sl::LogLevel::eDefault;
@@ -149,7 +158,7 @@ bool init(const std::wstring& exe_dir) {
   pref.logMessageCallback = log_callback;
   pref.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
   pref.featuresToLoad = features;
-  pref.numFeaturesToLoad = 1;
+  pref.numFeaturesToLoad = (uint32_t)(sizeof features / sizeof features[0]);
   pref.engine = sl::EngineType::eCustom;
   pref.engineVersion = "melee-port";
   pref.applicationId = 231313132;   // NVIDIA sample application id: valid for development builds of non-registered titles
@@ -181,6 +190,9 @@ void set_device(ID3D12Device* device) {
   if (res != sl::Result::eOk) { host::log("dlss: slSetD3DDevice failed (%d)", (int)res); g_dlss_ok = false; return; }
   sl::FeatureRequirements req{};
   g_dlss_ok = slGetFeatureRequirements(sl::kFeatureDLSS, req) == sl::Result::eOk;
+  sl::FeatureRequirements fg_req{}, rx_req{};
+  g_fg_ok = slGetFeatureRequirements(sl::kFeatureDLSS_G, fg_req) == sl::Result::eOk;
+  g_reflex_ok = slGetFeatureRequirements(sl::kFeatureReflex, rx_req) == sl::Result::eOk;
   host::log("dlss: %s", g_dlss_ok ? "available (off until selected under Upscaling in PC settings)" : "feature failed to initialise; native rendering only");
 }
 bool dlss_supported(IDXGIAdapter* adapter) {
@@ -197,6 +209,13 @@ bool dlss_supported(IDXGIAdapter* adapter) {
     host::log("dlss: not available on this adapter (%s, %d)", why, (int)res);
   }
   g_dlss_ok = res == sl::Result::eOk;
+  // Frame generation has its own requirements (RTX 40 or newer, Windows hardware GPU scheduling on).
+  if (g_fg_ok) {
+    const sl::Result fg = slIsFeatureSupported(sl::kFeatureDLSS_G, info);
+    g_fg_ok = fg == sl::Result::eOk;
+    host::log("dlss: frame generation %s (%d)", g_fg_ok ? "available" : "not available on this system", (int)fg);
+  }
+  if (g_reflex_ok) g_reflex_ok = slIsFeatureSupported(sl::kFeatureReflex, info) == sl::Result::eOk;
   return g_dlss_ok;
 }
 
@@ -279,6 +298,37 @@ bool set_constants(const FrameConstants& c) {
   return true;
 }
 
+bool frame_generation_available() { return g_ready && g_fg_ok; }
+bool reflex_available() { return g_ready && g_reflex_ok; }
+void set_reflex(bool on) {
+  if (!reflex_available()) return;
+  sl::ReflexOptions r{};
+  r.mode = on ? sl::ReflexMode::eLowLatencyWithBoost : sl::ReflexMode::eOff;
+  r.useMarkersToOptimize = on;
+  const sl::Result res = slReflexSetOptions(r);
+  g_reflex_on = on && res == sl::Result::eOk;
+  host::log("reflex: %s (%d)", on ? "low latency + boost" : "off", (int)res);
+}
+void set_frame_generation(bool on) {
+  if (!frame_generation_available()) return;
+  sl::DLSSGOptions o{};
+  o.mode = on ? sl::DLSSGMode::eOn : sl::DLSSGMode::eOff;
+  o.numFramesToGenerate = 1;
+  const sl::Result res = slDLSSGSetOptions(g_viewport, o);
+  g_fg_on = on && res == sl::Result::eOk;
+  host::log("dlss: frame generation %s (%d)", on ? "on" : "off", (int)res);
+}
+void log_frame_generation() {
+  if (!g_fg_on) return;
+  sl::DLSSGState st{};
+  if (slDLSSGGetState(g_viewport, st, nullptr) != sl::Result::eOk) return;
+  host::log("dlss: frame generation status %u, %u frames presented per rendered frame", (unsigned)st.status, st.numFramesActuallyPresented);
+}
+void pcl_marker(int marker) {
+  if (!g_token || !g_reflex_on) return;
+  slPCLSetMarker((sl::PCLMarker)marker, *g_token);
+}
+
 bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in) {
   if (!available() || !g_token) return false;
   sl::Resource color_in(sl::ResourceType::eTex2d, in.color_in, in.color_state);
@@ -297,6 +347,14 @@ bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in) {
   // composited after DLSS in the present blit instead.
   const sl::BaseStructure* inputs[] = {&g_viewport, &tags[0], &tags[1], &tags[2], &tags[3]};
   const uint32_t input_count = 5;
+  if (g_fg_on) {
+    // Frame generation reads depth and motion vectors at Present, after this call.
+    sl::ResourceTag fg_tags[] = {
+        sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),
+        sl::ResourceTag(&mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),
+    };
+    slSetTagForFrame(*g_token, g_viewport, fg_tags, 2, list);
+  }
   sl::Result res = slEvaluateFeature(sl::kFeatureDLSS, *g_token, inputs, input_count, list);
   if (res != sl::Result::eOk) {
     static int logged = 0;

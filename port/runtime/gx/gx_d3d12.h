@@ -28,6 +28,8 @@ struct D3D12Options {
   // than Off the renderer presents new sub-frames between 60 Hz simulation frames.
   double fps_cap = 60; // -1 follows the active monitor
   bool fullscreen = false;
+  bool frame_generation = false;  // DLSS Frame Generation (RTX 40+): needs an Upscaling mode; adds latency
+  bool reflex = false;            // NVIDIA Reflex low latency + boost (on whenever frame generation is)
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
   float dlss_jitter_sign = -1.0f; // calibrated 2026-09-11: -1 reconstructs sharp text, +1 blurs (see PORT_COMPLETION.md)
   bool pc_settings = false, settings_open = false, performance_overlay = false;

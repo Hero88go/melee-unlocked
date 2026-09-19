@@ -138,7 +138,7 @@ def main():
         raise SystemExit(f"{launcher.name} does not contain the string {args.version!r}, so it was built "
                          f"before VERSION changed; build the melee_unlocked target and try again")
     shutil.copy2(launcher, folder / "MeleeUnlockedLauncher.exe")
-    for dll in ("sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll"):
+    for dll in ("sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll", "sl.dlss_g.dll", "nvngx_dlssg.dll", "sl.reflex.dll", "sl.pcl.dll", "libxess.dll"):
         src = args.exe.parent / dll
         if src.is_file():
             shutil.copy2(src, folder / dll)
@@ -172,7 +172,9 @@ def main():
     licenses.mkdir()
     for src, dst in ((ROOT / "port/third_party/streamline/license.txt", "streamline.txt"),
                      (ROOT / "port/third_party/enet/LICENSE", "enet.txt"),
-                     (ROOT / "port/third_party/imgui/LICENSE.txt", "imgui.txt")):
+                     (ROOT / "port/third_party/imgui/LICENSE.txt", "imgui.txt"),
+                     (ROOT / "port/third_party/streamline/reflex.license.txt", "nvidia-reflex.txt"),
+                     (ROOT / "port/third_party/xess/LICENSE.txt", "intel-xess.txt")):
         if src.is_file():
             shutil.copy2(src, licenses / dst)
     zip_path = args.out / f"{name}-win64.zip"
