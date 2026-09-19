@@ -51,6 +51,7 @@ struct EvaluateInputs {
   ID3D12Resource* color_in; uint32_t color_state;      // render-resolution jittered color
   ID3D12Resource* depth; uint32_t depth_state;
   ID3D12Resource* mvec; uint32_t mvec_state;           // pixel-space motion vectors (previous - current)
+  ID3D12Resource* hud_mask = nullptr; uint32_t hud_mask_state = 0;   // 1 = flat 2D (HUD): keep no history
   ID3D12Resource* color_out; uint32_t out_state;       // output-resolution result (UAV capable)
   uint32_t in_left, in_top, in_w, in_h;                // extent within the render-resolution textures
   uint32_t out_w, out_h;

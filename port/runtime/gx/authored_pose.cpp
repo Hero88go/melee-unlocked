@@ -235,6 +235,27 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
         }
         if(sampled){ scale=ts; rot=tr; pos=tp; animated=true; } else partial=true;
       }
+      // A joint that could not be sampled used to keep its current-frame values. In Interpolate every
+      // other joint is shown at previous + phase, so this one sat a whole frame ahead of the rest of
+      // its own model, and as sampling came and went between presented frames the scenery snapped
+      // back and forth (Yoshi's Story: trees and flowers alternating at 240 Hz). Blend it between its
+      // two frames by the same phase instead, so a model is never at two times at once.
+      if(!sampled&&interp&&!j.tracks.empty()) {
+        const float t=float(phase);
+        for(const auto& tr_:j.tracks){
+          if(tr_.channel>=1&&tr_.channel<=3){
+            const int k=tr_.channel-1; float d=j.rotation[k]-p.rotation[k];
+            if(!std::isfinite(d))continue;
+            d=std::remainder(d,6.2831853f);   // the short way round
+            rot[k]=p.rotation[k]+t*d;
+          } else if(tr_.channel>=5&&tr_.channel<=7){
+            const int k=tr_.channel-5; pos[k]=p.translation[k]+t*(j.translation[k]-p.translation[k]);
+          } else if(tr_.channel>=8&&tr_.channel<=10){
+            const int k=tr_.channel-8; scale[k]=p.scale[k]+t*(j.scale[k]-p.scale[k]);
+          }
+        }
+        if(t>0&&t<1)animated=true;
+      }
       // Game-driven motion (fighter positions, items, knockback) has no track: predict it forward by
       // the last simulated per-frame delta, bounded so teleports and respawns hold instead.
       for(int k=0;k<3;++k){

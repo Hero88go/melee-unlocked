@@ -1,5 +1,6 @@
 // HLSL generation for GX pipelines. Ported from Dolphin VideoCommon (GPL-2.0-or-later):
 // VertexShaderGen.cpp, LightingShaderGen.h, PixelShaderGen.cpp (D3D11 integer-math path).
+#include <cstdlib>
 #include "gx_shader.h"
 #include "gx_texture.h"
 #include <array>
@@ -428,7 +429,7 @@ std::string generate_pixel_shader(const PSUid& uid) {
   o.w("cbuffer PSBlock : register(b1) {\nint4 colors[4];\nint4 kcolors[4];\nint4 alpharef;\nfloat4 texdims[8];\nint4 zbias[2];\n"
       "int4 indtexscale[2];\nint4 indtexmtx[6];\nint4 fogcolor;\nint4 fogi;\nfloat4 fogf[2];\nfloat4 zslope;\nint4 flags;\nfloat4 efbscale;\nfloat4 mvscale;\nfloat4 tint;\n};\n");
   if (forced_early_z) o.w("[earlydepthstencil]\n");
-  if (uid.motion_vectors) o.w("void main(out float4 ocol0 : SV_Target0, out float2 omv : SV_Target1, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
+  if (uid.motion_vectors) o.w("void main(out float4 ocol0 : SV_Target0, out float2 omv : SV_Target1, out float ohud : SV_Target2, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
   else o.w("void main(out float4 ocol0 : SV_Target0, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
   for (uint32_t i = 0; i < numTexgen; ++i) o.w(", in float3 uv%d : TEXCOORD%d", i, i);
   if (uid.motion_vectors) o.w(", in float4 clipPos : TEXCOORD%d, in float4 curPos : TEXCOORD%d, in float4 prevPos : TEXCOORD%d) {\n", numTexgen, numTexgen + 1, numTexgen + 2);
@@ -616,7 +617,7 @@ std::string generate_pixel_shader(const PSUid& uid) {
   // lerping by 0 returns ocol0.rgb unchanged, so this costs a multiply and changes nothing
   // otherwise. It is deliberately not part of PSUid: there is one pipeline either way.
   o.w("ocol0.rgb = lerp(ocol0.rgb, ocol0.rgb * tint.rgb + tint.rgb * 0.35, tint.w);\n");
-  if (uid.motion_vectors) o.w("omv = (prevPos.xy / prevPos.w - curPos.xy / curPos.w) * mvscale.xy;\n");
+  if (uid.motion_vectors) o.w("omv = (prevPos.xy / prevPos.w - curPos.xy / curPos.w) * mvscale.xy;\nohud = mvscale.z * saturate(ocol0.a);\n");
   o.w("}\n");
   return o.s;
 }
@@ -624,6 +625,16 @@ std::string generate_pixel_shader(const PSUid& uid) {
 // ---------------------------------------------------------------- constants
 std::atomic<bool> g_true_widescreen{false};
 void set_true_widescreen(bool on) { g_true_widescreen.store(on, std::memory_order_relaxed); }
+
+static uint32_t g_main_proj[7];
+static bool g_main_proj_valid = false;
+void set_main_projection(const DrawCall* scene) {
+  g_main_proj_valid = scene != nullptr;
+  if (scene) std::memcpy(g_main_proj, &scene->xf_regs[0x20], sizeof g_main_proj);
+}
+bool is_scene_draw(const DrawCall& dc) {
+  return g_main_proj_valid && std::memcmp(&dc.xf_regs[0x20], g_main_proj, sizeof g_main_proj) == 0;
+}
 
 void build_projection(const DrawCall& dc, float m[16]) {
   const float* vp = (const float*)&dc.xf_regs[0x1A];
@@ -673,8 +684,13 @@ void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const 
   if (motion) {
     // Sub-pixel jitter: shift clip space by the jitter in NDC (row 3 is the w row), so the
     // rasterized samples move while the reported matrices stay unjittered.
-    float jx = viewport_width != 0.0f ? 2.0f * motion->jitter_x / viewport_width : 0.0f;
-    float jy = viewport_height != 0.0f ? 2.0f * motion->jitter_y / viewport_height : 0.0f;
+    // Only the 3D scene is jittered. The HUD, text and menus are orthographic 2D; jittered, DLSS
+    // had to rebuild them from shaking samples with no motion to follow, and text came out soft.
+    // MELEE_DLSS_JITTER_HUD=1 jitters them again (for comparison).
+    static const bool jitter_hud = [] { const char* e = std::getenv("MELEE_DLSS_JITTER_HUD"); return e && *e == '1'; }();
+    const bool jitter = is_scene_draw(dc) || jitter_hud;
+    float jx = jitter && viewport_width != 0.0f ? 2.0f * motion->jitter_x / viewport_width : 0.0f;
+    float jy = jitter && viewport_height != 0.0f ? 2.0f * motion->jitter_y / viewport_height : 0.0f;
     for (int i = 0; i < 4; ++i) { m[i] += jx * m[12 + i]; m[4 + i] += jy * m[12 + i]; }
     std::memcpy(c.prev_projection, motion->prev_proj ? motion->prev_proj : &c.unjittered_projection[0][0], sizeof c.prev_projection);
     std::memcpy(c.prev_transformmatrices, motion->prev_pos ? motion->prev_pos : pos_matrices, sizeof c.prev_transformmatrices);
@@ -771,7 +787,8 @@ void fill_ps_constants(const DrawCall& dc, PSConstants& c, int efb_scale) {
     c.fogf[0][0] = 0.0f; c.fogf[0][1] = 1.0f; c.fogf[0][2] = 1.0f;
   }
   c.efbscale[0] = 1.0f / efb_scale; c.efbscale[1] = 1.0f / efb_scale;
-  { const float* vp = (const float*)&dc.xf_regs[0x1A]; c.mvscale[0] = vp[0] * efb_scale; c.mvscale[1] = vp[1] * efb_scale; }
+  { const float* vp = (const float*)&dc.xf_regs[0x1A]; c.mvscale[0] = vp[0] * efb_scale; c.mvscale[1] = vp[1] * efb_scale;
+    c.mvscale[2] = is_scene_draw(dc) ? 0.0f : 1.0f; }   // not the 3D scene (HUD, tags): shown as rendered, not from DLSS
   c.tint[0] = c.tint[1] = c.tint[2] = 1.0f; c.tint[3] = 0.0f;
   // The model only, as the Gecko code does. Tinting every draw the player owns also caught the
   // shadow and the effects around the fighter, which is the tint appearing where it should not.

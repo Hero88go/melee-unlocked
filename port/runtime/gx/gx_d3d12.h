@@ -37,6 +37,8 @@ struct D3D12Options {
   bool settings_hint = true;
   bool input_overlay = false;     // on-screen controller display, for streaming
   int input_overlay_ports = 1;    // bitmask of the controller ports it shows (bit 0 = port 1)
+  bool input_overlay_values = false;
+  int input_overlay_stick = 5;            // stick knob size, 1 (small marker) to 10 (fills much of the gate)        // print each stick's value (Melee units) under it
   bool input_overlay_hide_border = false;  // draw the pads with no panel background or resize grip
   // Drop in-world translucent effects to buy frame rate on weak machines: 0 everything, 1 skips
   // effects that do not write depth (sparks, glow, smoke), 2 skips translucent world geometry too.

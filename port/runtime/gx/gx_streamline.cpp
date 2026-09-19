@@ -217,8 +217,15 @@ bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h) {
   o.mode = to_sl(mode); o.outputWidth = out_w; o.outputHeight = out_h;
   o.colorBuffersHDR = sl::Boolean::eFalse;
   o.useAutoExposure = sl::Boolean::eTrue;
-  o.dlaaPreset = o.qualityPreset = o.balancedPreset = o.performancePreset = sl::DLSSPreset::ePresetK;
-  o.ultraPerformancePreset = sl::DLSSPreset::ePresetF;
+  // The second-generation transformer L on every mode (Streamline 2.14, DLSS 310.9). Measured on the
+  // same match frames at 1080p Quality: L 443, M 380, K 220 (Laplacian variance; native 3x is 405),
+  // K visibly soft on text and edges. Melee is light enough that L's extra cost does not matter.
+  // MELEE_DLSS_PRESET=K|L|M forces another preset on every mode (for comparison).
+  o.dlaaPreset = o.qualityPreset = o.balancedPreset = o.performancePreset = o.ultraPerformancePreset = sl::DLSSPreset::ePresetL;
+  if (const char* e = std::getenv("MELEE_DLSS_PRESET")) {
+    const sl::DLSSPreset p = *e == 'L' ? sl::DLSSPreset::ePresetL : *e == 'M' ? sl::DLSSPreset::ePresetM : sl::DLSSPreset::ePresetK;
+    o.dlaaPreset = o.qualityPreset = o.balancedPreset = o.performancePreset = o.ultraPerformancePreset = p;
+  }
   sl::Result res = slDLSSSetOptions(g_viewport, o);
   if (res != sl::Result::eOk) { host::log("dlss: slDLSSSetOptions failed (%d)", (int)res); return false; }
   g_mode = o.mode; g_out_w = out_w; g_out_h = out_h;
@@ -286,8 +293,11 @@ bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in) {
       sl::ResourceTag(&mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilEvaluate, &render_extent),
       sl::ResourceTag(&color_out, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &out_extent),
   };
+  // No bias-current-colour hint: NVIDIA's guide (3.15) says current models do not use it. The HUD is
+  // composited after DLSS in the present blit instead.
   const sl::BaseStructure* inputs[] = {&g_viewport, &tags[0], &tags[1], &tags[2], &tags[3]};
-  sl::Result res = slEvaluateFeature(sl::kFeatureDLSS, *g_token, inputs, (uint32_t)(sizeof inputs / sizeof inputs[0]), list);
+  const uint32_t input_count = 5;
+  sl::Result res = slEvaluateFeature(sl::kFeatureDLSS, *g_token, inputs, input_count, list);
   if (res != sl::Result::eOk) {
     static int logged = 0;
     if (logged++ < 5) host::log("dlss: slEvaluateFeature failed (%d)", (int)res);

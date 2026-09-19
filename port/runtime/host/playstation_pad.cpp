@@ -30,6 +30,17 @@ bool playstation_parse(const uint8_t* report, size_t size, bool dualsense, PadSt
   else if (report[0] == 0x01) { offset = 1; if (dualsense && size >= 32) layout = kDualSense; }
   if (size < offset + 9) return false;   // the short Bluetooth report ends exactly at the right trigger
   const uint8_t* d = report + offset;
+  // A full-size USB report can be either layout whatever the device calls itself: third-party "PS5"
+  // pads and some remappers present as a DualShock 4 but send DualSense reports, and read with the
+  // DualShock 4 layout every face button landed on the left trigger's byte ("every button is L2").
+  // The d-pad's released code (8) says which it is: it sits at byte 4 in a DualShock 4 report and at
+  // byte 7 in a DualSense one. When both or neither read 8 (a d-pad held, or a trigger whose low
+  // nibble happens to be 8), the device's own identity decides, as before.
+  if (report[0] == 0x01 && size >= 32) {
+    const bool ds4_hat = (d[4] & 0x0F) == 8, dualsense_hat = (d[7] & 0x0F) == 8;
+    if (ds4_hat && !dualsense_hat) layout = kDualShock;
+    else if (dualsense_hat && !ds4_hat) layout = kDualSense;
+  }
 
   uint16_t b = 0;
   const uint8_t hat = d[layout.buttons] & 0x0F;   // 0 = up, clockwise to 7 = up-left, 8 = released
