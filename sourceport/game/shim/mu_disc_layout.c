@@ -3,6 +3,8 @@
 #include <melee/ft/types.h>
 #include <melee/ft/kinds/ftPikachu/types.h>
 #include <melee/lb/lbanim.h>
+#include <melee/it/itCharItems.h>
+#include <melee/it/itCommonItems.h>
 
 #define DISC_OFFSET(type, field, offset) \
     _Static_assert(__builtin_offsetof(type, field) == (offset), #type "." #field)
@@ -29,3 +31,15 @@ _Static_assert(sizeof(FigaTrack) == 0x0C, "figatrack disc stride");
 DISC_OFFSET(FigaTrack, ad_head, 0x08);
 _Static_assert(sizeof(CmdUnion) == 4, "command word stride");
 _Static_assert(sizeof(struct gmScriptEventDefault) == 4, "command opcode stride");
+_Static_assert(sizeof(itSamusGrappleAttributes) == 0xB0, "grapple attribute stride");
+DISC_OFFSET(itSamusGrappleAttributes, x74, 0x74);
+DISC_OFFSET(itSamusGrappleAttributes, xAC, 0xAC);
+_Static_assert(sizeof(AnimBundle) == 0xC, "item animation bundle stride");
+DISC_OFFSET(itLinkBoomerangAttributes, x58_anim, 0x58);
+_Static_assert(sizeof(it_2E5A_TierEntry) == 0x2C, "item tier stride");
+DISC_OFFSET(it_2E5A_Attrs, tiers, 0x3C);
+DISC_OFFSET(itWhiteBeaAttributes, x14, 0x14);
+_Static_assert(sizeof(itGamewatchchefAttrEntry) == 0x14, "projectile entry stride");
+_Static_assert(sizeof(union ColorOverlay_x8_t) == 4, "color command stride");
+_Static_assert(sizeof(Fighter_x2D0_t) == 0x34, "multi-jump attribute stride");
+DISC_OFFSET(Fighter_x2D0_t, x2C, 0x2C);
