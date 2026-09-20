@@ -337,6 +337,11 @@ class D3D12Backend : public Backend {
   int fg_applied_ = -1; int reflex_applied_ = -1;   // what Streamline was last told; -1 forces the first call through even when the setting is "off"
   bool xess_reset_ = true;
   bool in_match_ = false;   // the frame being submitted shows a running match (set in submit_frame)
+  // Whether presented_aspect's widen actually reaches anything on screen: a mode's character/stage
+  // select through its results screen, not the bare 2D menu shell around it (see
+  // frame_has_widenable_scene). Starts true so a fresh window is never letterboxed to 73:60 for the
+  // one frame before the first EFB copy sets it for real.
+  bool widenable_scene_ = true;
   bool dlss_in_match_ = false;
   bool dlss_menus_ = false;   // run DLAA on menus too: DLSS 5 is on and wants the look everywhere
   ComPtr<IDXGIAdapter3> adapter3_;   // video memory queries   // last frame's frame_in_match: the upscaler's history restarts on a change
@@ -629,7 +634,7 @@ int D3D12Backend::pick_scale() const {
 
 // The game renders the same 640x480 field either way, but its camera asks for a 73:60 frustum, and
 // Slippi's widescreen code widens that to exactly 16:9. See presented_aspect in gx_d3d12.h.
-float D3D12Backend::output_aspect() const { return presented_aspect(opts_, client_w_, client_h_); }
+float D3D12Backend::output_aspect() const { return presented_aspect(opts_, client_w_, client_h_, widenable_scene_); }
 
 void D3D12Backend::create_efb() {
   scale_ = pick_scale();
@@ -1888,6 +1893,7 @@ static void dump_frame(const Frame& frame, const std::string& path) {
 
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
   in_match_ = frame_in_match(frame);
+  widenable_scene_ = frame_has_widenable_scene(frame);
   integrate_compiled_psos();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; wait_gpu(); sampler_sets_.clear(); }
   if (opts_.ssaa != ssaa_applied_ || (!dlss_active_ && pick_scale() != scale_)) {

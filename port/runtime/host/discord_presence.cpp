@@ -38,6 +38,12 @@ constexpr uint32_t FRAME_MAX = 64 * 1024;  // larger than Discord ever sends; an
 std::mutex g_mutex;                        // guards everything below except the atomics
 std::condition_variable g_wake;
 std::string g_app_id, g_status = "Off", g_join_code;
+// The most recent invite, kept for the on-screen notice. Separate from g_join_code because that
+// one is consumed by the Direct code list the moment the game asks for it, which would leave
+// nothing to show.
+std::string g_invite_notice;
+uint64_t g_invite_notice_until = 0;
+constexpr uint64_t INVITE_NOTICE_MS = 15000;   // long enough to read and act on, not a permanent banner
 Presence g_wanted;
 std::thread g_thread;
 std::atomic<bool> g_enabled{false}, g_stop{false}, g_has_join{false};
@@ -251,6 +257,8 @@ Pump handle_frames(HANDLE pipe, Reader& reader) {
         std::lock_guard<std::mutex> lk(g_mutex);
         g_join_code = secret;
         mine = g_wanted.join_code;
+        g_invite_notice = secret;
+        g_invite_notice_until = now_ms() + INVITE_NOTICE_MS;
       }
       g_has_join.store(true, std::memory_order_release);
       copy_to_clipboard(mine);
@@ -424,6 +432,13 @@ std::string take_join_code() {
   std::string out;
   out.swap(g_join_code);
   return out;
+}
+
+std::string invite_notice() {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (g_invite_notice.empty()) return {};
+  if (now_ms() >= g_invite_notice_until) { g_invite_notice.clear(); return {}; }
+  return g_invite_notice;
 }
 
 void shutdown() {
