@@ -1300,6 +1300,24 @@ static void draw_lcancel_overlays() {
   }
 }
 
+// A friend pressed Join on the player's Discord presence. All that does inside the game is put
+// their code at the front of the Online > Direct suggestions, which is invisible unless the player
+// is already standing on that screen: three players reported pressing Join, seeing nothing happen,
+// and concluding it was broken. Say what arrived and where to go with it.
+static void draw_discord_invite_overlay() {
+  if (!host::discord::enabled()) return;
+  const std::string code = host::discord::invite_notice();
+  if (code.empty()) return;
+  ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, 10), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+  ImGui::SetNextWindowBgAlpha(0.85f);
+  ImGui::Begin("DiscordInviteNotice", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                                   ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+                                                   ImGuiWindowFlags_NoFocusOnAppearing);
+  ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "Discord invite from %s", code.c_str());
+  ImGui::TextUnformatted("Open Online > Direct. Their code is the first suggestion, and yours is on the clipboard.");
+  ImGui::End();
+}
+
 // The volume the settings file holds. state.volume is only assigned while the Audio tab is being
 // drawn, and ImGui runs a tab's body only when it is the selected one, so saving from any other
 // tab used to write whatever that field happened to start as, which is zero. Players saw the
@@ -3157,6 +3175,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   // the launcher's settings window. The warning was already in this file, twenty lines up.
   if (!state.fill_window) {
     draw_lcancel_overlays();
+    draw_discord_invite_overlay();
     // The plain readouts: frame rate and, while online, the ping. Small, top left, no window
     // chrome, the way a Dolphin OSD line looks, and separate from the performance graph.
     // Reflex flash indicator: a white square on the frame A goes down on port 1, and the matching
