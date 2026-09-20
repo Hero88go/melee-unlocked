@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "hid_pad.h"
 #include "host.h"
+#include "input_bindings.h"
 #define NOMINMAX
 #include <windows.h>
 #include <hidsdi.h>
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <cstring>
 #include <mutex>
@@ -50,8 +52,12 @@ struct Slot {
   // Latest decoded state.
   PadState pad{};
   uint32_t buttons = 0;
+  int log_reports = 0;   // first few reports after a device appears, for diagnosing a pad that will not bind
   int32_t raw[8]{};
   bool fresh = false;
+  // Where each axis rests when nothing touches it, decided from the first report (see hid_trigger_rest).
+  // Only the axes read as triggers use it.
+  int8_t rest[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
 };
 
 constexpr USAGE kAxisOrder[8] = {kUsageX, kUsageY, kUsageZ, kUsageRx, kUsageRy, kUsageRz, kUsageSlider, kUsageHat};
@@ -76,7 +82,7 @@ std::string device_path(HANDLE device) {
 // two paths at once makes it fight itself, which looks like a broken controller rather than a
 // duplicated one.
 bool claimed_elsewhere(const RID_DEVICE_INFO_HID& hid, const std::string& path) {
-  if (hid.dwVendorId == 0x054C && (hid.dwProductId == 0x05C4 || hid.dwProductId == 0x09CC)) return true;  // DS4
+  if (playstation_pad(hid.dwVendorId, hid.dwProductId)) return true;                                      // DS4, DualSense
   if (hid.dwVendorId == 0x057E) return true;                                                              // Switch Pro family
   if (hid.dwVendorId == 0x057E || hid.dwVendorId == 0x0079) {}
   // An XInput device appears as HID as well, and its interface path carries "IG_". XInput already
@@ -160,24 +166,48 @@ int slot_for(HANDLE device) {
   return -1;
 }
 
-// Scales a declared axis range onto the signed range the GameCube pad uses. No deadzone: a box
-// reports exact values and rounding them toward centre is precisely the wrong thing to do.
-int8_t to_signed(const Axis& a, LONG raw) {
-  const double span = (double)a.logical_max - (double)a.logical_min;
-  if (span <= 0) return 0;
-  const double t = ((double)raw - (double)a.logical_min) / span;        // 0..1
-  const int scaled = (int)std::lround(t * 255.0) - 128;
-  return (int8_t)std::clamp(scaled, -128, 127);
-}
-
-uint8_t to_trigger(const Axis& a, LONG raw) {
-  const double span = (double)a.logical_max - (double)a.logical_min;
-  if (span <= 0) return 0;
-  const double t = ((double)raw - (double)a.logical_min) / span;
-  return (uint8_t)std::clamp((int)std::lround(t * 255.0), 0, 255);
+// Scales a declared axis range onto the signed range the GameCube pad uses exactly as Dolphin does:
+// from the centre out (centre -> 0, either end -> 127), the axis flipped first where the stick's
+// direction is reversed, then ROUNDED DOWN. Box scripts are tuned against that: b0xx-ahk sends
+// 10271 * c + 16448 on X and -10271 * c + 16320 on Y, and its +-64 offsets only land on the right
+// values (80 at a full press either way, 0 at rest) when the result is floored. Rounding to nearest
+// gave 79 for a full left press, and scaling across the whole span gave 79 for a full right one.
+// No deadzone: a box reports exact values and rounding them toward centre is precisely wrong.
+int8_t to_signed(const Axis& a, LONG raw, bool flip = false) {
+  const double half = ((double)a.logical_max - (double)a.logical_min) / 2.0;
+  if (half <= 0) return 0;
+  const double mid = ((double)a.logical_max + (double)a.logical_min) / 2.0;
+  double v = ((double)raw - mid) / half * 127.0;
+  if (flip) v = -v;
+  return (int8_t)std::clamp((int)std::floor(v), -128, 127);
 }
 
 }  // namespace
+
+// Where a trigger axis sits untouched. A real analog trigger rests at one end of its range. A vJoy
+// axis that its feeder never writes rests in the middle, and reading that from the bottom of the
+// range put every shield at half pressed for as long as the device was plugged in. Dolphin binds such
+// an axis as a half-axis (Z+), where the middle is released, and this does the same. Decided once,
+// from the first report, by which of the three places the value is nearest.
+int8_t hid_trigger_rest(long logical_min, long logical_max, long raw) {
+  const double lo = (double)logical_min, hi = (double)logical_max, mid = (lo + hi) / 2.0;
+  const double v = (double)raw;
+  const double to_lo = std::abs(v - lo), to_mid = std::abs(v - mid), to_hi = std::abs(v - hi);
+  if (to_mid < to_lo && to_mid < to_hi) return kTriggerRestCentre;
+  return to_hi < to_lo ? kTriggerRestMax : kTriggerRestMin;
+}
+
+uint8_t hid_trigger_value(long logical_min, long logical_max, long raw, int8_t rest) {
+  const double lo = (double)logical_min, hi = (double)logical_max;
+  if (hi <= lo) return 0;
+  double t;
+  switch (rest) {
+    case kTriggerRestCentre: t = ((double)raw - (lo + hi) / 2.0) / ((hi - lo) / 2.0); break;   // released at the middle
+    case kTriggerRestMax:    t = (hi - (double)raw) / (hi - lo); break;                         // pulled toward the minimum
+    default:                 t = ((double)raw - lo) / (hi - lo); break;
+  }
+  return (uint8_t)std::clamp((int)std::lround(t * 255.0), 0, 255);
+}
 
 bool hidpad_raw_input(void* device_handle, const uint8_t* report, uint32_t size, uint32_t count) {
   HANDLE device = (HANDLE)device_handle;
@@ -203,8 +233,15 @@ bool hidpad_raw_input(void* device_handle, const uint8_t* report, uint32_t size,
     s.device = device;
     s.name = friendly_name(path, info.hid);
     s.ready = true;
-    host::log("hid pad %d: %s (%d axes, buttons %u..%u)", index + 1, s.name.c_str(), s.axis_count,
-              (unsigned)s.button_min, (unsigned)s.button_max);
+    // Everything needed to tell, from a log alone, why a pad does not bind: how the device
+    // described itself and what the first report actually contained. A box controller reports its
+    // buttons in ways that differ from a normal pad, and without this the only symptom is a rebind
+    // that waits forever.
+    HIDP_CAPS caps{};
+    const unsigned collections = HidP_GetCaps(preparsed_of(s), &caps) == HIDP_STATUS_SUCCESS ? caps.NumberLinkCollectionNodes : 0;
+    host::log("hid pad %d: %s (%d axes, buttons %u..%u, %u collections, report %u bytes)", index + 1, s.name.c_str(),
+              s.axis_count, (unsigned)s.button_min, (unsigned)s.button_max, collections, caps.InputReportByteLength);
+    s.log_reports = 3;
   }
   if (!s.ready) return false;
 
@@ -226,35 +263,65 @@ bool hidpad_raw_input(void* device_handle, const uint8_t* report, uint32_t size,
   // the common choices are accepted: Rx/Ry when present, otherwise Z/Rz, which is what most cheap
   // pads and most vJoy feeder configurations use.
   if (read_axis(0, value)) pad.stick_x = to_signed(s.axes[0], value);
-  if (read_axis(1, value)) pad.stick_y = (int8_t)-std::max<int>(-127, to_signed(s.axes[1], value));
+  if (read_axis(1, value)) pad.stick_y = to_signed(s.axes[1], value, true);
   if (s.axes[3].present && s.axes[4].present) {
     if (read_axis(3, value)) pad.sub_x = to_signed(s.axes[3], value);
-    if (read_axis(4, value)) pad.sub_y = (int8_t)-std::max<int>(-127, to_signed(s.axes[4], value));
+    if (read_axis(4, value)) pad.sub_y = to_signed(s.axes[4], value, true);
   } else {
     if (read_axis(2, value)) pad.sub_x = to_signed(s.axes[2], value);
-    if (read_axis(5, value)) pad.sub_y = (int8_t)-std::max<int>(-127, to_signed(s.axes[5], value));
+    if (read_axis(5, value)) pad.sub_y = to_signed(s.axes[5], value, true);
   }
   // Triggers, when the device has spare analog axes for them. A box reports these as buttons
   // instead, which the binding table picks up.
-  if (s.axes[6].present && read_axis(6, value)) pad.trig_l = to_trigger(s.axes[6], value);
+  auto trigger = [&](int i, LONG raw) {
+    if (s.rest[i] < 0) {
+      s.rest[i] = hid_trigger_rest(s.axes[i].logical_min, s.axes[i].logical_max, raw);
+      if (s.rest[i] != kTriggerRestMin)
+        host::log("hid pad %d: trigger axis %s rests %s", index + 1, axis_name(s.axes[i].usage),
+                  s.rest[i] == kTriggerRestCentre ? "at the centre, read as a half-axis" : "at the top, read reversed");
+    }
+    return hid_trigger_value(s.axes[i].logical_min, s.axes[i].logical_max, raw, s.rest[i]);
+  };
+  if (s.axes[6].present && read_axis(6, value)) pad.trig_l = trigger(6, value);
   if (s.axes[3].present && s.axes[4].present && s.axes[2].present && read_axis(2, value))
-    pad.trig_r = to_trigger(s.axes[2], value);
+    pad.trig_r = trigger(2, value);
 
   uint32_t mask = 0;
-  if (s.button_max >= s.button_min) {
-    ULONG usage_count = HidP_MaxUsageListLength(HidP_Input, kUsagePageButton, preparsed_of(s));
+  {
+    // Every button pressed anywhere in the report, whatever collection it sits in. Asking for the
+    // Button page in link collection 0 only missed buttons a device keeps in a nested collection,
+    // and a vJoy device fed by a box controller can be laid out that way: its axes read (they are
+    // top level) while not one of its buttons ever registered, so a rebind waited forever.
+    ULONG usage_count = HidP_MaxUsageListLength(HidP_Input, 0, preparsed_of(s));
     if (usage_count) {
-      std::vector<USAGE> pressed(usage_count);
-      if (HidP_GetUsages(HidP_Input, kUsagePageButton, 0, pressed.data(), &usage_count, preparsed_of(s),
-                         (PCHAR)report, size) == HIDP_STATUS_SUCCESS) {
+      std::vector<USAGE_AND_PAGE> pressed(usage_count);
+      if (HidP_GetUsagesEx(HidP_Input, 0, pressed.data(), &usage_count, preparsed_of(s), (PCHAR)report, size) == HIDP_STATUS_SUCCESS) {
         for (ULONG i = 0; i < usage_count; ++i) {
-          const int bit = (int)pressed[i] - (int)s.button_min;
+          if (pressed[i].UsagePage != kUsagePageButton) continue;
+          const int bit = (int)pressed[i].Usage - (int)s.button_min;
           if (bit >= 0 && bit < 32) mask |= 1u << bit;
         }
       }
     }
   }
 
+  // The hat switch, as four buttons above the device's own (HID_HAT_*): box controllers on HayBox
+  // report their D-pad there. Eight positions from the top clockwise; anything else is centred.
+  if (s.axes[7].present && read_axis(7, value)) {
+    const LONG v = value - s.axes[7].logical_min;
+    if (v >= 0 && v < 8) {
+      if (v == 7 || v <= 1) mask |= host::HID_HAT_UP;
+      if (v >= 1 && v <= 3) mask |= host::HID_HAT_RIGHT;
+      if (v >= 3 && v <= 5) mask |= host::HID_HAT_DOWN;
+      if (v >= 5) mask |= host::HID_HAT_LEFT;
+    }
+  }
+
+  if (s.log_reports) {
+    --s.log_reports;
+    host::log("hid pad %d: report buttons %08X, stick %d,%d c-stick %d,%d, triggers %u/%u",
+              index + 1, mask, pad.stick_x, pad.stick_y, pad.sub_x, pad.sub_y, pad.trig_l, pad.trig_r);
+  }
   s.pad = pad;
   s.buttons = mask;
   s.fresh = true;

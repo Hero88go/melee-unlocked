@@ -49,7 +49,8 @@
 #define IDB_BAILEY 5
 
 namespace {
-enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_ENGINE, ID_TIMER = 1 };
+enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG,
+       ID_ENGINE, ID_SEG_LEGACY, ID_SEG_DLSS5, ID_TIMER = 1 };
 const UINT WM_APP_LOG = WM_APP + 1;      // lParam: heap std::string* to append to the log
 const UINT WM_APP_BUILD_DONE = WM_APP + 2;
 const UINT WM_APP_GAME_DONE = WM_APP + 3;
@@ -68,16 +69,21 @@ const COLORREF C_RAIL_TOP = RGB(0x0B, 0x11, 0x1E), C_RAIL_BOT = RGB(0x13, 0x1B, 
 const COLORREF C_DIVIDER = RGB(0x27, 0x31, 0x4A), C_SEP = RGB(0x22, 0x2B, 0x42);
 const COLORREF C_TEXT = RGB(0xE7, 0xEC, 0xF5), C_DIM = RGB(0x8D, 0x9B, 0xB5), C_FAINT = RGB(0x66, 0x74, 0x8E);
 const COLORREF C_FIELD = RGB(0x0E, 0x15, 0x22), C_FIELD_BORDER = RGB(0x2B, 0x36, 0x52);
-const COLORREF C_ACC_HI = RGB(0xEF, 0xA0, 0x54), C_ACC_LO = RGB(0xD9, 0x7B, 0x2C);
+// The accent (selected page bar, focus rings, the Build page's active border) is the same purple as
+// the PLAY button rather than Bailey's amber: two different highlight colours on one page read as
+// two different meanings, and PLAY is the one the eye is meant to land on.
+const COLORREF C_ACC_HI = RGB(0xA8, 0x7A, 0xFF), C_ACC_LO = RGB(0x7A, 0x3F, 0xE8);
 const COLORREF C_BTN = RGB(0x21, 0x2B, 0x42), C_BTN_BORDER = RGB(0x35, 0x41, 0x5F), C_BTN_DOWN = RGB(0x18, 0x21, 0x34);
 const COLORREF C_NAV_ON = RGB(0x1F, 0x2A, 0x40), C_NAV_HOT = RGB(0x18, 0x21, 0x34);
 const COLORREF C_LOG_BG = RGB(0x0A, 0x0F, 0x1A), C_LOG_TEXT = RGB(0x9F, 0xB4, 0xCE);
-const COLORREF C_PLAY_TEXT = RGB(0x24, 0x16, 0x05);
+const COLORREF C_PLAY_TEXT = RGB(0xFF, 0xFF, 0xFF);
+// The PLAY button: a saturated purple gradient, as bold as the amber it replaced.
+const COLORREF C_PLAY_HI = RGB(0xA8, 0x7A, 0xFF), C_PLAY_LO = RGB(0x7A, 0x3F, 0xE8), C_PLAY_DOWN = RGB(0x68, 0x32, 0xCC);
 const COLORREF C_OK = RGB(0x5A, 0xC8, 0x8A), C_WARN = RGB(0xE5, 0xA8, 0x4A), C_BAD = RGB(0xE0, 0x6B, 0x5B);
 const COLORREF NO_FILL = CLR_INVALID;
 
 HWND g_main;
-HWND g_play[6], g_build[2];
+HWND g_play[8], g_build[2];
 HWND g_iso_edit, g_play_btn, g_slippi_btn, g_update_btn, g_log, g_build_btn;
 HFONT g_font, g_font_big, g_font_mono, g_font_mark, g_font_nav, g_font_label, g_font_small;
 HICON g_mark = nullptr;          // IDI_MELEE_MARK, the wordmark drawn at the top of the rail
@@ -102,6 +108,12 @@ int g_cpu_build = CPU_AUTO;
 enum Engine { ENGINE_LEGACY = 0, ENGINE_SOURCE = 1 };
 int g_engine = ENGINE_LEGACY;
 HWND g_engine_btn = nullptr;
+int g_selected_build = 0; // 0 Legacy, 1 experimental neural rendering
+bool g_install_requested = false;
+HWND g_seg[2]{};                 // the GAME BUILD segments: 0 Legacy, 1 experimental
+// The experimental build's warning is shown the first time it is launched on this machine, not on
+// every start: an unskippable box before every single launch is nagging, not information.
+bool g_dlss5_warned = false;
 std::string g_slippi_line, g_version_line;
 COLORREF g_version_dot = C_FAINT;
 std::atomic<bool> g_building{false}, g_playing{false};
@@ -159,9 +171,11 @@ void load_ini() {
         if (v >= ENGINE_LEGACY && v <= ENGINE_SOURCE) g_engine = v;
         continue;
       }
-      if (line.rfind("cpubuild=", 0) != 0) continue;
-      const int v = std::atoi(line.c_str() + 9);
-      if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
+      if (line.rfind("cpubuild=", 0) == 0) {
+        const int v = std::atoi(line.c_str() + 9);
+        if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
+      } else if (line == "build=experimental") g_selected_build = 1;
+      else if (line == "dlss5warned=1") g_dlss5_warned = true;
     }
   }
   g_iso = read_iso_from(ini_path());
@@ -177,7 +191,8 @@ void load_ini() {
 void save_ini() {
   {
     std::ofstream f(ini_path());
-    f << "iso=" << g_iso << "\n";
+    f << "iso=" << g_iso << "\nbuild=" << (g_selected_build ? "experimental" : "legacy") << "\n";
+    if (g_dlss5_warned) f << "dlss5warned=1\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
     if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
     if (g_engine != ENGINE_LEGACY) f << "engine=" << g_engine << "\n";
@@ -312,12 +327,13 @@ std::string game_exe() {
   }
   const bool want_compat = g_cpu_build == CPU_COMPAT ||
                            (g_cpu_build == CPU_AUTO && !cpu_has_avx2());
-  if (want_compat && file_exists(g_dir + "\\melee_port_compat.exe"))
-    return g_dir + "\\melee_port_compat.exe";
-  if (file_exists(g_dir + "\\melee_port.exe")) return g_dir + "\\melee_port.exe";
+  const std::string stem = g_selected_build ? "melee_port_dlss5" : "melee_port";
+  if (want_compat && file_exists(g_dir + "\\" + stem + "_compat.exe"))
+    return g_dir + "\\" + stem + "_compat.exe";
+  if (file_exists(g_dir + "\\" + stem + ".exe")) return g_dir + "\\" + stem + ".exe";
   std::string root = repo_root();
-  if (!root.empty()) return root + "\\build-review\\port\\Release\\melee_port.exe";
-  return g_dir + "\\melee_port.exe";
+  if (!root.empty()) return root + (g_selected_build ? "\\build-dlss5\\port\\Release\\melee_port.exe" : "\\build-review\\port\\Release\\melee_port.exe");
+  return g_dir + "\\" + stem + ".exe";
 }
 // Working directory for the game: the release folder (Sys next to the launcher) or the repo root
 // of a source checkout (its defaults, port/slippi_sys and shadercache, are relative paths).
@@ -411,6 +427,11 @@ void dot(HDC dc, int x, int y, COLORREF c) {
 }
 
 RECT nav_rect(int i) { return LR(12, NAV_Y + i * NAV_GAP, RAIL_W - 24, NAV_H); }
+// The two build segments, side by side on the GAME BUILD row: Legacy and the experimental build.
+RECT build_seg_rect(int i) {
+  const int left = CX + 96, total = CW - 96, gap = 8, w = (total - gap) / 2;
+  return LR(left + i * (w + gap), 98, w, 28);
+}
 RECT slippi_text_rect() { return LR(CX + 15, 212, 319, 34); }
 RECT version_text_rect() { return LR(CX + 15, 244, 319, 34); }
 RECT drop_sub_rect() { return LR(CX, 86, CW, 20); }
@@ -540,6 +561,7 @@ void paint_play(HDC dc) {
   draw_text(dc, L"MELEE NTSC 1.02 DISC IMAGE", LR(CX, 32, CW, 18), g_font_label, C_FAINT,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER, S(1));
   round_rect(dc, LR(CX, 58, 380, 34), 7, C_FIELD, C_FIELD, C_FIELD_BORDER);
+  draw_text(dc, L"GAME BUILD", LR(CX, 102, 130, 19), g_font_label, C_FAINT, DT_LEFT | DT_SINGLELINE | DT_VCENTER, S(1));
 
   dot(dc, CX, 215, g_slippi_missing ? C_WARN : C_OK);   // centred on the first line of slippi_text_rect
   draw_text(dc, widen(g_slippi_line), slippi_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
@@ -592,15 +614,30 @@ void draw_button(DRAWITEMSTRUCT* di) {
   bool disabled = (di->itemState & ODS_DISABLED) != 0;
   bool down = (di->itemState & ODS_SELECTED) != 0;
   bool primary = di->hwndItem == g_play_btn;
+  // The GAME BUILD segments: the chosen one is filled in the same purple as PLAY, the other is an
+  // outline, so which build is about to start reads at a glance without a second highlight colour.
+  const int segment = di->hwndItem == g_seg[0] ? 0 : di->hwndItem == g_seg[1] ? 1 : -1;
 
   // Reproduce the parent's gradient behind the button so the rounded corners have the right colour.
   vgrad(di->hDC, r, content_bg_at(wr.top), content_bg_at(wr.bottom));
 
+  if (segment >= 0) {
+    const bool on = segment == g_selected_build;
+    COLORREF top = on ? C_ACC_HI : (down ? C_BTN_DOWN : C_BTN);
+    COLORREF bot = on ? C_ACC_LO : top;
+    COLORREF border = on ? NO_FILL : C_BTN_BORDER;
+    COLORREF text = on ? C_PLAY_TEXT : C_DIM;
+    round_rect(di->hDC, r, 7, top, bot, border);
+    wchar_t cap[128]{}; GetWindowTextW(di->hwndItem, cap, 128);
+    draw_text(di->hDC, cap, r, g_font_small, text, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    return;
+  }
+
   COLORREF top, bot, border = NO_FILL, text;
   if (primary) {
-    top = C_ACC_HI; bot = C_ACC_LO; text = C_PLAY_TEXT;
-    if (down) { top = C_ACC_LO; bot = C_ACC_LO; }
-    if (disabled) { top = RGB(0x3A, 0x35, 0x30); bot = RGB(0x33, 0x2E, 0x2A); text = RGB(0x7C, 0x74, 0x6B); }
+    top = C_PLAY_HI; bot = C_PLAY_LO; text = C_PLAY_TEXT;
+    if (down) top = bot = C_PLAY_DOWN;
+    if (disabled) { top = RGB(0x36, 0x33, 0x40); bot = RGB(0x30, 0x2D, 0x3A); text = RGB(0x78, 0x74, 0x84); }
   } else {
     top = bot = down ? C_BTN_DOWN : C_BTN; border = C_BTN_BORDER; text = C_TEXT;
     if (disabled) { top = bot = RGB(0x1A, 0x21, 0x32); border = RGB(0x28, 0x31, 0x47); text = RGB(0x5C, 0x68, 0x7E); }
@@ -608,7 +645,7 @@ void draw_button(DRAWITEMSTRUCT* di) {
   round_rect(di->hDC, r, primary ? 10 : 7, top, bot, border);
   if (di->itemState & ODS_FOCUS) {
     RECT f{r.left + S(3), r.top + S(3), r.right - S(3), r.bottom - S(3)};
-    round_rect(di->hDC, f, primary ? 8 : 5, NO_FILL, NO_FILL, primary ? C_PLAY_TEXT : C_ACC_LO);
+    round_rect(di->hDC, f, primary ? 8 : 5, NO_FILL, NO_FILL, primary ? C_PLAY_TEXT : C_ACC_LO);   // focus ring
   }
   wchar_t cap[128]{}; GetWindowTextW(di->hwndItem, cap, 128);
   draw_text(di->hDC, cap, r, primary ? g_font_big : g_font, text,
@@ -669,7 +706,10 @@ void start_build() {
 void open_settings() {
   if (g_playing || g_iso.empty()) return;
   g_game_exe = game_exe();
-  if (!file_exists(g_game_exe)) { select_tab(1); refresh_updater(); start_build(); return; }
+  if (!file_exists(g_game_exe)) {
+    if (g_selected_build && repo_root().empty()) { g_install_requested = true; host::updater::check(MELEE_PORT_VERSION, true); return; }
+    select_tab(1); refresh_updater(); start_build(); return;
+  }
   std::string cwd = work_dir();
   // --settings-window: the panel alone, no disc, no match engine, no prewarm.
   std::string cmd = "\"" + g_game_exe + "\" --settings-window";
@@ -713,10 +753,34 @@ void toggle_engine() {
   refresh_engine();
 }
 
+// A GAME BUILD segment was pressed: remember the choice, repaint both segments, and fetch the
+// experimental build if this install does not have it yet (a Legacy-only zip, nothing to build from).
+void select_build(int which) {
+  if (g_selected_build == which) return;
+  g_selected_build = which;
+  save_ini();
+  for (HWND h : g_seg) if (h) InvalidateRect(h, nullptr, TRUE);
+  if (g_selected_build && repo_root().empty() && !file_exists(game_exe())) {
+    g_install_requested = true;
+    host::updater::check(MELEE_PORT_VERSION, true);
+  }
+}
+
 void start_game() {
   if (g_playing || g_iso.empty()) return;
   g_game_exe = game_exe();
-  if (!file_exists(g_game_exe)) { select_tab(1); refresh_updater(); start_build(); return; }
+  if (!file_exists(g_game_exe)) {
+    if (g_selected_build && repo_root().empty()) { g_install_requested = true; host::updater::check(MELEE_PORT_VERSION, true); return; }
+    select_tab(1); refresh_updater(); start_build(); return;
+  }
+  // Once per machine, not once per launch: after the first time it is the same text every start,
+  // in the way of the thing the button was pressed to do. The status in the game's own PC settings
+  // panel is what reports whether the model actually loaded.
+  if (g_selected_build && !g_dlss5_warned) {
+    MessageBoxW(g_main, L"DLSS 5 Neural Rendering is experimental and intended for RTX 50-series GPUs or newer. It also needs a model in the NVIDIA driver or nvngx_dlssnr.dll supplied beside the game executable.\n\nThis is shown once.", L"Experimental build", MB_OK | MB_ICONWARNING);
+    g_dlss5_warned = true;
+    save_ini();
+  }
   std::string cwd = work_dir();
   std::string cmd = "\"" + g_game_exe + "\"" + game_args();
   STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
@@ -747,7 +811,12 @@ void refresh_updater() {
   using host::updater::State;
   auto st = host::updater::state();
   // One yes/no prompt per launch when a newer release exists. Nothing installs without a Yes.
-  if (st == State::UpdateAvailable && !g_update_prompted) {
+  if (st == State::UpdateAvailable && g_install_requested) {
+    g_install_requested = false;
+    g_update_prompted = true;
+    host::updater::download_and_install();
+    st = host::updater::state();
+  } else if (st == State::UpdateAvailable && !g_update_prompted) {
     g_update_prompted = true;
     std::string text = "Melee Unlocked " + host::updater::latest_version() + " is available (you have " MELEE_PORT_VERSION ").\n\nUpdate now? The game folder is updated in place; settings, saves and replays are kept.\n\nNo keeps this version; the Update button stays on the Play page.";
     if (MessageBoxW(g_main, widen(text).c_str(), L"Melee Unlocked Launcher", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) host::updater::download_and_install();
@@ -771,6 +840,15 @@ HWND make(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, in
   SendMessageW(hw, WM_SETFONT, (WPARAM)(font ? font : g_font), TRUE);
   return hw;
 }
+// Same, for a control whose rectangle is already in pixels (build_seg_rect, so the segments and the
+// painted label cannot drift apart at a non-96 DPI).
+HWND make_px(const wchar_t* cls, const wchar_t* text, DWORD style, RECT r, int id, HFONT font = nullptr) {
+  HWND hw = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, r.left, r.top,
+                            r.right - r.left, r.bottom - r.top, g_main, (HMENU)(INT_PTR)id,
+                            GetModuleHandleW(nullptr), nullptr);
+  SendMessageW(hw, WM_SETFONT, (WPARAM)(font ? font : g_font), TRUE);
+  return hw;
+}
 
 LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   switch (msg) {
@@ -781,7 +859,12 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       int i = 0;
       g_play[i++] = g_iso_edit = make(L"EDIT", L"", ES_AUTOHSCROLL | ES_READONLY, CX + 10, 66, 360, 18, ID_ISO_EDIT);
       g_play[i++] = make(L"BUTTON", L"Browse...", BS_OWNERDRAW, 602, 58, 96, 34, ID_BROWSE);
-      g_play[i++] = g_play_btn = make(L"BUTTON", L"PLAY", BS_OWNERDRAW, CX, 118, CW, 76, ID_PLAY, g_font_big);
+      {
+        RECT s0 = build_seg_rect(0), s1 = build_seg_rect(1);
+        g_play[i++] = g_seg[0] = make_px(L"BUTTON", L"Legacy", BS_OWNERDRAW, s0, ID_SEG_LEGACY);
+        g_play[i++] = g_seg[1] = make_px(L"BUTTON", L"DLSS 5 (RTX 50+)", BS_OWNERDRAW, s1, ID_SEG_DLSS5);
+      }
+      g_play[i++] = g_play_btn = make(L"BUTTON", L"PLAY", BS_OWNERDRAW, CX, 134, CW, 62, ID_PLAY, g_font_big);
       g_play[i++] = g_engine_btn = make(L"BUTTON", L"Engine", BS_OWNERDRAW, CX, 280, 160, 30, ID_ENGINE);
       g_play[i++] = g_slippi_btn = make(L"BUTTON", L"Get Slippi Launcher", BS_OWNERDRAW, 554, 214, 144, 30, ID_SLIPPI_GET);
       g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_OWNERDRAW, 554, 246, 144, 30, ID_UPDATE);
@@ -846,6 +929,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       switch (LOWORD(wp)) {
         case ID_BROWSE: browse(); break;
         case ID_PLAY: start_game(); break;
+        case ID_SEG_LEGACY: select_build(0); break;
+        case ID_SEG_DLSS5: select_build(1); break;
         case ID_BUILD: start_build(); break;
         case ID_UPDATE:
           if (host::updater::state() == host::updater::State::Failed) host::updater::check(MELEE_PORT_VERSION);

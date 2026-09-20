@@ -32,6 +32,17 @@ using Microsoft::WRL::ComPtr;
 int run_settings_d3d11(gx::RenderOptions& options, void* hwnd);
 int run_settings_d3d12(gx::RenderOptions& options, void* hwnd);
 
+// The controller display draws what the game read on its last PADRead, which is the right source in
+// game: it shows what the simulation acted on. Here there is no game and nothing ever calls
+// input_poll, so every port stayed at its zero-initialised state and the controller on screen never
+// moved, in the one window whose whole purpose is checking that a controller works. Polling once per
+// drawn frame publishes the same routed per-port state the game would, so the display, the port
+// assignment section and the live "what is this device pressing" lines all work here too.
+static void poll_pads_for_panel() {
+  host::PadState pads[4];
+  host::input_poll(pads);
+}
+
 int run_settings_window(gx::RenderOptions& options) {
   gx::settings_fill_window(true);   // the panel IS this window, not a box floating inside it
   void* hwnd = host::window_create(620, 700, L"Melee Unlocked settings", true);
@@ -83,8 +94,14 @@ int run_settings_d3d11(gx::RenderOptions& options, void* hwnd) {
   options.pc_settings = true;
   gx::PcSettingsUID3D11 ui(hwnd, device.Get(), context.Get(), options);
 
-  while (!host::window_closed()) {
-    host::window_pump();
+  // One frame. Called from the loop, and also from the window's WM_SIZE while its edge is being
+  // dragged: Windows runs its own message loop for the whole drag, so without this the last frame was
+  // stretched to the new size until the mouse was let go. `drawing` keeps a resize that arrives from
+  // inside a frame from starting another one.
+  bool drawing = false;
+  auto draw_frame = [&] {
+    if (drawing) return;
+    drawing = true;
     // Resizing releases the back buffer, so the view is rebuilt from whatever size it is now.
     RECT rc{}; GetClientRect((HWND)hwnd, &rc);
     const UINT w = (UINT)(rc.right - rc.left), h = (UINT)(rc.bottom - rc.top);
@@ -106,6 +123,13 @@ int run_settings_d3d11(gx::RenderOptions& options, void* hwnd) {
     }
     ui.draw();
     swapchain->Present(1, 0);   // vsync: this window has nothing to race
+    drawing = false;
+  };
+  host::window_set_resize_callback([&](int, int) { draw_frame(); });
+  while (!host::window_closed()) {
+    host::window_pump();
+    poll_pads_for_panel();
+    draw_frame();
     // A settings box must not cost what a game costs. Unfocused it redraws a few times a second;
     // focused, vsync above already holds it at the monitor rate for one ImGui window.
     if (GetForegroundWindow() != (HWND)hwnd) Sleep(120);
@@ -113,6 +137,7 @@ int run_settings_d3d11(gx::RenderOptions& options, void* hwnd) {
     // there is no game to return to.
     if (gx::settings_close_requested()) { ShowWindow((HWND)hwnd, SW_HIDE); break; }
   }
+  host::window_set_resize_callback({});
   options.settings_open = was_open;   // do not let opening this window change the saved startup choice
   return 0;
 }
@@ -178,8 +203,11 @@ int run_settings_d3d12(gx::RenderOptions& options, void* hwnd) {
   options.pc_settings = true;
   {
     gx::PcSettingsUI ui(hwnd, device.Get(), queue.Get(), options);
-    while (!host::window_closed()) {
-      host::window_pump();
+    // One frame, from the loop and from WM_SIZE during a drag (see the Direct3D 11 version).
+    bool drawing = false;
+    auto draw_frame = [&] {
+      if (drawing) return;
+      drawing = true;
       RECT rc{}; GetClientRect((HWND)hwnd, &rc);
       const UINT w = (UINT)(rc.right - rc.left), h = (UINT)(rc.bottom - rc.top);
       DXGI_SWAP_CHAIN_DESC1 have{}; swapchain->GetDesc1(&have);
@@ -214,9 +242,17 @@ int run_settings_d3d12(gx::RenderOptions& options, void* hwnd) {
       queue->ExecuteCommandLists(1, lists);
       swapchain->Present(1, 0);
       wait_gpu();
+      drawing = false;
+    };
+    host::window_set_resize_callback([&](int, int) { draw_frame(); });
+    while (!host::window_closed()) {
+      host::window_pump();
+      poll_pads_for_panel();
+      draw_frame();
       if (GetForegroundWindow() != (HWND)hwnd) Sleep(120);
       if (gx::settings_close_requested()) { ShowWindow((HWND)hwnd, SW_HIDE); break; }
     }
+    host::window_set_resize_callback({});
     wait_gpu();
   }
   CloseHandle(fence_event);

@@ -49,6 +49,13 @@ std::string status();
 // Returned once and then forgotten. Validated as a connect code before it ever gets here.
 std::string take_join_code();
 
+// The code from the most recent invite, for the on-screen notice, or "" once it has been shown for
+// long enough. Unlike take_join_code() this does not consume anything: pressing Join in Discord
+// only files the code away for the Direct name entry, which is invisible unless the player happens
+// to already be on that screen. Three players reported pressing Join and seeing nothing happen at
+// all, so the notice exists to say what arrived and where to go. Safe from the render thread.
+std::string invite_notice();
+
 // Stops the thread. Safe to call when it never started. Call before process exit.
 void shutdown();
 

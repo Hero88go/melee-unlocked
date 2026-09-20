@@ -68,6 +68,7 @@ def to_discord(text, version, repo="Hero88go/melee-unlocked"):
     # belong on the release page people land on, not in a chat message.
     skip_sections = {"install"}
     skipping = False
+    title = ""
 
     def flush():
         if para:
@@ -83,7 +84,8 @@ def to_discord(text, version, repo="Hero88go/melee-unlocked"):
             continue
         if stripped.startswith("# "):
             flush()
-            continue                                   # the title is carried by the header below
+            title = stripped[2:].strip()               # carried by the header below
+            continue
         if stripped.startswith("## "):
             flush()
             heading = stripped[3:].strip()
@@ -109,7 +111,8 @@ def to_discord(text, version, repo="Hero88go/melee-unlocked"):
     flush()
 
     body = re.sub(r"\n{3,}", "\n\n", "\n".join(blocks)).strip()
-    header = "**Melee Unlocked %s is out**\n\n" % version
+    # A notes title with more than the version ("0.6.0: DLSS5 update, ...") is the headline.
+    header = ("**%s**\n\n" % title) if ":" in title else "**Melee Unlocked %s is out**\n\n" % version
     link = "\n\nhttps://github.com/%s/releases/tag/v%s" % (repo, version)
     return header + body + link
 

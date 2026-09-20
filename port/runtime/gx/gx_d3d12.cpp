@@ -27,6 +27,11 @@
 #include "gx_shader.h"
 #include "gx_texture.h"
 #include "gx_streamline.h"
+#include "gx_xess.h"
+#include "flicker_scan.h"
+#ifdef GX_DLSS5
+#include "gx_dlss5.h"
+#endif
 #include "texture_pack.h"
 #include "host.h"
 #include "window.h"   // fullscreen toggling lives on the window, not the settings panel
@@ -41,6 +46,33 @@
 using Microsoft::WRL::ComPtr;
 
 namespace gx {
+// VRAM meter (see vram_usage): written by the renderer, read by the settings overlay.
+// g_vram_budget is Windows' current allowance for this process (DXGI_QUERY_VIDEO_MEMORY_INFO::Budget):
+// it moves with whatever else is asking the GPU for memory (a browser, an overlay, another game) and
+// is usually a bit under the card's real size, which reads as "missing" VRAM to someone who knows
+// their card's number. g_vram_total is the adapter's own installed size instead, captured once.
+std::atomic<float> g_vram_used{0.0f}, g_vram_budget{0.0f}, g_vram_total{0.0f};
+bool vram_usage(float* used_gb, float* total_gb) {
+  *used_gb = g_vram_used.load(std::memory_order_relaxed); *total_gb = g_vram_total.load(std::memory_order_relaxed);
+  return *total_gb > 0.0f;
+}
+
+// GPU time actually spent in the DLAA/DLSS pass and the DLSS 5 pass, in milliseconds, each frame
+// either ran (see D3D12Backend::read_gpu_timers). 0 for a pass that has not run yet. For the
+// settings panel: what a setting is actually costing, not the total render latency alone.
+std::atomic<float> g_dlaa_pass_ms{0.0f};
+#ifdef GX_DLSS5
+std::atomic<float> g_dlss5_pass_ms{0.0f};
+#endif
+void gpu_pass_cost(float* dlaa_ms, float* neural_ms) {
+  *dlaa_ms = g_dlaa_pass_ms.load(std::memory_order_relaxed);
+#ifdef GX_DLSS5
+  *neural_ms = g_dlss5_pass_ms.load(std::memory_order_relaxed);
+#else
+  *neural_ms = 0.0f;
+#endif
+}
+
 
 namespace {
 
@@ -163,17 +195,26 @@ class D3D12Backend : public Backend {
     settings_ui_.reset();
 #endif
  stop_pso_workers(); integrate_compiled_psos(); flush_captures(); save_pipeline_recipes(); save_pipeline_library(); if (fence_event_) CloseHandle(fence_event_); if (present_timer_) CloseHandle(present_timer_);
-    last_poses_.clear(); mvec_.Reset(); dlss_out_.Reset(); streamline::shutdown(); }
+    last_poses_.clear();
+#ifdef GX_DLSS5
+    dlss5::shutdown();
+#endif
+    mvec_.Reset(); hud_mask_.Reset(); dlss_out_.Reset(); xess::shutdown(); streamline::shutdown(); }
   const D3D12Options& options() const { return opts_; }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
+  // EFB copies are about to be freed. texture_sets_ is keyed by resource pointer, so its entries for
+  // them must go too: a new texture allocated at a freed address would otherwise match a descriptor
+  // table that still points at the freed one, and the GPU reads released memory (the crash on
+  // changing internal resolution mid-match).
+  void drop_efb_copies() { efb_copies_.clear(); texture_sets_.clear(); }
   void resize(int w, int h) {
     wait_gpu(); client_w_ = w; client_h_ = h; create_swapchain_targets(true);
     // Auto scale follows the window like Dolphin's "Auto (Window Size)" integral mode: the EFB is
     // re-created at the new multiplier and scaled EFB-copy textures are dropped (their size changed).
-    if (opts_.efb_scale == 0 && pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
+    if (opts_.efb_scale == 0 && pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
   int scale() const { return scale_; }
   void set_skip_present(bool skip) override { skip_present_ = skip; }
@@ -204,12 +245,23 @@ class D3D12Backend : public Backend {
   uint64_t texpack_report_frame_ = ~0ull;
   int forced_scale_ = 0;
   ComPtr<ID3D12Resource> mvec_, dlss_out_;
+  // DLSS "bias current colour" hint: 1 where a flat 2D draw (HUD, text, player tags) wrote, so DLSS
+  // keeps no history there. Without it a ticking timer or a tag following a fighter ghosted.
+  ComPtr<ID3D12Resource> hud_mask_;
   uint32_t dlss_out_w_ = 0, dlss_out_h_ = 0;
   float jitter_x_ = 0, jitter_y_ = 0;
   bool dlss_reset_ = true;
-  struct LastPose { float pos[256]; float proj[16]; uint64_t frame; };
+#ifdef GX_DLSS5
+  bool dlss5_reset_ = true;
+#endif
+  // A draw's pose this frame and in the frame before. A model drawn in several passes in one frame
+  // (fighters are) must compare every pass with the previous frame; comparing a second pass with the
+  // first pass's pose gave zero motion, and DLSS/DLAA blended the moving fighter into the background.
+  struct LastPose { float pos[256]; float proj[16]; uint64_t frame; float prev_pos[256]; float prev_proj[16]; uint64_t prev_frame; };
   std::unordered_map<uint64_t, LastPose> last_poses_;
   void configure_dlss();
+  void update_vram();
+  void set_dlss_mip_bias(float bias);
   void bind_efb_targets();
   void output_size(int* vw, int* vh) const;
   HANDLE present_timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* high resolution */, TIMER_ALL_ACCESS);
@@ -277,6 +329,26 @@ class D3D12Backend : public Backend {
   D3D12Options opts_;
   int client_w_, client_h_;
   int scale_ = 1;                                // current internal-resolution multiplier
+  // Texture LOD bias for the DLSS upscaling modes, log2(render width / output width) as NVIDIA's
+  // guide asks: without it textures are sampled at the detail of the smaller render and stay soft
+  // after the upscale. Zero for native and DLAA.
+  float dlss_mip_bias_ = 0.0f;
+  uint64_t mv_draws_ = 0, mv_matched_ = 0;
+  int fg_applied_ = -1; int reflex_applied_ = -1;   // what Streamline was last told; -1 forces the first call through even when the setting is "off"
+  bool xess_reset_ = true;
+  bool in_match_ = false;   // the frame being submitted shows a running match (set in submit_frame)
+  // Whether presented_aspect's widen actually reaches anything on screen: a mode's character/stage
+  // select through its results screen, not the bare 2D menu shell around it (see
+  // frame_has_widenable_scene). Starts true so a fresh window is never letterboxed to 73:60 for the
+  // one frame before the first EFB copy sets it for real.
+  bool widenable_scene_ = true;
+  bool dlss_in_match_ = false;
+  bool dlss_menus_ = false;   // run DLAA on menus too: DLSS 5 is on and wants the look everywhere
+  ComPtr<IDXGIAdapter3> adapter3_;   // video memory queries   // last frame's frame_in_match: the upscaler's history restarts on a change
+  std::wstring exe_dir_;   // for loading the upscaler libraries
+  bool xess_active() const { return xess::is_xess_mode(opts_.dlss_mode); }
+  // The name of the upscaling mode for the log, whichever vendor it belongs to.
+  const char* upscaler_name() const { return xess_active() ? xess::mode_name(opts_.dlss_mode) : dlss_mode_name((DlssMode)opts_.dlss_mode); }   // draws with motion history (diagnostic, logged with DLSS on)
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
   ComPtr<ID3D12Device> device_;
   // Persistent caches (opts_.shader_cache): compiled shader blobs as files, pipelines in a D3D12
@@ -298,6 +370,25 @@ class D3D12Backend : public Backend {
   static constexpr int FRAME_SLOTS = 3;
   ComPtr<ID3D12CommandAllocator> allocators_[FRAME_SLOTS];
   uint64_t slot_fence_[FRAME_SLOTS] = {};
+  // --flicker-scan: each presented frame's EFB is copied into its slot's readback buffer, and read
+  // when that slot comes round again (its fence has passed, so the read never stalls the GPU).
+  FlickerScanner scanner_;
+  ComPtr<ID3D12Resource> scan_rb_[FRAME_SLOTS];
+  uint64_t scan_rb_size_[FRAME_SLOTS] = {};
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT scan_fp_[FRAME_SLOTS] = {};
+  bool scan_pending_[FRAME_SLOTS] = {};
+  uint32_t scan_frame_[FRAME_SLOTS] = {};
+  void record_flicker_scan();
+  void read_flicker_scan();
+  // GPU-timed cost of the DLAA/DLSS pass and the DLSS 5 pass, each frame, read back the same way as
+  // the flicker scan above (same slot_, so it is already fence-safe). For the settings panel: "how
+  // much is this setting actually costing", not just the total render latency Reflex reports.
+  ComPtr<ID3D12QueryHeap> timer_heap_;
+  ComPtr<ID3D12Resource> timer_rb_[FRAME_SLOTS];
+  uint8_t timer_mask_[FRAME_SLOTS] = {};   // bit 0: DLAA/DLSS queried this slot; bit 1: DLSS 5 queried
+  bool timer_pending_[FRAME_SLOTS] = {};
+  uint64_t timer_freq_ = 0;
+  void read_gpu_timers();
   int slot_ = 0;
   ComPtr<ID3D12GraphicsCommandList> list_;
   ComPtr<ID3D12Fence> fence_;
@@ -319,6 +410,10 @@ class D3D12Backend : public Backend {
   uint32_t sampler_slots_used_ = 0;
   uint32_t srv_cursor_ = 0;
   std::unordered_map<TextureSetKey, uint32_t, TextureSetHash> texture_sets_;
+  // Textures drawn at native resolution while their pack replacement loads in the background, by
+  // texture cache key: once the replacement is ready the native one is dropped and rebuilt with it.
+  std::unordered_map<uint64_t, std::string> pending_hd_;
+  void swap_in_ready_replacements();
   std::vector<ComPtr<ID3D12DescriptorHeap>> descriptor_garbage_[FRAME_SLOTS];
   uint64_t frame_counter_ = 0;
   uint32_t frames_presented_ = 0;
@@ -333,10 +428,11 @@ void D3D12Backend::init() {
 #ifdef _DEBUG
   { ComPtr<ID3D12Debug> dbg; if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) dbg->EnableDebugLayer(); }
 #endif
-  if (opts_.pc_settings || opts_.dlss_mode != 0) {
+  if (opts_.pc_settings || opts_.dlss_mode != 0 || opts_.reflex_mode != 0 || opts_.frame_generation_mode != 0) {
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring dir(exe); size_t slash = dir.find_last_of(L"\\/"); if (slash != std::wstring::npos) dir.resize(slash);
     streamline::init(dir);
+    exe_dir_ = dir;
   }
   ComPtr<IDXGIFactory4> factory;
   check(streamline::create_dxgi_factory2(0, &IID_PPV_ARGS_Helper_IID<IDXGIFactory4>(), (void**)factory.GetAddressOf()), "factory");
@@ -351,8 +447,11 @@ void D3D12Backend::init() {
       // character pack at 4x, and small enough that the game never competes with itself for VRAM.
       replacement_budget_ = std::clamp<uint64_t>((uint64_t)desc.DedicatedVideoMemory / 4,
                                                  256ull * 1024 * 1024, 2048ull * 1024 * 1024);
+      g_vram_total = (float)((double)desc.DedicatedVideoMemory / 1073741824.0);   // the card's own size, for the VRAM meter
+      adapter.As(&adapter3_);   // for the VRAM meter (Windows 10 and later)
       streamline::set_device(device_.Get());
       streamline::dlss_supported(adapter.Get());
+      if (!exe_dir_.empty()) xess::init(exe_dir_, device_.Get());
       break;
     }
   }
@@ -387,6 +486,23 @@ void D3D12Backend::init() {
   check(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)), "fence");
   fence_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
+  // GPU timers for the settings panel's latency breakdown (see gpu_pass_cost). Timer 0 = DLAA/DLSS
+  // start, 1 = its end, 2 = DLSS 5 start, 3 = its end, per frame slot. queue_->GetTimestampFrequency
+  // can fail on hardware/drivers that do not support GPU timestamps; the readouts just stay at 0.
+  D3D12_QUERY_HEAP_DESC qhd{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, FRAME_SLOTS * 4};
+  if (SUCCEEDED(device_->CreateQueryHeap(&qhd, IID_PPV_ARGS(&timer_heap_))) &&
+      SUCCEEDED(queue_->GetTimestampFrequency(&timer_freq_))) {
+    for (int i = 0; i < FRAME_SLOTS; ++i) {
+      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
+      D3D12_RESOURCE_DESC rd{};
+      rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = 4 * sizeof(uint64_t); rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+      rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+      device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&timer_rb_[i]));
+    }
+  } else {
+    timer_heap_.Reset(); timer_freq_ = 0;
+  }
+
   create_swapchain_targets(false);
   create_efb();
   open_pipeline_library();
@@ -414,15 +530,18 @@ void D3D12Backend::init() {
   ss.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR; ss.AddressU = ss.AddressV = ss.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
   ss.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
   D3D12_ROOT_PARAMETER bp[2]{};
-  bp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; D3D12_DESCRIPTOR_RANGE br{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, 0};
+  bp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; D3D12_DESCRIPTOR_RANGE br{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0, 0, 0};   // t0 image, t1 current EFB, t2 HUD mask
   bp[0].DescriptorTable = {1, &br}; bp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 12; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 20; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
   D3D12_ROOT_SIGNATURE_DESC brsd{2, bp, 1, &ss, D3D12_ROOT_SIGNATURE_FLAG_NONE};
   check(D3D12SerializeRootSignature(&brsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err), "blit root");
   check(device_->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&blit_root_)), "blit root sig");
   const char* blit = R"(
-Texture2D src : register(t0); SamplerState samp : register(s0);
-cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis
+Texture2D src : register(t0); Texture2D efb : register(t1); Texture2D hudmask : register(t2); SamplerState samp : register(s0);
+// box.z > 0: DLSS HUD composite. Pixels a flat 2D draw wrote this frame (HUD, text, player tags) come
+// from this frame's own render instead of DLSS, which rebuilds from history and ghosted the ticking
+// timer and moving tags; NVIDIA's guide puts UI after DLSS. hudr maps output uv to EFB uv.
+cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 hudr; float4 color; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis; color: x = brightness gain, y = contrast gain, z = vibrance gain
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
 // Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
@@ -439,9 +558,27 @@ float4 downsample(float2 uv) {
       acc += src.Sample(samp, uv + (float2(x, y) + 0.5) / float2(nx, ny) * foot - 0.5 * foot);
   return acc / (nx * ny);
 }
+float4 hud(float2 uv, float4 c) {
+  if (box.z <= 0.0) return c;
+  float2 e = uv * hudr.xy + hudr.zw;
+  if (box.w > 0.0) return float4(hudmask.Sample(samp, e).rrr, 1);   // MELEE_DEBUG_HUDMASK
+  float m = hudmask.Sample(samp, e).r;
+  return m > 0.0 ? lerp(c, efb.Sample(samp, e), saturate(m)) : c;
+}
+// Brightness/contrast/vibrance: a display adjustment over the finished picture, HUD included (a
+// brightness slider that left percentages at native brightness while dimming everything else would
+// read as a bug, not a feature). Neutral at (1,1,1), so this is a no-op when nobody has touched it.
+float3 grade(float3 c) {
+  if (color.x == 1.0 && color.y == 1.0 && color.z == 1.0) return c;
+  c *= color.x;
+  c = (c - 0.5) * color.y + 0.5;
+  float luma = dot(c, float3(0.2126, 0.7152, 0.0722));
+  c = lerp(luma.xxx, c, color.z);
+  return saturate(c);
+}
 float4 PS(O i) : SV_Target {
-  float4 c = downsample(i.uv);
-  if (sharp.z <= 0.0) return c;
+  float4 c = hud(i.uv, downsample(i.uv));
+  if (sharp.z <= 0.0) return float4(grade(c.rgb), c.a);
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
   float2 step = sharp.xy * max(box.xy, 1.0);
@@ -452,7 +589,8 @@ float4 PS(O i) : SV_Target {
   float peak = -1.0 / lerp(8.0, 5.0, saturate(sharp.z));
   float3 wgt = amp * peak;
   float3 r = (c.rgb + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt);
-  return float4(saturate(r), c.a);
+  float4 sharpened = hud(i.uv, float4(saturate(r), c.a));
+  return float4(grade(sharpened.rgb), sharpened.a);
 })";
   ComPtr<ID3DBlob> bvs, bps;
   check(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &bvs, &err), "blit vs");
@@ -496,7 +634,7 @@ int D3D12Backend::pick_scale() const {
 
 // The game renders the same 640x480 field either way, but its camera asks for a 73:60 frustum, and
 // Slippi's widescreen code widens that to exactly 16:9. See presented_aspect in gx_d3d12.h.
-float D3D12Backend::output_aspect() const { return presented_aspect(opts_, client_w_, client_h_); }
+float D3D12Backend::output_aspect() const { return presented_aspect(opts_, client_w_, client_h_, widenable_scene_); }
 
 void D3D12Backend::create_efb() {
   scale_ = pick_scale();
@@ -510,25 +648,34 @@ void D3D12Backend::create_efb() {
   check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &cv, IID_PPV_ARGS(&efb_color_)), "efb color");
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += 3 * rtv_size_;
   device_->CreateRenderTargetView(efb_color_.Get(), nullptr, rtv);
-  rd.Format = DXGI_FORMAT_D32_FLOAT; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+  // Typeless with a D32 view: Streamline copies depth for frame generation and cannot size a
+  // depth-only D32_FLOAT resource ("Don't know the size for resource ... native 40").
+  rd.Format = DXGI_FORMAT_R32_TYPELESS; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
   D3D12_CLEAR_VALUE dv{DXGI_FORMAT_D32_FLOAT}; dv.DepthStencil.Depth = 0.0f;
   check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &dv, IID_PPV_ARGS(&efb_depth_)), "efb depth");
-  device_->CreateDepthStencilView(efb_depth_.Get(), nullptr, dsv_heap_->GetCPUDescriptorHandleForHeapStart());
+  D3D12_DEPTH_STENCIL_VIEW_DESC dsvd{}; dsvd.Format = DXGI_FORMAT_D32_FLOAT; dsvd.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+  device_->CreateDepthStencilView(efb_depth_.Get(), &dsvd, dsv_heap_->GetCPUDescriptorHandleForHeapStart());
   rd.Format = DXGI_FORMAT_R16G16_FLOAT; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
   D3D12_CLEAR_VALUE mv{DXGI_FORMAT_R16G16_FLOAT, {0, 0, 0, 0}};
   check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &mv, IID_PPV_ARGS(&mvec_)), "motion vectors");
   D3D12_CPU_DESCRIPTOR_HANDLE mrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); mrtv.ptr += 5 * rtv_size_;
   device_->CreateRenderTargetView(mvec_.Get(), nullptr, mrtv);
+  rd.Format = DXGI_FORMAT_R8_UNORM;
+  D3D12_CLEAR_VALUE hv{DXGI_FORMAT_R8_UNORM, {0, 0, 0, 0}};
+  check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &hv, IID_PPV_ARGS(&hud_mask_)), "hud mask");
+  D3D12_CPU_DESCRIPTOR_HANDLE hrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); hrtv.ptr += 6 * rtv_size_;
+  device_->CreateRenderTargetView(hud_mask_.Get(), nullptr, hrtv);
   last_poses_.clear(); dlss_reset_ = true;
   efb_is_rt_ = true;
 }
 
 void D3D12Backend::bind_efb_targets() {
-  D3D12_CPU_DESCRIPTOR_HANDLE rtvs[2];
+  D3D12_CPU_DESCRIPTOR_HANDLE rtvs[3];
   rtvs[0] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtvs[0].ptr += 3 * rtv_size_;
   rtvs[1] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtvs[1].ptr += 5 * rtv_size_;
+  rtvs[2] = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtvs[2].ptr += 6 * rtv_size_;
   D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsv_heap_->GetCPUDescriptorHandleForHeapStart();
-  list_->OMSetRenderTargets(dlss_active_ ? 2 : 1, rtvs, FALSE, &dsv);
+  list_->OMSetRenderTargets(dlss_active_ ? 3 : 1, rtvs, FALSE, &dsv);
 }
 
 void D3D12Backend::output_size(int* vw, int* vh) const {
@@ -541,24 +688,55 @@ void D3D12Backend::output_size(int* vw, int* vh) const {
 
 // Reconciles the DLSS mode with the window: picks the integer EFB scale whose render size fits
 // the mode's optimal/allowed range, allocates the output texture and tells Streamline.
+void D3D12Backend::set_dlss_mip_bias(float bias) {
+  if (bias == dlss_mip_bias_) return;
+  dlss_mip_bias_ = bias;
+  sampler_sets_.clear();   // samplers carry the bias: build them again on next use
+  host::log("dlss: texture LOD bias %.2f", bias);
+}
+
+
+void D3D12Backend::update_vram() {
+  DXGI_QUERY_VIDEO_MEMORY_INFO info{};
+  if (FAILED(adapter3_->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) return;
+  g_vram_used = (float)(info.CurrentUsage / 1073741824.0);
+  g_vram_budget = (float)(info.Budget / 1073741824.0);
+}
+
+
 void D3D12Backend::configure_dlss() {
   int vw, vh; output_size(&vw, &vh);
-  bool want = opts_.dlss_mode != 0 && streamline::available();
+  bool want = opts_.dlss_mode != 0 && (xess_active() ? xess::available() : streamline::available());
   if (!want) {
     if (dlss_active_ || forced_scale_) {
       wait_gpu(); dlss_active_ = false; dlss_in_place_ = false; dlss_mode_active_ = 0; forced_scale_ = 0; dlss_out_.Reset(); dlss_out_w_ = dlss_out_h_ = 0;
+      set_dlss_mip_bias(0.0f);
       streamline::dlss_set_options(DlssMode::Off, vw, vh);
-      if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
+      if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
       host::log("dlss: off (native rendering at EFB x%d)", scale_);
     }
     return;
   }
-  const bool in_place = (DlssMode)opts_.dlss_mode == DlssMode::DLAA;
+  const bool in_place = (DlssMode)opts_.dlss_mode == DlssMode::DLAA || xess::is_in_place(opts_.dlss_mode);
   // DLAA only accepts a render size equal to its output size. The EFB is always a 640x480 multiple,
   // which can never equal a 16:9 window, so asking for a window-sized DLAA output left the render
   // larger than the mode's own maximum and it produced an empty image (a black screen). Anti-alias
   // the EFB in place instead, at the scale the player chose, and let the present blit letterbox it.
   int out_w = vw, out_h = vh, in_place_scale = 0;
+  // The upscaling modes output at the size native rendering would use (the EFB multiple the player's
+  // resolution setting picks, 3x at 1080p), and the present blit shrinks that to the window exactly as
+  // it does native. Output at the window size, DLSS had nothing to supersample and looked soft next to
+  // native for the same render cost. Kept as an experiment: MELEE_DLSS_SUPERSAMPLE=1.
+  // Off by default: measured no visible gain over window-sized output, only more GPU work.
+  const char* supersample = std::getenv("MELEE_DLSS_SUPERSAMPLE");
+  if (!in_place && supersample && *supersample == '1') {
+    const int saved = forced_scale_;
+    forced_scale_ = 0;
+    const int native_scale = pick_scale();
+    forced_scale_ = saved;
+    const double k = std::max(1.0, (480.0 * native_scale) / (double)std::max(vh, 1));
+    out_w = (int)std::lround(vw * k); out_h = (int)std::lround(vh * k);
+  }
   if (in_place) {
     // pick_scale() reports any scale a previous mode forced, so clear it first to get the EFB scale
     // the player actually chose (switching straight from DLSS Quality to DLAA would otherwise size
@@ -571,7 +749,10 @@ void D3D12Backend::configure_dlss() {
   }
   if (dlss_active_ && dlss_mode_active_ == opts_.dlss_mode && (int)dlss_out_w_ == out_w && (int)dlss_out_h_ == out_h) return;
   uint32_t rw = 0, rh = 0, min_w = 0, min_h = 0, max_w = 0, max_h = 0;
-  if (!streamline::dlss_optimal_size((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh, &min_w, &min_h, &max_w, &max_h)) {
+  const bool sized = xess_active()
+      ? xess::optimal_size(opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh, &min_w, &min_h, &max_w, &max_h)
+      : streamline::dlss_optimal_size((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh, &min_w, &min_h, &max_w, &max_h);
+  if (!sized) {
     host::log("dlss: optimal settings unavailable, staying native"); opts_.dlss_mode = 0; return;
   }
   int scale;
@@ -598,14 +779,24 @@ void D3D12Backend::configure_dlss() {
     // satisfies both, the mode cannot run at this output size, so stay native rather than render blind.
     if ((max_w && 640u * scale > max_w) || (max_h && 480u * scale > max_h) ||
         640u * scale > (uint32_t)out_w || 480u * scale > (uint32_t)out_h) {
-      host::log("dlss: %s needs a render size between %ux%u and %ux%u for a %dx%d output and no EFB multiple fits; staying native",
-                dlss_mode_name((DlssMode)opts_.dlss_mode), min_w, min_h, max_w, max_h, out_w, out_h);
+      host::log("dlss: %s needs a render size between %ux%u and %ux%u for a %dx%d output and no EFB multiple fits",
+                upscaler_name(), min_w, min_h, max_w, max_h, out_w, out_h);
+      // Ultra Performance renders at exactly a third of the output, which is below the GameCube's
+      // own 640x480 at any display under 8K, so it can almost never fit. Step up to Performance
+      // (what it would have looked like anyway) instead of dropping all the way to native.
+      if (!xess_active() && opts_.dlss_mode == (int)DlssMode::UltraPerformance) {
+        host::log("dlss: using Performance instead");
+        opts_.dlss_mode = (int)DlssMode::Performance;
+        configure_dlss();
+        return;
+      }
+      host::log("dlss: staying native");
       opts_.dlss_mode = 0; return;
     }
   }
   wait_gpu();
   forced_scale_ = scale;
-  if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
+  if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   if (!dlss_out_ || (int)dlss_out_w_ != out_w || (int)dlss_out_h_ != out_h) {
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     D3D12_RESOURCE_DESC rd{};
@@ -615,9 +806,18 @@ void D3D12Backend::configure_dlss() {
     check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&dlss_out_)), "dlss output");
     dlss_out_w_ = out_w; dlss_out_h_ = out_h;
   }
-  if (!streamline::dlss_set_options((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h)) { opts_.dlss_mode = 0; forced_scale_ = 0; dlss_active_ = false; return; }
-  dlss_active_ = true; dlss_in_place_ = in_place; dlss_mode_active_ = opts_.dlss_mode; dlss_reset_ = true; last_poses_.clear();
-  host::log("dlss: %s, render %dx%d (EFB x%d, optimal %ux%u) -> %s %dx%d%s", dlss_mode_name((DlssMode)opts_.dlss_mode),
+  const bool configured = xess_active() ? xess::set_options(opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h)
+                                        : streamline::dlss_set_options((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h);
+  if (!configured) { opts_.dlss_mode = 0; forced_scale_ = 0; dlss_active_ = false; return; }
+  dlss_active_ = true; dlss_in_place_ = in_place; dlss_mode_active_ = opts_.dlss_mode; dlss_reset_ = true; xess_reset_ = true; last_poses_.clear();
+  // NVIDIA's texture LOD bias for DLSS: log2(render / display) - 1. The -1 samples textures as if at
+  // the output resolution so DLSS has the detail to reconstruct; without it faces and cloth came out
+  // soft next to native. DLAA renders at the output size, so its bias is the -1 alone.
+  // MELEE_DLSS_BIAS_EXTRA overrides the -1 for testing.
+  float bias_extra = -1.0f;
+  if (const char* e = std::getenv("MELEE_DLSS_BIAS_EXTRA")) bias_extra = (float)std::atof(e);
+  set_dlss_mip_bias((in_place ? 0.0f : std::log2((640.0f * scale) / (float)out_w)) + bias_extra);
+  host::log("dlss: %s, render %dx%d (EFB x%d, optimal %ux%u) -> %s %dx%d%s", upscaler_name(),
             in_place ? out_w : 640 * scale, in_place ? out_h : 480 * scale, scale, rw, rh,
             in_place ? "anti-aliased in place at" : "output", out_w, out_h, in_place ? ", letterboxed to the window by the present blit" : "");
 }
@@ -698,12 +898,21 @@ static void describe_pipeline(D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, const PsoK
   pd.DepthStencilState.DepthWriteMask = (bits(zm, 0, 1) && bits(zm, 4, 1)) ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
   pd.DepthStencilState.DepthFunc = bits(zm, 0, 1) ? cmp[bits(zm, 1, 3)] : D3D12_COMPARISON_FUNC_ALWAYS;
   pd.PrimitiveTopologyType = topo;
-  pd.NumRenderTargets = key.mvec ? 2 : 1; pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; pd.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+  pd.NumRenderTargets = key.mvec ? 3 : 1; pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; pd.DSVFormat = DXGI_FORMAT_D32_FLOAT;
   if (key.mvec) {
     pd.RTVFormats[1] = DXGI_FORMAT_R16G16_FLOAT;
+    pd.RTVFormats[2] = DXGI_FORMAT_R8_UNORM;
     pd.BlendState.IndependentBlendEnable = TRUE;
     pd.BlendState.RenderTarget[1] = D3D12_RENDER_TARGET_BLEND_DESC{};
-    pd.BlendState.RenderTarget[1].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN;
+    // Motion vectors belong to the surface in the depth buffer, so only draws that write depth write
+    // them. A translucent layer (smoke, sparks, fades, a stage's see-through planes) drawn over a
+    // moving fighter used to replace that pixel's motion with its own, usually none, and DLSS then
+    // blended last frame's image at the wrong place: the smearing on moving characters.
+    static const bool all_write_mvec = [] { const char* e = std::getenv("MELEE_DEBUG_MVEC_ALL"); return e && e[0] == '1'; }();   // A/B: the old rule
+    const bool writes_depth = all_write_mvec || (bits(zm, 0, 1) && bits(zm, 4, 1));
+    pd.BlendState.RenderTarget[1].RenderTargetWriteMask = writes_depth ? (D3D12_COLOR_WRITE_ENABLE_RED | D3D12_COLOR_WRITE_ENABLE_GREEN) : 0;
+    pd.BlendState.RenderTarget[2] = D3D12_RENDER_TARGET_BLEND_DESC{};
+    pd.BlendState.RenderTarget[2].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_RED;
   }
   pd.SampleDesc.Count = 1;
 }
@@ -782,6 +991,13 @@ ID3D12PipelineState* D3D12Backend::fallback_pso(const PsoKey& key, const DrawCal
   FallbackKey fk{key.blend, key.zmode, key.cull, key.topology, key.pixel_format, key.mvec, (uint32_t)textured | ((uint32_t)colored << 1)};
   auto it = fallback_psos_.find(fk);
   if (it != fallback_psos_.end()) return it->second.Get();
+  // On menus and transitions only: an untextured, uncoloured draw has its colour in TEV state this
+  // stand-in cannot read and came out plain white, and a blended one (fades, transitions) came out
+  // opaque, so the first frame of a new screen flashed. Skipping them there is invisible. In a match
+  // the same kinds of draw are a stage's sky and cloud layers, and skipping one for a frame is a
+  // visible flicker (Yoshi's Story), so there the stand-in draws as it always did.
+  if (!in_match_ && (!textured && !colored)) return nullptr;
+  if (!in_match_ && (dc.bp.blendmode() & 1)) return nullptr;
   static const char* vs_src = R"(
 cbuffer VSBlock : register(b0) {
 float4 projection[4]; float4 depthparams; float4 viewparams; float4 materials[4]; float4 lights[40];
@@ -818,8 +1034,8 @@ void main(out float4 ocol0 : SV_Target0 MVEC_OUT, in float4 rawpos : SV_Position
   std::string vs = vs_src, ps = ps_src;
   vs.replace(vs.find("COLOR_EXPR"), 10, colored ? "color0" : "float4(1.0, 1.0, 1.0, 1.0)");
   ps.replace(ps.find("TEX_EXPR"), 8, textured ? "c *= Tex[0].Sample(samp[0], uv);" : "");
-  ps.replace(ps.find("MVEC_OUT"), 8, key.mvec ? ", out float2 omv : SV_Target1" : "");
-  ps.replace(ps.find("MVEC_WRITE"), 10, key.mvec ? "omv = float2(0.0, 0.0);" : "");
+  ps.replace(ps.find("MVEC_OUT"), 8, key.mvec ? ", out float2 omv : SV_Target1, out float ohud : SV_Target2" : "");
+  ps.replace(ps.find("MVEC_WRITE"), 10, key.mvec ? "omv = float2(0.0, 0.0); ohud = 0.0;" : "");
   ComPtr<ID3DBlob> vsb, psb, err;
   if (FAILED(D3DCompile(vs.c_str(), vs.size(), "fallback_vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vsb, &err)) ||
       FAILED(D3DCompile(ps.c_str(), ps.size(), "fallback_ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &psb, &err))) {
@@ -910,7 +1126,11 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
   std::unique_ptr<texpack::Replacement> replacement;
   if (texpack::enabled() || texpack::dumping()) {
     pack_name = texpack::base_name(t, *t.data);
-    if (texpack::enabled()) {
+    if (texpack::enabled() && texpack::has(pack_name) && !texpack::ready(pack_name)) {
+      // Not decoded yet: draw the original now and load the replacement in the background.
+      texpack::request(pack_name);
+      pending_hd_[key] = pack_name;
+    } else if (texpack::enabled()) {
       replacement = texpack::load(pack_name, replacement_bytes_ < replacement_budget_
                                                  ? replacement_budget_ - replacement_bytes_ : 0);
       texpack::note_lookup(replacement != nullptr);
@@ -1043,7 +1263,7 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
       sd.Filter = D3D12_ENCODE_BASIC_FILTER(mn, mg, mp, D3D12_FILTER_REDUCTION_TYPE_STANDARD);
       // Anisotropic filtering where the game asked for linear sampling (Dolphin's "Anisotropic Filtering").
       if (opts_.anisotropy > 1 && min_linear && mag_linear) sd.Filter = D3D12_FILTER_ANISOTROPIC;
-      sd.MipLODBias = (float)(int32_t)((int32_t)sbits(m0, 9, 8)) / 32.0f;
+      sd.MipLODBias = (float)(int32_t)((int32_t)sbits(m0, 9, 8)) / 32.0f + dlss_mip_bias_;
       sd.MinLOD = bits(m1, 0, 8) / 16.0f;
       sd.MaxLOD = mip ? bits(m1, 8, 8) / 16.0f : 0.0f;
       sd.MaxAnisotropy = (UINT)std::clamp(opts_.anisotropy, 1, 16);
@@ -1059,14 +1279,8 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
 
 // ---------------- draws ----------------
 void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const DrawMatrices* override_matrices) {
-  // The "Visual effects" quality reduction used to sit here and has been removed. It skipped
-  // world-space additive draws that do not write depth, on the theory that those are glow, sparks
-  // and flashes. In Melee they are also the stage select pointer (reported missing whenever effects
-  // were reduced) and, at the wider level 2 rule, menu text. Nothing in a draw distinguishes a hit
-  // spark from a cursor: both are 3D, additive and depth-less, so the filter cannot be narrowed into
-  // correctness. It was also aimed at machines that turn out to be limited by the simulation rather
-  // than by draw submission, so it was removing required UI to buy time that was not the bottleneck.
-  // The "effects" key is still parsed from settings files written by older builds, and ignored.
+  // "Visual effects" below Full: decorative draws in a match are skipped (see skip_for_effects).
+  if (skip_for_effects(frame, dc, opts_.effects_level)) return;
 
   // Build index list (triangle list / line list) from the GX primitive.
   Stopwatch sw;
@@ -1124,8 +1338,13 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   if (dlss_active_) {
     MotionInfo motion; motion.jitter_x = jitter_x_; motion.jitter_y = jitter_y_;
     LastPose& last = last_poses_[dc.identity];
-    bool had = last.frame != 0 && last.frame + 2 >= frame_counter_;
-    if (had) { motion.prev_pos = last.pos; motion.prev_proj = last.proj; }
+    if (last.frame != 0 && last.frame != frame_counter_) {   // first pass this frame: last frame's pose moves back
+      std::memcpy(last.prev_pos, last.pos, sizeof last.pos); std::memcpy(last.prev_proj, last.proj, sizeof last.proj);
+      last.prev_frame = last.frame;
+    }
+    bool had = last.prev_frame != 0 && last.prev_frame + 2 >= frame_counter_ && last.prev_frame != frame_counter_;
+    if (had) { motion.prev_pos = last.prev_pos; motion.prev_proj = last.prev_proj; }
+    ++mv_draws_; if (had) ++mv_matched_;
     fill_vs_constants(dc, vs_constants, scale_, override_matrices, &motion);
     std::memcpy(last.pos, override_matrices ? override_matrices->pos : dc.posMatrices, sizeof last.pos);
     std::memcpy(last.proj, vs_constants.unjittered_projection, sizeof last.proj);
@@ -1221,9 +1440,9 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   }
   e.last_used = frame_counter_;
   if (c.half_scale) {
-    uint32_t slot = reserve_srvs(1);
+    uint32_t slot = reserve_srvs(3);
     D3D12_CPU_DESCRIPTOR_HANDLE sh_cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart(); sh_cpu.ptr += slot * srv_size_;
-    device_->CreateShaderResourceView(efb_color_.Get(), nullptr, sh_cpu);
+    for (int k = 0; k < 3; ++k) { D3D12_CPU_DESCRIPTOR_HANDLE hk = sh_cpu; hk.ptr += k * srv_size_; device_->CreateShaderResourceView(efb_color_.Get(), nullptr, hk); }
     D3D12_GPU_DESCRIPTOR_HANDLE sh_gpu = srv_heap_->GetGPUDescriptorHandleForHeapStart(); sh_gpu.ptr += slot * srv_size_;
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += 4 * rtv_size_;  // transient slot
     device_->CreateRenderTargetView(e.resource.Get(), nullptr, rtv);
@@ -1235,9 +1454,12 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
     list_->SetPipelineState(blit_pso_.Get());
     list_->SetGraphicsRootSignature(blit_root_.Get());
     list_->SetGraphicsRootDescriptorTable(0, sh_gpu);
-    float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                      0, 0, 0, 0, 1.0f, 1.0f, 0, 0};   // no sharpening or averaging on this path
-    list_->SetGraphicsRoot32BitConstants(1, 12, rect, 0);
+    // Neutral grade (1,1,1): this reads the EFB back into a texture the game itself samples from
+    // (reflections, effects), not the presented image, so brightness/contrast/vibrance must not
+    // touch it -- only the final blit to the backbuffer, below, applies those.
+    float rect[20] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+                      0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 0, 0, 0, 0, 1.0f, 1.0f, 1.0f, 0};   // no sharpening, averaging, HUD composite or grading here
+    list_->SetGraphicsRoot32BitConstants(1, 20, rect, 0);
     list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list_->DrawInstanced(3, 1, 0, 0);
     // Restore the EFB as the render target; execute_draw re-sets viewport/scissor per draw.
@@ -1261,11 +1483,13 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   UINT bb = swapchain_->GetCurrentBackBufferIndex();
   // DLSS: upscale the jittered EFB region (with depth and motion vectors) into the output texture first.
   bool upscaled = false;
-  if (dlss_active_ && dlss_out_) {
+  // Menus skip the upscaler and are presented from the EFB like native (see dlss_in_match_).
+  if (dlss_active_ && dlss_out_ && (dlss_in_match_ || dlss_menus_)) {
     streamline::EvaluateInputs in{};
     in.color_in = efb_color_.Get(); in.color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     in.depth = efb_depth_.Get(); in.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     in.mvec = mvec_.Get(); in.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    in.hud_mask = hud_mask_.Get(); in.hud_mask_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     in.color_out = dlss_out_.Get(); in.out_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
     // In place (DLAA) the render and output sizes must match exactly, so feed the whole EFB and let
     // the present blit pick the displayed region out of the result, exactly as it does without DLSS.
@@ -1275,26 +1499,102 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
       in.in_w = std::min<uint32_t>(c.src_w * scale_, efb_w_ - in.in_left); in.in_h = std::min<uint32_t>(c.src_h * scale_, efb_h_ - in.in_top);
     }
     in.out_w = dlss_out_w_; in.out_h = dlss_out_h_;
-    upscaled = streamline::evaluate(list_.Get(), in);
+    const bool timing = timer_heap_ != nullptr;
+    timer_mask_[slot_] = 0;
+    if (timing) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 0);
+    if (xess_active()) {
+      // XeSS takes its inputs as non-pixel-shader resources; DLSS takes them in place.
+      D3D12_RESOURCE_BARRIER xb[3]{};
+      xb[0].Type = xb[1].Type = xb[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      xb[0].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+      xb[1].Transition = {efb_depth_.Get(), 0, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+      xb[2].Transition = {mvec_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+      list_->ResourceBarrier(3, xb);
+      xess::Inputs xi{efb_color_.Get(), efb_depth_.Get(), mvec_.Get(), dlss_out_.Get(), in.in_left, in.in_top, in.in_w, in.in_h,
+                      // XeSS takes the jitter the opposite way round to DLSS (measured: 277 vs 209 sharpness).
+                      -jitter_x_ * opts_.dlss_jitter_sign, -jitter_y_ * opts_.dlss_jitter_sign, xess_reset_};
+      xess_reset_ = false;
+      upscaled = xess::evaluate(list_.Get(), xi);
+      for (auto& b : xb) std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+      list_->ResourceBarrier(3, xb);
+    } else {
+      upscaled = streamline::evaluate(list_.Get(), in);
+    }
+    if (timing) { list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 1); timer_mask_[slot_] |= 1; }
     if (!upscaled && ++dlss_failures_ >= 30) {
       host::log("dlss: evaluation keeps failing; switching Upscaling back to Native");
       opts_.dlss_mode = 0; dlss_failures_ = 0;
     } else if (upscaled) dlss_failures_ = 0;
+#ifdef GX_DLSS5
+    // EXPERIMENTAL DLSS 5 Neural Rendering over the DLSS/DLAA result, before it is presented.
+    if (upscaled && opts_.dlss5) {
+      dlss5::Inputs n{};
+      n.device = device_.Get(); n.list = list_.Get();
+      n.color = dlss_out_.Get(); n.w = dlss_out_w_; n.h = dlss_out_h_;
+      n.depth = efb_depth_.Get(); n.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+      n.mvec = mvec_.Get(); n.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+      n.guide_x = in.in_left; n.guide_y = in.in_top; n.guide_w = in.in_w; n.guide_h = in.in_h;
+      n.reset = dlss5_reset_; n.tuning = opts_.dlss5_tuning;
+      if (timing) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 2);
+      dlss5::evaluate(n);
+      if (timing) { list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 3); timer_mask_[slot_] |= 2; }
+      dlss5_reset_ = false;
+    } else {
+      dlss5_reset_ = true;
+    }
+#endif
+    if (timing && timer_mask_[slot_]) {
+      list_->ResolveQueryData(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4, 4, timer_rb_[slot_].Get(), 0);
+      timer_pending_[slot_] = true;
+    }
     ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
     list_->SetDescriptorHeaps(2, heaps);
   }
+#ifdef GX_DLSS5
+  // DLSS 5 runs only in matches, and building it on the first match frame froze the countdown for a
+  // tenth of a second. On a menu, build it and run it once with the picture left untouched.
+  else if (opts_.dlss5 && dlss_active_ && dlss_out_ && !xess_active() &&
+           dlss5::needs_warmup(dlss_out_w_, dlss_out_h_, opts_.dlss5_tuning)) {
+    dlss5::Inputs n{};
+    n.device = device_.Get(); n.list = list_.Get();
+    n.color = dlss_out_.Get(); n.w = dlss_out_w_; n.h = dlss_out_h_;
+    n.depth = efb_depth_.Get(); n.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    n.mvec = mvec_.Get(); n.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    n.guide_x = 0; n.guide_y = 0; n.guide_w = (uint32_t)efb_w_; n.guide_h = (uint32_t)efb_h_;
+    n.reset = true; n.tuning = opts_.dlss5_tuning; n.warm_only = true;
+    dlss5::evaluate(n);
+    dlss5_reset_ = true;
+    ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
+    list_->SetDescriptorHeaps(2, heaps);
+  }
+#endif
+  // Diagnostics (in-place DLAA / XeSS AA only): every other presented frame shows the upscaler's own
+  // input instead of its output, while it keeps running every frame. A capture burst then puts each
+  // output next to the input it came from, so a trail left by the upscaler can be measured.
+  static const bool debug_show_input = [] { const char* e = std::getenv("MELEE_DEBUG_DLSS_INPUT_ODD"); return e && e[0] == '1'; }();
+  if (debug_show_input && upscaled && dlss_in_place_ && (frames_presented_ & 1)) upscaled = false;
+  if (opts_.flicker_scan) record_flicker_scan();
   ID3D12Resource* source = upscaled ? dlss_out_.Get() : efb_color_.Get();
   D3D12_RESOURCE_STATES source_state = upscaled ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_RENDER_TARGET;
-  D3D12_RESOURCE_BARRIER b[2]{};
+  // With DLSS the current EFB and the HUD mask are read too (HUD composite).
+  const bool hud_composite = upscaled && hud_mask_;
+  D3D12_RESOURCE_BARRIER b[4]{};
   b[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[0].Transition = {source, 0, source_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
   b[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[1].Transition = {backbuffers_[bb].Get(), 0, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET};
-  list_->ResourceBarrier(2, b);
-  // SRV for the presented image
-  uint32_t slot = reserve_srvs(1);
+  b[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  b[2].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+  b[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  b[3].Transition = {hud_composite ? hud_mask_.Get() : nullptr, 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+  list_->ResourceBarrier(hud_composite ? 4 : 2, b);
+  // SRVs: the presented image, then (DLSS HUD composite) the current EFB and the HUD mask.
+  uint32_t slot = reserve_srvs(3);
   D3D12_CPU_DESCRIPTOR_HANDLE h = srv_heap_->GetCPUDescriptorHandleForHeapStart(); h.ptr += slot * srv_size_;
   device_->CreateShaderResourceView(source, nullptr, h);
+  { D3D12_CPU_DESCRIPTOR_HANDLE h1 = h; h1.ptr += srv_size_; D3D12_CPU_DESCRIPTOR_HANDLE h2 = h1; h2.ptr += srv_size_;
+    device_->CreateShaderResourceView(hud_composite ? efb_color_.Get() : source, nullptr, h1);
+    device_->CreateShaderResourceView(hud_composite ? hud_mask_.Get() : source, nullptr, h2); }
   D3D12_GPU_DESCRIPTOR_HANDLE g = srv_heap_->GetGPUDescriptorHandleForHeapStart(); g.ptr += slot * srv_size_;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += bb * rtv_size_;
   float border[4] = {0, 0, 0, 1};   // letterbox/pillarbox bars (black, as on Dolphin and a TV)
@@ -1321,9 +1621,13 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   // same displayed sub-region, same box filter when the render is larger than the window.
   const bool fills_output = upscaled && !dlss_in_place_;
   float src_w = upscaled ? (float)dlss_out_w_ : (float)efb_w_, src_h = upscaled ? (float)dlss_out_h_ : (float)efb_h_;
-  float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+  float rect[20] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
                     1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
-                    1.0f, 1.0f, 0.0f, 0.0f};
+                    1.0f, 1.0f, hud_composite ? 1.0f : 0.0f, std::getenv("MELEE_DEBUG_HUDMASK") ? 1.0f : 0.0f,
+                    // Output uv to EFB uv: DLAA's image already is EFB-sized, so identity there.
+                    dlss_in_place_ ? 1.0f : (float)c.src_w / EFB_WIDTH, dlss_in_place_ ? 1.0f : (float)c.src_h / EFB_HEIGHT,
+                    dlss_in_place_ ? 0.0f : (float)c.src_x / EFB_WIDTH, dlss_in_place_ ? 0.0f : (float)c.src_y / EFB_HEIGHT,
+                    opts_.brightness, opts_.contrast, opts_.vibrance, 0.0f};
   // Averaging box when the rendered image is larger than the output. The two axes shrink by
   // different amounts (the picture is letterboxed to 16:9 inside the window), so they get their
   // own tap counts; using the horizontal count for both left vertical edges aliasing.
@@ -1331,8 +1635,13 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
     rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
   }
-  if (fills_output) { rect[0] = 1.0f; rect[1] = 1.0f; rect[2] = 0.0f; rect[3] = 0.0f; }
-  list_->SetGraphicsRoot32BitConstants(1, 12, rect, 0);
+  if (fills_output) {
+    rect[0] = 1.0f; rect[1] = 1.0f; rect[2] = 0.0f; rect[3] = 0.0f;
+    // DLSS output larger than the window (supersampled): the same averaging box native gets.
+    rect[8] = (float)std::clamp((int)std::lround((double)dlss_out_w_ / std::max(vw, 1.0f)), 1, 4);
+    rect[9] = (float)std::clamp((int)std::lround((double)dlss_out_h_ / std::max(vh, 1.0f)), 1, 4);
+  }
+  list_->SetGraphicsRoot32BitConstants(1, 20, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
 #ifdef GX_PC_SETTINGS
@@ -1342,14 +1651,125 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
     list_->SetDescriptorHeaps(2, heaps);
   }
 #endif
-  D3D12_RESOURCE_BARRIER back[2]{};
+  D3D12_RESOURCE_BARRIER back[4]{};
   back[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   back[0].Transition = {source, 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, source_state};
   back[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   back[1].Transition = {backbuffers_[bb].Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT};
-  list_->ResourceBarrier(2, back);
+  back[2].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  back[2].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET};
+  back[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  back[3].Transition = {hud_composite ? hud_mask_.Get() : nullptr, 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET};
+  list_->ResourceBarrier(hud_composite ? 4 : 2, back);
   // Restore EFB as the render target for any later commands in this frame.
   bind_efb_targets();
+}
+
+void D3D12Backend::record_flicker_scan() {
+  const D3D12_RESOURCE_DESC desc = efb_color_->GetDesc();
+  D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp{};
+  UINT64 total = 0;
+  device_->GetCopyableFootprints(&desc, 0, 1, 0, &fp, nullptr, nullptr, &total);
+  if (!scan_rb_[slot_] || scan_rb_size_[slot_] < total) {
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = total; rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+    rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    scan_rb_[slot_].Reset();
+    if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&scan_rb_[slot_])))) return;
+    scan_rb_size_[slot_] = total;
+  }
+  D3D12_RESOURCE_BARRIER b{};
+  b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  b.Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE};
+  list_->ResourceBarrier(1, &b);
+  D3D12_TEXTURE_COPY_LOCATION dst{scan_rb_[slot_].Get(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+  dst.PlacedFootprint = fp;
+  D3D12_TEXTURE_COPY_LOCATION src{efb_color_.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+  src.SubresourceIndex = 0;
+  list_->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+  std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+  list_->ResourceBarrier(1, &b);
+  scan_fp_[slot_] = fp; scan_pending_[slot_] = true; scan_frame_[slot_] = frames_presented_;
+}
+
+// Reduces the copied EFB to the scanner's grid: each cell averages a 4x4 spread of pixels from its
+// block of the picture (the visible 640x480 part; the rows below it are never shown).
+void D3D12Backend::read_flicker_scan() {
+  scan_pending_[slot_] = false;
+  const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& fp = scan_fp_[slot_];
+  const D3D12_RANGE range{0, (SIZE_T)scan_rb_size_[slot_]};
+  void* mapped = nullptr;
+  if (FAILED(scan_rb_[slot_]->Map(0, &range, &mapped))) return;
+  const uint8_t* base = (const uint8_t*)mapped + fp.Offset;
+  const uint32_t w = fp.Footprint.Width, h = std::min<uint32_t>(fp.Footprint.Height, fp.Footprint.Width * 480 / 640);
+  constexpr int G = FlickerScanner::kGrid;
+  static float grid[G * G];
+  for (int gy = 0; gy < G; ++gy)
+    for (int gx = 0; gx < G; ++gx) {
+      float sum = 0;
+      for (int sy = 0; sy < 4; ++sy)
+        for (int sx = 0; sx < 4; ++sx) {
+          const uint32_t x = (uint32_t)((gx + (sx + 0.5f) / 4.0f) * w / G), y = (uint32_t)((gy + (sy + 0.5f) / 4.0f) * h / G);
+          const uint8_t* p = base + (size_t)y * fp.Footprint.RowPitch + (size_t)x * 4;
+          sum += p[0] * 0.25f + p[1] * 0.6f + p[2] * 0.15f;
+        }
+      grid[gy * G + gx] = sum / 16.0f;
+    }
+  const D3D12_RANGE none{0, 0};
+  scan_rb_[slot_]->Unmap(0, &none);
+  scanner_.push(grid, scan_frame_[slot_]);
+}
+
+// Reads back the previous use of this frame slot's query pair(s), fence-safe for the same reason
+// read_flicker_scan is: this only runs after wait_fence(slot_fence_[slot_]) at the top of the frame.
+void D3D12Backend::read_gpu_timers() {
+  timer_pending_[slot_] = false;
+  const uint8_t mask = timer_mask_[slot_];
+  if (!timer_freq_) return;
+  // A pass that did not run this frame (its mask bit clear) goes back to 0 rather than keeping its
+  // last measurement: a stale "DLSS 5 +9ms" sitting in the breakdown after DLSS 5 was turned off
+  // would misreport what is actually happening, and would throw off the "Native (estimated)" number
+  // too, since that subtracts these from the total.
+  if (!(mask & 1)) g_dlaa_pass_ms = 0.0f;
+#ifdef GX_DLSS5
+  if (!(mask & 2)) g_dlss5_pass_ms = 0.0f;
+#endif
+  if (!mask) return;
+  const D3D12_RANGE range{0, 4 * sizeof(uint64_t)};
+  uint64_t* ts = nullptr;
+  if (FAILED(timer_rb_[slot_]->Map(0, &range, (void**)&ts))) return;
+  auto ms = [&](int a, int b) { return ts[b] > ts[a] ? (float)((double)(ts[b] - ts[a]) * 1000.0 / (double)timer_freq_) : -1.0f; };
+  if (mask & 1) { const float v = ms(0, 1); if (v >= 0.0f) g_dlaa_pass_ms = v; }
+#ifdef GX_DLSS5
+  if (mask & 2) { const float v = ms(2, 3); if (v >= 0.0f) g_dlss5_pass_ms = v; }
+#endif
+  static uint64_t logged = 0;
+#ifdef GX_DLSS5
+  if (++logged % 180 == 1) host::log("gputimer: mask %u freq %llu dlaa %.2f ms dlss5 %.2f ms", mask, (unsigned long long)timer_freq_, g_dlaa_pass_ms.load(), g_dlss5_pass_ms.load());
+#else
+  if (++logged % 180 == 1) host::log("gputimer: mask %u freq %llu dlaa %.2f ms", mask, (unsigned long long)timer_freq_, g_dlaa_pass_ms.load());
+#endif
+  const D3D12_RANGE none{0, 0};
+  timer_rb_[slot_]->Unmap(0, &none);
+}
+
+// A replacement that finished loading in the background: drop the native texture drawn meanwhile so
+// the next use builds it again from the replacement (which load() now returns at once). The old
+// resource is kept until the GPU is done with it, and descriptor tables name resources by pointer.
+void D3D12Backend::swap_in_ready_replacements() {
+  if (pending_hd_.empty() || (frame_counter_ & 1)) return;
+  bool dropped = false;
+  for (auto it = pending_hd_.begin(); it != pending_hd_.end();) {
+    auto tex = textures_.find(it->first);
+    if (tex == textures_.end()) { it = pending_hd_.erase(it); continue; }
+    if (!texpack::ready(it->second)) { ++it; continue; }
+    frame_garbage_[slot_].push_back(tex->second.resource);
+    textures_.erase(tex);
+    it = pending_hd_.erase(it);
+    dropped = true;
+  }
+  if (dropped) texture_sets_.clear();
 }
 
 void D3D12Backend::capture_backbuffer() {
@@ -1472,11 +1892,13 @@ static void dump_frame(const Frame& frame, const std::string& path) {
 }
 
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
+  in_match_ = frame_in_match(frame);
+  widenable_scene_ = frame_has_widenable_scene(frame);
   integrate_compiled_psos();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; wait_gpu(); sampler_sets_.clear(); }
   if (opts_.ssaa != ssaa_applied_ || (!dlss_active_ && pick_scale() != scale_)) {
     ssaa_applied_ = opts_.ssaa;
-    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); host::log("d3d12: internal resolution now EFB x%d", scale_); }
+    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); host::log("d3d12: internal resolution now EFB x%d", scale_); }
   }
   struct FloatEnvironment {
     unsigned saved = _mm_getcsr();
@@ -1486,10 +1908,10 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
 #ifdef GX_PC_SETTINGS
   // A texture pack was switched on or off in the panel: everything already uploaded was built with
   // the old set, so drop it and let the next draw rebuild what it needs.
-  if (settings_ui_ && settings_textures_dirty()) { wait_gpu(); textures_.clear(); }
+  if (settings_ui_ && settings_textures_dirty()) { wait_gpu(); textures_.clear(); texture_sets_.clear(); }
   if (settings_ui_ && settings_ui_->begin(opts_)) {
     host::window_set_fullscreen(opts_.fullscreen);
-    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
+    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
 #endif
   // Texture packs can be switched on and off while the game runs. Every texture already uploaded
@@ -1502,14 +1924,22 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     replacement_bytes_ = 0;
     texpack_report_frame_ = frame_counter_ + 600;
   }
+  if (adapter3_ && (frame_counter_ % 30) == 0) update_vram();
+  if (adapter3_ && frame_counter_ && (frame_counter_ % 3600) == 0) {
+    float used = 0, total = 0;
+    if (vram_usage(&used, &total)) host::log("vram: %.2f of %.2f GB in use (EFB %dx%d, replacement textures %.0f MB)", used, total, efb_w_, efb_h_, replacement_bytes_ / 1048576.0);
+  }
   if (texpack::enabled() && frame_counter_ >= texpack_report_frame_) {
     texpack::report();
+    float used = 0, total = 0;
+    if (vram_usage(&used, &total)) host::log("vram: %.2f of %.2f GB (replacement textures %.0f MB of %.0f MB)", used, total,
+                                               replacement_bytes_ / 1048576.0, replacement_budget_ / 1048576.0);
     texpack_report_frame_ = frame_counter_ + 3600;
   }
   if (host::window_take_fullscreen_toggle()) {   // Alt+Enter
     opts_.fullscreen = !opts_.fullscreen;
     host::window_set_fullscreen(opts_.fullscreen);
-    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
+    if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
   configure_dlss();
   pso_wait_budget_us_ = 12000;
@@ -1517,9 +1947,12 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
   slot_ = (int)(frame_counter_ % FRAME_SLOTS);
   wait_fence(slot_fence_[slot_]);   // this slot's previous frame (FRAME_SLOTS frames ago) is complete
+  if (scan_pending_[slot_]) read_flicker_scan();
+  if (timer_pending_[slot_]) read_gpu_timers();
   vertex_ring_.reset(slot_); index_ring_.reset(slot_); constant_ring_.reset(slot_); upload_ring_.reset(slot_);
   frame_garbage_[slot_].clear();
   descriptor_garbage_[slot_].clear();
+  swap_in_ready_replacements();
   check(allocators_[slot_]->Reset(), "allocator reset");
   check(list_->Reset(allocators_[slot_].Get(), nullptr), "list reset");
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
@@ -1529,19 +1962,51 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     D3D12_CPU_DESCRIPTOR_HANDLE mrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); mrtv.ptr += 5 * rtv_size_;
     const float zero[4] = {0, 0, 0, 0};
     list_->ClearRenderTargetView(mrtv, zero, 0, nullptr);
-    streamline::new_frame((uint32_t)frame_counter_);
+    D3D12_CPU_DESCRIPTOR_HANDLE hrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); hrtv.ptr += 6 * rtv_size_;
+    list_->ClearRenderTargetView(hrtv, zero, 0, nullptr);
+    if (!xess_active()) streamline::new_frame((uint32_t)frame_counter_);
     streamline::jitter(frames_presented_, &jitter_x_, &jitter_y_);
     // The main camera projection: the first perspective draw of the frame (menus and HUD are orthographic).
     streamline::FrameConstants fc{};
     bool found = false;
-    for (const DrawCall& d : frame.draws) if (d.xf_regs[0x26] == 0) { build_projection(d, fc.projection); found = true; break; }
+    // Menus are shown exactly as rendered: with no main scene, no draw is jittered or given motion,
+    // and the present blit takes every pixel from the EFB. The upscaler has nothing to add to flat
+    // 2D screens, and the character select cursor left trails through it.
+    const bool in_match = frame_in_match(frame);
+    if (in_match != dlss_in_match_) { dlss_in_match_ = in_match; fc.reset = true; dlss_reset_ = true; xess_reset_ = true; }
+    // Tried: menus through DLAA and DLSS 5 when DLSS 5 is on. The neural pass put blocks around the
+    // flat menu art and the cursor, so menus stay as rendered and DLSS 5 waits for a match.
+    dlss_menus_ = false;
+    if (in_match)
+      for (const DrawCall& d : frame.draws) if (d.xf_regs[0x26] == 0) { build_projection(d, fc.projection); set_main_projection(&d); found = true; break; }
+    if (!found) set_main_projection(nullptr);
     if (!found && !frame.draws.empty()) { build_projection(frame.draws[0], fc.projection); fc.orthographic = true; }
     fc.jitter_x = jitter_x_ * opts_.dlss_jitter_sign; fc.jitter_y = jitter_y_ * opts_.dlss_jitter_sign;
     fc.render_w = 640 * scale_; fc.render_h = 480 * scale_;
     fc.reset = dlss_reset_; dlss_reset_ = false;
-    streamline::set_constants(fc);
+    if (!xess_active()) streamline::set_constants(fc);
+    if (frame_counter_ % 600 == 0) streamline::log_frame_generation();
+    if (frame_counter_ % 600 == 0 && mv_draws_) { host::log("dlss: %.1f%% of draws had a previous pose (%llu of %llu)", 100.0 * mv_matched_ / mv_draws_, (unsigned long long)mv_matched_, (unsigned long long)mv_draws_); mv_draws_ = mv_matched_ = 0; }
     if (frame_counter_ % 600 == 0) for (auto it = last_poses_.begin(); it != last_poses_.end();) { if (it->second.frame + 4 < frame_counter_) it = last_poses_.erase(it); else ++it; }
   }
+  // Reflex and frame generation: a frame token is needed for the markers even without DLSS, and even
+  // with Reflex's own low-latency mode left Off -- the PC Latency markers below are what feeds the
+  // latency reading, and that keeps working at Native so there is something to compare On against.
+  if (!dlss_active_ && streamline::reflex_available()) streamline::new_frame((uint32_t)frame_counter_);
+  {
+    const int want_fg = opts_.frame_generation_mode > 0 && dlss_active_ && !xess_active() && streamline::frame_generation_available()
+                        ? opts_.frame_generation_mode : 0;
+    // Frame generation needs Reflex on: it takes at least "On" while frame generation runs.
+    const int want_reflex = streamline::reflex_available() ? std::max(opts_.reflex_mode, want_fg ? 1 : 0) : 0;
+    if (want_reflex != reflex_applied_) { streamline::set_reflex(want_reflex); reflex_applied_ = want_reflex; }
+    // Sampled regardless of mode: the PC Latency markers run every frame either way (below), so the
+    // measurement stays available running plain Native -- Reflex's low-latency algorithm is a
+    // separate thing from being told how long a frame is taking.
+    if (streamline::reflex_available() && (frame_counter_ % 30) == 0) streamline::update_reflex_stats();
+    if (want_reflex && (frame_counter_ % 600) == 0) host::log("reflex: render latency %.2f ms", streamline::reflex_latency_ms());
+    if (want_fg != fg_applied_) { streamline::set_frame_generation(want_fg); fg_applied_ = want_fg; }
+  }
+  streamline::pcl_marker(0); streamline::pcl_marker(1); streamline::pcl_marker(2);
   if (have_clear_) { clear_efb(pending_clear_); have_clear_ = false; }
   bool presented = false;
   for (const FrameCommand& cmd : frame.commands) {
@@ -1570,7 +2035,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       } else YieldProcessor();
     }
     present_wait_ = Stopwatch::now()-wait_start;
+    streamline::pcl_marker(3); streamline::pcl_marker(4);
     swapchain_->Present(opts_.vsync ? 1 : 0, opts_.vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING);
+    streamline::pcl_marker(5);
     ++frames_presented_;
   }
   // Signal, do not wait: the next frames render while the GPU finishes this one.
@@ -1585,7 +2052,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       CreateDirectoryA("capture", nullptr);
       const std::string saved = opts_.capture_path;
       char path[64];
-      snprintf(path, sizeof path, "capture\blink_%05u.ppm", frames_presented_);
+      snprintf(path, sizeof path, "capture\\blink_%05u.ppm", frames_presented_);
       opts_.capture_path = path;
       capture_backbuffer();
       opts_.capture_path = saved;
@@ -1663,7 +2130,7 @@ void D3D12Backend::prewarm_pipelines() {
     auto topo = (D3D12_PRIMITIVE_TOPOLOGY_TYPE)recipe.topology;
     // Both pipeline variants: plain, and with motion vectors for DLSS (otherwise the first match
     // with DLSS on would compile everything again and skip draws meanwhile).
-    const int variants = streamline::available() ? 2 : 1;
+    const int variants = streamline::available() || xess::available() ? 2 : 1;
     for (int mvec = 0; mvec < variants; ++mvec) {
       VSUid vsu = make_vs_uid(draw); PSUid psu = make_ps_uid(draw);
       vsu.motion_vectors = psu.motion_vectors = (uint32_t)mvec;

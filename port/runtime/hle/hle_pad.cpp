@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstring>
 #include "lcancel.h"
+#include "user_gecko.h"
+#include "slippi_online.h"
 
 static uint32_t s_spec = 5;
 
@@ -18,8 +20,19 @@ HLE(PADRecalibrate) {
   RET(1);
 }
 // PADControlMotor(chan, command): 0 stop, 1 rumble, 2 stop hard.
-HLE(PADControlMotor) { host::gcadapter_rumble((int)ARG0, ARG1 == 1); }
-HLE(PADControlAllMotors) { for (int i = 0; i < 4; ++i) host::gcadapter_rumble(i, host::rd32(ARG0 + 4 * i) == 1); }
+// Online, the game's ports are the match's slots, not the sockets on the adapter: the local
+// player's controller may be in socket 2 while the match has them in slot 1. Only the local slot's
+// motor command means anything here, and it goes to whatever controller is feeding the local
+// input. Everything else is the opponent's rumble, which is theirs to feel, not ours.
+static void rumble(int game_port, bool on) {
+  if (slippi::online::is_online_match()) {
+    if (game_port == slippi::online::local_player_slot()) host::input_rumble_local(on);
+    return;
+  }
+  host::input_rumble(game_port, on);
+}
+HLE(PADControlMotor) { rumble((int)ARG0, ARG1 == 1); }
+HLE(PADControlAllMotors) { for (int i = 0; i < 4; ++i) rumble(i, host::rd32(ARG0 + 4 * i) == 1); }
 HLE(PADSetSpec) { s_spec = ARG0; }
 HLE(PADGetSpec) { RET(s_spec); }
 HLE(PADGetType) { if (ARG1) host::wr32(ARG1, 0x08000000); RET(1); }
@@ -38,6 +51,8 @@ HLE(PADRead) {
   // upstream of everything the game does with the pad, so the press is sampled, recorded into the
   // replay and sent to the opponent exactly like a press the player made.
   lcancel::apply(pads);
+  // The player's own Gecko codes (data writes only), re-applied each frame like the Gecko handler.
+  user_gecko::apply();
   uint32_t base = ARG0, mask = 0;
   for (int i = 0; i < 4; ++i) {
     uint32_t p = base + i * 12;

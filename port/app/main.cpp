@@ -22,6 +22,7 @@
 #include "threaded_backend.h"
 #include "window.h"
 #include "lcancel.h"
+#include "user_gecko.h"
 #include "updater.h"
 #include "discord_presence.h"
 namespace app { int run_settings_window(gx::RenderOptions& options); }
@@ -383,13 +384,14 @@ static int melee_main(int argc, char** argv) {
   gfx.pc_settings = !automated;
   g_crash_dialog = !automated;
   o.no_gc_adapter = automated;   // a hidden test run must not take the adapter from a game the player is running
+  if (std::getenv("MELEE_NO_GC_ADAPTER")) o.no_gc_adapter = true;   // same, for a visible test window
   SetUnhandledExceptionFilter(crash_filter);
   if (!automated) {
     // Interpolate by default: it never overshoots a stop, so menus, cursors and stage geometry stay
     // on one timeline. Predict avoids its one tick of delay but can overshoot and snap back.
     // Set before the settings file is read, so a saved "subframe" (Off in the Low spec preset) wins
     // over this default and an explicit --frame-mode, parsed below, still wins over both.
-    if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::AuthoredInterpolate;
+    if (!explicit_frame_mode) gfx.subframe = gx::SubFrameMode::Authored;   // Predict (the default since 0.5.5)
     // A person launching the game wants to hear it. The zero default is there for automated runs,
     // which never reach this branch, and it used to be hidden by the launcher passing --volume 70 on
     // every start; that override was removed because it also overwrote the player's saved settings,
@@ -463,12 +465,18 @@ static int melee_main(int argc, char** argv) {
       if (v == "d3d11" || v == "dx11" || v == "11") gfx.api = gx::RenderApi::D3D11;
       else if (v == "d3d12" || v == "dx12" || v == "12") gfx.api = gx::RenderApi::D3D12;
       else { std::fprintf(stderr, "--backend d3d12|d3d11\n"); return 2; } }
-    else if (a == "--dlss") { std::string v = next(); gfx.dlss_mode = v == "off" ? 0 : v == "dlaa" ? 1 : v == "quality" ? 2 : v == "balanced" ? 3 : v == "performance" ? 4 : v == "ultra" ? 5 : -1;
+#ifdef GX_DLSS5
+    else if (a == "--dlss5") gfx.dlss5 = true;                  // EXPERIMENTAL (gx_dlss5.h); needs --dlss
+#endif
+    else if (a == "--dlss") { std::string v = next(); gfx.dlss_mode = v == "off" ? 0 : v == "dlaa" ? 1 : v == "quality" ? 2 : v == "balanced" ? 3 : v == "performance" ? 4 : v == "ultra" ? 5 : v == "xess-aa" ? 6 : v == "xess-ultra" ? 7 : v == "xess-quality" ? 8 : v == "xess-balanced" ? 9 : v == "xess-performance" ? 10 : -1;
       if (gfx.dlss_mode < 0) { std::fprintf(stderr, "--dlss off|dlaa|quality|balanced|performance|ultra\n"); return 2; } }
+    else if (a == "--frame-generation") gfx.frame_generation_mode = 1;   // 2x
+    else if (a == "--reflex") gfx.reflex_mode = 2;
     else if (a == "--dlss-jitter-sign") gfx.dlss_jitter_sign = (float)std::atof(next());
     else if (a == "--frame-times") gfx.frame_times = next();
     else if (a == "--vsync") gfx.vsync = true;
     else if (a == "--flicker-scan") gfx.flicker_scan = true;
+    else if (a == "--pin-phase") gfx.pin_phase = std::atof(next());
     else if (a == "--capture") gfx.capture_path = next();
     else if (a == "--capture-frame") gfx.capture_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--capture-every") gfx.capture_every = (uint32_t)std::strtoul(next(), nullptr, 0);
@@ -510,6 +518,9 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--rng-seed") { o.rng_seed = (uint32_t)std::strtoul(next(), nullptr, 0); o.rng_seed_set = true; }
     else if (a == "--volume") o.volume = std::atoi(next());
     else if (a == "--widescreen") { gfx.widescreen = true; gfx.true_widescreen = false; }
+    else if (a == "--pal-stock-icons") gecko::option_pal_stock_icons = true;
+    else if (a == "--no-screen-shake") gecko::option_no_screen_shake = true;
+    else if (a == "--gecko-codes") user_gecko::load(next(), {}, false);   // scripted runs: that file's enabled codes
     // Experimental true 16:9: widens the frustum in the renderer, no game code. Mutually exclusive
     // with --widescreen, so whichever comes last on the command line wins rather than both applying.
     else if (a == "--true-widescreen") { gfx.true_widescreen = true; gfx.widescreen = false; }
@@ -550,11 +561,26 @@ static int melee_main(int argc, char** argv) {
   if (settings_window_only) {
     gfx.pc_settings = true;
     gx::load_pc_settings(gfx, o.volume);
-    return app::run_settings_window(gfx);
+    const int rc = app::run_settings_window(gfx);
+    // The panel polls every controller so its live readouts work, which starts the adapter and
+    // Switch Pro threads, and it can start an update check. Returning straight from here left those
+    // threads running into static destruction, where a joinable std::thread ends the process: every
+    // close of this window was a crash (0xC0000409), and with Windows Error Reporting collecting it,
+    // the window took a long time to go away. Same shutdown as the game's, below.
+    host::updater::shutdown();
+    host::discord::shutdown();
+    host::gcadapter_shutdown();
+    host::switchpro_shutdown();
+    slippi::shutdown();
+    return rc;
   }
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
   remember_iso(o.iso);   // so the launcher can offer this disc without being told again
+  // Controllers do not count as activity to Windows, so a session played only on a pad let the
+  // display power off after the idle timeout (monitors going black mid-game until the mouse moved).
+  // Held by this thread for as long as the game runs; Windows drops it when the process exits.
+  if (!hidden) SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
 
   std::unique_ptr<gx::Backend> backend;
   if (!headless && threaded) {

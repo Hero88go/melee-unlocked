@@ -118,16 +118,23 @@ class User {
   explicit User(std::string user_dir);
   bool AttemptLogin();          // (re)reads user.json
   bool IsLoggedIn() const { return logged_in_; }
-  UserInfo GetUserInfo() const { return info_; }
+  UserInfo GetUserInfo() const { std::lock_guard<std::mutex> lock(mutex_); return info_; }
   void LogOut();
-  void OverwriteLatestVersion(const std::string& v) { info_.latest_version = v; }
+  void OverwriteLatestVersion(const std::string& v) { std::lock_guard<std::mutex> lock(mutex_); info_.latest_version = v; }
   std::vector<std::string> GetUserChatMessages() const;
   static std::vector<std::string> GetDefaultChatMessages();
   const std::string& dir() const { return dir_; }
+  // Refreshes display name, connect code, latest version and chat messages from Slippi's user
+  // API on a background thread. user.json is only rewritten by the Slippi Launcher at login, so a
+  // name changed on the website since then is stale in it; the server's copy is what the opponent
+  // and the in-game name tag already show.
+  void RefreshFromServer();
  private:
   std::string dir_;
   UserInfo info_;
   bool logged_in_ = false;
+  mutable std::mutex mutex_;
+  std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
 };
 
 // Connect-code history (direct-codes.json / teams-codes.json in the user folder).
@@ -174,6 +181,7 @@ class NetplayClient {
   uint8_t GetSlippiRemoteSentChatMessage(bool chat_enabled);
   int32_t CalcTimeOffsetUs();
   double GetAndResetAvgPingMs();
+  int LastPingMs() const { return (int)(last_ping_ms_.load(std::memory_order_relaxed)); }
   bool IsWaitingForDesyncRecovery();
   DesyncRecoveryResp GetDesyncRecoveryState();
   void SendChatMessage(int message_id);
@@ -215,6 +223,7 @@ class NetplayClient {
   std::deque<GamePrepStepResults> game_prep_step_queue_;
   uint64_t ping_us_[REMOTE_PLAYER_MAX] = {};
   std::atomic<uint64_t> ping_sample_sum_us_{0}, ping_sample_count_{0};
+  std::atomic<uint32_t> last_ping_ms_{0};
   int32_t last_frame_acked_[REMOTE_PLAYER_MAX] = {};
   FrameOffsetData frame_offset_data_[REMOTE_PLAYER_MAX];
   FrameTiming last_frame_timing_[REMOTE_PLAYER_MAX];

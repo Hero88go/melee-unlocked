@@ -1,11 +1,11 @@
 
-# Melee Unlocked - Alpha
+# Melee Unlocked - Beta
 
-A native Windows build of Super Smash Bros. Melee (NTSC 1.02) with Slippi online play and an
-unlocked display frame rate.
+A native Windows build of Super Smash Bros. Melee (NTSC 1.02) with **Slippi online play** and an
+**unlocked display frame rate.**
 
 The game's own PowerPC code is translated ahead of time into C++ (static recompilation of the
-retail executable plus Slippi's Gecko codes) and runs against a native D3D12 renderer, so the
+retail executable plus Slippi's Gecko codes) and runs against a native D3D12 or D3D11 renderer, so the
 game logic stays exactly what the GameCube ran, at 60 Hz, while the display runs at any rate.
 In-between frames come from the game's own animation data and physics state, not from image
 interpolation, so an unlocked 200 Hz display shows real intermediate poses with no added latency.
@@ -18,11 +18,40 @@ HAL Laboratory. Slippi netplay compatibility is implemented from Slippi's open s
 the Slippi team.
 
 No Monetization. No Donos. No Patreon. **FREE FOREVER**
- 
-First gameplay footage can be found here: https://youtu.be/y2KN3s7uvqM
+
+**v0.6.1 DLSS5 Footage** can be found here https://www.youtube.com/watch?v=qZXsNr7HmAo
+
+**v0.5.0 Gameplay footage** can be found here: https://www.youtube.com/watch?v=JlmTDW6wQms
 
 ## Discord / Help
+
 Discord can be found here https://discord.gg/K7HHs3r8ty
+And On X https://x.com/MeleeUnlocked
+
+## Screenshots
+
+Taken in the game with DLAA on, at the window's full resolution. No textures or other game files
+are included with Melee Unlocked.
+
+![Four-player match on Jungle Japes](docs/screenshots/gameplay-jungle-japes.jpg)
+
+| | |
+|---|---|
+| ![Title screen](docs/screenshots/title.jpg) | ![Slippi online menu](docs/screenshots/online-menu.jpg) |
+| Title screen | Slippi online play |
+| ![Character select](docs/screenshots/character-select.jpg) | ![Stage select](docs/screenshots/stage-select.jpg) |
+| Character select | Stage select |
+| ![Fountain of Dreams](docs/screenshots/gameplay-fountain.jpg) | ![Opening movie](docs/screenshots/opening-movie.jpg) |
+| Fountain of Dreams | The opening movie |
+
+### PC settings (F1)
+
+| | |
+|---|---|
+| ![GameCube controller](docs/screenshots/settings-controls-gc.png) | ![Switch Pro controller](docs/screenshots/settings-controls-switch.png) |
+| Controls: click a button on the controller to rebind it | Switch Pro controllers get their own layout |
+| ![Video settings](docs/screenshots/settings-video.png) | ![Game settings](docs/screenshots/settings-game.png) |
+| Video: one-click quality presets, DLSS and DLAA | Game: L-cancel helpers, PAL stock icons, frame delay |
 
 ## Install
 
@@ -52,6 +81,29 @@ updates and the Slippi account check in one place.
 - **Play**: press PLAY. It shows which Slippi account will be used.
 - **Updates**: it checks for a new release on every start. "Update and restart" installs it in
   place; settings, saves and replays stay.
+
+### Legacy vs. DLSS 5 Experimental
+
+Two builds are available, picked from the **GAME BUILD** dropdown on the launcher's Play page
+(remembered between launches; the manual `.bat` files always run Legacy):
+
+- **Legacy** (`MeleeUnlocked-<version>-win64.zip`): the regular game. Ordinary NVIDIA DLSS / DLAA
+  upscaling, Frame Generation and Reflex are all here; none of it needs DLSS 5.
+- **DLSS 5 Experimental** (`MeleeUnlocked-<version>-DLSS5-Experimental.zip`): everything in
+  Legacy, plus an extra, optional neural-rendering pass over the DLSS/DLAA image
+  (`melee_port_dlss5.exe` / `melee_port_dlss5_compat.exe`, on by picking "Insane" in the Quality
+  presets or the DLSS 5 controls in PC settings). It is experimental, intended for RTX 50-series
+  GPUs or newer, and is not included in or reachable from the Legacy build at all: the Legacy
+  executables are compiled without this code.
+
+  Picking DLSS 5 Experimental from a Legacy-only install downloads and installs the complete
+  experimental zip once, then launches it; after that it is just the other choice in the
+  dropdown. Switching back to Legacy needs nothing extra.
+
+  **DLSS 5 will not work without NVIDIA's DLSS 5 file (`nvngx_dlssnr.dll`). It is not included
+  in either zip, and this project does not provide it.** The game looks for it in the NVIDIA
+  driver first, then next to `melee_port_dlss5.exe` (or the `_compat` executable). Without it the
+  game runs normally, and the PC settings panel says DLSS 5 could not start and why.
 
 ### Build from source
 

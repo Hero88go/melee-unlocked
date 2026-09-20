@@ -21,6 +21,7 @@ Backend* g_backend = nullptr;
 Frame g_frame;
 TextureSnapshotCache g_texture_snapshots;
 uint64_t g_frame_sequence = 0;
+bool g_discontinuity = false;   // simulation thread only, like the rest of this file's state
 std::vector<uint8_t> g_buf;
 size_t g_buf_pos = 0;   // parsed prefix of g_buf
 // Bytes the pending (incomplete) command at g_buf_pos needs before it can parse. The game writes the
@@ -345,7 +346,16 @@ void bp_write(uint32_t value) {
       ++g_efb_copies;
       if (c.to_xfb) {
         g_frame.sequence = ++g_frame_sequence;
+        g_frame.scene_major = host::rd8(0x80479D30);
+        g_frame.scene_minor = host::rd8(0x80479D33);
+        {
+          static uint16_t last_scene = 0xFFFF;
+          const uint16_t scene = (uint16_t)(g_frame.scene_major << 8 | g_frame.scene_minor);
+          if (scene != last_scene) { host::log("scene: major %02X minor %02X (frame %llu)", g_frame.scene_major, g_frame.scene_minor, (unsigned long long)g_frame.sequence); last_scene = scene; }
+        }
         g_frame.time = host::now_seconds(); // completed snapshot availability anchors presentation
+        g_frame.discontinuous = g_discontinuity;
+        g_discontinuity = false;
         if (g_backend) g_backend->submit_and_recycle(g_frame);   // hands over the buffers, returns recycled ones
         else g_frame.clear();
         g_texture_snapshots.end_frame();
@@ -433,6 +443,8 @@ size_t parse_command(const uint8_t* d, size_t len) {
 }
 
 }  // namespace
+
+void mark_discontinuity() { g_discontinuity = true; }
 
 void init(Backend* backend) {
   g_backend = backend;

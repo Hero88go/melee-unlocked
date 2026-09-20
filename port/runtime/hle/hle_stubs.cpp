@@ -6,16 +6,105 @@
 #include "audio.h"
 #include "exi_slippi.h"
 #include "memory_range.h"
+#include <cstdio>
 #include <cstring>
 #include <deque>
+#include <filesystem>
+#include <string>
 
 // ---------------- EXI ----------------
-// Channel 1 (memory card slot B) carries the Slippi device; other channels have no device.
+// Channel 1 (memory card slot B) carries the Slippi device; channel 0 device 1 is the console's
+// RTC and SRAM; other channels have no device.
 static constexpr uint32_t SLIPPI_CHANNEL = 1;
 static uint32_t s_exi_selected_dev[3] = {0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF};
-HLE(EXIInit) {}
-HLE(EXIProbe) { RET(ARG0 == SLIPPI_CHANNEL ? 1 : 0); }
-HLE(EXIProbeEx) { RET(ARG0 == SLIPPI_CHANNEL ? 1 : (uint32_t)-1); }
+
+// ---- SRAM ----
+// The console keeps its settings in 64 bytes of battery-backed RAM behind the RTC on channel 0
+// device 1: sound mode, progressive scan, language, screen position. The game reads and writes it
+// through the real SDK code (OSGetSoundMode and friends are not HLE'd), so all that is needed here
+// is a device that remembers. Without one every read returned zeros, which is mono, English and
+// interlaced, and every write was dropped: a player could set stereo, have it hold for the rest of
+// the session because the SDK keeps its own copy in RAM, and find it mono again on the next start.
+//
+// Layout (dolphin/os/OSRtc.h, struct OSSram): checkSum, checkSumInv, ead0, ead1, counterBias,
+// displayOffsetH, ntd, language, flags. Sound mode is bit 2 of flags at offset 19, progressive
+// scan is bit 7 of the same byte. Nothing in the SDK validates the checksum when reading, so a
+// fresh image only has to be the right size.
+namespace {
+constexpr uint32_t SRAM_SIZE = 64;
+uint8_t s_sram[SRAM_SIZE];
+bool s_sram_loaded = false;
+bool s_sram_dirty = false;
+uint32_t s_sram_offset = 0;      // byte offset the pending command selected
+bool s_sram_writing = false;     // the pending command is a write
+
+std::string sram_path() {
+  // Beside the memory card, which is where this installation's other console state already lives.
+  std::filesystem::path dir(host::options.card_dir);
+  if (dir.has_parent_path()) dir = dir.parent_path();
+  return (dir / "sram.bin").string();
+}
+
+void sram_load() {
+  if (s_sram_loaded) return;
+  s_sram_loaded = true;
+  std::memset(s_sram, 0, sizeof s_sram);
+  // A console leaves the factory set to stereo, and that is what a player expects to find.
+  s_sram[19] = 0x04;
+  bool from_file = false;
+  if (FILE* in = std::fopen(sram_path().c_str(), "rb")) {
+    uint8_t buf[SRAM_SIZE];
+    if (std::fread(buf, 1, sizeof buf, in) == sizeof buf) { std::memcpy(s_sram, buf, sizeof s_sram); from_file = true; }
+    std::fclose(in);
+  }
+  host::log("sram: %s, sound %s, %s scan", from_file ? "loaded" : "new",
+            (s_sram[19] & 0x04) ? "stereo" : "mono",
+            (s_sram[19] & 0x80) ? "progressive" : "interlaced");
+}
+
+void sram_save() {
+  if (!s_sram_dirty) return;
+  s_sram_dirty = false;
+  const std::string path = sram_path();
+  std::error_code ec;
+  std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+  const std::string tmp = path + ".tmp";
+  FILE* out = std::fopen(tmp.c_str(), "wb");
+  if (!out) { host::log("sram: cannot write %s", path.c_str()); return; }
+  const bool ok = std::fwrite(s_sram, 1, sizeof s_sram, out) == sizeof s_sram;
+  std::fclose(out);
+  if (ok) std::filesystem::rename(tmp, path, ec);
+  if (!ok || ec) host::log("sram: failed to save %s", path.c_str());
+}
+
+bool exi_is_sram(uint32_t chan) { return chan == 0 && s_exi_selected_dev[0] == 1; }
+
+// The first immediate write of a transfer carries the command. Bit 31 set means write; the address
+// is the low 24 bits, where SRAM starts at 0x100 and each byte is one step of 0x40
+// (dolphin/os/OSRtc.c: ReadSram sends 0x20000100, WriteSram sends 0xA0000000 | off<<6 | 0x100).
+// The RTC shares the device and asks for 0x20000000, whose address is below SRAM, so it selects no
+// byte and keeps reading zero exactly as it did before.
+void sram_command(uint32_t cmd) {
+  s_sram_writing = (cmd & 0x80000000u) != 0;
+  const uint32_t addr = cmd & 0x00FFFFFFu;
+  s_sram_offset = addr >= 0x100 ? (addr - 0x100) >> 6 : SRAM_SIZE;
+}
+
+void sram_transfer(uint32_t buf, uint32_t len, bool write) {
+  sram_load();
+  for (uint32_t i = 0; i < len; ++i) {
+    const uint32_t off = s_sram_offset + i;
+    if (off >= SRAM_SIZE) break;
+    if (write) { s_sram[off] = host::rd8(buf + i); s_sram_dirty = true; }
+    else host::wr8(buf + i, s_sram[off]);
+  }
+  if (write) sram_save();
+}
+}  // namespace
+
+HLE(EXIInit) { sram_load(); }
+HLE(EXIProbe) { RET(ARG0 == SLIPPI_CHANNEL || ARG0 == 0 ? 1 : 0); }
+HLE(EXIProbeEx) { RET(ARG0 == SLIPPI_CHANNEL || ARG0 == 0 ? 1 : (uint32_t)-1); }
 HLE(EXIGetID) { if (ARG0 == SLIPPI_CHANNEL && ARG1 == 0 && ARG2) host::wr32(ARG2, 0); RET(ARG0 == SLIPPI_CHANNEL ? 1 : 0); }
 HLE(EXILock) { RET(1); }
 HLE(EXIUnlock) { RET(1); }
@@ -28,6 +117,21 @@ HLE(EXIImm) {
   if (exi_is_slippi(chan)) {
     if (type != 0) { uint32_t data = 0; for (uint32_t i = 0; i < len && i < 4; ++i) data |= (uint32_t)host::rd8(buf + i) << (24 - 8 * i); slippi::imm_write(data, len); }
     if (type != 1) { uint32_t data = slippi::imm_read(len); for (uint32_t i = 0; i < len && i < 4; ++i) host::wr8(buf + i, (uint8_t)(data >> (24 - 8 * i))); }
+  } else if (exi_is_sram(chan)) {
+    // A 4-byte immediate write opens a transfer and names the byte; it carries no data of its own,
+    // so it must not also be treated as a read. Everything else on this device is the RTC, whose
+    // reads keep returning zero exactly as they did before.
+    if (type == 1 && len == 4) {
+      uint32_t cmd = 0;
+      for (uint32_t i = 0; i < 4; ++i) cmd |= (uint32_t)host::rd8(buf + i) << (24 - 8 * i);
+      sram_command(cmd);
+    } else if (type != 0) {
+      sram_transfer(buf, len, true);
+    } else if (s_sram_offset < SRAM_SIZE) {
+      sram_transfer(buf, len, false);
+    } else {
+      for (uint32_t i = 0; i < len && i < 4; ++i) host::wr8(buf + i, 0);
+    }
   } else if (type != 1) {
     for (uint32_t i = 0; i < len && i < 4; ++i) host::wr8(buf + i, 0);
   }
@@ -38,6 +142,8 @@ HLE(EXIImmEx) {
   if (exi_is_slippi(chan)) {
     if (type != 0) slippi::dma_write(buf, len);
     if (type != 1) slippi::dma_read(buf, len);
+  } else if (exi_is_sram(chan) && s_sram_offset < SRAM_SIZE) {
+    sram_transfer(buf, len, type != 0);   // WriteSram's payload arrives here
   } else if (type != 1) {
     for (uint32_t i = 0; i < len; ++i) host::wr8(buf + i, 0);
   }
@@ -48,6 +154,8 @@ HLE(EXIDma) {
   if (exi_is_slippi(chan)) {
     if (type == 1) slippi::dma_write(buf, len);
     else slippi::dma_read(buf, len);
+  } else if (exi_is_sram(chan) && s_sram_offset < SRAM_SIZE) {
+    sram_transfer(buf, len, type == 1);   // ReadSram pulls the whole 64 bytes here
   } else if (type == 0) {
     for (uint32_t i = 0; i < len; ++i) host::wr8(buf + i, 0);
   }

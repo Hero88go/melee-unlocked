@@ -68,6 +68,12 @@ and Teams work against players on regular Slippi Dolphin.
 Bug reports: https://github.com/hero88go/melee-unlocked/issues with melee_port.log,
 port-settings.ini and the steps to reproduce.
 
+Watching replays: drop a .slp file onto WatchReplay.bat. That runs melee_port_playback.exe, a
+separate build of the game made for playback, so Slippi Dolphin is not needed to watch a replay
+either. Your ISO has to be next to it named melee.iso. A replay recorded by a much newer or older
+Slippi version may not line up with this build; when that happens the log says so rather than
+playing something subtly wrong.
+
 Saves: memory card slot A is the folder User\GC\CardA, one .gci per file (Dolphin's GCI folder
 format). Copy your Slippi Dolphin save (GALE01-*.gci) there to keep your unlocks and settings.
 
@@ -88,8 +94,33 @@ rem Frame rate, frame mode, internal resolution and volume are saved in port-set
 rem command line is applied after that file is read, so passing them every time would undo whatever
 rem was set in the F1 panel. They only seed a first run, before a settings file exists.
 set FIRSTRUN=
-if not exist "%~dp0port-settings.ini" set FIRSTRUN=--fps unlocked --frame-mode authored-interpolate --scale auto --volume 70
+if not exist "%~dp0port-settings.ini" set FIRSTRUN=--fps unlocked --frame-mode authored --scale auto --volume 70
 melee_port.exe --iso "%ISO%" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\Slippi" --replay-dir "%~dp0Replays" --card-dir "%~dp0User\GC\CardA" --threaded-renderer %FIRSTRUN%
+if errorlevel 1 pause
+"""
+
+# Playback is its own program (a second translation of the game against the Slippi Playback code
+# set), so it gets its own launcher: drop a .slp on it, or leave one next to it.
+PLAYBACK_BAT = """@echo off
+cd /d "%~dp0"
+set ISO=%~dp0melee.iso
+if not exist "%ISO%" (
+  echo Put your Melee NTSC 1.02 ISO next to this file, named melee.iso
+  pause
+  exit /b 1
+)
+set REPLAY=%~1
+if "%REPLAY%"=="" (
+  echo Drop a Slippi replay ^(.slp^) onto this file to watch it.
+  pause
+  exit /b 1
+)
+if not exist "%REPLAY%" (
+  echo Cannot find "%REPLAY%"
+  pause
+  exit /b 1
+)
+melee_port_playback.exe --iso "%ISO%" --replay "%REPLAY%" --sys-dir "%~dp0SysPlayback" --card-dir "%~dp0User\\GC\\CardA" --threaded-renderer
 if errorlevel 1 pause
 """
 
@@ -100,12 +131,45 @@ def main():
     ap.add_argument("--exe", type=Path, default=ROOT / "build-review/port/Release/melee_port.exe")
     # The same game built for processors without AVX2, shipped alongside so the ordinary build
     # keeps its instruction set. The launcher picks between them by asking the processor.
+    # Required, not just optional: a release silently missing this file leaves every pre-Haswell/
+    # pre-Ryzen machine (a real and recurring support case) unable to start the game at all, with
+    # no clear error before 0.6.2 shipped without it by accident. Pass --skip-compat-exe only when
+    # that omission is deliberate (e.g. a quick local test build).
     ap.add_argument("--compat-exe", type=Path, default=None,
-                    help="melee_port.exe built with -DMELEE_CPU_BASELINE=SSE2")
+                    help="melee_port.exe built with -DMELEE_CPU_BASELINE=SSE2 (required unless --skip-compat-exe)")
+    ap.add_argument("--skip-compat-exe", action="store_true",
+                    help="explicitly ship without the SSE2 compatibility build (not recommended for a real release)")
+    ap.add_argument("--experimental-exe", type=Path, required=True,
+                    help="experimental game executable, built with MELEE_ENABLE_DLSS5=ON")
+    ap.add_argument("--experimental-compat-exe", type=Path, default=None,
+                    help="optional: experimental game executable built with SSE2 (RTX 50 machines have AVX2)")
+    # Replay playback: a second translation of the game against the Slippi Playback code set, so
+    # the release can play a .slp back. It carries its own Sys folder because its code list differs
+    # from the online one (see PORT_COMPLETION.md, "Replay playback build").
+    ap.add_argument("--playback-exe", type=Path, default=None,
+                    help="melee_port_playback.exe, built from port/generated_playback")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
+    if not args.compat_exe and not args.skip_compat_exe:
+        raise SystemExit("missing --compat-exe (the SSE2 build for pre-Haswell/pre-Ryzen CPUs). "
+                          "Pass --skip-compat-exe if this omission is deliberate.")
     if not args.exe.is_file():
         raise SystemExit(f"missing executable: {args.exe}")
+    # A standard build passed as --experimental-exe was never built with MELEE_ENABLE_DLSS5=ON, so
+    # it would ship as the "DLSS5-Experimental" download while behaving like the standard build and
+    # missing nvngx.dll_meleedlss5.dll (caught below), or worse, silently sharing the same file with
+    # no forwarder check if that ever changes. Reject the mistake outright rather than rely on the
+    # forwarder check alone to catch it.
+    if args.experimental_exe.resolve() == args.exe.resolve():
+        raise SystemExit("--experimental-exe is the same file as --exe. Build it separately with "
+                          "-DMELEE_ENABLE_DLSS5=ON; do not reuse the standard executable.")
+    for experimental in [e for e in (args.experimental_exe, args.experimental_compat_exe) if e]:
+        if not experimental.is_file():
+            raise SystemExit(f"missing experimental executable: {experimental}")
+        built_experimental = subprocess.run([str(experimental), "--version"], capture_output=True,
+                                            text=True, timeout=60).stdout.strip()
+        if built_experimental != args.version:
+            raise SystemExit(f"{experimental} reports {built_experimental!r}, not {args.version!r}")
     # The version is compiled into the executable, so a build made before VERSION changed would
     # ship reporting the old number and offer itself the update forever. Catch that here.
     built = subprocess.run([str(args.exe), "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
@@ -126,6 +190,21 @@ def main():
             raise SystemExit(f"the compatibility build reports {compat_version!r}, not {args.version!r}")
         shutil.copy2(args.compat_exe, folder / "melee_port_compat.exe")
         print(f"compatibility build: {args.compat_exe}")
+    if args.playback_exe:
+        if not args.playback_exe.is_file():
+            raise SystemExit(f"missing playback executable: {args.playback_exe}")
+        playback_version = subprocess.run([str(args.playback_exe), "--version"], capture_output=True,
+                                          text=True, timeout=60).stdout.strip()
+        if playback_version != args.version:
+            raise SystemExit(f"the playback build reports {playback_version!r}, not {args.version!r}")
+        shutil.copy2(args.playback_exe, folder / "melee_port_playback.exe")
+        # It reads the playback code set, not the online one, so both ship.
+        playback_sys = ROOT / "port/slippi_sys_playback"
+        if not (playback_sys / "codehandler.bin").is_file():
+            raise SystemExit(f"missing playback Sys folder: {playback_sys}")
+        shutil.copytree(playback_sys, folder / "SysPlayback",
+                        ignore=shutil.ignore_patterns("README.md", ".git*"))
+        print(f"playback build: {args.playback_exe}")
     launcher = args.exe.parent / "MeleeUnlockedLauncher.exe"
     if not launcher.is_file():
         raise SystemExit(f"missing launcher: {launcher} (build target melee_unlocked)")
@@ -138,7 +217,7 @@ def main():
         raise SystemExit(f"{launcher.name} does not contain the string {args.version!r}, so it was built "
                          f"before VERSION changed; build the melee_unlocked target and try again")
     shutil.copy2(launcher, folder / "MeleeUnlockedLauncher.exe")
-    for dll in ("sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll"):
+    for dll in ("sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll", "sl.dlss_g.dll", "nvngx_dlssg.dll", "sl.reflex.dll", "sl.pcl.dll", "libxess.dll"):
         src = args.exe.parent / dll
         if src.is_file():
             shutil.copy2(src, folder / dll)
@@ -167,20 +246,39 @@ def main():
     (folder / "User/Slippi").mkdir(parents=True)
     (folder / "Replays").mkdir()
     (folder / "MeleeUnlocked.bat").write_bytes(BAT.replace("\n", "\r\n").encode("utf-8"))
+    if args.playback_exe:
+        (folder / "WatchReplay.bat").write_bytes(PLAYBACK_BAT.replace("\n", "\r\n").encode("utf-8"))
     (folder / "README.txt").write_text(README.format(version=args.version), encoding="utf-8")
     licenses = folder / "licenses"
     licenses.mkdir()
     for src, dst in ((ROOT / "port/third_party/streamline/license.txt", "streamline.txt"),
                      (ROOT / "port/third_party/enet/LICENSE", "enet.txt"),
-                     (ROOT / "port/third_party/imgui/LICENSE.txt", "imgui.txt")):
+                     (ROOT / "port/third_party/imgui/LICENSE.txt", "imgui.txt"),
+                     (ROOT / "port/third_party/streamline/reflex.license.txt", "nvidia-reflex.txt"),
+                     (ROOT / "port/third_party/xess/LICENSE.txt", "intel-xess.txt")):
         if src.is_file():
             shutil.copy2(src, licenses / dst)
-    zip_path = args.out / f"{name}-win64.zip"
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-        for path in folder.rglob("*"):
-            z.write(path, path.relative_to(args.out))
-    total = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
-    print(f"{zip_path} ({zip_path.stat().st_size / 1e6:.1f} MB zipped, {total / 1e6:.1f} MB unpacked)")
+    def zip_folder(zip_path):
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+            for path in folder.rglob("*"):
+                z.write(path, path.relative_to(args.out))
+        total = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
+        print(f"{zip_path} ({zip_path.stat().st_size / 1e6:.1f} MB zipped, {total / 1e6:.1f} MB unpacked)")
+
+    zip_folder(args.out / f"{name}-win64.zip")
+    shutil.copy2(args.experimental_exe, folder / "melee_port_dlss5.exe")
+    if args.experimental_compat_exe:
+        shutil.copy2(args.experimental_compat_exe, folder / "melee_port_dlss5_compat.exe")
+    forwarder = args.experimental_exe.parent / "nvngx.dll_meleedlss5.dll"
+    if not forwarder.is_file():
+        raise SystemExit(f"missing experimental forwarder: {forwarder}")
+    shutil.copy2(forwarder, folder / forwarder.name)
+    (folder / "README.txt").write_text(README.format(version=args.version) +
+        "\nEXPERIMENTAL DLSS 5: Choose DLSS 5 Experimental in the launcher. Requires an RTX 50-series GPU or newer.\n"
+        "DLSS 5 will not work without NVIDIA's DLSS 5 file (nvngx_dlssnr.dll). It is not included and\n"
+        "we do not provide it. Without it the game runs normally and F1 says DLSS 5 could not start.\n",
+        encoding="utf-8")
+    zip_folder(args.out / f"{name}-DLSS5-Experimental.zip")
 
 
 if __name__ == "__main__":

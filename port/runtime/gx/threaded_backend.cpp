@@ -55,7 +55,7 @@ class ThreadedBackend final : public Backend {
       }
       ~Trace() { if (file) std::fclose(file); }
     } trace(options_.frame_times);
-    double last_submission = 0; uint64_t drained = 0;
+    double last_submission = 0; uint64_t drained = 0, discontinuities = 0;
     double next_present = host::now_seconds();
     double stats_time = next_present; uint64_t stats_presented = 0, stats_sim = 0, stats_lines = 0;
     uint32_t phase_bins[5] = {};
@@ -85,11 +85,27 @@ class ThreadedBackend final : public Backend {
       }
       authored = live_options.subframe == SubFrameMode::Authored || live_options.subframe == SubFrameMode::AuthoredInterpolate;
       interpolate = live_options.subframe == SubFrameMode::Interpolate || live_options.subframe == SubFrameMode::AuthoredInterpolate;
-      // Menus, character select and stage select have no skinned character models. Their panels and
-      // cursors are moved by game code that stops without warning, so predicting ahead overshoots and
-      // snaps back; interpolating between the last two frames never overshoots, and a menu does not
-      // need the frame of latency Predict avoids.
-      if (authored && subframes && cur >= 0 && solver.stats().draws && !solver.stats().skinned) interpolate = true;
+      // The menus, the character select and the stage select are moved by game code that stops
+      // without warning, so predicting ahead overshoots a cursor and snaps back. Interpolating
+      // between the last two frames never overshoots, and a menu does not need the frame of
+      // latency Predict avoids. Decided from the game's own scene controller, recorded with the
+      // frame: major scene 1 is the menus; in the match modes minor scenes 0 and 1 are the
+      // character and stage selects and 2 is the match. (An earlier version keyed this on "no
+      // skinned draws", which the menus never satisfy: they have skinned draws from frame 4 on.)
+      if (authored && subframes && cur >= 0) {
+        // Anything that is not certainly a running match counts as a menu. Named the other way
+        // round it kept missing screens (the online menus among them), and the two mistakes are not
+        // equal: a menu treated as a match flickers, while a match treated as a menu is only
+        // slightly less smooth. The scene controller's major scene is the mode and the minor scene
+        // is the stage within it; in every mode that plays a match, 0 and 1 are the character and
+        // stage selects and the match itself is 2 and up.
+        const bool in_menus = !frame_in_match(frames[cur]);
+        // A cursor that stops is overshot by prediction and snaps back, which is the menu overshoot
+        // reported on the stage select. Interpolating never overshoots and a menu does not need the
+        // frame of latency Predict avoids, so menus interpolate whichever mode is selected.
+        if (in_menus) interpolate = true;
+        solver.set_menu_mode(in_menus);
+      }
       // Render every source at least once: EFB resources can depend on earlier commands.
       bool got_new = false;
       Frame incoming;
@@ -97,7 +113,10 @@ class ThreadedBackend final : public Backend {
         int next = cur < 0 ? 0 : cur ^ 1;
         queue.recycle(std::move(frames[next]));   // return the buffers this slot is about to drop
         frames[next] = std::move(incoming);
-        have_prev = cur >= 0;
+        // A frame that follows a rollback is not the neighbour of the one before it (Frame::discontinuous),
+        // so it is shown as it is, unpaired, and pairing resumes from it on the next frame.
+        have_prev = cur >= 0 && !frames[next].discontinuous;
+        if (frames[next].discontinuous) ++discontinuities;
         cur = next;
         got_new = true;
         ++submitted; ++stats_sim;
@@ -137,7 +156,16 @@ class ThreadedBackend final : public Backend {
         t = (now - current.time) / SIM_PERIOD;
         if (interpolate) t = std::min(std::max(t, 0.0), 1.0);
         else t = std::min(std::max(t, 0.0), 1.0);   // never extrapolate more than one frame ahead
-        if (cap_period > 0 && now < next_present - render_budget) {
+        if (options_.pin_phase >= 0) {
+          // Development: one presented frame per simulation frame at a fixed phase, so two runs of
+          // the same script produce pictures that can be compared one for one.
+          t = std::min(options_.pin_phase, 1.0);
+          if (current.sequence == rendered_sequence) {
+            if (queue.drained()) break;
+            queue.wait_available(std::chrono::milliseconds(2));
+            continue;
+          }
+        } else if (cap_period > 0 && now < next_present - render_budget) {
           // Start early enough to finish GPU submission before the presentation deadline.
           double wait = next_present - render_budget - now;
           if (wait > 0.0005) std::this_thread::sleep_for(std::chrono::microseconds((long long)(std::min(wait - 0.0003, 0.001) * 1e6)));
@@ -198,6 +226,29 @@ class ThreadedBackend final : public Backend {
                     !subframes ? "locked" : authored ? "authored" : interpolate ? "interpolate" : "extrapolate", s.draws, s.paired, s.cuts);
           if (subframes) host::log("pair rejection: missing %u, HUD %u, geometry %u, state %u (last BP %02X), projection %u, authored %u, camera-only %u, vertex-blended %u, FLIPS %u | phases <.25:%u <.5:%u <.75:%u <1:%u =1:%u",
                                    s.missing, s.hud, s.geometry, s.state, s.state_register, s.projection, s.authored, s.carried, s.vertex_blended, s.pair_flips, phase_bins[0], phase_bins[1], phase_bins[2], phase_bins[3], phase_bins[4]);
+          if (subframes) {
+            // What the solver got wrong at the one phase where there is a right answer to compare
+            // against. Anything other than zero here is geometry that jumps once per simulation
+            // frame, so this is the number to watch when a stage flickers.
+            static EndpointStats last_endpoint;
+            const EndpointStats& e = subframe_endpoint_stats();
+            const uint64_t checked = e.checked - last_endpoint.checked, off = e.off - last_endpoint.off;
+            if (checked) host::log("endpoint check: %llu of %llu draws not at the simulation pose at phase 1 (worst %.2f units, identity %016llX) | stage-locked %u",
+                                   (unsigned long long)off, (unsigned long long)checked, e.worst, (unsigned long long)e.worst_identity, s.stage_locked);
+            last_endpoint = e;
+            const_cast<EndpointStats&>(e).worst = 0;
+            static PhaseFlipStats last_flips;
+            const PhaseFlipStats& f = subframe_phase_flips();
+            const uint64_t compared = f.compared - last_flips.compared, flipped = f.flipped - last_flips.flipped,
+                           skinned = f.flipped_skinned - last_flips.flipped_skinned;
+            if (compared) host::log("phase flips: %llu of %llu draws changed route between two frames of the same tick (%llu of them skinned)",
+                                    (unsigned long long)flipped, (unsigned long long)compared, (unsigned long long)skinned);
+            last_flips = f;
+            const StageSplitAudit& a = subframe_stage_split_audit();
+            if (a.checked)
+              host::log("stage split audit: %llu of %llu static draws placed off the camera transform, worst %.4f units",
+                        (unsigned long long)a.split, (unsigned long long)a.checked, a.worst);
+          }
           if (subframes) std::memset(phase_bins, 0, sizeof phase_bins);
           host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), render_profile_line().c_str());
           build_seconds = submit_seconds = 0; cost_presented = 0;
@@ -219,7 +270,8 @@ class ThreadedBackend final : public Backend {
         stats_time = now; stats_presented = 0; stats_sim = 0;
       }
     }
-    host::log("renderer: %llu simulation frames, %llu presented frames on its own thread, %llu drained without presenting", submitted, presented, (unsigned long long)drained);
+    host::log("renderer: %llu simulation frames, %llu presented frames on its own thread, %llu drained without presenting, %llu shown unblended after a rollback",
+              submitted, presented, (unsigned long long)drained, (unsigned long long)discontinuities);
   }
 
  public:

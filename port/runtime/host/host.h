@@ -144,6 +144,20 @@ void input_last_pads(PadState out[4]);
 // GameCube controller adapter (WUP-028 over WinUSB): fills plugged ports, returns their mask.
 uint32_t gcadapter_poll(PadState out[4]);
 void gcadapter_rumble(int port, bool on);
+// Rumble for an IN-GAME port, delivered to whichever adapter socket the port assignment routes to
+// that port (or nowhere, for a device without a motor). The game names ports, not sockets: a
+// player plugged into socket 2 and playing as port 1 online used to feel the OPPONENT's rumble,
+// because port 2's motor command went straight to socket 2.
+// The player's own switch for controller rumble (Controls tab), on by default. The game's rumble
+// option is not reachable in Slippi's online menus, so this is the only way to turn it off there.
+extern bool g_rumble_enabled;
+// Background input (Game tab), on by default. On: controllers keep playing while another window has
+// focus, as they always have, and the keyboard is read then too. Off: every port reads neutral
+// until the game window has focus again, as in Dolphin with Background Input unticked.
+extern bool g_background_input;
+void input_rumble(int game_port, bool on);
+// Rumble for the local netplay player: every adapter socket that currently has a controller in it.
+void input_rumble_local(bool on);
 // Forget a port's stored neutral so the next report re-establishes it (-1 for every port). The game
 // asks for this through PADRecalibrate.
 void gcadapter_recalibrate(int port);

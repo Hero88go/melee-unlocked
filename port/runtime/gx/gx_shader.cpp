@@ -1,5 +1,6 @@
 // HLSL generation for GX pipelines. Ported from Dolphin VideoCommon (GPL-2.0-or-later):
 // VertexShaderGen.cpp, LightingShaderGen.h, PixelShaderGen.cpp (D3D11 integer-math path).
+#include <cstdlib>
 #include "gx_shader.h"
 #include "gx_texture.h"
 #include <array>
@@ -428,7 +429,7 @@ std::string generate_pixel_shader(const PSUid& uid) {
   o.w("cbuffer PSBlock : register(b1) {\nint4 colors[4];\nint4 kcolors[4];\nint4 alpharef;\nfloat4 texdims[8];\nint4 zbias[2];\n"
       "int4 indtexscale[2];\nint4 indtexmtx[6];\nint4 fogcolor;\nint4 fogi;\nfloat4 fogf[2];\nfloat4 zslope;\nint4 flags;\nfloat4 efbscale;\nfloat4 mvscale;\nfloat4 tint;\n};\n");
   if (forced_early_z) o.w("[earlydepthstencil]\n");
-  if (uid.motion_vectors) o.w("void main(out float4 ocol0 : SV_Target0, out float2 omv : SV_Target1, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
+  if (uid.motion_vectors) o.w("void main(out float4 ocol0 : SV_Target0, out float2 omv : SV_Target1, out float ohud : SV_Target2, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
   else o.w("void main(out float4 ocol0 : SV_Target0, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
   for (uint32_t i = 0; i < numTexgen; ++i) o.w(", in float3 uv%d : TEXCOORD%d", i, i);
   if (uid.motion_vectors) o.w(", in float4 clipPos : TEXCOORD%d, in float4 curPos : TEXCOORD%d, in float4 prevPos : TEXCOORD%d) {\n", numTexgen, numTexgen + 1, numTexgen + 2);
@@ -616,7 +617,7 @@ std::string generate_pixel_shader(const PSUid& uid) {
   // lerping by 0 returns ocol0.rgb unchanged, so this costs a multiply and changes nothing
   // otherwise. It is deliberately not part of PSUid: there is one pipeline either way.
   o.w("ocol0.rgb = lerp(ocol0.rgb, ocol0.rgb * tint.rgb + tint.rgb * 0.35, tint.w);\n");
-  if (uid.motion_vectors) o.w("omv = (prevPos.xy / prevPos.w - curPos.xy / curPos.w) * mvscale.xy;\n");
+  if (uid.motion_vectors) o.w("omv = (prevPos.xy / prevPos.w - curPos.xy / curPos.w) * mvscale.xy;\nohud = mvscale.z * saturate(ocol0.a);\n");
   o.w("}\n");
   return o.s;
 }
@@ -624,6 +625,48 @@ std::string generate_pixel_shader(const PSUid& uid) {
 // ---------------------------------------------------------------- constants
 std::atomic<bool> g_true_widescreen{false};
 void set_true_widescreen(bool on) { g_true_widescreen.store(on, std::memory_order_relaxed); }
+
+static uint32_t g_main_proj[7];
+static bool g_main_proj_valid = false;
+void set_main_projection(const DrawCall* scene) {
+  g_main_proj_valid = scene != nullptr;
+  if (scene) std::memcpy(g_main_proj, &scene->xf_regs[0x20], sizeof g_main_proj);
+}
+bool is_scene_draw(const DrawCall& dc) {
+  return g_main_proj_valid && std::memcmp(&dc.xf_regs[0x20], g_main_proj, sizeof g_main_proj) == 0;
+}
+
+// A perspective camera whose frustum is exactly the 4:3 box its content was authored to fill: the
+// screen flash and its wipes (lb/lbbgflash.c, a 640x480 quad at fov 60, aspect 4:3). proj[] holds
+// the GX projection as x scale, x shift, y scale, y shift, and the shifts are zero for a camera
+// that is not looking off to one side. Melee's own 3D cameras shift horizontally in places and do
+// not sit at this ratio once widened, so this stays specific to the overlays.
+bool is_authored_fullscreen(const float* proj) {
+  if (proj[1] != 0.0f || proj[3] != 0.0f) return false;          // off-centre: a real camera
+  if (proj[0] <= 0.0f || proj[2] <= 0.0f) return false;
+  const float ratio = proj[2] / proj[0];                          // y scale over x scale
+  return std::fabs(ratio - 4.0f / 3.0f) < 0.001f;
+}
+
+// The in-game P1/P2/... name tag camera (if/ifnametag.c, nametag_CObjDesc): an
+// HSD_CameraDescFrustum with top=0 bottom=-480 left=0 right=640, i.e. the GX frustum corner pinned
+// to the screen's own top-left rather than centred, so each player's tag can be placed at a fixed
+// screen position independent of the 3D camera. GXSetProjection still sees this as GX_PERSPECTIVE
+// (cobj.c's makeProjectionMtx, PROJ_FRUSTUM case), so build_projection widened it exactly like a
+// real world camera, and a name tag's screen anchor drifted off the player it belongs above:
+// reported as "P1/P2 above the player ahead constantly gets off track" once true 16:9 stopped
+// stretching menus and made this the next thing wrong. Unlike the flash, this frustum is meant to
+// be maximally off-axis (that is how a per-player fixed screen position is built at all), so it
+// cannot be recognised by centring the way is_authored_fullscreen is; it is recognised instead by
+// its shift terms sitting exactly at the frustum's own edges (+-1, a corner-pinned box) together
+// with the same authored 4:3 ratio.
+bool is_authored_screen_pinned(const float* proj) {
+  if (proj[0] <= 0.0f || proj[2] <= 0.0f) return false;
+  if (std::fabs(std::fabs(proj[1]) - 1.0f) > 0.001f) return false;   // x shift pinned to an edge
+  if (std::fabs(std::fabs(proj[3]) - 1.0f) > 0.001f) return false;   // y shift pinned to an edge
+  const float ratio = proj[2] / proj[0];
+  return std::fabs(ratio - 4.0f / 3.0f) < 0.001f;
+}
 
 void build_projection(const DrawCall& dc, float m[16]) {
   const float* vp = (const float*)&dc.xf_regs[0x1A];
@@ -636,7 +679,18 @@ void build_projection(const DrawCall& dc, float m[16]) {
     // keeps an off-centre frustum centred: Melee shifts the projection horizontally in places, and
     // scaling only m[0] would move the picture as well as widen it. Perspective draws only: the
     // orthographic branch below is the HUD and the 2D layer, which must keep its authored size.
-    if (g_true_widescreen.load(std::memory_order_relaxed)) {
+    // Widen the world, not the overlays that are authored to cover the screen. The screen flash
+    // (lbbgflash) and the wipes built on it use their own perspective camera placed so that a
+    // 640x480 quad exactly fills a 4:3 frustum. Widening that camera makes it see 935 units while
+    // the quad is still 640, so the flash stops 16% short on each side and appears as a 4:3 square
+    // over a 16:9 picture. Such a camera is recognisable without guessing: it is axis-aligned (no
+    // off-centre shift) and its x and y scales are in exactly the 4:3 ratio the quad was drawn for,
+    // which the game's own cameras never are once the player's aspect is applied.
+    // The P1/P2 name tag camera (ifnametag.c) is excluded the same way for the opposite reason: it
+    // is corner-pinned rather than centred, so each tag can sit at a fixed screen position, and
+    // widening it moves that position off the player it names (see is_authored_screen_pinned).
+    if (g_true_widescreen.load(std::memory_order_relaxed) &&
+        !is_authored_fullscreen(proj) && !is_authored_screen_pinned(proj)) {
       constexpr float kWiden = 219.0f / 320.0f;   // (73/60) * (320/219) == 16/9
       for (int i = 0; i < 4; ++i) m[i] *= kWiden;
     }
@@ -673,8 +727,13 @@ void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const 
   if (motion) {
     // Sub-pixel jitter: shift clip space by the jitter in NDC (row 3 is the w row), so the
     // rasterized samples move while the reported matrices stay unjittered.
-    float jx = viewport_width != 0.0f ? 2.0f * motion->jitter_x / viewport_width : 0.0f;
-    float jy = viewport_height != 0.0f ? 2.0f * motion->jitter_y / viewport_height : 0.0f;
+    // Only the 3D scene is jittered. The HUD, text and menus are orthographic 2D; jittered, DLSS
+    // had to rebuild them from shaking samples with no motion to follow, and text came out soft.
+    // MELEE_DLSS_JITTER_HUD=1 jitters them again (for comparison).
+    static const bool jitter_hud = [] { const char* e = std::getenv("MELEE_DLSS_JITTER_HUD"); return e && *e == '1'; }();
+    const bool jitter = is_scene_draw(dc) || jitter_hud;
+    float jx = jitter && viewport_width != 0.0f ? 2.0f * motion->jitter_x / viewport_width : 0.0f;
+    float jy = jitter && viewport_height != 0.0f ? 2.0f * motion->jitter_y / viewport_height : 0.0f;
     for (int i = 0; i < 4; ++i) { m[i] += jx * m[12 + i]; m[4 + i] += jy * m[12 + i]; }
     std::memcpy(c.prev_projection, motion->prev_proj ? motion->prev_proj : &c.unjittered_projection[0][0], sizeof c.prev_projection);
     std::memcpy(c.prev_transformmatrices, motion->prev_pos ? motion->prev_pos : pos_matrices, sizeof c.prev_transformmatrices);
@@ -771,7 +830,8 @@ void fill_ps_constants(const DrawCall& dc, PSConstants& c, int efb_scale) {
     c.fogf[0][0] = 0.0f; c.fogf[0][1] = 1.0f; c.fogf[0][2] = 1.0f;
   }
   c.efbscale[0] = 1.0f / efb_scale; c.efbscale[1] = 1.0f / efb_scale;
-  { const float* vp = (const float*)&dc.xf_regs[0x1A]; c.mvscale[0] = vp[0] * efb_scale; c.mvscale[1] = vp[1] * efb_scale; }
+  { const float* vp = (const float*)&dc.xf_regs[0x1A]; c.mvscale[0] = vp[0] * efb_scale; c.mvscale[1] = vp[1] * efb_scale;
+    c.mvscale[2] = is_scene_draw(dc) ? 0.0f : 1.0f; }   // not the 3D scene (HUD, tags): shown as rendered, not from DLSS
   c.tint[0] = c.tint[1] = c.tint[2] = 1.0f; c.tint[3] = 0.0f;
   // The model only, as the Gecko code does. Tinting every draw the player owns also caught the
   // shadow and the effects around the fighter, which is the tint appearing where it should not.

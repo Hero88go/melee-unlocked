@@ -14,6 +14,7 @@
 #include "window.h"
 #include "input_bindings.h"
 #include "hid_pad.h"
+#include "playstation_pad.h"
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "xinput9_1_0.lib")
@@ -28,6 +29,8 @@ bool g_closed = false;
 int g_client_w = 1280, g_client_h = 960;
 ResizeCallback g_on_resize;
 std::atomic<bool> g_fullscreen_toggle{false};
+std::atomic<bool> g_settings_toggle{false};
+std::atomic<bool> g_escape_press{false};
 MessageCallback g_on_message;
 std::atomic<bool> g_ui_capture{false};
 std::mutex g_ui_pad_mutex;
@@ -37,16 +40,32 @@ void raw_input(HRAWINPUT raw);
 void ds4_init_defaults();
 
 LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  // No mouse pointer over the game while it has focus and the settings panel is closed. The pointer
+  // has nothing to do there, and after alt-tabbing back from a music player it sat in the middle of
+  // the screen for the rest of the match. It comes back the moment the panel opens or focus leaves.
+  // Before the ImGui handler, which would otherwise set the arrow itself.
+  if (m == WM_SETCURSOR && LOWORD(l) == HTCLIENT && !g_ui_capture.load() && GetForegroundWindow() == h) { SetCursor(nullptr); return TRUE; }
   if (g_on_message && g_on_message(h, m, w, l)) return 1;
   switch (m) {
     case WM_CLOSE: g_closed = true; request_exit(0); return 0;
+    case WM_APP + 7:   // kCursorRefresh, see window_input_capture
+      if (GetForegroundWindow() == h) SetCursor(w ? LoadCursor(nullptr, IDC_ARROW) : nullptr);
+      return 0;
     case WM_INPUT: raw_input((HRAWINPUT)l); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     case WM_SYSKEYDOWN:
       if (w == VK_RETURN && (l & (1 << 29)) && !(l & (1 << 30))) { g_fullscreen_toggle.store(true); return 0; }   // Alt+Enter, first press only
       break;
     case WM_SYSCHAR: if (w == VK_RETURN) return 0; break;   // no beep for Alt+Enter
-    case WM_KEYDOWN: { std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = true; return 0; }
+    case WM_KEYDOWN: {
+      // F1 opens and closes the settings panel. Taken here, from the first key-down of a press
+      // (bit 30 is set on auto-repeats), rather than from ImGui's key state: the panel only runs on
+      // frames that are drawn, so presses made during a load queued up and were replayed afterwards,
+      // and ImGui's repeat turned a held key into the panel flickering open and shut.
+      if (w == VK_F1 && !(l & (1 << 30))) g_settings_toggle.store(true);
+      if (w == VK_ESCAPE && !(l & (1 << 30))) g_escape_press.store(true);   // the in-game menu, same rules as F1
+      std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = true; return 0;
+    }
     case WM_KEYUP: { std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = false; return 0; }
     case WM_SIZE:
       if (w != SIZE_MINIMIZED) {
@@ -165,7 +184,25 @@ void window_set_client_size(int w, int h) {
   g_pending_client_size.store(((uint64_t)(uint32_t)w << 32) | (uint32_t)h);
 }
 
+static double query_refresh_rate();
+
+// The settings panel asks for this on every frame it draws the Video tab (the default frame rate
+// follows the monitor), and the answer comes from the display driver through the kernel, which some
+// drivers make slow. A monitor's rate does not change from one frame to the next: ask once a second.
 double window_refresh_rate() {
+  static std::atomic<double> cached{0.0};
+  static std::atomic<int64_t> cached_at{0};
+  LARGE_INTEGER now, freq;
+  QueryPerformanceCounter(&now); QueryPerformanceFrequency(&freq);
+  const double value = cached.load(std::memory_order_relaxed);
+  if (value > 0.0 && now.QuadPart - cached_at.load(std::memory_order_relaxed) < freq.QuadPart) return value;
+  const double fresh = query_refresh_rate();
+  cached.store(fresh, std::memory_order_relaxed);
+  cached_at.store(now.QuadPart, std::memory_order_relaxed);
+  return fresh;
+}
+
+static double query_refresh_rate() {
   MONITORINFOEXW monitor{}; monitor.cbSize = sizeof(monitor);
   if (!GetMonitorInfoW(MonitorFromWindow(g_hwnd, MONITOR_DEFAULTTONEAREST), &monitor)) return 60.0;
   // DisplayConfig retains rational rates (e.g. 60000/1001) that DEVMODE rounds.
@@ -195,10 +232,20 @@ double window_refresh_rate() {
 }
 
 void window_set_message_callback(MessageCallback cb) { g_on_message = std::move(cb); }
-void window_input_capture(bool capture) { g_ui_capture.store(capture); }
+// The pointer is hidden over the game and shown while a menu has input. Windows only asks for the
+// cursor again when the mouse moves, so opening the settings or the Esc menu with the mouse still
+// left it invisible; a change now tells the window thread to set it straight away.
+constexpr UINT kCursorRefresh = WM_APP + 7;
+void window_input_capture(bool capture) {
+  if (g_ui_capture.exchange(capture) != capture && g_hwnd) PostMessageW(g_hwnd, kCursorRefresh, capture ? 1 : 0, 0);
+}
 bool window_ui_gamecube_pad(PadState& pad) { std::lock_guard<std::mutex> lock(g_ui_pad_mutex); pad = g_ui_pad; return g_ui_gamecube; }
 void window_set_resize_callback(ResizeCallback cb) { g_on_resize = std::move(cb); }
 bool window_take_fullscreen_toggle() { return g_fullscreen_toggle.exchange(false); }
+// Several presses while nothing was being drawn count as one: the player pressed F1 again because
+// nothing seemed to happen, and wants the panel, not an even number of toggles.
+bool window_take_settings_toggle() { return g_settings_toggle.exchange(false); }
+bool window_take_escape() { return g_escape_press.exchange(false); }
 
 void window_destroy() { if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; } }
 
@@ -231,7 +278,13 @@ std::array<PadBindings, 4> g_ds4_bindings = {};
 // over by the defaults a moment later.
 std::array<PadBindings, 4> g_swpro_bindings = default_swpro_bindings();
 std::array<HidBindings, 4> g_hid_bindings = default_hid_bindings();
+std::array<Deadzone, (size_t)PadFamily::Count> g_deadzones{};
 std::array<PortSource, 4> g_port_sources = default_port_sources();
+std::array<std::string, 4> g_port_device_names;
+// The device that actually fed each port on the last poll. Usually its port source; but a port whose
+// source is missing (say "GC Adapter 1" while a program like Delfinovin holds the adapter and offers
+// it as an Xbox pad) falls back to the first free pad, and rumble has to go where the input came from.
+std::array<PortSource, 4> g_port_feeding{};
 // The last state the game actually read, for the on-screen controller overlay. Taken here rather
 // than polled again by the renderer, so the overlay shows what the game saw and polling the devices
 // stays on one thread at one rate.
@@ -280,40 +333,21 @@ int ds4_slot(HANDLE device) {
   return -1;
 }
 
-bool ds4_device(HANDLE device) {
+bool ds4_device(HANDLE device, bool* dualsense) {
   RID_DEVICE_INFO info{}; info.cbSize = sizeof info;
   UINT size = sizeof info;
   if (GetRawInputDeviceInfoW(device, RIDI_DEVICEINFO, &info, &size) == (UINT)-1 || info.dwType != RIM_TYPEHID) return false;
-  return info.hid.dwVendorId == 0x054C && (info.hid.dwProductId == 0x05C4 || info.hid.dwProductId == 0x09CC);
+  *dualsense = dualsense_pad(info.hid.dwVendorId, info.hid.dwProductId);
+  return playstation_pad(info.hid.dwVendorId, info.hid.dwProductId);
 }
 
-void ds4_report(RAWINPUT* input) {
+// The decoding lives in playstation_pad.cpp, where it is tested byte by byte (port/tests).
+void ds4_report(RAWINPUT* input, bool dualsense) {
   int slot = ds4_slot(input->header.hDevice);
   if (slot < 0 || !input->data.hid.dwSizeHid || !input->data.hid.dwCount) return;
-  const uint8_t* report = input->data.hid.bRawData;
-  // USB reports use ID 0x01 with axes at byte 1; Bluetooth reports use ID
-  // 0x11, a counter byte, then axes at byte 2.
-  size_t offset = report[0] == 0x11 ? 2 : report[0] == 0x01 ? 1 : 0;
-  if (input->data.hid.dwSizeHid < offset + 9) return;
-  const uint8_t dpad = report[offset + 4] & 0x0F;
+  PadState pad{};
   uint16_t buttons = 0;
-  if (dpad == 0 || dpad == 1 || dpad == 7) buttons |= DS4_DPAD_UP;
-  if (dpad == 3 || dpad == 4 || dpad == 5) buttons |= DS4_DPAD_DOWN;
-  if (dpad == 5 || dpad == 6 || dpad == 7) buttons |= DS4_DPAD_LEFT;
-  if (dpad == 1 || dpad == 2 || dpad == 3) buttons |= DS4_DPAD_RIGHT;
-  const uint8_t face = report[offset + 5], system = report[offset + 6];
-  if (face & 0x10) buttons |= DS4_SQUARE; if (face & 0x20) buttons |= DS4_CROSS;
-  if (face & 0x40) buttons |= DS4_CIRCLE; if (face & 0x80) buttons |= DS4_TRIANGLE;
-  if (face & 0x01) buttons |= DS4_L1; if (face & 0x02) buttons |= DS4_R1;
-  if (system & 0x01) buttons |= DS4_SHARE; if (system & 0x02) buttons |= DS4_OPTIONS;
-  if (system & 0x04) buttons |= DS4_L3; if (system & 0x08) buttons |= DS4_R3;
-  // Y is inverted: 128 - raw reaches +128 at full up, which wrapped to -128 in an int8 and turned a
-  // full tilt up into a full tilt down. Clamp to the int8 range first.
-  auto up_axis = [](uint8_t raw) { return (int8_t)std::min(127, 128 - (int)raw); };
-  PadState pad{}; pad.err = 0; pad.stick_x = (int8_t)((int)report[offset] - 128); pad.stick_y = up_axis(report[offset + 1]);
-  pad.sub_x = (int8_t)((int)report[offset + 2] - 128); pad.sub_y = up_axis(report[offset + 3]);
-  if (report[offset + 8] > 30) { buttons |= DS4_R2; pad.trig_r = report[offset + 8]; }
-  if (report[offset + 7] > 30) { buttons |= DS4_L2; pad.trig_l = report[offset + 7]; }
+  if (!playstation_parse(input->data.hid.bRawData, input->data.hid.dwSizeHid, dualsense, pad, buttons)) return;
   std::lock_guard<std::mutex> lock(g_ds4_mutex); g_ds4_buttons[slot] = buttons; g_ds4_pads[slot] = pad;
 }
 
@@ -327,7 +361,7 @@ void raw_input(HRAWINPUT raw) {
   if (GetRawInputData(raw, RID_INPUT, bytes.data(), &size, sizeof(RAWINPUTHEADER)) != size) return;
   RAWINPUT* input = reinterpret_cast<RAWINPUT*>(bytes.data());
   if (input->header.dwType != RIM_TYPEHID) return;
-  if (ds4_device(input->header.hDevice)) { ds4_report(input); return; }
+  if (bool dualsense = false; ds4_device(input->header.hDevice, &dualsense)) { ds4_report(input, dualsense); return; }
   if (switchpro_raw_input(input->header.hDevice, input->data.hid.bRawData,
                           input->data.hid.dwSizeHid, input->data.hid.dwCount)) return;
   // Anything else that calls itself a gamepad: a B0XX, a Frame1, a vJoy feeder, a third-party pad.
@@ -337,6 +371,11 @@ void raw_input(HRAWINPUT raw) {
 }
 }  // namespace
 
+namespace { CaptureDevice g_capture_want = CaptureDevice::None; int g_capture_want_index = 0; }
+void input_begin_capture(CaptureDevice want, int want_index) {
+  g_capture_want = want; g_capture_want_index = want_index;
+  input_begin_capture();
+}
 void input_begin_capture() {
   { std::lock_guard<std::mutex> lock(g_keys_mutex); std::memcpy(g_capture_key_baseline, g_keys, sizeof g_keys); }
   // gcadapter_poll fills four pads. It used to be handed the address of a single PadState, once per
@@ -376,14 +415,23 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
     if (g_keys[VK_ESCAPE] && !g_capture_key_baseline[VK_ESCAPE]) {
       g_capturing.store(false); device = CaptureDevice::None; value = 0; device_index = 0; return true;
     }
-    for (int vk = 0; vk < 256; ++vk) {
+    const bool want_keyboard = g_capture_want == CaptureDevice::None || g_capture_want == CaptureDevice::Keyboard;
+    for (int vk = 0; vk < 256 && want_keyboard; ++vk) {
       if (vk == VK_ESCAPE) continue;
       if (g_keys[vk] && !g_capture_key_baseline[vk]) {
         g_capturing.store(false); device = CaptureDevice::Keyboard; value = vk; device_index = 0; return true;
       }
     }
   }
+  // Only controllers of the kind being rebound are listened to (see input_begin_capture), but any
+  // one of them: a player does not know which adapter socket or pad number theirs is, and the
+  // settings panel moves to whichever one answered. `wanted` with no device named keeps the old
+  // behaviour of taking whatever fires first.
+  auto wanted = [](CaptureDevice kind, int) {
+    return g_capture_want == CaptureDevice::None || g_capture_want == kind;
+  };
   for (int idx = 0; idx < 4; ++idx) {
+    if (!wanted(CaptureDevice::XInputPad, idx)) continue;
     XINPUT_STATE xs{};
     if (XInputGetState(idx, &xs) != ERROR_SUCCESS) continue;
     unsigned short newly = xs.Gamepad.wButtons & ~g_capture_pad_baseline[idx];
@@ -395,8 +443,12 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
   PadState gc[4];
   uint32_t mask = gcadapter_poll(gc);
   for (int idx = 0; idx < 4; ++idx) {
-    if (!(mask & (1u << idx))) continue;
+    if (!(mask & (1u << idx)) || !wanted(CaptureDevice::GCAdapter, idx)) continue;
     uint16_t newly = gc[idx].button & ~g_capture_gc_baseline[idx].button;
+    // A trigger pressed most of the way counts, not only one clicked all the way in.
+    constexpr int kTriggerPress = 140;
+    if (gc[idx].trig_l >= kTriggerPress && g_capture_gc_baseline[idx].trig_l < kTriggerPress) newly |= PAD_L;
+    if (gc[idx].trig_r >= kTriggerPress && g_capture_gc_baseline[idx].trig_r < kTriggerPress) newly |= PAD_R;
     if (newly) {
       unsigned short lowest = newly & (~(newly - 1));
       g_capturing.store(false); device = CaptureDevice::GCAdapter; value = lowest; device_index = idx; return true;
@@ -405,6 +457,7 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
   {
     std::lock_guard<std::mutex> lock(g_ds4_mutex);
     for (int idx = 0; idx < 4; ++idx) {
+      if (!wanted(CaptureDevice::DS4Pad, idx)) continue;
       uint16_t newly = g_ds4_buttons[idx] & ~g_capture_ds4_baseline[idx];
       if (newly) {
         uint16_t lowest = newly & (uint16_t)(~(newly - 1));
@@ -417,7 +470,7 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
     uint16_t buttons[4]{};
     uint32_t mask = switchpro_poll(swpro, buttons);
     for (int idx = 0; idx < 4; ++idx) {
-      if (!(mask & (1u << idx))) continue;
+      if (!(mask & (1u << idx)) || !wanted(CaptureDevice::SwitchPro, idx)) continue;
       uint16_t newly = buttons[idx] & ~g_capture_swpro_baseline[idx];
       if (newly) {
         uint16_t lowest = newly & (uint16_t)(~(newly - 1));
@@ -430,7 +483,7 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
     uint32_t buttons[4]{};
     uint32_t mask = hidpad_poll(hid, buttons);
     for (int idx = 0; idx < 4; ++idx) {
-      if (!(mask & (1u << idx))) continue;
+      if (!(mask & (1u << idx)) || !wanted(CaptureDevice::HidPad, idx)) continue;
       // Bit 31 is left out: the capture result travels as an int, and a mask with the top bit set
       // would arrive negative. Thirty-one buttons is more than any box controller has.
       uint32_t newly = buttons[idx] & ~g_capture_hid_baseline[idx] & 0x7FFFFFFFu;
@@ -476,30 +529,84 @@ static std::atomic<uint32_t> g_scene_start_retrace{0};   // 0 = not observed yet
 // The L/R shoulders are digital on this pad, so a press bottoms the analog trigger out the way a
 // digital press does on hardware: Melee shields from the trigger value, not from the L/R bit.
 uint16_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad) {
-  uint16_t actions = 0;
+  uint32_t actions = 0;
   for (int i = 0; i < (int)BindAction::Count; ++i) {
     if (!(g_hid_bindings[idx].mask[i] & buttons)) continue;
     pad.button |= kActionPadBit[i];
-    actions |= (uint16_t)(1u << i);
+    actions |= (uint32_t)(1u << i);
   }
   // A box has no analog triggers: its L and R are buttons, and the game needs a full press to see
   // a shield. Light shield on such a device is a firmware feature, reported on an analog axis when
   // the device has one, which the axis path above has already put into trig_l/trig_r.
   if (pad.button & kActionPadBit[(size_t)BindAction::L] && !pad.trig_l) pad.trig_l = 255;
   if (pad.button & kActionPadBit[(size_t)BindAction::R] && !pad.trig_r) pad.trig_r = 255;
+  apply_cstick_actions(actions, pad.sub_x, pad.sub_y);
   return actions;
 }
 
 uint16_t swpro_apply_bindings(int idx, uint16_t buttons, PadState& pad) {
-  uint16_t actions = 0;
+  uint32_t actions = 0;
   for (int i = 0; i < (int)BindAction::Count; ++i) {
     if (!(g_swpro_bindings[idx].mask[i] & buttons)) continue;
     pad.button |= kActionPadBit[i];
-    actions |= (uint16_t)(1u << i);
+    actions |= (uint32_t)(1u << i);
   }
   if (pad.button & kActionPadBit[(size_t)BindAction::L]) pad.trig_l = 255;
   if (pad.button & kActionPadBit[(size_t)BindAction::R]) pad.trig_r = 255;
+  apply_cstick_actions(actions, pad.sub_x, pad.sub_y);
   return actions;
+}
+
+// A box whose layout is known gets it the first time it appears in a slot, as long as that slot
+// still has the generic defaults (anything the player changed is kept). vJoy: the b0xx-ahk layout,
+// which most B0XX-on-vJoy setups use. "Arduino Leonardo": a HayBox box in DInput mode.
+void apply_known_box_layout(int idx) {
+  static std::string seen[4];
+  const std::string name = hidpad_name(idx);
+  if (name == seen[idx]) return;
+  seen[idx] = name;
+  std::string lower = name;
+  for (char& ch : lower) ch = (char)std::tolower((unsigned char)ch);
+  const HidBindings generic = default_hid_bindings()[0];
+  if (std::memcmp(&g_hid_bindings[idx], &generic, sizeof generic) != 0) return;
+  if (lower.find("vjoy") != std::string::npos) {
+    g_hid_bindings[idx] = vjoy_b0xx_bindings();
+    host::log("hid pad %d: %s, using the B0XX (vJoy) layout", idx + 1, name.c_str());
+  } else if (lower.find("leonardo") != std::string::npos || lower.find("haybox") != std::string::npos) {
+    g_hid_bindings[idx] = haybox_dinput_bindings();
+    host::log("hid pad %d: %s, using the B0XX-layout box (HayBox DInput) layout", idx + 1, name.c_str());
+  }
+}
+
+// Every family's binding table the same way: `pressed(i)` says whether action i's binding is down.
+// Returns the actions as BindAction bits for the settings panel.
+template <class Pressed> uint32_t apply_actions(PadState& pad, Pressed pressed) {
+  uint32_t actions = 0;
+  for (int i = 0; i < (int)BindAction::Count; ++i) {
+    if (!pressed(i)) continue;
+    actions |= (uint32_t)(1u << i);
+    pad.button |= kActionPadBit[i];
+  }
+  apply_cstick_actions(actions, pad.sub_x, pad.sub_y);
+  return actions;
+}
+
+// The adapter reports GameCube buttons already; its table remaps them (the default is the identity).
+// The analog triggers stay with the physical triggers; a digital L or R arriving from another button
+// bottoms its trigger out, as a box's L/R do, since the game shields from the analog value.
+uint16_t gc_apply_bindings(int idx, PadState& pad) {
+  const uint16_t raw = pad.button;
+  pad.button = 0;
+  const uint32_t actions = apply_actions(pad, [&](int i) { const uint16_t m = g_gc_bindings[idx].mask[i]; return m && (raw & m); });
+  if (pad.button & PAD_L && !pad.trig_l) pad.trig_l = 255;
+  if (pad.button & PAD_R && !pad.trig_r) pad.trig_r = 255;
+  return actions;
+}
+
+void apply_family_options(PadFamily family, PadState& pad) {
+  const Deadzone& dz = g_deadzones[(size_t)family];
+  apply_deadzone(dz, pad.stick_x, pad.stick_y, false);
+  apply_deadzone(dz, pad.sub_x, pad.sub_y, true);
 }
 }  // namespace
 void input_mark_match_start() { g_match_start_retrace.store(retrace_count()); }
@@ -630,21 +737,24 @@ void input_poll(PadState out[4]) {
   InputDebugSnapshot debug{};
   debug.gc_mask = gc_mask;
 
+  // Whether the game window has focus: without it, input follows the Background input option.
+  const bool focused = g_hwnd && GetForegroundWindow() == g_hwnd;
   PadState kb{}; kb.err = 0;
+  uint32_t keyboard_actions = 0;
   {
-    // Keyboard: arrows = stick, IJKL = c-stick, rest from g_key_bindings.
+    // Keyboard: every action, the control stick and C-stick included, comes from g_key_bindings.
+    // The stick used to be hard wired to the arrow keys here while everything else was a setting,
+    // which is the one thing players could not rebind; the arrows are now just its defaults.
+    // Key messages only reach a focused window, so in the background the keys are read directly.
     std::lock_guard<std::mutex> lock(g_keys_mutex);
-    auto key = [](int vk) { return g_keys[vk & 0xFF]; };
-    int sx = 0, sy = 0, cx = 0, cy = 0;
-    if (key(VK_LEFT)) sx -= 127; if (key(VK_RIGHT)) sx += 127; if (key(VK_UP)) sy += 127; if (key(VK_DOWN)) sy -= 127;
-    if (key('J')) cx -= 127; if (key('L')) cx += 127; if (key('I')) cy += 127; if (key('K')) cy -= 127;
-    for (int i = 0; i < (int)BindAction::Count; ++i) {
-      int vk = g_key_bindings.vk[i];
-      if (vk && key(vk)) kb.button |= kActionPadBit[i];
-    }
-    if (int vk = g_key_bindings.vk[(size_t)BindAction::L]; vk && key(vk)) kb.trig_l = 255;
-    if (int vk = g_key_bindings.vk[(size_t)BindAction::R]; vk && key(vk)) kb.trig_r = 255;
-    kb.stick_x = (int8_t)sx; kb.stick_y = (int8_t)sy; kb.sub_x = (int8_t)cx; kb.sub_y = (int8_t)cy;
+    auto key = [&](int vk) {
+      if (focused) return g_keys[vk & 0xFF];
+      return g_background_input && (GetAsyncKeyState(vk & 0xFF) & 0x8000) != 0;
+    };
+    keyboard_actions = apply_actions(kb, [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); });
+    apply_stick_actions(keyboard_actions, kb.stick_x, kb.stick_y);
+    if (kb.button & PAD_L) kb.trig_l = 255;
+    if (kb.button & PAD_R) kb.trig_r = 255;
   }
 
   PadState xin[4];
@@ -658,18 +768,15 @@ void input_poll(PadState out[4]) {
     x.err = 0;
     auto& g = xs.Gamepad;
     auto axis = [](SHORT v) { int a = v / 258; return a > 127 ? 127 : a < -127 ? -127 : a; };
-    int sx = 0, sy = 0, cx = 0, cy = 0;
-    if (abs(g.sThumbLX) > 7849 || abs(g.sThumbLY) > 7849) { sx = axis(g.sThumbLX); sy = axis(g.sThumbLY); }
-    if (abs(g.sThumbRX) > 8689 || abs(g.sThumbRY) > 8689) { cx = axis(g.sThumbRX); cy = axis(g.sThumbRY); }
-    for (int i = 0; i < (int)BindAction::Count; ++i) {
-      unsigned short mask = g_pad_bindings[idx].mask[i];
-      if (mask && (g.wButtons & mask)) x.button |= kActionPadBit[i];
-    }
-    if (g.bLeftTrigger > 30) { x.trig_l = g.bLeftTrigger; if (g.bLeftTrigger > 200) x.button |= PAD_L; }
-    if (g.bRightTrigger > 30) { x.trig_r = g.bRightTrigger; if (g.bRightTrigger > 200) x.button |= PAD_R; }
+    // No deadzone and no trigger floor, as in Dolphin. These used Microsoft's recommended Xbox
+    // deadzone, which zeroed both axes whenever both sat inside about 30 of Melee's 80 units: larger
+    // than the game's own deadzone, and exactly where a box controller in XInput mode puts some of its
+    // modifier coordinates, which then did nothing. The game already ignores a resting stick.
+    const int sx = axis(g.sThumbLX), sy = axis(g.sThumbLY), cx = axis(g.sThumbRX), cy = axis(g.sThumbRY);
     x.stick_x = (int8_t)sx; x.stick_y = (int8_t)sy; x.sub_x = (int8_t)cx; x.sub_y = (int8_t)cy;
-    for (int i = 0; i < (int)BindAction::Count; ++i)
-      if ((x.button & kActionPadBit[i]) != 0) debug.xinput_actions[idx] |= (uint16_t)(1u << i);
+    debug.xinput_actions[idx] = apply_actions(x, [&](int i) { const unsigned short m = g_pad_bindings[idx].mask[i]; return m && (g.wButtons & m); });
+    x.trig_l = g.bLeftTrigger; if (g.bLeftTrigger > 200) { x.button |= PAD_L; debug.xinput_actions[idx] |= 1u << (int)BindAction::L; }
+    x.trig_r = g.bRightTrigger; if (g.bRightTrigger > 200) { x.button |= PAD_R; debug.xinput_actions[idx] |= 1u << (int)BindAction::R; }
   }
 
   PadState ds4[4]{};
@@ -682,11 +789,8 @@ void input_poll(PadState out[4]) {
       ds4_connected[idx] = g_ds4_devices[idx] != nullptr;
       ds4[idx].err = ds4_connected[idx] ? 0 : -1;
       if (!ds4_connected[idx]) continue;
-      for (int i = 0; i < (int)BindAction::Count; ++i)
-        if (g_ds4_bindings[idx].mask[i] & ds4_buttons[idx]) ds4[idx].button |= kActionPadBit[i];
+      debug.ds4_actions[idx] = apply_actions(ds4[idx], [&](int i) { return (g_ds4_bindings[idx].mask[i] & ds4_buttons[idx]) != 0; });
       debug.ds4_connected[idx] = true;
-      for (int i = 0; i < (int)BindAction::Count; ++i)
-        if (ds4[idx].button & kActionPadBit[i]) debug.ds4_actions[idx] |= (uint16_t)(1u << i);
     }
   }
 
@@ -712,6 +816,7 @@ void input_poll(PadState out[4]) {
     uint32_t hid_mask = hidpad_poll(hid, buttons);
     for (int idx = 0; idx < 4; ++idx) {
       if (!(hid_mask & (1u << idx))) { hid[idx] = {}; hid[idx].err = -1; continue; }
+      apply_known_box_layout(idx);
       hid_connected[idx] = true;
       debug.hid_connected[idx] = true;
       debug.hid_actions[idx] = hid_apply_bindings(idx, buttons[idx], hid[idx]);
@@ -719,9 +824,17 @@ void input_poll(PadState out[4]) {
   }
 
   for (int idx = 0; idx < 4; ++idx)
-    if (gc_mask & (1u << idx))
-      for (int i = 0; i < (int)BindAction::Count; ++i)
-        if (gc[idx].button & kActionPadBit[i]) debug.gc_actions[idx] |= (uint16_t)(1u << i);
+    if (gc_mask & (1u << idx)) debug.gc_actions[idx] = gc_apply_bindings(idx, gc[idx]);
+
+  // Per-family options (deadzones). Before routing, so the port overlay and everything downstream
+  // see what the game gets.
+  for (int idx = 0; idx < 4; ++idx) {
+    if (gc_mask & (1u << idx)) apply_family_options(PadFamily::GameCube, gc[idx]);
+    if (xin_connected[idx]) apply_family_options(PadFamily::Xbox, xin[idx]);
+    if (ds4_connected[idx]) apply_family_options(PadFamily::PlayStation, ds4[idx]);
+    if (swpro_connected[idx]) apply_family_options(PadFamily::Switch, swpro[idx]);
+    if (hid_connected[idx]) apply_family_options(PadFamily::Box, hid[idx]);
+  }
 
   // 0.1.7 drove port 1 from the keyboard and the first pad together. The port-source table replaced
   // that with the keyboard alone, so a lone Xbox pad landed on port 2 and a DS4 on no port at all,
@@ -731,20 +844,40 @@ void input_poll(PadState out[4]) {
     for (int q = 0; q < 4; ++q) if (g_port_sources[q].kind == kind && g_port_sources[q].index == index) return true;
     return false;
   };
-  auto keyboard_and_pad = [&](int) {
+  auto keyboard_and_pad = [&](int port) {
     PadState result = kb;
     const PadState* pad = nullptr;
-    for (int i = 0; i < 4 && !pad; ++i) if (xin_connected[i] && !routed(DeviceKind::XInputPad, i)) pad = &xin[i];
-    for (int i = 0; i < 4 && !pad; ++i) if (ds4_connected[i] && !routed(DeviceKind::DS4Pad, i)) pad = &ds4[i];
-    for (int i = 0; i < 4 && !pad; ++i) if (swpro_connected[i] && !routed(DeviceKind::SwitchPro, i)) pad = &swpro[i];
-    for (int i = 0; i < 4 && !pad; ++i) if (hid_connected[i] && !routed(DeviceKind::HidPad, i)) pad = &hid[i];
-    // The keyboard keeps working; the pad takes over whenever it is actually being used.
-    if (pad && (pad->button || pad->stick_x || pad->stick_y || pad->sub_x || pad->sub_y ||
+    PortSource feeding{DeviceKind::Keyboard, 0};
+    for (int i = 0; i < 4 && !pad; ++i) if (xin_connected[i] && !routed(DeviceKind::XInputPad, i)) { pad = &xin[i]; feeding = {DeviceKind::XInputPad, i}; }
+    for (int i = 0; i < 4 && !pad; ++i) if (ds4_connected[i] && !routed(DeviceKind::DS4Pad, i)) { pad = &ds4[i]; feeding = {DeviceKind::DS4Pad, i}; }
+    for (int i = 0; i < 4 && !pad; ++i) if (swpro_connected[i] && !routed(DeviceKind::SwitchPro, i)) { pad = &swpro[i]; feeding = {DeviceKind::SwitchPro, i}; }
+    for (int i = 0; i < 4 && !pad; ++i) if (hid_connected[i] && !routed(DeviceKind::HidPad, i)) { pad = &hid[i]; feeding = {DeviceKind::HidPad, i}; }
+    g_port_feeding[port] = feeding;
+    // The keyboard keeps working; the pad takes over whenever it is actually being used. "Used" means
+    // past the game's own deadzone (0.2875 of 80), not merely non-zero: pad values carry no deadzone
+    // now, and a worn stick resting a few units off centre would otherwise lock the keyboard out.
+    auto moved = [](int8_t v) { return v > 23 || v < -23; };
+    if (pad && (pad->button || moved(pad->stick_x) || moved(pad->stick_y) || moved(pad->sub_x) || moved(pad->sub_y) ||
                 pad->trig_l > 20 || pad->trig_r > 20)) result = *pad;
     return result;
   };
+  // A port given a named box follows that box to whatever HID slot it is in this time.
+  for (int port = 0; port < 4; ++port) {
+    PortSource& src = g_port_sources[port];
+    const std::string& want = g_port_device_names[port];
+    if (src.kind != DeviceKind::HidPad || want.empty()) continue;
+    const bool here = src.index >= 0 && src.index < 4 && hid_connected[src.index] && port_device_key(hidpad_name(src.index)) == want;
+    if (here) continue;
+    for (int i = 0; i < 4; ++i) {
+      if (!hid_connected[i] || port_device_key(hidpad_name(i)) != want) continue;
+      log("controls: port %d follows %s to HID slot %d (it was listed as slot %d)", port + 1, want.c_str(), i + 1, src.index + 1);
+      src.index = i;
+      break;
+    }
+  }
   for (int port = 0; port < 4; ++port) {
     const PortSource& src = g_port_sources[port];
+    g_port_feeding[port] = src;   // replaced below when the port falls back to another device
     switch (src.kind) {
       case DeviceKind::Keyboard: out[port] = keyboard_and_pad(port); break;
       case DeviceKind::XInputPad:
@@ -769,12 +902,80 @@ void input_poll(PadState out[4]) {
     }
     debug.ports[port] = out[port];
   }
+  // Background input off and another window in front: every port stays plugged in but neutral.
+  if (!focused && !g_background_input)
+    for (int port = 0; port < 4; ++port)
+      if (out[port].err == 0) { const auto err = out[port].err; out[port] = {}; out[port].err = err; debug.ports[port] = out[port]; }
   { std::lock_guard<std::mutex> lock(g_last_pads_mutex); for (int port = 0; port < 4; ++port) g_last_pads[port] = out[port]; }
 
-  debug.keyboard_actions = 0;
-  for (int i = 0; i < (int)BindAction::Count; ++i) if (kb.button & kActionPadBit[i]) debug.keyboard_actions |= (uint16_t)(1u << i);
+  debug.keyboard_actions = keyboard_actions;
   for (int idx = 0; idx < 4; ++idx) if (xin_connected[idx]) debug.xinput_connected[idx] = true;
   input_debug_snapshot(debug);
+}
+
+bool g_rumble_enabled = true;
+bool g_background_input = true;
+
+namespace {
+// An Xbox pad's motors: both at full while the game asks for rumble, off otherwise. Only written
+// when the state changes, since XInputSetState is a call into the driver.
+void xinput_rumble(int index, bool on) {
+  static bool state[4] = {};
+  if (index < 0 || index > 3 || state[index] == on) return;
+  state[index] = on;
+  XINPUT_VIBRATION v{};
+  v.wLeftMotorSpeed = v.wRightMotorSpeed = on ? 65535 : 0;
+  XInputSetState((DWORD)index, &v);
+}
+// The first rumble each port asks for, and where it went: players report "rumble does not work"
+// without saying which controller, and this line answers that from their log.
+void log_first_rumble(int game_port, const char* where) {
+  static bool logged[5] = {};
+  const int i = game_port < 0 ? 4 : game_port;
+  if (logged[i]) return;
+  logged[i] = true;
+  log("rumble: %s%d -> %s%s", game_port < 0 ? "local player" : "port ", game_port < 0 ? 0 : game_port + 1, where,
+      g_rumble_enabled ? "" : " (switched off in Controls)");
+}
+}  // namespace
+
+void input_rumble(int game_port, bool on) {
+  if (game_port < 0 || game_port > 3) return;
+  if (!g_rumble_enabled) on = false;
+  const PortSource& src = g_port_feeding[game_port];   // where the input came from, fallback included
+  const bool valid = src.index >= 0 && src.index < 4;
+  if (src.kind == DeviceKind::GCAdapter && valid) { gcadapter_rumble(src.index, on); if (on) log_first_rumble(game_port, "GameCube adapter"); }
+  else if (src.kind == DeviceKind::XInputPad && valid) { xinput_rumble(src.index, on); if (on) log_first_rumble(game_port, "Xbox controller"); }
+  else if (on) log_first_rumble(game_port, "a controller without rumble support (keyboard, PlayStation, Switch or box)");
+}
+
+void input_rumble_local(bool on) {
+  if (!g_rumble_enabled) on = false;
+  // Online the match's slot is not the socket the controller is in, so the caller cannot name a
+  // port: it only knows the rumble was meant for the local player. Rumble the one controller that
+  // is actually feeding a port, not every device on the machine.
+  //
+  // This used to poll the adapter and XInput and buzz everything connected, which meant a player
+  // on port 3 in a Direct match felt their port 1 controller go off as well, and anyone with a
+  // second pad plugged in felt it on both. g_port_feeding already records which device feeds each
+  // port, with the same fallback the offline path in input_rumble() uses, so the local player's
+  // controller is the first port that has a real one behind it.
+  for (int port = 0; port < 4; ++port) {
+    const PortSource& src = g_port_feeding[port];
+    const bool valid = src.index >= 0 && src.index < 4;
+    if (!valid) continue;
+    if (src.kind == DeviceKind::GCAdapter) {
+      gcadapter_rumble(src.index, on);
+      if (on) log_first_rumble(-1, "GameCube adapter");
+      return;
+    }
+    if (src.kind == DeviceKind::XInputPad) {
+      xinput_rumble(src.index, on);
+      if (on) log_first_rumble(-1, "Xbox controller");
+      return;
+    }
+  }
+  if (on) log_first_rumble(-1, "a controller without rumble support (keyboard, PlayStation, Switch or box)");
 }
 
 void input_last_pads(PadState out[4]) {
@@ -793,19 +994,11 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   {
     std::lock_guard<std::mutex> lock(g_keys_mutex);
     auto key = [](int vk) { return g_keys[vk & 0xFF]; };
-    int sx = 0, sy = 0, cx = 0, cy = 0;
-    if (key(VK_LEFT)) sx -= 127; if (key(VK_RIGHT)) sx += 127; if (key(VK_UP)) sy += 127; if (key(VK_DOWN)) sy -= 127;
-    if (key('J')) cx -= 127; if (key('L')) cx += 127; if (key('I')) cy += 127; if (key('K')) cy -= 127;
-    for (int i = 0; i < (int)BindAction::Count; ++i) {
-      int vk = g_key_bindings.vk[i];
-      if (vk && key(vk)) kb.button |= kActionPadBit[i];
-    }
-    if (int vk = g_key_bindings.vk[(size_t)BindAction::L]; vk && key(vk)) kb.trig_l = 255;
-    if (int vk = g_key_bindings.vk[(size_t)BindAction::R]; vk && key(vk)) kb.trig_r = 255;
-    kb.stick_x = (int8_t)sx; kb.stick_y = (int8_t)sy; kb.sub_x = (int8_t)cx; kb.sub_y = (int8_t)cy;
+    snapshot.keyboard_actions = apply_actions(kb, [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); });
+    apply_stick_actions(snapshot.keyboard_actions, kb.stick_x, kb.stick_y);
+    if (kb.button & PAD_L) kb.trig_l = 255;
+    if (kb.button & PAD_R) kb.trig_r = 255;
   }
-  snapshot.keyboard_actions = 0;
-  for (int i = 0; i < (int)BindAction::Count; ++i) if (kb.button & kActionPadBit[i]) snapshot.keyboard_actions |= (uint16_t)(1u << i);
 
   PadState xin[4];
   for (int idx = 0; idx < 4; ++idx) {
@@ -815,17 +1008,12 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     snapshot.xinput_connected[idx] = true;
     auto& g = xs.Gamepad;
     auto axis = [](SHORT v) { int a = v / 258; return a > 127 ? 127 : a < -127 ? -127 : a; };
-    int sx = 0, sy = 0, cx = 0, cy = 0;
-    if (abs(g.sThumbLX) > 7849 || abs(g.sThumbLY) > 7849) { sx = axis(g.sThumbLX); sy = axis(g.sThumbLY); }
-    if (abs(g.sThumbRX) > 8689 || abs(g.sThumbRY) > 8689) { cx = axis(g.sThumbRX); cy = axis(g.sThumbRY); }
-    for (int i = 0; i < (int)BindAction::Count; ++i) {
-      unsigned short mask = g_pad_bindings[idx].mask[i];
-      if (mask && (g.wButtons & mask)) xin[idx].button |= kActionPadBit[i];
-    }
-    if (g.bLeftTrigger > 30) { xin[idx].trig_l = g.bLeftTrigger; if (g.bLeftTrigger > 200) xin[idx].button |= PAD_L; }
-    if (g.bRightTrigger > 30) { xin[idx].trig_r = g.bRightTrigger; if (g.bRightTrigger > 200) xin[idx].button |= PAD_R; }
+    // Same reading as input_poll: no deadzone, no trigger floor.
+    const int sx = axis(g.sThumbLX), sy = axis(g.sThumbLY), cx = axis(g.sThumbRX), cy = axis(g.sThumbRY);
     xin[idx].stick_x = (int8_t)sx; xin[idx].stick_y = (int8_t)sy; xin[idx].sub_x = (int8_t)cx; xin[idx].sub_y = (int8_t)cy;
-    for (int i = 0; i < (int)BindAction::Count; ++i) if (xin[idx].button & kActionPadBit[i]) snapshot.xinput_actions[idx] |= (uint16_t)(1u << i);
+    snapshot.xinput_actions[idx] = apply_actions(xin[idx], [&](int i) { const unsigned short m = g_pad_bindings[idx].mask[i]; return m && (g.wButtons & m); });
+    xin[idx].trig_l = g.bLeftTrigger; if (g.bLeftTrigger > 200) { xin[idx].button |= PAD_L; snapshot.xinput_actions[idx] |= 1u << (int)BindAction::L; }
+    xin[idx].trig_r = g.bRightTrigger; if (g.bRightTrigger > 200) { xin[idx].button |= PAD_R; snapshot.xinput_actions[idx] |= 1u << (int)BindAction::R; }
   }
 
   PadState ds4[4]{};
@@ -835,10 +1023,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     ds4_buttons[idx] = g_ds4_buttons[idx]; ds4[idx] = g_ds4_pads[idx];
     if (!g_ds4_devices[idx]) { ds4[idx].err = -1; continue; }
     snapshot.ds4_connected[idx] = true; ds4[idx].err = 0;
-    for (int i = 0; i < (int)BindAction::Count; ++i) {
-      if (g_ds4_bindings[idx].mask[i] & ds4_buttons[idx]) ds4[idx].button |= kActionPadBit[i];
-      if (ds4[idx].button & kActionPadBit[i]) snapshot.ds4_actions[idx] |= (uint16_t)(1u << i);
-    }
+    snapshot.ds4_actions[idx] = apply_actions(ds4[idx], [&](int i) { return (g_ds4_bindings[idx].mask[i] & ds4_buttons[idx]) != 0; });
   }
 
   PadState swpro[4];
@@ -849,6 +1034,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     for (int idx = 0; idx < 4; ++idx) {
       if (!(swpro_mask & (1u << idx))) { swpro[idx] = {}; swpro[idx].err = -1; continue; }
       snapshot.swpro_connected[idx] = true;
+      snapshot.swpro_buttons[idx] = buttons[idx];
       snapshot.swpro_actions[idx] = swpro_apply_bindings(idx, buttons[idx], swpro[idx]);
     }
   }
@@ -873,8 +1059,14 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   for (int idx = 0; idx < 4; ++idx) {
     snapshot.gc_actions[idx] = 0;
     if (!(gc_mask & (1u << idx))) continue;
-    for (int i = 0; i < (int)BindAction::Count; ++i) if (gc[idx].button & kActionPadBit[i]) snapshot.gc_actions[idx] |= (uint16_t)(1u << i);
+    snapshot.gc_actions[idx] = gc_apply_bindings(idx, gc[idx]);
     snapshot.ports[idx] = gc[idx];
+  }
+  snapshot.keyboard_pad = kb;
+  for (int idx = 0; idx < 4; ++idx) {
+    snapshot.xinput_pad[idx] = xin[idx]; snapshot.ds4_pad[idx] = ds4[idx]; snapshot.swpro_pad[idx] = swpro[idx];
+    snapshot.hid_pad[idx] = hid[idx];
+    if (gc_mask & (1u << idx)) snapshot.gc_pad[idx] = gc[idx];
   }
   for (int port = 0; port < 4; ++port) {
     const PortSource& src = g_port_sources[port];
@@ -888,6 +1080,9 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
         break;
       case DeviceKind::SwitchPro:
         if (src.index >= 0 && src.index < 4 && snapshot.swpro_connected[src.index]) snapshot.ports[port] = swpro[src.index];
+        break;
+      case DeviceKind::HidPad:
+        if (src.index >= 0 && src.index < 4 && snapshot.hid_connected[src.index]) snapshot.ports[port] = hid[src.index];
         break;
       case DeviceKind::GCAdapter:
         if (src.index >= 0 && src.index < 4 && (gc_mask & (1u << src.index))) snapshot.ports[port] = gc[src.index];

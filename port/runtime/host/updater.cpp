@@ -83,11 +83,11 @@ bool newer(const std::string& a, const std::string& b) {
 void join() { if (g_thread.joinable()) g_thread.join(); }
 }  // namespace
 
-void check(const std::string& current_version) {
+void check(const std::string& current_version, bool install_experimental) {
   join();
   g_current = current_version;
   g_state = State::Checking;
-  g_thread = std::thread([] {
+  g_thread = std::thread([install_experimental] {
     std::string body; int status = 0;
     if (!http_get(REPO_API, &body, &status) || status != 200) { set_message(status ? "Update check failed (HTTP " + std::to_string(status) + ")" : "Update check failed (no connection)"); host::log("updater: GET %s failed, HTTP %d, error %lu", REPO_API, status, (unsigned long)GetLastError()); g_state = State::Failed; return; }
     auto list = nlohmann::json::parse(body, nullptr, false);
@@ -98,10 +98,17 @@ void check(const std::string& current_version) {
     if (!tag.empty() && tag[0] == 'v') tag.erase(0, 1);
     std::string zip;
     size_t zip_size = 0;
+    char module[MAX_PATH]{}; GetModuleFileNameA(nullptr, module, MAX_PATH);
+    std::string dir(module); auto slash = dir.find_last_of("\\/");
+    if (slash != std::string::npos) dir.resize(slash);
+    const DWORD exp_attr = GetFileAttributesA((dir + "\\melee_port_dlss5.exe").c_str());
+    const bool experimental = install_experimental || (exp_attr != INVALID_FILE_ATTRIBUTES && !(exp_attr & FILE_ATTRIBUTE_DIRECTORY));
+    const std::string wanted = "MeleeUnlocked-" + tag + (experimental ? "-DLSS5-Experimental.zip" : "-win64.zip");
     if (j.count("assets") && j["assets"].is_array())
-      for (auto& a : j["assets"]) if (a.is_object() && a.value("name", std::string()).find("win64.zip") != std::string::npos) { zip = a.value("browser_download_url", std::string()); zip_size = a.value("size", size_t(0)); }
+      for (auto& a : j["assets"]) if (a.is_object() && a.value("name", std::string()) == wanted) { zip = a.value("browser_download_url", std::string()); zip_size = a.value("size", size_t(0)); break; }
     { std::lock_guard<std::mutex> lk(g_mutex); g_latest = tag; g_zip_url = zip; g_zip_size = zip_size; }
-    if (newer(tag, g_current) && !zip.empty()) { set_message("Update available: " + tag); g_state = State::UpdateAvailable; host::log("updater: version %s available (running %s)", tag.c_str(), g_current.c_str()); }
+    if ((newer(tag, g_current) || install_experimental) && !zip.empty()) { set_message(install_experimental ? "Installing experimental build: " + tag : "Update available: " + tag); g_state = State::UpdateAvailable; host::log("updater: version %s available (running %s)", tag.c_str(), g_current.c_str()); }
+    else if (zip.empty() && install_experimental) { set_message("Experimental download missing from the latest release"); g_state = State::Failed; }
     else { set_message("Up to date (" + g_current + ")"); g_state = State::UpToDate; }
   });
 }
@@ -146,7 +153,11 @@ void download_and_install() {
       << ":wait\r\ntasklist /FI \"PID eq " << GetCurrentProcessId() << "\" 2>nul | find \"" << GetCurrentProcessId() << "\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n"
       // The game holds its own exe open. Updating from the launcher while a match is running used to
       // fail the copy with a locked file, so wait for it too rather than fighting it.
-      << ":waitgame\r\ntasklist /FI \"IMAGENAME eq melee_port.exe\" 2>nul | find /i \"melee_port.exe\" >nul && (echo waiting for the game to close>> %LOG% & timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
+      << ":waitgame\r\n"
+      << "tasklist /FI \"IMAGENAME eq melee_port.exe\" 2>nul | find /i \"melee_port.exe\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
+      << "tasklist /FI \"IMAGENAME eq melee_port_compat.exe\" 2>nul | find /i \"melee_port_compat.exe\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
+      << "tasklist /FI \"IMAGENAME eq melee_port_dlss5.exe\" 2>nul | find /i \"melee_port_dlss5.exe\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
+      << "tasklist /FI \"IMAGENAME eq melee_port_dlss5_compat.exe\" 2>nul | find /i \"melee_port_dlss5_compat.exe\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
       << "rmdir /s /q update_tmp 2>nul\r\nmkdir update_tmp\r\n"
       << "tar -xf update.zip -C update_tmp\r\n"
       << "if errorlevel 1 (echo could not unpack update.zip>> %LOG% & echo Could not unpack the update. & pause & exit /b 1)\r\n"

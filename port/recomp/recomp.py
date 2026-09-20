@@ -49,6 +49,17 @@ class GeckoSet:
         for h in self.main.hooks:
             if h.hook not in base_hooks:
                 h.optional = self.optional_flag
+        # Port codes: in the table always, their hooks gated by their own flag.
+        port_hooks = {}
+        for code in self.codes:
+            if code.port_flag:
+                for a, d in code.codes:
+                    if (a >> 24) & 0xFE == 0xC2:
+                        port_hooks[0x80000000 | (a & 0x01FFFFFF)] = code.port_flag
+                self.optional_flags = sorted(set(self.optional_flags) | {code.port_flag})
+        for h in self.main.hooks:
+            if h.hook in port_hooks:
+                h.optional = port_hooks[h.hook]
         self.optional_text = {}    # addr -> (patched word, flag): translated as both variants
         self.optional_data = []    # (addr, patched bytes, original bytes): applied/restored at run time
 
@@ -210,7 +221,7 @@ def main():
                                     "const uint8_t slippi_gct[1] = {0}; const size_t slippi_gct_size = 0;\n"
                                     "const Write boot_writes[1] = {{0, 0, nullptr}}; const size_t boot_writes_count = 0;\n"
                                     "const HookInstall boot_hooks[1] = {{0, 0, 0}}; const size_t boot_hooks_count = 0;\nconst uint32_t gct_base_used = 0;\n"
-                                    "const uint32_t optional_gct_offset = 0; bool option_widescreen = false;\n"
+                                    "const uint32_t optional_gct_offset = 0; bool option_widescreen = false; bool option_pal_stock_icons = false; bool option_no_screen_shake = false;\n"
                                     "const OptionalWrite optional_writes[1] = {{0, 0, nullptr, nullptr}}; const size_t optional_writes_count = 0;\n}\n")
 
     # Prototypes for every function.
