@@ -13,9 +13,15 @@ enum class BindAction : uint8_t {
   A, B, X, Y, Z, Start, L, R, DUp, DDown, DLeft, DRight,
   // C-stick directions, for devices that have them as buttons (keyboard, box controllers). A pad
   // with an analog C-stick keeps using it; a bound direction pushes the C-stick all the way.
-  CUp, CDown, CLeft, CRight, Count
+  CUp, CDown, CLeft, CRight,
+  // Control stick directions, the same idea. These were the one thing on the keyboard that could
+  // not be rebound: the stick was hard wired to the arrow keys while every other key was a
+  // setting, so anyone who did not want their right hand on the arrows was stuck. Left unbound on
+  // a pad, whose analog stick feeds these directly.
+  SUp, SDown, SLeft, SRight, Count
 };
 inline constexpr bool is_cstick_action(int i) { return i >= (int)BindAction::CUp && i <= (int)BindAction::CRight; }
+inline constexpr bool is_stick_action(int i) { return i >= (int)BindAction::SUp && i <= (int)BindAction::SRight; }
 
 struct KeyBindings { int vk[(size_t)BindAction::Count]; };
 struct PadBindings { unsigned short mask[(size_t)BindAction::Count]; };  // 0 = unbound
@@ -50,15 +56,27 @@ bool switchpro_raw_input(void* device, const uint8_t* report, size_t size, size_
 
 inline constexpr uint16_t kActionPadBit[(size_t)BindAction::Count] = {
   0x0100, 0x0200, 0x0400, 0x0800, 0x0010, 0x1000, 0x0040, 0x0020, 0x0008, 0x0004, 0x0001, 0x0002,
-  0, 0, 0, 0   // C-stick directions are not buttons (see apply_cstick_actions)
+  0, 0, 0, 0,  // C-stick directions are not buttons (see apply_cstick_actions)
+  0, 0, 0, 0   // control stick directions likewise (see apply_stick_actions)
 };
 
 // Pushes the C-stick for bound C-stick directions in `actions` (BindAction bit indices).
-inline void apply_cstick_actions(uint16_t actions, int8_t& sub_x, int8_t& sub_y) {
+inline void apply_cstick_actions(uint32_t actions, int8_t& sub_x, int8_t& sub_y) {
   const bool up = actions & (1u << (int)BindAction::CUp), down = actions & (1u << (int)BindAction::CDown);
   const bool left = actions & (1u << (int)BindAction::CLeft), right = actions & (1u << (int)BindAction::CRight);
   if (up != down) sub_y = up ? 127 : -127;
   if (left != right) sub_x = right ? 127 : -127;
+}
+
+// The same for the control stick. Returns false when nothing is bound or held, so a caller with an
+// analog stick of its own can leave it alone rather than have it zeroed by an unbound keyboard.
+inline bool apply_stick_actions(uint32_t actions, int8_t& stick_x, int8_t& stick_y) {
+  const bool up = actions & (1u << (int)BindAction::SUp), down = actions & (1u << (int)BindAction::SDown);
+  const bool left = actions & (1u << (int)BindAction::SLeft), right = actions & (1u << (int)BindAction::SRight);
+  if (!up && !down && !left && !right) return false;
+  if (up != down) stick_y = up ? 127 : -127;
+  if (left != right) stick_x = right ? 127 : -127;
+  return true;
 }
 
 inline KeyBindings default_key_bindings() {
@@ -79,6 +97,12 @@ inline KeyBindings default_key_bindings() {
   k.vk[(size_t)BindAction::CDown]  = 'K';
   k.vk[(size_t)BindAction::CLeft]  = 'J';
   k.vk[(size_t)BindAction::CRight] = 'L';
+  // The arrow keys the control stick was hard wired to, now as ordinary defaults that can be
+  // rebound like everything else. Anyone happy with the arrows keeps them and notices nothing.
+  k.vk[(size_t)BindAction::SUp]    = VK_UP;
+  k.vk[(size_t)BindAction::SDown]  = VK_DOWN;
+  k.vk[(size_t)BindAction::SLeft]  = VK_LEFT;
+  k.vk[(size_t)BindAction::SRight] = VK_RIGHT;
   return k;
 }
 
@@ -274,12 +298,12 @@ void input_cancel_capture();
 
 struct InputDebugSnapshot {
   PadState ports[4]{};
-  uint16_t keyboard_actions = 0;
-  uint16_t xinput_actions[4]{};
-  uint16_t ds4_actions[4]{};
-  uint16_t gc_actions[4]{};
-  uint16_t swpro_actions[4]{};
-  uint16_t hid_actions[4]{};
+  uint32_t keyboard_actions = 0;
+  uint32_t xinput_actions[4]{};
+  uint32_t ds4_actions[4]{};
+  uint32_t gc_actions[4]{};
+  uint32_t swpro_actions[4]{};
+  uint32_t hid_actions[4]{};
   bool xinput_connected[4]{};
   bool ds4_connected[4]{};
   bool swpro_connected[4]{};

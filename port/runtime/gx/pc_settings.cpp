@@ -49,12 +49,16 @@ namespace gx {
 // Order must match host::BindAction exactly.
 static const char* kActionNames[(size_t)host::BindAction::Count] = {
   "A", "B", "X", "Y", "Z", "Start", "L", "R", "DUp", "DDown", "DLeft", "DRight",
-  "CUp", "CDown", "CLeft", "CRight"
+  "CUp", "CDown", "CLeft", "CRight",
+  // Added after the control stick became rebindable. A settings file written before that has no
+  // these lines, so the arrow key defaults stand and nobody's setup changes on upgrade.
+  "SUp", "SDown", "SLeft", "SRight"
 };
 // The same, as the controls picture writes them.
 static const char* kActionTitles[(size_t)host::BindAction::Count] = {
   "A", "B", "X", "Y", "Z", "Start", "L", "R", "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right",
-  "C Up", "C Down", "C Left", "C Right"
+  "C Up", "C Down", "C Left", "C Right",
+  "Stick Up", "Stick Down", "Stick Left", "Stick Right"
 };
 
 // ---- Port-source <-> combo-box index, shared by load/save and the Port assignment UI ----
@@ -213,10 +217,10 @@ static const char* gc_button_name(unsigned short mask) {
 
 // Space-joined list of action names whose bit is set, for the live "what's this
 // device pressing right now" overlay lines. Bit i corresponds to BindAction i.
-static std::string active_actions_label(uint16_t bits) {
+static std::string active_actions_label(uint32_t bits) {
   std::string s;
   for (int i = 0; i < (int)host::BindAction::Count; ++i)
-    if (bits & (uint16_t)(1u << i)) { if (!s.empty()) s += " "; s += kActionNames[i]; }
+    if (bits & (uint32_t)(1u << i)) { if (!s.empty()) s += " "; s += kActionNames[i]; }
   return s.empty() ? std::string("-") : s;
 }
 
@@ -412,7 +416,7 @@ static host::ProfileDevice profile_device_for(host::CaptureDevice kind) {
 }
 
 // Which actions this device is pressing right now (bit i = BindAction i).
-static uint16_t live_actions(const host::InputDebugSnapshot& snap, host::CaptureDevice kind, int index) {
+static uint32_t live_actions(const host::InputDebugSnapshot& snap, host::CaptureDevice kind, int index) {
   switch (kind) {
     case host::CaptureDevice::Keyboard:  return snap.keyboard_actions;
     case host::CaptureDevice::XInputPad: return snap.xinput_actions[index];
@@ -634,7 +638,9 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
 // right-click to clear. A part lights while pressed; the box being bound turns purple.
 // Authored on a 960x392 canvas and scaled to the panel's width.
 struct GcCallout { int action; float x, y, w; };
-constexpr float kGcCanvasHKeys = 392, kGcCanvasHAnalog = 350;   // the keyboard has a row of C-direction boxes under the pad
+// The keyboard has two rows of direction boxes under the pad: the C-stick, and the control stick
+// (added once the stick stopped being hard wired to the arrow keys).
+constexpr float kGcCanvasHKeys = 434, kGcCanvasHAnalog = 350;
 enum { kCStickModeBox = 100 };   // the single C-stick box of an analog controller: shows and toggles the mode
 
 // The deadzone as the settings picture shows it: an orange ring sized to the deadzone, and a dot at
@@ -655,7 +661,7 @@ static void draw_deadzone_view(ImDrawList* dl, ImVec2 c, float reach, ImVec2 raw
   dl->AddCircle(p, 4.5f * k, IM_COL32(20, 20, 24, 255), 16, 1.5f * k);
 }
 
-static int draw_gc_bind_picture(uint16_t live, int capturing, int* right_clicked, int* hovered_out,
+static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked, int* hovered_out,
                                 const std::function<std::string(int)>& label, bool analog_c,
                                 const char* c_mode_text, ImVec2 stick_pos, ImVec2 c_pos, float dz_main, float dz_c) {
   using A = host::BindAction;
@@ -778,6 +784,9 @@ static int draw_gc_bind_picture(uint16_t live, int capturing, int* right_clicked
   dl->AddNgonFilled(cst_c, 33 * kc, IM_COL32(215, 160, 20, 255), 8);
   dl->AddCircleFilled(c_cap, 22 * kc, c_on ? IM_COL32(255, 230, 120, 255) : IM_COL32(245, 195, 40, 255), 32);
   centred_text(c_cap, "C", IM_COL32(120, 80, 0, 255));
+  // Main stick (keyboard digital bindings only): ring lights up while any stick-direction key is held.
+  const bool s_on = lit((int)A::SUp) || lit((int)A::SDown) || lit((int)A::SLeft) || lit((int)A::SRight);
+  if (s_on) dl->AddCircle(stick, 33 * kc, IM_COL32(255, 255, 255, 255), 8, 3.0f * k);
   draw_deadzone_view(dl, stick, 33 * kc, stick_pos, dz_main, k, false);
   draw_deadzone_view(dl, cst_c, 33 * kc, c_pos, dz_c, k, true);
 
@@ -822,6 +831,10 @@ static int draw_gc_bind_picture(uint16_t live, int capturing, int* right_clicked
   if (!analog_c) {
     boxes.push_back({(int)A::CUp, 216, 350, 128}); boxes.push_back({(int)A::CDown, 352, 350, 128});
     boxes.push_back({(int)A::CLeft, 488, 350, 128}); boxes.push_back({(int)A::CRight, 624, 350, 128});
+    // Second row: the control stick, on the same condition. A device with a real analog stick
+    // feeds it directly and has nothing to bind here.
+    boxes.push_back({(int)A::SUp, 216, 392, 128}); boxes.push_back({(int)A::SDown, 352, 392, 128});
+    boxes.push_back({(int)A::SLeft, 488, 392, 128}); boxes.push_back({(int)A::SRight, 624, 392, 128});
   }
   constexpr float kBoxH = 32;
   // Grey group panels behind the boxes.
@@ -829,7 +842,7 @@ static int draw_gc_bind_picture(uint16_t live, int capturing, int* right_clicked
   dl->AddRectFilled(P(14, 110), P(234, 282), group, 8 * k);
   dl->AddRectFilled(P(726, 20), P(946, 112), group, 8 * k);
   dl->AddRectFilled(P(726, 132), P(946, 304), group, 8 * k);
-  if (!analog_c) dl->AddRectFilled(P(206, 342), P(762, 390), group, 8 * k);
+  if (!analog_c) dl->AddRectFilled(P(206, 342), P(762, 432), group, 8 * k);   // both direction rows
 
   int hovered = -1;
   if (const char* force = std::getenv("MELEE_TEST_HOVER")) hovered = std::atoi(force);   // screenshot hook
@@ -853,6 +866,8 @@ static int draw_gc_bind_picture(uint16_t live, int capturing, int* right_clicked
       default: break;
     }
     if (action == kCStickModeBox || (action >= (int)A::CUp && action <= (int)A::CRight)) return ImVec2(cst_c.x, cst_c.y + 37 * kc);
+    // The control stick's own boxes point at the stick, not the C-stick.
+    if (action >= (int)A::SUp && action <= (int)A::SRight) return ImVec2(stick.x, stick.y + 37 * kc);
     return C(476, 344);   // the D-pad arms: the diamond's left corner
   };
   auto outline_part = [&](int action, ImU32 col, float th) {
@@ -2492,11 +2507,11 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     {
       // A stick pushed well off centre counts as well as a button, so moving a stick to watch it
       // in the picture shows that controller, whichever socket or pad number it is on.
-      static uint16_t last_live[kDeviceTabs] = {};
+      static uint32_t last_live[kDeviceTabs] = {};
       static bool last_pushed[kDeviceTabs] = {};
       for (int t = 1; t < kDeviceTabs; ++t) {
         int idx; const host::CaptureDevice kind = tab_kind_of(t, &idx);
-        const uint16_t now_live = tab_connected(t) ? live_actions(snap, kind, idx) : 0;
+        const uint32_t now_live = tab_connected(t) ? live_actions(snap, kind, idx) : 0;
         const host::PadState& ps = t <= 4 ? snap.xinput_pad[t - 1] : t <= 8 ? snap.ds4_pad[t - 5] : t <= 12 ? snap.gc_pad[t - 9]
                                  : t <= 16 ? snap.swpro_pad[t - 13] : snap.hid_pad[t - 17];
         auto far_out = [](int8_t v) { return v > 50 || v < -50; };
@@ -2719,7 +2734,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         // bind them in the list below.
         const bool analog_c = tab_kind != host::CaptureDevice::Keyboard;
         const int waiting = state.rebind_kind == tab_kind && state.rebind_index == tab_index ? state.rebind_action : -1;
-        const uint16_t live = live_actions(snap, tab_kind, tab_index);
+        const uint32_t live = live_actions(snap, tab_kind, tab_index);
         int right_clicked = -1, hovered = -1;
         ImVec2 stick_pos(0, 0), c_pos(0, 0);
         {

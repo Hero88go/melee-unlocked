@@ -513,11 +513,11 @@ static std::atomic<uint32_t> g_match_start_retrace{0};
 // The L/R shoulders are digital on this pad, so a press bottoms the analog trigger out the way a
 // digital press does on hardware: Melee shields from the trigger value, not from the L/R bit.
 uint16_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad) {
-  uint16_t actions = 0;
+  uint32_t actions = 0;
   for (int i = 0; i < (int)BindAction::Count; ++i) {
     if (!(g_hid_bindings[idx].mask[i] & buttons)) continue;
     pad.button |= kActionPadBit[i];
-    actions |= (uint16_t)(1u << i);
+    actions |= (uint32_t)(1u << i);
   }
   // A box has no analog triggers: its L and R are buttons, and the game needs a full press to see
   // a shield. Light shield on such a device is a firmware feature, reported on an analog axis when
@@ -529,11 +529,11 @@ uint16_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad) {
 }
 
 uint16_t swpro_apply_bindings(int idx, uint16_t buttons, PadState& pad) {
-  uint16_t actions = 0;
+  uint32_t actions = 0;
   for (int i = 0; i < (int)BindAction::Count; ++i) {
     if (!(g_swpro_bindings[idx].mask[i] & buttons)) continue;
     pad.button |= kActionPadBit[i];
-    actions |= (uint16_t)(1u << i);
+    actions |= (uint32_t)(1u << i);
   }
   if (pad.button & kActionPadBit[(size_t)BindAction::L]) pad.trig_l = 255;
   if (pad.button & kActionPadBit[(size_t)BindAction::R]) pad.trig_r = 255;
@@ -564,11 +564,11 @@ void apply_known_box_layout(int idx) {
 
 // Every family's binding table the same way: `pressed(i)` says whether action i's binding is down.
 // Returns the actions as BindAction bits for the settings panel.
-template <class Pressed> uint16_t apply_actions(PadState& pad, Pressed pressed) {
-  uint16_t actions = 0;
+template <class Pressed> uint32_t apply_actions(PadState& pad, Pressed pressed) {
+  uint32_t actions = 0;
   for (int i = 0; i < (int)BindAction::Count; ++i) {
     if (!pressed(i)) continue;
-    actions |= (uint16_t)(1u << i);
+    actions |= (uint32_t)(1u << i);
     pad.button |= kActionPadBit[i];
   }
   apply_cstick_actions(actions, pad.sub_x, pad.sub_y);
@@ -581,7 +581,7 @@ template <class Pressed> uint16_t apply_actions(PadState& pad, Pressed pressed) 
 uint16_t gc_apply_bindings(int idx, PadState& pad) {
   const uint16_t raw = pad.button;
   pad.button = 0;
-  const uint16_t actions = apply_actions(pad, [&](int i) { const uint16_t m = g_gc_bindings[idx].mask[i]; return m && (raw & m); });
+  const uint32_t actions = apply_actions(pad, [&](int i) { const uint16_t m = g_gc_bindings[idx].mask[i]; return m && (raw & m); });
   if (pad.button & PAD_L && !pad.trig_l) pad.trig_l = 255;
   if (pad.button & PAD_R && !pad.trig_r) pad.trig_r = 255;
   return actions;
@@ -686,19 +686,19 @@ void input_poll(PadState out[4]) {
   // Whether the game window has focus: without it, input follows the Background input option.
   const bool focused = g_hwnd && GetForegroundWindow() == g_hwnd;
   PadState kb{}; kb.err = 0;
-  uint16_t keyboard_actions = 0;
+  uint32_t keyboard_actions = 0;
   {
-    // Keyboard: arrows = stick, the rest (C-stick included, IJKL by default) from g_key_bindings.
+    // Keyboard: every action, the control stick and C-stick included, comes from g_key_bindings.
+    // The stick used to be hard wired to the arrow keys here while everything else was a setting,
+    // which is the one thing players could not rebind; the arrows are now just its defaults.
     // Key messages only reach a focused window, so in the background the keys are read directly.
     std::lock_guard<std::mutex> lock(g_keys_mutex);
     auto key = [&](int vk) {
       if (focused) return g_keys[vk & 0xFF];
       return g_background_input && (GetAsyncKeyState(vk & 0xFF) & 0x8000) != 0;
     };
-    int sx = 0, sy = 0;
-    if (key(VK_LEFT)) sx -= 127; if (key(VK_RIGHT)) sx += 127; if (key(VK_UP)) sy += 127; if (key(VK_DOWN)) sy -= 127;
-    kb.stick_x = (int8_t)sx; kb.stick_y = (int8_t)sy;
     keyboard_actions = apply_actions(kb, [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); });
+    apply_stick_actions(keyboard_actions, kb.stick_x, kb.stick_y);
     if (kb.button & PAD_L) kb.trig_l = 255;
     if (kb.button & PAD_R) kb.trig_r = 255;
   }
@@ -940,10 +940,8 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   {
     std::lock_guard<std::mutex> lock(g_keys_mutex);
     auto key = [](int vk) { return g_keys[vk & 0xFF]; };
-    int sx = 0, sy = 0;
-    if (key(VK_LEFT)) sx -= 127; if (key(VK_RIGHT)) sx += 127; if (key(VK_UP)) sy += 127; if (key(VK_DOWN)) sy -= 127;
-    kb.stick_x = (int8_t)sx; kb.stick_y = (int8_t)sy;
     snapshot.keyboard_actions = apply_actions(kb, [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); });
+    apply_stick_actions(snapshot.keyboard_actions, kb.stick_x, kb.stick_y);
     if (kb.button & PAD_L) kb.trig_l = 255;
     if (kb.button & PAD_R) kb.trig_r = 255;
   }
