@@ -24,6 +24,10 @@ bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vect
 // Counts rollback loads so the renderer can treat them as discontinuities.
 uint64_t rollback_count();
 bool is_online_match();
+// The in-game slot the local player occupies in the running online match (0-3).
+int local_player_slot();
+// Most recent measured round trip to the opponent, in milliseconds; 0 when not connected.
+int ping_ms();
 // The online mode of the session that is running or being set up, as a Matchmaking::OnlinePlayMode
 // value (RANKED 0, UNRANKED 1, DIRECT 2, TEAMS 3, PARTY 4). -1 when there is no online session at
 // all, which is what "offline" means to the rest of the port. Covers matchmaking, the online

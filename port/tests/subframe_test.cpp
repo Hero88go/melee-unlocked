@@ -103,14 +103,22 @@ int main() {
   solver.set_frames(&a, &b);
   solver.build(0.5, true, mats, false);
   check(!mats[0].vertices, "switching away from authored mode clears the vertex override");
+  // A stream that cannot be blended is drawn as the current stream, but its matrices still move
+  // with everything else: holding them at the current frame put such a draw on its own timeline,
+  // and a menu element rebuilt on some ticks and not others then flickered between the two.
+  // The per-vertex matrix index only means anything when the draw is set up to read one, so the
+  // draw says so here. Without that flag the index in the vertex is ignored by the hardware and by
+  // the solver, which is what lets an object whose matrix moved to another slot still pair.
+  a.draws[0].components = b.draws[0].components = gx::VB_HAS_POSMTXIDX;
   b.vertices[0].posmtx = 3; solver.set_frames(&a, &b);
   solver.build(0.5, true, mats, true);
-  check(!mats[0].vertices && std::memcmp(mats[0].pos, b.draws[0].posMatrices, sizeof mats[0].pos) == 0,
-        "changed matrix binding holds the complete current draw");
+  check(!mats[0].vertices && near(mats[0].pos[3], 4.0f),
+        "changed matrix binding keeps the current vertices and advances the matrices");
+  a.draws[0].components = b.draws[0].components = 0;
   b.vertices[0].posmtx = 0; b.vertices[0].pos[0] = solver.max_translation + 1; solver.set_frames(&a, &b);
   solver.build(0.5, true, mats, true);
-  check(!mats[0].vertices && std::memcmp(mats[0].pos, b.draws[0].posMatrices, sizeof mats[0].pos) == 0,
-        "geometry discontinuity holds current vertices and matrices together");
+  check(!mats[0].vertices && near(mats[0].pos[3], 4.0f),
+        "geometry discontinuity keeps the current vertices and advances the matrices");
   b.vertices[0].pos[0] = 0; b.draws[0].xf_regs[0x26] = 1; solver.set_frames(&a, &b);
   check(solver.stats().paired == 0, "orthographic HUD draws retain exact pose");
   // Matrix selectors are discrete even when the vertex stream is unchanged.
@@ -194,7 +202,10 @@ int main() {
     }
     check(!gx::sample_authored(paused_previous, paused_current, .5, joint.world.data(), out, nrm, ident_n),
           "paused long-running animation does not predict another half tick");
-    paused_previous.joints[0].frame = 1000;
+    // The previous capture has to be what the track actually holds at frame 1000 (0, one frame
+    // before 5): a sample is only accepted between the two captured values, so a previous pose
+    // that claims frame 1000 while carrying frame 1001's translation is a contradiction.
+    paused_previous.joints[0].frame = 1000; paused_previous.joints[0].translation[0] = 0; paused_previous.joints[0].world[3] = 0;
     check(gx::sample_authored(paused_previous, paused_current, .5, joint.world.data(), out, nrm, ident_n) && near(out[3], 7.5f),
           "advancing long-running animation still samples at its declared rate");
     paused_previous.joints[0].rate = .5f;
@@ -212,15 +223,33 @@ int main() {
     float held_pos[256]{}, held_nrm[96]{}, carried_pos[256], carried_nrm[96];
     std::memcpy(held_pos, NativeMelee::Identity().data(), 12 * sizeof(float));
     std::memcpy(carried_pos, held_pos, sizeof carried_pos);
-    check(gx::carry_camera(view_previous, view_current, .5, held_pos, held_nrm, 1, carried_pos, carried_nrm) && near(carried_pos[3], 1),
+    check(gx::carry_camera(view_previous, view_current, .5, view_current, held_pos, held_nrm, 1, carried_pos, carried_nrm) && near(carried_pos[3], 1),
           "panning camera carries held draws forward");
     view_current.quake = true;
     std::memcpy(carried_pos, held_pos, sizeof carried_pos);
-    check(!gx::carry_camera(view_previous, view_current, .5, held_pos, held_nrm, 1, carried_pos, carried_nrm) && carried_pos[3] == 0,
+    check(!gx::carry_camera(view_previous, view_current, .5, view_current, held_pos, held_nrm, 1, carried_pos, carried_nrm) && carried_pos[3] == 0,
           "shaking camera is not extrapolated along the quake");
     view_current.quake = false; view_previous.quake = true;
-    check(!gx::carry_camera(view_previous, view_current, .5, held_pos, held_nrm, 1, carried_pos, carried_nrm),
+    check(!gx::carry_camera(view_previous, view_current, .5, view_current, held_pos, held_nrm, 1, carried_pos, carried_nrm),
           "the tick after a quake still holds");
+    // The carry has to cancel the view that is actually in the matrices it is given. An object
+    // standing still in the world is at view * world, so at half a frame it must be drawn at the
+    // half-way view, whichever frame the caller held: a paired draw holds the previous frame's
+    // matrices, an unpaired one has only the current frame's. Taking the base from the mode instead
+    // left a whole camera step in every unpaired draw (here x = 3 rather than 1).
+    view_previous.quake = false;
+    gx::set_authored_interpolate(true);
+    float from_current[256]{}, from_previous[256]{};
+    std::memcpy(from_current, NativeMelee::Identity().data(), 12 * sizeof(float));
+    from_current[3] = 2;   // current frame: view x = 2 times a world position of 0
+    std::memcpy(from_previous, NativeMelee::Identity().data(), 12 * sizeof(float));
+    check(gx::carry_camera(view_previous, view_current, .5, view_current, from_current, held_nrm, 1, carried_pos, carried_nrm) &&
+              near(carried_pos[3], 1),
+          "a draw with no pair is carried off the current frame's view");
+    check(gx::carry_camera(view_previous, view_current, .5, view_previous, from_previous, held_nrm, 1, carried_pos, carried_nrm) &&
+              near(carried_pos[3], 1),
+          "a paired draw holding the previous frame is carried off that view");
+    gx::set_authored_interpolate(false);
   }
   std::puts("sub-frame rigid fractions, cuts, blends and pairing passed");
 }

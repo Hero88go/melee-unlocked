@@ -3,3 +3,47 @@
 // the window, the taskbar and Alt-Tab.
 #define IDI_MELEE_UNLOCKED 1
 IDI_MELEE_UNLOCKED ICON "melee_unlocked.ico"
+
+// Version resource. An executable without one has no company, product name or description for
+// Windows to show, and an unsigned binary with none of that is part of what SmartScreen and
+// Defender score as suspicious: players have had these files quarantined on download. Signing is
+// the real fix; this is the free part of it, and a signed binary wants this block anyway.
+#include <winver.h>
+// Shared by melee_port and melee_port_playback, which are different executables built from the
+// same sources, so the name fields come from the build rather than being hard coded here.
+#ifndef MELEE_RC_DESCRIPTION
+#define MELEE_RC_DESCRIPTION "Melee Unlocked"
+#endif
+#ifndef MELEE_RC_INTERNAL_NAME
+#define MELEE_RC_INTERNAL_NAME "melee_port"
+#endif
+#ifndef MELEE_RC_ORIGINAL_FILENAME
+#define MELEE_RC_ORIGINAL_FILENAME "melee_port.exe"
+#endif
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     MELEE_VERSION_COMMAS
+PRODUCTVERSION  MELEE_VERSION_COMMAS
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"   // US English, Unicode
+    BEGIN
+      VALUE "CompanyName",      "Melee Unlocked"
+      VALUE "FileDescription",  MELEE_RC_DESCRIPTION
+      VALUE "FileVersion",      MELEE_PORT_VERSION
+      VALUE "InternalName",     MELEE_RC_INTERNAL_NAME
+      VALUE "OriginalFilename", MELEE_RC_ORIGINAL_FILENAME
+      VALUE "ProductName",      "Melee Unlocked"
+      VALUE "ProductVersion",   MELEE_PORT_VERSION
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

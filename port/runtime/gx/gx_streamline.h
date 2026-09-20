@@ -30,6 +30,10 @@ bool available();
 long create_dxgi_factory2(uint32_t flags, const void* riid, void** out);
 long d3d12_create_device(void* adapter, int feature_level, const void* riid, void** out);
 void set_device(ID3D12Device* device);
+// The driver's own interface behind a Streamline proxy (device, command list), for code that talks
+// to NVIDIA NGX directly. Returns the argument unchanged when Streamline is not in use. Borrowed: the
+// proxy keeps it alive.
+void* native_interface(void* proxy);
 bool dlss_supported(IDXGIAdapter* adapter);
 
 // Per-mode optimal render size for an output size. Returns false when DLSS is unavailable.
@@ -51,11 +55,38 @@ struct EvaluateInputs {
   ID3D12Resource* color_in; uint32_t color_state;      // render-resolution jittered color
   ID3D12Resource* depth; uint32_t depth_state;
   ID3D12Resource* mvec; uint32_t mvec_state;           // pixel-space motion vectors (previous - current)
+  ID3D12Resource* hud_mask = nullptr; uint32_t hud_mask_state = 0;   // 1 = flat 2D (HUD): keep no history
   ID3D12Resource* color_out; uint32_t out_state;       // output-resolution result (UAV capable)
   uint32_t in_left, in_top, in_w, in_h;                // extent within the render-resolution textures
   uint32_t out_w, out_h;
 };
 bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in);
+// DLSS Frame Generation and Reflex (NVIDIA, RTX 40+ for frame generation). Call on the presenting
+// thread. Frame generation needs the upscaler running (it reuses DLSS's depth and motion vectors)
+// and always runs with Reflex on, as NVIDIA requires.
+bool frame_generation_available();
+bool reflex_available();
+// What the hardware allows: 1 (2x only, RTX 40) up to 3 (4x, Multi Frame Generation, RTX 50).
+// Answered once queried; 1 until then.
+uint32_t frame_generation_max_multiplier();
+bool frame_generation_dynamic_supported();   // whether DLSSGMode::eDynamic (an auto-picked multiplier) is offered
+void set_frame_generation(int mode);   // 0 off, 1 2x, 2 3x, 3 4x, 4 Dynamic
+void set_reflex(int mode);   // 0 off, 1 low latency, 2 low latency + boost
+// Reflex's measured render latency (simulation start to GPU finished), averaged over the recent frame
+// reports, in milliseconds; 0 when Reflex has no report yet. Refreshed by update_reflex_stats().
+// Populated whether or not Reflex's low-latency mode is on: the PC Latency markers run every frame
+// regardless (see pcl_marker), so this keeps working running plain Native.
+float reflex_latency_ms();
+// Where that time goes, each stage's share in milliseconds, same averaging and same availability as
+// reflex_latency_ms(). Sums to close to the total (osRenderQueue and driver overlap the others a
+// little, which NVIDIA's own report structure allows for).
+struct ReflexBreakdown { float sim = 0, render_submit = 0, driver = 0, os_queue = 0, gpu_render = 0; };
+ReflexBreakdown reflex_breakdown();
+void update_reflex_stats();
+// Reflex latency markers for the current frame token (0 sim start, 1 sim end, 2 render submit
+// start, 3 render submit end, 4 present start, 5 present end). No-op without a token or Reflex.
+void pcl_marker(int marker);
+void log_frame_generation();   // diagnostic: status and frames presented per rendered frame
 // Halton (2,3) jitter for a frame index, centred, in pixels.
 void jitter(uint32_t index, float* jx, float* jy);
 

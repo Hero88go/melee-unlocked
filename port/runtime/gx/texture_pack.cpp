@@ -19,11 +19,16 @@
 #include <thread>
 #include <shellapi.h>
 #include <atomic>
+#include <chrono>
 #include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <iterator>
+#include <mutex>
+#include <condition_variable>
+#include <deque>
+#include <unordered_set>
 #include <system_error>
 #include <unordered_map>
 
@@ -125,6 +130,9 @@ struct State {
   uint64_t mips_ignored = 0;       // packs that supplied mips we did not use
   bool reported_budget = false;
   std::unordered_map<std::string, bool> dumped;
+  // When the last look found nothing, and whether "no pack folder" has been said already.
+  std::chrono::steady_clock::time_point last_empty_scan{};
+  bool scanned_empty = false, reported_no_folder = false;
 };
 State g;
 
@@ -227,8 +235,10 @@ void build_index() {
   // created a Load folder got no scan at all and an empty list, which is the one case the
   // TexturePacks folder exists to serve.
   if (g.roots.empty()) {
-    host::log("textures: no pack folder; create %s and drop a pack in it",
-              (base / "TexturePacks").string().c_str());
+    if (!g.reported_no_folder)
+      host::log("textures: no pack folder; create %s and drop a pack in it",
+                (base / "TexturePacks").string().c_str());
+    g.reported_no_folder = true;
     return;
   }
   std::error_code ec;
@@ -353,8 +363,24 @@ bool dumping() { return g.dump; }
 // only when replacement is on.
 void refresh_packs() {
   if (!g.index.empty() || !g.packs.empty()) return;   // already scanned this run
+  // Nothing found so far. The settings panel calls this on every frame it draws the Video tab, and
+  // "found nothing" used to mean "look again", so a player with no pack (nearly everyone) had the
+  // folders probed at the monitor's refresh rate, on the render thread, for as long as the panel
+  // was open: the game stuttered whenever the panel was up. Look again now and then instead, which
+  // still picks up a pack dropped in while the panel is open.
+  const auto now = std::chrono::steady_clock::now();
+  if (g.scanned_empty && now - g.last_empty_scan < std::chrono::seconds(3)) return;
+  g.last_empty_scan = now;
+  g.scanned_empty = true;
   build_index();
 }
+
+std::mutex g_cache_mutex;
+std::unordered_map<std::string, std::unique_ptr<Replacement>> g_cache;
+uint64_t g_cache_bytes = 0;
+constexpr uint64_t kCacheBudget = 1536ull * 1024 * 1024;
+void clear_cache();   // defined with load()
+std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes);
 
 bool configure(bool on, bool dump) {
   if (on == g.on && dump == g.dump) return false;
@@ -362,6 +388,7 @@ bool configure(bool on, bool dump) {
   if (was_on && !on) report();   // last word on what the pack did before its counters are dropped
   g.on = on;
   g.dump = dump;
+  if (!on) clear_cache();
   if (on && g.index.empty()) build_index();
   if (dump) {
     g.dump_root = exe_directory() / "Dump" / "Textures" / "GALE01";
@@ -495,11 +522,22 @@ void prefetch_begin() {
     for (const auto& kv : g.index) names.push_back(kv.first);
     for (const auto& name : names) {
       if (!g.on) break;   // switched off mid-run: stop rather than finish work nobody wants
-      load(name, ~0ull);  // decoded into the cache; the draw path then finds it ready
+      {
+        std::lock_guard<std::mutex> lk(g_cache_mutex);
+        if (g_cache_bytes >= kCacheBudget || g_cache.count(name)) { g_prefetch_done.fetch_add(1, std::memory_order_relaxed); continue; }
+      }
+      if (auto r = decode_entry(name, ~0ull)) {   // decoded into the cache; the draw path then finds it ready
+        std::lock_guard<std::mutex> lk(g_cache_mutex);
+        if (g_cache_bytes + r->pixels.size() <= kCacheBudget) { g_cache_bytes += r->pixels.size(); g_cache.emplace(name, std::move(r)); }
+      }
       g_prefetch_done.fetch_add(1, std::memory_order_relaxed);
     }
-    host::log("textures: prefetched %llu of %llu replacements",
-              (unsigned long long)g_prefetch_done.load(), (unsigned long long)g_prefetch_total.load());
+    {
+      std::lock_guard<std::mutex> lk(g_cache_mutex);
+      host::log("textures: prefetched %llu of %llu replacements, %zu kept decoded (%.0f MB)",
+                (unsigned long long)g_prefetch_done.load(), (unsigned long long)g_prefetch_total.load(),
+                g_cache.size(), g_cache_bytes / 1048576.0);
+    }
     g_prefetching.store(false, std::memory_order_release);
   });
 }
@@ -516,7 +554,41 @@ void note_lookup(bool was_matched) {
   if (was_matched) ++g.matched;
 }
 
+// Decoded replacements kept for the draw path. "Load them at startup" used to decode every PNG and
+// throw the result away, so it cost a core at startup and every texture was still decoded again on
+// the render thread the first time it appeared (a hitch per new texture, such as the time-up
+// graphics at the end of a match). Prefetch now fills this, and load() takes from it. Capped so a
+// large pack cannot take all of RAM; past the cap the rest decode on first use as before.
+
+void clear_cache() {
+  std::lock_guard<std::mutex> lk(g_cache_mutex);
+  g_cache.clear();
+  g_cache_bytes = 0;
+}
+
+std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes);
+
 std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes) {
+  if (!g.on || base.empty()) return nullptr;
+  {
+    std::lock_guard<std::mutex> lk(g_cache_mutex);
+    auto hit = g_cache.find(base);
+    if (hit != g_cache.end()) {
+      std::unique_ptr<Replacement> r = std::move(hit->second);
+      g_cache_bytes -= r->pixels.size();
+      g_cache.erase(hit);
+      auto found = g.index.find(base);
+      if (found != g.index.end()) {
+        const int pack = found->second.pack;
+        if (pack >= 0 && pack < (int)g.packs.size() && !g.packs[(size_t)pack].enabled) return nullptr;
+      }
+      return r->pixels.size() <= budget_bytes ? std::move(r) : nullptr;
+    }
+  }
+  return decode_entry(base, budget_bytes);
+}
+
+std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes) {
   if (!g.on || base.empty()) return nullptr;
   auto found = g.index.find(base);
   if (found == g.index.end()) return nullptr;
@@ -572,6 +644,62 @@ std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes
   }
   ++g.decoded;
   return out;
+}
+
+// ---- background loader ----
+std::mutex g_req_mutex;
+std::condition_variable g_req_cv;
+std::deque<std::string> g_req_queue;
+std::unordered_set<std::string> g_req_pending;
+std::thread g_req_thread;
+bool g_req_started = false;
+
+bool has(const std::string& base) {
+  if (!g.on || base.empty()) return false;
+  auto found = g.index.find(base);
+  if (found == g.index.end()) return false;
+  const Entry& entry = found->second;
+  if (entry.pack >= 0 && entry.pack < (int)g.packs.size() && !g.packs[(size_t)entry.pack].enabled) return false;
+  return !entry.levels.empty() && !entry.levels[0].empty();
+}
+
+bool ready(const std::string& base) {
+  std::lock_guard<std::mutex> lk(g_cache_mutex);
+  return g_cache.count(base) != 0;
+}
+
+void request(const std::string& base) {
+  std::lock_guard<std::mutex> lk(g_req_mutex);
+  if (!g_req_pending.insert(base).second) return;
+  g_req_queue.push_back(base);
+  if (!g_req_started) {
+    g_req_started = true;
+    g_req_thread = std::thread([] {
+      for (;;) {
+        std::string name;
+        {
+          std::unique_lock<std::mutex> lk(g_req_mutex);
+          g_req_cv.wait(lk, [] { return !g_req_queue.empty(); });
+          name = std::move(g_req_queue.front());
+          g_req_queue.pop_front();
+        }
+        bool cached;
+        { std::lock_guard<std::mutex> lk(g_cache_mutex); cached = g_cache.count(name) != 0; }
+        if (!cached && g.on) {
+          // Wanted right now, so it goes in past the prefetch cap; load() takes it out again.
+          if (auto r = decode_entry(name, ~0ull)) {
+            std::lock_guard<std::mutex> lk(g_cache_mutex);
+            g_cache_bytes += r->pixels.size();
+            g_cache.emplace(name, std::move(r));
+          }
+        }
+        std::lock_guard<std::mutex> lk(g_req_mutex);
+        g_req_pending.erase(name);
+      }
+    });
+    g_req_thread.detach();
+  }
+  g_req_cv.notify_one();
 }
 
 void dump_level(const std::string& base, uint32_t level, const uint8_t* level_rgba,

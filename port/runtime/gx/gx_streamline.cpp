@@ -6,6 +6,7 @@
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_6.h>
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <atomic>
@@ -15,6 +16,9 @@
 #include <sl.h>
 #include <sl_consts.h>
 #include <sl_dlss.h>
+#include <sl_dlss_g.h>
+#include <sl_reflex.h>
+#include <sl_pcl.h>
 #include <sl_security.h>
 #endif
 
@@ -48,17 +52,34 @@ bool available() { return false; }
 long create_dxgi_factory2(uint32_t flags, const void* riid, void** out) { return CreateDXGIFactory2(flags, *(const IID*)riid, out); }
 long d3d12_create_device(void* adapter, int fl, const void* riid, void** out) { return D3D12CreateDevice((IUnknown*)adapter, (D3D_FEATURE_LEVEL)fl, *(const IID*)riid, out); }
 void set_device(ID3D12Device*) {}
+void* native_interface(void* proxy) { return proxy; }
 bool dlss_supported(IDXGIAdapter*) { return false; }
 bool dlss_optimal_size(DlssMode, uint32_t, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*) { return false; }
 bool dlss_set_options(DlssMode, uint32_t, uint32_t) { return false; }
 void new_frame(uint32_t) {}
 bool set_constants(const FrameConstants&) { return false; }
 bool evaluate(ID3D12GraphicsCommandList*, const EvaluateInputs&) { return false; }
+bool frame_generation_available() { return false; }
+bool reflex_available() { return false; }
+uint32_t frame_generation_max_multiplier() { return 1; }
+bool frame_generation_dynamic_supported() { return false; }
+void set_frame_generation(int) {}
+void set_reflex(int) {}
+float reflex_latency_ms() { return 0.0f; }
+ReflexBreakdown reflex_breakdown() { return {}; }
+void update_reflex_stats() {}
+void pcl_marker(int) {}
+void log_frame_generation() {}
 #else
 
 namespace {
 HMODULE g_module = nullptr;
-bool g_ready = false, g_dlss_ok = false;
+bool g_ready = false, g_dlss_ok = false, g_fg_ok = false, g_reflex_ok = false, g_fg_on = false;
+// Whether the Reflex plugin has been handed options at all (any mode, including Off) and can be
+// asked for a report. Separate from whether the low-latency algorithm is actually throttling
+// anything (ReflexOptions::mode): the PC Latency markers and the telemetry they produce run
+// regardless of that, so the latency reading works at Native too.
+bool g_reflex_ready = false;
 sl::FrameToken* g_token = nullptr;
 sl::ViewportHandle g_viewport{0u};
 typedef HRESULT(WINAPI* PFunCreateDXGIFactory2)(UINT, REFIID, void**);
@@ -138,7 +159,7 @@ bool init(const std::wstring& exe_dir) {
   static std::wstring dir_copy;
   dir_copy = exe_dir;
   plugin_dirs[0] = dir_copy.c_str();
-  static const sl::Feature features[] = {sl::kFeatureDLSS};
+  static const sl::Feature features[] = {sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
   sl::Preferences pref{};
   pref.showConsole = false;
   pref.logLevel = sl::LogLevel::eDefault;
@@ -149,7 +170,7 @@ bool init(const std::wstring& exe_dir) {
   pref.logMessageCallback = log_callback;
   pref.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
   pref.featuresToLoad = features;
-  pref.numFeaturesToLoad = 1;
+  pref.numFeaturesToLoad = (uint32_t)(sizeof features / sizeof features[0]);
   pref.engine = sl::EngineType::eCustom;
   pref.engineVersion = "melee-port";
   pref.applicationId = 231313132;   // NVIDIA sample application id: valid for development builds of non-registered titles
@@ -181,7 +202,18 @@ void set_device(ID3D12Device* device) {
   if (res != sl::Result::eOk) { host::log("dlss: slSetD3DDevice failed (%d)", (int)res); g_dlss_ok = false; return; }
   sl::FeatureRequirements req{};
   g_dlss_ok = slGetFeatureRequirements(sl::kFeatureDLSS, req) == sl::Result::eOk;
+  sl::FeatureRequirements fg_req{}, rx_req{};
+  g_fg_ok = slGetFeatureRequirements(sl::kFeatureDLSS_G, fg_req) == sl::Result::eOk;
+  g_reflex_ok = slGetFeatureRequirements(sl::kFeatureReflex, rx_req) == sl::Result::eOk;
   host::log("dlss: %s", g_dlss_ok ? "available (off until selected under Upscaling in PC settings)" : "feature failed to initialise; native rendering only");
+}
+void* native_interface(void* proxy) {
+  if (!g_ready || !proxy) return proxy;
+  void* base = nullptr;
+  if (slGetNativeInterface(proxy, &base) != sl::Result::eOk || !base) return proxy;
+  // slGetNativeInterface adds a reference; the proxy already holds one for as long as we use it.
+  ((IUnknown*)base)->Release();
+  return base;
 }
 bool dlss_supported(IDXGIAdapter* adapter) {
   if (!g_ready) return false;
@@ -197,6 +229,13 @@ bool dlss_supported(IDXGIAdapter* adapter) {
     host::log("dlss: not available on this adapter (%s, %d)", why, (int)res);
   }
   g_dlss_ok = res == sl::Result::eOk;
+  // Frame generation has its own requirements (RTX 40 or newer, Windows hardware GPU scheduling on).
+  if (g_fg_ok) {
+    const sl::Result fg = slIsFeatureSupported(sl::kFeatureDLSS_G, info);
+    g_fg_ok = fg == sl::Result::eOk;
+    host::log("dlss: frame generation %s (%d)", g_fg_ok ? "available" : "not available on this system", (int)fg);
+  }
+  if (g_reflex_ok) g_reflex_ok = slIsFeatureSupported(sl::kFeatureReflex, info) == sl::Result::eOk;
   return g_dlss_ok;
 }
 
@@ -217,8 +256,15 @@ bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h) {
   o.mode = to_sl(mode); o.outputWidth = out_w; o.outputHeight = out_h;
   o.colorBuffersHDR = sl::Boolean::eFalse;
   o.useAutoExposure = sl::Boolean::eTrue;
-  o.dlaaPreset = o.qualityPreset = o.balancedPreset = o.performancePreset = sl::DLSSPreset::ePresetK;
-  o.ultraPerformancePreset = sl::DLSSPreset::ePresetF;
+  // The second-generation transformer L on every mode (Streamline 2.14, DLSS 310.9). Measured on the
+  // same match frames at 1080p Quality: L 443, M 380, K 220 (Laplacian variance; native 3x is 405),
+  // K visibly soft on text and edges. Melee is light enough that L's extra cost does not matter.
+  // MELEE_DLSS_PRESET=K|L|M forces another preset on every mode (for comparison).
+  o.dlaaPreset = o.qualityPreset = o.balancedPreset = o.performancePreset = o.ultraPerformancePreset = sl::DLSSPreset::ePresetL;
+  if (const char* e = std::getenv("MELEE_DLSS_PRESET")) {
+    const sl::DLSSPreset p = *e == 'L' ? sl::DLSSPreset::ePresetL : *e == 'M' ? sl::DLSSPreset::ePresetM : sl::DLSSPreset::ePresetK;
+    o.dlaaPreset = o.qualityPreset = o.balancedPreset = o.performancePreset = o.ultraPerformancePreset = p;
+  }
   sl::Result res = slDLSSSetOptions(g_viewport, o);
   if (res != sl::Result::eOk) { host::log("dlss: slDLSSSetOptions failed (%d)", (int)res); return false; }
   g_mode = o.mode; g_out_w = out_w; g_out_h = out_h;
@@ -272,6 +318,93 @@ bool set_constants(const FrameConstants& c) {
   return true;
 }
 
+bool frame_generation_available() { return g_ready && g_fg_ok; }
+bool reflex_available() { return g_ready && g_reflex_ok; }
+std::atomic<float> g_latency_ms{0.0f};
+void set_reflex(int mode) {
+  if (!reflex_available()) return;
+  sl::ReflexOptions r{};
+  r.mode = mode >= 2 ? sl::ReflexMode::eLowLatencyWithBoost : mode == 1 ? sl::ReflexMode::eLowLatency : sl::ReflexMode::eOff;
+  r.useMarkersToOptimize = mode > 0;
+  const sl::Result res = slReflexSetOptions(r);
+  g_reflex_ready = res == sl::Result::eOk;   // markers/telemetry can flow now, whatever the mode is
+  host::log("reflex: %s (%d)", mode >= 2 ? "on + boost" : mode == 1 ? "on" : "off", (int)res);
+}
+float reflex_latency_ms() { return g_latency_ms.load(std::memory_order_relaxed); }
+std::atomic<float> g_sim_ms{0}, g_render_submit_ms{0}, g_driver_ms{0}, g_os_queue_ms{0}, g_gpu_render_ms{0};
+ReflexBreakdown reflex_breakdown() {
+  ReflexBreakdown b;
+  b.sim = g_sim_ms.load(std::memory_order_relaxed); b.render_submit = g_render_submit_ms.load(std::memory_order_relaxed);
+  b.driver = g_driver_ms.load(std::memory_order_relaxed); b.os_queue = g_os_queue_ms.load(std::memory_order_relaxed);
+  b.gpu_render = g_gpu_render_ms.load(std::memory_order_relaxed);
+  return b;
+}
+void update_reflex_stats() {
+  if (!g_reflex_ready) return;
+  sl::ReflexState st{};
+  if (slReflexGetState(st) != sl::Result::eOk || !st.latencyReportAvailable) return;
+  double total = 0, sim = 0, submit = 0, drv = 0, queue = 0, gpu = 0;
+  int n = 0, ns = 0, nu = 0, nd = 0, nq = 0, ng = 0;
+  auto span = [](uint64_t a, uint64_t b) { return b > a ? (double)(b - a) : -1.0; };
+  for (const auto& r : st.frameReport) {
+    if (r.simStartTime && r.gpuRenderEndTime > r.simStartTime) { total += (double)(r.gpuRenderEndTime - r.simStartTime); ++n; }
+    double v;
+    if ((v = span(r.simStartTime, r.simEndTime)) >= 0) { sim += v; ++ns; }
+    if ((v = span(r.renderSubmitStartTime, r.renderSubmitEndTime)) >= 0) { submit += v; ++nu; }
+    if ((v = span(r.driverStartTime, r.driverEndTime)) >= 0) { drv += v; ++nd; }
+    if ((v = span(r.osRenderQueueStartTime, r.osRenderQueueEndTime)) >= 0) { queue += v; ++nq; }
+    if ((v = span(r.gpuRenderStartTime, r.gpuRenderEndTime)) >= 0) { gpu += v; ++ng; }
+  }
+  // Report times are in microseconds.
+  if (n) g_latency_ms = (float)(total / n / 1000.0);
+  if (ns) g_sim_ms = (float)(sim / ns / 1000.0);
+  if (nu) g_render_submit_ms = (float)(submit / nu / 1000.0);
+  if (nd) g_driver_ms = (float)(drv / nd / 1000.0);
+  if (nq) g_os_queue_ms = (float)(queue / nq / 1000.0);
+  if (ng) g_gpu_render_ms = (float)(gpu / ng / 1000.0);
+}
+// What the hardware allows: numFramesToGenerateMax 1 means only a 2x multiplier is available (RTX
+// 40 series), higher means Multi Frame Generation (RTX 50 series, up to 4x = max 3). Queried once,
+// the first time frame generation is asked for, since it needs no active session to answer.
+std::atomic<uint32_t> g_fg_max{1};
+std::atomic<bool> g_fg_dynamic_ok{false};
+bool g_fg_queried = false;
+void query_frame_generation_limits() {
+  if (g_fg_queried || !frame_generation_available()) return;
+  g_fg_queried = true;
+  sl::DLSSGState st{};
+  if (slDLSSGGetState(g_viewport, st, nullptr) != sl::Result::eOk) return;
+  g_fg_max = std::max<uint32_t>(1, st.numFramesToGenerateMax);
+  g_fg_dynamic_ok = st.bIsDynamicMFGSupported == sl::Boolean::eTrue;
+  host::log("dlss: frame generation up to %ux%s", g_fg_max.load() + 1, g_fg_dynamic_ok.load() ? ", Dynamic available" : "");
+}
+uint32_t frame_generation_max_multiplier() { query_frame_generation_limits(); return g_fg_max.load(); }
+bool frame_generation_dynamic_supported() { query_frame_generation_limits(); return g_fg_dynamic_ok.load(); }
+
+// mode: 0 off, 1 2x, 2 3x, 3 4x, 4 Dynamic (the driver picks the multiplier, up to what the hardware allows).
+void set_frame_generation(int mode) {
+  if (!frame_generation_available()) return;
+  query_frame_generation_limits();
+  sl::DLSSGOptions o{};
+  const bool dynamic = mode == 4 && g_fg_dynamic_ok.load();
+  o.mode = mode == 0 ? sl::DLSSGMode::eOff : dynamic ? sl::DLSSGMode::eDynamic : sl::DLSSGMode::eOn;
+  o.numFramesToGenerate = dynamic ? g_fg_max.load() : (uint32_t)std::clamp(mode, 1, (int)g_fg_max.load());
+  const sl::Result res = slDLSSGSetOptions(g_viewport, o);
+  g_fg_on = mode != 0 && res == sl::Result::eOk;
+  static const char* names[] = {"off", "2x", "3x", "4x", "dynamic"};
+  host::log("dlss: frame generation %s (%d)", names[std::clamp(mode, 0, 4)], (int)res);
+}
+void log_frame_generation() {
+  if (!g_fg_on) return;
+  sl::DLSSGState st{};
+  if (slDLSSGGetState(g_viewport, st, nullptr) != sl::Result::eOk) return;
+  host::log("dlss: frame generation status %u, %u frames presented per rendered frame", (unsigned)st.status, st.numFramesActuallyPresented);
+}
+void pcl_marker(int marker) {
+  if (!g_token || !g_reflex_ready) return;
+  slPCLSetMarker((sl::PCLMarker)marker, *g_token);
+}
+
 bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in) {
   if (!available() || !g_token) return false;
   sl::Resource color_in(sl::ResourceType::eTex2d, in.color_in, in.color_state);
@@ -286,8 +419,19 @@ bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in) {
       sl::ResourceTag(&mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilEvaluate, &render_extent),
       sl::ResourceTag(&color_out, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &out_extent),
   };
+  // No bias-current-colour hint: NVIDIA's guide (3.15) says current models do not use it. The HUD is
+  // composited after DLSS in the present blit instead.
   const sl::BaseStructure* inputs[] = {&g_viewport, &tags[0], &tags[1], &tags[2], &tags[3]};
-  sl::Result res = slEvaluateFeature(sl::kFeatureDLSS, *g_token, inputs, (uint32_t)(sizeof inputs / sizeof inputs[0]), list);
+  const uint32_t input_count = 5;
+  if (g_fg_on) {
+    // Frame generation reads depth and motion vectors at Present, after this call.
+    sl::ResourceTag fg_tags[] = {
+        sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),
+        sl::ResourceTag(&mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),
+    };
+    slSetTagForFrame(*g_token, g_viewport, fg_tags, 2, list);
+  }
+  sl::Result res = slEvaluateFeature(sl::kFeatureDLSS, *g_token, inputs, input_count, list);
   if (res != sl::Result::eOk) {
     static int logged = 0;
     if (logged++ < 5) host::log("dlss: slEvaluateFeature failed (%d)", (int)res);

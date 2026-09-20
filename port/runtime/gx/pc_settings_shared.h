@@ -12,9 +12,14 @@ namespace gx {
 
 struct SettingsState {
   bool open = false, saved = false;
+  bool dirty = false;   // a setting changed since the last write; saved once the control is released
   int volume = 0;
   std::array<float, 180> intervals{};
   unsigned cursor = 0;
+  // Reflex's measured render latency, same rolling-buffer shape as intervals, for the performance
+  // graph. Filled whether or not Reflex's low-latency mode is on (see gx_streamline.h).
+  std::array<float, 180> latencies{};
+  unsigned latency_cursor = 0;
   int rebind_action = -1;                                       // BindAction index while a "press a button" capture runs, -1 = none
   host::CaptureDevice rebind_kind = host::CaptureDevice::None;  // which device tab that capture belongs to
   int rebind_index = 0;                                         // pad / adapter port index for that tab
@@ -23,6 +28,9 @@ struct SettingsState {
   // panel is reachable mid-game.
   enum class Confirm { None, Restart, Quit };
   Confirm confirm = Confirm::None;
+  // The Esc menu (back to game, settings, quit), for keyboards without an F1 key and so quitting
+  // does not need Alt-Tab. menu_quit: showing "Quit Melee Unlocked?" instead of the buttons.
+  bool menu_open = false, menu_quit = false;
   // A texture pack was switched on or off: the backend drops what it has uploaded so the next
   // draw rebuilds it with (or without) its replacement.
   bool textures_dirty = false;

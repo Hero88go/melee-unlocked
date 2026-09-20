@@ -10,6 +10,7 @@
 #include "host.h"
 #include "window.h"
 #include "discord_presence.h"
+#include "gx_core.h"
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -496,6 +497,11 @@ void handle_load_savestate(const uint8_t* payload) {
   for (int i = 4; be32(payload + i) != 0; i += 8) blocks.push_back({be32(payload + i), be32(payload + i + 4)});
   g_active_savestates[frame]->Load(blocks);
   ++g_rollbacks;
+  // The next frame the game finishes continues from this older state, not from the frame on screen.
+  // Blending the two (sub-frame animation) would draw positions that never existed on either
+  // timeline, which on continuously animated stages showed as a glitch that only ever happened
+  // online. The renderer holds exact frames across it instead.
+  gx::mark_discontinuity();
   for (auto& kv : g_active_savestates) g_available_savestates.push_back(std::move(kv.second));
   g_active_savestates.clear();
 }
@@ -881,6 +887,8 @@ void handle_get_player_settings(std::vector<uint8_t>& q) {
 Config& config() { return g_config; }
 uint64_t rollback_count() { return g_rollbacks; }
 bool is_online_match() { return g_in_online_match; }
+int local_player_slot() { return g_local_player_index; }
+int ping_ms() { return g_netplay ? g_netplay->LastPingMs() : 0; }
 
 // g_last_search keeps the mode of the last search for the whole session, so it only means anything
 // while an online session is actually up: searching, set up (the online character select screen),

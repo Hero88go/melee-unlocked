@@ -40,6 +40,7 @@
 #include <condition_variable>
 #include <vector>
 #include "gx_d3d11.h"
+#include "flicker_scan.h"
 #include "gx_backend.h"
 #include "exi_slippi.h"
 #include "gx_shader.h"
@@ -272,6 +273,11 @@ class D3D11Backend : public Backend {
   // During construction a failure means "this machine cannot run D3D11": throw so the caller can
   // fall back to D3D12. Afterwards (a resolution change mid-session) it is a genuine fatal error.
   bool starting_ = true;
+  // Whether presented_aspect's widen actually reaches anything on screen: a mode's character/stage
+  // select through its results screen, not the bare 2D menu shell around it (see
+  // frame_has_widenable_scene in gx_core.h). Starts true so a fresh window is never letterboxed to
+  // 73:60 for the one frame before the first submit_frame sets it for real.
+  bool widenable_scene_ = true;
   void fail(HRESULT hr, const char* what) const { if (SUCCEEDED(hr)) return; if (starting_) require(hr, what); check(hr, what); }
   void init();
   void create_swapchain_targets(bool resize);
@@ -309,7 +315,7 @@ class D3D11Backend : public Backend {
   void execute_copy(const EfbCopy& copy);
   void present_efb(const EfbCopy& copy);
   void clear_efb(const EfbCopy& copy);
-  void blit(ID3D11ShaderResourceView* src, const float rect[12]);
+  void blit(ID3D11ShaderResourceView* src, const float rect[16]);
   void capture_backbuffer();
   void write_capture(const std::string& path, uint64_t sequence);
   void flush_captures();
@@ -377,14 +383,14 @@ class D3D11Backend : public Backend {
   // an unlocked rate a few thousand dumped frames cover a fraction of a second. So the check runs in
   // the renderer instead, on a 16x16 downsample of every presented frame, and only says something
   // when a frame pops out and comes back.
-  static constexpr int kScanGrid = 64;   // coarse, but enough to recognise what changed on a hit
+  static constexpr int kScanGrid = FlickerScanner::kGrid;   // coarse, but enough to recognise what changed on a hit
   static constexpr int kScanRing = 3;   // readback is mapped two frames later, so it never stalls
   void flicker_scan();
   ComPtr<ID3D11Texture2D> scan_rt_, scan_staging_[kScanRing];
   ComPtr<ID3D11RenderTargetView> scan_rtv_;
-  uint32_t scan_ring_ = 0, scan_ready_ = 0, scan_history_ = 0;
-  uint64_t scan_hits_ = 0;
-  float scan_sig_[3][kScanGrid * kScanGrid] = {};
+  uint32_t scan_ring_ = 0, scan_ready_ = 0;
+  FlickerScanner scanner_;   // the analysis, shared with D3D12 (flicker_scan.cpp)
+
 
   std::mutex shader_mutex_;
   std::condition_variable shader_cv_, shader_done_cv_;
@@ -509,7 +515,7 @@ void D3D11Backend::init() {
   // with the root constants replaced by a constant buffer.
   const char* blit = R"(
 Texture2D src : register(t0); SamplerState samp : register(s0);
-cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis
+cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 color; };  // color: brightness, contrast, vibrance
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
 // Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
@@ -528,7 +534,11 @@ float4 downsample(float2 uv) {
 }
 float4 PS(O i) : SV_Target {
   float4 c = downsample(i.uv);
-  if (sharp.z <= 0.0) return c;
+  if (sharp.z <= 0.0) {
+    float3 rgb = (c.rgb * color.x - 0.5) * color.y + 0.5;
+    float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
+    return float4(saturate(lerp(luma.xxx, rgb, color.z)), c.a);
+  }
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
   float2 step = sharp.xy * max(box.xy, 1.0);
@@ -539,7 +549,9 @@ float4 PS(O i) : SV_Target {
   float peak = -1.0 / lerp(8.0, 5.0, saturate(sharp.z));
   float3 wgt = amp * peak;
   float3 r = (c.rgb + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt);
-  return float4(saturate(r), c.a);
+  r = (saturate(r) * color.x - 0.5) * color.y + 0.5;
+  float luma = dot(r, float3(0.2126, 0.7152, 0.0722));
+  return float4(saturate(lerp(luma.xxx, r, color.z)), c.a);
 })";
   ComPtr<ID3DBlob> bvs, bps, err;
   fail(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &bvs, &err), "blit vs");
@@ -561,7 +573,7 @@ float4 PS() : SV_Target { return clear_color; })";
   fail(device_->CreatePixelShader(cps->GetBufferPointer(), cps->GetBufferSize(), nullptr, &clear_ps_), "clear ps object");
 
   D3D11_BUFFER_DESC cbd{};
-  cbd.ByteWidth = 48; cbd.Usage = D3D11_USAGE_DYNAMIC; cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+  cbd.ByteWidth = 64; cbd.Usage = D3D11_USAGE_DYNAMIC; cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   fail(device_->CreateBuffer(&cbd, nullptr, &blit_cb_), "blit cb");
   cbd.ByteWidth = 32;
   fail(device_->CreateBuffer(&cbd, nullptr, &clear_cb_), "clear cb");
@@ -613,8 +625,8 @@ int D3D11Backend::pick_scale() const {
 }
 
 // Melee's camera asks for a 73:60 frustum, which the Slippi widescreen code widens to exactly
-// 16:9. See presented_aspect in render_options.h for the evidence and the player's override.
-float D3D11Backend::output_aspect() const { return presented_aspect(opts_, client_w_, client_h_); }
+// 16:9. See presented_aspect in gx_d3d12.h for the evidence and the player's override.
+float D3D11Backend::output_aspect() const { return presented_aspect(opts_, client_w_, client_h_, widenable_scene_); }
 
 void D3D11Backend::output_size(int* vw, int* vh) const {
   float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
@@ -1209,8 +1221,8 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
     D3D11_RECT sc{0, 0, (LONG)sw, (LONG)sh};
     context_->RSSetViewports(1, &vp);
     context_->RSSetScissorRects(1, &sc);
-    const float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                            0, 0, 0, 0, 1.0f, 1.0f, 0, 0};   // no sharpening or averaging on this path
+    const float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+                            0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 1.0f, 1.0f, 1.0f, 0};   // no sharpening, grading or averaging on this path
     blit(efb_srv_.Get(), rect);
     bind_efb_targets();
   } else {
@@ -1223,10 +1235,10 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
 
 // One full-screen triangle through the shared blit/sharpen shader. The caller has already set
 // the render target, viewport and scissor.
-void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[12]) {
+void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[16]) {
   D3D11_MAPPED_SUBRESOURCE m{};
   if (FAILED(context_->Map(blit_cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
-  std::memcpy(m.pData, rect, 48);
+  std::memcpy(m.pData, rect, 64);
   context_->Unmap(blit_cb_.Get(), 0);
   ID3D11Buffer* buffer = blit_cb_.Get();
   ID3D11SamplerState* sampler = blit_sampler_.Get();
@@ -1263,9 +1275,9 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   D3D11_RECT sc{0, 0, client_w_, client_h_};
   context_->RSSetViewports(1, &vp);
   context_->RSSetScissorRects(1, &sc);
-  float rect[12] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+  float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
                     1.0f / std::max((float)efb_w_, 1.0f), 1.0f / std::max((float)efb_h_, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
-                    1.0f, 1.0f, 0.0f, 0.0f};
+                    1.0f, 1.0f, 0.0f, 0.0f, opts_.brightness, opts_.contrast, opts_.vibrance, 0.0f};
   // Averaging box when the rendered image is larger than the output (see the D3D12 backend).
   rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
   rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
@@ -1316,7 +1328,7 @@ void D3D11Backend::flicker_scan() {
   D3D11_RECT sc{0, 0, kScanGrid, kScanGrid};
   context_->RSSetViewports(1, &vp);
   context_->RSSetScissorRects(1, &sc);
-  const float rect[12] = {1, 1, 0, 0, 0, 0, 0, 0, 1.0f, 1.0f, 0, 0};
+  const float rect[16] = {1, 1, 0, 0, 0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 1.0f, 1.0f, 1.0f, 0};
   blit(efb_srv_.Get(), rect);
   context_->CopyResource(scan_staging_[scan_ring_].Get(), scan_rt_.Get());
   scan_ring_ = (scan_ring_ + 1) % kScanRing;
@@ -1325,55 +1337,15 @@ void D3D11Backend::flicker_scan() {
   // Map the oldest copy in the ring, which the GPU finished two frames ago.
   D3D11_MAPPED_SUBRESOURCE m{};
   if (SUCCEEDED(context_->Map(scan_staging_[scan_ring_].Get(), 0, D3D11_MAP_READ, 0, &m))) {
-    float* slot = scan_sig_[scan_history_ % 3];
+    static float grid[FlickerScanner::kGrid * FlickerScanner::kGrid];
     const uint8_t* src = (const uint8_t*)m.pData;
     for (int y = 0; y < kScanGrid; ++y)
       for (int x = 0; x < kScanGrid; ++x) {
         const uint8_t* p = src + (size_t)y * m.RowPitch + (size_t)x * 4;
-        slot[y * kScanGrid + x] = p[0] * 0.25f + p[1] * 0.6f + p[2] * 0.15f;
+        grid[y * kScanGrid + x] = p[0] * 0.25f + p[1] * 0.6f + p[2] * 0.15f;
       }
     context_->Unmap(scan_staging_[scan_ring_].Get(), 0);
-    ++scan_history_;
-    if (scan_history_ >= 3) {
-      const float* a = scan_sig_[(scan_history_ - 3) % 3];
-      const float* b = scan_sig_[(scan_history_ - 2) % 3];
-      const float* c = scan_sig_[(scan_history_ - 1) % 3];
-      float d_prev = 0, d_next = 0, d_skip = 0;
-      for (int i = 0; i < kScanGrid * kScanGrid; ++i) {
-        d_prev += std::abs(b[i] - a[i]); d_next += std::abs(b[i] - c[i]); d_skip += std::abs(c[i] - a[i]);
-      }
-      const float n = kScanGrid * kScanGrid;
-      d_prev /= n; d_next /= n; d_skip /= n;
-      const float out = std::min(d_prev, d_next);
-      // The floor keeps a still image, where every difference is near zero, from reporting noise.
-      if (out > 1.5f && out > d_skip * 1.25f) {
-        ++scan_hits_;
-        host::log("flicker: presented frame %u pops out and back (prev %.2f, next %.2f, neighbours %.2f, ratio %.1f); %llu so far",
-                  frames_presented_ - 1, d_prev, d_next, d_skip, out / (d_skip > 0.01f ? d_skip : 0.01f),
-                  (unsigned long long)scan_hits_);
-        // Write the three signatures so a hit can be classified by someone who was not watching:
-        // a hit spark is a small bright patch, the defect we are chasing is the whole stage.
-        if (scan_hits_ <= 40) {
-          CreateDirectoryA("flicker", nullptr);
-          const float* trio[3] = {a, b, c};
-          for (int k = 0; k < 3; ++k) {
-            char path[160];
-            snprintf(path, sizeof path, "flicker/hit%03llu_%u_%s.ppm", (unsigned long long)scan_hits_,
-                     frames_presented_ - 1, k == 0 ? "1prev" : k == 1 ? "2BAD" : "3next");
-            if (FILE* f = fopen(path, "wb")) {
-              fprintf(f, "P6\n%d %d\n255\n", kScanGrid, kScanGrid);
-              for (int i = 0; i < kScanGrid * kScanGrid; ++i) {
-                const float value = trio[k][i];
-                const unsigned char v = (unsigned char)(value < 0 ? 0 : value > 255 ? 255 : value);
-                const unsigned char rgb[3] = {v, v, v};
-                fwrite(rgb, 1, 3, f);
-              }
-              fclose(f);
-            }
-          }
-        }
-      }
-    }
+    scanner_.push(grid, frames_presented_ - kScanRing);   // this copy was made kScanRing frames ago
   }
   bind_efb_targets();
 }
@@ -1411,6 +1383,7 @@ void D3D11Backend::flush_captures() {
 
 // ---------------------------------------------------------------- frame
 void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
+  widenable_scene_ = frame_has_widenable_scene(frame);
   integrate_compiled_pipelines();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; samplers_.clear(); reset_bound(); }
   if (opts_.ssaa != ssaa_applied_ || pick_scale() != scale_) {
@@ -1459,7 +1432,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
     const DrawCall& dc = frame.draws[cmd.index];
     DrawPlan& plan = plans_[cmd.index];
-    // The "Visual effects" quality reduction was removed from both backends; see gx_d3d12.cpp.
+    if (skip_for_effects(frame, dc, opts_.effects_level)) continue;   // "Visual effects"; plan.valid stays false
     uint32_t n = dc.vertex_count;
     const uint32_t first = (uint32_t)index_scratch_.size();
     auto& idx = index_scratch_;
@@ -1569,7 +1542,11 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       bool burst = opts_.capture_burst && opts_.capture_frame && next_presented >= opts_.capture_frame && next_presented < opts_.capture_frame + opts_.capture_burst;
       if (next_presented == opts_.capture_frame && !burst) { capture = true; path = opts_.capture_path; }
       else if (burst || (opts_.capture_every && next_presented % opts_.capture_every == 0)) {
-        char suffix[32]; snprintf(suffix, sizeof suffix, "_%05u.ppm", next_presented);
+        // A pinned-phase run names each picture by its simulation frame, so two runs line up by
+        // name even if one of them skipped a present while draining a backlog.
+        char suffix[48];
+        if (opts_.pin_phase >= 0) snprintf(suffix, sizeof suffix, "_s%06llu.ppm", (unsigned long long)frame.sequence);
+        else snprintf(suffix, sizeof suffix, "_%05u.ppm", next_presented);
         const std::string& base = opts_.capture_path;
         path = base.substr(0, base.size() > 4 && base.compare(base.size() - 4, 4, ".ppm") == 0 ? base.size() - 4 : base.size()) + suffix;
         capture = true;
@@ -1582,7 +1559,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       gx_capture_request_set(want - 1);
       CreateDirectoryA("capture", nullptr);
       char req[64];
-      snprintf(req, sizeof req, "capture\blink_%05u.ppm", frames_presented_ + 1);
+      snprintf(req, sizeof req, "capture\\blink_%05u.ppm", frames_presented_ + 1);
       const std::string saved = opts_.capture_path;
       opts_.capture_path = req;
       capture_backbuffer();

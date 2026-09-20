@@ -5,6 +5,9 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#ifdef GX_DLSS5
+#include "gx_dlss5.h"
+#endif
 
 namespace gx {
 
@@ -29,14 +32,28 @@ struct RenderOptions {
   // than Off the renderer presents new sub-frames between 60 Hz simulation frames.
   double fps_cap = 60; // -1 follows the active monitor
   bool fullscreen = false;
+  // DLSS Frame Generation and NVIDIA Reflex are presentation-only controls. They are ignored when
+  // the selected backend or hardware cannot provide them.
+  int frame_generation_mode = 0;
+  int reflex_mode = 0;
+  bool reflex_stats = false;
+  bool reflex_flash = false;
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
+#ifdef GX_DLSS5
+  bool dlss5 = false;
+  dlss5::Tuning dlss5_tuning;
+#endif
   float dlss_jitter_sign = -1.0f; // calibrated 2026-09-11: -1 reconstructs sharp text, +1 blurs (see PORT_COMPLETION.md)
   bool pc_settings = false, settings_open = false, performance_overlay = false;
+  bool show_vram = false;
+  bool show_fps = false, show_ping = true;
   // The "Settings: F1" reminder in the corner. On for a new player, off for anyone who knows the
   // key and does not want it in a recording.
   bool settings_hint = true;
   bool input_overlay = false;     // on-screen controller display, for streaming
   int input_overlay_ports = 1;    // bitmask of the controller ports it shows (bit 0 = port 1)
+  bool input_overlay_values = false;
+  int input_overlay_stick = 5;
   bool input_overlay_hide_border = false;  // draw the pads with no panel background or resize grip
   // Drop in-world translucent effects to buy frame rate on weak machines: 0 everything, 1 skips
   // effects that do not write depth (sparks, glow, smoke), 2 skips translucent world geometry too.
@@ -70,6 +87,7 @@ struct RenderOptions {
   // human can catch with a screenshot key. Diagnostic only: it costs a small downsample and readback
   // per presented frame, so it is off unless --flicker-scan asks for it.
   bool flicker_scan = false;
+  double pin_phase = -1;
   std::string settings_path = "port-settings.ini";
   std::string frame_times; // optional buffered CSV of CPU presentation timing
   SubFrameMode subframe = SubFrameMode::Off;
@@ -96,6 +114,7 @@ struct RenderOptions {
   // instead of a stutter each time a new texture comes on screen.
   bool prefetch_textures = true;
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
+  float brightness = 1.0f, contrast = 1.0f, vibrance = 1.0f;
   int anisotropy = 16;        // texture anisotropic filtering 1..16
   int ssaa = 1;               // supersampling factor: 1 off, 2 = 4x SSAA (EFB rendered at 2x the chosen scale, box filtered)
   std::string capture_path;   // write a PPM of the presented image at capture_frame
@@ -107,6 +126,10 @@ struct RenderOptions {
   std::string dump_path;      // write a text dump of draw state + shaders at dump_frame
   uint32_t dump_frame = 0;
 };
+
+// Compatibility name retained for tests and backend-facing callers from before the shared options
+// header existed. It is the same object type, not a second settings layout.
+using D3D12Options = RenderOptions;
 
 // Sub-frame animation only means anything when the display shows more frames than the simulation
 // produces. At a cap of 60 or below there is one presented frame per 60 Hz tick either way, so
@@ -129,15 +152,19 @@ inline bool subframe_useful(double fps_cap) { return fps_cap <= 0.0 || fps_cap >
 // samples of an NTSC active line, which is why Dolphin's VI derived aspect comes out at 1.2154
 // and why Slippi Dolphin ships "Force 73:60 (Melee)" as its default (VideoConfig.cpp).
 // The Slippi widescreen Gecko code multiplies that camera aspect by 320/219, and 73/60 * 320/219
-// is exactly 16/9, so with the code on the correct presentation is 16:9.
-inline float presented_aspect(const RenderOptions& options, int client_w, int client_h) {
+// is exactly 16/9, so with the code on the correct presentation is 16:9. Some scenes keep the
+// authored 4:3 projection even when the renderer has a widescreen presentation option; those pass
+// widenable_scene=false so the window is letterboxed instead of stretching that scene.
+inline float presented_aspect(const RenderOptions& options, int client_w, int client_h,
+                              bool widenable_scene = true) {
   switch (options.aspect) {
     case AspectMode::Native:    return 73.0f / 60.0f;
     case AspectMode::Force4_3:  return 4.0f / 3.0f;
     case AspectMode::Force16_9: return 16.0f / 9.0f;
     // No bars at all: claiming the window's own aspect makes the letterbox maths fill it exactly.
     case AspectMode::Stretch:   return (float)(client_w > 0 ? client_w : 1) / (float)(client_h > 0 ? client_h : 1);
-    default:                    return options.widescreen || options.true_widescreen ? 16.0f / 9.0f : 73.0f / 60.0f;
+    default:                    return (options.widescreen || options.true_widescreen) && widenable_scene
+                                      ? 16.0f / 9.0f : 73.0f / 60.0f;
   }
 }
 

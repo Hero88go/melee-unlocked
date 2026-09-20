@@ -112,13 +112,69 @@ struct Frame {
   std::vector<EfbCopy> copies;
   std::vector<FrameCommand> commands;
   uint64_t sequence = 0;
+  // The game's scene controller when this frame was finished: major scene (2 VS, 0x1C training,
+  // 1 the menus) and the minor scene within it (2 is in-game for the match modes; the character and
+  // stage selects come before it). Read on the simulation thread; the presentation thread decides
+  // from it whether there is a match on screen.
+  uint8_t scene_major = 0, scene_minor = 0;
   double time = 0.0;   // host seconds of the retrace this frame belongs to (see host::frame_time)
+  // The game's timeline jumped between the previous frame and this one: an online rollback loaded
+  // an older state and simulated forward again. The two frames are not neighbours in time, so
+  // nothing may be blended between them (see mark_discontinuity).
+  bool discontinuous = false;
   // sequence and time are reset too: a recycled frame is handed back to the producer as "cleared",
   // and the renderer decides when to present by comparing sequences. Leaving a stale one on a
   // buffer that is about to be refilled is only harmless while every producer remembers to assign
   // one before pushing.
-  void clear() { vertices.clear(); draws.clear(); copies.clear(); commands.clear(); sequence = 0; time = 0.0; }
+  void clear() { vertices.clear(); draws.clear(); copies.clear(); commands.clear(); sequence = 0; time = 0.0; discontinuous = false; }
 };
+
+// Whether a frame certainly shows a running match. Anything else counts as a menu: the character and
+// stage selects are minor scenes 0 and 1 of every mode that plays a match, the match is 2 and up.
+inline bool frame_in_match(const Frame& f) {
+  const uint8_t major = f.scene_major, minor = f.scene_minor;
+  // Slippi online play is major scene 08: its character select is minor 0, the match minor 2, and
+  // the screens around them (splash, results) other minors. Missing from the list below, an online
+  // match used to be treated as a menu: sub-frame animation ran in its menu mode for whole matches.
+  if (major == 0x08) return minor == 2;
+  const bool match_mode = major == 0x02 || major == 0x03 || major == 0x04 || major == 0x05 ||
+                          major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C;
+  return match_mode && minor >= 2;
+}
+
+// Whether a frame's scene has 3D content the true-16:9 camera widen actually reaches: any mode that
+// plays a match (its character/stage select through its results screen), or Slippi online play.
+// The bare menu shell around it (major 01: title, main menu, options, trophies, vs mode select, the
+// rest) is almost entirely the 2D/orthographic UI layer, which build_projection deliberately never
+// widens (see its comment: widening it compressed shadows off their platforms). Presenting THAT
+// screen at 16:9 anyway stretches the whole picture with nothing compensating, the same defect true
+// 16:9 originally had on the screen flash, just covering the entire menu instead of one quad. Gating
+// presented_aspect on this keeps the letterbox at 73:60 there and lets it widen everywhere the widen
+// itself actually does something.
+inline bool frame_has_widenable_scene(const Frame& f) {
+  const uint8_t major = f.scene_major;
+  return major == 0x08 || major == 0x02 || major == 0x03 || major == 0x04 || major == 0x05 ||
+         major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C;
+}
+
+// "Visual effects" (Reduced / Minimal): whether a draw is decoration the player chose to skip. Only
+// during a match, so menus are never touched: an earlier version applied everywhere and hid the
+// stage select pointer and menu text, which are drawn the same way as a hit spark. Only world-space
+// blended draws that do not write depth qualify, so fighters, the stage and the HUD always draw.
+// Reduced skips additive ones (glow, sparks, flashes); Minimal also skips any that neither write nor
+// test depth (screen overlays in the world). Display only: guest memory is untouched, so it cannot
+// desync and two players may use different levels.
+inline bool skip_for_effects(const Frame& f, const DrawCall& dc, int level) {
+  if (level <= 0 || dc.xf_regs[0x26] != 0 || !(dc.bp.blendmode() & 1) || !frame_in_match(f)) return false;
+  const uint32_t zmode = dc.bp.zmode();
+  if (zmode & 0x10) return false;                                   // writes depth: part of the scene
+  const bool additive = ((dc.bp.blendmode() >> 5) & 7) == 1;         // destination factor ONE
+  return additive || (level >= 2 && !(zmode & 1));
+}
+
+// Marks the next finished frame as discontinuous. Called on the simulation thread when the game's
+// state is replaced wholesale (a rollback's savestate load), which only the host knows about.
+void mark_discontinuity();
 
 // Renderer interface implemented by the D3D12 backend (or a null backend).
 struct Backend {

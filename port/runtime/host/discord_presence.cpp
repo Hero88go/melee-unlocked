@@ -38,6 +38,12 @@ constexpr uint32_t FRAME_MAX = 64 * 1024;  // larger than Discord ever sends; an
 std::mutex g_mutex;                        // guards everything below except the atomics
 std::condition_variable g_wake;
 std::string g_app_id, g_status = "Off", g_join_code;
+// The most recent invite, kept for the on-screen notice. Separate from g_join_code because that
+// one is consumed by the Direct code list the moment the game asks for it, which would leave
+// nothing to show.
+std::string g_invite_notice;
+uint64_t g_invite_notice_until = 0;
+constexpr uint64_t INVITE_NOTICE_MS = 15000;   // long enough to read and act on, not a permanent banner
 Presence g_wanted;
 std::thread g_thread;
 std::atomic<bool> g_enabled{false}, g_stop{false}, g_has_join{false};
@@ -123,6 +129,10 @@ json activity_json(const Presence& p) {
   json activity = json::object();
   if (!p.details.empty()) activity["details"] = p.details;
   if (!p.state.empty()) activity["state"] = p.state;
+  // The picture beside the presence. Discord looks the name up in the application's Rich Presence
+  // art assets, so it stays blank until an asset called this is uploaded there; sending it costs
+  // nothing meanwhile.
+  activity["assets"] = {{"large_image", "melee_unlocked"}, {"large_text", "Melee Unlocked"}};
   const bool has_party = p.party_size > 0 && p.party_max >= p.party_size;
   if (has_party) {
     // The party id only has to be stable and unique to this player; their own connect code is both,
@@ -247,6 +257,8 @@ Pump handle_frames(HANDLE pipe, Reader& reader) {
         std::lock_guard<std::mutex> lk(g_mutex);
         g_join_code = secret;
         mine = g_wanted.join_code;
+        g_invite_notice = secret;
+        g_invite_notice_until = now_ms() + INVITE_NOTICE_MS;
       }
       g_has_join.store(true, std::memory_order_release);
       copy_to_clipboard(mine);
@@ -328,6 +340,40 @@ void worker() {
   }
 }
 
+// What Discord's own discord-rpc calls Discord_Register: a discord-<application id> URL protocol
+// under the current user pointing at this game's launcher. Discord's "Ask to Join" is only offered
+// on a machine where the application is registered this way; without it the friend's client says
+// the game is not detected, whether or not the game is running. Current user only, no elevation.
+void register_launch(const std::string& application_id) {
+  wchar_t self[MAX_PATH]{};
+  if (!GetModuleFileNameW(nullptr, self, MAX_PATH)) return;
+  std::wstring exe = self;
+  const size_t slash = exe.find_last_of(L"\\/");
+  if (slash != std::wstring::npos) {
+    const std::wstring launcher = exe.substr(0, slash + 1) + L"melee_unlocked.exe";
+    if (GetFileAttributesW(launcher.c_str()) != INVALID_FILE_ATTRIBUTES) exe = launcher;
+  }
+  std::wstring id(application_id.begin(), application_id.end());
+  const std::wstring key = L"Software\\Classes\\discord-" + id;
+  const std::wstring command = L"\"" + exe + L"\" \"%1\"";
+  HKEY h = nullptr;
+  if (RegCreateKeyExW(HKEY_CURRENT_USER, key.c_str(), 0, nullptr, 0, KEY_WRITE, nullptr, &h, nullptr) != ERROR_SUCCESS) return;
+  const std::wstring name = L"URL:Run game " + id + L" protocol";
+  RegSetValueExW(h, nullptr, 0, REG_SZ, (const BYTE*)name.c_str(), (DWORD)((name.size() + 1) * sizeof(wchar_t)));
+  RegSetValueExW(h, L"URL Protocol", 0, REG_SZ, (const BYTE*)L"", sizeof(wchar_t));
+  HKEY icon = nullptr;
+  if (RegCreateKeyExW(h, L"DefaultIcon", 0, nullptr, 0, KEY_WRITE, nullptr, &icon, nullptr) == ERROR_SUCCESS) {
+    RegSetValueExW(icon, nullptr, 0, REG_SZ, (const BYTE*)exe.c_str(), (DWORD)((exe.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(icon);
+  }
+  HKEY open = nullptr;
+  if (RegCreateKeyExW(h, L"shell\\open\\command", 0, nullptr, 0, KEY_WRITE, nullptr, &open, nullptr) == ERROR_SUCCESS) {
+    RegSetValueExW(open, nullptr, 0, REG_SZ, (const BYTE*)command.c_str(), (DWORD)((command.size() + 1) * sizeof(wchar_t)));
+    RegCloseKey(open);
+  }
+  RegCloseKey(h);
+}
+
 }  // namespace
 
 void configure(const std::string& application_id) {
@@ -346,6 +392,7 @@ void enable(bool on) {
   if (g_enabled.load(std::memory_order_acquire)) return;
   std::string id;
   { std::lock_guard<std::mutex> lk(g_mutex); id = g_app_id; }
+  if (!id.empty()) register_launch(id);
   if (id.empty()) {
     host::log("discord: presence is on but no application ID is set; staying off");
     set_status("No application ID. Create one at discord.com/developers/applications and paste it here.");
@@ -385,6 +432,13 @@ std::string take_join_code() {
   std::string out;
   out.swap(g_join_code);
   return out;
+}
+
+std::string invite_notice() {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (g_invite_notice.empty()) return {};
+  if (now_ms() >= g_invite_notice_until) { g_invite_notice.clear(); return {}; }
+  return g_invite_notice;
 }
 
 void shutdown() {

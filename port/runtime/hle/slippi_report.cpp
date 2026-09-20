@@ -82,6 +82,9 @@ bool http(const char* method, const std::string& url, const std::wstring& header
   return ok;
 }
 
+}  // namespace
+bool http_get(const std::string& url, std::string* response, int* status) { return http("GET", url, L"", "", status, response); }
+namespace {
 // GraphQL POST; returns the `data` object or null (and logs) on failure.
 json graphql(const std::string& query, const json& variables) {
   json body = {{"query", query}, {"variables", variables}};
