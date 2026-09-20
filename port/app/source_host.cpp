@@ -4,19 +4,22 @@
 // instead of the translated guest. main.cpp calls reserve_memory() first thing and run() where the
 // recompiled build would enter __start.
 //
-// What still differs from the recompiled build is listed where it happens: no sound yet (M4), no
-// memory card yet (M10), Slippi's game side not present (M12).
+// What still differs from the recompiled build is listed where it happens: no memory card yet
+// (M10), Slippi's game side not present (M12).
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "source_host.h"
 #include <windows.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include "host.h"
+#include "audio_core.h"
+#include "ax_ucode.h"
 #include "gx_core.h"
 #include "lcancel.h"
 #include "mu_host.h"
@@ -36,6 +39,23 @@ constexpr uintptr_t GAME_IMAGE_BASE = 0x82800000u;
 
 MuGameApi g_game{};
 std::string g_dll = "melee_game.dll";
+audio_core::State g_audio;
+
+uint16_t ax_native_rd16(uint32_t addr) {
+  uint16_t value;
+  std::memcpy(&value, host::ptr(addr, sizeof value), sizeof value);
+  return value;
+}
+uint32_t ax_native_rd32(uint32_t addr) {
+  return ((uint32_t) ax_native_rd16(addr) << 16) | ax_native_rd16(addr + 2);
+}
+void ax_native_wr16(uint32_t addr, uint16_t value) {
+  std::memcpy(host::ptr(addr, sizeof value), &value, sizeof value);
+}
+void ax_native_wr32(uint32_t addr, uint32_t value) {
+  ax_native_wr16(addr, (uint16_t) (value >> 16));
+  ax_native_wr16(addr + 2, (uint16_t) value);
+}
 
 // ---- the disc's filesystem table, for the game's entry numbers ----
 struct FstFile { uint32_t offset, length; bool dir; };
@@ -109,15 +129,25 @@ void h_panic(const char* file, int32_t line, const char* message) {
 uint64_t h_ticks() { return host::cpu->tb; }
 uint64_t h_boot_time() { return 0; }
 
+void native_audio_done(void*) {
+  if (g_game.ai_dma_done) g_game.ai_dma_done();
+}
+
+void native_audio_tick() {
+  audio_core::tick(g_audio, host::cpu->tb, host::TB_HZ, native_audio_done, nullptr);
+}
+
 void h_poll() {
   guarded([] {
     host::advance_time(2048);   // time flows in busy waits, as it does for the recompiled build
+    native_audio_tick();
     if (host::retrace_due()) host::retrace();
     else g_game.fire_alarms(host::cpu->tb);
   });
 }
 
 void native_retrace() {
+  native_audio_tick();
   g_game.fire_alarms(host::cpu->tb);
   g_game.retrace();
 }
@@ -185,21 +215,21 @@ int32_t h_card_set_stat(int32_t, int32_t, const void*, uint32_t) { return -3; }
 int32_t h_card_free_blocks(int32_t, int32_t*, int32_t*) { return -3; }
 int32_t h_card_format(int32_t) { return -3; }
 
-// Audio: silent until M4 (the game's sound data is not ported yet). ARAM is real, since the game
-// keeps other data there too.
-void h_ai_init_dma(void*, uint32_t) {}
-void h_ai_start_dma(int32_t) {}
+void h_ai_init_dma(void* buffer, uint32_t length) { audio_core::init_dma(g_audio, buffer, length); }
+void h_ai_start_dma(int32_t on) { audio_core::start_dma(g_audio, on != 0, host::cpu->tb, host::TB_HZ); }
 void h_ai_set_sample_rate(uint32_t) {}
 void h_ai_set_stream_volume(int32_t, int32_t) {}
-void h_dsp_mail(uint32_t) {}
-uint32_t h_dsp_mail_pending() { return 0; }
+void h_dsp_mail(uint32_t mail) { audio_core::dsp_mail(mail); }
+uint32_t h_dsp_mail_pending() { return audio_core::dsp_mail_pending(); }
 void* h_aram_base() { return host::aram; }
-uint32_t h_aram_size() { return 0x01000000u; }
+uint32_t h_aram_size() { return 0x02000000u; }
 void h_aram_dma(int32_t to_aram, void* mainmem, uint32_t aram_offset, uint32_t length) {
-  if ((uint64_t)aram_offset + length > 0x01000000u) host::die("ARAM DMA out of range %08X+%X", aram_offset, length);
+  if ((uint64_t)aram_offset + length > 0x02000000u) host::die("ARAM DMA out of range %08X+%X", aram_offset, length);
   if (to_aram) std::memcpy(host::aram + aram_offset, mainmem, length);
   else std::memcpy(mainmem, host::aram + aram_offset, length);
 }
+void* h_native_alloc(uint32_t size) { return std::malloc(size); }
+void h_native_free(void* ptr) { std::free(ptr); }
 
 uint32_t h_mem1_size() { return MEM1_SIZE; }
 int32_t h_sound_mode() { return 1; }
@@ -250,6 +280,7 @@ MuHostApi make_host() {
   h.ai_init_dma = h_ai_init_dma; h.ai_start_dma = h_ai_start_dma; h.ai_set_sample_rate = h_ai_set_sample_rate;
   h.ai_set_stream_volume = h_ai_set_stream_volume; h.dsp_mail = h_dsp_mail; h.dsp_mail_pending = h_dsp_mail_pending;
   h.aram_base = h_aram_base; h.aram_size = h_aram_size; h.aram_dma = h_aram_dma;
+  h.native_alloc = h_native_alloc; h.native_free = h_native_free;
   h.mem1_size = h_mem1_size; h.sound_mode = h_sound_mode; h.set_sound_mode = h_set_sound_mode;
   h.progressive_mode = h_progressive_mode; h.set_progressive_mode = h_set_progressive_mode;
   h.reset_code = h_reset_code; h.reset_switch = h_reset_switch; h.stop = h_stop;
@@ -377,8 +408,11 @@ bool reserve_memory() {
 int run(void (*shutdown)(int)) {
   g_shutdown = shutdown;
   host::init_state_digest();
-  if (!host::aram) host::aram = (uint8_t*)std::calloc(0x01000000, 1);
+  if (!host::aram) host::aram = (uint8_t*)std::calloc(0x02000000, 1);
   if (!host::cpu) host::cpu = new ppc::Context();   // only its timebase is used: the clock both builds share
+  ax::set_memory({ax_native_rd16, ax_native_rd32, ax_native_wr16, ax_native_wr32,
+                  host::aram, 0x02000000});
+  audio_core::reset(g_audio);
   if (!read_fst()) host::die("cannot read the disc's filesystem table");
   HMODULE module = LoadLibraryA(g_dll.c_str());
   if (!module) host::die("cannot load %s (error %lu)", g_dll.c_str(), GetLastError());

@@ -8,6 +8,9 @@
 
 #include "mu_shim.h"
 
+void* mu_native_alloc(u32 size) { return mu_host->native_alloc(size); }
+void mu_native_free(void* ptr) { mu_host->native_free(ptr); }
+
 /* ---- AI ---- */
 static AIDCallback mu_ai_callback;
 
