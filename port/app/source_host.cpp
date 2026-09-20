@@ -21,6 +21,7 @@
 #include "lcancel.h"
 #include "mu_host.h"
 #include "ppc.h"
+#include "window.h"
 
 namespace source_port {
 namespace {
@@ -219,6 +220,20 @@ MuMatchOverride g_match{};
 bool g_match_set = false;
 const MuMatchOverride* h_match_override() { return g_match_set ? &g_match : nullptr; }
 
+// --rng-seed: forced from host::options once at startup (see main.cpp's flag parsing), read by the
+// game at the same point --match is (gmvsmelee.c's MU_NATIVE block, right before
+// gm_SetupSubColors), so a scripted run reaches identical RNG in both the source port and a
+// --rng-seed recomp run from the first in-match frame.
+void h_rng_seed_override(uint32_t* seed, int32_t* has_value) {
+  *has_value = host::options.rng_seed_set ? 1 : 0;
+  if (host::options.rng_seed_set) *seed = host::options.rng_seed;
+}
+// Called from the same gmvsmelee.c point unconditionally (not just when --rng-seed was given), so
+// an @match-relative script section starts counting from the match's rules/players being
+// finalised on an ordinary offline run too, the same instant the recomp guest's --rng-seed hook
+// marks it.
+void h_mark_match_start() { host::input_mark_match_start(); }
+
 MuHostApi make_host() {
   MuHostApi h{};
   h.version = MU_HOST_API_VERSION;
@@ -240,6 +255,7 @@ MuHostApi make_host() {
   h.progressive_mode = h_progressive_mode; h.set_progressive_mode = h_set_progressive_mode;
   h.reset_code = h_reset_code; h.reset_switch = h_reset_switch; h.stop = h_stop;
   h.match_override = h_match_override;
+  h.rng_seed_override = h_rng_seed_override; h.mark_match_start = h_mark_match_start;
   return h;
 }
 

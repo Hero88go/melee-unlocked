@@ -273,6 +273,7 @@ void init_state_digest() {
       for (const char* field : {"present", "stocks", "action", "anim_frame", "pos_x", "pos_y", "pos_z",
                                 "vel_x", "vel_y", "vel_z", "percent", "facing"})
         std::fprintf(g_state_digest, ",p%u_%s", slot, field);
+    std::fprintf(g_state_digest, ",scene_major,match_frame");
     std::fputc('\n', g_state_digest);
   }
 }
@@ -512,6 +513,21 @@ static void trace_state() {
   std::fflush(g_state_trace);
 }
 
+// Just the scene fields, cheap enough to call every retrace when an @scene script needs to know
+// when the game reaches a particular mode/state (window.cpp). Shares the same addresses
+// digest_state() uses for the full snapshot so the two never disagree about what "scene" means.
+void current_scene(uint32_t* major, uint32_t* minor) {
+  if (native_state_snapshot) {
+    MuStatePod state{};
+    native_state_snapshot(&state);
+    *major = state.scene_major;
+    *minor = state.scene;
+  } else {
+    *major = rd8(0x80479D30u);   // GameRouting::curr_mode (state_machine + 0)
+    *minor = rd8(0x80479D33u);   // GameRouting::curr_state_id (state_machine + 3)
+  }
+}
+
 static void digest_state() {
   if (!g_state_digest) return;
   MuStatePod state{};
@@ -520,7 +536,9 @@ static void digest_state() {
   } else {
     const uint32_t seed = rd32(0x804D5F94u);
     if (seed && try_ptr(seed, 4)) state.rng = rd32(seed);
-    state.scene = rd8(0x80479D33u);
+    state.scene = rd8(0x80479D33u);         // GameRouting::curr_state_id (state_machine + 3)
+    state.scene_major = rd8(0x80479D30u);   // GameRouting::curr_mode (state_machine + 0)
+    state.match_frame = rd32(0x8046B6C4u);  // VsSceneController(0x8046B6A0)->state.frame_count (+0x24)
     for (uint32_t slot = 0; slot < 6; ++slot) {
       const uint32_t player = 0x80453080u + slot * 0xE90u;
       if (rd32(player) != 2) continue;
@@ -546,6 +564,7 @@ static void digest_state() {
     const uint32_t* words = &f.present;
     for (unsigned index = 0; index < 12; ++index) std::fprintf(g_state_digest, ",%08X", words[index]);
   }
+  std::fprintf(g_state_digest, ",%08X,%08X", state.scene_major, state.match_frame);
   std::fputc('\n', g_state_digest);
   std::fflush(g_state_digest);
 }

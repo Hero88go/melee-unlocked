@@ -41,3 +41,33 @@ int mu_match_request(int* stage, int* kind, int* cpu, int* level, int* costume,
     }
     return 1;
 }
+
+/* --rng-seed (M7 lockstep parity): forces the RNG and marks the match start the instant a VS
+ * match's rules and players are finalised, the same point the recomp guest's --rng-seed hook on
+ * gm_SetupSubColors (0x801B0348) does, so a scripted run reaches identical RNG in both builds
+ * from the first in-match frame. Marks the match start unconditionally (mark_match_start, for
+ * @match-relative scripts on an ordinary run too); overwrites the seed only when --rng-seed was
+ * given (rng_seed_override sets has_value). A pre-version-3 host leaves both fields NULL.
+ *
+ * The actual write through HSD_RandSeedPtr happens in mu_apply_seed (mu_snapshot.c): that file
+ * already includes the game's random.h, and random.h drags in Runtime/platform.h, whose ssize_t
+ * conflicts with the one mu_host.h gets from the Windows SDK's stdint.h when both land in the same
+ * translation unit (the same reason mu_entry.c keeps game headers out of itself). This function
+ * stays the ABI side, with no game headers, exactly like mu_match_request above it. */
+void mu_apply_seed(uint32_t seed);
+
+void mu_seed_request(void)
+{
+    if (mu_host->version >= 3 && mu_host->mark_match_start != NULL) {
+        mu_host->mark_match_start();
+    }
+    if (mu_host->version >= 3 && mu_host->rng_seed_override != NULL) {
+        uint32_t seed = 0;
+        int32_t has_value = 0;
+        mu_host->rng_seed_override(&seed, &has_value);
+        if (has_value) {
+            mu_apply_seed(seed);
+            if (mu_host->log) mu_host->log("rng-seed: forced (gm_SetupSubColors from gmVsMelee_EnterVs)");
+        }
+    }
+}

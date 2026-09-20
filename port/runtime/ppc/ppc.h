@@ -52,6 +52,11 @@ void hang_check(Context& c);
 void trace_enter(Context& c, uint32_t pc);
 
 void add_trace_func(uint32_t addr, uint32_t limit);
+// Runs `fn` at the entry of the translated function at `addr`. Every translated function starts
+// with enter(), so this also catches direct calls, which set_hook (dispatch table only) never
+// sees. Rides the --trace-func slow path: no cost unless a hook or trace is registered.
+using EntryHook = void (*)(Context&);
+void add_entry_hook(uint32_t addr, EntryHook fn);
 inline void enter(Context& c, uint32_t pc) {
   c.last_pc = pc; c.trace[c.trace_pos++ & 63] = pc;
   if ((++g_enter_count & 0xFFFFFu) == 0) hang_check(c);
