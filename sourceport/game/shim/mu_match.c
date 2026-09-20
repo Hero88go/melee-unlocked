@@ -42,9 +42,9 @@ int mu_match_request(int* stage, int* kind, int* cpu, int* level, int* costume,
     return 1;
 }
 
-/* --rng-seed (M7 lockstep parity): forces the RNG and marks the match start the instant a VS
- * match's rules and players are finalised, the same point the recomp guest's --rng-seed hook on
- * gm_SetupSubColors (0x801B0348) does, so a scripted run reaches identical RNG in both builds
+/* --rng-seed (M7 lockstep parity): forces the RNG and marks the match start at the first GS_VS
+ * frame callback, after scene setup and immediately before the match simulation begins. The
+ * native game and recomp guest use the same callback, so a scripted run reaches identical RNG
  * from the first in-match frame. Marks the match start unconditionally (mark_match_start, for
  * @match-relative scripts on an ordinary run too); overwrites the seed only when --rng-seed was
  * given (rng_seed_override sets has_value). A pre-version-3 host leaves both fields NULL.
@@ -67,7 +67,7 @@ void mu_seed_request(void)
         mu_host->rng_seed_override(&seed, &has_value);
         if (has_value) {
             mu_apply_seed(seed);
-            if (mu_host->log) mu_host->log("rng-seed: forced (gm_SetupSubColors from gmVsMelee_EnterVs)");
+            if (mu_host->log) mu_host->log("rng-seed: forced (first GS_VS frame)");
         }
     }
 }

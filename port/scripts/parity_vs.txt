@@ -2,11 +2,11 @@
 # prompt, START skips the intro movie/title once each) plus a fixed frame gap that both builds
 # were measured reaching GameModeKind GM_MENU (1) inside (vanilla at retrace 403, native at 702
 # per run-source/resume-items -- the numbers differ but the gap between presses is wide enough
-# that both land the same button on the same screen). Everything from @scene 1:0 onward is
-# relative to the retrace where the host first observes GM_MENU, so the CSS/SSS/match-start
-# sequence that follows lands identically in both builds even though they take a different number
-# of absolute retraces to get there (different opening-movie and disc-read timing; menu logic
-# itself runs 1:1 once both builds are inside the same menu screen).
+# that both land the same button on the same screen). The menu entries after @scene 1:0 are
+# relative to the retrace where the host first observes GM_MENU. The @match section is silent
+# until the VS match reports frame 1, then its entries follow simulated match frames.
+# This keeps the CSS/SSS sequence aligned despite different opening-movie and disc-read timing,
+# and keeps the in-match inputs aligned despite different host retrace counts before match start.
 #
 # Compare with: python tools/lockstep_compare.py native.csv vanilla.csv --align match
 130 A
@@ -44,6 +44,7 @@
 770
 
 # Match: walk in and jab (Ness p1, Pikachu p2 per the CSS picks above).
+@match
 900 sx=80
 960 X
 965
