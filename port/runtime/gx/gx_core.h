@@ -142,6 +142,21 @@ inline bool frame_in_match(const Frame& f) {
   return match_mode && minor >= 2;
 }
 
+// Whether a frame's scene has 3D content the true-16:9 camera widen actually reaches: any mode that
+// plays a match (its character/stage select through its results screen), or Slippi online play.
+// The bare menu shell around it (major 01: title, main menu, options, trophies, vs mode select, the
+// rest) is almost entirely the 2D/orthographic UI layer, which build_projection deliberately never
+// widens (see its comment: widening it compressed shadows off their platforms). Presenting THAT
+// screen at 16:9 anyway stretches the whole picture with nothing compensating, the same defect true
+// 16:9 originally had on the screen flash, just covering the entire menu instead of one quad. Gating
+// presented_aspect on this keeps the letterbox at 73:60 there and lets it widen everywhere the widen
+// itself actually does something.
+inline bool frame_has_widenable_scene(const Frame& f) {
+  const uint8_t major = f.scene_major;
+  return major == 0x08 || major == 0x02 || major == 0x03 || major == 0x04 || major == 0x05 ||
+         major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C;
+}
+
 // "Visual effects" (Reduced / Minimal): whether a draw is decoration the player chose to skip. Only
 // during a match, so menus are never touched: an earlier version applied everywhere and hid the
 // stage select pointer and menu text, which are drawn the same way as a hit spark. Only world-space

@@ -273,6 +273,11 @@ class D3D11Backend : public Backend {
   // During construction a failure means "this machine cannot run D3D11": throw so the caller can
   // fall back to D3D12. Afterwards (a resolution change mid-session) it is a genuine fatal error.
   bool starting_ = true;
+  // Whether presented_aspect's widen actually reaches anything on screen: a mode's character/stage
+  // select through its results screen, not the bare 2D menu shell around it (see
+  // frame_has_widenable_scene in gx_core.h). Starts true so a fresh window is never letterboxed to
+  // 73:60 for the one frame before the first submit_frame sets it for real.
+  bool widenable_scene_ = true;
   void fail(HRESULT hr, const char* what) const { if (SUCCEEDED(hr)) return; if (starting_) require(hr, what); check(hr, what); }
   void init();
   void create_swapchain_targets(bool resize);
@@ -621,7 +626,7 @@ int D3D11Backend::pick_scale() const {
 
 // Melee's camera asks for a 73:60 frustum, which the Slippi widescreen code widens to exactly
 // 16:9. See presented_aspect in gx_d3d12.h for the evidence and the player's override.
-float D3D11Backend::output_aspect() const { return presented_aspect(opts_, client_w_, client_h_); }
+float D3D11Backend::output_aspect() const { return presented_aspect(opts_, client_w_, client_h_, widenable_scene_); }
 
 void D3D11Backend::output_size(int* vw, int* vh) const {
   float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
@@ -1378,6 +1383,7 @@ void D3D11Backend::flush_captures() {
 
 // ---------------------------------------------------------------- frame
 void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
+  widenable_scene_ = frame_has_widenable_scene(frame);
   integrate_compiled_pipelines();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; samplers_.clear(); reset_bound(); }
   if (opts_.ssaa != ssaa_applied_ || pick_scale() != scale_) {

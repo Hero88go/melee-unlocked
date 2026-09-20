@@ -160,14 +160,24 @@ inline bool subframe_useful(double fps_cap) { return fps_cap <= 0.0 || fps_cap >
 // and why Slippi Dolphin ships "Force 73:60 (Melee)" as its default (VideoConfig.cpp).
 // The Slippi widescreen Gecko code multiplies that camera aspect by 320/219, and 73/60 * 320/219
 // is exactly 16/9, so with the code on the correct presentation is 16:9.
-inline float presented_aspect(const D3D12Options& options, int client_w, int client_h) {
+//
+// widenable_scene is frame_has_widenable_scene(frame) for the frame about to present (gx_core.h):
+// whether build_projection's per-camera widen is actually reaching anything, i.e. a mode's
+// character/stage select through its results screen. Auto/widescreen only claims 16:9 there.
+// Letterboxing the bare menu shell (main menu, options, trophies, vs mode select) to 16:9 too would
+// stretch the whole picture with nothing compensating: that screen is almost entirely the 2D layer,
+// which is deliberately never widened (see build_projection's comment on why), so it has no 3D
+// content to absorb the wider frame the way a match or a character select does. A caller with no
+// frame yet (window just opened) passes true rather than default to a menu it has not seen.
+inline float presented_aspect(const D3D12Options& options, int client_w, int client_h, bool widenable_scene = true) {
   switch (options.aspect) {
     case AspectMode::Native:    return 73.0f / 60.0f;
     case AspectMode::Force4_3:  return 4.0f / 3.0f;
     case AspectMode::Force16_9: return 16.0f / 9.0f;
     // No bars at all: claiming the window's own aspect makes the letterbox maths fill it exactly.
     case AspectMode::Stretch:   return (float)(client_w > 0 ? client_w : 1) / (float)(client_h > 0 ? client_h : 1);
-    default:                    return options.widescreen || options.true_widescreen ? 16.0f / 9.0f : 73.0f / 60.0f;
+    default:
+      return (options.widescreen || options.true_widescreen) && widenable_scene ? 16.0f / 9.0f : 73.0f / 60.0f;
   }
 }
 

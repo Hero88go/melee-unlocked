@@ -648,6 +648,26 @@ bool is_authored_fullscreen(const float* proj) {
   return std::fabs(ratio - 4.0f / 3.0f) < 0.001f;
 }
 
+// The in-game P1/P2/... name tag camera (if/ifnametag.c, nametag_CObjDesc): an
+// HSD_CameraDescFrustum with top=0 bottom=-480 left=0 right=640, i.e. the GX frustum corner pinned
+// to the screen's own top-left rather than centred, so each player's tag can be placed at a fixed
+// screen position independent of the 3D camera. GXSetProjection still sees this as GX_PERSPECTIVE
+// (cobj.c's makeProjectionMtx, PROJ_FRUSTUM case), so build_projection widened it exactly like a
+// real world camera, and a name tag's screen anchor drifted off the player it belongs above:
+// reported as "P1/P2 above the player ahead constantly gets off track" once true 16:9 stopped
+// stretching menus and made this the next thing wrong. Unlike the flash, this frustum is meant to
+// be maximally off-axis (that is how a per-player fixed screen position is built at all), so it
+// cannot be recognised by centring the way is_authored_fullscreen is; it is recognised instead by
+// its shift terms sitting exactly at the frustum's own edges (+-1, a corner-pinned box) together
+// with the same authored 4:3 ratio.
+bool is_authored_screen_pinned(const float* proj) {
+  if (proj[0] <= 0.0f || proj[2] <= 0.0f) return false;
+  if (std::fabs(std::fabs(proj[1]) - 1.0f) > 0.001f) return false;   // x shift pinned to an edge
+  if (std::fabs(std::fabs(proj[3]) - 1.0f) > 0.001f) return false;   // y shift pinned to an edge
+  const float ratio = proj[2] / proj[0];
+  return std::fabs(ratio - 4.0f / 3.0f) < 0.001f;
+}
+
 void build_projection(const DrawCall& dc, float m[16]) {
   const float* vp = (const float*)&dc.xf_regs[0x1A];
   const float* proj = (const float*)&dc.xf_regs[0x20];
@@ -666,7 +686,11 @@ void build_projection(const DrawCall& dc, float m[16]) {
     // over a 16:9 picture. Such a camera is recognisable without guessing: it is axis-aligned (no
     // off-centre shift) and its x and y scales are in exactly the 4:3 ratio the quad was drawn for,
     // which the game's own cameras never are once the player's aspect is applied.
-    if (g_true_widescreen.load(std::memory_order_relaxed) && !is_authored_fullscreen(proj)) {
+    // The P1/P2 name tag camera (ifnametag.c) is excluded the same way for the opposite reason: it
+    // is corner-pinned rather than centred, so each tag can sit at a fixed screen position, and
+    // widening it moves that position off the player it names (see is_authored_screen_pinned).
+    if (g_true_widescreen.load(std::memory_order_relaxed) &&
+        !is_authored_fullscreen(proj) && !is_authored_screen_pinned(proj)) {
       constexpr float kWiden = 219.0f / 320.0f;   // (73/60) * (320/219) == 16/9
       for (int i = 0; i < 4; ++i) m[i] *= kWiden;
     }
