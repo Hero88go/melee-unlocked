@@ -1,0 +1,155 @@
+# M7 lockstep parity script. Boot path from boot_to_menu.txt (A dismisses the "no memory card"
+# prompt, START skips the intro movie/title once each) plus a fixed frame gap that both builds
+# were measured reaching GameModeKind GM_MENU (1) inside (vanilla at retrace 403, native at 702
+# per run-source/resume-items -- the numbers differ but the gap between presses is wide enough
+# that both land the same button on the same screen). Everything from @scene 1:0 onward is
+# relative to the retrace where the host first observes GM_MENU, so the CSS/SSS/match-start
+# sequence that follows lands identically in both builds even though they take a different number
+# of absolute retraces to get there (different opening-movie and disc-read timing; menu logic
+# itself runs 1:1 once both builds are inside the same menu screen).
+#
+# Compare with: python tools/lockstep_compare.py native.csv vanilla.csv --align match
+130 A
+140
+400 START
+410
+520 START
+530
+700 START
+710
+
+@scene 1:0
+# From here, frame 0 = the retrace GM_MENU was first observed. Move to VS Mode, confirm, pick
+# characters on two human ports, confirm CSS, pick a stage, confirm SSS.
+100 sy=-127
+106
+160 A
+168
+230 A
+238
+240 p=2
+400 sx=61 sy=127
+400 p=2 sy=127
+430
+430 p=2
+440 A
+440 p=2 A
+450
+450 p=2
+500 START
+510
+700 sy=100
+740
+760 A
+770
+
+# Match: walk in and jab (Ness p1, Pikachu p2 per the CSS picks above).
+900 sx=80
+960 X
+965
+1000 sx=-80
+1060 A
+1065
+1100
+
+1200 sx=90
+1260 A
+1265
+1300 sx=90
+1360 A
+1365
+1400 sx=90
+1460 A
+1465
+1500 sx=90
+1560 A
+1565
+1600 sx=90
+1660 A
+1665
+1700 sx=90
+1760 A
+1765
+1800 sx=90
+1860 A
+1865
+1900 sx=90
+1960 A
+1965
+
+# Smash attacks: enough knockback for a KO and respawn inside a long trace.
+2100 sx=90
+2160 cx=127
+2170
+2260 sx=90
+2320 cx=127
+2330
+2420 sx=90
+2480 cx=127
+2490
+2580 sx=90
+2640 cx=127
+2650
+2740 sx=90
+2800 cx=127
+2810
+2900 sx=90
+2960 cx=127
+2970
+3060 sx=90
+3120 cx=127
+3130
+3220 sx=90
+3280 cx=127
+3290
+3380 sx=90
+3440 cx=127
+3450
+3540 sx=90
+3600 cx=127
+3610
+3700 sx=90
+3760 cx=127
+3770
+3860 sx=90
+3920 cx=127
+3930
+4020 sx=90
+4080 cx=127
+4090
+4180 sx=90
+4240 cx=127
+4250
+4340 sx=90
+4400 cx=127
+4410
+4500 sx=90
+4560 cx=127
+4570
+4660 sx=90
+4720 cx=127
+4730
+4820 sx=90
+4880 cx=127
+4890
+4980 sx=90
+5040 cx=127
+5050
+5140 sx=90
+5200 cx=127
+5210
+5300 sx=90
+5360 cx=127
+5370
+5460 sx=90
+5520 cx=127
+5530
+5620 sx=90
+5680 cx=127
+5690
+5780 sx=90
+5840 cx=127
+5850
+5940 sx=90
+6000 cx=127
+6010

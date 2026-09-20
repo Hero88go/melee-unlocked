@@ -20,6 +20,8 @@ struct Options {
   bool trace_calls = false;      // log HLE calls
   bool quiet = false;
   uint64_t time_base = 0;        // preset timebase (0 = derive from wall clock like Dolphin)
+  uint32_t rng_seed = 0;         // --rng-seed: force HSD_RandSeedPtr when a VS match starts (0 = off, game picks its own)
+  bool rng_seed_set = false;
   int volume = 0;                // audio output volume percent (0 = muted, the development default)
   double hang_watch = 0.0;       // seconds without a retrace before the guest is declared hung (0 = off)
   std::string sys_dir = "port/slippi_sys";   // Slippi Sys folder (code tables, GameFiles served over the EXI device)
@@ -85,6 +87,12 @@ bool retrace_due();                    // the timebase has reached the next retr
 // logging, exit, is shared).
 extern void (*native_retrace)();
 extern void (*native_state_snapshot)(MuStatePod*);
+// The game's current mode/scene (GameRouting::curr_mode, curr_state_id), read the same way for
+// both builds (native_state_snapshot when the source port is running, direct guest reads
+// otherwise). Used by an @scene script directive to align input to a game point instead of an
+// absolute retrace, so the same script drives both builds into the same match despite differing
+// boot and menu timing. Safe to call every retrace; cheap either way.
+void current_scene(uint32_t* major, uint32_t* minor);
 void deliver_interrupt(uint32_t number);
 bool exit_requested();
 void request_exit(int code);

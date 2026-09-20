@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 2
+#define MU_HOST_API_VERSION 3
 #define MU_GAME_API_VERSION 2
 
 /* Values are raw IEEE-754 bits so the two builds can be compared exactly. */
@@ -27,9 +27,17 @@ typedef struct MuFighterState {
     uint32_t percent, facing;
 } MuFighterState;
 
+/* scene is GameRouting::curr_state_id (the scene graph's local id, scoped to the current game
+ * mode; the existing field). scene_major is GameRouting::curr_mode (::GameModeKind, e.g. GM_VS),
+ * added so a script can wait for a specific game mode without also matching its scene ids against
+ * a different mode's states. match_frame is VsSceneController::state.frame_count
+ * (gm_GetFrameCount()): zero outside a VS-family match, counting from 1 once the match's fighters
+ * start simulating, so it lines up native and vanilla traces regardless of how many retraces each
+ * build spent booting or sitting in menus to get there. */
 typedef struct MuStatePod {
     uint32_t rng, scene;
     MuFighterState player[6];
+    uint32_t scene_major, match_frame;
 } MuStatePod;
 
 /* The console's 40.5 MHz timebase, which the host advances deterministically. */
@@ -158,6 +166,21 @@ typedef struct MuHostApi {
     /* ---- scripted runs (version 2) ---- */
     /* The match a --match run asked for, or NULL for an ordinary run. */
     const MuMatchOverride* (*match_override)(void);
+
+    /* ---- scripted runs (version 3) ----
+     * The seed a --rng-seed run asked for. *has_value is set to 0 by the game before calling
+     * (an older or non-conforming host that fills *seed without touching *has_value would
+     * otherwise look like it asked for seed 0); the host sets it to 1 and fills *seed only when
+     * --rng-seed was given. NULL for a host built before version 3, same as match_override for
+     * version 2: the game must check for NULL before calling. */
+    void (*rng_seed_override)(uint32_t* seed, int32_t* has_value);
+    /* Marks "the match's rules and players are now finalised" as the instant an @match-relative
+     * script section starts counting from (mirrors what an online match reaching frame 1 already
+     * does for input_mark_match_start on the host side). The game calls this once, right where it
+     * calls rng_seed_override, regardless of whether --rng-seed was given, so @match sections work
+     * the same way for a scripted offline run as they already do online. NULL for a host built
+     * before version 3. */
+    void (*mark_match_start)(void);
 } MuHostApi;
 
 typedef struct MuGameApi {

@@ -1,6 +1,7 @@
 /* Native half of the per-retrace state comparison. Keep game headers out of mu_entry.c:
  * the console's ssize_t conflicts with the Windows host ABI headers there. */
 #include <melee/gm/gm_1A3F.h>
+#include <melee/gm/gmvs.h>
 #include <melee/pl/player.h>
 #include <melee/ft/types.h>
 #include <sysdolphin/baselib/gobj.h>
@@ -13,10 +14,21 @@ static u32 float_bits(float value)
     return bits;
 }
 
+/* Called from mu_match.c's mu_seed_request (--rng-seed, M7 lockstep parity): mu_match.c is the
+ * ABI side and cannot include random.h itself (it also includes mu_host.h, whose stdint.h
+ * conflicts with Runtime/platform.h's ssize_t in the same translation unit), so the actual write
+ * happens here where random.h is already pulled in for HSD_RandSeedPtr. */
+void mu_apply_seed(u32 seed)
+{
+    *HSD_RandSeedPtr = seed;
+}
+
 void mu_state_snapshot_words(u32* out)
 {
     int slot;
-    __builtin_memset(out, 0, (2 + 6 * 12) * sizeof *out);
+    /* Layout must track MuStatePod in mu_host.h exactly: rng, scene, 6*12 player words,
+     * scene_major, match_frame. */
+    __builtin_memset(out, 0, (2 + 6 * 12 + 2) * sizeof *out);
     out[0] = *HSD_RandSeedPtr;
     out[1] = gm_GetCurrentSceneIndex();
     for (slot = 0; slot < 6; ++slot) {
@@ -40,4 +52,6 @@ void mu_state_snapshot_words(u32* out)
         state[10] = float_bits(fp->dmg.x1830_percent);
         state[11] = float_bits(fp->facing_dir);
     }
+    out[2 + 6 * 12] = gm_GetCurrentGameMode();
+    out[2 + 6 * 12 + 1] = gm_GetFrameCount();
 }

@@ -454,6 +454,15 @@ uint32_t g_script_ports = 1;
 static bool g_script_relative_section = false;
 static uint32_t g_script_loop = 0;
 static std::atomic<uint32_t> g_match_start_retrace{0};
+// `@scene <major>[:<minor>]` is the offline counterpart of `@match`: later entries stay silent
+// until host::current_scene() first reports that mode (and, if given, that scene id too), then
+// become relative to the retrace where it was first observed. This is what lets one script drive
+// both the native build and the recomp guest into the same VS match despite each build reaching
+// any given scene at a different absolute retrace (different boot timing, disc-read latency).
+static bool g_script_has_scene_wait = false;
+static uint32_t g_scene_wait_major = 0, g_scene_wait_minor = 0;
+static bool g_scene_wait_has_minor = false;
+static std::atomic<uint32_t> g_scene_start_retrace{0};   // 0 = not observed yet
 
 // Turns a Switch controller's raw SWPRO_* bits into GameCube buttons through slot `idx`'s
 // remappable table, and returns the same thing as BindAction bit indices for the settings panel.
@@ -498,6 +507,16 @@ bool input_load_script(const char* path) {
     if (*p == '#' || *p == '\n' || *p == '\r') continue;
     if (!strncmp(p, "@match", 6)) { g_script_relative_section = true; continue; }
     if (!strncmp(p, "@loop", 5)) { g_script_loop = (uint32_t)strtoul(p + 5, nullptr, 10); continue; }
+    if (!strncmp(p, "@scene", 6)) {
+      char* q = p + 6;
+      while (*q == ' ' || *q == '\t') ++q;
+      g_scene_wait_major = (uint32_t)strtoul(q, &q, 0);
+      g_scene_wait_has_minor = (*q == ':');
+      if (g_scene_wait_has_minor) g_scene_wait_minor = (uint32_t)strtoul(q + 1, nullptr, 0);
+      g_script_has_scene_wait = true;
+      g_script_relative_section = true;
+      continue;
+    }
     e.relative = g_script_relative_section;
     e.frame = (uint32_t)strtoul(p, &p, 10);
     while (*p) {
@@ -537,7 +556,17 @@ void input_poll(PadState out[4]) {
   if (!g_script.empty()) {
     // Scripts drive port 1 by default; entries with p=N drive port N (a port with any entry counts as plugged in).
     uint32_t frame = retrace_count();
-    uint32_t start = g_match_start_retrace.load();
+    // @scene takes over the same "relative section" that @match uses, but starts counting from
+    // the retrace where the requested mode/scene was first observed instead of an online match
+    // reaching frame 1. Checked every poll (once per retrace) so the wait is not sensitive to
+    // when input_poll happens to be called relative to the scene actually changing.
+    if (g_script_has_scene_wait && !g_scene_start_retrace.load()) {
+      uint32_t major, minor;
+      current_scene(&major, &minor);
+      if (major == g_scene_wait_major && (!g_scene_wait_has_minor || minor == g_scene_wait_minor))
+        g_scene_start_retrace.store(frame);
+    }
+    uint32_t start = g_script_has_scene_wait ? g_scene_start_retrace.load() : g_match_start_retrace.load();
     bool in_match = start && frame >= start;
     uint32_t rel = in_match ? frame - start : 0;
     if (in_match && g_script_loop) rel %= g_script_loop;

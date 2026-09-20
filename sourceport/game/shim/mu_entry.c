@@ -12,7 +12,7 @@ void mu_state_snapshot_words(uint32_t* out);
 
 static void mu_state_snapshot(MuStatePod* out)
 {
-    _Static_assert(sizeof(MuStatePod) == 74 * sizeof(uint32_t), "state POD layout");
+    _Static_assert(sizeof(MuStatePod) == 76 * sizeof(uint32_t), "state POD layout");
     mu_state_snapshot_words((uint32_t*) out);
 }
 
