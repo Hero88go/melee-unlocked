@@ -131,8 +131,14 @@ def main():
     ap.add_argument("--exe", type=Path, default=ROOT / "build-review/port/Release/melee_port.exe")
     # The same game built for processors without AVX2, shipped alongside so the ordinary build
     # keeps its instruction set. The launcher picks between them by asking the processor.
+    # Required, not just optional: a release silently missing this file leaves every pre-Haswell/
+    # pre-Ryzen machine (a real and recurring support case) unable to start the game at all, with
+    # no clear error before 0.6.2 shipped without it by accident. Pass --skip-compat-exe only when
+    # that omission is deliberate (e.g. a quick local test build).
     ap.add_argument("--compat-exe", type=Path, default=None,
-                    help="melee_port.exe built with -DMELEE_CPU_BASELINE=SSE2")
+                    help="melee_port.exe built with -DMELEE_CPU_BASELINE=SSE2 (required unless --skip-compat-exe)")
+    ap.add_argument("--skip-compat-exe", action="store_true",
+                    help="explicitly ship without the SSE2 compatibility build (not recommended for a real release)")
     ap.add_argument("--experimental-exe", type=Path, required=True,
                     help="experimental game executable, built with MELEE_ENABLE_DLSS5=ON")
     ap.add_argument("--experimental-compat-exe", type=Path, default=None,
@@ -144,6 +150,9 @@ def main():
                     help="melee_port_playback.exe, built from port/generated_playback")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
+    if not args.compat_exe and not args.skip_compat_exe:
+        raise SystemExit("missing --compat-exe (the SSE2 build for pre-Haswell/pre-Ryzen CPUs). "
+                          "Pass --skip-compat-exe if this omission is deliberate.")
     if not args.exe.is_file():
         raise SystemExit(f"missing executable: {args.exe}")
     for experimental in [e for e in (args.experimental_exe, args.experimental_compat_exe) if e]:
