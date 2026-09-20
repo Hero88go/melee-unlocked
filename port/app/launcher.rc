@@ -16,3 +16,36 @@ IDI_MELEE_MARK  ICON   "melee_unlocked.ico"
 #define IDB_BAILEY 5
 IDB_MELEE_MARK  BITMAP "melee_mark.bmp"
 IDB_BAILEY      BITMAP "bailey_cut.bmp"
+
+// Version resource; see the same block in melee_unlocked.rc for why. The launcher needs it more
+// than the game does: it is the file that downloads and replaces executables over the network,
+// which is the behaviour heuristics react to, and it is the one players have reported missing
+// after a download.
+#include <winver.h>
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     MELEE_VERSION_COMMAS
+PRODUCTVERSION  MELEE_VERSION_COMMAS
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"   // US English, Unicode
+    BEGIN
+      VALUE "CompanyName",      "Melee Unlocked"
+      VALUE "FileDescription",  "Melee Unlocked Launcher"
+      VALUE "FileVersion",      MELEE_PORT_VERSION
+      VALUE "InternalName",     "MeleeUnlockedLauncher"
+      VALUE "OriginalFilename", "MeleeUnlockedLauncher.exe"
+      VALUE "ProductName",      "Melee Unlocked"
+      VALUE "ProductVersion",   MELEE_PORT_VERSION
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
