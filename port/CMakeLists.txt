@@ -1,5 +1,8 @@
 # Native Melee port: recompiled guest code + host runtime.
 cmake_minimum_required(VERSION 3.15)
+add_executable(port_launch_process_test tests/launch_process_test.cpp)
+target_compile_features(port_launch_process_test PRIVATE cxx_std_17)
+add_test(NAME port_launch_process COMMAND port_launch_process_test)
 add_executable(port_frame_queue_test tests/frame_queue_test.cpp)
 target_include_directories(port_frame_queue_test PRIVATE runtime/gx)
 target_compile_features(port_frame_queue_test PRIVATE cxx_std_17)
