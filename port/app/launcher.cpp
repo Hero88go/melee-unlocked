@@ -31,6 +31,7 @@
 #include <vector>
 #include <thread>
 #include "updater.h"
+#include "launch_process.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -264,9 +265,10 @@ DWORD run_logged(std::string cmd, const std::string& cwd) {
   HANDLE rd = nullptr, wr = nullptr;
   if (!CreatePipe(&rd, &wr, &sa, 0)) return 1;
   SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-  STARTUPINFOA si{}; si.cb = sizeof si; si.dwFlags = STARTF_USESTDHANDLES; si.hStdOutput = wr; si.hStdError = wr; si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  STARTUPINFOW si{}; si.cb = sizeof si; si.dwFlags = STARTF_USESTDHANDLES; si.hStdOutput = wr; si.hStdError = wr; si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
   PROCESS_INFORMATION pi{};
-  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, cwd.c_str(), &si, &pi)) { CloseHandle(rd); CloseHandle(wr); log_line("cannot start: %s", cmd.c_str()); return 1; }
+  auto wcmd = widen(cmd), wcwd = widen(cwd);
+  if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, wcwd.c_str(), &si, &pi)) { DWORD error = GetLastError(); CloseHandle(rd); CloseHandle(wr); log_line("cannot start (Windows error %lu): %s", error, cmd.c_str()); return error ? error : 1; }
   CloseHandle(wr);
   std::string acc; char buf[4096]; DWORD got = 0;
   while (ReadFile(rd, buf, sizeof buf, &got, nullptr) && got) {
@@ -703,6 +705,19 @@ void start_build() {
 // Opens the game straight into its own PC settings panel. Same binary, same panel, same file: what
 // is changed here is what the next launch uses, because the game reads port-settings.ini from this
 // working directory before it opens a window.
+void report_launch_error(DWORD error, const std::string& exe, const std::string& cwd) {
+  wchar_t detail[2048]{};
+  FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                 nullptr, error, 0, detail, 2048, nullptr);
+  std::wstring message = L"Could not start:\n" + widen(exe) +
+      L"\n\nWindows error " + std::to_wstring(error) + L": " + detail +
+      L"\nWorking directory:\n" + widen(cwd) +
+      L"\n\nPlease include this message when reporting the problem.";
+  log_line("Launch failed: Windows error %lu; executable=%s; directory=%s",
+           error, exe.c_str(), cwd.c_str());
+  MessageBoxW(g_main, message.c_str(), L"Melee Unlocked Launcher", MB_ICONERROR);
+}
+
 void open_settings() {
   if (g_playing || g_iso.empty()) return;
   g_game_exe = game_exe();
@@ -713,9 +728,10 @@ void open_settings() {
   std::string cwd = work_dir();
   // --settings-window: the panel alone, no disc, no match engine, no prewarm.
   std::string cmd = "\"" + g_game_exe + "\" --settings-window";
-  STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
-  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi)) {
-    MessageBoxW(g_main, L"Could not start melee_port.exe", L"Melee Unlocked Launcher", MB_ICONERROR);
+  PROCESS_INFORMATION pi{};
+  const DWORD error = launcher::start_process(widen(g_game_exe), widen(cmd), widen(cwd), 0, pi);
+  if (error != ERROR_SUCCESS) {
+    report_launch_error(error, g_game_exe, cwd);
     return;
   }
   CloseHandle(pi.hThread);
@@ -783,8 +799,12 @@ void start_game() {
   }
   std::string cwd = work_dir();
   std::string cmd = "\"" + g_game_exe + "\"" + game_args();
-  STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
-  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi)) { MessageBoxW(g_main, L"Could not start melee_port.exe", L"Melee Unlocked Launcher", MB_ICONERROR); return; }
+  PROCESS_INFORMATION pi{};
+  const DWORD error = launcher::start_process(widen(g_game_exe), widen(cmd), widen(cwd), 0, pi);
+  if (error != ERROR_SUCCESS) {
+    report_launch_error(error, g_game_exe, cwd);
+    return;
+  }
   CloseHandle(pi.hThread);
   g_playing = true;
   EnableWindow(g_play_btn, FALSE);
