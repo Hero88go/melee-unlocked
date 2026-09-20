@@ -897,16 +897,31 @@ void input_rumble(int game_port, bool on) {
 
 void input_rumble_local(bool on) {
   if (!g_rumble_enabled) on = false;
-  PadState gc[4];
-  for (auto& s : gc) { s = {}; s.err = -1; }
-  const uint32_t mask = gcadapter_poll(gc);
-  for (int i = 0; i < 4; ++i) if (mask & (1u << i)) gcadapter_rumble(i, on);
-  // The local player may be on an Xbox pad instead: rumble whichever ones are connected.
-  for (int i = 0; i < 4; ++i) {
-    XINPUT_STATE xs{};
-    if (XInputGetState((DWORD)i, &xs) == ERROR_SUCCESS) xinput_rumble(i, on);
+  // Online the match's slot is not the socket the controller is in, so the caller cannot name a
+  // port: it only knows the rumble was meant for the local player. Rumble the one controller that
+  // is actually feeding a port, not every device on the machine.
+  //
+  // This used to poll the adapter and XInput and buzz everything connected, which meant a player
+  // on port 3 in a Direct match felt their port 1 controller go off as well, and anyone with a
+  // second pad plugged in felt it on both. g_port_feeding already records which device feeds each
+  // port, with the same fallback the offline path in input_rumble() uses, so the local player's
+  // controller is the first port that has a real one behind it.
+  for (int port = 0; port < 4; ++port) {
+    const PortSource& src = g_port_feeding[port];
+    const bool valid = src.index >= 0 && src.index < 4;
+    if (!valid) continue;
+    if (src.kind == DeviceKind::GCAdapter) {
+      gcadapter_rumble(src.index, on);
+      if (on) log_first_rumble(-1, "GameCube adapter");
+      return;
+    }
+    if (src.kind == DeviceKind::XInputPad) {
+      xinput_rumble(src.index, on);
+      if (on) log_first_rumble(-1, "Xbox controller");
+      return;
+    }
   }
-  if (on) log_first_rumble(-1, mask ? "GameCube adapter" : "any connected Xbox controller");
+  if (on) log_first_rumble(-1, "a controller without rumble support (keyboard, PlayStation, Switch or box)");
 }
 
 void input_last_pads(PadState out[4]) {

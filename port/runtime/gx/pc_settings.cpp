@@ -2024,6 +2024,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     {
       // EXPERIMENTAL: DLSS 5 rides on the DLSS/DLAA pass (it needs its depth and motion vectors).
       const bool nr_blocked = d3d11 || options.dlss_mode == 0 || options.dlss_mode >= 6;
+      // Greying the checkbox only stops it being clicked; it leaves whatever value was already
+      // there. Someone who turned DLSS 5 on and then set Upscaling to Off kept a setting that
+      // reads as on, saves as on and is still acted on by the renderer (gx_d3d12 tests opts_.dlss5
+      // directly), while the panel shows a disabled box they cannot use to switch it back off.
+      // Clear it when it cannot apply, so what the panel shows and what the renderer does agree.
+      if (nr_blocked && options.dlss5) { options.dlss5 = false; changed = true; }
       if (nr_blocked) ImGui::BeginDisabled();
       if (ImGui::Checkbox("DLSS 5 Neural Rendering (experimental)", &options.dlss5)) changed = true;
       if (options.dlss5) {

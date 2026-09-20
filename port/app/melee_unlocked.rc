@@ -3,3 +3,36 @@
 // the window, the taskbar and Alt-Tab.
 #define IDI_MELEE_UNLOCKED 1
 IDI_MELEE_UNLOCKED ICON "melee_unlocked.ico"
+
+// Version resource. An executable without one has no company, product name or description for
+// Windows to show, and an unsigned binary with none of that is part of what SmartScreen and
+// Defender score as suspicious: players have had these files quarantined on download. Signing is
+// the real fix; this is the free part of it, and a signed binary wants this block anyway.
+#include <winver.h>
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     MELEE_VERSION_COMMAS
+PRODUCTVERSION  MELEE_VERSION_COMMAS
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       0
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904B0"   // US English, Unicode
+    BEGIN
+      VALUE "CompanyName",      "Melee Unlocked"
+      VALUE "FileDescription",  "Melee Unlocked"
+      VALUE "FileVersion",      MELEE_PORT_VERSION
+      VALUE "InternalName",     "melee_port"
+      VALUE "OriginalFilename", "melee_port.exe"
+      VALUE "ProductName",      "Melee Unlocked"
+      VALUE "ProductVersion",   MELEE_PORT_VERSION
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END

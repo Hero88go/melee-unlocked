@@ -116,6 +116,19 @@ target_compile_definitions(port_libusb PRIVATE _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(port_libusb PUBLIC advapi32 ole32 setupapi)
 file(STRINGS "${PROJECT_SOURCE_DIR}/VERSION" MELEE_PORT_VERSION LIMIT_COUNT 1)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/VERSION")
+# VERSIONINFO wants the version as four comma separated numbers, not the "0.6.2" string. An
+# executable with no version resource at all has no company, product or description for Windows to
+# show, which is part of what makes an unsigned binary look like a dropper to SmartScreen and
+# Defender: players have had the launcher quarantined on download. This does not replace signing,
+# but it is free and it is a prerequisite for it.
+string(REPLACE "." ";" MELEE_VERSION_PARTS "${MELEE_PORT_VERSION}")
+list(LENGTH MELEE_VERSION_PARTS MELEE_VERSION_PART_COUNT)
+while(MELEE_VERSION_PART_COUNT LESS 4)
+  list(APPEND MELEE_VERSION_PARTS "0")
+  list(LENGTH MELEE_VERSION_PARTS MELEE_VERSION_PART_COUNT)
+endwhile()
+list(SUBLIST MELEE_VERSION_PARTS 0 4 MELEE_VERSION_PARTS)
+list(JOIN MELEE_VERSION_PARTS "," MELEE_VERSION_COMMAS)
 add_library(runtime STATIC ${RUNTIME_SOURCES} third_party/slippilib/SlippiGame.cpp)
 target_compile_definitions(runtime PRIVATE MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
 # The replay code list a playback build was translated against, so it can tell a player when a
@@ -148,7 +161,8 @@ add_test(NAME port_settings_load COMMAND port_settings_load_test)
 target_link_libraries(melee_port PRIVATE runtime guest dbghelp)   # dbghelp: crash minidump
 target_compile_options(melee_port PRIVATE /EHsc)
 target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
-  MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}")
+  MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}"
+  MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS})
 if(MELEE_CPU_BASELINE STREQUAL "AVX2")
   target_compile_definitions(melee_port PRIVATE MELEE_NEEDS_AVX2)
 endif()
@@ -159,7 +173,8 @@ set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLaunche
 target_include_directories(melee_unlocked PRIVATE runtime/host runtime/ppc runtime/hle runtime/gx "${PORT_GEN}" third_party)
 target_compile_features(melee_unlocked PRIVATE cxx_std_17)
 target_compile_options(melee_unlocked PRIVATE /EHsc)
-target_compile_definitions(melee_unlocked PRIVATE NOMINMAX UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
+target_compile_definitions(melee_unlocked PRIVATE NOMINMAX UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
+  MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS})
 target_link_libraries(melee_unlocked PRIVATE comctl32 winhttp user32 gdi32 shell32 comdlg32 msimg32 uxtheme)
 
 # Replay playback build: the same runtime with the game translated against the Slippi Playback
