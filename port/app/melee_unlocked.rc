@@ -9,6 +9,17 @@ IDI_MELEE_UNLOCKED ICON "melee_unlocked.ico"
 // Defender score as suspicious: players have had these files quarantined on download. Signing is
 // the real fix; this is the free part of it, and a signed binary wants this block anyway.
 #include <winver.h>
+// Shared by melee_port and melee_port_playback, which are different executables built from the
+// same sources, so the name fields come from the build rather than being hard coded here.
+#ifndef MELEE_RC_DESCRIPTION
+#define MELEE_RC_DESCRIPTION "Melee Unlocked"
+#endif
+#ifndef MELEE_RC_INTERNAL_NAME
+#define MELEE_RC_INTERNAL_NAME "melee_port"
+#endif
+#ifndef MELEE_RC_ORIGINAL_FILENAME
+#define MELEE_RC_ORIGINAL_FILENAME "melee_port.exe"
+#endif
 VS_VERSION_INFO VERSIONINFO
 FILEVERSION     MELEE_VERSION_COMMAS
 PRODUCTVERSION  MELEE_VERSION_COMMAS
@@ -23,10 +34,10 @@ BEGIN
     BLOCK "040904B0"   // US English, Unicode
     BEGIN
       VALUE "CompanyName",      "Melee Unlocked"
-      VALUE "FileDescription",  "Melee Unlocked"
+      VALUE "FileDescription",  MELEE_RC_DESCRIPTION
       VALUE "FileVersion",      MELEE_PORT_VERSION
-      VALUE "InternalName",     "melee_port"
-      VALUE "OriginalFilename", "melee_port.exe"
+      VALUE "InternalName",     MELEE_RC_INTERNAL_NAME
+      VALUE "OriginalFilename", MELEE_RC_ORIGINAL_FILENAME
       VALUE "ProductName",      "Melee Unlocked"
       VALUE "ProductVersion",   MELEE_PORT_VERSION
     END

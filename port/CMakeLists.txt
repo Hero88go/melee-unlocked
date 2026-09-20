@@ -198,13 +198,20 @@ if(EXISTS "${PORT_GEN_PLAYBACK}/guest_sources.cmake")
   target_compile_options(guest_playback PRIVATE /bigobj /MP /EHsc ${MELEE_ARCH_FLAG} /fp:precise /wd4102 /wd4101 /wd4189 /W1)
   target_compile_definitions(guest_playback PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
   endif()
-  add_executable(melee_port_playback app/main.cpp app/settings_window.cpp)
+  # The .rc carries the icon and the version resource. This target never had it, so the playback
+  # build shipped with a blank Explorer icon and no company or product name at all, which is the
+  # profile an unsigned executable is judged on.
+  add_executable(melee_port_playback app/main.cpp app/settings_window.cpp app/melee_unlocked.rc)
   target_link_libraries(melee_port_playback PRIVATE runtime guest_playback dbghelp)
   target_compile_options(melee_port_playback PRIVATE /EHsc)
   # It ships in the release now, and the packager refuses an executable that does not report the
   # release's own version, so it needs the same definition the other builds get.
   target_compile_definitions(melee_port_playback PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS
-    MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
+    MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
+    MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS}
+    MELEE_RC_DESCRIPTION="Melee Unlocked Replay Playback"
+    MELEE_RC_INTERNAL_NAME="melee_port_playback"
+    MELEE_RC_ORIGINAL_FILENAME="melee_port_playback.exe")
 endif()
 if(EXISTS "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
   add_test(NAME port_image_identity COMMAND "${Python3_EXECUTABLE}"
