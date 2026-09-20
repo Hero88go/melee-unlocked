@@ -361,6 +361,7 @@ bool reserve_memory() {
 
 int run(void (*shutdown)(int)) {
   g_shutdown = shutdown;
+  host::init_state_digest();
   if (!host::aram) host::aram = (uint8_t*)std::calloc(0x01000000, 1);
   if (!host::cpu) host::cpu = new ppc::Context();   // only its timebase is used: the clock both builds share
   if (!read_fst()) host::die("cannot read the disc's filesystem table");
@@ -374,7 +375,10 @@ int run(void (*shutdown)(int)) {
   if (!entry) host::die("%s has no mu_game_entry", g_dll.c_str());
   static MuHostApi api = make_host();
   if (entry(&api, &g_game) != 0) host::die("%s refused host API version %u", g_dll.c_str(), api.version);
+  if (g_game.version != MU_GAME_API_VERSION || !g_game.state_snapshot)
+    host::die("%s has game API version %u, expected %u", g_dll.c_str(), g_game.version, MU_GAME_API_VERSION);
   host::native_retrace = native_retrace;
+  host::native_state_snapshot = g_game.state_snapshot;
   AddVectoredExceptionHandler(1, on_game_exception);
   host::log("source port: %s at %p, MEM1 %u MB at %08llX", g_dll.c_str(), (void*)module, MEM1_SIZE >> 20, (unsigned long long)MEM1_BASE);
   int code = 0;

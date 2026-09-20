@@ -50,7 +50,7 @@ else()
 endif()
 message(STATUS "melee: CPU baseline ${MELEE_CPU_BASELINE}")
 
-set(PORT_GEN "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+set(PORT_GEN "${CMAKE_CURRENT_SOURCE_DIR}/generated" CACHE PATH "Guest translation directory")
 if(NOT EXISTS "${PORT_GEN}/guest_sources.cmake")
   message(FATAL_ERROR "port: generated code missing; run python port/recomp/recomp.py")
 endif()

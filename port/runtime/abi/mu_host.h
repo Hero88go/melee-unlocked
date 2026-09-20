@@ -18,7 +18,19 @@ extern "C" {
 #endif
 
 #define MU_HOST_API_VERSION 2
-#define MU_GAME_API_VERSION 1
+#define MU_GAME_API_VERSION 2
+
+/* Values are raw IEEE-754 bits so the two builds can be compared exactly. */
+typedef struct MuFighterState {
+    uint32_t present, stocks, action, anim_frame;
+    uint32_t pos_x, pos_y, pos_z, vel_x, vel_y, vel_z;
+    uint32_t percent, facing;
+} MuFighterState;
+
+typedef struct MuStatePod {
+    uint32_t rng, scene;
+    MuFighterState player[6];
+} MuStatePod;
 
 /* The console's 40.5 MHz timebase, which the host advances deterministically. */
 #define MU_TB_HZ 40500000ull
@@ -159,6 +171,8 @@ typedef struct MuGameApi {
     void (*fire_alarms)(uint64_t now);
     /* The audio buffer the game handed to AI has been played. */
     void (*ai_dma_done)(void);
+    /* Snapshot at a retrace boundary, before the next game update. */
+    void (*state_snapshot)(MuStatePod* out);
 } MuGameApi;
 
 /* The library's one export. The host fills `host`, the game fills `game`. */

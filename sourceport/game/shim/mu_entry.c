@@ -8,6 +8,13 @@ static int32_t mu_run(void);
 static void mu_retrace_from_host(void);
 void mu_fire_alarms(uint64_t now);
 void mu_ai_dma_done(void);
+void mu_state_snapshot_words(uint32_t* out);
+
+static void mu_state_snapshot(MuStatePod* out)
+{
+    _Static_assert(sizeof(MuStatePod) == 74 * sizeof(uint32_t), "state POD layout");
+    mu_state_snapshot_words((uint32_t*) out);
+}
 
 /* The game's own main (gm/gmmain.c). On the console __start ran it after bringing up the C runtime;
  * natively the host has done that part. */
@@ -23,8 +30,10 @@ __declspec(dllexport) int32_t mu_game_entry(const MuHostApi* host, MuGameApi* ga
     game->retrace = mu_retrace_from_host;
     game->fire_alarms = mu_fire_alarms;
     game->ai_dma_done = mu_ai_dma_done;
+    game->state_snapshot = mu_state_snapshot;
     return 0;
 }
+
 
 void mu_fill_from_dol(void);
 

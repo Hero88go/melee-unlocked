@@ -40,6 +40,7 @@ ppc::Context* cpu = nullptr;
 
 static FILE* g_disc = nullptr;
 static FILE* g_state_trace = nullptr;
+static FILE* g_state_digest = nullptr;
 static uint32_t g_fst_offset, g_fst_size, g_fst_max;
 static std::deque<Completion> g_completions;
 static bool g_pe_finish_pending = false;
@@ -263,7 +264,21 @@ static void install_gecko_boot() {
       gecko::boot_writes_count, gecko::boot_hooks_count, gecko::slippi_gct_size);
 }
 
+void init_state_digest() {
+  if (!options.state_digest.empty()) {
+    g_state_digest = std::fopen(options.state_digest.c_str(), "w");
+    if (!g_state_digest) die("cannot open state digest");
+    std::fprintf(g_state_digest, "frame,rng,scene");
+    for (unsigned slot = 0; slot < 6; ++slot)
+      for (const char* field : {"present", "stocks", "action", "anim_frame", "pos_x", "pos_y", "pos_z",
+                                "vel_x", "vel_y", "vel_z", "percent", "facing"})
+        std::fprintf(g_state_digest, ",p%u_%s", slot, field);
+    std::fputc('\n', g_state_digest);
+  }
+}
+
 void boot_setup() {
+  init_state_digest();
   if (!options.state_trace.empty()) {
     g_state_trace = std::fopen(options.state_trace.c_str(), "w");
     if (!g_state_trace) die("cannot open state trace");
@@ -366,6 +381,7 @@ uint32_t retrace_count() { return g_retraces; }
 static uint64_t g_next_retrace_tb = TB_PER_FRAME;
 static bool g_in_retrace = false;
 void (*native_retrace)() = nullptr;
+void (*native_state_snapshot)(MuStatePod*) = nullptr;
 bool retrace_due() { return cpu->tb >= g_next_retrace_tb && !g_in_retrace; }
 void advance_time(uint64_t ticks) { cpu->tb += ticks; }
 static void advance_frame() {
@@ -496,6 +512,44 @@ static void trace_state() {
   std::fflush(g_state_trace);
 }
 
+static void digest_state() {
+  if (!g_state_digest) return;
+  MuStatePod state{};
+  if (native_state_snapshot) {
+    native_state_snapshot(&state);
+  } else {
+    const uint32_t seed = rd32(0x804D5F94u);
+    if (seed && try_ptr(seed, 4)) state.rng = rd32(seed);
+    state.scene = rd8(0x80479D33u);
+    for (uint32_t slot = 0; slot < 6; ++slot) {
+      const uint32_t player = 0x80453080u + slot * 0xE90u;
+      if (rd32(player) != 2) continue;
+      const uint32_t active = rd8(player + 0xCu);
+      const uint32_t gobj = rd32(player + 0xB0u + (active & 1u) * 4u);
+      if (!gobj || !try_ptr(gobj, 0x30)) continue;
+      const uint32_t fp = rd32(gobj + 0x2Cu);
+      if (!fp || !try_ptr(fp, 0x1834)) continue;
+      if (rd32(fp) != gobj) continue;
+      MuFighterState& f = state.player[slot];
+      f.present = 1;
+      f.stocks = static_cast<int8_t>(rd8(player + 0x8Eu));
+      f.action = rd32(fp + 0x10u);
+      f.anim_frame = rd32(fp + 0x894u);
+      f.pos_x = rd32(fp + 0xB0u); f.pos_y = rd32(fp + 0xB4u); f.pos_z = rd32(fp + 0xB8u);
+      f.vel_x = rd32(fp + 0x80u); f.vel_y = rd32(fp + 0x84u); f.vel_z = rd32(fp + 0x88u);
+      f.percent = rd32(fp + 0x1830u);
+      f.facing = rd32(fp + 0x2Cu);
+    }
+  }
+  std::fprintf(g_state_digest, "%u,%08X,%08X", g_retraces, state.rng, state.scene);
+  for (const auto& f : state.player) {
+    const uint32_t* words = &f.present;
+    for (unsigned index = 0; index < 12; ++index) std::fprintf(g_state_digest, ",%08X", words[index]);
+  }
+  std::fputc('\n', g_state_digest);
+  std::fflush(g_state_digest);
+}
+
 static double g_frame_time = 0.0;
 static double g_emulation_speed = 1.0;
 void set_emulation_speed(double speed) { g_emulation_speed = speed < 0.5 ? 0.5 : speed > 2.0 ? 2.0 : speed; }
@@ -582,6 +636,7 @@ void retrace() {
     deliver_interrupt(24);  // __OS_INTERRUPT_PI_VI
     trace_state();
   }
+  digest_state();
   if (g_retraces % 60 == 0 || (options.frames && g_retraces >= options.frames)) {
     uint64_t commands, draws, vertices; uint32_t copies;
     gx_stats(&commands, &draws, &vertices, &copies);

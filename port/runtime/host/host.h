@@ -6,12 +6,14 @@
 #include <string>
 #include <vector>
 #include "ppc.h"
+#include "../abi/mu_host.h"
 
 namespace host {
 
 struct Options {
   std::string iso;
   std::string state_trace;        // optional per-retrace CPU/RAM/ARAM verification CSV
+  std::string state_digest;       // per-retrace gameplay state shared with the source build
   std::string log_file;           // console log copy (default melee_port.log in the working directory)
   uint32_t frames = 0;           // stop after N retraces (0 = run until exit)
   bool fast = false;             // no real-time pacing
@@ -67,6 +69,7 @@ bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size);
 
 // ---- boot ----
 void boot_setup();               // low memory, FST placement, DOL load, registers
+void init_state_digest();        // source path skips boot_setup but shares the digest writer
 
 // ---- events (interrupt delivery at guest wait points) ----
 using Completion = std::function<void()>;
@@ -81,6 +84,7 @@ bool retrace_due();                    // the timebase has reached the next retr
 // place of the guest's alarm, audio and VI interrupt delivery (everything else, pacing, window,
 // logging, exit, is shared).
 extern void (*native_retrace)();
+extern void (*native_state_snapshot)(MuStatePod*);
 void deliver_interrupt(uint32_t number);
 bool exit_requested();
 void request_exit(int code);
