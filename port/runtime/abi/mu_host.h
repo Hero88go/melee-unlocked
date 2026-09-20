@@ -17,7 +17,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 3
+#define MU_HOST_API_VERSION 4
 #define MU_GAME_API_VERSION 2
 
 /* Values are raw IEEE-754 bits so the two builds can be compared exactly. */
@@ -148,10 +148,15 @@ typedef struct MuHostApi {
     void (*ai_set_stream_volume)(int32_t left, int32_t right);
     void (*dsp_mail)(uint32_t mail);
     uint32_t (*dsp_mail_pending)(void);
-    /* Audio RAM: the console's separate 16 MB, which only DMA could reach. */
+    /* Audio RAM: the console's separate ARAM; native runs may expose a larger host backing. */
     void* (*aram_base)(void);
     uint32_t (*aram_size)(void);
     void (*aram_dma)(int32_t to_aram, void* mainmem, uint32_t aram_offset, uint32_t length);
+
+    /* Native-only process storage for host-layout metadata that must not consume the game's
+     * console-sized audio heap. NULL for hosts that do not run MU_NATIVE. */
+    void* (*native_alloc)(uint32_t size);
+    void (*native_free)(void* ptr);
 
     /* ---- machine ---- */
     uint32_t (*mem1_size)(void);
