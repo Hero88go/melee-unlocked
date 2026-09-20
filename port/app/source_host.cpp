@@ -221,14 +221,13 @@ bool g_match_set = false;
 const MuMatchOverride* h_match_override() { return g_match_set ? &g_match : nullptr; }
 
 // --rng-seed: forced from host::options once at startup (see main.cpp's flag parsing), read by the
-// game at the same point --match is (gmvsmelee.c's MU_NATIVE block, right before
-// gm_SetupSubColors), so a scripted run reaches identical RNG in both the source port and a
+// game at the same first GS_VS frame callback, so a scripted run reaches identical RNG in both the source port and a
 // --rng-seed recomp run from the first in-match frame.
 void h_rng_seed_override(uint32_t* seed, int32_t* has_value) {
   *has_value = host::options.rng_seed_set ? 1 : 0;
   if (host::options.rng_seed_set) *seed = host::options.rng_seed;
 }
-// Called from the same gmvsmelee.c point unconditionally (not just when --rng-seed was given), so
+// Called from the same first GS_VS frame callback unconditionally (not just when --rng-seed was given), so
 // an @match-relative script section starts counting from the match's rules/players being
 // finalised on an ordinary offline run too, the same instant the recomp guest's --rng-seed hook
 // marks it.

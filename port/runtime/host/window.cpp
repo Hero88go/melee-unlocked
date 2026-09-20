@@ -446,7 +446,15 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
 namespace {
 // tl/tr are the analog triggers. Melee shields from the analog value, not the digital L/R bit, so a
 // script that only pressed L never actually shielded and shield behaviour could not be tested at all.
-struct ScriptEntry { uint32_t frame; uint16_t buttons; int8_t sx, sy, cx, cy; uint8_t tl, tr; int port;  bool relative = false; };
+struct ScriptEntry {
+  uint32_t frame;
+  uint16_t buttons;
+  int8_t sx, sy, cx, cy;
+  uint8_t tl, tr;
+  int port;
+  bool relative = false;
+  bool scene_match_relative = false;
+};
 std::vector<ScriptEntry> g_script;
 uint32_t g_script_ports = 1;
 // `@match` makes later entries relative to the retrace at which an online match reached frame 1
@@ -454,12 +462,11 @@ uint32_t g_script_ports = 1;
 static bool g_script_relative_section = false;
 static uint32_t g_script_loop = 0;
 static std::atomic<uint32_t> g_match_start_retrace{0};
-// `@scene <major>[:<minor>]` is the offline counterpart of `@match`: later entries stay silent
-// until host::current_scene() first reports that mode (and, if given, that scene id too), then
-// become relative to the retrace where it was first observed. This is what lets one script drive
-// both the native build and the recomp guest into the same VS match despite each build reaching
-// any given scene at a different absolute retrace (different boot timing, disc-read latency).
+// `@scene <major>[:<minor>]` starts a menu-relative section at the first matching scene. A later
+// `@match` in the same script switches subsequent entries to match-frame-relative timing, leaving
+// the menu entries on scene retraces and keeping in-match inputs silent until frame 1.
 static bool g_script_has_scene_wait = false;
+static bool g_script_scene_match_relative = false;
 static uint32_t g_scene_wait_major = 0, g_scene_wait_minor = 0;
 static bool g_scene_wait_has_minor = false;
 static std::atomic<uint32_t> g_scene_start_retrace{0};   // 0 = not observed yet
@@ -505,7 +512,11 @@ bool input_load_script(const char* path) {
     ScriptEntry e{};
     char* p = line;
     if (*p == '#' || *p == '\n' || *p == '\r') continue;
-    if (!strncmp(p, "@match", 6)) { g_script_relative_section = true; continue; }
+    if (!strncmp(p, "@match", 6)) {
+      g_script_relative_section = true;
+      g_script_scene_match_relative = g_script_has_scene_wait;
+      continue;
+    }
     if (!strncmp(p, "@loop", 5)) { g_script_loop = (uint32_t)strtoul(p + 5, nullptr, 10); continue; }
     if (!strncmp(p, "@scene", 6)) {
       char* q = p + 6;
@@ -514,10 +525,12 @@ bool input_load_script(const char* path) {
       g_scene_wait_has_minor = (*q == ':');
       if (g_scene_wait_has_minor) g_scene_wait_minor = (uint32_t)strtoul(q + 1, nullptr, 0);
       g_script_has_scene_wait = true;
+      g_script_scene_match_relative = false;
       g_script_relative_section = true;
       continue;
     }
     e.relative = g_script_relative_section;
+    e.scene_match_relative = g_script_scene_match_relative;
     e.frame = (uint32_t)strtoul(p, &p, 10);
     while (*p) {
       while (*p == ' ' || *p == '\t') ++p;
@@ -560,24 +573,36 @@ void input_poll(PadState out[4]) {
     // the retrace where the requested mode/scene was first observed instead of an online match
     // reaching frame 1. Checked every poll (once per retrace) so the wait is not sensitive to
     // when input_poll happens to be called relative to the scene actually changing.
-    if (g_script_has_scene_wait && !g_scene_start_retrace.load()) {
+    uint32_t match_frame = 0;
+    if (g_script_has_scene_wait) {
       uint32_t major, minor;
-      current_scene(&major, &minor);
-      if (major == g_scene_wait_major && (!g_scene_wait_has_minor || minor == g_scene_wait_minor))
+      current_scene(&major, &minor, &match_frame);
+      if (!g_scene_start_retrace.load() &&
+          major == g_scene_wait_major &&
+          (!g_scene_wait_has_minor || minor == g_scene_wait_minor))
         g_scene_start_retrace.store(frame);
     }
     uint32_t start = g_script_has_scene_wait ? g_scene_start_retrace.load() : g_match_start_retrace.load();
-    bool in_match = start && frame >= start;
-    uint32_t rel = in_match ? frame - start : 0;
-    if (in_match && g_script_loop) rel %= g_script_loop;
+    bool use_match_frame = g_script_has_scene_wait && start && match_frame != 0;
+    bool in_section = start && frame >= start;
+    uint32_t scene_rel = in_section ? frame - start : 0;
+    uint32_t rel = use_match_frame ? match_frame : (in_section ? frame - start : 0);
+    if (in_section && g_script_loop && (!g_script_has_scene_wait || use_match_frame)) rel %= g_script_loop;
     for (int port = 0; port < 4; ++port) {
       if (port && !(g_script_ports & (1u << port))) continue;
       out[port].err = 0;
       const ScriptEntry* cur = nullptr;
       for (const ScriptEntry& e : g_script) {
         if (e.port != port) continue;
-        if (e.relative) { if (in_match && e.frame <= rel) cur = &e; }
-        else if (!in_match && e.frame <= frame) cur = &e;
+        if (e.relative) {
+          if (e.scene_match_relative) {
+            if (use_match_frame && e.frame <= rel) cur = &e;
+          } else if (g_script_has_scene_wait) {
+            if (in_section && e.frame <= scene_rel) cur = &e;
+          } else if (in_section && e.frame <= rel) {
+            cur = &e;
+          }
+        } else if (!in_section && e.frame <= frame) cur = &e;
       }
       if (cur) {
         PadState& q = out[port];

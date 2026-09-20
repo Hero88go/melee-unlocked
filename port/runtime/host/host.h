@@ -92,7 +92,7 @@ extern void (*native_state_snapshot)(MuStatePod*);
 // otherwise). Used by an @scene script directive to align input to a game point instead of an
 // absolute retrace, so the same script drives both builds into the same match despite differing
 // boot and menu timing. Safe to call every retrace; cheap either way.
-void current_scene(uint32_t* major, uint32_t* minor);
+void current_scene(uint32_t* major, uint32_t* minor, uint32_t* match_frame);
 void deliver_interrupt(uint32_t number);
 bool exit_requested();
 void request_exit(int code);

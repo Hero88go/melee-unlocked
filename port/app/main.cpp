@@ -54,25 +54,22 @@ static void usage() {
 }
 
 #ifndef MELEE_SOURCE_PORT
-// --rng-seed for the recompiled guest: force RNG at gm_SetupSubColors (0x801B0348), called right
-// after gmVsMelee_EnterVs finalises a VS match's rules and players, right before the game itself
-// seeds RNG from OSGetTick(). ppc::set_hook (dispatch-table only) cannot reach it: the recompiler
-// emits a call to this statically-known address as a direct C++ call
-// (`c.lr = 0x801A5AD0u; f_801B0348(c, m);` in port/generated_vanilla/guest_060.cpp), never
-// through the table. ppc::add_entry_hook rides every function's enter() call instead, which is
-// unconditional, so it sees direct calls too. Guarded on the caller (c.lr) so only the
-// gmVsMelee_EnterVs call site is affected, not gm_SetupSubColors called from anywhere else.
-namespace guest { void f_801B0348(ppc::Context&, uint8_t*); }
+// --rng-seed for the recompiled guest: force RNG at the first GS_VS frame callback
+// (0x8016D800), after scene setup and immediately before match simulation. ppc::set_hook
+// (dispatch-table only) cannot reach a statically-known function call; ppc::add_entry_hook rides
+// every translated function's enter() call and sees direct calls too.
 static void install_rng_seed_hook() {
   if (!host::options.rng_seed_set) return;
-  ppc::add_entry_hook(0x801B0348u, [](ppc::Context& c) {
-    if (c.lr != 0x801A5AD0u) return;   // only the gmVsMelee_EnterVs call site
+  ppc::add_entry_hook(0x8016D800u, [](ppc::Context&) {
+    static bool applied = false;
+    if (applied) return;
+    applied = true;
     // HSD_RandSeedPtr (0x804D5F94) holds the address of the actual seed word (usually the
     // static `seed` at 0x804D5F90); write through the indirection, exactly as digest_state()
     // reads through it, rather than overwriting the pointer variable itself.
     const uint32_t seed_addr = host::rd32(0x804D5F94u);
     if (seed_addr && host::try_ptr(seed_addr, 4)) host::wr32(seed_addr, host::options.rng_seed);
-    host::log("rng-seed: forced %08X at retrace %u (gm_SetupSubColors from gmVsMelee_EnterVs)",
+    host::log("rng-seed: forced %08X at retrace %u (first GS_VS frame)",
               host::options.rng_seed, host::retrace_count());
     host::input_mark_match_start();
   });
@@ -506,9 +503,8 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;
     else if (a == "--time-base") o.time_base = std::strtoull(next(), nullptr, 0);
-    // Forces HSD_RandSeedPtr the moment a VS match's rules and players are finalised (the same
-    // point --match forces the matchup at), so a script that reaches that point in both the
-    // native and the recomp guest builds sees identical RNG from the first in-match frame,
+    // Forces HSD_RandSeedPtr at the first GS_VS frame, after scene setup and before match
+    // simulation, so a script that reaches that point in both builds sees identical RNG,
     // regardless of how each build's boot timing seeded OSGetTick(). Off by default (0 is a
     // valid seed too, so use rng_seed_set rather than a zero check).
     else if (a == "--rng-seed") { o.rng_seed = (uint32_t)std::strtoul(next(), nullptr, 0); o.rng_seed_set = true; }

@@ -516,15 +516,17 @@ static void trace_state() {
 // Just the scene fields, cheap enough to call every retrace when an @scene script needs to know
 // when the game reaches a particular mode/state (window.cpp). Shares the same addresses
 // digest_state() uses for the full snapshot so the two never disagree about what "scene" means.
-void current_scene(uint32_t* major, uint32_t* minor) {
+void current_scene(uint32_t* major, uint32_t* minor, uint32_t* match_frame) {
   if (native_state_snapshot) {
     MuStatePod state{};
     native_state_snapshot(&state);
     *major = state.scene_major;
     *minor = state.scene;
+    *match_frame = state.match_frame;
   } else {
     *major = rd8(0x80479D30u);   // GameRouting::curr_mode (state_machine + 0)
     *minor = rd8(0x80479D33u);   // GameRouting::curr_state_id (state_machine + 3)
+    *match_frame = rd32(0x8046B6C4u); // VsSceneController state frame count
   }
 }
 
