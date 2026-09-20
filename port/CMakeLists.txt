@@ -51,13 +51,8 @@ add_test(NAME port_signed_halfword_loads COMMAND port_load_test)
 # what every release so far has used; it needs Intel Haswell (2013) or AMD Ryzen. "AVX" reaches
 # back to 2011, and "SSE2" is every x64 processor ever made. A player on a processor without AVX2
 # cannot start the game at all, so this exists to build them something that runs.
-set(MELEE_CPU_BASELINE "AVX2" CACHE STRING "Instruction set baseline: AVX2, AVX or SSE2")
-set_property(CACHE MELEE_CPU_BASELINE PROPERTY STRINGS AVX2 AVX SSE2)
-if(MELEE_CPU_BASELINE STREQUAL "SSE2")
-  set(MELEE_ARCH_FLAG "")          # the x64 default; naming it explicitly is an error in MSVC
-else()
-  set(MELEE_ARCH_FLAG "/arch:${MELEE_CPU_BASELINE}")
-endif()
+# MELEE_CPU_BASELINE and MELEE_ARCH_FLAG are declared at the root CMakeLists.txt, before this
+# subdirectory is added, so native_animation (built there) also gets the right /arch flag.
 message(STATUS "melee: CPU baseline ${MELEE_CPU_BASELINE}")
 
 set(PORT_GEN "${CMAKE_CURRENT_SOURCE_DIR}/generated")
@@ -251,6 +246,7 @@ add_library(port_imgui STATIC
   third_party/imgui/backends/imgui_impl_dx12.cpp third_party/imgui/backends/imgui_impl_win32.cpp)
 target_include_directories(port_imgui PUBLIC third_party/imgui)
 target_compile_features(port_imgui PUBLIC cxx_std_17)
+target_compile_options(port_imgui PRIVATE ${MELEE_ARCH_FLAG})
 target_link_libraries(port_imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
 target_compile_definitions(runtime PRIVATE GX_PC_SETTINGS)
 target_link_libraries(runtime PUBLIC port_imgui)
