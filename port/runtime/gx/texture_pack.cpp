@@ -378,7 +378,21 @@ void refresh_packs() {
 std::mutex g_cache_mutex;
 std::unordered_map<std::string, std::unique_ptr<Replacement>> g_cache;
 uint64_t g_cache_bytes = 0;
-constexpr uint64_t kCacheBudget = 1536ull * 1024 * 1024;
+// Decoded PNGs are CPU-side staging data, and on an integrated GPU they compete with the GPU for
+// the same physical RAM. Keep the old 1.5 GB ceiling on ordinary machines, but do not reserve that
+// much of a small machine's memory before the game has even started. A quarter leaves room for the
+// ISO, the emulator, the OS and the GPU's shared allocation; the lower bound still lets a single
+// useful replacement be prefetched on a 2 GB machine.
+constexpr uint64_t kMaxCacheBudget = 1536ull * 1024 * 1024;
+constexpr uint64_t kMinCacheBudget = 256ull * 1024 * 1024;
+
+uint64_t prefetch_cache_budget() {
+  MEMORYSTATUSEX memory{};
+  memory.dwLength = sizeof memory;
+  if (!GlobalMemoryStatusEx(&memory) || !memory.ullTotalPhys) return kMaxCacheBudget;
+  return std::clamp<uint64_t>(memory.ullTotalPhys / 4, kMinCacheBudget, kMaxCacheBudget);
+}
+
 void clear_cache();   // defined with load()
 std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes);
 
@@ -512,11 +526,12 @@ void prefetch_begin() {
   if (g_prefetching.load(std::memory_order_relaxed)) return;
   refresh_packs();
   if (!g.on || g.index.empty()) return;
+  const uint64_t cache_budget = prefetch_cache_budget();
   if (g_prefetch.joinable()) g_prefetch.join();
   g_prefetch_done.store(0, std::memory_order_relaxed);
   g_prefetch_total.store(g.index.size(), std::memory_order_relaxed);
   g_prefetching.store(true, std::memory_order_release);
-  g_prefetch = std::thread([] {
+  g_prefetch = std::thread([cache_budget] {
     std::vector<std::string> names;
     names.reserve(g.index.size());
     for (const auto& kv : g.index) names.push_back(kv.first);
@@ -524,19 +539,21 @@ void prefetch_begin() {
       if (!g.on) break;   // switched off mid-run: stop rather than finish work nobody wants
       {
         std::lock_guard<std::mutex> lk(g_cache_mutex);
-        if (g_cache_bytes >= kCacheBudget || g_cache.count(name)) { g_prefetch_done.fetch_add(1, std::memory_order_relaxed); continue; }
+        if (g_cache_bytes >= cache_budget || g_cache.count(name)) { g_prefetch_done.fetch_add(1, std::memory_order_relaxed); continue; }
       }
       if (auto r = decode_entry(name, ~0ull)) {   // decoded into the cache; the draw path then finds it ready
         std::lock_guard<std::mutex> lk(g_cache_mutex);
-        if (g_cache_bytes + r->pixels.size() <= kCacheBudget) { g_cache_bytes += r->pixels.size(); g_cache.emplace(name, std::move(r)); }
+        if (g_cache_bytes < cache_budget && r->pixels.size() <= cache_budget - g_cache_bytes) {
+          g_cache_bytes += r->pixels.size(); g_cache.emplace(name, std::move(r));
+        }
       }
       g_prefetch_done.fetch_add(1, std::memory_order_relaxed);
     }
     {
       std::lock_guard<std::mutex> lk(g_cache_mutex);
-      host::log("textures: prefetched %llu of %llu replacements, %zu kept decoded (%.0f MB)",
+      host::log("textures: prefetched %llu of %llu replacements, %zu kept decoded (%.0f MB of %.0f MB)",
                 (unsigned long long)g_prefetch_done.load(), (unsigned long long)g_prefetch_total.load(),
-                g_cache.size(), g_cache_bytes / 1048576.0);
+                g_cache.size(), g_cache_bytes / 1048576.0, cache_budget / 1048576.0);
     }
     g_prefetching.store(false, std::memory_order_release);
   });
