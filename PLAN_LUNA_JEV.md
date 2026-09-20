@@ -158,3 +158,36 @@ References checked 2026-09-20:
 - https://developers.openai.com/api/docs/models/gpt-5.6-luna
 - https://docs.typesafe.ai/api
 - https://docs.typesafe.ai/patterns/fan-out
+
+## TypeSafe documentation supplied by the user: read on continuation
+
+Do not repeat a blanket claim that live TypeSafe documentation is unavailable.
+Some `.md` fetches failed, but the normal API and fan-out pages were successfully
+read during this session. Retry the normal page when a Markdown URL fails.
+
+- Skill: `C:/Users/Chandler/.codex/skills/typesafe-ai/SKILL.md`
+- Skill source: https://raw.githubusercontent.com/typesafe-ai/skills/main/skills/typesafe-ai/SKILL.md
+- Index: https://docs.typesafe.ai/llms.txt
+- Quickstart: https://docs.typesafe.ai/introduction/quickstart
+- Building guide: https://docs.typesafe.ai/concepts/how-to-build-with-system-one
+- Primer: https://docs.typesafe.ai/introduction/machine-learning-primer
+- Patterns: https://docs.typesafe.ai/patterns
+- API: https://docs.typesafe.ai/api
+- Parallel questions: https://docs.typesafe.ai/patterns/fan-out
+- Uncertainty: https://docs.typesafe.ai/patterns/confidence-routing
+- Composite scoring: https://docs.typesafe.ai/patterns/composite-scoring
+
+Verified HTTP contract: POST `https://api.typesafe.ai/v1/systemone`, Bearer token
+from TYPESAFE_API_KEY, JSON body with state, model and questions. Questions use
+type, instructions and criteria. Choice criteria is an option map; Score criteria
+is an ordered array of 2 to 10 levels; Noul asks a binary probability question.
+The response has model, answers keyed by question ID and usage. Choice/Score
+include confidence and probabilities; Noul has its probability without separate
+confidence. Batch independent questions over shared evidence. Typed output is
+not proof of correctness. tools/jev_review.py implements this direct HTTP path;
+no LangChain installation is necessary. Live inference remains unverified for
+this helper until a replacement credential is locally configured.
+
+The user also supplied article text and illustrative diagrams. Their assumed
+latency/cost comparisons are not measured port speedups. Prefer the live API
+contract over article snippets when they differ.
