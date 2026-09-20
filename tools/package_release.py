@@ -155,6 +155,14 @@ def main():
                           "Pass --skip-compat-exe if this omission is deliberate.")
     if not args.exe.is_file():
         raise SystemExit(f"missing executable: {args.exe}")
+    # A standard build passed as --experimental-exe was never built with MELEE_ENABLE_DLSS5=ON, so
+    # it would ship as the "DLSS5-Experimental" download while behaving like the standard build and
+    # missing nvngx.dll_meleedlss5.dll (caught below), or worse, silently sharing the same file with
+    # no forwarder check if that ever changes. Reject the mistake outright rather than rely on the
+    # forwarder check alone to catch it.
+    if args.experimental_exe.resolve() == args.exe.resolve():
+        raise SystemExit("--experimental-exe is the same file as --exe. Build it separately with "
+                          "-DMELEE_ENABLE_DLSS5=ON; do not reuse the standard executable.")
     for experimental in [e for e in (args.experimental_exe, args.experimental_compat_exe) if e]:
         if not experimental.is_file():
             raise SystemExit(f"missing experimental executable: {experimental}")
