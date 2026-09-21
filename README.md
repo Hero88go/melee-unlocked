@@ -55,7 +55,7 @@ are included with Melee Unlocked.
 
 ## Install
 
-Download `MeleeUnlocked-<version>-win64.zip` from [Releases](https://github.com/hero88go/melee-unlocked/releases)
+Download `MeleeUnlocked-<version>-Stable-Recomp-Legacy-win64.zip` from [Releases](https://github.com/hero88go/melee-unlocked/releases)
 and extract it anywhere. Then pick one of two ways to run it. **The launcher is optional**;
 the game does not depend on it, and the manual way is complete on its own.
 
@@ -82,23 +82,23 @@ updates and the Slippi account check in one place.
 - **Updates**: it checks for a new release on every start. "Update and restart" installs it in
   place; settings, saves and replays stay.
 
-### Legacy vs. DLSS 5 Experimental
+### Stable Recomp Legacy vs. DLSS 5 Experimental
 
 Two builds are available, picked from the **GAME BUILD** dropdown on the launcher's Play page
 (remembered between launches; the manual `.bat` files always run Legacy):
 
-- **Legacy** (`MeleeUnlocked-<version>-win64.zip`): the regular game. Ordinary NVIDIA DLSS / DLAA
+- **Stable Recomp Legacy** (`MeleeUnlocked-<version>-Stable-Recomp-Legacy-win64.zip`): the regular game. Ordinary NVIDIA DLSS / DLAA
   upscaling, Frame Generation and Reflex are all here; none of it needs DLSS 5.
-- **DLSS 5 Experimental** (`MeleeUnlocked-<version>-DLSS5-Experimental.zip`): everything in
-  Legacy, plus an extra, optional neural-rendering pass over the DLSS/DLAA image
+- **DLSS 5 Experimental** (inside the same Stable Recomp Legacy archive): everything in Legacy,
+  plus an extra, optional neural-rendering pass over the DLSS/DLAA image
   (`melee_port_dlss5.exe` / `melee_port_dlss5_compat.exe`, on by picking "Insane" in the Quality
   presets or the DLSS 5 controls in PC settings). It is experimental, intended for RTX 50-series
   GPUs or newer, and is not included in or reachable from the Legacy build at all: the Legacy
   executables are compiled without this code.
 
-  Picking DLSS 5 Experimental from a Legacy-only install downloads and installs the complete
-  experimental zip once, then launches it; after that it is just the other choice in the
-  dropdown. Switching back to Legacy needs nothing extra.
+  Picking DLSS 5 Experimental from an install that has only the legacy executable asks the
+  launcher to install the current combined archive, then launches it; after that it is just the
+  other choice in the dropdown. Switching back to Legacy needs nothing extra.
 
   **DLSS 5 will not work without NVIDIA's DLSS 5 file (`nvngx_dlssnr.dll`). It is not included
   in either zip, and this project does not provide it.** The game looks for it in the NVIDIA

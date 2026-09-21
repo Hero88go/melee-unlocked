@@ -52,6 +52,9 @@ static void usage() {
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
               "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
+#ifdef MELEE_SOURCE_PORT
+  std::printf("           [--card-self-test <new scratch directory>]\n");
+#endif
 }
 
 #ifndef MELEE_SOURCE_PORT
@@ -372,6 +375,7 @@ static int melee_main(int argc, char** argv) {
   TimerResolution timer_resolution;
   host::Options& o = host::options;
   bool headless = false, hidden = false, threaded = false, fps_requested = false;
+  std::string card_self_test_dir;
   gx::RenderOptions gfx;
   bool automated = false, explicit_frame_mode = false, settings_window_only = false;
   for (int i = 1; i < argc; ++i) {
@@ -547,6 +551,7 @@ static int melee_main(int argc, char** argv) {
 #ifdef MELEE_SOURCE_PORT
     else if (a == "--match") { if (!source_port::set_match(next())) {
       std::fprintf(stderr, "--match <stage>:<p1>[:<p2>...], each player <kind>[/c<level>][/x<costume>]\n"); return 2; } }
+    else if (a == "--card-self-test") card_self_test_dir = next();
 #endif
     else if (a == "--settings-window") {}
     else { usage(); return 2; }
@@ -574,6 +579,9 @@ static int melee_main(int argc, char** argv) {
     slippi::shutdown();
     return rc;
   }
+#ifdef MELEE_SOURCE_PORT
+  if (!card_self_test_dir.empty()) return source_port::card_self_test(card_self_test_dir.c_str()) ? 0 : 1;
+#endif
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
   remember_iso(o.iso);   // so the launcher can offer this disc without being told again
