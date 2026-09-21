@@ -744,29 +744,16 @@ void open_settings() {
 // make anyone accept by default.
 void refresh_engine() {
   if (!g_engine_btn) return;
-  const bool have = source_available();
-  if (!have && g_engine != ENGINE_LEGACY) { g_engine = ENGINE_LEGACY; save_ini(); }
-  ShowWindow(g_engine_btn, have ? SW_SHOW : SW_HIDE);
-  set_text(g_engine_btn, g_engine == ENGINE_SOURCE ? "Build: Source Port" : "Build: Stable Recomp Legacy");
-  // The source build has no Slippi in it at all, so the account line would be telling the player
-  // about something this launch cannot reach.
-  if (g_engine == ENGINE_SOURCE) {
-    g_slippi_line = "Source engine: offline modes only. Switch to Legacy for online.";
-    g_slippi_missing = false;   // not a problem to fix, just what this engine is
-    ShowWindow(g_slippi_btn, SW_HIDE);
-  } else {
-    g_slippi_line = slippi_account_line();
-    g_slippi_missing = g_slippi_line.rfind("Slippi account:", 0) != 0;
-    ShowWindow(g_slippi_btn, g_slippi_missing ? SW_SHOW : SW_HIDE);
-  }
+  if (g_engine != ENGINE_LEGACY) { g_engine = ENGINE_LEGACY; save_ini(); }
+  ShowWindow(g_engine_btn, SW_HIDE);
+  g_slippi_line = slippi_account_line();
+  g_slippi_missing = g_slippi_line.rfind("Slippi account:", 0) != 0;
+  ShowWindow(g_slippi_btn, g_slippi_missing ? SW_SHOW : SW_HIDE);
   InvalidateRect(g_main, nullptr, FALSE);
 }
 
 void toggle_engine() {
-  if (g_playing || !source_available()) return;
-  g_engine = g_engine == ENGINE_SOURCE ? ENGINE_LEGACY : ENGINE_SOURCE;
-  save_ini();
-  refresh_engine();
+  // The Stable Recomp launcher does not expose the Source Port build.
 }
 
 // A GAME BUILD segment was pressed: remember the choice, repaint both segments, and fetch the

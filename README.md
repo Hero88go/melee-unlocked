@@ -89,7 +89,7 @@ Two builds are available, picked from the **GAME BUILD** dropdown on the launche
 
 - **Stable Recomp Legacy** (`MeleeUnlocked-<version>-Stable-Recomp-Legacy-win64.zip`): the regular game. Ordinary NVIDIA DLSS / DLAA
   upscaling, Frame Generation and Reflex are all here; none of it needs DLSS 5.
-- **DLSS 5 Experimental** (inside the same Stable Recomp Legacy archive): everything in Legacy,
+- **DLSS 5 Experimental** (`MeleeUnlocked-<version>-DLSS5-Experimental.zip`): everything in Legacy,
   plus an extra, optional neural-rendering pass over the DLSS/DLAA image
   (`melee_port_dlss5.exe` / `melee_port_dlss5_compat.exe`, on by picking "Insane" in the Quality
   presets or the DLSS 5 controls in PC settings). It is experimental, intended for RTX 50-series
@@ -97,8 +97,8 @@ Two builds are available, picked from the **GAME BUILD** dropdown on the launche
   executables are compiled without this code.
 
   Picking DLSS 5 Experimental from an install that has only the legacy executable asks the
-  launcher to install the current combined archive, then launches it; after that it is just the
-  other choice in the dropdown. Switching back to Legacy needs nothing extra.
+  launcher to install the separate DLSS 5 Experimental archive, then launches it. Switching back
+  to Legacy needs nothing extra.
 
   **DLSS 5 will not work without NVIDIA's DLSS 5 file (`nvngx_dlssnr.dll`). It is not included
   in either zip, and this project does not provide it.** The game looks for it in the NVIDIA
