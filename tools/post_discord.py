@@ -11,6 +11,8 @@ Set it up once:
 Usage:
   python tools/post_discord.py --version 0.1.15                 # show what would be posted
   python tools/post_discord.py --version 0.1.15 --send          # actually post it
+  python tools/post_discord.py --last 3                         # preview the latest 3 releases
+  python tools/post_discord.py --last 3 --send                  # post the latest 3 releases
   python tools/post_discord.py --notes release/NOTES.md --send  # post an arbitrary file
 
 Nothing is posted without --send, so the message can always be read first.
@@ -54,7 +56,7 @@ def notes_for_version(version):
     return None
 
 
-def to_discord(text, version, repo="Hero88go/melee-unlocked"):
+def to_discord(text, version, repo="Hero88go/melee-unlocked", release_url=None):
     """Markdown that reads well in Discord.
 
     The notes are hard wrapped for reading as a file, but Discord treats every newline as a real
@@ -113,8 +115,29 @@ def to_discord(text, version, repo="Hero88go/melee-unlocked"):
     body = re.sub(r"\n{3,}", "\n\n", "\n".join(blocks)).strip()
     # A notes title with more than the version ("0.6.0: DLSS5 update, ...") is the headline.
     header = ("**%s**\n\n" % title) if ":" in title else "**Melee Unlocked %s is out**\n\n" % version
-    link = "\n\nhttps://github.com/%s/releases/tag/v%s" % (repo, version)
+    link = ("\n\n" + release_url) if release_url else ("\n\nhttps://github.com/%s/releases/tag/v%s" % (repo, version))
     return header + body + link
+
+
+def latest_releases(repo, count):
+    """Return the newest published GitHub releases, newest first."""
+    if count <= 0:
+        raise SystemExit("--last must be greater than zero")
+    url = "https://api.github.com/repos/%s/releases?per_page=%d" % (repo, max(count, 1))
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "melee-unlocked-release-notes"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            releases = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError) as error:
+        raise SystemExit("could not read GitHub releases: %s" % error)
+    published = [r for r in releases if isinstance(r, dict) and not r.get("draft")]
+    if len(published) < count:
+        raise SystemExit("GitHub returned only %d published release(s); need %d" % (len(published), count))
+    return published[:count]
 
 
 def split_message(text, limit=DISCORD_LIMIT):
@@ -179,11 +202,16 @@ def delete(webhook, message_id):
 def main():
     ap = argparse.ArgumentParser(description="Post release notes to Discord through a webhook.")
     ap.add_argument("--version", help="release version, e.g. 0.1.15 (reads release/RELEASE_NOTES_<v>.md)")
+    ap.add_argument("--last", type=int, metavar="N", help="use the N latest published GitHub releases")
     ap.add_argument("--notes", type=Path, help="post this file instead of a version's notes")
+    ap.add_argument("--repo", default="Hero88go/melee-unlocked", help="GitHub repository for --last")
     ap.add_argument("--webhook", help="webhook URL (default: discord-webhook.txt or MELEE_DISCORD_WEBHOOK)")
     ap.add_argument("--send", action="store_true", help="actually post; without it the message is only printed")
     ap.add_argument("--delete", metavar="VERSION", help="delete the messages posted for VERSION and stop")
     args = ap.parse_args()
+
+    if args.last and (args.version or args.notes):
+        ap.error("--last cannot be combined with --version or --notes")
 
     if args.delete:
         record = ROOT / "release" / ("discord-posted-%s.txt" % args.delete)
@@ -199,18 +227,34 @@ def main():
         record.unlink()
         return 0
 
-    if args.notes:
+    if args.last:
+        messages = []
+        for release in latest_releases(args.repo, args.last):
+            tag = release.get("tag_name", "").strip()
+            version = tag[1:] if tag.startswith("v") else tag
+            if not version:
+                raise SystemExit("a GitHub release had no tag_name")
+            title = release.get("name") or tag
+            body = release.get("body") or "No release notes were provided."
+            text = "# %s\n\n%s" % (title, body)
+            messages.extend(split_message(to_discord(text, version, args.repo,
+                                                      release.get("html_url"))))
+        chunks = messages
+        version = "last%d" % args.last
+        message = "\n\n".join(chunks)
+    elif args.notes:
         text = args.notes.read_text(encoding="utf-8")
         version = args.version or (ROOT / "VERSION").read_text(encoding="utf-8").strip()
+        message = to_discord(text, version)
+        chunks = split_message(message)
     else:
         version = args.version or (ROOT / "VERSION").read_text(encoding="utf-8").strip()
         text = notes_for_version(version)
         if text is None:
             raise SystemExit("no notes found for %s. Write release/RELEASE_NOTES_%s.md or pass --notes."
                              % (version, version))
-
-    message = to_discord(text, version)
-    chunks = split_message(message)
+        message = to_discord(text, version)
+        chunks = split_message(message)
 
     print("=" * 72)
     for i, chunk in enumerate(chunks, 1):
