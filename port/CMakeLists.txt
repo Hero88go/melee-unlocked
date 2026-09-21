@@ -13,6 +13,7 @@ target_include_directories(port_memory_range_test PRIVATE runtime/host)
 target_compile_features(port_memory_range_test PRIVATE cxx_std_17)
 add_test(NAME port_memory_ranges COMMAND port_memory_range_test)
 add_test(NAME port_dol_validation COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/dol_validation_test.py")
+add_test(NAME port_release_integration COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/release_integration_test.py")
 add_executable(port_texture_test tests/texture_snapshot_test.cpp runtime/gx/gx_texture.cpp)
 target_include_directories(port_texture_test PRIVATE runtime/gx)
 target_compile_features(port_texture_test PRIVATE cxx_std_17)
@@ -156,6 +157,9 @@ target_compile_options(melee_source PRIVATE /EHsc)
 target_compile_definitions(melee_source PRIVATE MELEE_SOURCE_PORT NOMINMAX _CRT_SECURE_NO_WARNINGS
   MELEE_PORT_VERSION="${MELEE_PORT_VERSION}" MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}"
   MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS})
+add_test(NAME source_card_roundtrip COMMAND melee_source --hidden --volume 0
+  --log-file "${CMAKE_CURRENT_BINARY_DIR}/source-card-roundtrip.log"
+  --card-self-test "${CMAKE_CURRENT_BINARY_DIR}/source-card-roundtrip")
 add_executable(melee_source_probe app/main_source.cpp)
 target_include_directories(melee_source_probe PRIVATE runtime/abi)
 add_executable(port_mm_probe tests/mm_probe.cpp)

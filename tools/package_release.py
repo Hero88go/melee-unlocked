@@ -1,10 +1,14 @@
-"""Assembles a standalone release folder and zip of the native port.
+"""Assembles a standalone release folder and one combined Stable Recomp Legacy zip.
 
-Contents: MeleeUnlockedLauncher.exe (optional client), melee_port.exe, the Streamline/DLSS runtime DLLs, the Slippi Sys files the EXI device
-serves (code tables, game file diffs), a launcher batch file, README and licenses. No game data:
+Contents: MeleeUnlockedLauncher.exe (optional client), the normal/compatibility/DLSS5 legacy
+executables, optional Source Port files, the Streamline/DLSS runtime DLLs, the Slippi Sys files
+the legacy EXI device serves (code tables, game file diffs), a launcher batch file, README and
+licenses. No game data:
 the user supplies their own Melee NTSC 1.02 ISO. Usage:
 
-    python tools/package_release.py --version 0.1.0 [--out release]
+    python tools/package_release.py --version 0.1.0 --exe build-review/port/Release/melee_port.exe \
+        --compat-exe build-compat/port/Release/melee_port.exe \
+        --experimental-exe build-dlss5/port/Release/melee_port.exe [--out release]
 """
 import argparse
 import shutil
@@ -49,6 +53,14 @@ Either way, the PC settings panel opens on the first launch; later press F1 or c
 fullscreen, frame rate cap, VSync, widescreen 16:9, internal resolution,
 anti-aliasing (SSAA), anisotropic filtering, DLSS/DLAA, sharpening, sub-frame animation,
 game and music volume. Settings persist in port-settings.ini.
+
+Build choices
+-------------
+The launcher defaults to Stable Recomp Legacy. It includes the normal and compatibility legacy
+builds and, when present, exposes DLSS 5 Experimental as a separate legacy build choice.
+Source Port is an additional offline-only choice when this package includes melee_source.exe and
+melee_game.dll. Source Port does not include Slippi yet; switch back to Stable Recomp Legacy for
+online play. Its gameplay parity and authored-subframe work are still under validation.
 
 Controllers: a GameCube adapter (WUP-028, official or Mayflash in Wii U mode) is used
 automatically if it has the WinUSB driver that Slippi installs. Close Slippi Dolphin first.
@@ -148,6 +160,12 @@ def main():
     # from the online one (see PORT_COMPLETION.md, "Replay playback build").
     ap.add_argument("--playback-exe", type=Path, default=None,
                     help="melee_port_playback.exe, built from port/generated_playback")
+    ap.add_argument("--source-exe", type=Path, default=None,
+                    help="optional melee_source.exe from the native Source Port build")
+    ap.add_argument("--source-dll", type=Path, default=None,
+                    help="optional melee_game.dll paired with --source-exe")
+    ap.add_argument("--source-dbg", type=Path, default=None,
+                    help="optional melee_game.dbg paired with --source-dll")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
     if not args.compat_exe and not args.skip_compat_exe:
@@ -155,6 +173,10 @@ def main():
                           "Pass --skip-compat-exe if this omission is deliberate.")
     if not args.exe.is_file():
         raise SystemExit(f"missing executable: {args.exe}")
+    if bool(args.source_exe) != bool(args.source_dll):
+        raise SystemExit("--source-exe and --source-dll must be supplied together")
+    if args.source_exe and (not args.source_exe.is_file() or not args.source_dll.is_file()):
+        raise SystemExit("missing Source Port executable or DLL")
     # A standard build passed as --experimental-exe was never built with MELEE_ENABLE_DLSS5=ON, so
     # it would ship as the "DLSS5-Experimental" download while behaving like the standard build and
     # missing nvngx.dll_meleedlss5.dll (caught below), or worse, silently sharing the same file with
@@ -175,7 +197,7 @@ def main():
     built = subprocess.run([str(args.exe), "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
     if built != args.version:
         raise SystemExit(f"{args.exe.name} reports version {built!r} but the release is {args.version!r}; rebuild it first")
-    name = f"MeleeUnlocked-{args.version}"
+    name = f"MeleeUnlocked-{args.version}-Stable-Recomp-Legacy"
     folder = args.out / name
     if folder.exists():
         shutil.rmtree(folder)
@@ -205,6 +227,18 @@ def main():
         shutil.copytree(playback_sys, folder / "SysPlayback",
                         ignore=shutil.ignore_patterns("README.md", ".git*"))
         print(f"playback build: {args.playback_exe}")
+    if args.source_exe:
+        source_version = subprocess.run([str(args.source_exe), "--version"], capture_output=True,
+                                        text=True, timeout=60).stdout.strip()
+        if source_version != args.version:
+            raise SystemExit(f"the Source Port executable reports {source_version!r}, not {args.version!r}")
+        shutil.copy2(args.source_exe, folder / "melee_source.exe")
+        shutil.copy2(args.source_dll, folder / "melee_game.dll")
+        if args.source_dbg:
+            if not args.source_dbg.is_file():
+                raise SystemExit(f"missing Source Port debug file: {args.source_dbg}")
+            shutil.copy2(args.source_dbg, folder / "melee_game.dbg")
+        print(f"source port: {args.source_exe} + {args.source_dll}")
     launcher = args.exe.parent / "MeleeUnlockedLauncher.exe"
     if not launcher.is_file():
         raise SystemExit(f"missing launcher: {launcher} (build target melee_unlocked)")
@@ -265,7 +299,6 @@ def main():
         total = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
         print(f"{zip_path} ({zip_path.stat().st_size / 1e6:.1f} MB zipped, {total / 1e6:.1f} MB unpacked)")
 
-    zip_folder(args.out / f"{name}-win64.zip")
     shutil.copy2(args.experimental_exe, folder / "melee_port_dlss5.exe")
     if args.experimental_compat_exe:
         shutil.copy2(args.experimental_compat_exe, folder / "melee_port_dlss5_compat.exe")
@@ -278,7 +311,7 @@ def main():
         "DLSS 5 will not work without NVIDIA's DLSS 5 file (nvngx_dlssnr.dll). It is not included and\n"
         "we do not provide it. Without it the game runs normally and F1 says DLSS 5 could not start.\n",
         encoding="utf-8")
-    zip_folder(args.out / f"{name}-DLSS5-Experimental.zip")
+    zip_folder(args.out / f"{name}-win64.zip")
 
 
 if __name__ == "__main__":

@@ -14,6 +14,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -199,21 +201,294 @@ void h_disc_read(uint32_t offset, void* dst, uint32_t size, MuDiscDone done, voi
 int32_t h_disc_status() { return 0; }
 uint32_t h_disc_id(void* out, uint32_t size) { const uint32_t n = std::min<uint32_t>(size, 0x20); std::memcpy(out, (void*)MEM1_BASE, n); return n; }
 
-// Memory card: none yet (M10). CARD_RESULT_NOCARD.
-int32_t h_card_probe(int32_t, int32_t*, int32_t*) { return -3; }
-int32_t h_card_mount(int32_t) { return -3; }
-int32_t h_card_unmount(int32_t) { return -3; }
-int32_t h_card_open(int32_t, const char*, int32_t*, uint32_t*) { return -3; }
-int32_t h_card_close(int32_t, int32_t) { return -3; }
-int32_t h_card_create(int32_t, const char*, uint32_t, int32_t*) { return -3; }
-int32_t h_card_delete(int32_t, const char*) { return -3; }
-int32_t h_card_rename(int32_t, const char*, const char*) { return -3; }
-int32_t h_card_read(int32_t, int32_t, void*, uint32_t, uint32_t) { return -3; }
-int32_t h_card_write(int32_t, int32_t, const void*, uint32_t, uint32_t) { return -3; }
-int32_t h_card_stat(int32_t, int32_t, void*, uint32_t) { return -3; }
-int32_t h_card_set_stat(int32_t, int32_t, const void*, uint32_t) { return -3; }
-int32_t h_card_free_blocks(int32_t, int32_t*, int32_t*) { return -3; }
-int32_t h_card_format(int32_t) { return -3; }
+// Memory card: slot A is a Dolphin-compatible folder of .gci files. The game-side shim passes
+// native pointers here, so directory entries are converted explicitly instead of exposing their
+// big-endian on-card representation as a host struct.
+namespace {
+constexpr int32_t CARD_READY = 0, CARD_NOCARD = -3, CARD_NOFILE = -4, CARD_EXIST = -7,
+                  CARD_NOENT = -8, CARD_INSSPACE = -9, CARD_NOPERM = -10,
+                  CARD_LIMIT = -11, CARD_NAMETOOLONG = -12, CARD_FATAL = -128;
+constexpr uint32_t CARD_SECTOR = 0x2000, CARD_MAX_FILES = 127, CARD_TOTAL_BLOCKS = 2043,
+                   CARD_MEM_SIZE_MBIT = 128;
+
+struct SourceCardFile {
+  uint8_t dir[64]{};
+  std::vector<uint8_t> data;
+  std::filesystem::path path;
+
+  std::string name() const {
+    return std::string(reinterpret_cast<const char*>(dir + 8), strnlen(reinterpret_cast<const char*>(dir + 8), 32));
+  }
+  uint16_t blocks() const { return (uint16_t)(((uint16_t)dir[0x38] << 8) | dir[0x39]); }
+};
+
+struct SourceCardStat {
+  char fileName[32];
+  uint32_t length, time;
+  uint8_t gameName[4], company[2], bannerFormat;
+  uint32_t iconAddr;
+  uint16_t iconFormat, iconSpeed;
+  uint32_t commentAddr, offsetBanner, offsetBannerTlut, offsetIcon[8], offsetIconTlut, offsetData;
+};
+static_assert(sizeof(SourceCardStat) == 0x6C, "native CARDStat layout");
+
+std::vector<SourceCardFile*> g_card_files;
+std::filesystem::path g_card_dir;
+bool g_card_mounted = false;
+
+uint16_t card_be16(const uint8_t* p) { return (uint16_t)(((uint16_t)p[0] << 8) | p[1]); }
+uint32_t card_be32(const uint8_t* p) {
+  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+void card_put16(uint8_t* p, uint16_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
+void card_put32(uint8_t* p, uint32_t v) {
+  p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v;
+}
+
+const uint8_t* card_disk_id() { return reinterpret_cast<const uint8_t*>(MEM1_BASE); }
+bool card_same_game(const SourceCardFile& file) { return std::memcmp(file.dir, card_disk_id(), 6) == 0; }
+uint32_t card_used_blocks() {
+  uint32_t blocks = 0;
+  for (const SourceCardFile* file : g_card_files) if (file) blocks += file->blocks();
+  return blocks;
+}
+int32_t card_find(const std::string& name) {
+  for (size_t i = 0; i < g_card_files.size(); ++i) {
+    if (g_card_files[i] && card_same_game(*g_card_files[i]) && g_card_files[i]->name() == name)
+      return (int32_t)i;
+  }
+  return -1;
+}
+std::string card_safe_name(const SourceCardFile& file) {
+  std::string name(reinterpret_cast<const char*>(file.dir), 6);
+  name += "-";
+  for (char ch : file.name())
+    name += (std::isalnum((unsigned char)ch) || ch == '_' || ch == '-' || ch == '.') ? ch : '_';
+  return name + ".gci";
+}
+void card_save(SourceCardFile& file) {
+  if (file.path.empty()) file.path = g_card_dir / card_safe_name(file);
+  std::filesystem::path temporary = file.path.string() + ".tmp";
+  FILE* out = std::fopen(temporary.string().c_str(), "wb");
+  if (!out) { host::log("card: cannot write %s", file.path.string().c_str()); return; }
+  const bool ok = std::fwrite(file.dir, 1, sizeof file.dir, out) == sizeof file.dir &&
+                  std::fwrite(file.data.data(), 1, file.data.size(), out) == file.data.size();
+  std::fclose(out);
+  std::error_code ec;
+  if (ok) std::filesystem::rename(temporary, file.path, ec);
+  if (!ok || ec) host::log("card: failed to save %s", file.path.string().c_str());
+}
+void card_clear_files() {
+  for (SourceCardFile* file : g_card_files) delete file;
+  g_card_files.clear();
+}
+void card_mount_files() {
+  if (g_card_mounted) return;
+  g_card_dir = host::options.card_dir;
+  std::error_code ec;
+  std::filesystem::create_directories(g_card_dir, ec);
+  card_clear_files();
+  g_card_files.assign(CARD_MAX_FILES, nullptr);
+  size_t slot = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(g_card_dir, ec)) {
+    if (ec || entry.path().extension() != ".gci" || slot >= CARD_MAX_FILES) continue;
+    FILE* in = std::fopen(entry.path().string().c_str(), "rb");
+    if (!in) continue;
+    auto* file = new SourceCardFile;
+    bool ok = std::fread(file->dir, 1, sizeof file->dir, in) == sizeof file->dir;
+    if (ok) {
+      file->data.resize((size_t)file->blocks() * CARD_SECTOR);
+      ok = std::fread(file->data.data(), 1, file->data.size(), in) == file->data.size();
+    }
+    std::fclose(in);
+    if (!ok || file->blocks() == 0 || file->blocks() > CARD_TOTAL_BLOCKS) { delete file; continue; }
+    file->path = entry.path();
+    g_card_files[slot++] = file;
+  }
+  g_card_mounted = true;
+  host::log("card: source slot A mounted from %s (%zu files, %u of %u blocks used)",
+            g_card_dir.string().c_str(), slot, card_used_blocks(), CARD_TOTAL_BLOCKS);
+}
+void card_reset_mount() { card_clear_files(); g_card_mounted = false; }
+uint32_t card_time_2000() { return host::cpu ? (uint32_t)(host::cpu->tb / host::TB_HZ) : 0; }
+void card_fill_stat(const SourceCardFile& file, SourceCardStat& stat) {
+  std::memset(&stat, 0, sizeof stat);
+  std::memcpy(stat.fileName, file.dir + 8, 32);
+  stat.length = (uint32_t)file.data.size();
+  stat.time = card_be32(file.dir + 0x28);
+  std::memcpy(stat.gameName, file.dir, 4);
+  std::memcpy(stat.company, file.dir + 4, 2);
+  stat.bannerFormat = file.dir[7];
+  stat.iconAddr = card_be32(file.dir + 0x2C);
+  stat.iconFormat = card_be16(file.dir + 0x30);
+  stat.iconSpeed = card_be16(file.dir + 0x32);
+  stat.commentAddr = card_be32(file.dir + 0x3C);
+  const uint32_t none = 0xFFFFFFFFu;
+  for (uint32_t& offset : stat.offsetIcon) offset = none;
+  stat.offsetBanner = stat.offsetBannerTlut = stat.offsetIconTlut = none;
+  if (stat.iconAddr == none) { stat.offsetData = 0; return; }
+  uint32_t offset = stat.iconAddr;
+  if ((stat.bannerFormat & 3) == 1) { stat.offsetBanner = offset; offset += 3072; stat.offsetBannerTlut = offset; offset += 512; }
+  else if ((stat.bannerFormat & 3) == 2) { stat.offsetBanner = offset; offset += 6144; }
+  bool has_tlut = false;
+  for (int i = 0; i < 8; ++i) {
+    const uint32_t format = (stat.iconFormat >> (2 * i)) & 3;
+    if (format == 1) { stat.offsetIcon[i] = offset; offset += 1024; has_tlut = true; }
+    else if (format == 2) { stat.offsetIcon[i] = offset; offset += 2048; }
+  }
+  if (has_tlut) { stat.offsetIconTlut = offset; offset += 512; }
+  stat.offsetData = offset;
+}
+}  // namespace
+
+int32_t h_card_probe(int32_t chan, int32_t* mem_size, int32_t* sector_size) {
+  if (chan != 0) return CARD_NOCARD;
+  if (mem_size) *mem_size = CARD_MEM_SIZE_MBIT;
+  if (sector_size) *sector_size = CARD_SECTOR;
+  return CARD_READY;
+}
+int32_t h_card_mount(int32_t chan) { if (chan != 0) return CARD_NOCARD; card_mount_files(); return CARD_READY; }
+int32_t h_card_unmount(int32_t chan) { if (chan != 0) return CARD_NOCARD; card_reset_mount(); return CARD_READY; }
+int32_t h_card_open(int32_t chan, const char* name, int32_t* file_no, uint32_t* length) {
+  if (chan != 0 || !g_card_mounted) return CARD_NOCARD;
+  const int32_t no = card_find(name ? name : "");
+  if (no < 0) return CARD_NOFILE;
+  if (file_no) *file_no = no;
+  if (length) *length = (uint32_t)g_card_files[no]->data.size();
+  return CARD_READY;
+}
+int32_t h_card_close(int32_t chan, int32_t) { return chan == 0 ? CARD_READY : CARD_NOCARD; }
+int32_t h_card_create(int32_t chan, const char* name, uint32_t size, int32_t* file_no) {
+  if (chan != 0 || !g_card_mounted) return CARD_NOCARD;
+  const std::string filename = name ? name : "";
+  if (filename.empty() || filename.size() > 32) return CARD_NAMETOOLONG;
+  if (card_find(filename) >= 0) return CARD_EXIST;
+  if (size == 0 || size % CARD_SECTOR) return CARD_FATAL;
+  const uint32_t blocks = size / CARD_SECTOR;
+  if (card_used_blocks() + blocks > CARD_TOTAL_BLOCKS) return CARD_INSSPACE;
+  int32_t no = -1;
+  for (size_t i = 0; i < g_card_files.size(); ++i) if (!g_card_files[i]) { no = (int32_t)i; break; }
+  if (no < 0) return CARD_NOENT;
+  auto* file = new SourceCardFile;
+  std::memcpy(file->dir, card_disk_id(), 6);
+  file->dir[6] = 0xFF; file->dir[7] = 0;
+  std::memcpy(file->dir + 8, filename.data(), filename.size());
+  card_put32(file->dir + 0x28, card_time_2000());
+  card_put32(file->dir + 0x2C, 0xFFFFFFFFu);
+  card_put16(file->dir + 0x30, 0); card_put16(file->dir + 0x32, 0);
+  file->dir[0x34] = 0x04; file->dir[0x35] = 0;
+  card_put16(file->dir + 0x36, (uint16_t)(5 + card_used_blocks()));
+  card_put16(file->dir + 0x38, (uint16_t)blocks);
+  file->dir[0x3A] = 0xFF; file->dir[0x3B] = 0xFF; card_put32(file->dir + 0x3C, 0xFFFFFFFFu);
+  file->data.assign(size, 0xFF);
+  g_card_files[no] = file;
+  card_save(*file);
+  if (file_no) *file_no = no;
+  return CARD_READY;
+}
+int32_t h_card_delete(int32_t chan, const char* name) {
+  if (chan != 0 || !g_card_mounted) return CARD_NOCARD;
+  const int32_t no = card_find(name ? name : "");
+  if (no < 0) return CARD_NOFILE;
+  SourceCardFile* file = g_card_files[no];
+  std::error_code ec; std::filesystem::remove(file->path, ec);
+  delete file; g_card_files[no] = nullptr;
+  return CARD_READY;
+}
+int32_t h_card_rename(int32_t chan, const char* old_name, const char* new_name) {
+  if (chan != 0 || !g_card_mounted) return CARD_NOCARD;
+  const std::string old_file = old_name ? old_name : "", new_file = new_name ? new_name : "";
+  if (new_file.empty() || new_file.size() > 32) return CARD_NAMETOOLONG;
+  const int32_t no = card_find(old_file);
+  if (no < 0) return CARD_NOFILE;
+  if (card_find(new_file) >= 0) return CARD_EXIST;
+  SourceCardFile& file = *g_card_files[no];
+  std::error_code ec; std::filesystem::remove(file.path, ec); file.path.clear();
+  std::memset(file.dir + 8, 0, 32); std::memcpy(file.dir + 8, new_file.data(), new_file.size());
+  card_save(file);
+  return CARD_READY;
+}
+int32_t h_card_read(int32_t chan, int32_t file_no, void* dst, uint32_t length, uint32_t offset) {
+  if (chan != 0 || !g_card_mounted) return CARD_NOCARD;
+  if (file_no < 0 || file_no >= (int32_t)g_card_files.size() || !g_card_files[file_no]) return CARD_NOFILE;
+  SourceCardFile& file = *g_card_files[file_no];
+  if ((uint64_t)offset + length > file.data.size()) return CARD_LIMIT;
+  std::memcpy(dst, file.data.data() + offset, length); return CARD_READY;
+}
+int32_t h_card_write(int32_t chan, int32_t file_no, const void* src, uint32_t length, uint32_t offset) {
+  if (chan != 0 || !g_card_mounted) return CARD_NOCARD;
+  if (file_no < 0 || file_no >= (int32_t)g_card_files.size() || !g_card_files[file_no]) return CARD_NOFILE;
+  SourceCardFile& file = *g_card_files[file_no];
+  if ((uint64_t)offset + length > file.data.size()) return CARD_LIMIT;
+  std::memcpy(file.data.data() + offset, src, length); card_save(file); return CARD_READY;
+}
+int32_t h_card_stat(int32_t chan, int32_t file_no, void* stat, uint32_t stat_size) {
+  if (chan != 0 || !g_card_mounted) return CARD_NOCARD;
+  if (file_no < 0 || file_no >= (int32_t)g_card_files.size() || !g_card_files[file_no]) return CARD_NOFILE;
+  SourceCardStat value{}; card_fill_stat(*g_card_files[file_no], value);
+  std::memcpy(stat, &value, std::min<uint32_t>(stat_size, sizeof value)); return CARD_READY;
+}
+int32_t h_card_set_stat(int32_t chan, int32_t file_no, const void* stat, uint32_t stat_size) {
+  if (chan != 0 || !g_card_mounted) return CARD_NOCARD;
+  if (file_no < 0 || file_no >= (int32_t)g_card_files.size() || !g_card_files[file_no]) return CARD_NOFILE;
+  if (stat_size < sizeof(SourceCardStat)) return CARD_LIMIT;
+  SourceCardStat value{}; std::memcpy(&value, stat, sizeof value);
+  SourceCardFile& file = *g_card_files[file_no];
+  file.dir[7] = value.bannerFormat; card_put32(file.dir + 0x2C, value.iconAddr);
+  card_put16(file.dir + 0x30, value.iconFormat); card_put16(file.dir + 0x32, value.iconSpeed);
+  card_put32(file.dir + 0x3C, value.commentAddr); card_put32(file.dir + 0x28, card_time_2000());
+  card_save(file); return CARD_READY;
+}
+int32_t h_card_free_blocks(int32_t chan, int32_t* bytes_unused, int32_t* files_unused) {
+  if (chan != 0 || !g_card_mounted) return CARD_NOCARD;
+  if (bytes_unused) *bytes_unused = (int32_t)((CARD_TOTAL_BLOCKS - std::min(CARD_TOTAL_BLOCKS, card_used_blocks())) * CARD_SECTOR);
+  if (files_unused) *files_unused = (int32_t)(CARD_MAX_FILES - std::count_if(g_card_files.begin(), g_card_files.end(), [](const SourceCardFile* f) { return f != nullptr; }));
+  return CARD_READY;
+}
+int32_t h_card_format(int32_t chan) {
+  if (chan != 0) return CARD_NOCARD;
+  card_mount_files();
+  for (SourceCardFile*& file : g_card_files) {
+    if (!file) continue;
+    std::error_code ec; std::filesystem::remove(file->path, ec);
+    delete file; file = nullptr;
+  }
+  return CARD_READY;
+}
+
+bool card_self_test_impl(const char* directory) {
+  if (!directory || !*directory) return false;
+  host::options.card_dir = directory;
+  card_reset_mount();
+  const uint8_t id[6] = {'G', 'A', 'L', 'E', '0', '1'};
+  std::memcpy(reinterpret_cast<void*>(MEM1_BASE), id, sizeof id);
+  int32_t mem_size = 0, sector_size = 0;
+  if (h_card_probe(0, &mem_size, &sector_size) != CARD_READY || mem_size != (int32_t)CARD_MEM_SIZE_MBIT ||
+      sector_size != (int32_t)CARD_SECTOR || h_card_mount(0) != CARD_READY)
+    return false;
+  int32_t file_no = -1;
+  if (h_card_create(0, "MU_NATIVE_CARD_TEST", CARD_SECTOR, &file_no) != CARD_READY || file_no < 0)
+    return false;
+  std::vector<uint8_t> expected(CARD_SECTOR), actual(CARD_SECTOR);
+  for (uint32_t i = 0; i < expected.size(); ++i) expected[i] = (uint8_t)((i * 37u + 11u) & 0xFFu);
+  if (h_card_write(0, file_no, expected.data(), (uint32_t)expected.size(), 0) != CARD_READY ||
+      h_card_read(0, file_no, actual.data(), (uint32_t)actual.size(), 0) != CARD_READY || actual != expected)
+    return false;
+  SourceCardStat stat{};
+  if (h_card_stat(0, file_no, &stat, sizeof stat) != CARD_READY || stat.length != CARD_SECTOR)
+    return false;
+  if (h_card_unmount(0) != CARD_READY || h_card_mount(0) != CARD_READY)
+    return false;
+  int32_t reopened = -1; uint32_t length = 0;
+  if (h_card_open(0, "MU_NATIVE_CARD_TEST", &reopened, &length) != CARD_READY ||
+      reopened < 0 || length != CARD_SECTOR || h_card_read(0, reopened, actual.data(), (uint32_t)actual.size(), 0) != CARD_READY ||
+      actual != expected)
+    return false;
+  if (h_card_format(0) != CARD_READY || h_card_unmount(0) != CARD_READY)
+    return false;
+  host::log("card: native isolated round-trip passed");
+  return true;
+}
 
 void h_ai_init_dma(void* buffer, uint32_t length) { audio_core::init_dma(g_audio, buffer, length); }
 void h_ai_start_dma(int32_t on) { audio_core::start_dma(g_audio, on != 0, host::cpu->tb, host::TB_HZ); }
@@ -346,6 +621,8 @@ LONG CALLBACK on_game_exception(EXCEPTION_POINTERS* info) {
 }
 
 }  // namespace
+
+bool card_self_test(const char* directory) { return card_self_test_impl(directory); }
 
 // --match <stage>:<p1>[:<p2>...], each player <kind>[/c<level>][/x<costume>], all numbers decimal
 // or 0x-hex. For example "0x14:9:12/c9" is Onett, one human, one level 9 CPU.

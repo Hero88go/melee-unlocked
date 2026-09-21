@@ -344,7 +344,7 @@ std::string work_dir() {
   std::string root = repo_root();
   return root.empty() ? g_dir : root;
 }
-std::string settings_ini_path() { return work_dir() + "\port-settings.ini"; }
+std::string settings_ini_path() { return work_dir() + "\\port-settings.ini"; }
 std::string game_args() {
   std::string base = g_dir;
   std::string a = " --iso \"" + g_iso + "\" --threaded-renderer";
@@ -747,7 +747,7 @@ void refresh_engine() {
   const bool have = source_available();
   if (!have && g_engine != ENGINE_LEGACY) { g_engine = ENGINE_LEGACY; save_ini(); }
   ShowWindow(g_engine_btn, have ? SW_SHOW : SW_HIDE);
-  set_text(g_engine_btn, g_engine == ENGINE_SOURCE ? "Engine: Source" : "Engine: Legacy");
+  set_text(g_engine_btn, g_engine == ENGINE_SOURCE ? "Build: Source Port" : "Build: Stable Recomp Legacy");
   // The source build has no Slippi in it at all, so the account line would be telling the player
   // about something this launch cannot reach.
   if (g_engine == ENGINE_SOURCE) {

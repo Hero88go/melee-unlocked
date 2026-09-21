@@ -98,17 +98,15 @@ void check(const std::string& current_version, bool install_experimental) {
     if (!tag.empty() && tag[0] == 'v') tag.erase(0, 1);
     std::string zip;
     size_t zip_size = 0;
-    char module[MAX_PATH]{}; GetModuleFileNameA(nullptr, module, MAX_PATH);
-    std::string dir(module); auto slash = dir.find_last_of("\\/");
-    if (slash != std::string::npos) dir.resize(slash);
-    const DWORD exp_attr = GetFileAttributesA((dir + "\\melee_port_dlss5.exe").c_str());
-    const bool experimental = install_experimental || (exp_attr != INVALID_FILE_ATTRIBUTES && !(exp_attr & FILE_ATTRIBUTE_DIRECTORY));
-    const std::string wanted = "MeleeUnlocked-" + tag + (experimental ? "-DLSS5-Experimental.zip" : "-win64.zip");
+    // Legacy and DLSS5 are choices inside one combined archive. Keep the same
+    // asset for both launcher paths so selecting DLSS5 never asks GitHub for an
+    // archive the packager no longer creates.
+    const std::string wanted = "MeleeUnlocked-" + tag + "-Stable-Recomp-Legacy-win64.zip";
     if (j.count("assets") && j["assets"].is_array())
       for (auto& a : j["assets"]) if (a.is_object() && a.value("name", std::string()) == wanted) { zip = a.value("browser_download_url", std::string()); zip_size = a.value("size", size_t(0)); break; }
     { std::lock_guard<std::mutex> lk(g_mutex); g_latest = tag; g_zip_url = zip; g_zip_size = zip_size; }
-    if ((newer(tag, g_current) || install_experimental) && !zip.empty()) { set_message(install_experimental ? "Installing experimental build: " + tag : "Update available: " + tag); g_state = State::UpdateAvailable; host::log("updater: version %s available (running %s)", tag.c_str(), g_current.c_str()); }
-    else if (zip.empty() && install_experimental) { set_message("Experimental download missing from the latest release"); g_state = State::Failed; }
+    if ((newer(tag, g_current) || install_experimental) && !zip.empty()) { set_message(install_experimental ? "Installing combined build: " + tag : "Update available: " + tag); g_state = State::UpdateAvailable; host::log("updater: version %s available (running %s)", tag.c_str(), g_current.c_str()); }
+    else if (zip.empty() && install_experimental) { set_message("Combined release download missing from the latest release"); g_state = State::Failed; }
     else { set_message("Up to date (" + g_current + ")"); g_state = State::UpToDate; }
   });
 }

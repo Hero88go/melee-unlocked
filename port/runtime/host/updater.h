@@ -7,7 +7,7 @@
 
 namespace host::updater {
 enum class State { Idle, Checking, UpToDate, UpdateAvailable, Downloading, ReadyToInstall, Failed };
-void check(const std::string& current_version, bool install_experimental = false); // true also offers the current version's complete experimental zip
+void check(const std::string& current_version, bool install_experimental = false); // true also offers the current version's combined archive
 State state();
 std::string latest_version();                     // tag of the newest release when known (without the leading v)
 std::string message();                            // short status text for the settings panel

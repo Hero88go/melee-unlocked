@@ -118,7 +118,9 @@ Decision: GitHub Releases for downloads (unlimited bandwidth, no site to host), 
 reports (template in `.github/ISSUE_TEMPLATE/bug_report.yml`). A launcher with an updater can come
 later; a zip is enough for the first Reddit post.
 
-- `python tools/package_release.py --version X.Y.Z` writes `release/MeleeUnlocked-X.Y.Z-win64.zip` (version from `VERSION`), with `MeleeUnlocked.exe` (client)
+- `python tools/package_release.py --version X.Y.Z` writes one combined
+  `release/MeleeUnlocked-X.Y.Z-Stable-Recomp-Legacy-win64.zip` (version from `VERSION`), with
+  the Legacy, compatibility, DLSS5 and optional Source Port choices in one launcher package.
   (about 38 MB): `melee_port.exe`, Streamline/DLSS DLLs, `Sys/` (GameSettings ini, codehandler,
   bootloader, GameFiles diffs), `MeleeUnlocked.bat`, README, licenses. No ISO, no DOL, no generated
   code. The user drops `melee.iso` next to the batch file.
