@@ -1,6 +1,6 @@
-"""Assembles a standalone release folder and one combined Stable Recomp Legacy zip.
+"""Assembles separate Stable Recomp Legacy and DLSS 5 Experimental release zips.
 
-Contents: MeleeUnlockedLauncher.exe (optional client), the normal/compatibility/DLSS5 legacy
+Contents: MeleeUnlockedLauncher.exe (optional client), the normal/compatibility legacy
 executables, optional Source Port files, the Streamline/DLSS runtime DLLs, the Slippi Sys files
 the legacy EXI device serves (code tables, game file diffs), a launcher batch file, README and
 licenses. No game data:
@@ -57,10 +57,8 @@ game and music volume. Settings persist in port-settings.ini.
 Build choices
 -------------
 The launcher defaults to Stable Recomp Legacy. It includes the normal and compatibility legacy
-builds and, when present, exposes DLSS 5 Experimental as a separate legacy build choice.
-Source Port is an additional offline-only choice when this package includes melee_source.exe and
-melee_game.dll. Source Port does not include Slippi yet; switch back to Stable Recomp Legacy for
-online play. Its gameplay parity and authored-subframe work are still under validation.
+builds and, when the separate DLSS 5 Experimental archive is installed, exposes it as another
+build choice.
 
 Controllers: a GameCube adapter (WUP-028, official or Mayflash in Wii U mode) is used
 automatically if it has the WinUSB driver that Slippi installs. Close Slippi Dolphin first.
@@ -292,26 +290,35 @@ def main():
                      (ROOT / "port/third_party/xess/LICENSE.txt", "intel-xess.txt")):
         if src.is_file():
             shutil.copy2(src, licenses / dst)
-    def zip_folder(zip_path):
+    def zip_folder(source_folder, zip_path):
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-            for path in folder.rglob("*"):
+            for path in source_folder.rglob("*"):
                 z.write(path, path.relative_to(args.out))
-        total = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
+        total = sum(p.stat().st_size for p in source_folder.rglob("*") if p.is_file())
         print(f"{zip_path} ({zip_path.stat().st_size / 1e6:.1f} MB zipped, {total / 1e6:.1f} MB unpacked)")
 
-    shutil.copy2(args.experimental_exe, folder / "melee_port_dlss5.exe")
+    # Keep the ordinary download free of the experimental executable and its
+    # unsigned forwarder. The experimental archive is a superset so the
+    # launcher can update an existing Legacy install in place.
+    zip_folder(folder, args.out / f"{name}-win64.zip")
+
+    experimental_folder = args.out / f"MeleeUnlocked-{args.version}-DLSS5-Experimental"
+    if experimental_folder.exists():
+        shutil.rmtree(experimental_folder)
+    shutil.copytree(folder, experimental_folder)
+    shutil.copy2(args.experimental_exe, experimental_folder / "melee_port_dlss5.exe")
     if args.experimental_compat_exe:
-        shutil.copy2(args.experimental_compat_exe, folder / "melee_port_dlss5_compat.exe")
+        shutil.copy2(args.experimental_compat_exe, experimental_folder / "melee_port_dlss5_compat.exe")
     forwarder = args.experimental_exe.parent / "nvngx.dll_meleedlss5.dll"
     if not forwarder.is_file():
         raise SystemExit(f"missing experimental forwarder: {forwarder}")
-    shutil.copy2(forwarder, folder / forwarder.name)
-    (folder / "README.txt").write_text(README.format(version=args.version) +
+    shutil.copy2(forwarder, experimental_folder / forwarder.name)
+    (experimental_folder / "README.txt").write_text(README.format(version=args.version) +
         "\nEXPERIMENTAL DLSS 5: Choose DLSS 5 Experimental in the launcher. Requires an RTX 50-series GPU or newer.\n"
         "DLSS 5 will not work without NVIDIA's DLSS 5 file (nvngx_dlssnr.dll). It is not included and\n"
         "we do not provide it. Without it the game runs normally and F1 says DLSS 5 could not start.\n",
         encoding="utf-8")
-    zip_folder(args.out / f"{name}-win64.zip")
+    zip_folder(experimental_folder, args.out / f"MeleeUnlocked-{args.version}-DLSS5-Experimental.zip")
 
 
 if __name__ == "__main__":
