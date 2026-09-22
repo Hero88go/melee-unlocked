@@ -24,6 +24,7 @@ struct Options {
   std::string replay_dir = "replays";        // where .slp recordings are written
   std::string card_dir = "User/GC/CardA";    // memory card slot A as a folder of .gci files
   std::string audio_dump;        // optional WAV file receiving everything the AI DMA plays
+  uint32_t regions = 0;          // --regions ADDR: dump a heap region table there when the heap is reported
   std::string input_log;         // --input-log: CSV of every PADRead (retrace, port, buttons, sticks, triggers)
   bool no_gc_adapter = false;    // hidden/headless runs: never open the GameCube adapter (WinUSB is exclusive; a test run would take it from the player)
 };

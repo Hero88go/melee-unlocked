@@ -204,7 +204,24 @@ uint32_t disc_fst_max_size() { return g_fst_max; }
 // and each Cell is { Cell* prev; Cell* next; s32 size; }. Walking the free list from the host
 // costs the guest nothing and answers the question an out-of-memory panic never does: was the
 // heap actually empty, or just too broken up to satisfy the request?
+// A scene's reserved memory regions, for builds whose heap bounds come from a table rather than
+// from the arena (m-ex walks five 28-byte entries: start at +8, size at +0xC, kind at +0x10, and
+// a skip flag at +0x14; kind 1 pushes the heap's bottom up, kind 2 pulls its top down). Printing
+// them says which reservations are squeezing the object heap, which a total never can.
+static void region_report(uint32_t table) {
+  if (!table) return;
+  for (uint32_t i = 0; i < 5; ++i) {
+    const uint32_t e = table + i * 28;
+    const uint32_t start = rd32(e + 8), size = rd32(e + 12), kind = rd32(e + 16), skip = rd32(e + 20);
+    const char* effect = kind == 1 ? "raises the heap's bottom" : kind == 2 ? "lowers the heap's top"
+                       : kind == 4 ? "raises a secondary bound" : "ignored";
+    log("  region %u: %08X + %08X (%.2f MB) kind %u %s%s", i, start, size, size / 1048576.0, kind,
+        effect, skip ? "  [SKIPPED: flag set]" : "");
+  }
+}
+
 void heap_report(const char* where) {
+  region_report(options.regions);
   const uint32_t heaps = rd32(gs::HeapArray);
   const int32_t count = (int32_t)rd32(gs::NumHeaps);
   const int32_t current = (int32_t)rd32(gs::__OSCurrHeap);
