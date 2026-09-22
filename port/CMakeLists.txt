@@ -75,6 +75,14 @@ target_include_directories(guest PUBLIC "${PORT_GEN}" runtime/ppc)
 target_include_directories(guest PRIVATE runtime/hle)   # gecko_data.h: run-time optional code flags
 target_compile_features(guest PUBLIC cxx_std_17)
 target_compile_options(guest PRIVATE /bigobj /MP /EHsc ${MELEE_ARCH_FLAG} /fp:precise /wd4102 /wd4101 /wd4189 /W1)
+# The translated game is tens of thousands of machine-written functions, and /O2 on them is
+# most of a first build's wall clock. MELEE_FAST_BUILD compiles them at /O1 instead: much
+# faster to build, slower code, which this has room for (the simulation runs near 1 ms of a
+# 16.6 ms frame). MSVC takes the last optimisation flag, so this overrides the Release /O2.
+option(MELEE_FAST_BUILD "Compile the translated game at /O1: a much faster first build, slower guest code" OFF)
+if(MELEE_FAST_BUILD)
+  target_compile_options(guest PRIVATE /O1 /Ob1)
+endif()
 target_compile_definitions(guest PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 endif()
 
