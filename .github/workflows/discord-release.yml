@@ -1,6 +1,6 @@
 name: Announce release on Discord
 
-# Posts the three latest published GitHub releases to a Discord channel through a webhook.
+# Posts the four latest published GitHub releases to a Discord channel through a webhook.
 # One-time setup by the server owner:
 #   1. Discord: Server Settings > Integrations > Webhooks > New Webhook, pick the updates
 #      channel, Copy Webhook URL.
@@ -20,10 +20,10 @@ jobs:
     steps:
       - name: Check out release formatter
         uses: actions/checkout@v4
-      - name: Post latest three releases to Discord
+      - name: Post latest four releases to Discord
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           if [ -z "$WEBHOOK" ]; then echo "DISCORD_WEBHOOK secret not set; skipping"; exit 0; fi
-          python3 tools/post_discord.py --last 3 --send
+          python3 tools/post_discord.py --last 4 --send

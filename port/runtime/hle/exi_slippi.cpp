@@ -143,10 +143,16 @@ void write_to_file(const uint8_t* payload, uint32_t length, const char* option) 
   if (length > 1 && payload[0] == CMD_GECKO_LIST) {
     // EVENT_GECKO_LIST stores the GCT body without its two-word 00D0C0DE header.
     constexpr uint32_t kGctHeaderSize = 8;
-    const uint32_t table_off = gecko::port_gct_offset;
+    const uint8_t first_port_hook[] = {0xC2, 0x2F, 0x9A, 0x3C, 0x00, 0x00, 0x00, 0x07};
+    uint32_t table_off = 0;
+    for (uint32_t i = kGctHeaderSize; i + sizeof(first_port_hook) <= gecko::slippi_gct_size; i += 8) {
+      if (std::memcmp(gecko::slippi_gct + i, first_port_hook, sizeof(first_port_hook)) == 0) {
+        table_off = i;
+        break;
+      }
+    }
     const uint32_t event_off = table_off >= kGctHeaderSize ? table_off - kGctHeaderSize : 0;
     if (table_off >= kGctHeaderSize && event_off + 8 <= length - 1 &&
-        table_off + 8 <= gecko::slippi_gct_size &&
         std::memcmp(payload + 1, gecko::slippi_gct + kGctHeaderSize, event_off) == 0) {
       recorded.assign(payload, payload + length);
       recorded[1 + event_off] = 0xFF;
