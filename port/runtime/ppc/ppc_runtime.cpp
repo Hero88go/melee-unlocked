@@ -100,6 +100,9 @@ void trace_enter(Context& c, uint32_t pc) {
     --t.second;
     host::log("[trace] frame %u %s(%08X) r3=%08X r4=%08X r5=%08X r1=%08X lr=%08X (from %s)", host::retrace_count(),
               host::symbol_name(pc), pc, c.r[3], c.r[4], c.r[5], c.r[1], c.lr, host::symbol_name(c.lr));
+    // A region table is only meaningful while the scene that filled it is being set up, so dump it
+    // at the traced call rather than at a panic minutes later, when it has been cleared or reused.
+    host::region_report(host::options.regions);
   }
 }
 

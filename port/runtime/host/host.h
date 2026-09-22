@@ -63,6 +63,7 @@ bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size);
 void boot_setup();               // low memory, FST placement, DOL load, registers
 bool is_text_addr(uint32_t addr);  // inside a text section of the DOL that was loaded
 void heap_report(const char* where);  // guest heap free/allocated totals, for out-of-memory diagnosis
+void region_report(uint32_t table);   // --regions: the heap reservations a scene set up
 
 // ---- events (interrupt delivery at guest wait points) ----
 using Completion = std::function<void()>;

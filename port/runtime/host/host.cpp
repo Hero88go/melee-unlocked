@@ -208,7 +208,7 @@ uint32_t disc_fst_max_size() { return g_fst_max; }
 // from the arena (m-ex walks five 28-byte entries: start at +8, size at +0xC, kind at +0x10, and
 // a skip flag at +0x14; kind 1 pushes the heap's bottom up, kind 2 pulls its top down). Printing
 // them says which reservations are squeezing the object heap, which a total never can.
-static void region_report(uint32_t table) {
+void region_report(uint32_t table) {
   if (!table) return;
   for (uint32_t i = 0; i < 5; ++i) {
     const uint32_t e = table + i * 28;
