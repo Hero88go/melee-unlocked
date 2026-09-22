@@ -25,5 +25,8 @@ jobs:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$WEBHOOK" ]; then echo "DISCORD_WEBHOOK secret not set; skipping"; exit 0; fi
+          if [ -z "$WEBHOOK" ]; then
+            echo "::error::DISCORD_WEBHOOK repository secret is not configured; refusing to report a successful Discord post"
+            exit 1
+          fi
           python3 tools/post_discord.py --last 4 --send
