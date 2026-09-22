@@ -199,6 +199,41 @@ bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size) {
 }
 uint32_t disc_fst_max_size() { return g_fst_max; }
 
+// ---------------- guest heap report ----------------
+// The SDK allocator keeps its heaps in HeapArray: HeapDesc { s32 size; Cell* free; Cell* alloc; },
+// and each Cell is { Cell* prev; Cell* next; s32 size; }. Walking the free list from the host
+// costs the guest nothing and answers the question an out-of-memory panic never does: was the
+// heap actually empty, or just too broken up to satisfy the request?
+void heap_report(const char* where) {
+  const uint32_t heaps = rd32(gs::HeapArray);
+  const int32_t count = (int32_t)rd32(gs::NumHeaps);
+  const int32_t current = (int32_t)rd32(gs::__OSCurrHeap);
+  if (!heaps || count <= 0) { log("heap (%s): no heaps", where); return; }
+  for (int32_t h = 0; h < count && h < 8; ++h) {
+    const uint32_t desc = heaps + (uint32_t)h * 12;
+    const int32_t size = (int32_t)rd32(desc);
+    if (size < 0) continue;                       // unused slot
+    uint64_t free_total = 0, alloc_total = 0;
+    uint32_t free_blocks = 0, alloc_blocks = 0, largest = 0;
+    for (uint32_t cell = rd32(desc + 4), guard = 0; cell && guard < 100000; ++guard) {
+      const uint32_t bytes = rd32(cell + 8);
+      free_total += bytes;
+      if (bytes > largest) largest = bytes;
+      ++free_blocks;
+      cell = rd32(cell + 4);
+    }
+    for (uint32_t cell = rd32(desc + 8), guard = 0; cell && guard < 200000; ++guard) {
+      alloc_total += rd32(cell + 8);
+      ++alloc_blocks;
+      cell = rd32(cell + 4);
+    }
+    log("heap %d%s (%s): %.2f MB total, free %.2f MB in %u blocks (largest %.2f MB), "
+        "allocated %.2f MB in %u blocks",
+        h, h == current ? "*" : "", where, size / 1048576.0, free_total / 1048576.0, free_blocks,
+        largest / 1048576.0, alloc_total / 1048576.0, alloc_blocks);
+  }
+}
+
 // ---------------- boot ----------------
 // Text sections of the DOL that was loaded, for the "is this address code" diagnostics. A custom
 // build (m-ex and the like) puts its own code in sections the retail game does not have, so the
