@@ -11,6 +11,7 @@
 #include "exi_slippi.h"
 #include "slippi_online.h"
 #include "slippi_net.h"
+#include "jukebox.h"
 #include "audio.h"
 #include "functions.h"
 #include "guest_symbols.h"
@@ -47,7 +48,7 @@ static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
               "           [--aspect auto|73:60|4:3|16:9|stretch] [--widescreen|--true-widescreen]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
-              "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--volume 0-100] [--audio-dump out.wav]\n"
+              "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--music 0-100|--no-music] [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
 }
 
@@ -482,6 +483,8 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--quiet") o.quiet = true;
     else if (a == "--time-base") o.time_base = std::strtoull(next(), nullptr, 0);
     else if (a == "--volume") o.volume = std::atoi(next());
+    else if (a == "--music") slippi::jukebox::set_user_volume(std::clamp(std::atoi(next()), 0, 100));
+    else if (a == "--no-music") slippi::jukebox::set_user_volume(0);
     else if (a == "--widescreen") { gfx.widescreen = true; gfx.true_widescreen = false; }
     else if (a == "--pal-stock-icons") gecko::option_pal_stock_icons = true;
     else if (a == "--no-screen-shake") gecko::option_no_screen_shake = true;
