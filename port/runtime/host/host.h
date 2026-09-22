@@ -60,6 +60,7 @@ bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size);
 
 // ---- boot ----
 void boot_setup();               // low memory, FST placement, DOL load, registers
+bool is_text_addr(uint32_t addr);  // inside a text section of the DOL that was loaded
 
 // ---- events (interrupt delivery at guest wait points) ----
 using Completion = std::function<void()>;

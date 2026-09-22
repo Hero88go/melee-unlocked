@@ -19,6 +19,7 @@ import gecko
 
 ROOT = Path(__file__).resolve().parents[2]
 SLIPPI_SYS = ROOT / "port/slippi_sys"   # Slippi's Sys files (GPL-2.0, from the Slippi Ishiiruka repo), vendored so a clone builds
+VANILLA_DOL_SHA1 = "08e0bf20134dfcb260699671004527b2d6bb1a45"   # Melee NTSC 1.02 main.dol
 
 
 class GeckoSet:
@@ -169,11 +170,28 @@ def main():
     ap.add_argument("--sys-dir", default=str(SLIPPI_SYS), help="Slippi Sys folder with the code list to bake (port/slippi_sys, or port/slippi_sys_playback for the playback build)")
     ap.add_argument("--gct-base", default="0", help="guest address where the game loads the main GCT (from a previous run's log); "
                                                      "enables translation of C0 caves at their real addresses")
+    ap.add_argument("--modded-dol", action="store_true",
+                    help="translate a DOL that is not the verified vanilla NTSC 1.02 image (m-ex/ACE and other custom builds). "
+                         "The runtime then requires that same DOL on the disc instead of the vanilla one. Implies --discover "
+                         "and --skip-unemittable unless they are given explicitly.")
+    ap.add_argument("--discover", action="store_true",
+                    help="find functions the symbol map does not describe (see discover.py) instead of leaving them to the interpreter")
+    ap.add_argument("--no-pointer-scan", action="store_true",
+                    help="with --discover: seed only from branches, not from function pointers in data (fewer false positives)")
+    ap.add_argument("--skip-unemittable", action="store_true",
+                    help="drop a function the emitter cannot translate instead of failing the whole run; the interpreter takes it at run time")
     args = ap.parse_args()
+    if args.modded_dol:
+        args.discover = True
+        args.skip_unemittable = True
 
     t0 = time.time()
-    if hashlib.sha1(Path(args.dol).read_bytes()).hexdigest() != "08e0bf20134dfcb260699671004527b2d6bb1a45":
-        ap.error("this port requires the verified vanilla Melee NTSC 1.02 DOL")
+    dol_bytes = Path(args.dol).read_bytes()
+    dol_sha1 = hashlib.sha1(dol_bytes).hexdigest()
+    vanilla = dol_sha1 == VANILLA_DOL_SHA1
+    if not vanilla and not args.modded_dol:
+        ap.error("this port requires the verified vanilla Melee NTSC 1.02 DOL (this one is SHA-1 %s); "
+                 "pass --modded-dol to translate a custom build's DOL" % dol_sha1)
     dol = Dol(args.dol)
     symbols = SymbolMap(args.symbols)
     gs = None
@@ -188,6 +206,9 @@ def main():
             ", ".join(gs.optional_flags) or "none", len(gs.optional_text), sum(1 for h in gs.hooks if h.optional), len(gs.optional_data), gs.optional_offset))
         for idx, a, b in (gs.boot.unsupported + gs.main.unsupported)[:10]:
             print("  unsupported Gecko line %d: %08X %08X" % (idx, a, b))
+    if args.discover:
+        from discover import discover as discover_functions
+        discover_functions(dol, symbols, scan_pointers=not args.no_pointer_scan)
     infos, extra, thunks = analyze_all(dol, symbols, gs)
     hle = set()
     for line in open(args.hle, encoding="utf-8"):
@@ -212,6 +233,31 @@ def main():
             del thunks[t]
     func_names = {addr: "f_%08X" % addr for addr in infos}
     emitter = Emitter(dol, symbols, infos, hle_funcs, func_names)
+    if args.skip_unemittable:
+        # A custom build can contain instructions this emitter does not translate (it covers what
+        # the retail game uses). Rather than failing the whole run, drop those functions: nothing
+        # refers to them afterwards and ppc::call hands them to the interpreter at run time.
+        # Dropping one changes how its callers are emitted, so repeat until the set is stable.
+        dropped = {}
+        for _ in range(4):
+            failed = {}
+            for addr in sorted(infos):
+                try:
+                    emitter.emit_function(infos[addr])
+                except Exception as exc:   # noqa: BLE001 - any emitter failure is a drop
+                    failed[addr] = exc
+            if not failed:
+                break
+            for addr, exc in failed.items():
+                dropped[addr] = exc
+                del infos[addr]
+            thunks = {t: owner for t, owner in thunks.items() if owner in infos}
+            func_names = {addr: "f_%08X" % addr for addr in infos}
+            emitter = Emitter(dol, symbols, infos, hle_funcs, func_names)
+        if dropped:
+            print("warning: %d functions left untranslated (the interpreter runs them):" % len(dropped))
+            for addr in sorted(dropped)[:20]:
+                print("  %08X %s: %s" % (addr, symbols.name_of(addr) or "?", dropped[addr]))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     changed = 0
@@ -250,6 +296,13 @@ def main():
         used.add(ident)
         text.append("constexpr uint32_t %s = 0x%08Xu;\n" % (ident, addr))
     text.append("}\n")
+    # The image this translation describes. The runtime checks the disc's DOL against it, so a
+    # build recompiled from a custom DOL accepts that DOL and refuses every other one.
+    text.append("namespace gs { namespace image {\n"
+                "constexpr char dol_sha1[] = \"%s\";\n"
+                "constexpr unsigned int dol_size = 0x%Xu;\n"
+                "constexpr bool vanilla = %s;\n"
+                "} }\n" % (dol_sha1, len(dol_bytes), "true" if vanilla else "false"))
     changed += write_if_changed(out / "guest_symbols.h", "".join(text))
 
     # Translation units.
@@ -313,6 +366,7 @@ def main():
     digest = hashlib.sha1(dol.ram).hexdigest()[:12]
     print("generated %d TUs, %d functions, %d HLE overrides, %d files changed, image %s, %.1fs" % (
         len(written), len(infos), len(hle_funcs), changed, digest, time.time() - t0))
+    print("source DOL: %s, %d bytes, %s" % (dol_sha1, len(dol_bytes), "vanilla NTSC 1.02" if vanilla else "CUSTOM BUILD"))
 
 
 if __name__ == "__main__":
