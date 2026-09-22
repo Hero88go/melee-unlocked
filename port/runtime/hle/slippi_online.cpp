@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <random>
@@ -906,6 +907,11 @@ bool in_online_menus() {
 static bool file_exists(const std::string& p) { FILE* f = std::fopen(p.c_str(), "rb"); if (!f) return false; std::fclose(f); return true; }
 
 void init() {
+  // The launcher profile is a read-only authentication fallback. Keep the port's mutable direct
+  // and teams-code history in the configured local profile so launching this app cannot rewrite or
+  // truncate Dolphin/Slippi Launcher's friend/code history.
+  const std::string configured_user_dir = g_config.user_dir;
+  bool using_shared_launcher_login = false;
   report::init(host::options.iso, g_config.user_dir);
   // Without a user.json in the configured folder, use the Slippi Launcher's own login so a fresh
   // install of the port shares the account the user already signed into.
@@ -913,14 +919,24 @@ void init() {
     const char* appdata = std::getenv("APPDATA");
     if (appdata) {
       std::string launcher = std::string(appdata) + "/Slippi Launcher/netplay/User/Slippi";
-      if (file_exists(launcher + "/user.json")) { host::log("slippi: using the Slippi Launcher login at %s", launcher.c_str()); g_config.user_dir = launcher; }
+      if (file_exists(launcher + "/user.json")) {
+        host::log("slippi: using the Slippi Launcher login at %s", launcher.c_str());
+        g_config.user_dir = launcher;
+        using_shared_launcher_login = true;
+      }
     }
   }
   g_user = std::make_unique<User>(g_config.user_dir);
   if (g_user->IsLoggedIn()) report::fetch_user_rank(g_user->GetUserInfo().uid);
   g_matchmaking = std::make_unique<Matchmaking>(g_user.get());
-  g_direct_codes = std::make_unique<DirectCodes>(g_config.user_dir + "/direct-codes.json");
-  g_teams_codes = std::make_unique<DirectCodes>(g_config.user_dir + "/teams-codes.json");
+  const std::string code_history_dir = using_shared_launcher_login ? configured_user_dir : g_config.user_dir;
+  if (using_shared_launcher_login) {
+    std::error_code ec;
+    std::filesystem::create_directories(code_history_dir, ec);
+    host::log("slippi: keeping direct/teams code history local at %s (launcher profile is read-only)", code_history_dir.c_str());
+  }
+  g_direct_codes = std::make_unique<DirectCodes>(code_history_dir + "/direct-codes.json");
+  g_teams_codes = std::make_unique<DirectCodes>(code_history_dir + "/teams-codes.json");
   g_local_selections.Reset();
   Savestate::force_init = true;
   if (!g_user->IsLoggedIn()) host::log("slippi: not logged in (no %s/user.json); log in with the Slippi Launcher and point --user-dir at its Slippi folder", g_config.user_dir.c_str());
