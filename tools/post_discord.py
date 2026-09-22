@@ -208,10 +208,25 @@ def main():
     ap.add_argument("--webhook", help="webhook URL (default: discord-webhook.txt or MELEE_DISCORD_WEBHOOK)")
     ap.add_argument("--send", action="store_true", help="actually post; without it the message is only printed")
     ap.add_argument("--delete", metavar="VERSION", help="delete the messages posted for VERSION and stop")
+    ap.add_argument("--delete-ids", help="delete comma-separated webhook message IDs and stop")
     args = ap.parse_args()
 
     if args.last and (args.version or args.notes):
         ap.error("--last cannot be combined with --version or --notes")
+
+    if args.delete and args.delete_ids:
+        ap.error("--delete and --delete-ids cannot be combined")
+
+    if args.delete_ids:
+        webhook = read_webhook(args.webhook)
+        for message_id in (item.strip() for item in args.delete_ids.split(",")):
+            if message_id:
+                try:
+                    print("deleted %s (HTTP %s)" % (message_id, delete(webhook, message_id)))
+                except urllib.error.HTTPError as e:
+                    print("could not delete %s: HTTP %s" % (message_id, e.code), file=sys.stderr)
+                    return 1
+        return 0
 
     if args.delete:
         record = ROOT / "release" / ("discord-posted-%s.txt" % args.delete)
