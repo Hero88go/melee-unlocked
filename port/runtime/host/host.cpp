@@ -205,18 +205,41 @@ uint32_t disc_fst_max_size() { return g_fst_max; }
 // costs the guest nothing and answers the question an out-of-memory panic never does: was the
 // heap actually empty, or just too broken up to satisfy the request?
 // A scene's reserved memory regions, for builds whose heap bounds come from a table rather than
-// from the arena (m-ex walks five 28-byte entries: start at +8, size at +0xC, kind at +0x10, and
-// a skip flag at +0x14; kind 1 pushes the heap's bottom up, kind 2 pulls its top down). Printing
-// them says which reservations are squeezing the object heap, which a total never can.
+// from the arena. The entries are 28 bytes each, preceded by a four-word header; which word of an
+// entry means what is not documented anywhere, so this prints all of them and then points out any
+// adjacent pair that reads as a RAM range, rather than deciding in advance and hiding the rest.
+// Printing them says which reservations are squeezing the object heap, which a total never can.
 void region_report(uint32_t table) {
   if (!table) return;
-  for (uint32_t i = 0; i < 5; ++i) {
+  if (table < 0x80000010u || table + 7 * 28 > ppc::RAM_TOP) {
+    log("  region table address %08X is outside RAM", table);
+    return;
+  }
+  // The four words ahead of the entries are the structure's header (list heads, a count), and
+  // worth seeing: a count there says how many of the entries below are live.
+  log("  region table at %08X, header %08X %08X %08X %08X", table,
+      rd32(table - 16), rd32(table - 12), rd32(table - 8), rd32(table - 4));
+  // Every word of every entry, because which field means what is exactly what is in question.
+  // The interpretation follows it rather than replacing it, so a wrong guess cannot hide the data.
+  for (uint32_t i = 0; i < 7; ++i) {
     const uint32_t e = table + i * 28;
-    const uint32_t start = rd32(e + 8), size = rd32(e + 12), kind = rd32(e + 16), skip = rd32(e + 20);
-    const char* effect = kind == 1 ? "raises the heap's bottom" : kind == 2 ? "lowers the heap's top"
-                       : kind == 4 ? "raises a secondary bound" : "ignored";
-    log("  region %u: %08X + %08X (%.2f MB) kind %u %s%s", i, start, size, size / 1048576.0, kind,
-        effect, skip ? "  [SKIPPED: flag set]" : "");
+    uint32_t w[7];
+    for (uint32_t k = 0; k < 7; ++k) w[k] = rd32(e + k * 4);
+    log("  region %u @ %08X: %08X %08X %08X %08X %08X %08X %08X", i, e,
+        w[0], w[1], w[2], w[3], w[4], w[5], w[6]);
+    // A pair of plausible RAM addresses in any two adjacent words is a range; report every one,
+    // since that is what a reservation looks like whichever slot it sits in.
+    for (uint32_t k = 0; k + 1 < 7; ++k) {
+      const uint32_t lo = w[k], hi = w[k + 1];
+      const bool lo_ram = lo >= 0x80000000u && lo < ppc::RAM_TOP;
+      if (!lo_ram) continue;
+      if (hi > lo && hi <= ppc::RAM_TOP)
+        log("      words %u-%u look like %08X-%08X, %.2f MB", k, k + 1, lo, hi,
+            (hi - lo) / 1048576.0);
+      else if (hi > 0 && hi <= ppc::RAM_SIZE && lo + hi <= ppc::RAM_TOP)
+        log("      words %u-%u look like %08X + %08X, %.2f MB, ending %08X", k, k + 1, lo, hi,
+            hi / 1048576.0, lo + hi);
+    }
   }
 }
 
