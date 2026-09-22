@@ -134,6 +134,28 @@ void write_to_file(const uint8_t* payload, uint32_t length, const char* option) 
     g_last_frame = (int32_t)be32(payload + 1);
     g_char_usage[payload[5]][payload[7]] += 1;
   }
+  // The generated GCT ends with PC-only hooks (PAL stock icons and the screen-shake toggle).
+  // Native code gates those hooks with host settings; a stock Slippi replay viewer has no such
+  // gate and would execute them unconditionally. In particular, every widescreen recording used
+  // to lose screen shake when opened in Slippi Dolphin. Keep the event's declared size unchanged,
+  // but terminate its code list before the private suffix so all later replay events stay aligned.
+  std::vector<uint8_t> recorded;
+  if (length > 1 && payload[0] == CMD_GECKO_LIST) {
+    // EVENT_GECKO_LIST stores the GCT body without its two-word 00D0C0DE header.
+    constexpr uint32_t kGctHeaderSize = 8;
+    const uint32_t table_off = gecko::port_gct_offset;
+    const uint32_t event_off = table_off >= kGctHeaderSize ? table_off - kGctHeaderSize : 0;
+    if (table_off >= kGctHeaderSize && event_off + 8 <= length - 1 &&
+        table_off + 8 <= gecko::slippi_gct_size &&
+        std::memcmp(payload + 1, gecko::slippi_gct + kGctHeaderSize, event_off) == 0) {
+      recorded.assign(payload, payload + length);
+      recorded[1 + event_off] = 0xFF;
+      std::memset(recorded.data() + 1 + event_off + 1, 0, 7);
+      payload = recorded.data();
+      host::log("slippi: omitted %u bytes of PC-only Gecko hooks from replay metadata",
+                (unsigned)(length - 1 - event_off - 8));
+    }
+  }
   std::fwrite(payload, 1, length, g_file);
   g_written += length;
   if (std::strcmp(option, "close") == 0) {

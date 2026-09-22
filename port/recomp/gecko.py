@@ -114,10 +114,15 @@ def load_ini(path):
 
 def generate_gct(codes, include_optional=True):
     """Byte-for-byte Gecko::GenerateGct for the enabled codes, with the run-time optional codes
-    moved to the end. Returns (table, offset of the optional section)."""
+    followed by port-only host-gated codes. Returns (table, optional offset, port-only offset).
+
+    Port codes must remain last. The native recompiler gates their hooks with host-side settings,
+    but a stock Slippi replay viewer cannot see those flags. The recorder replaces this suffix with
+    an early GCT terminator before putting the list in an .slp file.
+    """
     out = bytearray(struct.pack(">II", 0x00D0C0DE, 0x00D0C0DE))
     for code in codes:
-        if code.enabled and code.optional is None:
+        if code.enabled and code.optional is None and code.port_flag is None:
             for a, d in code.codes:
                 out += struct.pack(">II", a, d)
     offset = len(out)
@@ -126,8 +131,13 @@ def generate_gct(codes, include_optional=True):
             if code.enabled and code.optional is not None:
                 for a, d in code.codes:
                     out += struct.pack(">II", a, d)
+    port_offset = len(out)
+    for code in codes:
+        if code.enabled and code.port_flag is not None:
+            for a, d in code.codes:
+                out += struct.pack(">II", a, d)
     out += struct.pack(">II", 0xFF000000, 0)
-    return bytes(out), offset
+    return bytes(out), offset, port_offset
 
 
 class Hook:
