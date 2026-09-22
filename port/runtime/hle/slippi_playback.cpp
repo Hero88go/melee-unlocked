@@ -84,6 +84,12 @@ std::unordered_map<uint32_t, bool> build_denylist() {
   }
   deny[0x8038add0] = true;   // Online/Core/PreventFileAlarms/PreventMusicAlarm.asm (rollback display off)
   deny[0x80023FFC] = true;   // Online/Core/PreventFileAlarms/MuteMusic.asm
+  // Older Melee Unlocked recordings exposed these PC-only, host-gated hooks in their Gecko list.
+  // The playback executable already has its own gated translations; accepting the recorded C2s as
+  // ordinary replay codes would make them unconditional. New recordings terminate before them.
+  deny[0x802F9A3C] = true;   // Port: PAL Stock Icons
+  deny[0x802F84C8] = true;   // Port: PAL Stock Icons, hide lost stocks
+  deny[0x8002A104] = true;   // Port: No Screen Shake
   return deny;
 }
 
@@ -99,6 +105,9 @@ void prepare_gecko_list() {
   const std::vector<uint8_t>& source = settings->geckoCodes;
   size_t idx = 0, kept = 0, dropped = 0;
   while (idx + 8 <= source.size()) {
+    // A recording can deliberately end its public code list before its fixed-size event ends.
+    // Do not scan bytes after that terminator as more codes.
+    if (source[idx] == 0xF0 || source[idx] == 0xFF || source[idx] == 0xE0) break;
     uint8_t type = source[idx] & 0xFE;
     uint32_t address = ((uint32_t)source[idx] << 24 | (uint32_t)source[idx + 1] << 16 | (uint32_t)source[idx + 2] << 8 | source[idx + 3]);
     address = (address & 0x01FFFFFF) | 0x80000000;
