@@ -278,6 +278,7 @@ class D3D12Backend : public Backend {
   struct FallbackKeyHash { size_t operator()(const FallbackKey& k) const { return hash_bytes(&k, sizeof k); } };
   std::unordered_map<FallbackKey, ComPtr<ID3D12PipelineState>, FallbackKeyHash> fallback_psos_;
   ID3D12PipelineState* fallback_pso(const PsoKey& key, const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo);
+  void prewarm_fallback_psos();
   std::mutex pso_mutex_, pipeline_library_mutex_;
   std::condition_variable pso_cv_, pso_done_cv_;
   int pso_wait_budget_us_ = 0;   // per presented frame: how long draws may wait for their real pipeline
@@ -524,6 +525,10 @@ void D3D12Backend::init() {
   if (FAILED(D3D12SerializeRootSignature(&rsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err)))
     host::die("root signature: %s", err ? (const char*)err->GetBufferPointer() : "?");
   check(device_->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&root_)), "root sig");
+  // Fallback pipelines are only an interim visual path while a real pipeline is compiled on a
+  // worker. Build the finite generic set now so a newly-seen draw can never compile a shader or
+  // create a D3D12 PSO on the presentation thread.
+  prewarm_fallback_psos();
 
   // Blit pipeline (EFB -> backbuffer).
   D3D12_STATIC_SAMPLER_DESC ss{};
@@ -988,7 +993,10 @@ void D3D12Backend::integrate_compiled_psos() {
 ID3D12PipelineState* D3D12Backend::fallback_pso(const PsoKey& key, const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
   const bool textured = (dc.xf_regs[0x3F] & 15) != 0 && (dc.components & VB_HAS_UV0);
   const bool colored = (dc.components & VB_HAS_COL0) != 0;
-  FallbackKey fk{key.blend, key.zmode, key.cull, key.topology, key.pixel_format, key.mvec, (uint32_t)textured | ((uint32_t)colored << 1)};
+  // Raster state is deliberately normalized here. The fallback is approximate by design; using
+  // one generic blend/depth/cull state per output format and topology bounds the set to a few
+  // startup-created PSOs instead of one synchronous PSO creation for every new guest state.
+  FallbackKey fk{0, 0, 0, key.topology, key.pixel_format, key.mvec, (uint32_t)textured | ((uint32_t)colored << 1)};
   auto it = fallback_psos_.find(fk);
   if (it != fallback_psos_.end()) return it->second.Get();
   // On menus and transitions only: an untextured, uncoloured draw has its colour in TEV state this
@@ -1043,11 +1051,38 @@ void main(out float4 ocol0 : SV_Target0 MVEC_OUT, in float4 rawpos : SV_Position
     fallback_psos_[fk] = nullptr; return nullptr;
   }
   D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
-  describe_pipeline(pd, key, topo, root_.Get(), vsb.Get(), psb.Get());
+  PsoKey generic = key;
+  generic.blend = 0x18; // write RGBA, blending disabled
+  generic.zmode = 0;    // depth disabled
+  generic.cull = 0;     // no culling
+  describe_pipeline(pd, generic, topo, root_.Get(), vsb.Get(), psb.Get());
   ComPtr<ID3D12PipelineState> pso;
   if (FAILED(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)))) { host::log("d3d12: fallback pipeline creation failed"); fallback_psos_[fk] = nullptr; return nullptr; }
   fallback_psos_[fk] = pso;
   return pso.Get();
+}
+
+void D3D12Backend::prewarm_fallback_psos() {
+  const D3D12_PRIMITIVE_TOPOLOGY_TYPE topologies[] = {
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_POINT,
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE,
+    D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+  };
+  for (auto topo : topologies) {
+    for (uint32_t pixel_format = 0; pixel_format <= 1; ++pixel_format) {
+      for (uint32_t mvec = 0; mvec <= 1; ++mvec) {
+        for (uint32_t variant = 0; variant < 4; ++variant) {
+          DrawCall draw{};
+          if (variant & 1) draw.components |= VB_HAS_UV0;
+          if (variant & 2) draw.components |= VB_HAS_COL0;
+          if (variant & 1) draw.xf_regs[0x3F] = 1;
+          PsoKey key{0, 0, 0x18, 0, 0, (uint32_t)topo, pixel_format, mvec};
+          fallback_pso(key, draw, topo);
+        }
+      }
+    }
+  }
+  host::log("d3d12: prewarmed generic fallback pipelines (%zu)", fallback_psos_.size());
 }
 
 ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo) {
@@ -1942,7 +1977,11 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
   configure_dlss();
-  pso_wait_budget_us_ = 12000;
+  // Never block the presentation thread on a driver pipeline compile. A 12 ms
+  // wait is already most of a 60 Hz frame and is nearly three frames at 240 Hz;
+  // AMD drivers can take long enough here to produce recurring visible hitches.
+  // The fallback PSO keeps the draw alive while the worker publishes the real one.
+  pso_wait_budget_us_ = 0;
   ++frame_counter_;
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
   slot_ = (int)(frame_counter_ % FRAME_SLOTS);

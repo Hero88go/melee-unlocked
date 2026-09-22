@@ -282,7 +282,7 @@ class ThreadedBackend final : public Backend {
       bool started = false;
       try {
         void* window = host::window_create(options.window_w, options.window_h, L"Melee Unlocked (development)", visible);
-        if (options.fullscreen) host::window_set_fullscreen(true);
+        if (options.fullscreen || options.exclusive_fullscreen) host::window_set_fullscreen(true);
         // The swapchain must match the window as it is now (fullscreen covers the monitor, not window_w x window_h).
         int client_w = options.window_w, client_h = options.window_h;
         host::window_client_size(&client_w, &client_h);
