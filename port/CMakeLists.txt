@@ -252,7 +252,10 @@ target_compile_definitions(runtime PRIVATE GX_PC_SETTINGS)
 target_link_libraries(runtime PUBLIC port_imgui)
 
 # NVIDIA Streamline (DLSS): optional, enabled when the SDK subset is present under third_party/streamline.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/include/sl.h")
+# The redistributable DLLs are not in the repository, and the post-build copy below fails the
+# whole build without them, so DLSS turns itself off when they are absent.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/include/sl.h" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/bin/x64/sl.interposer.dll")
   target_compile_definitions(runtime PRIVATE GX_STREAMLINE)
   target_include_directories(runtime PRIVATE third_party/streamline/include)
   target_link_libraries(runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/lib/x64/sl.interposer.lib" wintrust crypt32 delayimp)
