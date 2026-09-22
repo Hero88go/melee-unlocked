@@ -28,6 +28,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DISCORD_LIMIT = 2000   # characters per message; longer notes are split on blank lines
+INSTALL_BLOCK = """**Install**
+
+- Download the release archive from the linked GitHub release.
+- Close Melee Unlocked, then extract the archive over the existing folder so settings, saves and replays carry over.
+- Keep your own Melee NTSC 1.02 ISO beside the files as `melee.iso`, or use the included launcher/batch file to select it.
+- Start the included launcher or game executable after extraction; follow any build-specific requirements on the release page."""
 
 
 def read_webhook(explicit=None):
@@ -66,8 +72,8 @@ def to_discord(text, version, repo="Hero88go/melee-unlocked", release_url=None):
     the post in half.
     """
     blocks, para = [], []
-    # Sections the GitHub release keeps but the announcement does not want. Install instructions
-    # belong on the release page people land on, not in a chat message.
+    # Existing release-page install sections are normalized below so every Discord update has
+    # the same actionable install guidance.
     skip_sections = {"install"}
     skipping = False
     title = ""
@@ -116,7 +122,7 @@ def to_discord(text, version, repo="Hero88go/melee-unlocked", release_url=None):
     # A notes title with more than the version ("0.6.0: DLSS5 update, ...") is the headline.
     header = ("**%s**\n\n" % title) if ":" in title else "**Melee Unlocked %s is out**\n\n" % version
     link = ("\n\n" + release_url) if release_url else ("\n\nhttps://github.com/%s/releases/tag/v%s" % (repo, version))
-    return header + body + link
+    return header + INSTALL_BLOCK + "\n\n" + body + link
 
 
 def latest_releases(repo, count):
@@ -229,7 +235,8 @@ def main():
 
     if args.last:
         messages = []
-        for release in latest_releases(args.repo, args.last):
+        # GitHub returns newest first; announcements should read chronologically.
+        for release in reversed(latest_releases(args.repo, args.last)):
             tag = release.get("tag_name", "").strip()
             version = tag[1:] if tag.startswith("v") else tag
             if not version:
