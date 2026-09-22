@@ -1,6 +1,6 @@
 name: Announce release on Discord
 
-# Posts every published GitHub release to a Discord channel through a webhook.
+# Posts the four latest published GitHub releases to a Discord channel through a webhook.
 # One-time setup by the server owner:
 #   1. Discord: Server Settings > Integrations > Webhooks > New Webhook, pick the updates
 #      channel, Copy Webhook URL.
@@ -16,24 +16,15 @@ jobs:
   announce:
     runs-on: ubuntu-latest
     steps:
-      - name: Post to Discord
+      - name: Check out release formatter
+        uses: actions/checkout@v4
+      - name: Post latest four releases to Discord
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          TAG: ${{ github.event.release.tag_name }}
-          NAME: ${{ github.event.release.name }}
-          URL: ${{ github.event.release.html_url }}
-          BODY: ${{ github.event.release.body }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$WEBHOOK" ]; then echo "DISCORD_WEBHOOK secret not set; skipping"; exit 0; fi
-          python3 - <<'EOF'
-          import json, os, urllib.request
-          body = os.environ["BODY"]
-          if len(body) > 1500: body = body[:1500] + "\n..."
-          payload = {
-            "username": "Melee Unlocked",
-            "content": f"**{os.environ['NAME'] or os.environ['TAG']}** is out: {os.environ['URL']}",
-            "embeds": [{"title": os.environ["TAG"], "url": os.environ["URL"], "description": body, "color": 0x5865F2}],
-          }
-          req = urllib.request.Request(os.environ["WEBHOOK"], data=json.dumps(payload).encode(), headers={"Content-Type": "application/json", "User-Agent": "melee-unlocked-release"})
-          with urllib.request.urlopen(req) as r: print("discord:", r.status)
-          EOF
+          if [ -z "$WEBHOOK" ]; then
+            echo "::error::DISCORD_WEBHOOK repository secret is not configured; refusing to report a successful Discord post"
+            exit 1
+          fi
+          python3 tools/post_discord.py --last 4 --send
