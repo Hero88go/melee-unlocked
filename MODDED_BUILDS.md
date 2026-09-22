@@ -18,7 +18,11 @@ mod's own DOL and compile a second build around it. These changes make that poss
 | `host.cpp` | the boot check compares the disc's DOL against the image this build was recompiled from, whatever that is, and the DOL size is read from the image instead of hard-coded |
 | `host.cpp` | "is this address code" now comes from the loaded DOL's text sections, so a handler in the mod's own section is not reported as corruption |
 | `tools/extract_dol.py --any` | extracts the DOL from a disc whose header is not vanilla |
+| `emit.py` fall-through | a function whose code runs past its last instruction continues into the next one instead of returning; hand-written mod code ignores the symbol map's boundaries |
+| `recomp.py --mod-gct` | bakes the mod's own Gecko table into the translation (m-ex ships its content as `codes.gct` on the disc) |
+| `--watch ADDR` | runtime diagnostic: reports what changes a word of guest memory, and between which two calls |
 | `tools/mod_report.py` | a pre-flight report on what the mod does to this port's assumptions |
+| `tools/iso_file.py`, `tools/gct_report.py`, `tools/changed_functions.py`, `tools/disasm.py` | pull a file off the disc, decode a code list, list what a mod patched, read its code |
 
 Everything the stock build does is unchanged: recompiled from the vanilla DOL, `gs::image`
 carries the vanilla SHA-1 and the boot check is exactly as strict as before.
@@ -141,9 +145,38 @@ meet, and what each one means:
   framework before. The interpreter line at the end of the log (`interpreter: N calls into
   RAM-resident code, M instructions`) tells you how much of the game is going through it.
 
-That last point is the honest shape of this: the patches remove the hard blockers and give you a
-build that boots the right image with the mod's code compiled, but m-ex's file-resident code is
-the part no one has run through this runtime. Expect to debug it, not to have it work first try.
+## Status: ACE 2.0 runs
+
+Smash ACE Build v2.0.0 boots, renders and plays on this port, at roughly 0.8 ms/frame of
+simulation with the mod's code compiled rather than interpreted (2 interpreter calls in a
+600-frame run). Getting there needed four fixes, in this order, each hiding the next:
+
+1. **The image check.** The runtime only accepted vanilla 1.02. Now it accepts the DOL the build
+   was recompiled from, whatever that is.
+2. **The mod's code table.** ACE changes 42 retail functions and adds no code; its content is
+   77 KB of Gecko codes in `codes.gct`, loaded at boot into RAM, where recompiled code cannot
+   execute it. Baked in ahead of time with `--mod-gct`. Symptom before the fix:
+   `assertion "adr" failed in memory.c on line 52`, HSD's heap never created.
+3. **Fall-through between functions.** m-ex's loader sits in the dead HIO/MCC debug block and
+   runs straight through those old function boundaries — its `addis`/`ori` pair is split across
+   the end of `HIOWriteAsync` and the start of `HIOReadStatus`. The emitter ended the translated
+   function there, so the guest took a return it never asked for and lost the `lmw` restoring
+   `r28` (`HSD_OSInit`'s cached `arena_hi`). Symptom: a heap created with its end below its
+   start, then a jump to a garbage address.
+4. **Nothing else.** The remaining `fsqrt` gap (below) the interpreter covers.
+
+### Known limits
+
+- **29 of the mod's hooks patch code that only exists at run time** (fighter and stage files
+  m-ex loads). Nothing ahead-of-time can reach those; whatever they do, does not happen.
+- **`fsqrt` is not in the emitter**, so ~20 functions carrying it (including `HSD_OSInit`, which
+  has a cave spliced into it) run interpreted. Harmless in practice. Worth noting that `fsqrt`
+  does not exist on the real Gekko — that code would fault on a console, so it relies on
+  Dolphin implementing it.
+- **No online play.** `--no-slippi` is required, and a modded build must not be taken onto
+  Slippi matchmaking.
+- **The launcher rejects the disc** (it checks for a vanilla header). Run `melee_port.exe`
+  directly.
 
 ## Going back to vanilla
 
