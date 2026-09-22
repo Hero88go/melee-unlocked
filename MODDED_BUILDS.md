@@ -63,9 +63,37 @@ Read it in this order:
 - **"hooks from retail code into the mod"** — where m-ex branches into itself. A hook listed as
   landing inside an HLE'd function will not run, same as above.
 
+## 2b. The mod's own Gecko table
+
+An m-ex build keeps very little in the DOL. ACE 2.0 changes 42 retail functions and adds no code
+at all; the mod itself ships as `codes.gct` on the disc, which a DOL hook in `HSD_OSInit` loads
+into RAM at boot and applies with m-ex's own handler.
+
+That does nothing here. Recompiled code is not read from guest RAM, so writes the handler makes
+land in a void and a C2 cave in the table is never entered — the branch that would enter it only
+exists in RAM. Symptom: the game panics early with `assertion "adr" failed in memory.c on line 52`
+(`HSD_MemAlloc` with heap handle `-1`), because the cave that sets the heap up never ran.
+
+The fix is the one the port already uses for Slippi's codes: bake the table into the translation.
+
+    python tools\iso_file.py --iso "D:\Melee\ACE.iso" --extract codes.gct --out build\codes.gct
+    python tools\gct_report.py --gct build\codes.gct --base 8065CC80 --dol build\ace.dol
+
+`--base` is the address the build loads the table at, which the port prints when it happens:
+run once and look for `DVDReadAsyncPrio ... addr=8065CC80` right after `lbFileGetSize`.
+
+The report's **unsupported lines** count is what decides feasibility: those are code types
+`gecko.py` cannot express as ahead-of-time patches. ACE 2.0 has none — 391 writes, 778 C2 hooks,
+17,026 instructions of cave code, all bakeable. **Hooks into run-time code** (the report calls
+them "not text") are the ones that cannot be: they patch code loaded from files, which no
+translation can see. ACE has 29 of those out of 778.
+
 ## 3. Recompile
 
-    python port\recomp\recomp.py --dol build\ace.dol --modded-dol --no-slippi
+    python port\recomp\recomp.py --dol build\ace.dol --modded-dol --no-slippi ^
+        --mod-gct build\codes.gct --mod-gct-base 0x8065CC80
+
+Leave out the `--mod-gct` pair for a build that ships no code table of its own.
 
 `--modded-dol` implies `--discover` and `--skip-unemittable`. `--no-slippi` leaves out Slippi's
 Gecko code table, which is not optional here: those codes patch vanilla addresses that m-ex has
