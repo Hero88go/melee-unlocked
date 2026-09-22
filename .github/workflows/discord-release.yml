@@ -12,6 +12,16 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      action:
+        description: Post or clean up announcement messages
+        required: false
+        default: post
+      message_ids:
+        description: Comma-separated Discord webhook message IDs to delete when action=cleanup
+        required: false
+        default: ''
+  workflow_dispatch:
 
 jobs:
   announce:
@@ -27,5 +37,9 @@ jobs:
           if [ -z "$MELEE_DISCORD_WEBHOOK" ]; then
             echo "::error::DISCORD_WEBHOOK repository secret is not configured; refusing to report a successful Discord post"
             exit 1
+          fi
+          if [ "${{ inputs.action }}" = "cleanup" ]; then
+            python3 tools/post_discord.py --delete-ids "${{ inputs.message_ids }}"
+            exit $?
           fi
           python3 tools/post_discord.py --last 4 --send
