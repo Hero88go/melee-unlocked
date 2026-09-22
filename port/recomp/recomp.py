@@ -332,6 +332,12 @@ def main():
             print("warning: %d functions left untranslated (the interpreter runs them):" % len(dropped))
             for addr in sorted(dropped)[:20]:
                 print("  %08X %s: %s" % (addr, symbols.name_of(addr) or "?", dropped[addr]))
+    if emitter.fallthroughs:
+        print("fall-through: %d functions run past their last instruction into the next one "
+              "(hand-written code ignoring the symbol map's boundaries)" % len(emitter.fallthroughs))
+        for addr in sorted(emitter.fallthroughs)[:10]:
+            print("  %08X %s -> %s" % (addr, symbols.by_addr[addr].name,
+                                       symbols.name_of(symbols.by_addr[addr].end) or "?"))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     changed = 0

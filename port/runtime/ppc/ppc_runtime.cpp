@@ -68,12 +68,38 @@ uint64_t g_enter_count = 0;
 bool g_trace_funcs = false;
 static std::vector<std::pair<uint32_t, uint32_t>> g_traced;   // (addr, remaining prints)
 void add_trace_func(uint32_t addr, uint32_t limit) { g_traced.push_back({addr, limit}); g_trace_funcs = true; }
+
+// --watch: a word of guest memory checked at every function entry, for finding what overwrites
+// something it should not (a stack slot a mod's code left a saved register in, say). It reports
+// the change at the next entry, so the writer is between the previous report and this one.
+static uint32_t g_watch_addr = 0, g_watch_last = 0, g_watch_prev_pc = 0;
+static bool g_watch_armed = false;
+static uint32_t g_watch_reports = 0;
+void set_watch(uint32_t addr) { g_watch_addr = addr; g_watch_armed = false; g_trace_funcs = true; }
+static void watch_check(Context& c, uint32_t pc) {
+  if (!g_watch_addr) return;
+  const uint32_t value = host::rd32(g_watch_addr);
+  if (!g_watch_armed) {
+    g_watch_armed = true;
+    g_watch_last = value;
+    host::log("[watch] %08X = %08X, armed entering %s", g_watch_addr, value, host::symbol_name(pc));
+  } else if (value != g_watch_last) {
+    if (++g_watch_reports <= 40)
+      host::log("[watch] %08X changed %08X -> %08X between %s and %s (%08X), r1=%08X lr=%08X",
+                g_watch_addr, g_watch_last, value, host::symbol_name(g_watch_prev_pc),
+                host::symbol_name(pc), pc, c.r[1], c.lr);
+    g_watch_last = value;
+  }
+  g_watch_prev_pc = pc;
+}
+
 void trace_enter(Context& c, uint32_t pc) {
+  watch_check(c, pc);
   for (auto& t : g_traced) {
     if (t.first != pc || !t.second) continue;
     --t.second;
-    host::log("[trace] frame %u %s(%08X) r3=%08X r4=%08X r5=%08X lr=%08X (from %s)", host::retrace_count(), host::symbol_name(pc), pc,
-              c.r[3], c.r[4], c.r[5], c.lr, host::symbol_name(c.lr));
+    host::log("[trace] frame %u %s(%08X) r3=%08X r4=%08X r5=%08X r1=%08X lr=%08X (from %s)", host::retrace_count(),
+              host::symbol_name(pc), pc, c.r[3], c.r[4], c.r[5], c.r[1], c.lr, host::symbol_name(c.lr));
   }
 }
 
