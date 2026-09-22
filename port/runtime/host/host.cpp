@@ -21,6 +21,8 @@
 #include <string>
 #include <deque>
 #include <thread>
+#include <utility>
+#include <vector>
 
 namespace guest {
 struct NameEntry { uint32_t addr; const char* name; };
@@ -197,30 +199,131 @@ bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size) {
 }
 uint32_t disc_fst_max_size() { return g_fst_max; }
 
+// ---------------- guest heap report ----------------
+// The SDK allocator keeps its heaps in HeapArray: HeapDesc { s32 size; Cell* free; Cell* alloc; },
+// and each Cell is { Cell* prev; Cell* next; s32 size; }. Walking the free list from the host
+// costs the guest nothing and answers the question an out-of-memory panic never does: was the
+// heap actually empty, or just too broken up to satisfy the request?
+// A scene's reserved memory regions, for builds whose heap bounds come from a table rather than
+// from the arena. The entries are 28 bytes each, preceded by a four-word header; which word of an
+// entry means what is not documented anywhere, so this prints all of them and then points out any
+// adjacent pair that reads as a RAM range, rather than deciding in advance and hiding the rest.
+// Printing them says which reservations are squeezing the object heap, which a total never can.
+void region_report(uint32_t table) {
+  if (!table) return;
+  if (table < 0x80000010u || table + 7 * 28 > ppc::RAM_TOP) {
+    log("  region table address %08X is outside RAM", table);
+    return;
+  }
+  // The four words ahead of the entries are the structure's header (list heads, a count), and
+  // worth seeing: a count there says how many of the entries below are live.
+  log("  region table at %08X, header %08X %08X %08X %08X", table,
+      rd32(table - 16), rd32(table - 12), rd32(table - 8), rd32(table - 4));
+  // Every word of every entry, because which field means what is exactly what is in question.
+  // The interpretation follows it rather than replacing it, so a wrong guess cannot hide the data.
+  for (uint32_t i = 0; i < 7; ++i) {
+    const uint32_t e = table + i * 28;
+    uint32_t w[7];
+    for (uint32_t k = 0; k < 7; ++k) w[k] = rd32(e + k * 4);
+    log("  region %u @ %08X: %08X %08X %08X %08X %08X %08X %08X", i, e,
+        w[0], w[1], w[2], w[3], w[4], w[5], w[6]);
+    // A pair of plausible RAM addresses in any two adjacent words is a range; report every one,
+    // since that is what a reservation looks like whichever slot it sits in.
+    for (uint32_t k = 0; k + 1 < 7; ++k) {
+      const uint32_t lo = w[k], hi = w[k + 1];
+      const bool lo_ram = lo >= 0x80000000u && lo < ppc::RAM_TOP;
+      if (!lo_ram) continue;
+      if (hi > lo && hi <= ppc::RAM_TOP)
+        log("      words %u-%u look like %08X-%08X, %.2f MB", k, k + 1, lo, hi,
+            (hi - lo) / 1048576.0);
+      else if (hi > 0 && hi <= ppc::RAM_SIZE && lo + hi <= ppc::RAM_TOP)
+        log("      words %u-%u look like %08X + %08X, %.2f MB, ending %08X", k, k + 1, lo, hi,
+            hi / 1048576.0, lo + hi);
+    }
+  }
+}
+
+void heap_report(const char* where) {
+  region_report(options.regions);
+  const uint32_t heaps = rd32(gs::HeapArray);
+  const int32_t count = (int32_t)rd32(gs::NumHeaps);
+  const int32_t current = (int32_t)rd32(gs::__OSCurrHeap);
+  if (!heaps || count <= 0) { log("heap (%s): no heaps", where); return; }
+  for (int32_t h = 0; h < count && h < 8; ++h) {
+    const uint32_t desc = heaps + (uint32_t)h * 12;
+    const int32_t size = (int32_t)rd32(desc);
+    if (size < 0) continue;                       // unused slot
+    uint64_t free_total = 0, alloc_total = 0;
+    uint32_t free_blocks = 0, alloc_blocks = 0, largest = 0;
+    for (uint32_t cell = rd32(desc + 4), guard = 0; cell && guard < 100000; ++guard) {
+      const uint32_t bytes = rd32(cell + 8);
+      free_total += bytes;
+      if (bytes > largest) largest = bytes;
+      ++free_blocks;
+      cell = rd32(cell + 4);
+    }
+    for (uint32_t cell = rd32(desc + 8), guard = 0; cell && guard < 200000; ++guard) {
+      alloc_total += rd32(cell + 8);
+      ++alloc_blocks;
+      cell = rd32(cell + 4);
+    }
+    log("heap %d%s (%s): %.2f MB total, free %.2f MB in %u blocks (largest %.2f MB), "
+        "allocated %.2f MB in %u blocks",
+        h, h == current ? "*" : "", where, size / 1048576.0, free_total / 1048576.0, free_blocks,
+        largest / 1048576.0, alloc_total / 1048576.0, alloc_blocks);
+  }
+}
+
 // ---------------- boot ----------------
+// Text sections of the DOL that was loaded, for the "is this address code" diagnostics. A custom
+// build (m-ex and the like) puts its own code in sections the retail game does not have, so the
+// ranges come from the image instead of from constants.
+static std::vector<std::pair<uint32_t, uint32_t>> g_text_ranges;
+bool is_text_addr(uint32_t addr) {
+  for (const auto& r : g_text_ranges)
+    if (addr >= r.first && addr < r.second) return true;
+  return false;
+}
+
 static void load_dol_from_disc() {
   uint8_t hdr[0x20];
   if (!disc_read(0x420, hdr, 4)) die("cannot read disc DOL offset");
   uint32_t dol_offset = ((uint32_t)hdr[0] << 24) | ((uint32_t)hdr[1] << 16) | ((uint32_t)hdr[2] << 8) | hdr[3];
-  constexpr uint32_t dol_size = 0x4385E0u;
+  uint8_t dh[0x100];
+  if (!disc_read(dol_offset, dh, sizeof dh)) die("cannot read DOL header");
+  auto be = [&](int o) { return ((uint32_t)dh[o] << 24) | ((uint32_t)dh[o + 1] << 16) | ((uint32_t)dh[o + 2] << 8) | dh[o + 3]; };
+  // DOL file size: the end of its last section (7 text + 11 data).
+  uint32_t dol_size = 0;
+  for (int i = 0; i < 18; ++i) {
+    uint32_t size = be(0x90 + i * 4);
+    if (size && be(i * 4) + size > dol_size) dol_size = be(i * 4) + size;
+  }
+  // The recompiled code is a translation of one exact DOL image, so the disc must carry that
+  // image: recomp.py recorded its SHA-1 and size in gs::image. For the stock build that is
+  // vanilla NTSC 1.02; for a build recompiled from a custom DOL it is that custom DOL.
+  if (dol_size != gs::image::dol_size)
+    die("ISO DOL is %u bytes; this build was recompiled from a %u byte DOL%s", dol_size, gs::image::dol_size,
+        gs::image::vanilla ? " (vanilla Melee NTSC 1.02)" : " (custom build)");
   std::vector<uint8_t> image(dol_size);
   if (!disc_read(dol_offset, image.data(), dol_size)) die("cannot read full Melee DOL");
   BCRYPT_ALG_HANDLE algorithm = nullptr;
   uint8_t digest[20];
-  const uint8_t expected[20] = {0x08,0xe0,0xbf,0x20,0x13,0x4d,0xfc,0xb2,0x60,0x69,0x96,0x71,0x00,0x45,0x27,0xb2,0xd6,0xbb,0x1a,0x45};
   if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA1_ALGORITHM, nullptr, 0) < 0)
     die("cannot initialize game-image verification");
   NTSTATUS hash_status = BCryptHash(algorithm, nullptr, 0, image.data(), dol_size, digest, sizeof digest);
   BCryptCloseAlgorithmProvider(algorithm, 0);
-  if (hash_status < 0 || std::memcmp(digest, expected, sizeof digest))
-    die("ISO DOL does not match vanilla Melee NTSC 1.02; recompiled code cannot run this image");
-  uint8_t dh[0x100];
-  if (!disc_read(dol_offset, dh, sizeof dh)) die("cannot read DOL header");
-  auto be = [&](int o) { return ((uint32_t)dh[o] << 24) | ((uint32_t)dh[o + 1] << 16) | ((uint32_t)dh[o + 2] << 8) | dh[o + 3]; };
+  char hex[41];
+  for (int i = 0; i < 20; ++i) std::snprintf(hex + i * 2, 3, "%02x", digest[i]);
+  if (hash_status < 0 || std::strcmp(hex, gs::image::dol_sha1) != 0)
+    die("ISO DOL (SHA-1 %s) is not the image this build was recompiled from (%s)%s", hex, gs::image::dol_sha1,
+        gs::image::vanilla ? "; this build needs vanilla Melee NTSC 1.02"
+                           : "; re-run port/recomp/recomp.py --modded-dol against this disc's DOL and rebuild");
+  g_text_ranges.clear();
   for (int i = 0; i < 18; ++i) {
     uint32_t off = be(i * 4), addr = be(0x48 + i * 4), size = be(0x90 + i * 4);
     if (!size) continue;
     if (!disc_read(dol_offset + off, ptr(addr, size), size)) die("cannot read DOL section %d", i);
+    if (i < 7) g_text_ranges.emplace_back(addr, addr + size);
   }
   // The DOL header's bss range overlaps the loaded .sdata section; the guest's own
   // __init_data zeroes .bss/.sbss precisely and RAM starts zeroed, so do not memset here.
@@ -300,7 +403,7 @@ void boot_setup() {
 
   // Apploader: FST at the top of RAM, arena hi below it.
   if (!valid_range(0, g_fst_max, ppc::RAM_SIZE) || g_fst_size > g_fst_max) die("invalid FST size");
-  uint32_t fst_addr = (0x81800000u - g_fst_max) & ~31u;
+  uint32_t fst_addr = (ppc::RAM_TOP - g_fst_max) & ~31u;
   if (!disc_read(g_fst_offset, ptr(fst_addr, g_fst_size), g_fst_size)) die("cannot read FST");
   wr32(0x80000038, fst_addr);
   wr32(0x8000003C, g_fst_max);
@@ -406,15 +509,16 @@ static void validate_alarm_queue(const char* where) {
   if (reported) return;
   uint32_t a = rd32(gs::AlarmQueue), prev = 0;
   for (int guard = 0; a && guard < 64; ++guard) {
-    bool bad = a < 0x80003000u || a >= 0x81800000u;
+    bool bad = a < 0x80003000u || a >= ppc::RAM_TOP;
     uint32_t handler = bad ? 0 : rd32(a);
-    // Handlers live in the DOL's text or in the Slippi code table caves; nothing else is code.
-    bool code = (handler >= 0x80003100u && handler < 0x803B7240u) || (handler >= 0x8065C000u && handler < 0x8071B000u);
+    // Handlers live in the DOL's text (whatever sections this image has) or in the Slippi code
+    // table caves; nothing else is code.
+    bool code = is_text_addr(handler) || (handler >= 0x8065C000u && handler < 0x8071B000u);
     if (!bad) bad = !code || (handler & 3) || rd32(a + 16) != prev;
     if (bad) {
       reported = true;
       log("ALARM QUEUE CORRUPT (%s): entry %08X handler %08X prev %08X (expected %08X) next %08X head %08X tail %08X retrace %u",
-          where, a, handler, bad && a >= 0x80003000u && a < 0x81800000u ? rd32(a + 16) : 0, prev, a >= 0x80003000u && a < 0x81800000u ? rd32(a + 20) : 0,
+          where, a, handler, bad && a >= 0x80003000u && a < ppc::RAM_TOP ? rd32(a + 16) : 0, prev, a >= 0x80003000u && a < ppc::RAM_TOP ? rd32(a + 20) : 0,
           rd32(gs::AlarmQueue), rd32(gs::AlarmQueue + 4), g_retraces);
       ppc::fatal(*cpu, "alarm queue corrupt", a);
       return;

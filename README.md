@@ -1,221 +1,112 @@
 
-# Melee Unlocked - Beta
+# Smash ACE Unlocked
 
-A native Windows build of Super Smash Bros. Melee (NTSC 1.02) with **Slippi online play** and an
-**unlocked display frame rate.**
+**[Smash ACE Build v2.0.0](https://github.com/Chri222k/ACE-BUILD-PUBLIC-) running natively on
+Windows**, with an unlocked display frame rate — no emulator.
 
-The game's own PowerPC code is translated ahead of time into C++ (static recompilation of the
-retail executable plus Slippi's Gecko codes) and runs against a native D3D12 or D3D11 renderer, so the
-game logic stays exactly what the GameCube ran, at 60 Hz, while the display runs at any rate.
-In-between frames come from the game's own animation data and physics state, not from image
-interpolation, so an unlocked 200 Hz display shows real intermediate poses with no added latency.
+This is a fork of [Hero88go/melee-unlocked](https://github.com/Hero88go/melee-unlocked), which
+statically recompiles Melee's PowerPC code into C++ and runs it against a native D3D12/D3D11
+renderer. That project targets retail Melee NTSC 1.02. This fork targets the ACE build instead:
+its executable, and the 77 KB Gecko code table the build ships on its disc, are translated
+ahead of time along with the game.
 
-Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO.
+Nothing from Melee or from the ACE build is included here. You supply your own ACE-patched ISO.
 
-This project is not affiliated with, endorsed by, or supported by the Slippi team, Nintendo or
-HAL Laboratory. Slippi netplay compatibility is implemented from Slippi's open source code
-(GPL). Questions and bugs about this build go to this repository or the Discord below, not to
-the Slippi team.
+Not affiliated with the ACE team, the m-ex project, the Slippi team, Nintendo or HAL Laboratory.
 
-No Monetization. No Donos. No Patreon. **FREE FOREVER**
+## What you need
 
-**v0.6.1 DLSS5 Footage** can be found here https://www.youtube.com/watch?v=qZXsNr7HmAo
+1. A clean **Melee NTSC 1.02** ISO (MD5 `0e63d4223b01d9aba596259dc155a174`).
+2. The **ACE build patch** applied to it, from the
+   [ACE build releases](https://github.com/Chri222k/ACE-BUILD-PUBLIC-/releases). Their
+   instructions are in the release.
+3. Windows 10/11. Git, Python, CMake and the Visual Studio 2022 Build Tools are installed for
+   you by `build.bat` if they are missing.
 
-**v0.5.0 Gameplay footage** can be found here: https://www.youtube.com/watch?v=JlmTDW6wQms
+## Play
 
-## Discord / Help
+Drop your ACE ISO onto **`play.bat`**, or put it next to `play.bat` named `ace.iso` and
+double-click. The first run builds everything (a few minutes) and then launches. Later runs start straight away.
 
-Discord can be found here https://discord.gg/K7HHs3r8ty
-And On X https://x.com/MeleeUnlocked
+F1, or Z + Start on a pad, opens the PC settings panel for controls, video and frame pacing.
 
-## Screenshots
-
-Taken in the game with DLAA on, at the window's full resolution. No textures or other game files
-are included with Melee Unlocked.
-
-![Four-player match on Jungle Japes](docs/screenshots/gameplay-jungle-japes.jpg)
-
-| | |
-|---|---|
-| ![Title screen](docs/screenshots/title.jpg) | ![Slippi online menu](docs/screenshots/online-menu.jpg) |
-| Title screen | Slippi online play |
-| ![Character select](docs/screenshots/character-select.jpg) | ![Stage select](docs/screenshots/stage-select.jpg) |
-| Character select | Stage select |
-| ![Fountain of Dreams](docs/screenshots/gameplay-fountain.jpg) | ![Opening movie](docs/screenshots/opening-movie.jpg) |
-| Fountain of Dreams | The opening movie |
-
-### PC settings (F1)
-
-| | |
-|---|---|
-| ![GameCube controller](docs/screenshots/settings-controls-gc.png) | ![Switch Pro controller](docs/screenshots/settings-controls-switch.png) |
-| Controls: click a button on the controller to rebind it | Switch Pro controllers get their own layout |
-| ![Video settings](docs/screenshots/settings-video.png) | ![Game settings](docs/screenshots/settings-game.png) |
-| Video: one-click quality presets, DLSS and DLAA | Game: L-cancel helpers, PAL stock icons, frame delay |
-
-## Install
-
-Download `MeleeUnlocked-<version>-win64.zip` from [Releases](https://github.com/hero88go/melee-unlocked/releases)
-and extract it anywhere. Then pick one of two ways to run it. **The launcher is optional**;
-the game does not depend on it, and the manual way is complete on its own.
-
-### Manual (no launcher)
-
-1. Drag your Melee NTSC 1.02 ISO onto `MeleeUnlocked.bat`, or put the ISO next to it named
-   `melee.iso` and double-click `MeleeUnlocked.bat`.
-2. Play. The first launch precompiles the graphics pipelines (15 to 30 seconds, progress in
-   the title bar). In game, F1 (or Z + Start) opens the PC settings.
-3. To update, extract a newer zip over the folder. Settings, saves and replays are kept.
-
-Native DualShock 4 support is experimental. Connect a DS4 by USB or Bluetooth, open PC
-settings with F1, select a DS4 tab, rebind its actions if needed, and assign it to a game
-port. It uses Windows Raw Input directly; DS4Windows is not required.
-
-### Melee Unlocked Launcher (optional)
-
-A small window in the same zip, `MeleeUnlockedLauncher.exe`, for people who want setup,
-updates and the Slippi account check in one place.
-
-- **Build tab**: drop the ISO onto the window. It checks the disc, precompiles the graphics
-  pipelines for your GPU once and remembers the path. The ISO is never copied.
-- **Play**: press PLAY. It shows which Slippi account will be used.
-- **Updates**: it checks for a new release on every start. "Update and restart" installs it in
-  place; settings, saves and replays stay.
-
-### Legacy vs. DLSS 5 Experimental
-
-Two builds are available, picked from the **GAME BUILD** dropdown on the launcher's Play page
-(remembered between launches; the manual `.bat` files always run Legacy):
-
-- **Legacy** (`MeleeUnlocked-<version>-win64.zip`): the regular game. Ordinary NVIDIA DLSS / DLAA
-  upscaling, Frame Generation and Reflex are all here; none of it needs DLSS 5.
-- **DLSS 5 Experimental** (`MeleeUnlocked-<version>-DLSS5-Experimental.zip`): everything in
-  Legacy, plus an extra, optional neural-rendering pass over the DLSS/DLAA image
-  (`melee_port_dlss5.exe` / `melee_port_dlss5_compat.exe`, on by picking "Insane" in the Quality
-  presets or the DLSS 5 controls in PC settings). It is experimental, intended for RTX 50-series
-  GPUs or newer, and is not included in or reachable from the Legacy build at all: the Legacy
-  executables are compiled without this code.
-
-  Picking DLSS 5 Experimental from a Legacy-only install downloads and installs the complete
-  experimental zip once, then launches it; after that it is just the other choice in the
-  dropdown. Switching back to Legacy needs nothing extra.
-
-  **DLSS 5 will not work without NVIDIA's DLSS 5 file (`nvngx_dlssnr.dll`). It is not included
-  in either zip, and this project does not provide it.** The game looks for it in the NVIDIA
-  driver first, then next to `melee_port_dlss5.exe` (or the `_compat` executable). Without it the
-  game runs normally, and the PC settings panel says DLSS 5 could not start and why.
-
-### Build from source
-
-Windows 10/11, your own ISO, about 5-10 minutes the first time. The game is translated to C++
-and compiled on your machine; nothing from the ISO enters the repository.
-
-Either drag the ISO onto `play.bat` in a clone of this repo (it installs Python, CMake and the
-Visual Studio 2022 Build Tools with winget if missing, then builds and starts the game), or:
+What `build.bat` does, if you would rather run the steps yourself:
 
 ```powershell
-git clone https://github.com/hero88go/melee-unlocked.git
-cd melee-unlocked
-python tools/extract_dol.py "C:/path/to/melee.iso" build/main.dol
-python port/recomp/recomp.py --dol build/main.dol --gct-base 0x8065CC80
-cmake -S . -B build-review -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON
-cmake --build build-review --config Release --target melee_port --parallel
-build-review/port/Release/melee_port.exe --iso "C:/path/to/melee.iso" --threaded-renderer --fps unlocked --frame-mode authored --scale auto --volume 70
+git clone --filter=blob:none --sparse --depth 1 https://github.com/doldecomp/melee.git melee
+cd melee && git sparse-checkout set src/sysdolphin/baselib && cd ..       # 3 MB, source only
+python tools\extract_dol.py "<your ACE ISO>" build\ace.dol --any
+python tools\iso_file.py --iso "<your ACE ISO>" --extract codes.gct --out build\codes.gct
+python port\recomp\recomp.py --dol build\ace.dol --modded-dol --no-slippi ^
+    --mod-gct build\codes.gct --mod-gct-base 0x8065CC80
+cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON -DMELEE_FAST_BUILD=ON -DMELEE_RAM_MB=32
+cmake --build build-ace --config Release --target melee_port --parallel
+build-ace\port\Release\melee_port.exe --iso "<your ACE ISO>" --threaded-renderer
 ```
 
-(Add the target `melee_unlocked` to the build line if you want the optional launcher; run
-`build-review/port/Release/MeleeUnlockedLauncher.exe` from the checkout and it finds the repo.)
+The build accepts **only** the exact DOL it was translated from. Re-export the ISO from
+MexManager and you must re-run the recompile step; the game will say so rather than misbehave.
 
-## FAQ
+## Why a separate build is needed at all
 
-**Was this "vibe coded"?**
+Melee Unlocked is not an emulator. `port/recomp/recomp.py` translates one exact DOL image into
+C++ ahead of time, so a disc carrying a different executable cannot run against it — the stock
+build refuses an ACE disc outright.
 
-This was developed using Fable 5.1 and GPT 6 Astra, much like the 100% decomp. 
-You can either complain about it or enjoy it, the truth is the decomp + PC port would not have been possible or would have taken infinitely longer without the latest AI coding models.
-As humans we can either work with the robots or against them, I believe in technlogical progress and making cool shit, if we do not use all tools available we are choosing to limit our results.
-I will not handicap myself and there's no reason anyone has to wait any longer for ports and advancements like this. If I were to shy away from every new technology I would not be the person I am today. 
+Translating ACE's DOL is most of the work, but not all of it. ACE changes only 42 functions of
+the retail executable and adds no code to it: the mod itself is a Gecko code list, `codes.gct`,
+which m-ex loads into RAM at boot and applies with its own handler. Recompiled code does not
+execute guest RAM, so all 770 of those hooks would land in a void. They are baked into the
+translation instead, which is what `--mod-gct` does.
 
-I am interested in collabing with other developers but so far have found no collective space for this type of dicussion; PC port dicussion is actively discouraged in the Melee decomp discord
-My vision for the project is keeping it open source so anyone can view the work and make it better. 
+[`MODDED_BUILDS.md`](MODDED_BUILDS.md) documents the whole route, including the three failures
+that stood between "it boots" and "it plays", how each was diagnosed, and what still does not
+work. It also covers using this on other m-ex builds.
 
-## Features
+## Four players
 
-- Unlocked frame rate (monitor rate, a fixed cap, or fully unlocked) with sub-frame animation
-- Slippi online against regular Slippi Dolphin players, using your Slippi Launcher login
-- GameCube adapter (WUP-028 with the WinUSB driver), keyboard fallback
-- DLSS / DLAA (NVIDIA Streamline), internal resolution up to 8x, SSAA, anisotropic filtering,
-  sharpening, borderless fullscreen, VSync
-- Direct3D 12 by default, with a Direct3D 11 renderer for machines where D3D12 will not start
-  (`--backend d3d11`, or Graphics backend in the PC settings panel; needs a restart, no DLSS)
-- "Low spec" switch in the PC settings panel: one control that puts internal resolution,
-  anti-aliasing, anisotropic filtering, visual effects, sub-frame animation and the frame cap at
-  their cheapest, for integrated graphics and older laptops. Turning it off restores exactly what
-  you had before. It reduces rendering cost only; the simulation runs at the same price either way.
-- Widescreen 16:9 (Slippi's own optional code, online safe)
-- Aspect ratio and window size pickers (`--aspect`, `--window`): Melee's native 73:60 by default,
-  4:3, 16:9, or stretched to fill the window with no black bars. Presentation only, so it cannot
-  desync and the two players in a match may each pick their own.
-- Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
-- PC settings overlay in the game window: F1 or Z + Start
-- Optional launcher with self-update
+On a console, ACE cannot finish a 4-player match: m-ex reserves 6.6 MB at the top of RAM for its
+own content, which leaves the match heap 5.43 MB, and four players exhaust it —
+`assertion "adr" failed in memory.c on line 52`. The same crash happens on Dolphin.
 
-## Slippi online
+This build gives the machine 32 MB instead of 24. The heap's bottom is pinned and its top follows
+the arena, so the extra 8 MB lands entirely in the match heap — **5.43 MB becomes 13.43 MB** — and
+m-ex's block simply sits higher. Nothing of ACE's is patched. That is a fix an emulator cannot
+offer, since emulating a console means emulating its memory.
 
-Everything Slippi Dolphin does for netplay is built in: matchmaking, rollback netcode, the
-Slippi code set, replay recording, game reporting. Slippi Dolphin itself is not needed and is
-not touched.
+The cost is that this is no longer console-faithful memory. Pass `-DMELEE_RAM_MB=24` if you need
+it to be. [`MODDED_BUILDS.md`](MODDED_BUILDS.md#the-heap-is-too-small-for-four-players) has the
+trace this came from, and why 40 and 48 MB do not work.
 
-**Is the Slippi Launcher required?** For online play, yes: a Slippi account is required and
-accounts are created and logged in only through the [Slippi Launcher](https://slippi.gg/downloads).
-Install it, log in once, and the game picks up that login automatically (the optional Melee
-Unlocked Launcher shows the account on its Play page and links to the download if none is
-found). The **Slippi** Launcher also installs the WinUSB driver a GameCube adapter needs. For
-offline play the Slippi Launcher is not required. NOTE: **we are not affiliated with the Slippi team.**
+## Build speed
 
-Unranked, Direct codes and Teams work against players on regular Slippi Dolphin; they change
-nothing on their side. Replays (.slp) are written to `Replays\`.
+`MELEE_FAST_BUILD=ON` (what `build.bat` uses) compiles the translated game at `/O1` instead of
+`/O2`. Measured on the same scenes, same workload: **2.4 minutes instead of about 30**, for
+simulation at 3.8-4.0 ms/frame instead of 3.0-3.4, against a 16.6 ms budget at 60 Hz. Rendering
+output is identical down to the vertex count. Pass `-DMELEE_FAST_BUILD=OFF` if you want the
+optimised build anyway.
 
+## What does not work
 
-## Bug reports
-
-Open a [GitHub issue](https://github.com/hero88go/melee-unlocked/issues) using the template.
-Attach `melee_port.log` from the game folder, your `port-settings.ini`, and the .slp replay if
-the bug happened in a match.
-
-## Repository layout
-
-`port/recomp/` is the recompiler (Python): it reads the DOL and the Slippi code tables
-(`port/slippi_sys/`, vendored from Slippi) and writes `port/generated/` (not committed).
-`port/runtime/` is the host runtime: PowerPC helpers, HLE of the GameCube SDK (OS, VI, PAD, DVD,
-AI/AX audio, CARD, EXI), the Slippi EXI device, netcode, game reporting, the D3D12 and D3D11
-renderers and the sub-frame solver. `port/app/launcher.cpp` is the optional launcher. `tools/` holds validation,
-benchmarking and packaging scripts. See `PORT_COMPLETION.md` for the technical state and
-evidence, `HANDOFF_FABLE_3.md` for the roadmap.
-
-`tools/package_release.py` produces the release zip (version from `VERSION`). The replay
-playback build (`melee_port_playback`, used to verify frame-exactness against Dolphin replays)
-is described in `PORT_COMPLETION.md`.
-
-## Verification
-
-Development launcher: `run-native.bat` (or `python tools/launch_native.py --iso <iso> ...`) starts the
-build in `build-review/port/Play/` if present, else the Release build, muted and windowed by default.
-
-- `ctest --test-dir build-review -C Release`: unit tests
-- `python tools/validate_native.py --iso <iso>`: 2400 simulation checkpoints must match across
-  headless, hidden, threaded and authored rendering
-- `python tools/online_pair.py --script port/scripts/online_bot.txt`: two local instances play a
-  full Slippi online match; the log must show no `DESYNC`
-
-## License
-
-GPL-2.0-or-later. Parts of the runtime are ports of Dolphin and Slippi Ishiiruka code (GPL-2.0).
-Third-party components: ENet, Dear ImGui, nlohmann/json, NVIDIA Streamline (see `licenses/` in a
-release and `port/third_party/`). Super Smash Bros. Melee is the property of Nintendo and HAL
-Laboratory; this project contains none of its data.
+- **No online play.** Slippi's code table is left out (it patches addresses ACE has already
+  rewritten), so this build has no netplay. Do not take a modded build onto Slippi matchmaking.
+- **29 of ACE's hooks patch code that only exists at run time** — fighter and stage files m-ex
+  loads. Nothing translated ahead of time can reach those.
+- **The Melee Unlocked launcher rejects the disc**, since it checks for a vanilla header. Use
+  `play.bat` or `melee_port.exe` directly.
+- `fsqrt`, which ACE's code uses and the real Gekko does not have, runs interpreted. Harmless.
 
 ## Credits
 
-Hero88go - developer 
+- **Hero88go** — [Melee Unlocked](https://github.com/Hero88go/melee-unlocked), the recompiler,
+  runtime and renderer this is built on.
+- **The Smash ACE build team** — [ACE Build](https://github.com/Chri222k/ACE-BUILD-PUBLIC-),
+  and the **ACE team** whose mod it extends.
+- **Akaneia / Ploaj** — [m-ex](https://github.com/akaneia/m-ex), the framework ACE is built with.
+- **The Melee decompilation project** — [doldecomp/melee](https://github.com/doldecomp/melee).
+- **The Slippi team**, whose GPL code the runtime borrows from, and **Dolphin**.
 
-Johnny Brookes Aka Lainthewired for their major contribution of the last graphic error fix that took this project from alpha -> beta. Could not have done it without them 
+## License
+
+GPL-2.0-or-later, as upstream. Super Smash Bros. Melee is the property of Nintendo and HAL
+Laboratory; this repository contains none of its data, and none of the ACE build's.

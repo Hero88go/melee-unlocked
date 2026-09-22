@@ -22,6 +22,15 @@ def U1(n):
     return "c.f[%d].u1" % n
 
 
+def _falls_through(ins):
+    """True when execution continues past `ins` to the next address."""
+    if ins.op == "b":
+        return bool(ins.lk)                      # bl returns; b does not
+    if ins.op in ("bclr", "bcctr"):
+        return bool(ins.lk) or (ins.f["bo"] & 0x14) != 0x14   # conditional, or linked
+    return ins.op != "rfi"
+
+
 def hexs(v):
     v &= 0xFFFFFFFF
     return "0x%Xu" % v
@@ -64,6 +73,7 @@ class Emitter:
     def __init__(self, dol, symbols, infos, hle_names, func_names):
         self.dol = dol
         self.symbols = symbols
+        self.fallthroughs = set()   # functions whose code runs past their last instruction
         self.infos = infos
         self.hle = hle_names
         self.func_names = func_names  # addr -> C identifier
@@ -134,6 +144,18 @@ class Emitter:
             except KeyError as e:
                 raise RuntimeError("emit failed at %08x %s: %s" % (addr, ins.op, e))
             out.append("  " + line + "  // %08x" % addr if line else "  // %08x %s" % (addr, ins.op))
+        # Falling off the end. A compiler never emits a function that runs past its last
+        # instruction, so retail code never does this, but hand-written mod code laid over the
+        # image ignores the old function boundaries: m-ex splits an `addis`/`ori` pair across the
+        # end of one dead SDK function and the start of the next. Without this the translated
+        # function simply returns there, and the guest takes a return it never asked for, losing
+        # everything the rest of that code would have restored.
+        last = info.insns[-1] if info.insns else None
+        last_addr = info.addrs[-1] if info.addrs else None
+        if last is not None and last_addr == func.end - 4 and _falls_through(last):
+            self.fallthroughs.add(func.addr)
+            out.append("  ppc::call(c, m, %s); return;  // falls through into %s"
+                       % (hexs(func.end), self.symbols.name_of(func.end) or "the next function"))
         if info.setjmp_returns:
             out.append("  } catch (ppc::GuestLongJmp& j) {")
             out.append("    const uint32_t ret = ppc::ld32(c, m, j.buf);")

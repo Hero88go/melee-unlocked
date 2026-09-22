@@ -26,6 +26,9 @@ HLE(OSResetSystem) {
 }
 HLE(OSPanic) {
   std::string file = host::cstr(ARG0), msg = host::cstr(ARG2);
+  // Most panics in this game are the heap giving out, and the message never says how much was
+  // left, so report it while the heap is still in the state that caused this.
+  host::heap_report("at panic");
   host::die("OSPanic at %s:%u: %s", file.c_str(), ARG1, msg.c_str());
 }
 HLE(__OSUnhandledException) {

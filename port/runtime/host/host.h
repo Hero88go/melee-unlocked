@@ -24,6 +24,7 @@ struct Options {
   std::string replay_dir = "replays";        // where .slp recordings are written
   std::string card_dir = "User/GC/CardA";    // memory card slot A as a folder of .gci files
   std::string audio_dump;        // optional WAV file receiving everything the AI DMA plays
+  uint32_t regions = 0;          // --regions ADDR: dump a heap region table there when the heap is reported
   std::string input_log;         // --input-log: CSV of every PADRead (retrace, port, buttons, sticks, triggers)
   bool no_gc_adapter = false;    // hidden/headless runs: never open the GameCube adapter (WinUSB is exclusive; a test run would take it from the player)
 };
@@ -60,6 +61,9 @@ bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size);
 
 // ---- boot ----
 void boot_setup();               // low memory, FST placement, DOL load, registers
+bool is_text_addr(uint32_t addr);  // inside a text section of the DOL that was loaded
+void heap_report(const char* where);  // guest heap free/allocated totals, for out-of-memory diagnosis
+void region_report(uint32_t table);   // --regions: the heap reservations a scene set up
 
 // ---- events (interrupt delivery at guest wait points) ----
 using Completion = std::function<void()>;

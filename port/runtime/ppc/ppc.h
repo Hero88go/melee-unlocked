@@ -12,7 +12,15 @@
 namespace ppc {
 
 constexpr uint32_t RAM_BASE = 0x80000000u;
-constexpr uint32_t RAM_SIZE = 0x01800000u;
+// A GameCube has 24 MB. This is not a GameCube: a build can be given more, which a mod that
+// runs out of the retail heap may be able to use (its heap is built from the arena, and the
+// arena top is wherever the FST is placed). Off the console's spec, so a build with this
+// raised is not console-faithful and must not be used for netplay or replay verification.
+#ifndef MELEE_RAM_MB
+#define MELEE_RAM_MB 24
+#endif
+constexpr uint32_t RAM_SIZE = (uint32_t)MELEE_RAM_MB * 0x100000u;
+constexpr uint32_t RAM_TOP = 0x80000000u + RAM_SIZE;
 constexpr uint32_t LC_BASE = 0xE0000000u;
 constexpr uint32_t LC_SIZE = 0x4000u;
 
@@ -52,6 +60,7 @@ void hang_check(Context& c);
 void trace_enter(Context& c, uint32_t pc);
 
 void add_trace_func(uint32_t addr, uint32_t limit);
+void set_watch(uint32_t addr);   // --watch: report what changes this word of guest memory
 inline void enter(Context& c, uint32_t pc) {
   c.last_pc = pc; c.trace[c.trace_pos++ & 63] = pc;
   if ((++g_enter_count & 0xFFFFFu) == 0) hang_check(c);

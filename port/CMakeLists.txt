@@ -1,5 +1,26 @@
 # Native Melee port: recompiled guest code + host runtime.
 cmake_minimum_required(VERSION 3.15)
+
+# Guest RAM in MB. 24 is the console. More is not console-faithful: it changes what the game sees
+# from OSGetPhysicalMemSize and where the arena ends, which is the point - a mod that exhausts the
+# retail heap may fit.
+#
+# 32 is the default here because ACE needs it. m-ex reserves 6.6 MB at the top of RAM for its own
+# content, measured down from the arena high, which on a console leaves the match heap 5.43 MB -
+# not enough for four players, so a 4-player match dies on `memory.c:52` (on Dolphin too; this is
+# the build's limit, not the port's). The bottom of that heap is pinned and the top follows the
+# arena, so every megabyte added to the machine lands in the heap and nothing of the mod's moves:
+# 32 MB makes it 13.43 MB and four players fit. 48 is not an option - Melee reads exactly 48 MB as
+# a devkit and throws half of it away - and past 32 the game starts producing pointers that do not
+# survive its own packing.
+#
+# Set 24 for anything that has to behave like a console (replay verification, netplay). Directory-
+# wide and before any target, because ppc.h inlines RAM_SIZE into the generated guest code as well
+# as the runtime: the two halves disagreeing about where RAM ends would be far worse than either
+# value.
+set(MELEE_RAM_MB "32" CACHE STRING "Guest RAM in MB (24 = GameCube, 32 = what ACE needs for 4 players)")
+add_compile_definitions(MELEE_RAM_MB=${MELEE_RAM_MB})
+
 add_executable(port_frame_queue_test tests/frame_queue_test.cpp)
 target_include_directories(port_frame_queue_test PRIVATE runtime/gx)
 target_compile_features(port_frame_queue_test PRIVATE cxx_std_17)
@@ -75,6 +96,14 @@ target_include_directories(guest PUBLIC "${PORT_GEN}" runtime/ppc)
 target_include_directories(guest PRIVATE runtime/hle)   # gecko_data.h: run-time optional code flags
 target_compile_features(guest PUBLIC cxx_std_17)
 target_compile_options(guest PRIVATE /bigobj /MP /EHsc ${MELEE_ARCH_FLAG} /fp:precise /wd4102 /wd4101 /wd4189 /W1)
+# The translated game is tens of thousands of machine-written functions, and /O2 on them is
+# most of a first build's wall clock. MELEE_FAST_BUILD compiles them at /O1 instead: much
+# faster to build, slower code, which this has room for (the simulation runs near 1 ms of a
+# 16.6 ms frame). MSVC takes the last optimisation flag, so this overrides the Release /O2.
+option(MELEE_FAST_BUILD "Compile the translated game at /O1: a much faster first build, slower guest code" OFF)
+if(MELEE_FAST_BUILD)
+  target_compile_options(guest PRIVATE /O1 /Ob1)
+endif()
 target_compile_definitions(guest PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 endif()
 
@@ -252,7 +281,10 @@ target_compile_definitions(runtime PRIVATE GX_PC_SETTINGS)
 target_link_libraries(runtime PUBLIC port_imgui)
 
 # NVIDIA Streamline (DLSS): optional, enabled when the SDK subset is present under third_party/streamline.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/include/sl.h")
+# The redistributable DLLs are not in the repository, and the post-build copy below fails the
+# whole build without them, so DLSS turns itself off when they are absent.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/include/sl.h" AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/bin/x64/sl.interposer.dll")
   target_compile_definitions(runtime PRIVATE GX_STREAMLINE)
   target_include_directories(runtime PRIVATE third_party/streamline/include)
   target_link_libraries(runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/lib/x64/sl.interposer.lib" wintrust crypt32 delayimp)

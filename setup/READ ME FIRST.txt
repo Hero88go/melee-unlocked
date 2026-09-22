@@ -1,0 +1,50 @@
+Smash ACE Unlocked
+==================
+
+Smash ACE Build v2.0.0 running natively on Windows, with an unlocked frame
+rate. No emulator.
+
+    https://github.com/sennecaelen/melee-unlocked
+
+
+WHAT YOU NEED
+
+  1. Your own clean Super Smash Bros. Melee NTSC 1.02 ISO.
+  2. The Smash ACE build patch applied to it. Get the patch and follow its
+     instructions here:
+       https://github.com/Chri222k/ACE-BUILD-PUBLIC-/releases
+  3. Windows 10 or 11. Everything else installs itself.
+
+Nothing from Melee or from the ACE build is included in this download.
+
+
+HOW TO USE IT
+
+  Drag your ACE-patched ISO onto "Setup Smash ACE.bat".
+
+  The first run downloads the project and builds the game on your PC. The
+  build itself takes a few minutes; if this machine has never built C++
+  before, installing the compiler first can take another 10 to 20. It all
+  happens once. When it finishes the game starts, and after that, drag the
+  ISO onto the same file any time and it starts in seconds.
+
+  In game, F1 (or Z + Start on a pad) opens the settings panel for
+  controls, video and frame pacing.
+
+
+WHY IT BUILDS INSTEAD OF SHIPPING A READY EXE
+
+  This is not an emulator. The game's own code is translated ahead of time
+  into C++ and compiled, so the finished program contains the translated
+  game. Shipping that would mean handing out Melee's code and the ACE
+  team's mod, which are not ours to hand out. Building it on your machine,
+  from the ISO you already own, keeps it yours.
+
+
+IF SOMETHING GOES WRONG
+
+  melee-unlocked\melee_port.log records every run. Issues:
+    https://github.com/sennecaelen/melee-unlocked/issues
+
+  Not affiliated with the ACE team, the m-ex project, the Slippi team,
+  Nintendo or HAL Laboratory.

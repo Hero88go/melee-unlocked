@@ -19,6 +19,7 @@ import gecko
 
 ROOT = Path(__file__).resolve().parents[2]
 SLIPPI_SYS = ROOT / "port/slippi_sys"   # Slippi's Sys files (GPL-2.0, from the Slippi Ishiiruka repo), vendored so a clone builds
+VANILLA_DOL_SHA1 = "08e0bf20134dfcb260699671004527b2d6bb1a45"   # Melee NTSC 1.02 main.dol
 
 
 class GeckoSet:
@@ -134,6 +135,50 @@ def write_gecko_data(out, gs):
     return write_if_changed(out / "gecko_data.cpp", "".join(text))
 
 
+class ModGecko:
+    """A custom build's own Gecko table, baked in ahead of time.
+
+    An m-ex build (ACE and the like) ships its codes on the disc and applies them at boot with its
+    own handler: the DOL hook loads codes.gct into RAM and the handler writes the patches and the
+    C2 branches. None of that reaches recompiled code, which does not execute guest RAM, so the
+    mod's 04/06 writes land in a void and its caves are never entered. This applies the same table
+    to the image at translation time, exactly as GeckoSet does for Slippi's, so the patches are in
+    the compiled code and the caves are translated at the addresses the table occupies in RAM.
+
+    The guest still loads and applies the real file at run time, so RAM ends up as it does on
+    console (the caves read constants out of the table, and they are there).
+    """
+
+    def __init__(self, path, base):
+        self.gct_base = base
+        self.gct = Path(path).read_bytes()
+        self.main = gecko.parse_gct(self.gct, base)
+        self.hooks, self.caves = [], []
+        # No run-time optional codes: a mod's table is all or nothing.
+        self.optional_text, self.optional_data, self.optional_flags = {}, [], []
+        self.optional_flag = None
+
+    def apply(self, dol):
+        text_writes = data_writes = outside = 0
+        for addr, blob in self.main.writes:
+            if not dol.in_ram(addr) or not dol.in_ram(addr + len(blob) - 1):
+                outside += 1
+                continue
+            dol.write_bytes(addr, blob)
+            if dol.in_text(addr):
+                text_writes += 1
+            else:
+                data_writes += 1
+        seen = {}
+        for h in self.main.hooks:
+            if h.hook in seen:
+                print("warning: two Gecko hooks at %08X; the later one wins" % h.hook)
+            seen[h.hook] = h
+        self.hooks = list(seen.values())
+        self.caves = list(self.main.c0)
+        return text_writes, data_writes, outside
+
+
 MACRO_LIKE = {"errno", "stdin", "stdout", "stderr", "NULL", "EOF", "min", "max", "TRUE", "FALSE", "BOOL",
               "assert", "offsetof", "alloca", "environ", "abs", "unix", "linux", "far", "near", "pascal",
               "interface", "small", "hyper"}
@@ -169,11 +214,33 @@ def main():
     ap.add_argument("--sys-dir", default=str(SLIPPI_SYS), help="Slippi Sys folder with the code list to bake (port/slippi_sys, or port/slippi_sys_playback for the playback build)")
     ap.add_argument("--gct-base", default="0", help="guest address where the game loads the main GCT (from a previous run's log); "
                                                      "enables translation of C0 caves at their real addresses")
+    ap.add_argument("--modded-dol", action="store_true",
+                    help="translate a DOL that is not the verified vanilla NTSC 1.02 image (m-ex/ACE and other custom builds). "
+                         "The runtime then requires that same DOL on the disc instead of the vanilla one. Implies --discover "
+                         "and --skip-unemittable unless they are given explicitly.")
+    ap.add_argument("--discover", action="store_true",
+                    help="find functions the symbol map does not describe (see discover.py) instead of leaving them to the interpreter")
+    ap.add_argument("--no-pointer-scan", action="store_true",
+                    help="with --discover: seed only from branches, not from function pointers in data (fewer false positives)")
+    ap.add_argument("--mod-gct", help="a custom build's own Gecko table (m-ex loads codes.gct at boot): "
+                                      "bake its writes and C2 caves into the translation, since recompiled code "
+                                      "cannot execute the patches the guest writes into RAM")
+    ap.add_argument("--mod-gct-base", default="0x8065CC80",
+                    help="guest address the build loads that table at (the DVDRead address in the port's log)")
+    ap.add_argument("--skip-unemittable", action="store_true",
+                    help="drop a function the emitter cannot translate instead of failing the whole run; the interpreter takes it at run time")
     args = ap.parse_args()
+    if args.modded_dol:
+        args.discover = True
+        args.skip_unemittable = True
 
     t0 = time.time()
-    if hashlib.sha1(Path(args.dol).read_bytes()).hexdigest() != "08e0bf20134dfcb260699671004527b2d6bb1a45":
-        ap.error("this port requires the verified vanilla Melee NTSC 1.02 DOL")
+    dol_bytes = Path(args.dol).read_bytes()
+    dol_sha1 = hashlib.sha1(dol_bytes).hexdigest()
+    vanilla = dol_sha1 == VANILLA_DOL_SHA1
+    if not vanilla and not args.modded_dol:
+        ap.error("this port requires the verified vanilla Melee NTSC 1.02 DOL (this one is SHA-1 %s); "
+                 "pass --modded-dol to translate a custom build's DOL" % dol_sha1)
     dol = Dol(args.dol)
     symbols = SymbolMap(args.symbols)
     gs = None
@@ -188,7 +255,26 @@ def main():
             ", ".join(gs.optional_flags) or "none", len(gs.optional_text), sum(1 for h in gs.hooks if h.optional), len(gs.optional_data), gs.optional_offset))
         for idx, a, b in (gs.boot.unsupported + gs.main.unsupported)[:10]:
             print("  unsupported Gecko line %d: %08X %08X" % (idx, a, b))
-    infos, extra, thunks = analyze_all(dol, symbols, gs)
+    mod = None
+    if args.mod_gct:
+        if gs is not None:
+            ap.error("--mod-gct needs --no-slippi: Slippi's codes patch addresses a custom build has already changed")
+        mod = ModGecko(args.mod_gct, int(args.mod_gct_base, 0))
+        text_writes, data_writes, outside = mod.apply(dol)
+        in_text = sum(1 for h in mod.hooks if dol.in_text(h.hook))
+        print("mod gct: %d bytes at %08X; %d writes (%d code, %d data, %d outside the image); "
+              "%d C2 hooks (%d into the DOL, %d into run-time code), %d C0 caves, %d instructions of cave code; "
+              "%d unsupported lines" % (
+                  len(mod.gct), mod.gct_base, len(mod.main.writes), text_writes, data_writes, outside,
+                  len(mod.hooks), in_text, len(mod.hooks) - in_text, len(mod.caves),
+                  sum(len(h.words) for h in mod.hooks) + sum(len(c.words) for c in mod.caves),
+                  len(mod.main.unsupported)))
+        for idx, a, b in mod.main.unsupported[:10]:
+            print("  unsupported Gecko line %d: %08X %08X" % (idx, a, b))
+    if args.discover:
+        from discover import discover as discover_functions
+        discover_functions(dol, symbols, scan_pointers=not args.no_pointer_scan)
+    infos, extra, thunks = analyze_all(dol, symbols, gs if gs is not None else mod)
     hle = set()
     for line in open(args.hle, encoding="utf-8"):
         line = line.split("#", 1)[0].strip()
@@ -205,6 +291,15 @@ def main():
                 print("warning: Gecko hook at %08X lands in HLE'd %s; the cave will not run" % (h.hook, owner.name))
         Path(args.out).mkdir(parents=True, exist_ok=True)
         write_gecko_data(Path(args.out), gs)
+    if mod is not None:
+        blocked = [h for h in mod.hooks
+                   if symbols.containing(h.hook) is not None and symbols.containing(h.hook).name in hle_funcs]
+        for h in blocked:
+            print("warning: mod hook at %08X lands in HLE'd %s; the cave will not run"
+                  % (h.hook, symbols.containing(h.hook).name))
+        if blocked:
+            print("warning: %d of the mod's %d hooks are in functions this port replaces with host code"
+                  % (len(blocked), len(mod.hooks)))
 
     for t, owner in list(thunks.items()):
         if symbols.by_addr[owner].name in hle_funcs:
@@ -212,6 +307,37 @@ def main():
             del thunks[t]
     func_names = {addr: "f_%08X" % addr for addr in infos}
     emitter = Emitter(dol, symbols, infos, hle_funcs, func_names)
+    if args.skip_unemittable:
+        # A custom build can contain instructions this emitter does not translate (it covers what
+        # the retail game uses). Rather than failing the whole run, drop those functions: nothing
+        # refers to them afterwards and ppc::call hands them to the interpreter at run time.
+        # Dropping one changes how its callers are emitted, so repeat until the set is stable.
+        dropped = {}
+        for _ in range(4):
+            failed = {}
+            for addr in sorted(infos):
+                try:
+                    emitter.emit_function(infos[addr])
+                except Exception as exc:   # noqa: BLE001 - any emitter failure is a drop
+                    failed[addr] = exc
+            if not failed:
+                break
+            for addr, exc in failed.items():
+                dropped[addr] = exc
+                del infos[addr]
+            thunks = {t: owner for t, owner in thunks.items() if owner in infos}
+            func_names = {addr: "f_%08X" % addr for addr in infos}
+            emitter = Emitter(dol, symbols, infos, hle_funcs, func_names)
+        if dropped:
+            print("warning: %d functions left untranslated (the interpreter runs them):" % len(dropped))
+            for addr in sorted(dropped)[:20]:
+                print("  %08X %s: %s" % (addr, symbols.name_of(addr) or "?", dropped[addr]))
+    if emitter.fallthroughs:
+        print("fall-through: %d functions run past their last instruction into the next one "
+              "(hand-written code ignoring the symbol map's boundaries)" % len(emitter.fallthroughs))
+        for addr in sorted(emitter.fallthroughs)[:10]:
+            print("  %08X %s -> %s" % (addr, symbols.by_addr[addr].name,
+                                       symbols.name_of(symbols.by_addr[addr].end) or "?"))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     changed = 0
@@ -250,6 +376,13 @@ def main():
         used.add(ident)
         text.append("constexpr uint32_t %s = 0x%08Xu;\n" % (ident, addr))
     text.append("}\n")
+    # The image this translation describes. The runtime checks the disc's DOL against it, so a
+    # build recompiled from a custom DOL accepts that DOL and refuses every other one.
+    text.append("namespace gs { namespace image {\n"
+                "constexpr char dol_sha1[] = \"%s\";\n"
+                "constexpr unsigned int dol_size = 0x%Xu;\n"
+                "constexpr bool vanilla = %s;\n"
+                "} }\n" % (dol_sha1, len(dol_bytes), "true" if vanilla else "false"))
     changed += write_if_changed(out / "guest_symbols.h", "".join(text))
 
     # Translation units.
@@ -313,6 +446,7 @@ def main():
     digest = hashlib.sha1(dol.ram).hexdigest()[:12]
     print("generated %d TUs, %d functions, %d HLE overrides, %d files changed, image %s, %.1fs" % (
         len(written), len(infos), len(hle_funcs), changed, digest, time.time() - t0))
+    print("source DOL: %s, %d bytes, %s" % (dol_sha1, len(dol_bytes), "vanilla NTSC 1.02" if vanilla else "CUSTOM BUILD"))
 
 
 if __name__ == "__main__":

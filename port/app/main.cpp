@@ -479,6 +479,8 @@ static int melee_main(int argc, char** argv) {
       lp.remote_ip = v.substr(a2 + 1, a3 - a2 - 1); lp.remote_port = (uint16_t)std::atoi(v.substr(a3 + 1).c_str()); }
     else if (a == "--dump-frame") gfx.dump_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--trace-calls") o.trace_calls = true;
+    else if (a == "--watch") ppc::set_watch((uint32_t)std::strtoul(next(), nullptr, 16));
+    else if (a == "--regions") o.regions = (uint32_t)std::strtoul(next(), nullptr, 16);
     else if (a == "--quiet") o.quiet = true;
     else if (a == "--time-base") o.time_base = std::strtoull(next(), nullptr, 0);
     else if (a == "--volume") o.volume = std::atoi(next());

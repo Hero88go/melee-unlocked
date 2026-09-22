@@ -38,7 +38,7 @@ void classify(Code& c) {
     uint32_t len = kind == 0x00 ? ((v >> 16) + 1) : kind == 0x02 ? ((v >> 16) + 1) * 2 : kind == 0x04 ? 4 : v;
     if (kind == 0x06) i += (v + 7) / 8;           // the string's bytes follow on the next lines
     if (i >= c.lines.size() && kind == 0x06) { c.reason = "has a string write cut short"; return; }
-    if (addr < 0x80003100u || addr + len > 0x81800000u) { c.reason = "writes outside game memory (" + hex8(addr) + ")"; return; }
+    if (addr < 0x80003100u || addr + len > ppc::RAM_TOP) { c.reason = "writes outside game memory (" + hex8(addr) + ")"; return; }
     if (in_code(addr) || in_code(addr + len - 1)) { c.reason = "patches the game's code at " + hex8(addr) + ", which this build runs translated"; return; }
   }
   c.supported = true;
