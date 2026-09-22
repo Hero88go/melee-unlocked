@@ -23,8 +23,13 @@ if not exist %VSWHERE% (
 echo.
 echo [1/6] Decomp source ^(the animation solver is generated from it^)
 if not exist melee\src\sysdolphin\baselib\fobj.c (
-  echo   cloning doldecomp/melee ^(source only, no game data^)
-  git clone --depth 1 https://github.com/doldecomp/melee.git melee || goto :fail
+  rem Only fobj.c, fobj.h and spline.c are read, so fetch that one folder rather than the
+  rem whole decomp: a few MB instead of a few hundred. No game data either way.
+  echo   fetching the decomp's baselib ^(a few MB, source only^)
+  git clone --filter=blob:none --sparse --depth 1 https://github.com/doldecomp/melee.git melee || goto :fail
+  pushd melee
+  git sparse-checkout set src/sysdolphin/baselib || (popd & goto :fail)
+  popd
 )
 echo [2/6] Extracting main.dol from the ISO
 python tools\extract_dol.py "%ISO%" build\ace.dol --any || goto :fail
