@@ -38,12 +38,16 @@ python tools\iso_file.py --iso "%ISO%" --extract codes.gct --out build\codes.gct
 echo [4/6] Translating the game and its code table to C++ ^(about 20 s^)
 python port\recomp\recomp.py --dol build\ace.dol --modded-dol --no-slippi --mod-gct build\codes.gct --mod-gct-base 0x8065CC80 || goto :fail
 echo [5/6] Configuring
-cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON || goto :fail
-echo [6/6] Compiling ^(20 to 40 minutes the first time^)
+cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON -DMELEE_FAST_BUILD=ON || goto :fail
+echo [6/6] Compiling ^(a few minutes^)
 cmake --build build-ace --config Release --target melee_port --parallel || goto :fail
 echo.
 echo Done: build-ace\port\Release\melee_port.exe
 echo Play with:  play.bat "%ISO%"
+echo.
+echo For the last millisecond of simulation headroom, rebuild fully optimised:
+echo   cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON -DMELEE_FAST_BUILD=OFF
+echo   cmake --build build-ace --config Release --target melee_port --parallel
 if not "%~1"=="" pause
 exit /b 0
 

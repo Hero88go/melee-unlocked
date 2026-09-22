@@ -26,20 +26,20 @@ Not affiliated with the ACE team, the m-ex project, the Slippi team, Nintendo or
 ## Play
 
 Drop your ACE ISO onto **`play.bat`**, or put it next to `play.bat` named `ace.iso` and
-double-click. The first run builds everything (20 to 40 minutes, mostly compiling the translated
-game), then launches. Later runs start straight away.
+double-click. The first run builds everything (a few minutes) and then launches. Later runs start straight away.
 
 F1, or Z + Start on a pad, opens the PC settings panel for controls, video and frame pacing.
 
 What `build.bat` does, if you would rather run the steps yourself:
 
 ```powershell
-git clone --depth 1 https://github.com/doldecomp/melee.git melee          # decomp source, no game data
+git clone --filter=blob:none --sparse --depth 1 https://github.com/doldecomp/melee.git melee
+cd melee && git sparse-checkout set src/sysdolphin/baselib && cd ..       # 3 MB, source only
 python tools\extract_dol.py "<your ACE ISO>" build\ace.dol --any
 python tools\iso_file.py --iso "<your ACE ISO>" --extract codes.gct --out build\codes.gct
 python port\recomp\recomp.py --dol build\ace.dol --modded-dol --no-slippi ^
     --mod-gct build\codes.gct --mod-gct-base 0x8065CC80
-cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON
+cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON -DMELEE_FAST_BUILD=ON
 cmake --build build-ace --config Release --target melee_port --parallel
 build-ace\port\Release\melee_port.exe --iso "<your ACE ISO>" --threaded-renderer
 ```
@@ -62,6 +62,14 @@ translation instead, which is what `--mod-gct` does.
 [`MODDED_BUILDS.md`](MODDED_BUILDS.md) documents the whole route, including the three failures
 that stood between "it boots" and "it plays", how each was diagnosed, and what still does not
 work. It also covers using this on other m-ex builds.
+
+## Build speed
+
+`MELEE_FAST_BUILD=ON` (what `build.bat` uses) compiles the translated game at `/O1` instead of
+`/O2`. Measured on the same scenes, same workload: **2.4 minutes instead of about 30**, for
+simulation at 3.8-4.0 ms/frame instead of 3.0-3.4, against a 16.6 ms budget at 60 Hz. Rendering
+output is identical down to the vertex count. Pass `-DMELEE_FAST_BUILD=OFF` if you want the
+optimised build anyway.
 
 ## What does not work
 
