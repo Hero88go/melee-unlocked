@@ -328,7 +328,7 @@ void boot_setup() {
 
   // Apploader: FST at the top of RAM, arena hi below it.
   if (!valid_range(0, g_fst_max, ppc::RAM_SIZE) || g_fst_size > g_fst_max) die("invalid FST size");
-  uint32_t fst_addr = (0x81800000u - g_fst_max) & ~31u;
+  uint32_t fst_addr = (ppc::RAM_TOP - g_fst_max) & ~31u;
   if (!disc_read(g_fst_offset, ptr(fst_addr, g_fst_size), g_fst_size)) die("cannot read FST");
   wr32(0x80000038, fst_addr);
   wr32(0x8000003C, g_fst_max);
@@ -434,7 +434,7 @@ static void validate_alarm_queue(const char* where) {
   if (reported) return;
   uint32_t a = rd32(gs::AlarmQueue), prev = 0;
   for (int guard = 0; a && guard < 64; ++guard) {
-    bool bad = a < 0x80003000u || a >= 0x81800000u;
+    bool bad = a < 0x80003000u || a >= ppc::RAM_TOP;
     uint32_t handler = bad ? 0 : rd32(a);
     // Handlers live in the DOL's text (whatever sections this image has) or in the Slippi code
     // table caves; nothing else is code.
@@ -443,7 +443,7 @@ static void validate_alarm_queue(const char* where) {
     if (bad) {
       reported = true;
       log("ALARM QUEUE CORRUPT (%s): entry %08X handler %08X prev %08X (expected %08X) next %08X head %08X tail %08X retrace %u",
-          where, a, handler, bad && a >= 0x80003000u && a < 0x81800000u ? rd32(a + 16) : 0, prev, a >= 0x80003000u && a < 0x81800000u ? rd32(a + 20) : 0,
+          where, a, handler, bad && a >= 0x80003000u && a < ppc::RAM_TOP ? rd32(a + 16) : 0, prev, a >= 0x80003000u && a < ppc::RAM_TOP ? rd32(a + 20) : 0,
           rd32(gs::AlarmQueue), rd32(gs::AlarmQueue + 4), g_retraces);
       ppc::fatal(*cpu, "alarm queue corrupt", a);
       return;

@@ -383,7 +383,7 @@ void xf_indexed_load(uint32_t op, uint32_t value) {
 size_t parse_command(const uint8_t* d, size_t len);
 
 void run_display_list(uint32_t addr, uint32_t size) {
-  if ((addr & 0x3FFFFFFFu) + size > 0x01800000u) { host::log("gx: display list outside RAM %08X+%X", addr, size); return; }
+  if ((addr & 0x3FFFFFFFu) + size > ppc::RAM_SIZE) { host::log("gx: display list outside RAM %08X+%X", addr, size); return; }
   const uint8_t* p = host::ptr(addr, size);
   uint32_t saved_addr = g_dl_addr, saved_draw = g_dl_draw_ordinal, saved_call = g_dl_call_ordinal;
   g_dl_addr = addr; g_dl_draw_ordinal = 0; g_dl_call_ordinal = g_dl_calls[addr]++;

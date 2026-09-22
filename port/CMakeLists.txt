@@ -1,5 +1,14 @@
 # Native Melee port: recompiled guest code + host runtime.
 cmake_minimum_required(VERSION 3.15)
+
+# Guest RAM in MB. 24 is the console. More is not console-faithful: it changes what the game sees
+# from OSGetPhysicalMemSize and where the arena ends, which is the point - a mod that exhausts the
+# retail heap may fit. Experimental; the game may not cope. Directory-wide and before any target,
+# because ppc.h inlines RAM_SIZE into the generated guest code as well as the runtime: the two
+# halves disagreeing about where RAM ends would be far worse than either value.
+set(MELEE_RAM_MB "24" CACHE STRING "Guest RAM in MB (24 = GameCube)")
+add_compile_definitions(MELEE_RAM_MB=${MELEE_RAM_MB})
+
 add_executable(port_frame_queue_test tests/frame_queue_test.cpp)
 target_include_directories(port_frame_queue_test PRIVATE runtime/gx)
 target_compile_features(port_frame_queue_test PRIVATE cxx_std_17)
