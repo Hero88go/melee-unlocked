@@ -25,7 +25,7 @@ class GeckoLayoutTest(unittest.TestCase):
         port.port_flag = "no_screen_shake"
         port.codes = [(0xC2000030, 0), (0x60000000, 0)]
 
-        table, optional_offset, port_offset = gecko.generate_gct([port, optional, normal])
+        table, optional_offset, port_offset = gecko.generate_gct([normal, optional, port])
 
         self.assertEqual(optional_offset, 16)
         self.assertEqual(port_offset, 24)
@@ -37,7 +37,7 @@ class GeckoLayoutTest(unittest.TestCase):
         # EVENT_GECKO_LIST omits the eight-byte GCT header. Replacing the first word at this
         # adjusted boundary with FF000000 hides every host-gated code without changing event size.
         event = bytearray(table[8:])
-        event_offset = port_offset - 8
+        event_offset = 24 - 8
         event[event_offset:event_offset + 8] = struct.pack(">II", 0xFF000000, 0)
         self.assertEqual(event[event_offset:event_offset + 8], struct.pack(">II", 0xFF000000, 0))
         self.assertNotIn(struct.pack(">II", 0xC2000030, 0), event[:event_offset + 8])

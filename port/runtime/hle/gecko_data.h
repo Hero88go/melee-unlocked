@@ -22,9 +22,6 @@ extern bool option_pal_stock_icons_default;
 extern bool option_no_screen_shake;            // camera shake off (a port code, see recomp/gecko.py)
 extern bool option_no_screen_shake_default;
 extern const uint32_t optional_gct_offset;     // where the optional codes start inside slippi_gct
-// PC-only hooks follow normal and optional Slippi codes. They are translated with host-side gates,
-// but must be hidden from recorded .slp code lists because stock Slippi cannot reproduce the gate.
-extern const uint32_t port_gct_offset;
 struct OptionalWrite { uint32_t addr; uint32_t size; const uint8_t* patched; const uint8_t* original; };
 extern const OptionalWrite optional_writes[]; extern const size_t optional_writes_count;
 }  // namespace gecko
