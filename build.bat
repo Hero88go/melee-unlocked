@@ -38,7 +38,9 @@ python tools\iso_file.py --iso "%ISO%" --extract codes.gct --out build\codes.gct
 echo [4/6] Translating the game and its code table to C++ ^(about 20 s^)
 python port\recomp\recomp.py --dol build\ace.dol --modded-dol --no-slippi --mod-gct build\codes.gct --mod-gct-base 0x8065CC80 || goto :fail
 echo [5/6] Configuring
-cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON -DMELEE_FAST_BUILD=ON || goto :fail
+rem 32 MB of guest RAM, not the console's 24: m-ex leaves the match heap too small for four
+rem players otherwise. See MODDED_BUILDS.md. Pass -DMELEE_RAM_MB=24 for console-faithful memory.
+cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON -DMELEE_FAST_BUILD=ON -DMELEE_RAM_MB=32 || goto :fail
 echo [6/6] Compiling ^(a few minutes^)
 cmake --build build-ace --config Release --target melee_port --parallel || goto :fail
 echo.

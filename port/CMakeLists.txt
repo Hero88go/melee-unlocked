@@ -3,10 +3,22 @@ cmake_minimum_required(VERSION 3.15)
 
 # Guest RAM in MB. 24 is the console. More is not console-faithful: it changes what the game sees
 # from OSGetPhysicalMemSize and where the arena ends, which is the point - a mod that exhausts the
-# retail heap may fit. Experimental; the game may not cope. Directory-wide and before any target,
-# because ppc.h inlines RAM_SIZE into the generated guest code as well as the runtime: the two
-# halves disagreeing about where RAM ends would be far worse than either value.
-set(MELEE_RAM_MB "24" CACHE STRING "Guest RAM in MB (24 = GameCube)")
+# retail heap may fit.
+#
+# 32 is the default here because ACE needs it. m-ex reserves 6.6 MB at the top of RAM for its own
+# content, measured down from the arena high, which on a console leaves the match heap 5.43 MB -
+# not enough for four players, so a 4-player match dies on `memory.c:52` (on Dolphin too; this is
+# the build's limit, not the port's). The bottom of that heap is pinned and the top follows the
+# arena, so every megabyte added to the machine lands in the heap and nothing of the mod's moves:
+# 32 MB makes it 13.43 MB and four players fit. 48 is not an option - Melee reads exactly 48 MB as
+# a devkit and throws half of it away - and past 32 the game starts producing pointers that do not
+# survive its own packing.
+#
+# Set 24 for anything that has to behave like a console (replay verification, netplay). Directory-
+# wide and before any target, because ppc.h inlines RAM_SIZE into the generated guest code as well
+# as the runtime: the two halves disagreeing about where RAM ends would be far worse than either
+# value.
+set(MELEE_RAM_MB "32" CACHE STRING "Guest RAM in MB (24 = GameCube, 32 = what ACE needs for 4 players)")
 add_compile_definitions(MELEE_RAM_MB=${MELEE_RAM_MB})
 
 add_executable(port_frame_queue_test tests/frame_queue_test.cpp)

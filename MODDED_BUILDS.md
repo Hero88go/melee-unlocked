@@ -109,8 +109,12 @@ each line names the address and the instruction the emitter could not handle.
 
 ## 4. Build
 
-    cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON
+    cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON -DMELEE_RAM_MB=32
     cmake --build build-ace --config Release --target melee_port --parallel
+
+`MELEE_RAM_MB=32` is the default and is what lets four players into a match; see
+[The heap is too small for four players](#the-heap-is-too-small-for-four-players). Pass
+`-DMELEE_RAM_MB=24` for a machine that behaves like a console.
 
 ## 5. Run
 
@@ -164,6 +168,57 @@ simulation with the mod's code compiled rather than interpreted (2 interpreter c
    `r28` (`HSD_OSInit`'s cached `arena_hi`). Symptom: a heap created with its end below its
    start, then a jump to a garbage address.
 4. **Nothing else.** The remaining `fsqrt` gap (below) the interpreter covers.
+
+Four players then needed a fifth fix, which is not a port bug at all — see the next section.
+
+## The heap is too small for four players
+
+A 4-player match on ACE dies partway in with the same message as an unbuilt heap:
+
+    assertion "adr" failed in memory.c on line 52
+
+This one is real out of memory, and it happens on Dolphin too: it is the build's limit, not the
+port's. The port can fix it anyway, which an emulator structurally cannot, because emulating a
+console means emulating its memory.
+
+What the heap report at the panic shows:
+
+    heap 3* (at panic): 5.43 MB total, free 0.00 MB in 1 blocks, allocated 5.43 MB in 17999 blocks
+
+5.43 MB, not a byte free, ~18,000 live objects. Where 5.43 comes from, traced with
+`--trace-func HSD_CreateMainHeap`:
+
+    frame 58  HSD_CreateMainHeap(807212C0, 817F2760)   17.0 MB   <- boot scene
+    frame 63  HSD_CreateMainHeap(80C397E0, 811A7360)    5.43 MB  <- everything after
+
+`817F2760` is the arena high exactly (the port puts the FST there, just under the top of RAM).
+The match heap's top is that minus a fixed `0x64B400` — 6.6 MB that m-ex keeps at the top of RAM
+for its extended content, which on a 24 MB machine leaves the game a third of what retail Melee
+gets. Four players and ACE's extra content do not fit in the remainder.
+
+Two details make this cheap to fix:
+
+- **The bottom is pinned, the top follows the arena.** Rebuild at 32 MB and the call becomes
+  `HSD_CreateMainHeap(80C397E0, 819A7360)` — bottom unchanged, top up by exactly the 8 MB added.
+  The match heap goes 5.43 MB → 13.43 MB, m-ex's block rides up on top of it untouched, and no
+  patching of the mod is involved.
+- **The obvious larger numbers do not work.** 48 MB is read by Melee as a devkit
+  (`OSGetConsoleSimulatedMemSize() == 0x03000000`) and half of it is deliberately thrown away at
+  `main+0x4C`. Past 32 the game starts producing pointers that do not survive its own packing —
+  a 40 MB build dies on `interpreter jump outside RAM (841C49F8)`.
+
+So 32 MB is the default. It is off-spec: `OSGetPhysicalMemSize` reports something no GameCube
+ever had, and the boot banner says `Arena Size 27 MB`. Anything that must match console behaviour
+— replay verification, netplay — wants `-DMELEE_RAM_MB=24` instead. This fork has no netplay, so
+nothing here depends on it.
+
+A dead end worth recording, because it looks right for a long time: `lbHeap_80015900` computes
+those bounds by walking four 28-byte entries at `0x80431FE8` (`start` at `+8`, `size` at `+0xC`,
+`kind` at `+0x10`, an enable flag at `+0x14`; kind 1 raises the bottom, kind 2 lowers the top).
+Dumping that table at the call shows nothing but zeros — because ACE's C2 hook lands on
+`0x800159B4`, the loop's first instruction, and replaces the whole walk with 48 instructions of
+its own. The vanilla table is dead code in an m-ex build. `tools/xref.py --addr 80431FA0` is what
+showed that only the initialiser ever writes there.
 
 ### Known limits
 

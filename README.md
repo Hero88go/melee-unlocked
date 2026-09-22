@@ -39,7 +39,7 @@ python tools\extract_dol.py "<your ACE ISO>" build\ace.dol --any
 python tools\iso_file.py --iso "<your ACE ISO>" --extract codes.gct --out build\codes.gct
 python port\recomp\recomp.py --dol build\ace.dol --modded-dol --no-slippi ^
     --mod-gct build\codes.gct --mod-gct-base 0x8065CC80
-cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON -DMELEE_FAST_BUILD=ON
+cmake -S . -B build-ace -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON -DMELEE_FAST_BUILD=ON -DMELEE_RAM_MB=32
 cmake --build build-ace --config Release --target melee_port --parallel
 build-ace\port\Release\melee_port.exe --iso "<your ACE ISO>" --threaded-renderer
 ```
@@ -62,6 +62,21 @@ translation instead, which is what `--mod-gct` does.
 [`MODDED_BUILDS.md`](MODDED_BUILDS.md) documents the whole route, including the three failures
 that stood between "it boots" and "it plays", how each was diagnosed, and what still does not
 work. It also covers using this on other m-ex builds.
+
+## Four players
+
+On a console, ACE cannot finish a 4-player match: m-ex reserves 6.6 MB at the top of RAM for its
+own content, which leaves the match heap 5.43 MB, and four players exhaust it —
+`assertion "adr" failed in memory.c on line 52`. The same crash happens on Dolphin.
+
+This build gives the machine 32 MB instead of 24. The heap's bottom is pinned and its top follows
+the arena, so the extra 8 MB lands entirely in the match heap — **5.43 MB becomes 13.43 MB** — and
+m-ex's block simply sits higher. Nothing of ACE's is patched. That is a fix an emulator cannot
+offer, since emulating a console means emulating its memory.
+
+The cost is that this is no longer console-faithful memory. Pass `-DMELEE_RAM_MB=24` if you need
+it to be. [`MODDED_BUILDS.md`](MODDED_BUILDS.md#the-heap-is-too-small-for-four-players) has the
+trace this came from, and why 40 and 48 MB do not work.
 
 ## Build speed
 
