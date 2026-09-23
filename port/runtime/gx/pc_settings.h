@@ -9,6 +9,8 @@ struct ID3D11Device;
 struct ID3D11DeviceContext;
 namespace gx {
 void load_pc_settings(D3D12Options& options, int& volume);
+// Current letterboxed gameplay viewport aspect, used to keep overlays out of the black bars.
+void settings_set_game_aspect(float aspect);
 // True once after a texture pack is switched on or off, so the backend can drop the textures it
 // uploaded under the old set. Reading it clears it.
 bool settings_textures_dirty();

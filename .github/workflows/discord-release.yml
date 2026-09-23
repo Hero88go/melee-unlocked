@@ -1,6 +1,6 @@
 name: Announce release on Discord
 
-# Posts the four latest published GitHub releases to a Discord channel through a webhook.
+# Announces newly published releases on Discord; manual runs can repost the latest four.
 # One-time setup by the server owner:
 #   1. Discord: Server Settings > Integrations > Webhooks > New Webhook, pick the updates
 #      channel, Copy Webhook URL.
@@ -11,7 +11,16 @@ name: Announce release on Discord
 on:
   release:
     types: [published]
-
+  workflow_dispatch:
+    inputs:
+      action:
+        description: Post or clean up announcement messages
+        required: false
+        default: post
+      message_ids:
+        description: Comma-separated Discord webhook message IDs to delete when action=cleanup
+        required: false
+        default: ''
 jobs:
   announce:
     runs-on: ubuntu-latest
@@ -20,13 +29,22 @@ jobs:
     steps:
       - name: Check out release formatter
         uses: actions/checkout@v4
-      - name: Post latest four releases to Discord
+      - name: Announce release or requested release batch
         env:
-          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+          MELEE_DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          if [ -z "$WEBHOOK" ]; then
+          if [ -z "$MELEE_DISCORD_WEBHOOK" ]; then
             echo "::error::DISCORD_WEBHOOK repository secret is not configured; refusing to report a successful Discord post"
             exit 1
           fi
-          python3 tools/post_discord.py --last 4 --send
+          if [ "${{ inputs.action }}" = "cleanup" ]; then
+            python3 tools/post_discord.py --delete-ids "${{ inputs.message_ids }}"
+            exit $?
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            python3 tools/post_discord.py --version "$version" --send
+          else
+            python3 tools/post_discord.py --last 4 --send
+          fi

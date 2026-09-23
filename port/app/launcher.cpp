@@ -49,10 +49,11 @@
 #define IDB_BAILEY 5
 
 namespace {
-enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_SEG_LEGACY, ID_SEG_DLSS5, ID_TIMER = 1 };
+enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_SEG_LEGACY, ID_SEG_DLSS5, ID_WARM_CACHE, ID_TIMER = 1 };
 const UINT WM_APP_LOG = WM_APP + 1;      // lParam: heap std::string* to append to the log
 const UINT WM_APP_BUILD_DONE = WM_APP + 2;
 const UINT WM_APP_GAME_DONE = WM_APP + 3;
+const UINT WM_APP_CACHE_WARM_DONE = WM_APP + 4;
 
 // Client area in layout units; S() turns these into pixels for the current DPI.
 const int WIN_W = 720, WIN_H = 400;
@@ -82,8 +83,8 @@ const COLORREF C_OK = RGB(0x5A, 0xC8, 0x8A), C_WARN = RGB(0xE5, 0xA8, 0x4A), C_B
 const COLORREF NO_FILL = CLR_INVALID;
 
 HWND g_main;
-HWND g_play[7], g_build[2];
-HWND g_iso_edit, g_play_btn, g_slippi_btn, g_update_btn, g_log, g_build_btn;
+HWND g_play[7], g_build[3];
+HWND g_iso_edit, g_play_btn, g_slippi_btn, g_update_btn, g_log, g_build_btn, g_warm_cache_check;
 HFONT g_font, g_font_big, g_font_mono, g_font_mark, g_font_nav, g_font_label, g_font_small;
 HICON g_mark = nullptr;          // IDI_MELEE_MARK, the wordmark drawn at the top of the rail
 HBRUSH g_br_field, g_br_log;
@@ -102,6 +103,7 @@ enum CpuBuild { CPU_AUTO = 0, CPU_STANDARD = 1, CPU_COMPAT = 2 };
 int g_cpu_build = CPU_AUTO;
 int g_selected_build = 0; // 0 Legacy, 1 experimental neural rendering
 bool g_install_requested = false;
+bool g_warm_cache_on_play = false;
 HWND g_seg[2]{};                 // the GAME BUILD segments: 0 Legacy, 1 experimental
 // The experimental build's warning is shown the first time it is launched on this machine, not on
 // every start: an unskippable box before every single launch is nagging, not information.
@@ -163,6 +165,7 @@ void load_ini() {
         if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
       } else if (line == "build=experimental") g_selected_build = 1;
       else if (line == "dlss5warned=1") g_dlss5_warned = true;
+      else if (line == "warmcache=1") g_warm_cache_on_play = true;
     }
   }
   g_iso = read_iso_from(ini_path());
@@ -179,6 +182,7 @@ void save_ini() {
   {
     std::ofstream f(ini_path());
     f << "iso=" << g_iso << "\nbuild=" << (g_selected_build ? "experimental" : "legacy") << "\n";
+    if (g_warm_cache_on_play) f << "warmcache=1\n";
     if (g_dlss5_warned) f << "dlss5warned=1\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
     if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
@@ -308,7 +312,7 @@ std::string work_dir() {
   std::string root = repo_root();
   return root.empty() ? g_dir : root;
 }
-std::string settings_ini_path() { return work_dir() + "\port-settings.ini"; }
+std::string settings_ini_path() { return work_dir() + "\\port-settings.ini"; }
 std::string game_args() {
   std::string base = g_dir;
   std::string a = " --iso \"" + g_iso + "\" --threaded-renderer";
@@ -551,7 +555,7 @@ void paint_build(HDC dc) {
   std::wstring sub = g_iso.empty() ? L"or press Browse on the Play page" : widen(iso_name());
   draw_text(dc, sub, drop_sub_rect(), g_font_small, C_FAINT, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
-  draw_text(dc, L"Verifies the disc and precompiles shaders for your GPU. The ISO is never copied.",
+  draw_text(dc, L"Verifies the disc and precompiles shaders for your GPU. The ISO is never copied. Its location is remembered for later launches.",
             LR(CX, 132, CW, 44), g_font_small, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
   round_rect(dc, LR(CX, 226, CW, 106), 8, C_LOG_BG, C_LOG_BG, RGB(0x24, 0x2E, 0x46));
 }
@@ -580,12 +584,30 @@ void draw_button(DRAWITEMSTRUCT* di) {
   bool disabled = (di->itemState & ODS_DISABLED) != 0;
   bool down = (di->itemState & ODS_SELECTED) != 0;
   bool primary = di->hwndItem == g_play_btn;
+  bool checkbox = di->hwndItem == g_warm_cache_check;
   // The GAME BUILD segments: the chosen one is filled in the same purple as PLAY, the other is an
   // outline, so which build is about to start reads at a glance without a second highlight colour.
   const int segment = di->hwndItem == g_seg[0] ? 0 : di->hwndItem == g_seg[1] ? 1 : -1;
 
   // Reproduce the parent's gradient behind the button so the rounded corners have the right colour.
   vgrad(di->hDC, r, content_bg_at(wr.top), content_bg_at(wr.bottom));
+
+  if (checkbox) {
+    RECT box{r.left + S(1), r.top + S(5), r.left + S(17), r.top + S(21)};
+    round_rect(di->hDC, box, 3, C_FIELD, C_FIELD, C_BTN_BORDER);
+    if (g_warm_cache_on_play) {
+      HPEN pen = CreatePen(PS_SOLID, S(2), C_ACC_HI);
+      HGDIOBJ old_pen = SelectObject(di->hDC, pen);
+      MoveToEx(di->hDC, box.left + S(3), box.top + S(8), nullptr);
+      LineTo(di->hDC, box.left + S(7), box.bottom - S(4));
+      LineTo(di->hDC, box.right - S(3), box.top + S(3));
+      SelectObject(di->hDC, old_pen); DeleteObject(pen);
+    }
+    RECT label = r; label.left += S(24);
+    draw_text(di->hDC, L"Warm cache from remembered ISO before Play", label, g_font_small,
+              disabled ? C_FAINT : C_DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+    return;
+  }
 
   if (segment >= 0) {
     const bool on = segment == g_selected_build;
@@ -665,11 +687,22 @@ void start_build() {
   std::thread(build_thread).detach();
 }
 
+void launch_game_now();
+
+void warm_cache_thread() {
+  log_line("Warming the graphics cache before launch (the first run may take 15 to 30 seconds)");
+  const std::string cwd = work_dir();
+  const DWORD code = run_logged("\"" + g_game_exe + "\"" + game_args() +
+                                " --hidden --frames 30 --volume 0 --log-file launcher_warm.log", cwd);
+  if (code != 0) log_line("Cache warmup exited with code %lu; starting the game anyway.", code);
+  PostMessageW(g_main, WM_APP_CACHE_WARM_DONE, code, 0);
+}
+
 // Opens the game straight into its own PC settings panel. Same binary, same panel, same file: what
 // is changed here is what the next launch uses, because the game reads port-settings.ini from this
 // working directory before it opens a window.
 void open_settings() {
-  if (g_playing || g_iso.empty()) return;
+  if (g_playing) return;
   g_game_exe = game_exe();
   if (!file_exists(g_game_exe)) {
     if (g_selected_build && repo_root().empty()) { g_install_requested = true; host::updater::check(MELEE_PORT_VERSION, true); return; }
@@ -715,6 +748,17 @@ void start_game() {
     g_dlss5_warned = true;
     save_ini();
   }
+  if (g_warm_cache_on_play) {
+    g_building = true;
+    EnableWindow(g_play_btn, FALSE);
+    EnableWindow(g_build_btn, FALSE);
+    std::thread(warm_cache_thread).detach();
+    return;
+  }
+  launch_game_now();
+}
+
+void launch_game_now() {
   std::string cwd = work_dir();
   std::string cmd = "\"" + g_game_exe + "\"" + game_args();
   STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
@@ -803,7 +847,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_OWNERDRAW, 554, 246, 144, 30, ID_UPDATE);
       // Build page
       g_build[0] = g_build_btn = make(L"BUTTON", L"Build", BS_OWNERDRAW, CX, 182, 120, 32, ID_BUILD);
-      g_build[1] = g_log = make(L"EDIT", L"", WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, CX + 2, 228, CW - 4, 102, ID_LOG, g_font_mono);
+      g_build[1] = g_warm_cache_check = make(L"BUTTON", L"", BS_OWNERDRAW, CX + 136, 188, 350, 24, ID_WARM_CACHE);
+      g_build[2] = g_log = make(L"EDIT", L"", WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, CX + 2, 228, CW - 4, 102, ID_LOG, g_font_mono);
       SetWindowTheme(g_log, L"DarkMode_Explorer", nullptr);   // a dark scrollbar where the OS has one
       select_tab(0);
       load_ini();
@@ -862,6 +907,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
     case WM_COMMAND:
       switch (LOWORD(wp)) {
+        case ID_WARM_CACHE:
+          if (HIWORD(wp) == BN_CLICKED) {
+            g_warm_cache_on_play = !g_warm_cache_on_play;
+            InvalidateRect(g_warm_cache_check, nullptr, FALSE);
+            save_ini();
+          }
+          break;
         case ID_BROWSE: browse(); break;
         case ID_PLAY: start_game(); break;
         case ID_SEG_LEGACY: select_build(0); break;
@@ -902,6 +954,12 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       // game exiting from here, so activating would put the launcher in front of the new instance
       // the moment it started.
       ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+      return 0;
+    case WM_APP_CACHE_WARM_DONE:
+      g_building = false;
+      EnableWindow(g_play_btn, !g_iso.empty() && !g_playing);
+      EnableWindow(g_build_btn, !g_iso.empty());
+      launch_game_now();
       return 0;
     case WM_TIMER: refresh_updater(); return 0;
     case WM_CTLCOLORSTATIC:

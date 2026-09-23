@@ -551,7 +551,7 @@ static int melee_main(int argc, char** argv) {
     backend = gx::create_threaded_backend(gfx, !hidden);
   } else if (!headless) {
     void* hwnd = host::window_create(gfx.window_w, gfx.window_h, L"Melee Unlocked (development)", !hidden);
-    if (gfx.fullscreen) host::window_set_fullscreen(true);
+    if (gfx.fullscreen && !gfx.exclusive_fullscreen) host::window_set_fullscreen(true);
     backend.reset(gx::create_render_backend(hwnd, gfx.window_w, gfx.window_h, gfx));
     host::window_set_resize_callback([renderer = backend.get()](int w, int h) { gx::render_resize(renderer, w, h); });
     host::g_has_window = true;
