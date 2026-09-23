@@ -1407,6 +1407,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
       else if (key == "labview") options.lab_view = value == "1";
+      else if (key == "labskipscene") options.lab_skip_scene = value != "0";
       // Settings saved before the overlay could show several ports name a single port number.
       else if (key == "inputoverlayport") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 4) options.input_overlay_ports = 1 << n; }
       else if (key == "inputoverlayports") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 16) options.input_overlay_ports = n; }
@@ -1701,7 +1702,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   // panel is open (the panel is what writes the settings file).
   if (ImGui::IsKeyPressed(ImGuiKey_F3, false)) { options.lab_view = !options.lab_view; state.dirty = true; host::log("lab view: %s", options.lab_view ? "on" : "off"); }
   // Drawn first, on the background list, so every overlay and window below lands on top of it.
-  if (!state.fill_window) lab::draw(options.lab_view, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+  // Called every frame, off or on, so lab::covering() always describes this frame.
+  lab::draw(options.lab_view && !state.fill_window, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // Esc: closes the panel if it is open; otherwise opens or closes the Esc menu. While a rebind is
   // waiting for a button, Escape means "cancel that", which the capture itself watches for, so it
   // does nothing here then (closing the panel on the same key left the capture running).
@@ -2870,6 +2872,15 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                         "on a plain stage, over the game image. Display only, so it is safe online;\n"
                         "menus and character select look normal. Needs the Lab folder from\n"
                         "tools/build_lab_assets.py for the silhouettes.");
+    if (options.lab_view) {
+      ImGui::Indent();
+      changed |= ImGui::Checkbox("Skip the 3D scene underneath", &options.lab_skip_scene);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("While the Lab view is showing, the game's own 3D scene is not drawn at all,\n"
+                          "since it would be covered anyway. Much lighter on the graphics card, so a\n"
+                          "weak laptop runs smoother. The game itself runs exactly the same.");
+      ImGui::Unindent();
+    }
     changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
     if (options.input_overlay) {
       ImGui::SameLine();
@@ -3008,7 +3019,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            // Read since it was added and never written, so hiding the reminder lasted one session.
            << "\nsettingshint " << (options.settings_hint ? 1 : 0)
            << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
-           << "\nlabview " << options.lab_view
+           << "\nlabview " << options.lab_view << "\nlabskipscene " << options.lab_skip_scene
            << "\ninputoverlayhideborder " << options.input_overlay_hide_border
            << "\ninputoverlayvalues " << options.input_overlay_values
            << "\ninputoverlaystick " << options.input_overlay_stick

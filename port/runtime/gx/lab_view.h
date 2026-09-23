@@ -27,4 +27,10 @@ void draw(bool enabled, float width, float height);
 // True while a match is running and the view has a frame to show.
 bool match_in_progress();
 
+// Render thread: whether the most recent draw() covered the window. The backends ask this after
+// the settings panel has run for the frame (which is where draw() is called) and before they
+// replay the game's draws, so they can skip a 3D scene nobody will see. It is the decision draw()
+// actually made, not a fresh check, so the scene and the cover can never disagree for a frame.
+bool covering();
+
 }  // namespace lab

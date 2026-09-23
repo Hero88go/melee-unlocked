@@ -150,6 +150,7 @@ int unit_test() {
   const float scale1 = 5 + (4.8f - 5) * 0.04f;
   const float half = 10 * scale1;   // the square is 20 world units wide at character scale 1
   CHECK(square.n == 4);
+  CHECK(lab::covering());   // what the renderers read to skip the 3D scene under the view
   CHECK(std::fabs(square.x0 - (W / 2 - half)) < 0.5f && std::fabs(square.x1 - (W / 2 + half)) < 0.5f);
   CHECK(std::fabs(square.y0 - (H / 2 - half)) < 0.5f && std::fabs(square.y1 - (H / 2 + half)) < 0.5f);
 
@@ -164,11 +165,18 @@ int unit_test() {
   CHECK(std::fabs(circle.x0 - (W / 2 - r)) < 1.0f && std::fabs(circle.x1 - (W / 2 + r)) < 1.0f);
   CHECK(std::fabs(circle.y0 - (H / 2 - r)) < 1.0f && std::fabs(circle.y1 - (H / 2 + r)) < 1.0f);
 
+  // Switched off mid-match: nothing drawn, and the scene must not be skipped.
+  ImGui::GetIO().DisplaySize = ImVec2(W, H);
+  ImGui::NewFrame(); lab::draw(false, W, H); ImGui::Render();
+  CHECK(ImGui::GetDrawData()->TotalVtxCount == 0);
+  CHECK(!lab::covering());
+
   // Game end hands the window back to the game.
   const std::vector<uint8_t> end = {0x39, 0, 0};
   feed(end);
   CHECK(!lab::match_in_progress());
   CHECK(draw_vertex_count(W, H) == 0);
+  CHECK(!lab::covering());
 
   fs::remove_all(dir, ec);
   if (g_failures) std::printf("%d failure(s)\n", g_failures);
@@ -235,6 +243,7 @@ int replay_dump(int argc, char** argv) {
 int main(int argc, char** argv) {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
+  ImGui::GetIO().IniFilename = nullptr;   // a headless test has no window layout to keep
   ImGui::GetIO().Fonts->Build();
   ImGui::GetIO().DeltaTime = 1.0f / 60;
   const int result = argc >= 5 ? replay_dump(argc, argv) : unit_test();
