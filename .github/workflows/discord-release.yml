@@ -1,6 +1,6 @@
 name: Announce release on Discord
 
-# Posts the four latest published GitHub releases to a Discord channel through a webhook.
+# Announces newly published releases on Discord; manual runs can repost the latest four.
 # One-time setup by the server owner:
 #   1. Discord: Server Settings > Integrations > Webhooks > New Webhook, pick the updates
 #      channel, Copy Webhook URL.
@@ -21,8 +21,6 @@ on:
         description: Comma-separated Discord webhook message IDs to delete when action=cleanup
         required: false
         default: ''
-  workflow_dispatch:
-
 jobs:
   announce:
     runs-on: ubuntu-latest
@@ -42,4 +40,10 @@ jobs:
             python3 tools/post_discord.py --delete-ids "${{ inputs.message_ids }}"
             exit $?
           fi
-          python3 tools/post_discord.py --last 4 --send
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            version="${GITHUB_REF_NAME#v}"
+            python3 tools/post_discord.py --version "$version" --send
+          else
+            python3 tools/post_discord.py --last 4 --send
+          fi
+
