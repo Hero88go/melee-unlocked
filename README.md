@@ -158,6 +158,31 @@ My vision for the project is keeping it open source so anyone can view the work 
 - Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
 - PC settings overlay in the game window: F1 or Z + Start
 - Optional launcher with self-update
+- Lab view (F3): the match drawn in Slippi Lab's flat style, online safe (see below)
+
+## Lab view
+
+Shows the match the way [Slippi Lab](https://github.com/frankborden/slippilab) draws
+replays: flat character silhouettes on a plain stage, with the grid, blast zones, shields, lasers
+and projectiles, and a percent and stock readout. Toggle it with **F3**, or "Lab view" in the
+Overlays tab of the PC settings (F1). Menus and character select look normal; the view takes over
+only while a match is running.
+
+It is display only. The view reads the same per-frame events the Slippi recording codes already
+send for replays and draws them over the game image, so it never touches the simulation and is
+safe online: your opponent's game is unaffected, and the rollback state it shows is exactly what
+the game is running.
+
+The silhouettes are Slippi Lab's own animation frames and are not shipped with this build.
+Generate them once from a Slippi Lab checkout (Python 3, no extra packages):
+
+```powershell
+git clone https://github.com/frankborden/slippilab.git
+python tools/build_lab_assets.py --slippilab slippilab --out "C:/path/to/MeleeUnlocked/Lab"
+```
+
+The game reads `Lab\` next to it (or `--lab-dir <folder>`). Without it, characters show as plain
+markers. The view runs at the game's 60 Hz; sub-frame animation does not apply to it.
 
 ## Slippi online
 
