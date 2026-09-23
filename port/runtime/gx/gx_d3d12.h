@@ -58,6 +58,9 @@ struct D3D12Options {
   // key and does not want it in a recording.
   bool settings_hint = true;
   bool input_overlay = false;     // on-screen controller display, for streaming
+  // Lab view: draw matches as Slippi Lab draws replays (flat silhouettes on a plain stage) over
+  // the game image. Display only, so it is safe online. F3 toggles it. See lab_view.h.
+  bool lab_view = false;
   int input_overlay_ports = 1;    // bitmask of the controller ports it shows (bit 0 = port 1)
   bool input_overlay_values = false;
   int input_overlay_stick = 5;            // stick knob size, 1 (small marker) to 10 (fills much of the gate)        // print each stick's value (Melee units) under it

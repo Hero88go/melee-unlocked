@@ -23,6 +23,7 @@
 #include "updater.h"
 #include "discord_presence.h"
 #include "controller_profiles.h"
+#include "lab_view.h"
 #ifndef MELEE_PORT_VERSION
 #define MELEE_PORT_VERSION "dev"
 #endif
@@ -1405,6 +1406,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "settingshint") options.settings_hint = value != "0";
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
+      else if (key == "labview") options.lab_view = value == "1";
       // Settings saved before the overlay could show several ports name a single port number.
       else if (key == "inputoverlayport") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 4) options.input_overlay_ports = 1 << n; }
       else if (key == "inputoverlayports") { int n = std::atoi(value.c_str()); if (n >= 0 && n < 16) options.input_overlay_ports = n; }
@@ -1695,6 +1697,11 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   // session, where scripted runs reproduce nothing: press it while the problem is happening and
   // the frames themselves can be read afterwards.
   if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) { request_frame_capture(90); host::log("capture: F2, writing the next 90 presented frames into capture\\"); }
+  // F3: Lab view on or off. Marked dirty, so it is saved with the other settings the next time the
+  // panel is open (the panel is what writes the settings file).
+  if (ImGui::IsKeyPressed(ImGuiKey_F3, false)) { options.lab_view = !options.lab_view; state.dirty = true; host::log("lab view: %s", options.lab_view ? "on" : "off"); }
+  // Drawn first, on the background list, so every overlay and window below lands on top of it.
+  if (!state.fill_window) lab::draw(options.lab_view, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // Esc: closes the panel if it is open; otherwise opens or closes the Esc menu. While a rebind is
   // waiting for a button, Escape means "cancel that", which the capture itself watches for, so it
   // does nothing here then (closing the panel on the same key left the capture running).
@@ -2857,6 +2864,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       ImGui::SetTooltip("Shows the measured render latency under the FPS counter. Works whether or\n"
                         "not NVIDIA Reflex Low Latency (Video tab) is On, so Off has a number too --\n"
                         "the full breakdown by stage is on the performance graph.");
+    changed |= ImGui::Checkbox("Lab view (F3)", &options.lab_view);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Draws matches the way Slippi Lab draws replays: flat character silhouettes\n"
+                        "on a plain stage, over the game image. Display only, so it is safe online;\n"
+                        "menus and character select look normal. Needs the Lab folder from\n"
+                        "tools/build_lab_assets.py for the silhouettes.");
     changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
     if (options.input_overlay) {
       ImGui::SameLine();
@@ -2995,6 +3008,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            // Read since it was added and never written, so hiding the reminder lasted one session.
            << "\nsettingshint " << (options.settings_hint ? 1 : 0)
            << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
+           << "\nlabview " << options.lab_view
            << "\ninputoverlayhideborder " << options.input_overlay_hide_border
            << "\ninputoverlayvalues " << options.input_overlay_values
            << "\ninputoverlaystick " << options.input_overlay_stick
