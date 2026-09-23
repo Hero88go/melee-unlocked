@@ -69,11 +69,20 @@ struct GameInfo {
   struct Port { bool present = false; uint8_t external = 0, team = 0, shade = 0; } ports[4];
 };
 
+// One collision line of the stage as the game has it this frame (world units, y up).
+struct StageLine {
+  float x0, y0, x1, y1;
+  bool floor, platform;
+};
+
 struct Frame {
   int32_t number = -1000;
   PlayerFrame players[4][2];   // [port][follower]
   std::vector<ItemFrame> items;
   float fod_left = 20.0f, fod_right = 27.44186047f;   // game platform heights (Slippi Lab constants.ts)
+  // The stage's live collision, read from the game at the end of the frame. Empty if it could not
+  // be read, in which case the view falls back to Slippi Lab's fixed outlines.
+  std::vector<StageLine> stage_lines;
 };
 
 // Simulation-thread state.
@@ -197,6 +206,52 @@ PlayerFrame& history(int32_t frame, int port, int follower) {
   return g_history[((frame % kHistory) + kHistory) % kHistory][port][follower];
 }
 
+// ---- Live stage collision (read only) ----
+//
+// Slippi Lab draws stages from outlines typed in by hand, so anything that moves or changes shape
+// is either special-cased (Randall, the Fountain platforms) or missing (Pokemon Stadium's
+// transformations, every other stage). The game keeps the collision it is actually using in three
+// globals of mplib.c (names and addresses from the decomp's GALE01 symbols.txt, byte-matching 1.02):
+//   0x804D64B4 MapCollData*  the stage's collision: +0x4 vertex count, +0xC line count
+//   0x804D64B8 CollVtx*      current vertices, 0x18 bytes each, position at +0x8 (moves with the stage)
+//   0x804D64BC CollLine*     per line: +0x0 MapLine* (vertex indices u16 at +0 and +2), +0x4 flags
+// A line is solid when it is enabled and neither hidden (its group switched off, which is how a
+// Stadium transformation swaps terrain) nor pruned as empty. Only read here, never written, and at
+// the end of the frame's simulation, so it cannot affect the match.
+constexpr uint32_t kCollData = 0x804D64B4, kCollVerts = 0x804D64B8, kCollLines = 0x804D64BC;
+constexpr uint32_t kRamBase = 0x80000000u, kRamSize = 24u << 20;   // 24 MB of guest RAM
+constexpr uint32_t kLineKind = 0xF, kLineFloor = 1 << 0, kLineEmpty = 1 << 7, kLinePlatform = 1 << 8,
+                   kLineEnabled = 1 << 16, kLineHidden = 1 << 18;
+
+bool guest_span(uint32_t addr, uint32_t bytes) {
+  return host::ram && addr >= kRamBase && bytes <= kRamSize && addr - kRamBase <= kRamSize - bytes;
+}
+uint32_t guest32(uint32_t addr) { return be32(host::ram + (addr - kRamBase)); }
+uint16_t guest16(uint32_t addr) { return be16(host::ram + (addr - kRamBase)); }
+float guestf(uint32_t addr) { return bef(host::ram + (addr - kRamBase)); }
+
+void read_stage_lines(std::vector<StageLine>& out) {
+  out.clear();
+  if (!guest_span(kCollData, 12)) return;
+  const uint32_t coll = guest32(kCollData), verts = guest32(kCollVerts), lines = guest32(kCollLines);
+  if (!guest_span(coll, 0x10)) return;
+  const uint32_t vert_count = guest32(coll + 0x4), line_count = guest32(coll + 0xC);
+  // The game's own array sizes (groundCollVtx_count, groundCollLine_count in mplib.c).
+  if (vert_count == 0 || vert_count > 2048 || line_count == 0 || line_count > 1536) return;
+  if (!guest_span(verts, vert_count * 0x18) || !guest_span(lines, line_count * 8)) return;
+  for (uint32_t i = 0; i < line_count; ++i) {
+    const uint32_t line = guest32(lines + 8 * i), flags = guest32(lines + 8 * i + 4);
+    if (!(flags & kLineEnabled) || (flags & (kLineHidden | kLineEmpty)) || !(flags & kLineKind)) continue;
+    if (!guest_span(line, 4)) continue;
+    const uint16_t a = guest16(line), b = guest16(line + 2);
+    if (a >= vert_count || b >= vert_count) continue;
+    const uint32_t va = verts + 0x18 * a + 8, vb = verts + 0x18 * b + 8;
+    StageLine l{guestf(va), guestf(va + 4), guestf(vb), guestf(vb + 4), (flags & kLineFloor) != 0, (flags & kLinePlatform) != 0};
+    if (!std::isfinite(l.x0) || !std::isfinite(l.y0) || !std::isfinite(l.x1) || !std::isfinite(l.y1)) continue;
+    out.push_back(l);
+  }
+}
+
 void commit() {
   const int32_t f = g_building.number;
   for (int port = 0; port < 4; ++port) {
@@ -227,6 +282,7 @@ void commit() {
   }
   g_building.fod_left = g_fod_left;
   g_building.fod_right = g_fod_right;
+  read_stage_lines(g_building.stage_lines);
   std::lock_guard<std::mutex> lock(g_mutex);
   g_shown = g_building;
   g_last_commit = std::chrono::steady_clock::now();
@@ -641,10 +697,23 @@ void draw_circle(ImDrawList* dl, const View& v, float x, float y, float r, ImU32
   dl->AddCircleFilled(v(x, y), std::max(1.0f, r * v.px), col, 0);
 }
 
+// The game's live collision lines: exactly the floors the characters are standing on this frame,
+// moving platforms and Stadium transformations included.
+void draw_stage_lines(ImDrawList* dl, const View& v, const Frame& f) {
+  const ImU32 stage = rgb(kStage);
+  const float floor_w = std::max(1.0f, 1.0f * v.px), edge_w = std::max(1.0f, 0.5f * v.px);
+  for (const StageLine& l : f.stage_lines)
+    dl->AddLine(v(l.x0, l.y0), v(l.x1, l.y1), stage, (l.floor || l.platform) ? floor_w : edge_w);
+}
+
 void draw_stage(ImDrawList* dl, const View& v, const GameInfo& info, const Frame& f) {
   const StageShape* shape = nullptr;
   for (const StageShape& s : stages()) if (s.id == info.stage) shape = &s;
-  if (!shape) return;   // not one of the six Slippi Lab draws: characters on a blank field
+  const bool live = !f.stage_lines.empty();
+  if (!shape) {   // not one of the six Slippi Lab draws: the game's own outline, if we have it
+    if (live) draw_stage_lines(dl, v, f);
+    return;
+  }
   // Grid every 5 units inside the blast zones.
   const ImU32 grid = rgb(kGrid);
   const float grid_w = std::max(1.0f, 0.1f * v.px);
@@ -660,14 +729,21 @@ void draw_stage(ImDrawList* dl, const View& v, const GameInfo& info, const Frame
   dl->AddConcavePolyFilled(pts.data(), (int)pts.size(), stage);
   dl->AddPolyline(pts.data(), (int)pts.size(), stage, ImDrawFlags_Closed, std::max(1.0f, 0.5f * v.px));
   const float line_w = std::max(1.0f, 1.0f * v.px);   // SVG's default stroke, one world unit
-  for (const auto& pl : shape->platforms) dl->AddLine(v(pl[0]), v(pl[1]), stage, line_w);
-  if (info.stage == 2) {   // Fountain of Dreams side platforms
-    constexpr float k = 0.80625f;   // game platform height to drawn height (Slippi Lab)
-    dl->AddLine(v(-49.5f, f.fod_left * k), v(-21, f.fod_left * k), stage, line_w);
-    dl->AddLine(v(21, f.fod_right * k), v(49.5f, f.fod_right * k), stage, line_w);
+  if (live) {
+    // Platforms, Randall, the Fountain's moving platforms and whatever a Stadium transformation
+    // puts down, all from the game itself. The filled body above is Slippi Lab's outline of the
+    // part that never changes.
+    draw_stage_lines(dl, v, f);
+  } else {
+    for (const auto& pl : shape->platforms) dl->AddLine(v(pl[0]), v(pl[1]), stage, line_w);
+    if (info.stage == 2) {   // Fountain of Dreams side platforms
+      constexpr float k = 0.80625f;   // game platform height to drawn height (Slippi Lab)
+      dl->AddLine(v(-49.5f, f.fod_left * k), v(-21, f.fod_left * k), stage, line_w);
+      dl->AddLine(v(21, f.fod_right * k), v(49.5f, f.fod_right * k), stage, line_w);
+    }
+    ImVec2 l, r;
+    if (info.stage == 8 && randall(f.number, l, r)) dl->AddLine(v(l), v(r), rgb(kRandall), line_w);
   }
-  ImVec2 l, r;
-  if (info.stage == 8 && randall(f.number, l, r)) dl->AddLine(v(l), v(r), rgb(kRandall), line_w);
   dl->AddRect(v(shape->bz_min.x, shape->bz_max.y), v(shape->bz_max.x, shape->bz_min.y), stage, 0, 0, std::max(1.0f, v.px));
 }
 
@@ -682,6 +758,14 @@ void draw_hexagon_ring(ImDrawList* dl, const View& v, float x, float y, float r,
   }
 }
 
+// The last silhouette each player was drawn with this match (render thread only), shown again for
+// actions Slippi Lab has no drawing for.
+struct LastPose { uint64_t serial = 0; uint8_t character = 0; uint16_t path = 0xFFFF; float facing = 1; };
+LastPose g_last_pose[4][2];
+// Actions 0-11 are the KOs (DeadDown ... DeadUpFallHitCameraIce) and Sleep, the state between a
+// lost stock and the respawn platform: nothing on screen to keep drawing.
+constexpr uint16_t kLastDeadAction = 11;
+
 void draw_player(ImDrawList* dl, const View& v, const GameInfo& info, const PlayerFrame& p, int port, bool nana) {
   const ImU32 inner = rgb(player_color(info, port, nana));
   std::shared_ptr<Pack> pack = get_pack(p.character);
@@ -693,47 +777,64 @@ void draw_player(ImDrawList* dl, const View& v, const GameInfo& info, const Play
   const Anim* anim = nullptr;
   if (p.action < pack->action_anim.size() && pack->action_anim[p.action] < pack->anims.size())
     anim = &pack->anims[pack->action_anim[p.action]];
+  // Which silhouette, facing and rotation this frame. Slippi Lab has no drawing for some actions
+  // (being thrown, a few specials); for those the character keeps the last pose it was drawn in,
+  // at its current position, rather than vanishing mid-move.
+  uint16_t path = 0xFFFF;
+  float facing = p.facing, rotation = 0;
   if (anim && !anim->frames.empty()) {
     // Floor, clamp -1 to 0, and loop (Entry, Guard...), as Slippi Lab does.
     const int index = (int)std::floor(std::max(0.0f, p.counter)) % (int)anim->frames.size();
-    const uint16_t path = anim->frames[index];
-    if (path < pack->paths.size()) {
-      auto it = pack->meshes.find(path);
-      if (it == pack->meshes.end()) it = pack->meshes.emplace(path, build_mesh(pack->paths[path])).first;
-      const Pack::Mesh& mesh = it->second;
-      const std::vector<ImVec2>& model = mesh.outline;
-      float rotation = 0;
-      if (anim->fly_roll) {
-        rotation = std::atan2(p.y - p.prev_y, p.x - p.prev_x) * 180 / kPi - 90;
-      } else if ((p.character == kFox || p.character == kFalco) && (p.action == 355 || p.action == 356)) {
-        const float joy = (p.start_joy_x == 0 && p.start_joy_y == 0) ? 90.0f : std::atan2(p.start_joy_y, p.start_joy_x) * 180 / kPi;
-        rotation = joy - (p.start_facing == -1 ? 180.0f : 0.0f);
-      }
-      const float facing = anim->follows_facing ? p.facing : p.start_facing;
-      const float rad = rotation * kPi / 180, cr = std::cos(rad), sr = std::sin(rad);
-      const float s = pack->scale;
-      // Slippi Lab's transform, point first: translate(-500 -500), scale(.1 -.1), scale(facing 1),
-      // scale(character), rotate about (0, 8), translate to the character's position.
-      thread_local std::vector<ImVec2> screen;
-      screen.resize(model.size());
-      for (size_t i = 0; i < model.size(); ++i) {
-        float x = (model[i].x - 500) * 0.1f * facing * s;
-        float y = (model[i].y - 500) * -0.1f * s - 8;
-        const float rx = x * cr - y * sr, ry = x * sr + y * cr + 8;
-        screen[i] = v(p.x + rx, p.y + ry);
-      }
-      const ImU32 outer = p.start_lcancel == 2 ? rgb(0xFF0000) : p.hurtbox != 0 ? rgb(0x0000FF) : rgb(0x000000);
-      if (screen.size() >= 3) {
-        if (!mesh.triangles.empty()) {
-          const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
-          dl->PrimReserve((int)mesh.triangles.size(), (int)screen.size());
-          const ImDrawIdx base = (ImDrawIdx)dl->_VtxCurrentIdx;
-          for (uint32_t i : mesh.triangles) dl->PrimWriteIdx((ImDrawIdx)(base + i));
-          for (const ImVec2& q : screen) dl->PrimWriteVtx(q, uv, inner);
-        }
-        dl->AddPolyline(screen.data(), (int)screen.size(), outer, ImDrawFlags_Closed, std::max(1.0f, 0.2f * s * v.px));
-      }
+    path = anim->frames[index];
+    if (anim->fly_roll) {
+      rotation = std::atan2(p.y - p.prev_y, p.x - p.prev_x) * 180 / kPi - 90;
+    } else if ((p.character == kFox || p.character == kFalco) && (p.action == 355 || p.action == 356)) {
+      const float joy = (p.start_joy_x == 0 && p.start_joy_y == 0) ? 90.0f : std::atan2(p.start_joy_y, p.start_joy_x) * 180 / kPi;
+      rotation = joy - (p.start_facing == -1 ? 180.0f : 0.0f);
     }
+    facing = anim->follows_facing ? p.facing : p.start_facing;
+  }
+  LastPose& last = g_last_pose[port][nana ? 1 : 0];
+  if (last.serial != g_camera.serial) last = LastPose{};
+  if (path < pack->paths.size()) {
+    last = LastPose{g_camera.serial, p.character, path, facing};
+  } else if (p.action <= kLastDeadAction) {
+    return;   // KO'd or between stocks: off screen, nothing to hold
+  } else if (last.path != 0xFFFF && last.character == p.character) {
+    path = last.path;
+    facing = last.facing;
+  }
+  if (path < pack->paths.size()) {
+    auto it = pack->meshes.find(path);
+    if (it == pack->meshes.end()) it = pack->meshes.emplace(path, build_mesh(pack->paths[path])).first;
+    const Pack::Mesh& mesh = it->second;
+    const std::vector<ImVec2>& model = mesh.outline;
+    const float rad = rotation * kPi / 180, cr = std::cos(rad), sr = std::sin(rad);
+    const float s = pack->scale;
+    // Slippi Lab's transform, point first: translate(-500 -500), scale(.1 -.1), scale(facing 1),
+    // scale(character), rotate about (0, 8), translate to the character's position.
+    thread_local std::vector<ImVec2> screen;
+    screen.resize(model.size());
+    for (size_t i = 0; i < model.size(); ++i) {
+      float x = (model[i].x - 500) * 0.1f * facing * s;
+      float y = (model[i].y - 500) * -0.1f * s - 8;
+      const float rx = x * cr - y * sr, ry = x * sr + y * cr + 8;
+      screen[i] = v(p.x + rx, p.y + ry);
+    }
+    const ImU32 outer = p.start_lcancel == 2 ? rgb(0xFF0000) : p.hurtbox != 0 ? rgb(0x0000FF) : rgb(0x000000);
+    if (screen.size() >= 3) {
+      if (!mesh.triangles.empty()) {
+        const ImVec2 uv = ImGui::GetFontTexUvWhitePixel();
+        dl->PrimReserve((int)mesh.triangles.size(), (int)screen.size());
+        const ImDrawIdx base = (ImDrawIdx)dl->_VtxCurrentIdx;
+        for (uint32_t i : mesh.triangles) dl->PrimWriteIdx((ImDrawIdx)(base + i));
+        for (const ImVec2& q : screen) dl->PrimWriteVtx(q, uv, inner);
+      }
+      dl->AddPolyline(screen.data(), (int)screen.size(), outer, ImDrawFlags_Closed, std::max(1.0f, 0.2f * s * v.px));
+    }
+  } else {
+    // Never drawn yet this match (an action with no silhouette on the very first frames).
+    draw_circle(dl, v, p.x, p.y + 8, 6, inner);
   }
   if (anim && anim->guard) {
     // Shield size from shield health and trigger strength (ssbwiki Shield statistics), with the

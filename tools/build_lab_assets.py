@@ -72,22 +72,60 @@ def load_zip(path: Path) -> dict:
         return {Path(n).stem: json.loads(z.read(n)) for n in z.namelist() if n.endswith(".json")}
 
 
+def lookup(character: dict, action_id: int, name) -> str:
+    """Slippi Lab's computeRenderData lookup: the character's own map for the action's name, then
+    its specials by ID, then the action name itself. "" means Slippi Lab draws nothing."""
+    if name is not None and name in character["animation_map"]:
+        return character["animation_map"][name]
+    if action_id in character["specials"]:
+        return character["specials"][action_id]
+    return name or ""
+
+
+def stand_ins(name: str) -> list:
+    """Action names to try, in order, when an action has no animation of its own. Only ever the
+    same move in another form, so a stand-in is the right shape, just not the exact variant:
+      AppealL / AppealR -> Appeal, and Appeal -> AppealL / AppealR (which one a character's zip
+        has differs: Captain Falcon's taunt was mapped to "Appeal" but only AppealL/R exist)
+      AttackS4Hi / AttackS4LwS ... -> AttackS4S (angled forward smash drawn as the straight one)
+      AttackS3Hi / AttackS3Lw ...  -> AttackS3S (angled forward tilt as the straight one)
+    Anything else keeps no animation here; the game holds the last silhouette shown instead of
+    drawing nothing (lab_view.cpp), so a character is never invisible mid-move."""
+    out = []
+    if name.endswith(("L", "R")) and len(name) > 1:
+        out.append(name[:-1])
+    else:
+        out += [name + "L", name + "R"]
+    m = re.fullmatch(r"AttackS([34])(Hi|Lw)S?", name)
+    if m:
+        out.append(f"AttackS{m.group(1)}S")
+    return out
+
+
+def resolve(character: dict, animations: dict, action_id: int, name, by_name: dict):
+    anim = lookup(character, action_id, name)
+    if anim in animations:
+        return anim
+    if name is None:
+        return None
+    for alt in [name] + stand_ins(name):
+        for candidate in (lookup(character, by_name.get(alt, -1), alt), alt):
+            if candidate and candidate in animations:
+                return candidate
+    # The mapped animation name itself may be the one needing an L/R form ("Appeal" -> "AppealL").
+    for alt in stand_ins(anim) if anim else []:
+        if alt in animations:
+            return alt
+    return None
+
+
 def build_pack(character: dict, animations: dict, action_names: list) -> bytes:
-    # Same lookup as Slippi Lab's computeRenderData: the character's own map for the action's
-    # name, then its specials by ID, then the action name itself. An empty mapping means Slippi Lab
-    # draws nothing for that action, and so do we.
     action_count = max(len(action_names), max(character["specials"], default=0) + 1)
+    by_name = {n: i for i, n in enumerate(action_names)}
     wanted = []
     for action_id in range(action_count):
         name = action_names[action_id] if action_id < len(action_names) else None
-        anim = None
-        if name is not None and name in character["animation_map"]:
-            anim = character["animation_map"][name]
-        elif action_id in character["specials"]:
-            anim = character["specials"][action_id]
-        elif name is not None:
-            anim = name
-        wanted.append(anim if anim and anim in animations else None)
+        wanted.append(resolve(character, animations, action_id, name, by_name))
 
     names = sorted({a for a in wanted if a})
     index_of = {n: i for i, n in enumerate(names)}

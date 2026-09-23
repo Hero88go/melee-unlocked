@@ -27,6 +27,7 @@
 
 namespace host {
 Options options;
+uint8_t* ram = nullptr;   // the stage collision test points this at a fake 24 MB guest RAM
 void log(const char* fmt, ...) { va_list a; va_start(a, fmt); std::vfprintf(stderr, fmt, a); va_end(a); std::fputc('\n', stderr); }
 }
 
@@ -99,12 +100,12 @@ std::vector<uint8_t> game_start() {
   return e;
 }
 
-std::vector<uint8_t> post_frame(int32_t frame, float x, float y, float counter) {
+std::vector<uint8_t> post_frame(int32_t frame, float x, float y, float counter, uint16_t action = 14) {
   std::vector<uint8_t> e(0x54, 0);
   e[0] = 0x38;
   put32(e, 1, (uint32_t)frame);
   e[5] = 0; e[6] = 0; e[7] = 1;           // port 1, not a follower, internal Fox
-  put16(e, 8, 14);                         // Wait
+  put16(e, 8, action);                     // 14 = Wait
   putf(e, 0x0A, x); putf(e, 0x0E, y); putf(e, 0x12, 1.0f);
   putf(e, 0x1A, 60.0f); e[0x21] = 4;
   putf(e, 0x22, counter);
@@ -119,6 +120,27 @@ std::vector<uint8_t> bookend(int32_t frame) {
 }
 
 void feed(const std::vector<uint8_t>& e) { lab::feed(e.data(), (uint32_t)e.size()); }
+
+// Fake guest RAM holding the three mplib.c collision globals and what they point at.
+struct GuestRam {
+  std::vector<uint8_t> bytes = std::vector<uint8_t>(24u << 20, 0);
+  uint8_t* at(uint32_t a) { return bytes.data() + (a - 0x80000000u); }
+  void w32(uint32_t a, uint32_t v) { for (int i = 0; i < 4; ++i) at(a)[i] = (uint8_t)(v >> (24 - 8 * i)); }
+  void w16(uint32_t a, uint16_t v) { at(a)[0] = (uint8_t)(v >> 8); at(a)[1] = (uint8_t)v; }
+  void wf(uint32_t a, float f) { uint32_t u; std::memcpy(&u, &f, 4); w32(a, u); }
+};
+
+int stage_line_count(ImU32 color, float y_screen, float x0, float x1, float w, float h) {
+  ImGui::GetIO().DisplaySize = ImVec2(w, h);
+  ImGui::NewFrame();
+  lab::draw(true, w, h);
+  ImGui::Render();
+  int n = 0;
+  for (ImDrawList* list : ImGui::GetDrawData()->CmdLists)
+    for (const ImDrawVert& v : list->VtxBuffer)
+      if (v.col == color && std::fabs(v.pos.y - y_screen) < 4 && v.pos.x > x0 - 4 && v.pos.x < x1 + 4) ++n;
+  return n;
+}
 
 int unit_test() {
   namespace fs = std::filesystem;
@@ -165,6 +187,15 @@ int unit_test() {
   CHECK(std::fabs(circle.x0 - (W / 2 - r)) < 1.0f && std::fabs(circle.x1 - (W / 2 + r)) < 1.0f);
   CHECK(std::fabs(circle.y0 - (H / 2 - r)) < 1.0f && std::fabs(circle.y1 - (H / 2 + r)) < 1.0f);
 
+  // An action the pack has no drawing for (20 = Dash here) keeps the last pose, the circle, instead
+  // of leaving the character invisible; a KO (action 0) draws nothing.
+  feed(post_frame(-121, 10, 0, 0, 20));
+  feed(bookend(-121));
+  CHECK(frame_box(red, W, H).n > 16);
+  feed(post_frame(-120, 10, 0, 0, 0));
+  feed(bookend(-120));
+  CHECK(frame_box(red, W, H).n == 0);
+
   // Switched off mid-match: nothing drawn, and the scene must not be skipped.
   ImGui::GetIO().DisplaySize = ImVec2(W, H);
   ImGui::NewFrame(); lab::draw(false, W, H); ImGui::Render();
@@ -177,6 +208,51 @@ int unit_test() {
   CHECK(!lab::match_in_progress());
   CHECK(draw_vertex_count(W, H) == 0);
   CHECK(!lab::covering());
+
+  // Stage from the game's live collision: a platform whose line is enabled is drawn, one whose group
+  // was hidden (how a Stadium transformation removes terrain) is not.
+  {
+    GuestRam g;
+    const uint32_t coll = 0x80100000, verts = 0x80101000, maplines = 0x80102000, lines = 0x80103000;
+    g.w32(0x804D64B4, coll); g.w32(0x804D64B8, verts); g.w32(0x804D64BC, lines);
+    g.w32(coll + 0x4, 4); g.w32(coll + 0xC, 2);
+    const float pts[4][2] = {{-10, 30}, {10, 30}, {-10, 60}, {10, 60}};
+    for (int i = 0; i < 4; ++i) { g.wf(verts + 0x18 * i + 8, pts[i][0]); g.wf(verts + 0x18 * i + 12, pts[i][1]); }
+    g.w16(maplines, 0); g.w16(maplines + 2, 1);          // line 0: y = 30
+    g.w16(maplines + 0x10, 2); g.w16(maplines + 0x12, 3); // line 1: y = 60
+    g.w32(lines, maplines); g.w32(lines + 4, (1u << 16) | (1u << 8) | 1);                    // enabled platform floor
+    g.w32(lines + 8, maplines + 0x10); g.w32(lines + 12, (1u << 16) | (1u << 18) | (1u << 8) | 1);   // hidden
+    host::ram = g.bytes.data();
+
+    feed(game_start());   // Final Destination, which has no platforms of its own in Slippi Lab
+    feed(post_frame(-123, 10, 0, 0));
+    feed(bookend(-123));
+    const ImU32 slate = IM_COL32(0x1E, 0x29, 0x3B, 255);
+    const float scale = 5 + (4.8f - 5) * 0.04f;          // fresh camera, eased once, centered on (10, 0)
+    auto sx = [&](float x) { return W / 2 + (x - 10) * scale; };
+    auto sy = [&](float y) { return H / 2 - y * scale; };
+    CHECK(stage_line_count(slate, sy(30), sx(-10), sx(10), W, H) >= 4);   // the enabled platform
+    CHECK(stage_line_count(slate, sy(60), sx(-10), sx(10), W, H) == 0);   // the hidden one is gone
+
+    // Transformation: the game hides the first group and shows the second.
+    g.w32(lines + 4, (1u << 16) | (1u << 18) | (1u << 8) | 1);
+    g.w32(lines + 12, (1u << 16) | (1u << 8) | 1);
+    feed(post_frame(-122, 10, 0, 1));
+    feed(bookend(-122));
+    const float scale2 = scale + (4.8f - scale) * 0.04f;
+    auto sy2 = [&](float y) { return H / 2 - y * scale2; };
+    auto sx2 = [&](float x) { return W / 2 + (x - 10) * scale2; };
+    CHECK(stage_line_count(slate, sy2(30), sx2(-10), sx2(10), W, H) == 0);
+    CHECK(stage_line_count(slate, sy2(60), sx2(-10), sx2(10), W, H) >= 4);
+
+    // A pointer outside RAM is ignored, not followed: falls back to Slippi Lab's outlines.
+    g.w32(0x804D64B4, 0x12345678);
+    feed(post_frame(-121, 10, 0, 0));
+    feed(bookend(-121));
+    CHECK(draw_vertex_count(W, H) > 0);
+    feed(end);
+    host::ram = nullptr;
+  }
 
   fs::remove_all(dir, ec);
   if (g_failures) std::printf("%d failure(s)\n", g_failures);
