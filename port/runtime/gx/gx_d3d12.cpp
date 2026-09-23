@@ -190,7 +190,7 @@ class D3D12Backend : public Backend {
     if (opts_.pc_settings) settings_ui_ = std::make_unique<PcSettingsUI>(hwnd, device_.Get(), queue_.Get(), opts_);
 #endif
   }
-  ~D3D12Backend() override { wait_gpu(); texpack::report();
+  ~D3D12Backend() override { wait_gpu(); if (swapchain_) swapchain_->SetFullscreenState(FALSE, nullptr); texpack::report();
 #ifdef GX_PC_SETTINGS
     settings_ui_.reset();
 #endif
@@ -306,6 +306,7 @@ class D3D12Backend : public Backend {
   std::vector<uint32_t> index_scratch_;
   void init();
   void create_swapchain_targets(bool resize);
+  void apply_fullscreen_mode();
   void create_efb();
   int pick_scale() const;
   float output_aspect() const;
@@ -462,7 +463,7 @@ void D3D12Backend::init() {
   DXGI_SWAP_CHAIN_DESC1 sd{};
   sd.Width = client_w_; sd.Height = client_h_; sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.SampleDesc.Count = 1;
   sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.BufferCount = 3; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-  sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+  sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING | DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
   ComPtr<IDXGISwapChain1> sc1;
   check(factory->CreateSwapChainForHwnd(queue_.Get(), hwnd_, &sd, nullptr, nullptr, &sc1), "swapchain");
   check(sc1.As(&swapchain_), "swapchain3");
@@ -506,6 +507,7 @@ void D3D12Backend::init() {
 
   create_swapchain_targets(false);
   create_efb();
+  if (opts_.exclusive_fullscreen) apply_fullscreen_mode();
   open_pipeline_library();
   vertex_ring_.init(device_.Get(), 48 << 20);
   index_ring_.init(device_.Get(), 24 << 20);
@@ -613,12 +615,66 @@ float4 PS(O i) : SV_Target {
 
 void D3D12Backend::create_swapchain_targets(bool resize) {
   for (auto& b : backbuffers_) b.Reset();
-  if (resize) check(swapchain_->ResizeBuffers(3, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING), "resize");
+  if (resize) check(swapchain_->ResizeBuffers(3, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM,
+                                               DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING | DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH), "resize");
   for (UINT i = 0; i < 3; ++i) {
     check(swapchain_->GetBuffer(i, IID_PPV_ARGS(&backbuffers_[i])), "backbuffer");
     D3D12_CPU_DESCRIPTOR_HANDLE h = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
     h.ptr += i * rtv_size_;
     device_->CreateRenderTargetView(backbuffers_[i].Get(), nullptr, h);
+  }
+}
+
+void D3D12Backend::apply_fullscreen_mode() {
+  if (!swapchain_) return;
+  BOOL was_exclusive = FALSE;
+  swapchain_->GetFullscreenState(&was_exclusive, nullptr);
+  const bool want_exclusive = opts_.exclusive_fullscreen;
+  if ((was_exclusive != FALSE) == want_exclusive) {
+    if (!want_exclusive) host::window_set_fullscreen(opts_.fullscreen);
+    return;
+  }
+  wait_gpu();
+  for (auto& buffer : backbuffers_) buffer.Reset();
+  if (was_exclusive) {
+    HRESULT hr = swapchain_->SetFullscreenState(FALSE, nullptr);
+    if (FAILED(hr)) host::log("d3d12: leaving exclusive fullscreen failed (0x%08X)", (unsigned)hr);
+  }
+  if (host::window_is_fullscreen()) host::window_set_fullscreen(false);
+  if (want_exclusive) {
+    ComPtr<IDXGIOutput> output;
+    DXGI_OUTPUT_DESC desc{};
+    if (SUCCEEDED(swapchain_->GetContainingOutput(&output)) && SUCCEEDED(output->GetDesc(&desc))) {
+      DXGI_MODE_DESC mode{};
+      mode.Width = (UINT)(desc.DesktopCoordinates.right - desc.DesktopCoordinates.left);
+      mode.Height = (UINT)(desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top);
+      mode.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+      if (mode.Width >= 320 && mode.Height >= 240) swapchain_->ResizeTarget(&mode);
+    }
+    const HRESULT hr = swapchain_->SetFullscreenState(TRUE, nullptr);
+    if (FAILED(hr)) {
+      host::log("d3d12: exclusive fullscreen unavailable (0x%08X); using borderless fullscreen", (unsigned)hr);
+      opts_.exclusive_fullscreen = false;
+      opts_.fullscreen = true;
+      host::window_set_fullscreen(true);
+      RECT client{}; if (GetClientRect(hwnd_, &client)) { client_w_ = client.right; client_h_ = client.bottom; }
+    } else {
+      ComPtr<IDXGIOutput> output;
+      DXGI_OUTPUT_DESC desc{};
+      if (SUCCEEDED(swapchain_->GetContainingOutput(&output)) && SUCCEEDED(output->GetDesc(&desc))) {
+        client_w_ = desc.DesktopCoordinates.right - desc.DesktopCoordinates.left;
+        client_h_ = desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top;
+      } else host::window_client_size(&client_w_, &client_h_);
+    }
+  } else {
+    host::window_set_fullscreen(opts_.fullscreen);
+    RECT client{}; if (GetClientRect(hwnd_, &client)) { client_w_ = client.right; client_h_ = client.bottom; }
+  }
+  client_w_ = std::max(client_w_, 1); client_h_ = std::max(client_h_, 1);
+  create_swapchain_targets(true);
+  if (pick_scale() != scale_) {
+    host::log("d3d12: fullscreen transition changes internal scale %d -> %d", scale_, pick_scale());
+    drop_efb_copies(); create_efb();
   }
 }
 
@@ -1944,8 +2000,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // A texture pack was switched on or off in the panel: everything already uploaded was built with
   // the old set, so drop it and let the next draw rebuild what it needs.
   if (settings_ui_ && settings_textures_dirty()) { wait_gpu(); textures_.clear(); texture_sets_.clear(); }
+  if (settings_ui_) settings_set_game_aspect(output_aspect());
   if (settings_ui_ && settings_ui_->begin(opts_)) {
-    host::window_set_fullscreen(opts_.fullscreen);
+    apply_fullscreen_mode();
     if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
 #endif
@@ -1972,8 +2029,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     texpack_report_frame_ = frame_counter_ + 3600;
   }
   if (host::window_take_fullscreen_toggle()) {   // Alt+Enter
-    opts_.fullscreen = !opts_.fullscreen;
-    host::window_set_fullscreen(opts_.fullscreen);
+    if (opts_.exclusive_fullscreen) opts_.exclusive_fullscreen = false;
+    else opts_.fullscreen = !host::window_is_fullscreen();
+    apply_fullscreen_mode();
     if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
   configure_dlss();
@@ -2075,7 +2133,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     }
     present_wait_ = Stopwatch::now()-wait_start;
     streamline::pcl_marker(3); streamline::pcl_marker(4);
-    swapchain_->Present(opts_.vsync ? 1 : 0, opts_.vsync ? 0 : DXGI_PRESENT_ALLOW_TEARING);
+    swapchain_->Present(opts_.vsync ? 1 : 0, (!opts_.vsync && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
     streamline::pcl_marker(5);
     ++frames_presented_;
   }

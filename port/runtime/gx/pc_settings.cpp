@@ -43,6 +43,35 @@
 #include <cmath>
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 namespace gx {
+namespace {
+float g_overlay_game_aspect = 73.0f / 60.0f;
+
+struct OverlayBounds { float left, top, right, bottom; };
+
+OverlayBounds overlay_bounds() {
+  const ImVec2 display = ImGui::GetIO().DisplaySize;
+  const float aspect = std::max(0.1f, g_overlay_game_aspect);
+  float width = display.x, height = width / aspect;
+  if (height > display.y) { height = display.y; width = height * aspect; }
+  const float x = (display.x - width) * 0.5f;
+  const float y = (display.y - height) * 0.5f;
+  return {x, y, x + width, y + height};
+}
+
+void clamp_overlay_window() {
+  const OverlayBounds bounds = overlay_bounds();
+  const ImVec2 pos = ImGui::GetWindowPos();
+  const ImVec2 size = ImGui::GetWindowSize();
+  const float max_x = std::max(bounds.left, bounds.right - size.x);
+  const float max_y = std::max(bounds.top, bounds.bottom - size.y);
+  const ImVec2 clamped(std::clamp(pos.x, bounds.left, max_x), std::clamp(pos.y, bounds.top, max_y));
+  if (clamped.x != pos.x || clamped.y != pos.y) ImGui::SetWindowPos(clamped);
+}
+}
+
+void settings_set_game_aspect(float aspect) {
+  if (std::isfinite(aspect) && aspect > 0.1f) g_overlay_game_aspect = aspect;
+}
 
 // Names used both when drawing the Controls list and when saving/loading bindings
 // to port-settings.ini (as "key_<name>" / "pad<idx>_<name>" / "gc<idx>_<name>" lines).
@@ -264,7 +293,8 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
                            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoNav;
   if (!editable) flags |= ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize;
   if (borderless) flags |= ImGuiWindowFlags_NoBackground;
-  ImGui::SetNextWindowPos(ImVec2(16, ImGui::GetIO().DisplaySize.y - 16 - row * (pad_h + 6)), ImGuiCond_FirstUseEver, ImVec2(0, 1));
+  const OverlayBounds bounds = overlay_bounds();
+  ImGui::SetNextWindowPos(ImVec2(bounds.left + 16, bounds.bottom - 16 - row * (pad_h + 6)), ImGuiCond_FirstUseEver, ImVec2(0, 1));
   ImGui::SetNextWindowSize(ImVec2(pad_w, pad_h), ImGuiCond_FirstUseEver);
   ImGui::SetNextWindowBgAlpha(borderless ? 0.0f : 0.30f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, borderless ? 0.0f : 1.0f);
@@ -277,6 +307,7 @@ static void draw_input_overlay(int port, int row, bool lone, bool editable, bool
     ImGui::PushStyleColor(ImGuiCol_ResizeGripActive, IM_COL32(255, 255, 255, 70));
   }
   ImGui::Begin(title, nullptr, flags);
+  clamp_overlay_window();
   ImDrawList* dl = ImGui::GetWindowDrawList();
   const ImVec2 o = ImGui::GetCursorScreenPos();
   // Everything below is authored against a 300x132 controller and scaled to the current size.
@@ -1304,10 +1335,12 @@ static void draw_lcancel_overlays() {
     if (const char* mode = lcancel::auto_suppressed_mode()) {
       std::string lower = mode;
       for (char& c : lower) c = (char)std::tolower((unsigned char)c);
-      ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, 10), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+      const OverlayBounds bounds = overlay_bounds();
+      ImGui::SetNextWindowPos(ImVec2((bounds.left + bounds.right) * 0.5f, bounds.top + 10), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
       ImGui::SetNextWindowBgAlpha(0.75f);
       ImGui::Begin("LCancelModeNotice", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                                      ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing);
+      clamp_overlay_window();
       ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.3f, 1.0f),
                          "You currently have auto L-cancel on, but we have disabled it for %s mode", lower.c_str());
       ImGui::End();
@@ -1323,11 +1356,13 @@ static void draw_discord_invite_overlay() {
   if (!host::discord::enabled()) return;
   const std::string code = host::discord::invite_notice();
   if (code.empty()) return;
-  ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x * 0.5f, 10), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+  const OverlayBounds bounds = overlay_bounds();
+  ImGui::SetNextWindowPos(ImVec2((bounds.left + bounds.right) * 0.5f, bounds.top + 10), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
   ImGui::SetNextWindowBgAlpha(0.85f);
   ImGui::Begin("DiscordInviteNotice", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                                    ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
                                                    ImGuiWindowFlags_NoFocusOnAppearing);
+  clamp_overlay_window();
   ImGui::TextColored(ImVec4(0.45f, 0.75f, 1.0f, 1.0f), "Discord invite from %s", code.c_str());
   ImGui::TextUnformatted("Open Online > Direct. Their code is the first suggestion, and yours is on the clipboard.");
   ImGui::End();
@@ -1361,6 +1396,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       if (key == "fps") { double rate = std::stod(value); if (rate == -1 || rate == 0 || (rate >= 30 && rate <= 2000)) options.fps_cap = rate; }
       else if (key == "scale") { int scale = std::stoi(value); if (scale >= 0 && scale <= 8) options.efb_scale = scale; }
       else if (key == "fullscreen") options.fullscreen = value == "1";
+      else if (key == "exclusivefullscreen") options.exclusive_fullscreen = value == "1";
       else if (key == "vsync") options.vsync = value == "1";
       else if (key == "widescreen") options.widescreen = value == "1";
       else if (key == "truewidescreen") options.true_widescreen = value == "1";
@@ -1549,6 +1585,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
   // The old Ultra preset (4x supersampling under DLAA) becomes the new one (DLAA alone); see the
   // presets. Only that exact combination is changed.
   if (options.efb_scale == 0 && options.ssaa == 2 && options.anisotropy == 16 && options.dlss_mode == 1) options.ssaa = 1;
+  if (options.exclusive_fullscreen) options.fullscreen = false;
   // The player's Gecko codes live beside the settings file.
   std::filesystem::path codes = std::filesystem::path(options.settings_path).parent_path() / "GeckoCodes.ini";
   user_gecko::load(codes.string(), gecko_on, gecko_chosen);
@@ -1852,7 +1889,14 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                         ImGui::CalcTextSize("Widescreen 16:9 (Slippi)").x + ImGui::GetStyle().ItemSpacing.x * 3.0f;
     changed |= ImGui::Checkbox("VSync", &options.vsync);
     ImGui::SameLine(kCol2);
-    changed |= ImGui::Checkbox("Borderless fullscreen", &options.fullscreen);
+    if (ImGui::Checkbox("Borderless fullscreen", &options.fullscreen)) {
+      if (options.fullscreen) options.exclusive_fullscreen = false;
+      changed = true;
+    }
+    if (ImGui::Checkbox("Exclusive fullscreen (experimental)", &options.exclusive_fullscreen)) {
+      if (options.exclusive_fullscreen) options.fullscreen = false;
+      changed = true;
+    }
     if (ImGui::Checkbox("Widescreen 16:9 (Slippi)", &options.widescreen)) {
       if (options.widescreen) options.true_widescreen = false;   // one or the other, never both
       changed = true;
@@ -1910,7 +1954,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
           if (kSizes[i].w == options.window_w && kSizes[i].h == options.window_h) size_index = i;
         if (size_index < 0) { items[kPresets] = custom; count = kPresets + 1; size_index = kPresets; }
       }
-      const bool full = options.fullscreen || host::window_is_fullscreen();
+      const bool full = options.fullscreen || options.exclusive_fullscreen || host::window_is_fullscreen();
       if (full) ImGui::BeginDisabled();
       if (ImGui::Combo("Window size", &size_index, items, count)) {
         if (size_index == 0) options.window_pinned = false;
@@ -2971,6 +3015,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";
       std::ofstream file(temporary);
       file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
+           << "\nexclusivefullscreen " << options.exclusive_fullscreen
            << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen
            << "\ntruewidescreen " << options.true_widescreen << "\naspect " << (int)options.aspect
            << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
@@ -3162,9 +3207,11 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // at the end of this function, and skipping it left draw() handing the renderer draw data that
     // was never built for this frame, which crashed on the next F1.
     if (options.settings_hint) {
-      ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 12, 12), ImGuiCond_Always, ImVec2(1, 0));
+      const OverlayBounds bounds = overlay_bounds();
+      ImGui::SetNextWindowPos(ImVec2(bounds.right - 12, bounds.top + 12), ImGuiCond_Always, ImVec2(1, 0));
       ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
       ImGui::Begin("SettingsButton", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
+      clamp_overlay_window();
       ImGui::TextUnformatted("Settings: F1");
       ImGui::End();
     }
@@ -3201,7 +3248,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       host::input_last_pads(pads);
       const bool a_down = (pads[0].button & 0x0100) != 0;
       if (a_down && !a_was_down) {
-        ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(0, 0), ImVec2(64, 64), IM_COL32(255, 255, 255, 255));
+        const OverlayBounds bounds = overlay_bounds();
+        ImGui::GetForegroundDrawList()->AddRectFilled(ImVec2(bounds.left, bounds.top), ImVec2(bounds.left + 64, bounds.top + 64), IM_COL32(255, 255, 255, 255));
         streamline::pcl_marker(7);   // eTriggerFlash
       }
       a_was_down = a_down;
@@ -3226,7 +3274,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       if (options.reflex_stats && streamline::reflex_latency_ms() > 0.0f && n < 3)
         std::snprintf(lines[n++], sizeof lines[0], "Render latency: %.1f ms", streamline::reflex_latency_ms());
       if (vram_line) std::snprintf(lines[n++], sizeof lines[0], "VRAM: %.1f / %.1f GB", vram_used, vram_total);
-      ImVec2 at(10, 8);
+      const OverlayBounds bounds = overlay_bounds();
+      ImVec2 at(bounds.left + 10, bounds.top + 8);
       float wide = 0;
       for (int i = 0; i < n; ++i) wide = std::max(wide, ImGui::CalcTextSize(lines[i]).x);
       const bool graph_there = options.performance_overlay && perf_max.x > perf_min.x &&
@@ -3242,11 +3291,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (options.performance_overlay) {
       // Draggable, and resizable by its bottom-right corner (drag it smaller if it is in the way);
       // NoTitleBar keeps it out of the way otherwise. Opens under the FPS and ping lines.
-      ImGui::SetNextWindowPos(ImVec2(12, (options.show_fps || options.show_ping) ? 8.0f + readout_h : 12.0f), ImGuiCond_FirstUseEver);
+      const OverlayBounds bounds = overlay_bounds();
+      ImGui::SetNextWindowPos(ImVec2(bounds.left + 12, bounds.top + ((options.show_fps || options.show_ping) ? 8.0f + readout_h : 12.0f)), ImGuiCond_FirstUseEver);
       ImGui::SetNextWindowSize(ImVec2(266, 0), ImGuiCond_FirstUseEver);
       ImGui::SetNextWindowSizeConstraints(ImVec2(120, 40), ImVec2(FLT_MAX, FLT_MAX));
       ImGui::SetNextWindowBgAlpha(0.75f);
       ImGui::Begin("Performance", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse);
+      clamp_overlay_window();
       const float plot_w = ImGui::GetContentRegionAvail().x;
       ImGui::Text("%.0f presentations/s | %.2f ms", ImGui::GetIO().Framerate, 1000.f/std::max(1.f, ImGui::GetIO().Framerate));
       ImGui::PlotLines("##frametimes", state.intervals.data(), (int)state.intervals.size(), state.cursor % state.intervals.size(), nullptr, 0, 33.4f, ImVec2(plot_w, 60));

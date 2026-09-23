@@ -37,6 +37,7 @@ struct D3D12Options {
   // than Off the renderer presents new sub-frames between 60 Hz simulation frames.
   double fps_cap = 60; // -1 follows the active monitor
   bool fullscreen = false;
+  bool exclusive_fullscreen = false;
   // DLSS Frame Generation (RTX 40+): needs an Upscaling mode; adds latency. 0 off, 1 2x, 2 3x, 3 4x
   // (Multi Frame Generation, RTX 50 only), 4 Dynamic (the driver picks the multiplier).
   int frame_generation_mode = 0;

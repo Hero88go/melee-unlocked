@@ -28,6 +28,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DISCORD_LIMIT = 2000   # characters per message; longer notes are split on blank lines
+INSTALL_BLOCK = """**Install**
+
+- Choose one archive from the linked GitHub release: `MeleeUnlocked-{version}-win64.zip` is the standard build; `MeleeUnlocked-{version}-DLSS5-Experimental.zip` is experimental and requires an RTX 50-series GPU or newer plus NVIDIA's DLSS 5 file (not included).
+- Close Melee Unlocked, then extract the chosen archive over the existing folder so settings, saves and replays carry over.
+- Keep your own Melee NTSC 1.02 ISO beside the files as `melee.iso`, or select it with the included launcher.
+- Start `MeleeUnlockedLauncher.exe` after extraction."""
 
 
 def read_webhook(explicit=None):
@@ -49,7 +55,8 @@ def read_webhook(explicit=None):
 
 def notes_for_version(version):
     """Release notes for a version: the release/ file if there is one, else the GitHub release body."""
-    for candidate in (ROOT / "release" / ("RELEASE_NOTES_%s.md" % version),
+    for candidate in (ROOT / ("RELEASE_NOTES_%s.md" % version),
+                      ROOT / "release" / ("RELEASE_NOTES_%s.md" % version),
                       ROOT / "release" / ("RELEASE_NOTES_%s-beta.md" % version)):
         if candidate.exists():
             return candidate.read_text(encoding="utf-8")
@@ -116,7 +123,7 @@ def to_discord(text, version, repo="Hero88go/melee-unlocked", release_url=None):
     # A notes title with more than the version ("0.6.0: DLSS5 update, ...") is the headline.
     header = ("**%s**\n\n" % title) if ":" in title else "**Melee Unlocked %s is out**\n\n" % version
     link = ("\n\n" + release_url) if release_url else ("\n\nhttps://github.com/%s/releases/tag/v%s" % (repo, version))
-    return header + body + link
+    return header + INSTALL_BLOCK.format(version=version) + "\n\n" + body + link
 
 
 def latest_releases(repo, count):

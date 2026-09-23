@@ -18,6 +18,8 @@ void log(const char* fmt, ...) { va_list args; va_start(args, fmt); vprintf(fmt,
 // The renderer reaches back into the window for fullscreen changes; this test owns a bare HWND.
 bool window_take_fullscreen_toggle() { return false; }
 void window_set_fullscreen(bool) {}
+bool window_is_fullscreen() { return false; }
+void window_client_size(int* w, int* h) { if (w) *w = 640; if (h) *h = 480; }
 void window_set_title(const wchar_t*) {}
 }
 namespace slippi { void request_widescreen(bool) {} }
