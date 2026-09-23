@@ -184,6 +184,10 @@ python tools/build_lab_assets.py --slippilab slippilab --out "C:/path/to/MeleeUn
 The game reads `Lab\` next to it (or `--lab-dir <folder>`). Without it, characters show as plain
 markers. The view runs at the game's 60 Hz; sub-frame animation does not apply to it.
 
+While the view is showing, the game's own 3D scene is not drawn, since it would be covered anyway.
+That makes the Lab view much lighter on the graphics card than the normal game, which helps on weak
+laptops. "Skip the 3D scene underneath" under the Lab view checkbox turns that off.
+
 ## Slippi online
 
 Everything Slippi Dolphin does for netplay is built in: matchmaking, rollback netcode, the

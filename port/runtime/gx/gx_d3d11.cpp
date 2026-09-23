@@ -50,6 +50,7 @@
 #include "window.h"
 #ifdef GX_PC_SETTINGS
 #include "pc_settings.h"
+#include "lab_view.h"
 #endif
 
 #pragma comment(lib, "d3d11.lib")
@@ -270,6 +271,7 @@ class D3D11Backend : public Backend {
 #ifdef GX_PC_SETTINGS
   std::unique_ptr<PcSettingsUID3D11> settings_ui_;
 #endif
+  bool lab_skip_scene_ = false;   // the Lab view covers this frame and its scene is not drawn (submit_frame)
   // During construction a failure means "this machine cannot run D3D11": throw so the caller can
   // fall back to D3D12. Afterwards (a resolution change mid-session) it is a genuine fatal error.
   bool starting_ = true;
@@ -1400,6 +1402,8 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     host::window_set_fullscreen(opts_.fullscreen);
     if (pick_scale() != scale_) { host::log("d3d11: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
   }
+  // After the panel, where the Lab view decided whether it covers this frame (see gx_d3d12.cpp).
+  lab_skip_scene_ = settings_ui_ && opts_.lab_skip_scene && frame_in_match(frame) && lab::covering();
 #endif
   // Switching packs on or off in the panel invalidates every cached texture, because each was
   // built with or without its replacement. D3D11 holds its own references until the cache is
@@ -1432,6 +1436,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
     const DrawCall& dc = frame.draws[cmd.index];
     DrawPlan& plan = plans_[cmd.index];
+    if (lab_skip_scene_) continue;   // the Lab view covers this frame; plan.valid stays false
     if (skip_for_effects(frame, dc, opts_.effects_level)) continue;   // "Visual effects"; plan.valid stays false
     uint32_t n = dc.vertex_count;
     const uint32_t first = (uint32_t)index_scratch_.size();

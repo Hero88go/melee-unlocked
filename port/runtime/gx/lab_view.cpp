@@ -820,9 +820,14 @@ void draw_hud(ImDrawList* dl, const GameInfo& info, const Frame& f, float w, flo
   }
 }
 
+std::atomic<bool> g_covering{false};
+
 }  // namespace
 
+bool covering() { return g_covering.load(std::memory_order_relaxed); }
+
 void draw(bool enabled, float width, float height) {
+  g_covering.store(false, std::memory_order_relaxed);
   if (!enabled || width <= 0 || height <= 0 || !match_in_progress()) return;
   GameInfo info;
   Frame f;
@@ -835,6 +840,7 @@ void draw(bool enabled, float width, float height) {
   }
   update_camera(f, serial);
   if (!g_camera.valid) return;
+  g_covering.store(true, std::memory_order_relaxed);
 
   // Slippi Lab's viewBox is 730 x 600 world-scaled units around the camera center; here that box
   // is fitted to the window, and a wider window simply shows more of the stage to the sides.

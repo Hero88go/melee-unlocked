@@ -61,6 +61,9 @@ struct D3D12Options {
   // Lab view: draw matches as Slippi Lab draws replays (flat silhouettes on a plain stage) over
   // the game image. Display only, so it is safe online. F3 toggles it. See lab_view.h.
   bool lab_view = false;
+  // While the Lab view covers the window, skip replaying the game's own draws: the scene would be
+  // drawn only to be painted over. Saves the GPU (and draw submission) its whole frame in a match.
+  bool lab_skip_scene = true;
   int input_overlay_ports = 1;    // bitmask of the controller ports it shows (bit 0 = port 1)
   bool input_overlay_values = false;
   int input_overlay_stick = 5;            // stick knob size, 1 (small marker) to 10 (fills much of the gate)        // print each stick's value (Melee units) under it
