@@ -184,6 +184,11 @@ python tools/build_lab_assets.py --slippilab slippilab --out "C:/path/to/MeleeUn
 The game reads `Lab\` next to it (or `--lab-dir <folder>`). Without it, characters show as plain
 markers. The view runs at the game's 60 Hz; sub-frame animation does not apply to it.
 
+Stages are drawn from the collision the game is actually using each frame, so moving platforms,
+Randall and Pokémon Stadium's transformations always match where characters can stand, and stages
+Slippi Lab has no outline for still get one. The solid body of the six legal stages is Slippi
+Lab's shape; if the collision cannot be read, its fixed platforms are used instead.
+
 While the view is showing, the game's own 3D scene is not drawn, since it would be covered anyway.
 That makes the Lab view much lighter on the graphics card than the normal game, which helps on weak
 laptops. "Skip the 3D scene underneath" under the Lab view checkbox turns that off.
