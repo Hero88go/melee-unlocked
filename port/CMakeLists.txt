@@ -250,6 +250,17 @@ target_compile_options(port_imgui PRIVATE ${MELEE_ARCH_FLAG})
 target_link_libraries(port_imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
 target_compile_definitions(runtime PRIVATE GX_PC_SETTINGS)
 target_link_libraries(runtime PUBLIC port_imgui)
+# Lab view: feeds Slippi events through lab::feed and checks where the silhouettes land. Links the
+# ImGui core only (no renderer), so it runs headless. With a .slp and a Lab folder as arguments it
+# dumps draw data for tools/lab_render.py instead (see the test's header).
+add_executable(port_lab_view_test tests/lab_view_test.cpp runtime/gx/lab_view.cpp
+  third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
+  third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp)
+target_include_directories(port_lab_view_test PRIVATE runtime/gx runtime/host runtime/ppc third_party third_party/imgui)
+target_compile_features(port_lab_view_test PRIVATE cxx_std_17)
+target_compile_definitions(port_lab_view_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+add_test(NAME port_lab_view COMMAND port_lab_view_test)
+set_tests_properties(port_lab_view PROPERTIES TIMEOUT 30)
 
 # NVIDIA Streamline (DLSS): optional, enabled when the SDK subset is present under third_party/streamline.
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/include/sl.h")
