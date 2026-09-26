@@ -43,6 +43,7 @@
 #include "gecko_data.h"
 #ifdef GX_PC_SETTINGS
 #include "pc_settings.h"
+#include "lab_view.h"
 #endif
 
 #pragma comment(lib, "d3d12.lib")
@@ -369,6 +370,7 @@ class D3D12Backend : public Backend {
   int fg_applied_ = -1; int reflex_applied_ = -1;   // what Streamline was last told; -1 forces the first call through even when the setting is "off"
   bool xess_reset_ = true;
   bool in_match_ = false;   // the frame being submitted shows a running match (set in submit_frame)
+  bool lab_skip_scene_ = false;   // the Lab view covers this frame and its scene is not drawn (submit_frame)
   // Whether presented_aspect's widen actually reaches anything on screen: a mode's character/stage
   // select through its results screen, not the bare 2D menu shell around it (see
   // frame_has_widenable_scene). Starts true so a fresh window is never letterboxed to 73:60 for the
@@ -1616,6 +1618,8 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
 
 // ---------------- draws ----------------
 void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const DrawMatrices* override_matrices) {
+  // The Lab view is painting over this frame: nothing the game draws would be seen.
+  if (lab_skip_scene_) return;
   // "Visual effects" below Full: decorative draws in a match are skipped (see skip_for_effects).
   if (skip_for_effects(frame, dc, opts_.effects_level)) return;
 
@@ -2301,6 +2305,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     apply_fullscreen_mode();
     if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
+  // Decided after the panel ran, because that is where the Lab view chose whether to cover this
+  // frame; only a match is ever skipped, so menus draw as usual whatever the panel said.
+  lab_skip_scene_ = settings_ui_ && opts_.lab_skip_scene && in_match_ && lab::covering();
 #endif
   // Texture packs can be switched on and off while the game runs. Every texture already uploaded
   // was built with (or without) its replacement, so the cache has to go; the GPU may still be

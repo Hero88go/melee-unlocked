@@ -280,7 +280,7 @@ if(EXISTS "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
     "${PROJECT_SOURCE_DIR}/melee/orig/GALE01/sys/main.dol")
 endif()
 
-add_executable(port_gpu_resource_test tests/gpu_resource_test.cpp runtime/gx/gx_d3d12.cpp runtime/gx/gx_shader.cpp runtime/gx/gx_texture.cpp runtime/gx/gx_streamline.cpp runtime/gx/gx_xess.cpp runtime/gx/flicker_scan.cpp runtime/gx/texture_pack.cpp)
+add_executable(port_gpu_resource_test tests/gpu_resource_test.cpp runtime/gx/gx_d3d12.cpp runtime/gx/gx_shader.cpp runtime/gx/gx_texture.cpp runtime/gx/gx_streamline.cpp runtime/gx/gx_xess.cpp runtime/gx/flicker_scan.cpp runtime/gx/texture_pack.cpp runtime/gx/gx_dxr_scene.cpp runtime/gx/gx_dxr_gpu_scene.cpp runtime/gx/gx_dxr_path_tracer.cpp)
 target_include_directories(port_gpu_resource_test PRIVATE runtime/gx runtime/host runtime/ppc runtime/hle third_party)
 target_compile_features(port_gpu_resource_test PRIVATE cxx_std_17)
 target_compile_definitions(port_gpu_resource_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS GX_SRV_HEAP_SIZE=32 GX_SAMPLER_HEAP_SIZE=16 GX_CONSTANT_PAGE_SIZE=4096)
@@ -316,6 +316,17 @@ target_compile_options(port_imgui PRIVATE ${MELEE_ARCH_FLAG})
 target_link_libraries(port_imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
 target_compile_definitions(runtime PRIVATE GX_PC_SETTINGS)
 target_link_libraries(runtime PUBLIC port_imgui)
+# Lab view: feeds Slippi events through lab::feed and checks where the silhouettes land. Links the
+# ImGui core only (no renderer), so it runs headless. With a .slp and a Lab folder as arguments it
+# dumps draw data for tools/lab_render.py instead (see the test's header).
+add_executable(port_lab_view_test tests/lab_view_test.cpp runtime/gx/lab_view.cpp
+  third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
+  third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp)
+target_include_directories(port_lab_view_test PRIVATE runtime/gx runtime/host runtime/ppc third_party third_party/imgui)
+target_compile_features(port_lab_view_test PRIVATE cxx_std_17)
+target_compile_definitions(port_lab_view_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+add_test(NAME port_lab_view COMMAND port_lab_view_test)
+set_tests_properties(port_lab_view PROPERTIES TIMEOUT 30)
 
 # NVIDIA Streamline (DLSS): optional, enabled only when the headers, import library, and core
 # redistributable DLLs are all present. A source archive may intentionally omit proprietary runtime
