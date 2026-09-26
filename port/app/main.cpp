@@ -523,6 +523,8 @@ static int melee_main(int argc, char** argv) {
       ppc::add_trace_func(addr, limit); }
     else if (a == "--sys-dir") o.sys_dir = next();
     else if (a == "--replay-dir") o.replay_dir = next();
+    else if (a == "--lab-dir") o.lab_dir = next();
+    else if (a == "--lab-view") gfx.lab_view = true;
     else if (a == "--card-dir") o.card_dir = next();
     else if (a == "--log-file") o.log_file = next();
     else if (a == "--replay") slippi::playback::set_replay(next());   // playback build: play this .slp

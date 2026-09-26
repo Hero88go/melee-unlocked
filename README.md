@@ -162,6 +162,40 @@ My vision for the project is keeping it open source so anyone can view the work 
   CSPs and screenshots appear as previews in Customize. See [docs/cosmetic-imports.md](docs/cosmetic-imports.md).
 - Looping H.264 CSS and SSS backgrounds with target learning and vanilla fallback.
 - Optional launcher with self-update
+- Lab view (F3): the match drawn in Slippi Lab's flat style, online safe (see below)
+
+## Lab view
+
+Shows the match the way [Slippi Lab](https://github.com/frankborden/slippilab) draws
+replays: flat character silhouettes on a plain stage, with the grid, blast zones, shields, lasers
+and projectiles, and a percent and stock readout. Toggle it with **F3**, or "Lab view" in the
+Overlays tab of the PC settings (F1). Menus and character select look normal; the view takes over
+only while a match is running.
+
+It is display only. The view reads the same per-frame events the Slippi recording codes already
+send for replays and draws them over the game image, so it never touches the simulation and is
+safe online: your opponent's game is unaffected, and the rollback state it shows is exactly what
+the game is running.
+
+The silhouettes are Slippi Lab's own animation frames and are not shipped with this build.
+Generate them once from a Slippi Lab checkout (Python 3, no extra packages):
+
+```powershell
+git clone https://github.com/frankborden/slippilab.git
+python tools/build_lab_assets.py --slippilab slippilab --out "C:/path/to/MeleeUnlocked/Lab"
+```
+
+The game reads `Lab\` next to it (or `--lab-dir <folder>`). Without it, characters show as plain
+markers. The view runs at the game's 60 Hz; sub-frame animation does not apply to it.
+
+Stages are drawn from the collision the game is actually using each frame, so moving platforms,
+Randall and Pokémon Stadium's transformations always match where characters can stand, and stages
+Slippi Lab has no outline for still get one. The solid body of the six legal stages is Slippi
+Lab's shape; if the collision cannot be read, its fixed platforms are used instead.
+
+While the view is showing, the game's own 3D scene is not drawn, since it would be covered anyway.
+That makes the Lab view much lighter on the graphics card than the normal game, which helps on weak
+laptops. "Skip the 3D scene underneath" under the Lab view checkbox turns that off.
 
 ## Slippi online
 

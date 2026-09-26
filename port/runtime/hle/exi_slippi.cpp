@@ -7,6 +7,7 @@
 #include "gecko_data.h"
 #include "host.h"
 #include "vcdiff.h"
+#include "lab_view.h"
 #define NOMINMAX
 #include <windows.h>
 #include <cstdio>
@@ -129,6 +130,9 @@ void create_file() {
 }
 
 void write_to_file(const uint8_t* payload, uint32_t length, const char* option) {
+  // Every recording event passes through here, whether or not a replay file is open, which is
+  // exactly the stream the Lab view draws from. It only reads the bytes.
+  lab::feed(payload, length);
   if (std::strcmp(option, "create") == 0) create_file();
   if (!g_file) return;
   if (length > 0 && payload[0] == CMD_RECEIVE_POST_FRAME_UPDATE && length >= 8) {
