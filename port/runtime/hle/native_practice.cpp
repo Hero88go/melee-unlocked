@@ -70,10 +70,10 @@ Phase g_logged_phase = Phase::Idle;
 
 bool is_training() { return host::rd8(kSceneState) == kTrainingMajor; }
 bool is_online_scene() { return host::rd8(kSceneState) == kOnlineMajor; }
-// Practice matchmaking is offered only in Training (offline practice), so players are already on
-// the character they chose; the handoff then goes through Slippi's online character select.
+// Any offline match where the player already picked a character: VS, Training, single player,
+// events. The handoff then goes through Slippi's online character select.
 bool is_offline_gameplay() {
-  return is_training() && is_offline_gameplay_scene(host::rd8(kSceneState), host::rd8(kSceneState + 3));
+  return is_offline_gameplay_scene(host::rd8(kSceneState), host::rd8(kSceneState + 3));
 }
 
 PracticeConfig capture_practice() {
@@ -393,7 +393,9 @@ void shutdown() {
   g_practice = {};
   g_restore_training = false;
   clear_search_metadata();
-  publish_snapshot();
+  // The launcher's settings window shuts Slippi down without ever loading the game, so there is no
+  // guest RAM to read the scene from; publishing then crashed every close of that window.
+  if (host::ram) publish_snapshot();
 }
 
 bool cosmetic_profile_locked() { return snapshot().cosmetic_profile_locked; }

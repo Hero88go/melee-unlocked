@@ -39,6 +39,8 @@ Close Melee Unlocked, then extract the archive over your existing game folder. Y
 - The launcher's Play page shows the game build. A source port option is listed as coming soon.
 - The updater now always uses the single download, so future updates reach every install.
 - Legacy menu: Esc no longer flashes the new menu behind it, and it always reopens on screen.
+- The launcher's Settings window shows the classic settings screen again, and closing it no longer crashes.
+- Watching replays with WatchReplay.bat works again; it crashed on start in recent versions.
 
 ## Notes
 

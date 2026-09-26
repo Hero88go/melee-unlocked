@@ -536,16 +536,19 @@ void paint_play(HDC dc) {
   draw_text(dc, L"MELEE NTSC 1.02 DISC IMAGE", LR(CX, 32, CW, 18), g_font_label, C_FAINT,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER, S(1));
   round_rect(dc, LR(CX, 58, 380, 34), 7, C_FIELD, C_FIELD, C_FIELD_BORDER);
-  draw_text(dc, L"Graphics options are in Settings", LR(CX, 102, 180, 19), g_font_small,
-            C_DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-  // Game build: Legacy is the only build in this release. The source port is shown, disabled, so
-  // players can see it coming; it is painted only (no control), so it cannot be picked.
-  draw_text(dc, L"GAME BUILD", LR(398, 100, 64, 22), g_font_small, C_FAINT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-  round_rect(dc, LR(462, 100, 70, 22), 6, C_BTN, C_BTN, C_ACC_LO);
-  draw_text(dc, L"Legacy", LR(462, 100, 70, 22), g_font_small, C_TEXT, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-  round_rect(dc, LR(538, 100, 160, 22), 6, RGB(0x1A, 0x21, 0x32), RGB(0x1A, 0x21, 0x32), RGB(0x28, 0x31, 0x47));
-  draw_text(dc, L"Source port (coming soon)", LR(538, 100, 160, 22), g_font_small, RGB(0x5C, 0x68, 0x7E),
-            DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+  // GAME BUILD row, drawn exactly like 0.6.61's two segments (same label, rects, radius and
+  // colours). Legacy is the only build in this release: filled in PLAY's purple. The source port
+  // segment uses the disabled-button colours and is painted only, so it cannot be picked.
+  draw_text(dc, L"GAME BUILD", LR(CX, 102, 130, 19), g_font_label, C_FAINT, DT_LEFT | DT_SINGLELINE | DT_VCENTER, S(1));
+  {
+    const int left = CX + 96, total = CW - 96, gap = 8, w = (total - gap) / 2;
+    const RECT legacy = LR(left, 98, w, 28), source = LR(left + w + gap, 98, w, 28);
+    round_rect(dc, legacy, 7, C_ACC_HI, C_ACC_LO, NO_FILL);
+    draw_text(dc, L"Legacy", legacy, g_font_small, C_PLAY_TEXT, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    round_rect(dc, source, 7, RGB(0x1A, 0x21, 0x32), RGB(0x1A, 0x21, 0x32), RGB(0x28, 0x31, 0x47));
+    draw_text(dc, L"Source port (coming soon)", source, g_font_small, RGB(0x5C, 0x68, 0x7E),
+              DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+  }
 
   dot(dc, CX, 215, g_slippi_missing ? C_WARN : C_OK);   // centred on the first line of slippi_text_rect
   draw_text(dc, widen(g_slippi_line), slippi_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
