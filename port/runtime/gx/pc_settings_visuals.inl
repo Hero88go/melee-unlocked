@@ -295,6 +295,36 @@ static void settings_page_footer(SettingsState& state, int appearance) {
     if (ImGui::Button("Close",ImVec2(70,27))) state.open=false;
     return;
   }
+  if (appearance == 5) {
+    // Simple: the same rounded buttons as its category list (selected purple, resting navy),
+    // instead of Clean side's slanted chips.
+    const float top = p.y + s.y - 50.0f;
+    ImGui::SetCursorScreenPos(ImVec2(p.x + 8.0f, top));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.40f, 0.27f, 0.62f, 1));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.68f, 0.47f, 0.90f, 1));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.53f, 0.27f, 0.72f, 1));
+    if (ImGui::Button("B  Back##simple_back", ImVec2(143.0f, 38.0f))) settings_back_page(state, appearance);
+    ImGui::PopStyleColor();
+    ImGui::SameLine(0.0f, 8.0f);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.13f, 0.27f, 0.96f));
+    if (ImGui::Button("F1  Return##simple_return", ImVec2(143.0f, 38.0f))) state.open = false;
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar();
+    const float menu_x = p.x + s.x - 40;
+    ImGui::SetCursorScreenPos(ImVec2(menu_x, top));
+    if (settings_hit_button("##page_more", ImVec2(32, 32))) ImGui::OpenPopup("##settings_actions");
+    draw->AddText(ImVec2(menu_x + 6, top + 8), IM_COL32(240, 244, 252, 255), "...");
+    if (ImGui::BeginPopup("##settings_actions")) {
+      ImGui::TextDisabled(state.dirty ? "Saving changes..." : state.saved ? "Settings saved" : "Changes save automatically");
+      ImGui::Separator();
+      if (ImGui::MenuItem("Return to game")) state.open = false;
+      if (ImGui::MenuItem("Restart game")) state.confirm = SettingsState::Confirm::Restart;
+      if (ImGui::MenuItem("Quit game")) state.confirm = SettingsState::Confirm::Quit;
+      ImGui::EndPopup();
+    }
+    return;
+  }
   const bool gd = appearance == 2;
   const float top = gd ? p.y + s.y * (430.0f / 480.0f) : p.y+s.y-34;
   const float left = gd ? p.x+s.x*.13f : p.x+22;

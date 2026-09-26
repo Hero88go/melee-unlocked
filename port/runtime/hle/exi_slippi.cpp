@@ -132,7 +132,10 @@ void create_file() {
 void write_to_file(const uint8_t* payload, uint32_t length, const char* option) {
   // Every recording event passes through here, whether or not a replay file is open, which is
   // exactly the stream the Lab view draws from. It only reads the bytes.
-  lab::feed(payload, length);
+  // Lab view is hidden for now (see kLabViewAvailable in pc_settings.cpp), so it is not fed either:
+  // no event parsing and no silhouette loading while nothing can draw it.
+  constexpr bool kLabViewFeed = false;
+  if (kLabViewFeed) lab::feed(payload, length);
   if (std::strcmp(option, "create") == 0) create_file();
   if (!g_file) return;
   if (length > 0 && payload[0] == CMD_RECEIVE_POST_FRAME_UPDATE && length >= 8) {
