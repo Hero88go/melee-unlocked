@@ -2861,11 +2861,20 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   // Esc: closes the panel if it is open; otherwise opens or closes the Esc menu. While a rebind is
   // waiting for a button, Escape means "cancel that", which the capture itself watches for, so it
   // does nothing here then (closing the panel on the same key left the capture running).
+  // Esc: opens settings on the category screen. On a settings page it goes back to the category
+  // screen; on the category screen it asks to quit (Quit / Cancel), so Esc, Esc, Enter still exits
+  // the game the way the old Esc menu did. Esc on that prompt cancels it. The legacy menus and the
+  // launcher's settings window keep Esc = close.
   if (host::window_take_escape() && state.rebind_action < 0) {
-    if (state.open) state.open = false;
+    const int style = options.overlay_style;
+    const bool on_page = (style == 0 && state.clean_detail_open) || (style == 1 && state.dashboard_detail_open) ||
+                         (style == 2 && state.gd_detail_open) || (style == 3 && state.radial_detail_open) ||
+                         (style == 4 && state.wide_detail_open);
+    if (state.open && (state.legacy_presentation || style >= 5 || launcher_window)) state.open = false;
+    else if (state.open && on_page) settings_back_page(state, style);
+    else if (state.open) { state.open = false; state.menu_open = true; state.menu_quit = true; }
     else if (state.practice_open) { state.practice_open = false; state.practice_release_capture = true; }
     else if (state.menu_open) { state.menu_open = false; state.menu_quit = false; }
-    // Esc opens the full settings menu on its category page; quit and restart live in its "..." menu.
     else if (!state.fill_window) { state.open = true; reset_settings_home("Esc"); }
   }
   if (launcher_window && !state.open) {
@@ -5726,8 +5735,11 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       draw->AddText(ImVec2(p.x + 20, p.y + 144), IM_COL32(167, 162, 178, 255),
                     "ESC  BACK TO GAME     F1  SETTINGS");
     } else {
-      if (action("##confirm_quit", "QUIT", 0)) { state.menu_open = false; host::request_exit(0); }
-      if (action("##cancel_quit", "CANCEL", 1)) state.menu_quit = false;
+      const bool enter = ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
+      if (action("##confirm_quit", "QUIT", 0) || enter) { state.menu_open = false; host::request_exit(0); }
+      if (action("##cancel_quit", "CANCEL", 1)) { state.menu_open = false; state.menu_quit = false; }
+      draw->AddText(ImVec2(p.x + 20, p.y + 144), IM_COL32(167, 162, 178, 255),
+                    "QUIT MELEE UNLOCKED?     ENTER  QUIT     ESC  CANCEL");
     }
     ImGui::End();
   }
