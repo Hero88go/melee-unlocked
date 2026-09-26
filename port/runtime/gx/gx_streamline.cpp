@@ -16,6 +16,7 @@
 #include <sl.h>
 #include <sl_consts.h>
 #include <sl_dlss.h>
+#include <sl_dlss_d.h>
 #include <sl_dlss_g.h>
 #include <sl_reflex.h>
 #include <sl_pcl.h>
@@ -48,22 +49,27 @@ void jitter(uint32_t index, float* jx, float* jy) {
 #ifndef GX_STREAMLINE
 bool init(const std::wstring&) { host::log("dlss: built without the Streamline SDK"); return false; }
 void shutdown() {}
+void shutdown_for_process_exit() {}
 bool available() { return false; }
+bool ray_reconstruction_available() { return false; }
 long create_dxgi_factory2(uint32_t flags, const void* riid, void** out) { return CreateDXGIFactory2(flags, *(const IID*)riid, out); }
 long d3d12_create_device(void* adapter, int fl, const void* riid, void** out) { return D3D12CreateDevice((IUnknown*)adapter, (D3D_FEATURE_LEVEL)fl, *(const IID*)riid, out); }
 void set_device(ID3D12Device*) {}
 void* native_interface(void* proxy) { return proxy; }
 bool dlss_supported(IDXGIAdapter*) { return false; }
 bool dlss_optimal_size(DlssMode, uint32_t, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*) { return false; }
-bool dlss_set_options(DlssMode, uint32_t, uint32_t) { return false; }
+bool dlss_set_options(DlssMode, uint32_t, uint32_t, bool) { return false; }
 void new_frame(uint32_t) {}
 bool set_constants(const FrameConstants&) { return false; }
 bool evaluate(ID3D12GraphicsCommandList*, const EvaluateInputs&) { return false; }
+bool evaluate_ray_reconstruction(ID3D12GraphicsCommandList*, const RayReconstructionInputs&) { return false; }
 bool frame_generation_available() { return false; }
+void frame_generation_after_present() {}
 bool reflex_available() { return false; }
 uint32_t frame_generation_max_multiplier() { return 1; }
+bool frame_generation_capabilities_queried() { return false; }
 bool frame_generation_dynamic_supported() { return false; }
-void set_frame_generation(int) {}
+void set_frame_generation(int, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {}
 void set_reflex(int) {}
 float reflex_latency_ms() { return 0.0f; }
 ReflexBreakdown reflex_breakdown() { return {}; }
@@ -74,12 +80,14 @@ void log_frame_generation() {}
 
 namespace {
 HMODULE g_module = nullptr;
-bool g_ready = false, g_dlss_ok = false, g_fg_ok = false, g_reflex_ok = false, g_fg_on = false;
+bool g_ready = false, g_dlss_ok = false, g_fg_ok = false, g_reflex_ok = false,
+     g_rr_ok = false, g_fg_on = false;
 // Whether the Reflex plugin has been handed options at all (any mode, including Off) and can be
 // asked for a report. Separate from whether the low-latency algorithm is actually throttling
 // anything (ReflexOptions::mode): the PC Latency markers and the telemetry they produce run
 // regardless of that, so the latency reading works at Native too.
 bool g_reflex_ready = false;
+bool g_rr_evaluation_logged = false;
 sl::FrameToken* g_token = nullptr;
 sl::ViewportHandle g_viewport{0u};
 typedef HRESULT(WINAPI* PFunCreateDXGIFactory2)(UINT, REFIID, void**);
@@ -159,7 +167,14 @@ bool init(const std::wstring& exe_dir) {
   static std::wstring dir_copy;
   dir_copy = exe_dir;
   plugin_dirs[0] = dir_copy.c_str();
-  static const sl::Feature features[] = {sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
+  static const sl::Feature base_features[] = {
+      sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
+  static const sl::Feature features_with_rr[] = {
+      sl::kFeatureDLSS, sl::kFeatureDLSS_RR, sl::kFeatureDLSS_G,
+      sl::kFeatureReflex, sl::kFeaturePCL};
+  const bool have_rr_runtime =
+      GetFileAttributesW((exe_dir + L"\\sl.dlss_d.dll").c_str()) != INVALID_FILE_ATTRIBUTES &&
+      GetFileAttributesW((exe_dir + L"\\nvngx_dlssd.dll").c_str()) != INVALID_FILE_ATTRIBUTES;
   sl::Preferences pref{};
   pref.showConsole = false;
   pref.logLevel = sl::LogLevel::eDefault;
@@ -169,8 +184,10 @@ bool init(const std::wstring& exe_dir) {
   pref.pathToLogsAndData = logs.c_str();
   pref.logMessageCallback = log_callback;
   pref.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
-  pref.featuresToLoad = features;
-  pref.numFeaturesToLoad = (uint32_t)(sizeof features / sizeof features[0]);
+  pref.featuresToLoad = have_rr_runtime ? features_with_rr : base_features;
+  pref.numFeaturesToLoad = have_rr_runtime ?
+      (uint32_t)(sizeof features_with_rr / sizeof features_with_rr[0]) :
+      (uint32_t)(sizeof base_features / sizeof base_features[0]);
   pref.engine = sl::EngineType::eCustom;
   pref.engineVersion = "melee-port";
   pref.applicationId = 231313132;   // NVIDIA sample application id: valid for development builds of non-registered titles
@@ -180,13 +197,27 @@ bool init(const std::wstring& exe_dir) {
   if (res != sl::Result::eOk) { host::log("dlss: slInit failed (%d); DLSS unavailable", (int)res); return false; }
   g_ready = true;
   host::log("dlss: Streamline initialised (SDK %llu)", (unsigned long long)sl::kSDKVersion);
+  if (have_rr_runtime)
+    host::log("dlss-rr: signed plugin and NGX runtime found; waiting for a DXR input path");
+  else
+    host::log("dlss-rr: plugin/runtime not installed; Ray Reconstruction unavailable");
   return true;
 }
 
 void shutdown() {
   if (g_ready) { slShutdown(); g_ready = false; }
 }
+void shutdown_for_process_exit() {
+  // Repeated clean-ISO captures reached slShutdown() and then blocked inside
+  // sl.dlss's NGX unload after all GPU work and caches had finished. The backend
+  // is destroyed only as this process exits; leaving the signed interposer loaded
+  // lets Windows reclaim it without freezing Quit/Restart. Keep shutdown() for a
+  // future in-process renderer restart, where an SDK teardown is required.
+  g_ready = false;
+  g_dlss_ok = g_fg_ok = g_reflex_ok = g_rr_ok = g_fg_on = false;
+}
 bool available() { return g_ready && g_dlss_ok; }
+bool ray_reconstruction_available() { return g_ready && g_rr_ok; }
 
 long create_dxgi_factory2(uint32_t flags, const void* riid, void** out) {
   if (g_ready && g_create_factory2) return g_create_factory2(flags, *(const IID*)riid, out);
@@ -205,6 +236,10 @@ void set_device(ID3D12Device* device) {
   sl::FeatureRequirements fg_req{}, rx_req{};
   g_fg_ok = slGetFeatureRequirements(sl::kFeatureDLSS_G, fg_req) == sl::Result::eOk;
   g_reflex_ok = slGetFeatureRequirements(sl::kFeatureReflex, rx_req) == sl::Result::eOk;
+  sl::FeatureRequirements rr_req{};
+  const sl::Result rr_requirements = slGetFeatureRequirements(sl::kFeatureDLSS_RR, rr_req);
+  g_rr_ok = rr_requirements == sl::Result::eOk;
+  if (!g_rr_ok) host::log("dlss-rr: plugin did not initialize (%d)", (int)rr_requirements);
   host::log("dlss: %s", g_dlss_ok ? "available (off until selected under Upscaling in PC settings)" : "feature failed to initialise; native rendering only");
 }
 void* native_interface(void* proxy) {
@@ -236,6 +271,13 @@ bool dlss_supported(IDXGIAdapter* adapter) {
     host::log("dlss: frame generation %s (%d)", g_fg_ok ? "available" : "not available on this system", (int)fg);
   }
   if (g_reflex_ok) g_reflex_ok = slIsFeatureSupported(sl::kFeatureReflex, info) == sl::Result::eOk;
+  if (g_rr_ok) {
+    const sl::Result rr = slIsFeatureSupported(sl::kFeatureDLSS_RR, info);
+    g_rr_ok = rr == sl::Result::eOk;
+    host::log("dlss-rr: %s on this adapter (%d)%s",
+              g_rr_ok ? "plugin ready" : "not supported", (int)rr,
+              g_rr_ok ? "; traced inputs are still required" : "");
+  }
   return g_dlss_ok;
 }
 
@@ -250,11 +292,11 @@ bool dlss_optimal_size(DlssMode mode, uint32_t out_w, uint32_t out_h, uint32_t* 
   return true;
 }
 
-bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h) {
+bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h, bool color_is_hdr) {
   if (!available()) return false;
   sl::DLSSOptions o{};
   o.mode = to_sl(mode); o.outputWidth = out_w; o.outputHeight = out_h;
-  o.colorBuffersHDR = sl::Boolean::eFalse;
+  o.colorBuffersHDR = color_is_hdr ? sl::Boolean::eTrue : sl::Boolean::eFalse;
   o.useAutoExposure = sl::Boolean::eTrue;
   // The second-generation transformer L on every mode (Streamline 2.14, DLSS 310.9). Measured on the
   // same match frames at 1080p Quality: L 443, M 380, K 220 (Laplacian variance; native 3x is 405),
@@ -363,42 +405,82 @@ void update_reflex_stats() {
   if (nq) g_os_queue_ms = (float)(queue / nq / 1000.0);
   if (ng) g_gpu_render_ms = (float)(gpu / ng / 1000.0);
 }
-// What the hardware allows: numFramesToGenerateMax 1 means only a 2x multiplier is available (RTX
-// 40 series), higher means Multi Frame Generation (RTX 50 series, up to 4x = max 3). Queried once,
-// the first time frame generation is asked for, since it needs no active session to answer.
+// numFramesToGenerateMax is the number of inserted frames, so 5 means a 6x multiplier. Query once
+// on the presenting thread, even while generation is off, so settings can show hardware support
+// before a match starts.
 std::atomic<uint32_t> g_fg_max{1};
 std::atomic<bool> g_fg_dynamic_ok{false};
+std::atomic<int> g_fg_requested_mode{0};
 bool g_fg_queried = false;
+std::atomic<uint64_t> g_fg_presented_since_log{0};
+std::atomic<uint64_t> g_fg_samples_since_log{0};
+std::atomic<uint32_t> g_fg_status{0};
 void query_frame_generation_limits() {
   if (g_fg_queried || !frame_generation_available()) return;
-  g_fg_queried = true;
   sl::DLSSGState st{};
   if (slDLSSGGetState(g_viewport, st, nullptr) != sl::Result::eOk) return;
+  g_fg_queried = true;
   g_fg_max = std::max<uint32_t>(1, st.numFramesToGenerateMax);
   g_fg_dynamic_ok = st.bIsDynamicMFGSupported == sl::Boolean::eTrue;
   host::log("dlss: frame generation up to %ux%s", g_fg_max.load() + 1, g_fg_dynamic_ok.load() ? ", Dynamic available" : "");
+  // If a saved Dynamic setting was applied before the first state query, switch from the safe 2x
+  // fallback to Dynamic now that support is known. This runs after Present on the same thread.
+  if (g_fg_requested_mode.load() == 4 && g_fg_on && g_fg_dynamic_ok.load()) {
+    sl::DLSSGOptions o{};
+    o.mode = sl::DLSSGMode::eDynamic;
+    o.numFramesToGenerate = g_fg_max.load();
+    const sl::Result res = slDLSSGSetOptions(g_viewport, o);
+    host::log("dlss: frame generation Dynamic refresh (%d)", (int)res);
+  }
 }
-uint32_t frame_generation_max_multiplier() { query_frame_generation_limits(); return g_fg_max.load(); }
-bool frame_generation_dynamic_supported() { query_frame_generation_limits(); return g_fg_dynamic_ok.load(); }
-
-// mode: 0 off, 1 2x, 2 3x, 3 4x, 4 Dynamic (the driver picks the multiplier, up to what the hardware allows).
-void set_frame_generation(int mode) {
+uint32_t frame_generation_max_multiplier() { return g_fg_max.load(); }
+bool frame_generation_capabilities_queried() { return g_fg_queried; }
+bool frame_generation_dynamic_supported() { return g_fg_dynamic_ok.load(); }
+void frame_generation_after_present() {
   if (!frame_generation_available()) return;
-  query_frame_generation_limits();
+  if (!g_fg_queried) query_frame_generation_limits();
+  if (!g_fg_on) return;
+  // DLSS-G reports a count accumulated since GetState. Query on every Present so the result can
+  // be summed over a known number of rendered frames instead of mislabeling a single sample.
+  sl::DLSSGState st{};
+  if (slDLSSGGetState(g_viewport, st, nullptr) != sl::Result::eOk) return;
+  g_fg_presented_since_log.fetch_add(st.numFramesActuallyPresented, std::memory_order_relaxed);
+  g_fg_samples_since_log.fetch_add(1, std::memory_order_relaxed);
+  g_fg_status.store((uint32_t)st.status, std::memory_order_relaxed);
+}
+
+// mode: 0 off, 1–3 fixed 2x–4x, 4 Dynamic, 5 fixed 5x, 6 fixed 6x.
+void set_frame_generation(int mode, uint32_t render_w, uint32_t render_h, uint32_t output_w, uint32_t output_h,
+                          uint32_t backbuffer_count, uint32_t backbuffer_format, uint32_t motion_format, uint32_t depth_format) {
+  if (!frame_generation_available()) return;
   sl::DLSSGOptions o{};
   const bool dynamic = mode == 4 && g_fg_dynamic_ok.load();
+  const uint32_t fixed_frames = mode <= 3 ? (uint32_t)mode : mode == 5 ? 4u : mode == 6 ? 5u : 1u;
   o.mode = mode == 0 ? sl::DLSSGMode::eOff : dynamic ? sl::DLSSGMode::eDynamic : sl::DLSSGMode::eOn;
-  o.numFramesToGenerate = dynamic ? g_fg_max.load() : (uint32_t)std::clamp(mode, 1, (int)g_fg_max.load());
+  o.numFramesToGenerate = dynamic ? g_fg_max.load() : std::clamp(fixed_frames, 1u, g_fg_max.load());
+  // Streamline can infer these from DXGI, but explicitly passing the swap-chain and input sizes
+  // avoids its backbuffer-extent fallback on this manually managed, three-buffer swap chain.
+  o.numBackBuffers = backbuffer_count;
+  o.mvecDepthWidth = render_w;
+  o.mvecDepthHeight = render_h;
+  o.colorWidth = output_w;
+  o.colorHeight = output_h;
+  o.colorBufferFormat = backbuffer_format;
+  o.mvecBufferFormat = motion_format;
+  o.depthBufferFormat = depth_format;
   const sl::Result res = slDLSSGSetOptions(g_viewport, o);
   g_fg_on = mode != 0 && res == sl::Result::eOk;
-  static const char* names[] = {"off", "2x", "3x", "4x", "dynamic"};
-  host::log("dlss: frame generation %s (%d)", names[std::clamp(mode, 0, 4)], (int)res);
+  g_fg_requested_mode = mode;
+  static const char* names[] = {"off", "2x", "3x", "4x", "dynamic", "5x", "6x"};
+  host::log("dlss: frame generation %s (%d)", names[std::clamp(mode, 0, 6)], (int)res);
 }
 void log_frame_generation() {
   if (!g_fg_on) return;
-  sl::DLSSGState st{};
-  if (slDLSSGGetState(g_viewport, st, nullptr) != sl::Result::eOk) return;
-  host::log("dlss: frame generation status %u, %u frames presented per rendered frame", (unsigned)st.status, st.numFramesActuallyPresented);
+  const uint64_t presented = g_fg_presented_since_log.exchange(0, std::memory_order_relaxed);
+  const uint64_t samples = g_fg_samples_since_log.exchange(0, std::memory_order_relaxed);
+  host::log("dlss: frame generation status 0x%X, %llu presented frames across %llu rendered frames (%lld generated)",
+            g_fg_status.load(std::memory_order_relaxed), (unsigned long long)presented,
+            (unsigned long long)samples, (long long)presented - (long long)samples);
 }
 void pcl_marker(int marker) {
   if (!g_token || !g_reflex_ready) return;
@@ -424,18 +506,69 @@ bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in) {
   const sl::BaseStructure* inputs[] = {&g_viewport, &tags[0], &tags[1], &tags[2], &tags[3]};
   const uint32_t input_count = 5;
   if (g_fg_on) {
-    // Frame generation reads depth and motion vectors at Present, after this call.
+    // Frame generation reads depth and motion vectors at Present, after this call. The game image
+    // is composed into the full backbuffer, so there is no special backbuffer sub-rectangle.
     sl::ResourceTag fg_tags[] = {
         sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),
         sl::ResourceTag(&mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),
     };
-    slSetTagForFrame(*g_token, g_viewport, fg_tags, 2, list);
+    const sl::Result tag_res = slSetTagForFrame(*g_token, g_viewport, fg_tags, 2, list);
+    if (tag_res != sl::Result::eOk) host::log("dlss: Frame Generation input tags failed (%d)", (int)tag_res);
   }
   sl::Result res = slEvaluateFeature(sl::kFeatureDLSS, *g_token, inputs, input_count, list);
   if (res != sl::Result::eOk) {
     static int logged = 0;
     if (logged++ < 5) host::log("dlss: slEvaluateFeature failed (%d)", (int)res);
     return false;
+  }
+  return true;
+}
+
+bool evaluate_ray_reconstruction(ID3D12GraphicsCommandList* list, const RayReconstructionInputs& in) {
+  if (!ray_reconstruction_available() || !g_token || !list || !in.color_in || !in.depth || !in.mvec ||
+      !in.albedo || !in.specular_albedo || !in.normal_roughness || !in.color_out ||
+      !in.in_w || !in.in_h || !in.out_w || !in.out_h)
+    return false;
+  sl::DLSSDOptions options{};
+  options.mode = g_mode;
+  options.outputWidth = in.out_w;
+  options.outputHeight = in.out_h;
+  options.colorBuffersHDR = sl::Boolean::eTrue;
+  options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
+  sl::Result result = slDLSSDSetOptions(g_viewport, options);
+  if (result != sl::Result::eOk) {
+    host::log("dlss-rr: slDLSSDSetOptions failed (%d)", (int)result);
+    return false;
+  }
+  sl::Resource color(sl::ResourceType::eTex2d, in.color_in, in.color_state);
+  sl::Resource depth(sl::ResourceType::eTex2d, in.depth, in.depth_state);
+  sl::Resource mvec(sl::ResourceType::eTex2d, in.mvec, in.mvec_state);
+  sl::Resource albedo(sl::ResourceType::eTex2d, in.albedo, in.albedo_state);
+  sl::Resource specular(sl::ResourceType::eTex2d, in.specular_albedo, in.specular_albedo_state);
+  sl::Resource normal(sl::ResourceType::eTex2d, in.normal_roughness, in.normal_roughness_state);
+  sl::Resource output(sl::ResourceType::eTex2d, in.color_out, in.out_state);
+  sl::Extent render_extent{in.in_top, in.in_left, in.in_w, in.in_h};
+  sl::Extent output_extent{0, 0, in.out_w, in.out_h};
+  sl::ResourceTag tags[] = {
+      sl::ResourceTag(&color, sl::kBufferTypeScalingInputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &render_extent),
+      sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilEvaluate, &render_extent),
+      sl::ResourceTag(&mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilEvaluate, &render_extent),
+      sl::ResourceTag(&albedo, sl::kBufferTypeAlbedo, sl::ResourceLifecycle::eValidUntilEvaluate, &render_extent),
+      sl::ResourceTag(&specular, sl::kBufferTypeSpecularAlbedo, sl::ResourceLifecycle::eValidUntilEvaluate, &render_extent),
+      sl::ResourceTag(&normal, sl::kBufferTypeNormalRoughness, sl::ResourceLifecycle::eValidUntilEvaluate, &render_extent),
+      sl::ResourceTag(&output, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &output_extent),
+  };
+  const sl::BaseStructure* inputs[] = {&g_viewport, &tags[0], &tags[1], &tags[2], &tags[3],
+                                       &tags[4], &tags[5], &tags[6]};
+  result = slEvaluateFeature(sl::kFeatureDLSS_RR, *g_token, inputs, (uint32_t)std::size(inputs), list);
+  if (result != sl::Result::eOk) {
+    static int logged = 0;
+    if (logged++ < 5) host::log("dlss-rr: slEvaluateFeature failed (%d)", (int)result);
+    return false;
+  }
+  if (!g_rr_evaluation_logged) {
+    host::log("dlss-rr: path-traced HDR frame accepted with depth, motion, diffuse/specular albedo, and packed normal/roughness guides");
+    g_rr_evaluation_logged = true;
   }
   return true;
 }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <string>
+#include <array>
 #include <vector>
 #include "gx_core.h"
 #ifdef GX_DLSS5
@@ -12,6 +13,7 @@ namespace gx {
 // Video memory the game is using and the adapter's own installed size, in GB (D3D12 only; false
 // until the renderer has measured it). Refreshed about twice a second.
 bool vram_usage(float* used_gb, float* total_gb);
+bool dxr_path_tracing_available();
 // GPU-measured cost of the DLAA/DLSS pass and the DLSS 5 pass, in milliseconds; 0 for a pass that
 // has not run since launch. See D3D12Backend::read_gpu_timers.
 void gpu_pass_cost(float* dlaa_ms, float* neural_ms);
@@ -38,6 +40,7 @@ struct D3D12Options {
   double fps_cap = 60; // -1 follows the active monitor
   bool fullscreen = false;
   bool exclusive_fullscreen = false;
+  bool fod_reflections = true;  // keep Fountain of Dreams water/reflection effects on by default
   // DLSS Frame Generation (RTX 40+): needs an Upscaling mode; adds latency. 0 off, 1 2x, 2 3x, 3 4x
   // (Multi Frame Generation, RTX 50 only), 4 Dynamic (the driver picks the multiplier).
   int frame_generation_mode = 0;
@@ -57,7 +60,20 @@ struct D3D12Options {
   bool show_fps = false, show_ping = true;   // small top-left readouts: presented frame rate; netplay ping while online
   // The "Settings: F1" reminder in the corner. On for a new player, off for anyone who knows the
   // key and does not want it in a recording.
-  bool settings_hint = true;
+  bool settings_hint = false;   // the corner reminder is off by default; Overlays can turn it on
+  bool legacy_menu_enabled = false; // F11 and launcher Settings use the selected legacy presentation
+  int legacy_menu_style = 7; // 7: Legacy Old (v0.6.6), 6: Legacy New
+  bool settings_menu_sounds = false;
+  bool settings_custom_color_enabled = false;
+  std::array<float, 3> settings_custom_color{0.96f, 0.15f, 0.52f};
+  int overlay_style = 0;          // 0: Clean side, 1: Icon tiles, 2: GD Melee, 3: Radial, 4: Wide tabs, 5: Simple, 6: Classic (legacy)
+  std::array<int, 7> overlay_palettes{}; // independent palette (0 classic, 1-3 alternate) for each appearance
+  int settings_transparency = 0;  // percent of the settings layer's alpha removed, 0..65
+  int stock_hud_scale = 100;       // percent of the original stock HUD root scale
+  int damage_hud_scale = 100;      // percent of the original damage HUD root scale
+  bool show_player_nicknames = false; // screen-space names anchored to Melee's player tags
+  // The small "Matchmaking: Tab" reminder. Matchmaking remains available when it is hidden.
+  bool matchmaking_hint = true;
   bool input_overlay = false;     // on-screen controller display, for streaming
   int input_overlay_ports = 1;    // bitmask of the controller ports it shows (bit 0 = port 1)
   bool input_overlay_values = false;
@@ -119,11 +135,17 @@ struct D3D12Options {
   // players may differ. dump_textures writes what the game drew, with the names a pack must use.
   bool custom_textures = false;
   bool dump_textures = false;
+  // Looping host-decoded MP4s on the CSS and stage-select backdrop textures. The game still draws
+  // the menus and owns their timing; only the pixels sampled by the learned backdrop are replaced.
+  bool video_backgrounds = true;
   // Decode every replacement when the game starts rather than the first time each texture appears,
   // as Dolphin's "Prefetch Custom Textures" does. A large pack costs about half a minute once here
   // instead of a stutter each time a new texture comes on screen.
   bool prefetch_textures = true;
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
+  float screen_space_ao = 0.0f; // 0..1 depth-based contact shading; display-only, not ray traced
+  bool path_tracing = false;       // D3D12 DXR diffuse indirect bounce, display-only and off by default
+  bool ray_reconstruction = false; // DLSS-RR denoising of the path-traced HDR input; needs NVIDIA runtime
   // Display adjustment in the present pass, over the whole picture including the HUD. 1.0 is neutral
   // (untouched) for all three; the shader skips the work entirely when nobody has moved them.
   float brightness = 1.0f, contrast = 1.0f, vibrance = 1.0f;

@@ -263,7 +263,7 @@ Pump handle_frames(HANDLE pipe, Reader& reader) {
       g_has_join.store(true, std::memory_order_release);
       copy_to_clipboard(mine);
       host::log("discord: join invite accepted for %s", secret.c_str());
-      set_status(mine.empty() ? "Joining " + secret + ". Open Online > Direct: the code is waiting there."
+      set_status(mine.empty() ? "Join received from " + secret + ". Open Online > Direct to use it."
                               : "Joining " + secret + ". Open Online > Direct; your code " + mine + " is on the clipboard for them.");
     }
   }

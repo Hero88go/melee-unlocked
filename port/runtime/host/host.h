@@ -1,6 +1,7 @@
 // Host services used by the recompiled guest and the HLE layer.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -47,12 +48,16 @@ void wr32(uint32_t addr, uint32_t v);
 void wr16(uint32_t addr, uint16_t v);
 void wr8(uint32_t addr, uint8_t v);
 uint8_t* ptr(uint32_t addr, uint32_t bytes = 1); // checks the complete RAM span
+void mark_ram_write(uint32_t addr, uint32_t bytes); // direct HLE/DMA write invalidation for renderer snapshots
 std::string cstr(uint32_t addr, size_t max = 256);
 
 // ---- disc ----
 struct DiscFile { uint32_t offset, size; };
 bool disc_open(const std::string& path);
 bool disc_read(uint32_t offset, void* dst, uint32_t size);
+// File-relative read used by DVDFileInfo calls. Cosmetic replacements are resolved by the file's
+// original FST start plus this relative offset; absolute disc reads always use disc_read above.
+bool disc_read_file(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, uint32_t size);
 uint32_t disc_fst_offset();
 uint32_t disc_fst_size();
 uint32_t disc_fst_max_size();
@@ -79,6 +84,10 @@ void request_exit(int code);
 void request_restart();
 int exit_code();
 uint32_t retrace_count();
+// Frame id read by the optional sampling profiler. It is atomic because the
+// profiler reads it from its sampling thread while the simulation advances it.
+uint32_t profiler_frame_id();
+const std::vector<uint32_t>& slow_sim_frames();
 
 // ---- simulation-thread cost accounting (per retrace; logged when a frame exceeds 20 ms) ----
 enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, SIM_OBSERVE, SIM_RECORD, SIM_COST_COUNT };
@@ -119,6 +128,8 @@ void input_poll(PadState out[4]);
 void input_last_pads(PadState out[4]);
 // GameCube controller adapter (WUP-028 over WinUSB): fills plugged ports, returns their mask.
 uint32_t gcadapter_poll(PadState out[4]);
+// Measured incoming USB reports per second, shared by the four adapter sockets; zero if stale.
+double gcadapter_poll_rate_hz();
 void gcadapter_rumble(int port, bool on);
 // Rumble for an IN-GAME port, delivered to whichever adapter socket the port assignment routes to
 // that port (or nowhere, for a device without a motor). The game names ports, not sockets: a
@@ -126,13 +137,15 @@ void gcadapter_rumble(int port, bool on);
 // because port 2's motor command went straight to socket 2.
 // The player's own switch for controller rumble (Controls tab), on by default. The game's rumble
 // option is not reachable in Slippi's online menus, so this is the only way to turn it off there.
-extern bool g_rumble_enabled;
+extern std::atomic<bool> g_rumble_enabled;
 // Background input (Game tab), on by default. On: controllers keep playing while another window has
 // focus, as they always have, and the keyboard is read then too. Off: every port reads neutral
 // until the game window has focus again, as in Dolphin with Background Input unticked.
 extern bool g_background_input;
 void input_rumble(int game_port, bool on);
-// Rumble for the local netplay player: every adapter socket that currently has a controller in it.
+// Immediately clear any motors that were active when the Controls switch is turned off.
+void input_stop_all_rumble();
+// Rumble for the local netplay player through the first assigned rumble-capable input source.
 void input_rumble_local(bool on);
 // Forget a port's stored neutral so the next report re-establishes it (-1 for every port). The game
 // asks for this through PADRecalibrate.

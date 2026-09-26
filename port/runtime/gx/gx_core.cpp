@@ -2,7 +2,11 @@
 // GX command processor: FIFO -> register state -> captured frames.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gx_core.h"
+#include "pc_settings_shared.h"
 #include "host.h"
+#include "slippi_online.h"
+#include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <unordered_map>
@@ -15,6 +19,7 @@ BPMemory g_bp;
 CPMemory g_cp;
 XFMemory g_xf;
 uint8_t g_tmem[1024 * 1024];
+uint64_t g_tmem_generation = 1;
 uint32_t g_bp_mask = 0xFFFFFF;
 int32_t g_tev_colors[4][4], g_tev_kcolors[4][4];
 Backend* g_backend = nullptr;
@@ -22,6 +27,76 @@ Frame g_frame;
 TextureSnapshotCache g_texture_snapshots;
 uint64_t g_frame_sequence = 0;
 bool g_discontinuity = false;   // simulation thread only, like the rest of this file's state
+std::atomic<int> g_stock_hud_scale{100}, g_damage_hud_scale{100};
+std::atomic<bool> g_pal_stock_hud{false};
+
+bool guest_object(uint32_t address, uint32_t bytes) {
+  return address >= 0x80000000u && address <= 0x81800000u - bytes;
+}
+float guest_float(uint32_t address) {
+  const uint32_t bits = host::rd32(address);
+  float value;
+  std::memcpy(&value, &bits, sizeof value);
+  return value;
+}
+void write_guest_float(uint32_t address, float value) {
+  uint32_t bits;
+  std::memcpy(&bits, &value, sizeof bits);
+  host::wr32(address, bits);
+}
+struct HudRootScale { uint32_t root = 0; float base_x = 1, base_y = 1; };
+std::array<HudRootScale, 4> g_stock_roots{}, g_damage_roots{};
+
+void scale_hud_root(uint32_t gobj, int percent, HudRootScale& cached) {
+  if (!guest_object(gobj, 0x2C)) { cached = {}; return; }
+  const uint32_t root = host::rd32(gobj + 0x28);
+  if (!guest_object(root, 0x44)) { cached = {}; return; }
+  if (cached.root != root) {
+    cached = {root, guest_float(root + 0x2C), guest_float(root + 0x30)};
+    if (!std::isfinite(cached.base_x) || !std::isfinite(cached.base_y) ||
+        cached.base_x <= 0.0f || cached.base_y <= 0.0f) { cached = {}; return; }
+  }
+  const float factor = std::clamp(percent, 75, 175) / 100.0f;
+  const float x = cached.base_x * factor, y = cached.base_y * factor;
+  if (guest_float(root + 0x2C) == x && guest_float(root + 0x30) == y) return;
+  write_guest_float(root + 0x2C, x);
+  write_guest_float(root + 0x30, y);
+  host::wr32(root + 0x14, host::rd32(root + 0x14) | (1u << 6)); // JOBJ_MTX_DIRTY
+}
+
+void capture_match_hud(Frame& frame) {
+  if (!frame_in_match(frame)) { g_stock_roots = {}; g_damage_roots = {}; return; }
+  frame.player_names = slippi::online::player_names_for_overlay();
+  for (int slot = 0; slot < 4; ++slot) {
+    auto& out = frame.hud_players[slot];
+    const uint32_t status = 0x804A10C8u + slot * 0x64u; // HudIndex.players[slot]
+    const uint32_t stock = 0x804A1378u + 8u + slot * 0x50u;
+    const uint32_t damage_gobj = host::rd32(status);
+    const uint32_t stock_gobj = host::rd32(stock);
+    const int damage = (int16_t)host::rd16(status + 0x0A);
+    const int stocks = (int32_t)host::rd32(stock + 0x4C);
+    out.present = guest_object(damage_gobj, 0x2C) && guest_object(stock_gobj, 0x2C) &&
+                  damage >= 0 && damage <= 999 && stocks >= 0 && stocks <= 99;
+    if (out.present) { out.damage = damage; out.stocks = stocks; }
+    const uint32_t tag_gobj = host::rd32(0x804A1EE0u + slot * 4u);
+    if (guest_object(tag_gobj, 0x2C)) {
+      const uint32_t tag_root = host::rd32(tag_gobj + 0x28);
+      if (guest_object(tag_root, 0x44)) {
+        out.tag_x = guest_float(tag_root + 0x38);
+        out.tag_y = -guest_float(tag_root + 0x3C);
+        const uint32_t child = host::rd32(tag_root + 0x10);
+        out.tag_visible = guest_object(child, 0x18) && !(host::rd32(child + 0x14) & 0x10) &&
+                          std::isfinite(out.tag_x) && std::isfinite(out.tag_y) &&
+                          out.tag_x >= 0 && out.tag_x <= 640 && out.tag_y >= 0 && out.tag_y <= 480;
+      }
+    }
+    if (out.present) {
+      if (!g_pal_stock_hud.load(std::memory_order_relaxed))
+        scale_hud_root(stock_gobj, g_stock_hud_scale.load(std::memory_order_relaxed), g_stock_roots[slot]);
+      scale_hud_root(damage_gobj, g_damage_hud_scale.load(std::memory_order_relaxed), g_damage_roots[slot]);
+    }
+  }
+}
 std::vector<uint8_t> g_buf;
 size_t g_buf_pos = 0;   // parsed prefix of g_buf
 // Bytes the pending (incomplete) command at g_buf_pos needs before it can parse. The game writes the
@@ -30,6 +105,7 @@ size_t g_parse_need = 0;
 inline size_t incomplete(size_t need) { g_parse_need = need; return 0; }
 // Draw identity bookkeeping (reset per frame).
 uint32_t g_dl_addr = 0, g_dl_draw_ordinal = 0, g_dl_call_ordinal = 0;
+bool g_merge_next_primitive = false;
 std::unordered_map<uint32_t, uint32_t> g_dl_calls;        // display list address -> calls this frame
 std::unordered_map<uint64_t, uint32_t> g_immediate_draws;  // (tex0, count, prim) -> ordinal this frame
 uint64_t g_commands = 0, g_draws = 0, g_vertices = 0;
@@ -237,18 +313,39 @@ void snapshot_textures(DrawCall& dc) {
     if (offset >= ppc::RAM_SIZE || total > ppc::RAM_SIZE - offset ||
         t.tlut_addr > sizeof g_tmem || palette_bytes > sizeof g_tmem - t.tlut_addr)
       host::die("GX texture range invalid: %08X+%X, palette %X+%X", t.addr, total, t.tlut_addr, palette_bytes);
-    t.data = g_texture_snapshots.capture(host::ram + offset, total, g_tmem + t.tlut_addr, palette_bytes);
+    const uint64_t source_version = ppc::watch_ram_range(offset, total);
+    t.data = g_texture_snapshots.capture(host::ram + offset, total, g_tmem + t.tlut_addr,
+                                         palette_bytes, source_version,
+                                         palette_bytes ? g_tmem_generation : 0);
   }
 }
 
 void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t components) {
   host::SimCostScope record_cost(host::SIM_RECORD);
+  const bool line = primitive == 0xA8 || primitive == 0xB0;
+  if (g_merge_next_primitive && !g_frame.commands.empty() &&
+      g_frame.commands.back().kind == FrameCommand::Draw) {
+    DrawCall& previous = g_frame.draws[g_frame.commands.back().index];
+    const bool previous_line = previous.primitive == 0xA8 || previous.primitive == 0xB0;
+    if (line == previous_line && previous.first_vertex + previous.vertex_count == first &&
+        previous.components == components &&
+        previous.first_segment + previous.segment_count == g_frame.segments.size()) {
+      g_frame.segments.push_back({first, count, primitive});
+      previous.vertex_count += count;
+      ++previous.segment_count;
+      ++g_draws;
+      g_vertices += count;
+      return;
+    }
+  }
   // Built on the stack (hot in cache), then moved in: filling the vector element directly measured
   // worse, because each field write lands in cold memory instead of one sequential copy.
   DrawCall dc{DrawCall::SkipInit{}};
   dc.primitive = primitive;
   dc.first_vertex = first;
   dc.vertex_count = count;
+  dc.first_segment = (uint32_t)g_frame.segments.size();
+  dc.segment_count = 1;
   dc.components = components;
   dc.bp = g_bp;
   std::memcpy(dc.posMatrices, g_xf.posMatrices, sizeof dc.posMatrices);
@@ -279,6 +376,7 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
     dc.skinned = observed_skinned();
     dc.authored_pose = capture_authored_pose(); }
   g_frame.draws.push_back(std::move(dc));
+  g_frame.segments.push_back({first, count, primitive});
   g_frame.commands.push_back({FrameCommand::Draw, (uint32_t)g_frame.draws.size() - 1});
   ++g_draws;
   g_vertices += count;
@@ -312,7 +410,10 @@ void bp_write(uint32_t value) {
       uint32_t tmem_addr = (masked & 0x3FF) << 9;
       uint32_t count = (masked & 0x1FFC00) >> 5;
       uint32_t src = (g_bp.reg[BP_LOADTLUT0] << 5) & 0x01FFFFFF;
-      if (tmem_addr + count <= sizeof g_tmem) std::memcpy(g_tmem + tmem_addr, host::ptr(0x80000000u | src, count), count);
+      if (tmem_addr + count <= sizeof g_tmem) {
+        std::memcpy(g_tmem + tmem_addr, host::ptr(0x80000000u | src, count), count);
+        ++g_tmem_generation;
+      }
       break;
     }
     case BP_TRIGGER_EFB_COPY: {
@@ -344,6 +445,13 @@ void bp_write(uint32_t value) {
         g_frame.sequence = ++g_frame_sequence;
         g_frame.scene_major = host::rd8(0x80479D30);
         g_frame.scene_minor = host::rd8(0x80479D33);
+        capture_match_hud(g_frame);
+        const uint8_t options_menu = host::rd8(0x804A04F0);
+        const uint16_t options_selection = host::rd16(0x804A04F2);
+        const uint32_t options_buttons = host::rd32(0x804A04FC);
+        gx::settings_guest_options_frame(options_menu, options_selection, options_buttons);
+        if (options_menu == 4 && options_selection == 3 && (options_buttons & 0x10))
+          host::wr8(0x804A0501, 0); // no guest submenu owns the PC Settings row
         {
           static uint16_t last_scene = 0xFFFF;
           const uint16_t scene = (uint16_t)(g_frame.scene_major << 8 | g_frame.scene_minor);
@@ -388,11 +496,18 @@ void run_display_list(uint32_t addr, uint32_t size) {
   uint32_t saved_addr = g_dl_addr, saved_draw = g_dl_draw_ordinal, saved_call = g_dl_call_ordinal;
   g_dl_addr = addr; g_dl_draw_ordinal = 0; g_dl_call_ordinal = g_dl_calls[addr]++;
   size_t used = 0;
+  bool previous_primitive = false;
+  const bool saved_merge = g_merge_next_primitive;
   while (used < size) {
+    const uint8_t op = p[used];
+    const bool primitive = op >= 0x80 && op < 0xC0 && used + 3 <= size && be16(p + used + 1) != 0;
+    g_merge_next_primitive = previous_primitive && primitive;
     size_t n = parse_command(p + used, size - used);
     if (!n) break;
     used += n;
+    previous_primitive = primitive;
   }
+  g_merge_next_primitive = saved_merge;
   g_dl_addr = saved_addr; g_dl_draw_ordinal = saved_draw; g_dl_call_ordinal = saved_call;
 }
 
@@ -442,6 +557,12 @@ size_t parse_command(const uint8_t* d, size_t len) {
 
 void mark_discontinuity() { g_discontinuity = true; }
 
+void set_hud_scales(int stocks_percent, int damage_percent, bool pal_stocks) {
+  g_stock_hud_scale.store(stocks_percent, std::memory_order_relaxed);
+  g_damage_hud_scale.store(damage_percent, std::memory_order_relaxed);
+  g_pal_stock_hud.store(pal_stocks, std::memory_order_relaxed);
+}
+
 void init(Backend* backend) {
   g_backend = backend;
   std::memset(&g_bp, 0, sizeof g_bp);
@@ -449,6 +570,7 @@ void init(Backend* backend) {
   std::memset(&g_xf, 0, sizeof g_xf);
   std::memset(g_tmem, 0, sizeof g_tmem);
   g_frame.clear();
+  g_frame.reserve_gameplay_capacity();
 }
 
 void write_fifo(uint32_t value, int bytes) {

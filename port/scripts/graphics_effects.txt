@@ -1,0 +1,46 @@
+# Real project-effects fixture: Fox and Luigi on Battlefield.
+# P1 fires lasers, uses Illusion, Reflector and Fire Fox; both players then shield.
+300 B
+310
+380 B
+390
+460 sy=-127
+466
+500 A
+510
+580 A
+590
+700 p=2
+1000 sx=61 sy=127
+1000 p=2 sy=127
+1017 p=2
+1040 p=2 A
+1050 p=2
+1040 sx=-127 sy=-70
+1060 sx=127
+1067
+1100 A
+1110
+1160 START
+1170
+1360 sy=100
+1365
+1390 A
+1400
+# Offline fixtures have no Slippi frame-one callback, so gameplay inputs stay on the absolute
+# retrace clock. The stage appears at about retrace 1510 on the deterministic test card.
+1630 B
+1635
+1710 B
+1715
+1750 sx=127 B
+1755
+1830 sy=-127 B
+1835
+1910 sy=127 B
+1915
+2110 R
+2150
+2230 p=2 R
+2270 p=2
+2330

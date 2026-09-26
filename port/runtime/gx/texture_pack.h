@@ -22,6 +22,17 @@ struct Replacement {
   uint64_t bytes() const { return pixels.size(); }
 };
 
+struct CosmeticCompanion {
+  std::string kind;
+  std::string target_path;
+  std::string path;
+};
+
+// Installs the CSP/stock PNGs from the immutable cosmetic launch snapshot. These replacements are
+// independent of the user's Dolphin texture-pack toggle and are removed by Restore Vanilla on the
+// next launch. Unknown or ambiguous native identities are deliberately left vanilla.
+void set_cosmetic_companions(std::vector<CosmeticCompanion> companions);
+
 // Turns pack loading on or off. With `enabled` false this returns immediately and touches no files.
 // Returns true when the state changed, meaning the caller must drop textures it already uploaded so
 // they are rebuilt with (or without) their replacements.
@@ -36,6 +47,9 @@ bool ready(const std::string& base);
 void request(const std::string& base);
 bool enabled();
 bool dumping();
+// True when the launch snapshot contains at least one CSP or stock override. Backends use this to
+// enter the replacement path even when the optional general-purpose texture-pack toggle is off.
+bool cosmetics_enabled();
 
 // Dolphin's base name for a texture, from HiresTextures.cpp GenBaseName:
 //   tex1_<w>x<h>[_m]_<tex_hash>[_<tlut_hash>]_<format>

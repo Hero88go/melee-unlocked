@@ -15,6 +15,13 @@ int main() {
   image[80] = 17; // change a later mip without changing level zero
   auto third = cache.capture(image.data(), image.size(), palette.data(), palette.size());
   check(first != second && second != third, "different palette or mip was reused");
+  std::vector<uint8_t> versioned(4096, 3);
+  auto stable = cache.capture(versioned.data(), versioned.size(), nullptr, 0, 10, 0);
+  check(cache.capture(versioned.data(), versioned.size(), nullptr, 0, 10, 0) == stable,
+        "unchanged RAM generation did not reuse the snapshot");
+  versioned[2048] = 4;
+  check(cache.capture(versioned.data(), versioned.size(), nullptr, 0, 11, 0) != stable,
+        "changed RAM generation did not revalidate source bytes");
   std::vector<uint8_t> red, green;
   gx::decode_texture(first->image.data(), 8, 4, 9, first->palette.data(), 1, red);
   gx::decode_texture(second->image.data(), 8, 4, 9, second->palette.data(), 1, green);

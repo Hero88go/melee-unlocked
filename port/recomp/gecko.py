@@ -20,7 +20,13 @@ BOOTLOADER_BASE = 0x800028B8   # codehandler.bin length (4288) - 8, per Gecko::I
 
 # Codes the port compiles in but lets the player switch at run time (PC settings). Their table
 # entries go last in the GCT so every other cave keeps its address whether they are on or off.
-RUNTIME_OPTIONAL = {"Optional: Widescreen 16:9": "widescreen"}
+RUNTIME_OPTIONAL = {
+    "Optional: Widescreen 16:9": "widescreen",
+    # The normal Sys file labels this as Recommended while the playback Sys file labels it
+    # Optional; both names describe the same code and are kept compatible here.
+    "Recommended: Lagless FoD": "lagless_fod",
+    "Optional: Lagless FoD": "lagless_fod",
+}
 
 # Codes the port adds to the table itself (they are not in Slippi's code list). Each is always in
 # the table, at the end of the part that is never cut, so its cave and data sit in RAM at a fixed

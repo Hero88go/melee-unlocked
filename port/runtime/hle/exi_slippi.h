@@ -25,6 +25,7 @@ const std::string& last_replay_path();   // the .slp most recently written (for 
 // command line / settings before the game loads the code table.
 void request_widescreen(bool on);
 bool widescreen();
+void request_fod_reflections(bool on);
 void poll_options();
 
 }  // namespace slippi

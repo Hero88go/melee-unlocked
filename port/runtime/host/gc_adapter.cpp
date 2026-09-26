@@ -37,6 +37,7 @@ int g_iface = 0;
 uint8_t g_ep_in = 0x81, g_ep_out = 0x02;
 std::thread g_thread;
 std::atomic<bool> g_running{false};
+std::atomic<double> g_poll_rate_hz{0.0};
 std::mutex g_mutex;
 uint8_t g_report[37] = {};
 bool g_have_report = false;
@@ -71,18 +72,52 @@ void reader_thread() {
   auto send_start = [&] {
     uint8_t start = 0x13;
     int wrote = 0;
-    const int rc = libusb_interrupt_transfer(g_dev, g_ep_out, &start, 1, &wrote, 100);
-    if (rc != 0) log("gc adapter: start command failed (%s)", libusb_error_name(rc));
+    int rc = libusb_interrupt_transfer(g_dev, g_ep_out, &start, 1, &wrote, 100);
+    if (rc == LIBUSB_ERROR_PIPE) {
+      libusb_clear_halt(g_dev, g_ep_out);
+      wrote = 0;
+      rc = libusb_interrupt_transfer(g_dev, g_ep_out, &start, 1, &wrote, 100);
+    }
+    if (rc != 0 || wrote != 1) log("gc adapter: start command failed (%s, wrote %d)", libusb_error_name(rc), wrote);
   };
   send_start();
+  // Some Wii U-mode adapters need the all-off rumble command after report startup.
+  uint8_t rumble_off[5] = {0x11, 0, 0, 0, 0};
+  int rumble_wrote = 0;
+  const int rumble_rc = libusb_interrupt_transfer(g_dev, g_ep_out, rumble_off, sizeof rumble_off, &rumble_wrote, 100);
+  if (rumble_rc != 0 || rumble_wrote != sizeof rumble_off)
+    log("gc adapter: initial rumble reset failed (%s, wrote %d)", libusb_error_name(rumble_rc), rumble_wrote);
   int failures = 0, silent = 0;
+  auto poll_window_start = std::chrono::steady_clock::now();
+  auto last_report = poll_window_start;
+  unsigned reports_in_window = 0;
   while (g_running.load()) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_report >= std::chrono::milliseconds(500)) {
+      g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
+      reports_in_window = 0;
+      poll_window_start = now;
+      std::lock_guard<std::mutex> lk(g_mutex);
+      g_have_report = false;
+    }
     uint8_t buf[37];
     int got = 0;
     const int rc = libusb_interrupt_transfer(g_dev, g_ep_in, buf, (int)sizeof buf, &got, 100);
     if (rc == 0) {
       failures = 0; silent = 0;
-      if (got == 37 && buf[0] == 0x21) { std::lock_guard<std::mutex> lk(g_mutex); std::memcpy(g_report, buf, 37); g_have_report = true; }
+      if (got == 37 && buf[0] == 0x21) {
+        const auto received = std::chrono::steady_clock::now();
+        last_report = received;
+        if (++reports_in_window == 50) {
+          const double seconds = std::chrono::duration<double>(received - poll_window_start).count();
+          g_poll_rate_hz.store(seconds > 0.0 ? 50.0 / seconds : 0.0, std::memory_order_relaxed);
+          poll_window_start = received;
+          reports_in_window = 0;
+        }
+        std::lock_guard<std::mutex> lk(g_mutex);
+        std::memcpy(g_report, buf, 37);
+        g_have_report = true;
+      }
     } else {
       if (rc == LIBUSB_ERROR_TIMEOUT) {
         // A timeout used to loop forever without counting, so an adapter that was connected but not
@@ -105,12 +140,14 @@ void reader_thread() {
       libusb_interrupt_transfer(g_dev, g_ep_out, cmd, (int)sizeof cmd, &wrote, 100);
     }
   }
+  g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
   g_running.store(false);
 }
 
 void close_adapter() {
   g_running.store(false);
   if (g_thread.joinable()) g_thread.join();
+  g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
   if (g_dev) {
     if (g_claimed) libusb_release_interface(g_dev, g_iface);
     libusb_close(g_dev);
@@ -175,6 +212,10 @@ bool open_adapter() {
     }
     return false;
   }
+  // The request is optional: Nintendo adapters may reject it while still working normally.
+  const int protocol = libusb_control_transfer(g_dev, 0x21, 11, 0x0001, 0, nullptr, 0, 1000);
+  if (protocol < 0 && protocol != LIBUSB_ERROR_PIPE)
+    log("gc adapter: report protocol request returned %s", libusb_error_name(protocol));
   rc = libusb_claim_interface(g_dev, g_iface);
   if (rc != 0) {
     if (!g_logged_missing) {
@@ -185,20 +226,21 @@ bool open_adapter() {
     return false;
   }
   g_claimed = true;
-  // A run that exited without closing the adapter (a crash) leaves it mid-stream: the next open
-  // succeeds but the read pipe delivers nothing, so the adapter looks absent until it is physically
-  // unplugged. Clearing both pipes does by software what a replug was doing by hand.
-  libusb_clear_halt(g_dev, g_ep_in);
-  libusb_clear_halt(g_dev, g_ep_out);
+  // Leave a successfully opened pipe alone. The timeout path recovers a genuinely silent pipe.
   log("gc adapter: opened through libusb (interface %d, endpoints in 0x%02X out 0x%02X)", g_iface, g_ep_in, g_ep_out);
   g_logged_missing = false;
   g_logged_restart = false;
+  g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
   g_running.store(true);
   g_thread = std::thread(reader_thread);
   return true;
 }
 
 }  // namespace
+
+double gcadapter_poll_rate_hz() {
+  return g_poll_rate_hz.load(std::memory_order_relaxed);
+}
 
 // Fills ports that have a controller plugged into the adapter; returns the mask of those ports.
 uint32_t gcadapter_poll(PadState out[4]) {

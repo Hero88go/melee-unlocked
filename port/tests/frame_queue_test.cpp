@@ -62,6 +62,8 @@ int main() {
     gx::Frame producer = frame(1);
     check(queue.push_and_recycle(producer));
     check(producer.sequence == 0);            // handed back cleared, ready to refill
+    check(producer.vertices.capacity() >= 65536);
+    check(producer.draws.capacity() >= 1024);
     gx::Frame out;
     check(queue.pop(out) && out.sequence == 1);
     queue.recycle(std::move(out));
@@ -69,6 +71,17 @@ int main() {
     check(queue.push_and_recycle(producer));
     check(producer.sequence == 0);
     check(queue.pop(out) && out.sequence == 2);
+  }
+  // A producer buffer is prepared with headroom from the submitted frame. This keeps an abrupt
+  // increase in stage geometry from reallocating and moving live DrawCall snapshots next frame.
+  {
+    gx::FrameQueue queue;
+    gx::Frame producer = frame(1);
+    producer.vertices.resize(66000);
+    producer.draws.resize(1030);
+    check(queue.push_and_recycle(producer));
+    check(producer.vertices.capacity() >= 82501);
+    check(producer.draws.capacity() >= 1288);
   }
   // try_pop never blocks; wait_available reports a frame arriving rather than spinning.
   {

@@ -191,6 +191,7 @@ static int32_t do_read(uint32_t info, uint32_t buf, int32_t length, int32_t offs
   if (!f) return chan == 0 ? NOFILE : NOCARD;
   if (length < 0 || offset < 0 || (uint64_t)offset + (uint64_t)length > f->data.size()) return -11 /* LIMIT */;
   std::memcpy(host::ptr(buf, (uint32_t)length), f->data.data() + offset, (size_t)length);
+  host::mark_ram_write(buf, (uint32_t)length);
   g_xferred = length;
   return READY;
 }

@@ -11,6 +11,8 @@ namespace gx {
 void load_pc_settings(D3D12Options& options, int& volume);
 // Current letterboxed gameplay viewport aspect, used to keep overlays out of the black bars.
 void settings_set_game_aspect(float aspect);
+// Copy the same simulation frame's HUD anchors used by the presented image.
+void settings_set_hud_snapshot(const Frame& frame);
 // True once after a texture pack is switched on or off, so the backend can drop the textures it
 // uploaded under the old set. Reading it clears it.
 bool settings_textures_dirty();

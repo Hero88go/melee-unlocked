@@ -36,6 +36,7 @@
 #include "gx_texture.h"
 #include "host.h"
 #include "texture_snapshot.h"
+#include "companion_texture_map.h"
 
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
@@ -130,6 +131,8 @@ struct State {
   uint64_t mips_ignored = 0;       // packs that supplied mips we did not use
   bool reported_budget = false;
   std::unordered_map<std::string, bool> dumped;
+  std::unordered_map<uint64_t, std::string> cosmetic_csp;
+  std::unordered_map<uint64_t, std::string> cosmetic_stock;
   // When the last look found nothing, and whether "no pack folder" has been said already.
   std::chrono::steady_clock::time_point last_empty_scan{};
   bool scanned_empty = false, reported_no_folder = false;
@@ -352,10 +355,65 @@ bool decode_png(const std::string& path, std::vector<uint8_t>& out, uint32_t* wi
   return true;
 }
 
+std::string selector_target(std::string target) {
+  // CSS/HUD treats Sheik as Zelda at the same costume ordinal.
+  if (target.rfind("PlSk", 0) == 0) target.replace(2, 2, "Zd");
+  // Nana's physical costume suffixes differ from Popo's, but each array element is the same Ice
+  // Climbers selector ordinal.
+  static constexpr const char* nana[] = {"PlNnNr.dat", "PlNnYe.dat", "PlNnAq.dat", "PlNnWh.dat"};
+  static constexpr const char* popo[] = {"PlPpNr.dat", "PlPpGr.dat", "PlPpOr.dat", "PlPpRe.dat"};
+  for (size_t i = 0; i < std::size(nana); ++i) if (target == nana[i]) return popo[i];
+  return target;
+}
+
+const std::string* cosmetic_path(const std::string& base) {
+  const std::unordered_map<uint64_t, std::string>* map = nullptr;
+  size_t hash_at = std::string::npos;
+  for (const auto& prefix : {std::string("tex1_136x188_"), std::string("tex1_136x188_m_")}) {
+    if (base.rfind(prefix, 0) == 0) { map = &g.cosmetic_csp; hash_at = prefix.size(); break; }
+  }
+  if (!map) for (const auto& prefix : {std::string("tex1_24x24_"), std::string("tex1_24x24_m_")}) {
+    if (base.rfind(prefix, 0) == 0) { map = &g.cosmetic_stock; hash_at = prefix.size(); break; }
+  }
+  if (!map || hash_at + 16 > base.size() || base[hash_at + 16] != '_') return nullptr;
+  const std::string hash_text = base.substr(hash_at, 16);
+  char* end = nullptr;
+  uint64_t hash = std::strtoull(hash_text.c_str(), &end, 16);
+  if (!end || *end) return nullptr;
+  auto found = map->find(hash);
+  return found == map->end() ? nullptr : &found->second;
+}
+
 }  // namespace
+
+void clear_cache();
+
+void set_cosmetic_companions(std::vector<CosmeticCompanion> companions) {
+  g.cosmetic_csp.clear();
+  g.cosmetic_stock.clear();
+  for (const auto& companion : companions) {
+    const std::string target = selector_target(companion.target_path);
+    for (const auto& slot : native_companions::kSlots) {
+      if (target != slot.target) continue;
+      if (companion.kind == "csp") g.cosmetic_csp[slot.csp_hash] = companion.path;
+      else if (companion.kind == "stock") {
+        if (slot.stock_hash == native_companions::kAmbiguousStockHash) {
+          host::log("cosmetics: stock identity for %s shares native image bytes; using vanilla until palette identity is mapped",
+                    companion.target_path.c_str());
+          continue;
+        }
+        g.cosmetic_stock[slot.stock_hash] = companion.path;
+      }
+    }
+  }
+  clear_cache();
+  host::log("cosmetics: %zu CSP and %zu stock texture identities active",
+            g.cosmetic_csp.size(), g.cosmetic_stock.size());
+}
 
 bool enabled() { return g.on; }
 bool dumping() { return g.dump; }
+bool cosmetics_enabled() { return !g.cosmetic_csp.empty() || !g.cosmetic_stock.empty(); }
 
 // Scanning is separate from replacing. A player who has a pack installed should see it listed
 // without having to switch anything on first: the index is filenames only, and building it is a
@@ -586,7 +644,7 @@ void clear_cache() {
 std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes);
 
 std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes) {
-  if (!g.on || base.empty()) return nullptr;
+  if (base.empty() || (!g.on && !cosmetic_path(base))) return nullptr;
   {
     std::lock_guard<std::mutex> lk(g_cache_mutex);
     auto hit = g_cache.find(base);
@@ -595,7 +653,7 @@ std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes
       g_cache_bytes -= r->pixels.size();
       g_cache.erase(hit);
       auto found = g.index.find(base);
-      if (found != g.index.end()) {
+      if (!cosmetic_path(base) && found != g.index.end()) {
         const int pack = found->second.pack;
         if (pack >= 0 && pack < (int)g.packs.size() && !g.packs[(size_t)pack].enabled) return nullptr;
       }
@@ -606,7 +664,18 @@ std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes
 }
 
 std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes) {
-  if (!g.on || base.empty()) return nullptr;
+  if (base.empty()) return nullptr;
+  if (const std::string* path = cosmetic_path(base)) {
+    auto out = std::make_unique<Replacement>();
+    uint32_t width = 0, height = 0;
+    if (!decode_png(*path, out->pixels, &width, &height)) { ++g.decode_failed; return nullptr; }
+    if (out->pixels.size() > budget_bytes) return nullptr;
+    out->width = width; out->height = height; out->levels = 1;
+    out->level_offset = {0}; out->level_width = {width}; out->level_height = {height};
+    ++g.decoded;
+    return out;
+  }
+  if (!g.on) return nullptr;
   auto found = g.index.find(base);
   if (found == g.index.end()) return nullptr;
   const Entry& entry = found->second;
@@ -672,7 +741,9 @@ std::thread g_req_thread;
 bool g_req_started = false;
 
 bool has(const std::string& base) {
-  if (!g.on || base.empty()) return false;
+  if (base.empty()) return false;
+  if (cosmetic_path(base)) return true;
+  if (!g.on) return false;
   auto found = g.index.find(base);
   if (found == g.index.end()) return false;
   const Entry& entry = found->second;
@@ -702,7 +773,7 @@ void request(const std::string& base) {
         }
         bool cached;
         { std::lock_guard<std::mutex> lk(g_cache_mutex); cached = g_cache.count(name) != 0; }
-        if (!cached && g.on) {
+        if (!cached && has(name)) {
           // Wanted right now, so it goes in past the prefetch cap; load() takes it out again.
           if (auto r = decode_entry(name, ~0ull)) {
             std::lock_guard<std::mutex> lk(g_cache_mutex);

@@ -64,7 +64,8 @@ the game does not depend on it, and the manual way is complete on its own.
 1. Drag your Melee NTSC 1.02 ISO onto `MeleeUnlocked.bat`, or put the ISO next to it named
    `melee.iso` and double-click `MeleeUnlocked.bat`.
 2. Play. The first launch precompiles the graphics pipelines (15 to 30 seconds, progress in
-   the title bar). In game, F1 (or Z + Start) opens the PC settings.
+   the title bar). In game, F1 (or Start + D-pad Down + Z on a GameCube controller) opens the PC settings;
+   Melee's own Options menu also has a PC Settings entry.
 3. To update, extract a newer zip over the folder. Settings, saves and replays are kept.
 
 Native DualShock 4 support is experimental. Connect a DS4 by USB or Bluetooth, open PC
@@ -81,29 +82,22 @@ updates and the Slippi account check in one place.
 - **Play**: press PLAY. It shows which Slippi account will be used.
 - **Updates**: it checks for a new release on every start. "Update and restart" installs it in
   place; settings, saves and replays stay.
+- **Version rollback**: choose a published Windows version from **Choose version** on the Play
+  page. The launcher downloads it into `Versions/` and keeps the current game files intact.
+  Previously installed versions remain selectable offline. The selected version is remembered;
+  choose **Current install** to return. The ISO, settings, saves, and replays are shared, while
+  each version uses its own game files and `Sys` resources.
 
-### Legacy vs. DLSS 5 Experimental
+### DLSS 5 Experimental
 
-Two builds are available, picked from the **GAME BUILD** dropdown on the launcher's Play page
-(remembered between launches; the manual `.bat` files always run Legacy):
+The current private v0.7 test package uses one integrated executable. It includes the normal DLSS /
+DLAA, Frame Generation, Reflex, and renderer options alongside the optional DLSS 5 neural-rendering
+path; no separate Legacy game executable or build selector is used. The feature is experimental and
+requires NVIDIA's DLSS 5 runtime/model, which is not included. Without that runtime, the game runs
+normally and the PC settings panel reports that DLSS 5 could not start.
 
-- **Legacy** (`MeleeUnlocked-<version>-win64.zip`): the regular game. Ordinary NVIDIA DLSS / DLAA
-  upscaling, Frame Generation and Reflex are all here; none of it needs DLSS 5.
-- **DLSS 5 Experimental** (`MeleeUnlocked-<version>-DLSS5-Experimental.zip`): everything in
-  Legacy, plus an extra, optional neural-rendering pass over the DLSS/DLAA image
-  (`melee_port_dlss5.exe` / `melee_port_dlss5_compat.exe`, on by picking "Insane" in the Quality
-  presets or the DLSS 5 controls in PC settings). It is experimental, intended for RTX 50-series
-  GPUs or newer, and is not included in or reachable from the Legacy build at all: the Legacy
-  executables are compiled without this code.
-
-  Picking DLSS 5 Experimental from a Legacy-only install downloads and installs the complete
-  experimental zip once, then launches it; after that it is just the other choice in the
-  dropdown. Switching back to Legacy needs nothing extra.
-
-  **DLSS 5 will not work without NVIDIA's DLSS 5 file (`nvngx_dlssnr.dll`). It is not included
-  in either zip, and this project does not provide it.** The game looks for it in the NVIDIA
-  driver first, then next to `melee_port_dlss5.exe` (or the `_compat` executable). Without it the
-  game runs normally, and the PC settings panel says DLSS 5 could not start and why.
+For renderer diagnostics, `--frame-generation` enables 2x. The explicit forms
+`--frame-generation=2x|3x|4x|5x|6x|dynamic` select a driver-supported mode.
 
 ### Build from source
 
@@ -156,7 +150,17 @@ My vision for the project is keeping it open source so anyone can view the work 
   4:3, 16:9, or stretched to fill the window with no black bars. Presentation only, so it cannot
   desync and the two players in a match may each pick their own.
 - Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
-- PC settings overlay in the game window: F1 or Z + Start
+- PC settings overlay in the game window: F1, Start + D-pad Down + Z, or PC Settings from Melee's Options menu.
+  Customize offers six menu appearances (Clean side, Icon tiles, GD Melee, Radial, Wide tabs and
+  Simple), each with its own colour palettes, plus the previous compact menu on F11. Video, Audio,
+  Game, Controls, Overlays, Customize, and Gecko Codes have their own pages. See the
+  [full v0.7 feature list](docs/v0.7-feature-list.md).
+- Fountain of Dreams reflections are on by default. The Video page can turn on Lagless FoD;
+  changing this only affects the optional visual code, not match rules.
+- Cosmetic DAT/ZIP and Nucleus vault imports for costumes, stage visuals, and move level effects.
+  Stage files map to exact disc resources; non texture stage changes use vanilla online. Supplied
+  CSPs and screenshots appear as previews in Customize. See [docs/cosmetic-imports.md](docs/cosmetic-imports.md).
+- Looping H.264 CSS and SSS backgrounds with target learning and vanilla fallback.
 - Optional launcher with self-update
 
 ## Slippi online
@@ -190,7 +194,7 @@ the bug happened in a match.
 AI/AX audio, CARD, EXI), the Slippi EXI device, netcode, game reporting, the D3D12 and D3D11
 renderers and the sub-frame solver. `port/app/launcher.cpp` is the optional launcher. `tools/` holds validation,
 benchmarking and packaging scripts. See `PORT_COMPLETION.md` for the technical state and
-evidence, `HANDOFF_FABLE_3.md` for the roadmap.
+evidence, and `docs/v0.7-test-notes.md` for what the current build has and has not verified.
 
 `tools/package_release.py` produces the release zip (version from `VERSION`). The replay
 playback build (`melee_port_playback`, used to verify frame-exactness against Dolphin replays)

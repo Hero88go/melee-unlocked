@@ -5,16 +5,52 @@ target_include_directories(port_frame_queue_test PRIVATE runtime/gx)
 target_compile_features(port_frame_queue_test PRIVATE cxx_std_17)
 add_test(NAME port_frame_queue COMMAND port_frame_queue_test)
 set_tests_properties(port_frame_queue PROPERTIES TIMEOUT 10)
+add_executable(port_video_background_learning_test tests/video_background_learning_test.cpp)
+target_include_directories(port_video_background_learning_test PRIVATE runtime/gx)
+target_compile_features(port_video_background_learning_test PRIVATE cxx_std_17)
+add_test(NAME port_video_background_learning COMMAND port_video_background_learning_test)
+
+add_executable(port_settings_chord_test tests/settings_chord_test.cpp)
+target_include_directories(port_settings_chord_test PRIVATE runtime/host)
+target_compile_features(port_settings_chord_test PRIVATE cxx_std_17)
+add_test(NAME port_settings_chord COMMAND port_settings_chord_test)
+
+add_executable(port_gd_melee_ui_motion_test tests/gd_melee_ui_motion_test.cpp)
+target_include_directories(port_gd_melee_ui_motion_test PRIVATE runtime/gx)
+target_compile_features(port_gd_melee_ui_motion_test PRIVATE cxx_std_17)
+add_test(NAME port_gd_melee_ui_motion COMMAND port_gd_melee_ui_motion_test)
+add_executable(port_radial_navigation_test tests/radial_navigation_test.cpp)
+target_include_directories(port_radial_navigation_test PRIVATE runtime/gx)
+target_compile_features(port_radial_navigation_test PRIVATE cxx_std_17)
+add_test(NAME port_radial_navigation COMMAND port_radial_navigation_test)
 add_executable(port_memory_range_test tests/memory_range_test.cpp)
 target_include_directories(port_memory_range_test PRIVATE runtime/host)
 target_compile_features(port_memory_range_test PRIVATE cxx_std_17)
 add_test(NAME port_memory_ranges COMMAND port_memory_range_test)
 add_test(NAME port_dol_validation COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/dol_validation_test.py")
 add_test(NAME port_gecko_layout COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/gecko_layout_test.py")
+add_test(NAME port_computed_return COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/computed_return_test.py")
+add_test(NAME port_cosmetic_import_diagnostic COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/cosmetic_import_diagnostic_test.py")
+add_test(NAME port_nucleus_vault_diagnostic COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/nucleus_vault_diagnostic_test.py")
+add_test(NAME port_stage_cosmetic_diagnostic COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/stage_cosmetic_diagnostic_test.py")
+add_test(NAME port_effect_cosmetic_diagnostic COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/effect_cosmetic_diagnostic_test.py")
+add_test(NAME port_companion_texture_diagnostic COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/companion_texture_diagnostic_test.py")
 add_executable(port_texture_test tests/texture_snapshot_test.cpp runtime/gx/gx_texture.cpp)
 target_include_directories(port_texture_test PRIVATE runtime/gx)
 target_compile_features(port_texture_test PRIVATE cxx_std_17)
 add_test(NAME port_texture_snapshots COMMAND port_texture_test)
+add_executable(port_ram_watch_test tests/ram_watch_test.cpp)
+target_include_directories(port_ram_watch_test PRIVATE runtime/ppc)
+target_compile_features(port_ram_watch_test PRIVATE cxx_std_17)
+add_test(NAME port_ram_watch COMMAND port_ram_watch_test)
+add_executable(port_draw_batch_test tests/draw_batch_test.cpp)
+target_include_directories(port_draw_batch_test PRIVATE runtime/gx)
+target_compile_features(port_draw_batch_test PRIVATE cxx_std_17)
+add_test(NAME port_draw_batch COMMAND port_draw_batch_test)
+add_executable(port_dxr_scene_test tests/dxr_scene_test.cpp runtime/gx/gx_dxr_scene.cpp)
+target_include_directories(port_dxr_scene_test PRIVATE runtime/gx)
+target_compile_features(port_dxr_scene_test PRIVATE cxx_std_17)
+add_test(NAME port_dxr_scene COMMAND port_dxr_scene_test)
 add_executable(port_ax_ucode_test tests/ax_ucode_test.cpp runtime/hle/ax_ucode.cpp)
 target_include_directories(port_ax_ucode_test PRIVATE runtime/hle)
 target_compile_features(port_ax_ucode_test PRIVATE cxx_std_17)
@@ -29,6 +65,13 @@ add_executable(port_controller_profiles_test tests/controller_profiles_test.cpp 
 target_include_directories(port_controller_profiles_test PRIVATE runtime/host)
 target_compile_features(port_controller_profiles_test PRIVATE cxx_std_17)
 add_test(NAME port_controller_profiles COMMAND port_controller_profiles_test)
+add_executable(port_cosmetic_mods_test tests/cosmetic_mods_test.cpp runtime/host/cosmetic_mods.cpp)
+target_include_directories(port_cosmetic_mods_test PRIVATE runtime/host runtime/ppc third_party)
+target_compile_features(port_cosmetic_mods_test PRIVATE cxx_std_17)
+target_compile_options(port_cosmetic_mods_test PRIVATE /EHsc)
+target_compile_definitions(port_cosmetic_mods_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_link_libraries(port_cosmetic_mods_test PRIVATE bcrypt comdlg32 user32)
+add_test(NAME port_cosmetic_mods COMMAND port_cosmetic_mods_test)
 add_executable(port_vcdiff_test tests/vcdiff_test.cpp runtime/host/vcdiff.cpp)
 target_include_directories(port_vcdiff_test PRIVATE runtime/host)
 target_compile_features(port_vcdiff_test PRIVATE cxx_std_17)
@@ -56,7 +99,7 @@ add_test(NAME port_signed_halfword_loads COMMAND port_load_test)
 # subdirectory is added, so native_animation (built there) also gets the right /arch flag.
 message(STATUS "melee: CPU baseline ${MELEE_CPU_BASELINE}")
 
-set(PORT_GEN "${CMAKE_CURRENT_SOURCE_DIR}/generated")
+set(PORT_GEN "${CMAKE_CURRENT_SOURCE_DIR}/generated" CACHE PATH "Guest translation source directory")
 if(NOT EXISTS "${PORT_GEN}/guest_sources.cmake")
   message(FATAL_ERROR "port: generated code missing; run python port/recomp/recomp.py")
 endif()
@@ -75,7 +118,7 @@ add_library(guest STATIC ${GUEST_SOURCES} "${PORT_GEN}/function_names.cpp" "${PO
 target_include_directories(guest PUBLIC "${PORT_GEN}" runtime/ppc)
 target_include_directories(guest PRIVATE runtime/hle)   # gecko_data.h: run-time optional code flags
 target_compile_features(guest PUBLIC cxx_std_17)
-target_compile_options(guest PRIVATE /bigobj /MP /EHsc ${MELEE_ARCH_FLAG} /fp:precise /wd4102 /wd4101 /wd4189 /W1)
+target_compile_options(guest PRIVATE /bigobj /EHsc ${MELEE_ARCH_FLAG} /fp:precise /wd4102 /wd4101 /wd4189 /W1)
 target_compile_definitions(guest PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 endif()
 
@@ -139,7 +182,7 @@ target_include_directories(runtime PUBLIC runtime/ppc runtime/host runtime/hle r
 target_compile_features(runtime PUBLIC cxx_std_17)
 target_compile_options(runtime PRIVATE /EHsc ${MELEE_ARCH_FLAG} /fp:precise /W3)
 target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
-target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcrypt d3d12 d3d11 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb hid)
+target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcrypt comdlg32 d3d12 d3d11 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb hid mfplat mfreadwrite mfuuid ole32 shell32)
 
 # WIN32: no console window when the game is double-clicked or started from the launcher. Command-line
 # use still works, because main() reattaches to a parent console when there is one (see app/main.cpp).
@@ -159,6 +202,28 @@ target_compile_options(melee_port PRIVATE /EHsc)
 target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
   MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}"
   MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS})
+
+# Compile the D3D12 ray-tracing library with the matching Windows SDK DXC. Keeping DXIL beside the
+# executable makes the D3D12 renderer independent of the user's developer tools; the package tool
+# includes this binary with the game files. Shader Model 6.3 keeps the pass usable on DXR 1.0 RTX
+# adapters as well as newer cards.
+set(MELEE_DXC_HINT "C:/Program Files (x86)/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64")
+find_program(MELEE_DXC_EXECUTABLE NAMES dxc.exe HINTS "${MELEE_DXC_HINT}")
+if(NOT MELEE_DXC_EXECUTABLE)
+  message(FATAL_ERROR "The Windows SDK DXC compiler (dxc.exe) is required to build the DXR path shader")
+endif()
+set(MELEE_DXR_DXIL "${CMAKE_CURRENT_BINARY_DIR}/dxr_pathtrace.dxil")
+add_custom_command(OUTPUT "${MELEE_DXR_DXIL}"
+  COMMAND "${MELEE_DXC_EXECUTABLE}" -T lib_6_3 -HV 2021 -O3
+          -Fo "${MELEE_DXR_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/dxr_pathtrace.hlsl"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/dxr_pathtrace.hlsl"
+  VERBATIM)
+add_custom_target(melee_dxr_shader DEPENDS "${MELEE_DXR_DXIL}")
+add_dependencies(melee_port melee_dxr_shader)
+add_custom_command(TARGET melee_port POST_BUILD
+  COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_DXR_DXIL}"
+          "$<TARGET_FILE_DIR:melee_port>/dxr_pathtrace.dxil"
+  VERBATIM)
 if(MELEE_CPU_BASELINE STREQUAL "AVX2")
   target_compile_definitions(melee_port PRIVATE MELEE_NEEDS_AVX2)
 endif()
@@ -191,7 +256,7 @@ if(EXISTS "${PORT_GEN_PLAYBACK}/guest_sources.cmake")
   target_include_directories(guest_playback PUBLIC runtime/ppc)
   target_include_directories(guest_playback PRIVATE runtime/hle)
   target_compile_features(guest_playback PUBLIC cxx_std_17)
-  target_compile_options(guest_playback PRIVATE /bigobj /MP /EHsc ${MELEE_ARCH_FLAG} /fp:precise /wd4102 /wd4101 /wd4189 /W1)
+  target_compile_options(guest_playback PRIVATE /bigobj /EHsc ${MELEE_ARCH_FLAG} /fp:precise /wd4102 /wd4101 /wd4189 /W1)
   target_compile_definitions(guest_playback PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
   endif()
   # The .rc carries the icon and the version resource. This target never had it, so the playback
@@ -252,15 +317,24 @@ target_link_libraries(port_imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
 target_compile_definitions(runtime PRIVATE GX_PC_SETTINGS)
 target_link_libraries(runtime PUBLIC port_imgui)
 
-# NVIDIA Streamline (DLSS): optional, enabled when the SDK subset is present under third_party/streamline.
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/include/sl.h")
+# NVIDIA Streamline (DLSS): optional, enabled only when the headers, import library, and core
+# redistributable DLLs are all present. A source archive may intentionally omit proprietary runtime
+# binaries; that must produce a normal non-Streamline build rather than a post-link copy failure.
+set(MELEE_STREAMLINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline" CACHE PATH
+    "NVIDIA Streamline SDK root (headers, import library, and x64 runtime plugins)")
+if(EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h" AND
+   EXISTS "${MELEE_STREAMLINE_ROOT}/lib/x64/sl.interposer.lib" AND
+   EXISTS "${MELEE_STREAMLINE_ROOT}/bin/x64/sl.interposer.dll" AND
+   EXISTS "${MELEE_STREAMLINE_ROOT}/bin/x64/sl.common.dll")
   target_compile_definitions(runtime PRIVATE GX_STREAMLINE)
-  target_include_directories(runtime PRIVATE third_party/streamline/include)
-  target_link_libraries(runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/lib/x64/sl.interposer.lib" wintrust crypt32 delayimp)
+  target_include_directories(runtime PRIVATE "${MELEE_STREAMLINE_ROOT}/include")
+  target_link_libraries(runtime PUBLIC "${MELEE_STREAMLINE_ROOT}/lib/x64/sl.interposer.lib" wintrust crypt32 delayimp)
   target_link_options(melee_port PRIVATE /DELAYLOAD:sl.interposer.dll)
-  foreach(sl_dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll)
-    add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/bin/x64/${sl_dll}" "$<TARGET_FILE_DIR:melee_port>/${sl_dll}")
+  foreach(sl_dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll sl.dlss_d.dll nvngx_dlssd.dll sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll)
+    if(EXISTS "${MELEE_STREAMLINE_ROOT}/bin/x64/${sl_dll}")
+      add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${MELEE_STREAMLINE_ROOT}/bin/x64/${sl_dll}" "$<TARGET_FILE_DIR:melee_port>/${sl_dll}")
+    endif()
   endforeach()
   # Intel XeSS (loaded at run time; missing file = no XeSS modes)
   add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -280,6 +354,8 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline/include/sl.h")
     add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "$<TARGET_FILE:dlss5_forwarder>" "$<TARGET_FILE_DIR:melee_port>/nvngx.dll_meleedlss5.dll")
   endif()
+elseif(EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h")
+  message(STATUS "NVIDIA Streamline runtime is incomplete; building without Streamline/DLSS")
 endif()
 if(MELEE_ENABLE_DLSS5 AND NOT TARGET dlss5_forwarder)
   message(FATAL_ERROR "DLSS 5 requires Streamline and NGX")

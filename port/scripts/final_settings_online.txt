@@ -1,0 +1,44 @@
+# Final validation: close the startup settings panel, queue Unranked against the local peer,
+# then in the match open/close settings with the controller chord several times and keep playing.
+120 START
+130
+300 A
+310
+840 sx=61 sy=127
+857
+880 A
+890
+940 START
+950
+@match
+60 sx=80
+120 X
+126
+200 START DD Z
+210
+260 DD
+266
+300 A
+306
+360 B
+366
+420 START
+430
+480 sx=80
+540 X
+546
+600 START DD Z
+610
+660 START
+670
+720 sx=-80
+780 X
+786
+840 START DD Z
+850
+900 B
+906
+960 sx=80
+1020 X
+1026
+1100

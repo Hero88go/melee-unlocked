@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 
@@ -35,6 +36,18 @@ std::string clean_profile_name(const std::string& name) {
 std::filesystem::path profile_path(const std::string& name) {
   return std::filesystem::path(g_profile_dir) / (clean_profile_name(name) + ".txt");
 }
+Tuning bounded_tuning(Tuning t) {
+  const auto bound = [](float v, float fallback, float lo, float hi) {
+    return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback;
+  };
+  t.intensity = bound(t.intensity, 1.0f, 0.0f, 10.0f);
+  t.detail = bound(t.detail, 1.0f, 0.0f, 10.0f);
+  t.tone = bound(t.tone, 1.0f, 0.0f, 10.0f);
+  t.skin = t.skin < 0.0f ? -1.0f : bound(t.skin, -1.0f, 0.0f, 10.0f);
+  t.style = std::clamp(t.style, 0, 3);
+  t.preset = std::clamp(t.preset, 0, 3);
+  return t;
+}
 }  // namespace
 
 void profile_set_folder(const std::string& settings_path) {
@@ -59,9 +72,10 @@ bool profile_save(const std::string& name, const Tuning& t) {
   std::filesystem::create_directories(g_profile_dir, ec);
   std::ofstream f(profile_path(name));
   if (!f) return false;
+  const Tuning saved = bounded_tuning(t);
   f << "# Melee Unlocked DLSS 5 profile\n"
-       "intensity " << t.intensity << "\ndetail " << t.detail << "\ntone " << t.tone << "\nskin " << t.skin
-    << "\nstyle " << t.style << "\npreset " << t.preset << "\nautomask " << (t.auto_mask ? 1 : 0) << "\n";
+       "intensity " << saved.intensity << "\ndetail " << saved.detail << "\ntone " << saved.tone << "\nskin " << saved.skin
+    << "\nstyle " << saved.style << "\npreset " << saved.preset << "\nautomask " << (saved.auto_mask ? 1 : 0) << "\n";
   return f.good();
 }
 bool profile_load(const std::string& name, Tuning& t) {
@@ -81,7 +95,7 @@ bool profile_load(const std::string& name, Tuning& t) {
       else if (key == "automask") loaded.auto_mask = value == "1";
     } catch (...) { return false; }
   }
-  t = loaded;
+  t = bounded_tuning(loaded);
   return true;
 }
 bool profile_delete(const std::string& name) {
@@ -199,7 +213,7 @@ void find_float_slot() {
       return;
     }
   }
-  host::log("dlss5: no float slot found; intensity will have no effect");
+  host::log("dlss5: no float parameter slot found");
 }
 
 bool fail(const std::string& why) {
@@ -241,6 +255,7 @@ bool ensure_ready(ID3D12Device* proxy_device) {
   if (!g.load(model.c_str())) return fail("nvngx_dlssnr.dll would not load (" + narrow(model) + ")");
 
   find_float_slot();
+  if (g.float_slot < 0) return fail("the model did not accept floating-point controls");
   int ir = g.init(kAppId, data.c_str(), g.device, (int)NVSDK_NGX_Version_API, g.caps);
   if (ir != NVSDK_NGX_Result_Success) return fail("the DLSS 5 model would not initialise (" + hex((unsigned)ir) + ")");
   g.ready = true;
@@ -321,8 +336,7 @@ bool create_feature(ID3D12GraphicsCommandList* list, uint32_t w, uint32_t h, con
 }  // namespace
 
 static Tuning clamped(Tuning t) {
-  t.intensity = t.intensity < 0.0f ? 0.0f : t.intensity > 1.0f ? 1.0f : t.intensity;
-  return t;
+  return bounded_tuning(t);
 }
 
 bool needs_warmup(uint32_t w, uint32_t h, const Tuning& t) {

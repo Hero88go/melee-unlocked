@@ -14,7 +14,11 @@ struct TextureSnapshot {
 };
 
 class TextureSnapshotCache {
-  struct Entry { std::shared_ptr<const TextureSnapshot> snapshot; uint64_t used = 0; };
+  struct Entry {
+    std::shared_ptr<const TextureSnapshot> snapshot;
+    uint64_t used = 0, source_version = 0, palette_version = 0;
+    const uint8_t* palette_source = nullptr;
+  };
   std::unordered_multimap<uint64_t, Entry> entries;
   std::unordered_map<const uint8_t*, Entry> last_source;
   uint64_t generation = 0;
@@ -39,7 +43,9 @@ public:
       it = it->second.used + KEEP_FRAMES < generation ? last_source.erase(it) : std::next(it);
   }
   std::shared_ptr<const TextureSnapshot> capture(const uint8_t* image, size_t image_size,
-                                                const uint8_t* palette, size_t palette_size) {
+                                                const uint8_t* palette, size_t palette_size,
+                                                uint64_t source_version = 0,
+                                                uint64_t palette_version = 0) {
     // Most draws reuse their source. Vectorized memcmp avoids rehashing
     // every byte with a serial hash recurrence; changes still receive a new copy.
     auto previous = last_source.find(image);
@@ -49,8 +55,20 @@ public:
     // or palette animated within a single frame showed its previous contents, which is one way a
     // draw ends up looking wrong for exactly one frame. Correctness needs the comparison, and the
     // comparison below is a vectorized memcmp of a few KB, so the cost is bounded.
+    if (source_version && previous != last_source.end() &&
+        previous->second.source_version == source_version &&
+        previous->second.palette_version == palette_version &&
+        previous->second.palette_source == palette &&
+        previous->second.snapshot->image.size() == image_size &&
+        previous->second.snapshot->palette.size() == palette_size) {
+      previous->second.used = generation;
+      return previous->second.snapshot;
+    }
     if (previous != last_source.end() && equal(*previous->second.snapshot, image, image_size, palette, palette_size)) {
       previous->second.used = generation;
+      previous->second.source_version = source_version;
+      previous->second.palette_version = palette_version;
+      previous->second.palette_source = palette;
       return previous->second.snapshot;
     }
     uint64_t hash = hash_bytes(image, image_size) ^ (hash_bytes(palette, palette_size) * 31);
@@ -58,7 +76,7 @@ public:
     for (auto i = range.first; i != range.second; ++i) {
       if (equal(*i->second.snapshot, image, image_size, palette, palette_size)) {
         i->second.used = generation;
-        last_source[image] = i->second;
+        last_source[image] = Entry{i->second.snapshot, generation, source_version, palette_version, palette};
         return i->second.snapshot;
       }
     }
@@ -66,8 +84,8 @@ public:
     s->image.assign(image, image + image_size);
     if (palette_size) s->palette.assign(palette, palette + palette_size);
     s->hash = hash;
-    entries.emplace(hash, Entry{s, generation});
-    last_source[image] = Entry{s, generation};
+    entries.emplace(hash, Entry{s, generation, 0, 0, nullptr});
+    last_source[image] = Entry{s, generation, source_version, palette_version, palette};
     return s;
   }
 };
