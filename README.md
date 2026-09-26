@@ -194,7 +194,7 @@ the bug happened in a match.
 AI/AX audio, CARD, EXI), the Slippi EXI device, netcode, game reporting, the D3D12 and D3D11
 renderers and the sub-frame solver. `port/app/launcher.cpp` is the optional launcher. `tools/` holds validation,
 benchmarking and packaging scripts. See `PORT_COMPLETION.md` for the technical state and
-evidence, and `docs/v0.7-test-notes.md` for what the current build has and has not verified.
+evidence, and `docs/v0.7-feature-list.md` for the current feature list.
 
 `tools/package_release.py` produces the release zip (version from `VERSION`). The replay
 playback build (`melee_port_playback`, used to verify frame-exactness against Dolphin replays)
