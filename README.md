@@ -200,8 +200,6 @@ evidence, and `docs/v0.7-test-notes.md` for what the current build has and has n
 playback build (`melee_port_playback`, used to verify frame-exactness against Dolphin replays)
 is described in `PORT_COMPLETION.md`.
 
-
-
 ## Verification
 
 Development launcher: `run-native.bat` (or `python tools/launch_native.py --iso <iso> ...`) starts the
@@ -219,3 +217,9 @@ GPL-2.0-or-later. Parts of the runtime are ports of Dolphin and Slippi Ishiiruka
 Third-party components: ENet, Dear ImGui, nlohmann/json, NVIDIA Streamline (see `licenses/` in a
 release and `port/third_party/`). Super Smash Bros. Melee is the property of Nintendo and HAL
 Laboratory; this project contains none of its data.
+
+## Credits
+
+Hero88go - developer 
+
+Johnny Brookes Aka Lainthewired for their major contribution of the last graphic error fix that took this project from alpha -> beta. Could not have done it without them 
