@@ -30,8 +30,8 @@ ROOT = Path(__file__).resolve().parent.parent
 DISCORD_LIMIT = 2000   # characters per message; longer notes are split on blank lines
 INSTALL_BLOCK = """**Install**
 
-- Choose one archive from the linked GitHub release: `MeleeUnlocked-{version}-win64.zip` is the standard build; `MeleeUnlocked-{version}-DLSS5-Experimental.zip` is experimental and requires an RTX 50-series GPU or newer plus NVIDIA's DLSS 5 file (not included).
-- Close Melee Unlocked, then extract the chosen archive over the existing folder so settings, saves and replays carry over.
+- Download `MeleeUnlocked-{version}-win64.zip` from the linked GitHub release. It contains one game build with optional experimental DLSS 5; that feature needs NVIDIA's separate model, which is not included.
+- Close Melee Unlocked, then extract the archive over the existing folder so settings, saves and replays carry over.
 - Keep your own Melee NTSC 1.02 ISO beside the files as `melee.iso`, or select it with the included launcher.
 - Start `MeleeUnlockedLauncher.exe` after extraction."""
 

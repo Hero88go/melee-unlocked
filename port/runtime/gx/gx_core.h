@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
+#include <array>
 #include <memory>
+#include <string>
 #include <vector>
 #include "gx_regs.h"
 #include "texture_snapshot.h"
@@ -44,6 +46,48 @@ struct TextureRef {
 };
 
 struct AuthoredPose;
+struct DrawSegment {
+  uint32_t first_vertex, vertex_count;
+  uint32_t primitive;
+};
+
+enum class DrawTopology { Unsupported, Triangles, Lines };
+
+// Appends one GX primitive's indices while preserving the boundary between adjacent commands.
+// In particular, two strips must never grow a triangle across their shared batch boundary.
+inline DrawTopology append_segment_indices(std::vector<uint32_t>& out, uint32_t primitive,
+                                           uint32_t count, uint32_t base) {
+  switch (primitive) {
+    case 0x80: case 0x88:
+      for (uint32_t i = 0; i + 3 < count; i += 4)
+        out.insert(out.end(), {base+i, base+i+1, base+i+2, base+i, base+i+2, base+i+3});
+      return DrawTopology::Triangles;
+    case 0x90:
+      for (uint32_t i = 0; i + 2 < count; i += 3)
+        out.insert(out.end(), {base+i, base+i+1, base+i+2});
+      return DrawTopology::Triangles;
+    case 0x98:
+      for (uint32_t i = 2; i < count; ++i) {
+        if (i & 1) out.insert(out.end(), {base+i-1, base+i-2, base+i});
+        else out.insert(out.end(), {base+i-2, base+i-1, base+i});
+      }
+      return DrawTopology::Triangles;
+    case 0xA0:
+      for (uint32_t i = 2; i < count; ++i)
+        out.insert(out.end(), {base, base+i-1, base+i});
+      return DrawTopology::Triangles;
+    case 0xA8:
+      for (uint32_t i = 0; i + 1 < count; i += 2)
+        out.insert(out.end(), {base+i, base+i+1});
+      return DrawTopology::Lines;
+    case 0xB0:
+      for (uint32_t i = 1; i < count; ++i)
+        out.insert(out.end(), {base+i-1, base+i});
+      return DrawTopology::Lines;
+    default:
+      return DrawTopology::Unsupported;
+  }
+}
 struct DrawCall {
   // ~5 KB of register and matrix snapshots, recorded ~1400 times per simulation frame. Zeroing all
   // of that costs real time on the simulation thread, so record_draw (which overwrites every one of
@@ -53,6 +97,9 @@ struct DrawCall {
   explicit DrawCall(SkipInit) {}
   uint32_t primitive;              // GX primitive opcode & 0xF8
   uint32_t first_vertex, vertex_count;
+  // Consecutive primitive commands in one display list share all render state. They are retained as
+  // separate index ranges inside one backend draw instead of duplicating a 5 KB DrawCall for each.
+  uint32_t first_segment = 0, segment_count = 0;
   uint32_t components;
   // Register snapshots used by shader generation and pipeline state.
   BPMemory bp;
@@ -106,11 +153,20 @@ struct FrameCommand {
   uint32_t index;   // into draws or copies
 };
 
+struct HudPlayerSnapshot {
+  int damage = 0, stocks = 0;
+  float tag_x = 0, tag_y = 0; // Melee's 640x480 screen coordinates
+  bool present = false, tag_visible = false;
+};
+
 struct Frame {
   std::vector<Vertex> vertices;
+  std::vector<DrawSegment> segments;
   std::vector<DrawCall> draws;
   std::vector<EfbCopy> copies;
   std::vector<FrameCommand> commands;
+  std::array<HudPlayerSnapshot, 4> hud_players{};
+  std::array<std::string, 4> player_names{};
   uint64_t sequence = 0;
   // The game's scene controller when this frame was finished: major scene (2 VS, 0x1C training,
   // 1 the menus) and the minor scene within it (2 is in-game for the match modes; the character and
@@ -122,12 +178,27 @@ struct Frame {
   // an older state and simulated forward again. The two frames are not neighbours in time, so
   // nothing may be blended between them (see mark_discontinuity).
   bool discontinuous = false;
+  // Reserve enough storage for an ordinary match before the first large scene is decoded. DrawCall
+  // is about 5 KB, so a vector growth during a Stadium transformation can otherwise copy several
+  // megabytes on the simulation thread and miss a 16.7 ms frame. Recycled frames retain this memory.
+  void reserve_gameplay_capacity(size_t vertex_count = 65536, size_t draw_count = 1024,
+                                 size_t segment_count = 2048, size_t command_count = 2048,
+                                 size_t copy_count = 16) {
+    vertices.reserve(vertex_count);
+    draws.reserve(draw_count);
+    segments.reserve(segment_count);
+    commands.reserve(command_count);
+    copies.reserve(copy_count);
+  }
   // sequence and time are reset too: a recycled frame is handed back to the producer as "cleared",
   // and the renderer decides when to present by comparing sequences. Leaving a stale one on a
   // buffer that is about to be refilled is only harmless while every producer remembers to assign
   // one before pushing.
-  void clear() { vertices.clear(); draws.clear(); copies.clear(); commands.clear(); sequence = 0; time = 0.0; discontinuous = false; }
+  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; time = 0.0; discontinuous = false; }
 };
+
+// The panel publishes visual-only HUD controls to the simulation thread.
+void set_hud_scales(int stocks_percent, int damage_percent, bool pal_stocks);
 
 // Whether a frame certainly shows a running match. Anything else counts as a menu: the character and
 // stage selects are minor scenes 0 and 1 of every mode that plays a match, the match is 2 and up.

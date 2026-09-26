@@ -21,4 +21,7 @@ uint64_t audio_dropped_blocks();
 uint64_t audio_underruns(uint64_t* silent_ms);   // output gaps (ring empty), and the total time they held the last sample
 void audio_rate_range(double* low, double* high);  // resampling ratio extremes used to track the sound card's clock
 uint32_t audio_buffered_ms();                      // how much audio is queued for the device right now
+// Settings menu feedback: 1 = move between items, 2 = select / open, 3 = back / close.
+// Mixed into the output on the audio thread; safe to call from any thread, never blocks.
+void audio_ui_sound(int kind);
 }  // namespace host

@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cmath>
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <immintrin.h>
@@ -15,6 +16,38 @@ constexpr uint32_t RAM_BASE = 0x80000000u;
 constexpr uint32_t RAM_SIZE = 0x01800000u;
 constexpr uint32_t LC_BASE = 0xE0000000u;
 constexpr uint32_t LC_SIZE = 0x4000u;
+// Coarse write generations for renderer-owned snapshots. A 64 KB block keeps the hot guest-store
+// path to one relaxed byte load and (only for blocks containing captured textures) one increment.
+// False invalidations are safe; an unchanged generation proves every byte in the block is unchanged.
+constexpr uint32_t RAM_WATCH_SHIFT = 16;
+constexpr uint32_t RAM_WATCH_SIZE = 1u << RAM_WATCH_SHIFT;
+constexpr uint32_t RAM_WATCH_COUNT = RAM_SIZE / RAM_WATCH_SIZE;
+extern std::atomic<uint8_t> g_ram_watched[RAM_WATCH_COUNT];
+extern std::atomic<uint32_t> g_ram_versions[RAM_WATCH_COUNT];
+
+inline void mark_ram_write(uint32_t ea, uint32_t bytes) {
+  if (!bytes) return;
+  const uint32_t off = ea & 0x3FFFFFFFu;
+  if (off >= RAM_SIZE || bytes > RAM_SIZE - off) return;
+  const uint32_t first = off >> RAM_WATCH_SHIFT;
+  const uint32_t last = (off + bytes - 1) >> RAM_WATCH_SHIFT;
+  for (uint32_t block = first; block <= last; ++block)
+    if (g_ram_watched[block].load(std::memory_order_relaxed))
+      g_ram_versions[block].fetch_add(1, std::memory_order_relaxed);
+}
+
+inline uint64_t watch_ram_range(uint32_t off, uint32_t bytes) {
+  if (!bytes || off >= RAM_SIZE || bytes > RAM_SIZE - off) return 0;
+  const uint32_t first = off >> RAM_WATCH_SHIFT;
+  const uint32_t last = (off + bytes - 1) >> RAM_WATCH_SHIFT;
+  uint64_t version = 1469598103934665603ull;
+  for (uint32_t block = first; block <= last; ++block) {
+    g_ram_watched[block].store(1, std::memory_order_relaxed);
+    version ^= ((uint64_t)block << 32) | g_ram_versions[block].load(std::memory_order_relaxed);
+    version *= 1099511628211ull;
+  }
+  return version;
+}
 
 union FPR {
   struct { double ps0, ps1; };
@@ -82,6 +115,9 @@ void interpreter_stats(uint64_t* calls, uint64_t* insns);
 // unwinding the function it was spliced into: see analyze._computed_return_delta). Reported at exit,
 // so a run can be checked for whether those code paths were reached at all.
 extern uint64_t g_resumed_returns;
+// Counts call sites where a Gecko cave's adjusted-return branch is eligible, even when the cave
+// chooses its normal return. This distinguishes "path was checked" from "adjusted return taken".
+extern uint64_t g_computed_return_checks;
 void fatal(Context& c, const char* what, uint32_t a);
 // Releases one level of guest call depth when the call returns or is unwound by an exception.
 struct CallDepthScope { Context& c; ~CallDepthScope() { --c.call_depth; } };
@@ -134,25 +170,25 @@ inline uint64_t ld64(Context& c, uint8_t* m, uint32_t ea) {
   return mmio_read64(c, ea);
 }
 inline void st8(Context& c, uint8_t* m, uint32_t ea, uint32_t v) {
-  if (uint8_t* p = fast(m, ea)) { *p = (uint8_t)v; return; }
+  if (uint8_t* p = fast(m, ea)) { *p = (uint8_t)v; mark_ram_write(ea, 1); return; }
   if (uint8_t* p = slowptr(ea)) { *p = (uint8_t)v; return; }
   mmio_write(c, ea, v & 0xFF, 1);
 }
 inline void st16(Context& c, uint8_t* m, uint32_t ea, uint32_t v) {
   uint16_t s = _byteswap_ushort((uint16_t)v);
-  if (uint8_t* p = fast(m, ea)) { std::memcpy(p, &s, 2); return; }
+  if (uint8_t* p = fast(m, ea)) { std::memcpy(p, &s, 2); mark_ram_write(ea, 2); return; }
   if (uint8_t* p = slowptr(ea)) { std::memcpy(p, &s, 2); return; }
   mmio_write(c, ea, v & 0xFFFF, 2);
 }
 inline void st32(Context& c, uint8_t* m, uint32_t ea, uint32_t v) {
   uint32_t s = _byteswap_ulong(v);
-  if (uint8_t* p = fast(m, ea)) { std::memcpy(p, &s, 4); return; }
+  if (uint8_t* p = fast(m, ea)) { std::memcpy(p, &s, 4); mark_ram_write(ea, 4); return; }
   if (uint8_t* p = slowptr(ea)) { std::memcpy(p, &s, 4); return; }
   mmio_write(c, ea, v, 4);
 }
 inline void st64(Context& c, uint8_t* m, uint32_t ea, uint64_t v) {
   uint64_t s = _byteswap_uint64(v);
-  if (uint8_t* p = fast(m, ea)) { std::memcpy(p, &s, 8); return; }
+  if (uint8_t* p = fast(m, ea)) { std::memcpy(p, &s, 8); mark_ram_write(ea, 8); return; }
   if (uint8_t* p = slowptr(ea)) { std::memcpy(p, &s, 8); return; }
   mmio_write64(c, ea, v);
 }

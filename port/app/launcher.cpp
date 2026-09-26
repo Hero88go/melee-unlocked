@@ -22,6 +22,7 @@
 #include <uxtheme.h>
 #include <intrin.h>
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -49,7 +50,7 @@
 #define IDB_BAILEY 5
 
 namespace {
-enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_SEG_LEGACY, ID_SEG_DLSS5, ID_WARM_CACHE, ID_TIMER = 1 };
+enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_WARM_CACHE, ID_VERSIONS, ID_TIMER = 1 };
 const UINT WM_APP_LOG = WM_APP + 1;      // lParam: heap std::string* to append to the log
 const UINT WM_APP_BUILD_DONE = WM_APP + 2;
 const UINT WM_APP_GAME_DONE = WM_APP + 3;
@@ -83,8 +84,8 @@ const COLORREF C_OK = RGB(0x5A, 0xC8, 0x8A), C_WARN = RGB(0xE5, 0xA8, 0x4A), C_B
 const COLORREF NO_FILL = CLR_INVALID;
 
 HWND g_main;
-HWND g_play[7], g_build[3];
-HWND g_iso_edit, g_play_btn, g_slippi_btn, g_update_btn, g_log, g_build_btn, g_warm_cache_check;
+HWND g_play[6], g_build[3];
+HWND g_iso_edit, g_play_btn, g_slippi_btn, g_update_btn, g_versions_btn, g_log, g_build_btn, g_warm_cache_check;
 HFONT g_font, g_font_big, g_font_mono, g_font_mark, g_font_nav, g_font_label, g_font_small;
 HICON g_mark = nullptr;          // IDI_MELEE_MARK, the wordmark drawn at the top of the rail
 HBRUSH g_br_field, g_br_log;
@@ -93,21 +94,14 @@ int g_dog_w = 0, g_dog_h = 0;
 HBITMAP g_wordmark = nullptr;    // the MU mark cut off its navy plate, at full resolution
 int g_wordmark_w = 0, g_wordmark_h = 0;
 std::string g_dir, g_iso, g_game_exe;
-// Which of the two builds to run. Asking the processor is right for everyone, so there is no control
-// for this: nobody should have to know what an instruction set is to start a game, and a player who
-// picked the wrong one by hand would be worse off than the detector ever leaves them.
-// "cpubuild=1" or "cpubuild=2" in launcher.ini forces the standard or the compatibility build. That
-// is deliberately undocumented and exists only so a wrong answer from the detector can be worked
-// around without waiting for a release.
+std::string g_active_version; // folder name inside Versions; empty means the current install
+bool g_rollback_consumed = true;
+// The game is a single integrated build. Older CPUs can still use a compatibility executable
+// when one is present; this is selected automatically unless launcher.ini overrides it.
 enum CpuBuild { CPU_AUTO = 0, CPU_STANDARD = 1, CPU_COMPAT = 2 };
 int g_cpu_build = CPU_AUTO;
-int g_selected_build = 0; // 0 Legacy, 1 experimental neural rendering
 bool g_install_requested = false;
 bool g_warm_cache_on_play = false;
-HWND g_seg[2]{};                 // the GAME BUILD segments: 0 Legacy, 1 experimental
-// The experimental build's warning is shown the first time it is launched on this machine, not on
-// every start: an unskippable box before every single launch is nagging, not information.
-bool g_dlss5_warned = false;
 std::string g_slippi_line, g_version_line;
 COLORREF g_version_dot = C_FAINT;
 std::atomic<bool> g_building{false}, g_playing{false};
@@ -121,6 +115,13 @@ std::wstring widen(const std::string& s) { int n = MultiByteToWideChar(CP_UTF8, 
 std::string narrow(const std::wstring& w) { int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr); std::string s(n ? n - 1 : 0, 0); if (n) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), n, nullptr, nullptr); return s; }
 bool file_exists(const std::string& p) { DWORD a = GetFileAttributesW(widen(p).c_str()); return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY); }
 void set_text(HWND h, const std::string& s) { SetWindowTextW(h, widen(s).c_str()); }
+bool safe_version_folder(const std::string& s) {
+  if (s.empty() || s.size() > 70 || s.find("..") != std::string::npos) return false;
+  for (char c : s) if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
+                    !(c >= '0' && c <= '9') && c != '.' && c != '-' && c != '_') return false;
+  return true;
+}
+std::string active_dir() { return g_active_version.empty() ? g_dir : g_dir + "\\Versions\\" + g_active_version; }
 
 // A layout rectangle in pixels.
 RECT LR(int x, int y, int w, int h) { RECT r{S(x), S(y), S(x + w), S(y + h)}; return r; }
@@ -159,15 +160,18 @@ void load_ini() {
     std::ifstream f(ini_path());
     std::string line;
     while (std::getline(f, line)) {
-      if (!line.empty() && line.back() == '') line.pop_back();
+      if (!line.empty() && line.back() == '\r') line.pop_back();
       if (line.rfind("cpubuild=", 0) == 0) {
         const int v = std::atoi(line.c_str() + 9);
         if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
-      } else if (line == "build=experimental") g_selected_build = 1;
-      else if (line == "dlss5warned=1") g_dlss5_warned = true;
+      } else if (line.rfind("activeversion=", 0) == 0 && safe_version_folder(line.substr(14))) g_active_version = line.substr(14);
       else if (line == "warmcache=1") g_warm_cache_on_play = true;
     }
   }
+  if (!g_active_version.empty() &&
+      (!file_exists(active_dir() + "\\Sys\\codehandler.bin") ||
+       !file_exists(active_dir() + "\\melee_port.exe")))
+    g_active_version.clear();
   g_iso = read_iso_from(ini_path());
   if (g_iso.empty() || !file_exists(g_iso)) {
     std::string remembered = read_iso_from(shared_ini_path());
@@ -181,9 +185,9 @@ void load_ini() {
 void save_ini() {
   {
     std::ofstream f(ini_path());
-    f << "iso=" << g_iso << "\nbuild=" << (g_selected_build ? "experimental" : "legacy") << "\n";
+    f << "iso=" << g_iso << "\n";
+    if (!g_active_version.empty()) f << "activeversion=" << g_active_version << "\n";
     if (g_warm_cache_on_play) f << "warmcache=1\n";
-    if (g_dlss5_warned) f << "dlss5warned=1\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
     if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
   }
@@ -297,27 +301,33 @@ std::string game_exe() {
   // machine is not stuck arguing with a detector.
   const bool want_compat = g_cpu_build == CPU_COMPAT ||
                            (g_cpu_build == CPU_AUTO && !cpu_has_avx2());
-  const std::string stem = g_selected_build ? "melee_port_dlss5" : "melee_port";
-  if (want_compat && file_exists(g_dir + "\\" + stem + "_compat.exe"))
-    return g_dir + "\\" + stem + "_compat.exe";
-  if (file_exists(g_dir + "\\" + stem + ".exe")) return g_dir + "\\" + stem + ".exe";
+  const std::string stem = "melee_port";
+  const std::string dir = active_dir();
+  if (want_compat && file_exists(dir + "\\" + stem + "_compat.exe"))
+    return dir + "\\" + stem + "_compat.exe";
+  if (file_exists(dir + "\\" + stem + ".exe")) return dir + "\\" + stem + ".exe";
+  if (!g_active_version.empty()) return dir + "\\" + stem + ".exe";
   std::string root = repo_root();
-  if (!root.empty()) return root + (g_selected_build ? "\\build-dlss5\\port\\Release\\melee_port.exe" : "\\build-review\\port\\Release\\melee_port.exe");
+  if (!root.empty()) {
+    const std::string integrated = root + "\\build-integration\\port\\Release\\melee_port.exe";
+    if (file_exists(integrated)) return integrated;
+    return root + "\\build-review\\port\\Release\\melee_port.exe";
+  }
   return g_dir + "\\" + stem + ".exe";
 }
 // Working directory for the game: the release folder (Sys next to the launcher) or the repo root
 // of a source checkout (its defaults, port/slippi_sys and shadercache, are relative paths).
 std::string work_dir() {
-  if (file_exists(g_dir + "\\Sys\\codehandler.bin")) return g_dir;
+  if (file_exists(active_dir() + "\\Sys\\codehandler.bin")) return active_dir();
   std::string root = repo_root();
   return root.empty() ? g_dir : root;
 }
-std::string settings_ini_path() { return work_dir() + "\\port-settings.ini"; }
+std::string settings_ini_path() { return (g_active_version.empty() ? work_dir() : g_dir) + "\\port-settings.ini"; }
 std::string game_args() {
-  std::string base = g_dir;
-  std::string a = " --iso \"" + g_iso + "\" --threaded-renderer";
-  if (file_exists(g_dir + "\\Sys\\codehandler.bin"))
-    a += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + base + "\\User\\Slippi\" --replay-dir \"" + base + "\\Replays\" --card-dir \"" + base + "\\User\\GC\\CardA\"";
+  std::string base = active_dir();
+  std::string a = " --iso \"" + g_iso + "\" --threaded-renderer --settings-path \"" + settings_ini_path() + "\"";
+  if (file_exists(base + "\\Sys\\codehandler.bin"))
+    a += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + g_dir + "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\CardA\"";
   return a;
 }
 
@@ -397,11 +407,6 @@ void dot(HDC dc, int x, int y, COLORREF c) {
 }
 
 RECT nav_rect(int i) { return LR(12, NAV_Y + i * NAV_GAP, RAIL_W - 24, NAV_H); }
-// The two build segments, side by side on the GAME BUILD row: Legacy and the experimental build.
-RECT build_seg_rect(int i) {
-  const int left = CX + 96, total = CW - 96, gap = 8, w = (total - gap) / 2;
-  return LR(left + i * (w + gap), 98, w, 28);
-}
 RECT slippi_text_rect() { return LR(CX + 15, 212, 319, 34); }
 RECT version_text_rect() { return LR(CX + 15, 244, 319, 34); }
 RECT drop_sub_rect() { return LR(CX, 86, CW, 20); }
@@ -531,7 +536,16 @@ void paint_play(HDC dc) {
   draw_text(dc, L"MELEE NTSC 1.02 DISC IMAGE", LR(CX, 32, CW, 18), g_font_label, C_FAINT,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER, S(1));
   round_rect(dc, LR(CX, 58, 380, 34), 7, C_FIELD, C_FIELD, C_FIELD_BORDER);
-  draw_text(dc, L"GAME BUILD", LR(CX, 102, 130, 19), g_font_label, C_FAINT, DT_LEFT | DT_SINGLELINE | DT_VCENTER, S(1));
+  draw_text(dc, L"Graphics options are in Settings", LR(CX, 102, 180, 19), g_font_small,
+            C_DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+  // Game build: Legacy is the only build in this release. The source port is shown, disabled, so
+  // players can see it coming; it is painted only (no control), so it cannot be picked.
+  draw_text(dc, L"GAME BUILD", LR(398, 100, 64, 22), g_font_small, C_FAINT, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+  round_rect(dc, LR(462, 100, 70, 22), 6, C_BTN, C_BTN, C_ACC_LO);
+  draw_text(dc, L"Legacy", LR(462, 100, 70, 22), g_font_small, C_TEXT, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+  round_rect(dc, LR(538, 100, 160, 22), 6, RGB(0x1A, 0x21, 0x32), RGB(0x1A, 0x21, 0x32), RGB(0x28, 0x31, 0x47));
+  draw_text(dc, L"Source port (coming soon)", LR(538, 100, 160, 22), g_font_small, RGB(0x5C, 0x68, 0x7E),
+            DT_CENTER | DT_SINGLELINE | DT_VCENTER);
 
   dot(dc, CX, 215, g_slippi_missing ? C_WARN : C_OK);   // centred on the first line of slippi_text_rect
   draw_text(dc, widen(g_slippi_line), slippi_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
@@ -542,6 +556,14 @@ void paint_play(HDC dc) {
   RECT sep = LR(CX, 282, CW, 1);
   fill(dc, sep, C_SEP);
   draw_text(dc, HINT_TEXT, LR(CX, 294, CW, 44), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
+  std::string version_status = g_active_version.empty() ? "Current install" : "Playing " + g_active_version;
+  if (host::updater::rollback_state() == host::updater::RollbackState::Downloading)
+    version_status = host::updater::rollback_message();
+  else if (host::updater::rollback_state() == host::updater::RollbackState::Failed)
+    version_status = host::updater::rollback_message();
+  draw_text(dc, widen(version_status), LR(398, 348, 300, 32), g_font_small,
+            host::updater::rollback_state() == host::updater::RollbackState::Failed ? C_BAD : C_DIM,
+            DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 }
 
 
@@ -585,9 +607,6 @@ void draw_button(DRAWITEMSTRUCT* di) {
   bool down = (di->itemState & ODS_SELECTED) != 0;
   bool primary = di->hwndItem == g_play_btn;
   bool checkbox = di->hwndItem == g_warm_cache_check;
-  // The GAME BUILD segments: the chosen one is filled in the same purple as PLAY, the other is an
-  // outline, so which build is about to start reads at a glance without a second highlight colour.
-  const int segment = di->hwndItem == g_seg[0] ? 0 : di->hwndItem == g_seg[1] ? 1 : -1;
 
   // Reproduce the parent's gradient behind the button so the rounded corners have the right colour.
   vgrad(di->hDC, r, content_bg_at(wr.top), content_bg_at(wr.bottom));
@@ -606,18 +625,6 @@ void draw_button(DRAWITEMSTRUCT* di) {
     RECT label = r; label.left += S(24);
     draw_text(di->hDC, L"Warm cache from remembered ISO before Play", label, g_font_small,
               disabled ? C_FAINT : C_DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
-    return;
-  }
-
-  if (segment >= 0) {
-    const bool on = segment == g_selected_build;
-    COLORREF top = on ? C_ACC_HI : (down ? C_BTN_DOWN : C_BTN);
-    COLORREF bot = on ? C_ACC_LO : top;
-    COLORREF border = on ? NO_FILL : C_BTN_BORDER;
-    COLORREF text = on ? C_PLAY_TEXT : C_DIM;
-    round_rect(di->hDC, r, 7, top, bot, border);
-    wchar_t cap[128]{}; GetWindowTextW(di->hwndItem, cap, 128);
-    draw_text(di->hDC, cap, r, g_font_small, text, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
     return;
   }
 
@@ -705,12 +712,11 @@ void open_settings() {
   if (g_playing) return;
   g_game_exe = game_exe();
   if (!file_exists(g_game_exe)) {
-    if (g_selected_build && repo_root().empty()) { g_install_requested = true; host::updater::check(MELEE_PORT_VERSION, true); return; }
     select_tab(1); refresh_updater(); start_build(); return;
   }
   std::string cwd = work_dir();
   // --settings-window: the panel alone, no disc, no match engine, no prewarm.
-  std::string cmd = "\"" + g_game_exe + "\" --settings-window";
+  std::string cmd = "\"" + g_game_exe + "\" --settings-window --settings-path \"" + settings_ini_path() + "\"";
   STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
   if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi)) {
     MessageBoxW(g_main, L"Could not start melee_port.exe", L"Melee Unlocked Launcher", MB_ICONERROR);
@@ -720,33 +726,11 @@ void open_settings() {
   CloseHandle(pi.hProcess);
 }
 
-// A GAME BUILD segment was pressed: remember the choice, repaint both segments, and fetch the
-// experimental build if this install does not have it yet (a Legacy-only zip, nothing to build from).
-void select_build(int which) {
-  if (g_selected_build == which) return;
-  g_selected_build = which;
-  save_ini();
-  for (HWND h : g_seg) if (h) InvalidateRect(h, nullptr, TRUE);
-  if (g_selected_build && repo_root().empty() && !file_exists(game_exe())) {
-    g_install_requested = true;
-    host::updater::check(MELEE_PORT_VERSION, true);
-  }
-}
-
 void start_game() {
   if (g_playing || g_iso.empty()) return;
   g_game_exe = game_exe();
   if (!file_exists(g_game_exe)) {
-    if (g_selected_build && repo_root().empty()) { g_install_requested = true; host::updater::check(MELEE_PORT_VERSION, true); return; }
     select_tab(1); refresh_updater(); start_build(); return;
-  }
-  // Once per machine, not once per launch: after the first time it is the same text every start,
-  // in the way of the thing the button was pressed to do. The status in the game's own PC settings
-  // panel is what reports whether the model actually loaded.
-  if (g_selected_build && !g_dlss5_warned) {
-    MessageBoxW(g_main, L"DLSS 5 Neural Rendering is experimental and intended for RTX 50-series GPUs or newer. It also needs a model in the NVIDIA driver or nvngx_dlssnr.dll supplied beside the game executable.\n\nThis is shown once.", L"Experimental build", MB_OK | MB_ICONWARNING);
-    g_dlss5_warned = true;
-    save_ini();
   }
   if (g_warm_cache_on_play) {
     g_building = true;
@@ -788,6 +772,20 @@ bool g_update_prompted = false;
 void refresh_updater() {
   using host::updater::State;
   auto st = host::updater::state();
+  if (!g_rollback_consumed && host::updater::rollback_state() == host::updater::RollbackState::Ready) {
+    g_rollback_consumed = true;
+    const std::string folder = host::updater::rollback_folder();
+    const auto slash = folder.find_last_of("\\/");
+    if (slash != std::string::npos && safe_version_folder(folder.substr(slash + 1))) {
+      g_active_version = folder.substr(slash + 1);
+      save_ini();
+    }
+    InvalidateRect(g_main, nullptr, FALSE);
+  }
+  if (!g_rollback_consumed && host::updater::rollback_state() == host::updater::RollbackState::Failed) {
+    g_rollback_consumed = true;
+    InvalidateRect(g_main, nullptr, FALSE);
+  }
   // One yes/no prompt per launch when a newer release exists. Nothing installs without a Yes.
   if (st == State::UpdateAvailable && g_install_requested) {
     g_install_requested = false;
@@ -811,6 +809,63 @@ void refresh_updater() {
   }
   ShowWindow(g_update_btn, (st == State::UpdateAvailable || st == State::Failed) && g_tab == 0 ? SW_SHOW : SW_HIDE);
   set_text(g_update_btn, st == State::Failed ? "Retry" : "Update and restart");
+  const bool choosing = host::updater::rollback_state() == host::updater::RollbackState::Downloading;
+  EnableWindow(g_versions_btn, !choosing);
+  EnableWindow(g_update_btn, !choosing);
+}
+
+void choose_version() {
+  if (host::updater::rollback_state() == host::updater::RollbackState::Downloading) return;
+  const auto catalog = host::updater::releases();
+  std::vector<std::string> installed;
+  std::error_code ec;
+  const std::filesystem::path versions = std::filesystem::path(g_dir) / "Versions";
+  for (std::filesystem::directory_iterator it(versions, std::filesystem::directory_options::skip_permission_denied, ec), end;
+       !ec && it != end; it.increment(ec)) {
+    if (!it->is_directory(ec) || ec) { ec.clear(); continue; }
+    const std::string id = it->path().filename().string();
+    if (safe_version_folder(id) && file_exists((it->path() / "melee_port.exe").string()) &&
+        file_exists((it->path() / "Sys" / "codehandler.bin").string())) installed.push_back(id);
+  }
+  if (catalog.empty() && installed.empty()) {
+    MessageBoxW(g_main, L"Version history is still loading or could not be reached. Try again shortly.", L"Melee Unlocked Launcher", MB_OK | MB_ICONINFORMATION);
+    return;
+  }
+  HMENU menu = CreatePopupMenu();
+  AppendMenuW(menu, MF_STRING | (g_active_version.empty() ? MF_CHECKED : 0), 1900, L"Current install");
+  AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+  if (!installed.empty()) {
+    HMENU local = CreatePopupMenu();
+    for (size_t i = 0; i < installed.size(); ++i)
+      AppendMenuW(local, MF_STRING | (g_active_version == installed[i] ? MF_CHECKED : 0), 3000 + (UINT)i, widen(installed[i]).c_str());
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)local, L"Installed versions");
+  }
+  for (size_t first = 0; first < catalog.size(); first += 10) {
+    HMENU group = CreatePopupMenu();
+    for (size_t i = first; i < catalog.size() && i < first + 10; ++i) {
+      const bool available = catalog[i].legacy;
+      std::wstring name = L"v" + widen(catalog[i].version);
+      if (!available) name += L" (no standard build)";
+      AppendMenuW(group, MF_STRING | (available ? 0 : MF_GRAYED), 2000 + (UINT)i, name.c_str());
+    }
+    std::wstring title = first == 0 ? L"Recent releases" : L"Older releases " + std::to_wstring(first + 1) + L"-" + std::to_wstring(std::min(first + 10, catalog.size()));
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)group, title.c_str());
+  }
+  RECT r{}; GetWindowRect(g_versions_btn, &r);
+  const UINT picked = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN, r.left, r.top, 0, g_main, nullptr);
+  DestroyMenu(menu);
+  if (picked == 1900) { g_active_version.clear(); save_ini(); InvalidateRect(g_main, nullptr, FALSE); return; }
+  if (picked >= 3000 && picked - 3000 < installed.size()) {
+    g_active_version = installed[picked - 3000]; save_ini(); InvalidateRect(g_main, nullptr, FALSE); return;
+  }
+  if (picked < 2000 || picked - 2000 >= catalog.size()) return;
+  const std::string version = catalog[picked - 2000].version;
+  const std::string label = "Install and select Melee Unlocked " + version + "?\n\nIt will be kept in Versions beside the current build. Your ISO, settings, saves, and replays stay shared.";
+  if (MessageBoxW(g_main, widen(label).c_str(), L"Choose game version", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) != IDYES) return;
+  if (host::updater::install_release(version, false, g_dir)) {
+    g_rollback_consumed = false;
+    InvalidateRect(g_main, nullptr, FALSE);
+  }
 }
 
 HWND make(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, HFONT font = nullptr, DWORD ex = 0) {
@@ -818,16 +873,6 @@ HWND make(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, in
   SendMessageW(hw, WM_SETFONT, (WPARAM)(font ? font : g_font), TRUE);
   return hw;
 }
-// Same, for a control whose rectangle is already in pixels (build_seg_rect, so the segments and the
-// painted label cannot drift apart at a non-96 DPI).
-HWND make_px(const wchar_t* cls, const wchar_t* text, DWORD style, RECT r, int id, HFONT font = nullptr) {
-  HWND hw = CreateWindowExW(0, cls, text, WS_CHILD | WS_VISIBLE | style, r.left, r.top,
-                            r.right - r.left, r.bottom - r.top, g_main, (HMENU)(INT_PTR)id,
-                            GetModuleHandleW(nullptr), nullptr);
-  SendMessageW(hw, WM_SETFONT, (WPARAM)(font ? font : g_font), TRUE);
-  return hw;
-}
-
 LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   switch (msg) {
     case WM_CREATE: {
@@ -837,14 +882,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       int i = 0;
       g_play[i++] = g_iso_edit = make(L"EDIT", L"", ES_AUTOHSCROLL | ES_READONLY, CX + 10, 66, 360, 18, ID_ISO_EDIT);
       g_play[i++] = make(L"BUTTON", L"Browse...", BS_OWNERDRAW, 602, 58, 96, 34, ID_BROWSE);
-      {
-        RECT s0 = build_seg_rect(0), s1 = build_seg_rect(1);
-        g_play[i++] = g_seg[0] = make_px(L"BUTTON", L"Legacy", BS_OWNERDRAW, s0, ID_SEG_LEGACY);
-        g_play[i++] = g_seg[1] = make_px(L"BUTTON", L"DLSS 5 (RTX 50+)", BS_OWNERDRAW, s1, ID_SEG_DLSS5);
-      }
       g_play[i++] = g_play_btn = make(L"BUTTON", L"PLAY", BS_OWNERDRAW, CX, 134, CW, 62, ID_PLAY, g_font_big);
       g_play[i++] = g_slippi_btn = make(L"BUTTON", L"Get Slippi Launcher", BS_OWNERDRAW, 554, 214, 144, 30, ID_SLIPPI_GET);
       g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_OWNERDRAW, 554, 246, 144, 30, ID_UPDATE);
+      g_play[i++] = g_versions_btn = make(L"BUTTON", L"Choose version...", BS_OWNERDRAW, CX, 348, 174, 32, ID_VERSIONS);
       // Build page
       g_build[0] = g_build_btn = make(L"BUTTON", L"Build", BS_OWNERDRAW, CX, 182, 120, 32, ID_BUILD);
       g_build[1] = g_warm_cache_check = make(L"BUTTON", L"", BS_OWNERDRAW, CX + 136, 188, 350, 24, ID_WARM_CACHE);
@@ -916,14 +957,14 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           break;
         case ID_BROWSE: browse(); break;
         case ID_PLAY: start_game(); break;
-        case ID_SEG_LEGACY: select_build(0); break;
-        case ID_SEG_DLSS5: select_build(1); break;
         case ID_BUILD: start_build(); break;
         case ID_UPDATE:
+          if (host::updater::rollback_state() == host::updater::RollbackState::Downloading) break;
           if (host::updater::state() == host::updater::State::Failed) host::updater::check(MELEE_PORT_VERSION);
           else host::updater::download_and_install();
           refresh_updater();
           break;
+        case ID_VERSIONS: choose_version(); break;
         case ID_SLIPPI_GET: ShellExecuteW(hwnd, L"open", L"https://slippi.gg/downloads", nullptr, nullptr, SW_SHOWNORMAL); break;
       }
       return 0;
@@ -961,7 +1002,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       EnableWindow(g_build_btn, !g_iso.empty());
       launch_game_now();
       return 0;
-    case WM_TIMER: refresh_updater(); return 0;
+    case WM_TIMER: refresh_updater(); if (g_tab == 0 && host::updater::rollback_state() == host::updater::RollbackState::Downloading) invalidate(LR(398, 348, 300, 32)); return 0;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT: {
       HDC dc = (HDC)wp;

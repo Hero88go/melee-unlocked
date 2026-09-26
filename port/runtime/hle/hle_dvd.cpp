@@ -24,11 +24,13 @@ void finish_read(uint32_t block, uint32_t addr, uint32_t length, uint32_t disc_o
   host::wr32(block + 0x1C, length);
   host::wr32(block + 0x20, length);
 }
-void do_read(uint32_t block, uint32_t addr, uint32_t length, uint32_t disc_offset) {
+void do_file_read(uint32_t block, uint32_t addr, uint32_t length, uint32_t file_start,
+                  uint32_t file_offset) {
   host::SimCostScope cost(host::SIM_DVD);
-  if (!host::disc_read(disc_offset, host::ptr(addr, length), length))
-    host::die("disc read failed: offset %08X length %X to %08X", disc_offset, length, addr);
-  finish_read(block, addr, length, disc_offset);
+  if (!host::disc_read_file(file_start, file_offset, host::ptr(addr, length), length))
+    host::die("disc file read failed: start %08X offset %X length %X to %08X",
+              file_start, file_offset, length, addr);
+  finish_read(block, addr, length, file_start + file_offset);
 }
 
 // Asynchronous reads run on a worker so a stage load (tens of MB) never stalls the simulation
@@ -36,7 +38,9 @@ void do_read(uint32_t block, uint32_t addr, uint32_t length, uint32_t disc_offse
 // the request (a quarter frame), in request order, so the guest sees deterministic timing; if
 // the worker has not finished by then the simulation waits for it, as it used to for every read.
 struct AsyncRead {
-  uint32_t block, addr, length, disc_offset, callback; bool file_info;
+  uint32_t block, addr, length, disc_offset, callback;
+  uint32_t file_start, file_offset;
+  bool file_info;
   uint64_t ready_tb;
   std::shared_ptr<std::atomic<bool>> done;
 };
@@ -51,7 +55,10 @@ void dvd_worker() {
   for (;;) {
     AsyncRead r;
     { std::unique_lock<std::mutex> lk(g_dvd_mutex); g_dvd_cv.wait(lk, [] { return !g_dvd_queue.empty(); }); r = g_dvd_queue.front(); g_dvd_queue.pop_front(); }
-    if (!host::disc_read(r.disc_offset, host::ptr(r.addr, r.length), r.length)) host::die("disc read failed: offset %08X length %X to %08X", r.disc_offset, r.length, r.addr);
+    bool ok = r.file_info
+        ? host::disc_read_file(r.file_start, r.file_offset, host::ptr(r.addr, r.length), r.length)
+        : host::disc_read(r.disc_offset, host::ptr(r.addr, r.length), r.length);
+    if (!ok) host::die("disc read failed: offset %08X length %X to %08X", r.disc_offset, r.length, r.addr);
     { std::lock_guard<std::mutex> lk(g_dvd_mutex); r.done->store(true, std::memory_order_release); }
     g_dvd_done_cv.notify_all();
   }
@@ -97,7 +104,8 @@ HLE(DVDReadAsyncPrio) {
   uint32_t start = host::rd32(info + 0x30);
   host::wr32(info + 0x38, callback);
   TRACE("DVDReadAsyncPrio info=%08X addr=%08X len=%X off=%X cb=%08X", info, addr, length, offset, callback);
-  start_read(AsyncRead{info, addr, length, start + offset, callback, true});
+  if ((uint64_t)start + offset > UINT32_MAX) host::die("disc file read offset overflow");
+  start_read(AsyncRead{info, addr, length, start + offset, callback, start, offset, true});
   RET(1);
 }
 
@@ -106,7 +114,8 @@ HLE(DVDReadPrio) {
   uint32_t info = ARG0, addr = ARG1, length = ARG2, offset = ARG3;
   uint32_t start = host::rd32(info + 0x30);
   TRACE("DVDReadPrio info=%08X addr=%08X len=%X off=%X", info, addr, length, offset);
-  do_read(info, addr, length, start + offset);
+  if ((uint64_t)start + offset > UINT32_MAX) host::die("disc file read offset overflow");
+  do_file_read(info, addr, length, start, offset);
   RET(length);
 }
 
@@ -116,7 +125,7 @@ HLE(DVDReadAbsAsyncPrio) {
   host::pump_completions();
   host::wr32(block + 0x28, callback);
   TRACE("DVDReadAbsAsyncPrio block=%08X addr=%08X len=%X off=%X", block, addr, length, offset);
-  start_read(AsyncRead{block, addr, length, offset, callback, false});
+  start_read(AsyncRead{block, addr, length, offset, callback, 0, 0, false});
   RET(1);
 }
 

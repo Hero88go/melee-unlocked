@@ -21,7 +21,7 @@ namespace dlss5 {
 // The model's own controls. It reads them when its feature is built, so changing any of them
 // rebuilds the feature (a brief reset of its history, no restart).
 struct Tuning {
-  float intensity = 1.0f;         // DLSSNR.Intensity: how strongly the result replaces the frame, 0..1
+  float intensity = 1.0f;         // DLSSNR.Intensity: experimental 0..10 UI range; >1 is undocumented
   float detail = 1.0f;            // DLSSNR.LocalStructureStrength: added surface detail
   float tone = 1.0f;              // DLSSNR.LocalToneStrength: local lighting and contrast
   float skin = -1.0f;             // DLSSNR.SkinStructureStrength: -1 lets the model decide

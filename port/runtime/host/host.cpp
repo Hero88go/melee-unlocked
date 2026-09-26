@@ -1,6 +1,7 @@
 // Host services: memory, disc, boot, event delivery, time, MMIO, logging.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
+#include "cosmetic_mods.h"
 #include "memory_range.h"
 #include <windows.h>
 #include <bcrypt.h>
@@ -45,6 +46,8 @@ static bool g_pe_finish_pending = false;
 static bool g_pe_token_pending = false;
 static uint16_t g_pe_token = 0;
 static uint32_t g_retraces = 0;
+static std::atomic<uint32_t> g_profiler_frame{0};
+static std::vector<uint32_t> g_slow_sim_frames;
 static std::atomic<bool> g_exit{false};
 static std::atomic<int> g_exit_code{0};
 static std::chrono::steady_clock::time_point g_next_frame;
@@ -129,9 +132,10 @@ uint8_t* ptr(uint32_t addr, uint32_t bytes) {
 uint32_t rd32(uint32_t a) { uint32_t v; std::memcpy(&v, ptr(a, 4), 4); return _byteswap_ulong(v); }
 uint16_t rd16(uint32_t a) { uint16_t v; std::memcpy(&v, ptr(a, 2), 2); return _byteswap_ushort(v); }
 uint8_t rd8(uint32_t a) { return *ptr(a); }
-void wr32(uint32_t a, uint32_t v) { v = _byteswap_ulong(v); std::memcpy(ptr(a, 4), &v, 4); }
-void wr16(uint32_t a, uint16_t v) { v = _byteswap_ushort(v); std::memcpy(ptr(a, 2), &v, 2); }
-void wr8(uint32_t a, uint8_t v) { *ptr(a) = v; }
+void mark_ram_write(uint32_t a, uint32_t bytes) { ppc::mark_ram_write(a, bytes); }
+void wr32(uint32_t a, uint32_t v) { v = _byteswap_ulong(v); std::memcpy(ptr(a, 4), &v, 4); mark_ram_write(a, 4); }
+void wr16(uint32_t a, uint16_t v) { v = _byteswap_ushort(v); std::memcpy(ptr(a, 2), &v, 2); mark_ram_write(a, 2); }
+void wr8(uint32_t a, uint8_t v) { *ptr(a) = v; mark_ram_write(a, 1); }
 std::string cstr(uint32_t addr, size_t max) {
   std::string s;
   for (size_t i = 0; i < max; ++i) { char ch = (char)rd8(addr + (uint32_t)i); if (!ch) break; s += ch; }
@@ -159,7 +163,29 @@ bool disc_read(uint32_t offset, void* dst, uint32_t size) {
   if (_fseeki64(g_disc, offset, SEEK_SET) != 0) return false;
   ++g_disc_reads;
   g_disc_bytes += size;
-  return std::fread(dst, 1, size, g_disc) == size;
+  bool ok = std::fread(dst, 1, size, g_disc) == size;
+  auto* output = (uint8_t*)dst;
+  if (ok && ram && output >= ram && output <= ram + ppc::RAM_SIZE &&
+      size <= (uint32_t)(ram + ppc::RAM_SIZE - output))
+    ppc::mark_ram_write(ppc::RAM_BASE + (uint32_t)(output - ram), size);
+  return ok;
+}
+bool disc_read_file(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, uint32_t size) {
+  switch (cosmetics::read(vanilla_file_start, file_offset, dst, size)) {
+    case cosmetics::OverrideRead::Success:
+      if (ram) {
+        auto* output = (uint8_t*)dst;
+        if (output >= ram && output <= ram + ppc::RAM_SIZE &&
+            size <= (uint32_t)(ram + ppc::RAM_SIZE - output))
+          ppc::mark_ram_write(ppc::RAM_BASE + (uint32_t)(output - ram), size);
+      }
+      return true;
+    case cosmetics::OverrideRead::Failed: return false;
+    case cosmetics::OverrideRead::NotOverridden: break;
+  }
+  uint64_t absolute = (uint64_t)vanilla_file_start + file_offset;
+  if (absolute > UINT32_MAX) return false;
+  return disc_read((uint32_t)absolute, dst, size);
 }
 uint32_t disc_fst_offset() { return g_fst_offset; }
 uint32_t disc_fst_size() { return g_fst_size; }
@@ -302,6 +328,10 @@ void boot_setup() {
   if (!valid_range(0, g_fst_max, ppc::RAM_SIZE) || g_fst_size > g_fst_max) die("invalid FST size");
   uint32_t fst_addr = (0x81800000u - g_fst_max) & ~31u;
   if (!disc_read(g_fst_offset, ptr(fst_addr, g_fst_size), g_fst_size)) die("cannot read FST");
+  // Resolve logical asset paths against this exact ISO before the guest initializes DVD. Selected
+  // entries keep their vanilla starts but receive their replacement lengths; DVDFileInfo reads are
+  // then served by file identity, so a larger mod never aliases the next physical ISO file.
+  cosmetics::apply_to_fst(ptr(fst_addr, g_fst_size), g_fst_size);
   wr32(0x80000038, fst_addr);
   wr32(0x8000003C, g_fst_max);
   wr32(0x80000034, fst_addr);                        // arena hi
@@ -348,6 +378,8 @@ void request_restart() {
 }
 int exit_code() { return g_exit_code.load(); }
 uint32_t retrace_count() { return g_retraces; }
+uint32_t profiler_frame_id() { return g_profiler_frame.load(std::memory_order_relaxed); }
+const std::vector<uint32_t>& slow_sim_frames() { return g_slow_sim_frames; }
 // The VI retrace is periodic in virtual time, like the hardware interrupt: `g_next_retrace_tb`
 // is the timebase value of the next retrace. A sleeping guest (wait_event) jumps time straight
 // to that boundary; a guest that busy-waits with interrupts enabled advances time in small steps
@@ -530,6 +562,11 @@ double last_sim_frame_ms() { return g_last_sim_ms; }
 void retrace() {
   struct Guard { Guard() { g_in_retrace = true; } ~Guard() { g_in_retrace = false; } } guard;
   ++g_retraces;
+  // Work sampled since the prior retrace belongs to the prior frame id. Publish
+  // the new id only after that interval is complete so a slow-frame report can
+  // select the samples that actually occurred inside it.
+  const uint32_t completed_frame = g_retraces - 1;
+  g_profiler_frame.store(g_retraces, std::memory_order_relaxed);
   {
     double now = now_seconds();
     if (g_sim_frame_start > 0.0) {
@@ -537,9 +574,20 @@ void retrace() {
       g_sim_ms_window += g_last_sim_ms;
       if (g_last_sim_ms > g_sim_ms_worst) g_sim_ms_worst = g_last_sim_ms;
       if (g_last_sim_ms > 20.0) {
+        g_slow_sim_frames.push_back(completed_frame);
         char detail[256] = ""; size_t n = 0;
         for (int i = 0; i < SIM_COST_COUNT; ++i) if (g_sim_costs[i] * 1000.0 >= 0.5) n += (size_t)std::snprintf(detail + n, sizeof detail - n, " %s %.1f", g_sim_cost_names[i], g_sim_costs[i] * 1000.0);
         log("sim frame %u took %.1f ms (ms:%s%s)", g_retraces, g_last_sim_ms, detail, n ? "" : " guest code");
+        // This is end-of-frame context rather than attribution. With --profile, the sampling
+        // report below also names routines sampled during this exact slow frame.
+        if (cpu) {
+          constexpr uint32_t kRecentFunctions = 16;
+          const uint32_t count = std::min<uint32_t>(cpu->trace_pos, kRecentFunctions);
+          for (uint32_t i = 0; i < count; ++i) {
+            const uint32_t pc = cpu->trace[(cpu->trace_pos - count + i) & 63u];
+            if (pc) log("  end-of-frame guest %08X %s", pc, symbol_name(pc));
+          }
+        }
       }
     }
     std::memset(g_sim_costs, 0, sizeof g_sim_costs);

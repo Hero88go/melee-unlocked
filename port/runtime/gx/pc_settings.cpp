@@ -6,9 +6,18 @@
 #endif
 #include <unordered_map>
 #include "texture_pack.h"
+#include "video_background.h"
 #include <atomic>
+#include <memory>
+#include <cstring>
 #include <cstdarg>
+#include <cstdio>
+#include <cfloat>
+#include <sstream>
+#include <sstream>
 #include "pc_settings_shared.h"
+#include "ui_sources/gd_melee/motion.h"
+#include "radial_navigation.h"
 #include "gx_backend.h"
 #include "jukebox.h"
 #include "window.h"
@@ -19,22 +28,31 @@
 #include "user_gecko.h"
 #include "gecko_data.h"
 #include "slippi_online.h"
+#include "native_practice.h"
 #include "hid_pad.h"
 #include "updater.h"
 #include "discord_presence.h"
 #include "controller_profiles.h"
+#include "cosmetic_mods.h"
 #ifndef MELEE_PORT_VERSION
 #define MELEE_PORT_VERSION "dev"
 #endif
 #include "imgui.h"
+#include "imgui_internal.h"
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb/stb_image.h"
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx12.h"
 #include <windows.h>
 #include <xinput.h>
+#include <mmsystem.h>
+#include <mmsystem.h>
 #include <d3d12.h>
 #include <wrl/client.h>
 #include <array>
 #include <functional>
+#include <map>
 #include <string>
 #include <filesystem>
 #include <fstream>
@@ -44,7 +62,96 @@
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
 namespace gx {
 namespace {
+std::atomic<uint32_t> g_guest_options_selection{0};
+std::atomic<bool> g_guest_options_open_request{false};
+bool g_menu_style_gallery_open = false;
+std::unordered_map<std::string, std::unique_ptr<ImTextureData>> g_cosmetic_previews;
+
+std::string ui_source_asset_path_uncached(const char* source, const char* filename);
+// Resolved once per asset. The GD Melee page asks for its font atlas and artwork dozens of times a
+// frame; resolving each call meant two filesystem checks and a module-path lookup every time,
+// which held that page near 80 fps with spikes past 200 ms.
+std::string ui_source_asset_path(const char* source, const char* filename) {
+  static std::unordered_map<std::string, std::string> resolved;
+  std::string key(source);
+  key += '/';
+  key += filename;
+  auto found = resolved.find(key);
+  if (found != resolved.end()) return found->second;
+  return resolved.emplace(std::move(key), ui_source_asset_path_uncached(source, filename)).first->second;
+}
+
+std::string ui_source_asset_path_uncached(const char* source, const char* filename) {
+  const std::filesystem::path source_asset =
+      std::filesystem::path("port/runtime/gx/ui_sources") / source / "assets" / filename;
+  if (std::filesystem::exists(source_asset)) return source_asset.string();
+  wchar_t module[MAX_PATH]{};
+  const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+  if (length > 0 && length < MAX_PATH) {
+    const std::filesystem::path packaged =
+        std::filesystem::path(module).parent_path() / "ui_sources" / source / filename;
+    if (std::filesystem::exists(packaged)) return packaged.string();
+  }
+  return source_asset.string();
+}
+
+ImTextureData* cosmetic_preview(const std::string& path) {
+  if (path.empty()) return nullptr;
+  auto cached = g_cosmetic_previews.find(path);
+  if (cached != g_cosmetic_previews.end()) return cached->second.get();
+  std::unique_ptr<ImTextureData> texture;
+  std::ifstream file(std::filesystem::u8path(path), std::ios::binary | std::ios::ate);
+  if (file && file.tellg() > 0 && file.tellg() <= 16 * 1024 * 1024) {
+    const size_t size = (size_t)file.tellg();
+    std::vector<unsigned char> encoded(size);
+    file.seekg(0);
+    if (file.read((char*)encoded.data(), size)) {
+      int width = 0, height = 0, channels = 0;
+      if (stbi_info_from_memory(encoded.data(), (int)size, &width, &height, &channels) &&
+          width > 0 && height > 0 && (int64_t)width * height <= 4'000'000) {
+        unsigned char* pixels = stbi_load_from_memory(encoded.data(), (int)size,
+                                                       &width, &height, &channels, 4);
+        if (pixels) {
+          texture = std::make_unique<ImTextureData>();
+          texture->Create(ImTextureFormat_RGBA32, width, height);
+          std::memcpy(texture->Pixels, pixels, (size_t)width * height * 4);
+          texture->UseColors = true;
+          ImGui::RegisterUserTexture(texture.get());
+          stbi_image_free(pixels);
+        }
+      }
+    }
+  }
+  auto* result = texture.get();
+  g_cosmetic_previews.emplace(path, std::move(texture));
+  return result;
+}
+
+void draw_cosmetic_preview(const host::cosmetics::AssetInfo& asset) {
+  if (auto* preview = cosmetic_preview(asset.preview_path)) {
+    const float scale = std::min(280.0f / preview->Width, 170.0f / preview->Height);
+    ImGui::Image(preview->GetTexRef(), ImVec2(preview->Width * scale, preview->Height * scale));
+  }
+}
+}
+
+void settings_guest_options_frame(uint8_t menu, uint16_t selection, uint32_t buttons) {
+  static uint8_t previous_menu = 0xff;
+  if (menu != previous_menu && menu == 4)
+    host::log("pc settings: original Options menu detected; PC Settings row enabled");
+  previous_menu = menu;
+  g_guest_options_selection.store(menu == 4 ? (uint32_t)selection + 1 : 0,
+                                  std::memory_order_relaxed);
+  if (menu == 4 && selection == 3 && (buttons & 0x10)) {
+    g_guest_options_open_request.store(true, std::memory_order_release);
+    host::log("pc settings: original Options row selected; opening PC Settings");
+  }
+}
+namespace {
 float g_overlay_game_aspect = 73.0f / 60.0f;
+std::array<HudPlayerSnapshot, 4> g_hud_players{};
+std::array<std::string, 4> g_hud_player_names{};
+bool g_hud_match = false;
 
 struct OverlayBounds { float left, top, right, bottom; };
 
@@ -71,6 +178,40 @@ void clamp_overlay_window() {
 
 void settings_set_game_aspect(float aspect) {
   if (std::isfinite(aspect) && aspect > 0.1f) g_overlay_game_aspect = aspect;
+}
+
+void settings_set_hud_snapshot(const Frame& frame) {
+  g_hud_match = frame_in_match(frame);
+  g_hud_players = frame.hud_players;
+  g_hud_player_names = frame.player_names;
+}
+
+static void draw_player_nicknames() {
+  if (!g_hud_match) return;
+  const OverlayBounds bounds = overlay_bounds();
+  const float width = bounds.right - bounds.left, height = bounds.bottom - bounds.top;
+  const float font_size = std::clamp(height / 27.0f, 15.0f, 24.0f);
+  static constexpr ImU32 colors[4] = {
+    IM_COL32(255, 99, 107, 255), IM_COL32(83, 164, 255, 255),
+    IM_COL32(255, 211, 84, 255), IM_COL32(93, 220, 143, 255)};
+  ImDrawList* draw = ImGui::GetForegroundDrawList();
+  draw->PushClipRect(ImVec2(bounds.left, bounds.top), ImVec2(bounds.right, bounds.bottom), true);
+  for (int slot = 0; slot < 4; ++slot) {
+    const auto& player = g_hud_players[slot];
+    if (!player.tag_visible || g_hud_player_names[slot].empty()) continue;
+    const std::string label = "P" + std::to_string(slot + 1) + "  " + g_hud_player_names[slot];
+    const ImVec2 text_size = ImGui::GetFont()->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label.c_str());
+    const float x = std::clamp(bounds.left + player.tag_x / 640.0f * width - text_size.x * 0.5f,
+                               bounds.left + 4.0f, std::max(bounds.left + 4.0f, bounds.right - text_size.x - 4.0f));
+    const float y = std::clamp(bounds.top + player.tag_y / 480.0f * height - font_size * 2.4f,
+                               bounds.top + 4.0f, bounds.bottom - font_size - 8.0f);
+    draw->AddRectFilled(ImVec2(x - 5, y - 3), ImVec2(x + text_size.x + 5, y + font_size + 4),
+                        IM_COL32(9, 11, 22, 215), 5.0f);
+    draw->AddRect(ImVec2(x - 5, y - 3), ImVec2(x + text_size.x + 5, y + font_size + 4),
+                  colors[slot], 5.0f, 0, 1.5f);
+    draw->AddText(ImGui::GetFont(), font_size, ImVec2(x, y), IM_COL32(255, 255, 255, 255), label.c_str());
+  }
+  draw->PopClipRect();
 }
 
 // Names used both when drawing the Controls list and when saving/loading bindings
@@ -1399,10 +1540,12 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "exclusivefullscreen") options.exclusive_fullscreen = value == "1";
       else if (key == "vsync") options.vsync = value == "1";
       else if (key == "widescreen") options.widescreen = value == "1";
+      else if (key == "fodreflections") options.fod_reflections = value != "0";
       else if (key == "truewidescreen") options.true_widescreen = value == "1";
       else if (key == "customtextures") options.custom_textures = value == "1";
       else if (key == "dumptextures") options.dump_textures = value == "1";
       else if (key == "prefetchtextures") options.prefetch_textures = value != "0";
+      else if (key == "videobackgrounds") options.video_backgrounds = value != "0";
       // One line per pack the player switched off; anything not listed is on, so a pack installed
       // later starts enabled rather than silently doing nothing.
       else if (key == "texpackoff") {
@@ -1422,6 +1565,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
         } else options.window_pinned = false;
       }
       else if (key == "sharpness") options.sharpness = std::clamp(std::stof(value), 0.0f, 1.0f);
+      else if (key == "ssao") options.screen_space_ao = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "brightness") options.brightness = std::clamp(std::stof(value), 0.5f, 1.5f);
       else if (key == "contrast") options.contrast = std::clamp(std::stof(value), 0.5f, 1.5f);
       else if (key == "vibrance") options.vibrance = std::clamp(std::stof(value), 0.0f, 2.0f);
@@ -1438,7 +1582,29 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       // Settings-file only rather than a control in the panel, because it costs a readback on every
       // presented frame and nobody should switch it on by browsing.
       else if (key == "flickerscan") options.flicker_scan = value == "1";
-      else if (key == "settingshint") options.settings_hint = value != "0";
+      else if (key == "settingsreminder") options.settings_hint = value != "0";
+      else if (key == "legacymenu") options.legacy_menu_enabled = value == "1";
+      else if (key == "legacymenustyle") options.legacy_menu_style = value == "6" ? 6 : 7;
+      else if (key == "menusounds") options.settings_menu_sounds = value == "1";
+      else if (key == "menucustom") options.settings_custom_color_enabled = value == "1";
+      else if (key == "menucolor") {
+        std::istringstream color(value);
+        color >> options.settings_custom_color[0] >> options.settings_custom_color[1] >> options.settings_custom_color[2];
+        for (float& channel : options.settings_custom_color) channel = std::clamp(channel,0.0f,1.0f);
+      }
+      else if (key == "settingstransparency")
+        options.settings_transparency = std::clamp(std::atoi(value.c_str()), 0, 65);
+      else if (key == "overlaystyle") {
+        int selected = std::atoi(value.c_str());
+        options.overlay_style = selected >= 0 && selected <= 7 ? selected : 0;
+      }
+      else if (key.size() == 15 && key.compare(0, 14, "overlaypalette") == 0 &&
+               key[14] >= '0' && key[14] <= '6')
+        options.overlay_palettes[key[14] - '0'] = std::clamp(std::atoi(value.c_str()), 0, 3);
+      else if (key == "stockhudscale") options.stock_hud_scale = std::clamp(std::atoi(value.c_str()), 75, 175);
+      else if (key == "damagehudscale") options.damage_hud_scale = std::clamp(std::atoi(value.c_str()), 75, 175);
+      else if (key == "playernicknames") options.show_player_nicknames = value == "1";
+      else if (key == "matchmakinghint") options.matchmaking_hint = value != "0";
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
       // Settings saved before the overlay could show several ports name a single port number.
@@ -1454,7 +1620,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "geckocode") gecko_on.push_back(value);
       else if (key == "geckochosen") gecko_chosen = value == "1";
       else if (key == "swpro_gc_picture") g_swpro_gc_picture = value == "1";
-      else if (key == "rumble") host::g_rumble_enabled = value != "0";
+      else if (key == "rumble") host::g_rumble_enabled.store(value != "0", std::memory_order_relaxed);
       else if (key == "backgroundinput") host::g_background_input = value != "0";
       else if (key == "editdevice") g_saved_edit_tab = std::atoi(value.c_str());
       // "activeprofile<device> <name>": the profile each controller uses, so it is still the one
@@ -1471,16 +1637,18 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "startup") options.settings_open = value != "0";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 10) options.dlss_mode = m; }
       // Pre-multiplier saves wrote 0 or 1; both still mean what they always meant (off / 2x).
-      else if (key == "framegen") options.frame_generation_mode = std::clamp(std::stoi(value), 0, 4);
+      else if (key == "framegen") options.frame_generation_mode = std::clamp(std::stoi(value), 0, 6);
       else if (key == "reflex") options.reflex_mode = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "reflexstats") options.reflex_stats = value == "1";
       else if (key == "reflexflash") options.reflex_flash = value == "1";
+      else if (key == "pathtracing") options.path_tracing = value == "1";
+      else if (key == "rayreconstruction") options.ray_reconstruction = value == "1";
 #ifdef GX_DLSS5
       else if (key == "dlss5") options.dlss5 = value == "1";
-      else if (key == "dlss5intensity") options.dlss5_tuning.intensity = std::clamp(std::stof(value), 0.0f, 1.0f);
-      else if (key == "dlss5detail") options.dlss5_tuning.detail = std::clamp(std::stof(value), 0.0f, 2.0f);
-      else if (key == "dlss5tone") options.dlss5_tuning.tone = std::clamp(std::stof(value), 0.0f, 2.0f);
-      else if (key == "dlss5skin") options.dlss5_tuning.skin = std::clamp(std::stof(value), -1.0f, 2.0f);
+      else if (key == "dlss5intensity") options.dlss5_tuning.intensity = std::clamp(std::stof(value), 0.0f, 10.0f);
+      else if (key == "dlss5detail") options.dlss5_tuning.detail = std::clamp(std::stof(value), 0.0f, 10.0f);
+      else if (key == "dlss5tone") options.dlss5_tuning.tone = std::clamp(std::stof(value), 0.0f, 10.0f);
+      else if (key == "dlss5skin") options.dlss5_tuning.skin = std::clamp(std::stof(value), -1.0f, 10.0f);
       else if (key == "dlss5style") options.dlss5_tuning.style = std::clamp(std::stoi(value), 0, 3);
       else if (key == "dlss5preset") options.dlss5_tuning.preset = std::clamp(std::stoi(value), 0, 3);
       else if (key == "dlss5automask") options.dlss5_tuning.auto_mask = value == "1";
@@ -1615,22 +1783,649 @@ std::string texpack_disabled_lines() {
   for (const auto& name : texpack::disabled_packs()) out += std::string("\n") + "texpackoff " + name;
   return out;
 }
+const bool g_ui_diag = std::getenv("MELEE_UI_DIAG") != nullptr;   // logs settings panel state transitions
+ImGuiStyle g_input_overlay_style;   // 0.6.61 look for the controller overlay, set up at context creation
 std::atomic<bool> g_fill_window{false};
 std::atomic<bool> g_close_requested{false};
 bool settings_close_requested() { return g_close_requested.exchange(false, std::memory_order_relaxed); }
 void settings_fill_window(bool on) { g_fill_window.store(on, std::memory_order_relaxed); }
 bool settings_textures_dirty() { return g_textures_dirty.exchange(false, std::memory_order_relaxed); }
 
+// The appearance layouts share one settings model and page controls; each supplies its own
+// navigation, home screen, motion, and color treatment.
+static void draw_settings_icon(int index, ImVec2 p, ImU32 color) {
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  const float x = p.x, y = p.y;
+  switch (index) {
+    case 0: // display
+      draw->AddRect(ImVec2(x - 11, y - 8), ImVec2(x + 11, y + 6), color, 2.0f, 0, 2.0f);
+      draw->AddLine(ImVec2(x, y + 6), ImVec2(x, y + 11), color, 2);
+      draw->AddLine(ImVec2(x - 6, y + 11), ImVec2(x + 6, y + 11), color, 2);
+      break;
+    case 1: // speaker
+      draw->AddRectFilled(ImVec2(x - 11, y - 4), ImVec2(x - 5, y + 4), color);
+      draw->AddTriangleFilled(ImVec2(x - 5, y - 4), ImVec2(x + 3, y - 9), ImVec2(x + 3, y + 9), color);
+      draw->AddLine(ImVec2(x + 7, y - 7), ImVec2(x + 11, y - 3), color, 2);
+      draw->AddLine(ImVec2(x + 11, y - 3), ImVec2(x + 11, y + 3), color, 2);
+      draw->AddLine(ImVec2(x + 11, y + 3), ImVec2(x + 7, y + 7), color, 2);
+      break;
+    case 2: // gamepad
+      draw->AddRect(ImVec2(x - 13, y - 6), ImVec2(x + 13, y + 8), color, 7.0f, 0, 2.0f);
+      draw->AddLine(ImVec2(x - 8, y + 1), ImVec2(x - 2, y + 1), color, 2);
+      draw->AddLine(ImVec2(x - 5, y - 2), ImVec2(x - 5, y + 4), color, 2);
+      draw->AddCircleFilled(ImVec2(x + 6, y), 2, color);
+      draw->AddCircleFilled(ImVec2(x + 10, y + 3), 2, color);
+      break;
+    case 3: // controls: directional cross
+      draw->AddRect(ImVec2(x - 10, y - 10), ImVec2(x + 10, y + 10), color, 4.0f, 0, 2.0f);
+      draw->AddLine(ImVec2(x - 6, y), ImVec2(x + 6, y), color, 2);
+      draw->AddLine(ImVec2(x, y - 6), ImVec2(x, y + 6), color, 2);
+      break;
+    case 4: // layers
+      draw->AddRect(ImVec2(x - 12, y - 9), ImVec2(x + 5, y + 5), color, 2.0f, 0, 2.0f);
+      draw->AddRect(ImVec2(x - 5, y - 3), ImVec2(x + 12, y + 10), color, 2.0f, 0, 2.0f);
+      break;
+    case 5: // palette
+      draw->AddCircle(ImVec2(x, y), 11, color, 0, 2);
+      draw->AddCircleFilled(ImVec2(x - 5, y - 4), 2, color);
+      draw->AddCircleFilled(ImVec2(x + 3, y - 6), 2, color);
+      draw->AddCircleFilled(ImVec2(x + 7, y + 2), 2, color);
+      break;
+    default: // code brackets
+      draw->AddLine(ImVec2(x - 3, y - 8), ImVec2(x - 10, y), color, 2);
+      draw->AddLine(ImVec2(x - 10, y), ImVec2(x - 3, y + 8), color, 2);
+      draw->AddLine(ImVec2(x + 3, y - 8), ImVec2(x + 10, y), color, 2);
+      draw->AddLine(ImVec2(x + 10, y), ImVec2(x + 3, y + 8), color, 2);
+      break;
+  }
+}
+
+#include "ui_sources/gd_melee/text.inl"
+#include "pc_settings_visuals.inl"
+
+static void settings_gd_chrome(ImVec2 origin, float scale, const char* title = "SETTINGS") {
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  const auto point = [&](float x, float y) {
+    return ImVec2(origin.x + (x + (240.0f - y) * 0.25f) * scale, origin.y + y * scale);
+  };
+  const auto quad = [&](float x0, float y0, float x1, float y1, ImU32 color) {
+    const ImVec2 vertices[] = {point(x0,y0), point(x1,y0), point(x1,y1), point(x0,y1)};
+    draw->AddConvexPolyFilled(vertices, 4, color);
+  };
+  // Current GD kit, KS_OPTIONS: exact unsheared chrome geometry and section palette.
+  // This replaces fe_draw_frame's old blue bitmap frame with the current kit renderer.
+  draw->AddRectFilled(origin, ImVec2(origin.x + 640.0f * scale, origin.y + 480.0f * scale),
+                      IM_COL32(25, 33, 42, 252));
+  const auto art = [&](const char* name,float x,float y,float w,float h,ImU32 tint) {
+    if (auto* tex=cosmetic_preview(ui_source_asset_path("gd_melee",name)))
+      draw->AddImageQuad(tex->GetTexRef(),point(x,y),point(x+w,y),point(x+w,y+h),point(x,y+h),
+                         ImVec2(0,0),ImVec2(1,0),ImVec2(1,1),ImVec2(0,1),tint);
+  };
+  const float title_width = gd_kit_text_width("title", title);
+  quad(84, 24, 120 + title_width, 52, settings_accent(2));
+  quad(116 + title_width, 46, 550, 52, IM_COL32(10, 14, 24, 255));
+  gd_kit_text(draw, "title", origin, scale, 100, 45.92f, title, IM_COL32(10, 14, 24, 255));
+  art("kit/ico_options.png",96,56,16,16,IM_COL32(149,157,167,255));
+  gd_kit_text(draw,"body",origin,scale,118,68.62f,"SETTINGS",IM_COL32(184,194,220,255));
+  const float crumb=118+gd_kit_text_width("body","SETTINGS");
+  quad(crumb+6,58.62f,crumb+8,68.62f,settings_accent(2));
+  gd_kit_text(draw,"body",origin,scale,crumb+14,68.62f,std::strcmp(title,"SETTINGS")==0?"PC SETTINGS":title,IM_COL32(242,239,228,255));
+  quad(90, 398, 596, 422, IM_COL32(10, 14, 24, 255));
+  quad(90, 430, 596, 456, IM_COL32(10,14,24,255));
+  quad(100,437,106,449,settings_accent(2));
+  const char* glyphs[]={"kit/glyph_a.png","kit/glyph_dpad.png","kit/glyph_b.png"};
+  const char* hints[]={"Select","Change","Back"};
+  const ImU32 tints[]={IM_COL32(39,184,138,255),IM_COL32(242,239,228,255),IM_COL32(229,72,59,255)};
+  float hint_x=114;
+  for(int i=0;i<3;++i) {
+    if(i==2)g_settings_gd_back_x=point(hint_x,435).x;
+    art(glyphs[i],hint_x,435,16,16,tints[i]);
+    gd_kit_text(draw,"body",origin,scale,hint_x+20,447.62f,hints[i],IM_COL32(242,239,228,255));
+    hint_x+=32+gd_kit_text_width("body",hints[i]);
+  }
+}
+
+static void settings_gd_home(SettingsState& state) {
+  static constexpr const char* names[] = {
+      "VIDEO", "AUDIO", "GAME", "CONTROLS", "OVERLAYS", "CUSTOMIZE", "GECKO CODES"};
+  static constexpr const char* help[] = {
+      "Adjust graphics and display settings.", "Set music and game sound.",
+      "Choose how Melee plays.", "Set up controllers and bindings.",
+      "Choose the information shown during play.", "Choose an appearance and menu artwork.",
+      "Manage optional game codes."};
+  const ImVec2 origin = ImGui::GetWindowPos();
+  const float scale = ImGui::GetWindowWidth() / 640.0f;
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  const auto point = [&](float x, float y) {
+    return ImVec2(origin.x + (x + (240.0f - y) * 0.25f) * scale, origin.y + y * scale);
+  };
+  const auto quad = [&](float x, float y, float w, float h, ImU32 color) {
+    const ImVec2 vertices[] = {point(x,y), point(x+w,y), point(x+w,y+h), point(x,y+h)};
+    draw->AddConvexPolyFilled(vertices, 4, color);
+  };
+  const ImVec2 saved_cursor = ImGui::GetCursorPos();
+  settings_gd_chrome(origin, scale);
+  state.gd_screen_frames += ImGui::GetIO().DeltaTime * 60.0f;
+  for (int i = 0; i < 7; ++i) {
+    const float t = std::clamp((state.gd_screen_frames - 2.0f * i) / 12.0f, 0.0f, 1.0f);
+    const float offset = 48.0f * std::pow(1.0f - t, 3.0f);
+    const float x = 96.0f + offset, y = 84.0f + 34.0f * i;
+    ImGui::SetCursorScreenPos(point(x - 7.5f, y));
+    ImGui::PushID(i);
+    bool activated = settings_hit_button("##gd_category", ImVec2(451.5f * scale, 30.0f * scale));
+    if (state.home_focus_reset && i == 0) {
+      ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+      state.home_focus_reset = false;
+    }
+    if (i == state.active_tab) ImGui::SetItemDefaultFocus();
+    const bool focused = ImGui::IsItemFocused();
+    const bool hovered = ImGui::IsItemHovered();
+    activated = activated ||
+        (focused && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false));
+    ImGui::PopID();
+    if (focused && state.open && settings_nav_input_pressed()) state.active_tab = i;
+    if (hovered && state.open) state.active_tab = i;
+    const bool selected = state.active_tab == i;
+    if (selected) quad(x, y, 444, 30, settings_palette_tint(2,IM_COL32(169, 118, 26, 255)));
+    const float dx = selected ? -5.0f : 0.0f, dy = selected ? -5.0f : 0.0f;
+    quad(x+dx, y+dy, 444, 30, selected ? settings_accent(2) : IM_COL32(46, 54, 64, 255));
+    gd_kit_text(draw, "row", origin, scale, x+16+dx, y+20.28f+dy,
+                names[i], selected ? IM_COL32(10, 14, 24, 255) : IM_COL32(242, 239, 228, 255));
+    gd_kit_text(draw, "row", origin, scale, x+414+dx, y+20.28f+dy,
+                ">", selected ? IM_COL32(10, 14, 24, 255) : IM_COL32(149, 157, 167, 255));
+    if (activated && state.open) {
+      state.active_tab = i;
+      state.gd_detail_open = true;
+      state.gd_screen_frames = 0.0f;
+      state.content_anim_frame = 0.0f;
+    }
+  }
+  gd_kit_text(draw, "body", origin, scale, 104, 414.0f, help[state.active_tab], IM_COL32(242, 239, 228, 255), 472);
+  ImGui::SetCursorPos(saved_cursor);
+}
+
+static void settings_radial_scene() {
+  // The wheel supplies its own contrast. Leave the surrounding game untouched.
+}
+
+static void settings_radial_nav(SettingsState& state, ImVec2 center, float radius, bool home) {
+  static constexpr const char* labels[] = {
+      "VIDEO", "AUDIO", "GAME", "CONTROLS", "OVERLAYS", "CUSTOMIZE", "CODES"};
+  constexpr float pi = radial_navigation::kPi;
+  constexpr float step = radial_navigation::kStep;
+  const float inner = radius * 0.44f;
+  const float mid = radius * 0.73f;
+  const ImVec2 saved_cursor = ImGui::GetCursorPos();
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  // The wheel owns the D-pad and stick only on the home screen. On a category page they move
+  // through that page's settings; turning the wheel there switched category mid-scroll.
+  const bool up = home && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadUp,true) || ImGui::IsKeyPressed(ImGuiKey_UpArrow,true));
+  const bool right = home && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight,true) || ImGui::IsKeyPressed(ImGuiKey_RightArrow,true));
+  const bool down = home && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadDown,true) || ImGui::IsKeyPressed(ImGuiKey_DownArrow,true));
+  const bool left = home && (ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft,true) || ImGui::IsKeyPressed(ImGuiKey_LeftArrow,true));
+  if (home) {
+    state.radial_selection = radial_navigation::update(
+        state.radial_selection, up, right, down, left,
+        state.settings_stick_x, state.settings_stick_y);
+    state.active_tab = state.radial_selection;
+  }
+  draw->AddCircleFilled(ImVec2(center.x+6,center.y+18),radius+15.0f,IM_COL32(0,3,11,82),128);
+  draw->AddCircleFilled(ImVec2(center.x+1,center.y+9),radius+11.0f,IM_COL32(2,8,18,255),128);
+  draw->AddCircleFilled(ImVec2(center.x,center.y+5),radius+9.0f,IM_COL32(35,48,63,255),128);
+  draw->AddCircleFilled(center,radius+3.0f,IM_COL32(14,23,35,255),128);
+  draw->AddCircle(center,radius+8.0f,IM_COL32(89,111,130,215),128,1.4f);
+  draw->AddCircle(center,radius+3.0f,IM_COL32(28,43,59,255),128,3.0f);
+  for (int i = 0; i < 7; ++i) {
+    const float angle = -pi * 0.5f + i * step;
+    const float start = angle - step * 0.47f;
+    const float finish = angle + step * 0.47f;
+    const ImVec2 c(center.x + std::cos(angle) * mid,
+                   center.y + std::sin(angle) * mid);
+    const ImVec2 hit(std::max(64.0f, radius * 0.60f), std::max(46.0f, radius * 0.44f));
+    ImGui::SetCursorScreenPos(ImVec2(c.x - hit.x * 0.5f, c.y - hit.y * 0.5f));
+    ImGui::PushID(i);
+    const bool activated_by_mouse = settings_hit_button("##wheel_category", hit, 0);
+    const bool selected = home ? state.radial_selection == i : state.active_tab == i;
+    if (selected) ImGui::SetItemDefaultFocus();
+    // Mouse hover only: ImGui otherwise reports the nav-focused sector (VIDEO, where focus lands on
+    // open) as hovered, so it stayed lit while the D-pad selection moved elsewhere.
+    const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_NoNavOverride);
+    ImGui::PopID();
+    const float target = hovered || selected ? 1.0f : 0.0f;
+    state.radial_hover[i] += (target - state.radial_hover[i]) *
+        std::min(1.0f, ImGui::GetIO().DeltaTime * 11.0f);
+    const float glow=state.radial_hover[i];
+    const ImU32 outer=settings_mix_color(IM_COL32(53,72,94,255),settings_accent(3),glow*.94f);
+    const ImU32 inner_color=settings_mix_color(IM_COL32(29,43,60,255),settings_accent(3),glow*.62f);
+    const ImDrawListFlags saved_flags = draw->Flags;
+    draw->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+    for (int slice = 0; slice < 16; ++slice) {
+      const float a0 = start + (finish - start) * slice / 16.0f;
+      const float a1 = start + (finish - start) * (slice + 1) / 16.0f;
+      const auto point = [&](float a, float r) {
+        return ImVec2(center.x + std::cos(a) * r, center.y + std::sin(a) * r);
+      };
+      const int first=draw->VtxBuffer.Size;
+      draw->AddQuadFilled(point(a0, radius-4.0f), point(a1, radius-4.0f),
+                          point(a1, inner+4.0f), point(a0, inner+4.0f), IM_COL32_WHITE);
+      draw->VtxBuffer[first].col=outer;
+      draw->VtxBuffer[first+1].col=outer;
+      draw->VtxBuffer[first+2].col=inner_color;
+      draw->VtxBuffer[first+3].col=inner_color;
+    }
+    draw->Flags = saved_flags;
+    draw->PathArcTo(center,radius-7.0f,start+.027f,finish-.027f,16);
+    draw->PathStroke(glow>.05f?IM_COL32(181,226,255,235):IM_COL32(124,157,185,112),0,
+                     glow>.05f?2.6f:1.4f);
+    draw->PathArcTo(center,inner+7.0f,start+.026f,finish-.026f,16);
+    draw->PathStroke(IM_COL32(0,5,15,230),0,2.8f);
+    draw->AddLine(ImVec2(center.x + std::cos(start) * inner,
+                         center.y + std::sin(start) * inner),
+                  ImVec2(center.x + std::cos(start) * radius,
+                         center.y + std::sin(start) * radius),
+                  IM_COL32(4,12,24,230), 3.0f);
+    const ImVec2 icon(c.x, c.y - radius*.070f);
+    const int icon_start = draw->VtxBuffer.Size;
+    if(settings_icon_variant()==0) {
+      draw_settings_icon(i,icon,IM_COL32(236,247,255,255));
+      const float icon_scale=std::max(1.0f,radius/155.0f);
+      for(int v=icon_start;v<draw->VtxBuffer.Size;++v) {
+        ImVec2& pos=draw->VtxBuffer[v].pos;
+        pos=ImVec2(icon.x+(pos.x-icon.x)*icon_scale,icon.y+(pos.y-icon.y)*icon_scale);
+      }
+    } else settings_symbol_icon(i,icon,std::max(1.0f,radius/195.0f),IM_COL32(238,247,255,255));
+    const float label_font=std::clamp(radius*.095f,14.0f,18.0f);
+    const ImVec2 label_size=settings_heading_font()->CalcTextSizeA(label_font,FLT_MAX,0.0f,labels[i]);
+    draw->AddText(settings_heading_font(),label_font,
+                  ImVec2(c.x-label_size.x*.5f,c.y+radius*.095f),
+                  IM_COL32(242,247,252,255),labels[i]);
+    const bool activated_by_pad = home && selected && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown,false);
+    const bool activated_by_key = home && selected && (ImGui::IsKeyPressed(ImGuiKey_Enter,false) ||
+                                                         ImGui::IsKeyPressed(ImGuiKey_Space,false));
+    if ((activated_by_mouse || activated_by_pad || activated_by_key) && state.open) {
+      state.active_tab = i;
+      state.radial_selection = i;
+      if (home) state.radial_detail_open = true;
+    }
+  }
+  draw->AddCircleFilled(ImVec2(center.x,center.y+8),inner-1.0f,IM_COL32(0,5,15,255),96);
+  draw->AddCircleFilled(center,inner-3.0f,IM_COL32(56,77,93,255),96);
+  draw->AddCircleFilled(center,inner-10.0f,IM_COL32(10,19,31,255),96);
+  draw->AddCircle(center,inner-4.0f,IM_COL32(124,153,173,210),96,1.4f);
+  draw->AddCircle(center,inner-12.0f,IM_COL32(26,48,69,255),96,3.0f);
+  draw->PathArcTo(center,inner-7.0f,-.35f,1.36f,32);
+  draw->PathStroke(settings_accent(3),0,4.0f);
+  const float hub_scale=std::clamp(radius/210.0f,.75f,1.25f);
+  draw->AddCircle(center,19.0f*hub_scale,IM_COL32(205,229,241,255),48,2.4f*hub_scale);
+  draw->AddLine(center,ImVec2(center.x,center.y-12*hub_scale),IM_COL32_WHITE,2.5f*hub_scale);
+  draw->AddLine(center,ImVec2(center.x+9*hub_scale,center.y+5*hub_scale),IM_COL32_WHITE,2.5f*hub_scale);
+  draw->AddCircleFilled(center,2.5f*hub_scale,IM_COL32_WHITE,20);
+  const char* center_text=home?"SETTINGS":"BACK";
+  const float center_size=std::clamp(radius*.071f,11.0f,15.0f);
+  const ImVec2 text_size=settings_heading_font()->CalcTextSizeA(center_size,FLT_MAX,0,center_text);
+  draw->AddText(settings_heading_font(),center_size,
+                ImVec2(center.x-text_size.x*.5f,center.y+25*hub_scale),
+                IM_COL32(232,242,248,255),center_text);
+  if (!home) {
+    const float d = inner * 1.6f;
+    ImGui::SetCursorScreenPos(ImVec2(center.x - d * 0.5f, center.y - d * 0.5f));
+    if (settings_hit_button("##wheel_home", ImVec2(d, d), 0) && state.open)
+      state.radial_detail_open = false;
+  }
+  ImGui::SetCursorPos(saved_cursor);
+}
+
+static bool settings_nav_strip(int index, bool selected, ImVec2 size) {
+  static constexpr const char* labels[] = {
+      "VIDEO", "AUDIO", "GAME", "CONTROLS", "OVERLAYS", "CUSTOMIZE", "CODES"};
+  ImGui::PushID(index);
+  const bool clicked = settings_hit_button("##strip_category", size);
+  if (selected) ImGui::SetItemDefaultFocus();
+  const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+  const bool hovered = ImGui::IsItemHovered();
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  if (selected || hovered) {
+    draw->AddRectFilled(a,b,selected ? settings_palette_tint(4,IM_COL32(17,112,224,255)) : IM_COL32(35,57,94,230),size.y*.5f);
+    if (selected) draw->AddRect(a,b,settings_palette_tint(4,IM_COL32(105,196,255,255)),size.y*.5f,0,1.5f);
+  }
+  const ImVec2 text_size = ImGui::CalcTextSize(labels[index]);
+  draw->AddText(ImVec2((a.x + b.x - text_size.x) * 0.5f,
+                        (a.y + b.y - text_size.y) * 0.5f),
+                IM_COL32(245, 249, 255, 255), labels[index]);
+  ImGui::PopID();
+  return clicked;
+}
+
+static void settings_clean_chrome(const char* heading, float slide_offset) {
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  const ImVec2 p = ImGui::GetWindowPos(), s = ImGui::GetWindowSize();
+  const ImVec2 end(p.x + s.x, p.y + s.y);
+  // The title is anchored to the game's top-left, independently of the category stack
+  // on the right. Only these shards and the cards paint over the live game.
+  const ImVec2 display=ImGui::GetIO().DisplaySize;
+  const float game_left=std::max(0.0f,(display.x-display.y*(73.0f/60.0f))*.5f);
+  const float hx=game_left+18.0f-std::abs(slide_offset)*.58f, hy=18.0f;
+  const float hw=std::clamp(display.x*.39f,300.0f,420.0f);
+  ImDrawList* front=ImGui::GetForegroundDrawList();
+  const ImVec2 header[]={ImVec2(hx+24,hy),ImVec2(hx+hw,hy),
+      ImVec2(hx+hw-75,hy+94),ImVec2(hx-10,hy+94)};
+  front->AddConvexPolyFilled(header,4,settings_palette_tint(0,IM_COL32(226,20,126,245)));
+  const ImVec2 slash[]={ImVec2(hx+hw*.40f,hy),ImVec2(hx+hw*.55f,hy),
+      ImVec2(hx+hw*.55f-75,hy+94),ImVec2(hx+hw*.40f-75,hy+94)};
+  front->AddConvexPolyFilled(slash,4,IM_COL32(11,13,29,250));
+  front->AddLine(ImVec2(hx+4,hy+94),ImVec2(hx+hw-78,hy+94),
+                 settings_palette_tint(0,IM_COL32(255,134,197,240)),2.0f);
+  front->AddText(ImGui::GetFont(),12.0f,ImVec2(hx+24,hy+12),
+                 IM_COL32(255,235,248,255),"MELEE UNLOCKED");
+  const float heading_size=std::strlen(heading)>9?34.0f:42.0f;
+  settings_slanted_text(front,settings_heading_font(),heading_size,
+      ImVec2(hx+23,hy+46),IM_COL32_WHITE,heading,.08f);
+  const float chip_w=(s.x-78.0f)*.5f;
+  for(int chip=0;chip<2;++chip) {
+    const float x=p.x+11.0f+chip*(chip_w+5.0f);
+    const ImVec2 shadow[]={ImVec2(x+11,end.y-24),ImVec2(x+chip_w+2,end.y-36),
+                           ImVec2(x+chip_w-7,end.y-8),ImVec2(x,end.y+2)};
+    draw->AddConvexPolyFilled(shadow,4,IM_COL32(0,0,0,110));
+    const ImVec2 card[]={ImVec2(x+12,end.y-29),ImVec2(x+chip_w,end.y-41),
+                         ImVec2(x+chip_w-10,end.y-11),ImVec2(x,end.y-1)};
+    draw->AddConvexPolyFilled(card,4,chip==0?
+        settings_palette_tint(0,IM_COL32(145,14,89,248)):IM_COL32(28,17,35,245));
+    draw->AddLine(card[0],card[1],settings_palette_tint(0,IM_COL32(255,135,204,220)),1.8f);
+  }
+}
+
+static void settings_clean_home(SettingsState& state) {
+  static constexpr const char* names[] = {
+      "VIDEO", "AUDIO", "GAME", "CONTROLS", "OVERLAYS", "CUSTOMIZE", "GECKO CODES"};
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  const ImVec2 p = ImGui::GetWindowPos(), s = ImGui::GetWindowSize();
+  const ImVec2 saved = ImGui::GetCursorPos();
+  state.clean_home_frames = std::min(24.0f,
+      state.clean_home_frames + ImGui::GetIO().DeltaTime * 60.0f);
+  const float row_h = std::min(61.0f, (s.y - 210.0f) / 7.0f);
+  const float step = row_h - 1.0f;
+  for (int i = 0; i < 7; ++i) {
+    const float t = std::clamp((state.clean_home_frames - i * 1.25f) / 14.0f, 0.0f, 1.0f);
+    const float eased = t * t * (3.0f - 2.0f * t);
+    const float entry_x=p.x+19.0f+(1.0f-eased)*90.0f;
+    const float y = p.y + 161.0f + i * step;
+    const float width = s.x - 39.0f;
+    ImGui::SetCursorScreenPos(ImVec2(entry_x, y-width*0.05f));
+    ImGui::PushID(i);
+    const bool clicked = settings_hit_button("##clean_category", ImVec2(width, row_h));
+    if (state.home_focus_reset && i == 0) {
+      ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+      state.home_focus_reset = false;
+    }
+    if (i == state.active_tab) ImGui::SetItemDefaultFocus();
+    const bool nav_focused = ImGui::IsItemFocused();
+    const bool hovered = ImGui::IsItemHovered();
+    ImGui::PopID();
+    if (nav_focused && state.open && settings_nav_input_pressed()) state.active_tab = i;
+    if (hovered && state.open) state.active_tab = i;
+    const bool selected = state.active_tab == i;
+    const float target=selected?1.0f:0.0f;
+    state.clean_hover[i]+=(target-state.clean_hover[i])*
+        std::min(1.0f,ImGui::GetIO().DeltaTime*13.0f);
+    const float x=entry_x-state.clean_hover[i]*10.0f;
+    // Only the active category reads as selected. The old
+    // alternating accent rows made Gecko Codes look active even when untouched.
+    const ImU32 face = selected ? settings_palette_tint(0,IM_COL32(247, 31, 143, 250)) :
+                                  IM_COL32(12, 15, 28, 232);
+    const float tilt = width * 0.10f;
+    const ImVec2 depth[] = {ImVec2(x+19,y+8),ImVec2(x+width+3,y-tilt+8),
+                            ImVec2(x+width-14,y+row_h-tilt+10),ImVec2(x-3,y+row_h+10)};
+    const ImVec2 shadow[] = {ImVec2(x+17,y+12),ImVec2(x+width+6,y-tilt+12),
+                             ImVec2(x+width-12,y+row_h-tilt+14),ImVec2(x-5,y+row_h+14)};
+    draw->AddConvexPolyFilled(shadow,4,IM_COL32(0,0,0,70));
+    draw->AddConvexPolyFilled(depth,4,settings_palette_tint(0,IM_COL32(55,10,47,235)));
+    const ImVec2 left_fold[]={ImVec2(x+18,y),ImVec2(x+2,y+row_h*.38f),
+                              ImVec2(x-8,y+row_h+7),ImVec2(x+3,y+row_h)};
+    draw->AddConvexPolyFilled(left_fold,4,
+        selected?settings_palette_tint(0,IM_COL32(102,13,73,250)):IM_COL32(18,19,37,245));
+    const ImVec2 poly[] = {ImVec2(x + 18.0f, y), ImVec2(x + width, y-tilt),
+                           ImVec2(x + width - 18.0f, y + row_h-tilt), ImVec2(x, y + row_h)};
+    draw->AddConvexPolyFilled(poly, 4, face);
+    draw->AddLine(ImVec2(x + 18.0f, y + 1.0f), ImVec2(x + width - 1.0f, y + 1.0f-tilt),
+                  selected ? IM_COL32(255, 223, 245, 255) :
+                             settings_palette_tint(0,IM_COL32(220,72,142,145)), 1.4f);
+    draw->AddLine(poly[3],poly[2],selected?
+        settings_palette_tint(0,IM_COL32(104,10,70,220)):IM_COL32(56,35,62,215),1.4f);
+    draw_settings_icon(i, ImVec2(x + 38.0f, y + row_h * 0.5f-4.0f),
+                       IM_COL32(255, 255, 255, 255));
+    settings_slanted_text(draw, settings_heading_font(), 23.0f,
+                  ImVec2(x + 69.0f, y + (row_h - 23.0f) * 0.5f-7.0f),
+                  IM_COL32(255, 255, 255, 255), names[i], 0.10f);
+    if (clicked && state.open) {
+      state.active_tab = i;
+      state.clean_detail_open = true;
+    }
+  }
+  // The A SELECT / B BACK chips drawn by settings_clean_chrome are real buttons: Select opens
+  // the highlighted category, Back closes the panel. Hover lifts and lightens the chip.
+  {
+    const float chip_w = (s.x - 78.0f) * .5f;
+    const float bottom = p.y + s.y;
+    for (int chip = 0; chip < 2; ++chip) {
+      const float x = p.x + 11.0f + chip * (chip_w + 5.0f);
+      ImGui::SetCursorScreenPos(ImVec2(x, bottom - 41.0f));
+      ImGui::PushID(chip);
+      const bool pressed = settings_hit_button("##clean_home_chip", ImVec2(chip_w, 40.0f));
+      const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+      ImGui::PopID();
+      state.footer_hover[chip] += ((hot ? 1.0f : 0.0f) - state.footer_hover[chip]) *
+                                  std::min(1.0f, ImGui::GetIO().DeltaTime * 16.0f);
+      const float glow = state.footer_hover[chip];
+      if (glow > 0.01f) {
+        const float lift = glow * 4.0f;
+        const ImVec2 card[] = {ImVec2(x + 12, bottom - 29 - lift), ImVec2(x + chip_w, bottom - 41 - lift),
+                               ImVec2(x + chip_w - 10, bottom - 11 - lift), ImVec2(x, bottom - 1 - lift)};
+        draw->AddConvexPolyFilled(card, 4, chip == 0 ?
+            settings_palette_tint(0, IM_COL32(247, 31, 143, (int)(250 * glow))) :
+            IM_COL32(70, 44, 88, (int)(245 * glow)));
+        draw->AddLine(card[0], card[1], IM_COL32(255, 224, 246, (int)(255 * glow)), 2.0f);
+      }
+      if (pressed && state.open) {
+        if (chip == 0) state.clean_detail_open = true;
+        else state.open = false;
+      }
+    }
+  }
+  settings_slanted_text(draw,settings_heading_font(),13.0f,
+      ImVec2(p.x+34.0f,p.y+s.y-27.0f),IM_COL32(255,239,249,255),
+      "A  SELECT",.08f);
+  settings_slanted_text(draw,settings_heading_font(),13.0f,
+      ImVec2(p.x+39.0f+(s.x-78.0f)*.5f,p.y+s.y-27.0f),
+      IM_COL32(255,239,249,255),"B  BACK",.08f);
+  ImGui::SetCursorScreenPos(ImVec2(p.x + s.x - 37.0f, p.y + 16.0f));
+  if (settings_close_hit("##close_clean", ImVec2(28.0f, 28.0f))) state.open = false;
+  draw->AddText(ImVec2(p.x + s.x - 30.0f, p.y + 18.0f),
+                IM_COL32(255, 255, 255, 255), "X");
+  ImGui::SetCursorPos(saved);
+}
+
+static void settings_dashboard_home(SettingsState& state) {
+  settings_dashboard_tiles(state);
+}
+
+static bool settings_nav_rail(int index, bool selected, ImVec2 size) {
+  static constexpr const char* names[] = {
+      "Video", "Audio", "Game", "Controls", "Overlays", "Customize", "Gecko Codes"};
+  static constexpr const char* short_names[] = {
+      "VIDEO", "AUDIO", "GAME", "CONTROLS", "OVERLAYS", "CUSTOMIZE", "CODES"};
+  ImGui::PushID(index);
+  const bool clicked = settings_hit_button("##rail_category", size);
+  if (selected) ImGui::SetItemDefaultFocus();
+  const bool hovered = ImGui::IsItemHovered();
+  const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  draw->AddRectFilled(a, b, selected ? IM_COL32(116, 60, 165, 255) :
+                             hovered ? IM_COL32(46, 57, 101, 255) : IM_COL32(28, 36, 69, 235), 5.0f);
+  if (selected) draw->AddRect(a, b, IM_COL32(229, 197, 255, 255), 5.0f, 0, 2.0f);
+  draw_settings_icon(index, ImVec2((a.x + b.x) * 0.5f, a.y + 18.0f),
+                     IM_COL32(246, 240, 255, 255));
+  const ImVec2 label_size = ImGui::GetFont()->CalcTextSizeA(11.0f, FLT_MAX, 0.0f,
+                                                           short_names[index]);
+  draw->AddText(ImGui::GetFont(), 11.0f,
+                ImVec2((a.x + b.x - label_size.x) * 0.5f, a.y + 37.0f),
+                IM_COL32(240, 236, 255, 255), short_names[index]);
+  if (hovered) ImGui::SetTooltip("%s", names[index]);
+  ImGui::PopID();
+  return clicked;
+}
+
+static void settings_strip_overview(int index) {
+  static constexpr const char* names[] = {
+      "VIDEO", "AUDIO", "GAME", "CONTROLS", "OVERLAYS", "CUSTOMIZE", "GECKO CODES"};
+  static constexpr const char* descriptions[] = {
+      "Adjust graphics and display settings.", "Tune game and music sound.",
+      "Choose how Melee plays.", "Set up controllers and bindings.",
+      "Choose the information shown during play.", "Pick menu art and cosmetic mods.",
+      "Manage your optional game codes."};
+  const ImVec2 a = ImGui::GetCursorScreenPos();
+  const float width = ImGui::GetContentRegionAvail().x;
+  const float height = 122.0f;
+  const float preview_w = std::min(width * 0.33f, 230.0f);
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  draw->AddRectFilled(ImVec2(a.x + preview_w + 5.0f, a.y),
+                      ImVec2(a.x + width, a.y + height), IM_COL32(16, 27, 45, 245), 4.0f);
+  draw->AddRect(ImVec2(a.x, a.y), ImVec2(a.x + preview_w, a.y + height),
+                IM_COL32(118, 168, 213, 255), 3.0f, 0, 2.0f);
+  draw->AddRectFilled(ImVec2(a.x + 6.0f, a.y + height - 27.0f),
+                      ImVec2(a.x + preview_w - 6.0f, a.y + height - 6.0f),
+                      IM_COL32(5, 13, 26, 190), 2.0f);
+
+  draw->AddText(ImVec2(a.x + preview_w + 20.0f, a.y + 20.0f),
+                IM_COL32(250, 252, 255, 255), names[index]);
+  draw->AddText(ImVec2(a.x + preview_w + 20.0f, a.y + 47.0f),
+                IM_COL32(200, 215, 234, 255), descriptions[index]);
+  ImGui::Dummy(ImVec2(width, height));
+}
+
+static void settings_wide_home(SettingsState& state) {
+  const ImVec2 p=ImGui::GetWindowPos(),s=ImGui::GetWindowSize();
+  ImDrawList* d=ImGui::GetWindowDrawList();
+  // The compact selector is intentionally only a header and category tabs. Selecting
+  // a tab opens the real settings page below; the game stays visible around this strip.
+  d->AddRectFilled(p,ImVec2(p.x+s.x,p.y+94),IM_COL32(12,21,31,250),9);
+  d->AddRect(p,ImVec2(p.x+s.x,p.y+94),IM_COL32(117,144,165,255),9,0,1.5f);
+  d->AddLine(ImVec2(p.x,p.y+94),ImVec2(p.x+s.x,p.y+94),IM_COL32(85,116,145,255));
+  d->AddText(settings_heading_font(),28,ImVec2(p.x+20,p.y+14),IM_COL32(247,251,255,255),"SETTINGS");
+  ImGui::SetCursorPos(ImVec2(18,54));
+  const float gap=5, tab=(s.x-36-gap*6)/7;
+  ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,ImVec2(gap,8));
+  for(int i=0;i<7;++i) {
+    if(settings_nav_strip(i,state.active_tab==i,ImVec2(tab,30))) {
+      state.active_tab=i;
+      state.wide_detail_open=true;
+      state.content_anim_frame=0.0f;
+    }
+    if(i!=6)ImGui::SameLine();
+  }
+  ImGui::PopStyleVar();
+}
+
+static bool settings_nav_tile(int index, bool selected, int overlay_style, ImVec2 size) {
+  static constexpr const char* labels[] = {
+      "Video", "Audio", "Game", "Controls", "Overlays", "Customize", "Gecko Codes"};
+  static const ImVec4 colors[] = {
+      {0.86f, 0.63f, 0.20f, 1}, {0.84f, 0.39f, 0.63f, 1},
+      {0.27f, 0.70f, 0.65f, 1}, {0.37f, 0.54f, 0.87f, 1},
+      {0.55f, 0.45f, 0.86f, 1}, {0.89f, 0.51f, 0.32f, 1},
+      {0.72f, 0.43f, 0.66f, 1}};
+  const bool dashboard = overlay_style == 1;
+  const bool gd_kit = overlay_style == 2;
+  const ImVec4 base = dashboard ? colors[index] :
+      (gd_kit ? ImVec4(0.12f, 0.23f, 0.55f, 1) :
+       (selected ? ImVec4(0.53f, 0.27f, 0.72f, 1) : ImVec4(0.12f, 0.13f, 0.27f, 0.96f)));
+  ImGui::PushID(index);
+  ImGui::PushStyleColor(ImGuiCol_Button, gd_kit ? ImVec4(0, 0, 0, 0) : base);
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                        dashboard ? ImVec4(base.x + 0.08f, base.y + 0.08f, base.z + 0.08f, 1) :
+                                    ImVec4(0.40f, 0.27f, 0.62f, 1));
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.68f, 0.47f, 0.90f, 1));
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, dashboard ? 14.0f : 3.0f);
+  bool clicked = ImGui::Button("##category", size);
+  if (selected) ImGui::SetItemDefaultFocus();
+  const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  if (gd_kit) {
+    // Ported GD Melee hub state: uniform 0.25 shear, six-pixel gutter, flat
+    // cobalt faces, and the gold lifted face over a gold-dark rest plate.
+    // Source values: menu/pipeline/hub_layout.py, see the import boundary.
+    const ImVec2 rest[] = {ImVec2(a.x + 12, a.y), ImVec2(b.x + 12, a.y),
+                           ImVec2(b.x, b.y), ImVec2(a.x, b.y)};
+    if (selected) draw->AddConvexPolyFilled(rest, 4, settings_palette_tint(2,IM_COL32(169, 118, 26, 255)));
+    const float dx = selected ? -5.0f : 0.0f;
+    const float dy = selected ? -5.0f : 0.0f;
+    ImVec2 face[] = {ImVec2(a.x + 12 + dx, a.y + dy), ImVec2(b.x + 12 + dx, a.y + dy),
+                     ImVec2(b.x + dx, b.y + dy), ImVec2(a.x + dx, b.y + dy)};
+    const bool hovered = ImGui::IsItemHovered();
+    draw->AddConvexPolyFilled(face, 4,
+        selected ? settings_accent(2) :
+        (hovered ? IM_COL32(47, 85, 184, 255) : IM_COL32(30, 58, 140, 255)));
+  } else if (selected) {
+    draw->AddRect(a, b, IM_COL32(244, 223, 255, 255), dashboard ? 14.0f : 5.0f, 0, 2.0f);
+  }
+  ImVec2 icon = dashboard ? ImVec2((a.x + b.x) * 0.5f, a.y + (size.y < 60 ? 14.0f : 25.0f)) :
+                            ImVec2(a.x + 23, (a.y + b.y) * 0.5f);
+  if (gd_kit && selected) icon = ImVec2(icon.x - 5.0f, icon.y - 5.0f);
+  const ImU32 icon_color = gd_kit ?
+      (selected ? settings_palette_tint(2,IM_COL32(169, 118, 26, 255)) : IM_COL32(74, 122, 224, 255)) :
+      IM_COL32(255, 255, 255, 255);
+  draw_settings_icon(index, icon, icon_color);
+  ImVec2 text_size = ImGui::CalcTextSize(labels[index]);
+  ImVec2 text_pos = dashboard ? ImVec2((a.x + b.x - text_size.x) * 0.5f,
+                                      b.y - text_size.y - (size.y < 60 ? 5.0f : 12.0f)) :
+                                ImVec2(a.x + 48, (a.y + b.y - text_size.y) * 0.5f);
+  if (gd_kit && selected) text_pos = ImVec2(text_pos.x - 5.0f, text_pos.y - 5.0f);
+  draw->AddText(text_pos, gd_kit ? (selected ? IM_COL32(10, 14, 24, 255) : IM_COL32(242, 239, 228, 255)) : IM_COL32(255, 255, 255, 255), labels[index]);
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", labels[index]);
+  ImGui::PopStyleVar(); ImGui::PopStyleColor(3); ImGui::PopID();
+  return clicked;
+}
+
 void settings_context_create(void* window, bool open_at_startup) {
   (void)open_at_startup;
   IMGUI_CHECKVERSION(); ImGui::CreateContext();
   auto& io = ImGui::GetIO(); io.IniFilename = nullptr;
+  g_settings_old_font = io.Fonts->AddFontDefault();
+  if (GetFileAttributesW(L"C:\\Windows\\Fonts\\segoeui.ttf") != INVALID_FILE_ATTRIBUTES)
+    g_settings_body_font = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f);
+  if (g_settings_body_font) io.FontDefault = g_settings_body_font;
+  if (GetFileAttributesW(L"C:\\Windows\\Fonts\\lucon.ttf") != INVALID_FILE_ATTRIBUTES)
+    g_settings_classic_font = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\lucon.ttf", 16.0f);
+  const std::string heading_font_path = ui_source_asset_path("gd_melee", "kit/SourceSans3-Black.otf");
+  if (std::filesystem::exists(heading_font_path))
+    g_settings_heading_font = io.Fonts->AddFontFromFileTTF(heading_font_path.c_str(), 28.0f);
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
   // Every input change is handled in the frame it arrives. ImGui otherwise takes one change per key
   // per frame, and with two sources feeding the same gamepad keys (our GameCube pad and ImGui's own
   // XInput polling) the queue grew faster than it drained: holding a stick froze the panel for a while.
   io.ConfigInputTrickleEventQueue = false;
-  ImGui::StyleColorsDark(); ImGui::GetStyle().ScaleAllSizes(1.25f);
+  ImGui::StyleColorsDark();
+  auto& style = ImGui::GetStyle();
+  style.Colors[ImGuiCol_WindowBg] = ImVec4(0.055f, 0.063f, 0.14f, 0.97f);
+  style.Colors[ImGuiCol_ChildBg] = ImVec4(0.075f, 0.08f, 0.19f, 0.60f);
+  style.Colors[ImGuiCol_FrameBg] = ImVec4(0.14f, 0.16f, 0.30f, 1);
+  style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.23f, 0.20f, 0.42f, 1);
+  style.Colors[ImGuiCol_Button] = ImVec4(0.22f, 0.18f, 0.38f, 1);
+  style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.39f, 0.25f, 0.59f, 1);
+  style.Colors[ImGuiCol_CheckMark] = ImVec4(0.85f, 0.57f, 0.98f, 1);
+  style.Colors[ImGuiCol_SliderGrab] = ImVec4(0.72f, 0.42f, 0.91f, 1);
+  style.WindowRounding = 10.0f; style.ChildRounding = 8.0f;
+  style.FrameRounding = 6.0f; style.FramePadding = ImVec2(12, 10);
+  style.ItemSpacing = ImVec2(12, 14);
+  style.ScaleAllSizes(1.15f);
+  // The controller overlay keeps the exact 0.6.61 look (dark style scaled 1.25x, ImGui's own font).
+  // The menu redesign above is for the settings panel only; players tune their overlay placement
+  // and reading around the old one.
+  {
+    ImGuiStyle legacy;
+    ImGui::StyleColorsDark(&legacy);
+    legacy.ScaleAllSizes(1.25f);
+    g_input_overlay_style = legacy;
+  }
   ImGui_ImplWin32_Init(window);
   host::window_set_message_callback([](void* w, uint32_t m, uintptr_t a, intptr_t b) {
     return ImGui_ImplWin32_WndProcHandler((HWND)w, m, a, b) != 0;
@@ -1638,6 +2433,9 @@ void settings_context_create(void* window, bool open_at_startup) {
 }
 
 void settings_context_destroy() {
+  for (auto& preview : g_cosmetic_previews)
+    if (preview.second) ImGui::UnregisterUserTexture(preview.second.get());
+  g_cosmetic_previews.clear();
   host::window_set_message_callback({}); host::window_input_capture(false);
   ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
 }
@@ -1653,6 +2451,11 @@ PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueu
     : impl_(std::make_unique<Impl>()) {
   auto& state = *impl_;
   state.state.open = options.settings_open;
+  state.state.panel_anim_target_open = options.settings_open;
+  state.state.panel_anim_initialized = true;
+  state.state.panel_anim_frame = options.settings_open ? 17.0f : 12.0f;
+  state.state.panel_slide_x = options.settings_open ? 0.0f : -720.0f;
+  state.state.panel_slide_start_x = state.state.panel_slide_x;
   settings_context_create(window, options.settings_open);
   D3D12_DESCRIPTOR_HEAP_DESC desc{}; desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
   desc.NumDescriptors = (UINT)state.used.size(); desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
@@ -1687,36 +2490,263 @@ bool PcSettingsUI::begin(D3D12Options& options) {
   return settings_frame(impl_->state, options);
 }
 
+static const char* matchmaking_state_text(int state) {
+  switch (state) {
+    case 0: return "Starting...";
+    case 1: return "Initializing...";
+    case 2: return "Searching...";
+    case 3: return "Opponent found; connecting...";
+    case 4: return "Connected";
+    case 5: return "Matchmaking error";
+    default: return "Searching...";
+  }
+}
+
+static void draw_native_practice(SettingsState& state, D3D12Options& options,
+                                 const slippi::native_practice::Snapshot& practice,
+                                 const host::PadState& pad, bool have_pad) {
+  using slippi::native_practice::Phase;
+  const ImVec2 screen = ImGui::GetIO().DisplaySize;
+
+  if (practice.phase == Phase::Handoff) {
+    ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowBgAlpha(0.88f);
+    ImGui::Begin("##native_match_found", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::TextUnformatted("Match found");
+    ImGui::TextDisabled("Connecting...");
+    ImGui::End();
+    return;
+  }
+
+  if (slippi::native_practice::phase_shows_return_overlay(practice.phase,
+                                                          practice.in_practice)) {
+    ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowBgAlpha(0.88f);
+    ImGui::Begin("##native_practice_return", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs |
+                 ImGuiWindowFlags_NoSavedSettings);
+    ImGui::TextUnformatted("Returning to practice...");
+    ImGui::End();
+    return;
+  }
+
+  if (practice.phase == Phase::Failure) {
+    const bool a_down = have_pad && (pad.button & 0x100) != 0;
+    if (state.practice_pad_armed && a_down && !state.practice_a_was_down) {
+      slippi::native_practice::submit_acknowledge_failure();
+      state.practice_pad_armed = false;
+      state.practice_release_capture = true;
+    }
+    state.practice_a_was_down = a_down;
+
+    ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowBgAlpha(0.92f);
+    ImGui::Begin("##native_practice_failure", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::TextUnformatted("Disconnected " "\xE2\x80\x94" " Press A to continue");
+    if (!practice.detail.empty()) ImGui::TextDisabled("%s", practice.detail.c_str());
+    if (!state.practice_pad_armed) ImGui::TextDisabled("Release the controller, then press A.");
+    ImGui::End();
+    return;
+  }
+
+  if (practice.phase == Phase::Searching && !state.practice_open) {
+    ImGui::SetNextWindowPos(ImVec2(screen.x - 12, screen.y - 12), ImGuiCond_Always, ImVec2(1, 1));
+    ImGui::SetNextWindowBgAlpha(0.72f);
+    ImGui::Begin("##native_search_status", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings);
+    ImGui::Text("%s: %s", slippi::native_practice::match_mode_name(practice.mode),
+                matchmaking_state_text(practice.matchmaking_state));
+    const std::string elapsed = slippi::native_practice::format_search_duration(practice.search_ticks);
+    ImGui::TextDisabled("Searching %s", elapsed.c_str());
+    ImGui::TextDisabled("Tab: search controls");
+    ImGui::End();
+  }
+
+  if (!state.practice_open) {
+    if (options.matchmaking_hint && practice.tab_available && practice.phase == Phase::Idle) {
+      ImGui::SetNextWindowPos(ImVec2(screen.x - 12, 52), ImGuiCond_Always, ImVec2(1, 0));
+      ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
+      ImGui::Begin("##native_practice_hint", nullptr,
+                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                   ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings);
+      ImGui::TextUnformatted("Matchmaking: Tab");
+      ImGui::End();
+    }
+    return;
+  }
+
+  ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_FirstUseEver);
+  if (!ImGui::Begin("Practice matchmaking", &state.practice_open,
+                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+    ImGui::End();
+    return;
+  }
+  ImGui::TextUnformatted("Tab or Esc: return to the game");
+  ImGui::Separator();
+
+  ImGui::BeginDisabled(!practice.can_start);
+  const bool start_ranked = ImGui::Button("Ranked", ImVec2(126, 32));
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!practice.can_start);
+  const bool start_unranked = ImGui::Button("Unranked", ImVec2(126, 32));
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Direct", ImVec2(126, 32))) state.practice_focus_code = true;
+  ImGui::TextDisabled("Ranked and Unranked start immediately; Direct uses a code.");
+  ImGui::Separator();
+
+  if (start_ranked && practice.can_start) {
+    state.practice_error[0] = 0;
+    slippi::native_practice::submit_start_ranked();
+    state.practice_open = false;
+    state.practice_release_capture = true;
+    ImGui::End();
+    return;
+  }
+
+  if (start_unranked && practice.can_start) {
+    state.practice_error[0] = 0;
+    slippi::native_practice::submit_start_unranked();
+    state.practice_open = false;
+    state.practice_release_capture = true;
+    ImGui::End();
+    return;
+  }
+
+  if (practice.phase == Phase::Searching) {
+    ImGui::Text("Mode: %s", slippi::native_practice::match_mode_name(practice.mode));
+    if (!practice.connect_code.empty()) ImGui::Text("Code: %s", practice.connect_code.c_str());
+    ImGui::TextUnformatted(matchmaking_state_text(practice.matchmaking_state));
+    const std::string elapsed = slippi::native_practice::format_search_duration(practice.search_ticks);
+    ImGui::Text("Search time: %s", elapsed.c_str());
+    if (!practice.opponent.empty()) ImGui::Text("Opponent: %s", practice.opponent.c_str());
+    ImGui::TextWrapped("Close this popup with Tab to keep practicing while the search continues.");
+    if (ImGui::Button("Cancel search", ImVec2(-1, 36))) {
+      slippi::native_practice::submit_cancel();
+      state.practice_open = false;
+      state.practice_release_capture = true;
+    }
+  } else {
+    ImGui::TextUnformatted("Connect code");
+    if (state.practice_focus_code) {
+      ImGui::SetKeyboardFocusHere();
+      state.practice_focus_code = false;
+    }
+    const bool enter = ImGui::InputText("##direct_code", state.practice_code,
+                                        sizeof state.practice_code,
+                                        ImGuiInputTextFlags_CharsUppercase |
+                                        ImGuiInputTextFlags_CharsNoBlank |
+                                        ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::TextDisabled("Type or paste a code such as NAME#123.");
+    ImGui::BeginDisabled(!practice.can_start);
+    const bool start = ImGui::Button("Search Direct", ImVec2(-1, 36)) || enter;
+    ImGui::EndDisabled();
+    if (start && practice.can_start) {
+      std::string code, error;
+      if (slippi::native_practice::normalize_direct_code(state.practice_code, &code, &error)) {
+        std::snprintf(state.practice_code, sizeof state.practice_code, "%s", code.c_str());
+        state.practice_error[0] = 0;
+        slippi::native_practice::submit_start_direct(code);
+        state.practice_open = false;
+        state.practice_release_capture = true;
+      } else {
+        std::snprintf(state.practice_error, sizeof state.practice_error, "%s", error.c_str());
+      }
+    }
+    if (state.practice_error[0])
+      ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.40f, 1.0f), "%s", state.practice_error);
+  }
+  ImGui::End();
+}
+
 bool settings_frame(SettingsState& state, D3D12Options& options) {
+  slippi::native_practice::Snapshot practice = slippi::native_practice::snapshot();
+  const bool practice_forced = practice.phase == slippi::native_practice::Phase::Handoff ||
+                               practice.phase == slippi::native_practice::Phase::Failure ||
+                               practice.phase == slippi::native_practice::Phase::ReturningToPractice;
+  const bool practice_force_capture =
+      slippi::native_practice::phase_forces_input_capture(practice.phase);
+  const bool practice_nav = state.practice_open || practice.phase == slippi::native_practice::Phase::Failure;
   // Dear ImGui's Win32 backend polls XInput itself whenever gamepad navigation is enabled, and maps
   // the Xbox X button to its "menu" key, which pops up ImGui's window switcher for as long as the
   // button is held. Players pressing X mid-match got a little window they could not get rid of.
-  // Controller navigation is only wanted while this panel is open, so it is switched off otherwise,
-  // before the backend's NewFrame does that polling.
+  // Native practice must follow the controller port selected in Training. Disable the backend's
+  // hard-wired XInput-pad-1 poll and feed the already-routed GameCube-format port below instead.
   {
     auto& io = ImGui::GetIO();
-    if (state.open) {
-      io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-    } else {
-      io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
-      io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
-    }
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
+    io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
   }
   ImGui_ImplWin32_NewFrame();
-  // The GameCube pad drives the panel only while it is open. Fed in while closed, a whole match of
-  // presses queued up in ImGui and played back the moment the panel opened: the cursor ran through
-  // the settings on its own, A presses switched them, and one of those took the game down. Opening
-  // clears whatever is queued, and the pad counts again only once it has been let go.
-  static bool was_open = false, pad_armed = false;
-  host::PadState pad{};
-  const bool have_pad = host::window_ui_gamecube_pad(pad);
-  if (state.open && !was_open) { ImGui::GetIO().ClearEventsQueue(); ImGui::GetIO().ClearInputKeys(); pad_armed = false; }
-  was_open = state.open;
-  if (!state.open) pad_armed = false;
-  else if (!pad_armed && have_pad)
-    pad_armed = pad.button == 0 && std::abs(pad.stick_x) < 30 && std::abs(pad.stick_y) < 30;
-  if (have_pad && state.open && pad_armed) {
-    auto& io = ImGui::GetIO(); io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
+  // UI navigation is armed only after the selected pad has returned to neutral. A held A that
+  // opened no UI cannot click Start, Cancel, or acknowledge a later disconnect.
+  host::PadState pads[4]{};
+  const bool have_any_pad = host::window_ui_pads(pads);
+  if (!have_any_pad) for (host::PadState& p : pads) p.err = -1;
+  if (state.practice_release_capture) {
+    bool any_connected = false, all_neutral = true;
+    for (const host::PadState& p : pads) {
+      if (p.err != 0) continue;
+      any_connected = true;
+      if (p.button || std::abs(p.stick_x) >= 30 || std::abs(p.stick_y) >= 30 ||
+          std::abs(p.sub_x) >= 30 || std::abs(p.sub_y) >= 30 || p.trig_l > 20 || p.trig_r > 20)
+        all_neutral = false;
+    }
+    if (!any_connected || all_neutral) state.practice_release_capture = false;
+  }
+  const int shortcut_port = host::window_take_settings_controller_port();
+  if (shortcut_port >= 0 && shortcut_port < 4) state.settings_controller_port = shortcut_port;
+  const bool nav_active = state.open || practice_nav;
+  int nav_port = practice_nav ? std::clamp(practice.controller_port, 0, 3) :
+                                std::clamp(state.settings_controller_port, 0, 3);
+  if (!practice_nav && nav_active) {
+    for (int i = 0; i < 4; ++i) {
+      const host::PadState& candidate = pads[i];
+      const bool active = candidate.err == 0 &&
+          (candidate.button || std::abs(candidate.stick_x) >= 30 || std::abs(candidate.stick_y) >= 30);
+      if (active) { state.settings_controller_port = i; nav_port = i; break; }
+    }
+  }
+  if (pads[nav_port].err != 0)
+    for (int i = 0; i < 4; ++i) if (pads[i].err == 0) { nav_port = i; break; }
+  const host::PadState& pad = pads[nav_port];
+  const bool have_pad = pad.err == 0;
+  state.settings_stick_x = have_pad ? pad.stick_x : 0;
+  state.settings_stick_y = have_pad ? pad.stick_y : 0;
+  if (nav_active && (!state.practice_nav_active || practice.generation != state.practice_generation)) {
+    ImGui::GetIO().ClearEventsQueue();
+    ImGui::GetIO().ClearInputKeys();
+    state.practice_pad_armed = false;
+    state.practice_a_was_down = (pad.button & 0x100) != 0;
+  }
+  state.practice_nav_active = nav_active;
+  state.practice_generation = practice.generation;
+  if (!nav_active) state.practice_pad_armed = false;
+  else if (!state.practice_pad_armed && have_pad)
+    state.practice_pad_armed = pad.button == 0 && std::abs(pad.stick_x) < 30 && std::abs(pad.stick_y) < 30;
+  if (g_ui_diag && nav_active) {
+    static uint32_t last_sig = 0xFFFFFFFFu;
+    const uint32_t sig = have_pad ? ((uint32_t)nav_port << 28) ^ pad.button ^
+        ((uint32_t)(uint8_t)(pad.stick_x / 20) << 16) ^ ((uint32_t)(uint8_t)(pad.stick_y / 20) << 20) : 0xFFFFFFFEu;
+    if (sig != last_sig) {
+      last_sig = sig;
+      host::log("ui diag: nav pad port %d present %d armed %d buttons %04X stick %d,%d c %d,%d",
+                nav_port, (int)have_pad, (int)state.practice_pad_armed, have_pad ? pad.button : 0,
+                have_pad ? pad.stick_x : 0, have_pad ? pad.stick_y : 0, have_pad ? pad.sub_x : 0, have_pad ? pad.sub_y : 0);
+    }
+  }
+  if (have_pad && nav_active && state.practice_pad_armed) {
+    auto& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
     io.AddKeyEvent(ImGuiKey_GamepadStart, (pad.button & 0x1000) != 0);
     io.AddKeyEvent(ImGuiKey_GamepadBack, (pad.button & 0x10) != 0);
     io.AddKeyEvent(ImGuiKey_GamepadFaceDown, (pad.button & 0x100) != 0);
@@ -1727,58 +2757,630 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.button & 2) || pad.stick_x > 40);
   }
   ImGui::NewFrame();
-  if (host::window_take_settings_toggle()) state.open = !state.open;   // see window.cpp WM_KEYDOWN
+  set_hud_scales(options.stock_hud_scale, options.damage_hud_scale, gecko::option_pal_stock_icons);
+  static bool test_tab_set = false;
+  if (!test_tab_set) {
+    test_tab_set = true;
+    if (const char* tab = std::getenv("MELEE_TEST_SETTINGS_TAB"))
+      state.active_tab = std::clamp(std::atoi(tab), 0, 6);
+  }
+  const auto reset_settings_home = [&state](const char* why) {
+    if (g_ui_diag) host::log("ui diag: settings reset to home (%s), tab %d", why, state.active_tab);
+    state.active_tab = 0;
+    state.radial_selection = 0;
+    state.home_focus_reset = true;
+    state.clean_hover.fill(0.0f);
+    state.dashboard_hover.fill(0.0f);
+    state.radial_hover.fill(0.0f);
+    state.clean_detail_open = state.dashboard_detail_open = false;
+    state.gd_detail_open = state.radial_detail_open = state.wide_detail_open = false;
+  };
+  if (g_guest_options_open_request.exchange(false, std::memory_order_acq_rel)) {
+    state.open = true;
+    state.practice_open = false;
+    reset_settings_home("guest Options row");
+  }
+  if (host::window_take_settings_toggle()) {
+    if (state.legacy_presentation) {
+      options.overlay_style = state.legacy_saved_appearance;
+      state.legacy_presentation = false;
+    }
+    state.open = !state.open;
+    if (state.open) {
+      state.practice_open = false;
+      reset_settings_home("F1 or controller chord");
+    }
+  }
+  if (host::window_take_legacy_settings_toggle() && options.legacy_menu_enabled) {
+    if (state.legacy_presentation) {
+      options.overlay_style = state.legacy_saved_appearance;
+      state.legacy_presentation = false;
+      state.open = false;
+    } else {
+      state.legacy_saved_appearance = options.overlay_style;
+      state.legacy_presentation = true;
+      options.overlay_style = options.legacy_menu_style;
+      state.open = true;
+      state.practice_open = false;
+      reset_settings_home("F11 legacy menu");
+    }
+  }
+  // Style 6 is an in-memory-only presentation: a simple header, flat category
+  // tabs, and the existing settings controls, with the selected modern appearance
+  // held in SettingsState and restored on exit;
+  // controls continue editing the same D3D12Options values and persistence file.
+  if (g_fill_window.load(std::memory_order_relaxed) && options.legacy_menu_enabled && !state.legacy_presentation) {
+    state.legacy_saved_appearance = options.overlay_style;
+    state.legacy_presentation = true;
+  }
+  if (state.legacy_presentation) options.overlay_style = options.legacy_menu_style;
+  const bool tab_pressed = host::window_take_practice_toggle();
+  if (tab_pressed && !state.open && !state.menu_open && !state.fill_window && practice.tab_available) {
+    const bool was_open = state.practice_open;
+    state.practice_open = !state.practice_open;
+    if (state.practice_open) state.practice_focus_code = practice.phase == slippi::native_practice::Phase::Idle;
+    else if (was_open) state.practice_release_capture = true;
+  }
   // F2: write the next ~90 presented frames into capture\. For defects that only show in a real
   // session, where scripted runs reproduce nothing: press it while the problem is happening and
   // the frames themselves can be read afterwards.
   if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) { request_frame_capture(90); host::log("capture: F2, writing the next 90 presented frames into capture\\"); }
+  // Start on the controller closes the panel from any page (the open chord is Start + Down + Z,
+  // which the input layer swallows whole, so this never fires on the press that opened it).
+  if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
+      !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && state.rebind_action < 0)
+    state.open = false;
+  if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) &&
+      !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && state.rebind_action < 0) {
+    if (options.overlay_style == 0 && state.clean_detail_open) state.clean_detail_open = false;
+    else if (options.overlay_style == 1 && state.dashboard_detail_open) state.dashboard_detail_open = false;
+    else if (options.overlay_style == 2 && state.gd_detail_open) state.gd_detail_open = false;
+    else if (options.overlay_style == 3 && state.radial_detail_open) state.radial_detail_open = false;
+    else if (options.overlay_style == 4 && state.wide_detail_open) state.wide_detail_open = false;
+    else state.open = false;
+  }
   // Esc: closes the panel if it is open; otherwise opens or closes the Esc menu. While a rebind is
   // waiting for a button, Escape means "cancel that", which the capture itself watches for, so it
   // does nothing here then (closing the panel on the same key left the capture running).
   if (host::window_take_escape() && state.rebind_action < 0) {
     if (state.open) state.open = false;
-    else if (!state.fill_window) { state.menu_open = !state.menu_open; state.menu_quit = false; }
+    else if (state.practice_open) { state.practice_open = false; state.practice_release_capture = true; }
+    else if (state.menu_open) { state.menu_open = false; state.menu_quit = false; }
+    // Esc opens the full settings menu on its category page; quit and restart live in its "..." menu.
+    else if (!state.fill_window) { state.open = true; reset_settings_home("Esc"); }
   }
-  if (state.open) state.menu_open = false;   // F1 with the menu up goes straight to the panel
-  host::window_input_capture(state.open || state.menu_open);
+  if (state.open) { state.menu_open = false; state.practice_open = false; }
+  if (state.menu_open) state.practice_open = false;
+  if (practice_forced || practice.phase == slippi::native_practice::Phase::OnlineFlow ||
+      practice.phase == slippi::native_practice::Phase::InMatch)
+    state.practice_open = false;
+  // Use the GD Melee source's actual 60 Hz slide keyframes. Sample the current
+  // position when direction changes so a quick reopen never snaps.
+  if (!state.panel_anim_initialized) {
+    state.panel_anim_initialized = true;
+    state.panel_anim_target_open = state.open;
+    state.panel_anim_frame = state.open ? 17.0f : 12.0f;
+    state.panel_slide_x = state.open ? 0.0f : -720.0f;
+    state.panel_slide_start_x = state.panel_slide_x;
+  } else if (state.panel_anim_target_open != state.open) {
+    const bool was_mid_open = state.panel_anim_target_open && state.panel_anim_frame < 17.0f;
+    const bool was_mid_close = !state.panel_anim_target_open && state.panel_anim_frame < 12.0f;
+    const bool interrupted = was_mid_open || was_mid_close;
+    state.panel_anim_initialized = true;
+    state.panel_anim_target_open = state.open;
+    state.panel_anim_frame = 0.0f;
+    state.panel_slide_start_x = interrupted ? state.panel_slide_x : (state.open ? 720.0f : 0.0f);
+    if (state.open) {
+      state.clean_home_frames = 0.0f;
+      state.dashboard_home_frames = 0.0f;
+    }
+  }
+  if (state.open) {
+    state.panel_anim_frame = std::min(17.0f, state.panel_anim_frame + ImGui::GetIO().DeltaTime * 60.0f);
+    state.panel_slide_x = gx::gd_melee_ui::slide_in(state.panel_slide_start_x, state.panel_anim_frame);
+  } else if (state.panel_anim_frame < 12.0f) {
+    state.panel_anim_frame = std::min(12.0f, state.panel_anim_frame + ImGui::GetIO().DeltaTime * 60.0f);
+    state.panel_slide_x = gx::gd_melee_ui::slide_out(state.panel_slide_start_x, state.panel_anim_frame);
+  }
+  // The clean side appearance keeps one physical panel and slides its content between pages.
+  // The exit track remains visible until it finishes, including when Back is pressed mid motion.
+  const float clean_step = ImGui::GetIO().DeltaTime * 60.0f;
+  state.clean_detail_frames = std::clamp(state.clean_detail_frames +
+      (state.clean_detail_open ? clean_step : -clean_step), 0.0f, 14.0f);
+  const bool panel_visible = state.open || state.panel_slide_x > -720.0f;
+  const bool practice_capture = state.practice_open || practice_force_capture ||
+                                state.practice_release_capture;
+  host::window_input_capture(state.open || state.menu_open || practice_capture);
   state.intervals[state.cursor++ % state.intervals.size()] = ImGui::GetIO().DeltaTime*1000.f;
   if (streamline::reflex_available())
     state.latencies[state.latency_cursor++ % state.latencies.size()] = streamline::reflex_latency_ms();
   bool changed = false;
-  if (state.open) {
-    // Tall enough that the Low spec switch at the end of the settings section is on screen when the
-    // panel is first opened, and still short enough for a 768-line laptop display.
+  if (panel_visible) {
+    g_settings_palette = options.overlay_palettes[std::clamp(options.overlay_style, 0, 6)];
+    g_settings_custom_color_enabled = options.settings_custom_color_enabled;
+    g_settings_custom_color = ImVec4(options.settings_custom_color[0],options.settings_custom_color[1],
+                                     options.settings_custom_color[2],1.0f);
+    const SettingsAppearanceScope appearance_scope(options.overlay_style);
+    const bool old_menu = options.overlay_style == 7;
+    const bool classic_menu = options.overlay_style >= 6;
+    if (options.overlay_style == 6) {
+      // Match the compact v0.6.6 settings screen: black canvas, navy controls,
+      // purple selected tab, and Lucida Console text. The F11 legacy view is
+      // the old settings presentation, not another modern appearance.
+      ImGui::PushStyleColor(ImGuiCol_WindowBg,ImVec4(.045f,.048f,.055f,1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ChildBg,ImVec4(.055f,.062f,.075f,1.0f));
+      ImGui::PushStyleColor(ImGuiCol_Text,ImVec4(.88f,.90f,.93f,1.0f));
+      ImGui::PushStyleColor(ImGuiCol_TextDisabled,ImVec4(.48f,.51f,.57f,1.0f));
+      ImGui::PushStyleColor(ImGuiCol_FrameBg,ImVec4(.105f,.16f,.24f,1.0f));
+      ImGui::PushStyleColor(ImGuiCol_FrameBgHovered,ImVec4(.24f,.20f,.38f,1.0f));
+      ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(.10f,.18f,.29f,1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered,ImVec4(.30f,.22f,.47f,1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive,ImVec4(.34f,.23f,.58f,1.0f));
+      ImGui::PushStyleColor(ImGuiCol_Border,ImVec4(.20f,.22f,.26f,1.0f));
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,0.0f);
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,0.0f);
+      ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(4.0f,2.0f));
+      if (g_settings_classic_font) ImGui::PushFont(g_settings_classic_font);
+    }
     state.fill_window = g_fill_window.load(std::memory_order_relaxed);
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float motion_scale = std::max(0.1f, display.y / 480.0f);
     if (state.fill_window) {
-      // Standalone: no game behind it, so the panel is the window. No title bar of its own, no
-      // moving or resizing inside the frame, and the OS window supplies the chrome.
-      ImGui::SetNextWindowPos(ImVec2(0, 0));
-      ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+      ImGui::SetNextWindowPos(ImVec2(state.panel_slide_x * motion_scale, 0));
+      ImGui::SetNextWindowSize(display);
       ImGui::Begin("PC settings", nullptr,
                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoSavedSettings);
-    } else {
-      ImGui::SetNextWindowSize(ImVec2(560, 620), ImGuiCond_FirstUseEver);
-      ImGui::Begin("PC settings", &state.open, ImGuiWindowFlags_NoCollapse);
+    } else if (old_menu) {
+      // Its own window ID: sharing "PC settings" with the modern appearances made it reopen at
+      // wherever the modern panel last was, including part-way through its slide (off screen).
+      ImGui::SetNextWindowSize(ImVec2(std::min(560.0f, display.x - 20.0f),
+                                     std::min(620.0f, display.y - 20.0f)), ImGuiCond_Appearing);
+      ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Appearing);
+      ImGui::Begin("PC settings###legacy_old_settings", &state.open, ImGuiWindowFlags_NoCollapse |
+                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
       ImGui::TextUnformatted("F1 or Esc: return to game");
+    } else {
+      const float width = options.overlay_style == 0 ? std::min(560.0f, std::max(390.0f, display.x * 0.38f)) :
+                          options.overlay_style == 1 ? std::min(1040.0f, display.x - 24.0f) :
+                          options.overlay_style == 2 ? std::min(display.x - 12.0f, (display.y - 12.0f) * 4.0f / 3.0f) :
+                          options.overlay_style == 3 ? display.x - 24.0f :
+                          options.overlay_style == 4 ? std::min(960.0f, display.x - 24.0f) :
+                          options.overlay_style == 6 ? std::min(980.0f, display.x - 40.0f) :
+                                                       std::min(860.0f, display.x - 24.0f);
+      const float w = std::max(300.0f, std::min(width, display.x - 12.0f));
+      // Radial fills the height so its header and close button sit at the top of the window, not
+      // floating mid-screen when the window is taller than the old 790 px cap.
+      const float h = options.overlay_style == 3 ? std::max(320.0f, display.y - 12.0f) :
+                      options.overlay_style == 4 ? std::max(360.0f,std::min(710.0f,display.y-40.0f)) :
+                      options.overlay_style == 6 ? std::max(360.0f,std::min(710.0f,display.y-40.0f)) :
+                      options.overlay_style == 2 ? w * 3.0f / 4.0f :
+                      std::max(320.0f, std::min(790.0f, display.y - 12.0f));
+      const ImVec2 base_pos = options.overlay_style == 0 ? ImVec2(display.x - w, 0) :
+                              ImVec2((display.x - w) * 0.5f, (display.y - h) * 0.5f);
+      const float slide_x = options.overlay_style == 0 ? std::abs(state.panel_slide_x) : state.panel_slide_x;
+      const float slide_scale = std::max(motion_scale, w / 720.0f);
+      const ImVec2 pos(base_pos.x + slide_x * slide_scale, base_pos.y);
+      ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
+      ImGui::SetNextWindowSize(ImVec2(w, options.overlay_style == 0 ? display.y : h), ImGuiCond_Always);
+    const bool scene_chrome = options.overlay_style == 0 || options.overlay_style == 1 ||
+                                (options.overlay_style >= 2 && options.overlay_style <= 4);
+      ImGui::SetNextWindowBgAlpha(scene_chrome ? 0.0f : classic_menu ? 1.0f :
+                                  options.overlay_style == 0 ? 0.90f : 0.97f);
+      ImGui::Begin("PC settings", &state.open, ImGuiWindowFlags_NoTitleBar |
+                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                   ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                   ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                   (scene_chrome ? ImGuiWindowFlags_NoBackground : 0));
     }
+    static bool screenshot_tab_set = false;
+    if (!screenshot_tab_set) {
+      screenshot_tab_set = true;
+      const char* requested = std::getenv("MELEE_SETTINGS_TAB");
+      static constexpr const char* tabs[] = {
+          "Video", "Audio", "Game", "Controls", "Overlays", "Customize", "Gecko Codes"};
+      if (requested) for (int i = 0; i < 7; ++i)
+        if (std::strcmp(requested, tabs[i]) == 0 ||
+            (i == 5 && std::strcmp(requested, "Mods") == 0)) {
+          state.active_tab = i;
+          if (options.overlay_style == 0) state.clean_detail_open = true;
+          if (options.overlay_style == 1) state.dashboard_detail_open = true;
+          if (options.overlay_style == 3) state.radial_detail_open = true;
+          if (options.overlay_style == 2) state.gd_detail_open = true;
+          if (options.overlay_style == 4) state.wide_detail_open = true;
+        }
+    }
+    const bool clean_home = !state.fill_window && options.overlay_style == 0 &&
+                            !state.clean_detail_open && state.clean_detail_frames <= 0.0f;
+    const bool dashboard_home = !state.fill_window && options.overlay_style == 1 &&
+                                !state.dashboard_detail_open;
+    const bool gd_home = !state.fill_window && options.overlay_style == 2 &&
+                         !state.gd_detail_open;
+    const bool radial_home = !state.fill_window && options.overlay_style == 3 &&
+                             !state.radial_detail_open;
+    if (!state.fill_window && options.overlay_style == 0) {
+      static constexpr const char* clean_titles[]={
+          "VIDEO","AUDIO","GAME","CONTROLS","OVERLAYS","CUSTOMIZE","GECKO CODES"};
+      // Clean side draws its title in the foreground so it can extend beyond
+      // the narrow panel. Hide it while the style gallery modal is visible.
+      if (!g_menu_style_gallery_open)
+        settings_clean_chrome(state.clean_detail_open?
+            clean_titles[std::clamp(state.active_tab,0,6)]:"SETTINGS",state.panel_slide_x);
+    }
+    if (!state.fill_window && options.overlay_style == 3)
+      settings_radial_scene();
+    if (!state.fill_window && options.overlay_style == 4)
+      settings_wide_home(state);
+    if (clean_home) {
+      settings_clean_home(state);
+    } else if (dashboard_home) {
+      settings_dashboard_home(state);
+    } else if (gd_home) {
+      settings_gd_home(state);
+    } else if (radial_home) {
+      ImDrawList* draw = ImGui::GetWindowDrawList();
+      const ImVec2 window_pos = ImGui::GetWindowPos();
+      const ImVec2 window_size = ImGui::GetWindowSize();
+      const ImVec2 center(window_pos.x + window_size.x * 0.5f,
+                          window_pos.y + window_size.y * 0.51f);
+      const float radius = std::min(224.0f, std::min(window_size.x, window_size.y) * 0.315f);
+      draw->AddText(ImVec2(window_pos.x + 24.0f, window_pos.y + 18.0f),
+                    IM_COL32(240, 248, 255, 255), "MELEE UNLOCKED  /  SETTINGS");
+      const ImVec2 hint_min(window_pos.x + window_size.x - 238.0f,
+                            window_pos.y + 46.0f);
+      const ImVec2 hint_max(window_pos.x + window_size.x - 18.0f,
+                            window_pos.y + 96.0f);
+      draw->AddRectFilled(ImVec2(hint_min.x+2,hint_min.y+3),
+                          ImVec2(hint_max.x+2,hint_max.y+3),IM_COL32(0,3,10,96),12.0f);
+      draw->AddRectFilled(hint_min,hint_max,IM_COL32(15,27,42,235),12.0f);
+      draw->AddRect(hint_min,hint_max,IM_COL32(95,145,184,205),12.0f,0,1.2f);
+      draw->AddText(ImVec2(hint_min.x + 12.0f, hint_min.y + 6.0f),
+                    IM_COL32(186, 204, 222, 255), "MOVE  /  D-PAD OR STICK");
+      draw->AddText(ImVec2(hint_min.x + 12.0f, hint_min.y + 25.0f),
+                    IM_COL32(239, 246, 252, 255), "A  SELECT     B  BACK");
+      settings_radial_nav(state, center, radius, true);
+      ImGui::SetCursorScreenPos(ImVec2(window_pos.x + window_size.x - 40.0f,
+                                       window_pos.y + 10.0f));
+      if (settings_close_hit("##close_radial", ImVec2(28.0f, 28.0f))) state.open = false;
+      draw->AddLine(ImVec2(window_pos.x + window_size.x - 33.0f, window_pos.y + 17.0f),
+                    ImVec2(window_pos.x + window_size.x - 19.0f, window_pos.y + 31.0f),
+                    IM_COL32(235, 243, 255, 255), 2.0f);
+      draw->AddLine(ImVec2(window_pos.x + window_size.x - 19.0f, window_pos.y + 17.0f),
+                    ImVec2(window_pos.x + window_size.x - 33.0f, window_pos.y + 31.0f),
+                    IM_COL32(235, 243, 255, 255), 2.0f);
+    } else {
+    const bool gd_detail_theme = options.overlay_style == 2 && !state.fill_window;
+    const bool clean_detail_theme = options.overlay_style == 0 && !state.fill_window;
+    const bool dashboard_detail_theme = options.overlay_style == 1 && !state.fill_window;
+    const bool wide_detail_theme = options.overlay_style == 4 && !state.fill_window;
+    if (dashboard_detail_theme) {
+      ImDrawList* draw = ImGui::GetWindowDrawList();
+      const ImVec2 p = ImGui::GetWindowPos(), s = ImGui::GetWindowSize();
+      draw->AddRectFilled(p, ImVec2(p.x + s.x, p.y + s.y), IM_COL32(25, 34, 49, 246), 13.0f);
+      draw->AddRectFilled(p, ImVec2(p.x + s.x, p.y + 5.0f), IM_COL32(246, 195, 55, 255), 2.0f);
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.14f, 0.31f, 0.55f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.22f, 0.49f, 0.82f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.30f, 0.60f, 0.94f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.08f, 0.18f, 0.34f, 1.0f));
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+    }
+    if (clean_detail_theme) {
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.23f, 0.06f, 0.19f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.91f, 0.12f, 0.48f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.0f, 0.24f, 0.58f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.11f, 0.07f, 0.14f, 1.0f));
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f);
+    }
+    if (gd_detail_theme) {
+      ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.21f, 0.25f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.94f, 0.69f, 0.15f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.0f, 0.79f, 0.23f, 1.0f));
+      ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.08f, 0.10f, 0.13f, 1.0f));
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
+    }
+    if (options.overlay_style == 2 && !state.fill_window) {
+      static constexpr const char* page_names[] = {
+          "VIDEO", "AUDIO", "GAME", "CONTROLS", "OVERLAYS", "CUSTOMIZE", "GECKO CODES"};
+      const ImVec2 origin = ImGui::GetWindowPos();
+      const float scale = ImGui::GetWindowWidth() / 640.0f;
+      settings_gd_chrome(origin, scale, page_names[state.active_tab]);
+      gd_kit_text(ImGui::GetWindowDrawList(), "body", origin, scale, 104, 414.0f,
+                  g_settings_gd_help.empty() ? "Choose a setting. Changes save automatically." : g_settings_gd_help.c_str(),
+                  IM_COL32(242,239,228,255), 472);
+    } else if (clean_detail_theme) {
+      const ImVec2 p = ImGui::GetWindowPos(), s = ImGui::GetWindowSize();
+      ImDrawList* draw = ImGui::GetWindowDrawList();
+      ImGui::SetCursorScreenPos(ImVec2(p.x + s.x - 37.0f, p.y + 15.0f));
+      if (settings_close_hit("##close_clean_detail", ImVec2(28.0f, 28.0f))) state.open = false;
+      draw->AddText(ImVec2(p.x + s.x - 30.0f, p.y + 18.0f),
+                    IM_COL32(255, 255, 255, 255), "X");
+      ImGui::SetCursorScreenPos(ImVec2(p.x + 20.0f, p.y + 115.0f));
+      const bool categories_clicked=settings_hit_button("##clean_categories",ImVec2(s.x-40.0f,34.0f));
+      const bool categories_hovered=ImGui::IsItemHovered()||ImGui::IsItemFocused();
+      const ImVec2 ca=ImGui::GetItemRectMin(), cb=ImGui::GetItemRectMax();
+      const ImVec2 category_shadow[]={ImVec2(ca.x+15,ca.y+5),ImVec2(cb.x,ca.y-2),
+                                      ImVec2(cb.x-9,cb.y+5),ImVec2(ca.x+2,cb.y+5)};
+      draw->AddConvexPolyFilled(category_shadow,4,IM_COL32(0,0,0,105));
+      const ImVec2 category_card[]={ImVec2(ca.x+13,ca.y),ImVec2(cb.x-2,ca.y-7),
+                                    ImVec2(cb.x-13,cb.y-7),ImVec2(ca.x,cb.y)};
+      draw->AddConvexPolyFilled(category_card,4,categories_hovered?
+          settings_accent(0):IM_COL32(26,17,35,235));
+      draw->AddLine(category_card[0],category_card[1],
+          settings_palette_tint(0,IM_COL32(255,108,189,245)),2.0f);
+      settings_slanted_text(draw,settings_heading_font(),16.0f,
+          ImVec2(ca.x+23,ca.y+7),IM_COL32_WHITE,"<  CATEGORIES",.08f);
+      if (categories_clicked) {
+        state.clean_detail_open = false;
+        state.clean_home_frames = 0.0f;
+      }
+      ImGui::SetCursorScreenPos(ImVec2(p.x + 18.0f, p.y + 153.0f));
+    } else if (dashboard_detail_theme) {
+      settings_detail_header(state,1);
+      ImGui::SetCursorPos(ImVec2(24, 112));
+    } else if (options.overlay_style == 3) {
+      settings_detail_header(state,3);
+      const ImVec2 window_pos = ImGui::GetWindowPos(), window_size = ImGui::GetWindowSize();
+      const float nav_width = std::min(320.0f,
+          std::max(248.0f, (window_size.x - 52.0f) * 0.31f));
+      const ImVec2 center(window_pos.x + 26.0f + nav_width * 0.5f,
+                          window_pos.y + 112.0f + (window_size.y - 160.0f) * 0.45f);
+      const float radius = std::min(122.0f, std::min(nav_width * 0.43f,
+                                                    (window_size.y - 200.0f) * 0.34f));
+      settings_radial_nav(state, center, radius, false);
+      ImGui::SetCursorScreenPos(ImVec2(window_pos.x + 26.0f + nav_width + 22.0f,
+                                       window_pos.y + 112.0f));
+    } else if (old_menu) {
+      // Native v0.6.6 title and tab positioning.
+    } else {
+        ImGui::SetCursorPos(ImVec2(20, 14));
+        if (state.legacy_presentation || options.overlay_style == 6) {
+          // The v0.6.6 layout began with the category tabs, not the modern
+          // oversized SETTINGS banner.
+          ImGui::SetCursorPos(ImVec2(8, 12));
+        } else {
+          ImGui::PushFont(settings_heading_font());
+          ImGui::TextUnformatted("SETTINGS");
+          ImGui::PopFont();
+          ImGui::SetCursorPos(ImVec2(20, 56));
+        }
+    }
+    ImGui::BeginDisabled(!state.open);
+    if ((options.overlay_style != 2 || state.fill_window) && !clean_detail_theme &&
+        !(options.overlay_style == 3 && !state.fill_window) &&
+        !state.legacy_presentation && options.overlay_style != 6) ImGui::Separator();
+    const bool icon_dashboard = options.overlay_style == 1;
+    if (options.overlay_style == 2 && !state.fill_window) {
+      const float scale = ImGui::GetWindowWidth() / 640.0f;
+      ImGui::SetCursorPos(ImVec2(72.0f * scale, 84.0f * scale));
+    } else if (clean_detail_theme || dashboard_detail_theme || options.overlay_style == 3) {
+      // Wheel categories open a complete page; labels never compete with a miniature wheel.
+    } else if (old_menu) {
+      static constexpr const char* tabs[] = {"Video", "Audio", "Game", "Controls", "Overlays", "Customize", "Gecko Codes"};
+      static bool old_tabs_initialized = false;
+      const int requested_old_tab = state.active_tab;
+      if (ImGui::BeginTabBar("settings_tabs")) {
+        for (int i = 0; i < 7; ++i) {
+          if (ImGui::BeginTabItem(tabs[i], nullptr, !old_tabs_initialized && requested_old_tab == i ? ImGuiTabItemFlags_SetSelected : 0)) {
+            state.active_tab = i;
+            ImGui::EndTabItem();
+          }
+        }
+        ImGui::EndTabBar();
+        old_tabs_initialized = true;
+      }
+    } else if (state.legacy_presentation || options.overlay_style == 6) {
+      static constexpr const char* legacy_tabs[] = {
+          "Video", "Audio", "Game", "Controls", "Overlays", "Customize", "Gecko Codes"};
+      ImGui::SetCursorPos(ImVec2(8, 12));
+      const float spacing = 4.0f;
+      for (int i = 0; i < 7; ++i) {
+        const bool selected = state.active_tab == i;
+        ImGui::PushID(i);
+        ImGui::PushStyleColor(ImGuiCol_Button, selected ? ImVec4(.34f,.23f,.58f,1.0f) :
+                                                        ImVec4(.10f,.18f,.29f,1.0f));
+        const ImVec2 label_size=ImGui::CalcTextSize(legacy_tabs[i]);
+        if (ImGui::Button(legacy_tabs[i], ImVec2(label_size.x + 18.0f, 23.0f)))
+          state.active_tab = i;
+        ImGui::PopStyleColor();
+        ImGui::PopID();
+        if (i != 6) ImGui::SameLine(0.0f,spacing);
+      }
+      ImGui::Separator();
+      ImGui::Spacing();
+    } else if (options.overlay_style == 4) {
+      // Leave breathing room below the tab strip; the panel's rounded outline is its only top edge.
+      ImGui::SetCursorPos(ImVec2(18.0f,120.0f));
+    } else if (icon_dashboard) {
+      const float spacing = ImGui::GetStyle().ItemSpacing.x;
+      const float tile_width = std::max(82.0f, (ImGui::GetContentRegionAvail().x - 3 * spacing) / 4);
+      const float tile_height = display.y < 600.0f ? 48.0f : 70.0f;
+      for (int i = 0; i < 7; ++i) {
+        if (settings_nav_tile(i, state.active_tab == i, options.overlay_style,
+                              ImVec2(tile_width, tile_height))) state.active_tab = i;
+        if (i % 4 != 3 && i != 6) ImGui::SameLine();
+      }
+      ImGui::Spacing();
+    } else if (options.overlay_style == 3) {
+      const float nav_width = std::min(320.0f,
+          std::max(248.0f, (ImGui::GetWindowWidth() - 52.0f) * 0.31f));
+      const ImVec2 window_pos = ImGui::GetWindowPos(), window_size = ImGui::GetWindowSize();
+      const ImVec2 center(window_pos.x + 26.0f + nav_width * 0.5f,
+                          window_pos.y + 112.0f + (window_size.y - 160.0f) * 0.45f);
+      const float radius = std::min(122.0f, std::min(nav_width * 0.43f,
+                                                    (window_size.y - 200.0f) * 0.34f));
+      ImGui::SetCursorScreenPos(ImVec2(window_pos.x + 26.0f + nav_width + 22.0f,
+                                       window_pos.y + 112.0f));
+    } else {
+      const float nav_width = options.overlay_style == 0 ? 78.0f :
+                              151.0f;
+      ImGui::BeginChild("##settings_navigation", ImVec2(nav_width, -80), false);
+      for (int i = 0; i < 7; ++i) {
+        const bool clicked = options.overlay_style == 0 ?
+            settings_nav_rail(i, state.active_tab == i, ImVec2(nav_width - 8.0f, 58.0f)) :
+            settings_nav_tile(i, state.active_tab == i, options.overlay_style,
+                              ImVec2(nav_width - 8.0f, 48.0f));
+        if (clicked) state.active_tab = i;
+      }
+      ImGui::EndChild();
+      ImGui::SameLine();
+    }
+    bool content_tab_changed = false;
+    if (state.content_anim_tab < 0) {
+      state.content_anim_tab = state.active_tab;
+      state.content_anim_frame = 12.0f;
+      content_tab_changed = true;
+    } else if (state.content_anim_tab != state.active_tab) {
+      state.content_anim_tab = state.active_tab;
+      state.content_anim_frame = 0.0f;
+      content_tab_changed = true;
+    }
+    g_settings_focus_next_gd_row = content_tab_changed && options.overlay_style == 2 &&
+                                   !state.fill_window;
+    constexpr float kContentTransitionFrames = 8.0f;
+    state.content_anim_frame = std::min(kContentTransitionFrames,
+        state.content_anim_frame + ImGui::GetIO().DeltaTime * 60.0f);
+    const float page_t = std::clamp(state.content_anim_frame / kContentTransitionFrames, 0.0f, 1.0f);
+    const float page_ease = page_t * page_t * (3.0f - 2.0f * page_t);
+    ImVec2 page_offset(0.0f, 0.0f);
+    if (options.overlay_style == 0) {
+      const float t = std::clamp(state.clean_detail_frames / 14.0f, 0.0f, 1.0f);
+      const float slide = t * t * (3.0f - 2.0f * t);
+      page_offset.x = ImGui::GetWindowWidth() * 0.65f * (1.0f - slide);
+    }
+    else if (options.overlay_style == 1) page_offset.y = 14.0f * (1.0f - page_ease);
+    else page_offset.x = 12.0f * (1.0f - page_ease);
+    const ImVec2 content_origin = ImGui::GetCursorPos();
+    ImGui::SetCursorPos(ImVec2(content_origin.x + page_offset.x,
+                               content_origin.y + page_offset.y));
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha,
+        options.overlay_style == 0 ? 0.35f + 0.65f * std::clamp(state.clean_detail_frames / 14.0f, 0.0f, 1.0f) :
+                                     0.72f + 0.28f * page_ease);
+    const bool gd_page = options.overlay_style == 2 && !state.fill_window;
+    if (wide_detail_theme) {
+      const ImVec2 window = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+      const ImVec2 a(window.x + 24.0f, window.y + 108.0f);
+      const ImVec2 b(window.x + size.x - 24.0f, window.y + size.y - 50.0f);
+      ImDrawList* draw = ImGui::GetWindowDrawList();
+      draw->AddRectFilled(ImVec2(a.x, a.y + 4.0f), ImVec2(b.x, b.y + 4.0f),
+                          IM_COL32(0, 0, 0, 55), 14.0f);
+      draw->AddRectFilled(a, b, IM_COL32(12, 21, 32, 246), 14.0f);
+      draw->AddRect(a, b, IM_COL32(76, 105, 132, 150), 14.0f, 0, 1.0f);
+    }
+    if (clean_detail_theme || dashboard_detail_theme ||
+        (options.overlay_style >= 2 && options.overlay_style <= 4))
+      ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                            gd_page ? ImVec4(0, 0, 0, 0) :
+                            clean_detail_theme ? ImVec4(0.035f, 0.025f, 0.055f, 0.78f) :
+                            dashboard_detail_theme ? ImVec4(0.055f, 0.12f, 0.22f, 0.96f) :
+                                                 ImVec4(0, 0, 0, 0));
+    const float gd_scale = ImGui::GetWindowWidth() / 640.0f;
+    g_settings_form_style = gd_page ? 2 : (options.overlay_style == 2 ? 4 : options.overlay_style);
+    g_settings_gd_origin = ImGui::GetWindowPos();
+    g_settings_gd_scale = gd_scale;
+    if (!state.fill_window && (options.overlay_style == 3 || options.overlay_style == 4)) {
+      const ImVec2 window = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+      ImVec2 a = ImGui::GetCursorScreenPos();
+      ImVec2 b(a.x + ImGui::GetContentRegionAvail().x,
+               window.y + size.y - 54.0f);
+      if (options.overlay_style == 3) {
+        // The radial detail page is a two-column composition. Its content glass must
+        // begin to the right of the wheel; painting the normal full-width card here
+        // covered the wheel and made it look like the page was frozen underneath it.
+        constexpr float kRadialDetailSideInset = 64.0f;
+        constexpr float kRadialDetailColumnGap = 36.0f;
+        const float nav_width = std::min(320.0f,
+            std::max(248.0f, (size.x - 52.0f) * 0.31f));
+        a = ImVec2(window.x + 26.0f + nav_width + kRadialDetailColumnGap, window.y + 112.0f);
+        b = ImVec2(window.x + size.x - kRadialDetailSideInset, window.y + size.y - 54.0f);
+      }
+      ImDrawList* draw = ImGui::GetWindowDrawList();
+      draw->AddRectFilled(ImVec2(a.x-5,a.y-7),ImVec2(b.x+5,b.y+4),
+                          options.overlay_style==3?IM_COL32(13,22,35,250):IM_COL32(7,19,35,204),18.0f);
+      draw->AddRect(ImVec2(a.x-5,a.y-7),ImVec2(b.x+5,b.y+4),
+                    options.overlay_style==3?IM_COL32(99,119,139,112):
+                        settings_palette_tint(options.overlay_style,IM_COL32(85,150,208,142)),
+                    18.0f,0,1.5f);
+    }
+    const bool radial_detail_page = options.overlay_style == 3 && !state.fill_window;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
+        gd_page ? ImVec2(0,0) : classic_menu ? ImVec2(8.0f, 5.0f) :
+        radial_detail_page ? ImVec2(24.0f, 20.0f) :
+        wide_detail_theme ? ImVec2(26.0f, 22.0f) :
+        ImVec2(clean_detail_theme ? 18.0f : 24.0f, 20.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+        old_menu ? ImVec2(5.0f, 3.75f) : classic_menu ? ImVec2(4.0f, 2.0f) :
+        radial_detail_page ? ImVec2(14.0f, 9.0f) : ImVec2(12.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, old_menu ? ImVec2(10.0f, 5.0f) : classic_menu ? ImVec2(5.0f, 4.0f) :
+        gd_page ? ImVec2(4.0f * gd_scale, 4.0f * gd_scale) : ImVec2(12.0f, 12.0f));
+    ImVec2 settings_content_size = gd_page ? ImVec2(532.0f * gd_scale, 306.0f * gd_scale) : ImVec2(0, -48);
+    if (options.overlay_style == 3) {
+      const ImVec2 window_pos = ImGui::GetWindowPos(), window_size = ImGui::GetWindowSize();
+      constexpr float kRadialDetailSideInset = 64.0f;
+      constexpr float kRadialDetailColumnGap = 36.0f;
+      const float nav_width = std::min(320.0f, std::max(248.0f, (window_size.x - 52.0f) * 0.31f));
+      const float content_x = 26.0f + nav_width + kRadialDetailColumnGap;
+      ImGui::SetCursorScreenPos(ImVec2(window_pos.x + content_x, window_pos.y + 112.0f));
+      settings_content_size.x = std::max(300.0f, window_size.x - content_x - kRadialDetailSideInset);
+    }
+    ImGui::BeginChild("##settings_content", settings_content_size,
+                      (radial_detail_page || wide_detail_theme) ?
+                          ImGuiChildFlags_AlwaysUseWindowPadding : ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoScrollWithMouse);
+    {
+      // Smooth wheel scrolling at the presented frame rate. ImGui's own wheel scroll jumps a whole
+      // notch in one frame, which reads as 60 Hz stepping on a high-refresh display. The target
+      // follows any other scroll change (scrollbar drag, keyboard or controller navigation).
+      ImGuiWindow* content = ImGui::GetCurrentWindow();
+      ImGuiStorage* storage = ImGui::GetStateStorage();
+      const ImGuiID target_id = ImGui::GetID("##smooth_scroll_target");
+      const ImGuiID applied_id = ImGui::GetID("##smooth_scroll_applied");
+      const float current = content->Scroll.y;
+      float target = storage->GetFloat(target_id, current);
+      const float applied = storage->GetFloat(applied_id, current);
+      if (std::fabs(current - applied) > 0.5f) target = current;
+      const ImGuiIO& scroll_io = ImGui::GetIO();
+      if (GImGui->HoveredWindow == content && scroll_io.MouseWheel != 0.0f)
+        target -= scroll_io.MouseWheel * std::max(60.0f, ImGui::GetTextLineHeightWithSpacing() * 4.0f);
+      target = std::clamp(target, 0.0f, content->ScrollMax.y);
+      float next = current + (target - current) * std::min(1.0f, scroll_io.DeltaTime * 16.0f);
+      if (std::fabs(target - next) < 0.5f) next = target;
+      if (next != current) ImGui::SetScrollY(next);
+      storage->SetFloat(target_id, target);
+      storage->SetFloat(applied_id, next);
+    }
+    // The radial details glass is positioned as a separate right-hand column. Give its actual
+    // controls their own inset instead of relying on inherited child padding, which can be zero
+    // under the legacy child flags used by some builds. This keeps rows away from the glass edge.
+    ImGui::PushTextWrapPos(0.0f);
+    static constexpr const char* titles[] = {
+        "VIDEO", "AUDIO", "GAME", "CONTROLS", "OVERLAYS", "CUSTOMIZE", "GECKO CODES"};
+    if (wide_detail_theme) {
+      static constexpr const char* wide_titles[] = {
+          "Video", "Audio", "Game", "Controls", "Overlays", "Customize", "Gecko Codes"};
+      const ImVec2 header = ImGui::GetCursorScreenPos();
+      const ImVec2 icon(header.x + 19.0f, header.y + 17.0f);
+      settings_symbol_icon(state.active_tab, icon, 0.52f,
+          settings_palette_tint(4, IM_COL32(226, 238, 249, 255)));
+      ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 40.0f);
+      ImGui::PushFont(settings_heading_font());
+      ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(settings_accent(4)), "%s",
+                         wide_titles[state.active_tab]);
+      ImGui::PopFont();
+      ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
+      ImGui::Spacing();
+    } else if (!gd_page && !clean_detail_theme && !dashboard_detail_theme &&
+               options.overlay_style != 3 && !classic_menu) {
+    ImGui::PushFont(settings_heading_font());
+    ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(settings_accent(options.overlay_style)),
+                       "%s", titles[state.active_tab]);
+    ImGui::PopFont();
     ImGui::Separator();
-    // Grouped into tabs so the panel is scannable: it had grown to one long column where the
-    // audio sliders sat between the sub-frame mode and the visual effects level. Save settings and
-    // the version line stay outside the tabs, so Save is reachable from whichever tab is open.
-    if (ImGui::BeginTabBar("settings_tabs")) {
-      // Test hook for panel screenshots: MELEE_SETTINGS_TAB=Controls opens on that tab, once.
-      static const char* open_tab = std::getenv("MELEE_SETTINGS_TAB");
-      auto tab_flags = [](const char* name) {
-        if (!open_tab || std::strcmp(open_tab, name) != 0) return ImGuiTabItemFlags_None;
-        open_tab = nullptr;
-        return ImGuiTabItemFlags_SetSelected;
-      };
-      if (ImGui::BeginTabItem("Video", nullptr, tab_flags("Video"))) {
+    }
+    if (state.active_tab == 0) {
     // One width for every combo and slider on this tab, so their labels all begin at the same x.
     // Left to itself ImGui sizes each control from the space its own label needs, which staggered
     // the labels down the column.
-    ImGui::PushItemWidth(330.0f);
+    ImGui::PushItemWidth(std::clamp(ImGui::GetContentRegionAvail().x - 135.0f, 145.0f, 330.0f));
     // ---- Quality presets: one click for people who do not want to learn the settings below ----
     // Each sets the image settings and the frame rate; the controls below still show and change
     // every value, and the row says "Custom" once any of them differs from all four.
@@ -1826,87 +3428,81 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                            false
 #endif
         };
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted("Quality");
-      for (int i = 0; i < kPresetCount; ++i) {
-        ImGui::SameLine();
-        const bool on = i == current;
-        if (on) {
-          ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f, 0.22f, 0.75f, 1.0f));
-          ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.52f, 0.28f, 0.82f, 1.0f));
+      const char* preset_labels[kPresetCount + 1];
+      for (int i=0;i<kPresetCount;++i) preset_labels[i]=presets[i].name;
+      preset_labels[kPresetCount]="Custom";
+      int picked=current<0?kPresetCount:current;
+      bool preset_changed=false;
+      if (classic_menu) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Quality");
+        for (int i=0;i<=kPresetCount;++i) {
+          if (ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + 94.0f < ImGui::GetWindowContentRegionMax().x)
+            ImGui::SameLine(0.0f,6.0f);
+          ImGui::PushID(i);
+          const bool selected=picked==i;
+          if (selected) ImGui::PushStyleColor(ImGuiCol_Button,ImVec4(.34f,.23f,.58f,1.0f));
+          if (ImGui::Button(preset_labels[i],ImVec2(82.0f,22.0f))) {
+            picked=i;
+            preset_changed=true;
+          }
+          if (selected) ImGui::PopStyleColor();
+          if (ImGui::IsItemHovered() && i<kPresetCount) ImGui::SetTooltip("%s",presets[i].tip);
+          ImGui::PopID();
         }
-        if (ImGui::Button(presets[i].name, ImVec2(86, 0))) {
-          const Preset& pr = presets[i];
-          options.efb_scale = pr.efb; options.ssaa = pr.ssaa; options.anisotropy = pr.aniso;
-          options.dlss_mode = pr.dlss; options.fps_cap = pr.fps; options.subframe = pr.sub;
+      } else preset_changed=settings_combo("Quality",&picked,preset_labels,kPresetCount+1);
+      if (preset_changed) {
+        if (picked<kPresetCount) {
+          const Preset& pr=presets[picked];
+          options.efb_scale=pr.efb; options.ssaa=pr.ssaa; options.anisotropy=pr.aniso;
+          options.dlss_mode=pr.dlss; options.fps_cap=pr.fps; options.subframe=pr.sub;
 #ifdef GX_DLSS5
-          options.dlss5 = pr.dlss5;
+          options.dlss5=pr.dlss5;
 #endif
-          options.low_spec = false;   // the presets replace it; the backend is left as it is
-          changed = true;
+          options.low_spec=false; changed=true;
+        } else if (g_custom_preset.set) {
+          const CustomPreset& c=g_custom_preset;
+          options.efb_scale=c.efb;options.ssaa=c.ssaa;options.anisotropy=c.aniso;
+          options.dlss_mode=c.dlss;options.fps_cap=c.fps;options.subframe=(SubFrameMode)c.sub;
+#ifdef GX_DLSS5
+          options.dlss5=c.dlss5;
+#endif
+          options.low_spec=false;changed=true;
         }
-        if (on) ImGui::PopStyleColor(2);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", presets[i].tip);
       }
-      // Custom: the player's own settings, back with one click after trying a preset.
-      ImGui::SameLine();
-      const bool custom_on = current < 0;
-      if (custom_on) {
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.45f, 0.22f, 0.75f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.52f, 0.28f, 0.82f, 1.0f));
-      }
-      ImGui::BeginDisabled(!g_custom_preset.set);
-      if (ImGui::Button("Custom", ImVec2(86, 0)) && !custom_on) {
-        const CustomPreset& c = g_custom_preset;
-        options.efb_scale = c.efb; options.ssaa = c.ssaa; options.anisotropy = c.aniso;
-        options.dlss_mode = c.dlss; options.fps_cap = c.fps; options.subframe = (SubFrameMode)c.sub;
-#ifdef GX_DLSS5
-        options.dlss5 = c.dlss5;
-#endif
-        options.low_spec = false;
-        changed = true;
-      }
-      ImGui::EndDisabled();
-      if (custom_on) ImGui::PopStyleColor(2);
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip(g_custom_preset.set ? "Your own settings. Change anything below and it is kept here,\nso you can switch to a preset and back to compare."
-                                              : "Change any setting below and it is kept here as your own.");
-      if (room_after_last_item() > ImGui::CalcTextSize("Not sure? Pick High.").x + 24) {
-        ImGui::SameLine();
-        ImGui::TextDisabled("  Not sure? Pick High.");
-      }
-      ImGui::Spacing();
+      if (!classic_menu && ImGui::IsItemHovered() && picked<kPresetCount)
+        ImGui::SetTooltip("%s",presets[picked].tip);
     }
     // Frame rate first: it is the setting this port exists for, and the one people look for.
     const double rates[] = {-1, 0, 60, 120, 144, 165, 200, 240, 360, 480};
     const char* names[] = {"Match monitor", "Unlocked", "60", "120", "144", "165", "200", "240", "360", "480"};
     int selected = -1; for (int i = 0; i < 10; ++i) if (options.fps_cap == rates[i]) selected = i;
-    if (ImGui::Combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
+    if (settings_combo("Frame rate", &selected, names, 10)) { options.fps_cap = rates[selected]; changed = true; }
     // Two checkboxes per row. The second column is measured from the widest label in the first one
     // rather than guessed: a fixed offset put "True 16:9" hard against the bracket of "Widescreen
     // 16:9 (Slippi)" and would break again the moment a label or the font changed.
     const float kCol2 = ImGui::GetCursorPosX() + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemInnerSpacing.x +
                         ImGui::CalcTextSize("Widescreen 16:9 (Slippi)").x + ImGui::GetStyle().ItemSpacing.x * 3.0f;
-    changed |= ImGui::Checkbox("VSync", &options.vsync);
-    ImGui::SameLine(kCol2);
-    if (ImGui::Checkbox("Borderless fullscreen", &options.fullscreen)) {
+    changed |= settings_toggle("VSync", &options.vsync);
+    if (ImGui::GetContentRegionAvail().x >= 650.0f) ImGui::SameLine(kCol2);
+    if (settings_toggle("Borderless fullscreen", &options.fullscreen)) {
       if (options.fullscreen) options.exclusive_fullscreen = false;
       changed = true;
     }
-    if (ImGui::Checkbox("Exclusive fullscreen (experimental)", &options.exclusive_fullscreen)) {
+    if (settings_toggle("Exclusive fullscreen (experimental)", &options.exclusive_fullscreen)) {
       if (options.exclusive_fullscreen) options.fullscreen = false;
       changed = true;
     }
-    if (ImGui::Checkbox("Widescreen 16:9 (Slippi)", &options.widescreen)) {
+    if (settings_toggle("Widescreen 16:9 (Slippi)", &options.widescreen)) {
       if (options.widescreen) options.true_widescreen = false;   // one or the other, never both
       changed = true;
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Slippi widescreen Gecko code. Online safe.");
-    ImGui::SameLine(kCol2);
+    if (ImGui::GetContentRegionAvail().x >= 650.0f) ImGui::SameLine(kCol2);
     // True 16:9 widens the frustum here in the renderer instead of running the Gecko code, so
     // nothing is written to guest memory and it cannot desync. Experimental because the game still
     // lays out and culls for 73:60: geometry can be missing or pop in at the new edges.
-    if (ImGui::Checkbox("True 16:9 (experimental)", &options.true_widescreen)) {
+    if (settings_toggle("True 16:9 (experimental)", &options.true_widescreen)) {
       if (options.true_widescreen) options.widescreen = false;
       changed = true;
     }
@@ -1921,12 +3517,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       const char* aspects[] = {"Auto (Melee's own: 73:60, or 16:9 with widescreen on)",
                                "73:60 (Melee's native)", "4:3", "16:9", "Stretch to window (no black bars)"};
       int index = std::clamp((int)options.aspect, 0, 4);
-      if (ImGui::Combo("Aspect ratio", &index, aspects, 5)) { options.aspect = (AspectMode)index; changed = true; }
+      if (settings_combo("Aspect ratio", &index, aspects, 5)) { options.aspect = (AspectMode)index; changed = true; }
       if (options.aspect == AspectMode::Stretch)
-        ImGui::TextDisabled("Fills the whole window or screen, so the picture is stretched. Pick a 4:3 window\n"
+        settings_hint("Fills the whole window or screen, so the picture is stretched. Pick a 4:3 window\n"
                             "size below and a wider screen to get the stretched resolution players use.");
       else
-        ImGui::TextDisabled("Melee's camera asks for 73:60, not 4:3; the Slippi widescreen code widens it to 16:9.\n"
+        settings_hint("Melee's camera asks for 73:60, not 4:3; the Slippi widescreen code widens it to 16:9.\n"
                             "Auto follows the checkbox above, which is what Slippi Dolphin does.");
 
       // Window size, the way Dolphin lets a player choose one. 4:3 sizes first: those are what
@@ -1956,7 +3552,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       }
       const bool full = options.fullscreen || options.exclusive_fullscreen || host::window_is_fullscreen();
       if (full) ImGui::BeginDisabled();
-      if (ImGui::Combo("Window size", &size_index, items, count)) {
+      if (settings_combo("Window size", &size_index, items, count)) {
         if (size_index == 0) options.window_pinned = false;
         else if (size_index < kPresets) {
           options.window_pinned = true;
@@ -1965,14 +3561,14 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         }
         changed = true;
       }
-      if (full) { ImGui::EndDisabled(); ImGui::TextDisabled("Fullscreen uses the whole screen. Stretch above fills it; the other aspects add bars."); }
+      if (full) { ImGui::EndDisabled(); settings_hint("Fullscreen uses the whole screen. Stretch above fills it; the other aspects add bars."); }
       // A window bigger than the desktop cannot be shown with its title bar on screen, so Windows
       // (and the clamp in window_set_client_size) gives back a smaller one. The player can also just
       // have dragged the edge since. Either way, say what the window actually is.
       else if (options.window_pinned && ((int)win_w != options.window_w || (int)win_h != options.window_h))
-        ImGui::TextDisabled("Picked %dx%d, window is %dx%d (dragged, or capped to your desktop).\nFullscreen is never capped.",
+        settings_hint("Picked %dx%d, window is %dx%d (dragged, or capped to your desktop).\nFullscreen is never capped.",
                             options.window_w, options.window_h, (int)win_w, (int)win_h);
-      ImGui::TextDisabled("Aspect ratio and window size only change how the picture is fitted to your screen.\n"
+      settings_hint("Aspect ratio and window size only change how the picture is fitted to your screen.\n"
                           "They cannot desync, and your opponent can be on different ones.");
     }
 
@@ -1989,27 +3585,27 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // player picked and only anti-aliases it, so it leaves both of them working.
     const bool dlss_picks_resolution = options.dlss_mode >= 2 && options.dlss_mode != 6;   // not DLAA / XeSS AA
     if (dlss_picks_resolution) ImGui::BeginDisabled();
-    changed |= ImGui::Combo("Internal resolution", &options.efb_scale, scales, 9);
+    changed |= settings_combo("Internal resolution", &options.efb_scale, scales, 9);
     // DLSS (DLAA included) does its own anti-aliasing, so supersampling on top would render larger
     // for a second pass over the same edges: grey it out rather than let the two stack.
     const char* aa[] = {"None", "4x SSAA (supersampling)"};
     int aa_index = options.ssaa == 2 ? 1 : 0;
     if (options.dlss_mode && !dlss_picks_resolution) ImGui::BeginDisabled();
-    if (ImGui::Combo("Anti-aliasing", &aa_index, aa, 2)) { options.ssaa = aa_index ? 2 : 1; changed = true; }
+    if (settings_combo("Anti-aliasing", &aa_index, aa, 2)) { options.ssaa = aa_index ? 2 : 1; changed = true; }
     if (options.dlss_mode && !dlss_picks_resolution) ImGui::EndDisabled();
     if (dlss_picks_resolution) ImGui::EndDisabled();
     const char* anis[] = {"1x", "2x", "4x", "8x", "16x"};
     int an_index = options.anisotropy >= 16 ? 4 : options.anisotropy >= 8 ? 3 : options.anisotropy >= 4 ? 2 : options.anisotropy >= 2 ? 1 : 0;
-    if (ImGui::Combo("Anisotropic filtering", &an_index, anis, 5)) { options.anisotropy = 1 << an_index; changed = true; }
+    if (settings_combo("Anisotropic filtering", &an_index, anis, 5)) { options.anisotropy = 1 << an_index; changed = true; }
     // Live, right where the settings that move it are, rather than only in an on-screen overlay
     // during play: raise Internal resolution, Anti-aliasing or a DLSS mode and watch this move.
     {
       float used = 0, total = 0;
-      if (vram_usage(&used, &total)) ImGui::TextDisabled("Video memory in use: %.1f / %.1f GB", used, total);
+      if (vram_usage(&used, &total)) settings_hint("Video memory in use: %.1f / %.1f GB", used, total);
     }
     {
       const char* levels[] = {"Full", "Reduced (no sparks or glow)", "Minimal (no screen overlays)"};
-      if (ImGui::Combo("Visual effects", &options.effects_level, levels, 3)) changed = true;
+      if (settings_combo("Visual effects", &options.effects_level, levels, 3)) changed = true;
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Skips decorative effects during matches to help slower PCs: glow, sparks and\n"
                           "flashes (Reduced), plus full-screen overlays (Minimal). Menus, fighters, the\n"
@@ -2019,13 +3615,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // read again at the next launch (see load_pc_settings and --backend).
     const char* backends[] = {"Direct3D 12 (default)", "Direct3D 11 (older GPUs and drivers)"};
     int api_index = options.api == RenderApi::D3D11 ? 1 : 0;
-    if (ImGui::Combo("Graphics backend", &api_index, backends, 2)) { options.api = api_index ? RenderApi::D3D11 : RenderApi::D3D12; changed = true; }
-    ImGui::TextDisabled("Takes effect at the next launch: save settings, then restart.");
+    if (settings_combo("Graphics backend", &api_index, backends, 2)) { options.api = api_index ? RenderApi::D3D11 : RenderApi::D3D12; changed = true; }
+    settings_hint("Takes effect at the next launch: save settings, then restart.");
     const bool d3d11 = options.api == RenderApi::D3D11;
     const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance",
                                "XeSS AA", "XeSS Ultra Quality", "XeSS Quality", "XeSS Balanced", "XeSS Performance"};
     if (d3d11) ImGui::BeginDisabled();
-    if (ImGui::Combo("Upscaling (DLSS / XeSS)", &options.dlss_mode, upscalers, 11)) changed = true;
+    if (settings_combo("Upscaling (DLSS / XeSS)", &options.dlss_mode, upscalers, 11)) changed = true;
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("DLSS: NVIDIA RTX cards. XeSS: Intel's upscaler, works on Intel, NVIDIA and AMD cards.\n"
                         "AA modes (DLAA, XeSS AA) keep the full resolution and only smooth edges.\n"
@@ -2052,51 +3648,85 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
 #endif
         std::snprintf(line + n, sizeof(line) - n, ")");
       }
-      ImGui::TextDisabled("%s", line);
+      settings_hint("%s", line);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("An average of the last measured frames, so it lags a change by a second or\n"
                           "two, not instant. \"Native (estimated)\" is the total with the two measured\n"
                           "GPU costs subtracted out -- an estimate, not a separate measurement.");
     }
-    // Frame generation reuses DLSS's depth and motion vectors, so it needs a DLSS mode. The choices
-    // on offer follow the hardware: RTX 40 series only ever answers "2x" for the maximum, RTX 50
-    // (Multi Frame Generation) up to "4x", and Dynamic (the driver picks the multiplier) only where
-    // the SDK reports it supported.
-    ImGui::BeginDisabled(options.dlss_mode == 0 || options.dlss_mode >= 6);
+    // Frame generation reuses DLSS's depth and motion vectors, so it needs a DLSS mode. Build the
+    // list from Streamline's present-thread capability query: RTX 40 usually reports 2x, while newer
+    // RTX 50 drivers can expose fixed multipliers through 6x and Dynamic.
+    const bool fg_capabilities_known = streamline::frame_generation_capabilities_queried();
+    ImGui::BeginDisabled(options.dlss_mode == 0 || options.dlss_mode >= 6 || !fg_capabilities_known);
     {
-      const uint32_t max_mult = streamline::frame_generation_max_multiplier();   // 1=2x, 2=3x, 3=4x
+      const uint32_t max_mult = std::min<uint32_t>(5, streamline::frame_generation_max_multiplier());
       const bool dynamic_ok = streamline::frame_generation_dynamic_supported();
-      static const char* all_modes[] = {"Off", "2x", "3x", "4x", "Dynamic"};
-      const char* modes[5]; int n = 1; modes[0] = all_modes[0];
-      for (uint32_t m = 1; m <= max_mult && n < 4; ++m) modes[n++] = all_modes[m];
-      if (dynamic_ok) modes[n++] = all_modes[4];
-      if (options.frame_generation_mode >= n) options.frame_generation_mode = n - 1;
+      static const char* labels[] = {"Off", "2x", "3x", "4x", "5x", "6x", "Dynamic"};
+      const int values[] = {0, 1, 2, 3, 5, 6, 4};
+      const char* modes[7]; int mode_values[7]; int n = 0;
+      for (int i = 0; i <= (int)max_mult; ++i) {
+        modes[n] = labels[i];
+        mode_values[n++] = values[i];
+      }
+      if (dynamic_ok) { modes[n] = labels[6]; mode_values[n++] = values[6]; }
+      int selected = 0; bool found_mode = false;
+      for (int i = 0; i < n; ++i) {
+        if (mode_values[i] == options.frame_generation_mode) { selected = i; found_mode = true; break; }
+      }
+      if (!found_mode) selected = (int)max_mult;  // safest supported fixed multiplier
+      if (fg_capabilities_known && mode_values[selected] != options.frame_generation_mode) {
+        options.frame_generation_mode = mode_values[selected];
+      }
       ImGui::SetNextItemWidth(160.0f);
-      if (ImGui::Combo("Frame generation", &options.frame_generation_mode, modes, n)) changed = true;
+      if (settings_combo("Frame generation", &selected, modes, n)) {
+        options.frame_generation_mode = mode_values[selected];
+        changed = true;
+      }
+      if (!fg_capabilities_known) settings_hint("Checking supported modes…");
     }
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-      ImGui::SetTooltip("NVIDIA DLSS Frame Generation (RTX 40 series and newer): extra generated frames\n"
-                        "between each rendered one -- 2x is one generated frame per real one, 4x is\n"
-                        "three (RTX 50 series, Multi Frame Generation). Smoother, but it holds a frame\n"
-                        "back, which adds input delay: for single player and casual play, not\n"
-                        "competitive or online. Needs an Upscaling mode other than Native. Reflex is\n"
-                        "switched on with it.");
+      ImGui::SetTooltip("NVIDIA DLSS Frame Generation (RTX 40 series and newer): generated frames between\n"
+                        "rendered frames. RTX 50 Multi Frame Generation can offer up to 6x when the\n"
+                        "driver reports support. It adds input delay, so use it for solo play rather\n"
+                        "than competitive online matches. Needs DLSS upscaling; Reflex turns on with it.");
     // NVIDIA Reflex, laid out the way games offer it.
     {
       const char* modes[] = {"Off", "On", "On + Boost"};
       ImGui::SetNextItemWidth(160.0f);
-      if (ImGui::Combo("NVIDIA Reflex Low Latency", &options.reflex_mode, modes, 3)) changed = true;
+      if (settings_combo("NVIDIA Reflex Low Latency", &options.reflex_mode, modes, 3)) changed = true;
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("On: the GPU stops queueing frames ahead of the game, so what you press shows sooner.\n"
                           "On + Boost: also keeps the GPU clocks up, trading power for a little more.\n"
                           "Frame generation always runs with Reflex at least On. NVIDIA cards only.");
-      if (ImGui::Checkbox("Reflex flash indicator", &options.reflex_flash)) changed = true;
+      if (settings_toggle("Reflex flash indicator", &options.reflex_flash)) changed = true;
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Flashes a white square in the top left corner when A is pressed on port 1,\n"
                           "for monitors with the NVIDIA Reflex Latency Analyzer and for LDAT.");
     }
-    if (d3d11) { ImGui::EndDisabled(); ImGui::TextDisabled("DLSS needs Direct3D 12 and an NVIDIA GPU."); }
+    if (d3d11) { ImGui::EndDisabled(); settings_hint("DLSS needs Direct3D 12 and an NVIDIA GPU."); }
+    {
+      const bool path_available = !d3d11 && options.dlss_mode < 6 && dxr_path_tracing_available();
+      if (!path_available && options.path_tracing) { options.path_tracing = false; changed = true; }
+      if (!path_available) ImGui::BeginDisabled();
+      if (settings_toggle("DXR diffuse path tracing (experimental)", &options.path_tracing)) changed = true;
+      if (options.path_tracing)
+        settings_hint("Adds three low-sample diffuse bounces to the raster image. High GPU cost; match scenes only.");
+      if (!path_available) {
+        ImGui::EndDisabled();
+        settings_hint("DXR needs Direct3D 12, a ray-tracing capable GPU, and Native, DLAA, or DLSS selected.");
+      }
+      const bool rr_available = path_available && options.path_tracing && options.dlss_mode > 0 &&
+                                streamline::ray_reconstruction_available();
+      if (!rr_available && options.ray_reconstruction) { options.ray_reconstruction = false; changed = true; }
+      if (!rr_available) ImGui::BeginDisabled();
+      if (settings_toggle("NVIDIA Ray Reconstruction", &options.ray_reconstruction)) changed = true;
+      if (!rr_available) {
+        ImGui::EndDisabled();
+        settings_hint("Needs DXR path tracing, an NVIDIA DLSS mode, and the signed DLSS Ray Reconstruction runtime.");
+      }
+    }
 #ifdef GX_DLSS5
     {
       // EXPERIMENTAL: DLSS 5 rides on the DLSS/DLAA pass (it needs its depth and motion vectors).
@@ -2108,39 +3738,75 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       // Clear it when it cannot apply, so what the panel shows and what the renderer does agree.
       if (nr_blocked && options.dlss5) { options.dlss5 = false; changed = true; }
       if (nr_blocked) ImGui::BeginDisabled();
-      if (ImGui::Checkbox("DLSS 5 Neural Rendering (experimental)", &options.dlss5)) changed = true;
+      if (settings_toggle("DLSS 5 Neural Rendering (experimental)", &options.dlss5)) changed = true;
       if (options.dlss5) {
         // Sliders apply when released: every change rebuilds the model's feature, and doing that on
         // each pixel of a drag would stall the frame repeatedly.
         dlss5::Tuning& t = options.dlss5_tuning;
-        auto percent = [&](const char* label, float& v, int lo, int hi) {
+        auto percent = [&](const char* label, float& v) {
           static std::unordered_map<const float*, int> held;
           auto it = held.find(&v);
           int shown = it != held.end() ? it->second : (int)std::lround(v * 100.0f);
-          ImGui::SliderInt(label, &shown, lo, hi, "%d%%");
+          const ImVec4 accent = shown > 200 ? ImVec4(1.0f, 0.22f, 0.26f, 1.0f) :
+                                shown > 150 ? ImVec4(1.0f, 0.57f, 0.16f, 1.0f) :
+                                              ImVec4(0.56f, 0.69f, 1.0f, 1.0f);
+          ImGui::PushStyleColor(ImGuiCol_SliderGrab, accent);
+          ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, accent);
+          settings_slider(label, &shown, 0, 1000, "%d%%");
+          ImGui::PopStyleColor(2);
           if (ImGui::IsItemActive()) held[&v] = shown;
           else if (it != held.end()) { held.erase(it); v = shown / 100.0f; changed = true; }
+          return shown;
         };
-        percent("Intensity", t.intensity, 0, 100);
-        percent("Surface detail", t.detail, 0, 200);
-        percent("Lighting and tone", t.tone, 0, 200);
-        // Above 150% the model's lighting swings frame to frame and large flat backdrops (Yoshi's
-        // Story, Dream Land) flicker. Allowed, but said plainly next to the slider.
-        if (t.tone > 1.5f) {
-          ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.25f, 1.0f));
-          ImGui::TextWrapped("Above 150%% the lighting can flicker on stage backgrounds (Yoshi's Story, Dream Land).");
-          ImGui::PopStyleColor();
-        }
+        const int intensity_pct = percent("Intensity", t.intensity);
+        const int detail_pct = percent("Surface detail", t.detail);
+        const int tone_pct = percent("Lighting and tone", t.tone);
         bool skin_auto = t.skin < 0.0f;
-        if (ImGui::Checkbox("Skin detail: automatic", &skin_auto)) { t.skin = skin_auto ? -1.0f : 1.0f; changed = true; }
-        if (!skin_auto) percent("Skin detail", t.skin, 0, 200);
+        if (settings_toggle("Skin detail: automatic", &skin_auto)) { t.skin = skin_auto ? -1.0f : 1.0f; changed = true; }
+        const int skin_pct = skin_auto ? 0 : percent("Skin detail", t.skin);
+        const int extreme_pct = std::max({intensity_pct, detail_pct, tone_pct, skin_pct});
+        if (extreme_pct > 150) {
+          const bool red = extreme_pct > 200;
+          const float pulse = red ? .5f + .5f * std::sin((float)ImGui::GetTime() * 3.2f) : .25f;
+          const ImVec2 origin = ImGui::GetCursorScreenPos();
+          const float badge_width = std::max(0.0f, std::min(ImGui::GetContentRegionAvail().x, 440.0f));
+          constexpr float badge_height = 38.0f;
+          const ImU32 fill = red ? IM_COL32(45, 21, 33, 250) : IM_COL32(46, 34, 23, 248);
+          const ImU32 edge = red ? IM_COL32(255, (uint8_t)(75+55*pulse), (uint8_t)(86+50*pulse), 255) :
+                                   IM_COL32(230, 145, 48, 255);
+          const ImVec2 a(origin.x, origin.y + 4.0f);
+          const ImVec2 b(a.x + badge_width, a.y + badge_height);
+          ImDrawList* draw = ImGui::GetWindowDrawList();
+          draw->AddRectFilled(ImVec2(a.x,a.y+3),ImVec2(b.x,b.y+3),IM_COL32(0,0,0,68),8.0f);
+          draw->AddRectFilled(a,b,fill,8.0f);
+          draw->AddRect(a,b,edge,8.0f,0,red ? 1.5f+0.7f*pulse : 1.2f);
+          draw->AddRectFilled(a,ImVec2(a.x+4,b.y),edge,2.0f);
+          draw->AddTriangleFilled(ImVec2(a.x+18,a.y+26),ImVec2(a.x+27,a.y+10),
+                                  ImVec2(a.x+36,a.y+26),edge);
+          draw->AddLine(ImVec2(a.x+27,a.y+15),ImVec2(a.x+27,a.y+21),fill,1.8f);
+          draw->AddCircleFilled(ImVec2(a.x+27,a.y+24),1.0f,fill,12);
+          const char* badge = red ? "EXTREME" : "HIGH";
+          draw->AddText(settings_heading_font(),16.0f,ImVec2(a.x+47,a.y+6),
+                        IM_COL32(255,247,240,255),badge);
+          char percent[24];
+          std::snprintf(percent,sizeof(percent),"%d%%",extreme_pct);
+          const ImVec2 value_size=ImGui::CalcTextSize(percent);
+          draw->AddText(ImVec2(b.x-value_size.x-15,a.y+7),IM_COL32(255,247,240,255),percent);
+          ImGui::Dummy(ImVec2(0,badge_height+12.0f));
+          if (extreme_pct >= 1000)
+            ImGui::TextWrapped("i'm not sure youre ready for that, but you can try");
+          else if (red)
+            ImGui::TextWrapped("Above 200%% is experimental. NVIDIA has not published a supported numeric range; visual artifacts or feature failure are possible.");
+        }
+        if (tone_pct > 150)
+          ImGui::TextWrapped("Lighting above 150%% can flicker on stage backgrounds.");
         const char* styles[] = {"Style 0 (default)", "Style 1", "Style 2", "Style 3"};
         ImGui::SetNextItemWidth(160.0f);
-        if (ImGui::Combo("Style", &t.style, styles, 4)) changed = true;
+        if (settings_combo("Style", &t.style, styles, 4)) changed = true;
         const char* presets[] = {"Model default", "Preset 1", "Preset 2", "Preset 3"};
         ImGui::SetNextItemWidth(160.0f);
-        if (ImGui::Combo("Model preset", &t.preset, presets, 4)) changed = true;
-        if (ImGui::Checkbox("Protect HUD and flat areas (auto mask)", &t.auto_mask)) changed = true;
+        if (settings_combo("Model preset", &t.preset, presets, 4)) changed = true;
+        if (settings_toggle("Protect HUD and flat areas (auto mask)", &t.auto_mask)) changed = true;
         if (ImGui::Button("Reset DLSS 5 controls")) { t = dlss5::Tuning{}; changed = true; }
         // Named tuning profiles: a saved sliders-and-all setup under a name, one text file per name
         // in Dlss5Profiles beside port-settings.ini. Loading one applies it immediately.
@@ -2185,16 +3851,16 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
             active_name.clear();
           }
           ImGui::EndDisabled();
-          if (!status.empty()) { ImGui::SameLine(); ImGui::TextDisabled("%s", status.c_str()); }
+          if (!status.empty()) { ImGui::SameLine(); settings_hint("%s", status.c_str()); }
         }
       }
       if (nr_blocked) ImGui::EndDisabled();
-      if (nr_blocked) ImGui::TextDisabled("DLSS 5 needs Direct3D 12 and Upscaling set to DLAA or a DLSS mode.");
+      if (nr_blocked) settings_hint("DLSS 5 needs Direct3D 12 and Upscaling set to DLAA or a DLSS mode.");
       else if (options.dlss5) {
         ImGui::TextWrapped("DLSS 5: %s. Experimental; intended for RTX 50 series or newer. It runs on every frame shown, so expect a lower frame rate.", dlss5::status());
         float dlaa_ms = 0, dlss5_ms = 0;
         gpu_pass_cost(&dlaa_ms, &dlss5_ms);
-        if (dlss5_ms > 0.0f) ImGui::TextDisabled("Costing about %.1f ms of GPU time per frame right now.", dlss5_ms);
+        if (dlss5_ms > 0.0f) settings_hint("Costing about %.1f ms of GPU time per frame right now.", dlss5_ms);
       }
     }
 #endif
@@ -2206,18 +3872,21 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       ImGui::TextWrapped("DLSS renders the game at %s of the window size (at 1080p about 1280x960) and upscales it. That is what DLSS is for in heavy games; Melee is cheap to render, so here it is a downgrade in sharpness, and Internal resolution and Anti-aliasing above are ignored while it is on. For the sharpest image choose Native, set Internal resolution to 3x or higher and Anti-aliasing to 4x SSAA (the Dolphin look), or choose DLAA (full resolution, DLSS used only as anti-aliasing).", ratios[options.dlss_mode]);
     }
     int sharp = (int)std::lround(options.sharpness * 100.0f);
-    if (ImGui::SliderInt("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }
+    if (settings_slider("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }
+    int ao = (int)std::lround(options.screen_space_ao * 100.0f);
+    if (settings_slider("Screen-space ambient occlusion", &ao, 0, 100, "%d%%")) { options.screen_space_ao = ao / 100.0f; changed = true; }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Experimental depth-based contact shading. It uses the game's depth buffer and works on D3D11 and D3D12; it is not RTX ray tracing.");
     // Display adjustment over the finished picture, HUD included; 100% is neutral on all three.
     int bright = (int)std::lround(options.brightness * 100.0f);
-    if (ImGui::SliderInt("Brightness", &bright, 50, 150, "%d%%")) { options.brightness = bright / 100.0f; changed = true; }
+    if (settings_slider("Brightness", &bright, 50, 150, "%d%%")) { options.brightness = bright / 100.0f; changed = true; }
     int contrast = (int)std::lround(options.contrast * 100.0f);
-    if (ImGui::SliderInt("Contrast", &contrast, 50, 150, "%d%%")) { options.contrast = contrast / 100.0f; changed = true; }
+    if (settings_slider("Contrast", &contrast, 50, 150, "%d%%")) { options.contrast = contrast / 100.0f; changed = true; }
     int vibrance = (int)std::lround(options.vibrance * 100.0f);
-    if (ImGui::SliderInt("Vibrance", &vibrance, 0, 200, "%d%%")) { options.vibrance = vibrance / 100.0f; changed = true; }
+    if (settings_slider("Vibrance", &vibrance, 0, 200, "%d%%")) { options.vibrance = vibrance / 100.0f; changed = true; }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("0%% is greyscale, 100%% is native, above that is more saturated.");
     const char* subframe_modes[] = {"Off (60 Hz poses only)", "Predict ahead (no delay, can overshoot on speed changes)", "Interpolate (exact, one frame of delay)"};
     int sf = options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1;
-    if (ImGui::Combo("Sub-frame animation", &sf, subframe_modes, 3)) { options.subframe = sf == 0 ? SubFrameMode::Off : sf == 2 ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored; changed = true; }
+    if (settings_combo("Sub-frame animation", &sf, subframe_modes, 3)) { options.subframe = sf == 0 ? SubFrameMode::Off : sf == 2 ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored; changed = true; }
     if (sf == 1) ImGui::TextWrapped("Samples supported animation beyond the latest pose. Sudden stops can require correction.");
     if (sf == 2) ImGui::TextWrapped("Samples between completed poses. This adds up to one simulation tick of visual delay; unsupported motion may hold.");
     // Say it rather than quietly ignoring the setting: a player who picked a mode and sees no
@@ -2261,13 +3930,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     if (installed.empty()) {
       ImGui::TextWrapped("None installed. Press + Add and drop a pack folder in.");
     } else {
-      changed |= ImGui::Checkbox("Use texture packs", &options.custom_textures);
+      changed |= settings_toggle("Use texture packs", &options.custom_textures);
       if (ImGui::IsItemDeactivatedAfterEdit()) {
         texpack::configure(options.custom_textures, options.dump_textures);
         g_textures_dirty.store(true, std::memory_order_relaxed);
       }
       ImGui::SameLine();
-      changed |= ImGui::Checkbox("Load them at startup", &options.prefetch_textures);
+      changed |= settings_toggle("Load them at startup", &options.prefetch_textures);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Decodes every replacement once when the game starts instead of the first time each\n"
                           "texture appears. One wait up front rather than stutters through the first minutes.");
@@ -2288,7 +3957,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         ImGui::SameLine();
         ImGui::Text("%s", pack.name.c_str());
         ImGui::SameLine();
-        ImGui::TextDisabled("(%llu textures)", (unsigned long long)pack.files);
+        settings_hint("(%llu textures)", (unsigned long long)pack.files);
       }
       if (texpack::prefetching()) {
         uint64_t done = 0, total = 0;
@@ -2296,12 +3965,59 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         ImGui::Text("Loading textures %llu / %llu", (unsigned long long)done, (unsigned long long)total);
       }
       // For pack authors, not for playing: writes what the game drew, named the way a pack must.
-      changed |= ImGui::Checkbox("Dump textures (for making a pack)", &options.dump_textures);
+      changed |= settings_toggle("Dump textures (for making a pack)", &options.dump_textures);
       if (ImGui::IsItemDeactivatedAfterEdit()) texpack::configure(options.custom_textures, options.dump_textures);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Saves every texture the game draws into Dump\\Textures\\GALE01 with the exact\n"
                           "filenames a replacement has to use. Only useful if you are making a pack.");
     }
+
+    // ---- Looping menu backgrounds ----
+    // Fixed filenames make the first test hard to misconfigure: replace css.mp4 or sss.mp4 in
+    // place, and one checkbox restores the unmodified game backdrop.
+    ImGui::Separator();
+    ImGui::TextUnformatted("Animated menu backgrounds");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+ Open folder")) video_bg::open_folder();
+    bool video_on = options.video_backgrounds;
+    if (settings_toggle("Use looping MP4 backgrounds", &video_on)) {
+      options.video_backgrounds = video_on;
+      video_bg::set_enabled(video_on);
+      changed = true;
+    }
+    ImGui::TextWrapped("Drop css.mp4 and/or sss.mp4 into VideoBackgrounds. Audio is ignored. "
+                       "The first visit learns the vanilla backdrop without changing the ISO.");
+    const std::string css_status = video_bg::status(0);
+    const std::string sss_status = video_bg::status(1);
+    auto target_picker = [](int slot, const char* label) {
+      const auto observed = video_bg::observed_textures(slot);
+      if (observed.empty()) return;
+      const std::string current = video_bg::target(slot);
+      const std::string preview = current.empty() ? "Choose observed texture..." : current;
+      ImGui::PushID(slot == 0 ? "css-video-target" : "sss-video-target");
+      ImGui::SetNextItemWidth(-1.0f);
+      if (ImGui::BeginCombo(label, preview.c_str())) {
+        for (const auto& texture : observed) {
+          const std::string item = texture.name + " — " + std::to_string(texture.width) + "x" +
+              std::to_string(texture.height) + ", " +
+              std::to_string(texture.distinct_frames) + " frames / " +
+              std::to_string(texture.observations) + " observations";
+          if (ImGui::Selectable(item.c_str(), texture.name == current))
+            video_bg::choose_target(slot, texture.name);
+          if (texture.name == current) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+      }
+      ImGui::PopID();
+    };
+    ImGui::Text("Character select: %s", css_status.c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Relearn CSS")) video_bg::relearn(0);
+    target_picker(0, "CSS texture target");
+    ImGui::Text("Stage select: %s", sss_status.c_str());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Relearn SSS")) video_bg::relearn(1);
+    target_picker(1, "SSS texture target");
 
     // ---- Low spec ----
     // One switch for every setting above that costs frames. Turning it on remembers what the player
@@ -2310,7 +4026,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // immediately except the graphics backend, which needs a new device and so a new launch.
     {
       bool low = options.low_spec;
-      if (ImGui::Checkbox("Low spec", &low)) {
+      if (settings_toggle("Low spec", &low)) {
         if (low) {
           options.low_spec_previous = {options.api, options.fps_cap, options.efb_scale, options.ssaa,
                                        options.anisotropy, options.effects_level, options.dlss_mode, options.subframe};
@@ -2332,7 +4048,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         changed = true;
       }
       ImGui::SameLine();
-      ImGui::TextDisabled("For integrated graphics and older laptops.");
+      settings_hint("For integrated graphics and older laptops.");
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Puts internal resolution, anti-aliasing, anisotropic filtering, visual effects,\n"
                           "sub-frame animation, DLSS and the frame cap at their cheapest settings.\n"
@@ -2345,30 +4061,719 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                            options.api == RenderApi::D3D11 ? "Direct3D 11" : "Direct3D 12");
     }
         ImGui::PopItemWidth();
-        ImGui::EndTabItem();
       }
-      if (ImGui::BeginTabItem("Audio", nullptr, tab_flags("Audio"))) {
+      if (state.active_tab == 1) {
     ImGui::PushItemWidth(330.0f);
     int music = slippi::jukebox::user_volume();
-    if (ImGui::SliderInt("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
+    if (settings_slider("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
     // With a game running the device holds the live value. Without one, which is the settings
     // window the launcher opens, the saved value is all there is: reading back from an audio module
     // that was never opened returned zero every frame and dragged the slider back to it.
     if (host::audio_running()) g_volume = host::audio_volume();
-    if (ImGui::SliderInt("Volume", &g_volume, 0, 100, "%d%%")) host::audio_set_volume(g_volume);
+    if (settings_slider("Volume", &g_volume, 0, 100, "%d%%")) host::audio_set_volume(g_volume);
     state.volume = g_volume;
         ImGui::PopItemWidth();
-        ImGui::EndTabItem();
+        if (settings_toggle("Menu sounds", &options.settings_menu_sounds)) {
+          changed = true;
+          if (options.settings_menu_sounds) host::audio_ui_sound(2);   // a sample, so the change is heard
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A short tick when you move through the settings, and when a page opens or closes.");
       }
-      if (ImGui::BeginTabItem("Game", nullptr, tab_flags("Game"))) {
+      if (state.active_tab == 5) {
+        static std::string mod_message;
+        ImGui::TextUnformatted("Customize");
+        ImGui::TextDisabled("Choose the menu layout, colors, and transparency.");
+        ImGui::Spacing();
+        changed |= settings_toggle("Enable Legacy Menu (F11)", &options.legacy_menu_enabled);
+        ImGui::TextWrapped("F11 and launcher Settings open the selected legacy menu. Both menus edit the same settings.");
+        const char* legacy_names[] = {"Legacy Old (v0.6.6)", "Legacy New"};
+        int legacy_choice = options.legacy_menu_style == 6 ? 1 : 0;
+        if (settings_combo("Legacy menu", &legacy_choice, legacy_names, 2)) {
+          options.legacy_menu_style = legacy_choice == 1 ? 6 : 7;
+          changed = true;
+        }
+        if (state.legacy_presentation && !options.legacy_menu_enabled) {
+          options.overlay_style = state.legacy_saved_appearance;
+          state.legacy_presentation = false;
+          reset_settings_home("legacy menu switched off");
+        }
+        ImGui::Spacing();
+        static constexpr const char* appearance_names[] = {
+            "Clean side", "Icon tiles", "GD Melee", "Radial", "Wide tabs", "Simple"};
+        static constexpr const char* appearance_images[] = {
+            "clean-side.png", "icon-tiles.png", "gd-melee.png", "radial.png", "wide-tabs.png", "simple.png"};
+        static constexpr const char* appearance_hints[] = {
+            "Pink side panel; settings slide in beside the live game",
+            "Rounded, dimensional settings tiles",
+            "GD Melee's slanted navigation and matching setting rows",
+            "Controller-first radial category navigation",
+            "Wide category tabs with live settings pages",
+            "Compact settings layout"};
+        static const char* const palette_names[7][4] = {
+          {"Original pink", "Electric cyan", "Sunset amber", "Arcade violet"},
+          {"Original candy", "Arcade brights", "Soft pastels", "Night lights"},
+          {"Classic gold", "Cobalt", "Emerald", "Crimson"},
+          {"Original blue", "Plasma violet", "Emerald", "Amber"},
+          {"Original blue", "Magenta", "Mint", "Amber"},
+          {"Simple blue", "Graphite", "Forest", "Warm gray"},
+          {"Windows blue", "Steel", "Pine", "Sepia"}};
+        static const char* const palette_short[7][4] = {
+          {"Pink","Cyan","Amber","Violet"},
+          {"Candy","Arcade","Pastel","Night"},
+          {"Gold","Cobalt","Emerald","Crimson"},
+          {"Blue","Violet","Emerald","Amber"},
+          {"Blue","Magenta","Mint","Amber"},
+          {"Blue","Graphite","Forest","Warm"},
+          {"Blue","Steel","Pine","Sepia"}};
+        if (false) { // Superseded by the compact appearance controls below.
+        ImGui::TextUnformatted("Color palette for this appearance");
+        ImGui::TextDisabled(options.overlay_style==2 ?
+            "Classic Gold is GD Melee's original palette." :
+            "Each layout remembers its own color choice.");
+        int& palette = options.overlay_palettes[std::clamp(options.overlay_style, 0, 5)];
+        const float palette_gap=ImGui::GetStyle().ItemSpacing.x;
+        const float palette_w=(ImGui::GetContentRegionAvail().x-3*palette_gap)/4.0f;
+        for (int variant=0;variant<4;++variant) {
+          if (variant) ImGui::SameLine();
+          ImGui::PushID(variant);
+          const bool palette_pressed=settings_hit_button("##palette",ImVec2(palette_w,52));
+          if (palette_pressed) {
+            if (palette!=variant) { palette=variant; changed=true; }
+          }
+          const ImVec2 a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
+          const bool hover=ImGui::IsItemHovered()||ImGui::IsItemFocused();
+          ImDrawList* draw=ImGui::GetWindowDrawList();
+          const ImU32 swatch=settings_accent_for(options.overlay_style,variant);
+          draw->AddRectFilled(a,b,IM_COL32(18,28,42,242),8.0f);
+          draw->AddRectFilled(ImVec2(a.x+5,a.y+5),ImVec2(b.x-5,a.y+23),swatch,6.0f);
+          draw->AddLine(ImVec2(a.x+13,a.y+8),ImVec2(b.x-13,a.y+8),
+                        IM_COL32(255,255,255,125),2.0f);
+          draw->AddText(ImGui::GetFont(),12.0f,ImVec2(a.x+7,a.y+29),
+                        IM_COL32(245,248,253,255),palette_short[std::clamp(options.overlay_style, 0, 5)][variant]);
+          if (palette==variant||hover)
+            draw->AddRect(a,b,palette==variant?swatch:IM_COL32(230,238,252,150),
+                          8.0f,0,palette==variant?2.5f:1.5f);
+          if (hover) ImGui::SetTooltip("%s",palette_names[std::clamp(options.overlay_style, 0, 5)][variant]);
+          ImGui::PopID();
+        }
+        ImGui::Spacing();
+        }
+        if (false) { // Retained as design reference only; selectable options below are live styles, not painted mockup screenshots.
+        const float available = ImGui::GetContentRegionAvail().x;
+        const float gap = ImGui::GetStyle().ItemSpacing.x;
+        const int per_row = std::clamp((int)((available + gap) / (145.0f + gap)), 1, 5);
+        const float card_w = (available - (per_row - 1) * gap) / per_row;
+        const ImVec2 card_size(card_w, 140.0f);
+        for (int style = 0; style < 5; ++style) {
+          if (style % per_row != 0) ImGui::SameLine();
+          ImGui::PushID(style);
+          const bool selected = options.overlay_style == style;
+          settings_hit_button("##appearance_preview", card_size);
+          const ImVec2 a = ImGui::GetItemRectMin();
+          const ImVec2 b = ImGui::GetItemRectMax();
+          const bool hovered = ImGui::IsItemHovered();
+          ImDrawList* draw = ImGui::GetWindowDrawList();
+          const ImU32 bg = ImGui::GetColorU32(selected ? ImGuiCol_FrameBgActive :
+                                               hovered ? ImGuiCol_FrameBgHovered : ImGuiCol_FrameBg);
+          draw->AddRectFilled(a, b, bg, 5.0f);
+          // Both 5x4 reference sheets have 334x235 cells. Preserve their proportions instead
+          // of stretching each mockup to whichever card width a window happens to allow.
+          const float preview_h = 105.0f;
+          const float preview_w = std::min(card_w - 10.0f, preview_h * 334.0f / 235.0f);
+          const ImVec2 p(a.x + (card_w - preview_w) * 0.5f, a.y + 5.0f);
+          const ImVec2 q(p.x + preview_w, p.y + preview_h);
+          // The source sheet for #02 contains Japanese labels. Draw the implemented English
+          // layout here so the appearance picker previews what the player will actually see.
+          if (style == 0) {
+            draw->AddRectFilled(p,q,IM_COL32(13,20,43,255));
+            draw->AddRectFilled(ImVec2(p.x+3,p.y+8),ImVec2(p.x+preview_w*.46f,q.y-7),
+                                IM_COL32(24,39,75,255));
+            const float left_w=preview_w*.46f;
+            for(int line=0;line<7;++line)
+              draw->AddLine(ImVec2(p.x+6+line*5,p.y+6),ImVec2(p.x+6+line*5,q.y-5),
+                            IM_COL32(46,71,126,115));
+            draw->AddRectFilled(ImVec2(p.x+8,p.y+preview_h*.43f),
+                                ImVec2(p.x+left_w-3,p.y+preview_h*.57f),
+                                IM_COL32(255,196,25,255),2.0f);
+            draw->AddText(ImGui::GetFont(),9.0f,ImVec2(p.x+12,p.y+preview_h*.455f),
+                          IM_COL32(20,19,16,255),"Unranked");
+            const float x=p.x+left_w;
+            draw->AddRectFilled(ImVec2(x,p.y),q,IM_COL32(17,18,29,250));
+            const ImVec2 banner[]={ImVec2(x,p.y),ImVec2(q.x,p.y),
+                ImVec2(q.x,p.y+20),ImVec2(x,p.y+20)};
+            draw->AddConvexPolyFilled(banner,4,IM_COL32(184,17,104,255));
+            draw->AddText(ImGui::GetFont(),10.0f,ImVec2(x+5,p.y+4),
+                          IM_COL32(255,255,255,255),"SETTINGS");
+            static const char* labels[]={"VIDEO","AUDIO","GAME","CONTROLS",
+                                          "OVERLAYS","CUSTOMIZE","CODES"};
+            for(int line=0;line<7;++line) {
+              const float y=p.y+23+line*11.0f;
+              const ImVec2 quad[]={ImVec2(x+4,y),ImVec2(q.x-4,y-1),
+                                   ImVec2(q.x-7,y+9),ImVec2(x+1,y+10)};
+              draw->AddConvexPolyFilled(quad,4,line==0?IM_COL32(244,20,137,255):
+                                                       IM_COL32(28,30,43,255));
+              draw->AddText(ImGui::GetFont(),7.0f,ImVec2(x+10,y+1),
+                            IM_COL32(255,255,255,255),labels[line]);
+            }
+          } else if (style == 1) {
+            draw->AddRectFilled(p,q,IM_COL32(18,38,68,255));
+            for(int col=0;col<8;++col)
+              draw->AddLine(ImVec2(p.x+col*21.0f,p.y),ImVec2(p.x+col*21.0f,q.y),
+                            IM_COL32(64,98,145,65));
+            draw->AddText(ImGui::GetFont(),11.0f,ImVec2(p.x+6,p.y+5),
+                          IM_COL32(255,255,255,255),"Settings");
+            const float gap=3.0f,tile=(preview_w-12.0f-3.0f*gap)/4.0f;
+            static const char* tiny[]={"V","A","G","C","O","M","<>"};
+            for(int i=0;i<7;++i) {
+              const int row=i<4?0:1,col=i<4?i:i-4;
+              const ImVec2 lo(p.x+6.0f+col*(tile+gap),p.y+23.0f+row*35.0f);
+              const ImVec2 hi(lo.x+tile,lo.y+31.0f);
+              draw->AddRectFilled(ImVec2(lo.x+1,lo.y+4),ImVec2(hi.x+1,hi.y+4),
+                                  IM_COL32(3,8,25,150),7.0f);
+              draw->AddRectFilled(lo,hi,
+                  settings_dashboard_tile_color(i,options.overlay_palettes[1]),7.0f);
+              draw->AddRect(ImVec2(lo.x+1,lo.y+1),ImVec2(hi.x-1,hi.y-1),
+                            IM_COL32(255,255,255,175),6.0f);
+              const ImVec2 size=ImGui::GetFont()->CalcTextSizeA(10.0f,FLT_MAX,0,tiny[i]);
+              draw->AddText(ImGui::GetFont(),10.0f,
+                  ImVec2((lo.x+hi.x-size.x)*.5f,(lo.y+hi.y-size.y)*.5f),
+                  IM_COL32(20,35,58,255),tiny[i]);
+            }
+          } else if (style == 2) {
+            draw->AddRectFilled(p,q,IM_COL32(25,33,42,255));
+            const float k=preview_w/640.0f;
+            auto pt=[&](float x,float y) {
+              return ImVec2(p.x+(x+(240-y)*.25f)*k,p.y+y*(preview_h/480.0f));
+            };
+            auto quad=[&](float x0,float y0,float x1,float y1,ImU32 color) {
+              const ImVec2 v[]={pt(x0,y0),pt(x1,y0),pt(x1,y1),pt(x0,y1)};
+              draw->AddConvexPolyFilled(v,4,color);
+            };
+            quad(84,24,343,52,style==options.overlay_style?settings_accent(2):IM_COL32(240,180,41,255));
+            quad(340,46,550,52,IM_COL32(10,14,24,255));
+            for(int row=0;row<5;++row)
+              quad(96.0f,84.0f+34.0f*row,540.0f,114.0f+34.0f*row,
+                   row==0&&style==options.overlay_style?settings_accent(2):
+                   row==0?IM_COL32(240,180,41,255):IM_COL32(46,54,64,255));
+            draw->AddText(ImVec2(p.x+15,p.y+7),IM_COL32(10,14,24,255),"SETTINGS");
+            draw->AddText(ImVec2(p.x+27,p.y+35),IM_COL32(10,14,24,255),"VIDEO");
+          } else if (style == 3) {
+            draw->AddRectFilled(p,q,IM_COL32(12,24,43,255));
+            const ImVec2 c((p.x+q.x)*.5f,p.y+preview_h*.56f);
+            const float outer=std::min(43.0f,preview_h*.42f), hub=outer*.39f;
+            draw->AddCircleFilled(ImVec2(c.x+2,c.y+4),outer+3,IM_COL32(0,4,13,125),72);
+            draw->AddCircleFilled(c,outer+1,IM_COL32(8,15,25,255),72);
+            for(int i=0;i<7;++i) {
+              const float center=-1.57079632679f+i*6.28318530718f/7.0f;
+              const float half=3.14159265359f/7.0f*.93f;
+              const ImVec2 a(c.x+std::cos(center-half)*outer,c.y+std::sin(center-half)*outer);
+              const ImVec2 b(c.x+std::cos(center+half)*outer,c.y+std::sin(center+half)*outer);
+              draw->AddTriangleFilled(c,a,b,i==0?settings_accent_for(3,options.overlay_palettes[3]):
+                                                   IM_COL32(31,45,62,255));
+              draw->AddLine(a,c,IM_COL32(3,9,17,225),1.1f);
+              const ImVec2 icon(c.x+std::cos(center)*outer*.67f,
+                                c.y+std::sin(center)*outer*.67f);
+              settings_symbol_icon(i,icon,.38f,IM_COL32(238,246,253,255));
+            }
+            draw->AddCircleFilled(c,hub,IM_COL32(11,22,36,255),48);
+            draw->AddCircle(c,hub,IM_COL32(119,153,179,220),48,1.8f);
+            draw->AddCircleFilled(ImVec2(c.x,c.y-2),5,IM_COL32(195,224,242,255),24);
+            draw->AddText(ImGui::GetFont(),7.0f,ImVec2(p.x+6,p.y+5),
+                          IM_COL32(238,245,252,255),"SETTINGS  /  A SELECT  ·  B BACK");
+          } else if (style == 4) {
+            draw->AddRectFilled(p,q,IM_COL32(11,23,37,255));
+            draw->AddText(ImGui::GetFont(),10.0f,ImVec2(p.x+7,p.y+4),
+                          IM_COL32(239,245,252,255),"SETTINGS");
+            static const char* tabs[]={"VIDEO","AUDIO","GAME","CTRL","HUD","MODS","CODES"};
+            const float tab_top=p.y+21.0f, tab_h=13.0f, tab_gap=2.0f;
+            const float tab_w=(preview_w-12.0f-6.0f*tab_gap)/7.0f;
+            for(int i=0;i<7;++i) {
+              const float x=p.x+6.0f+i*(tab_w+tab_gap);
+              draw->AddRectFilled(ImVec2(x,tab_top),ImVec2(x+tab_w,tab_top+tab_h),
+                  i==0?settings_accent_for(4,options.overlay_palettes[4]):IM_COL32(24,40,57,255),3.0f);
+              draw->AddText(ImGui::GetFont(),5.5f,ImVec2(x+2,tab_top+3),
+                            IM_COL32(244,248,253,255),tabs[i]);
+            }
+            const ImVec2 panel_min(p.x+6,p.y+39), panel_max(q.x-6,q.y-5);
+            draw->AddRectFilled(panel_min,panel_max,IM_COL32(17,31,46,245),4.0f);
+            draw->AddText(ImGui::GetFont(),8.0f,ImVec2(panel_min.x+6,panel_min.y+3),
+                          settings_accent_for(4,options.overlay_palettes[4]),"VIDEO");
+            static const char* rows[]={"Quality","Frame rate","VSync","Window size"};
+            for(int i=0;i<4;++i) {
+              const float y=panel_min.y+16+i*10.0f;
+              draw->AddText(ImGui::GetFont(),6.5f,ImVec2(panel_min.x+6,y+1),
+                            IM_COL32(217,228,238,255),rows[i]);
+              draw->AddRectFilled(ImVec2(panel_min.x+64,y),ImVec2(panel_max.x-5,y+8),
+                                  IM_COL32(32,54,77,255),2.0f);
+              if(i<2) draw->AddText(ImGui::GetFont(),5.0f,
+                  ImVec2(panel_min.x+69,y+1),IM_COL32(239,245,252,255),i==0?"High":"Match monitor");
+              else draw->AddCircleFilled(ImVec2(panel_max.x-12,y+4),2.4f,
+                  i==2?settings_accent_for(4,options.overlay_palettes[4]):IM_COL32(172,186,200,255),12);
+            }
+          } else {
+            draw->AddRectFilled(p, q, IM_COL32(17, 29, 61, 255));
+          }
+          draw->AddText(ImVec2(a.x + 6.0f, a.y + 115.0f),
+                        ImGui::GetColorU32(selected ? ImGuiCol_Text : ImGuiCol_TextDisabled),
+                        appearance_names[style]);
+          if (selected) {
+          draw->AddRect(a, b, style == 2 ? settings_accent(2) :
+                                    IM_COL32(133, 184, 255, 255), 5.0f, 0, 2.0f);
+            draw->AddText(ImVec2(b.x - 48.0f, a.y + 8.0f),
+                          IM_COL32(255, 255, 255, 255), "ACTIVE");
+          }
+          if (hovered) ImGui::SetTooltip("%s", appearance_hints[style]);
+          if (ImGui::IsItemClicked()) {
+            if (options.overlay_style != style) {
+              options.overlay_style = style;
+              state.clean_detail_open=false; state.clean_home_frames=0;
+              state.dashboard_detail_open=false; state.dashboard_home_frames=0;
+              state.gd_detail_open=false; state.gd_screen_frames=0;
+              state.radial_detail_open=false; state.wide_detail_open=false;
+              state.content_anim_tab=-1;
+              changed = true;
+            }
+          }
+          ImGui::PopID();
+        }
+        }
+        {
+          ImGui::TextUnformatted("Menu style");
+          ImGui::TextDisabled("Choose a picture to change the menu layout.");
+          if (ImGui::Button("Choose menu style...",ImVec2(-1.0f,30.0f))) {
+            ImGui::OpenPopup("Menu styles");
+            g_menu_style_gallery_open=true;
+          }
+          if (ImTextureData* current_preview=cosmetic_preview(ui_source_asset_path(
+                  "menu_previews",appearance_images[std::clamp(options.overlay_style,0,5)]))) {
+            const ImVec2 preview_size(160.0f,120.0f);
+            if (ImGui::ImageButton("##current_menu_style",current_preview->GetTexRef(),preview_size)) {
+              ImGui::OpenPopup("Menu styles");
+              g_menu_style_gallery_open=true;
+            }
+          }
+          static bool test_gallery_opened=false;
+          if (!test_gallery_opened && std::getenv("MELEE_TEST_STYLE_GALLERY")) {
+            ImGui::OpenPopup("Menu styles");
+            g_menu_style_gallery_open=true;
+            test_gallery_opened=true;
+          }
+          const ImVec2 display_size=ImGui::GetIO().DisplaySize;
+          ImGui::SetNextWindowSize(ImVec2(std::min(820.0f,display_size.x-24.0f),
+                                           std::min(570.0f,display_size.y-20.0f)),ImGuiCond_Appearing);
+          ImGui::SetNextWindowPos(ImVec2(display_size.x*.5f,display_size.y*.5f),
+                                  ImGuiCond_Appearing,ImVec2(.5f,.5f));
+          if (ImGui::BeginPopupModal("Menu styles",nullptr,
+                  ImGuiWindowFlags_NoResize|ImGuiWindowFlags_NoMove|ImGuiWindowFlags_NoSavedSettings)) {
+          ImGui::TextUnformatted("Choose a menu style");
+          ImGui::TextDisabled("Each picture shows the current in-game layout.");
+          ImGui::Spacing();
+          const float available=ImGui::GetContentRegionAvail().x;
+          const float gap=ImGui::GetStyle().ItemSpacing.x;
+          const int per_row=std::clamp((int)((available+gap)/(204.0f+gap)),1,4);
+          const float card_w=(available-gap*(per_row-1))/per_row;
+          const float image_w=std::min(card_w-12.0f,195.0f);
+          const float image_h=image_w*0.75f;
+          const float card_h=image_h+34.0f;
+          ImGui::BeginDisabled(state.legacy_presentation);
+          for(int style=0;style<6;++style) {
+            if(style%per_row) ImGui::SameLine(0.0f,gap);
+            ImGui::PushID(style);
+            const bool pressed=settings_hit_button("##appearance_picture",ImVec2(card_w,card_h));
+            const bool hovered=ImGui::IsItemHovered()||ImGui::IsItemFocused();
+            const ImVec2 a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
+            ImDrawList* draw=ImGui::GetWindowDrawList();
+            draw->AddRectFilled(a,b,IM_COL32(15,24,38,250),7.0f);
+            const ImVec2 image_min(a.x+(card_w-image_w)*0.5f,a.y+6.0f);
+            const ImVec2 image_max(image_min.x+image_w,image_min.y+image_h);
+            if(ImTextureData* preview=cosmetic_preview(
+                ui_source_asset_path("menu_previews",appearance_images[style]))) {
+              draw->AddImage(preview->GetTexRef(),image_min,image_max);
+            } else {
+              draw->AddRectFilled(image_min,image_max,IM_COL32(9,16,28,255));
+              draw->AddText(ImVec2(image_min.x+8,image_min.y+8),IM_COL32(220,228,239,255),
+                            "Preview unavailable");
+            }
+            const ImU32 accent=settings_accent_for(style,options.overlay_palettes[style]);
+            draw->AddText(ImVec2(a.x+9,image_max.y+7),IM_COL32(239,245,252,255),appearance_names[style]);
+            if(options.overlay_style==style||hovered)
+              draw->AddRect(a,b,options.overlay_style==style?accent:IM_COL32(232,239,248,180),
+                            7.0f,0,options.overlay_style==style?2.0f:1.2f);
+            if(pressed&&options.overlay_style!=style) {
+              options.overlay_style=style;
+              state.clean_detail_open=false; state.clean_home_frames=0;
+              state.dashboard_detail_open=false; state.dashboard_home_frames=0;
+              state.gd_detail_open=false; state.gd_screen_frames=0;
+              state.radial_detail_open=false; state.wide_detail_open=false;
+              state.content_anim_tab=-1;
+              changed=true;
+              ImGui::CloseCurrentPopup();
+              g_menu_style_gallery_open=false;
+            }
+            ImGui::PopID();
+          }
+          ImGui::EndDisabled();
+          ImGui::Spacing();
+          if (ImGui::Button("Close",ImVec2(110.0f,26.0f))) {
+            ImGui::CloseCurrentPopup();
+            g_menu_style_gallery_open=false;
+          }
+          ImGui::EndPopup();
+          } else g_menu_style_gallery_open=false;
+          ImGui::Spacing();
+          ImGui::TextUnformatted("Color palette");
+          int& palette = options.overlay_palettes[std::clamp(options.overlay_style, 0, 6)];
+          for (int i=0;i<4;++i) {
+            if (i) ImGui::SameLine(0.0f,10.0f);
+            ImGui::PushID(i);
+            const ImVec2 swatch_size(40.0f,24.0f);
+            const bool clicked=ImGui::ColorButton("##palette_swatch",
+                ImGui::ColorConvertU32ToFloat4(settings_accent_for(options.overlay_style,i)),
+                ImGuiColorEditFlags_NoTooltip,swatch_size);
+            const ImVec2 a=ImGui::GetItemRectMin(),b=ImGui::GetItemRectMax();
+            if (palette==i)
+              ImGui::GetWindowDrawList()->AddRect(a,b,IM_COL32(242,246,252,220),4.0f,0,1.5f);
+            if (clicked && palette!=i) { palette=i; changed=true; }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Palette %d",i+1);
+            ImGui::PopID();
+          }
+          ImGui::Spacing();
+          int transparency = options.settings_transparency;
+          if (settings_slider("Window transparency", &transparency, 0, 65, "%d%%")) {
+            options.settings_transparency=transparency;
+            changed=true;
+          }
+          ImGui::Spacing();
+          ImGui::TextUnformatted("Custom menu accent");
+          ImGui::Checkbox("Use custom accent",&options.settings_custom_color_enabled);
+          if (ImGui::IsItemDeactivatedAfterEdit()) changed=true;
+          // Collapsed by default: the full wheel is large and most players never open it.
+          if (ImGui::TreeNode("Show colour picker")) {
+            ImGui::SetNextItemWidth(std::min(220.0f, ImGui::GetContentRegionAvail().x));
+            if (ImGui::ColorPicker3("##menu_accent_wheel",options.settings_custom_color.data(),
+                                    ImGuiColorEditFlags_PickerHueWheel|ImGuiColorEditFlags_NoSidePreview|
+                                    ImGuiColorEditFlags_NoInputs)) {
+              options.settings_custom_color_enabled=true;
+              changed=true;
+            }
+            ImGui::TreePop();
+          }
+        }
+        if (false) { // Superseded by the screenshot picker above.
+          const float available = ImGui::GetContentRegionAvail().x;
+          const float gap = ImGui::GetStyle().ItemSpacing.x;
+          const int per_row = std::clamp((int)((available + gap) / (145.0f + gap)), 1, 4);
+          const float card_w = (available - (per_row - 1) * gap) / per_row;
+          static constexpr const char* style_names[] = {
+            "Clean side", "Icon tiles", "GD Melee", "Radial", "Wide tabs", "Simple", "Classic"};
+          for (int style = 0; style < 7; ++style) {
+            if (style % per_row != 0) ImGui::SameLine();
+            ImGui::PushID(style);
+            const bool active = options.overlay_style == style;
+            const bool pressed = settings_hit_button("##appearance_style", ImVec2(card_w, 76.0f));
+            const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+            const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+            ImDrawList* draw = ImGui::GetWindowDrawList();
+            draw->AddRectFilled(a, b, IM_COL32(15, 24, 38, 248), 8.0f);
+            const ImU32 accent = settings_accent_for(style, options.overlay_palettes[style]);
+            draw->AddRectFilled(ImVec2(a.x + 5, a.y + 5), ImVec2(b.x - 5, a.y + 9), accent, 2.0f);
+            const ImVec2 mark(a.x + 12, a.y + 19), mark_end(b.x - 12, a.y + 45);
+            if (style == 0) {
+              draw->AddRectFilled(mark, ImVec2(mark.x + 12, mark_end.y), IM_COL32(36, 53, 78, 255), 2.0f);
+              draw->AddRectFilled(ImVec2(mark.x + 17, mark.y), mark_end, IM_COL32(31, 42, 59, 255), 2.0f);
+              draw->AddRectFilled(ImVec2(mark.x + 17, mark.y + 7), ImVec2(mark_end.x, mark.y + 11), accent, 1.0f);
+            } else if (style == 1) {
+              const float tile = std::min(21.0f, (card_w - 39.0f) / 4.0f);
+              for (int i = 0; i < 4; ++i)
+                draw->AddRectFilled(ImVec2(mark.x + i * (tile + 3), mark.y),
+                                    ImVec2(mark.x + i * (tile + 3) + tile, mark.y + tile),
+                                    settings_dashboard_tile_color(i, options.overlay_palettes[1]), 5.0f);
+            } else if (style == 2) {
+              const ImVec2 row1[] = {mark, ImVec2(mark_end.x, mark.y - 3), ImVec2(mark_end.x - 5, mark.y + 7), ImVec2(mark.x - 4, mark.y + 10)};
+              const ImVec2 row2[] = {ImVec2(mark.x + 3, mark.y + 14), ImVec2(mark_end.x - 3, mark.y + 12), ImVec2(mark_end.x - 7, mark.y + 23), ImVec2(mark.x - 1, mark.y + 25)};
+              draw->AddConvexPolyFilled(row1, 4, accent);
+              draw->AddConvexPolyFilled(row2, 4, IM_COL32(48, 58, 72, 255));
+            } else if (style == 3) {
+              const ImVec2 center((a.x + b.x) * 0.5f, mark.y + 13.0f);
+              draw->AddCircleFilled(center, 16.0f, IM_COL32(29, 43, 60, 255), 48);
+              draw->AddCircle(center, 16.0f, IM_COL32(107, 131, 154, 220), 48, 1.3f);
+              for (int i = 0; i < 7; ++i) {
+                const float angle = -1.5707963f + 6.2831853f * i / 7.0f;
+                draw->AddCircleFilled(ImVec2(center.x + std::cos(angle) * 10.0f,
+                                             center.y + std::sin(angle) * 10.0f), 3.1f,
+                                      i == 0 ? accent : IM_COL32(188, 204, 220, 255), 16);
+              }
+              draw->AddCircleFilled(center, 4.0f, IM_COL32(230, 240, 248, 255), 20);
+            } else if (style == 4) {
+              draw->AddRectFilled(mark, ImVec2(mark_end.x, mark.y + 7), IM_COL32(31, 48, 67, 255), 3.0f);
+              draw->AddRectFilled(mark, ImVec2(mark.x + (mark_end.x - mark.x) / 4.0f, mark.y + 7), accent, 3.0f);
+              draw->AddRectFilled(ImVec2(mark.x, mark.y + 12), mark_end, IM_COL32(25, 37, 53, 255), 3.0f);
+              for (int i = 1; i < 7; ++i)
+                draw->AddLine(ImVec2(mark.x + (mark_end.x - mark.x) * i / 7.0f, mark.y + 13),
+                              ImVec2(mark.x + (mark_end.x - mark.x) * i / 7.0f, mark_end.y),
+                              IM_COL32(90, 113, 136, 180), 1.0f);
+            } else if (style == 5) {
+              draw->AddRectFilled(mark, ImVec2(mark_end.x, mark_end.y), IM_COL32(23, 31, 41, 255));
+              draw->AddRectFilled(mark, ImVec2(mark_end.x, mark.y + 7), IM_COL32(42, 57, 72, 255));
+              draw->AddText(ImGui::GetFont(), 8.0f, ImVec2(mark.x + 5, mark.y + 1),
+                            IM_COL32(239, 245, 252, 255), "VIDEO");
+              for (int i = 0; i < 3; ++i)
+                draw->AddRectFilled(ImVec2(mark.x + 4, mark.y + 11 + i * 5),
+                                    ImVec2(mark_end.x - 4, mark.y + 14 + i * 5),
+                                    i == 0 ? accent : IM_COL32(54, 67, 81, 255), 1.0f);
+            } else {
+              draw->AddRectFilled(mark, ImVec2(mark_end.x, mark_end.y), IM_COL32(192, 192, 192, 255));
+              draw->AddRectFilled(mark, ImVec2(mark_end.x, mark.y + 7), IM_COL32(0, 0, 128, 255));
+              draw->AddText(ImGui::GetFont(), 7.0f, ImVec2(mark.x + 4, mark.y + 1),
+                            IM_COL32(255, 255, 255, 255), "Settings");
+              draw->AddRectFilled(ImVec2(mark.x + 5, mark.y + 11),
+                                  ImVec2(mark_end.x - 5, mark_end.y - 4),
+                                  IM_COL32(226, 226, 226, 255));
+              draw->AddRect(ImVec2(mark.x + 5, mark.y + 11),
+                            ImVec2(mark_end.x - 5, mark_end.y - 4),
+                            IM_COL32(90, 90, 90, 255), 0.0f, 0, 1.0f);
+              draw->AddRectFilled(ImVec2(mark.x + 8, mark.y + 14),
+                                  ImVec2(mark.x + 17, mark.y + 17), accent);
+            }
+            draw->AddText(ImVec2(a.x + 9, a.y + 51), IM_COL32(239, 245, 252, 255), style_names[style]);
+            if (active || hovered)
+              draw->AddRect(a, b, active ? accent : IM_COL32(226, 236, 247, 155), 8.0f, 0, active ? 2.3f : 1.3f);
+            if (active) {
+              const ImVec2 badge(b.x - 15.0f, a.y + 21.0f);
+              draw->AddCircleFilled(ImVec2(badge.x + 1.0f, badge.y + 1.0f), 7.0f,
+                                    IM_COL32(0, 4, 10, 150), 24);
+              draw->AddCircleFilled(badge, 6.0f, accent, 24);
+              draw->AddLine(ImVec2(badge.x - 2.5f, badge.y), ImVec2(badge.x - 0.5f, badge.y + 2.0f),
+                            IM_COL32(255,255,255,255), 1.6f);
+              draw->AddLine(ImVec2(badge.x - 0.5f, badge.y + 2.0f), ImVec2(badge.x + 3.0f, badge.y - 2.5f),
+                            IM_COL32(255,255,255,255), 1.6f);
+            }
+            if (hovered) ImGui::SetTooltip("%s", appearance_hints[style]);
+            if (pressed && !active) {
+              options.overlay_style = style;
+              state.clean_detail_open = false; state.clean_home_frames = 0;
+              state.dashboard_detail_open = false; state.dashboard_home_frames = 0;
+              state.gd_detail_open = false; state.gd_screen_frames = 0;
+              state.radial_detail_open = false; state.wide_detail_open = false;
+              state.content_anim_tab = -1;
+              changed = true;
+            }
+            ImGui::PopID();
+          }
+        }
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::TextUnformatted("Cosmetic mods");
+        ImGui::TextWrapped("Imports use one shared native profile. Stage DATs that fail the exact-ISO "
+                           "visual check use the clean disc resource online. Changes take effect after restart.");
+        if (ImGui::Button("Import / Refresh...")) {
+          std::string path = host::cosmetics::choose_import_file();
+          if (!path.empty()) mod_message = host::cosmetics::import_file(path).message;
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Import a Nucleus project ZIP, costume DAT/ZIP, or stage DAT/ZIP.\n"
+                            "Stage DATs use only their matching disc file. Unsafe stage changes stay offline.");
+        ImGui::SameLine();
+        if (ImGui::Button("Refresh catalog")) {
+          std::string error;
+          if (!host::cosmetics::refresh_catalog(&error)) mod_message = error;
+          else mod_message = host::cosmetics::last_message();
+        }
+        bool use_mods = host::cosmetics::profile_enabled();
+        ImGui::NewLine();
+        if (settings_toggle("Use cosmetic profile", &use_mods)) {
+          std::string error;
+          if (!host::cosmetics::set_profile_enabled(use_mods, &error)) mod_message = error;
+          else { mod_message = host::cosmetics::last_message(); changed = true; }
+        }
+
+        const auto installed_mods = host::cosmetics::assets();
+        if (installed_mods.empty()) {
+          ImGui::Spacing();
+          settings_hint("No supported cosmetic assets imported.");
+        } else {
+          using CosmeticAsset = host::cosmetics::AssetInfo;
+          std::map<std::string, std::map<std::string, std::vector<const CosmeticAsset*>>> characters;
+          std::map<std::string, std::vector<const CosmeticAsset*>> stages;
+          std::map<std::string, std::map<std::string, std::vector<const CosmeticAsset*>>> effects;
+          for (const auto& asset : installed_mods) {
+            if (asset.kind == "character_costume") characters[asset.character][asset.costume].push_back(&asset);
+            else if (asset.kind == "stage_visual" && asset.available) stages[asset.costume].push_back(&asset);
+            else if (asset.kind == "effect_visual") effects[asset.character][asset.costume].push_back(&asset);
+          }
+          static std::string rename_id;
+          static std::array<char, 97> rename_text{};
+          if (ImGui::CollapsingHeader("Characters")) {
+            for (const auto& character : characters) {
+              if (!ImGui::TreeNode(character.first.c_str())) continue;
+              for (const auto& costume : character.second) {
+                const auto& variants = costume.second;
+                const std::string& target = variants.front()->target_path;
+                ImGui::PushID(target.c_str());
+                ImGui::TextUnformatted(costume.first.c_str());
+                int current = 0;
+                std::vector<std::string> option_storage{"Vanilla"};
+                for (size_t i = 0; i < variants.size(); ++i) {
+                  option_storage.push_back(variants[i]->name +
+                      (variants[i]->available ? "" : " (unavailable)"));
+                  if (variants[i]->selected && variants[i]->available) current = (int)i + 1;
+                }
+                std::vector<const char*> option_names;
+                for (const auto& option : option_storage) option_names.push_back(option.c_str());
+                int selected = current;
+                ImGui::SetNextItemWidth(280.0f);
+                if (settings_combo("##variant", &selected, option_names.data(), (int)option_names.size())) {
+                  std::string error;
+                  bool ok = selected == 0 ? host::cosmetics::disable_target(target, &error) :
+                      host::cosmetics::select_variant(target, variants[(size_t)selected - 1]->id, &error);
+                  if (!ok) mod_message = error;
+                  else { mod_message = host::cosmetics::last_message(); changed = true; }
+                }
+                if (current != 0) {
+                  ImGui::SameLine();
+                  if (ImGui::SmallButton("Use Vanilla")) {
+                    std::string error;
+                    if (!host::cosmetics::disable_target(target, &error)) mod_message = error;
+                    else { mod_message = host::cosmetics::last_message(); changed = true; }
+                  }
+                }
+                if (variants.size() > 1)
+                  ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                                     "%zu variants; the saved selection wins.", variants.size());
+                const CosmeticAsset* details = current > 0 ? variants[(size_t)current - 1] : variants.front();
+                std::string details_label = "Details — " + details->name;
+                if (ImGui::TreeNode(details_label.c_str())) {
+                  draw_cosmetic_preview(*details);
+                  ImGui::Text("Target: %s", details->target_path.c_str());
+                  ImGui::TextWrapped("Content ID: %s", details->id.c_str());
+                  ImGui::TextWrapped("SHA-256: %s", details->sha256.c_str());
+                  if (!details->availability_message.empty())
+                    ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s",
+                                       details->availability_message.c_str());
+                  if (!details->dependencies.empty()) {
+                    std::string deps;
+                    for (const auto& dep : details->dependencies) deps += (deps.empty() ? "" : ", ") + dep;
+                    ImGui::TextWrapped("Dependencies: %s", deps.c_str());
+                  }
+                  for (const auto& companion : details->unsupported_companions)
+                    ImGui::TextWrapped("Companion: %s", companion.c_str());
+                  if (ImGui::SmallButton("Rename...")) {
+                    rename_id = details->id;
+                    rename_text.fill(0);
+                    std::copy_n(details->name.data(), std::min(details->name.size(), rename_text.size() - 1),
+                                rename_text.data());
+                    ImGui::OpenPopup("Rename variant");
+                  }
+                  if (ImGui::BeginPopupModal("Rename variant", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+                    ImGui::InputText("Display name", rename_text.data(), rename_text.size());
+                    if (ImGui::Button("Save", ImVec2(100, 0))) {
+                      std::string error;
+                      if (!host::cosmetics::rename_asset(rename_id, rename_text.data(), &error)) mod_message = error;
+                      else { mod_message = host::cosmetics::last_message(); changed = true; ImGui::CloseCurrentPopup(); }
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Cancel", ImVec2(100, 0))) ImGui::CloseCurrentPopup();
+                    ImGui::EndPopup();
+                  }
+                  ImGui::TreePop();
+                }
+                ImGui::PopID();
+              }
+              ImGui::TreePop();
+            }
+          }
+          auto draw_resource_slot = [&](const std::string& label,
+                                        const std::vector<const CosmeticAsset*>& variants) {
+            const std::string target = variants.front()->target_path +
+                (variants.front()->scope.empty() ? "" : "#" + variants.front()->scope);
+            ImGui::PushID(target.c_str());
+            ImGui::TextUnformatted(label.c_str());
+            int current = 0;
+            std::vector<std::string> option_storage{"Vanilla"};
+            for (size_t i = 0; i < variants.size(); ++i) {
+              option_storage.push_back(variants[i]->name +
+                  (variants[i]->available ? "" : " (unavailable)"));
+              if (variants[i]->selected && variants[i]->available) current = (int)i + 1;
+            }
+            std::vector<const char*> option_names;
+            for (const auto& option : option_storage) option_names.push_back(option.c_str());
+            int selected = current;
+            ImGui::SetNextItemWidth(280.0f);
+            if (settings_combo("##variant", &selected, option_names.data(), (int)option_names.size())) {
+              std::string error;
+              bool ok = selected == 0 ? host::cosmetics::disable_target(target, &error) :
+                  host::cosmetics::select_variant(target, variants[(size_t)selected - 1]->id, &error);
+              if (!ok) mod_message = error;
+              else { mod_message = host::cosmetics::last_message(); changed = true; }
+            }
+            const CosmeticAsset* details = current > 0 ? variants[(size_t)current - 1] : variants.front();
+            draw_cosmetic_preview(*details);
+            if (!details->availability_message.empty())
+              ImGui::TextWrapped("%s", details->availability_message.c_str());
+            ImGui::PopID();
+          };
+          if (!stages.empty() && ImGui::CollapsingHeader("Stages", ImGuiTreeNodeFlags_DefaultOpen))
+            for (const auto& stage : stages) draw_resource_slot(stage.first, stage.second);
+          if (!effects.empty() && ImGui::CollapsingHeader("Effects")) {
+            if (ImGui::Button("Enable project effects")) {
+              std::string error;
+              if (!host::cosmetics::enable_project_effects(&error)) mod_message = error;
+              else { mod_message = host::cosmetics::last_message(); changed = true; }
+            }
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Validates each move against this clean ISO and combines compatible changes.\n"
+                                "Conflicting changes are reported. Character and stage choices are preserved.");
+            for (const auto& group : effects) {
+              if (!ImGui::TreeNode(group.first.c_str())) continue;
+              for (const auto& slot : group.second) draw_resource_slot(slot.first, slot.second);
+              ImGui::TreePop();
+            }
+          }
+        }
+        ImGui::Separator();
+        if (ImGui::Button("Restore Vanilla")) ImGui::OpenPopup("restore_vanilla_cosmetics");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Disables every asset override. No backup is needed: the clean ISO is never modified.");
+        if (ImGui::BeginPopupModal("restore_vanilla_cosmetics", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+          ImGui::TextWrapped("Disable all cosmetic overrides and clear every slot selection?\n"
+                             "Imported files stay in the catalog so they can be selected again.");
+          if (ImGui::Button("Restore Vanilla", ImVec2(150, 0))) {
+            std::string error;
+            if (!host::cosmetics::restore_vanilla(&error)) mod_message = error;
+            else { mod_message = host::cosmetics::last_message(); changed = true; }
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Cancel", ImVec2(100, 0))) ImGui::CloseCurrentPopup();
+          ImGui::EndPopup();
+        }
+        if (host::cosmetics::pending_restart()) {
+          ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                             "Profile changed. Restart to apply it and clear affected guest/render caches.");
+          if (!state.fill_window) {
+            if (ImGui::Button("Restart to apply mods")) state.confirm = SettingsState::Confirm::Restart;
+          } else settings_hint("Close settings, then launch the game to apply this profile.");
+        }
+        if (mod_message.empty()) mod_message = host::cosmetics::last_message();
+        if (!mod_message.empty()) ImGui::TextWrapped("%s", mod_message.c_str());
+      }
+      if (state.active_tab == 2) {
 
     // ---- Input ----
     ImGui::TextUnformatted("Input");
-    if (ImGui::Checkbox("Background input", &host::g_background_input)) changed = true;
+    if (settings_toggle("Background input", &host::g_background_input)) changed = true;
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("On: controllers and the keyboard keep playing while another window is in front\n"
+      ImGui::SetTooltip("On: controllers keep playing while another window is in front\n"
                         "(a stream, Discord, a second monitor).\n"
                         "Off: the game ignores all input until you click back into its window.");
+
+    // Slippi's Lagless FoD code is a real game patch, so expose it as an offline/direct setting
+    // instead of silently forcing the performance-oriented variant on every player.
+    ImGui::TextUnformatted("Stage effects");
+    if (settings_toggle("Fountain of Dreams reflections", &options.fod_reflections)) changed = true;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("On: keep Fountain of Dreams' water reflection and particles.\n"
+                        "Off: use the Lagless FoD code for lower GPU cost. Takes effect at the next retrace.");
 
     // ---- L-cancel helpers ----
     // The indicator reads the fighter's action state and never writes anything, so it is display
@@ -2379,16 +4784,16 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     ImGui::TextUnformatted("L-cancel");
     {
       bool indicator = lcancel::indicator_enabled();
-      if (ImGui::Checkbox("Flash red on missed L-cancel", &indicator)) lcancel::set_indicator(indicator);
+      if (settings_toggle("Flash red on missed L-cancel", &indicator)) lcancel::set_indicator(indicator);
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Flashes the fighter red when an aerial lands without the landing lag halved.\n"
                           "Display only: the tint is applied by the renderer and never written into the\n"
                           "game, so it is safe in every mode. It is skipped while auto L-cancel is doing\n"
                           "the press for you, since there is then nothing to report.");
       bool automatic = lcancel::automatic_enabled();
-      if (ImGui::Checkbox("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
+      if (settings_toggle("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
       ImGui::SameLine();
-      ImGui::TextDisabled("(NOTE: Will not work in Unranked or Ranked, only offline and direct)");
+      settings_hint("(NOTE: Will not work in Unranked or Ranked, only offline and direct)");
       if (automatic) {
         ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
                            "network like any other, so it cannot desync. In a Direct match both players should agree "
@@ -2402,12 +4807,23 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // A port code compiled into the game (recomp/gecko.py PORT_CODES): the stock row drawn at PAL's
     // size and height. Display only, read when the HUD is built, so it applies from the next match.
     ImGui::TextUnformatted("HUD");
-    if (ImGui::Checkbox("PAL style stock icons", &gecko::option_pal_stock_icons)) changed = true;
+    ImGui::SetNextItemWidth(170.0f);
+    if (settings_slider("Stock icon size", &options.stock_hud_scale, 75, 175, "%d%%")) {
+      gecko::option_pal_stock_icons = false;
+      changed = true;
+    }
+    ImGui::SetNextItemWidth(170.0f);
+    changed |= settings_slider("Damage number size", &options.damage_hud_scale, 75, 175, "%d%%");
+    settings_hint("Display only; updates during play. Larger values may overlap in four-player matches.");
+    if (settings_toggle("PAL style stock icons", &gecko::option_pal_stock_icons)) {
+      if (gecko::option_pal_stock_icons) options.stock_hud_scale = 85;
+      changed = true;
+    }
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Smaller stock icons, set a little higher, as in the PAL version.\n"
                         "Display only. Applies from the next match.");
     // Also a port code: zeroes the camera's shake offset before the game applies it.
-    if (ImGui::Checkbox("Disable screen shake", &gecko::option_no_screen_shake)) changed = true;
+    if (settings_toggle("Disable screen shake", &gecko::option_no_screen_shake)) changed = true;
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("The camera no longer shakes on hard hits, explosions and stage effects.\n"
                         "Camera only: fighters and hits are unchanged. Takes effect immediately.");
@@ -2420,14 +4836,14 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     {
       int delay = slippi::online::config().delay;
       ImGui::SetNextItemWidth(160.0f);
-      if (ImGui::SliderInt("Frame delay", &delay, 1, 9)) { slippi::online::config().delay = delay; changed = true; }
+      if (settings_slider("Frame delay", &delay, 1, 9)) { slippi::online::config().delay = delay; changed = true; }
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Frames of your own input held back before the game uses it, as in Slippi Dolphin.\n"
                           "Higher means fewer rollbacks on a bad connection and more input lag.\n"
                           "2 is Slippi's default. Takes effect from the next online match.");
       if (slippi::online::is_online_match()) {
         ImGui::SameLine();
-        ImGui::TextDisabled("(applies from the next match)");
+        settings_hint("(applies from the next match)");
       }
     }
 
@@ -2442,23 +4858,32 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       host::discord::configure(options.discord_app_id);
     }
     const bool discord_was = options.discord_presence;
-    ImGui::Checkbox("Discord presence (show what you are playing; friends can press Join)", &options.discord_presence);
+    settings_toggle("Discord presence (show what you are playing; friends can press Join)", &options.discord_presence);
     if (options.discord_presence != discord_was) {
       host::discord::configure(options.discord_app_id);
       host::discord::enable(options.discord_presence);   // starts or stops one background thread
     }
     if (options.discord_presence) {
       ImGui::TextWrapped("%s", host::discord::status().c_str());
-      ImGui::TextDisabled("A new Application ID is picked up the next time you switch this off and on.");
-      ImGui::TextWrapped("Your Slippi connect code is published as the join secret so a friend who presses Join gets it filled in under Online > Direct. Your IP address is never published. Rich Presence is visible to anyone who can see your Discord profile.");
+      settings_hint("A new Application ID is picked up the next time you switch this off and on.");
+      ImGui::TextWrapped("Discord Join sends the other player's code to Online > Direct; selecting Direct automatically uses it for that attempt. Your Slippi code is copied to the clipboard for the other player. Your IP address is never published. Who can see or join depends on your Discord activity privacy settings.");
     } else {
-      ImGui::TextDisabled("Off. Nothing is sent to Discord. Needs an Application ID from discord.com/developers/applications.");
+      settings_hint("Off. Nothing is sent to Discord. Needs an Application ID from discord.com/developers/applications.");
     }
 
-    ImGui::Checkbox("Open this panel at startup", &options.settings_open);
-        ImGui::EndTabItem();
+    changed |= settings_toggle("Open this panel at startup", &options.settings_open);
       }
-      if (ImGui::BeginTabItem("Controls", nullptr, tab_flags("Controls"))) {
+      if (state.active_tab == 3) {
+
+    bool rumble_enabled = host::g_rumble_enabled.load(std::memory_order_relaxed);
+    if (settings_toggle("Controller rumble", &rumble_enabled)) {
+      host::g_rumble_enabled.store(rumble_enabled, std::memory_order_relaxed);
+      if (!rumble_enabled) host::input_stop_all_rumble();
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Turn off vibration for GameCube adapters and Xbox controllers, including online play.");
+    ImGui::Spacing();
 
     host::InputDebugSnapshot snap;
     host::input_debug_snapshot(snap);
@@ -2605,10 +5030,11 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // edits that controller, and its arrow changes what plays there. ----
     {
       const float gap = ImGui::GetStyle().ItemSpacing.x;
-      const float card_w = std::max(104.0f, (ImGui::GetContentRegionAvail().x - 3 * gap) / 4);
+      const int card_columns = ImGui::GetContentRegionAvail().x < 600.0f ? 2 : 4;
+      const float card_w = (ImGui::GetContentRegionAvail().x - (card_columns - 1) * gap) / card_columns;
       constexpr float card_h = 70.0f;
       for (int port = 0; port < 4; ++port) {
-        if (port) ImGui::SameLine();
+        if (port % card_columns) ImGui::SameLine();
         ImGui::PushID(100 + port);
         int t = tab_of_source(host::g_port_sources[port]);
         // A port left on the keyboard is also played by the first spare pad (window.cpp); show that
@@ -2621,7 +5047,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         const bool editing = t >= 0 && t == edit_tab;
         const ImVec2 o = ImGui::GetCursorScreenPos();
         ImGui::SetNextItemAllowOverlap();   // the arrow drawn on top of the card takes its own clicks
-        if (ImGui::InvisibleButton("card", ImVec2(card_w, card_h)) && t >= 0) select_tab(t);
+        if (settings_hit_button("card", ImVec2(card_w, card_h)) && t >= 0) select_tab(t);
         const bool hovered_card = ImGui::IsItemHovered();
         ImDrawList* d = ImGui::GetWindowDrawList();
         d->AddRectFilled(o, ImVec2(o.x + card_w, o.y + card_h), hovered_card ? IM_COL32(40, 40, 52, 255) : IM_COL32(30, 30, 40, 255), 8.0f);
@@ -2642,13 +5068,15 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         d->PopClipRect();
         // The arrow: what plays as this port.
         ImGui::SetCursorScreenPos(ImVec2(o.x + card_w - 30, o.y + 8));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(4.0f,3.0f));
         if (ImGui::ArrowButton("pick", ImGuiDir_Down)) ImGui::OpenPopup("port_source");
+        ImGui::PopStyleVar();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Choose what plays as port %d.", port + 1);
         else if (hovered_card)
           ImGui::SetTooltip("%s%s%s\nClick to set up this controller's buttons.", device_title(t).c_str(), t > 0 ? ", " : "",
                             t > 0 ? (device_where(t) + (connected ? "" : " (unplugged)")).c_str() : "");
         if (ImGui::BeginPopup("port_source")) {
-          ImGui::TextDisabled("Plays as port %d", port + 1);
+          settings_hint("Plays as port %d", port + 1);
           ImGui::Separator();
           const int cur = port_source_to_combo(host::g_port_sources[port]);
           // Plugged in first; the rest under "Not plugged in", so it can be set up ahead of time.
@@ -2698,7 +5126,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       ImGui::AlignTextToFramePadding();
       ImGui::TextUnformatted("Editing");
       ImGui::SameLine();
-      ImGui::SetNextItemWidth(std::min(380.0f, ImGui::GetContentRegionAvail().x - 40.0f));
+      ImGui::SetNextItemWidth(std::max(100.0f, ImGui::GetContentRegionAvail().x - 40.0f));
       if (ImGui::BeginCombo("##editing", label_of(edit_tab).c_str())) {
         static const int kOrder[] = {9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 13, 14, 15, 16, 17, 18, 19, 20, 0};
         for (int t : kOrder)
@@ -2723,11 +5151,19 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       }
       if (room_after_last_item() > ImGui::CalcTextSize("Press any button on a controller to jump to it.").x + 16) {
         ImGui::SameLine();
-        ImGui::TextDisabled("Press any button on a controller to jump to it.");
+        settings_hint("Press any button on a controller to jump to it.");
       }
     }
     const Family& cur_family = kFamilies[family_sel];
     ImGui::Spacing();
+    if (cur_family.fam == (int)host::PadFamily::GameCube) {
+      const double rate = host::gcadapter_poll_rate_hz();
+      if (rate > 0.0) ImGui::Text("Adapter polling rate: %.0f Hz", rate);
+      else settings_hint("Adapter polling rate: --");
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Incoming USB reports per second, shared by all four adapter sockets.\nThe game reads controller state once per frame.");
+      ImGui::Spacing();
+    }
 
     {
       const int tab = cur_family.first_tab + device_sel[family_sel];
@@ -2792,12 +5228,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         const float dz_main = cur_family.fam >= 0 ? host::g_deadzones[(size_t)cur_family.fam].main / 80.0f : 0.0f;
         const float dz_c = cur_family.fam >= 0 ? host::g_deadzones[(size_t)cur_family.fam].c / 80.0f : 0.0f;
         if (tab_kind == host::CaptureDevice::SwitchPro) {
-          if (ImGui::Checkbox("Use GameCube controller picture", &g_swpro_gc_picture)) changed = true;
+          if (settings_toggle("Use GameCube controller picture", &g_swpro_gc_picture)) changed = true;
           if (ImGui::IsItemHovered()) ImGui::SetTooltip("Set up this Switch controller on the GameCube layout instead:\nclick a GameCube button, then press the Switch button for it.");
         }
         if (switch_picture) {
           changed |= draw_swpro_bind_picture(tab_index, snap.swpro_buttons[tab_index], stick_pos, c_pos, dz_main, dz_c);
-          if (tab_connected(tab)) ImGui::TextDisabled("Click a button or its box to choose what it does. Right-click to clear.");
+          if (tab_connected(tab)) settings_hint("Click a button or its box to choose what it does. Right-click to clear.");
         }
         const int clicked = switch_picture ? -1 : draw_gc_bind_picture(live, waiting, &right_clicked, &hovered,
                                                  [&](int action) { return binding_label(tab_kind, tab_index, action); },
@@ -2811,9 +5247,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         if (waiting >= 0)
           ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Press a key or button for %s (Esc to cancel)", kActionTitles[waiting]);
         else if (!tab_connected(tab))
-          ImGui::TextDisabled("Not connected. Plug it in to rebind it; its saved buttons are shown.");
+          settings_hint("Not connected. Plug it in to rebind it; its saved buttons are shown.");
         else if (!switch_picture)
-          ImGui::TextDisabled("Click a button or its box to rebind it. Right-click to clear.");
+          settings_hint("Click a button or its box to rebind it. Right-click to clear.");
 
         // Any change to this controller's buttons (a rebind, a clear, a box layout, a loaded
         // profile) is kept in its profile straight away.
@@ -2833,23 +5269,16 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
           ImGui::SeparatorText("Sticks");
           host::Deadzone& dz = host::g_deadzones[(size_t)cur_family.fam];
           ImGui::SetNextItemWidth(200.0f);
-          changed |= ImGui::SliderInt("Control stick deadzone", &dz.main, 0, 60, dz.main ? "%d" : "Off");
+          changed |= settings_slider("Control stick deadzone", &dz.main, 0, 60, dz.main ? "%d" : "Off");
           if (ImGui::IsItemActive()) g_show_dz_main_until = ImGui::GetTime() + 1.5;
           if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Inside this distance from centre the stick reads as centred; outside it the stick\n"
                               "is passed through exactly as the controller sends it (out of 127). Melee already\n"
                               "ignores about 23, so only a worn stick drifting past that needs it.");
-          ImGui::SameLine(0, 24.0f);
           ImGui::SetNextItemWidth(200.0f);
-          changed |= ImGui::SliderInt("C-stick deadzone", &dz.c, 0, 60, dz.c ? "%d" : "Off");
+          changed |= settings_slider("C-stick deadzone", &dz.c, 0, 60, dz.c ? "%d" : "Off");
           if (ImGui::IsItemActive()) g_show_dz_c_until = ImGui::GetTime() + 1.5;
-          ImGui::TextDisabled("Applies to every %s controller.", cur_family.name);
-          if (cur_family.fam == (int)host::PadFamily::GameCube) {
-            if (ImGui::Checkbox("Rumble", &host::g_rumble_enabled)) changed = true;
-            if (ImGui::IsItemHovered())
-              ImGui::SetTooltip("Off stops controller rumble everywhere, Unranked and Direct included,\n"
-                                "where the game's own rumble option is not in the menus.");
-          }
+          settings_hint("Applies to every %s controller.", cur_family.name);
         }
         if (tab_kind == host::CaptureDevice::HidPad && ImGui::CollapsingHeader("Box layouts")) {
           if (ImGui::Button("B0XX (vJoy / b0xx-ahk)")) { host::g_hid_bindings[tab_index] = host::vjoy_b0xx_bindings(); changed = true; }
@@ -2857,12 +5286,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
           if (ImGui::Button("B0XX-layout box (HayBox)")) { host::g_hid_bindings[tab_index] = host::haybox_dinput_bindings(); changed = true; }
           ImGui::SameLine();
           if (ImGui::Button("Generic")) { host::g_hid_bindings[tab_index] = host::default_hid_bindings()[0]; changed = true; }
-          ImGui::TextDisabled("vJoy and HayBox boxes in DInput mode get their layout automatically.");
+          settings_hint("vJoy and HayBox boxes in DInput mode get their layout automatically.");
           const host::HidPadAxes axes = host::hidpad_axes(tab_index);
           if (axes.count) {
             std::string line = "Axes:";
             for (int a = 0; a < axes.count; ++a) line += "  " + std::string(axes.name[a]) + " " + std::to_string(axes.value[a]);
-            ImGui::TextDisabled("%s", line.c_str());
+            settings_hint("%s", line.c_str());
           }
         }
         if (ImGui::CollapsingHeader("All buttons as a list")) {
@@ -2887,28 +5316,31 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         }
       }
     }
-        ImGui::EndTabItem();
       }
-      if (ImGui::BeginTabItem("Overlays", nullptr, tab_flags("Overlays"))) {
-    changed |= ImGui::Checkbox("Show the \"Settings: F1\" reminder", &options.settings_hint);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1 still opens this panel with it off.");
-    ImGui::Checkbox("Performance overlay", &options.performance_overlay);
-    changed |= ImGui::Checkbox("FPS counter (top left)", &options.show_fps);
+      if (state.active_tab == 4) {
+    changed |= settings_toggle("Show player nicknames above fighters", &options.show_player_nicknames);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shows each online player's name at Melee's player-tag anchor. Local display only.");
+    changed |= settings_toggle("Show the \"Settings: F1\" reminder", &options.settings_hint);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1, or Start + D-pad Down + Z on a GameCube controller, opens settings.");
+    changed |= settings_toggle("Show the \"Matchmaking: Tab\" reminder", &options.matchmaking_hint);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tab still opens matchmaking with it off.");
+    settings_toggle("Performance overlay", &options.performance_overlay);
+    changed |= settings_toggle("FPS counter (top left)", &options.show_fps);
     // VRAM has its own line in the Video tab, right by the settings that move it; no overlay needed.
-    changed |= ImGui::Checkbox("Ping while online (under the FPS)", &options.show_ping);
-    changed |= ImGui::Checkbox("Render latency (under the FPS)", &options.reflex_stats);
+    changed |= settings_toggle("Ping while online (under the FPS)", &options.show_ping);
+    changed |= settings_toggle("Render latency (under the FPS)", &options.reflex_stats);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Shows the measured render latency under the FPS counter. Works whether or\n"
                         "not NVIDIA Reflex Low Latency (Video tab) is On, so Off has a number too --\n"
                         "the full breakdown by stage is on the performance graph.");
-    changed |= ImGui::Checkbox("Controller overlay", &options.input_overlay);
+    changed |= settings_toggle("Controller overlay", &options.input_overlay);
     if (options.input_overlay) {
       ImGui::SameLine();
-      changed |= ImGui::Checkbox("Show values", &options.input_overlay_values);
+      changed |= settings_toggle("Show values", &options.input_overlay_values);
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each stick's position as the game reads it. A full press is 1.0000.");
       ImGui::SameLine();
       ImGui::SetNextItemWidth(110.0f);
-      changed |= ImGui::SliderInt("Stick size", &options.input_overlay_stick, 1, 10);
+      changed |= settings_slider("Stick size", &options.input_overlay_stick, 1, 10);
       // Several ports can be shown at once (doubles and crew streams want every player visible);
       // they stack upward from the bottom left corner.
       for (int i = 0; i < 4; ++i) {
@@ -2916,19 +5348,18 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         char label[16];
         std::snprintf(label, sizeof label, "P%d", i + 1);
         bool on = (options.input_overlay_ports & (1 << i)) != 0;
-        if (ImGui::Checkbox(label, &on)) {
+        if (settings_toggle(label, &on)) {
           options.input_overlay_ports = on ? (options.input_overlay_ports | (1 << i)) : (options.input_overlay_ports & ~(1 << i));
           changed = true;
         }
       }
       ImGui::SameLine();
-      changed |= ImGui::Checkbox("Hide background", &options.input_overlay_hide_border);
+      changed |= settings_toggle("Hide background", &options.input_overlay_hide_border);
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("Removes the panel behind the overlay, leaving only the buttons and sticks.");
-      ImGui::TextDisabled("  Drag an overlay to move it, and its edges to resize, while this panel is open.");
+      settings_hint("  Drag an overlay to move it, and its edges to resize, while this panel is open.");
     }
-        ImGui::EndTabItem();
       }
-      if (ImGui::BeginTabItem("Gecko Codes", nullptr, tab_flags("Gecko Codes"))) {
+      if (state.active_tab == 6) {
     // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
     // Always shown: a code the other player does not have desyncs the match.
     ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "WARNING: Gecko codes can cause DESYNCS online.");
@@ -2942,7 +5373,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                         "writes into the code) cannot run in this build and are shown greyed out.",
                         user_gecko::path().c_str());
     if (user_gecko::codes().empty()) {
-      ImGui::TextDisabled("No codes yet. Paste one below, or put a GeckoCodes.ini next to port-settings.ini.");
+      settings_hint("No codes yet. Paste one below, or put a GeckoCodes.ini next to port-settings.ini.");
     } else {
       std::string to_remove;
       for (user_gecko::Code& c : user_gecko::codes()) {
@@ -2951,7 +5382,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove this code.");
         ImGui::SameLine();
         ImGui::BeginDisabled(!c.supported);
-        if (ImGui::Checkbox(c.name.c_str(), &c.enabled)) { changed = true; g_gecko_chosen = true; }
+        if (settings_toggle(c.name.c_str(), &c.enabled)) { changed = true; g_gecko_chosen = true; }
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
           std::string tip;
@@ -2990,33 +5421,37 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         ImGui::EndPopup();
       }
     }
-        ImGui::EndTabItem();
-      }
-      ImGui::EndTabBar();
     }
+    ImGui::PopTextWrapPos();
+    ImGui::EndChild();
+    ImGui::PopStyleVar(3);
+    if (clean_detail_theme || dashboard_detail_theme ||
+        (options.overlay_style >= 2 && options.overlay_style <= 4))
+      ImGui::PopStyleColor();
+    const ImVec2 content_size = ImGui::GetItemRectSize();
+    // Keep the footer anchored while the page itself slides in. BeginChild advances the parent
+    // cursor by the displaced child position, so restore its undisturbed layout position here.
+    if (gd_page)
+      ImGui::SetCursorPos(ImVec2(44.0f * gd_scale, 396.0f * gd_scale));
+    else
+      ImGui::SetCursorPos(ImVec2(content_origin.x, content_origin.y + content_size.y));
+    ImGui::PopStyleVar();
 
-    ImGui::Separator();
-
-    {
-      auto st = host::updater::state();
-      if (st == host::updater::State::Idle) host::updater::check(MELEE_PORT_VERSION);
-      ImGui::Text("Version %s. %s", MELEE_PORT_VERSION, host::updater::message().c_str());
-      if (st == host::updater::State::UpdateAvailable) { ImGui::SameLine(); if (ImGui::Button("Update and restart")) host::updater::download_and_install(); }
-      if (st == host::updater::State::Failed) { ImGui::SameLine(); if (ImGui::Button("Retry")) host::updater::check(MELEE_PORT_VERSION); }
-    }
-    ImGui::Separator();
+    if (!state.fill_window) settings_page_footer(state,options.overlay_style);
+    else ImGui::Separator();
     // Every change is saved on its own, once the control that changed it is released (a slider
     // being dragged writes once, at the end, not sixty times a second). The button stays for
     // anyone who wants to be sure, and for the few controls that do not report a change.
     if (changed) state.dirty = true;
     const bool autosave = state.dirty && !ImGui::IsAnyItemActive();
-    if (ImGui::Button("Save settings") || autosave) {
+    if ((state.fill_window && ImGui::Button("Save settings")) || autosave) {
       state.dirty = false;
       std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";
       std::ofstream file(temporary);
       file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
            << "\nexclusivefullscreen " << options.exclusive_fullscreen
            << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen
+           << "\nfodreflections " << options.fod_reflections
            << "\ntruewidescreen " << options.true_widescreen << "\naspect " << (int)options.aspect
            << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
            << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
@@ -3024,6 +5459,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\ndlss " << options.dlss_mode << "\nframegen " << options.frame_generation_mode
            << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
            << "\nreflexflash " << (options.reflex_flash ? 1 : 0)
+           << "\npathtracing " << (options.path_tracing ? 1 : 0)
+           << "\nrayreconstruction " << (options.ray_reconstruction ? 1 : 0)
 #ifdef GX_DLSS5
            << "\ndlss5 " << (options.dlss5 ? 1 : 0) << "\ndlss5intensity " << options.dlss5_tuning.intensity
            << "\ndlss5detail " << options.dlss5_tuning.detail << "\ndlss5tone " << options.dlss5_tuning.tone
@@ -3031,14 +5468,33 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\ndlss5preset " << options.dlss5_tuning.preset << "\ndlss5automask " << (options.dlss5_tuning.auto_mask ? 1 : 0)
 #endif
            << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
-           << "\nsharpness " << options.sharpness << "\nbrightness " << options.brightness
+           << "\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
            << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
            << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
            << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
            << "\nonlinedelay " << slippi::online::config().delay
            << "\nstartup " << (options.settings_open ? 1 : 0)
            // Read since it was added and never written, so hiding the reminder lasted one session.
-           << "\nsettingshint " << (options.settings_hint ? 1 : 0)
+           << "\nsettingsreminder " << (options.settings_hint ? 1 : 0)
+           << "\nlegacymenu " << (options.legacy_menu_enabled ? 1 : 0)
+           << "\nlegacymenustyle " << options.legacy_menu_style
+           << "\nmenusounds " << (options.settings_menu_sounds ? 1 : 0)
+           << "\nmenucustom " << (options.settings_custom_color_enabled ? 1 : 0)
+           << "\nmenucolor " << options.settings_custom_color[0] << ' '
+           << options.settings_custom_color[1] << ' ' << options.settings_custom_color[2]
+           << "\noverlaystyle " << (state.legacy_presentation ? state.legacy_saved_appearance : options.overlay_style)
+           << "\nsettingstransparency " << options.settings_transparency
+           << "\noverlaypalette0 " << options.overlay_palettes[0]
+           << "\noverlaypalette1 " << options.overlay_palettes[1]
+           << "\noverlaypalette2 " << options.overlay_palettes[2]
+           << "\noverlaypalette3 " << options.overlay_palettes[3]
+           << "\noverlaypalette4 " << options.overlay_palettes[4]
+           << "\noverlaypalette5 " << options.overlay_palettes[5]
+           << "\noverlaypalette6 " << options.overlay_palettes[6]
+           << "\nstockhudscale " << options.stock_hud_scale
+           << "\ndamagehudscale " << options.damage_hud_scale
+           << "\nplayernicknames " << (options.show_player_nicknames ? 1 : 0)
+           << "\nmatchmakinghint " << (options.matchmaking_hint ? 1 : 0)
            << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
            << "\ninputoverlayhideborder " << options.input_overlay_hide_border
            << "\ninputoverlayvalues " << options.input_overlay_values
@@ -3060,7 +5516,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
            << "\nnoscreenshake " << (gecko::option_no_screen_shake ? 1 : 0)
            << "\nswpro_gc_picture " << (g_swpro_gc_picture ? 1 : 0)
            << family_options_text()
-           << "\nrumble " << (host::g_rumble_enabled ? 1 : 0)
+           << "\nrumble " << (host::g_rumble_enabled.load(std::memory_order_relaxed) ? 1 : 0)
            << "\nbackgroundinput " << (host::g_background_input ? 1 : 0)
            << "\neditdevice " << g_saved_edit_tab
            << (g_custom_preset.set ? "\ncustompreset " + std::to_string(g_custom_preset.efb) + " " + std::to_string(g_custom_preset.ssaa) + " " +
@@ -3078,7 +5534,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       // set it up correctly was told their packs were off. Same omission that hid texpackoff.
       file << "\ncustomtextures " << (options.custom_textures ? 1 : 0)
            << "\ndumptextures " << (options.dump_textures ? 1 : 0)
-           << "\nprefetchtextures " << (options.prefetch_textures ? 1 : 0);
+           << "\nprefetchtextures " << (options.prefetch_textures ? 1 : 0)
+           << "\nvideobackgrounds " << (options.video_backgrounds ? 1 : 0);
       file << texpack_disabled_lines();
       // The player's Gecko codes switched on, by name (names can hold spaces; read to end of line).
       if (g_gecko_chosen) {
@@ -3124,31 +5581,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       // The window itself has to be told: state.open is the panel's own flag and the standalone
       // window loop cannot see it, so pressing Close left the window sitting there open.
       if (ImGui::Button("Close")) { state.open = false; g_close_requested.store(true, std::memory_order_relaxed); }
-    } else {
-    ImGui::SameLine(); if (ImGui::Button("Return to game")) state.open = false;
-    // Restarting and quitting both shut down the same way closing the window does, so the replay is
-    // finalised, the pipeline cache is written and the adapter is released rather than left
-    // mid-stream. Both ask first: the panel opens mid-match, and a stray click would end it.
-    ImGui::SameLine();
-    if (ImGui::Button("Restart game")) state.confirm = SettingsState::Confirm::Restart;
-    ImGui::SameLine();
-    if (ImGui::Button("Quit game")) state.confirm = SettingsState::Confirm::Quit;
     }
-    if (state.saved) ImGui::TextUnformatted("Settings saved");
-
-    // A backend change is the one setting the running device cannot adopt, so it is the one that
-    // needs the process to come back. Offered here rather than only described, so the player does
-    // not have to work out how to act on it.
-    const RenderApi running_api = state.running_d3d11 ? RenderApi::D3D11 : RenderApi::D3D12;
-    if (options.api != running_api && state.confirm == SettingsState::Confirm::None) {
-      ImGui::Separator();
-      ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
-                         "The graphics backend will not be applied until after a restart.");
-      if (!state.fill_window) {
-        ImGui::SameLine();
-        if (ImGui::Button("Restart now")) state.confirm = SettingsState::Confirm::Restart;
-      }
-    }
+    if (state.saved && ImGui::IsItemHovered()) ImGui::SetTooltip("Settings saved");
 
     if (state.confirm != SettingsState::Confirm::None) {
       const bool restart = state.confirm == SettingsState::Confirm::Restart;
@@ -3174,35 +5608,113 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         ImGui::EndPopup();
       }
     }
+    ImGui::EndDisabled();
+    if (gd_detail_theme) {
+      ImGui::PopStyleVar();
+      ImGui::PopStyleColor(4);
+    }
+    if (clean_detail_theme) {
+      ImGui::PopStyleVar();
+      ImGui::PopStyleColor(4);
+    }
+    if (dashboard_detail_theme) {
+      ImGui::PopStyleVar();
+      ImGui::PopStyleColor(4);
+    }
+    }
     ImGui::End();
+    if (!old_menu && classic_menu) {
+      if (g_settings_classic_font) ImGui::PopFont();
+      ImGui::PopStyleVar(3);
+      ImGui::PopStyleColor(10);
+    }
   }
   // ---- the Esc menu ----
   if (state.menu_open && !state.open) {
     const ImVec2 screen = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::Begin("##esc_menu", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
-                                         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings);
-    const ImVec2 wide(240, 34), half_w(116, 34);
+    const float width = std::min(760.0f, screen.x - 24.0f);
+    const float height = 172.0f;
+    ImGui::SetNextWindowPos(ImVec2((screen.x - width) * 0.5f, screen.y - height - 18.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(width, height), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.0f);
+    ImGui::Begin("##esc_menu", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+                                         ImGuiWindowFlags_NoBackground);
+    const ImVec2 p = ImGui::GetWindowPos();
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    g_settings_palette = options.overlay_palettes[0];
+    g_settings_custom_color_enabled = options.settings_custom_color_enabled;
+    g_settings_custom_color = ImVec4(options.settings_custom_color[0], options.settings_custom_color[1],
+                                     options.settings_custom_color[2], 1.0f);
+    const ImU32 accent = settings_accent(0);
+    const ImVec4 accent_f = ImGui::ColorConvertU32ToFloat4(accent);
+    const ImU32 accent_dark = ImGui::ColorConvertFloat4ToU32(
+        ImVec4(accent_f.x * .48f, accent_f.y * .48f, accent_f.z * .48f, 1.0f));
+    draw->AddRectFilled(p, ImVec2(p.x + width, p.y + height), IM_COL32(8, 10, 20, 226), 8.0f);
+    draw->AddRectFilled(p, ImVec2(p.x + width, p.y + 4), accent);
+    draw->AddText(ImVec2(p.x + 20, p.y + 17), IM_COL32(250, 244, 248, 255),
+                  state.menu_quit ? "QUIT MELEE UNLOCKED?" : "MELEE UNLOCKED");
+    if (state.menu_quit)
+      draw->AddText(ImVec2(p.x + 20, p.y + 41), IM_COL32(183, 174, 190, 255), "The current match will end.");
+    const float gap = 10.0f;
+    const int count = state.menu_quit ? 2 : 3;
+    const float button_w = (width - 40.0f - gap * (count - 1)) / count;
+    auto action = [&](const char* id, const char* label, int index) {
+      const float x = 20.0f + index * (button_w + gap), y = 66.0f;
+      ImGui::SetCursorPos(ImVec2(x, y));
+      const bool pressed = ImGui::InvisibleButton(id, ImVec2(button_w, 58.0f), ImGuiButtonFlags_EnableNav);
+      const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+      const ImVec2 q(p.x + x, p.y + y - (hot ? 4.0f : 0.0f));
+      const ImVec2 shadow[] = {ImVec2(q.x + 9, q.y + 7), ImVec2(q.x + button_w, q.y + 7),
+                               ImVec2(q.x + button_w - 9, q.y + 62), ImVec2(q.x, q.y + 62)};
+      const ImVec2 face[] = {ImVec2(q.x + 9, q.y), ImVec2(q.x + button_w, q.y),
+                             ImVec2(q.x + button_w - 9, q.y + 54), ImVec2(q.x, q.y + 54)};
+      draw->AddConvexPolyFilled(shadow, 4, hot ? accent_dark : IM_COL32(24, 13, 34, 245));
+      draw->AddConvexPolyFilled(face, 4, hot ? accent : IM_COL32(31, 20, 42, 245));
+      const ImVec2 text_size = ImGui::CalcTextSize(label);
+      draw->AddText(ImVec2(q.x + (button_w - text_size.x) * .5f, q.y + (54.0f - text_size.y) * .5f),
+                    IM_COL32(255, 250, 253, 255), label);
+      return pressed;
+    };
     if (!state.menu_quit) {
-      ImGui::TextUnformatted("Melee Unlocked");
-      ImGui::Separator();
-      if (ImGui::Button("Back to game", wide)) state.menu_open = false;
-      if (ImGui::Button("Settings", wide)) { state.menu_open = false; state.open = true; }
-      if (ImGui::Button("Quit game", wide)) state.menu_quit = true;
-      ImGui::TextDisabled("Esc: back to game    F1: settings");
+      if (action("##resume", "BACK TO GAME", 0)) state.menu_open = false;
+      if (action("##settings", "SETTINGS", 1)) {
+        state.menu_open = false;
+        state.open = true;
+        reset_settings_home("Esc menu SETTINGS");
+      }
+      if (action("##quit", "QUIT GAME", 2)) state.menu_quit = true;
+      draw->AddText(ImVec2(p.x + 20, p.y + 144), IM_COL32(167, 162, 178, 255),
+                    "ESC  BACK TO GAME     F1  SETTINGS");
     } else {
-      ImGui::TextUnformatted("Quit Melee Unlocked?");
-      ImGui::TextDisabled("The current match will end.");
-      ImGui::Separator();
-      if (ImGui::Button("Quit", half_w)) { state.menu_open = false; host::request_exit(0); }
-      ImGui::SameLine();
-      if (ImGui::Button("Cancel", half_w)) state.menu_quit = false;
+      if (action("##confirm_quit", "QUIT", 0)) { state.menu_open = false; host::request_exit(0); }
+      if (action("##cancel_quit", "CANCEL", 1)) state.menu_quit = false;
     }
     ImGui::End();
   }
-  if (!state.open) {
-    // Keep the closed state passive: opening is intentionally F1-only so controller
-    // navigation cannot activate a settings button by accident.
+  const bool practice_was_open = state.practice_open;
+  if (!state.fill_window && !state.open && !state.menu_open)
+    draw_native_practice(state, options, practice, pad, have_pad);
+  if (practice_was_open && !state.practice_open) state.practice_release_capture = true;
+  if (!panel_visible) {
+    if (!state.fill_window && !state.menu_open &&
+        g_guest_options_selection.load(std::memory_order_relaxed)) {
+      const OverlayBounds bounds = overlay_bounds();
+      ImGui::SetNextWindowPos(ImVec2(bounds.right - 24.0f, bounds.bottom - 24.0f),
+                              ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+      ImGui::SetNextWindowBgAlpha(0.88f);
+      ImGui::Begin("GameOptionsPCSettings", nullptr,
+                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                   ImGuiWindowFlags_NoSavedSettings);
+      ImGui::TextUnformatted("OPTIONS");
+      if (ImGui::Button("PC Settings", ImVec2(190.0f, 36.0f))) {
+        state.open = true;
+        reset_settings_home("Options overlay PC Settings button");
+      }
+      ImGui::TextDisabled("Select the fourth option with A");
+      ImGui::End();
+    }
+    // The closed state is passive except for F1 and the explicit GameCube Start + Down + Z chord.
     // Hidden on request; F1 still opens the panel. This must not return early: ImGui::Render() is
     // at the end of this function, and skipping it left draw() handing the renderer draw data that
     // was never built for this frame, which crashed on the next F1.
@@ -3212,8 +5724,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
       ImGui::Begin("SettingsButton", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings);
       clamp_overlay_window();
-      ImGui::TextUnformatted("Settings: F1");
-      ImGui::End();
+      ImGui::TextUnformatted("Settings: F1  /  START + DOWN + Z");
+    ImGui::End();
     }
   }
   // Test hook for screenshots: MELEE_TEST_OVERLAY=1 shows the controller overlay with its values.
@@ -3223,8 +5735,15 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     const int mask = options.input_overlay_ports ? options.input_overlay_ports : 1;
     const bool lone = (mask & (mask - 1)) == 0;   // exactly one port selected
     int row = 0;
+    // Draw with the 0.6.61 style and font; restore the menu style afterwards.
+    ImGuiStyle& live_style = ImGui::GetStyle();
+    const ImGuiStyle menu_style = live_style;
+    live_style = g_input_overlay_style;
+    if (g_settings_old_font) ImGui::PushFont(g_settings_old_font);
     for (int i = 0; i < 4; ++i)
       if (mask & (1 << i)) draw_input_overlay(i, row++, lone, state.open, options.input_overlay_hide_border, options.input_overlay_values, options.input_overlay_stick);
+    if (g_settings_old_font) ImGui::PopFont();
+    live_style = menu_style;
   }
   // Below here are the two overlays that only make sense with a match behind them: the L-cancel
   // notice, which is about a mode the player is queuing for, and the frame time graph, which in the
@@ -3320,10 +5839,85 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       perf_min = perf_max = ImVec2(0, 0);
     }
   }
+  // When the panel closes, keep the game's controller input neutral until every button is up.
+  // Otherwise the A (or B/Start) that closed it is still held and Melee reads it as a new press.
+  {
+    static bool capture_prev_open = false;
+    if (capture_prev_open && !state.open && !state.fill_window) state.practice_release_capture = true;
+    capture_prev_open = state.open;
+  }
   // Same rule as at the top of the frame. With only the in-game (Esc) menu open, this used to say
   // "not captured" while the top said "captured", so the pointer was shown and hidden every frame.
-  host::window_input_capture(state.open || state.menu_open);
+  host::window_input_capture(state.open || state.menu_open || practice_capture ||
+                             state.practice_release_capture);
+  if (!state.fill_window && !state.open && !state.menu_open && options.show_player_nicknames)
+    draw_player_nicknames();
+  {
+    // Menu sounds: a tick when the highlighted category or control changes, a brighter one when
+    // a page opens or the panel opens, a lower one when a page or the panel closes.
+    static bool snd_init = false, snd_open = false;
+    static int snd_tab = 0, snd_detail = 0;
+    static ImGuiID snd_focus = 0;
+    const int detail_now = (state.clean_detail_open ? 1 : 0) | (state.dashboard_detail_open ? 2 : 0) |
+                           (state.gd_detail_open ? 4 : 0) | (state.radial_detail_open ? 8 : 0) |
+                           (state.wide_detail_open ? 16 : 0);
+    const ImGuiID focus_now = state.open ? ImGui::GetFocusID() : 0;
+    int sound = 0;
+    if (snd_init && options.settings_menu_sounds && !state.fill_window) {
+      if (state.open != snd_open) sound = state.open ? 2 : 3;
+      else if (state.open && detail_now != snd_detail) sound = detail_now ? 2 : 3;
+      else if (state.open && (state.active_tab != snd_tab || (focus_now && focus_now != snd_focus))) sound = 1;
+    }
+    if (sound) host::audio_ui_sound(sound);
+    snd_init = true; snd_open = state.open; snd_tab = state.active_tab;
+    snd_detail = detail_now; snd_focus = focus_now;
+  }
+  if (g_ui_diag) {
+    // One line per change, so a report of "the menu jumped" can be read back from the log.
+    static int last_open = -1, last_tab = -1, last_detail = -1, last_style = -1, last_legacy = -1;
+    const int detail = (state.clean_detail_open ? 1 : 0) | (state.dashboard_detail_open ? 2 : 0) |
+                       (state.gd_detail_open ? 4 : 0) | (state.radial_detail_open ? 8 : 0) |
+                       (state.wide_detail_open ? 16 : 0);
+    if (last_open != (int)state.open || last_tab != state.active_tab || last_detail != detail ||
+        last_style != options.overlay_style || last_legacy != (int)state.legacy_presentation) {
+      host::log("ui diag: open %d tab %d detail %d style %d legacy %d", (int)state.open, state.active_tab,
+                detail, options.overlay_style, (int)state.legacy_presentation);
+      last_open = state.open; last_tab = state.active_tab; last_detail = detail;
+      last_style = options.overlay_style; last_legacy = state.legacy_presentation;
+    }
+    const ImGuiIO& diag_io = ImGui::GetIO();
+    if (diag_io.MouseClicked[0] || diag_io.MouseReleased[0])
+      host::log("ui diag: mouse %s at %.0f,%.0f hovered id %08X active id %08X nav id %08X",
+                diag_io.MouseClicked[0] ? "down" : "up", diag_io.MousePos.x, diag_io.MousePos.y,
+                ImGui::GetHoveredID(), ImGui::GetActiveID(), ImGui::GetFocusID());
+  }
   ImGui::Render();
+  // Apply opacity after ImGui has built the overlay: this includes the game-facing custom
+  // geometry and images as well as standard widgets, leaving the emulated frame visible beneath.
+  if (options.settings_transparency > 0) {
+    const float alpha_scale = 1.0f - options.settings_transparency / 100.0f;
+    ImDrawData* data = ImGui::GetDrawData();
+    for (int list_index = 0; list_index < data->CmdListsCount; ++list_index) {
+      ImDrawList* list = data->CmdLists[list_index];
+      for (ImDrawVert& vertex : list->VtxBuffer) {
+        const uint32_t alpha = (vertex.col >> IM_COL32_A_SHIFT) & 0xff;
+        const uint32_t scaled = (uint32_t)std::lround(alpha * alpha_scale);
+        vertex.col = (vertex.col & ~IM_COL32_A_MASK) | (scaled << IM_COL32_A_SHIFT);
+      }
+    }
+  }
+  if (state.legacy_presentation) {
+    options.overlay_style = state.legacy_saved_appearance;
+    if (!state.open) {
+      state.legacy_presentation = false;
+      // The legacy view has no slide-out. Finish the close now, or the restored modern
+      // appearance (pink Clean side) is drawn sliding out for a few frames behind it.
+      state.panel_anim_target_open = false;
+      state.panel_anim_frame = 12.0f;
+      state.panel_slide_x = -720.0f;
+      state.panel_slide_start_x = -720.0f;
+    }
+  }
   return changed;
 }
 

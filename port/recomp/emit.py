@@ -468,9 +468,11 @@ class Emitter:
         # return leaves the address of the next instruction, so the test costs one compare.
         callee = self.infos.get(target)
         if callee is not None and info is not None:
-            for k in sorted(getattr(callee, "computed_returns", ())):
-                if ret + k in info.labels:
-                    out += " if (c.lr == %s) { ++ppc::g_resumed_returns; goto L_%08X; }" % (hexs(ret + k), ret + k)
+            eligible = [k for k in sorted(getattr(callee, "computed_returns", ())) if ret + k in info.labels]
+            if eligible:
+                out = "++ppc::g_computed_return_checks; " + out
+            for k in eligible:
+                out += " if (c.lr == %s) { ++ppc::g_resumed_returns; goto L_%08X; }" % (hexs(ret + k), ret + k)
         return out
 
     def _tail(self, target):

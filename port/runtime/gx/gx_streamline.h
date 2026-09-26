@@ -24,7 +24,13 @@ namespace streamline {
 // DXGI/D3D12 call. Returns false (with a logged reason) when Streamline cannot be used.
 bool init(const std::wstring& exe_dir);
 void shutdown();
+// The final process-exit path. Streamline's NGX unload can deadlock on this driver even
+// after GPU idle; the OS reclaims the interposer at process termination.
+void shutdown_for_process_exit();
 bool available();
+// True only when the signed RR plugin loaded and Streamline reports it supported on the active GPU.
+// This does not mean RR is running; the renderer must supply its traced input and guide buffers.
+bool ray_reconstruction_available();
 
 // D3D/DXGI creation proxies (fall back to the system functions when Streamline is off).
 long create_dxgi_factory2(uint32_t flags, const void* riid, void** out);
@@ -39,7 +45,7 @@ bool dlss_supported(IDXGIAdapter* adapter);
 // Per-mode optimal render size for an output size. Returns false when DLSS is unavailable.
 bool dlss_optimal_size(DlssMode mode, uint32_t out_w, uint32_t out_h, uint32_t* render_w, uint32_t* render_h,
                        uint32_t* min_w, uint32_t* min_h, uint32_t* max_w, uint32_t* max_h);
-bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h);
+bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h, bool color_is_hdr = false);
 
 // Frame flow on the render thread: new_frame() -> set_constants() -> ... draws ... -> evaluate().
 struct FrameConstants {
@@ -61,16 +67,32 @@ struct EvaluateInputs {
   uint32_t out_w, out_h;
 };
 bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in);
+struct RayReconstructionInputs {
+  ID3D12Resource* color_in = nullptr; uint32_t color_state = 0;
+  ID3D12Resource* depth = nullptr; uint32_t depth_state = 0;
+  ID3D12Resource* mvec = nullptr; uint32_t mvec_state = 0;
+  ID3D12Resource* albedo = nullptr; uint32_t albedo_state = 0;
+  ID3D12Resource* specular_albedo = nullptr; uint32_t specular_albedo_state = 0;
+  ID3D12Resource* normal_roughness = nullptr; uint32_t normal_roughness_state = 0;
+  ID3D12Resource* color_out = nullptr; uint32_t out_state = 0;
+  uint32_t in_left = 0, in_top = 0, in_w = 0, in_h = 0;
+  uint32_t out_w = 0, out_h = 0;
+};
+bool evaluate_ray_reconstruction(ID3D12GraphicsCommandList* list, const RayReconstructionInputs& in);
 // DLSS Frame Generation and Reflex (NVIDIA, RTX 40+ for frame generation). Call on the presenting
 // thread. Frame generation needs the upscaler running (it reuses DLSS's depth and motion vectors)
 // and always runs with Reflex on, as NVIDIA requires.
 bool frame_generation_available();
 bool reflex_available();
-// What the hardware allows: 1 (2x only, RTX 40) up to 3 (4x, Multi Frame Generation, RTX 50).
-// Answered once queried; 1 until then.
+void frame_generation_after_present(); // query asynchronous DLSS-G state on the presenting thread
+// Maximum inserted-frame count reported by the driver (1 means 2x, 5 means 6x). It is 1 until
+// Streamline's first present-thread capability query has completed.
 uint32_t frame_generation_max_multiplier();
+bool frame_generation_capabilities_queried();
 bool frame_generation_dynamic_supported();   // whether DLSSGMode::eDynamic (an auto-picked multiplier) is offered
-void set_frame_generation(int mode);   // 0 off, 1 2x, 2 3x, 3 4x, 4 Dynamic
+// mode: 0 off, 1–3 fixed 2x–4x, 4 Dynamic, 5 fixed 5x, 6 fixed 6x.
+void set_frame_generation(int mode, uint32_t render_w, uint32_t render_h, uint32_t output_w, uint32_t output_h,
+                          uint32_t backbuffer_count, uint32_t backbuffer_format, uint32_t motion_format, uint32_t depth_format);
 void set_reflex(int mode);   // 0 off, 1 low latency, 2 low latency + boost
 // Reflex's measured render latency (simulation start to GPU finished), averaged over the recent frame
 // reports, in milliseconds; 0 when Reflex has no report yet. Refreshed by update_reflex_stats().

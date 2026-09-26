@@ -11,6 +11,7 @@
 #include "window.h"
 #include "discord_presence.h"
 #include "gx_core.h"
+#include "cosmetic_mods.h"
 #include <algorithm>
 #include <array>
 #include <cstdio>
@@ -60,8 +61,8 @@ class Savestate {
       keep.resize(b.length);
       std::memcpy(keep.data(), host::ptr(b.address, b.length), b.length);
     }
-    for (auto& l : locs_) std::memcpy(host::ptr(l.start, l.end - l.start), l.data.data(), l.end - l.start);
-    for (auto& b : blocks) std::memcpy(host::ptr(b.address, b.length), preservation_[b].data(), b.length);
+    for (auto& l : locs_) { std::memcpy(host::ptr(l.start, l.end - l.start), l.data.data(), l.end - l.start); host::mark_ram_write(l.start, l.end - l.start); }
+    for (auto& b : blocks) { std::memcpy(host::ptr(b.address, b.length), preservation_[b].data(), b.length); host::mark_ram_write(b.address, b.length); }
   }
  private:
   static std::vector<Loc> processed_;
@@ -122,6 +123,8 @@ std::unique_ptr<User> g_user;
 std::unique_ptr<Matchmaking> g_matchmaking;
 std::unique_ptr<NetplayClient> g_netplay;
 std::unique_ptr<DirectCodes> g_direct_codes, g_teams_codes;
+std::string g_discord_join_code;
+uint64_t g_discord_join_expires_ms = 0;
 std::map<int32_t, std::unique_ptr<Savestate>> g_active_savestates;
 std::deque<std::unique_ptr<Savestate>> g_available_savestates;
 PlayerSelections g_local_selections;
@@ -259,15 +262,24 @@ void consume_discord_join() {
   if (!host::discord::enabled()) return;
   const std::string code = host::discord::take_join_code();
   if (code.empty() || !g_direct_codes) return;
-  // The in-game Online > Direct name entry autocompletes out of this list (handle_name_entry_load
-  // serves CMD_FETCH_CODE_SUGGESTION from it), so putting the host's code at the front is all it
-  // takes for the friend to find it already waiting on screen.
+  // Queue it for the Direct screen and remember it for the next Direct matchmaking command. The
+  // latter makes the invite usable even if the player accepts the suggestion without typing it.
   g_direct_codes->AddOrUpdateCode(code);
+  g_discord_join_code = code;
+  g_discord_join_expires_ms = time_ms() + 5 * 60 * 1000;
   host::log("slippi: Discord invite from %s; it is now the first suggestion under Online > Direct", code.c_str());
+}
+
+bool discord_join_pending() {
+  if (!g_discord_join_code.empty() && time_ms() >= g_discord_join_expires_ms) {
+    g_discord_join_code.clear();
+  }
+  return !g_discord_join_code.empty();
 }
 
 void cleanup_connection() {
   host::log("slippi: connection cleanup");
+  host::cosmetics::thaw_after_online_session();
   if (g_matchmaking || g_netplay) {
     std::thread([mm = std::move(g_matchmaking), nc = std::move(g_netplay)]() mutable { mm.reset(); nc.reset(); }).detach();
   }
@@ -513,6 +525,13 @@ void start_find_match(const uint8_t* payload) {
   search.mode = (Matchmaking::OnlinePlayMode)payload[0];
   std::string sj((const char*)payload + 1, 18);
   sj.erase(std::find(sj.begin(), sj.end(), '\0'), sj.end());
+  if (search.mode == Matchmaking::DIRECT && discord_join_pending()) {
+    // Choosing Direct after accepting a Discord Join means join that sender. Use the queued code
+    // even if the game's text field still contains its old value; the user need not retype/paste it.
+    const std::string invite_sj = utf8_to_shiftjis(g_discord_join_code);
+    sj.assign(invite_sj.begin(), invite_sj.begin() + std::min<size_t>(invite_sj.size(), 18));
+    g_discord_join_code.clear();
+  }
   if (search.mode == Matchmaking::DIRECT) g_direct_codes->AddOrUpdateCode(shiftjis_to_utf8(sj));
   else if (search.mode == Matchmaking::TEAMS) g_teams_codes->AddOrUpdateCode(shiftjis_to_utf8(sj));
   search.connect_code = sj;
@@ -526,6 +545,7 @@ void start_find_match(const uint8_t* payload) {
     g_forced_error = "The character you selected is not allowed in this mode"; return;
   }
   if (!enet_ready()) { g_forced_error = "Networking unavailable"; return; }
+  host::cosmetics::freeze_for_online_session();
   g_matchmaking->FindMatch(search);
   update_discord_presence(true);
 }
@@ -549,12 +569,20 @@ void handle_name_entry_load(const uint8_t* payload, std::vector<uint8_t>& q) {
   else if (scroll == 2) cur = cur > 0 ? cur - 1 : cur;
   else if (scroll == 3) cur = 0;
   std::string tag = "1";
-  while (cur < (uint32_t)history->length()) {
+  if (mode == Matchmaking::DIRECT && discord_join_pending()) {
+    // Return the invite as the active completion even with an empty field, so the code appears
+    // immediately when Online > Direct opens. start_find_match also consumes it if the field was
+    // not explicitly accepted by the user.
+    tag = history->get(0);
+    cur = 0;
+  } else {
+    while (cur < (uint32_t)history->length()) {
+      tag = history->get((int)cur);
+      if (tag_matches_input(payload, len, tag)) break;
+      cur = scroll == 2 ? cur - 1 : cur + 1;
+    }
     tag = history->get((int)cur);
-    if (tag_matches_input(payload, len, tag)) break;
-    cur = scroll == 2 ? cur - 1 : cur + 1;
   }
-  tag = history->get((int)cur);
   if (tag == "1") {
     std::string init_tag = history->get((int)initial);
     if (tag_matches_input(payload, len, init_tag)) { tag = init_tag; cur = initial; }
@@ -590,6 +618,12 @@ void set_match_selections(const uint8_t* payload) {
   s.is_stage_selected = stage_option == 1 || stage_option == 3;
   if (stage_option == 3) s.stage_id = random_stage();
   s.rng_offset = g_rng() % 0xFFFF;
+  const auto& local_peer = Matchmaking::local_peer;
+  if (local_peer.enabled && local_peer.test_stage >= 0) {
+    s.stage_id = static_cast<uint16_t>(local_peer.test_stage);
+    s.is_stage_selected = true;
+    host::log("slippi: local regression stage forced to %u", s.stage_id);
+  }
   g_local_selections.Merge(s);
   if (g_netplay) g_netplay->SetMatchSelections(g_local_selections);
 }
@@ -711,6 +745,13 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     }
     uint16_t stage_id = 0x1F;
     for (auto* s : ordered) { if (!s->is_stage_selected) continue; stage_id = s->stage_id; alt_stage_mode = s->alt_stage_mode; break; }
+    if (Matchmaking::local_peer.enabled && Matchmaking::local_peer.test_stage >= 0) {
+      // Force the final host-built setup packet too: each test peer may have sent its menu choice
+      // before the other peer finished connecting, so the earlier local selection override alone
+      // is not sufficient to make a deterministic local regression match.
+      stage_id = static_cast<uint16_t>(Matchmaking::local_peer.test_stage);
+      host::log("slippi: local regression match stage %u", stage_id);
+    }
     if (Matchmaking::IsFixedRulesMode(g_last_search.mode)) {
       if (!local_char_ok) { cleanup_connection(); g_forced_error = "The character you selected is not allowed in this mode"; prepare_online_match_state(q); return; }
       if (!remote_char_ok) { cleanup_connection(); prepare_online_match_state(q); return; }
@@ -889,6 +930,14 @@ Config& config() { return g_config; }
 uint64_t rollback_count() { return g_rollbacks; }
 bool is_online_match() { return g_in_online_match; }
 int local_player_slot() { return g_local_player_index; }
+std::array<std::string, 4> player_names_for_overlay() {
+  std::array<std::string, 4> names{};
+  if (!g_in_online_match || !g_matchmaking) return names;
+  for (int i = 0; i < 4; ++i) names[i] = g_matchmaking->GetPlayerName((uint8_t)i);
+  if (g_user && g_local_player_index < 4 && names[g_local_player_index].empty())
+    names[g_local_player_index] = g_user->GetUserInfo().display_name;
+  return names;
+}
 int ping_ms() { return g_netplay ? g_netplay->LastPingMs() : 0; }
 
 // g_last_search keeps the mode of the last search for the whole session, so it only means anything
@@ -902,6 +951,61 @@ int local_player_index() { return (int)g_local_player_index; }
 bool in_online_menus() {
   const uint32_t now = host::retrace_count();
   return g_last_match_state_retrace && now - g_last_match_state_retrace < 10;
+}
+
+bool native_start_match(int mode, const std::string& connect_code, uint8_t character,
+                        uint8_t color, std::string* error) {
+  if (!g_user) init();
+  if (session_mode() >= 0) {
+    if (error) *error = "An online session is already active";
+    return false;
+  }
+  if (mode < (int)Matchmaking::RANKED || mode > (int)Matchmaking::PARTY) {
+    if (error) *error = "Unsupported matchmaking mode";
+    return false;
+  }
+
+  // Same payloads the guest sends from the stock Slippi online menus. Native practice chooses a
+  // random legal stage and carries the practice character/costume into the normal online flow.
+  uint8_t selections[9] = {0, character, color, 1, 0, 0, 3, (uint8_t)mode, 0};
+  set_match_selections(selections);
+  uint8_t find[19] = {};
+  find[0] = (uint8_t)mode;
+  const std::string sjis = utf8_to_shiftjis(connect_code);
+  std::memcpy(find + 1, sjis.data(), std::min<size_t>(18, sjis.size()));
+  start_find_match(find);
+  if (!g_forced_error.empty()) {
+    if (error) *error = g_forced_error;
+    return false;
+  }
+  if (error) error->clear();
+  return g_matchmaking && g_matchmaking->IsSearching();
+}
+
+NativeMatchPoll native_poll_match() {
+  NativeMatchPoll out;
+  if (!g_user) init();
+  std::vector<uint8_t> response;
+  prepare_online_match_state(response);  // owns lifecycle work; exactly one coordinator call/tick
+  if (!response.empty()) out.process_state = response[0];
+  out.connection_success = out.process_state == (int)Matchmaking::CONNECTION_SUCCESS;
+  if (response.size() >= 3) {
+    out.local_ready = response[1] != 0;
+    out.remote_ready = response[2] != 0;
+  }
+  if (!g_forced_error.empty()) out.error = g_forced_error;
+  else if (out.process_state == (int)Matchmaking::ERROR_ENCOUNTERED && g_matchmaking)
+    out.error = g_matchmaking->GetErrorMessage();
+  if (g_matchmaking) {
+    for (int i = 0; i < 4 && out.opponent.empty(); ++i)
+      if (i != (int)g_local_player_index) out.opponent = g_matchmaking->GetPlayerName((uint8_t)i);
+  }
+  return out;
+}
+
+void native_cleanup_match() {
+  if (!g_user) return;
+  cleanup_connection();
 }
 
 static bool file_exists(const std::string& p) { FILE* f = std::fopen(p.c_str(), "rb"); if (!f) return false; std::fclose(f); return true; }
@@ -944,6 +1048,7 @@ void init() {
 }
 
 void shutdown() {
+  host::cosmetics::thaw_after_online_session();
   // Leaving during a ranked game counts as abandoning it (same as Dolphin).
   if (g_in_online_match && g_recent_mm_result.id.find("mode.ranked") != std::string::npos && g_user) {
     UserInfo me = g_user->GetUserInfo(); report::match_status(me.uid, me.play_key, g_recent_mm_result.id, "abandoned", false);

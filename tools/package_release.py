@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import zipfile
 from pathlib import Path
+from verify_generated_gct import verify_generated_gct
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -83,19 +84,14 @@ not been tested in a live ranked set.
 
 BAT = """@echo off
 cd /d "%~dp0"
-set ISO=%~dp0melee.iso
-if not "%~1"=="" if exist "%~1" set ISO=%~1
+set "ISO=%~dp0melee.iso"
+if not "%~1"=="" if exist "%~1" set "ISO=%~1"
 if not exist "%ISO%" (
   echo Drop your Melee NTSC 1.02 ISO onto this file, or put it next to it named melee.iso
   pause
   exit /b 1
 )
-rem Frame rate, frame mode, internal resolution and volume are saved in port-settings.ini, and the
-rem command line is applied after that file is read, so passing them every time would undo whatever
-rem was set in the F1 panel. They only seed a first run, before a settings file exists.
-set FIRSTRUN=
-if not exist "%~dp0port-settings.ini" set FIRSTRUN=--fps unlocked --frame-mode authored --scale auto --volume 70
-melee_port.exe --iso "%ISO%" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\Slippi" --replay-dir "%~dp0Replays" --card-dir "%~dp0User\GC\CardA" --threaded-renderer %FIRSTRUN%
+melee_port.exe --iso "%ISO%" --settings-path "%~dp0port-settings.ini" --sys-dir "%~dp0Sys" --user-dir "%~dp0User\Slippi" --replay-dir "%~dp0Replays" --card-dir "%~dp0User\GC\CardA" --threaded-renderer
 if errorlevel 1 pause
 """
 
@@ -128,7 +124,7 @@ if errorlevel 1 pause
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--version", default=(ROOT / "VERSION").read_text().strip())
-    ap.add_argument("--exe", type=Path, default=ROOT / "build-review/port/Release/melee_port.exe")
+    ap.add_argument("--exe", type=Path, default=ROOT / "build-integration/port/Release/melee_port.exe")
     # The same game built for processors without AVX2, shipped alongside so the ordinary build
     # keeps its instruction set. The launcher picks between them by asking the processor.
     # Required, not just optional: a release silently missing this file leaves every pre-Haswell/
@@ -139,10 +135,6 @@ def main():
                     help="melee_port.exe built with -DMELEE_CPU_BASELINE=SSE2 (required unless --skip-compat-exe)")
     ap.add_argument("--skip-compat-exe", action="store_true",
                     help="explicitly ship without the SSE2 compatibility build (not recommended for a real release)")
-    ap.add_argument("--experimental-exe", type=Path, required=True,
-                    help="experimental game executable, built with MELEE_ENABLE_DLSS5=ON")
-    ap.add_argument("--experimental-compat-exe", type=Path, default=None,
-                    help="optional: experimental game executable built with SSE2 (RTX 50 machines have AVX2)")
     # Replay playback: a second translation of the game against the Slippi Playback code set, so
     # the release can play a .slp back. It carries its own Sys folder because its code list differs
     # from the online one (see PORT_COMPLETION.md, "Replay playback build").
@@ -155,26 +147,17 @@ def main():
                           "Pass --skip-compat-exe if this omission is deliberate.")
     if not args.exe.is_file():
         raise SystemExit(f"missing executable: {args.exe}")
-    # A standard build passed as --experimental-exe was never built with MELEE_ENABLE_DLSS5=ON, so
-    # it would ship as the "DLSS5-Experimental" download while behaving like the standard build and
-    # missing nvngx.dll_meleedlss5.dll (caught below), or worse, silently sharing the same file with
-    # no forwarder check if that ever changes. Reject the mistake outright rather than rely on the
-    # forwarder check alone to catch it.
-    if args.experimental_exe.resolve() == args.exe.resolve():
-        raise SystemExit("--experimental-exe is the same file as --exe. Build it separately with "
-                          "-DMELEE_ENABLE_DLSS5=ON; do not reuse the standard executable.")
-    for experimental in [e for e in (args.experimental_exe, args.experimental_compat_exe) if e]:
-        if not experimental.is_file():
-            raise SystemExit(f"missing experimental executable: {experimental}")
-        built_experimental = subprocess.run([str(experimental), "--version"], capture_output=True,
-                                            text=True, timeout=60).stdout.strip()
-        if built_experimental != args.version:
-            raise SystemExit(f"{experimental} reports {built_experimental!r}, not {args.version!r}")
     # The version is compiled into the executable, so a build made before VERSION changed would
     # ship reporting the old number and offer itself the update forever. Catch that here.
     built = subprocess.run([str(args.exe), "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
     if built != args.version:
         raise SystemExit(f"{args.exe.name} reports version {built!r} but the release is {args.version!r}; rebuild it first")
+    for executable in (args.exe, args.compat_exe):
+        if executable is not None:
+            try:
+                verify_generated_gct(executable)
+            except ValueError as error:
+                raise SystemExit(str(error)) from error
     name = f"MeleeUnlocked-{args.version}"
     folder = args.out / name
     if folder.exists():
@@ -217,10 +200,15 @@ def main():
         raise SystemExit(f"{launcher.name} does not contain the string {args.version!r}, so it was built "
                          f"before VERSION changed; build the melee_unlocked target and try again")
     shutil.copy2(launcher, folder / "MeleeUnlockedLauncher.exe")
-    for dll in ("sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll", "sl.dlss_g.dll", "nvngx_dlssg.dll", "sl.reflex.dll", "sl.pcl.dll", "libxess.dll"):
+    runtime_dlls = ("sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll",
+                    "sl.dlss_d.dll", "nvngx_dlssd.dll", "sl.dlss_g.dll", "nvngx_dlssg.dll",
+                    "sl.reflex.dll", "sl.pcl.dll", "libxess.dll", "nvngx.dll_meleedlss5.dll")
+    missing_dlls = [name for name in runtime_dlls if not (args.exe.parent / name).is_file()]
+    if missing_dlls:
+        raise SystemExit(f"missing runtime DLLs: {', '.join(missing_dlls)}")
+    for dll in runtime_dlls:
         src = args.exe.parent / dll
-        if src.is_file():
-            shutil.copy2(src, folder / dll)
+        shutil.copy2(src, folder / dll)
     # App-local Visual C++ runtime (Microsoft permits redistributing these next to the exe): without it
     # a PC that never installed the VC++ 2015-2022 redistributable closes the game before it can log.
     redist = sorted(Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC").glob("*/x64/Microsoft.VC143.CRT"))
@@ -258,6 +246,16 @@ def main():
                      (ROOT / "port/third_party/xess/LICENSE.txt", "intel-xess.txt")):
         if src.is_file():
             shutil.copy2(src, licenses / dst)
+    # The settings appearance picker loads these at runtime from beside the executable.
+    # Keep the GD import separate so it can be removed without touching the other themes.
+    ui_src = ROOT / "port/runtime/gx/ui_sources"
+    for source in ("gd_melee", "mockups", "menu_previews"):
+        assets = ui_src / source / "assets"
+        if not assets.is_dir():
+            raise SystemExit(f"missing settings appearance assets: {assets}")
+        shutil.copytree(assets, folder / "ui_sources" / source)
+    shutil.copy2(ROOT / "docs/third-party-ui-attribution.md", licenses / "ui-attribution.md")
+    shutil.copy2(ui_src / "gd_melee/ORIGIN.md", licenses / "gd-melee-origin.md")
     def zip_folder(zip_path):
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
             for path in folder.rglob("*"):
@@ -265,20 +263,16 @@ def main():
         total = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
         print(f"{zip_path} ({zip_path.stat().st_size / 1e6:.1f} MB zipped, {total / 1e6:.1f} MB unpacked)")
 
-    zip_folder(args.out / f"{name}-win64.zip")
-    shutil.copy2(args.experimental_exe, folder / "melee_port_dlss5.exe")
-    if args.experimental_compat_exe:
-        shutil.copy2(args.experimental_compat_exe, folder / "melee_port_dlss5_compat.exe")
-    forwarder = args.experimental_exe.parent / "nvngx.dll_meleedlss5.dll"
-    if not forwarder.is_file():
-        raise SystemExit(f"missing experimental forwarder: {forwarder}")
-    shutil.copy2(forwarder, folder / forwarder.name)
+    path_shader = args.exe.parent / "dxr_pathtrace.dxil"
+    if not path_shader.is_file():
+        raise SystemExit(f"missing DXR shader: {path_shader}")
+    shutil.copy2(path_shader, folder / path_shader.name)
     (folder / "README.txt").write_text(README.format(version=args.version) +
-        "\nEXPERIMENTAL DLSS 5: Choose DLSS 5 Experimental in the launcher. Requires an RTX 50-series GPU or newer.\n"
-        "DLSS 5 will not work without NVIDIA's DLSS 5 file (nvngx_dlssnr.dll). It is not included and\n"
-        "we do not provide it. Without it the game runs normally and F1 says DLSS 5 could not start.\n",
+        "\nThe one game executable includes standard graphics and optional experimental DLSS 5.\n"
+        "DLSS 5 requires NVIDIA's separate model (nvngx_dlssnr.dll), which is not included.\n"
+        "Experimental DXR path tracing and Ray Reconstruction are off by default.\n",
         encoding="utf-8")
-    zip_folder(args.out / f"{name}-DLSS5-Experimental.zip")
+    zip_folder(args.out / f"{name}-win64.zip")
 
 
 if __name__ == "__main__":

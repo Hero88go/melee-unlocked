@@ -3,6 +3,7 @@
 #include "jukebox.h"
 #include "slippi_playback.h"
 #include "slippi_online.h"
+#include "native_practice.h"
 #include "gecko_data.h"
 #include "host.h"
 #include "vcdiff.h"
@@ -185,29 +186,61 @@ void configure_commands(const uint8_t* payload, uint8_t length) {
   host::log("slippi: recording command sizes configured (%zu commands)", g_record_sizes.size());
 }
 
-// Run-time optional codes sit at the end of the table; ending the table early hides them from
-// the in-game code handler (which re-applies the table every frame), restoring it shows them.
-void terminate_optional_codes(uint8_t* table) {
-  uint32_t off = gecko::optional_gct_offset;
-  if (off + 8 > gecko::slippi_gct_size) return;
-  table[off] = 0xFF; table[off + 1] = 0; table[off + 2] = 0; table[off + 3] = 0;
-  table[off + 4] = 0; table[off + 5] = 0; table[off + 6] = 0; table[off + 7] = 0;
+// Optional codes share the tail with the always-installed port codes. Rebuild that tail whenever
+// a setting changes so each code can be enabled independently without moving the fixed base.
+bool optional_enabled(const char* flag) {
+  if (!flag) return false;
+  if (std::strcmp(flag, "widescreen") == 0) return gecko::option_widescreen;
+  if (std::strcmp(flag, "lagless_fod") == 0) return gecko::option_lagless_fod;
+  return false;
+}
+
+void rebuild_optional_codes(uint8_t* table) {
+  const uint32_t start = gecko::optional_gct_offset;
+  if (start + 8 > gecko::slippi_gct_size || gecko::port_gct_offset + 8 > gecko::slippi_gct_size) return;
+  uint32_t dst = start;
+  for (size_t i = 0; i < gecko::optional_codes_count; ++i) {
+    const gecko::OptionalCode& code = gecko::optional_codes[i];
+    if (!optional_enabled(code.flag)) continue;
+    if (code.offset + code.size > gecko::slippi_gct_size || dst + code.size + 8 > gecko::slippi_gct_size) return;
+    std::memcpy(table + dst, gecko::slippi_gct + code.offset, code.size);
+    dst += code.size;
+  }
+  const uint32_t port_size = gecko::slippi_gct_size - gecko::port_gct_offset - 8;
+  if (dst + port_size + 8 > gecko::slippi_gct_size) return;
+  std::memcpy(table + dst, gecko::slippi_gct + gecko::port_gct_offset, port_size);
+  dst += port_size;
+  std::memset(table + dst, 0, gecko::slippi_gct_size - dst);
+  table[dst] = 0xFF;
 }
 
 std::atomic<int> g_widescreen_request{-1};
+std::atomic<int> g_fod_reflections_request{-1};
 
-void apply_widescreen(bool on) {
-  gecko::option_widescreen = on;
+void apply_optional_codes() {
   if (g_gct_address) {
     uint8_t* table = host::ptr(g_gct_address, (uint32_t)gecko::slippi_gct_size);
-    std::memcpy(table + gecko::optional_gct_offset, gecko::slippi_gct + gecko::optional_gct_offset, gecko::slippi_gct_size - gecko::optional_gct_offset);
-    if (!on) terminate_optional_codes(table);
+    std::memcpy(table, gecko::slippi_gct, gecko::optional_gct_offset);
+    rebuild_optional_codes(table);
+    host::mark_ram_write(g_gct_address, (uint32_t)gecko::slippi_gct_size);
   }
   for (size_t i = 0; i < gecko::optional_writes_count; ++i) {
     const gecko::OptionalWrite& w = gecko::optional_writes[i];
-    std::memcpy(host::ptr(w.addr, w.size), on ? w.patched : w.original, w.size);
+    std::memcpy(host::ptr(w.addr, w.size), optional_enabled(w.flag) ? w.patched : w.original, w.size);
+    host::mark_ram_write(w.addr, w.size);
   }
+}
+
+void apply_widescreen(bool on) {
+  gecko::option_widescreen = on;
+  apply_optional_codes();
   host::log("slippi: widescreen 16:9 %s", on ? "on" : "off");
+}
+
+void apply_fod_reflections(bool on) {
+  gecko::option_lagless_fod = !on;
+  apply_optional_codes();
+  host::log("slippi: Fountain of Dreams reflections %s", on ? "on" : "off");
 }
 
 void prepare_gct_length() {
@@ -221,7 +254,7 @@ void prepare_gct_load(const uint8_t* payload) {
   host::log("slippi: game loads the GCT (%zu bytes) at %08X%s", gecko::slippi_gct_size, g_gct_address,
             gecko::gct_base_used == g_gct_address ? "" : " (recompile with --gct-base to translate C0 caves at this address)");
   g_read_queue.insert(g_read_queue.end(), gecko::slippi_gct, gecko::slippi_gct + gecko::slippi_gct_size);
-  if (!gecko::option_widescreen) terminate_optional_codes(g_read_queue.data());
+  rebuild_optional_codes(g_read_queue.data());
 }
 
 void log_message(const uint8_t* payload, uint32_t max) {
@@ -318,9 +351,12 @@ static void preload_game_files() {
 void init() { g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; preload_game_files(); online::init(); }
 void request_widescreen(bool on) { g_widescreen_request.store(on ? 1 : 0); }
 bool widescreen() { return gecko::option_widescreen; }
+void request_fod_reflections(bool on) { g_fod_reflections_request.store(on ? 1 : 0); }
 void poll_options() {
   int r = g_widescreen_request.exchange(-1);
   if (r >= 0 && (r != 0) != gecko::option_widescreen) apply_widescreen(r != 0);
+  int fod = g_fod_reflections_request.exchange(-1);
+  if (fod >= 0 && (fod != 0) == gecko::option_lagless_fod) apply_fod_reflections(fod != 0);
   // One line per game mode change. Melee routes every mode through the state machine at 0x80479D30
   // (gm_1A3F.c) whose first byte is routingInfo::curr_mode. Logging it costs one read per retrace
   // and answers "what were you doing when that happened" on a report without having to ask.
@@ -329,8 +365,9 @@ void poll_options() {
     last_mode = now;
     host::log("game mode: 0x%02X", now);
   }
+  native_practice::tick();
 }
-void shutdown() { if (g_file) { uint8_t empty[1]; write_to_file(empty, 0, "close"); } online::shutdown(); }
+void shutdown() { if (g_file) { uint8_t empty[1]; write_to_file(empty, 0, "close"); } native_practice::shutdown(); online::shutdown(); }
 uint64_t replays_written() { return g_replays_written; }
 uint32_t gct_load_address() { return g_gct_address; }
 uint64_t commands_seen() { return g_commands; }
@@ -404,6 +441,7 @@ void dma_read(uint32_t addr, uint32_t size) {
   if (g_read_queue.empty()) { host::log("slippi: DMA read of %u bytes with an empty response queue", size); return; }
   g_read_queue.resize(size, 0);
   std::memcpy(host::ptr(addr, size), g_read_queue.data(), size);
+  host::mark_ram_write(addr, size);
 }
 
 }  // namespace slippi

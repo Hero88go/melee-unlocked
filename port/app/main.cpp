@@ -20,6 +20,7 @@
 #include "gx_d3d12.h"
 #include "pc_settings.h"
 #include "texture_pack.h"
+#include "cosmetic_mods.h"
 #include "threaded_backend.h"
 #include "window.h"
 #include "lcancel.h"
@@ -46,9 +47,11 @@ extern const size_t name_table_count;
 
 static void usage() {
   std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
+              "           [--dlss-mode 0..5 --frame-generation[=2x|3x|4x|5x|6x|dynamic]] [--ssao 0..1]\n"
               "           [--aspect auto|73:60|4:3|16:9|stretch] [--widescreen|--true-widescreen]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
               "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--music 0-100|--no-music] [--volume 0-100] [--audio-dump out.wav]\n"
+              "           [--settings-path file --load-settings --import-cosmetic file|--enable-project-effects|--restore-vanilla-cosmetics|--cosmetic-status]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
 }
 
@@ -99,11 +102,13 @@ struct SimProfiler {
   }
   std::vector<uint64_t> samples;
   std::vector<uint64_t> returns;   // [rsp] at the sample: the caller when the sample is in a leaf system routine
+  std::vector<uint32_t> sample_frames;
   void start() {
     main_thread_id = GetCurrentThreadId();
     if (!render_thread) DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &target, 0, FALSE, DUPLICATE_SAME_ACCESS);
     samples.reserve(1u << 22);
     returns.reserve(1u << 22);
+    sample_frames.reserve(1u << 22);
     running = true;
     sampler = std::thread([this] {
       SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
@@ -121,7 +126,11 @@ struct SimProfiler {
       while (running.load(std::memory_order_relaxed) && samples.size() < samples.capacity()) {
         if (SuspendThread(target) != (DWORD)-1) {
           CONTEXT ctx{}; ctx.ContextFlags = CONTEXT_CONTROL;
-          if (GetThreadContext(target, &ctx)) { samples.push_back(ctx.Rip); returns.push_back(*(uint64_t*)ctx.Rsp); }
+          if (GetThreadContext(target, &ctx)) {
+            samples.push_back(ctx.Rip);
+            returns.push_back(*(uint64_t*)ctx.Rsp);
+            sample_frames.push_back(host::profiler_frame_id());
+          }
           ResumeThread(target);
         }
         Sleep(1);
@@ -139,7 +148,8 @@ struct SimProfiler {
     HANDLE process = GetCurrentProcess();
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
     SymInitialize(process, nullptr, TRUE);
-    std::unordered_map<std::string, uint64_t> hits, system_callers;
+    std::unordered_map<std::string, uint64_t> hits, slow_hits, system_callers;
+    const auto& slow_frames = host::slow_sim_frames();
     const uintptr_t exe_base = (uintptr_t)GetModuleHandleA(nullptr);
     IMAGE_NT_HEADERS* nt = (IMAGE_NT_HEADERS*)(exe_base + ((IMAGE_DOS_HEADER*)exe_base)->e_lfanew);
     const uintptr_t exe_end = exe_base + nt->OptionalHeader.SizeOfImage;
@@ -152,21 +162,27 @@ struct SimProfiler {
       std::string name = SymFromAddr(process, addr, &disp, sym) ? std::string(sym->Name) : "?";
       return host_names.emplace(addr, name).first->second;
     };
-    uint64_t guest_hits = 0;
+    uint64_t guest_hits = 0, slow_guest_hits = 0, slow_total = 0;
     for (size_t si = 0; si < samples.size(); ++si) {
       const uint64_t rip = samples[si];
+      const bool slow = !render_thread &&
+          std::binary_search(slow_frames.begin(), slow_frames.end(), sample_frames[si]);
+      std::string label;
       auto it = std::upper_bound(fns.begin(), fns.end(), std::make_pair((uintptr_t)rip, UINT32_MAX));
       if (it != fns.begin() && rip < fns.back().first + 0x10000) {
         --it;
         ++guest_hits;
-        ++hits[std::string("game ") + host::symbol_name(it->second)];
-        continue;
+        if (slow) ++slow_guest_hits;
+        label = std::string("game ") + host::symbol_name(it->second);
+      } else {
+        const bool in_exe = rip >= exe_base && rip < exe_end;
+        label = std::string(in_exe ? "host " : "system ") + host_name(rip);
+        // A system DLL has no symbols here, so its exported names are only nearest guesses; the
+        // return address shows which of our functions called into it.
+        if (!in_exe && returns[si] >= exe_base && returns[si] < exe_end) ++system_callers[host_name(returns[si])];
       }
-      const bool in_exe = rip >= exe_base && rip < exe_end;
-      ++hits[std::string(in_exe ? "host " : "system ") + host_name(rip)];
-      // A system DLL has no symbols here, so its exported names are only nearest guesses; the
-      // return address shows which of our functions called into it.
-      if (!in_exe && returns[si] >= exe_base && returns[si] < exe_end) ++system_callers[host_name(returns[si])];
+      ++hits[label];
+      if (slow) { ++slow_hits[label]; ++slow_total; }
     }
     std::vector<std::pair<uint64_t, std::string>> top;
     for (auto& kv : hits) top.push_back({kv.second, kv.first});
@@ -175,6 +191,17 @@ struct SimProfiler {
     host::log("profile: %zu samples of the %s thread, game code %.1f%%, runtime %.1f%%", samples.size(), render_thread ? "busiest non-simulation" : "simulation",
               100.0 * guest_hits / total, 100.0 * (samples.size() - guest_hits) / total);
     for (size_t i = 0; i < top.size() && i < 40; ++i) host::log("profile: %5.1f%%  %s", 100.0 * top[i].first / total, top[i].second.c_str());
+    if (!render_thread && !slow_frames.empty()) {
+      std::vector<std::pair<uint64_t, std::string>> slow_top;
+      for (auto& kv : slow_hits) slow_top.push_back({kv.second, kv.first});
+      std::sort(slow_top.rbegin(), slow_top.rend());
+      const double selected = (double)std::max<uint64_t>(1, slow_total);
+      host::log("profile slow frames: %zu frames, %llu samples, game code %.1f%%, runtime %.1f%%",
+                slow_frames.size(), (unsigned long long)slow_total,
+                100.0 * slow_guest_hits / selected, 100.0 * (slow_total - slow_guest_hits) / selected);
+      for (size_t i = 0; i < slow_top.size() && i < 25; ++i)
+        host::log("profile slow: %5.1f%%  %s", 100.0 * slow_top[i].first / selected, slow_top[i].second.c_str());
+    }
     std::vector<std::pair<uint64_t, std::string>> callers;
     for (auto& kv : system_callers) callers.push_back({kv.second, kv.first});
     std::sort(callers.rbegin(), callers.rend());
@@ -344,14 +371,18 @@ static int melee_main(int argc, char** argv) {
   TimerResolution timer_resolution;
   host::Options& o = host::options;
   bool headless = false, hidden = false, threaded = false, fps_requested = false;
+  std::string cosmetic_import;
+  bool cosmetic_enable_effects = false, cosmetic_restore = false, cosmetic_status = false;
   gx::D3D12Options gfx;
   bool automated = false, explicit_frame_mode = false, settings_window_only = false;
+  bool load_settings_for_capture = false;
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
     if (arg == "--hidden" || arg == "--headless") automated = true;
     if (arg == "--settings-path" && i+1 < argc) gfx.settings_path = argv[++i];
     if (arg == "--frame-mode") explicit_frame_mode = true;
     if (arg == "--settings-window") settings_window_only = true;
+    if (arg == "--load-settings") load_settings_for_capture = true;
   }
   gfx.pc_settings = !automated;
   g_crash_dialog = !automated;
@@ -391,6 +422,10 @@ static int melee_main(int argc, char** argv) {
     if (gfx.discord_presence) { host::discord::configure(gfx.discord_app_id); host::discord::enable(true); }
     threaded = true;
   }
+  // Automated renderer/UI reviews can explicitly exercise saved preferences.
+  // Ordinary hidden/headless validation keeps its deterministic clean defaults.
+  // Presence is intentionally still only activated by the visible startup path.
+  if (automated && load_settings_for_capture) gx::load_pc_settings(gfx, o.volume);
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
@@ -426,7 +461,12 @@ static int melee_main(int argc, char** argv) {
                  : v == "stretch" ? gx::AspectMode::Stretch : (gx::AspectMode)-1;
       if ((int)gfx.aspect < 0) { std::fprintf(stderr, "--aspect auto|73:60|4:3|16:9|stretch\n"); return 2; } }
     else if (a == "--settings-path") gfx.settings_path = next();
+    else if (a == "--import-cosmetic") cosmetic_import = next();
+    else if (a == "--enable-project-effects") cosmetic_enable_effects = true;
+    else if (a == "--restore-vanilla-cosmetics") cosmetic_restore = true;
+    else if (a == "--cosmetic-status") cosmetic_status = true;
     else if (a == "--pc-settings-open") { gfx.pc_settings = true; gfx.settings_open = true; }
+    else if (a == "--load-settings") {}
     // The overlay layer without the panel. An automated run turns the UI off entirely, which also
     // takes the on-screen overlays with it; this brings them back without capturing the pad, so a
     // scripted run can screenshot an overlay.
@@ -441,7 +481,26 @@ static int melee_main(int argc, char** argv) {
 #endif
     else if (a == "--dlss") { std::string v = next(); gfx.dlss_mode = v == "off" ? 0 : v == "dlaa" ? 1 : v == "quality" ? 2 : v == "balanced" ? 3 : v == "performance" ? 4 : v == "ultra" ? 5 : v == "xess-aa" ? 6 : v == "xess-ultra" ? 7 : v == "xess-quality" ? 8 : v == "xess-balanced" ? 9 : v == "xess-performance" ? 10 : -1;
       if (gfx.dlss_mode < 0) { std::fprintf(stderr, "--dlss off|dlaa|quality|balanced|performance|ultra\n"); return 2; } }
-    else if (a == "--frame-generation") gfx.frame_generation_mode = 1;   // 2x
+    else if (a == "--frame-generation") gfx.frame_generation_mode = 1;   // backward-compatible 2x shorthand
+    else if (a.rfind("--frame-generation=", 0) == 0) {
+      const std::string v = a.substr(std::strlen("--frame-generation="));
+      gfx.frame_generation_mode = v == "2x" ? 1 : v == "3x" ? 2 : v == "4x" ? 3 :
+                                  v == "dynamic" ? 4 : v == "5x" ? 5 : v == "6x" ? 6 : -1;
+      if (gfx.frame_generation_mode < 0) {
+        std::fprintf(stderr, "--frame-generation=2x|3x|4x|5x|6x|dynamic\n");
+        return 2;
+      }
+    }
+    else if (a == "--dlss-mode") {
+      char* end = nullptr; long mode = std::strtol(next(), &end, 10);
+      if (!end || *end || mode < 0 || mode > 5) { std::fprintf(stderr, "--dlss-mode must be 0..5\n"); return 2; }
+      gfx.dlss_mode = (int)mode;
+    }
+    else if (a == "--ssao") {
+      char* end = nullptr; float amount = std::strtof(next(), &end);
+      if (!end || *end || !std::isfinite(amount) || amount < 0.0f || amount > 1.0f) { std::fprintf(stderr, "--ssao must be 0..1\n"); return 2; }
+      gfx.screen_space_ao = amount;
+    }
     else if (a == "--reflex") gfx.reflex_mode = 2;
     else if (a == "--dlss-jitter-sign") gfx.dlss_jitter_sign = (float)std::atof(next());
     else if (a == "--frame-times") gfx.frame_times = next();
@@ -478,6 +537,12 @@ static int melee_main(int argc, char** argv) {
       if (a1 == std::string::npos || a2 == std::string::npos || a3 == std::string::npos) { std::fprintf(stderr, "--local-peer idx:port:ip:port"); return 2; }
       lp.enabled = true; lp.local_index = std::atoi(v.substr(0, a1).c_str()); lp.local_port = (uint16_t)std::atoi(v.substr(a1 + 1, a2 - a1 - 1).c_str());
       lp.remote_ip = v.substr(a2 + 1, a3 - a2 - 1); lp.remote_port = (uint16_t)std::atoi(v.substr(a3 + 1).c_str()); }
+    else if (a == "--test-stage") {
+      auto& lp = slippi::Matchmaking::local_peer;
+      const int stage = std::atoi(next());
+      if (stage < 0 || stage > 0xFFFF) { std::fprintf(stderr, "--test-stage requires a legal Slippi stage id\n"); return 2; }
+      lp.test_stage = stage;
+    }
     else if (a == "--dump-frame") gfx.dump_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;
@@ -515,11 +580,58 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--settings-window") {}
     else { usage(); return 2; }
   }
+  if (slippi::Matchmaking::local_peer.test_stage >= 0) {
+    const int stage = slippi::Matchmaking::local_peer.test_stage;
+    const bool legal = stage == 0x2 || stage == 0x3 || stage == 0x8 || stage == 0x1C || stage == 0x1F || stage == 0x20;
+    if (!slippi::Matchmaking::local_peer.enabled || !legal) {
+      std::fprintf(stderr, "--test-stage requires --local-peer and a legal tournament stage id (2, 3, 8, 28, 31, or 32)\n");
+      return 2;
+    }
+  }
   gecko::option_widescreen = gfx.widescreen;   // before the game loads the code table
+  gecko::option_lagless_fod = !gfx.fod_reflections; // the Gecko flag is the inverse of the UI label
   if (fps_requested && gfx.subframe == gx::SubFrameMode::Off) {
     std::fprintf(stderr, "--fps requires explicit experimental --frame-mode interpolate, extrapolate or authored\n");
     return 2;
   }
+  // Cosmetic catalog/profile storage follows --settings-path just like controller and video
+  // settings. Configure it for normal, standalone-settings, and automated diagnostic launches.
+  host::cosmetics::configure(gfx.settings_path);
+  if (!cosmetic_import.empty() || cosmetic_enable_effects || cosmetic_restore || cosmetic_status) {
+    bool ok = true;
+    if (!cosmetic_import.empty()) {
+      auto result = host::cosmetics::import_file(cosmetic_import);
+      std::printf("%s\n", result.message.c_str()); ok &= result.ok;
+    }
+    if (cosmetic_enable_effects) {
+      std::string error;
+      if (o.iso.empty()) {
+        std::fprintf(stderr, "--enable-project-effects requires --iso so every target can be validated against the clean disc\n");
+        ok = false;
+      } else if (!host::disc_open(o.iso)) {
+        std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str());
+        ok = false;
+      } else if (!host::cosmetics::enable_project_effects(&error)) {
+        std::fprintf(stderr, "%s\n", error.c_str());
+        ok = false;
+      } else {
+        std::printf("%s\n", host::cosmetics::last_message().c_str());
+      }
+    }
+    if (cosmetic_restore) {
+      std::string error;
+      if (!host::cosmetics::restore_vanilla(&error)) { std::fprintf(stderr, "%s\n", error.c_str()); ok = false; }
+      else std::printf("%s\n", host::cosmetics::last_message().c_str());
+    }
+    if (cosmetic_status) {
+      std::printf("profile %s\n", host::cosmetics::profile_enabled() ? "enabled" : "disabled");
+      for (const auto& asset : host::cosmetics::assets())
+        std::printf("%c %s | %s | %s | %s\n", asset.selected ? '*' : '-', asset.target_path.c_str(),
+                    asset.name.c_str(), asset.id.c_str(), asset.sha256.c_str());
+    }
+    return ok ? 0 : 1;
+  }
+
   // The settings panel with no game behind it: the launcher opens this instead of booting the
   // whole game to change a setting. Before the disc check, because it needs no disc.
   if (settings_window_only) {
@@ -580,6 +692,12 @@ static int melee_main(int argc, char** argv) {
 
   ppc::init_dispatch();
   host::boot_setup();
+  {
+    std::vector<gx::texpack::CosmeticCompanion> companions;
+    for (const auto& item : host::cosmetics::active_companions())
+      companions.push_back({item.kind, item.target_path, item.path});
+    gx::texpack::set_cosmetic_companions(std::move(companions));
+  }
   host::log("boot: entering __start at %08X", 0x8000522Cu);
   int code = 0;
   if (g_profile) g_profiler.start();
@@ -606,8 +724,9 @@ static int melee_main(int argc, char** argv) {
   slippi::shutdown();
   { uint64_t calls = 0, insns = 0; ppc::interpreter_stats(&calls, &insns);
     if (calls) host::log("interpreter: %llu calls into RAM-resident code, %llu instructions", (unsigned long long)calls, (unsigned long long)insns); }
-  if (ppc::g_resumed_returns)
-    host::log("gecko: %llu code-cave returns resumed past the call (UCF Shield Drop and the like)", (unsigned long long)ppc::g_resumed_returns);
+  if (ppc::g_computed_return_checks || ppc::g_resumed_returns)
+    host::log("gecko: adjusted-return checks %llu, resumed %llu (UCF Shield Drop and the like)",
+              (unsigned long long)ppc::g_computed_return_checks, (unsigned long long)ppc::g_resumed_returns);
   host::log("slippi: %llu EXI commands, %llu replays written, GCT at %08X", (unsigned long long)slippi::commands_seen(),
             (unsigned long long)slippi::replays_written(), slippi::gct_load_address());
   return code;

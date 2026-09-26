@@ -302,7 +302,7 @@ HLE(ARRegisterDMACallback) { uint32_t cb = ARG0; RET(s_ar_dma_callback); s_ar_dm
 static void aram_dma(uint32_t type, uint32_t mainmem, uint32_t aram, uint32_t length) {
   if (!host::valid_range(aram, length, 0x01000000)) host::die("ARAM DMA out of range %08X+%X", aram, length);
   if (type == 0) std::memcpy(host::aram + aram, host::ptr(mainmem, length), length);   // MRAM -> ARAM
-  else std::memcpy(host::ptr(mainmem, length), host::aram + aram, length);            // ARAM -> MRAM
+  else { std::memcpy(host::ptr(mainmem, length), host::aram + aram, length); host::mark_ram_write(mainmem, length); } // ARAM -> MRAM
 }
 HLE(ARStartDMA) {
   aram_dma(ARG0, ARG1, ARG2, ARG3);

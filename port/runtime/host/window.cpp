@@ -13,6 +13,7 @@
 #include "host.h"
 #include "window.h"
 #include "input_bindings.h"
+#include "settings_chord.h"
 #include "hid_pad.h"
 #include "playstation_pad.h"
 
@@ -30,12 +31,18 @@ int g_client_w = 1280, g_client_h = 960;
 ResizeCallback g_on_resize;
 std::atomic<bool> g_fullscreen_toggle{false};
 std::atomic<bool> g_settings_toggle{false};
+std::atomic<bool> g_legacy_settings_toggle{false};
+std::atomic<int> g_settings_controller_port{-1};
+std::atomic<bool> g_practice_toggle{false};
 std::atomic<bool> g_escape_press{false};
 MessageCallback g_on_message;
 std::atomic<bool> g_ui_capture{false};
 std::mutex g_ui_pad_mutex;
 PadState g_ui_pad{};
+PadState g_ui_pads[4]{};
+bool g_ui_has_pad = false;
 bool g_ui_gamecube = false;
+bool g_ui_settings_chord_held[4]{};
 void raw_input(HRAWINPUT raw);
 void ds4_init_defaults();
 
@@ -45,6 +52,17 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   // the screen for the rest of the match. It comes back the moment the panel opens or focus leaves.
   // Before the ImGui handler, which would otherwise set the arrow itself.
   if (m == WM_SETCURSOR && LOWORD(l) == HTCLIENT && !g_ui_capture.load() && GetForegroundWindow() == h) { SetCursor(nullptr); return TRUE; }
+  // Reserve Tab before ImGui or the game's keyboard bindings see it. The edge reaches the practice
+  // UI whether a text field is active or the overlay is closed.
+  if (m == WM_KEYDOWN && w == VK_TAB) {
+    if (!(l & (1 << 30))) g_practice_toggle.store(true);
+    // Tab is reserved for native matchmaking. Never let a binding on the same keyboard key reach
+    // Melee for the frame that opens or closes the overlay.
+    std::lock_guard<std::mutex> lock(g_keys_mutex); g_keys[VK_TAB] = false; return 0;
+  }
+  if (m == WM_KEYUP && w == VK_TAB) {
+    std::lock_guard<std::mutex> lock(g_keys_mutex); g_keys[VK_TAB] = false; return 0;
+  }
   if (g_on_message && g_on_message(h, m, w, l)) return 1;
   switch (m) {
     case WM_CLOSE: g_closed = true; request_exit(0); return 0;
@@ -63,6 +81,7 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
       // frames that are drawn, so presses made during a load queued up and were replayed afterwards,
       // and ImGui's repeat turned a held key into the panel flickering open and shut.
       if (w == VK_F1 && !(l & (1 << 30))) g_settings_toggle.store(true);
+      if (w == VK_F11 && !(l & (1 << 30))) g_legacy_settings_toggle.store(true);
       if (w == VK_ESCAPE && !(l & (1 << 30))) g_escape_press.store(true);   // the in-game menu, same rules as F1
       std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = true; return 0;
     }
@@ -240,11 +259,19 @@ void window_input_capture(bool capture) {
   if (g_ui_capture.exchange(capture) != capture && g_hwnd) PostMessageW(g_hwnd, kCursorRefresh, capture ? 1 : 0, 0);
 }
 bool window_ui_gamecube_pad(PadState& pad) { std::lock_guard<std::mutex> lock(g_ui_pad_mutex); pad = g_ui_pad; return g_ui_gamecube; }
+bool window_ui_pads(PadState pads[4]) {
+  std::lock_guard<std::mutex> lock(g_ui_pad_mutex);
+  for (int i = 0; i < 4; ++i) pads[i] = g_ui_pads[i];
+  return g_ui_has_pad;
+}
 void window_set_resize_callback(ResizeCallback cb) { g_on_resize = std::move(cb); }
 bool window_take_fullscreen_toggle() { return g_fullscreen_toggle.exchange(false); }
 // Several presses while nothing was being drawn count as one: the player pressed F1 again because
 // nothing seemed to happen, and wants the panel, not an even number of toggles.
 bool window_take_settings_toggle() { return g_settings_toggle.exchange(false); }
+bool window_take_legacy_settings_toggle() { return g_legacy_settings_toggle.exchange(false); }
+int window_take_settings_controller_port() { return g_settings_controller_port.exchange(-1); }
+bool window_take_practice_toggle() { return g_practice_toggle.exchange(false); }
 bool window_take_escape() { return g_escape_press.exchange(false); }
 
 void window_destroy() { if (g_hwnd) { DestroyWindow(g_hwnd); g_hwnd = nullptr; } }
@@ -499,7 +526,11 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
 namespace {
 // tl/tr are the analog triggers. Melee shields from the analog value, not the digital L/R bit, so a
 // script that only pressed L never actually shielded and shield behaviour could not be tested at all.
-struct ScriptEntry { uint32_t frame; uint16_t buttons; int8_t sx, sy, cx, cy; uint8_t tl, tr; int port;  bool relative = false; };
+struct ScriptEntry {
+  uint32_t frame; uint16_t buttons; int8_t sx, sy, cx, cy; uint8_t tl, tr; int port;
+  bool relative = false;
+  bool scene_relative = false;
+};
 std::vector<ScriptEntry> g_script;
 uint32_t g_script_ports = 1;
 // `@match` makes later entries relative to the retrace at which an online match reached frame 1
@@ -507,6 +538,13 @@ uint32_t g_script_ports = 1;
 static bool g_script_relative_section = false;
 static uint32_t g_script_loop = 0;
 static std::atomic<uint32_t> g_match_start_retrace{0};
+// `@scene MM mm` anchors subsequent entries to the first retrace at which the guest enters that
+// scene. This keeps automated menu setup aligned when graphics backends reach CSS at different
+// wall-clock/retrace offsets.
+static bool g_script_scene_section = false;
+static bool g_script_has_scene_entries = false;
+static uint8_t g_script_scene_major = 0, g_script_scene_minor = 0;
+static std::atomic<uint32_t> g_script_scene_start_retrace{0};
 
 // Turns a Switch controller's raw SWPRO_* bits into GameCube buttons through slot `idx`'s
 // remappable table, and returns the same thing as BindAction bit indices for the settings panel.
@@ -598,14 +636,38 @@ void input_mark_match_start() { g_match_start_retrace.store(retrace_count()); }
 bool input_load_script(const char* path) {
   FILE* f = fopen(path, "r");
   if (!f) return false;
+  g_script.clear();
+  g_script_ports = 1;
+  g_script_relative_section = false;
+  g_script_loop = 0;
+  g_match_start_retrace.store(0);
+  g_script_scene_section = false;
+  g_script_has_scene_entries = false;
+  g_script_scene_major = g_script_scene_minor = 0;
+  g_script_scene_start_retrace.store(0);
   char line[256];
   while (fgets(line, sizeof line, f)) {
     ScriptEntry e{};
     char* p = line;
     if (*p == '#' || *p == '\n' || *p == '\r') continue;
-    if (!strncmp(p, "@match", 6)) { g_script_relative_section = true; continue; }
+    if (!strncmp(p, "@match", 6)) { g_script_relative_section = true; g_script_scene_section = false; continue; }
     if (!strncmp(p, "@loop", 5)) { g_script_loop = (uint32_t)strtoul(p + 5, nullptr, 10); continue; }
+    if (!strncmp(p, "@scene", 6)) {
+      unsigned major = 0, minor = 0;
+      if (sscanf(p + 6, "%x %x", &major, &minor) != 2 || major > 0xFF || minor > 0xFF) {
+        fclose(f);
+        g_script.clear();
+        return false;
+      }
+      g_script_scene_major = (uint8_t)major;
+      g_script_scene_minor = (uint8_t)minor;
+      g_script_scene_section = true;
+      g_script_has_scene_entries = true;
+      g_script_relative_section = false;
+      continue;
+    }
     e.relative = g_script_relative_section;
+    e.scene_relative = g_script_scene_section;
     e.frame = (uint32_t)strtoul(p, &p, 10);
     while (*p) {
       while (*p == ' ' || *p == '\t') ++p;
@@ -636,8 +698,32 @@ void input_poll(PadState out[4]) {
   struct UiSnapshot {
     PadState* pads; bool gamecube = false;
     ~UiSnapshot() {
-      std::lock_guard<std::mutex> lock(g_ui_pad_mutex); g_ui_pad = pads[0]; g_ui_gamecube = gamecube;
-      if (g_ui_capture.load()) { pads[0] = {}; pads[0].err = 0; }
+      std::lock_guard<std::mutex> lock(g_ui_pad_mutex);
+      bool toggle_settings = false;
+      for (int i = 0; i < 4; ++i) {
+        const bool opened_here =
+            settings_shortcut::poll_z_start(pads[i].err == 0, pads[i].button,
+                                            g_ui_settings_chord_held[i]);
+        toggle_settings |= opened_here;
+        if (opened_here) g_settings_controller_port.store(i, std::memory_order_release);
+      }
+      if (toggle_settings) g_settings_toggle.store(true, std::memory_order_release);
+      g_ui_pad = pads[0];
+      g_ui_gamecube = gamecube;
+      g_ui_has_pad = false;
+      for (int i = 0; i < 4; ++i) {
+        g_ui_pads[i] = pads[i];
+        if (pads[i].err == 0) g_ui_has_pad = true;
+      }
+      if (g_ui_capture.load()) {
+        // UI capture is global, not player-one-only. Keeping ports 2-4 live made menu navigation
+        // leak into Training and, during handoff, into the first online gameplay inputs.
+        for (int i = 0; i < 4; ++i) {
+          const int8_t err = pads[i].err;
+          pads[i] = {};
+          pads[i].err = err;
+        }
+      }
     }
   } ui{out};
   for (int i = 0; i < 4; ++i) { std::memset(&out[i], 0, sizeof out[i]); out[i].err = -1; }
@@ -647,6 +733,14 @@ void input_poll(PadState out[4]) {
     uint32_t start = g_match_start_retrace.load();
     bool in_match = start && frame >= start;
     uint32_t rel = in_match ? frame - start : 0;
+    if (g_script_has_scene_entries && !g_script_scene_start_retrace.load() &&
+        host::rd8(0x80479D30) == g_script_scene_major && host::rd8(0x80479D33) == g_script_scene_minor) {
+      uint32_t expected = 0;
+      g_script_scene_start_retrace.compare_exchange_strong(expected, frame);
+    }
+    const uint32_t scene_start = g_script_scene_start_retrace.load();
+    const bool in_scene = scene_start && frame >= scene_start;
+    const uint32_t scene_rel = in_scene ? frame - scene_start : 0;
     if (in_match && g_script_loop) rel %= g_script_loop;
     for (int port = 0; port < 4; ++port) {
       if (port && !(g_script_ports & (1u << port))) continue;
@@ -654,7 +748,8 @@ void input_poll(PadState out[4]) {
       const ScriptEntry* cur = nullptr;
       for (const ScriptEntry& e : g_script) {
         if (e.port != port) continue;
-        if (e.relative) { if (in_match && e.frame <= rel) cur = &e; }
+        if (e.scene_relative) { if (in_scene && e.frame <= scene_rel) cur = &e; }
+        else if (e.relative) { if (in_match && e.frame <= rel) cur = &e; }
         else if (!in_match && e.frame <= frame) cur = &e;
       }
       if (cur) {
@@ -691,12 +786,10 @@ void input_poll(PadState out[4]) {
     // Keyboard: every action, the control stick and C-stick included, comes from g_key_bindings.
     // The stick used to be hard wired to the arrow keys here while everything else was a setting,
     // which is the one thing players could not rebind; the arrows are now just its defaults.
-    // Key messages only reach a focused window, so in the background the keys are read directly.
+    // The keyboard only counts while the game window has focus. Background input is for
+    // controllers: reading the keyboard globally made typing in any other window play the game.
     std::lock_guard<std::mutex> lock(g_keys_mutex);
-    auto key = [&](int vk) {
-      if (focused) return g_keys[vk & 0xFF];
-      return g_background_input && (GetAsyncKeyState(vk & 0xFF) & 0x8000) != 0;
-    };
+    auto key = [&](int vk) { return focused && g_keys[vk & 0xFF]; };
     keyboard_actions = apply_actions(kb, [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); });
     apply_stick_actions(keyboard_actions, kb.stick_x, kb.stick_y);
     if (kb.button & PAD_L) kb.trig_l = 255;
@@ -859,10 +952,13 @@ void input_poll(PadState out[4]) {
   input_debug_snapshot(debug);
 }
 
-bool g_rumble_enabled = true;
+std::atomic<bool> g_rumble_enabled{true};
 bool g_background_input = true;
 
 namespace {
+// Serialize motor commands with the all-off action. A motor-on request that began before
+// the Controls switch changed must not land after the all-off command.
+std::mutex g_rumble_mutex;
 // An Xbox pad's motors: both at full while the game asks for rumble, off otherwise. Only written
 // when the state changes, since XInputSetState is a call into the driver.
 void xinput_rumble(int index, bool on) {
@@ -881,13 +977,14 @@ void log_first_rumble(int game_port, const char* where) {
   if (logged[i]) return;
   logged[i] = true;
   log("rumble: %s%d -> %s%s", game_port < 0 ? "local player" : "port ", game_port < 0 ? 0 : game_port + 1, where,
-      g_rumble_enabled ? "" : " (switched off in Controls)");
+      g_rumble_enabled.load() ? "" : " (switched off in Controls)");
 }
 }  // namespace
 
 void input_rumble(int game_port, bool on) {
   if (game_port < 0 || game_port > 3) return;
-  if (!g_rumble_enabled) on = false;
+  std::lock_guard<std::mutex> lock(g_rumble_mutex);
+  if (!g_rumble_enabled.load()) on = false;
   const PortSource& src = g_port_feeding[game_port];   // where the input came from, fallback included
   const bool valid = src.index >= 0 && src.index < 4;
   if (src.kind == DeviceKind::GCAdapter && valid) { gcadapter_rumble(src.index, on); if (on) log_first_rumble(game_port, "GameCube adapter"); }
@@ -896,7 +993,8 @@ void input_rumble(int game_port, bool on) {
 }
 
 void input_rumble_local(bool on) {
-  if (!g_rumble_enabled) on = false;
+  std::lock_guard<std::mutex> lock(g_rumble_mutex);
+  if (!g_rumble_enabled.load()) on = false;
   // Online the match's slot is not the socket the controller is in, so the caller cannot name a
   // port: it only knows the rumble was meant for the local player. Rumble the one controller that
   // is actually feeding a port, not every device on the machine.
@@ -922,6 +1020,14 @@ void input_rumble_local(bool on) {
     }
   }
   if (on) log_first_rumble(-1, "a controller without rumble support (keyboard, PlayStation, Switch or box)");
+}
+
+void input_stop_all_rumble() {
+  std::lock_guard<std::mutex> lock(g_rumble_mutex);
+  for (int index = 0; index < 4; ++index) {
+    gcadapter_rumble(index, false);
+    xinput_rumble(index, false);
+  }
 }
 
 void input_last_pads(PadState out[4]) {

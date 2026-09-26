@@ -242,7 +242,14 @@ class Matchmaking {
   struct MatchSearchSettings { OnlinePlayMode mode = RANKED; std::string connect_code; };
   struct MatchmakeResult { std::string id; std::vector<UserInfo> players; std::vector<uint16_t> stages; uint32_t items = 0; };
   // Local test peering (no matchmaking server): fixed player index, ports and peer address.
-  struct LocalPeer { bool enabled = false; int local_index = 0; uint16_t local_port = 0; std::string remote_ip; uint16_t remote_port = 0; };
+  struct LocalPeer {
+    bool enabled = false;
+    int local_index = 0;
+    uint16_t local_port = 0;
+    std::string remote_ip;
+    uint16_t remote_port = 0;
+    int test_stage = -1;  // deterministic stage selection for local regression runs only
+  };
 
   explicit Matchmaking(User* user);
   ~Matchmaking();

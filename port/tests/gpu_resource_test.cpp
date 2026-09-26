@@ -5,6 +5,8 @@
 #include "gx_d3d12.h"
 #include "gx_shader.h"
 #include "gx_texture.h"
+#include "texture_pack.h"
+#include "video_background.h"
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -22,7 +24,21 @@ bool window_is_fullscreen() { return false; }
 void window_client_size(int* w, int* h) { if (w) *w = 640; if (h) *h = 480; }
 void window_set_title(const wchar_t*) {}
 }
-namespace slippi { void request_widescreen(bool) {} }
+namespace slippi { void request_widescreen(bool) {} void request_fod_reflections(bool) {} }
+// These visual setting hooks are not exercised by the resource-pool test. Keep the production
+// D3D12 backend linkable without pulling in the full game core or generated Gecko data.
+namespace gx { void set_hud_scales(int, int, bool) {} }
+namespace gecko { bool option_pal_stock_icons = false; }
+// This renderer regression test deliberately links the production D3D12 backend without Media
+// Foundation. Keep its video-background hooks inert so it exercises descriptor/upload behavior.
+namespace gx::video_bg {
+void begin_frame(uint8_t, uint8_t) {}
+bool wants_texture_names() { return false; }
+std::shared_ptr<const Frame> lookup(const std::string&, uint32_t, uint32_t, int*) { return {}; }
+std::shared_ptr<const Frame> fullscreen_frame(int*) { return {}; }
+void set_enabled(bool) {}
+void report_backend_failure(int, const std::string&) {}
+}
 static void check(bool b, const char* why) { if(!b) throw std::runtime_error(why); }
 static void f32(uint32_t& out, float f) { memcpy(&out,&f,4); }
 static gx::TextureRef texture(uint32_t addr, uint8_t r, uint8_t b) {
@@ -31,7 +47,33 @@ static gx::TextureRef texture(uint32_t addr, uint8_t r, uint8_t b) {
   for(int i=0;i<16;++i) { data->image[i*2]=255; data->image[i*2+1]=r; data->image[32+i*2]=0; data->image[33+i*2]=b; }
   data->hash=gx::hash_bytes(data->image.data(),data->image.size()); t.data=data; return t;
 }
-int main() {
+int main(int argc, char** argv) {
+  // Optional real-asset diagnostic: exercise the exact production PNG decoder and native
+  // selector identity lookup without booting the game or touching the ISO/catalog.
+  if (argc == 3) {
+    try {
+      gx::texpack::set_cosmetic_companions({
+          {"csp", "PlFxGr.dat", argv[1]}, {"stock", "PlFxGr.dat", argv[2]},
+      });
+      check(!gx::texpack::enabled() && gx::texpack::cosmetics_enabled(),
+            "cosmetic lookup remains active with the general texture-pack toggle off");
+      const std::string csp_name = "tex1_136x188_344dd1ecdd6c1ce7_0000000000000000_9";
+      const std::string stock_name = "tex1_24x24_9af3cce4366b97bf_0000000000000000_8";
+      check(gx::texpack::has(csp_name) && gx::texpack::has(stock_name),
+            "green Fox native companion identities resolve");
+      auto csp = gx::texpack::load(csp_name, ~0ull);
+      auto stock = gx::texpack::load(stock_name, ~0ull);
+      check(csp && csp->width && csp->height, "real CSP decodes through the production loader");
+      check(stock && stock->width && stock->height,
+            "real stock icon decodes through the production loader");
+      std::printf("Tom Nook companion decode passed: CSP %ux%u, stock %ux%u\n",
+                  csp->width, csp->height, stock->width, stock->height);
+      return 0;
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "%s\n", e.what());
+      return 1;
+    }
+  }
   HWND window=nullptr;
   try {
     WNDCLASSW wc{}; wc.lpfnWndProc=DefWindowProcW; wc.hInstance=GetModuleHandleW(nullptr); wc.lpszClassName=L"MeleeGpuResourceTest";

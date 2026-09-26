@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "gx_core.h"
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -32,10 +33,22 @@ public:
     std::unique_lock<std::mutex> lock(mutex);
     changed.wait(lock, [&] { return finished || frames.size() < 32; });
     if (finished) return false;
+    // Keep one frame of headroom in every buffer handed back to simulation. An abrupt increase in
+    // Stadium geometry should allocate into an empty recycled frame here instead of moving a live
+    // multi-megabyte DrawCall vector halfway through the next simulation frame.
+    const size_t want_vertices = std::max<size_t>(65536, frame.vertices.size() + frame.vertices.size() / 4 + 1);
+    const size_t want_draws = std::max<size_t>(1024, frame.draws.size() + frame.draws.size() / 4 + 1);
+    const size_t want_segments = std::max<size_t>(2048, frame.segments.size() + frame.segments.size() / 4 + 1);
+    const size_t want_commands = std::max<size_t>(2048, frame.commands.size() + frame.commands.size() / 4 + 1);
+    const size_t want_copies = std::max<size_t>(16, frame.copies.size() + 4);
     frames.push_back(std::move(frame));
     if (!recycled.empty()) { frame = std::move(recycled.back()); recycled.pop_back(); }
     frame.clear();
     changed.notify_all();
+    lock.unlock();
+    // Reserving a cleared local frame does not need the queue mutex. Large capacity changes must
+    // not hold the render thread out of pop/recycle while the allocator obtains memory.
+    frame.reserve_gameplay_capacity(want_vertices, want_draws, want_segments, want_commands, want_copies);
     return true;
   }
   // The renderer returns buffers it is about to overwrite.

@@ -34,6 +34,27 @@ class GeckoSet:
         self.boot = gecko.parse_gct(self.bootloader, gecko.BOOTLOADER_BASE)
         self.gct_base = gct_base
         self.main = gecko.parse_gct(self.gct, gct_base if gct_base else 0x81900000)
+        # Keep the flag attached to each optional code. The original implementation had one
+        # optional flag for the whole tail, which worked for widescreen alone but made a second
+        # independent code impossible to toggle safely.
+        self.optional_write_flags = {}
+        self.optional_hook_flags = {}
+        self.optional_code_ranges = []
+        optional_cursor = self.optional_offset
+        for code in self.codes:
+            if not code.enabled or code.optional is None:
+                continue
+            one_gct, _, _ = gecko.generate_gct([code])
+            block = one_gct[8:-8]
+            if not block:
+                continue
+            self.optional_code_ranges.append((optional_cursor, len(block), code.optional))
+            optional_cursor += len(block)
+            one = gecko.parse_gct(one_gct, gct_base if gct_base else 0x81900000)
+            for addr, blob in one.writes:
+                self.optional_write_flags[(addr, blob)] = code.optional
+            for h in one.hooks:
+                self.optional_hook_flags[h.hook] = code.optional
         # Playback: the list a replay carries (served over EXI, installed by the Playback code at
         # `extra_base`) is translated too, so its caves run as compiled code.
         self.extra = gecko.parse_gct(Path(extra_gct).read_bytes(), extra_base) if extra_gct else None
@@ -48,7 +69,7 @@ class GeckoSet:
         self.optional_write_list = [(a, b) for (a, b) in self.main.writes if (a, b) not in base_writes]
         for h in self.main.hooks:
             if h.hook not in base_hooks:
-                h.optional = self.optional_flag
+                h.optional = self.optional_hook_flags.get(h.hook, self.optional_flag)
         # Port codes: in the table always, their hooks gated by their own flag.
         port_hooks = {}
         for code in self.codes:
@@ -61,7 +82,7 @@ class GeckoSet:
             if h.hook in port_hooks:
                 h.optional = port_hooks[h.hook]
         self.optional_text = {}    # addr -> (patched word, flag): translated as both variants
-        self.optional_data = []    # (addr, patched bytes, original bytes): applied/restored at run time
+        self.optional_data = []    # (addr, patched bytes, original bytes, flag): applied/restored at run time
 
     def apply(self, dol):
         """Applies the memory writes to the image and collects hooks/caves for translation."""
@@ -75,10 +96,10 @@ class GeckoSet:
                     # Left out of the image: text becomes a two-way instruction, data is written at run time.
                     if dol.in_text(addr):
                         assert len(blob) == 4, "optional text patch must be one instruction"
-                        self.optional_text[addr] = (int.from_bytes(blob, "big"), self.optional_flag)
+                        self.optional_text[addr] = (int.from_bytes(blob, "big"), self.optional_write_flags.get((addr, blob), self.optional_flag))
                     else:
                         original = bytes(dol.u32(addr + k).to_bytes(4, "big")[0] for k in range(len(blob)))
-                        self.optional_data.append((addr, blob, original))
+                        self.optional_data.append((addr, blob, original, self.optional_write_flags.get((addr, blob), self.optional_flag)))
                     continue
                 dol.write_bytes(addr, blob)
                 if dol.in_text(addr):
@@ -122,14 +143,18 @@ def write_gecko_data(out, gs):
         len(gs.boot.hooks)))
     text.append("const uint32_t gct_base_used = 0x%08Xu;\n" % (gs.gct_base or 0))
     text.append("const uint32_t optional_gct_offset = %du;\n" % gs.optional_offset)
+    text.append("const uint32_t port_gct_offset = %du;\n" % gs.port_offset)
     for flag in gs.optional_flags:
         text.append("bool option_%s = false;\n" % flag)
-    for i, (addr, patched, original) in enumerate(gs.optional_data):
+    for i, (addr, patched, original, flag) in enumerate(gs.optional_data):
         text.append("static const uint8_t optional_patched_%d[] = {%s};\nstatic const uint8_t optional_original_%d[] = {%s};\n" % (
             i, ", ".join("0x%02X" % b for b in patched), i, ", ".join("0x%02X" % b for b in original)))
     text.append("const OptionalWrite optional_writes[] = {\n%s\n};\nconst size_t optional_writes_count = %d;\n" % (
-        "\n".join("  {0x%08Xu, %du, optional_patched_%d, optional_original_%d}," % (addr, len(patched), i, i) for i, (addr, patched, original) in enumerate(gs.optional_data)) or "  {0, 0, nullptr, nullptr},",
+        "\n".join('  {0x%08Xu, %du, optional_patched_%d, optional_original_%d, "%s"},' % (addr, len(patched), i, i, flag) for i, (addr, patched, original, flag) in enumerate(gs.optional_data)) or "  {0, 0, nullptr, nullptr, nullptr},",
         len(gs.optional_data)))
+    text.append("const OptionalCode optional_codes[] = {\n%s\n};\nconst size_t optional_codes_count = %d;\n" % (
+        "\n".join('  {%du, %du, "%s"},' % (offset, size, flag) for offset, size, flag in gs.optional_code_ranges) or "  {0, 0, nullptr},",
+        len(gs.optional_code_ranges)))
     text.append("}\n")
     return write_if_changed(out / "gecko_data.cpp", "".join(text))
 
@@ -175,6 +200,12 @@ def main():
     if hashlib.sha1(Path(args.dol).read_bytes()).hexdigest() != "08e0bf20134dfcb260699671004527b2d6bb1a45":
         ap.error("this port requires the verified vanilla Melee NTSC 1.02 DOL")
     dol = Dol(args.dol)
+    # The original Settings menu contains a fourth row but explicitly marks it
+    # locked. Make that existing row navigable for the PC Settings action. The
+    # host observes its confirm event after each completed guest frame.
+    if dol.u32(0x802299AC) != 0x38600000:
+        ap.error("unexpected Settings menu lock instruction in the verified DOL")
+    dol.write_u32(0x802299AC, 0x38600001)
     symbols = SymbolMap(args.symbols)
     gs = None
     if not args.no_slippi:
@@ -221,8 +252,9 @@ def main():
                                     "const uint8_t slippi_gct[1] = {0}; const size_t slippi_gct_size = 0;\n"
                                     "const Write boot_writes[1] = {{0, 0, nullptr}}; const size_t boot_writes_count = 0;\n"
                                     "const HookInstall boot_hooks[1] = {{0, 0, 0}}; const size_t boot_hooks_count = 0;\nconst uint32_t gct_base_used = 0;\n"
-                                    "const uint32_t optional_gct_offset = 0; bool option_widescreen = false; bool option_pal_stock_icons = false; bool option_no_screen_shake = false;\n"
-                                    "const OptionalWrite optional_writes[1] = {{0, 0, nullptr, nullptr}}; const size_t optional_writes_count = 0;\n}\n")
+                                     "const uint32_t optional_gct_offset = 0; const uint32_t port_gct_offset = 0; bool option_widescreen = false; bool option_lagless_fod = false; bool option_pal_stock_icons = false; bool option_no_screen_shake = false;\n"
+                                     "const OptionalWrite optional_writes[1] = {{0, 0, nullptr, nullptr, nullptr}}; const size_t optional_writes_count = 0;\n"
+                                     "const OptionalCode optional_codes[1] = {{0, 0, nullptr}}; const size_t optional_codes_count = 0;\n}\n")
 
     # Prototypes for every function.
     text = ["// Generated by port/recomp/recomp.py. Do not edit.\n#pragma once\n#include \"ppc.h\"\n",

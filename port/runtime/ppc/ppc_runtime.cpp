@@ -12,10 +12,13 @@
 #include <vector>
 
 namespace ppc {
+std::atomic<uint8_t> g_ram_watched[RAM_WATCH_COUNT]{};
+std::atomic<uint32_t> g_ram_versions[RAM_WATCH_COUNT]{};
 
 static std::vector<Fn> g_dispatch;   // indexed by (addr - RAM_BASE) / 4
 static uint8_t g_locked_cache[LC_SIZE];
 uint64_t g_resumed_returns = 0;      // see ppc.h
+uint64_t g_computed_return_checks = 0; // see ppc.h
 
 // Covers all of RAM: Gecko caves live below .text (bootloader at 0x800028B8) and in the heap
 // (the main code table the game loads), and their subroutines are called through pointers.
@@ -158,7 +161,7 @@ static void locked_cache_dma(Context& c, uint32_t dmal) {
   if (++transfers == 1 || transfers % 100000 == 0)
     host::log("locked cache DMA: %llu transfers (%s %08X+%X)", (unsigned long long)transfers, (dmal & 0x10u) ? "load" : "store", 0x80000000u | mem, bytes);
   if (dmal & 0x10u) std::memcpy(g_locked_cache + lc_offset, ram, bytes);   // LCLoadData
-  else std::memcpy(ram, g_locked_cache + lc_offset, bytes);               // LCStoreData
+  else { std::memcpy(ram, g_locked_cache + lc_offset, bytes); mark_ram_write(0x80000000u | mem, bytes); } // LCStoreData
 }
 
 void spr_write(Context& c, uint32_t n, uint32_t v) {
@@ -185,7 +188,7 @@ void update_mxcsr(Context& c) {
 
 void dcbz(Context& c, uint8_t* m, uint32_t ea) {
   ea &= ~31u;
-  if (uint8_t* p = fast(m, ea)) { std::memset(p, 0, 32); return; }
+  if (uint8_t* p = fast(m, ea)) { std::memset(p, 0, 32); mark_ram_write(ea, 32); return; }
   if (uint8_t* p = slowptr(ea)) { std::memset(p, 0, 32); return; }
   fatal(c, "dcbz outside RAM", ea);
 }

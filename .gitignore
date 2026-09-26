@@ -41,3 +41,9 @@ build-*/
 
 # Cygwin/MSYS crash dumps, written into whatever directory the shell was in
 *.stackdump
+
+# v0.7 generated translation (regenerate with port/recomp/recomp.py) and local user data
+/port/generated_07/
+/CosmeticMods/
+/VideoBackgrounds/
+/port-settings.ini.bak

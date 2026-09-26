@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
+#include <array>
 #include <string>
 #include <vector>
 
@@ -26,6 +27,8 @@ uint64_t rollback_count();
 bool is_online_match();
 // The in-game slot the local player occupies in the running online match (0-3).
 int local_player_slot();
+// Simulation-thread snapshot for local display; names never enter the synchronized game state.
+std::array<std::string, 4> player_names_for_overlay();
 // Most recent measured round trip to the opponent, in milliseconds; 0 when not connected.
 int ping_ms();
 // The online mode of the session that is running or being set up, as a Matchmaking::OnlinePlayMode
@@ -39,5 +42,21 @@ int local_player_index();
 // True while the game is polling the online menus (mode select, the online character select screen,
 // waiting for an opponent) and not running a match.
 bool in_online_menus();
+
+// Native practice uses the same Slippi matchmaking implementation as the game's online menus.
+// These calls are simulation-thread only. native_poll_match is deliberately side-effecting and
+// must be advanced no more than once per intended 60 Hz tick, just like CMD_GET_MATCH_STATE.
+struct NativeMatchPoll {
+  int process_state = 0;
+  bool connection_success = false;
+  bool local_ready = false;
+  bool remote_ready = false;
+  std::string error;
+  std::string opponent;
+};
+bool native_start_match(int mode, const std::string& connect_code, uint8_t character,
+                        uint8_t color, std::string* error);
+NativeMatchPoll native_poll_match();
+void native_cleanup_match();
 
 }  // namespace slippi::online

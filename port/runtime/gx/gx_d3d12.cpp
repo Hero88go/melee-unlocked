@@ -25,6 +25,9 @@
 #include "gx_d3d12.h"
 #include "exi_slippi.h"
 #include "gx_shader.h"
+#include "gx_dxr_scene.h"
+#include "gx_dxr_gpu_scene.h"
+#include "gx_dxr_path_tracer.h"
 #include "gx_texture.h"
 #include "gx_streamline.h"
 #include "gx_xess.h"
@@ -33,8 +36,11 @@
 #include "gx_dlss5.h"
 #endif
 #include "texture_pack.h"
+#include "video_background.h"
+#include "video_background_learning.h"
 #include "host.h"
 #include "window.h"   // fullscreen toggling lives on the window, not the settings panel
+#include "gecko_data.h"
 #ifdef GX_PC_SETTINGS
 #include "pc_settings.h"
 #endif
@@ -52,6 +58,8 @@ namespace gx {
 // is usually a bit under the card's real size, which reads as "missing" VRAM to someone who knows
 // their card's number. g_vram_total is the adapter's own installed size instead, captured once.
 std::atomic<float> g_vram_used{0.0f}, g_vram_budget{0.0f}, g_vram_total{0.0f};
+std::atomic<bool> g_dxr_path_available{false};
+bool dxr_path_tracing_available() { return g_dxr_path_available.load(std::memory_order_relaxed); }
 bool vram_usage(float* used_gb, float* total_gb) {
   *used_gb = g_vram_used.load(std::memory_order_relaxed); *total_gb = g_vram_total.load(std::memory_order_relaxed);
   return *total_gb > 0.0f;
@@ -189,17 +197,30 @@ class D3D12Backend : public Backend {
 #ifdef GX_PC_SETTINGS
     if (opts_.pc_settings) settings_ui_ = std::make_unique<PcSettingsUI>(hwnd, device_.Get(), queue_.Get(), opts_);
 #endif
+    set_hud_scales(opts_.stock_hud_scale, opts_.damage_hud_scale, gecko::option_pal_stock_icons);
   }
-  ~D3D12Backend() override { wait_gpu(); if (swapchain_) swapchain_->SetFullscreenState(FALSE, nullptr); texpack::report();
+  ~D3D12Backend() override { if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend shutdown / gpu wait");
+    wait_gpu(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: gpu idle / settings destroy");
+    if (swapchain_) swapchain_->SetFullscreenState(FALSE, nullptr); texpack::report();
 #ifdef GX_PC_SETTINGS
     settings_ui_.reset();
 #endif
- stop_pso_workers(); integrate_compiled_psos(); flush_captures(); save_pipeline_recipes(); save_pipeline_library(); if (fence_event_) CloseHandle(fence_event_); if (present_timer_) CloseHandle(present_timer_);
+    if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: settings destroyed / workers stop");
+    stop_pso_workers(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: workers stopped");
+    integrate_compiled_psos(); flush_captures(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: captures flushed");
+    save_pipeline_recipes(); save_pipeline_library(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: pipeline cache saved");
+    if (fence_event_) CloseHandle(fence_event_); if (present_timer_) CloseHandle(present_timer_);
     last_poses_.clear();
 #ifdef GX_DLSS5
     dlss5::shutdown();
+    if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: DLSS 5 stopped");
 #endif
-    mvec_.Reset(); hud_mask_.Reset(); dlss_out_.Reset(); xess::shutdown(); streamline::shutdown(); }
+    mvec_.Reset(); hud_mask_.Reset(); dlss_out_.Reset();
+    if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: render resources reset");
+    xess::shutdown(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: XeSS stopped");
+    streamline::shutdown_for_process_exit();
+    if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: Streamline left for process exit");
+    if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend destroyed"); }
   const D3D12Options& options() const { return opts_; }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
@@ -236,6 +257,7 @@ class D3D12Backend : public Backend {
   bool dlss_in_place_ = false;
   int dlss_mode_active_ = 0;
   bool widescreen_sent_ = false;
+  bool fod_reflections_sent_ = false;
   int dlss_failures_ = 0;
   int anisotropy_applied_ = 0, ssaa_applied_ = 0;
   // Custom texture packs. An HD pack can hold far more pixels than this machine has video memory,
@@ -249,6 +271,10 @@ class D3D12Backend : public Backend {
   // keeps no history there. Without it a ticking timer or a tag following a fighter ghosted.
   ComPtr<ID3D12Resource> hud_mask_;
   uint32_t dlss_out_w_ = 0, dlss_out_h_ = 0;
+  bool dlss_hdr_active_ = false;
+  bool dxr_path_logged_ = false;
+  bool dxr_scene_logged_ = false;
+  bool dxr_scene_failure_logged_ = false;
   float jitter_x_ = 0, jitter_y_ = 0;
   bool dlss_reset_ = true;
 #ifdef GX_DLSS5
@@ -314,12 +340,16 @@ class D3D12Backend : public Backend {
   uint32_t reserve_srvs(uint32_t count);
   void rotate_heap(D3D12_DESCRIPTOR_HEAP_TYPE type);
   ID3D12PipelineState* get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo);
+  ID3D12Resource* update_video_texture(const std::shared_ptr<const video_bg::Frame>& frame,
+                                       int video_slot);
+  void draw_video_background(const std::shared_ptr<const video_bg::Frame>& frame,
+                             int video_slot, const EfbCopy& screen);
   ID3D12Resource* get_texture(const TextureRef& t, uint32_t* w, uint32_t* h);
   D3D12_GPU_DESCRIPTOR_HANDLE bind_textures(const DrawCall& dc);
   D3D12_GPU_DESCRIPTOR_HANDLE bind_samplers(const DrawCall& dc);
   void execute_draw(const Frame& frame, const DrawCall& dc, const DrawMatrices* override_matrices);
   void execute_copy(const EfbCopy& copy);
-  void present_efb(const EfbCopy& copy);
+  void present_efb(const EfbCopy& copy, const DxrScene* dxr_scene = nullptr);
   void clear_efb(const EfbCopy& copy);
   void capture_backbuffer();
   void flush_captures();
@@ -353,6 +383,13 @@ class D3D12Backend : public Backend {
   const char* upscaler_name() const { return xess_active() ? xess::mode_name(opts_.dlss_mode) : dlss_mode_name((DlssMode)opts_.dlss_mode); }   // draws with motion history (diagnostic, logged with DLSS on)
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
   ComPtr<ID3D12Device> device_;
+  // Queried independently from Streamline: RR support does not imply that the renderer can build
+  // or dispatch a DXR scene. These interfaces are the foundation for the GX scene path.
+  ComPtr<ID3D12Device5> dxr_device_;
+  ComPtr<ID3D12GraphicsCommandList4> dxr_list_;
+  DxrGpuScene dxr_gpu_scene_;
+  DxrPathTracer dxr_path_tracer_;
+  D3D12_RAYTRACING_TIER dxr_tier_ = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
   // Persistent caches (opts_.shader_cache): compiled shader blobs as files, pipelines in a D3D12
   // pipeline library serialized at shutdown. First sessions compile; later ones load instantly.
   ComPtr<ID3D12PipelineLibrary> pipeline_library_;
@@ -407,6 +444,10 @@ class D3D12Backend : public Backend {
   std::unordered_map<uint64_t, ComPtr<ID3DBlob>> vs_blobs_, ps_blobs_;
   std::unordered_map<PsoKey, ComPtr<ID3D12PipelineState>, PsoKeyHash> psos_;
   std::unordered_map<uint64_t, TextureEntry> textures_;       // key: hash of (addr, dims, format, data, tlut)
+  TextureEntry video_textures_[2][FRAME_SLOTS];
+  uint64_t video_serial_[2][FRAME_SLOTS]{};
+  bool video_layer_logged_[2]{};
+  int draw_video_slot_ = -1;   // video target sampled by the draw currently being submitted
   std::unordered_map<uint32_t, TextureEntry> efb_copies_;     // key: guest dest address
   std::unordered_map<SamplerSetKey, uint32_t, SamplerSetHash> sampler_sets_;  // -> heap slot base
   uint32_t sampler_slots_used_ = 0;
@@ -430,11 +471,12 @@ void D3D12Backend::init() {
 #ifdef _DEBUG
   { ComPtr<ID3D12Debug> dbg; if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dbg)))) dbg->EnableDebugLayer(); }
 #endif
-  if (opts_.pc_settings || opts_.dlss_mode != 0 || opts_.reflex_mode != 0 || opts_.frame_generation_mode != 0) {
+  {
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring dir(exe); size_t slash = dir.find_last_of(L"\\/"); if (slash != std::wstring::npos) dir.resize(slash);
-    streamline::init(dir);
     exe_dir_ = dir;
+    if (opts_.pc_settings || opts_.dlss_mode != 0 || opts_.reflex_mode != 0 || opts_.frame_generation_mode != 0)
+    streamline::init(dir);
   }
   ComPtr<IDXGIFactory4> factory;
   check(streamline::create_dxgi_factory2(0, &IID_PPV_ARGS_Helper_IID<IDXGIFactory4>(), (void**)factory.GetAddressOf()), "factory");
@@ -458,6 +500,18 @@ void D3D12Backend::init() {
     }
   }
   if (!device_) host::die("D3D12: no adapter");
+  D3D12_FEATURE_DATA_D3D12_OPTIONS5 dxr_options{};
+  if (SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5,
+                                             &dxr_options, sizeof(dxr_options))) &&
+      dxr_options.RaytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED &&
+      SUCCEEDED(device_.As(&dxr_device_))) {
+    dxr_tier_ = dxr_options.RaytracingTier;
+    host::log("d3d12: DXR device tier %u detected; GX scene tracing is not active yet",
+              (unsigned)dxr_tier_);
+  } else {
+    dxr_device_.Reset();
+    host::log("d3d12: DXR is unavailable on this adapter/driver");
+  }
   D3D12_COMMAND_QUEUE_DESC qd{}; qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
   check(device_->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue_)), "queue");
   DXGI_SWAP_CHAIN_DESC1 sd{};
@@ -484,6 +538,23 @@ void D3D12Backend::init() {
 
   for (auto& a : allocators_) check(device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&a)), "allocator");
   check(device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocators_[0].Get(), nullptr, IID_PPV_ARGS(&list_)), "list");
+  if (dxr_device_ && FAILED(list_.As(&dxr_list_))) {
+    dxr_device_.Reset();
+    dxr_tier_ = D3D12_RAYTRACING_TIER_NOT_SUPPORTED;
+    host::log("d3d12: command list does not expose the DXR interface; GX scene tracing is unavailable");
+  }
+  if (dxr_device_ && dxr_list_) {
+    std::string dxr_error;
+    if (dxr_path_tracer_.initialize(dxr_device_.Get(), exe_dir_, &dxr_error)) {
+      g_dxr_path_available.store(true, std::memory_order_relaxed);
+      host::log("dxr: GX diffuse path-tracing pass initialized");
+    } else {
+      g_dxr_path_available.store(false, std::memory_order_relaxed);
+      host::log("dxr: path tracing unavailable: %s", dxr_error.c_str());
+    }
+  } else {
+    g_dxr_path_available.store(false, std::memory_order_relaxed);
+  }
   list_->Close();
   check(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_)), "fence");
   fence_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -537,14 +608,14 @@ void D3D12Backend::init() {
   ss.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR; ss.AddressU = ss.AddressV = ss.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
   ss.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
   D3D12_ROOT_PARAMETER bp[2]{};
-  bp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; D3D12_DESCRIPTOR_RANGE br{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0, 0, 0};   // t0 image, t1 current EFB, t2 HUD mask
+  bp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; D3D12_DESCRIPTOR_RANGE br{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0};   // t0 image, t1 current EFB, t2 HUD mask, t3 depth
   bp[0].DescriptorTable = {1, &br}; bp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
   bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 20; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
   D3D12_ROOT_SIGNATURE_DESC brsd{2, bp, 1, &ss, D3D12_ROOT_SIGNATURE_FLAG_NONE};
   check(D3D12SerializeRootSignature(&brsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err), "blit root");
   check(device_->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&blit_root_)), "blit root sig");
   const char* blit = R"(
-Texture2D src : register(t0); Texture2D efb : register(t1); Texture2D hudmask : register(t2); SamplerState samp : register(s0);
+Texture2D src : register(t0); Texture2D efb : register(t1); Texture2D hudmask : register(t2); Texture2D<float> efb_depth : register(t3); SamplerState samp : register(s0);
 // box.z > 0: DLSS HUD composite. Pixels a flat 2D draw wrote this frame (HUD, text, player tags) come
 // from this frame's own render instead of DLSS, which rebuilds from history and ghosted the ticking
 // timer and moving tags; NVIDIA's guide puts UI after DLSS. hudr maps output uv to EFB uv.
@@ -572,6 +643,25 @@ float4 hud(float2 uv, float4 c) {
   float m = hudmask.Sample(samp, e).r;
   return m > 0.0 ? lerp(c, efb.Sample(samp, e), saturate(m)) : c;
 }
+// Optional screen-space ambient occlusion approximation. Melee uses reversed depth (clear = 0),
+// so nearer samples have larger depth. It darkens contact edges only and leaves cleared pixels
+// alone. This is a lightweight display effect, not hardware ray tracing.
+float ao(float2 uv) {
+  if (color.w <= 0.0) return 1.0;
+  float d = efb_depth.Sample(samp, uv).r;
+  if (d <= 0.00001) return 1.0;
+  uint depth_w, depth_h;
+  efb_depth.GetDimensions(depth_w, depth_h);
+  float2 px = 2.0 / max(float2(depth_w, depth_h), 1.0);
+  float2 dirs[8] = {float2(-1,-1), float2(0,-1), float2(1,-1), float2(-1,0), float2(1,0), float2(-1,1), float2(0,1), float2(1,1)};
+  float occ = 0.0;
+  float bias = max(0.0015, d * 0.012);
+  [unroll] for (int k = 0; k < 8; ++k) {
+    float nd = efb_depth.Sample(samp, uv + dirs[k] * px).r;
+    occ += nd > d + bias ? 1.0 : 0.0;
+  }
+  return saturate(1.0 - (occ * 0.125) * color.w);
+}
 // Brightness/contrast/vibrance: a display adjustment over the finished picture, HUD included (a
 // brightness slider that left percentages at native brightness while dimming everything else would
 // read as a bug, not a feature). Neutral at (1,1,1), so this is a no-op when nobody has touched it.
@@ -583,9 +673,16 @@ float3 grade(float3 c) {
   c = lerp(luma.xxx, c, color.z);
   return saturate(c);
 }
+float3 path_to_display(float3 c) {
+  c = saturate(c);
+  return lerp(12.92 * c, 1.055 * pow(c, 1.0 / 2.4) - 0.055, step(0.0031308, c));
+}
 float4 PS(O i) : SV_Target {
-  float4 c = hud(i.uv, downsample(i.uv));
-  if (sharp.z <= 0.0) return float4(grade(c.rgb), c.a);
+  float2 depth_uv = i.uv * hudr.xy + hudr.zw;
+  float4 scene = downsample(i.uv);
+  scene.rgb *= ao(depth_uv);
+  float4 c = hud(i.uv, scene);
+  if (sharp.z <= 0.0) return float4(grade(sharp.w > 0.5 ? path_to_display(c.rgb) : c.rgb), c.a);
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
   float2 step = sharp.xy * max(box.xy, 1.0);
@@ -597,7 +694,7 @@ float4 PS(O i) : SV_Target {
   float3 wgt = amp * peak;
   float3 r = (c.rgb + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt);
   float4 sharpened = hud(i.uv, float4(saturate(r), c.a));
-  return float4(grade(sharpened.rgb), sharpened.a);
+  return float4(grade(sharp.w > 0.5 ? path_to_display(sharpened.rgb) : sharpened.rgb), sharpened.a);
 })";
   ComPtr<ID3DBlob> bvs, bps;
   check(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "VS", "vs_5_0", 0, 0, &bvs, &err), "blit vs");
@@ -770,7 +867,7 @@ void D3D12Backend::configure_dlss() {
   bool want = opts_.dlss_mode != 0 && (xess_active() ? xess::available() : streamline::available());
   if (!want) {
     if (dlss_active_ || forced_scale_) {
-      wait_gpu(); dlss_active_ = false; dlss_in_place_ = false; dlss_mode_active_ = 0; forced_scale_ = 0; dlss_out_.Reset(); dlss_out_w_ = dlss_out_h_ = 0;
+      wait_gpu(); dlss_active_ = false; dlss_in_place_ = false; dlss_mode_active_ = 0; forced_scale_ = 0; dlss_out_.Reset(); dlss_out_w_ = dlss_out_h_ = 0; dlss_hdr_active_ = false;
       set_dlss_mip_bias(0.0f);
       streamline::dlss_set_options(DlssMode::Off, vw, vh);
       if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
@@ -808,7 +905,8 @@ void D3D12Backend::configure_dlss() {
     forced_scale_ = saved;
     out_w = EFB_WIDTH * in_place_scale; out_h = EFB_HEIGHT * in_place_scale;
   }
-  if (dlss_active_ && dlss_mode_active_ == opts_.dlss_mode && (int)dlss_out_w_ == out_w && (int)dlss_out_h_ == out_h) return;
+  if (dlss_active_ && dlss_mode_active_ == opts_.dlss_mode && dlss_hdr_active_ == opts_.path_tracing &&
+      (int)dlss_out_w_ == out_w && (int)dlss_out_h_ == out_h) return;
   uint32_t rw = 0, rh = 0, min_w = 0, min_h = 0, max_w = 0, max_h = 0;
   const bool sized = xess_active()
       ? xess::optimal_size(opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, &rw, &rh, &min_w, &min_h, &max_w, &max_h)
@@ -858,17 +956,19 @@ void D3D12Backend::configure_dlss() {
   wait_gpu();
   forced_scale_ = scale;
   if (pick_scale() != scale_) { host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
-  if (!dlss_out_ || (int)dlss_out_w_ != out_w || (int)dlss_out_h_ != out_h) {
+  if (!dlss_out_ || (int)dlss_out_w_ != out_w || (int)dlss_out_h_ != out_h || dlss_hdr_active_ != opts_.path_tracing) {
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
     D3D12_RESOURCE_DESC rd{};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = out_w; rd.Height = out_h; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
-    rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    rd.Format = opts_.path_tracing ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_R8G8B8A8_UNORM;
+    rd.SampleDesc.Count = 1; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
     dlss_out_.Reset();
     check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(&dlss_out_)), "dlss output");
     dlss_out_w_ = out_w; dlss_out_h_ = out_h;
+    dlss_hdr_active_ = opts_.path_tracing;
   }
   const bool configured = xess_active() ? xess::set_options(opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h)
-                                        : streamline::dlss_set_options((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h);
+                                        : streamline::dlss_set_options((DlssMode)opts_.dlss_mode, (uint32_t)out_w, (uint32_t)out_h, opts_.path_tracing);
   if (!configured) { opts_.dlss_mode = 0; forced_scale_ = 0; dlss_active_ = false; return; }
   dlss_active_ = true; dlss_in_place_ = in_place; dlss_mode_active_ = opts_.dlss_mode; dlss_reset_ = true; xess_reset_ = true; last_poses_.clear();
   // NVIDIA's texture LOD bias for DLSS: log2(render / display) - 1. The -1 samples textures as if at
@@ -1195,6 +1295,133 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
 }
 
 // ---------------- textures ----------------
+ID3D12Resource* D3D12Backend::update_video_texture(
+    const std::shared_ptr<const video_bg::Frame>& frame, int video_slot) {
+  if (!frame || video_slot < 0 || video_slot >= 2 || frame->bgra.empty()) return nullptr;
+  TextureEntry& e = video_textures_[video_slot][slot_];
+  bool created = false;
+  if (!e.resource || e.width != frame->width || e.height != frame->height) {
+    e = TextureEntry{};
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    rd.Width = frame->width; rd.Height = frame->height;
+    rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+    rd.Format = DXGI_FORMAT_B8G8R8A8_UNORM; rd.SampleDesc.Count = 1;
+    const HRESULT hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+          D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&e.resource));
+    if (FAILED(hr)) {
+      char message[96];
+      std::snprintf(message, sizeof message, "D3D12 video texture creation failed (%08X)",
+                    (unsigned)hr);
+      video_bg::report_backend_failure(video_slot, message);
+      e = TextureEntry{};
+    }
+  }
+  if (e.resource && !e.width) {
+    e.width = frame->width; e.height = frame->height; e.levels = 1;
+    video_serial_[video_slot][slot_] = 0;
+    created = true;
+  }
+  bool upload_ok = e.resource != nullptr;
+  if (upload_ok && video_serial_[video_slot][slot_] != frame->serial) {
+    if (!created) {
+      D3D12_RESOURCE_BARRIER to_copy{};
+      to_copy.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      to_copy.Transition = {e.resource.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                            D3D12_RESOURCE_STATE_COPY_DEST};
+      list_->ResourceBarrier(1, &to_copy);
+    }
+    const uint32_t pitch = (frame->width * 4 + 255) & ~255u;
+    uint8_t* cpu = nullptr; D3D12_GPU_VIRTUAL_ADDRESS gpu = 0;
+    if (!upload_ring_.alloc((size_t)pitch * frame->height, 512, &cpu, &gpu)) {
+      video_bg::report_backend_failure(video_slot, "D3D12 video upload allocation failed");
+      if (created) {
+        e = TextureEntry{};
+      } else {
+        D3D12_RESOURCE_BARRIER to_sample{};
+        to_sample.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        to_sample.Transition = {e.resource.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                                D3D12_RESOURCE_STATE_COPY_DEST,
+                                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+        list_->ResourceBarrier(1, &to_sample);
+      }
+      upload_ok = false;
+    }
+    if (upload_ok) {
+      for (uint32_t y = 0; y < frame->height; ++y)
+        std::memcpy(cpu + (size_t)y * pitch,
+                    frame->bgra.data() + (size_t)y * frame->width * 4,
+                    (size_t)frame->width * 4);
+      D3D12_TEXTURE_COPY_LOCATION dst{e.resource.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX};
+      D3D12_TEXTURE_COPY_LOCATION src{upload_ring_.resource(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+      src.PlacedFootprint.Offset = gpu - upload_ring_.resource()->GetGPUVirtualAddress();
+      src.PlacedFootprint.Footprint = {DXGI_FORMAT_B8G8R8A8_UNORM, frame->width,
+                                      frame->height, 1, pitch};
+      list_->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+      D3D12_RESOURCE_BARRIER to_sample{};
+      to_sample.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+      to_sample.Transition = {e.resource.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                              D3D12_RESOURCE_STATE_COPY_DEST,
+                              D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+      list_->ResourceBarrier(1, &to_sample);
+      video_serial_[video_slot][slot_] = frame->serial;
+    }
+  }
+  if (!upload_ok) return nullptr;
+  e.last_used = frame_counter_;
+  return e.resource.Get();
+}
+
+void D3D12Backend::draw_video_background(
+    const std::shared_ptr<const video_bg::Frame>& frame, int video_slot,
+    const EfbCopy& screen) {
+  ID3D12Resource* video = update_video_texture(frame, video_slot);
+  if (!video) return;
+
+  const uint32_t base = reserve_srvs(4);
+  D3D12_CPU_DESCRIPTOR_HANDLE cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart();
+  for (int i = 0; i < 4; ++i) {
+    D3D12_CPU_DESCRIPTOR_HANDLE h = cpu; h.ptr += (base + i) * srv_size_;
+    D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
+    sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    sd.Texture2D.MipLevels = 1;
+    device_->CreateShaderResourceView(video, &sd, h);
+  }
+  D3D12_GPU_DESCRIPTOR_HANDLE gpu = srv_heap_->GetGPUDescriptorHandleForHeapStart();
+  gpu.ptr += base * srv_size_;
+
+  D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
+  rtv.ptr += 3 * rtv_size_;
+  list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+  const float s = (float)scale_;
+  D3D12_VIEWPORT vp{screen.src_x * s, screen.src_y * s,
+                    screen.src_w * s, screen.src_h * s, 0, 1};
+  D3D12_RECT sc{(LONG)(screen.src_x * scale_), (LONG)(screen.src_y * scale_),
+                (LONG)((screen.src_x + screen.src_w) * scale_),
+                (LONG)((screen.src_y + screen.src_h) * scale_)};
+  list_->RSSetViewports(1, &vp);
+  list_->RSSetScissorRects(1, &sc);
+  list_->SetPipelineState(blit_pso_.Get());
+  list_->SetGraphicsRootSignature(blit_root_.Get());
+  list_->SetGraphicsRootDescriptorTable(0, gpu);
+  // Media Foundation's decoded rows are top-down while this EFB blit samples V in the opposite
+  // direction. Flip only the presentation layer; guest textures and ordinary EFB blits retain
+  // their existing orientation.
+  const float rect[20] = {1, -1, 0, 1,
+                          1.0f / frame->width, 1.0f / frame->height, 0, 0,
+                          1, 1, 0, 0,
+                          0, 0, 0, 0,
+                          1, 1, 1, 0};
+  list_->SetGraphicsRoot32BitConstants(1, 20, rect, 0);
+  list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+  list_->DrawInstanced(3, 1, 0, 0);
+  bind_efb_targets();
+}
+
 ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint32_t* h) {
   auto ec = efb_copies_.find(t.addr);
   if (ec != efb_copies_.end() && ec->second.resource) {
@@ -1203,6 +1430,23 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
     return ec->second.resource.Get();
   }
   if (!t.data) return nullptr;
+  // One dynamic resource per menu and frame-in-flight slot. The slot fence has completed before
+  // this function runs, so updating this slot cannot overwrite pixels an older GPU frame samples.
+  std::string video_name;
+  if (video_bg::wants_texture_names()) {
+    video_name = texpack::base_name(t, *t.data);
+    int video_slot = -1;
+    std::shared_ptr<const video_bg::Frame> frame =
+        video_bg::lookup(video_name, t.width, t.height, &video_slot);
+    if (frame && video_slot >= 0 && video_slot < 2 && !frame->bgra.empty()) {
+      ID3D12Resource* video = update_video_texture(frame, video_slot);
+      if (video) {
+        draw_video_slot_ = video_slot;
+        *w = frame->width; *h = frame->height;
+        return video;
+      }
+    }
+  }
   const uint8_t* src = t.data->image.data();
   uint32_t lw = t.width, lh = t.height;
   const uint32_t meta[] = {t.width, t.height, t.format, t.mip_levels, t.tlut_format};
@@ -1210,18 +1454,19 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
   auto it = textures_.find(key);
   if (it != textures_.end()) { it->second.last_used = frame_counter_; *w = it->second.width; *h = it->second.height; return it->second.resource.Get(); }
 
-  // Custom texture pack: Dolphin's name for this texture, then its PNG if the pack has one. Both
-  // the name and the lookup happen once per unique texture (this is the cache-miss path), never
-  // per draw. With the setting off neither runs and no file is opened.
+  // Custom texture pack or launch-scoped cosmetic companion: Dolphin's name for this texture,
+  // then its PNG if either source has one. Both happen once per unique texture (this is the
+  // cache-miss path), never per draw. Cosmetic companions stay active independently of the
+  // general-purpose texture-pack toggle.
   std::string pack_name;
   std::unique_ptr<texpack::Replacement> replacement;
-  if (texpack::enabled() || texpack::dumping()) {
-    pack_name = texpack::base_name(t, *t.data);
-    if (texpack::enabled() && texpack::has(pack_name) && !texpack::ready(pack_name)) {
+  if (texpack::enabled() || texpack::dumping() || texpack::cosmetics_enabled()) {
+    pack_name = video_name.empty() ? texpack::base_name(t, *t.data) : video_name;
+    if (texpack::has(pack_name) && !texpack::ready(pack_name)) {
       // Not decoded yet: draw the original now and load the replacement in the background.
       texpack::request(pack_name);
       pending_hd_[key] = pack_name;
-    } else if (texpack::enabled()) {
+    } else if (texpack::has(pack_name)) {
       replacement = texpack::load(pack_name, replacement_bytes_ < replacement_budget_
                                                  ? replacement_budget_ - replacement_bytes_ : 0);
       texpack::note_lookup(replacement != nullptr);
@@ -1318,7 +1563,8 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_textures(const DrawCall& dc) {
     for (int i = 0; i < 8; ++i) {
       D3D12_CPU_DESCRIPTOR_HANDLE h = cpu; h.ptr += (base + i) * srv_size_;
       D3D12_SHADER_RESOURCE_VIEW_DESC sd{};
-      sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+      sd.Format = resources[i] ? resources[i]->GetDesc().Format : DXGI_FORMAT_R8G8B8A8_UNORM;
+      sd.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
       sd.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
       sd.Texture2D.MipLevels = resources[i] ? -1 : 1;
       device_->CreateShaderResourceView(resources[i], &sd, h);
@@ -1376,32 +1622,23 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   // Build index list (triangle list / line list) from the GX primitive.
   Stopwatch sw;
   auto& idx = index_scratch_; idx.clear();
-  uint32_t n = dc.vertex_count;
+  const uint32_t n = dc.vertex_count;
   D3D12_PRIMITIVE_TOPOLOGY_TYPE topo = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   D3D12_PRIMITIVE_TOPOLOGY prim = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
-  switch (dc.primitive) {
-    case 0x80: case 0x88:
-      for (uint32_t i = 0; i + 3 < n; i += 4) { idx.insert(idx.end(), {i, i + 1, i + 2, i, i + 2, i + 3}); }
-      break;
-    case 0x90:
-      for (uint32_t i = 0; i + 2 < n; i += 3) idx.insert(idx.end(), {i, i + 1, i + 2});
-      break;
-    case 0x98:
-      for (uint32_t i = 2; i < n; ++i) { if (i & 1) idx.insert(idx.end(), {i - 1, i - 2, i}); else idx.insert(idx.end(), {i - 2, i - 1, i}); }
-      break;
-    case 0xA0:
-      for (uint32_t i = 2; i < n; ++i) idx.insert(idx.end(), {0, i - 1, i});
-      break;
-    case 0xA8:
-      topo = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE; prim = D3D_PRIMITIVE_TOPOLOGY_LINELIST;
-      for (uint32_t i = 0; i + 1 < n; i += 2) idx.insert(idx.end(), {i, i + 1});
-      break;
-    case 0xB0:
-      topo = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE; prim = D3D_PRIMITIVE_TOPOLOGY_LINELIST;
-      for (uint32_t i = 1; i < n; ++i) idx.insert(idx.end(), {i - 1, i});
-      break;
-    default:
-      return;  // points not supported yet
+  auto append_indices = [&](uint32_t primitive, uint32_t count, uint32_t base) {
+    if (append_segment_indices(idx, primitive, count, base) == DrawTopology::Lines) {
+      topo = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
+      prim = D3D_PRIMITIVE_TOPOLOGY_LINELIST;
+    }
+  };
+  if (dc.segment_count && dc.first_segment <= frame.segments.size() &&
+      dc.segment_count <= frame.segments.size() - dc.first_segment) {
+    for (uint32_t s = 0; s < dc.segment_count; ++s) {
+      const DrawSegment& segment = frame.segments[dc.first_segment + s];
+      append_indices(segment.primitive, segment.vertex_count, segment.first_vertex - dc.first_vertex);
+    }
+  } else {
+    append_indices(dc.primitive, dc.vertex_count, 0);
   }
   if (idx.empty()) return;
   ++g_prof_draws; g_prof[0] += sw.lap();   // index generation
@@ -1531,9 +1768,9 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   }
   e.last_used = frame_counter_;
   if (c.half_scale) {
-    uint32_t slot = reserve_srvs(3);
+    uint32_t slot = reserve_srvs(4);
     D3D12_CPU_DESCRIPTOR_HANDLE sh_cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart(); sh_cpu.ptr += slot * srv_size_;
-    for (int k = 0; k < 3; ++k) { D3D12_CPU_DESCRIPTOR_HANDLE hk = sh_cpu; hk.ptr += k * srv_size_; device_->CreateShaderResourceView(efb_color_.Get(), nullptr, hk); }
+    for (int k = 0; k < 4; ++k) { D3D12_CPU_DESCRIPTOR_HANDLE hk = sh_cpu; hk.ptr += k * srv_size_; device_->CreateShaderResourceView(efb_color_.Get(), nullptr, hk); }
     D3D12_GPU_DESCRIPTOR_HANDLE sh_gpu = srv_heap_->GetGPUDescriptorHandleForHeapStart(); sh_gpu.ptr += slot * srv_size_;
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += 4 * rtv_size_;  // transient slot
     device_->CreateRenderTargetView(e.resource.Get(), nullptr, rtv);
@@ -1570,14 +1807,40 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   list_->ResourceBarrier(2, back);
 }
 
-void D3D12Backend::present_efb(const EfbCopy& c) {
+void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   UINT bb = swapchain_->GetCurrentBackBufferIndex();
+  ID3D12Resource* path_color = nullptr;
+  if (opts_.path_tracing && dxr_scene && dxr_path_tracer_.ready()) {
+    D3D12_RESOURCE_BARRIER to_trace{};
+    to_trace.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    to_trace.Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET,
+                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE};
+    list_->ResourceBarrier(1, &to_trace);
+    std::string error;
+    if (dxr_path_tracer_.dispatch(dxr_list_.Get(), (unsigned)slot_, dxr_gpu_scene_, *dxr_scene,
+                                  efb_color_.Get(), (uint32_t)efb_w_, (uint32_t)efb_h_,
+                                  (uint32_t)frame_counter_, 0.18f, 1, 3, &error)) {
+      path_color = dxr_path_tracer_.color((unsigned)slot_);
+      if (!dxr_path_logged_) {
+        host::log("dxr: hybrid diffuse path pass dispatched (%ux%u, %zu triangles, 1 sample, 3 bounces)",
+                  (unsigned)efb_w_, (unsigned)efb_h_, dxr_scene->indices.size() / 3);
+        dxr_path_logged_ = true;
+      }
+    } else if (frame_counter_ % 120 == 0) {
+      host::log("dxr: path-tracing dispatch skipped: %s", error.c_str());
+    }
+    std::swap(to_trace.Transition.StateBefore, to_trace.Transition.StateAfter);
+    list_->ResourceBarrier(1, &to_trace);
+    ID3D12DescriptorHeap* gx_heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
+    list_->SetDescriptorHeaps(2, gx_heaps);
+  }
   // DLSS: upscale the jittered EFB region (with depth and motion vectors) into the output texture first.
   bool upscaled = false;
   // Menus skip the upscaler and are presented from the EFB like native (see dlss_in_match_).
   if (dlss_active_ && dlss_out_ && (dlss_in_match_ || dlss_menus_)) {
     streamline::EvaluateInputs in{};
-    in.color_in = efb_color_.Get(); in.color_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    in.color_in = path_color ? path_color : efb_color_.Get();
+    in.color_state = path_color ? (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) : D3D12_RESOURCE_STATE_RENDER_TARGET;
     in.depth = efb_depth_.Get(); in.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     in.mvec = mvec_.Get(); in.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     in.hud_mask = hud_mask_.Get(); in.hud_mask_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -1609,7 +1872,23 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
       for (auto& b : xb) std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
       list_->ResourceBarrier(3, xb);
     } else {
-      upscaled = streamline::evaluate(list_.Get(), in);
+      if (opts_.ray_reconstruction && path_color && streamline::ray_reconstruction_available()) {
+        streamline::RayReconstructionInputs rr{};
+        rr.color_in = path_color; rr.color_state = in.color_state;
+        rr.depth = in.depth; rr.depth_state = in.depth_state;
+        rr.mvec = in.mvec; rr.mvec_state = in.mvec_state;
+        rr.albedo = dxr_path_tracer_.albedo((unsigned)slot_);
+        rr.albedo_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        rr.specular_albedo = dxr_path_tracer_.specular_albedo((unsigned)slot_);
+        rr.specular_albedo_state = rr.albedo_state;
+        rr.normal_roughness = dxr_path_tracer_.normal_roughness((unsigned)slot_);
+        rr.normal_roughness_state = rr.albedo_state;
+        rr.color_out = dlss_out_.Get(); rr.out_state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        rr.in_left = in.in_left; rr.in_top = in.in_top; rr.in_w = in.in_w; rr.in_h = in.in_h;
+        rr.out_w = in.out_w; rr.out_h = in.out_h;
+        upscaled = streamline::evaluate_ray_reconstruction(list_.Get(), rr);
+      }
+      if (!upscaled) upscaled = streamline::evaluate(list_.Get(), in);
     }
     if (timing) { list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 1); timer_mask_[slot_] |= 1; }
     if (!upscaled && ++dlss_failures_ >= 30) {
@@ -1665,8 +1944,9 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   static const bool debug_show_input = [] { const char* e = std::getenv("MELEE_DEBUG_DLSS_INPUT_ODD"); return e && e[0] == '1'; }();
   if (debug_show_input && upscaled && dlss_in_place_ && (frames_presented_ & 1)) upscaled = false;
   if (opts_.flicker_scan) record_flicker_scan();
-  ID3D12Resource* source = upscaled ? dlss_out_.Get() : efb_color_.Get();
-  D3D12_RESOURCE_STATES source_state = upscaled ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS : D3D12_RESOURCE_STATE_RENDER_TARGET;
+  ID3D12Resource* source = upscaled ? dlss_out_.Get() : (path_color ? path_color : efb_color_.Get());
+  D3D12_RESOURCE_STATES source_state = upscaled ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS :
+      path_color ? (D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE) : D3D12_RESOURCE_STATE_RENDER_TARGET;
   // With DLSS the current EFB and the HUD mask are read too (HUD composite).
   const bool hud_composite = upscaled && hud_mask_;
   D3D12_RESOURCE_BARRIER b[4]{};
@@ -1679,13 +1959,24 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   b[3].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[3].Transition = {hud_composite ? hud_mask_.Get() : nullptr, 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
   list_->ResourceBarrier(hud_composite ? 4 : 2, b);
-  // SRVs: the presented image, then (DLSS HUD composite) the current EFB and the HUD mask.
-  uint32_t slot = reserve_srvs(3);
+  D3D12_RESOURCE_BARRIER depth_barrier{};
+  depth_barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  depth_barrier.Transition = {efb_depth_.Get(), 0, D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+  list_->ResourceBarrier(1, &depth_barrier);
+  // SRVs: presented image, HUD composite inputs, and the current reversed-depth buffer for SSAO.
+  uint32_t slot = reserve_srvs(4);
   D3D12_CPU_DESCRIPTOR_HANDLE h = srv_heap_->GetCPUDescriptorHandleForHeapStart(); h.ptr += slot * srv_size_;
   device_->CreateShaderResourceView(source, nullptr, h);
   { D3D12_CPU_DESCRIPTOR_HANDLE h1 = h; h1.ptr += srv_size_; D3D12_CPU_DESCRIPTOR_HANDLE h2 = h1; h2.ptr += srv_size_;
     device_->CreateShaderResourceView(hud_composite ? efb_color_.Get() : source, nullptr, h1);
     device_->CreateShaderResourceView(hud_composite ? hud_mask_.Get() : source, nullptr, h2); }
+  { D3D12_CPU_DESCRIPTOR_HANDLE h3 = h; h3.ptr += 3 * srv_size_;
+    D3D12_SHADER_RESOURCE_VIEW_DESC depth_srv{};
+    depth_srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    depth_srv.Format = DXGI_FORMAT_R32_FLOAT;
+    depth_srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    depth_srv.Texture2D.MipLevels = 1;
+    device_->CreateShaderResourceView(efb_depth_.Get(), &depth_srv, h3); }
   D3D12_GPU_DESCRIPTOR_HANDLE g = srv_heap_->GetGPUDescriptorHandleForHeapStart(); g.ptr += slot * srv_size_;
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += bb * rtv_size_;
   float border[4] = {0, 0, 0, 1};   // letterbox/pillarbox bars (black, as on Dolphin and a TV)
@@ -1694,6 +1985,7 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   // Letterbox the output at the game's aspect (XFB region c.src_w x lines); the widescreen
   // setting also drives the Slippi code on the simulation side.
   if (opts_.widescreen != widescreen_sent_) { widescreen_sent_ = opts_.widescreen; slippi::request_widescreen(opts_.widescreen); }
+  if (opts_.fod_reflections != fod_reflections_sent_) { fod_reflections_sent_ = opts_.fod_reflections; slippi::request_fod_reflections(opts_.fod_reflections); }
   // The Gecko code wins if both are somehow set, so the two can never widen the same frame twice.
   set_true_widescreen(opts_.true_widescreen && !opts_.widescreen);
   float src_h_lines = (float)c.src_h * c.y_scale;
@@ -1713,12 +2005,12 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   const bool fills_output = upscaled && !dlss_in_place_;
   float src_w = upscaled ? (float)dlss_out_w_ : (float)efb_w_, src_h = upscaled ? (float)dlss_out_h_ : (float)efb_h_;
   float rect[20] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                    1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
+                    1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), path_color ? 1.0f : 0.0f,
                     1.0f, 1.0f, hud_composite ? 1.0f : 0.0f, std::getenv("MELEE_DEBUG_HUDMASK") ? 1.0f : 0.0f,
                     // Output uv to EFB uv: DLAA's image already is EFB-sized, so identity there.
                     dlss_in_place_ ? 1.0f : (float)c.src_w / EFB_WIDTH, dlss_in_place_ ? 1.0f : (float)c.src_h / EFB_HEIGHT,
                     dlss_in_place_ ? 0.0f : (float)c.src_x / EFB_WIDTH, dlss_in_place_ ? 0.0f : (float)c.src_y / EFB_HEIGHT,
-                    opts_.brightness, opts_.contrast, opts_.vibrance, 0.0f};
+                    opts_.brightness, opts_.contrast, opts_.vibrance, opts_.screen_space_ao};
   // Averaging box when the rendered image is larger than the output. The two axes shrink by
   // different amounts (the picture is letterboxed to 16:9 inside the window), so they get their
   // own tap counts; using the horizontal count for both left vertical edges aliasing.
@@ -1735,6 +2027,8 @@ void D3D12Backend::present_efb(const EfbCopy& c) {
   list_->SetGraphicsRoot32BitConstants(1, 20, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
+  std::swap(depth_barrier.Transition.StateBefore, depth_barrier.Transition.StateAfter);
+  list_->ResourceBarrier(1, &depth_barrier);
 #ifdef GX_PC_SETTINGS
   if (settings_ui_) {
     settings_ui_->draw(list_.Get());
@@ -1983,6 +2277,8 @@ static void dump_frame(const Frame& frame, const std::string& path) {
 }
 
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
+  video_bg::set_enabled(opts_.video_backgrounds);
+  video_bg::begin_frame(frame.scene_major, frame.scene_minor);
   in_match_ = frame_in_match(frame);
   widenable_scene_ = frame_has_widenable_scene(frame);
   integrate_compiled_psos();
@@ -2000,7 +2296,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // A texture pack was switched on or off in the panel: everything already uploaded was built with
   // the old set, so drop it and let the next draw rebuild what it needs.
   if (settings_ui_ && settings_textures_dirty()) { wait_gpu(); textures_.clear(); texture_sets_.clear(); }
-  if (settings_ui_) settings_set_game_aspect(output_aspect());
+  if (settings_ui_) { settings_set_game_aspect(output_aspect()); settings_set_hud_snapshot(frame); }
   if (settings_ui_ && settings_ui_->begin(opts_)) {
     apply_fullscreen_mode();
     if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
@@ -2041,6 +2337,14 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // The fallback PSO keeps the draw alive while the worker publishes the real one.
   pso_wait_budget_us_ = 0;
   ++frame_counter_;
+  // Opt-in hardware-build probe: capture and upload one real match scene every two seconds.
+  // Kept off in ordinary sessions until the ray dispatch and shading path are integrated.
+  static const bool dxr_scene_diag = [] {
+    const char* value = std::getenv("MELEE_DXR_SCENE_DIAG");
+    return value && *value == '1';
+  }();
+  const bool dxr_scene_diag_frame = dxr_device_ && dxr_list_ && dxr_scene_diag && in_match_ &&
+                                    frame_counter_ % 120 == 0;
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
   slot_ = (int)(frame_counter_ % FRAME_SLOTS);
   wait_fence(slot_fence_[slot_]);   // this slot's previous frame (FRAME_SLOTS frames ago) is complete
@@ -2054,6 +2358,36 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   check(list_->Reset(allocators_[slot_].Get(), nullptr), "list reset");
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
   list_->SetDescriptorHeaps(2, heaps);
+  DxrScene dxr_scene;
+  bool dxr_scene_ready = false;
+  if (dxr_device_ && dxr_list_ && dxr_path_tracer_.ready() && in_match_ &&
+      (opts_.path_tracing || dxr_scene_diag_frame)) {
+    if (build_dxr_scene(frame, dxr_scene, overrides)) {
+      std::string error;
+      dxr_scene_ready = dxr_gpu_scene_.build(dxr_scene, (unsigned)slot_, dxr_device_.Get(), dxr_list_.Get(), &error);
+      if (opts_.path_tracing && dxr_scene_ready && !dxr_scene_logged_) {
+        host::log("dxr: match scene captured (%zu draw batches, %zu triangles)",
+                  dxr_scene.geometries.size(), dxr_scene.indices.size() / 3);
+        dxr_scene_logged_ = true;
+      }
+      if (opts_.path_tracing && !dxr_scene_ready && !dxr_scene_failure_logged_) {
+        host::log("dxr: match scene acceleration-structure build failed: %s", error.c_str());
+        dxr_scene_failure_logged_ = true;
+      }
+      if (dxr_scene_diag_frame && dxr_scene_ready) {
+        host::log("dxr-scene-probe: frame %llu, camera draw %u, %zu geometries, %zu vertices, %zu triangles; GPU BLAS/TLAS recorded",
+                  (unsigned long long)frame_counter_, dxr_scene.camera_draw, dxr_scene.geometries.size(),
+                  dxr_scene.vertices.size(), dxr_scene.indices.size() / 3);
+      } else if (dxr_scene_diag_frame && !dxr_scene_ready) {
+        host::log("dxr-scene-probe: frame %llu, %zu vertices, %zu triangles; GPU AS build failed: %s",
+                  (unsigned long long)frame_counter_, dxr_scene.vertices.size(), dxr_scene.indices.size() / 3,
+                  error.c_str());
+      }
+    } else if (dxr_scene_diag_frame) {
+      host::log("dxr-scene-probe: frame %llu has no valid match geometry",
+                (unsigned long long)frame_counter_);
+    }
+  }
   bind_efb_targets();
   if (dlss_active_) {
     D3D12_CPU_DESCRIPTOR_HANDLE mrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); mrtv.ptr += 5 * rtv_size_;
@@ -2082,7 +2416,6 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     fc.render_w = 640 * scale_; fc.render_h = 480 * scale_;
     fc.reset = dlss_reset_; dlss_reset_ = false;
     if (!xess_active()) streamline::set_constants(fc);
-    if (frame_counter_ % 600 == 0) streamline::log_frame_generation();
     if (frame_counter_ % 600 == 0 && mv_draws_) { host::log("dlss: %.1f%% of draws had a previous pose (%llu of %llu)", 100.0 * mv_matched_ / mv_draws_, (unsigned long long)mv_matched_, (unsigned long long)mv_draws_); mv_draws_ = mv_matched_ = 0; }
     if (frame_counter_ % 600 == 0) for (auto it = last_poses_.begin(); it != last_poses_.end();) { if (it->second.frame + 4 < frame_counter_) it = last_poses_.erase(it); else ++it; }
   }
@@ -2091,7 +2424,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // latency reading, and that keeps working at Native so there is something to compare On against.
   if (!dlss_active_ && streamline::reflex_available()) streamline::new_frame((uint32_t)frame_counter_);
   {
-    const int want_fg = opts_.frame_generation_mode > 0 && dlss_active_ && !xess_active() && streamline::frame_generation_available()
+    // DLSS-G is only valid while Melee is drawing a running 3D match. Keep it off during
+    // menus, loading screens, and results; those frames do not have usable motion/depth inputs.
+    const int want_fg = opts_.frame_generation_mode > 0 && in_match_ && dlss_active_ && !xess_active() && streamline::frame_generation_available()
                         ? opts_.frame_generation_mode : 0;
     // Frame generation needs Reflex on: it takes at least "On" while frame generation runs.
     const int want_reflex = streamline::reflex_available() ? std::max(opts_.reflex_mode, want_fg ? 1 : 0) : 0;
@@ -2101,17 +2436,59 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     // separate thing from being told how long a frame is taking.
     if (streamline::reflex_available() && (frame_counter_ % 30) == 0) streamline::update_reflex_stats();
     if (want_reflex && (frame_counter_ % 600) == 0) host::log("reflex: render latency %.2f ms", streamline::reflex_latency_ms());
-    if (want_fg != fg_applied_) { streamline::set_frame_generation(want_fg); fg_applied_ = want_fg; }
+    if (want_fg != fg_applied_) {
+      streamline::set_frame_generation(want_fg, (uint32_t)efb_w_, (uint32_t)efb_h_, (uint32_t)client_w_,
+                                       (uint32_t)client_h_, 3, (uint32_t)DXGI_FORMAT_R8G8B8A8_UNORM,
+                                       (uint32_t)DXGI_FORMAT_R16G16_FLOAT, (uint32_t)DXGI_FORMAT_R32_FLOAT);
+      fg_applied_ = want_fg;
+    }
   }
   streamline::pcl_marker(0); streamline::pcl_marker(1); streamline::pcl_marker(2);
   if (have_clear_) { clear_efb(pending_clear_); have_clear_ = false; }
+  const EfbCopy* screen = nullptr;
+  for (const EfbCopy& copy : frame.copies) if (copy.to_xfb) screen = &copy;
+  int fullscreen_slot = -1;
+  std::shared_ptr<const video_bg::Frame> fullscreen = video_bg::fullscreen_frame(&fullscreen_slot);
+  const bool css_fullscreen = fullscreen && fullscreen_slot == 0 && screen;
+  unsigned leading_untextured_draws = 0;
+  bool background_drawn = false;
   bool presented = false;
   for (const FrameCommand& cmd : frame.commands) {
     if (cmd.kind == FrameCommand::Draw) {
-      execute_draw(frame, frame.draws[cmd.index], overrides ? overrides + cmd.index : nullptr);
+      const DrawCall& dc = frame.draws[cmd.index];
+      if (css_fullscreen && !background_drawn) {
+        bool textured = false;
+        for (const TextureRef& texture : dc.textures) textured |= texture.used;
+        if (!textured) {
+          ++leading_untextured_draws;
+        } else if (video_bg::learning::should_insert_fullscreen_layer(
+                       fullscreen_slot, leading_untextured_draws, textured)) {
+          draw_video_background(fullscreen, fullscreen_slot, *screen);
+          background_drawn = true;
+          if (!video_layer_logged_[fullscreen_slot]) {
+            host::log("video backgrounds: CSS full-screen layer inserted after %u hardcoded background draws (D3D12)",
+                      leading_untextured_draws);
+            video_layer_logged_[fullscreen_slot] = true;
+          }
+        }
+      }
+      draw_video_slot_ = -1;
+      execute_draw(frame, dc, overrides ? overrides + cmd.index : nullptr);
+      // The SSS backdrop's guest material tints arbitrary footage blue/purple. Keep the learned
+      // texture draw as the precise layer marker, then cover only that completed backdrop with the
+      // untinted frame. Every stage icon, line and cursor is drawn afterwards, matching MnSlMap
+      // background mods while accepting any MP4.
+      if (fullscreen && screen && fullscreen_slot == 1 && draw_video_slot_ == 1 && !background_drawn) {
+        draw_video_background(fullscreen, fullscreen_slot, *screen);
+        background_drawn = true;
+        if (!video_layer_logged_[fullscreen_slot]) {
+          host::log("video backgrounds: SSS full-screen layer composited after learned backdrop draw (D3D12)");
+          video_layer_logged_[fullscreen_slot] = true;
+        }
+      }
     } else {
       const EfbCopy& c = frame.copies[cmd.index];
-      if (c.to_xfb) { if (!skip_present_) { present_efb(c); presented = true; } }
+      if (c.to_xfb) { if (!skip_present_) { present_efb(c, dxr_scene_ready ? &dxr_scene : nullptr); presented = true; } }
       else execute_copy(c);
       if (c.clear) clear_efb(c);
     }
@@ -2136,6 +2513,8 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     swapchain_->Present(opts_.vsync ? 1 : 0, (!opts_.vsync && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
     streamline::pcl_marker(5);
     ++frames_presented_;
+    streamline::frame_generation_after_present();
+    if (frames_presented_ % 600 == 0) streamline::log_frame_generation();
   }
   // Signal, do not wait: the next frames render while the GPU finishes this one.
   ++fence_value_;

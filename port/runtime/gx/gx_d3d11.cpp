@@ -46,8 +46,11 @@
 #include "gx_shader.h"
 #include "gx_texture.h"
 #include "texture_pack.h"
+#include "video_background.h"
+#include "video_background_learning.h"
 #include "host.h"
 #include "window.h"
+#include "gecko_data.h"
 #ifdef GX_PC_SETTINGS
 #include "pc_settings.h"
 #endif
@@ -233,6 +236,7 @@ class D3D11Backend : public Backend {
 #ifdef GX_PC_SETTINGS
       if (opts_.pc_settings) settings_ui_ = std::make_unique<PcSettingsUID3D11>(hwnd, device_.Get(), context_.Get(), opts_);
 #endif
+      set_hud_scales(opts_.stock_hud_scale, opts_.damage_hud_scale, gecko::option_pal_stock_icons);
     } catch (...) { stop_shader_workers(); throw; }   // the worker threads must not outlive a failed start
     starting_ = false;
   }
@@ -311,13 +315,17 @@ class D3D11Backend : public Backend {
   void save_shader_blob(const std::string& path, ID3DBlob* blob);
 
   // ---- resources ----
+  TextureEntry* update_video_texture(const std::shared_ptr<const video_bg::Frame>& frame,
+                                     int video_slot);
+  void draw_video_background(const std::shared_ptr<const video_bg::Frame>& frame,
+                             int video_slot, const EfbCopy& screen);
   TextureEntry* get_texture(const TextureRef& t);
   ID3D11SamplerState* get_sampler(uint32_t mode0, uint32_t mode1);
   void bind_textures(const DrawCall& dc);
   void execute_copy(const EfbCopy& copy);
   void present_efb(const EfbCopy& copy);
   void clear_efb(const EfbCopy& copy);
-  void blit(ID3D11ShaderResourceView* src, const float rect[16]);
+  void blit(ID3D11ShaderResourceView* src, const float rect[16], ID3D11ShaderResourceView* depth = nullptr);
   void capture_backbuffer();
   void write_capture(const std::string& path, uint64_t sequence);
   void flush_captures();
@@ -332,6 +340,7 @@ class D3D11Backend : public Backend {
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
   bool skip_present_ = false;
   bool widescreen_sent_ = false;
+  bool fod_reflections_sent_ = false;
   int anisotropy_applied_ = 0, ssaa_applied_ = 0;
   bool allow_tearing_ = false;
   bool constant_offsetting_ = false;
@@ -344,6 +353,7 @@ class D3D11Backend : public Backend {
   ComPtr<ID3D11Texture2D> efb_color_, efb_depth_;
   ComPtr<ID3D11RenderTargetView> efb_rtv_;
   ComPtr<ID3D11ShaderResourceView> efb_srv_;
+  ComPtr<ID3D11ShaderResourceView> efb_depth_srv_;
   ComPtr<ID3D11DepthStencilView> efb_dsv_;
   ComPtr<ID3D11InputLayout> layout_;
   ComPtr<ID3D11VertexShader> blit_vs_, clear_vs_;
@@ -373,6 +383,10 @@ class D3D11Backend : public Backend {
   std::unordered_map<uint32_t, ComPtr<ID3D11RasterizerState>> raster_states_;
   std::unordered_map<SamplerKey, ComPtr<ID3D11SamplerState>, SamplerKeyHash> samplers_;
   std::unordered_map<uint64_t, TextureEntry> textures_;
+  TextureEntry video_textures_[2];
+  uint64_t video_serial_[2]{};
+  bool video_layer_logged_[2]{};
+  int draw_video_slot_ = -1;   // video target sampled by the draw currently being submitted
   std::unordered_map<uint32_t, TextureEntry> efb_copies_;
   // Diagnostic for the Fountain of Dreams reflection, which exists only as an EFB copy: the stage
   // renders a mirrored camera pass, copies it into an 80x60 image, and the water samples that
@@ -517,8 +531,8 @@ void D3D11Backend::init() {
   // Blit (EFB -> back buffer, and the half-scale EFB copy). Identical HLSL to the D3D12 backend,
   // with the root constants replaced by a constant buffer.
   const char* blit = R"(
-Texture2D src : register(t0); SamplerState samp : register(s0);
-cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 color; };  // color: brightness, contrast, vibrance
+Texture2D src : register(t0); Texture2D<float> efb_depth : register(t3); SamplerState samp : register(s0);
+cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 color; };  // color: brightness, contrast, vibrance, SSAO strength
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
 // Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
@@ -535,8 +549,25 @@ float4 downsample(float2 uv) {
       acc += src.Sample(samp, uv + (float2(x, y) + 0.5) / float2(nx, ny) * foot - 0.5 * foot);
   return acc / (nx * ny);
 }
+float ao(float2 uv) {
+  if (color.w <= 0.0) return 1.0;
+  float d = efb_depth.Sample(samp, uv).r;
+  if (d <= 0.00001) return 1.0;
+  uint depth_w, depth_h;
+  efb_depth.GetDimensions(depth_w, depth_h);
+  float2 px = 2.0 / max(float2(depth_w, depth_h), 1.0);
+  float2 dirs[8] = {float2(-1,-1), float2(0,-1), float2(1,-1), float2(-1,0), float2(1,0), float2(-1,1), float2(0,1), float2(1,1)};
+  float occ = 0.0;
+  float bias = max(0.0015, d * 0.012);
+  [unroll] for (int k = 0; k < 8; ++k) {
+    float nd = efb_depth.Sample(samp, uv + dirs[k] * px).r;
+    occ += nd > d + bias ? 1.0 : 0.0;
+  }
+  return saturate(1.0 - (occ * 0.125) * color.w);
+}
 float4 PS(O i) : SV_Target {
   float4 c = downsample(i.uv);
+  c.rgb *= ao(i.uv);
   if (sharp.z <= 0.0) {
     float3 rgb = (c.rgb * color.x - 0.5) * color.y + 0.5;
     float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
@@ -663,7 +694,7 @@ void D3D11Backend::apply_fullscreen_mode() {
   create_swapchain_targets(true);
   if (pick_scale() != scale_) {
     host::log("d3d11: fullscreen transition changes internal scale %d -> %d", scale_, pick_scale());
-    efb_color_.Reset(); efb_depth_.Reset(); efb_rtv_.Reset(); efb_srv_.Reset(); efb_dsv_.Reset();
+    efb_color_.Reset(); efb_depth_.Reset(); efb_rtv_.Reset(); efb_srv_.Reset(); efb_depth_srv_.Reset(); efb_dsv_.Reset();
     create_efb();
   }
 }
@@ -697,7 +728,7 @@ void D3D11Backend::create_efb() {
   scale_ = pick_scale();
   efb_w_ = EFB_WIDTH * scale_; efb_h_ = EFB_HEIGHT * scale_;
   host::log("d3d11: internal resolution %dx%d (EFB x%d, window %dx%d)", efb_w_, efb_h_, scale_, client_w_, client_h_);
-  efb_rtv_.Reset(); efb_srv_.Reset(); efb_dsv_.Reset(); efb_color_.Reset(); efb_depth_.Reset();
+  efb_rtv_.Reset(); efb_srv_.Reset(); efb_depth_srv_.Reset(); efb_dsv_.Reset(); efb_color_.Reset(); efb_depth_.Reset();
   context_->ClearState(); reset_bound();
   D3D11_TEXTURE2D_DESC td{};
   td.Width = efb_w_; td.Height = efb_h_; td.MipLevels = 1; td.ArraySize = 1;
@@ -706,9 +737,13 @@ void D3D11Backend::create_efb() {
   fail(device_->CreateTexture2D(&td, nullptr, &efb_color_), "efb color");
   fail(device_->CreateRenderTargetView(efb_color_.Get(), nullptr, &efb_rtv_), "efb rtv");
   fail(device_->CreateShaderResourceView(efb_color_.Get(), nullptr, &efb_srv_), "efb srv");
-  td.Format = DXGI_FORMAT_D32_FLOAT; td.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+  td.Format = DXGI_FORMAT_R32_TYPELESS; td.BindFlags = D3D11_BIND_DEPTH_STENCIL | D3D11_BIND_SHADER_RESOURCE;
   fail(device_->CreateTexture2D(&td, nullptr, &efb_depth_), "efb depth");
-  fail(device_->CreateDepthStencilView(efb_depth_.Get(), nullptr, &efb_dsv_), "efb dsv");
+  D3D11_DEPTH_STENCIL_VIEW_DESC dsv{}; dsv.Format = DXGI_FORMAT_D32_FLOAT; dsv.ViewDimension = D3D11_DSV_DIMENSION_TEXTURE2D;
+  fail(device_->CreateDepthStencilView(efb_depth_.Get(), &dsv, &efb_dsv_), "efb dsv");
+  D3D11_SHADER_RESOURCE_VIEW_DESC depth_srv{}; depth_srv.Format = DXGI_FORMAT_R32_FLOAT; depth_srv.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+  depth_srv.Texture2D.MipLevels = 1;
+  fail(device_->CreateShaderResourceView(efb_depth_.Get(), &depth_srv, &efb_depth_srv_), "efb depth srv");
   const float black[4] = {0, 0, 0, 0};
   context_->ClearRenderTargetView(efb_rtv_.Get(), black);
   context_->ClearDepthStencilView(efb_dsv_.Get(), D3D11_CLEAR_DEPTH, 0.0f, 0);
@@ -1031,6 +1066,65 @@ Pipeline* D3D11Backend::get_pipeline(const DrawCall& dc, uint32_t topo_type, D3D
 }
 
 // ---------------------------------------------------------------- textures
+TextureEntry* D3D11Backend::update_video_texture(
+    const std::shared_ptr<const video_bg::Frame>& frame, int video_slot) {
+  if (!frame || video_slot < 0 || video_slot >= 2 || frame->bgra.empty()) return nullptr;
+  TextureEntry& e = video_textures_[video_slot];
+  if (!e.resource || e.width != frame->width || e.height != frame->height) {
+    e = TextureEntry{};
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = frame->width; td.Height = frame->height; td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM; td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    if (FAILED(device_->CreateTexture2D(&td, nullptr, &e.resource)) ||
+        FAILED(device_->CreateShaderResourceView(e.resource.Get(), nullptr, &e.srv))) {
+      char message[96];
+      std::snprintf(message, sizeof message, "D3D11 video texture creation failed (%ux%u)",
+                    frame->width, frame->height);
+      video_bg::report_backend_failure(video_slot, message);
+      e = TextureEntry{};
+    } else {
+      e.width = frame->width; e.height = frame->height; e.levels = 1;
+      video_serial_[video_slot] = 0;
+    }
+  }
+  if (e.resource && video_serial_[video_slot] != frame->serial) {
+    context_->UpdateSubresource(e.resource.Get(), 0, nullptr, frame->bgra.data(),
+                                frame->width * 4, 0);
+    video_serial_[video_slot] = frame->serial;
+  }
+  if (!e.resource) return nullptr;
+  e.last_used = frame_counter_;
+  return &e;
+}
+
+void D3D11Backend::draw_video_background(
+    const std::shared_ptr<const video_bg::Frame>& frame, int video_slot,
+    const EfbCopy& screen) {
+  TextureEntry* video = update_video_texture(frame, video_slot);
+  if (!video) return;
+  unbind_shader_resources();
+  ID3D11RenderTargetView* rtv = efb_rtv_.Get();
+  context_->OMSetRenderTargets(1, &rtv, nullptr);
+  const float s = (float)scale_;
+  D3D11_VIEWPORT vp{screen.src_x * s, screen.src_y * s,
+                    screen.src_w * s, screen.src_h * s, 0, 1};
+  D3D11_RECT sc{(LONG)(screen.src_x * scale_), (LONG)(screen.src_y * scale_),
+                (LONG)((screen.src_x + screen.src_w) * scale_),
+                (LONG)((screen.src_y + screen.src_h) * scale_)};
+  context_->RSSetViewports(1, &vp);
+  context_->RSSetScissorRects(1, &sc);
+  // Media Foundation's decoded rows are top-down while this EFB blit samples V in the opposite
+  // direction. Flip only the presentation layer; guest textures and ordinary EFB blits retain
+  // their existing orientation.
+  const float rect[16] = {1, -1, 0, 1,
+                          1.0f / frame->width, 1.0f / frame->height, 0, 0,
+                          1, 1, 0, 0,
+                          1, 1, 1, 0};
+  blit(video->srv.Get(), rect);
+  bind_efb_targets();
+}
+
 TextureEntry* D3D11Backend::get_texture(const TextureRef& t) {
   auto ec = efb_copies_.find(t.addr);
   if (ec != efb_copies_.end() && ec->second.resource) {
@@ -1042,21 +1136,35 @@ TextureEntry* D3D11Backend::get_texture(const TextureRef& t) {
   // fallback below decodes guest RAM, which for a render target holds nothing the GPU ever wrote.
   if (copy_dests_.count(t.addr)) ++g_efb_tex_miss;
   if (!t.data) return nullptr;
+  // Dynamic menu video is checked before the immutable texture cache. A target may be learned
+  // after the vanilla texture was cached, and subsequent frames still need to switch immediately.
+  std::string video_name;
+  if (video_bg::wants_texture_names()) {
+    video_name = texpack::base_name(t, *t.data);
+    int video_slot = -1;
+    std::shared_ptr<const video_bg::Frame> frame =
+        video_bg::lookup(video_name, t.width, t.height, &video_slot);
+    if (frame && video_slot >= 0 && video_slot < 2 && !frame->bgra.empty()) {
+      if (TextureEntry* video = update_video_texture(frame, video_slot)) {
+        draw_video_slot_ = video_slot;
+        return video;
+      }
+    }
+  }
   const uint32_t meta[] = {t.width, t.height, t.format, t.mip_levels, t.tlut_format};
   uint64_t key = t.data->hash ^ hash_bytes(meta, sizeof meta);
   auto it = textures_.find(key);
   if (it != textures_.end()) { it->second.last_used = frame_counter_; return &it->second; }
 
-  // Custom texture pack, exactly as the D3D12 backend does it: Dolphin's name for this texture,
-  // then its PNG if a pack has one. Both happen once per unique texture on this cache-miss path,
-  // never per draw, and neither runs with the setting off. This was missing entirely until 0.3.3,
-  // so packs were scanned, listed and reported as active on D3D11 while every draw still used the
-  // game's own texture.
+  // Custom texture pack or launch-scoped cosmetic companion, exactly as the D3D12 backend does it:
+  // Dolphin's name for this texture, then its PNG if either source has one. Both happen once per
+  // unique texture on this cache-miss path, never per draw. Cosmetic companions stay active
+  // independently of the general-purpose texture-pack toggle.
   std::string pack_name;
   std::unique_ptr<texpack::Replacement> replacement;
-  if (texpack::enabled() || texpack::dumping()) {
-    pack_name = texpack::base_name(t, *t.data);
-    if (texpack::enabled()) {
+  if (texpack::enabled() || texpack::dumping() || texpack::cosmetics_enabled()) {
+    pack_name = video_name.empty() ? texpack::base_name(t, *t.data) : video_name;
+    if (texpack::has(pack_name)) {
       replacement = texpack::load(pack_name, replacement_bytes_ < replacement_budget_
                                                  ? replacement_budget_ - replacement_bytes_ : 0);
       texpack::note_lookup(replacement != nullptr);
@@ -1292,7 +1400,7 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
 
 // One full-screen triangle through the shared blit/sharpen shader. The caller has already set
 // the render target, viewport and scissor.
-void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[16]) {
+void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[16], ID3D11ShaderResourceView* depth) {
   D3D11_MAPPED_SUBRESOURCE m{};
   if (FAILED(context_->Map(blit_cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
   std::memcpy(m.pData, rect, 64);
@@ -1306,6 +1414,7 @@ void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[16]) {
   context_->VSSetConstantBuffers(0, 1, &buffer);
   context_->PSSetConstantBuffers(0, 1, &buffer);
   context_->PSSetShaderResources(0, 1, &src);
+  context_->PSSetShaderResources(3, 1, &depth);
   context_->PSSetSamplers(0, 1, &sampler);
   context_->OMSetBlendState(opaque_blend_.Get(), nullptr, 0xFFFFFFFFu);
   context_->OMSetDepthStencilState(no_depth_.Get(), 0);
@@ -1322,6 +1431,7 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   const float border[4] = {0, 0, 0, 1};   // letterbox/pillarbox bars
   context_->ClearRenderTargetView(rtv, border);
   if (opts_.widescreen != widescreen_sent_) { widescreen_sent_ = opts_.widescreen; slippi::request_widescreen(opts_.widescreen); }
+  if (opts_.fod_reflections != fod_reflections_sent_) { fod_reflections_sent_ = opts_.fod_reflections; slippi::request_fod_reflections(opts_.fod_reflections); }
   // The Gecko code wins if both are somehow set, so the two can never widen the same frame twice.
   set_true_widescreen(opts_.true_widescreen && !opts_.widescreen);
   float aspect = output_aspect();
@@ -1334,11 +1444,11 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   context_->RSSetScissorRects(1, &sc);
   float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
                     1.0f / std::max((float)efb_w_, 1.0f), 1.0f / std::max((float)efb_h_, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
-                    1.0f, 1.0f, 0.0f, 0.0f, opts_.brightness, opts_.contrast, opts_.vibrance, 0.0f};
+                    1.0f, 1.0f, 0.0f, 0.0f, opts_.brightness, opts_.contrast, opts_.vibrance, opts_.screen_space_ao};
   // Averaging box when the rendered image is larger than the output (see the D3D12 backend).
   rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
   rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
-  blit(efb_srv_.Get(), rect);
+  blit(efb_srv_.Get(), rect, efb_depth_srv_.Get());
 #ifdef GX_PC_SETTINGS
   if (settings_ui_) { settings_ui_->draw(); reset_bound(); context_->IASetInputLayout(layout_.Get()); }
 #endif
@@ -1440,6 +1550,8 @@ void D3D11Backend::flush_captures() {
 
 // ---------------------------------------------------------------- frame
 void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
+  video_bg::set_enabled(opts_.video_backgrounds);
+  video_bg::begin_frame(frame.scene_major, frame.scene_minor);
   widenable_scene_ = frame_has_widenable_scene(frame);
   integrate_compiled_pipelines();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; samplers_.clear(); reset_bound(); }
@@ -1453,7 +1565,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     ~FloatEnvironment() { _mm_setcsr(saved); }
   } float_environment;
 #ifdef GX_PC_SETTINGS
-  if (settings_ui_) settings_set_game_aspect(output_aspect());
+  if (settings_ui_) { settings_set_game_aspect(output_aspect()); settings_set_hud_snapshot(frame); }
   if (settings_ui_ && settings_ui_->begin(opts_)) {
     apply_fullscreen_mode();
     if (pick_scale() != scale_) { host::log("d3d11: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
@@ -1492,32 +1604,23 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     const DrawCall& dc = frame.draws[cmd.index];
     DrawPlan& plan = plans_[cmd.index];
     if (skip_for_effects(frame, dc, opts_.effects_level)) continue;   // "Visual effects"; plan.valid stays false
-    uint32_t n = dc.vertex_count;
+    const uint32_t n = dc.vertex_count;
     const uint32_t first = (uint32_t)index_scratch_.size();
     auto& idx = index_scratch_;
-    switch (dc.primitive) {
-      case 0x80: case 0x88:
-        for (uint32_t i = 0; i + 3 < n; i += 4) idx.insert(idx.end(), {i, i + 1, i + 2, i, i + 2, i + 3});
-        break;
-      case 0x90:
-        for (uint32_t i = 0; i + 2 < n; i += 3) idx.insert(idx.end(), {i, i + 1, i + 2});
-        break;
-      case 0x98:
-        for (uint32_t i = 2; i < n; ++i) { if (i & 1) idx.insert(idx.end(), {i - 1, i - 2, i}); else idx.insert(idx.end(), {i - 2, i - 1, i}); }
-        break;
-      case 0xA0:
-        for (uint32_t i = 2; i < n; ++i) idx.insert(idx.end(), {0u, i - 1, i});
-        break;
-      case 0xA8:
-        plan.topo_type = TOPO_LINE; plan.topology = D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
-        for (uint32_t i = 0; i + 1 < n; i += 2) idx.insert(idx.end(), {i, i + 1});
-        break;
-      case 0xB0:
-        plan.topo_type = TOPO_LINE; plan.topology = D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
-        for (uint32_t i = 1; i < n; ++i) idx.insert(idx.end(), {i - 1, i});
-        break;
-      default:
-        continue;   // points not supported yet
+    auto append_indices = [&](uint32_t primitive, uint32_t count, uint32_t base) {
+      if (append_segment_indices(idx, primitive, count, base) == DrawTopology::Lines) {
+        plan.topo_type = TOPO_LINE;
+        plan.topology = D3D11_PRIMITIVE_TOPOLOGY_LINELIST;
+      }
+    };
+    if (dc.segment_count && dc.first_segment <= frame.segments.size() &&
+        dc.segment_count <= frame.segments.size() - dc.first_segment) {
+      for (uint32_t s = 0; s < dc.segment_count; ++s) {
+        const DrawSegment& segment = frame.segments[dc.first_segment + s];
+        append_indices(segment.primitive, segment.vertex_count, segment.first_vertex - dc.first_vertex);
+      }
+    } else {
+      append_indices(dc.primitive, dc.vertex_count, 0);
     }
     if (index_scratch_.size() == first) continue;
     plan.first_index = first;
@@ -1577,10 +1680,45 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   context_->IASetIndexBuffer(index_buffer_.get(), DXGI_FORMAT_R32_UINT, 0);
   context_->IASetInputLayout(layout_.Get());
 
+  const EfbCopy* screen = nullptr;
+  for (const EfbCopy& copy : frame.copies) if (copy.to_xfb) screen = &copy;
+  int fullscreen_slot = -1;
+  std::shared_ptr<const video_bg::Frame> fullscreen = video_bg::fullscreen_frame(&fullscreen_slot);
+  const bool css_fullscreen = fullscreen && fullscreen_slot == 0 && screen;
+  unsigned leading_untextured_draws = 0;
+  bool background_drawn = false;
   bool presented = false;
   for (const FrameCommand& cmd : frame.commands) {
     if (cmd.kind == FrameCommand::Draw) {
-      if (cmd.index < frame.draws.size() && plans_[cmd.index].valid) execute_draw(frame.draws[cmd.index], plans_[cmd.index]);
+      if (cmd.index < frame.draws.size()) {
+        const DrawCall& dc = frame.draws[cmd.index];
+        if (css_fullscreen && !background_drawn) {
+          bool textured = false;
+          for (const TextureRef& texture : dc.textures) textured |= texture.used;
+          if (!textured) {
+            ++leading_untextured_draws;
+          } else if (video_bg::learning::should_insert_fullscreen_layer(
+                         fullscreen_slot, leading_untextured_draws, textured)) {
+            draw_video_background(fullscreen, fullscreen_slot, *screen);
+            background_drawn = true;
+            if (!video_layer_logged_[fullscreen_slot]) {
+              host::log("video backgrounds: CSS full-screen layer inserted after %u hardcoded background draws (D3D11)",
+                        leading_untextured_draws);
+              video_layer_logged_[fullscreen_slot] = true;
+            }
+          }
+        }
+        draw_video_slot_ = -1;
+        if (plans_[cmd.index].valid) execute_draw(dc, plans_[cmd.index]);
+        if (fullscreen && screen && fullscreen_slot == 1 && draw_video_slot_ == 1 && !background_drawn) {
+          draw_video_background(fullscreen, fullscreen_slot, *screen);
+          background_drawn = true;
+          if (!video_layer_logged_[fullscreen_slot]) {
+            host::log("video backgrounds: SSS full-screen layer composited after learned backdrop draw (D3D11)");
+            video_layer_logged_[fullscreen_slot] = true;
+          }
+        }
+      }
     } else {
       const EfbCopy& c = frame.copies[cmd.index];
       // The EFB holds the finished image at the copy to the display buffer, which is the moment the

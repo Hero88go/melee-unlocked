@@ -8,6 +8,7 @@
 #include <mmdeviceapi.h>
 #include <audioclient.h>
 #include <algorithm>
+#include <cmath>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -83,6 +84,29 @@ inline double cubic(double a, double b, double c, double d, double t) {
   return b + 0.5 * t * (c - a + t * (2.0 * a - 5.0 * b + 4.0 * c - d + t * (3.0 * (b - c) + d - a)));
 }
 
+// ---- settings menu ticks ----
+// A decaying sine: short and quiet so it reads as UI feedback, never over the game's own sound.
+std::atomic<int> g_ui_sound_request{0};
+struct UiTick { int remaining = 0, total = 0; double step = 0, phase = 0, level = 0; } g_ui_tick;  // output thread only
+void mix_ui_sound(int16_t* out, size_t frames, int volume) {
+  if (const int kind = g_ui_sound_request.exchange(0)) {
+    const double freq = kind == 1 ? 740.0 : kind == 2 ? 990.0 : 590.0;
+    const double seconds = kind == 1 ? 0.030 : 0.055;
+    g_ui_tick.total = g_ui_tick.remaining = (int)(SAMPLE_RATE * seconds);
+    g_ui_tick.step = 6.283185307179586 * freq / SAMPLE_RATE;
+    g_ui_tick.phase = 0.0;
+    g_ui_tick.level = (kind == 1 ? 0.045 : 0.065) * 32767.0;
+  }
+  if (g_ui_tick.remaining <= 0 || volume <= 0) return;
+  const double gain = g_ui_tick.level * volume / 100.0;
+  for (size_t i = 0; i < frames && g_ui_tick.remaining > 0; ++i, --g_ui_tick.remaining) {
+    const double env = (double)g_ui_tick.remaining / g_ui_tick.total;
+    const int v = (int)(std::sin(g_ui_tick.phase) * env * env * gain);
+    g_ui_tick.phase += g_ui_tick.step;
+    for (int c = 0; c < 2; ++c) out[i * 2 + c] = (int16_t)std::clamp((int)out[i * 2 + c] + v, -32768, 32767);
+  }
+}
+
 void wasapi_thread() {
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   while (g_running.load()) {
@@ -141,6 +165,7 @@ void wasapi_thread() {
     g_ring_read.store(read, std::memory_order_release);
     if (starved) { g_underruns.fetch_add(1); g_underrun_frames.fetch_add(starved); }
     slippi::jukebox::mix(out, want, volume / 100.0);
+    mix_ui_sound(out, want, volume);
     g_render->ReleaseBuffer(want, 0);
   }
   CoUninitialize();
@@ -278,6 +303,7 @@ void audio_push(const uint8_t* be_samples, size_t bytes) {
     for (int i = 0; i < BLOCK_BYTES / 2; ++i)
       g_blocks[g_next][i] = (int16_t)((int32_t)converted[i] * g_volume / 100);
     slippi::jukebox::mix(g_blocks[g_next], BLOCK_BYTES / 4, g_volume / 100.0);
+    mix_ui_sound(g_blocks[g_next], BLOCK_BYTES / 4, g_volume.load());
     h.dwFlags &= ~WHDR_DONE;
     if (waveOutWrite(g_out, &h, sizeof(WAVEHDR)) != MMSYSERR_NOERROR) { h.dwFlags |= WHDR_DONE; ++g_dropped; continue; }
     g_next = (g_next + 1) % BLOCKS;
@@ -286,6 +312,7 @@ void audio_push(const uint8_t* be_samples, size_t bytes) {
 }
 
 uint64_t audio_pushed_frames() { return g_frames; }
+void audio_ui_sound(int kind) { g_ui_sound_request.store(kind); }
 uint64_t audio_dropped_blocks() { return g_dropped; }
 uint64_t audio_underruns(uint64_t* silent_ms) { if (silent_ms) *silent_ms = g_underrun_frames.load() * 1000 / SAMPLE_RATE; return g_underruns.load(); }
 void audio_rate_range(double* low, double* high) { if (low) *low = g_rate_min.load(); if (high) *high = g_rate_max.load(); }
