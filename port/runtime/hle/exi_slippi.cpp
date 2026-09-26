@@ -199,23 +199,26 @@ bool optional_enabled(const char* flag) {
   return false;
 }
 
+// Every code stays at the offset it was translated for: the recompiled caves read their constants
+// from those exact guest addresses. Packing the enabled codes together moved widescreen onto Lagless
+// FoD's slot whenever Lagless was off, so its caves read garbage and 16:9 smeared the whole picture.
+// A switched-off optional code keeps its bytes' length but becomes a Gecko "goto" (66200000 | N)
+// that skips its own remaining N lines, so the code handler neither runs nor installs it.
 void rebuild_optional_codes(uint8_t* table) {
   const uint32_t start = gecko::optional_gct_offset;
-  if (start + 8 > gecko::slippi_gct_size || gecko::port_gct_offset + 8 > gecko::slippi_gct_size) return;
-  uint32_t dst = start;
+  if (start + 8 > gecko::slippi_gct_size) return;
+  std::memcpy(table + start, gecko::slippi_gct + start, gecko::slippi_gct_size - start);
   for (size_t i = 0; i < gecko::optional_codes_count; ++i) {
     const gecko::OptionalCode& code = gecko::optional_codes[i];
-    if (!optional_enabled(code.flag)) continue;
-    if (code.offset + code.size > gecko::slippi_gct_size || dst + code.size + 8 > gecko::slippi_gct_size) return;
-    std::memcpy(table + dst, gecko::slippi_gct + code.offset, code.size);
-    dst += code.size;
+    if (optional_enabled(code.flag)) continue;
+    if (code.size < 8 || code.size % 8 || code.offset + code.size > gecko::slippi_gct_size) continue;
+    const uint32_t skip = code.size / 8 - 1;
+    const uint32_t goto_line = 0x66200000u | (skip & 0xFFFFu);
+    uint8_t* p = table + code.offset;
+    p[0] = (uint8_t)(goto_line >> 24); p[1] = (uint8_t)(goto_line >> 16);
+    p[2] = (uint8_t)(goto_line >> 8);  p[3] = (uint8_t)goto_line;
+    p[4] = p[5] = p[6] = p[7] = 0;
   }
-  const uint32_t port_size = gecko::slippi_gct_size - gecko::port_gct_offset - 8;
-  if (dst + port_size + 8 > gecko::slippi_gct_size) return;
-  std::memcpy(table + dst, gecko::slippi_gct + gecko::port_gct_offset, port_size);
-  dst += port_size;
-  std::memset(table + dst, 0, gecko::slippi_gct_size - dst);
-  table[dst] = 0xFF;
 }
 
 std::atomic<int> g_widescreen_request{-1};
