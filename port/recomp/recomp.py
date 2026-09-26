@@ -243,6 +243,11 @@ def main():
             del thunks[t]
     func_names = {addr: "f_%08X" % addr for addr in infos}
     emitter = Emitter(dol, symbols, infos, hle_funcs, func_names)
+    if emitter.fallthroughs:
+        print("fall-through: %d functions run past their last instruction into the next one" % len(emitter.fallthroughs))
+        for addr in sorted(emitter.fallthroughs)[:10]:
+            print("  %08X %s -> %s" % (addr, symbols.by_addr[addr].name,
+                                       symbols.name_of(symbols.by_addr[addr].end) or "?"))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     changed = 0

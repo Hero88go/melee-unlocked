@@ -85,6 +85,7 @@ void hang_check(Context& c);
 void trace_enter(Context& c, uint32_t pc);
 
 void add_trace_func(uint32_t addr, uint32_t limit);
+void set_watch(uint32_t addr);   // --watch: report what changes this word of guest memory
 inline void enter(Context& c, uint32_t pc) {
   c.last_pc = pc; c.trace[c.trace_pos++ & 63] = pc;
   if ((++g_enter_count & 0xFFFFFu) == 0) hang_check(c);
