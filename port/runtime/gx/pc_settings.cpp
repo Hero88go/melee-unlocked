@@ -35,6 +35,9 @@
 #include "controller_profiles.h"
 #include "cosmetic_mods.h"
 #include "lab_view.h"
+// Lab view is hidden until its silhouette packs can ship at a reasonable size: no F3 toggle, no
+// Overlays switch, never drawn (so the renderers never skip the scene for it). Code kept intact.
+constexpr bool kLabViewAvailable = false;
 #ifndef MELEE_PORT_VERSION
 #define MELEE_PORT_VERSION "dev"
 #endif
@@ -2840,10 +2843,10 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) { request_frame_capture(90); host::log("capture: F2, writing the next 90 presented frames into capture\\"); }
   // F3: Lab view on or off. Marked dirty, so it is saved with the other settings the next time the
   // panel is open (the panel is what writes the settings file).
-  if (ImGui::IsKeyPressed(ImGuiKey_F3, false)) { options.lab_view = !options.lab_view; state.dirty = true; host::log("lab view: %s", options.lab_view ? "on" : "off"); }
+  if (kLabViewAvailable && ImGui::IsKeyPressed(ImGuiKey_F3, false)) { options.lab_view = !options.lab_view; state.dirty = true; host::log("lab view: %s", options.lab_view ? "on" : "off"); }
   // Drawn first, on the background list, so every overlay and window below lands on top of it.
   // Called every frame, off or on, so lab::covering() always describes this frame.
-  lab::draw(options.lab_view && !state.fill_window, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+  lab::draw(kLabViewAvailable && options.lab_view && !state.fill_window, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // Start on the controller closes the panel from any page (the open chord is Start + Down + Z,
   // which the input layer swallows whole, so this never fires on the press that opened it).
   if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
@@ -5365,6 +5368,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       ImGui::SetTooltip("Shows the measured render latency under the FPS counter. Works whether or\n"
                         "not NVIDIA Reflex Low Latency (Video tab) is On, so Off has a number too --\n"
                         "the full breakdown by stage is on the performance graph.");
+    if (kLabViewAvailable) {
     changed |= settings_toggle("Lab view (F3)", &options.lab_view);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Draws matches the way Slippi Lab draws replays: flat character silhouettes\n"
@@ -5379,6 +5383,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                           "since it would be covered anyway. Much lighter on the graphics card, so a\n"
                           "weak laptop runs smoother. The game itself runs exactly the same.");
       ImGui::Unindent();
+    }
     }
     changed |= settings_toggle("Controller overlay", &options.input_overlay);
     if (options.input_overlay) {
