@@ -2757,6 +2757,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     io.AddKeyEvent(ImGuiKey_GamepadDpadRight, (pad.button & 2) || pad.stick_x > 40);
   }
   ImGui::NewFrame();
+  ImGuiStyle launcher_saved_style;
+  const bool launcher_old_look = g_fill_window.load(std::memory_order_relaxed);
+  if (launcher_old_look) {
+    launcher_saved_style = ImGui::GetStyle();
+    ImGui::GetStyle() = g_input_overlay_style;
+    if (g_settings_old_font) ImGui::PushFont(g_settings_old_font);
+  }
   set_hud_scales(options.stock_hud_scale, options.damage_hud_scale, gecko::option_pal_stock_icons);
   static bool test_tab_set = false;
   if (!test_tab_set) {
@@ -2809,11 +2816,14 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   // tabs, and the existing settings controls, with the selected modern appearance
   // held in SettingsState and restored on exit;
   // controls continue editing the same D3D12Options values and persistence file.
-  if (g_fill_window.load(std::memory_order_relaxed) && options.legacy_menu_enabled && !state.legacy_presentation) {
+  // The launcher's Settings window always shows the old (0.6.61) settings screen, whatever
+  // appearance or legacy choice the game uses; the chosen appearance is restored and saved as is.
+  const bool launcher_window = g_fill_window.load(std::memory_order_relaxed);
+  if (launcher_window && !state.legacy_presentation) {
     state.legacy_saved_appearance = options.overlay_style;
     state.legacy_presentation = true;
   }
-  if (state.legacy_presentation) options.overlay_style = options.legacy_menu_style;
+  if (state.legacy_presentation) options.overlay_style = launcher_window ? 7 : options.legacy_menu_style;
   const bool tab_pressed = host::window_take_practice_toggle();
   if (tab_pressed && !state.open && !state.menu_open && !state.fill_window && practice.tab_available) {
     const bool was_open = state.practice_open;
@@ -2848,6 +2858,10 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     else if (state.menu_open) { state.menu_open = false; state.menu_quit = false; }
     // Esc opens the full settings menu on its category page; quit and restart live in its "..." menu.
     else if (!state.fill_window) { state.open = true; reset_settings_home("Esc"); }
+  }
+  if (launcher_window && !state.open) {
+    g_close_requested.store(true, std::memory_order_relaxed);
+    state.open = true;
   }
   if (state.open) { state.menu_open = false; state.practice_open = false; }
   if (state.menu_open) state.practice_open = false;
@@ -5890,6 +5904,10 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       host::log("ui diag: mouse %s at %.0f,%.0f hovered id %08X active id %08X nav id %08X",
                 diag_io.MouseClicked[0] ? "down" : "up", diag_io.MousePos.x, diag_io.MousePos.y,
                 ImGui::GetHoveredID(), ImGui::GetActiveID(), ImGui::GetFocusID());
+  }
+  if (launcher_old_look) {
+    if (g_settings_old_font) ImGui::PopFont();
+    ImGui::GetStyle() = launcher_saved_style;
   }
   ImGui::Render();
   // Apply opacity after ImGui has built the overlay: this includes the game-facing custom
