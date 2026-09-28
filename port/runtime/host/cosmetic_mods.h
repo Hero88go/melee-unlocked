@@ -99,6 +99,15 @@ OverrideRead read(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, 
 void freeze_for_online_session();
 void thaw_after_online_session();
 SessionProfile session_profile();
+// The online rule also applies whenever this probe says the game is in its online flow (the online
+// menus and character select come before any search, and the character select already loads the
+// fighter files). Each engine installs its own: the game's current mode is Slippi's online mode.
+using OnlineProbe = bool (*)();
+void set_online_probe(OnlineProbe probe);
+// Frozen for a search or match, or inside the online flow.
+bool online_active();
+// False when this disc file has an override that must not be used online (not proven visual-only).
+bool online_allowed(uint32_t vanilla_file_start);
 
 // Native Windows picker used by the ImGui Mods tab. An empty string means the player cancelled.
 std::string choose_import_file();
@@ -115,6 +124,9 @@ struct DatInspection {
 DatInspection inspect_dat(const std::vector<uint8_t>& bytes);
 bool visual_dat_only(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
                      std::string* error);
+// Online rule for costumes: the _Share_joint skeleton equals the vanilla slot's (see the .cpp).
+bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
+                              std::string* error);
 bool materialize_effect_dat(const std::string& target_path,
                             const std::vector<uint8_t>& clean,
                             const std::vector<uint8_t>& candidate,

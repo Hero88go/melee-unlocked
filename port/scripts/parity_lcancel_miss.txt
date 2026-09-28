@@ -1,0 +1,207 @@
+# L-cancel indicator script (menus from parity_vs.txt): P1 short-hops, down airs at varying delays, lands without L. Boot path from boot_to_menu.txt (A dismisses the "no memory card"
+# prompt, START skips the intro movie/title once each) plus a fixed frame gap that both builds
+# were measured reaching GameModeKind GM_MENU (1) inside (vanilla at retrace 403, native at 702
+# per run-source/resume-items -- the numbers differ but the gap between presses is wide enough
+# that both land the same button on the same screen). The menu entries after @scene 1:0 are
+# relative to the retrace where the host first observes GM_MENU. The @match section is silent
+# until the VS match reports frame 1, then its entries follow simulated match frames.
+# This keeps the CSS/SSS sequence aligned despite different opening-movie and disc-read timing,
+# and keeps the in-match inputs aligned despite different host retrace counts before match start.
+#
+# Compare with: python tools/lockstep_compare.py native.csv vanilla.csv --align match
+130 A
+140
+400 START
+410
+520 START
+530
+700 START
+710
+
+@scene 1:0
+# From here, frame 0 = the retrace GM_MENU was first observed. Move to VS Mode, confirm, pick
+# characters on two human ports, confirm CSS, pick a stage, confirm SSS.
+100 sy=-127
+106
+160 A
+168
+230 A
+238
+240 p=2
+400 sx=61 sy=127
+400 p=2 sy=127
+430
+430 p=2
+440 A
+440 p=2 A
+450
+450 p=2
+500 START
+510
+700 sy=100
+740
+760 A
+770
+
+# Match: walk in and jab (Ness p1, Pikachu p2 per the CSS picks above).
+@match
+900 X
+902
+908 A sy=-127
+910
+975 X
+977
+985 A sy=-127
+987
+1050 X
+1052
+1062 A sy=-127
+1064
+1125 X
+1127
+1139 A sy=-127
+1141
+1200 X
+1202
+1216 A sy=-127
+1218
+1275 X
+1277
+1283 A sy=-127
+1285
+1350 X
+1352
+1360 A sy=-127
+1362
+1425 X
+1427
+1437 A sy=-127
+1439
+1500 X
+1502
+1514 A sy=-127
+1516
+1575 X
+1577
+1591 A sy=-127
+1593
+1650 X
+1652
+1658 A sy=-127
+1660
+1725 X
+1727
+1735 A sy=-127
+1737
+1800 X
+1802
+1812 A sy=-127
+1814
+1875 X
+1877
+1889 A sy=-127
+1891
+1950 X
+1952
+1966 A sy=-127
+1968
+2025 X
+2027
+2033 A sy=-127
+2035
+2100 X
+2102
+2110 A sy=-127
+2112
+2175 X
+2177
+2187 A sy=-127
+2189
+2250 X
+2252
+2264 A sy=-127
+2266
+2325 X
+2327
+2341 A sy=-127
+2343
+2400 X
+2402
+2408 A sy=-127
+2410
+2475 X
+2477
+2485 A sy=-127
+2487
+2550 X
+2552
+2562 A sy=-127
+2564
+2625 X
+2627
+2639 A sy=-127
+2641
+2700 X
+2702
+2716 A sy=-127
+2718
+2775 X
+2777
+2783 A sy=-127
+2785
+2850 X
+2852
+2860 A sy=-127
+2862
+2925 X
+2927
+2937 A sy=-127
+2939
+3000 X
+3002
+3014 A sy=-127
+3016
+3075 X
+3077
+3091 A sy=-127
+3093
+3150 X
+3152
+3158 A sy=-127
+3160
+3225 X
+3227
+3235 A sy=-127
+3237
+3300 X
+3302
+3312 A sy=-127
+3314
+3375 X
+3377
+3389 A sy=-127
+3391
+3450 X
+3452
+3466 A sy=-127
+3468
+3525 X
+3527
+3533 A sy=-127
+3535
+3600 X
+3602
+3610 A sy=-127
+3612
+3675 X
+3677
+3687 A sy=-127
+3689
+3750 X
+3752
+3764 A sy=-127
+3766
+3825 X
+3827
+3841 A sy=-127
+3843

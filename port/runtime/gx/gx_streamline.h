@@ -46,6 +46,8 @@ bool dlss_supported(IDXGIAdapter* adapter);
 bool dlss_optimal_size(DlssMode mode, uint32_t out_w, uint32_t out_h, uint32_t* render_w, uint32_t* render_h,
                        uint32_t* min_w, uint32_t* min_h, uint32_t* max_w, uint32_t* max_h);
 bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h, bool color_is_hdr = false);
+// Creates the DLSS feature ahead of its first use (a menu frame), so the first match does not stall.
+void dlss_allocate(ID3D12GraphicsCommandList* list);
 
 // Frame flow on the render thread: new_frame() -> set_constants() -> ... draws ... -> evaluate().
 struct FrameConstants {

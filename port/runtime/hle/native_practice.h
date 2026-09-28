@@ -10,8 +10,8 @@
 
 namespace slippi::native_practice {
 
-// Values intentionally match Slippi's OnlinePlayMode.
-enum class MatchMode : uint8_t { None = 0xFF, Ranked = 0, Unranked = 1, Direct = 2 };
+// Values intentionally match Slippi's OnlinePlayMode (Melee Unlocked has no Ranked).
+enum class MatchMode : uint8_t { None = 0xFF, Unranked = 1, Direct = 2 };
 
 struct Snapshot {
   Phase phase = Phase::Idle;
@@ -31,7 +31,6 @@ struct Snapshot {
 };
 
 Snapshot snapshot();
-void submit_start_ranked();
 void submit_start_unranked();
 void submit_start_direct(const std::string& connect_code);
 void submit_cancel();
@@ -45,5 +44,10 @@ void shutdown();
 // start of a search through online cleanup. No cosmetic implementation is required by this module.
 bool cosmetic_profile_locked();
 const char* match_mode_name(MatchMode mode);
+
+// The Source Port game's practice operations (MuGameApi::practice, MU_PRACTICE_* in mu_host.h).
+// Unset, the coordinator works on the static recomp's console memory.
+using NativeBridge = int32_t (*)(int32_t op, int32_t* args, int32_t count);
+void set_native_bridge(NativeBridge bridge);
 
 }  // namespace slippi::native_practice

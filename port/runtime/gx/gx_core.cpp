@@ -4,6 +4,7 @@
 #include "gx_core.h"
 #include "pc_settings_shared.h"
 #include "host.h"
+#include "native_pose_bridge.h"
 #include "slippi_online.h"
 #include <algorithm>
 #include <atomic>
@@ -20,6 +21,9 @@ CPMemory g_cp;
 XFMemory g_xf;
 uint8_t g_tmem[1024 * 1024];
 uint64_t g_tmem_generation = 1;
+// One per write_fifo_bytes call (a native pipe flush). The native game is stopped while a batch is
+// parsed, so memory a texture reads cannot change between two draws of one batch.
+uint64_t g_fifo_batch = 1;
 uint32_t g_bp_mask = 0xFFFFFF;
 int32_t g_tev_colors[4][4], g_tev_kcolors[4][4];
 Backend* g_backend = nullptr;
@@ -110,6 +114,29 @@ std::unordered_map<uint32_t, uint32_t> g_dl_calls;        // display list addres
 std::unordered_map<uint64_t, uint32_t> g_immediate_draws;  // (tex0, count, prim) -> ordinal this frame
 uint64_t g_commands = 0, g_draws = 0, g_vertices = 0;
 uint32_t g_efb_copies = 0;
+NativeDrawAudit g_native_draw_audit;
+std::atomic<bool> g_native_pose_capture_enabled{false};
+std::unordered_map<uint32_t, std::shared_ptr<const AuthoredPose>> g_native_pose_scopes;
+std::unordered_map<uint32_t, bool> g_native_pose_skinned_scopes;
+std::vector<uint32_t> g_native_pose_scope_ids;
+// The native game names the joint and the PObj each draw scope belongs to (token 0xF0). A draw in a
+// named scope is identified by its PObj, that PObj's ordinal among its scopes this frame (a model
+// drawn twice, as a reflection) and the draw's ordinal in the scope; the joint is its object, as
+// the translated build's observer names a draw by the object it saw allocated. Display list and
+// call order alone shift when a menu drops or adds draws, and the incoming menu panels then paired
+// with the outgoing ones and flew in between two frames.
+struct NativeDrawScope { uint32_t object, piece, ordinal, draws; };
+std::vector<NativeDrawScope> g_native_draw_scopes;
+std::unordered_map<uint32_t, uint32_t> g_native_object_scopes;   // PObj -> scopes begun this frame
+NativePoseBridgeStats g_native_pose_stats{};
+// Native game: draw owners arrive in the stream (token 0xF1), not from the render observer.
+bool g_native_owner_source = false;
+uint8_t g_native_owner = 0xFF;
+bool g_native_skinned = false;   // token 0xF2: the current native PObj is an envelope draw
+
+uint32_t active_native_pose_scope_id() {
+  return g_native_pose_scope_ids.empty() ? 0 : g_native_pose_scope_ids.back();
+}
 
 inline uint32_t be32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
 inline uint32_t be16(const uint8_t* p) { return ((uint32_t)p[0] << 8) | p[1]; }
@@ -200,66 +227,119 @@ void read_color(const uint8_t* p, uint32_t format, uint8_t out[4]) {
 
 const uint8_t* array_ptr(uint32_t array, uint32_t index) {
   uint32_t base = g_cp.array_base(array), stride = g_cp.array_stride(array);
-  return host::ptr(0x80000000u | ((base + stride * index) & 0x01FFFFFFu));
+  return host::ptr(0x80000000u | ((base + stride * index) & 0x3FFFFFFFu));
+}
+
+// One vertex array resolved once per decode call: its host base and how many bytes follow it in the
+// region it lives in. Every indexed attribute of every vertex used to go through array_ptr (two
+// register reads and an out-of-line host::ptr range check each, ~47,000 calls a frame in a match).
+// An index inside the region reads base + stride * index directly; anything else takes array_ptr,
+// which wraps and fails exactly as before, so the bytes read are the same either way.
+struct ArrayView { const uint8_t* base = nullptr; uint64_t avail = 0; uint32_t stride = 0, array = 0; };
+ArrayView array_view(uint32_t array) {
+  ArrayView v;
+  v.array = array;
+  v.stride = g_cp.array_stride(array);
+  const uint32_t off = g_cp.array_base(array) & 0x3FFFFFFFu;
+  if (const uint8_t* p = host::try_ptr(0x80000000u | off, 1)) {
+    v.base = p;
+    if (p >= host::ram && p < host::ram + host::ram_size) v.avail = (uint64_t)(host::ram + host::ram_size - p);
+    else if (host::game_image && p >= host::game_image && p < host::game_image + host::game_image_size)
+      v.avail = (uint64_t)(host::game_image + host::game_image_size - p);
+    else v.base = nullptr;
+  }
+  return v;
+}
+inline const uint8_t* array_at(const ArrayView& v, uint32_t index, uint32_t bytes) {
+  const uint64_t at = (uint64_t)v.stride * index;
+  if (v.base && at + bytes <= v.avail) return v.base + at;
+  return array_ptr(v.array, index);
 }
 
 // Decodes `count` vertices of format `fmt` from `src` into the frame. Returns components mask.
 uint32_t decode_vertices(const VertexDesc& d, const uint8_t* src, uint32_t count, uint32_t fmt) {
   uint32_t components = 0;
   uint32_t mia = g_cp.matrix_index_a(), mib = g_cp.matrix_index_b();
+  static const uint32_t csize[] = {2, 3, 4, 2, 3, 4, 4, 4};
+  // Arrays and the bytes each attribute reads from them, resolved once for the whole call.
+  ArrayView pos_view, nrm_view, col_view[2], tex_view[8];
+  const uint32_t pos_bytes = comp_bytes(d.pos.format) * (d.pos.count ? 3 : 2);
+  const uint32_t nrm_bytes = comp_bytes(d.nrm.format) * 3;
+  if (d.pos.type >= 2) pos_view = array_view(d.pos.array);
+  if (d.nrm.type >= 2) nrm_view = array_view(1);
+  for (int i = 0; i < 2; ++i) if (d.col[i].type >= 2) col_view[i] = array_view(d.col[i].array);
+  for (int i = 0; i < 8; ++i) if (d.tex[i].type >= 2) tex_view[i] = array_view(d.tex[i].array);
+  // Everything that depends only on the format is worked out once per call: the components mask,
+  // the matrix indices a vertex without its own takes from the CP registers, and the texture
+  // coordinate sets that are present. Vertices are decoded straight into the frame's storage
+  // (value-initialised, as `Vertex out{}` was), not built on the stack and copied in.
+  if (d.posmtx) components |= VB_HAS_POSMTXIDX;
+  uint8_t default_texmtx[8];
+  for (int i = 0; i < 8; ++i) {
+    default_texmtx[i] = (uint8_t)(i < 4 ? bits(mia, 6 + 6 * i, 6) : bits(mib, 6 * (i - 4), 6));
+    if (d.texmtx[i]) components |= VB_HAS_TEXMTXIDX0 << i;
+  }
+  if (d.nrm.type) components |= VB_HAS_NRM0;
+  for (int i = 0; i < 2; ++i) if (d.col[i].type) components |= i ? VB_HAS_COL1 : VB_HAS_COL0;
+  struct TexSet { int index; uint32_t n, cb, bytes; };
+  TexSet tex_sets[8];
+  int tex_count = 0;
+  for (int i = 0; i < 8; ++i) {
+    if (!d.tex[i].type) continue;
+    const uint32_t n = d.tex[i].count ? 2 : 1, cb = comp_bytes(d.tex[i].format);
+    tex_sets[tex_count++] = {i, n, cb, cb * n};
+    components |= VB_HAS_UV0 << i;
+  }
+  const uint32_t pos_n = d.pos.count ? 3 : 2, pos_cb = comp_bytes(d.pos.format);
+  const uint32_t nrm_cb = comp_bytes(d.nrm.format);
+  const uint32_t nrm_frac = d.nrm.format == 1 ? 6 : d.nrm.format == 3 ? 14 : d.nrm.format == 0 ? 7 : d.nrm.format == 2 ? 15 : 0;
+  const uint32_t nrm_direct = nrm_cb * 3 * (d.nrm.count ? 3 : 1);
+  const uint32_t nrm_skip8 = (d.nrm.count && d.nrm_index3) ? 3 : 1, nrm_skip16 = (d.nrm.count && d.nrm_index3) ? 6 : 2;
+  const size_t base = g_frame.vertices.size();
+  g_frame.vertices.resize(base + count);
+  Vertex* const outv = g_frame.vertices.data() + base;
   for (uint32_t v = 0; v < count; ++v) {
-    Vertex out{};
+    Vertex& out = outv[v];
     const uint8_t* p = src + (size_t)v * d.size;
     // matrix indices
-    if (d.posmtx) { out.posmtx = *p++; components |= VB_HAS_POSMTXIDX; }
+    if (d.posmtx) out.posmtx = *p++;
     else out.posmtx = (uint8_t)(mia & 63);
-    for (int i = 0; i < 8; ++i) {
-      if (d.texmtx[i]) { out.texmtx[i] = *p++; components |= VB_HAS_TEXMTXIDX0 << i; }
-      else out.texmtx[i] = (uint8_t)(i < 4 ? bits(mia, 6 + 6 * i, 6) : bits(mib, 6 * (i - 4), 6));
-    }
-    auto fetch = [&](const AttrDesc& x, uint32_t direct_size) -> const uint8_t* {
+    for (int i = 0; i < 8; ++i) out.texmtx[i] = d.texmtx[i] ? *p++ : default_texmtx[i];
+    auto fetch = [&](const AttrDesc& x, const ArrayView& view, uint32_t direct_size) -> const uint8_t* {
       const uint8_t* q = nullptr;
       if (x.type == 1) { q = p; p += direct_size; }
-      else if (x.type == 2) { q = array_ptr(x.array, *p); p += 1; }
-      else if (x.type == 3) { q = array_ptr(x.array, be16(p)); p += 2; }
+      else if (x.type == 2) { q = array_at(view, *p, direct_size); p += 1; }
+      else if (x.type == 3) { q = array_at(view, be16(p), direct_size); p += 2; }
       return q;
     };
     // position
     {
-      uint32_t n = d.pos.count ? 3 : 2, cb = comp_bytes(d.pos.format);
-      const uint8_t* q = fetch(d.pos, cb * n);
-      if (q) for (uint32_t k = 0; k < n; ++k) out.pos[k] = read_component(q + k * cb, d.pos.format, d.pos.frac);
+      const uint8_t* q = fetch(d.pos, pos_view, pos_bytes);
+      if (q) for (uint32_t k = 0; k < pos_n; ++k) out.pos[k] = read_component(q + k * pos_cb, d.pos.format, d.pos.frac);
     }
     // normal (first vector only; binormal/tangent ignored for now)
     if (d.nrm.type) {
-      uint32_t cb = comp_bytes(d.nrm.format), frac = d.nrm.format == 1 ? 6 : d.nrm.format == 3 ? 14 : d.nrm.format == 0 ? 7 : d.nrm.format == 2 ? 15 : 0;
-      uint32_t nvec = d.nrm.count ? 3 : 1;
       const uint8_t* q = nullptr;
-      if (d.nrm.type == 1) { q = p; p += cb * 3 * nvec; }
-      else if (d.nrm.type == 2) { q = array_ptr(1, *p); p += (d.nrm.count && d.nrm_index3) ? 3 : 1; }
-      else { q = array_ptr(1, be16(p)); p += (d.nrm.count && d.nrm_index3) ? 6 : 2; }
-      if (q) for (int k = 0; k < 3; ++k) out.nrm[k] = read_component(q + k * cb, d.nrm.format, frac);
-      components |= VB_HAS_NRM0;
+      if (d.nrm.type == 1) { q = p; p += nrm_direct; }
+      else if (d.nrm.type == 2) { q = array_at(nrm_view, *p, nrm_bytes); p += nrm_skip8; }
+      else { q = array_at(nrm_view, be16(p), nrm_bytes); p += nrm_skip16; }
+      if (q) for (int k = 0; k < 3; ++k) out.nrm[k] = read_component(q + k * nrm_cb, d.nrm.format, nrm_frac);
     }
     // colors
-    static const uint32_t csize[] = {2, 3, 4, 2, 3, 4, 4, 4};
     for (int i = 0; i < 2; ++i) {
       if (!d.col[i].type) { continue; }
-      const uint8_t* q = fetch(d.col[i], csize[d.col[i].format]);
+      const uint8_t* q = fetch(d.col[i], col_view[i], csize[d.col[i].format]);
       uint8_t* dst = i ? out.col1 : out.col0;
       if (q) read_color(q, d.col[i].format, dst);
       if (!d.col[i].count) dst[3] = 255;
-      components |= i ? VB_HAS_COL1 : VB_HAS_COL0;
     }
     // texcoords
-    for (int i = 0; i < 8; ++i) {
-      if (!d.tex[i].type) continue;
-      uint32_t n = d.tex[i].count ? 2 : 1, cb = comp_bytes(d.tex[i].format);
-      const uint8_t* q = fetch(d.tex[i], cb * n);
-      if (q) for (uint32_t k = 0; k < n; ++k) out.uv[i][k] = read_component(q + k * cb, d.tex[i].format, d.tex[i].frac);
-      components |= VB_HAS_UV0 << i;
+    for (int t = 0; t < tex_count; ++t) {
+      const TexSet& set = tex_sets[t];
+      const AttrDesc& x = d.tex[set.index];
+      const uint8_t* q = fetch(x, tex_view[set.index], set.bytes);
+      if (q) for (uint32_t k = 0; k < set.n; ++k) out.uv[set.index][k] = read_component(q + k * set.cb, x.format, x.frac);
     }
-    g_frame.vertices.push_back(out);
   }
   return components;
 }
@@ -308,13 +388,16 @@ void snapshot_textures(DrawCall& dc) {
   for (TextureRef& t : dc.textures) {
     if (!t.used) continue;
     uint32_t total = texture_chain_bytes(t.width, t.height, t.format, t.mip_levels);
-    uint32_t offset = t.addr & 0x3FFFFFFFu;
     uint32_t palette_bytes = t.format == 8 ? 32 : t.format == 9 ? 512 : t.format == 10 ? 32768 : 0;
-    if (offset >= ppc::RAM_SIZE || total > ppc::RAM_SIZE - offset ||
-        t.tlut_addr > sizeof g_tmem || palette_bytes > sizeof g_tmem - t.tlut_addr)
+    const uint8_t* texels = host::try_ptr(t.addr, total);
+    if (!texels || t.tlut_addr > sizeof g_tmem || palette_bytes > sizeof g_tmem - t.tlut_addr)
       host::die("GX texture range invalid: %08X+%X, palette %X+%X", t.addr, total, t.tlut_addr, palette_bytes);
-    const uint64_t source_version = ppc::watch_ram_range(offset, total);
-    t.data = g_texture_snapshots.capture(host::ram + offset, total, g_tmem + t.tlut_addr,
+    // Native writes never pass through ppc::mark_ram_write, so the RAM-version shortcut cannot
+    // see them. The native game cannot run while one FIFO batch is parsed, though, so the batch
+    // number is a valid version: a texture drawn again in the same batch skips the texel compare
+    // (that compare, repeated for every draw, was most of the native build's texsnap cost).
+    const uint64_t source_version = host::game_image ? g_fifo_batch : ppc::watch_ram_range(t.addr & 0x3FFFFFFFu, total);
+    t.data = g_texture_snapshots.capture(texels, total, g_tmem + t.tlut_addr,
                                          palette_bytes, source_version,
                                          palette_bytes ? g_tmem_generation : 0);
   }
@@ -372,9 +455,26 @@ void record_draw(uint32_t primitive, uint32_t first, uint32_t count, uint32_t co
   }
   { host::SimCostScope cost(host::SIM_OBSERVE);
     dc.identity = observed_draw_identity(dc.identity, dc.object_generation);
-    dc.owner_player = observed_owner();   // SkipInit above means this has to be written every draw
-    dc.skinned = observed_skinned();
-    dc.authored_pose = capture_authored_pose(); }
+    if (!dc.object_generation && !g_native_draw_scopes.empty() && g_native_draw_scopes.back().object &&
+        g_native_draw_scopes.back().piece) {
+      NativeDrawScope& scope = g_native_draw_scopes.back();
+      const uint64_t key[] = {scope.piece, scope.ordinal, scope.draws++};
+      dc.object_generation = scope.object;
+      dc.identity = hash_bytes(key, sizeof key) ^ 3;
+    }
+    dc.owner_player = g_native_owner_source ? g_native_owner : observed_owner();   // SkipInit above means this has to be written every draw
+    if (native_pose_capture_enabled()) {
+      dc.skinned = active_native_scope_is_skinned();
+      dc.authored_pose = active_native_authored_pose();
+    } else {
+      dc.skinned = g_native_owner_source ? g_native_skinned : observed_skinned();
+      dc.authored_pose = capture_authored_pose();
+    }
+    if (dc.skinned) ++authored_stats().skinned_draws;
+    if (dc.authored_pose) {
+      ++authored_stats().posed_draws;
+      if (dc.authored_pose->envelope) ++authored_stats().posed_draws_envelope;
+    } }
   g_frame.draws.push_back(std::move(dc));
   g_frame.segments.push_back({first, count, primitive});
   g_frame.commands.push_back({FrameCommand::Draw, (uint32_t)g_frame.draws.size() - 1});
@@ -409,7 +509,12 @@ void bp_write(uint32_t value) {
     case BP_LOADTLUT1: {
       uint32_t tmem_addr = (masked & 0x3FF) << 9;
       uint32_t count = (masked & 0x1FFC00) >> 5;
-      uint32_t src = (g_bp.reg[BP_LOADTLUT0] << 5) & 0x01FFFFFF;
+      // BP_LOADTLUT0 carries the source address in bits 0..20 only; bits 21..23 are
+      // reserved and the GP ignores them. GXInitTlutObj writes just the 21-bit field
+      // and the 8-bit register id, so whatever the caller's uninitialised GXTlutObj
+      // held in between rides along (tobj.c and psdisp.c both use a stack local).
+      // Mask to the real field or those stale bits become a wild address.
+      uint32_t src = ((g_bp.reg[BP_LOADTLUT0] & 0x1FFFFFu) << 5) & 0x3FFFFFFFu;
       if (tmem_addr + count <= sizeof g_tmem) {
         std::memcpy(g_tmem + tmem_addr, host::ptr(0x80000000u | src, count), count);
         ++g_tmem_generation;
@@ -443,27 +548,36 @@ void bp_write(uint32_t value) {
       ++g_efb_copies;
       if (c.to_xfb) {
         g_frame.sequence = ++g_frame_sequence;
-        g_frame.scene_major = host::rd8(0x80479D30);
-        g_frame.scene_minor = host::rd8(0x80479D33);
-        capture_match_hud(g_frame);
-        const uint8_t options_menu = host::rd8(0x804A04F0);
-        const uint16_t options_selection = host::rd16(0x804A04F2);
-        const uint32_t options_buttons = host::rd32(0x804A04FC);
-        gx::settings_guest_options_frame(options_menu, options_selection, options_buttons);
-        if (options_menu == 4 && options_selection == 3 && (options_buttons & 0x10))
-          host::wr8(0x804A0501, 0); // no guest submenu owns the PC Settings row
+        // Through the host, not guest memory: the native game keeps its scene in its own image, so
+        // a read at the console address made every native match look like a menu to the renderer.
+        { uint32_t major = 0, minor = 0, match_frame = 0;
+          host::current_scene(&major, &minor, &match_frame);
+          g_frame.scene_major = (uint8_t)major; g_frame.scene_minor = (uint8_t)minor; }
+        // The HUD objects and the guest Settings menu row are read and written at their console
+        // addresses, which only the recompiled build keeps in guest RAM: the native game holds
+        // them in its own image with its own layout, so it skips both.
+        if (!host::game_image) {
+          capture_match_hud(g_frame);
+          const uint8_t options_menu = host::rd8(0x804A04F0);
+          const uint16_t options_selection = host::rd16(0x804A04F2);
+          const uint32_t options_buttons = host::rd32(0x804A04FC);
+          gx::settings_guest_options_frame(options_menu, options_selection, options_buttons);
+          if (options_menu == 4 && options_selection == 3 && (options_buttons & 0x10))
+            host::wr8(0x804A0501, 0); // no guest submenu owns the PC Settings row
+        }
         {
           static uint16_t last_scene = 0xFFFF;
           const uint16_t scene = (uint16_t)(g_frame.scene_major << 8 | g_frame.scene_minor);
           if (scene != last_scene) { host::log("scene: major %02X minor %02X (frame %llu)", g_frame.scene_major, g_frame.scene_minor, (unsigned long long)g_frame.sequence); last_scene = scene; }
         }
         g_frame.time = host::now_seconds(); // completed snapshot availability anchors presentation
+        g_frame.tick = host::tick_timing();
         g_frame.discontinuous = g_discontinuity;
         g_discontinuity = false;
         if (g_backend) g_backend->submit_and_recycle(g_frame);   // hands over the buffers, returns recycled ones
         else g_frame.clear();
         g_texture_snapshots.end_frame();
-        g_dl_calls.clear(); g_immediate_draws.clear(); finish_observed_frame();
+        g_dl_calls.clear(); g_immediate_draws.clear(); g_native_object_scopes.clear(); g_native_draw_scopes.clear(); native_pose_bridge_frame_reset(); finish_observed_frame();
       }
       break;
     }
@@ -491,8 +605,8 @@ void xf_indexed_load(uint32_t op, uint32_t value) {
 size_t parse_command(const uint8_t* d, size_t len);
 
 void run_display_list(uint32_t addr, uint32_t size) {
-  if ((addr & 0x3FFFFFFFu) + size > 0x01800000u) { host::log("gx: display list outside RAM %08X+%X", addr, size); return; }
-  const uint8_t* p = host::ptr(addr, size);
+  const uint8_t* p = host::try_ptr(addr, size);
+  if (!p) { host::log("gx: display list outside RAM %08X+%X (parent %08X, vcd %08X/%08X)", addr, size, g_dl_addr, g_cp.reg[0x50], g_cp.reg[0x60]); return; }
   uint32_t saved_addr = g_dl_addr, saved_draw = g_dl_draw_ordinal, saved_call = g_dl_call_ordinal;
   g_dl_addr = addr; g_dl_draw_ordinal = 0; g_dl_call_ordinal = g_dl_calls[addr]++;
   size_t used = 0;
@@ -534,6 +648,45 @@ size_t parse_command(const uint8_t* d, size_t len) {
     return 9;
   }
   if (op == 0x48) return 1;
+  // Private diagnostic token emitted only by MU_NATIVE and consumed before GX rendering.
+  // Opcode 0xF0 is not a GX command; it is present only when the optional audit is enabled.
+  if (op == 0xF0) {
+    if (len < 21) return incomplete(21);
+    const NativeRenderScopeEvent event{be32(d + 1), be32(d + 5), be32(d + 9), 0};
+    if (event.phase == NATIVE_SCOPE_BEGIN) {
+      const uint32_t object = be32(d + 13), piece = be32(d + 17);
+      g_native_draw_scopes.push_back({object, piece, piece ? g_native_object_scopes[piece]++ : 0, 0});
+    } else if (event.phase == NATIVE_SCOPE_END && !g_native_draw_scopes.empty()) {
+      g_native_draw_scopes.pop_back();
+    }
+    g_native_draw_audit.note_streamed_event(event);
+    if (native_pose_capture_enabled()) {
+      if (event.phase == NATIVE_SCOPE_BEGIN) {
+        g_native_pose_scope_ids.push_back(event.scope_id);
+      } else if (event.phase == NATIVE_SCOPE_END) {
+        if (!g_native_pose_scope_ids.empty() &&
+            g_native_pose_scope_ids.back() == event.scope_id)
+          g_native_pose_scope_ids.pop_back();
+        else
+          g_native_pose_scope_ids.clear();
+      }
+    }
+    if (event.phase == NATIVE_SCOPE_END) finish_native_pose_scope(event.scope_id);
+    return 21;
+  }
+  // Private token from the native fighter render callback: the owning player slot of the draws
+  // that follow, 0xFF for none. Only sent while owner tracking is on (MuHostApi.native_owner_tracking).
+  if (op == 0xF1) {
+    if (len < 2) return incomplete(2);
+    g_native_owner = d[1];
+    return 2;
+  }
+  // Private token from native HSD_PObjDisp while owners are tracked: the PObj is an envelope draw.
+  if (op == 0xF2) {
+    if (len < 2) return incomplete(2);
+    g_native_skinned = d[1] != 0;
+    return 2;
+  }
   if (op == 0x61) { if (len < 5) return incomplete(5); bp_write(be32(d + 1)); return 5; }
   if (op >= 0x80 && op < 0xC0) {
     if (len < 3) return incomplete(3);
@@ -542,6 +695,7 @@ size_t parse_command(const uint8_t* d, size_t len) {
     size_t need = 3 + (size_t)count * desc.size;
     if (len < need) return incomplete(need);
     if (count) {
+      g_native_draw_audit.note_decoded_draw();
       uint32_t first = (uint32_t)g_frame.vertices.size();
       uint32_t components = decode_vertices(desc, d + 3, count, fmt);
       record_draw(op & 0xF8, first, count, components);
@@ -549,7 +703,7 @@ size_t parse_command(const uint8_t* d, size_t len) {
     return need;
   }
   static int reported = 0;
-  if (reported++ < 10) host::log("gx: unknown opcode %02X", op);
+  if (reported++ < 10) host::log("gx: unknown opcode %02X (list %08X, data %p, vcd %08X/%08X)", op, g_dl_addr, d, g_cp.reg[0x50], g_cp.reg[0x60]);
   return 1;
 }
 
@@ -570,15 +724,35 @@ void init(Backend* backend) {
   std::memset(&g_xf, 0, sizeof g_xf);
   std::memset(g_tmem, 0, sizeof g_tmem);
   g_frame.clear();
+  g_native_draw_audit.reset(false);
+  g_native_pose_scopes.clear();
+  g_native_pose_skinned_scopes.clear();
+  g_native_pose_scope_ids.clear();
+  g_native_pose_stats = {};
   g_frame.reserve_gameplay_capacity();
 }
+
+// Parses whatever complete commands g_buf now holds.
+static void drain_fifo();
 
 void write_fifo(uint32_t value, int bytes) {
   const size_t at = g_buf.size();
   g_buf.resize(at + (size_t)bytes);   // one size update per write instead of a push_back per byte
   for (int i = 0; i < bytes; ++i) g_buf[at + i] = (uint8_t)(value >> (8 * (bytes - 1 - i)));
+  drain_fifo();
+}
+
+// The same stream handed over in bulk, already in the pipe's big-endian byte order.
+void write_fifo_bytes(const uint8_t* data, size_t bytes) {
+  ++g_fifo_batch;
+  g_buf.insert(g_buf.end(), data, data + bytes);
+  drain_fifo();
+}
+
+static void drain_fifo() {
   if (g_buf.size() - g_buf_pos < g_parse_need) return;   // the pending command is still incomplete
   g_parse_need = 0;
+  host::SimCostScope cost(host::SIM_DECODE);   // everything the simulation thread spends turning FIFO bytes into draws
   while (g_buf_pos < g_buf.size()) {
     size_t n = parse_command(g_buf.data() + g_buf_pos, g_buf.size() - g_buf_pos);
     if (!n) break;               // parse_command recorded how many bytes it needs
@@ -595,6 +769,73 @@ void stats(uint64_t* commands, uint64_t* draws, uint64_t* vertices, uint32_t* ef
   if (draws) *draws = g_draws;
   if (vertices) *vertices = g_vertices;
   if (efb_copies) *efb_copies = g_efb_copies;
+}
+
+void set_native_draw_audit(bool enabled) { g_native_draw_audit.reset(enabled); }
+void native_render_scope_event(const NativeRenderScopeEvent& event) { g_native_draw_audit.note_submitted_event(event); }
+NativeDrawAuditStats native_draw_audit_stats() { return g_native_draw_audit.stats(); }
+bool native_draw_audit_enabled() { return g_native_draw_audit.enabled(); }
+void set_native_pose_capture_enabled(bool enabled) {
+  g_native_pose_capture_enabled.store(enabled, std::memory_order_relaxed);
+  if (!enabled) {
+    g_native_pose_scopes.clear();
+    g_native_pose_skinned_scopes.clear();
+    g_native_pose_scope_ids.clear();
+  }
+}
+void set_native_owner_source(bool native) { g_native_owner_source = native; g_native_owner = 0xFF; g_native_skinned = false; }
+static std::atomic<bool> g_authored_capture_wanted{true};
+void set_authored_capture_wanted(bool wanted) { g_authored_capture_wanted.store(wanted, std::memory_order_relaxed); }
+bool authored_capture_wanted() { return g_authored_capture_wanted.load(std::memory_order_relaxed); }
+bool native_pose_capture_enabled() {
+  return g_native_pose_capture_enabled.load(std::memory_order_relaxed) && authored_capture_wanted();
+}
+void native_pose_snapshot(const MuNativePoseSnapshot* snapshot) {
+  if (!snapshot || !native_pose_capture_enabled()) return;
+  ++g_native_pose_stats.snapshots;
+  if (snapshot->scope_id == 0) {
+    ++g_native_pose_stats.invalid_payloads;
+    return;
+  }
+  const bool envelope = snapshot->kind == MU_NATIVE_POSE_ENVELOPE;
+  if (envelope) ++g_native_pose_stats.envelope_scopes;
+  g_native_pose_skinned_scopes[snapshot->scope_id] = envelope;
+  if ((snapshot->kind != MU_NATIVE_POSE_RIGID && !envelope) ||
+      snapshot->reject_reason != MU_NATIVE_POSE_REJECT_NONE) {
+    const uint32_t reason = snapshot->reject_reason;
+    if (reason > 0 && reason < MU_NATIVE_POSE_REJECT_COUNT)
+      ++g_native_pose_stats.rejected[reason];
+    else
+      ++g_native_pose_stats.invalid_payloads;
+    return;
+  }
+  auto pose = envelope ? copy_native_envelope_snapshot(*snapshot)
+                       : copy_native_pose_snapshot(*snapshot);
+  if (!pose) {
+    ++g_native_pose_stats.invalid_payloads;
+    return;
+  }
+  g_native_pose_scopes[snapshot->scope_id] = std::move(pose);
+  ++(envelope ? g_native_pose_stats.envelope_captured : g_native_pose_stats.rigid_captured);
+  ++(snapshot->default_setup ? g_native_pose_stats.captured_default_setup
+                             : g_native_pose_stats.captured_custom_setup);
+  ++authored_stats().captured;
+  if (envelope) ++authored_stats().captured_envelope;
+}
+std::shared_ptr<const AuthoredPose> active_native_authored_pose() {
+  const uint32_t scope = active_native_pose_scope_id();
+  auto it = g_native_pose_scopes.find(scope);
+  return it == g_native_pose_scopes.end() ? std::shared_ptr<const AuthoredPose>{} : it->second;
+}
+bool active_native_scope_is_skinned() {
+  const uint32_t scope = active_native_pose_scope_id();
+  auto it = g_native_pose_skinned_scopes.find(scope);
+  return it != g_native_pose_skinned_scopes.end() && it->second;
+}
+NativePoseBridgeStats native_pose_bridge_stats() { return g_native_pose_stats; }
+void finish_native_pose_scope(uint32_t scope_id) {
+  g_native_pose_scopes.erase(scope_id);
+  g_native_pose_skinned_scopes.erase(scope_id);
 }
 
 const uint8_t* tmem() { return g_tmem; }

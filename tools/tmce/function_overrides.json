@@ -1,0 +1,15 @@
+{
+  "DevCam_AdjustRotate": "mu_tmce_fn_802279E8",
+  "DevCam_AdjustZoom": "mu_tmce_fn_80227CAC",
+  "DevCam_AdjustPan": "mu_tmce_fn_80227FE0",
+  "Egg_Destroy": "mu_tmce_fn_it_80289158",
+  "GuardOnInitIDK": "mu_tmce_fn_ftCo_800923B4",
+  "Memcard_RemovedCallback": "mu_tmce_fn_onCardComplete",
+  "blr": "mex_blr",
+  "blr2": "mex_blr",
+  "ActionStateChange": "mex_ActionStateChange",
+  "GrColl_RaycastGround": "mex_GrColl_RaycastGround",
+  "Develop_DrawSphere": "mex_Develop_DrawSphere",
+  "DevelopText_StoreBGColor": "mex_DevelopText_StoreBGColor",
+  "Fighter_GetKnockbackAngle": "mex_Fighter_GetKnockbackAngle"
+}

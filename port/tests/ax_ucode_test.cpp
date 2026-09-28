@@ -6,10 +6,15 @@
 #include <vector>
 static std::vector<uint8_t> g_ram(0x20000);
 static std::vector<uint8_t> g_aram(0x10000);
+static std::vector<uint8_t> g_le_ram(0x20000);
 static uint16_t rd16(uint32_t a) { a &= 0x1FFFF; return (uint16_t)((g_ram[a] << 8) | g_ram[a + 1]); }
 static uint32_t rd32(uint32_t a) { return ((uint32_t)rd16(a) << 16) | rd16(a + 2); }
 static void wr16(uint32_t a, uint16_t v) { a &= 0x1FFFF; g_ram[a] = (uint8_t)(v >> 8); g_ram[a + 1] = (uint8_t)v; }
 static void wr32(uint32_t a, uint32_t v) { wr16(a, (uint16_t)(v >> 16)); wr16(a + 2, (uint16_t)v); }
+static uint16_t rd16le(uint32_t a) { uint16_t v; std::memcpy(&v, &g_le_ram[a & 0x1FFFF], sizeof v); return v; }
+static uint32_t rd32le(uint32_t a) { return ((uint32_t)rd16le(a) << 16) | rd16le(a + 2); }
+static void wr16le(uint32_t a, uint16_t v) { std::memcpy(&g_le_ram[a & 0x1FFFF], &v, sizeof v); }
+static void wr32le(uint32_t a, uint32_t v) { wr16le(a, (uint16_t)(v >> 16)); wr16le(a + 2, (uint16_t)v); }
 static void check(bool ok, const char* what) { if (!ok) { std::printf("FAIL: %s\n", what); std::fflush(stdout); std::exit(1); } }
 
 int main() {
@@ -50,5 +55,11 @@ int main() {
   uint32_t cur = ((uint32_t)rd16(audio_addr + 12) << 16) | rd16(audio_addr + 14);
   check(cur == 0x2000 + 160 + 2 * 12, "accelerator position written back to the PB (12 frame headers consumed)");
   check(rd16(pb + 0x0E) == 1, "voice still running (end not reached)");
+  ax::set_memory({rd16le, rd32le, wr16le, wr32le, g_aram.data(), (uint32_t)g_aram.size()});
+  ax::reset();
+  wr16le(0x120, 0x1234);
+  wr32le(0x124, 0x89ABCDEF);
+  check(rd16le(0x120) == 0x1234 && rd32le(0x124) == 0x89ABCDEF,
+        "little-endian identity AX memory preserves hi/lo words");
   std::puts("AX ucode ADPCM decode, PB write-back, output interleave and mixer control passed");
 }

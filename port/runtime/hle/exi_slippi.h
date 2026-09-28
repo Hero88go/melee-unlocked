@@ -4,6 +4,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace slippi {
 
@@ -27,5 +28,8 @@ void request_widescreen(bool on);
 bool widescreen();
 void request_fod_reflections(bool on);
 void poll_options();
+// Sys/GameFiles/GALE01/<name> as the EXI file commands (D1/D2) serve it: the loose file, or its
+// .diff applied to the disc copy. Empty when missing or when the diff fails.
+std::vector<uint8_t> system_game_file(const std::string& name);
 
 }  // namespace slippi

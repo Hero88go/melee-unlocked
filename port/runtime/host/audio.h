@@ -16,6 +16,8 @@ bool audio_open(int volume_percent, const char* wav_dump_path = nullptr, bool op
 void audio_close();
 // `bytes` of big-endian 16-bit samples ordered R, L, R, L ... (GameCube AI DMA format).
 void audio_push(const uint8_t* be_samples, size_t bytes);
+// Native AX writes the same R,L sample words in host byte order.
+void audio_push_native(const uint8_t* le_samples, size_t bytes);
 uint64_t audio_pushed_frames();
 uint64_t audio_dropped_blocks();
 uint64_t audio_underruns(uint64_t* silent_ms);   // output gaps (ring empty), and the total time they held the last sample

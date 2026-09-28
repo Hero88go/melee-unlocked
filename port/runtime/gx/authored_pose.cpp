@@ -2,8 +2,11 @@
 #include "authored_pose.h"
 #include "Geometry.h"
 #include "subframe.h"
+#include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 namespace gx {
 // Furthest the view may travel in one simulation frame before it is treated as a cut rather than
@@ -15,6 +18,46 @@ void set_authored_interpolate(bool on) { g_interpolate.store(on, std::memory_ord
 namespace {
 using NativeMelee::Matrix;
 bool near(float a,float b) { return std::isfinite(a)&&std::isfinite(b)&&std::abs(a-b)<=0.002f*(1+std::abs(b)); }
+void diagnose_first_s8(size_t index, size_t chain_size, int matrix_index, double phase,
+                       const Matrix& reconstructed, const AuthoredJoint& previous,
+                       const AuthoredJoint& current) {
+  static std::atomic<bool> emitted{false};
+  const char* enabled = std::getenv("MELEE_AUTHORED_S8_DIAGNOSTIC");
+  if (!enabled || std::strcmp(enabled, "1") != 0) return;
+  bool expected = false;
+  if (!emitted.compare_exchange_strong(expected, true, std::memory_order_relaxed)) return;
+  std::fprintf(stderr,
+               "[M8-S8-FIRST] phase=%.9g joint=%zu/%zu matrix=%d current(gen=%llu flags=%08X quat=%u frame=%.9g rate=%.9g end=%.9g tracks=%zu) previous(gen=%llu flags=%08X frame=%.9g rate=%.9g tracks=%zu)\n",
+               phase, index, chain_size, matrix_index,
+               (unsigned long long)current.generation, current.flags, current.quaternion ? 1u : 0u,
+               current.frame, current.rate, current.end, current.tracks.size(),
+               (unsigned long long)previous.generation, previous.flags, previous.frame,
+               previous.rate, previous.tracks.size());
+  std::fprintf(stderr,
+               "[M8-S8-LOCAL] previous S=(%.9g,%.9g,%.9g) R=(%.9g,%.9g,%.9g) T=(%.9g,%.9g,%.9g); current S=(%.9g,%.9g,%.9g) R=(%.9g,%.9g,%.9g) T=(%.9g,%.9g,%.9g) Q=(%.9g,%.9g,%.9g,%.9g)\n",
+               previous.scale[0], previous.scale[1], previous.scale[2],
+               previous.rotation[0], previous.rotation[1], previous.rotation[2],
+               previous.translation[0], previous.translation[1], previous.translation[2],
+               current.scale[0], current.scale[1], current.scale[2],
+               current.rotation[0], current.rotation[1], current.rotation[2],
+               current.translation[0], current.translation[1], current.translation[2],
+               current.quat[0], current.quat[1], current.quat[2], current.quat[3]);
+  for (size_t k = 0; k < 12; ++k)
+    std::fprintf(stderr, "[M8-S8-MATRIX] row=%zu reconstructed=%.9g captured=%.9g\n",
+                 k, reconstructed[k], current.world[k]);
+  for (size_t k = 0; k < 12; ++k)
+    std::fprintf(stderr, "[M8-S8-PREVWORLD] row=%zu previous=%.9g current=%.9g\n",
+                 k, previous.world[k], current.world[k]);
+  for (const auto& track : current.tracks) {
+    std::fprintf(stderr, "[M8-S8-TRACK] channel=%u start=%d value_format=%u slope_format=%u bytes=%zu data=",
+                 track.channel, track.start_frame, track.value_format, track.slope_format,
+                 track.bytes.size());
+    const size_t bytes = std::min<size_t>(track.bytes.size(), 16);
+    for (size_t k = 0; k < bytes; ++k) std::fprintf(stderr, "%02X", track.bytes[k]);
+    std::fputc('\n', stderr);
+  }
+  std::fflush(stderr);
+}
 bool inverse(const Matrix& m,Matrix& o) {
   double det=m[0]*(double(m[5])*m[10]-double(m[6])*m[9])-m[1]*(double(m[4])*m[10]-double(m[6])*m[8])+m[2]*(double(m[4])*m[9]-double(m[5])*m[8]);
   if (!std::isfinite(det)||std::abs(det)<1e-12) return false;
@@ -281,7 +324,7 @@ static bool sample_chain(const AuthoredPose& previous,const AuthoredPose& curren
       // HSD_JObjSetupMatrixSub applies the joint's constraints after make_mtx, so they land here,
       // on both the reconstruction and the sampled pose, and before the reconstruction is checked.
       if(!j.constraints.empty()&&!constrain(p,j,phase,cache,exact,world,animated)) return false;
-      for(int k=0;k<12;++k)if(!near(exact[k],j.world[k])){ ++authored_stats().sample[8]; return false; }
+      for(int k=0;k<12;++k)if(!near(exact[k],j.world[k])){ diagnose_first_s8(i,current.joints.size(),k,phase,exact,p,j); ++authored_stats().sample[8]; return false; }
       if(!(j.flags&8)){ for(int k=0;k<3;++k){ inherited[k]*=scale[k]; inherited_exact[k]*=j.scale[k]; } }
     }
   } catch(const std::exception&) { { ++authored_stats().sample[10]; return false; } }
@@ -472,6 +515,7 @@ bool sample_authored_envelope(const AuthoredPose& previous,const AuthoredPose& c
   std::memcpy(out_pos,staged_pos,sizeof staged_pos);
   std::memcpy(out_nrm,staged_nrm,sizeof staged_nrm);
   ++authored_stats().sampled;
+  ++authored_stats().sampled_envelope;
   return true;
 }
 }

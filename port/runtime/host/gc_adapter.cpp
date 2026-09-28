@@ -40,6 +40,7 @@ std::atomic<bool> g_running{false};
 std::atomic<double> g_poll_rate_hz{0.0};
 std::mutex g_mutex;
 uint8_t g_report[37] = {};
+std::chrono::steady_clock::time_point g_report_time;
 bool g_have_report = false;
 std::chrono::steady_clock::time_point g_next_scan;
 bool g_logged_missing = false;
@@ -116,6 +117,7 @@ void reader_thread() {
         }
         std::lock_guard<std::mutex> lk(g_mutex);
         std::memcpy(g_report, buf, 37);
+        g_report_time = received;
         g_have_report = true;
       }
     } else {
@@ -257,6 +259,8 @@ uint32_t gcadapter_poll(PadState out[4]) {
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_have_report) return 0;
     std::memcpy(rep, g_report, 37);
+    TickTiming& tick = tick_timing();
+    if (tick.pad_age < 0) tick.pad_age = std::chrono::duration<double, std::milli>(now - g_report_time).count();
   }
   uint32_t mask = 0;
   for (int port = 0; port < 4; ++port) {

@@ -32,6 +32,9 @@ extern const char* const SLIPPI_SEMVER;   // netplay version this port speaks
 enum NetMsg : uint8_t {
   NP_MSG_SLIPPI_PAD = 0x80, NP_MSG_SLIPPI_PAD_ACK = 0x81, NP_MSG_SLIPPI_MATCH_SELECTIONS = 0x82, NP_MSG_SLIPPI_CONN_SELECTED = 0x83,
   NP_MSG_SLIPPI_CHAT_MESSAGE = 0x84, NP_MSG_SLIPPI_COMPLETE_STEP = 0x85, NP_MSG_SLIPPI_SYNCED_STATE = 0x86,
+  // Melee Unlocked only: the sender's build (retail or a mod's identity). Slippi Dolphin logs an
+  // unknown id and ignores it, so it is safe to send to anyone.
+  NP_MSG_MU_BUILD = 0xE0,
 };
 
 // sf::Packet wire format: integers big-endian, bool as one byte, strings as u32 length + bytes.
@@ -80,10 +83,6 @@ struct RemotePadOutput {
   std::vector<uint8_t> data;
 };
 
-struct GamePrepStepResults { uint8_t step_idx = 0, char_selection = 0, char_color_selection = 0, stage_selections[2] = {}; };
-struct SyncedFighterState { uint8_t stocks_remaining = 4; uint16_t current_health = 0; };
-struct SyncedGameState { std::string match_id; uint32_t game_index = 0, tiebreak_index = 0, seconds_remaining = 480; SyncedFighterState fighters[4]; };
-struct DesyncRecoveryResp { bool is_recovering = false, is_waiting = false, is_error = false; SyncedGameState state; };
 
 struct PlayerSelections {
   uint8_t player_idx = 0, character_id = 0, character_color = 0, team_id = 0;
@@ -109,7 +108,6 @@ struct UserInfo {
   int port = 0;
   std::vector<std::string> chat_messages;
   bool is_bot = false;
-  float ranked_rating = 0; int ranked_update_count = 0, ranked_global_placement = 0, ranked_regional_placement = 0;
 };
 
 // The user record written by the Slippi Launcher (user.json in the Slippi user folder).
@@ -167,9 +165,6 @@ class NetplayClient {
   void StartSlippiGame();
   void SendSlippiPad(std::unique_ptr<Pad> pad);
   void SetMatchSelections(PlayerSelections& s);
-  void SendGamePrepStep(const GamePrepStepResults& s);
-  void SendSyncedGameState(const SyncedGameState& s);
-  bool GetGamePrepResults(uint8_t step_idx, GamePrepStepResults& res);
   std::unique_ptr<RemotePadOutput> GetSlippiRemotePad(int index, int max_frame_count);
   void DropOldRemoteInputs(int32_t finalized_frame);
   std::unordered_map<uint8_t, bool> GetActivePlayerIndices() const;
@@ -182,11 +177,13 @@ class NetplayClient {
   int32_t CalcTimeOffsetUs();
   double GetAndResetAvgPingMs();
   int LastPingMs() const { return (int)(last_ping_ms_.load(std::memory_order_relaxed)); }
-  bool IsWaitingForDesyncRecovery();
-  DesyncRecoveryResp GetDesyncRecoveryState();
   void SendChatMessage(int message_id);
   void SendAsync(std::unique_ptr<Packet> packet);
   uint8_t remote_sent_chat_message_id = 0;
+  // The opponents' builds (NP_MSG_MU_BUILD), and when the connection completed.
+  struct RemoteBuild { bool received = false, mod_view = false; std::string fingerprint, name; };
+  RemoteBuild GetRemoteBuild(int index);
+  uint64_t ConnectedAtMs() const { return connected_at_ms_.load(std::memory_order_acquire); }
 
  private:
   struct FrameTiming { int32_t frame = 0; uint64_t time_us = 0; };
@@ -217,10 +214,7 @@ class NetplayClient {
   std::atomic<bool> player_active_[PLAYER_COUNT_MAX] = {};
   std::deque<std::unique_ptr<Pad>> local_pad_queue_;
   std::deque<std::unique_ptr<Pad>> remote_pad_queue_[REMOTE_PLAYER_MAX];
-  bool is_desync_recovery_ = false;
   struct ChecksumEntry { int32_t frame = 0; uint32_t value = 0; } remote_checksums_[REMOTE_PLAYER_MAX];
-  SyncedGameState remote_sync_states_[REMOTE_PLAYER_MAX], local_sync_state_;
-  std::deque<GamePrepStepResults> game_prep_step_queue_;
   uint64_t ping_us_[REMOTE_PLAYER_MAX] = {};
   std::atomic<uint64_t> ping_sample_sum_us_{0}, ping_sample_count_{0};
   std::atomic<uint32_t> last_ping_ms_{0};
@@ -233,21 +227,27 @@ class NetplayClient {
   std::vector<int> failed_connections_;
   MatchInfo match_info_;
   std::unique_ptr<PlayerSelections> remote_chat_message_selection_;
+  std::mutex build_mutex_;
+  RemoteBuild remote_build_[REMOTE_PLAYER_MAX];
+  std::atomic<uint64_t> connected_at_ms_{0};
+  void SendBuild();
 };
 
 class Matchmaking {
  public:
+  // Slippi's mode ids. RANKED stays defined only as protocol id 0: Melee Unlocked never searches it.
   enum OnlinePlayMode { RANKED = 0, UNRANKED = 1, DIRECT = 2, TEAMS = 3, PARTY = 4 };
   enum ProcessState { IDLE, INITIALIZING, MATCHMAKING, OPPONENT_CONNECTING, CONNECTION_SUCCESS, ERROR_ENCOUNTERED };
-  struct MatchSearchSettings { OnlinePlayMode mode = RANKED; std::string connect_code; };
+  struct MatchSearchSettings { OnlinePlayMode mode = UNRANKED; std::string connect_code; };
   struct MatchmakeResult { std::string id; std::vector<UserInfo> players; std::vector<uint16_t> stages; uint32_t items = 0; };
-  // Local test peering (no matchmaking server): fixed player index, ports and peer address.
+  // Local test peering (no matchmaking server): fixed player index, local port and the address of
+  // every other player ("ip:port", in player-index order with the local player left out). One
+  // remote is a two-player match; three is a four-player (Teams) match.
   struct LocalPeer {
     bool enabled = false;
     int local_index = 0;
     uint16_t local_port = 0;
-    std::string remote_ip;
-    uint16_t remote_port = 0;
+    std::vector<std::string> remotes;
     int test_stage = -1;  // deterministic stage selection for local regression runs only
   };
 
@@ -261,13 +261,15 @@ class Matchmaking {
   int LocalPlayerIndex() const { return local_player_index_; }
   std::vector<UserInfo> GetPlayerInfo() const { return player_info_; }
   std::string GetPlayerName(uint8_t port) const { return port < player_info_.size() ? player_info_[port].display_name : ""; }
-  int GetPlayerRank(uint8_t port) const;
   std::vector<uint16_t> GetStages() const { return allowed_stages_; }
   uint8_t RemotePlayerCount() const { return player_info_.empty() ? 0 : (uint8_t)(player_info_.size() - 1); }
   MatchmakeResult GetMatchmakeResult() const { return mm_result_; }
-  static bool IsFixedRulesMode(OnlinePlayMode m) { return m == UNRANKED || m == RANKED || m == PARTY; }
-  static LocalPeer local_peer;          // set from the command line for local two-instance tests
+  static bool IsFixedRulesMode(OnlinePlayMode m) { return m == UNRANKED || m == PARTY; }
+  static LocalPeer local_peer;          // set from the command line for local 2-4 instance tests
   static uint16_t forced_port;          // 0 = random 41000..50999
+  // False in hidden or scripted runs unless --allow-matchmaking: an automated run must never
+  // queue on Slippi's servers by accident (local peering is unaffected).
+  static bool server_allowed;
 
  private:
   void MatchmakeThread();
@@ -276,6 +278,8 @@ class Matchmaking {
   void handleConnecting();
   void disconnectFromServer();
   void terminateMmConnection();
+  struct Ticket;                          // a get-ticket-resp body (defined in slippi_net.cpp)
+  void ingest_ticket(const Ticket& ticket);
 
   User* user_;
   _ENetHost* client_ = nullptr;

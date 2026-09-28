@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import subprocess
 import time
+import shutil
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,6 +35,9 @@ def main():
     ap.add_argument('--timeout', type=float, default=180)
     ap.add_argument('--window', default='1920x1080')
     ap.add_argument('--scale', type=int, default=3)
+    ap.add_argument('--sys-dir', type=Path, help='Slippi Sys folder, for a build run outside its checkout')
+    ap.add_argument('--cwd', type=Path, default=ROOT, help='working directory for the game process')
+    ap.add_argument('--card-template', type=Path, help='memory card files copied into each run first')
     args = ap.parse_args()
     if args.frames <= args.match_start or args.repeats < 1:
         ap.error('need frames beyond match-start and at least one repeat')
@@ -51,6 +55,8 @@ def main():
         for repeat in range(args.repeats):
             label = f'{cap}-{repeat}'
             isolated = Path(tempfile.mkdtemp(prefix=label+'-state-', dir=args.out)).resolve()
+            if args.card_template:
+                shutil.copytree(args.card_template, isolated / 'cards')
             trace = (args.out / (label + '.csv')).resolve()
             command = [str(args.exe.resolve()), '--iso', str(args.iso.resolve()),
                        '--volume', '0', '--hidden', '--threaded-renderer', '--fps', cap,
@@ -60,9 +66,11 @@ def main():
                        '--log-file', str((args.out / (label + '-port.log')).resolve()),
                        '--card-dir', str(isolated / 'cards'), '--user-dir', str(isolated / 'User'),
                        '--shader-cache', str(cache), '--replay-dir', str((args.out / 'replays').resolve())]
+            if args.sys_dir:
+                command += ['--sys-dir', str(args.sys_dir.resolve())]
             start = time.monotonic()
             with (args.out / (label + '.log')).open('w') as log:
-                run = subprocess.run(command, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT,
+                run = subprocess.run(command, cwd=args.cwd, stdout=log, stderr=subprocess.STDOUT,
                                      timeout=args.timeout, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if run.returncode:
                 raise SystemExit(f'{label} failed: {run.returncode}; inspect log')

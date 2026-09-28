@@ -12,6 +12,10 @@
 #include <mutex>
 #include <functional>
 #include <condition_variable>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 
 namespace gx {
 EndpointStats& subframe_endpoint_stats() { static EndpointStats e; return e; }
@@ -478,7 +482,8 @@ namespace {
 class SolverPool {
  public:
   explicit SolverPool(int workers) {
-    for (int i = 0; i < workers; ++i) threads_.emplace_back([this, i] { loop(i + 1); });
+    // Same priority as the render thread that waits on them (threaded_backend.cpp).
+    for (int i = 0; i < workers; ++i) threads_.emplace_back([this, i] { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL); loop(i + 1); });
   }
   ~SolverPool() {
     { std::lock_guard<std::mutex> lk(m_); quit_ = true; }
@@ -528,6 +533,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
   if (!cur_) return;
   SubFrameStats* stats = &stats_;
   stats->rigid = stats->blended = stats->cuts = stats->authored = stats->carried = stats->vertex_blended = 0;
+  stats->posed = stats->posed_skinned = 0;
   if (authored) {
     // Sample forward from the latest state. Unsupported/discontinuous draws hold their current
     // matrices instead of inventing motion or adding a frame of delay. Chunks run in parallel.
@@ -545,6 +551,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
     SolverPool& pool = solver_pool();
     const int chunks = n >= 128 ? pool.chunks() : 1;
     std::vector<uint32_t> counts((size_t)chunks, 0), carries((size_t)chunks, 0), blends((size_t)chunks, 0), stages((size_t)chunks, 0);
+    std::vector<uint32_t> poses((size_t)chunks, 0), skinned_poses((size_t)chunks, 0);
     // A presented frame at phase 1 in Interpolate is the current simulation frame itself, so every
     // draw must leave the solver holding exactly the matrices the game loaded. Whatever does not is
     // what jumps once per tick. Checked only on those frames.
@@ -590,7 +597,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
     auto work = [&](int chunk) {
       AuthoredCache chain_cache;   // one sampled chain per object per chunk per presented frame
       size_t begin = n * (size_t)chunk / (size_t)chunks, end = n * (size_t)(chunk + 1) / (size_t)chunks;
-      uint32_t count = 0, carried = 0, blended = 0, staged = 0;
+      uint32_t count = 0, carried = 0, blended = 0, staged = 0, posed_count = 0, posed_skinned = 0;
       uint32_t lagged = 0, worst_kind = 0, worst_verts = 0; float worst_err = 0;
       for (size_t i = begin; i < end; ++i) {
         const DrawCall& d = cur_->draws[i];
@@ -891,7 +898,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
           }
         }
         routes_[i] = posed ? 1 : 0;
-        if (posed) ++count;
+        if (posed) { ++count; ++posed_count; if (d.authored_pose->envelope) ++posed_skinned; }
         else {
           // The re-pose failed. Carrying only the camera leaves the object at the PREVIOUS frame's
           // own pose, so at phase 1, where the presented frame is the current simulation frame, it is
@@ -953,7 +960,15 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
       if (endpoint_check)
         for (size_t i = begin; i < end; ++i) {
           const DrawCall& d = cur_->draws[i];
-          const DrawMatrices& o = out[i];
+          DrawMatrices& o = out[i];
+          // At phase 1 the interpolated presentation is the current simulation frame itself.
+          // Some routes intentionally hold or carry a draw (camera cuts, rejected pose samples,
+          // and changing vertex streams); their interior-phase fallback must not leak past the
+          // endpoint. Use the captured current-frame matrices and vertex stream exactly here.
+          // This is the interpolation boundary condition, not a tolerance adjustment.
+          std::memcpy(o.pos, d.posMatrices, sizeof o.pos);
+          std::memcpy(o.nrm, d.normalMatrices, sizeof o.nrm);
+          o.vertices = nullptr;
           uint64_t slots = pairs_[i].pos_slots ? pairs_[i].pos_slots : (1ull << (d.matrix_index_a & 63));
           float worst = 0;
           while (slots) {
@@ -989,12 +1004,16 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
       carries[(size_t)chunk] = carried;
       blends[(size_t)chunk] = blended;
       stages[(size_t)chunk] = staged;
+      poses[(size_t)chunk] = posed_count;
+      skinned_poses[(size_t)chunk] = posed_skinned;
     };
     if (chunks == 1) work(0); else pool.run(work);
     for (uint32_t c : counts) stats->authored += c;
     for (uint32_t c : carries) stats->carried += c;
     for (uint32_t c : blends) stats->vertex_blended += c;
     for (uint32_t c : stages) stats->stage_locked += c;
+    for (uint32_t c : poses) stats->posed += c;
+    for (uint32_t c : skinned_poses) stats->posed_skinned += c;
     // Two presented frames of the same simulation frame differ only in phase. A draw that takes one
     // route at one phase and another at the next is being drawn on two timelines inside a single
     // tick, which on screen is that object flashing several times per tick.

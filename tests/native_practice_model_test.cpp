@@ -8,7 +8,7 @@ using slippi::native_practice::Lifecycle;
 using slippi::native_practice::MatchMode;
 using slippi::native_practice::Phase;
 
-static_assert((int)MatchMode::Ranked == 0, "Ranked must match Slippi's online-mode value");
+// Ranked (Slippi value 0) is not offered; the value must stay unused.
 static_assert((int)MatchMode::Unranked == 1, "Unranked must match Slippi's online-mode value");
 static_assert((int)MatchMode::Direct == 2, "Direct must match Slippi's online-mode value");
 
@@ -62,7 +62,7 @@ int main() {
   CHECK(slippi::native_practice::is_offline_gameplay_scene(0x12, 0x02));   // event match
   CHECK(slippi::native_practice::is_offline_gameplay_scene(0x1C, 0x02));   // training
   CHECK(!slippi::native_practice::is_offline_gameplay_scene(0x08, 0x02));  // online
-  CHECK(!slippi::native_practice::mode_needs_direct_first_match_reset((uint8_t)MatchMode::Ranked));
+  CHECK(!slippi::native_practice::mode_needs_direct_first_match_reset(0));
   CHECK(!slippi::native_practice::mode_needs_direct_first_match_reset((uint8_t)MatchMode::Unranked));
   CHECK(slippi::native_practice::mode_needs_direct_first_match_reset((uint8_t)MatchMode::Direct));
 

@@ -6,24 +6,47 @@
 #include <array>
 #include <string>
 #include <vector>
+#include "native_online_policy.h"
 
 namespace slippi::online {
 
 struct Config {
+  std::string lobby_code;        // One explicit launcher-approved Direct match; never a Discord invite.
+  int lobby_character = 2;
+  std::string lobby_status_file;
   std::string user_dir = "runtime/slippi/User/Slippi";   // user.json, direct-codes.json (Slippi Launcher layout)
   int delay = 2;                 // Slippi Online input delay (frames)
   int chat = 0;                  // 0 enabled, 1 direct only, 2 disabled
-  bool show_local_rank = true, show_opponent_rank = true;
 };
 Config& config();
 
 void init();
 void shutdown();
+// The native source port sets this before its game starts. Legacy remains vanilla.
+void set_native_gameplay_profile(NativeGameplayProfile profile);
+
+// What this client plays online, sent to the opponent after connecting (a netplay message stock
+// Slippi Dolphin ignores). mod_view false = the retail game (the static recomp always, the Source
+// Port without a mod or in its retail view). In Direct a mod build plays only against the same
+// build; allow_unverified lets it play an opponent who sends no build (Slippi Dolphin with the same
+// mod), at the player's word.
+struct LocalBuild {
+  bool mod_view = false;
+  std::string fingerprint;   // the mod content's identity (hex), empty for the retail game
+  std::string name;          // shown in messages, e.g. "Akaneia 1.0.1"
+  bool allow_unverified = false;
+};
+void set_local_build(const LocalBuild& build);
+const LocalBuild& local_build();
 // Handles one online command (cmd byte, payload after it); responses go to `read_queue`.
 // Returns false for commands this module does not own.
 bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vector<uint8_t>& read_queue);
+// Validates the fixed EXI payload size before native or legacy callers enter a command handler.
+bool valid_command_payload(uint8_t cmd, const uint8_t* payload, uint32_t payload_len);
 // Counts rollback loads so the renderer can treat them as discontinuities.
 uint64_t rollback_count();
+// A native savestate load (the source port serves Slippi's savestate commands itself).
+void note_rollback();
 bool is_online_match();
 // The in-game slot the local player occupies in the running online match (0-3).
 int local_player_slot();
@@ -32,7 +55,7 @@ std::array<std::string, 4> player_names_for_overlay();
 // Most recent measured round trip to the opponent, in milliseconds; 0 when not connected.
 int ping_ms();
 // The online mode of the session that is running or being set up, as a Matchmaking::OnlinePlayMode
-// value (RANKED 0, UNRANKED 1, DIRECT 2, TEAMS 3, PARTY 4). -1 when there is no online session at
+// value (UNRANKED 1, DIRECT 2, TEAMS 3, PARTY 4; 0 is Slippi's Ranked, never used). -1 when there is no online session at
 // all, which is what "offline" means to the rest of the port. Covers matchmaking, the online
 // character select screen and the match itself, so a feature can be gated on the mode before the
 // match starts rather than only once it is running.
