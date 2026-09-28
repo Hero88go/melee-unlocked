@@ -1,35 +1,17 @@
 
 # Melee Unlocked - Beta
 
-A native Windows build of Super Smash Bros. Melee (NTSC 1.02), available as a **Source Port or
-Static Recomp**, with **Slippi online play** and an **unlocked display frame rate.**
+A native Windows port of Super Smash Bros. Melee (NTSC 1.02), with **Slippi online play**
+and an **unlocked frame rate**.
 
-**Current release: [v0.8.0](https://github.com/Hero88go/melee-unlocked/releases/tag/v0.8.0).**
-One Windows archive includes both game builds. Choose **Static Recomp** (the default) or
-**Source Port** under Game Build on the launcher's Play page. The Source Port rebuilds the
-decompiled game as native PC code and supports Slippi Unranked, Direct and Teams against
-regular Slippi Dolphin players. Ranked is removed from both builds. Event Match and Source
-Port mods are planned for a later version; use Static Recomp for events.
-See the [v0.8.0 release notes](RELEASE_NOTES_0.8.0.md) for the full update.
+**Source Port is the default:** Melee's decompiled C source is compiled directly for PC,
+with native graphics, audio and controller support. You can also choose **Static Recomp**,
+which translates the original PowerPC code and Slippi's Gecko codes into C++ ahead of time.
+Both keep game logic at 60 Hz while rendering at higher frame rates.
 
-**Source Port:** Melee's decompiled C source is adapted and compiled directly for Windows.
-The game runs as a native PC library (`melee_game.dll`), while `melee_source.exe` supplies
-the renderer, audio, controllers, disc access and Slippi services that replace the GameCube
-hardware. The game logic comes from the decompiled source rather than a translated PowerPC
-executable. You still supply your own ISO for stages, characters, music and other game assets.
-
-**Static Recomp:** the original retail executable and Slippi's Gecko codes are translated
-ahead of time from PowerPC instructions into C++, then compiled into a native Windows
-executable. It preserves the original game's instruction-level behavior and replaces
-hardware and SDK services with PC implementations. Choose this build for the established
-game path and features such as Event Match that the Source Port does not yet support.
-
-Both builds use the native D3D12 or D3D11 renderer and keep the simulation at 60 Hz while
-the display can run at any rate. In-between frames come from the game's animation data
-and physics state, so an unlocked 200 Hz display shows intermediate poses without changing
-the simulation rate. Switch builds on the launcher's Play page; Static Recomp is the default.
-
-Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO.
+[Download v0.8.0](https://github.com/Hero88go/melee-unlocked/releases/tag/v0.8.0).
+Both builds are included; switch under **Game Build** in the launcher.
+You supply your own Melee NTSC 1.02 ISO. No game assets are included.
 
 This project is not affiliated with, endorsed by, or supported by the Slippi team, Nintendo or
 HAL Laboratory. Slippi netplay compatibility is implemented from Slippi's open source code
@@ -74,7 +56,7 @@ are included with Melee Unlocked.
 
 ## Install
 
-Download `MeleeUnlocked-<version>-Stable-Recomp-Legacy-win64.zip` from [Releases](https://github.com/hero88go/melee-unlocked/releases)
+Download `MeleeUnlocked-<version>-win64.zip` from [Releases](https://github.com/hero88go/melee-unlocked/releases)
 and extract it anywhere. Then pick one of two ways to run it. **The launcher is optional**;
 the game does not depend on it, and the manual way is complete on its own.
 
@@ -99,7 +81,7 @@ updates and the Slippi account check in one place.
 - **Build tab**: drop the ISO onto the window. It checks the disc, precompiles the graphics
   pipelines for your GPU once and remembers the path. The ISO is never copied.
 - **Play**: press PLAY. It shows which Slippi account will be used.
-- **Game Build**: choose Static Recomp or Source Port. Both are included in the v0.8.0 archive.
+- **Game Build**: Source Port is the default; Static Recomp is also available.
 - **Multiplayer Lobby**: go online to chat, add friends and request Slippi Direct matches.
   Players connect directly; some networks block discovery or connections, and there is no relay yet.
 - **Replay Viewer**: browse saved matches and view player, stock and punish statistics.
