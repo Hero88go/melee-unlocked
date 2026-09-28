@@ -69,6 +69,12 @@ enum CaptureFeature {
 extern const char* const kCaptureFeatureNames[FEAT_COUNT];
 struct AuthoredStats { std::atomic<uint32_t> capture[24]{}; std::atomic<uint32_t> sample[32]{}; std::atomic<uint32_t> feature[FEAT_COUNT]{};
   std::atomic<uint32_t> captured{0}, sampled{0};
+  // The skinned (envelope) share of captured/sampled, so the two engines can be compared per kind.
+  std::atomic<uint32_t> captured_envelope{0}, sampled_envelope{0};
+  // Recorded draws that carry an authored pose. Unlike `captured` (Legacy counts one capture per
+  // rigid joint display and per envelope draw, native one per PObj), this is the same unit in both
+  // engines and depends only on simulation frames, not on presentation timing.
+  std::atomic<uint32_t> posed_draws{0}, posed_draws_envelope{0}, skinned_draws{0};
   // Constraint work, so the evaluator can be seen running rather than inferred from a falling
   // rejection count: chains captured carrying an HSD_RObj, and constraints evaluated while sampling.
   std::atomic<uint32_t> robj_chains{0}, robj_applied{0}; };

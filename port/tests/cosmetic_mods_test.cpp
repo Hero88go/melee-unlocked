@@ -254,6 +254,25 @@ uint32_t read_be32(const uint8_t* p) {
 }
 }
 
+// A three-joint skeleton (root, child, child's sibling) under a _Share_joint root.
+std::vector<uint8_t> skeleton_dat(uint32_t root_flags, float child_y, bool extra_joint) {
+  const uint32_t joints = extra_joint ? 4 : 3, data = joints * 0x40;
+  const std::string name = "PlyFox5K_Share_joint";
+  std::vector<uint8_t> out(0x20 + data + 8 + name.size() + 1, 0);
+  be32(out, 0, (uint32_t)out.size()); be32(out, 4, data); be32(out, 12, 1);
+  auto joint = [&](uint32_t index) { return (size_t)0x20 + index * 0x40; };
+  be32(out, joint(0) + 4, root_flags);
+  be32(out, joint(0) + 8, 0x40);                     // child: joint 1
+  be32(out, joint(1) + 12, 0x80);                    // next: joint 2
+  if (extra_joint) be32(out, joint(2) + 8, 0xC0);    // joint 2 gains a child
+  uint32_t bits; std::memcpy(&bits, &child_y, 4); be32(out, joint(1) + 0x30, bits);
+  for (uint32_t i = 0; i < joints; ++i) { float one = 1.0f; std::memcpy(&bits, &one, 4);
+    be32(out, joint(i) + 0x20, bits); be32(out, joint(i) + 0x24, bits); be32(out, joint(i) + 0x28, bits); }
+  be32(out, 0x20 + data, 0); be32(out, 0x20 + data + 4, 0);
+  std::memcpy(out.data() + 0x20 + data + 8, name.c_str(), name.size() + 1);
+  return out;
+}
+
 int main(int argc, char** argv) {
   wchar_t temp_root[MAX_PATH]; GetTempPathW(MAX_PATH, temp_root);
   fs::path folder = fs::path(temp_root) /
@@ -343,6 +362,20 @@ int main(int argc, char** argv) {
   }
 
   const auto dat = fox_dat();
+  {
+    const auto vanilla = skeleton_dat(0x2, 5.0f, false);
+    std::string why;
+    check(host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2 | 0x10 | 0x40000, 5.0f, false), &why),
+          "costume skeleton: drawing-only joint flags may differ");
+    check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2, 5.5f, false), &why),
+          "costume skeleton: a moved bone keeps the costume offline");
+    check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2 | 0x8, 5.0f, false), &why),
+          "costume skeleton: a transform flag change keeps the costume offline");
+    check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2, 5.0f, true), &why),
+          "costume skeleton: an extra joint keeps the costume offline");
+    check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, fox_dat(), &why),
+          "costume skeleton: a different tree is refused");
+  }
   auto inspected = host::cosmetics::testing::inspect_dat(dat);
   check(inspected.ok, "synthetic Fox DAT validates");
   check(inspected.target_path == "PlFxGr.dat", "green Fox roots map to PlFxGr.dat");
@@ -588,7 +621,10 @@ int main(int argc, char** argv) {
         "ZIP traversal path is rejected");
 
   constexpr uint32_t start = 0x00123400;
-  auto fst = one_file_fst(start, 0x10000);
+  // The disc slot is shorter than the costume: a costume that is not proven skeleton-equal (this
+  // test disc has no clean copy) is padded to the disc's extent for the online fallback, and a
+  // shorter slot keeps the override's own length.
+  auto fst = one_file_fst(start, 0x20);
   host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size());
   check(read_be32(fst.data() + 20) == dat.size(), "FST logical file size is patched");
   auto session = host::cosmetics::session_profile();

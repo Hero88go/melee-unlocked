@@ -16,6 +16,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--iso", type=Path, required=True)
     ap.add_argument("--exe", type=Path, default=ROOT / "build-review/port/Release/melee_port.exe")
+    ap.add_argument("--trace-kind", choices=("recomp", "source"), default="recomp",
+                    help="use the translated guest state trace or the native Source Port digest API")
     ap.add_argument("--script", type=Path, default=ROOT / "port/scripts/vs_match.txt")
     ap.add_argument("--out", type=Path, default=ROOT / "reports/native-validation")
     ap.add_argument("--frames", type=int, default=2400)
@@ -38,6 +40,7 @@ def main():
         shutil.rmtree(card_dir, ignore_errors=True)
         if args.card_fixture:
             shutil.copytree(args.card_fixture, card_dir)
+        trace_flag = "--state-digest" if args.trace_kind == "source" else "--state-trace"
         command = [str(args.exe.resolve()), "--iso", str(args.iso.resolve()), *mode_flags,
                    "--volume", "0", "--fast", "--frames", str(args.frames), "--time-base", "1",
                    "--card-dir", str(card_dir),
@@ -45,7 +48,7 @@ def main():
                    "--shader-cache", str((args.out / (mode + '-cache')).resolve()),
                    "--replay-dir", str((args.out / (mode + '-replays')).resolve()),
                    "--log-file", str((args.out / (mode + "-port.log")).resolve()),
-                   "--script", str(args.script.resolve()), "--state-trace", str(trace)]
+                   "--script", str(args.script.resolve()), trace_flag, str(trace)]
         start = time.monotonic()
         with log_path.open("w", encoding="utf-8") as log:
             try:

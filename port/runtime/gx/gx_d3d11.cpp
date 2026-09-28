@@ -229,7 +229,7 @@ static std::atomic<uint64_t> next_backend_id{0x100000000ull};
 
 class D3D11Backend : public Backend {
  public:
-  D3D11Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) {
+  D3D11Backend(HWND hwnd, int w, int h, const RenderOptions& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) {
     init();
     try {
       start_shader_workers();
@@ -244,7 +244,6 @@ class D3D11Backend : public Backend {
   ~D3D11Backend() override {
     if (swapchain_) swapchain_->SetFullscreenState(FALSE, nullptr);
     texpack::report();   // last word on how many of the pack's textures the game actually drew
-    render_backend_unregister(this);
 #ifdef GX_PC_SETTINGS
     settings_ui_.reset();
 #endif
@@ -255,13 +254,20 @@ class D3D11Backend : public Backend {
     if (context_) context_->ClearState();
     if (present_timer_) CloseHandle(present_timer_);
   }
-  const D3D12Options& options() const { return opts_; }
+  const RenderOptions& options() const { return opts_; }
+  const RenderOptions* presentation_options() const override { return &opts_; }
+  void presentation_stats(uint32_t* frames, uint32_t* pipelines, uint32_t* textures) const override {
+    if (frames) *frames = frames_presented();
+    if (pipelines) *pipelines = pipeline_count();
+    if (textures) *textures = texture_count();
+  }
+  std::string profile_line() const override { return d3d11_profile_line(); }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
   void set_skip_present(bool skip) override { skip_present_ = skip; }
-  void resize(int w, int h) {
+  void resize(int w, int h) override {
     if (w == client_w_ && h == client_h_) return;
     client_w_ = w; client_h_ = h;
     create_swapchain_targets(true);
@@ -336,7 +342,7 @@ class D3D11Backend : public Backend {
   uint64_t capture_sequence_ = 0;
 
   HWND hwnd_;
-  D3D12Options opts_;
+  RenderOptions opts_;
   int client_w_, client_h_;
   int scale_ = 1;
   int efb_w_ = EFB_WIDTH, efb_h_ = EFB_HEIGHT;
@@ -1828,14 +1834,21 @@ void D3D11Backend::prewarm_pipelines() {
   }
   shader_cv_.notify_all();
   const size_t total = pipelines_.size() + queued;
+  // A cache that is already warm finishes in a moment; the progress panel only appears once the
+  // wait is long enough to notice, so a normal launch never flashes it.
+  const double panel_after = host::now_seconds() + 0.4;
   for (;;) {
     integrate_compiled_pipelines();
     size_t pending = pipelines_pending_.size();
-    wchar_t title[128]; swprintf_s(title, L"Melee Unlocked  |  compiling shaders %zu / %zu", total - pending, total);
+    wchar_t title[192]; swprintf_s(title, L"%ls  |  compiling shaders %zu / %zu", host::window_title_base().c_str(), total - pending, total);
     host::window_set_title(title);
+    if (pending && host::now_seconds() >= panel_after)
+      host::loading_show(L"Compiling shaders (first launch of this version)", total - pending, total);
     if (!pending) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
+  host::loading_close();
+  host::window_set_title(host::window_title_base().c_str());
   host::log("d3d11: prewarmed %zu pipelines from %zu recipes before guest startup in %.1f ms", pipelines_.size(), pipeline_recipes_.size(), timer.lap() * 1000.0);
 }
 
@@ -1866,7 +1879,7 @@ std::string d3d11_profile_line() {
   return buf;
 }
 
-Backend* create_d3d11_backend(void* hwnd, int w, int h, const D3D12Options& options) {
+Backend* create_d3d11_backend(void* hwnd, int w, int h, const RenderOptions& options) {
   try {
     return new D3D11Backend((HWND)hwnd, w, h, options);
   } catch (const std::exception& e) {
@@ -1874,7 +1887,7 @@ Backend* create_d3d11_backend(void* hwnd, int w, int h, const D3D12Options& opti
     return nullptr;
   }
 }
-const D3D12Options& d3d11_options(Backend* backend) { return static_cast<D3D11Backend*>(backend)->options(); }
+const RenderOptions& d3d11_options(Backend* backend) { return static_cast<D3D11Backend*>(backend)->options(); }
 void d3d11_resize(Backend* backend, int w, int h) { static_cast<D3D11Backend*>(backend)->resize(w, h); }
 void d3d11_stats(Backend* backend, uint32_t* frames, uint32_t* pipelines, uint32_t* textures) {
   auto* b = static_cast<D3D11Backend*>(backend);

@@ -25,6 +25,8 @@ std::mutex g_mutex;
 std::shared_ptr<Song> g_song;     // replaced atomically under the mutex; the mixer holds a copy
 std::atomic<uint32_t> g_song_generation{0};   // a stop() or a newer start_song() cancels an in-flight decode
 std::atomic<int> g_melee_volume{254}, g_user_volume{100};
+std::atomic<float> g_next_song_gain{1.0f}, g_song_gain{1.0f};
+std::atomic<DiscReader> g_reader{nullptr};
 
 uint32_t be32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
 int16_t be16(const uint8_t* p) { return (int16_t)((p[0] << 8) | p[1]); }
@@ -113,20 +115,24 @@ std::shared_ptr<Song> decode_hps(const std::vector<uint8_t>& file) {
 // The disc read and HPS decode (tens of ms for a full track) run on a worker: music start time
 // is not part of the deterministic simulation, and the game's own audio must not hitch for it.
 void start_song(uint32_t disc_offset, uint32_t size) {
+  g_song_gain.store(g_next_song_gain.exchange(1.0f));
   host::SimCostScope cost(host::SIM_JUKEBOX);
   if (size == 0 || size > 64u * 1024 * 1024) { host::log("jukebox: bad song size %u", size); return; }
   const uint32_t generation = ++g_song_generation;
   std::thread([disc_offset, size, generation] {
     std::vector<uint8_t> file(size);
-    if (!host::disc_read(disc_offset, file.data(), size)) { host::log("jukebox: cannot read song at %08X", disc_offset); return; }
+    const DiscReader reader = g_reader.load();
+    if (!(reader ? reader(disc_offset, file.data(), size) : host::disc_read(disc_offset, file.data(), size))) { host::log("jukebox: cannot read song at %08X", disc_offset); return; }
     auto song = decode_hps(file);
     std::lock_guard<std::mutex> lk(g_mutex);
     if (g_song_generation.load() == generation) g_song = song;
   }).detach();
 }
 
+void set_disc_reader(DiscReader reader) { g_reader.store(reader); }
 void stop() { ++g_song_generation; std::lock_guard<std::mutex> lk(g_mutex); g_song.reset(); }
 void set_melee_volume(uint8_t volume) { g_melee_volume.store(volume); }
+void set_next_song_gain(float gain) { g_next_song_gain.store(gain); }
 void set_user_volume(int percent) { g_user_volume.store(std::clamp(percent, 0, 100)); }
 int user_volume() { return g_user_volume.load(); }
 
@@ -134,7 +140,8 @@ void mix(int16_t* out, size_t frames, double master) {
   std::shared_ptr<Song> song;
   { std::lock_guard<std::mutex> lk(g_mutex); song = g_song; }
   if (!song || song->samples.empty()) return;
-  double gain = (g_melee_volume.load() / 254.0) * (g_user_volume.load() / 100.0) * VOLUME_REDUCTION * master;
+  double gain = (g_melee_volume.load() / 254.0) * (g_user_volume.load() / 100.0) * VOLUME_REDUCTION * master *
+                g_song_gain.load();
   if (gain <= 0.0) return;
   size_t total = song->samples.size() / 2;
   for (size_t i = 0; i < frames; ++i) {

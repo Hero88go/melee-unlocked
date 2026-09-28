@@ -1,0 +1,126 @@
+# M7: use VS Rules -> Item Switch to disable items, then Ness/Pikachu on Onett.
+# Settings are changed through ordinary menu inputs before the fixed RNG seed.
+130 A
+140
+400 START
+410
+520 START
+530
+700 START
+710
+@scene 1:0
+100 sy=-127
+106
+160 A
+168
+# VS submenu: Rules (fourth entry).
+230 sy=-127
+236
+270 sy=-127
+276
+310 sy=-127
+316
+370 A
+378
+# Rules: Item Switch (sixth entry).
+460 sy=-127
+466
+500 sy=-127
+506
+540 sy=-127
+546
+580 sy=-127
+586
+620 sy=-127
+626
+680 A
+688
+# Item Switch: move up to frequency, decrement three times (Medium -> None).
+770 sy=127
+776
+820 sx=-127
+826
+860 sx=-127
+866
+900 sx=-127
+906
+# Start enters CSS directly from Item Switch.
+980 START
+988
+990 p=2
+1150 sx=61 sy=127
+1150 p=2 sy=127
+1180
+1180 p=2
+1190 A
+1190 p=2 A
+1200
+1200 p=2
+1250 START
+1260
+1450 sy=100
+1490
+1510 A
+1520
+@match
+900 sx=80
+960 X
+965
+1000 sx=-80
+1060 A
+1065
+1100
+1200 sx=90
+1260 A
+1265
+1300 sx=90
+1360 A
+1365
+1400 sx=90
+1460 A
+1465
+1500 sx=90
+1560 A
+1565
+1600 sx=90
+1660 A
+1665
+1700 sx=90
+1760 A
+1765
+1800 sx=90
+1860 A
+1865
+1900 sx=90
+1960 A
+1965
+2100 sx=90
+2160 cx=127
+2170
+2260 sx=90
+2320 cx=127
+2330
+2420 sx=90
+2480 cx=127
+2490
+2580 sx=90
+2640 cx=127
+2650
+2740 sx=90
+2800 cx=127
+2810
+2900 sx=90
+2960 cx=127
+2970
+3060 sx=90
+3120 cx=127
+3130
+3220 sx=90
+3280 cx=127
+3290
+3380 sx=90
+3440 cx=127
+3450
+3540 sx=90
+3600 cx=127
+3610

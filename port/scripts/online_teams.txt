@@ -1,0 +1,43 @@
+# Online Play -> Teams (two rows down) -> Teams CSS, staying on the red team -> pick a character
+# (Mario) -> Start opens connect-code entry -> Z accepts the suggested code (the user folder needs
+# teams-codes.json, tools/online_quad.py writes one) -> Start jumps to OK -> A confirms (search).
+# The @match section is online_bot.txt's: a character that dashes, hops, attacks and shields.
+280 sy=-80
+288
+296 sy=-80
+304
+320 A
+330
+840 sx=61 sy=127
+857
+880 A
+890
+940 START
+950
+1040 Z
+1046
+1080 START
+1086
+1120 A
+1126
+@match
+@loop 360
+0
+60 sx=80
+90 sx=80 A
+96
+120 sx=-80
+150 sx=-80 A
+156
+180 X
+183
+190 sx=0 A
+200
+220 sy=-80 A
+230
+250 L
+280
+300 sx=80 Y
+303 sx=80
+320 sx=80 B
+330

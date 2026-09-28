@@ -6,6 +6,7 @@
 #include "slippi_playback.h"
 
 #include <array>
+#include <cstdlib>
 #include <deque>
 #include <mutex>
 #include <utility>
@@ -29,7 +30,7 @@ constexpr uint32_t kPlayerStride = 0xE90;
 constexpr uint32_t kMatchStage = 0x8046B6A0 + 0x24C8 + 0x0E;
 constexpr uint32_t kSearchTimeoutTicks = 60 * 90;
 
-enum class CommandKind { StartRanked, StartUnranked, StartDirect, Cancel, AcknowledgeFailure };
+enum class CommandKind { StartUnranked, StartDirect, Cancel, AcknowledgeFailure };
 struct Command { CommandKind kind; std::string text; };
 
 struct SavedPlayer {
@@ -67,17 +68,64 @@ uint32_t g_return_ticks = 0;
 uint8_t g_origin_major = 1;
 bool g_restore_training = false;
 Phase g_logged_phase = Phase::Idle;
+bool g_lobby_started = false;
+uint32_t g_lobby_boot_ticks = 0;
 
-bool is_training() { return host::rd8(kSceneState) == kTrainingMajor; }
-bool is_online_scene() { return host::rd8(kSceneState) == kOnlineMajor; }
+// The Source Port's game answers through its practice bridge (game API 6); the static recomp's
+// state is read and written at its console addresses.
+NativeBridge g_bridge = nullptr;
+enum { OP_SCENE, OP_GET_PLAYER, OP_SET_PLAYER, OP_GET_STAGE, OP_SET_STAGE, OP_SET_EVENT_BACKUP,
+       OP_REQUEST_MAJOR, OP_SET_ONLINE_MODE, OP_GET_ONLINE_MODE, OP_DIRECT_FIRST_MATCH };
+
+uint8_t current_major() {
+  if (g_bridge) { int32_t a[2] = {}; g_bridge(OP_SCENE, a, 2); return (uint8_t)a[0]; }
+  return host::rd8(kSceneState);
+}
+uint8_t current_minor() {
+  if (g_bridge) { int32_t a[2] = {}; g_bridge(OP_SCENE, a, 2); return (uint8_t)a[1]; }
+  return host::rd8(kSceneState + 3);
+}
+void set_online_mode(uint8_t mode) {
+  if (g_bridge) { int32_t a[1] = {mode}; g_bridge(OP_SET_ONLINE_MODE, a, 1); return; }
+  host::wr8(kOnlineMode, mode);
+}
+uint8_t online_mode() {
+  if (g_bridge) { int32_t a[1] = {}; g_bridge(OP_GET_ONLINE_MODE, a, 1); return (uint8_t)a[0]; }
+  return host::rd8(kOnlineMode);
+}
+
+bool is_training() { return current_major() == kTrainingMajor; }
+bool is_online_scene() { return current_major() == kOnlineMajor; }
 // Any offline match where the player already picked a character: VS, Training, single player,
 // events. The handoff then goes through Slippi's online character select.
 bool is_offline_gameplay() {
-  return is_offline_gameplay_scene(host::rd8(kSceneState), host::rd8(kSceneState + 3));
+  return is_offline_gameplay_scene(current_major(), current_minor());
 }
 
 PracticeConfig capture_practice() {
   PracticeConfig out;
+  if (g_bridge) {
+    int32_t st[1] = {};
+    g_bridge(OP_GET_STAGE, st, 1);
+    out.stage = (uint16_t)st[0];
+    bool found = false;
+    for (int i = 0; i < 4; ++i) {
+      int32_t a[9] = {i};
+      g_bridge(OP_GET_PLAYER, a, 9);
+      SavedPlayer& p = out.players[i];
+      p.state = (uint32_t)a[1]; p.character = (uint32_t)a[2]; p.player_kind = (uint32_t)a[3];
+      p.costume = (uint8_t)a[4]; p.controller = (uint8_t)a[5]; p.cpu_level = (uint8_t)a[6];
+      p.damage = (uint16_t)a[7]; p.initial_damage = (uint16_t)a[8];
+      p.active = p.state == 2 || p.state == 3;
+      if (!found && p.active && p.player_kind == 0) {
+        found = true;
+        out.local_slot = i;
+        out.controller_port = p.controller < 4 ? p.controller : 0;
+      }
+    }
+    out.valid = found;
+    return out;
+  }
   out.stage = host::rd16(kMatchStage);
   bool found_human = false;
   for (int i = 0; i < 4; ++i) {
@@ -105,6 +153,11 @@ PracticeConfig capture_practice() {
 void write_event_backup() {
   if (!g_practice.valid) return;
   const SavedPlayer& p = g_practice.players[g_practice.local_slot];
+  if (g_bridge) {
+    int32_t a[3] = {(int32_t)p.character, p.costume, g_practice.controller_port};
+    g_bridge(OP_SET_EVENT_BACKUP, a, 3);
+    return;
+  }
   host::wr8(kEventBackup + 0, (uint8_t)p.character);
   host::wr8(kEventBackup + 1, p.costume);
   host::wr8(kEventBackup + 4, (uint8_t)g_practice.controller_port);
@@ -112,6 +165,18 @@ void write_event_backup() {
 
 void restore_practice_fields() {
   if (!g_practice.valid) return;
+  if (g_bridge) {
+    int32_t st[1] = {g_practice.stage};
+    g_bridge(OP_SET_STAGE, st, 1);
+    for (int i = 0; i < 4; ++i) {
+      const SavedPlayer& p = g_practice.players[i];
+      if (!p.active) continue;
+      int32_t a[9] = {i, (int32_t)p.state, (int32_t)p.character, (int32_t)p.player_kind, p.costume,
+                      p.controller, p.cpu_level, (int16_t)p.damage, (int16_t)p.initial_damage};
+      g_bridge(OP_SET_PLAYER, a, 9);
+    }
+    return;
+  }
   host::wr16(kMatchStage, g_practice.stage);
   for (int i = 0; i < 4; ++i) {
     const SavedPlayer& p = g_practice.players[i];
@@ -131,6 +196,7 @@ void request_major(uint8_t major) {
   // Native equivalents of Scene_SetNextMajor, Scene_ExitMajor and Scene_ExitMinor. The last write
   // makes the current minor run its decide path on the next guest frame; writing only the major
   // pending flag would leave an endless Training minor alive.
+  if (g_bridge) { int32_t a[1] = {major}; g_bridge(OP_REQUEST_MAJOR, a, 1); return; }
   host::wr8(kSceneState + 1, major);
   host::wr8(kSceneState + 12, 1);
   host::wr32(kMinorSceneControl + 12, 1);
@@ -145,11 +211,16 @@ void run_decision(const Decision& d) {
   if (d.request_online_handoff) {
     write_event_backup();
     if (mode_needs_direct_first_match_reset((uint8_t)g_match_mode)) {
-      host::wr8(kDirectIsWinner, 0xFF);  // ISWINNER_NULL: first match, not a loser rematch.
-      host::wr8(kDirectChoseStage, 0);
+      if (g_bridge) {
+        int32_t none[1] = {};
+        g_bridge(OP_DIRECT_FIRST_MATCH, none, 0);
+      } else {
+        host::wr8(kDirectIsWinner, 0xFF);  // ISWINNER_NULL: first match, not a loser rematch.
+        host::wr8(kDirectChoseStage, 0);
+      }
       host::log("native practice: initialized Direct first-match CSS state");
     }
-    host::wr8(kOnlineMode, (uint8_t)g_match_mode);  // Consumed by the normal online scene.
+    set_online_mode((uint8_t)g_match_mode);  // Consumed by the normal online scene.
     request_major(kOnlineMajor);
     host::log("native practice: %s match found; handing off to normal online flow",
               match_mode_name(g_match_mode));
@@ -187,7 +258,7 @@ void start_search(MatchMode mode, const std::string& connect_code) {
   if (slippi::online::session_mode() >= 0) { fail("An online session is already active", false); return; }
   if (!is_offline_gameplay()) { fail("Start matchmaking during an offline match", false); return; }
 
-  g_origin_major = host::rd8(kSceneState);
+  g_origin_major = current_major();
   g_restore_training = is_training();
   g_practice = capture_practice();
   if (!g_practice.valid) { fail("No active human fighter was found", false); return; }
@@ -204,7 +275,7 @@ void start_search(MatchMode mode, const std::string& connect_code) {
   if (!g_lifecycle.begin_search()) return;
 
   const int online_mode = (int)mode;
-  host::wr8(kOnlineMode, (uint8_t)online_mode);
+  set_online_mode((uint8_t)online_mode);
   std::string error;
   if (!slippi::online::native_start_match(online_mode, connect_code, (uint8_t)player.character,
                                            player.costume, &error)) {
@@ -219,9 +290,6 @@ void start_search(MatchMode mode, const std::string& connect_code) {
 
 void process_command(Command command) {
   switch (command.kind) {
-    case CommandKind::StartRanked:
-      start_search(MatchMode::Ranked, {});
-      break;
     case CommandKind::StartUnranked:
       start_search(MatchMode::Unranked, {});
       break;
@@ -300,11 +368,6 @@ void submit_start_direct(const std::string& connect_code) {
   g_commands.push_back({CommandKind::StartDirect, connect_code});
 }
 
-void submit_start_ranked() {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  g_commands.push_back({CommandKind::StartRanked, {}});
-}
-
 void submit_start_unranked() {
   std::lock_guard<std::mutex> lock(g_mutex);
   g_commands.push_back({CommandKind::StartUnranked, {}});
@@ -321,6 +384,58 @@ void submit_acknowledge_failure() {
 }
 
 void tick() {
+  // Launcher matches start only once the title/main-menu scene is initialized. Both players have
+  // explicitly agreed already; the first main supplies an initial fighter to Slippi's normal CSS.
+  // This coordinator runs only for static recomp; native uses its game-side online scene bridge.
+  const auto& lobby = slippi::online::config();
+  // (The Source Port enters lobby matches through its own online scene bridge instead.)
+  if (!g_bridge && !lobby.lobby_code.empty() && !g_lobby_started && !slippi::playback::enabled()) {
+    const uint8_t major = host::rd8(kSceneState);
+    if ((major == 0 || major == 1) && ++g_lobby_boot_ticks >= 120) {
+      g_lobby_started = true;
+      // Boot/main-menu decide callbacks normally replace the pending destination. During this
+      // single accepted handoff, redirect their scene setter through the ordinary online major.
+      // These hooks stop changing arguments as soon as Slippi owns the online scene.
+      const auto redirect = [](ppc::Context& context) {
+        if (g_lobby_started && g_lifecycle.phase() == Phase::Handoff)
+          context.r[3] = kOnlineMajor;
+      };
+      ppc::add_entry_hook(0x801A42E8u, redirect); // gm_SetPendingGameMode
+      ppc::add_entry_hook(0x801A42F8u, redirect); // gm_ChangeGameModeAfterCurrentScene
+      g_origin_major = 1;
+      g_restore_training = false;
+      g_practice = {};
+      g_practice.valid = true;
+      g_practice.players[0].active = true;
+      g_practice.players[0].character = (uint32_t)lobby.lobby_character;
+      g_match_mode = MatchMode::Direct;
+      g_connect_code = lobby.lobby_code;
+      g_search_ticks = 0;
+      if (g_lifecycle.begin_search()) {
+        host::wr8(kOnlineMode, 2);
+        std::string error;
+        if (!slippi::online::native_start_match(2, g_connect_code, (uint8_t)lobby.lobby_character, 0, &error))
+          fail(error.empty() ? "Could not start the lobby match" : error, true);
+        ++g_generation;
+      }
+    }
+  }
+  // Test only (MELEE_PRACTICE_AUTOSTART=unranked or direct:CODE): start one search after two
+  // seconds of offline gameplay, as pressing Tab and choosing would. Hidden test runs have no Tab.
+  {
+    static const char* autostart = std::getenv("MELEE_PRACTICE_AUTOSTART");
+    static uint32_t offline_ticks = 0;
+    static bool fired = false;
+    if (autostart && !fired && g_lifecycle.phase() == Phase::Idle && is_offline_gameplay()) {
+      if (++offline_ticks >= 120) {
+        fired = true;
+        const std::string spec = autostart;
+        host::log("native practice: test autostart %s", spec.c_str());
+        if (spec.rfind("direct:", 0) == 0) submit_start_direct(spec.substr(7));
+        else submit_start_unranked();
+      }
+    }
+  }
   std::deque<Command> commands;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -333,11 +448,11 @@ void tick() {
   // CSS decision to Slippi's normal online flow.
   if (phase_owns_online_mode(g_lifecycle.phase()) && g_match_mode != MatchMode::None) {
     const uint8_t expected = (uint8_t)g_match_mode;
-    const uint8_t actual = host::rd8(kOnlineMode);
+    const uint8_t actual = online_mode();
     if (actual != expected) {
       host::log("native practice: correcting guest online mode %u -> %u during handoff",
                 actual, expected);
-      host::wr8(kOnlineMode, expected);
+      set_online_mode(expected);
     }
   }
 
@@ -365,8 +480,8 @@ void tick() {
     if (before == Phase::InMatch && g_lifecycle.phase() == Phase::Idle)
       clear_search_metadata();
   } else if (g_lifecycle.phase() == Phase::ReturningToPractice) {
-    const bool origin_ready = host::rd8(kSceneState) == g_origin_major &&
-                              (!g_restore_training || host::rd8(kSceneState + 3) == 2);
+    const bool origin_ready = current_major() == g_origin_major &&
+                              (!g_restore_training || current_minor() == 2);
     if (origin_ready) ++g_return_ticks;
     else g_return_ticks = 0;
     if (g_return_ticks >= 3) {
@@ -400,9 +515,10 @@ void shutdown() {
 
 bool cosmetic_profile_locked() { return snapshot().cosmetic_profile_locked; }
 
+void set_native_bridge(NativeBridge bridge) { g_bridge = bridge; }
+
 const char* match_mode_name(MatchMode mode) {
   switch (mode) {
-    case MatchMode::Ranked: return "Ranked";
     case MatchMode::Unranked: return "Unranked";
     case MatchMode::Direct: return "Direct";
     case MatchMode::None: return "matchmaking";

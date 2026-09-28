@@ -1,0 +1,48 @@
+# Same as online_teams.txt, but first cycles the team to blue: the hand starts on the P1 HMN button,
+# moves right onto the team button (9 frames), A toggles red -> blue, then it moves back to where it
+# started so the character pick below lands exactly as in the red script.
+280 sy=-80
+288
+296 sy=-80
+304
+320 A
+330
+800 sx=80 sy=-8
+809
+812 A
+814
+816 sx=-80 sy=8
+825
+840 sx=61 sy=127
+857
+880 A
+890
+940 START
+950
+1040 Z
+1046
+1080 START
+1086
+1120 A
+1126
+@match
+@loop 360
+0
+60 sx=80
+90 sx=80 A
+96
+120 sx=-80
+150 sx=-80 A
+156
+180 X
+183
+190 sx=0 A
+200
+220 sy=-80 A
+230
+250 L
+280
+300 sx=80 Y
+303 sx=80
+320 sx=80 B
+330

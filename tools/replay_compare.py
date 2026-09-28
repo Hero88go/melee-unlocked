@@ -3,6 +3,10 @@ the original, frame by frame: positions, action states, percent, stocks, facing 
 player. This is the frame-exactness oracle against Slippi Dolphin (which recorded the original).
 
     python tools/replay_compare.py <replay.slp> [--exe build-review/port/Release/melee_port_playback.exe]
+    python tools/replay_compare.py <replay.slp> --source [--exe build-sourceport/port/Release/melee_source.exe]
+
+--source plays the replay on the Source engine (melee_source.exe and melee_game.dll, native
+playback) instead of the Legacy playback build; the comparison is the same.
 """
 import argparse
 import glob
@@ -27,8 +31,11 @@ def parse_slp(path):
     i += 3
     assert d[i:i+2] == b"[$"
     n = struct.unpack(">I", d[i+5:i+9])[0]
-    raw = d[i+9:i+9+n]
-    assert raw[0] == 0x35
+    # Slippi writes a zero length until the game closes the file cleanly; its own readers then
+    # take everything up to the end of the file (there is no metadata block in that case).
+    raw = d[i+9:i+9+n] if n else d[i+9:]
+    if not raw or raw[0] != 0x35:
+        raise SystemExit(f"{path}: raw block does not start with the event sizes")
     count = (raw[1] - 1) // 3
     sizes = {raw[2+3*k]: struct.unpack(">H", raw[3+3*k:5+3*k])[0] for k in range(count)}
     pos = 1 + raw[1]
@@ -36,8 +43,8 @@ def parse_slp(path):
     while pos < len(raw):
         c = raw[pos]
         s = sizes.get(c)
-        if s is None:
-            break
+        if s is None or pos + 1 + s > len(raw):
+            break   # an unknown event, or the last event of a file that was cut off
         body = raw[pos:pos+1+s]
         if c == 0x36:
             start = bytes(body)
@@ -62,21 +69,30 @@ def parse_slp(path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("replay", type=Path)
-    ap.add_argument("--exe", type=Path, default=ROOT / "build-review/port/Release/melee_port_playback.exe")
+    ap.add_argument("--exe", type=Path, default=None)
+    ap.add_argument("--source", action="store_true", help="play on the Source engine (native playback)")
     ap.add_argument("--iso", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=ROOT / "reports/native-validation/playback")
     ap.add_argument("--timeout", type=float, default=900)
     ap.add_argument("--visible", action="store_true", help="show the window instead of running hidden and fast")
+    ap.add_argument("--backend", choices=["d3d11", "d3d12"], default=None, help="graphics backend (default: the game's)")
     args = ap.parse_args()
     args.iso = require_iso(args.iso)
+    if args.exe is None:
+        args.exe = ROOT / ("build-sourceport/port/Release/melee_source.exe" if args.source
+                           else "build-review/port/Release/melee_port_playback.exe")
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
     for old in glob.glob(str(out / "*.slp")):
         os.remove(old)
-    cmd = [str(args.exe), "--iso", str(args.iso), "--sys-dir", str(ROOT / "port/slippi_sys_playback"), "--replay", str(args.replay.resolve()),
+    cmd = [str(args.exe), "--iso", str(args.iso), "--replay", str(args.replay.resolve()),
            "--volume", "0", "--replay-dir", str(out), "--card-dir", str(out / "card"), "--log-file", str(out / "port.log")]
+    if not args.source:
+        cmd[3:3] = ["--sys-dir", str(ROOT / "port/slippi_sys_playback")]
     if not args.visible:
         cmd += ["--hidden", "--fast"]
+    if args.backend:
+        cmd += ["--backend", args.backend]
     print("running:", " ".join(cmd[1:]))
     try:
         run = subprocess.run(cmd, cwd=ROOT, timeout=args.timeout, capture_output=True)
@@ -97,6 +113,8 @@ def main():
     # shield-drop desync reports describe.
     fields = ("state", "x", "y", "facing", "percent", "shield", "stocks", "char")
     mismatches = 0
+    in_play = 0          # mismatches from frame 0 on (after the pre-GO entry animation)
+    first_in_play = None
     first = None
     compared = 0
     for f in sorted(orig_post):
@@ -116,12 +134,19 @@ def main():
             for field in fields:
                 if a[field] != b[field]:
                     mismatches += 1
+                    if f >= 0:
+                        in_play += 1
+                        if first_in_play is None:
+                            first_in_play = (f, key, f"{field}: original {a[field]} vs port {b[field]}")
                     if first is None:
                         first = (f, key, f"{field}: original {a[field]} vs port {b[field]}")
                     break
     print(f"{compared} player-frames compared over {len(orig_post)} reference frames; {mismatches} mismatches")
     if first:
         print("first divergence: frame", first[0], "player/follower", first[1], first[2])
+    print(f"mismatches from frame 0 on: {in_play}")
+    if first_in_play:
+        print("first in-play divergence: frame", first_in_play[0], "player/follower", first_in_play[1], first_in_play[2])
     return 0 if mismatches == 0 and orig_post else 1
 
 

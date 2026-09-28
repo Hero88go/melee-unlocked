@@ -27,8 +27,7 @@ const wchar_t* USER_AGENT = L"SlippiDolphin (b: ishiiruka) (v: 3.6.4) (o: window
 const char* ENDPOINT = "https://internal.slippi.gg/graphql";
 constexpr int MAX_ATTEMPTS = 5;
 
-struct StatusJob { std::string uid, play_key, match_id, status; };
-struct Job { bool is_status = false; GameReport game; StatusJob status; int attempts = 0; };
+struct Job { GameReport game; int attempts = 0; };
 
 std::mutex g_mutex;
 std::condition_variable g_cv;
@@ -161,14 +160,6 @@ void hash_iso() {
   g_hash_done = true;
 }
 
-bool send_status(const StatusJob& s) {
-  json vars = {{"report", {{"matchId", s.match_id}, {"fbUid", s.uid}, {"playKey", s.play_key}, {"status", s.status}}}};
-  json data = graphql("mutation ($report: OnlineMatchStatusReportInput!) { reportOnlineMatchStatus (report: $report) }", vars);
-  bool ok = !data.is_null() && data.value("reportOnlineMatchStatus", false);
-  host::log("slippi report: match status '%s' for %s: %s", s.status.c_str(), s.match_id.c_str(), ok ? "accepted" : "failed");
-  return ok;
-}
-
 void upload_replay(const std::string& path, const std::string& url) {
   std::ifstream in(path, std::ios::binary);
   std::string contents((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -214,7 +205,7 @@ void worker() {
       job = g_queue.front();
       if (g_quit) { g_queue.pop_front(); job.attempts = MAX_ATTEMPTS - 1; }   // one last attempt each on shutdown
     }
-    bool done = job.is_status ? (send_status(job.status), true) : send_game(job);
+    bool done = send_game(job);
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_queue.empty() && !g_quit) { if (done) g_queue.pop_front(); else g_queue.front().attempts = job.attempts; }
   }
@@ -226,12 +217,10 @@ void init(const std::string& iso_path, const std::string& cache_dir) {
   g_thread = std::thread(worker);
 }
 
-void join_rank_thread_for_shutdown();
 void shutdown() {
   { std::lock_guard<std::mutex> lk(g_mutex); g_quit = true; }
   g_cv.notify_all();
   if (g_thread.joinable()) g_thread.join();
-  join_rank_thread_for_shutdown();   // a joinable std::thread at static destruction would terminate the process
 }
 
 void log_game(const GameReport& report) {
@@ -239,106 +228,4 @@ void log_game(const GameReport& report) {
   g_cv.notify_all();
 }
 
-void match_status(const std::string& uid, const std::string& play_key, const std::string& match_id, const std::string& status, bool background) {
-  StatusJob s{uid, play_key, match_id, status};
-  if (!background) { send_status(s); return; }
-  { std::lock_guard<std::mutex> lk(g_mutex); Job j; j.is_status = true; j.status = s; g_queue.push_back(std::move(j)); }
-  g_cv.notify_all();
-}
-
-// ---------------------------------------------------------------- rank
-namespace {
-std::mutex g_rank_mutex;
-RankInfo g_rank;
-std::atomic<RankFetchStatus> g_rank_status{RankFetchStatus::Error};
-std::thread g_rank_thread;
-
-// SlippiRank::decide
-int8_t decide_rank(float o, uint16_t global, uint16_t regional, uint32_t updates) {
-  if (updates < 5) return 0;
-  if (o <= 765.42f) return 1;
-  if (o > 765.43f && o <= 913.71f) return 2;
-  if (o > 913.72f && o <= 1054.86f) return 3;
-  if (o > 1054.87f && o <= 1188.87f) return 4;
-  if (o > 1188.88f && o <= 1315.74f) return 5;
-  if (o > 1315.75f && o <= 1435.47f) return 6;
-  if (o > 1435.48f && o <= 1548.06f) return 7;
-  if (o > 1548.07f && o <= 1653.51f) return 8;
-  if (o > 1653.52f && o <= 1751.82f) return 9;
-  if (o > 1751.83f && o <= 1842.99f) return 10;
-  if (o > 1843.0f && o <= 1927.02f) return 11;
-  if (o > 1927.03f && o <= 2003.91f) return 12;
-  if (o > 2003.92f && o <= 2073.66f) return 13;
-  if (o > 2073.67f && o <= 2136.27f) return 14;
-  if (o > 2136.28f && o <= 2191.74f) return 15;
-  if (o >= 2191.75f && (global > 0 || regional > 0)) return 19;
-  if (o > 2191.75f && o <= 2274.99f) return 16;
-  if (o > 2275.0f && o <= 2350.0f) return 17;
-  if (o > 2350.0f) return 18;
-  return 0;
-}
-
-void join_rank_thread() { if (g_rank_thread.joinable()) g_rank_thread.join(); }
-}  // namespace
-void join_rank_thread_for_shutdown() { join_rank_thread(); }
-
-void fetch_user_rank(const std::string& uid) {
-  if (uid.empty()) return;
-  join_rank_thread();
-  g_rank_status = RankFetchStatus::Fetching;
-  g_rank_thread = std::thread([uid] {
-    std::string url = "https://users-rest-dot-slippi.uc.r.appspot.com/user/" + uid + "?additionalFields=chatMessages,rank";
-    int status = 0; std::string response;
-    if (!http("GET", url, L"", "", &status, &response)) { g_rank_status = RankFetchStatus::Error; host::log("slippi rank: user fetch failed (network)"); return; }
-    json j = json::parse(response, nullptr, false);
-    if (j.is_discarded() || !j.is_object() || !j.count("rank") || !j["rank"].is_object()) { g_rank_status = RankFetchStatus::Error; host::log("slippi rank: user fetch HTTP %d, no rank in response", status); return; }
-    auto& r = j["rank"];
-    RankInfo info;
-    info.rating_ordinal = r.value("ratingOrdinal", 0.0f);
-    info.global_placing = (uint16_t)(r.count("dailyGlobalPlacement") && r["dailyGlobalPlacement"].is_number() ? r["dailyGlobalPlacement"].get<int>() : 0);
-    info.regional_placing = (uint16_t)(r.count("dailyRegionalPlacement") && r["dailyRegionalPlacement"].is_number() ? r["dailyRegionalPlacement"].get<int>() : 0);
-    info.rating_update_count = r.value("ratingUpdateCount", 0u);
-    info.rank = decide_rank(info.rating_ordinal, info.global_placing, info.regional_placing, info.rating_update_count);
-    { std::lock_guard<std::mutex> lk(g_rank_mutex); g_rank = info; }
-    g_rank_status = RankFetchStatus::Fetched;
-    host::log("slippi rank: rating %.1f, %u rated games, rank index %d", info.rating_ordinal, info.rating_update_count, info.rank);
-  });
-}
-
-void fetch_match_result(const std::string& match_id, const std::string& uid, const std::string& play_key) {
-  join_rank_thread();
-  g_rank_status = RankFetchStatus::Fetching;
-  g_rank_thread = std::thread([match_id, uid, play_key] {
-    for (int attempt = 0; attempt < 3; ++attempt) {
-      json vars = {{"request", {{"matchId", match_id}, {"fbUid", uid}, {"playKey", play_key}}}};
-      json data = graphql("query ($request: OnlineMatchRequestInput!) { getRankedMatchPersonalResult(request: $request) { participant { ordinal dailyGlobalPlacement dailyRegionalPlacement ratingUpdateCount ratingChange } } }", vars);
-      if (data.is_null() || !data.count("getRankedMatchPersonalResult") || !data["getRankedMatchPersonalResult"].is_object()) { std::this_thread::sleep_for(std::chrono::seconds(1)); continue; }
-      auto& p = data["getRankedMatchPersonalResult"]["participant"];
-      bool has_change = p.count("ratingChange") && p["ratingChange"].is_number();
-      if (!has_change && attempt < 2) { std::this_thread::sleep_for(std::chrono::seconds(3)); continue; }
-      RankInfo info;
-      info.rating_ordinal = p.count("ordinal") && p["ordinal"].is_number() ? p["ordinal"].get<float>() : 0.0f;
-      info.global_placing = (uint16_t)(p.count("dailyGlobalPlacement") && p["dailyGlobalPlacement"].is_number() ? p["dailyGlobalPlacement"].get<int>() : 0);
-      info.regional_placing = (uint16_t)(p.count("dailyRegionalPlacement") && p["dailyRegionalPlacement"].is_number() ? p["dailyRegionalPlacement"].get<int>() : 0);
-      info.rating_update_count = p.count("ratingUpdateCount") && p["ratingUpdateCount"].is_number() ? p["ratingUpdateCount"].get<uint32_t>() : 0;
-      info.rating_change = has_change ? p["ratingChange"].get<float>() : 0.0f;
-      int8_t prev = decide_rank(info.rating_ordinal, info.global_placing, info.regional_placing, info.rating_update_count);
-      info.rating_ordinal += info.rating_change;
-      info.rating_update_count += has_change ? 1 : 0;
-      info.rank = decide_rank(info.rating_ordinal, info.global_placing, info.regional_placing, info.rating_update_count);
-      info.rank_change = (int8_t)(info.rank - prev);
-      { std::lock_guard<std::mutex> lk(g_rank_mutex); g_rank = info; }
-      g_rank_status = RankFetchStatus::Fetched;
-      host::log("slippi rank: match result: rating %.1f (%+.1f), rank index %d (%+d)", info.rating_ordinal, info.rating_change, info.rank, info.rank_change);
-      return;
-    }
-    g_rank_status = RankFetchStatus::Error;
-    host::log("slippi rank: match result fetch failed");
-  });
-}
-
-RankFetchStatus rank_info(RankInfo* out) {
-  if (out) { std::lock_guard<std::mutex> lk(g_rank_mutex); *out = g_rank; }
-  return g_rank_status.load();
-}
 }  // namespace slippi::report

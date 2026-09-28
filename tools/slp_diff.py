@@ -7,6 +7,7 @@ desync itself, with the action states around it.
 """
 import argparse
 import sys
+import struct
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -14,6 +15,32 @@ from replay_compare import parse_slp
 
 FIELDS = ("state", "x", "y", "facing", "percent", "shield", "stocks", "char")
 INPUTS = ("jx", "jy", "cx", "cy", "trig", "buttons")
+
+
+def first_difference(a, b, fields):
+    """Compare full coverage, including players and the sign bit of floating zero."""
+    if not a or not b:
+        return (None, None, ["empty recording"])
+    for frame in sorted(set(a) | set(b)):
+        if frame not in a or frame not in b:
+            return (frame, None, ["missing frame in " + ("A" if frame not in a else "B")])
+        for key in sorted(set(a[frame]) | set(b[frame])):
+            if key not in a[frame] or key not in b[frame]:
+                return (frame, key, ["missing player in " + ("A" if key not in a[frame] else "B")])
+            left, right = a[frame][key], b[frame][key]
+            bad = []
+            for field in fields:
+                if field not in left or field not in right:
+                    bad.append(field)
+                    continue
+                x, y = left[field], right[field]
+                equal = (struct.pack(">f", x) == struct.pack(">f", y)
+                         if isinstance(x, float) and isinstance(y, float) else x == y)
+                if not equal:
+                    bad.append(field)
+            if bad:
+                return (frame, key, bad)
+    return None
 
 
 def fmt_post(p):
@@ -32,35 +59,18 @@ def main():
     args = ap.parse_args()
     _, post_a, pre_a = parse_slp(args.a)
     _, post_b, pre_b = parse_slp(args.b)
-    frames = sorted(set(post_a) & set(post_b))
-    print(f"A {args.a.name}: frames {min(post_a)}..{max(post_a)} | B {args.b.name}: frames {min(post_b)}..{max(post_b)} | shared {len(frames)}")
-    first = None
-    for f in frames:
-        for key, pa in post_a[f].items():
-            pb = post_b[f].get(key)
-            if pb is None:
-                continue
-            bad = [k for k in FIELDS if pa[k] != pb[k]]
-            if bad:
-                first = (f, key, bad)
-                break
-        if first:
-            break
+    if not post_a or not post_b:
+        print("FAIL: one or both recordings have no post-frame events")
+        return 1
+    print(f"A {args.a.name}: frames {min(post_a)}..{max(post_a)} | B {args.b.name}: frames {min(post_b)}..{max(post_b)}")
+    first = first_difference(post_a, post_b, FIELDS)
     # Inputs can differ before any state does (a remote input applied on a different frame).
-    first_input = None
-    for f in sorted(set(pre_a) & set(pre_b)):
-        for key, ia in pre_a[f].items():
-            ib = pre_b[f].get(key)
-            if ib is not None and any(ia[k] != ib[k] for k in INPUTS):
-                first_input = (f, key)
-                break
-        if first_input:
-            break
+    first_input = first_difference(pre_a, pre_b, INPUTS)
     if first_input:
-        print(f"first input difference: frame {first_input[0]} player {first_input[1]}")
+        print(f"first input difference: frame {first_input[0]} player {first_input[1]}: {', '.join(first_input[2])}")
     if not first:
-        print("post-frame state identical on every shared frame")
-        return 0
+        print("post-frame state identical on every frame, with identical player coverage")
+        return 1 if first_input else 0
     f0, key, bad = first
     print(f"first state difference: frame {f0} player/follower {key}: {', '.join(bad)}")
     for f in range(f0 - args.context, f0 + 2):

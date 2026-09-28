@@ -1,0 +1,3005 @@
+#ifndef MEX_H_MATCH
+#define MEX_H_MATCH
+
+#include "structs.h"
+#include "datatypes.h"
+#include "obj.h"
+#include "fighter.h"
+#include "stage.h"
+#include "gx.h"
+
+// Match Data definitions
+#define MATCH_TIMER_FROZEN 0
+#define MATCH_TIMER_HIDE 1
+#define MATCH_TIMER_COUNTDOWN 2
+#define MATCH_TIMER_COUNTUP 3
+#define MATCH_MATCHTYPE_TIME 0
+#define MATCH_MATCHTYPE_STOCK 1
+#define MATCH_MATCHTYPE_COIN 2
+#define MATCH_HUDPOS_NONE 0
+#define MATCH_HUDPOS_ONE 1
+#define MATCH_HUDPOS_TWO 2
+#define MATCH_HUDPOS_THREE 3
+#define MATCH_HUDPOS_FOUR 4
+#define MATCH_HUDPOS_SIX 5
+#define MATCH_HUDPOS_UNK 6
+#define MATCH_HUDPOS_FOURCOMPACT 7
+#define MATCH_PAUSEHUD_HIDE 1
+#define MATCH_MATCHTYPE_STOCK 1
+#define MATCH_MATCHTYPE_COIN 2
+#define MATCH_ITEMFREQ_OFF -1
+#define MATCH_ITEMFREQ_VERYLOW 0
+#define MATCH_ITEMFREQ_LOW 1
+#define MATCH_ITEMFREQ_MEDIUM 2
+#define MATCH_ITEMFREQ_HIGH 3
+#define MATCH_ITEMFREQ_VERYHIGH 4
+
+enum MatchState
+{
+    MATCHSTATE_INPROG,
+    MATCHSTATE_GAME,
+    MATCHSTATE_EXIT,
+};
+
+enum MatchEndKind
+{
+    MATCHENDKIND_NONE,      // hasn't ended yet?
+    MATCHENDKIND_VSTIME,    // timeout in a VS match
+    MATCHENDKIND_VSGAME,    // successful ending to a VS match
+    MATCHENDKIND_3,         //
+    MATCHENDKIND_1PLOSE,    // used for dying in 1p games
+    MATCHENDKIND_5,         //
+    MATCHENDKIND_1PWIN,     // winning a 1p game
+    MATCHENDKIND_NOCONTEST, //
+    MATCHENDKIND_RETRY,     // stadium retry
+    MATCHENDKIND_OVERRIDE,  // match end was requested by external code
+};
+
+enum MatchPLinks
+{
+    // the game whitelists p_links 0,2,16,18,19,20,21,22,24+ to run on match pause
+    MATCHPLINK_SYS,
+    MATCHPLINK_1,
+    MATCHPLINK_2,
+    MATCHPLINK_LIGHT,
+    MATCHPLINK_ZAKO,
+    MATCHPLINK_MAP,
+    MATCHPLINK_COLL,
+    MATCHPLINK_7,
+    MATCHPLINK_FIGHTER,
+    MATCHPLINK_ITEM,
+    MATCHPLINK_10,
+    MATCHPLINK_EFFECT1,
+    MATCHPLINK_EFFECT2,
+    MATCHPLINK_MAPMISC,
+    MATCHPLINK_MISC,
+    MATCHPLINK_HUD,
+    MATCHPLINK_16,
+    MATCHPLINK_17,
+    MATCHPLINK_MATCHCAM,
+    MATCHPLINK_MISCCAM,
+    MATCHPLINK_HUDCAM,
+    MATCHPLINK_COINCAM,
+    MATCHPLINK_SCREENFLASHCAM,
+    MATCHPLINK_CROWDSFX,
+    MATCHPLINK_DEVTEXT,
+};
+
+enum MatchGXLinks
+{
+    MATCHGX_LIGHT,       // fog too i think?
+    MATCHGX_POKEMONITOR, // hrc signs use this as well
+    MATCHGX_FODREFLECT,
+    MATCHGX_STAGE,
+    MATCHGX_4,
+    MATCHGX_FIGHTER,
+    MATCHGX_ITEM,
+    MATCHGX_EFFECT,   // in-game effects
+    MATCHGX_HUDPTCL,  // effects used on hud, like stock disappearing
+    MATCHGX_HUDTAGS,  // nametag jobj and text
+    MATCHGX_HUDLIGHT, // also used for coin lighting? 802ff060
+    MATCHGX_HUD,      // stocks, percent, insignia, timer, READY, etc
+    MATCHGX_12,
+    MATCHGX_13,
+    MATCHGX_14,
+    MATCHGX_COIN,
+    MATCHGX_SCREENCOLANIM,
+    MATCHGX_DEVELOPTEXT,
+};
+
+typedef enum HitAttribute // these belong to items *and* fighters so im putting them here
+{
+    HITATTR_NORMAL,
+    HITATTR_FIRE,
+    HITATTR_ELEC,
+    HITATTR_SLASH,
+    HITATTR_COIN,
+    HITATTR_ICE,
+    HITATTR_SLEEPSHORT,
+    HITATTR_SLEEPLONG,
+    HITATTR_BURY,
+    HITATTR_BURY2,
+    HITATTR_SPIN,
+    HITATTR_EMPTY,
+    HITATTR_DISABLE,
+    HITATTR_DARK,
+    HITATTR_SCREW,
+    HITATTR_FLOWER,
+    HITATTR_NULL,
+} HitAttribute;
+
+typedef enum HitSFXKind // these belong to items *and* fighters so im putting them here
+{
+    HITSFX_NONE,
+    HITSFX_PUNCH,
+    HITSFX_KICK,
+    HITSFX_SWORD,
+    HITSFX_COIN,
+    HITSFX_BAT,
+    HITSFX_FAN,
+    HITSFX_ELEC,
+    HITSFX_FIRE,
+    HITSFX_CHEW,
+    HITSFX_SHELL,
+    HITSFX_ENERGY,
+    HITSFX_PEACHITEM,
+    HITSFX_ICE,
+    HITSFX_14,
+    HITSFX_15,
+} HitSFXKind;
+
+/*** Structs ***/
+
+struct MatchInit /* native twin, generated */
+{
+    union {
+        char _mex_native_size[352];
+        struct { unsigned char matchType : 3; };
+        struct { unsigned char : 3; unsigned char hudPos : 3; };
+        struct { char _p1895[1]; unsigned char timer_unk2 : 1; };
+        struct { char _p1896[1]; unsigned char : 1; unsigned char unk4 : 1; };
+        struct { char _p1897[1]; unsigned char : 2; unsigned char hideReady : 1; };
+        struct { char _p1898[1]; unsigned char : 3; unsigned char hideGo : 1; };
+        struct { char _p1899[1]; unsigned char : 4; unsigned char isDisableMusic : 1; };
+        struct { char _p1900[1]; unsigned char : 5; unsigned char unk3 : 1; };
+        struct { char _p1901[1]; unsigned char : 6; unsigned char timer_unk : 1; };
+        struct { char _p1902[1]; unsigned char : 7; unsigned char unk2 : 1; };
+        struct { char _p1903[2]; unsigned char unk9 : 1; };
+        struct { char _p1904[2]; unsigned char : 1; unsigned char disableOffscreenDamage : 1; };
+        struct { char _p1905[2]; unsigned char : 2; unsigned char unk8 : 1; };
+        struct { char _p1906[2]; unsigned char : 3; unsigned char isSingleButtonMode : 1; };
+        struct { char _p1907[2]; unsigned char : 4; unsigned char isDisablePause : 1; };
+        struct { char _p1908[2]; unsigned char : 5; unsigned char unk7 : 1; };
+        struct { char _p1909[2]; unsigned char : 6; unsigned char isCreateHUD : 1; };
+        struct { char _p1910[2]; unsigned char : 7; unsigned char unk5 : 1; };
+        struct { char _p1911[3]; unsigned char isShowScore : 1; };
+        struct { char _p1912[3]; unsigned char : 1; unsigned char isShowAnalogStick : 1; };
+        struct { char _p1913[3]; unsigned char : 2; unsigned char isCheckForZRetry : 1; };
+        struct { char _p1914[3]; unsigned char : 3; unsigned char isShowZRetry : 1; };
+        struct { char _p1915[3]; unsigned char : 4; unsigned char isCheckForLRAStart : 1; };
+        struct { char _p1916[3]; unsigned char : 5; unsigned char isShowLRAStart : 1; };
+        struct { char _p1917[3]; unsigned char : 6; unsigned char isHidePauseHUD : 1; };
+        struct { char _p1918[3]; unsigned char : 7; unsigned char timerRunOnPause : 1; };
+        struct { char _p1919[4]; unsigned char unk11 : 1; };
+        struct { char _p1920[4]; unsigned char : 1; unsigned char isCheckStockSteal : 1; };
+        struct { char _p1921[4]; unsigned char : 2; unsigned char isRunStockLogic : 1; };
+        struct { char _p1922[4]; unsigned char : 3; unsigned char x4_10 : 1; };
+        struct { char _p1923[4]; unsigned char : 4; unsigned char x4_08 : 1; };
+        struct { char _p1924[5]; unsigned char no_check_end : 1; };
+        struct { char _p1925[5]; unsigned char : 1; unsigned char isSkipUnkStockCheck : 1; };
+        struct { char _p1926[5]; unsigned char : 2; unsigned char no_hit : 1; };
+        struct { char _p1927[6]; u8 bombRain; };
+        struct { char _p1928[7]; u8 x7; };
+        struct { char _p1929[8]; u8 is_teams; };
+        struct { char _p1930[9]; u8 use_ko_count; };
+        struct { char _p1931[10]; u8 xa; };
+        struct { char _p1932[11]; s8 itemFreq; };
+        struct { char _p1933[12]; s8 sd_penalty; };
+        struct { char _p1934[13]; u8 xd; };
+        struct { char _p1935[14]; u16 stage; };
+        struct { char _p1936[16]; int timer_seconds; };
+        struct { char _p1937[20]; u8 timer_subseconds; };
+        struct { char _p1938[24]; int x88; };
+        struct { char _p1939[32]; u64 itemSwitch; };
+        struct { char _p1940[40]; int x28; };
+        struct { char _p1941[44]; float quake_mult; };
+        struct { char _p1942[48]; float dmg_ratio; };
+        struct { char _p1943[52]; float match_speed; };
+        struct { char _p1944[80]; void *onStartMelee; };
+        struct { char _p1945[104]; void *onMatchEnd; };
+        struct { char _p1946[128]; int x5c; };
+        struct { char _p1947[136]; PlayerData playerData[6]; };
+    };
+};
+
+struct MatchHUDElement /* native twin, generated */
+{
+    union {
+        char _mex_native_size[128];
+        struct { GOBJ *percent; };
+        struct { char _p4729[8]; GOBJ *insignia; };
+        struct { char _p4730[16]; u8 x8; };
+        struct { char _p4731[17]; u8 x9; };
+        struct { char _p4732[18]; u16 xa; };
+        struct { char _p4733[20]; u16 xc; };
+        struct { char _p4734[22]; u8 xe; };
+        struct { char _p4735[23]; u8 xf; };
+        struct { char _p4736[24]; unsigned char is_removed : 1; };
+        struct { char _p4737[24]; unsigned char : 1; unsigned char x10_40 : 1; };
+        struct { char _p4738[24]; unsigned char : 2; unsigned char x10_20 : 1; };
+        struct { char _p4739[24]; unsigned char : 3; unsigned char x10_10 : 1; };
+        struct { char _p4740[24]; unsigned char : 4; unsigned char is_hidden : 1; };
+        struct { char _p4741[24]; unsigned char : 6; unsigned char x10_04 : 1; };
+        struct { char _p4742[24]; unsigned char : 5; unsigned char x10_02 : 1; };
+        struct { char _p4743[24]; unsigned char : 7; unsigned char x10_01 : 1; };
+        struct { char _p4744[28]; float x14[3]; };
+    };
+};
+struct MatchHUDStock
+{
+    GOBJ *gobj;
+    JOBJ *jobj[17];
+    int curr_coins;
+    int curr_stocks;
+};
+struct MatchHUD /* native twin, generated */
+{
+    union {
+        char _mex_native_size[168];
+        struct { GOBJ *cam_gobj; };
+        struct { char _p4696[8]; GOBJ *light_gobj; };
+        struct { char _p4697[24]; Vec3 timer_pos; };
+        struct { char _p4698[36]; Vec3 player_hud_pos[6]; };
+        struct { char _p4699[108]; Vec3 joint8_pos[3]; };
+        struct { char _p4700[144]; Vec3 joint11_pos[2]; };
+    };
+};
+
+struct CmSubject /* native twin, generated */
+{
+    union {
+        char _mex_native_size[120];
+        struct { void *alloc; };
+        struct { char _p4657[8]; CmSubject *next; };
+        struct { char _p4658[16]; int kind; };
+        struct { char _p4659[20]; u8 flags_x80 : 1; };
+        struct { char _p4660[20]; u8 : 1; u8 is_disable : 1; };
+        struct { char _p4661[24]; Vec3 cam_pos; };
+        struct { char _p4662[36]; Vec3 bone_pos; };
+        struct { char _p4663[48]; float direction; };
+        struct { char _p4664[52]; float boundleft_curr; };
+        struct { char _p4665[56]; float boundright_curr; };
+        struct { char _p4666[60]; float boundtop_curr; };
+        struct { char _p4667[64]; float boundbottom_curr; };
+        struct { char _p4668[68]; float x3c; };
+        struct { char _p4669[72]; float boundleft_proj; };
+        struct { char _p4670[76]; float boundright_proj; };
+        struct { char _p4671[80]; float boundtop_proj; };
+        struct { char _p4672[84]; float boundbottom_proj; };
+        struct { char _p4673[88]; float x50; };
+    };
+};
+struct MatchCamera /* native twin, generated */
+{
+    union {
+        char _mex_native_size[960];
+        struct { GOBJ *gobj; };
+        struct { char _p1990[8]; int cam_kind; };
+        struct { char _p1991[12]; GXColor erase_color; };
+        struct { char _p1992[16]; float near; };
+        struct { char _p1993[20]; float far; };
+        struct { char _p1994[24]; Vec3 x14_current; };
+        struct { char _p1995[36]; Vec3 x20_projected; };
+        struct { char _p1996[48]; Vec3 x2c_current; };
+        struct { char _p1997[60]; Vec3 x38_projected; };
+        struct { char _p1998[72]; float normalcam_fov; };
+        struct { char _p1999[76]; float x48_projected; };
+        struct { char _p2000[80]; Vec3 x4c_current; };
+        struct { char _p2001[92]; Vec3 x58_projected; };
+        struct { char _p2002[104]; Vec3 x64_current; };
+        struct { char _p2003[116]; Vec3 x70_projected; };
+        struct { char _p2004[128]; float x7c_current; };
+        struct { char _p2005[132]; float x80_projected; };
+        struct { char _p2006[136]; int x84; };
+        struct { char _p2007[140]; int x88; };
+        struct { char _p2008[144]; int x8c; };
+        struct { char _p2009[148]; int x90; };
+        struct { char _p2010[152]; int x94; };
+        struct { char _p2011[156]; int x98; };
+        struct { char _p2012[160]; int x9c; };
+        struct { char _p2013[176]; int xa4; };
+        struct { char _p2014[180]; int xa8; };
+        struct { char _p2015[184]; int xac; };
+        struct { char _p2016[188]; int xb0; };
+        struct { char _p2017[192]; int xb4; };
+        struct { char _p2018[196]; int xb8; };
+        struct { char _p2019[200]; int xbc; };
+        struct { char _p2020[204]; int xc0; };
+        struct { char _p2021[208]; int xc4; };
+        struct { char _p2022[212]; int xc8; };
+        struct { char _p2023[216]; int xcc; };
+        struct { char _p2024[220]; int xd0; };
+        struct { char _p2025[224]; int xd4; };
+        struct { char _p2026[228]; int xd8; };
+        struct { char _p2027[232]; int xdc; };
+        struct { char _p2028[236]; int xe0; };
+        struct { char _p2029[240]; int xe4; };
+        struct { char _p2030[244]; int xe8; };
+        struct { char _p2031[248]; int xec; };
+        struct { char _p2032[252]; int xf0; };
+        struct { char _p2033[256]; int xf4; };
+        struct { char _p2034[260]; int xf8; };
+        struct { char _p2035[264]; int xfc; };
+        struct { char _p2036[268]; int x100; };
+        struct { char _p2037[272]; int x104; };
+        struct { char _p2038[276]; int x108; };
+        struct { char _p2039[280]; int x10c; };
+        struct { char _p2040[284]; int x110; };
+        struct { char _p2041[288]; int x114; };
+        struct { char _p2042[292]; int x118; };
+        struct { char _p2043[296]; int x11c; };
+        struct { char _p2044[300]; int x120; };
+        struct { char _p2045[304]; int x124; };
+        struct { char _p2046[308]; int x128; };
+        struct { char _p2047[312]; int x12c; };
+        struct { char _p2048[316]; int x130; };
+        struct { char _p2049[320]; int x134; };
+        struct { char _p2050[324]; int x138; };
+        struct { char _p2051[328]; int x13c; };
+        struct { char _p2052[332]; int x140; };
+        struct { char _p2053[336]; int x144; };
+        struct { char _p2054[340]; int x148; };
+        struct { char _p2055[344]; int x14c; };
+        struct { char _p2056[348]; int x150; };
+        struct { char _p2057[352]; int x154; };
+        struct { char _p2058[356]; int x158; };
+        struct { char _p2059[360]; int x15c; };
+        struct { char _p2060[364]; int x160; };
+        struct { char _p2061[368]; int x164; };
+        struct { char _p2062[372]; int x168; };
+        struct { char _p2063[376]; int x16c; };
+        struct { char _p2064[380]; int x170; };
+        struct { char _p2065[384]; int x174; };
+        struct { char _p2066[388]; int x178; };
+        struct { char _p2067[392]; int x17c; };
+        struct { char _p2068[396]; int x180; };
+        struct { char _p2069[400]; int x184; };
+        struct { char _p2070[404]; int x188; };
+        struct { char _p2071[408]; int x18c; };
+        struct { char _p2072[412]; int x190; };
+        struct { char _p2073[416]; int x194; };
+        struct { char _p2074[420]; int x198; };
+        struct { char _p2075[424]; int x19c; };
+        struct { char _p2076[428]; int x1a0; };
+        struct { char _p2077[432]; int x1a4; };
+        struct { char _p2078[436]; int x1a8; };
+        struct { char _p2079[440]; int x1ac; };
+        struct { char _p2080[444]; int x1b0; };
+        struct { char _p2081[448]; int x1b4; };
+        struct { char _p2082[452]; int x1b8; };
+        struct { char _p2083[456]; int x1bc; };
+        struct { char _p2084[460]; int x1c0; };
+        struct { char _p2085[464]; int x1c4; };
+        struct { char _p2086[468]; int x1c8; };
+        struct { char _p2087[472]; int x1cc; };
+        struct { char _p2088[476]; int x1d0; };
+        struct { char _p2089[480]; int x1d4; };
+        struct { char _p2090[484]; int x1d8; };
+        struct { char _p2091[488]; int x1dc; };
+        struct { char _p2092[492]; int x1e0; };
+        struct { char _p2093[496]; int x1e4; };
+        struct { char _p2094[500]; int x1e8; };
+        struct { char _p2095[504]; int x1ec; };
+        struct { char _p2096[508]; int x1f0; };
+        struct { char _p2097[512]; int x1f4; };
+        struct { char _p2098[516]; int x1f8; };
+        struct { char _p2099[520]; int x1fc; };
+        struct { char _p2100[524]; int x200; };
+        struct { char _p2101[528]; int x204; };
+        struct { char _p2102[532]; int x208; };
+        struct { char _p2103[536]; int x20c; };
+        struct { char _p2104[540]; int x210; };
+        struct { char _p2105[544]; int x214; };
+        struct { char _p2106[548]; int x218; };
+        struct { char _p2107[552]; int x21c; };
+        struct { char _p2108[556]; int x220; };
+        struct { char _p2109[560]; int x224; };
+        struct { char _p2110[564]; int x228; };
+        struct { char _p2111[568]; int x22c; };
+        struct { char _p2112[572]; int x230; };
+        struct { char _p2113[576]; int x234; };
+        struct { char _p2114[580]; int x238; };
+        struct { char _p2115[584]; int x23c; };
+        struct { char _p2116[588]; int x240; };
+        struct { char _p2117[592]; int x244; };
+        struct { char _p2118[596]; int x248; };
+        struct { char _p2119[600]; int x24c; };
+        struct { char _p2120[604]; int x250; };
+        struct { char _p2121[608]; int x254; };
+        struct { char _p2122[612]; int x258; };
+        struct { char _p2123[616]; int x25c; };
+        struct { char _p2124[620]; int x260; };
+        struct { char _p2125[624]; int x264; };
+        struct { char _p2126[628]; int x268; };
+        struct { char _p2127[632]; int x26c; };
+        struct { char _p2128[636]; int x270; };
+        struct { char _p2129[640]; int x274; };
+        struct { char _p2130[644]; int x278; };
+        struct { char _p2131[648]; int x27c; };
+        struct { char _p2132[652]; int x280; };
+        struct { char _p2133[656]; int x284; };
+        struct { char _p2134[660]; int x288; };
+        struct { char _p2135[664]; int x28c; };
+        struct { char _p2136[668]; int x290; };
+        struct { char _p2137[672]; int x294; };
+        struct { char _p2138[676]; int x298; };
+        struct { char _p2139[680]; int x29c; };
+        struct { char _p2140[684]; int x2a0; };
+        struct { char _p2141[688]; int x2a4; };
+        struct { char _p2142[692]; int x2a8; };
+        struct { char _p2143[696]; int x2ac; };
+        struct { char _p2144[700]; int x2b0; };
+        struct { char _p2145[704]; int x2b4; };
+        struct { char _p2146[708]; int x2b8; };
+        struct { char _p2147[712]; int x2bc; };
+        struct { char _p2148[716]; float cam_; };
+        struct { char _p2149[720]; int x2c4; };
+        struct { char _p2150[724]; int x2c8; };
+        struct { char _p2151[728]; int x2cc; };
+        struct { char _p2152[736]; int x2d0; };
+        struct { char _p2153[740]; int x2d4; };
+        struct { char _p2154[744]; int x2d8; };
+        struct { char _p2155[748]; int x2dc; };
+        struct { char _p2156[752]; int x2e0; };
+        struct { char _p2157[756]; int x2e4; };
+        struct { char _p2158[760]; int x2e8; };
+        struct { char _p2159[764]; float freecam_tilt_vertical; };
+        struct { char _p2160[768]; int x2f0; };
+        struct { char _p2161[772]; int x2f4; };
+        struct { char _p2162[776]; float freecam_zoommax; };
+        struct { char _p2163[780]; float freecam_zoommin; };
+        struct { char _p2164[792]; int x304; };
+        struct { char _p2165[796]; Vec3 freecam_pos; };
+        struct { char _p2166[808]; Vec3 freecam_offset; };
+        struct { char _p2167[820]; Vec2 freecam_rotate; };
+        struct { char _p2168[828]; Vec3 freecam_fov; };
+        struct { char _p2169[840]; int x334; };
+        struct { char _p2170[844]; int x338; };
+        struct { char _p2171[848]; int x33c; };
+        struct { char _p2172[852]; int x340; };
+        struct { char _p2173[856]; int x344; };
+        struct { char _p2174[860]; int x348; };
+        struct { char _p2175[864]; int x34c; };
+        struct { char _p2176[872]; int x350; };
+        struct { char _p2177[876]; int x354; };
+        struct { char _p2178[880]; int x358; };
+        struct { char _p2179[888]; int x35c; };
+        struct { char _p2180[892]; int x360; };
+        struct { char _p2181[896]; int x364; };
+        struct { char _p2182[904]; int x368; };
+        struct { char _p2183[908]; int x36c; };
+        struct { char _p2184[912]; int x370; };
+        struct { char _p2185[916]; int x374; };
+        struct { char _p2186[920]; int x378; };
+        struct { char _p2187[924]; int x37c; };
+        struct { char _p2188[928]; int x380; };
+        struct { char _p2189[932]; int x384; };
+        struct { char _p2190[936]; int x388; };
+        struct { char _p2191[940]; int x38c; };
+        struct { char _p2192[944]; int x390; };
+        struct { char _p2193[948]; int x394; };
+        struct { char _p2194[952]; unsigned char hide_fighters : 1; };
+        struct { char _p2195[952]; unsigned char : 1; unsigned char hide_items : 1; };
+        struct { char _p2196[952]; unsigned char : 2; unsigned char hide_stage2 : 1; };
+        struct { char _p2197[952]; unsigned char : 3; unsigned char hide_effects : 1; };
+        struct { char _p2198[952]; unsigned char : 4; unsigned char hide_lighting : 1; };
+        struct { char _p2199[952]; unsigned char : 5; unsigned char hide_background : 1; };
+        struct { char _p2200[952]; unsigned char : 6; unsigned char item_render_flags : 2; };
+        struct { char _p2201[953]; unsigned char map_render_flags : 2; };
+        struct { char _p2202[953]; unsigned char : 2; unsigned char x399x20 : 1; };
+        struct { char _p2203[953]; unsigned char : 3; unsigned char show_coll : 1; };
+        struct { char _p2204[953]; unsigned char : 4; unsigned char show_cam_blastzones : 1; };
+        struct { char _p2205[953]; unsigned char : 5; unsigned char hide_stage : 1; };
+        struct { char _p2206[953]; unsigned char : 6; unsigned char x399_02 : 1; };
+        struct { char _p2207[953]; unsigned char : 7; unsigned char x399_01 : 1; };
+        struct { char _p2208[954]; unsigned char x39a_80 : 1; };
+        struct { char _p2209[954]; unsigned char : 1; unsigned char x39a_40 : 1; };
+        struct { char _p2210[954]; unsigned char : 2; unsigned char show_item_spawns : 1; };
+        struct { char _p2211[954]; unsigned char : 3; unsigned char x39a_10 : 1; };
+        struct { char _p2212[954]; unsigned char : 4; unsigned char x39a_08 : 1; };
+        struct { char _p2213[954]; unsigned char : 5; unsigned char x39a_04 : 1; };
+        struct { char _p2214[954]; unsigned char : 6; unsigned char x39a_02 : 1; };
+        struct { char _p2215[954]; unsigned char : 7; unsigned char x39a_01 : 1; };
+        struct { char _p2216[955]; char x39b; };
+    };
+};
+
+struct MatchLupe
+{
+    GOBJ *gobj;                 // 0x0
+    JOBJ *arrow_jobj;           // 0x4
+    _HSD_ImageDesc *image_desc; // 0x8 jobj 2 -> dobj -> next -> mobj -> tobj -> imagedesc
+    u8 is_rendred_lupe_cam : 1; // 0xC, 0x80 raised when the lupe cobj detects the fighter is offscreen and renders the low poly model
+    u8 ignore_offscreen : 1;    // 0xC, unk, set to 0 initially
+    u8 offscreen_dir : 6;       // 0xC, 0x3f. 0x2 = left, 0x4 = right
+};
+struct MatchOffscreen /* native twin, generated */
+{
+    union {
+        char _mex_native_size[344];
+        struct { JOBJSet *lupe_jobjset; };
+        struct { char _p4701[8]; GXColor lupe_color[4]; };
+        struct { char _p4707[24]; struct {
+            union {
+                char _mex_span[32];
+                struct { GOBJ *gobj; };
+                struct { char _p4702[8]; JOBJ *arrow_jobj; };
+                struct { char _p4703[16]; _HSD_ImageDesc *image_desc; };
+                struct { char _p4704[24]; u8 is_rendred_lupe_cam : 1; };
+                struct { char _p4705[24]; u8 : 1; u8 ignore_offscreen : 1; };
+                struct { char _p4706[24]; u8 : 2; u8 offscreen_dir : 6; };
+            };
+        } lupe[6]; };
+    };
+};
+struct MatchNametags {
+    JOBJSet nametag_jobjset;
+    // initialized in HUD_InitNametag (802fcf38)
+    // GOBJs for the nametags / player indicators
+    GOBJ *gobjs[6];             // 0x10 all are non-null
+};
+
+struct ExclamData /* native twin, generated */
+{
+    union {
+        char _mex_native_size[64];
+        struct { GOBJ *gobj; };
+        struct { char _p4708[8]; int x4; };
+        struct { char _p4709[24]; int sfx; };
+        struct { char _p4710[28]; u8 x10; };
+        struct { char _p4711[29]; u8 x11; };
+        struct { char _p4712[30]; u8 is_play_sfx12 : 1; };
+        struct { char _p4713[30]; u8 : 1; u8 is_play_sfx3 : 1; };
+        struct { char _p4714[30]; u8 : 2; u8 is_exec_func1 : 1; };
+        struct { char _p4715[30]; u8 : 3; u8 x12_x10 : 1; };
+        struct { char _p4716[30]; u8 : 4; u8 x12_x08 : 1; };
+        struct { char _p4717[30]; u8 : 5; u8 x12_x04 : 1; };
+        struct { char _p4718[30]; u8 : 6; u8 x12_x02 : 1; };
+        struct { char _p4719[30]; u8 : 7; u8 x12_x01 : 1; };
+        struct { char _p4720[40]; void *on_start; };
+        struct { char _p4721[48]; void *on_end; };
+        struct { char _p4722[56]; int sfx2; };
+        struct { char _p4723[60]; int sfx3; };
+    };
+};
+
+struct PlayerStandings
+{
+    u8 pkind;                 // 0x58
+    u8 ckind;                 // 0x59
+    u8 ftkind;                // 0x5a
+    u8 costume : 6;           // 0x5b costume id
+    u8 is_rumble : 1;         // 0x5b rumble flag
+    u8 is_stamina : 1;        // 0x5b stamina flag
+    u8 nametag;               // 0x5c
+    u8 placement;             // 0x5d, (0 = 1st, 1 = 2nd, etc)
+    u8 x5e;                   // 0x5e, placement again?
+    u8 team;                  // 0x5f, index of this players team
+    u8 stock_num;             // 0x60
+    u8 hp;                    // 0x61
+    u8 sd_num;                // 0x62
+    u8 fall_num;              // 0x63
+    u16 dmg_num;              // 0x64
+    u16 joystick_inputs;      // 0x66, this is weird, its multiplied by 0.9 and then 0.031. results in the number of times you inputted 28 joystick directions
+    u16 kos[6];               // 0x68, indexed per ply
+    int coins;                // 0x74
+    int x78;                  // 0x78
+    int x7c;                  // 0x7c
+    int frames_alive;         // 0x80
+    int death_time;           // 0x84, Time Player Lost All Stocks (Seconds), is 0x1 if player was the last survivor.
+    int x88;                  // 0x88
+    int x8c;                  // 0x8c
+    int hits_landed;          // 0x90, total
+    int attack_num;           // 0x94, total
+    int dmg_dealt;            // 0x98, total
+    int dmg_taken;            // 0x9c, total
+    int xa0;                  // 0xa0
+    int max_dmg_taken;        // 0xa4, per stock
+    int dist_traveled_ground; // 0xa8, only updated when player is actionable
+    int dist_traveled_air;    // 0xac, only updated when player is actionable
+    int dist_fallen;          // 0xb0
+    int dist_hit;             // 0xb4
+    int coins_collected;      // 0xb8
+    int xbc;                  // 0xbc
+    int xc0;                  // 0xc0
+    int seconds_grounded;     // 0xc4
+    int seconds_airborne;     // 0xc8
+    int xcc;                  // 0xcc
+    int xd0;                  // 0xd0
+    int xd4;                  // 0xd4
+    int xd8;                  // 0xd8
+    int xdc;                  // 0xdc
+    int xe0;                  // 0xe0
+    int ledgegrab_num;        // 0xe4
+    int xe8;                  // 0xe8
+    int xec;                  // 0xec
+    int xf0;                  // 0xf0
+    int xf4;                  // 0xf4
+    int xf8;                  // 0xf8
+    int xfc;                  // 0xfc
+};
+
+struct TeamStandings
+{
+    int death_time; // 0x0, does this contain stocks for the winning team?
+    int x4;         // 0x4
+    u8 placement;   // 0x8
+    u8 x9;          // 0x9
+    u8 xa;          // 0xa
+    u8 xb;          // 0xb
+};
+
+struct MatchStandings
+{
+    int x0;                           // 0x24c
+    u8 end_kind;                      // 0x250
+    u8 x5;                            // 0x251
+    u8 is_teams;                      // 0x252
+    int time_frames;                  // 0x254 how many frames passed in the match
+    u8 xc;                            // 0x258
+    u8 winner_num;                    // 0x259 is greater than 1 when a tie occurs
+    u8 placings[4];                   // 0x25a - 0x25d, array of player indices in order of placement
+    int x14;                          // 0x260
+    int x18;                          // 0x264
+    TeamStandings team_standings[5];  // 0x268
+    PlayerStandings ply_standings[6]; // 0x2a4
+};
+
+struct Match /* native twin, generated */
+{
+    union {
+        char _mex_native_size[9568];
+        struct { u8 state; };
+        struct { char _p2419[1]; u8 pauser; };
+        struct { char _p2420[2]; u8 x2; };
+        struct { char _p2421[3]; u8 x3; };
+        struct { char _p2422[4]; u8 x4; };
+        struct { char _p2423[5]; u8 start_exclamation_ended; };
+        struct { char _p2424[6]; u8 request_match_end; };
+        struct { char _p2425[7]; u8 x7; };
+        struct { char _p2426[8]; u8 end_kind; };
+        struct { char _p2427[9]; u8 x9; };
+        struct { char _p2428[10]; u8 xa; };
+        struct { char _p2429[11]; u8 xb; };
+        struct { char _p2430[12]; int xc; };
+        struct { char _p2431[16]; int end_sfx_announcer; };
+        struct { char _p2432[20]; int end_sfx_crowd; };
+        struct { char _p2433[24]; int x18; };
+        struct { char _p2434[48]; int time_frames; };
+        struct { char _p2435[52]; int time_seconds; };
+        struct { char _p2436[56]; u16 time_ms; };
+        struct { char _p2437[60]; int x30; };
+        struct { char _p2438[64]; int x34; };
+        struct { char _p2439[68]; int x38; };
+        struct { char _p2440[72]; int x3c; };
+        struct { char _p2441[76]; int x40; };
+        struct { char _p2442[80]; int x44; };
+        struct { char _p2443[84]; int x48; };
+        struct { char _p2444[88]; int x4c; };
+        struct { char _p2445[92]; int x50; };
+        struct { char _p2446[96]; int x54; };
+        struct { char _p2447[100]; int x58; };
+        struct { char _p2448[104]; int x5c; };
+        struct { char _p2449[108]; int x60; };
+        struct { char _p2450[112]; int x64; };
+        struct { char _p2451[116]; int x68; };
+        struct { char _p2452[120]; int x6c; };
+        struct { char _p2453[124]; int x70; };
+        struct { char _p2454[128]; int x74; };
+        struct { char _p2455[132]; int x78; };
+        struct { char _p2456[136]; int x7c; };
+        struct { char _p2457[140]; int x80; };
+        struct { char _p2458[144]; int x84; };
+        struct { char _p2459[148]; int x88; };
+        struct { char _p2460[152]; int x8c; };
+        struct { char _p2461[156]; int x90; };
+        struct { char _p2462[160]; int x94; };
+        struct { char _p2463[164]; int x98; };
+        struct { char _p2464[168]; int x9c; };
+        struct { char _p2465[172]; int xa0; };
+        struct { char _p2466[176]; int xa4; };
+        struct { char _p2467[180]; int xa8; };
+        struct { char _p2468[184]; int xac; };
+        struct { char _p2469[188]; int xb0; };
+        struct { char _p2470[192]; int xb4; };
+        struct { char _p2471[196]; int xb8; };
+        struct { char _p2472[200]; int xbc; };
+        struct { char _p2473[204]; int xc0; };
+        struct { char _p2474[208]; int xc4; };
+        struct { char _p2475[212]; int xc8; };
+        struct { char _p2476[216]; int xcc; };
+        struct { char _p2477[220]; int xd0; };
+        struct { char _p2478[224]; int xd4; };
+        struct { char _p2479[228]; int xd8; };
+        struct { char _p2480[232]; int xdc; };
+        struct { char _p2481[236]; int xe0; };
+        struct { char _p2482[240]; int xe4; };
+        struct { char _p2483[244]; int xe8; };
+        struct { char _p2484[248]; int xec; };
+        struct { char _p2485[252]; int xf0; };
+        struct { char _p2486[256]; int xf4; };
+        struct { char _p2487[260]; int xf8; };
+        struct { char _p2488[264]; int xfc; };
+        struct { char _p2489[268]; int x100; };
+        struct { char _p2490[272]; int x104; };
+        struct { char _p2491[276]; int x108; };
+        struct { char _p2492[280]; int x10c; };
+        struct { char _p2493[284]; int x110; };
+        struct { char _p2494[288]; int x114; };
+        struct { char _p2495[292]; int x118; };
+        struct { char _p2496[296]; int x11c; };
+        struct { char _p2497[300]; int x120; };
+        struct { char _p2498[304]; int x124; };
+        struct { char _p2499[308]; int x128; };
+        struct { char _p2500[312]; int x12c; };
+        struct { char _p2501[316]; int x130; };
+        struct { char _p2502[320]; int x134; };
+        struct { char _p2503[324]; int x138; };
+        struct { char _p2504[328]; int x13c; };
+        struct { char _p2505[332]; int x140; };
+        struct { char _p2506[336]; int x144; };
+        struct { char _p2507[340]; int x148; };
+        struct { char _p2508[344]; int x14c; };
+        struct { char _p2509[348]; int x150; };
+        struct { char _p2510[352]; int x154; };
+        struct { char _p2511[356]; int x158; };
+        struct { char _p2512[360]; int x15c; };
+        struct { char _p2513[364]; int x160; };
+        struct { char _p2514[368]; int x164; };
+        struct { char _p2515[372]; int x168; };
+        struct { char _p2516[376]; int x16c; };
+        struct { char _p2517[380]; int x170; };
+        struct { char _p2518[384]; int x174; };
+        struct { char _p2519[388]; int x178; };
+        struct { char _p2520[392]; int x17c; };
+        struct { char _p2521[396]; int x180; };
+        struct { char _p2522[400]; int x184; };
+        struct { char _p2523[404]; int x188; };
+        struct { char _p2524[408]; int x18c; };
+        struct { char _p2525[412]; int x190; };
+        struct { char _p2526[416]; int x194; };
+        struct { char _p2527[420]; int x198; };
+        struct { char _p2528[424]; int x19c; };
+        struct { char _p2529[428]; int x1a0; };
+        struct { char _p2530[432]; int x1a4; };
+        struct { char _p2531[436]; int x1a8; };
+        struct { char _p2532[440]; int x1ac; };
+        struct { char _p2533[444]; int x1b0; };
+        struct { char _p2534[448]; int x1b4; };
+        struct { char _p2535[452]; int x1b8; };
+        struct { char _p2536[456]; int x1bc; };
+        struct { char _p2537[460]; int x1c0; };
+        struct { char _p2538[464]; int x1c4; };
+        struct { char _p2539[468]; int x1c8; };
+        struct { char _p2540[472]; int x1cc; };
+        struct { char _p2541[476]; int x1d0; };
+        struct { char _p2542[480]; int x1d4; };
+        struct { char _p2543[484]; int x1d8; };
+        struct { char _p2544[488]; int x1dc; };
+        struct { char _p2545[492]; int x1e0; };
+        struct { char _p2546[496]; int x1e4; };
+        struct { char _p2547[500]; int x1e8; };
+        struct { char _p2548[504]; int x1ec; };
+        struct { char _p2549[508]; int x1f0; };
+        struct { char _p2550[512]; int x1f4; };
+        struct { char _p2551[516]; int x1f8; };
+        struct { char _p2552[520]; int x1fc; };
+        struct { char _p2553[524]; int x200; };
+        struct { char _p2554[528]; int x204; };
+        struct { char _p2555[532]; int x208; };
+        struct { char _p2556[536]; int x20c; };
+        struct { char _p2557[540]; int x210; };
+        struct { char _p2558[544]; int x214; };
+        struct { char _p2559[548]; int x218; };
+        struct { char _p2560[552]; int x21c; };
+        struct { char _p2561[556]; int x220; };
+        struct { char _p2562[560]; int x224; };
+        struct { char _p2563[564]; int x228; };
+        struct { char _p2564[568]; int x22c; };
+        struct { char _p2565[572]; int x230; };
+        struct { char _p2566[576]; int x234; };
+        struct { char _p2567[580]; int x238; };
+        struct { char _p2568[584]; int x23c; };
+        struct { char _p2569[588]; int x240; };
+        struct { char _p2570[592]; int x244; };
+        struct { char _p2571[596]; int x248; };
+        struct { char _p2634[600]; struct {
+            union {
+                char _mex_span[1096];
+                struct { int x0; };
+                struct { char _p2572[4]; u8 end_kind; };
+                struct { char _p2573[5]; u8 x5; };
+                struct { char _p2574[6]; u8 is_teams; };
+                struct { char _p2575[8]; int time_frames; };
+                struct { char _p2576[12]; u8 xc; };
+                struct { char _p2577[13]; u8 winner_num; };
+                struct { char _p2578[14]; u8 placings[4]; };
+                struct { char _p2579[20]; int x14; };
+                struct { char _p2580[24]; int x18; };
+                struct { char _p2581[28]; TeamStandings team_standings[5]; };
+                struct { char _p2633[88]; struct {
+                    union {
+                        char _mex_span[168];
+                        struct { u8 pkind; };
+                        struct { char _p2582[1]; u8 ckind; };
+                        struct { char _p2583[2]; u8 ftkind; };
+                        struct { char _p2584[3]; u8 costume : 6; };
+                        struct { char _p2585[3]; u8 : 6; u8 is_rumble : 1; };
+                        struct { char _p2586[3]; u8 : 7; u8 is_stamina : 1; };
+                        struct { char _p2587[4]; u8 nametag; };
+                        struct { char _p2588[5]; u8 placement; };
+                        struct { char _p2589[6]; u8 x5e; };
+                        struct { char _p2590[7]; u8 team; };
+                        struct { char _p2591[8]; u8 stock_num; };
+                        struct { char _p2592[9]; u8 hp; };
+                        struct { char _p2593[10]; u8 sd_num; };
+                        struct { char _p2594[11]; u8 fall_num; };
+                        struct { char _p2595[12]; u16 dmg_num; };
+                        struct { char _p2596[14]; u16 joystick_inputs; };
+                        struct { char _p2597[16]; u16 kos[6]; };
+                        struct { char _p2598[28]; int coins; };
+                        struct { char _p2599[32]; int x78; };
+                        struct { char _p2600[36]; int x7c; };
+                        struct { char _p2601[40]; int frames_alive; };
+                        struct { char _p2602[44]; int death_time; };
+                        struct { char _p2603[48]; int x88; };
+                        struct { char _p2604[52]; int x8c; };
+                        struct { char _p2605[56]; int hits_landed; };
+                        struct { char _p2606[60]; int attack_num; };
+                        struct { char _p2607[64]; int dmg_dealt; };
+                        struct { char _p2608[68]; int dmg_taken; };
+                        struct { char _p2609[72]; int xa0; };
+                        struct { char _p2610[76]; int max_dmg_taken; };
+                        struct { char _p2611[80]; int dist_traveled_ground; };
+                        struct { char _p2612[84]; int dist_traveled_air; };
+                        struct { char _p2613[88]; int dist_fallen; };
+                        struct { char _p2614[92]; int dist_hit; };
+                        struct { char _p2615[96]; int coins_collected; };
+                        struct { char _p2616[100]; int xbc; };
+                        struct { char _p2617[104]; int xc0; };
+                        struct { char _p2618[108]; int seconds_grounded; };
+                        struct { char _p2619[112]; int seconds_airborne; };
+                        struct { char _p2620[116]; int xcc; };
+                        struct { char _p2621[120]; int xd0; };
+                        struct { char _p2622[124]; int xd4; };
+                        struct { char _p2623[128]; int xd8; };
+                        struct { char _p2624[132]; int xdc; };
+                        struct { char _p2625[136]; int xe0; };
+                        struct { char _p2626[140]; int ledgegrab_num; };
+                        struct { char _p2627[144]; int xe8; };
+                        struct { char _p2628[148]; int xec; };
+                        struct { char _p2629[152]; int xf0; };
+                        struct { char _p2630[156]; int xf4; };
+                        struct { char _p2631[160]; int xf8; };
+                        struct { char _p2632[164]; int xfc; };
+                    };
+                } ply_standings[6]; };
+            };
+        } standings; };
+        struct { char _p2635[1696]; int x694; };
+        struct { char _p2636[1700]; int x698; };
+        struct { char _p2637[1704]; int x69c; };
+        struct { char _p2638[1708]; int x6a0; };
+        struct { char _p2639[1712]; int x6a4; };
+        struct { char _p2640[1716]; int x6a8; };
+        struct { char _p2641[1720]; int x6ac; };
+        struct { char _p2642[1724]; int x6b0; };
+        struct { char _p2643[1728]; int x6b4; };
+        struct { char _p2644[1732]; int x6b8; };
+        struct { char _p2645[1736]; int x6bc; };
+        struct { char _p2646[1740]; int x6c0; };
+        struct { char _p2647[1744]; int x6c4; };
+        struct { char _p2648[1748]; int x6c8; };
+        struct { char _p2649[1752]; int x6cc; };
+        struct { char _p2650[1756]; int x6d0; };
+        struct { char _p2651[1760]; int x6d4; };
+        struct { char _p2652[1764]; int x6d8; };
+        struct { char _p2653[1768]; int x6dc; };
+        struct { char _p2654[1772]; int x6e0; };
+        struct { char _p2655[1776]; int x6e4; };
+        struct { char _p2656[1780]; int x6e8; };
+        struct { char _p2657[1784]; int x6ec; };
+        struct { char _p2658[1788]; int x6f0; };
+        struct { char _p2659[1792]; int x6f4; };
+        struct { char _p2660[1796]; int x6f8; };
+        struct { char _p2661[1800]; int x6fc; };
+        struct { char _p2662[1804]; int x700; };
+        struct { char _p2663[1808]; int x704; };
+        struct { char _p2664[1812]; int x708; };
+        struct { char _p2665[1816]; int x70c; };
+        struct { char _p2666[1820]; int x710; };
+        struct { char _p2667[1824]; int x714; };
+        struct { char _p2668[1828]; int x718; };
+        struct { char _p2669[1832]; int x71c; };
+        struct { char _p2670[1836]; int x720; };
+        struct { char _p2671[1840]; int x724; };
+        struct { char _p2672[1844]; int x728; };
+        struct { char _p2673[1848]; int x72c; };
+        struct { char _p2674[1852]; int x730; };
+        struct { char _p2675[1856]; int x734; };
+        struct { char _p2676[1860]; int x738; };
+        struct { char _p2677[1864]; int x73c; };
+        struct { char _p2678[1868]; int x740; };
+        struct { char _p2679[1872]; int x744; };
+        struct { char _p2680[1876]; int x748; };
+        struct { char _p2681[1880]; int x74c; };
+        struct { char _p2682[1884]; int x750; };
+        struct { char _p2683[1888]; int x754; };
+        struct { char _p2684[1892]; int x758; };
+        struct { char _p2685[1896]; int x75c; };
+        struct { char _p2686[1900]; int x760; };
+        struct { char _p2687[1904]; int x764; };
+        struct { char _p2688[1908]; int x768; };
+        struct { char _p2689[1912]; int x76c; };
+        struct { char _p2690[1916]; int x770; };
+        struct { char _p2691[1920]; int x774; };
+        struct { char _p2692[1924]; int x778; };
+        struct { char _p2693[1928]; int x77c; };
+        struct { char _p2694[1932]; int x780; };
+        struct { char _p2695[1936]; int x784; };
+        struct { char _p2696[1940]; int x788; };
+        struct { char _p2697[1944]; int x78c; };
+        struct { char _p2698[1948]; int x790; };
+        struct { char _p2699[1952]; int x794; };
+        struct { char _p2700[1956]; int x798; };
+        struct { char _p2701[1960]; int x79c; };
+        struct { char _p2702[1964]; int x7a0; };
+        struct { char _p2703[1968]; int x7a4; };
+        struct { char _p2704[1972]; int x7a8; };
+        struct { char _p2705[1976]; int x7ac; };
+        struct { char _p2706[1980]; int x7b0; };
+        struct { char _p2707[1984]; int x7b4; };
+        struct { char _p2708[1988]; int x7b8; };
+        struct { char _p2709[1992]; int x7bc; };
+        struct { char _p2710[1996]; int x7c0; };
+        struct { char _p2711[2000]; int x7c4; };
+        struct { char _p2712[2004]; int x7c8; };
+        struct { char _p2713[2008]; int x7cc; };
+        struct { char _p2714[2012]; int x7d0; };
+        struct { char _p2715[2016]; int x7d4; };
+        struct { char _p2716[2020]; int x7d8; };
+        struct { char _p2717[2024]; int x7dc; };
+        struct { char _p2718[2028]; int x7e0; };
+        struct { char _p2719[2032]; int x7e4; };
+        struct { char _p2720[2036]; int x7e8; };
+        struct { char _p2721[2040]; int x7ec; };
+        struct { char _p2722[2044]; int x7f0; };
+        struct { char _p2723[2048]; int x7f4; };
+        struct { char _p2724[2052]; int x7f8; };
+        struct { char _p2725[2056]; int x7fc; };
+        struct { char _p2726[2060]; int x800; };
+        struct { char _p2727[2064]; int x804; };
+        struct { char _p2728[2068]; int x808; };
+        struct { char _p2729[2072]; int x80c; };
+        struct { char _p2730[2076]; int x810; };
+        struct { char _p2731[2080]; int x814; };
+        struct { char _p2732[2084]; int x818; };
+        struct { char _p2733[2088]; int x81c; };
+        struct { char _p2734[2092]; int x820; };
+        struct { char _p2735[2096]; int x824; };
+        struct { char _p2736[2100]; int x828; };
+        struct { char _p2737[2104]; int x82c; };
+        struct { char _p2738[2108]; int x830; };
+        struct { char _p2739[2112]; int x834; };
+        struct { char _p2740[2116]; int x838; };
+        struct { char _p2741[2120]; int x83c; };
+        struct { char _p2742[2124]; int x840; };
+        struct { char _p2743[2128]; int x844; };
+        struct { char _p2744[2132]; int x848; };
+        struct { char _p2745[2136]; int x84c; };
+        struct { char _p2746[2140]; int x850; };
+        struct { char _p2747[2144]; int x854; };
+        struct { char _p2748[2148]; int x858; };
+        struct { char _p2749[2152]; int x85c; };
+        struct { char _p2750[2156]; int x860; };
+        struct { char _p2751[2160]; int x864; };
+        struct { char _p2752[2164]; int x868; };
+        struct { char _p2753[2168]; int x86c; };
+        struct { char _p2754[2172]; int x870; };
+        struct { char _p2755[2176]; int x874; };
+        struct { char _p2756[2180]; int x878; };
+        struct { char _p2757[2184]; int x87c; };
+        struct { char _p2758[2188]; int x880; };
+        struct { char _p2759[2192]; int x884; };
+        struct { char _p2760[2196]; int x888; };
+        struct { char _p2761[2200]; int x88c; };
+        struct { char _p2762[2204]; int x890; };
+        struct { char _p2763[2208]; int x894; };
+        struct { char _p2764[2212]; int x898; };
+        struct { char _p2765[2216]; int x89c; };
+        struct { char _p2766[2220]; int x8a0; };
+        struct { char _p2767[2224]; int x8a4; };
+        struct { char _p2768[2228]; int x8a8; };
+        struct { char _p2769[2232]; int x8ac; };
+        struct { char _p2770[2236]; int x8b0; };
+        struct { char _p2771[2240]; int x8b4; };
+        struct { char _p2772[2244]; int x8b8; };
+        struct { char _p2773[2248]; int x8bc; };
+        struct { char _p2774[2252]; int x8c0; };
+        struct { char _p2775[2256]; int x8c4; };
+        struct { char _p2776[2260]; int x8c8; };
+        struct { char _p2777[2264]; int x8cc; };
+        struct { char _p2778[2268]; int x8d0; };
+        struct { char _p2779[2272]; int x8d4; };
+        struct { char _p2780[2276]; int x8d8; };
+        struct { char _p2781[2280]; int x8dc; };
+        struct { char _p2782[2284]; int x8e0; };
+        struct { char _p2783[2288]; int x8e4; };
+        struct { char _p2784[2292]; int x8e8; };
+        struct { char _p2785[2296]; int x8ec; };
+        struct { char _p2786[2300]; int x8f0; };
+        struct { char _p2787[2304]; int x8f4; };
+        struct { char _p2788[2308]; int x8f8; };
+        struct { char _p2789[2312]; int x8fc; };
+        struct { char _p2790[2316]; int x900; };
+        struct { char _p2791[2320]; int x904; };
+        struct { char _p2792[2324]; int x908; };
+        struct { char _p2793[2328]; int x90c; };
+        struct { char _p2794[2332]; int x910; };
+        struct { char _p2795[2336]; int x914; };
+        struct { char _p2796[2340]; int x918; };
+        struct { char _p2797[2344]; int x91c; };
+        struct { char _p2798[2348]; int x920; };
+        struct { char _p2799[2352]; int x924; };
+        struct { char _p2800[2356]; int x928; };
+        struct { char _p2801[2360]; int x92c; };
+        struct { char _p2802[2364]; int x930; };
+        struct { char _p2803[2368]; int x934; };
+        struct { char _p2804[2372]; int x938; };
+        struct { char _p2805[2376]; int x93c; };
+        struct { char _p2806[2380]; int x940; };
+        struct { char _p2807[2384]; int x944; };
+        struct { char _p2808[2388]; int x948; };
+        struct { char _p2809[2392]; int x94c; };
+        struct { char _p2810[2396]; int x950; };
+        struct { char _p2811[2400]; int x954; };
+        struct { char _p2812[2404]; int x958; };
+        struct { char _p2813[2408]; int x95c; };
+        struct { char _p2814[2412]; int x960; };
+        struct { char _p2815[2416]; int x964; };
+        struct { char _p2816[2420]; int x968; };
+        struct { char _p2817[2424]; int x96c; };
+        struct { char _p2818[2428]; int x970; };
+        struct { char _p2819[2432]; int x974; };
+        struct { char _p2820[2436]; int x978; };
+        struct { char _p2821[2440]; int x97c; };
+        struct { char _p2822[2444]; int x980; };
+        struct { char _p2823[2448]; int x984; };
+        struct { char _p2824[2452]; int x988; };
+        struct { char _p2825[2456]; int x98c; };
+        struct { char _p2826[2460]; int x990; };
+        struct { char _p2827[2464]; int x994; };
+        struct { char _p2828[2468]; int x998; };
+        struct { char _p2829[2472]; int x99c; };
+        struct { char _p2830[2476]; int x9a0; };
+        struct { char _p2831[2480]; int x9a4; };
+        struct { char _p2832[2484]; int x9a8; };
+        struct { char _p2833[2488]; int x9ac; };
+        struct { char _p2834[2492]; int x9b0; };
+        struct { char _p2835[2496]; int x9b4; };
+        struct { char _p2836[2500]; int x9b8; };
+        struct { char _p2837[2504]; int x9bc; };
+        struct { char _p2838[2508]; int x9c0; };
+        struct { char _p2839[2512]; int x9c4; };
+        struct { char _p2840[2516]; int x9c8; };
+        struct { char _p2841[2520]; int x9cc; };
+        struct { char _p2842[2524]; int x9d0; };
+        struct { char _p2843[2528]; int x9d4; };
+        struct { char _p2844[2532]; int x9d8; };
+        struct { char _p2845[2536]; int x9dc; };
+        struct { char _p2846[2540]; int x9e0; };
+        struct { char _p2847[2544]; int x9e4; };
+        struct { char _p2848[2548]; int x9e8; };
+        struct { char _p2849[2552]; int x9ec; };
+        struct { char _p2850[2556]; int x9f0; };
+        struct { char _p2851[2560]; int x9f4; };
+        struct { char _p2852[2564]; int x9f8; };
+        struct { char _p2853[2568]; int x9fc; };
+        struct { char _p2854[2572]; int xa00; };
+        struct { char _p2855[2576]; int xa04; };
+        struct { char _p2856[2580]; int xa08; };
+        struct { char _p2857[2584]; int xa0c; };
+        struct { char _p2858[2588]; int xa10; };
+        struct { char _p2859[2592]; int xa14; };
+        struct { char _p2860[2596]; int xa18; };
+        struct { char _p2861[2600]; int xa1c; };
+        struct { char _p2862[2604]; int xa20; };
+        struct { char _p2863[2608]; int xa24; };
+        struct { char _p2864[2612]; int xa28; };
+        struct { char _p2865[2616]; int xa2c; };
+        struct { char _p2866[2620]; int xa30; };
+        struct { char _p2867[2624]; int xa34; };
+        struct { char _p2868[2628]; int xa38; };
+        struct { char _p2869[2632]; int xa3c; };
+        struct { char _p2870[2636]; int xa40; };
+        struct { char _p2871[2640]; int xa44; };
+        struct { char _p2872[2644]; int xa48; };
+        struct { char _p2873[2648]; int xa4c; };
+        struct { char _p2874[2652]; int xa50; };
+        struct { char _p2875[2656]; int xa54; };
+        struct { char _p2876[2660]; int xa58; };
+        struct { char _p2877[2664]; int xa5c; };
+        struct { char _p2878[2668]; int xa60; };
+        struct { char _p2879[2672]; int xa64; };
+        struct { char _p2880[2676]; int xa68; };
+        struct { char _p2881[2680]; int xa6c; };
+        struct { char _p2882[2684]; int xa70; };
+        struct { char _p2883[2688]; int xa74; };
+        struct { char _p2884[2692]; int xa78; };
+        struct { char _p2885[2696]; int xa7c; };
+        struct { char _p2886[2700]; int xa80; };
+        struct { char _p2887[2704]; int xa84; };
+        struct { char _p2888[2708]; int xa88; };
+        struct { char _p2889[2712]; int xa8c; };
+        struct { char _p2890[2716]; int xa90; };
+        struct { char _p2891[2720]; int xa94; };
+        struct { char _p2892[2724]; int xa98; };
+        struct { char _p2893[2728]; int xa9c; };
+        struct { char _p2894[2732]; int xaa0; };
+        struct { char _p2895[2736]; int xaa4; };
+        struct { char _p2896[2740]; int xaa8; };
+        struct { char _p2897[2744]; int xaac; };
+        struct { char _p2898[2748]; int xab0; };
+        struct { char _p2899[2752]; int xab4; };
+        struct { char _p2900[2756]; int xab8; };
+        struct { char _p2901[2760]; int xabc; };
+        struct { char _p2902[2764]; int xac0; };
+        struct { char _p2903[2768]; int xac4; };
+        struct { char _p2904[2772]; int xac8; };
+        struct { char _p2905[2776]; int xacc; };
+        struct { char _p2906[2780]; int xad0; };
+        struct { char _p2907[2784]; int xad4; };
+        struct { char _p2908[2788]; int xad8; };
+        struct { char _p2909[2792]; int xadc; };
+        struct { char _p2910[2796]; int xae0; };
+        struct { char _p2911[2800]; int xae4; };
+        struct { char _p2912[2804]; int xae8; };
+        struct { char _p2913[2808]; int xaec; };
+        struct { char _p2914[2812]; int xaf0; };
+        struct { char _p2915[2816]; int xaf4; };
+        struct { char _p2916[2820]; int xaf8; };
+        struct { char _p2917[2824]; int xafc; };
+        struct { char _p2918[2828]; int xb00; };
+        struct { char _p2919[2832]; int xb04; };
+        struct { char _p2920[2836]; int xb08; };
+        struct { char _p2921[2840]; int xb0c; };
+        struct { char _p2922[2844]; int xb10; };
+        struct { char _p2923[2848]; int xb14; };
+        struct { char _p2924[2852]; int xb18; };
+        struct { char _p2925[2856]; int xb1c; };
+        struct { char _p2926[2860]; int xb20; };
+        struct { char _p2927[2864]; int xb24; };
+        struct { char _p2928[2868]; int xb28; };
+        struct { char _p2929[2872]; int xb2c; };
+        struct { char _p2930[2876]; int xb30; };
+        struct { char _p2931[2880]; int xb34; };
+        struct { char _p2932[2884]; int xb38; };
+        struct { char _p2933[2888]; int xb3c; };
+        struct { char _p2934[2892]; int xb40; };
+        struct { char _p2935[2896]; int xb44; };
+        struct { char _p2936[2900]; int xb48; };
+        struct { char _p2937[2904]; int xb4c; };
+        struct { char _p2938[2908]; int xb50; };
+        struct { char _p2939[2912]; int xb54; };
+        struct { char _p2940[2916]; int xb58; };
+        struct { char _p2941[2920]; int xb5c; };
+        struct { char _p2942[2924]; int xb60; };
+        struct { char _p2943[2928]; int xb64; };
+        struct { char _p2944[2932]; int xb68; };
+        struct { char _p2945[2936]; int xb6c; };
+        struct { char _p2946[2940]; int xb70; };
+        struct { char _p2947[2944]; int xb74; };
+        struct { char _p2948[2948]; int xb78; };
+        struct { char _p2949[2952]; int xb7c; };
+        struct { char _p2950[2956]; int xb80; };
+        struct { char _p2951[2960]; int xb84; };
+        struct { char _p2952[2964]; int xb88; };
+        struct { char _p2953[2968]; int xb8c; };
+        struct { char _p2954[2972]; int xb90; };
+        struct { char _p2955[2976]; int xb94; };
+        struct { char _p2956[2980]; int xb98; };
+        struct { char _p2957[2984]; int xb9c; };
+        struct { char _p2958[2988]; int xba0; };
+        struct { char _p2959[2992]; int xba4; };
+        struct { char _p2960[2996]; int xba8; };
+        struct { char _p2961[3000]; int xbac; };
+        struct { char _p2962[3004]; int xbb0; };
+        struct { char _p2963[3008]; int xbb4; };
+        struct { char _p2964[3012]; int xbb8; };
+        struct { char _p2965[3016]; int xbbc; };
+        struct { char _p2966[3020]; int xbc0; };
+        struct { char _p2967[3024]; int xbc4; };
+        struct { char _p2968[3028]; int xbc8; };
+        struct { char _p2969[3032]; int xbcc; };
+        struct { char _p2970[3036]; int xbd0; };
+        struct { char _p2971[3040]; int xbd4; };
+        struct { char _p2972[3044]; int xbd8; };
+        struct { char _p2973[3048]; int xbdc; };
+        struct { char _p2974[3052]; int xbe0; };
+        struct { char _p2975[3056]; int xbe4; };
+        struct { char _p2976[3060]; int xbe8; };
+        struct { char _p2977[3064]; int xbec; };
+        struct { char _p2978[3068]; int xbf0; };
+        struct { char _p2979[3072]; int xbf4; };
+        struct { char _p2980[3076]; int xbf8; };
+        struct { char _p2981[3080]; int xbfc; };
+        struct { char _p2982[3084]; int xc00; };
+        struct { char _p2983[3088]; int xc04; };
+        struct { char _p2984[3092]; int xc08; };
+        struct { char _p2985[3096]; int xc0c; };
+        struct { char _p2986[3100]; int xc10; };
+        struct { char _p2987[3104]; int xc14; };
+        struct { char _p2988[3108]; int xc18; };
+        struct { char _p2989[3112]; int xc1c; };
+        struct { char _p2990[3116]; int xc20; };
+        struct { char _p2991[3120]; int xc24; };
+        struct { char _p2992[3124]; int xc28; };
+        struct { char _p2993[3128]; int xc2c; };
+        struct { char _p2994[3132]; int xc30; };
+        struct { char _p2995[3136]; int xc34; };
+        struct { char _p2996[3140]; int xc38; };
+        struct { char _p2997[3144]; int xc3c; };
+        struct { char _p2998[3148]; int xc40; };
+        struct { char _p2999[3152]; int xc44; };
+        struct { char _p3000[3156]; int xc48; };
+        struct { char _p3001[3160]; int xc4c; };
+        struct { char _p3002[3164]; int xc50; };
+        struct { char _p3003[3168]; int xc54; };
+        struct { char _p3004[3172]; int xc58; };
+        struct { char _p3005[3176]; int xc5c; };
+        struct { char _p3006[3180]; int xc60; };
+        struct { char _p3007[3184]; int xc64; };
+        struct { char _p3008[3188]; int xc68; };
+        struct { char _p3009[3192]; int xc6c; };
+        struct { char _p3010[3196]; int xc70; };
+        struct { char _p3011[3200]; int xc74; };
+        struct { char _p3012[3204]; int xc78; };
+        struct { char _p3013[3208]; int xc7c; };
+        struct { char _p3014[3212]; int xc80; };
+        struct { char _p3015[3216]; int xc84; };
+        struct { char _p3016[3220]; int xc88; };
+        struct { char _p3017[3224]; int xc8c; };
+        struct { char _p3018[3228]; int xc90; };
+        struct { char _p3019[3232]; int xc94; };
+        struct { char _p3020[3236]; int xc98; };
+        struct { char _p3021[3240]; int xc9c; };
+        struct { char _p3022[3244]; int xca0; };
+        struct { char _p3023[3248]; int xca4; };
+        struct { char _p3024[3252]; int xca8; };
+        struct { char _p3025[3256]; int xcac; };
+        struct { char _p3026[3260]; int xcb0; };
+        struct { char _p3027[3264]; int xcb4; };
+        struct { char _p3028[3268]; int xcb8; };
+        struct { char _p3029[3272]; int xcbc; };
+        struct { char _p3030[3276]; int xcc0; };
+        struct { char _p3031[3280]; int xcc4; };
+        struct { char _p3032[3284]; int xcc8; };
+        struct { char _p3033[3288]; int xccc; };
+        struct { char _p3034[3292]; int xcd0; };
+        struct { char _p3035[3296]; int xcd4; };
+        struct { char _p3036[3300]; int xcd8; };
+        struct { char _p3037[3304]; int xcdc; };
+        struct { char _p3038[3308]; int xce0; };
+        struct { char _p3039[3312]; int xce4; };
+        struct { char _p3040[3316]; int xce8; };
+        struct { char _p3041[3320]; int xcec; };
+        struct { char _p3042[3324]; int xcf0; };
+        struct { char _p3043[3328]; int xcf4; };
+        struct { char _p3044[3332]; int xcf8; };
+        struct { char _p3045[3336]; int xcfc; };
+        struct { char _p3046[3340]; int xd00; };
+        struct { char _p3047[3344]; int xd04; };
+        struct { char _p3048[3348]; int xd08; };
+        struct { char _p3049[3352]; int xd0c; };
+        struct { char _p3050[3356]; int xd10; };
+        struct { char _p3051[3360]; int xd14; };
+        struct { char _p3052[3364]; int xd18; };
+        struct { char _p3053[3368]; int xd1c; };
+        struct { char _p3054[3372]; int xd20; };
+        struct { char _p3055[3376]; int xd24; };
+        struct { char _p3056[3380]; int xd28; };
+        struct { char _p3057[3384]; int xd2c; };
+        struct { char _p3058[3388]; int xd30; };
+        struct { char _p3059[3392]; int xd34; };
+        struct { char _p3060[3396]; int xd38; };
+        struct { char _p3061[3400]; int xd3c; };
+        struct { char _p3062[3404]; int xd40; };
+        struct { char _p3063[3408]; int xd44; };
+        struct { char _p3064[3412]; int xd48; };
+        struct { char _p3065[3416]; int xd4c; };
+        struct { char _p3066[3420]; int xd50; };
+        struct { char _p3067[3424]; int xd54; };
+        struct { char _p3068[3428]; int xd58; };
+        struct { char _p3069[3432]; int xd5c; };
+        struct { char _p3070[3436]; int xd60; };
+        struct { char _p3071[3440]; int xd64; };
+        struct { char _p3072[3444]; int xd68; };
+        struct { char _p3073[3448]; int xd6c; };
+        struct { char _p3074[3452]; int xd70; };
+        struct { char _p3075[3456]; int xd74; };
+        struct { char _p3076[3460]; int xd78; };
+        struct { char _p3077[3464]; int xd7c; };
+        struct { char _p3078[3468]; int xd80; };
+        struct { char _p3079[3472]; int xd84; };
+        struct { char _p3080[3476]; int xd88; };
+        struct { char _p3081[3480]; int xd8c; };
+        struct { char _p3082[3484]; int xd90; };
+        struct { char _p3083[3488]; int xd94; };
+        struct { char _p3084[3492]; int xd98; };
+        struct { char _p3085[3496]; int xd9c; };
+        struct { char _p3086[3500]; int xda0; };
+        struct { char _p3087[3504]; int xda4; };
+        struct { char _p3088[3508]; int xda8; };
+        struct { char _p3089[3512]; int xdac; };
+        struct { char _p3090[3516]; int xdb0; };
+        struct { char _p3091[3520]; int xdb4; };
+        struct { char _p3092[3524]; int xdb8; };
+        struct { char _p3093[3528]; int xdbc; };
+        struct { char _p3094[3532]; int xdc0; };
+        struct { char _p3095[3536]; int xdc4; };
+        struct { char _p3096[3540]; int xdc8; };
+        struct { char _p3097[3544]; int xdcc; };
+        struct { char _p3098[3548]; int xdd0; };
+        struct { char _p3099[3552]; int xdd4; };
+        struct { char _p3100[3556]; int xdd8; };
+        struct { char _p3101[3560]; int xddc; };
+        struct { char _p3102[3564]; int xde0; };
+        struct { char _p3103[3568]; int xde4; };
+        struct { char _p3104[3572]; int xde8; };
+        struct { char _p3105[3576]; int xdec; };
+        struct { char _p3106[3580]; int xdf0; };
+        struct { char _p3107[3584]; int xdf4; };
+        struct { char _p3108[3588]; int xdf8; };
+        struct { char _p3109[3592]; int xdfc; };
+        struct { char _p3110[3596]; int xe00; };
+        struct { char _p3111[3600]; int xe04; };
+        struct { char _p3112[3604]; int xe08; };
+        struct { char _p3113[3608]; int xe0c; };
+        struct { char _p3114[3612]; int xe10; };
+        struct { char _p3115[3616]; int xe14; };
+        struct { char _p3116[3620]; int xe18; };
+        struct { char _p3117[3624]; int xe1c; };
+        struct { char _p3118[3628]; int xe20; };
+        struct { char _p3119[3632]; int xe24; };
+        struct { char _p3120[3636]; int xe28; };
+        struct { char _p3121[3640]; int xe2c; };
+        struct { char _p3122[3644]; int xe30; };
+        struct { char _p3123[3648]; int xe34; };
+        struct { char _p3124[3652]; int xe38; };
+        struct { char _p3125[3656]; int xe3c; };
+        struct { char _p3126[3660]; int xe40; };
+        struct { char _p3127[3664]; int xe44; };
+        struct { char _p3128[3668]; int xe48; };
+        struct { char _p3129[3672]; int xe4c; };
+        struct { char _p3130[3676]; int xe50; };
+        struct { char _p3131[3680]; int xe54; };
+        struct { char _p3132[3684]; int xe58; };
+        struct { char _p3133[3688]; int xe5c; };
+        struct { char _p3134[3692]; int xe60; };
+        struct { char _p3135[3696]; int xe64; };
+        struct { char _p3136[3700]; int xe68; };
+        struct { char _p3137[3704]; int xe6c; };
+        struct { char _p3138[3708]; int xe70; };
+        struct { char _p3139[3712]; int xe74; };
+        struct { char _p3140[3716]; int xe78; };
+        struct { char _p3141[3720]; int xe7c; };
+        struct { char _p3142[3724]; int xe80; };
+        struct { char _p3143[3728]; int xe84; };
+        struct { char _p3144[3732]; int xe88; };
+        struct { char _p3145[3736]; int xe8c; };
+        struct { char _p3146[3740]; int xe90; };
+        struct { char _p3147[3744]; int xe94; };
+        struct { char _p3148[3748]; int xe98; };
+        struct { char _p3149[3752]; int xe9c; };
+        struct { char _p3150[3756]; int xea0; };
+        struct { char _p3151[3760]; int xea4; };
+        struct { char _p3152[3764]; int xea8; };
+        struct { char _p3153[3768]; int xeac; };
+        struct { char _p3154[3772]; int xeb0; };
+        struct { char _p3155[3776]; int xeb4; };
+        struct { char _p3156[3780]; int xeb8; };
+        struct { char _p3157[3784]; int xebc; };
+        struct { char _p3158[3788]; int xec0; };
+        struct { char _p3159[3792]; int xec4; };
+        struct { char _p3160[3796]; int xec8; };
+        struct { char _p3161[3800]; int xecc; };
+        struct { char _p3162[3804]; int xed0; };
+        struct { char _p3163[3808]; int xed4; };
+        struct { char _p3164[3812]; int xed8; };
+        struct { char _p3165[3816]; int xedc; };
+        struct { char _p3166[3820]; int xee0; };
+        struct { char _p3167[3824]; int xee4; };
+        struct { char _p3168[3828]; int xee8; };
+        struct { char _p3169[3832]; int xeec; };
+        struct { char _p3170[3836]; int xef0; };
+        struct { char _p3171[3840]; int xef4; };
+        struct { char _p3172[3844]; int xef8; };
+        struct { char _p3173[3848]; int xefc; };
+        struct { char _p3174[3852]; int xf00; };
+        struct { char _p3175[3856]; int xf04; };
+        struct { char _p3176[3860]; int xf08; };
+        struct { char _p3177[3864]; int xf0c; };
+        struct { char _p3178[3868]; int xf10; };
+        struct { char _p3179[3872]; int xf14; };
+        struct { char _p3180[3876]; int xf18; };
+        struct { char _p3181[3880]; int xf1c; };
+        struct { char _p3182[3884]; int xf20; };
+        struct { char _p3183[3888]; int xf24; };
+        struct { char _p3184[3892]; int xf28; };
+        struct { char _p3185[3896]; int xf2c; };
+        struct { char _p3186[3900]; int xf30; };
+        struct { char _p3187[3904]; int xf34; };
+        struct { char _p3188[3908]; int xf38; };
+        struct { char _p3189[3912]; int xf3c; };
+        struct { char _p3190[3916]; int xf40; };
+        struct { char _p3191[3920]; int xf44; };
+        struct { char _p3192[3924]; int xf48; };
+        struct { char _p3193[3928]; int xf4c; };
+        struct { char _p3194[3932]; int xf50; };
+        struct { char _p3195[3936]; int xf54; };
+        struct { char _p3196[3940]; int xf58; };
+        struct { char _p3197[3944]; int xf5c; };
+        struct { char _p3198[3948]; int xf60; };
+        struct { char _p3199[3952]; int xf64; };
+        struct { char _p3200[3956]; int xf68; };
+        struct { char _p3201[3960]; int xf6c; };
+        struct { char _p3202[3964]; int xf70; };
+        struct { char _p3203[3968]; int xf74; };
+        struct { char _p3204[3972]; int xf78; };
+        struct { char _p3205[3976]; int xf7c; };
+        struct { char _p3206[3980]; int xf80; };
+        struct { char _p3207[3984]; int xf84; };
+        struct { char _p3208[3988]; int xf88; };
+        struct { char _p3209[3992]; int xf8c; };
+        struct { char _p3210[3996]; int xf90; };
+        struct { char _p3211[4000]; int xf94; };
+        struct { char _p3212[4004]; int xf98; };
+        struct { char _p3213[4008]; int xf9c; };
+        struct { char _p3214[4012]; int xfa0; };
+        struct { char _p3215[4016]; int xfa4; };
+        struct { char _p3216[4020]; int xfa8; };
+        struct { char _p3217[4024]; int xfac; };
+        struct { char _p3218[4028]; int xfb0; };
+        struct { char _p3219[4032]; int xfb4; };
+        struct { char _p3220[4036]; int xfb8; };
+        struct { char _p3221[4040]; int xfbc; };
+        struct { char _p3222[4044]; int xfc0; };
+        struct { char _p3223[4048]; int xfc4; };
+        struct { char _p3224[4052]; int xfc8; };
+        struct { char _p3225[4056]; int xfcc; };
+        struct { char _p3226[4060]; int xfd0; };
+        struct { char _p3227[4064]; int xfd4; };
+        struct { char _p3228[4068]; int xfd8; };
+        struct { char _p3229[4072]; int xfdc; };
+        struct { char _p3230[4076]; int xfe0; };
+        struct { char _p3231[4080]; int xfe4; };
+        struct { char _p3232[4084]; int xfe8; };
+        struct { char _p3233[4088]; int xfec; };
+        struct { char _p3234[4092]; int xff0; };
+        struct { char _p3235[4096]; int xff4; };
+        struct { char _p3236[4100]; int xff8; };
+        struct { char _p3237[4104]; int xffc; };
+        struct { char _p3238[4108]; int x1000; };
+        struct { char _p3239[4112]; int x1004; };
+        struct { char _p3240[4116]; int x1008; };
+        struct { char _p3241[4120]; int x100c; };
+        struct { char _p3242[4124]; int x1010; };
+        struct { char _p3243[4128]; int x1014; };
+        struct { char _p3244[4132]; int x1018; };
+        struct { char _p3245[4136]; int x101c; };
+        struct { char _p3246[4140]; int x1020; };
+        struct { char _p3247[4144]; int x1024; };
+        struct { char _p3248[4148]; int x1028; };
+        struct { char _p3249[4152]; int x102c; };
+        struct { char _p3250[4156]; int x1030; };
+        struct { char _p3251[4160]; int x1034; };
+        struct { char _p3252[4164]; int x1038; };
+        struct { char _p3253[4168]; int x103c; };
+        struct { char _p3254[4172]; int x1040; };
+        struct { char _p3255[4176]; int x1044; };
+        struct { char _p3256[4180]; int x1048; };
+        struct { char _p3257[4184]; int x104c; };
+        struct { char _p3258[4188]; int x1050; };
+        struct { char _p3259[4192]; int x1054; };
+        struct { char _p3260[4196]; int x1058; };
+        struct { char _p3261[4200]; int x105c; };
+        struct { char _p3262[4204]; int x1060; };
+        struct { char _p3263[4208]; int x1064; };
+        struct { char _p3264[4212]; int x1068; };
+        struct { char _p3265[4216]; int x106c; };
+        struct { char _p3266[4220]; int x1070; };
+        struct { char _p3267[4224]; int x1074; };
+        struct { char _p3268[4228]; int x1078; };
+        struct { char _p3269[4232]; int x107c; };
+        struct { char _p3270[4236]; int x1080; };
+        struct { char _p3271[4240]; int x1084; };
+        struct { char _p3272[4244]; int x1088; };
+        struct { char _p3273[4248]; int x108c; };
+        struct { char _p3274[4252]; int x1090; };
+        struct { char _p3275[4256]; int x1094; };
+        struct { char _p3276[4260]; int x1098; };
+        struct { char _p3277[4264]; int x109c; };
+        struct { char _p3278[4268]; int x10a0; };
+        struct { char _p3279[4272]; int x10a4; };
+        struct { char _p3280[4276]; int x10a8; };
+        struct { char _p3281[4280]; int x10ac; };
+        struct { char _p3282[4284]; int x10b0; };
+        struct { char _p3283[4288]; int x10b4; };
+        struct { char _p3284[4292]; int x10b8; };
+        struct { char _p3285[4296]; int x10bc; };
+        struct { char _p3286[4300]; int x10c0; };
+        struct { char _p3287[4304]; int x10c4; };
+        struct { char _p3288[4308]; int x10c8; };
+        struct { char _p3289[4312]; int x10cc; };
+        struct { char _p3290[4316]; int x10d0; };
+        struct { char _p3291[4320]; int x10d4; };
+        struct { char _p3292[4324]; int x10d8; };
+        struct { char _p3293[4328]; int x10dc; };
+        struct { char _p3294[4332]; int x10e0; };
+        struct { char _p3295[4336]; int x10e4; };
+        struct { char _p3296[4340]; int x10e8; };
+        struct { char _p3297[4344]; int x10ec; };
+        struct { char _p3298[4348]; int x10f0; };
+        struct { char _p3299[4352]; int x10f4; };
+        struct { char _p3300[4356]; int x10f8; };
+        struct { char _p3301[4360]; int x10fc; };
+        struct { char _p3302[4364]; int x1100; };
+        struct { char _p3303[4368]; int x1104; };
+        struct { char _p3304[4372]; int x1108; };
+        struct { char _p3305[4376]; int x110c; };
+        struct { char _p3306[4380]; int x1110; };
+        struct { char _p3307[4384]; int x1114; };
+        struct { char _p3308[4388]; int x1118; };
+        struct { char _p3309[4392]; int x111c; };
+        struct { char _p3310[4396]; int x1120; };
+        struct { char _p3311[4400]; int x1124; };
+        struct { char _p3312[4404]; int x1128; };
+        struct { char _p3313[4408]; int x112c; };
+        struct { char _p3314[4412]; int x1130; };
+        struct { char _p3315[4416]; int x1134; };
+        struct { char _p3316[4420]; int x1138; };
+        struct { char _p3317[4424]; int x113c; };
+        struct { char _p3318[4428]; int x1140; };
+        struct { char _p3319[4432]; int x1144; };
+        struct { char _p3320[4436]; int x1148; };
+        struct { char _p3321[4440]; int x114c; };
+        struct { char _p3322[4444]; int x1150; };
+        struct { char _p3323[4448]; int x1154; };
+        struct { char _p3324[4452]; int x1158; };
+        struct { char _p3325[4456]; int x115c; };
+        struct { char _p3326[4460]; int x1160; };
+        struct { char _p3327[4464]; int x1164; };
+        struct { char _p3328[4468]; int x1168; };
+        struct { char _p3329[4472]; int x116c; };
+        struct { char _p3330[4476]; int x1170; };
+        struct { char _p3331[4480]; int x1174; };
+        struct { char _p3332[4484]; int x1178; };
+        struct { char _p3333[4488]; int x117c; };
+        struct { char _p3334[4492]; int x1180; };
+        struct { char _p3335[4496]; int x1184; };
+        struct { char _p3336[4500]; int x1188; };
+        struct { char _p3337[4504]; int x118c; };
+        struct { char _p3338[4508]; int x1190; };
+        struct { char _p3339[4512]; int x1194; };
+        struct { char _p3340[4516]; int x1198; };
+        struct { char _p3341[4520]; int x119c; };
+        struct { char _p3342[4524]; int x11a0; };
+        struct { char _p3343[4528]; int x11a4; };
+        struct { char _p3344[4532]; int x11a8; };
+        struct { char _p3345[4536]; int x11ac; };
+        struct { char _p3346[4540]; int x11b0; };
+        struct { char _p3347[4544]; int x11b4; };
+        struct { char _p3348[4548]; int x11b8; };
+        struct { char _p3349[4552]; int x11bc; };
+        struct { char _p3350[4556]; int x11c0; };
+        struct { char _p3351[4560]; int x11c4; };
+        struct { char _p3352[4564]; int x11c8; };
+        struct { char _p3353[4568]; int x11cc; };
+        struct { char _p3354[4572]; int x11d0; };
+        struct { char _p3355[4576]; int x11d4; };
+        struct { char _p3356[4580]; int x11d8; };
+        struct { char _p3357[4584]; int x11dc; };
+        struct { char _p3358[4588]; int x11e0; };
+        struct { char _p3359[4592]; int x11e4; };
+        struct { char _p3360[4596]; int x11e8; };
+        struct { char _p3361[4600]; int x11ec; };
+        struct { char _p3362[4604]; int x11f0; };
+        struct { char _p3363[4608]; int x11f4; };
+        struct { char _p3364[4612]; int x11f8; };
+        struct { char _p3365[4616]; int x11fc; };
+        struct { char _p3366[4620]; int x1200; };
+        struct { char _p3367[4624]; int x1204; };
+        struct { char _p3368[4628]; int x1208; };
+        struct { char _p3369[4632]; int x120c; };
+        struct { char _p3370[4636]; int x1210; };
+        struct { char _p3371[4640]; int x1214; };
+        struct { char _p3372[4644]; int x1218; };
+        struct { char _p3373[4648]; int x121c; };
+        struct { char _p3374[4652]; int x1220; };
+        struct { char _p3375[4656]; int x1224; };
+        struct { char _p3376[4660]; int x1228; };
+        struct { char _p3377[4664]; int x122c; };
+        struct { char _p3378[4668]; int x1230; };
+        struct { char _p3379[4672]; int x1234; };
+        struct { char _p3380[4676]; int x1238; };
+        struct { char _p3381[4680]; int x123c; };
+        struct { char _p3382[4684]; int x1240; };
+        struct { char _p3383[4688]; int x1244; };
+        struct { char _p3384[4692]; int x1248; };
+        struct { char _p3385[4696]; int x124c; };
+        struct { char _p3386[4700]; int x1250; };
+        struct { char _p3387[4704]; int x1254; };
+        struct { char _p3388[4708]; int x1258; };
+        struct { char _p3389[4712]; int x125c; };
+        struct { char _p3390[4716]; int x1260; };
+        struct { char _p3391[4720]; int x1264; };
+        struct { char _p3392[4724]; int x1268; };
+        struct { char _p3393[4728]; int x126c; };
+        struct { char _p3394[4732]; int x1270; };
+        struct { char _p3395[4736]; int x1274; };
+        struct { char _p3396[4740]; int x1278; };
+        struct { char _p3397[4744]; int x127c; };
+        struct { char _p3398[4748]; int x1280; };
+        struct { char _p3399[4752]; int x1284; };
+        struct { char _p3400[4756]; int x1288; };
+        struct { char _p3401[4760]; int x128c; };
+        struct { char _p3402[4764]; int x1290; };
+        struct { char _p3403[4768]; int x1294; };
+        struct { char _p3404[4772]; int x1298; };
+        struct { char _p3405[4776]; int x129c; };
+        struct { char _p3406[4780]; int x12a0; };
+        struct { char _p3407[4784]; int x12a4; };
+        struct { char _p3408[4788]; int x12a8; };
+        struct { char _p3409[4792]; int x12ac; };
+        struct { char _p3410[4796]; int x12b0; };
+        struct { char _p3411[4800]; int x12b4; };
+        struct { char _p3412[4804]; int x12b8; };
+        struct { char _p3413[4808]; int x12bc; };
+        struct { char _p3414[4812]; int x12c0; };
+        struct { char _p3415[4816]; int x12c4; };
+        struct { char _p3416[4820]; int x12c8; };
+        struct { char _p3417[4824]; int x12cc; };
+        struct { char _p3418[4828]; int x12d0; };
+        struct { char _p3419[4832]; int x12d4; };
+        struct { char _p3420[4836]; int x12d8; };
+        struct { char _p3421[4840]; int x12dc; };
+        struct { char _p3422[4844]; int x12e0; };
+        struct { char _p3423[4848]; int x12e4; };
+        struct { char _p3424[4852]; int x12e8; };
+        struct { char _p3425[4856]; int x12ec; };
+        struct { char _p3426[4860]; int x12f0; };
+        struct { char _p3427[4864]; int x12f4; };
+        struct { char _p3428[4868]; int x12f8; };
+        struct { char _p3429[4872]; int x12fc; };
+        struct { char _p3430[4876]; int x1300; };
+        struct { char _p3431[4880]; int x1304; };
+        struct { char _p3432[4884]; int x1308; };
+        struct { char _p3433[4888]; int x130c; };
+        struct { char _p3434[4892]; int x1310; };
+        struct { char _p3435[4896]; int x1314; };
+        struct { char _p3436[4900]; int x1318; };
+        struct { char _p3437[4904]; int x131c; };
+        struct { char _p3438[4908]; int x1320; };
+        struct { char _p3439[4912]; int x1324; };
+        struct { char _p3440[4916]; int x1328; };
+        struct { char _p3441[4920]; int x132c; };
+        struct { char _p3442[4924]; int x1330; };
+        struct { char _p3443[4928]; int x1334; };
+        struct { char _p3444[4932]; int x1338; };
+        struct { char _p3445[4936]; int x133c; };
+        struct { char _p3446[4940]; int x1340; };
+        struct { char _p3447[4944]; int x1344; };
+        struct { char _p3448[4948]; int x1348; };
+        struct { char _p3449[4952]; int x134c; };
+        struct { char _p3450[4956]; int x1350; };
+        struct { char _p3451[4960]; int x1354; };
+        struct { char _p3452[4964]; int x1358; };
+        struct { char _p3453[4968]; int x135c; };
+        struct { char _p3454[4972]; int x1360; };
+        struct { char _p3455[4976]; int x1364; };
+        struct { char _p3456[4980]; int x1368; };
+        struct { char _p3457[4984]; int x136c; };
+        struct { char _p3458[4988]; int x1370; };
+        struct { char _p3459[4992]; int x1374; };
+        struct { char _p3460[4996]; int x1378; };
+        struct { char _p3461[5000]; int x137c; };
+        struct { char _p3462[5004]; int x1380; };
+        struct { char _p3463[5008]; int x1384; };
+        struct { char _p3464[5012]; int x1388; };
+        struct { char _p3465[5016]; int x138c; };
+        struct { char _p3466[5020]; int x1390; };
+        struct { char _p3467[5024]; int x1394; };
+        struct { char _p3468[5028]; int x1398; };
+        struct { char _p3469[5032]; int x139c; };
+        struct { char _p3470[5036]; int x13a0; };
+        struct { char _p3471[5040]; int x13a4; };
+        struct { char _p3472[5044]; int x13a8; };
+        struct { char _p3473[5048]; int x13ac; };
+        struct { char _p3474[5052]; int x13b0; };
+        struct { char _p3475[5056]; int x13b4; };
+        struct { char _p3476[5060]; int x13b8; };
+        struct { char _p3477[5064]; int x13bc; };
+        struct { char _p3478[5068]; int x13c0; };
+        struct { char _p3479[5072]; int x13c4; };
+        struct { char _p3480[5076]; int x13c8; };
+        struct { char _p3481[5080]; int x13cc; };
+        struct { char _p3482[5084]; int x13d0; };
+        struct { char _p3483[5088]; int x13d4; };
+        struct { char _p3484[5092]; int x13d8; };
+        struct { char _p3485[5096]; int x13dc; };
+        struct { char _p3486[5100]; int x13e0; };
+        struct { char _p3487[5104]; int x13e4; };
+        struct { char _p3488[5108]; int x13e8; };
+        struct { char _p3489[5112]; int x13ec; };
+        struct { char _p3490[5116]; int x13f0; };
+        struct { char _p3491[5120]; int x13f4; };
+        struct { char _p3492[5124]; int x13f8; };
+        struct { char _p3493[5128]; int x13fc; };
+        struct { char _p3494[5132]; int x1400; };
+        struct { char _p3495[5136]; int x1404; };
+        struct { char _p3496[5140]; int x1408; };
+        struct { char _p3497[5144]; int x140c; };
+        struct { char _p3498[5148]; int x1410; };
+        struct { char _p3499[5152]; int x1414; };
+        struct { char _p3500[5156]; int x1418; };
+        struct { char _p3501[5160]; int x141c; };
+        struct { char _p3502[5164]; int x1420; };
+        struct { char _p3503[5168]; int x1424; };
+        struct { char _p3504[5172]; int x1428; };
+        struct { char _p3505[5176]; int x142c; };
+        struct { char _p3506[5180]; int x1430; };
+        struct { char _p3507[5184]; int x1434; };
+        struct { char _p3508[5188]; int x1438; };
+        struct { char _p3509[5192]; int x143c; };
+        struct { char _p3510[5196]; int x1440; };
+        struct { char _p3511[5200]; int x1444; };
+        struct { char _p3512[5204]; int x1448; };
+        struct { char _p3513[5208]; int x144c; };
+        struct { char _p3514[5212]; int x1450; };
+        struct { char _p3515[5216]; int x1454; };
+        struct { char _p3516[5220]; int x1458; };
+        struct { char _p3517[5224]; int x145c; };
+        struct { char _p3518[5228]; int x1460; };
+        struct { char _p3519[5232]; int x1464; };
+        struct { char _p3520[5236]; int x1468; };
+        struct { char _p3521[5240]; int x146c; };
+        struct { char _p3522[5244]; int x1470; };
+        struct { char _p3523[5248]; int x1474; };
+        struct { char _p3524[5252]; int x1478; };
+        struct { char _p3525[5256]; int x147c; };
+        struct { char _p3526[5260]; int x1480; };
+        struct { char _p3527[5264]; int x1484; };
+        struct { char _p3528[5268]; int x1488; };
+        struct { char _p3529[5272]; int x148c; };
+        struct { char _p3530[5276]; int x1490; };
+        struct { char _p3531[5280]; int x1494; };
+        struct { char _p3532[5284]; int x1498; };
+        struct { char _p3533[5288]; int x149c; };
+        struct { char _p3534[5292]; int x14a0; };
+        struct { char _p3535[5296]; int x14a4; };
+        struct { char _p3536[5300]; int x14a8; };
+        struct { char _p3537[5304]; int x14ac; };
+        struct { char _p3538[5308]; int x14b0; };
+        struct { char _p3539[5312]; int x14b4; };
+        struct { char _p3540[5316]; int x14b8; };
+        struct { char _p3541[5320]; int x14bc; };
+        struct { char _p3542[5324]; int x14c0; };
+        struct { char _p3543[5328]; int x14c4; };
+        struct { char _p3544[5332]; int x14c8; };
+        struct { char _p3545[5336]; int x14cc; };
+        struct { char _p3546[5340]; int x14d0; };
+        struct { char _p3547[5344]; int x14d4; };
+        struct { char _p3548[5348]; int x14d8; };
+        struct { char _p3549[5352]; int x14dc; };
+        struct { char _p3550[5356]; int x14e0; };
+        struct { char _p3551[5360]; int x14e4; };
+        struct { char _p3552[5364]; int x14e8; };
+        struct { char _p3553[5368]; int x14ec; };
+        struct { char _p3554[5372]; int x14f0; };
+        struct { char _p3555[5376]; int x14f4; };
+        struct { char _p3556[5380]; int x14f8; };
+        struct { char _p3557[5384]; int x14fc; };
+        struct { char _p3558[5388]; int x1500; };
+        struct { char _p3559[5392]; int x1504; };
+        struct { char _p3560[5396]; int x1508; };
+        struct { char _p3561[5400]; int x150c; };
+        struct { char _p3562[5404]; int x1510; };
+        struct { char _p3563[5408]; int x1514; };
+        struct { char _p3564[5412]; int x1518; };
+        struct { char _p3565[5416]; int x151c; };
+        struct { char _p3566[5420]; int x1520; };
+        struct { char _p3567[5424]; int x1524; };
+        struct { char _p3568[5428]; int x1528; };
+        struct { char _p3569[5432]; int x152c; };
+        struct { char _p3570[5436]; int x1530; };
+        struct { char _p3571[5440]; int x1534; };
+        struct { char _p3572[5444]; int x1538; };
+        struct { char _p3573[5448]; int x153c; };
+        struct { char _p3574[5452]; int x1540; };
+        struct { char _p3575[5456]; int x1544; };
+        struct { char _p3576[5460]; int x1548; };
+        struct { char _p3577[5464]; int x154c; };
+        struct { char _p3578[5468]; int x1550; };
+        struct { char _p3579[5472]; int x1554; };
+        struct { char _p3580[5476]; int x1558; };
+        struct { char _p3581[5480]; int x155c; };
+        struct { char _p3582[5484]; int x1560; };
+        struct { char _p3583[5488]; int x1564; };
+        struct { char _p3584[5492]; int x1568; };
+        struct { char _p3585[5496]; int x156c; };
+        struct { char _p3586[5500]; int x1570; };
+        struct { char _p3587[5504]; int x1574; };
+        struct { char _p3588[5508]; int x1578; };
+        struct { char _p3589[5512]; int x157c; };
+        struct { char _p3590[5516]; int x1580; };
+        struct { char _p3591[5520]; int x1584; };
+        struct { char _p3592[5524]; int x1588; };
+        struct { char _p3593[5528]; int x158c; };
+        struct { char _p3594[5532]; int x1590; };
+        struct { char _p3595[5536]; int x1594; };
+        struct { char _p3596[5540]; int x1598; };
+        struct { char _p3597[5544]; int x159c; };
+        struct { char _p3598[5548]; int x15a0; };
+        struct { char _p3599[5552]; int x15a4; };
+        struct { char _p3600[5556]; int x15a8; };
+        struct { char _p3601[5560]; int x15ac; };
+        struct { char _p3602[5564]; int x15b0; };
+        struct { char _p3603[5568]; int x15b4; };
+        struct { char _p3604[5572]; int x15b8; };
+        struct { char _p3605[5576]; int x15bc; };
+        struct { char _p3606[5580]; int x15c0; };
+        struct { char _p3607[5584]; int x15c4; };
+        struct { char _p3608[5588]; int x15c8; };
+        struct { char _p3609[5592]; int x15cc; };
+        struct { char _p3610[5596]; int x15d0; };
+        struct { char _p3611[5600]; int x15d4; };
+        struct { char _p3612[5604]; int x15d8; };
+        struct { char _p3613[5608]; int x15dc; };
+        struct { char _p3614[5612]; int x15e0; };
+        struct { char _p3615[5616]; int x15e4; };
+        struct { char _p3616[5620]; int x15e8; };
+        struct { char _p3617[5624]; int x15ec; };
+        struct { char _p3618[5628]; int x15f0; };
+        struct { char _p3619[5632]; int x15f4; };
+        struct { char _p3620[5636]; int x15f8; };
+        struct { char _p3621[5640]; int x15fc; };
+        struct { char _p3622[5644]; int x1600; };
+        struct { char _p3623[5648]; int x1604; };
+        struct { char _p3624[5652]; int x1608; };
+        struct { char _p3625[5656]; int x160c; };
+        struct { char _p3626[5660]; int x1610; };
+        struct { char _p3627[5664]; int x1614; };
+        struct { char _p3628[5668]; int x1618; };
+        struct { char _p3629[5672]; int x161c; };
+        struct { char _p3630[5676]; int x1620; };
+        struct { char _p3631[5680]; int x1624; };
+        struct { char _p3632[5684]; int x1628; };
+        struct { char _p3633[5688]; int x162c; };
+        struct { char _p3634[5692]; int x1630; };
+        struct { char _p3635[5696]; int x1634; };
+        struct { char _p3636[5700]; int x1638; };
+        struct { char _p3637[5704]; int x163c; };
+        struct { char _p3638[5708]; int x1640; };
+        struct { char _p3639[5712]; int x1644; };
+        struct { char _p3640[5716]; int x1648; };
+        struct { char _p3641[5720]; int x164c; };
+        struct { char _p3642[5724]; int x1650; };
+        struct { char _p3643[5728]; int x1654; };
+        struct { char _p3644[5732]; int x1658; };
+        struct { char _p3645[5736]; int x165c; };
+        struct { char _p3646[5740]; int x1660; };
+        struct { char _p3647[5744]; int x1664; };
+        struct { char _p3648[5748]; int x1668; };
+        struct { char _p3649[5752]; int x166c; };
+        struct { char _p3650[5756]; int x1670; };
+        struct { char _p3651[5760]; int x1674; };
+        struct { char _p3652[5764]; int x1678; };
+        struct { char _p3653[5768]; int x167c; };
+        struct { char _p3654[5772]; int x1680; };
+        struct { char _p3655[5776]; int x1684; };
+        struct { char _p3656[5780]; int x1688; };
+        struct { char _p3657[5784]; int x168c; };
+        struct { char _p3658[5788]; int x1690; };
+        struct { char _p3659[5792]; int x1694; };
+        struct { char _p3660[5796]; int x1698; };
+        struct { char _p3661[5800]; int x169c; };
+        struct { char _p3662[5804]; int x16a0; };
+        struct { char _p3663[5808]; int x16a4; };
+        struct { char _p3664[5812]; int x16a8; };
+        struct { char _p3665[5816]; int x16ac; };
+        struct { char _p3666[5820]; int x16b0; };
+        struct { char _p3667[5824]; int x16b4; };
+        struct { char _p3668[5828]; int x16b8; };
+        struct { char _p3669[5832]; int x16bc; };
+        struct { char _p3670[5836]; int x16c0; };
+        struct { char _p3671[5840]; int x16c4; };
+        struct { char _p3672[5844]; int x16c8; };
+        struct { char _p3673[5848]; int x16cc; };
+        struct { char _p3674[5852]; int x16d0; };
+        struct { char _p3675[5856]; int x16d4; };
+        struct { char _p3676[5860]; int x16d8; };
+        struct { char _p3677[5864]; int x16dc; };
+        struct { char _p3678[5868]; int x16e0; };
+        struct { char _p3679[5872]; int x16e4; };
+        struct { char _p3680[5876]; int x16e8; };
+        struct { char _p3681[5880]; int x16ec; };
+        struct { char _p3682[5884]; int x16f0; };
+        struct { char _p3683[5888]; int x16f4; };
+        struct { char _p3684[5892]; int x16f8; };
+        struct { char _p3685[5896]; int x16fc; };
+        struct { char _p3686[5900]; int x1700; };
+        struct { char _p3687[5904]; int x1704; };
+        struct { char _p3688[5908]; int x1708; };
+        struct { char _p3689[5912]; int x170c; };
+        struct { char _p3690[5916]; int x1710; };
+        struct { char _p3691[5920]; int x1714; };
+        struct { char _p3692[5924]; int x1718; };
+        struct { char _p3693[5928]; int x171c; };
+        struct { char _p3694[5932]; int x1720; };
+        struct { char _p3695[5936]; int x1724; };
+        struct { char _p3696[5940]; int x1728; };
+        struct { char _p3697[5944]; int x172c; };
+        struct { char _p3698[5948]; int x1730; };
+        struct { char _p3699[5952]; int x1734; };
+        struct { char _p3700[5956]; int x1738; };
+        struct { char _p3701[5960]; int x173c; };
+        struct { char _p3702[5964]; int x1740; };
+        struct { char _p3703[5968]; int x1744; };
+        struct { char _p3704[5972]; int x1748; };
+        struct { char _p3705[5976]; int x174c; };
+        struct { char _p3706[5980]; int x1750; };
+        struct { char _p3707[5984]; int x1754; };
+        struct { char _p3708[5988]; int x1758; };
+        struct { char _p3709[5992]; int x175c; };
+        struct { char _p3710[5996]; int x1760; };
+        struct { char _p3711[6000]; int x1764; };
+        struct { char _p3712[6004]; int x1768; };
+        struct { char _p3713[6008]; int x176c; };
+        struct { char _p3714[6012]; int x1770; };
+        struct { char _p3715[6016]; int x1774; };
+        struct { char _p3716[6020]; int x1778; };
+        struct { char _p3717[6024]; int x177c; };
+        struct { char _p3718[6028]; int x1780; };
+        struct { char _p3719[6032]; int x1784; };
+        struct { char _p3720[6036]; int x1788; };
+        struct { char _p3721[6040]; int x178c; };
+        struct { char _p3722[6044]; int x1790; };
+        struct { char _p3723[6048]; int x1794; };
+        struct { char _p3724[6052]; int x1798; };
+        struct { char _p3725[6056]; int x179c; };
+        struct { char _p3726[6060]; int x17a0; };
+        struct { char _p3727[6064]; int x17a4; };
+        struct { char _p3728[6068]; int x17a8; };
+        struct { char _p3729[6072]; int x17ac; };
+        struct { char _p3730[6076]; int x17b0; };
+        struct { char _p3731[6080]; int x17b4; };
+        struct { char _p3732[6084]; int x17b8; };
+        struct { char _p3733[6088]; int x17bc; };
+        struct { char _p3734[6092]; int x17c0; };
+        struct { char _p3735[6096]; int x17c4; };
+        struct { char _p3736[6100]; int x17c8; };
+        struct { char _p3737[6104]; int x17cc; };
+        struct { char _p3738[6108]; int x17d0; };
+        struct { char _p3739[6112]; int x17d4; };
+        struct { char _p3740[6116]; int x17d8; };
+        struct { char _p3741[6120]; int x17dc; };
+        struct { char _p3742[6124]; int x17e0; };
+        struct { char _p3743[6128]; int x17e4; };
+        struct { char _p3744[6132]; int x17e8; };
+        struct { char _p3745[6136]; int x17ec; };
+        struct { char _p3746[6140]; int x17f0; };
+        struct { char _p3747[6144]; int x17f4; };
+        struct { char _p3748[6148]; int x17f8; };
+        struct { char _p3749[6152]; int x17fc; };
+        struct { char _p3750[6156]; int x1800; };
+        struct { char _p3751[6160]; int x1804; };
+        struct { char _p3752[6164]; int x1808; };
+        struct { char _p3753[6168]; int x180c; };
+        struct { char _p3754[6172]; int x1810; };
+        struct { char _p3755[6176]; int x1814; };
+        struct { char _p3756[6180]; int x1818; };
+        struct { char _p3757[6184]; int x181c; };
+        struct { char _p3758[6188]; int x1820; };
+        struct { char _p3759[6192]; int x1824; };
+        struct { char _p3760[6196]; int x1828; };
+        struct { char _p3761[6200]; int x182c; };
+        struct { char _p3762[6204]; int x1830; };
+        struct { char _p3763[6208]; int x1834; };
+        struct { char _p3764[6212]; int x1838; };
+        struct { char _p3765[6216]; int x183c; };
+        struct { char _p3766[6220]; int x1840; };
+        struct { char _p3767[6224]; int x1844; };
+        struct { char _p3768[6228]; int x1848; };
+        struct { char _p3769[6232]; int x184c; };
+        struct { char _p3770[6236]; int x1850; };
+        struct { char _p3771[6240]; int x1854; };
+        struct { char _p3772[6244]; int x1858; };
+        struct { char _p3773[6248]; int x185c; };
+        struct { char _p3774[6252]; int x1860; };
+        struct { char _p3775[6256]; int x1864; };
+        struct { char _p3776[6260]; int x1868; };
+        struct { char _p3777[6264]; int x186c; };
+        struct { char _p3778[6268]; int x1870; };
+        struct { char _p3779[6272]; int x1874; };
+        struct { char _p3780[6276]; int x1878; };
+        struct { char _p3781[6280]; int x187c; };
+        struct { char _p3782[6284]; int x1880; };
+        struct { char _p3783[6288]; int x1884; };
+        struct { char _p3784[6292]; int x1888; };
+        struct { char _p3785[6296]; int x188c; };
+        struct { char _p3786[6300]; int x1890; };
+        struct { char _p3787[6304]; int x1894; };
+        struct { char _p3788[6308]; int x1898; };
+        struct { char _p3789[6312]; int x189c; };
+        struct { char _p3790[6316]; int x18a0; };
+        struct { char _p3791[6320]; int x18a4; };
+        struct { char _p3792[6324]; int x18a8; };
+        struct { char _p3793[6328]; int x18ac; };
+        struct { char _p3794[6332]; int x18b0; };
+        struct { char _p3795[6336]; int x18b4; };
+        struct { char _p3796[6340]; int x18b8; };
+        struct { char _p3797[6344]; int x18bc; };
+        struct { char _p3798[6348]; int x18c0; };
+        struct { char _p3799[6352]; int x18c4; };
+        struct { char _p3800[6356]; int x18c8; };
+        struct { char _p3801[6360]; int x18cc; };
+        struct { char _p3802[6364]; int x18d0; };
+        struct { char _p3803[6368]; int x18d4; };
+        struct { char _p3804[6372]; int x18d8; };
+        struct { char _p3805[6376]; int x18dc; };
+        struct { char _p3806[6380]; int x18e0; };
+        struct { char _p3807[6384]; int x18e4; };
+        struct { char _p3808[6388]; int x18e8; };
+        struct { char _p3809[6392]; int x18ec; };
+        struct { char _p3810[6396]; int x18f0; };
+        struct { char _p3811[6400]; int x18f4; };
+        struct { char _p3812[6404]; int x18f8; };
+        struct { char _p3813[6408]; int x18fc; };
+        struct { char _p3814[6412]; int x1900; };
+        struct { char _p3815[6416]; int x1904; };
+        struct { char _p3816[6420]; int x1908; };
+        struct { char _p3817[6424]; int x190c; };
+        struct { char _p3818[6428]; int x1910; };
+        struct { char _p3819[6432]; int x1914; };
+        struct { char _p3820[6436]; int x1918; };
+        struct { char _p3821[6440]; int x191c; };
+        struct { char _p3822[6444]; int x1920; };
+        struct { char _p3823[6448]; int x1924; };
+        struct { char _p3824[6452]; int x1928; };
+        struct { char _p3825[6456]; int x192c; };
+        struct { char _p3826[6460]; int x1930; };
+        struct { char _p3827[6464]; int x1934; };
+        struct { char _p3828[6468]; int x1938; };
+        struct { char _p3829[6472]; int x193c; };
+        struct { char _p3830[6476]; int x1940; };
+        struct { char _p3831[6480]; int x1944; };
+        struct { char _p3832[6484]; int x1948; };
+        struct { char _p3833[6488]; int x194c; };
+        struct { char _p3834[6492]; int x1950; };
+        struct { char _p3835[6496]; int x1954; };
+        struct { char _p3836[6500]; int x1958; };
+        struct { char _p3837[6504]; int x195c; };
+        struct { char _p3838[6508]; int x1960; };
+        struct { char _p3839[6512]; int x1964; };
+        struct { char _p3840[6516]; int x1968; };
+        struct { char _p3841[6520]; int x196c; };
+        struct { char _p3842[6524]; int x1970; };
+        struct { char _p3843[6528]; int x1974; };
+        struct { char _p3844[6532]; int x1978; };
+        struct { char _p3845[6536]; int x197c; };
+        struct { char _p3846[6540]; int x1980; };
+        struct { char _p3847[6544]; int x1984; };
+        struct { char _p3848[6548]; int x1988; };
+        struct { char _p3849[6552]; int x198c; };
+        struct { char _p3850[6556]; int x1990; };
+        struct { char _p3851[6560]; int x1994; };
+        struct { char _p3852[6564]; int x1998; };
+        struct { char _p3853[6568]; int x199c; };
+        struct { char _p3854[6572]; int x19a0; };
+        struct { char _p3855[6576]; int x19a4; };
+        struct { char _p3856[6580]; int x19a8; };
+        struct { char _p3857[6584]; int x19ac; };
+        struct { char _p3858[6588]; int x19b0; };
+        struct { char _p3859[6592]; int x19b4; };
+        struct { char _p3860[6596]; int x19b8; };
+        struct { char _p3861[6600]; int x19bc; };
+        struct { char _p3862[6604]; int x19c0; };
+        struct { char _p3863[6608]; int x19c4; };
+        struct { char _p3864[6612]; int x19c8; };
+        struct { char _p3865[6616]; int x19cc; };
+        struct { char _p3866[6620]; int x19d0; };
+        struct { char _p3867[6624]; int x19d4; };
+        struct { char _p3868[6628]; int x19d8; };
+        struct { char _p3869[6632]; int x19dc; };
+        struct { char _p3870[6636]; int x19e0; };
+        struct { char _p3871[6640]; int x19e4; };
+        struct { char _p3872[6644]; int x19e8; };
+        struct { char _p3873[6648]; int x19ec; };
+        struct { char _p3874[6652]; int x19f0; };
+        struct { char _p3875[6656]; int x19f4; };
+        struct { char _p3876[6660]; int x19f8; };
+        struct { char _p3877[6664]; int x19fc; };
+        struct { char _p3878[6668]; int x1a00; };
+        struct { char _p3879[6672]; int x1a04; };
+        struct { char _p3880[6676]; int x1a08; };
+        struct { char _p3881[6680]; int x1a0c; };
+        struct { char _p3882[6684]; int x1a10; };
+        struct { char _p3883[6688]; int x1a14; };
+        struct { char _p3884[6692]; int x1a18; };
+        struct { char _p3885[6696]; int x1a1c; };
+        struct { char _p3886[6700]; int x1a20; };
+        struct { char _p3887[6704]; int x1a24; };
+        struct { char _p3888[6708]; int x1a28; };
+        struct { char _p3889[6712]; int x1a2c; };
+        struct { char _p3890[6716]; int x1a30; };
+        struct { char _p3891[6720]; int x1a34; };
+        struct { char _p3892[6724]; int x1a38; };
+        struct { char _p3893[6728]; int x1a3c; };
+        struct { char _p3894[6732]; int x1a40; };
+        struct { char _p3895[6736]; int x1a44; };
+        struct { char _p3896[6740]; int x1a48; };
+        struct { char _p3897[6744]; int x1a4c; };
+        struct { char _p3898[6748]; int x1a50; };
+        struct { char _p3899[6752]; int x1a54; };
+        struct { char _p3900[6756]; int x1a58; };
+        struct { char _p3901[6760]; int x1a5c; };
+        struct { char _p3902[6764]; int x1a60; };
+        struct { char _p3903[6768]; int x1a64; };
+        struct { char _p3904[6772]; int x1a68; };
+        struct { char _p3905[6776]; int x1a6c; };
+        struct { char _p3906[6780]; int x1a70; };
+        struct { char _p3907[6784]; int x1a74; };
+        struct { char _p3908[6788]; int x1a78; };
+        struct { char _p3909[6792]; int x1a7c; };
+        struct { char _p3910[6796]; int x1a80; };
+        struct { char _p3911[6800]; int x1a84; };
+        struct { char _p3912[6804]; int x1a88; };
+        struct { char _p3913[6808]; int x1a8c; };
+        struct { char _p3914[6812]; int x1a90; };
+        struct { char _p3915[6816]; int x1a94; };
+        struct { char _p3916[6820]; int x1a98; };
+        struct { char _p3917[6824]; int x1a9c; };
+        struct { char _p3918[6828]; int x1aa0; };
+        struct { char _p3919[6832]; int x1aa4; };
+        struct { char _p3920[6836]; int x1aa8; };
+        struct { char _p3921[6840]; int x1aac; };
+        struct { char _p3922[6844]; int x1ab0; };
+        struct { char _p3923[6848]; int x1ab4; };
+        struct { char _p3924[6852]; int x1ab8; };
+        struct { char _p3925[6856]; int x1abc; };
+        struct { char _p3926[6860]; int x1ac0; };
+        struct { char _p3927[6864]; int x1ac4; };
+        struct { char _p3928[6868]; int x1ac8; };
+        struct { char _p3929[6872]; int x1acc; };
+        struct { char _p3930[6876]; int x1ad0; };
+        struct { char _p3931[6880]; int x1ad4; };
+        struct { char _p3932[6884]; int x1ad8; };
+        struct { char _p3933[6888]; int x1adc; };
+        struct { char _p3934[6892]; int x1ae0; };
+        struct { char _p3935[6896]; int x1ae4; };
+        struct { char _p3936[6900]; int x1ae8; };
+        struct { char _p3937[6904]; int x1aec; };
+        struct { char _p3938[6908]; int x1af0; };
+        struct { char _p3939[6912]; int x1af4; };
+        struct { char _p3940[6916]; int x1af8; };
+        struct { char _p3941[6920]; int x1afc; };
+        struct { char _p3942[6924]; int x1b00; };
+        struct { char _p3943[6928]; int x1b04; };
+        struct { char _p3944[6932]; int x1b08; };
+        struct { char _p3945[6936]; int x1b0c; };
+        struct { char _p3946[6940]; int x1b10; };
+        struct { char _p3947[6944]; int x1b14; };
+        struct { char _p3948[6948]; int x1b18; };
+        struct { char _p3949[6952]; int x1b1c; };
+        struct { char _p3950[6956]; int x1b20; };
+        struct { char _p3951[6960]; int x1b24; };
+        struct { char _p3952[6964]; int x1b28; };
+        struct { char _p3953[6968]; int x1b2c; };
+        struct { char _p3954[6972]; int x1b30; };
+        struct { char _p3955[6976]; int x1b34; };
+        struct { char _p3956[6980]; int x1b38; };
+        struct { char _p3957[6984]; int x1b3c; };
+        struct { char _p3958[6988]; int x1b40; };
+        struct { char _p3959[6992]; int x1b44; };
+        struct { char _p3960[6996]; int x1b48; };
+        struct { char _p3961[7000]; int x1b4c; };
+        struct { char _p3962[7004]; int x1b50; };
+        struct { char _p3963[7008]; int x1b54; };
+        struct { char _p3964[7012]; int x1b58; };
+        struct { char _p3965[7016]; int x1b5c; };
+        struct { char _p3966[7020]; int x1b60; };
+        struct { char _p3967[7024]; int x1b64; };
+        struct { char _p3968[7028]; int x1b68; };
+        struct { char _p3969[7032]; int x1b6c; };
+        struct { char _p3970[7036]; int x1b70; };
+        struct { char _p3971[7040]; int x1b74; };
+        struct { char _p3972[7044]; int x1b78; };
+        struct { char _p3973[7048]; int x1b7c; };
+        struct { char _p3974[7052]; int x1b80; };
+        struct { char _p3975[7056]; int x1b84; };
+        struct { char _p3976[7060]; int x1b88; };
+        struct { char _p3977[7064]; int x1b8c; };
+        struct { char _p3978[7068]; int x1b90; };
+        struct { char _p3979[7072]; int x1b94; };
+        struct { char _p3980[7076]; int x1b98; };
+        struct { char _p3981[7080]; int x1b9c; };
+        struct { char _p3982[7084]; int x1ba0; };
+        struct { char _p3983[7088]; int x1ba4; };
+        struct { char _p3984[7092]; int x1ba8; };
+        struct { char _p3985[7096]; int x1bac; };
+        struct { char _p3986[7100]; int x1bb0; };
+        struct { char _p3987[7104]; int x1bb4; };
+        struct { char _p3988[7108]; int x1bb8; };
+        struct { char _p3989[7112]; int x1bbc; };
+        struct { char _p3990[7116]; int x1bc0; };
+        struct { char _p3991[7120]; int x1bc4; };
+        struct { char _p3992[7124]; int x1bc8; };
+        struct { char _p3993[7128]; int x1bcc; };
+        struct { char _p3994[7132]; int x1bd0; };
+        struct { char _p3995[7136]; int x1bd4; };
+        struct { char _p3996[7140]; int x1bd8; };
+        struct { char _p3997[7144]; int x1bdc; };
+        struct { char _p3998[7148]; int x1be0; };
+        struct { char _p3999[7152]; int x1be4; };
+        struct { char _p4000[7156]; int x1be8; };
+        struct { char _p4001[7160]; int x1bec; };
+        struct { char _p4002[7164]; int x1bf0; };
+        struct { char _p4003[7168]; int x1bf4; };
+        struct { char _p4004[7172]; int x1bf8; };
+        struct { char _p4005[7176]; int x1bfc; };
+        struct { char _p4006[7180]; int x1c00; };
+        struct { char _p4007[7184]; int x1c04; };
+        struct { char _p4008[7188]; int x1c08; };
+        struct { char _p4009[7192]; int x1c0c; };
+        struct { char _p4010[7196]; int x1c10; };
+        struct { char _p4011[7200]; int x1c14; };
+        struct { char _p4012[7204]; int x1c18; };
+        struct { char _p4013[7208]; int x1c1c; };
+        struct { char _p4014[7212]; int x1c20; };
+        struct { char _p4015[7216]; int x1c24; };
+        struct { char _p4016[7220]; int x1c28; };
+        struct { char _p4017[7224]; int x1c2c; };
+        struct { char _p4018[7228]; int x1c30; };
+        struct { char _p4019[7232]; int x1c34; };
+        struct { char _p4020[7236]; int x1c38; };
+        struct { char _p4021[7240]; int x1c3c; };
+        struct { char _p4022[7244]; int x1c40; };
+        struct { char _p4023[7248]; int x1c44; };
+        struct { char _p4024[7252]; int x1c48; };
+        struct { char _p4025[7256]; int x1c4c; };
+        struct { char _p4026[7260]; int x1c50; };
+        struct { char _p4027[7264]; int x1c54; };
+        struct { char _p4028[7268]; int x1c58; };
+        struct { char _p4029[7272]; int x1c5c; };
+        struct { char _p4030[7276]; int x1c60; };
+        struct { char _p4031[7280]; int x1c64; };
+        struct { char _p4032[7284]; int x1c68; };
+        struct { char _p4033[7288]; int x1c6c; };
+        struct { char _p4034[7292]; int x1c70; };
+        struct { char _p4035[7296]; int x1c74; };
+        struct { char _p4036[7300]; int x1c78; };
+        struct { char _p4037[7304]; int x1c7c; };
+        struct { char _p4038[7308]; int x1c80; };
+        struct { char _p4039[7312]; int x1c84; };
+        struct { char _p4040[7316]; int x1c88; };
+        struct { char _p4041[7320]; int x1c8c; };
+        struct { char _p4042[7324]; int x1c90; };
+        struct { char _p4043[7328]; int x1c94; };
+        struct { char _p4044[7332]; int x1c98; };
+        struct { char _p4045[7336]; int x1c9c; };
+        struct { char _p4046[7340]; int x1ca0; };
+        struct { char _p4047[7344]; int x1ca4; };
+        struct { char _p4048[7348]; int x1ca8; };
+        struct { char _p4049[7352]; int x1cac; };
+        struct { char _p4050[7356]; int x1cb0; };
+        struct { char _p4051[7360]; int x1cb4; };
+        struct { char _p4052[7364]; int x1cb8; };
+        struct { char _p4053[7368]; int x1cbc; };
+        struct { char _p4054[7372]; int x1cc0; };
+        struct { char _p4055[7376]; int x1cc4; };
+        struct { char _p4056[7380]; int x1cc8; };
+        struct { char _p4057[7384]; int x1ccc; };
+        struct { char _p4058[7388]; int x1cd0; };
+        struct { char _p4059[7392]; int x1cd4; };
+        struct { char _p4060[7396]; int x1cd8; };
+        struct { char _p4061[7400]; int x1cdc; };
+        struct { char _p4062[7404]; int x1ce0; };
+        struct { char _p4063[7408]; int x1ce4; };
+        struct { char _p4064[7412]; int x1ce8; };
+        struct { char _p4065[7416]; int x1cec; };
+        struct { char _p4066[7420]; int x1cf0; };
+        struct { char _p4067[7424]; int x1cf4; };
+        struct { char _p4068[7428]; int x1cf8; };
+        struct { char _p4069[7432]; int x1cfc; };
+        struct { char _p4070[7436]; int x1d00; };
+        struct { char _p4071[7440]; int x1d04; };
+        struct { char _p4072[7444]; int x1d08; };
+        struct { char _p4073[7448]; int x1d0c; };
+        struct { char _p4074[7452]; int x1d10; };
+        struct { char _p4075[7456]; int x1d14; };
+        struct { char _p4076[7460]; int x1d18; };
+        struct { char _p4077[7464]; int x1d1c; };
+        struct { char _p4078[7468]; int x1d20; };
+        struct { char _p4079[7472]; int x1d24; };
+        struct { char _p4080[7476]; int x1d28; };
+        struct { char _p4081[7480]; int x1d2c; };
+        struct { char _p4082[7484]; int x1d30; };
+        struct { char _p4083[7488]; int x1d34; };
+        struct { char _p4084[7492]; int x1d38; };
+        struct { char _p4085[7496]; int x1d3c; };
+        struct { char _p4086[7500]; int x1d40; };
+        struct { char _p4087[7504]; int x1d44; };
+        struct { char _p4088[7508]; int x1d48; };
+        struct { char _p4089[7512]; int x1d4c; };
+        struct { char _p4090[7516]; int x1d50; };
+        struct { char _p4091[7520]; int x1d54; };
+        struct { char _p4092[7524]; int x1d58; };
+        struct { char _p4093[7528]; int x1d5c; };
+        struct { char _p4094[7532]; int x1d60; };
+        struct { char _p4095[7536]; int x1d64; };
+        struct { char _p4096[7540]; int x1d68; };
+        struct { char _p4097[7544]; int x1d6c; };
+        struct { char _p4098[7548]; int x1d70; };
+        struct { char _p4099[7552]; int x1d74; };
+        struct { char _p4100[7556]; int x1d78; };
+        struct { char _p4101[7560]; int x1d7c; };
+        struct { char _p4102[7564]; int x1d80; };
+        struct { char _p4103[7568]; int x1d84; };
+        struct { char _p4104[7572]; int x1d88; };
+        struct { char _p4105[7576]; int x1d8c; };
+        struct { char _p4106[7580]; int x1d90; };
+        struct { char _p4107[7584]; int x1d94; };
+        struct { char _p4108[7588]; int x1d98; };
+        struct { char _p4109[7592]; int x1d9c; };
+        struct { char _p4110[7596]; int x1da0; };
+        struct { char _p4111[7600]; int x1da4; };
+        struct { char _p4112[7604]; int x1da8; };
+        struct { char _p4113[7608]; int x1dac; };
+        struct { char _p4114[7612]; int x1db0; };
+        struct { char _p4115[7616]; int x1db4; };
+        struct { char _p4116[7620]; int x1db8; };
+        struct { char _p4117[7624]; int x1dbc; };
+        struct { char _p4118[7628]; int x1dc0; };
+        struct { char _p4119[7632]; int x1dc4; };
+        struct { char _p4120[7636]; int x1dc8; };
+        struct { char _p4121[7640]; int x1dcc; };
+        struct { char _p4122[7644]; int x1dd0; };
+        struct { char _p4123[7648]; int x1dd4; };
+        struct { char _p4124[7652]; int x1dd8; };
+        struct { char _p4125[7656]; int x1ddc; };
+        struct { char _p4126[7660]; int x1de0; };
+        struct { char _p4127[7664]; int x1de4; };
+        struct { char _p4128[7668]; int x1de8; };
+        struct { char _p4129[7672]; int x1dec; };
+        struct { char _p4130[7676]; int x1df0; };
+        struct { char _p4131[7680]; int x1df4; };
+        struct { char _p4132[7684]; int x1df8; };
+        struct { char _p4133[7688]; int x1dfc; };
+        struct { char _p4134[7692]; int x1e00; };
+        struct { char _p4135[7696]; int x1e04; };
+        struct { char _p4136[7700]; int x1e08; };
+        struct { char _p4137[7704]; int x1e0c; };
+        struct { char _p4138[7708]; int x1e10; };
+        struct { char _p4139[7712]; int x1e14; };
+        struct { char _p4140[7716]; int x1e18; };
+        struct { char _p4141[7720]; int x1e1c; };
+        struct { char _p4142[7724]; int x1e20; };
+        struct { char _p4143[7728]; int x1e24; };
+        struct { char _p4144[7732]; int x1e28; };
+        struct { char _p4145[7736]; int x1e2c; };
+        struct { char _p4146[7740]; int x1e30; };
+        struct { char _p4147[7744]; int x1e34; };
+        struct { char _p4148[7748]; int x1e38; };
+        struct { char _p4149[7752]; int x1e3c; };
+        struct { char _p4150[7756]; int x1e40; };
+        struct { char _p4151[7760]; int x1e44; };
+        struct { char _p4152[7764]; int x1e48; };
+        struct { char _p4153[7768]; int x1e4c; };
+        struct { char _p4154[7772]; int x1e50; };
+        struct { char _p4155[7776]; int x1e54; };
+        struct { char _p4156[7780]; int x1e58; };
+        struct { char _p4157[7784]; int x1e5c; };
+        struct { char _p4158[7788]; int x1e60; };
+        struct { char _p4159[7792]; int x1e64; };
+        struct { char _p4160[7796]; int x1e68; };
+        struct { char _p4161[7800]; int x1e6c; };
+        struct { char _p4162[7804]; int x1e70; };
+        struct { char _p4163[7808]; int x1e74; };
+        struct { char _p4164[7812]; int x1e78; };
+        struct { char _p4165[7816]; int x1e7c; };
+        struct { char _p4166[7820]; int x1e80; };
+        struct { char _p4167[7824]; int x1e84; };
+        struct { char _p4168[7828]; int x1e88; };
+        struct { char _p4169[7832]; int x1e8c; };
+        struct { char _p4170[7836]; int x1e90; };
+        struct { char _p4171[7840]; int x1e94; };
+        struct { char _p4172[7844]; int x1e98; };
+        struct { char _p4173[7848]; int x1e9c; };
+        struct { char _p4174[7852]; int x1ea0; };
+        struct { char _p4175[7856]; int x1ea4; };
+        struct { char _p4176[7860]; int x1ea8; };
+        struct { char _p4177[7864]; int x1eac; };
+        struct { char _p4178[7868]; int x1eb0; };
+        struct { char _p4179[7872]; int x1eb4; };
+        struct { char _p4180[7876]; int x1eb8; };
+        struct { char _p4181[7880]; int x1ebc; };
+        struct { char _p4182[7884]; int x1ec0; };
+        struct { char _p4183[7888]; int x1ec4; };
+        struct { char _p4184[7892]; int x1ec8; };
+        struct { char _p4185[7896]; int x1ecc; };
+        struct { char _p4186[7900]; int x1ed0; };
+        struct { char _p4187[7904]; int x1ed4; };
+        struct { char _p4188[7908]; int x1ed8; };
+        struct { char _p4189[7912]; int x1edc; };
+        struct { char _p4190[7916]; int x1ee0; };
+        struct { char _p4191[7920]; int x1ee4; };
+        struct { char _p4192[7924]; int x1ee8; };
+        struct { char _p4193[7928]; int x1eec; };
+        struct { char _p4194[7932]; int x1ef0; };
+        struct { char _p4195[7936]; int x1ef4; };
+        struct { char _p4196[7940]; int x1ef8; };
+        struct { char _p4197[7944]; int x1efc; };
+        struct { char _p4198[7948]; int x1f00; };
+        struct { char _p4199[7952]; int x1f04; };
+        struct { char _p4200[7956]; int x1f08; };
+        struct { char _p4201[7960]; int x1f0c; };
+        struct { char _p4202[7964]; int x1f10; };
+        struct { char _p4203[7968]; int x1f14; };
+        struct { char _p4204[7972]; int x1f18; };
+        struct { char _p4205[7976]; int x1f1c; };
+        struct { char _p4206[7980]; int x1f20; };
+        struct { char _p4207[7984]; int x1f24; };
+        struct { char _p4208[7988]; int x1f28; };
+        struct { char _p4209[7992]; int x1f2c; };
+        struct { char _p4210[7996]; int x1f30; };
+        struct { char _p4211[8000]; int x1f34; };
+        struct { char _p4212[8004]; int x1f38; };
+        struct { char _p4213[8008]; int x1f3c; };
+        struct { char _p4214[8012]; int x1f40; };
+        struct { char _p4215[8016]; int x1f44; };
+        struct { char _p4216[8020]; int x1f48; };
+        struct { char _p4217[8024]; int x1f4c; };
+        struct { char _p4218[8028]; int x1f50; };
+        struct { char _p4219[8032]; int x1f54; };
+        struct { char _p4220[8036]; int x1f58; };
+        struct { char _p4221[8040]; int x1f5c; };
+        struct { char _p4222[8044]; int x1f60; };
+        struct { char _p4223[8048]; int x1f64; };
+        struct { char _p4224[8052]; int x1f68; };
+        struct { char _p4225[8056]; int x1f6c; };
+        struct { char _p4226[8060]; int x1f70; };
+        struct { char _p4227[8064]; int x1f74; };
+        struct { char _p4228[8068]; int x1f78; };
+        struct { char _p4229[8072]; int x1f7c; };
+        struct { char _p4230[8076]; int x1f80; };
+        struct { char _p4231[8080]; int x1f84; };
+        struct { char _p4232[8084]; int x1f88; };
+        struct { char _p4233[8088]; int x1f8c; };
+        struct { char _p4234[8092]; int x1f90; };
+        struct { char _p4235[8096]; int x1f94; };
+        struct { char _p4236[8100]; int x1f98; };
+        struct { char _p4237[8104]; int x1f9c; };
+        struct { char _p4238[8108]; int x1fa0; };
+        struct { char _p4239[8112]; int x1fa4; };
+        struct { char _p4240[8116]; int x1fa8; };
+        struct { char _p4241[8120]; int x1fac; };
+        struct { char _p4242[8124]; int x1fb0; };
+        struct { char _p4243[8128]; int x1fb4; };
+        struct { char _p4244[8132]; int x1fb8; };
+        struct { char _p4245[8136]; int x1fbc; };
+        struct { char _p4246[8140]; int x1fc0; };
+        struct { char _p4247[8144]; int x1fc4; };
+        struct { char _p4248[8148]; int x1fc8; };
+        struct { char _p4249[8152]; int x1fcc; };
+        struct { char _p4250[8156]; int x1fd0; };
+        struct { char _p4251[8160]; int x1fd4; };
+        struct { char _p4252[8164]; int x1fd8; };
+        struct { char _p4253[8168]; int x1fdc; };
+        struct { char _p4254[8172]; int x1fe0; };
+        struct { char _p4255[8176]; int x1fe4; };
+        struct { char _p4256[8180]; int x1fe8; };
+        struct { char _p4257[8184]; int x1fec; };
+        struct { char _p4258[8188]; int x1ff0; };
+        struct { char _p4259[8192]; int x1ff4; };
+        struct { char _p4260[8196]; int x1ff8; };
+        struct { char _p4261[8200]; int x1ffc; };
+        struct { char _p4262[8204]; int x2000; };
+        struct { char _p4263[8208]; int x2004; };
+        struct { char _p4264[8212]; int x2008; };
+        struct { char _p4265[8216]; int x200c; };
+        struct { char _p4266[8220]; int x2010; };
+        struct { char _p4267[8224]; int x2014; };
+        struct { char _p4268[8228]; int x2018; };
+        struct { char _p4269[8232]; int x201c; };
+        struct { char _p4270[8236]; int x2020; };
+        struct { char _p4271[8240]; int x2024; };
+        struct { char _p4272[8244]; int x2028; };
+        struct { char _p4273[8248]; int x202c; };
+        struct { char _p4274[8252]; int x2030; };
+        struct { char _p4275[8256]; int x2034; };
+        struct { char _p4276[8260]; int x2038; };
+        struct { char _p4277[8264]; int x203c; };
+        struct { char _p4278[8268]; int x2040; };
+        struct { char _p4279[8272]; int x2044; };
+        struct { char _p4280[8276]; int x2048; };
+        struct { char _p4281[8280]; int x204c; };
+        struct { char _p4282[8284]; int x2050; };
+        struct { char _p4283[8288]; int x2054; };
+        struct { char _p4284[8292]; int x2058; };
+        struct { char _p4285[8296]; int x205c; };
+        struct { char _p4286[8300]; int x2060; };
+        struct { char _p4287[8304]; int x2064; };
+        struct { char _p4288[8308]; int x2068; };
+        struct { char _p4289[8312]; int x206c; };
+        struct { char _p4290[8316]; int x2070; };
+        struct { char _p4291[8320]; int x2074; };
+        struct { char _p4292[8324]; int x2078; };
+        struct { char _p4293[8328]; int x207c; };
+        struct { char _p4294[8332]; int x2080; };
+        struct { char _p4295[8336]; int x2084; };
+        struct { char _p4296[8340]; int x2088; };
+        struct { char _p4297[8344]; int x208c; };
+        struct { char _p4298[8348]; int x2090; };
+        struct { char _p4299[8352]; int x2094; };
+        struct { char _p4300[8356]; int x2098; };
+        struct { char _p4301[8360]; int x209c; };
+        struct { char _p4302[8364]; int x20a0; };
+        struct { char _p4303[8368]; int x20a4; };
+        struct { char _p4304[8372]; int x20a8; };
+        struct { char _p4305[8376]; int x20ac; };
+        struct { char _p4306[8380]; int x20b0; };
+        struct { char _p4307[8384]; int x20b4; };
+        struct { char _p4308[8388]; int x20b8; };
+        struct { char _p4309[8392]; int x20bc; };
+        struct { char _p4310[8396]; int x20c0; };
+        struct { char _p4311[8400]; int x20c4; };
+        struct { char _p4312[8404]; int x20c8; };
+        struct { char _p4313[8408]; int x20cc; };
+        struct { char _p4314[8412]; int x20d0; };
+        struct { char _p4315[8416]; int x20d4; };
+        struct { char _p4316[8420]; int x20d8; };
+        struct { char _p4317[8424]; int x20dc; };
+        struct { char _p4318[8428]; int x20e0; };
+        struct { char _p4319[8432]; int x20e4; };
+        struct { char _p4320[8436]; int x20e8; };
+        struct { char _p4321[8440]; int x20ec; };
+        struct { char _p4322[8444]; int x20f0; };
+        struct { char _p4323[8448]; int x20f4; };
+        struct { char _p4324[8452]; int x20f8; };
+        struct { char _p4325[8456]; int x20fc; };
+        struct { char _p4326[8460]; int x2100; };
+        struct { char _p4327[8464]; int x2104; };
+        struct { char _p4328[8468]; int x2108; };
+        struct { char _p4329[8472]; int x210c; };
+        struct { char _p4330[8476]; int x2110; };
+        struct { char _p4331[8480]; int x2114; };
+        struct { char _p4332[8484]; int x2118; };
+        struct { char _p4333[8488]; int x211c; };
+        struct { char _p4334[8492]; int x2120; };
+        struct { char _p4335[8496]; int x2124; };
+        struct { char _p4336[8500]; int x2128; };
+        struct { char _p4337[8504]; int x212c; };
+        struct { char _p4338[8508]; int x2130; };
+        struct { char _p4339[8512]; int x2134; };
+        struct { char _p4340[8516]; int x2138; };
+        struct { char _p4341[8520]; int x213c; };
+        struct { char _p4342[8524]; int x2140; };
+        struct { char _p4343[8528]; int x2144; };
+        struct { char _p4344[8532]; int x2148; };
+        struct { char _p4345[8536]; int x214c; };
+        struct { char _p4346[8540]; int x2150; };
+        struct { char _p4347[8544]; int x2154; };
+        struct { char _p4348[8548]; int x2158; };
+        struct { char _p4349[8552]; int x215c; };
+        struct { char _p4350[8556]; int x2160; };
+        struct { char _p4351[8560]; int x2164; };
+        struct { char _p4352[8564]; int x2168; };
+        struct { char _p4353[8568]; int x216c; };
+        struct { char _p4354[8572]; int x2170; };
+        struct { char _p4355[8576]; int x2174; };
+        struct { char _p4356[8580]; int x2178; };
+        struct { char _p4357[8584]; int x217c; };
+        struct { char _p4358[8588]; int x2180; };
+        struct { char _p4359[8592]; int x2184; };
+        struct { char _p4360[8596]; int x2188; };
+        struct { char _p4361[8600]; int x218c; };
+        struct { char _p4362[8604]; int x2190; };
+        struct { char _p4363[8608]; int x2194; };
+        struct { char _p4364[8612]; int x2198; };
+        struct { char _p4365[8616]; int x219c; };
+        struct { char _p4366[8620]; int x21a0; };
+        struct { char _p4367[8624]; int x21a4; };
+        struct { char _p4368[8628]; int x21a8; };
+        struct { char _p4369[8632]; int x21ac; };
+        struct { char _p4370[8636]; int x21b0; };
+        struct { char _p4371[8640]; int x21b4; };
+        struct { char _p4372[8644]; int x21b8; };
+        struct { char _p4373[8648]; int x21bc; };
+        struct { char _p4374[8652]; int x21c0; };
+        struct { char _p4375[8656]; int x21c4; };
+        struct { char _p4376[8660]; int x21c8; };
+        struct { char _p4377[8664]; int x21cc; };
+        struct { char _p4378[8668]; int x21d0; };
+        struct { char _p4379[8672]; int x21d4; };
+        struct { char _p4380[8676]; int x21d8; };
+        struct { char _p4381[8680]; int x21dc; };
+        struct { char _p4382[8684]; int x21e0; };
+        struct { char _p4383[8688]; int x21e4; };
+        struct { char _p4384[8692]; int x21e8; };
+        struct { char _p4385[8696]; int x21ec; };
+        struct { char _p4386[8700]; int x21f0; };
+        struct { char _p4387[8704]; int x21f4; };
+        struct { char _p4388[8708]; int x21f8; };
+        struct { char _p4389[8712]; int x21fc; };
+        struct { char _p4390[8716]; int x2200; };
+        struct { char _p4391[8720]; int x2204; };
+        struct { char _p4392[8724]; int x2208; };
+        struct { char _p4393[8728]; int x220c; };
+        struct { char _p4394[8732]; int x2210; };
+        struct { char _p4395[8736]; int x2214; };
+        struct { char _p4396[8740]; int x2218; };
+        struct { char _p4397[8744]; int x221c; };
+        struct { char _p4398[8748]; int x2220; };
+        struct { char _p4399[8752]; int x2224; };
+        struct { char _p4400[8756]; int x2228; };
+        struct { char _p4401[8760]; int x222c; };
+        struct { char _p4402[8764]; int x2230; };
+        struct { char _p4403[8768]; int x2234; };
+        struct { char _p4404[8772]; int x2238; };
+        struct { char _p4405[8776]; int x223c; };
+        struct { char _p4406[8780]; int x2240; };
+        struct { char _p4407[8784]; int x2244; };
+        struct { char _p4408[8788]; int x2248; };
+        struct { char _p4409[8792]; int x224c; };
+        struct { char _p4410[8796]; int x2250; };
+        struct { char _p4411[8800]; int x2254; };
+        struct { char _p4412[8804]; int x2258; };
+        struct { char _p4413[8808]; int x225c; };
+        struct { char _p4414[8812]; int x2260; };
+        struct { char _p4415[8816]; int x2264; };
+        struct { char _p4416[8820]; int x2268; };
+        struct { char _p4417[8824]; int x226c; };
+        struct { char _p4418[8828]; int x2270; };
+        struct { char _p4419[8832]; int x2274; };
+        struct { char _p4420[8836]; int x2278; };
+        struct { char _p4421[8840]; int x227c; };
+        struct { char _p4422[8844]; int x2280; };
+        struct { char _p4423[8848]; int x2284; };
+        struct { char _p4424[8852]; int x2288; };
+        struct { char _p4425[8856]; int x228c; };
+        struct { char _p4426[8860]; int x2290; };
+        struct { char _p4427[8864]; int x2294; };
+        struct { char _p4428[8868]; int x2298; };
+        struct { char _p4429[8872]; int x229c; };
+        struct { char _p4430[8876]; int x22a0; };
+        struct { char _p4431[8880]; int x22a4; };
+        struct { char _p4432[8884]; int x22a8; };
+        struct { char _p4433[8888]; int x22ac; };
+        struct { char _p4434[8892]; int x22b0; };
+        struct { char _p4435[8896]; int x22b4; };
+        struct { char _p4436[8900]; int x22b8; };
+        struct { char _p4437[8904]; int x22bc; };
+        struct { char _p4438[8908]; int x22c0; };
+        struct { char _p4439[8912]; int x22c4; };
+        struct { char _p4440[8916]; int x22c8; };
+        struct { char _p4441[8920]; int x22cc; };
+        struct { char _p4442[8924]; int x22d0; };
+        struct { char _p4443[8928]; int x22d4; };
+        struct { char _p4444[8932]; int x22d8; };
+        struct { char _p4445[8936]; int x22dc; };
+        struct { char _p4446[8940]; int x22e0; };
+        struct { char _p4447[8944]; int x22e4; };
+        struct { char _p4448[8948]; int x22e8; };
+        struct { char _p4449[8952]; int x22ec; };
+        struct { char _p4450[8956]; int x22f0; };
+        struct { char _p4451[8960]; int x22f4; };
+        struct { char _p4452[8964]; int x22f8; };
+        struct { char _p4453[8968]; int x22fc; };
+        struct { char _p4454[8972]; int x2300; };
+        struct { char _p4455[8976]; int x2304; };
+        struct { char _p4456[8980]; int x2308; };
+        struct { char _p4457[8984]; int x230c; };
+        struct { char _p4458[8988]; int x2310; };
+        struct { char _p4459[8992]; int x2314; };
+        struct { char _p4460[8996]; int x2318; };
+        struct { char _p4461[9000]; int x231c; };
+        struct { char _p4462[9004]; int x2320; };
+        struct { char _p4463[9008]; int x2324; };
+        struct { char _p4464[9012]; int x2328; };
+        struct { char _p4465[9016]; int x232c; };
+        struct { char _p4466[9020]; int x2330; };
+        struct { char _p4467[9024]; int x2334; };
+        struct { char _p4468[9028]; int x2338; };
+        struct { char _p4469[9032]; int x233c; };
+        struct { char _p4470[9036]; int x2340; };
+        struct { char _p4471[9040]; int x2344; };
+        struct { char _p4472[9044]; int x2348; };
+        struct { char _p4473[9048]; int x234c; };
+        struct { char _p4474[9052]; int x2350; };
+        struct { char _p4475[9056]; int x2354; };
+        struct { char _p4476[9060]; int x2358; };
+        struct { char _p4477[9064]; int x235c; };
+        struct { char _p4478[9068]; int x2360; };
+        struct { char _p4479[9072]; int x2364; };
+        struct { char _p4480[9076]; int x2368; };
+        struct { char _p4481[9080]; int x236c; };
+        struct { char _p4482[9084]; int x2370; };
+        struct { char _p4483[9088]; int x2374; };
+        struct { char _p4484[9092]; int x2378; };
+        struct { char _p4485[9096]; int x237c; };
+        struct { char _p4486[9100]; int x2380; };
+        struct { char _p4487[9104]; int x2384; };
+        struct { char _p4488[9108]; int x2388; };
+        struct { char _p4489[9112]; int x238c; };
+        struct { char _p4490[9116]; int x2390; };
+        struct { char _p4491[9120]; int x2394; };
+        struct { char _p4492[9124]; int x2398; };
+        struct { char _p4493[9128]; int x239c; };
+        struct { char _p4494[9132]; int x23a0; };
+        struct { char _p4495[9136]; int x23a4; };
+        struct { char _p4496[9140]; int x23a8; };
+        struct { char _p4497[9144]; int x23ac; };
+        struct { char _p4498[9148]; int x23b0; };
+        struct { char _p4499[9152]; int x23b4; };
+        struct { char _p4500[9156]; int x23b8; };
+        struct { char _p4501[9160]; int x23bc; };
+        struct { char _p4502[9164]; int x23c0; };
+        struct { char _p4503[9168]; int x23c4; };
+        struct { char _p4504[9172]; int x23c8; };
+        struct { char _p4505[9176]; int x23cc; };
+        struct { char _p4506[9180]; int x23d0; };
+        struct { char _p4507[9184]; int x23d4; };
+        struct { char _p4508[9188]; int x23d8; };
+        struct { char _p4509[9192]; int x23dc; };
+        struct { char _p4510[9196]; int x23e0; };
+        struct { char _p4511[9200]; int x23e4; };
+        struct { char _p4512[9204]; int x23e8; };
+        struct { char _p4513[9208]; int x23ec; };
+        struct { char _p4514[9212]; int x23f0; };
+        struct { char _p4515[9216]; int x23f4; };
+        struct { char _p4516[9220]; int x23f8; };
+        struct { char _p4517[9224]; int x23fc; };
+        struct { char _p4518[9228]; int x2400; };
+        struct { char _p4519[9232]; int x2404; };
+        struct { char _p4520[9236]; int x2408; };
+        struct { char _p4521[9240]; int x240c; };
+        struct { char _p4522[9244]; int x2410; };
+        struct { char _p4523[9248]; int x2414; };
+        struct { char _p4524[9252]; int x2418; };
+        struct { char _p4525[9256]; int x241c; };
+        struct { char _p4526[9260]; int x2420; };
+        struct { char _p4527[9264]; int x2424; };
+        struct { char _p4528[9268]; int x2428; };
+        struct { char _p4529[9272]; int x242c; };
+        struct { char _p4530[9276]; int x2430; };
+        struct { char _p4531[9280]; int x2434; };
+        struct { char _p4532[9284]; int x2438; };
+        struct { char _p4533[9288]; int x243c; };
+        struct { char _p4534[9292]; int x2440; };
+        struct { char _p4535[9296]; int x2444; };
+        struct { char _p4536[9300]; int x2448; };
+        struct { char _p4537[9304]; int x244c; };
+        struct { char _p4538[9308]; int x2450; };
+        struct { char _p4539[9312]; int x2454; };
+        struct { char _p4540[9316]; int x2458; };
+        struct { char _p4541[9320]; int x245c; };
+        struct { char _p4542[9324]; int x2460; };
+        struct { char _p4543[9328]; int x2464; };
+        struct { char _p4544[9332]; int x2468; };
+        struct { char _p4545[9336]; int x246c; };
+        struct { char _p4546[9340]; int x2470; };
+        struct { char _p4547[9344]; int x2474; };
+        struct { char _p4548[9348]; int x2478; };
+        struct { char _p4549[9352]; int x247c; };
+        struct { char _p4550[9356]; int x2480; };
+        struct { char _p4551[9360]; int x2484; };
+        struct { char _p4552[9364]; int x2488; };
+        struct { char _p4553[9368]; int x248c; };
+        struct { char _p4554[9372]; int x2490; };
+        struct { char _p4555[9376]; int x2494; };
+        struct { char _p4556[9380]; int x2498; };
+        struct { char _p4557[9384]; int x249c; };
+        struct { char _p4558[9388]; int x24a0; };
+        struct { char _p4559[9392]; int x24a4; };
+        struct { char _p4560[9396]; int x24a8; };
+        struct { char _p4561[9400]; int x24ac; };
+        struct { char _p4562[9404]; int x24b0; };
+        struct { char _p4563[9408]; int x24b4; };
+        struct { char _p4564[9412]; int x24b8; };
+        struct { char _p4565[9416]; int x24bc; };
+        struct { char _p4566[9420]; int x24c0; };
+        struct { char _p4567[9424]; int x24c4; };
+        struct { char _p4622[9432]; struct {
+            union {
+                char _mex_span[132];
+                struct { unsigned char matchType : 3; };
+                struct { unsigned char : 3; unsigned char hudPos : 3; };
+                struct { char _p4570[1]; unsigned char timer_unk2 : 1; };
+                struct { char _p4571[1]; unsigned char : 1; unsigned char unk4 : 1; };
+                struct { char _p4572[1]; unsigned char : 2; unsigned char hideReady : 1; };
+                struct { char _p4573[1]; unsigned char : 3; unsigned char hideGo : 1; };
+                struct { char _p4574[1]; unsigned char : 4; unsigned char isDisableMusic : 1; };
+                struct { char _p4575[1]; unsigned char : 5; unsigned char unk3 : 1; };
+                struct { char _p4576[1]; unsigned char : 6; unsigned char timer_unk : 1; };
+                struct { char _p4577[1]; unsigned char : 7; unsigned char unk2 : 1; };
+                struct { char _p4578[2]; unsigned char unk9 : 1; };
+                struct { char _p4579[2]; unsigned char : 1; unsigned char disableOffscreenDamage : 1; };
+                struct { char _p4580[2]; unsigned char : 2; unsigned char unk8 : 1; };
+                struct { char _p4581[2]; unsigned char : 3; unsigned char isSingleButtonMode : 1; };
+                struct { char _p4582[2]; unsigned char : 4; unsigned char isDisablePause : 1; };
+                struct { char _p4583[2]; unsigned char : 5; unsigned char unk7 : 1; };
+                struct { char _p4584[2]; unsigned char : 6; unsigned char isCreateHUD : 1; };
+                struct { char _p4585[2]; unsigned char : 7; unsigned char unk5 : 1; };
+                struct { char _p4586[3]; unsigned char isShowScore : 1; };
+                struct { char _p4587[3]; unsigned char : 1; unsigned char isShowAnalogStick : 1; };
+                struct { char _p4588[3]; unsigned char : 2; unsigned char isCheckForZRetry : 1; };
+                struct { char _p4589[3]; unsigned char : 3; unsigned char isShowZRetry : 1; };
+                struct { char _p4590[3]; unsigned char : 4; unsigned char isCheckForLRAStart : 1; };
+                struct { char _p4591[3]; unsigned char : 5; unsigned char isShowLRAStart : 1; };
+                struct { char _p4592[3]; unsigned char : 6; unsigned char isHidePauseHUD : 1; };
+                struct { char _p4593[3]; unsigned char : 7; unsigned char timerRunOnPause : 1; };
+                struct { char _p4594[4]; unsigned char unk11 : 1; };
+                struct { char _p4595[4]; unsigned char : 1; unsigned char isCheckStockSteal : 1; };
+                struct { char _p4596[4]; unsigned char : 2; unsigned char isRunStockLogic : 1; };
+                struct { char _p4597[4]; unsigned char : 3; unsigned char x4_10 : 1; };
+                struct { char _p4598[4]; unsigned char : 4; unsigned char x4_08 : 1; };
+                struct { char _p4599[5]; unsigned char no_check_end : 1; };
+                struct { char _p4600[5]; unsigned char : 1; unsigned char isSkipUnkStockCheck : 1; };
+                struct { char _p4601[5]; unsigned char : 2; unsigned char no_hit : 1; };
+                struct { char _p4602[6]; u8 bombRain; };
+                struct { char _p4603[7]; u8 x7; };
+                struct { char _p4604[8]; u8 is_teams; };
+                struct { char _p4605[9]; u8 use_ko_count; };
+                struct { char _p4606[10]; u8 xa; };
+                struct { char _p4607[11]; s8 itemFreq; };
+                struct { char _p4608[12]; s8 sd_penalty; };
+                struct { char _p4609[13]; u8 xd; };
+                struct { char _p4610[14]; u16 stage; };
+                struct { char _p4611[16]; int timer_seconds; };
+                struct { char _p4612[20]; u8 timer_subseconds; };
+                struct { char _p4613[24]; int x88; };
+                struct { char _p4614[32]; u64 itemSwitch; };
+                struct { char _p4615[40]; int x28; };
+                struct { char _p4616[44]; float quake_mult; };
+                struct { char _p4617[48]; float dmg_ratio; };
+                struct { char _p4618[52]; float match_speed; };
+                struct { char _p4619[80]; void *onStartMelee; };
+                struct { char _p4620[104]; void *onMatchEnd; };
+                struct { char _p4621[128]; int x5c; };
+            };
+        } match; };
+    };
+};
+
+// static Match *stc_match = (void *)0x8046b6a0;
+extern void *mu_tmce_ref_stc_match;
+#define stc_match ((Match *)((char *)mu_tmce_ref_stc_match + 0))
+// static MatchCamera *stc_matchcam = (void *)0x80452c68;
+extern void *mu_tmce_ref_stc_matchcam;
+#define stc_matchcam ((MatchCamera *)((char *)mu_tmce_ref_stc_matchcam + 0))
+extern char mu_mx_cm_804D6464[] __asm__("cm_804D6464");
+static COBJ **stc_matchcam_cobj = (void *)(mu_mx_cm_804D6464 + 0);
+// static MatchHUD *stc_matchhud = (void *)0x804a0fd8;
+extern void *mu_tmce_ref_stc_matchhud;
+#define stc_matchhud ((MatchHUD *)((char *)mu_tmce_ref_stc_matchhud + 0))
+extern char mu_mx_ifMagnify_804A1DE0[] __asm__("ifMagnify_804A1DE0");
+static MatchOffscreen *stc_match_offscreen = (void *)(mu_mx_ifMagnify_804A1DE0 + 0);
+// static MatchNametags *stc_match_nametags = (void *)0x804a1ed0;
+extern void *mu_tmce_ref_stc_match_nametags;
+#define stc_match_nametags ((MatchNametags *)((char *)mu_tmce_ref_stc_match_nametags + 0))
+extern char mu_mx_ifStatus_803F9628[] __asm__("ifStatus_803F9628");
+static ExclamData *stc_exclam_data = (void *)(mu_mx_ifStatus_803F9628 + 0); // 8 of these
+// static HSD_Archive **stc_ifall_archive = (void *)0x804d6d5c;
+extern void *mu_tmce_ref_stc_ifall_archive;
+#define stc_ifall_archive ((HSD_Archive * *)((char *)mu_tmce_ref_stc_ifall_archive + 0))
+extern char mu_mx_cm_804D6468[] __asm__("cm_804D6468");
+static CmSubject **stc_match_camera_subject = (void *)(mu_mx_cm_804D6468 + 0); // linked list of all camera boxes
+// static int *stc_match_canvas = (void *)0x804a1f58;
+extern void *mu_tmce_ref_stc_match_canvas;
+#define stc_match_canvas ((int *)((char *)mu_tmce_ref_stc_match_canvas + 0))
+extern char mu_mx_flash_gobj[] __asm__("flash_gobj");
+static GOBJ **stc_match_screencolor_gobj = (void *)(mu_mx_flash_gobj + 0);
+// static u8 *stc_hud_is_hidden = (void *)0x804D6D6C;
+extern void *mu_tmce_ref_stc_hud_is_hidden;
+#define stc_hud_is_hidden ((u8 *)((char *)mu_tmce_ref_stc_hud_is_hidden + 0))
+// static u8 *stc_develop_hide_hud = (void *)0x804d6d58; //
+extern void *mu_tmce_ref_stc_develop_hide_hud;
+#define stc_develop_hide_hud ((u8 *)((char *)mu_tmce_ref_stc_develop_hide_hud + 0))
+// static float *stc_match_fgm_volume = R13_OFFSET(-0x7dbc);
+extern void *mu_tmce_ref_stc_match_fgm_volume;
+#define stc_match_fgm_volume ((float *)((char *)mu_tmce_ref_stc_match_fgm_volume + 0))
+// static float *stc_match_bgm_volume = R13_OFFSET(-0x7db8);
+extern void *mu_tmce_ref_stc_match_bgm_volume;
+#define stc_match_bgm_volume ((float *)((char *)mu_tmce_ref_stc_match_bgm_volume + 0))
+// static JOBJDesc **stc_intro_scene_data = R13_OFFSET(-0x50a4);
+extern void *mu_tmce_ref_stc_intro_scene_data;
+#define stc_intro_scene_data ((JOBJDesc * *)((char *)mu_tmce_ref_stc_intro_scene_data + 0))
+// static HSD_Archive **stc_intro_archive = R13_OFFSET(-0x50ac);
+extern void *mu_tmce_ref_stc_intro_archive;
+#define stc_intro_archive ((HSD_Archive * *)((char *)mu_tmce_ref_stc_intro_archive + 0))
+// static HSD_Archive **stc_viwait_archive = R13_OFFSET(-0x474c);
+extern void *mu_tmce_ref_stc_viwait_archive;
+#define stc_viwait_archive ((HSD_Archive * *)((char *)mu_tmce_ref_stc_viwait_archive + 0))
+
+/*** Functions ***/
+CmSubject *CameraSubject_Alloc();
+void CameraSubject_Destroy(CmSubject *cam);
+void KOCount_Init(int updateCallback);
+void KOCount_Update(int KOs);
+void Stage_CameraLimitInitialization();
+void Stage_BlastzoneInitialization();
+Match *Match_GetMatchData();
+void Match_SetEndGraphic(int graphic);
+void Match_DisplayEndGraphic(void *cb);
+void Match_EndImmediate();
+void Match_EndVS();
+void Match_FadeScreen(int time);
+int Match_CheckIfTeams();
+int Match_CheckIfStock();
+int Match_CheckIfFriendlyFire();
+void Match_SetPostMatchSFX(int sfx);
+void Match_FreezeGame(int freeze_kind);
+void Match_UnfreezeGame(int freeze_kind);
+void Match_CreateHUD(int ply);
+void Match_HideHUD();
+void Match_ShowHUD();
+void Match_HidePercents();
+void Match_ShowPercents();
+void Match_ShowTimer();
+void Match_HideTimer();
+void Match_CorrectCamera();
+void Match_SetNormalCamera();
+void Match_SetFreeCamera(int unk, int unk2);
+void Match_SetZoomCamera(int unk, int unk2);
+void Match_SetFixedCamera();
+void Match_SetDevelopCamera();
+void DevCam_AdjustRotate(COBJ *cobj, Vec3 *wobjpos, Vec3 *rotate, float stickX, float stickY);
+void DevCam_AdjustPan(COBJ *cobj, float stickX, float stickY);
+void DevCam_AdjustZoom(COBJ *cobj, float stickY);
+void ScreenFlash_Create(int kind, int unk);
+void ScreenRumble_Execute(int kind, Vec3 *pos);
+void Match_StoreGoCallback(GOBJ *gobj, void *cb);
+void Match_CreateExclamation(int exclam, int is_play_sfx, int sfx, int r6, void *cb, void *cb2);
+void Match_AdjustSoundOnPause(int is_pause);
+Vec3 *Match_GetPlayerHUDPos(int ply);
+COBJ *Match_GetCObj();
+float Match_GetDamageRatio();
+void Match_CreateGOExclamation();
+void Match_EnableFighterInputs();
+void Match_ApplyScreenColAnim(int colanim_index, int unk);
+void Match_SetStageRenderFlags(int flags);
+u8 Match_CheckHUDHiddenDevelop();
+void Match_ShowHUDDevelop();
+void Match_HideHUDDevelop();
+u8 Match_IsHUDHiddenDevelop();
+void Match_InitCameraSubjects(int unk);
+void Match_InitFighters(); // allocs hsd obj for fighterdata
+void Match_InitUnk1();
+void Match_InitUnk2();
+void Match_InitStage();
+void Match_LoadStage(GrExternal gr_kind, int unk);
+void Match_LoadCommonItems();
+void Match_LoadPdPm();
+void Match_InitCrowdReact();
+void Match_InitItems(); // allocs hsd obj for itemdata
+void Match_CreateStage();
+void Match_CreateCamera();
+void Match_CameraThink();
+void Match_CameraSetFOV(float fov);
+void Match_InitEffects();
+void Match_IndexAuxAnim(CharacterKind c_kind, HSD_Archive *archive, int anim_kind);
+void Match_ClearAuxAnim();
+char *Match_GetVIWaitFilename(CharacterKind c_kind);
+
+void MatchInfo_0x0010_store(int unk);
+#endif

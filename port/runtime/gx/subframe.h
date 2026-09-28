@@ -21,6 +21,9 @@ namespace gx {
 
 struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, cuts = 0; uint32_t missing = 0, hud = 0, state = 0, geometry = 0, projection = 0, state_register = 256, authored = 0, carried = 0, vertex_blended = 0;
   uint32_t skinned = 0;   // skinned (character model) draws in the current frame; zero on menus and stage select
+  // Draws actually re-posed from their authored channels this presentation (route 1). `authored`
+  // also counts the matrix-blend fallback taken by draws that have no authored pose.
+  uint32_t posed = 0, posed_skinned = 0;
   // Draws whose pairing outcome differs from the previous simulation frame. A total says how many
   // objects are held; this says how many are CHANGING between held and re-posed, which is what an
   // object flashing actually is: a steady hold is invisible, alternating is not.

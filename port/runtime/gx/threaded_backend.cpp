@@ -6,11 +6,12 @@
 #include "threaded_backend.h"
 #include "frame_queue.h"
 #include "gx_backend.h"
-#include "gx_d3d12.h"
+#include "render_options.h"
 #include "host.h"
 #include "subframe.h"
 #include "authored_pose.h"
 #include "window.h"
+#include "gx_core.h"
 #include <algorithm>
 #include <chrono>
 #include <string>
@@ -19,6 +20,10 @@
 #include <future>
 #include <cmath>
 #include <thread>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 namespace gx {
 namespace {
 
@@ -27,7 +32,7 @@ constexpr double SIM_PERIOD = 1.0 / 60.0;
 class ThreadedBackend final : public Backend {
   FrameQueue queue;
   std::thread worker;
-  D3D12Options options_;
+  RenderOptions options_;
 
   // Runs on the render thread.
   void present_loop(Backend* renderer) {
@@ -50,7 +55,7 @@ class ThreadedBackend final : public Backend {
           file = std::fopen(path.c_str(), "w");
           if (!file) throw std::runtime_error("cannot open frame timing CSV");
           std::setvbuf(file, nullptr, _IOFBF, 1024 * 1024);
-          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms,draws,missing,hud,state,geometry,projection,state_register,skinned\n", file);
+          std::fputs("presentation,simulation,phase,source_age_ms,interval_ms,solver_ms,submit_ms,present_wait_ms,authored_draws,paired_draws,sim_ms,draws,missing,hud,state,geometry,projection,state_register,skinned,posed,posed_skinned\n", file);
         }
       }
       ~Trace() { if (file) std::fclose(file); }
@@ -60,6 +65,13 @@ class ThreadedBackend final : public Backend {
     double stats_time = next_present; uint64_t stats_presented = 0, stats_sim = 0, stats_lines = 0;
     uint32_t phase_bins[5] = {};
     double build_seconds = 0, submit_seconds = 0; uint64_t cost_presented = 0;   // presented phases: [0,.25) [.25,.5) [.5,.75) [.75,1) exactly 1
+    // MELEE_TRACE_LATENCY=1: the path of each new simulation frame from its tick to the return of
+    // its first Present, in milliseconds, summarised as median and p95 every 600 frames.
+    enum { LT_WAKE, LT_PAD, LT_SIM, LT_PICKUP, LT_SUBMIT, LT_WAIT, LT_TOTAL, LT_AGE, LT_COUNT };
+    static const char* const kLatencyNames[LT_COUNT] = {"wake late", "pad read after wake", "pad read to queued", "queued to submit", "submit", "present wait", "pad read to Present return", "adapter report age"};
+    std::vector<double> latency[LT_COUNT];
+    const bool latency_trace = host::latency_trace_enabled();
+    uint64_t latency_sequence = 0;
     for (;;) {
       host::window_pump();
       const auto& live_options = render_options(renderer);
@@ -85,6 +97,7 @@ class ThreadedBackend final : public Backend {
       }
       authored = live_options.subframe == SubFrameMode::Authored || live_options.subframe == SubFrameMode::AuthoredInterpolate;
       interpolate = live_options.subframe == SubFrameMode::Interpolate || live_options.subframe == SubFrameMode::AuthoredInterpolate;
+      set_authored_capture_wanted(subframes && authored);
       // The menus, the character select and the stage select are moved by game code that stops
       // without warning, so predicting ahead overshoots a cursor and snaps back. Interpolating
       // between the last two frames never overshoots, and a menu does not need the frame of
@@ -197,12 +210,33 @@ class ThreadedBackend final : public Backend {
       const double render_end = host::now_seconds();
       const double present_wait = renderer->presentation_wait_seconds();
       render_budget = std::max(render_budget * 0.95, render_end-render_start-present_wait+0.0002);
-      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f,%u,%u,%u,%u,%u,%u,%u,%u\n",
+      if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
           (unsigned long long)(presented+1), (unsigned long long)current.sequence, t,
           (render_start-current.time)*1000.0, last_submission ? (render_end-last_submission)*1000.0 : 0.0,
           solver_ms, (render_end-render_start-present_wait)*1000.0-solver_ms, present_wait*1000.0, solver.stats().authored, solver.stats().paired, host::last_sim_frame_ms(),
           solver.stats().draws, solver.stats().missing, solver.stats().hud, solver.stats().state, solver.stats().geometry,
-          solver.stats().projection, solver.stats().state_register, solver.stats().skinned);
+          solver.stats().projection, solver.stats().state_register, solver.stats().skinned,
+          solver.stats().posed, solver.stats().posed_skinned);
+      if (latency_trace && current.sequence != latency_sequence && current.tick.pad > 0) {
+        latency_sequence = current.sequence;
+        const host::TickTiming& k = current.tick;
+        const double v[LT_COUNT] = {k.wake - k.target, k.pad - k.wake, current.time - k.pad, render_start - current.time,
+                                    render_end - render_start - present_wait, present_wait, render_end - k.pad, k.pad_age / 1000.0};
+        for (int i = 0; i < LT_COUNT; ++i) if (i != LT_AGE || k.pad_age >= 0) latency[i].push_back(v[i] * 1000.0);
+        if (latency[LT_TOTAL].size() == 600) {
+          std::string line = "latency trace (600 frames, median/p95 ms):";
+          for (int i = 0; i < LT_COUNT; ++i) {
+            auto& s = latency[i];
+            if (s.empty()) continue;
+            std::sort(s.begin(), s.end());
+            char part[96];
+            std::snprintf(part, sizeof part, " %s %.2f/%.2f |", kLatencyNames[i], s[s.size() / 2], s[s.size() * 95 / 100]);
+            line += part;
+            s.clear();
+          }
+          host::log("%s adapter %.0f Hz", line.c_str(), host::gcadapter_poll_rate_hz());
+        }
+      }
       last_submission = render_end;
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
@@ -216,9 +250,9 @@ class ThreadedBackend final : public Backend {
       double now = host::now_seconds();
       if (now - stats_time >= 1.0) {
         const SubFrameStats& s = solver.stats();
-        wchar_t title[160];
-        _snwprintf_s(title, _TRUNCATE, L"Melee Unlocked  |  DISPLAY %.0f fps%s  |  game logic %.0f Hz (always 60, like Rivals' physics)  |  %s  |  draws %u paired %u",
-                     stats_presented / (now - stats_time), cap_period > 0 ? L" (capped)" : L" (uncapped)", stats_sim / (now - stats_time),
+        wchar_t title[256];
+        _snwprintf_s(title, _TRUNCATE, L"%ls  |  DISPLAY %.0f fps%s  |  game logic %.0f Hz (always 60, like Rivals' physics)  |  %s  |  draws %u paired %u",
+                     host::window_title_base().c_str(), stats_presented / (now - stats_time), cap_period > 0 ? L" (capped)" : L" (uncapped)", stats_sim / (now - stats_time),
                      !subframes ? L"locked" : authored ? L"authored" : interpolate ? L"interpolate" : L"extrapolate", s.draws, s.paired);
         host::window_set_title(title);
         if (++stats_lines % 5 == 0) {
@@ -250,7 +284,7 @@ class ThreadedBackend final : public Backend {
                         (unsigned long long)a.split, (unsigned long long)a.checked, a.worst);
           }
           if (subframes) std::memset(phase_bins, 0, sizeof phase_bins);
-          host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), render_profile_line().c_str());
+          host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), render_profile_line(renderer).c_str());
           build_seconds = submit_seconds = 0; cost_presented = 0;
           if (authored) {
             const AuthoredStats& a = authored_stats();
@@ -264,6 +298,8 @@ class ThreadedBackend final : public Backend {
             for (int i = 0; i < FEAT_COUNT; ++i)
               if (a.feature[i]) features += std::string(" ") + kCaptureFeatureNames[i] + "=" + std::to_string(a.feature[i]);
             if (!features.empty()) line += " | unevaluated joint features:" + features;
+            line += " | envelope captured " + std::to_string(a.captured_envelope) + " sampled " + std::to_string(a.sampled_envelope);
+            line += " | posed draws " + std::to_string(a.posed_draws) + " (envelope " + std::to_string(a.posed_draws_envelope) + ", skinned draws " + std::to_string(a.skinned_draws) + ")";
             host::log("%s", line.c_str());
           }
         }
@@ -275,13 +311,16 @@ class ThreadedBackend final : public Backend {
   }
 
  public:
-  ThreadedBackend(D3D12Options options, bool visible) : options_(options) {
+  ThreadedBackend(RenderOptions options, bool visible) : options_(options) {
     std::promise<void> initialized;
     auto ready = initialized.get_future();
     worker = std::thread([this, options, visible, init = std::move(initialized)]() mutable {
+      // Above normal so other programs cannot delay presentation; below the simulation thread
+      // (main.cpp), which an unlocked renderer would otherwise starve.
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
       bool started = false;
       try {
-        void* window = host::window_create(options.window_w, options.window_h, L"Melee Unlocked (development)", visible);
+        void* window = host::window_create(options.window_w, options.window_h, host::window_title_base().c_str(), visible);
         if (options.fullscreen && !options.exclusive_fullscreen) host::window_set_fullscreen(true);
         // The swapchain must match the window as it is now (fullscreen covers the monitor, not window_w x window_h).
         int client_w = options.window_w, client_h = options.window_h;
@@ -319,7 +358,7 @@ class ThreadedBackend final : public Backend {
   }
 };
 }
-std::unique_ptr<Backend> create_threaded_backend(const D3D12Options& options, bool visible) {
+std::unique_ptr<Backend> create_threaded_backend(const RenderOptions& options, bool visible) {
   return std::make_unique<ThreadedBackend>(options, visible);
 }
 }

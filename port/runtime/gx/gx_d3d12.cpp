@@ -96,7 +96,7 @@ namespace {
 #endif
 
 // execute_draw section costs (seconds) and draw count since the last profile line.
-double g_prof[8]; uint64_t g_prof_draws = 0, g_pso_hits = 0, g_pso_lookups = 0, g_pso_creates = 0, g_pso_skips = 0;
+double g_prof[12]; uint64_t g_prof_frames = 0; uint64_t g_prof_draws = 0, g_pso_hits = 0, g_pso_lookups = 0, g_pso_creates = 0, g_pso_skips = 0;
 struct Stopwatch {
   static double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
   double t = now(); double lap() { double n = now(), d = n - t; t = n; return d; }
@@ -195,6 +195,9 @@ static std::atomic<uint64_t> next_backend_id{1};
 class D3D12Backend : public Backend {
  public:
   D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); start_pso_workers(); prewarm_pipelines();
+    // With DLSS on, the first menu frames still create the DLSS, DLSS 5 and frame generation
+    // features (about half a second on one frame), so the panel stays up until they are done.
+    if (opts_.dlss_mode != 0) host::loading_show(L"Starting NVIDIA DLSS", 4, 4); else host::loading_close();
 #ifdef GX_PC_SETTINGS
     if (opts_.pc_settings) settings_ui_ = std::make_unique<PcSettingsUI>(hwnd, device_.Get(), queue_.Get(), opts_);
 #endif
@@ -223,6 +226,13 @@ class D3D12Backend : public Backend {
     if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: Streamline left for process exit");
     if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend destroyed"); }
   const D3D12Options& options() const { return opts_; }
+  const RenderOptions* presentation_options() const override { return &opts_; }
+  void presentation_stats(uint32_t* frames, uint32_t* pipelines, uint32_t* textures) const override {
+    if (frames) *frames = frames_presented();
+    if (pipelines) *pipelines = pipeline_count();
+    if (textures) *textures = texture_count();
+  }
+  std::string profile_line() const override { return d3d12_profile_line(); }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
@@ -232,7 +242,7 @@ class D3D12Backend : public Backend {
   // table that still points at the freed one, and the GPU reads released memory (the crash on
   // changing internal resolution mid-match).
   void drop_efb_copies() { efb_copies_.clear(); texture_sets_.clear(); }
-  void resize(int w, int h) {
+  void resize(int w, int h) override {
     wait_gpu(); client_w_ = w; client_h_ = h; create_swapchain_targets(true);
     // Auto scale follows the window like Dolphin's "Auto (Window Size)" integral mode: the EFB is
     // re-created at the new multiplier and scaled EFB-copy textures are dropped (their size changed).
@@ -443,6 +453,25 @@ class D3D12Backend : public Backend {
   ComPtr<ID3D12PipelineState> blit_pso_;
   UINT rtv_size_ = 0, srv_size_ = 0, sampler_size_ = 0;
   Ring vertex_ring_, index_ring_, constant_ring_, upload_ring_;
+  // One simulation frame's geometry: its whole vertex stream and each draw's index list, uploaded on
+  // the frame's first presentation and read again by every sub-frame presentation of it. At several
+  // hundred presents a second each game frame is shown about ten times, and rebuilding and copying
+  // the same indices and vertices for every one of them was a third of the submit cost. Draws whose
+  // vertices are blended between frames still upload their own per present. A set is reused for a
+  // newer frame only after the GPU has finished the last present that read it (its fence).
+  struct FrameGeometry {
+    struct DrawIndex { uint32_t offset = 0, count = 0; uint8_t state = 0, lines = 0; };   // state 0 unbuilt, 1 cached, 2 fallback
+    uint64_t sequence = 0, fence = 0, last_use = 0;
+    ComPtr<ID3D12Resource> buffer;
+    uint8_t* cpu = nullptr;
+    D3D12_GPU_VIRTUAL_ADDRESS gpu = 0;
+    size_t capacity = 0, used = 0;
+    std::vector<DrawIndex> draws;
+  };
+  FrameGeometry geometry_[4];
+  FrameGeometry* geometry_frame_ = nullptr;   // the set of the frame being submitted, null when not cached
+  uint64_t geometry_uses_ = 0;
+  void select_frame_geometry(const Frame& frame);
   std::unordered_map<uint64_t, ComPtr<ID3DBlob>> vs_blobs_, ps_blobs_;
   std::unordered_map<PsoKey, ComPtr<ID3D12PipelineState>, PsoKeyHash> psos_;
   std::unordered_map<uint64_t, TextureEntry> textures_;       // key: hash of (addr, dims, format, data, tlut)
@@ -477,8 +506,12 @@ void D3D12Backend::init() {
     wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
     std::wstring dir(exe); size_t slash = dir.find_last_of(L"\\/"); if (slash != std::wstring::npos) dir.resize(slash);
     exe_dir_ = dir;
+    // The startup panel: a progress bar in the middle of the window from here until the game starts,
+    // so a slow driver or DLSS start never looks like a hang.
+    host::loading_show(L"Starting NVIDIA DLSS and Reflex", 1, 4);
     if (opts_.pc_settings || opts_.dlss_mode != 0 || opts_.reflex_mode != 0 || opts_.frame_generation_mode != 0)
     streamline::init(dir);
+    host::loading_show(L"Starting the graphics device", 2, 4);
   }
   ComPtr<IDXGIFactory4> factory;
   check(streamline::create_dxgi_factory2(0, &IID_PPV_ARGS_Helper_IID<IDXGIFactory4>(), (void**)factory.GetAddressOf()), "factory");
@@ -1617,18 +1650,74 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
 }
 
 // ---------------- draws ----------------
+void D3D12Backend::select_frame_geometry(const Frame& frame) {
+  geometry_frame_ = nullptr;
+  if (!frame.sequence || frame.vertices.empty()) return;
+  ++geometry_uses_;
+  for (FrameGeometry& g : geometry_)
+    if (g.sequence == frame.sequence && g.draws.size() == frame.draws.size()) { g.last_use = geometry_uses_; geometry_frame_ = &g; return; }
+  FrameGeometry* pick = &geometry_[0];
+  for (FrameGeometry& g : geometry_) if (g.last_use < pick->last_use) pick = &g;
+  wait_fence(pick->fence);   // the last present that read it has finished on the GPU
+  const size_t vbytes = frame.vertices.size() * sizeof(Vertex);
+  // Room for the vertices plus index lists: strips and fans can need three indices per vertex.
+  const size_t want = ((vbytes + 255) & ~size_t(255)) + frame.vertices.size() * 12 + (1 << 20);
+  if (pick->capacity < want) {
+    const size_t size = std::max(want + want / 4, size_t(8) << 20);
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_UPLOAD};
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = size; rd.Height = 1;
+    rd.DepthOrArraySize = 1; rd.MipLevels = 1; rd.SampleDesc.Count = 1;
+    rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    pick->buffer.Reset(); pick->cpu = nullptr; pick->capacity = 0;
+    if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_GENERIC_READ,
+                                                nullptr, IID_PPV_ARGS(&pick->buffer))) ||
+        FAILED(pick->buffer->Map(0, nullptr, (void**)&pick->cpu))) {
+      pick->buffer.Reset(); pick->sequence = 0; return;
+    }
+    pick->capacity = size;
+    pick->gpu = pick->buffer->GetGPUVirtualAddress();
+  }
+  std::memcpy(pick->cpu, frame.vertices.data(), vbytes);
+  pick->used = (vbytes + 255) & ~size_t(255);
+  pick->draws.assign(frame.draws.size(), FrameGeometry::DrawIndex{});
+  pick->sequence = frame.sequence;
+  pick->last_use = geometry_uses_;
+  geometry_frame_ = pick;
+}
+
 void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const DrawMatrices* override_matrices) {
   // The Lab view is painting over this frame: nothing the game draws would be seen.
   if (lab_skip_scene_) return;
   // "Visual effects" below Full: decorative draws in a match are skipped (see skip_for_effects).
   if (skip_for_effects(frame, dc, opts_.effects_level)) return;
 
-  // Build index list (triangle list / line list) from the GX primitive.
   Stopwatch sw;
-  auto& idx = index_scratch_; idx.clear();
   const uint32_t n = dc.vertex_count;
   D3D12_PRIMITIVE_TOPOLOGY_TYPE topo = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   D3D12_PRIMITIVE_TOPOLOGY prim = D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
+  uint8_t* vcpu; D3D12_GPU_VIRTUAL_ADDRESS vgpu, igpu;
+  size_t vbytes = (size_t)n * sizeof(Vertex);
+  uint32_t index_count = 0;
+  // This frame's geometry set, when the draw's own vertices are the frame's (not blended this present).
+  FrameGeometry::DrawIndex* cached = nullptr;
+  if (geometry_frame_ && !(override_matrices && override_matrices->vertices) && !frame.draws.empty() &&
+      &dc >= frame.draws.data() && &dc < frame.draws.data() + frame.draws.size() &&
+      (size_t)dc.first_vertex + n <= frame.vertices.size()) {
+    FrameGeometry::DrawIndex& d = geometry_frame_->draws[(size_t)(&dc - frame.draws.data())];
+    if (d.state != 2) cached = &d;
+  }
+  if (cached && cached->state == 1) {
+    if (!cached->count) return;
+    ++g_prof_draws; g_prof[0] += sw.lap();
+    if (cached->lines) { topo = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE; prim = D3D_PRIMITIVE_TOPOLOGY_LINELIST; }
+    vgpu = geometry_frame_->gpu + (D3D12_GPU_VIRTUAL_ADDRESS)dc.first_vertex * sizeof(Vertex);
+    igpu = geometry_frame_->gpu + cached->offset;
+    index_count = cached->count;
+    g_prof[1] += sw.lap();
+  } else {
+  // Build index list (triangle list / line list) from the GX primitive.
+  auto& idx = index_scratch_; idx.clear();
   auto append_indices = [&](uint32_t primitive, uint32_t count, uint32_t base) {
     if (append_segment_indices(idx, primitive, count, base) == DrawTopology::Lines) {
       topo = D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE;
@@ -1644,18 +1733,38 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   } else {
     append_indices(dc.primitive, dc.vertex_count, 0);
   }
+  if (cached) {
+    // First use of this draw in this frame: keep its indices in the frame's set for later presents.
+    const size_t ibytes = idx.size() * 4, at = (geometry_frame_->used + 3) & ~size_t(3);
+    if (idx.empty()) {
+      cached->count = 0; cached->state = 1;
+    } else if (at + ibytes <= geometry_frame_->capacity) {
+      std::memcpy(geometry_frame_->cpu + at, idx.data(), ibytes);
+      geometry_frame_->used = at + ibytes;
+      cached->offset = (uint32_t)at; cached->count = (uint32_t)idx.size();
+      cached->lines = topo == D3D12_PRIMITIVE_TOPOLOGY_TYPE_LINE; cached->state = 1;
+    } else {
+      cached->state = 2;   // no room: this draw uploads per present, as before
+      cached = nullptr;
+    }
+  }
   if (idx.empty()) return;
   ++g_prof_draws; g_prof[0] += sw.lap();   // index generation
-  // Vertices
-  uint8_t* vcpu; D3D12_GPU_VIRTUAL_ADDRESS vgpu;
-  size_t vbytes = (size_t)n * sizeof(Vertex);
-  if (!vertex_ring_.alloc(vbytes, 16, &vcpu, &vgpu)) { host::log("d3d12: vertex ring full"); return; }
-  const Vertex* vsrc = (override_matrices && override_matrices->vertices) ? override_matrices->vertices : &frame.vertices[dc.first_vertex];
-  memcpy(vcpu, vsrc, vbytes);
-  uint8_t* icpu; D3D12_GPU_VIRTUAL_ADDRESS igpu;
-  if (!index_ring_.alloc(idx.size() * 4, 4, &icpu, &igpu)) { host::log("d3d12: index ring full"); return; }
-  memcpy(icpu, idx.data(), idx.size() * 4);
+  index_count = (uint32_t)idx.size();
+  if (cached) {
+    vgpu = geometry_frame_->gpu + (D3D12_GPU_VIRTUAL_ADDRESS)dc.first_vertex * sizeof(Vertex);
+    igpu = geometry_frame_->gpu + cached->offset;
+  } else {
+    // Vertices
+    if (!vertex_ring_.alloc(vbytes, 16, &vcpu, &vgpu)) { host::log("d3d12: vertex ring full"); return; }
+    const Vertex* vsrc = (override_matrices && override_matrices->vertices) ? override_matrices->vertices : &frame.vertices[dc.first_vertex];
+    memcpy(vcpu, vsrc, vbytes);
+    uint8_t* icpu;
+    if (!index_ring_.alloc(idx.size() * 4, 4, &icpu, &igpu)) { host::log("d3d12: index ring full"); return; }
+    memcpy(icpu, idx.data(), idx.size() * 4);
+  }
   g_prof[1] += sw.lap();   // vertex/index upload
+  }
   // Constants
   uint8_t* ccpu; D3D12_GPU_VIRTUAL_ADDRESS vs_gpu, ps_gpu;
   // Only the part of the block this draw's shader can read is uploaded: the post-transform and
@@ -1725,11 +1834,11 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   list_->RSSetViewports(1, &viewport);
   list_->RSSetScissorRects(1, &scissor);
   D3D12_VERTEX_BUFFER_VIEW vbv{vgpu, (UINT)vbytes, sizeof(Vertex)};
-  D3D12_INDEX_BUFFER_VIEW ibv{igpu, (UINT)(idx.size() * 4), DXGI_FORMAT_R32_UINT};
+  D3D12_INDEX_BUFFER_VIEW ibv{igpu, (UINT)(index_count * 4), DXGI_FORMAT_R32_UINT};
   list_->IASetVertexBuffers(0, 1, &vbv);
   list_->IASetIndexBuffer(&ibv);
   list_->IASetPrimitiveTopology(prim);
-  list_->DrawIndexedInstanced((UINT)idx.size(), 1, 0, 0, 0);
+  list_->DrawIndexedInstanced((UINT)index_count, 1, 0, 0, 0);
   g_prof[5] += sw.lap();   // state + draw calls
 }
 
@@ -1909,10 +2018,11 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
       n.mvec = mvec_.Get(); n.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
       n.guide_x = in.in_left; n.guide_y = in.in_top; n.guide_w = in.in_w; n.guide_h = in.in_h;
       n.reset = dlss5_reset_; n.tuning = opts_.dlss5_tuning;
+      n.fence = fence_.Get(); n.signal_value = fence_value_ + 1;
       if (timing) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 2);
-      dlss5::evaluate(n);
+      const bool neural_ok = dlss5::evaluate(n);
       if (timing) { list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 3); timer_mask_[slot_] |= 2; }
-      dlss5_reset_ = false;
+      dlss5_reset_ = !neural_ok;
     } else {
       dlss5_reset_ = true;
     }
@@ -1936,6 +2046,7 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
     n.mvec = mvec_.Get(); n.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     n.guide_x = 0; n.guide_y = 0; n.guide_w = (uint32_t)efb_w_; n.guide_h = (uint32_t)efb_h_;
     n.reset = true; n.tuning = opts_.dlss5_tuning; n.warm_only = true;
+    n.fence = fence_.Get(); n.signal_value = fence_value_ + 1;
     dlss5::evaluate(n);
     dlss5_reset_ = true;
     ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
@@ -2281,6 +2392,8 @@ static void dump_frame(const Frame& frame, const std::string& path) {
 }
 
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
+  Stopwatch frame_sw;
+  struct FrameTimer { Stopwatch& sw; ~FrameTimer() { g_prof[11] += sw.lap(); ++g_prof_frames; } } frame_timer{frame_sw};
   video_bg::set_enabled(opts_.video_backgrounds);
   video_bg::begin_frame(frame.scene_major, frame.scene_minor);
   in_match_ = frame_in_match(frame);
@@ -2301,6 +2414,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // the old set, so drop it and let the next draw rebuild what it needs.
   if (settings_ui_ && settings_textures_dirty()) { wait_gpu(); textures_.clear(); texture_sets_.clear(); }
   if (settings_ui_) { settings_set_game_aspect(output_aspect()); settings_set_hud_snapshot(frame); }
+  Stopwatch ui_sw;
   if (settings_ui_ && settings_ui_->begin(opts_)) {
     apply_fullscreen_mode();
     if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
@@ -2308,6 +2422,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // Decided after the panel ran, because that is where the Lab view chose whether to cover this
   // frame; only a match is ever skipped, so menus draw as usual whatever the panel said.
   lab_skip_scene_ = settings_ui_ && opts_.lab_skip_scene && in_match_ && lab::covering();
+  g_prof[8] += ui_sw.lap();
 #endif
   // Texture packs can be switched on and off while the game runs. Every texture already uploaded
   // was built with (or without) its replacement, so the cache has to go; the GPU may still be
@@ -2358,6 +2473,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (scan_pending_[slot_]) read_flicker_scan();
   if (timer_pending_[slot_]) read_gpu_timers();
   vertex_ring_.reset(slot_); index_ring_.reset(slot_); constant_ring_.reset(slot_); upload_ring_.reset(slot_);
+  select_frame_geometry(frame);
   frame_garbage_[slot_].clear();
   descriptor_garbage_[slot_].clear();
   swap_in_ready_replacements();
@@ -2412,6 +2528,8 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     // 2D screens, and the character select cursor left trails through it.
     const bool in_match = frame_in_match(frame);
     if (in_match != dlss_in_match_) { dlss_in_match_ = in_match; fc.reset = true; dlss_reset_ = true; xess_reset_ = true; }
+    // DLSS is first evaluated in a match; create its feature on a menu frame instead (no stall).
+    if (!in_match && dlss_active_) streamline::dlss_allocate(list_.Get());
     // Tried: menus through DLAA and DLSS 5 when DLSS 5 is on. The neural pass put blocks around the
     // flat menu art and the cursor, so menus stay as rendered and DLSS 5 waits for a match.
     dlss_menus_ = false;
@@ -2495,7 +2613,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       }
     } else {
       const EfbCopy& c = frame.copies[cmd.index];
-      if (c.to_xfb) { if (!skip_present_) { present_efb(c, dxr_scene_ready ? &dxr_scene : nullptr); presented = true; } }
+      if (c.to_xfb) { if (!skip_present_) { Stopwatch pe_sw; present_efb(c, dxr_scene_ready ? &dxr_scene : nullptr); g_prof[9] += pe_sw.lap(); presented = true; } }
       else execute_copy(c);
       if (c.clear) clear_efb(c);
     }
@@ -2517,9 +2635,12 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     }
     present_wait_ = Stopwatch::now()-wait_start;
     streamline::pcl_marker(3); streamline::pcl_marker(4);
+    Stopwatch present_sw;
     swapchain_->Present(opts_.vsync ? 1 : 0, (!opts_.vsync && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    g_prof[10] += present_sw.lap();
     streamline::pcl_marker(5);
     ++frames_presented_;
+    if (frames_presented_ == 90) host::loading_close();   // the startup panel (see the constructor)
     streamline::frame_generation_after_present();
     if (frames_presented_ % 600 == 0) streamline::log_frame_generation();
   }
@@ -2527,6 +2648,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   ++fence_value_;
   queue_->Signal(fence_.Get(), fence_value_);
   slot_fence_[slot_] = fence_value_;
+  if (geometry_frame_) geometry_frame_->fence = fence_value_;
   // F2: write the next N presented frames out, whatever the capture options say.
   if (presented) {
     unsigned want = g_capture_request.load(std::memory_order_relaxed);
@@ -2591,6 +2713,7 @@ static bool read_recipe_file(const std::string& path, std::vector<PipelineRecipe
 }
 
 void D3D12Backend::prewarm_pipelines() {
+  host::loading_show(L"Loading shaders", 3, 4);
   std::vector<PipelineRecipe> recipes;
   read_recipe_file(shader_cache_root_ + "/recipes.bin", recipes);
   std::error_code ec;
@@ -2628,14 +2751,21 @@ void D3D12Backend::prewarm_pipelines() {
   }
   pso_cv_.notify_all();
   const size_t total = psos_.size() + queued;
+  // A cache that is already warm finishes in a moment; the progress panel only appears once the
+  // wait is long enough to notice, so a normal launch never flashes it.
+  const double panel_after = host::now_seconds() + 0.4;
   for (;;) {
     integrate_compiled_psos();
     size_t pending = psos_pending_.size();
-    wchar_t title[128]; swprintf_s(title, L"Melee Unlocked  |  compiling shaders %zu / %zu", total - pending, total);
+    wchar_t title[192]; swprintf_s(title, L"%ls  |  compiling shaders %zu / %zu", host::window_title_base().c_str(), total - pending, total);
     host::window_set_title(title);
+    if (pending && host::now_seconds() >= panel_after)
+      host::loading_show(L"Compiling shaders (first launch of this version)", total - pending, total);
     if (!pending) break;
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
+  host::loading_close();
+  host::window_set_title(host::window_title_base().c_str());
   host::log("d3d12: prewarmed %zu pipelines from %zu recipes before guest startup in %.1f ms", psos_.size(), pipeline_recipes_.size(), timer.lap()*1000.0);
 }
 
@@ -2710,8 +2840,13 @@ std::string d3d12_profile_line() {
   snprintf(buf, sizeof buf, "%llu draws: index %.2f, upload %.2f, constants %.2f, pso %.2f, bind %.2f, draw %.2f us/draw | pso cache hits %llu, lookups %llu (uid %.2f + map %.2f us), created %llu, draws on the fallback pipeline while compiling %llu",
            (unsigned long long)g_prof_draws, 1e6 * g_prof[0] / n, 1e6 * g_prof[1] / n, 1e6 * g_prof[2] / n, 1e6 * g_prof[3] / n, 1e6 * g_prof[4] / n, 1e6 * g_prof[5] / n,
            (unsigned long long)g_pso_hits, (unsigned long long)g_pso_lookups, 1e6 * g_prof[6] / l, 1e6 * g_prof[7] / l, (unsigned long long)g_pso_creates, (unsigned long long)g_pso_skips);
-  std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pso_hits = g_pso_lookups = g_pso_creates = g_pso_skips = 0;
-  return buf;
+  const double f = (double)std::max<uint64_t>(1, g_prof_frames);
+  char tail[200];
+  snprintf(tail, sizeof tail, " | per frame: panel %.3f, present pass %.3f, Present %.3f, whole %.3f ms",
+           1e3 * g_prof[8] / f, 1e3 * g_prof[9] / f, 1e3 * g_prof[10] / f, 1e3 * g_prof[11] / f);
+  std::string line = std::string(buf) + tail;
+  std::memset(g_prof, 0, sizeof g_prof); g_prof_frames = 0; g_prof_draws = g_pso_hits = g_pso_lookups = g_pso_creates = g_pso_skips = 0;
+  return line;
 }
 
 Backend* create_d3d12_backend(void* hwnd, int w, int h, const D3D12Options& options) {

@@ -223,7 +223,7 @@ struct PcSettingsUID3D11::Impl {
   bool ready = false;
 };
 
-PcSettingsUID3D11::PcSettingsUID3D11(void* window, ID3D11Device* device, ID3D11DeviceContext* context, const D3D12Options& options)
+PcSettingsUID3D11::PcSettingsUID3D11(void* window, ID3D11Device* device, ID3D11DeviceContext* context, const RenderOptions& options)
     : impl_(std::make_unique<Impl>()) {
   impl_->state.open = options.settings_open;
   impl_->state.panel_anim_target_open = options.settings_open;
@@ -256,7 +256,7 @@ PcSettingsUID3D11::~PcSettingsUID3D11() {
   settings_context_destroy();
 }
 
-bool PcSettingsUID3D11::begin(D3D12Options& options) {
+bool PcSettingsUID3D11::begin(RenderOptions& options) {
   if (!impl_->ready) return false;
   return settings_frame(impl_->state, options);
 }

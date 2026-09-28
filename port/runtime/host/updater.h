@@ -8,7 +8,7 @@
 
 namespace host::updater {
 enum class State { Idle, Checking, UpToDate, UpdateAvailable, Downloading, ReadyToInstall, Failed };
-struct Release { std::string version; bool legacy = false; bool experimental = false; };
+struct Release { std::string version, published; bool legacy = false; bool experimental = false; };   // published: YYYY-MM-DD
 enum class RollbackState { Idle, Downloading, Ready, Failed };
 void check(const std::string& current_version, bool install_experimental = false); // true also offers the current version's complete experimental zip
 State state();

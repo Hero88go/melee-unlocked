@@ -202,6 +202,8 @@ HLE(AIStartDMA) {
   if (!s_ai_dma_running) {
     s_ai_next_tb = host::cpu->tb + (uint64_t)s_ai_dma_len * host::TB_HZ / 128000;
     host::log("audio: AI DMA started at %08X+%X (period %llu ticks)", s_ai_dma_addr, s_ai_dma_len, (unsigned long long)s_ai_dma_len * host::TB_HZ / 128000);
+    host::log("audio: AI clock phase retrace=%u next_tick_after_boundary=%lld", host::retrace_count(),
+              (long long)(s_ai_next_tb - (host::next_retrace_tb() - host::TB_PER_FRAME)));
   }
   s_ai_dma_running = true;
 }
@@ -216,7 +218,11 @@ void audio_tick(bool force) {
   if (!force && !ppc::interrupts_on(*host::cpu)) return;
   ticking = true;
   uint64_t period = (uint64_t)s_ai_dma_len * host::TB_HZ / 128000;   // bytes / (32 kHz * 4 bytes)
-  if (host::cpu->tb > s_ai_next_tb + period * 20) s_ai_next_tb = host::cpu->tb;   // long stall: skip ahead
+  if (host::cpu->tb > s_ai_next_tb + period * 20) {   // long stall: skip ahead
+    s_ai_next_tb = host::cpu->tb;
+    host::log("audio: AI clock skip retrace=%u next_tick_after_boundary=%lld", host::retrace_count(),
+              (long long)(s_ai_next_tb - (host::next_retrace_tb() - host::TB_PER_FRAME)));
+  }
   for (int guard = 0; guard < 8 && host::cpu->tb >= s_ai_next_tb; ++guard) {
     s_ai_next_tb += period;
     // The DMA that just completed played the buffer AX set up last time.

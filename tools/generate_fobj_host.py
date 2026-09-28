@@ -9,6 +9,8 @@ import sys
 
 root = Path(__file__).resolve().parents[1]
 base = root / 'melee/src/sysdolphin/baselib'
+if not base.exists():
+    base = root / 'sourceport/extern/melee/src/sysdolphin/baselib'
 source = (base / 'fobj.c').read_text()
 source = source[source.index('u32 HSD_FObjSetState'):source.index('HSD_FObj* HSD_FObjLoadDesc')]
 header = (base / 'fobj.h').read_text()
@@ -16,6 +18,7 @@ constants = header[header.index('#define HSD_A_OP_NONE'):header.index('struct HS
 structure = header[header.index('struct HSD_FObj {'):header.index('typedef struct _HSD_FObjDesc')]
 spline = (base / 'spline.c').read_text()
 spline = spline[spline.index('f32 splGetHelmite'):spline.index('static inline void splGetCardinalPoint')]
+spline = spline.replace('__builtin_fmaf(', 'std::fma(')
 start, end = source.index('static f32 parseFloat'), source.index('static u32 FObjLoadWait')
 source = source[:start] + r'''
 static thread_local const u8* stream_end;

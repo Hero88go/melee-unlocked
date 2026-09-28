@@ -4,6 +4,7 @@
 #include <stdexcept>
 #include <cstdio>
 static void check(bool ok, const char* why) { if (!ok) throw std::runtime_error(why); }
+namespace gx { bool authored_capture_wanted() { return true; } }   // gx_core.cpp, not linked here
 int main() {
   ppc::Context c{}; c.r[3]=0x80001000;
   { gx::RenderObserver scope(c,gx::Observe::AllocateJoint); }

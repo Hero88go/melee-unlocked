@@ -1,9 +1,12 @@
 // EXPERIMENTAL DLSS 5 Neural Rendering (see gx_dlss5.h).
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gx_dlss5.h"
+#include "gx_dlss5_scaling.h"
 #include "gx_streamline.h"
 #include "host.h"
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 #include <windows.h>
 #include <d3d12.h>
 #include <wrl/client.h>
@@ -13,6 +16,9 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <limits>
 
 #ifdef GX_DLSS5
 #include <nvsdk_ngx.h>
@@ -46,6 +52,11 @@ Tuning bounded_tuning(Tuning t) {
   t.skin = t.skin < 0.0f ? -1.0f : bound(t.skin, -1.0f, 0.0f, 10.0f);
   t.style = std::clamp(t.style, 0, 3);
   t.preset = std::clamp(t.preset, 0, 3);
+  t.resolution_scale = std::clamp(t.resolution_scale, 25, 100);
+  t.downsample_filter = std::clamp(t.downsample_filter, 0, 2);
+  t.upsample_filter = std::clamp(t.upsample_filter, 0, 2);
+  t.reconstruction = std::clamp(t.reconstruction, 0, 1);
+  t.passes = std::clamp(t.passes, 1, 4);
   return t;
 }
 }  // namespace
@@ -73,9 +84,13 @@ bool profile_save(const std::string& name, const Tuning& t) {
   std::ofstream f(profile_path(name));
   if (!f) return false;
   const Tuning saved = bounded_tuning(t);
+  f << std::setprecision(std::numeric_limits<float>::max_digits10);
   f << "# Melee Unlocked DLSS 5 profile\n"
        "intensity " << saved.intensity << "\ndetail " << saved.detail << "\ntone " << saved.tone << "\nskin " << saved.skin
     << "\nstyle " << saved.style << "\npreset " << saved.preset << "\nautomask " << (saved.auto_mask ? 1 : 0) << "\n";
+  f << "resolution " << saved.resolution_scale << "\ndownsample " << saved.downsample_filter
+    << "\nupsample " << saved.upsample_filter << "\nreconstruction " << saved.reconstruction
+    << "\npasses " << saved.passes << "\n";
   return f.good();
 }
 bool profile_load(const std::string& name, Tuning& t) {
@@ -83,18 +98,33 @@ bool profile_load(const std::string& name, Tuning& t) {
   std::ifstream f(profile_path(name));
   if (!f) return false;
   Tuning loaded;
-  std::string key; std::string value;
-  while (f >> key >> value) {
+  std::string line;
+  while (std::getline(f, line)) {
+    std::istringstream fields(line);
+    std::string key, value, extra;
+    if (!(fields >> key) || key[0] == '#') continue;
+    float* number = key == "intensity" ? &loaded.intensity : key == "detail" ? &loaded.detail :
+                    key == "tone" ? &loaded.tone : key == "skin" ? &loaded.skin : nullptr;
+    int* integer = key == "style" ? &loaded.style : key == "preset" ? &loaded.preset :
+                   key == "resolution" ? &loaded.resolution_scale : key == "downsample" ? &loaded.downsample_filter :
+                   key == "upsample" ? &loaded.upsample_filter : key == "reconstruction" ? &loaded.reconstruction :
+                   key == "passes" ? &loaded.passes : nullptr;
+    if (!number && !integer && key != "automask") continue;
+    if (!(fields >> value) || ((fields >> extra) && extra[0] != '#')) return false;
     try {
-      if (key == "intensity") loaded.intensity = std::stof(value);
-      else if (key == "detail") loaded.detail = std::stof(value);
-      else if (key == "tone") loaded.tone = std::stof(value);
-      else if (key == "skin") loaded.skin = std::stof(value);
-      else if (key == "style") loaded.style = std::stoi(value);
-      else if (key == "preset") loaded.preset = std::stoi(value);
-      else if (key == "automask") loaded.auto_mask = value == "1";
+      size_t used = 0;
+      if (number) *number = std::stof(value, &used);
+      else if (integer) *integer = std::stoi(value, &used);
+      else {
+        if (value != "0" && value != "1") return false;
+        loaded.auto_mask = value == "1"; used = value.size();
+      }
+      if (used != value.size()) return false;
     } catch (...) { return false; }
   }
+  if (f.bad()) return false;
+  if (!std::isfinite(loaded.intensity) || !std::isfinite(loaded.detail) ||
+      !std::isfinite(loaded.tone) || !std::isfinite(loaded.skin)) return false;
   t = bounded_tuning(loaded);
   return true;
 }
@@ -109,6 +139,7 @@ bool evaluate(const Inputs&) { return false; }
 bool needs_warmup(uint32_t, uint32_t, const Tuning&) { return false; }
 bool running() { return false; }
 const char* status() { return "not built into this version"; }
+bool model_found() { return false; }
 void shutdown() {}
 #else
 
@@ -124,10 +155,13 @@ using ReleaseFn = int(__cdecl*)(void*);
 // Same development application id the Streamline integration uses (gx_streamline.cpp).
 constexpr unsigned long long kAppId = 231313132ull;
 
-struct Retired { void* feature; ComPtr<ID3D12Resource> resource; int frames_left; };
+struct Retired { void* feature; ComPtr<ID3D12Resource> resource; uint64_t until; };
 
 struct State {
   bool tried = false, failed = false, ready = false;
+  bool tuning_failed = false;
+  Tuning failed_tuning;
+  uint32_t failed_w = 0, failed_h = 0;
   std::string reason = "off";
   std::string running_line;
   HMODULE forwarder = nullptr;
@@ -135,10 +169,15 @@ struct State {
   ID3D12Device* device = nullptr;   // native (not the Streamline proxy)
   NVSDK_NGX_Parameter* caps = nullptr;
   int float_slot = -1;
-  void* feature = nullptr;
+  void* feature[4] = {};
   uint32_t feature_w = 0, feature_h = 0;
   Tuning feature_tuning;
-  ComPtr<ID3D12Resource> out, depth_copy;
+  ComPtr<ID3D12Resource> out[2], depth_copy, reduced_input, resolved;
+  uint32_t resolved_w = 0, resolved_h = 0;
+  Scaling scaling;
+  ComPtr<ID3D12Fence> fence;
+  uint64_t retire_after = 0;
+  bool history_dirty = true;
   uint32_t out_w = 0, out_h = 0, depth_w = 0, depth_h = 0;
   std::vector<Retired> retired;
   int failures = 0;
@@ -216,10 +255,18 @@ void find_float_slot() {
   host::log("dlss5: no float parameter slot found");
 }
 
-bool fail(const std::string& why) {
+bool fail(const std::string& why, bool tuning_failure = false) {
   g.failed = true; g.reason = why;
-  host::log("dlss5: %s; DLSS 5 off for this session", why.c_str());
+  g.tuning_failed = tuning_failure;
+  host::log("dlss5: %s; DLSS 5 %s", why.c_str(), tuning_failure ? "disabled for these settings" : "off for this session");
   return false;
+}
+bool fail_tuning(const std::string& why, uint32_t w, uint32_t h, const Tuning& t) {
+  g.failed_w = w; g.failed_h = h; g.failed_tuning = t;
+  return fail(why + "; choose different DLSS 5 settings to retry", true);
+}
+bool can_retry(uint32_t w, uint32_t h, const Tuning& t) {
+  return g.tuning_failed && (g.failed_w != w || g.failed_h != h || g.failed_tuning != t);
 }
 
 std::string hex(unsigned v) { char b[16]; wsprintfA(b, "0x%08X", v); return b; }
@@ -264,16 +311,23 @@ bool ensure_ready(ID3D12Device* proxy_device) {
 }
 
 void retire_feature() {
-  if (g.feature) g.retired.push_back({g.feature, nullptr, 16});
-  g.feature = nullptr;
+  for (auto& feature : g.feature) {
+    if (feature) {
+      auto found = std::find_if(g.retired.begin(), g.retired.end(),
+        [&](const Retired& retired) { return retired.feature == feature; });
+      if (found == g.retired.end()) g.retired.push_back({feature, nullptr, g.retire_after});
+      else found->until = std::max(found->until, g.retire_after);
+    }
+    feature = nullptr;
+  }
 }
 void retire_resource(ComPtr<ID3D12Resource>& r) {
-  if (r) g.retired.push_back({nullptr, r, 16});
+  if (r) g.retired.push_back({nullptr, r, g.retire_after});
   r.Reset();
 }
 void collect_retired() {
   for (size_t i = 0; i < g.retired.size();) {
-    if (--g.retired[i].frames_left > 0) { ++i; continue; }
+    if (!g.fence || g.fence->GetCompletedValue() < g.retired[i].until) { ++i; continue; }
     if (g.retired[i].feature) g.release(g.retired[i].feature);
     g.retired.erase(g.retired.begin() + i);
   }
@@ -324,13 +378,21 @@ bool create_feature(ID3D12GraphicsCommandList* list, uint32_t w, uint32_t h, con
   set_tuning(t);
   set_uint("DLSSNR.UICorrection", 0);
   clear_ui_inputs();
-  void* feature = nullptr;
-  int r = g.create(list, g.caps, &feature);
-  if (r != NVSDK_NGX_Result_Success || !feature) return fail("the DLSS 5 feature could not be created (" + hex((unsigned)r) + ")");
-  g.feature = feature; g.feature_w = w; g.feature_h = h; g.feature_tuning = t;
+  for (int pass = 0; pass < t.passes; ++pass) {
+    int r = g.create(list, g.caps, &g.feature[pass]);
+    if (r != NVSDK_NGX_Result_Success || !g.feature[pass]) {
+      retire_feature(); // Includes initialization work already recorded by earlier passes.
+      return fail_tuning("the DLSS 5 feature could not be created (" + hex((unsigned)r) + ")", w, h, t);
+    }
+    for (int prior = 0; prior < pass; ++prior) if (g.feature[prior] == g.feature[pass]) {
+      retire_feature();
+      return fail_tuning("the model reused one temporal feature for multiple passes", w, h, t);
+    }
+  }
+  g.feature_w = w; g.feature_h = h; g.feature_tuning = t;
   host::log("dlss5: feature created at %ux%u (intensity %.2f, detail %.2f, tone %.2f, skin %.2f, style %d, preset %d, auto mask %d)",
             w, h, t.intensity, t.detail, t.tone, t.skin, t.style, t.preset, t.auto_mask ? 1 : 0);
-  char line[96]; wsprintfA(line, "running at %ux%u", w, h); g.running_line = line;
+  char line[128]; wsprintfA(line, "%ux%u neural resolution (%d%%), %d pass(es)", w, h, t.resolution_scale, t.passes); g.running_line = line;
   return true;
 }
 }  // namespace
@@ -340,95 +402,145 @@ static Tuning clamped(Tuning t) {
 }
 
 bool needs_warmup(uint32_t w, uint32_t h, const Tuning& t) {
-  if (g.failed) return false;
-  return !g.feature || g.feature_w != w || g.feature_h != h || g.feature_tuning != clamped(t) || g.evaluations == 0;
+  const Tuning tune = clamped(t);
+  if (tune.intensity == 0.0f) return false;
+  w = std::max(1u, w * (uint32_t)tune.resolution_scale / 100u);
+  h = std::max(1u, h * (uint32_t)tune.resolution_scale / 100u);
+  if (g.failed && !can_retry(w, h, tune)) return false;
+  return !g.feature[0] || g.feature_w != w || g.feature_h != h || g.feature_tuning != tune || g.evaluations == 0;
 }
 
 bool evaluate(const Inputs& in) {
   if (g.release) collect_retired();
-  if (g.failed || !in.color || !in.depth || !in.mvec || !in.w || !in.h || !in.guide_w || !in.guide_h) return false;
+  if (!in.color || !in.depth || !in.mvec || !in.w || !in.h || !in.guide_w || !in.guide_h) return false;
+  const Tuning t = clamped(in.tuning);
+  const uint32_t w = std::max(1u, in.w * (uint32_t)t.resolution_scale / 100u);
+  const uint32_t h = std::max(1u, in.h * (uint32_t)t.resolution_scale / 100u);
+  if (g.failed) {
+    if (!can_retry(w, h, t)) return false;
+    g.failed = false; g.tuning_failed = false; g.history_dirty = true; g.failures = 0;
+  }
+  // Exact bypass, including reduced-resolution processed-image mode.
+  if (t.intensity == 0.0f) { g.history_dirty = true; return false; }
+  if (!in.fence || !in.signal_value) return fail("DLSS 5 submission is missing its completion fence");
+  if (g.fence && g.fence.Get() != in.fence) return fail("DLSS 5 queue changed without shutdown");
+  g.fence = in.fence; g.retire_after = in.signal_value;
   if (!ensure_ready(in.device)) return false;
   auto* list = (ID3D12GraphicsCommandList*)streamline::native_interface(in.list);
+  const bool scaled = w != in.w || h != in.h;
+  const auto uav = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+  const auto npsr = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
 
-  if (!g.out || g.out_w != in.w || g.out_h != in.h) {
-    retire_resource(g.out);
-    if (!make_texture(g.out, in.w, in.h, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, "output")) return false;
-    g.out_w = in.w; g.out_h = in.h;
+  if (!g.out[0] || g.out_w != w || g.out_h != h) {
+    for (auto& out : g.out) retire_resource(out);
+    retire_resource(g.reduced_input);
+    if (!make_texture(g.out[0], w, h, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, uav, "neural output")) return false;
+    g.out_w = w; g.out_h = h;
+    g.history_dirty = true;
+  }
+  if (t.passes > 1 && !g.out[1] && !make_texture(g.out[1], w, h, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, uav, "second neural output")) return false;
+  if (scaled) {
+    if (!g.reduced_input && !make_texture(g.reduced_input, w, h, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, uav, "neural input")) return false;
+    if (!g.resolved || g.resolved_w != in.w || g.resolved_h != in.h) {
+      retire_resource(g.resolved);
+      if (!make_texture(g.resolved, in.w, in.h, DXGI_FORMAT_R8G8B8A8_UNORM, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, uav, "neural reconstruction")) return false;
+      g.resolved_w = in.w; g.resolved_h = in.h;
+    }
   }
   const D3D12_RESOURCE_DESC dd = in.depth->GetDesc();
   if (!g.depth_copy || g.depth_w != (uint32_t)dd.Width || g.depth_h != dd.Height) {
     retire_resource(g.depth_copy);
-    // Our depth buffer is D32_FLOAT, which cannot be read as a texture; the copy is its R32_FLOAT twin.
-    if (!make_texture(g.depth_copy, (uint32_t)dd.Width, dd.Height, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, "depth copy")) return false;
+    if (!make_texture(g.depth_copy, (uint32_t)dd.Width, dd.Height, DXGI_FORMAT_R32_FLOAT, D3D12_RESOURCE_FLAG_NONE, npsr, "depth copy")) return false;
     g.depth_w = (uint32_t)dd.Width; g.depth_h = dd.Height;
   }
-  Tuning t = clamped(in.tuning);
-  bool reset = in.reset || in.warm_only;
-  if (!g.feature || g.feature_w != in.w || g.feature_h != in.h || g.feature_tuning != t) {
-    if (!create_feature(list, in.w, in.h, t)) return false;
+  bool reset = in.reset || in.warm_only || g.history_dirty;
+  if (!g.feature[0] || g.feature_w != w || g.feature_h != h || g.feature_tuning != t) {
+    if (!create_feature(list, w, h, t)) return false;
     reset = true;
   }
-
-  const auto npsr = D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
   const auto depth_state = (D3D12_RESOURCE_STATES)in.depth_state, mvec_state = (D3D12_RESOURCE_STATES)in.mvec_state;
+  barrier(list, in.color, uav, npsr);
+  if (scaled) {
+    if (!g.scaling.dispatch(g.device, list, in.fence, in.signal_value, in.color, in.color, in.color, g.reduced_input.Get(), 0, t.downsample_filter)) {
+      barrier(list, in.color, npsr, uav);
+      return fail(g.scaling.error());
+    }
+    barrier(list, g.reduced_input.Get(), uav, npsr);
+  }
   barrier(list, in.depth, depth_state, D3D12_RESOURCE_STATE_COPY_SOURCE);
   barrier(list, g.depth_copy.Get(), npsr, D3D12_RESOURCE_STATE_COPY_DEST);
   list->CopyResource(g.depth_copy.Get(), in.depth);
   barrier(list, in.depth, D3D12_RESOURCE_STATE_COPY_SOURCE, depth_state);
   barrier(list, g.depth_copy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, npsr);
   barrier(list, in.mvec, mvec_state, npsr);
-  barrier(list, in.color, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, npsr);
 
-  set_resource("DLSSNR.Color", in.color);
-  set_resource("DLSSNR.Depth", g.depth_copy.Get());
-  set_resource("DLSSNR.MVec", in.mvec);
-  set_resource("DLSSNR.Output", g.out.Get());
-  clear_ui_inputs();
-  // The block is shared with DLSS, which may overwrite these between frames: set everything again.
-  set_uint("DLSSNR.Enabled", 1);
-  set_uint("DLSSNR.Width", in.w); set_uint("DLSSNR.Height", in.h);
-  set_uint("DLSSNR.DepthInverted", 1);   // reversed Z, as told to DLSS (gx_streamline.cpp)
-  set_uint("DLSSNR.Reset", reset ? 1 : 0);
-  set_uint("DLSSNR.ColorSubrectBaseX", 0); set_uint("DLSSNR.ColorSubrectBaseY", 0);
-  set_uint("DLSSNR.ColorSubrectWidth", in.w); set_uint("DLSSNR.ColorSubrectHeight", in.h);
-  set_uint("DLSSNR.OutputSubrectBaseX", 0); set_uint("DLSSNR.OutputSubrectBaseY", 0);
-  set_uint("DLSSNR.OutputSubrectWidth", in.w); set_uint("DLSSNR.OutputSubrectHeight", in.h);
-  set_uint("DLSSNR.DepthSubrectBaseX", in.guide_x); set_uint("DLSSNR.DepthSubrectBaseY", in.guide_y);
-  set_uint("DLSSNR.DepthSubrectWidth", in.guide_w); set_uint("DLSSNR.DepthSubrectHeight", in.guide_h);
-  set_uint("DLSSNR.MVecSubrectBaseX", in.guide_x); set_uint("DLSSNR.MVecSubrectBaseY", in.guide_y);
-  set_uint("DLSSNR.MVecSubrectWidth", in.guide_w); set_uint("DLSSNR.MVecSubrectHeight", in.guide_h);
-  // Our vectors are in render-resolution pixels; the model works at the output size.
-  set_float("DLSSNR.MVecScaleX", (float)in.w / (float)in.guide_w);
-  set_float("DLSSNR.MVecScaleY", (float)in.h / (float)in.guide_h);
-  set_tuning(t);
-
-  const int r = g.eval(list, g.feature, g.caps);
-  const bool ok = r == NVSDK_NGX_Result_Success;
-
-  barrier(list, in.mvec, npsr, mvec_state);
-  if (ok && in.warm_only) {
-    // Warm-up on a menu: the model has run once, the picture is left as it was.
-    barrier(list, in.color, npsr, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    if (g.evaluations++ == 0) host::log("dlss5: warmed up on a menu (ready before the match)");
-    g.failures = 0;
-    return false;
+  int r = NVSDK_NGX_Result_Success;
+  for (int pass = 0; pass < t.passes; ++pass) {
+    ID3D12Resource* input = pass == 0 ? (scaled ? g.reduced_input.Get() : in.color) : g.out[(pass - 1) % 2].Get();
+    if (pass > 0) barrier(list, input, uav, npsr);
+    set_resource("DLSSNR.Color", input);
+    set_resource("DLSSNR.Depth", g.depth_copy.Get());
+    set_resource("DLSSNR.MVec", in.mvec);
+    set_resource("DLSSNR.Output", g.out[pass % 2].Get());
+    clear_ui_inputs();
+    set_uint("DLSSNR.Enabled", 1); set_uint("DLSSNR.UICorrection", 0);
+    set_uint("DLSSNR.Width", w); set_uint("DLSSNR.Height", h);
+    set_uint("DLSSNR.DepthInverted", 1);
+    set_uint("DLSSNR.Reset", reset ? 1 : 0);
+    set_uint("DLSSNR.ColorSubrectBaseX", 0); set_uint("DLSSNR.ColorSubrectBaseY", 0);
+    set_uint("DLSSNR.ColorSubrectWidth", w); set_uint("DLSSNR.ColorSubrectHeight", h);
+    set_uint("DLSSNR.OutputSubrectBaseX", 0); set_uint("DLSSNR.OutputSubrectBaseY", 0);
+    set_uint("DLSSNR.OutputSubrectWidth", w); set_uint("DLSSNR.OutputSubrectHeight", h);
+    set_uint("DLSSNR.DepthSubrectBaseX", in.guide_x); set_uint("DLSSNR.DepthSubrectBaseY", in.guide_y);
+    set_uint("DLSSNR.DepthSubrectWidth", in.guide_w); set_uint("DLSSNR.DepthSubrectHeight", in.guide_h);
+    set_uint("DLSSNR.MVecSubrectBaseX", in.guide_x); set_uint("DLSSNR.MVecSubrectBaseY", in.guide_y);
+    set_uint("DLSSNR.MVecSubrectWidth", in.guide_w); set_uint("DLSSNR.MVecSubrectHeight", in.guide_h);
+    // Each pass owns history from the corresponding pass of the previous frame, so all passes
+    // need the frame-to-frame engine vectors. They do not share same-frame temporal history.
+    set_float("DLSSNR.MVecScaleX", (float)w / (float)in.guide_w);
+    set_float("DLSSNR.MVecScaleY", (float)h / (float)in.guide_h);
+    set_tuning(t);
+    r = g.eval(list, g.feature[pass], g.caps);
+    if (pass > 0) barrier(list, input, npsr, uav);
+    if (r != NVSDK_NGX_Result_Success) break;
   }
-  barrier(list, in.color, npsr, ok ? D3D12_RESOURCE_STATE_COPY_DEST : D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+  barrier(list, in.mvec, npsr, mvec_state);
+  bool ok = r == NVSDK_NGX_Result_Success;
+  ID3D12Resource* result = g.out[(t.passes - 1) % 2].Get();
+  if (ok && scaled && !in.warm_only) {
+    barrier(list, result, uav, npsr);
+    ok = g.scaling.dispatch(g.device, list, in.fence, in.signal_value, result, g.reduced_input.Get(), in.color,
+                            g.resolved.Get(), t.reconstruction == 0 ? 2 : 1, t.upsample_filter);
+    barrier(list, result, npsr, uav);
+    if (!ok) fail(g.scaling.error());
+    result = g.resolved.Get();
+  }
+  if (scaled) barrier(list, g.reduced_input.Get(), npsr, uav);
+  // No partial result: all passes and the resolve must succeed before touching the source.
+  if (ok && !in.warm_only) {
+    barrier(list, result, uav, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    barrier(list, in.color, npsr, D3D12_RESOURCE_STATE_COPY_DEST);
+    list->CopyResource(in.color, result);
+    barrier(list, result, D3D12_RESOURCE_STATE_COPY_SOURCE, uav);
+    barrier(list, in.color, D3D12_RESOURCE_STATE_COPY_DEST, uav);
+  } else {
+    barrier(list, in.color, npsr, uav);
+  }
+  g.history_dirty = !ok || in.warm_only;
   if (ok) {
-    barrier(list, g.out.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    list->CopyResource(in.color, g.out.Get());
-    barrier(list, g.out.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-    barrier(list, in.color, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
     g.failures = 0;
-    if (g.evaluations++ == 0) host::log("dlss5: first frame evaluated");
+    if (g.evaluations++ == 0) host::log("dlss5: evaluated %d pass(es) at %ux%u%s", t.passes, w, h, in.warm_only ? " (warm-up)" : "");
   } else {
     if (g.failures < 5) host::log("dlss5: evaluate failed (%s)", hex((unsigned)r).c_str());
-    if (++g.failures >= 30) fail("the model keeps failing to evaluate (" + hex((unsigned)r) + ")");
+    if (++g.failures >= 30) fail_tuning("the model keeps failing to evaluate (" + hex((unsigned)r) + ")", w, h, t);
   }
-  return ok;
+  return ok && !in.warm_only;
 }
 
-bool running() { return g.ready && g.feature && !g.failed; }
+bool running() { return g.ready && g.feature[0] && !g.failed; }
+
+// The model file is present (beside the game, beside the driver core, or in the driver store).
+bool model_found() { return !find_model().empty(); }
 
 const char* status() {
   if (g.failed) return g.reason.c_str();
@@ -439,12 +551,16 @@ const char* status() {
 void shutdown() {
   if (g.release) {
     for (auto& r : g.retired) if (r.feature) g.release(r.feature);
-    if (g.feature) g.release(g.feature);
+    for (auto* feature : g.feature) if (feature) g.release(feature);
   }
-  g.retired.clear(); g.feature = nullptr;
-  g.out.Reset(); g.depth_copy.Reset();
+  g.retired.clear();
+  for (auto& feature : g.feature) feature = nullptr;
+  for (auto& out : g.out) out.Reset();
+  g.depth_copy.Reset(); g.reduced_input.Reset(); g.resolved.Reset(); g.scaling.shutdown();
   if (g.caps) { NVSDK_NGX_D3D12_DestroyParameters(g.caps); g.caps = nullptr; }
-  g.ready = false;
+  g.fence.Reset();
+  g.ready = false; g.failed = false; g.tried = false; g.tuning_failed = false;
+  g.history_dirty = true; g.evaluations = 0; g.failures = 0;
 }
 #endif
 
