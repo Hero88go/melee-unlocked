@@ -1325,6 +1325,25 @@ void mu_online_match_exit(void)
     mu_online.active = 0;
 }
 
+/* The scene loop can end on a re-simulated frame: a late remote input (a pause quit, the last hit)
+ * rolls back and the match ends inside the re-run. The scene then waits for its last frame to be
+ * shown before the exit handlers run, but while the host is in a re-simulation it skips retrace
+ * waits, so that wait never ended: the game froze going into the next game. The rollback ends
+ * here, as it would have on its last frame. */
+void mu_online_scene_loop_exit(void)
+{
+    if (!mu_online.resim) {
+        return;
+    }
+    logf_("online: scene ended during a rollback at frame %d", (int) global_frame(), 0, 0);
+    mu_online.rollback_active = 0;
+    mu_online.stable_rollback_active = 0;
+    mu_online.selftest_rollback = 0;
+    mu_online.resim = 0;
+    mu_online_abi_resim_phase(0);
+    mu_online_audio_rollback_end();
+}
+
 /* The online menus' VS prep (Slippi's InitOnlinePlay runs in that scene): the next match scene is
  * an online match of this mode, read from this pad port. Starts clean, as the test harness does. */
 void mu_online_arm(int mode, int input_port)

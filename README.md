@@ -94,7 +94,7 @@ updates and the Slippi account check in one place.
 
 ### DLSS 5 Experimental
 
-The v0.8.0 archive includes normal DLSS / DLAA, Frame Generation, Reflex and the optional
+The v0.8.1 archive includes normal DLSS / DLAA, Frame Generation, Reflex and the optional
 DLSS 5 neural-rendering path. DLSS 5 requires an RTX 50-series card, Direct3D 12, DLAA or
 DLSS, and your own NVIDIA model file (`nvngx_dlssnr.dll` beside the game), which is not
 included. The settings panel reports if the model is missing. One pass is recommended;
@@ -173,7 +173,7 @@ My vision for the project is keeping it open source so anyone can view the work 
 
 ## Lab view
 
-Lab view is hidden in v0.8.0. The following describes the implementation for developers.
+Lab view is hidden in v0.8.1. The following describes the implementation for developers.
 
 Shows the match the way [Slippi Lab](https://github.com/frankborden/slippilab) draws
 replays: flat character silhouettes on a plain stage, with the grid, blast zones, shields, lasers

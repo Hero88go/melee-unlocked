@@ -100,9 +100,13 @@ void Engine::start_workers() {
   const unsigned hw = std::thread::hardware_concurrency();
   const int count = hw >= 8 ? 3 : hw >= 4 ? 1 : 0;
   quit_ = false;
+  // New workers start from the current job generation. Starting from 0 made each worker of a
+  // second match run the first match's last job at once, through a std::function that no longer
+  // existed: every second online game crashed.
+  const uint64_t start_gen = job_gen_;
   for (int i = 0; i < count; ++i) {
-    workers_.emplace_back([this, i] {
-      uint64_t seen = 0;
+    workers_.emplace_back([this, i, start_gen] {
+      uint64_t seen = start_gen;
       for (;;) {
         const std::function<void(size_t, size_t)>* job;
         size_t n, parts;
@@ -131,6 +135,7 @@ void Engine::stop_workers() {
   cv_.notify_all();
   for (auto& t : workers_) t.join();
   workers_.clear();
+  job_ = nullptr;
 }
 
 void Engine::run(size_t n, const std::function<void(size_t, size_t)>& fn) {

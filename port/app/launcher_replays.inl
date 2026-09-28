@@ -410,7 +410,7 @@ int draw_stats(HDC dc,int width,int y) {
   for(int p=0;p<2;++p) {
     const int x=X0+p*(half+S(14)); int ty=y;
     player_header(dc,RECT{x,ty,x+half,ty+S(38)},r.players[p]); ty+=S(38);
-    const int col[5]={0,half*16/100,half*32/100,half*68/100,half*84/100};
+    const int col[5]={0,half*13/100,half*26/100,half*56/100,half*80/100};
     const wchar_t* names[5]={L"Start",L"End",L"Kill Move",L"Direction",L"Percent"};
     fill(dc,RECT{x,ty,x+half,ty+S(28)},C_SECTION);
     for(int c=0;c<5;++c) cell(dc,names[c],RECT{x+col[c],ty,x+(c<4?col[c+1]:half),ty+S(28)},C_TEXT,replay_font(12,FW_SEMIBOLD));
@@ -432,12 +432,13 @@ int draw_stats(HDC dc,int width,int y) {
   }
   y=end_y+S(26);
   // Openings & Conversions: each player's punishes, with the opponent's stocks after every kill.
-  draw_text(dc,L"Openings & Conversions",RECT{X0,y,X0+W,y+S(32)},replay_font(20,FW_SEMIBOLD),C_TEXT,DT_LEFT|DT_VCENTER|DT_SINGLELINE); y+=S(40);
+  draw_text(dc,L"Openings && Conversions",RECT{X0,y,X0+W,y+S(32)},replay_font(20,FW_SEMIBOLD),C_TEXT,DT_LEFT|DT_VCENTER|DT_SINGLELINE); y+=S(40);
   end_y=y;
   for(int p=0;p<2;++p) {
-    const int x=X0+p*(half+S(14)); int ty=y;
+    /* one table per player across the whole width, the second under the first */
+    const int x=X0; const int half=W; int ty=end_y+(p?S(18):0);
     player_header(dc,RECT{x,ty,x+half,ty+S(38)},r.players[p]); ty+=S(38);
-    const int col[6]={0,half*13/100,half*26/100,half*38/100,half*63/100,half*75/100};
+    const int col[6]={0,half*11/100,half*22/100,half*36/100,half*62/100,half*76/100};
     const wchar_t* names[6]={L"Start",L"End",L"Damage",L"Range",L"Moves",L"Opening"};
     fill(dc,RECT{x,ty,x+half,ty+S(28)},C_SECTION);
     for(int c=0;c<6;++c) cell(dc,names[c],RECT{x+col[c],ty,x+(c<5?col[c+1]:half),ty+S(28)},C_TEXT,replay_font(12,FW_SEMIBOLD));

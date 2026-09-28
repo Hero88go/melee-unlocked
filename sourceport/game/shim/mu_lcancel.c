@@ -9,6 +9,22 @@
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/gobj.h>
 
+/* A player slot can still name its fighter after the match has freed it (scene changes, the
+ * results screen): only a fighter on the live fighter list is read. */
+static int fighter_alive(HSD_GObj* gobj)
+{
+    HSD_GObj* it;
+    if (HSD_GObjPLinkHead == NULL) {
+        return 0;
+    }
+    for (it = HSD_GObjPLinkHead[HSD_GOBJ_PLINK_FIGHTER]; it != NULL; it = it->next) {
+        if (it == gobj) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 void mu_lcancel_view(MuLcancelView* out)
 {
     int slot;
@@ -35,7 +51,7 @@ void mu_lcancel_view(MuLcancelView* out)
         if (Player_GetPlayerState(slot) == 0)
             continue;
         gobj = Player_GetEntityAtIndex(slot, 0);
-        if (gobj == NULL || (fp = gobj->user_data) == NULL || fp->gobj != gobj)
+        if (gobj == NULL || !fighter_alive(gobj) || (fp = gobj->user_data) == NULL || fp->gobj != gobj)
             continue;
         out->port[port].present = 1;
         out->port[port].slot = slot;

@@ -1152,7 +1152,17 @@ void h_pad_read(MuPadStatus out[4]) {
     }
   }
 }
-void h_pad_rumble(int32_t port, int32_t on) { host::gcadapter_rumble(port, on != 0); }
+// The game's motor commands go through the same routing as the Static Recomp's: the Controller
+// rumble setting, the device actually feeding that port, and online only the local player's slot.
+// Sending them straight to the adapter ignored the setting. A replay rumbles nobody.
+void h_pad_rumble(int32_t port, int32_t on) {
+  if (g_replaying) on = 0;
+  if (slippi::online::is_online_match()) {
+    if (port == slippi::online::local_player_slot()) host::input_rumble_local(on != 0);
+    return;
+  }
+  host::input_rumble(port, on != 0);
+}
 
 // Slippi's online flow is game mode 8, asked of the game itself (practice bridge, scene query).
 bool native_online_mode() {

@@ -301,6 +301,7 @@ def main():
             raise SystemExit(f"missing settings appearance assets: {assets}")
         shutil.copytree(assets, folder / "ui_sources" / source)
     shutil.copy2(ROOT / "docs/third-party-ui-attribution.md", licenses / "ui-attribution.md")
+    shutil.copy2(ROOT / "docs/third-party-training-mode-ce.txt", licenses / "training-mode-ce.txt")
     shutil.copy2(ui_src / "gd_melee/ORIGIN.md", licenses / "gd-melee-origin.md")
     def zip_folder(zip_path):
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
