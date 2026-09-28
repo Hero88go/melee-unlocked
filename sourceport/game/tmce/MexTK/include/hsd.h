@@ -136,7 +136,12 @@ struct HSD_Material
     GXColor specular;
     float alpha;
     float shininess;
-};
+}
+#ifdef MU_NATIVE
+/* disc data, read by the game as big-endian (sysdolphin mobj.h): TM-CE's alpha writes must match */
+__attribute__((scalar_storage_order("big-endian")))
+#endif
+;
 
 struct HSD_Pad
 {

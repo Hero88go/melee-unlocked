@@ -43,4 +43,4 @@ NVIDIA's model is supplied separately by the user.
 
 The native host shares rendering, audio, controllers and Slippi services with Static
 Recomp. The game DLL is built from source; the host's translation is also used by
-the parity tests. Source Port mods and Event Match are not supported in v0.8.0.
+the parity tests. Source Port mods are not supported in v0.8.1.

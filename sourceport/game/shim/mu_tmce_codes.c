@@ -58,7 +58,8 @@
 #include <sysdolphin/baselib/memory.h>
 #include <sysdolphin/baselib/rumble.h>
 
-extern Camera game_camera;
+extern void* mu_tmce_ref_stc_matchcam;   /* camera.c keeps game_camera file-private */
+#define game_camera (*(Camera*) mu_tmce_ref_stc_matchcam)
 extern struct gmm_x0 gmMainLib_8045A6C0;
 extern u8 mnVibration_804D4FF0[4];
 extern void* mu_tmce_event_vars; /* tmce/native/tmce_runtime.c: the event menu's EventVars */

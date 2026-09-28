@@ -59,9 +59,15 @@ void OnCSSLoad(HSD_Archive *archive)
     // alloc image (needs to be 32 byte aligned)
     import_data.snap.image = calloc(GXGetTexBufferSize(RESIZE_WIDTH, RESIZE_HEIGHT, 4, 0, 0)); // allocate 128 entries
 
+#ifdef MU_NATIVE
+    // natively the event menu's GetEventDesc is linked in, not found through the console's function table
+    extern EventDesc *tmce_eventMenu_GetEventDesc(int page, int event);
+    event_desc = tmce_eventMenu_GetEventDesc(1, 0);
+#else
     // HUGE HACK ALERT -- manually gets function offset of TM_GetEventDesc
     EventDesc *(*GetEventDesc)(int page, int event) = RTOC_PTR(TM_FUNC + (1 * 4));
     event_desc = GetEventDesc(1, 0);
+#endif
     event_desc->stage = -1;
     *onload_fileno = -1;
 

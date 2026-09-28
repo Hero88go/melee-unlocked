@@ -702,7 +702,9 @@ typedef struct MuSplashData {
     s32 x04;   /* event mode */
     u8 b[0x18];
 } MuSplashData;
-extern MuSplashData gmClassicIntroDataBuffer;
+/* Classic's intro buffer is the first part of gmClassic_rt natively (gm/gmclassic.c). */
+extern unsigned char gmClassic_rt[];
+#define gmClassicIntroDataBuffer (*(MuSplashData*) gmClassic_rt)
 
 /* SplashScenePrep. */
 static void splash_prep(GameModeState* state)
