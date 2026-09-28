@@ -126,6 +126,30 @@ int differential() {
   return 0;
 }
 
+// One engine across several matches, as the game keeps it: begin, captures and loads big enough to
+// use the worker threads, end, and again. Workers of a second match used to run the first match's
+// last job (a dead std::function) at once: every second online game crashed.
+int restart() {
+  const size_t kW = 8u << 20;
+  uint8_t* w = alloc_watched(kW);
+  std::memset(w, 0, kW);
+  Engine e;
+  for (int match = 0; match < 3; ++match) {
+    e.begin(subtract({reg(w, 0, (uint32_t)kW)}, {}), 7);
+    for (int32_t f = 1; f <= 30; ++f) {
+      for (size_t p = 0; p < kW; p += 4096 * 3) w[p] = (uint8_t)(f + match);
+      e.capture(f);
+      if (f % 10 == 0) {
+        CHECK(e.load(f - 3));
+        CHECK(w[0] == (uint8_t)(f - 3 + match));
+      }
+    }
+    e.end();
+  }
+  std::printf("native savestate: restart ok\n");
+  return 0;
+}
+
 // 43 MB snapshot (40 MB write-watched, 2.7 MB diffed) with 2-6 MB dirtied per frame; worst-case
 // rollback = load 7 frames back, then 7 frames of writes + captures.
 void benchmark() {
@@ -199,6 +223,7 @@ void benchmark() {
 }  // namespace
 
 int main() {
+  if (restart() != 0) return 1;
   static uint8_t mem[400];
   uint8_t* m = mem;
 

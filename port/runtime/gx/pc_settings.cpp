@@ -4914,7 +4914,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             }
           }
           if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Your own modded disc (.iso, for example Akaneia) or save file (.gci, for example 20XX TE).\n"
+            ImGui::SetTooltip("Your own modded disc (.iso, for example Training Mode CE or Akaneia) or save file\n"
+                              "(.gci, for example 20XX TE).\n"
                               "Nothing is copied into the game except a save file.");
           if (!import_message.empty()) ImGui::TextWrapped("%s", import_message.c_str());
           // Command-line mods (no profile name) are a test setup: nothing to compare against.

@@ -99,7 +99,10 @@ bool ModOverlay::add_iso(const fs::path& iso, const std::string& profile,
     std::array<uint8_t, 0x440> header{};
     if (!in || !read_at(in, 0, header.data(), header.size())) { error = "cannot read mod ISO header"; return false; }
     static constexpr uint8_t melee_102_id[8] = {'G', 'A', 'L', 'E', '0', '1', 0, 2};
-    if (std::memcmp(header.data(), melee_102_id, sizeof(melee_102_id))) {
+    // Training Mode CE's disc: the same 1.02 game under its own id.
+    static constexpr uint8_t tmce_id[8] = {'G', 'T', 'M', 'E', '0', '1', 0, 2};
+    if (std::memcmp(header.data(), melee_102_id, sizeof(melee_102_id)) &&
+        std::memcmp(header.data(), tmce_id, sizeof(tmce_id))) {
       error = "mod ISO must be a patched NTSC 1.02 Melee disc (GALE01 revision 2)";
       return false;
     }

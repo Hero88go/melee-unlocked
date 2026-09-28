@@ -1,0 +1,9 @@
+Training Mode - Community Edition
+
+The Source Port runs Training Mode CE's events natively: its C source is compiled into
+melee_game.dll, and the game-side changes its PowerPC patches make are written as C at the same
+points in the game's source. Its disc files (the TM folder: menus, the Lab, event data) are not
+included; they load from your own Training Mode CE disc image.
+
+Training Mode CE by UnclePunch and contributors.
+https://github.com/AlexanderHarrison/TrainingMode-CommunityEdition
