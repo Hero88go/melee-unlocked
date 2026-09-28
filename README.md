@@ -9,7 +9,7 @@ with native graphics, audio and controller support. You can also choose **Static
 which translates the original PowerPC code and Slippi's Gecko codes into C++ ahead of time.
 Both keep game logic at 60 Hz while rendering at higher frame rates.
 
-[Download v0.8.0](https://github.com/Hero88go/melee-unlocked/releases/tag/v0.8.0).
+[Download v0.8.1]([https://github.com/Hero88go/melee-unlocked/releases/tag/v0.8.0](https://github.com/Hero88go/melee-unlocked/releases/tag/v0.8.1)).
 Both builds are included; switch under **Game Build** in the launcher.
 You supply your own Melee NTSC 1.02 ISO. No game assets are included.
 
