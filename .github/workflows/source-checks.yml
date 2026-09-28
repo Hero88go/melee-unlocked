@@ -1,0 +1,29 @@
+name: Source checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check release integration and replay tools
+        run: |
+          python -m unittest discover -s tools -p release_integration_test.py
+          python -m unittest discover -s tools -p test_slp_diff.py
+          python -m unittest discover -s tools -p test_post_discord.py
+      - name: Check translation and cosmetic diagnostics
+        run: |
+          for test in computed_return_test gecko_layout_test companion_texture_diagnostic_test cosmetic_import_diagnostic_test nucleus_vault_diagnostic_test stage_cosmetic_diagnostic_test effect_cosmetic_diagnostic_test; do
+            python -m unittest discover -s port/tests -p "${test}.py"
+          done

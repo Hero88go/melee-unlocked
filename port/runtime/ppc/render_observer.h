@@ -26,11 +26,13 @@ class RenderObserver {
 uint64_t observed_draw_identity(uint64_t fallback, uint64_t& generation);
 void finish_observed_frame();
 void set_authored_capture(bool enabled);
+bool authored_capture_enabled();
 std::shared_ptr<const AuthoredPose> capture_authored_pose();
 // Player slot (0..5) whose fighter is being rendered right now, or 0xFF for anything else. Off
 // unless set_owner_tracking(true): resolving it costs a few guest reads per rendered object, and
 // only the display-only fighter tint needs it. Reads guest memory, never writes it.
 void set_owner_tracking(bool enabled);
+bool owner_tracking_enabled();
 uint8_t observed_owner();
 // Whether the draw being recorded is skinned (SetupEnvelopeModelMtx). A fighter's model is skinned;
 // its shadow and its effects are not, which is what separates the model from everything else drawn

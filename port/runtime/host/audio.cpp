@@ -11,7 +11,9 @@
 #include <cmath>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -107,8 +109,18 @@ void mix_ui_sound(int16_t* out, size_t frames, int volume) {
   }
 }
 
+// Test-only (MELEE_AUDIO_DEVICE_DUMP=<file.wav>): record exactly what the output thread renders,
+// after the ring resampler, the jukebox and the UI ticks, at full volume, and send silence to the
+// device instead. It measures what a player hears (pitch tracking, gaps, music path) without
+// making a sound on the machine running the test. A second file (<file>.rate.csv) logs the
+// resampling ratio, the ring fill and the starved frames of every device callback.
+FILE* g_device_dump = nullptr;
+FILE* g_device_rate_log = nullptr;
+uint32_t g_device_dump_bytes = 0;
+
 void wasapi_thread() {
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  const uint64_t start_ticks = GetTickCount64();
   while (g_running.load()) {
     if (WaitForSingleObject(g_event, 200) != WAIT_OBJECT_0) continue;
     UINT32 padding = 0;
@@ -118,7 +130,7 @@ void wasapi_thread() {
     BYTE* dst = nullptr;
     if (FAILED(g_render->GetBuffer(want, &dst))) continue;
     int16_t* out = (int16_t*)dst;
-    const int volume = g_volume.load();
+    const int volume = g_device_dump ? 100 : g_volume.load();
     uint64_t read = g_ring_read.load(std::memory_order_relaxed);
 
     // Rate control: steer the ring towards the target fill instead of letting it drift into an
@@ -166,6 +178,15 @@ void wasapi_thread() {
     if (starved) { g_underruns.fetch_add(1); g_underrun_frames.fetch_add(starved); }
     slippi::jukebox::mix(out, want, volume / 100.0);
     mix_ui_sound(out, want, volume);
+    if (g_device_dump) {
+      std::fwrite(out, 4, want, g_device_dump);
+      g_device_dump_bytes += want * 4;
+      if (g_device_rate_log)
+        std::fprintf(g_device_rate_log, "%llu,%u,%.6f,%llu,%u\n", (unsigned long long)(GetTickCount64() - start_ticks), want, g_rate,
+                     (unsigned long long)buffered, starved);
+      g_render->ReleaseBuffer(want, AUDCLNT_BUFFERFLAGS_SILENT);
+      continue;
+    }
     g_render->ReleaseBuffer(want, 0);
   }
   CoUninitialize();
@@ -198,6 +219,15 @@ bool wasapi_open() {
   if (g_target_frames > RING_FRAMES / 2) g_target_frames = RING_FRAMES / 2;
   g_priming = true;
   g_fill_average = 0.0;
+  if (const char* dump = std::getenv("MELEE_AUDIO_DEVICE_DUMP")) {
+    if ((g_device_dump = std::fopen(dump, "wb")) != nullptr) {
+      wav_header(g_device_dump, 0);
+      g_device_dump_bytes = 0;
+      g_device_rate_log = std::fopen((std::string(dump) + ".rate.csv").c_str(), "w");
+      if (g_device_rate_log) std::fprintf(g_device_rate_log, "ms,frames,rate,buffered,starved\n");
+      log("audio: test dump of the device output to %s (the device plays silence)", dump);
+    }
+  }
   g_running.store(true);
   g_thread = std::thread(wasapi_thread);
   if (FAILED(g_client->Start())) { log("audio: IAudioClient start failed"); g_running.store(false); g_thread.join(); g_render->Release(); g_render = nullptr; g_client->Release(); g_client = nullptr; return false; }
@@ -208,6 +238,12 @@ void wasapi_close() {
   if (!g_client) return;
   g_running.store(false);
   if (g_thread.joinable()) g_thread.join();
+  if (g_device_dump) {
+    std::fseek(g_device_dump, 0, SEEK_SET);
+    wav_header(g_device_dump, g_device_dump_bytes);
+    std::fclose(g_device_dump); g_device_dump = nullptr;
+  }
+  if (g_device_rate_log) { std::fclose(g_device_rate_log); g_device_rate_log = nullptr; }
   g_client->Stop();
   if (g_render) { g_render->Release(); g_render = nullptr; }
   g_client->Release(); g_client = nullptr;
@@ -272,16 +308,21 @@ void audio_close() {
   g_open = false;
 }
 
-void audio_push(const uint8_t* be_samples, size_t bytes) {
+static void audio_push_ordered(const uint8_t* samples, size_t bytes,
+                               bool little_endian) {
   if (!g_open) return;
   std::unique_lock<std::mutex> winmm_lock(g_mutex, std::defer_lock);
   if (!g_client) winmm_lock.lock();   // the WASAPI path is lock free; only the fallback needs this
   for (size_t off = 0; off + BLOCK_BYTES <= bytes; off += BLOCK_BYTES) {
     int16_t converted[BLOCK_BYTES / 2];
-    const uint8_t* src = be_samples + off;
+    const uint8_t* src = samples + off;
     for (int i = 0; i < BLOCK_BYTES / 4; ++i) {
-      int16_t r = (int16_t)((src[i * 4] << 8) | src[i * 4 + 1]);
-      int16_t l = (int16_t)((src[i * 4 + 2] << 8) | src[i * 4 + 3]);
+      int16_t r = little_endian
+          ? (int16_t)(src[i * 4] | (src[i * 4 + 1] << 8))
+          : (int16_t)((src[i * 4] << 8) | src[i * 4 + 1]);
+      int16_t l = little_endian
+          ? (int16_t)(src[i * 4 + 2] | (src[i * 4 + 3] << 8))
+          : (int16_t)((src[i * 4 + 2] << 8) | src[i * 4 + 3]);
       converted[i * 2] = l; converted[i * 2 + 1] = r;
     }
     if (g_wav) { std::fwrite(converted, 1, BLOCK_BYTES, g_wav); g_wav_bytes += BLOCK_BYTES; }
@@ -309,6 +350,14 @@ void audio_push(const uint8_t* be_samples, size_t bytes) {
     g_next = (g_next + 1) % BLOCKS;
     g_frames += BLOCK_BYTES / 4;
   }
+}
+
+void audio_push(const uint8_t* be_samples, size_t bytes) {
+  audio_push_ordered(be_samples, bytes, false);
+}
+
+void audio_push_native(const uint8_t* le_samples, size_t bytes) {
+  audio_push_ordered(le_samples, bytes, true);
 }
 
 uint64_t audio_pushed_frames() { return g_frames; }

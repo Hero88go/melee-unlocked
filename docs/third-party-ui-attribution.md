@@ -4,6 +4,15 @@ This file records which third-party projects contribute to the in-game UI and
 where their code or assets live. Keep imported files inside the named source
 boundary so a later removal does not require searching shared settings code.
 
+## Launcher chat emoji
+
+The eight chat emoji icons in `port/app/emoji_*.png` and `port/app/emoji_*.ico`
+come from [Twemoji](https://github.com/twitter/twemoji), licensed under
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The source PNGs
+are the 72-pixel assets for waving hand, thumbs up, tears of joy, fire, heart,
+video game, handshake, and party popper. The ICO files are resized derivatives
+embedded by `port/app/launcher.rc` for the Windows lobby picker.
+
 ## GD's Melee UI
 
 The settings UI's third appearance option ports the current settings toolkit

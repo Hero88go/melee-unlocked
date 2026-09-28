@@ -1,0 +1,31 @@
+# The stages a player can pick in VS mode on retail 1.02, as StKind values for --match.
+# Anything outside this list is not part of the game: St_Kind_Akaneia (0x15) has no stage
+# module and no archive on the disc, and St_Kind_Icetop (0x1A) has no parameter row in
+# GrIm.dat. Both are leftover ids that retail also fails on. Do not sweep them.
+0x02 Fountain of Dreams
+0x03 Pokemon Stadium
+0x04 Princess Peach's Castle
+0x05 Kongo Jungle
+0x06 Brinstar
+0x07 Corneria
+0x08 Yoshi's Story
+0x09 Onett
+0x0A Mute City
+0x0B Rainbow Cruise
+0x0C Jungle Japes
+0x0D Great Bay
+0x0E Hyrule Temple
+0x0F Brinstar Depths
+0x10 Yoshi's Island
+0x11 Green Greens
+0x12 Fourside
+0x13 Mushroom Kingdom
+0x14 Mushroom Kingdom II
+0x16 Venom
+0x17 Poke Floats
+0x18 Big Blue
+0x19 Icicle Mountain
+0x1B Flat Zone
+0x1C Dream Land
+0x1D Yoshi's Island 64
+0x1E Kongo Jungle 64

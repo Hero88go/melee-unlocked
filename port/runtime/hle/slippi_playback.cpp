@@ -52,12 +52,12 @@ bool version_at_least(const std::string& v, int a, int b, int c) {
 
 // Dolphin's denylist: injections that do not affect gameplay (from the Sys/Slippi/InjectionLists
 // files, later-numbered files winning) plus a fixed backward-compatibility set.
-std::unordered_map<uint32_t, bool> build_denylist() {
+std::unordered_map<uint32_t, bool> build_denylist_in(const std::string& sys_dir) {
   std::unordered_map<uint32_t, bool> deny = {
       {0x802fef88, true}, {0x8006c5d8, true}, {0x8016d30c, true}, {0x8016e9b4, true},
       {0x802f6690, true}, {0x802F71E0, true}, {0x80071960, true}, {0x800CC818, true}, {0x8008A478, true},
   };
-  std::filesystem::path dir = std::filesystem::path(host::options.sys_dir) / "Slippi" / "InjectionLists";
+  std::filesystem::path dir = std::filesystem::path(sys_dir) / "Slippi" / "InjectionLists";
   std::vector<std::pair<int, std::filesystem::path>> files;
   std::error_code ec;
   for (auto& e : std::filesystem::directory_iterator(dir, ec)) {
@@ -92,6 +92,7 @@ std::unordered_map<uint32_t, bool> build_denylist() {
   deny[0x8002A104] = true;   // Port: No Screen Shake
   return deny;
 }
+std::unordered_map<uint32_t, bool> build_denylist() { return build_denylist_in(host::options.sys_dir); }
 
 void prepare_gecko_list() {
   g_gecko_list.clear();
@@ -145,6 +146,29 @@ void character_frame_data(const Slippi::FrameData* frame, uint8_t port, bool fol
 }  // namespace
 
 void set_replay(const std::string& path) { g_path = path; }
+
+std::vector<KeptCode> gameplay_codes(const std::vector<uint8_t>& source, const std::string& sys_dir, size_t* dropped) {
+  std::vector<KeptCode> kept;
+  auto denylist = build_denylist_in(sys_dir);
+  size_t idx = 0, n_dropped = 0;
+  while (idx + 8 <= source.size()) {
+    uint8_t type = source[idx] & 0xFE;
+    uint32_t address = ((uint32_t)source[idx] << 24 | (uint32_t)source[idx + 1] << 16 | (uint32_t)source[idx + 2] << 8 | source[idx + 3]);
+    address = (address & 0x01FFFFFF) | 0x80000000;
+    size_t len = 8;
+    uint32_t word = (uint32_t)source[idx + 4] << 24 | (uint32_t)source[idx + 5] << 16 | (uint32_t)source[idx + 6] << 8 | source[idx + 7];
+    if (type == 0xC0 || type == 0xC2) len = 8 + (size_t)word * 8;
+    else if (type == 0x08) len = 16;
+    else if (type == 0x06) len = 8 + ((word + 7) & ~7u);
+    if (idx + len > source.size()) break;
+    auto it = denylist.find(address);
+    if (it != denylist.end() && it->second) { ++n_dropped; idx += len; continue; }
+    kept.push_back({address, type, std::vector<uint8_t>(source.begin() + idx, source.begin() + idx + len)});
+    idx += len;
+  }
+  if (dropped) *dropped = n_dropped;
+  return kept;
+}
 bool enabled() { return !g_path.empty(); }
 
 void prepare_is_file_ready(std::vector<uint8_t>& q) {

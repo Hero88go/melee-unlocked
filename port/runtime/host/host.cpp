@@ -5,15 +5,18 @@
 #include "memory_range.h"
 #include <windows.h>
 #include <bcrypt.h>
-#include "functions.h"
+#include "guest_registry.h"
 #include "guest_symbols.h"
 #include "gx_core.h"
+#include "authored_pose.h"
 #include "window.h"
 #include "ax_ucode.h"
 #include "exi_slippi.h"
+#include "slippi_online.h"
 #include "gecko_data.h"
 #include <chrono>
 #include <mutex>
+#include <condition_variable>
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
@@ -22,24 +25,23 @@
 #include <string>
 #include <deque>
 #include <thread>
+#include <filesystem>
+#include <fstream>
 
-namespace guest {
-struct NameEntry { uint32_t addr; const char* name; };
-extern const NameEntry name_table[];
-extern const size_t name_table_count;
-}
 namespace hle { void audio_tick(bool force); }
 
-namespace hle { void dvd_poll(); }
+namespace hle { void dvd_poll(); void dvd_settle(); }
 namespace host {
 
 Options options;
 uint8_t* ram = nullptr;
+uint32_t ram_size = ppc::RAM_SIZE;
 uint8_t* aram = nullptr;
 ppc::Context* cpu = nullptr;
 
 static FILE* g_disc = nullptr;
 static FILE* g_state_trace = nullptr;
+static FILE* g_state_digest = nullptr;
 static uint32_t g_fst_offset, g_fst_size, g_fst_max;
 static std::deque<Completion> g_completions;
 static bool g_pe_finish_pending = false;
@@ -53,6 +55,32 @@ static std::atomic<int> g_exit_code{0};
 static std::chrono::steady_clock::time_point g_next_frame;
 static uint8_t g_mmio[0x10000];      // 0xCC000000 - 0xCC00FFFF register file (big-endian bytes)
 static bool g_in_interrupt = false;
+
+static bool trace_ax_voice_window() {
+  const char* range = std::getenv("MELEE_TRACE_AX_SFX");
+  unsigned first = 0, last = 0;
+  const uint32_t retrace = retrace_count();
+  return range && std::sscanf(range, "%u:%u", &first, &last) == 2 &&
+         first <= last && retrace >= first && retrace <= last;
+}
+
+static void trace_ax_voice(const ax::VoiceTrace& trace) {
+  if (!trace_ax_voice_window()) return;
+  log("[ax-voice-legacy] retrace=%u block=%llu ms=%u pb=%08X cur=%08X>%08X end=%08X ratio=%08X frac=%04X>%04X env=%04X/%04X input=%d/%d peak=%d output=%d/%d peak=%d",
+      retrace_count(), (unsigned long long) trace.frame, trace.millisecond,
+      trace.pb_addr, trace.cur_before, trace.cur_after, trace.end_addr,
+      trace.ratio, trace.frac_before, trace.frac_after, trace.volume_before,
+      trace.volume_delta, trace.input_first, trace.input_last,
+      trace.input_peak, trace.output_first, trace.output_last,
+      trace.output_peak);
+}
+
+// MELEE_TRACE_AX_VOICES (M4 diagnostic, off by default): every AX frame and every voice block the
+// ucode renders, with hashes of the voice's own samples before the final mix (ax_ucode.h).
+static void trace_ax_frame(const char* line) {
+  log("[ax-vtrace] retrace=%u tb=%llu vi=%llu %s", retrace_count(), (unsigned long long)(cpu ? cpu->tb : 0),
+      (unsigned long long)(next_retrace_tb() - TB_PER_FRAME), line);
+}
 
 // ---------------- logging ----------------
 // Every line also goes to melee_port.log in the working directory (truncated at start), so a play
@@ -70,30 +98,67 @@ static void open_log_file() {
   std::rename(path.c_str(), previous.c_str());
   g_log_file = std::fopen(path.c_str(), "w");
 }
+// Lines are formatted by the caller and written (and flushed) by a background thread. Flushing on
+// the caller made the simulation thread wait for the disk: with a busy disk (a build, a download)
+// the once-a-second frame line alone stalled 60 Hz ticks by 20-200 ms. Order is kept: the writer
+// takes g_log_io before it takes the pending text, and so does log_flush().
+static std::mutex g_log_mutex;             // guards g_log_pending
+static std::condition_variable g_log_cv;
+static std::string g_log_pending;
+static std::timed_mutex g_log_io;          // held while text goes to stdout and the file
+static void log_drain(bool wait_for_io) {
+  std::unique_lock<std::timed_mutex> io(g_log_io, std::defer_lock);
+  // A crash on the writer thread itself must not wait on the lock it holds: give up after a while
+  // and write anyway (a garbled line beats a hung crash report).
+  if (wait_for_io) io.lock(); else if (!io.try_lock_for(std::chrono::milliseconds(500))) {}
+  std::string batch;
+  { std::lock_guard<std::mutex> lock(g_log_mutex); batch.swap(g_log_pending); }
+  if (batch.empty()) return;
+  std::fwrite(batch.data(), 1, batch.size(), stdout);
+  std::fflush(stdout);
+  if (g_log_file) { std::fwrite(batch.data(), 1, batch.size(), g_log_file); std::fflush(g_log_file); }
+}
+static void log_enqueue(const char* data, size_t len) {
+  static std::once_flag started;
+  std::call_once(started, [] {
+    std::thread([] {
+      for (;;) {
+        { std::unique_lock<std::mutex> lock(g_log_mutex); g_log_cv.wait(lock, [] { return !g_log_pending.empty(); }); }
+        log_drain(true);
+      }
+    }).detach();
+    std::atexit([] { log_flush(); });
+  });
+  { std::lock_guard<std::mutex> lock(g_log_mutex); g_log_pending.append(data, len); }
+  g_log_cv.notify_one();
+}
+void log_flush() { log_drain(false); }
+
 void log(const char* fmt, ...) {
   if (options.quiet) return;
   open_log_file();
+  char stack[1024];
   va_list ap; va_start(ap, fmt);
-  std::vfprintf(stdout, fmt, ap);
+  const int n = std::vsnprintf(stack, sizeof stack - 1, fmt, ap);
   va_end(ap);
-  std::fputc('\n', stdout);
-  std::fflush(stdout);
-  if (g_log_file) {
+  if (n < 0) return;
+  if ((size_t)n < sizeof stack - 1) {
+    stack[n] = '\n';
+    log_enqueue(stack, (size_t)n + 1);
+  } else {
+    std::string line((size_t)n + 1, '\0');
     va_list ap2; va_start(ap2, fmt);
-    std::vfprintf(g_log_file, fmt, ap2);
+    std::vsnprintf(line.data(), line.size(), fmt, ap2);
     va_end(ap2);
-    std::fputc('\n', g_log_file);
-    std::fflush(g_log_file);
+    line.back() = '\n';
+    log_enqueue(line.data(), line.size());
   }
 }
 
-void log_guest_text(const char* data, size_t len) {
-  std::fwrite(data, 1, len, stdout);
-  std::fflush(stdout);
-  if (g_log_file) { std::fwrite(data, 1, len, g_log_file); std::fflush(g_log_file); }
-}
+void log_guest_text(const char* data, size_t len) { log_enqueue(data, len); }
 
 [[noreturn]] void die(const char* fmt, ...) {
+  log_flush();
   va_list ap; va_start(ap, fmt);
   std::fprintf(stderr, "\nFATAL: ");
   std::vfprintf(stderr, fmt, ap);
@@ -124,10 +189,19 @@ const char* symbol_name(uint32_t addr) {
 }
 
 // ---------------- memory ----------------
-uint8_t* ptr(uint32_t addr, uint32_t bytes) {
+uint8_t* game_image = nullptr;
+uint32_t game_image_size = 0;
+uint8_t* try_ptr(uint32_t addr, uint32_t bytes) {
   uint32_t off = addr & 0x3FFFFFFFu;
-  if (!valid_range(off, bytes, ppc::RAM_SIZE)) die("host access outside RAM: %08X+%X", addr, bytes);
-  return ram + off;
+  if (valid_range(off, bytes, ram_size)) return ram + off;
+  constexpr uint32_t IMAGE_PHYS = 0x10000000u;
+  if (game_image && off >= IMAGE_PHYS && valid_range(off - IMAGE_PHYS, bytes, game_image_size)) return game_image + (off - IMAGE_PHYS);
+  return nullptr;
+}
+uint8_t* ptr(uint32_t addr, uint32_t bytes) {
+  uint8_t* p = try_ptr(addr, bytes);
+  if (!p) die("host access outside RAM: %08X+%X", addr, bytes);
+  return p;
 }
 uint32_t rd32(uint32_t a) { uint32_t v; std::memcpy(&v, ptr(a, 4), 4); return _byteswap_ulong(v); }
 uint16_t rd16(uint32_t a) { uint16_t v; std::memcpy(&v, ptr(a, 2), 2); return _byteswap_ushort(v); }
@@ -224,13 +298,17 @@ bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size) {
 uint32_t disc_fst_max_size() { return g_fst_max; }
 
 // ---------------- boot ----------------
-static void load_dol_from_disc() {
-  uint8_t hdr[0x20];
+static uint32_t disc_dol_offset() {
+  uint8_t hdr[4];
   if (!disc_read(0x420, hdr, 4)) die("cannot read disc DOL offset");
-  uint32_t dol_offset = ((uint32_t)hdr[0] << 24) | ((uint32_t)hdr[1] << 16) | ((uint32_t)hdr[2] << 8) | hdr[3];
+  return ((uint32_t)hdr[0] << 24) | ((uint32_t)hdr[1] << 16) | ((uint32_t)hdr[2] << 8) | hdr[3];
+}
+// Both engines are built for the retail main.dol: the recompiled one runs its code, the native one
+// reads its data. A modded disc (a patched DOL, m-ex and friends) fails the SHA-1 of NTSC 1.02.
+bool disc_has_vanilla_dol() {
   constexpr uint32_t dol_size = 0x4385E0u;
   std::vector<uint8_t> image(dol_size);
-  if (!disc_read(dol_offset, image.data(), dol_size)) die("cannot read full Melee DOL");
+  if (!disc_read(disc_dol_offset(), image.data(), dol_size)) die("cannot read full Melee DOL");
   BCRYPT_ALG_HANDLE algorithm = nullptr;
   uint8_t digest[20];
   const uint8_t expected[20] = {0x08,0xe0,0xbf,0x20,0x13,0x4d,0xfc,0xb2,0x60,0x69,0x96,0x71,0x00,0x45,0x27,0xb2,0xd6,0xbb,0x1a,0x45};
@@ -238,7 +316,11 @@ static void load_dol_from_disc() {
     die("cannot initialize game-image verification");
   NTSTATUS hash_status = BCryptHash(algorithm, nullptr, 0, image.data(), dol_size, digest, sizeof digest);
   BCryptCloseAlgorithmProvider(algorithm, 0);
-  if (hash_status < 0 || std::memcmp(digest, expected, sizeof digest))
+  return hash_status >= 0 && std::memcmp(digest, expected, sizeof digest) == 0;
+}
+static void load_dol_from_disc() {
+  const uint32_t dol_offset = disc_dol_offset();
+  if (!disc_has_vanilla_dol())
     die("ISO DOL does not match vanilla Melee NTSC 1.02; recompiled code cannot run this image");
   uint8_t dh[0x100];
   if (!disc_read(dol_offset, dh, sizeof dh)) die("cannot read DOL header");
@@ -279,7 +361,22 @@ static void install_gecko_boot() {
       gecko::boot_writes_count, gecko::boot_hooks_count, gecko::slippi_gct_size);
 }
 
+void init_state_digest() {
+  if (!options.state_digest.empty()) {
+    g_state_digest = std::fopen(options.state_digest.c_str(), "w");
+    if (!g_state_digest) die("cannot open state digest");
+    std::fprintf(g_state_digest, "frame,rng,scene");
+    for (unsigned slot = 0; slot < 6; ++slot)
+      for (const char* field : {"present", "stocks", "action", "anim_frame", "pos_x", "pos_y", "pos_z",
+                                "vel_x", "vel_y", "vel_z", "percent", "facing"})
+        std::fprintf(g_state_digest, ",p%u_%s", slot, field);
+    std::fprintf(g_state_digest, ",scene_major,match_frame");
+    std::fputc('\n', g_state_digest);
+  }
+}
+
 void boot_setup() {
+  init_state_digest();
   if (!options.state_trace.empty()) {
     g_state_trace = std::fopen(options.state_trace.c_str(), "w");
     if (!g_state_trace) die("cannot open state trace");
@@ -288,6 +385,9 @@ void boot_setup() {
   ram = (uint8_t*)std::calloc(ppc::RAM_SIZE + 64, 1);
   aram = (uint8_t*)std::calloc(0x01000000, 1);
   ax::set_memory({rd16, rd32, wr16, wr32, aram, 0x01000000});
+  ax::set_voice_trace(std::getenv("MELEE_TRACE_AX_SFX") ? trace_ax_voice
+                                                        : nullptr);
+  ax::set_frame_trace(std::getenv("MELEE_TRACE_AX_VOICES") ? trace_ax_frame : nullptr);
   ax::reset();
   cpu = new ppc::Context();
   std::memset(cpu, 0, sizeof *cpu);
@@ -332,6 +432,7 @@ void boot_setup() {
   // entries keep their vanilla starts but receive their replacement lengths; DVDFileInfo reads are
   // then served by file identity, so a larger mod never aliases the next physical ISO file.
   cosmetics::apply_to_fst(ptr(fst_addr, g_fst_size), g_fst_size);
+  cosmetics::set_online_probe([] { return ram != nullptr && rd8(0x80479D30) == 8; });
   wr32(0x80000038, fst_addr);
   wr32(0x8000003C, g_fst_max);
   wr32(0x80000034, fst_addr);                        // arena hi
@@ -387,6 +488,10 @@ const std::vector<uint32_t>& slow_sim_frames() { return g_slow_sim_frames; }
 // lag-reduction code waits for pad data that the retrace path produces).
 static uint64_t g_next_retrace_tb = TB_PER_FRAME;
 static bool g_in_retrace = false;
+void (*native_retrace)() = nullptr;
+void (*native_state_snapshot)(MuStatePod*) = nullptr;
+bool retrace_due() { return cpu->tb >= g_next_retrace_tb && !g_in_retrace; }
+uint64_t next_retrace_tb() { return g_next_retrace_tb; }
 void advance_time(uint64_t ticks) { cpu->tb += ticks; }
 static void advance_frame() {
   if (cpu->tb < g_next_retrace_tb) cpu->tb = g_next_retrace_tb;   // idle: jump to the boundary
@@ -502,6 +607,7 @@ bool g_has_window = false;
 // Field-wise CPU hash excludes C++ padding and diagnostic counters/trace history.
 static void trace_state() {
   if (!g_state_trace) return;
+  hle::dvd_settle();   // a disc read still being copied in would make the RAM hash depend on the machine's load
   uint64_t h = 0;
   auto add = [&](const auto& v) { h = (h ^ gx::hash_bytes(&v, sizeof v)) * 0x100000001b3ull; };
   const auto& c = *cpu;
@@ -515,12 +621,129 @@ static void trace_state() {
   std::fflush(g_state_trace);
 }
 
+// Just the scene fields, cheap enough to call every retrace when an @scene script needs to know
+// when the game reaches a particular mode/state (window.cpp). Shares the same addresses
+// digest_state() uses for the full snapshot so the two never disagree about what "scene" means.
+void current_scene(uint32_t* major, uint32_t* minor, uint32_t* match_frame) {
+  if (native_state_snapshot) {
+    MuStatePod state{};
+    native_state_snapshot(&state);
+    *major = state.scene_major;
+    *minor = state.scene;
+    *match_frame = state.match_frame;
+  } else {
+    *major = rd8(0x80479D30u);   // GameRouting::curr_mode (state_machine + 0)
+    *minor = rd8(0x80479D33u);   // GameRouting::curr_state_id (state_machine + 3)
+    *match_frame = rd32(0x8046B6C4u); // VsSceneController state frame count
+  }
+}
+
+static void digest_state() {
+  if (!g_state_digest) return;
+  MuStatePod state{};
+  if (native_state_snapshot) {
+    native_state_snapshot(&state);
+  } else {
+    const uint32_t seed = rd32(0x804D5F94u);
+    if (seed && try_ptr(seed, 4)) state.rng = rd32(seed);
+    state.scene = rd8(0x80479D33u);         // GameRouting::curr_state_id (state_machine + 3)
+    state.scene_major = rd8(0x80479D30u);   // GameRouting::curr_mode (state_machine + 0)
+    state.match_frame = rd32(0x8046B6C4u);  // VsSceneController(0x8046B6A0)->state.frame_count (+0x24)
+    for (uint32_t slot = 0; slot < 6; ++slot) {
+      const uint32_t player = 0x80453080u + slot * 0xE90u;
+      if (rd32(player) != 2) continue;
+      const uint32_t active = rd8(player + 0xCu);
+      const uint32_t gobj = rd32(player + 0xB0u + (active & 1u) * 4u);
+      if (!gobj || !try_ptr(gobj, 0x30)) continue;
+      const uint32_t fp = rd32(gobj + 0x2Cu);
+      if (!fp || !try_ptr(fp, 0x1834)) continue;
+      if (rd32(fp) != gobj) continue;
+      MuFighterState& f = state.player[slot];
+      f.present = 1;
+      f.stocks = static_cast<int8_t>(rd8(player + 0x8Eu));
+      f.action = rd32(fp + 0x10u);
+      f.anim_frame = rd32(fp + 0x894u);
+      f.pos_x = rd32(fp + 0xB0u); f.pos_y = rd32(fp + 0xB4u); f.pos_z = rd32(fp + 0xB8u);
+      f.vel_x = rd32(fp + 0x80u); f.vel_y = rd32(fp + 0x84u); f.vel_z = rd32(fp + 0x88u);
+      f.percent = rd32(fp + 0x1830u);
+      f.facing = rd32(fp + 0x2Cu);
+    }
+  }
+  std::fprintf(g_state_digest, "%u,%08X,%08X", g_retraces, state.rng, state.scene);
+  for (const auto& f : state.player) {
+    const uint32_t* words = &f.present;
+    for (unsigned index = 0; index < 12; ++index) std::fprintf(g_state_digest, ",%08X", words[index]);
+  }
+  std::fprintf(g_state_digest, ",%08X,%08X", state.scene_major, state.match_frame);
+  std::fputc('\n', g_state_digest);
+  std::fflush(g_state_digest);
+}
+
+// A local mailbox only. The launcher owns network presence and authentication; the simulation
+// writes at most once per second, using each engine's real player state (never a guessed timer).
+static void publish_lobby_status() {
+  const auto& cfg = slippi::online::config();
+  if (cfg.lobby_status_file.empty() && cfg.lobby_code.empty()) return;
+  static auto last = std::chrono::steady_clock::time_point{};
+  const auto now = std::chrono::steady_clock::now();
+  if (now - last < std::chrono::seconds(1)) return;
+  last = now;
+  const bool in_match = slippi::online::is_online_match() && !slippi::online::in_online_menus();
+  std::string stocks;
+  if (in_match) {
+    const int local = slippi::online::local_player_index();
+    if (local >= 0 && local < 4) {
+      int count = 0;
+      if (native_state_snapshot) {
+        MuStatePod state{}; native_state_snapshot(&state);
+        count = (int)state.player[local].stocks;
+      } else {
+        count = (int8_t)rd8(0x80453080u + (uint32_t)local * 0xE90u + 0x8Eu);
+      }
+      if (count >= 0 && count <= 99) stocks = std::to_string(count);
+    }
+  }
+  if (!cfg.lobby_status_file.empty()) {
+    const auto path = std::filesystem::u8path(cfg.lobby_status_file);
+    const auto temp = std::filesystem::u8path(cfg.lobby_status_file + ".tmp");
+    { std::ofstream f(temp); f << "{\"status\":\"" << (in_match ? "In match" : "In game") << "\",\"stocks\":[" << stocks << "]}"; }
+    MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+  }
+  // Native lobby boot is a single negotiated match. Return to the launcher after it ends.
+  // A failed negotiation must not leave either player stuck in the loading scene indefinitely.
+  if (!cfg.lobby_code.empty()) {
+    static const auto started = now;
+    static bool played = false;
+    if (in_match) played = true;
+    if ((game_image && played && !in_match) || (!played && now - started > std::chrono::seconds(90))) request_exit(played ? 0 : 2);
+  }
+}
+
+void publish_lobby_result(int winner_index, int end_method) {
+  const auto& cfg = slippi::online::config();
+  if (cfg.lobby_code.empty() || cfg.lobby_status_file.empty()) return;
+  const int local = slippi::online::local_player_index();
+  const char* outcome = "incomplete";
+  if (end_method == 2 && winner_index >= 0 && winner_index < 4 && local >= 0 && local < 4)
+    outcome = winner_index == local ? "win" : "loss";
+  const auto path = std::filesystem::u8path(cfg.lobby_status_file + ".results");
+  std::ofstream file(path, std::ios::app);
+  file << "{\"result\":\"" << outcome << "\",\"winner\":"
+       << winner_index << ",\"end_method\":" << end_method << "}\n";
+}
+
 static double g_frame_time = 0.0;
 static double g_emulation_speed = 1.0;
 void set_emulation_speed(double speed) { g_emulation_speed = speed < 0.5 ? 0.5 : speed > 2.0 ? 2.0 : speed; }
 double emulation_speed() { return g_emulation_speed; }
 double now_seconds() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 double frame_time() { return g_frame_time; }
+bool latency_trace_enabled() {
+  static const bool enabled = [] { const char* v = std::getenv("MELEE_TRACE_LATENCY"); return v && *v && *v != '0'; }();
+  return enabled;
+}
+static TickTiming g_tick_timing;
+TickTiming& tick_timing() { return g_tick_timing; }
 
 // Simulation-thread cost accounting: HLE entry points add their time to a slot; at the next
 // retrace the frame's work time (sleep excluded) is logged when it exceeds 20 ms, with the
@@ -536,8 +759,9 @@ const double tsc_seconds = [] {
 static double g_sim_costs[SIM_COST_COUNT];
 static double g_sim_costs_window[SIM_COST_COUNT];   // accumulated over the 60-frame log interval
 static double g_sim_ms_window = 0, g_sim_ms_worst = 0;
-static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record"};   // record includes texsnap and observe
+static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record", "gxdecode"};   // record includes texsnap and observe; gxdecode includes record and queue
 static double g_sim_frame_start = 0.0, g_last_sim_ms = 0.0;
+static ULONG64 g_sim_frame_start_cycles = 0;   // this thread's cycle count at g_sim_frame_start (MELEE_SIM_TIMES)
 void sim_cost_add(int slot, double seconds) { if (slot >= 0 && slot < SIM_COST_COUNT) { g_sim_costs[slot] += seconds; g_sim_costs_window[slot] += seconds; } }
 // "sim: 3.1 ms/frame (worst 12.4) | observe 0.9 texsnap 0.4" for the periodic frame log.
 static std::string sim_cost_line(uint32_t frames) {
@@ -559,9 +783,54 @@ static std::string sim_cost_line(uint32_t frames) {
 }
 double last_sim_frame_ms() { return g_last_sim_ms; }
 
+// MELEE_TEST_EARLY_RNG_SEED="<seed>@<retrace>" (M4 diagnostic, off by default): the recompiled
+// game's seed is written through HSD_RandSeedPtr at the start of that retrace, before the VI
+// interrupt, so both engines reach the pre-match scenes with the same RNG. The native game writes
+// the same seed at the same point (mu_entry.c mu_early_rng_seed).
+static void apply_early_rng_seed() {
+  static bool parsed = false, enabled = false;
+  static uint32_t seed = 0, at = 0;
+  if (!parsed) {
+    parsed = true;
+    if (const char* text = std::getenv("MELEE_TEST_EARLY_RNG_SEED")) {
+      char* end = nullptr;
+      seed = (uint32_t)std::strtoul(text, &end, 0);
+      if (end && *end == '@') {
+        at = (uint32_t)std::strtoul(end + 1, &end, 0);
+        enabled = end && *end == '\0' && at != 0;
+      }
+    }
+  }
+  if (!enabled || g_retraces != at) return;
+  const uint32_t seed_addr = rd32(0x804D5F94u);   // HSD_RandSeedPtr, as install_rng_seed_hook writes it
+  if (seed_addr && try_ptr(seed_addr, 4)) wr32(seed_addr, seed);
+  log("rng-seed: early %08X at retrace %u", seed, at);
+}
+
+// Every input waits for the next tick, so the tick wakes on time rather than on the millisecond
+// sleep granularity (0.7 ms late on average, 1.2 ms at p95): a high resolution timer to just
+// before the deadline, then a short spin. Without the high resolution timer (Windows before 1803)
+// a millisecond sleep stands in for it.
+static void wait_for_tick(std::chrono::steady_clock::time_point deadline) {
+  static const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+  for (;;) {
+    const double remaining = std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
+    if (remaining <= 0.0) return;
+    if (remaining > 0.0006) {
+      LARGE_INTEGER due; due.QuadPart = -(LONGLONG)((remaining - 0.0004) * 1e7);
+      if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, INFINITE);
+      else if (remaining > 0.002) Sleep(1);
+      else YieldProcessor();
+    } else {
+      YieldProcessor();
+    }
+  }
+}
+
 void retrace() {
   struct Guard { Guard() { g_in_retrace = true; } ~Guard() { g_in_retrace = false; } } guard;
   ++g_retraces;
+  if (!native_retrace) apply_early_rng_seed();
   // Work sampled since the prior retrace belongs to the prior frame id. Publish
   // the new id only after that interval is complete so a slow-frame report can
   // select the samples that actually occurred inside it.
@@ -589,6 +858,31 @@ void retrace() {
           }
         }
       }
+      // MELEE_SIM_TIMES=<csv>: every simulation frame's work time and its cost slots, for
+      // percentile comparisons between the engines (the log above only names frames over 20 ms).
+      static FILE* sim_times = [] {
+        const char* path = std::getenv("MELEE_SIM_TIMES");
+        FILE* f = path && *path ? std::fopen(path, "w") : nullptr;
+        if (f) {
+          std::setvbuf(f, nullptr, _IOFBF, 1 << 20);
+          std::fputs("retrace,scene_major,scene_minor,match_frame,sim_ms,cpu_ms", f);
+          for (int i = 0; i < SIM_COST_COUNT; ++i) std::fprintf(f, ",%s", g_sim_cost_names[i]);
+          std::fputc('\n', f);
+        }
+        return f;
+      }();
+      if (sim_times) {
+        uint32_t major = 0, minor = 0, match_frame = 0;
+        current_scene(&major, &minor, &match_frame);
+        // Cycles this thread actually ran during the frame (waits and preemption by other processes
+        // excluded): separates the frame's own cost from contention.
+        ULONG64 cycles = 0; QueryThreadCycleTime(GetCurrentThread(), &cycles);
+        const double cpu_ms = g_sim_frame_start_cycles ? (double)(cycles - g_sim_frame_start_cycles) * tsc_seconds * 1000.0 : 0.0;
+        std::fprintf(sim_times, "%u,%u,%u,%u,%.3f,%.3f", completed_frame, major, minor, match_frame, g_last_sim_ms, cpu_ms);
+        for (int i = 0; i < SIM_COST_COUNT; ++i) std::fprintf(sim_times, ",%.3f", g_sim_costs[i] * 1000.0);
+        std::fputc('\n', sim_times);
+        if (g_retraces % 600 == 0) std::fflush(sim_times);
+      }
     }
     std::memset(g_sim_costs, 0, sizeof g_sim_costs);
   }
@@ -598,26 +892,50 @@ void retrace() {
   if (!options.fast) {
     g_next_frame += std::chrono::microseconds((long long)(16667.0 / g_emulation_speed));
     auto now = std::chrono::steady_clock::now();
-    if (g_next_frame > now) std::this_thread::sleep_until(g_next_frame);
+    if (g_next_frame > now) wait_for_tick(g_next_frame);
     else if (now - g_next_frame > std::chrono::milliseconds(34)) g_next_frame = now;   // after a stall, resume at 60 Hz instead of sprinting to catch up (audio would crackle)
     g_frame_time = std::chrono::duration<double>(g_next_frame.time_since_epoch()).count();
   } else {
     g_frame_time = now_seconds();
   }
   g_sim_frame_start = now_seconds();
-  fire_due_alarms(true);
-  hle::audio_tick(true);
-  // VI: mark display-interrupt 0 as pending (bit 15 of DI0 status, VI reg index 0x18).
-  uint16_t di0 = ((uint16_t)g_mmio[0x2030] << 8) | g_mmio[0x2031];
-  di0 |= 0x8000;
-  g_mmio[0x2030] = (uint8_t)(di0 >> 8); g_mmio[0x2031] = (uint8_t)di0;
-  deliver_interrupt(24);  // __OS_INTERRUPT_PI_VI
-  trace_state();
+  static const bool sim_times_wanted = [] { const char* v = std::getenv("MELEE_SIM_TIMES"); return v && *v; }();
+  if (sim_times_wanted) QueryThreadCycleTime(GetCurrentThread(), &g_sim_frame_start_cycles);
+  g_tick_timing = {g_frame_time, g_sim_frame_start, 0, -1};
+  if (native_retrace) {
+    native_retrace();
+  } else {
+    fire_due_alarms(true);
+    hle::audio_tick(true);
+    // VI: mark display-interrupt 0 as pending (bit 15 of DI0 status, VI reg index 0x18).
+    uint16_t di0 = ((uint16_t)g_mmio[0x2030] << 8) | g_mmio[0x2031];
+    di0 |= 0x8000;
+    g_mmio[0x2030] = (uint8_t)(di0 >> 8); g_mmio[0x2031] = (uint8_t)di0;
+    deliver_interrupt(24);  // __OS_INTERRUPT_PI_VI
+    trace_state();
+  }
+  digest_state();
+  publish_lobby_status();
   if (g_retraces % 60 == 0 || (options.frames && g_retraces >= options.frames)) {
     uint64_t commands, draws, vertices; uint32_t copies;
     gx_stats(&commands, &draws, &vertices, &copies);
     log("[frame %u] gx: %llu cmds %llu draws %llu verts %u efb-copies | disc: %llu reads %.1f MB | %s",
         g_retraces, commands, draws, vertices, copies, g_disc_reads, g_disc_bytes / 1048576.0, sim_cost_line(60).c_str());
+    // Same-thread, fixed-frame reading of authored coverage: comparable between the two engines.
+    if (const auto& a = gx::authored_stats(); a.posed_draws)
+      log("[frame %u] authored coverage: posed draws %u (envelope %u), skinned draws %u",
+          g_retraces, (unsigned)a.posed_draws, (unsigned)a.posed_draws_envelope, (unsigned)a.skinned_draws);
+    if (gx::native_draw_audit_enabled()) {
+      const auto audit = gx::native_draw_audit_stats();
+      log("native PObj scope audit: %llu submitted, %llu streamed, %llu matched, %llu mismatched, %llu sequence errors, %llu scope errors, %llu/%llu scopes, %llu scoped / %llu unscoped draws, depth %llu, %llu pending, %llu open",
+          (unsigned long long)audit.submitted_events, (unsigned long long)audit.streamed_events,
+          (unsigned long long)audit.matched_events, (unsigned long long)audit.mismatched_events,
+          (unsigned long long)audit.sequence_errors, (unsigned long long)audit.invalid_scope_events,
+          (unsigned long long)audit.scopes_ended, (unsigned long long)audit.scopes_started,
+          (unsigned long long)audit.scoped_draws, (unsigned long long)audit.unscoped_draws,
+          (unsigned long long)audit.max_scope_depth, (unsigned long long)audit.pending_events,
+          (unsigned long long)audit.open_scopes);
+    }
   }
   if (options.frames && g_retraces >= options.frames) request_exit(0);
   if (g_exit) {

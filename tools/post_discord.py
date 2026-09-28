@@ -60,6 +60,11 @@ def notes_for_version(version):
                       ROOT / "release" / ("RELEASE_NOTES_%s-beta.md" % version)):
         if candidate.exists():
             return candidate.read_text(encoding="utf-8")
+    event_path = os.environ.get("GITHUB_EVENT_PATH")
+    if os.environ.get("GITHUB_EVENT_NAME") == "release" and event_path:
+        release = json.loads(Path(event_path).read_text(encoding="utf-8")).get("release", {})
+        if release.get("tag_name") == "v" + version:
+            return release.get("body") or None
     return None
 
 

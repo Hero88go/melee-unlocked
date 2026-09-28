@@ -1,7 +1,6 @@
 // Slippi game reporting (port of SlippiRustExtensions' game-reporter): after each online game the
 // result is POSTed to Slippi's GraphQL API and, when the server asks for it, the replay is
-// uploaded. Ranked play depends on this; unranked reports feed stats. Match status updates
-// (connecting, game setup/start, completion, abandoned, poor performance) go the same way.
+// uploaded. Melee Unlocked has no Ranked play, so there are no match status reports or rank lookups.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
@@ -27,22 +26,7 @@ struct GameReport {
 void init(const std::string& iso_path, const std::string& cache_dir);   // starts the worker; hashes the ISO in the background
 void shutdown();                                                         // flushes queued reports (one attempt each)
 void log_game(const GameReport& report);
-void match_status(const std::string& uid, const std::string& play_key, const std::string& match_id, const std::string& status, bool background);
 // Plain GET with this client's identification, for the user profile API. Blocking; call off the sim thread.
 bool http_get(const std::string& url, std::string* response, int* status);
 
-// Ranked: the player's rank (port of the Rust user crate's rank fetcher). fetch_user_rank runs at
-// login (users REST API), fetch_match_result after a ranked game (GraphQL), both in the background.
-struct RankInfo {
-  int8_t rank = 0;              // SlippiRank index (0 unranked ... 19 grandmaster)
-  float rating_ordinal = 0;
-  uint16_t global_placing = 0, regional_placing = 0;
-  uint32_t rating_update_count = 0;
-  float rating_change = 0;
-  int8_t rank_change = 0;
-};
-enum class RankFetchStatus : uint8_t { Fetching = 0, Fetched = 1, Error = 2 };
-void fetch_user_rank(const std::string& uid);
-void fetch_match_result(const std::string& match_id, const std::string& uid, const std::string& play_key);
-RankFetchStatus rank_info(RankInfo* out);
 }  // namespace slippi::report

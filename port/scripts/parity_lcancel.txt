@@ -1,0 +1,247 @@
+# L-cancel regression script (menus from parity_vs.txt): P1 short-hops into neutral airs. Boot path from boot_to_menu.txt (A dismisses the "no memory card"
+# prompt, START skips the intro movie/title once each) plus a fixed frame gap that both builds
+# were measured reaching GameModeKind GM_MENU (1) inside (vanilla at retrace 403, native at 702
+# per run-source/resume-items -- the numbers differ but the gap between presses is wide enough
+# that both land the same button on the same screen). The menu entries after @scene 1:0 are
+# relative to the retrace where the host first observes GM_MENU. The @match section is silent
+# until the VS match reports frame 1, then its entries follow simulated match frames.
+# This keeps the CSS/SSS sequence aligned despite different opening-movie and disc-read timing,
+# and keeps the in-match inputs aligned despite different host retrace counts before match start.
+#
+# Compare with: python tools/lockstep_compare.py native.csv vanilla.csv --align match
+130 A
+140
+400 START
+410
+520 START
+530
+700 START
+710
+
+@scene 1:0
+# From here, frame 0 = the retrace GM_MENU was first observed. Move to VS Mode, confirm, pick
+# characters on two human ports, confirm CSS, pick a stage, confirm SSS.
+100 sy=-127
+106
+160 A
+168
+230 A
+238
+240 p=2
+400 sx=61 sy=127
+400 p=2 sy=127
+430
+430 p=2
+440 A
+440 p=2 A
+450
+450 p=2
+500 START
+510
+700 sy=100
+740
+760 A
+770
+
+# Match: walk in and jab (Ness p1, Pikachu p2 per the CSS picks above).
+@match
+900 X
+902
+907 A
+909
+960 X
+962
+967 A
+969
+1020 X
+1022
+1027 A
+1029
+1080 X
+1082
+1087 A
+1089
+1140 X
+1142
+1147 A
+1149
+1200 X
+1202
+1207 A
+1209
+1260 X
+1262
+1267 A
+1269
+1320 X
+1322
+1327 A
+1329
+1380 X
+1382
+1387 A
+1389
+1440 X
+1442
+1447 A
+1449
+1500 X
+1502
+1507 A
+1509
+1560 X
+1562
+1567 A
+1569
+1620 X
+1622
+1627 A
+1629
+1680 X
+1682
+1687 A
+1689
+1740 X
+1742
+1747 A
+1749
+1800 X
+1802
+1807 A
+1809
+1860 X
+1862
+1867 A
+1869
+1920 X
+1922
+1927 A
+1929
+1980 X
+1982
+1987 A
+1989
+2040 X
+2042
+2047 A
+2049
+2100 X
+2102
+2107 A
+2109
+2160 X
+2162
+2167 A
+2169
+2220 X
+2222
+2227 A
+2229
+2280 X
+2282
+2287 A
+2289
+2340 X
+2342
+2347 A
+2349
+2400 X
+2402
+2407 A
+2409
+2460 X
+2462
+2467 A
+2469
+2520 X
+2522
+2527 A
+2529
+2580 X
+2582
+2587 A
+2589
+2640 X
+2642
+2647 A
+2649
+2700 X
+2702
+2707 A
+2709
+2760 X
+2762
+2767 A
+2769
+2820 X
+2822
+2827 A
+2829
+2880 X
+2882
+2887 A
+2889
+2940 X
+2942
+2947 A
+2949
+3000 X
+3002
+3007 A
+3009
+3060 X
+3062
+3067 A
+3069
+3120 X
+3122
+3127 A
+3129
+3180 X
+3182
+3187 A
+3189
+3240 X
+3242
+3247 A
+3249
+3300 X
+3302
+3307 A
+3309
+3360 X
+3362
+3367 A
+3369
+3420 X
+3422
+3427 A
+3429
+3480 X
+3482
+3487 A
+3489
+3540 X
+3542
+3547 A
+3549
+3600 X
+3602
+3607 A
+3609
+3660 X
+3662
+3667 A
+3669
+3720 X
+3722
+3727 A
+3729
+3780 X
+3782
+3787 A
+3789
+3840 X
+3842
+3847 A
+3849

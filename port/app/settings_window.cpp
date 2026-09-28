@@ -16,10 +16,11 @@
 #include <d3d12.h>
 #include <dxgi1_4.h>
 #include <wrl/client.h>
-#include "gx_d3d12.h"
+#include "render_options.h"
 #include "pc_settings.h"
 #include "window.h"
 #include "host.h"
+#include <functional>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3d12.lib")
@@ -29,8 +30,8 @@ namespace app {
 
 using Microsoft::WRL::ComPtr;
 
-int run_settings_d3d11(gx::D3D12Options& options, void* hwnd);
-int run_settings_d3d12(gx::D3D12Options& options, void* hwnd);
+int run_settings_d3d11(gx::RenderOptions& options, void* hwnd);
+int run_settings_d3d12(gx::RenderOptions& options, void* hwnd);
 
 // The controller display draws what the game read on its last PADRead, which is the right source in
 // game: it shows what the simulation acted on. Here there is no game and nothing ever calls
@@ -43,9 +44,47 @@ static void poll_pads_for_panel() {
   host::input_poll(pads);
 }
 
-int run_settings_window(gx::D3D12Options& options) {
+// Standby: the launcher starts this window hidden ahead of time, with its device, fonts and panel all
+// created, and its Settings button only signals it to show. Starting a process and a graphics device
+// on the click took about a second, with a black window first.
+static unsigned long g_standby_parent = 0;
+static std::function<void()> g_standby_reload;
+
+// Waits hidden until the launcher asks for the window. False: the launcher asked it to quit, or is gone.
+static bool standby_wait(void* hwnd) {
+  if (!g_standby_parent) return true;
+  wchar_t name[96];
+  swprintf_s(name, L"Local\\MeleeUnlockedSettingsShow-%lu", g_standby_parent);
+  HANDLE show = CreateEventW(nullptr, FALSE, FALSE, name);
+  swprintf_s(name, L"Local\\MeleeUnlockedSettingsQuit-%lu", g_standby_parent);
+  HANDLE quit = CreateEventW(nullptr, FALSE, FALSE, name);
+  HANDLE parent = OpenProcess(SYNCHRONIZE, FALSE, g_standby_parent);
+  bool shown = false;
+  if (show && quit && parent) {
+    HANDLE waits[3] = {show, quit, parent};
+    for (;;) {
+      const DWORD r = MsgWaitForMultipleObjects(3, waits, FALSE, INFINITE, QS_ALLINPUT);
+      if (r == WAIT_OBJECT_0) { shown = true; break; }
+      if (r != WAIT_OBJECT_0 + 3) break;
+      host::window_pump();
+      if (host::window_closed()) break;
+    }
+  }
+  if (show) CloseHandle(show);
+  if (quit) CloseHandle(quit);
+  if (parent) CloseHandle(parent);
+  if (!shown) return false;
+  if (g_standby_reload) g_standby_reload();   // what the game or an earlier panel saved meanwhile
+  ShowWindow((HWND)hwnd, SW_SHOW);
+  SetForegroundWindow((HWND)hwnd);
+  return true;
+}
+
+int run_settings_window(gx::RenderOptions& options, unsigned long standby_parent, std::function<void()> reload) {
+  g_standby_parent = standby_parent;
+  g_standby_reload = std::move(reload);
   gx::settings_fill_window(true);   // the panel IS this window, not a box floating inside it
-  void* hwnd = host::window_create(620, 700, L"Melee Unlocked settings", true);
+  void* hwnd = host::window_create(620, 700, L"Melee Unlocked settings", standby_parent == 0);
   if (!hwnd) { host::log("settings: cannot create a window"); return 1; }
   // The backend the game is set to, so the panel runs on the renderer this machine will use. If it
   // cannot be created the other one still opens the settings rather than leaving no way in.
@@ -59,7 +98,7 @@ int run_settings_window(gx::D3D12Options& options) {
 }
 
 // Returns 2 when this API could not start, so the caller can try the other.
-int run_settings_d3d11(gx::D3D12Options& options, void* hwnd) {
+int run_settings_d3d11(gx::RenderOptions& options, void* hwnd) {
   ComPtr<ID3D11Device> device;
   ComPtr<ID3D11DeviceContext> context;
   DXGI_SWAP_CHAIN_DESC scd{};
@@ -126,6 +165,7 @@ int run_settings_d3d11(gx::D3D12Options& options, void* hwnd) {
     drawing = false;
   };
   host::window_set_resize_callback([&](int, int) { draw_frame(); });
+  if (!standby_wait(hwnd)) return 0;
   while (!host::window_closed()) {
     host::window_pump();
     poll_pads_for_panel();
@@ -145,7 +185,7 @@ int run_settings_d3d11(gx::D3D12Options& options, void* hwnd) {
 
 // The same panel on Direct3D 12. One command allocator and list, one fence, two back buffers: a
 // settings box has no pipelining to do, so each frame is recorded, submitted and waited on.
-int run_settings_d3d12(gx::D3D12Options& options, void* hwnd) {
+int run_settings_d3d12(gx::RenderOptions& options, void* hwnd) {
   ComPtr<ID3D12Device> device;
   if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
     host::log("settings: no Direct3D 12 device");
@@ -245,6 +285,7 @@ int run_settings_d3d12(gx::D3D12Options& options, void* hwnd) {
       drawing = false;
     };
     host::window_set_resize_callback([&](int, int) { draw_frame(); });
+    if (!standby_wait(hwnd)) return 0;
     while (!host::window_closed()) {
       host::window_pump();
       poll_pads_for_panel();

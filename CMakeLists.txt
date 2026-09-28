@@ -18,10 +18,14 @@ else()
 endif()
 
 set(HOST_FOBJ "${CMAKE_CURRENT_BINARY_DIR}/generated/FObjHost.cpp")
+set(MELEE_ANIMATION_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/melee")
+if(NOT EXISTS "${MELEE_ANIMATION_SOURCES}/src/sysdolphin/baselib/fobj.c")
+  set(MELEE_ANIMATION_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/sourceport/extern/melee")
+endif()
 add_custom_command(OUTPUT "${HOST_FOBJ}"
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/generate_fobj_host.py" "${HOST_FOBJ}"
-  DEPENDS tools/generate_fobj_host.py melee/src/sysdolphin/baselib/fobj.c
-          melee/src/sysdolphin/baselib/fobj.h melee/src/sysdolphin/baselib/spline.c)
+  DEPENDS tools/generate_fobj_host.py "${MELEE_ANIMATION_SOURCES}/src/sysdolphin/baselib/fobj.c"
+          "${MELEE_ANIMATION_SOURCES}/src/sysdolphin/baselib/fobj.h" "${MELEE_ANIMATION_SOURCES}/src/sysdolphin/baselib/spline.c")
 add_library(native_animation STATIC "${HOST_FOBJ}")
 target_include_directories(native_animation PUBLIC native)
 target_compile_features(native_animation PUBLIC cxx_std_14)

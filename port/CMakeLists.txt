@@ -1,5 +1,47 @@
 # Native Melee port: recompiled guest code + host runtime.
 cmake_minimum_required(VERSION 3.15)
+add_executable(port_launch_process_test tests/launch_process_test.cpp)
+target_compile_features(port_launch_process_test PRIVATE cxx_std_17)
+add_test(NAME port_launch_process COMMAND port_launch_process_test)
+add_executable(port_native_replay_stream_test tests/native_replay_stream_test.cpp runtime/hle/native_replay_stream.cpp)
+target_include_directories(port_native_replay_stream_test PRIVATE runtime/hle)
+target_compile_features(port_native_replay_stream_test PRIVATE cxx_std_17)
+add_test(NAME port_native_replay_stream COMMAND port_native_replay_stream_test)
+add_executable(port_source_mod_overlay_test tests/source_mod_overlay_test.cpp runtime/host/source_mod_overlay.cpp)
+target_include_directories(port_source_mod_overlay_test PRIVATE runtime/host)
+target_compile_features(port_source_mod_overlay_test PRIVATE cxx_std_17)
+target_compile_options(port_source_mod_overlay_test PRIVATE /EHsc)
+add_test(NAME port_source_mod_overlay COMMAND port_source_mod_overlay_test)
+add_executable(port_mod_profile_test tests/mod_profile_test.cpp runtime/host/mod_profile.cpp)
+target_include_directories(port_mod_profile_test PRIVATE runtime/host)
+target_compile_features(port_mod_profile_test PRIVATE cxx_std_17)
+target_compile_options(port_mod_profile_test PRIVATE /EHsc)
+add_test(NAME port_mod_profile COMMAND port_mod_profile_test)
+add_executable(port_native_online_policy_test tests/native_online_policy_test.cpp)
+target_include_directories(port_native_online_policy_test PRIVATE runtime/hle)
+target_compile_features(port_native_online_policy_test PRIVATE cxx_std_17)
+add_test(NAME port_native_online_policy COMMAND port_native_online_policy_test)
+add_executable(port_native_slippi_bridge_test tests/native_slippi_bridge_test.cpp)
+target_include_directories(port_native_slippi_bridge_test PRIVATE runtime/hle)
+target_compile_features(port_native_slippi_bridge_test PRIVATE cxx_std_17)
+add_test(NAME port_native_slippi_bridge COMMAND port_native_slippi_bridge_test)
+add_executable(port_native_slippi_menu_payload_test tests/native_slippi_menu_payload_test.cpp)
+target_include_directories(port_native_slippi_menu_payload_test PRIVATE runtime/hle)
+target_compile_features(port_native_slippi_menu_payload_test PRIVATE cxx_std_17)
+add_test(NAME port_native_slippi_menu_payload COMMAND port_native_slippi_menu_payload_test)
+add_executable(port_native_state_layout_test tests/native_state_layout_test.cpp)
+target_include_directories(port_native_state_layout_test PRIVATE runtime/hle runtime/abi)
+target_compile_features(port_native_state_layout_test PRIVATE cxx_std_17)
+add_test(NAME port_native_state_layout COMMAND port_native_state_layout_test)
+add_executable(port_native_savestate_test tests/native_savestate_test.cpp runtime/hle/native_savestate.cpp)
+target_include_directories(port_native_savestate_test PRIVATE runtime/hle runtime/abi)
+target_compile_features(port_native_savestate_test PRIVATE cxx_std_17)
+add_test(NAME port_native_savestate COMMAND port_native_savestate_test)
+add_test(NAME port_slp_diff COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_slp_diff.py")
+add_executable(port_launcher_engine_test tests/launcher_engine_test.cpp)
+target_include_directories(port_launcher_engine_test PRIVATE app)
+target_compile_features(port_launcher_engine_test PRIVATE cxx_std_17)
+add_test(NAME port_launcher_engine COMMAND port_launcher_engine_test)
 add_executable(port_frame_queue_test tests/frame_queue_test.cpp)
 target_include_directories(port_frame_queue_test PRIVATE runtime/gx)
 target_compile_features(port_frame_queue_test PRIVATE cxx_std_17)
@@ -28,6 +70,7 @@ target_include_directories(port_memory_range_test PRIVATE runtime/host)
 target_compile_features(port_memory_range_test PRIVATE cxx_std_17)
 add_test(NAME port_memory_ranges COMMAND port_memory_range_test)
 add_test(NAME port_dol_validation COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/dol_validation_test.py")
+add_test(NAME port_release_integration COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/release_integration_test.py")
 add_test(NAME port_gecko_layout COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/gecko_layout_test.py")
 add_test(NAME port_computed_return COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/computed_return_test.py")
 add_test(NAME port_cosmetic_import_diagnostic COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/cosmetic_import_diagnostic_test.py")
@@ -55,6 +98,11 @@ add_executable(port_ax_ucode_test tests/ax_ucode_test.cpp runtime/hle/ax_ucode.c
 target_include_directories(port_ax_ucode_test PRIVATE runtime/hle)
 target_compile_features(port_ax_ucode_test PRIVATE cxx_std_17)
 add_test(NAME port_ax_ucode COMMAND port_ax_ucode_test)
+add_executable(port_hle_card_test tests/hle_card_lifecycle_test.cpp runtime/hle/hle_card.cpp)
+target_include_directories(port_hle_card_test PRIVATE runtime/hle runtime/host runtime/ppc generated)
+target_compile_features(port_hle_card_test PRIVATE cxx_std_17)
+target_compile_definitions(port_hle_card_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+add_test(NAME port_hle_card_lifecycle COMMAND port_hle_card_test)
 add_executable(port_pad_report_test tests/pad_report_test.cpp runtime/host/playstation_pad.cpp runtime/host/hid_pad.cpp)
 target_include_directories(port_pad_report_test PRIVATE runtime/host runtime/ppc)
 target_compile_features(port_pad_report_test PRIVATE cxx_std_17)
@@ -127,6 +175,22 @@ file(GLOB RUNTIME_SOURCES runtime/ppc/*.cpp runtime/hle/*.cpp runtime/host/*.cpp
 option(MELEE_ENABLE_DLSS5 "Build experimental DLSS 5 neural rendering" OFF)
 if(NOT MELEE_ENABLE_DLSS5)
   list(REMOVE_ITEM RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/gx_dlss5.cpp")
+  list(REMOVE_ITEM RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/gx_dlss5_scaling.cpp")
+else()
+  add_executable(port_dlss5_scaling_test tests/dlss5_scaling_test.cpp runtime/gx/gx_dlss5_scaling.cpp)
+  target_include_directories(port_dlss5_scaling_test PRIVATE runtime/gx)
+  target_compile_features(port_dlss5_scaling_test PRIVATE cxx_std_17)
+  target_compile_definitions(port_dlss5_scaling_test PRIVATE NOMINMAX)
+  target_link_libraries(port_dlss5_scaling_test PRIVATE d3d12 dxgi d3dcompiler)
+  add_test(NAME port_dlss5_scaling COMMAND port_dlss5_scaling_test)
+  set_tests_properties(port_dlss5_scaling PROPERTIES TIMEOUT 60)
+  add_executable(port_dlss5_pipeline_test tests/dlss5_pipeline_test.cpp runtime/gx/gx_dlss5_scaling.cpp)
+  target_include_directories(port_dlss5_pipeline_test PRIVATE runtime/gx runtime/host runtime/ppc third_party/ngx/include)
+  target_compile_features(port_dlss5_pipeline_test PRIVATE cxx_std_17)
+  target_compile_definitions(port_dlss5_pipeline_test PRIVATE GX_DLSS5 NOMINMAX _CRT_SECURE_NO_WARNINGS)
+  target_link_libraries(port_dlss5_pipeline_test PRIVATE d3d12 dxgi d3dcompiler "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ngx/lib/nvsdk_ngx_d.lib")
+  add_test(NAME port_dlss5_pipeline COMMAND port_dlss5_pipeline_test)
+  set_tests_properties(port_dlss5_pipeline PROPERTIES TIMEOUT 60)
 endif()
 enable_language(C)
 file(GLOB ENET_SOURCES third_party/enet/*.c)
@@ -187,6 +251,33 @@ target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcry
 # WIN32: no console window when the game is double-clicked or started from the launcher. Command-line
 # use still works, because main() reattaches to a parent console when there is one (see app/main.cpp).
 add_executable(melee_port WIN32 app/main.cpp app/settings_window.cpp app/melee_unlocked.rc)
+# The source port: the whole application (renderers, DLSS, sub-frame, input, panel) with the game
+# coming from melee_game.dll, built from the decompiled sources by sourceport/game with GCC.
+# melee_source_probe is the bare first stage (no window, no runtime), for chasing boot crashes.
+set(NATIVE_RECORDING_CODES "${CMAKE_CURRENT_BINARY_DIR}/native_recording_codes.h")
+add_custom_command(OUTPUT "${NATIVE_RECORDING_CODES}"
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/native_recording_codes.py" "${NATIVE_RECORDING_CODES}"
+  DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/../tools/native_recording_codes.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/recomp/gecko.py"
+          "${CMAKE_CURRENT_SOURCE_DIR}/slippi_sys_general/GameSettings/GALE01r2.ini"
+          "${CMAKE_CURRENT_SOURCE_DIR}/slippi_sys/GameSettings/GALE01r2.ini"
+  VERBATIM)
+add_executable(melee_source WIN32 app/main.cpp app/settings_window.cpp app/source_host.cpp app/source_guest_boundary.cpp app/melee_unlocked.rc)
+target_sources(melee_source PRIVATE "${NATIVE_RECORDING_CODES}")
+target_include_directories(melee_source PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_include_directories(melee_source PRIVATE runtime/abi app)
+target_link_libraries(melee_source PRIVATE runtime dbghelp)
+# A link map lets the package audit verify no translated guest/interpreter objects enter Source.
+target_link_options(melee_source PRIVATE /MAP:$<TARGET_FILE_DIR:melee_source>/melee_source.map)
+target_compile_options(melee_source PRIVATE /EHsc)
+target_compile_definitions(melee_source PRIVATE MELEE_SOURCE_PORT NOMINMAX _CRT_SECURE_NO_WARNINGS
+  MELEE_PORT_VERSION="${MELEE_PORT_VERSION}" MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}"
+  MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS})
+add_test(NAME source_card_roundtrip COMMAND melee_source --hidden --volume 0
+  --log-file "${CMAKE_CURRENT_BINARY_DIR}/source-card-roundtrip.log"
+  --card-self-test "${CMAKE_CURRENT_BINARY_DIR}/source-card-roundtrip")
+add_executable(melee_source_probe app/main_source.cpp)
+target_include_directories(melee_source_probe PRIVATE runtime/abi)
 add_executable(port_mm_probe tests/mm_probe.cpp)
 target_link_libraries(port_mm_probe PRIVATE runtime guest)
 target_compile_options(port_mm_probe PRIVATE /EHsc)
@@ -198,6 +289,13 @@ target_compile_options(port_settings_load_test PRIVATE /EHsc)
 target_compile_definitions(port_settings_load_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 add_test(NAME port_settings_load COMMAND port_settings_load_test)
 target_link_libraries(melee_port PRIVATE runtime guest dbghelp)   # dbghelp: crash minidump
+# Holds native routines (a GCC-built parity library, see sourceport/game) to the translated game bit
+# for bit, routine by routine. Needs the disc.
+add_executable(port_native_parity tests/native_parity.cpp)
+target_link_libraries(port_native_parity PRIVATE runtime guest)
+target_include_directories(port_native_parity PRIVATE runtime)
+target_compile_options(port_native_parity PRIVATE /EHsc)
+target_compile_definitions(port_native_parity PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(melee_port PRIVATE /EHsc)
 target_compile_definitions(melee_port PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
   MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}"
@@ -229,18 +327,59 @@ if(MELEE_CPU_BASELINE STREQUAL "AVX2")
 endif()
 
 # Melee Unlocked client: Win32 launcher (Play page, Build tab, self-update). No runtime dependency.
-add_executable(melee_unlocked WIN32 app/launcher.cpp runtime/host/updater.cpp app/launcher.rc)
+add_executable(melee_unlocked WIN32 app/launcher.cpp app/launcher_replay_data.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp
+  third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
+  runtime/host/updater.cpp app/launcher.rc)
 set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
-target_include_directories(melee_unlocked PRIVATE runtime/host runtime/ppc runtime/hle runtime/gx "${PORT_GEN}" third_party)
+add_executable(port_launcher_replay_data_test tests/launcher_replay_data_test.cpp app/launcher_replay_data.cpp)
+target_include_directories(port_launcher_replay_data_test PRIVATE app third_party)
+target_compile_features(port_launcher_replay_data_test PRIVATE cxx_std_17)
+target_compile_options(port_launcher_replay_data_test PRIVATE /EHsc)
+add_test(NAME port_launcher_replay_data COMMAND port_launcher_replay_data_test)
+target_include_directories(melee_unlocked PRIVATE runtime/host runtime/ppc runtime/hle runtime/gx "${PORT_GEN}" third_party third_party/dht third_party/monocypher)
 target_compile_features(melee_unlocked PRIVATE cxx_std_17)
 target_compile_options(melee_unlocked PRIVATE /EHsc)
 target_compile_definitions(melee_unlocked PRIVATE NOMINMAX UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
   MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS})
-target_link_libraries(melee_unlocked PRIVATE comctl32 winhttp user32 gdi32 shell32 comdlg32 msimg32 uxtheme)
+target_link_libraries(melee_unlocked PRIVATE comctl32 winhttp ws2_32 bcrypt user32 gdi32 shell32 comdlg32 msimg32 uxtheme winmm)
+
+# Run via lobby/test_client.py, which owns a temporary HTTP/UDP service and database.
+add_executable(port_launcher_lobby_client_test tests/launcher_lobby_client_test.cpp app/launcher_lobby_p2p.cpp
+  third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c)
+target_include_directories(port_launcher_lobby_client_test PRIVATE third_party third_party/dht third_party/monocypher)
+target_compile_features(port_launcher_lobby_client_test PRIVATE cxx_std_17)
+target_compile_definitions(port_launcher_lobby_client_test PRIVATE NOMINMAX UNICODE _UNICODE)
+target_link_libraries(port_launcher_lobby_client_test PRIVATE winhttp ws2_32 bcrypt user32 gdi32 comctl32 winmm)
+
+# Two-process, no-service lobby smoke; driven by lobby/test_peer_client.py.
+add_executable(port_launcher_lobby_peer_test tests/launcher_lobby_peer_test.cpp app/launcher_lobby_p2p.cpp
+  third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c)
+target_include_directories(port_launcher_lobby_peer_test PRIVATE third_party third_party/dht third_party/monocypher)
+target_compile_features(port_launcher_lobby_peer_test PRIVATE cxx_std_17)
+target_compile_definitions(port_launcher_lobby_peer_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_link_libraries(port_launcher_lobby_peer_test PRIVATE ws2_32 bcrypt)
+
+add_executable(port_launcher_lobby_peer_worker_test tests/launcher_lobby_peer_worker_test.cpp app/launcher_lobby_p2p.cpp
+  third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c)
+target_include_directories(port_launcher_lobby_peer_worker_test PRIVATE third_party third_party/dht third_party/monocypher)
+target_compile_features(port_launcher_lobby_peer_worker_test PRIVATE cxx_std_17)
+target_compile_definitions(port_launcher_lobby_peer_worker_test PRIVATE NOMINMAX UNICODE _UNICODE)
+target_link_libraries(port_launcher_lobby_peer_worker_test PRIVATE winhttp ws2_32 bcrypt user32 gdi32 comctl32 winmm)
+
+# Diagnostic for a future serverless rendezvous transport; intentionally separate from the launcher.
+# jech/dht is MIT licensed (third_party/dht/LICENCE) and only supplies BEP 5 endpoint discovery.
+add_executable(port_lobby_dht_probe ../lobby/dht_probe.cpp third_party/dht/dht.c)
+target_include_directories(port_lobby_dht_probe PRIVATE third_party/dht)
+target_compile_features(port_lobby_dht_probe PRIVATE cxx_std_17)
+target_compile_definitions(port_lobby_dht_probe PRIVATE WIN32_LEAN_AND_MEAN)
+target_link_libraries(port_lobby_dht_probe PRIVATE ws2_32 bcrypt)
 
 # Replay playback build: the same runtime with the game translated against the Slippi Playback
 # code set (python port/recomp/recomp.py --sys-dir port/slippi_sys_playback --out port/generated_playback).
-set(PORT_GEN_PLAYBACK "${CMAKE_CURRENT_SOURCE_DIR}/generated_playback")
+# A build dir may point it at another translation (a replay's own code list) with -DPORT_GEN_PLAYBACK.
+if(NOT PORT_GEN_PLAYBACK)
+  set(PORT_GEN_PLAYBACK "${CMAKE_CURRENT_SOURCE_DIR}/generated_playback")
+endif()
 if(EXISTS "${PORT_GEN_PLAYBACK}/guest_sources.cmake")
   include("${PORT_GEN_PLAYBACK}/guest_sources.cmake")
   set(MELEE_PREBUILT_GUEST_PLAYBACK "" CACHE FILEPATH "Link this guest_playback.lib (built from identical port/generated_playback) instead of compiling it")
@@ -295,6 +434,27 @@ target_compile_definitions(port_render_observer_test PRIVATE NOMINMAX)
 target_link_libraries(port_render_observer_test PRIVATE native_animation)
 add_test(NAME port_render_observer COMMAND port_render_observer_test)
 
+add_executable(port_source_boundary_test tests/source_boundary_test.cpp app/source_guest_boundary.cpp)
+target_include_directories(port_source_boundary_test PRIVATE runtime/ppc runtime/hle runtime/host)
+target_compile_features(port_source_boundary_test PRIVATE cxx_std_17)
+target_compile_options(port_source_boundary_test PRIVATE /EHsc)
+add_test(NAME port_source_boundary COMMAND port_source_boundary_test)
+
+add_executable(port_backend_dispatch_test tests/backend_dispatch_test.cpp runtime/gx/gx_backend_dispatch.cpp)
+target_include_directories(port_backend_dispatch_test PRIVATE runtime/gx)
+target_compile_features(port_backend_dispatch_test PRIVATE cxx_std_17)
+add_test(NAME port_backend_dispatch COMMAND port_backend_dispatch_test)
+
+add_executable(port_native_draw_audit_test tests/native_draw_audit_test.cpp runtime/gx/native_draw_audit.cpp)
+target_include_directories(port_native_draw_audit_test PRIVATE runtime/gx)
+target_compile_features(port_native_draw_audit_test PRIVATE cxx_std_17)
+add_test(NAME port_native_draw_audit COMMAND port_native_draw_audit_test)
+
+add_executable(port_native_pose_bridge_test tests/native_pose_bridge_test.cpp runtime/gx/native_pose_bridge.cpp)
+target_include_directories(port_native_pose_bridge_test PRIVATE runtime/gx runtime/abi "${PROJECT_SOURCE_DIR}/native")
+target_compile_features(port_native_pose_bridge_test PRIVATE cxx_std_17)
+add_test(NAME port_native_pose_bridge COMMAND port_native_pose_bridge_test)
+
 # Cache identity follows shader generation, constant layout and pipeline setup.
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
   runtime/gx/gx_shader.cpp runtime/gx/gx_shader.h runtime/gx/gx_d3d12.cpp)
@@ -341,15 +501,20 @@ if(EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h" AND
   target_include_directories(runtime PRIVATE "${MELEE_STREAMLINE_ROOT}/include")
   target_link_libraries(runtime PUBLIC "${MELEE_STREAMLINE_ROOT}/lib/x64/sl.interposer.lib" wintrust crypt32 delayimp)
   target_link_options(melee_port PRIVATE /DELAYLOAD:sl.interposer.dll)
+  target_link_options(melee_source PRIVATE /DELAYLOAD:sl.interposer.dll)   # same folder, same DLLs
   foreach(sl_dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll sl.dlss_d.dll nvngx_dlssd.dll sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll)
     if(EXISTS "${MELEE_STREAMLINE_ROOT}/bin/x64/${sl_dll}")
       add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${MELEE_STREAMLINE_ROOT}/bin/x64/${sl_dll}" "$<TARGET_FILE_DIR:melee_port>/${sl_dll}")
+      add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${MELEE_STREAMLINE_ROOT}/bin/x64/${sl_dll}" "$<TARGET_FILE_DIR:melee_source>/${sl_dll}")
     endif()
   endforeach()
   # Intel XeSS (loaded at run time; missing file = no XeSS modes)
   add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xess/bin/libxess.dll" "$<TARGET_FILE_DIR:melee_port>/libxess.dll")
+  add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xess/bin/libxess.dll" "$<TARGET_FILE_DIR:melee_source>/libxess.dll")
   # EXPERIMENTAL DLSS 5 Neural Rendering (gx_dlss5.h): NGX core from NVIDIA's DLSS SDK, plus the
   # forwarder DLL the model accepts as a caller. The model itself is never shipped.
   if(MELEE_ENABLE_DLSS5)
@@ -362,8 +527,11 @@ if(EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h" AND
     add_library(dlss5_forwarder SHARED dlss5_forwarder/forwarder.cpp)
     set_target_properties(dlss5_forwarder PROPERTIES OUTPUT_NAME "nvngx.dll_meleedlss5" PREFIX "" SUFFIX ".dll")
     add_dependencies(melee_port dlss5_forwarder)
+    add_dependencies(melee_source dlss5_forwarder)
     add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "$<TARGET_FILE:dlss5_forwarder>" "$<TARGET_FILE_DIR:melee_port>/nvngx.dll_meleedlss5.dll")
+    add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:dlss5_forwarder>" "$<TARGET_FILE_DIR:melee_source>/nvngx.dll_meleedlss5.dll")
   endif()
 elseif(EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h")
   message(STATUS "NVIDIA Streamline runtime is incomplete; building without Streamline/DLSS")

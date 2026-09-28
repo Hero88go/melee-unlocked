@@ -3,7 +3,9 @@
 Default: direct local peering (no matchmaking server). With --real both instances queue at the
 real Slippi matchmaking server using the user folders given by --user-a/--user-b.
 
-    python tools/online_pair.py [--frames 3600] [--script port/scripts/online_unranked.txt]
+    python tools/online_pair.py [--frames 3600] [--script port/scripts/online_unranked.txt] [--base-port 41100]
+
+Four players (Teams) and mixed engines per slot: tools/online_quad.py.
 """
 import argparse
 import re
@@ -42,12 +44,14 @@ def main():
     ap.add_argument("--only", choices=["A", "B"], help="launch a single instance (the other side is external)")
     ap.add_argument("--iso")
     ap.add_argument("--exe", type=Path, default=EXE)
+    ap.add_argument("--base-port", type=int, default=41100, help="A listens on base, B on base+1")
     ap.add_argument("--extra", nargs=argparse.REMAINDER, default=[])
     args = ap.parse_args()
     iso = require_iso(args.iso)
     out = ROOT / args.out
     procs = {}
-    for name, idx, port, other in (("A", 0, 41100, 41101), ("B", 1, 41101, 41100)):
+    base = args.base_port
+    for name, idx, port, other in (("A", 0, base, base + 1), ("B", 1, base + 1, base)):
         if args.only and args.only != name:
             continue
         d = out / f"peer{name}"
@@ -58,7 +62,7 @@ def main():
             user = args.user_a if name == "A" else args.user_b
             if user:
                 cmd += ["--user-dir", user]
-            cmd += ["--netplay-port", str(port)]
+            cmd += ["--netplay-port", str(port), "--allow-matchmaking"]
         else:
             cmd += ["--time-base", "1", "--local-peer", f"{idx}:{port}:127.0.0.1:{other}"]
         cmd += args.extra

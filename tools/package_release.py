@@ -1,10 +1,14 @@
-"""Assembles a standalone release folder and zip of the native port.
+"""Assembles the unified Windows release archive.
 
-Contents: MeleeUnlockedLauncher.exe (optional client), melee_port.exe, the Streamline/DLSS runtime DLLs, the Slippi Sys files the EXI device
-serves (code tables, game file diffs), a launcher batch file, README and licenses. No game data:
+Contents: MeleeUnlockedLauncher.exe (optional client), the normal/compatibility legacy
+executables, optional Source Port files, the Streamline/DLSS runtime DLLs, the Slippi Sys files
+the legacy EXI device serves (code tables, game file diffs), a launcher batch file, README and
+licenses. No game data:
 the user supplies their own Melee NTSC 1.02 ISO. Usage:
 
-    python tools/package_release.py --version 0.1.0 [--out release]
+    python tools/package_release.py --version 0.1.0 --exe build-review/port/Release/melee_port.exe \
+        --compat-exe build-compat/port/Release/melee_port.exe \
+        --experimental-exe build-dlss5/port/Release/melee_port.exe [--out release]
 """
 import argparse
 import shutil
@@ -45,11 +49,22 @@ B. Melee Unlocked Launcher (optional convenience)
       the disc, precompiles the graphics pipelines and remembers the path.
    2. Press PLAY. The launcher checks for new releases on every start and "Update and
       restart" installs one in place. It also shows which Slippi account will be used.
+   3. Multiplayer Lobby: fill out your profile (name, location, three mains; your
+      Slippi code comes from your linked Slippi account) and tick Go Online. Players
+      exchange chat, friend requests, friend status and match requests directly; ping
+      is measured once a match request is sent. Accepted games use Slippi Direct.
+      Discovery can take time, and some networks cannot connect directly (no relay yet).
 
 Either way, the PC settings panel opens on the first launch; later press F1 or click Settings:
 fullscreen, frame rate cap, VSync, widescreen 16:9, internal resolution,
 anti-aliasing (SSAA), anisotropic filtering, DLSS/DLAA, sharpening, sub-frame animation,
 game and music volume. Settings persist in port-settings.ini.
+
+Build choices
+-------------
+The launcher defaults to Static Recomp. The unified archive includes its normal and compatibility
+builds and, when supplied to the packager, the Source Port executable and native game library.
+Choose Static Recomp or Source Port under Game Build on the launcher's Play page.
 
 Controllers: a GameCube adapter (WUP-028, official or Mayflash in Wii U mode) is used
 automatically if it has the WinUSB driver that Slippi installs. Close Slippi Dolphin first.
@@ -78,8 +93,9 @@ playing something subtly wrong.
 Saves: memory card slot A is the folder User\GC\CardA, one .gci per file (Dolphin's GCI folder
 format). Copy your Slippi Dolphin save (GALE01-*.gci) there to keep your unlocks and settings.
 
-Known gaps in this version: audio is an approximate mixer; ranked play reports results but has
-not been tested in a live ranked set.
+Ranked is removed from both builds. Unranked, Direct and Teams remain available.
+Event Match and mods on the Source Port are planned for a later release; use Static Recomp
+for events.
 """
 
 BAT = """@echo off
@@ -140,6 +156,12 @@ def main():
     # from the online one (see PORT_COMPLETION.md, "Replay playback build").
     ap.add_argument("--playback-exe", type=Path, default=None,
                     help="melee_port_playback.exe, built from port/generated_playback")
+    ap.add_argument("--source-exe", type=Path, default=None,
+                    help="optional melee_source.exe from the native Source Port build")
+    ap.add_argument("--source-dll", type=Path, default=None,
+                    help="optional melee_game.dll paired with --source-exe")
+    ap.add_argument("--source-dbg", type=Path, default=None,
+                    help="optional melee_game.dbg paired with --source-dll")
     ap.add_argument("--out", type=Path, default=ROOT / "release")
     args = ap.parse_args()
     if not args.compat_exe and not args.skip_compat_exe:
@@ -147,6 +169,10 @@ def main():
                           "Pass --skip-compat-exe if this omission is deliberate.")
     if not args.exe.is_file():
         raise SystemExit(f"missing executable: {args.exe}")
+    if bool(args.source_exe) != bool(args.source_dll):
+        raise SystemExit("--source-exe and --source-dll must be supplied together")
+    if args.source_exe and (not args.source_exe.is_file() or not args.source_dll.is_file()):
+        raise SystemExit("missing Source Port executable or DLL")
     # The version is compiled into the executable, so a build made before VERSION changed would
     # ship reporting the old number and offer itself the update forever. Catch that here.
     built = subprocess.run([str(args.exe), "--version"], capture_output=True, text=True, timeout=60).stdout.strip()
@@ -188,6 +214,24 @@ def main():
         shutil.copytree(playback_sys, folder / "SysPlayback",
                         ignore=shutil.ignore_patterns("README.md", ".git*"))
         print(f"playback build: {args.playback_exe}")
+    if args.source_exe:
+        source_version = subprocess.run([str(args.source_exe), "--version"], capture_output=True,
+                                        text=True, timeout=60).stdout.strip()
+        if source_version != args.version:
+            raise SystemExit(f"the Source Port executable reports {source_version!r}, not {args.version!r}")
+        shutil.copy2(args.source_exe, folder / "melee_source.exe")
+        shutil.copy2(args.source_dll, folder / "melee_game.dll")
+        # The sound driver's snapshot exclusions, written by the game library's build. Without it a
+        # rollback restores the sound driver's tables while its voices keep playing: crackle online.
+        snapexcl = args.source_dll.with_suffix(".snapexcl")
+        if not snapexcl.is_file():
+            raise SystemExit(f"missing {snapexcl.name} next to {args.source_dll} (built with melee_game)")
+        shutil.copy2(snapexcl, folder / "melee_game.snapexcl")
+        if args.source_dbg:
+            if not args.source_dbg.is_file():
+                raise SystemExit(f"missing Source Port debug file: {args.source_dbg}")
+            shutil.copy2(args.source_dbg, folder / "melee_game.dbg")
+        print(f"source port: {args.source_exe} + {args.source_dll}")
     launcher = args.exe.parent / "MeleeUnlockedLauncher.exe"
     if not launcher.is_file():
         raise SystemExit(f"missing launcher: {launcher} (build target melee_unlocked)")
@@ -240,6 +284,8 @@ def main():
     licenses = folder / "licenses"
     licenses.mkdir()
     for src, dst in ((ROOT / "port/third_party/streamline/license.txt", "streamline.txt"),
+                     (ROOT / "port/third_party/dht/LICENCE", "dht.txt"),
+                     (ROOT / "port/third_party/monocypher/LICENCE.md", "monocypher.md"),
                      (ROOT / "port/third_party/enet/LICENSE", "enet.txt"),
                      (ROOT / "port/third_party/imgui/LICENSE.txt", "imgui.txt"),
                      (ROOT / "port/third_party/streamline/reflex.license.txt", "nvidia-reflex.txt"),

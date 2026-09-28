@@ -26,6 +26,11 @@ namespace gecko { bool option_pal_stock_icons_default = false; }
 #pragma comment(linker, "/alternatename:?option_pal_stock_icons@gecko@@3_NA=?option_pal_stock_icons_default@gecko@@3_NA")
 namespace gecko { bool option_no_screen_shake_default = false; }
 #pragma comment(linker, "/alternatename:?option_no_screen_shake@gecko@@3_NA=?option_no_screen_shake_default@gecko@@3_NA")
+// Same for the Lagless FoD flag and the optional-code table (an older prebuilt playback guest has neither).
+namespace gecko { bool option_lagless_fod_default = false; extern const OptionalCode optional_codes_default[1] = {}; extern const size_t optional_codes_count_default = 0; }
+#pragma comment(linker, "/alternatename:?option_lagless_fod@gecko@@3_NA=?option_lagless_fod_default@gecko@@3_NA")
+#pragma comment(linker, "/alternatename:?optional_codes@gecko@@3QBUOptionalCode@1@B=?optional_codes_default@gecko@@3QBUOptionalCode@1@B")
+#pragma comment(linker, "/alternatename:?optional_codes_count@gecko@@3_KB=?optional_codes_count_default@gecko@@3_KB")
 
 namespace slippi {
 namespace {
@@ -129,6 +134,64 @@ void create_file() {
   g_last_frame = -123;
 }
 
+// Diagnostic, off unless MELEE_DUMP_FIGHTERS=<first>:<last> (Slippi frame numbers) and
+// MELEE_DUMP_FIGHTERS_OUT=<file>: at each post-frame event, the console-layout Fighter (0x23EC bytes,
+// big-endian) of that player, one record per fighter per frame ([s32 frame][u8 port][u8 follower]
+// [u16 size][bytes], header little-endian). The Source build writes its native Fighter at the same
+// point; tools/fieldmap/field_diff.py compares them field by field.
+void dump_fighter(const uint8_t* payload) {
+  static bool init = false;
+  static int first = 0, last = -1;
+  static FILE* out = nullptr;
+  if (!init) {
+    init = true;
+    const char* range = std::getenv("MELEE_DUMP_FIGHTERS");
+    const char* path = std::getenv("MELEE_DUMP_FIGHTERS_OUT");
+    if (range && path && std::sscanf(range, "%d:%d", &first, &last) == 2) out = std::fopen(path, "wb");
+  }
+  if (!out) return;
+  const int32_t frame = (int32_t)be32(payload + 1);
+  if (frame < first || frame > last) return;
+  const uint8_t port = payload[5], follower = payload[6];
+  const uint32_t slot = 0x80453080u + port * 0xE90u + 0xB0u + 4u * follower;
+  auto rd = [](uint32_t a) -> uint32_t {
+    const uint32_t off = a - 0x80000000u;
+    return off + 4 <= host::ram_size ? be32(host::ram + off) : 0;
+  };
+  const uint32_t gobj = rd(slot);
+  const uint32_t fp = gobj ? rd(gobj + 0x2C) : 0;
+  const uint16_t size = 0x23EC;
+  if (!fp || fp - 0x80000000u + size > host::ram_size) return;
+  uint8_t head[8];
+  std::memcpy(head, &frame, 4);
+  head[4] = port;
+  head[5] = follower;
+  std::memcpy(head + 6, &size, 2);
+  std::fwrite(head, 1, 8, out);
+  std::fwrite(host::ram + (fp - 0x80000000u), 1, size, out);
+  // Bone record (port | 0x80): per part rotate, scale, translate, world matrix, 22 floats written
+  // little-endian like the Source build. Parts: fp+0x5E8, 0x10 each, joint at +0; count from
+  // ftPartsTable[kind]->parts_num (+8); JObj rotate +0x1C .. mtx +0x44..+0x74.
+  const uint32_t parts = rd(fp + 0x5E8), table = rd(0x804D6544u);
+  const uint32_t entry = table ? rd(table + 4u * rd(fp + 0x4)) : 0;
+  uint32_t n = entry ? rd(entry + 8) : 0;
+  if (parts && n) {
+    if (n > 96) n = 96;
+    std::vector<uint32_t> bones(n * 22, 0);
+    for (uint32_t i = 0; i < n; ++i) {
+      const uint32_t j = rd(parts + i * 0x10);
+      if (!j) continue;
+      for (uint32_t k = 0; k < 22; ++k) bones[i * 22 + k] = rd(j + 0x1C + 4 * k);
+    }
+    const uint16_t bsize = (uint16_t)(n * 22 * 4);
+    head[4] = (uint8_t)(port | 0x80);
+    std::memcpy(head + 6, &bsize, 2);
+    std::fwrite(head, 1, 8, out);
+    std::fwrite(bones.data(), 1, bsize, out);
+  }
+  std::fflush(out);
+}
+
 void write_to_file(const uint8_t* payload, uint32_t length, const char* option) {
   // Every recording event passes through here, whether or not a replay file is open, which is
   // exactly the stream the Lab view draws from. It only reads the bytes.
@@ -141,6 +204,7 @@ void write_to_file(const uint8_t* payload, uint32_t length, const char* option) 
   if (length > 0 && payload[0] == CMD_RECEIVE_POST_FRAME_UPDATE && length >= 8) {
     g_last_frame = (int32_t)be32(payload + 1);
     g_char_usage[payload[5]][payload[7]] += 1;
+    dump_fighter(payload);
   }
   // The generated GCT ends with PC-only hooks (PAL stock icons and the screen-shake toggle).
   // Native code gates those hooks with host settings; a stock Slippi replay viewer has no such
@@ -358,11 +422,20 @@ static void preload_game_files() {
   std::thread([names] { for (const auto& n : names) load_game_file(n); }).detach();
 }
 
+// The same bytes the EXI file commands serve, for the Source Port's system-file layer. Built
+// directly (not through the Legacy cache): the native host calls it once per file at boot.
+std::vector<uint8_t> system_game_file(const std::string& name) { return build_game_file(name); }
+
 void init() { g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; preload_game_files(); online::init(); }
 void request_widescreen(bool on) { g_widescreen_request.store(on ? 1 : 0); }
 bool widescreen() { return gecko::option_widescreen; }
 void request_fod_reflections(bool on) { g_fod_reflections_request.store(on ? 1 : 0); }
 void poll_options() {
+  // Everything below acts on the translated guest: the optional codes live in its code table and
+  // practice matchmaking drives its scene state at console addresses. The native game keeps both
+  // in its own image, so the Source Port skips the rest of the poll. Practice matchmaking runs on
+  // both: natively through the game's practice bridge (set by the Source Port host).
+  if (host::game_image) { native_practice::tick(); return; }
   int r = g_widescreen_request.exchange(-1);
   if (r >= 0 && (r != 0) != gecko::option_widescreen) apply_widescreen(r != 0);
   int fod = g_fod_reflections_request.exchange(-1);

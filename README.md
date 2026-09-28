@@ -1,14 +1,33 @@
 
 # Melee Unlocked - Beta
 
-A native Windows build of Super Smash Bros. Melee (NTSC 1.02) with **Slippi online play** and an
-**unlocked display frame rate.**
+A native Windows build of Super Smash Bros. Melee (NTSC 1.02), available as a **Source Port or
+Static Recomp**, with **Slippi online play** and an **unlocked display frame rate.**
 
-The game's own PowerPC code is translated ahead of time into C++ (static recompilation of the
-retail executable plus Slippi's Gecko codes) and runs against a native D3D12 or D3D11 renderer, so the
-game logic stays exactly what the GameCube ran, at 60 Hz, while the display runs at any rate.
-In-between frames come from the game's own animation data and physics state, not from image
-interpolation, so an unlocked 200 Hz display shows real intermediate poses with no added latency.
+**Current release: [v0.8.0](https://github.com/Hero88go/melee-unlocked/releases/tag/v0.8.0).**
+One Windows archive includes both game builds. Choose **Static Recomp** (the default) or
+**Source Port** under Game Build on the launcher's Play page. The Source Port rebuilds the
+decompiled game as native PC code and supports Slippi Unranked, Direct and Teams against
+regular Slippi Dolphin players. Ranked is removed from both builds. Event Match and Source
+Port mods are planned for a later version; use Static Recomp for events.
+See the [v0.8.0 release notes](RELEASE_NOTES_0.8.0.md) for the full update.
+
+**Source Port:** Melee's decompiled C source is adapted and compiled directly for Windows.
+The game runs as a native PC library (`melee_game.dll`), while `melee_source.exe` supplies
+the renderer, audio, controllers, disc access and Slippi services that replace the GameCube
+hardware. The game logic comes from the decompiled source rather than a translated PowerPC
+executable. You still supply your own ISO for stages, characters, music and other game assets.
+
+**Static Recomp:** the original retail executable and Slippi's Gecko codes are translated
+ahead of time from PowerPC instructions into C++, then compiled into a native Windows
+executable. It preserves the original game's instruction-level behavior and replaces
+hardware and SDK services with PC implementations. Choose this build for the established
+game path and features such as Event Match that the Source Port does not yet support.
+
+Both builds use the native D3D12 or D3D11 renderer and keep the simulation at 60 Hz while
+the display can run at any rate. In-between frames come from the game's animation data
+and physics state, so an unlocked 200 Hz display shows intermediate poses without changing
+the simulation rate. Switch builds on the launcher's Play page; Static Recomp is the default.
 
 Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO.
 
@@ -55,7 +74,7 @@ are included with Melee Unlocked.
 
 ## Install
 
-Download `MeleeUnlocked-<version>-win64.zip` from [Releases](https://github.com/hero88go/melee-unlocked/releases)
+Download `MeleeUnlocked-<version>-Stable-Recomp-Legacy-win64.zip` from [Releases](https://github.com/hero88go/melee-unlocked/releases)
 and extract it anywhere. Then pick one of two ways to run it. **The launcher is optional**;
 the game does not depend on it, and the manual way is complete on its own.
 
@@ -80,6 +99,10 @@ updates and the Slippi account check in one place.
 - **Build tab**: drop the ISO onto the window. It checks the disc, precompiles the graphics
   pipelines for your GPU once and remembers the path. The ISO is never copied.
 - **Play**: press PLAY. It shows which Slippi account will be used.
+- **Game Build**: choose Static Recomp or Source Port. Both are included in the v0.8.0 archive.
+- **Multiplayer Lobby**: go online to chat, add friends and request Slippi Direct matches.
+  Players connect directly; some networks block discovery or connections, and there is no relay yet.
+- **Replay Viewer**: browse saved matches and view player, stock and punish statistics.
 - **Updates**: it checks for a new release on every start. "Update and restart" installs it in
   place; settings, saves and replays stay.
 - **Version rollback**: choose a published Windows version from **Choose version** on the Play
@@ -90,11 +113,11 @@ updates and the Slippi account check in one place.
 
 ### DLSS 5 Experimental
 
-The current private v0.7 test package uses one integrated executable. It includes the normal DLSS /
-DLAA, Frame Generation, Reflex, and renderer options alongside the optional DLSS 5 neural-rendering
-path; no separate Legacy game executable or build selector is used. The feature is experimental and
-requires NVIDIA's DLSS 5 runtime/model, which is not included. Without that runtime, the game runs
-normally and the PC settings panel reports that DLSS 5 could not start.
+The v0.8.0 archive includes normal DLSS / DLAA, Frame Generation, Reflex and the optional
+DLSS 5 neural-rendering path. DLSS 5 requires an RTX 50-series card, Direct3D 12, DLAA or
+DLSS, and your own NVIDIA model file (`nvngx_dlssnr.dll` beside the game), which is not
+included. The settings panel reports if the model is missing. One pass is recommended;
+multiple passes can darken moving fighters and leave trails.
 
 For renderer diagnostics, `--frame-generation` enables 2x. The explicit forms
 `--frame-generation=2x|3x|4x|5x|6x|dynamic` select a driver-supported mode.
@@ -110,6 +133,7 @@ Visual Studio 2022 Build Tools with winget if missing, then builds and starts th
 ```powershell
 git clone https://github.com/hero88go/melee-unlocked.git
 cd melee-unlocked
+git submodule update --init sourceport/extern/melee
 python tools/extract_dol.py "C:/path/to/melee.iso" build/main.dol
 python port/recomp/recomp.py --dol build/main.dol --gct-base 0x8065CC80
 cmake -S . -B build-review -G "Visual Studio 17 2022" -A x64 -DMELEE_BUILD_EXPERIMENTAL_PORT=ON
@@ -119,6 +143,8 @@ build-review/port/Release/melee_port.exe --iso "C:/path/to/melee.iso" --threaded
 
 (Add the target `melee_unlocked` to the build line if you want the optional launcher; run
 `build-review/port/Release/MeleeUnlockedLauncher.exe` from the checkout and it finds the repo.)
+
+For the GCC-built Source Port DLL and its MSVC host, see [Building the Source Port](docs/build-source-port.md).
 
 ## FAQ
 
@@ -162,9 +188,11 @@ My vision for the project is keeping it open source so anyone can view the work 
   CSPs and screenshots appear as previews in Customize. See [docs/cosmetic-imports.md](docs/cosmetic-imports.md).
 - Looping H.264 CSS and SSS backgrounds with target learning and vanilla fallback.
 - Optional launcher with self-update
-- Lab view (F3): the match drawn in Slippi Lab's flat style, online safe (see below)
+- Lab view is hidden in this release while its silhouettes are prepared for distribution.
 
 ## Lab view
+
+Lab view is hidden in v0.8.0. The following describes the implementation for developers.
 
 Shows the match the way [Slippi Lab](https://github.com/frankborden/slippilab) draws
 replays: flat character silhouettes on a plain stage, with the grid, blast zones, shields, lasers
@@ -212,6 +240,15 @@ offline play the Slippi Launcher is not required. NOTE: **we are not affiliated 
 
 Unranked, Direct codes and Teams work against players on regular Slippi Dolphin; they change
 nothing on their side. Replays (.slp) are written to `Replays\`.
+
+The optional launcher's **Multiplayer Lobby** tab offers an opt-in peer-to-peer lobby.
+Checking **Go Online** lists your name for reachable players and enables match requests
+while the launcher is open. The lobby works without a Melee Unlocked server.
+It uses DHT discovery and direct encrypted
+messages for the roster, chat, friends, presence and match requests, then starts
+accepted matches through Slippi Direct. Reachability depends on each player's
+network; this experimental mode has no relay or guaranteed global chat history.
+See the [lobby setup and limitations](lobby/README.md).
 
 
 ## Bug reports

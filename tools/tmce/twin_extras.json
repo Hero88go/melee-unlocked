@@ -1,0 +1,21 @@
+{
+  "FighterData": [
+    [
+      "mu_ecb_bot_lock_frames",
+      "int",
+      "0x88C"
+    ]
+  ],
+  "Playerblock": [
+    [
+      "mu_gobj0",
+      "GOBJ *",
+      "0xB0"
+    ],
+    [
+      "mu_gobj1",
+      "GOBJ *",
+      "0xB4"
+    ]
+  ]
+}

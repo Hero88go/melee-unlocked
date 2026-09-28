@@ -160,9 +160,15 @@ int difference(const Grid& a, const Grid& b, const Mask& mask) {
 }
 
 void press(WORD key) {
+  // Sent as a hardware scan code: DirectInput (Dolphin's keyboard device) reads scan codes and
+  // ignores a virtual-key-only event. Arrow keys carry the extended flag so Windows still reports
+  // them as arrows, not numpad keys, to programs that read window messages.
+  const bool extended = key == VK_UP || key == VK_DOWN || key == VK_LEFT || key == VK_RIGHT;
+  const DWORD flags = KEYEVENTF_SCANCODE | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
+  const WORD scan = (WORD)MapVirtualKeyW(key, MAPVK_VK_TO_VSC);
   INPUT input[2]{};
-  input[0].type = INPUT_KEYBOARD; input[0].ki.wVk = key;
-  input[1].type = INPUT_KEYBOARD; input[1].ki.wVk = key; input[1].ki.dwFlags = KEYEVENTF_KEYUP;
+  input[0].type = INPUT_KEYBOARD; input[0].ki.wScan = scan; input[0].ki.dwFlags = flags;
+  input[1].type = INPUT_KEYBOARD; input[1].ki.wScan = scan; input[1].ki.dwFlags = flags | KEYEVENTF_KEYUP;
   SendInput(1, &input[0], sizeof(INPUT));
   Sleep(24);   // a GameCube controller poll is 1 frame; hold long enough for one to land
   SendInput(1, &input[1], sizeof(INPUT));
@@ -182,16 +188,19 @@ WORD parse_key(const std::string& name) {
 
 int main(int argc, char** argv) {
   std::string title = "Melee", key_name = "down", key2_name;
-  int trials = 30, settle_ms = 600, timeout_ms = 400;
+  HWND chosen = nullptr;   // --hwnd: this exact window, for programs with several matching titles
+  int trials = 30, settle_ms = 600, timeout_ms = 400, gap_ms = 180;
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() { return i + 1 < argc ? argv[++i] : ""; };
     if (a == "--title") title = next();
+    else if (a == "--hwnd") chosen = (HWND)(uintptr_t)std::strtoull(next(), nullptr, 0);
     else if (a == "--key") key_name = next();
     else if (a == "--key2") key2_name = next();   // alternated with --key, so a menu cursor keeps moving
     else if (a == "--trials") trials = std::atoi(next());
     else if (a == "--settle") settle_ms = std::atoi(next());
     else if (a == "--timeout") timeout_ms = std::atoi(next());
+    else if (a == "--gap") gap_ms = std::atoi(next());   // pause after each trial (a jump must land before the next press)
     else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
   }
   const WORD key = parse_key(key_name);
@@ -200,7 +209,13 @@ int main(int argc, char** argv) {
   if (!key2) { std::fprintf(stderr, "unknown key %s\n", key2_name.c_str()); return 2; }
 
   g_wanted.assign(title.begin(), title.end());
-  EnumWindows(enum_window, 0);
+  if (chosen) {
+    wchar_t text[512] = L"";
+    GetWindowTextW(chosen, text, 512);
+    if (IsWindowVisible(chosen)) { g_found.window = chosen; g_found.title = text; }
+  } else {
+    EnumWindows(enum_window, 0);
+  }
   if (!g_found.window) { std::fprintf(stderr, "no visible window whose title contains \"%s\"\n", title.c_str()); return 1; }
   std::wprintf(L"window: %s\n", g_found.title.c_str());
   SetForegroundWindow(g_found.window);
@@ -240,8 +255,10 @@ int main(int argc, char** argv) {
 
   std::vector<double> results;
   for (int trial = 0; trial < trials; ++trial) {
-    // Start from a settled picture so the response is the only large change.
-    while (capture.next(previous, &present, 50)) {}
+    // Start from the newest picture. Waiting for the desktop to go quiet never ends on a screen whose
+    // background keeps animating, so the wait is bounded; the masked cells already ignore it.
+    const long long drain_until = qpc_now() + (long long)(frequency * 0.25);
+    while (qpc_now() < drain_until && capture.next(previous, &present, 50)) {}
     SetForegroundWindow(g_found.window);
     const long long pressed = qpc_now();
     press(trial % 2 ? key2 : key);
@@ -257,7 +274,7 @@ int main(int argc, char** argv) {
     }
     if (latency >= 0) { results.push_back(latency); std::printf("  trial %2d: %6.1f ms\n", trial + 1, latency); }
     else std::printf("  trial %2d: no response\n", trial + 1);
-    Sleep(180);
+    Sleep((DWORD)gap_ms);
   }
 
   if (results.empty()) { std::fprintf(stderr, "no trial produced a measurable response\n"); return 1; }

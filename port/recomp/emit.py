@@ -83,6 +83,25 @@ class Emitter:
             out.append("void %s(ppc::Context& c, uint8_t* m) { c.entry = 0; hle::%s(c, m); }" % (name, func.name))
             return "\n".join(out) + "\n"
         out.append("void %s(ppc::Context& __restrict c, uint8_t* __restrict m) {" % name)
+        if func.name == "lb_8000B1CC":
+            # Event 23 can pass a missing joint while asking for a world position. The retail
+            # function assumes pos0 is non-null on that path, but native stage setup legitimately
+            # calls it with pos0 == NULL. Keep the guard in generated guest code so static builds
+            # get the same safe behavior as the native source port.
+            out.append("  if (c.r[3] == 0) {")
+            out.append("    if (c.r[5]) {")
+            out.append("      if (c.r[4]) {")
+            out.append("        ppc::st32(c, m, c.r[5] + 0u, ppc::ld32(c, m, c.r[4] + 0u));")
+            out.append("        ppc::st32(c, m, c.r[5] + 4u, ppc::ld32(c, m, c.r[4] + 4u));")
+            out.append("        ppc::st32(c, m, c.r[5] + 8u, ppc::ld32(c, m, c.r[4] + 8u));")
+            out.append("      } else {")
+            out.append("        ppc::st32(c, m, c.r[5] + 0u, 0u);")
+            out.append("        ppc::st32(c, m, c.r[5] + 4u, 0u);")
+            out.append("        ppc::st32(c, m, c.r[5] + 8u, 0u);")
+            out.append("      }")
+            out.append("    }")
+            out.append("    return;")
+            out.append("  }")
         out.append("  ppc::enter(c, %s);" % hexs(func.addr))
         # JObjLoad as well as HSD_JObjAlloc: JObjLoadJointSub (jobj.c) creates a joint with
         # HSD_JObjAlloc only when its descriptor names no class, and with hsdNew(info) when it does.
@@ -99,6 +118,9 @@ class Emitter:
             # blrl jumps to LR and re-links: when LR is still this invocation's return address the
             # instruction is a return that leaves a new LR behind (Slippi's helper-table trick).
             out.append("  const uint32_t entry_lr = c.lr;")
+        if info.local_returns:
+            # Return addresses of the cave-local calls this invocation made (see _local_return).
+            out.append("  uint32_t lrs[32]; uint32_t lrn = 0;")
         if info.setjmp_returns:
             # __longjmp throws; this function called __setjmp, so catch, restore and re-enter at
             # the saved return address through the entry dispatch (a goto cannot enter a try block).
@@ -346,31 +368,31 @@ class Emitter:
         if op == "b":
             t = ins.branch_target
             if ins.lk and (ins.addr + 4) in info.local_returns:
-                return "c.lr = %s; goto L_%08X;" % (hexs(ins.addr + 4), t)
+                return self._local_call(ins.addr + 4, t)
             if ins.lk:
                 return self._call(t, ins.addr + 4, info)
             if t in info.addr_set:
                 poll = "ppc::backedge(c); " if t <= ins.addr else ""
                 return "%sgoto L_%08X;" % (poll, t)
-            return self._tail(t)
+            return self._tail(t, info)
         if op == "bc":
             t = ins.branch_target
             cond = cond_expr(f["bo"], f["bi"])
             if ins.lk and (ins.addr + 4) in info.local_returns:
-                body = "c.lr = %s; goto L_%08X;" % (hexs(ins.addr + 4), t)
+                body = self._local_call(ins.addr + 4, t)
             elif ins.lk:
                 body = self._call(t, ins.addr + 4, info)
             elif t in info.addr_set:
                 poll = "ppc::backedge(c); " if t <= ins.addr else ""
                 body = "%sgoto L_%08X;" % (poll, t)
             else:
-                body = self._tail(t)
+                body = self._tail(t, info)
             return body if cond is None else "if (%s) { %s }" % (cond, body)
         if op == "bclr":
             cond = cond_expr(f["bo"], f["bi"])
             # Local subroutine returns: dispatch on LR with a plain if-chain (a switch here trips
             # the MSVC backend). Only functions containing cave-local calls have any.
-            local = " ".join("if (t == %s) goto L_%08X;" % (hexs(r), r) for r in sorted(info.local_returns))
+            local = self._local_return(info, "t")
             if ins.lk:
                 body = "{ uint32_t t = c.lr; c.lr = %s; %s if (t == entry_lr) return; ppc::call(c, m, t); }" % (hexs(ins.addr + 4), local)
             else:
@@ -381,7 +403,7 @@ class Emitter:
             if ins.lk and ins.addr in info.ctr_calls:
                 t = info.ctr_calls[ins.addr]
                 if (ins.addr + 4) in info.local_returns:
-                    body = "c.lr = %s; goto L_%08X;" % (hexs(ins.addr + 4), t)
+                    body = self._local_call(ins.addr + 4, t)
                 else:
                     body = self._call(t, ins.addr + 4, info)
             elif ins.lk:
@@ -392,14 +414,14 @@ class Emitter:
                     poll = "ppc::backedge(c); " if t <= ins.addr else ""
                     body = "%sgoto L_%08X;" % (poll, t)
                 else:
-                    body = self._tail(t)
+                    body = self._tail(t, info)
             else:
                 jt = info.jumptables.get(ins.addr)
                 if jt:
                     cases = " ".join("case %s: goto L_%08X;" % (hexs(t), t) for t in sorted(set(jt.targets)))
-                    body = "switch (c.ctr) { %s default: ppc::call(c, m, c.ctr); return; }" % cases
+                    body = "switch (c.ctr) { %s default: %s }" % (cases, self._tail_expr("ppc::call(c, m, c.ctr);", info))
                 else:
-                    body = "ppc::call(c, m, c.ctr); return;"
+                    body = self._tail_expr("ppc::call(c, m, c.ctr);", info)
             return body if cond is None else "if (%s) { %s }" % (cond, body)
         if op == "sc":
             return "ppc::syscall(c, m);"
@@ -475,10 +497,34 @@ class Emitter:
                 out += " if (c.lr == %s) { ++ppc::g_resumed_returns; goto L_%08X; }" % (hexs(ret + k), ret + k)
         return out
 
-    def _tail(self, target):
+    def _tail(self, target, info=None):
         if target in self.func_names and target in self.infos:
-            return "%s(c, m); return;" % self.fname(target)
-        return "ppc::call(c, m, %s); return;" % hexs(target)
+            return self._tail_expr("%s(c, m);" % self.fname(target), info)
+        return self._tail_expr("ppc::call(c, m, %s);" % hexs(target), info)
+
+    # Cave-local subroutines. A Gecko cave spliced into a function calls its own helpers with `bl`,
+    # which translates to a jump that sets LR, and the helper's `blr` jumps back by matching LR
+    # against the function's local return addresses. The same guest code also exists in other host
+    # functions (the gecko_fn_ copies, and thunks that enter this function mid-cave), so an LR value
+    # equal to one of these addresses may belong to a call made by a different host frame: a shared
+    # epilogue reached with `b` from a helper in another copy then ran the caller's continuation
+    # inside this frame and returned twice, popping guest stack frames that were already gone. Each
+    # invocation therefore records the local calls it made, and a return (or a tail branch, which
+    # returns to the LR it was taken with) resumes locally only at an address this invocation pushed;
+    # any other LR returns to the host caller, which is the frame that set it.
+    def _local_call(self, ret, target):
+        return "c.lr = %s; lrs[lrn++ & 31u] = %s; goto L_%08X;" % (hexs(ret), hexs(ret), target)
+
+    def _local_return(self, info, var):
+        if not info.local_returns:
+            return ""
+        chain = " ".join("if (%s == %s) goto L_%08X;" % (var, hexs(r), r) for r in sorted(info.local_returns))
+        return "if (ppc::local_return(lrs, lrn, %s)) { %s }" % (var, chain)
+
+    def _tail_expr(self, call, info):
+        if info is None or not info.local_returns:
+            return "%s return;" % call
+        return "{ const uint32_t tl = c.lr; %s %s return; }" % (call, self._local_return(info, "tl"))
 
     def _spr_read(self, n):
         if n == 1:

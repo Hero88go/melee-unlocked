@@ -1,0 +1,4 @@
+sourceport/patches/*.patch -text -diff
+# Preserve the formatting of imported Slippi tables and TM-CE sources.
+port/slippi_sys_general/** whitespace=-blank-at-eol
+sourceport/game/tmce/** whitespace=-blank-at-eol,-blank-at-eof

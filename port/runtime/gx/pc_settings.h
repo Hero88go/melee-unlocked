@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
-#include "gx_d3d12.h"
+#include "gx_core.h"
+#include "render_options.h"
 #include <memory>
 struct ID3D12Device;
 struct ID3D12CommandQueue;
@@ -8,7 +9,7 @@ struct ID3D12GraphicsCommandList;
 struct ID3D11Device;
 struct ID3D11DeviceContext;
 namespace gx {
-void load_pc_settings(D3D12Options& options, int& volume);
+void load_pc_settings(RenderOptions& options, int& volume);
 // Current letterboxed gameplay viewport aspect, used to keep overlays out of the black bars.
 void settings_set_game_aspect(float aspect);
 // Copy the same simulation frame's HUD anchors used by the presented image.
@@ -25,9 +26,9 @@ class PcSettingsUI {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 public:
-  PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const D3D12Options& options);
+  PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const RenderOptions& options);
   ~PcSettingsUI();
-  bool begin(D3D12Options& options); // returns true when render configuration changed
+  bool begin(RenderOptions& options); // returns true when render configuration changed
   void draw(ID3D12GraphicsCommandList* list);
 };
 // The same panel on the D3D11 backend (its own small ImGui renderer; the panel body is shared).
@@ -35,9 +36,9 @@ class PcSettingsUID3D11 {
   struct Impl;
   std::unique_ptr<Impl> impl_;
 public:
-  PcSettingsUID3D11(void* window, ID3D11Device* device, ID3D11DeviceContext* context, const D3D12Options& options);
+  PcSettingsUID3D11(void* window, ID3D11Device* device, ID3D11DeviceContext* context, const RenderOptions& options);
   ~PcSettingsUID3D11();
-  bool begin(D3D12Options& options);
+  bool begin(RenderOptions& options);
   void draw();   // into whatever render target the caller has bound
 };
 }

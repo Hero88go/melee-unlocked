@@ -19,6 +19,7 @@
 #include "ui_sources/gd_melee/motion.h"
 #include "radial_navigation.h"
 #include "gx_backend.h"
+#include "gx_d3d12.h"
 #include "jukebox.h"
 #include "window.h"
 #include "audio.h"
@@ -34,7 +35,9 @@
 #include "discord_presence.h"
 #include "controller_profiles.h"
 #include "cosmetic_mods.h"
+#include "mod_profile.h"
 #include "lab_view.h"
+#include "training_overlay.h"
 // Lab view is hidden until its silhouette packs can ship at a reasonable size: no F3 toggle, no
 // Overlays switch, never drawn (so the renderers never skip the scene for it). Code kept intact.
 constexpr bool kLabViewAvailable = false;
@@ -1519,11 +1522,19 @@ static void draw_discord_invite_overlay() {
 // volume set itself to 0 on a later launch.
 int g_volume = 100;
 
-void load_pc_settings(D3D12Options& options, int& volume) {
+#ifdef GX_DLSS5
+// A saved DLSS 5 strength: a NaN or infinite value keeps the previous one instead of reaching the model.
+static void dlss5_float(const std::string& value, float& target, float lo, float hi) {
+  const float parsed = std::stof(value);
+  if (std::isfinite(parsed)) target = std::clamp(parsed, lo, hi);
+}
+#endif
+
+void load_pc_settings(RenderOptions& options, int& volume) {
   capture_default_bindings();   // the built-in buttons, before the saved ones replace them
   std::ifstream file(options.settings_path);
-  // First launch (no saved settings yet): open the PC settings panel so nobody has to find it.
-  options.settings_open = true;   // opens at every launch unless "startup 0" was saved
+  // Start in the game. F1 and the launcher Settings entry remain available at any time.
+  options.settings_open = false;
   // One setting per line: the key, then everything after it on that line. Reading the value as a
   // single token lost the multi-number "custompreset" line (0.5.5 and later) and shifted every
   // setting after it by one token, so the controller bindings, port choices and profiles saved
@@ -1582,7 +1593,7 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "showfps") options.show_fps = value == "1";
       else if (key == "showvram") options.show_vram = value == "1";
       else if (key == "showping") options.show_ping = value == "1";
-      // Diagnostic, off unless someone is hunting a one-frame glitch: see D3D12Options::flicker_scan.
+      // Diagnostic, off unless someone is hunting a one-frame glitch: see RenderOptions::flicker_scan.
       // Settings-file only rather than a control in the panel, because it costs a readback on every
       // presented frame and nobody should switch it on by browsing.
       else if (key == "flickerscan") options.flicker_scan = value == "1";
@@ -1640,24 +1651,31 @@ void load_pc_settings(D3D12Options& options, int& volume) {
         if (std::sscanf(value.c_str(), "%d %d %d %d %lf %d", &c.efb, &c.ssaa, &c.aniso, &c.dlss, &c.fps, &c.sub) == 6) g_custom_preset = c;
       }
       else if (load_family_option(key, value)) {}
-      else if (key == "startup") options.settings_open = value != "0";
+      else if (key == "autoopenoverlay") options.settings_open = value == "1";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 10) options.dlss_mode = m; }
       // Pre-multiplier saves wrote 0 or 1; both still mean what they always meant (off / 2x).
       else if (key == "framegen") options.frame_generation_mode = std::clamp(std::stoi(value), 0, 6);
       else if (key == "reflex") options.reflex_mode = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "reflexstats") options.reflex_stats = value == "1";
       else if (key == "reflexflash") options.reflex_flash = value == "1";
-      else if (key == "pathtracing") options.path_tracing = value == "1";
-      else if (key == "rayreconstruction") options.ray_reconstruction = value == "1";
+      else if (key == "pathtracing")
+        options.path_tracing = RenderOptions::kPathTracingAvailable && value == "1";
+      else if (key == "rayreconstruction")
+        options.ray_reconstruction = RenderOptions::kPathTracingAvailable && value == "1";
 #ifdef GX_DLSS5
       else if (key == "dlss5") options.dlss5 = value == "1";
-      else if (key == "dlss5intensity") options.dlss5_tuning.intensity = std::clamp(std::stof(value), 0.0f, 10.0f);
-      else if (key == "dlss5detail") options.dlss5_tuning.detail = std::clamp(std::stof(value), 0.0f, 10.0f);
-      else if (key == "dlss5tone") options.dlss5_tuning.tone = std::clamp(std::stof(value), 0.0f, 10.0f);
-      else if (key == "dlss5skin") options.dlss5_tuning.skin = std::clamp(std::stof(value), -1.0f, 10.0f);
+      else if (key == "dlss5intensity") dlss5_float(value, options.dlss5_tuning.intensity, 0.0f, 10.0f);
+      else if (key == "dlss5detail") dlss5_float(value, options.dlss5_tuning.detail, 0.0f, 10.0f);
+      else if (key == "dlss5tone") dlss5_float(value, options.dlss5_tuning.tone, 0.0f, 10.0f);
+      else if (key == "dlss5skin") dlss5_float(value, options.dlss5_tuning.skin, -1.0f, 10.0f);
       else if (key == "dlss5style") options.dlss5_tuning.style = std::clamp(std::stoi(value), 0, 3);
       else if (key == "dlss5preset") options.dlss5_tuning.preset = std::clamp(std::stoi(value), 0, 3);
       else if (key == "dlss5automask") options.dlss5_tuning.auto_mask = value == "1";
+      else if (key == "dlss5resolution") options.dlss5_tuning.resolution_scale = std::clamp(std::stoi(value), 25, 100);
+      else if (key == "dlss5downsample") options.dlss5_tuning.downsample_filter = std::clamp(std::stoi(value), 0, 2);
+      else if (key == "dlss5upsample") options.dlss5_tuning.upsample_filter = std::clamp(std::stoi(value), 0, 2);
+      else if (key == "dlss5reconstruction") options.dlss5_tuning.reconstruction = std::clamp(std::stoi(value), 0, 1);
+      else if (key == "dlss5passes") options.dlss5_tuning.passes = std::clamp(std::stoi(value), 1, 4);
 #endif
       // Low spec: the switch, then what the player had before it was turned on, so turning it off
       // after a restart still restores their own settings rather than the defaults.
@@ -1672,6 +1690,11 @@ void load_pc_settings(D3D12Options& options, int& volume) {
       else if (key == "lowspec_prev_subframe") options.low_spec_previous.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "discord") options.discord_presence = value == "1";
       // A Discord application id is a snowflake; anything else would only be rejected by Discord.
+      else if (key == "te_options") { options.te_options = (uint32_t) std::stoul(value, nullptr, 16); }
+      else if (key == "mod_profile") { if (value.size() <= 1024) options.mod_profile = value; }
+      else if (key == "mods_in_direct") options.mods_in_direct = value != "0";
+      else if (key == "te_options2") options.te_options2 = (uint32_t)std::strtoul(value.c_str(), nullptr, 16);
+      else if (key == "te_menu_music") options.te_menu_music = std::atoi(value.c_str());
       else if (key == "discord_app_id") { if (value.find_first_not_of("0123456789") == std::string::npos && value.size() <= 24) options.discord_app_id = value; }
       else if (key == "backend") options.api = value == "d3d11" ? RenderApi::D3D11 : RenderApi::D3D12;
       else if (key == "volume") { volume = std::clamp(std::stoi(value), 0, 100); g_volume = volume; }
@@ -1764,6 +1787,12 @@ void load_pc_settings(D3D12Options& options, int& volume) {
   std::filesystem::path codes = std::filesystem::path(options.settings_path).parent_path() / "GeckoCodes.ini";
   user_gecko::load(codes.string(), gecko_on, gecko_chosen);
   g_gecko_chosen = gecko_chosen;
+  // The Training Lab's bits (0x8000 and up) are no longer offered: Training Mode CE replaces it.
+  options.te_options &= 0x00007FFFu;
+  if (RenderOptions::kModFeaturesAvailable) RenderOptions::live_te_options() = options.te_options;
+  RenderOptions::live_mods_in_direct() = options.mods_in_direct;
+  RenderOptions::live_te_options2() = options.te_options2;
+  RenderOptions::live_te_menu_music().store(options.te_menu_music);
 #ifdef GX_DLSS5
   dlss5::profile_set_folder(options.settings_path);
 #endif
@@ -1918,7 +1947,8 @@ static void settings_gd_home(SettingsState& state) {
     const float x = 96.0f + offset, y = 84.0f + 34.0f * i;
     ImGui::SetCursorScreenPos(point(x - 7.5f, y));
     ImGui::PushID(i);
-    bool activated = settings_hit_button("##gd_category", ImVec2(451.5f * scale, 30.0f * scale));
+    bool activated = settings_shaped_hit_button("##gd_category", ImVec2(451.5f * scale, 30.0f * scale));
+    const bool nav_frame = settings_nav_frame_on_item();
     if (state.home_focus_reset && i == 0) {
       ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
       state.home_focus_reset = false;
@@ -1935,6 +1965,12 @@ static void settings_gd_home(SettingsState& state) {
     if (selected) quad(x, y, 444, 30, settings_palette_tint(2,IM_COL32(169, 118, 26, 255)));
     const float dx = selected ? -5.0f : 0.0f, dy = selected ? -5.0f : 0.0f;
     quad(x+dx, y+dy, 444, 30, selected ? settings_accent(2) : IM_COL32(46, 54, 64, 255));
+    if (nav_frame) {
+      // Lifted face and its shadow together, in the rows' own slant.
+      const ImVec2 frame[] = {point(x+dx, y+dy), point(x+444, y+dy),
+                              point(x+444, y+30), point(x+dx, y+30)};
+      settings_nav_frame(draw, frame);
+    }
     gd_kit_text(draw, "row", origin, scale, x+16+dx, y+20.28f+dy,
                 names[i], selected ? IM_COL32(10, 14, 24, 255) : IM_COL32(242, 239, 228, 255));
     gd_kit_text(draw, "row", origin, scale, x+414+dx, y+20.28f+dy,
@@ -2150,6 +2186,9 @@ static void settings_clean_home(SettingsState& state) {
       state.clean_home_frames + ImGui::GetIO().DeltaTime * 60.0f);
   const float row_h = std::min(61.0f, (s.y - 210.0f) / 7.0f);
   const float step = row_h - 1.0f;
+  // The rows overlap, so the focus frame is drawn once they are all down or the next row hides it.
+  bool nav_frame_row = false;
+  ImVec2 nav_frame_quad[4];
   for (int i = 0; i < 7; ++i) {
     const float t = std::clamp((state.clean_home_frames - i * 1.25f) / 14.0f, 0.0f, 1.0f);
     const float eased = t * t * (3.0f - 2.0f * t);
@@ -2158,8 +2197,8 @@ static void settings_clean_home(SettingsState& state) {
     const float width = s.x - 39.0f;
     ImGui::SetCursorScreenPos(ImVec2(entry_x, y-width*0.05f));
     ImGui::PushID(i);
-    const bool clicked = settings_hit_button("##clean_category", ImVec2(width, row_h));
-    if (state.home_focus_reset && i == 0) {
+    const bool clicked = settings_shaped_hit_button("##clean_category", ImVec2(width, row_h));
+    const bool nav_frame = settings_nav_frame_on_item();    if (state.home_focus_reset && i == 0) {
       ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
       state.home_focus_reset = false;
     }
@@ -2192,6 +2231,10 @@ static void settings_clean_home(SettingsState& state) {
     const ImVec2 poly[] = {ImVec2(x + 18.0f, y), ImVec2(x + width, y-tilt),
                            ImVec2(x + width - 18.0f, y + row_h-tilt), ImVec2(x, y + row_h)};
     draw->AddConvexPolyFilled(poly, 4, face);
+    if (nav_frame) {
+      nav_frame_row = true;
+      std::copy(poly, poly + 4, nav_frame_quad);
+    }
     draw->AddLine(ImVec2(x + 18.0f, y + 1.0f), ImVec2(x + width - 1.0f, y + 1.0f-tilt),
                   selected ? IM_COL32(255, 223, 245, 255) :
                              settings_palette_tint(0,IM_COL32(220,72,142,145)), 1.4f);
@@ -2207,6 +2250,7 @@ static void settings_clean_home(SettingsState& state) {
       state.clean_detail_open = true;
     }
   }
+  if (nav_frame_row) settings_nav_frame(draw, nav_frame_quad);
   // The A SELECT / B BACK chips drawn by settings_clean_chrome are real buttons: Select opens
   // the highlighted category, Back closes the panel. Hover lifts and lightens the chip.
   {
@@ -2216,16 +2260,18 @@ static void settings_clean_home(SettingsState& state) {
       const float x = p.x + 11.0f + chip * (chip_w + 5.0f);
       ImGui::SetCursorScreenPos(ImVec2(x, bottom - 41.0f));
       ImGui::PushID(chip);
-      const bool pressed = settings_hit_button("##clean_home_chip", ImVec2(chip_w, 40.0f));
+      const bool pressed = settings_shaped_hit_button("##clean_home_chip", ImVec2(chip_w, 40.0f));
+      const bool nav_frame = settings_nav_frame_on_item();
       const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
       ImGui::PopID();
       state.footer_hover[chip] += ((hot ? 1.0f : 0.0f) - state.footer_hover[chip]) *
                                   std::min(1.0f, ImGui::GetIO().DeltaTime * 16.0f);
       const float glow = state.footer_hover[chip];
+      const float lift = glow * 4.0f;
+      const ImVec2 card[] = {ImVec2(x + 12, bottom - 29 - lift), ImVec2(x + chip_w, bottom - 41 - lift),
+                             ImVec2(x + chip_w - 10, bottom - 11 - lift), ImVec2(x, bottom - 1 - lift)};
+      if (nav_frame) settings_nav_frame(draw, card);
       if (glow > 0.01f) {
-        const float lift = glow * 4.0f;
-        const ImVec2 card[] = {ImVec2(x + 12, bottom - 29 - lift), ImVec2(x + chip_w, bottom - 41 - lift),
-                               ImVec2(x + chip_w - 10, bottom - 11 - lift), ImVec2(x, bottom - 1 - lift)};
         draw->AddConvexPolyFilled(card, 4, chip == 0 ?
             settings_palette_tint(0, IM_COL32(247, 31, 143, (int)(250 * glow))) :
             IM_COL32(70, 44, 88, (int)(245 * glow)));
@@ -2453,7 +2499,7 @@ struct PcSettingsUI::Impl {
   SettingsState state;
 };
 
-PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const D3D12Options& options)
+PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const RenderOptions& options)
     : impl_(std::make_unique<Impl>()) {
   auto& state = *impl_;
   state.state.open = options.settings_open;
@@ -2491,7 +2537,7 @@ PcSettingsUI::~PcSettingsUI() {
   settings_context_destroy();
 }
 
-bool PcSettingsUI::begin(D3D12Options& options) {
+bool PcSettingsUI::begin(RenderOptions& options) {
   ImGui_ImplDX12_NewFrame();
   return settings_frame(impl_->state, options);
 }
@@ -2508,7 +2554,7 @@ static const char* matchmaking_state_text(int state) {
   }
 }
 
-static void draw_native_practice(SettingsState& state, D3D12Options& options,
+static void draw_native_practice(SettingsState& state, RenderOptions& options,
                                  const slippi::native_practice::Snapshot& practice,
                                  const host::PadState& pad, bool have_pad) {
   using slippi::native_practice::Phase;
@@ -2598,25 +2644,12 @@ static void draw_native_practice(SettingsState& state, D3D12Options& options,
   ImGui::Separator();
 
   ImGui::BeginDisabled(!practice.can_start);
-  const bool start_ranked = ImGui::Button("Ranked", ImVec2(126, 32));
-  ImGui::EndDisabled();
-  ImGui::SameLine();
-  ImGui::BeginDisabled(!practice.can_start);
   const bool start_unranked = ImGui::Button("Unranked", ImVec2(126, 32));
   ImGui::EndDisabled();
   ImGui::SameLine();
   if (ImGui::Button("Direct", ImVec2(126, 32))) state.practice_focus_code = true;
-  ImGui::TextDisabled("Ranked and Unranked start immediately; Direct uses a code.");
+  ImGui::TextDisabled("Unranked starts immediately; Direct uses a code.");
   ImGui::Separator();
-
-  if (start_ranked && practice.can_start) {
-    state.practice_error[0] = 0;
-    slippi::native_practice::submit_start_ranked();
-    state.practice_open = false;
-    state.practice_release_capture = true;
-    ImGui::End();
-    return;
-  }
 
   if (start_unranked && practice.can_start) {
     state.practice_error[0] = 0;
@@ -2673,7 +2706,147 @@ static void draw_native_practice(SettingsState& state, D3D12Options& options,
   ImGui::End();
 }
 
-bool settings_frame(SettingsState& state, D3D12Options& options) {
+// The settings file. Written by the panel after a change, and at once when the game changes a
+// saved value itself (the 20XX TE menu song).
+static bool write_settings_file(const SettingsState& state, const RenderOptions& options) {
+  std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";
+  std::ofstream file(temporary);
+  file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
+       << "\nexclusivefullscreen " << options.exclusive_fullscreen
+       << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen
+       << "\nfodreflections " << options.fod_reflections
+       << "\ntruewidescreen " << options.true_widescreen << "\naspect " << (int)options.aspect
+       << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
+       << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
+       << "\nshowfps " << options.show_fps << "\nshowvram " << (options.show_vram ? 1 : 0) << "\nshowping " << options.show_ping
+       << "\ndlss " << options.dlss_mode << "\nframegen " << options.frame_generation_mode
+       << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
+       << "\nreflexflash " << (options.reflex_flash ? 1 : 0)
+       << "\npathtracing " << (options.path_tracing ? 1 : 0)
+       << "\nrayreconstruction " << (options.ray_reconstruction ? 1 : 0)
+#ifdef GX_DLSS5
+       << "\ndlss5 " << (options.dlss5 ? 1 : 0) << "\ndlss5intensity " << options.dlss5_tuning.intensity
+       << "\ndlss5detail " << options.dlss5_tuning.detail << "\ndlss5tone " << options.dlss5_tuning.tone
+       << "\ndlss5skin " << options.dlss5_tuning.skin << "\ndlss5style " << options.dlss5_tuning.style
+       << "\ndlss5preset " << options.dlss5_tuning.preset << "\ndlss5automask " << (options.dlss5_tuning.auto_mask ? 1 : 0)
+       << "\ndlss5resolution " << options.dlss5_tuning.resolution_scale << "\ndlss5passes " << options.dlss5_tuning.passes
+       << "\ndlss5downsample " << options.dlss5_tuning.downsample_filter << "\ndlss5upsample " << options.dlss5_tuning.upsample_filter
+       << "\ndlss5reconstruction " << options.dlss5_tuning.reconstruction
+#endif
+       << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
+       << "\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
+       << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
+       << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
+       << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
+       << "\nonlinedelay " << slippi::online::config().delay
+       << "\nautoopenoverlay " << (options.settings_open ? 1 : 0)
+       // Read since it was added and never written, so hiding the reminder lasted one session.
+       << "\nsettingsreminder " << (options.settings_hint ? 1 : 0)
+       << "\nlegacymenu " << (options.legacy_menu_enabled ? 1 : 0)
+       << "\nlegacymenustyle " << options.legacy_menu_style
+       << "\nmenusounds " << (options.settings_menu_sounds ? 1 : 0)
+       << "\nmenucustom " << (options.settings_custom_color_enabled ? 1 : 0)
+       << "\nmenucolor " << options.settings_custom_color[0] << ' '
+       << options.settings_custom_color[1] << ' ' << options.settings_custom_color[2]
+       << "\noverlaystyle " << (state.legacy_presentation ? state.legacy_saved_appearance : options.overlay_style)
+       << "\nsettingstransparency " << options.settings_transparency
+       << "\noverlaypalette0 " << options.overlay_palettes[0]
+       << "\noverlaypalette1 " << options.overlay_palettes[1]
+       << "\noverlaypalette2 " << options.overlay_palettes[2]
+       << "\noverlaypalette3 " << options.overlay_palettes[3]
+       << "\noverlaypalette4 " << options.overlay_palettes[4]
+       << "\noverlaypalette5 " << options.overlay_palettes[5]
+       << "\noverlaypalette6 " << options.overlay_palettes[6]
+       << "\nstockhudscale " << options.stock_hud_scale
+       << "\ndamagehudscale " << options.damage_hud_scale
+       << "\nplayernicknames " << (options.show_player_nicknames ? 1 : 0)
+       << "\nmatchmakinghint " << (options.matchmaking_hint ? 1 : 0)
+       << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
+       << "\nlabview " << options.lab_view << "\nlabskipscene " << options.lab_skip_scene
+       << "\ninputoverlayhideborder " << options.input_overlay_hide_border
+       << "\ninputoverlayvalues " << options.input_overlay_values
+       << "\ninputoverlaystick " << options.input_overlay_stick
+       << "\neffects " << options.effects_level
+       // Low spec: the switch, and the settings it is holding for the player while it is on.
+       << "\nlowspec " << (options.low_spec ? 1 : 0)
+       << "\nlowspec_prev_backend " << (options.low_spec_previous.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
+       << "\nlowspec_prev_fps " << options.low_spec_previous.fps_cap
+       << "\nlowspec_prev_scale " << options.low_spec_previous.efb_scale
+       << "\nlowspec_prev_ssaa " << options.low_spec_previous.ssaa
+       << "\nlowspec_prev_anisotropy " << options.low_spec_previous.anisotropy
+       << "\nlowspec_prev_effects " << options.low_spec_previous.effects_level
+       << "\nlowspec_prev_dlss " << options.low_spec_previous.dlss_mode
+       << "\nlowspec_prev_subframe " << (options.low_spec_previous.subframe == SubFrameMode::Off ? 0 : options.low_spec_previous.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1)
+       << "\nlcancelindicator " << (lcancel::indicator_enabled() ? 1 : 0)
+       << "\nautolcancel " << (lcancel::automatic_enabled() ? 1 : 0)
+       << "\npalstockicons " << (gecko::option_pal_stock_icons ? 1 : 0)
+       << "\nnoscreenshake " << (gecko::option_no_screen_shake ? 1 : 0)
+       << "\nswpro_gc_picture " << (g_swpro_gc_picture ? 1 : 0)
+       << family_options_text()
+       << "\nrumble " << (host::g_rumble_enabled.load(std::memory_order_relaxed) ? 1 : 0)
+       << "\nbackgroundinput " << (host::g_background_input ? 1 : 0)
+       << "\neditdevice " << g_saved_edit_tab
+       << (g_custom_preset.set ? "\ncustompreset " + std::to_string(g_custom_preset.efb) + " " + std::to_string(g_custom_preset.ssaa) + " " +
+                                     std::to_string(g_custom_preset.aniso) + " " + std::to_string(g_custom_preset.dlss) + " " +
+                                     std::to_string(g_custom_preset.fps) + " " + std::to_string(g_custom_preset.sub)
+                               : std::string())
+       << "\ndiscord " << (options.discord_presence ? 1 : 0);
+  // Only when set: "key value" parsing would swallow the next line on an empty value.
+  if (!options.discord_app_id.empty()) file << "\ndiscord_app_id " << options.discord_app_id;
+  if (!options.mod_profile.empty()) file << "\nmod_profile " << options.mod_profile;
+  if (!options.mods_in_direct) file << "\nmods_in_direct 0";
+  if (options.te_options2) { char te2[16]; std::snprintf(te2, sizeof te2, "%X", options.te_options2); file << "\nte_options2 " << te2; }
+  if (options.te_menu_music) file << "\nte_menu_music " << options.te_menu_music;
+  if (options.te_options) { char te[16]; std::snprintf(te, sizeof te, "%X", options.te_options); file << "\nte_options " << te; }
+  // One line per pack that is switched off. Without this the loader parsed "texpackoff" but
+  // nothing ever wrote it, so switching a pack off lasted only until the next launch. The
+  // loader reads the name to end of line, so a name with spaces in it round-trips.
+  // The texture settings themselves. The loader has always parsed these three, but nothing ever
+  // wrote them, so "Use texture packs" came back unchecked at every launch and a player who had
+  // set it up correctly was told their packs were off. Same omission that hid texpackoff.
+  file << "\ncustomtextures " << (options.custom_textures ? 1 : 0)
+       << "\ndumptextures " << (options.dump_textures ? 1 : 0)
+       << "\nprefetchtextures " << (options.prefetch_textures ? 1 : 0)
+       << "\nvideobackgrounds " << (options.video_backgrounds ? 1 : 0);
+  file << texpack_disabled_lines();
+  // The player's Gecko codes switched on, by name (names can hold spaces; read to end of line).
+  if (g_gecko_chosen) {
+    file << "\ngeckochosen 1";
+    for (const user_gecko::Code& c : user_gecko::codes())
+      if (c.enabled) file << "\ngeckocode " << c.name;
+  }
+  for (int i = 0; i < (int)host::BindAction::Count; ++i)
+    file << "\nkey_" << kActionNames[i] << " " << host::g_key_bindings.vk[i];
+  for (int idx = 0; idx < 4; ++idx)
+    for (int i = 0; i < (int)host::BindAction::Count; ++i)
+      file << "\npad" << idx << "_" << kActionNames[i] << " " << host::g_pad_bindings[idx].mask[i];
+  for (int idx = 0; idx < 4; ++idx)
+    for (int i = 0; i < (int)host::BindAction::Count; ++i)
+      file << "\ngc" << idx << "_" << kActionNames[i] << " " << host::g_gc_bindings[idx].mask[i];
+  for (int idx = 0; idx < 4; ++idx)
+    for (int i = 0; i < (int)host::BindAction::Count; ++i)
+      file << "\nds4" << idx << "_" << kActionNames[i] << " " << host::g_ds4_bindings[idx].mask[i];
+  for (int idx = 0; idx < 4; ++idx)
+    for (int i = 0; i < (int)host::BindAction::Count; ++i)
+      file << "\nswpro" << idx << "_" << kActionNames[i] << " " << host::g_swpro_bindings[idx].mask[i];
+  for (int idx = 0; idx < 4; ++idx)
+    for (int i = 0; i < (int)host::BindAction::Count; ++i)
+      file << "\nhid" << idx << "_" << kActionNames[i] << " " << host::g_hid_bindings[idx].mask[i];
+  for (int n = 0; n < 4; ++n)
+    file << "\nport" << n << " " << port_source_to_combo(host::g_port_sources[n]);
+  for (int n = 0; n < 4; ++n)
+    if (!host::g_port_device_names[n].empty()) file << "\nportname" << n << " " << host::g_port_device_names[n];
+  // Only while a named profile (not "Default") is actually active: g_active_profile also holds a
+  // pre-allocated name while Default is selected (so an unprompted rebind has somewhere to save
+  // to), and writing that out would read back next launch as if that profile were chosen.
+  for (int t = 0; t < kDeviceTabs; ++t)
+    if (g_named_profile_active[t] && !g_active_profile[t].empty()) file << "\nactiveprofile" << t << " " << g_active_profile[t];
+  file << '\n';
+  file.close();
+  return file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+}
+
+bool settings_frame(SettingsState& state, RenderOptions& options) {
   slippi::native_practice::Snapshot practice = slippi::native_practice::snapshot();
   const bool practice_forced = practice.phase == slippi::native_practice::Phase::Handoff ||
                                practice.phase == slippi::native_practice::Phase::Failure ||
@@ -2840,13 +3013,24 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
   // F2: write the next ~90 presented frames into capture\. For defects that only show in a real
   // session, where scripted runs reproduce nothing: press it while the problem is happening and
   // the frames themselves can be read afterwards.
+  // 20XX TE: the game chose a menu song in Sound Test. Saved now, like TE saves it.
+  if (const int song = RenderOptions::live_te_menu_music().load(); song != options.te_menu_music) {
+    options.te_menu_music = song;
+    state.saved = write_settings_file(state, options);
+  }
   if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) { request_frame_capture(90); host::log("capture: F2, writing the next 90 presented frames into capture\\"); }
   // F3: Lab view on or off. Marked dirty, so it is saved with the other settings the next time the
   // panel is open (the panel is what writes the settings file).
-  if (kLabViewAvailable && ImGui::IsKeyPressed(ImGuiKey_F3, false)) { options.lab_view = !options.lab_view; state.dirty = true; host::log("lab view: %s", options.lab_view ? "on" : "off"); }
+  // The Lab view draws from the Slippi frame data the translated guest sends; the Source Port has
+  // none, so F3 stays off there.
+  if (kLabViewAvailable && !options.native_source && ImGui::IsKeyPressed(ImGuiKey_F3, false)) { options.lab_view = !options.lab_view; state.dirty = true; host::log("lab view: %s", options.lab_view ? "on" : "off"); }
   // Drawn first, on the background list, so every overlay and window below lands on top of it.
   // Called every frame, off or on, so lab::covering() always describes this frame.
-  lab::draw(kLabViewAvailable && options.lab_view && !state.fill_window, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+  lab::draw(kLabViewAvailable && options.lab_view && !options.native_source && !state.fill_window, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+  training_overlay::draw(options.native_source &&
+                             ((RenderOptions::live_te_options() & 0x48000u) == 0x48000u || training_overlay::input_display()) &&
+                             !state.fill_window,
+                         ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // Start on the controller closes the panel from any page (the open chord is Start + Down + Z,
   // which the input layer swallows whole, so this never fires on the press that opened it).
   if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
@@ -3130,7 +3314,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       draw->AddText(ImVec2(p.x + s.x - 30.0f, p.y + 18.0f),
                     IM_COL32(255, 255, 255, 255), "X");
       ImGui::SetCursorScreenPos(ImVec2(p.x + 20.0f, p.y + 115.0f));
-      const bool categories_clicked=settings_hit_button("##clean_categories",ImVec2(s.x-40.0f,34.0f));
+      const bool categories_clicked=settings_shaped_hit_button("##clean_categories",ImVec2(s.x-40.0f,34.0f));
+      const bool categories_nav_frame=settings_nav_frame_on_item();
       const bool categories_hovered=ImGui::IsItemHovered()||ImGui::IsItemFocused();
       const ImVec2 ca=ImGui::GetItemRectMin(), cb=ImGui::GetItemRectMax();
       const ImVec2 category_shadow[]={ImVec2(ca.x+15,ca.y+5),ImVec2(cb.x,ca.y-2),
@@ -3142,6 +3327,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
           settings_accent(0):IM_COL32(26,17,35,235));
       draw->AddLine(category_card[0],category_card[1],
           settings_palette_tint(0,IM_COL32(255,108,189,245)),2.0f);
+      if (categories_nav_frame) settings_nav_frame(draw,category_card);
       settings_slanted_text(draw,settings_heading_font(),16.0f,
           ImVec2(ca.x+23,ca.y+7),IM_COL32_WHITE,"<  CATEGORIES",.08f);
       if (categories_clicked) {
@@ -3528,11 +3714,15 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       if (options.exclusive_fullscreen) options.fullscreen = false;
       changed = true;
     }
-    if (settings_toggle("Widescreen 16:9 (Slippi)", &options.widescreen)) {
-      if (options.widescreen) options.true_widescreen = false;   // one or the other, never both
-      changed = true;
+    if (options.native_source) {
+      ImGui::TextDisabled("Slippi Widescreen: Static Recomp only");
+    } else {
+      if (settings_toggle("Widescreen 16:9 (Slippi)", &options.widescreen)) {
+        if (options.widescreen) options.true_widescreen = false;   // one or the other, never both
+        changed = true;
+      }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Slippi widescreen Gecko code. Online safe.");
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The Slippi widescreen Gecko code. Online safe.");
     if (ImGui::GetContentRegionAvail().x >= 650.0f) ImGui::SameLine(kCol2);
     // True 16:9 widens the frustum here in the renderer instead of running the Gecko code, so
     // nothing is written to guest memory and it cannot desync. Experimental because the game still
@@ -3556,6 +3746,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       if (options.aspect == AspectMode::Stretch)
         settings_hint("Fills the whole window or screen, so the picture is stretched. Pick a 4:3 window\n"
                             "size below and a wider screen to get the stretched resolution players use.");
+      else if (options.native_source)
+        ImGui::TextDisabled("Melee's camera asks for 73:60. The Slippi code is Legacy only; True 16:9 widens in the renderer.");
       else
         settings_hint("Melee's camera asks for 73:60, not 4:3; the Slippi widescreen code widens it to 16:9.\n"
                             "Auto follows the checkbox above, which is what Slippi Dolphin does.");
@@ -3741,7 +3933,13 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                           "for monitors with the NVIDIA Reflex Latency Analyzer and for LDAT.");
     }
     if (d3d11) { ImGui::EndDisabled(); settings_hint("DLSS needs Direct3D 12 and an NVIDIA GPU."); }
-    {
+    if (!RenderOptions::kPathTracingAvailable) {
+      if (options.path_tracing || options.ray_reconstruction) {
+        options.path_tracing = false;
+        options.ray_reconstruction = false;
+        changed = true;
+      }
+    } else {
       const bool path_available = !d3d11 && options.dlss_mode < 6 && dxr_path_tracing_available();
       if (!path_available && options.path_tracing) { options.path_tracing = false; changed = true; }
       if (!path_available) ImGui::BeginDisabled();
@@ -3773,11 +3971,46 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       // Clear it when it cannot apply, so what the panel shows and what the renderer does agree.
       if (nr_blocked && options.dlss5) { options.dlss5 = false; changed = true; }
       if (nr_blocked) ImGui::BeginDisabled();
+      {
+        // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=dlss5): bring this section into view once.
+        static int scroll_frames = 0;
+        if (scroll_frames < 30) {
+          const char* target = std::getenv("MELEE_SETTINGS_SCROLL_TO");
+          if (target && std::strcmp(target, "dlss5") == 0) ImGui::SetScrollHereY(0.0f);
+          ++scroll_frames;
+        }
+      }
       if (settings_toggle("DLSS 5 Neural Rendering (experimental)", &options.dlss5)) changed = true;
+      if (!dlss5::model_found())
+        settings_hint("DLSS 5 model file not found. It is not included with Melee Unlocked: put your own "
+                      "nvngx_dlssnr.dll beside melee_source.exe, then restart.");
       if (options.dlss5) {
         // Sliders apply when released: every change rebuilds the model's feature, and doing that on
         // each pixel of a drag would stall the frame repeatedly.
         dlss5::Tuning& t = options.dlss5_tuning;
+        // Five looks: starting points for Melee's art, independent of the processing below. The
+        // neural model choice is the same DLSSNR.Style control RenoDX calls Model A/B/C.
+        struct NeuralLook { const char* name; const char* tip; float intensity, detail, tone; int style; };
+        static const NeuralLook looks[] = {
+          {"Original+", "Model A with gentle detail and lighting. Keeps Melee's colors closest to the original.", 0.85f, 1.10f, 0.90f, 0},
+          {"Balanced", "Model C at full intensity with modest detail.", 1.00f, 1.15f, 1.05f, 2},
+          {"Vivid", "Model C with more surface detail and lighting. In our tests it looks close to Balanced.", 1.00f, 1.35f, 1.20f, 2},
+          {"Moody", "Model B with more contrast and detail.", 1.00f, 1.25f, 1.10f, 1},
+          {"Stable", "Model A at reduced strength, for scenes that flicker.", 0.70f, 0.90f, 0.80f, 0},
+        };
+        int look_index = 5;
+        for (int i = 0; i < 5; ++i)
+          if (t.intensity == looks[i].intensity && t.detail == looks[i].detail && t.tone == looks[i].tone &&
+              t.style == looks[i].style && t.skin < 0.0f && t.preset == 0 && t.auto_mask) { look_index = i; break; }
+        const char* look_names[] = {"Original+", "Balanced", "Vivid", "Moody", "Stable", "Custom"};
+        if (settings_combo("DLSS 5 look", &look_index, look_names, 6) && look_index < 5) {
+          t.intensity = looks[look_index].intensity; t.detail = looks[look_index].detail; t.tone = looks[look_index].tone;
+          t.style = looks[look_index].style; t.skin = -1.0f; t.preset = 0; t.auto_mask = true;
+          changed = true;
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("%s", look_index < 5 ? looks[look_index].tip :
+                            "Your own settings. Save them as a profile below to use them again.");
         auto percent = [&](const char* label, float& v) {
           static std::unordered_map<const float*, int> held;
           auto it = held.find(&v);
@@ -3793,12 +4026,12 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
           else if (it != held.end()) { held.erase(it); v = shown / 100.0f; changed = true; }
           return shown;
         };
-        const int intensity_pct = percent("Intensity", t.intensity);
-        const int detail_pct = percent("Surface detail", t.detail);
-        const int tone_pct = percent("Lighting and tone", t.tone);
+        const int intensity_pct = percent("Overall intensity", t.intensity);
+        const int detail_pct = percent("Structure intensity", t.detail);
+        const int tone_pct = percent("Local tone intensity", t.tone);
         bool skin_auto = t.skin < 0.0f;
-        if (settings_toggle("Skin detail: automatic", &skin_auto)) { t.skin = skin_auto ? -1.0f : 1.0f; changed = true; }
-        const int skin_pct = skin_auto ? 0 : percent("Skin detail", t.skin);
+        if (settings_toggle("Skin structure: automatic", &skin_auto)) { t.skin = skin_auto ? -1.0f : 1.0f; changed = true; }
+        const int skin_pct = skin_auto ? 0 : percent("Skin structure strength", t.skin);
         const int extreme_pct = std::max({intensity_pct, detail_pct, tone_pct, skin_pct});
         if (extreme_pct > 150) {
           const bool red = extreme_pct > 200;
@@ -3834,14 +4067,73 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
             ImGui::TextWrapped("Above 200%% is experimental. NVIDIA has not published a supported numeric range; visual artifacts or feature failure are possible.");
         }
         if (tone_pct > 150)
-          ImGui::TextWrapped("Lighting above 150%% can flicker on stage backgrounds.");
-        const char* styles[] = {"Style 0 (default)", "Style 1", "Style 2", "Style 3"};
+          ImGui::TextWrapped("Local tone above 150%% can flicker on stage backgrounds.");
+        const char* styles[] = {"Model A", "Model B", "Model C", "Style 3 (experimental)"};
         ImGui::SetNextItemWidth(160.0f);
-        if (settings_combo("Style", &t.style, styles, 4)) changed = true;
+        if (settings_combo("Model", &t.style, styles, 4)) changed = true;
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("The A/B/C choices in RenoDX set this same neural style control.\n"
+                            "Stage lighting changes how different they look.");
         const char* presets[] = {"Model default", "Preset 1", "Preset 2", "Preset 3"};
         ImGui::SetNextItemWidth(160.0f);
-        if (settings_combo("Model preset", &t.preset, presets, 4)) changed = true;
-        if (settings_toggle("Protect HUD and flat areas (auto mask)", &t.auto_mask)) changed = true;
+        if (settings_combo("Weight hint (experimental)", &t.preset, presets, 4)) changed = true;
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Separate from Models A/B/C. Current DLSS 5 runtimes may have one weight set,\n"
+                            "so these hints can produce the same picture.");
+        if (settings_toggle("Character mask", &t.auto_mask)) changed = true;
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Lets the neural model find characters and skin by itself (its automatic mask).\n"
+                            "Melee's HUD is restored separately after the neural pass.");
+        // Processing: where and how often the model runs, independent of the look above.
+        struct ProcessingPreset { int scale, passes, upsample; };
+        static const ProcessingPreset processing[] = {{100, 1, 0}, {50, 1, 0}, {75, 1, 1}, {100, 2, 1}, {100, 3, 1}};
+        int processing_index = 5;
+        for (int i = 0; i < 5; ++i)
+          if (t.resolution_scale == processing[i].scale && t.passes == processing[i].passes &&
+              (t.resolution_scale == 100 ||
+               (t.upsample_filter == processing[i].upsample && t.downsample_filter == 0 && t.reconstruction == 0))) {
+            processing_index = i;
+            break;
+          }
+        const char* processing_names[] = {"Default", "Performance", "Balanced", "Quality", "Showcase", "Custom"};
+        if (settings_combo("DLSS 5 processing", &processing_index, processing_names, 6) && processing_index < 5) {
+          t.resolution_scale = processing[processing_index].scale; t.passes = processing[processing_index].passes;
+          t.downsample_filter = 0; t.upsample_filter = processing[processing_index].upsample; t.reconstruction = 0;
+          changed = true;
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Default: 100%%, one pass. Performance: 50%%, one pass. Balanced: 75%%, one pass.\n"
+                            "Quality: 100%%, two passes. Showcase: 100%%, three passes.\n"
+                            "Each extra pass costs as much GPU time as the first, and in our tests extra\n"
+                            "passes darkened moving fighters and left trails. One pass is recommended.");
+        auto deferred_int = [&](const char* label, int& value, int lo, int hi, const char* format) {
+          static std::unordered_map<const int*, int> held;
+          auto it = held.find(&value);
+          int shown = it == held.end() ? value : it->second;
+          settings_slider(label, &shown, lo, hi, format);
+          if (ImGui::IsItemActive()) held[&value] = shown;
+          else if (it != held.end()) { held.erase(it); value = std::clamp(shown, lo, hi); changed = true; }
+          else if (shown != value) { value = std::clamp(shown, lo, hi); changed = true; }
+        };
+        deferred_int("Neural resolution scale", t.resolution_scale, 25, 100, "%d%%");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Resolution of the neural processing only. The game's render resolution stays the same.\n"
+                            "At 50%% per axis the model processes a quarter of the pixels.");
+        deferred_int("Pass count", t.passes, 1, 4, "%d");
+        if (t.passes > 1)
+          ImGui::TextWrapped("More than one pass darkens moving fighters and can leave trails behind them.");
+        ImGui::BeginDisabled(t.resolution_scale == 100);
+        const char* down_filters[] = {"Area", "Bilinear", "Nearest"};
+        const char* up_filters[] = {"Bilinear", "Bicubic", "Nearest"};
+        const char* reconstruction[] = {"RGB residual", "Processed image"};
+        if (settings_combo("Downsample filter", &t.downsample_filter, down_filters, 3)) changed = true;
+        if (settings_combo("Upsample filter", &t.upsample_filter, up_filters, 3)) changed = true;
+        if (settings_combo("Scale reconstruction", &t.reconstruction, reconstruction, 2)) changed = true;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+          ImGui::SetTooltip("RGB residual adds the neural change to the full-resolution picture.\n"
+                            "Processed image enlarges the whole neural result (softer).\n"
+                            "Filters and reconstruction apply below 100%% resolution.");
+        ImGui::EndDisabled();
         if (ImGui::Button("Reset DLSS 5 controls")) { t = dlss5::Tuning{}; changed = true; }
         // Named tuning profiles: a saved sliders-and-all setup under a name, one text file per name
         // in Dlss5Profiles beside port-settings.ini. Loading one applies it immediately.
@@ -4062,24 +4354,8 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     {
       bool low = options.low_spec;
       if (settings_toggle("Low spec", &low)) {
-        if (low) {
-          options.low_spec_previous = {options.api, options.fps_cap, options.efb_scale, options.ssaa,
-                                       options.anisotropy, options.effects_level, options.dlss_mode, options.subframe};
-          if (d3d11_available()) options.api = RenderApi::D3D11;   // the better exercised driver path on old integrated GPUs
-          options.fps_cap = 60;
-          options.efb_scale = 1;                  // native 640x528, the floor
-          options.ssaa = 1;                       // no supersampling
-          options.anisotropy = 1;                 // no anisotropic filtering
-
-          options.dlss_mode = 0;                  // NVIDIA and Direct3D 12 only
-          options.subframe = SubFrameMode::Off;   // the sub-frame solver is the largest CPU cost here
-        } else {
-          const auto& p = options.low_spec_previous;
-          options.api = p.api; options.fps_cap = p.fps_cap; options.efb_scale = p.efb_scale;
-          options.ssaa = p.ssaa; options.anisotropy = p.anisotropy; options.effects_level = p.effects_level;
-          options.dlss_mode = p.dlss_mode; options.subframe = p.subframe;
-        }
-        options.low_spec = low;
+        if (low) apply_low_spec(options, d3d11_available());
+        else restore_low_spec(options);
         changed = true;
       }
       ImGui::SameLine();
@@ -4598,6 +4874,180 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
         }
         ImGui::Spacing();
         ImGui::Separator();
+        if (RenderOptions::kModFeaturesAvailable && source_port::mods::status().source_port) {
+          const auto& mod_status = source_port::mods::status();
+          // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=mods): bring this section into view once.
+          static int scroll_frames = 0;
+          if (scroll_frames < 30) {
+            const char* target = std::getenv("MELEE_SETTINGS_SCROLL_TO");
+            if (target && std::strcmp(target, "mods") == 0) ImGui::SetScrollHereY(0.0f);
+            ++scroll_frames;
+          }
+          ImGui::TextUnformatted("Game mods");
+          ImGui::TextWrapped("A mod profile loads a modded disc, loose files and memory card saves over the "
+                             "retail game, with its own memory card. Profiles live in Mods\\Profiles. "
+                             "Changes take effect after restart.");
+          static std::vector<std::string> profiles = source_port::mods::list_profiles();
+          // A profile saved as a path shows as its file name.
+          std::string shown_name = options.mod_profile;
+          if (shown_name.size() > 4 && _stricmp(shown_name.c_str() + shown_name.size() - 4, ".ini") == 0) {
+            const size_t slash = shown_name.find_last_of("/\\");
+            shown_name = shown_name.substr(slash == std::string::npos ? 0 : slash + 1);
+            shown_name.resize(shown_name.size() - 4);
+          }
+          const char* shown = options.mod_profile.empty() ? "Vanilla" : shown_name.c_str();
+          if (ImGui::BeginCombo("Mod profile", shown)) {
+            if (ImGui::Selectable("Vanilla", options.mod_profile.empty())) { options.mod_profile.clear(); changed = true; }
+            for (const auto& name : profiles)
+              if (ImGui::Selectable(name.c_str(), options.mod_profile == name)) { options.mod_profile = name; changed = true; }
+            ImGui::EndCombo();
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Rescan")) profiles = source_port::mods::list_profiles();
+          static std::string import_message;
+          if (ImGui::Button("Add a mod file...")) {
+            const std::string picked = source_port::mods::choose_mod_file();
+            if (!picked.empty()) {
+              const std::string name = source_port::mods::import_file(std::filesystem::u8path(picked), &import_message);
+              profiles = source_port::mods::list_profiles();
+              if (!name.empty()) { options.mod_profile = name; changed = true; }
+            }
+          }
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Your own modded disc (.iso, for example Akaneia) or save file (.gci, for example 20XX TE).\n"
+                              "Nothing is copied into the game except a save file.");
+          if (!import_message.empty()) ImGui::TextWrapped("%s", import_message.c_str());
+          // Command-line mods (no profile name) are a test setup: nothing to compare against.
+          const bool from_command_line = mod_status.profile.empty() && !mod_status.identity.empty();
+          if (!from_command_line && options.mod_profile != mod_status.requested) {
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Profile changed. Restart to apply it.");
+            if (!state.fill_window) {
+              if (ImGui::Button("Restart to apply profile")) state.confirm = SettingsState::Confirm::Restart;
+            } else settings_hint("Close settings, then launch the game to apply this profile.");
+          }
+          if (mod_status.identity.empty()) {
+            ImGui::TextDisabled("Running: the retail game");
+          } else {
+            ImGui::Text("Running: %s (content %.12s)", from_command_line ? "command-line mods" :
+                        mod_status.profile.c_str(), mod_status.identity.c_str());
+            for (const auto& line : mod_status.layers) ImGui::BulletText("%s", line.c_str());
+            for (const auto& line : mod_status.notes) ImGui::TextWrapped("%s", line.c_str());
+            ImGui::Spacing();
+            ImGui::TextWrapped("Online: Unranked, Teams and Party always play the standard game. Direct can use "
+                               "this mod, and then only against a player on the same build.");
+            bool in_direct = options.mods_in_direct;
+            if (settings_toggle("Use this mod in Direct", &in_direct)) {
+              options.mods_in_direct = in_direct;
+              RenderOptions::live_mods_in_direct() = in_direct;
+              changed = true;
+            }
+            if (in_direct) {
+              bool dolphin = RenderOptions::live_mods_dolphin_ok();
+              if (settings_toggle("Opponent uses it on Slippi Dolphin", &dolphin)) RenderOptions::live_mods_dolphin_ok() = dolphin;
+              if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Slippi Dolphin cannot confirm which build it runs. Tick this only for an opponent\n"
+                                  "you know has the same mod. Until you close the game.");
+            }
+          }
+          ImGui::Spacing();
+          ImGui::Separator();
+          ImGui::TextUnformatted("20XX Tournament Edition");
+          if (!mod_status.te_owned) {
+            ImGui::TextWrapped("Add your 20XX TE save (.gci) with \"Add a mod file\" above, pick its profile and "
+                               "restart to use 20XX TE's features here.");
+          } else {
+          ImGui::TextWrapped("20XX TE's features, built into the game. Offline only: online matches and "
+                             "replays always play the standard rules.");
+          struct TeFeature { uint32_t bit; const char* label; const char* hint; bool tournament; };
+          static const TeFeature te_features[] = {
+            {0x40u, "Pausing requires holding Start", "Hold Start for half a second to pause a VS match.", true},
+            {0x80u, "Frozen stages", "Stadium stays on its base form, Dream Land has no wind, Yoshi's Story has no "
+                                     "Shy Guys, Final Destination's background holds still, Kongo Jungle 64 has no barrel.", true},
+            {0x2000u, "CPU Zelda is Sheik", "A CPU given Zelda plays Sheik and never transforms.", true},
+            {0x4000u, "Handicap is stock count", "With handicap on, each player's handicap sets their stocks.", true},
+            {0x100u, "Disable Star KO", "Top blast zone KOs are always the quick kind.", false},
+            {0x800u, "Keep playing after GAME!", "The match does not freeze on GAME!; KOs after the result do not count.", false},
+            {0x400u, "Taunt cancelling", "A taunt out of a dash keeps sliding and can slide off an edge.", false},
+            {0x200u, "Infinite shields", "Shields never shrink, and CPUs hold shield.", false},
+            {0x1000u, "Fixed camera", "The camera shows the whole stage and never moves.", false},
+          };
+          const bool te_locked_all = (options.te_options2 & 0x40000u) != 0;
+          bool te_on = (options.te_options & 0x10u) != 0;
+          if (te_locked_all) ImGui::BeginDisabled();
+          const bool te_on_changed = settings_toggle("Use 20XX TE features", &te_on);
+          if (te_locked_all) ImGui::EndDisabled();
+          if (te_on_changed) {
+            options.te_options = te_on ? (options.te_options | 0x10u) : (options.te_options & ~0x10u);
+            changed = true;
+          }
+          if (te_on) {
+            bool tournament = (options.te_options & 0x20u) != 0;
+            if (te_locked_all) ImGui::BeginDisabled();
+            const bool tournament_changed = settings_toggle("Tournament Mode", &tournament);
+            if (te_locked_all) ImGui::EndDisabled();
+            if (tournament_changed) {
+              options.te_options = tournament ? (options.te_options | 0x20u) : (options.te_options & ~0x20u);
+              changed = true;
+            }
+            if (ImGui::IsItemHovered())
+              ImGui::SetTooltip("Keeps only the features tournaments allow.");
+            for (const auto& feature : te_features) {
+              bool on = (options.te_options & feature.bit) != 0;
+              const bool blocked = (tournament && !feature.tournament) || te_locked_all;
+              if (blocked) ImGui::BeginDisabled();
+              if (settings_toggle(feature.label, &on)) {
+                options.te_options = on ? (options.te_options | feature.bit) : (options.te_options & ~feature.bit);
+                changed = true;
+              }
+              if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s%s", feature.hint, blocked ? "\nOff in Tournament Mode." : "");
+              if (blocked) ImGui::EndDisabled();
+            }
+            // The second word (host API 14). General conveniences (unlocks, boot rules, no title
+            // demo, C-Stick in 1P, menu tweaks) are always on with TE and have no switch.
+            struct TeFeature2 { uint32_t bit; const char* label; const char* hint; bool tournament; };
+            static const TeFeature2 te_features2[] = {
+              {0x20000u, "Stage striking", "Press X on stage select to strike a stage; random picks only unstruck stages.", true},
+              {0x10u, "Frozen Mode toggle", "Press Y on stage select to switch stage hazards off or on.", true},
+              {0x8u, "Reset tournament rules", "In Tournament Mode, rules and the stage list go back to the tournament set after each game.", true},
+              {0x2u, "v1.00 game rules", "Hitlag, Bowser's flame cancel, Link and Young Link's boomerang cancel and Ness's PK Thunder as in v1.00.", true},
+              {0x4u, "Quieter Dream Land 64 music", "Slightly lower volume for Dream Land 64's music.", true},
+              {0x40000u, "Lock these settings", "The 20XX TE settings cannot be changed until this is switched off (for tournament setups).", true},
+              {0x10000u, "Hand-warmer mode", "In 1-minute time matches fighters pass through each other and cannot hit each other.", true},
+              {0x40u, "Random stage music", "Each stage plays a random song.", false},
+              {0x80u, "Extra shield colors", "Press L or R on character select to change your shield color.", false},
+              {0x100u, "Disable screen rumble", "The camera does not shake on powerful attacks.", false},
+              {0x200u, "Flash on L-cancel", "Your character flashes white on a successful L-cancel and red on a missed one.", false},
+              {0x800u, "L-cancel training wheels", "Every aerial landing is L-cancelled; the flash shows whether you pressed in time.", false},
+              {0x400u, "Spoof controller plugins", "Character select treats every port as having a controller.", false},
+              {0x1000u, "Collision bubbles", "Shows hitboxes and hurtboxes in matches.", false},
+              {0x2000u, "Input display", "Shows each player's controller in matches and replays.", false},
+              {0x4000u, "CPU smart DI", "CPUs DI and tech at random and use survival DI against strong hits.", false},
+              {0x8000u, "Color overlays", "Fighters turn green on the frames they can act, to show frame holes.", false},
+            };
+            ImGui::TextWrapped("Always on with 20XX TE: everything unlocked, 4 stock / 8 minute / friendly fire rules at start, "
+                               "C-Stick in 1P modes, neutral spawns, no results screen (A+B for a rematch), UCF, "
+                               "D-pad up/down on character select for rumble.");
+            const bool te_locked = (options.te_options2 & 0x40000u) != 0;
+            for (const auto& feature : te_features2) {
+              bool on = (options.te_options2 & feature.bit) != 0;
+              const bool blocked = (tournament && !feature.tournament) || (te_locked && feature.bit != 0x40000u);
+              if (blocked) ImGui::BeginDisabled();
+              if (settings_toggle(feature.label, &on)) {
+                options.te_options2 = on ? (options.te_options2 | feature.bit) : (options.te_options2 & ~feature.bit);
+                RenderOptions::live_te_options2() = options.te_options2;
+                changed = true;
+              }
+              if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s%s", feature.hint, blocked ? "\nOff in Tournament Mode." : "");
+              if (blocked) ImGui::EndDisabled();
+            }
+          }
+          }   // the TE save is loaded
+          RenderOptions::live_te_options() = options.te_options;
+          ImGui::Spacing();
+          ImGui::Separator();
+        }
         ImGui::TextUnformatted("Cosmetic mods");
         ImGui::TextWrapped("Imports use one shared native profile. Stage DATs that fail the exact-ISO "
                            "visual check use the clean disc resource online. Changes take effect after restart.");
@@ -4794,6 +5244,11 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       }
       if (state.active_tab == 2) {
 
+    ImGui::TextUnformatted("In-game overlay");
+    changed |= settings_toggle("Auto-open in-game overlay on startup", &options.settings_open);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Off starts directly in the game. Press F1 to open the overlay anytime.");
+
     // ---- Input ----
     ImGui::TextUnformatted("Input");
     if (settings_toggle("Background input", &host::g_background_input)) changed = true;
@@ -4805,10 +5260,16 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // Slippi's Lagless FoD code is a real game patch, so expose it as an offline/direct setting
     // instead of silently forcing the performance-oriented variant on every player.
     ImGui::TextUnformatted("Stage effects");
-    if (settings_toggle("Fountain of Dreams reflections", &options.fod_reflections)) changed = true;
-    if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("On: keep Fountain of Dreams' water reflection and particles.\n"
-                        "Off: use the Lagless FoD code for lower GPU cost. Takes effect at the next retrace.");
+    // The Source Port carries Lagless FoD as C at each patched site, latched at boot with the
+    // General Codes, so this switch only reaches the Static Recomp build for now.
+    if (options.native_source) {
+      ImGui::TextDisabled("Fountain of Dreams reflections: Static Recomp only");
+    } else {
+      if (settings_toggle("Fountain of Dreams reflections", &options.fod_reflections)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("On: keep Fountain of Dreams' water reflection and particles.\n"
+                          "Off: use the Lagless FoD code for lower GPU cost. Takes effect at the next retrace.");
+    }
 
     // ---- L-cancel helpers ----
     // The indicator reads the fighter's action state and never writes anything, so it is display
@@ -4828,7 +5289,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       bool automatic = lcancel::automatic_enabled();
       if (settings_toggle("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
       ImGui::SameLine();
-      settings_hint("(NOTE: Will not work in Unranked or Ranked, only offline and direct)");
+      settings_hint("(NOTE: Works offline and in Direct, not in Unranked or Teams)");
       if (automatic) {
         ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
                            "network like any other, so it cannot desync. In a Direct match both players should agree "
@@ -4841,17 +5302,22 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // ---- HUD ----
     // A port code compiled into the game (recomp/gecko.py PORT_CODES): the stock row drawn at PAL's
     // size and height. Display only, read when the HUD is built, so it applies from the next match.
+    // The native game has its own versions of both (MuHostApi.game_options), so both engines show them.
     ImGui::TextUnformatted("HUD");
-    ImGui::SetNextItemWidth(170.0f);
-    if (settings_slider("Stock icon size", &options.stock_hud_scale, 75, 175, "%d%%")) {
-      gecko::option_pal_stock_icons = false;
-      changed = true;
+    // The two size sliders rescale the HUD objects in guest RAM, which only the Static Recomp
+    // build keeps at console addresses, so the Source Port shows the PAL and shake switches only.
+    if (!options.native_source) {
+      ImGui::SetNextItemWidth(170.0f);
+      if (settings_slider("Stock icon size", &options.stock_hud_scale, 75, 175, "%d%%")) {
+        gecko::option_pal_stock_icons = false;
+        changed = true;
+      }
+      ImGui::SetNextItemWidth(170.0f);
+      changed |= settings_slider("Damage number size", &options.damage_hud_scale, 75, 175, "%d%%");
+      settings_hint("Display only; updates during play. Larger values may overlap in four-player matches.");
     }
-    ImGui::SetNextItemWidth(170.0f);
-    changed |= settings_slider("Damage number size", &options.damage_hud_scale, 75, 175, "%d%%");
-    settings_hint("Display only; updates during play. Larger values may overlap in four-player matches.");
     if (settings_toggle("PAL style stock icons", &gecko::option_pal_stock_icons)) {
-      if (gecko::option_pal_stock_icons) options.stock_hud_scale = 85;
+      if (gecko::option_pal_stock_icons && !options.native_source) options.stock_hud_scale = 85;
       changed = true;
     }
     if (ImGui::IsItemHovered())
@@ -4868,7 +5334,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     // Slippi's local input delay: frames of your own input held back so there is less to roll back.
     // The game asks for it when an online match is set up, so a change applies from the next match.
     ImGui::TextUnformatted("Online");
-    {
+    if (options.native_source) {
+      ImGui::TextDisabled("Legacy-only: Slippi frame delay.");
+    } else {
       int delay = slippi::online::config().delay;
       ImGui::SetNextItemWidth(160.0f);
       if (settings_slider("Frame delay", &delay, 1, 9)) { slippi::online::config().delay = delay; changed = true; }
@@ -4906,7 +5374,6 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       settings_hint("Off. Nothing is sent to Discord. Needs an Application ID from discord.com/developers/applications.");
     }
 
-    changed |= settings_toggle("Open this panel at startup", &options.settings_open);
       }
       if (state.active_tab == 3) {
 
@@ -5369,13 +5836,15 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
                         "not NVIDIA Reflex Low Latency (Video tab) is On, so Off has a number too --\n"
                         "the full breakdown by stage is on the performance graph.");
     if (kLabViewAvailable) {
+    ImGui::BeginDisabled(options.native_source);
     changed |= settings_toggle("Lab view (F3)", &options.lab_view);
+    ImGui::EndDisabled();
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Draws matches the way Slippi Lab draws replays: flat character silhouettes\n"
                         "on a plain stage, over the game image. Display only, so it is safe online;\n"
                         "menus and character select look normal. Needs the Lab folder from\n"
                         "tools/build_lab_assets.py for the silhouettes.");
-    if (options.lab_view) {
+    if (options.lab_view && !options.native_source) {
       ImGui::Indent();
       changed |= settings_toggle("Skip the 3D scene underneath", &options.lab_skip_scene);
       if (ImGui::IsItemHovered())
@@ -5411,7 +5880,9 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
       settings_hint("  Drag an overlay to move it, and its edges to resize, while this panel is open.");
     }
       }
-      if (state.active_tab == 6) {
+      if (state.active_tab == 6 && options.native_source) {
+        ImGui::TextDisabled("Gecko codes run on the Static Recomp build only.");
+      } else if (state.active_tab == 6) {
     // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
     // Always shown: a code the other player does not have desyncs the match.
     ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "WARNING: Gecko codes can cause DESYNCS online.");
@@ -5498,133 +5969,7 @@ bool settings_frame(SettingsState& state, D3D12Options& options) {
     const bool autosave = state.dirty && !ImGui::IsAnyItemActive();
     if ((state.fill_window && ImGui::Button("Save settings")) || autosave) {
       state.dirty = false;
-      std::filesystem::path path(options.settings_path), temporary = path; temporary += ".tmp";
-      std::ofstream file(temporary);
-      file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
-           << "\nexclusivefullscreen " << options.exclusive_fullscreen
-           << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen
-           << "\nfodreflections " << options.fod_reflections
-           << "\ntruewidescreen " << options.true_widescreen << "\naspect " << (int)options.aspect
-           << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
-           << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
-           << "\nshowfps " << options.show_fps << "\nshowvram " << (options.show_vram ? 1 : 0) << "\nshowping " << options.show_ping
-           << "\ndlss " << options.dlss_mode << "\nframegen " << options.frame_generation_mode
-           << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
-           << "\nreflexflash " << (options.reflex_flash ? 1 : 0)
-           << "\npathtracing " << (options.path_tracing ? 1 : 0)
-           << "\nrayreconstruction " << (options.ray_reconstruction ? 1 : 0)
-#ifdef GX_DLSS5
-           << "\ndlss5 " << (options.dlss5 ? 1 : 0) << "\ndlss5intensity " << options.dlss5_tuning.intensity
-           << "\ndlss5detail " << options.dlss5_tuning.detail << "\ndlss5tone " << options.dlss5_tuning.tone
-           << "\ndlss5skin " << options.dlss5_tuning.skin << "\ndlss5style " << options.dlss5_tuning.style
-           << "\ndlss5preset " << options.dlss5_tuning.preset << "\ndlss5automask " << (options.dlss5_tuning.auto_mask ? 1 : 0)
-#endif
-           << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
-           << "\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
-           << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
-           << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
-           << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
-           << "\nonlinedelay " << slippi::online::config().delay
-           << "\nstartup " << (options.settings_open ? 1 : 0)
-           // Read since it was added and never written, so hiding the reminder lasted one session.
-           << "\nsettingsreminder " << (options.settings_hint ? 1 : 0)
-           << "\nlegacymenu " << (options.legacy_menu_enabled ? 1 : 0)
-           << "\nlegacymenustyle " << options.legacy_menu_style
-           << "\nmenusounds " << (options.settings_menu_sounds ? 1 : 0)
-           << "\nmenucustom " << (options.settings_custom_color_enabled ? 1 : 0)
-           << "\nmenucolor " << options.settings_custom_color[0] << ' '
-           << options.settings_custom_color[1] << ' ' << options.settings_custom_color[2]
-           << "\noverlaystyle " << (state.legacy_presentation ? state.legacy_saved_appearance : options.overlay_style)
-           << "\nsettingstransparency " << options.settings_transparency
-           << "\noverlaypalette0 " << options.overlay_palettes[0]
-           << "\noverlaypalette1 " << options.overlay_palettes[1]
-           << "\noverlaypalette2 " << options.overlay_palettes[2]
-           << "\noverlaypalette3 " << options.overlay_palettes[3]
-           << "\noverlaypalette4 " << options.overlay_palettes[4]
-           << "\noverlaypalette5 " << options.overlay_palettes[5]
-           << "\noverlaypalette6 " << options.overlay_palettes[6]
-           << "\nstockhudscale " << options.stock_hud_scale
-           << "\ndamagehudscale " << options.damage_hud_scale
-           << "\nplayernicknames " << (options.show_player_nicknames ? 1 : 0)
-           << "\nmatchmakinghint " << (options.matchmaking_hint ? 1 : 0)
-           << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
-           << "\nlabview " << options.lab_view << "\nlabskipscene " << options.lab_skip_scene
-           << "\ninputoverlayhideborder " << options.input_overlay_hide_border
-           << "\ninputoverlayvalues " << options.input_overlay_values
-           << "\ninputoverlaystick " << options.input_overlay_stick
-           << "\neffects " << options.effects_level
-           // Low spec: the switch, and the settings it is holding for the player while it is on.
-           << "\nlowspec " << (options.low_spec ? 1 : 0)
-           << "\nlowspec_prev_backend " << (options.low_spec_previous.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
-           << "\nlowspec_prev_fps " << options.low_spec_previous.fps_cap
-           << "\nlowspec_prev_scale " << options.low_spec_previous.efb_scale
-           << "\nlowspec_prev_ssaa " << options.low_spec_previous.ssaa
-           << "\nlowspec_prev_anisotropy " << options.low_spec_previous.anisotropy
-           << "\nlowspec_prev_effects " << options.low_spec_previous.effects_level
-           << "\nlowspec_prev_dlss " << options.low_spec_previous.dlss_mode
-           << "\nlowspec_prev_subframe " << (options.low_spec_previous.subframe == SubFrameMode::Off ? 0 : options.low_spec_previous.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1)
-           << "\nlcancelindicator " << (lcancel::indicator_enabled() ? 1 : 0)
-           << "\nautolcancel " << (lcancel::automatic_enabled() ? 1 : 0)
-           << "\npalstockicons " << (gecko::option_pal_stock_icons ? 1 : 0)
-           << "\nnoscreenshake " << (gecko::option_no_screen_shake ? 1 : 0)
-           << "\nswpro_gc_picture " << (g_swpro_gc_picture ? 1 : 0)
-           << family_options_text()
-           << "\nrumble " << (host::g_rumble_enabled.load(std::memory_order_relaxed) ? 1 : 0)
-           << "\nbackgroundinput " << (host::g_background_input ? 1 : 0)
-           << "\neditdevice " << g_saved_edit_tab
-           << (g_custom_preset.set ? "\ncustompreset " + std::to_string(g_custom_preset.efb) + " " + std::to_string(g_custom_preset.ssaa) + " " +
-                                         std::to_string(g_custom_preset.aniso) + " " + std::to_string(g_custom_preset.dlss) + " " +
-                                         std::to_string(g_custom_preset.fps) + " " + std::to_string(g_custom_preset.sub)
-                                   : std::string())
-           << "\ndiscord " << (options.discord_presence ? 1 : 0);
-      // Only when set: "key value" parsing would swallow the next line on an empty value.
-      if (!options.discord_app_id.empty()) file << "\ndiscord_app_id " << options.discord_app_id;
-      // One line per pack that is switched off. Without this the loader parsed "texpackoff" but
-      // nothing ever wrote it, so switching a pack off lasted only until the next launch. The
-      // loader reads the name to end of line, so a name with spaces in it round-trips.
-      // The texture settings themselves. The loader has always parsed these three, but nothing ever
-      // wrote them, so "Use texture packs" came back unchecked at every launch and a player who had
-      // set it up correctly was told their packs were off. Same omission that hid texpackoff.
-      file << "\ncustomtextures " << (options.custom_textures ? 1 : 0)
-           << "\ndumptextures " << (options.dump_textures ? 1 : 0)
-           << "\nprefetchtextures " << (options.prefetch_textures ? 1 : 0)
-           << "\nvideobackgrounds " << (options.video_backgrounds ? 1 : 0);
-      file << texpack_disabled_lines();
-      // The player's Gecko codes switched on, by name (names can hold spaces; read to end of line).
-      if (g_gecko_chosen) {
-        file << "\ngeckochosen 1";
-        for (const user_gecko::Code& c : user_gecko::codes())
-          if (c.enabled) file << "\ngeckocode " << c.name;
-      }
-      for (int i = 0; i < (int)host::BindAction::Count; ++i)
-        file << "\nkey_" << kActionNames[i] << " " << host::g_key_bindings.vk[i];
-      for (int idx = 0; idx < 4; ++idx)
-        for (int i = 0; i < (int)host::BindAction::Count; ++i)
-          file << "\npad" << idx << "_" << kActionNames[i] << " " << host::g_pad_bindings[idx].mask[i];
-      for (int idx = 0; idx < 4; ++idx)
-        for (int i = 0; i < (int)host::BindAction::Count; ++i)
-          file << "\ngc" << idx << "_" << kActionNames[i] << " " << host::g_gc_bindings[idx].mask[i];
-      for (int idx = 0; idx < 4; ++idx)
-        for (int i = 0; i < (int)host::BindAction::Count; ++i)
-          file << "\nds4" << idx << "_" << kActionNames[i] << " " << host::g_ds4_bindings[idx].mask[i];
-      for (int idx = 0; idx < 4; ++idx)
-        for (int i = 0; i < (int)host::BindAction::Count; ++i)
-          file << "\nswpro" << idx << "_" << kActionNames[i] << " " << host::g_swpro_bindings[idx].mask[i];
-      for (int idx = 0; idx < 4; ++idx)
-        for (int i = 0; i < (int)host::BindAction::Count; ++i)
-          file << "\nhid" << idx << "_" << kActionNames[i] << " " << host::g_hid_bindings[idx].mask[i];
-      for (int n = 0; n < 4; ++n)
-        file << "\nport" << n << " " << port_source_to_combo(host::g_port_sources[n]);
-      for (int n = 0; n < 4; ++n)
-        if (!host::g_port_device_names[n].empty()) file << "\nportname" << n << " " << host::g_port_device_names[n];
-      // Only while a named profile (not "Default") is actually active: g_active_profile also holds a
-      // pre-allocated name while Default is selected (so an unprompted rebind has somewhere to save
-      // to), and writing that out would read back next launch as if that profile were chosen.
-      for (int t = 0; t < kDeviceTabs; ++t)
-        if (g_named_profile_active[t] && !g_active_profile[t].empty()) file << "\nactiveprofile" << t << " " << g_active_profile[t];
-      file << '\n';
-      file.close();
-      state.saved = file.good() && MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+      state.saved = write_settings_file(state, options);
     }
     // Standalone: there is no game behind this window, so "return", "restart" and "quit the game"
     // are all the same thing, closing it. Restart in particular relaunched this process with the

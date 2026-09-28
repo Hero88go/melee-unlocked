@@ -1,17 +1,64 @@
 // Runtime services for recompiled Gekko code: dispatch, MMIO routing, SPRs, PSQ, fres/frsqrte.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "ppc.h"
-#include "functions.h"
+#include "guest_registry.h"
 #include "host.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <thread>
 #include <vector>
 
 namespace ppc {
+// Diagnostic hook the regenerated vanilla guest calls around the spline evaluator
+// (0x80378A30..0x80378A90). Lives in the runtime, not main.cpp, so every binary that links
+// guest.lib (tests, probes) resolves it. Off unless MELEE_TRACE_SPLINE_PPC=first:last is set.
+void trace_spline_guest(const Context& context, uint32_t pc) {
+  static bool initialized = false;
+  static bool enabled = false;
+  static bool active = false;
+  static uint32_t first = 0, last = 0;
+  static uint32_t trace_retrace = 0;
+  if (!initialized) {
+    initialized = true;
+    const char* range = std::getenv("MELEE_TRACE_SPLINE_PPC");
+    if (range && std::sscanf(range, "%u:%u", &first, &last) == 2 &&
+        first <= last && last - first <= 120) enabled = true;
+  }
+  if (!enabled) return;
+  auto bits = [](double value) {
+    const float single = static_cast<float>(value);
+    uint32_t raw;
+    std::memcpy(&raw, &single, sizeof raw);
+    return raw;
+  };
+  if (!active && pc == 0x80378A30u) {
+    const uint32_t retrace = host::retrace_count();
+    if (retrace < first || retrace > last || context.lr != 0x8036AFECu ||
+        bits(context.f[1].ps0) != 0x3E2AAAABu ||
+        bits(context.f[2].ps0) != 0x40000000u ||
+        bits(context.f[3].ps0) != 0x00000000u ||
+        bits(context.f[4].ps0) != 0x40A2F400u ||
+        bits(context.f[5].ps0) != 0x3F26A400u ||
+        bits(context.f[6].ps0) != 0x3FA39400u) return;
+    active = true;
+    trace_retrace = retrace;
+  }
+  if (!active) return;
+  host::log("[spline-ppc] retrace=%u pc=%08X lr=%08X f0=%08X f1=%08X f2=%08X f3=%08X f4=%08X f5=%08X f6=%08X f7=%08X f8=%08X f9=%08X f10=%08X f11=%08X",
+            trace_retrace, pc, context.lr,
+            bits(context.f[0].ps0), bits(context.f[1].ps0),
+            bits(context.f[2].ps0), bits(context.f[3].ps0),
+            bits(context.f[4].ps0), bits(context.f[5].ps0),
+            bits(context.f[6].ps0), bits(context.f[7].ps0),
+            bits(context.f[8].ps0), bits(context.f[9].ps0),
+            bits(context.f[10].ps0), bits(context.f[11].ps0));
+  if (pc == 0x80378A90u) active = false;
+}
+
 std::atomic<uint8_t> g_ram_watched[RAM_WATCH_COUNT]{};
 std::atomic<uint32_t> g_ram_versions[RAM_WATCH_COUNT]{};
 
@@ -33,7 +80,7 @@ void init_dispatch() {
 
 Fn lookup(uint32_t addr) {
   uint32_t off = addr - RAM_BASE;
-  if (off >= RAM_SIZE || (addr & 3)) return nullptr;
+  if (g_dispatch.empty() || off >= RAM_SIZE || (addr & 3)) return nullptr;
   return g_dispatch[off / 4];
 }
 
@@ -71,7 +118,10 @@ uint64_t g_enter_count = 0;
 bool g_trace_funcs = false;
 static std::vector<std::pair<uint32_t, uint32_t>> g_traced;   // (addr, remaining prints)
 void add_trace_func(uint32_t addr, uint32_t limit) { g_traced.push_back({addr, limit}); g_trace_funcs = true; }
+static std::vector<std::pair<uint32_t, EntryHook>> g_entry_hooks;
+void add_entry_hook(uint32_t addr, EntryHook fn) { g_entry_hooks.push_back({addr, fn}); g_trace_funcs = true; }
 void trace_enter(Context& c, uint32_t pc) {
+  for (auto& h : g_entry_hooks) if (h.first == pc) h.second(c);
   for (auto& t : g_traced) {
     if (t.first != pc || !t.second) continue;
     --t.second;
@@ -329,76 +379,7 @@ void psq_store(Context& c, uint8_t* m, uint32_t ea, uint32_t rs, uint32_t w, uin
   }
 }
 
-// ---- fres / frsqrte (Dolphin Common/MathUtil.cpp) ----
-static const int frsqrte_expected_base[] = {
-  0x3ffa000, 0x3c29000, 0x38aa000, 0x3572000, 0x3279000, 0x2fb7000, 0x2d26000, 0x2ac0000,
-  0x2881000, 0x2665000, 0x2468000, 0x2287000, 0x20c1000, 0x1f12000, 0x1d79000, 0x1bf4000,
-  0x1a7e800, 0x17cb800, 0x1552800, 0x130c000, 0x10f2000, 0x0eff000, 0x0d2e000, 0x0b7c000,
-  0x09e5000, 0x0867000, 0x06ff000, 0x05ab800, 0x046a000, 0x0339800, 0x0218800, 0x0105800,
-};
-static const int frsqrte_expected_dec[] = {
-  0x7a4, 0x700, 0x670, 0x5f2, 0x584, 0x524, 0x4cc, 0x47e, 0x43a, 0x3fa, 0x3c2, 0x38e,
-  0x35e, 0x332, 0x30a, 0x2e6, 0x568, 0x4f3, 0x48d, 0x435, 0x3e7, 0x3a2, 0x365, 0x32e,
-  0x2fc, 0x2d0, 0x2a8, 0x283, 0x261, 0x243, 0x226, 0x20b,
-};
-
-double frsqrte(double val) {
-  int64_t vali; std::memcpy(&vali, &val, 8);
-  int64_t mantissa = vali & ((1LL << 52) - 1);
-  int64_t sign = vali & (1LL << 63);
-  int64_t exponent = vali & (0x7FFLL << 52);
-  if (mantissa == 0 && exponent == 0)
-    return sign ? -std::numeric_limits<double>::infinity() : std::numeric_limits<double>::infinity();
-  if (exponent == (0x7FFLL << 52)) {
-    if (mantissa == 0) return sign ? std::numeric_limits<double>::quiet_NaN() : 0.0;
-    return 0.0 + val;
-  }
-  if (sign) return std::numeric_limits<double>::quiet_NaN();
-  if (!exponent) {
-    do { exponent -= 1LL << 52; mantissa <<= 1; } while (!(mantissa & (1LL << 52)));
-    mantissa &= (1LL << 52) - 1;
-    exponent += 1LL << 52;
-  }
-  bool odd_exponent = !(exponent & (1LL << 52));
-  exponent = ((0x3FFLL << 52) - ((exponent - (0x3FELL << 52)) / 2)) & (0x7FFLL << 52);
-  int i = (int)(mantissa >> 37);
-  vali = sign | exponent;
-  int index = i / 2048 + (odd_exponent ? 16 : 0);
-  vali |= (int64_t)(frsqrte_expected_base[index] - frsqrte_expected_dec[index] * (i % 2048)) << 26;
-  double out; std::memcpy(&out, &vali, 8);
-  return out;
-}
-
-static const int fres_expected_base[] = {
-  0x7ff800, 0x783800, 0x70ea00, 0x6a0800, 0x638800, 0x5d6200, 0x579000, 0x520800,
-  0x4cc800, 0x47ca00, 0x430800, 0x3e8000, 0x3a2c00, 0x360800, 0x321400, 0x2e4a00,
-  0x2aa800, 0x272c00, 0x23d600, 0x209e00, 0x1d8800, 0x1a9000, 0x17ae00, 0x14f800,
-  0x124400, 0x0fbe00, 0x0d3800, 0x0ade00, 0x088400, 0x065000, 0x041c00, 0x020c00,
-};
-static const int fres_expected_dec[] = {
-  0x3e1, 0x3a7, 0x371, 0x340, 0x313, 0x2ea, 0x2c4, 0x2a0, 0x27f, 0x261, 0x245, 0x22a,
-  0x212, 0x1fb, 0x1e5, 0x1d1, 0x1be, 0x1ac, 0x19b, 0x18b, 0x17c, 0x16e, 0x15b, 0x15b,
-  0x143, 0x143, 0x12d, 0x12d, 0x11a, 0x11a, 0x108, 0x106,
-};
-
-double fres(double val) {
-  int64_t vali; std::memcpy(&vali, &val, 8);
-  int64_t mantissa = vali & ((1LL << 52) - 1);
-  int64_t sign = vali & (1LL << 63);
-  int64_t exponent = vali & (0x7FFLL << 52);
-  if (mantissa == 0 && exponent == 0) return std::copysign(std::numeric_limits<double>::infinity(), val);
-  if (exponent == (0x7FFLL << 52)) {
-    if (mantissa == 0) return std::copysign(0.0, val);
-    return 0.0 + val;
-  }
-  if (exponent < (895LL << 52)) return std::copysign((double)std::numeric_limits<float>::max(), val);
-  if (exponent >= (1149LL << 52)) return std::copysign(0.0, val);
-  exponent = (0x7FDLL << 52) - exponent;
-  int i = (int)(mantissa >> 37);
-  vali = sign | exponent;
-  vali |= (int64_t)(fres_expected_base[i / 1024] - (fres_expected_dec[i / 1024] * (i % 1024) + 1) / 2) << 29;
-  double out; std::memcpy(&out, &vali, 8);
-  return out;
-}
+// ---- fres / frsqrte ----
+#include "ppc_estimates.inc"
 
 }  // namespace ppc

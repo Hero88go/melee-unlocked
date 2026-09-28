@@ -1,7 +1,8 @@
 // Melee Unlocked Launcher: an optional Win32 client with a Play page (ISO, Slippi account, version
 // and self-update) and a Build tab (drop the ISO: verify it, run the source build when this is a
-// checkout, precompile the pipeline library, remember the path). Starts melee_port.exe with the
-// release settings. Plain Win32 so it has no dependencies beyond the OS.
+// checkout, precompile the pipeline library, remember the path). Starts melee_port.exe, or
+// melee_source.exe when the Source Port is picked, with the release settings. Plain Win32 so it has
+// no dependencies beyond the OS.
 //
 // The chrome is drawn by hand: a left rail carrying the wordmark, the page nav and Bailey, and a
 // content column on a dark gradient. Every label is painted by the parent in WM_PAINT and every
@@ -25,13 +26,24 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdarg>
+#include <cstdint>
+#include <cstring>
+#include <cwctype>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
 #include <thread>
+#include <wincodec.h>
+#pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "ole32.lib")
 #include "updater.h"
+#include "launch_process.h"
+#include "launcher_engine.h"
+#include "launcher_lobby.h"
+#include "launcher_theme.h"
+#include "launcher_replay_data.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -50,14 +62,16 @@
 #define IDB_BAILEY 5
 
 namespace {
-enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_WARM_CACHE, ID_VERSIONS, ID_TIMER = 1 };
+enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_WARM_CACHE, ID_VERSIONS, ID_THEME, ID_TIMER = 1, ID_TIMER_STANDBY = 2 };
 const UINT WM_APP_LOG = WM_APP + 1;      // lParam: heap std::string* to append to the log
 const UINT WM_APP_BUILD_DONE = WM_APP + 2;
 const UINT WM_APP_GAME_DONE = WM_APP + 3;
 const UINT WM_APP_CACHE_WARM_DONE = WM_APP + 4;
 
 // Client area in layout units; S() turns these into pixels for the current DPI.
-const int WIN_W = 720, WIN_H = 400;
+const int WIN_W = 720, WIN_H = 480;
+const int LOBBY_W = 980, LOBBY_H = 768;
+const int REPLAY_W = 980, REPLAY_H = 700;
 const int RAIL_W = 190;                 // left rail: wordmark, page nav, Bailey
 const int CX = 212, CW = 486;           // content column
 // NAV_Y leaves room for the whole mark. At 104 the page nav started on top of it and cut the
@@ -73,33 +87,47 @@ const COLORREF C_FIELD = RGB(0x0E, 0x15, 0x22), C_FIELD_BORDER = RGB(0x2B, 0x36,
 // The accent (selected page bar, focus rings, the Build page's active border) is the same purple as
 // the PLAY button rather than Bailey's amber: two different highlight colours on one page read as
 // two different meanings, and PLAY is the one the eye is meant to land on.
-const COLORREF C_ACC_HI = RGB(0xA8, 0x7A, 0xFF), C_ACC_LO = RGB(0x7A, 0x3F, 0xE8);
+#define C_ACC_HI launcher::theme::top()
+#define C_ACC_LO launcher::theme::bottom()
 const COLORREF C_BTN = RGB(0x21, 0x2B, 0x42), C_BTN_BORDER = RGB(0x35, 0x41, 0x5F), C_BTN_DOWN = RGB(0x18, 0x21, 0x34);
 const COLORREF C_NAV_ON = RGB(0x1F, 0x2A, 0x40), C_NAV_HOT = RGB(0x18, 0x21, 0x34);
 const COLORREF C_LOG_BG = RGB(0x0A, 0x0F, 0x1A), C_LOG_TEXT = RGB(0x9F, 0xB4, 0xCE);
-const COLORREF C_PLAY_TEXT = RGB(0xFF, 0xFF, 0xFF);
+#define C_PLAY_TEXT launcher::theme::on_accent()
 // The PLAY button: a saturated purple gradient, as bold as the amber it replaced.
-const COLORREF C_PLAY_HI = RGB(0xA8, 0x7A, 0xFF), C_PLAY_LO = RGB(0x7A, 0x3F, 0xE8), C_PLAY_DOWN = RGB(0x68, 0x32, 0xCC);
+#define C_PLAY_HI launcher::theme::top()
+#define C_PLAY_LO launcher::theme::bottom()
+#define C_PLAY_DOWN launcher::theme::pressed()
 const COLORREF C_OK = RGB(0x5A, 0xC8, 0x8A), C_WARN = RGB(0xE5, 0xA8, 0x4A), C_BAD = RGB(0xE0, 0x6B, 0x5B);
 const COLORREF NO_FILL = CLR_INVALID;
 
 HWND g_main;
-HWND g_play[6], g_build[3];
+HWND g_play[7], g_build[3];
 HWND g_iso_edit, g_play_btn, g_slippi_btn, g_update_btn, g_versions_btn, g_log, g_build_btn, g_warm_cache_check;
 HFONT g_font, g_font_big, g_font_mono, g_font_mark, g_font_nav, g_font_label, g_font_small;
 HICON g_mark = nullptr;          // IDI_MELEE_MARK, the wordmark drawn at the top of the rail
 HBRUSH g_br_field, g_br_log;
 HBITMAP g_dog = nullptr;         // Bailey cut out of her white plate, 32bpp premultiplied
 int g_dog_w = 0, g_dog_h = 0;
+RECT g_dog_rect{};              // where she was last drawn: clicking her changes the picture
+bool g_dog_hot = false;
 HBITMAP g_wordmark = nullptr;    // the MU mark cut off its navy plate, at full resolution
 int g_wordmark_w = 0, g_wordmark_h = 0;
 std::string g_dir, g_iso, g_game_exe;
+std::string g_lobby_launch_args;
+bool g_lobby_game_active = false;
 std::string g_active_version; // folder name inside Versions; empty means the current install
 bool g_rollback_consumed = true;
 // The game is a single integrated build. Older CPUs can still use a compatibility executable
 // when one is present; this is selected automatically unless launcher.ini overrides it.
-enum CpuBuild { CPU_AUTO = 0, CPU_STANDARD = 1, CPU_COMPAT = 2 };
+using launcher::CPU_AUTO; using launcher::CPU_STANDARD; using launcher::CPU_COMPAT;
 int g_cpu_build = CPU_AUTO;
+// Which build PLAY starts, picked on the GAME BUILD row. Static Recomp (melee_port.exe) is the
+// recompilation every release so far has shipped and stays the default; the Source Port
+// (melee_source.exe + melee_game.dll) is the native build of the decompiled game. Both read the
+// same port-settings.ini from the same working directory, so switching does not move anyone's
+// settings. launcher.ini keeps engine=1 for the Source Port; no engine= line means Static Recomp.
+using launcher::ENGINE_LEGACY; using launcher::ENGINE_SOURCE;
+int g_engine = ENGINE_LEGACY;
 bool g_install_requested = false;
 bool g_warm_cache_on_play = false;
 std::string g_slippi_line, g_version_line;
@@ -107,6 +135,7 @@ COLORREF g_version_dot = C_FAINT;
 std::atomic<bool> g_building{false}, g_playing{false};
 bool g_slippi_missing = false;
 int g_tab = 0, g_nav_hot = -1;
+int g_seg_hot = -1;              // the GAME BUILD segment under the mouse, when a click would pick it
 bool g_tracking = false;
 int g_dpi = 96;
 int S(int v) { return MulDiv(v, g_dpi, 96); }
@@ -161,11 +190,16 @@ void load_ini() {
     std::string line;
     while (std::getline(f, line)) {
       if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line.rfind("engine=", 0) == 0) { g_engine = launcher::parse_engine_line(line, g_engine); continue; }
       if (line.rfind("cpubuild=", 0) == 0) {
         const int v = std::atoi(line.c_str() + 9);
         if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
       } else if (line.rfind("activeversion=", 0) == 0 && safe_version_folder(line.substr(14))) g_active_version = line.substr(14);
       else if (line == "warmcache=1") g_warm_cache_on_play = true;
+      else if (line.rfind("accent=#",0)==0 && line.size()==14) {
+        unsigned value=0; if(std::sscanf(line.c_str()+8,"%6x",&value)==1)
+          launcher::theme::accent=RGB((value>>16)&255,(value>>8)&255,value&255);
+      }
     }
   }
   if (!g_active_version.empty() &&
@@ -190,6 +224,9 @@ void save_ini() {
     if (g_warm_cache_on_play) f << "warmcache=1\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
     if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
+    if (g_engine != ENGINE_LEGACY) f << "engine=" << g_engine << "\n";
+    char color[16]; std::snprintf(color,sizeof color,"accent=#%02X%02X%02X",GetRValue(launcher::theme::accent),GetGValue(launcher::theme::accent),GetBValue(launcher::theme::accent));
+    f << color << "\n";
   }
   const std::string shared = shared_ini_path();
   if (!shared.empty()) { std::ofstream f(shared); f << "iso=" << g_iso << "\n"; }
@@ -247,8 +284,13 @@ std::string slippi_account_line() {
   for (auto& p : paths) {
     if (p.empty() || !file_exists(p)) continue;
     std::ifstream f(p); auto j = nlohmann::json::parse(f, nullptr, false);
-    if (j.is_object() && j.count("connectCode")) return "Slippi account: " + j.value("displayName", std::string("?")) + " (" + j["connectCode"].get<std::string>() + ")";
+    if (j.is_object() && j.value("connectCode",nlohmann::json()).is_string() && !j["connectCode"].get<std::string>().empty()) {
+      const auto name=j.value("displayName",std::string("?")), code=j["connectCode"].get<std::string>();
+      launcher::lobby::set_account(name,code);
+      return "Slippi account: " + name + " (" + code + ")";
+    }
   }
+  launcher::lobby::set_account("", "");
   return "Slippi online needs an account: install the Slippi Launcher and log in once.";
 }
 
@@ -258,9 +300,10 @@ DWORD run_logged(std::string cmd, const std::string& cwd) {
   HANDLE rd = nullptr, wr = nullptr;
   if (!CreatePipe(&rd, &wr, &sa, 0)) return 1;
   SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
-  STARTUPINFOA si{}; si.cb = sizeof si; si.dwFlags = STARTF_USESTDHANDLES; si.hStdOutput = wr; si.hStdError = wr; si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  STARTUPINFOW si{}; si.cb = sizeof si; si.dwFlags = STARTF_USESTDHANDLES; si.hStdOutput = wr; si.hStdError = wr; si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
   PROCESS_INFORMATION pi{};
-  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, cwd.c_str(), &si, &pi)) { CloseHandle(rd); CloseHandle(wr); log_line("cannot start: %s", cmd.c_str()); return 1; }
+  auto wcmd = widen(cmd), wcwd = widen(cwd);
+  if (!CreateProcessW(nullptr, wcmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, wcwd.c_str(), &si, &pi)) { DWORD error = GetLastError(); CloseHandle(rd); CloseHandle(wr); log_line("cannot start (Windows error %lu): %s", error, cmd.c_str()); return error ? error : 1; }
   CloseHandle(wr);
   std::string acc; char buf[4096]; DWORD got = 0;
   while (ReadFile(rd, buf, sizeof buf, &got, nullptr) && got) {
@@ -295,7 +338,28 @@ bool cpu_has_avx2() {
   __cpuidex(r, 7, 0); return (r[1] >> 5) & 1;
 }
 
+// The Source Port is two files: the host and the game library beside it. A release that predates
+// it, or a source checkout that has not built it, has neither, so it can only be picked when both
+// are actually there: in the game folder (active_dir(), the one melee_port.exe comes from), or in a
+// source checkout's build-sourceport output. That search is launcher_engine.h, so a test can run it
+// without this window.
+std::string source_exe_dir() {
+  launcher::EngineInputs in;
+  in.dir = active_dir();
+  // An older version from Versions runs only what is in its own folder, as in game_exe() below.
+  in.repo_root = g_active_version.empty() ? repo_root() : std::string();
+  in.exists = file_exists;
+  return launcher::source_exe_dir(in);
+}
+bool source_available() { return !source_exe_dir().empty(); }
+
 std::string game_exe() {
+  // The Source Port when it is picked and installed. Picked but gone since (an update that dropped
+  // it, or an older version without it) falls back to Static Recomp rather than failing to start.
+  if (g_engine == ENGINE_SOURCE) {
+    const std::string d = source_exe_dir();
+    if (!d.empty()) return d + "\\melee_source.exe";
+  }
   // Automatic only hands over the compatibility build to a processor that cannot run the other one.
   // A machine that can, keeps it. The two explicit choices exist so that a player who knows their
   // machine is not stuck arguing with a detector.
@@ -406,7 +470,24 @@ void dot(HDC dc, int x, int y, COLORREF c) {
   round_rect(dc, r, 4, c, c, NO_FILL);
 }
 
-RECT nav_rect(int i) { return LR(12, NAV_Y + i * NAV_GAP, RAIL_W - 24, NAV_H); }
+// Rail order, by nav id (0 Play, 1 Settings, 2 Build, 3 Lobby, 4 Replays): Build sits last.
+int nav_slot(int i) { static const int slot[5] = {0, 1, 4, 2, 3}; return i >= 0 && i < 5 ? slot[i] : i; }
+RECT nav_rect(int i) { return LR(12, NAV_Y + nav_slot(i) * NAV_GAP, RAIL_W - 24, NAV_H); }
+// The two build segments, side by side on the GAME BUILD row: 0 Source Port, 1 Static Recomp (Legacy).
+RECT build_seg_rect(int i) {
+  const int left = CX + 96, total = CW - 96, gap = 8, w = (total - gap) / 2;
+  return LR(left + i * (w + gap), 98, w, 28);
+}
+// The segment a click at p would pick: -1 off the row, off the Play page, or on a Source Port
+// segment with nothing installed behind it. The file check only runs over that segment.
+int build_seg_at(POINT p) {
+  if (g_tab != 0) return -1;
+  for (int i = 0; i < 2; ++i) {
+    RECT r = build_seg_rect(i);
+    if (PtInRect(&r, p)) return i == 0 && !source_available() ? -1 : i;
+  }
+  return -1;
+}
 RECT slippi_text_rect() { return LR(CX + 15, 212, 319, 34); }
 RECT version_text_rect() { return LR(CX + 15, 244, 319, 34); }
 RECT drop_sub_rect() { return LR(CX, 86, CW, 20); }
@@ -474,13 +555,49 @@ HBITMAP load_art(int resource, int max_w, int max_h, int& w, int& h) {
   w = dw; h = dh;
   return scaled;
 }
+// The player's own picture in Bailey's place: any PNG, JPEG, BMP or GIF, decoded by Windows, kept as
+// premultiplied BGRA so it blends onto the rail exactly as she does.
+HBITMAP load_art_file(const std::wstring& path, int max_w, int max_h, int& w, int& h) {
+  CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+  IWICImagingFactory* factory = nullptr; IWICBitmapDecoder* decoder = nullptr;
+  IWICBitmapFrameDecode* frame = nullptr; IWICFormatConverter* conv = nullptr;
+  HBITMAP result = nullptr;
+  UINT sw = 0, sh = 0;
+  if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) &&
+      SUCCEEDED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder)) &&
+      SUCCEEDED(decoder->GetFrame(0, &frame)) && SUCCEEDED(factory->CreateFormatConverter(&conv)) &&
+      SUCCEEDED(conv->Initialize(frame, GUID_WICPixelFormat32bppPBGRA, WICBitmapDitherTypeNone, nullptr, 0, WICBitmapPaletteTypeCustom)) &&
+      SUCCEEDED(conv->GetSize(&sw, &sh)) && sw > 0 && sh > 0 && sw <= 8192 && sh <= 8192) {
+    std::vector<uint8_t> bits((size_t)sw * sh * 4);
+    if (SUCCEEDED(conv->CopyPixels(nullptr, sw * 4, (UINT)bits.size(), bits.data()))) {
+      int dw = max_w, dh = (int)((long long)dw * sh / sw);
+      if (dh > max_h) { dh = max_h; dw = (int)((long long)dh * sw / sh); }
+      result = resample(bits.data(), (int)sw, (int)sh, std::max(dw, 1), std::max(dh, 1));
+      if (result) { w = std::max(dw, 1); h = std::max(dh, 1); }
+    }
+  }
+  if (conv) conv->Release(); if (frame) frame->Release(); if (decoder) decoder->Release(); if (factory) factory->Release();
+  return result;
+}
+std::string rail_image_path() {
+  for (const char* ext : {".png", ".jpg", ".jpeg", ".bmp", ".gif"})
+    if (file_exists(g_dir + "\\rail-image" + ext)) return g_dir + "\\rail-image" + ext;
+  return {};
+}
 void load_rail_art() {
-  g_dog = load_art(IDB_BAILEY, S(RAIL_W - 46), S(WIN_H - (NAV_Y + 2 * NAV_GAP + NAV_H + 10) - 12), g_dog_w, g_dog_h);
+  // One box for Bailey and for a player's picture: it fits under the page list in the shortest
+  // window, so no picture can ever reach the nav text.
+  const int box_w = S(RAIL_W - 46), box_h = S(400 - (NAV_Y + 2 * NAV_GAP + NAV_H + 10) - 12);
+  if (g_dog) { DeleteObject(g_dog); g_dog = nullptr; }
+  const std::string custom = rail_image_path();
+  if (!custom.empty()) g_dog = load_art_file(widen(custom), box_w, box_h, g_dog_w, g_dog_h);
+  if (!g_dog) g_dog = load_art(IDB_BAILEY, box_w, box_h, g_dog_w, g_dog_h);
   g_wordmark = load_art(IDB_MELEE_MARK, S(RAIL_W - 44), S(NAV_Y - 22), g_wordmark_w, g_wordmark_h);
 }
 
 void paint_rail(HDC dc) {
-  RECT r = LR(0, 0, RAIL_W, WIN_H);
+  RECT client{}; GetClientRect(g_main,&client);
+  RECT r{0,0,S(RAIL_W),client.bottom};
   // The rail is always the dark gradient. Stretching the photo over it filled the rail with the
   // white plate the dog was composited on and cropped her at the same time, because the plate is
   // 620x416 and the rail is tall and narrow. The dog is cut out of that plate at load (see
@@ -490,18 +607,19 @@ void paint_rail(HDC dc) {
     const int dw = g_dog_w, dh = g_dog_h;
     // Centred in what is left of the rail under the nav, so the gap above her matches the gap below.
     // Bottom-anchored left a dead band between the page list and her head.
-    const int top = S(NAV_Y + 2 * NAV_GAP + NAV_H + 10);
-    const int dx = (S(RAIL_W) - dw) / 2, dy = top + (S(WIN_H) - top - dh) / 2;
+    const int top = S(NAV_Y + 4 * NAV_GAP + NAV_H + 10);
+    const int dx = (S(RAIL_W) - dw) / 2, dy = top + (client.bottom - top - dh) / 2;
     HDC md = CreateCompatibleDC(dc);
     HGDIOBJ old = SelectObject(md, g_dog);
     BLENDFUNCTION bf{AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
     SetStretchBltMode(dc, HALFTONE);
     SetBrushOrgEx(dc, 0, 0, nullptr);
     AlphaBlend(dc, dx, dy, dw, dh, md, 0, 0, g_dog_w, g_dog_h, bf);
+    g_dog_rect = RECT{dx, dy, dx + dw, dy + dh};
     SelectObject(md, old);
     DeleteDC(md);
   }
-  RECT line{r.right - 1, 0, r.right, S(WIN_H)};
+  RECT line{r.right - 1, 0, r.right, client.bottom};
   fill(dc, line, C_DIVIDER);
 
   // The game's own mark, drawn as artwork. Setting the two words in a system font next to the
@@ -516,13 +634,13 @@ void paint_rail(HDC dc) {
     SelectObject(md, oldm); DeleteDC(md);
   }
 
-  const wchar_t* names[3] = {L"Play", L"Settings", L"Build"};
-  for (int i = 0; i < 3; ++i) {
+  const wchar_t* names[5] = {L"Play", L"Settings", L"Build", L"Multiplayer Lobby", L"Replay Viewer"};
+  for (int i = 0; i < 5; ++i) {
     RECT nr = nav_rect(i);
-    const int page = i == 0 ? 0 : (i == 2 ? 1 : -1);
+    const int page = i == 0 ? 0 : (i == 2 ? 1 : (i == 3 ? 2 : (i == 4 ? 3 : -1)));
     if (page >= 0 && g_tab == page) {
       round_rect(dc, nr, 8, C_NAV_ON, C_NAV_ON, NO_FILL);
-      RECT bar = LR(12, NAV_Y + i * NAV_GAP + 8, 4, 18);
+      RECT bar = LR(12, NAV_Y + nav_slot(i) * NAV_GAP + 8, 4, 18);
       round_rect(dc, bar, 2, C_ACC_HI, C_ACC_LO, NO_FILL);
     } else if (g_nav_hot == i) {
       round_rect(dc, nr, 8, C_NAV_HOT, C_NAV_HOT, NO_FILL);
@@ -536,18 +654,23 @@ void paint_play(HDC dc) {
   draw_text(dc, L"MELEE NTSC 1.02 DISC IMAGE", LR(CX, 32, CW, 18), g_font_label, C_FAINT,
             DT_LEFT | DT_SINGLELINE | DT_VCENTER, S(1));
   round_rect(dc, LR(CX, 58, 380, 34), 7, C_FIELD, C_FIELD, C_FIELD_BORDER);
-  // GAME BUILD row, drawn exactly like 0.6.61's two segments (same label, rects, radius and
-  // colours). Legacy is the only build in this release: filled in PLAY's purple. The source port
-  // segment uses the disabled-button colours and is painted only, so it cannot be picked.
+  // GAME BUILD row, drawn like 0.6.61's two segments (same label, rects, radius and colours): the
+  // build PLAY starts is filled in PLAY's purple and the other is an outline that a click selects.
+  // With melee_source.exe or melee_game.dll missing from the game folder, the Source Port segment
+  // says so in the disabled-button colours, cannot be picked, and PLAY starts Static Recomp.
   draw_text(dc, L"GAME BUILD", LR(CX, 102, 130, 19), g_font_label, C_FAINT, DT_LEFT | DT_SINGLELINE | DT_VCENTER, S(1));
   {
-    const int left = CX + 96, total = CW - 96, gap = 8, w = (total - gap) / 2;
-    const RECT legacy = LR(left, 98, w, 28), source = LR(left + w + gap, 98, w, 28);
-    round_rect(dc, legacy, 7, C_ACC_HI, C_ACC_LO, NO_FILL);
-    draw_text(dc, L"Legacy", legacy, g_font_small, C_PLAY_TEXT, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
-    round_rect(dc, source, 7, RGB(0x1A, 0x21, 0x32), RGB(0x1A, 0x21, 0x32), RGB(0x28, 0x31, 0x47));
-    draw_text(dc, L"Source port (coming soon)", source, g_font_small, RGB(0x5C, 0x68, 0x7E),
-              DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    const bool installed = source_available();
+    const int on = g_engine == ENGINE_SOURCE && installed ? 0 : 1;
+    const wchar_t* names[2] = {installed ? L"Source Port (Beta)" : L"Source Port (Beta, not installed)", L"Static Recomp (Legacy)"};
+    for (int i = 0; i < 2; ++i) {
+      const RECT r = build_seg_rect(i);
+      COLORREF top = C_BTN, bot = C_BTN, border = C_BTN_BORDER, text = C_DIM;
+      if (i == on) { top = C_ACC_HI; bot = C_ACC_LO; border = NO_FILL; text = C_PLAY_TEXT; }
+      else if (i == 0 && !installed) { top = bot = RGB(0x1A, 0x21, 0x32); border = RGB(0x28, 0x31, 0x47); text = RGB(0x5C, 0x68, 0x7E); }
+      round_rect(dc, r, 7, top, bot, border);
+      draw_text(dc, names[i], r, g_font_small, text, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
+    }
   }
 
   dot(dc, CX, 215, g_slippi_missing ? C_WARN : C_OK);   // centred on the first line of slippi_text_rect
@@ -559,12 +682,12 @@ void paint_play(HDC dc) {
   RECT sep = LR(CX, 282, CW, 1);
   fill(dc, sep, C_SEP);
   draw_text(dc, HINT_TEXT, LR(CX, 294, CW, 44), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
-  std::string version_status = g_active_version.empty() ? "Current install" : "Playing " + g_active_version;
+  std::string version_status = g_active_version.empty() ? "" : "Playing " + g_active_version;
   if (host::updater::rollback_state() == host::updater::RollbackState::Downloading)
     version_status = host::updater::rollback_message();
   else if (host::updater::rollback_state() == host::updater::RollbackState::Failed)
     version_status = host::updater::rollback_message();
-  draw_text(dc, widen(version_status), LR(398, 348, 300, 32), g_font_small,
+  draw_text(dc, widen(version_status), LR(398, 348, 188, 32), g_font_small,
             host::updater::rollback_state() == host::updater::RollbackState::Failed ? C_BAD : C_DIM,
             DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 }
@@ -585,6 +708,10 @@ void paint_build(HDC dc) {
   round_rect(dc, LR(CX, 226, CW, 106), 8, C_LOG_BG, C_LOG_BG, RGB(0x24, 0x2E, 0x46));
 }
 
+#include "launcher_replays.inl"
+#include "launcher_match_character.inl"
+#include "launcher_theme_picker.inl"
+
 void paint(HWND hwnd, HDC target, RECT dirty) {
   RECT cr; GetClientRect(hwnd, &cr);
   HDC dc = CreateCompatibleDC(target);
@@ -594,7 +721,7 @@ void paint(HWND hwnd, HDC target, RECT dirty) {
   RECT content{S(RAIL_W), 0, cr.right, cr.bottom};
   vgrad(dc, content, C_CONTENT_TOP, C_CONTENT_BOT);
   paint_rail(dc);
-  if (g_tab == 0) paint_play(dc); else paint_build(dc);
+  if (g_tab == 0) paint_play(dc); else if (g_tab == 1) paint_build(dc); else if(g_tab==3) paint_replays(dc);
 
   BitBlt(target, dirty.left, dirty.top, dirty.right - dirty.left, dirty.bottom - dirty.top, dc, dirty.left, dirty.top, SRCCOPY);
   SelectObject(dc, oldb);
@@ -610,6 +737,11 @@ void draw_button(DRAWITEMSTRUCT* di) {
   bool down = (di->itemState & ODS_SELECTED) != 0;
   bool primary = di->hwndItem == g_play_btn;
   bool checkbox = di->hwndItem == g_warm_cache_check;
+  if(di->CtlID==ID_THEME) {
+    vgrad(di->hDC,di->rcItem,content_bg_at(wr.top),content_bg_at(wr.bottom));
+    theme_wheel(di->hDC,16,16,13,true);
+    return;
+  }
 
   // Reproduce the parent's gradient behind the button so the rounded corners have the right colour.
   vgrad(di->hDC, r, content_bg_at(wr.top), content_bg_at(wr.bottom));
@@ -656,11 +788,34 @@ void draw_button(DRAWITEMSTRUCT* di) {
 
 void refresh_updater();
 void open_settings();
+void settings_standby_start();
+void settings_standby_stop();
+void choose_rail_image();
 
 void select_tab(int idx) {
+  const int previous = g_tab;
   g_tab = idx;
   for (HWND h : g_play) if (h) ShowWindow(h, idx == 0 ? SW_SHOW : SW_HIDE);
   for (HWND h : g_build) if (h) ShowWindow(h, idx == 1 ? SW_SHOW : SW_HIDE);
+  replay_layout();
+  if (idx != 2) launcher::lobby::hide();
+  if (g_main && previous != idx) {
+    RECT size{0,0,S(idx==2?LOBBY_W:(idx==3?REPLAY_W:WIN_W)),S(idx==2?LOBBY_H:(idx==3?REPLAY_H:WIN_H))};
+    AdjustWindowRect(&size,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,FALSE);
+    int width=size.right-size.left, height=size.bottom-size.top;
+    RECT work{}; SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
+    if(work.right>work.left && work.bottom>work.top) {
+      width=std::min(width,int(work.right-work.left));
+      height=std::min(height,int(work.bottom-work.top));
+    }
+    RECT current{}; GetWindowRect(g_main,&current);
+    int x=current.left,y=current.top;
+    if(work.right>work.left && work.bottom>work.top) {
+      x=std::clamp(x,int(work.left),int(work.right-width));
+      y=std::clamp(y,int(work.top),int(work.bottom-height));
+    }
+    SetWindowPos(g_main,nullptr,x,y,width,height,SWP_NOZORDER|SWP_NOACTIVATE);
+  }
   if (idx == 0 && !g_slippi_missing) ShowWindow(g_slippi_btn, SW_HIDE);
   if (idx != 0) ShowWindow(g_update_btn, SW_HIDE);
   if (g_main) InvalidateRect(g_main, nullptr, FALSE);
@@ -711,22 +866,131 @@ void warm_cache_thread() {
 // Opens the game straight into its own PC settings panel. Same binary, same panel, same file: what
 // is changed here is what the next launch uses, because the game reads port-settings.ini from this
 // working directory before it opens a window.
+void report_launch_error(DWORD error, const std::string& exe, const std::string& cwd) {
+  wchar_t detail[2048]{};
+  FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                 nullptr, error, 0, detail, 2048, nullptr);
+  std::wstring message = L"Could not start:\n" + widen(exe) +
+      L"\n\nWindows error " + std::to_wstring(error) + L": " + detail +
+      L"\nWorking directory:\n" + widen(cwd) +
+      L"\n\nPlease include this message when reporting the problem.";
+  log_line("Launch failed: Windows error %lu; executable=%s; directory=%s",
+           error, exe.c_str(), cwd.c_str());
+  MessageBoxW(g_main, message.c_str(), L"Melee Unlocked Launcher", MB_ICONERROR);
+}
+
+// The settings window waits hidden in the background, fully started, so the Settings button only
+// has to show it: starting a process and a graphics device on the click took about a second behind
+// a black window. A fresh one is started after each use.
+HANDLE g_settings_standby = nullptr, g_settings_show = nullptr, g_settings_quit = nullptr;
+std::string g_settings_standby_exe;
+void settings_standby_stop() {
+  if (!g_settings_standby) return;
+  SetEvent(g_settings_quit);
+  if (WaitForSingleObject(g_settings_standby, 2000) != WAIT_OBJECT_0) TerminateProcess(g_settings_standby, 0);
+  ResetEvent(g_settings_quit);
+  CloseHandle(g_settings_standby); g_settings_standby = nullptr;
+}
+void settings_standby_start() {
+  const std::string exe = game_exe();
+  if (g_settings_standby && WaitForSingleObject(g_settings_standby, 0) == WAIT_TIMEOUT && g_settings_standby_exe == exe) return;
+  settings_standby_stop();
+  if (!file_exists(exe)) return;
+  const DWORD pid = GetCurrentProcessId();
+  if (!g_settings_show) g_settings_show = CreateEventW(nullptr, FALSE, FALSE, (L"Local\\MeleeUnlockedSettingsShow-" + std::to_wstring(pid)).c_str());
+  if (!g_settings_quit) g_settings_quit = CreateEventW(nullptr, FALSE, FALSE, (L"Local\\MeleeUnlockedSettingsQuit-" + std::to_wstring(pid)).c_str());
+  if (!g_settings_show || !g_settings_quit) return;
+  ResetEvent(g_settings_show);
+  const std::string cmd = "\"" + exe + "\" --settings-window --settings-standby " + std::to_string(pid) + " --settings-path \"" + settings_ini_path() + "\"";
+  PROCESS_INFORMATION pi{};
+  if (launcher::start_process(widen(exe), widen(cmd), widen(work_dir()), 0, pi) != ERROR_SUCCESS) return;
+  CloseHandle(pi.hThread);
+  g_settings_standby = pi.hProcess; g_settings_standby_exe = exe;
+}
+void choose_rail_image() {
+  HMENU menu = CreatePopupMenu();
+  AppendMenuW(menu, MF_STRING, 1, L"Choose a picture...");
+  if (!rail_image_path().empty()) AppendMenuW(menu, MF_STRING, 2, L"Bring back Bailey");
+  POINT at; GetCursorPos(&at);
+  const UINT picked = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, 0, g_main, nullptr);
+  DestroyMenu(menu);
+  if (picked == 2) {
+    for (const char* ext : {".png", ".jpg", ".jpeg", ".bmp", ".gif"}) DeleteFileW(widen(g_dir + "\\rail-image" + ext).c_str());
+  } else if (picked == 1) {
+    wchar_t file[MAX_PATH]{};
+    OPENFILENAMEW dialog{sizeof dialog}; dialog.hwndOwner = g_main;
+    dialog.lpstrFilter = L"Pictures (*.png;*.jpg;*.jpeg;*.bmp;*.gif)\0*.png;*.jpg;*.jpeg;*.bmp;*.gif\0";
+    dialog.lpstrTitle = L"Choose a picture for the launcher"; dialog.lpstrFile = file; dialog.nMaxFile = MAX_PATH;
+    dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    if (!GetOpenFileNameW(&dialog)) return;
+    std::wstring ext = std::filesystem::path(file).extension().wstring();
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::towlower);
+    int w = 0, h = 0;
+    HBITMAP test = load_art_file(file, 64, 64, w, h);
+    if (!test) { MessageBoxW(g_main, L"That picture could not be opened.", L"Melee Unlocked Launcher", MB_OK | MB_ICONWARNING); return; }
+    DeleteObject(test);
+    // A copy beside the launcher, so the picture stays when the original is moved or deleted.
+    for (const char* old : {".png", ".jpg", ".jpeg", ".bmp", ".gif"}) DeleteFileW(widen(g_dir + "\\rail-image" + old).c_str());
+    CopyFileW(file, (widen(g_dir + "\\rail-image") + ext).c_str(), FALSE);
+  } else return;
+  if (g_dog) { DeleteObject(g_dog); g_dog = nullptr; }
+  g_dog_rect = RECT{};
+  load_rail_art();
+  InvalidateRect(g_main, nullptr, FALSE);
+}
 void open_settings() {
   if (g_playing) return;
   g_game_exe = game_exe();
   if (!file_exists(g_game_exe)) {
     select_tab(1); refresh_updater(); start_build(); return;
   }
+  if (g_settings_standby && WaitForSingleObject(g_settings_standby, 0) == WAIT_TIMEOUT && g_settings_standby_exe == g_game_exe) {
+    AllowSetForegroundWindow(GetProcessId(g_settings_standby));
+    SetEvent(g_settings_show);
+    CloseHandle(g_settings_standby); g_settings_standby = nullptr;
+    SetTimer(g_main, ID_TIMER_STANDBY, 3000, nullptr);
+    return;
+  }
+  SetTimer(g_main, ID_TIMER_STANDBY, 3000, nullptr);
   std::string cwd = work_dir();
   // --settings-window: the panel alone, no disc, no match engine, no prewarm.
   std::string cmd = "\"" + g_game_exe + "\" --settings-window --settings-path \"" + settings_ini_path() + "\"";
-  STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
-  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi)) {
-    MessageBoxW(g_main, L"Could not start melee_port.exe", L"Melee Unlocked Launcher", MB_ICONERROR);
+  PROCESS_INFORMATION pi{};
+  const DWORD error = launcher::start_process(widen(g_game_exe), widen(cmd), widen(cwd), 0, pi);
+  if (error != ERROR_SUCCESS) {
+    report_launch_error(error, g_game_exe, cwd);
     return;
   }
   CloseHandle(pi.hThread);
   CloseHandle(pi.hProcess);
+}
+
+// A GAME BUILD segment was clicked: remember the choice for the next PLAY and repaint the row.
+// build_seg_at() has already refused a Source Port segment with nothing installed behind it.
+void select_engine(int engine) {
+  if (g_engine == engine) return;
+  g_engine = engine;
+  save_ini();
+  SetTimer(g_main, ID_TIMER_STANDBY, 800, nullptr);   // the panel of the build now picked
+  invalidate(build_seg_rect(0)); invalidate(build_seg_rect(1));
+}
+
+bool lobby_game_ready() {
+  if (g_iso.empty() || !file_exists(game_exe()) || g_building || g_playing ||
+      !g_active_version.empty() || g_slippi_missing) return false;
+  if (g_engine == ENGINE_SOURCE && source_available()) return true;
+  // Slippi's normal boot loads/creates the Melee save. First-run card prompts need the player's
+  // choice before we can promise that accepting a lobby request starts a match without input.
+  for (const auto& base : {g_dir, work_dir()}) {
+    std::error_code ec;
+    const auto card = std::filesystem::u8path(base + "/User/GC/CardA");
+    for (std::filesystem::directory_iterator it(card, ec), end; !ec && it != end; it.increment(ec)) {
+      if (it->path().extension() != ".gci") continue;
+      std::ifstream f(it->path(), std::ios::binary); char id[6]{};
+      if (f.read(id, sizeof id) && std::string(id, sizeof id) == "GALE01") return true;
+    }
+  }
+  return false;
 }
 
 void start_game() {
@@ -747,15 +1011,24 @@ void start_game() {
 
 void launch_game_now() {
   std::string cwd = work_dir();
-  std::string cmd = "\"" + g_game_exe + "\"" + game_args();
-  STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
-  if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, cwd.c_str(), &si, &pi)) { MessageBoxW(g_main, L"Could not start melee_port.exe", L"Melee Unlocked Launcher", MB_ICONERROR); return; }
+  std::string cmd = "\"" + g_game_exe + "\"" + game_args() + g_lobby_launch_args +
+      " --lobby-status-file \"" + g_dir + "\\lobby-game-status.json\"";
+  g_lobby_game_active = !g_lobby_launch_args.empty();
+  g_lobby_launch_args.clear();
+  PROCESS_INFORMATION pi{};
+  const DWORD error = launcher::start_process(widen(g_game_exe), widen(cmd), widen(cwd), 0, pi);
+  if (error != ERROR_SUCCESS) {
+    launcher::lobby::game_running(false);
+    report_launch_error(error, g_game_exe, cwd);
+    return;
+  }
   CloseHandle(pi.hThread);
   g_playing = true;
+  launcher::lobby::game_running(true);
   EnableWindow(g_play_btn, FALSE);
   set_text(g_play_btn, "Running");
   ShowWindow(g_main, SW_MINIMIZE);
-  std::thread([h = pi.hProcess] { WaitForSingleObject(h, INFINITE); CloseHandle(h); PostMessageW(g_main, WM_APP_GAME_DONE, 0, 0); }).detach();
+  std::thread([h = pi.hProcess] { WaitForSingleObject(h, INFINITE); DWORD code=0; GetExitCodeProcess(h,&code); CloseHandle(h); PostMessageW(g_main, WM_APP_GAME_DONE, code, 0); }).detach();
 }
 
 void set_iso(const std::string& path) {
@@ -793,12 +1066,13 @@ void refresh_updater() {
   if (st == State::UpdateAvailable && g_install_requested) {
     g_install_requested = false;
     g_update_prompted = true;
+    settings_standby_stop();
     host::updater::download_and_install();
     st = host::updater::state();
   } else if (st == State::UpdateAvailable && !g_update_prompted) {
     g_update_prompted = true;
     std::string text = "Melee Unlocked " + host::updater::latest_version() + " is available (you have " MELEE_PORT_VERSION ").\n\nUpdate now? The game folder is updated in place; settings, saves and replays are kept.\n\nNo keeps this version; the Update button stays on the Play page.";
-    if (MessageBoxW(g_main, widen(text).c_str(), L"Melee Unlocked Launcher", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) host::updater::download_and_install();
+    if (MessageBoxW(g_main, widen(text).c_str(), L"Melee Unlocked Launcher", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) { settings_standby_stop(); host::updater::download_and_install(); }
     st = host::updater::state();
   }
   std::string line = "Version " MELEE_PORT_VERSION ". " + host::updater::message();
@@ -848,6 +1122,11 @@ void choose_version() {
     for (size_t i = first; i < catalog.size() && i < first + 10; ++i) {
       const bool available = catalog[i].legacy;
       std::wstring name = L"v" + widen(catalog[i].version);
+      int y = 0, m = 0, d = 0;
+      if (std::sscanf(catalog[i].published.c_str(), "%4d-%2d-%2d", &y, &m, &d) == 3 && m >= 1 && m <= 12) {
+        static const wchar_t* months[12] = {L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun", L"Jul", L"Aug", L"Sep", L"Oct", L"Nov", L"Dec"};
+        wchar_t date[32]; swprintf_s(date, L"\t%ls %d, %d", months[m - 1], d, y); name += date;
+      }
       if (!available) name += L" (no standard build)";
       AppendMenuW(group, MF_STRING | (available ? 0 : MF_GRAYED), 2000 + (UINT)i, name.c_str());
     }
@@ -857,6 +1136,7 @@ void choose_version() {
   RECT r{}; GetWindowRect(g_versions_btn, &r);
   const UINT picked = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_BOTTOMALIGN, r.left, r.top, 0, g_main, nullptr);
   DestroyMenu(menu);
+  SetTimer(g_main, ID_TIMER_STANDBY, 800, nullptr);
   if (picked == 1900) { g_active_version.clear(); save_ini(); InvalidateRect(g_main, nullptr, FALSE); return; }
   if (picked >= 3000 && picked - 3000 < installed.size()) {
     g_active_version = installed[picked - 3000]; save_ini(); InvalidateRect(g_main, nullptr, FALSE); return;
@@ -871,7 +1151,7 @@ void choose_version() {
   }
 }
 
-HWND make(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, HFONT font = nullptr, DWORD ex = 0) {
+HWND make(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, HFONT font, DWORD ex) {
   HWND hw = CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(w), S(h), g_main, (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr), nullptr);
   SendMessageW(hw, WM_SETFONT, (WPARAM)(font ? font : g_font), TRUE);
   return hw;
@@ -889,11 +1169,20 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_play[i++] = g_slippi_btn = make(L"BUTTON", L"Get Slippi Launcher", BS_OWNERDRAW, 554, 214, 144, 30, ID_SLIPPI_GET);
       g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_OWNERDRAW, 554, 246, 144, 30, ID_UPDATE);
       g_play[i++] = g_versions_btn = make(L"BUTTON", L"Choose version...", BS_OWNERDRAW, CX, 348, 174, 32, ID_VERSIONS);
+      g_play[i++] = make(L"BUTTON",L"Launcher color",BS_OWNERDRAW,666,348,32,32,ID_THEME);
+      {
+        HWND tips=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,
+                                  0,0,0,0,hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
+        TOOLINFOW tip{sizeof tip};tip.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tip.hwnd=hwnd;
+        tip.uId=(UINT_PTR)g_play[6];tip.lpszText=const_cast<wchar_t*>(L"Launcher color");
+        SendMessageW(tips,TTM_ADDTOOLW,0,(LPARAM)&tip);
+      }
       // Build page
       g_build[0] = g_build_btn = make(L"BUTTON", L"Build", BS_OWNERDRAW, CX, 182, 120, 32, ID_BUILD);
       g_build[1] = g_warm_cache_check = make(L"BUTTON", L"", BS_OWNERDRAW, CX + 136, 188, 350, 24, ID_WARM_CACHE);
       g_build[2] = g_log = make(L"EDIT", L"", WS_VSCROLL | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL, CX + 2, 228, CW - 4, 102, ID_LOG, g_font_mono);
       SetWindowTheme(g_log, L"DarkMode_Explorer", nullptr);   // a dark scrollbar where the OS has one
+      create_replay_controls();
       select_tab(0);
       load_ini();
       set_iso(g_iso);
@@ -904,6 +1193,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       host::updater::check(MELEE_PORT_VERSION);
       refresh_updater();
       SetTimer(hwnd, ID_TIMER, 500, nullptr);
+      SetTimer(hwnd, ID_TIMER_STANDBY, 1500, nullptr);
       DragAcceptFiles(hwnd, TRUE);
       return 0;
     }
@@ -914,39 +1204,54 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       EndPaint(hwnd, &ps);
       return 0;
     }
-    case WM_DRAWITEM: draw_button((DRAWITEMSTRUCT*)lp); return TRUE;
+    case WM_DRAWITEM: if(((DRAWITEMSTRUCT*)lp)->CtlID==ID_REPLAY_LIST) draw_replay((DRAWITEMSTRUCT*)lp); else draw_button((DRAWITEMSTRUCT*)lp); return TRUE;
+    case WM_MEASUREITEM: if(((MEASUREITEMSTRUCT*)lp)->CtlID==ID_REPLAY_LIST) { ((MEASUREITEMSTRUCT*)lp)->itemHeight=S(84); return TRUE; } break;
     case WM_MOUSEMOVE: {
       POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
       int hot = -1;
-      for (int i = 0; i < 3; ++i) { RECT r = nav_rect(i); if (PtInRect(&r, p)) hot = i; }
+      for (int i = 0; i < 5; ++i) { RECT r = nav_rect(i); if (PtInRect(&r, p)) hot = i; }
       if (hot != g_nav_hot) {
         int was = g_nav_hot; g_nav_hot = hot;
         if (was >= 0) invalidate(nav_rect(was));
         if (hot >= 0) invalidate(nav_rect(hot));
       }
+      g_seg_hot = build_seg_at(p);   // only the cursor changes over a segment, so nothing to repaint
+      g_dog_hot = PtInRect(&g_dog_rect, p) != 0;
       if (!g_tracking) { TRACKMOUSEEVENT t{sizeof t, TME_LEAVE, hwnd, 0}; TrackMouseEvent(&t); g_tracking = true; }
       return 0;
     }
     case WM_MOUSELEAVE:
       g_tracking = false;
+      g_seg_hot = -1;
       if (g_nav_hot >= 0) { int was = g_nav_hot; g_nav_hot = -1; invalidate(nav_rect(was)); }
       return 0;
     case WM_SETCURSOR:
-      if (LOWORD(lp) == HTCLIENT && g_nav_hot >= 0) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
+      if (LOWORD(lp) == HTCLIENT && (g_nav_hot >= 0 || g_seg_hot >= 0 || g_dog_hot)) { SetCursor(LoadCursorW(nullptr, IDC_HAND)); return TRUE; }
       break;
     case WM_LBUTTONDOWN: {
       POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-      for (int i = 0; i < 3; ++i) {
+      for (int i = 0; i < 5; ++i) {
         RECT r = nav_rect(i);
         if (!PtInRect(&r, p)) continue;
         // Settings is not a page here. The launcher used to draw its own copy of the options, which
         // is a second settings UI to keep in step with the real one; this opens the game's own F1
         // panel instead, so it is the same UI by construction and cannot drift from it.
         if (i == 1) { open_settings(); return 0; }
+        if (i == 4) { select_tab(3); refresh_replays(); return 0; }
+        if (i == 3) {
+          g_slippi_line=slippi_account_line();
+          g_slippi_missing=g_slippi_line.rfind("Slippi account:",0)!=0;
+          select_tab(2);
+          launcher::lobby::open(std::string(MELEE_PORT_VERSION) + (g_engine == ENGINE_SOURCE ? ":source" : ":recomp"),
+                                lobby_game_ready());
+          return 0;
+        }
         const int tab = i == 0 ? 0 : 1;
         if (g_tab != tab) { select_tab(tab); refresh_updater(); }
         return 0;
       }
+      if (const int seg = build_seg_at(p); seg >= 0) select_engine(seg == 0 ? ENGINE_SOURCE : ENGINE_LEGACY);
+      if (PtInRect(&g_dog_rect, p)) choose_rail_image();
       return 0;
     }
     case WM_COMMAND:
@@ -964,10 +1269,18 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_UPDATE:
           if (host::updater::rollback_state() == host::updater::RollbackState::Downloading) break;
           if (host::updater::state() == host::updater::State::Failed) host::updater::check(MELEE_PORT_VERSION);
-          else host::updater::download_and_install();
+          else { settings_standby_stop(); host::updater::download_and_install(); }
           refresh_updater();
           break;
         case ID_VERSIONS: choose_version(); break;
+        case ID_THEME: open_theme_picker(); break;
+        case ID_REPLAY_BROWSE: browse_replay(); break;
+        case ID_REPLAY_WATCH: watch_replay(); break;
+        case ID_REPLAY_REFRESH: refresh_replays(); break;
+        case ID_REPLAY_LIST: if(HIWORD(wp)==LBN_SELCHANGE) replay_selection_changed(); break;
+        case ID_REPLAY_BACK: replay_back(); break;
+        case ID_REPLAY_PREV: replay_step(-1); break;
+        case ID_REPLAY_NEXT: replay_step(1); break;
         case ID_SLIPPI_GET: ShellExecuteW(hwnd, L"open", L"https://slippi.gg/downloads", nullptr, nullptr, SW_SHOWNORMAL); break;
       }
       return 0;
@@ -985,6 +1298,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       delete s;
       return 0;
     }
+    case WM_APP_REPLAYS_LISTED: replays_listed((ReplayScan*)lp); return 0;
+    case WM_APP_REPLAY_LOADED: replay_loaded((ReplayLoaded*)lp); return 0;
     case WM_APP_BUILD_DONE:
       g_building = false;
       set_iso(g_iso);
@@ -992,7 +1307,12 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_APP_GAME_DONE:
       g_playing = false;
+      if(g_replay_active) { g_replay_active=false; EnableWindow(g_replays[2],!g_replay_files.empty()); replay_status(wp?"Replay playback ended with an error. Check melee_port.log.":"Replay finished."); }
+      launcher::lobby::game_running(false);
       set_text(g_play_btn, "PLAY");
+      if (g_lobby_game_active && wp != 0)
+        MessageBoxW(hwnd, L"The lobby match could not complete its connection or the game exited with an error. Check your Slippi login/code and melee_port.log, then request another match.", L"Lobby match ended", MB_ICONWARNING);
+      g_lobby_game_active = false;
       set_iso(g_iso);
       // Restore, but never take the foreground. The game restarting itself looks exactly like the
       // game exiting from here, so activating would put the launcher in front of the new instance
@@ -1005,7 +1325,28 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       EnableWindow(g_build_btn, !g_iso.empty());
       launch_game_now();
       return 0;
-    case WM_TIMER: refresh_updater(); if (g_tab == 0 && host::updater::rollback_state() == host::updater::RollbackState::Downloading) invalidate(LR(398, 348, 300, 32)); return 0;
+    case WM_TIMER: {
+      if (wp == ID_TIMER_STANDBY) { KillTimer(hwnd, ID_TIMER_STANDBY); settings_standby_start(); return 0; }
+      launcher::lobby::Match match;
+      if (launcher::lobby::take_match(match)) {
+        // Codes arrive from another user. Never concatenate unchecked text into a command line.
+        bool valid = !match.code.empty() && match.code.size() <= 18 && match.code.find('#') != std::string::npos;
+        for (char c : match.code) if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '#')) valid = false;
+        const auto selected_build = std::string(MELEE_PORT_VERSION) + (g_engine == ENGINE_SOURCE ? ":source" : ":recomp");
+        if (valid && match.build == selected_build && match.character >= 0 && match.character < 26 && !g_playing && !g_building && !g_iso.empty() && g_active_version.empty() && file_exists(game_exe())) {
+          match.character=choose_match_character(match);
+          g_lobby_launch_args = " --lobby-direct " + match.code + " --lobby-character " + std::to_string(match.character);
+          g_game_exe = game_exe(); launch_game_now();
+        } else {
+          launcher::lobby::game_running(false);
+          MessageBoxW(hwnd, L"The match could not start. Select an installed current build and disc, then request another match.", L"Lobby", MB_ICONWARNING);
+        }
+      }
+      refresh_updater();
+      if (g_tab == 0 && host::updater::rollback_state() == host::updater::RollbackState::Downloading) invalidate(LR(398, 348, 300, 32));
+      return 0;
+    }
+    case WM_CTLCOLORLISTBOX: SetTextColor((HDC)wp,C_TEXT); SetBkColor((HDC)wp,C_FIELD); return (LRESULT)g_br_field;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT: {
       HDC dc = (HDC)wp;
@@ -1013,7 +1354,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       SetTextColor(dc, C_TEXT); SetBkColor(dc, C_FIELD); return (LRESULT)g_br_field;
     }
     case WM_DESTROY:
-      KillTimer(hwnd, ID_TIMER); host::updater::shutdown();
+      launcher::lobby::shutdown();
+      KillTimer(hwnd, ID_TIMER); settings_standby_stop(); host::updater::shutdown();
       if (g_dog) DeleteObject(g_dog);
       if (g_wordmark) DeleteObject(g_wordmark);
       PostQuitMessage(0);
@@ -1059,6 +1401,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   RECT r{0, 0, S(WIN_W), S(WIN_H)}; AdjustWindowRect(&r, WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, FALSE);
   std::wstring title = widen(std::string("Melee Unlocked Launcher ") + MELEE_PORT_VERSION);
   HWND hwnd = CreateWindowExW(0, wc.lpszClassName, title.c_str(), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
+  launcher::lobby::init(hwnd, g_dir);
   ShowWindow(hwnd, show);
   MSG m;
   while (GetMessageW(&m, nullptr, 0, 0)) { if (!IsDialogMessageW(hwnd, &m)) { TranslateMessage(&m); DispatchMessageW(&m); } }

@@ -1,0 +1,40 @@
+# Native source-port build (no Slippi, no memory card): A through the card prompts, START at the
+# title, then VS Mode -> Melee -> two human ports pick characters -> stage select -> match.
+360 A
+368
+420 A
+428
+480 A
+488
+540 A
+548
+1100 START
+1110
+1200 sy=-127
+1206
+1260 A
+1268
+1330 A
+1338
+1340 p=2
+1500 sx=61 sy=127
+1500 p=2 sy=127
+1530
+1530 p=2
+1540 A
+1540 p=2 A
+1550
+1550 p=2
+1600 START
+1610
+1800 sy=100
+1840
+1860 A
+1870
+2400 sx=80
+2460 X
+2465
+2500 sx=-80
+2560 A
+2565
+2600
