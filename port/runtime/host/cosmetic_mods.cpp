@@ -973,6 +973,78 @@ bool parse_visual_layout(const std::vector<uint8_t>& bytes, VisualLayout* out,
   return true;
 }
 
+// A costume's skeleton places the fighter's hurtboxes and hitboxes, so online it must match the
+// vanilla slot exactly: same joints, same hierarchy, same rest transforms, same transform flags.
+// Flags that only affect drawing (hidden, lighting, texgen, specular, opaque/translucent classes)
+// may differ. Anything else and the costume stays offline; online the vanilla model is loaded.
+namespace skeleton {
+constexpr uint32_t kVisualFlags = 0x10u | 0x20u | 0x40u | 0x80u | 0x100u | 0x10000u | 0x40000u |
+                                  0x80000u | 0x100000u | 0x70000000u;
+bool share_joint_root(const std::vector<uint8_t>& bytes, uint32_t* data_size, uint32_t* root,
+                      std::string* error) {
+  if (bytes.size() < 0x20) { *error = "DAT header is truncated."; return false; }
+  const uint64_t dsize = be32(bytes.data() + 4), relocations = be32(bytes.data() + 8),
+                 roots = be32(bytes.data() + 12), references = be32(bytes.data() + 16);
+  const uint64_t root_table = 0x20ull + dsize + relocations * 4ull;
+  const uint64_t strings = root_table + (roots + references) * 8ull;
+  if (roots > 1024 || references > 1024 || strings > bytes.size()) { *error = "DAT tables point outside the file."; return false; }
+  for (uint64_t i = 0; i < roots; ++i) {
+    const uint8_t* record = &bytes[(size_t)(root_table + i * 8)];
+    const uint64_t name = strings + be32(record + 4);
+    if (name >= bytes.size()) continue;
+    const char* s = (const char*)&bytes[(size_t)name];
+    const size_t n = strnlen(s, bytes.size() - (size_t)name);
+    static constexpr char suffix[] = "_Share_joint";
+    if (n >= sizeof suffix - 1 && std::memcmp(s + n - (sizeof suffix - 1), suffix, sizeof suffix - 1) == 0) {
+      *data_size = (uint32_t)dsize; *root = be32(record);
+      if (*root + 0x40ull > dsize) { *error = "Skeleton root points outside the data block."; return false; }
+      return true;
+    }
+  }
+  *error = "No _Share_joint skeleton root."; return false;
+}
+bool same_tree(const std::vector<uint8_t>& a, uint32_t asize, uint32_t ja,
+               const std::vector<uint8_t>& b, uint32_t bsize, uint32_t jb,
+               uint32_t* joints, std::string* error) {
+  // Iterative walk of both trees in lockstep (child first, then next), bounded against cycles.
+  // Child and next pointers of 0 are null; the root itself may sit at data offset 0.
+  struct Pair { uint32_t x, y; bool root; };
+  std::vector<Pair> stack{{ja, jb, true}};
+  while (!stack.empty()) {
+    const Pair top = stack.back(); stack.pop_back();
+    const uint32_t x = top.x, y = top.y;
+    if (!top.root && (!x || !y)) {
+      if (x || y) { *error = "Skeleton hierarchy differs from the vanilla costume."; return false; }
+      continue;
+    }
+    if (x + 0x40ull > asize || y + 0x40ull > bsize) { *error = "Skeleton joint points outside the data block."; return false; }
+    if (++*joints > 1024) { *error = "Skeleton has more than 1024 joints."; return false; }
+    const uint8_t* p = &a[0x20ull + x];
+    const uint8_t* q = &b[0x20ull + y];
+    if ((be32(p + 4) & ~kVisualFlags) != (be32(q + 4) & ~kVisualFlags)) {
+      *error = "Skeleton joint " + std::to_string(*joints - 1) + " flags differ from the vanilla costume."; return false;
+    }
+    if (std::memcmp(p + 0x14, q + 0x14, 36)) {
+      *error = "Skeleton joint " + std::to_string(*joints - 1) + " rest pose differs from the vanilla costume."; return false;
+    }
+    stack.push_back({be32(p + 0x0C), be32(q + 0x0C), false});   // next sibling
+    stack.push_back({be32(p + 0x08), be32(q + 0x08), false});   // first child
+  }
+  return true;
+}
+}  // namespace skeleton
+
+bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
+                              std::string* error) {
+  uint32_t asize = 0, aroot = 0, bsize = 0, broot = 0, joints = 0;
+  if (!skeleton::share_joint_root(clean, &asize, &aroot, error) ||
+      !skeleton::share_joint_root(candidate, &bsize, &broot, error)) return false;
+  if (asize + 0x20ull > clean.size() || bsize + 0x20ull > candidate.size()) { *error = "DAT data block is truncated."; return false; }
+  if (!skeleton::same_tree(clean, asize, aroot, candidate, bsize, broot, &joints, error)) return false;
+  *error = std::to_string(joints) + " joints match";
+  return true;
+}
+
 bool visual_dat_only(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
                      std::string* error) {
   VisualLayout before, after;
@@ -2635,6 +2707,15 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
       // original extent available for aligned DVD reads during online fallback.
       if (!online_allowed && bytes.size() < file.size) bytes.resize(file.size, 0);
     }
+    if (asset->info.kind == "character_costume") {
+      std::vector<uint8_t> clean(file.size);
+      std::string validation_error;
+      online_allowed = host::disc_read(file.start, clean.data(), file.size) &&
+                       costume_skeleton_matches(clean, bytes, &validation_error);
+      host::log("cosmetics: costume %s %s online (%s)", file.path.c_str(),
+                online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
+      if (!online_allowed && bytes.size() < file.size) bytes.resize(file.size, 0);
+    }
     if (bytes.size() > std::numeric_limits<uint32_t>::max()) continue;
     put_be32(fst + (size_t)file.index * 12 + 8, (uint32_t)bytes.size());
     RuntimeAsset active{asset->info.id, asset->info.target_path,
@@ -2668,7 +2749,7 @@ OverrideRead read(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, 
   auto runtime = std::atomic_load(&g_runtime);
   auto found = runtime->by_start.find(vanilla_file_start);
   if (found == runtime->by_start.end()) return OverrideRead::NotOverridden;
-  if (g_online_freezes.load(std::memory_order_relaxed) && !found->second.online_allowed) {
+  if (!found->second.online_allowed && online_active()) {
     const uint32_t vanilla_size = found->second.vanilla_size;
     const uint64_t exposed_size = std::max<size_t>(vanilla_size, found->second.bytes->size());
     if (file_offset > exposed_size || (uint64_t)file_offset + size > exposed_size + 31)
@@ -2693,6 +2774,18 @@ OverrideRead read(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, 
   return OverrideRead::Success;
 }
 
+std::atomic<OnlineProbe> g_online_probe{nullptr};
+void set_online_probe(OnlineProbe probe) { g_online_probe.store(probe); }
+bool online_active() {
+  if (g_online_freezes.load(std::memory_order_relaxed)) return true;
+  const OnlineProbe probe = g_online_probe.load();
+  return probe && probe();
+}
+bool online_allowed(uint32_t vanilla_file_start) {
+  auto runtime = std::atomic_load(&g_runtime);
+  auto found = runtime->by_start.find(vanilla_file_start);
+  return found == runtime->by_start.end() || found->second.online_allowed;
+}
 void freeze_for_online_session() { g_online_freezes.store(1, std::memory_order_relaxed); }
 void thaw_after_online_session() { g_online_freezes.store(0, std::memory_order_relaxed); }
 SessionProfile session_profile() {
@@ -2717,6 +2810,11 @@ bool visual_dat_only(const std::vector<uint8_t>& clean, const std::vector<uint8_
                      std::string* error) {
   std::string local; if (!error) error = &local;
   return host::cosmetics::visual_dat_only(clean, candidate, error);
+}
+bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
+                              std::string* error) {
+  std::string local; if (!error) error = &local;
+  return host::cosmetics::costume_skeleton_matches(clean, candidate, error);
 }
 bool materialize_effect_dat(const std::string& target_path,
                             const std::vector<uint8_t>& clean,

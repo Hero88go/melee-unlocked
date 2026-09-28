@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // Port of Dolphin's Core/HW/DSPHLE/UCodes/AX.cpp and AXVoice.h (GameCube AX, ucode 0x4e8a8b21).
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include "ax_ucode.h"
 #include <algorithm>
+#include <array>
+#include <cstdio>
 #include <cstring>
+#include <unordered_map>
 
 namespace ax {
 namespace {
@@ -83,6 +89,62 @@ void write_pb(uint32_t addr, const AXPB& pb) {
 uint32_t acc_loop_addr, acc_end_addr;
 uint32_t* acc_cur_addr;
 AXPB* acc_pb;
+VoiceTraceFn g_voice_trace = nullptr;
+
+// ---- per-voice frame trace (set_frame_trace); nothing here runs while the sink is null ----
+FrameTraceFn g_frame_trace = nullptr;
+constexpr uint64_t FNV_BASIS = 14695981039346656037ull, FNV_PRIME = 1099511628211ull;
+struct VoiceFrameAccum {
+  uint64_t pcm = FNV_BASIS, mix = FNV_BASIS;
+  uint32_t samples = 0, ms_mask = 0;
+  int32_t peak = 0;
+};
+VoiceFrameAccum* g_accum = nullptr;   // set only while a traced block renders
+using PBWords = std::array<uint16_t, sizeof(AXPB) / 2>;
+std::unordered_map<uint32_t, PBWords> g_written_back;   // each block as the ucode last wrote it
+inline uint64_t fnv_add(uint64_t hash, int16_t sample) {
+  const uint16_t value = (uint16_t)sample;
+  hash = (hash ^ (value & 0xFFu)) * FNV_PRIME;
+  return (hash ^ (value >> 8)) * FNV_PRIME;
+}
+void trace_voice_frame(uint32_t pb_addr, const AXPB& begin, const AXPB& end, const VoiceFrameAccum& accum) {
+  PBWords begin_words, end_words;
+  std::memcpy(begin_words.data(), &begin, sizeof(AXPB));
+  std::memcpy(end_words.data(), &end, sizeof(AXPB));
+  auto last = g_written_back.find(pb_addr);
+  const bool cpu_changed = last == g_written_back.end() || last->second != begin_words;
+  if (last == g_written_back.end()) g_written_back.emplace(pb_addr, end_words);
+  else last->second = end_words;
+  if (!accum.samples && !cpu_changed && begin.running == end.running) return;
+  uint32_t update_count = 0;
+  for (uint16_t n : begin.updates.num_updates) update_count += n;
+  char line[4096];
+  size_t used = (size_t)std::snprintf(line, sizeof line,
+      "kind=voice frame=%llu pb=%08X run=%u>%u ms=%X n=%u peak=%d pcm=%016llX mix=%016llX "
+      "cur=%08X>%08X end=%08X loop=%08X fmt=%u looping=%u ratio=%08X vol=%04X/%04X updates=%u cpu=%u",
+      (unsigned long long)g_frames, pb_addr, begin.running, end.running, accum.ms_mask, accum.samples,
+      accum.peak, (unsigned long long)accum.pcm, (unsigned long long)accum.mix,
+      hilo(begin.audio_addr.cur_addr_hi, begin.audio_addr.cur_addr_lo),
+      hilo(end.audio_addr.cur_addr_hi, end.audio_addr.cur_addr_lo),
+      hilo(begin.audio_addr.end_addr_hi, begin.audio_addr.end_addr_lo),
+      hilo(begin.audio_addr.loop_addr_hi, begin.audio_addr.loop_addr_lo), begin.audio_addr.sample_format,
+      begin.audio_addr.looping, hilo(begin.src.ratio_hi, begin.src.ratio_lo), begin.vol_env.cur_volume,
+      (uint16_t)begin.vol_env.cur_volume_delta, update_count, cpu_changed ? 1u : 0u);
+  if (cpu_changed && used + 8 + begin_words.size() * 4 < sizeof line) {
+    used += (size_t)std::snprintf(line + used, sizeof line - used, " words=");
+    for (uint16_t word : begin_words) used += (size_t)std::snprintf(line + used, sizeof line - used, "%04X", word);
+  }
+  if (update_count && used + 10 < sizeof line) {
+    used += (size_t)std::snprintf(line + used, sizeof line - used, " update=");
+    const uint32_t updates_addr = hilo(begin.updates.data_hi, begin.updates.data_lo);
+    uint32_t index = 0;
+    for (uint32_t ms = 0; ms < 5; ++ms)
+      for (uint16_t k = 0; k < begin.updates.num_updates[ms] && used + 16 < sizeof line; ++k, ++index)
+        used += (size_t)std::snprintf(line + used, sizeof line - used, "%u:%04X=%04X,", ms,
+                                      g_mem.rd16(updates_addr + index * 4), g_mem.rd16(updates_addr + index * 4 + 2));
+  }
+  g_frame_trace(line);
+}
 
 void accelerator_setup(AXPB* pb, uint32_t* cur_addr) {
   acc_pb = pb;
@@ -196,12 +258,14 @@ void get_input_samples(AXPB& pb, int16_t* samples, uint16_t count) {
 void mix_add(int* out, const int16_t* input, uint32_t count, uint16_t* pvol, int16_t* dpop, bool ramp) {
   uint16_t& volume = pvol[0];
   uint16_t volume_delta = ramp ? pvol[1] : 0;
+  VoiceFrameAccum* const accum = g_accum;
   for (uint32_t i = 0; i < count; ++i) {
     int64_t sample = input[i];
     sample *= volume;
     sample >>= 15;
     sample = clamp16((int32_t)sample);
     out[i] += (int16_t)sample;
+    if (accum) accum->mix = fnv_add(accum->mix, (int16_t)sample);
     volume += volume_delta;
     *dpop = (int16_t)sample;
   }
@@ -209,13 +273,60 @@ void mix_add(int* out, const int16_t* input, uint32_t count, uint16_t* pvol, int
 
 struct Buffers { int* ptrs[9]; };
 
-void process_voice(AXPB& pb, const Buffers& b, uint16_t count, uint32_t mctrl) {
+void process_voice(AXPB& pb, const Buffers& b, uint16_t count, uint32_t mctrl,
+                   uint32_t pb_addr, uint16_t millisecond) {
   if (!pb.running) return;
   int16_t samples[32];
+  const uint32_t end_addr = hilo(pb.audio_addr.end_addr_hi,
+                                 pb.audio_addr.end_addr_lo);
+  const bool trace_voice = g_voice_trace && !pb.audio_addr.looping &&
+      (end_addr == 0x00009FF2u || end_addr == 0x003EA94Cu ||
+       end_addr == 0x00220F57u || end_addr == 0x00309E72u ||
+       end_addr == 0x00B97F06u || end_addr == 0x00B61C06u);
+  const uint32_t cur_before = trace_voice
+      ? hilo(pb.audio_addr.cur_addr_hi, pb.audio_addr.cur_addr_lo) : 0;
+  const uint16_t frac_before = trace_voice ? pb.src.cur_addr_frac : 0;
+  const uint16_t volume_before = trace_voice ? pb.vol_env.cur_volume : 0;
+  const uint16_t volume_delta = trace_voice
+      ? (uint16_t) pb.vol_env.cur_volume_delta : 0;
   get_input_samples(pb, samples, count);
+  int16_t input_peak = 0;
+  int16_t input_first = 0, input_last = 0;
+  if (trace_voice) {
+    input_first = samples[0];
+    input_last = samples[count - 1];
+    for (uint32_t i = 0; i < count; ++i) {
+      int32_t magnitude = samples[i] < 0 ? -(int32_t) samples[i] : samples[i];
+      if (magnitude > input_peak) input_peak = (int16_t) magnitude;
+    }
+  }
   for (uint32_t i = 0; i < count; ++i) {
     samples[i] = (int16_t)clamp16(((int32_t)samples[i] * pb.vol_env.cur_volume) >> 15);
     pb.vol_env.cur_volume += pb.vol_env.cur_volume_delta;
+  }
+  if (g_accum) {
+    for (uint32_t i = 0; i < count; ++i) {
+      g_accum->pcm = fnv_add(g_accum->pcm, samples[i]);
+      const int32_t magnitude = samples[i] < 0 ? -(int32_t)samples[i] : samples[i];
+      g_accum->peak = std::max(g_accum->peak, magnitude);
+    }
+    g_accum->samples += count;
+    g_accum->ms_mask |= 1u << millisecond;
+  }
+  if (trace_voice) {
+    int16_t output_peak = 0;
+    for (uint32_t i = 0; i < count; ++i) {
+      int32_t magnitude = samples[i] < 0 ? -(int32_t) samples[i] : samples[i];
+      if (magnitude > output_peak) output_peak = (int16_t) magnitude;
+    }
+    const VoiceTrace trace{
+        g_frames, pb_addr, cur_before,
+        hilo(pb.audio_addr.cur_addr_hi, pb.audio_addr.cur_addr_lo),
+        hilo(pb.audio_addr.end_addr_hi, pb.audio_addr.end_addr_lo),
+        hilo(pb.src.ratio_hi, pb.src.ratio_lo), millisecond, frac_before,
+        pb.src.cur_addr_frac, volume_before, volume_delta, input_first,
+        input_last, input_peak, samples[0], samples[count - 1], output_peak};
+    g_voice_trace(trace);
   }
   // (Dolphin keeps the low-pass filter disabled.)
 #define MIX_ON(C) (0 != (mctrl & MIX_##C))
@@ -272,6 +383,18 @@ void mix_aux_samples(int aux_id, uint32_t write_addr, uint32_t read_addr) {
     for (int* buffer : buffers) for (uint32_t j = 0; j < 160; ++j) { g_mem.wr32(ptr, (uint32_t)buffer[j]); ptr += 4; }
   }
   uint32_t ptr = read_addr;
+  // Diagnostic, off unless MELEE_TRACE_AX_AUX=1: energy sent to and returned from each aux bus.
+  static const bool trace = [] { const char* v = std::getenv("MELEE_TRACE_AX_AUX"); return v && v[0] == '1'; }();
+  static double sent[2], back[2], dry; static uint32_t frames;
+  if (trace) {
+    for (int* buffer : buffers) for (uint32_t j = 0; j < 160; ++j) sent[aux_id] += (double)buffer[j] * buffer[j];
+    for (uint32_t j = 0; j < 480; ++j) { const double v = (int)g_mem.rd32(read_addr + j * 4); back[aux_id] += v * v; }
+    if (aux_id == 0) { for (int v : m_samples_left) dry += (double)v * v; if (++frames % 1000 == 0) {
+      std::fprintf(stderr, "[ax-aux] frames %u dryL %.1f dB auxA sent %.1f back %.1f | auxB sent %.1f back %.1f\n", frames,
+                   10 * std::log10(dry / frames + 1), 10 * std::log10(sent[0] / frames + 1), 10 * std::log10(back[0] / frames + 1),
+                   10 * std::log10(sent[1] / frames + 1), 10 * std::log10(back[1] / frames + 1));
+      sent[0] = sent[1] = back[0] = back[1] = dry = 0; frames = 0; } }
+  }
   for (int& s : m_samples_left) { s += (int)g_mem.rd32(ptr); ptr += 4; }
   for (int& s : m_samples_right) { s += (int)g_mem.rd32(ptr); ptr += 4; }
   for (int& s : m_samples_surround) { s += (int)g_mem.rd32(ptr); ptr += 4; }
@@ -331,6 +454,11 @@ void handle_command_list() {
   bool end = false;
   int hops = 0, steps = 0;
   auto next = [&]() -> uint16_t { return idx < 512 ? m_cmdlist[idx++] : (uint16_t)CMD_END; };
+  if (g_frame_trace) {
+    char line[48];
+    std::snprintf(line, sizeof line, "kind=frame frame=%llu", (unsigned long long)g_frames);
+    g_frame_trace(line);
+  }
   while (!end && idx < 512 && steps++ < 4096) {
     uint16_t cmd = next();
     switch (cmd) {
@@ -368,8 +496,11 @@ void handle_command_list() {
 }  // namespace
 
 void set_memory(const Memory& mem) { g_mem = mem; }
+void set_voice_trace(VoiceTraceFn trace) { g_voice_trace = trace; }
+void set_frame_trace(FrameTraceFn sink) { g_frame_trace = sink; }
 void reset() {
   m_cmdlist_size = 0; m_next_is_cmdlist = false; m_pending_cmdlist_size = 0; g_frames = 0;
+  g_written_back.clear();
   int* all[] = {m_samples_left, m_samples_right, m_samples_surround, m_samples_auxA_left, m_samples_auxA_right, m_samples_auxA_surround, m_samples_auxB_left, m_samples_auxB_right, m_samples_auxB_surround};
   for (int* b : all) std::memset(b, 0, 160 * sizeof(int));
 }
@@ -416,13 +547,23 @@ void process_pb_list(uint32_t pb_addr) {
   while (pb_addr && guard++ < 256) {
     Buffers buffers{{m_samples_left, m_samples_right, m_samples_surround, m_samples_auxA_left, m_samples_auxA_right, m_samples_auxA_surround, m_samples_auxB_left, m_samples_auxB_right, m_samples_auxB_surround}};
     read_pb(pb_addr, pb);
+    AXPB begin;
+    VoiceFrameAccum accum;
+    if (g_frame_trace) {
+      begin = pb;
+      g_accum = &accum;
+    }
     uint32_t updates_addr = hilo(pb.updates.data_hi, pb.updates.data_lo);
     for (int curr_ms = 0; curr_ms < 5; ++curr_ms) {
       apply_updates_for_ms(curr_ms, (uint16_t*)&pb, pb.updates.num_updates, updates_addr);
-      process_voice(pb, buffers, (uint16_t)spms, convert_mixer_control(pb.mixer_control));
+      process_voice(pb, buffers, (uint16_t)spms,
+                    convert_mixer_control(pb.mixer_control), pb_addr,
+                    (uint16_t) curr_ms);
       for (int*& p : buffers.ptrs) p += spms;
     }
+    g_accum = nullptr;
     write_pb(pb_addr, pb);
+    if (g_frame_trace) trace_voice_frame(pb_addr, begin, pb, accum);
     pb_addr = hilo(pb.next_pb_hi, pb.next_pb_lo);
   }
 }

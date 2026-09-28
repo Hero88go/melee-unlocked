@@ -17,4 +17,9 @@ void prepare_is_stock_steal(const uint8_t* payload, std::vector<uint8_t>& q);// 
 void prepare_is_file_ready(std::vector<uint8_t>& q);                         // CMD_IS_FILE_READY
 void prepare_gecko_codes(std::vector<uint8_t>& q);                           // CMD_GET_GECKO_CODES
 void note_gecko_list_dma(uint32_t addr, uint32_t size);                      // where the game put the list
+// The replay's code list as Dolphin serves it (injections not tagged [affects-gameplay] in
+// <sys_dir>/Slippi/InjectionLists removed): the Source engine's native playback reads which
+// gameplay codes a replay carries from this.
+struct KeptCode { uint32_t address; uint8_t type; std::vector<uint8_t> bytes; };
+std::vector<KeptCode> gameplay_codes(const std::vector<uint8_t>& list, const std::string& sys_dir, size_t* dropped);
 }  // namespace slippi::playback

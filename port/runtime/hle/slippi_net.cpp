@@ -2,6 +2,7 @@
 // SlippiNetplayClient, SlippiMatchmaking and the user record.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "slippi_net.h"
+#include "slippi_online.h"
 #include "slippi_report.h"
 #include "host.h"
 #define NOMINMAX
@@ -154,6 +155,7 @@ User::User(std::string user_dir) : dir_(std::move(user_dir)) { if (AttemptLogin(
 void User::RefreshFromServer() {
   UserInfo me = GetUserInfo();
   if (me.uid.empty()) return;
+  if (Matchmaking::local_peer.enabled) return;   // local test peering stays off Slippi's servers
   std::shared_ptr<std::atomic<bool>> alive = alive_;
   std::thread([this, me, alive] {
     std::string response; int status = 0;
@@ -362,26 +364,55 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       if (!s->error) remote_chat_message_selection_ = std::move(s);
       break;
     }
+    case NP_MSG_MU_BUILD: {
+      // 'M' 'U' 'B' version, player port, mod view, fingerprint length + bytes, name length + bytes.
+      uint8_t m, u, b, version, port, mod_view, fp_len, name_len;
+      if (!(packet >> m >> u >> b >> version >> port >> mod_view >> fp_len) || m != 'M' || u != 'U' || b != 'B' || version != 1) {
+        host::log("slippi: invalid build message");
+        break;
+      }
+      std::string fp, name;
+      for (uint8_t i = 0; i < fp_len; ++i) { uint8_t ch; if (!(packet >> ch)) break; fp.push_back((char)ch); }
+      if (packet >> name_len)
+        for (uint8_t i = 0; i < name_len; ++i) { uint8_t ch; if (!(packet >> ch)) break; name.push_back((char)ch); }
+      const uint8_t pidx = PlayerIdxFromPort(port);
+      if (pidx >= remote_player_count_) { host::log("slippi: build message with invalid player idx %u", pidx); break; }
+      {
+        std::lock_guard<std::mutex> lk(build_mutex_);
+        remote_build_[pidx] = {true, mod_view != 0, fp, name};
+      }
+      host::log("slippi: opponent %u build: %s%s%s", port, mod_view ? "mod " : "retail game",
+                mod_view ? name.c_str() : "", mod_view ? (" " + fp.substr(0, 16)).c_str() : "");
+      break;
+    }
     case NP_MSG_SLIPPI_CONN_SELECTED: break;
-    case NP_MSG_SLIPPI_COMPLETE_STEP: {
-      GamePrepStepResults r;
-      packet >> r.step_idx >> r.char_selection >> r.char_color_selection >> r.stage_selections[0] >> r.stage_selections[1];
-      game_prep_step_queue_.push_back(r);
-      break;
-    }
-    case NP_MSG_SLIPPI_SYNCED_STATE: {
-      uint8_t packet_player_port;
-      if (!(packet >> packet_player_port)) break;
-      uint8_t pidx = PlayerIdxFromPort(packet_player_port);
-      if (pidx >= remote_player_count_) break;
-      SyncedGameState r;
-      packet >> r.match_id >> r.game_index >> r.tiebreak_index >> r.seconds_remaining;
-      for (int i = 0; i < 4; ++i) packet >> r.fighters[i].stocks_remaining >> r.fighters[i].current_health;
-      remote_sync_states_[pidx] = r;
-      break;
-    }
+    case NP_MSG_SLIPPI_COMPLETE_STEP: break;   // Ranked game preparation: no Ranked in Melee Unlocked
+    case NP_MSG_SLIPPI_SYNCED_STATE: break;    // Ranked tiebreak recovery: no Ranked in Melee Unlocked
     default: host::log("slippi: unknown netplay message %u", mid); break;
   }
+}
+
+void NetplayClient::SendBuild() {
+  // Tests only: behave like Slippi Dolphin, which never sends a build.
+  if (std::getenv("MELEE_TEST_NO_BUILD_MESSAGE")) { host::log("slippi: build message suppressed (test)"); return; }
+  const auto& me = slippi::online::local_build();
+  auto p = std::make_unique<Packet>();
+  *p << (uint8_t)NP_MSG_MU_BUILD << (uint8_t)'M' << (uint8_t)'U' << (uint8_t)'B' << (uint8_t)1 << player_idx_
+     << (uint8_t)(me.mod_view ? 1 : 0);
+  const std::string fp = me.mod_view ? me.fingerprint.substr(0, 64) : std::string();
+  const std::string name = me.mod_view ? me.name.substr(0, 64) : std::string();
+  *p << (uint8_t)fp.size();
+  for (char ch : fp) *p << (uint8_t)ch;
+  *p << (uint8_t)name.size();
+  for (char ch : name) *p << (uint8_t)ch;
+  host::log("slippi: sending build: %s%s", me.mod_view ? "mod " : "retail game", me.mod_view ? name.c_str() : "");
+  SendAsync(std::move(p));
+}
+
+NetplayClient::RemoteBuild NetplayClient::GetRemoteBuild(int index) {
+  std::lock_guard<std::mutex> lk(build_mutex_);
+  if (index < 0 || index >= REMOTE_PLAYER_MAX) return {};
+  return remote_build_[index];
 }
 
 void NetplayClient::WriteSelections(Packet& p, const PlayerSelections& s) {
@@ -477,13 +508,18 @@ void NetplayClient::ThreadFunc() {
           for (size_t i = 0; i < server_.size(); ++i)
             if (connections[i] && ev.peer->address.host == server_[i]->address.host && ev.peer->address.port == server_[i]->address.port) { server_[i] = ev.peer; already = true; break; }
           if (already) break;
-          for (size_t i = 0; i < server_.size(); ++i) {
-            if (remote_addrs[i].host == ev.peer->address.host && !connections[i]) {
-              host::log("slippi: connected to %x:%u", ev.peer->address.host, ev.peer->address.port);
-              server_[i] = ev.peer;
-              connections[i] = true;
-              break;
-            }
+          // Exact address first: several players can share one host (local multi-instance
+          // tests, or a LAN behind one address), and matching the host alone would hand this
+          // peer another player's slot. Falls back to the host alone as before.
+          int slot = -1;
+          for (size_t i = 0; i < server_.size() && slot < 0; ++i)
+            if (!connections[i] && remote_addrs[i].host == ev.peer->address.host && remote_addrs[i].port == ev.peer->address.port) slot = (int)i;
+          for (size_t i = 0; i < server_.size() && slot < 0; ++i)
+            if (!connections[i] && remote_addrs[i].host == ev.peer->address.host) slot = (int)i;
+          if (slot >= 0) {
+            host::log("slippi: connected to %x:%u", ev.peer->address.host, ev.peer->address.port);
+            server_[slot] = ev.peer;
+            connections[slot] = true;
           }
           break;
         }
@@ -495,7 +531,9 @@ void NetplayClient::ThreadFunc() {
     if (all) {
       client_->intercept = intercept_callback;
       host::log("slippi: online connection successful");
+      connected_at_ms_.store(time_ms(), std::memory_order_release);
       status_.store(ConnectStatus::CONNECTED, std::memory_order_release);
+      SendBuild();
       break;
     }
     if (time_ms() - start_time >= timeout || !do_loop_.load()) {
@@ -594,8 +632,6 @@ void NetplayClient::StartSlippiGame() {
     last_frame_acked_[i] = 0;
     ack_timers_[i].clear();
   }
-  is_desync_recovery_ = false;
-  game_prep_step_queue_.clear();
   match_info_.Reset();
 }
 
@@ -631,26 +667,6 @@ void NetplayClient::SetMatchSelections(PlayerSelections& s) {
   auto spac = std::make_unique<Packet>();
   WriteSelections(*spac, match_info_.local);
   SendAsync(std::move(spac));
-}
-void NetplayClient::SendGamePrepStep(const GamePrepStepResults& s) {
-  auto spac = std::make_unique<Packet>();
-  *spac << (uint8_t)NP_MSG_SLIPPI_COMPLETE_STEP << s.step_idx << s.char_selection << s.char_color_selection << s.stage_selections[0] << s.stage_selections[1];
-  SendAsync(std::move(spac));
-}
-void NetplayClient::SendSyncedGameState(const SyncedGameState& s) {
-  is_desync_recovery_ = true;
-  local_sync_state_ = s;
-  auto spac = std::make_unique<Packet>();
-  *spac << (uint8_t)NP_MSG_SLIPPI_SYNCED_STATE << player_idx_ << s.match_id << s.game_index << s.tiebreak_index << s.seconds_remaining;
-  for (int i = 0; i < 4; ++i) *spac << s.fighters[i].stocks_remaining << s.fighters[i].current_health;
-  SendAsync(std::move(spac));
-}
-bool NetplayClient::GetGamePrepResults(uint8_t step_idx, GamePrepStepResults& res) {
-  while (!game_prep_step_queue_.empty()) {
-    if (game_prep_step_queue_.front().step_idx == step_idx) { res = game_prep_step_queue_.front(); return true; }
-    game_prep_step_queue_.pop_front();
-  }
-  return false;
 }
 void NetplayClient::SendChatMessage(int message_id) {
   remote_sent_chat_message_id = (uint8_t)message_id;
@@ -765,35 +781,11 @@ int32_t NetplayClient::CalcTimeOffsetUs() {
   if (offsets.empty()) return 0;
   return *std::min_element(offsets.begin(), offsets.end());
 }
-bool NetplayClient::IsWaitingForDesyncRecovery() {
-  if (!is_desync_recovery_) return false;
-  for (int i = 0; i < remote_player_count_; ++i)
-    if (local_sync_state_.game_index != remote_sync_states_[i].game_index || local_sync_state_.tiebreak_index != remote_sync_states_[i].tiebreak_index) return true;
-  return false;
-}
-DesyncRecoveryResp NetplayClient::GetDesyncRecoveryState() {
-  DesyncRecoveryResp r;
-  r.is_recovering = is_desync_recovery_;
-  r.is_waiting = IsWaitingForDesyncRecovery();
-  if (!r.is_recovering || r.is_waiting) return r;
-  r.state = local_sync_state_;
-  for (int i = 0; i < remote_player_count_; ++i) {
-    auto& s = remote_sync_states_[i];
-    if (std::abs((int)r.state.seconds_remaining - (int)s.seconds_remaining) > 1) { r.is_error = true; return r; }
-    if (s.seconds_remaining > r.state.seconds_remaining) r.state.seconds_remaining = s.seconds_remaining;
-    for (int j = 0; j < 4; ++j) {
-      auto& f = r.state.fighters[i]; auto& g = s.fighters[i];   // (index i, as in Dolphin)
-      if (f.stocks_remaining != g.stocks_remaining) { r.is_error = true; return r; }
-      if (std::abs((int)f.current_health - (int)g.current_health) > 25) { r.is_error = true; return r; }
-      if (g.current_health < f.current_health) f.current_health = g.current_health;
-    }
-  }
-  return r;
-}
 
 // ---------------------------------------------------------------- matchmaking
 Matchmaking::LocalPeer Matchmaking::local_peer;
 uint16_t Matchmaking::forced_port = 0;
+bool Matchmaking::server_allowed = true;
 
 Matchmaking::Matchmaking(User* user) : user_(user) {}
 Matchmaking::~Matchmaking() {
@@ -807,6 +799,12 @@ void Matchmaking::FindMatch(MatchSearchSettings settings) {
   is_mm_connected_ = false;
   search_settings_ = settings;
   error_msg_.clear();
+  if (!local_peer.enabled && !server_allowed) {
+    error_msg_ = "Matchmaking is off in automated runs";
+    state_ = ERROR_ENCOUNTERED;
+    host::log("slippi: matchmaking blocked: hidden or scripted run without --allow-matchmaking");
+    return;
+  }
   state_ = INITIALIZING;
   host::log("slippi: matchmaking started (mode %d, code '%s')", settings.mode, settings.connect_code.c_str());
   thread_ = std::thread(&Matchmaking::MatchmakeThread, this);
@@ -877,34 +875,63 @@ static int mm_receive(ENetHost* client, json& msg, int timeout_ms) {
   return -1;
 }
 
+struct Matchmaking::Ticket { const json& resp; };
+
+// Local test peering: the get-ticket-resp Slippi's matchmaking server would send this instance.
+// Players are listed by port (1-based), the local one flagged isLocalPlayer; everyone is on
+// 127.0.0.1 so ipAddress and ipAddressLan are the same. Player 1 (index 0) is the decider. A
+// two-player match keeps the six-stage list the local harness always used; with more players
+// "stages" is left out, so the parser's default for more than two players applies (no Fountain
+// of Dreams).
+static json local_peer_ticket(const UserInfo& me, Matchmaking::OnlinePlayMode mode) {
+  using MM = Matchmaking;
+  const auto& local_peer = MM::local_peer;
+  const int n = (int)local_peer.remotes.size() + 1;
+  json players = json::array();
+  for (int i = 0, r = 0; i < n; ++i) {
+    json p;
+    const bool local = i == local_peer.local_index;
+    std::string addr = local ? "127.0.0.1:" + std::to_string(local_peer.local_port) : local_peer.remotes[r++];
+    if (local) {
+      p["uid"] = me.uid; p["displayName"] = me.display_name; p["connectCode"] = me.connect_code;
+    } else if (n == 2) {
+      p["uid"] = "local-peer"; p["displayName"] = "Peer"; p["connectCode"] = "PEER#001";
+    } else {
+      p["uid"] = "local-peer-" + std::to_string(i + 1); p["displayName"] = "Peer " + std::to_string(i + 1);
+      p["connectCode"] = "PEER#00" + std::to_string(i + 1);
+    }
+    p["port"] = i + 1;
+    p["isLocalPlayer"] = local;
+    p["ipAddress"] = addr;
+    p["ipAddressLan"] = addr;
+    players.push_back(p);
+  }
+  const char* mode_name = mode == MM::DIRECT ? "direct" : mode == MM::TEAMS ? "teams" : mode == MM::PARTY ? "party" : "unranked";
+  json resp;
+  resp["type"] = "get-ticket-resp";
+  resp["matchId"] = "mode." + std::string(mode_name) + "-local-test";
+  resp["players"] = players;
+  resp["isHost"] = local_peer.local_index == 0;
+  if (n == 2) resp["stages"] = {0x2, 0x3, 0x8, 0x1C, 0x1F, 0x20};
+  return resp;
+}
+
 void Matchmaking::startMatchmaking() {
   client_ = nullptr;
   UserInfo me = user_->GetUserInfo();
   static std::mt19937 rng((uint32_t)time_ms());
 
   if (local_peer.enabled) {
-    // Two local instances peer directly; the "match" is fabricated the way the server would report it.
+    // 2-4 local instances peer directly. The match is the get-ticket-resp the server would send,
+    // run through the same parser as a real one (player list, local index, decider, addresses).
     host_port_ = local_peer.local_port;
-    local_player_index_ = local_peer.local_index;
-    is_host_ = local_player_index_ == 0;
-    player_info_.clear();
-    remote_ips_.clear();
-    for (int i = 0; i < 2; ++i) {
-      UserInfo p;
-      if (i == local_player_index_) p = me;
-      else { p.uid = "local-peer"; p.display_name = "Peer"; p.connect_code = "PEER#001"; }
-      p.port = i + 1;
-      p.chat_messages = User::GetDefaultChatMessages();
-      player_info_.push_back(p);
-    }
-    remote_ips_.push_back(local_peer.remote_ip + ":" + std::to_string(local_peer.remote_port));
-    allowed_stages_ = {0x2, 0x3, 0x8, 0x1C, 0x1F, 0x20};
-    mm_result_.id = "mode." + std::string(search_settings_.mode == DIRECT ? "direct" : "unranked") + "-local-test";
-    mm_result_.players = player_info_;
-    mm_result_.stages = allowed_stages_;
-    mm_result_.items = 0;
+    json resp = local_peer_ticket(me, search_settings_.mode);
+    ingest_ticket(Ticket{resp});
     state_ = OPPONENT_CONNECTING;
-    host::log("slippi: local peer test: player %d on port %d, peer %s", local_player_index_, host_port_, remote_ips_[0].c_str());
+    std::string peers;
+    for (auto& ip : remote_ips_) peers += (peers.empty() ? "" : ", ") + ip;
+    host::log("slippi: local peer test: %s, player %d of %zu on port %d (decider %d), peers %s", mm_result_.id.c_str(),
+              local_player_index_, player_info_.size(), host_port_, is_host_, peers.c_str());
     return;
   }
 
@@ -965,6 +992,16 @@ void Matchmaking::handleMatchmaking() {
     host::log("slippi: mm error: %s", err.c_str());
     return;
   }
+  ingest_ticket(Ticket{resp});
+  terminateMmConnection();
+  state_ = OPPONENT_CONNECTING;
+  host::log("slippi: opponent found (decider: %d)", is_host_);
+}
+
+// The part of a get-ticket-resp that describes the match: players, local index, the address to
+// reach each remote (LAN when on the same external IP), decider, stages and items.
+void Matchmaking::ingest_ticket(const Ticket& ticket) {
+  const json& resp = ticket.resp;
   netplay_client_ = nullptr;
   remote_ips_.clear();
   player_info_.clear();
@@ -985,13 +1022,6 @@ void Matchmaking::handleMatchmaking() {
         for (auto& m : el["chatMessages"]) if (m.is_string()) p.chat_messages.push_back(m.get<std::string>());
       }
       if (p.chat_messages.size() != 16) p.chat_messages = User::GetDefaultChatMessages();
-      if (el.count("rank") && el["rank"].is_object()) {
-        auto& rk = el["rank"];
-        p.ranked_rating = rk.value("rating", 0.0f);
-        p.ranked_update_count = rk.value("updateCount", 0);
-        p.ranked_global_placement = rk.value("globalPlacement", 0);
-        p.ranked_regional_placement = rk.value("regionalPlacement", 0);
-      }
       player_info_.push_back(p);
       if (is_local) {
         std::string ip = el.value("ipAddress", "1.1.1.1:123");
@@ -1018,10 +1048,8 @@ void Matchmaking::handleMatchmaking() {
   mm_result_.players = player_info_;
   mm_result_.stages = allowed_stages_;
   mm_result_.items = resp.value("items", 0u);
-  terminateMmConnection();
-  state_ = OPPONENT_CONNECTING;
-  host::log("slippi: opponent found (decider: %d)", is_host_);
 }
+
 
 void Matchmaking::handleConnecting() {
   netplay_client_ = nullptr;
@@ -1040,6 +1068,12 @@ void Matchmaking::handleConnecting() {
       if (state_ != OPPONENT_CONNECTING) return;
       continue;
     }
+    if (st != NetplayClient::ConnectStatus::CONNECTED && client->GetRemoteBuild(0).received) {
+      // It did connect: the opponent's build arrived, then they left (their build check refused
+      // this one). Hand the client over so the build check can say why, instead of a plain failure.
+      netplay_client_ = std::move(client);
+      break;
+    }
     if (st != NetplayClient::ConnectStatus::CONNECTED) {
       if (local_peer.enabled) { state_ = ERROR_ENCOUNTERED; error_msg_ = "Could not connect to the local peer"; return; }
       if (search_settings_.mode == TEAMS) { state_ = ERROR_ENCOUNTERED; error_msg_ = "Timed out waiting for other players to connect"; return; }
@@ -1052,18 +1086,5 @@ void Matchmaking::handleConnecting() {
   state_ = CONNECTION_SUCCESS;
 }
 
-int Matchmaking::GetPlayerRank(uint8_t port) const {
-  if (port >= player_info_.size()) return 0;
-  const UserInfo& info = player_info_[port];
-  float r = info.ranked_rating;
-  if (info.ranked_update_count < 5) return 0;
-  static const float bounds[] = {765.42f, 913.71f, 1054.86f, 1188.87f, 1315.74f, 1435.47f, 1548.06f, 1653.51f, 1751.82f,
-                                 1842.99f, 1927.02f, 2003.91f, 2073.66f, 2136.27f, 2191.74f};
-  for (int i = 0; i < 15; ++i) if (r <= bounds[i]) return i + 1;
-  if (r >= 2191.75f && (info.ranked_global_placement > 0 || info.ranked_regional_placement > 0)) return 19;
-  if (r <= 2274.99f) return 16;
-  if (r <= 2350.0f) return 17;
-  return 18;
-}
 
 }  // namespace slippi

@@ -9,8 +9,14 @@
 namespace slippi::jukebox {
 void start_song(uint32_t disc_offset, uint32_t size);   // CMD_PLAY_MUSIC
 void stop();                                            // CMD_STOP_MUSIC
+// Where songs are read from: the disc image by default. The Source Port's reader also serves its
+// mod overlay, so a replaced song plays through the jukebox as it does in the game.
+using DiscReader = bool (*)(uint32_t offset, void* dst, uint32_t size);
+void set_disc_reader(DiscReader reader);
 void set_melee_volume(uint8_t volume);                  // CMD_CHANGE_MUSIC_VOLUME (0..254)
 void set_user_volume(int percent);                      // PC settings "Music" (0..100)
+// A gain for the song about to start (1 = unchanged); start_song() takes it for that song only.
+void set_next_song_gain(float gain);
 int user_volume();
 // Mixes `frames` stereo 32 kHz samples into `out` (adds to what is there). Audio-thread safe.
 // `master` is the Volume setting as a fraction, applied on top of Melee's own music volume and the

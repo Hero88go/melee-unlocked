@@ -18,7 +18,25 @@ struct Memory {
   uint32_t aram_size;
 };
 
+struct VoiceTrace {
+  uint64_t frame;
+  uint32_t pb_addr, cur_before, cur_after, end_addr, ratio;
+  uint16_t millisecond, frac_before, frac_after, volume_before, volume_delta;
+  int16_t input_first, input_last, input_peak;
+  int16_t output_first, output_last, output_peak;
+};
+using VoiceTraceFn = void (*)(const VoiceTrace&);
+
+// Per-voice frame trace (M4 diagnostic, inert until a host installs a sink): a "kind=frame" line as
+// each command list starts, then one "kind=voice" line per parameter block that rendered samples or
+// that the CPU changed since the ucode last wrote it back. A voice line carries FNV-1a hashes of the
+// block's own 160 samples before the final mix (after its volume envelope, and every mixer
+// contribution in bus order) and, when the CPU changed the block, its words as the frame began.
+using FrameTraceFn = void (*)(const char* line);
+
 void set_memory(const Memory& mem);
+void set_voice_trace(VoiceTraceFn trace);
+void set_frame_trace(FrameTraceFn sink);
 void reset();
 // CPU -> DSP mailbox (DSPSendMailToDSP). Runs a command list when its address arrives.
 void handle_mail(uint32_t mail);

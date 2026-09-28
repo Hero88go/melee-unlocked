@@ -289,7 +289,7 @@ enum class CaptureDevice : uint8_t { None, Keyboard, XInputPad, DS4Pad, GCAdapte
 void input_begin_capture(CaptureDevice want, int want_index);
 void input_begin_capture();
 // Call every frame while waiting. Returns true once something new was pressed
-// (or Escape was pressed to cancel — in that case device == None).
+// (or Escape was pressed to cancel; in that case device == None).
 // On success: device/value/device_index identify what was pressed (value = VK code for
 // Keyboard, XInput button bit for XInputPad, GC adapter button bit for GCAdapter).
 bool input_poll_capture(CaptureDevice& device, int& value, int& device_index);

@@ -1,0 +1,103 @@
+#include "../MexTK/mex.h"
+#include "events.h"
+
+#define TEXT_SCALE 4.2
+#define WDJOBJ_TEXT 6
+#define WDJOBJ_ARROW 3
+#define WDARROW_OFFSET 0.36
+#define WDARROW_ANIMFRAMES 4
+#define WDFRAMES 15
+#define FAILFRAMES 8
+
+#define TRGT_RANGEMAX 0.8
+#define TRGT_RANGEMIN 0.55
+
+#define TRGTJOBJ_AURA 3
+#define TRGTJOBJ_LBOUND 4
+#define TRGTJOBJ_RBOUND 5
+
+#define TRGTSCL_DISTMIN 20
+#define TRGTSCL_DISTMAX 50
+#define TRGTSCL_SCALEMIN 1.0
+#define TRGTSCL_SCALEMAX 1.7
+
+typedef struct WavedashData WavedashData;
+typedef struct WavedashAssets WavedashAssets;
+typedef struct TargetData TargetData;
+
+struct WavedashData
+{
+    EventDesc *event_desc;
+    WavedashAssets *assets;
+    struct
+    {
+        GOBJ *gobj;
+        float scale;
+        Vec3 left_offset;
+        Vec3 center_offset;
+        Vec3 right_offset;
+    } target;
+    struct
+    {
+        u8 shield_num;
+        u8 short_hop;
+    } tip;
+    float wd_maxdstn;
+    int timer;
+    int airdodge_count;
+    int airdodge_frame[8];
+    int result;
+    float angle;
+    int short_hop;
+    int wd_attempted;
+    int wd_succeeded;
+};
+
+#ifdef MU_NATIVE
+struct MEX_DISC_STRUCT WavedashAssets
+{
+    unsigned int hud;           // JOBJDesc *, read with MEX_DP()
+    unsigned int hudmatanim;    // disc array of pointers
+    unsigned int target_jobj;
+    unsigned int target_jointanim;
+    unsigned int target_matanim;
+};
+#else
+struct WavedashAssets
+{
+    JOBJDesc *hud;
+    void **hudmatanim; // pointer to array
+    JOBJDesc *target_jobj;
+    void **target_jointanim;
+    void **target_matanim;
+};
+#endif
+
+enum TargetState
+{
+    TRGSTATE_SPAWN,
+    TRGSTATE_WAIT,
+    TRGSTATE_DESPAWN,
+};
+struct TargetData
+{
+    int state;
+    Vec3 pos;
+    int line_index;
+    float left;
+    float right;
+    CmSubject *cam;
+};
+
+void Tips_Think(WavedashData *event_data, FighterData *hmn_data);
+float Target_GetWdashDistance(FighterData *hmn_data, float mag);
+GOBJ *Target_Spawn(WavedashData *event_data, FighterData *fighter_data);
+int Target_CheckArea(WavedashData *event_data, int line, Vec3 *pos, float x_offset, int *ret_line, Vec3 *ret_pos, Vec3 *ret_slope);
+void Target_Think(GOBJ *target_gobj);
+void Target_ChangeState(GOBJ *target_gobj, int state);
+void Target_Manager(WavedashData *event_data, FighterData *hmn_data);
+void Target_Init(WavedashData *event_data, FighterData *hmn_data);
+void Wavedash_Think(WavedashData *event_data, FighterData *hmn_data);
+void Wavedash_ChangeShowHUD(GOBJ *menu_gobj, int show);
+void HUD_GX(GOBJ *gobj, int pass);
+void Event_Exit(GOBJ *menu);

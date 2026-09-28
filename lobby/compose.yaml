@@ -1,0 +1,26 @@
+services:
+  lobby:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - lobby-data:/data
+    ports:
+      - "8787:8787/udp"
+  https:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      LOBBY_DOMAIN: ${LOBBY_DOMAIN:?Set LOBBY_DOMAIN to your service DNS name}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - tls-data:/data
+      - tls-config:/config
+    depends_on:
+      - lobby
+volumes:
+  lobby-data:
+  tls-data:
+  tls-config:

@@ -4,6 +4,7 @@
 #include "ppc.h"
 #include "gx_texture.h"
 #include "authored_pose.h"
+#include "gx_core.h"   // authored_capture_wanted
 #include <algorithm>
 #include <cstring>
 #include <unordered_map>
@@ -329,16 +330,18 @@ uint64_t observed_draw_identity(uint64_t fallback, uint64_t& generation) {
   return hash_bytes(key, sizeof key);
 }
 void set_authored_capture(bool enabled) { authored_enabled = enabled; }
+bool authored_capture_enabled() { return authored_enabled; }
 void set_owner_tracking(bool enabled) { owner_tracking.store(enabled, std::memory_order_relaxed); }
+bool owner_tracking_enabled() { return owner_tracking.load(std::memory_order_relaxed); }
 uint8_t observed_owner() { return current_owner; }
 bool observed_skinned() { return envelope; }
 std::shared_ptr<const AuthoredPose> capture_authored_pose() {
-  if(!authored_enabled||!current_generation||!current_memory||!(rigid||envelope)){ ++authored_stats().capture[1]; return {}; }
+  if(!authored_enabled||!authored_capture_wanted()||!current_generation||!current_memory||!(rigid||envelope)){ ++authored_stats().capture[1]; return {}; }
   Reader r{current_memory};
   if(envelope) {
     // Every PObj of a skinned model has its own envelope list, so this is per draw (chains are shared).
     auto pose = capture_envelope(r);
-    if(pose) ++authored_stats().captured;
+    if(pose) { ++authored_stats().captured; ++authored_stats().captured_envelope; }
     return pose;
   }
   if(current_pose)return current_pose;

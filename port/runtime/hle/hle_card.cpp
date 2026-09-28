@@ -86,6 +86,13 @@ void mount() {
   host::log("card: slot A mounted from %s (%zu files, %u of %u blocks used)", g_dir.string().c_str(), slot, used_blocks(), TOTAL_BLOCKS);
 }
 
+void unmount() {
+  if (!g_mounted) return;
+  for (File* f : g_files) delete f;
+  g_files.clear();
+  g_mounted = false;
+}
+
 void complete(uint32_t callback, int32_t chan, int32_t result) {
   if (callback) host::post_completion([callback, chan, result] { host::call_guest(callback, (uint32_t)chan, (uint32_t)result); });
 }
@@ -147,7 +154,7 @@ HLE(CARDProbeEx) {
 }
 HLE(CARDMountAsync) { if (ARG0 != 0) { RET(NOCARD); return; } mount(); complete(ARG3, 0, READY); RET(READY); }
 HLE(CARDMount) { if (ARG0 != 0) { RET(NOCARD); return; } mount(); RET(READY); }
-HLE(CARDUnmount) { RET(ARG0 == 0 ? READY : NOCARD); }
+HLE(CARDUnmount) { if (ARG0 != 0) { RET(NOCARD); return; } unmount(); RET(READY); }
 HLE(CARDCheckAsync) { if (ARG0 != 0 || !g_mounted) { RET(NOCARD); return; } complete(ARG1, 0, READY); RET(READY); }
 HLE(CARDCheck) { RET(ARG0 == 0 && g_mounted ? READY : NOCARD); }
 HLE(CARDGetResultCode) { RET(ARG0 == 0 ? READY : NOCARD); }
@@ -156,7 +163,12 @@ HLE(CARDGetSectorSize) { if (ARG0 != 0) { RET(NOCARD); return; } host::wr32(ARG1
 HLE(CARDGetEncoding) { if (ARG0 != 0) { RET(NOCARD); return; } host::wr16(ARG1, 0); RET(READY); }
 HLE(CARDGetSerialNo) { if (ARG0 != 0) { RET(NOCARD); return; } host::wr32(ARG1, 0x4D454C45u); host::wr32(ARG1 + 4, 0x504F5254u); RET(READY); }
 HLE(CARDGetCurrentMode) { if (ARG0 != 0) { RET(NOCARD); return; } host::wr32(ARG1, 0); RET(READY); }
-HLE(CARDCancel) { RET(READY); }
+HLE(CARDCancel) {
+  int32_t chan = 0;
+  File* f = file_of(ARG0, &chan);
+  if (chan != 0 || !g_mounted) { RET(NOCARD); return; }
+  RET(f ? READY : NOFILE);
+}
 HLE(CARDGetXferredBytes) { RET(ARG0 == 0 ? g_xferred : 0); }
 
 HLE(CARDFreeBlocks) {

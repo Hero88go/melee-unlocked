@@ -59,6 +59,7 @@ void* native_interface(void* proxy) { return proxy; }
 bool dlss_supported(IDXGIAdapter*) { return false; }
 bool dlss_optimal_size(DlssMode, uint32_t, uint32_t, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*, uint32_t*) { return false; }
 bool dlss_set_options(DlssMode, uint32_t, uint32_t, bool) { return false; }
+void dlss_allocate(ID3D12GraphicsCommandList*) {}
 void new_frame(uint32_t) {}
 bool set_constants(const FrameConstants&) { return false; }
 bool evaluate(ID3D12GraphicsCommandList*, const EvaluateInputs&) { return false; }
@@ -292,6 +293,8 @@ bool dlss_optimal_size(DlssMode mode, uint32_t out_w, uint32_t out_h, uint32_t* 
   return true;
 }
 
+bool g_allocated = false;   // the DLSS feature exists for the current mode and size (dlss_allocate)
+
 bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h, bool color_is_hdr) {
   if (!available()) return false;
   sl::DLSSOptions o{};
@@ -309,9 +312,21 @@ bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h, bool color_
   }
   sl::Result res = slDLSSSetOptions(g_viewport, o);
   if (res != sl::Result::eOk) { host::log("dlss: slDLSSSetOptions failed (%d)", (int)res); return false; }
+  if (o.mode != g_mode || out_w != g_out_w || out_h != g_out_h) g_allocated = false;
   g_mode = o.mode; g_out_w = out_w; g_out_h = out_h;
   if (mode == DlssMode::Off) g_have_prev = false;
   return true;
+}
+
+// Creates the DLSS feature now instead of on its first evaluate. Streamline builds it lazily, and
+// the Source Port first evaluates DLSS on the first frame of a match (menus are shown as rendered),
+// so every first match with DLSS on stalled for about 2.7 seconds. Done on a menu frame instead,
+// once per mode and output size.
+void dlss_allocate(ID3D12GraphicsCommandList* list) {
+  if (!available() || g_allocated || g_mode == sl::DLSSMode::eOff || !list) return;
+  g_allocated = true;
+  const sl::Result res = slAllocateResources(list, sl::kFeatureDLSS, g_viewport);
+  host::log("dlss: feature allocated ahead of the first match (%d)", (int)res);
 }
 
 void new_frame(uint32_t frame_index) {

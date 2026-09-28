@@ -9,6 +9,7 @@
 #include <cstring>
 #include <vector>
 #include <mutex>
+#include <algorithm>
 #include <atomic>
 #include "host.h"
 #include "window.h"
@@ -75,6 +76,9 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
       if (w == VK_RETURN && (l & (1 << 29)) && !(l & (1 << 30))) { g_fullscreen_toggle.store(true); return 0; }   // Alt+Enter, first press only
       break;
     case WM_SYSCHAR: if (w == VK_RETURN) return 0; break;   // no beep for Alt+Enter
+    // Alt pressed and released alone opens the window menu in keyboard mode, and Windows then runs
+    // its modal menu loop on this thread: the renderer draws nothing until another key ends it.
+    case WM_SYSCOMMAND: if ((w & 0xFFF0) == SC_KEYMENU) return 0; break;
     case WM_KEYDOWN: {
       // F1 opens and closes the settings panel. Taken here, from the first key-down of a press
       // (bit 30 is set on auto-repeats), rather than from ImGui's key state: the panel only runs on
@@ -287,6 +291,94 @@ void window_pump() {
 }
 
 void window_set_title(const wchar_t* title) { if (g_hwnd) SetWindowTextW(g_hwnd, title); }
+
+// Compiling the pipeline cache on the first launch of a new version keeps the first frame back for
+// 20 seconds or more on some machines, with nothing in the game window, which looks like a hang.
+// This panel sits over the game window meanwhile and shows how far along the work is.
+namespace {
+HWND g_loading = nullptr;
+HFONT g_loading_title_font = nullptr, g_loading_font = nullptr;
+std::wstring g_loading_text;
+size_t g_loading_done = 0, g_loading_total = 0;
+
+void loading_fill(HDC dc, const RECT& r, COLORREF color) {
+  HBRUSH brush = CreateSolidBrush(color);
+  FillRect(dc, &r, brush);
+  DeleteObject(brush);
+}
+
+LRESULT CALLBACK loading_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  if (m == WM_ERASEBKGND) return 1;   // WM_PAINT covers every pixel
+  if (m != WM_PAINT) return DefWindowProcW(h, m, w, l);
+  PAINTSTRUCT ps;
+  HDC dc = BeginPaint(h, &ps);
+  RECT rc;
+  GetClientRect(h, &rc);
+  loading_fill(dc, rc, RGB(0x14, 0x17, 0x20));
+  SetBkMode(dc, TRANSPARENT);
+  const int pad = 18;
+  RECT title{pad, 12, rc.right - pad, 40};
+  SelectObject(dc, g_loading_title_font);
+  SetTextColor(dc, RGB(0xF2, 0xF3, 0xF7));
+  DrawTextW(dc, window_title_base().c_str(), -1, &title, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+  wchar_t line[192];
+  swprintf_s(line, L"%ls   %zu / %zu", g_loading_text.c_str(), g_loading_done, g_loading_total);
+  RECT text{pad, 44, rc.right - pad, 66};
+  SelectObject(dc, g_loading_font);
+  SetTextColor(dc, RGB(0x9A, 0xA3, 0xB5));
+  DrawTextW(dc, line, -1, &text, DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+  const RECT track{pad, 78, rc.right - pad, 90};
+  loading_fill(dc, track, RGB(0x2A, 0x2F, 0x3D));
+  if (g_loading_total) {
+    RECT bar = track;
+    const double f = (double)std::min(g_loading_done, g_loading_total) / (double)g_loading_total;
+    bar.right = track.left + (LONG)((track.right - track.left) * f);
+    loading_fill(dc, bar, RGB(0x9B, 0x6B, 0xFF));
+  }
+  EndPaint(h, &ps);
+  return 0;
+}
+}  // namespace
+
+void loading_show(const wchar_t* what, size_t done, size_t total) {
+  if (!g_hwnd || !IsWindowVisible(g_hwnd)) return;   // hidden and headless runs show nothing
+  if (!g_loading) {
+    HINSTANCE inst = GetModuleHandleW(nullptr);
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof wc; wc.hInstance = inst; wc.lpfnWndProc = loading_proc;
+    wc.lpszClassName = L"MeleePortLoading"; wc.hCursor = LoadCursor(nullptr, IDC_APPSTARTING);
+    RegisterClassExW(&wc);
+    const int w = 460, h = 108;
+    RECT owner{};
+    GetWindowRect(g_hwnd, &owner);
+    const int x = owner.left + ((owner.right - owner.left) - w) / 2;
+    const int y = owner.top + ((owner.bottom - owner.top) - h) / 2;
+    g_loading_title_font = CreateFontW(-19, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                       CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    g_loading_font = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                 CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+    // Owned by the game window, so it stays above it, and never activated, so it takes no focus.
+    g_loading = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, wc.lpszClassName, L"", WS_POPUP | WS_BORDER,
+                                x, y, w, h, g_hwnd, nullptr, inst, nullptr);
+    if (!g_loading) return;
+    ShowWindow(g_loading, SW_SHOWNOACTIVATE);
+  }
+  g_loading_text = what;
+  g_loading_done = done;
+  g_loading_total = total;
+  InvalidateRect(g_loading, nullptr, FALSE);
+  UpdateWindow(g_loading);
+  // Retrieving this thread's messages while it waits also keeps Windows from marking the game
+  // window as not responding.
+  MSG msg;
+  while (PeekMessageW(&msg, g_loading, 0, 0, PM_REMOVE)) DispatchMessageW(&msg);
+}
+
+void loading_close() {
+  if (g_loading) { DestroyWindow(g_loading); g_loading = nullptr; }
+  if (g_loading_title_font) { DeleteObject(g_loading_title_font); g_loading_title_font = nullptr; }
+  if (g_loading_font) { DeleteObject(g_loading_font); g_loading_font = nullptr; }
+}
 bool window_closed() { return g_closed; }
 void window_client_size(int* w, int* h) { *w = g_client_w; *h = g_client_h; }
 
@@ -527,9 +619,14 @@ namespace {
 // tl/tr are the analog triggers. Melee shields from the analog value, not the digital L/R bit, so a
 // script that only pressed L never actually shielded and shield behaviour could not be tested at all.
 struct ScriptEntry {
-  uint32_t frame; uint16_t buttons; int8_t sx, sy, cx, cy; uint8_t tl, tr; int port;
+  uint32_t frame;
+  uint16_t buttons;
+  int8_t sx, sy, cx, cy;
+  uint8_t tl, tr;
+  int port;
   bool relative = false;
-  bool scene_relative = false;
+  bool scene_match_relative = false;
+  bool match_retrace_relative = false;
 };
 std::vector<ScriptEntry> g_script;
 uint32_t g_script_ports = 1;
@@ -537,14 +634,21 @@ uint32_t g_script_ports = 1;
 // (they stay silent until then); `@loop N` repeats the relative section every N frames.
 static bool g_script_relative_section = false;
 static uint32_t g_script_loop = 0;
+static uint32_t g_script_release_after = 0, g_script_release_at = 0;
 static std::atomic<uint32_t> g_match_start_retrace{0};
-// `@scene MM mm` anchors subsequent entries to the first retrace at which the guest enters that
-// scene. This keeps automated menu setup aligned when graphics backends reach CSS at different
-// wall-clock/retrace offsets.
-static bool g_script_scene_section = false;
-static bool g_script_has_scene_entries = false;
-static uint8_t g_script_scene_major = 0, g_script_scene_minor = 0;
-static std::atomic<uint32_t> g_script_scene_start_retrace{0};
+// `@scene <major>[:<minor>]` starts a menu-relative section at the first matching scene. A later
+// `@match` in the same script switches subsequent entries to match-frame-relative timing, leaving
+// the menu entries on scene retraces and keeping in-match inputs silent until frame 1.
+static bool g_script_has_scene_wait = false;
+static bool g_script_scene_match_relative = false;
+static uint32_t g_scene_wait_major = 0, g_scene_wait_minor = 0;
+static bool g_scene_wait_has_minor = false;
+static std::atomic<uint32_t> g_scene_start_retrace{0};   // 0 = not observed yet
+// `@matchrt` (after `@scene`): later entries count retraces from the start of each match instead
+// of match frames, so they keep advancing while the game is paused (the match frame stops there).
+// A match frame lower than the last one seen marks a new match and restarts the count.
+static bool g_script_match_retrace = false;
+static uint32_t g_match_rt_start = 0, g_match_rt_last = 0;
 
 // Turns a Switch controller's raw SWPRO_* bits into GameCube buttons through slot `idx`'s
 // remappable table, and returns the same thing as BindAction bit indices for the settings panel.
@@ -641,33 +745,50 @@ bool input_load_script(const char* path) {
   g_script_relative_section = false;
   g_script_loop = 0;
   g_match_start_retrace.store(0);
-  g_script_scene_section = false;
-  g_script_has_scene_entries = false;
-  g_script_scene_major = g_script_scene_minor = 0;
-  g_script_scene_start_retrace.store(0);
+  g_script_has_scene_wait = false;
+  g_script_scene_match_relative = false;
+  g_script_match_retrace = false;
+  g_scene_wait_major = g_scene_wait_minor = 0;
+  g_scene_wait_has_minor = false;
+  g_scene_start_retrace.store(0);
+  g_match_rt_start = g_match_rt_last = 0;
+  g_script_release_after = 0; g_script_release_at = 0;
   char line[256];
   while (fgets(line, sizeof line, f)) {
     ScriptEntry e{};
     char* p = line;
     if (*p == '#' || *p == '\n' || *p == '\r') continue;
-    if (!strncmp(p, "@match", 6)) { g_script_relative_section = true; g_script_scene_section = false; continue; }
+    // `@release N`: N retraces after a match is first seen in progress, the script ends and the
+    // real controllers drive every port (a scripted boot into a match, then a person plays).
+    if (!strncmp(p, "@release", 8)) { g_script_release_after = (uint32_t)strtoul(p + 8, nullptr, 10); continue; }
+    if (!strncmp(p, "@matchrt", 8)) {
+      g_script_relative_section = true;
+      g_script_scene_match_relative = false;
+      g_script_match_retrace = g_script_has_scene_wait;
+      continue;
+    }
+    if (!strncmp(p, "@match", 6)) {
+      g_script_relative_section = true;
+      g_script_scene_match_relative = g_script_has_scene_wait;
+      g_script_match_retrace = false;
+      continue;
+    }
     if (!strncmp(p, "@loop", 5)) { g_script_loop = (uint32_t)strtoul(p + 5, nullptr, 10); continue; }
     if (!strncmp(p, "@scene", 6)) {
-      unsigned major = 0, minor = 0;
-      if (sscanf(p + 6, "%x %x", &major, &minor) != 2 || major > 0xFF || minor > 0xFF) {
-        fclose(f);
-        g_script.clear();
-        return false;
-      }
-      g_script_scene_major = (uint8_t)major;
-      g_script_scene_minor = (uint8_t)minor;
-      g_script_scene_section = true;
-      g_script_has_scene_entries = true;
-      g_script_relative_section = false;
+      char* q = p + 6;
+      while (*q == ' ' || *q == '\t') ++q;
+      g_scene_wait_major = (uint32_t)strtoul(q, &q, 0);
+      g_scene_wait_has_minor = (*q == ':');
+      if (g_scene_wait_has_minor) g_scene_wait_minor = (uint32_t)strtoul(q + 1, nullptr, 0);
+      g_script_has_scene_wait = true;
+      g_script_scene_match_relative = false;
+      g_script_match_retrace = false;
+      g_script_relative_section = true;
       continue;
     }
     e.relative = g_script_relative_section;
-    e.scene_relative = g_script_scene_section;
+    e.scene_match_relative = g_script_scene_match_relative;
+    e.match_retrace_relative = g_script_match_retrace;
     e.frame = (uint32_t)strtoul(p, &p, 10);
     while (*p) {
       while (*p == ' ' || *p == '\t') ++p;
@@ -726,31 +847,60 @@ void input_poll(PadState out[4]) {
       }
     }
   } ui{out};
+  if (TickTiming& tick = tick_timing(); tick.pad == 0) tick.pad = now_seconds();
   for (int i = 0; i < 4; ++i) { std::memset(&out[i], 0, sizeof out[i]); out[i].err = -1; }
+  if (!g_script.empty() && g_script_release_after) {
+    uint32_t major, minor, match_frame;
+    current_scene(&major, &minor, &match_frame);
+    if (!g_script_release_at && match_frame > 1) g_script_release_at = retrace_count() + g_script_release_after;
+    if (g_script_release_at && retrace_count() >= g_script_release_at) { g_script.clear(); log("script: released, controllers live"); }
+  }
   if (!g_script.empty()) {
     // Scripts drive port 1 by default; entries with p=N drive port N (a port with any entry counts as plugged in).
     uint32_t frame = retrace_count();
-    uint32_t start = g_match_start_retrace.load();
-    bool in_match = start && frame >= start;
-    uint32_t rel = in_match ? frame - start : 0;
-    if (g_script_has_scene_entries && !g_script_scene_start_retrace.load() &&
-        host::rd8(0x80479D30) == g_script_scene_major && host::rd8(0x80479D33) == g_script_scene_minor) {
-      uint32_t expected = 0;
-      g_script_scene_start_retrace.compare_exchange_strong(expected, frame);
+    // @scene takes over the same "relative section" that @match uses, but starts counting from
+    // the retrace where the requested mode/scene was first observed instead of an online match
+    // reaching frame 1. Checked every poll (once per retrace) so the wait is not sensitive to
+    // when input_poll happens to be called relative to the scene actually changing.
+    uint32_t match_frame = 0;
+    if (g_script_has_scene_wait) {
+      uint32_t major, minor;
+      current_scene(&major, &minor, &match_frame);
+      if (!g_scene_start_retrace.load() &&
+          major == g_scene_wait_major &&
+          (!g_scene_wait_has_minor || minor == g_scene_wait_minor))
+        g_scene_start_retrace.store(frame);
     }
-    const uint32_t scene_start = g_script_scene_start_retrace.load();
-    const bool in_scene = scene_start && frame >= scene_start;
-    const uint32_t scene_rel = in_scene ? frame - scene_start : 0;
-    if (in_match && g_script_loop) rel %= g_script_loop;
+    uint32_t start = g_script_has_scene_wait ? g_scene_start_retrace.load() : g_match_start_retrace.load();
+    bool use_match_frame = g_script_has_scene_wait && start && match_frame != 0;
+    if (match_frame == 0) {
+      g_match_rt_start = 0;
+    } else if (!g_match_rt_start || match_frame < g_match_rt_last) {
+      g_match_rt_start = frame;
+    }
+    g_match_rt_last = match_frame;
+    const uint32_t match_rt = g_match_rt_start ? frame - g_match_rt_start : 0;
+    bool in_section = start && frame >= start;
+    uint32_t scene_rel = in_section ? frame - start : 0;
+    uint32_t rel = use_match_frame ? match_frame : (in_section ? frame - start : 0);
+    if (in_section && g_script_loop && (!g_script_has_scene_wait || use_match_frame)) rel %= g_script_loop;
     for (int port = 0; port < 4; ++port) {
       if (port && !(g_script_ports & (1u << port))) continue;
       out[port].err = 0;
       const ScriptEntry* cur = nullptr;
       for (const ScriptEntry& e : g_script) {
         if (e.port != port) continue;
-        if (e.scene_relative) { if (in_scene && e.frame <= scene_rel) cur = &e; }
-        else if (e.relative) { if (in_match && e.frame <= rel) cur = &e; }
-        else if (!in_match && e.frame <= frame) cur = &e;
+        if (e.relative) {
+          if (e.match_retrace_relative) {
+            if (g_match_rt_start && e.frame <= match_rt) cur = &e;
+          } else if (e.scene_match_relative) {
+            if (use_match_frame && e.frame <= rel) cur = &e;
+          } else if (g_script_has_scene_wait) {
+            if (in_section && e.frame <= scene_rel) cur = &e;
+          } else if (in_section && e.frame <= rel) {
+            cur = &e;
+          }
+        } else if (!in_section && e.frame <= frame) cur = &e;
       }
       if (cur) {
         PadState& q = out[port];
@@ -789,7 +939,19 @@ void input_poll(PadState out[4]) {
     // The keyboard only counts while the game window has focus. Background input is for
     // controllers: reading the keyboard globally made typing in any other window play the game.
     std::lock_guard<std::mutex> lock(g_keys_mutex);
-    auto key = [&](int vk) { return focused && g_keys[vk & 0xFF]; };
+    // Background input is for controllers: keys typed into another window (chat, a browser) must not
+    // reach the game, so the keyboard is only read while the game window has focus.
+    // The keys are read as they are now, at the pad read. The window messages are handled by the
+    // presentation thread between its frames, up to 2 ms after the press, and a press made in that
+    // gap missed the tick. The message rules still hold: Tab stays reserved for matchmaking, and
+    // with Alt held the messages decide, since those keys arrive as system keys and never played.
+    const bool live = focused && !(GetAsyncKeyState(VK_MENU) & 0x8000);
+    auto key = [&](int vk) {
+      vk &= 0xFF;
+      if (!focused) return false;
+      if (live && vk >= 8 && vk != VK_TAB) return (GetAsyncKeyState(vk) & 0x8000) != 0;
+      return g_keys[vk];
+    };
     keyboard_actions = apply_actions(kb, [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); });
     apply_stick_actions(keyboard_actions, kb.stick_x, kb.stick_y);
     if (kb.button & PAD_L) kb.trig_l = 255;
@@ -887,17 +1049,16 @@ void input_poll(PadState out[4]) {
     PadState result = kb;
     const PadState* pad = nullptr;
     PortSource feeding{DeviceKind::Keyboard, 0};
+    for (int i = 0; i < 4 && !pad; ++i) if ((gc_mask & (1u << i)) && !routed(DeviceKind::GCAdapter, i)) { pad = &gc[i]; feeding = {DeviceKind::GCAdapter, i}; }
     for (int i = 0; i < 4 && !pad; ++i) if (xin_connected[i] && !routed(DeviceKind::XInputPad, i)) { pad = &xin[i]; feeding = {DeviceKind::XInputPad, i}; }
     for (int i = 0; i < 4 && !pad; ++i) if (ds4_connected[i] && !routed(DeviceKind::DS4Pad, i)) { pad = &ds4[i]; feeding = {DeviceKind::DS4Pad, i}; }
     for (int i = 0; i < 4 && !pad; ++i) if (swpro_connected[i] && !routed(DeviceKind::SwitchPro, i)) { pad = &swpro[i]; feeding = {DeviceKind::SwitchPro, i}; }
     for (int i = 0; i < 4 && !pad; ++i) if (hid_connected[i] && !routed(DeviceKind::HidPad, i)) { pad = &hid[i]; feeding = {DeviceKind::HidPad, i}; }
     g_port_feeding[port] = feeding;
-    // The keyboard keeps working; the pad takes over whenever it is actually being used. "Used" means
-    // past the game's own deadzone (0.2875 of 80), not merely non-zero: pad values carry no deadzone
-    // now, and a worn stick resting a few units off centre would otherwise lock the keyboard out.
-    auto moved = [](int8_t v) { return v > 23 || v < -23; };
-    if (pad && (pad->button || moved(pad->stick_x) || moved(pad->stick_y) || moved(pad->sub_x) || moved(pad->sub_y) ||
-                pad->trig_l > 20 || pad->trig_r > 20)) result = *pad;
+    // With a controller connected, the default port is that controller alone: keys pressed while
+    // playing on a pad (hotkeys, typing) must not press game buttons. The keyboard drives the port
+    // when no controller is connected, or when it is chosen as the port's source in the F1 panel.
+    if (pad) result = *pad;
     return result;
   };
   // A port given a named box follows that box to whatever HID slot it is in this time.

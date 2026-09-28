@@ -7,7 +7,12 @@
 #include <string>
 #include <vector>
 #include "gx_regs.h"
+#include "native_draw_audit.h"
+#include "../abi/mu_native_pose.h"
+#include "../host/tick_timing.h"
 #include "texture_snapshot.h"
+
+struct MuNativePoseSnapshot;
 
 namespace gx {
 
@@ -46,6 +51,18 @@ struct TextureRef {
 };
 
 struct AuthoredPose;
+struct NativePoseBridgeStats {
+  uint64_t snapshots = 0;
+  uint64_t rigid_captured = 0;
+  uint64_t envelope_scopes = 0;
+  uint64_t envelope_captured = 0;
+  // Captures split by the PObj class's setup_mtx: the stock HSD path (the population the Legacy
+  // observer hooks) versus a custom one (fighters' ftParts path, which Legacy never observes).
+  uint64_t captured_default_setup = 0;
+  uint64_t captured_custom_setup = 0;
+  uint64_t invalid_payloads = 0;
+  uint64_t rejected[MU_NATIVE_POSE_REJECT_COUNT]{};
+};
 struct DrawSegment {
   uint32_t first_vertex, vertex_count;
   uint32_t primitive;
@@ -174,6 +191,7 @@ struct Frame {
   // from it whether there is a match on screen.
   uint8_t scene_major = 0, scene_minor = 0;
   double time = 0.0;   // host seconds of the retrace this frame belongs to (see host::frame_time)
+  host::TickTiming tick;   // latency trace: the tick that produced this frame (host::tick_timing)
   // The game's timeline jumped between the previous frame and this one: an online rollback loaded
   // an older state and simulated forward again. The two frames are not neighbours in time, so
   // nothing may be blended between them (see mark_discontinuity).
@@ -194,7 +212,7 @@ struct Frame {
   // and the renderer decides when to present by comparing sequences. Leaving a stale one on a
   // buffer that is about to be refilled is only harmless while every producer remembers to assign
   // one before pushing.
-  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; time = 0.0; discontinuous = false; }
+  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; time = 0.0; tick = {}; discontinuous = false; }
 };
 
 // The panel publishes visual-only HUD controls to the simulation thread.
@@ -247,9 +265,19 @@ inline bool skip_for_effects(const Frame& f, const DrawCall& dc, int level) {
 // state is replaced wholesale (a rollback's savestate load), which only the host knows about.
 void mark_discontinuity();
 
-// Renderer interface implemented by the D3D12 backend (or a null backend).
+// Renderer interface shared by D3D12, D3D11, and future backends. The host calls
+// these on the renderer's owning thread. This is internal C++, not the game ABI.
+struct RenderOptions;
 struct Backend {
   virtual ~Backend() = default;
+  virtual const RenderOptions* presentation_options() const { return nullptr; }
+  virtual void resize(int, int) {}
+  virtual void presentation_stats(uint32_t* frames, uint32_t* pipelines, uint32_t* textures) const {
+    if (frames) *frames = 0;
+    if (pipelines) *pipelines = 0;
+    if (textures) *textures = 0;
+  }
+  virtual std::string profile_line() const { return {}; }
   virtual void set_present_deadline(double) {}
   virtual double presentation_wait_seconds() const { return 0; }
   virtual void submit_frame(const Frame& frame) = 0;   // called at XFB copy
@@ -265,7 +293,27 @@ struct Backend {
 
 void init(Backend* backend);
 void write_fifo(uint32_t value, int bytes);   // write-gather pipe byte stream
+void write_fifo_bytes(const uint8_t* data, size_t bytes);   // the same stream in bulk, big-endian as the pipe carries it
 void stats(uint64_t* commands, uint64_t* draws, uint64_t* vertices, uint32_t* efb_copies);
+void set_native_draw_audit(bool enabled);
+void native_render_scope_event(const NativeRenderScopeEvent& event);
+NativeDrawAuditStats native_draw_audit_stats();
+bool native_draw_audit_enabled();
+void set_native_pose_capture_enabled(bool enabled);
+bool native_pose_capture_enabled();
+// Whether the renderer is presenting authored sub-frames right now (set every loop by the render
+// thread). Pose capture feeds only that path, so at a 60 cap, or with sub-frames off, both the
+// native snapshots and the translated observer's captures are skipped instead of thrown away.
+void set_authored_capture_wanted(bool wanted);
+bool authored_capture_wanted();
+void native_pose_snapshot(const ::MuNativePoseSnapshot* snapshot);
+std::shared_ptr<const AuthoredPose> active_native_authored_pose();
+bool active_native_scope_is_skinned();
+// The native game reports draw owners in the command stream (token 0xF1) instead of through the
+// render observer.
+void set_native_owner_source(bool native);
+NativePoseBridgeStats native_pose_bridge_stats();
+void finish_native_pose_scope(uint32_t scope_id);
 const uint8_t* tmem();
 
 }  // namespace gx

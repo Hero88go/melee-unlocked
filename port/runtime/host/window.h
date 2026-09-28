@@ -2,6 +2,7 @@
 #pragma once
 #include <functional>
 #include <cstdint>
+#include <string>
 
 namespace host {
 using MessageCallback = std::function<bool(void*, uint32_t, uintptr_t, intptr_t)>;
@@ -30,6 +31,15 @@ bool window_take_practice_toggle();     // true once per Tab press (auto-repeat 
 double window_refresh_rate();
 void window_destroy();
 void window_set_title(const wchar_t* title);
+// Start of every window title: the game, its version and the engine running it ("Source Port" or
+// "Static Recomp"), so the title bar and any screenshot of it say which build is playing. main()
+// sets it once before the window opens; every title the runtime writes begins with it.
+inline std::wstring& window_title_base() { static std::wstring base = L"Melee Unlocked"; return base; }
+// A small progress panel over the game window for startup work that holds the first frame back
+// (compiling the pipeline cache on the first launch of a new version). Call from the thread that
+// owns the game window; nothing is shown for a hidden window.
+void loading_show(const wchar_t* what, size_t done, size_t total);
+void loading_close();
 bool window_closed();
 void window_client_size(int* w, int* h);
 // Scripted input: text file with lines "FRAME BUTTON+BUTTON [sx=N] [sy=N] [cx=N] [cy=N]"; state holds

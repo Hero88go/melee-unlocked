@@ -121,25 +121,19 @@ struct PadCal {
   float deadzone = 0.30f;
 };
 
-PadCal read_pad_cal() {
+PadCal pad_cal_of(const MuLcancelView& v) {
   PadCal c;
-  int shift = rd8(kHsdPadLibData + kPlShift), max = rd8(kHsdPadLibData + kPlMax);
-  int min = rd8(kHsdPadLibData + kPlMin), scale = rd8(kHsdPadLibData + kPlScale);
-  if (scale > 0 && max > min && min >= 0) { c.min = min; c.max = max; c.scale = scale; c.shift = shift == 1; }
-  uint32_t common = rd32(kPFtCommonData);
-  if (mapped(common, kFcDeadzone + 4)) {
-    float dz = rdf32(common + kFcDeadzone);
-    if (dz > 0.0f && dz < 1.0f) c.deadzone = dz;
+  if (v.pad_scale > 0 && v.pad_max > v.pad_min && v.pad_min >= 0) {
+    c.min = v.pad_min; c.max = v.pad_max; c.scale = v.pad_scale; c.shift = v.pad_shift == 1;
   }
+  if (v.have_common && v.trigger_deadzone > 0.0f && v.trigger_deadzone < 1.0f) c.deadzone = v.trigger_deadzone;
   return c;
 }
 
 // The L-cancel input window (ftCommonData::xE4). 7 on a stock PlCo.dat.
-int read_lcancel_window() {
-  uint32_t common = rd32(kPFtCommonData);
-  if (!mapped(common, kFcLcWindow + 4)) return 7;
-  int32_t w = (int32_t)rd32(common + kFcLcWindow);
-  return (w > 0 && w <= 60) ? w : 7;
+int lcancel_window_of(const MuLcancelView& v) {
+  if (!v.have_common) return 7;
+  return (v.lcancel_window > 0 && v.lcancel_window <= 60) ? v.lcancel_window : 7;
 }
 
 float nml_trigger(uint8_t raw, const PadCal& c) {
@@ -223,6 +217,35 @@ void local_fighters(Target out[4]) {
   }
 }
 
+void (*g_native_view)(MuLcancelView* out) = nullptr;
+
+// Everything apply() decides from, read once per retrace.
+void gather(MuLcancelView& v) {
+  std::memset(&v, 0, sizeof v);
+  if (g_native_view) { g_native_view(&v); return; }
+  v.pad_shift = rd8(kHsdPadLibData + kPlShift); v.pad_max = rd8(kHsdPadLibData + kPlMax);
+  v.pad_min = rd8(kHsdPadLibData + kPlMin); v.pad_scale = rd8(kHsdPadLibData + kPlScale);
+  const uint32_t common = rd32(kPFtCommonData);
+  if (mapped(common, kFcLcWindow + 4)) {
+    v.have_common = 1;
+    v.trigger_deadzone = rdf32(common + kFcDeadzone);
+    v.lcancel_window = (int32_t)rd32(common + kFcLcWindow);
+  }
+  Target targets[4];
+  local_fighters(targets);
+  for (int p = 0; p < 4; ++p) {
+    const uint32_t fp = targets[p].fighter;
+    if (!fp) continue;
+    MuLcancelFighter& f = v.port[p];
+    f.present = 1;
+    f.slot = targets[p].slot;
+    f.motion_id = (int32_t)rd32(fp + kFtMotionId);
+    f.ground_or_air = rd32(fp + kFtGroundAir);
+    f.frames_since_trigger = rd8(fp + kFtX67F);
+    f.anim_frame = rdf32(fp + kFtAnimFrame);
+  }
+}
+
 void raise_flash(int slot, int port, int frames_since_press, uint32_t retrace) {
   if (slot < 0 || slot >= kPlayerSlotCount) return;
   g_flash[slot] = {true, retrace};
@@ -268,6 +291,7 @@ void log_row(uint32_t retrace, int port, int32_t motion, uint32_t ground_air, ui
 }  // namespace
 
 void set_indicator(bool on) { g_indicator.store(on, std::memory_order_relaxed); }
+void set_native_view(void (*fill)(MuLcancelView* out)) { g_native_view = fill; }
 void set_automatic(bool on) { g_automatic.store(on, std::memory_order_relaxed); }
 bool indicator_enabled() { return g_indicator.load(std::memory_order_relaxed); }
 bool automatic_enabled() { return g_automatic.load(std::memory_order_relaxed); }
@@ -285,7 +309,6 @@ const char* auto_suppressed_mode() {
   if (mode < 0) return nullptr;                                  // offline
   if (mode == slippi::Matchmaking::DIRECT) return nullptr;        // the one allowed online mode
   switch (mode) {
-    case slippi::Matchmaking::RANKED: return "Ranked";
     case slippi::Matchmaking::UNRANKED: return "Unranked";
     case slippi::Matchmaking::TEAMS: return "Teams";
     case slippi::Matchmaking::PARTY: return "Party";
@@ -316,9 +339,11 @@ void apply(host::PadState pads[4]) {
   }
   g_last_retrace = retrace;
 
-  const PadCal cal = read_pad_cal();
+  MuLcancelView view;
+  gather(view);
+  const PadCal cal = pad_cal_of(view);
   const uint8_t press = inject_value(cal);
-  const int window = read_lcancel_window();
+  const int window = lcancel_window_of(view);
   const char* suppressed = auto_suppressed_mode();
   const bool auto_allowed = want_auto && suppressed == nullptr;
   // With the automatic press actually doing the L-cancel there is nothing to report, so the flash
@@ -337,30 +362,27 @@ void apply(host::PadState pads[4]) {
     }
   }
 
-  Target targets[4];
-  local_fighters(targets);
-
   for (int p = 0; p < 4; ++p) {
     PortState& st = g_ports[p];
     host::PadState& pad = pads[p];
     st.cached_inject = false;
-    const uint32_t fp = targets[p].fighter;
-    if (!fp) {
+    const MuLcancelFighter& fighter = view.port[p];
+    if (!fighter.present) {
       st.last_motion = -1;
       st.last_effective_lr = effective_lr(pad, cal);
       st.last_button = pad.button;
       continue;
     }
 
-    const int32_t motion = (int32_t)rd32(fp + kFtMotionId);
-    const uint32_t ground_air = rd32(fp + kFtGroundAir);
-    const uint8_t since = rd8(fp + kFtX67F);
+    const int32_t motion = fighter.motion_id;
+    const uint32_t ground_air = fighter.ground_or_air;
+    const uint8_t since = (uint8_t)fighter.frames_since_trigger;
 
     // Indicator: the frame the fighter enters a LandingAir* state is the frame the game ran the
     // x67F < window test, and x67F has not moved since. Display only, so it is safe in every mode.
     if (indicate && motion >= kLandingAirN && motion <= kLandingAirLw && motion != st.last_motion &&
         since >= (uint8_t)std::min(window, 255))
-      raise_flash(targets[p].slot, p, since, retrace);
+      raise_flash(fighter.slot, p, since, retrace);
 
     // Automatic press: only while the fighter is airborne in one of the five aerial attacks. An
     // aerial cannot be interrupted into an air dodge or a shield, so a shoulder input there has no
@@ -379,7 +401,7 @@ void apply(host::PadState pads[4]) {
       st.cached_value = press;
     }
 
-    if (g_log) log_row(retrace, p, motion, ground_air, since, rdf32(fp + kFtAnimFrame), inject);
+    if (g_log) log_row(retrace, p, motion, ground_air, since, fighter.anim_frame, inject);
 
     st.last_motion = motion;
     st.last_effective_lr = effective_lr(pad, cal);

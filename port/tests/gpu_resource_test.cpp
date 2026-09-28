@@ -23,6 +23,9 @@ void window_set_fullscreen(bool) {}
 bool window_is_fullscreen() { return false; }
 void window_client_size(int* w, int* h) { if (w) *w = 640; if (h) *h = 480; }
 void window_set_title(const wchar_t*) {}
+void loading_show(const wchar_t*, size_t, size_t) {}
+double now_seconds() { return 0.0; }
+void loading_close() {}
 }
 namespace slippi { void request_widescreen(bool) {} void request_fod_reflections(bool) {} }
 // These visual setting hooks are not exercised by the resource-pool test. Keep the production
@@ -80,7 +83,7 @@ int main(int argc, char** argv) {
     RegisterClassW(&wc);
     window=CreateWindowW(wc.lpszClassName,L"GPU resource regression",WS_OVERLAPPEDWINDOW,0,0,640,480,nullptr,nullptr,wc.hInstance,nullptr);
     check(window!=nullptr,"hidden window creation");
-    gx::D3D12Options options; options.efb_scale=1; options.capture_frame=6; options.capture_path="gpu-resource-test.ppm";
+    gx::RenderOptions options; options.efb_scale=1; options.capture_frame=6; options.capture_path="gpu-resource-test.ppm";
     std::unique_ptr<gx::Backend> renderer(gx::create_d3d12_backend(window,640,480,options));
     gx::Frame frame; frame.sequence=1;
     // The first red quad must survive every subsequent descriptor/page rollover.
@@ -160,7 +163,15 @@ int main(int argc, char** argv) {
       for(auto& p:xy) { gx::Vertex v{}; v.pos[0]=p[0]; v.pos[1]=p[1]; v.uv[0][0]=v.uv[0][1]=0.5f; v.texmtx[6]=57; v.texmtx[7]=60; texgen_frame.vertices.push_back(v); }
       t.cached_pipeline=nullptr; t.cached_pipeline_owner=0;
       texgen_frame.draws.push_back(t); texgen_frame.commands.push_back({gx::FrameCommand::Draw,0});
-      for(unsigned n=0;n<6;++n) { texgen_frame.sequence=7+n; renderer->submit_frame(texgen_frame); }
+      // The renderer never waits for a pipeline compile: until the worker publishes the real
+      // pipeline the draw uses the fallback, which is never cached on the draw. Keep submitting
+      // (each submit collects finished compiles) for up to five seconds.
+      const ULONGLONG texgen_deadline=GetTickCount64()+5000;
+      for(unsigned n=0;;++n) {
+        texgen_frame.sequence=7+n; renderer->submit_frame(texgen_frame);
+        if(texgen_frame.draws[0].cached_pipeline!=nullptr||GetTickCount64()>texgen_deadline) break;
+        if(n>=6) Sleep(2);
+      }
       check(texgen_frame.draws[0].cached_pipeline!=nullptr,"eight-texgen pipeline built against the new input layout");
     }
     renderer.reset(); DestroyWindow(window); window=nullptr;

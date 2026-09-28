@@ -85,10 +85,27 @@ void hang_check(Context& c);
 void trace_enter(Context& c, uint32_t pc);
 
 void add_trace_func(uint32_t addr, uint32_t limit);
+// Bounded M7 diagnostic hook used only by an instrumented translated spline function.
+void trace_spline_guest(const Context& c, uint32_t pc);
+// Runs `fn` at the entry of the translated function at `addr`. Every translated function starts
+// with enter(), so this also catches direct calls, which set_hook (dispatch table only) never
+// sees. Rides the --trace-func slow path: no cost unless a hook or trace is registered.
+using EntryHook = void (*)(Context&);
+void add_entry_hook(uint32_t addr, EntryHook fn);
 inline void enter(Context& c, uint32_t pc) {
   c.last_pc = pc; c.trace[c.trace_pos++ & 63] = pc;
   if ((++g_enter_count & 0xFFFFFu) == 0) hang_check(c);
   if (g_trace_funcs) trace_enter(c, pc);
+}
+// Cave-local returns (emit.py _local_return): `lrs` holds the return addresses of the last 32 local
+// calls this host frame made (lrn counts pushes). True when `t` is one of them; that entry and every
+// entry pushed after it are popped (helpers that never returned, such as `bl` used to read the PC).
+inline bool local_return(const uint32_t* lrs, uint32_t& lrn, uint32_t t) {
+  const uint32_t n = lrn < 32u ? lrn : 32u;
+  for (uint32_t k = 1; k <= n; ++k) {
+    if (lrs[(lrn - k) & 31u] == t) { lrn -= k; return true; }
+  }
+  return false;
 }
 // MSR writes: when the guest re-enables external interrupts (EE), deliver pending host events,
 // exactly where a real interrupt would have been taken.

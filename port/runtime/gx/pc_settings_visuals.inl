@@ -14,6 +14,46 @@ static bool settings_close_hit(const char* id, ImVec2 size) {
   return pressed;
 }
 
+// Controller focus on slanted rows and chips. ImGui frames the focused item with an upright
+// rectangle around its hit box, which on a parallelogram sat off the shape and across its
+// neighbours. These buttons hide that rectangle; the caller then draws the same frame (focus
+// color, 2 px line, 4 px outside the edge, as ImGui draws it) around the shape it painted.
+static bool settings_shaped_hit_button(const char* id, ImVec2 size) {
+  ImGui::PushStyleColor(ImGuiCol_NavCursor, IM_COL32(0, 0, 0, 0));
+  const bool pressed = settings_hit_button(id, size);
+  ImGui::PopStyleColor();
+  return pressed;
+}
+
+// Whether ImGui would have drawn its focus frame on the last item (same test as RenderNavCursor).
+static bool settings_nav_frame_on_item() {
+  const ImGuiContext& g = *GImGui;
+  return g.NavCursorVisible && g.NavId != 0 && g.LastItemData.ID == g.NavId &&
+         !ImGui::GetCurrentWindow()->DC.NavHideHighlightOneFrame;
+}
+
+// The focus frame around a convex quad, offset outward along each edge.
+static void settings_nav_frame(ImDrawList* draw, const ImVec2 (&quad)[4]) {
+  constexpr float distance = 4.0f, thickness = 2.0f;
+  float area = 0.0f;
+  for (int i = 0; i < 4; ++i) {
+    const ImVec2& a = quad[i], & b = quad[(i + 1) % 4];
+    area += a.x * b.y - b.x * a.y;
+  }
+  const float side = area >= 0.0f ? 1.0f : -1.0f;
+  const auto normal = [&](const ImVec2& a, const ImVec2& b) {
+    const float ex = b.x - a.x, ey = b.y - a.y, length = std::sqrt(ex * ex + ey * ey);
+    return length > 0.0f ? ImVec2(side * ey / length, -side * ex / length) : ImVec2(0, 0);
+  };
+  ImVec2 frame[4];
+  for (int i = 0; i < 4; ++i) {
+    const ImVec2 n0 = normal(quad[(i + 3) % 4], quad[i]), n1 = normal(quad[i], quad[(i + 1) % 4]);
+    const float k = distance / std::max(0.2f, 1.0f + n0.x * n1.x + n0.y * n1.y);
+    frame[i] = ImVec2(quad[i].x + (n0.x + n1.x) * k, quad[i].y + (n0.y + n1.y) * k);
+  }
+  draw->AddPolyline(frame, 4, ImGui::GetColorU32(ImGuiCol_NavCursor), ImDrawFlags_Closed, thickness);
+}
+
 // Hovering a category must not change the active page. Only an explicit
 // navigation move may transfer selection to ImGui's focused category item.
 static bool settings_nav_input_pressed() {
@@ -158,7 +198,8 @@ static SettingsGdRow settings_gd_row(const char* label) {
   SettingsGdRow row;
   row.y = (ImGui::GetCursorScreenPos().y - g_settings_gd_origin.y) / g_settings_gd_scale;
   ImGui::SetCursorScreenPos(row.point(88.5f, row.y));
-  row.activated = settings_hit_button("##kit_row", ImVec2(451.5f * g_settings_gd_scale, 30.0f * g_settings_gd_scale));
+  row.activated = settings_shaped_hit_button("##kit_row", ImVec2(451.5f * g_settings_gd_scale, 30.0f * g_settings_gd_scale));
+  const bool nav_frame = settings_nav_frame_on_item();
   row.selected = ImGui::IsItemHovered() || ImGui::IsItemFocused() || ImGui::IsItemActive();
   if (g_settings_focus_next_gd_row) {
     // SetKeyboardFocusHere(-1) here targets the item before this row (the category
@@ -177,6 +218,12 @@ static SettingsGdRow settings_gd_row(const char* label) {
                              settings_palette_tint(2,IM_COL32(169,118,26,255)));
   row.quad(96+row.lift,row.y+row.lift,540+row.lift,row.y+30+row.lift,
            row.selected ? settings_accent(2) : IM_COL32(46,54,64,255));
+  if (nav_frame) {
+    // Lifted face and its shadow together, in the rows' own slant.
+    const ImVec2 frame[] = {row.point(96+row.lift,row.y+row.lift), row.point(540,row.y+row.lift),
+                            row.point(540,row.y+30), row.point(96+row.lift,row.y+30)};
+    settings_nav_frame(ImGui::GetWindowDrawList(), frame);
+  }
   const char* display_label=std::strcmp(label,"Exclusive fullscreen (experimental)")==0?
       "Exclusive fullscreen":label;
   row.text(112+row.lift,row.y+20.28f+row.lift,display_label,row.ink,216);
@@ -283,9 +330,23 @@ static void settings_slanted_text(ImDrawList* draw, ImFont* font, float size,
                                   ImVec2 pos, ImU32 color, const char* text, float slope);
 
 static ImU32 settings_mix_color(ImU32 a, ImU32 b, float amount);
+// A visible way out of the game from any settings page (players on fullscreen asked for one: Esc
+// opens this panel, so the old Esc-to-quit route was hidden). Opens the usual Quit confirmation.
+static void settings_quit_button(SettingsState& state, ImVec2 at, ImVec2 size) {
+  ImGui::SetCursorScreenPos(at);
+  ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.42f, 0.10f, 0.12f, 0.92f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.66f, 0.16f, 0.18f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.82f, 0.22f, 0.22f, 1.0f));
+  if (ImGui::Button("Quit game##footer_quit", size)) state.confirm = SettingsState::Confirm::Quit;
+  if (ImGui::IsItemHovered()) ImGui::SetTooltip("Close Melee Unlocked (asks first)");
+  ImGui::PopStyleColor(3);
+  ImGui::PopStyleVar();
+}
 static void settings_page_footer(SettingsState& state, int appearance) {
   const ImVec2 p = ImGui::GetWindowPos(), s = ImGui::GetWindowSize();
   ImDrawList* draw = ImGui::GetWindowDrawList();
+  const float quit_w = ImGui::CalcTextSize("Quit game").x + 20.0f;
   if (appearance == 6 || appearance == 7) {
     const float top=p.y+s.y-35.0f;
     draw->AddLine(ImVec2(p.x+8,top),ImVec2(p.x+s.x-8,top),IM_COL32(70,78,88,255));
@@ -293,6 +354,7 @@ static void settings_page_footer(SettingsState& state, int appearance) {
     if (ImGui::Button("Save settings",ImVec2(ImGui::CalcTextSize("Save settings").x + 20.0f,27))) state.dirty=true;
     ImGui::SameLine(0.0f,6.0f);
     if (ImGui::Button("Close",ImVec2(70,27))) state.open=false;
+    settings_quit_button(state, ImVec2(p.x+s.x-8-quit_w, top+6), ImVec2(quit_w, 27));
     return;
   }
   if (appearance == 5) {
@@ -312,6 +374,7 @@ static void settings_page_footer(SettingsState& state, int appearance) {
     ImGui::PopStyleColor(3);
     ImGui::PopStyleVar();
     const float menu_x = p.x + s.x - 40;
+    settings_quit_button(state, ImVec2(menu_x - quit_w - 8.0f, top + 3.0f), ImVec2(quit_w, 32.0f));
     ImGui::SetCursorScreenPos(ImVec2(menu_x, top));
     if (settings_hit_button("##page_more", ImVec2(32, 32))) ImGui::OpenPopup("##settings_actions");
     draw->AddText(ImVec2(menu_x + 6, top + 8), IM_COL32(240, 244, 252, 255), "...");
@@ -336,8 +399,9 @@ static void settings_page_footer(SettingsState& state, int appearance) {
     const float x=appearance==0?p.x+11.0f+chip*(clean_chip_w+5.0f):left+chip*(chip_w+10.0f);
     const float w=appearance==0?clean_chip_w:chip_w;
     ImGui::SetCursorScreenPos(ImVec2(x,top-5));
-    const bool clicked=settings_hit_button(chip==0?"##page_back":"##page_return",
-                                           ImVec2(w,appearance==0?38.0f:34.0f));
+    const bool clicked=settings_shaped_hit_button(chip==0?"##page_back":"##page_return",
+                                                  ImVec2(w,appearance==0?38.0f:34.0f));
+    const bool nav_frame=settings_nav_frame_on_item();
     const bool hovered=ImGui::IsItemHovered()||ImGui::IsItemFocused();
     state.footer_hover[chip]+=( (hovered?1.0f:0.0f)-state.footer_hover[chip])*
                                std::min(1.0f,ImGui::GetIO().DeltaTime*16.0f);
@@ -351,6 +415,7 @@ static void settings_page_footer(SettingsState& state, int appearance) {
                               hovered?IM_COL32(52,34,66,250):IM_COL32(25,20,37,245));
     draw->AddLine(card[0],card[1],hovered?IM_COL32(255,224,246,255):
                   settings_palette_tint(appearance,IM_COL32(255,135,204,220)),1.8f);
+    if (nav_frame) settings_nav_frame(draw,card);
     const char* label=chip==0?"B  BACK":"F1  RETURN";
     settings_slanted_text(draw,settings_heading_font(),13.0f,
                           ImVec2(x+(appearance==0?18.0f:14.0f),top+6-pop),
@@ -365,7 +430,8 @@ static void settings_page_footer(SettingsState& state, int appearance) {
     const float w = 118.0f * g_settings_gd_scale, h = 28.0f * g_settings_gd_scale;
     const ImVec2 at(g_settings_gd_back_x - 8.0f * g_settings_gd_scale, top - 2.0f * g_settings_gd_scale);
     ImGui::SetCursorScreenPos(at);
-    const bool clicked = settings_hit_button("##page_back", ImVec2(w, h));
+    const bool clicked = settings_shaped_hit_button("##page_back", ImVec2(w, h));
+    const bool nav_frame = settings_nav_frame_on_item();
     const bool hovered = ImGui::IsItemHovered() || ImGui::IsItemFocused();
     state.footer_hover[0] += ((hovered ? 1.0f : 0.0f) - state.footer_hover[0]) *
                              std::min(1.0f, ImGui::GetIO().DeltaTime * 16.0f);
@@ -378,6 +444,7 @@ static void settings_page_footer(SettingsState& state, int appearance) {
     draw->AddConvexPolyFilled(shade, 4, IM_COL32(0, 0, 0, 120));
     draw->AddConvexPolyFilled(face, 4, settings_mix_color(IM_COL32(46, 54, 64, 255), IM_COL32(229, 72, 59, 255),
                                                           0.35f + 0.65f * state.footer_hover[0]));
+    if (nav_frame) settings_nav_frame(draw, face);
     const ImU32 ink = IM_COL32(242, 239, 228, 255);
     const float font = 15.0f * g_settings_gd_scale;
     const ImVec2 label = settings_heading_font()->CalcTextSizeA(font, FLT_MAX, 0.0f, "B  BACK");
@@ -386,6 +453,9 @@ static void settings_page_footer(SettingsState& state, int appearance) {
     if (clicked) settings_back_page(state, appearance);
   }
   const float menu_x = p.x+s.x-(gd?34:40);
+  // Clean's two chips fill the width, so there the button sits above them on the right.
+  if (appearance == 0) settings_quit_button(state, ImVec2(p.x+s.x-12.0f-quit_w, top-44.0f), ImVec2(quit_w, 26.0f));
+  else settings_quit_button(state, ImVec2(menu_x-quit_w-8.0f, top), ImVec2(quit_w, gd ? 28.0f * g_settings_gd_scale : 30.0f));
   ImGui::SetCursorScreenPos(ImVec2(menu_x,top));
   if (settings_hit_button("##page_more",ImVec2(32,32))) ImGui::OpenPopup("##settings_actions");
   draw->AddText(ImVec2(menu_x+6,top+5),IM_COL32(240,244,252,255),"...");
@@ -444,7 +514,11 @@ static bool settings_toggle(const char* label, bool* value) {
   const float text_width = std::max(65.0f, width - 68.0f);
   const ImVec2 text_size = ImGui::CalcTextSize(label, nullptr, true, text_width);
   const float height = std::max(36.0f, text_size.y + 16.0f);
-  const bool clicked = settings_hit_button("##switch", ImVec2(width, height));
+  // Clean side paints this row as a slanted strip; its focus frame follows the strip.
+  const bool slanted = g_settings_form_style == 0;
+  const bool clicked = slanted ? settings_shaped_hit_button("##switch", ImVec2(width, height)) :
+                                 settings_hit_button("##switch", ImVec2(width, height));
+  const bool nav_frame = slanted && settings_nav_frame_on_item();
   if (clicked) *value = !*value;
   const bool focused = ImGui::IsItemHovered() || ImGui::IsItemFocused();
   ImDrawList* draw = ImGui::GetWindowDrawList();
@@ -455,6 +529,7 @@ static bool settings_toggle(const char* label, bool* value) {
                           ImVec2(b.x-4,b.y-4),ImVec2(a.x,b.y)};
     draw->AddConvexPolyFilled(strip,4,IM_COL32(10,12,27,205));
     draw->AddLine(strip[0],strip[1],settings_palette_tint(0,IM_COL32(215,49,144,160)),1.0f);
+    if (nav_frame) settings_nav_frame(draw,strip);
   } else if (g_settings_form_style == 3 || g_settings_form_style == 4) {
     draw->AddRectFilled(a,b,g_settings_form_style==3?
                         IM_COL32(30,42,58,249):IM_COL32(12,28,47,218),10.0f);

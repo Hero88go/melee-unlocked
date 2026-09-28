@@ -1,0 +1,2468 @@
+#include "events.h"
+#include "savestate.h"
+#include "osds.h"
+#include <stdarg.h>
+
+/////////////////////
+// Mod Information //
+/////////////////////
+
+static char TM_VersShort[] = TM_VERSSHORT "\n";
+static char TM_VersLong[] = TM_VERSLONG "\n";
+static char TM_Compile[] = "COMPILED: " __DATE__ " " __TIME__;
+
+////////////////////////
+/// Event Defintions ///
+////////////////////////
+
+// Lab
+static EventMatchData Lab_MatchData = {
+    .timer = MATCH_TIMER_COUNTUP,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = true,
+    .hideReady = true,
+    .isCreateHUD = true,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = false,
+    .isShowScore = false,
+
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 0,
+};
+EventDesc Lab = {
+    // Event Name
+    .eventName = "Training Lab\n",
+    .eventDescription = "Free practice with\ncomplete control.\n",
+    .eventFile = "lab",
+    .jumpTableIndex = -1,
+    .eventCSSFile = "TM/labCSS.dat",
+    .CSSType = SLCHRKIND_TRAINING,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = &Lab_MatchData,
+};
+
+// L-Cancel Training
+static EventMatchData LCancel_MatchData = {
+    .timer = MATCH_TIMER_HIDE,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = true,
+    .hideReady = true,
+    .isCreateHUD = false,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = false,
+    .isShowScore = false,
+
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 0,
+};
+EventDesc LCancel = {
+    // Event Name
+    .eventName = "L-Cancel Training\n",
+    .eventDescription = "Practice L-Cancelling on\na stationary CPU.\n",
+    .eventFile = "lcancel",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 15,
+    .matchData = &LCancel_MatchData,
+};
+
+// Ledgedash Training
+static EventMatchData Ledgedash_MatchData = {
+    .timer = MATCH_TIMER_HIDE,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = true,
+    .hideReady = true,
+    .isCreateHUD = false,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = false,
+    .isShowScore = false,
+
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 0,
+};
+EventDesc Ledgedash = {
+    .eventName = "Ledgedash Training\n",
+    .eventDescription = "Practice Ledgedashes!\nUse D-Pad to change ledge.\n",
+    .eventFile = "ledgedash",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = true,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 15,
+    .matchData = &Ledgedash_MatchData,
+};
+
+// Wavedash Training
+static EventMatchData Wavedash_MatchData = {
+    .timer = MATCH_TIMER_HIDE,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = true,
+    .hideReady = true,
+    .isCreateHUD = false,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = false,
+    .isShowScore = false,
+
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 0,
+};
+EventDesc Wavedash = {
+    .eventName = "Wavedash Training\n",
+    .eventDescription = "Practice timing your wavedash,\na fundamental movement technique.\n",
+    .eventFile = "wavedash",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 15,
+    .matchData = &Wavedash_MatchData,
+};
+
+// TechChase Training
+static EventMatchData TechChase_MatchData = {
+    .timer = MATCH_TIMER_HIDE,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = true,
+    .hideReady = true,
+    .isCreateHUD = false,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = false,
+    .isShowScore = false,
+
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 0,
+};
+EventDesc TechChase = {
+    .eventName = "Techchase Training\n",
+    .eventDescription = "Practice chasing techs! A\nuseful tool to extend combos.",
+    .eventFile = "techchase",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_TRAINING,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = &TechChase_MatchData,
+};
+
+// Float Cancel Training
+static EventMatchData FloatCancel_MatchData = {
+    .timer = MATCH_TIMER_HIDE,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = true,
+    .hideReady = true,
+    .isCreateHUD = false,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = false,
+    .isShowScore = false,
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 0,
+};
+EventDesc FloatCancel = {
+    .eventName = "Float Cancel Training\n",
+    .eventDescription = "Practice Peach's most important\ntechnique!\n",
+    .eventFile = "fc",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = CSSID_PEACH, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = GRKINDEXT_FD,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = &FloatCancel_MatchData,
+};
+
+static EventMatchData Sweetspot_MatchData = {
+    .timer = MATCH_TIMER_HIDE,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = true,
+    .hideReady = true,
+    .isCreateHUD = false,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = true,
+    .isShowScore = false,
+
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 0,
+};
+EventDesc Sweetspot = {
+    .eventName = "Side-B Sweetspot\n",
+    .eventDescription = "Use a sweetspot Side-B to avoid Marth's\ndown-tilt and grab the ledge!",
+    .eventFile = "sweetspot",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = {
+        .hmn = CSSID_FALCO | CSSID_FOX,
+        .cpu = -1,
+    },
+    .playerKind = -1,
+    .cpuKind = CKIND_MARTH,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = &Sweetspot_MatchData,
+};
+
+// Laser land training
+static EventMatchData LaserLand_MatchData = {
+    .timer = MATCH_TIMER_HIDE,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = true,
+    .hideReady = true,
+    .isCreateHUD = false,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = true,
+    .isShowScore = false,
+
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 0,
+};
+EventDesc LaserLand = {
+    .eventName = "Laser Land Training\n",
+    .eventDescription = "Use a laser to board platforms instantly!",
+    .eventFile = "laserland",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = {
+        .hmn = CSSID_FOX | CSSID_FALCO,
+        .cpu = -1,
+    },
+    .playerKind = -1,
+    .cpuKind = -1,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 15,
+    .matchData = &LaserLand_MatchData,
+};
+
+
+// Combo Training
+EventDesc Combo = {
+    .eventName = "Combo Training\n",
+    .eventDescription = "L+DPad adjusts percent | DPadDown moves CPU\nDPad right/left saves and loads positions.",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_COMBO,
+    .CSSType = SLCHRKIND_TRAINING,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+// Attack On Shield Training
+EventDesc AttackOnShield = {
+    .eventName = "Attack on Shield\n",
+    .eventDescription = "Practice attacks on a shielding opponent\nPause to change their OoS option.\n",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_ATTACKONSHIELD,
+    .CSSType = SLCHRKIND_TRAINING,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = GRKINDEXT_FD,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+EventDesc Reversal = {
+    .eventName = "Reversal Training\n",
+    .eventDescription = "Practice OoS punishes! DPad left/right\nmoves characters closer and further apart.",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_REVERSAL,
+    .CSSType = SLCHRKIND_TRAINING,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+EventDesc SDI = {
+    .eventName = "SDI Training\n",
+    .eventDescription = "Use Smash DI to escape\nFox's up-air!",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_SDITRAINING,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = CKIND_FOX,
+    .stage = GRKINDEXT_FD,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+static EventMatchData Powershield_MatchData = {
+    .timer = MATCH_TIMER_COUNTUP,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = true,
+    .hideReady = true,
+    .isCreateHUD = true,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = true,
+    .isShowScore = false,
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 0,
+};
+EventDesc Powershield = {
+    .eventName = "Powershield Training\n",
+    .eventDescription = "Powershield Falco's laser!",
+    .eventFile = "powershield",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = CKIND_FALCO,
+    .stage = GRKINDEXT_FD,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = &Powershield_MatchData,
+};
+
+static EventMatchData EscapeDThrowKnee_MatchData = {
+    .timer = MATCH_TIMER_HIDE,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = true,
+    .hideReady = true,
+    .isCreateHUD = true,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = true,
+    .isShowScore = false,
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 0,
+};
+EventDesc EscapeDThrowKnee = {
+    .eventName = "Escape DThrow Knee\n",
+    .eventDescription = "Airdodge out of Falcon's down\nthrow knee kill confirm!",
+    .eventFile = "dthrowknee",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = {
+        .hmn = CSSID_PEACH | CSSID_MARIO | CSSID_DOCTOR_MARIO | CSSID_LUIGI
+            | CSSID_MEWTWO | CSSID_ZELDA | CSSID_ICE_CLIMBERS | CSSID_MARTH,
+        .cpu = -1
+    },
+    .cpuKind = CKIND_FALCON,
+    .stage = GRKINDEXT_FD,
+    .disable_hazards = true,
+    .force_sopo = true,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = &EscapeDThrowKnee_MatchData,
+};
+
+EventDesc Ledgetech = {
+    .eventName = "Ledgetech Training\n",
+    .eventDescription = "Practice ledgeteching\nFalco's down-smash!",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_LEDGETECH,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = CKIND_FALCO,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+EventDesc AmsahTech = {
+    .eventName = "Amsah-Tech Training\n",
+    .eventDescription = "Taunt to have Marth Up-B,\nthen ASDI down and tech!\n",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_AMSAHTECH,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = CKIND_MARTH,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+EventDesc ShieldDrop = {
+    .eventName = "Shield Drop Training\n",
+    .eventDescription = "Counter with a shield-drop aerial!\nDPad left/right moves players apart.",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_SHIELDDROP,
+    .CSSType = SLCHRKIND_TRAINING,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+EventDesc WaveshineSDI = {
+    .eventName = "Waveshine SDI\n",
+    .eventDescription = "Use Smash DI to get out\nof Fox's waveshine!",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_WAVESHINESDI,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = {
+        .hmn = CSSID_DOCTOR_MARIO | CSSID_MARIO | CSSID_BOWSER | CSSID_PEACH | CSSID_YOSHI
+                    | CSSID_DONKEY_KONG | CSSID_CAPTAIN_FALCON | CSSID_GANONDORF | CSSID_NESS
+                    | CSSID_SAMUS | CSSID_ZELDA | CSSID_LINK,
+        .cpu = -1,
+    },
+    .cpuKind = CKIND_FOX,
+    .stage = GRKINDEXT_FD,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+EventDesc SlideOff = {
+    .eventName = "Slide-Off Training\n",
+    .eventDescription = "Use Slide-Off DI to slide off\nthe platform and counter attack!\n",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_SLIDEOFF,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = CKIND_MARTH,
+    .stage = GRKINDEXT_PSTAD,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+EventDesc GrabMash = {
+    .eventName = "Grab Mash Training\n",
+    .eventDescription = "Mash buttons to escape the grab\nas quickly as possible!\n",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_GRABMASH,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = CKIND_MARTH,
+    .stage = GRKINDEXT_FD,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+EventDesc TechCounter = {
+    .eventName = "Ledgetech Marth Counter\n",
+    .eventDescription = "Practice ledgeteching\nMarth's counter!\n",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_LEDGETECHCOUNTER,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = {
+        .hmn = CSSID_FALCO | CSSID_FOX,
+        .cpu = -1,
+    },
+    .cpuKind = CKIND_MARTH,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+static EventMatchData Edgeguard_MatchData = {
+    .timer = MATCH_TIMER_COUNTUP,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = true,
+    .hideReady = true,
+    .isCreateHUD = true,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = true,
+    .isShowScore = false,
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 0,
+};
+EventDesc Edgeguard = {
+    .eventName = "Edgeguard Training\n",
+    .eventDescription = "Finish off the enemy\nafter you hit them offstage!",
+    .eventFile = "edgeguard",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_TRAINING,
+    .allowed_characters = {
+        .hmn = -1,
+        .cpu = CSSID_FOX | CSSID_FALCO | CSSID_ZELDA | CSSID_CAPTAIN_FALCON
+            | CSSID_MARTH
+    },
+    .cpuKind = -1,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = &Edgeguard_MatchData,
+};
+
+EventDesc EscapeSheik = {
+    .eventName = "Escape Sheik Techchase\n",
+    .eventDescription = "Practice escaping the tech chase with a\nframe perfect shine or jab SDI!\n",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_ESCAPESHIEK,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = {
+        .hmn = CSSID_YOSHI |  CSSID_CAPTAIN_FALCON |  CSSID_FALCO |  CSSID_FOX |  CSSID_PIKACHU,
+        .cpu = -1,
+    },
+    .cpuKind = CKIND_SHEIK,
+    .stage = GRKINDEXT_FD,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+static EventMatchData Eggs_MatchData = {
+    .timer = MATCH_TIMER_COUNTDOWN,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = false,
+    .hideReady = false,
+    .isCreateHUD = true,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = true,
+    .isShowScore = false,
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 60,
+};
+
+EventDesc Eggs = {
+    .eventName = "Eggs-ercise \n",
+    .eventDescription = "Break the eggs! Only strong hits will\nbreak them. Start = more options.",
+    .eventFile = "eggs",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = -1,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = &Eggs_MatchData,
+};
+
+static EventMatchData Slalom_MatchData = {
+    .timer = MATCH_TIMER_COUNTDOWN,
+    .matchType = MATCH_MATCHTYPE_TIME,
+    .hideGo = false,
+    .hideReady = false,
+    .isCreateHUD = true,
+    .timerRunOnPause = false,
+    .isCheckForZRetry = true,
+    .isShowScore = false,
+    .isRunStockLogic = false,
+    .isDisableHit = false,
+    .useKOCounter = false,
+    .timerSeconds = 60,
+};
+
+EventDesc Slalom = {
+    .eventName = "Slalom\n",
+    .eventDescription = "Dash-dance around poles\nas quickly as you can!",
+    .eventFile = "slalom",
+    .jumpTableIndex = -1,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = GRKINDEXT_FD,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = &Slalom_MatchData,
+};
+
+EventDesc Multishine = {
+    .eventName = "Shined Blind\n",
+    .eventDescription = "How many shines can you\nperform in 10 seconds?",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_MULTISHINE,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = {
+        .hmn = CSSID_FALCO | CSSID_FOX,
+        .cpu = -1,
+    },
+    .cpuKind = -1,
+    .stage = GRKINDEXT_FD,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+EventDesc Reaction = {
+    .eventName = "Reaction Test\n",
+    .eventDescription = "Test your reaction time by pressing\nany button when you see/hear Fox shine!",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_REACTION,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = CKIND_FOX,
+    .stage = GRKINDEXT_FD,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_KO,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+EventDesc Ledgestall = {
+    .eventName = "Under Fire\n",
+    .eventDescription = "Ledgestall to remain\ninvincible while the lava rises!\n",
+    .eventFile = 0,
+    .jumpTableIndex = JUMP_LEDGESTALL,
+    .CSSType = SLCHRKIND_EVENT,
+    .allowed_characters = { .hmn = -1, .cpu = -1 },
+    .cpuKind = -1,
+    .stage = GRKINDEXT_ZEBES,
+    .disable_hazards = true,
+    .force_sopo = false,
+    .scoreType = SCORETYPE_TIME,
+    .callbackPriority = 3,
+    .matchData = 0,
+};
+
+///////////////////////
+/// Page Defintions ///
+///////////////////////
+
+// Minigames
+static EventDesc *Minigames_Events[] = {
+    &Eggs,
+    &Slalom,
+    &Multishine,
+    &Reaction,
+    &Ledgestall,
+};
+static EventPage Minigames_Page = {
+    .name = "Minigames",
+    .eventNum = countof(Minigames_Events),
+    .events = Minigames_Events,
+};
+
+// Page 2 Events
+static EventDesc *General_Events[] = {
+    &Lab,
+    &LCancel,
+    &Ledgedash,
+    &Wavedash,
+    &TechChase,
+    &Combo,
+    &AttackOnShield,
+    &Reversal,
+    &SDI,
+    &Powershield,
+    &Ledgetech,
+    &AmsahTech,
+    &ShieldDrop,
+    &WaveshineSDI,
+    &SlideOff,
+    &GrabMash,
+};
+static EventPage General_Page = {
+    .name = "General Tech",
+    .eventNum = countof(General_Events),
+    .events = General_Events,
+};
+
+// Page 3 Events
+static EventDesc *CharacterSpecific_Events[] = {
+    &TechCounter,
+    &Edgeguard,
+    &Sweetspot,
+    &LaserLand,
+    &EscapeSheik,
+    &EscapeDThrowKnee,
+    &FloatCancel,
+};
+static EventPage CharacterSpecific_Page = {
+    .name = "Character-specific Tech",
+    .eventNum = countof(CharacterSpecific_Events),
+    .events = CharacterSpecific_Events,
+};
+
+EventPage *EventPages[] = {
+    &Minigames_Page,
+    &General_Page,
+    &CharacterSpecific_Page,
+};
+
+////////////////////////
+/// Static Variables ///
+////////////////////////
+
+RNGControl rng;
+
+EventVars stc_event_vars = {
+    .event_desc = 0,
+    .menu_assets = 0,
+    .event_gobj = 0,
+    .menu_gobj = 0,
+    .rng = &rng,
+    .game_timer = 0,
+    .flags = 0,
+    .Savestate_Save_v1 = Savestate_Save_v1,
+    .Savestate_Load_v1 = Savestate_Load_v1,
+    .Message_Display = Message_Display,
+    .Tip_Display = Tip_Display,
+    .Tip_Destroy = Tip_Destroy,
+    .GFX_Start = GFX_Start,
+    .HUD_DrawRects = HUD_DrawRects,
+    .HUD_DrawTris = HUD_DrawTris,
+    .HUD_DrawText = HUD_DrawText,
+    .HUD_DrawActionLogBar = HUD_DrawActionLogBar,
+    .HUD_DrawActionLogKey = HUD_DrawActionLogKey,
+    .HUD_DrawInfoPanel = HUD_DrawInfoPanel,
+};
+
+static GOBJ *stc_msgmgr;
+static Savestate_v1 *stc_savestate;
+static TipMgr stc_tipmgr;
+
+static Vec2 stc_msg_queue_offsets_vertical[] = {
+    {0, 5.15f},
+    {0, 5.15f},
+    {0, 5.15f},
+    {0, 5.15f},
+    {0, 5.15f},
+    {0, 5.15f},
+    {0, -5.15f}
+};
+static Vec3 stc_msg_queue_pos_sides[] = {
+    {-22.f, -13.f, 0},
+    {-7.f, -13.f, 0},
+    {7.f, -13.f, 0},
+    {22.f, -13.f, 0},
+    {0, 0, 0},
+    {0, 0, 0},
+    {0, -5.15f, 0}
+};
+
+static Vec2 stc_msg_queue_offsets_horizontal[] = {
+    {12.5f, 0},
+    {12.5f, 0},
+    {12.5f, 0},
+    {12.5f, 0},
+    {12.5f, 0},
+    {12.5f, 0},
+    {-12.5f, 0},
+};
+static Vec3 stc_msg_queue_pos_top[] = {
+    {-22.f, 20.f, 0},
+    {-22.f, 14.f, 0},
+    {-22.f, 8.f, 0},
+    {-22.f, 2.f, 0},
+    {0, 0, 0},
+    {0, 0, 0},
+    {22.f, 20.f, 0}
+};
+static GXColor stc_msg_colors[] = {
+    {255, 255, 255, 255},
+    {141, 255, 110, 255},
+    {255, 162, 186, 255},
+    {255, 240, 0, 255},
+};
+
+//////////////////
+/// Primitives ///
+//////////////////
+
+void GFX_Start(u16 vtx_count, GFX_Params params)
+{
+    // mostly copy pasted from 80391A04
+    Mtx mtx;
+    HSD_ClearVtxDesc();
+    GXSetCurrentMtx(0);
+    COBJ_GetViewingMtx(COBJ_GetCurrent(), &mtx);
+    GXLoadPosMtxImm(mtx, 0);
+    HSD_StateSetLineWidth(params.size, 5);
+    HSD_StateSetPointSize(params.size, 5);
+    HSD_SetupRenderMode(0x68000002);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
+    GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_CLR0, GX_CLR_RGBA, GX_RGBA8, 0);
+    GXSetVtxDesc(GX_VA_POS, GX_DIRECT);
+    GXSetVtxDesc(GX_VA_CLR0, GX_DIRECT);
+    HSD_StateSetCullMode(0);
+    COBJ_GetViewingMtx(COBJ_GetCurrent(), &mtx);
+
+    GXBegin(params.shape, GX_VTXFMT0, vtx_count);
+}
+
+void HUD_DrawTris(Tri *tris, GXColor *colors, int count)
+{
+    HUDCamData *cam_data = stc_event_vars.hudcam_gobj->userdata;
+    if (cam_data->hide) return;
+
+    COBJ *prev_camera = COBJ_GetCurrent();
+    CObj_SetCurrent(stc_event_vars.hudcam_gobj->hsd_object);
+
+    GFX_Start(count * 3, (GFX_Params) { .shape = GX_TRIANGLES });
+    for (int i = 0; i < count; ++i) {
+        GXColor color = colors[i];
+        Tri *tri = &tris[i];
+        GFX_AddVtx((*tri)[0].X, (*tri)[0].Y, 0.f, color);
+        GFX_AddVtx((*tri)[1].X, (*tri)[1].Y, 0.f, color);
+        GFX_AddVtx((*tri)[2].X, (*tri)[2].Y, 0.f, color);
+    }
+
+    CObj_SetCurrent(prev_camera);
+}
+
+void HUD_DrawRects(Rect *rects, GXColor *colors, int count)
+{
+    HUDCamData *cam_data = stc_event_vars.hudcam_gobj->userdata;
+    if (cam_data->hide) return;
+
+    COBJ *prev_camera = COBJ_GetCurrent();
+    CObj_SetCurrent(stc_event_vars.hudcam_gobj->hsd_object);
+
+    GFX_Start(count * 4, (GFX_Params) { .shape = GX_QUADS });
+    for (int i = 0; i < count; ++i) {
+        GXColor color = colors[i];
+
+        Rect *rect = &rects[i];
+        float x1 = rect->x;
+        float y1 = rect->y;
+        float x2 = x1 + rect->w;
+        float y2 = y1 + rect->h;
+
+        GFX_AddVtx(x1, y1, 0.f, color);
+        GFX_AddVtx(x1, y2, 0.f, color);
+        GFX_AddVtx(x2, y2, 0.f, color);
+        GFX_AddVtx(x2, y1, 0.f, color);
+    }
+
+    CObj_SetCurrent(prev_camera);
+}
+
+void HUD_DrawTextEx(
+    const char *text, Rect *pos, float size,
+    GXColor text_color, GXColor border_color,
+    float border_offset, int align
+) {
+    HUDCamData *hud = stc_event_vars.hudcam_gobj->userdata;
+    
+    // skip if already used up entire text cache
+    if (hud->text_cache_used == countof(hud->text_cache))
+        return;
+
+    // create text if it doesn't exist
+    Text **text_ptr = &hud->text_cache[hud->text_cache_used++];
+    if (*text_ptr == 0) {
+        Text *new_text = Text_CreateText(2, hud->canvas);
+        *text_ptr = new_text;
+        new_text->kerning = 1;
+        new_text->align = align;
+        new_text->use_aspect = 1;
+        new_text->aspect.X = 80;
+        new_text->viewport_scale.X = 0.1f;
+        new_text->viewport_scale.Y = 0.1f;
+        Text_AddSubtext(new_text, 0, 0, "");
+        Text_AddSubtext(new_text, 0, 0, "");
+        Text_AddSubtext(new_text, 0, 0, "");
+        Text_AddSubtext(new_text, 0, 0, "");
+        Text_AddSubtext(new_text, 0, 0, "");
+    }
+
+    Text *hud_text = *text_ptr;
+
+    for (int i = 0; i < 4; ++i)
+        Text_SetColor(hud_text, i, &border_color);
+    Text_SetColor(hud_text, 4, &text_color);
+
+    hud_text->hidden = false;
+    float x = pos->x * 10.f + pos->w * 5.f;
+    float y = pos->y * -10.f + pos->h * -5.f - 25.f;
+    
+    if (border_offset != 0.f && border_color.a != 0) {
+        for (int i = 0; i < 4; ++i) {
+            Text_SetText(hud_text, i, text);
+            Text_SetScale(hud_text, i, size, size);
+        }
+    } else {
+        for (int i = 0; i < 4; ++i)
+            Text_SetText(hud_text, i, "");
+    }
+
+    Text_SetText(hud_text, 4, text);
+    Text_SetScale(hud_text, 4, size, size);
+    Text_SetPosition(hud_text, 0, x-border_offset, y-border_offset);
+    Text_SetPosition(hud_text, 1, x+border_offset, y-border_offset);
+    Text_SetPosition(hud_text, 2, x-border_offset, y+border_offset);
+    Text_SetPosition(hud_text, 3, x+border_offset, y+border_offset);
+    Text_SetPosition(hud_text, 4, x, y);
+}
+
+void HUD_DrawText(const char *text, Rect *pos, float size)
+{
+    HUD_DrawTextEx(
+        text, pos, size,
+        (GXColor) {255,255,255,255}, (GXColor) {0,0,0,255},
+        1.f, 1
+    );
+}
+
+static const Vec2 info_item_vtx[] = {
+    { 1.f, 5.f },    // 0: top left
+    { 0.f, 2.5f },    // 1: mid left
+    { 0.f, 0.f },    // 2: bottom left
+    { 9.f, 5.f },    // 3: top right
+    { 9.f, 2.5f },    // 4: mid right
+    { 9.f, 0.f },    // 5: bottom right
+    { 0.2f, 2.5f },   // 6: mid left (inset)
+    { 0.2f, 0.2f },  // 7: bottom left (inset)
+    { 9.f, 0.2f },   // 8: bottom right (inset)
+};
+static const u8 info_item_quad_grey_idx[] = {
+    0, 1, 4, 3,
+    1, 2, 7, 6,
+    2, 7, 8, 5,
+};
+static const u8 info_item_quad_black_idx[] = {
+    6, 7, 8, 4
+};
+static const Rect info_item_label_rect = { 0.8f, 2.5f, 8.6f, 2.5f };
+static const Rect info_item_info_rect = { 0.0f, 0.0f, 9.6f, 2.5f };
+
+void HUD_DrawInfoPanel(const char **label, const char **info, int count) {
+    HUDCamData *cam_data = stc_event_vars.hudcam_gobj->userdata;
+    if (cam_data->hide) return;
+    COBJ *prev_camera = COBJ_GetCurrent();
+    CObj_SetCurrent(stc_event_vars.hudcam_gobj->hsd_object);
+
+    float x = 18.f;
+    float y = 9.f;
+    GXColor grey = { 130, 130, 130, 180 };
+    GXColor black = { 0, 0, 0, 180 };
+
+    int vtx_count = countof(info_item_quad_grey_idx)*count // info model (grey)
+        + countof(info_item_quad_black_idx)*count // info model (black)
+        + /* border */ 16;
+    
+    // we could use indexed quads + non-direct grey here, but that's just a minor gain
+    GFX_Start(vtx_count, (GFX_Params) { .shape = GX_QUADS });
+
+    // draw info row
+    float cur_y = y;
+    for (int info_i = 0; info_i < count; ++info_i) {
+        for (u32 vtx_i = 0; vtx_i < countof(info_item_quad_grey_idx); ++vtx_i) {
+            Vec2 pos = info_item_vtx[info_item_quad_grey_idx[vtx_i]];
+            GFX_AddVtx(x + pos.X, cur_y + pos.Y, 0, grey);
+        }
+        for (u32 vtx_i = 0; vtx_i < countof(info_item_quad_black_idx); ++vtx_i) {
+            Vec2 pos = info_item_vtx[info_item_quad_black_idx[vtx_i]];
+            GFX_AddVtx(x + pos.X, cur_y + pos.Y, 0, black);
+        }
+        
+        Rect label_rect = info_item_label_rect;
+        label_rect.x += x;
+        label_rect.y += cur_y;
+        HUD_DrawTextEx(
+            label[info_i], &label_rect, 0.5f,
+            (GXColor) {0,0,0,255}, (GXColor) {0,0,0,0},
+            0, 1
+        );
+
+        Rect info_rect = info_item_info_rect;
+        info_rect.x += x;
+        info_rect.y += cur_y;
+        HUD_DrawTextEx(
+            info[info_i], &info_rect, 0.5f,
+            (GXColor) {220,220,220,255}, (GXColor) {0,0,0,0},
+            0, 1
+        );
+
+        cur_y -= 5.5f;
+    }
+
+    // draw border
+    float x0 = x - 0.7f;
+    float x1i = x + 9.f;
+    float y0 = y + 0.5f + 5.f;
+    float y1 = y0 - 5.5f*count - 0.5f;
+    float x0i = x0 + 0.3f;
+    float x1 = x1i + 0.4f;
+    float y0i = y0 - 0.3f;
+    float y1i = y1 + 0.3f;
+
+    GFX_AddVtx(x0, y0, 0, grey);
+    GFX_AddVtx(x0, y1, 0, grey);
+    GFX_AddVtx(x0i, y1i, 0, grey);
+    GFX_AddVtx(x0i, y0i, 0, grey);
+
+    GFX_AddVtx(x1, y0, 0, grey);
+    GFX_AddVtx(x1, y1, 0, grey);
+    GFX_AddVtx(x1i, y1i, 0, grey);
+    GFX_AddVtx(x1i, y0i, 0, grey);
+
+    GFX_AddVtx(x0, y0, 0, grey);
+    GFX_AddVtx(x1, y0, 0, grey);
+    GFX_AddVtx(x1i, y0i, 0, grey);
+    GFX_AddVtx(x0i, y0i, 0, grey);
+
+    GFX_AddVtx(x0, y1, 0, grey);
+    GFX_AddVtx(x1, y1, 0, grey);
+    GFX_AddVtx(x1i, y1i, 0, grey);
+    GFX_AddVtx(x0i, y1i, 0, grey);
+
+    CObj_SetCurrent(prev_camera);
+}
+
+static float log_size = 1.f;
+static float log_padding = 0.1f;
+static float log_y_pos = 15.f;
+static GXColor log_background_color = { 20, 20, 20, 255 };
+static float action_key_size = 15.f;
+static float action_key_size_decrement = 1.2f;
+static float action_key_y_pos = 15.f;
+static float action_key_height = 6.f;
+
+Rect HUD_DrawActionLogBar(u8 *action_log, GXColor *color_lookup, int log_count) {
+    Rect rects[log_count + 1];
+    GXColor colors[log_count + 1];
+    
+    float rect_count = (float)log_count;
+    float w = rect_count * log_size + (rect_count + 1.f) * log_padding;
+    
+    Rect background = { -w/2.f, log_y_pos, w, log_size + log_padding*2.f }; 
+    rects[0] = background;
+    colors[0] = log_background_color;
+
+    RectShrink(&background, log_padding);
+    Rect ret = background;
+    
+    for (int i = 0; i < log_count; ++i) {
+        RectSplitL(&rects[i+1], &background, log_size, log_padding);
+        colors[i+1] = color_lookup[action_log[i]];
+    }
+
+    HUD_DrawRects(rects, colors, log_count + 1);
+
+    return ret;
+}
+
+void HUD_DrawActionLogKey(char **action_names, GXColor *action_colors, int action_count) {
+    Rect rects[action_count*2];
+    GXColor colors[action_count*2];
+
+    float action_count_f = (float)action_count;
+    float size = action_key_size - action_count_f * action_key_size_decrement;
+    float w = action_count_f * size;
+    Rect action_table_row = { -w/2.f, action_key_y_pos, w, action_key_height };
+
+    Rect cur_rect;
+    for (int i = 0; i < action_count; ++i) {
+        RectSplitL(&cur_rect, &action_table_row, size, 0);
+        HUD_DrawText(action_names[i], &cur_rect, 0.34f);
+
+        RectCentreW(&cur_rect, log_size + log_padding);
+        RectCentreH(&cur_rect, log_size + log_padding);
+        cur_rect.y += 2.f;
+        rects[i*2+0] = cur_rect;
+
+        RectShrink(&cur_rect, log_padding);
+        rects[i*2+1] = cur_rect;
+
+        colors[i*2+0] = log_background_color;
+        colors[i*2+1] = action_colors[i];
+    }
+    
+    HUD_DrawRects(rects, colors, action_count * 2);
+}
+
+///////////////////////
+/// Event Functions ///
+///////////////////////
+
+void EventInit(int page, int eventID, MatchInit *matchData)
+{
+
+    /*
+    This function runs when leaving the main menu/css and handles
+    setting up the match information, such as rules, players, stage.
+    All of this data comes from the EventDesc in events.c
+    */
+
+    // get event pointer
+    EventDesc *event = GetEventDesc(page, eventID);
+    EventMatchData *eventMatchData = event->matchData;
+
+    if (event->CSSType == SLCHRKIND_VS)
+        memcpy(matchData, &(*stc_css_minorscene)->vs_data.match_init, sizeof(*matchData));
+
+    //Init default match info
+    matchData->timer_unk2 = 0;
+    matchData->unk2 = 1;
+    matchData->unk7 = 1;
+    matchData->isCheckStockSteal = 1;
+#ifdef MU_NATIVE
+    mexbits_set_MatchInit__unk1f(matchData, 3);
+#else
+    matchData->unk1f = 3;
+#endif
+    matchData->no_check_end = 1;
+    matchData->itemFreq = MATCH_ITEMFREQ_OFF;
+    matchData->onStartMelee = EventLoad;
+    matchData->isCheckForLRAStart = true;
+    matchData->isHidePauseHUD = true;
+    matchData->isDisablePause = true;
+
+    //Copy event's match info struct
+#ifdef MU_NATIVE
+    mexbits_set_MatchInit__timer(matchData, eventMatchData->timer);
+#else
+    matchData->timer = eventMatchData->timer;
+#endif
+    matchData->matchType = eventMatchData->matchType;
+    matchData->hideGo = eventMatchData->hideGo;
+    matchData->hideReady = eventMatchData->hideReady;
+    matchData->isCreateHUD = eventMatchData->isCreateHUD;
+    matchData->timerRunOnPause = eventMatchData->timerRunOnPause;
+    matchData->isCheckForZRetry = eventMatchData->isCheckForZRetry;
+    matchData->isShowScore = eventMatchData->isShowScore;
+    matchData->isRunStockLogic = eventMatchData->isRunStockLogic;
+    matchData->no_hit = eventMatchData->isDisableHit;
+    matchData->timer_seconds = eventMatchData->timerSeconds;
+
+    Preload *preload = Preload_GetTable();
+
+    if (event->CSSType != SLCHRKIND_VS) {
+        // Determine player ports
+        u8 hmn_port = *stc_css_hmnport + 1;
+        u8 cpu_port = *stc_css_cpuport + 1;
+
+        // Initialize all player data
+        for (int i = 0; i < 6; i++) {
+          CSS_InitPlayerData(&matchData->playerData[i]);
+          matchData->playerData[i].stocks = 1;
+        }
+
+        // Update the player's nametag ID and rumble
+        u8 nametag = stc_memcard->EventBackup.nametag;
+        matchData->playerData[0].nametag = nametag;
+        matchData->playerData[0].isRumble = CSS_GetNametagRumble(0, nametag);
+
+        // Determine the CPU
+        s32 cpu_kind = event->cpuKind;
+        s32 cpu_costume = 0;
+        if (cpu_kind == -1 && event->CSSType == SLCHRKIND_TRAINING) {
+            cpu_kind = preload->queued.fighters[1].kind;
+            cpu_costume = preload->queued.fighters[1].costume;
+        }
+
+        if (cpu_kind == CKIND_ZELDA)
+            cpu_kind = CKIND_SHEIK;
+
+        if (cpu_kind != -1) {
+            matchData->playerData[1].costume = cpu_costume;
+            matchData->playerData[1].c_kind = cpu_kind;
+            matchData->playerData[1].p_kind = PKIND_CPU;
+            matchData->playerData[1].portNumberOverride = cpu_port;
+        }
+        
+        matchData->playerData[0].c_kind = preload->queued.fighters[0].kind;
+        matchData->playerData[0].costume = preload->queued.fighters[0].costume;
+        matchData->playerData[0].p_kind = PKIND_HMN;
+        matchData->playerData[0].portNumberOverride = hmn_port;
+
+        // Force Popo if required
+        if (event->force_sopo && matchData->playerData[0].c_kind == CKIND_ICECLIMBERS) {
+            matchData->playerData[0].c_kind = CKIND_POPO;
+        }
+
+        // Determine the correct HUD position for this amount of players
+        int hudPos = 0;
+        for (int i = 0; i < 6; i++)
+        {
+            if (matchData->playerData[i].p_kind != PKIND_NONE)
+                hudPos++;
+        }
+        matchData->hudPos = hudPos;
+    }
+
+    // set to enter fall on match start
+    for (int i = 0; i < 6; i++)
+        matchData->playerData[i].isEntry = false;
+
+    // Determine the Stage
+    if (event->stage == -1) {
+        matchData->stage = preload->queued.stage;
+    } else {
+        matchData->stage = event->stage;
+    }
+};
+
+void StartOSDs(void)
+{
+    // Add OSD callback
+    // Very low priority of 20, runs after everything else
+    GOBJ *osd_gobj = GObj_Create(0, 7, 0);
+    GObj_AddProc(osd_gobj, OSD_Think, 20);
+}
+
+void EventLoad(void)
+{
+    StartOSDs();
+
+    // get this event
+    int page = stc_memcard->TM_EventPage;
+    int eventID = stc_memcard->EventBackup.event;
+    EventDesc *event_desc = GetEventDesc(page, eventID);
+    evFunction *evFunction = &stc_event_vars.evFunction;
+
+    // clear evFunction
+    memset(evFunction, 0, sizeof(*evFunction));
+
+    // append extension
+    static char *extension = "TM/%s.dat";
+    char buffer[20];
+    sprintf(buffer, extension, event_desc->eventFile);
+
+    // load this events file
+    HSD_Archive *archive = MEX_LoadRelArchive(buffer, evFunction, "evFunction");
+    stc_event_vars.event_archive = archive;
+
+    // Create this event's gobj
+    int pri = event_desc->callbackPriority;
+    void *cb = evFunction->Event_Think;
+    GOBJ *gobj = GObj_Create(0, 7, 0);
+    void *userdata = calloc(EVENT_DATASIZE);
+    GObj_AddUserData(gobj, 4, HSD_Free, userdata);
+    GObj_AddProc(gobj, cb, pri);
+    
+    // store pointer to the event's data
+    *(EventDesc **)userdata = event_desc;
+
+    // Create a gobj to track match time
+    stc_event_vars.game_timer = 0;
+    GOBJ *timer_gobj = GObj_Create(0, 7, 0);
+    GObj_AddProc(timer_gobj, Event_IncTimer, 0);
+
+    // init savestate struct
+    stc_savestate = calloc(sizeof(Savestate_v1));
+    stc_savestate->is_exist = 0;
+    stc_event_vars.savestate = stc_savestate;
+
+    // disable hazards if enabled
+    if (event_desc->disable_hazards == 1)
+        Hazards_Disable();
+
+    // Store update function
+    HSD_Update *update = stc_hsd_update;
+    update->onFrame = EventUpdate;
+    
+    // Init static structure containing event variables
+    stc_event_vars.event_desc = event_desc;
+    stc_event_vars.event_gobj = gobj;
+
+    // init the pause menu
+    GOBJ *menu_gobj = EventMenu_Init(*evFunction->menu_start);
+    stc_event_vars.menu_gobj = menu_gobj;
+    
+    // init HUD camera
+    GOBJ *hudcam_gobj = GObj_Create(19, 20, 0);
+    stc_event_vars.hudcam_gobj = hudcam_gobj;
+#ifdef MU_NATIVE
+    void *dmgScnMdls = Archive_GetPublicAddress(*stc_ifall_archive, "ScInfDmg_scene_data");
+#else
+    COBJDesc ***dmgScnMdls = Archive_GetPublicAddress(*stc_ifall_archive, (void *)0x803f94d0);
+#endif
+#ifdef MU_NATIVE
+    COBJDesc *cam_desc = MEX_DP_AT(MEX_DP_AT(dmgScnMdls, 1), 0);
+#else
+    COBJDesc *cam_desc = dmgScnMdls[1][0];
+#endif
+    COBJ *hud_cobj = COBJ_LoadDesc(cam_desc);
+    HUDCamData *cam_data = HSD_MemAlloc(sizeof(HUDCamData));
+    *cam_data = (HUDCamData) {
+        .hide = false,
+        .canvas = Text_CreateCanvas(2, hudcam_gobj, 14, 15, 0, GXLINK_HUD, 81, 19),
+    };
+    GObj_AddUserData(hudcam_gobj, 4, HSD_Free, cam_data);
+    GObj_AddObject(hudcam_gobj, R13_U8(-0x3E55), hud_cobj);
+    GOBJ_InitCamera(hudcam_gobj, HUD_CObjThink, 7);
+    hudcam_gobj->cobj_links = 1 << GXLINK_HUD;
+    
+    // Run this event's init function
+    if (evFunction->Event_Init)
+        evFunction->Event_Init(gobj);
+};
+
+void UpdateDevCamera(void)
+{
+    MatchCamera *cam = stc_matchcam;
+
+    // Return if camera not in develop mode
+    if (cam->cam_kind != 8)
+        return;
+
+    int pad_index = Fighter_GetControllerPort(0);
+    HSD_Pad *pad = PadGetMaster(pad_index);
+    int held = pad->held;
+    float x = pad->fsubstickX;
+    float y = pad->fsubstickY;
+
+    if (fabs(x) < 0.2)
+        x = 0;
+    if (fabs(y) < 0.2)
+        y = 0;
+
+    if (x != 0 || y != 0)
+    {
+        COBJ *cobj = Match_GetCObj();
+
+        if (held & HSD_BUTTON_A)
+            DevCam_AdjustPan(cobj, x * -1, y * -1);
+        else if (held & HSD_BUTTON_Y)
+            DevCam_AdjustZoom(cobj, y);
+        else if (held & HSD_BUTTON_B)
+#ifdef MU_NATIVE
+            DevCam_AdjustRotate(cobj, MEX_DEVCAM_ROT(), MEX_DEVCAM_POS(), x, y);
+#else
+            DevCam_AdjustRotate(cobj, &cam->devcam_rot, &cam->devcam_pos, x, y);
+#endif
+    }
+}
+
+void EventUpdate(void)
+{
+    // reset text cache for this frame
+    HUDCamData *hudcam_data = stc_event_vars.hudcam_gobj->userdata;
+    hudcam_data->text_cache_used = 0;
+    for (u32 i = 0; i < countof(hudcam_data->text_cache); ++i) {
+        Text *t = hudcam_data->text_cache[i];
+        if (t)
+            t->hidden = true;
+    }
+    
+    // get event info
+    GOBJ *menu_gobj = stc_event_vars.menu_gobj;
+    if (menu_gobj)
+        EventMenu_Update(menu_gobj);
+
+    evFunction *evFunction = &stc_event_vars.evFunction;
+    if (evFunction->Event_Update)
+        evFunction->Event_Update();
+
+    UpdateDevCamera();
+
+    // This is the vanilla callback. This code handles the vanilla develop.
+    // mode shortcuts. We could probably delete it if we want to.
+    Develop_UpdateMatchHotkeys();
+}
+
+//////////////////////
+/// Hook Functions ///
+//////////////////////
+
+void TM_ConsoleToggle(GOBJ *gobj)
+{
+    DevText *text = gobj->userdata;
+    text->show_text ^= 1;
+    text->show_background ^= 1;
+}
+
+void TM_ConsoleThink(GOBJ *gobj)
+{
+    // Toggle console with L/R + Z
+    for (int i = 0; i < 4; i++)
+    {
+        HSD_Pad *pad = PadGetMaster(i);
+        if (pad->held & (HSD_TRIGGER_L | HSD_TRIGGER_R) && (pad->down & HSD_TRIGGER_Z))
+        {
+            TM_ConsoleToggle(gobj);
+            break;
+        }
+    }
+}
+void TM_CreateConsole(void)
+{
+    // init dev text
+    DevText *text = DevelopText_CreateDataTable(13, 0, 0, 32, 32, HSD_MemAlloc(0x1000));
+    DevelopText_Activate(0, text);
+    text->show_cursor = 0;
+    text->show_text = 0;
+    text->show_background = 0;
+
+    GOBJ *gobj = GObj_Create(0, 0, 0);
+    GObj_AddUserData(gobj, 4, HSD_Free, text);
+    GObj_AddProc(gobj, TM_ConsoleThink, 0);
+
+    GXColor color = {21, 20, 59, 80};
+    DevelopText_StoreBGColor(text, &color);
+    DevelopText_StoreTextScale(text, 10, 12);
+    stc_event_vars.db_console_text = text;
+    TM_ConsoleToggle(gobj);
+}
+
+void OnFileLoad(HSD_Archive *archive) // this function is run right after TmDt is loaded into memory on boot
+{
+    // init event menu assets
+    stc_event_vars.menu_assets = Archive_GetPublicAddress(archive, "eventMenu");
+
+    // store pointer to static variables
+    *event_vars_ptr_loc = &stc_event_vars;
+}
+
+void OnSceneChange(void)
+{
+    // Hook exists at 801a4c94
+    TM_CreateWatermark();
+
+#if TM_DEBUG
+    TM_CreateConsole();
+#endif
+};
+
+void OnBoot(void)
+{
+    // OSReport("hi this is boot\n");
+};
+
+void OnStartMelee(void)
+{
+    Message_Init();
+    Tip_Init();
+}
+
+///////////////////////////////
+/// Miscellaneous Functions ///
+///////////////////////////////
+
+GOBJ *GOBJToID(GOBJ *gobj)
+{
+    // ensure valid pointer
+    if (gobj == 0)
+        return (GOBJ *)-1;
+
+    // ensure its a fighter
+    if (gobj->entity_class != 4)
+        return (GOBJ *)-1;
+
+    // access the data
+    FighterData *ft_data = gobj->userdata;
+    u8 ply = ft_data->ply;
+    u8 ms = ft_data->flags.ms;
+
+    return (GOBJ *)((ply << 4) | ms);
+}
+FighterData *FtDataToID(FighterData *fighter_data)
+{
+    // ensure valid pointer
+    if (fighter_data == 0)
+        return (FighterData *)-1;
+
+    // ensure its a fighter
+    if (fighter_data->fighter == 0)
+        return (FighterData *)-1;
+
+    // get ply and ms
+    u8 ply = fighter_data->ply;
+    u8 ms = fighter_data->flags.ms;
+
+    return (FighterData *)((ply << 4) | ms);
+}
+JOBJ *BoneToID(FighterData *fighter_data, JOBJ *bone)
+{
+    // ensure bone exists
+    if (bone == 0)
+        return (JOBJ *)-1;
+
+    int bone_id = -1;
+
+    // painstakingly look for a match
+    for (int i = 0; i < fighter_data->bone_num; i++)
+    {
+        if (bone == fighter_data->bones[i].joint)
+        {
+            bone_id = i;
+            break;
+        }
+    }
+
+    // no bone found
+    if (bone_id == -1)
+        TMLOG("no bone found %x\n", bone);
+
+    return (JOBJ *)bone_id;
+}
+GOBJ *IDToGOBJ(GOBJ *id_as_ptr)
+{
+    int id = (int)id_as_ptr;
+
+    // ensure valid pointer
+    if (id == -1)
+        return (GOBJ *)0;
+
+    // get ply and ms
+    u8 ply = (id >> 4) & 0xF;
+    u8 ms = id & 0xF;
+
+    // get the gobj for this fighter
+    GOBJ *gobj = Fighter_GetSubcharGObj(ply, ms);
+
+    return gobj;
+}
+FighterData *IDToFtData(FighterData *id_as_ptr)
+{
+    int id = (int)id_as_ptr;
+
+    // ensure valid pointer
+    if (id == -1)
+        return 0;
+
+    // get ply and ms
+    u8 ply = (id >> 4) & 0xF;
+    u8 ms = id & 0xF;
+
+    // get the gobj for this fighter
+    GOBJ *gobj = Fighter_GetSubcharGObj(ply, ms);
+    FighterData *fighter_data = gobj->userdata;
+
+    return fighter_data;
+}
+JOBJ *IDToBone(FighterData *fighter_data, JOBJ *id_as_ptr)
+{
+    int id = (int)id_as_ptr;
+
+    // ensure valid pointer
+    if (id == -1)
+        return 0;
+
+    // get the bone
+    JOBJ *bone = fighter_data->bones[id].joint;
+
+    return bone;
+}
+
+void Event_IncTimer(GOBJ *gobj)
+{
+    stc_event_vars.game_timer++;
+}
+void TM_CreateWatermark(void)
+{
+    // create text canvas
+    int canvas = Text_CreateCanvas(10, 0, 9, 13, 0, 14, 0, 10);
+    
+    // create text
+    Text *text = Text_CreateText(10, canvas);
+    // enable align and kerning
+    text->align = 2;
+    text->kerning = 1;
+    // scale canvas
+    text->viewport_scale.X = 0.4;
+    text->viewport_scale.Y = 0.4;
+    text->trans.X = 615;
+    text->trans.Y = 446;
+
+    // print string
+    int shadow = Text_AddSubtext(text, 2, 2, TM_VersShort);
+    GXColor shadow_color = {0, 0, 0, 0};
+    Text_SetColor(text, shadow, &shadow_color);
+
+    int shadow1 = Text_AddSubtext(text, 2, -2, TM_VersShort);
+    Text_SetColor(text, shadow1, &shadow_color);
+
+    int shadow2 = Text_AddSubtext(text, -2, 2, TM_VersShort);
+    Text_SetColor(text, shadow2, &shadow_color);
+
+    int shadow3 = Text_AddSubtext(text, -2, -2, TM_VersShort);
+    Text_SetColor(text, shadow3, &shadow_color);
+
+    Text_AddSubtext(text, 0, 0, TM_VersShort);
+
+    stc_event_vars.watermark = text;
+}
+void Hazards_Disable(void)
+{
+    // get stage id
+    int stage_internal = Stage_ExternalToInternal(Stage_GetExternalID());
+    int is_fixwind = 0;
+
+    switch (stage_internal)
+    {
+    case (GRKIND_STORY):
+    {
+        // remove shyguy map gobj proc
+        GOBJ *shyguy_gobj = Stage_GetMapGObj(3);
+        GObj_RemoveProc(shyguy_gobj);
+
+        // remove randall
+        GOBJ *randall_gobj = Stage_GetMapGObj(2);
+        Stage_DestroyMapGObj(randall_gobj);
+
+        is_fixwind = 1;
+
+        break;
+    }
+    case (GRKIND_PSTAD):
+    {
+        // remove map gobj proc
+        GOBJ *map_gobj = Stage_GetMapGObj(2);
+        GObj_RemoveProc(map_gobj);
+
+        is_fixwind = 1;
+
+        break;
+    }
+    case (GRKIND_OLDPU):
+    {
+        // remove map gobj proc
+        GOBJ *map_gobj = Stage_GetMapGObj(7);
+        GObj_RemoveProc(map_gobj);
+
+        // remove map gobj proc
+        map_gobj = Stage_GetMapGObj(6);
+        GObj_RemoveProc(map_gobj);
+
+        // set wind hazard num to 0
+        *ftchkdevice_windnum = 0;
+
+        break;
+    }
+    case (GRKIND_FD):
+    {
+        // set bg skip flag
+        GOBJ *map_gobj = Stage_GetMapGObj(3);
+        MapData *map_data = map_gobj->userdata;
+        map_data->xc4 |= 0x40;
+
+        // remove on-go function that changes this flag
+        StageOnGO *on_go = stc_stage->on_go;
+        stc_stage->on_go = on_go->next;
+        HSD_Free(on_go);
+
+        break;
+    }
+    }
+
+    // Certain stages have an essential ragdoll function
+    // in their map_gobj think function. If the think function is removed,
+    // the ragdoll function must be re-scheduled to function properly.
+    if (is_fixwind == 1)
+    {
+        GOBJ *wind_gobj = GObj_Create(3, 5, 0);
+        GObj_AddProc(wind_gobj, Dynamics_DecayWind, 4);
+    }
+}
+
+// Message Functions
+void Message_Init(void)
+{
+    // create cobj
+    GOBJ *cam_gobj = GObj_Create(19, 20, 0);
+#ifdef MU_NATIVE
+    COBJDesc *cam_desc = MEX_DP(stc_event_vars.menu_assets->hud_cobjdesc);
+#else
+    COBJDesc *cam_desc = stc_event_vars.menu_assets->hud_cobjdesc;
+#endif
+    COBJ *cam_cobj = COBJ_LoadDescSetScissor(cam_desc);
+    cam_cobj->scissor_bottom = 400;
+    // init camera
+    GObj_AddObject(cam_gobj, R13_U8(-0x3E55), cam_cobj);
+    GOBJ_InitCamera(cam_gobj, Message_CObjThink, MSG_COBJLGXPRI);
+    cam_gobj->cobj_links = MSG_COBJLGXLINKS;
+
+    // Create manager GOBJ
+    GOBJ *mgr_gobj = GObj_Create(0, 7, 0);
+    MsgMngrData *mgr_data = calloc(sizeof(MsgMngrData));
+    GObj_AddUserData(mgr_gobj, 4, HSD_Free, mgr_data);
+    GObj_AddProc(mgr_gobj, Message_Manager, 21);
+
+    // create text canvas
+    int canvas = Text_CreateCanvas(2, mgr_gobj, 14, 15, 0, MSG_GXLINK, MSGTEXT_GXPRI, 19);
+    mgr_data->canvas = canvas;
+
+    // store cobj
+    mgr_data->cobj = cam_cobj;
+
+    // store gobj pointer
+    stc_msgmgr = mgr_gobj;
+}
+GOBJ *Message_Display(int msg_kind, int queue_num, int msg_color, char *format, ...)
+{
+
+    va_list args;
+
+    MsgMngrData *mgr_data = stc_msgmgr->userdata;
+
+    // Create GOBJ
+    GOBJ *msg_gobj = GObj_Create(0, 7, 0);
+    MsgData *msg_data = calloc(sizeof(MsgData));
+    GObj_AddUserData(msg_gobj, 4, HSD_Free, msg_data);
+    GObj_AddGXLink(msg_gobj, GXLink_Common, MSG_GXLINK, MSG_GXPRI);
+#ifdef MU_NATIVE
+    JOBJ *msg_jobj = JOBJ_LoadJoint(MEX_DP(stc_event_vars.menu_assets->message));
+#else
+    JOBJ *msg_jobj = JOBJ_LoadJoint(stc_event_vars.menu_assets->message);
+#endif
+    GObj_AddObject(msg_gobj, R13_U8(-0x3E55), msg_jobj);
+    msg_data->lifetime = MSG_LIFETIME;
+    msg_data->kind = msg_kind;
+    msg_data->state = MSGSTATE_SHIFT;
+    msg_data->anim_timer = MSGTIMER_SHIFT;
+    msg_jobj->scale.X = MSGJOINT_SCALE;
+    msg_jobj->scale.Y = MSGJOINT_SCALE;
+    msg_jobj->scale.Z = MSGJOINT_SCALE;
+    msg_jobj->trans.X = MSGJOINT_X;
+    msg_jobj->trans.Y = MSGJOINT_Y;
+    msg_jobj->trans.Z = MSGJOINT_Z;
+
+    // Create text object
+    Text *msg_text = Text_CreateText(2, mgr_data->canvas);
+    msg_data->text = msg_text;
+    msg_text->kerning = 1;
+    msg_text->align = 1;
+    msg_text->use_aspect = 1;
+    msg_text->color = stc_msg_colors[msg_color];
+
+    // adjust scale
+    Vec3 scale = msg_jobj->scale;
+    // background scale
+    msg_jobj->scale = scale;
+    // text scale
+    msg_text->viewport_scale.X = (scale.X * 0.01f) * MSGTEXT_BASESCALE;
+    msg_text->viewport_scale.Y = (scale.Y * 0.01f) * MSGTEXT_BASESCALE;
+    msg_text->aspect.X = MSGTEXT_BASEWIDTH;
+
+    JOBJ_SetMtxDirtySub(msg_jobj);
+
+    // build string
+    char buffer[MSG_LINEMAX * MSG_CHARMAX + 1];
+    va_start(args, format);
+    vsprintf(buffer, format, args);
+    va_end(args);
+    char *msg = buffer;
+
+    // count newlines
+    int line_num = 1;
+    int line_length_arr[MSG_LINEMAX];
+    char *msg_cursor_prev, *msg_cursor_curr; // declare char pointers
+    msg_cursor_prev = msg;
+    msg_cursor_curr = strchr(msg_cursor_prev, '\n'); // check for occurrence
+    while (msg_cursor_curr != 0)                     // if occurrence found, increment values
+    {
+        // check if exceeds max lines
+        if (line_num >= MSG_LINEMAX)
+            assert("MSG_LINEMAX exceeded!");
+
+        // Save information about this line
+        line_length_arr[line_num - 1] = msg_cursor_curr - msg_cursor_prev; // determine length of the line
+        line_num++;                                                        // increment number of newlines found
+        msg_cursor_prev = msg_cursor_curr + 1;                             // update prev cursor
+        msg_cursor_curr = strchr(msg_cursor_prev, '\n');                   // check for another occurrence
+    }
+
+    // get last lines length
+    msg_cursor_curr = strchr(msg_cursor_prev, 0);
+    line_length_arr[line_num - 1] = msg_cursor_curr - msg_cursor_prev;
+
+    // copy each line to an individual char array
+    for (int i = 0; i < line_num; i++)
+    {
+
+        // check if over char max
+        u8 line_length = line_length_arr[i];
+        if (line_length > MSG_CHARMAX)
+            assert("MSG_CHARMAX exceeded!");
+
+        // copy char array
+        char msg_line[MSG_CHARMAX + 1];
+        memcpy(msg_line, msg, line_length);
+
+        // add null terminator
+        msg_line[line_length] = '\0';
+
+        // increment msg
+        msg += line_length + 1; // +1 to skip past newline
+
+        // print line
+        int y_base = (line_num - 1) * (-MSGTEXT_YOFFSET / 2);
+        int y_delta = i * MSGTEXT_YOFFSET;
+        Text_AddSubtext(msg_text, 0, y_base + y_delta, msg_line);
+    }
+
+    // Add to queue
+    Message_Add(msg_gobj, queue_num);
+
+    return msg_gobj;
+}
+void Message_Manager(GOBJ *mngr_gobj)
+{
+    MsgMngrData *mgr_data = mngr_gobj->userdata;
+
+    // Iterate through each queue
+    for (int i = 0; i < MSGQUEUE_NUM; i++)
+    {
+        GOBJ **msg_queue = mgr_data->msg_queue[i];
+
+        // anim update (time based logic)
+        for (int j = MSGQUEUE_SIZE - 1; j >= 0; j--) // iterate through backwards (because deletions)
+        {
+            GOBJ *this_msg_gobj = msg_queue[j];
+
+            // if message exists
+            if (this_msg_gobj)
+            {
+                MsgData *this_msg_data = this_msg_gobj->userdata;
+
+                // check if the message moved this frame
+                if (this_msg_data->orig_index != j)
+                {
+                    this_msg_data->orig_index = j;              // moved so update this
+                    this_msg_data->state = MSGSTATE_SHIFT;      // enter shift
+                    this_msg_data->anim_timer = MSGTIMER_SHIFT; // shift timer
+                }
+
+                // decrement state timer if above 0
+                if (this_msg_data->anim_timer > 0)
+                    this_msg_data->anim_timer--;
+
+                switch (this_msg_data->state)
+                {
+                case (MSGSTATE_WAIT):
+                case (MSGSTATE_SHIFT):
+                {
+
+                    // increment alive time
+                    this_msg_data->alive_timer++;
+
+                    // if lifetime is ended, enter delete state
+                    if (this_msg_data->alive_timer >= this_msg_data->lifetime)
+                    {
+                        // if using frame advance, instantly remove this message
+                        if (Pause_CheckStatus(0) == 1)
+                        {
+                            Message_Destroy(msg_queue, j);
+                        }
+                        else
+                        {
+                            this_msg_data->state = MSGSTATE_DELETE;
+                            this_msg_data->anim_timer = MSGTIMER_DELETE;
+                        }
+                    }
+
+                    break;
+                }
+
+                case (MSGSTATE_DELETE):
+                {
+
+                    // if timer is ended, remove the message
+                    if (this_msg_data->anim_timer <= 0)
+                    {
+                        Message_Destroy(msg_queue, j);
+                    }
+
+                    break;
+                }
+                }
+            }
+        }
+
+        // position update (update messages' onscreen positions)
+        for (int j = 0; j < MSGQUEUE_SIZE; j++)
+        {
+            GOBJ *this_msg_gobj = msg_queue[j];
+
+            // if message exists
+            if (this_msg_gobj)
+            {
+                MsgData *this_msg_data = this_msg_gobj->userdata;
+                Text *this_msg_text = this_msg_data->text;
+                JOBJ *this_msg_jobj = this_msg_gobj->hsd_object;
+
+                int osd_pos_type = stc_memcard->TM_OSDPosition;
+                if (osd_pos_type > 3)
+                    osd_pos_type = 0;
+
+                Vec3 base_pos;
+                Vec2 pos_delta;
+
+                if (osd_pos_type == 0) {
+                    // above hud
+                    Vec3 *hud_pos = Match_GetPlayerHUDPos(i);
+
+                    base_pos.X = hud_pos->X;
+                    base_pos.Y = hud_pos->Y + MSG_HUDYOFFSET;
+                    base_pos.Z = hud_pos->Z;
+                    pos_delta = stc_msg_queue_offsets_vertical[i];
+                } else if (osd_pos_type == 1) {
+                    // sides
+                    base_pos = stc_msg_queue_pos_sides[i];
+                    pos_delta = stc_msg_queue_offsets_vertical[i];
+                } else {
+                    // top
+                    base_pos = stc_msg_queue_pos_top[i];
+                    pos_delta = stc_msg_queue_offsets_horizontal[i];
+                    if (osd_pos_type == 3) {
+                        // top right
+                        base_pos.X *= -1;
+                        pos_delta.X *= -1;
+                    }
+                }
+
+                // Get the onscreen position for this queue
+                Vec3 this_msg_pos = {0, 0, 0};
+
+                switch (this_msg_data->state)
+                {
+                case (MSGSTATE_WAIT):
+                case (MSGSTATE_SHIFT):
+                {
+
+                    // get time
+                    float t = ((float)MSGTIMER_SHIFT - this_msg_data->anim_timer) / MSGTIMER_SHIFT;
+
+                    // get initial and final position for animation
+                    float final_x = base_pos.X + (float)j * pos_delta.X;
+                    float final_y = base_pos.Y + (float)j * pos_delta.Y;
+                    float initial_x = base_pos.X + (float)this_msg_data->prev_index * pos_delta.X;
+                    float initial_y = base_pos.Y + (float)this_msg_data->prev_index * pos_delta.Y;
+                    if (Pause_CheckStatus(0) == 1) { // if using frame advance, do not animate
+                        this_msg_pos.X = final_x;
+                        this_msg_pos.Y = final_y;
+                    } else {
+                        this_msg_pos.X = smooth_lerp(t, initial_x, final_x);
+                        this_msg_pos.Y = smooth_lerp(t, initial_y, final_y);
+                    }
+
+                    Vec3 scale = this_msg_jobj->scale;
+
+                    // BG position
+                    this_msg_jobj->trans.X = this_msg_pos.X;
+                    this_msg_jobj->trans.Y = this_msg_pos.Y;
+                    // text position
+                    this_msg_text->trans.X =  this_msg_pos.X + MSGTEXT_BASEX * scale.X * 0.25f;
+                    this_msg_text->trans.Y = -this_msg_pos.Y + MSGTEXT_BASEY * scale.Y * 0.25f;
+
+                    // adjust bar
+                    JOBJ *bar;
+                    JOBJ_GetChild(this_msg_jobj, &bar, 4, -1);
+                    bar->trans.X = (float)(this_msg_data->lifetime - this_msg_data->alive_timer) / (float)this_msg_data->lifetime;
+
+                    break;
+                }
+                case (MSGSTATE_DELETE):
+                {
+                    // get time
+                    float t = this_msg_data->anim_timer / (float)MSGTIMER_DELETE;
+
+                    Vec3 *scale = &this_msg_jobj->scale;
+                    Vec3 *pos = &this_msg_jobj->trans;
+
+                    // BG scale
+                    scale->Y = smooth_lerp(t,  0.f, 1.f);
+                    // text scale
+                    this_msg_text->viewport_scale.Y = scale->Y * 0.01f * MSGTEXT_BASESCALE;
+                    // text position
+                    this_msg_text->trans.Y = -pos->Y + MSGTEXT_BASEY * scale->Y * 0.25f;
+
+                    break;
+                }
+                }
+
+                JOBJ_SetMtxDirtySub(this_msg_jobj);
+            }
+        }
+    }
+}
+void Message_Destroy(GOBJ **msg_queue, int msg_num)
+{
+    GOBJ *msg_gobj = msg_queue[msg_num];
+    MsgData *msg_data = msg_gobj->userdata;
+
+    // Destroy text
+    Text *text = msg_data->text;
+    if (text)
+        Text_Destroy(text);
+
+    // Destroy GOBJ
+    GObj_Destroy(msg_gobj);
+
+    // shift others
+    for (int i = msg_num; i < MSGQUEUE_SIZE - 1; i++)
+    {
+        msg_queue[i] = msg_queue[i + 1];
+
+        // update its prev pos
+        GOBJ *this_msg_gobj = msg_queue[i];
+        if (this_msg_gobj)
+        {
+            MsgData *this_msg_data = this_msg_gobj->userdata;
+            this_msg_data->prev_index = i + 1; // prev position
+        }
+    }
+
+    msg_queue[MSGQUEUE_SIZE-1] = 0;
+}
+
+void Message_Add(GOBJ *msg_gobj, int queue_num)
+{
+    MsgData *msg_data = msg_gobj->userdata;
+    MsgMngrData *mgr_data = stc_msgmgr->userdata;
+    GOBJ **msg_queue = mgr_data->msg_queue[queue_num];
+
+    // ensure this queue exists
+    if (queue_num >= MSGQUEUE_NUM)
+        assert("queue_num over!");
+
+    // msg kind -1 always sticks around
+    if (msg_data->kind != -1) {
+        // remove any existing messages of this kind
+        for (int i = 0; i < MSGQUEUE_SIZE; i++)
+        {
+            GOBJ *this_msg_gobj = msg_queue[i];
+
+            // if it exists
+            if (this_msg_gobj)
+            {
+                MsgData *this_msg_data = this_msg_gobj->userdata;
+
+                // Remove this message if its of the same kind
+                if (this_msg_data->kind == msg_data->kind)
+                {
+                    Message_Destroy(msg_queue, i); // remove the message and shift others
+
+                    // if the message we're replacing is the most recent message, instantly
+                    // remove the old one and do not animate the new one
+                    if (i == 0)
+                    {
+                        msg_data->state = MSGSTATE_WAIT;
+                        msg_data->anim_timer = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    // first remove last message in the queue
+    if (msg_queue[MSGQUEUE_SIZE - 1])
+        Message_Destroy(msg_queue, MSGQUEUE_SIZE - 1);
+
+    // shift other messages
+    for (int i = MSGQUEUE_SIZE - 2; i >= 0; i--)
+    {
+        // shift message
+        msg_queue[i + 1] = msg_queue[i];
+
+        // update its prev pos
+        GOBJ *this_msg_gobj = msg_queue[i + 1];
+        if (this_msg_gobj)
+        {
+            MsgData *this_msg_data = this_msg_gobj->userdata;
+            this_msg_data->prev_index = i; // prev position
+        }
+    }
+
+    // add this new message
+    msg_queue[0] = msg_gobj;
+
+    // set prev pos to -1 (slides in)
+    msg_data->prev_index = -1;
+    msg_data->orig_index = 0;
+}
+void HUD_CObjThink(GOBJ *gobj)
+{
+    HUDCamData *cam = gobj->userdata;
+    if (!cam->hide && Pause_CheckStatus(1) != 2)
+        CObjThink_Common(gobj);
+}
+void Message_CObjThink(GOBJ *gobj)
+{
+    if (Pause_CheckStatus(1) != 2)
+        CObjThink_Common(gobj);
+}
+
+// Tips Functions
+void Tip_Init(void)
+{
+    // init static struct
+    memset(&stc_tipmgr, 0, sizeof(TipMgr));
+
+    // create tipmgr gobj
+    GOBJ *tipmgr_gobj = GObj_Create(0, 7, 0);
+    GObj_AddProc(tipmgr_gobj, Tip_Think, 21);
+}
+void Tip_Think(GOBJ *gobj)
+{
+    GOBJ *tip_gobj = stc_tipmgr.gobj;
+
+    // update tip
+    if (tip_gobj)
+    {
+        // update anim
+        JOBJ_AnimAll(tip_gobj->hsd_object);
+
+        // update text position
+        JOBJ *tip_jobj;
+        Vec3 tip_pos;
+        JOBJ_GetChild(tip_gobj->hsd_object, &tip_jobj, TIP_TXTJOINT, -1);
+        JOBJ_GetWorldPosition(tip_jobj, 0, &tip_pos);
+        Text *tip_text = stc_tipmgr.text;
+        tip_text->trans.X = tip_pos.X;
+        tip_text->trans.Y = -tip_pos.Y;
+
+        // state logic
+        switch (stc_tipmgr.state)
+        {
+        case (0): // in
+        {
+            // if anim is done, enter wait
+            if (JOBJ_CheckAObjEnd(tip_gobj->hsd_object) == 0)
+                stc_tipmgr.state = 1; // enter wait
+
+            break;
+        }
+        case (1): // wait
+        {
+            // sub timer
+            stc_tipmgr.lifetime--;
+            if (stc_tipmgr.lifetime <= 0)
+            {
+                // apply exit anim
+                JOBJ *tip_root = tip_gobj->hsd_object;
+                JOBJ_RemoveAnimAll(tip_root);
+#ifdef MU_NATIVE
+                JOBJ_AddAnimAll(tip_root, MEX_DP_AT(MEX_DP(stc_event_vars.menu_assets->tip_jointanim), 1), 0, 0);
+#else
+                JOBJ_AddAnimAll(tip_root, stc_event_vars.menu_assets->tip_jointanim[1], 0, 0);
+#endif
+                JOBJ_ReqAnimAll(tip_root, 0);
+
+                stc_tipmgr.state = 2; // enter wait
+            }
+
+            break;
+        }
+        case (2): // out
+        {
+            // if anim is done, destroy
+            if (JOBJ_CheckAObjEnd(tip_gobj->hsd_object) == 0)
+            {
+                // remove text
+                Text_Destroy(stc_tipmgr.text);
+                GObj_Destroy(stc_tipmgr.gobj);
+                stc_tipmgr.gobj = 0;
+            }
+            break;
+        }
+        }
+    }
+}
+int Tip_Display(int lifetime, char *fmt, ...)
+{
+
+#define TIP_TXTSIZE 4.7
+#define TIP_TXTSIZEX TIP_TXTSIZE * 0.85
+#define TIP_TXTSIZEY TIP_TXTSIZE
+#define TIP_TXTASPECT 2430
+#define TIP_LINEMAX 5
+#define TIP_CHARMAX 48
+
+    va_list args;
+
+    // if tip exists
+    if (stc_tipmgr.gobj)
+    {
+        // if tip is in the process of exiting
+        if (stc_tipmgr.state == 2)
+        {
+            // remove text
+            Text_Destroy(stc_tipmgr.text);
+            GObj_Destroy(stc_tipmgr.gobj);
+            stc_tipmgr.gobj = 0;
+        }
+        // if is active onscreen do nothing
+        else
+            return 0;
+    }
+
+    MsgMngrData *msgmngr_data = stc_msgmgr->userdata; // using message canvas cause there are so many god damn text canvases
+
+    // Create bg
+    GOBJ *tip_gobj = GObj_Create(0, 0, 0);
+    stc_tipmgr.gobj = tip_gobj;
+    GObj_AddGXLink(tip_gobj, GXLink_Common, MSG_GXLINK, 80);
+#ifdef MU_NATIVE
+    JOBJ *tip_jobj = JOBJ_LoadJoint(MEX_DP(stc_event_vars.menu_assets->tip_jobj));
+#else
+    JOBJ *tip_jobj = JOBJ_LoadJoint(stc_event_vars.menu_assets->tip_jobj);
+#endif
+    GObj_AddObject(tip_gobj, R13_U8(-0x3E55), tip_jobj);
+
+    // account for widescreen
+    /*
+    float aspect = (msgmngr_data->cobj->projection_param.perspective.aspect / 1.216667) - 1;
+    tip_jobj->trans.X += (tip_jobj->trans.X * aspect);
+    JOBJ_SetMtxDirtySub(tip_jobj);
+    */
+
+    // Create text object
+    Text *tip_text = Text_CreateText(2, msgmngr_data->canvas);
+    stc_tipmgr.text = tip_text;
+    stc_tipmgr.lifetime = lifetime;
+    stc_tipmgr.state = 0;
+    tip_text->kerning = 1;
+    tip_text->align = 0;
+    tip_text->use_aspect = 1;
+
+    // adjust text scale
+    Vec3 scale = tip_jobj->scale;
+    // background scale
+    tip_jobj->scale = scale;
+    // text scale
+    tip_text->viewport_scale.X = scale.X * 0.01f * TIP_TXTSIZEX;
+    tip_text->viewport_scale.Y = scale.Y * 0.01f * TIP_TXTSIZEY;
+    tip_text->aspect.X = TIP_TXTASPECT / TIP_TXTSIZEX;
+
+    // apply enter anim
+    JOBJ_RemoveAnimAll(tip_jobj);
+#ifdef MU_NATIVE
+    JOBJ_AddAnimAll(tip_jobj, MEX_DP_AT(MEX_DP(stc_event_vars.menu_assets->tip_jointanim), 0), 0, 0);
+#else
+    JOBJ_AddAnimAll(tip_jobj, stc_event_vars.menu_assets->tip_jointanim[0], 0, 0);
+#endif
+    JOBJ_ReqAnimAll(tip_jobj, 0);
+
+    // build string
+    char buffer[(TIP_LINEMAX * TIP_CHARMAX) + 1];
+    va_start(args, fmt);
+    vsprintf(buffer, fmt, args);
+    va_end(args);
+    char *msg = buffer;
+
+    // count newlines
+    int line_num = 1;
+    int line_length_arr[TIP_LINEMAX];
+    char *msg_cursor_prev, *msg_cursor_curr; // declare char pointers
+    msg_cursor_prev = msg;
+    msg_cursor_curr = strchr(msg_cursor_prev, '\n'); // check for occurrence
+    while (msg_cursor_curr != 0)                     // if occurrence found, increment values
+    {
+        // check if exceeds max lines
+        if (line_num >= TIP_LINEMAX)
+            assert("TIP_LINEMAX exceeded!");
+
+        // Save information about this line
+        line_length_arr[line_num - 1] = msg_cursor_curr - msg_cursor_prev; // determine length of the line
+        line_num++;                                                        // increment number of newlines found
+        msg_cursor_prev = msg_cursor_curr + 1;                             // update prev cursor
+        msg_cursor_curr = strchr(msg_cursor_prev, '\n');                   // check for another occurrence
+    }
+
+    // get last lines length
+    msg_cursor_curr = strchr(msg_cursor_prev, 0);
+    line_length_arr[line_num - 1] = msg_cursor_curr - msg_cursor_prev;
+
+    // copy each line to an individual char array
+    for (int i = 0; i < line_num; i++)
+    {
+        // check if over char max
+        u8 line_length = line_length_arr[i];
+        if (line_length > TIP_CHARMAX)
+            assert("TIP_CHARMAX exceeded!");
+
+        // copy char array
+        char msg_line[TIP_CHARMAX + 1];
+        memcpy(msg_line, msg, line_length);
+
+        // add null terminator
+        msg_line[line_length] = '\0';
+
+        // increment msg
+        msg += line_length + 1; // +1 to skip past newline
+
+        // print line
+        int y_delta = i * MSGTEXT_YOFFSET;
+        Text_AddSubtext(tip_text, 0, y_delta, msg_line);
+    }
+
+    return 1; // tip created
+}
+void Tip_Destroy(void)
+{
+    // check if tip exists and isnt in exit state, enter exit
+    if (stc_tipmgr.gobj && stc_tipmgr.state != 2)
+    {
+        // apply exit anim
+        JOBJ *tip_root = stc_tipmgr.gobj->hsd_object;
+        JOBJ_RemoveAnimAll(tip_root);
+#ifdef MU_NATIVE
+        JOBJ_AddAnimAll(tip_root, MEX_DP_AT(MEX_DP(stc_event_vars.menu_assets->tip_jointanim), 1), 0, 0);
+#else
+        JOBJ_AddAnimAll(tip_root, stc_event_vars.menu_assets->tip_jointanim[1], 0, 0);
+#endif
+        JOBJ_ReqAnimAll(tip_root, 0);
+        JOBJ_ForEachAnim(tip_root, 6, 0xfb7f, AOBJ_SetRate, 1, (float)2);
+
+        stc_tipmgr.state = 2; // enter wait
+    }
+}
+
+///////////////////////////////
+/// Member-Access Functions ///
+///////////////////////////////
+
+EventDesc *GetEventDesc(int page, int event)
+{
+    return EventPages[page]->events[event];
+}
+char *GetEventName(int page, int event)
+{
+    EventDesc *desc = GetEventDesc(page, event);
+    return desc->eventName;
+}
+char *GetEventDescription(int page, int event)
+{
+    EventDesc *desc = GetEventDesc(page, event);
+    return desc->eventDescription;
+}
+char *GetPageName(int page)
+{
+    return EventPages[page]->name;
+}
+char *GetEventFile(int page, int event)
+{
+    EventDesc *desc = GetEventDesc(page, event);
+    return desc->eventFile;
+}
+char *GetCSSFile(int page, int event)
+{
+    EventDesc *desc = GetEventDesc(page, event);
+    return desc->eventCSSFile;
+}
+int GetPageEventNum(int page)
+{
+    return EventPages[page]->eventNum - 1;
+}
+char *GetTMVersShort(void)
+{
+    return TM_VersShort;
+}
+char *GetTMVersLong(void)
+{
+    return TM_VersLong;
+}
+char *GetTMCompile(void)
+{
+    return TM_Compile;
+}
+int GetPageNum(void)
+{
+    return countof(EventPages) - 1;
+}
+u8 GetCSSType(int page, int event)
+{
+    EventDesc *desc = GetEventDesc(page, event);
+    return desc->CSSType;
+}
+u8 GetIsSelectStage(int page, int event)
+{
+    EventDesc *desc = GetEventDesc(page, event);
+    return desc->stage == -1;
+}
+s8 GetCPUFighter(int page, int event)
+{
+    EventDesc *desc = GetEventDesc(page, event);
+    return desc->cpuKind;
+}
+s16 GetStage(int page, int event)
+{
+    EventDesc *desc = GetEventDesc(page, event);
+    return desc->stage;
+}
+u8 GetScoreType(int page, int event)
+{
+    EventDesc *desc = GetEventDesc(page, event);
+    return desc->scoreType;
+}
+int GetPageEventOffset(int pageID) {
+    int eventIndex = 0;
+    // Add the number of events for each previous page
+    for(int i = 0; i < pageID; i++) {
+        eventIndex += EventPages[i]->eventNum;
+    }
+    return eventIndex;
+}
+int GetJumpTableOffset(int pageID, int eventID) {
+    EventDesc *desc = GetEventDesc(pageID, eventID);
+    return desc->jumpTableIndex;
+}
+AllowedCharacters *GetEventCharList(int eventID,int pageID) {
+    EventDesc *desc = GetEventDesc(pageID, eventID);
+    return &desc->allowed_characters;
+}
