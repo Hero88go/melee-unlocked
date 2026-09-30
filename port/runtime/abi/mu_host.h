@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 14
+#define MU_HOST_API_VERSION 16
 #define MU_GAME_API_VERSION 6
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -320,6 +320,22 @@ typedef struct MuHostApi {
     /* Version 14. The second word of 20XX TE features (MU_GAME_OPTION2_TE_*); during replay
      * playback, the word the replay was recorded with. */
     uint32_t (*game_options2)(void);
+
+    /* Version 15. The HUD sizes from the settings panel, display only: stock icon percent in the
+     * low byte, damage number percent in the next (75..175; 100 is the game's own size). */
+    uint32_t (*hud_scales)(void);
+    /* Version 15. Each drawn frame, per player slot 0..3: whether the slot is in the match, its
+     * damage and stocks, and its player tag in the HUD's 640x480 space (the nickname anchor). */
+    void (*hud_player)(int32_t slot, int32_t present, int32_t damage, int32_t stocks,
+                       float tag_x, float tag_y, int32_t tag_visible);
+
+    /* Version 16. The idle part of the wait for the next retrace, one audio period at a time.
+     * VIWaitForRetrace calls it while it returns nonzero and delivers pending events after each
+     * call: the host waits until the real time of the next audio (AI) deadline before that retrace,
+     * advances the console clock to it and plays the block, so the game's DMA-done handler mixes the
+     * next block then, as the console's AI interrupt did, instead of three blocks in a burst after
+     * the retrace. Returns 0 when no deadline is left before the retrace, or when pacing is off. */
+    int32_t (*vi_idle_step)(void);
 } MuHostApi;
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
@@ -360,6 +376,9 @@ typedef struct MuHostApi {
 #define MU_GAME_OPTION_LAB_LOOP            0x04000000u   /* playback returns to the kept moment and repeats */
 /* Training Mode CE's disc files are in the mod profile, on the vanilla game (sourceport/game/tmce). */
 #define MU_GAME_OPTION_TMCE                0x08000000u
+/* Slippi's "Widescreen 16:9" optional code, native (shim/mu_gecko.c). Only what is drawn changes,
+ * so it follows each player's own setting online and in replays. */
+#define MU_GAME_OPTION_WIDESCREEN          0x10000000u
 #define MU_GAME_OPTION_TE_TOURNAMENT_SAFE                                                         \
     (MU_GAME_OPTION_TE_HOLD_START_PAUSE | MU_GAME_OPTION_TE_FROZEN_STAGES |                     \
      MU_GAME_OPTION_TE_CPU_ZELDA_SHEIK | MU_GAME_OPTION_TE_HANDICAP_STOCKS)

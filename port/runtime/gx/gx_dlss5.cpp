@@ -3,6 +3,7 @@
 #include "gx_dlss5.h"
 #include "gx_dlss5_scaling.h"
 #include "gx_streamline.h"
+#include "../../dlss5_forwarder/core_api.h"
 #include "host.h"
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -168,6 +169,10 @@ struct State {
   LoadFn load = nullptr; InitFn init = nullptr; CreateFn create = nullptr; EvaluateFn eval = nullptr; ReleaseFn release = nullptr;
   ID3D12Device* device = nullptr;   // native (not the Streamline proxy)
   NVSDK_NGX_Parameter* caps = nullptr;
+  mdl5_api::CoreInitFn core_init = nullptr;
+  mdl5_api::CoreCapabilitiesFn core_capabilities = nullptr;
+  mdl5_api::CoreDestroyFn core_destroy = nullptr;
+  mdl5_api::CoreShutdownFn core_shutdown = nullptr;
   int float_slot = -1;
   void* feature[4] = {};
   uint32_t feature_w = 0, feature_h = 0;
@@ -271,29 +276,45 @@ bool can_retry(uint32_t w, uint32_t h, const Tuning& t) {
 
 std::string hex(unsigned v) { char b[16]; wsprintfA(b, "0x%08X", v); return b; }
 
-bool ensure_ready(ID3D12Device* proxy_device) {
-  if (g.ready) return true;
-  if (g.failed) return false;
-  g.tried = true;
-  const std::wstring dir = exe_dir();
-  const std::wstring fwd = dir + L"\\nvngx.dll_meleedlss5.dll";
-  g.forwarder = LoadLibraryW(fwd.c_str());
+bool load_forwarder() {
+  if (!g.forwarder) {
+    const std::wstring path = exe_dir() + L"\\nvngx.dll_meleedlss5.dll";
+    g.forwarder = LoadLibraryW(path.c_str());
+  }
   if (!g.forwarder) return fail("nvngx.dll_meleedlss5.dll is missing from the game folder");
   g.load = (LoadFn)GetProcAddress(g.forwarder, "mdl5_load");
   g.init = (InitFn)GetProcAddress(g.forwarder, "mdl5_init");
   g.create = (CreateFn)GetProcAddress(g.forwarder, "mdl5_create");
   g.eval = (EvaluateFn)GetProcAddress(g.forwarder, "mdl5_evaluate");
   g.release = (ReleaseFn)GetProcAddress(g.forwarder, "mdl5_release");
-  if (!g.load || !g.init || !g.create || !g.eval || !g.release) return fail("the forwarder DLL is the wrong version");
+  g.core_init = (mdl5_api::CoreInitFn)GetProcAddress(g.forwarder, "mdl5_core_init");
+  g.core_capabilities = (mdl5_api::CoreCapabilitiesFn)GetProcAddress(g.forwarder, "mdl5_core_capabilities");
+  g.core_destroy = (mdl5_api::CoreDestroyFn)GetProcAddress(g.forwarder, "mdl5_core_destroy");
+  g.core_shutdown = (mdl5_api::CoreShutdownFn)GetProcAddress(g.forwarder, "mdl5_core_shutdown");
+  if (!g.load || !g.init || !g.create || !g.eval || !g.release ||
+      !g.core_init || !g.core_capabilities || !g.core_destroy || !g.core_shutdown)
+    return fail("the forwarder DLL is the wrong version");
+  return true;
+}
+
+bool ensure_ready(ID3D12Device* proxy_device) {
+  if (g.ready) return true;
+  if (g.failed) return false;
+  g.tried = true;
+  const std::wstring dir = exe_dir();
+  if (!load_forwarder()) return false;
 
   g.device = (ID3D12Device*)streamline::native_interface(proxy_device);
   const std::wstring data = dir + L"\\streamline-logs";
   CreateDirectoryW(data.c_str(), nullptr);
   // NVIDIA's NGX core (DLSS SDK). Streamline has usually brought it up already for DLSS, in which
   // case this returns success without changing anything.
-  NVSDK_NGX_Result r = NVSDK_NGX_D3D12_Init(kAppId, data.c_str(), g.device);
+  NVSDK_NGX_Result r = static_cast<NVSDK_NGX_Result>(g.core_init(
+      kAppId, data.c_str(), g.device, static_cast<int>(NVSDK_NGX_Version_API)));
   if (NVSDK_NGX_FAILED(r)) return fail("NVIDIA NGX would not start (" + hex((unsigned)r) + ")");
-  r = NVSDK_NGX_D3D12_GetCapabilityParameters(&g.caps);
+  void* parameters = nullptr;
+  r = static_cast<NVSDK_NGX_Result>(g.core_capabilities(&parameters));
+  g.caps = static_cast<NVSDK_NGX_Parameter*>(parameters);
   if (NVSDK_NGX_FAILED(r) || !g.caps) return fail("NVIDIA NGX gave no parameters (" + hex((unsigned)r) + ")");
 
   const std::wstring model = find_model();
@@ -557,7 +578,7 @@ void shutdown() {
   for (auto& feature : g.feature) feature = nullptr;
   for (auto& out : g.out) out.Reset();
   g.depth_copy.Reset(); g.reduced_input.Reset(); g.resolved.Reset(); g.scaling.shutdown();
-  if (g.caps) { NVSDK_NGX_D3D12_DestroyParameters(g.caps); g.caps = nullptr; }
+  if (g.caps) { if (g.core_destroy) g.core_destroy(g.caps); g.caps = nullptr; }
   g.fence.Reset();
   g.ready = false; g.failed = false; g.tried = false; g.tuning_failed = false;
   g.history_dirty = true; g.evaluations = 0; g.failures = 0;

@@ -1,0 +1,18 @@
+Free DSP coefficient table v0.2.1
+
+Sys/GC/dsp_coef.bin and SysPlayback/GC/dsp_coef.bin are generated filter coefficients from the
+free DSP ROM project, licensed under GPL-2.0-or-later. They are not a console ROM dump.
+Source and generator at commit 388ab13db1c2a10534a9b81acba8fef98d96409c:
+https://github.com/dolphin-emu/dolphin/blob/388ab13db1c2a10534a9b81acba8fef98d96409c/Data/Sys/GC/dsp_coef.bin
+https://github.com/dolphin-emu/dolphin/blob/388ab13db1c2a10534a9b81acba8fef98d96409c/docs/DSP/free_dsp_rom/generate_coefs.py
+
+The table is 4096 bytes. SHA-256:
+c41e7d9f763da40983e83a5291cbecec1f536fd8b08ac6dda05eab33f57501ea
+Adler-32 after loading its 16-bit words in host byte order: db6880c1.
+Adler-32 of the file bytes: 25b780c1.
+
+The generator produces 128 phases of four Q15 taps for three cutoffs, using Hamming and Kaiser
+windowed sinc filters, followed by 1024 zero bytes. A player's own console coefficient dump in
+User/GC/dsp_coef.bin takes priority. That player-supplied file is never copied into a release.
+The applicable GPL text is supplied as COPYING.txt in this folder; the combined program is
+distributed under GPL-3.0-or-later.

@@ -1,4 +1,4 @@
-// Native Melee port entry point.
+﻿// Native Melee port entry point.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
 #include <functional>
@@ -22,6 +22,7 @@
 #include "pc_settings.h"
 #include "texture_pack.h"
 #include "cosmetic_mods.h"
+#include "mod_scan.h"
 #include "threaded_backend.h"
 #include "window.h"
 #include "lcancel.h"
@@ -892,11 +893,40 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
     CloseHandle(dump);
   }
   if (g_crash_dialog) {
-    std::string text = std::string(head) + "\n\nMelee Unlocked crashed. Please send melee_port.log, melee_port_crash.txt and melee_port_crash.dmp "
-                       "from the game folder with your bug report (https://github.com/hero88go/melee-unlocked/issues).";
+    std::string text = std::string(head) + "\n\nMelee Unlocked crashed. The launcher can send this report: it asks once you close this "
+                       "message. If you started the game without the launcher, please send melee_port.log, melee_port_crash.txt and "
+                       "melee_port_crash.dmp from the game folder with your bug report (https://github.com/hero88go/melee-unlocked/issues).";
     MessageBoxA(nullptr, text.c_str(), "Melee Unlocked", MB_ICONERROR | MB_OK);
   }
   return EXCEPTION_EXECUTE_HANDLER;
+}
+
+// MELEE_TEST_CRASH=<frame>: a deliberate crash during that frame, for the crash report gates. Only a
+// hidden or headless run arms it (players never start one). It is an ordinary access violation, so
+// melee_port_crash.txt, the minidump and the log line come from crash_filter exactly as for a real
+// crash. It fires on a thread of its own, which leaves the frame loop untouched; in a --fast run it
+// can land a frame or two late, and the log line names the frame it hit.
+static void arm_test_crash(bool automated) {
+  const char* text = std::getenv("MELEE_TEST_CRASH");
+  if (!text || !*text) return;
+  char* end = nullptr;
+  const unsigned long frame = std::strtoul(text, &end, 10);
+  if (!automated || !end || *end || frame == 0) {
+    host::log("test: MELEE_TEST_CRASH ignored (%s)", automated ? "not a frame number" : "hidden runs only");
+    return;
+  }
+  host::log("test: crash armed for frame %lu", frame);
+  std::thread([frame] {
+    // The Source Port counts profiler frames, the Static Recomp retraces: whichever moves. The armed
+    // line is written again once the game runs, since the Static Recomp opens its log after this point.
+    const auto now = [] { return std::max(host::profiler_frame_id(), host::retrace_count()); };
+    while (now() < 1) Sleep(1);
+    host::log("test: crash armed for frame %lu", frame);
+    while (now() < frame) Sleep(1);
+    host::log("test: forced crash at frame %u", now());
+    volatile int* volatile target = nullptr;
+    *target = 1;
+  }).detach();
 }
 
 // Records the disc this run used, next to the launcher's own settings. However the game was
@@ -1033,6 +1063,17 @@ static int melee_main(int argc, char** argv) {
   // with the game above normal. The tick sleeps most of each frame, so the rest of the PC keeps
   // the remaining time; the render thread and the audio thread are raised where they start.
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+  // Windows power throttling (EcoQoS) off for this process: on CPUs with performance and efficiency
+  // cores, Windows can move a throttled process onto the efficiency cores, and the game then runs
+  // slow for as long as it stays there. The game sleeps most of each frame, so this costs no power
+  // while it waits. Ignored by Windows versions without the setting.
+  {
+    PROCESS_POWER_THROTTLING_STATE throttling{};
+    throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    throttling.StateMask = 0;   // execution speed never throttled
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof throttling);
+  }
   host::Options& o = host::options;
   bool headless = false, hidden = false, threaded = false, fps_requested = false;
   bool scripted = false, allow_matchmaking = false;   // automated runs stay off Slippi's servers
@@ -1045,6 +1086,7 @@ static int melee_main(int argc, char** argv) {
   gfx.native_source = true;
 #endif
   bool automated = false, explicit_frame_mode = false, settings_window_only = false, load_settings = false;
+  bool explicit_card_dir = false;
   unsigned long settings_standby = 0;   // the launcher's process id: start hidden, show when it asks
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -1057,6 +1099,7 @@ static int melee_main(int argc, char** argv) {
     if (arg == "--settings-window") settings_window_only = true;
     if (arg == "--settings-standby" && i+1 < argc) settings_standby = std::strtoul(argv[++i], nullptr, 10);
     if (arg == "--load-settings") load_settings = true;
+    if (arg == "--card-dir") explicit_card_dir = true;
   }
   gfx.pc_settings = !automated;
   g_crash_dialog = !automated;
@@ -1091,6 +1134,7 @@ static int melee_main(int argc, char** argv) {
     // Following the monitor is still unlocked in the sense that matters: a 144 Hz display gets 144.
     gfx.fps_cap = -1;   // -1 = follow the monitor, 0 = uncapped
     gx::load_pc_settings(gfx, o.volume);
+    source_port::mods::set_auto_detect(true);
     // Opt-in, and only ever from a saved setting: an automated or headless run never gets here, so
     // it can never publish. With the setting off no thread is started and no pipe is opened.
     if (gfx.discord_presence) { host::discord::configure(gfx.discord_app_id); host::discord::enable(true); }
@@ -1106,6 +1150,7 @@ static int melee_main(int argc, char** argv) {
     std::string a = argv[i];
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
     if (a == "--iso") o.iso = next();
+    else if (a == "--mod-base-iso") o.mod_base_iso = next();   // Static Recomp: --iso is a mod disc, this is the vanilla one
     else if (a == "--state-trace") o.state_trace = next();
     else if (a == "--state-digest") o.state_digest = next();
     else if (a == "--frames") o.frames = (uint32_t)std::strtoul(next(), nullptr, 0);
@@ -1204,6 +1249,8 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--lab-dir") o.lab_dir = next();
     else if (a == "--lab-view") gfx.lab_view = true;
     else if (a == "--card-dir") o.card_dir = next();
+    // Explicit test opt-in; ordinary hidden replay and online runs never scan Mods.
+    else if (a == "--scan-mods") source_port::mods::set_auto_detect(true);
     else if (a == "--log-file") o.log_file = next();
 #ifdef MELEE_SOURCE_PORT
     else if (a == "--replay") replay_arg = next();   // the native game plays this .slp (loaded after the flags)
@@ -1301,6 +1348,10 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--profile-render") { g_profile = true; g_profiler.render_thread = true; }
     // Recognised in the pre-scan above; listed here so it is not rejected as unknown.
 #ifdef MELEE_SOURCE_PORT
+    else if (a == "--list-audio-devices") {   // endpoint id and name per line, for the launcher and support
+      for (const auto& d : host::audio_list_devices()) std::printf("%s\t%s\n", d.id.c_str(), d.name.c_str());
+      return 0;
+    }
     else if (a == "--match") { if (!source_port::set_match(next())) {
       std::fprintf(stderr, "--match <stage>:<p1>[:<p2>...], each player <kind>[/c<level>][/x<costume>]\n"); return 2; } }
     else if (a == "--card-self-test") card_self_test_dir = next();
@@ -1331,7 +1382,10 @@ static int melee_main(int argc, char** argv) {
       return 2;
     }
   }
-  gecko::option_widescreen = gfx.native_source ? false : gfx.widescreen;   // native Source has no translated Slippi code table
+  // The Static Recomp runs Slippi's code from its code table; the Source Port game reads the same
+  // flag (MU_GAME_OPTION_WIDESCREEN) and runs its native version of the code.
+  gecko::option_widescreen = gfx.widescreen;
+  if (gfx.widescreen) std::fprintf(stderr, "widescreen: Slippi 16:9 on\n");
   gecko::option_lagless_fod = !gfx.fod_reflections; // the Gecko flag is the inverse of the UI label
   if (fps_requested && gfx.subframe == gx::SubFrameMode::Off) {
     std::fprintf(stderr, "--fps requires explicit experimental --frame-mode interpolate, extrapolate or authored\n");
@@ -1453,8 +1507,16 @@ static int melee_main(int argc, char** argv) {
     host::window_set_title(host::window_title_base().c_str());
   }
   gx::set_authored_capture(gfx.subframe == gx::SubFrameMode::Authored || gfx.subframe == gx::SubFrameMode::AuthoredInterpolate);
+  host::disc_prefetch_wait();
   gx::init(backend.get());
+  host::audio_set_buffering(gfx.audio_mode, gfx.audio_buffer_ms);
+  host::audio_set_device(gfx.audio_device.c_str());
+  host::audio_set_asio(gfx.audio_asio_driver.c_str(), gfx.audio_asio_buffer);
+  // Hidden runs are test automation (players never start hidden): they use the player's Auto memory
+  // but never save to it, so a loaded test machine cannot raise the player's buffer.
+  host::audio_set_remember(!hidden);
   host::audio_open(o.volume, o.audio_dump.c_str(), !headless);
+  arm_test_crash(automated);   // no-op unless MELEE_TEST_CRASH is set on a hidden run
 
 #ifdef MELEE_SOURCE_PORT
   // The game from source: nothing below this point applies (it is the recompiled guest's boot).
@@ -1542,7 +1604,19 @@ static int melee_main(int argc, char** argv) {
   ppc::init_dispatch();
 #ifndef MELEE_SOURCE_PORT
   install_rng_seed_hook();
+  host::install_audio_pacing();
 #endif
+  if (gx::RenderOptions::kModFeaturesAvailable && source_port::mods::auto_detect() && !gfx.native_source) {
+    source_port::mods::StartupOptions scan;
+    scan.base_iso = std::filesystem::u8path(o.mod_base_iso.empty() ? o.iso : o.mod_base_iso);
+    // An explicit card belongs to this session already. Protect the ordinary card and
+    // list the packs, without replacing or modifying the session's selected card.
+    if (!explicit_card_dir) scan.card_dir = std::filesystem::u8path(o.card_dir);
+    scan.use_profile_card = !explicit_card_dir;
+    const auto found = source_port::mods::startup(scan);
+    for (const auto& line : found.log) host::log("mods: %s", line.c_str());
+    if (!explicit_card_dir && !found.card_dir.empty()) o.card_dir = found.card_dir.u8string();
+  }
   host::boot_setup();
   {
     std::vector<gx::texpack::CosmeticCompanion> companions;

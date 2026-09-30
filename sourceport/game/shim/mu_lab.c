@@ -563,6 +563,23 @@ int mu_lab_input(void* fighter, MuLabInput* out)
 {
     Fighter* fp = fighter;
     const int dummy = fp->player_idx == 1 && !fp->is_sub_fighter;
+    /* MELEE_TEST_CPU_FALL=<frame> (tests only): after that match frame every fighter but player 1 is
+     * moved below the blast zone, so a hidden Classic run wins its stage and reaches STAGE CLEAR. */
+    static int cpu_fall = -2;
+    if (cpu_fall == -2) {
+        const char* v = getenv("MELEE_TEST_CPU_FALL");
+        cpu_fall = -1;
+        if (v != NULL && *v >= '0' && *v <= '9') {
+            cpu_fall = 0;
+            while (*v >= '0' && *v <= '9' && cpu_fall < 1000000) {
+                cpu_fall = cpu_fall * 10 + (*v++ - '0');
+            }
+        }
+    }
+    if (cpu_fall >= 0 && fp->player_idx != 0 && !mu_online_active() &&
+        (int) gm_GetFrameCount() > cpu_fall) {
+        fp->cur_pos.y = -1000.0f;
+    }
     if (!lab_on()) {
         /* MELEE_TE_FAKE_ATTACK (tests only): player 1 walks to player 2 and forward smashes it once
          * a second in any offline match, so CPU smart DI can be checked without a controller. */
@@ -687,3 +704,21 @@ MU_EXCLUSIONS(lab,
               MU_EXCLUDE(lab_pos),
               MU_EXCLUDE(dummy_logs),
               MU_EXCLUDE(lab_loop_pending))
+
+/* MELEE_TEST_CLASSIC_STAGE=<n> (tests only): Classic starts at stage index n (5 is Snag the Trophies)
+ * so a hidden run can reach a later stage. Unset for players: -1, the normal start. */
+int mu_test_classic_stage(void)
+{
+    const char* v = getenv("MELEE_TEST_CLASSIC_STAGE");
+    int n = 0;
+    if (v == NULL || *v < '0' || *v > '9') {
+        return -1;
+    }
+    while (*v >= '0' && *v <= '9') {
+        n = n * 10 + (*v++ - '0');
+        if (n > 10) {
+            return -1;
+        }
+    }
+    return *v == '\0' ? n : -1;
+}

@@ -13,6 +13,23 @@ int mu_online_abi_command(unsigned int command, const unsigned char* payload, un
                                    (uint32_t*) response_size);
 }
 
+/* HUD sizes from the settings panel: stock percent | damage percent << 8 (0: host too old). */
+unsigned int mu_hud_scales_abi(void)
+{
+    if (mu_host->version >= 15 && mu_host->hud_scales != NULL) {
+        return mu_host->hud_scales();
+    }
+    return 0;
+}
+
+void mu_hud_player_abi(int slot, int present, int damage, int stocks, float tag_x, float tag_y,
+                       int tag_visible)
+{
+    if (mu_host->version >= 15 && mu_host->hud_player != NULL) {
+        mu_host->hud_player(slot, present, damage, stocks, tag_x, tag_y, tag_visible);
+    }
+}
+
 void mu_online_abi_resim_phase(int entering)
 {
     if (mu_host->version >= 13 && mu_host->resim_phase != NULL) {

@@ -27,6 +27,12 @@ u32 VIGetDTVStatus(void) { return 0; }
 
 void VIWaitForRetrace(void)
 {
+    /* The idle wait, one audio period at a time: each step plays the block due then, and the
+     * DMA-done handler it posts mixes the next one before the following step. */
+    if (mu_host->version >= 16 && mu_host->vi_idle_step != NULL) {
+        while (mu_host->vi_idle_step())
+            mu_deliver_pending();
+    }
     mu_host->vi_wait_retrace();
     mu_deliver_pending();
 }

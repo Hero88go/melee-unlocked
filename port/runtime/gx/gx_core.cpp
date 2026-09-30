@@ -4,6 +4,7 @@
 #include "gx_core.h"
 #include "pc_settings_shared.h"
 #include "host.h"
+#include "audio.h"
 #include "native_pose_bridge.h"
 #include "slippi_online.h"
 #include <algorithm>
@@ -33,6 +34,7 @@ uint64_t g_frame_sequence = 0;
 bool g_discontinuity = false;   // simulation thread only, like the rest of this file's state
 std::atomic<int> g_stock_hud_scale{100}, g_damage_hud_scale{100};
 std::atomic<bool> g_pal_stock_hud{false};
+std::array<HudPlayerSnapshot, 4> g_native_hud{};   // the native game's players (set_native_hud_player)
 
 bool guest_object(uint32_t address, uint32_t bytes) {
   return address >= 0x80000000u && address <= 0x81800000u - bytes;
@@ -535,6 +537,7 @@ void bp_write(uint32_t value) {
       c.intensity = bits(masked, 15, 1);
       c.half_scale = bits(masked, 9, 1);
       c.is_depth = (g_bp.zcontrol() & 7) == 3;
+      c.efb_alpha = (g_bp.zcontrol() & 7) == 1;   // RGBA6_Z24
       c.clear_color = ((g_bp.reg[BP_CLEAR_AR] & 0xFF) << 24) | ((g_bp.reg[BP_CLEAR_AR] & 0xFF00) << 8) |
                       ((g_bp.reg[BP_CLEAR_GB] & 0xFF00) >> 8 << 8) | (g_bp.reg[BP_CLEAR_GB] & 0xFF);
       // clear_color layout: A(31..24) R(23..16) G(15..8) B(7..0)
@@ -556,6 +559,15 @@ void bp_write(uint32_t value) {
         // The HUD objects and the guest Settings menu row are read and written at their console
         // addresses, which only the recompiled build keeps in guest RAM: the native game holds
         // them in its own image with its own layout, so it skips both.
+        if (host::game_image) {
+          // The native game reports its players each drawn frame (set_native_hud_player).
+          if (frame_in_match(g_frame)) {
+            g_frame.hud_players = g_native_hud;
+            g_frame.player_names = slippi::online::player_names_for_overlay();
+          } else {
+            g_native_hud = {};
+          }
+        }
         if (!host::game_image) {
           capture_match_hud(g_frame);
           const uint8_t options_menu = host::rd8(0x804A04F0);
@@ -578,6 +590,7 @@ void bp_write(uint32_t value) {
         else g_frame.clear();
         g_texture_snapshots.end_frame();
         g_dl_calls.clear(); g_immediate_draws.clear(); g_native_object_scopes.clear(); g_native_draw_scopes.clear(); native_pose_bridge_frame_reset(); finish_observed_frame();
+        host::note_frame_submitted();   // the game now only waits for the retrace (audio pacing, host.cpp)
       }
       break;
     }
@@ -715,6 +728,24 @@ void set_hud_scales(int stocks_percent, int damage_percent, bool pal_stocks) {
   g_stock_hud_scale.store(stocks_percent, std::memory_order_relaxed);
   g_damage_hud_scale.store(damage_percent, std::memory_order_relaxed);
   g_pal_stock_hud.store(pal_stocks, std::memory_order_relaxed);
+}
+
+void set_native_hud_player(int slot, bool present, int damage, int stocks, float tag_x, float tag_y,
+                           bool tag_visible) {
+  if (slot < 0 || slot >= 4) return;
+  auto& out = g_native_hud[slot];
+  out.present = present && damage >= 0 && damage <= 999 && stocks >= 0 && stocks <= 99;
+  out.damage = out.present ? damage : 0;
+  out.stocks = out.present ? stocks : 0;
+  out.tag_x = tag_x; out.tag_y = tag_y;
+  out.tag_visible = out.present && tag_visible && std::isfinite(tag_x) && std::isfinite(tag_y) &&
+                    tag_x >= 0 && tag_x <= 640 && tag_y >= 0 && tag_y <= 480;
+}
+
+uint32_t hud_scales_packed() {
+  const auto clamp_percent = [](int p) { return (uint32_t)std::clamp(p, 75, 175); };
+  return clamp_percent(g_stock_hud_scale.load(std::memory_order_relaxed)) |
+         clamp_percent(g_damage_hud_scale.load(std::memory_order_relaxed)) << 8;
 }
 
 void init(Backend* backend) {

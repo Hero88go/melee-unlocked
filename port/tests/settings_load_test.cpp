@@ -5,7 +5,14 @@
 #include "host/window.h"
 #include "host/host.h"
 #include "host/input_bindings.h"
+#include "host/audio_buffer_policy.h"
+#include "host/audio_sample_conversion.h"
+#include "host/lcancel.h"
+#include "abi/mu_lcancel_flash.h"
+#include "gx/gx_core.h"
 #include "gx/texture_pack.h"
+#include "host/mod_scan.h"
+#include "hle/gecko_data.h"
 #ifdef GX_DLSS5
 #include "gx/gx_dlss5.h"
 #endif
@@ -14,20 +21,90 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+#include <sstream>
 #include <string>
 
 namespace {
 int g_failures = 0;
 #define CHECK(cond) do { if (!(cond)) { std::printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #cond); ++g_failures; } } while (0)
+
+std::string read_text(const std::filesystem::path& path) {
+  std::ifstream in(path);
+  std::stringstream text;
+  text << in.rdbuf();
+  return text.str();
+}
+// A "key value" line for this key, anywhere in a settings file.
+bool has_key_line(const std::string& text, const std::string& key) {
+  return text.rfind(key + " ", 0) == 0 || text.find("\n" + key + " ") != std::string::npos;
+}
 }
 
 int main() {
   namespace fs = std::filesystem;
+  host::AudioBufferPolicy audio;
+  audio.configure(0, 40);
+  CHECK(audio.gap(160, 32000) && audio.target_ms == 44);
+  CHECK(!audio.gap(32000, 32000) && audio.target_ms == 44);
+  audio.clean(320000, 32000);
+  CHECK(audio.target_ms == 43);
+  audio.configure(1, 5);
+  CHECK(!audio.gap(160, 32000) && audio.target_ms == 5);
+  audio.configure(0, -100);
+  CHECK(audio.target_ms == 10);   // Auto's floor
+  audio.configure(2, 8);
+  CHECK(!audio.adaptive && !audio.gap(160, 32000) && audio.target_ms == 8);   // Exclusive stays fixed
+  audio.configure(0, 10000);
+  CHECK(!audio.gap(160, 32000) && audio.target_ms == 120);
+  // Exclusive has no buffer control. Neither a saved 120 ms Low target nor the default
+  // 40 ms may override its device-derived 18 ms floor. Low still respects the saved target.
+  audio.configure_for_output(2, 40, 18);
+  CHECK(!audio.adaptive && audio.target_ms == 18);
+  audio.configure_for_output(2, 120, 18);
+  CHECK(audio.target_ms == 18);
+  audio.configure_for_output(2, 5, 18);
+  CHECK(audio.target_ms == 18);
+  audio.configure_for_output(1, 40, 18);
+  CHECK(audio.target_ms == 40);
+  audio.configure_for_output(1, 5, 18);
+  CHECK(audio.target_ms == 18);
+  // The driver receives signed packed PCM: silence, both polarities and both full-scale limits.
+  const int16_t samples24[] = {0, 1, -1, INT16_MAX, INT16_MIN};
+  const uint32_t expected24[] = {0x000000u, 0x000100u, 0xFFFF00u, 0x7FFF00u, 0x800000u};
+  for (size_t i = 0; i < sizeof(samples24) / sizeof(samples24[0]); ++i) {
+    uint8_t guarded[] = {0xA5, 0, 0, 0, 0x5A};
+    host::audio_store_pcm24_le(guarded + 1, samples24[i]);
+    CHECK(guarded[0] == 0xA5 && guarded[4] == 0x5A);
+    CHECK((static_cast<uint32_t>(guarded[1]) | (static_cast<uint32_t>(guarded[2]) << 8) |
+           (static_cast<uint32_t>(guarded[3]) << 16)) == expected24[i]);
+  }
+  gx::Frame event_frame{};
+  CHECK(gx::frame_scene_draw(event_frame) == nullptr);
+  event_frame.draws.resize(3);
+  event_frame.draws[0].xf_regs[0x26] = 1; // orthographic UI
+  CHECK(gx::frame_scene_draw(event_frame) == &event_frame.draws[1]);
+  event_frame.draws[2].owner_player = 0;
+  event_frame.draws[2].skinned = true;
+  CHECK(gx::frame_scene_draw(event_frame) == &event_frame.draws[2]);
+  event_frame.scene_major = 0x2B;
+  CHECK(!gx::frame_in_match(event_frame) && gx::frame_has_widenable_scene(event_frame));
+  event_frame.scene_minor = 2;
+  CHECK(!gx::frame_in_match(event_frame) && gx::frame_has_widenable_scene(event_frame));
+  event_frame.scene_minor = 1;
+  CHECK(gx::frame_in_match(event_frame) && gx::frame_has_widenable_scene(event_frame));
+  event_frame.scene_major = 0x0E;
+  event_frame.scene_minor = 0;
+  CHECK(!gx::frame_in_match(event_frame) && gx::frame_has_widenable_scene(event_frame));
+  event_frame.scene_minor = 1;
+  CHECK(gx::frame_in_match(event_frame) && gx::frame_has_widenable_scene(event_frame));
+  event_frame.scene_minor = 3;
+  CHECK(!gx::frame_in_match(event_frame) && gx::frame_has_widenable_scene(event_frame));
   gx::RenderOptions aspect_options;
+  CHECK(aspect_options.te_options == 0x10u); // recognized TE save is enabled by default
   aspect_options.widescreen = true;
   CHECK(gx::presented_aspect(aspect_options, 1920, 1080) == 16.0f / 9.0f);
   aspect_options.native_source = true;
-  CHECK(gx::presented_aspect(aspect_options, 1920, 1080) == 73.0f / 60.0f);
+  CHECK(gx::presented_aspect(aspect_options, 1920, 1080) == 16.0f / 9.0f);
   aspect_options.true_widescreen = true;
   CHECK(gx::presented_aspect(aspect_options, 1920, 1080) == 16.0f / 9.0f);
 
@@ -42,6 +119,7 @@ int main() {
          "ssao 0.65\n"
          "discord 0\n"
          "backend d3d11\n"
+         "audio_mode 1\naudio_buffer_ms 17\n"
          "overlaystyle 2\nlegacymenu 1\noverlaypalette0 1\noverlaypalette2 3\noverlaypalette4 99\n"
 #ifdef GX_DLSS5
          "dlss5intensity 10\n"
@@ -54,16 +132,28 @@ int main() {
          "key_A 88\n"
          "port0 2\nport1 18\n"
          "portname1 GRAM_Slim\n";
+    f << "mod_te_enabled 0\nmod_tmce_enabled 1\nmod_enabled abcdef0123456789 0\n";
   }
   gx::D3D12Options options;
   options.settings_path = path.string();
   int volume = 0;
   gx::load_pc_settings(options, volume);
 
+  CHECK(options.mod_choices.at("te") == 0 && options.mod_choices.at("tmce") == 1);
+  CHECK(source_port::mods::choices() == options.mod_choices);
+  CHECK(gx::save_pc_settings(options, volume));
+  gx::RenderOptions reloaded;
+  reloaded.settings_path = path.string();
+  gx::load_pc_settings(reloaded, volume);
+  CHECK(reloaded.mod_choices == options.mod_choices);
+  CHECK(reloaded.mod_choices.at("abcdef0123456789") == 0);
+
   CHECK(options.efb_scale == 2);
   CHECK(!options.fod_reflections);
   CHECK(options.screen_space_ao == 0.65f);
   CHECK(options.api == gx::RenderApi::D3D11);                       // after both multi-word lines
+  CHECK(options.audio_mode == 1 && options.audio_buffer_ms == 17);
+  CHECK(options.audio_asio_driver.empty() && options.audio_asio_buffer == 0);   // files without the ASIO keys
   CHECK(options.overlay_style == 2);
   CHECK(options.legacy_menu_enabled);
   CHECK(options.legacy_menu_style == 7); // existing preferences default to original layout
@@ -133,6 +223,10 @@ int main() {
     CHECK(options.overlay_style == 2); // legacy choice never replaces modern selection
   }
 
+  { std::ofstream f(path); f << "te_options 0\nte_options2 0\n"; }
+  gx::load_pc_settings(options, volume);
+  CHECK(options.te_options == 0 && gx::RenderOptions::live_te_options() == 0);
+
   std::error_code ec;
   fs::remove(path, ec);
   // Low spec: on keeps the player's settings, off puts exactly those back.
@@ -169,6 +263,216 @@ int main() {
           o.subframe == gx::SubFrameMode::AuthoredInterpolate);
     std::error_code ec;
     fs::remove(low_path, ec);
+  }
+
+  // Settings audit (0.8.5): Video and Overlays were regrouped (one Display choice, one Widescreen
+  // choice, an Advanced group on each) and 20XX TE's screen rumble and input display were linked with
+  // ours, all with the settings file's keys unchanged. A file in 0.8.1's format loads the same values,
+  // saving writes every key it had, and the two new keys (the Advanced groups) default to closed.
+  {
+    const fs::path old_path = fs::temp_directory_path() / "melee_unlocked_settings_081_test.ini";
+    {
+      std::ofstream f(old_path);
+      f << "fps 144\nscale 3\nfullscreen 1\nexclusivefullscreen 0\nvsync 0\nwidescreen 0\n"
+           "fodreflections 0\ntruewidescreen 1\naspect 4\nwindow 1440x1080\nvolume 80\n"
+           "performance 1\nshowfps 1\nshowvram 0\nshowping 1\nreflex 1\nreflexstats 1\nreflexflash 1\n"
+           "pathtracing 1\nrayreconstruction 1\ninputoverlay 1\ninputoverlayports 3\nlabview 1\nlabskipscene 0\n"
+           "dumptextures 1\nnoscreenshake 1\nte_options 30\nte_options2 2100\noverlaystyle 3\n";
+    }
+    gx::RenderOptions o;
+    o.settings_path = old_path.string();
+    int vol = 0;
+    gx::load_pc_settings(o, vol);
+    CHECK(o.fps_cap == 144 && o.efb_scale == 3 && o.fullscreen && !o.exclusive_fullscreen && !o.vsync);
+    CHECK(!o.widescreen && o.true_widescreen && o.aspect == gx::AspectMode::Stretch && !o.fod_reflections);
+    CHECK(o.window_pinned && o.window_w == 1440 && o.window_h == 1080 && vol == 80);
+    CHECK(o.performance_overlay && o.show_fps && o.show_ping && o.reflex_mode == 1 && o.reflex_stats && o.reflex_flash);
+    CHECK(o.path_tracing == gx::RenderOptions::kPathTracingAvailable &&
+          o.ray_reconstruction == gx::RenderOptions::kPathTracingAvailable);   // loaded as before
+    CHECK(o.input_overlay && o.input_overlay_ports == 3 && o.lab_view && !o.lab_skip_scene && o.dump_textures);
+    CHECK(gecko::option_no_screen_shake && o.te_options == 0x30u && o.te_options2 == 0x2100u && o.overlay_style == 3);
+    CHECK(gx::save_pc_settings(o, vol));
+    const std::string written = read_text(old_path);
+    for (const char* key : {"fps", "scale", "fullscreen", "exclusivefullscreen", "vsync", "widescreen", "fodreflections",
+                            "truewidescreen", "aspect", "window", "volume", "performance", "showfps", "showvram",
+                            "showping", "reflex", "reflexstats", "reflexflash", "pathtracing", "rayreconstruction",
+                            "inputoverlay", "inputoverlayports", "labview", "labskipscene", "dumptextures",
+                            "noscreenshake", "te_options", "te_options2", "overlaystyle"})
+      CHECK(has_key_line(written, key));
+    CHECK(written.find("\nadvancedvideo 0\n") != std::string::npos);
+    CHECK(written.find("\nadvancedoverlays 0\n") != std::string::npos);
+    gx::RenderOptions again;
+    again.settings_path = old_path.string();
+    gx::load_pc_settings(again, vol);
+    CHECK(again.fullscreen == o.fullscreen && again.exclusive_fullscreen == o.exclusive_fullscreen &&
+          again.widescreen == o.widescreen && again.true_widescreen == o.true_widescreen && again.aspect == o.aspect);
+    CHECK(again.reflex_flash == o.reflex_flash && again.reflex_stats == o.reflex_stats &&
+          again.dump_textures == o.dump_textures && again.lab_skip_scene == o.lab_skip_scene &&
+          again.input_overlay == o.input_overlay && again.fod_reflections == o.fod_reflections &&
+          again.te_options == o.te_options && again.te_options2 == o.te_options2);
+    std::error_code ec;
+    fs::remove(old_path, ec);
+  }
+  // One Display choice and one Widescreen choice: a file with both of a pair on (possible only by
+  // hand) loads as the one the renderers already let win, exclusive and the Slippi code.
+  {
+    const fs::path pair_path = fs::temp_directory_path() / "melee_unlocked_settings_pairs_test.ini";
+    { std::ofstream f(pair_path); f << "fullscreen 1\nexclusivefullscreen 1\nwidescreen 1\ntruewidescreen 1\n"; }
+    gx::RenderOptions o;
+    o.settings_path = pair_path.string();
+    int vol = 0;
+    gx::load_pc_settings(o, vol);
+    CHECK(o.exclusive_fullscreen && !o.fullscreen);
+    CHECK(o.widescreen && !o.true_widescreen);
+    CHECK(gx::presented_aspect(o, 1920, 1080) == 16.0f / 9.0f);
+    std::error_code ec;
+    fs::remove(pair_path, ec);
+  }
+  // The Advanced groups remember being opened, and a file without their keys reads as closed again.
+  {
+    const fs::path adv_path = fs::temp_directory_path() / "melee_unlocked_settings_advanced_test.ini";
+    { std::ofstream f(adv_path); f << "advancedvideo 1\nadvancedoverlays 0\n"; }
+    gx::RenderOptions o;
+    o.settings_path = adv_path.string();
+    int vol = 0;
+    gx::load_pc_settings(o, vol);
+    CHECK(gx::save_pc_settings(o, vol));
+    std::string written = read_text(adv_path);
+    CHECK(written.find("\nadvancedvideo 1\n") != std::string::npos);
+    CHECK(written.find("\nadvancedoverlays 0\n") != std::string::npos);
+    { std::ofstream f(adv_path); f << "advancedoverlays 1\n"; }
+    gx::load_pc_settings(o, vol);
+    CHECK(gx::save_pc_settings(o, vol));
+    written = read_text(adv_path);
+    CHECK(written.find("\nadvancedvideo 0\n") != std::string::npos);
+    CHECK(written.find("\nadvancedoverlays 1\n") != std::string::npos);
+    std::error_code ec;
+    fs::remove(adv_path, ec);
+  }
+  // Reloading preferences replaces the texture-pack choice list rather than doubling it.
+  {
+    const fs::path path = fs::temp_directory_path() / "melee_texture_reload_test.ini";
+    { std::ofstream out(path); out << "texpackoff HD Textures\ntexpackoff HD Textures\n"; }
+    gx::RenderOptions o;
+    o.settings_path = path.string();
+    int volume = 0;
+    for (int i = 0; i < 4; ++i) {
+      gx::load_pc_settings(o, volume);
+      CHECK(gx::texpack::disabled_packs() == std::vector<std::string>{"HD Textures"});
+      CHECK(gx::save_pc_settings(o, volume));
+    }
+    { std::ofstream out(path); out << "volume 0\n"; }
+    gx::load_pc_settings(o, volume);
+    CHECK(gx::texpack::disabled_packs().empty());
+    std::error_code ec;
+    fs::remove(path, ec);
+  }
+  // Audio mode 3 (ASIO) with its driver name (spaces) and buffer round-trips; out-of-range modes clamp.
+  {
+    const fs::path asio_path = fs::temp_directory_path() / "melee_unlocked_settings_asio_test.ini";
+    { std::ofstream f(asio_path); f << "audio_mode 3\naudio_asio_driver MOTU M Series\naudio_asio_buffer 64\n"; }
+    gx::RenderOptions o;
+    o.settings_path = asio_path.string();
+    int vol = 0;
+    gx::load_pc_settings(o, vol);
+    CHECK(o.audio_mode == 3 && o.audio_asio_driver == "MOTU M Series" && o.audio_asio_buffer == 64);
+    CHECK(gx::save_pc_settings(o, vol));
+    gx::RenderOptions again;
+    again.settings_path = asio_path.string();
+    gx::load_pc_settings(again, vol);
+    CHECK(again.audio_mode == 3 && again.audio_asio_driver == "MOTU M Series" && again.audio_asio_buffer == 64);
+    { std::ofstream f(asio_path); f << "audio_mode 7\n"; }
+    gx::RenderOptions high;
+    high.settings_path = asio_path.string();
+    gx::load_pc_settings(high, vol);
+    CHECK(high.audio_mode == 3);
+    std::error_code ec;
+    fs::remove(asio_path, ec);
+  }
+
+  // Each mode keeps its Windows endpoint and ASIO preference independently. Opening a
+  // missing driver later must not erase the requested driver or the selected buffer.
+  {
+    const fs::path path = fs::temp_directory_path() /
+      ("melee_audio_choice_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".ini");
+    const int choices[] = {0, 64, 96, 128, 192, 256, 384, 512};
+    const std::string endpoint = "{0.0.0.00000000}.{12345678-1234-1234-1234-123456789abc}";
+    const std::string driver = "Unavailable Test ASIO Driver";
+    int volume = 0;
+    for (int mode = 0; mode < 4; ++mode) for (int buffer : choices) {
+      { std::ofstream out(path); out << "audio_mode " << mode << "\naudio_buffer_ms 17\naudio_device "
+        << endpoint << "\naudio_asio_driver " << driver << "\naudio_asio_buffer " << buffer << "\nvolume 0\n"; }
+      gx::RenderOptions first;
+      first.settings_path = path.string();
+      gx::load_pc_settings(first, volume);
+      CHECK(first.audio_mode == mode && first.audio_buffer_ms == 17);
+      CHECK(first.audio_device == endpoint && first.audio_asio_driver == driver && first.audio_asio_buffer == buffer);
+      CHECK(gx::save_pc_settings(first, volume));
+      gx::RenderOptions restarted;
+      restarted.settings_path = path.string();
+      gx::load_pc_settings(restarted, volume);
+      CHECK(restarted.audio_mode == mode && restarted.audio_buffer_ms == 17);
+      CHECK(restarted.audio_device == endpoint && restarted.audio_asio_driver == driver && restarted.audio_asio_buffer == buffer);
+    }
+    const int requested_buffers[] = {-4, 1, 0, 33, 2049};
+    const int expected_buffers[] = {32, 32, 0, 33, 2048};
+    for (size_t i = 0; i < sizeof(requested_buffers) / sizeof(requested_buffers[0]); ++i) {
+      { std::ofstream out(path); out << "audio_asio_buffer " << requested_buffers[i] << "\n"; }
+      gx::RenderOptions o;
+      o.settings_path = path.string();
+      gx::load_pc_settings(o, volume);
+      CHECK(o.audio_asio_buffer == expected_buffers[i]);
+    }
+    { std::ofstream out(path); out << "audio_mode -1\naudio_asio_buffer nonsense\naudio_asio_driver "
+                                  << driver << "\naudio_buffer_ms 23\n"; }
+    gx::RenderOptions malformed;
+    malformed.settings_path = path.string();
+    gx::load_pc_settings(malformed, volume);
+    CHECK(malformed.audio_mode == 0 && malformed.audio_asio_buffer == 0);
+    CHECK(malformed.audio_asio_driver == driver && malformed.audio_buffer_ms == 23);
+    std::error_code ec;
+    fs::remove(path, ec);
+  }
+
+  // Old flash keys keep their behavior; the explicit chooser is independent of file key order.
+  {
+    const fs::path flash_path = fs::temp_directory_path() / "melee_unlocked_lcancel_flash_test.ini";
+    int vol = 0;
+    for (int mode = 0; mode < 5; ++mode) for (int color = 0; color < 3; ++color) {
+      for (int order = 0; order < 2; ++order) {
+        const std::string legacy = "te_options2 40200\nlcancelindicator 1\n";
+        const std::string explicit_choice = "lcancel_flash_mode " + std::to_string(mode) +
+                                           "\nlcancel_success_flash " + std::to_string(color) + "\n";
+        { std::ofstream f(flash_path); f << (order ? legacy + explicit_choice : explicit_choice + legacy); }
+        gx::RenderOptions o;
+        o.settings_path = flash_path.string();
+        gx::load_pc_settings(o, vol);
+        CHECK(mu_lcancel_flash_mode(o.te_options2, lcancel::indicator_enabled()) == mode);
+        CHECK(mu_lcancel_success_color(o.te_options2) == color);
+        CHECK((o.te_options2 & 0x40000u) != 0);   // the stored lock is not discarded at load
+        CHECK(lcancel::indicator_enabled() == (mode == MU_LCFLASH_MU_MISSED));
+        CHECK(gx::save_pc_settings(o, vol));
+        gx::RenderOptions again;
+        again.settings_path = flash_path.string();
+        gx::load_pc_settings(again, vol);
+        CHECK(again.te_options2 == o.te_options2);
+        CHECK(mu_lcancel_flash_mode(again.te_options2, lcancel::indicator_enabled()) == mode);
+      }
+    }
+    { std::ofstream f(flash_path); f << "te_options2 200\nlcancelindicator 1\n"; }
+    gx::RenderOptions legacy_te;
+    legacy_te.settings_path = flash_path.string();
+    gx::load_pc_settings(legacy_te, vol);
+    CHECK(legacy_te.te_options2 == 0x200u && !lcancel::indicator_enabled());
+    CHECK(mu_lcancel_flash_mode(legacy_te.te_options2, 0) == MU_LCFLASH_TE_BOTH);
+    CHECK(mu_lcancel_success_color(legacy_te.te_options2) == MU_LCFLASH_SUCCESS_WHITE);
+    { std::ofstream f(flash_path); f << "lcancelindicator 1\n"; }
+    gx::RenderOptions legacy_mu;
+    legacy_mu.settings_path = flash_path.string();
+    gx::load_pc_settings(legacy_mu, vol);
+    CHECK(lcancel::indicator_enabled() && legacy_mu.te_options2 == 0);
+    std::error_code ec;
+    fs::remove(flash_path, ec);
   }
 
   if (g_failures == 0) std::printf("settings load: all checks passed\n");

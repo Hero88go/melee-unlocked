@@ -276,6 +276,13 @@ static bool settings_gd_combo(const char* label, int* value, const char* const i
     static constexpr const char* short_aspects[]={
         "Auto (73:60 / 16:9)","73:60 native","4:3","16:9","Stretch"};
     if(*value>=0 && *value<5) shown=short_aspects[*value];
+  } else if(std::strcmp(label,"Display")==0) {
+    // The value box holds about 20 characters; the full names are in the list and on hover.
+    static constexpr const char* short_displays[]={"Window","Borderless","Exclusive"};
+    if(*value>=0 && *value<3) shown=short_displays[*value];
+  } else if(std::strcmp(label,"Widescreen")==0) {
+    static constexpr const char* short_widescreen[]={"Off","Slippi code","True 16:9"};
+    if(*value>=0 && *value<3) shown=short_widescreen[*value];
   }
   const float value_width=std::min(158.0f,gd_kit_text_width("row",shown));
   row.text(x+95-value_width*.5f,baseline,shown,row.ink,158);
@@ -659,16 +666,16 @@ static void settings_dashboard_icon(int index, ImVec2 c, float scale, ImU32 face
 }
 
 static ImU32 settings_dashboard_tile_color(int index, int variant) {
-  static constexpr ImU32 all_colors[4][7] = {
+  static constexpr ImU32 all_colors[4][8] = {
     {IM_COL32(255,201,25,255),IM_COL32(230,55,153,255),IM_COL32(37,165,91,255),
-     IM_COL32(104,65,205,255),IM_COL32(37,129,223,255),IM_COL32(241,105,59,255),IM_COL32(139,83,218,255)},
+     IM_COL32(104,65,205,255),IM_COL32(37,129,223,255),IM_COL32(241,105,59,255),IM_COL32(139,83,218,255),IM_COL32(33,178,185,255)},
     {IM_COL32(255,178,60,255),IM_COL32(255,93,127,255),IM_COL32(110,221,104,255),
-     IM_COL32(85,189,255,255),IM_COL32(95,130,251,255),IM_COL32(255,126,70,255),IM_COL32(204,110,246,255)},
+     IM_COL32(85,189,255,255),IM_COL32(95,130,251,255),IM_COL32(255,126,70,255),IM_COL32(204,110,246,255),IM_COL32(64,212,216,255)},
     {IM_COL32(244,213,147,255),IM_COL32(236,172,195,255),IM_COL32(167,205,165,255),
-     IM_COL32(192,183,226,255),IM_COL32(163,195,225,255),IM_COL32(234,190,159,255),IM_COL32(194,179,214,255)},
+     IM_COL32(192,183,226,255),IM_COL32(163,195,225,255),IM_COL32(234,190,159,255),IM_COL32(194,179,214,255),IM_COL32(165,213,210,255)},
     {IM_COL32(117,179,246,255),IM_COL32(230,126,210,255),IM_COL32(112,214,191,255),
-     IM_COL32(154,151,246,255),IM_COL32(110,171,234,255),IM_COL32(242,152,138,255),IM_COL32(195,145,242,255)}};
-  return all_colors[std::clamp(variant,0,3)][std::clamp(index,0,6)];
+     IM_COL32(154,151,246,255),IM_COL32(110,171,234,255),IM_COL32(242,152,138,255),IM_COL32(195,145,242,255),IM_COL32(122,212,224,255)}};
+  return all_colors[std::clamp(variant,0,3)][std::clamp(index,0,7)];
 }
 
 static int settings_icon_variant() {
@@ -729,6 +736,13 @@ static void settings_symbol_icon(int index,ImVec2 c,float scale,ImU32 ink) {
       d->AddCircleFilled(p(8,-3),2.4f*scale,ink);
       d->AddCircleFilled(p(5,6),2.4f*scale,ink);
       break;
+    case 7:
+      d->AddRect(p(-15,-12),p(15,15),ink,3*scale,0,w);
+      d->AddLine(p(-15,-3),p(15,-3),ink,w);
+      d->AddLine(p(0,-12),p(0,-3),ink,w);
+      d->AddLine(p(-6,6),p(6,6),ink,w);
+      d->AddLine(p(0,0),p(0,12),ink,w);
+      break;
     default:
       d->AddLine(p(-5,-12),p(-17,0),ink,w);
       d->AddLine(p(-17,0),p(-5,12),ink,w);
@@ -766,8 +780,8 @@ static void settings_rounded_gradient(ImDrawList* draw, ImVec2 a, ImVec2 b,
 
 static void settings_dashboard_tiles(SettingsState& state) {
   static constexpr const char* labels[] = {
-      "Video", "Audio", "Game", "Controls", "Overlays", "Customize", "Gecko Codes"};
-  // Four glossy tiles above three, with the game visible beside them.
+      "Video", "Audio", "Game", "Controls", "Overlays", "Customize", "Gecko Codes", "Mods"};
+  // Two rows of four glossy tiles, with the game visible beside them.
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 p = ImGui::GetWindowPos(), s = ImGui::GetWindowSize();
   const ImVec2 saved = ImGui::GetCursorPos();
@@ -792,7 +806,7 @@ static void settings_dashboard_tiles(SettingsState& state) {
                 IM_COL32(255, 252, 244, 255), "Settings");
   state.dashboard_home_frames = std::min(30.0f,
       state.dashboard_home_frames + ImGui::GetIO().DeltaTime * 60.0f);
-  for (int i = 0; i < 7; ++i) {
+  for (int i = 0; i < 8; ++i) {
     const int row = i < 4 ? 0 : 1, col = i < 4 ? i : i - 4;
     const float progress = std::clamp((state.dashboard_home_frames - i * 1.0f) / 15.0f, 0.0f, 1.0f);
     const float eased = 1.0f - std::pow(1.0f - progress, 3.0f);
@@ -874,7 +888,7 @@ static void settings_dashboard_tiles(SettingsState& state) {
 }
 
 static void settings_detail_header(SettingsState& state,int appearance) {
-  static const char* names[]={"Video","Audio","Game","Controls","Overlays","Customize","Gecko Codes"};
+  static const char* names[]={"Video","Audio","Game","Controls","Overlays","Customize","Gecko Codes", "Mods"};
   const ImVec2 p=ImGui::GetWindowPos(),s=ImGui::GetWindowSize();
   ImDrawList* d=ImGui::GetWindowDrawList();
   const bool dashboard=appearance==1;

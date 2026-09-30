@@ -16,6 +16,9 @@ struct State {
   // over through init_dma. Until then the buffer holds the block already played.
   bool awaiting_block = false;
   uint64_t awaiting_since_tb = 0;
+  // Set when the wait timed out: the next pushes are the old block faded to silence, then silence,
+  // never the stale block repeated. Cleared by the next init_dma.
+  int stale_pushes = 0;
 };
 
 using DmaDone = void (*)(void* user);

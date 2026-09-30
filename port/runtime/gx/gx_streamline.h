@@ -22,7 +22,12 @@ namespace streamline {
 
 // Loads the interposer and initialises Streamline with DLSS requested. Must run before any
 // DXGI/D3D12 call. Returns false (with a logged reason) when Streamline cannot be used.
-bool init(const std::wstring& exe_dir);
+// The frame generation plugin is loaded only when load_frame_generation is set: loaded but unused,
+// it stalled the render thread for about 200 ms when the first match started (measured 09-29).
+bool init(const std::wstring& exe_dir, bool load_frame_generation);
+// True when frame generation was left unloaded this session because it was off at startup; turning
+// it on takes effect at the next start.
+bool frame_generation_deferred();
 void shutdown();
 // The final process-exit path. Streamline's NGX unload can deadlock on this driver even
 // after GPU idle; the OS reclaims the interposer at process termination.
@@ -95,6 +100,11 @@ bool frame_generation_dynamic_supported();   // whether DLSSGMode::eDynamic (an 
 // mode: 0 off, 1–3 fixed 2x–4x, 4 Dynamic, 5 fixed 5x, 6 fixed 6x.
 void set_frame_generation(int mode, uint32_t render_w, uint32_t render_h, uint32_t output_w, uint32_t output_h,
                           uint32_t backbuffer_count, uint32_t backbuffer_format, uint32_t motion_format, uint32_t depth_format);
+// Loading-screen preparation: allocates frame generation's resources for `mode`, then leaves
+// generation off with the resources kept, so the first match does not stall. False when unavailable.
+bool frame_generation_prepare(ID3D12GraphicsCommandList* list, int mode, uint32_t render_w, uint32_t render_h,
+                              uint32_t output_w, uint32_t output_h, uint32_t backbuffer_count,
+                              uint32_t backbuffer_format, uint32_t motion_format, uint32_t depth_format);
 void set_reflex(int mode);   // 0 off, 1 low latency, 2 low latency + boost
 // Reflex's measured render latency (simulation start to GPU finished), averaged over the recent frame
 // reports, in milliseconds; 0 when Reflex has no report yet. Refreshed by update_reflex_stats().

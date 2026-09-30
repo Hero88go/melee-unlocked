@@ -37,10 +37,14 @@ LocalBuild g_local_build;   // retail unless the Source Port's content view says
 NativeGameplayProfile effective_profile() {
   return g_local_build.mod_view ? g_native_gameplay_profile : NativeGameplayProfile::Vanilla;
 }
+const char* local_matchmaking_error(int mode) {
+  if (const char* reason = native_profile_mode_error(effective_profile(), mode)) return reason;
+  if (g_local_build.mod_view && !native_mod_fingerprint_valid(g_local_build.fingerprint))
+    return "Could not verify this mod's content. Restart the game before playing Direct.";
+  return nullptr;
+}
 // Vanilla character select kinds are 0-25 and the stage kinds end with the heal stage (0x55); an id
 // past those comes from a build with more content (m-ex adds its fighters and stages after them).
-constexpr uint8_t kRetailCharacterCount = 26;
-constexpr uint16_t kRetailStageCount = 0x56;
 constexpr uint64_t kBuildWaitMs = 3000;   // how long a mod build waits for the opponent's build message
 
 // Command ids live in native_slippi_bridge.h, shared with the native game's call path.
@@ -533,7 +537,7 @@ void handle_load_savestate(const uint8_t* payload) {
 void start_find_match(const uint8_t* payload) {
   Matchmaking::MatchSearchSettings search;
   search.mode = (Matchmaking::OnlinePlayMode)payload[0];
-  if (const char* reason = native_profile_mode_error(effective_profile(), (int)search.mode)) {
+  if (const char* reason = local_matchmaking_error((int)search.mode)) {
     g_forced_error = reason;
     return;
   }
@@ -664,7 +668,7 @@ int build_verdict(uint8_t remote_count, std::string* why) {
       continue;
     }
     if (g_local_build.mod_view) {
-      if (!rb.mod_view || rb.fingerprint != g_local_build.fingerprint) {
+      if (!native_direct_builds_match(true, g_local_build.fingerprint, rb.mod_view, rb.fingerprint)) {
         *why = "Your opponent is not on " + g_local_build.name + ". This Direct match needs the same build";
         return -1;
       }
@@ -831,11 +835,13 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
       if (!local_char_ok) { cleanup_connection(); g_forced_error = "The character you selected is not allowed in this mode"; prepare_online_match_state(q); return; }
       if (!remote_char_ok) { cleanup_connection(); prepare_online_match_state(q); return; }
     } else if (g_last_search.mode == Matchmaking::DIRECT) {
-      // Characters and stages past the retail ones exist only in a mod build, and the Source Port
-      // runs a mod's added fighters and stages only once their code is source (none yet): such a
-      // selection ends the match here instead of desyncing or crashing inside it.
-      bool foreign = stage_id >= kRetailStageCount;
-      for (int i = 0; i < remote_count; ++i) if (rps[i].character_id >= kRetailCharacterCount) foreign = true;
+      // build_verdict already confirmed the peer's content. Only Static mod boot advertises that
+      // it runs the disc's extended fighter/stage code; Source and retail keep vanilla limits.
+      bool foreign = !native_direct_selection_supported(g_local_build.mod_view, g_local_build.extended_content,
+                                                         lps.character_id, stage_id);
+      for (int i = 0; i < remote_count; ++i)
+        if (!native_direct_selection_supported(g_local_build.mod_view, g_local_build.extended_content,
+                                               rps[i].character_id, stage_id)) foreign = true;
       if (foreign) {
         cleanup_connection();
         g_forced_error = g_local_build.mod_view
@@ -1015,7 +1021,7 @@ void handle_get_player_settings(std::vector<uint8_t>& q) {
 Config& config() { return g_config; }
 void set_local_build(const LocalBuild& build) {
   if (build.mod_view != g_local_build.mod_view || build.fingerprint != g_local_build.fingerprint ||
-      build.allow_unverified != g_local_build.allow_unverified)
+      build.allow_unverified != g_local_build.allow_unverified || build.extended_content != g_local_build.extended_content)
     host::log("slippi: local build: %s%s%s", build.mod_view ? "mod " : "retail game",
               build.mod_view ? build.name.c_str() : "", build.allow_unverified ? " (Slippi Dolphin opponents allowed)" : "");
   g_local_build = build;
@@ -1062,7 +1068,7 @@ bool native_start_match(int mode, const std::string& connect_code, uint8_t chara
     if (error) *error = "An online session is already active";
     return false;
   }
-  if (const char* reason = native_profile_mode_error(effective_profile(), mode)) {
+  if (const char* reason = local_matchmaking_error(mode)) {
     if (error) *error = reason;
     return false;
   }

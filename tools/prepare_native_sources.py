@@ -26,7 +26,7 @@ def prepare(decomp):
     result = git('apply', str(patch))
     if result.returncode:
         raise SystemExit(result.stderr)
-    print('Prepared the v0.8.0 native Melee sources.')
+    print('Prepared the released native Melee sources.')
 
 
 if __name__ == '__main__':

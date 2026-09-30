@@ -1,7 +1,7 @@
 // Native, themed lobby presentation. Network state remains in launcher_lobby.cpp.
 const COLORREF ui_bg=RGB(19,26,42), ui_panel=RGB(12,18,33), ui_border=RGB(43,54,82);
 const COLORREF ui_text=RGB(231,236,245), ui_dim=RGB(141,155,181);
-HFONT ui_font{},ui_small{},ui_title{},ui_name{};
+HFONT ui_font{},ui_small{},ui_small_bold{},ui_title{},ui_name{};
 HBRUSH ui_brush{},ui_background{},ui_field_brush{};
 const COLORREF ui_field=RGB(16,23,38);
 HICON stock_icons[26]{};
@@ -28,6 +28,46 @@ void box(HDC dc,RECT r,COLORREF color,int radius=0) {
 void ink(HDC dc,const std::wstring& s,RECT r,HFONT font,COLORREF color,UINT flags=DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS) {
   auto old=SelectObject(dc,font); SetBkMode(dc,TRANSPARENT); SetTextColor(dc,color);
   DrawTextW(dc,s.c_str(),-1,&r,flags); SelectObject(dc,old);
+}
+// One line drawn in pieces, each with its own font and color (a player card's mod badges: "Open to"
+// bold, "Has" dim). The piece that reaches the right edge ends in an ellipsis.
+struct TextRun { std::wstring text; HFONT font; COLORREF color; };
+void ink_runs(HDC dc,const std::vector<TextRun>& runs,RECT r) {
+  for(const auto& run:runs) {
+    if(r.left>=r.right) break;
+    if(run.text.empty()) continue;
+    auto old=SelectObject(dc,run.font);
+    SIZE size{}; GetTextExtentPoint32W(dc,run.text.c_str(),(int)run.text.size(),&size);
+    SelectObject(dc,old);
+    ink(dc,run.text,r,run.font,run.color);
+    r.left+=size.cx;
+  }
+}
+// Line breaks at spaces, measured with the font that draws the text. DrawText's own word break
+// split a Russian heading inside a word; text without spaces (Japanese, Chinese) is left for
+// DT_WORDBREAK to break by character.
+std::wstring wrap_words(HDC dc,HFONT font,const std::wstring& s,int width) {
+  auto old=SelectObject(dc,font);
+  std::wstring out;
+  size_t start=0;
+  while(start<=s.size()) {
+    size_t end=s.find(L'\n',start); if(end==std::wstring::npos) end=s.size();
+    const std::wstring paragraph=s.substr(start,end-start);
+    std::wstring line;
+    for(size_t i=0;i<=paragraph.size();) {
+      size_t j=paragraph.find(L' ',i); if(j==std::wstring::npos) j=paragraph.size();
+      const std::wstring word=paragraph.substr(i,j-i);
+      const std::wstring candidate=line.empty()?word:line+L" "+word;
+      SIZE size{}; GetTextExtentPoint32W(dc,candidate.c_str(),(int)candidate.size(),&size);
+      if(size.cx>width && !line.empty()) { out+=line+L"\n"; line=word; } else line=candidate;
+      i=j+1;
+    }
+    out+=line;
+    if(end<s.size()) out+=L"\n";
+    start=end+1;
+  }
+  SelectObject(dc,old);
+  return out;
 }
 POINT visible_icon_offset(HICON icon) {
   ICONINFO info{}; if(!icon || !GetIconInfo(icon,&info)) return {};
@@ -70,7 +110,7 @@ LRESULT CALLBACK emoji_popup_proc(HWND w,UINT message,WPARAM wp,LPARAM lp) {
     PAINTSTRUCT ps{};HDC dc=BeginPaint(w,&ps);
     box(dc,RECT{0,0,U(198),U(112)},ui_border,10);
     box(dc,RECT{U(1),U(1),U(197),U(111)},ui_panel,9);
-    ink(dc,L"Add emoji",RECT{U(14),U(6),U(180),U(28)},ui_name,ui_text);
+    ink(dc,launcher::lang::txw(L"Add emoji"),RECT{U(14),U(6),U(180),U(28)},ui_name,ui_text);
     for(int i=0;i<8;++i) {
       int x=U(12+(i%4)*46),y=U(35+(i/4)*37);
       box(dc,RECT{x,y,x+U(40),y+U(33)},RGB(33,43,66),7);
@@ -109,7 +149,9 @@ void add(HWND w,int id,const wchar_t* type,const wchar_t* caption,int,int,int,in
   if(!wcscmp(type,L"BUTTON")) style=BS_OWNERDRAW|WS_TABSTOP;
   if(!wcscmp(type,L"EDIT")) style=(style&~WS_BORDER)|WS_TABSTOP;
   if(!wcscmp(type,L"LISTBOX")) style=(style&~(WS_BORDER|WS_HSCROLL))|LBS_OWNERDRAWFIXED|LBS_HASSTRINGS|LBS_NOTIFY|WS_TABSTOP;
-  HWND h=CreateWindowExW(0,type,caption,WS_CHILD|WS_CLIPSIBLINGS|style,0,0,0,0,w,(HMENU)(INT_PTR)id,GetModuleHandleW(nullptr),nullptr);
+  // Captions in the player's language (English text is the lookup key; unknown text stays as is).
+  const std::wstring shown=launcher::lang::txw(caption?caption:L"");
+  HWND h=CreateWindowExW(0,type,shown.c_str(),WS_CHILD|WS_CLIPSIBLINGS|style,0,0,0,0,w,(HMENU)(INT_PTR)id,GetModuleHandleW(nullptr),nullptr);
   SendMessageW(h,WM_SETFONT,(WPARAM)ui_font,TRUE);
   if(!wcscmp(type,L"LISTBOX")) SendMessageW(h,LB_SETITEMHEIGHT,0,U(id==PLAYERS||id==FRIENDS?76:54));
 }
@@ -122,6 +164,16 @@ void place(int id,int x,int y,int width,int height,bool show=true) {
   if(show!=visible) { ShowWindow(h,show?SW_SHOWNA:SW_HIDE); InvalidateRect(window,&previous,FALSE); InvalidateRect(window,&next,FALSE); }
 
 }
+// A control's text width in layout units (1/96 inch), in the font the lobby draws it with.
+int text_width(int id) {
+  HWND h=GetDlgItem(window,id); if(!h) return 0;
+  const int length=GetWindowTextLengthW(h); if(length<=0) return 0;
+  std::wstring s(length+1,0); s.resize(GetWindowTextW(h,s.data(),length+1));
+  HDC dc=GetDC(h); auto old=SelectObject(dc,ui_font);
+  SIZE size{}; GetTextExtentPoint32W(dc,s.c_str(),(int)s.size(),&size);
+  SelectObject(dc,old); ReleaseDC(h,dc);
+  return MulDiv(size.cx,96,owner?GetDpiForWindow(owner):96);
+}
 void layout() {
   if(!window) return;
   RECT r{}; GetClientRect(window,&r); const int width=MulDiv(r.right,96,owner?GetDpiForWindow(owner):96);
@@ -132,7 +184,9 @@ void layout() {
   place(TAB_PROFILE,24,bottom+12,82,34); place(TAB_FRIENDS,114,bottom+12,82,34); place(TAB_HISTORY,204,bottom+12,82,34);
   place(TAB_CHAT,294,bottom+12,132,34,lobby_tab!=0);
   place(PLAYER_HEADING,right+14,124,264,24);
-  place(PLAYERS,right+12,162,268,bottom-174,!rows.empty());
+  // The Show filter has its own row: beside the heading it would not fit in every language.
+  place(PLAYER_FILTER,right+12,154,268,28,!roster_all.empty());
+  place(PLAYERS,right+12,190,268,bottom-202,!rows.empty());
   place(REQUEST,right,bottom+12,181,34); place(ADD_FRIEND,right+189,bottom+12,103,34);
   bool pending=!requests.empty() && lobby_tab==0;
   int content_bottom=bottom-(pending?122:0);
@@ -147,14 +201,19 @@ void layout() {
   bool incoming=choice>=0 && choice<(int)friends.size() && friends[choice].value("incoming",false);
   place(FRIEND_ACCEPT,38,bottom-44,118,30,lobby_tab==1&&incoming&&!adding_friend);
   place(FRIEND_DECLINE,164,bottom-44,86,30,lobby_tab==1&&incoming&&!adding_friend);
-  place(REMOVE_FRIEND,38,bottom-44,120,30,lobby_tab==1&&!incoming&&choice>=0&&!adding_friend);
+  // A friend: Invite to Match first (what a friend is for), then Remove Friend.
+  const bool chosen_friend=lobby_tab==1&&!incoming&&choice>=0&&!adding_friend;
+  place(INVITE_FRIEND,38,bottom-44,140,30,chosen_friend);
+  place(REMOVE_FRIEND,186,bottom-44,120,30,chosen_friend);
   place(RECORD,38,168,left_width-28,24,lobby_tab==2);
   place(HISTORY,38,202,left_width-28,bottom-216,lobby_tab==2&&!history.empty());
   const bool profile=lobby_tab==3;
   for(int i=0;i<3;++i) {
     place(PROFILE_NAME+i,40,166+i*64,left_width-32,18,profile);
-    place(NAME+i,44,194+i*64,left_width-40,24,profile);
+    // The Location field shares its row with the Open to button.
+    place(NAME+i,44,194+i*64,i==2?left_width-40-206:left_width-40,24,profile);
   }
+  place(OPEN_TO,left_width-196,191+2*64,196,30,profile);
   place(PROFILE_MAINS,40,358,left_width-32,20,profile);
   for(int i=0;i<26;++i) place(CHARACTER_FIRST+i,40+(i%9)*42,388+(i/9)*42,36,36,profile);
   for(int id:{ADVANCED,PROFILE_MODE,MODE,URL_LABEL,URL}) ShowWindow(GetDlgItem(window,id),SW_HIDE);
@@ -165,7 +224,11 @@ void layout() {
   place(FRIEND_HINT,38,bottom-136,left_width-28,36,lobby_tab==1&&adding_friend);
   place(FRIEND_CODE,44,bottom-90,left_width-46,26,lobby_tab==1&&adding_friend);
   place(FRIEND_SEND,38,bottom-46,150,30,lobby_tab==1&&adding_friend);
-  place(STATUS,24,bottom+58,width-48,18);
+  // Copy code sits right after "Can't reach X. Use Slippi Direct with their code: X#1" while it shows.
+  const bool copy=!copy_button_code.empty();
+  const int copy_x=std::min(24+(copy?text_width(STATUS):0)+12,width-24-104);
+  place(COPY_CODE,copy_x,bottom+53,104,26,copy);
+  place(STATUS,24,bottom+58,copy?copy_x-32:width-48,18);
   for(int id:{EMPTY_PLAYERS,EMPTY_FRIENDS,EMPTY_CHAT}) ShowWindow(GetDlgItem(window,id),SW_HIDE);
 
 }
@@ -174,9 +237,20 @@ Json profile_config() {
   { std::lock_guard<std::mutex> lock(mutex); cfg=config; }
   const bool prior_peer=peer_mode(cfg);
   cfg["mode"]="peer";
-  cfg["url"]=prior_peer?text(URL):std::string();
-  cfg["name"]=text(NAME); cfg["code"]=account_code; cfg["location"]=text(LOCATION);
+  // Before the Lobby page was ever opened there are no fields to read: the saved profile holds them.
+  if(window) {
+    cfg["url"]=prior_peer?text(URL):std::string();
+    cfg["name"]=text(NAME); cfg["location"]=text(LOCATION);
+  } else if(!prior_peer) cfg["url"]=std::string();
+  if(cfg.value("name",std::string()).empty()) cfg["name"]=account_name;
+  cfg["code"]=account_code;
   cfg["build"]=build; cfg["ready"]=can_play; cfg["mains"]=selected_mains;
+  // What this PC has and what the player takes requests for (see launcher_lobby_p2p.h).
+  if(!mod_has.empty()) cfg["has"]=mod_has; else cfg.erase("has");
+  cfg["open"]=open_list();
+  if(custom_launch_ready && !custom_hash.empty() && valid_iso_name(current_prefs.custom_name))
+    cfg["iso"]={{"n",current_prefs.custom_name},{"h",custom_hash}};
+  else cfg.erase("iso");
   int wins=0,losses=0;
   for(const auto& game:history) {
     if(game.value("result",std::string())=="win") ++wins;
@@ -203,9 +277,9 @@ void draw_control(DRAWITEMSTRUCT* d) {
       return;
     }
     bool active=(id>=TAB_CHAT&&id<=TAB_PROFILE&&id-TAB_CHAT==lobby_tab);
-    bool primary=id==REQUEST||id==GO_ONLINE||id==ACCEPT||active;
+    bool primary=id==REQUEST||id==GO_ONLINE||id==ACCEPT||id==INVITE_FRIEND||active;
     bool enabled=!(d->itemState&ODS_DISABLED);
-    box(d->hDC,r,id==GO_ONLINE||id==REQUEST||id==ADD_FRIEND||id==TAB_PROFILE||id==TAB_HISTORY||id==TAB_FRIENDS||id==TAB_CHAT?ui_bg:ui_panel);
+    box(d->hDC,r,id==GO_ONLINE||id==REQUEST||id==ADD_FRIEND||id==TAB_PROFILE||id==TAB_HISTORY||id==TAB_FRIENDS||id==TAB_CHAT||id==COPY_CODE?ui_bg:ui_panel);
     COLORREF top=primary?launcher::theme::top():RGB(33,43,66), bot=primary?launcher::theme::bottom():top;
     if(!enabled) top=bot=RGB(26,33,50);
     if(d->itemState&ODS_SELECTED) top=bot=primary?launcher::theme::pressed():RGB(24,33,52);
@@ -253,21 +327,64 @@ void draw_control(DRAWITEMSTRUCT* d) {
     RECT avatar{r.left+U(10),r.top+U(13),r.left+U(42),r.top+U(45)};
     if(main>=0 && main<26 && stock_icons[main]) centered_icon(d->hDC,stock_icons[main],avatar,32,stock_icon_offsets[main]);
     else { box(d->hDC,avatar,launcher::theme::mix(launcher::theme::accent,ui_panel,.7),12); ink(d->hDC,wide(p->value("name",std::string("?"))).substr(0,1),avatar,ui_font,ui_text,DT_CENTER|DT_VCENTER|DT_SINGLELINE); }
-    auto name=wide(p->value("name",std::string("Player"))+(p->value("is_self",false)?"  (You)":""));
+    auto name=wide(p->value("name",std::string("Player"))+(p->value("is_self",false)?"  "+launcher::lang::tx("(You)"):std::string()));
     auto version=p->value("build",std::string());
-    if(auto colon=version.find(':'); colon!=std::string::npos) version.resize(colon);
+    std::string kind;
+    if(auto colon=version.find(':'); colon!=std::string::npos) { kind=version.substr(colon+1); version.resize(colon); }
     if(!version.empty() && version[0]!='v' && version[0]!='V') version="v"+version;
-    RECT line{r.left+U(54),r.top+U(8),r.right-U(68),r.top+U(26)};
+    // Both players need the same Game Build: show it, not only the version.
+    if(kind=="source") version+="  Source Port"; else if(kind=="recomp") version+="  Static Recomp";
+    // Share the header using the fonts that actually draw it. A fixed 150-unit build
+    // slot left only 64 units for the nickname and localized "(You)" on a roster card.
+    const int text_left=avatar.right+U(12), text_right=r.right-U(12);
+    const int content_width=std::max(0,text_right-text_left), header_gap=U(8);
+    auto measure=[&](const std::wstring& text,HFONT font) {
+      auto old=SelectObject(d->hDC,font);
+      SIZE size{}; GetTextExtentPoint32W(d->hDC,text.c_str(),(int)text.size(),&size);
+      SelectObject(d->hDC,old); return int(size.cx);
+    };
+    const auto build=wide(version);
+    const int name_width=measure(name,ui_name)+U(2);
+    const int build_width=build.empty()?0:std::min(measure(build,ui_small)+U(2),
+      std::max(0,content_width-header_gap-std::min(name_width,content_width/2)));
+    RECT line{text_left,r.top+U(8),build_width?text_right-build_width-header_gap:text_right,r.top+U(26)};
     ink(d->hDC,name,line,ui_name,ui_text);
-    RECT version_rect{r.right-U(66),r.top+U(8),r.right-U(10),r.top+U(26)};
-    ink(d->hDC,wide(version),version_rect,ui_small,launcher::theme::glow(),DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+    RECT version_rect{text_right-build_width,r.top+U(8),text_right,r.top+U(26)};
+    if(build_width) ink(d->hDC,build,version_rect,ui_small,launcher::theme::glow(),DT_RIGHT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
     line.right=r.right-U(12);
     std::string detail=p->value("incoming",false)?"Friend request":p->value("status",std::string("Online"));
+    // A player who cannot take a match yet says so instead of looking free: the player's own card from
+    // this PC's setup (disc, built game, Slippi sign-in), everyone else's from their profile.
+    const bool self_card=p->value("is_self",false);
+    if(detail=="Online" && !(self_card?can_play:p->value("ready",true)))
+      detail=launcher::lang::tr(self_card?"lobby.card.finish_setup":"lobby.card.setup_unfinished");
+    else detail=launcher::lang::tx(detail);   // "Online", "In game", "Friend request"...; any other text stays as is
     auto location=p->value("location",std::string()); if(!location.empty()) detail+="  /  "+location;
     { std::lock_guard<std::mutex> lock(mutex); auto it=pings.find(p->value("id",std::string())); if(it!=pings.end()) detail+="  /  "+std::to_string(it->second)+" ms"; }
-    line.top+=U(22); line.bottom+=U(22); ink(d->hDC,wide(detail),line,ui_small,ui_dim);
+    // Mods: "Open to Akaneia" in bold when they take those requests, "Has ACE" dimmed when installed
+    // but not open, the custom ISO by name ("same ISO" when its content matches this player's).
+    std::vector<TextRun> runs{{wide(detail),ui_small,ui_dim}};
+    {
+      const COLORREF faint=launcher::theme::mix(ui_dim,ui_panel,.35);
+      const Json has=p->value("has",Json::object());
+      for(const char* m:{"akaneia","ace"}) if(has.is_object() && has.count(m)) {
+        const bool open_mod=open_to(*p,m);
+        runs.push_back({L"  /  ",ui_small,ui_dim});
+        runs.push_back({wide(launcher::lang::tx(open_mod?"Open to":"Has")+" "+(std::string(m)=="akaneia"?"Akaneia":"ACE")),
+                        open_mod?ui_small_bold:ui_small,open_mod?ui_text:faint});
+      }
+      const Json iso=p->value("iso",Json::object());
+      if(iso.is_object() && iso.count("n") && open_to(*p,"custom")) {
+        runs.push_back({L"  /  ",ui_small,ui_dim});
+        runs.push_back({wide(iso.value("n",std::string())),ui_small_bold,ui_text});
+        if(!self_card && !custom_hash.empty() && iso.value("h",std::string())==custom_hash)
+          runs.push_back({wide(" ("+launcher::lang::tx("same ISO")+")"),ui_small,ui_dim});
+      }
+      if(!open_to(*p,"vanilla") && p->count("open")) runs.push_back({wide("  /  "+launcher::lang::tx("mods only")),ui_small,ui_dim});
+    }
+    line.top+=U(22); line.bottom+=U(22); ink_runs(d->hDC,runs,line);
     if(!p->value("stocks",Json::array()).empty()) {
-      std::string stocks="Stocks: "; for(auto n:(*p)["stocks"]) stocks+=std::to_string(n.get<int>())+" ";
+      std::string stocks=launcher::lang::tx("Stocks:")+" "; for(auto n:(*p)["stocks"]) stocks+=std::to_string(n.get<int>())+" ";
       line.top+=U(21); line.bottom+=U(21); ink(d->hDC,wide(stocks),line,ui_small,ui_dim);
     } else if(d->itemState&ODS_SELECTED && id==PLAYERS) {
       std::string record="W "+std::to_string(p->value("wins",0))+"  /  L "+std::to_string(p->value("losses",0));
@@ -285,16 +402,17 @@ void draw_control(DRAWITEMSTRUCT* d) {
     InflateRect(&r,-U(8),-U(5)); ink(d->hDC,s,r,ui_small,ui_text,DT_LEFT|DT_WORDBREAK|DT_END_ELLIPSIS);
   }
 }
-void paint_lobby(HWND w) {
-  PAINTSTRUCT ps{}; HDC target=BeginPaint(w,&ps); RECT r{}; GetClientRect(w,&r);
+// print: a device context to draw into instead of the window (WM_PRINTCLIENT, for test captures).
+void paint_lobby(HWND w,HDC print=nullptr) {
+  PAINTSTRUCT ps{}; HDC target=print?print:BeginPaint(w,&ps); RECT r{}; GetClientRect(w,&r);
   HDC dc=CreateCompatibleDC(target); HBITMAP bmp=CreateCompatibleBitmap(target,r.right,r.bottom); auto old=SelectObject(dc,bmp);
   box(dc,r,ui_bg);
-  RECT title{U(24),U(24),r.right-U(148),U(54)}; ink(dc,L"Multiplayer Lobby",title,ui_title,ui_text);
+  RECT title{U(24),U(24),r.right-U(148),U(54)}; ink(dc,launcher::lang::txw(L"Multiplayer Lobby"),title,ui_title,ui_text);
   const int right=r.right-U(316), bottom=r.bottom-U(94);
   RECT left{U(24),U(110),right-U(18),bottom}, players{right,U(110),r.right-U(24),bottom};
   for(auto card:{left,players}) { box(dc,card,ui_border,12); InflateRect(&card,-1,-1); box(dc,card,ui_panel,12); }
   const wchar_t* headings[]={L"Lobby chat",L"Friends",L"Match history",L"Your profile"};
-  RECT heading{left.left+U(16),left.top+U(12),left.right-U(16),left.top+U(42)}; ink(dc,headings[lobby_tab],heading,ui_name,ui_text);
+  RECT heading{left.left+U(16),left.top+U(12),left.right-U(16),left.top+U(42)}; ink(dc,launcher::lang::txw(headings[lobby_tab]),heading,ui_name,ui_text);
   if(lobby_tab==3) {
     RECT track{U(slider_left),U(slider_y),U(slider_right),U(slider_y+5)}; box(dc,track,ui_border,5);
     RECT amount=track; amount.right=amount.left+(amount.right-amount.left)*sound_volume/100; box(dc,amount,launcher::theme::accent,5);
@@ -313,12 +431,13 @@ void paint_lobby(HWND w) {
     if(social) { Ellipse(dc,x+U(16),y+U(9),x+U(30),y+U(23)); RoundRect(dc,x+U(9),y+U(26),x+U(37),y+U(39),U(12),U(12)); }
     else { RoundRect(dc,x+U(10),y+U(11),x+U(36),y+U(31),U(6),U(6)); MoveToEx(dc,x+U(16),y+U(31),nullptr); LineTo(dc,x+U(16),y+U(37)); LineTo(dc,x+U(23),y+U(31)); }
     SelectObject(dc,oldBrush); SelectObject(dc,oldPen); DeleteObject(pen);
-    RECT title{x,y+U(64),area.right-U(20),y+U(114)}; ink(dc,heading,title,ui_title,ui_text,DT_LEFT|DT_WORDBREAK);
-    RECT description{x,y+U(124),area.right-U(24),y+U(182)}; ink(dc,detail,description,ui_font,ui_dim,DT_LEFT|DT_WORDBREAK);
+    RECT title{x,y+U(64),area.right-U(20),y+U(128)}; ink(dc,wrap_words(dc,ui_title,launcher::lang::txw(heading),title.right-title.left),title,ui_title,ui_text,DT_LEFT|DT_WORDBREAK);
+    RECT description{x,y+U(132),area.right-U(24),y+U(196)}; ink(dc,wrap_words(dc,ui_font,launcher::lang::txw(detail),description.right-description.left),description,ui_font,ui_dim,DT_LEFT|DT_WORDBREAK);
   };
   if(rows.empty()) { RECT area=players; area.top+=U(46); empty_state(area,L"Find your next match",L"Go online to discover players.\nTheir location and mains appear here.",true); }
   if(lobby_tab==0&&chat_messages.empty()) { RECT area=left; area.top+=U(46); empty_state(area,L"Ready for a few games?",L"Join the lobby, say hello, and send a match request when you're ready.",false); }
   if(lobby_tab==1&&friends.empty()) { RECT area=left; area.top+=U(46); empty_state(area,L"Friends, one click away.",L"Add a player to see when they're online and ready for another game.",true); }
   if(lobby_tab==2&&history.empty()) { RECT area=left; area.top+=U(68); empty_state(area,L"Match history",L"Completed lobby games appear here, with your wins and losses.",false); }
-  BitBlt(target,0,0,r.right,r.bottom,dc,0,0,SRCCOPY); SelectObject(dc,old); DeleteObject(bmp); DeleteDC(dc); EndPaint(w,&ps);
+  BitBlt(target,0,0,r.right,r.bottom,dc,0,0,SRCCOPY); SelectObject(dc,old); DeleteObject(bmp); DeleteDC(dc);
+  if(!print) EndPaint(w,&ps);
 }

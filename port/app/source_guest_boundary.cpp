@@ -36,4 +36,8 @@ void interpreter_stats(uint64_t* calls, uint64_t* instructions) {
   if (calls) *calls = 0;
   if (instructions) *instructions = 0;
 }
+void interpreter_counts(uint64_t* calls, uint64_t* instructions) {
+  if (calls) *calls = 0;
+  if (instructions) *instructions = 0;
+}
 }

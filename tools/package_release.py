@@ -1,4 +1,4 @@
-"""Assembles the unified Windows release archive.
+"""Assembles the Windows release archive with both game builds and optional DLSS 5 support.
 
 Contents: MeleeUnlockedLauncher.exe (optional client), the normal/compatibility legacy
 executables, optional Source Port files, the Streamline/DLSS runtime DLLs, the Slippi Sys files
@@ -11,6 +11,8 @@ the user supplies their own Melee NTSC 1.02 ISO. Usage:
         --experimental-exe build-dlss5/port/Release/melee_port.exe [--out release]
 """
 import argparse
+import hashlib
+import re
 import shutil
 import subprocess
 import zipfile
@@ -56,15 +58,16 @@ B. Melee Unlocked Launcher (optional convenience)
       Discovery can take time, and some networks cannot connect directly (no relay yet).
 
 Either way, the PC settings panel opens on the first launch; later press F1 or click Settings:
-fullscreen, frame rate cap, VSync, widescreen 16:9, internal resolution,
+fullscreen, frame rate cap, VSync, widescreen 16:9 (both Game Builds), internal resolution,
 anti-aliasing (SSAA), anisotropic filtering, DLSS/DLAA, sharpening, sub-frame animation,
 game and music volume. Settings persist in port-settings.ini.
 
-Build choices
--------------
-The launcher defaults to Static Recomp. The unified archive includes its normal and compatibility
-builds and, when supplied to the packager, the Source Port executable and native game library.
-Choose Static Recomp or Source Port under Game Build on the launcher's Play page.
+Game Builds
+-----------
+The launcher's Build tab picks the Game Build: the Source Port (the game built from source) or the
+Static Recomp (the original game code translated ahead of time; mod discs such as Akaneia run on
+it). A compatibility build for older processors is included. Optional experimental DLSS 5 uses
+NVIDIA's separate model, which is not included in this archive.
 
 Controllers: a GameCube adapter (WUP-028, official or Mayflash in Wii U mode) is used
 automatically if it has the WinUSB driver that Slippi installs. Close Slippi Dolphin first.
@@ -81,7 +84,8 @@ Install it, log in once, and the game picks up the login automatically (the Slip
 installs the GameCube adapter driver). For offline play it is not required. Unranked, Direct codes
 and Teams work against players on regular Slippi Dolphin.
 
-Bug reports: https://github.com/hero88go/melee-unlocked/issues with melee_port.log,
+Crashes: after a crash the launcher offers to send the report (crash text, minidump and logs) with
+one click. Other bugs: https://github.com/hero88go/melee-unlocked/issues with melee_port.log,
 port-settings.ini and the steps to reproduce.
 
 Watching replays: drop a .slp file onto WatchReplay.bat. That runs melee_port_playback.exe, a
@@ -93,9 +97,34 @@ playing something subtly wrong.
 Saves: memory card slot A is the folder User\GC\CardA, one .gci per file (Dolphin's GCI folder
 format). Copy your Slippi Dolphin save (GALE01-*.gci) there to keep your unlocks and settings.
 
-Ranked is removed from both builds. Unranked, Direct and Teams remain available.
-Event Match and mods on the Source Port are planned for a later release; use Static Recomp
-for events.
+Mods: put your own mod files in the Mods folder (or drop them on the launcher's Mods page). The
+game recognizes known packs by their content. New supported and untested custom entries turn on;
+unsupported versions stay off. Read each entry's compatibility warning. F1 > Mods (or
+Start + Down + Z on a controller) has an On/Off switch for each. Training Mode CE and 20XX TE run on
+the Source Port: 20XX TE's in-game menu is VS Mode > Tournament Melee, Training Mode CE's exercises
+are under 1P Mode > Event Match. Akaneia runs on the Static Recomp (launcher > Mods > Play). The
+20XX Training Hack Pack is not supported yet. See TrainingMods.md for compatibility and differences
+from the original console mods.
+
+Audio: F1 > Audio offers Auto (recommended: starts at the lowest buffer and backs off only after
+real gaps), Low latency (a fixed buffer), Exclusive (takes over the output device), and ASIO(R)
+for audio interfaces with a driver and buffer picker. Restart after changing the mode or driver.
+ASIO and Exclusive can take the device; sharing depends on the interface driver.
+
+Known gaps in this version: ranked play reports results but has not been tested in a live ranked set.
+
+License and source code
+-----------------------
+Melee Unlocked is free software under the GNU General Public License, version 3 or (at your
+option) any later version: licenses\\COPYING.txt, with the notices in licenses\\NOTICE.txt.
+Source code for this version: https://github.com/hero88go/melee-unlocked/tree/v{version}
+The NVIDIA (DLSS, Streamline, Reflex) and Intel (XeSS) runtime files and the Microsoft Visual C++
+runtime files in this folder are not covered by the GPL; their own terms are in licenses\\.
+ASIO is a registered trademark of Steinberg Media Technologies GmbH. The SDK and host-helper
+license texts are licenses\\steinberg-asio-sdk.txt and licenses\\steinberg-asio-bsd.txt.
+The official compatibility logo and SDK credits are in licenses\\asio.html.
+The default DSP coefficient table is the generated free table described in
+licenses\\dsp-coefficients.txt. A player's own dump in User\\GC\\dsp_coef.bin takes priority.
 """
 
 BAT = """@echo off
@@ -135,6 +164,31 @@ if not exist "%REPLAY%" (
 melee_port_playback.exe --iso "%ISO%" --replay "%REPLAY%" --sys-dir "%~dp0SysPlayback" --card-dir "%~dp0User\\GC\\CardA" --threaded-renderer
 if errorlevel 1 pause
 """
+
+
+def json_notice():
+    """nlohmann/json keeps its MIT notice in the opening comment of json.hpp."""
+    text = (ROOT / "port/third_party/nlohmann/json.hpp").read_text(encoding="utf-8")
+    end = text.find("*/")
+    if not text.startswith("/*") or end < 0 or not re.search(r"Permission is hereby\s+granted", text[:end]):
+        raise SystemExit("json.hpp: MIT notice not found at the top of the file")
+    return text[2:end].strip("\n") + "\n"
+
+
+def imgui_font_notice():
+    """The fonts compiled into Dear ImGui carry their own MIT notices (imgui_draw.cpp)."""
+    text = (ROOT / "port/third_party/imgui/imgui_draw.cpp").read_text(encoding="utf-8")
+    blocks = re.findall(r"// \[SECTION\] Default font data \(([^)]+)\)\n//-+\n((?://.*\n)+?)//-+\n", text)
+    if not blocks:
+        raise SystemExit("imgui_draw.cpp: embedded font notices not found")
+    mit = (ROOT / "port/third_party/imgui/LICENSE.txt").read_text(encoding="utf-8")
+    grant = re.search(r"Permission is hereby\s+granted", mit)
+    if not grant:
+        raise SystemExit("imgui LICENSE.txt: MIT permission text not found")
+    lines = ["Fonts compiled into Dear ImGui (port/third_party/imgui/imgui_draw.cpp), MIT License:", ""]
+    for name, notice in blocks:
+        lines += [name] + ["  " + line[2:].strip() for line in notice.splitlines()] + [""]
+    return "\n".join(lines) + "\n" + mit[grant.start():]
 
 
 def main():
@@ -244,6 +298,10 @@ def main():
         raise SystemExit(f"{launcher.name} does not contain the string {args.version!r}, so it was built "
                          f"before VERSION changed; build the melee_unlocked target and try again")
     shutil.copy2(launcher, folder / "MeleeUnlockedLauncher.exe")
+    # Launcher translations (plain UTF-8 text; English is built in).
+    lang_src = ROOT / "lang"
+    if lang_src.is_dir():
+        shutil.copytree(lang_src, folder / "lang", dirs_exist_ok=True)
     runtime_dlls = ("sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll",
                     "sl.dlss_d.dll", "nvngx_dlssd.dll", "sl.dlss_g.dll", "nvngx_dlssg.dll",
                     "sl.reflex.dll", "sl.pcl.dll", "libxess.dll", "nvngx.dll_meleedlss5.dll")
@@ -268,6 +326,17 @@ def main():
     shutil.copy2(sys_src / "codehandler.bin", sys_dst / "codehandler.bin")
     shutil.copy2(sys_src / "bootloader.gct", sys_dst / "bootloader.gct")
     shutil.copytree(sys_src / "GameFiles", sys_dst / "GameFiles")
+    # Ship only the pinned generated free table, never a player's hardware ROM dump.
+    coef = sys_src / "GC/dsp_coef.bin"
+    if not coef.is_file() or hashlib.sha256(coef.read_bytes()).hexdigest() != \
+            "c41e7d9f763da40983e83a5291cbecec1f536fd8b08ac6dda05eab33f57501ea":
+        raise SystemExit(f"missing or unrecognized free DSP coefficient table: {coef}")
+    (sys_dst / "GC").mkdir(exist_ok=True)
+    shutil.copy2(coef, sys_dst / "GC/dsp_coef.bin")
+    # Playback normally finds Sys too, but keep its standalone Sys tree complete.
+    if args.playback_exe:
+        (folder / "SysPlayback/GC").mkdir(exist_ok=True)
+        shutil.copy2(coef, folder / "SysPlayback/GC/dsp_coef.bin")
     # Warmed pipeline recipes: the newest cache namespace that has them (the exe's shader sources
     # decide the namespace, so this must come from the same build).
     recipes = ROOT / "shadercache/recipes.bin"
@@ -283,25 +352,60 @@ def main():
     (folder / "README.txt").write_text(README.format(version=args.version), encoding="utf-8")
     licenses = folder / "licenses"
     licenses.mkdir()
-    for src, dst in ((ROOT / "port/third_party/streamline/license.txt", "streamline.txt"),
+    # The program's own license and every third-party notice its files need (GPL-3.0 sections 4
+    # and 6; the MIT, BSD, ISC and LGPL texts; the NVIDIA, Intel and DLSS third-party terms). A
+    # missing text stops the build instead of shipping a package without it.
+    for src, dst in ((ROOT / "LICENSE", "COPYING.txt"),
+                     (ROOT / "NOTICE", "NOTICE.txt"),
+                     (ROOT / "port/third_party/streamline/license.txt", "streamline.txt"),
+                     (ROOT / "port/third_party/streamline/3rd-party-licenses.md", "streamline-third-party.md"),
+                     (ROOT / "port/third_party/streamline/reflex.license.txt", "nvidia-reflex.txt"),
+                     (ROOT / "port/third_party/ngx/LICENSE.txt", "nvidia-rtx-sdks.txt"),
+                     (ROOT / "docs/licenses/nvidia-dlss-third-party.txt", "nvidia-dlss-third-party.txt"),
+                     (ROOT / "port/third_party/xess/LICENSE.txt", "intel-xess.txt"),
                      (ROOT / "port/third_party/dht/LICENCE", "dht.txt"),
                      (ROOT / "port/third_party/monocypher/LICENCE.md", "monocypher.md"),
                      (ROOT / "port/third_party/enet/LICENSE", "enet.txt"),
                      (ROOT / "port/third_party/imgui/LICENSE.txt", "imgui.txt"),
-                     (ROOT / "port/third_party/streamline/reflex.license.txt", "nvidia-reflex.txt"),
-                     (ROOT / "port/third_party/xess/LICENSE.txt", "intel-xess.txt")):
-        if src.is_file():
-            shutil.copy2(src, licenses / dst)
+                     (ROOT / "port/third_party/libusb/COPYING", "libusb-LGPL-2.1.txt"),
+                     (ROOT / "port/third_party/stb/LICENSE", "stb.txt"),
+                     (ROOT / "port/third_party/earcut/LICENSE", "earcut.txt"),
+                     (ROOT / "port/third_party/asio/LICENSE.txt", "steinberg-asio-sdk.txt"),
+                     (ROOT / "port/third_party/asio/NOTICE-BSD.txt", "steinberg-asio-bsd.txt"),
+                     (ROOT / "docs/licenses/asio.html", "asio.html"),
+                     (ROOT / "docs/licenses/asio-compatible-logo-white.svg", "asio-compatible-logo-white.svg"),
+                     (ROOT / "docs/licenses/dsp-coefficients.txt", "dsp-coefficients.txt"),
+                     (ROOT / "docs/licenses/hps_decode-MIT.txt", "hps_decode.txt"),
+                     (ROOT / "docs/licenses/slippilab-MIT.txt", "slippilab.txt"),
+                     (ROOT / "port/runtime/gx/ui_sources/gd_melee/assets/kit/SourceSans3-OFL.md",
+                      "source-sans-3-OFL.md")):
+        if not src.is_file():
+            raise SystemExit(f"missing license text: {src}")
+        shutil.copy2(src, licenses / dst)
+    mod_tools = ROOT / "port/third_party/mod_tools"
+    (folder / "tools").mkdir(exist_ok=True)
+    for tool, digest in (("xdelta3.exe", "d81f59b2fe5e8589c0ee9782e231c805084f4d23dfade413903a4cad63b4e342"),
+                         ("7zr.exe", "ad4c82fadcbdf93c03b4fc440f300509c7d60c5c2f4d183e35d9d70d6957037d")):
+        src = mod_tools / tool
+        if not src.is_file() or hashlib.sha256(src.read_bytes()).hexdigest() != digest:
+            raise SystemExit(f"missing or altered mod tool: {src}")
+        shutil.copy2(src, folder / "tools" / tool)
+    for src, dst in (("xdelta-COPYING.txt", "xdelta3-GPL-2.txt"),
+                     ("7zip-license.txt", "7zip.txt"), ("SOURCES.txt", "mod-tools-sources.txt")):
+        shutil.copy2(mod_tools / src, licenses / dst)
+    (licenses / "nlohmann-json.txt").write_text(json_notice(), encoding="utf-8")
+    (licenses / "imgui-fonts.txt").write_text(imgui_font_notice(), encoding="utf-8")
     # The settings appearance picker loads these at runtime from beside the executable.
     # Keep the GD import separate so it can be removed without touching the other themes.
     ui_src = ROOT / "port/runtime/gx/ui_sources"
-    for source in ("gd_melee", "mockups", "menu_previews"):
+    for source in ("gd_melee", "mockups", "menu_previews", "vendor"):
         assets = ui_src / source / "assets"
         if not assets.is_dir():
             raise SystemExit(f"missing settings appearance assets: {assets}")
         shutil.copytree(assets, folder / "ui_sources" / source)
     shutil.copy2(ROOT / "docs/third-party-ui-attribution.md", licenses / "ui-attribution.md")
     shutil.copy2(ROOT / "docs/third-party-training-mode-ce.txt", licenses / "training-mode-ce.txt")
+    shutil.copy2(ROOT / "docs/training-mods.md", folder / "TrainingMods.md")
     shutil.copy2(ui_src / "gd_melee/ORIGIN.md", licenses / "gd-melee-origin.md")
     def zip_folder(zip_path):
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
@@ -315,7 +419,7 @@ def main():
         raise SystemExit(f"missing DXR shader: {path_shader}")
     shutil.copy2(path_shader, folder / path_shader.name)
     (folder / "README.txt").write_text(README.format(version=args.version) +
-        "\nThe one game executable includes standard graphics and optional experimental DLSS 5.\n"
+        "\nThis experimental Mod Update includes Source Port and Static Recomp game builds.\n"
         "DLSS 5 requires NVIDIA's separate model (nvngx_dlssnr.dll), which is not included.\n"
         "Experimental DXR path tracing and Ray Reconstruction are off by default.\n",
         encoding="utf-8")

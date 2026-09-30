@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+﻿// SPDX-License-Identifier: GPL-2.0-or-later
 // Port of Dolphin's Core/HW/DSPHLE/UCodes/AX.cpp and AXVoice.h (GameCube AX, ucode 0x4e8a8b21).
 #include <cmath>
 #include <cstdio>
@@ -8,7 +8,12 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <unordered_map>
+
+// The port log (runtime/host/host.cpp). Declared here rather than through host.h so the unit test,
+// which builds this file on its own, only has to supply this one function.
+namespace host { void log(const char* fmt, ...); }
 
 namespace ax {
 namespace {
@@ -89,7 +94,73 @@ void write_pb(uint32_t addr, const AXPB& pb) {
 uint32_t acc_loop_addr, acc_end_addr;
 uint32_t* acc_cur_addr;
 AXPB* acc_pb;
+// End of a one-shot, as the hardware does it: after the end address the accelerator returns no more
+// samples (reads give 0, the address stays at the loop address) until the ucode writes YN2, and the
+// ucode's end handler (IMEM 0x0c50) writes YN2 only for looping voices, so the rest of a one-shot's
+// last 1 ms block is silence (Dolphin's DSPAccelerator does the same). Melee points every one-shot's
+// loop address at its own sample start, so without this each ending sound finished its block with
+// the opening of the same sound and then snapped to silence: a click on the 1 ms edge (09-29).
+// MELEE_AUDIO_OLD_ACC=1 keeps decoding past the end, as before, for comparison.
+const bool acc_stop_at_end = [] { const char* v = std::getenv("MELEE_AUDIO_OLD_ACC"); return !(v && *v == '1'); }();
+bool acc_reads_stopped = false;
 VoiceTraceFn g_voice_trace = nullptr;
+
+// ---- initial time delay (ITD), as the ucode does it (run-source/rel085-final/wp6-20260930/ITD-SPEC.md) ----
+// A voice with its ITD flag set is heard 32 - shift samples late on each side: its 1 ms blocks (after
+// the resampler and the volume envelope) follow the voice's last 32 samples from the previous frame
+// in the DSP's work area, and the left buses (main, AuxA, AuxB) read that stream shiftL samples into
+// the old 32, the right buses shiftR samples in; surround buses read the block itself. After every
+// rendered millisecond each shift moves one sample toward its target. After the voice's 5 ms the last
+// block rendered goes back to the PB's ITD buffer in RAM (the SDK's __AXITD), then the PB with its
+// shifts. Melee arms ITD on most sound effects (pan != centre), never on the music stream.
+// MELEE_AUDIO_ITD=0 turns all of it off: no work area, no RAM reads or writes, today's output.
+bool g_itd_on = [] { const char* v = std::getenv("MELEE_AUDIO_ITD"); return !(v && v[0] == '0'); }();
+bool g_itd_logged = false;
+// DMEM 0x0CC0-0x0D7F as offsets from 0x0CC0: [0, 32) the history, then up to five 1 ms blocks. It
+// keeps whatever the previous voices left there, as DMEM does.
+constexpr uint32_t ITD_BLOCK0 = 32, ITD_WORDS = 32 + 5 * 32, ITD_NONE = 0xFFFFFFFFu;
+int16_t g_itd_dmem[ITD_WORDS];
+uint32_t g_itd_left = ITD_BLOCK0, g_itd_right = ITD_BLOCK0;   // DMEM 0x0E40 / 0x0E41: left and right sources
+uint32_t g_itd_next = ITD_BLOCK0;                              // 0x0E42: where the next block goes
+// 0x0E1C: start of the last block rendered by any voice. The ucode never resets it, so a flagged voice
+// that did not run writes back another voice's block. ITD_NONE until a block exists (the hardware
+// word points at DMEM 0x0000, the mix buffer, then; zeros here).
+uint32_t g_itd_last = ITD_NONE;
+
+// The read position the ucode computes for a source (0x030B-0x030F): block - 32 + shift. Melee's shifts
+// are 0..31; the clamp only keeps shifts the hardware would read outside the work area inside it.
+inline uint32_t itd_source(uint32_t block, uint16_t shift) {
+  const int32_t at = (int32_t)block - 32 + (int16_t)shift;
+  return (uint32_t)std::clamp(at, 0, (int32_t)(ITD_WORDS - 32));
+}
+// One step toward the target (0x02FC-0x0309: DECM when above, INCM when below).
+inline uint16_t itd_step(uint16_t shift, uint16_t target) {
+  const int16_t s = (int16_t)shift, t = (int16_t)target;
+  return (uint16_t)(s > t ? s - 1 : s < t ? s + 1 : s);
+}
+inline uint32_t itd_buffer(const AXPB& pb) {
+  return hilo(pb.initial_time_delay.addrMemHigh, pb.initial_time_delay.addrMemLow);
+}
+// Voice setup (0x0210-0x0246), for every PB in the list, running or not, before the first
+// millisecond's PB updates: pointers from the current shifts, and the 32-sample history DMA'd in.
+void itd_voice_setup(const AXPB& pb) {
+  g_itd_next = ITD_BLOCK0;
+  if (!pb.initial_time_delay.on) {
+    g_itd_left = g_itd_right = ITD_BLOCK0;
+    return;
+  }
+  g_itd_left = itd_source(ITD_BLOCK0, pb.initial_time_delay.offsetLeft);   // 0x0CC0 + shiftL
+  g_itd_right = itd_source(ITD_BLOCK0, pb.initial_time_delay.offsetRight);
+  const uint32_t buffer = itd_buffer(pb);
+  for (uint32_t i = 0; i < 32; ++i) g_itd_dmem[i] = (int16_t)g_mem.rd16(buffer + i * 2);
+}
+// After the voice's 5 ms (0x0355-0x0368), with the flag as it stands then, before the PB goes back.
+void itd_write_back(const AXPB& pb) {
+  if (!pb.initial_time_delay.on) return;
+  const uint32_t buffer = itd_buffer(pb);
+  for (uint32_t i = 0; i < 32; ++i)
+    g_mem.wr16(buffer + i * 2, g_itd_last == ITD_NONE ? 0 : (uint16_t)g_itd_dmem[g_itd_last + i]);
+}
 
 // ---- per-voice frame trace (set_frame_trace); nothing here runs while the sink is null ----
 FrameTraceFn g_frame_trace = nullptr;
@@ -151,9 +222,11 @@ void accelerator_setup(AXPB* pb, uint32_t* cur_addr) {
   acc_loop_addr = hilo(pb->audio_addr.loop_addr_hi, pb->audio_addr.loop_addr_lo);
   acc_end_addr = hilo(pb->audio_addr.end_addr_hi, pb->audio_addr.end_addr_lo);
   acc_cur_addr = cur_addr;
+  acc_reads_stopped = false;   // every voice setup writes YN2 (ucode 0x05df), which resumes reads
 }
 
 uint16_t accelerator_get_sample() {
+  if (acc_reads_stopped) return 0;
   uint16_t ret;
   uint8_t step_size_bytes = 0;
   switch (acc_pb->audio_addr.sample_format) {
@@ -209,13 +282,127 @@ uint16_t accelerator_get_sample() {
       }
     } else {
       acc_pb->running = 0;
+      acc_reads_stopped = acc_stop_at_end;   // no YN2 write for a one-shot: reads stay stopped
     }
   }
   return ret;
 }
 
-uint32_t resample_audio(int16_t* output, uint32_t count, int16_t* last_samples, uint32_t curr_pos, uint32_t ratio, int srctype) {
-  if (srctype == SRCTYPE_LINEAR || srctype == SRCTYPE_POLYPHASE) {
+// The DSP's polyphase filter: 3 sets x 128 phases x 4 taps (Q15), as in the DSP coefficient ROM.
+// On whenever a coefficient table is found (MELEE_AUDIO_POLYPHASE=0 turns it off; without a table
+// voices render linear, as Dolphin HLE does). Measured 09-29 against Slippi Dolphin's LLE DSP dump
+// of the same replay: its tone matches the hardware within 0.6 dB in every octave band (linear is
+// 5 dB bright at 8-14 kHz), and with the accelerator stopping at a one-shot's end (acc_stop_at_end)
+// it flags 6 clicks where the LLE dump flags 10 (before that fix: 41, all on 1 ms voice block edges:
+// this filter passes the newest samples sooner than linear, so it showed the defect more). The math
+// below matches the ucode's routine at IMEM 0x05a8, output rounding included: the ucode keeps the
+// middle word of the doubled sum with a saturating store, which is sum >> 15 clamped (09-30).
+//
+// Where the table comes from, first found wins (paths relative to the game's folder, the launcher's
+// working folder): MELEE_DSP_COEF (a test override); User\GC\dsp_coef.bin, a player's own dump of a
+// console's DSP ROM (Adler-32 f3b93527, the exact hardware filter; Nintendo data, never shipped);
+// Sys\GC\dsp_coef.bin, the free table shipped with the game (Dolphin's free DSP ROM table v0.2.1,
+// GPL-2.0-or-later, generated windowed sinc: the table the LLE reference used); then a Slippi
+// Launcher install. The port log names the file and its Adler-32.
+//
+// Adler-32 as Dolphin prints it for DSP ROM files: over the 16-bit words in host (little-endian)
+// order, which is each big-endian file word with its two bytes swapped.
+uint32_t dsp_rom_adler32(const uint8_t* raw, size_t bytes) {
+  uint32_t a = 1, b = 0;
+  for (size_t i = 0; i + 1 < bytes; i += 2) {
+    a = (a + raw[i + 1]) % 65521; b = (b + a) % 65521;
+    a = (a + raw[i]) % 65521; b = (b + a) % 65521;
+  }
+  return (b << 16) | a;
+}
+const char* dsp_coef_name(uint32_t adler) {
+  switch (adler) {
+    case 0xf3b93527u: return "a console's own table";
+    case 0xdb6880c1u: return "free table v0.2.1, as the LLE reference";
+    case 0xa4a575f5u: return "free table v0.3 or later";
+    case 0xb019c2fbu: return "free table v0.2, linear interpolation only";
+    default: return "unknown table";
+  }
+}
+const int16_t* polyphase_coefs() {
+  static bool loaded = false;
+  static std::array<int16_t, 3 * 512> table{};
+  static bool ok = false;
+  if (loaded) return ok ? table.data() : nullptr;
+  loaded = true;
+  if (const char* on = std::getenv("MELEE_AUDIO_POLYPHASE"); on && on[0] == '0') {
+    host::log("audio: DSP polyphase filter off (MELEE_AUDIO_POLYPHASE=0), voices use linear interpolation");
+    return nullptr;
+  }
+  std::string paths[6];
+  if (const char* p = std::getenv("MELEE_DSP_COEF")) paths[0] = p;
+  paths[1] = "User\\GC\\dsp_coef.bin";
+  paths[2] = "Sys\\GC\\dsp_coef.bin";
+  if (const char* a = std::getenv("APPDATA")) {
+    const std::string base = std::string(a) + "\\Slippi Launcher\\";
+    paths[3] = base + "netplay\\Sys\\GC\\dsp_coef.bin";
+    paths[4] = base + "playback\\Sys\\GC\\dsp_coef.bin";
+    paths[5] = base + "netplay-beta\\Sys\\GC\\dsp_coef.bin";
+  }
+  for (const std::string& path : paths) {
+    if (path.empty()) continue;
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+      // A measurement that pins the table must not fall through to another one unnoticed.
+      if (&path == &paths[0]) host::log("audio: DSP coefficient table %s (MELEE_DSP_COEF) not found", path.c_str());
+      continue;
+    }
+    uint8_t raw[4097];
+    const size_t n = std::fread(raw, 1, sizeof raw, f);
+    std::fclose(f);
+    if (n != 4096) {
+      host::log("audio: DSP coefficient table %s skipped (not 4096 bytes)", path.c_str());
+      continue;
+    }
+    for (int i = 0; i < 3 * 512; ++i) table[i] = (int16_t)((raw[i * 2] << 8) | raw[i * 2 + 1]);
+    // Each phase must be a low-pass (taps summing to about 1.0) whose taps' magnitudes stay under
+    // 2.0, so the four-tap sum in resample_audio fits an int32 (the DSP accumulates in 40 bits).
+    bool sane = true;
+    for (int row = 0; row < 3 * 128 && sane; ++row) {
+      const int16_t* c = &table[row * 4];
+      const int sum = c[0] + c[1] + c[2] + c[3];
+      const int magnitude = std::abs(c[0]) + std::abs(c[1]) + std::abs(c[2]) + std::abs(c[3]);
+      sane = sum > 30000 && sum < 34000 && magnitude < 65536;
+    }
+    if (!sane) {
+      host::log("audio: DSP coefficient table %s skipped (its filter rows are out of range)", path.c_str());
+      continue;
+    }
+    ok = true;
+    const uint32_t adler = dsp_rom_adler32(raw, 4096);
+    host::log("audio: DSP coefficient table %s Adler-32 %08x (%s)", path.c_str(), adler, dsp_coef_name(adler));
+    return table.data();
+  }
+  host::log("audio: no DSP coefficient table (MELEE_DSP_COEF, User\\GC, Sys\\GC, Slippi Launcher folders): "
+            "voices use linear interpolation");
+  return nullptr;
+}
+
+uint32_t resample_audio(int16_t* output, uint32_t count, int16_t* last_samples, uint32_t curr_pos, uint32_t ratio, int srctype,
+                        int coef_select) {
+  const int16_t* poly = srctype == SRCTYPE_POLYPHASE && coef_select >= 0 && coef_select < 3 ? polyphase_coefs() : nullptr;
+  if (poly) {
+    poly += coef_select * 512;
+    int16_t temp[4];
+    uint32_t idx = 0;
+    temp[idx++ & 3] = last_samples[0]; temp[idx++ & 3] = last_samples[1];
+    temp[idx++ & 3] = last_samples[2]; temp[idx++ & 3] = last_samples[3];
+    for (uint32_t i = 0; i < count; ++i) {
+      curr_pos += ratio;
+      while (curr_pos >= 0x10000) { temp[idx++ & 3] = (int16_t)accelerator_get_sample(); curr_pos -= 0x10000; }
+      const int16_t* c = poly + ((curr_pos & 0xFFFF) >> 9) * 4;
+      int32_t s = temp[idx & 3] * c[0] + temp[(idx + 1) & 3] * c[1] + temp[(idx + 2) & 3] * c[2] + temp[(idx + 3) & 3] * c[3];
+      s >>= 15;
+      output[i] = (int16_t)std::clamp(s, -32768, 32767);
+    }
+    last_samples[0] = temp[idx & 3]; last_samples[1] = temp[(idx + 1) & 3];
+    last_samples[2] = temp[(idx + 2) & 3]; last_samples[3] = temp[(idx + 3) & 3];
+  } else if (srctype == SRCTYPE_LINEAR || srctype == SRCTYPE_POLYPHASE) {
     int16_t temp[4];
     uint32_t idx = 0;
     temp[idx++ & 3] = last_samples[0]; temp[idx++ & 3] = last_samples[1];
@@ -249,7 +436,8 @@ uint32_t resample_audio(int16_t* output, uint32_t count, int16_t* last_samples, 
 void get_input_samples(AXPB& pb, int16_t* samples, uint16_t count) {
   uint32_t cur_addr = hilo(pb.audio_addr.cur_addr_hi, pb.audio_addr.cur_addr_lo);
   accelerator_setup(&pb, &cur_addr);
-  uint32_t curr_pos = resample_audio(samples, count, pb.src.last_samples, pb.src.cur_addr_frac, hilo(pb.src.ratio_hi, pb.src.ratio_lo), pb.src_type);
+  uint32_t curr_pos = resample_audio(samples, count, pb.src.last_samples, pb.src.cur_addr_frac, hilo(pb.src.ratio_hi, pb.src.ratio_lo), pb.src_type,
+                                    pb.coef_select);
   pb.src.cur_addr_frac = (uint16_t)(curr_pos & 0xFFFF);
   pb.audio_addr.cur_addr_hi = (uint16_t)(cur_addr >> 16);
   pb.audio_addr.cur_addr_lo = (uint16_t)(cur_addr & 0xFFFF);
@@ -328,20 +516,45 @@ void process_voice(AXPB& pb, const Buffers& b, uint16_t count, uint32_t mctrl,
         input_last, input_peak, samples[0], samples[count - 1], output_peak};
     g_voice_trace(trace);
   }
+  // Initial time delay (ucode 0x0267-0x02EF): this block goes into the work area after its volume
+  // envelope, and the left and right buses read from their own positions in it (ITD-SPEC.md).
+  // Voices without the flag read their block itself, so their output does not change.
+  const int16_t* input_left = samples;
+  const int16_t* input_right = samples;
+  if (g_itd_on && count == 32 && g_itd_next <= ITD_WORDS - 32) {
+    g_itd_last = g_itd_next;   // 0x0269: 0x0E1C = 0x0E42
+    std::memcpy(&g_itd_dmem[g_itd_next], samples, sizeof samples);
+    g_itd_next += 32;
+    input_left = &g_itd_dmem[g_itd_left];
+    input_right = &g_itd_dmem[g_itd_right];
+  }
   // (Dolphin keeps the low-pass filter disabled.)
 #define MIX_ON(C) (0 != (mctrl & MIX_##C))
 #define RAMP_ON(C) (0 != (mctrl & MIX_##C##_RAMP))
-  if (MIX_ON(L)) mix_add(b.ptrs[0], samples, count, &pb.mixer.left, &pb.dpop.left, RAMP_ON(L));
-  if (MIX_ON(R)) mix_add(b.ptrs[1], samples, count, &pb.mixer.right, &pb.dpop.right, RAMP_ON(R));
+  if (MIX_ON(L)) mix_add(b.ptrs[0], input_left, count, &pb.mixer.left, &pb.dpop.left, RAMP_ON(L));
+  if (MIX_ON(R)) mix_add(b.ptrs[1], input_right, count, &pb.mixer.right, &pb.dpop.right, RAMP_ON(R));
   if (MIX_ON(S)) mix_add(b.ptrs[2], samples, count, &pb.mixer.surround, &pb.dpop.surround, RAMP_ON(S));
-  if (MIX_ON(AUXA_L)) mix_add(b.ptrs[3], samples, count, &pb.mixer.auxA_left, &pb.dpop.auxA_left, RAMP_ON(AUXA_L));
-  if (MIX_ON(AUXA_R)) mix_add(b.ptrs[4], samples, count, &pb.mixer.auxA_right, &pb.dpop.auxA_right, RAMP_ON(AUXA_R));
+  if (MIX_ON(AUXA_L)) mix_add(b.ptrs[3], input_left, count, &pb.mixer.auxA_left, &pb.dpop.auxA_left, RAMP_ON(AUXA_L));
+  if (MIX_ON(AUXA_R)) mix_add(b.ptrs[4], input_right, count, &pb.mixer.auxA_right, &pb.dpop.auxA_right, RAMP_ON(AUXA_R));
   if (MIX_ON(AUXA_S)) mix_add(b.ptrs[5], samples, count, &pb.mixer.auxA_surround, &pb.dpop.auxA_surround, RAMP_ON(AUXA_S));
-  if (MIX_ON(AUXB_L)) mix_add(b.ptrs[6], samples, count, &pb.mixer.auxB_left, &pb.dpop.auxB_left, RAMP_ON(AUXB_L));
-  if (MIX_ON(AUXB_R)) mix_add(b.ptrs[7], samples, count, &pb.mixer.auxB_right, &pb.dpop.auxB_right, RAMP_ON(AUXB_R));
+  if (MIX_ON(AUXB_L)) mix_add(b.ptrs[6], input_left, count, &pb.mixer.auxB_left, &pb.dpop.auxB_left, RAMP_ON(AUXB_L));
+  if (MIX_ON(AUXB_R)) mix_add(b.ptrs[7], input_right, count, &pb.mixer.auxB_right, &pb.dpop.auxB_right, RAMP_ON(AUXB_R));
   if (MIX_ON(AUXB_S)) mix_add(b.ptrs[8], samples, count, &pb.mixer.auxB_surround, &pb.dpop.auxB_surround, RAMP_ON(AUXB_S));
 #undef MIX_ON
 #undef RAMP_ON
+  // After the mix (0x02F1-0x0330), with the flag as this millisecond's updates left it: the shifts
+  // step toward their targets and the sources move to the next block less 32 plus the new shift.
+  if (g_itd_on) {
+    PBInitialTimeDelay& itd = pb.initial_time_delay;
+    if (itd.on) {
+      itd.offsetLeft = itd_step(itd.offsetLeft, itd.targetLeft);
+      itd.offsetRight = itd_step(itd.offsetRight, itd.targetRight);
+      g_itd_left = itd_source(g_itd_next, itd.offsetLeft);
+      g_itd_right = itd_source(g_itd_next, itd.offsetRight);
+    } else {
+      g_itd_left = g_itd_right = g_itd_next;
+    }
+  }
 }
 
 void apply_updates_for_ms(int curr_ms, uint16_t* pb, const uint16_t* num_updates, uint32_t updates_addr) {
@@ -498,11 +711,16 @@ void handle_command_list() {
 void set_memory(const Memory& mem) { g_mem = mem; }
 void set_voice_trace(VoiceTraceFn trace) { g_voice_trace = trace; }
 void set_frame_trace(FrameTraceFn sink) { g_frame_trace = sink; }
+void set_itd_enabled(bool on) { g_itd_on = on; }
 void reset() {
   m_cmdlist_size = 0; m_next_is_cmdlist = false; m_pending_cmdlist_size = 0; g_frames = 0;
   g_written_back.clear();
   int* all[] = {m_samples_left, m_samples_right, m_samples_surround, m_samples_auxA_left, m_samples_auxA_right, m_samples_auxA_surround, m_samples_auxB_left, m_samples_auxB_right, m_samples_auxB_surround};
   for (int* b : all) std::memset(b, 0, 160 * sizeof(int));
+  // The DSP's work area as a freshly booted DSP has it (its DMEM image is zeros).
+  std::memset(g_itd_dmem, 0, sizeof g_itd_dmem);
+  g_itd_left = g_itd_right = g_itd_next = ITD_BLOCK0;
+  g_itd_last = ITD_NONE;
 }
 uint64_t frames_processed() { return g_frames; }
 
@@ -544,6 +762,11 @@ void process_pb_list(uint32_t pb_addr) {
   const uint32_t spms = 32;
   AXPB pb;
   int guard = 0;
+  if (!g_itd_logged) {
+    g_itd_logged = true;
+    host::log(g_itd_on ? "audio: AX initial time delay on (MELEE_AUDIO_ITD=0 turns it off)"
+                       : "audio: AX initial time delay off (MELEE_AUDIO_ITD=0)");
+  }
   while (pb_addr && guard++ < 256) {
     Buffers buffers{{m_samples_left, m_samples_right, m_samples_surround, m_samples_auxA_left, m_samples_auxA_right, m_samples_auxA_surround, m_samples_auxB_left, m_samples_auxB_right, m_samples_auxB_surround}};
     read_pb(pb_addr, pb);
@@ -553,6 +776,7 @@ void process_pb_list(uint32_t pb_addr) {
       begin = pb;
       g_accum = &accum;
     }
+    if (g_itd_on) itd_voice_setup(pb);
     uint32_t updates_addr = hilo(pb.updates.data_hi, pb.updates.data_lo);
     for (int curr_ms = 0; curr_ms < 5; ++curr_ms) {
       apply_updates_for_ms(curr_ms, (uint16_t*)&pb, pb.updates.num_updates, updates_addr);
@@ -562,21 +786,33 @@ void process_pb_list(uint32_t pb_addr) {
       for (int*& p : buffers.ptrs) p += spms;
     }
     g_accum = nullptr;
+    if (g_itd_on) itd_write_back(pb);   // the ucode sends the history back before the PB
     write_pb(pb_addr, pb);
     if (g_frame_trace) trace_voice_frame(pb_addr, begin, pb, accum);
     pb_addr = hilo(pb.next_pb_hi, pb.next_pb_lo);
   }
 }
 
+OutputSink g_output_sink = nullptr;
+uint64_t g_blocks_output = 0;
+
 void output_samples(uint32_t lr_addr, uint32_t surround_addr) {
   for (uint32_t i = 0; i < 160; ++i) g_mem.wr32(surround_addr + i * 4, (uint32_t)m_samples_surround[i]);
   // Clamped 16-bit samples interleaved R L R L ... (AI DMA order).
+  int16_t rl[320];
   for (uint32_t i = 0; i < 160; ++i) {
     int left = clamp16(m_samples_left[i]), right = clamp16(m_samples_right[i]);
     g_mem.wr16(lr_addr + i * 4, (uint16_t)right);
     g_mem.wr16(lr_addr + i * 4 + 2, (uint16_t)left);
+    rl[i * 2] = (int16_t)right;
+    rl[i * 2 + 1] = (int16_t)left;
   }
+  ++g_blocks_output;
+  if (g_output_sink) g_output_sink(rl, 160);
 }
+
+void set_output_sink(OutputSink sink) { g_output_sink = sink; }
+uint64_t blocks_output() { return g_blocks_output; }
 
 void handle_mail(uint32_t mail) {
   if (m_next_is_cmdlist) {

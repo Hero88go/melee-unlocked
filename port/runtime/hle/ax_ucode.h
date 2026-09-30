@@ -37,10 +37,19 @@ using FrameTraceFn = void (*)(const char* line);
 void set_memory(const Memory& mem);
 void set_voice_trace(VoiceTraceFn trace);
 void set_frame_trace(FrameTraceFn sink);
+// The block a command list has just mixed, exactly as it went to RAM for the AI DMA (R, L sample
+// pairs in host order). The console plays it one to two blocks later (the AX library double
+// buffers the DMA); the host hands it to the sound card now (audio_core.cpp, hle_stubs.cpp).
+using OutputSink = void (*)(const int16_t* rl, uint32_t frames);
+void set_output_sink(OutputSink sink);
+// Blocks mixed since start (each command list's OUTPUT), for the fronts to tell a new block apart.
+uint64_t blocks_output();
 void reset();
 // CPU -> DSP mailbox (DSPSendMailToDSP). Runs a command list when its address arrives.
 void handle_mail(uint32_t mail);
 // Exposed for tests.
+// Initial time delay (the ucode's per-voice ITD). On unless MELEE_AUDIO_ITD=0; tests switch it here.
+void set_itd_enabled(bool on);
 uint32_t convert_mixer_control(uint16_t mixer_control);
 void process_pb_list(uint32_t pb_addr);
 void output_samples(uint32_t lr_addr, uint32_t surround_addr);

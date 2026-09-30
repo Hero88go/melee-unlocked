@@ -142,7 +142,7 @@ void replays_listed(ReplayScan* scan) {
     g_replay_view=it==g_replay_files.end()?-1:int(it-g_replay_files.begin());
   }
   EnableWindow(g_replays[2],!g_replay_files.empty()&&!g_playing&&!g_building);
-  replay_status(g_replay_files.empty()?"Choose a Slippi replay to get started.":std::to_string(g_replay_files.size())+" replays");
+  replay_status(g_replay_files.empty()?"Choose a Slippi replay to get started.":launcher::lang::fill(launcher::lang::tx("{count} replays"),launcher::lang::Args{{"count",std::to_string(g_replay_files.size())}}));
   stats_changed();
 }
 void replay_loaded(ReplayLoaded* loaded) {
@@ -181,7 +181,8 @@ void replay_selection_changed() { InvalidateRect(g_replays[0],nullptr,FALSE); }
 void browse_replay() {
   wchar_t file[32768]{}; auto folder=widen(g_dir+"\\Replays");
   OPENFILENAMEW dialog{sizeof dialog}; dialog.hwndOwner=g_main;
-  dialog.lpstrFilter=L"Slippi replays (*.slp)\0*.slp\0"; dialog.lpstrTitle=L"Open replay";
+  const std::wstring dialog_title=launcher::lang::txw(L"Open replay");
+  dialog.lpstrFilter=L"Slippi replays (*.slp)\0*.slp\0"; dialog.lpstrTitle=dialog_title.c_str();
   dialog.lpstrFile=file; dialog.nMaxFile=32768; dialog.lpstrInitialDir=folder.c_str();
   dialog.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
   if(GetOpenFileNameW(&dialog)) refresh_replays(std::filesystem::path(file));
@@ -209,7 +210,7 @@ void watch_replay() {
   if(error) { report_launch_error(error,exe,cwd); return; }
   CloseHandle(process.hThread); g_playing=true; g_replay_active=true;
   launcher::lobby::game_running(true); EnableWindow(g_play_btn,FALSE); EnableWindow(g_replays[2],FALSE);
-  replay_status("Watching "+g_replay_files[index].filename().u8string());
+  replay_status(launcher::lang::fill(launcher::lang::tx("Watching {file}"),launcher::lang::Args{{"file",g_replay_files[index].filename().u8string()}}));
   ShowWindow(g_main,SW_MINIMIZE);
   std::thread([h=process.hProcess]{ WaitForSingleObject(h,INFINITE); DWORD code=0; GetExitCodeProcess(h,&code); CloseHandle(h); PostMessageW(g_main,WM_APP_GAME_DONE,code,0); }).detach();
 }

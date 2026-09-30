@@ -7,6 +7,7 @@
 #include "exi_slippi.h"
 #include "memory_range.h"
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -196,7 +197,11 @@ static bool s_ai_dma_running = false;
 static uint64_t s_ai_next_tb = 0;
 static uint32_t s_dsp_task = 0;
 HLE(AIInit) {}
-HLE(AIRegisterDMACallback) { uint32_t cb = ARG0; RET(s_ai_dma_callback); s_ai_dma_callback = cb; host::log("audio: AI DMA callback %08X", cb); }
+namespace hle { static void push_fresh(const int16_t* rl, uint32_t frames); }
+HLE(AIRegisterDMACallback) {
+  uint32_t cb = ARG0; RET(s_ai_dma_callback); s_ai_dma_callback = cb; host::log("audio: AI DMA callback %08X", cb);
+  ax::set_output_sink(hle::push_fresh);
+}
 HLE(AIInitDMA) { s_ai_dma_addr = ARG0; s_ai_dma_len = ARG1; }
 HLE(AIStartDMA) {
   if (!s_ai_dma_running) {
@@ -209,6 +214,33 @@ HLE(AIStartDMA) {
 }
 
 namespace hle {
+// Each block goes to the sound card the moment the DSP has mixed it (ax::set_output_sink), not when
+// its AI DMA completes: the AX library double buffers, so that was two blocks (10 ms) after the mix
+// and one block after the console itself starts playing it. The game sees the same DMA timing and
+// callbacks either way. MELEE_AUDIO_DMA_PUSH=1 goes back to pushing at DMA completion (comparison);
+// MELEE_AUDIO_FRESH_CHECK=1 compares each DMA with the block handed over early, and logs the count.
+static const bool s_push_at_dma = [] { const char* v = std::getenv("MELEE_AUDIO_DMA_PUSH"); return v && *v == '1'; }();
+static const bool s_fresh_check = [] { const char* v = std::getenv("MELEE_AUDIO_FRESH_CHECK"); return v && *v == '1'; }();
+static int16_t s_fresh[4][320];
+static unsigned s_fresh_next = 0;
+static uint64_t s_fresh_same = 0, s_fresh_diff = 0;
+static void push_fresh(const int16_t* rl, uint32_t frames) {
+  if (s_fresh_check && frames == 160) { std::memcpy(s_fresh[s_fresh_next & 3], rl, sizeof s_fresh[0]); ++s_fresh_next; }
+  if (!s_push_at_dma) host::audio_push_native((const uint8_t*)rl, (size_t)frames * 4);
+}
+static void check_dma_block(const uint8_t* be, uint32_t len) {
+  if (!s_fresh_check || len != 640) return;
+  int16_t dma[320];
+  for (int i = 0; i < 320; ++i) dma[i] = (int16_t)((be[i * 2] << 8) | be[i * 2 + 1]);
+  bool same = false;
+  for (int k = 0; k < 4 && !same; ++k) same = std::memcmp(dma, s_fresh[k], sizeof dma) == 0;
+  (same ? s_fresh_same : s_fresh_diff) += 1;
+  if ((s_fresh_same + s_fresh_diff) % 2000 == 0)
+    host::log("audio: early blocks matched %llu DMAs, differed from %llu", (unsigned long long)s_fresh_same, (unsigned long long)s_fresh_diff);
+}
+// The console time of the next AI DMA completion, 0 while audio is not running (the frame wait's
+// audio pacing, host.cpp).
+uint64_t audio_next_due() { return s_ai_dma_running && s_ai_dma_callback && s_ai_dma_len ? s_ai_next_tb : 0; }
 // longjmp cannot return through the host call stack; the setjmp caller catches this (ppc.h).
 void __longjmp(ppc::Context& c, uint8_t*) { throw ppc::GuestLongJmp{c.r[3], c.r[4]}; }
 // Called at interrupt-safe points (see host::pump_completions / host::retrace).
@@ -225,8 +257,10 @@ void audio_tick(bool force) {
   }
   for (int guard = 0; guard < 8 && host::cpu->tb >= s_ai_next_tb; ++guard) {
     s_ai_next_tb += period;
-    // The DMA that just completed played the buffer AX set up last time.
-    host::audio_push(host::ptr(s_ai_dma_addr, s_ai_dma_len), s_ai_dma_len);
+    // The DMA that just completed played the buffer AX set up last time. The callback below mixes
+    // the next block, which push_fresh hands over at once.
+    check_dma_block(host::ptr(s_ai_dma_addr, s_ai_dma_len), s_ai_dma_len);
+    if (s_push_at_dma) host::audio_push(host::ptr(s_ai_dma_addr, s_ai_dma_len), s_ai_dma_len);
     ppc::Context saved = *host::cpu;
     try { host::call_guest(s_ai_dma_callback); } catch (const LoadContextUnwind&) {}
     uint64_t tb = host::cpu->tb;

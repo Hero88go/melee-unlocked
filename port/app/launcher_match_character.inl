@@ -12,7 +12,8 @@ LRESULT CALLBACK match_picker_proc(HWND w,UINT message,WPARAM wp,LPARAM lp) {
     PAINTSTRUCT paint{}; HDC dc=BeginPaint(w,&paint); RECT client{}; GetClientRect(w,&client);
     vgrad(dc,client,C_CONTENT_TOP,C_CONTENT_BOT);
     draw_text(dc,L"Choose your character",LR(20,15,420,31),g_font_big,C_TEXT,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
-    draw_text(dc,widen("Playing " + (choice?choice->opponent:std::string("your opponent")) + "  |  Click a stock icon to launch Direct"),
+    draw_text(dc,widen(launcher::lang::fill(launcher::lang::tx("Playing {name}"),launcher::lang::Args{{"name",choice?choice->opponent:launcher::lang::tx("your opponent")}}) +
+                       "  |  " + launcher::lang::tx("Click a stock icon to launch Direct")),
               LR(20,49,420,26),g_font_small,C_DIM,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
     for(int i=0;i<26;++i) {
       RECT cell=LR(20+(i%9)*46,84+(i/9)*52,40,44);
@@ -51,7 +52,7 @@ int choose_match_character(const launcher::lobby::Match& match) {
   RECT parent{}; GetWindowRect(g_main,&parent);
   RECT frame{0,0,S(460),S(291)}; AdjustWindowRect(&frame,WS_POPUP|WS_CAPTION,FALSE);
   const int width=frame.right-frame.left,height=frame.bottom-frame.top;
-  HWND picker=CreateWindowExW(WS_EX_DLGMODALFRAME,L"MeleeUnlockedMatchPicker",L"Match accepted",
+  HWND picker=CreateWindowExW(WS_EX_DLGMODALFRAME,L"MeleeUnlockedMatchPicker",launcher::lang::txw(L"Match accepted").c_str(),
     WS_POPUP|WS_CAPTION,(parent.left+parent.right-width)/2,(parent.top+parent.bottom-height)/2,
     width,height,g_main,nullptr,GetModuleHandleW(nullptr),&selection);
   if(!picker) return match.character;

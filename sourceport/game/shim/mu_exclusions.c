@@ -14,7 +14,7 @@ typedef unsigned int (*MuExclusionList)(const MuExclusion** out);
 #define PROVIDERS(X)                                                                               \
     X(ax_vpb) X(ax_alloc) X(ax_aux) X(ax_cl) X(ax_out) X(ax_spb) X(ax_prof) X(synth) X(axdriver)  \
     X(lbaudio_reverb) X(video) X(perf) X(pobj_bridge) X(gx_regs) X(gx_fifo) X(os) X(card) X(audio) \
-    X(replay_abi) X(lab) X(content)
+    X(replay_abi) X(lab) X(content) X(practice)
 
 #define DECLARE(name) unsigned int mu_exclusions_##name(const MuExclusion** out);
 PROVIDERS(DECLARE)

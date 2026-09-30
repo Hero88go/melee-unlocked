@@ -77,16 +77,16 @@ struct Status {
   bool te_owned = false;             // the 20XX Tournament Edition save
   bool akaneia = false;              // the Akaneia 1.0.1 disc
   bool tmce = false;                 // Training Mode CE's disc files (TM/), on the vanilla game
+  // The session's mods came from the Mods folder (mod_scan.h), not a profile or --mod-* flags; then
+  // switching 20XX TE on the Mods page takes effect at once.
+  bool detected = false;
 };
 Status& status();
 // Profile names found in Mods/Profiles (*.ini), sorted.
 std::vector<std::string> list_profiles();
 
-// Makes a profile from one file the player picked: a modded disc (.iso, .gcm) is used where it is,
-// a memory card file (.gci) is copied into Mods/Saves. Akaneia and 20XX saves get their usual
-// names, anything else the file's name. Returns the profile name; empty with *message on failure.
-std::string import_file(const std::filesystem::path& file, std::string* message);
-// Windows open dialog for discs and memory card files; empty when cancelled.
+// Windows open dialog for discs and memory card files; empty when cancelled. "Add a mod file..."
+// copies the pick into the Mods folder (mod_scan.h import_async).
 std::string choose_mod_file();
 
 }  // namespace source_port::mods

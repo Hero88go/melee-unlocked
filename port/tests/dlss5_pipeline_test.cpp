@@ -91,9 +91,13 @@ int main(int argc, char** argv) {
       require(std::strcmp(gpu.backend,"NVIDIA hardware")==0,"native parameters need a NVIDIA adapter");
       std::filesystem::create_directories("dlss5-parameter-logs");
       const std::wstring folder=std::filesystem::absolute("dlss5-parameter-logs").wstring();
-      auto result=NVSDK_NGX_D3D12_Init(gx::dlss5::kAppId,folder.c_str(),gpu.device.Get());
+      require(gx::dlss5::load_forwarder(),"optional NGX helper exports");
+      auto result=static_cast<NVSDK_NGX_Result>(state.core_init(gx::dlss5::kAppId,
+          folder.c_str(),gpu.device.Get(),static_cast<int>(NVSDK_NGX_Version_API)));
       require(result==NVSDK_NGX_Result_Success,"installed NVIDIA NGX core initialization");
-      result=NVSDK_NGX_D3D12_GetCapabilityParameters(&state.caps);
+      void* core_parameters=nullptr;
+      result=static_cast<NVSDK_NGX_Result>(state.core_capabilities(&core_parameters));
+      state.caps=static_cast<NVSDK_NGX_Parameter*>(core_parameters);
       require(result==NVSDK_NGX_Result_Success && state.caps,"installed NVIDIA parameter block");
       gx::dlss5::find_float_slot(); require(state.float_slot>=0,"native float setter discovered");
       gx::dlss5::Tuning tuning; tuning.intensity=0.85f; tuning.detail=1.1f;
@@ -113,8 +117,9 @@ int main(int argc, char** argv) {
       ID3D12Resource* actual=nullptr;
       require(state.caps->Get("DLSSNR.Color",&actual)==NVSDK_NGX_Result_Success && actual==color.Get(),"native resource pointer roundtrip");
       gx::dlss5::set_resource("DLSSNR.Color",nullptr);
-      NVSDK_NGX_D3D12_DestroyParameters(state.caps); state.caps=nullptr;
-      NVSDK_NGX_D3D12_Shutdown1(gpu.device.Get());
+      require(state.core_destroy(state.caps)==NVSDK_NGX_Result_Success,"core parameters released");
+      state.caps=nullptr;
+      require(state.core_shutdown(gpu.device.Get())==NVSDK_NGX_Result_Success,"core shut down");
       printf("Installed NVIDIA NGX core: artistic floats, model/preset/mask integers and resource pointers passed (float slot %d)\n",state.float_slot);
       return 0;
     }

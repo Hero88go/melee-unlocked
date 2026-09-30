@@ -31,6 +31,9 @@ namespace gecko { bool option_lagless_fod_default = false; extern const Optional
 #pragma comment(linker, "/alternatename:?option_lagless_fod@gecko@@3_NA=?option_lagless_fod_default@gecko@@3_NA")
 #pragma comment(linker, "/alternatename:?optional_codes@gecko@@3QBUOptionalCode@1@B=?optional_codes_default@gecko@@3QBUOptionalCode@1@B")
 #pragma comment(linker, "/alternatename:?optional_codes_count@gecko@@3_KB=?optional_codes_count_default@gecko@@3_KB")
+// And the start of the port's private suffix (zero: no suffix known, the replay code list is left as sent).
+namespace gecko { extern const uint32_t port_gct_offset_default = 0; }
+#pragma comment(linker, "/alternatename:?port_gct_offset@gecko@@3IB=?port_gct_offset_default@gecko@@3IB")
 
 namespace slippi {
 namespace {
@@ -192,6 +195,52 @@ void dump_fighter(const uint8_t* payload) {
   std::fflush(out);
 }
 
+// The replay's copy of the code list is the table without its 00D0C0DE header. It is rebuilt as
+// Slippi's codes plus the optional codes that are on, then FF000000 00000000, then zeros to the same
+// length. Only this build's own table is rebuilt: every line of Slippi's part must have the same
+// header and size as the table served (the words inside the caves are not compared: the applier
+// writes their return branches, and some caves rewrite their own data while the game runs, which a
+// Slippi Dolphin recording carries the same way).
+std::vector<uint8_t> g_held_code_chunks;   // the list's 0x10 chunks, until the last one arrives
+bool rebuild_recorded_codes(std::vector<uint8_t>& list) {
+  constexpr uint32_t kHeader = 8;
+  const uint32_t fixed_end = gecko::optional_gct_offset, suffix = gecko::port_gct_offset;
+  if (fixed_end <= kHeader || suffix < fixed_end || suffix > gecko::slippi_gct_size || list.size() + kHeader < suffix) return false;
+  const uint8_t* t = gecko::slippi_gct;
+  for (uint32_t off = kHeader; off + 8 <= fixed_end;) {
+    const uint32_t a = be32(t + off), b = be32(t + off + 4), type = (a >> 24) & 0xFEu;
+    uint64_t span = 8;
+    if (type == 0xC0 || type == 0xC2) span = 8 + (uint64_t)b * 8;
+    else if (type == 0x06) span = 8 + (((uint64_t)b + 7) & ~7ull);
+    else if (type == 0x08) span = 16;
+    if (span > fixed_end - off) return false;
+    const uint8_t* got = list.data() + (off - kHeader);
+    if (be32(got) != a) return false;
+    if ((type == 0xC0 || type == 0xC2 || type == 0x06 || type == 0x08) && be32(got + 4) != b) return false;
+    off += (uint32_t)span;
+  }
+  std::vector<uint8_t> out(list.begin(), list.begin() + (fixed_end - kHeader));
+  unsigned kept = 0;
+  for (size_t i = 0; i < gecko::optional_codes_count; ++i) {
+    const gecko::OptionalCode& code = gecko::optional_codes[i];
+    if (code.size < 8 || code.size % 8 || code.offset < fixed_end || code.offset + code.size > suffix) continue;
+    const uint8_t* p = list.data() + (code.offset - kHeader);
+    const uint32_t first = be32(p);
+    if (first == 0xE0000000u || (first >> 16) == 0x6620u) continue;   // switched off
+    out.insert(out.end(), p, p + code.size);
+    ++kept;
+  }
+  const uint8_t end_line[8] = {0xFF, 0, 0, 0, 0, 0, 0, 0};
+  out.insert(out.end(), end_line, end_line + 8);
+  if (out.size() > list.size()) return false;
+  const size_t left_out = list.size() - out.size();
+  out.resize(list.size(), 0);
+  list.swap(out);
+  host::log("slippi: replay code list: Slippi's codes and %u optional codes that are on; %zu bytes of switched-off and PC-only codes left out",
+            kept, left_out);
+  return true;
+}
+
 void write_to_file(const uint8_t* payload, uint32_t length, const char* option) {
   // Every recording event passes through here, whether or not a replay file is open, which is
   // exactly the stream the Lab view draws from. It only reads the bytes.
@@ -199,39 +248,45 @@ void write_to_file(const uint8_t* payload, uint32_t length, const char* option) 
   // no event parsing and no silhouette loading while nothing can draw it.
   constexpr bool kLabViewFeed = false;
   if (kLabViewFeed) lab::feed(payload, length);
-  if (std::strcmp(option, "create") == 0) create_file();
+  if (std::strcmp(option, "create") == 0) { g_held_code_chunks.clear(); create_file(); }
   if (!g_file) return;
   if (length > 0 && payload[0] == CMD_RECEIVE_POST_FRAME_UPDATE && length >= 8) {
     g_last_frame = (int32_t)be32(payload + 1);
     g_char_usage[payload[5]][payload[7]] += 1;
     dump_fighter(payload);
   }
-  // The generated GCT ends with PC-only hooks (PAL stock icons and the screen-shake toggle).
-  // Native code gates those hooks with host settings; a stock Slippi replay viewer has no such
-  // gate and would execute them unconditionally. In particular, every widescreen recording used
-  // to lose screen shake when opened in Slippi Dolphin. Keep the event's declared size unchanged,
-  // but terminate its code list before the private suffix so all later replay events stay aligned.
-  std::vector<uint8_t> recorded;
-  if (length > 1 && payload[0] == CMD_GECKO_LIST) {
-    // EVENT_GECKO_LIST stores the GCT body without its two-word 00D0C0DE header.
-    constexpr uint32_t kGctHeaderSize = 8;
-    const uint8_t first_port_hook[] = {0xC2, 0x2F, 0x9A, 0x3C, 0x00, 0x00, 0x00, 0x07};
-    uint32_t table_off = 0;
-    for (uint32_t i = kGctHeaderSize; i + sizeof(first_port_hook) <= gecko::slippi_gct_size; i += 8) {
-      if (std::memcmp(gecko::slippi_gct + i, first_port_hook, sizeof(first_port_hook)) == 0) {
-        table_off = i;
-        break;
+  // The code list. The game sends its table from RAM after the applier ran, through the message
+  // splitter (0x10 events carrying 0x3D, 512 bytes each) or, from other builds, as one 0x3D event. A
+  // stock replay viewer runs that list, so it holds Slippi's codes and the optional codes that are on,
+  // and ends before the PC-only hooks (PAL stock icons, screen shake: their gates exist only here).
+  // Held chunks are written once the list is complete, each at its own size.
+  constexpr uint32_t kSplitEvent = 1 + 512 + 2 + 1 + 1;   // command, data, used size, carried command, last
+  if (length == kSplitEvent && payload[0] == 0x10 && payload[515] == CMD_GECKO_LIST) {
+    g_held_code_chunks.insert(g_held_code_chunks.end(), payload, payload + length);
+    if (!payload[516]) return;   // more chunks follow
+    std::vector<uint8_t> list;
+    auto used = [&](size_t e) { return std::min<uint32_t>(512u, ((uint32_t)g_held_code_chunks[e + 513] << 8) | g_held_code_chunks[e + 514]); };
+    for (size_t e = 0; e + kSplitEvent <= g_held_code_chunks.size(); e += kSplitEvent)
+      list.insert(list.end(), g_held_code_chunks.begin() + e + 1, g_held_code_chunks.begin() + e + 1 + used(e));
+    if (rebuild_recorded_codes(list)) {
+      size_t at = 0;
+      for (size_t e = 0; e + kSplitEvent <= g_held_code_chunks.size(); e += kSplitEvent) {
+        std::memcpy(g_held_code_chunks.data() + e + 1, list.data() + at, used(e));
+        at += used(e);
       }
     }
-    const uint32_t event_off = table_off >= kGctHeaderSize ? table_off - kGctHeaderSize : 0;
-    if (table_off >= kGctHeaderSize && event_off + 8 <= length - 1 &&
-        std::memcmp(payload + 1, gecko::slippi_gct + kGctHeaderSize, event_off) == 0) {
-      recorded.assign(payload, payload + length);
-      recorded[1 + event_off] = 0xFF;
-      std::memset(recorded.data() + 1 + event_off + 1, 0, 7);
+    std::fwrite(g_held_code_chunks.data(), 1, g_held_code_chunks.size(), g_file);
+    g_written += (uint32_t)g_held_code_chunks.size();
+    g_held_code_chunks.clear();
+    return;
+  }
+  std::vector<uint8_t> recorded;
+  if (length > 1 && payload[0] == CMD_GECKO_LIST) {
+    std::vector<uint8_t> list(payload + 1, payload + length);
+    if (rebuild_recorded_codes(list)) {
+      recorded.assign(payload, payload + 1);
+      recorded.insert(recorded.end(), list.begin(), list.end());
       payload = recorded.data();
-      host::log("slippi: omitted %u bytes of PC-only Gecko hooks from replay metadata",
-                (unsigned)(length - 1 - event_off - 8));
     }
   }
   std::fwrite(payload, 1, length, g_file);
@@ -266,25 +321,103 @@ bool optional_enabled(const char* flag) {
   return false;
 }
 
+inline void put_be32(uint8_t* p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
+
+// Slippi's in-game applier (in its boot codes: the walker at 80002CC8 and its callback at 80002A64,
+// read from their disassembly). A line's type is (word0 >> 24) & 0xFE. C0 and C2 lines span 8 + 8n
+// bytes, 06 spans 8 plus its byte count rounded up to 8, 08 spans 16, a line whose top nibble is F
+// with a zero second word ends the table, and any other line (a 66 goto or an E0 included) is stepped
+// over as one line. Only 04 (the word), 06 (the bytes) and C2 ("b cave" at the hook, "b hook+4" as
+// the cave's last word) write anything. visit(type, line offset, address, n) for each writing line.
+template <class Visit>
+void walk_applier(const uint8_t* table, uint32_t begin, uint32_t end, Visit&& visit) {
+  for (uint32_t off = begin; off + 8 <= end;) {
+    const uint32_t a = be32(table + off), b = be32(table + off + 4);
+    const uint32_t type = (a >> 24) & 0xFEu;
+    uint64_t span = 8;
+    if (type == 0xC0 || type == 0xC2) span = 8 + (uint64_t)b * 8;
+    else if (type == 0x06) span = 8 + (((uint64_t)b + 7) & ~7ull);
+    else if (type == 0x08) span = 16;
+    else if (type != 0x04 && (a >> 28) == 0xF && b == 0) return;
+    if (span > end - off) return;
+    if (type == 0x04 || type == 0x06 || type == 0xC2) visit(type, off, 0x80000000u | (a & 0x01FFFFFFu), b);
+    off += (uint32_t)span;
+  }
+}
+// The two words the applier writes for the C2 line at `off` in a table at `base`, computed as it does.
+inline uint32_t c2_hook_word(uint32_t base, uint32_t off, uint32_t hook) { return 0x48000000u | (((base + off + 8) - hook) & 0x03FFFFFCu); }
+inline uint32_t c2_return_word(uint32_t base, uint32_t off, uint32_t hook, uint32_t n) {
+  const uint32_t last_line = base + off + n * 8;
+  return ((((hook + 4) - last_line) & 0x03FFFFFCu) | 0x48000000u) - 4u;
+}
+
+// MELEE_OPTIONAL_GOTO=1: a switched-off code keeps the 0.8.1 form, a goto in its first line only.
+bool optional_goto_form() {
+  static const bool on = [] { const char* v = std::getenv("MELEE_OPTIONAL_GOTO"); return v && *v == '1'; }();
+  return on;
+}
+
+// Optional code i in a table at `table` (guest address `base`): its own lines when on (with each C2
+// cave's return branch when `returns`, as the applier leaves them in RAM), and when off one
+// E0000000 00000000 per line. The applier steps over those one line at a time and writes nothing (a
+// goto in the first line alone is stepped over too, and every later line of the code was still
+// installed); a Gecko code handler reads them as terminators that change nothing.
+void write_optional_region(uint8_t* table, uint32_t base, size_t i, bool on, bool returns) {
+  const gecko::OptionalCode& code = gecko::optional_codes[i];
+  uint8_t* p = table + code.offset;
+  std::memcpy(p, gecko::slippi_gct + code.offset, code.size);
+  if (on) {
+    if (returns)
+      walk_applier(gecko::slippi_gct, code.offset, code.offset + code.size, [&](uint32_t type, uint32_t off, uint32_t hook, uint32_t n) {
+        if (type == 0xC2 && n) put_be32(table + off + n * 8 + 4, c2_return_word(base, off, hook, n));
+      });
+    return;
+  }
+  if (optional_goto_form()) { put_be32(p, 0x66200000u | ((code.size / 8 - 1) & 0xFFFFu)); put_be32(p + 4, 0); return; }
+  for (uint32_t k = 0; k < code.size; k += 8) { put_be32(p + k, 0xE0000000u); put_be32(p + k + 4, 0); }
+}
+
+bool optional_code_valid(const gecko::OptionalCode& code) {
+  return code.size >= 8 && code.size % 8 == 0 && code.offset >= gecko::optional_gct_offset && code.offset + code.size <= gecko::slippi_gct_size;
+}
+
 // Every code stays at the offset it was translated for: the recompiled caves read their constants
 // from those exact guest addresses. Packing the enabled codes together moved widescreen onto Lagless
 // FoD's slot whenever Lagless was off, so its caves read garbage and 16:9 smeared the whole picture.
-// A switched-off optional code keeps its bytes' length but becomes a Gecko "goto" (66200000 | N)
-// that skips its own remaining N lines, so the code handler neither runs nor installs it.
 void rebuild_optional_codes(uint8_t* table) {
   const uint32_t start = gecko::optional_gct_offset;
   if (start + 8 > gecko::slippi_gct_size) return;
   std::memcpy(table + start, gecko::slippi_gct + start, gecko::slippi_gct_size - start);
+  for (size_t i = 0; i < gecko::optional_codes_count; ++i)
+    if (!optional_enabled(gecko::optional_codes[i].flag) && optional_code_valid(gecko::optional_codes[i]))
+      write_optional_region(table, 0, i, false, false);
+}
+
+// What each optional code installs when the applier runs it, and the words that were there before,
+// taken as the game loads the table (the applier has not run yet). On a mod disc, switching a code
+// during a session puts either side back, so code running from RAM follows the switch as the
+// compiled code does.
+struct OptionalInstall { uint32_t addr; std::vector<uint8_t> installed, original; };
+std::vector<std::vector<OptionalInstall>> g_optional_installs;   // per gecko::optional_codes entry
+std::vector<int8_t> g_optional_live;                             // the table in RAM: 1 on, 0 off, -1 unknown
+
+void record_optional_installs(uint32_t base) {
+  g_optional_installs.assign(gecko::optional_codes_count, {});
+  g_optional_live.assign(gecko::optional_codes_count, -1);
   for (size_t i = 0; i < gecko::optional_codes_count; ++i) {
     const gecko::OptionalCode& code = gecko::optional_codes[i];
-    if (optional_enabled(code.flag)) continue;
-    if (code.size < 8 || code.size % 8 || code.offset + code.size > gecko::slippi_gct_size) continue;
-    const uint32_t skip = code.size / 8 - 1;
-    const uint32_t goto_line = 0x66200000u | (skip & 0xFFFFu);
-    uint8_t* p = table + code.offset;
-    p[0] = (uint8_t)(goto_line >> 24); p[1] = (uint8_t)(goto_line >> 16);
-    p[2] = (uint8_t)(goto_line >> 8);  p[3] = (uint8_t)goto_line;
-    p[4] = p[5] = p[6] = p[7] = 0;
+    if (!optional_code_valid(code)) continue;
+    walk_applier(gecko::slippi_gct, code.offset, code.offset + code.size, [&](uint32_t type, uint32_t off, uint32_t addr, uint32_t n) {
+      OptionalInstall w{addr, {}, {}};
+      if (type == 0x04) w.installed.assign(gecko::slippi_gct + off + 4, gecko::slippi_gct + off + 8);
+      else if (type == 0x06) w.installed.assign(gecko::slippi_gct + off + 8, gecko::slippi_gct + off + 8 + n);
+      else { w.installed.resize(4); put_be32(w.installed.data(), c2_hook_word(base, off, addr)); }
+      const uint8_t* now = host::try_ptr(addr, (uint32_t)w.installed.size());
+      if (!now) return;
+      w.original.assign(now, now + w.installed.size());
+      g_optional_installs[i].push_back(std::move(w));
+    });
+    g_optional_live[i] = optional_enabled(code.flag) ? 1 : 0;
   }
 }
 
@@ -292,16 +425,40 @@ std::atomic<int> g_widescreen_request{-1};
 std::atomic<int> g_fod_reflections_request{-1};
 
 void apply_optional_codes() {
-  if (g_gct_address) {
+  // Only the switched codes' lines change in RAM: the rest of the table keeps the return branches the
+  // applier wrote into its caves (copying the whole table back erased them, and a cave running from
+  // RAM on a mod disc then ran into a zero word).
+  if (g_gct_address && g_optional_live.size() == gecko::optional_codes_count) {
     uint8_t* table = host::ptr(g_gct_address, (uint32_t)gecko::slippi_gct_size);
-    std::memcpy(table, gecko::slippi_gct, gecko::optional_gct_offset);
-    rebuild_optional_codes(table);
-    host::mark_ram_write(g_gct_address, (uint32_t)gecko::slippi_gct_size);
+    const bool mirror = host::mod_disc_active() && host::mod_reference_from_table() && gecko::gct_base_used == g_gct_address;
+    for (size_t i = 0; i < gecko::optional_codes_count; ++i) {
+      const gecko::OptionalCode& code = gecko::optional_codes[i];
+      if (!optional_code_valid(code)) continue;
+      const bool on = optional_enabled(code.flag);
+      if (g_optional_live[i] == (on ? 1 : 0)) continue;
+      write_optional_region(table, g_gct_address, i, on, true);
+      host::mark_ram_write(g_gct_address + code.offset, code.size);
+      g_optional_live[i] = on ? 1 : 0;
+      if (!host::mod_disc_active()) continue;   // compiled code follows the flag by itself
+      // Its hooks and writes, as the applier leaves them with the code on or off. A word changed by
+      // something else since (the mod's own codes) is left alone.
+      for (const OptionalInstall& w : g_optional_installs[i]) {
+        const std::vector<uint8_t>& from = on ? w.original : w.installed;
+        const std::vector<uint8_t>& to = on ? w.installed : w.original;
+        uint8_t* now = host::ptr(w.addr, (uint32_t)to.size());
+        if (std::memcmp(now, from.data(), from.size()) != 0) continue;
+        std::memcpy(now, to.data(), to.size());
+        host::mark_ram_write(w.addr, (uint32_t)to.size());
+        if (mirror) host::mod_reference_set(w.addr, to.data(), (uint32_t)to.size());
+      }
+    }
   }
   for (size_t i = 0; i < gecko::optional_writes_count; ++i) {
     const gecko::OptionalWrite& w = gecko::optional_writes[i];
-    std::memcpy(host::ptr(w.addr, w.size), optional_enabled(w.flag) ? w.patched : w.original, w.size);
+    const uint8_t* bytes = optional_enabled(w.flag) ? w.patched : w.original;
+    std::memcpy(host::ptr(w.addr, w.size), bytes, w.size);
     host::mark_ram_write(w.addr, w.size);
+    if (host::mod_disc_active() && host::mod_reference_from_table()) host::mod_reference_set(w.addr, bytes, w.size);
   }
 }
 
@@ -327,8 +484,44 @@ void prepare_gct_load(const uint8_t* payload) {
   g_gct_address = be32(payload);
   host::log("slippi: game loads the GCT (%zu bytes) at %08X%s", gecko::slippi_gct_size, g_gct_address,
             gecko::gct_base_used == g_gct_address ? "" : " (recompile with --gct-base to translate C0 caves at this address)");
+  // A mod moved Slippi's code table (its own memory setup shifts the heap). The translated caves were
+  // made for the other address, so none of them may run: Slippi's code runs from the table in RAM
+  // (interpreted), and the game functions it hooks follow the hooks written into RAM.
+  if (host::mod_disc_active()) ppc::add_ram_code_range(g_gct_address, g_gct_address + (uint32_t)gecko::slippi_gct_size);
+  if (host::mod_disc_active() && gecko::gct_base_used && gecko::gct_base_used != g_gct_address) {
+    const uint32_t lo = std::min(gecko::gct_base_used, g_gct_address);
+    const uint32_t hi = std::max(gecko::gct_base_used, g_gct_address) + (uint32_t)gecko::slippi_gct_size + 0x1000;
+    ppc::disable_dispatch_range(lo, hi);
+    host::log("slippi: the mod moved the code table by %d bytes; Slippi's codes run from RAM",
+              (int)((int64_t)g_gct_address - (int64_t)gecko::gct_base_used));
+  }
   g_read_queue.insert(g_read_queue.end(), gecko::slippi_gct, gecko::slippi_gct + gecko::slippi_gct_size);
   rebuild_optional_codes(g_read_queue.data());
+  record_optional_installs(g_gct_address);
+  // A mod disc with the table where it was translated: every word the applier is about to install from
+  // it is code the compiled guest already runs, so it joins the reference image, and a function it
+  // touches stays compiled unless the mod changed that function too (host.cpp). A moved table keeps
+  // all of Slippi's codes running from RAM (above). MELEE_MOD_REFERENCE=boot: the 0.8.1 rule.
+  if (host::mod_disc_active() && host::mod_reference_from_table() && gecko::gct_base_used == g_gct_address) {
+    const uint8_t* t = g_read_queue.data();
+    uint32_t writes = 0;
+    // Diagnostics: MELEE_MOD_REFERENCE_LINES=<from>-<to> mirrors only the lines at those table offsets
+    // (finding which code a difference between the two rules comes from, by halving the range).
+    uint32_t from = 8, to = (uint32_t)gecko::slippi_gct_size;
+    if (const char* v = std::getenv("MELEE_MOD_REFERENCE_LINES")) {
+      char* end = nullptr;
+      from = (uint32_t)std::strtoul(v, &end, 0);
+      if (end && *end == '-') to = (uint32_t)std::strtoul(end + 1, nullptr, 0);
+      host::log("mods: reference mirrors table offsets %u to %u only", from, to);
+    }
+    walk_applier(t, 8, (uint32_t)gecko::slippi_gct_size, [&](uint32_t type, uint32_t off, uint32_t addr, uint32_t n) {
+      if (off < from || off >= to) return;
+      if (type == 0x04) writes += host::mod_reference_set(addr, t + off + 4, 4) ? 1 : 0;
+      else if (type == 0x06) writes += host::mod_reference_set(addr, t + off + 8, n) ? 1 : 0;
+      else { uint8_t w[4]; put_be32(w, c2_hook_word(g_gct_address, off, addr)); writes += host::mod_reference_set(addr, w, 4) ? 1 : 0; }
+    });
+    host::log("mods: the reference includes Slippi's served codes (%u writes into the game's code)", writes);
+  }
 }
 
 void log_message(const uint8_t* payload, uint32_t max) {
@@ -435,7 +628,16 @@ void poll_options() {
   // practice matchmaking drives its scene state at console addresses. The native game keeps both
   // in its own image, so the Source Port skips the rest of the poll. Practice matchmaking runs on
   // both: natively through the game's practice bridge (set by the Source Port host).
-  if (host::game_image) { native_practice::tick(); return; }
+  if (host::game_image) {
+    // The native game carries Slippi widescreen as C and reads this flag as each camera loads.
+    const int wide = g_widescreen_request.exchange(-1);
+    if (wide >= 0 && (wide != 0) != gecko::option_widescreen) {
+      gecko::option_widescreen = wide != 0;
+      host::log("slippi: widescreen 16:9 %s (from the next screen)", gecko::option_widescreen ? "on" : "off");
+    }
+    native_practice::tick();
+    return;
+  }
   int r = g_widescreen_request.exchange(-1);
   if (r >= 0 && (r != 0) != gecko::option_widescreen) apply_widescreen(r != 0);
   int fod = g_fod_reflections_request.exchange(-1);

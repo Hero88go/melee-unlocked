@@ -17,10 +17,35 @@ target_include_directories(port_mod_profile_test PRIVATE runtime/host)
 target_compile_features(port_mod_profile_test PRIVATE cxx_std_17)
 target_compile_options(port_mod_profile_test PRIVATE /EHsc)
 add_test(NAME port_mod_profile COMMAND port_mod_profile_test)
+add_executable(port_mod_scan_test tests/mod_scan_test.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp)
+target_include_directories(port_mod_scan_test PRIVATE runtime/host)
+target_compile_features(port_mod_scan_test PRIVATE cxx_std_17)
+target_compile_options(port_mod_scan_test PRIVATE /EHsc /utf-8)
+target_compile_definitions(port_mod_scan_test PRIVATE MU_REPO_ROOT="${CMAKE_SOURCE_DIR}" NOMINMAX)
+target_link_libraries(port_mod_scan_test PRIVATE bcrypt shell32)
+add_test(NAME port_mod_scan COMMAND port_mod_scan_test)
+add_executable(port_lcancel_flash_policy_test tests/lcancel_flash_policy_test.cpp)
+target_include_directories(port_lcancel_flash_policy_test PRIVATE runtime/abi)
+target_compile_features(port_lcancel_flash_policy_test PRIVATE cxx_std_17)
+add_test(NAME port_lcancel_flash_policy COMMAND port_lcancel_flash_policy_test)
+add_executable(port_mod_catalog_test tests/mod_catalog_test.cpp app/launcher_mod_catalog.cpp)
+target_include_directories(port_mod_catalog_test PRIVATE app third_party)
+target_compile_features(port_mod_catalog_test PRIVATE cxx_std_17)
+target_compile_options(port_mod_catalog_test PRIVATE /EHsc /utf-8)
+target_compile_definitions(port_mod_catalog_test PRIVATE NOMINMAX)
+target_link_libraries(port_mod_catalog_test PRIVATE bcrypt)
+add_test(NAME port_mod_catalog COMMAND port_mod_catalog_test)
+
 add_executable(port_native_online_policy_test tests/native_online_policy_test.cpp)
 target_include_directories(port_native_online_policy_test PRIVATE runtime/hle)
 target_compile_features(port_native_online_policy_test PRIVATE cxx_std_17)
 add_test(NAME port_native_online_policy COMMAND port_native_online_policy_test)
+add_executable(port_static_mod_online_test tests/static_mod_online_test.cpp runtime/host/mod_profile.cpp)
+target_include_directories(port_static_mod_online_test PRIVATE runtime/hle runtime/host)
+target_compile_features(port_static_mod_online_test PRIVATE cxx_std_17)
+target_compile_options(port_static_mod_online_test PRIVATE /EHsc)
+target_link_libraries(port_static_mod_online_test PRIVATE bcrypt)
+add_test(NAME port_static_mod_online COMMAND port_static_mod_online_test)
 add_executable(port_native_slippi_bridge_test tests/native_slippi_bridge_test.cpp)
 target_include_directories(port_native_slippi_bridge_test PRIVATE runtime/hle)
 target_compile_features(port_native_slippi_bridge_test PRIVATE cxx_std_17)
@@ -42,6 +67,12 @@ add_executable(port_launcher_engine_test tests/launcher_engine_test.cpp)
 target_include_directories(port_launcher_engine_test PRIVATE app)
 target_compile_features(port_launcher_engine_test PRIVATE cxx_std_17)
 add_test(NAME port_launcher_engine COMMAND port_launcher_engine_test)
+# The crash report zip: file list, per-file caps, the relay's 8 MB cap (synthetic crash folder in %TEMP%).
+add_executable(port_launcher_crash_zip_test tests/launcher_crash_zip_test.cpp)
+target_include_directories(port_launcher_crash_zip_test PRIVATE app)
+target_compile_features(port_launcher_crash_zip_test PRIVATE cxx_std_17)
+target_compile_options(port_launcher_crash_zip_test PRIVATE /EHsc)
+add_test(NAME port_launcher_crash_zip COMMAND port_launcher_crash_zip_test)
 add_executable(port_frame_queue_test tests/frame_queue_test.cpp)
 target_include_directories(port_frame_queue_test PRIVATE runtime/gx)
 target_compile_features(port_frame_queue_test PRIVATE cxx_std_17)
@@ -188,7 +219,7 @@ else()
   target_include_directories(port_dlss5_pipeline_test PRIVATE runtime/gx runtime/host runtime/ppc third_party/ngx/include)
   target_compile_features(port_dlss5_pipeline_test PRIVATE cxx_std_17)
   target_compile_definitions(port_dlss5_pipeline_test PRIVATE GX_DLSS5 NOMINMAX _CRT_SECURE_NO_WARNINGS)
-  target_link_libraries(port_dlss5_pipeline_test PRIVATE d3d12 dxgi d3dcompiler "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ngx/lib/nvsdk_ngx_d.lib")
+  target_link_libraries(port_dlss5_pipeline_test PRIVATE d3d12 dxgi d3dcompiler)
   add_test(NAME port_dlss5_pipeline COMMAND port_dlss5_pipeline_test)
   set_tests_properties(port_dlss5_pipeline PROPERTIES TIMEOUT 60)
 endif()
@@ -234,6 +265,15 @@ list(SUBLIST MELEE_VERSION_PARTS 0 4 MELEE_VERSION_PARTS)
 list(JOIN MELEE_VERSION_PARTS "," MELEE_VERSION_COMMAS)
 add_library(runtime STATIC ${RUNTIME_SOURCES} third_party/slippilib/SlippiGame.cpp)
 target_compile_definitions(runtime PRIVATE MELEE_PORT_VERSION="${MELEE_PORT_VERSION}")
+# ASIO output (audio mode 3): the Steinberg ASIO SDK host files only, under the SDK's GPL Version 3
+# option (asio.cpp, asiodrivers.cpp, asiolist.cpp; see third_party/asio/README.txt). Windows only. The
+# SDK's registry helpers use the ANSI API, so these three build without UNICODE.
+if(WIN32)
+  set(MELEE_ASIO_SOURCES third_party/asio/asio.cpp third_party/asio/asiodrivers.cpp third_party/asio/asiolist.cpp)
+  target_sources(runtime PRIVATE ${MELEE_ASIO_SOURCES})
+  set_source_files_properties(${MELEE_ASIO_SOURCES} PROPERTIES COMPILE_OPTIONS "/UUNICODE;/U_UNICODE;/W0")
+  target_link_libraries(runtime PUBLIC advapi32)
+endif()
 # The replay code list a playback build was translated against, so it can tell a player when a
 # replay comes from a different Slippi version instead of quietly diverging. Set these to the
 # --extra-gct-base and the list's size when generating port/generated_playback; left at zero, the
@@ -327,7 +367,7 @@ if(MELEE_CPU_BASELINE STREQUAL "AVX2")
 endif()
 
 # Melee Unlocked client: Win32 launcher (Play page, Build tab, self-update). No runtime dependency.
-add_executable(melee_unlocked WIN32 app/launcher.cpp app/launcher_replay_data.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp
+add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp
   third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
   runtime/host/updater.cpp app/launcher.rc)
 set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
@@ -365,6 +405,16 @@ target_include_directories(port_launcher_lobby_peer_worker_test PRIVATE third_pa
 target_compile_features(port_launcher_lobby_peer_worker_test PRIVATE cxx_std_17)
 target_compile_definitions(port_launcher_lobby_peer_worker_test PRIVATE NOMINMAX UNICODE _UNICODE)
 target_link_libraries(port_launcher_lobby_peer_worker_test PRIVATE winhttp ws2_32 bcrypt user32 gdi32 comctl32 winmm)
+
+# Two peer lobbies in one process over loopback (no DHT, no window): requests, refusals, loss, friends, mods.
+add_executable(port_launcher_lobby_p2p_test tests/launcher_lobby_p2p_test.cpp app/launcher_lobby_p2p.cpp
+  third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c)
+target_include_directories(port_launcher_lobby_p2p_test PRIVATE app third_party third_party/dht third_party/monocypher)
+target_compile_features(port_launcher_lobby_p2p_test PRIVATE cxx_std_17)
+target_compile_definitions(port_launcher_lobby_p2p_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(port_launcher_lobby_p2p_test PRIVATE /EHsc)
+target_link_libraries(port_launcher_lobby_p2p_test PRIVATE ws2_32 bcrypt user32 gdi32)
+add_test(NAME port_launcher_lobby_p2p COMMAND port_launcher_lobby_p2p_test)
 
 # Diagnostic for a future serverless rendezvous transport; intentionally separate from the launcher.
 # jech/dht is MIT licensed (third_party/dht/LICENCE) and only supplies BEP 5 endpoint discovery.
@@ -523,11 +573,27 @@ if(EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h" AND
     endif()
     target_compile_definitions(runtime PUBLIC GX_DLSS5)
     target_include_directories(runtime PRIVATE third_party/ngx/include)
-    target_link_libraries(runtime PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ngx/lib/nvsdk_ngx_d.lib")
+    # The optional helper is the sole static NGX consumer. Host executables use its C ABI.
     add_library(dlss5_forwarder SHARED dlss5_forwarder/forwarder.cpp)
+    target_compile_features(dlss5_forwarder PRIVATE cxx_std_17)
+    target_compile_definitions(dlss5_forwarder PRIVATE NOMINMAX)
+    target_include_directories(dlss5_forwarder PRIVATE third_party/ngx/include)
+    target_link_libraries(dlss5_forwarder PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ngx/lib/nvsdk_ngx_d.lib" advapi32 user32)
+    target_link_options(dlss5_forwarder PRIVATE /MAP:$<TARGET_FILE_DIR:dlss5_forwarder>/dlss5_forwarder.map)
     set_target_properties(dlss5_forwarder PROPERTIES OUTPUT_NAME "nvngx.dll_meleedlss5" PREFIX "" SUFFIX ".dll")
     add_dependencies(melee_port dlss5_forwarder)
     add_dependencies(melee_source dlss5_forwarder)
+    if(TARGET melee_port_playback)
+      add_dependencies(melee_port_playback dlss5_forwarder)
+    endif()
+    add_dependencies(port_dlss5_pipeline_test dlss5_forwarder)
+    add_custom_command(TARGET port_dlss5_pipeline_test POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "$<TARGET_FILE:dlss5_forwarder>" "$<TARGET_FILE_DIR:port_dlss5_pipeline_test>/nvngx.dll_meleedlss5.dll")
+    foreach(ngx_host_target melee_port melee_port_playback port_dlss5_pipeline_test)
+      if(TARGET ${ngx_host_target})
+        target_link_options(${ngx_host_target} PRIVATE /MAP:$<TARGET_FILE_DIR:${ngx_host_target}>/$<TARGET_FILE_BASE_NAME:${ngx_host_target}>.map)
+      endif()
+    endforeach()
     add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
       "$<TARGET_FILE:dlss5_forwarder>" "$<TARGET_FILE_DIR:melee_port>/nvngx.dll_meleedlss5.dll")
     add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different

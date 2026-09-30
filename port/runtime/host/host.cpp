@@ -1,7 +1,9 @@
 // Host services: memory, disc, boot, event delivery, time, MMIO, logging.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
+#include "audio.h"
 #include "cosmetic_mods.h"
+#include "mod_profile.h"
 #include "memory_range.h"
 #include <windows.h>
 #include <bcrypt.h>
@@ -28,7 +30,7 @@
 #include <filesystem>
 #include <fstream>
 
-namespace hle { void audio_tick(bool force); }
+namespace hle { void audio_tick(bool force); uint64_t audio_next_due(); }
 
 namespace hle { void dvd_poll(); void dvd_settle(); }
 namespace host {
@@ -217,9 +219,51 @@ std::string cstr(uint32_t addr, size_t max) {
 }
 
 // ---------------- disc ----------------
+// Reads the whole disc image once, in the background at the lowest I/O priority, so the file cache
+// holds it. Every game read is synchronous on the simulation thread (as the console's drive
+// interrupt only ever arrives between frames), so a read that has to seek a hard drive or wait for
+// a busy disk stalled a frame: files loaded during a match (items, Pokemon, stage changes) showed up
+// as stutter. Load timing never reaches the game state: replays and online are unaffected.
+static std::atomic<bool> g_disc_prefetch_done{true};
+static std::atomic<uint64_t> g_disc_prefetch_bytes{0};
+static void prefetch_disc_image(const std::string& path) {
+  static std::atomic<bool> started{false};
+  if (started.exchange(true)) return;
+  g_disc_prefetch_done = false;
+  std::thread([path] {
+    struct Completion { ~Completion() { g_disc_prefetch_done.store(true, std::memory_order_release); } } completion;
+    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);   // low CPU and I/O priority
+    const auto begin = std::chrono::steady_clock::now();
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return;
+    std::vector<uint8_t> chunk(4u << 20);
+    uint64_t total = 0;
+    for (size_t got; (got = std::fread(chunk.data(), 1, chunk.size(), f)) > 0;) {
+      total += got;
+      g_disc_prefetch_bytes.store(total, std::memory_order_relaxed);
+    }
+    std::fclose(f);
+    SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
+    log("disc: image prefetched into the file cache (%llu MB in %.1f s)", (unsigned long long)(total >> 20),
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count());
+  }).detach();
+}
+
+void disc_prefetch_wait() {
+  // Overlap file-cache warming with graphics initialization, but finish it before simulation.
+  // In particular, a slow disk must not be competing with the first stage's synchronous reads.
+  while (!g_disc_prefetch_done.load(std::memory_order_acquire)) {
+    const size_t mb = (size_t)(g_disc_prefetch_bytes.load(std::memory_order_relaxed) >> 20);
+    loading_show(L"Reading game assets into the file cache (MB)", mb, mb + 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  loading_close();
+}
+
 bool disc_open(const std::string& path) {
   g_disc = std::fopen(path.c_str(), "rb");
   if (!g_disc) return false;
+  prefetch_disc_image(path);
   uint8_t hdr[0x440];
   if (!disc_read(0, hdr, sizeof hdr)) return false;
   auto be = [&](int o) { return ((uint32_t)hdr[o] << 24) | ((uint32_t)hdr[o + 1] << 16) | ((uint32_t)hdr[o + 2] << 8) | hdr[o + 3]; };
@@ -318,10 +362,78 @@ bool disc_has_vanilla_dol() {
   BCryptCloseAlgorithmProvider(algorithm, 0);
   return hash_status >= 0 && std::memcmp(digest, expected, sizeof digest) == 0;
 }
+// ---- mod discs (Static Recomp) ----
+// The recompiled game is the vanilla 1.02 code. For a mod disc the vanilla game is booted first from
+// the player's own vanilla disc (to build the reference image), then the mod's main.dol replaces it in
+// RAM and every function whose bytes differ runs from RAM (ppc::redirect_changed_functions).
+static bool g_mod_disc = false;
+static std::vector<std::pair<uint32_t, uint32_t>> g_text_ranges;   // vanilla DOL text sections
+static std::vector<uint8_t> g_mod_reference;                       // vanilla + Slippi code, per text range, concatenated
+static std::vector<uint8_t> g_mod_reference_boot;                  // the same before Slippi's served table joined it
+static std::vector<uint8_t> g_vanilla_text;                        // vanilla code alone, same layout
+static std::vector<uint32_t> g_mod_block_versions;                  // write generations of the watched code blocks
+
+bool mod_disc_active() { return g_mod_disc; }
+
+bool mod_reference_from_table() {
+  static const bool boot_only = [] { const char* v = std::getenv("MELEE_MOD_REFERENCE"); return v && std::strcmp(v, "boot") == 0; }();
+  return !boot_only;
+}
+
+// The reference byte for a guest address inside the text ranges (the vectors concatenate them).
+static uint8_t* reference_byte(std::vector<uint8_t>& image, uint32_t addr) {
+  size_t at = 0;
+  for (const auto& r : g_text_ranges) {
+    if (addr >= r.first && addr - r.first < r.second) return image.data() + at + (addr - r.first);
+    at += r.second;
+  }
+  return nullptr;
+}
+
+bool mod_reference_set(uint32_t addr, const uint8_t* bytes, uint32_t n) {
+  if (!g_mod_disc || g_mod_reference.empty()) return false;
+  bool any = false;
+  for (uint32_t i = 0; i < n; ++i)
+    if (uint8_t* p = reference_byte(g_mod_reference, addr + i)) { *p = bytes[i]; any = true; }
+  return any;
+}
+
+static void load_dol_from_file(const std::string& path) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) die("cannot open the vanilla disc %s", path.c_str());
+  auto read_at = [&](uint64_t off, void* dst, size_t n) {
+    return _fseeki64(f, (long long)off, SEEK_SET) == 0 && std::fread(dst, 1, n, f) == n;
+  };
+  uint8_t hdr[4];
+  if (!read_at(0x420, hdr, 4)) die("cannot read the vanilla disc header");
+  const uint32_t dol_offset = ((uint32_t)hdr[0] << 24) | ((uint32_t)hdr[1] << 16) | ((uint32_t)hdr[2] << 8) | hdr[3];
+  uint8_t dh[0x100];
+  if (!read_at(dol_offset, dh, sizeof dh)) die("cannot read the vanilla DOL header");
+  auto be = [&](int o) { return ((uint32_t)dh[o] << 24) | ((uint32_t)dh[o + 1] << 16) | ((uint32_t)dh[o + 2] << 8) | dh[o + 3]; };
+  g_text_ranges.clear();
+  for (int i = 0; i < 18; ++i) {
+    uint32_t off = be(i * 4), addr = be(0x48 + i * 4), size = be(0x90 + i * 4);
+    if (!size) continue;
+    if (!read_at(dol_offset + off, ptr(addr, size), size)) die("cannot read vanilla DOL section %d", i);
+    if (i < 7) g_text_ranges.push_back({addr, size});
+  }
+  std::fclose(f);
+  g_vanilla_text.clear();
+  for (const auto& r : g_text_ranges) { const uint8_t* p = ptr(r.first, r.second); g_vanilla_text.insert(g_vanilla_text.end(), p, p + r.second); }
+}
+
 static void load_dol_from_disc() {
   const uint32_t dol_offset = disc_dol_offset();
-  if (!disc_has_vanilla_dol())
-    die("ISO DOL does not match vanilla Melee NTSC 1.02; recompiled code cannot run this image");
+  if (!disc_has_vanilla_dol()) {
+    if (options.mod_base_iso.empty())
+      die("ISO DOL does not match vanilla Melee NTSC 1.02; recompiled code cannot run this image");
+    // A mod disc: boot the vanilla code first; the mod's code is laid over it after the Slippi
+    // tables are installed (apply_mod_code, boot_setup).
+    load_dol_from_file(options.mod_base_iso);
+    g_mod_disc = true;
+    log("boot: mod disc; vanilla code from %s, the mod's code follows", options.mod_base_iso.c_str());
+    return;
+  }
   uint8_t dh[0x100];
   if (!disc_read(dol_offset, dh, sizeof dh)) die("cannot read DOL header");
   auto be = [&](int o) { return ((uint32_t)dh[o] << 24) | ((uint32_t)dh[o + 1] << 16) | ((uint32_t)dh[o + 2] << 8) | dh[o + 3]; };
@@ -339,8 +451,7 @@ static void load_dol_from_disc() {
 // 0x80001800, bootloader.gct at 0x800028B8, then the effect of running the handler once (its
 // 32-bit writes and the C2 hook branches into the caves inside the table). The recompiled code
 // already contains these patches; this keeps RAM identical to what the game expects to read.
-static void install_gecko_boot() {
-  if (!gecko::codehandler_bin_size) { log("boot: translated without Slippi code tables"); return; }
+static void apply_gecko_boot_ram() {
   std::memcpy(ptr(0x80001800u, (uint32_t)gecko::codehandler_bin_size), gecko::codehandler_bin, gecko::codehandler_bin_size);
   wr32(0x80001D6Cu, 0x4E800020u);   // USB Gecko I/O replaced by blr, as Slippi does
   wr32(0x80001800u, 0xD01F1BADu);   // handler magic
@@ -356,9 +467,193 @@ static void install_gecko_boot() {
     uint32_t last = h.cave_addr + (h.words - 1) * 4;
     wr32(last, 0x48000000u | (((h.hook + 4) - last) & 0x03FFFFFCu));
   }
+}
+static void install_gecko_boot() {
+  if (!gecko::codehandler_bin_size) { log("boot: translated without Slippi code tables"); return; }
+  apply_gecko_boot_ram();
   slippi::init();
   log("boot: Slippi code tables installed (%zu boot writes, %zu boot hooks, main GCT %zu bytes served over EXI)",
       gecko::boot_writes_count, gecko::boot_hooks_count, gecko::slippi_gct_size);
+}
+
+// The mod's main.dol over the vanilla code in RAM, then the Slippi tables again (as Dolphin applies
+// them to whatever disc it boots), then every function whose code differs from vanilla + Slippi runs
+// from RAM. The code ranges stay watched so code the mod writes later (its own code lists, a memory
+// card payload) is picked up at the next retrace.
+static void apply_mod_code() {
+  g_mod_reference.clear();
+  for (const auto& r : g_text_ranges) {
+    const uint8_t* p = ptr(r.first, r.second);
+    g_mod_reference.insert(g_mod_reference.end(), p, p + r.second);
+  }
+  g_mod_reference_boot = g_mod_reference;
+  const uint32_t dol_offset = disc_dol_offset();
+  uint8_t dh[0x100];
+  if (!disc_read(dol_offset, dh, sizeof dh)) die("cannot read the mod's DOL header");
+  auto be = [&](int o) { return ((uint32_t)dh[o] << 24) | ((uint32_t)dh[o + 1] << 16) | ((uint32_t)dh[o + 2] << 8) | dh[o + 3]; };
+  for (int i = 0; i < 18; ++i) {
+    uint32_t off = be(i * 4), addr = be(0x48 + i * 4), size = be(0x90 + i * 4);
+    if (!size) continue;
+    if (!try_ptr(addr, size) || !disc_read(dol_offset + off, ptr(addr, size), size)) die("cannot read the mod's DOL section %d", i);
+  }
+  // Slippi's boot patches again over the mod's code, as Slippi Dolphin applies them to any disc.
+  if (gecko::codehandler_bin_size) {
+    apply_gecko_boot_ram();
+    ppc::add_ram_code_range(0x80001800u, 0x80001800u + (uint32_t)gecko::codehandler_bin_size);
+    ppc::add_ram_code_range(0x800028B8u, 0x800028B8u + (uint32_t)gecko::bootloader_gct_size);
+  }
+  size_t total = 0, at = 0;
+  for (const auto& r : g_text_ranges) {
+    total += ppc::redirect_changed_functions(g_mod_reference.data() + at, ram, r.first, r.second);
+    at += r.second;
+  }
+  g_mod_block_versions.assign(ppc::RAM_WATCH_COUNT, 0);
+  for (const auto& r : g_text_ranges) ppc::watch_ram_range(r.first & 0x3FFFFFFFu, r.second);
+  for (uint32_t b = 0; b < ppc::RAM_WATCH_COUNT; ++b) g_mod_block_versions[b] = ppc::g_ram_versions[b].load();
+  log("mods: the mod's main.dol is in; %zu game functions run its code", total);
+
+  // Online: a mod disc plays Direct only, against the same mod (Unranked, Teams and Party refuse).
+  // Hash the entire disc, including every file payload and DOL data section. The patched text
+  // also binds the identity to Slippi's boot code. No path/mtime cache can reuse a stale digest.
+  {
+    std::string hex;
+    const std::string disc_hash = source_port::mods::sha256_file(std::filesystem::u8path(options.iso));
+    if (slippi::online::native_mod_fingerprint_valid(disc_hash)) {
+      source_port::mods::Sha256 identity;
+      identity.update("mu-static-mod-disc-v2\n");
+      identity.update(disc_hash);
+      for (const auto& r : g_text_ranges) identity.update(ptr(r.first, r.second), r.second);
+      hex = identity.hex();
+    }
+    if (!slippi::online::native_mod_fingerprint_valid(hex))
+      log("mods: cannot verify the disc's complete content; Direct matchmaking will be refused");
+    char title[0x41] = {};
+    disc_read(0x20, title, 0x40);
+    slippi::online::LocalBuild build;
+    build.mod_view = true;
+    build.extended_content = true;   // the Static engine executes the mod's own code
+    build.fingerprint = hex;
+    build.name = title[0] ? std::string(title) : std::string("a modded disc");
+    slippi::online::set_local_build(build);
+    slippi::online::set_native_gameplay_profile(slippi::online::NativeGameplayProfile::OtherMod);
+    log("mods: online plays Direct only against the same mod (%s, %s)", build.name.c_str(), hex.substr(0, 16).c_str());
+  }
+}
+// At each retrace: code blocks written since the last look are compared again. A 64 KB block can
+// hold the end of one text range and the start of the next (block 0 holds both vanilla ranges), so
+// the changed blocks are collected first, every range part in them is compared, and only then are
+// their versions stored (storing inside the range loop skipped the second range's part).
+static void check_mod_code_writes() {
+  if (!g_mod_disc || g_mod_block_versions.empty()) return;
+  std::vector<std::pair<uint32_t, uint32_t>> changed;   // (block, the version read now)
+  for (const auto& r : g_text_ranges) {
+    const uint32_t first = (r.first & 0x3FFFFFFFu) >> ppc::RAM_WATCH_SHIFT, last = ((r.first & 0x3FFFFFFFu) + r.second - 1) >> ppc::RAM_WATCH_SHIFT;
+    for (uint32_t b = first; b <= last; ++b) {
+      const uint32_t v = ppc::g_ram_versions[b].load(std::memory_order_relaxed);
+      if (v == g_mod_block_versions[b]) continue;
+      if (std::find_if(changed.begin(), changed.end(), [&](const auto& c) { return c.first == b; }) == changed.end()) changed.push_back({b, v});
+    }
+  }
+  if (changed.empty()) return;
+  size_t at = 0;
+  for (const auto& r : g_text_ranges) {
+    for (const auto& c : changed) {
+      const uint32_t b = c.first;
+      const uint32_t lo = std::max(r.first, ppc::RAM_BASE + (b << ppc::RAM_WATCH_SHIFT));
+      const uint32_t hi = std::min(r.first + r.second, ppc::RAM_BASE + ((b + 1) << ppc::RAM_WATCH_SHIFT));
+      if (hi <= lo) continue;
+      const size_t off = at + (lo - r.first);
+      const size_t n = ppc::redirect_changed_functions(g_mod_reference.data() + off, ram, lo, hi - lo);
+      if (n) log("mods: %zu more functions run code written at run time (block %08X)", n, lo);
+      ppc::report_kept_compiled(g_mod_reference_boot.data() + off, g_mod_reference.data() + off, ram, lo, hi - lo);
+    }
+    at += r.second;
+  }
+  for (const auto& c : changed) g_mod_block_versions[c.first] = c.second;
+}
+
+// Test runs (MELEE_DIGEST_RAM=N): every N retraces the state digest also carries a hash of all of main
+// RAM, so two runs that must behave the same (a function compiled or run from RAM) are compared on every
+// byte the game keeps, not only on the fighters. MELEE_DIGEST_RAM_DUMP=<retrace>:<file> writes RAM at
+// that retrace, to find what differs when two hashes do not match.
+static uint32_t digest_ram_interval() {
+  static const uint32_t n = [] { const char* v = std::getenv("MELEE_DIGEST_RAM"); return v ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u; }();
+  return n;
+}
+// MELEE_DIGEST_RAM_SKIP=<addr>+<bytes>[,...] leaves words out of the hash: the few that hold host time
+// (two identical runs differ only there, e.g. 800030D8+8 and the OS time words in .sbss).
+static uint64_t ram_hash() {
+  static const std::vector<std::pair<uint32_t, uint32_t>> skip = [] {
+    std::vector<std::pair<uint32_t, uint32_t>> out;
+    if (const char* v = std::getenv("MELEE_DIGEST_RAM_SKIP"))
+      for (const char* p = v; *p;) {
+        char* end = nullptr;
+        const uint32_t a = (uint32_t)std::strtoul(p, &end, 16);
+        if (end == p || *end != '+') break;
+        const uint32_t n = (uint32_t)std::strtoul(end + 1, &end, 0);
+        out.push_back({(a & 0x3FFFFFFFu) & ~7u, ((a & 7u) + n + 7) / 8});   // whole 8-byte words
+        p = (*end == ',') ? end + 1 : end;
+      }
+    return out;
+  }();
+  const uint64_t* p = reinterpret_cast<const uint64_t*>(ram);
+  uint64_t h = 0x9E3779B97F4A7C15ull;
+  for (size_t i = 0; i < ppc::RAM_SIZE / 8; ++i) {
+    uint64_t w = p[i];
+    for (const auto& s : skip) if (i >= s.first / 8 && i < s.first / 8 + s.second) { w = 0; break; }
+    h = (h ^ w) * 0x100000001B3ull; h ^= h >> 29;
+  }
+  return h;
+}
+// MELEE_TEST_PEEK=<addr>[,<addr>...]@<retrace>: logs those RAM words at that retrace (test runs).
+static void test_peek_and_dump() {
+  static const auto peek = [] {
+    std::pair<std::vector<uint32_t>, uint32_t> out{{}, 0};
+    const char* v = std::getenv("MELEE_TEST_PEEK");
+    if (!v) return out;
+    const char* at = std::strchr(v, '@');
+    if (!at) return out;
+    out.second = (uint32_t)std::strtoul(at + 1, nullptr, 0);
+    for (const char* p = v; p < at;) {
+      char* end = nullptr;
+      const uint32_t a = (uint32_t)std::strtoul(p, &end, 16);
+      if (end == p) break;
+      out.first.push_back(a);
+      p = (*end == ',') ? end + 1 : end;
+    }
+    return out;
+  }();
+  if (!peek.first.empty() && g_retraces == peek.second)
+    for (uint32_t a : peek.first) log("peek %08X = %08X", a, try_ptr(a, 4) ? rd32(a) : 0u);
+  static const auto dump = [] {
+    std::pair<uint32_t, std::string> out{0, {}};
+    const char* v = std::getenv("MELEE_DIGEST_RAM_DUMP");
+    if (!v) return out;
+    const char* colon = std::strchr(v, ':');
+    if (!colon) return out;
+    out.first = (uint32_t)std::strtoul(v, nullptr, 0);
+    out.second = colon + 1;
+    return out;
+  }();
+  // MELEE_TEST_WIDESCREEN_TOGGLES=<retrace>[,<retrace>...]: flips Slippi widescreen at those retraces,
+  // as the settings panel would (a switch during a session, in hidden test runs).
+  static const std::vector<uint32_t> toggles = [] {
+    std::vector<uint32_t> out;
+    if (const char* v = std::getenv("MELEE_TEST_WIDESCREEN_TOGGLES"))
+      for (const char* p = v; *p;) { char* end = nullptr; out.push_back((uint32_t)std::strtoul(p, &end, 0)); if (end == p) break; p = (*end == ',') ? end + 1 : end; }
+    return out;
+  }();
+  if (std::find(toggles.begin(), toggles.end(), g_retraces) != toggles.end()) {
+    slippi::request_widescreen(!slippi::widescreen());
+    log("test: widescreen switched %s at retrace %u", slippi::widescreen() ? "off" : "on", g_retraces);
+  }
+  if (!dump.second.empty() && g_retraces == dump.first) {
+    if (FILE* f = std::fopen(dump.second.c_str(), "wb")) {
+      std::fwrite(ram, 1, ppc::RAM_SIZE, f);
+      std::fclose(f);
+      log("ram: written to %s at retrace %u", dump.second.c_str(), g_retraces);
+    }
+  }
 }
 
 void init_state_digest() {
@@ -371,6 +666,7 @@ void init_state_digest() {
                                 "vel_x", "vel_y", "vel_z", "percent", "facing"})
         std::fprintf(g_state_digest, ",p%u_%s", slot, field);
     std::fprintf(g_state_digest, ",scene_major,match_frame");
+    if (digest_ram_interval()) std::fprintf(g_state_digest, ",ram");
     std::fputc('\n', g_state_digest);
   }
 }
@@ -438,6 +734,7 @@ void boot_setup() {
   wr32(0x80000034, fst_addr);                        // arena hi
   log("boot: FST %u bytes at %08X (max %X), arena hi %08X", g_fst_size, fst_addr, g_fst_max, fst_addr);
   install_gecko_boot();
+  if (g_mod_disc) apply_mod_code();
 
   cpu->msr = 0x00002030u | 0x8000u;                  // FP | DR | IR | EE
   cpu->fpscr = 0;
@@ -522,6 +819,11 @@ static void fire_due_alarms(bool force);
 static bool deliver_completions(bool force);
 
 static void validate_alarm_queue(const char* where);
+// Set when the game hands over the frame's picture (the display copy): from then until the retrace it
+// is only waiting, so its polls may wait for real time without delaying any game work.
+static bool g_frame_submitted = false;
+void note_frame_submitted() { g_frame_submitted = true; }
+
 void pump_completions() {
   // Called from HLE entry points the guest polls. Virtual time flows a little so periodic
   // alarms (pad sampling) fire even in loops that never sleep. Nothing is delivered while the
@@ -531,9 +833,79 @@ void pump_completions() {
   validate_alarm_queue("hle entry");
   if (!ppc::interrupts_on(*cpu)) return;
   fire_due_alarms(false);
+  // Slippi's lag reduction busy-waits for the retrace with interrupts on, and each poll moves
+  // console time on: without this, time raced ahead of the clock and a frame's audio blocks went out
+  // together. Once the frame is submitted, a block that is due waits for its real time (the AI
+  // interrupt's 5 ms rhythm on the console). Game work before the display copy is never delayed.
+  if (g_frame_submitted && !options.fast) {
+    static const bool pace = [] { const char* v = std::getenv("MELEE_AUDIO_PACING"); return !(v && *v == '0'); }();
+    const uint64_t due = hle::audio_next_due();
+    if (pace && due && cpu->tb >= due && due < g_next_retrace_tb) wait_until_console_time(due);
+  }
   hle::audio_tick(false);
   deliver_completions(false);
   if (cpu->tb >= g_next_retrace_tb && !g_in_retrace) retrace();   // periodic VI interrupt during busy waits
+}
+
+// ---- audio blocks at their 5 ms times during the frame wait (Static Recomp) ----
+// The scene loop waits for the next frame by asking lb_80019894 how many pad samples are queued and
+// polling until there is one. On the console the audio interface interrupt fires every 5 ms during
+// that wait and the DSP renders one block each time; here console time used to run straight to the
+// retrace in small poll steps, so a frame's three or four blocks went out together (a ~17 ms burst
+// the output buffer had to absorb, the main cost in sound latency). While the answer is "none yet",
+// wait for the next block's real time and play it; the retrace, the pad sample and frame timing are
+// unchanged. The Source Port does the same in its scene loop (mu_audio_idle).
+}  // namespace host
+namespace hle { uint64_t audio_next_due(); }
+namespace host {
+namespace {
+ppc::Fn g_pad_queue_count = nullptr;
+void pad_queue_count_paced(ppc::Context& c, uint8_t* m) {
+  g_pad_queue_count(c, m);
+  static const bool enabled = [] { const char* v = std::getenv("MELEE_AUDIO_PACING"); return !(v && *v == '0'); }();
+  static const bool trace = [] { const char* v = std::getenv("MELEE_AUDIO_PACING_TRACE"); return v && *v == '1'; }();
+  static uint64_t calls, has_pad, irq_off, no_due, past, steps;
+  if (trace && ++calls % 600 == 0)
+    log("audio pacing (recomp): %llu calls, %llu steps; pad queued %llu, interrupts off %llu, not due/none %llu, past retrace %llu",
+        (unsigned long long)calls, (unsigned long long)steps, (unsigned long long)has_pad, (unsigned long long)irq_off,
+        (unsigned long long)no_due, (unsigned long long)past);
+  if (c.r[3] != 0) { ++has_pad; return; }
+  if (!enabled || options.fast) return;
+  if (!ppc::interrupts_on(c)) { ++irq_off; return; }
+  const uint64_t due = hle::audio_next_due();
+  if (!due || c.tb >= due) { ++no_due; return; }
+  if (!wait_until_console_time(due)) { ++past; return; }   // due after the retrace: the retrace wait covers it
+  hle::audio_tick(false);
+  ++steps;
+}
+}  // namespace
+ppc::Fn g_idle_poll = nullptr;
+// lb_800195D0: the scene loop's idle poll. With Slippi's codes the wait loop around it is theirs, so
+// pace here: when no pad sample is queued yet (the game is waiting), play the next block at its time.
+void idle_poll_paced(ppc::Context& c, uint8_t* m) {
+  static const bool trace = [] { const char* v = std::getenv("MELEE_AUDIO_PACING_TRACE"); return v && *v == '1'; }();
+  static uint64_t calls;
+  if (trace && ++calls % 600 == 0) log("audio pacing (recomp): idle poll %llu calls", (unsigned long long)calls);
+  if (g_pad_queue_count) {
+    const ppc::Context saved = c;
+    g_pad_queue_count(c, m);          // how many pad samples are queued (reads only)
+    const uint32_t queued = c.r[3];
+    const uint64_t tb = c.tb;
+    c = saved; c.tb = tb;
+    if (queued == 0) {
+      static const bool enabled = [] { const char* v = std::getenv("MELEE_AUDIO_PACING"); return !(v && *v == '0'); }();
+      const uint64_t due = hle::audio_next_due();
+      if (enabled && !options.fast && ppc::interrupts_on(c) && due && c.tb < due && wait_until_console_time(due))
+        hle::audio_tick(false);
+    }
+  }
+  g_idle_poll(c, m);
+}
+void install_audio_pacing() {
+  if (ppc::Fn previous = ppc::set_hook(0x80019894u, pad_queue_count_paced)) g_pad_queue_count = previous;
+  else log("audio: frame-wait pacing not installed (lb_80019894 not found)");
+  if (ppc::Fn previous = ppc::set_hook(0x800195D0u, idle_poll_paced)) g_idle_poll = previous;
+  else log("audio: frame-wait pacing not installed (lb_800195D0 not found)");
 }
 
 // Diagnostic: the OSAlarm queue must only ever link alarms whose handlers are code. A corrupt
@@ -675,6 +1047,13 @@ static void digest_state() {
     for (unsigned index = 0; index < 12; ++index) std::fprintf(g_state_digest, ",%08X", words[index]);
   }
   std::fprintf(g_state_digest, ",%08X,%08X", state.scene_major, state.match_frame);
+  if (const uint32_t every = digest_ram_interval()) {
+    if (g_retraces % every == 0 && !native_state_snapshot) {
+      hle::dvd_settle();   // as the state trace does: a read still being copied in is not the game's state yet
+      std::fprintf(g_state_digest, ",%016llX", (unsigned long long)ram_hash());
+    }
+    else std::fprintf(g_state_digest, ",-");
+  }
   std::fputc('\n', g_state_digest);
   std::fflush(g_state_digest);
 }
@@ -703,11 +1082,29 @@ static void publish_lobby_status() {
       if (count >= 0 && count <= 99) stocks = std::to_string(count);
     }
   }
+  // The file is written by its own thread, and only when the text changes. Written here, a slow
+  // disk (a sleeping hard drive, a virus scan of the new file) held the simulation for that long
+  // once a second, and a write over a second long repeated on every frame: 1 fps until the disk
+  // recovered. The launcher adds this file, so games started from it stuttered and bare runs did not.
   if (!cfg.lobby_status_file.empty()) {
-    const auto path = std::filesystem::u8path(cfg.lobby_status_file);
-    const auto temp = std::filesystem::u8path(cfg.lobby_status_file + ".tmp");
-    { std::ofstream f(temp); f << "{\"status\":\"" << (in_match ? "In match" : "In game") << "\",\"stocks\":[" << stocks << "]}"; }
-    MoveFileExW(temp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING);
+    static std::mutex mutex;
+    static std::condition_variable wake;
+    static std::string pending, written;
+    std::string text = std::string("{\"status\":\"") + (in_match ? "In match" : "In game") + "\",\"stocks\":[" + stocks + "]}";
+    static std::once_flag started;
+    std::call_once(started, [path = cfg.lobby_status_file] {
+      std::thread([path] {
+        const auto target = std::filesystem::u8path(path), temp = std::filesystem::u8path(path + ".tmp");
+        for (;;) {
+          std::string next;
+          { std::unique_lock<std::mutex> lock(mutex); wake.wait(lock, [] { return pending != written; }); next = written = pending; }
+          { std::ofstream f(temp); f << next; }
+          MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING);
+        }
+      }).detach();
+    });
+    { std::lock_guard<std::mutex> lock(mutex); pending = std::move(text); }
+    wake.notify_one();
   }
   // Native lobby boot is a single negotiated match. Return to the launcher after it ends.
   // A failed negotiation must not leave either player stuck in the loading scene indefinitely.
@@ -734,7 +1131,12 @@ void publish_lobby_result(int winner_index, int end_method) {
 
 static double g_frame_time = 0.0;
 static double g_emulation_speed = 1.0;
-void set_emulation_speed(double speed) { g_emulation_speed = speed < 0.5 ? 0.5 : speed > 2.0 ? 2.0 : speed; }
+void set_emulation_speed(double speed) {
+  g_emulation_speed = speed < 0.5 ? 0.5 : speed > 2.0 ? 2.0 : speed;
+  // The game makes its sound at this speed too (Slippi's time sync nudges it by up to 1% online):
+  // the output follows it directly, since its own drift correction is capped far below that.
+  audio_set_speed(g_emulation_speed);
+}
 double emulation_speed() { return g_emulation_speed; }
 double now_seconds() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 double frame_time() { return g_frame_time; }
@@ -770,6 +1172,13 @@ static std::string sim_cost_line(uint32_t frames) {
   const uint64_t enters = ppc::g_enter_count - last_enters; last_enters = ppc::g_enter_count;
   size_t n = (size_t)std::snprintf(buf, sizeof buf, "sim: %.1f ms/frame (worst %.1f), %llu guest calls/frame", g_sim_ms_window / std::max(1u, frames), g_sim_ms_worst,
                                    (unsigned long long)(enters / std::max(1u, frames)));
+  // Code run from RAM (mod discs, RAM-resident routines): the interpreter's share of the window.
+  static uint64_t last_insns = 0;
+  uint64_t calls = 0, insns = 0;
+  ppc::interpreter_counts(&calls, &insns);
+  if (insns != last_insns)
+    n += (size_t)std::snprintf(buf + n, sizeof buf - n, ", %llu interpreted insns/frame", (unsigned long long)((insns - last_insns) / std::max(1u, frames)));
+  last_insns = insns;
   bool first = true;
   for (int i = 0; i < SIM_COST_COUNT; ++i) {
     double ms = g_sim_costs_window[i] * 1000.0 / std::max(1u, frames);
@@ -827,8 +1236,19 @@ static void wait_for_tick(std::chrono::steady_clock::time_point deadline) {
   }
 }
 
+bool wait_until_console_time(uint64_t tb) {
+  if (options.fast || tb >= g_next_retrace_tb || g_next_retrace_tb - tb > TB_PER_FRAME) return false;
+  // Position of `tb` inside the frame, as a fraction, mapped onto the frame's real-time period.
+  const double into_frame = 1.0 - (double)(g_next_retrace_tb - tb) / (double)TB_PER_FRAME;
+  const auto deadline = g_next_frame + std::chrono::microseconds((long long)(into_frame * 16667.0 / g_emulation_speed));
+  if (deadline > std::chrono::steady_clock::now()) wait_for_tick(deadline);
+  if (cpu->tb < tb) cpu->tb = tb;
+  return true;
+}
+
 void retrace() {
   struct Guard { Guard() { g_in_retrace = true; } ~Guard() { g_in_retrace = false; } } guard;
+  g_frame_submitted = false;
   ++g_retraces;
   if (!native_retrace) apply_early_rng_seed();
   // Work sampled since the prior retrace belongs to the prior frame id. Publish
@@ -887,6 +1307,30 @@ void retrace() {
     std::memset(g_sim_costs, 0, sizeof g_sim_costs);
   }
   slippi::poll_options();
+  check_mod_code_writes();
+  {
+    // Gameplay for the audio output's Auto mode: a match whose frame counter moves, past its first
+    // second (the match start itself can hitch).
+    static uint32_t last_match_frame = 0;
+    uint32_t major = 0, minor = 0, match_frame = 0;
+    current_scene(&major, &minor, &match_frame);
+    audio_set_gameplay(match_frame != last_match_frame && match_frame > 60);
+    last_match_frame = match_frame;
+  }
+  // Static Recomp: the guest sleeps until the retrace, and time used to jump straight to it, so the
+  // blocks that fell due during the sleep went out together once the frame's real-time wait ended.
+  // Deliver each at its own real time first (as the console's AI interrupt does every 5 ms); the
+  // frame boundary does not move. The Source Port paces in its scene loop instead (mu_audio_idle).
+  if (!native_retrace && !options.fast) {
+    static const bool pace = [] { const char* v = std::getenv("MELEE_AUDIO_PACING"); return !(v && *v == '0'); }();
+    for (int guard = 0; pace && guard < 8; ++guard) {
+      const uint64_t due = hle::audio_next_due();
+      if (!due || due >= g_next_retrace_tb) break;
+      if (cpu->tb < due && !wait_until_console_time(due)) break;
+      if (cpu->tb < due) cpu->tb = due;
+      hle::audio_tick(true);
+    }
+  }
   advance_frame();
   if (g_has_window) window_pump();
   if (!options.fast) {
@@ -915,6 +1359,7 @@ void retrace() {
     trace_state();
   }
   digest_state();
+  test_peek_and_dump();
   publish_lobby_status();
   if (g_retraces % 60 == 0 || (options.frames && g_retraces >= options.frames)) {
     uint64_t commands, draws, vertices; uint32_t copies;

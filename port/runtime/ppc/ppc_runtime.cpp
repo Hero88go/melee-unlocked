@@ -3,6 +3,10 @@
 #include "ppc.h"
 #include "guest_registry.h"
 #include "host.h"
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -101,6 +105,152 @@ Fn set_hook(uint32_t addr, Fn fn) {
   Fn previous = g_dispatch[off / 4];
   g_dispatch[off / 4] = fn;
   return previous;
+}
+
+// ---- mods on the Static Recomp ----
+// A mod's changed game code runs from RAM: the compiled function it replaces gets a 5-byte jump at its
+// entry to a trampoline that interprets the function's current bytes. Unchanged functions keep their
+// compiled code (no check on any call path), so a mod costs nothing where it changes nothing.
+namespace {
+uint8_t* g_tramp_pool = nullptr;
+size_t g_tramp_used = 0, g_tramp_cap = 0;
+std::vector<uint32_t> g_redirected;   // sorted guest addresses
+void* alloc_near(const void* target, size_t size) {
+  SYSTEM_INFO si; GetSystemInfo(&si);
+  const uintptr_t gran = si.dwAllocationGranularity;
+  const uintptr_t base = (uintptr_t)target & ~(gran - 1);
+  for (uintptr_t step = gran; step < (1ull << 30); step += gran) {
+    for (int dir = -1; dir <= 1; dir += 2) {
+      const uintptr_t at = dir < 0 ? base - step : base + step;
+      if (void* p = VirtualAlloc((void*)at, size, MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE)) return p;
+    }
+  }
+  return nullptr;
+}
+}  // namespace
+
+// One byte per guest word: 1 = the interpreter follows this address in RAM (a redirected function's
+// body, or one of Slippi's code tables in a mod session). O(1) on every interpreted branch.
+static std::vector<uint8_t> g_inline_map;
+static void mark_inline(uint32_t lo, uint32_t hi) {
+  if (g_inline_map.empty()) g_inline_map.assign(RAM_SIZE / 4, 0);
+  for (uint32_t a = lo & ~3u; a < hi; a += 4) { const uint32_t off = a - RAM_BASE; if (off < RAM_SIZE) g_inline_map[off / 4] = 1; }
+}
+void add_ram_code_range(uint32_t lo, uint32_t hi) { mark_inline(lo, hi); }
+
+bool runs_from_ram(uint32_t addr) {
+  if (g_inline_map.empty()) return false;
+  const uint32_t off = addr - RAM_BASE;
+  return off < RAM_SIZE && g_inline_map[off / 4] != 0;
+}
+
+// The guest function containing addr: [*lo, *hi) from the name table.
+bool function_bounds(uint32_t addr, uint32_t* lo, uint32_t* hi) {
+  size_t l = 0, h = guest::name_table_count;
+  while (l < h) { const size_t mid = (l + h) / 2; if (guest::name_table[mid].addr <= addr) l = mid + 1; else h = mid; }
+  if (!l) return false;
+  *lo = guest::name_table[l - 1].addr;
+  *hi = l < guest::name_table_count ? guest::name_table[l].addr : *lo + 4;
+  return true;
+}
+
+void disable_dispatch_range(uint32_t lo, uint32_t hi) {
+  for (uint32_t a = lo & ~3u; a < hi; a += 4) {
+    const uint32_t off = a - RAM_BASE;
+    if (off < RAM_SIZE && !g_dispatch.empty()) g_dispatch[off / 4] = nullptr;
+  }
+}
+
+void interp_entry(Context& c, uint8_t* m, uint32_t addr) {
+  const uint32_t start = c.entry ? c.entry : addr;   // a mid-function thunk asked for this entry
+  c.entry = 0;
+  interpret(c, m, start);
+}
+
+bool redirect_to_interpreter(uint32_t addr) {
+  auto at = std::lower_bound(g_redirected.begin(), g_redirected.end(), addr);
+  if (at != g_redirected.end() && *at == addr) return true;
+  Fn fn = lookup(addr);
+  if (!fn) return false;
+  uint8_t* code = reinterpret_cast<uint8_t*>(fn);
+  if (!g_tramp_pool) { g_tramp_cap = 4u << 20; g_tramp_pool = static_cast<uint8_t*>(alloc_near(code, g_tramp_cap)); }
+  if (!g_tramp_pool || g_tramp_used + 32 > g_tramp_cap) return false;
+  uint8_t* t = g_tramp_pool + g_tramp_used;
+  const int64_t rel = (int64_t)(t - (code + 5));
+  if (rel < INT32_MIN || rel > INT32_MAX) return false;
+  g_tramp_used += 32;
+  // mov r8d, addr ; mov rax, interp_entry ; jmp rax   (rcx = Context&, rdx = RAM, as the caller passed)
+  t[0] = 0x41; t[1] = 0xB8; std::memcpy(t + 2, &addr, 4);
+  const uint64_t target = reinterpret_cast<uint64_t>(&interp_entry);
+  t[6] = 0x48; t[7] = 0xB8; std::memcpy(t + 8, &target, 8);
+  t[16] = 0xFF; t[17] = 0xE0;
+  DWORD old = 0;
+  if (!VirtualProtect(code, 5, PAGE_EXECUTE_READWRITE, &old)) return false;
+  const int32_t r = (int32_t)rel;
+  code[0] = 0xE9; std::memcpy(code + 1, &r, 4);
+  VirtualProtect(code, 5, old, &old);
+  FlushInstructionCache(GetCurrentProcess(), code, 5);
+  g_redirected.insert(at, addr);
+  uint32_t lo = 0, hi = 0;
+  if (function_bounds(addr, &lo, &hi)) mark_inline(lo, hi);
+  return true;
+}
+
+size_t redirect_changed_functions(const uint8_t* reference, const uint8_t* m, uint32_t base, uint32_t size) {
+  size_t redirected = 0;
+  uint32_t last_owner = 0;
+  for (uint32_t off = 0; off + 4 <= size; off += 4) {
+    const uint32_t addr = base + off;
+    if (std::memcmp(reference + off, m + (addr - RAM_BASE), 4) == 0) continue;
+    // The function containing this word: the last function start at or below it.
+    size_t lo = 0, hi = guest::name_table_count;
+    while (lo < hi) { const size_t mid = (lo + hi) / 2; if (guest::name_table[mid].addr <= addr) lo = mid + 1; else hi = mid; }
+    if (!lo) continue;
+    const uint32_t owner = guest::name_table[lo - 1].addr;
+    if (owner == last_owner) continue;
+    last_owner = owner;
+    // Already running from RAM: a block written every frame (block 0 holds low memory as well as
+    // code) is compared again every frame, and each of those functions was logged again each time.
+    if (std::binary_search(g_redirected.begin(), g_redirected.end(), owner)) continue;
+    if (redirect_to_interpreter(owner)) {
+      ++redirected;
+      host::log("mods: %08X %s runs the mod's code", owner, guest::name_table[lo - 1].name);
+    } else {
+      host::log("mods: %08X %s changed but cannot be redirected", owner, guest::name_table[lo - 1].name);
+    }
+  }
+  return redirected;
+}
+
+void report_kept_compiled(const uint8_t* boot_reference, const uint8_t* reference, const uint8_t* m, uint32_t base, uint32_t size) {
+  static std::vector<uint32_t> reported;   // sorted owners already logged
+  if (!guest::name_table_count || std::memcmp(boot_reference, reference, size) == 0) return;   // nothing the served codes explain here
+  // The owner of the first word, then the next function starts in order as the words pass them.
+  size_t next = 0, hi = guest::name_table_count;
+  while (next < hi) { const size_t mid = (next + hi) / 2; if (guest::name_table[mid].addr <= base) next = mid + 1; else hi = mid; }
+  uint32_t owner = next ? guest::name_table[next - 1].addr : 0, words = 0;
+  const char* name = next ? guest::name_table[next - 1].name : "";
+  bool differs = false;
+  auto finish = [&] {
+    if (!owner || !words || differs) return;
+    auto at = std::lower_bound(reported.begin(), reported.end(), owner);
+    if (at != reported.end() && *at == owner) return;
+    reported.insert(at, owner);
+    if (std::binary_search(g_redirected.begin(), g_redirected.end(), owner)) return;   // already runs from RAM
+    host::log("mods: kept compiled %08X %s: %u words, Slippi main list", owner, name, words);
+  };
+  for (uint32_t off = 0; off + 4 <= size; off += 4) {
+    const uint32_t addr = base + off;
+    while (next < guest::name_table_count && guest::name_table[next].addr <= addr) {
+      finish();
+      owner = guest::name_table[next].addr; name = guest::name_table[next].name; words = 0; differs = false;
+      ++next;
+    }
+    const uint8_t* now = m + (addr - RAM_BASE);
+    if (std::memcmp(reference + off, now, 4) != 0) differs = true;
+    else if (std::memcmp(boot_reference + off, now, 4) != 0) ++words;
+  }
+  finish();
 }
 
 void call(Context& c, uint8_t* m, uint32_t addr) {

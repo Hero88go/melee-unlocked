@@ -7,10 +7,14 @@ voices the DSP keeps playing through a load). Restoring those tables on a rollba
 play on gives cut-off and restarted sounds, heard as crackle. The native build names only a few of
 their variables, so this lists each file's whole .bss and .data range instead, as image offsets.
 
-    python tools/snapshot_audio_ranges.py <melee_game.map> <image base hex> <output file>
+    python tools/snapshot_audio_ranges.py <melee_game.map> <image base hex> <output file> [melee_game.dll]
 
-Output: one line per range, "<offset hex> <size hex> <section> <file>".
+Output: one line per range, "<offset hex> <size hex> <section> <file>". With the library given, a first
+line "# dll_size <bytes>" ties the ranges to that exact build: the offsets are only right for the
+library they were read from, and the host ignores them for any other (a copied library with an old
+file beside it restored the wrong memory on every rollback, 09-29).
 """
+import os
 import re
 import sys
 
@@ -34,6 +38,8 @@ def main():
     if missing:
         sys.exit("snapshot_audio_ranges: no sections found for " + ", ".join(missing))
     with open(out_path, "w", encoding="utf-8") as f:
+        if len(sys.argv) > 4:
+            f.write(f"# dll_size {os.path.getsize(sys.argv[4])}\n")
         for offset, size, section, name in rows:
             f.write(f"{offset:x} {size:x} {section} {name}\n")
     print(f"snapshot_audio_ranges: {len(rows)} ranges, {sum(r[1] for r in rows)} bytes")

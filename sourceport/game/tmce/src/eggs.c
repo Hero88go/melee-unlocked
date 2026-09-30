@@ -12,6 +12,27 @@ static JOBJ *hud_score_jobj, *hud_best_jobj;
 static int canvas;
 static Text *hud_score_text, *hud_best_text;
 
+/* Item lifetime is shorter than the exercise. A stage can destroy the egg without running
+ * our damage callback. Establish membership from the live item list before dereferencing
+ * the saved address, then verify that the live object still owns egg item data. */
+static GOBJ *Egg_LiveGObj(void)
+{
+#ifdef MU_NATIVE
+    GOBJ *live;
+    if (egg_gobj != 0) {
+        for (live = (*stc_gobj_lookup)[MATCHPLINK_ITEM]; live != 0; live = live->next) {
+            if (live == egg_gobj) {
+                ItemData *data = live->userdata;
+                if (data != 0 && data->kind == ITEM_EGG) return live;
+                break;
+            }
+        }
+        egg_gobj = 0;
+    }
+#endif
+    return egg_gobj;
+}
+
 void Exit(GOBJ *menu) 
 {
     stc_match->state = 3;
@@ -60,9 +81,11 @@ void StartFreePractice(GOBJ *gobj) {
 
 void Egg_OnChangeSize(GOBJ *menu, int value)
 {
-    if (egg_gobj != 0)
+    GOBJ *old_egg = Egg_LiveGObj();
+    if (old_egg != 0)
     {
-        Item_Destroy(egg_gobj);
+        egg_gobj = 0;
+        Item_Destroy(old_egg);
         egg_gobj = Egg_Spawn();
     }
 }
@@ -131,14 +154,18 @@ GOBJ *Egg_Spawn(void)
 
 int Egg_OnTakeDamage(GOBJ *gobj)
 {
-    // gfx and sfx
-    ItemData *egg_data = egg_gobj->userdata;
+    // Only the currently owned live egg may update this exercise's score.
+    GOBJ *live_egg = Egg_LiveGObj();
+    ItemData *egg_data;
+    if (live_egg == 0 || live_egg != gobj) return 0;
+    egg_data = live_egg->userdata;
     accumulated_damage += egg_data->dmg.recent;
     if (accumulated_damage >= Options_Main[OPT_DAMAGETHRESHOLD].val){
         Effect_SpawnSync(1232, gobj, egg_data->pos);
         Item_PlayOnDestroySFXAgain(egg_data, 244, 127, 64);
         
         // manage old and new egg
+        egg_gobj = 0;
         Egg_Destroy(gobj);
         egg_gobj = Egg_Spawn();
         egg_counter++;
@@ -148,6 +175,11 @@ int Egg_OnTakeDamage(GOBJ *gobj)
 
 void Event_Init(GOBJ *gobj)
 {
+#ifdef MU_NATIVE
+    /* Every exercise owns a new egg, even if the old scene reused a GObj address. */
+    egg_gobj = 0;
+    accumulated_damage = 0;
+#endif
     // initialize egg camera subject
     cam = CameraSubject_Alloc();
     cam->boundleft_proj = -10;
@@ -211,7 +243,10 @@ void Event_Think(GOBJ *event)
     }
 
     GOBJ *hmn = Fighter_GetGObj(0);
-    FighterData *hmn_data = hmn->userdata;
+    FighterData *hmn_data;
+    if (hmn == 0 || hmn->userdata == 0) return;
+    hmn_data = hmn->userdata;
+    Egg_LiveGObj();
 
     // wait for first frame of player control to spawn first egg
     if (egg_gobj == 0 && hmn_data->flags.input_enable)

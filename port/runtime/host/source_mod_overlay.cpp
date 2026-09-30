@@ -36,6 +36,11 @@ bool valid_name(const std::string& s) {
   for (unsigned char c : s) if (c < 0x20 || c == '/' || c == '\\' || c == ':') return false;
   return true;
 }
+bool akaneia_disabled(const std::set<std::string>& paths, std::string& error) {
+  if (!paths.count("/mxdt.dat") || !paths.count("/plsn.dat") || !paths.count("/plts.dat")) return false;
+  error = "Akaneia is disabled until its native fighters and stages are complete. Use Training Mode CE or 20XX TE.";
+  return true;
+}
 } // namespace
 
 bool ModOverlay::load(const fs::path& root, std::string& error) {
@@ -69,6 +74,9 @@ bool ModOverlay::add_directory(const fs::path& root, const std::string& profile,
       paths.emplace_back("/" + rel, entry.path());
     }
     std::sort(paths.begin(), paths.end());
+    std::set<std::string> disc_paths;
+    for (const auto& path : paths) disc_paths.insert(path.first);
+    if (akaneia_disabled(disc_paths, error)) return false;
     std::vector<File> loaded;
     for (const auto& path : paths) {
       const auto size = fs::file_size(path.second);
@@ -140,7 +148,7 @@ bool ModOverlay::add_iso(const fs::path& iso, const std::string& profile,
         continue;
       }
       const uint64_t offset = be32(entry + 4), length = be32(entry + 8);
-      if (length > 256u * 1024u * 1024u || offset > image_size || length > image_size - offset) {
+      if (offset > image_size || length > image_size - offset) {
         error = "invalid mod ISO file: " + path; return false;
       }
       DiscFile original{};
@@ -157,6 +165,11 @@ bool ModOverlay::add_iso(const fs::path& iso, const std::string& profile,
         }
       }
       if (identical) continue;
+      // Retail movies can exceed the replacement-file limit. They are safe to
+      // leave on the original disc; apply this limit only to changed content.
+      if (length > 256u * 1024u * 1024u) {
+        error = "mod ISO replacement file is too large: " + path; return false;
+      }
       File file;
       file.path = std::move(path); file.length = uint32_t(length);
       file.iso = iso; file.iso_offset = offset; file.profile = profile;
@@ -199,6 +212,7 @@ bool ModOverlay::add_iso(const fs::path& iso, const std::string& profile,
         if (run_start >= 0) report.dol_runs.push_back({uint32_t(run_start), uint32_t(last_diff + 1 - run_start)});
       }
     }
+    if (akaneia_disabled(names, error)) return false;
     if (!add_files(std::move(changed), error)) return false;
     reports_.push_back(std::move(report));
     return true;

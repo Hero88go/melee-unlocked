@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DISCORD_LIMIT = 2000   # characters per message; longer notes are split on blank lines
 INSTALL_BLOCK = """**Install**
 
-- Download `MeleeUnlocked-{version}-win64.zip` from the linked GitHub release. It contains one game build with optional experimental DLSS 5; that feature needs NVIDIA's separate model, which is not included.
+- Download `MeleeUnlocked-{version}-win64.zip` from the linked GitHub release. It contains Source Port and Static Recomp with optional experimental DLSS 5; that feature needs NVIDIA's separate model, which is not included.
 - Close Melee Unlocked, then extract the archive over the existing folder so settings, saves and replays carry over.
 - Keep your own Melee NTSC 1.02 ISO beside the files as `melee.iso`, or select it with the included launcher.
 - Start `MeleeUnlockedLauncher.exe` after extraction."""
@@ -60,11 +60,6 @@ def notes_for_version(version):
                       ROOT / "release" / ("RELEASE_NOTES_%s-beta.md" % version)):
         if candidate.exists():
             return candidate.read_text(encoding="utf-8")
-    event_path = os.environ.get("GITHUB_EVENT_PATH")
-    if os.environ.get("GITHUB_EVENT_NAME") == "release" and event_path:
-        release = json.loads(Path(event_path).read_text(encoding="utf-8")).get("release", {})
-        if release.get("tag_name") == "v" + version:
-            return release.get("body") or None
     return None
 
 
@@ -129,6 +124,27 @@ def to_discord(text, version, repo="Hero88go/melee-unlocked", release_url=None):
     header = ("**%s**\n\n" % title) if ":" in title else "**Melee Unlocked %s is out**\n\n" % version
     link = ("\n\n" + release_url) if release_url else ("\n\nhttps://github.com/%s/releases/tag/v%s" % (repo, version))
     return header + INSTALL_BLOCK.format(version=version) + "\n\n" + body + link
+
+
+def latest_releases(repo, count):
+    """Return the newest published GitHub releases, newest first."""
+    if count <= 0:
+        raise SystemExit("--last must be greater than zero")
+    url = "https://api.github.com/repos/%s/releases?per_page=%d" % (repo, max(count, 1))
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "melee-unlocked-release-notes"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = "Bearer " + token
+    request = urllib.request.Request(url, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            releases = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError) as error:
+        raise SystemExit("could not read GitHub releases: %s" % error)
+    published = [r for r in releases if isinstance(r, dict) and not r.get("draft")]
+    if len(published) < count:
+        raise SystemExit("GitHub returned only %d published release(s); need %d" % (len(published), count))
+    return published[:count]
 
 
 def latest_releases(repo, count):

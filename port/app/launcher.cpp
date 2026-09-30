@@ -23,6 +23,10 @@
 #include <uxtheme.h>
 #include <intrin.h>
 #include <nlohmann/json.hpp>
+#include "launcher_mod_catalog.h"
+#include "mod_scan.h"
+#include <set>
+#include <sstream>
 #include <algorithm>
 #include <atomic>
 #include <cstdarg>
@@ -42,8 +46,17 @@
 #include "launch_process.h"
 #include "launcher_engine.h"
 #include "launcher_lobby.h"
+#include "launcher_lobby_p2p.h"
 #include "launcher_theme.h"
 #include "launcher_replay_data.h"
+#include "launcher_lang.h"
+#include "launcher_crash_zip.h"
+// Every message box shows in the player's language (fixed English wording is looked up).
+inline int mu_message_box(HWND owner, const wchar_t* text, const wchar_t* caption, UINT type) {
+  return ::MessageBoxW(owner, launcher::lang::txw(text ? text : L"").c_str(),
+                       launcher::lang::txw(caption ? caption : L"").c_str(), type);
+}
+#define MessageBoxW mu_message_box
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -62,7 +75,8 @@
 #define IDB_BAILEY 5
 
 namespace {
-enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_WARM_CACHE, ID_VERSIONS, ID_THEME, ID_TIMER = 1, ID_TIMER_STANDBY = 2 };
+enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_WARM_CACHE, ID_VERSIONS, ID_THEME, ID_LANGUAGE, ID_MODS, ID_TIMER = 1, ID_TIMER_STANDBY = 2 };
+HWND g_lang_btn = nullptr;
 const UINT WM_APP_LOG = WM_APP + 1;      // lParam: heap std::string* to append to the log
 const UINT WM_APP_BUILD_DONE = WM_APP + 2;
 const UINT WM_APP_GAME_DONE = WM_APP + 3;
@@ -72,6 +86,7 @@ const UINT WM_APP_CACHE_WARM_DONE = WM_APP + 4;
 const int WIN_W = 720, WIN_H = 480;
 const int LOBBY_W = 980, LOBBY_H = 768;
 const int REPLAY_W = 980, REPLAY_H = 700;
+const int MODS_W = 980, MODS_H = 860;
 const int RAIL_W = 190;                 // left rail: wordmark, page nav, Bailey
 const int CX = 212, CW = 486;           // content column
 // NAV_Y leaves room for the whole mark. At 104 the page nav started on top of it and cut the
@@ -101,7 +116,7 @@ const COLORREF C_OK = RGB(0x5A, 0xC8, 0x8A), C_WARN = RGB(0xE5, 0xA8, 0x4A), C_B
 const COLORREF NO_FILL = CLR_INVALID;
 
 HWND g_main;
-HWND g_play[7], g_build[3];
+HWND g_play[9], g_build[3];
 HWND g_iso_edit, g_play_btn, g_slippi_btn, g_update_btn, g_versions_btn, g_log, g_build_btn, g_warm_cache_check;
 HFONT g_font, g_font_big, g_font_mono, g_font_mark, g_font_nav, g_font_label, g_font_small;
 HICON g_mark = nullptr;          // IDI_MELEE_MARK, the wordmark drawn at the top of the rail
@@ -113,8 +128,17 @@ bool g_dog_hot = false;
 HBITMAP g_wordmark = nullptr;    // the MU mark cut off its navy plate, at full resolution
 int g_wordmark_w = 0, g_wordmark_h = 0;
 std::string g_dir, g_iso, g_game_exe;
+std::string g_language;   // launcher.ini language= (empty: follow Windows)
+// A code mod (Akaneia, ACE, 20XX Hack Pack...) runs on the Static Recomp with its own disc, the
+// player's vanilla disc for the reference code, and a memory card folder of its own.
+std::string g_mod_launch_iso, g_mod_launch_key, g_mod_launch_engine, g_mod_launch_kind;
+bool g_launcher_test = std::getenv("MELEE_LAUNCHER_TEST") != nullptr;
+namespace mod_manager { std::string summary(); }
+void start_game();
+std::string static_recomp_exe();
 std::string g_lobby_launch_args;
 bool g_lobby_game_active = false;
+launcher::lobby::Prefs g_lobby_prefs;   // launcher.ini lobbyopen / lobbyiso / lobbyisoname
 std::string g_active_version; // folder name inside Versions; empty means the current install
 bool g_rollback_consumed = true;
 // The game is a single integrated build. Older CPUs can still use a compatibility executable
@@ -143,7 +167,7 @@ int S(int v) { return MulDiv(v, g_dpi, 96); }
 std::wstring widen(const std::string& s) { int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0); std::wstring w(n ? n - 1 : 0, 0); if (n) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n); return w; }
 std::string narrow(const std::wstring& w) { int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr); std::string s(n ? n - 1 : 0, 0); if (n) WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), n, nullptr, nullptr); return s; }
 bool file_exists(const std::string& p) { DWORD a = GetFileAttributesW(widen(p).c_str()); return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY); }
-void set_text(HWND h, const std::string& s) { SetWindowTextW(h, widen(s).c_str()); }
+void set_text(HWND h, const std::string& s) { SetWindowTextW(h, widen(launcher::lang::tx(s)).c_str()); }
 bool safe_version_folder(const std::string& s) {
   if (s.empty() || s.size() > 70 || s.find("..") != std::string::npos) return false;
   for (char c : s) if (!(c >= 'a' && c <= 'z') && !(c >= 'A' && c <= 'Z') &&
@@ -184,6 +208,20 @@ std::string read_iso_from(const std::string& path) {
   }
   return "";
 }
+// The launcher's language: launcher.ini's language= line, else Windows' display language. Runs
+// before any control is made, so every label is created already translated.
+void load_language() {
+  std::string code;
+  std::ifstream f(ini_path());
+  std::string line;
+  while (std::getline(f, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.rfind("language=", 0) == 0) code = line.substr(9);
+  }
+  g_language = code;
+  if (code.empty()) code = launcher::lang::system_default();
+  launcher::lang::set_language(code, {widen(g_dir + "\\lang")});
+}
 void load_ini() {
   {
     std::ifstream f(ini_path());
@@ -196,6 +234,9 @@ void load_ini() {
         if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
       } else if (line.rfind("activeversion=", 0) == 0 && safe_version_folder(line.substr(14))) g_active_version = line.substr(14);
       else if (line == "warmcache=1") g_warm_cache_on_play = true;
+      else if (line.rfind("lobbyopen=", 0) == 0) g_lobby_prefs.open_to = line.substr(10);
+      else if (line.rfind("lobbyiso=", 0) == 0) g_lobby_prefs.custom_iso = line.substr(9);
+      else if (line.rfind("lobbyisoname=", 0) == 0) g_lobby_prefs.custom_name = line.substr(13);
       else if (line.rfind("accent=#",0)==0 && line.size()==14) {
         unsigned value=0; if(std::sscanf(line.c_str()+8,"%6x",&value)==1)
           launcher::theme::accent=RGB((value>>16)&255,(value>>8)&255,value&255);
@@ -225,6 +266,10 @@ void save_ini() {
     // Kept so that browsing for a disc does not silently undo a hand-set override.
     if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
     if (g_engine != ENGINE_LEGACY) f << "engine=" << g_engine << "\n";
+    if (!g_language.empty()) f << "language=" << g_language << "\n";
+    // The lobby: which versions this player takes match requests for, and their custom ISO.
+    if (!g_lobby_prefs.open_to.empty() && g_lobby_prefs.open_to != "vanilla") f << "lobbyopen=" << g_lobby_prefs.open_to << "\n";
+    if (!g_lobby_prefs.custom_iso.empty()) f << "lobbyiso=" << g_lobby_prefs.custom_iso << "\nlobbyisoname=" << g_lobby_prefs.custom_name << "\n";
     char color[16]; std::snprintf(color,sizeof color,"accent=#%02X%02X%02X",GetRValue(launcher::theme::accent),GetGValue(launcher::theme::accent),GetBValue(launcher::theme::accent));
     f << color << "\n";
   }
@@ -460,7 +505,17 @@ void draw_text(HDC dc, const std::wstring& s, RECT r, HFONT f, COLORREF col, UIN
   SetBkMode(dc, TRANSPARENT);
   SetTextColor(dc, col);
   if (tracking) SetTextCharacterExtra(dc, tracking);
-  DrawTextW(dc, s.c_str(), -1, &r, fmt);
+  // Fixed English text shows in the player's language, line by line; anything else (paths,
+  // names) as is.
+  std::wstring shown;
+  for (size_t at = 0; at <= s.size();) {
+    size_t end = s.find(L'\n', at);
+    if (end == std::wstring::npos) end = s.size();
+    if (at) shown += L'\n';
+    shown += launcher::lang::txw(s.substr(at, end - at).c_str());
+    at = end + 1;
+  }
+  DrawTextW(dc, shown.c_str(), -1, &r, fmt);
   if (tracking) SetTextCharacterExtra(dc, 0);
   SelectObject(dc, old);
 }
@@ -470,8 +525,8 @@ void dot(HDC dc, int x, int y, COLORREF c) {
   round_rect(dc, r, 4, c, c, NO_FILL);
 }
 
-// Rail order, by nav id (0 Play, 1 Settings, 2 Build, 3 Lobby, 4 Replays): Build sits last.
-int nav_slot(int i) { static const int slot[5] = {0, 1, 4, 2, 3}; return i >= 0 && i < 5 ? slot[i] : i; }
+// Rail order: Play, Settings, Lobby, Replays, Mods, Build.
+int nav_slot(int i) { static const int slot[6] = {0, 1, 5, 2, 3, 4}; return i >= 0 && i < 6 ? slot[i] : i; }
 RECT nav_rect(int i) { return LR(12, NAV_Y + nav_slot(i) * NAV_GAP, RAIL_W - 24, NAV_H); }
 // The two build segments, side by side on the GAME BUILD row: 0 Source Port, 1 Static Recomp (Legacy).
 RECT build_seg_rect(int i) {
@@ -587,7 +642,7 @@ std::string rail_image_path() {
 void load_rail_art() {
   // One box for Bailey and for a player's picture: it fits under the page list in the shortest
   // window, so no picture can ever reach the nav text.
-  const int box_w = S(RAIL_W - 46), box_h = S(400 - (NAV_Y + 2 * NAV_GAP + NAV_H + 10) - 12);
+  const int box_w = S(RAIL_W - 46), box_h = S(480 - (NAV_Y + 5 * NAV_GAP + NAV_H + 10) - 12);
   if (g_dog) { DeleteObject(g_dog); g_dog = nullptr; }
   const std::string custom = rail_image_path();
   if (!custom.empty()) g_dog = load_art_file(widen(custom), box_w, box_h, g_dog_w, g_dog_h);
@@ -607,7 +662,7 @@ void paint_rail(HDC dc) {
     const int dw = g_dog_w, dh = g_dog_h;
     // Centred in what is left of the rail under the nav, so the gap above her matches the gap below.
     // Bottom-anchored left a dead band between the page list and her head.
-    const int top = S(NAV_Y + 4 * NAV_GAP + NAV_H + 10);
+    const int top = S(NAV_Y + 5 * NAV_GAP + NAV_H + 10);
     const int dx = (S(RAIL_W) - dw) / 2, dy = top + (client.bottom - top - dh) / 2;
     HDC md = CreateCompatibleDC(dc);
     HGDIOBJ old = SelectObject(md, g_dog);
@@ -634,10 +689,10 @@ void paint_rail(HDC dc) {
     SelectObject(md, oldm); DeleteDC(md);
   }
 
-  const wchar_t* names[5] = {L"Play", L"Settings", L"Build", L"Multiplayer Lobby", L"Replay Viewer"};
-  for (int i = 0; i < 5; ++i) {
+  const wchar_t* names[6] = {L"Play", L"Settings", L"Build", L"Multiplayer Lobby", L"Replay Viewer", L"Mods"};
+  for (int i = 0; i < 6; ++i) {
     RECT nr = nav_rect(i);
-    const int page = i == 0 ? 0 : (i == 2 ? 1 : (i == 3 ? 2 : (i == 4 ? 3 : -1)));
+    const int page = i == 0 ? 0 : (i == 2 ? 1 : (i == 3 ? 2 : (i == 4 ? 3 : (i == 5 ? 4 : -1))));
     if (page >= 0 && g_tab == page) {
       round_rect(dc, nr, 8, C_NAV_ON, C_NAV_ON, NO_FILL);
       RECT bar = LR(12, NAV_Y + nav_slot(i) * NAV_GAP + 8, 4, 18);
@@ -679,10 +734,11 @@ void paint_play(HDC dc) {
   dot(dc, CX, 247, g_version_dot);   // centred on the first line of version_text_rect
   draw_text(dc, widen(g_version_line), version_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
 
+  draw_text(dc, widen(mod_manager::summary() + " | " + launcher::lang::tx("Open Mods folder")), LR(CX, 269, CW, 13), g_font_small, C_OK, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
   RECT sep = LR(CX, 282, CW, 1);
   fill(dc, sep, C_SEP);
   draw_text(dc, HINT_TEXT, LR(CX, 294, CW, 44), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
-  std::string version_status = g_active_version.empty() ? "" : "Playing " + g_active_version;
+  std::string version_status = g_active_version.empty() ? "" : launcher::lang::fill(launcher::lang::tx("Playing {version}"), launcher::lang::Args{{"version", g_active_version}});
   if (host::updater::rollback_state() == host::updater::RollbackState::Downloading)
     version_status = host::updater::rollback_message();
   else if (host::updater::rollback_state() == host::updater::RollbackState::Failed)
@@ -711,6 +767,66 @@ void paint_build(HDC dc) {
 #include "launcher_replays.inl"
 #include "launcher_match_character.inl"
 #include "launcher_theme_picker.inl"
+#include "launcher_crash.inl"
+// Standard Win32 printing also renders the controls when the test window is off the desktop.
+// Bottom of the z-order first, so a child over another (the lobby banner over the Lobby page)
+// prints on top, as it shows on screen.
+void print_client_children(HWND window, HDC dc) {
+  std::vector<HWND> children;
+  for (HWND child = GetWindow(window, GW_CHILD); child; child = GetWindow(child, GW_HWNDNEXT)) children.push_back(child);
+  for (auto it = children.rbegin(); it != children.rend(); ++it) {
+    const HWND child = *it;
+    if (!(GetWindowLongPtrW(child, GWL_STYLE) & WS_VISIBLE)) continue;
+    RECT r; GetWindowRect(child, &r); MapWindowPoints(nullptr, window, reinterpret_cast<POINT*>(&r), 2);
+    const int saved = SaveDC(dc);
+    POINT origin{}; GetViewportOrgEx(dc, &origin);
+    SetViewportOrgEx(dc, origin.x + r.left, origin.y + r.top, nullptr);
+    IntersectClipRect(dc, 0, 0, r.right - r.left, r.bottom - r.top);
+    SendMessageW(child, WM_PRINT, (WPARAM)dc, PRF_CLIENT | PRF_NONCLIENT | PRF_ERASEBKGND | PRF_CHILDREN);
+    RestoreDC(dc, saved);
+  }
+}
+void capture_test_client(HWND window, const char* name) {
+  if (!g_launcher_test) return;
+  RECT r; GetClientRect(window, &r);
+  BITMAPINFO info{}; info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+  info.bmiHeader.biWidth = r.right; info.bmiHeader.biHeight = -r.bottom;
+  info.bmiHeader.biPlanes = 1; info.bmiHeader.biBitCount = 32;
+  HDC screen = GetDC(nullptr), dc = CreateCompatibleDC(screen); void* pixels = nullptr;
+  HBITMAP bitmap = CreateDIBSection(screen, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+  if (bitmap && pixels) {
+    const auto old = SelectObject(dc, bitmap);
+    SendMessageW(window, WM_PRINTCLIENT, (WPARAM)dc, PRF_CLIENT | PRF_CHILDREN | PRF_ERASEBKGND);
+    BITMAPFILEHEADER header{}; header.bfType = 0x4D42;
+    header.bfOffBits = sizeof header + sizeof(BITMAPINFOHEADER);
+    header.bfSize = header.bfOffBits + r.right * r.bottom * 4;
+    std::ofstream out(std::filesystem::u8path(g_dir + "/" + name), std::ios::binary);
+    out.write(reinterpret_cast<const char*>(&header), sizeof header);
+    out.write(reinterpret_cast<const char*>(&info.bmiHeader), sizeof(BITMAPINFOHEADER));
+    out.write(static_cast<const char*>(pixels), r.right * r.bottom * 4);
+    SelectObject(dc, old);
+  }
+  if (bitmap) DeleteObject(bitmap); DeleteDC(dc); ReleaseDC(nullptr, screen);
+}
+#include "launcher_mods.inl"
+
+// The Language button: a menu of the languages, each named in itself. Picking one saves it and
+// restarts the launcher, so every page is built again in that language.
+void pick_language() {
+  HMENU menu = CreatePopupMenu();
+  const auto& list = launcher::lang::languages();
+  for (size_t i = 0; i < list.size(); ++i)
+    AppendMenuW(menu, MF_STRING | (list[i].code == launcher::lang::current() ? MF_CHECKED : 0), 1 + i, list[i].native);
+  RECT r{}; GetWindowRect(g_lang_btn, &r);
+  const int pick = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_NONOTIFY, r.left, r.bottom, 0, g_main, nullptr);
+  DestroyMenu(menu);
+  if (pick <= 0 || (size_t)pick > list.size() || list[pick - 1].code == launcher::lang::current()) return;
+  g_language = list[pick - 1].code;
+  save_ini();
+  wchar_t exe[MAX_PATH]; GetModuleFileNameW(nullptr, exe, MAX_PATH);
+  ShellExecuteW(nullptr, L"open", exe, nullptr, widen(g_dir).c_str(), SW_SHOWNORMAL);
+  DestroyWindow(g_main);
+}
 
 void paint(HWND hwnd, HDC target, RECT dirty) {
   RECT cr; GetClientRect(hwnd, &cr);
@@ -800,10 +916,11 @@ void select_tab(int idx) {
   replay_layout();
   if (idx != 2) launcher::lobby::hide();
   if (g_main && previous != idx) {
-    RECT size{0,0,S(idx==2?LOBBY_W:(idx==3?REPLAY_W:WIN_W)),S(idx==2?LOBBY_H:(idx==3?REPLAY_H:WIN_H))};
+    RECT size{0,0,S(idx==2?LOBBY_W:(idx==3?REPLAY_W:(idx==4?MODS_W:WIN_W))),S(idx==2?LOBBY_H:(idx==3?REPLAY_H:(idx==4?MODS_H:WIN_H)))};
     AdjustWindowRect(&size,WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU|WS_MINIMIZEBOX,FALSE);
     int width=size.right-size.left, height=size.bottom-size.top;
-    RECT work{}; SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
+    // The hidden test launcher (MELEE_LAUNCHER_TEST) stays off the desktop at its full size.
+    RECT work{}; if(!g_launcher_test) SystemParametersInfoW(SPI_GETWORKAREA,0,&work,0);
     if(work.right>work.left && work.bottom>work.top) {
       width=std::min(width,int(work.right-work.left));
       height=std::min(height,int(work.bottom-work.top));
@@ -816,6 +933,7 @@ void select_tab(int idx) {
     }
     SetWindowPos(g_main,nullptr,x,y,width,height,SWP_NOZORDER|SWP_NOACTIVATE);
   }
+  mod_manager::show_page(idx == 4);
   if (idx == 0 && !g_slippi_missing) ShowWindow(g_slippi_btn, SW_HIDE);
   if (idx != 0) ShowWindow(g_update_btn, SW_HIDE);
   if (g_main) InvalidateRect(g_main, nullptr, FALSE);
@@ -909,8 +1027,8 @@ void settings_standby_start() {
 }
 void choose_rail_image() {
   HMENU menu = CreatePopupMenu();
-  AppendMenuW(menu, MF_STRING, 1, L"Choose a picture...");
-  if (!rail_image_path().empty()) AppendMenuW(menu, MF_STRING, 2, L"Bring back Bailey");
+  AppendMenuW(menu, MF_STRING, 1, launcher::lang::txw(L"Choose a picture...").c_str());
+  if (!rail_image_path().empty()) AppendMenuW(menu, MF_STRING, 2, launcher::lang::txw(L"Bring back Bailey").c_str());
   POINT at; GetCursorPos(&at);
   const UINT picked = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN, at.x, at.y, 0, g_main, nullptr);
   DestroyMenu(menu);
@@ -920,7 +1038,8 @@ void choose_rail_image() {
     wchar_t file[MAX_PATH]{};
     OPENFILENAMEW dialog{sizeof dialog}; dialog.hwndOwner = g_main;
     dialog.lpstrFilter = L"Pictures (*.png;*.jpg;*.jpeg;*.bmp;*.gif)\0*.png;*.jpg;*.jpeg;*.bmp;*.gif\0";
-    dialog.lpstrTitle = L"Choose a picture for the launcher"; dialog.lpstrFile = file; dialog.nMaxFile = MAX_PATH;
+    const std::wstring dialog_title = launcher::lang::txw(L"Choose a picture for the launcher");
+    dialog.lpstrTitle = dialog_title.c_str(); dialog.lpstrFile = file; dialog.nMaxFile = MAX_PATH;
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
     if (!GetOpenFileNameW(&dialog)) return;
     std::wstring ext = std::filesystem::path(file).extension().wstring();
@@ -995,7 +1114,11 @@ bool lobby_game_ready() {
 
 void start_game() {
   if (g_playing || g_iso.empty()) return;
-  g_game_exe = game_exe();
+  g_game_exe = !g_mod_launch_iso.empty() ? (g_mod_launch_engine == "source" ? source_exe_dir() + "\\melee_source.exe" : static_recomp_exe()) : game_exe();
+  if (!file_exists(g_game_exe) && !g_mod_launch_iso.empty()) {
+    MessageBoxW(g_main,L"The required game engine is not installed. Install it before playing this mod.",L"Mods",MB_ICONINFORMATION);
+    g_mod_launch_iso.clear(); g_mod_launch_engine.clear(); g_mod_launch_kind.clear(); return;
+  }
   if (!file_exists(g_game_exe)) {
     select_tab(1); refresh_updater(); start_build(); return;
   }
@@ -1009,20 +1132,53 @@ void start_game() {
   launch_game_now();
 }
 
+std::string static_recomp_exe() {
+  const bool want_compat = g_cpu_build == CPU_COMPAT || (g_cpu_build == CPU_AUTO && !cpu_has_avx2());
+  const std::string dir = active_dir();
+  if (want_compat && file_exists(dir + "\\melee_port_compat.exe")) return dir + "\\melee_port_compat.exe";
+  return dir + "\\melee_port.exe";
+}
 void launch_game_now() {
   std::string cwd = work_dir();
-  std::string cmd = "\"" + g_game_exe + "\"" + game_args() + g_lobby_launch_args +
+  std::string exe = g_game_exe, args = game_args();
+  if (!g_mod_launch_iso.empty()) {
+    exe = g_mod_launch_engine == "source" ? source_exe_dir() + "\\melee_source.exe" : static_recomp_exe();
+    const std::string base = active_dir();
+    args = g_mod_launch_engine == "source"
+        ? " --iso \"" + g_iso + "\" " + (g_mod_launch_kind == "te" ? "--mod-gci" : "--mod-iso") + " \"" + g_mod_launch_iso + "\""
+        : " --iso \"" + g_mod_launch_iso + "\" --mod-base-iso \"" + g_iso + "\"";
+    args += " --threaded-renderer --settings-path \"" + settings_ini_path() + "\"";
+    // Explicit Source layers take precedence over automatic layers. Keep enabled TE alongside a disc.
+    if (g_mod_launch_engine == "source" && g_mod_launch_kind != "te")
+      for (const auto& entry : mod_manager::installed())
+        if (entry.second.kind == "te" && entry.second.enabled && launcher::mod_catalog::playable(entry.second))
+          args += " --mod-gci \"" + entry.second.path + "\"";
+
+    if (file_exists(base + "\\Sys\\codehandler.bin"))
+      args += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + g_dir +
+              "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\Mods\\" + g_mod_launch_key + "\"";
+    g_mod_launch_iso.clear(); g_mod_launch_engine.clear(); g_mod_launch_kind.clear();
+  }
+  std::string cmd = "\"" + exe + "\"" + args + g_lobby_launch_args +
       " --lobby-status-file \"" + g_dir + "\\lobby-game-status.json\"";
   g_lobby_game_active = !g_lobby_launch_args.empty();
   g_lobby_launch_args.clear();
+  // Test runs only (MELEE_LAUNCHER_TEST): extra game arguments (hidden, local peering instead of
+  // Slippi's servers) and the exact command line written to a file for the lobby gate to check.
+  if (g_launcher_test) {
+    if (const char* extra = std::getenv("MELEE_LAUNCHER_TEST_GAME_ARGS")) cmd += std::string(" ") + extra;
+    if (const char* log_path = std::getenv("MELEE_LAUNCHER_TEST_LAUNCH_LOG"))
+      if (FILE* f = std::fopen(log_path, "ab")) { std::fprintf(f, "%s\n", cmd.c_str()); std::fclose(f); }
+  }
   PROCESS_INFORMATION pi{};
-  const DWORD error = launcher::start_process(widen(g_game_exe), widen(cmd), widen(cwd), 0, pi);
+  const DWORD error = launcher::start_process(widen(exe), widen(cmd), widen(cwd), 0, pi);
   if (error != ERROR_SUCCESS) {
     launcher::lobby::game_running(false);
-    report_launch_error(error, g_game_exe, cwd);
+    report_launch_error(error, exe, cwd);
     return;
   }
   CloseHandle(pi.hThread);
+  crash_report::note_launch();
   g_playing = true;
   launcher::lobby::game_running(true);
   EnableWindow(g_play_btn, FALSE);
@@ -1041,7 +1197,11 @@ void set_iso(const std::string& path) {
 void browse() {
   wchar_t file[MAX_PATH]{};
   OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof ofn; ofn.hwndOwner = g_main; ofn.lpstrFilter = L"GameCube disc image (*.iso;*.gcm)\0*.iso;*.gcm\0All files\0*.*\0"; ofn.lpstrFile = file; ofn.nMaxFile = MAX_PATH; ofn.Flags = OFN_FILEMUSTEXIST;
-  if (GetOpenFileNameW(&ofn)) { set_iso(narrow(file)); save_ini(); }
+  if (GetOpenFileNameW(&ofn)) {
+    if (mod_manager::hash_file(file, BCRYPT_MD5_ALGORITHM) != mod_manager::kVanillaMd5) {
+      mod_manager::open(); std::thread(mod_manager::install_file, std::wstring(file), std::string(), g_iso).detach();
+    } else { set_iso(narrow(file)); save_ini(); }
+  }
 }
 
 bool g_update_prompted = false;
@@ -1109,13 +1269,13 @@ void choose_version() {
     return;
   }
   HMENU menu = CreatePopupMenu();
-  AppendMenuW(menu, MF_STRING | (g_active_version.empty() ? MF_CHECKED : 0), 1900, L"Current install");
+  AppendMenuW(menu, MF_STRING | (g_active_version.empty() ? MF_CHECKED : 0), 1900, launcher::lang::txw(L"Current install").c_str());
   AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
   if (!installed.empty()) {
     HMENU local = CreatePopupMenu();
     for (size_t i = 0; i < installed.size(); ++i)
       AppendMenuW(local, MF_STRING | (g_active_version == installed[i] ? MF_CHECKED : 0), 3000 + (UINT)i, widen(installed[i]).c_str());
-    AppendMenuW(menu, MF_POPUP, (UINT_PTR)local, L"Installed versions");
+    AppendMenuW(menu, MF_POPUP, (UINT_PTR)local, launcher::lang::txw(L"Installed versions").c_str());
   }
   for (size_t first = 0; first < catalog.size(); first += 10) {
     HMENU group = CreatePopupMenu();
@@ -1127,10 +1287,10 @@ void choose_version() {
         static const wchar_t* months[12] = {L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun", L"Jul", L"Aug", L"Sep", L"Oct", L"Nov", L"Dec"};
         wchar_t date[32]; swprintf_s(date, L"\t%ls %d, %d", months[m - 1], d, y); name += date;
       }
-      if (!available) name += L" (no standard build)";
+      if (!available) name += L" (" + launcher::lang::txw(L"no standard build") + L")";
       AppendMenuW(group, MF_STRING | (available ? 0 : MF_GRAYED), 2000 + (UINT)i, name.c_str());
     }
-    std::wstring title = first == 0 ? L"Recent releases" : L"Older releases " + std::to_wstring(first + 1) + L"-" + std::to_wstring(std::min(first + 10, catalog.size()));
+    std::wstring title = first == 0 ? launcher::lang::txw(L"Recent releases") : launcher::lang::txw(L"Older releases") + L" " + std::to_wstring(first + 1) + L"-" + std::to_wstring(std::min(first + 10, catalog.size()));
     AppendMenuW(menu, MF_POPUP, (UINT_PTR)group, title.c_str());
   }
   RECT r{}; GetWindowRect(g_versions_btn, &r);
@@ -1152,7 +1312,8 @@ void choose_version() {
 }
 
 HWND make(const wchar_t* cls, const wchar_t* text, DWORD style, int x, int y, int w, int h, int id, HFONT font, DWORD ex) {
-  HWND hw = CreateWindowExW(ex, cls, text, WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(w), S(h), g_main, (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr), nullptr);
+  const std::wstring shown = launcher::lang::txw(text ? text : L"");
+  HWND hw = CreateWindowExW(ex, cls, shown.c_str(), WS_CHILD | WS_VISIBLE | style, S(x), S(y), S(w), S(h), g_main, (HMENU)(INT_PTR)id, GetModuleHandleW(nullptr), nullptr);
   SendMessageW(hw, WM_SETFONT, (WPARAM)(font ? font : g_font), TRUE);
   return hw;
 }
@@ -1160,6 +1321,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   switch (msg) {
     case WM_CREATE: {
       g_main = hwnd;
+      load_language();
       load_rail_art();
       // Play page
       int i = 0;
@@ -1171,10 +1333,19 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_play[i++] = g_versions_btn = make(L"BUTTON", L"Choose version...", BS_OWNERDRAW, CX, 348, 174, 32, ID_VERSIONS);
       g_play[i++] = make(L"BUTTON",L"Launcher color",BS_OWNERDRAW,666,348,32,32,ID_THEME);
       {
+        const auto* current = launcher::lang::find(launcher::lang::current());
+        g_lang_btn = CreateWindowExW(0, L"BUTTON", current ? current->native : L"English", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                                     S(478), S(348), S(176), S(32), hwnd, (HMENU)(INT_PTR)ID_LANGUAGE, GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(g_lang_btn, WM_SETFONT, (WPARAM)g_font, TRUE);
+        g_play[i++] = g_lang_btn;
+      }
+      g_play[i++] = make(L"BUTTON", L"Mods", BS_OWNERDRAW, 392, 348, 80, 32, ID_MODS);
+      {
         HWND tips=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,
                                   0,0,0,0,hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
         TOOLINFOW tip{sizeof tip};tip.uFlags=TTF_IDISHWND|TTF_SUBCLASS;tip.hwnd=hwnd;
-        tip.uId=(UINT_PTR)g_play[6];tip.lpszText=const_cast<wchar_t*>(L"Launcher color");
+        std::wstring tip_text=launcher::lang::txw(L"Launcher color");   // the tooltip keeps its own copy
+        tip.uId=(UINT_PTR)g_play[6];tip.lpszText=tip_text.data();
         SendMessageW(tips,TTM_ADDTOOLW,0,(LPARAM)&tip);
       }
       // Build page
@@ -1190,14 +1361,17 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_slippi_line = slippi_account_line();
       g_slippi_missing = g_slippi_line.rfind("Slippi account:", 0) != 0;
       ShowWindow(g_slippi_btn, g_slippi_missing ? SW_SHOW : SW_HIDE);
-      host::updater::check(MELEE_PORT_VERSION);
-      refresh_updater();
+      if (!g_launcher_test) { host::updater::check(MELEE_PORT_VERSION); refresh_updater(); }
       SetTimer(hwnd, ID_TIMER, 500, nullptr);
-      SetTimer(hwnd, ID_TIMER_STANDBY, 1500, nullptr);
+      if (!g_launcher_test) SetTimer(hwnd, ID_TIMER_STANDBY, 1500, nullptr);
       DragAcceptFiles(hwnd, TRUE);
       return 0;
     }
     case WM_ERASEBKGND: return 1;        // WM_PAINT paints every pixel from a memory DC
+    case WM_PRINTCLIENT: {
+      RECT r; GetClientRect(hwnd, &r); paint(hwnd, (HDC)wp, r); print_client_children(hwnd, (HDC)wp); return 0;
+    }
+    case WM_APP + 41: capture_test_client(hwnd, "launcher-capture.bmp"); return 0;
     case WM_PAINT: {
       PAINTSTRUCT ps; HDC dc = BeginPaint(hwnd, &ps);
       paint(hwnd, dc, ps.rcPaint);
@@ -1209,7 +1383,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: {
       POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
       int hot = -1;
-      for (int i = 0; i < 5; ++i) { RECT r = nav_rect(i); if (PtInRect(&r, p)) hot = i; }
+      for (int i = 0; i < 6; ++i) { RECT r = nav_rect(i); if (PtInRect(&r, p)) hot = i; }
       if (hot != g_nav_hot) {
         int was = g_nav_hot; g_nav_hot = hot;
         if (was >= 0) invalidate(nav_rect(was));
@@ -1230,7 +1404,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       break;
     case WM_LBUTTONDOWN: {
       POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-      for (int i = 0; i < 5; ++i) {
+      RECT mods_line = LR(CX, 269, CW, 13);
+      if (g_tab == 0 && PtInRect(&mods_line, p)) {
+        std::error_code ec; std::filesystem::create_directories(widen(mod_manager::mods_dir()), ec);
+        ShellExecuteW(nullptr, L"open", widen(mod_manager::mods_dir()).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return 0;
+      }
+      for (int i = 0; i < 6; ++i) {
         RECT r = nav_rect(i);
         if (!PtInRect(&r, p)) continue;
         // Settings is not a page here. The launcher used to draw its own copy of the options, which
@@ -1238,6 +1418,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         // panel instead, so it is the same UI by construction and cannot drift from it.
         if (i == 1) { open_settings(); return 0; }
         if (i == 4) { select_tab(3); refresh_replays(); return 0; }
+        if (i == 5) { mod_manager::open(); return 0; }
         if (i == 3) {
           g_slippi_line=slippi_account_line();
           g_slippi_missing=g_slippi_line.rfind("Slippi account:",0)!=0;
@@ -1274,6 +1455,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           break;
         case ID_VERSIONS: choose_version(); break;
         case ID_THEME: open_theme_picker(); break;
+        case ID_LANGUAGE: pick_language(); break;
+        case ID_MODS: mod_manager::open(); break;
         case ID_REPLAY_BROWSE: browse_replay(); break;
         case ID_REPLAY_WATCH: watch_replay(); break;
         case ID_REPLAY_REFRESH: refresh_replays(); break;
@@ -1285,9 +1468,34 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       }
       return 0;
     case WM_DROPFILES: {
-      wchar_t file[MAX_PATH]{};
-      if (DragQueryFileW((HDROP)wp, 0, file, MAX_PATH)) { set_iso(narrow(file)); select_tab(1); refresh_updater(); start_build(); }
-      DragFinish((HDROP)wp);
+      const HDROP drop = (HDROP)wp;
+      const UINT count = DragQueryFileW(drop, 0xFFFFFFFF, nullptr, 0);
+      std::wstring game_disc;
+      const std::string base_iso = g_iso;
+      for (UINT index = 0; index < count; ++index) {
+        const UINT length = DragQueryFileW(drop, index, nullptr, 0);
+        std::wstring file(length + 1, L'\0');
+        if (!length || !DragQueryFileW(drop, index, file.data(), length + 1)) continue;
+        file.resize(length);
+        // Mod downloads go to the mod manager. A disc is the game disc when it is vanilla 1.02, and a
+        // mod otherwise: a modded disc is never an error, it is added to the Mods folder.
+        std::wstring lower = file; for (auto& c : lower) c = (wchar_t)towlower(c);
+        const bool disc = lower.size() > 4 && (lower.compare(lower.size() - 4, 4, L".iso") == 0 || lower.compare(lower.size() - 4, 4, L".gcm") == 0);
+        bool vanilla = false;
+        if (disc) {
+          HCURSOR old = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+          vanilla = mod_manager::hash_file(file, BCRYPT_MD5_ALGORITHM) == mod_manager::kVanillaMd5;
+          SetCursor(old);
+        }
+        if (mod_manager::is_mod_file(file) || (disc && !vanilla)) {
+          mod_manager::open();
+          std::thread(mod_manager::install_file, file, std::string(), base_iso).detach();
+        } else if (game_disc.empty()) game_disc = file;
+      }
+      DragFinish(drop);
+      if (!game_disc.empty()) {
+        set_iso(narrow(game_disc)); select_tab(1); refresh_updater(); start_build();
+      }
       return 0;
     }
     case WM_APP_LOG: {
@@ -1314,6 +1522,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         MessageBoxW(hwnd, L"The lobby match could not complete its connection or the game exited with an error. Check your Slippi login/code and melee_port.log, then request another match.", L"Lobby match ended", MB_ICONWARNING);
       g_lobby_game_active = false;
       set_iso(g_iso);
+      // Also after a zero exit code: offer() only acts on a crash file newer than this launch.
+      crash_report::offer(hwnd, work_dir(), g_engine == ENGINE_SOURCE ? "Source Port" : "Static Recomp");
       // Restore, but never take the foreground. The game restarting itself looks exactly like the
       // game exiting from here, so activating would put the launcher in front of the new instance
       // the moment it started.
@@ -1327,19 +1537,50 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_TIMER: {
       if (wp == ID_TIMER_STANDBY) { KillTimer(hwnd, ID_TIMER_STANDBY); settings_standby_start(); return 0; }
+      // The lobby answers requests from here too (a banner), also before its page was opened, and
+      // hears about a changed Game Build, setup or Mods folder within two seconds.
+      launcher::lobby::tick_ui();
+      {
+        static ULONGLONG last_state = 0;
+        if (GetTickCount64() - last_state > 2000) {
+          last_state = GetTickCount64();
+          std::string hint;
+          if (g_iso.empty()) hint = "no disc";
+          else if (!file_exists(game_exe())) hint = "game not built";
+          else if (g_slippi_missing) hint = "not signed in to Slippi";
+          launcher::lobby::set_game_state(std::string(MELEE_PORT_VERSION) + (g_engine == ENGINE_SOURCE ? ":source" : ":recomp"),
+                                          lobby_game_ready(), hint);
+          launcher::lobby::refresh_mods({mod_manager::mods_dir() + "\\.cache\\detected.json"}, file_exists(static_recomp_exe()));
+        }
+      }
       launcher::lobby::Match match;
       if (launcher::lobby::take_match(match)) {
         // Codes arrive from another user. Never concatenate unchecked text into a command line.
         bool valid = !match.code.empty() && match.code.size() <= 18 && match.code.find('#') != std::string::npos;
         for (char c : match.code) if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '#')) valid = false;
         const auto selected_build = std::string(MELEE_PORT_VERSION) + (g_engine == ENGINE_SOURCE ? ":source" : ":recomp");
-        if (valid && match.build == selected_build && match.character >= 0 && match.character < 26 && !g_playing && !g_building && !g_iso.empty() && g_active_version.empty() && file_exists(game_exe())) {
+        // A mod match runs on Static Recomp whichever Game Build is picked: the version must match,
+        // and the mod's disc must still be where the Mods scan found it.
+        const bool mod_match = match.mode != "vanilla";
+        const bool build_ok = mod_match ? launcher::lobby::build_version(match.build) == MELEE_PORT_VERSION
+                                        : match.build == selected_build;
+        const bool mod_ok = !mod_match || (!match.mod_path.empty() && file_exists(match.mod_path) &&
+                                           file_exists(static_recomp_exe()));
+        if (valid && build_ok && mod_ok && match.character >= 0 && match.character < 26 && !g_playing && !g_building && !g_iso.empty() && g_active_version.empty() && file_exists(game_exe())) {
           match.character=choose_match_character(match);
           g_lobby_launch_args = " --lobby-direct " + match.code + " --lobby-character " + std::to_string(match.character);
+          if (mod_match) {
+            // Each mod keeps its own memory card folder (User\GC\Mods\<key>), as the Mods page does.
+            g_mod_launch_iso = match.mod_path; g_mod_launch_engine = "recomp"; g_mod_launch_kind = "mex";
+            g_mod_launch_key = match.mode.rfind("custom:", 0) == 0 ? "custom-" + match.mode.substr(7) : match.mode;
+          }
           g_game_exe = game_exe(); launch_game_now();
         } else {
           launcher::lobby::game_running(false);
-          MessageBoxW(hwnd, L"The match could not start. Select an installed current build and disc, then request another match.", L"Lobby", MB_ICONWARNING);
+          MessageBoxW(hwnd, mod_match && !mod_ok
+                                ? L"The match could not start: the mod's disc is not where the Mods folder scan found it. Open the Mods page, then request another match."
+                                : L"The match could not start. Select an installed current build and disc, then request another match.",
+                      L"Lobby", MB_ICONWARNING);
         }
       }
       refresh_updater();
@@ -1402,7 +1643,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   std::wstring title = widen(std::string("Melee Unlocked Launcher ") + MELEE_PORT_VERSION);
   HWND hwnd = CreateWindowExW(0, wc.lpszClassName, title.c_str(), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
   launcher::lobby::init(hwnd, g_dir);
-  ShowWindow(hwnd, show);
+  launcher::lobby::set_prefs(g_lobby_prefs);
+  launcher::lobby::on_prefs_changed([] { g_lobby_prefs = launcher::lobby::prefs(); save_ini(); });
+  if (g_launcher_test) SetWindowPos(hwnd, nullptr, -10000, -10000, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);
+  ShowWindow(hwnd, g_launcher_test ? SW_SHOWNOACTIVATE : show);
+  std::thread(mod_manager::rescan).detach();
   MSG m;
   while (GetMessageW(&m, nullptr, 0, 0)) { if (!IsDialogMessageW(hwnd, &m)) { TranslateMessage(&m); DispatchMessageW(&m); } }
   return 0;

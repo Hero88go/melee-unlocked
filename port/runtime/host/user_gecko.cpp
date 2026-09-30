@@ -3,6 +3,7 @@
 #include "host.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <fstream>
 #include <regex>
@@ -85,6 +86,25 @@ void load(const std::string& path, const std::vector<std::string>& enabled_names
     if (!c.supported) host::log("gecko: \"%s\" cannot run here: %s", c.name.c_str(), c.reason.c_str());
   }
   host::log("gecko: %zu user codes in %s (%d usable, %d on)", g_codes.size(), path.c_str(), supported, enabled);
+}
+
+const char* native_equivalent(const Code& c) {
+  // Slippi's optional codes (GALE01r2.ini) that the Source Port carries as C, by name or by the
+  // code's first line.
+  struct Known { const char* name; uint32_t w, v; const char* label; };
+  static const Known known[] = {
+      {"widescreen 16:9", 0x043BB05Cu, 0x3EB00000u, "Widescreen 16:9"},
+      {"disable screen shake", 0x04030E44u, 0x4E800020u, "Disable Screen Shake"},
+      {"flash red on failed l-cancel", 0xC20C0148u, 0x0000000Cu, "Flash Red on Failed L-Cancel"},
+      {"lagless fod", 0xC21CBB90u, 0x00000005u, "Lagless FoD"},
+  };
+  std::string name = c.name;
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+  for (const Known& k : known) {
+    if (name.find(k.name) != std::string::npos) return k.label;
+    if (!c.lines.empty() && c.lines[0].first == k.w && c.lines[0].second == k.v) return k.label;
+  }
+  return nullptr;
 }
 
 const std::string& path() { return g_path; }

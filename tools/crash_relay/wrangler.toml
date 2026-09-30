@@ -1,0 +1,10 @@
+name = "melee-crash-relay"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+preview_urls = false
+
+# Rate limits. Create once with: npx wrangler kv namespace create RATE
+# then paste the printed id below.
+[[kv_namespaces]]
+binding = "RATE"
+id = "36cc7f4af26b4a8abd15d99aa824aae9"

@@ -23,5 +23,7 @@ int user_volume();
 // Music slider. Without it the master volume only ever gated the music on or off, because the
 // caller scaled its own PCM and then had the music added underneath at full level: turning Volume
 // down quietened the game and left the music where it was.
-void mix(int16_t* out, size_t frames, double master);
+// output_rate: the device's sample rate divided by the clock-tracking ratio, so music follows the
+// same clock correction as the game's sound.
+void mix(int16_t* out, size_t frames, double master, double output_rate = 32000.0);
 }  // namespace slippi::jukebox

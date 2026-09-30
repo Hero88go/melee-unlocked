@@ -74,6 +74,7 @@ uint32_t g_lobby_boot_ticks = 0;
 // The Source Port's game answers through its practice bridge (game API 6); the static recomp's
 // state is read and written at its console addresses.
 NativeBridge g_bridge = nullptr;
+ContentBridge g_content_bridge = nullptr;
 enum { OP_SCENE, OP_GET_PLAYER, OP_SET_PLAYER, OP_GET_STAGE, OP_SET_STAGE, OP_SET_EVENT_BACKUP,
        OP_REQUEST_MAJOR, OP_SET_ONLINE_MODE, OP_GET_ONLINE_MODE, OP_DIRECT_FIRST_MATCH };
 
@@ -207,7 +208,10 @@ void run_decision(const Decision& d) {
     ++g_generation;
     host::log("native practice: pre-match failure: %s", g_lifecycle.error().c_str());
   }
-  if (d.cleanup_connection) slippi::online::native_cleanup_match();
+  if (d.cleanup_connection) {
+    slippi::online::native_cleanup_match();
+    if (g_content_bridge) g_content_bridge(-1, false);
+  }
   if (d.request_online_handoff) {
     write_event_backup();
     if (mode_needs_direct_first_match_reset((uint8_t)g_match_mode)) {
@@ -221,6 +225,7 @@ void run_decision(const Decision& d) {
       host::log("native practice: initialized Direct first-match CSS state");
     }
     set_online_mode((uint8_t)g_match_mode);  // Consumed by the normal online scene.
+    if (g_content_bridge) g_content_bridge((int)g_match_mode, true);
     request_major(kOnlineMajor);
     host::log("native practice: %s match found; handing off to normal online flow",
               match_mode_name(g_match_mode));
@@ -232,6 +237,7 @@ void run_decision(const Decision& d) {
       // same narrow set again once the Training match minor has settled.
       restore_practice_fields();
     }
+    if (g_content_bridge) g_content_bridge(-1, true);
     request_major(g_origin_major);
     g_return_ticks = 0;
     host::log("native practice: returning to offline scene %02X after pre-match disconnect",
@@ -276,6 +282,9 @@ void start_search(MatchMode mode, const std::string& connect_code) {
 
   const int online_mode = (int)mode;
   set_online_mode((uint8_t)online_mode);
+  // The build handshake starts here while the exercise remains active. Keep its file view
+  // intact until both players are ready and run_decision accepts the scene handoff.
+  if (g_content_bridge) g_content_bridge(online_mode, false);
   std::string error;
   if (!slippi::online::native_start_match(online_mode, connect_code, (uint8_t)player.character,
                                            player.costume, &error)) {
@@ -504,6 +513,10 @@ void tick() {
 void shutdown() {
   if (g_lifecycle.phase() != Phase::Idle && g_lifecycle.phase() != Phase::InMatch)
     slippi::online::native_cleanup_match();
+  if (g_content_bridge) {
+    g_content_bridge(-1, true);
+    g_content_bridge = nullptr;
+  }
   g_lifecycle.reset();
   g_practice = {};
   g_restore_training = false;
@@ -516,6 +529,7 @@ void shutdown() {
 bool cosmetic_profile_locked() { return snapshot().cosmetic_profile_locked; }
 
 void set_native_bridge(NativeBridge bridge) { g_bridge = bridge; }
+void set_content_bridge(ContentBridge bridge) { g_content_bridge = bridge; }
 
 const char* match_mode_name(MatchMode mode) {
   switch (mode) {
