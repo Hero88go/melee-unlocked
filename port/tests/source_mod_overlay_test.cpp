@@ -175,6 +175,47 @@ int main(int argc, char** argv) {
   CHECK(overlay.files()[3].path == "/new.dat");
   CHECK(overlay.read(overlay.files()[3].start, out, 7) == Overlay::Read::Success);
   CHECK(std::memcmp(out, "newdata", 7) == 0);
+  // Reject Akaneia by its disc files, including renamed ISOs and existing directory profiles.
+  // A refused pack must not publish any of its menu or costume assets.
+  const char* ak_files[] = {"MxDt.dat", "PlSn.dat", "PlTs.dat"};
+  for (const char* name : ak_files) { std::ofstream f(root / name); f << "data"; }
+  CHECK(!overlay.add_directory(root, "renamed-pack", error));
+  CHECK(error.find("Akaneia is disabled") != std::string::npos);
+  CHECK(overlay.files().size() == 4 && overlay.iso_reports().size() == 1);
+  for (const char* name : ak_files) CHECK(fs::remove(root / name));
+  put32(image, 0x428, 75);
+  put32(image, 0x50C, 0); put32(image, 0x518, 9); put32(image, 0x524, 18);
+  std::memcpy(image.data() + 0x530, "MxDt.dat\0PlSn.dat\0PlTs.dat", 27);
+  { std::ofstream f(iso, std::ios::binary); f.write((const char*)image.data(), (std::streamsize)image.size()); }
+  CHECK(!overlay.add_iso(iso, "renamed-pack", lookup, base_read, error));
+  CHECK(error.find("Akaneia is disabled") != std::string::npos);
+  CHECK(overlay.files().size() == 4 && overlay.iso_reports().size() == 1);
+  // Full retail images contain movies larger than the replacement-file cap.
+  // An unchanged one must be skipped, while a replacement that large is refused.
+  const auto large_iso = fs::path(root.string() + "-large.iso");
+  const uint32_t movie_size = 256u * 1024u * 1024u + 1;
+  std::vector<unsigned char> large_image(0x1000, 0);
+  std::memcpy(large_image.data(), disc_id, sizeof disc_id);
+  put32(large_image, 0x424, 0x500); put32(large_image, 0x428, 34);
+  large_image[0x500] = 1; put32(large_image, 0x508, 2);
+  put32(large_image, 0x50C + 4, 0x1000); put32(large_image, 0x50C + 8, movie_size);
+  std::memcpy(large_image.data() + 0x518, "movie.mth", 10);
+  { std::ofstream f(large_iso, std::ios::binary); f.write((const char*)large_image.data(), large_image.size()); }
+  fs::resize_file(large_iso, uint64_t(0x1000) + movie_size);
+  auto movie_lookup = [=](const std::string& path, Overlay::DiscFile* file) {
+    if (path != "/movie.mth") return false;
+    *file = {0x1000, movie_size}; return true;
+  };
+  auto movie_read = [](uint32_t, void* dst, uint32_t size) { std::memset(dst, 0, size); return true; };
+  Overlay movies;
+  CHECK(movies.add_iso(large_iso, "unchanged-movie", movie_lookup, movie_read, error));
+  CHECK(movies.files().empty());
+  auto changed_movie = [](uint32_t, void* dst, uint32_t size) {
+    std::memset(dst, 0, size); if (size) *(unsigned char*)dst = 1; return true;
+  };
+  CHECK(!movies.add_iso(large_iso, "changed-movie", movie_lookup, changed_movie, error));
+  CHECK(error.find("replacement file is too large") != std::string::npos);
+  CHECK(fs::remove(large_iso));
   CHECK(fs::remove(iso));
   { std::ofstream f(root / "empty.dat", std::ios::binary); }
   CHECK(!overlay.load(root, error));

@@ -62,6 +62,10 @@ int main() {
   CHECK(slippi::native_practice::is_offline_gameplay_scene(0x12, 0x02));   // event match
   CHECK(slippi::native_practice::is_offline_gameplay_scene(0x1C, 0x02));   // training
   CHECK(!slippi::native_practice::is_offline_gameplay_scene(0x08, 0x02));  // online
+  CHECK(!slippi::native_practice::is_offline_gameplay_scene(0x2B, 0x00));  // TM-CE CSS
+  CHECK(slippi::native_practice::is_offline_gameplay_scene(0x2B, 0x01));   // TM-CE exercise
+  CHECK(!slippi::native_practice::is_offline_gameplay_scene(0x2B, 0x02));  // TM-CE stage select
+  CHECK(!slippi::native_practice::is_offline_gameplay_scene(0x2B, 0x03));  // unknown TM-CE scene
   CHECK(!slippi::native_practice::mode_needs_direct_first_match_reset(0));
   CHECK(!slippi::native_practice::mode_needs_direct_first_match_reset((uint8_t)MatchMode::Unranked));
   CHECK(slippi::native_practice::mode_needs_direct_first_match_reset((uint8_t)MatchMode::Direct));
@@ -97,6 +101,8 @@ int main() {
   CHECK(lifecycle.begin_search());
   d = lifecycle.cancel();
   CHECK(d.cleanup_connection && lifecycle.phase() == Phase::Idle);
+  CHECK(!d.request_online_handoff && !d.request_practice_return);
+  CHECK(!lifecycle.left_practice());
   CHECK(lifecycle.begin_search());  // a cancelled coordinator can immediately queue again
   d = lifecycle.cancel();
   CHECK(d.cleanup_connection && lifecycle.phase() == Phase::Idle);
@@ -105,6 +111,7 @@ int main() {
   d = lifecycle.matchmaking_result(false, false, false, "server rejected the code");
   CHECK(d.cleanup_connection && lifecycle.phase() == Phase::Failure);
   CHECK(lifecycle.error() == "server rejected the code");
+  CHECK(!d.request_online_handoff && !d.request_practice_return && !lifecycle.left_practice());
   d = lifecycle.acknowledge_failure();
   CHECK(!d.request_practice_return && lifecycle.phase() == Phase::Idle);
   return 0;

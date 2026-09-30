@@ -16,13 +16,6 @@ endif()
 get_filename_component(REPO "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 set(MELEE_DECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../extern/melee" CACHE PATH "checkout of the game sources")
 set(D "${MELEE_DECOMP_DIR}")
-find_package(Python3 COMPONENTS Interpreter REQUIRED)
-execute_process(
-  COMMAND "${Python3_EXECUTABLE}" "${REPO}/tools/prepare_native_sources.py" --decomp "${D}"
-  RESULT_VARIABLE MU_PREPARE_RESULT)
-if(NOT MU_PREPARE_RESULT EQUAL 0)
-  message(FATAL_ERROR "melee_game: could not prepare the pinned native sources")
-endif()
 set(SDK "${D}/libs/dolphin/src/dolphin")
 if(NOT EXISTS "${D}/src/melee/gm/gmmain.c")
   message(FATAL_ERROR "melee_game: no game sources at ${D}")
@@ -129,7 +122,7 @@ add_test(NAME native_card_endian COMMAND mu_card_endian_test)
 
 # Every annotated DISC_STRUCT field sits at its console offset in the host layout (tools/disc_offset_audit.py).
 # An 8-byte pointer field in a disc struct shifted Link's attributes from +0x94 and went unnoticed.
-add_test(NAME native_disc_offsets COMMAND "${Python3_EXECUTABLE}" "${REPO}/tools/disc_offset_audit.py")
+add_test(NAME native_disc_offsets COMMAND "${MELEE_PYTHON}" "${REPO}/tools/disc_offset_audit.py")
 
 # ---- source implementations of assembly-only SDK maths ----
 # Native game builds never consume generated PPC translations or a retail DOL.
@@ -153,6 +146,24 @@ file(GLOB_RECURSE SHIM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/sh
 # Replacements for SDK files written against the hardware itself (see the REMOVE_ITEM above).
 file(GLOB GXNATIVE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gxnative/*.c")
 list(APPEND SHIM_SOURCES ${GXNATIVE_SOURCES})
+# Akaneia's added fighters, native (akaneia/INTEGRATION.md): the registry and each fighter's own C.
+# The fighters themselves are work in progress: they build only with -DMU_AKANEIA_FIGHTERS=ON, so a
+# release never carries an unfinished fighter (the registry alone keeps every added fighter locked).
+option(MU_AKANEIA_FIGHTERS "Build the work-in-progress native Akaneia fighters" OFF)
+list(APPEND SHIM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/mu_ak_fighters.c")
+if(MU_AKANEIA_FIGHTERS)
+  file(GLOB_RECURSE AKANEIA_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/*/*.c")
+  list(APPEND SHIM_SOURCES ${AKANEIA_SOURCES})
+endif()
+# A fighter joins the registry once akaneia/<fighter>/<fighter>.c exists (that file defines
+# mu_ak_<fighter>); until then the registry leaves it out and the fighter stays locked.
+foreach(ak_fighter wolf diddy charizard lucas sonic dedede tails)
+  if(MU_AKANEIA_FIGHTERS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/${ak_fighter}/${ak_fighter}.c")
+    string(TOUPPER "${ak_fighter}" ak_upper)
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/mu_ak_fighters.c" APPEND PROPERTY
+      COMPILE_DEFINITIONS "MU_AK_HAVE_${ak_upper}")
+  endif()
+endforeach()
 
 if(NOT Python3_EXECUTABLE)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
@@ -223,6 +234,7 @@ add_custom_command(TARGET melee_game POST_BUILD
   # The sound driver's whole state, left out of rollback snapshots as a console savestate does.
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/snapshot_audio_ranges.py"
           "${CMAKE_CURRENT_BINARY_DIR}/melee_game.map" 82800000 $<TARGET_FILE_DIR:melee_game>/melee_game.snapexcl
+          $<TARGET_FILE:melee_game>
   VERBATIM)
 
 # ---- parity library ----

@@ -19,6 +19,28 @@ enum { MU_PR_SCENE, MU_PR_GET_PLAYER, MU_PR_SET_PLAYER, MU_PR_GET_STAGE, MU_PR_S
 extern StaticPlayer player_slots[];
 struct gm_80479D58_t* mu_gm_engine_state(void);
 
+/* An explicit practice handoff owns one pending destination while the origin scene runs
+ * its ordinary decide/unload callbacks. TM-CE's event decide normally selects the menu;
+ * that must not replace the accepted online destination. Clear on entering another mode.
+ * These are host handoff bookkeeping, never synchronized match state. */
+static int practice_pending_mode = -1;
+static int practice_origin_mode = -1;
+
+int mu_practice_resolve_pending_mode(int requested)
+{
+    if (practice_pending_mode >= 0 && gm_GetCurrentGameMode() == practice_origin_mode) {
+        return practice_pending_mode;
+    }
+    return requested;
+}
+
+void mu_practice_enter_mode(int mode)
+{
+    if (practice_pending_mode >= 0 && mode != practice_origin_mode) {
+        practice_pending_mode = practice_origin_mode = -1;
+    }
+}
+
 int mu_practice_bridge(int op, int* a, int n)
 {
     MuSlippiMenuState* slp = mu_slippi_state();
@@ -74,6 +96,8 @@ int mu_practice_bridge(int op, int* a, int n)
         /* Leave the current scene for `major`: the pending mode plus the engine's leave flag, so a
          * Training minor that never ends on its own runs its decide path on the next frame. */
         if (n < 1) return -1;
+        practice_origin_mode = gm_GetCurrentGameMode();
+        practice_pending_mode = a[0];
         gm_ChangeGameModeAfterCurrentScene(a[0]);
         mu_gm_engine_state()->unk_C = 1;
         return 0;
@@ -92,3 +116,6 @@ int mu_practice_bridge(int op, int* a, int n)
     }
     return -1;
 }
+
+MU_EXCLUSIONS(practice, MU_EXCLUDE(practice_pending_mode),
+              MU_EXCLUDE(practice_origin_mode))

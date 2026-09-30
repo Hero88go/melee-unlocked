@@ -50,6 +50,8 @@ def parse_log(path):
             r["setup"] = line.split("match setup ", 1)[1].strip()
         elif "DESYNC" in line:
             r["desync"].append(line.strip())
+        elif "game crash" in line or line.startswith("CRASH:"):
+            r["crash"] = line.strip()
         elif "Could not connect" in line or "online connection failed" in line or "force-disconnecting" in line:
             r["errors"].append(line.strip())
         m = re.search(r"checksums agree through frame (\d+) \((\d+) compared, (\d+) mismatched\)", line)
@@ -92,6 +94,9 @@ def main():
     ap.add_argument("--players", type=int, default=4, choices=[2, 3, 4])
     ap.add_argument("--engines", default="native", help="native|static|<exe path>, one or comma-separated per slot")
     ap.add_argument("--scripts", help="one or comma-separated per slot (default: the Teams scripts)")
+    # Lobby Direct at boot (--lobby-direct CODE --lobby-character N per slot, through QUAD_SLOT<i>_EXTRA):
+    # the game's own driver takes the match from the main menu, and a script would fight it.
+    ap.add_argument("--no-script", action="store_true", help="run the slots without input scripts")
     ap.add_argument("--frames", type=int, default=4200)
     ap.add_argument("--base-port", type=int, default=41200, help="slot i listens on base+i (keep clear of 41100/41101)")
     ap.add_argument("--lag-ms", type=int, default=0, help="MELEE_NET_LAG_MS for every slot")
@@ -138,13 +143,15 @@ def main():
         for name in ("teams-codes.json", "direct-codes.json"):
             (user / name).write_text(CODE_HISTORY)
         remotes = ",".join(f"127.0.0.1:{p}" for j, p in enumerate(ports) if j != i)
-        cmd = [str(exes[i].resolve()), "--iso", str(iso), "--hidden", "--volume", "0", "--frames", str(args.frames),
-               "--script", str((ROOT / scripts[i]).resolve()), "--replay-dir", str(d), "--log-file", str(d / "port.log"),
+        script = [] if args.no_script else ["--script", str((ROOT / scripts[i]).resolve())]
+        cmd = [str(exes[i].resolve()), "--iso", str(iso), "--hidden", "--volume", "0", "--frames", str(args.frames)] + script + [
+               "--replay-dir", str(d), "--log-file", str(d / "port.log"),
                "--user-dir", str(user), "--time-base", "1", "--local-peer", f"{i}:{ports[i]}:{remotes}"] + args.extra
+        cmd += os.environ.get(f"QUAD_SLOT{i}_EXTRA", "").split()   # this slot only, e.g. a display option
         log = open(d / "log.txt", "w")
         p = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, env=env)
         procs.append((p, log))
-        print(f"P{i + 1} pid {p.pid} {engines[i]} {Path(scripts[i]).name} --local-peer {i}:{ports[i]}:{remotes}")
+        print(f"P{i + 1} pid {p.pid} {engines[i]} {'no script' if args.no_script else Path(scripts[i]).name} --local-peer {i}:{ports[i]}:{remotes}")
         time.sleep(args.stagger)
 
     deadline = time.time() + (args.timeout or args.frames / 40 + 60)
@@ -173,6 +180,11 @@ def main():
         for line in r["desync"][:5] + r["errors"][:5]:
             print(f"     {line}")
         if not r["connected"] or r["mismatched"] or r["compared"] == 0:
+            ok = False
+        # A slot that crashed fails the run even when every checksum it compared agreed (09-29: a
+        # crash at online frame 83 still printed PASS).
+        if r.get("crash"):
+            print(f"     {r['crash']}")
             ok = False
         slps = sorted(d.rglob("*.slp"), key=lambda f: f.stat().st_mtime)
         rep = parse_slp(slps[-1]) if slps else None

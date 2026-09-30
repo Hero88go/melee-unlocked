@@ -34,6 +34,9 @@ struct Options {
   std::string input_log;         // --input-log: CSV of every PADRead (retrace, port, buttons, sticks, triggers)
   bool no_gc_adapter = false;    // hidden/headless runs: never open the GameCube adapter (WinUSB is exclusive; a test run would take it from the player)
   bool vanilla_game = false;     // --vanilla-game: the Source engine without Legacy's always-on code set (parity runs against the code-free recompilation)
+  // Static Recomp mod runs: the boot disc (iso) is a mod, and this is the player's vanilla 1.02 disc.
+  // The mod's changed game code then runs from RAM, compared against the vanilla code.
+  std::string mod_base_iso;
 };
 
 extern Options options;
@@ -48,6 +51,14 @@ void log_guest_text(const char* data, size_t len);  // OSReport output
 void log_flush();   // writes every queued log line now (log() hands lines to a writer thread)
 [[noreturn]] void die(const char* fmt, ...);
 const char* symbol_name(uint32_t addr);
+// Static Recomp: the boot disc is a mod (its changed code runs from RAM; see --mod-base-iso).
+bool mod_disc_active();
+// The mod's reference image: the code the compiled guest runs (vanilla, Slippi's boot codes and the
+// words the in-game applier installs from Slippi's served table). A function whose RAM words all match
+// it stays compiled. Sets `n` bytes at `addr` where they fall in the text ranges; false when none do.
+bool mod_reference_set(uint32_t addr, const uint8_t* bytes, uint32_t n);
+// False with MELEE_MOD_REFERENCE=boot: the reference then stays vanilla plus the boot codes (0.8.1 rule).
+bool mod_reference_from_table();
 
 // ---- guest memory (host side, big-endian) ----
 uint32_t rd32(uint32_t addr);
@@ -69,6 +80,7 @@ std::string cstr(uint32_t addr, size_t max = 256);
 // ---- disc ----
 struct DiscFile { uint32_t offset, size; };
 bool disc_open(const std::string& path);
+void disc_prefetch_wait();  // finish background file-cache warming before starting simulation/audio
 bool disc_read(uint32_t offset, void* dst, uint32_t size);
 // File-relative read used by DVDFileInfo calls. Cosmetic replacements are resolved by the file's
 // original FST start plus this relative offset; absolute disc reads always use disc_read above.
@@ -131,6 +143,13 @@ double last_sim_frame_ms();            // work time of the most recent simulatio
 constexpr uint64_t TB_HZ = 40500000ull;   // bus clock / 4
 constexpr uint64_t TB_PER_FRAME = TB_HZ / 60;
 void advance_time(uint64_t ticks);
+// Idle-wait pacing: waits until the real time of console time `tb` inside the frame now running
+// (the frame started at its tick deadline; the coming retrace is one frame later on both clocks),
+// then advances the timebase to `tb`. False, without waiting, when `tb` is not before the coming
+// retrace or when running unpaced (--fast).
+bool wait_until_console_time(uint64_t tb);
+void install_audio_pacing();   // Static Recomp: audio blocks at their 5 ms times during the frame wait
+void note_frame_submitted();   // the game handed over the frame's picture; until the retrace it only waits
 // Retrace pacing multiplier (Slippi Online nudges it by up to 1% to keep peers in step).
 void set_emulation_speed(double speed);
 double emulation_speed();

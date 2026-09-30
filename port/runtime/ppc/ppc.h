@@ -127,7 +127,23 @@ Fn lookup(uint32_t addr);                                 // the function that r
 // whole game. Changes what the simulation computes: see the note in ppc_runtime.cpp.
 Fn set_hook(uint32_t addr, Fn fn);
 void interpret(Context& c, uint8_t* m, uint32_t addr);    // run RAM-resident code until it returns (interp.cpp)
+// Mods on the Static Recomp: the compiled function at `addr` is replaced by an interpreter of its
+// current bytes in RAM (a patched entry, no cost elsewhere). redirect_changed_functions compares
+// `size` bytes of code at `base` against `reference` and redirects every function containing a
+// changed word; returns how many were redirected.
+bool redirect_to_interpreter(uint32_t addr);
+void disable_dispatch_range(uint32_t lo, uint32_t hi);   // calls into [lo, hi) run RAM code (interpreted)
+bool runs_from_ram(uint32_t addr);   // addr lies in a function redirected to its RAM code
+// Code areas the interpreter follows from RAM even where compiled twins exist (Slippi's code tables in
+// a mod session: their compiled caves return into compiled game code, not into RAM code).
+void add_ram_code_range(uint32_t lo, uint32_t hi);
+size_t redirect_changed_functions(const uint8_t* reference, const uint8_t* m, uint32_t base, uint32_t size);
+// Logs, once per function, each function in [base, base+size) that stays compiled only because the
+// reference now includes Slippi's served codes: RAM differs from `boot_reference` there but matches
+// `reference` everywhere in the function.
+void report_kept_compiled(const uint8_t* boot_reference, const uint8_t* reference, const uint8_t* m, uint32_t base, uint32_t size);
 void interpreter_stats(uint64_t* calls, uint64_t* insns);
+void interpreter_counts(uint64_t* calls, uint64_t* insns);   // the totals alone, for periodic logs
 // Counts the times a callee asked its caller to resume past the call instead of at it (a Gecko cave
 // unwinding the function it was spliced into: see analyze._computed_return_delta). Reported at exit,
 // so a run can be checked for whether those code paths were reached at all.

@@ -1,9 +1,10 @@
-// Port of Slippi's jukebox (Rust, hps_decode 0.3.0) onto the host audio mixer.
+﻿// Port of Slippi's jukebox (Rust, hps_decode 0.3.0) onto the host audio mixer.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "jukebox.h"
 #include "host.h"
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -13,16 +14,29 @@
 namespace slippi::jukebox {
 namespace {
 constexpr uint32_t OUTPUT_RATE = 32000;
-constexpr double VOLUME_REDUCTION = 0.8;   // Slippi plays music a little under the game's level
+// The console's own level for a streamed song (synth.c, lbaudio_ax.c): stream volume 254/255 x music
+// group volume 254/255 (32510 of 32768) x the centre-pan level each of the stereo stream's two voices
+// gets (23124 left, 23215 right, of 32768). Measured against our AX path and the real DSP (LLE) within
+// 0.04 dB. Slippi's jukebox constant 0.8 played the music 1.16 dB (left) / 1.12 dB (right) louder.
+constexpr double CONSOLE_GAIN[2] = {32510.0 / 32768.0 * 23124.0 / 32768.0,    // 0.700133
+                                    32510.0 / 32768.0 * 23215.0 / 32768.0};   // 0.702887
 
 struct Song {
   std::vector<int16_t> samples;   // interleaved stereo at OUTPUT_RATE
   size_t loop_frame = SIZE_MAX;   // frame index the song restarts at, or SIZE_MAX for one-shot
   size_t position = 0;            // frames played
+  double phase = 0.0;            // fractional input sample when the endpoint runs above 32 kHz
+  float gain = 1.0f;             // per-song gain, set when the song is started
+  double level = 0.0;            // smoothed fade level, 0 to 1
 };
+
+constexpr double FADE_STEP = 1.0 / (0.030 * OUTPUT_RATE);   // 30 ms fades on start, stop and swap
+constexpr double GAIN_SMOOTH = 1.0 / (0.010 * OUTPUT_RATE); // volume changes glide over about 10 ms
 
 std::mutex g_mutex;
 std::shared_ptr<Song> g_song;     // replaced atomically under the mutex; the mixer holds a copy
+std::shared_ptr<Song> g_fading;   // the previous song, fading out after a stop or a swap
+double g_gain_now = -1.0;         // smoothed output gain (mixer thread only)
 std::atomic<uint32_t> g_song_generation{0};   // a stop() or a newer start_song() cancels an in-flight decode
 std::atomic<int> g_melee_volume{254}, g_user_volume{100};
 std::atomic<float> g_next_song_gain{1.0f}, g_song_gain{1.0f};
@@ -115,45 +129,89 @@ std::shared_ptr<Song> decode_hps(const std::vector<uint8_t>& file) {
 // The disc read and HPS decode (tens of ms for a full track) run on a worker: music start time
 // is not part of the deterministic simulation, and the game's own audio must not hitch for it.
 void start_song(uint32_t disc_offset, uint32_t size) {
-  g_song_gain.store(g_next_song_gain.exchange(1.0f));
+  const float song_gain = g_next_song_gain.exchange(1.0f);   // belongs to this song, not the one playing
   host::SimCostScope cost(host::SIM_JUKEBOX);
   if (size == 0 || size > 64u * 1024 * 1024) { host::log("jukebox: bad song size %u", size); return; }
   const uint32_t generation = ++g_song_generation;
-  std::thread([disc_offset, size, generation] {
+  std::thread([disc_offset, size, generation, song_gain] {
     std::vector<uint8_t> file(size);
     const DiscReader reader = g_reader.load();
     if (!(reader ? reader(disc_offset, file.data(), size) : host::disc_read(disc_offset, file.data(), size))) { host::log("jukebox: cannot read song at %08X", disc_offset); return; }
     auto song = decode_hps(file);
+    if (song) song->gain = song_gain;
     std::lock_guard<std::mutex> lk(g_mutex);
-    if (g_song_generation.load() == generation) g_song = song;
+    if (g_song_generation.load() == generation) {
+      if (g_song) g_fading = g_song;   // the old song fades out while the new one fades in
+      else if (song) song->level = 1.0;   // nothing playing: start as the console does, at full level
+      g_song = song;
+    }
   }).detach();
 }
 
 void set_disc_reader(DiscReader reader) { g_reader.store(reader); }
-void stop() { ++g_song_generation; std::lock_guard<std::mutex> lk(g_mutex); g_song.reset(); }
+void stop() {
+  ++g_song_generation;
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (g_song) g_fading = g_song;   // fades out over 30 ms instead of a hard cut
+  g_song.reset();
+}
 void set_melee_volume(uint8_t volume) { g_melee_volume.store(volume); }
 void set_next_song_gain(float gain) { g_next_song_gain.store(gain); }
 void set_user_volume(int percent) { g_user_volume.store(std::clamp(percent, 0, 100)); }
 int user_volume() { return g_user_volume.load(); }
 
-void mix(int16_t* out, size_t frames, double master) {
-  std::shared_ptr<Song> song;
-  { std::lock_guard<std::mutex> lk(g_mutex); song = g_song; }
-  if (!song || song->samples.empty()) return;
-  double gain = (g_melee_volume.load() / 254.0) * (g_user_volume.load() / 100.0) * VOLUME_REDUCTION * master *
-                g_song_gain.load();
-  if (gain <= 0.0) return;
-  size_t total = song->samples.size() / 2;
+namespace {
+// Adds one song into out[] (float accumulator). The fade level moves toward target at FADE_STEP per
+// 32 kHz frame. Returns false when the song has ended or faded out.
+bool render(Song& song, float* acc, size_t frames, double step, double target, const double* gains) {
+  const size_t total = song.samples.size() / 2;
+  if (total == 0) return false;
+  const double fade = FADE_STEP * step;
   for (size_t i = 0; i < frames; ++i) {
-    if (song->position >= total) {
-      if (song->loop_frame == SIZE_MAX) { std::lock_guard<std::mutex> lk(g_mutex); if (g_song == song) g_song.reset(); return; }
-      song->position = std::min(song->loop_frame, total - 1);
+    song.level += song.level < target ? std::min(fade, target - song.level) : -std::min(fade, song.level - target);
+    if (song.position >= total) {
+      if (song.loop_frame == SIZE_MAX) return false;
+      song.position = std::min(song.loop_frame, total - 1);
     }
+    const size_t next = song.position + 1 < total ? song.position + 1 :
+        song.loop_frame == SIZE_MAX ? song.position : std::min(song.loop_frame, total - 1);
+    const double g = gains[i] * song.gain * song.level;
     for (int ch = 0; ch < 2; ++ch) {
-      int32_t v = out[i * 2 + ch] + (int32_t)(song->samples[song->position * 2 + ch] * gain);
-      out[i * 2 + ch] = (int16_t)std::clamp(v, -32768, 32767);
+      const double sample = song.samples[song.position * 2 + ch] * (1.0 - song.phase) + song.samples[next * 2 + ch] * song.phase;
+      acc[i * 2 + ch] += (float)(sample * g * CONSOLE_GAIN[ch]);
     }
-    ++song->position;
+    song.phase += step;
+    while (song.phase >= 1.0) { song.phase -= 1.0; ++song.position; }
+  }
+  return target > 0.0 || song.level > 0.0;
+}
+}  // namespace
+
+void mix(int16_t* out, size_t frames, double master, double output_rate) {
+  std::shared_ptr<Song> song, fading;
+  { std::lock_guard<std::mutex> lk(g_mutex); song = g_song; fading = g_fading; }
+  if (!song && !fading) { g_gain_now = -1.0; return; }
+  const double target = (g_melee_volume.load() / 254.0) * (g_user_volume.load() / 100.0) * master;
+  const double step = (double)OUTPUT_RATE / std::max(1.0, output_rate);
+  if (g_gain_now < 0.0) g_gain_now = target;
+  static thread_local std::vector<double> gains;
+  static thread_local std::vector<float> acc;
+  gains.resize(frames);
+  acc.assign(frames * 2, 0.0f);
+  const double glide = GAIN_SMOOTH * step;
+  for (size_t i = 0; i < frames; ++i) {
+    g_gain_now += (target - g_gain_now) * std::min(1.0, glide * 4.0);
+    gains[i] = g_gain_now;
+  }
+  bool song_alive = true, fading_alive = true;
+  if (song) song_alive = render(*song, acc.data(), frames, step, 1.0, gains.data());
+  if (fading) fading_alive = render(*fading, acc.data(), frames, step, 0.0, gains.data());
+  for (size_t i = 0; i < frames * 2; ++i)
+    out[i] = (int16_t)std::clamp((int32_t)out[i] + (int32_t)std::lround(acc[i]), -32768, 32767);
+  if (!song_alive || !fading_alive) {
+    std::lock_guard<std::mutex> lk(g_mutex);
+    if (!song_alive && g_song == song) g_song.reset();
+    if (!fading_alive && g_fading == fading) g_fading.reset();
   }
 }
 }  // namespace slippi::jukebox

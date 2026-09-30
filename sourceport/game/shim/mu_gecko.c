@@ -50,6 +50,18 @@ int mu_general_codes(void)
     return general_codes || mu_online_codes() != 0;
 }
 
+/* Slippi's optional "Widescreen 16:9" code, one MU_NATIVE branch per patched site with the code's own
+ * values: cobj.c (camera aspect x 320/219 as it loads), lbbgflash.c (flash camera), ftdrawcommon.c
+ * (fighters in the added sides draw), ifmagnify.c (bubbles) and ifnametag.c (tags). Read live, so like
+ * the code it takes effect as each camera loads. Unlike the code, everything the game reads stays
+ * Melee's own: the on-screen test (camera.c) and Onett's cars measure with the 73:60 camera, and a
+ * fighter drawn only for widescreen gets its state put back (the draw sets up bone matrices that
+ * gameplay reads). So the option changes only the picture, online and in replays. */
+int mu_widescreen(void)
+{
+    return (mu_game_options() & MU_OPTION_WIDESCREEN) != 0;
+}
+
 /* UCF 0.84 is part of the General Codes; in a replay it runs only when the replay carries it.
  * Exported for the tumble wiggle site (ftCo_DamageFall.c). */
 int mu_ucf_enabled(void)

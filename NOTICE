@@ -1,0 +1,92 @@
+Melee Unlocked
+Copyright (C) 2026 Hero88go and the Melee Unlocked contributors
+
+Melee Unlocked is free software: you can redistribute it and/or modify it under the terms of
+the GNU General Public License as published by the Free Software Foundation, either version 3
+of the License, or (at your option) any later version.
+
+Melee Unlocked is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See
+the GNU General Public License for more details. You should have received a copy of the GNU
+General Public License along with this program (LICENSE in the source, licenses\COPYING.txt in
+a release). If not, see <https://www.gnu.org/licenses/>.
+
+Releases up to and including 0.8.1 were published under GPL-2.0-or-later. Starting with 0.8.5
+the project is published under GPL-3.0-or-later. Source files whose header names another
+project keep that project's notice (for example GPL-2.0-or-later for code ported from Dolphin
+and Slippi Ishiiruka); those terms are compatible with version 3 of the GPL.
+
+
+Additional permission under GNU GPL version 3 section 7
+
+If you modify this Program, or any covered work, by linking or combining it with the NVIDIA
+Streamline SDK, the NVIDIA DLSS (NGX) SDK, the NVIDIA Reflex SDK or the Intel XeSS SDK (or a
+modified version of those libraries), containing parts covered by the terms of the NVIDIA RTX
+SDKs License, the License Agreement for NVIDIA Software Development Kits or the Intel
+Simplified Software License, the licensors of this Program grant you additional permission to
+convey the resulting work.
+
+This permission is granted by the copyright holders of Melee Unlocked's own code and applies to
+every file of the Program whose copyright they hold. Code that this project takes from other
+projects is covered by its own license only.
+
+
+Third-party components
+Paths are in the source repository. A release carries the license texts in licenses\.
+
+Built into the program:
+- ENet (MIT): port/third_party/enet/LICENSE
+- Dear ImGui (MIT): port/third_party/imgui/LICENSE.txt. Its embedded ProggyClean and
+  ProggyForever fonts (MIT): notices in port/third_party/imgui/imgui_draw.cpp
+- libusb (LGPL-2.1-or-later): port/third_party/libusb/COPYING
+- stb_image and stb_image_write (MIT or public domain): port/third_party/stb/LICENSE
+- earcut.hpp (ISC): port/third_party/earcut/LICENSE
+- JSON for Modern C++ (MIT): notice at the top of port/third_party/nlohmann/json.hpp
+- dht (MIT): port/third_party/dht/LICENCE
+- Monocypher (BSD-2-Clause or CC0-1.0): port/third_party/monocypher/LICENCE.md
+- SlippiLib (GPL-2.0-or-later, from Slippi Ishiiruka): port/third_party/slippilib
+- NVIDIA Streamline headers and import library (MIT): port/third_party/streamline/license.txt
+- NVIDIA NGX library, builds with DLSS 5 only (NVIDIA RTX SDKs License):
+  port/third_party/ngx/LICENSE.txt
+- Intel XeSS headers (Intel license): port/third_party/xess/LICENSE.txt
+- Steinberg ASIO SDK 2.3.4 host files (ASIO output, audio mode 3): asio.cpp, asio.h,
+  asiosys.h and iasiodrv.h under the SDK's GPL Version 3 option (port/third_party/asio/LICENSE.txt);
+  asiodrivers, asiolist and ginclude under a BSD-3-Clause style notice
+  (port/third_party/asio/NOTICE-BSD.txt). ASIO is a registered trademark of Steinberg Media
+  Technologies GmbH.
+- GCC runtime library in melee_game.dll (GPL-3.0-or-later with the GCC Runtime Library
+  Exception)
+
+Code ported or adapted from other projects:
+- Dolphin (GPL-2.0-or-later): GX shader generation, AX audio emulation, the fres and frsqrte
+  tables, the GameCube adapter protocol
+- Slippi Ishiiruka (GPL-2.0-or-later): the Slippi EXI device, online play, replay playback,
+  custom texture naming
+- Slippi's game code, slippi-ssbm-asm (GPL-3.0): the Slippi codes built into the Static Recomp
+  and their native form in the Source Port
+- Slippi's Rust extensions (published with the GPL version 2 text): the music player and game
+  reporting
+- Slippi Launcher (GPL-3.0): the launcher's default stock icons
+- slippi-js (LGPL-3.0-or-later): the landing lag table in the launcher
+- hps_decode (MIT): docs/licenses/hps_decode-MIT.txt
+- Slippi Lab (MIT): docs/licenses/slippilab-MIT.txt
+- GD's Melee (GPL-2.0-or-later): settings motion and art, docs/third-party-ui-attribution.md
+- Twemoji graphics (CC BY 4.0): docs/third-party-ui-attribution.md
+- Source Sans 3 (SIL Open Font License 1.1):
+  port/runtime/gx/ui_sources/gd_melee/assets/kit/SourceSans3-OFL.md
+- Training Mode Community Edition: docs/third-party-training-mode-ce.txt
+- The Super Smash Bros. Melee decompilation (doldecomp/melee), which the Source Port's game
+  library is built from
+
+Shipped beside the program under their own terms, not covered by the GPL:
+- NVIDIA Streamline runtime (sl.*.dll, MIT); third-party notices:
+  port/third_party/streamline/3rd-party-licenses.md
+- NVIDIA DLSS, DLSS Ray Reconstruction and DLSS Frame Generation (nvngx_dlss*.dll, NVIDIA RTX
+  SDKs License); third-party notices: docs/licenses/nvidia-dlss-third-party.txt
+- NVIDIA Reflex (sl.reflex.dll, sl.pcl.dll): port/third_party/streamline/reflex.license.txt
+- Intel XeSS (libxess.dll, Intel Simplified Software License): port/third_party/xess/LICENSE.txt
+- Microsoft Visual C++ runtime DLLs (Microsoft Visual Studio distributable code)
+
+Super Smash Bros. Melee is the property of Nintendo and HAL Laboratory. Melee Unlocked is not
+affiliated with or endorsed by Nintendo, HAL Laboratory, NVIDIA, Intel or the projects above.
+You supply your own disc image.

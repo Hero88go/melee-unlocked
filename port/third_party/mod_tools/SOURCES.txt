@@ -1,0 +1,7 @@
+Unmodified standalone mod tools
+
+xdelta3 3.0.11: https://github.com/jmacd/xdelta/tree/v3.0.11/xdelta3
+Source archive: https://github.com/jmacd/xdelta/archive/refs/tags/v3.0.11.tar.gz
+7zr 26.03: https://github.com/ip7z/7zip/releases/tag/26.03
+Source archive: https://github.com/ip7z/7zip/releases/download/26.03/7z2603-src.tar.xz
+These programs run as separate processes. Their licenses and source links are included with the package.

@@ -23,6 +23,7 @@ void tmce_eventMenu_OnFileLoad(void* archive);
 void tmce_eventMenu_OnBoot(void);
 void tmce_eventMenu_OnSceneChange(void);
 void tmce_eventMenu_OnStartMelee(void);
+unsigned char gm_GetCurrentGameMode(void);
 
 /* the event menu's file stays loaded for the whole session, as the console loader keeps it */
 static u8 tmce_menu_file[256 * 1024] __attribute__((aligned(32)));
@@ -59,7 +60,10 @@ void mu_tmce_boot(void)
 
 void mu_tmce_on_scene_change(void)
 {
-    tmce_eventMenu_OnSceneChange();
+    /* The console pack brands every scene. In a combined native profile CE owns Event Match;
+     * the main menu, ordinary VS and TE's menu should keep their normal presentation. */
+    if (gm_GetCurrentGameMode() == 0x2B)
+        tmce_eventMenu_OnSceneChange();
 }
 
 void mu_tmce_on_start_melee(void)

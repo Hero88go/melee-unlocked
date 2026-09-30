@@ -28,7 +28,7 @@
 
 #include "mu_disc.h"
 
-extern Fighter_CostumeStrings* ftData_803C2360[Ft_Kind_Max];
+extern Fighter_CostumeStrings* ftData_803C2360[FT_KIND_TABLE_MAX];
 
 /* ---- MxDt.dat layout (big-endian, relocated in place by the archive loader) ---- */
 typedef DISC_PTR(char) MexStr;
@@ -57,13 +57,52 @@ typedef struct MexExtMap {
 
 typedef DISC_PTR(MexCostumeFile) MexCostumeFiles;
 
+typedef struct MexPlFile {
+    MexStr file;     /* "PlWf.dat" */
+    MexStr symbol;   /* "ftDataWolf" */
+} DISC_STRUCT MexPlFile;
+
+typedef DISC_PTR(u8) MexWords;   /* a table of big-endian words */
+
+typedef struct MexItemLookup {
+    u32 count;
+    DISC_PTR(u8) ids;   /* count big-endian u16 item kinds */
+} DISC_STRUCT MexItemLookup;
+
+/* The demo fighter's animation symbols (results, intro, ending, wait). */
+typedef struct MexFtDemo {
+    MexStr result, intro, ending, wait;
+} DISC_STRUCT MexFtDemo;
+typedef DISC_PTR(MexFtDemo) MexFtDemoPtr;
+
+typedef struct MexSsmFile {
+    u8 ssm_id;
+    u8 pad[3];
+    u32 x04, x08, x0C;
+} DISC_STRUCT MexSsmFile;
+
+/* m-ex MexTK/include/mxdt.h MexData.fighter; the index of each field is its m-ex table number. */
 typedef struct MexFighter {
-    DISC_PTR(MexStr) names;              /* [external] display names */
-    DISC_PTR(void) pl_files;             /* [internal] {file, symbol} */
-    DISC_PTR(u8) insignia;               /* [external] emblem frame */
-    DISC_PTR(MexExtMap) ext_map;         /* [external] */
-    DISC_PTR(MexCostumeInfo) costume_info;   /* [external] */
-    DISC_PTR(MexCostumeFiles) costume_files; /* [internal] -> [costume] */
+    DISC_PTR(MexStr) names;              /* 0 [external] display names */
+    DISC_PTR(MexPlFile) pl_files;        /* 1 [internal] */
+    DISC_PTR(u8) insignia;               /* 2 [external] emblem frame */
+    DISC_PTR(MexExtMap) ext_map;         /* 3 [external] */
+    DISC_PTR(MexCostumeInfo) costume_info;   /* 4 [external] */
+    DISC_PTR(MexCostumeFiles) costume_files; /* 5 [internal] -> [costume] */
+    DISC_PTR(MexFtDemoPtr) ftdemo;       /* 6 [internal] */
+    DISC_PTR(MexStr) anim_files;         /* 7 [internal] PlXxAJ.dat */
+    DISC_PTR(u8) anim_num;               /* 8 [internal] big-endian words */
+    DISC_PTR(u8) effect_index;           /* 9 [internal] the fighter's effect file */
+    DISC_PTR(MexStr) result_file;        /* 10 [external] */
+    DISC_PTR(u8) result_scale;           /* 11 [external] big-endian floats */
+    DISC_PTR(u8) victory_theme;          /* 12 [external] big-endian words */
+    DISC_PTR(u8) announcer_call;         /* 13 [external] big-endian words */
+    DISC_PTR(MexSsmFile) ssm_files;      /* 14 [internal] */
+    DISC_PTR(void) costume_pointers;     /* 15 runtime */
+    DISC_PTR(void) ft_archives;          /* 16 runtime */
+    DISC_PTR(u8) walljump;               /* 17 [internal] */
+    DISC_PTR(void) rst_runtime;          /* 18 runtime */
+    DISC_PTR(MexItemLookup) item_lookup; /* 19 [internal] the fighter's articles */
 } DISC_STRUCT MexFighter;
 
 typedef struct MexMenu {
@@ -76,6 +115,9 @@ typedef struct MexData {
     DISC_PTR(MexMeta) metadata;
     DISC_PTR(MexMenu) menu;
     DISC_PTR(MexFighter) fighter;
+    /* [m-ex ftFunction index] -> [internal] console addresses of the default callbacks (retail
+     * functions, or 0); a fighter file's ftFunction export overrides its own entries. */
+    DISC_PTR(MexWords) fighter_function;
 } DISC_STRUCT MexData;
 
 /* ---- state, fixed after boot ---- */
@@ -218,6 +260,7 @@ void mu_mex_boot(void)
         if (mex != NULL) {
             mex_restore_retail();
             mex = NULL;
+            mu_ak_apply();
             OSReport("[mex] retail view: retail tables\n");
         }
         return;
@@ -231,6 +274,7 @@ void mu_mex_boot(void)
     }
     mex = mex_loaded;
     mex_widen_costumes();
+    mu_ak_apply();
     OSReport("[mex] mod view: m-ex tables again\n");
 }
 
@@ -289,6 +333,7 @@ static void mex_load(void)
              meta->major, meta->minor, (unsigned) meta->ft_external, (unsigned) meta->css_icons,
              (unsigned) meta->gr_external, (unsigned) meta->sss_icons, (unsigned) meta->bgm);
     mex_widen_costumes();
+    mu_ak_apply();
 }
 
 /* m-ex's character select icons, converted to the game's icon table (big-endian disc words to host
@@ -320,7 +365,7 @@ int mu_mex_css_icons(CSSIcon* out, int max)
         }
         out[i].ft_hudindex = in[0];
         out[i].char_kind = in[1];
-        out[i].state = in[1] < CKind_Playable_Count ? 2 : 0;
+        out[i].state = in[1] < CKind_Playable_Count || mu_ak_css_selectable(in[1]) ? 2 : 0;
         out[i].anim_timer = 0;
         out[i].joint_id_vs = in[4];
         out[i].joint_id_1p = in[5];
@@ -375,4 +420,222 @@ int mu_mex_costume_info(int ckind, int which)
     case 2: return info->blue < mex_costume_count[kind] ? info->blue : 0;
     default: return info->green < mex_costume_count[kind] ? info->green : 0;
     }
+}
+
+/* ---- the tables behind the fighters m-ex adds (sourceport/game/akaneia/mu_ak_fighters.c) ---- */
+
+static u32 mex_be32(const u8* p)
+{
+    return (u32) p[0] << 24 | (u32) p[1] << 16 | (u32) p[2] << 8 | p[3];
+}
+
+int mu_mex_fighter_internal_count(void)
+{
+    return mex != NULL ? (int) DP(mex->metadata)->ft_internal : 0;
+}
+
+/* The fighter file of an m-ex internal fighter id, NULL when the slot is empty. */
+const char* mu_mex_fighter_file(int mex_internal)
+{
+    MexPlFile* files;
+    const char* name;
+    if (mex == NULL || mex_internal < 0 || mex_internal >= mu_mex_fighter_internal_count()) {
+        return NULL;
+    }
+    files = DP(DP(mex->fighter)->pl_files);
+    name = files != NULL ? DP(files[mex_internal].file) : NULL;
+    return name != NULL && name[0] != '\0' ? name : NULL;
+}
+
+/* m-ex's default for ftFunction slot `table` of an internal fighter: a console address (a retail
+ * function or table), 0 when empty. Only compared, never called. */
+unsigned int mu_mex_fighter_function(int table, int mex_internal)
+{
+    MexWords* tables;
+    const u8* words;
+    if (mex == NULL || table < 0 || table >= 64 || mex_internal < 0 ||
+        mex_internal >= mu_mex_fighter_internal_count())
+    {
+        return 0;
+    }
+    tables = DP(mex->fighter_function);
+    words = tables != NULL ? DP(tables[table]) : NULL;
+    return words != NULL ? mex_be32(words + 4 * mex_internal) : 0;
+}
+
+/* ---- the creation layer's tables (CREATION_LAYER_PLAN.md) ---- */
+
+static int mex_internal_ok(int mex_internal)
+{
+    return mex != NULL && mex_internal >= 0 && mex_internal < mu_mex_fighter_internal_count();
+}
+
+static int mex_external_ok(int ext)
+{
+    return mex != NULL && ext >= 0 && ext < mex_ext_count;
+}
+
+/* The fighter file's ftData symbol ("ftDataWolf"), NULL when the slot is empty. */
+const char* mu_mex_fighter_symbol(int mex_internal)
+{
+    MexPlFile* files;
+    if (!mex_internal_ok(mex_internal) || (files = DP(DP(mex->fighter)->pl_files)) == NULL) {
+        return NULL;
+    }
+    return DP(files[mex_internal].symbol);
+}
+
+/* The animation file (PlXxAJ.dat) and its animation count. */
+const char* mu_mex_fighter_anim_file(int mex_internal)
+{
+    MexStr* files;
+    if (!mex_internal_ok(mex_internal) || (files = DP(DP(mex->fighter)->anim_files)) == NULL) {
+        return NULL;
+    }
+    return DP(files[mex_internal]);
+}
+
+int mu_mex_fighter_anim_count(int mex_internal)
+{
+    const u8* words;
+    if (!mex_internal_ok(mex_internal) || (words = DP(DP(mex->fighter)->anim_num)) == NULL) {
+        return 0;
+    }
+    return (int) mex_be32(words + 4 * mex_internal);
+}
+
+/* The fighter's effect file index (into mexData.effect.files), -1 when none. */
+int mu_mex_fighter_effect_file(int mex_internal)
+{
+    const u8* bytes;
+    if (!mex_internal_ok(mex_internal) || (bytes = DP(DP(mex->fighter)->effect_index)) == NULL) {
+        return -1;
+    }
+    return bytes[mex_internal];
+}
+
+/* The demo fighter's animation symbols: which 0 result, 1 intro, 2 ending, 3 wait. */
+const char* mu_mex_fighter_demo(int mex_internal, int which)
+{
+    MexFtDemoPtr* demos;
+    MexFtDemo* demo;
+    if (!mex_internal_ok(mex_internal) || which < 0 || which > 3 ||
+        (demos = DP(DP(mex->fighter)->ftdemo)) == NULL || (demo = DP(demos[mex_internal])) == NULL)
+    {
+        return NULL;
+    }
+    switch (which) {
+    case 0: return DP(demo->result);
+    case 1: return DP(demo->intro);
+    case 2: return DP(demo->ending);
+    default: return DP(demo->wait);
+    }
+}
+
+/* The sound bank (SSM id) of an internal fighter, -1 when none. */
+int mu_mex_fighter_ssm(int mex_internal)
+{
+    MexSsmFile* files;
+    if (!mex_internal_ok(mex_internal) || (files = DP(DP(mex->fighter)->ssm_files)) == NULL) {
+        return -1;
+    }
+    return files[mex_internal].ssm_id;
+}
+
+/* Wall jump ability of an internal fighter (0 or 1), -1 when the table is missing. */
+int mu_mex_fighter_walljump(int mex_internal)
+{
+    const u8* bytes;
+    if (!mex_internal_ok(mex_internal) || (bytes = DP(DP(mex->fighter)->walljump)) == NULL) {
+        return -1;
+    }
+    return bytes[mex_internal];
+}
+
+/* External-id tables: the display name, results file and scale, victory theme, announcer call. */
+const char* mu_mex_fighter_name(int ext)
+{
+    return mex_external_ok(ext) ? mex_name(ext) : NULL;
+}
+
+const char* mu_mex_fighter_result_file(int ext)
+{
+    MexStr* files;
+    if (!mex_external_ok(ext) || (files = DP(DP(mex->fighter)->result_file)) == NULL) {
+        return NULL;
+    }
+    return DP(files[ext]);
+}
+
+float mu_mex_fighter_result_scale(int ext)
+{
+    const u8* words;
+    u32 bits;
+    float value;
+    if (!mex_external_ok(ext) || (words = DP(DP(mex->fighter)->result_scale)) == NULL) {
+        return 1.0f;
+    }
+    bits = mex_be32(words + 4 * ext);
+    __builtin_memcpy(&value, &bits, 4);
+    return value;
+}
+
+int mu_mex_fighter_victory_theme(int ext)
+{
+    const u8* words;
+    if (!mex_external_ok(ext) || (words = DP(DP(mex->fighter)->victory_theme)) == NULL) {
+        return -1;
+    }
+    return (int) mex_be32(words + 4 * ext);
+}
+
+int mu_mex_fighter_announcer(int ext)
+{
+    const u8* words;
+    if (!mex_external_ok(ext) || (words = DP(DP(mex->fighter)->announcer_call)) == NULL) {
+        return -1;
+    }
+    return (int) mex_be32(words + 4 * ext);
+}
+
+/* The m-ex external id of an internal fighter (the first external id that maps to it), -1 if none. */
+int mu_mex_external_of_internal(int mex_internal)
+{
+    MexExtMap* map;
+    int ext;
+    if (!mex_internal_ok(mex_internal) || (map = DP(DP(mex->fighter)->ext_map)) == NULL) {
+        return -1;
+    }
+    for (ext = 0; ext < mex_ext_count; ext++) {
+        if (map[ext].internal == mex_internal) {
+            return ext;
+        }
+    }
+    return -1;
+}
+
+/* The m-ex internal fighter of an external id, -1 when out of range. */
+int mu_mex_internal_of_external(int ext)
+{
+    MexExtMap* map;
+    if (!mex_external_ok(ext) || (map = DP(DP(mex->fighter)->ext_map)) == NULL) {
+        return -1;
+    }
+    return map[ext].internal;
+}
+
+/* The game's item kind for article `local` of an internal fighter, -1 when it has none. */
+int mu_mex_fighter_item(int mex_internal, int local)
+{
+    MexItemLookup* lookup;
+    const u8* ids;
+    if (mex == NULL || mex_internal < 0 || mex_internal >= mu_mex_fighter_internal_count() || local < 0) {
+        return -1;
+    }
+    lookup = DP(DP(mex->fighter)->item_lookup);
+    if (lookup == NULL || (u32) local >= lookup[mex_internal].count) {
+        return -1;
+    }
+    ids = DP(lookup[mex_internal].ids);
+    return ids != NULL ? (int) (ids[2 * local] << 8 | ids[2 * local + 1]) : -1;
 }

@@ -35,6 +35,9 @@ void load(const std::string& path, const std::vector<std::string>& enabled_names
 const std::string& path();
 std::vector<Code>& codes();
 bool any_enabled();
+// The Source Port runs no PowerPC. For one of Slippi's optional codes it carries as C (widescreen,
+// screen shake, the L-cancel flash, Lagless FoD), the name of that built-in switch; else null.
+const char* native_equivalent(const Code& c);
 
 // Parses a pasted or typed code and appends it, so a player can bring in a code without editing
 // GeckoCodes.ini by hand. `body` is the code's hex lines, one "XXXXXXXX YYYYYYYY" pair per line

@@ -10,7 +10,9 @@
 #include <cmath>
 #include <cstring>
 #include <atomic>
+#include <cstdlib>
 #include <string>
+#include <vector>
 
 #ifdef GX_STREAMLINE
 #include <sl.h>
@@ -47,7 +49,8 @@ void jitter(uint32_t index, float* jx, float* jy) {
 }
 
 #ifndef GX_STREAMLINE
-bool init(const std::wstring&) { host::log("dlss: built without the Streamline SDK"); return false; }
+bool init(const std::wstring&, bool) { host::log("dlss: built without the Streamline SDK"); return false; }
+bool frame_generation_deferred() { return false; }
 void shutdown() {}
 void shutdown_for_process_exit() {}
 bool available() { return false; }
@@ -71,6 +74,7 @@ uint32_t frame_generation_max_multiplier() { return 1; }
 bool frame_generation_capabilities_queried() { return false; }
 bool frame_generation_dynamic_supported() { return false; }
 void set_frame_generation(int, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {}
+bool frame_generation_prepare(ID3D12GraphicsCommandList*, int, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
 void set_reflex(int) {}
 float reflex_latency_ms() { return 0.0f; }
 ReflexBreakdown reflex_breakdown() { return {}; }
@@ -156,7 +160,10 @@ void mul4x4(const float a[16], const float b[16], float out[16]) {
 }
 }  // namespace
 
-bool init(const std::wstring& exe_dir) {
+bool g_fg_deferred = false;
+bool frame_generation_deferred() { return g_fg_deferred; }
+
+bool init(const std::wstring& exe_dir, bool load_frame_generation) {
   std::wstring path = exe_dir + L"\\sl.interposer.dll";
   if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) { host::log("dlss: sl.interposer.dll not found next to the executable; DLSS unavailable"); return false; }
   if (!sl::security::verifyEmbeddedSignature(path.c_str())) { host::log("dlss: sl.interposer.dll signature check failed; DLSS unavailable"); return false; }
@@ -168,14 +175,26 @@ bool init(const std::wstring& exe_dir) {
   static std::wstring dir_copy;
   dir_copy = exe_dir;
   plugin_dirs[0] = dir_copy.c_str();
-  static const sl::Feature base_features[] = {
-      sl::kFeatureDLSS, sl::kFeatureDLSS_G, sl::kFeatureReflex, sl::kFeaturePCL};
-  static const sl::Feature features_with_rr[] = {
-      sl::kFeatureDLSS, sl::kFeatureDLSS_RR, sl::kFeatureDLSS_G,
-      sl::kFeatureReflex, sl::kFeaturePCL};
   const bool have_rr_runtime =
       GetFileAttributesW((exe_dir + L"\\sl.dlss_d.dll").c_str()) != INVALID_FILE_ATTRIBUTES &&
       GetFileAttributesW((exe_dir + L"\\nvngx_dlssd.dll").c_str()) != INVALID_FILE_ATTRIBUTES;
+  // The frame generation plugin only when frame generation is on at startup. Loaded but unused, it
+  // made the render thread wait about 200 ms when the first match started (A0 vs A2 runs, 09-29).
+  // Diagnostics: MELEE_SL_NO_FG=1 never loads it, MELEE_SL_FORCE_FG=1 always loads it.
+  const char* no_fg_env = std::getenv("MELEE_SL_NO_FG");
+  const char* force_fg_env = std::getenv("MELEE_SL_FORCE_FG");
+  bool load_fg = load_frame_generation;
+  if (force_fg_env && *force_fg_env == '1') load_fg = true;
+  if (no_fg_env && *no_fg_env == '1') load_fg = false;
+  g_fg_deferred = !load_fg;
+  static std::vector<sl::Feature> features;
+  features.clear();
+  features.push_back(sl::kFeatureDLSS);
+  if (have_rr_runtime) features.push_back(sl::kFeatureDLSS_RR);
+  if (load_fg) features.push_back(sl::kFeatureDLSS_G);
+  features.push_back(sl::kFeatureReflex);
+  features.push_back(sl::kFeaturePCL);
+  host::log("dlss: loading Streamline features: DLSS%s%s, Reflex, PCL", have_rr_runtime ? ", RR" : "", load_fg ? ", DLSS-G" : "");
   sl::Preferences pref{};
   pref.showConsole = false;
   pref.logLevel = sl::LogLevel::eDefault;
@@ -185,10 +204,8 @@ bool init(const std::wstring& exe_dir) {
   pref.pathToLogsAndData = logs.c_str();
   pref.logMessageCallback = log_callback;
   pref.flags = sl::PreferenceFlags::eDisableCLStateTracking | sl::PreferenceFlags::eUseFrameBasedResourceTagging;
-  pref.featuresToLoad = have_rr_runtime ? features_with_rr : base_features;
-  pref.numFeaturesToLoad = have_rr_runtime ?
-      (uint32_t)(sizeof features_with_rr / sizeof features_with_rr[0]) :
-      (uint32_t)(sizeof base_features / sizeof base_features[0]);
+  pref.featuresToLoad = features.data();
+  pref.numFeaturesToLoad = (uint32_t)features.size();
   pref.engine = sl::EngineType::eCustom;
   pref.engineVersion = "melee-port";
   pref.applicationId = 231313132;   // NVIDIA sample application id: valid for development builds of non-registered titles
@@ -266,7 +283,10 @@ bool dlss_supported(IDXGIAdapter* adapter) {
   }
   g_dlss_ok = res == sl::Result::eOk;
   // Frame generation has its own requirements (RTX 40 or newer, Windows hardware GPU scheduling on).
-  if (g_fg_ok) {
+  if (g_fg_deferred) {
+    g_fg_ok = false;
+    host::log("dlss: frame generation not loaded (off at startup; turning it on applies at the next start)");
+  } else if (g_fg_ok) {
     const sl::Result fg = slIsFeatureSupported(sl::kFeatureDLSS_G, info);
     g_fg_ok = fg == sl::Result::eOk;
     host::log("dlss: frame generation %s (%d)", g_fg_ok ? "available" : "not available on this system", (int)fg);
@@ -324,8 +344,8 @@ bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h, bool color_
 // once per mode and output size.
 void dlss_allocate(ID3D12GraphicsCommandList* list) {
   if (!available() || g_allocated || g_mode == sl::DLSSMode::eOff || !list) return;
-  g_allocated = true;
   const sl::Result res = slAllocateResources(list, sl::kFeatureDLSS, g_viewport);
+  g_allocated = res == sl::Result::eOk;
   host::log("dlss: feature allocated ahead of the first match (%d)", (int)res);
 }
 
@@ -472,6 +492,9 @@ void set_frame_generation(int mode, uint32_t render_w, uint32_t render_h, uint32
   const bool dynamic = mode == 4 && g_fg_dynamic_ok.load();
   const uint32_t fixed_frames = mode <= 3 ? (uint32_t)mode : mode == 5 ? 4u : mode == 6 ? 5u : 1u;
   o.mode = mode == 0 ? sl::DLSSGMode::eOff : dynamic ? sl::DLSSGMode::eDynamic : sl::DLSSGMode::eOn;
+  // Generation is switched off between matches (menus have no usable motion). Without this flag each
+  // switch-on reallocates its resources: a 1.3 s stall at every match start (measured 09-29).
+  o.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
   o.numFramesToGenerate = dynamic ? g_fg_max.load() : std::clamp(fixed_frames, 1u, g_fg_max.load());
   // Streamline can infer these from DXGI, but explicitly passing the swap-chain and input sizes
   // avoids its backbuffer-extent fallback on this manually managed, three-buffer swap chain.
@@ -488,6 +511,20 @@ void set_frame_generation(int mode, uint32_t render_w, uint32_t render_h, uint32
   g_fg_requested_mode = mode;
   static const char* names[] = {"off", "2x", "3x", "4x", "dynamic", "5x", "6x"};
   host::log("dlss: frame generation %s (%d)", names[std::clamp(mode, 0, 6)], (int)res);
+}
+bool frame_generation_prepare(ID3D12GraphicsCommandList* list, int mode, uint32_t render_w, uint32_t render_h,
+                              uint32_t output_w, uint32_t output_h, uint32_t backbuffer_count,
+                              uint32_t backbuffer_format, uint32_t motion_format, uint32_t depth_format) {
+  if (!frame_generation_available() || !list || mode <= 0) return false;
+  // Allocate generation's resources now (loading screen) instead of at the first match's Present,
+  // then leave generation off with its resources kept; the renderer switches it on in matches.
+  set_frame_generation(mode, render_w, render_h, output_w, output_h, backbuffer_count, backbuffer_format,
+                       motion_format, depth_format);
+  const sl::Result res = slAllocateResources(list, sl::kFeatureDLSS_G, g_viewport);
+  host::log("dlss: frame generation resources allocated ahead of the first match (%d)", (int)res);
+  set_frame_generation(0, render_w, render_h, output_w, output_h, backbuffer_count, backbuffer_format,
+                       motion_format, depth_format);
+  return res == sl::Result::eOk;
 }
 void log_frame_generation() {
   if (!g_fg_on) return;
@@ -536,6 +573,10 @@ bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in) {
     if (logged++ < 5) host::log("dlss: slEvaluateFeature failed (%d)", (int)res);
     return false;
   }
+  // Evaluation also creates the feature lazily. In particular, explicit allocation can be
+  // unavailable before any tagged input exists during startup. Do not allocate it again on
+  // the first menu and discard the kernels/history that startup has just prepared.
+  g_allocated = true;
   return true;
 }
 

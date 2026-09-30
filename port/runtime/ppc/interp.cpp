@@ -6,12 +6,30 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "ppc.h"
 #include "host.h"
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <unordered_map>
+#include <vector>
 
 namespace ppc {
 Fn lookup(uint32_t addr);
+bool function_bounds(uint32_t addr, uint32_t* lo, uint32_t* hi);
 
 namespace {
+
+// Test runs (MELEE_INTERP_POLL=compiled): poll for host events only where translated code does, on a
+// backward branch without link that stays inside its function. The default also counts calls to lower
+// addresses and branches out of a function, so the same function run here or compiled takes events at
+// other instructions: harmless timing, but it hides everything else in a whole-RAM comparison of the two.
+inline void branch_poll(Context& c, uint32_t pc, uint32_t t, bool link) {
+  if (t > pc) return;
+  static const bool like_compiled = [] { const char* v = std::getenv("MELEE_INTERP_POLL"); return v && std::string(v) == "compiled"; }();
+  if (!like_compiled) { backedge(c); return; }
+  uint32_t lo = 0, hi = 0;
+  if (!link && function_bounds(pc, &lo, &hi) && t >= lo && pc < hi) backedge(c);
+}
 
 inline uint32_t bits(uint32_t w, int start, int count) { return (w >> (32 - start - count)) & ((1u << count) - 1); }
 inline uint32_t sext16(uint32_t v) { return (uint32_t)(int32_t)(int16_t)v; }
@@ -38,9 +56,33 @@ struct Interp {
     return ok;
   }
 
+  // The last control transfers (from, to), printed when the interpreter meets something it cannot
+  // run: where execution came from is the useful part of such a report.
+  static constexpr int kHistory = 32;
+  static inline uint32_t history[kHistory][2] = {};
+  static inline int history_at = 0;
+  void note(uint32_t from, uint32_t to) { history[history_at][0] = from; history[history_at][1] = to; history_at = (history_at + 1) % kHistory; }
+  static inline uint32_t starts[16][2] = {};
+  static inline int starts_at = 0;
+  static void note_start(uint32_t addr, uint32_t lr) { starts[starts_at][0] = addr; starts[starts_at][1] = lr; starts_at = (starts_at + 1) % 16; }
+  void dump_history() {
+    for (int i = 0; i < 16; ++i) {
+      const auto& s = starts[(starts_at + i) % 16];
+      if (s[0]) host::log("  interpreter start %08X (%s) return %08X (%s)", s[0], host::symbol_name(s[0]), s[1], host::symbol_name(s[1]));
+    }
+    for (int i = 0; i < kHistory; ++i) {
+      const auto& h = history[(history_at + i) % kHistory];
+      if (h[0] || h[1]) host::log("  interpreter jump %08X (%s) -> %08X (%s)", h[0], host::symbol_name(h[0]), h[1], host::symbol_name(h[1]));
+    }
+  }
   // Control transfer to `t` after the link register has been set as the instruction requires.
   // Host functions are called and then execution resumes at LR (what their blr would do).
   void transfer(uint32_t t, bool linked) {
+    note(pc, t);
+    // Code that runs from RAM (a mod's changed function, a return from its hook into the middle of
+    // one) is simply continued here: its compiled entry would start another interpreter, and a
+    // mid-function entry has no return address of its own.
+    if (runs_from_ram(t)) { pc = t; return; }
     for (;;) {
       if (Fn fn = lookup(t)) {
         if (++c.call_depth > 20000) fatal(c, "guest call depth exceeded", t);
@@ -90,6 +132,7 @@ struct Interp {
 
   void unsupported(uint32_t w) {
     host::log("interpreter: unsupported instruction %08X at %08X", w, pc);
+    dump_history();
     fatal(c, "interpreter: unsupported instruction", pc);
   }
 
@@ -160,7 +203,7 @@ struct Interp {
         bool take = cond(bo, bi);
         if (!take) break;
         if (w & 1) c.lr = pc + 4;
-        if (t <= pc) backedge(c);
+        branch_poll(c, pc, t, (w & 1) != 0);
         transfer(t, (w & 1) != 0);
         return;
       }
@@ -168,7 +211,7 @@ struct Interp {
         uint32_t li = w & 0x03FFFFFC; if (li & 0x02000000) li |= 0xFC000000u;
         uint32_t t = (w & 2) ? li : pc + li;
         if (w & 1) c.lr = pc + 4;
-        if (t <= pc) backedge(c);
+        branch_poll(c, pc, t, (w & 1) != 0);
         transfer(t, (w & 1) != 0);
         return;
       }
@@ -181,7 +224,11 @@ struct Interp {
           uint32_t t = c.lr;
           if (w & 1) c.lr = pc + 4;
           if (t == entry_lr) { done = true; return; }       // return to the host caller (blrl: with the new LR)
-          if (!(w & 1) && lookup(t)) fatal(c, "interpreter: blr into a function entry", t);
+          if (!(w & 1) && lookup(t) && !runs_from_ram(t)) {
+            host::log("interpreter: blr at %08X to %08X, entered with LR %08X", pc, t, entry_lr);
+            dump_history();
+            fatal(c, "interpreter: blr into a function entry", t);
+          }
           transfer(t, (w & 1) != 0);
           return;
         }
@@ -417,6 +464,8 @@ struct Interp {
 };
 
 uint64_t g_interpreted_calls = 0, g_interpreted_insns = 0;
+// MELEE_INTERP_PROFILE=1: instructions interpreted per containing function, printed at exit.
+std::unordered_map<uint32_t, uint64_t>* g_profile = nullptr;
 
 }  // namespace
 
@@ -424,10 +473,33 @@ void interpret(Context& c, uint8_t* m, uint32_t addr) {
   if (!fast(m, addr) || (addr & 3)) fatal(c, "call to unmapped guest address", addr);
   ++g_interpreted_calls;
   enter(c, addr);
+  Interp::note_start(addr, c.lr);
   Interp in(c, m, addr);
+  static const bool profile = [] { const char* v = std::getenv("MELEE_INTERP_PROFILE"); return v && (*v == '1' || *v == '2'); }();
+  if (profile) {
+    if (!g_profile) g_profile = new std::unordered_map<uint32_t, uint64_t>();
+    while (!in.done) { ++(*g_profile)[in.pc & ~0xFFu]; in.step(); ++g_interpreted_insns; }
+    return;
+  }
   while (!in.done) { in.step(); ++g_interpreted_insns; }
 }
 
-void interpreter_stats(uint64_t* calls, uint64_t* insns) { *calls = g_interpreted_calls; *insns = g_interpreted_insns; }
+void interpreter_counts(uint64_t* calls, uint64_t* insns) { *calls = g_interpreted_calls; *insns = g_interpreted_insns; }
+
+void interpreter_stats(uint64_t* calls, uint64_t* insns) {
+  *calls = g_interpreted_calls; *insns = g_interpreted_insns;
+  if (!g_profile) return;
+  // Per 256-byte region, named by the containing function: where interpreted time goes. The top 25,
+  // or every function that ran with MELEE_INTERP_PROFILE=2 (which functions a test actually reached).
+  std::unordered_map<std::string, uint64_t> by_fn;
+  for (const auto& kv : *g_profile) by_fn[host::symbol_name(kv.first)] += kv.second;
+  std::vector<std::pair<uint64_t, std::string>> top;
+  for (const auto& kv : by_fn) top.push_back({kv.second, kv.first});
+  std::sort(top.rbegin(), top.rend());
+  static const bool all = [] { const char* v = std::getenv("MELEE_INTERP_PROFILE"); return v && *v == '2'; }();
+  for (size_t i = 0; i < top.size() && (all || i < 25); ++i)
+    host::log("interpreter profile: %12llu  %s", (unsigned long long)top[i].first, top[i].second.c_str());
+  g_profile->clear();
+}
 
 }  // namespace ppc

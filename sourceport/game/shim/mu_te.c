@@ -10,6 +10,15 @@
 int mu_online_active(void);
 int mu_online_pending(void);
 int mu_replay_abi_active(void);
+int mu_tmce_enabled(void);
+unsigned char gm_GetCurrentGameMode(void);
+
+/* TM-CE exercises own their CPU, camera, pause and stage rules. Keep TE's stored choices for VS,
+ * but do not apply its switchable match features over an exercise in a combined profile. */
+static int te_in_tmce_event(void)
+{
+    return mu_tmce_enabled() && gm_GetCurrentGameMode() == 0x2B; /* GM_EVENT */
+}
 
 void OSReport(const char* msg, ...);
 
@@ -22,7 +31,7 @@ int mu_te(unsigned int feature)
         OSReport("[20xx] options %08X (online %d, replay %d)\n", reported,
                  mu_online_active() | mu_online_pending() << 1, mu_replay_abi_active());
     }
-    if (!(options & MU_OPTION_TE) || !(options & feature) || (options & MU_OPTION_VANILLA)) {
+    if (!(options & MU_OPTION_TE) || !(options & feature) || (options & MU_OPTION_VANILLA) || te_in_tmce_event()) {
         return 0;
     }
     if ((options & MU_OPTION_TE_TOURNAMENT) && !(feature & MU_GAME_OPTION_TE_TOURNAMENT_SAFE)) {
@@ -58,7 +67,7 @@ static int te_on_offline(void)
 int mu_te2(unsigned int feature)
 {
     const unsigned int options2 = mu_game_options2();
-    if (!(options2 & feature) || !te_on_offline()) {
+    if (!(options2 & feature) || !te_on_offline() || te_in_tmce_event()) {
         return 0;
     }
     if ((mu_game_options() & MU_OPTION_TE_TOURNAMENT) && !(feature & MU_GAME_OPTION2_TE_TOURNAMENT_SAFE)) {

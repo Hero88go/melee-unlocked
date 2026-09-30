@@ -42,9 +42,50 @@ int main(int argc,char** argv) {
     launcher::lobby::PeerLobby peer(argv[2],argv[3],std::stoi(argv[4]));
     const int timeout=argc>=6?std::stoi(argv[5]):30;
     const bool outside=argc==7 && std::string(argv[6])=="outside";
+    // mismatch: the two are on different Game Builds; the sender is told which.
+    // clash: both send a request at once; each receiver answers with why it cannot take it.
+    const bool mismatch=argc==7 && std::string(argv[6])=="mismatch";
+    const bool clash=argc==7 && std::string(argv[6])=="clash";
     nlohmann::json profile={{"name",alpha?"Alpha":"Beta"},{"code",alpha?"TEST#101":"TEST#102"},
-      {"location",alpha?"Phoenix":""},{"mains",alpha?nlohmann::json::array({2}):nlohmann::json::array({2,20,9})},{"build","peer-smoke:recomp"},{"ready",true}};
+      {"location",alpha?"Phoenix":""},{"mains",alpha?nlohmann::json::array({2}):nlohmann::json::array({2,20,9})},
+      {"build",mismatch&&!alpha?"peer-smoke:source":"peer-smoke:recomp"},{"ready",true}};
     peer.join(profile);
+    if(mismatch || clash) {
+      bool requested=false;
+      auto began=std::chrono::steady_clock::now();
+      while(std::chrono::steady_clock::now()-began<std::chrono::seconds(timeout)) {
+        peer.presence(nlohmann::json{{"status","Online"},{"stocks",nlohmann::json::array()}});
+        peer.tick(); auto state=peer.state();
+        if(!requested && !state["players"].empty() && (clash || alpha)) {
+          if(clash) std::this_thread::sleep_for(std::chrono::milliseconds(300));   // both have seen each other
+          try { peer.command("request",{{"target",state["players"][0]["id"]}}); }
+          catch(const std::exception& ex) {
+            std::string what=ex.what();
+            if(mismatch && what.find("Static Recomp")!=std::string::npos && what.find("Source Port")!=std::string::npos) {
+              std::cout<<"PASS mismatch named: "<<what<<"\n"; WSACleanup(); return 0;
+            }
+            if(clash && what.find("pending")!=std::string::npos) { requested=true; continue; }   // the other's request arrived first
+            std::cerr<<"unexpected: "<<what<<"\n"; WSACleanup(); return 1;
+          }
+          requested=true;
+        }
+        const auto notice=state.value("notice",std::string());
+        if(clash && notice.find("not delivered")!=std::string::npos) {
+          std::cout<<"PASS clash answered: "<<notice<<"\n"; WSACleanup(); return 0;
+        }
+        if(clash && requested && !state["requests"].empty() &&
+           state["requests"][0].value("from",std::string())!=peer.id()) {
+          std::cout<<"PASS clash: the other request arrived first and is pending here\n"; WSACleanup(); return 0;
+        }
+        if(mismatch && !alpha && std::chrono::steady_clock::now()-began>std::chrono::seconds(6)) { WSACleanup(); return 0; }
+        if(clash && requested && !state["requests"].empty() && state["requests"][0].value("from",std::string())==peer.id() &&
+           state["requests"][0].value("state",std::string())=="pending" && std::chrono::steady_clock::now()-began>std::chrono::seconds(4)) {
+          std::cout<<"PASS clash: own request stands for the other player to accept"<<std::endl; WSACleanup(); return 0;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+      }
+      std::cerr<<"no answer: "<<peer.state().dump()<<"\n"; WSACleanup(); return 1;
+    }
     bool sent=false,replied=false,friend_accepted=false,match_accepted=false,finished=false,left=false,measured=false;
     auto began=std::chrono::steady_clock::now(),completed=began;
     auto elapsed=[&] { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now()-began).count(); };

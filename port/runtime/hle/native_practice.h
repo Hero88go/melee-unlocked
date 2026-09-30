@@ -50,4 +50,10 @@ const char* match_mode_name(MatchMode mode);
 using NativeBridge = int32_t (*)(int32_t op, int32_t* args, int32_t count);
 void set_native_bridge(NativeBridge bridge);
 
+// Source-only host content policy, simulation thread. A search advertises the requested
+// online build without replacing files under the running offline exercise. Activate only
+// at the accepted scene handoff or the return to the offline scene. Unset on Static.
+using ContentBridge = void (*)(int mode, bool activate);
+void set_content_bridge(ContentBridge bridge);
+
 }  // namespace slippi::native_practice

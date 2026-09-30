@@ -12,6 +12,7 @@
 #include <libusb.h>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -42,7 +43,6 @@ std::mutex g_mutex;
 uint8_t g_report[37] = {};
 std::chrono::steady_clock::time_point g_report_time;
 bool g_have_report = false;
-std::chrono::steady_clock::time_point g_next_scan;
 bool g_logged_missing = false;
 bool g_logged_restart = false;   // logged once per open when the adapter is silent and we retry
 struct Origin { bool set = false; uint8_t sx = 128, sy = 128, cx = 128, cy = 128, tl = 0, tr = 0; } g_origin[4];
@@ -238,6 +238,25 @@ bool open_adapter() {
   return true;
 }
 
+// Finding and opening the adapter runs here, never on the game's thread. Listing the USB devices
+// takes tens of milliseconds, and an adapter that is present but cannot be opened (no WinUSB
+// driver) was retried every two seconds from the pad read: a hitch in every other second of play.
+std::thread g_scanner;
+std::atomic<bool> g_scanner_run{false};
+std::mutex g_scanner_mutex;
+std::condition_variable g_scanner_wake;
+
+void scanner_thread() {
+  while (g_scanner_run.load()) {
+    if (!g_dev || !g_running.load()) {
+      if (g_dev && !g_running.load()) close_adapter();
+      open_adapter();
+    }
+    std::unique_lock<std::mutex> lock(g_scanner_mutex);
+    g_scanner_wake.wait_for(lock, std::chrono::seconds(2), [] { return !g_scanner_run.load(); });
+  }
+}
+
 }  // namespace
 
 double gcadapter_poll_rate_hz() {
@@ -247,18 +266,16 @@ double gcadapter_poll_rate_hz() {
 // Fills ports that have a controller plugged into the adapter; returns the mask of those ports.
 uint32_t gcadapter_poll(PadState out[4]) {
   if (options.no_gc_adapter) return 0;
+  static std::once_flag started;
+  std::call_once(started, [] { g_scanner_run.store(true); g_scanner = std::thread(scanner_thread); });
   auto now = std::chrono::steady_clock::now();
-  if (!g_dev || !g_running.load()) {
-    if (g_dev && !g_running.load()) close_adapter();
-    if (now < g_next_scan) return 0;
-    g_next_scan = now + std::chrono::seconds(2);
-    if (!open_adapter()) return 0;
-  }
+  if (!g_running.load()) return 0;
   uint8_t rep[37];
+  // Held for the whole report: the scanner thread resets the origins under it when the adapter closes.
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (!g_have_report) return 0;
+  std::memcpy(rep, g_report, 37);
   {
-    std::lock_guard<std::mutex> lk(g_mutex);
-    if (!g_have_report) return 0;
-    std::memcpy(rep, g_report, 37);
     TickTiming& tick = tick_timing();
     if (tick.pad_age < 0) tick.pad_age = std::chrono::duration<double, std::milli>(now - g_report_time).count();
   }
@@ -309,6 +326,11 @@ void gcadapter_rumble(int port, bool on) {
 }
 
 void gcadapter_shutdown() {
+  if (g_scanner.joinable()) {
+    { std::lock_guard<std::mutex> lock(g_scanner_mutex); g_scanner_run.store(false); }
+    g_scanner_wake.notify_all();
+    g_scanner.join();
+  }
   close_adapter();
   if (g_ctx) { libusb_exit(g_ctx); g_ctx = nullptr; }
 }

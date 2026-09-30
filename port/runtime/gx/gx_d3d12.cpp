@@ -195,9 +195,8 @@ static std::atomic<uint64_t> next_backend_id{1};
 class D3D12Backend : public Backend {
  public:
   D3D12Backend(HWND hwnd, int w, int h, const D3D12Options& o) : hwnd_(hwnd), opts_(o), client_w_(w), client_h_(h) { init(); start_pso_workers(); prewarm_pipelines();
-    // With DLSS on, the first menu frames still create the DLSS, DLSS 5 and frame generation
-    // features (about half a second on one frame), so the panel stays up until they are done.
-    if (opts_.dlss_mode != 0) host::loading_show(L"Starting NVIDIA DLSS", 4, 4); else host::loading_close();
+    prewarm_upscalers();
+    host::loading_close();
 #ifdef GX_PC_SETTINGS
     if (opts_.pc_settings) settings_ui_ = std::make_unique<PcSettingsUI>(hwnd, device_.Get(), queue_.Get(), opts_);
 #endif
@@ -339,6 +338,7 @@ class D3D12Backend : public Backend {
     pso_threads_.clear();
   }
   void prewarm_pipelines();
+  void prewarm_upscalers();
   void save_pipeline_recipes();
   std::vector<uint32_t> index_scratch_;
   void init();
@@ -510,7 +510,7 @@ void D3D12Backend::init() {
     // so a slow driver or DLSS start never looks like a hang.
     host::loading_show(L"Starting NVIDIA DLSS and Reflex", 1, 4);
     if (opts_.pc_settings || opts_.dlss_mode != 0 || opts_.reflex_mode != 0 || opts_.frame_generation_mode != 0)
-    streamline::init(dir);
+    streamline::init(dir, opts_.frame_generation_mode > 0);
     host::loading_show(L"Starting the graphics device", 2, 4);
   }
   ComPtr<IDXGIFactory4> factory;
@@ -717,6 +717,8 @@ float4 PS(O i) : SV_Target {
   float4 scene = downsample(i.uv);
   scene.rgb *= ao(depth_uv);
   float4 c = hud(i.uv, scene);
+  // color.w < 0: an EFB copy from a frame buffer without alpha, which reads as opaque on hardware.
+  if (color.w < 0.0) return float4(c.rgb, 1.0);
   if (sharp.z <= 0.0) return float4(grade(sharp.w > 0.5 ? path_to_display(c.rgb) : c.rgb), c.a);
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
@@ -898,7 +900,12 @@ void D3D12Backend::update_vram() {
 
 
 void D3D12Backend::configure_dlss() {
+  // Only matches use the upscaler. Keep its target at the match aspect even on a title/menu
+  // frame: changing back to the menu's 4:3 target discarded the feature we warmed at startup.
+  const bool saved_widenable = widenable_scene_;
+  widenable_scene_ = true;
   int vw, vh; output_size(&vw, &vh);
+  widenable_scene_ = saved_widenable;
   bool want = opts_.dlss_mode != 0 && (xess_active() ? xess::available() : streamline::available());
   if (!want) {
     if (dlss_active_ || forced_scale_) {
@@ -1860,8 +1867,14 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   if (c.half_scale) { w = std::max(1u, w / 2); h = std::max(1u, h / 2); }
   uint32_t sw = w * scale_, sh = h * scale_;
   TextureEntry& e = efb_copies_[c.dest_addr];
-  const D3D12_RESOURCE_STATES dst_state = c.half_scale ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_DEST;
-  const D3D12_RESOURCE_STATES src_state = c.half_scale ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_COPY_SOURCE;
+  // Melee's EFB is RGB8 (no alpha): on hardware every copy from it is opaque. Our EFB keeps an alpha
+  // channel that the game never meant to fill (0 after most clears), and a raw copy of it made the
+  // Classic STAGE CLEAR zoom (a blurred copy of the last frame, drawn with its alpha) invisible.
+  // Those copies go through the blit with alpha forced to 1.
+  const bool opaque = !c.efb_alpha && !c.is_depth;
+  const bool blit = c.half_scale || opaque;
+  const D3D12_RESOURCE_STATES dst_state = blit ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_DEST;
+  const D3D12_RESOURCE_STATES src_state = blit ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_COPY_SOURCE;
   D3D12_RESOURCE_BARRIER b[2]{};
   b[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b[0].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, src_state};
@@ -1880,7 +1893,7 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
     list_->ResourceBarrier(2, b);
   }
   e.last_used = frame_counter_;
-  if (c.half_scale) {
+  if (blit) {
     uint32_t slot = reserve_srvs(4);
     D3D12_CPU_DESCRIPTOR_HANDLE sh_cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart(); sh_cpu.ptr += slot * srv_size_;
     for (int k = 0; k < 4; ++k) { D3D12_CPU_DESCRIPTOR_HANDLE hk = sh_cpu; hk.ptr += k * srv_size_; device_->CreateShaderResourceView(efb_color_.Get(), nullptr, hk); }
@@ -1899,7 +1912,7 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
     // (reflections, effects), not the presented image, so brightness/contrast/vibrance must not
     // touch it -- only the final blit to the backbuffer, below, applies those.
     float rect[20] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                      0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 0, 0, 0, 0, 1.0f, 1.0f, 1.0f, 0};   // no sharpening, averaging, HUD composite or grading here
+                      0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 0, 0, 0, 0, 1.0f, 1.0f, 1.0f, opaque ? -1.0f : 0.0f};   // no sharpening, averaging, HUD composite or grading here
     list_->SetGraphicsRoot32BitConstants(1, 20, rect, 0);
     list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list_->DrawInstanced(3, 1, 0, 0);
@@ -2393,6 +2406,14 @@ static void dump_frame(const Frame& frame, const std::string& path) {
 
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
   Stopwatch frame_sw;
+  static const bool startup_diag = std::getenv("MELEE_GPU_STARTUP_DIAG") != nullptr;
+  double diag_time = startup_diag ? Stopwatch::now() : 0.0;
+  auto diag = [&](const char* part) {
+    if (!startup_diag) return;
+    const double now = Stopwatch::now(), ms = (now - diag_time) * 1000.0;
+    if (ms > 20.0) host::log("gpu-startup: sim %llu %s %.1f ms", (unsigned long long)frame.sequence, part, ms);
+    diag_time = now;
+  };
   struct FrameTimer { Stopwatch& sw; ~FrameTimer() { g_prof[11] += sw.lap(); ++g_prof_frames; } } frame_timer{frame_sw};
   video_bg::set_enabled(opts_.video_backgrounds);
   video_bg::begin_frame(frame.scene_major, frame.scene_minor);
@@ -2453,6 +2474,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (pick_scale() != scale_) { wait_gpu(); host::log("d3d12: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); drop_efb_copies(); create_efb(); }
   }
   configure_dlss();
+  diag("frame setup");
   // Never block the presentation thread on a driver pipeline compile. A 12 ms
   // wait is already most of a 60 Hz frame and is nearly three frames at 240 Hz;
   // AMD drivers can take long enough here to produce recurring visible hitches.
@@ -2470,10 +2492,12 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
   slot_ = (int)(frame_counter_ % FRAME_SLOTS);
   wait_fence(slot_fence_[slot_]);   // this slot's previous frame (FRAME_SLOTS frames ago) is complete
+  diag("frame slot fence");
   if (scan_pending_[slot_]) read_flicker_scan();
   if (timer_pending_[slot_]) read_gpu_timers();
   vertex_ring_.reset(slot_); index_ring_.reset(slot_); constant_ring_.reset(slot_); upload_ring_.reset(slot_);
   select_frame_geometry(frame);
+  diag("geometry upload fence");
   frame_garbage_[slot_].clear();
   descriptor_garbage_[slot_].clear();
   swap_in_ready_replacements();
@@ -2520,7 +2544,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     list_->ClearRenderTargetView(hrtv, zero, 0, nullptr);
     if (!xess_active()) streamline::new_frame((uint32_t)frame_counter_);
     streamline::jitter(frames_presented_, &jitter_x_, &jitter_y_);
-    // The main camera projection: the first perspective draw of the frame (menus and HUD are orthographic).
+    // Prefer the fighter camera: TM-CE can submit its perspective HUD before the world.
     streamline::FrameConstants fc{};
     bool found = false;
     // Menus are shown exactly as rendered: with no main scene, no draw is jittered or given motion,
@@ -2528,13 +2552,16 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     // 2D screens, and the character select cursor left trails through it.
     const bool in_match = frame_in_match(frame);
     if (in_match != dlss_in_match_) { dlss_in_match_ = in_match; fc.reset = true; dlss_reset_ = true; xess_reset_ = true; }
-    // DLSS is first evaluated in a match; create its feature on a menu frame instead (no stall).
+    // Startup has already allocated and evaluated the feature. This also handles a live mode change.
     if (!in_match && dlss_active_) streamline::dlss_allocate(list_.Get());
     // Tried: menus through DLAA and DLSS 5 when DLSS 5 is on. The neural pass put blocks around the
     // flat menu art and the cursor, so menus stay as rendered and DLSS 5 waits for a match.
     dlss_menus_ = false;
-    if (in_match)
-      for (const DrawCall& d : frame.draws) if (d.xf_regs[0x26] == 0) { build_projection(d, fc.projection); set_main_projection(&d); found = true; break; }
+    if (in_match) {
+      if (const auto* scene = frame_scene_draw(frame)) {
+        build_projection(*scene, fc.projection); set_main_projection(scene); found = true;
+      }
+    }
     if (!found) set_main_projection(nullptr);
     if (!found && !frame.draws.empty()) { build_projection(frame.draws[0], fc.projection); fc.orthographic = true; }
     fc.jitter_x = jitter_x_ * opts_.dlss_jitter_sign; fc.jitter_y = jitter_y_ * opts_.dlss_jitter_sign;
@@ -2578,8 +2605,23 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   unsigned leading_untextured_draws = 0;
   bool background_drawn = false;
   bool presented = false;
-  for (const FrameCommand& cmd : frame.commands) {
+  // A backlog frame (skip_present_: the renderer fell behind and catches up without showing it) needs
+  // only the draws that feed its texture copies: later frames read those. The draws after its last
+  // texture copy paint a picture nobody sees, and the screen copy's clear wipes them before the next
+  // frame. Skipping them keeps a GPU that is over budget (DLSS 5 at a high resolution) from falling
+  // further behind until the simulation has to wait for it. Not when the screen copy keeps the EFB.
+  const size_t needed_commands = [&] {
+    static const bool full_backlog = std::getenv("MELEE_BACKLOG_FULL") != nullptr;   // comparison switch: the pre-0.8.5 full draw
+    if (!skip_present_ || !screen || !screen->clear || full_backlog) return frame.commands.size();
+    size_t end = 0;
+    for (size_t i = 0; i < frame.commands.size(); ++i)
+      if (frame.commands[i].kind != FrameCommand::Draw && !frame.copies[frame.commands[i].index].to_xfb) end = i + 1;
+    return end;
+  }();
+  for (size_t command_index = 0; command_index < frame.commands.size(); ++command_index) {
+    const FrameCommand& cmd = frame.commands[command_index];
     if (cmd.kind == FrameCommand::Draw) {
+      if (command_index >= needed_commands) continue;
       const DrawCall& dc = frame.draws[cmd.index];
       if (css_fullscreen && !background_drawn) {
         bool textured = false;
@@ -2613,7 +2655,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       }
     } else {
       const EfbCopy& c = frame.copies[cmd.index];
+      if (c.to_xfb) diag("scene draws and textures");
       if (c.to_xfb) { if (!skip_present_) { Stopwatch pe_sw; present_efb(c, dxr_scene_ready ? &dxr_scene : nullptr); g_prof[9] += pe_sw.lap(); presented = true; } }
+      if (c.to_xfb) diag("upscaler and present blit");
       else execute_copy(c);
       if (c.clear) clear_efb(c);
     }
@@ -2621,6 +2665,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   check(list_->Close(), "list close");
   ID3D12CommandList* lists[] = {list_.Get()};
   queue_->ExecuteCommandLists(1, lists);
+  diag("command execution");
   present_wait_ = 0;
   if (presented) {
     const double wait_start = Stopwatch::now();
@@ -2637,10 +2682,10 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     streamline::pcl_marker(3); streamline::pcl_marker(4);
     Stopwatch present_sw;
     swapchain_->Present(opts_.vsync ? 1 : 0, (!opts_.vsync && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    diag("swapchain Present and pacing");
     g_prof[10] += present_sw.lap();
     streamline::pcl_marker(5);
     ++frames_presented_;
-    if (frames_presented_ == 90) host::loading_close();   // the startup panel (see the constructor)
     streamline::frame_generation_after_present();
     if (frames_presented_ % 600 == 0) streamline::log_frame_generation();
   }
@@ -2710,6 +2755,75 @@ static bool read_recipe_file(const std::string& path, std::vector<PipelineRecipe
       hash_bytes(recipes.data(), recipes.size()*sizeof(PipelineRecipe)) != header[2]) return false;
   out.insert(out.end(), recipes.begin(), recipes.end());
   return true;
+}
+
+void D3D12Backend::prewarm_upscalers() {
+  if (!opts_.dlss_mode) return;
+  Stopwatch timer;
+  host::loading_show(L"Preparing anti-aliasing and neural rendering", 0, 6);
+  configure_dlss();
+  if (!dlss_active_) return;
+
+  // Evaluate the complete match path, not just feature allocation. The driver/model lazily
+  // prepares kernels on the first dispatch. Do this on initialized black inputs before the
+  // simulation or audio device starts, and fence every iteration so no preparation spills over.
+  EfbCopy black{};
+  black.src_w = EFB_WIDTH; black.src_h = EFB_HEIGHT;
+  black.clear_color = 0xFF000000; black.clear_z = 0; black.y_scale = 1.0f;
+  EfbCopy screen = black;
+  screen.src_h = 480; screen.to_xfb = true;
+  dlss_in_match_ = true;
+  // Diagnostic: MELEE_WARMUP_MONOTONIC=1 numbers the warm-up frames from the live frame counter, so
+  // Streamline sees one increasing frame sequence from warm-up into the game.
+  const char* mono_env = std::getenv("MELEE_WARMUP_MONOTONIC");
+  const bool monotonic_ids = mono_env && *mono_env == '1';
+  host::log("d3d12: upscaler warm-up frame ids %s", monotonic_ids ? "continue the frame counter" : "0xFFFFFF00+i");
+  for (unsigned i = 0; i < 6; ++i) {
+    slot_ = i % FRAME_SLOTS;
+    vertex_ring_.reset(slot_); index_ring_.reset(slot_); constant_ring_.reset(slot_); upload_ring_.reset(slot_);
+    check(allocators_[slot_]->Reset(), "upscaler warm-up allocator");
+    check(list_->Reset(allocators_[slot_].Get(), nullptr), "upscaler warm-up list");
+    ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
+    list_->SetDescriptorHeaps(2, heaps);
+    bind_efb_targets();
+    clear_efb(black);
+    const float zero[4] = {};
+    auto rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += 5 * rtv_size_;
+    list_->ClearRenderTargetView(rtv, zero, 0, nullptr);
+    rtv.ptr += rtv_size_;
+    list_->ClearRenderTargetView(rtv, zero, 0, nullptr);
+    streamline::FrameConstants fc{};
+    // Valid perspective projection; no game geometry or temporal history is consumed.
+    fc.projection[0] = fc.projection[5] = 1.0f;
+    fc.projection[10] = -1.0002f; fc.projection[11] = -2.0002f; fc.projection[14] = -1.0f;
+    fc.render_w = 640 * scale_; fc.render_h = 480 * scale_; fc.reset = i == 0;
+    streamline::jitter(i, &fc.jitter_x, &fc.jitter_y);
+    if (!xess_active()) {
+      streamline::new_frame(monotonic_ids ? (uint32_t)(frame_counter_ + i) : 0xFFFFFF00u + i);
+      streamline::set_constants(fc);
+      if (i == 0) streamline::dlss_allocate(list_.Get());
+      if (i == 0 && opts_.frame_generation_mode > 0)
+        streamline::frame_generation_prepare(list_.Get(), opts_.frame_generation_mode, (uint32_t)efb_w_, (uint32_t)efb_h_,
+                                             (uint32_t)client_w_, (uint32_t)client_h_, 3,
+                                             (uint32_t)DXGI_FORMAT_R8G8B8A8_UNORM, (uint32_t)DXGI_FORMAT_R16G16_FLOAT,
+                                             (uint32_t)DXGI_FORMAT_R32_FLOAT);
+    }
+    present_efb(screen);
+    check(list_->Close(), "upscaler warm-up close");
+    ID3D12CommandList* lists[] = {list_.Get()};
+    queue_->ExecuteCommandLists(1, lists);
+    wait_gpu();
+    if (timer_pending_[slot_]) read_gpu_timers();
+    host::loading_show(L"Preparing anti-aliasing and neural rendering", i + 1, 6);
+  }
+  // Nothing was presented or simulated. Start the real scene with clean temporal history.
+  if (monotonic_ids) frame_counter_ += 6;
+  dlss_in_match_ = false; dlss_reset_ = true; xess_reset_ = true;
+#ifdef GX_DLSS5
+  dlss5_reset_ = true;
+#endif
+  jitter_x_ = jitter_y_ = 0.0f;
+  host::log("d3d12: completed 6 upscaler warm-up frames before guest/audio startup in %.1f ms", timer.lap() * 1000.0);
 }
 
 void D3D12Backend::prewarm_pipelines() {

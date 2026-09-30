@@ -227,52 +227,13 @@ std::vector<std::string> list_profiles() {
   return names;
 }
 
-std::string import_file(const fs::path& file, std::string* message) {
-  std::string local;
-  if (!message) message = &local;
-  std::error_code ec;
-  if (!fs::is_regular_file(file, ec)) { *message = "Not a file: " + file.u8string(); return {}; }
-  std::string ext = file.extension().u8string();
-  std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-  std::string stem = file.stem().u8string();
-  std::string lower = stem;
-  std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-  std::string name, line;
-  if (ext == ".iso" || ext == ".gcm") {
-    name = lower.find("akaneia") != std::string::npos ? "Akaneia" : safe_name(stem);
-    line = "iso = " + fs::absolute(file, ec).u8string();
-  } else if (ext == ".gci") {
-    std::string identity, error;
-    if (!gci_identity(file, &identity, &error)) { *message = "Not a memory card file: " + error; return {}; }
-    name = lower.find("20xx") != std::string::npos ? "20XX TE" : safe_name(stem);
-    const fs::path saves = fs::path("Mods") / "Saves";
-    fs::create_directories(saves, ec);
-    const fs::path copy = saves / file.filename();
-    if (!fs::equivalent(file, copy, ec)) {
-      ec.clear();
-      fs::copy_file(file, copy, fs::copy_options::overwrite_existing, ec);
-    }
-    if (ec) { *message = "Could not copy the save into Mods\\Saves: " + ec.message(); return {}; }
-    line = "gci = ../Saves/" + file.filename().u8string();
-  } else {
-    *message = "Pick a modded disc (.iso) or a memory card file (.gci).";
-    return {};
-  }
-  if (name.empty()) name = "Mod";
-  const fs::path out = profile_path(name);
-  fs::create_directories(out.parent_path(), ec);
-  std::ofstream f(out, std::ios::binary | std::ios::trunc);
-  if (!f) { *message = "Could not write " + out.u8string(); return {}; }
-  f << line << "\n";
-  *message = "Added the " + name + " profile. Pick it above and restart to use it.";
-  return name;
-}
-
 std::string choose_mod_file() {
   wchar_t file[32768]{};
   OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof dialog;
   dialog.hwndOwner = GetActiveWindow();
-  dialog.lpstrFilter = L"Mods (*.iso;*.gcm;*.gci)\0*.iso;*.gcm;*.gci\0Modded disc (*.iso;*.gcm)\0*.iso;*.gcm\0Memory card file (*.gci)\0*.gci\0";
+  // The file's content decides what it is; the last entry lets a renamed file be picked too.
+  dialog.lpstrFilter = L"Mods (*.iso;*.gcm;*.gci)\0*.iso;*.gcm;*.gci\0Modded disc (*.iso;*.gcm)\0*.iso;*.gcm\0"
+                       L"Memory card file (*.gci)\0*.gci\0All files\0*.*\0";
   dialog.lpstrFile = file; dialog.nMaxFile = (DWORD)(sizeof file / sizeof file[0]);
   dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   if (!GetOpenFileNameW(&dialog)) return {};

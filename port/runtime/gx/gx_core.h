@@ -161,6 +161,7 @@ struct EfbCopy {
   uint32_t dest_addr, dest_stride, src_x, src_y, src_w, src_h;
   uint32_t format;   // copy format (tp_realFormat)
   bool to_xfb, clear, intensity, half_scale, is_depth;
+  bool efb_alpha;     // the EFB pixel format keeps alpha (RGBA6_Z24); otherwise copies read alpha as 1, as on hardware
   uint32_t clear_color, clear_z;  // ARGB, 24-bit z
   float y_scale;
 };
@@ -217,6 +218,12 @@ struct Frame {
 
 // The panel publishes visual-only HUD controls to the simulation thread.
 void set_hud_scales(int stocks_percent, int damage_percent, bool pal_stocks);
+// The same sizes for the native game (MuHostApi.hud_scales): stock | damage << 8, percent.
+uint32_t hud_scales_packed();
+// The native game's players (MuHostApi.hud_player), each drawn frame: the Static Recomp reads the
+// same HUD objects from guest RAM (capture_match_hud). Simulation thread.
+void set_native_hud_player(int slot, bool present, int damage, int stocks, float tag_x, float tag_y,
+                           bool tag_visible);
 
 // Whether a frame certainly shows a running match. Anything else counts as a menu: the character and
 // stage selects are minor scenes 0 and 1 of every mode that plays a match, the match is 2 and up.
@@ -226,6 +233,10 @@ inline bool frame_in_match(const Frame& f) {
   // the screens around them (splash, results) other minors. Missing from the list below, an online
   // match used to be treated as a menu: sub-frame animation ran in its menu mode for whole matches.
   if (major == 0x08) return minor == 2;
+  // Debug VS hosts replay playback: minor 1 is play and minor 3 is results.
+  if (major == 0x0E) return minor == 1;
+  // Event Match (including TM-CE) uses minor 0 for CSS, 1 for play and 2 for SSS.
+  if (major == 0x2B) return minor == 1;
   const bool match_mode = major == 0x02 || major == 0x03 || major == 0x04 || major == 0x05 ||
                           major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C;
   return match_mode && minor >= 2;
@@ -243,7 +254,20 @@ inline bool frame_in_match(const Frame& f) {
 inline bool frame_has_widenable_scene(const Frame& f) {
   const uint8_t major = f.scene_major;
   return major == 0x08 || major == 0x02 || major == 0x03 || major == 0x04 || major == 0x05 ||
-         major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C;
+         major == 0x0E || major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C ||
+         (major == 0x2B && f.scene_minor <= 2);
+}
+
+// A mod can draw a perspective HUD before the world. Prefer a fighter's camera so that HUD
+// neither receives temporal scene filtering nor follows the world's sub-frame camera motion.
+inline const DrawCall* frame_scene_draw(const Frame& f) {
+  const DrawCall* fallback = nullptr;
+  for (const auto& d : f.draws) {
+    if (d.xf_regs[0x26] != 0) continue;
+    if (!fallback) fallback = &d;
+    if (d.owner_player < 6 && d.skinned) return &d;
+  }
+  return fallback;
 }
 
 // "Visual effects" (Reduced / Minimal): whether a draw is decoration the player chose to skip. Only

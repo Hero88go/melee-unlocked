@@ -69,6 +69,10 @@ void mu_poll(void);
 #define MU_OPTION_NO_SCREEN_SHAKE 0x1u
 #define MU_OPTION_PAL_STOCK_ICONS 0x2u
 #define MU_OPTION_VANILLA 0x4u
+/* Slippi's "Widescreen 16:9" code (shim/mu_gecko.c): every perspective camera widens by 320/219 as
+ * it loads, with Slippi's offscreen-bubble and nametag values. Nonzero while the player has it on. */
+#define MU_OPTION_WIDESCREEN 0x10000000u
+int mu_widescreen(void);
 /* 20XX Tournament Edition features (shim/mu_te.c). mu_te(feature) is nonzero when the player turned
  * the feature on, 20XX TE is on, Tournament Mode allows it, and this is neither an online match nor
  * replay playback. Values match MU_GAME_OPTION_TE_* in mu_host.h. */
@@ -127,6 +131,10 @@ int mu_lab_input(void* fighter, MuLabInput* out);   /* fighter: Fighter* */
 #define MU_TE2_COLOR_OVERLAYS 0x8000u
 #define MU_TE2_HANDWARMERS 0x10000u
 #define MU_TE2_STAGE_STRIKE 0x20000u
+#define MU_TE2_LOCK 0x40000u   /* the settings cannot change until this is off */
+/* shim/mu_te_debugmenu.c: 20XX TE's settings menu (Tournament Melee with TE on). */
+void* mu_te_debug_menu(void);   /* the debug menu's root table, or NULL for the game's own */
+void mu_te_debug_menu_save(void);
 unsigned int mu_game_options2(void);
 int mu_te2(unsigned int feature);   /* a second-word 20XX TE feature is in effect */
 /* 20XX TE's general conveniences (unlocks, boot rules, no title demo, C-Stick in 1P, menu tweaks):
@@ -152,7 +160,62 @@ int mu_mex_active(void);
 int mu_mex_special_kind_shift(void);
 int mu_mex_parts_costume(int kind, int costume);   /* retail costume whose parts tables it uses */
 int mu_mex_costume_info(int ckind, int which);     /* 0 count, 1 red, 2 blue, 3 green; -1 retail */
+/* The m-ex tables behind the added fighters (ids are m-ex internal ids, special fighters shifted). */
+int mu_mex_fighter_internal_count(void);                        /* 0 without m-ex */
+const char* mu_mex_fighter_file(int mex_internal);              /* "PlWf.dat"; NULL when none */
+unsigned int mu_mex_fighter_function(int table, int mex_internal); /* console address, 0 empty */
+int mu_mex_fighter_item(int mex_internal, int local);          /* item kind of article, -1 none */
+/* The creation layer's tables (sourceport/game/akaneia/CREATION_LAYER_PLAN.md); NULL / -1 when none. */
+const char* mu_mex_fighter_symbol(int mex_internal);            /* "ftDataWolf" */
+const char* mu_mex_fighter_anim_file(int mex_internal);         /* "PlWfAJ.dat" */
+int mu_mex_fighter_anim_count(int mex_internal);
+int mu_mex_fighter_effect_file(int mex_internal);               /* index into mexData.effect.files */
+const char* mu_mex_fighter_demo(int mex_internal, int which);   /* 0 result, 1 intro, 2 ending, 3 wait */
+int mu_mex_fighter_ssm(int mex_internal);                       /* sound bank id */
+int mu_mex_fighter_walljump(int mex_internal);
+const char* mu_mex_fighter_name(int ext);
+const char* mu_mex_fighter_result_file(int ext);
+float mu_mex_fighter_result_scale(int ext);
+int mu_mex_fighter_victory_theme(int ext);
+int mu_mex_fighter_announcer(int ext);
+int mu_mex_external_of_internal(int mex_internal);
+int mu_mex_internal_of_external(int ext);
+
+/* Akaneia's added fighters, native (sourceport/game/akaneia/mu_ak_fighters.c). In the mod view each
+ * fighter m-ex adds gets a native kind past the retail ones (Ft_Kind_Max + 1 on: Ft_Kind_None stays
+ * "no fighter"); the per-kind tables have room for them (FT_KIND_TABLE_MAX, ft/forward.h) and the
+ * registry fills those slots. No kind in that range exists in the retail view or on a retail disc,
+ * so every hook below is inert there. */
+#define MU_AK_KIND_BASE 0x22
+#define MU_AK_KIND_SLOTS 16
+#define MU_FT_KIND_CAP (MU_AK_KIND_BASE + MU_AK_KIND_SLOTS)
+#define MU_AK_KIND(kind) ((unsigned) ((int) (kind) - MU_AK_KIND_BASE) < (unsigned) MU_AK_KIND_SLOTS)
+/* The m-ex fighter hooks that have no retail per-kind table (m-ex ftFunction indexes). */
+enum {
+    MU_AK_HOOK_FLOAT = 31,        /* bool (*)(HSD_GObj*, int): enter float; returns entered */
+    MU_AK_HOOK_DOUBLEJUMP = 32,   /* void (*)(HSD_GObj*): enter the double jump */
+    MU_AK_HOOK_ZAIR = 33,         /* void (*)(HSD_GObj*): enter the tether (Z-air) */
+    MU_AK_HOOK_LANDING = 34,      /* void (*)(HSD_GObj*): entered a grounded state */
+    MU_AK_HOOK_FSMASH = 35,       /* void (*)(HSD_GObj*): enter the forward smash */
+    MU_AK_HOOK_USMASH = 36,       /* void (*)(HSD_GObj*): enter the up smash */
+    MU_AK_HOOK_DSMASH = 37,       /* void (*)(HSD_GObj*): enter the down smash */
+};
+struct HSD_GObj;
+void mu_ak_apply(void);                  /* at each content view change (shim/mu_mex.c) */
+void* mu_ak_hook(int kind, int hook);    /* the callback, NULL when the slot is empty */
+int mu_ak_call(int kind, int hook, struct HSD_GObj* gobj);   /* calls a (HSD_GObj*) hook; 1 if run */
+int mu_ak_css_selectable(int ext);       /* an added fighter the character select may offer */
+/* Articles of the added fighters: item kinds past the retail ones. */
+int mu_ak_article(int item_kind, void** article, void** logic);   /* 1 when item_kind is one */
+void mu_ak_article_store(int item_kind, void* article);
 unsigned int mu_game_options(void);
+/* shim/mu_hud_scale.c: the HUD size sliders, applied from the stock (stock=1) and damage (0) draw
+ * callbacks. */
+struct HSD_GObj;
+void mu_hud_scale(struct HSD_GObj* gobj, int stock);
+/* shim/mu_hud_scale.c: each drawn frame, the players' tag positions, damage and stocks for the
+ * host's overlays (nicknames above the fighters). */
+void mu_hud_report(void);
 unsigned int mu_mod_flags(void);
 #ifndef MU_MOD_ASSETS_PRESENT
 #define MU_MOD_ASSETS_PRESENT 0x1u
@@ -250,6 +313,7 @@ int mu_online_active(void);
 unsigned int mu_online_codes(void);   /* MU_RC_* an online match plays with (0 offline) */
 int mu_online_is_test_run(void);
 int mu_online_engine_gate(int* pad_queue_count);   /* ForceEngineOnRollback */
+void mu_audio_idle(void);                          /* audio blocks at their times during the frame wait (mu_os.c) */
 void mu_online_frame_begin(void);                  /* StartEngineLoop */
 int mu_online_frame_end(void);                     /* LoopEngineForRollback: 1 re-run, 2 done */
 int mu_online_skip_pad_read(void);                 /* SkipNewInputFetchOnRollback */
@@ -474,6 +538,10 @@ int mu_slippi_css_zelda_icon_reset(void);    /* OnEnter: 1 = apply the OnLoad/On
 unsigned mu_slippi_online_load_count(void);  /* online major OnLoad count (mu_slippi_menu.c) */
 #endif
 
+/* The explicit practice bridge owns the pending destination until the origin mode exits. */
+int mu_practice_resolve_pending_mode(int requested);
+void mu_practice_enter_mode(int mode);
+
 /* Training Mode CE, native build (sourceport/game/tmce, hooks in shim/mu_tmce.c and the sites below). */
 #ifndef MU_TMCE_DECLS
 #define MU_TMCE_DECLS
@@ -484,4 +552,5 @@ int mu_tmce_enabled(void);                   /* TM-CE files present, vanilla bas
 void mu_tmce_on_scene_change(void);         /* TM-CE OnSceneChange / OnStartMelee hooks */
 void mu_tmce_on_start_melee(void);
 int mu_tmce_active(void);                    /* enabled and loaded: the hooks run */
+int mu_test_classic_stage(void);             /* MELEE_TEST_CLASSIC_STAGE, -1 when unset (tests only) */
 #endif

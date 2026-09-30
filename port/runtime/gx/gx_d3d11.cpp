@@ -575,6 +575,8 @@ float ao(float2 uv) {
 }
 float4 PS(O i) : SV_Target {
   float4 c = downsample(i.uv);
+  // Copies from an EFB without alpha read as opaque on hardware.
+  if (color.w < 0.0) return float4(c.rgb, 1.0);
   c.rgb *= ao(i.uv);
   if (sharp.z <= 0.0) {
     float3 rgb = (c.rgb * color.x - 0.5) * color.y + 0.5;
@@ -1386,7 +1388,8 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
     e.width = sw; e.height = sh;
   }
   e.last_used = frame_counter_;
-  if (c.half_scale) {
+  const bool opaque = !c.efb_alpha && !c.is_depth;
+  if (c.half_scale || opaque) {
     unbind_shader_resources();
     ID3D11RenderTargetView* rtv = e.rtv.Get();
     context_->OMSetRenderTargets(1, &rtv, nullptr);
@@ -1395,7 +1398,7 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
     context_->RSSetViewports(1, &vp);
     context_->RSSetScissorRects(1, &sc);
     const float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                            0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 1.0f, 1.0f, 1.0f, 0};   // no sharpening, grading or averaging on this path
+                            0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 1.0f, 1.0f, 1.0f, opaque ? -1.0f : 0.0f};   // no sharpening, grading or averaging on this path
     blit(efb_srv_.Get(), rect);
     bind_efb_targets();
   } else {
@@ -1699,9 +1702,20 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   unsigned leading_untextured_draws = 0;
   bool background_drawn = false;
   bool presented = false;
-  for (const FrameCommand& cmd : frame.commands) {
+  // A backlog frame (skip_present_) needs only the draws that feed its texture copies; see the same
+  // rule in gx_d3d12.cpp. Not when the screen copy keeps the EFB for the next frame.
+  const size_t needed_commands = [&] {
+    static const bool full_backlog = std::getenv("MELEE_BACKLOG_FULL") != nullptr;   // comparison switch: the pre-0.8.5 full draw
+    if (!skip_present_ || !screen || !screen->clear || full_backlog) return frame.commands.size();
+    size_t end = 0;
+    for (size_t i = 0; i < frame.commands.size(); ++i)
+      if (frame.commands[i].kind != FrameCommand::Draw && !frame.copies[frame.commands[i].index].to_xfb) end = i + 1;
+    return end;
+  }();
+  for (size_t command_index = 0; command_index < frame.commands.size(); ++command_index) {
+    const FrameCommand& cmd = frame.commands[command_index];
     if (cmd.kind == FrameCommand::Draw) {
-      if (cmd.index < frame.draws.size()) {
+      if (command_index < needed_commands && cmd.index < frame.draws.size()) {
         const DrawCall& dc = frame.draws[cmd.index];
         if (css_fullscreen && !background_drawn) {
           bool textured = false;
@@ -1771,6 +1785,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       const std::string saved = opts_.capture_path;
       opts_.capture_path = req;
       capture_backbuffer();
+      write_capture(req, frame.sequence);
       opts_.capture_path = saved;
       if (want == 1) host::log("capture: wrote the requested frames into capture\\");
       capture = false;   // already written for this frame

@@ -594,6 +594,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
     std::vector<uint32_t> checked((size_t)chunks, 0), offs((size_t)chunks, 0);
     std::vector<float> worsts((size_t)chunks, 0.0f);
     std::vector<uint64_t> worst_ids((size_t)chunks, 0);
+    const DrawCall* scene_draw = frame_scene_draw(*cur_);
     auto work = [&](int chunk) {
       AuthoredCache chain_cache;   // one sampled chain per object per chunk per presented frame
       size_t begin = n * (size_t)chunk / (size_t)chunks, end = n * (size_t)(chunk + 1) / (size_t)chunks;
@@ -636,7 +637,9 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
           // gets the carry, since nearly all of those are stage scenery on the main camera.
           const bool own_camera_matches = menus || !d.authored_pose || !d.authored_pose->has_view ||
                                           (camera_current_ && d.authored_pose->view == camera_current_->view);
-          if (camera_previous_ && camera_current_ && d.xf_regs[0x26] == 0 && own_camera_matches) {
+          const bool scene_projection = scene_draw &&
+              std::memcmp(&d.xf_regs[0x20], &scene_draw->xf_regs[0x20], 7 * sizeof(uint32_t)) == 0;
+          if (camera_previous_ && camera_current_ && d.xf_regs[0x26] == 0 && own_camera_matches && scene_projection) {
             uint64_t slots = 0;
             if (d.components & VB_HAS_POSMTXIDX) {
               for (uint32_t v = 0; v < d.vertex_count; ++v) {

@@ -146,7 +146,18 @@ enum { MU_JUKEBOX_PLAY = 0xD6, MU_JUKEBOX_STOP = 0xD7, MU_JUKEBOX_VOLUME = 0xD8 
 static u8 mu_jukebox_reply[MU_SLIPPI_RESPONSE_CAPACITY];
 static int mu_jukebox_last_volume = -1;
 
-int mu_jukebox_music(void) { return (mu_game_options() & MU_GAME_OPTION_VANILLA) == 0; }
+char* getenv(const char* name);
+
+/* MELEE_NO_JUKEBOX (comparison runs): the console's own music stream through AX, with every other
+ * code kept, so a dump holds music and sound effects as Dolphin's DSP dump of a replay does. */
+int mu_jukebox_music(void)
+{
+    static int no_jukebox = -1;
+    if (no_jukebox < 0) {
+        no_jukebox = getenv("MELEE_NO_JUKEBOX") != 0;
+    }
+    return !no_jukebox && (mu_game_options() & MU_GAME_OPTION_VANILLA) == 0;
+}
 
 static void mu_jukebox_send(u8 command, const u8* payload, u32 size)
 {

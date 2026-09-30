@@ -7,7 +7,7 @@
 
 namespace gx::radial_navigation {
 
-constexpr int kCategoryCount = 7;
+constexpr int kCategoryCount = 8;
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kStep = 2.0f * kPi / kCategoryCount;
 constexpr int kStickDeadzone = 58;
@@ -23,8 +23,7 @@ inline int update(int selection, bool up, bool right, bool down, bool left,
     const float angle = std::atan2(-static_cast<float>(stick_y),
                                    static_cast<float>(stick_x));
     const float sector_position = (angle + kPi * 0.5f) / kStep;
-    // At the exact bottom the seven equal wedges straddle the down axis. Bias that
-    // single tie toward Controls (sector 3), matching D-pad Down and the wheel label.
+    // Round to the nearest category; bias exact boundary ties consistently.
     const int target = wrap(static_cast<int>(std::floor(sector_position + 0.5f - 1.0e-5f)));
     if (target == selection) return selection;
 

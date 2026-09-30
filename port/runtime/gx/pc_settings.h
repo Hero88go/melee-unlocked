@@ -10,6 +10,8 @@ struct ID3D11Device;
 struct ID3D11DeviceContext;
 namespace gx {
 void load_pc_settings(RenderOptions& options, int& volume);
+// Same atomic writer used by the panel, for startup choices and settings validation.
+bool save_pc_settings(const RenderOptions& options, int volume);
 // Current letterboxed gameplay viewport aspect, used to keep overlays out of the black bars.
 void settings_set_game_aspect(float aspect);
 // Copy the same simulation frame's HUD anchors used by the presented image.

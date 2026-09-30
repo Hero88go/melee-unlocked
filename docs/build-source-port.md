@@ -15,7 +15,7 @@ python tools/prepare_native_sources.py
 The adaptations are tracked in `sourceport/patches/melee-native.patch`, including
 the native changes that previously existed only in the local submodule. The script
 checks the pinned upstream commit, refuses unrelated local edits, and accepts an
-already applied patch. The native CMake project also runs this step automatically.
+already applied patch. Run this preparation command before configuring the native library.
 To inspect the adaptations, run `git -C sourceport/extern/melee diff`.
 
 Install a MinGW-w64 GCC 14+ distribution with Ninja and configure the DLL (replace
@@ -43,4 +43,5 @@ NVIDIA's model is supplied separately by the user.
 
 The native host shares rendering, audio, controllers and Slippi services with Static
 Recomp. The game DLL is built from source; the host's translation is also used by
-the parity tests. Source Port mods are not supported in v0.8.1.
+the parity tests. v0.8.5 exposes TM-CE and 20XX TE under Mods; see
+[training-mod controls and limits](training-mods.md).

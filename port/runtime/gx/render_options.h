@@ -1,10 +1,11 @@
-// Render options shared by every backend, the presentation thread and the settings panel.
+﻿// Render options shared by every backend, the presentation thread and the settings panel.
 // Nothing here belongs to one graphics API: a backend reads what applies to it and ignores the rest.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <atomic>
 #include <array>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 #ifdef GX_DLSS5
@@ -34,6 +35,11 @@ struct RenderOptions {
   // in presentation defaults without changing the user's saved Legacy settings.
   bool native_source = false;
   RenderApi api = RenderApi::D3D12;   // --backend d3d11|d3d12, or "backend" in port-settings.ini
+  int audio_mode = 0;              // 0 Auto (adaptive, remembered per device), 1 Low latency (fixed), 2 Exclusive, 3 ASIO
+  std::string audio_asio_driver;   // ASIO driver name (HKLM\SOFTWARE\ASIO); used in mode 3 only
+  int audio_asio_buffer = 0;       // ASIO buffer in frames; 0 = the driver's preferred size
+  std::string audio_device;        // output endpoint id; empty = Windows default
+  int audio_buffer_ms = 40;        // software output buffer; independent of the game mixer
   // Presentation timeline (threaded renderer only). fps_cap 0 = uncapped. With a SubFrameMode other
   // than Off the renderer presents new sub-frames between 60 Hz simulation frames.
   double fps_cap = 60; // -1 follows the active monitor
@@ -43,6 +49,10 @@ struct RenderOptions {
   // DLSS Frame Generation and NVIDIA Reflex are presentation-only controls. They are ignored when
   // the selected backend or hardware cannot provide them.
   int frame_generation_mode = 0;
+  // What the driver last reported for frame generation (inserted frames, 0 = never queried), kept
+  // so the settings can offer the right modes in a session where the plugin is not loaded.
+  int fg_cached_max = 0;
+  bool fg_cached_dynamic = false;
   int reflex_mode = 0;
   bool reflex_stats = false;
   bool reflex_flash = false;
@@ -107,10 +117,13 @@ struct RenderOptions {
   // Source Port mod profile (Mods/Profiles/<name>.ini) loaded at start; empty = the retail game.
   // Command-line --mod-* flags take precedence. The static recomp ignores it.
   std::string mod_profile;
-  static uint32_t& live_te_options() { static uint32_t value = 0; return value; }
-  // Source Port mod profiles, 20XX TE options and the Training Lab: not offered yet. The settings
-  // panel hides them and saved values are ignored; the developer --te-options / --mod-* flags work.
-  static constexpr bool kModFeaturesAvailable = false;
+  // Packs found in the Mods folder (mod_scan.h): the player's on/off choice per pack, by key ("te",
+  // "tmce", or a content key). A pack with no entry has not been decided: it is turned on the first
+  // time it is found. Saved as mod_te_enabled, mod_tmce_enabled and "mod_enabled <key> <0|1>".
+  std::map<std::string, int> mod_choices;
+  static uint32_t& live_te_options() { static uint32_t value = 0x10u; return value; }
+  // Source Port mod profiles and offline 20XX TE options are available under Mods in 0.8.5.
+  static constexpr bool kModFeaturesAvailable = true;
   // DXR path tracing and Ray Reconstruction: not offered in 0.8. They rebuild the whole stage's
   // ray tracing geometry every frame, which dropped the picture to a few frames per second in
   // matches. Hidden and forced off (saved values ignored) until that is reworked.
@@ -123,10 +136,13 @@ struct RenderOptions {
   // being on the same mod, at the player's word. Never saved.
   static bool& live_mods_dolphin_ok() { static bool value = false; return value; }
   // Source Port 20XX Tournament Edition features (MU_GAME_OPTION_TE_* bits); offline only.
-  uint32_t te_options = 0;
+  uint32_t te_options = 0x10u;      // enables TE when its recognized save is loaded; an explicit 0 disables it
   // The second 20XX TE word (MU_GAME_OPTION2_TE_*): the features added with host API 14.
   uint32_t te_options2 = 0;
   static uint32_t& live_te_options2() { static uint32_t value = 0; return value; }
+  // Bumped when the game changes both TE words from 20XX TE's in-game settings menu (host command
+  // 0xF8); the settings panel then saves them, so the file and the menu agree.
+  static std::atomic<uint32_t>& live_te_game_changes() { static std::atomic<uint32_t> value{0}; return value; }
   // 20XX TE menu song chosen in Sound Test (TE's value: 0 none, -1 song 0, else the song). The game
   // sets it through a host command; the settings panel saves it as soon as it changes.
   int te_menu_music = 0;
@@ -223,7 +239,7 @@ inline float presented_aspect(const RenderOptions& options, int client_w, int cl
     case AspectMode::Force16_9: return 16.0f / 9.0f;
     // No bars at all: claiming the window's own aspect makes the letterbox maths fill it exactly.
     case AspectMode::Stretch:   return (float)(client_w > 0 ? client_w : 1) / (float)(client_h > 0 ? client_h : 1);
-    default:                    return ((!options.native_source && options.widescreen) || options.true_widescreen) && widenable_scene
+    default:                    return (options.widescreen || options.true_widescreen) && widenable_scene
                                       ? 16.0f / 9.0f : 73.0f / 60.0f;
   }
 }

@@ -22,12 +22,12 @@ Config& config();
 
 void init();
 void shutdown();
-// The native source port sets this before its game starts. Legacy remains vanilla.
+// Each engine sets this before its game starts; Static mod discs use OtherMod.
 void set_native_gameplay_profile(NativeGameplayProfile profile);
 
 // What this client plays online, sent to the opponent after connecting (a netplay message stock
-// Slippi Dolphin ignores). mod_view false = the retail game (the static recomp always, the Source
-// Port without a mod or in its retail view). In Direct a mod build plays only against the same
+// Slippi Dolphin ignores). mod_view false = the retail game; Source can also select its retail
+// content view. In Direct a mod build plays only against the same
 // build; allow_unverified lets it play an opponent who sends no build (Slippi Dolphin with the same
 // mod), at the player's word.
 struct LocalBuild {
@@ -35,6 +35,7 @@ struct LocalBuild {
   std::string fingerprint;   // the mod content's identity (hex), empty for the retail game
   std::string name;          // shown in messages, e.g. "Akaneia 1.0.1"
   bool allow_unverified = false;
+  bool extended_content = false;   // only Static mod boot runs the disc's added fighter/stage code
 };
 void set_local_build(const LocalBuild& build);
 const LocalBuild& local_build();

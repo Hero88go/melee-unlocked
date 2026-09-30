@@ -25,6 +25,7 @@
 #include <unordered_map>
 #include <vector>
 #include "host.h"
+#include "audio.h"
 #include "audio_core.h"
 #include "ax_ucode.h"
 #include "native_practice.h"
@@ -47,13 +48,14 @@
 #include "native_recording_codes.h"
 #include "source_mod_overlay.h"
 #include "mod_profile.h"
+#include "mod_scan.h"
 #include "cosmetic_mods.h"
 #include "slippilib/SlippiGame.h"
 #include "window.h"
 
 // The settings panel's port-code options (pc_settings.cpp); the native game reads them through
 // MuHostApi.game_options.
-namespace gecko { extern bool option_no_screen_shake; extern bool option_pal_stock_icons; }
+namespace gecko { extern bool option_no_screen_shake; extern bool option_pal_stock_icons; extern bool option_widescreen; }
 
 namespace source_port {
 namespace {
@@ -193,7 +195,9 @@ std::string g_mod_fingerprint;                 // content identity of the enable
 std::filesystem::path g_profile_card;          // the profile's own card folder, "" = the ordinary card
 std::vector<mods::CardImport> g_card_imports;
 
-// Known packs, by the content fingerprint of their layer (see iso_layer_fingerprint).
+// Known packs, by the content fingerprint of their layer (see iso_layer_fingerprint). The 20XX TE line
+// only matches the untouched official file; any 20XX TE v2d r4 save, including one Melee has saved
+// records into, is recognized by its code payload (mods::check_te_file, used below and by the scan).
 struct KnownPack { const char* fingerprint; const char* name; };
 const KnownPack kKnownPacks[] = {
   {"9a1a48b999a2f8f4deaee2554e5f177cb265666b95676a508406db80b181246b", "Akaneia 1.0.1"},
@@ -255,9 +259,34 @@ std::string dir_layer_fingerprint(const std::string& profile) {
   return total.hex();
 }
 
+// ---- the Mods folder (mod_scan.h) ----
+// Normal launches only (the settings file was read): the memory card folder check, the scan of the
+// Mods folder and the player's on/off choices. The packs found apply when neither a saved profile
+// nor --mod-* flags chose this session's mods; the Mods page lists them either way. 20XX TE is not a
+// layer here (its save stays out of the card): it switches on TE's native features. Card mods and
+// code mods need the Static Recomp and are not loaded.
+void apply_detected_mods() {
+  if (!gx::RenderOptions::kModFeaturesAvailable || !mods::auto_detect()) return;
+  mods::StartupOptions options;
+  options.card_dir = std::filesystem::u8path(host::options.card_dir);
+  options.base_iso = std::filesystem::u8path(host::options.iso);
+  options.source_port = true;
+  const mods::Startup found = mods::startup(options);
+  for (const auto& line : found.log) host::log("mods: %s", line.c_str());
+  if (!g_mod_layers.empty()) {
+    const std::string chooser = g_mod_profile_name.empty() ? std::string("the command line") : "profile " + g_mod_profile_name;
+    host::log("mods: %s chose this session's mods; the Mods folder's packs are only listed", chooser.c_str());
+    return;
+  }
+  mods::status().detected = true;
+  mods::status().te_owned = found.te;
+  g_mod_layers.insert(g_mod_layers.end(), found.layers.begin(), found.layers.end());
+}
+
 void load_mod_overlay() {
   namespace fs = std::filesystem;
   std::error_code ec;
+  apply_detected_mods();
   if (!g_mod_root_explicit && fs::exists(g_mod_root, ec) && !ec)
     g_mod_layers.push_back({mods::LayerKind::Dir, g_mod_root});
   if (g_mod_layers.empty()) return;
@@ -320,6 +349,14 @@ void load_mod_overlay() {
     const KnownPack* known = nullptr;
     for (const auto& pack : kKnownPacks) if (*pack.fingerprint && fingerprint == pack.fingerprint) known = &pack;
     if (known && std::strncmp(known->name, "20XX TE", 7) == 0) mods::status().te_owned = true;
+    if (!known && layer.kind == mods::LayerKind::Gci) {
+      const mods::TeCheck te = mods::check_te_file(layer.path);
+      if (te.supported()) {
+        mods::status().te_owned = true;
+        host::log("mods: %s is 20XX TE %s (%u of %u payload bytes intact)", layer.path.u8string().c_str(),
+                  te.version.c_str(), te.matching_bytes, te.payload_bytes);
+      }
+    }
     if (known && std::strncmp(known->name, "Akaneia", 7) == 0) mods::status().akaneia = true;
     host::log("mods: %s %s, content %s%s%s", kind, layer.path.u8string().c_str(), fingerprint.substr(0, 16).c_str(),
               known ? ", recognized as " : "", known ? known->name : "");
@@ -692,6 +729,12 @@ int32_t h_native_owner_tracking() { return gx::owner_tracking_enabled() ? 1 : 0;
 // Always on: the scope tokens are a few bytes per PObj, and without them a draw is known only by
 // its display list and call order, which shifts whenever a menu drops or adds a draw.
 int32_t h_native_draw_identity() { return 1; }
+// The HUD sliders (stock icon and damage number size), display only, as the backend last set them.
+uint32_t h_hud_scales() { return gx::hud_scales_packed(); }
+void h_hud_player(int32_t slot, int32_t present, int32_t damage, int32_t stocks, float tag_x, float tag_y,
+                  int32_t tag_visible) {
+  gx::set_native_hud_player(slot, present != 0, damage, stocks, tag_x, tag_y, tag_visible != 0);
+}
 // Replay playback: the options the replay was recorded with ("muOptions"), set by set_replay.
 bool g_replaying = false;
 uint32_t g_replay_feature_options = 0;
@@ -703,6 +746,7 @@ uint32_t h_game_options2() {
 uint32_t h_game_options() {
   return (gecko::option_no_screen_shake ? MU_GAME_OPTION_NO_SCREEN_SHAKE : 0u) |
          (gecko::option_pal_stock_icons ? MU_GAME_OPTION_PAL_STOCK_ICONS : 0u) |
+         (gecko::option_widescreen ? MU_GAME_OPTION_WIDESCREEN : 0u) |   // the viewer's own, also in replays
          (host::options.vanilla_game ? MU_GAME_OPTION_VANILLA : 0u) |
          (g_slippi_menus ? MU_GAME_OPT_SLIPPI_MENUS : 0u) |
          (mods::status().tmce && !g_replaying ? MU_GAME_OPTION_TMCE : 0u) |
@@ -710,6 +754,17 @@ uint32_t h_game_options() {
                    : gx::RenderOptions::live_te_options() & (mods::status().te_owned ? 0x00007FF0u : 0u));
   // (Only 20XX TE's own bits, and only with its save. The Training Lab bits above 0x7FF0 are not
   // offered any more: Training Mode CE replaces the lab.)
+}
+// Match conveniences implemented by the host follow the same gates as mu_te2 in the game.
+bool te_host_feature(uint32_t feature) {
+  const uint32_t options = h_game_options();
+  if (!(options & MU_GAME_OPTION_TE) || (options & MU_GAME_OPTION_VANILLA) ||
+      !(h_game_options2() & feature) || slippi::online::session_mode() >= 0) return false;
+  if ((options & MU_GAME_OPTION_TE_TOURNAMENT) &&
+      !(feature & MU_GAME_OPTION2_TE_TOURNAMENT_SAFE)) return false;
+  uint32_t major = 0, minor = 0, match_frame = 0;
+  host::current_scene(&major, &minor, &match_frame);
+  return !(mods::status().tmce && major == 0x2B);
 }
 uint32_t read_be32(const uint8_t* p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
 void append_be32(std::vector<uint8_t>& q, uint32_t v) { q.push_back((uint8_t)(v >> 24)); q.push_back((uint8_t)(v >> 16)); q.push_back((uint8_t)(v >> 8)); q.push_back((uint8_t)v); }
@@ -744,15 +799,33 @@ void begin_native_savestates() {
       std::string path(dll_path);
       path = path.substr(0, path.size() - 4) + ".snapexcl";
       std::ifstream in(path);
-      unsigned long long offset = 0, size = 0;
-      std::string section, file;
-      size_t added = 0, bytes = 0;
-      while (in >> std::hex >> offset >> size >> section >> file) {
-        exclusions.push_back(MuStateRegion{(void*)((uintptr_t)module + offset), (uint32_t)size});
-        ++added; bytes += size;
+      // The offsets are right only for the library they were read from: a file from another build
+      // (a library copied without it) left the wrong memory out and restored the sound driver's on
+      // every rollback, which crashed within seconds. Its "# dll_size" line must match this file.
+      WIN32_FILE_ATTRIBUTE_DATA dll_info{};
+      const unsigned long long dll_size = GetFileAttributesExA(dll_path, GetFileExInfoStandard, &dll_info)
+          ? ((unsigned long long)dll_info.nFileSizeHigh << 32 | dll_info.nFileSizeLow) : 0;
+      std::vector<MuStateRegion> sound;
+      std::string line;
+      size_t bytes = 0;
+      bool other_build = false;
+      while (std::getline(in, line)) {
+        unsigned long long value = 0;
+        if (std::sscanf(line.c_str(), "# dll_size %llu", &value) == 1) { other_build = value != dll_size; continue; }
+        unsigned long long offset = 0, size = 0;
+        if (std::sscanf(line.c_str(), "%llx %llx", &offset, &size) == 2 && size) {
+          sound.push_back(MuStateRegion{(void*)((uintptr_t)module + offset), (uint32_t)size});
+          bytes += size;
+        }
       }
-      if (added) host::log("online: sound driver state left out of snapshots: %zu ranges, %zu bytes", added, bytes);
-      else host::log("online: WARNING: %s missing; sound driver state is inside snapshots", path.c_str());
+      if (other_build)
+        host::log("online: WARNING: %s belongs to another build of melee_game.dll; sound driver state is inside snapshots", path.c_str());
+      else if (sound.empty())
+        host::log("online: WARNING: %s missing; sound driver state is inside snapshots", path.c_str());
+      else {
+        exclusions.insert(exclusions.end(), sound.begin(), sound.end());
+        host::log("online: sound driver state left out of snapshots: %zu ranges, %zu bytes", sound.size(), bytes);
+      }
     }
   }
   // Diagnostic (MELEE_SNAPSHOT_EXCLUDE=lo-hi[,lo-hi...], hex): leave extra ranges out, to find
@@ -992,8 +1065,7 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
         if (c == 0xD6 && n == 8) {
           // 20XX TE "Reduce Dream Land volume" (offline): its song 90/127 as loud, as TE plays it.
           const uint32_t offset = read_be32(p);
-          if ((h_game_options() & MU_GAME_OPTION_TE) && (h_game_options2() & MU_GAME_OPTION2_TE_DL64_QUIET) &&
-              slippi::online::session_mode() < 0) {
+          if (te_host_feature(MU_GAME_OPTION2_TE_DL64_QUIET)) {
             const auto dl64 = g_paths.find("/audio/old_kb.hps");
             if (dl64 != g_paths.end() && g_fst[dl64->second].offset == offset)
               slippi::jukebox::set_next_song_gain(90.0f / 127.0f);
@@ -1031,6 +1103,28 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           reply.push_back((uint8_t)(int8_t)gx::RenderOptions::live_te_menu_music().load());
           return true;
         }
+        if (c == 0xF8 && (n == 0 || n == 8)) {
+          // 20XX TE's in-game settings menu (shim/mu_te_debugmenu.c): both feature words, big-endian,
+          // the same bits as the F1 panel. Empty asks for the current ones. With "Lock settings" on,
+          // only switching the lock off goes through.
+          auto& w1 = gx::RenderOptions::live_te_options();
+          auto& w2 = gx::RenderOptions::live_te_options2();
+          if (n == 8 && (h_game_options() & MU_GAME_OPTION_TE) && slippi::online::session_mode() < 0 && !g_replaying) {
+            const uint32_t next1 = read_be32(p), next2 = read_be32(p + 4);
+            if (w2 & MU_GAME_OPTION2_TE_LOCK_SETTINGS) {
+              if (!(next2 & MU_GAME_OPTION2_TE_LOCK_SETTINGS)) w2 &= ~MU_GAME_OPTION2_TE_LOCK_SETTINGS;
+            } else {
+              w1 = (w1 & ~0x7FE0u) | (next1 & 0x7FE0u);   // TE itself (0x10) stays on
+              w2 = next2 & ~MU_GAME_OPTION2_TE_LCANCEL_WHEELS;   // the port's Auto L-cancel does that
+              if (w2 & MU_GAME_OPTION2_TE_LCANCEL_FLASH) lcancel::set_indicator(false);   // one flash at a time
+            }
+            gx::RenderOptions::live_te_game_changes().fetch_add(1);
+            host::log("20xx: settings from the game menu %08X %08X", w1, w2);
+          }
+          append_be32(reply, w1);
+          append_be32(reply, w2);
+          return true;
+        }
         if (c == CMD_CONTENT_MODE && n == 1) {
           if (p[0] != 0xFE) apply_content_mode(p[0] == 0xFF ? -1 : (int)p[0]);   // 0xFE: query only
           reply.push_back(g_retail_view ? 1 : 0);
@@ -1055,6 +1149,17 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
 // The view for the online mode the game reports (0-4), or offline (-1): offline and Direct with the
 // mod on show the mod; every other online mode shows the retail game. The online rules and the
 // build the opponent is told follow it.
+slippi::online::LocalBuild content_build_for_mode(int mode) {
+  const bool mods = !g_view_alias.empty();
+  const bool retail = mods && mode >= 0 && !(mode == 2 && gx::RenderOptions::live_mods_in_direct());
+  slippi::online::LocalBuild build;
+  build.mod_view = mods && !retail;
+  build.fingerprint = g_mod_fingerprint;
+  build.name = g_mod_display_name;
+  build.allow_unverified = gx::RenderOptions::live_mods_dolphin_ok();
+  return build;
+}
+
 void apply_content_mode(int mode) {
   const bool mods = !g_view_alias.empty();
   bool retail = false;
@@ -1063,12 +1168,16 @@ void apply_content_mode(int mode) {
     host::log("content: %s view (%s)", retail ? "retail" : "mod",
               mode < 0 ? "offline" : mode == 2 ? "Direct" : "online mode that plays the retail game");
   g_retail_view = retail;
-  slippi::online::LocalBuild build;
-  build.mod_view = mods && !retail;
-  build.fingerprint = g_mod_fingerprint;
-  build.name = g_mod_display_name;
-  build.allow_unverified = gx::RenderOptions::live_mods_dolphin_ok();
-  slippi::online::set_local_build(build);
+  slippi::online::set_local_build(content_build_for_mode(mode));
+}
+
+void prepare_practice_content(int mode, bool activate) {
+  if (activate) apply_content_mode(mode);
+  else slippi::online::set_local_build(content_build_for_mode(mode));
+  host::log("native practice content: mode %d, advertised %s, active files %s%s", mode,
+            slippi::online::local_build().mod_view ? "mod" : "retail",
+            g_retail_view || g_view_alias.empty() ? "retail" : "mod",
+            activate ? ", boundary activation" : "");
 }
 
 void h_resim_phase(int32_t entering) {
@@ -1115,10 +1224,46 @@ void h_vi_wait_retrace() {
   guarded([] { host::retrace(); });
 }
 
+// The idle wait before a retrace, one audio period at a time (host API 16). Plays each block at
+// the real time of its AI deadline instead of three together after the retrace. Alarms and the
+// retrace itself stay where they were (native_retrace), so game code runs in the same order.
+// MELEE_AUDIO_PACING=0 turns it off for comparisons.
+int32_t h_vi_idle_step() {
+  static const bool enabled = [] { const char* v = std::getenv("MELEE_AUDIO_PACING"); return !(v && *v == '0'); }();
+  // MELEE_AUDIO_PACING_TRACE=1: why the idle loop stops, counted and logged every 600 calls.
+  static const bool trace = [] { const char* v = std::getenv("MELEE_AUDIO_PACING_TRACE"); return v && *v == '1'; }();
+  static uint64_t calls, stop_off, stop_awaiting, stop_past_retrace, steps;
+  if (trace && ++calls % 600 == 0)
+    host::log("audio pacing: %llu calls, %llu steps; stops: awaiting block %llu, deadline past retrace %llu, off %llu",
+              (unsigned long long)calls, (unsigned long long)steps, (unsigned long long)stop_awaiting,
+              (unsigned long long)stop_past_retrace, (unsigned long long)stop_off);
+  if (!enabled || g_resim || !g_audio.running || !g_audio.dma_length) { ++stop_off; return 0; }
+  // The game has not handed over the next block yet: nothing to play at the next deadline.
+  if (g_audio.native_pcm && g_audio.awaiting_block) { ++stop_awaiting; return 0; }
+  int32_t stepped = 0;
+  guarded([&] {
+    const uint64_t due = g_audio.next_tb;
+    if (host::cpu->tb < due && !host::wait_until_console_time(due)) { ++stop_past_retrace; return; }
+    native_audio_tick();
+    stepped = 1;
+    ++steps;
+  });
+  return stepped;
+}
+
 void h_pad_read(MuPadStatus out[4]) {
   host::PadState pads[4];
   host::input_poll(pads);
   lcancel::apply(pads);   // auto L-cancel, upstream of the game exactly as in the recompiled build
+  if (host::audio_tracing()) {
+    // Latency trace: the first read that shows a new press on port 1 (buttons or the stick leaving
+    // its center), the moment the game sees it.
+    static bool was_active = false;
+    const bool active = pads[0].err == 0 && ((pads[0].button & 0x0F7Fu) || std::abs((int)pads[0].stick_y) >= 40 ||
+                                             std::abs((int)pads[0].stick_x) >= 40);
+    if (active && !was_active) host::audio_trace_event("input");
+    was_active = active;
+  }
   for (int i = 0; i < 4; ++i) {
     out[i].button = pads[i].button;
     out[i].stick_x = pads[i].stick_x; out[i].stick_y = pads[i].stick_y;
@@ -1128,9 +1273,7 @@ void h_pad_read(MuPadStatus out[4]) {
     out[i].err = pads[i].err;
   }
   // 20XX TE input display (offline matches and replays): the controllers the game read.
-  training_overlay::set_input_display((h_game_options() & MU_GAME_OPTION_TE) &&
-                                      (h_game_options2() & MU_GAME_OPTION2_TE_INPUT_DISPLAY) &&
-                                      slippi::online::session_mode() < 0);
+  training_overlay::set_input_display(te_host_feature(MU_GAME_OPTION2_TE_INPUT_DISPLAY));
   // Training Lab overlay: what the game read this frame, with the fighters' state.
   if (((gx::RenderOptions::live_te_options() & (MU_GAME_OPTION_LAB | MU_GAME_OPTION_LAB_OVERLAY)) ==
            (MU_GAME_OPTION_LAB | MU_GAME_OPTION_LAB_OVERLAY) || training_overlay::input_display()) &&
@@ -1207,10 +1350,23 @@ bool jukebox_disc_read(uint32_t offset, void* dst, uint32_t size) {
 }
 void h_disc_read(uint32_t offset, void* dst, uint32_t size, MuDiscDone done, void* user) {
   bool ok = false;
+  const auto began = std::chrono::steady_clock::now();
   if (!read_cosmetic(offset, dst, size, &ok) && !read_system_file(offset, dst, size, &ok) &&
       !read_overlay(offset, dst, size, &ok))
     ok = host::disc_read(offset, dst, size);
   if (!ok) host::log("disc: read %08X+%X failed", offset, size);
+  // Reads are synchronous on the simulation thread: a slow one is a hitch the player feels. Logged
+  // (at most 50 times) so a report of stutter can be matched against the disc.
+  {
+    static int slow_logged = 0;
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+    if (ms > 4.0 && slow_logged < 50) {
+      ++slow_logged;
+      uint32_t major = 0, minor = 0, match_frame = 0;
+      host::current_scene(&major, &minor, &match_frame);
+      host::log("disc: slow read %.1f ms (%08X+%X, scene %02X/%02X)", ms, offset, size, major, minor);
+    }
+  }
   note_disc_load(dst, size, offset);
   ++host::g_disc_reads;
   host::g_disc_bytes += size;
@@ -1326,6 +1482,19 @@ void card_mount_files() {
     std::fclose(in);
     if (!ok || file->blocks() == 0 || file->blocks() > CARD_TOTAL_BLOCKS) { delete file; continue; }
     file->path = entry.path();
+    // Two files with one save name: card_find would use whichever the folder listed first, so a save
+    // dropped in beside the player's own (20XX TE has Melee's own save name) could hide it. The boot
+    // check (mods::protect_card_folder) moves such files out; if one is still here, the file the game
+    // itself writes (card_safe_name) is the one mounted.
+    const int32_t same = card_find(file->name());
+    if (same >= 0 && std::memcmp(g_card_files[same]->dir, file->dir, 6) == 0) {
+      const bool keep_new = file->path.filename() == std::filesystem::u8path(card_safe_name(*file)) &&
+                            g_card_files[same]->path.filename() != std::filesystem::u8path(card_safe_name(*g_card_files[same]));
+      host::log("card: %s and %s have the same save name; %s is used", g_card_files[same]->path.u8string().c_str(),
+                file->path.u8string().c_str(), (keep_new ? file : g_card_files[same])->path.u8string().c_str());
+      if (keep_new) { delete g_card_files[same]; g_card_files[same] = file; } else delete file;
+      continue;
+    }
     g_card_files[slot++] = file;
   }
   // Imported GCI patches are mounted without copying or modifying the supplied
@@ -1919,6 +2088,9 @@ MuHostApi make_host() {
   h.resim_phase = h_resim_phase;
   h.online_test_match = h_online_test_match;
   h.game_options2 = h_game_options2;
+  h.hud_scales = h_hud_scales;
+  h.hud_player = h_hud_player;
+  h.vi_idle_step = h_vi_idle_step;
   return h;
 }
 
@@ -2223,6 +2395,7 @@ int run(void (*shutdown)(int)) {
       !g_game.state_exclusions || !g_game.snapshot_ranges || !g_game.practice)
     host::die("%s has game API version %u, expected %u", g_dll.c_str(), g_game.version, MU_GAME_API_VERSION);
   slippi::native_practice::set_native_bridge(g_game.practice);
+  slippi::native_practice::set_content_bridge(prepare_practice_content);
   MuStateRegion game_regions[3]{};
   std::string region_error;
   const uint32_t region_count = g_game.state_regions(game_regions, 3);

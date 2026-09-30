@@ -157,6 +157,9 @@ bool matchmaking_tab_available(Phase phase, bool playback, bool online_match, bo
 }
 
 bool is_offline_gameplay_scene(uint8_t major, uint8_t minor) {
+  // TM-CE uses Event Match's alternate major: 0 is its CSS, 2 its stage select,
+  // and 1 the running exercise. Only that exercise has a live human fighter.
+  if (major == 0x2B) return minor == 1;
   const bool match_mode = major == 0x02 || major == 0x03 || major == 0x04 || major == 0x05 ||
                           major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B ||
                           major == 0x1C;

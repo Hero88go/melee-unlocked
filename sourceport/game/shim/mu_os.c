@@ -338,6 +338,21 @@ void OSSleepThread(OSThreadQueue* queue)
     mu_run_events();
 }
 
+/* The scene loop's frame wait (gmscene.c, before each idle poll). On the console the audio
+ * interface interrupt fires every 5 ms while the game waits for the next frame, and the DSP renders
+ * one block each time; natively the wait used to run console time straight to the retrace, so a
+ * frame's three or four blocks went out together (a ~17 ms burst the output buffer had to absorb,
+ * and the main cost in sound latency). Each step waits for the next block's real time, plays it and
+ * lets the DMA-done handler mix the following one; it stops at the retrace, so frame timing and the
+ * game's input sample are unchanged. */
+void mu_audio_idle(void)
+{
+    if (mu_host->version >= 16 && mu_host->vi_idle_step != NULL) {
+        while (mu_host->vi_idle_step())
+            mu_deliver_pending();
+    }
+}
+
 void OSWakeupThread(OSThreadQueue* queue) { (void) queue; }
 
 int OSCreateThread(struct OSThread* thread, void* (*func)(void*), void* param, void* stack,

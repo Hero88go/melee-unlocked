@@ -93,6 +93,9 @@ def main():
         cmd += ["--hidden", "--fast"]
     if args.backend:
         cmd += ["--backend", args.backend]
+    # Extra game arguments for a whole batch (e.g. REPLAY_COMPARE_EXTRA=--widescreen, to show a
+    # display option leaves every frame the same).
+    cmd += os.environ.get("REPLAY_COMPARE_EXTRA", "").split()
     print("running:", " ".join(cmd[1:]))
     try:
         run = subprocess.run(cmd, cwd=ROOT, timeout=args.timeout, capture_output=True)

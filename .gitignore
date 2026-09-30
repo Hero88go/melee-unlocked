@@ -56,10 +56,3 @@ build-*/
 **/lobby-game-status.json*
 **/lobby.sqlite3*
 /Mods/
-
-# Generated code, local diagnostics and downloaded development dependencies.
-/port/generated*/
-*.dmp
-*.whl
-*.tar.gz
-/flicker/

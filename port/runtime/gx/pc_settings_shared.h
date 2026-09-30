@@ -23,6 +23,7 @@ struct SettingsState {
   float panel_slide_x = 720.0f;
   float panel_slide_start_x = 720.0f;
   bool dirty = false;   // a setting changed since the last write; saved once the control is released
+  uint32_t mod_choices_seen = 0;
   int volume = 0;
   std::array<float, 180> intervals{};
   unsigned cursor = 0;
