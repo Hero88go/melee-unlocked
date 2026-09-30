@@ -437,3 +437,4 @@ crash.offer = Игра аварийно завершилась. Отправит
 @Added to Mods. Online compatibility is unverified; different builds can desync. = Добавлено в Mods. Совместимость онлайн не проверена; разные сборки могут вызвать рассинхронизацию.
 @Direct only. Same mod required; different builds can desync. Launch vanilla for Unranked. = Только Direct. Нужен одинаковый мод; разные сборки могут вызвать рассинхронизацию. Для Unranked запустите оригинал.
 @Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked. = Для Direct нужны одинаковые моды; разные сборки могут вызвать рассинхронизацию. Source Port использует оригинал в Unranked.
+@Up to date = Актуально

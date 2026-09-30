@@ -437,3 +437,4 @@ crash.offer = 游戏崩溃了。要发送崩溃报告以便修复吗？\n\n将�
 @Added to Mods. Online compatibility is unverified; different builds can desync. = 已添加到Mods。在线兼容性未经验证；不同版本可能导致不同步。
 @Direct only. Same mod required; different builds can desync. Launch vanilla for Unranked. = 仅限Direct。必须使用相同模组；不同版本可能导致不同步。Unranked请启动原版。
 @Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked. = Direct需要相同模组；不同版本可能导致不同步。Source Port在Unranked中使用原版。
+@Up to date = 最新

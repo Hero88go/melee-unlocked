@@ -437,3 +437,4 @@ crash.offer = 게임이 비정상적으로 종료되었습니다. 문제를 고�
 @Added to Mods. Online compatibility is unverified; different builds can desync. = Mods에 추가했습니다. 온라인 호환성은 미검증이며 다른 빌드는 동기화 오류를 일으킬 수 있습니다.
 @Direct only. Same mod required; different builds can desync. Launch vanilla for Unranked. = Direct 전용입니다. 같은 모드가 필요하며 다른 빌드는 동기화 오류를 일으킬 수 있습니다. Unranked는 기본 게임으로 실행하세요.
 @Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked. = Direct에는 같은 모드가 필요하며 다른 빌드는 동기화 오류를 일으킬 수 있습니다. Source Port의 Unranked는 기본 게임을 사용합니다.
+@Up to date = 최신

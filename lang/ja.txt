@@ -437,3 +437,4 @@ crash.offer = ゲームがクラッシュしました。修正のためにクラ
 @Added to Mods. Online compatibility is unverified; different builds can desync. = Modsに追加しました。オンライン互換性は未確認です。異なるビルドでは同期ずれが起こる場合があります。
 @Direct only. Same mod required; different builds can desync. Launch vanilla for Unranked. = Directのみ。同じModが必要です。異なるビルドは同期ずれの原因になります。Unrankedはバニラで起動してください。
 @Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked. = Directには同じModが必要です。異なるビルドでは同期ずれが起こる場合があります。Source PortのUnrankedはバニラを使います。
+@Up to date = 最新です

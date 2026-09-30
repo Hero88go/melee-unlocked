@@ -437,3 +437,4 @@ crash.offer = Das Spiel ist abgestürzt. Einen Absturzbericht senden, damit der 
 @Added to Mods. Online compatibility is unverified; different builds can desync. = Zu Mods hinzugefügt. Online-Kompatibilität ungeprüft; verschiedene Builds können desynchronisieren.
 @Direct only. Same mod required; different builds can desync. Launch vanilla for Unranked. = Nur Direct. Gleicher Mod nötig; verschiedene Builds können desynchronisieren. Für Unranked Vanilla starten.
 @Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked. = Direct braucht gleiche Mods; verschiedene Builds können desynchronisieren. Source Port nutzt Vanilla für Unranked.
+@Up to date = Aktuell

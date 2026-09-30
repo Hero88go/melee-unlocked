@@ -437,3 +437,4 @@ crash.offer = O jogo fechou inesperadamente. Enviar um relatório de erro para q
 @Added to Mods. Online compatibility is unverified; different builds can desync. = Adicionado a Mods. Compatibilidade online não verificada; versões diferentes podem dessincronizar.
 @Direct only. Same mod required; different builds can desync. Launch vanilla for Unranked. = Somente Direct. É necessário o mesmo mod; versões diferentes podem dessincronizar. Inicie vanilla para Unranked.
 @Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked. = Direct exige os mesmos mods; versões diferentes podem dessincronizar. Source Port usa vanilla em Unranked.
+@Up to date = Atualizado

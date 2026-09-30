@@ -54,19 +54,21 @@ std::vector<CatalogMod> default_catalog() {
       "name": "Training Mode CE",
       "credits": "By UnclePunch, Aitch and contributors",
       "license": "Shared by its authors",
-      "page": "https://github.com/AlexanderHarrison/TrainingMode-CommunityEdition/releases/tag/CE-v1.4",
+      "page": "https://github.com/AlexanderHarrison/TrainingMode-CommunityEdition/releases/tag/CE-v1.4-dev1",
       "repo": "AlexanderHarrison/TrainingMode-CommunityEdition",
-      "tag": "CE-v1.4",
+      "tag": "CE-v1.4-dev1",
       "asset_pattern": "TM-CE.zip",
       "kind": "xdelta_zip",
       "one_click": true,
-      "version": "v1.4.1",
-      "url": "https://github.com/AlexanderHarrison/TrainingMode-CommunityEdition/releases/download/CE-v1.4/TM-CE.zip",
-      "sha256": "d56c97f9b176fb8de3adf3e36f00ecb22f8bb76750c0fc4a75a964970e307e6e",
+      "version": "v1.4 d1",
+      "url": "https://github.com/AlexanderHarrison/TrainingMode-CommunityEdition/releases/download/CE-v1.4-dev1/TM-CE.zip",
+      "sha256": "75091be9b402b1dea378a2ef3bc741baae3a11e0324b614cf5ee9da99d2e2d0f",
       "policy": "permission_granted",
       "tool_sha256": "d81f59b2fe5e8589c0ee9782e231c805084f4d23dfade413903a4cad63b4e342",
-      "patch_sha256": "27c467bc9b25e4ae03b8e7576b7d0eaf5a968bf83eebdaaed1f5274ba5e92316",
-      "note": "Current download v1.4.1 is not supported yet. Source Port supports v1.4 d1."
+      "patch_sha256": "6c21aac1e7c0d41b0f97f22c4cacd99f4dadae8b80507cfea6a7b47cead72e1f",
+      "output_md5": "a5312a822ff958b967da45a43ce50d09",
+      "output_sha256": "6e753b8f9c3178a9581f3c5d73ed4a75565160254f4f58c6e8c9568ea3e2a02e",
+      "note": "Runs on the Source Port."
     },
     {
       "id": "akaneia",
@@ -666,8 +668,9 @@ void refresh_window() {
     SetWindowTextW(g_buttons[i], widen(tx(primary)).c_str());
     SetWindowLongPtrW(g_buttons[i], GWLP_USERDATA, style);
     EnableWindow(g_buttons[i], enabled);
-    SetWindowTextW(g_updates[i], launcher::lang::txw(L"Update").c_str());
-    EnableWindow(g_updates[i], row.found && !busy && m.one_click && !m.version.empty() && !same_version(m.version, f.version) && !g_playing);
+    const bool current = row.found && !m.version.empty() && same_version(m.version, f.version);
+    SetWindowTextW(g_updates[i], launcher::lang::txw(current ? L"Up to date" : L"Update").c_str());
+    EnableWindow(g_updates[i], row.found && !busy && m.one_click && !m.version.empty() && !current && !g_playing);
     SetWindowTextW(g_removes[i], launcher::lang::txw(L"Remove").c_str());
     EnableWindow(g_removes[i], row.found && !busy && !g_playing);
     SetWindowTextW(g_toggles[i], launcher::lang::txw(f.enabled && row.found ? L"On" : L"Off").c_str());
@@ -855,6 +858,7 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
         select_tab(0); start_game(); return 0;
       }
       if (base == ID_MOD_BUTTON || base == ID_MOD_UPDATE) {
+        if (base == ID_MOD_UPDATE && row.found && same_version(row.catalog.version, row.installed.version)) return 0;
         if (row.catalog.one_click) {
           set_status(row.catalog.id, "Starting...");
           std::thread(download_and_install, row.catalog, g_iso).detach();
