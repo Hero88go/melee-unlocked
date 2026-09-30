@@ -170,8 +170,22 @@ def latest_releases(repo, count):
 
 def split_message(text, limit=DISCORD_LIMIT):
     """Split on blank lines so a message never breaks mid sentence."""
+    # Keep a heading and the following paragraph together before packing. Moving
+    # headings after packing can push an otherwise valid chunk over Discord's limit.
+    blocks = text.split("\n\n")
+    grouped = []
+    i = 0
+    while i < len(blocks):
+        block = blocks[i]
+        heading = block.strip()
+        if ("\n" not in heading and heading.startswith("**") and heading.endswith("**")
+                and i + 1 < len(blocks) and len(block) + 2 + len(blocks[i + 1]) <= limit):
+            block += "\n\n" + blocks[i + 1]
+            i += 1
+        grouped.append(block)
+        i += 1
     chunks, current = [], ""
-    for block in text.split("\n\n"):
+    for block in grouped:
         piece = block if not current else current + "\n\n" + block
         if len(piece) <= limit:
             current = piece
@@ -187,14 +201,8 @@ def split_message(text, limit=DISCORD_LIMIT):
         current = block
     if current:
         chunks.append(current)
-    # A heading alone at the end of a message, with its text in the next one, reads as a mistake.
-    # Move a trailing heading down to the message it introduces.
-    for i in range(len(chunks) - 1):
-        lines = chunks[i].rstrip().split("\n")
-        last = lines[-1].strip() if lines else ""
-        if len(lines) > 1 and last.startswith("**") and last.endswith("**") and len(last) < 60:
-            chunks[i] = "\n".join(lines[:-1]).rstrip()
-            chunks[i + 1] = last + "\n\n" + chunks[i + 1]
+    if any(len(chunk) > limit for chunk in chunks):
+        raise ValueError("Discord message exceeds the configured character limit")
     return chunks
 
 
@@ -312,6 +320,8 @@ def main():
         return 0
 
     webhook = read_webhook(args.webhook)
+    if any(len(chunk) > DISCORD_LIMIT for chunk in chunks):
+        raise SystemExit("refusing to post an oversized Discord message")
     posted = []
     for i, chunk in enumerate(chunks, 1):
         try:

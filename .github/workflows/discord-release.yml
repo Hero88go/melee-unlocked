@@ -17,6 +17,10 @@ on:
         description: Post or clean up announcement messages
         required: false
         default: post
+      version:
+        description: Release version to post, without v (empty posts latest four)
+        required: false
+        default: ''
       message_ids:
         description: Comma-separated Discord webhook message IDs to delete when action=cleanup
         required: false
@@ -33,6 +37,7 @@ jobs:
         env:
           MELEE_DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
           GITHUB_TOKEN: ${{ github.token }}
+          REQUESTED_VERSION: ${{ inputs.version }}
         run: |
           if [ -z "$MELEE_DISCORD_WEBHOOK" ]; then
             echo "::error::DISCORD_WEBHOOK repository secret is not configured; refusing to report a successful Discord post"
@@ -45,6 +50,8 @@ jobs:
           if [ "$GITHUB_EVENT_NAME" = "release" ]; then
             version="${GITHUB_REF_NAME#v}"
             python3 tools/post_discord.py --version "$version" --send
+          elif [ -n "$REQUESTED_VERSION" ]; then
+            python3 tools/post_discord.py --version "$REQUESTED_VERSION" --send
           else
             python3 tools/post_discord.py --last 4 --send
           fi
