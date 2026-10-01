@@ -218,6 +218,21 @@ def apply_slots(path):
     return changed
 
 
+# Lists of strings counted as sizeof(list) / 4, the console's pointer size: twice the real count
+# natively, so scrolling past an option's last value walked into whatever followed the list.
+# sizeof(list) / sizeof(*list) is the same number on the console, so no #ifdef is needed.
+COUNT_FILES = ['lab.h', 'lcancel.c', 'ledgedash.c', 'powershield.c']
+
+
+def apply_counts(path):
+    import re
+    text = open(path, encoding='utf-8', newline='').read()
+    new, n = re.subn(r'sizeof\((\w+)\) */ *4(?!\d)', r'sizeof(\1) / sizeof(*\1)', text)
+    if n:
+        open(path, 'w', encoding='utf-8', newline='').write(new)
+    return n
+
+
 def apply_block(path, first, last, native):
     text = open(path, encoding='utf-8', newline='').read()
     nl = '\r\n' if '\r\n' in text else '\n'
@@ -242,6 +257,8 @@ def main():
             missing.append((fn, first))
     for fn in SLOT_FILES:
         total += apply_slots(os.path.join(SRC, fn))
+    for fn in COUNT_FILES:
+        total += apply_counts(os.path.join(SRC, fn))
     for fn, orig, native in EDITS:
         n = apply(os.path.join(SRC, fn), orig, native)
         total += n

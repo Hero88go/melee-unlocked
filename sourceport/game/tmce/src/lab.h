@@ -1169,7 +1169,7 @@ static EventOption LabOptions_General[OPTGEN_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabOptions_CamMode) / 4,
+        .value_num = sizeof(LabOptions_CamMode) / sizeof(*LabOptions_CamMode),
         .name = "Camera Mode",
         .desc = {"Adjust the camera's behavior.",
                  "In advanced mode, use C-Stick while holding",
@@ -1364,7 +1364,7 @@ static EventOption LabOptions_InfoDisplayCPU[OPTINF_COUNT];
 static EventOption LabOptions_InfoDisplayDefault[OPTINF_COUNT] = {
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_InfoPresets) / 4,
+        .value_num = sizeof(LabValues_InfoPresets) / sizeof(*LabValues_InfoPresets),
         .name = "Display Preset",
         .desc = {"Choose between pre-configured selections."},
         .values = LabValues_InfoPresets,
@@ -1374,7 +1374,7 @@ static EventOption LabOptions_InfoDisplayDefault[OPTINF_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_InfoSizeText) / 4,
+        .value_num = sizeof(LabValues_InfoSizeText) / sizeof(*LabValues_InfoSizeText),
         .val = 1,
         .name = "Size",
         .desc = {"Change the size of the info display window.",
@@ -1384,56 +1384,56 @@ static EventOption LabOptions_InfoDisplayDefault[OPTINF_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_InfoDisplay) / 4,
+        .value_num = sizeof(LabValues_InfoDisplay) / sizeof(*LabValues_InfoDisplay),
         .name = "Row 1",
         .desc = {"Adjust what is displayed in this row."},
         .values = LabValues_InfoDisplay,
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_InfoDisplay) / 4,
+        .value_num = sizeof(LabValues_InfoDisplay) / sizeof(*LabValues_InfoDisplay),
         .name = "Row 2",
         .desc = {"Adjust what is displayed in this row."},
         .values = LabValues_InfoDisplay,
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_InfoDisplay) / 4,
+        .value_num = sizeof(LabValues_InfoDisplay) / sizeof(*LabValues_InfoDisplay),
         .name = "Row 3",
         .desc = {"Adjust what is displayed in this row."},
         .values = LabValues_InfoDisplay,
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_InfoDisplay) / 4,
+        .value_num = sizeof(LabValues_InfoDisplay) / sizeof(*LabValues_InfoDisplay),
         .name = "Row 4",
         .desc = {"Adjust what is displayed in this row."},
         .values = LabValues_InfoDisplay,
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_InfoDisplay) / 4,
+        .value_num = sizeof(LabValues_InfoDisplay) / sizeof(*LabValues_InfoDisplay),
         .name = "Row 5",
         .desc = {"Adjust what is displayed in this row."},
         .values = LabValues_InfoDisplay,
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_InfoDisplay) / 4,
+        .value_num = sizeof(LabValues_InfoDisplay) / sizeof(*LabValues_InfoDisplay),
         .name = "Row 6",
         .desc = {"Adjust what is displayed in this row."},
         .values = LabValues_InfoDisplay,
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_InfoDisplay) / 4,
+        .value_num = sizeof(LabValues_InfoDisplay) / sizeof(*LabValues_InfoDisplay),
         .name = "Row 7",
         .desc = {"Adjust what is displayed in this row."},
         .values = LabValues_InfoDisplay,
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_InfoDisplay) / 4,
+        .value_num = sizeof(LabValues_InfoDisplay) / sizeof(*LabValues_InfoDisplay),
         .name = "Row 8",
         .desc = {"Adjust what is displayed in this row."},
         .values = LabValues_InfoDisplay,
@@ -2189,7 +2189,7 @@ static EventOption LabOptions_CPU[OPTCPU_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_TDI) / 4,
+        .value_num = sizeof(LabValues_TDI) / sizeof(*LabValues_TDI),
         .name = "Trajectory DI",
         .desc = {"Adjust how the CPU will alter their knockback",
                  "trajectory."},
@@ -2212,7 +2212,7 @@ static EventOption LabOptions_CPU[OPTCPU_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_SDIDir) / 4,
+        .value_num = sizeof(LabValues_SDIDir) / sizeof(*LabValues_SDIDir),
         .name = "Smash DI Direction",
         .desc = {"Adjust the direction in which the CPU will alter ",
                  "their position during hitstop."},
@@ -2220,21 +2220,21 @@ static EventOption LabOptions_CPU[OPTCPU_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_ASDI) / 4,
+        .value_num = sizeof(LabValues_ASDI) / sizeof(*LabValues_ASDI),
         .name = "ASDI",
         .desc = {"Set CPU C-stick ASDI direction"},
         .values = LabValues_ASDI,
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_CPUBehave) / 4,
+        .value_num = sizeof(LabValues_CPUBehave) / sizeof(*LabValues_CPUBehave),
         .name = "Behavior",
         .desc = {"Adjust the CPU's default action."},
         .values = LabValues_CPUBehave,
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_CounterGround) / 4,
+        .value_num = sizeof(LabValues_CounterGround) / sizeof(*LabValues_CounterGround),
         .val = 1,
         .name = "Counter Action (Ground)",
         .desc = {"Select the action to be performed after a",
@@ -2243,7 +2243,7 @@ static EventOption LabOptions_CPU[OPTCPU_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_CounterAir) / 4,
+        .value_num = sizeof(LabValues_CounterAir) / sizeof(*LabValues_CounterAir),
         .val = 4,
         .name = "Counter Action (Air)",
         .desc = {"Select the action to be performed after an",
@@ -2252,7 +2252,7 @@ static EventOption LabOptions_CPU[OPTCPU_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_CounterShield) / 4,
+        .value_num = sizeof(LabValues_CounterShield) / sizeof(*LabValues_CounterShield),
         .val = 1,
         .name = "Counter Action (Shield)",
         .desc = {"Select the action to be performed after the",
@@ -2275,7 +2275,7 @@ static EventOption LabOptions_CPU[OPTCPU_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_Shield) / 4,
+        .value_num = sizeof(LabValues_Shield) / sizeof(*LabValues_Shield),
         .val = 1,
         .name = "Infinite Shields",
         .desc = {"Adjust how shield health deteriorates."},
@@ -2292,7 +2292,7 @@ static EventOption LabOptions_CPU[OPTCPU_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_ShieldDir) / 4,
+        .value_num = sizeof(LabValues_ShieldDir) / sizeof(*LabValues_ShieldDir),
         .name = "Shield Angle",
         .desc = {"Adjust how CPU angles their shield."},
         .values = LabValues_ShieldDir,
@@ -2305,7 +2305,7 @@ static EventOption LabOptions_CPU[OPTCPU_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_GrabEscape) / 4,
+        .value_num = sizeof(LabValues_GrabEscape) / sizeof(*LabValues_GrabEscape),
         .val = CPUMASH_NONE,
         .name = "Grab Escape",
         .desc = {"Adjust how the CPU will attempt to escape",
@@ -2314,7 +2314,7 @@ static EventOption LabOptions_CPU[OPTCPU_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_GrabRelease) / 4,
+        .value_num = sizeof(LabValues_GrabRelease) / sizeof(*LabValues_GrabRelease),
         .val = CPUGRABRELEASE_GROUNDED,
         .name = "Grab Release",
         .desc = {"Adjust how the CPU will escape grabs."},
@@ -2326,7 +2326,7 @@ static EventOption LabOptions_CPU[OPTCPU_COUNT] = {
 
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_CPUControlledBy) / 4,
+        .value_num = sizeof(LabValues_CPUControlledBy) / sizeof(*LabValues_CPUControlledBy),
         .val = 0,
         .name = "Controlled By",
         .desc = {"Select another port to control the CPU."},
@@ -2403,7 +2403,7 @@ static EventOption LabOptions_AdvCounter_Default[OPTCTR_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_CounterLogic) / 4,
+        .value_num = sizeof(LabValues_CounterLogic) / sizeof(*LabValues_CounterLogic),
         .name = "Counter Logic",
         .desc = {"How to alter the counter option.",
                  "Default = use basic counter options.",
@@ -2414,7 +2414,7 @@ static EventOption LabOptions_AdvCounter_Default[OPTCTR_COUNT] = {
     
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_CounterGround) / 4,
+        .value_num = sizeof(LabValues_CounterGround) / sizeof(*LabValues_CounterGround),
         .val = 1,
         .name = "Counter Action (Ground)",
         .desc = {"Select the action to be performed after a",
@@ -2424,7 +2424,7 @@ static EventOption LabOptions_AdvCounter_Default[OPTCTR_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_CounterAir) / 4,
+        .value_num = sizeof(LabValues_CounterAir) / sizeof(*LabValues_CounterAir),
         .val = 4,
         .name = "Counter Action (Air)",
         .desc = {"Select the action to be performed after an",
@@ -2434,7 +2434,7 @@ static EventOption LabOptions_AdvCounter_Default[OPTCTR_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_CounterShield) / 4,
+        .value_num = sizeof(LabValues_CounterShield) / sizeof(*LabValues_CounterShield),
         .val = 1,
         .name = "Counter Action (Shield)",
         .desc = {"Select the action to be performed after the",
@@ -2550,7 +2550,7 @@ enum tech_option
 static EventOption LabOptions_Tech[OPTTECH_COUNT] = {
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_Tech) / 4,
+        .value_num = sizeof(LabValues_Tech) / sizeof(*LabValues_Tech),
         .name = "Tech Option",
         .desc = {"Adjust what the CPU will do upon colliding",
                  "with the stage."},
@@ -2559,7 +2559,7 @@ static EventOption LabOptions_Tech[OPTTECH_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_Getup) / 4,
+        .value_num = sizeof(LabValues_Getup) / sizeof(*LabValues_Getup),
         .name = "Get Up Option",
         .desc = {"Adjust what the CPU will do after missing",
                  "a tech input."},
@@ -2958,7 +2958,7 @@ static EventOption LabOptions_Record[OPTREC_COUNT] = {
 
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_HMNRecordMode) / 4,
+        .value_num = sizeof(LabValues_HMNRecordMode) / sizeof(*LabValues_HMNRecordMode),
         .name = "HMN Mode",
         .desc = {"Toggle between recording and playback of",
                  "inputs."},
@@ -2967,7 +2967,7 @@ static EventOption LabOptions_Record[OPTREC_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_RecordSlot) / 4,
+        .value_num = sizeof(LabValues_RecordSlot) / sizeof(*LabValues_RecordSlot),
         .val = 1,
         .name = "HMN Record Slot",
         .desc = {"Toggle which recording slot to save inputs ",
@@ -2978,7 +2978,7 @@ static EventOption LabOptions_Record[OPTREC_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_CPURecordMode) / 4,
+        .value_num = sizeof(LabValues_CPURecordMode) / sizeof(*LabValues_CPURecordMode),
         .name = "CPU Mode",
         .desc = {"Toggle between recording and playback of",
                  "inputs."},
@@ -2987,7 +2987,7 @@ static EventOption LabOptions_Record[OPTREC_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_RecordSlot) / 4,
+        .value_num = sizeof(LabValues_RecordSlot) / sizeof(*LabValues_RecordSlot),
         .val = 1,
         .name = "CPU Record Slot",
         .desc = {"Toggle which recording slot to save inputs ",
@@ -2997,7 +2997,7 @@ static EventOption LabOptions_Record[OPTREC_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabOptions_ChangeMirroredPlayback) / 4,
+        .value_num = sizeof(LabOptions_ChangeMirroredPlayback) / sizeof(*LabOptions_ChangeMirroredPlayback),
         .name = "Mirrored Playback",
         .desc = {"Playback with mirrored the recorded inputs,",
                  "positions and facing directions.",
@@ -3008,7 +3008,7 @@ static EventOption LabOptions_Record[OPTREC_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_PlaybackCounterActions) / 4,
+        .value_num = sizeof(LabValues_PlaybackCounterActions) / sizeof(*LabValues_PlaybackCounterActions),
         .name = "CPU Counter",
         .val = 1,
         .desc = {"Choose when CPU will start performing",
@@ -3022,7 +3022,7 @@ static EventOption LabOptions_Record[OPTREC_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabValues_AutoRestore) / 4,
+        .value_num = sizeof(LabValues_AutoRestore) / sizeof(*LabValues_AutoRestore),
         .name = "Auto Restore",
         .desc = {"Automatically restore saved positions."},
         .values = LabValues_AutoRestore,
@@ -3034,7 +3034,7 @@ static EventOption LabOptions_Record[OPTREC_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabOptions_TakeoverTarget) / 4,
+        .value_num = sizeof(LabOptions_TakeoverTarget) / sizeof(*LabOptions_TakeoverTarget),
         .name = "Playback Takeover",
         .desc = {"Which character to takeover when",
                  "inputting during playback."},
@@ -3119,14 +3119,14 @@ static const char *LabOptions_Slot[] = {"Slot 1", "Slot 2", "Slot 3", "Slot 4", 
 static EventOption LabOptions_SlotManagement[OPTSLOT_COUNT] = {
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabOptions_HmnCpu) / 4,
+        .value_num = sizeof(LabOptions_HmnCpu) / sizeof(*LabOptions_HmnCpu),
         .name = "Player",
         .desc = {"Select the player to manage."},
         .values = LabOptions_HmnCpu,
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabOptions_Slot) / 4,
+        .value_num = sizeof(LabOptions_Slot) / sizeof(*LabOptions_Slot),
         .name = "Slot",
         .desc = {"Select the slot to manage."},
         .values = LabOptions_Slot,
@@ -3145,7 +3145,7 @@ static EventOption LabOptions_SlotManagement[OPTSLOT_COUNT] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LabOptions_Slot) / 4,
+        .value_num = sizeof(LabOptions_Slot) / sizeof(*LabOptions_Slot),
         .name = "Copy Slot To",
         .desc = {"Select the slot to copy to."},
         .values = LabOptions_Slot,

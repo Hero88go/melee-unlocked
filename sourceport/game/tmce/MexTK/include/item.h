@@ -422,6 +422,9 @@ struct SpawnItem
     short damage;                       // 0x3C
     short unk5;                         // 0x3E
     int unk6;                           // 0x40, 1 = correct initial position
+#ifdef MU_NATIVE
+    unsigned char : 7; /* the game keeps this flag byte most significant bit first */
+#endif
     unsigned char is_raycast_below : 1; // 0x44, 0x80 = perform initial collision check
     int is_spin;                        // 0x48, enables item spinning
 };
@@ -811,14 +814,14 @@ struct ItemData /* native twin, generated */
         struct { char _p1301[4867]; char xda7; };
         struct { char _p1302[4868]; char xda8; };
         struct { char _p1303[4869]; char xda9; };
-        struct { char _p1304[4870]; unsigned char xdaa1 : 1; };
-        struct { char _p1305[4870]; unsigned char : 1; unsigned char show_center_sphere : 1; };
-        struct { char _p1306[4870]; unsigned char : 2; unsigned char show_item_pickup : 1; };
-        struct { char _p1307[4870]; unsigned char : 3; unsigned char show_footstool : 1; };
-        struct { char _p1308[4870]; unsigned char : 4; unsigned char xda8_x8 : 1; };
-        struct { char _p1309[4870]; unsigned char : 5; unsigned char show_dynamics : 1; };
-        struct { char _p1310[4870]; unsigned char : 6; unsigned char show_hit : 1; };
-        struct { char _p1311[4870]; unsigned char : 7; unsigned char show_model : 1; };
+        struct { char _p1304[4870]; unsigned char : 7; unsigned char xdaa1 : 1; };
+        struct { char _p1305[4870]; unsigned char : 6; unsigned char show_center_sphere : 1; };
+        struct { char _p1306[4870]; unsigned char : 5; unsigned char show_item_pickup : 1; };
+        struct { char _p1307[4870]; unsigned char : 4; unsigned char show_footstool : 1; };
+        struct { char _p1308[4870]; unsigned char : 3; unsigned char xda8_x8 : 1; };
+        struct { char _p1309[4870]; unsigned char : 2; unsigned char show_dynamics : 1; };
+        struct { char _p1310[4870]; unsigned char : 1; unsigned char show_hit : 1; };
+        struct { char _p1311[4870]; unsigned char show_model : 1; };
         struct { char _p1316[4872]; struct {
             union {
                 char _mex_span[20];
@@ -863,30 +866,30 @@ struct ItemData /* native twin, generated */
         struct { char _p1348[4905]; unsigned char : 5; unsigned char xdcd6 : 1; };
         struct { char _p1349[4905]; unsigned char : 6; unsigned char xdcd7 : 1; };
         struct { char _p1350[4905]; unsigned char : 7; unsigned char xdcd8 : 1; };
-        struct { char _p1351[4906]; unsigned char xdce1 : 1; };
-        struct { char _p1352[4906]; unsigned char : 1; unsigned char xdce2 : 1; };
-        struct { char _p1353[4906]; unsigned char : 2; unsigned char xdce3 : 1; };
-        struct { char _p1354[4906]; unsigned char : 3; unsigned char xdce4 : 1; };
-        struct { char _p1355[4906]; unsigned char : 4; unsigned char xdce5 : 1; };
-        struct { char _p1356[4906]; unsigned char : 5; unsigned char xdce6 : 1; };
-        struct { char _p1357[4906]; unsigned char : 6; unsigned char is_detect : 1; };
-        struct { char _p1358[4906]; unsigned char : 7; unsigned char xdce8 : 1; };
-        struct { char _p1359[4907]; unsigned char xdcf1 : 1; };
-        struct { char _p1360[4907]; unsigned char : 1; unsigned char xdcf2 : 1; };
-        struct { char _p1361[4907]; unsigned char : 2; unsigned char xdcf3 : 1; };
-        struct { char _p1362[4907]; unsigned char : 3; unsigned char xdcf4 : 1; };
-        struct { char _p1363[4907]; unsigned char : 4; unsigned char xdcf5 : 1; };
-        struct { char _p1364[4907]; unsigned char : 5; unsigned char xdcf6 : 1; };
-        struct { char _p1365[4907]; unsigned char : 6; unsigned char is_hurt_by_fighter : 1; };
-        struct { char _p1366[4907]; unsigned char : 7; unsigned char xdcf8 : 1; };
-        struct { char _p1367[4908]; unsigned char is_footstool : 1; };
-        struct { char _p1368[4908]; unsigned char : 1; unsigned char xdd0_x40 : 1; };
-        struct { char _p1369[4908]; unsigned char : 2; unsigned char xdd0_x20 : 1; };
-        struct { char _p1370[4908]; unsigned char : 3; unsigned char xdd0_x10 : 1; };
-        struct { char _p1371[4908]; unsigned char : 4; unsigned char is_grabbable : 1; };
-        struct { char _p1372[4908]; unsigned char : 5; unsigned char xdd0_x04 : 1; };
-        struct { char _p1373[4908]; unsigned char : 6; unsigned char xdd0_x02 : 1; };
-        struct { char _p1374[4908]; unsigned char : 7; unsigned char xdd0_x01 : 1; };
+        struct { char _p1351[4906]; unsigned char : 7; unsigned char xdce1 : 1; };
+        struct { char _p1352[4906]; unsigned char : 6; unsigned char xdce2 : 1; };
+        struct { char _p1353[4906]; unsigned char : 5; unsigned char xdce3 : 1; };
+        struct { char _p1354[4906]; unsigned char : 4; unsigned char xdce4 : 1; };
+        struct { char _p1355[4906]; unsigned char : 3; unsigned char xdce5 : 1; };
+        struct { char _p1356[4906]; unsigned char : 2; unsigned char xdce6 : 1; };
+        struct { char _p1357[4906]; unsigned char : 1; unsigned char is_detect : 1; };
+        struct { char _p1358[4906]; unsigned char xdce8 : 1; };
+        struct { char _p1359[4907]; unsigned char : 7; unsigned char xdcf1 : 1; };
+        struct { char _p1360[4907]; unsigned char : 6; unsigned char xdcf2 : 1; };
+        struct { char _p1361[4907]; unsigned char : 5; unsigned char xdcf3 : 1; };
+        struct { char _p1362[4907]; unsigned char : 4; unsigned char xdcf4 : 1; };
+        struct { char _p1363[4907]; unsigned char : 3; unsigned char xdcf5 : 1; };
+        struct { char _p1364[4907]; unsigned char : 2; unsigned char xdcf6 : 1; };
+        struct { char _p1365[4907]; unsigned char : 1; unsigned char is_hurt_by_fighter : 1; };
+        struct { char _p1366[4907]; unsigned char xdcf8 : 1; };
+        struct { char _p1367[4908]; unsigned char : 7; unsigned char is_footstool : 1; };
+        struct { char _p1368[4908]; unsigned char : 6; unsigned char xdd0_x40 : 1; };
+        struct { char _p1369[4908]; unsigned char : 5; unsigned char xdd0_x20 : 1; };
+        struct { char _p1370[4908]; unsigned char : 4; unsigned char xdd0_x10 : 1; };
+        struct { char _p1371[4908]; unsigned char : 3; unsigned char is_grabbable : 1; };
+        struct { char _p1372[4908]; unsigned char : 2; unsigned char xdd0_x04 : 1; };
+        struct { char _p1373[4908]; unsigned char : 1; unsigned char xdd0_x02 : 1; };
+        struct { char _p1374[4908]; unsigned char xdd0_x01 : 1; };
         struct { char _p1500[4912]; struct {
             union {
                 char _mex_span[504];

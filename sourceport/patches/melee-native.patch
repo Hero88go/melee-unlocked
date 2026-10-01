@@ -100848,7 +100848,7 @@ index 2adba8159..37829ec96 100644
  
      gm_InitVsMode(temp_r31);
 diff --git a/src/melee/gm/gmvs.c b/src/melee/gm/gmvs.c
-index b2fc84a75..fd1557c8c 100644
+index b2fc84a75..df3fa952b 100644
 --- a/src/melee/gm/gmvs.c
 +++ b/src/melee/gm/gmvs.c
 @@ -41,11 +41,17 @@
@@ -102185,7 +102185,7 @@ index b2fc84a75..fd1557c8c 100644
                                     is_teams, Player_GetPlayerSlotType(i))));
  }
  
-@@ -1882,6 +2083,154 @@ void fn_8016E124(void)
+@@ -1882,6 +2083,162 @@ void fn_8016E124(void)
  }
  
  /// @todo The loop's SFX flag load uses a different equivalent address form.
@@ -102216,6 +102216,11 @@ index b2fc84a75..fd1557c8c 100644
 +static void mu_neutral_spawn_at(int slot, int index, u8 teams)
 +{
 +    static const u8 team_order[4] = { 0, 3, 1, 2 };
++    /* Training Mode CE carries its own copy of the code (ASM/Additional Codes/Neutral Spawn.asm),
++     * the same table except Final Destination's teams row. Its events are team matches with both
++     * fighters on one team, so that row decides which side the CPU starts on, and events such as
++     * the down-throw knee one restart until the player stands on the side they expect. */
++    static const float tmce_fd_teams[4][2] = { { -20, 10 }, { -60, 10 }, { 20, 10 }, { 60, 10 } };
 +    Vec3 pos;
 +    int e;
 +    for (e = 0; e < (int) ARRAY_SIZE(mu_neutral_spawns); e++) {
@@ -102226,6 +102231,9 @@ index b2fc84a75..fd1557c8c 100644
 +    if (e < (int) ARRAY_SIZE(mu_neutral_spawns)) {
 +        const float* p = teams ? mu_neutral_spawns[e].teams[index & 3]
 +                               : mu_neutral_spawns[e].singles[index & 3];
++        if (teams && mu_neutral_spawns[e].stkind == 0x20 && mu_tmce_active()) {
++            p = tmce_fd_teams[index & 3];
++        }
 +        pos.x = p[0];
 +        pos.y = p[1];
 +        pos.z = 0.0f;
@@ -102340,7 +102348,7 @@ index b2fc84a75..fd1557c8c 100644
  void fn_8016E2BC(void)
  {
      UNUSED u8 pad[8];
-@@ -1896,7 +2245,7 @@ void fn_8016E2BC(void)
+@@ -1896,7 +2253,7 @@ void fn_8016E2BC(void)
      PAD_STACK(0xC);
  
      Player_80036DA4();
@@ -102349,7 +102357,7 @@ index b2fc84a75..fd1557c8c 100644
          var_r0 = true;
      } else {
          var_r0 = false;
-@@ -1913,10 +2262,10 @@ void fn_8016E2BC(void)
+@@ -1913,10 +2270,10 @@ void fn_8016E2BC(void)
          Player_80032768(0, &sp24);
          single_is_teams = controller.start.is_teams == true;
          Player_SetUnk45(0, fn_80160840(gm_80160854(
@@ -102362,7 +102370,7 @@ index b2fc84a75..fd1557c8c 100644
              lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
          }
          fn_80169C54(Player_GetPlayerCharacter(0), Player_GetCostumeId(0));
-@@ -1940,13 +2289,18 @@ void fn_8016E2BC(void)
+@@ -1940,13 +2297,18 @@ void fn_8016E2BC(void)
                      }
                  }
                  Player_80032768(i, &sp18);
@@ -102383,7 +102391,7 @@ index b2fc84a75..fd1557c8c 100644
                      lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
                  }
              }
-@@ -1989,6 +2343,16 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -1989,6 +2351,16 @@ void fn_8016E730(StartMeleeData* arg0)
      VsSceneController* r30;
  
      db_Setup();
@@ -102400,7 +102408,7 @@ index b2fc84a75..fd1557c8c 100644
      gm_SetDbPauseInputHandlers(gm_AnyControllerPressedStart,
                                 gm_AnyControllerPressedZ);
      gm_SetPreGObjProcCallback(db_RunEveryFrame);
-@@ -1997,6 +2361,9 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -1997,6 +2369,9 @@ void fn_8016E730(StartMeleeData* arg0)
      Camera_Init(70);
      Camera_Create();
      fn_8016DCC0(arg0);
@@ -102410,7 +102418,7 @@ index b2fc84a75..fd1557c8c 100644
      lbRefract_800222A4();
      lb_8000FCDC();
      efLib_Init();
-@@ -2010,7 +2377,7 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -2010,7 +2385,7 @@ void fn_8016E730(StartMeleeData* arg0)
  
      r30 = &controller;
  
@@ -102419,7 +102427,7 @@ index b2fc84a75..fd1557c8c 100644
      Item_80266F70();
      Item_80266FCC();
      it_8026D018();
-@@ -2022,13 +2389,20 @@ void fn_8016E730(StartMeleeData* arg0)
+@@ -2022,13 +2397,20 @@ void fn_8016E730(StartMeleeData* arg0)
      Ground_EnableMatchCamera();
      Camera_8002F3AC();
      fn_801A1134();
@@ -102442,7 +102450,7 @@ index b2fc84a75..fd1557c8c 100644
      if (arg0->rules.on_match_start != NULL) {
          arg0->rules.on_match_start();
      }
-@@ -2059,7 +2433,7 @@ struct EndMeleeData {
+@@ -2059,7 +2441,7 @@ struct EndMeleeData {
      /* 00 */ u32 x0;
      /* 04 */ u32 x4;
      /* 08 */ u32 x8;
@@ -102451,7 +102459,7 @@ index b2fc84a75..fd1557c8c 100644
  };
  
  static inline bool gm_8016E9C8_inline(void)
-@@ -2086,34 +2460,46 @@ void gm_Scene_Vs_OnExit(void* user_data)
+@@ -2086,34 +2468,46 @@ void gm_Scene_Vs_OnExit(void* user_data)
      VsSceneController* tmp = &controller;
      int i;
  
@@ -102508,7 +102516,7 @@ index b2fc84a75..fd1557c8c 100644
          {
              for (i = 0; i < 6; i++) {
                  if (Player_GetPlayerSlotType(i) == Gm_PKind_Human) {
-@@ -2123,6 +2509,12 @@ void gm_Scene_Vs_OnExit(void* user_data)
+@@ -2123,6 +2517,12 @@ void gm_Scene_Vs_OnExit(void* user_data)
              }
          }
      }
@@ -102521,7 +102529,7 @@ index b2fc84a75..fd1557c8c 100644
  }
  
  void gm_Scene_SuddenDeath_OnEnter(void* user_data)
-@@ -2145,7 +2537,7 @@ void gm_Scene_Training_OnEnter(void* user_data)
+@@ -2145,7 +2545,7 @@ void gm_Scene_Training_OnEnter(void* user_data)
      grStadium_801D410C();
      un_802FD404();
      tmp2 = &controller;
@@ -102530,7 +102538,7 @@ index b2fc84a75..fd1557c8c 100644
      Stage_802252E4(tmp2->start.stkind, NULL);
      grStadium_801D4040();
      if (!controller.start.x1_3) {
-@@ -2187,7 +2579,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2187,7 +2587,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
      float var_f1;
      PAD_STACK(8);
  
@@ -102539,7 +102547,7 @@ index b2fc84a75..fd1557c8c 100644
          Player_GetPlayerSlotType(arg0) == Gm_PKind_NA &&
          Player_GetEntity(arg0) == NULL)
      {
-@@ -2211,7 +2603,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2211,7 +2611,7 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
          Player_80032768(arg0, &sp18);
          setPlayerUnk45(arg0);
          Player_80031AD0(arg0);
@@ -102548,7 +102556,7 @@ index b2fc84a75..fd1557c8c 100644
              lbAudioAx_800237A8(0x41F4E, 0x7F, 0x40);
          }
          fn_8016E124();
-@@ -2225,7 +2617,9 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
+@@ -2225,7 +2625,9 @@ bool gm_8016EDDC(int arg0, PlayerInitData* arg1)
  
  bool fn_8016EF98(int arg0)
  {
@@ -102559,7 +102567,7 @@ index b2fc84a75..fd1557c8c 100644
          ifStatus_802F6788(arg0);
          Player_80031EBC(arg0);
          Player_SetSlottype(arg0, Gm_PKind_NA);
-@@ -2288,3 +2682,9 @@ int fn_8016F160(int arg0, int arg1)
+@@ -2288,3 +2690,9 @@ int fn_8016F160(int arg0, int arg1)
  {
      return pl_80039418(arg0, arg1);
  }

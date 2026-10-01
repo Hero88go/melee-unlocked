@@ -64,7 +64,7 @@ static int LdshOptions_ResetDelayFailure[] = { 60, 20, 1, 1 };
 static EventOption LdshOptions_Main[] = {
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LdshOptions_Start) / 4,
+        .value_num = sizeof(LdshOptions_Start) / sizeof(*LdshOptions_Start),
         .name = "Starting Position",
         .desc = {"Choose where the fighter is placed ",
                  "after resetting positions."},
@@ -73,7 +73,7 @@ static EventOption LdshOptions_Main[] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LdshOptions_Reset) / 4,
+        .value_num = sizeof(LdshOptions_Reset) / sizeof(*LdshOptions_Reset),
         .val = OPTRESET_SAME_SIDE,
         .name = "Reset",
         .desc = {"Change where the fighter gets placed",
@@ -96,7 +96,7 @@ static EventOption LdshOptions_Main[] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LdshOptions_CamMode) / 4,
+        .value_num = sizeof(LdshOptions_CamMode) / sizeof(*LdshOptions_CamMode),
         .name = "Camera Mode",
         .desc = {"Adjust the camera's behavior.",
                  "In advanced mode, use C-Stick while holding",

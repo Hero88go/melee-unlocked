@@ -60,7 +60,7 @@ static const char *Options_Movement[] = { "In-Place", "Random", "Approaching", "
 static EventOption Options_Main[] = {
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(Options_FireSpeed) / 4,
+        .value_num = sizeof(Options_FireSpeed) / sizeof(*Options_FireSpeed),
         .name = "Fire Speed",
         .desc = {"Change the rate of fire."},
         .values = Options_FireSpeed,
@@ -88,14 +88,14 @@ static EventOption Options_Main[] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(Options_LaserHeight) / 4,
+        .value_num = sizeof(Options_LaserHeight) / sizeof(*Options_LaserHeight),
         .name = "Laser Height",
         .desc = {"Change the laser height."},
         .values = Options_LaserHeight,
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(Options_Direction) / 4,
+        .value_num = sizeof(Options_Direction) / sizeof(*Options_Direction),
         .name = "Direction",
         .desc = {"Change which way falco shoots a laser."},
         .values = Options_Direction,
@@ -103,7 +103,7 @@ static EventOption Options_Main[] = {
     },
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(Options_Movement) / 4,
+        .value_num = sizeof(Options_Movement) / sizeof(*Options_Movement),
         .name = "Movement",
         .desc = {"Change how falco lasers around the stage."},
         .values = Options_Movement,
