@@ -654,7 +654,11 @@ float Target_GetWdashDistance(FighterData *hmn_data, float mag)
     distance += mag;
 
     // subsequent, apply friction until at 0
+#ifdef MU_NATIVE
+    for (int mu_steps = 0; mag > 0 && mu_steps < 600; mu_steps++)
+#else
     while (mag > 0)
+#endif
     {
 
         // get friction

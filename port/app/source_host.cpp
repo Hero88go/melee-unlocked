@@ -149,9 +149,13 @@ bool read_fst() {
   uint8_t header[0x440];
   if (!host::disc_read(0, header, sizeof header)) return false;
   const uint32_t fst_offset = be32(header + 0x424), fst_size = be32(header + 0x428);
+  // A trimmed, compressed or damaged image can have no usable table here: refuse it plainly instead
+  // of reading an empty buffer (a 0.8.5 player's disc crashed at startup this way).
+  if (fst_size < 12 || fst_size > (16u << 20)) return false;
   std::vector<uint8_t> fst(fst_size);
   if (!host::disc_read(fst_offset, fst.data(), fst_size)) return false;
   const uint32_t count = be32(fst.data() + 8);
+  if (count < 1 || (uint64_t)count * 12 > fst_size) return false;
   const char* names = (const char*)fst.data() + count * 12;
   g_fst_raw = fst;
   g_fst.assign(count, FstFile{});
@@ -159,7 +163,9 @@ bool read_fst() {
   for (uint32_t i = 1; i < count; ++i) {
     while (dirs.size() > 1 && i >= dirs.back().first) dirs.pop_back();
     const uint8_t* e = fst.data() + i * 12;
-    std::string name = names + (be32(e) & 0xFFFFFFu);
+    const uint32_t name_at = count * 12 + (be32(e) & 0xFFFFFFu);
+    if (name_at >= fst_size) return false;
+    std::string name(names + (be32(e) & 0xFFFFFFu), strnlen(names + (be32(e) & 0xFFFFFFu), fst_size - name_at));
     std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
     const std::string full = dirs.back().second + "/" + name;
     g_fst[i] = {be32(e + 4), be32(e + 8), e[0] != 0};
@@ -2367,7 +2373,7 @@ int run(void (*shutdown)(int)) {
   mods::status().source_port = true;
   // Tests only: 20XX TE's features without mounting its save (its menu memory changes scripted runs).
   if (std::getenv("MELEE_TEST_TE_OWNED")) mods::status().te_owned = true;
-  if (!read_fst()) host::die("cannot read the disc's filesystem table");
+  if (!read_fst()) host::die("this disc image has no readable file table. Use a clean, uncompressed Melee NTSC 1.02 ISO (a trimmed or compressed image will not work)");
   load_mod_overlay();
   check_replay_content();
   load_cosmetics(g_replay || g_online_test_mode >= 0);

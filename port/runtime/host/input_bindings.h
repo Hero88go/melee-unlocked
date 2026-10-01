@@ -220,8 +220,18 @@ inline HidBindings vjoy_b0xx_bindings() {
 // default, passes the stick through untouched. Inside the deadzone the stick reads as centred;
 // outside it is left exactly as the device sent it, so no angle a box or a notched pad produces
 // is moved.
+//
+// Trigger values per family: 255, the default, leaves a trigger exactly as it is. Below 255 the
+// trigger is analog only, the way Dolphin's L-Analog / R-Analog range works: its value is capped
+// there and the full-press click is not sent. A digital or hair trigger then gives a light shield
+// (Melee shields lightly from 43, hardest at 140; only the click gives a full shield).
 enum class PadFamily : uint8_t { GameCube, Xbox, PlayStation, Switch, Box, Count };
-struct Deadzone { int main = 0, c = 0; };
+struct Deadzone { int main = 0, c = 0, trig_l = 255, trig_r = 255; };
+inline void apply_trigger_cap(int cap, uint8_t& value, uint16_t& button, uint16_t click) {
+  if (cap >= 255) return;
+  if (value > cap) value = (uint8_t)(cap < 0 ? 0 : cap);
+  button &= (uint16_t)~click;
+}
 extern std::array<Deadzone, (size_t)PadFamily::Count> g_deadzones;
 inline void apply_deadzone(const Deadzone& dz, int8_t& x, int8_t& y, bool c) {
   const int r = c ? dz.c : dz.main;

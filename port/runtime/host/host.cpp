@@ -159,6 +159,9 @@ void log(const char* fmt, ...) {
 
 void log_guest_text(const char* data, size_t len) { log_enqueue(data, len); }
 
+static void (*g_die_hook)(const char*) = nullptr;
+void set_die_hook(void (*hook)(const char*)) { g_die_hook = hook; }
+
 [[noreturn]] void die(const char* fmt, ...) {
   log_flush();
   va_list ap; va_start(ap, fmt);
@@ -176,6 +179,14 @@ void log_guest_text(const char* data, size_t len) { log_enqueue(data, len); }
   }
   std::fflush(stderr);
   std::fflush(stdout);
+  if (void (*hook)(const char*) = g_die_hook) {
+    g_die_hook = nullptr;   // once, even if the hook itself fails
+    char message[512];
+    va_list ap3; va_start(ap3, fmt);
+    std::vsnprintf(message, sizeof message, fmt, ap3);
+    va_end(ap3);
+    hook(message);
+  }
   std::exit(3);
 }
 
@@ -411,13 +422,30 @@ static void load_dol_from_file(const std::string& path) {
   if (!read_at(dol_offset, dh, sizeof dh)) die("cannot read the vanilla DOL header");
   auto be = [&](int o) { return ((uint32_t)dh[o] << 24) | ((uint32_t)dh[o + 1] << 16) | ((uint32_t)dh[o + 2] << 8) | dh[o + 3]; };
   g_text_ranges.clear();
+  std::vector<std::pair<uint32_t, uint32_t>> data_sections;
   for (int i = 0; i < 18; ++i) {
     uint32_t off = be(i * 4), addr = be(0x48 + i * 4), size = be(0x90 + i * 4);
     if (!size) continue;
     if (!read_at(dol_offset + off, ptr(addr, size), size)) die("cannot read vanilla DOL section %d", i);
     if (i < 7) g_text_ranges.push_back({addr, size});
+    else data_sections.push_back({addr, size});
   }
   std::fclose(f);
+  // Slippi's helper branch slots (800055EC..800056BC, inside a DOL data section): the recompiled
+  // game compiled each one as a function that jumps to Slippi's helper. Mods put their own helpers
+  // in the same slots (Akaneia replaces 8 of them, one is its sound bank request), so the slots are
+  // watched as code too: a slot the mod rewrites runs the mod's branch, not the compiled one.
+  for (const auto& d : data_sections) {
+    uint32_t lo = 0xFFFFFFFFu, hi = 0;
+    for (size_t i = 0; i < guest::name_table_count; ++i) {
+      const uint32_t a = guest::name_table[i].addr;
+      if (a < d.first || a - d.first >= d.second) continue;
+      if (std::strncmp(guest::name_table[i].name, "gecko_hook_", 11) != 0) continue;
+      lo = std::min(lo, a);
+      hi = std::max(hi, a + 4);
+    }
+    if (lo < hi && hi - lo <= 0x1000) g_text_ranges.push_back({lo, hi - lo});
+  }
   g_vanilla_text.clear();
   for (const auto& r : g_text_ranges) { const uint8_t* p = ptr(r.first, r.second); g_vanilla_text.insert(g_vanilla_text.end(), p, p + r.second); }
 }
@@ -735,6 +763,18 @@ void boot_setup() {
   log("boot: FST %u bytes at %08X (max %X), arena hi %08X", g_fst_size, fst_addr, g_fst_max, fst_addr);
   install_gecko_boot();
   if (g_mod_disc) apply_mod_code();
+  // MELEE_TEST_INTERPRET=<addr>[,<addr>...]: run those functions in the interpreter on any disc, so
+  // interpreted and compiled behaviour can be compared on the vanilla game. Test runs only (hidden
+  // and headless runs never open the GameCube adapter, which is what marks them here).
+  if (const char* v = std::getenv("MELEE_TEST_INTERPRET"); v && options.no_gc_adapter) {
+    for (const char* p = v; *p;) {
+      char* end = nullptr;
+      const uint32_t a = (uint32_t)std::strtoul(p, &end, 16);
+      if (end == p) break;
+      log("test: %08X %s %s", a, symbol_name(a), ppc::redirect_to_interpreter(a) ? "runs in the interpreter" : "could not be redirected");
+      p = (*end == ',') ? end + 1 : end;
+    }
+  }
 
   cpu->msr = 0x00002030u | 0x8000u;                  // FP | DR | IR | EE
   cpu->fpscr = 0;
@@ -743,14 +783,28 @@ void boot_setup() {
 }
 
 // ---------------- guest calls from host ----------------
+static void (*g_after_guest_call)(uint32_t) = nullptr;
 void call_guest(uint32_t addr, uint32_t r3, uint32_t r4, uint32_t r5, uint32_t r6) {
   ppc::Context& c = *cpu;
   uint32_t saved_lr = c.lr;
+  // A callback delivered at a poll (an interrupt on the console) may find the interrupted function
+  // between saving its LR into its caller's frame (stw r0,4(r1)) and making its own frame (stwu).
+  // The callback's prologue writes 4(r1) as well, so on the same r1 it overwrote that saved LR with 0
+  // and the interrupted function returned to address 0 (the ACE sound crash). The console's interrupt
+  // path gives handlers a frame of their own; so does this: r1 moves below a back-chained frame.
+  const uint32_t saved_r1 = c.r[1];
+  if (saved_r1 >= 0x80000100u && saved_r1 < 0x81800000u) {
+    c.r[1] = (saved_r1 - 0x40u) & ~7u;
+    wr32(c.r[1], saved_r1);
+  }
   c.r[3] = r3; c.r[4] = r4; c.r[5] = r5; c.r[6] = r6;
   c.lr = 0;
   ppc::call(c, ram, addr);
   c.lr = saved_lr;
+  c.r[1] = saved_r1;
+  if (g_after_guest_call) g_after_guest_call(addr);
 }
+void set_after_guest_call(void (*hook)(uint32_t addr)) { g_after_guest_call = hook; }
 
 // ---------------- events ----------------
 void post_completion(Completion fn) { g_completions.push_back(std::move(fn)); }

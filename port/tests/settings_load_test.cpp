@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <chrono>
 #include <sstream>
 #include <string>
@@ -366,6 +367,32 @@ int main() {
     CHECK(gx::texpack::disabled_packs().empty());
     std::error_code ec;
     fs::remove(path, ec);
+  }
+  // Trigger values per family: saved only when changed, read back, clamped; a file without them
+  // leaves every trigger at Full (255) and saving writes no trigger line.
+  {
+    const fs::path trig_path = fs::temp_directory_path() / "melee_unlocked_settings_trigger_test.ini";
+    { std::ofstream f(trig_path); f << "trigger_switch_l 100\ntrigger_xbox_r 999\n"; }
+    gx::RenderOptions o;
+    o.settings_path = trig_path.string();
+    int vol = 0;
+    gx::load_pc_settings(o, vol);
+    CHECK(host::g_deadzones[(size_t)host::PadFamily::Switch].trig_l == 100);
+    CHECK(host::g_deadzones[(size_t)host::PadFamily::Switch].trig_r == 255);
+    CHECK(host::g_deadzones[(size_t)host::PadFamily::Xbox].trig_r == 255);   // clamped
+    CHECK(gx::save_pc_settings(o, vol));
+    host::g_deadzones[(size_t)host::PadFamily::Switch].trig_l = 255;
+    gx::RenderOptions again;
+    again.settings_path = trig_path.string();
+    gx::load_pc_settings(again, vol);
+    CHECK(host::g_deadzones[(size_t)host::PadFamily::Switch].trig_l == 100);
+    host::g_deadzones[(size_t)host::PadFamily::Switch].trig_l = 255;
+    CHECK(gx::save_pc_settings(again, vol));
+    std::string text;
+    { std::ifstream f(trig_path); text.assign(std::istreambuf_iterator<char>(f), {}); }
+    CHECK(text.find("trigger_") == std::string::npos);
+    std::error_code ec;
+    fs::remove(trig_path, ec);
   }
   // Audio mode 3 (ASIO) with its driver name (spaces) and buffer round-trips; out-of-range modes clamp.
   {

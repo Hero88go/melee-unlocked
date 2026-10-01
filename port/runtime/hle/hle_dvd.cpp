@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <vector>
 
 namespace {
 constexpr uint32_t DVD_STATE_END = 0, DVD_STATE_BUSY = 1;
@@ -43,6 +44,11 @@ struct AsyncRead {
   bool file_info;
   uint64_t ready_tb;
   std::shared_ptr<std::atomic<bool>> done;
+  // The worker reads into this buffer; the bytes reach guest memory on the sim thread when the read
+  // completes (dvd_poll), as a console's DMA has finished by the time its callback runs. Written
+  // straight into guest memory from the worker, a read landed at a different moment in each run and
+  // still landed after DVDCancelAsync, into memory the game may already have reused.
+  std::shared_ptr<std::vector<uint8_t>> data;
 };
 std::mutex g_dvd_mutex;
 std::condition_variable g_dvd_cv, g_dvd_done_cv;
@@ -55,9 +61,10 @@ void dvd_worker() {
   for (;;) {
     AsyncRead r;
     { std::unique_lock<std::mutex> lk(g_dvd_mutex); g_dvd_cv.wait(lk, [] { return !g_dvd_queue.empty(); }); r = g_dvd_queue.front(); g_dvd_queue.pop_front(); }
+    r.data->resize(r.length);
     bool ok = r.file_info
-        ? host::disc_read_file(r.file_start, r.file_offset, host::ptr(r.addr, r.length), r.length)
-        : host::disc_read(r.disc_offset, host::ptr(r.addr, r.length), r.length);
+        ? host::disc_read_file(r.file_start, r.file_offset, r.data->data(), r.length)
+        : host::disc_read(r.disc_offset, r.data->data(), r.length);
     if (!ok) host::die("disc read failed: offset %08X length %X to %08X", r.disc_offset, r.length, r.addr);
     { std::lock_guard<std::mutex> lk(g_dvd_mutex); r.done->store(true, std::memory_order_release); }
     g_dvd_done_cv.notify_all();
@@ -68,6 +75,8 @@ void start_read(AsyncRead r) {
   host::wr32(r.block + 0x0C, DVD_STATE_BUSY);
   r.ready_tb = host::cpu->tb + host::TB_PER_FRAME / 4;
   r.done = std::make_shared<std::atomic<bool>>(false);
+  r.data = std::make_shared<std::vector<uint8_t>>();
+  (void)host::ptr(r.addr, r.length);   // validates the destination now, where the request is made
   g_dvd_pending.push_back(r);
   std::lock_guard<std::mutex> lk(g_dvd_mutex);
   if (!g_dvd_started) { g_dvd_started = true; g_dvd_thread = std::thread(dvd_worker); g_dvd_thread.detach(); }
@@ -83,6 +92,7 @@ void dvd_poll() {
     AsyncRead& r = g_dvd_pending.front();
     if (host::cpu->tb < r.ready_tb) return;
     if (!r.done->load(std::memory_order_acquire)) { host::SimCostScope cost(host::SIM_DVD); std::unique_lock<std::mutex> lk(g_dvd_mutex); g_dvd_done_cv.wait(lk, [&] { return r.done->load(std::memory_order_acquire); }); }
+    std::memcpy(host::ptr(r.addr, r.length), r.data->data(), r.length);
     finish_read(r.block, r.addr, r.length, r.disc_offset);
     if (r.callback) { uint32_t cb = r.callback, len = r.length, blk = r.block; host::post_completion([cb, len, blk] { host::call_guest(cb, len, blk); }); }
     g_dvd_pending.pop_front();
@@ -144,8 +154,18 @@ HLE(DVDGetCommandBlockStatus) { host::pump_completions(); RET(host::rd32(ARG0 + 
 HLE(DVDCheckDisk) { host::pump_completions(); RET(1); }
 HLE(DVDGetDriveStatus) { host::pump_completions(); RET(0); }
 HLE(DVDGetCurrentDiskID) { RET(0x80000000u); }
-HLE(DVDCancelAsync) { if (ARG1) { uint32_t cb = ARG1, block = ARG0; host::post_completion([cb, block] { host::call_guest(cb, 0, block); }); } RET(1); }
-HLE(DVDCancel) { RET(0); }
+// A cancelled read never reaches guest memory: the game may reuse the buffer at once.
+static bool dvd_cancel_pending(uint32_t block) {
+  for (auto it = g_dvd_pending.begin(); it != g_dvd_pending.end(); ++it) {
+    if (it->block != block) continue;
+    host::log("dvd: read into %08X (%X bytes) cancelled before it completed", it->addr, it->length);
+    g_dvd_pending.erase(it);
+    return true;
+  }
+  return false;
+}
+HLE(DVDCancelAsync) { dvd_cancel_pending(ARG0); if (ARG1) { uint32_t cb = ARG1, block = ARG0; host::post_completion([cb, block] { host::call_guest(cb, 0, block); }); } RET(1); }
+HLE(DVDCancel) { dvd_cancel_pending(ARG0); RET(0); }
 HLE(DVDReset) {}
 HLE(DVDPrepareStreamAsync) { RET(0); }
 HLE(DVDPrepareStream) { RET(0); }
