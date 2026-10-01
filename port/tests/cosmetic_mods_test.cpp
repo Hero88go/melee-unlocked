@@ -252,6 +252,17 @@ std::vector<uint8_t> one_file_fst(uint32_t start, uint32_t original_size,
 uint32_t read_be32(const uint8_t* p) {
   return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
+// Two files in the root directory. Their length fields are at offsets 20 and 32.
+std::vector<uint8_t> two_file_fst(const std::string& first, uint32_t first_start, uint32_t first_size,
+                                  const std::string& second, uint32_t second_start, uint32_t second_size) {
+  std::vector<uint8_t> fst(36 + first.size() + 1 + second.size() + 1, 0);
+  be32(fst, 0, 0x01000000); be32(fst, 4, 0); be32(fst, 8, 3);
+  be32(fst, 12, 0); be32(fst, 16, first_start); be32(fst, 20, first_size);
+  be32(fst, 24, (uint32_t)first.size() + 1); be32(fst, 28, second_start); be32(fst, 32, second_size);
+  std::memcpy(fst.data() + 36, first.c_str(), first.size() + 1);
+  std::memcpy(fst.data() + 36 + first.size() + 1, second.c_str(), second.size() + 1);
+  return fst;
+}
 }
 
 // A three-joint skeleton (root, child, child's sibling) under a _Share_joint root.
@@ -599,9 +610,13 @@ int main(int argc, char** argv) {
   std::copy(clean_stage.begin(), clean_stage.end(), g_disc_bytes.begin() + stage_start);
   host::cosmetics::freeze_for_online_session();
   std::vector<uint8_t> online_stage(clean_stage.size());
+  // The game was told this file has the override's length (the FST above), and it checks an
+  // archive's own length field against that: the disc's stage carries the same length.
   check(host::cosmetics::read(stage_start, 0, online_stage.data(), (uint32_t)online_stage.size()) ==
-            host::cosmetics::OverrideRead::Success && online_stage == clean_stage,
-        "unsafe project stage serves clean ISO bytes during online play");
+            host::cosmetics::OverrideRead::Success &&
+            read_be32(online_stage.data()) == full_stage.size() &&
+            std::equal(clean_stage.begin() + 4, clean_stage.end(), online_stage.begin() + 4),
+        "unsafe project stage serves the disc's own stage during online play, with the file's length in its length field");
   host::cosmetics::thaw_after_online_session();
   g_disc_bytes.clear();
   g_disc_bytes = visual_dat();
@@ -705,6 +720,103 @@ int main(int argc, char** argv) {
   check(host::cosmetics::read(stadium_start, 0, stadium_probe, sizeof stadium_probe) ==
             host::cosmetics::OverrideRead::Success,
         "Stadium transformation overrides only GrPs1.dat");
+
+  // A costume file named .usd, and the English twin of its slot. The disc holds PlCaRe.dat and
+  // PlCaRe.usd for Captain Falcon's red costume, and the English game loads the .usd.
+  using host::cosmetics::OverrideRead;
+  fs::path usd_folder = folder / L"usd";
+  fs::create_directories(usd_folder, ec);
+  host::cosmetics::configure((usd_folder / L"port-settings.ini").string());
+  const auto falcon_red = rooted_dat({"PlyCaptain5KRe_Share_joint"});
+  fs::path falcon_path = usd_folder / L"PlCaRe.usd";
+  write_file(falcon_path, falcon_red);
+  auto falcon_import = host::cosmetics::import_file(falcon_path.string());
+  auto usd_assets = host::cosmetics::assets();
+  check(falcon_import.ok && usd_assets.size() == 1 && usd_assets[0].target_path == "PlCaRe.dat",
+        "a costume file named .usd imports to its slot");
+  check(host::cosmetics::select_variant("PlCaRe.dat", falcon_import.asset_id, &error),
+        "the imported .usd costume can be selected");
+  auto usd_zip_path = usd_folder / L"falcon.zip";
+  write_file(usd_zip_path, one_file_zip("Blood Falcon/PlCaRe.usd", falcon_red));
+  auto usd_zip_import = host::cosmetics::import_file(usd_zip_path.string());
+  check(usd_zip_import.ok && usd_zip_import.already_present,
+        "a ZIP whose costume member is named .usd is read like a .dat member");
+  constexpr uint32_t twin_dat_start = 0x00200000, twin_usd_start = 0x00300000, twin_usd_size = 0x100;
+  auto twin_fst = two_file_fst("PlCaRe.dat", twin_dat_start, 0x40, "PlCaRe.usd", twin_usd_start, twin_usd_size);
+  host::cosmetics::apply_to_fst(twin_fst.data(), (uint32_t)twin_fst.size());
+  check(read_be32(twin_fst.data() + 20) == falcon_red.size() && read_be32(twin_fst.data() + 32) == twin_usd_size,
+        "PlCaRe.dat and its English twin PlCaRe.usd are both replaced");
+  check(host::cosmetics::session_profile().active_assets == 1,
+        "one costume counts once although two disc files serve it");
+  std::vector<uint8_t> served_dat(falcon_red.size()), served_usd(twin_usd_size);
+  check(host::cosmetics::read(twin_dat_start, 0, served_dat.data(), (uint32_t)served_dat.size()) == OverrideRead::Success &&
+            served_dat == falcon_red,
+        "the .dat slot serves the costume");
+  check(host::cosmetics::read(twin_usd_start, 0, served_usd.data(), twin_usd_size) == OverrideRead::Success &&
+            read_be32(served_usd.data()) == twin_usd_size &&
+            std::equal(falcon_red.begin() + 4, falcon_red.end(), served_usd.begin() + 4) &&
+            std::all_of(served_usd.begin() + falcon_red.size(), served_usd.end(), [](uint8_t b) { return b == 0; }),
+        "the English twin serves the costume, padded to its disc file's length");
+
+  // One file length, offline and online. The game checks that an archive's own length field
+  // equals the file's length and stops when they differ. A costume whose skeleton differs from
+  // the disc's is used offline only, and online the disc's own file is served: both must carry
+  // the length the game was given for the file.
+  fs::path length_folder = folder / L"length";
+  fs::create_directories(length_folder, ec);
+  host::cosmetics::configure((length_folder / L"port-settings.ini").string());
+  const auto three_joints = skeleton_dat(0x2, 5.0f, false), four_joints = skeleton_dat(0x2, 5.0f, true);
+  const auto moved_bone = skeleton_dat(0x2, 5.5f, false);
+  check(four_joints.size() > three_joints.size() && moved_bone.size() == three_joints.size(),
+        "test costumes: one longer than the disc file, one of the same length");
+  fs::path longer_path = length_folder / L"longer.dat";
+  write_file(longer_path, four_joints);
+  auto longer_import = host::cosmetics::import_file(longer_path.string());
+  check(longer_import.ok && host::cosmetics::select_variant("PlFxNr.dat", longer_import.asset_id, &error),
+        "a costume with an extra joint imports and can be selected");
+  g_disc_bytes = three_joints;   // the disc's own PlFxNr.dat, at offset 0
+  auto longer_fst = one_file_fst(0, (uint32_t)three_joints.size(), "PlFxNr.dat");
+  host::cosmetics::apply_to_fst(longer_fst.data(), (uint32_t)longer_fst.size());
+  uint32_t file_length = read_be32(longer_fst.data() + 20);
+  check(file_length == four_joints.size() && !host::cosmetics::online_allowed(0),
+        "an offline-only costume longer than the disc file gives the file the costume's length");
+  std::vector<uint8_t> offline(file_length), online(file_length, 0xcc);
+  check(host::cosmetics::read(0, 0, offline.data(), file_length) == OverrideRead::Success && offline == four_joints,
+        "offline the longer costume is served as it is");
+  host::cosmetics::freeze_for_online_session();
+  check(host::cosmetics::read(0, 0, online.data(), file_length) == OverrideRead::Success &&
+            read_be32(online.data()) == file_length &&
+            std::equal(three_joints.begin() + 4, three_joints.end(), online.begin() + 4) &&
+            std::all_of(online.begin() + three_joints.size(), online.end(), [](uint8_t b) { return b == 0; }),
+        "online the disc's own file is served with the file's length in its length field");
+  uint8_t middle[2] = {0xcc, 0xcc};
+  check(host::cosmetics::read(0, 2, middle, 2) == OverrideRead::Success &&
+            middle[0] == (uint8_t)(file_length >> 8) && middle[1] == (uint8_t)file_length,
+        "a read that starts inside the length field gets the same length");
+  host::cosmetics::thaw_after_online_session();
+
+  fs::path shorter_path = length_folder / L"shorter.dat";
+  write_file(shorter_path, moved_bone);
+  auto shorter_import = host::cosmetics::import_file(shorter_path.string());
+  check(shorter_import.ok && host::cosmetics::select_variant("PlFxNr.dat", shorter_import.asset_id, &error),
+        "a costume with a moved bone imports and can be selected");
+  g_disc_bytes = four_joints;    // now the disc's file is the longer one
+  auto shorter_fst = one_file_fst(0, (uint32_t)four_joints.size(), "PlFxNr.dat");
+  host::cosmetics::apply_to_fst(shorter_fst.data(), (uint32_t)shorter_fst.size());
+  file_length = read_be32(shorter_fst.data() + 20);
+  check(file_length == four_joints.size() && !host::cosmetics::online_allowed(0),
+        "an offline-only costume shorter than the disc file keeps the disc file's length");
+  offline.assign(file_length, 0xcc); online.assign(file_length, 0xcc);
+  check(host::cosmetics::read(0, 0, offline.data(), file_length) == OverrideRead::Success &&
+            read_be32(offline.data()) == file_length &&
+            std::equal(moved_bone.begin() + 4, moved_bone.end(), offline.begin() + 4) &&
+            std::all_of(offline.begin() + moved_bone.size(), offline.end(), [](uint8_t b) { return b == 0; }),
+        "offline the shorter costume is padded and its length field says the file's length");
+  host::cosmetics::freeze_for_online_session();
+  check(host::cosmetics::read(0, 0, online.data(), file_length) == OverrideRead::Success && online == four_joints,
+        "online the disc's own longer file is served unchanged");
+  host::cosmetics::thaw_after_online_session();
+  g_disc_bytes.clear();
 
   fs::remove_all(folder, ec);
   if (failures) std::fprintf(stderr, "%d cosmetic mod test(s) failed\n", failures);
