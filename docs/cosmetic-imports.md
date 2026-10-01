@@ -91,6 +91,24 @@ This matters because Tom Nook's DAT need not be the same length as vanilla `PlFx
 replacement as raw bytes at the old disc offset would let a longer file overlap its physical
 neighbor and would leave the guest with stale file-table metadata.
 
+### One length per file, offline and online
+
+The game checks that an archive's own length field (its first four bytes) equals the length of the
+file it was read from, and stops when they differ. A replacement that is not cleared for online play
+is served offline, and online the disc's own file is served in its place, so one file has two
+contents of different lengths while the file table holds a single length for it. That length is the
+longer of the two. The shorter content is padded with zeros, and the length field of whichever is
+served says the file's length. Without this an offline-only costume shorter than the disc's file
+stopped the game when a match loaded it, and a longer one stopped an online match.
+
+### Files the disc keeps per language (`.usd`)
+
+A few files exist twice on the disc: `PlCaRe.dat` and `PlCaRe.usd` (Captain Falcon's red costume),
+`GrPs.dat` and `GrPs.usd` (Pokemon Stadium). The game loads the `.usd` when its language is English
+and the `.dat` otherwise. An import for such a slot replaces both, each checked against its own disc
+file for the online rule. The importer accepts a file named `.usd` wherever it accepts a `.dat`,
+alone or inside a ZIP.
+
 The active runtime map owns immutable byte buffers and is published before the guest initializes
 DVD. Settings changes affect only the desired on-disk profile. Restarting drops guest RAM, DVD
 requests, model data, and renderer textures before a different snapshot is published; Restore
