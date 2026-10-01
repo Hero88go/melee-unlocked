@@ -14,7 +14,7 @@ Download `MeleeUnlocked-0.8.63-win64.zip` from this release. Close the game and 
 - Controls tab: it opens on the controller that plays as player 1, so an Xbox-type controller shows its own buttons and trigger settings instead of the GameCube page. LT and RT can be bound like buttons.
 - The launcher's Settings window no longer turns "Auto-open in-game overlay on startup" back on.
 - Portraits and stock icons show with a large texture pack on. They always take priority over a pack's picture.
-- GameCube adapter: an adapter that shows its polling rate stays at 1000 Hz.
+- GameCube adapter: the game now asks the adapter for input at the highest priority. This is meant to stop the polling rate from dropping below 1000 Hz on adapters that show it.
 - D3D12 on graphics cards with little video memory: running out of memory for a texture no longer closes the game.
 - Crash reports: names, account codes, addresses and folder locations are removed, and memory dumps stay on your PC. A readable `melee_crash_report.md` is saved next to the ZIP.
 
