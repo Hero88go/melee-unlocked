@@ -111,7 +111,25 @@ void check_triggers() {
 }
 }  // namespace
 
+// Trigger value per family (Dolphin's L-Analog range): Full leaves the trigger alone; a number caps
+// the analog value and drops the click, so a digital or hair trigger gives a light shield.
+void check_trigger_cap() {
+  const uint16_t kClick = 0x0040;
+  uint8_t v = 255; uint16_t b = kClick | 0x0100;
+  host::apply_trigger_cap(255, v, b, kClick);                 // default: untouched
+  CHECK(v == 255 && b == (kClick | 0x0100));
+  host::apply_trigger_cap(100, v, b, kClick);                 // digital press or hair trigger at 255
+  CHECK(v == 100 && b == 0x0100);                             // light shield, no click, other buttons kept
+  v = 60; b = 0;
+  host::apply_trigger_cap(100, v, b, kClick);                 // a half press below the cap passes through
+  CHECK(v == 60 && b == 0);
+  v = 0; b = 0;
+  host::apply_trigger_cap(100, v, b, kClick);                 // released stays released
+  CHECK(v == 0 && b == 0);
+}
+
 int main() {
+  check_trigger_cap();
   check_layout(Kind::Ds4Usb, "DS4 USB");
   check_layout(Kind::Ds4Bt, "DS4 Bluetooth");
   check_layout(Kind::DualSenseUsb, "DualSense USB");

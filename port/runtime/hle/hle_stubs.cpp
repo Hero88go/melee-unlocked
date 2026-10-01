@@ -340,6 +340,9 @@ HLE(ARFree) {
 HLE(ARGetSize) { RET(0x01000000); }
 HLE(ARRegisterDMACallback) { uint32_t cb = ARG0; RET(s_ar_dma_callback); s_ar_dma_callback = cb; }
 static void aram_dma(uint32_t type, uint32_t mainmem, uint32_t aram, uint32_t length) {
+  // MELEE_TRACE_ARAM=1: every transfer (which sound banks reach audio memory, and when)
+  static const bool trace = [] { const char* v = std::getenv("MELEE_TRACE_ARAM"); return v && v[0] == '1'; }();
+  if (trace) host::log("[aram] retrace=%u %s main=%08X aram=%08X len=%X", host::retrace_count(), type == 0 ? "to-aram" : "from-aram", mainmem, aram, length);
   if (!host::valid_range(aram, length, 0x01000000)) host::die("ARAM DMA out of range %08X+%X", aram, length);
   if (type == 0) std::memcpy(host::aram + aram, host::ptr(mainmem, length), length);   // MRAM -> ARAM
   else { std::memcpy(host::ptr(mainmem, length), host::aram + aram, length); host::mark_ram_write(mainmem, length); } // ARAM -> MRAM
