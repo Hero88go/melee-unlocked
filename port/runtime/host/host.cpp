@@ -377,18 +377,23 @@ static uint32_t disc_dol_offset() {
 }
 // Both engines are built for the retail main.dol: the recompiled one runs its code, the native one
 // reads its data. A modded disc (a patched DOL, m-ex and friends) fails the SHA-1 of NTSC 1.02.
-bool disc_has_vanilla_dol() {
-  constexpr uint32_t dol_size = 0x4385E0u;
-  std::vector<uint8_t> image(dol_size);
-  if (!disc_read(disc_dol_offset(), image.data(), dol_size)) die("cannot read full Melee DOL");
+constexpr uint32_t kVanillaDolSize = 0x4385E0u;
+// True for the retail NTSC 1.02 main.dol (kVanillaDolSize bytes).
+static bool vanilla_dol_image(const std::vector<uint8_t>& image) {
   BCRYPT_ALG_HANDLE algorithm = nullptr;
   uint8_t digest[20];
   const uint8_t expected[20] = {0x08,0xe0,0xbf,0x20,0x13,0x4d,0xfc,0xb2,0x60,0x69,0x96,0x71,0x00,0x45,0x27,0xb2,0xd6,0xbb,0x1a,0x45};
+  if (image.size() != kVanillaDolSize) return false;
   if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA1_ALGORITHM, nullptr, 0) < 0)
     die("cannot initialize game-image verification");
-  NTSTATUS hash_status = BCryptHash(algorithm, nullptr, 0, image.data(), dol_size, digest, sizeof digest);
+  NTSTATUS hash_status = BCryptHash(algorithm, nullptr, 0, (PUCHAR)image.data(), kVanillaDolSize, digest, sizeof digest);
   BCryptCloseAlgorithmProvider(algorithm, 0);
   return hash_status >= 0 && std::memcmp(digest, expected, sizeof digest) == 0;
+}
+bool disc_has_vanilla_dol() {
+  std::vector<uint8_t> image(kVanillaDolSize);
+  if (!disc_read(disc_dol_offset(), image.data(), kVanillaDolSize)) die("cannot read full Melee DOL");
+  return vanilla_dol_image(image);
 }
 // ---- mod discs (Static Recomp) ----
 // The recompiled game is the vanilla 1.02 code. For a mod disc the vanilla game is booted first from
@@ -435,6 +440,19 @@ static void load_dol_from_file(const std::string& path) {
   uint8_t hdr[4];
   if (!read_at(0x420, hdr, 4)) die("cannot read the vanilla disc header");
   const uint32_t dol_offset = ((uint32_t)hdr[0] << 24) | ((uint32_t)hdr[1] << 16) | ((uint32_t)hdr[2] << 8) | hdr[3];
+  // The base has to be the retail game: the recompiled code is that game, and the mod's own code is
+  // found by comparing against it. A modified disc here (the mod disc itself set as the Melee ISO,
+  // for one) made the comparison find nothing, so the retail code ran on the mod's files and the
+  // game stopped at boot on the first thing that no longer fit (the mod's larger sound bank).
+  {
+    std::vector<uint8_t> image(kVanillaDolSize);
+    if (!read_at(dol_offset, image.data(), kVanillaDolSize) || !vanilla_dol_image(image)) {
+      std::fclose(f);
+      die("the Melee ISO (%s) is a modified disc. A mod runs on top of an unmodified Melee NTSC 1.02 ISO: "
+          "choose your clean disc as the Melee ISO on the Play page and keep the mod's ISO in the Mods folder",
+          path.c_str());
+    }
+  }
   uint8_t dh[0x100];
   if (!read_at(dol_offset, dh, sizeof dh)) die("cannot read the vanilla DOL header");
   auto be = [&](int o) { return ((uint32_t)dh[o] << 24) | ((uint32_t)dh[o + 1] << 16) | ((uint32_t)dh[o + 2] << 8) | dh[o + 3]; };
