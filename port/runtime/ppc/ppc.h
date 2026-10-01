@@ -133,6 +133,11 @@ void interpret(Context& c, uint8_t* m, uint32_t addr);    // run RAM-resident co
 // `size` bytes of code at `base` against `reference` and redirects every function containing a
 // changed word; returns how many were redirected.
 bool redirect_to_interpreter(uint32_t addr);
+bool redirect_function_at(uint32_t addr);   // the same for the function containing `addr` (false: none compiled there)
+// Replaces the compiled function at `addr` with a host function for every caller: translated code
+// calls its own functions directly, so set_hook (the dispatch table) reaches only indirect calls.
+// The original cannot be called afterwards: `fn` has to do everything it did.
+bool redirect_to_host(uint32_t addr, Fn fn);
 void disable_dispatch_range(uint32_t lo, uint32_t hi);   // calls into [lo, hi) run RAM code (interpreted)
 bool runs_from_ram(uint32_t addr);   // addr lies in a function redirected to its RAM code
 // Code areas the interpreter follows from RAM even where compiled twins exist (Slippi's code tables in

@@ -96,8 +96,13 @@ void clear_player_tints();
 // horizontal half of a perspective projection is scaled by 219/320 and nothing else changes.
 // Orthographic projections (the HUD, the magnifier, every 2D element) are left alone, which is the
 // part the Gecko code cannot do: it widens the whole frame, so 2D authored for 73:60 stretches.
-// Nothing is written to guest memory, so this cannot desync; it is mutually exclusive with the
-// Gecko code because applying both would widen twice.
+// It is mutually exclusive with the Gecko code because applying both would widen twice.
+// The game still decides what is on screen with its own 73:60 camera, so on its own this leaves a
+// fighter who walks into the added sides undrawn (only the bubble shows). Both engines therefore
+// draw such a fighter anyway while this is on, the way the Slippi code does: the Source Port
+// draws and puts the fighter's state back (ftdrawcommon.c), the Static Recomp runs the game's
+// draw test with Slippi's one-instruction change (host::apply_wide_fighter_draw).
 void set_true_widescreen(bool on);
+bool true_widescreen_active();   // what the renderer is doing now (True 16:9 on and the Slippi code off)
 
 }  // namespace gx

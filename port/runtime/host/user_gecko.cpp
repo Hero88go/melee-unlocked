@@ -14,6 +14,7 @@ namespace {
 
 std::string g_path;
 std::vector<Code> g_codes;
+bool g_code_patches_allowed = false;
 
 // The DOL's code sections (main.dol: .init and .text). A write there changes instructions the
 // translated code will never read.
@@ -40,12 +41,48 @@ void classify(Code& c) {
     if (kind == 0x06) i += (v + 7) / 8;           // the string's bytes follow on the next lines
     if (i >= c.lines.size() && kind == 0x06) { c.reason = "has a string write cut short"; return; }
     if (addr < 0x80003100u || addr + len > 0x81800000u) { c.reason = "writes outside game memory (" + hex8(addr) + ")"; return; }
-    if (in_code(addr) || in_code(addr + len - 1)) { c.reason = "patches the game's code at " + hex8(addr) + ", which this build runs translated"; return; }
+    if (in_code(addr) || in_code(addr + len - 1)) {
+      if (!g_code_patches_allowed) { c.reason = "patches the game's code at " + hex8(addr) + ", and the Source Port runs the game's source code, not PowerPC"; return; }
+      c.patches_code = true;
+    }
   }
   c.supported = true;
 }
 
+// A write of `len` bytes at `addr` by a code that patches the game's code. The first time, the
+// bytes it replaces inside the code are kept, so switching the code off can put them back.
+void keep_original(Code& c, uint32_t addr, uint32_t len) {
+  if (c.patch_live) return;
+  for (uint32_t k = 0; k < len; ++k)
+    if (in_code(addr + k)) c.original.push_back({addr + k, host::rd8(addr + k)});
+}
+
+// The patched instructions are in RAM: the functions holding them run from there from now on.
+void run_patched_functions(Code& c) {
+  uint32_t last = 0;
+  int words = 0, missing = 0;
+  for (const auto& b : c.original) {
+    const uint32_t word = b.first & ~3u;
+    if (word == last) continue;
+    last = word;
+    if (ppc::redirect_function_at(word)) ++words; else ++missing;
+  }
+  host::log("gecko: code \"%s\" patches the game's code: %d instruction words now run from memory%s", c.name.c_str(), words,
+            missing ? " (some are not inside a function and stay as they were)" : "");
+}
+
+// The code was switched off: the game's own instructions go back (the functions keep running from
+// RAM, which holds the original bytes again).
+void restore_original(Code& c) {
+  for (const auto& b : c.original) host::wr8(b.first, b.second);
+  c.original.clear();
+  c.patch_live = false;
+  host::log("gecko: code \"%s\" is off: the game's own code is back", c.name.c_str());
+}
+
 }  // namespace
+
+void set_code_patches_allowed(bool allowed) { g_code_patches_allowed = allowed; }
 
 void load(const std::string& path, const std::vector<std::string>& enabled_names, bool chosen) {
   g_path = path;
@@ -165,27 +202,64 @@ bool save() {
 }
 
 void apply() {
-  for (const Code& c : g_codes) {
-    if (!c.enabled) continue;
+  for (Code& c : g_codes) {
+    if (!c.enabled) { if (c.patch_live) restore_original(c); continue; }
+    if (!c.patches_code) {
+      for (size_t i = 0; i < c.lines.size(); ++i) {
+        const uint32_t w = c.lines[i].first, v = c.lines[i].second, type = w >> 24;
+        if (type == 0xE0 || type == 0xF0) continue;
+        const uint32_t addr = 0x80000000u | (w & 0x01FFFFFFu);
+        switch (type & 0x0E) {
+          case 0x00: for (uint32_t k = 0; k <= (v >> 16); ++k) host::wr8(addr + k, (uint8_t)v); break;
+          case 0x02: for (uint32_t k = 0; k <= (v >> 16); ++k) host::wr16(addr + 2 * k, (uint16_t)v); break;
+          case 0x04: host::wr32(addr, v); break;
+          case 0x06: {
+            for (uint32_t k = 0; k < v; ++k) {
+              const auto& l = c.lines[i + 1 + k / 8];
+              const uint32_t word = (k % 8) < 4 ? l.first : l.second;
+              host::wr8(addr + k, (uint8_t)(word >> (24 - 8 * (k % 4))));
+            }
+            i += (v + 7) / 8;
+            break;
+          }
+        }
+      }
+      continue;
+    }
+    // A code that writes into the game's code. A byte is written only when it differs: a mod
+    // session watches its code blocks for changes, and the same values every frame would have a
+    // block compared again every frame.
+    auto put8 = [](uint32_t a, uint8_t b) { if (host::rd8(a) != b) host::wr8(a, b); };
     for (size_t i = 0; i < c.lines.size(); ++i) {
       const uint32_t w = c.lines[i].first, v = c.lines[i].second, type = w >> 24;
       if (type == 0xE0 || type == 0xF0) continue;
       const uint32_t addr = 0x80000000u | (w & 0x01FFFFFFu);
       switch (type & 0x0E) {
-        case 0x00: for (uint32_t k = 0; k <= (v >> 16); ++k) host::wr8(addr + k, (uint8_t)v); break;
-        case 0x02: for (uint32_t k = 0; k <= (v >> 16); ++k) host::wr16(addr + 2 * k, (uint16_t)v); break;
-        case 0x04: host::wr32(addr, v); break;
+        case 0x00:
+          keep_original(c, addr, (v >> 16) + 1);
+          for (uint32_t k = 0; k <= (v >> 16); ++k) put8(addr + k, (uint8_t)v);
+          break;
+        case 0x02:
+          keep_original(c, addr, ((v >> 16) + 1) * 2);
+          for (uint32_t k = 0; k <= (v >> 16); ++k) { put8(addr + 2 * k, (uint8_t)(v >> 8)); put8(addr + 2 * k + 1, (uint8_t)v); }
+          break;
+        case 0x04:
+          keep_original(c, addr, 4);
+          for (uint32_t k = 0; k < 4; ++k) put8(addr + k, (uint8_t)(v >> (24 - 8 * k)));
+          break;
         case 0x06: {
+          keep_original(c, addr, v);
           for (uint32_t k = 0; k < v; ++k) {
             const auto& l = c.lines[i + 1 + k / 8];
             const uint32_t word = (k % 8) < 4 ? l.first : l.second;
-            host::wr8(addr + k, (uint8_t)(word >> (24 - 8 * (k % 4))));
+            put8(addr + k, (uint8_t)(word >> (24 - 8 * (k % 4))));
           }
           i += (v + 7) / 8;
           break;
         }
       }
     }
+    if (!c.patch_live) { c.patch_live = true; run_patched_functions(c); }
   }
 }
 

@@ -60660,7 +60660,7 @@ index 2b0f190f4..22a6c7b46 100644
  
  #endif
 diff --git a/src/melee/ft/ftdrawcommon.c b/src/melee/ft/ftdrawcommon.c
-index cd8f9169e..23e384dcb 100644
+index cd8f9169e..430d3ec13 100644
 --- a/src/melee/ft/ftdrawcommon.c
 +++ b/src/melee/ft/ftdrawcommon.c
 @@ -22,6 +22,9 @@
@@ -60895,7 +60895,7 @@ index cd8f9169e..23e384dcb 100644
 +    int native_owner = ftDrawCommon_NativeOwnerBegin(gobj);
 +    const bool melee_draws = !fp->is_sleeping && ftLib_80086A8C(gobj);
 +    const bool widescreen_draws =
-+        !melee_draws && !fp->is_sleeping && mu_widescreen() &&
++        !melee_draws && !fp->is_sleeping && mu_wide_picture() &&
 +        Camera_80030A50() != NULL &&
 +        GET_COBJ(Camera_80030A50()) == HSD_CObjGetCurrent() &&
 +        ftDrawCommon_SnapshotTake(gobj, fp);
@@ -128094,7 +128094,7 @@ index f8a90fd16..cbffb83f3 100644
                                       int gobj_priority, int gx_link,
                                       u8 gx_priority);
 diff --git a/src/melee/if/textlib.c b/src/melee/if/textlib.c
-index bd8d18ba1..54b59c42e 100644
+index bd8d18ba1..d04978b2d 100644
 --- a/src/melee/if/textlib.c
 +++ b/src/melee/if/textlib.c
 @@ -2,6 +2,7 @@
@@ -128157,12 +128157,11 @@ index bd8d18ba1..54b59c42e 100644
 -#ifdef MUST_MATCH
 -#pragma pop
 -#endif
--
+ 
 -#ifdef MUST_MATCH
 -#pragma push
 -#pragma dont_inline on
 -#endif
-+
  void DevText_HideBackground(DevText* text)
  {
      text->flags |= (1 << 6);
@@ -128170,12 +128169,11 @@ index bd8d18ba1..54b59c42e 100644
 -#ifdef MUST_MATCH
 -#pragma pop
 -#endif
--
+ 
 -#ifdef MUST_MATCH
 -#pragma push
 -#pragma dont_inline on
 -#endif
-+
  void DevText_ShowText(DevText* text)
  {
      text->flags &= ~(1 << 7);
@@ -128183,12 +128181,11 @@ index bd8d18ba1..54b59c42e 100644
 -#ifdef MUST_MATCH
 -#pragma pop
 -#endif
--
+ 
 -#ifdef MUST_MATCH
 -#pragma push
 -#pragma dont_inline on
 -#endif
-+
  void DevText_HideText(DevText* text)
  {
      text->flags |= (1 << 7);
@@ -128196,12 +128193,11 @@ index bd8d18ba1..54b59c42e 100644
 -#ifdef MUST_MATCH
 -#pragma pop
 -#endif
--
+ 
 -#ifdef MUST_MATCH
 -#pragma push
 -#pragma dont_inline on
 -#endif
-+
  void DevText_SetScale(DevText* text, f32 x, f32 y)
  {
      text->scale_x = x;
@@ -128230,12 +128226,11 @@ index bd8d18ba1..54b59c42e 100644
 -#ifdef MUST_MATCH
 -#pragma pop
 -#endif
--
+ 
 -#ifdef MUST_MATCH
 -#pragma push
 -#pragma dont_inline on
 -#endif
-+
  GXColor DevText_SetTextColor(DevText* text, GXColor color)
  {
      int index = text->current_color;
@@ -128246,12 +128241,11 @@ index bd8d18ba1..54b59c42e 100644
 -#ifdef MUST_MATCH
 -#pragma pop
 -#endif
--
+ 
 -#ifdef MUST_MATCH
 -#pragma push
 -#pragma dont_inline on
 -#endif
-+
  GXColor DevText_SetBGColor(DevText* text, GXColor color)
  {
      GXColor old = text->bg_color;
@@ -128261,12 +128255,11 @@ index bd8d18ba1..54b59c42e 100644
 -#ifdef MUST_MATCH
 -#pragma pop
 -#endif
--
+ 
 -#ifdef MUST_MATCH
 -#pragma push
 -#pragma dont_inline on
 -#endif
-+
  void DevText_Erase(DevText* text)
  {
      memzero(text->buf, 2 * text->w * text->h);
@@ -128277,7 +128270,25 @@ index bd8d18ba1..54b59c42e 100644
  
  static inline void DevText_AdvanceLine(DevText* text)
  {
-@@ -319,19 +243,12 @@ void DevText_Print(DevText* text, char* str)
+@@ -292,8 +216,17 @@ static inline void DevText_AdvanceLine(DevText* text)
+ 
+ typedef struct DevTextGlyph {
+     u8 chr;
++#ifdef MU_NATIVE
++    /* The drawing code (textdraw.c) takes the colour from the top two bits of this byte, which is
++     * where the console's compiler puts the first bitfield. This compiler fills from the low bit,
++     * so every glyph drew in colour 0: the debug menu's selected row (and 20XX TE's settings
++     * menu, which uses the same engine) looked like every other row. */
++    u8 unk : 6;
++    u8 color : 2;
++#else
+     u8 color : 2;
+     u8 unk : 6;
++#endif
+ } DevTextGlyph;
+ 
+ void DevText_Print(DevText* text, char* str)
+@@ -319,19 +252,12 @@ void DevText_Print(DevText* text, char* str)
      }
  }
  
@@ -149256,7 +149267,7 @@ index 007cd1b27..f271c45d4 100644
  /* 0205F0 */ void lbBgFlash_800205F0(s32 duration);
  /* 02063C */ void lbBgFlash_8002063C(int count);
 diff --git a/src/melee/lb/lbcardgame.c b/src/melee/lb/lbcardgame.c
-index f1158fcfe..e2fd8305f 100644
+index f1158fcfe..ec086c32a 100644
 --- a/src/melee/lb/lbcardgame.c
 +++ b/src/melee/lb/lbcardgame.c
 @@ -1,22 +1,60 @@
@@ -149322,7 +149333,7 @@ index f1158fcfe..e2fd8305f 100644
  
  static struct {
      u32 x0, x4, x8;
-@@ -27,291 +65,347 @@ static struct {
+@@ -27,291 +65,361 @@ static struct {
      0x300,
  };
  
@@ -149445,7 +149456,12 @@ index f1158fcfe..e2fd8305f 100644
 -        var_r0 = 2;
 -    } else if (gm_80164ABC() != 0) {
 -        var_r0 = 1;
++#ifdef MU_NATIVE
++        /* TM-CE, "Use Save Banner #1" (8001C838): its own save carries the second icon. */
++        idx = mu_tmce_active() ? 1 : 2;
++#else
 +        idx = 2;
++#endif
 +    } else if (gm_80164ABC()) {
 +        idx = 1;
      } else {
@@ -149591,6 +149607,15 @@ index f1158fcfe..e2fd8305f 100644
 -    return lb_8001BE30(0, "SuperSmashBros0110290334", lb_803BAB74,
 -                       lb_8001C658(), temp_r24, _p(x5C)[3], &_p(x4),
 -                       fn_8001CC30);
++#ifdef MU_NATIVE
++    /* Every save in the game loads the icon archive before it asks for one. Training Mode CE asks
++     * directly from inside a match (lab.c, Lab_ChangeOSDs sets `dirty` itself), where the scene
++     * change has already dropped the archive. A console reads the icon through a null table
++     * there; here that stopped the game. Load it the way the game's own in-match saves do. */
++    if (_p(icon_data) == NULL) {
++        lbCardGame_LoadArchive((int) _p(jobj_translate_idx));
++    }
++#endif
 +    icon = getCurrentIcon();
 +#ifdef MU_NATIVE
 +    stageCardDataForWrite();

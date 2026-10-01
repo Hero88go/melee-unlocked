@@ -1397,7 +1397,7 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--pal-stock-icons") gecko::option_pal_stock_icons = true;
     else if (a == "--no-screen-shake") gecko::option_no_screen_shake = true;
     else if (a == "--vanilla-game") o.vanilla_game = true;
-    else if (a == "--gecko-codes") user_gecko::load(next(), {}, false);   // scripted runs: that file's enabled codes
+    else if (a == "--gecko-codes") { user_gecko::set_code_patches_allowed(!gfx.native_source); user_gecko::load(next(), {}, false); }   // scripted runs: that file's enabled codes
     // Experimental true 16:9: widens the frustum in the renderer, no game code. Mutually exclusive
     // with --widescreen, so whichever comes last on the command line wins rather than both applying.
     else if (a == "--true-widescreen") { gfx.true_widescreen = true; gfx.widescreen = false; }
@@ -1618,7 +1618,7 @@ static int melee_main(int argc, char** argv) {
   if (g_profile) g_profiler.start();   // the native game runs on this thread; shutdown() reports
   const int source_code = source_port::run(shutdown);
   shutdown(source_code);
-  return source_code;
+  host::end_process(source_code);   // everything is saved: do not run the libraries' unload code
 #endif
 #ifndef MELEE_SOURCE_PORT
   // MELEE_TEST_AXLIST=1: at every sound start, walk the free sound-request list (head r13-0x3F10,
@@ -1686,6 +1686,7 @@ static int melee_main(int argc, char** argv) {
 #ifndef MELEE_SOURCE_PORT
   install_rng_seed_hook();
   host::install_audio_pacing();
+  host::install_console_clock();
 #endif
   if (gx::RenderOptions::kModFeaturesAvailable && source_port::mods::auto_detect() && !gfx.native_source) {
     source_port::mods::StartupOptions scan;
@@ -1736,5 +1737,5 @@ static int melee_main(int argc, char** argv) {
               (unsigned long long)ppc::g_computed_return_checks, (unsigned long long)ppc::g_resumed_returns);
   host::log("slippi: %llu EXI commands, %llu replays written, GCT at %08X", (unsigned long long)slippi::commands_seen(),
             (unsigned long long)slippi::replays_written(), slippi::gct_load_address());
-  return code;
+  host::end_process(code);   // everything is saved: do not run the libraries' unload code (host.cpp)
 }
