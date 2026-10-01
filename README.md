@@ -12,10 +12,11 @@ interpolation, so an unlocked 200 Hz display shows real intermediate poses with 
 
 Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO.
 
-Version 0.8.5 is the **experimental Mod Update**. The launcher includes Source Port and
+Version 0.8.5 added the **experimental Mod Update**. The launcher includes Source Port and
 Static Recomp, with an integrated Mods page. Supported 20XX TE saves and Training Mode CE
 1.4d1 run on Source Port; Akaneia runs on Static Recomp with matching Direct builds.
-See [the update notes](RELEASE_NOTES_0.8.5.md) for installation and compatibility limits.
+See [the Mod Update notes](release/RELEASE_NOTES_0.8.5.md) for installation and compatibility
+limits. The current release is 0.8.61; the notes for every version are in [release/](release).
 
 This project is not affiliated with, endorsed by, or supported by the Slippi team, Nintendo or
 HAL Laboratory. Slippi netplay compatibility is implemented from Slippi's open source code

@@ -50,6 +50,9 @@ void log(const char* fmt, ...);
 void log_guest_text(const char* data, size_t len);  // OSReport output
 void log_flush();   // writes every queued log line now (log() hands lines to a writer thread)
 [[noreturn]] void die(const char* fmt, ...);
+// Ends the process now, with everything of ours already saved, without running DLL unload code
+// (see end_process in host.cpp for why).
+[[noreturn]] void end_process(int code);
 // Called by die() with its message before the process exits, so a fatal error leaves the same crash
 // report as an exception (the app registers it; the launcher offers that report).
 void set_die_hook(void (*hook)(const char* message));
@@ -153,6 +156,9 @@ void advance_time(uint64_t ticks);
 // retrace or when running unpaced (--fast).
 bool wait_until_console_time(uint64_t tb);
 void install_audio_pacing();   // Static Recomp: audio blocks at their 5 ms times during the frame wait
+void apply_wide_fighter_draw();   // Static Recomp, once per game frame: fighters in the added sides draw under True 16:9
+void install_console_clock();  // Static Recomp: OSGetTime carries the date (see os_get_time_dated)
+uint64_t console_epoch_ticks(); // the console clock at start: ticks since 2000-01-01, local time
 void note_frame_submitted();   // the game handed over the frame's picture; until the retrace it only waits
 // Retrace pacing multiplier (Slippi Online nudges it by up to 1% to keep peers in step).
 void set_emulation_speed(double speed);

@@ -3,12 +3,15 @@
 // first read). Each code is switched in the PC settings panel.
 //
 // WHAT CAN WORK HERE
-// The game's code is translated to PC code ahead of time, so an instruction written into RAM is
-// never executed. Codes that only write data (types 00, 02, 04 and 06 into RAM outside the game's
-// code) work: they are applied every frame, as the Gecko handler does. Codes that patch the game's
-// code (a write into .text, C2 injections, anything that runs PowerPC) are listed but cannot be
-// switched on, with the reason shown. The codes Slippi ships, and the port's own (widescreen, PAL
-// stock icons, screen shake), are translated in and do not come from this file.
+// Codes that write (types 00, 02, 04 and 06) work: they are applied every frame, as the Gecko
+// handler does. The game's code is translated to PC code ahead of time, so an instruction written
+// into RAM would never be executed; on the Static Recomp a write into the game's code therefore
+// also switches the function it lands in to its bytes in RAM (ppc::redirect_function_at, the way a
+// mod's changed functions run), and switching the code off puts the original bytes back. The Source
+// Port runs no PowerPC, so there such a code is listed with the reason and cannot be switched on.
+// C2 injections and the other handler-only types cannot run on either engine. The codes Slippi
+// ships, and the port's own (widescreen, PAL stock icons, screen shake), are translated in and do
+// not come from this file.
 //
 // Every code changes the game, so an online match only stays in sync when both players run the
 // same ones. The panel says so whenever any code is on.
@@ -27,7 +30,14 @@ struct Code {
   bool supported = false;
   std::string reason;               // why not, when unsupported
   bool enabled = false;
+  bool patches_code = false;        // writes into the game's code: its functions run from RAM while on
+  bool patch_live = false;          // those writes are in RAM now
+  std::vector<std::pair<uint32_t, uint8_t>> original;   // the code bytes they replaced
 };
+
+// Whether a write into the game's code can take effect: yes on the Static Recomp (the function runs
+// from RAM), no on the Source Port. Call before load(); the default is no.
+void set_code_patches_allowed(bool allowed);
 
 // Reads the file (missing is fine: no codes). `enabled_names` are the codes saved as on in the
 // settings file; until the panel has saved a choice (`chosen`), the file's [Gecko_Enabled] is used.

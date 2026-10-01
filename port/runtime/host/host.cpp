@@ -10,6 +10,7 @@
 #include "guest_registry.h"
 #include "guest_symbols.h"
 #include "gx_core.h"
+#include "gx_shader.h"
 #include "authored_pose.h"
 #include "window.h"
 #include "ax_ucode.h"
@@ -24,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
 #include <deque>
 #include <thread>
@@ -159,6 +161,20 @@ void log(const char* fmt, ...) {
 
 void log_guest_text(const char* data, size_t len) { log_enqueue(data, len); }
 
+// Ends the process without running any DLL's unload code. The game has saved everything by the
+// time this is called (replays, settings, shader cache, the log). The NVIDIA upscaler libraries
+// release their D3D12 objects when their DLLs unload, which is after the device is gone, and on
+// some machines that crashed: inside nvngx_dlss.dll, or in the graphics driver from
+// nvngx_dlssd.dll. The player had only closed the game and was shown a crash report. Streamline's
+// own shutdown is not an option either (it blocked inside the same unload, see
+// streamline::shutdown_for_process_exit), so the unload is skipped: Windows reclaims the rest.
+[[noreturn]] void end_process(int code) {
+  log_flush();
+  std::fflush(nullptr);
+  TerminateProcess(GetCurrentProcess(), (UINT)code);
+  std::abort();   // not reached
+}
+
 static void (*g_die_hook)(const char*) = nullptr;
 void set_die_hook(void (*hook)(const char*)) { g_die_hook = hook; }
 
@@ -187,7 +203,8 @@ void set_die_hook(void (*hook)(const char*)) { g_die_hook = hook; }
     va_end(ap3);
     hook(message);
   }
-  std::exit(3);
+  // Not std::exit: a crash in a library's unload code would replace the report just written.
+  end_process(3);
 }
 
 const char* symbol_name(uint32_t addr) {
@@ -734,14 +751,7 @@ void boot_setup() {
   wr32(0x80000300, 0x4C000064);                      // rfi stubs
   wr32(0x80000800, 0x4C000064);
   wr32(0x80000C00, 0x4C000064);
-  uint64_t tb = options.time_base;
-  if (!tb) {
-    // Dolphin presets the timebase from the RTC (seconds since GC epoch 2000-01-01) * 40.5 MHz.
-    auto now = std::chrono::system_clock::now().time_since_epoch();
-    uint64_t secs = (uint64_t)std::chrono::duration_cast<std::chrono::seconds>(now).count();
-    const uint64_t GC_EPOCH = 946684800ull;
-    tb = (secs - GC_EPOCH) * TB_HZ;
-  }
+  const uint64_t tb = console_epoch_ticks();
   // Like Dolphin: the timebase register starts near zero; 0x800030D8 holds the epoch adjust
   // that __OSGetSystemTime adds to mftb.
   wr32(0x800030D8, (uint32_t)(tb >> 32));
@@ -954,6 +964,71 @@ void idle_poll_paced(ppc::Context& c, uint8_t* m) {
     }
   }
   g_idle_poll(c, m);
+}
+// OSGetTime is the console's time since 2000-01-01: the boot ROM loads the timebase register from
+// the clock before a game starts. Here the timebase starts at zero and the date sits in the OS
+// adjust at 0x800030D8, which only __OSGetSystemTime adds. So everything that turned OSGetTime
+// into a date read January 1, 2000 at every start: the date in the save file's comment, and a mod
+// stage that shows a clock or changes with the season.
+// Every caller gets the dated time now, except __OSGetSystemTime (8034C410..8034C474), which adds
+// the adjust itself. The same three timebase reads as the game's function, so emulated time
+// advances exactly as it did; differences between two readings are unchanged.
+static void os_get_time_dated(ppc::Context& c, uint8_t*) {
+  ppc::enter(c, 0x8034C3F0u);
+  uint32_t hi, lo, again;
+  do {
+    hi = (uint32_t)(ppc::read_tb(c) >> 32);
+    lo = (uint32_t)ppc::read_tb(c);
+    again = (uint32_t)(ppc::read_tb(c) >> 32);
+  } while (hi != again);
+  ppc::cr_set_s(c, 0, (int32_t)hi, (int32_t)again);
+  uint64_t time = ((uint64_t)hi << 32) | lo;
+  if (c.lr < 0x8034C410u || c.lr >= 0x8034C474u)
+    time += ((uint64_t)rd32(0x800030D8u) << 32) | rd32(0x800030DCu);
+  c.r[3] = (uint32_t)(time >> 32); c.r[4] = (uint32_t)time; c.r[5] = again;
+}
+// The console clock when the game starts, in timebase ticks since 2000-01-01 (--time-base presets
+// it, which is what keeps a test run repeatable). Dolphin presets the timebase from the RTC the
+// same way. The console's clock holds local time, so this is the local wall-clock reading taken as
+// if it were UTC: a stage that shows the time of day, or a save's date, reads it from here.
+uint64_t console_epoch_ticks() {
+  static const uint64_t value = [] {
+    if (options.time_base) return options.time_base;
+    const std::time_t now = std::time(nullptr);
+    std::tm local{};
+    localtime_s(&local, &now);
+    const long long local_secs = _mkgmtime64(&local);
+    const long long GC_EPOCH = 946684800ll;
+    return (uint64_t)(local_secs > GC_EPOCH ? local_secs - GC_EPOCH : 0) * TB_HZ;
+  }();
+  return value;
+}
+void install_console_clock() {
+  if (!ppc::redirect_to_host(0x8034C3F0u, os_get_time_dated)) log("clock: OSGetTime keeps the time since start (not replaced)");
+}
+// True 16:9 on the Static Recomp. The renderer shows more to each side, but the game's draw test
+// (ftLib_80086A8C) still answers for its own 73:60 camera, so a fighter in the added sides was not
+// drawn at all. Slippi's widescreen code changes one instruction of that test ("Draw High Poly
+// Models", 80086B24: the branch that returns "do not draw" becomes a nop) and nothing else in it:
+// the on-screen flag, the bubble and everything else the game reads are set before that branch.
+// That instruction is compiled to follow the Slippi option, which also widens the cameras, so here
+// the same change is made in RAM and the function runs from there (a few calls per frame).
+// Only when the instruction is the game's own: a mod that changed this function is left alone.
+void apply_wide_fighter_draw() {
+  constexpr uint32_t kSite = 0x80086B24u, kBranch = 0x4182000Cu, kNop = 0x60000000u;
+  static bool live = false;
+  const bool want = gx::true_widescreen_active() && !gecko::option_widescreen;
+  if (want == live || !ram) return;
+  if (want) {
+    if (rd32(kSite) != kBranch) return;   // not the game's own code here
+    wr32(kSite, kNop);
+    if (!ppc::redirect_function_at(kSite)) { wr32(kSite, kBranch); return; }
+    live = true;
+    log("widescreen: fighters in the added sides are drawn (True 16:9)");
+  } else {
+    if (rd32(kSite) == kNop) wr32(kSite, kBranch);
+    live = false;
+  }
 }
 void install_audio_pacing() {
   if (ppc::Fn previous = ppc::set_hook(0x80019894u, pad_queue_count_paced)) g_pad_queue_count = previous;
@@ -1436,6 +1511,13 @@ void retrace() {
           (unsigned long long)audit.open_scopes);
     }
   }
+  // MELEE_TEST_RESIZE_AT=<retrace>:<w>x<h> (tests): the window changes size at that retrace, the
+  // way a maximized or fullscreen window does shortly after start.
+  static const struct ResizeAt {
+    uint32_t at = 0; int w = 0, h = 0;
+    ResizeAt() { if (const char* v = std::getenv("MELEE_TEST_RESIZE_AT")) std::sscanf(v, "%u:%dx%d", &at, &w, &h); }
+  } resize_at;
+  if (resize_at.at && g_retraces == resize_at.at) window_set_client_size(resize_at.w, resize_at.h);
   if (options.frames && g_retraces >= options.frames) request_exit(0);
   if (g_exit) {
     log("exit requested after %u retraces", g_retraces);

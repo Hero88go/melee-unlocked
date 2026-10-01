@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
+#include <cstring>
 #include <array>
 #include <memory>
 #include <string>
@@ -242,20 +243,16 @@ inline bool frame_in_match(const Frame& f) {
   return match_mode && minor >= 2;
 }
 
-// Whether a frame's scene has 3D content the true-16:9 camera widen actually reaches: any mode that
-// plays a match (its character/stage select through its results screen), or Slippi online play.
-// The bare menu shell around it (major 01: title, main menu, options, trophies, vs mode select, the
-// rest) is almost entirely the 2D/orthographic UI layer, which build_projection deliberately never
-// widens (see its comment: widening it compressed shadows off their platforms). Presenting THAT
-// screen at 16:9 anyway stretches the whole picture with nothing compensating, the same defect true
-// 16:9 originally had on the screen flash, just covering the entire menu instead of one quad. Gating
-// presented_aspect on this keeps the letterbox at 73:60 there and lets it widen everywhere the widen
-// itself actually does something.
+// Whether a frame's scene is presented wide when a widescreen mode is on. Every screen in the game
+// is drawn through perspective cameras, which both widescreen modes widen (the Slippi code in the
+// game, True 16:9 in build_projection), so every scene is, except the opening movie: a video on
+// the 2D layer, which nothing widens and which would only be stretched.
+// This used to be a list of the modes that play a match. The main menu was left out because its
+// camera was not being widened (see is_authored_fullscreen), and the list also missed Home-Run
+// Contest, Multi-Man Melee and the Special Melee modes. Every scene left out was shown squeezed
+// into a 73:60 box when the Slippi code was on, since the game had widened it all the same.
 inline bool frame_has_widenable_scene(const Frame& f) {
-  const uint8_t major = f.scene_major;
-  return major == 0x08 || major == 0x02 || major == 0x03 || major == 0x04 || major == 0x05 ||
-         major == 0x0E || major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C ||
-         (major == 0x2B && f.scene_minor <= 2);
+  return f.scene_major != 0x18;   // GM_OPENING_MV
 }
 
 // A mod can draw a perspective HUD before the world. Prefer a fighter's camera so that HUD
@@ -272,17 +269,35 @@ inline const DrawCall* frame_scene_draw(const Frame& f) {
 
 // "Visual effects" (Reduced / Minimal): whether a draw is decoration the player chose to skip. Only
 // during a match, so menus are never touched: an earlier version applied everywhere and hid the
-// stage select pointer and menu text, which are drawn the same way as a hit spark. Only world-space
-// blended draws that do not write depth qualify, so fighters, the stage and the HUD always draw.
-// Reduced skips additive ones (glow, sparks, flashes); Minimal also skips any that neither write nor
-// test depth (screen overlays in the world). Display only: guest memory is untouched, so it cannot
-// desync and two players may use different levels.
-inline bool skip_for_effects(const Frame& f, const DrawCall& dc, int level) {
-  if (level <= 0 || dc.xf_regs[0x26] != 0 || !(dc.bp.blendmode() & 1) || !frame_in_match(f)) return false;
+// stage select pointer and menu text, which are drawn the same way as a hit spark. Only blended
+// draws of the world camera that do not write depth qualify, so fighters, the stage and the HUD
+// always draw. Reduced skips additive ones (glow, sparks, flashes); Minimal also skips any that
+// neither write nor test depth (screen overlays in the world). Display only: guest memory is
+// untouched, so it cannot desync and two players may use different levels.
+//
+// "Of the world camera" is the projection the fighters are drawn with. A HUD drawn in perspective
+// has a camera of its own, and text from the game's text library neither tests nor writes depth:
+// without this test Minimal removed a mod's song title banner text and left its empty backing.
+struct EffectsFilter {
+  int level = 0;                // 0 = nothing is skipped this frame
+  uint32_t projection[6] = {};  // XF 0x1020..0x1025 of the world camera
+};
+inline EffectsFilter effects_filter(const Frame& f, int level) {
+  EffectsFilter e;
+  if (level <= 0 || !frame_in_match(f)) return e;
+  const DrawCall* scene = frame_scene_draw(f);
+  if (!scene) return e;
+  std::memcpy(e.projection, &scene->xf_regs[0x20], sizeof e.projection);
+  e.level = level;
+  return e;
+}
+inline bool skip_for_effects(const EffectsFilter& e, const DrawCall& dc) {
+  if (e.level <= 0 || dc.xf_regs[0x26] != 0 || !(dc.bp.blendmode() & 1)) return false;
   const uint32_t zmode = dc.bp.zmode();
   if (zmode & 0x10) return false;                                   // writes depth: part of the scene
+  if (std::memcmp(e.projection, &dc.xf_regs[0x20], sizeof e.projection) != 0) return false;   // another camera
   const bool additive = ((dc.bp.blendmode() >> 5) & 7) == 1;         // destination factor ONE
-  return additive || (level >= 2 && !(zmode & 1));
+  return additive || (e.level >= 2 && !(zmode & 1));
 }
 
 // Marks the next finished frame as discontinuous. Called on the simulation thread when the game's

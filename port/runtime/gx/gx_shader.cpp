@@ -625,6 +625,7 @@ std::string generate_pixel_shader(const PSUid& uid) {
 // ---------------------------------------------------------------- constants
 std::atomic<bool> g_true_widescreen{false};
 void set_true_widescreen(bool on) { g_true_widescreen.store(on, std::memory_order_relaxed); }
+bool true_widescreen_active() { return g_true_widescreen.load(std::memory_order_relaxed); }
 
 static uint32_t g_main_proj[7];
 static bool g_main_proj_valid = false;
@@ -639,33 +640,43 @@ bool is_scene_draw(const DrawCall& dc) {
 // A perspective camera whose frustum is exactly the 4:3 box its content was authored to fill: the
 // screen flash and its wipes (lb/lbbgflash.c, a 640x480 quad at fov 60, aspect 4:3). proj[] holds
 // the GX projection as x scale, x shift, y scale, y shift, and the shifts are zero for a camera
-// that is not looking off to one side. Melee's own 3D cameras shift horizontally in places and do
-// not sit at this ratio once widened, so this stays specific to the overlays.
+// that is not looking off to one side.
+// The field of view is part of the test. Centred and 4:3 alone also describes the main menu's
+// camera (fov 41.5, every draw on that screen): that test left the menus un-widened, so they were
+// stretched at 16:9, and they were then letterboxed to hide it. The flash is the one camera at fov
+// 60 (y scale cot 30 = 1.7320508), so the menus widen again as they did before the flash fix.
 bool is_authored_fullscreen(const float* proj) {
   if (proj[1] != 0.0f || proj[3] != 0.0f) return false;          // off-centre: a real camera
   if (proj[0] <= 0.0f || proj[2] <= 0.0f) return false;
+  if (std::fabs(proj[2] - 1.7320508f) > 0.001f) return false;    // not the flash camera's fov 60
   const float ratio = proj[2] / proj[0];                          // y scale over x scale
   return std::fabs(ratio - 4.0f / 3.0f) < 0.001f;
 }
 
-// The in-game P1/P2/... name tag camera (if/ifnametag.c, nametag_CObjDesc): an
-// HSD_CameraDescFrustum with top=0 bottom=-480 left=0 right=640, i.e. the GX frustum corner pinned
-// to the screen's own top-left rather than centred, so each player's tag can be placed at a fixed
-// screen position independent of the 3D camera. GXSetProjection still sees this as GX_PERSPECTIVE
-// (cobj.c's makeProjectionMtx, PROJ_FRUSTUM case), so build_projection widened it exactly like a
-// real world camera, and a name tag's screen anchor drifted off the player it belongs above:
-// reported as "P1/P2 above the player ahead constantly gets off track" once true 16:9 stopped
-// stretching menus and made this the next thing wrong. Unlike the flash, this frustum is meant to
-// be maximally off-axis (that is how a per-player fixed screen position is built at all), so it
-// cannot be recognised by centring the way is_authored_fullscreen is; it is recognised instead by
-// its shift terms sitting exactly at the frustum's own edges (+-1, a corner-pinned box) together
-// with the same authored 4:3 ratio.
+// A perspective frustum pinned to a screen corner (x and y shifts exactly at +-1) at the authored
+// 4:3 ratio: content placed at fixed screen positions rather than in the world, which widening
+// would move. This was written for the P1/P2 tags, but their camera turned out to be orthographic
+// (ifnametag.c), so the tags are handled by is_nametag_layer below; the test is kept for any
+// corner-pinned perspective layer.
 bool is_authored_screen_pinned(const float* proj) {
   if (proj[0] <= 0.0f || proj[2] <= 0.0f) return false;
   if (std::fabs(std::fabs(proj[1]) - 1.0f) > 0.001f) return false;   // x shift pinned to an edge
   if (std::fabs(std::fabs(proj[3]) - 1.0f) > 0.001f) return false;   // y shift pinned to an edge
   const float ratio = proj[2] / proj[0];
   return std::fabs(ratio - 4.0f / 3.0f) < 0.001f;
+}
+
+// The P1/P2 tag layer (if/ifnametag.c): an orthographic camera over the 640x480 screen, near 0.1,
+// far 32768, with each tag placed at the pixel its fighter is drawn at. Under True 16:9 the world
+// is widened about the centre, so a tag left at its pixel sat 1.46 times too far from the centre
+// (and was stretched): P1 hovered well to the side of the player it names. The same factor about
+// the centre puts it back over the fighter at its authored width.
+// The test has to stay this narrow. The stage-clear screen copy (near 0, far 2) and the text
+// canvases (far 65535) use the same 640x480 box and must keep covering the screen.
+static bool is_nametag_layer(const float* p) {
+  return std::fabs(p[0] - 2.0f / 640.0f) < 1e-6f && std::fabs(p[1] + 1.0f) < 1e-4f &&
+         std::fabs(p[2] - 2.0f / 480.0f) < 1e-6f && std::fabs(p[3] - 1.0f) < 1e-4f &&
+         std::fabs(p[4] + 1.0f / 32767.9f) < 2e-6f;
 }
 
 void build_projection(const DrawCall& dc, float m[16]) {
@@ -686,9 +697,7 @@ void build_projection(const DrawCall& dc, float m[16]) {
     // over a 16:9 picture. Such a camera is recognisable without guessing: it is axis-aligned (no
     // off-centre shift) and its x and y scales are in exactly the 4:3 ratio the quad was drawn for,
     // which the game's own cameras never are once the player's aspect is applied.
-    // The P1/P2 name tag camera (ifnametag.c) is excluded the same way for the opposite reason: it
-    // is corner-pinned rather than centred, so each tag can sit at a fixed screen position, and
-    // widening it moves that position off the player it names (see is_authored_screen_pinned).
+    // A corner-pinned perspective layer is excluded the same way (see is_authored_screen_pinned).
     if (g_true_widescreen.load(std::memory_order_relaxed) &&
         !is_authored_fullscreen(proj) && !is_authored_screen_pinned(proj)) {
       constexpr float kWiden = 219.0f / 320.0f;   // (73/60) * (320/219) == 16/9
@@ -702,6 +711,11 @@ void build_projection(const DrawCall& dc, float m[16]) {
     // perspective path above and comes out correct on its own, and what is actually orthographic is
     // the shadow and silhouette layer, which has to stay aligned with the 3D it sits under.
     // Compensating it here compressed those shadows away from the platforms they belong to.
+    // The one orthographic layer that is tied to the widened world is the P1/P2 tags.
+    if (g_true_widescreen.load(std::memory_order_relaxed) && is_nametag_layer(proj)) {
+      constexpr float kWiden = 219.0f / 320.0f;
+      for (int i = 0; i < 4; ++i) m[i] *= kWiden;
+    }
   }
   if (vp[0] < 0.0f) for (int i = 0; i < 4; ++i) m[i] *= -1.0f;
   if (vp[1] > 0.0f) for (int i = 4; i < 8; ++i) m[i] *= -1.0f;

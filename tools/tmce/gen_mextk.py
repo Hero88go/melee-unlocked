@@ -53,8 +53,23 @@ DISC_TYPES = [
 # FighterData.attr = Fighter.co_attrs (ftCo_DatAttrs, ft/types.h), filled by struct copy from ftData.
 BE_NESTED = {('FighterData', 'attr')}
 
+# Decomp bitfields kept in big-endian storage order (a DISC_STRUCT block: UnkFlagStruct, the throw
+# flags). Natively their first declared bit is the byte's most significant one, as on the console,
+# and the layout dump numbers their bits in that order, while an ordinary native bitfield starts at
+# the least significant bit. Decomp type -> the member paths. Listed: the flag bytes TM-CE reads or
+# writes (the model, hitbox and item-grab displays, the barrel's flags) and the throw flags. Not
+# listed: Fighter's x594 animation flags, which TM-CE does not touch.
+BE_BITS = {
+    'Fighter': re.compile(r'^[.](x21FC_flag[.]b[0-7]|throw_flags_b[0-7])$'),
+    'Item': re.compile(r'^[.]x(DAA|DCE|DCF|DD[0-3])_flag[.]b[0-7]$'),
+}
+
 # Hand edits kept in the generated headers: (file, original text, replacement).
 HEADER_EDITS = [
+    ('item.h',
+     '    unsigned char is_raycast_below : 1; // 0x44, 0x80 = perform initial collision check',
+     '#ifdef MU_NATIVE\n    unsigned char : 7; /* the game keeps this flag byte most significant bit first */\n#endif\n'
+     '    unsigned char is_raycast_below : 1; // 0x44, 0x80 = perform initial collision check'),
     ('hsd.h',
      'struct HSD_Material\n{\n    GXColor ambient;\n    GXColor diffuse;\n    GXColor specular;\n    float alpha;\n    float shininess;\n};',
      'struct HSD_Material\n{\n    GXColor ambient;\n    GXColor diffuse;\n    GXColor specular;\n    float alpha;\n    float shininess;\n}\n#ifdef MU_NATIVE\n/* disc data, read by the game as big-endian (sysdolphin mobj.h): TM-CE\'s alpha writes must match */\n__attribute__((scalar_storage_order("big-endian")))\n#endif\n;'),
@@ -141,8 +156,10 @@ class Gen:
 
     def decomp_rows(self, dtype):
         rows = self.types[dtype]['members']
+        be = BE_BITS.get(dtype)
         by_cbit = {}
         for r in rows:
+            r['be'] = bool(be and r['kind'] == 'bits' and be.match(r['path']))
             by_cbit.setdefault(r['cbit'], []).append(r)
         return rows, by_cbit
 
@@ -234,6 +251,11 @@ class Gen:
             if (b % 8) + w > 8:
                 return None, 'bitfield crosses bytes of a byte array'
             return r['nbit'] + byte * 8 + (8 - (b % 8) - w), None
+        if r.get('be'):
+            start = r['nbit'] + (b - r['cbit'])   # counted from the byte's most significant bit
+            if start % 8 + w > 8:
+                return None, 'big-endian bitfield crosses a byte'
+            return start // 8 * 8 + (8 - start % 8 - w), None
         return r['nbit'] + r['cbits'] - (b - r['cbit']) - w, None
 
     # ---- twin emission ----

@@ -380,6 +380,7 @@ class D3D12Backend : public Backend {
   int fg_applied_ = -1; int reflex_applied_ = -1;   // what Streamline was last told; -1 forces the first call through even when the setting is "off"
   bool xess_reset_ = true;
   bool in_match_ = false;   // the frame being submitted shows a running match (set in submit_frame)
+  EffectsFilter effects_filter_;   // "Visual effects" for the frame being submitted (set in submit_frame)
   bool lab_skip_scene_ = false;   // the Lab view covers this frame and its scene is not drawn (submit_frame)
   // Whether presented_aspect's widen actually reaches anything on screen: a mode's character/stage
   // select through its results screen, not the bare 2D menu shell around it (see
@@ -552,7 +553,10 @@ void D3D12Backend::init() {
   DXGI_SWAP_CHAIN_DESC1 sd{};
   sd.Width = client_w_; sd.Height = client_h_; sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.SampleDesc.Count = 1;
   sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.BufferCount = 3; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-  sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING | DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+  // No DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH: with it, going exclusive changes the display mode
+  // to match the window, so the desktop resolution became whatever "Window size" was set to.
+  // Without it exclusive fullscreen keeps the desktop's own mode and refresh rate.
+  sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
   ComPtr<IDXGISwapChain1> sc1;
   check(factory->CreateSwapChainForHwnd(queue_.Get(), hwnd_, &sd, nullptr, nullptr, &sc1), "swapchain");
   check(sc1.As(&swapchain_), "swapchain3");
@@ -750,7 +754,7 @@ float4 PS(O i) : SV_Target {
 void D3D12Backend::create_swapchain_targets(bool resize) {
   for (auto& b : backbuffers_) b.Reset();
   if (resize) check(swapchain_->ResizeBuffers(3, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM,
-                                               DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING | DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH), "resize");
+                                               DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING), "resize");
   for (UINT i = 0; i < 3; ++i) {
     check(swapchain_->GetBuffer(i, IID_PPV_ARGS(&backbuffers_[i])), "backbuffer");
     D3D12_CPU_DESCRIPTOR_HANDLE h = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
@@ -1697,7 +1701,7 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   // The Lab view is painting over this frame: nothing the game draws would be seen.
   if (lab_skip_scene_) return;
   // "Visual effects" below Full: decorative draws in a match are skipped (see skip_for_effects).
-  if (skip_for_effects(frame, dc, opts_.effects_level)) return;
+  if (skip_for_effects(effects_filter_, dc)) return;
 
   Stopwatch sw;
   const uint32_t n = dc.vertex_count;
@@ -2418,6 +2422,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   video_bg::set_enabled(opts_.video_backgrounds);
   video_bg::begin_frame(frame.scene_major, frame.scene_minor);
   in_match_ = frame_in_match(frame);
+  effects_filter_ = effects_filter(frame, opts_.effects_level);
   widenable_scene_ = frame_has_widenable_scene(frame);
   integrate_compiled_psos();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; wait_gpu(); sampler_sets_.clear(); }
