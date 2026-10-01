@@ -65,7 +65,20 @@ struct Interp {
   static inline uint32_t starts[16][2] = {};
   static inline int starts_at = 0;
   static void note_start(uint32_t addr, uint32_t lr) { starts[starts_at][0] = addr; starts[starts_at][1] = lr; starts_at = (starts_at + 1) % 16; }
+  // MELEE_INTERP_RING=1: the last 512 interpreted instructions with their registers, printed with
+  // the history when the interpreter faults (for faults that come from a corrupted stack or LR).
+  static constexpr int kRing = 512;
+  struct RingEntry { uint32_t pc, w, r0, r1, r3, r4, r5, r31, lr, ctr; };
+  static inline RingEntry ring[kRing] = {};
+  static inline int ring_at = 0;
+  static bool ring_on() { static const bool on = [] { const char* v = std::getenv("MELEE_INTERP_RING"); return v && *v == '1'; }(); return on; }
   void dump_history() {
+    if (ring_on())
+      for (int i = 0; i < kRing; ++i) {
+        const auto& e = ring[(ring_at + i) % kRing];
+        if (e.pc) host::log("  ring %08X %08X r0=%08X r1=%08X r3=%08X r4=%08X r5=%08X r31=%08X lr=%08X ctr=%08X",
+                            e.pc, e.w, e.r0, e.r1, e.r3, e.r4, e.r5, e.r31, e.lr, e.ctr);
+      }
     for (int i = 0; i < 16; ++i) {
       const auto& s = starts[(starts_at + i) % 16];
       if (s[0]) host::log("  interpreter start %08X (%s) return %08X (%s)", s[0], host::symbol_name(s[0]), s[1], host::symbol_name(s[1]));
@@ -138,6 +151,7 @@ struct Interp {
 
   void step() {
     uint32_t w = ld32(c, m, pc);
+    if (ring_on()) { ring[ring_at] = {pc, w, c.r[0], c.r[1], c.r[3], c.r[4], c.r[5], c.r[31], c.lr, c.ctr}; ring_at = (ring_at + 1) % kRing; }
     uint32_t op = w >> 26;
     uint32_t rd = bits(w, 6, 5), ra = bits(w, 11, 5), rb = bits(w, 16, 5), rs = rd;
     uint32_t simm = sext16(w & 0xFFFF), uimm = w & 0xFFFF;
@@ -481,7 +495,44 @@ void interpret(Context& c, uint8_t* m, uint32_t addr) {
     while (!in.done) { ++(*g_profile)[in.pc & ~0xFFu]; in.step(); ++g_interpreted_insns; }
     return;
   }
+  // MELEE_TRACE_INTERP=<lo>-<hi>[:<retrace from>][,...]: every interpreted instruction in those ranges with
+  // its registers (diagnostics; at most 200,000 lines).
+  struct TraceRange { uint32_t lo, hi, from; };
+  static const std::vector<TraceRange> ranges = [] {
+    std::vector<TraceRange> out;
+    const char* v = std::getenv("MELEE_TRACE_INTERP");
+    for (const char* p = v; p && *p;) {
+      char* e = nullptr;
+      TraceRange r{(uint32_t)std::strtoul(p, &e, 16), 0, 0};
+      if (*e != '-') break;
+      r.hi = (uint32_t)std::strtoul(e + 1, &e, 16);
+      if (*e == ':') r.from = (uint32_t)std::strtoul(e + 1, &e, 10);
+      out.push_back(r);
+      p = (*e == ',') ? e + 1 : e;
+    }
+    return out;
+  }();
+  if (!ranges.empty()) {
+    static uint32_t lines = 0;
+    while (!in.done) {
+      if (lines < 200000)
+        for (const auto& r : ranges)
+          if (in.pc >= r.lo && in.pc < r.hi && host::retrace_count() >= r.from) {
+            ++lines;
+            host::log("[interp] %08X r0=%08X r3=%08X r4=%08X r5=%08X r6=%08X r12=%08X r29=%08X r30=%08X r31=%08X cr=%08X ctr=%08X",
+                      in.pc, c.r[0], c.r[3], c.r[4], c.r[5], c.r[6], c.r[12], c.r[29], c.r[30], c.r[31], ppc::mfcr(c), c.ctr);
+            break;
+          }
+      in.step(); ++g_interpreted_insns;
+    }
+    return;
+  }
   while (!in.done) { in.step(); ++g_interpreted_insns; }
+}
+
+void interpreter_dump_recent(Context& c) {   // the ring and the jump history, for host-side checks
+  Interp in(c, nullptr, 0);
+  in.dump_history();
 }
 
 void interpreter_counts(uint64_t* calls, uint64_t* insns) { *calls = g_interpreted_calls; *insns = g_interpreted_insns; }

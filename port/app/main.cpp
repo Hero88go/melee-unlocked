@@ -432,6 +432,53 @@ static void trace_audio_start_entry(ppc::Context& context) {
 }
 // MELEE_TRACE_AX_VOICES (M4 diagnostic): every HSD_AudioSFXStartParam request for the whole run with
 // the timebase, to place it on the AX frame timeline next to the per-voice trace (ax_ucode.h).
+// MELEE_TEST_AXLIST: while a sound starts, the caller's saved return address (caller r1 + 0xC) must not
+// change; the first function entered after it did is reported with the interpreter's recent history.
+static uint32_t g_axw_slot = 0, g_axw_value = 0, g_axw_r1 = 0, g_axw_prev = 0;
+static bool g_axw_reported = false;
+static void ax_watch_any(ppc::Context& c, uint32_t pc) {
+  if (!g_axw_slot || g_axw_reported) return;
+  if (c.r[1] >= g_axw_r1) { g_axw_slot = 0; return; }   // back at the caller's level: the call is over
+  const uint32_t now = host::rd32(g_axw_slot);
+  if (now != g_axw_value) {
+    g_axw_reported = true;
+    host::log("[axwatch] retrace=%u slot %08X changed %08X -> %08X; entering %08X %s, previous entry %08X %s, r1=%08X",
+              host::retrace_count(), g_axw_slot, g_axw_value, now, pc, host::symbol_name(pc), g_axw_prev, host::symbol_name(g_axw_prev), c.r[1]);
+    ppc::interpreter_dump_recent(c);
+  }
+  g_axw_prev = pc;
+}
+static void ax_watch_after_callback(uint32_t addr) {
+  if (!g_axw_slot || g_axw_reported) return;
+  const uint32_t now = host::rd32(g_axw_slot);
+  if (now == g_axw_value) return;
+  g_axw_reported = true;
+  host::log("[axwatch] retrace=%u slot %08X changed %08X -> %08X during the host callback %08X %s (last entry %08X %s)",
+            host::retrace_count(), g_axw_slot, g_axw_value, now, addr, host::symbol_name(addr), g_axw_prev, host::symbol_name(g_axw_prev));
+  ppc::interpreter_dump_recent(*host::cpu);
+}
+static void ax_watch_start(ppc::Context& c) {
+  if (g_axw_reported || c.lr != 0x80023860u) return;   // the sound request call that crashed (lbAudioAx_800237A8)
+  g_axw_r1 = c.r[1]; g_axw_slot = c.r[1] + 0xC; g_axw_value = host::rd32(g_axw_slot); g_axw_prev = 0x8038CFF4u;
+}
+static void check_ax_free_list(ppc::Context& context) {
+  ax_watch_start(context);
+  static bool reported = false;
+  if (reported) return;
+  uint32_t node = host::rd32(0x804DB6A0u - 0x3F10u);
+  auto bad = [](uint32_t p) { return p && (p < 0x80400000u || p >= 0x804E0000u || (p & 3)); };
+  for (int i = 0; node && i < 256; ++i) {
+    const uint32_t other = host::rd32(node);
+    if (bad(node) || bad(other)) {
+      reported = true;
+      host::log("[axlist] retrace=%u bad free node %08X (link0 %08X) at depth %d (sound id %d)", host::retrace_count(), node,
+                bad(node) ? 0u : other, i, (int32_t)context.r[3]);
+      ppc::interpreter_dump_recent(context);
+      return;
+    }
+    node = host::rd32(node + 4);
+  }
+}
 static void trace_ax_request_entry(ppc::Context& context) {
   host::log("[ax-request-legacy] retrace=%u tb=%llu id=%d vol=%d pan=%d track=%d channel=%d",
             host::retrace_count(), static_cast<unsigned long long>(context.tb),
@@ -654,7 +701,7 @@ static void usage() {
               "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--music 0-100|--no-music] [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--settings-path file --load-settings --import-cosmetic file|--enable-project-effects|--restore-vanilla-cosmetics|--cosmetic-status]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
-  std::printf("           [--lobby-direct NAME#123 --lobby-character 0..25 --lobby-status-file path]\n");
+  std::printf("           [--lobby-direct NAME#123 --lobby-character 0..255 --lobby-status-file path]\n");
 #ifdef MELEE_SOURCE_PORT
   std::printf("           [--card-self-test <new scratch directory>]\n"
               "           [--replay <file.slp> --replay-dir <directory>] [--record-native]\n"
@@ -901,6 +948,34 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
   return EXCEPTION_EXECUTE_HANDLER;
 }
 
+// host::die (a guest fault, including one in a mod's own code, or any other fatal error) exits
+// without an exception, so it writes the same report here: melee_port_crash.txt, a minidump of the
+// process, and the dialog that points at the launcher's Send button.
+static void die_report(const char* message) {
+  char head[640];
+  std::snprintf(head, sizeof head, "FATAL: %s, version %s", message, MELEE_PORT_VERSION);
+  if (FILE* f = std::fopen("melee_port_crash.txt", "w")) {
+    std::fprintf(f, "%s\n", head);
+    if (host::cpu) {
+      std::fprintf(f, "last guest function %08X %s, lr %08X\nrecent guest functions (oldest first):\n", host::cpu->last_pc, host::symbol_name(host::cpu->last_pc), host::cpu->lr);
+      for (uint32_t i = 0; i < 64; ++i) { uint32_t pc = host::cpu->trace[(host::cpu->trace_pos + i) & 63]; if (pc) std::fprintf(f, "  %08X %s\n", pc, host::symbol_name(pc)); }
+    }
+    std::fclose(f);
+  }
+  HANDLE dump = CreateFileA("melee_port_crash.dmp", GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (dump != INVALID_HANDLE_VALUE) {
+    MiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), dump, MiniDumpNormal, nullptr, nullptr, nullptr);
+    CloseHandle(dump);
+  }
+  if (g_crash_dialog) {
+    std::string text = std::string(head) + "\n\nMelee Unlocked stopped with an error. The launcher can send this report: it asks once you "
+                       "close this message. If you started the game without the launcher, please send melee_port.log, "
+                       "melee_port_crash.txt and melee_port_crash.dmp from the game folder with your bug report "
+                       "(https://github.com/hero88go/melee-unlocked/issues).";
+    MessageBoxA(nullptr, text.c_str(), "Melee Unlocked", MB_ICONERROR | MB_OK);
+  }
+}
+
 // MELEE_TEST_CRASH=<frame>: a deliberate crash during that frame, for the crash report gates. Only a
 // hidden or headless run arms it (players never start one). It is an ordinary access violation, so
 // melee_port_crash.txt, the minidump and the log line come from crash_filter exactly as for a real
@@ -1106,6 +1181,7 @@ static int melee_main(int argc, char** argv) {
   o.no_gc_adapter = automated;   // a hidden test run must not take the adapter from a game the player is running
   if (std::getenv("MELEE_NO_GC_ADAPTER")) o.no_gc_adapter = true;   // same, for a visible test window
   SetUnhandledExceptionFilter(crash_filter);
+  host::set_die_hook(die_report);
   if (!automated) {
     // Interpolate by default: it never overshoots a stop, so menus, cursors and stage geometry stay
     // on one timeline. Predict avoids its one tick of delay but can overshoot and snap back.
@@ -1270,7 +1346,7 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--lobby-character") {
       const std::string value = next(); char* end = nullptr;
       long character = std::strtol(value.c_str(), &end, 10);
-      if (value.empty() || *end || character < 0 || character > 25) { std::fprintf(stderr, "Invalid lobby character\n"); return 2; }
+      if (value.empty() || *end || character < 0 || character > 255) { std::fprintf(stderr, "Invalid lobby character\n"); return 2; }
       slippi::online::config().lobby_character = (int)character;
     }
     else if (a == "--lobby-status-file") slippi::online::config().lobby_status_file = next();
@@ -1376,9 +1452,11 @@ static int melee_main(int argc, char** argv) {
   if ((hidden || headless || scripted) && !allow_matchmaking) slippi::Matchmaking::server_allowed = false;
   if (slippi::Matchmaking::local_peer.test_stage >= 0) {
     const int stage = slippi::Matchmaking::local_peer.test_stage;
-    const bool legal = stage == 0x2 || stage == 0x3 || stage == 0x8 || stage == 0x1C || stage == 0x1F || stage == 0x20;
+    // A mod disc (--mod-base-iso) has its own stages: any id, so a mod's stage can be tested.
+    const bool legal = stage == 0x2 || stage == 0x3 || stage == 0x8 || stage == 0x1C || stage == 0x1F || stage == 0x20 ||
+                       !o.mod_base_iso.empty();
     if (!slippi::Matchmaking::local_peer.enabled || !legal) {
-      std::fprintf(stderr, "--test-stage requires --local-peer and a legal tournament stage id (2, 3, 8, 28, 31, or 32)\n");
+      std::fprintf(stderr, "--test-stage requires --local-peer and a legal tournament stage id (2, 3, 8, 28, 31, or 32; any on a mod disc)\n");
       return 2;
     }
   }
@@ -1543,6 +1621,9 @@ static int melee_main(int argc, char** argv) {
   return source_code;
 #endif
 #ifndef MELEE_SOURCE_PORT
+  // MELEE_TEST_AXLIST=1: at every sound start, walk the free sound-request list (head r13-0x3F10,
+  // linked through +4) and report the first time a node lies outside the driver's own table.
+  if (std::getenv("MELEE_TEST_AXLIST")) { ppc::add_entry_hook(0x8038CFF4u, check_ax_free_list); ppc::set_any_entry_hook(ax_watch_any); host::set_after_guest_call(ax_watch_after_callback); }
   if (std::getenv("MELEE_TRACE_EFFECTS")) {
     ppc::add_entry_hook(0x8005FDDCu, trace_ef_sync_entry);    // efSync_Spawn(gfx_id, gobj, ...)
     ppc::add_entry_hook(0x800676F0u, trace_ef_async_entry);   // efAsync_Spawn(gobj, queue, kind, gfx_id, ...)

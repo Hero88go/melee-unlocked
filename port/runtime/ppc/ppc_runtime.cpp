@@ -270,7 +270,10 @@ static std::vector<std::pair<uint32_t, uint32_t>> g_traced;   // (addr, remainin
 void add_trace_func(uint32_t addr, uint32_t limit) { g_traced.push_back({addr, limit}); g_trace_funcs = true; }
 static std::vector<std::pair<uint32_t, EntryHook>> g_entry_hooks;
 void add_entry_hook(uint32_t addr, EntryHook fn) { g_entry_hooks.push_back({addr, fn}); g_trace_funcs = true; }
+static void (*g_any_entry_hook)(Context&, uint32_t) = nullptr;
+void set_any_entry_hook(void (*fn)(Context&, uint32_t)) { g_any_entry_hook = fn; if (fn) g_trace_funcs = true; }
 void trace_enter(Context& c, uint32_t pc) {
+  if (g_any_entry_hook) g_any_entry_hook(c, pc);
   for (auto& h : g_entry_hooks) if (h.first == pc) h.second(c);
   for (auto& t : g_traced) {
     if (t.first != pc || !t.second) continue;

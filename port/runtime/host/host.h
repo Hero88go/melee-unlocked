@@ -50,6 +50,10 @@ void log(const char* fmt, ...);
 void log_guest_text(const char* data, size_t len);  // OSReport output
 void log_flush();   // writes every queued log line now (log() hands lines to a writer thread)
 [[noreturn]] void die(const char* fmt, ...);
+// Called by die() with its message before the process exits, so a fatal error leaves the same crash
+// report as an exception (the app registers it; the launcher offers that report).
+void set_die_hook(void (*hook)(const char* message));
+void set_after_guest_call(void (*hook)(uint32_t addr));   // diagnostics: after each host-delivered guest callback
 const char* symbol_name(uint32_t addr);
 // Static Recomp: the boot disc is a mod (its changed code runs from RAM; see --mod-base-iso).
 bool mod_disc_active();
