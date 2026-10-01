@@ -653,11 +653,12 @@ std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes
       g_cache_bytes -= r->pixels.size();
       g_cache.erase(hit);
       auto found = g.index.find(base);
-      if (!cosmetic_path(base) && found != g.index.end()) {
+      const bool cosmetic = cosmetic_path(base) != nullptr;
+      if (!cosmetic && found != g.index.end()) {
         const int pack = found->second.pack;
         if (pack >= 0 && pack < (int)g.packs.size() && !g.packs[(size_t)pack].enabled) return nullptr;
       }
-      return r->pixels.size() <= budget_bytes ? std::move(r) : nullptr;
+      return cosmetic || r->pixels.size() <= budget_bytes ? std::move(r) : nullptr;
     }
   }
   return decode_entry(base, budget_bytes);
@@ -669,7 +670,10 @@ std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budg
     auto out = std::make_unique<Replacement>();
     uint32_t width = 0, height = 0;
     if (!decode_png(*path, out->pixels, &width, &height)) { ++g.decode_failed; return nullptr; }
-    if (out->pixels.size() > budget_bytes) return nullptr;
+    // No budget here: the budget keeps a huge pack from exhausting video memory, and a pack that
+    // had used it up took the player's portraits and stock icons down with it. These are a few
+    // small pictures the player chose one by one.
+    (void)budget_bytes;
     out->width = width; out->height = height; out->levels = 1;
     out->level_offset = {0}; out->level_width = {width}; out->level_height = {height};
     ++g.decoded;

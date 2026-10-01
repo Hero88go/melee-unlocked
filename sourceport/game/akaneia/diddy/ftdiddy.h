@@ -279,9 +279,9 @@ typedef struct ftDd_BananaVars {
 /* ------------------------------------------------------------------------------------------ */
 
 /* MEX_IndexFighterItem (console 803D7058): register article @p index of fighter @p kind. */
-void mu_ak_index_fighter_item(FighterKind kind, void* article, int index);
+void mu_ak_register_article(FighterKind kind, void* article, int index);
 /* MEX_GetFtItemID (console 803D7088): the ItemKind m-ex gave article @p index of this fighter. */
-ItemKind mu_ak_fighter_item_kind(HSD_GObj* fighter_gobj, int index);
+ItemKind mu_ak_article_kind(HSD_GObj* fighter_gobj, int index);
 /* The item creator without Item_802674AC's hold-kind rewrite (the decomp's static
  * Item_8026862C), able to create m-ex article kinds. */
 Item_GObj* mu_ak_item_create(SpawnItem* spawn);

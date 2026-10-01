@@ -70,6 +70,12 @@ void mu_slippi_sss_lock_in(int stage_behavior)
     sel.char_color = 0;
     if (css != NULL && port < 4) {
         sel.char_id = (u8) css->vs.start.players[port].ckind;
+#ifdef MU_AKANEIA_FIGHTERS
+        {
+            const int ext = mu_ak_mex_external(css->vs.start.players[port].ckind);
+            sel.char_id = ext >= 0 ? (u8) ext : ChKind_None;
+        }
+#endif
         sel.char_color = css->vs.start.players[port].color;
     }
     sel.char_opt = 1;   /* merge character */

@@ -50,7 +50,7 @@
 #include "launcher_theme.h"
 #include "launcher_replay_data.h"
 #include "launcher_lang.h"
-#include "launcher_crash_zip.h"
+#include "launcher_crash_text.h"   // with launcher_crash_zip.h; launcher_crash.inl sits inside the namespace below
 // Every message box shows in the player's language (fixed English wording is looked up).
 inline int mu_message_box(HWND owner, const wchar_t* text, const wchar_t* caption, UINT type) {
   return ::MessageBoxW(owner, launcher::lang::txw(text ? text : L"").c_str(),

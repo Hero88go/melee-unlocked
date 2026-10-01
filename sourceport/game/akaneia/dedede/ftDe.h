@@ -302,7 +302,7 @@ static inline ftDe_DatAttrs* ftDe_Attrs(Fighter* fp)
 
 /* m-ex 0x803D7058: register article `index` of fighter `kind` (its item descriptor from
  * ftData->x48_items) so it can be spawned. Called from OnLoad for articles 0 to 3. */
-void mu_ak_index_article(FighterKind kind, Article* article, int index);
+void mu_ak_register_article(FighterKind kind, void* article, int index);
 
 /* m-ex 0x803D7088: the ItemKind that article `index` of this fighter was registered as. */
 ItemKind mu_ak_article_kind(HSD_GObj* fighter_gobj, int index);

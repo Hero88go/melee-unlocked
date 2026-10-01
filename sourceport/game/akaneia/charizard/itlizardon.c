@@ -9,7 +9,7 @@
  *   2 RockBurst: the pieces the rock breaks into, thrown at a random angle and spun randomly.
  *
  * The item state tables and logic tables below are what m-ex installs for these item kinds; the
- * integration layer registers them for the kinds mu_ak_mex_get_ft_item_id hands out. */
+ * integration layer registers them for the kinds mu_ak_article_kind hands out. */
 #include "ftlizardon.h"
 
 #include <math.h>

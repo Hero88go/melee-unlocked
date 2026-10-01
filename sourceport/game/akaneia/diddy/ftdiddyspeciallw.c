@@ -71,7 +71,7 @@ static void ftDd_SpecialLw_BananaRelease(HSD_GObj* gobj)
     if (banana == NULL) {
         return;
     }
-    if (GET_ITEM(banana)->kind != mu_ak_fighter_item_kind(gobj, ftDd_Article_Banana)) {
+    if (GET_ITEM(banana)->kind != mu_ak_article_kind(gobj, ftDd_Article_Banana)) {
         return;
     }
     /* The console calls fn_8003E998 directly (pl_8003E978 without the wrapper). */

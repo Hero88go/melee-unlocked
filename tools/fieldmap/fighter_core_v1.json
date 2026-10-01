@@ -1,0 +1,42 @@
+{
+  "format": "melee-fighter-digest",
+  "version": 1,
+  "mode": "core",
+  "scope": "Fifteen declared post-frame Fighter scalars only; does not establish full fighter, item or stage equivalence",
+  "provenance": {
+    "native_debug_sha256": "a4c15132ea68910f8cce2678bf0a059aea512277d055d51b932425f3dafa94b0",
+    "native_field_map_sha256": "66e2840fff7f6354b8ba780d8af38977103861cb6aee875d4011aaa2d2deb84f",
+    "console_layout": "GALE01 retail Fighter dump, verified fixed scalar offsets",
+    "console_layout_note": "Current debugger-derived console model is 9520 bytes after native union expansion. That modeled size and unverified late union offsets are not used. Actual console dump size is 9196 bytes. Selected scalar console offsets agree with the historical retail map."
+  },
+  "record_sizes": {"console": 9196, "native": 11904},
+  "kind_offsets": {"console": 4, "native": 8},
+  "player_offsets": {"console": 12, "native": 16},
+  "fields": [
+    {"path": "fp.player_idx", "type": "u8", "console_offset": 12, "native_offset": 16},
+    {"path": "fp.motion_id", "type": "u32", "console_offset": 16, "native_offset": 20},
+    {"path": "fp.facing_dir", "type": "f32", "console_offset": 44, "native_offset": 64},
+    {"path": "fp.self_vel.x", "type": "f32", "console_offset": 128, "native_offset": 148},
+    {"path": "fp.self_vel.y", "type": "f32", "console_offset": 132, "native_offset": 152},
+    {"path": "fp.self_vel.z", "type": "f32", "console_offset": 136, "native_offset": 156},
+    {"path": "fp.cur_pos.x", "type": "f32", "console_offset": 176, "native_offset": 196},
+    {"path": "fp.cur_pos.y", "type": "f32", "console_offset": 180, "native_offset": 200},
+    {"path": "fp.cur_pos.z", "type": "f32", "console_offset": 184, "native_offset": 204},
+    {"path": "fp.input.pressed_buttons", "type": "u32", "console_offset": 1640, "native_offset": 2000},
+    {"path": "fp.input.released_buttons", "type": "u32", "console_offset": 1644, "native_offset": 2004},
+    {"path": "fp.cur_anim_frame", "type": "f32", "console_offset": 2196, "native_offset": 2608},
+    {"path": "fp.dmg.x1830_percent", "type": "f32", "console_offset": 6192, "native_offset": 8116},
+    {"path": "fp.shield_health", "type": "f32", "console_offset": 6552, "native_offset": 8512},
+    {"path": "fp.x2064_ledgeCooldown", "type": "i32", "console_offset": 8292, "native_offset": 10360}
+  ],
+  "exclusions": {
+    "pointers": "Guest addresses and native pointers have different widths and allocation identities; no pointer equivalence is claimed.",
+    "padding": "Padding and uninitialized storage are not typed game state.",
+    "unions": "Active fighter variables need per-kind schemas and separately verified console offsets; expanded native unions invalidate automatic console layout assumptions.",
+    "bitfields": "Host and console bitfield allocation differ; this schema includes no permissive bit reversal or guessed flag layout.",
+    "raw_fighter_kind": "Native added kinds and m-ex kinds have different numbers; core v1 does not compare character identity. Future active-variable schemas select explicit kinds for each layout.",
+    "bones": "Bone companions are structurally validated but their values are outside core scalar coverage.",
+    "other_fighter_fields": "Only the fifteen listed fields are compared; hitboxes, collision, velocities outside self_vel, RNG and remaining state are outside this schema.",
+    "items_and_stage_state": "Projectiles, articles, items and stage state are not in these Fighter core records; full B1/B2 readiness requires expanded coverage."
+  }
+}

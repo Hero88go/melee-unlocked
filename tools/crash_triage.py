@@ -3,7 +3,8 @@
 
 A report is the zip the launcher builds (melee_port_crash.txt, melee_port_crash.dmp, melee_port.log,
 lobby.log) or a folder holding those files. The tool reads the crash line ("CRASH: exception
-C0000005 at ... (module+0xOFFSET), version X"), the Source Port's unwound game stack in
+C0000005 at ... (module+0xOFFSET), version X" or "FATAL: game stopped at file:line: ..., version X"),
+the Source Port's unwound game stack in
 melee_port.log ("stack: melee_game.dll+0x..."), and the Static Recomp's last guest function, names
 the addresses with the symbols of the build that crashed, and groups reports whose top frames match.
 
@@ -47,9 +48,12 @@ VERSIONED_EXES = ("melee_source.exe", "melee_port.exe", "melee_port_playback.exe
                   "MeleeUnlockedLauncher.exe")
 MAX_MEMBERS = 16
 
-HEAD = re.compile(r"CRASH: exception ([0-9A-Fa-f]{8}) at ([0-9A-Fa-f]+) \((.*?)\+0x([0-9A-Fa-f]+)\), version (\S+)")
-LAST_GUEST = re.compile(r"last guest function ([0-9A-Fa-f]{8}) (\S+), lr ([0-9A-Fa-f]{8})")
+HEAD = re.compile(r"CRASH: exception ([0-9A-Fa-f]{8}) at (?:(?:([0-9A-Fa-f]+) \())?(.*?)\+0x([0-9A-Fa-f]+)\)?, version\s*(\S+)")
+FATAL = re.compile(r"^FATAL: game stopped(?: at (.+):(\d+)(?::[ \t]*([^\r\n]*?))?)?(?:, version\s*(\S+))?[ \t]*\r?$", re.MULTILINE)
+PANIC = re.compile(r"game panic at (.+):(\d+)\s*$")
+LAST_GUEST = re.compile(r"last guest function ([0-9A-Fa-f]{8}) ([^\r\n]*?), lr ([0-9A-Fa-f]{8})")
 GAME_CRASH = re.compile(r"game crash ([0-9A-Fa-f]{8}) (?:at melee_game\.dll\+0x([0-9A-Fa-f]+)|calling ([0-9A-Fa-f]+))")
+PRIVATE_GAME_CRASH = re.compile(r"CRASH: exception ([0-9A-Fa-f]{8}) at melee_game\.dll\+0x([0-9A-Fa-f]+)")
 STACK = re.compile(r"stack: melee_game\.dll\+0x([0-9A-Fa-f]+)")
 ACCESS = re.compile(r"(?:reading|writing|executing) address [0-9A-Fa-f]+")
 FORCED = re.compile(r"test: forced crash at frame (\d+)")
@@ -57,7 +61,8 @@ A2L = re.compile(r"^0x([0-9a-fA-F]+): (.*?)(?: at (.*))?$")
 MAP_LINE = re.compile(r"\s*[0-9a-fA-F]{4}:[0-9a-fA-F]{8}\s+(\S+)\s+([0-9a-fA-F]{16})\s+f\b")
 EXCEPTIONS = {"C0000005": "access violation", "C00000FD": "stack overflow", "C0000409": "fast fail",
               "C000001D": "illegal instruction", "C0000094": "integer divide by zero", "C0000374": "heap corruption",
-              "C0000096": "privileged instruction", "80000003": "breakpoint", "E06D7363": "C++ exception"}
+              "C0000096": "privileged instruction", "80000003": "breakpoint", "E06D7363": "C++ exception",
+              "FATAL": "game panic"}
 
 
 @dataclasses.dataclass
@@ -81,12 +86,12 @@ class Frame:
         # A named frame groups by function, so two builds of the same crash still meet; an unnamed
         # one groups by its exact offset.
         if self.module == "guest":
-            return "guest " + self.name
+            return "guest " + self.name if self.name else f"guest+0x{self.offset:X}"
         return f"{self.module}!{self.name}" if self.name else f"{self.module}+0x{self.offset:X}"
 
     def label(self):
         if self.module == "guest":
-            return "guest " + self.name
+            return "guest " + self.name if self.name else f"guest+0x{self.offset:X}"
         text = f"{self.module}+0x{self.offset:X}"
         if self.name:
             text += "  " + self.name
@@ -104,6 +109,8 @@ class Report:
     version: str = ""
     engine: str = ""
     access: str = ""
+    fatal_location: str = ""
+    fatal_message: str = ""
     forced_frame: int = 0
     frames: list = dataclasses.field(default_factory=list)
     sizes: dict = dataclasses.field(default_factory=dict)
@@ -111,7 +118,8 @@ class Report:
     symbols: str = ""
 
     def signature(self, top):
-        return (self.code or "?",) + tuple(f.key() for f in self.frames[:top])
+        assertion = ("assert " + short_where(self.fatal_location),) if self.fatal_location else ()
+        return (self.code or "?",) + assertion + tuple(f.key() for f in self.frames[:top])
 
 
 # ---- reading reports ----
@@ -215,13 +223,44 @@ def parse(report, texts):
         report.version = head.group(5)
         report.frames.append(Frame(report.module, report.offset))
     else:
-        report.notes.append("no CRASH line")
+        fatal = FATAL.search(txt)
+        if not fatal:
+            matches = list(FATAL.finditer(log))
+            fatal = matches[-1] if matches else None
+            if fatal:
+                report.notes.append("fatal line taken from the log")
+        if fatal:
+            report.code = "FATAL"
+            report.version = fatal.group(4) or ""
+            report.fatal_location = f"{fatal.group(1)}:{fatal.group(2)}" if fatal.group(1) else ""
+            report.fatal_message = (fatal.group(3) or "").strip()
+        else:
+            report.notes.append("no CRASH or FATAL line")
     lines = log.splitlines()
-    crash_at = max((i for i, line in enumerate(lines) if GAME_CRASH.search(line)), default=None)
+    anchors = [i for i, line in enumerate(lines) if GAME_CRASH.search(line) or PANIC.search(line) or
+               PRIVATE_GAME_CRASH.search(line)]
+    crash_at = anchors[-1] if anchors else None
+    # A forwarded report can contain a canonical crash line before the Source stack and another
+    # versioned header after it. Prefer the last failure anchor that actually owns a stack.
+    for candidate in reversed(anchors):
+        found_stack = False
+        for line in lines[candidate + 1:candidate + 64]:
+            if STACK.search(line):
+                found_stack = True
+                break
+            if HEAD.search(line) or FATAL.search(line):
+                break
+        if found_stack:
+            crash_at = candidate
+            break
     if crash_at is not None:
-        game = GAME_CRASH.search(lines[crash_at])
-        if not report.code:
+        game = GAME_CRASH.search(lines[crash_at]) or PRIVATE_GAME_CRASH.search(lines[crash_at])
+        panic = PANIC.search(lines[crash_at])
+        if not report.code and game:
             report.code = game.group(1).upper()
+        if panic:
+            report.code = report.code or "FATAL"
+            report.fatal_location = report.fatal_location or f"{panic.group(1)}:{panic.group(2)}"
         for line in lines[crash_at + 1:crash_at + 64]:
             stack = STACK.search(line)
             if stack:
@@ -230,15 +269,19 @@ def parse(report, texts):
             access = ACCESS.search(line)
             if access:
                 report.access = access.group(0)
-            if "(leaves the game" in line or HEAD.search(line):
+            if "(leaves the game" in line or HEAD.search(line) or FATAL.search(line):
                 break
     guest = LAST_GUEST.search(txt)
-    if guest and int(guest.group(1), 16) and guest.group(2) != "?":
-        report.frames.insert(min(1, len(report.frames)), Frame("guest", name=guest.group(2)))
+    if guest and int(guest.group(1), 16):
+        name = guest.group(2).strip()
+        if name in ("?", "(symbol omitted)"):
+            name = ""
+        report.frames.insert(min(1, len(report.frames)), Frame("guest", int(guest.group(1), 16), name=name))
     forced = FORCED.findall(log)
     if forced:
         report.forced_frame = int(forced[-1])
-    if report.module == GAME_DLL or report.module == "melee_source.exe" or "source port: melee_game.dll" in log:
+    if report.module == GAME_DLL or report.module == "melee_source.exe" or "source port: melee_game.dll" in log or \
+       any(f.module == GAME_DLL for f in report.frames):
         report.engine = "Source Port"
     elif report.module.startswith("melee_port") or "boot: entering __start" in log:
         report.engine = "Static Recomp"
@@ -634,6 +677,9 @@ def print_summary(result, top, out=sys.stdout):
             print("      " + frame.label(), file=out)
         if first.access:
             print("      " + first.access, file=out)
+        if first.fatal_location:
+            message = f": {first.fatal_message}" if first.fatal_message else ""
+            print("      assertion: " + first.fatal_location + message, file=out)
         # A folder report shows its parent too: test runs leave many folders with the same name.
         names = [Path(r.source).name if Path(r.source).suffix.lower() == ".zip" else "/".join(Path(r.source).parts[-2:])
                  for r in members]
@@ -657,10 +703,12 @@ def to_json(result, top):
         return {"module": f.module, "offset": f.offset, "name": f.name, "where": f.where, "label": f.label()}
     return {
         "reports": [{"source": r.source, "code": r.code, "version": r.version, "engine": r.engine, "module": r.module,
-                     "offset": r.offset, "access": r.access, "forced_frame": r.forced_frame, "sizes": r.sizes,
+                     "offset": r.offset, "access": r.access, "fatal_location": r.fatal_location,
+                     "fatal_message": r.fatal_message, "forced_frame": r.forced_frame, "sizes": r.sizes,
                      "symbols": r.symbols, "notes": r.notes, "frames": [frame(f) for f in r.frames]}
                     for r in result["reports"]],
         "groups": [{"count": len(m), "code": m[0].code, "signature": list(m[0].signature(top)),
+                    "fatal_location": m[0].fatal_location, "fatal_message": m[0].fatal_message,
                     "frames": [frame(f) for f in m[0].frames[:top]], "reports": [r.source for r in m]}
                    for m in result["groups"]],
         "skipped": [{"source": s, "reason": why} for s, why in result["skipped"]],
@@ -701,6 +749,30 @@ def self_test():
                           "0x00000000828274ca: ?? at ledgedash.c:?\n0x0000000082800010: ?? ??:0\n")
     expect(got == {0x82B157D3: ("_tyList_80313508", "tylist.c:456"), 0x828274CA: ("", "ledgedash.c"), 0x82800010: ("", "")},
            "addr2line output parsed (named, file only, unknown)")
+
+    fatal_txt = ("FATAL: game stopped at C:/src/melee/lb/lbarchive.c:94: , version 0.8.62\r\n"
+                 "last guest function 00000000 ?, lr 00000000\r\n")
+    fatal_log = ("source port: melee_game.dll at 0000000082800000\n"
+                 "game panic at C:/src/melee/lb/lbarchive.c:94\n"
+                 "  stack: melee_game.dll+0x39B749\n"
+                 "  stack: melee_game.dll+0x280E88\n"
+                 "FATAL: game stopped at C:/src/melee/lb/lbarchive.c:94: \n")
+    fatal_report = Report("fatal")
+    parse(fatal_report, {"melee_port_crash.txt": fatal_txt, "melee_port.log": fatal_log})
+    expect(fatal_report.code == "FATAL" and fatal_report.version == "0.8.62" and
+           fatal_report.fatal_location == "C:/src/melee/lb/lbarchive.c:94" and fatal_report.fatal_message == "" and
+           fatal_report.engine == "Source Port" and
+           [f.offset for f in fatal_report.frames] == [0x39B749, 0x280E88],
+           "fatal panic keeps its version, assertion and Source stack without an exception code")
+    fatal_fallback = Report("fatal-log")
+    parse(fatal_fallback, {"melee_port.log": fatal_log +
+          "FATAL: game stopped at C:/src/melee/lb/lbarchive.c:94: missing public symbol, version 0.8.62\n"})
+    expect(fatal_fallback.version == "0.8.62" and fatal_fallback.fatal_message == "missing public symbol" and
+           "fatal line taken from the log" in fatal_fallback.notes,
+           "fatal panic falls back to the last fatal log line and preserves its message")
+    other_panic = dataclasses.replace(fatal_report, fatal_location="C:/src/melee/lb/lbarchive.c:73")
+    expect(len(group([fatal_report, fatal_fallback, other_panic], 3)) == 2,
+           "different assertions stay separate despite identical panic wrapper frames")
 
     with tempfile.TemporaryDirectory(prefix="crash-triage-") as temp:
         temp = Path(temp)
@@ -749,6 +821,45 @@ def self_test():
         extract = temp / "extracted"
         options = argparse.Namespace(symbols=[str(symbols)], any_version=False, addr2line=None, top=3, extract=extract)
         limits = Limits(max_zip_bytes=256 * 1024, max_member_bytes=1 << 20)
+        from crash_report_privacy import private_text
+
+        # Legacy reports forwarded through the privacy allowlist contain canonical module offsets,
+        # no absolute PC or paths, and no binary dump. Stored text members need no external link.
+        forwarded = temp / "private-source.zip"
+        stored_zip(forwarded, {"melee_port_crash.txt": private_text("melee_port_crash.txt",
+                   crash_txt(GAME_DLL, 0x3157D3, "0.8.5").encode()),
+                   "melee_port.log": private_text("melee_port.log", source_port_log(0x3157D3, same_stack).encode())})
+        private_source, why = load_zip(forwarded, limits, None)
+        expect(not why and private_source.code == "C0000005" and private_source.version == "0.8.5" and
+               private_source.engine == "Source Port" and
+               [f.offset for f in private_source.frames] == [0x3157D3, *same_stack] and
+               "melee_port_crash.dmp" not in private_source.sizes,
+               "a stored privacy-forwarded legacy Source ZIP keeps module offsets, version and stack")
+
+        forwarded_fatal = temp / "private-fatal.zip"
+        stored_zip(forwarded_fatal, {"melee_port_crash.txt": private_text("melee_port_crash.txt", fatal_txt.encode()),
+                                    "melee_port.log": private_text("melee_port.log", fatal_log.encode())})
+        private_fatal, why = load_zip(forwarded_fatal, limits, None)
+        expect(not why and private_fatal.code == "FATAL" and private_fatal.version == "0.8.62" and
+               private_fatal.fatal_location == "lbarchive.c:94" and private_fatal.engine == "Source Port" and
+               [f.offset for f in private_fatal.frames] == [0x39B749, 0x280E88],
+               "a privacy-forwarded fatal ZIP keeps its basename assertion and Source stack")
+
+        forwarded_static = temp / "private-static.zip"
+        stored_zip(forwarded_static, {"melee_port_crash.txt":
+                   "CRASH: exception C0000005 at melee_port.exe+0x4010, version 0.8.5\n"
+                   "last guest function 8006B7F8 (symbol omitted), lr 80000000\n"})
+        private_static = triage([str(forwarded_static)], options, limits)["reports"][0]
+        expect(private_static.frames[0].name == "crash_filter" and private_static.frames[1].module == "guest" and
+               private_static.frames[1].offset == 0x8006B7F8 and private_static.frames[1].name == "" and
+               private_static.frames[1].label() == "guest+0x8006B7F8",
+               "canonical host module offsets still symbolize and omitted guest symbols retain only the address")
+
+        fatal_problems = []
+        symbolize([fatal_report], [SymbolDir.open(symbols)], options, limits, fatal_problems)
+        expect(not fatal_report.symbols and all(not f.name for f in fatal_report.frames) and
+               any("0.8.62" in note for note in fatal_report.notes),
+               "a fatal report's version prevents naming its stack with a different build")
         result = triage([str(reports)], options, limits)
         by_name = {Path(r.source).name: r for r in result["reports"]}
         skipped = dict((Path(s).name, why) for s, why in result["skipped"])

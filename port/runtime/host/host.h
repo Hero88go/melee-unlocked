@@ -57,6 +57,9 @@ void log_flush();   // writes every queued log line now (log() hands lines to a 
 // report as an exception (the app registers it; the launcher offers that report).
 void set_die_hook(void (*hook)(const char* message));
 void set_after_guest_call(void (*hook)(uint32_t addr));   // diagnostics: after each host-delivered guest callback
+// Hidden Static runs only, MELEE_TRACE_GUEST_HEAP=1: observe the known retail allocation assert.
+// Env off installs no hooks and reads no heap metadata. Allocation behavior is unchanged.
+void install_guest_heap_trace();
 const char* symbol_name(uint32_t addr);
 // Static Recomp: the boot disc is a mod (its changed code runs from RAM; see --mod-base-iso).
 bool mod_disc_active();
@@ -158,6 +161,7 @@ bool wait_until_console_time(uint64_t tb);
 void install_audio_pacing();   // Static Recomp: audio blocks at their 5 ms times during the frame wait
 void apply_wide_fighter_draw();   // Static Recomp, once per game frame: fighters in the added sides draw under True 16:9
 void install_console_clock();  // Static Recomp: OSGetTime carries the date (see os_get_time_dated)
+void install_language_override();  // Static Recomp: the functions that read the saved language follow g_game_language
 uint64_t console_epoch_ticks(); // the console clock at start: ticks since 2000-01-01, local time
 void note_frame_submitted();   // the game handed over the frame's picture; until the retrace it only waits
 // Retrace pacing multiplier (Slippi Online nudges it by up to 1% to keep peers in step).
@@ -206,6 +210,13 @@ extern std::atomic<bool> g_rumble_enabled;
 // focus, as they always have, and the keyboard is read then too. Off: every port reads neutral
 // until the game window has focus again, as in Dolphin with Background Input unticked.
 extern bool g_background_input;
+// The game's language as chosen in the PC settings (Game tab): 0 leaves the game's own choice
+// (Options > Language, kept in its save), 1 Japanese, 2 English. It is answered wherever the game
+// asks for its saved language, so the save itself is never changed, and it takes effect as each
+// screen loads. game_language_override() gives it in the game's own numbering: -1 none, 0 Japanese,
+// 1 English.
+extern std::atomic<int> g_game_language;
+int game_language_override();
 void input_rumble(int game_port, bool on);
 // Immediately clear any motors that were active when the Controls switch is turned off.
 void input_stop_all_rumble();

@@ -21,6 +21,12 @@ void settings_set_hud_snapshot(const Frame& frame);
 bool settings_textures_dirty();
 // Standalone settings window: the panel fills the OS window instead of floating inside it.
 void settings_fill_window(bool on);
+// True in the launcher's Settings window: the panel is the window and is always open there,
+// whatever the saved "open the overlay at startup" choice is.
+bool settings_fills_window();
+// True in the launcher's Settings window: the panel is the window and is always open there,
+// whatever the saved "open the overlay at startup" choice is.
+bool settings_fills_window();
 // True once after the panel asks to close. The standalone window has nothing to return to, so that
 // is its cue to exit. Reading it clears it.
 bool settings_close_requested();

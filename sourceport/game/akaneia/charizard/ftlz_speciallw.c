@@ -38,7 +38,7 @@ static void ftLz_SpecialLw_EnterState(HSD_GObj* gobj, FtMotionId msid)
     if (fv->rock == NULL) {
         float facing_dir = fp->facing_dir;
         int part = ftParts_GetBoneIndex(fp, FtPart_TransN2);
-        int kind = mu_ak_mex_get_ft_item_id(gobj, ftLz_Item_Rock);
+        int kind = mu_ak_article_kind(gobj, ftLz_Item_Rock);
         /* The console passes an uninitialised stack Vec3 as the spawn position; the rock is put in
          * Charizard's hand right after, so any position works. The fighter's own is used here. */
         Vec3 pos = fp->cur_pos;
@@ -91,7 +91,7 @@ void ftLz_SpecialLw_IASA(HSD_GObj* gobj)
         lb_8000B1CC(fp->parts[ftParts_GetBoneIndex(fp, FtPart_TransN2)].joint, NULL, &pos);
         facing_dir = fp->facing_dir;
         part = ftParts_GetBoneIndex(fp, FtPart_TransN2);
-        kind = mu_ak_mex_get_ft_item_id(gobj, ftLz_Item_RockBurst);
+        kind = mu_ak_article_kind(gobj, ftLz_Item_RockBurst);
         itLzRockBurst_Spawn(gobj, &pos, part, kind, facing_dir);
         fp->cmd_vars[0] = 0;
     }

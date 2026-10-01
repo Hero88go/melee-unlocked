@@ -70,6 +70,13 @@ int mu_wide_picture(void)
     return (mu_game_options() & (MU_OPTION_WIDESCREEN | MU_OPTION_TRUE_WIDESCREEN)) != 0;
 }
 
+/* The player's language choice from the PC settings (see mu_native.h). */
+int mu_language_override(void)
+{
+    const unsigned int choice = (mu_game_options() & MU_OPTION_LANGUAGE_MASK) >> MU_OPTION_LANGUAGE_SHIFT;
+    return choice == 1 ? 0 : choice == 2 ? 1 : -1;
+}
+
 /* UCF 0.84 is part of the General Codes; in a replay it runs only when the replay carries it.
  * Exported for the tumble wiggle site (ftCo_DamageFall.c). */
 int mu_ucf_enabled(void)

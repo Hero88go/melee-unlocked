@@ -107,5 +107,19 @@ static void emit_game_start(const StartMeleeData* data, const u8* msrb)
         /* The game number within this search (and the tiebreak number, ranked only) is kept by
          * the host, which sees the searches; it fills GS_GAME_NUMBER in. */
     }
+#ifdef MU_AKANEIA_FIGHTERS
+    /* Convert the final serialized copy only. Costume and Zelda checks above use native kinds;
+     * the replay keeps the original disc's external ids for Dolphin compatibility. */
+    for (i = 0; i < 6; ++i) {
+        u8* p = b + 5 + 0x60 + 0x24 * i;
+        const int ext = mu_ak_mex_external(data->players[i].ckind);
+        if (MU_AK_CKIND(data->players[i].ckind) ||
+            (data->players[i].ckind >= CKind_Playable_Count &&
+             data->players[i].ckind < ChKind_Max))
+        {
+            p[0] = ext >= 0 ? (u8) ext : ChKind_None;
+        }
+    }
+#endif
     mu_replay_abi_event(0x36, b + 1, sizeof b - 1);
 }

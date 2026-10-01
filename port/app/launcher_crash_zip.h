@@ -10,19 +10,19 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "launcher_crash_privacy.h"
 
 namespace launcher::crash {
 
 // tools/crash_relay refuses anything larger.
 constexpr size_t kMaxZipBytes = 8u * 1024 * 1024;
 
-// Everything a report can hold, in zip order, each cut to its newest bytes: the error, the minidump
-// and the game's log from the game's folder, the lobby log from the launcher's. Nothing else in
-// either folder is ever read.
+// Read only the crash text and two logs, then scrub them line by line (launcher_crash_privacy.h):
+// names, accounts, addresses and full file locations are removed, the rest of the log is kept.
+// Binary minidumps stay on the player's device.
 struct Part { const char* name; bool launcher_folder; size_t max_bytes; };
 inline constexpr Part kParts[] = {
   {"melee_port_crash.txt", false, 256 * 1024},
-  {"melee_port_crash.dmp", false, 4u * 1024 * 1024},
   {"melee_port.log", false, 2u * 1024 * 1024},
   {"lobby.log", true, 512 * 1024},
 };
@@ -79,15 +79,21 @@ inline std::vector<File> collect(const std::string& game_dir, const std::string&
   std::vector<File> files;
   for (const Part& part : kParts) {
     auto data = read_tail((part.launcher_folder ? launcher_dir : game_dir) + "\\" + part.name, part.max_bytes);
-    if (!data.empty()) files.emplace_back(part.name, std::move(data));
+    // A file at its cap was cut at the front, so its first line may be the tail of a longer one.
+    if (!data.empty()) files.emplace_back(part.name, private_report_text(part.name, data, data.size() >= part.max_bytes));
   }
   return files;
 }
 
-// The zip of `files`, at most `max` bytes. Over the cap, the minidump goes first, then the largest
-// log, until it fits; the crash text always stays (cut short only if it alone is too big, which
-// its own 256 KB cap rules out at 8 MB). `files` is left holding exactly what the zip holds.
+// Scrub and restrict `files`, then ZIP at most `max` bytes. Over the cap, the largest log goes
+// first; crash text always stays. `files` is left holding exactly what the outgoing ZIP holds.
 inline std::vector<uint8_t> capped_zip(std::vector<File>& files, size_t max = kMaxZipBytes) {
+  // Recheck this boundary even for hand-built reports: no binary payloads or unknown files.
+  std::vector<File> safe;
+  for (const auto& f : files)
+    if (f.first == "melee_port_crash.txt" || f.first == "melee_port.log" || f.first == "lobby.log")
+      safe.emplace_back(f.first, private_report_text(f.first, f.second));
+  files = std::move(safe);
   std::vector<uint8_t> zip = make_zip(files);
   while (zip.size() > max && !files.empty()) {
     size_t drop = files.size();

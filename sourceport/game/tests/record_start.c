@@ -1,6 +1,10 @@
 /* Exercise the production serializer against known console bytes and its reader. */
 #include "../shim/mu_replay.c"
 void mu_replay_abi_log(const char* text) { (void) text; }
+#ifdef MU_AKANEIA_FIGHTERS
+/* This fixture uses retail player ids. The separate character-map fixture covers m-ex ids. */
+int mu_ak_ckind_from_mex(int ext) { return ext; }
+#endif
 
 #define CHECK(condition) do { if (!(condition)) return __LINE__; } while (0)
 int main(void)

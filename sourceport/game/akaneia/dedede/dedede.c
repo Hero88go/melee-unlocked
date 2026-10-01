@@ -44,7 +44,7 @@ static void ftDe_OnLoad(HSD_GObj* gobj)
     fp->dat_attrs = fp->dat_attrs_backup;
 
     for (i = 0; i < ftDe_Article_Count; i++) {
-        mu_ak_index_article(fp->kind, DP(articles[i]), i);
+        mu_ak_register_article(fp->kind, DP(articles[i]), i);
     }
 
     fp->can_multijump = true;

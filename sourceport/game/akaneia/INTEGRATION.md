@@ -20,6 +20,14 @@ range. `mu_ak_kind_from_mex()` and `mu_ak_mex_internal()` convert both ways. Slo
 the fighter file name in MxDt (`PlWf.dat`), so a disc that orders its fighters differently still
 works.
 
+The experimental creation layer also reserves native character kinds from
+`MU_AK_CKIND_BASE` (0x22), with the same slot offset. `mu_ak_ckind_from_mex()` and
+`mu_ak_mex_external()` convert the disc's external character ids at the CSS and
+Slippi boundaries. `Player_MuSetAkKind()` fills or clears only added mappings and
+the None sentinel; every retail mapping stays unchanged. These character-kind
+edits are source only, unbuilt and unrun, behind `MU_AKANEIA_FIGHTERS`. The default
+build retains the retail character table size and all added fighters remain locked.
+
 The per-kind tables are sized `FT_KIND_TABLE_MAX` (`ft/forward.h`: `MU_FT_KIND_CAP` = 0x32
 natively, `Ft_Kind_Max` on the console). Retail entries are unchanged. The added slots are NULL
 until the registry fills them.

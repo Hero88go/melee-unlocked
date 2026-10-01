@@ -24,6 +24,7 @@
 #include <melee/ft/types.h>
 #include <melee/it/forward.h>
 #include <melee/it/kinds/types.h>
+#include <melee/pl/player.h>
 
 #include <stddef.h>
 
@@ -31,6 +32,10 @@
 
 _Static_assert(MU_AK_KIND_BASE == Ft_Kind_Max + 1, "added fighter kinds start right after Ft_Kind_None");
 _Static_assert(FT_KIND_TABLE_MAX == MU_FT_KIND_CAP, "the per-kind tables are widened for the added fighters");
+_Static_assert(MU_AK_CKIND_BASE == ChKind_Max + 1, "added character kinds start after ChKind_None");
+#ifdef MU_AKANEIA_FIGHTERS
+_Static_assert(CK_KIND_TABLE_MAX == MU_CK_KIND_CAP, "experimental character mapping has added slots");
+#endif
 
 /* The retail per-kind tables ftdata.h does not declare (defined in ft/ftdata.c). */
 extern MotionState* ftData_CharacterStateTables[FT_KIND_TABLE_MAX];
@@ -49,6 +54,24 @@ struct MuAkCallbackPair {
     void (*x4)(HSD_GObj*, int, float);
 };
 extern struct MuAkCallbackPair ftData_UnkCallbackPairs0[FT_KIND_TABLE_MAX];
+#ifdef MU_AKANEIA_FIGHTERS
+/* The file tables of the creation layer (CREATION_LAYER_PLAN.md step 3). */
+struct MuAkStringPair {
+    char* a;   /* the fighter file */
+    char* b;   /* its ftData symbol */
+};
+extern struct MuAkStringPair ftData_803C1F40[FT_KIND_TABLE_MAX];
+extern char* ftData_803C23E4[FT_KIND_TABLE_MAX];
+/* The game's effect file table (ef/efasync.c): file, table symbol, loaded data. Entries the
+ * retail game leaves empty take the added fighters' effect files (plan step 7). */
+struct MuAkEffectFile {
+    char* file;
+    char* symbol;
+    void* data;
+};
+extern struct MuAkEffectFile efAsync_DatEntries[51];
+#define MU_AK_EFFECT_FILES 50
+#endif
 
 /* ---- the fighters this build has (CMakeLists.txt defines MU_AK_HAVE_<FIGHTER> per file present) */
 static const MuAkFighter* const mu_ak_registry[] = {
@@ -143,6 +166,9 @@ static const short mu_ak_hook_fields[] = {
 /* ---- state, rebuilt at each content view change ---- */
 static const MuAkFighter* ak_fighter[MU_AK_KIND_SLOTS];   /* by slot (kind - MU_AK_KIND_BASE) */
 static signed char ak_mex[MU_AK_KIND_SLOTS];               /* m-ex internal id, -1 = no slot */
+#ifdef MU_AKANEIA_FIGHTERS
+static signed char ak_ext[MU_AK_CKIND_SLOTS];              /* first m-ex external id, -1 = absent */
+#endif
 static void* ak_hooks[MU_AK_KIND_SLOTS][7];
 static int ak_shift;                                      /* m-ex special fighter shift, 0 = off */
 
@@ -154,6 +180,108 @@ typedef struct MuAkArticle {
 } MuAkArticle;
 static MuAkArticle ak_articles[MU_AK_MAX_ARTICLES];
 static int ak_article_count;
+
+#ifdef MU_AKANEIA_FIGHTERS
+static Fighter_DemoStrings ak_demo[MU_AK_KIND_SLOTS];
+static signed char ak_effect_file[MU_AK_KIND_SLOTS];   /* the effect table entry a slot filled, 0 none */
+static int same_file(const char* a, const char* b);
+
+/* The fighter's own effect file: entry `index` of the game's effect file table, as the disc's
+ * effect table names it. The game then loads it with the fighter (efAsync_LoadSync from
+ * Fighter_Create) and drops it with the scene, as it does a retail fighter's. Returns the index,
+ * -1 when the fighter has no usable effect file. Index 0 is the common effect file, never a
+ * fighter's. */
+static int fill_effect_file(int slot)
+{
+    const int index = mu_mex_fighter_effect_file(ak_mex[slot]);
+    const char* file;
+    const char* symbol;
+    ak_effect_file[slot] = 0;
+    if (index <= 0 || index >= MU_AK_EFFECT_FILES || !mu_mex_effect_file(index, &file, &symbol)) {
+        return -1;
+    }
+    if (efAsync_DatEntries[index].file != NULL) {
+        /* A retail entry, or one another added fighter filled: usable only if it is this file. */
+        return same_file(efAsync_DatEntries[index].file, file) ? index : -1;
+    }
+    efAsync_DatEntries[index].file = (char*) file;
+    efAsync_DatEntries[index].symbol = (char*) symbol;
+    efAsync_DatEntries[index].data = NULL;
+    ak_effect_file[slot] = (signed char) index;
+    return index;
+}
+
+/* Creation layer steps 3 and 4: the files a fighter kind is created from. Empty in the retail
+ * view, as every other added slot. */
+static void clear_files(int slot)
+{
+    const int kind = MU_AK_KIND_BASE + slot;
+    ftData_803C1F40[kind].a = NULL;
+    ftData_803C1F40[kind].b = NULL;
+    ftData_803C23E4[kind] = NULL;
+    ftData_Table_Unk0[kind].data = NULL;
+    ftData_Table_Unk0[kind].count = 0;
+    ftData_UnkIntPairs[kind].data = NULL;
+    ftData_UnkIntPairs[kind].count = 0;
+    ftData_UnkBytePerCharacter[kind] = (u8) -1;
+    ftData_803C2468[kind] = NULL;
+    ftData_803C24EC[kind] = NULL;
+    ftData_UnkDemoCallbacks0[kind] = NULL;
+    __builtin_memset(&ak_demo[slot], 0, sizeof ak_demo[slot]);
+    if (ak_effect_file[slot] > 0) {
+        const int index = ak_effect_file[slot];
+        efAsync_DatEntries[index].file = NULL;
+        efAsync_DatEntries[index].symbol = NULL;
+        efAsync_DatEntries[index].data = NULL;
+    }
+    ak_effect_file[slot] = 0;
+}
+
+static int fill_files(int slot)
+{
+    const int kind = MU_AK_KIND_BASE + slot;
+    const int mex = ak_mex[slot];
+    const char* file = mu_mex_fighter_file(mex);
+    const char* symbol = mu_mex_fighter_symbol(mex);
+    const char* anims = mu_mex_fighter_anim_file(mex);
+    const int anim_count = mu_mex_fighter_anim_count(mex);
+    int costumes, effect;
+    if (file == NULL || symbol == NULL || anims == NULL || anim_count <= 0) {
+        OSReport("[ak] kind %d: MxDt has no %s; the fighter cannot be created\n", kind,
+                 file == NULL ? "fighter file" : symbol == NULL ? "ftData symbol" :
+                 anims == NULL ? "animation file" : "animation count");
+        return 0;
+    }
+    costumes = mu_mex_ak_costumes(kind, mex);
+    if (costumes <= 0) {
+        OSReport("[ak] kind %d (%s): no usable costume file; the fighter cannot be created\n", kind,
+                 file);
+        return 0;
+    }
+    ftData_803C1F40[kind].a = (char*) file;
+    ftData_803C1F40[kind].b = (char*) symbol;
+    ftData_803C23E4[kind] = (char*) anims;
+    ftData_Table_Unk0[kind].data = NULL;
+    ftData_Table_Unk0[kind].count = anim_count;
+    /* The fighter's effect file (plan step 7); "none", as for Master Hand, when it has none. */
+    effect = fill_effect_file(slot);
+    ftData_UnkBytePerCharacter[kind] = effect >= 0 ? (u8) effect : (u8) -1;
+    /* The demo fighter (results screen and the 1P movies, plan step 12): the animation symbols
+     * and the retail count of demo states. The per-kind demo callback stays empty, as for most
+     * retail fighters; it is only called for the special demo types. */
+    ak_demo[slot].result_filename = (char*) mu_mex_fighter_demo(mex, 0);
+    ak_demo[slot].intro_filename = (char*) mu_mex_fighter_demo(mex, 1);
+    ak_demo[slot].ending_filename = (char*) mu_mex_fighter_demo(mex, 2);
+    ak_demo[slot].vi_wait_filename = (char*) mu_mex_fighter_demo(mex, 3);
+    ftData_803C2468[kind] = &ak_demo[slot];
+    ftData_UnkIntPairs[kind].data = NULL;
+    ftData_UnkIntPairs[kind].count = 14;
+    OSReport("[ak] kind %d: %s (%s), %s with %d animations, %d costumes, effect file %d (%s)\n",
+             kind, file, symbol, anims, anim_count, costumes, effect,
+             effect >= 0 ? efAsync_DatEntries[effect].file : "none");
+    return 1;
+}
+#endif
 
 static void mu_ak_noop(HSD_GObj* gobj)
 {
@@ -220,6 +348,72 @@ int mu_ak_mex_internal(int kind)
 const MuAkFighter* mu_ak_fighter(int kind)
 {
     return MU_AK_KIND(kind) ? ak_fighter[kind - MU_AK_KIND_BASE] : NULL;
+}
+
+/* Character ids in native player state never reuse the retail special-character ids. The
+ * external map supplies the disc ordering; a shifted special fighter maps back to its retail
+ * character kind. Missing or unsupported added slots have no native character. */
+int mu_ak_ckind_from_kind(int kind)
+{
+#ifdef MU_AKANEIA_FIGHTERS
+    if (MU_AK_KIND(kind) && ak_fighter[kind - MU_AK_KIND_BASE] != NULL &&
+        ak_ext[kind - MU_AK_KIND_BASE] >= 0)
+    {
+        return MU_AK_CKIND_BASE + kind - MU_AK_KIND_BASE;
+    }
+#else
+    (void) kind;
+#endif
+    return -1;
+}
+
+int mu_ak_ckind_from_mex(int ext)
+{
+#ifdef MU_AKANEIA_FIGHTERS
+    int kind;
+    if (!mu_mex_active() || ak_shift <= 0 || ext < CKind_Playable_Count) {
+        return ext;
+    }
+    kind = mu_ak_kind_from_mex(mu_mex_internal_of_external(ext));
+    if (MU_AK_KIND(kind)) {
+        return mu_ak_ckind_from_kind(kind);
+    }
+    switch (kind) {
+    case Ft_Kind_MasterH: return CKind_MasterH;
+    case Ft_Kind_CrezyH: return CKind_CrezyH;
+    case Ft_Kind_Boy: return CKind_Boy;
+    case Ft_Kind_Girl: return CKind_Girl;
+    case Ft_Kind_GKoops: return CKind_GKoops;
+    case Ft_Kind_Sandbag: return ChKind_Sandbag;
+    case Ft_Kind_Popo: return ChKind_Popo;
+    default: return -1;
+    }
+#else
+    return ext;
+#endif
+}
+
+int mu_ak_mex_external(int ckind)
+{
+#ifdef MU_AKANEIA_FIGHTERS
+    int ext;
+    if (MU_AK_CKIND(ckind)) {
+        return ak_fighter[ckind - MU_AK_CKIND_BASE] != NULL ?
+                   ak_ext[ckind - MU_AK_CKIND_BASE] : -1;
+    }
+    if (!mu_mex_active() || ak_shift <= 0 || ckind < CKind_Playable_Count ||
+        ckind == ChKind_None)
+    {
+        return ckind;
+    }
+    if (ckind < 0 || ckind >= ChKind_Max) {
+        return -1;
+    }
+    ext = mu_mex_external_of_internal(mu_ak_mex_internal(Player_800325C8(ckind, 0)));
+    return ext;
+#else
+    return ckind;
+#endif
 }
 
 /* ---- m-ex defaults ---- */
@@ -383,7 +577,15 @@ static void clear_slots(void)
         ak_fighter[slot] = NULL;
         ak_mex[slot] = -1;
         __builtin_memset(ak_hooks[slot], 0, sizeof ak_hooks[slot]);
+#ifdef MU_AKANEIA_FIGHTERS
+        ak_ext[slot] = -1;
+        Player_MuSetAkKind(MU_AK_CKIND_BASE + slot, -1);
+        clear_files(slot);
+#endif
     }
+#ifdef MU_AKANEIA_FIGHTERS
+    Player_MuSetAkKind(ChKind_None, -1);
+#endif
     ak_article_count = 0;
 }
 
@@ -437,8 +639,14 @@ void mu_ak_apply(void)
     ak_shift = mu_mex_special_kind_shift();
     if (!mu_mex_active() || ak_shift <= 0) {
         ak_shift = 0;
+#ifdef MU_AKANEIA_FIGHTERS
+        mu_ak_services_apply(0);
+#endif
         return;
     }
+#ifdef MU_AKANEIA_FIGHTERS
+    mu_ak_services_apply(1);
+#endif
     slots = ak_shift < MU_AK_KIND_SLOTS ? ak_shift : MU_AK_KIND_SLOTS;
     if (ak_shift > MU_AK_KIND_SLOTS) {
         OSReport("[ak] m-ex adds %d fighters; the native game has %d slots\n", ak_shift, MU_AK_KIND_SLOTS);
@@ -459,8 +667,27 @@ void mu_ak_apply(void)
             continue;
         }
         fill_fighter(slot, ft);
+#ifdef MU_AKANEIA_FIGHTERS
+        /* The character kind maps to the fighter only when its files are all there: a kind
+         * without them must not reach Fighter_Create. */
+        ak_ext[slot] = (signed char) mu_mex_external_of_internal(mex);
+        if (!fill_files(slot)) {
+            ak_ext[slot] = -1;
+        }
+        if (ak_ext[slot] >= 0) {
+            Player_MuSetAkKind(MU_AK_CKIND_BASE + slot, MU_AK_KIND_BASE + slot);
+        }
+#endif
         OSReport("[ak] %s (%s): kind %d, %s\n", ft->name != NULL ? ft->name : "?", file,
                  MU_AK_KIND_BASE + slot, (ft->flags & MU_AK_READY) ? "ready" : "in progress");
     }
     build_articles();
 }
+
+#ifdef MU_AKANEIA_FIGHTERS
+/* The host refuses an Akaneia disc unless the game library says it has the native fighters. */
+__declspec(dllexport) int mu_ak_native_build(void)
+{
+    return 1;
+}
+#endif

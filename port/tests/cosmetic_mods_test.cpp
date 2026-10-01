@@ -818,6 +818,100 @@ int main(int argc, char** argv) {
   host::cosmetics::thaw_after_online_session();
   g_disc_bytes.clear();
 
+  // Portraits and stock icons with no costume file. The name of a picture can say its costume.
+  {
+    using host::cosmetics::testing::portrait_slot_from_name;
+    std::string slot, kind;
+    check(portrait_slot_from_name("PlFxGr stock.png", &slot, &kind) && slot == "PlFxGr.dat" && kind == "stock",
+          "a picture named by the costume's file code is a stock icon for that costume");
+    check(portrait_slot_from_name("Fox Green.png", &slot, &kind) && slot == "PlFxGr.dat" && kind == "csp",
+          "a picture named by fighter and color is that costume's portrait");
+    check(portrait_slot_from_name("captain falcon red csp.png", &slot, &kind) && slot == "PlCaRe.dat" && kind == "csp",
+          "a two-word fighter name is read as one fighter");
+    check(portrait_slot_from_name("Falco_Blue.png", &slot, &kind) && slot == "PlFcBu.dat",
+          "Falco is not read as Falcon");
+    check(portrait_slot_from_name("Dr Mario default.png", &slot, &kind) && slot == "PlDrNr.dat",
+          "Dr. Mario is not read as Mario, and default is the first costume");
+    check(portrait_slot_from_name("csp/Marth/White.png", &slot, &kind) && slot == "PlMsWh.dat",
+          "folder names count as part of a picture's name");
+    check(portrait_slot_from_name("Young Link black.png", &slot, &kind) && slot == "PlClBk.dat",
+          "Young Link is not read as Link");
+    check(!portrait_slot_from_name("Fox Blue.png", &slot, &kind), "a color the fighter does not have names no costume");
+    check(!portrait_slot_from_name("Fox.png", &slot, &kind), "a fighter with no color names no costume");
+    check(!portrait_slot_from_name("Mario and Luigi red.png", &slot, &kind), "two fighters name no costume");
+    check(!portrait_slot_from_name("readme.png", &slot, &kind), "an unrelated name names no costume");
+  }
+  fs::path picture_folder = folder / L"pictures";
+  fs::create_directories(picture_folder, ec);
+  host::cosmetics::configure((picture_folder / L"port-settings.ini").string());
+  check(host::cosmetics::costume_slots().size() == 124 && host::cosmetics::costume_slots()[0].target_path == "PlCaNr.dat",
+        "the slot picker lists every costume of the game");
+  fs::path portrait_path = picture_folder / L"anything.png";
+  write_file(portrait_path, png(136, 188));
+  auto portrait_import = host::cosmetics::import_portrait(portrait_path.string(), "PlFxGr.dat", "csp");
+  auto picture_assets = host::cosmetics::assets();
+  check(portrait_import.ok && picture_assets.size() == 1 && picture_assets[0].kind == "character_portrait" &&
+            picture_assets[0].target_path == "PlFxGr.dat#portrait" && picture_assets[0].selected &&
+            picture_assets[0].character == "Fox" && picture_assets[0].costume == "Green",
+        "a portrait for a chosen costume becomes its own selected entry");
+  check(!host::cosmetics::import_portrait(portrait_path.string(), "PlFxBu.dat", "csp").ok,
+        "a costume the game does not have is refused");
+  constexpr uint32_t picture_start = 0x00400000;
+  auto picture_fst = one_file_fst(picture_start, 0x40, "PlFxGr.dat");
+  host::cosmetics::apply_to_fst(picture_fst.data(), (uint32_t)picture_fst.size());
+  uint8_t picture_probe[4]{};
+  auto pictures_active = host::cosmetics::active_companions();
+  check(read_be32(picture_fst.data() + 20) == 0x40 &&
+            host::cosmetics::read(picture_start, 0, picture_probe, sizeof picture_probe) == OverrideRead::NotOverridden,
+        "a portrait entry replaces no disc file");
+  check(pictures_active.size() == 1 && pictures_active[0].kind == "csp" && pictures_active[0].target_path == "PlFxGr.dat" &&
+            host::cosmetics::session_profile().active_assets == 1,
+        "the portrait reaches the renderer for its costume");
+  // The stock icon joins the same entry, here through its file name.
+  fs::path stock_path = picture_folder / L"Fox Green stock.png";
+  write_file(stock_path, png(24, 24));
+  auto stock_import = host::cosmetics::import_file(stock_path.string());
+  check(stock_import.ok && stock_import.asset_id == portrait_import.asset_id && host::cosmetics::assets().size() == 1,
+        "a stock icon named for the costume joins the costume's entry");
+  host::cosmetics::apply_to_fst(picture_fst.data(), (uint32_t)picture_fst.size());
+  pictures_active = host::cosmetics::active_companions();
+  check(pictures_active.size() == 2, "portrait and stock icon are both active");
+  // A skin with its own portrait: the costume's own portrait wins.
+  fs::path skin_zip = picture_folder / L"skin.zip";
+  write_file(skin_zip, stored_zip({{"PlFxGr.dat", dat}, {"skin csp.png", png(136, 188)}}));
+  auto skin_import = host::cosmetics::import_file(skin_zip.string());
+  check(skin_import.ok && host::cosmetics::select_variant("PlFxGr.dat", skin_import.asset_id, &error),
+        "a skin with its own portrait imports beside the costume's portrait entry");
+  host::cosmetics::apply_to_fst(picture_fst.data(), (uint32_t)picture_fst.size());
+  pictures_active = host::cosmetics::active_companions();
+  size_t fox_portraits = 0; bool own_wins = false;
+  for (const auto& item : pictures_active)
+    if (item.kind == "csp" && item.target_path == "PlFxGr.dat") {
+      ++fox_portraits; own_wins = item.path.find("portrait-PlFxGr") != std::string::npos;
+    }
+  check(fox_portraits == 1 && own_wins, "the costume's own portrait replaces the one the skin brought");
+  check(host::cosmetics::disable_target("PlFxGr.dat#portrait", &error), "the portrait entry can be switched off");
+  host::cosmetics::apply_to_fst(picture_fst.data(), (uint32_t)picture_fst.size());
+  pictures_active = host::cosmetics::active_companions();
+  fox_portraits = 0; own_wins = false;
+  for (const auto& item : pictures_active)
+    if (item.kind == "csp" && item.target_path == "PlFxGr.dat") {
+      ++fox_portraits; own_wins = item.path.find("portrait-PlFxGr") != std::string::npos;
+    }
+  check(fox_portraits == 1 && !own_wins, "with the portrait entry off the skin's own portrait is used again");
+  // A ZIP of pictures and no costume file.
+  fs::path pack_path = picture_folder / L"pack.zip";
+  write_file(pack_path, stored_zip({{"Fox Orange.png", png(136, 188)}, {"csp/PlMsWh csp.png", png(136, 188)},
+                                    {"readme.png", png(8, 8)}}));
+  const size_t before_pack = host::cosmetics::assets().size();
+  auto pack_import = host::cosmetics::import_file(pack_path.string());
+  check(pack_import.ok && host::cosmetics::assets().size() == before_pack + 2 &&
+            pack_import.message.find("2 of 3") != std::string::npos,
+        "a ZIP of pictures sets each one whose name identifies a costume and reports the rest");
+  fs::path nameless = picture_folder / L"cool.png";
+  write_file(nameless, png(136, 188));
+  check(!host::cosmetics::import_file(nameless.string()).ok, "a picture whose name names no costume is refused with advice");
+
   fs::remove_all(folder, ec);
   if (failures) std::fprintf(stderr, "%d cosmetic mod test(s) failed\n", failures);
   else std::puts("cosmetic mod tests passed");

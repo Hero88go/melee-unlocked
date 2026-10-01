@@ -25,6 +25,16 @@ inline constexpr bool is_stick_action(int i) { return i >= (int)BindAction::SUp 
 
 struct KeyBindings { int vk[(size_t)BindAction::Count]; };
 struct PadBindings { unsigned short mask[(size_t)BindAction::Count]; };  // 0 = unbound
+// XInput reserves these wButtons bits. They identify analog triggers in binding
+// capture and profiles; hardware button bits are masked before they are added.
+inline constexpr uint16_t kXInputBindLT = 0x0400, kXInputBindRT = 0x0800;
+inline uint16_t xinput_binding_buttons(uint16_t buttons, uint8_t left, uint8_t right,
+                                      int left_threshold, int right_threshold) {
+  buttons &= (uint16_t)~(kXInputBindLT | kXInputBindRT);
+  if (left > left_threshold) buttons |= kXInputBindLT;
+  if (right > right_threshold) buttons |= kXInputBindRT;
+  return buttons;
+}
 struct GCBindings { unsigned short mask[(size_t)BindAction::Count]; };  // GC adapter raw button mask, same layout as kActionPadBit
 // Generic HID gamepads (B0XX, Frame1, vJoy, third-party pads). Thirty-two bits rather than sixteen
 // because a box controller really does have more than sixteen buttons, and the numbering is the
@@ -226,7 +236,14 @@ inline HidBindings vjoy_b0xx_bindings() {
 // there and the full-press click is not sent. A digital or hair trigger then gives a light shield
 // (Melee shields lightly from 43, hardest at 140; only the click gives a full shield).
 enum class PadFamily : uint8_t { GameCube, Xbox, PlayStation, Switch, Box, Count };
-struct Deadzone { int main = 0, c = 0, trig_l = 255, trig_r = 255; };
+inline constexpr int kDefaultTriggerClick = 200;
+struct Deadzone {
+  int main = 0, c = 0, trig_l = 255, trig_r = 255;
+  int click_l = kDefaultTriggerClick, click_r = kDefaultTriggerClick;
+};
+inline void apply_trigger_click(int threshold, uint8_t value, uint16_t& button, uint16_t click) {
+  if (value > threshold) button |= click;
+}
 inline void apply_trigger_cap(int cap, uint8_t& value, uint16_t& button, uint16_t click) {
   if (cap >= 255) return;
   if (value > cap) value = (uint8_t)(cap < 0 ? 0 : cap);
@@ -254,6 +271,43 @@ struct PortSource {
   DeviceKind kind = DeviceKind::None;
   int index = 0;   // physical controller index; unused for Keyboard/None
 };
+
+// Connection facts, with no polling or device ownership. Gameplay, the settings
+// window and the input preview use this same configured-route fallback policy.
+struct InputDeviceFacts {
+  bool xinput[4]{}, ds4[4]{}, gc[4]{}, switch_pro[4]{}, hid[4]{};
+};
+inline bool input_device_connected(PortSource source, const InputDeviceFacts& facts) {
+  if (source.kind == DeviceKind::Keyboard) return true;
+  if (source.index < 0 || source.index >= 4) return false;
+  switch (source.kind) {
+    case DeviceKind::XInputPad: return facts.xinput[source.index];
+    case DeviceKind::DS4Pad: return facts.ds4[source.index];
+    case DeviceKind::GCAdapter: return facts.gc[source.index];
+    case DeviceKind::SwitchPro: return facts.switch_pro[source.index];
+    case DeviceKind::HidPad: return facts.hid[source.index];
+    default: return false;
+  }
+}
+inline PortSource effective_port_source(const std::array<PortSource, 4>& sources,
+                                       const InputDeviceFacts& facts, int port) {
+  if (port < 0 || port >= 4) return {};
+  const PortSource source = sources[port];
+  if (source.kind != DeviceKind::Keyboard &&
+      !(port == 0 && source.kind == DeviceKind::GCAdapter && !input_device_connected(source, facts)))
+    return source;
+  constexpr DeviceKind order[] = {DeviceKind::GCAdapter, DeviceKind::XInputPad,
+                                 DeviceKind::DS4Pad, DeviceKind::SwitchPro, DeviceKind::HidPad};
+  for (DeviceKind kind : order) for (int index = 0; index < 4; ++index) {
+    const PortSource candidate{kind, index};
+    if (!input_device_connected(candidate, facts)) continue;
+    bool routed = false;
+    for (const PortSource assigned : sources)
+      if (assigned.kind == kind && assigned.index == index) { routed = true; break; }
+    if (!routed) return candidate;
+  }
+  return {DeviceKind::Keyboard, 0};
+}
 
 // Default: GameCube adapter port N drives game port N, as it did through 0.1.7. Port 1 falls back to
 // the keyboard and the first unrouted pad when adapter port 1 is empty, so a keyboard-only or
@@ -308,6 +362,7 @@ void input_cancel_capture();
 
 struct InputDebugSnapshot {
   PadState ports[4]{};
+  PortSource feeding[4]{};
   uint32_t keyboard_actions = 0;
   uint32_t xinput_actions[4]{};
   uint32_t ds4_actions[4]{};
@@ -324,6 +379,17 @@ struct InputDebugSnapshot {
   PadState xinput_pad[4]{}, ds4_pad[4]{}, gc_pad[4]{}, swpro_pad[4]{}, hid_pad[4]{};
   uint16_t swpro_buttons[4]{};   // raw SWPRO_* bits, for the Switch Pro picture
 };
+inline InputDeviceFacts input_device_facts(const InputDebugSnapshot& snapshot) {
+  InputDeviceFacts facts;
+  for (int index = 0; index < 4; ++index) {
+    facts.xinput[index] = snapshot.xinput_connected[index];
+    facts.ds4[index] = snapshot.ds4_connected[index];
+    facts.gc[index] = (snapshot.gc_mask & (1u << index)) != 0;
+    facts.switch_pro[index] = snapshot.swpro_connected[index];
+    facts.hid[index] = snapshot.hid_connected[index];
+  }
+  return facts;
+}
 void input_debug_snapshot(InputDebugSnapshot& snapshot);
 
 }  // namespace host
