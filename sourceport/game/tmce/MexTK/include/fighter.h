@@ -2686,14 +2686,14 @@ struct FighterData /* native twin, generated */
                 struct { char _p778[208]; void (*OnSpin)(GOBJ *fighter); };
             };
         } cb; };
-        struct { char _p780[10904]; unsigned char x21fc_1 : 1; };
-        struct { char _p781[10904]; unsigned char : 1; unsigned char show_center_sphere : 1; };
-        struct { char _p782[10904]; unsigned char : 2; unsigned char show_item_pickup : 1; };
-        struct { char _p783[10904]; unsigned char : 3; unsigned char show_cpu_ai : 1; };
-        struct { char _p784[10904]; unsigned char : 4; unsigned char show_footstool : 1; };
-        struct { char _p785[10904]; unsigned char : 5; unsigned char show_dynamics : 1; };
-        struct { char _p786[10904]; unsigned char : 6; unsigned char show_hit : 1; };
-        struct { char _p787[10904]; unsigned char : 7; unsigned char show_model : 1; };
+        struct { char _p780[10904]; unsigned char : 7; unsigned char x21fc_1 : 1; };
+        struct { char _p781[10904]; unsigned char : 6; unsigned char show_center_sphere : 1; };
+        struct { char _p782[10904]; unsigned char : 5; unsigned char show_item_pickup : 1; };
+        struct { char _p783[10904]; unsigned char : 4; unsigned char show_cpu_ai : 1; };
+        struct { char _p784[10904]; unsigned char : 3; unsigned char show_footstool : 1; };
+        struct { char _p785[10904]; unsigned char : 2; unsigned char show_dynamics : 1; };
+        struct { char _p786[10904]; unsigned char : 1; unsigned char show_hit : 1; };
+        struct { char _p787[10904]; unsigned char show_model : 1; };
         struct { char _p791[10908]; struct ftcmd_var {
             union {
                 char _mex_span[16];
@@ -2706,14 +2706,14 @@ struct FighterData /* native twin, generated */
         struct { char _p934[10924]; struct flags {
             union {
                 char _mex_span[27];
-                struct { unsigned char throw_1 : 1; };
-                struct { unsigned char : 1; unsigned char throw_2 : 1; };
-                struct { unsigned char : 2; unsigned char throw_3 : 1; };
-                struct { unsigned char : 3; unsigned char throw_release : 1; };
-                struct { unsigned char : 4; unsigned char throw_turn : 1; };
-                struct { unsigned char : 5; unsigned char throw_6 : 1; };
-                struct { unsigned char : 6; unsigned char throw_7 : 1; };
-                struct { unsigned char : 7; unsigned char throw_8 : 1; };
+                struct { unsigned char : 7; unsigned char throw_1 : 1; };
+                struct { unsigned char : 6; unsigned char throw_2 : 1; };
+                struct { unsigned char : 5; unsigned char throw_3 : 1; };
+                struct { unsigned char : 4; unsigned char throw_release : 1; };
+                struct { unsigned char : 3; unsigned char throw_turn : 1; };
+                struct { unsigned char : 2; unsigned char throw_6 : 1; };
+                struct { unsigned char : 1; unsigned char throw_7 : 1; };
+                struct { unsigned char throw_8 : 1; };
                 struct { char _p800[1]; char x2211; };
                 struct { char _p801[2]; char x2212; };
                 struct { char _p802[3]; char x2213; };
