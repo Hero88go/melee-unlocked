@@ -183,6 +183,9 @@ if(NOT EXISTS "${PORT_GEN}/guest_sources.cmake")
   message(FATAL_ERROR "port: generated code missing; run python port/recomp/recomp.py")
 endif()
 include("${PORT_GEN}/guest_sources.cmake")
+# The memory card test above includes hle.h, which needs the generated hle_decls.h: follow
+# PORT_GEN when the translation is somewhere other than port/generated.
+target_include_directories(port_hle_card_test PRIVATE "${PORT_GEN}")
 
 # Guest library: large generated translation units. A second checkout of the same generated code can
 # link an existing guest.lib instead of compiling it again (several GB of objects).
