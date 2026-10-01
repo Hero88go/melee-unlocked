@@ -2,7 +2,8 @@
 // launcher offers to send the crash files. Nothing is sent until the player says yes. The files go
 // to our relay (tools/crash_relay), which forwards them to a private channel; the webhook never
 // lives in the launcher. Without a relay, or when it fails, the launcher opens the folder with the
-// zip and a prefilled GitHub issue instead. What the zip holds, and its 8 MB cap, is
+// readable Markdown, sanitized ZIP and a prefilled GitHub issue instead. No binary dump is sent.
+// What the zip holds, and its 8 MB cap, is
 // launcher_crash_zip.h (shared with port_launcher_crash_zip_test).
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <winhttp.h>
@@ -75,6 +76,10 @@ bool offer(HWND owner, const std::string& dir, const std::string& engine) {
   // Built before asking, so the list the player reads is exactly what the zip holds.
   auto files = launcher::crash::collect(dir, g_dir);
   const auto zip = launcher::crash::capped_zip(files);
+  // Always save a readable report locally, including when the player declines transmission.
+  const std::string markdown_path = dir + "\\melee_crash_report.md";
+  const auto markdown = launcher::crash::make_markdown(files, MELEE_PORT_VERSION, engine);
+  const bool markdown_saved = launcher::crash::save_report(markdown_path, markdown.data(), markdown.size());
   const std::string where = !files.empty() && files[0].first == "melee_port_crash.txt" ? first_line(files[0].second) : std::string();
   std::string list;
   for (const auto& f : files) list += "  " + f.first + "\n";
@@ -82,20 +87,32 @@ bool offer(HWND owner, const std::string& dir, const std::string& engine) {
   const std::string question = launcher::lang::tr("crash.offer", {{"files", list}});
   if (MessageBoxW(owner, widen(question).c_str(), L"Send crash report", MB_YESNO | MB_ICONQUESTION) != IDYES) return true;
   const std::string zip_path = dir + "\\melee_crash_report.zip";
-  { std::ofstream out(std::filesystem::u8path(zip_path), std::ios::binary); out.write((const char*)zip.data(), (std::streamsize)zip.size()); }
+  const bool zip_saved = launcher::crash::save_report(zip_path, (const char*)zip.data(), zip.size());
   if (post(zip, engine, where)) {
-    MessageBoxW(owner, L"Crash report sent. Thank you!", L"Send crash report", MB_OK | MB_ICONINFORMATION);
+    MessageBoxW(owner, markdown_saved ?
+        L"Crash report sent. A readable copy is saved as melee_crash_report.md beside the game; you can attach it to your assistant." :
+        L"Crash report sent. A readable copy could not be saved in the game folder.",
+        L"Send crash report", MB_OK | MB_ICONINFORMATION);
     return true;
   }
   // Fallback: the zip in its folder, and a prefilled issue the player attaches it to.
-  const std::wstring select = L"/select,\"" + widen(zip_path) + L"\"";
-  ShellExecuteW(nullptr, L"open", L"explorer.exe", select.c_str(), nullptr, SW_SHOWNORMAL);
+  if (markdown_saved || zip_saved) {
+    const std::wstring select = L"/select,\"" + widen(markdown_saved ? markdown_path : zip_path) + L"\"";
+    ShellExecuteW(nullptr, L"open", L"explorer.exe", select.c_str(), nullptr, SW_SHOWNORMAL);
+  }
   const std::string body = "Version: " + std::string(MELEE_PORT_VERSION) + "\nGame Build: " + engine + "\nError: " + where +
-                           "\n\nPlease attach melee_crash_report.zip (the folder just opened).";
+      (markdown_saved ? std::string("\n\nPlease attach melee_crash_report.md from the folder that opened.") +
+                       (zip_saved ? " The companion ZIP contains the same sanitized diagnostic text." : "") :
+       zip_saved ? "\n\nPlease attach melee_crash_report.zip from the folder that opened. The readable copy could not be saved." :
+                   "\n\nThe report files could not be saved in the game folder. Please copy the error above into the issue.");
   const std::string issue = "https://github.com/Hero88go/melee-unlocked/issues/new?title=" + url_encode("Crash: " + where.substr(0, 80)) +
                             "&body=" + url_encode(body);
   ShellExecuteW(nullptr, L"open", widen(issue).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-  MessageBoxW(owner, L"The report could not be sent automatically. A GitHub issue page and the folder with melee_crash_report.zip are open: attach the zip to the issue.",
+  MessageBoxW(owner, markdown_saved ?
+      (zip_saved ? L"The report could not be sent automatically. A GitHub issue page and the folder with melee_crash_report.md are open. Attach the Markdown report to the issue or your assistant; the ZIP contains sanitized diagnostic text." :
+                   L"The report could not be sent automatically. A GitHub issue page and the folder with melee_crash_report.md are open. Attach the Markdown report to the issue or your assistant. The ZIP could not be saved.") :
+      zip_saved ? L"The report could not be sent automatically. A GitHub issue page and the folder with melee_crash_report.zip are open. The readable copy could not be saved; attach the ZIP to the issue." :
+      L"The report could not be sent or saved in the game folder. A GitHub issue page is open with the error. The original crash files are still in the game folder.",
               L"Send crash report", MB_OK | MB_ICONINFORMATION);
   return true;
 }

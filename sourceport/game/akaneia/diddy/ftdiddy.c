@@ -92,7 +92,7 @@ Item_GObj* ftDd_SpawnArticle(HSD_GObj* gobj, int article, int hold_kind, Vec3* p
     memset(&spawn, 0, sizeof(spawn));
     spawn.x0_parent_gobj = gobj;
     spawn.x4_parent_gobj2 = gobj;
-    spawn.kind = mu_ak_fighter_item_kind(gobj, article);
+    spawn.kind = mu_ak_article_kind(gobj, article);
     spawn.hold_kind = hold_kind;
     spawn.x10 = 0;
     spawn.pos = *pos;
@@ -251,9 +251,9 @@ void ftDd_Init_OnLoad(HSD_GObj* gobj)
     fp->dat_attrs = fp->dat_attrs_backup;
 
     articles = (ArticlePtr*) DP(fp->ft_data->x48_items);
-    mu_ak_index_fighter_item(fp->kind, DP(articles[ftDd_Article_Popgun]), ftDd_Article_Popgun);
-    mu_ak_index_fighter_item(fp->kind, DP(articles[ftDd_Article_Peanut]), ftDd_Article_Peanut);
-    mu_ak_index_fighter_item(fp->kind, DP(articles[ftDd_Article_Banana]), ftDd_Article_Banana);
+    mu_ak_register_article(fp->kind, DP(articles[ftDd_Article_Popgun]), ftDd_Article_Popgun);
+    mu_ak_register_article(fp->kind, DP(articles[ftDd_Article_Peanut]), ftDd_Article_Peanut);
+    mu_ak_register_article(fp->kind, DP(articles[ftDd_Article_Banana]), ftDd_Article_Banana);
 
     ftDd_FV(fp)->banana = NULL;
 

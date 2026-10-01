@@ -70,6 +70,11 @@ libusb_device* find_adapter(libusb_device** list, ssize_t count, std::string* ot
 }
 
 void reader_thread() {
+  // The adapter is polled as fast as this thread asks again. The simulation and render threads run
+  // above normal priority, and at normal priority this one was sometimes late with the next request:
+  // an adapter that shows its rate dropped from 1000 Hz to 500 or lower. It only sleeps in the USB
+  // transfer, so the highest priority costs nothing.
+  SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
   auto send_start = [&] {
     uint8_t start = 0x13;
     int wrote = 0;

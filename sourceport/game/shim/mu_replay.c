@@ -145,6 +145,12 @@ void mu_replay_prepare_scene(void)
     for (i = 0; i < 4; i++) {
         const u8* p = info + 0x60 + 0x24 * i;
         scene->game_cache.entries[i].char_id = (s8) p[0];
+#ifdef MU_AKANEIA_FIGHTERS
+        {
+            const int ckind = mu_ak_ckind_from_mex((s8) p[0]);
+            scene->game_cache.entries[i].char_id = ckind >= 0 ? (s8) ckind : ChKind_None;
+        }
+#endif
         scene->game_cache.entries[i].color = p[3];
     }
     lbDvd_80018254();
@@ -154,7 +160,12 @@ void mu_replay_prepare_scene(void)
     for (i = 0; i < 6; i++) {
         const u8* p = info + 0x60 + 0x24 * i;
         if ((s8) p[0] != 33) {   /* FN_GetFighterNum: 33 is "no fighter" */
-            mask |= lbAudioAx_80026E84((CharacterKind) (s8) p[0]);
+            int ckind = (s8) p[0];
+#ifdef MU_AKANEIA_FIGHTERS
+            ckind = mu_ak_ckind_from_mex(ckind);
+            if (ckind < 0) continue;
+#endif
+            mask |= lbAudioAx_80026E84((CharacterKind) ckind);
         }
     }
     mask |= lbAudioAx_80026EBC((StKind) be16(info + 0xE));
@@ -222,6 +233,12 @@ static void convert_rules(StartMeleeRules* r, const u8* g)
 static void convert_player(PlayerInitData* p, const u8* g)
 {
     p->ckind = (s8) g[0];
+#ifdef MU_AKANEIA_FIGHTERS
+    if ((s8) g[0] != ChKind_None) {
+        const int ckind = mu_ak_ckind_from_mex((s8) g[0]);
+        p->ckind = ckind >= 0 ? (s8) ckind : ChKind_None;
+    }
+#endif
     p->slot_type = g[1];
     p->stocks = (s8) g[2];
     p->color = g[3];
@@ -526,6 +543,12 @@ void mu_replay_post_frame(Fighter* fp)
     b[0x5] = fp->player_idx;
     b[0x6] = (u8) is_follower(fp);
     b[0x7] = (u8) fp->kind;
+#ifdef MU_AKANEIA_FIGHTERS
+    if (mu_mex_active()) {
+        const int kind = mu_ak_mex_internal(fp->kind);
+        if (kind >= 0) b[0x7] = (u8) kind;
+    }
+#endif
     put16(b, 0x8, (u16) fp->motion_id);
     putf(b, 0xA, fp->cur_pos.x);
     putf(b, 0xE, fp->cur_pos.y);

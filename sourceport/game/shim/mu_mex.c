@@ -91,7 +91,7 @@ typedef struct MexFighter {
     DISC_PTR(MexCostumeFiles) costume_files; /* 5 [internal] -> [costume] */
     DISC_PTR(MexFtDemoPtr) ftdemo;       /* 6 [internal] */
     DISC_PTR(MexStr) anim_files;         /* 7 [internal] PlXxAJ.dat */
-    DISC_PTR(u8) anim_num;               /* 8 [internal] big-endian words */
+    DISC_PTR(u8) anim_num;               /* 8 [internal] two big-endian words each: {0, count} */
     DISC_PTR(u8) effect_index;           /* 9 [internal] the fighter's effect file */
     DISC_PTR(MexStr) result_file;        /* 10 [external] */
     DISC_PTR(u8) result_scale;           /* 11 [external] big-endian floats */
@@ -111,6 +111,17 @@ typedef struct MexMenu {
     DISC_PTR(void) sss;
 } DISC_STRUCT MexMenu;
 
+/* One effect file: the game's own table entry (file, table symbol, loaded data). */
+typedef struct MexEffectFile {
+    MexStr file;     /* "EfWfData.dat" */
+    MexStr symbol;   /* "effWolfDataTable" */
+    u32 runtime;
+} DISC_STRUCT MexEffectFile;
+
+typedef struct MexEffect {
+    DISC_PTR(MexEffectFile) files;
+} DISC_STRUCT MexEffect;
+
 typedef struct MexData {
     DISC_PTR(MexMeta) metadata;
     DISC_PTR(MexMenu) menu;
@@ -118,6 +129,9 @@ typedef struct MexData {
     /* [m-ex ftFunction index] -> [internal] console addresses of the default callbacks (retail
      * functions, or 0); a fighter file's ftFunction export overrides its own entries. */
     DISC_PTR(MexWords) fighter_function;
+    DISC_PTR(void) ssm;
+    DISC_PTR(void) music;
+    DISC_PTR(MexEffect) effect;   /* the effect files, by effect file index */
 } DISC_STRUCT MexData;
 
 /* ---- state, fixed after boot ---- */
@@ -129,14 +143,21 @@ static MexData* mex_loaded;   /* MxDt.dat once read (the mod view's tables) */
 static HSD_Archive mex_archive;
 static u8 mex_file[1024 * 1024] __attribute__((aligned(32)));
 static int mex_ext_count;
-static u8 mex_widened[Ft_Kind_Max];
-static u8 mex_costume_count[Ft_Kind_Max];
-static u8 mex_vis[Ft_Kind_Max][MEX_MAX_COSTUMES];
-static UnkCostumeStruct mex_costume_pool[Ft_Kind_Max][MEX_MAX_COSTUMES];
-static Fighter_CostumeStrings mex_costume_strings[Ft_Kind_Max][MEX_MAX_COSTUMES];
+/* The kinds with costume tables here: the retail ones, and in the experimental build the kinds of
+ * the fighters m-ex adds (akaneia/CREATION_LAYER_PLAN.md step 4). */
+#ifdef MU_AKANEIA_FIGHTERS
+#define MEX_KINDS FT_KIND_TABLE_MAX
+#else
+#define MEX_KINDS Ft_Kind_Max
+#endif
+static u8 mex_widened[MEX_KINDS];
+static u8 mex_costume_count[MEX_KINDS];
+static u8 mex_vis[MEX_KINDS][MEX_MAX_COSTUMES];
+static UnkCostumeStruct mex_costume_pool[MEX_KINDS][MEX_MAX_COSTUMES];
+static Fighter_CostumeStrings mex_costume_strings[MEX_KINDS][MEX_MAX_COSTUMES];
 /* The retail tables a widened kind replaced, put back in the retail view. */
-static struct UnkCostumeList mex_retail_lists[Ft_Kind_Max];
-static Fighter_CostumeStrings* mex_retail_strings[Ft_Kind_Max];
+static struct UnkCostumeList mex_retail_lists[MEX_KINDS];
+static Fighter_CostumeStrings* mex_retail_strings[MEX_KINDS];
 
 int mu_mex_active(void)
 {
@@ -236,11 +257,60 @@ static void mex_widen_costumes(void)
     }
 }
 
+#ifdef MU_AKANEIA_FIGHTERS
+/* The costumes of a fighter m-ex adds: native kind `kind`, m-ex internal id `mex_internal`. The
+ * costume count is the external fighter's, the files are the internal fighter's. The parts
+ * index of each costume is the disc's own: it indexes the tables of the fighter's own file.
+ * Returns the usable costume count, 0 when the fighter has none (it must then stay locked). */
+int mu_mex_ak_costumes(int kind, int mex_internal)
+{
+    MexFighter* ft;
+    MexCostumeFiles* files;
+    MexCostumeFile* list;
+    MexCostumeInfo* info;
+    int ext, count, c;
+    if (mex == NULL || kind < Ft_Kind_Max || kind >= MEX_KINDS || mex_internal < 0 ||
+        mex_internal >= mu_mex_fighter_internal_count() || mex_widened[kind])
+    {
+        return 0;
+    }
+    ft = DP(mex->fighter);
+    files = DP(ft->costume_files);
+    info = DP(ft->costume_info);
+    ext = mu_mex_external_of_internal(mex_internal);
+    if (files == NULL || info == NULL || ext < 0 || (list = DP(files[mex_internal])) == NULL) {
+        return 0;
+    }
+    count = info[ext].count < MEX_MAX_COSTUMES ? info[ext].count : MEX_MAX_COSTUMES;
+    for (c = 0; c < count; c++) {
+        const u32 vis = list[c].visibility;
+        char* file = DP(list[c].file);
+        if (file == NULL || DP(list[c].joint) == NULL ||
+            DVDConvertPathToEntrynum(lbFileGetFullName(file)) < 0)
+        {
+            OSReport("[mex] %s costume %d: file %s is not on the disc; stopping at %d costumes\n",
+                     mex_name(ext), c, file ? file : "(none)", c);
+            break;
+        }
+        mex_costume_strings[kind][c].dat_filename = file;
+        mex_costume_strings[kind][c].joint_name = DP(list[c].joint);
+        mex_costume_strings[kind][c].matanim_joint_name = DP(list[c].matanim);
+        mex_vis[kind][c] = vis < 256 ? (u8) vis : 0;
+    }
+    if (c == 0) {
+        return 0;
+    }
+    memset(mex_costume_pool[kind], 0, sizeof mex_costume_pool[kind]);
+    mex_commit_costumes(kind, c);
+    return c;
+}
+#endif
+
 /* The retail view: every widened table back to its retail list. */
 static void mex_restore_retail(void)
 {
     int kind;
-    for (kind = 0; kind < Ft_Kind_Max; kind++) {
+    for (kind = 0; kind < MEX_KINDS; kind++) {
         if (!mex_widened[kind]) {
             continue;
         }
@@ -366,6 +436,13 @@ int mu_mex_css_icons(CSSIcon* out, int max)
         out[i].ft_hudindex = in[0];
         out[i].char_kind = in[1];
         out[i].state = in[1] < CKind_Playable_Count || mu_ak_css_selectable(in[1]) ? 2 : 0;
+#ifdef MU_AKANEIA_FIGHTERS
+        {
+            const int native = mu_ak_ckind_from_mex(in[1]);
+            out[i].char_kind = native >= 0 ? (u8) native : ChKind_None;
+            if (native < 0) out[i].state = 0;
+        }
+#endif
         out[i].anim_timer = 0;
         out[i].joint_id_vs = in[4];
         out[i].joint_id_1p = in[5];
@@ -392,7 +469,7 @@ int mu_mex_insignia(int ext)
 /* The retail costume whose parts tables costume `costume` of `kind` uses. */
 int mu_mex_parts_costume(int kind, int costume)
 {
-    if (kind >= 0 && kind < Ft_Kind_Max && mex_widened[kind] && costume >= 0 && costume < mex_costume_count[kind]) {
+    if (kind >= 0 && kind < MEX_KINDS && mex_widened[kind] && costume >= 0 && costume < mex_costume_count[kind]) {
         return mex_vis[kind][costume];
     }
     return costume;
@@ -501,7 +578,9 @@ int mu_mex_fighter_anim_count(int mex_internal)
     if (!mex_internal_ok(mex_internal) || (words = DP(DP(mex->fighter)->anim_num)) == NULL) {
         return 0;
     }
-    return (int) mex_be32(words + 4 * mex_internal);
+    /* Each entry is the retail pair of words {loaded data (0 on the disc), count}, eight bytes
+     * per fighter, not one word. Read on the Akaneia 1.0.1 disc: Wolf (internal 27) has 327. */
+    return (int) mex_be32(words + 8 * mex_internal + 4);
 }
 
 /* The fighter's effect file index (into mexData.effect.files), -1 when none. */
@@ -512,6 +591,32 @@ int mu_mex_fighter_effect_file(int mex_internal)
         return -1;
     }
     return bytes[mex_internal];
+}
+
+/* Effect file `index` of the disc's effect table (the index mu_mex_fighter_effect_file gives):
+ * its file and the symbol of its table. Returns 0 when the index is out of range, the entry is
+ * empty or the file is not on the disc. */
+int mu_mex_effect_file(int index, const char** file, const char** symbol)
+{
+    MexEffect* effect;
+    MexEffectFile* files;
+    const char* name;
+    const char* table;
+    if (mex == NULL || index < 0 || index >= (int) DP(mex->metadata)->effects ||
+        (effect = DP(mex->effect)) == NULL || (files = DP(effect->files)) == NULL)
+    {
+        return 0;
+    }
+    name = DP(files[index].file);
+    table = DP(files[index].symbol);
+    if (name == NULL || name[0] == '\0' || table == NULL || table[0] == '\0' ||
+        DVDConvertPathToEntrynum(lbFileGetFullName((char*) name)) < 0)
+    {
+        return 0;
+    }
+    *file = name;
+    *symbol = table;
+    return 1;
 }
 
 /* The demo fighter's animation symbols: which 0 result, 1 intro, 2 ending, 3 wait. */

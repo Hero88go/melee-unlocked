@@ -65,4 +65,7 @@ class ModOverlay {
   DiscRead base_read_;
   std::vector<IsoReport> reports_;
 };
+// An Akaneia disc is refused while its fighters and stages are not native. A game library built with
+// them (development builds only) says so, and the host then lets the disc through for that library.
+void allow_native_akaneia(bool allow);
 } // namespace source_port

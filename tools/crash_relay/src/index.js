@@ -1,15 +1,13 @@
 // Melee Unlocked crash report relay (Cloudflare Worker).
-// The launcher POSTs a zip (crash text, minidump, logs) to /report after the player clicks Send.
+// The launcher POSTs a ZIP after the player clicks Send. Older clients may include raw dumps/logs;
+// this relay forwards only a newly built ZIP and Markdown containing scrubbed log text (privacy.js).
 // The Discord webhook lives only in the Worker secret DISCORD_WEBHOOK_URL; the client never has it.
 // Limits: zip only, 8 MB, one report per IP per 10 minutes (KV binding RATE), 50 per day in total.
+import { InvalidZip, sanitizedReport } from "./crash_markdown.js";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const PER_IP_SECONDS = 600;
 const DAILY_LIMIT = 50;
-
-function plain(value, max) {
-  return String(value || "").replace(/[\u0000-\u001f\u007f`@]/g, " ").slice(0, max);
-}
 
 export default {
   async fetch(request, env) {
@@ -37,15 +35,23 @@ export default {
     if (!(head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04))
       return new Response("not a zip", { status: 415 });
 
-    const version = plain(request.headers.get("x-mu-version"), 20);
-    const engine = plain(request.headers.get("x-mu-engine"), 20);
-    const where = plain(request.headers.get("x-mu-crash"), 300);
+    let report;
+    try {
+      report = sanitizedReport(body, request.headers.get("x-mu-version"),
+        request.headers.get("x-mu-engine"), request.headers.get("x-mu-crash") || "");
+    } catch (error) {
+      if (error instanceof InvalidZip) return new Response("unsupported diagnostic zip", { status: 415 });
+      throw error;
+    }
     const form = new FormData();
     form.append("payload_json", JSON.stringify({
-      content: `Crash report: ${version || "?"} (${engine || "?"})\n${where}`,
+      content: `Crash report: ${report.version} (${report.engine})\n${report.where}`,
       allowed_mentions: { parse: [] },
     }));
-    form.append("files[0]", new Blob([body], { type: "application/zip" }), `crash-${Date.now()}.zip`);
+    const reportId = Date.now();
+    form.append("files[0]", new Blob([report.zip], { type: "application/zip" }), `crash-${reportId}.zip`);
+    form.append("files[1]", new Blob([report.markdown],
+      { type: "text/markdown; charset=utf-8" }), `crash-${reportId}.md`);
     const sent = await fetch(env.DISCORD_WEBHOOK_URL, { method: "POST", body: form });
     if (!sent.ok) return new Response("relay failed", { status: 502 });
     return new Response("sent", { status: 200 });

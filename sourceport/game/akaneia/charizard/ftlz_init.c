@@ -33,9 +33,9 @@ void ftLz_Init_OnLoad(HSD_GObj* gobj)
 
     /* Bowser does it_8026B3F8(items[0], It_Kind_Koopa_Flame); an m-ex fighter registers its
      * articles by index and the kinds are handed out by m-ex. */
-    mu_ak_mex_index_fighter_item(fp->kind, DP(items[ftLz_Item_Fire]), ftLz_Item_Fire);
-    mu_ak_mex_index_fighter_item(fp->kind, DP(items[ftLz_Item_Rock]), ftLz_Item_Rock);
-    mu_ak_mex_index_fighter_item(fp->kind, DP(items[ftLz_Item_RockBurst]), ftLz_Item_RockBurst);
+    mu_ak_register_article(fp->kind, DP(items[ftLz_Item_Fire]), ftLz_Item_Fire);
+    mu_ak_register_article(fp->kind, DP(items[ftLz_Item_Rock]), ftLz_Item_Rock);
+    mu_ak_register_article(fp->kind, DP(items[ftLz_Item_RockBurst]), ftLz_Item_RockBurst);
 
     /* Two midair jumps with Kirby's and Jigglypuff's multi-jump code; its parameters sit at the
      * end of the special attributes. */
