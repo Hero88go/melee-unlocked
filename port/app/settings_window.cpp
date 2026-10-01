@@ -126,10 +126,9 @@ int run_settings_d3d11(gx::RenderOptions& options, void* hwnd) {
   };
   make_rtv();
 
-  // The panel opens straight away here: a window whose only content is the panel must not start
-  // empty just because the player last closed it in game.
-  const bool was_open = options.settings_open;
-  options.settings_open = true;
+  // The panel opens straight away here (settings_fills_window). The saved "open the overlay at
+  // startup" choice is not touched: forcing it on here made every save from this window write it
+  // as on, so the overlay came back at each launch.
   options.pc_settings = true;
   gx::PcSettingsUID3D11 ui(hwnd, device.Get(), context.Get(), options);
 
@@ -178,7 +177,6 @@ int run_settings_d3d11(gx::RenderOptions& options, void* hwnd) {
     if (gx::settings_close_requested()) { ShowWindow((HWND)hwnd, SW_HIDE); break; }
   }
   host::window_set_resize_callback({});
-  options.settings_open = was_open;   // do not let opening this window change the saved startup choice
   return 0;
 }
 
@@ -238,8 +236,6 @@ int run_settings_d3d12(gx::RenderOptions& options, void* hwnd) {
     }
   };
 
-  const bool was_open = options.settings_open;
-  options.settings_open = true;
   options.pc_settings = true;
   {
     gx::PcSettingsUI ui(hwnd, device.Get(), queue.Get(), options);
@@ -297,7 +293,6 @@ int run_settings_d3d12(gx::RenderOptions& options, void* hwnd) {
     wait_gpu();
   }
   CloseHandle(fence_event);
-  options.settings_open = was_open;
   return 0;
 }
 

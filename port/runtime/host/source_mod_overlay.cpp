@@ -36,7 +36,9 @@ bool valid_name(const std::string& s) {
   for (unsigned char c : s) if (c < 0x20 || c == '/' || c == '\\' || c == ':') return false;
   return true;
 }
+bool g_native_akaneia = false;   // allow_native_akaneia()
 bool akaneia_disabled(const std::set<std::string>& paths, std::string& error) {
+  if (g_native_akaneia) return false;
   if (!paths.count("/mxdt.dat") || !paths.count("/plsn.dat") || !paths.count("/plts.dat")) return false;
   error = "Akaneia is disabled until its native fighters and stages are complete. Use Training Mode CE or 20XX TE.";
   return true;
@@ -266,6 +268,8 @@ bool ModOverlay::add_files(std::vector<File>&& files, std::string& error) {
   conflicts_.insert(conflicts_.end(), pending_conflicts.begin(), pending_conflicts.end());
   return true;
 }
+
+void allow_native_akaneia(bool allow) { g_native_akaneia = allow; }
 
 ModOverlay::Read ModOverlay::read(uint32_t offset, void* dst, uint32_t size) const {
   if (offset < base) return Read::NotOverridden;

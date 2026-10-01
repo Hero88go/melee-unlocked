@@ -135,7 +135,7 @@ static void ftLz_SpecialN_SpawnFire(HSD_GObj* gobj)
     speed_scale = fv->fire_speed / da->fire_speed_max;
     size_scale = fv->fire_size / da->fire_size_max;
     itLzFire_Spawn(gobj, &pos, mv->specialn.hit_id, gfx,
-                   mu_ak_mex_get_ft_item_id(gobj, ftLz_Item_Fire), fp->facing_dir, speed_scale,
+                   mu_ak_article_kind(gobj, ftLz_Item_Fire), fp->facing_dir, speed_scale,
                    size_scale);
 
     if (mv->specialn.sfx_cycle == 0) {

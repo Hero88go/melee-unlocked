@@ -26,6 +26,7 @@
 #include "audio.h"
 #include "host.h"
 #include "input_bindings.h"
+#include "settings_nav.h"
 #include "lcancel.h"
 #include "../abi/mu_lcancel_flash.h"
 #include "user_gecko.h"
@@ -291,6 +292,15 @@ static bool load_family_option(const std::string& key, const std::string& value)
     if (key == "deadzone_" + k + "_c") { host::g_deadzones[f].c = std::clamp(std::atoi(value.c_str()), 0, 100); return true; }
     if (key == "trigger_" + k + "_l") { host::g_deadzones[f].trig_l = std::clamp(std::atoi(value.c_str()), 0, 255); return true; }
     if (key == "trigger_" + k + "_r") { host::g_deadzones[f].trig_r = std::clamp(std::atoi(value.c_str()), 0, 255); return true; }
+    if (key == "trigger_" + k + "_l_threshold" || key == "trigger_" + k + "_r_threshold") {
+      char* end = nullptr;
+      const double normalized = std::strtod(value.c_str(), &end);
+      if (end == value.c_str() || *end != '\0' || !std::isfinite(normalized)) return true;
+      const int threshold = (int)std::lround(std::clamp(normalized, 0.0, 1.0) * 255.0);
+      if (key == "trigger_" + k + "_l_threshold") host::g_deadzones[f].click_l = threshold;
+      else host::g_deadzones[f].click_r = threshold;
+      return true;
+    }
   }
   return false;
 }
@@ -304,6 +314,10 @@ static std::string family_options_text() {
     // written only when changed, so a file that never used them stays as it was
     if (host::g_deadzones[f].trig_l < 255) out += "\ntrigger_" + k + "_l " + std::to_string(host::g_deadzones[f].trig_l);
     if (host::g_deadzones[f].trig_r < 255) out += "\ntrigger_" + k + "_r " + std::to_string(host::g_deadzones[f].trig_r);
+    if (host::g_deadzones[f].click_l != host::kDefaultTriggerClick)
+      out += "\ntrigger_" + k + "_l_threshold " + std::to_string(host::g_deadzones[f].click_l / 255.0);
+    if (host::g_deadzones[f].click_r != host::kDefaultTriggerClick)
+      out += "\ntrigger_" + k + "_r_threshold " + std::to_string(host::g_deadzones[f].click_r / 255.0);
   }
   return out;
 }
@@ -355,6 +369,8 @@ static const char* xinput_button_name(unsigned short mask) {
     case XINPUT_GAMEPAD_RIGHT_THUMB: return "R3";
     case XINPUT_GAMEPAD_LEFT_SHOULDER: return "LB";
     case XINPUT_GAMEPAD_RIGHT_SHOULDER: return "RB";
+    case host::kXInputBindLT: return "LT";
+    case host::kXInputBindRT: return "RT";
     case XINPUT_GAMEPAD_A: return "A";
     case XINPUT_GAMEPAD_B: return "B";
     case XINPUT_GAMEPAD_X: return "X";
@@ -584,7 +600,10 @@ static std::string binding_label(host::CaptureDevice kind, int index, int action
   char label[32];
   switch (kind) {
     case host::CaptureDevice::Keyboard:  format_key_label((int)v, label, sizeof label); return label;
-    case host::CaptureDevice::XInputPad: return xinput_button_name((unsigned short)v);
+    case host::CaptureDevice::XInputPad:
+      if (action == (int)host::BindAction::L && !v) return "LT analog";
+      if (action == (int)host::BindAction::R && !v) return "RT analog";
+      return xinput_button_name((unsigned short)v);
     case host::CaptureDevice::DS4Pad:    return ds4_button_name((unsigned short)v);
     case host::CaptureDevice::SwitchPro: return swpro_button_name((unsigned short)v);
     case host::CaptureDevice::HidPad:    return hid_button_name(v);
@@ -726,6 +745,7 @@ static bool g_gecko_chosen = false;
 // The controller last shown in the Controls tab (its device number), so the tab opens on it again
 // rather than on whatever plays as port 1. -1: nothing saved yet.
 static int g_saved_edit_tab = -1;
+static bool g_edit_follow_active = true;
 
 // The Advanced group at the bottom of Video ([0]) and Overlays ([1]): diagnostics, pack making and
 // the DLSS 5 internals, out of the way of the everyday settings. Closed until the player opens it,
@@ -864,7 +884,7 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
                                 const char* c_mode_text, ImVec2 stick_pos, ImVec2 c_pos, float dz_main, float dz_c) {
   using A = host::BindAction;
   const float avail = ImGui::GetContentRegionAvail().x;
-  const float k = std::clamp(avail / 960.0f, 0.5f, 1.4f);
+  const float k = std::clamp(avail / 960.0f, 0.15f, 1.4f);
   const ImVec2 o = ImGui::GetCursorScreenPos();
   const float kGcCanvasH = analog_c ? kGcCanvasHAnalog : kGcCanvasHKeys;
   ImGui::InvisibleButton("gc_picture", ImVec2(960.0f * k, kGcCanvasH * k));
@@ -1551,6 +1571,8 @@ static void dlss5_float(const std::string& value, float& target, float lo, float
 
 void load_pc_settings(RenderOptions& options, int& volume) {
   capture_default_bindings();   // the built-in buttons, before the saved ones replace them
+  g_edit_follow_active = true;
+  for (host::Deadzone& dz : host::g_deadzones) dz.click_l = dz.click_r = host::kDefaultTriggerClick;
   std::ifstream file(options.settings_path);
   // Start in the game. F1 and the launcher Settings entry remain available at any time.
   options.settings_open = false;
@@ -1616,6 +1638,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "audio_asio_buffer") { const int b = std::stoi(value); options.audio_asio_buffer = b == 0 ? 0 : std::clamp(b, 32, 2048); }
       else if (key == "audio_device") options.audio_device = value;
       else if (key == "audio_buffer_ms") options.audio_buffer_ms = std::clamp(std::stoi(value), 5, 120);
+      else if (key == "quickchat") slippi::online::config().chat = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "onlinedelay") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 9) slippi::online::config().delay = d; }
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "showfps") options.show_fps = value == "1";
@@ -1674,7 +1697,9 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "swpro_gc_picture") g_swpro_gc_picture = value == "1";
       else if (key == "rumble") host::g_rumble_enabled.store(value != "0", std::memory_order_relaxed);
       else if (key == "backgroundinput") host::g_background_input = value != "0";
+      else if (key == "gamelanguage") host::g_game_language.store(value == "1" ? 1 : value == "2" ? 2 : 0);
       else if (key == "editdevice") g_saved_edit_tab = std::atoi(value.c_str());
+      else if (key == "editdevice_follow") g_edit_follow_active = value != "0";
       // "activeprofile<device> <name>": the profile each controller uses, so it is still the one
       // shown (and the one changes are saved to) after a restart.
       else if (key.rfind("activeprofile", 0) == 0 && key.size() > 13 && std::isdigit((unsigned char)key[13])) {
@@ -1881,6 +1906,7 @@ std::atomic<bool> g_fill_window{false};
 std::atomic<bool> g_close_requested{false};
 bool settings_close_requested() { return g_close_requested.exchange(false, std::memory_order_relaxed); }
 void settings_fill_window(bool on) { g_fill_window.store(on, std::memory_order_relaxed); }
+bool settings_fills_window() { return g_fill_window.load(std::memory_order_relaxed); }
 bool settings_textures_dirty() { return g_textures_dirty.exchange(false, std::memory_order_relaxed); }
 
 // The appearance layouts share one settings model and page controls; each supplies its own
@@ -2579,11 +2605,12 @@ struct PcSettingsUI::Impl {
 PcSettingsUI::PcSettingsUI(void* window, ID3D12Device* device, ID3D12CommandQueue* queue, const RenderOptions& options)
     : impl_(std::make_unique<Impl>()) {
   auto& state = *impl_;
-  state.state.open = options.settings_open;
-  state.state.panel_anim_target_open = options.settings_open;
+  const bool open = options.settings_open || settings_fills_window();
+  state.state.open = open;
+  state.state.panel_anim_target_open = open;
   state.state.panel_anim_initialized = true;
-  state.state.panel_anim_frame = options.settings_open ? 17.0f : 12.0f;
-  state.state.panel_slide_x = options.settings_open ? 0.0f : -720.0f;
+  state.state.panel_anim_frame = open ? 17.0f : 12.0f;
+  state.state.panel_slide_x = open ? 0.0f : -720.0f;
   state.state.panel_slide_start_x = state.state.panel_slide_x;
   settings_context_create(window, options.settings_open);
   D3D12_DESCRIPTOR_HEAP_DESC desc{}; desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -2819,6 +2846,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
        << "\nonlinedelay " << slippi::online::config().delay
+       << "\nquickchat " << slippi::online::config().chat
        << "\nautoopenoverlay " << (options.settings_open ? 1 : 0)
        // Read since it was added and never written, so hiding the reminder lasted one session.
        << "\nsettingsreminder " << (options.settings_hint ? 1 : 0)
@@ -2869,7 +2897,9 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << family_options_text()
        << "\nrumble " << (host::g_rumble_enabled.load(std::memory_order_relaxed) ? 1 : 0)
        << "\nbackgroundinput " << (host::g_background_input ? 1 : 0)
+       << "\ngamelanguage " << host::g_game_language.load()
        << "\neditdevice " << g_saved_edit_tab
+       << "\neditdevice_follow " << (g_edit_follow_active ? 1 : 0)
        << (g_custom_preset.set ? "\ncustompreset " + std::to_string(g_custom_preset.efb) + " " + std::to_string(g_custom_preset.ssaa) + " " +
                                      std::to_string(g_custom_preset.aniso) + " " + std::to_string(g_custom_preset.dlss) + " " +
                                      std::to_string(g_custom_preset.fps) + " " + std::to_string(g_custom_preset.sub)
@@ -3170,30 +3200,32 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   host::PadState pads[4]{};
   const bool have_any_pad = host::window_ui_pads(pads);
   if (!have_any_pad) for (host::PadState& p : pads) p.err = -1;
+  host::settings_nav::Pad nav_pads[4];
+  for (int i = 0; i < 4; ++i)
+    nav_pads[i] = {pads[i].err == 0, pads[i].button, pads[i].stick_x, pads[i].stick_y};
   if (state.practice_release_capture) {
-    bool any_connected = false, all_neutral = true;
-    for (const host::PadState& p : pads) {
-      if (p.err != 0) continue;
-      any_connected = true;
-      if (p.button || std::abs(p.stick_x) >= 30 || std::abs(p.stick_y) >= 30 ||
-          std::abs(p.sub_x) >= 30 || std::abs(p.sub_y) >= 30 || p.trig_l > 20 || p.trig_r > 20)
-        all_neutral = false;
+    // The pad that drove the menu back at rest and every button up, or one second at most: a pad
+    // that never rests must not keep the game from its controllers (settings_nav.h).
+    state.practice_release_seconds += ImGui::GetIO().DeltaTime;
+    if (!host::settings_nav::hold_release(nav_pads, std::clamp(state.settings_controller_port, 0, 3),
+                                          state.practice_release_seconds)) {
+      if (state.practice_release_seconds >= host::settings_nav::kReleaseTimeout)
+        for (int i = 0; i < 4; ++i)
+          if (host::settings_nav::active(nav_pads[i]))
+            host::log("controls: port %d was still held %.0f s after the menu closed (buttons %04X, stick %d,%d); the game has its controllers back",
+                      i + 1, host::settings_nav::kReleaseTimeout, pads[i].button, pads[i].stick_x, pads[i].stick_y);
+      state.practice_release_capture = false;
     }
-    if (!any_connected || all_neutral) state.practice_release_capture = false;
   }
+  if (!state.practice_release_capture) state.practice_release_seconds = 0.0f;
   const int shortcut_port = host::window_take_settings_controller_port();
   if (shortcut_port >= 0 && shortcut_port < 4) state.settings_controller_port = shortcut_port;
   const bool nav_active = state.open || practice_nav;
-  int nav_port = practice_nav ? std::clamp(practice.controller_port, 0, 3) :
-                                std::clamp(state.settings_controller_port, 0, 3);
-  if (!practice_nav && nav_active) {
-    for (int i = 0; i < 4; ++i) {
-      const host::PadState& candidate = pads[i];
-      const bool active = candidate.err == 0 &&
-          (candidate.button || std::abs(candidate.stick_x) >= 30 || std::abs(candidate.stick_y) >= 30);
-      if (active) { state.settings_controller_port = i; nav_port = i; break; }
-    }
-  }
+  // The panel follows the pad that was last picked up, not the first one that reads as active.
+  const int followed = host::settings_nav::follow(nav_pads, state.settings_pad_was_at_rest.data(),
+                                                  state.settings_controller_port, nav_active && !practice_nav);
+  if (!practice_nav) state.settings_controller_port = followed;
+  int nav_port = practice_nav ? std::clamp(practice.controller_port, 0, 3) : followed;
   if (pads[nav_port].err != 0)
     for (int i = 0; i < 4; ++i) if (pads[i].err == 0) { nav_port = i; break; }
   const host::PadState& pad = pads[nav_port];
@@ -5538,7 +5570,51 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         }
         if (ImGui::IsItemHovered())
           ImGui::SetTooltip("Import a Nucleus project ZIP, costume DAT/ZIP, or stage DAT/ZIP.\n"
-                            "Stage DATs use only their matching disc file. Unsafe stage changes stay offline.");
+                            "Stage DATs use only their matching disc file. Unsafe stage changes stay offline.\n"
+                            "A portrait or stock icon PNG works too when its name says the costume\n"
+                            "(\"Fox Green.png\", \"PlFxGr stock.png\"), alone or as a ZIP of pictures.");
+        ImGui::SameLine();
+        // A portrait or stock icon for one costume, with no costume file: the player picks the costume.
+        if (ImGui::Button("Add portrait...")) ImGui::OpenPopup("add_portrait");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Give one costume its own character select portrait or stock icon from a PNG.\n"
+                            "It works on the original costume and on a skin, and replaces the picture a skin brought.");
+        if (ImGui::BeginPopupModal("add_portrait", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+          static const std::vector<host::cosmetics::CostumeSlot> slots = host::cosmetics::costume_slots();
+          static int fighter = 0, costume = 0, picture_kind = 0;
+          std::vector<const char*> fighter_names;
+          std::vector<int> first;   // each fighter's first slot
+          for (size_t i = 0; i < slots.size(); ++i)
+            if (i == 0 || slots[i].character != slots[i - 1].character) {
+              fighter_names.push_back(slots[i].character.c_str()); first.push_back((int)i);
+            }
+          fighter = std::clamp(fighter, 0, (int)first.size() - 1);
+          ImGui::SetNextItemWidth(260.0f);
+          if (settings_combo("Fighter", &fighter, fighter_names.data(), (int)fighter_names.size())) costume = 0;
+          const int begin = first[(size_t)fighter];
+          const int end = fighter + 1 < (int)first.size() ? first[(size_t)fighter + 1] : (int)slots.size();
+          std::vector<const char*> costume_names;
+          for (int i = begin; i < end; ++i) costume_names.push_back(slots[(size_t)i].costume.c_str());
+          costume = std::clamp(costume, 0, (int)costume_names.size() - 1);
+          ImGui::SetNextItemWidth(260.0f);
+          settings_combo("Costume", &costume, costume_names.data(), (int)costume_names.size());
+          const char* picture_kinds[] = {"Portrait", "Stock icon"};
+          ImGui::SetNextItemWidth(260.0f);
+          settings_combo("Picture", &picture_kind, picture_kinds, 2);
+          if (ImGui::Button("Choose PNG...", ImVec2(150, 0))) {
+            std::string path = host::cosmetics::choose_portrait_file();
+            if (!path.empty()) {
+              const auto result = host::cosmetics::import_portrait(path, slots[(size_t)(begin + costume)].target_path,
+                                                                   picture_kind == 0 ? "csp" : "stock");
+              mod_message = result.message;
+              if (result.ok) changed = true;
+              ImGui::CloseCurrentPopup();
+            }
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Cancel", ImVec2(100, 0))) ImGui::CloseCurrentPopup();
+          ImGui::EndPopup();
+        }
         ImGui::SameLine();
         if (ImGui::Button("Refresh catalog")) {
           std::string error;
@@ -5561,10 +5637,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           using CosmeticAsset = host::cosmetics::AssetInfo;
           std::map<std::string, std::map<std::string, std::vector<const CosmeticAsset*>>> characters;
           std::map<std::string, std::vector<const CosmeticAsset*>> stages;
+          std::map<std::string, std::vector<const CosmeticAsset*>> pictures;   // a costume's own portrait and stock icon
           std::map<std::string, std::map<std::string, std::vector<const CosmeticAsset*>>> effects;
           for (const auto& asset : installed_mods) {
             if (asset.kind == "character_costume") characters[asset.character][asset.costume].push_back(&asset);
             else if (asset.kind == "stage_visual" && asset.available) stages[asset.costume].push_back(&asset);
+            else if (asset.kind == "character_portrait") pictures[asset.character + ", " + asset.costume].push_back(&asset);
             else if (asset.kind == "effect_visual") effects[asset.character][asset.costume].push_back(&asset);
           }
           static std::string rename_id;
@@ -5678,6 +5756,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               ImGui::TextWrapped("%s", details->availability_message.c_str());
             ImGui::PopID();
           };
+          if (!pictures.empty() && ImGui::CollapsingHeader("Portraits and stock icons", ImGuiTreeNodeFlags_DefaultOpen))
+            for (const auto& slot : pictures) draw_resource_slot(slot.first, slot.second);
           if (!stages.empty() && ImGui::CollapsingHeader("Stages", ImGuiTreeNodeFlags_DefaultOpen))
             for (const auto& stage : stages) draw_resource_slot(stage.first, stage.second);
           if (!effects.empty() && ImGui::CollapsingHeader("Effects")) {
@@ -5737,6 +5817,24 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetTooltip("On: controllers keep playing while another window is in front\n"
                         "(a stream, Discord, a second monitor).\n"
                         "Off: the game ignores all input until you click back into its window.");
+
+    // The game's own language option (Options > Language) lives in its save. This offers the same
+    // choice here: the game is answered with it wherever it asks for its saved language, on both
+    // engines, and the save is left as it is.
+    ImGui::TextUnformatted("Language");
+    {
+      int language = host::g_game_language.load();
+      const char* languages[] = {"The game's own choice", "Japanese", "English"};
+      ImGui::SetNextItemWidth(220.0f);
+      if (settings_combo("Game language", &language, languages, 3)) {
+        host::g_game_language.store(language);
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Japanese gives the Japanese menus, fighter names and announcer calls,\n"
+                          "as the game's own Options > Language does.\n"
+                          "The game's own choice follows that option. Applies as each screen loads.");
+    }
 
     // Slippi's Lagless FoD code is a real game patch, so expose it as an offline/direct setting
     // instead of silently forcing the performance-oriented variant on every player.
@@ -5826,6 +5924,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Frames of your own input held back before the game uses it, as in Slippi Dolphin.\n"
                           "Higher means fewer rollbacks on a bad connection and more input lag.\n"
                           "2 is Slippi's default. Takes effect from the next online match.");
+      // Slippi's quick chat on the online character select screen, the same three choices as
+      // Slippi Dolphin. Off also stops showing the other player's messages.
+      static const char* chat_choices[] = {"On", "Direct matches only", "Off"};
+      int chat = std::clamp(slippi::online::config().chat, 0, 2);
+      ImGui::SetNextItemWidth(220.0f);
+      if (settings_combo("Quick chat", &chat, chat_choices, 3)) { slippi::online::config().chat = chat; changed = true; }
       if (slippi::online::is_online_match()) {
         ImGui::SameLine();
         settings_hint("(applies from the next match)");
@@ -5911,20 +6015,27 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     };
     static int family_sel = -1;
     static int device_sel[kFamilyCount] = {};
-    auto select_tab = [&](int t) {
+    auto select_tab = [&](int t, bool manual = false) {
       for (int f = 0; f < kFamilyCount; ++f)
-        if (t >= kFamilies[f].first_tab && t < kFamilies[f].first_tab + kFamilies[f].count) { family_sel = f; device_sel[f] = t - kFamilies[f].first_tab; }
+        if (t >= kFamilies[f].first_tab && t < kFamilies[f].first_tab + kFamilies[f].count) {
+          family_sel = f; device_sel[f] = t - kFamilies[f].first_tab;
+          if (manual && g_edit_follow_active) { g_edit_follow_active = false; changed = true; }
+        }
     };
     if (family_sel < 0) {   // open on whatever plays as port 1, else the first family with something connected
       family_sel = 0;
       for (int f = 0; f < kFamilyCount; ++f) if (family_connected(kFamilies[f]) > 0) { family_sel = f; break; }
       for (int f = 0; f < kFamilyCount; ++f)
         for (int i = 0; i < kFamilies[f].count; ++i) if (tab_connected(kFamilies[f].first_tab + i)) { device_sel[f] = i; break; }
-      const int t = tab_of_source(host::g_port_sources[0]);
+      const int t = tab_of_source(snap.feeding[0]);
       if (t >= 0 && tab_connected(t)) select_tab(t);
-      if (g_saved_edit_tab >= 0 && g_saved_edit_tab < kDeviceTabs) select_tab(g_saved_edit_tab);
+      if (!g_edit_follow_active && g_saved_edit_tab >= 0 && g_saved_edit_tab < kDeviceTabs) select_tab(g_saved_edit_tab);
       // Test hook for panel screenshots: MELEE_SETTINGS_EDIT=<device number> opens on that device.
-      if (const char* e = std::getenv("MELEE_SETTINGS_EDIT")) select_tab(std::atoi(e));
+      if (const char* e = std::getenv("MELEE_SETTINGS_EDIT")) select_tab(std::atoi(e), true);
+    }
+    if (g_edit_follow_active && state.rebind_action < 0) {
+      const int t = tab_of_source(snap.feeding[0]);
+      if (t >= 0 && tab_connected(t)) select_tab(t);
     }
     auto light = [&](ImVec2 c, int count, bool show_count) {
       ImDrawList* d = ImGui::GetWindowDrawList();
@@ -5969,13 +6080,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                                  : t <= 16 ? snap.swpro_pad[t - 13] : snap.hid_pad[t - 17];
         auto far_out = [](int8_t v) { return v > 50 || v < -50; };
         const bool pushed = tab_connected(t) && (far_out(ps.stick_x) || far_out(ps.stick_y) || far_out(ps.sub_x) || far_out(ps.sub_y));
-        if (((now_live & ~last_live[t]) || (pushed && !last_pushed[t])) && state.rebind_action < 0) select_tab(t);
+        if (((now_live & ~last_live[t]) || (pushed && !last_pushed[t])) && state.rebind_action < 0)
+          select_tab(t, t != tab_of_source(snap.feeding[0]));
         last_live[t] = now_live;
         last_pushed[t] = pushed;
       }
     }
     auto port_of_tab = [&](int t) {
-      for (int port = 0; port < 4; ++port) if (tab_of_source(host::g_port_sources[port]) == t) return port + 1;
+      for (int port = 0; port < 4; ++port) if (tab_of_source(snap.feeding[port]) == t) return port + 1;
       return 0;
     };
     // What a player calls each device: the kind of controller, then where it is plugged in.
@@ -6020,18 +6132,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       for (int port = 0; port < 4; ++port) {
         if (port % card_columns) ImGui::SameLine();
         ImGui::PushID(100 + port);
-        int t = tab_of_source(host::g_port_sources[port]);
-        // A port left on the keyboard is also played by the first spare pad (window.cpp); show that
-        // pad, so someone with only an Xbox controller sees it on P1 without having to pick it.
-        if (host::g_port_sources[port].kind == host::DeviceKind::Keyboard) {
-          const int ft = tab_of_source(host::g_port_feeding[port]);
-          if (ft > 0 && tab_connected(ft)) t = ft;
-        }
+        const int t = tab_of_source(snap.feeding[port]);
         const bool connected = t >= 0 && tab_connected(t);
         const bool editing = t >= 0 && t == edit_tab;
         const ImVec2 o = ImGui::GetCursorScreenPos();
         ImGui::SetNextItemAllowOverlap();   // the arrow drawn on top of the card takes its own clicks
-        if (settings_hit_button("card", ImVec2(card_w, card_h)) && t >= 0) select_tab(t);
+        if (settings_hit_button("card", ImVec2(card_w, card_h)) && t >= 0) select_tab(t, true);
         const bool hovered_card = ImGui::IsItemHovered();
         ImDrawList* d = ImGui::GetWindowDrawList();
         d->AddRectFilled(o, ImVec2(o.x + card_w, o.y + card_h), hovered_card ? IM_COL32(40, 40, 52, 255) : IM_COL32(30, 30, 40, 255), 8.0f);
@@ -6115,12 +6221,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         static const int kOrder[] = {9, 10, 11, 12, 1, 2, 3, 4, 5, 6, 7, 8, 13, 14, 15, 16, 17, 18, 19, 20, 0};
         for (int t : kOrder)
           if (t == 0 || tab_connected(t))
-            if (ImGui::Selectable((label_of(t) + "##dev" + std::to_string(t)).c_str(), t == edit_tab)) select_tab(t);
+            if (ImGui::Selectable((label_of(t) + "##dev" + std::to_string(t)).c_str(), t == edit_tab)) select_tab(t, true);
         // Every other controller, to set one up before plugging it in.
         if (ImGui::BeginMenu("Not plugged in")) {
           for (int t : kOrder)
             if (t != 0 && !tab_connected(t))
-              if (ImGui::Selectable((label_of(t) + "  (not plugged in)##dev" + std::to_string(t)).c_str(), t == edit_tab)) select_tab(t);
+              if (ImGui::Selectable((label_of(t) + "  (not plugged in)##dev" + std::to_string(t)).c_str(), t == edit_tab)) select_tab(t, true);
           ImGui::EndMenu();
         }
         ImGui::EndCombo();
@@ -6138,6 +6244,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         settings_hint("Press any button on a controller to jump to it.");
       }
     }
+    changed |= settings_toggle("Follow player 1 controller", &g_edit_follow_active);
+    if (!g_edit_follow_active) settings_hint("Editing your selected controller. Turn on Follow player 1 to return to the active pad.");
     const Family& cur_family = kFamilies[family_sel];
     ImGui::Spacing();
     if (cur_family.fam == (int)host::PadFamily::GameCube) {
@@ -6275,6 +6383,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           ImGui::SetNextItemWidth(200.0f);
           changed |= settings_slider("R trigger", &dz.trig_r, 43, 255, dz.trig_r >= 255 ? "Full" : "%d");
           if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kTrigTip);
+          static const char* kClickTip =
+              "How far the trigger travels (out of 255) before the game sees the full press.\n"
+              "Lower it for a trigger with short travel. 200 is the default. It has no effect\n"
+              "while the trigger above is set to a number, since that trigger never clicks.";
+          ImGui::SetNextItemWidth(200.0f);
+          changed |= settings_slider("L full press at", &dz.click_l, 1, 254, dz.click_l == host::kDefaultTriggerClick ? "Default" : "%d");
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kClickTip);
+          ImGui::SetNextItemWidth(200.0f);
+          changed |= settings_slider("R full press at", &dz.click_r, 1, 254, dz.click_r == host::kDefaultTriggerClick ? "Default" : "%d");
+          if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kClickTip);
           settings_hint("Applies to every %s controller.", cur_family.name);
         }
         if (tab_kind == host::CaptureDevice::HidPad && ImGui::CollapsingHeader("Box layouts")) {

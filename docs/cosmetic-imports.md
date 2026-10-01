@@ -109,6 +109,25 @@ and the `.dat` otherwise. An import for such a slot replaces both, each checked 
 file for the online rule. The importer accepts a file named `.usd` wherever it accepts a `.dat`,
 alone or inside a ZIP.
 
+### Portraits and stock icons without a costume file
+
+A portrait (the character select picture) or a stock icon can be given to a costume on its own:
+for an original costume, for a skin that came without one, or as a pack of pictures.
+
+- **Add portrait** in the Mods tab asks for the fighter, the costume and the kind of picture, then
+  for a PNG.
+- **Import** takes a PNG whose name says the costume, by the costume's file code
+  (`PlFxGr stock.png`) or by fighter and color (`Fox Green.png`, `captain falcon red csp.png`). A
+  name with "stock" in it is a stock icon, anything else a portrait. A name that fits two costumes,
+  or a color the fighter does not have, is refused with advice.
+- **A ZIP with pictures and no costume file** sets each PNG whose name identifies a costume and
+  lists the ones that do not.
+
+Each costume has one entry for its pictures (catalog kind `character_portrait`, target
+`<slot>.dat#portrait`). It is switched on and off like any other choice, independently of the
+costume's skin, and its pictures replace the ones a selected skin brought. It overrides no disc
+file. A build that predates the kind finds no disc file by that target and leaves the entry alone.
+
 The active runtime map owns immutable byte buffers and is published before the guest initializes
 DVD. Settings changes affect only the desired on-disk profile. Restarting drops guest RAM, DVD
 requests, model data, and renderer textures before a different snapshot is published; Restore

@@ -51,6 +51,8 @@ struct SettingsState {
   int active_tab = 0;             // shared across overlay styles A and B
   bool home_focus_reset = false;  // discard stale ImGui navigation focus when reopening the menu
   int settings_controller_port = 0;  // most recently used controller while the settings panel is open
+  std::array<bool, 4> settings_pad_was_at_rest{};   // last frame: connected and at rest, per port (settings_nav.h)
+  float practice_release_seconds = 0.0f;           // how long the game has waited for its controllers back
   int radial_selection = 0;       // sector chosen by the GameCube d-pad/left stick
   int8_t settings_stick_x = 0, settings_stick_y = 0;
   int content_anim_tab = -1;

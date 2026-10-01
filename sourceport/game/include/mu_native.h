@@ -78,6 +78,12 @@ int mu_widescreen(void);
  * game: a fighter in the added sides is drawn (ftdrawcommon.c). */
 #define MU_OPTION_TRUE_WIDESCREEN 0x20000000u
 int mu_wide_picture(void);
+/* The language chosen in the PC settings, in the game's own numbering: 0 Japanese, 1 English, or -1
+ * when the choice is left to the game's save (Options > Language). lblanguage.c answers with it
+ * wherever the game reads its saved language; the save is not changed. */
+#define MU_OPTION_LANGUAGE_MASK 0xC0000000u
+#define MU_OPTION_LANGUAGE_SHIFT 30
+int mu_language_override(void);
 /* 20XX Tournament Edition features (shim/mu_te.c). mu_te(feature) is nonzero when the player turned
  * the feature on, 20XX TE is on, Tournament Mode allows it, and this is neither an online match nor
  * replay playback. Values match MU_GAME_OPTION_TE_* in mu_host.h. */
@@ -156,6 +162,8 @@ void mu_te_css_rules(int doubles);   /* TE boot rules once; Tournament Mode rule
  * Teams, Party, and Direct unless the player uses the mod there), the mod's files otherwise. */
 int mu_content_mode(int online_mode);   /* 0-4 = the Slippi mode picked, -1 = offline; 1 = retail view */
 int mu_content_vanilla(void);
+/* After the previous major unloads, before the next major loads any files. */
+void mu_content_begin_major(int mode);
 
 /* m-ex content (shim/mu_mex.c): MxDt.dat read natively when the disc has it, active in the mod view. */
 void mu_mex_boot(void);
@@ -175,6 +183,7 @@ const char* mu_mex_fighter_symbol(int mex_internal);            /* "ftDataWolf" 
 const char* mu_mex_fighter_anim_file(int mex_internal);         /* "PlWfAJ.dat" */
 int mu_mex_fighter_anim_count(int mex_internal);
 int mu_mex_fighter_effect_file(int mex_internal);               /* index into mexData.effect.files */
+int mu_mex_effect_file(int index, const char** file, const char** symbol);   /* 1 when usable */
 const char* mu_mex_fighter_demo(int mex_internal, int which);   /* 0 result, 1 intro, 2 ending, 3 wait */
 int mu_mex_fighter_ssm(int mex_internal);                       /* sound bank id */
 int mu_mex_fighter_walljump(int mex_internal);
@@ -185,6 +194,9 @@ int mu_mex_fighter_victory_theme(int ext);
 int mu_mex_fighter_announcer(int ext);
 int mu_mex_external_of_internal(int mex_internal);
 int mu_mex_internal_of_external(int ext);
+#ifdef MU_AKANEIA_FIGHTERS
+int mu_mex_ak_costumes(int kind, int mex_internal);            /* usable costume count, 0 none */
+#endif
 
 /* Akaneia's added fighters, native (sourceport/game/akaneia/mu_ak_fighters.c). In the mod view each
  * fighter m-ex adds gets a native kind past the retail ones (Ft_Kind_Max + 1 on: Ft_Kind_None stays
@@ -195,6 +207,16 @@ int mu_mex_internal_of_external(int ext);
 #define MU_AK_KIND_SLOTS 16
 #define MU_FT_KIND_CAP (MU_AK_KIND_BASE + MU_AK_KIND_SLOTS)
 #define MU_AK_KIND(kind) ((unsigned) ((int) (kind) - MU_AK_KIND_BASE) < (unsigned) MU_AK_KIND_SLOTS)
+/* Native character ids also keep the retail special kinds and None at their original values.
+ * External m-ex ids stay at the disc / Slippi boundary, never in per-character native tables. */
+#define MU_AK_CKIND_BASE 0x22
+#define MU_AK_CKIND_SLOTS MU_AK_KIND_SLOTS
+#define MU_CK_KIND_CAP (MU_AK_CKIND_BASE + MU_AK_CKIND_SLOTS)
+#define MU_AK_CKIND(kind) ((unsigned) ((int) (kind) - MU_AK_CKIND_BASE) < (unsigned) MU_AK_CKIND_SLOTS)
+int mu_ak_ckind_from_mex(int ext);      /* native character kind, -1 if the disc slot is absent */
+int mu_ak_mex_external(int ckind);      /* disc / Slippi external id, -1 for an absent native slot */
+int mu_ak_mex_internal(int kind);       /* disc internal id for a native fighter kind */
+int mu_ak_ckind_from_kind(int kind);    /* added fighter kind -> native character kind, -1 otherwise */
 /* The m-ex fighter hooks that have no retail per-kind table (m-ex ftFunction indexes). */
 enum {
     MU_AK_HOOK_FLOAT = 31,        /* bool (*)(HSD_GObj*, int): enter float; returns entered */

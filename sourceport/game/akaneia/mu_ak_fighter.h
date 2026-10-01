@@ -17,6 +17,7 @@
 #include <melee/ft/types.h>
 #include <melee/it/forward.h>
 #include <melee/it/kinds/forward.h>
+#include <melee/mp/forward.h>
 #include <sysdolphin/baselib/forward.h>
 
 typedef void (*MuAkEvent)(HSD_GObj* gobj);
@@ -88,5 +89,29 @@ int mu_ak_item_kind(int kind, int local);
 /* The article data (from the fighter's own file) for one of its item kinds. Done from the fighter's
  * onload, as retail fighters call it_8026B3F8, which also accepts these kinds. */
 void mu_ak_article_set(int item_kind, Article* article);
+
+#ifdef MU_AKANEIA_FIGHTERS
+/* ---- the m-ex runtime services fighter code calls (common/mu_ak_services.c) ---- */
+/* MEX_IndexFighterItem: article `index` of the fighter's own item list, from its onload. */
+void mu_ak_register_article(FighterKind kind, void* article, int index);
+/* MEX_GetFtItemID: the game's item kind of the fighter's article `index`, -1 when none. */
+ItemKind mu_ak_article_kind(HSD_GObj* fighter_gobj, int index);
+/* The loaded costume file of a fighter kind, and a public symbol of the fighter's own costume. */
+HSD_Archive* mu_ak_costume_archive(FighterKind kind, int costume);
+void* mu_ak_costume_symbol(Fighter* fp, const char* symbol);
+/* The disc's display name of a native character kind. */
+const char* mu_ak_fighter_name(int ckind);
+/* The retail item creator as m-ex code calls it (it/item.c Item_8026862C): the caller's hold kind
+ * is kept. */
+#define MU_AK_HAVE_ITEM_CREATE 1
+Item_GObj* mu_ak_item_create(SpawnItem* spawn);
+/* The stage's collision joint list (mp/mplib.c). */
+CollJoint* mu_ak_mp_joint_list(void);
+/* m-ex MexCPU_Process: the game's CPU step with the fighter's own decision code in the middle
+ * (ft/kinds/ftCommon/ftCo_0A01.c). */
+void mu_ak_cpu_process(Fighter_GObj* gobj, void (*custom)(Fighter* fp));
+/* Fills or clears the service tables some fighters keep (at each view change). */
+void mu_ak_services_apply(int mod_view);
+#endif
 
 #endif

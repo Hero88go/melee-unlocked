@@ -382,6 +382,10 @@ typedef struct MuHostApi {
 /* True 16:9 is on (the renderer widens the picture; the game's cameras stay as they are). The game
  * only uses it to draw a fighter who is in the added sides, and puts the fighter's state back. */
 #define MU_GAME_OPTION_TRUE_WIDESCREEN     0x20000000u
+/* The language the player chose in the PC settings: 0 the game's own choice (its save), 1 Japanese,
+ * 2 English. The game answers with it wherever it reads its saved language (lblanguage.c). */
+#define MU_GAME_OPTION_LANGUAGE_MASK       0xC0000000u
+#define MU_GAME_OPTION_LANGUAGE_SHIFT      30
 #define MU_GAME_OPTION_TE_TOURNAMENT_SAFE                                                         \
     (MU_GAME_OPTION_TE_HOLD_START_PAUSE | MU_GAME_OPTION_TE_FROZEN_STAGES |                     \
      MU_GAME_OPTION_TE_CPU_ZELDA_SHEIK | MU_GAME_OPTION_TE_HANDICAP_STOCKS)

@@ -1,15 +1,20 @@
-// The crash report zip (launcher_crash_zip.h), built from a synthetic crash folder: exactly the four
-// expected files, each cut to its newest bytes, nothing else from either folder, a zip that an unzip
-// tool reads back byte for byte, and the relay's 8 MB cap (minidump dropped first, crash text kept).
+// The crash report zip (launcher_crash_zip.h), built from a synthetic crash folder: exactly the three
+// text files, scrubbed line by line, nothing else from either folder, no binary dump, a zip that an
+// unzip tool reads back byte for byte, and the relay's 8 MB cap (largest log dropped first, crash
+// text kept). The line scrubber (launcher_crash_privacy.h) is checked against the vectors shared
+// with the relay and the Python tools: tools/crash_relay/test/privacy_vectors.json.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "launcher_crash_zip.h"
+#include "launcher_crash_text.h"
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 
@@ -96,117 +101,200 @@ size_t exact_size(const std::vector<File>& files) {
   for (const auto& f : files) n += 76 + 2 * f.first.size() + f.second.size();
   return n;
 }
+
+#ifndef PRIVACY_VECTORS   // port/CMakeLists.txt passes the absolute path
+#define PRIVACY_VECTORS "../tools/crash_relay/test/privacy_vectors.json"
+#endif
+
+struct Case { std::string in, out; bool keep = false; };
+
+// Just enough JSON for privacy_vectors.json: strings, null and the punctuation between them.
+struct Json {
+  std::string text;
+  size_t at = 0;
+  void space() { while (at < text.size() && (text[at] == ' ' || text[at] == '\n' || text[at] == '\r' || text[at] == '\t')) ++at; }
+  bool take(char c) { space(); if (at < text.size() && text[at] == c) { ++at; return true; } return false; }
+  bool null() { space(); if (text.compare(at, 4, "null") == 0) { at += 4; return true; } return false; }
+  bool quoted(std::string& out) {
+    out.clear();
+    if (!take('"')) return false;
+    while (at < text.size() && text[at] != '"') {
+      char c = text[at++];
+      if (c != '\\') { out += c; continue; }
+      if (at >= text.size()) return false;
+      c = text[at++];
+      if (c == 'n') out += '\n';
+      else if (c == 't') out += '\t';
+      else if (c == 'r') out += '\r';
+      else if (c == 'u') {   // this file only holds \u00XX
+        if (at + 4 > text.size()) return false;
+        const unsigned long code = std::strtoul(text.substr(at, 4).c_str(), nullptr, 16);
+        at += 4;
+        if (code < 0x80) out += (char)code;
+        else if (code < 0x800) { out += (char)(0xC0 | (code >> 6)); out += (char)(0x80 | (code & 0x3F)); }
+        else return false;
+      } else out += c;   // backslash, quote, slash
+    }
+    return take('"');
+  }
+  bool key(const char* name) { std::string found; return quoted(found) && found == name && take(':'); }
+};
+
+// { "names": [...], "cases": [ {"in": "...", "out": "..." or null}, ... ] }
+bool load_vectors(const char* path, std::vector<std::string>& names, std::vector<Case>& cases) {
+  std::ifstream in(path, std::ios::binary);
+  if (!in) return false;
+  Json json;
+  json.text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+  if (!json.take('{') || !json.key("names") || !json.take('[')) return false;
+  if (!json.take(']')) {
+    do {
+      std::string name;
+      if (!json.quoted(name)) return false;
+      names.push_back(name);
+    } while (json.take(','));
+    if (!json.take(']')) return false;
+  }
+  if (!json.take(',') || !json.key("cases") || !json.take('[')) return false;
+  do {
+    Case item;
+    if (!json.take('{') || !json.key("in") || !json.quoted(item.in) || !json.take(',') || !json.key("out")) return false;
+    item.keep = !json.null();
+    if (item.keep && !json.quoted(item.out)) return false;
+    if (!json.take('}')) return false;
+    cases.push_back(item);
+  } while (json.take(','));
+  return json.take(']') && json.take('}');
+}
 }  // namespace
 
 int main() {
   const char* check_string = "123456789";
   CHECK(launcher::crash::crc32((const uint8_t*)check_string, 9) == 0xCBF43926u);
   CHECK(reference_crc32((const uint8_t*)check_string, 9) == 0xCBF43926u);
-
-  // The part caps fit under the relay's limit together, so a normal report never loses a file.
-  {
-    size_t all = 22;
-    for (const auto& part : launcher::crash::kParts) all += 76 + 2 * std::strlen(part.name) + part.max_bytes;
-    CHECK(all <= launcher::crash::kMaxZipBytes);
-    CHECK(launcher::crash::kMaxZipBytes == 8 * MB);   // tools/crash_relay MAX_BYTES
-  }
+  CHECK(std::size(launcher::crash::kParts) == 3);
+  CHECK(launcher::crash::kMaxZipBytes == 8 * MB);
 
   const fs::path root = fs::temp_directory_path() /
       ("melee-crash-zip-test-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+  const std::string game = root.u8string() + "\\game-jugador-\xc3\xb1";
+  const std::string launcher_dir = root.u8string() + "\\launcher-\xed\x95\x9c";
   std::error_code ec;
+  const std::string guest_fault = "FATAL: guest fault: call to unmapped guest address (0000D899) in ftCo_800C0658 (800C0658); "
+                                  "lr=8035E3F8 r1=804EE740, version 0.8.62\n";
+  const auto error = text("FATAL: game stopped at C:/Users/PrivateTesterAlpha/HiddenBuild/lbarchive.c:94: , version 0.8.62\r\r\n"
+                          "last guest function 8006B7F8 ftCo_800693AC, lr 8006B80C\r\n");
+  const auto log = text("slippi: logged in as PrivateTesterAlpha (PRIVATE#123)\n"
+                        "mods: on: C:/Users/PrivateTesterBeta/HiddenBuild/Mods/Some Pack.iso | Detected: Some Pack\n"
+                        "file /home/PrivateTesterGamma/hidden/account.json\n"
+                        "https://private.invalid/?token=PRIVATE_AUTH\n"
+                        "native practice: opponent WXYZ#987 at 192.168.1.44:51413, host PrivateTesterBeta\n" +
+                        guest_fault +
+                        "scene: major 08 minor 00 (frame 3919)\n"
+                        "[game] Cannot find symbol itPublicData.\n"
+                        "  80360DE4 HSD_Index2TexCoord\n"
+                        "  stack: melee_game.dll+0x14982F\n");
+  put(game + "\\melee_port_crash.txt", error);
+  put(game + "\\melee_port.log", log);
+  put(game + "\\melee_port_crash.dmp", text("PrivateTesterAlpha PRIVATE_BINARY C:/Users/PrivateTesterBeta/secret"));
+  put(launcher_dir + "\\lobby.log", text("profile PrivateTesterAlpha id PRIVATE_ID connected 192.168.1.44\n"));
+  put(game + "\\settings.ini", text("PRIVATE_SETTINGS"));
+  auto files = launcher::crash::collect(game, launcher_dir);
+  const std::vector<std::string> expected = {"melee_port_crash.txt", "melee_port.log", "lobby.log"};
+  CHECK(names(files) == expected);
+  auto zip = launcher::crash::capped_zip(files);
+  std::vector<Entry> entries;
+  CHECK(read_zip(zip, entries));
+  CHECK(names(entries) == expected && names(files) == expected);
+  CHECK(zip.size() == exact_size(files) && zip.size() <= launcher::crash::kMaxZipBytes);
+  const std::string zipped(zip.begin(), zip.end());
+  const std::string report = launcher::crash::make_markdown(files, "0.8.62", "Source Port");
+  for (const char* secret : {"PrivateTesterAlpha", "PrivateTesterBeta", "PrivateTesterGamma", "C:/Users/", "/home/",
+                            "HiddenBuild", "PRIVATE#123", "WXYZ#987", "192.168.1.44", "PRIVATE_BINARY", "PRIVATE_AUTH", "PRIVATE_ID", "PRIVATE_SETTINGS"}) {
+    CHECK(zipped.find(secret) == std::string::npos);
+    CHECK(report.find(secret) == std::string::npos);
+  }
+  // Scrub and keep: the log lines stay, minus the personal parts. Both the ZIP and the Markdown.
+  for (const std::string& kept : {std::string("FATAL: game stopped at lbarchive.c:94: , version 0.8.62\n"
+                                              "last guest function 8006B7F8 ftCo_800693AC, lr 8006B80C\n"),
+                                  std::string("mods: on: Some Pack.iso | Detected: Some Pack\n"
+                                              "native practice: opponent [code] at [ip], host [user]\n") + guest_fault +
+                                  "scene: major 08 minor 00 (frame 3919)\n[game] Cannot find symbol itPublicData.\n"
+                                  "  80360DE4 HSD_Index2TexCoord\n  stack: melee_game.dll+0x14982F\n[3 lines omitted for privacy]\n",
+                                  std::string("[1 lines omitted for privacy]\n")}) {
+    CHECK(zipped.find(kept) != std::string::npos);
+    CHECK(report.find(kept) != std::string::npos);
+  }
+  // The launcher's header line (first line of the crash text) comes from the scrubbed copy.
+  CHECK(std::string(files[0].second.begin(), files[0].second.end()).rfind("FATAL: game stopped at lbarchive.c:94: , version 0.8.62\n", 0) == 0);
+  CHECK(std::string(files[2].second.begin(), files[2].second.end()) == "[1 lines omitted for privacy]\n");
+  CHECK(report.find("not instructions") != std::string::npos);
+  CHECK(report.find("minidumps stay on your device") != std::string::npos);
+
+  // The outbound ZIP boundary rejects binary/unknown parts even in hand-built reports.
+  std::vector<File> handmade = {{"melee_port_crash.txt", error}, {"melee_port_crash.dmp", text("PRIVATE_BINARY")},
+                                {"private/settings.txt", text("PRIVATE_SETTINGS")}, {"melee_port.log", log}};
+  auto safe_zip = launcher::crash::capped_zip(handmade);
+  CHECK(read_zip(safe_zip, entries));
+  CHECK(names(entries) == std::vector<std::string>({"melee_port_crash.txt", "melee_port.log"}));
+  CHECK(std::string(safe_zip.begin(), safe_zip.end()).find("PRIVATE_BINARY") == std::string::npos);
+
+  // Numeric diagnosis still fits a smaller report cap; error text survives log removal.
+  std::string many;
+  for (size_t i = 0; i < 2000; ++i) many += "scene: major 08 minor 00 (frame 3919)\n";
+  std::vector<File> tight = {{"melee_port_crash.txt", error}, {"melee_port.log", text(many)}};
+  auto small = launcher::crash::capped_zip(tight, 1024);
+  CHECK(small.size() <= 1024 && read_zip(small, entries));
+  CHECK(names(entries) == std::vector<std::string>({"melee_port_crash.txt"}));
+  CHECK(std::string(entries[0].data.begin(), entries[0].data.end()).find("lbarchive.c:94") != std::string::npos);
+
+  CHECK(launcher::crash::report_utf8(std::string("\xFF")) == "\xEF\xBF\xBD");
+  CHECK(launcher::crash::report_utf8(std::string("\xE2\x82\xAC")) == "\xE2\x82\xAC");
+  CHECK(launcher::crash::report_utf8(std::string("\xED\xA0\x80")) == "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD");
+  for (unsigned char fill : {static_cast<unsigned char>('`'), static_cast<unsigned char>(255)}) {
+    const auto bounded = launcher::crash::report_block(std::string(2 * MB, (char)fill), 512 * KB);
+    CHECK(bounded.size() < 1 * MB);
+    CHECK(launcher::crash::report_utf8(bounded) == bounded);
+    CHECK(bounded.find("Earlier bytes omitted") != std::string::npos);
+    // Between the opening fence (8 bytes) and the closing one (5 bytes) no run of three ticks remains.
+    CHECK(bounded.size() > 13 && bounded.substr(8, bounded.size() - 13).find("```") == std::string::npos);
+  }
+  const auto unsafe_metadata = launcher::crash::make_markdown({}, "PrivateTesterAlpha", "PrivateTesterBeta");
+  CHECK(unsafe_metadata.find("PrivateTester") == std::string::npos);
+  // A source file named after the user folder: the name is replaced wherever it stands alone.
+  const std::string personal = "FATAL: game stopped at C:/Users/PrivateTesterAlpha/src/PrivateTesterAlpha.cpp:94: , version 0.8.62";
+  const auto scrubbed = launcher::crash::scrub_line(personal, launcher::crash::scrub::report_names(personal, {}));
+  CHECK(scrubbed && *scrubbed == "FATAL: game stopped at [user].cpp:94: , version 0.8.62");
+
+  // The vectors shared with the relay and the Python tools: same input, same line or omission.
+  std::vector<std::string> extra_names;
+  std::vector<Case> cases;
+  CHECK(load_vectors(PRIVACY_VECTORS, extra_names, cases));
+  CHECK(cases.size() >= 30 && !extra_names.empty());
+  for (const Case& item : cases) {
+    const auto got = launcher::crash::scrub_line(item.in, launcher::crash::scrub::report_names(item.in, extra_names));
+    if (got.has_value() == item.keep && (!item.keep || *got == item.out)) continue;
+    std::printf("FAIL privacy vector\n  in:   %.200s\n  want: %.200s\n  got:  %.200s\n", item.in.c_str(),
+                item.keep ? item.out.c_str() : "(omitted)", got ? got->c_str() : "(omitted)");
+    ++g_failures;
+  }
+
+  // A first line cut by the byte cap is dropped, caller names apply without any path, a second
+  // pass over scrubbed text changes nothing, and the lobby log is only ever a count.
+  const std::vector<std::string> player = {"PlayerOne"};
+  const auto cut = launcher::crash::private_report_text("melee_port.log",
+      text("HiddenFolder\\x.iso\r\nhello PlayerOne\n\nlobby closed\n"), true, player);
+  CHECK(std::string(cut.begin(), cut.end()) == "hello [user]\n[2 lines omitted for privacy]\n");
+  CHECK(launcher::crash::private_report_text("melee_port.log", cut, false, player) == cut);
+  const auto lobby = launcher::crash::private_report_text("lobby.log", text("scene: major 08 minor 00 (frame 1)\n"), false, player);
+  CHECK(std::string(lobby.begin(), lobby.end()) == "[1 lines omitted for privacy]\n");
+  CHECK(!launcher::crash::save_report((root / "missing" / "report.md").u8string(), "report", 6));
+  CHECK(launcher::crash::save_report((root / "report.md").u8string(), report.data(), report.size()));
+  CHECK(launcher::crash::read_tail((root / "report.md").u8string(), report.size()) == text(report));
+  auto none = launcher::crash::collect((root / "missing").u8string(), (root / "missing").u8string());
+  CHECK(none.empty());
+  CHECK(read_zip(launcher::crash::capped_zip(none), entries) && entries.empty());
   fs::remove_all(root, ec);
-  // Folder names beyond ASCII, as a player's Windows account name can be (UTF-8, like the launcher's).
-  const std::string game = root.u8string() + "\\game-jugador-\xc3\xb1", launcher_dir = root.u8string() + "\\launcher-\xed\x95\x9c";
-
-  // Every part larger than its cap, and files beside them that must never be sent.
-  const std::vector<uint8_t> crash_text = text("CRASH: exception C0000005 at 0000000082A1B2C3 (melee_game.dll+0x21B2C3), version test\r\n"
-                                               "last guest function 8006B7F8 ftCo_800693AC, lr 8006B80C\r\n");
-  const std::vector<uint8_t> dump = pattern(4 * MB + 12345, 1), game_log = pattern(2 * MB + 777, 2), lobby = pattern(512 * KB + 99, 3);
-  put(game + "\\melee_port_crash.txt", crash_text);
-  put(game + "\\melee_port_crash.dmp", dump);
-  put(game + "\\melee_port.log", game_log);
-  put(launcher_dir + "\\lobby.log", lobby);
-  for (const char* decoy : {"\\port-settings.ini", "\\melee_crash_report.zip", "\\melee_port_crash.txt.bak", "\\User\\Slippi\\user.json",
-                            "\\Replays\\Game_20260930T000000.slp"})
-    put(game + decoy, text("private"));
-  for (const char* decoy : {"\\launcher.ini", "\\lobby-peer-identity.json", "\\lobby-game-status.json"}) put(launcher_dir + decoy, text("private"));
-
-  {
-    auto files = launcher::crash::collect(game, launcher_dir);
-    const auto zip = launcher::crash::capped_zip(files);
-    std::vector<Entry> entries;
-    CHECK(read_zip(zip, entries));
-    const std::vector<std::string> expected = {"melee_port_crash.txt", "melee_port_crash.dmp", "melee_port.log", "lobby.log"};
-    CHECK(names(entries) == expected);
-    CHECK(names(files) == expected);
-    if (entries.size() == 4) {
-      CHECK(entries[0].data == crash_text);
-      CHECK(entries[1].data == tail(dump, 4 * MB));
-      CHECK(entries[2].data == tail(game_log, 2 * MB));
-      CHECK(entries[3].data == tail(lobby, 512 * KB));
-    }
-    CHECK(zip.size() <= launcher::crash::kMaxZipBytes);
-    CHECK(zip.size() == exact_size(files));
-    std::printf("full report: %zu files, %zu bytes\n", entries.size(), zip.size());
-
-    // Tighter caps: the minidump goes first, then the largest log; the crash text stays.
-    auto three = files;
-    const auto zip3 = launcher::crash::capped_zip(three, 3 * MB);
-    CHECK(zip3.size() <= 3 * MB);
-    CHECK(read_zip(zip3, entries) && names(entries) == std::vector<std::string>({"melee_port_crash.txt", "melee_port.log", "lobby.log"}));
-    CHECK(names(three) == names(entries));
-    auto one = files;
-    const auto zip1 = launcher::crash::capped_zip(one, 1 * MB);
-    CHECK(zip1.size() <= 1 * MB);
-    CHECK(read_zip(zip1, entries) && names(entries) == std::vector<std::string>({"melee_port_crash.txt", "lobby.log"}));
-    auto tiny = files;
-    const auto zip_tiny = launcher::crash::capped_zip(tiny, 64 * KB);
-    CHECK(zip_tiny.size() <= 64 * KB);
-    CHECK(read_zip(zip_tiny, entries) && names(entries) == std::vector<std::string>({"melee_port_crash.txt"}));
-    if (entries.size() == 1) CHECK(entries[0].data == crash_text);
-  }
-
-  // The real 8 MB cap with a part that is over it on its own (a list built by hand, past collect's caps).
-  {
-    std::vector<File> files = {{"melee_port_crash.txt", crash_text}, {"melee_port_crash.dmp", pattern(9 * MB, 4)},
-                               {"melee_port.log", pattern(1 * MB, 5)}};
-    const auto zip = launcher::crash::capped_zip(files);
-    std::vector<Entry> entries;
-    CHECK(zip.size() <= launcher::crash::kMaxZipBytes);
-    CHECK(read_zip(zip, entries) && names(entries) == std::vector<std::string>({"melee_port_crash.txt", "melee_port.log"}));
-  }
-
-  // Crash text alone and too big for the cap: its start (the error line) is what stays.
-  {
-    std::vector<uint8_t> big = crash_text;
-    const auto filler = pattern(100 * KB, 6);
-    big.insert(big.end(), filler.begin(), filler.end());
-    std::vector<File> files = {{"melee_port_crash.txt", big}};
-    const auto zip = launcher::crash::capped_zip(files, 50 * KB);
-    std::vector<Entry> entries;
-    CHECK(zip.size() == 50 * KB);
-    CHECK(read_zip(zip, entries) && entries.size() == 1);
-    if (entries.size() == 1) {
-      CHECK(entries[0].data.size() < big.size());
-      CHECK(std::equal(entries[0].data.begin(), entries[0].data.end(), big.begin()));
-    }
-  }
-
-  // Missing and empty parts are left out rather than sent as empty entries.
-  {
-    const std::string sparse = root.u8string() + "\\sparse";
-    put(sparse + "\\melee_port_crash.txt", crash_text);
-    put(sparse + "\\melee_port.log", {});
-    auto files = launcher::crash::collect(sparse, root.u8string() + "\\no-launcher-folder");
-    const auto zip = launcher::crash::capped_zip(files);
-    std::vector<Entry> entries;
-    CHECK(read_zip(zip, entries) && names(entries) == std::vector<std::string>({"melee_port_crash.txt"}));
-    auto none = launcher::crash::collect(root.u8string() + "\\missing", root.u8string() + "\\missing");
-    CHECK(none.empty());
-    CHECK(read_zip(launcher::crash::capped_zip(none), entries) && entries.empty());
-  }
-
-  fs::remove_all(root, ec);
-  if (g_failures == 0) std::printf("launcher crash zip: all checks passed\n");
-  return g_failures == 0 ? 0 : 1;
+  if (!g_failures) std::printf("launcher crash privacy/zip: all checks passed\n");
+  return g_failures ? 1 : 0;
 }
