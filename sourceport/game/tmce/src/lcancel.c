@@ -31,7 +31,7 @@ static EventOption LcOptions_Main[OPTLC_COUNT] = {
     // Target
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LcOptions_Barrel) / 4,
+        .value_num = sizeof(LcOptions_Barrel) / sizeof(*LcOptions_Barrel),
         .name = "Target",
         .desc = {"Enable a target to attack. Use DPad down to",
                  "manually move it."},
@@ -41,7 +41,7 @@ static EventOption LcOptions_Main[OPTLC_COUNT] = {
     // Target Intangibility
     {
         .kind = OPTKIND_STRING,
-        .value_num = sizeof(LcOptions_Barrel_Intangibility) / 4,
+        .value_num = sizeof(LcOptions_Barrel_Intangibility) / sizeof(*LcOptions_Barrel_Intangibility),
         .name = "Target Intangibility",
         .desc = {"Target cycles intangibility to practice",
                  "L-cancel timing on both hit and whiff"},

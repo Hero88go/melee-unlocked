@@ -196,6 +196,36 @@ bool redirect_to_interpreter(uint32_t addr) {
   return true;
 }
 
+bool redirect_function_at(uint32_t addr) {
+  uint32_t lo = 0, hi = 0;
+  if (!function_bounds(addr, &lo, &hi) || addr >= hi) return false;
+  return redirect_to_interpreter(lo);
+}
+
+bool redirect_to_host(uint32_t addr, Fn fn) {
+  if (!fn || std::binary_search(g_redirected.begin(), g_redirected.end(), addr)) return false;   // a mod's own version runs
+  Fn compiled = lookup(addr);
+  if (!compiled) return false;
+  uint8_t* code = reinterpret_cast<uint8_t*>(compiled);
+  if (!g_tramp_pool) { g_tramp_cap = 4u << 20; g_tramp_pool = static_cast<uint8_t*>(alloc_near(code, g_tramp_cap)); }
+  if (!g_tramp_pool || g_tramp_used + 32 > g_tramp_cap) return false;
+  uint8_t* t = g_tramp_pool + g_tramp_used;
+  const int64_t rel = (int64_t)(t - (code + 5));
+  if (rel < INT32_MIN || rel > INT32_MAX) return false;
+  g_tramp_used += 32;
+  // mov rax, fn ; jmp rax   (rcx = Context&, rdx = RAM, as the caller passed)
+  const uint64_t target = reinterpret_cast<uint64_t>(fn);
+  t[0] = 0x48; t[1] = 0xB8; std::memcpy(t + 2, &target, 8);
+  t[10] = 0xFF; t[11] = 0xE0;
+  DWORD old = 0;
+  if (!VirtualProtect(code, 5, PAGE_EXECUTE_READWRITE, &old)) return false;
+  const int32_t r = (int32_t)rel;
+  code[0] = 0xE9; std::memcpy(code + 1, &r, 4);
+  VirtualProtect(code, 5, old, &old);
+  FlushInstructionCache(GetCurrentProcess(), code, 5);
+  return true;
+}
+
 size_t redirect_changed_functions(const uint8_t* reference, const uint8_t* m, uint32_t base, uint32_t size) {
   size_t redirected = 0;
   uint32_t last_owner = 0;

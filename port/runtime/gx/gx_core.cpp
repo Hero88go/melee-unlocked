@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 
@@ -402,6 +403,19 @@ void snapshot_textures(DrawCall& dc) {
     t.data = g_texture_snapshots.capture(texels, total, g_tmem + t.tlut_addr,
                                          palette_bytes, source_version,
                                          palette_bytes ? g_tmem_generation : 0);
+    // MELEE_TEST_TEXSNAP_VERIFY=1 (tests): the snapshot a draw uses must equal the texels in memory.
+    // A difference means memory changed without a write version (a host write that was not marked).
+    static const bool verify = [] { const char* v = std::getenv("MELEE_TEST_TEXSNAP_VERIFY"); return v && *v == '1'; }();
+    if (verify && t.data && (t.data->image.size() != total || std::memcmp(t.data->image.data(), texels, total) != 0)) {
+      static uint32_t reported = 0;
+      static uint64_t stale = 0;
+      ++stale;
+      if (reported < 40) {
+        ++reported;
+        host::log("texsnap: STALE snapshot for the texture at %08X (%u bytes, %ux%u format %u), %llu so far",
+                  t.addr, total, (unsigned)t.width, (unsigned)t.height, (unsigned)t.format, (unsigned long long)stale);
+      }
+    }
   }
 }
 

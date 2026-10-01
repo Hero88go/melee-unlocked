@@ -510,10 +510,13 @@ void D3D11Backend::init() {
   DXGI_SWAP_CHAIN_DESC1 sd{};
   sd.Width = client_w_; sd.Height = client_h_; sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.SampleDesc.Count = 1;
   sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.BufferCount = 3; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-  sd.Flags = (allow_tearing_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0) | DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH;
+  // No DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH: with it, going exclusive changes the display mode
+  // to match the window, so the desktop resolution became whatever "Window size" was set to.
+  // Without it exclusive fullscreen keeps the desktop's own mode and refresh rate.
+  sd.Flags = allow_tearing_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
   if (FAILED(factory->CreateSwapChainForHwnd(device_.Get(), hwnd_, &sd, nullptr, nullptr, &swapchain_))) {
     // Pre-Windows-10 runtimes have no flip-discard: fall back to the blit model.
-    sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD; sd.BufferCount = 1; sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH; allow_tearing_ = false;
+    sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD; sd.BufferCount = 1; sd.Flags = 0; allow_tearing_ = false;
     require(factory->CreateSwapChainForHwnd(device_.Get(), hwnd_, &sd, nullptr, nullptr, &swapchain_), "swapchain");
   }
   factory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
@@ -1611,13 +1614,14 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   Stopwatch sw;
   plans_.assign(frame.draws.size(), DrawPlan{});
   index_scratch_.clear();
+  const EffectsFilter effects = effects_filter(frame, opts_.effects_level);
   uint32_t extra_vertices = 0, vs_slots = 0, ps_slots = 0;
   for (const FrameCommand& cmd : frame.commands) {
     if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
     const DrawCall& dc = frame.draws[cmd.index];
     DrawPlan& plan = plans_[cmd.index];
     if (lab_skip_scene_) continue;   // the Lab view covers this frame; plan.valid stays false
-    if (skip_for_effects(frame, dc, opts_.effects_level)) continue;   // "Visual effects"; plan.valid stays false
+    if (skip_for_effects(effects, dc)) continue;   // "Visual effects"; plan.valid stays false
     const uint32_t n = dc.vertex_count;
     const uint32_t first = (uint32_t)index_scratch_.size();
     auto& idx = index_scratch_;

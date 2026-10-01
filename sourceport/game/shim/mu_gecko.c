@@ -62,6 +62,14 @@ int mu_widescreen(void)
     return (mu_game_options() & MU_OPTION_WIDESCREEN) != 0;
 }
 
+/* Either widescreen mode shows more to each side than Melee's own camera sees. Under True 16:9 the
+ * game's cameras are untouched, so the fighter draw (ftdrawcommon.c) is the only place that needs to
+ * know: without it a fighter in the added sides was not drawn at all, only the bubble. */
+int mu_wide_picture(void)
+{
+    return (mu_game_options() & (MU_OPTION_WIDESCREEN | MU_OPTION_TRUE_WIDESCREEN)) != 0;
+}
+
 /* UCF 0.84 is part of the General Codes; in a replay it runs only when the replay carries it.
  * Exported for the tumble wiggle site (ftCo_DamageFall.c). */
 int mu_ucf_enabled(void)

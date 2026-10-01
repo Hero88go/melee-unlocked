@@ -19,6 +19,7 @@
 #include "ui_sources/gd_melee/motion.h"
 #include "radial_navigation.h"
 #include "gx_backend.h"
+#include "gx_shader.h"
 #include "gx_d3d12.h"
 #include "jukebox.h"
 #include "window.h"
@@ -210,7 +211,9 @@ static void draw_player_nicknames() {
     if (!player.tag_visible || g_hud_player_names[slot].empty()) continue;
     const std::string label = "P" + std::to_string(slot + 1) + "  " + g_hud_player_names[slot];
     const ImVec2 text_size = ImGui::GetFont()->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label.c_str());
-    const float x = std::clamp(bounds.left + player.tag_x / 640.0f * width - text_size.x * 0.5f,
+    // Under True 16:9 the tag is drawn 219/320 as far from the centre (gx_shader.cpp, is_nametag_layer).
+    const float tag_x = true_widescreen_active() ? 320.0f + (player.tag_x - 320.0f) * (219.0f / 320.0f) : player.tag_x;
+    const float x = std::clamp(bounds.left + tag_x / 640.0f * width - text_size.x * 0.5f,
                                bounds.left + 4.0f, std::max(bounds.left + 4.0f, bounds.right - text_size.x - 4.0f));
     const float y = std::clamp(bounds.top + player.tag_y / 480.0f * height - font_size * 2.4f,
                                bounds.top + 4.0f, bounds.bottom - font_size - 8.0f);
@@ -1824,6 +1827,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   if (options.widescreen) options.true_widescreen = false;
   // The player's Gecko codes live beside the settings file.
   std::filesystem::path codes = std::filesystem::path(options.settings_path).parent_path() / "GeckoCodes.ini";
+  user_gecko::set_code_patches_allowed(!options.native_source);   // the Static Recomp can run a patched function from RAM
   user_gecko::load(codes.string(), gecko_on, gecko_chosen);
   g_gecko_chosen = gecko_chosen;
   source_port::mods::set_choices(options.mod_choices);
@@ -4067,9 +4071,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     // Widescreen: one choice. The Slippi code and True 16:9 both widen the view, and together they
     // would widen it twice, so they were two switches that turned each other off.
-    // True 16:9 widens the frustum here in the renderer instead of running the Gecko code, so
-    // nothing is written to guest memory and it cannot desync. Experimental because the game still
-    // lays out and culls for 73:60: geometry can be missing or pop in at the new edges.
+    // True 16:9 widens the frustum here in the renderer instead of running the Gecko code. The one
+    // thing the game does differently is draw a fighter who is in the added sides (the Source Port
+    // puts the fighter's state back afterwards, the Static Recomp uses the Slippi code's own
+    // one-instruction change). Experimental because the game still lays out and culls scenery for
+    // 73:60: geometry can be missing or pop in at the new edges.
     {
       const char* widescreen_modes[] = {"Off", "Slippi code", "True 16:9 (experimental)"};
       int widescreen_mode = options.widescreen ? 1 : options.true_widescreen ? 2 : 0;
@@ -4081,12 +4087,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Slippi code: Slippi's widescreen code (on the Source Port, rebuilt with the same\n"
                           "values). Online safe: it changes only what you see. The view widens from the next screen.\n"
-                          "True 16:9: widens the camera in the renderer instead of running game code, so it\n"
-                          "cannot desync. Watch the edges for missing or popping scenery: the game still\n"
-                          "culls for 73:60.\n"
-                          "Matches, training, replays and character/stage select widen. The original 2D\n"
-                          "main menus keep their proportions and side bars. To fill those too, choose\n"
-                          "Advanced > Aspect ratio > Stretch (stretches the picture).\n%s", kExperimentalNote);
+                          "True 16:9: widens the camera in the renderer instead of running Slippi's code, and\n"
+                          "applies at once. Fighters in the added sides are drawn, as with the Slippi code.\n"
+                          "Watch the edges for missing or popping scenery: the game still culls for 73:60.\n"
+                          "Menus, character and stage select, matches, training and replays all fill the\n"
+                          "screen. Only the opening movie keeps its side bars.\n%s", kExperimentalNote);
     }
     float win_w = ImGui::GetIO().DisplaySize.x, win_h = ImGui::GetIO().DisplaySize.y;
 
@@ -6442,8 +6447,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     ImGui::TextUnformatted("Your codes");
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Your own codes, in Dolphin's format, from:\n%s\n"
-                        "Codes that write game data work. Codes that patch the game's code (C2 and\n"
-                        "writes into the code) cannot run in this build and are shown greyed out.",
+                        "Codes that write work. On the Static Recomp that includes writes into the game's\n"
+                        "code (the functions they change run from memory). C2 injections cannot run and\n"
+                        "are shown greyed out, as are code patches on the Source Port.",
                         user_gecko::path().c_str());
     if (user_gecko::codes().empty()) {
       settings_hint("No codes yet. Paste one below, or put a GeckoCodes.ini next to port-settings.ini.");
@@ -6461,6 +6467,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           std::string tip;
           for (const std::string& n : c.notes) tip += n + "\n";
           if (!c.supported) tip += "Cannot run here: this code " + c.reason + ".";
+          else if (c.patches_code) tip += "Changes the game's code: the functions it touches run from memory.\nDesyncs online unless your opponent runs it too.";
           else tip += "Desyncs online unless your opponent runs it too.";
           ImGui::SetTooltip("%s", tip.c_str());
         }

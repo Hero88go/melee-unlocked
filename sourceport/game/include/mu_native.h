@@ -73,6 +73,11 @@ void mu_poll(void);
  * it loads, with Slippi's offscreen-bubble and nametag values. Nonzero while the player has it on. */
 #define MU_OPTION_WIDESCREEN 0x10000000u
 int mu_widescreen(void);
+/* True 16:9 is on: the renderer shows more to each side while the game's cameras stay Melee's own.
+ * mu_wide_picture() is nonzero with either widescreen mode, for the one thing both need from the
+ * game: a fighter in the added sides is drawn (ftdrawcommon.c). */
+#define MU_OPTION_TRUE_WIDESCREEN 0x20000000u
+int mu_wide_picture(void);
 /* 20XX Tournament Edition features (shim/mu_te.c). mu_te(feature) is nonzero when the player turned
  * the feature on, 20XX TE is on, Tournament Mode allows it, and this is neither an online match nor
  * replay playback. Values match MU_GAME_OPTION_TE_* in mu_host.h. */

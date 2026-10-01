@@ -66,7 +66,10 @@ void mu_tmce_on_scene_change(void)
         tmce_eventMenu_OnSceneChange();
 }
 
+void mu_tmce_osd_start_melee(void); /* tmce/native/tmce_osd.c */
+
 void mu_tmce_on_start_melee(void)
 {
     tmce_eventMenu_OnStartMelee();
+    mu_tmce_osd_start_melee(); /* the message manager exists now: the on-screen displays may print */
 }
