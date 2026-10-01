@@ -360,7 +360,11 @@ std::string desired_fingerprint_locked() {
     auto found = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& a) {
       return a.info.id == pick.second && selection_key(a) == pick.first;
     });
-    if (found != g_assets.end()) source += pick.first + "=" + pick.second + "=" + found->info.sha256 + "\n";
+    if (found != g_assets.end()) {
+      source += pick.first + "=" + pick.second + "=" + found->info.sha256;
+      for (const auto& companion : found->companions) source += "+" + companion.kind + ":" + companion.sha256;
+      source += "\n";
+    }
   }
   return sha256_text(source);
 }
@@ -724,6 +728,160 @@ bool extract_zip_member(const fs::path& archive, const ZipEntry& entry,
   return true;
 }
 
+struct FighterFamily {
+  const char* file_code;
+  const char* root_name;
+  const char* display_name;
+  const char* colors;
+};
+// These are the existing NTSC 1.02 costume files only. Defaults use an un-suffixed 5K root even
+// though their disc filename ends in Nr. Bosses, wireframes, Sandbag, extra CSS slots, and base
+// fighter data archives are intentionally absent.
+constexpr FighterFamily families[] = {
+    {"Ca", "Captain", "Captain Falcon", "Nr Re Wh Gr Bu Gy"},
+    {"Cl", "Clink", "Young Link", "Nr Re Wh Bk Bu"},
+    {"Dk", "Donkey", "Donkey Kong", "Nr Re Bu Gr Bk"},
+    {"Dr", "Drmario", "Dr. Mario", "Nr Re Bu Gr Bk"},
+    {"Fc", "Falco", "Falco", "Nr Re Bu Gr"},
+    {"Fe", "Emblem", "Roy", "Nr Re Bu Gr Ye"},
+    {"Fx", "Fox", "Fox", "Nr Or La Gr"},
+    {"Gn", "Ganon", "Ganondorf", "Nr Re Bu Gr La"},
+    {"Gw", "Gamewatch", "Mr. Game & Watch", "Nr"},
+    {"Kb", "Kirby", "Kirby", "Nr Ye Bu Re Gr Wh"},
+    {"Kp", "Koopa", "Bowser", "Nr Re Bu Bk"},
+    {"Lg", "Luigi", "Luigi", "Nr Wh Aq Pi"},
+    {"Lk", "Link", "Link", "Nr Re Bu Bk Wh"},
+    {"Mr", "Mario", "Mario", "Nr Ye Bk Bu Gr"},
+    {"Ms", "Mars", "Marth", "Nr Re Gr Bk Wh"},
+    {"Mt", "Mewtwo", "Mewtwo", "Nr Re Bu Gr"},
+    {"Nn", "Nana", "Ice Climbers (Nana)", "Nr Ye Aq Wh"},
+    {"Ns", "Ness", "Ness", "Nr Ye Bu Gr"},
+    {"Pc", "Pichu", "Pichu", "Nr Re Bu Gr"},
+    {"Pe", "Peach", "Peach", "Nr Ye Wh Bu Gr"},
+    {"Pk", "Pikachu", "Pikachu", "Nr Re Bu Gr"},
+    {"Pp", "Popo", "Ice Climbers (Popo)", "Nr Re Gr Or"},
+    {"Pr", "Purin", "Jigglypuff", "Nr Re Bu Gr Ye"},
+    {"Sk", "Seak", "Sheik", "Nr Re Bu Gr Wh"},
+    {"Ss", "Samus", "Samus", "Nr Pi Bk Gr La"},
+    {"Ys", "Yoshi", "Yoshi", "Nr Re Bu Ye Pi Aq"},
+    {"Zd", "Zelda", "Zelda", "Nr Re Bu Gr Wh"},
+};
+struct ColorName { const char* code; const char* label; };
+constexpr ColorName color_names[] = {
+    {"Nr", "Default"}, {"Re", "Red"}, {"Bu", "Blue"}, {"Gr", "Green"},
+    {"Wh", "White"}, {"Bk", "Black"}, {"Ye", "Yellow"}, {"Or", "Orange"},
+    {"La", "Lavender"}, {"Pi", "Pink"}, {"Aq", "Aqua"}, {"Gy", "Gray"},
+};
+bool family_has_color(const FighterFamily& family, const char* code) {
+  return (std::string(" ") + family.colors + " ").find(std::string(" ") + code + " ") != std::string::npos;
+}
+
+// ---- portraits without a costume file ----
+// A portrait (the character select picture) or stock icon the player gives a costume slot on its
+// own. It is a catalog entry of its own kind whose target is the slot plus "#portrait": it is
+// chosen independently of the slot's skin, and a build that does not know the kind finds no disc
+// file by that name and leaves it alone.
+constexpr const char* kPortraitKind = "character_portrait";
+constexpr const char* kPortraitSuffix = "#portrait";
+
+// "PlFxGr.dat" from "PlFxGr.dat#portrait"
+std::string portrait_slot(const std::string& target) {
+  const size_t at = target.rfind(kPortraitSuffix);
+  return at == std::string::npos ? target : target.substr(0, at);
+}
+
+struct SlotName { const FighterFamily* family = nullptr; const ColorName* color = nullptr; };
+std::string slot_file(const SlotName& slot) {
+  return std::string("Pl") + slot.family->file_code + slot.color->code + ".dat";
+}
+bool find_slot(const std::string& target_path, SlotName* out) {
+  const std::string wanted = lower(target_path);
+  for (const auto& family : families)
+    for (const auto& color : color_names) {
+      if (!family_has_color(family, color.code)) continue;
+      const SlotName slot{&family, &color};
+      if (lower(slot_file(slot)) == wanted) { *out = slot; return true; }
+    }
+  return false;
+}
+
+// The slot a picture's name identifies. First the costume's own file code ("plfxgr"), which is
+// what packs made beside a skin use; otherwise one fighter name and one color word. A name that
+// fits two costumes, or a color the fighter does not have, identifies nothing.
+bool portrait_slot_from_name_impl(const std::string& raw, std::string* slot, std::string* kind) {
+  std::string name = lower(raw);
+  const size_t dot = name.find_last_of('.');
+  const size_t slash = name.find_last_of("/\\");
+  if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) name.resize(dot);
+  auto word_at = [&](size_t at, size_t length) {
+    return (at == 0 || !std::isalnum((unsigned char)name[at - 1])) &&
+           (at + length >= name.size() || !std::isalnum((unsigned char)name[at + length]));
+  };
+  *kind = name.find("stock") != std::string::npos ? "stock" : "csp";
+  std::vector<SlotName> found;
+  auto add = [&](const SlotName& candidate) {
+    for (const auto& have : found)
+      if (have.family == candidate.family && have.color == candidate.color) return;
+    found.push_back(candidate);
+  };
+  for (size_t at = name.find("pl"); at != std::string::npos; at = name.find("pl", at + 1)) {
+    if (at + 6 > name.size() || !word_at(at, 6)) continue;
+    for (const auto& family : families) {
+      if (lower(family.file_code) != name.substr(at + 2, 2)) continue;
+      for (const auto& color : color_names)
+        if (lower(color.code) == name.substr(at + 4, 2) && family_has_color(family, color.code))
+          add({&family, &color});
+    }
+  }
+  if (found.size() == 1) { *slot = slot_file(found[0]); return true; }
+  if (found.size() > 1) return false;
+
+  struct Alias { const char* text; const char* code; };
+  // Longest first: a match is blanked out, so "falcon" never also reads as "falco", nor "dr mario"
+  // as "mario".
+  static constexpr Alias fighters[] = {
+      {"mr. game & watch", "Gw"}, {"mr game and watch", "Gw"}, {"game and watch", "Gw"}, {"game & watch", "Gw"},
+      {"captain falcon", "Ca"}, {"ice climbers", "Pp"}, {"iceclimbers", "Pp"}, {"donkey kong", "Dk"},
+      {"young link", "Cl"}, {"gameandwatch", "Gw"}, {"jigglypuff", "Pr"}, {"younglink", "Cl"},
+      {"ganondorf", "Gn"}, {"gamewatch", "Gw"}, {"dr. mario", "Dr"}, {"dr mario", "Dr"}, {"c.falcon", "Ca"},
+      {"cfalcon", "Ca"}, {"drmario", "Dr"}, {"pikachu", "Pk"}, {"captain", "Ca"}, {"bowser", "Kp"},
+      {"falcon", "Ca"}, {"mewtwo", "Mt"}, {"donkey", "Dk"}, {"jiggly", "Pr"}, {"ylink", "Cl"}, {"clink", "Cl"},
+      {"ganon", "Gn"}, {"kirby", "Kb"}, {"luigi", "Lg"}, {"mario", "Mr"}, {"marth", "Ms"}, {"pichu", "Pc"},
+      {"peach", "Pe"}, {"purin", "Pr"}, {"sheik", "Sk"}, {"samus", "Ss"}, {"yoshi", "Ys"}, {"zelda", "Zd"},
+      {"falco", "Fc"}, {"koopa", "Kp"}, {"link", "Lk"}, {"ness", "Ns"}, {"nana", "Nn"}, {"popo", "Pp"},
+      {"puff", "Pr"}, {"g&w", "Gw"}, {"gnw", "Gw"}, {"roy", "Fe"}, {"fox", "Fx"}, {"doc", "Dr"}, {"ics", "Pp"},
+      {"dk", "Dk"},
+  };
+  static constexpr Alias colors[] = {
+      {"lavender", "La"}, {"default", "Nr"}, {"neutral", "Nr"}, {"original", "Nr"}, {"vanilla", "Nr"},
+      {"normal", "Nr"}, {"orange", "Or"}, {"yellow", "Ye"}, {"purple", "La"}, {"black", "Bk"}, {"white", "Wh"},
+      {"green", "Gr"}, {"blue", "Bu"}, {"pink", "Pi"}, {"aqua", "Aq"}, {"cyan", "Aq"}, {"gray", "Gy"},
+      {"grey", "Gy"}, {"red", "Re"},
+  };
+  auto scan = [&](const Alias* aliases, size_t count, std::vector<std::string>* codes) {
+    for (size_t i = 0; i < count; ++i) {
+      const std::string text = aliases[i].text;
+      for (size_t at = name.find(text); at != std::string::npos; at = name.find(text, at + 1)) {
+        if (!word_at(at, text.size())) continue;
+        if (std::find(codes->begin(), codes->end(), aliases[i].code) == codes->end()) codes->push_back(aliases[i].code);
+        name.replace(at, text.size(), text.size(), ' ');
+      }
+    }
+  };
+  std::vector<std::string> fighter_codes, color_codes;
+  scan(fighters, std::size(fighters), &fighter_codes);
+  scan(colors, std::size(colors), &color_codes);
+  if (fighter_codes.size() != 1 || color_codes.size() != 1) return false;
+  for (const auto& family : families) {
+    if (fighter_codes[0] != family.file_code) continue;
+    for (const auto& color : color_names)
+      if (color_codes[0] == color.code && family_has_color(family, color.code)) {
+        *slot = slot_file({&family, &color}); return true;
+      }
+  }
+  return false;
+}
+
 testing::DatInspection inspect_dat_impl(const std::vector<uint8_t>& bytes) {
   testing::DatInspection result;
   if (bytes.size() < 0x20) { result.error = "DAT header is truncated."; return result; }
@@ -774,50 +932,6 @@ testing::DatInspection inspect_dat_impl(const std::vector<uint8_t>& bytes) {
     if (i < roots) result.roots.push_back(symbols.back());
   }
 
-  struct FighterFamily {
-    const char* file_code;
-    const char* root_name;
-    const char* display_name;
-    const char* colors;
-  };
-  // These are the existing NTSC 1.02 costume files only. Defaults use an un-suffixed 5K root even
-  // though their disc filename ends in Nr. Bosses, wireframes, Sandbag, extra CSS slots, and base
-  // fighter data archives are intentionally absent.
-  static constexpr FighterFamily families[] = {
-      {"Ca", "Captain", "Captain Falcon", "Nr Re Wh Gr Bu Gy"},
-      {"Cl", "Clink", "Young Link", "Nr Re Wh Bk Bu"},
-      {"Dk", "Donkey", "Donkey Kong", "Nr Re Bu Gr Bk"},
-      {"Dr", "Drmario", "Dr. Mario", "Nr Re Bu Gr Bk"},
-      {"Fc", "Falco", "Falco", "Nr Re Bu Gr"},
-      {"Fe", "Emblem", "Roy", "Nr Re Bu Gr Ye"},
-      {"Fx", "Fox", "Fox", "Nr Or La Gr"},
-      {"Gn", "Ganon", "Ganondorf", "Nr Re Bu Gr La"},
-      {"Gw", "Gamewatch", "Mr. Game & Watch", "Nr"},
-      {"Kb", "Kirby", "Kirby", "Nr Ye Bu Re Gr Wh"},
-      {"Kp", "Koopa", "Bowser", "Nr Re Bu Bk"},
-      {"Lg", "Luigi", "Luigi", "Nr Wh Aq Pi"},
-      {"Lk", "Link", "Link", "Nr Re Bu Bk Wh"},
-      {"Mr", "Mario", "Mario", "Nr Ye Bk Bu Gr"},
-      {"Ms", "Mars", "Marth", "Nr Re Gr Bk Wh"},
-      {"Mt", "Mewtwo", "Mewtwo", "Nr Re Bu Gr"},
-      {"Nn", "Nana", "Ice Climbers (Nana)", "Nr Ye Aq Wh"},
-      {"Ns", "Ness", "Ness", "Nr Ye Bu Gr"},
-      {"Pc", "Pichu", "Pichu", "Nr Re Bu Gr"},
-      {"Pe", "Peach", "Peach", "Nr Ye Wh Bu Gr"},
-      {"Pk", "Pikachu", "Pikachu", "Nr Re Bu Gr"},
-      {"Pp", "Popo", "Ice Climbers (Popo)", "Nr Re Gr Or"},
-      {"Pr", "Purin", "Jigglypuff", "Nr Re Bu Gr Ye"},
-      {"Sk", "Seak", "Sheik", "Nr Re Bu Gr Wh"},
-      {"Ss", "Samus", "Samus", "Nr Pi Bk Gr La"},
-      {"Ys", "Yoshi", "Yoshi", "Nr Re Bu Ye Pi Aq"},
-      {"Zd", "Zelda", "Zelda", "Nr Re Bu Gr Wh"},
-  };
-  struct ColorName { const char* code; const char* label; };
-  static constexpr ColorName color_names[] = {
-      {"Nr", "Default"}, {"Re", "Red"}, {"Bu", "Blue"}, {"Gr", "Green"},
-      {"Wh", "White"}, {"Bk", "Black"}, {"Ye", "Yellow"}, {"Or", "Orange"},
-      {"La", "Lavender"}, {"Pi", "Pink"}, {"Aq", "Aqua"}, {"Gy", "Gray"},
-  };
   struct Match { const FighterFamily* family; const ColorName* color; };
   std::vector<Match> matches;
   for (const auto& family : families) {
@@ -1846,6 +1960,90 @@ ImportResult install_asset_locked(const fs::path& source, const std::string& sou
   return result;
 }
 
+// One entry per costume slot holds its portrait and its stock icon. Setting a picture again
+// replaces that picture and keeps the other.
+ImportResult install_portrait_locked(const std::string& slot_target, const std::string& kind,
+                                     const std::vector<uint8_t>& png, const std::string& source_name) {
+  ImportResult result;
+  std::string error;
+  if (!mutable_profile_locked(&error)) { result.message = error; return result; }
+  SlotName slot;
+  if (!find_slot(slot_target, &slot)) {
+    result.message = "That is not a costume of the game: " + slot_target; return result;
+  }
+  if (kind != "csp" && kind != "stock") { result.message = "A picture is a portrait or a stock icon."; return result; }
+  if (!png_companion(png, &error)) { result.message = error; return result; }
+  const std::string digest = sha256(png);
+  if (digest.empty()) { result.message = "The picture could not be hashed."; return result; }
+  const std::string file = slot_file(slot);
+  const std::string id = "portrait-" + file.substr(0, file.size() - 4);
+  const std::string target = file + kPortraitSuffix;
+  AssetRecord::Companion picture;
+  picture.kind = kind;
+  picture.stored_path = (fs::path(L"assets") / fs::u8path(id) / L"companions" /
+                         (kind == "csp" ? L"csp.png" : L"stock.png")).generic_u8string();
+  picture.sha256 = digest;
+  picture.source_member = source_name;
+
+  auto existing = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& a) { return a.info.id == id; });
+  const bool had = existing != g_assets.end();
+  AssetRecord asset = had ? *existing : AssetRecord{};
+  bool same_picture = false;
+  for (const auto& companion : asset.companions) same_picture |= companion.kind == kind && companion.sha256 == digest;
+  asset.companions.erase(std::remove_if(asset.companions.begin(), asset.companions.end(),
+      [&](const AssetRecord::Companion& c) { return c.kind == kind; }), asset.companions.end());
+  asset.companions.push_back(picture);
+  std::stable_sort(asset.companions.begin(), asset.companions.end(),
+      [](const AssetRecord::Companion& a, const AssetRecord::Companion& b) { return a.kind == "csp" && b.kind != "csp"; });
+  asset.info.id = id;
+  asset.info.kind = kPortraitKind;
+  asset.info.target_path = target;
+  asset.info.character = slot.family->display_name;
+  asset.info.costume = slot.color->label;
+  if (asset.info.name.empty()) asset.info.name = std::string(slot.family->display_name) + ", " + slot.color->label + " pictures";
+  asset.info.available = true;
+  asset.info.availability_message.clear();
+  asset.info.roots.clear();
+  asset.info.unsupported_companions.clear();
+  for (const auto& companion : asset.companions)
+    asset.info.unsupported_companions.push_back(std::string(companion.kind == "csp" ? "Portrait: " : "Stock icon: ") +
+                                               companion.source_member);
+  // The entry's own file is its first picture (the portrait when it has one): what the catalog
+  // checks when it lists the entry.
+  asset.stored_path = asset.companions.front().stored_path;
+  asset.info.sha256 = asset.companions.front().sha256;
+  asset.source_kind = "png";
+  asset.source_name = source_name;
+
+  if (!write_atomic(g_root / fs::u8path(picture.stored_path), png.data(), png.size(), &error)) {
+    result.message = error; return result;
+  }
+  const AssetRecord previous = had ? *existing : AssetRecord{};
+  if (had) *existing = asset; else g_assets.push_back(asset);
+  if (!save_catalog_locked(&error)) {
+    if (had) *std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& a) { return a.info.id == id; }) = previous;
+    else g_assets.pop_back();
+    result.message = error; return result;
+  }
+  const auto current = g_profile.selections.find(target);
+  if (current == g_profile.selections.end() || current->second != id) {
+    Profile before = g_profile;
+    g_profile.selections[target] = id;
+    ++g_profile.generation;
+    if (!save_profile_locked(&error)) {
+      g_profile = std::move(before);
+      result.message = "The picture was saved, but its selection could not be: " + error; return result;
+    }
+  } else if (!same_picture) {
+    ++g_profile.generation;   // the same entry, a different picture
+    save_profile_locked(&error);
+  }
+  g_message = std::string(kind == "csp" ? "Portrait" : "Stock icon") + " for " + slot.family->display_name + ", " +
+              slot.color->label + " set from " + source_name + ".";
+  result.ok = true; result.already_present = same_picture; result.asset_id = id; result.message = g_message;
+  return result;
+}
+
 bool materialize_effect_with_open_disc(const std::string& target_path,
                                        const std::vector<uint8_t>& candidate,
                                        std::vector<uint8_t>* runtime,
@@ -2135,6 +2333,8 @@ std::vector<uint8_t> load_runtime_asset_locked(const AssetRecord& asset, std::st
     if (!parse_visual_layout(bytes, &layout, error)) {
       *error = asset.info.name + ": " + *error; return {};
     }
+  } else if (asset.info.kind == kPortraitKind) {
+    if (!png_companion(bytes, error)) { *error = asset.info.name + ": " + *error; return {}; }
   } else {
     *error = asset.info.name + ": unsupported catalog resource kind."; return {};
   }
@@ -2147,7 +2347,7 @@ bool refresh_assets_locked(bool prune_invalid_selections, std::string* error) {
     std::string validation_error;
     asset.info.available = !load_runtime_asset_locked(asset, &validation_error).empty();
     asset.info.availability_message = asset.info.available ?
-        (asset.info.kind == "character_costume" ? std::string() :
+        (asset.info.kind == "character_costume" || asset.info.kind == kPortraitKind ? std::string() :
          asset.info.kind == "stage_visual" ?
              "Stage replacement is offline unless exact-ISO validation proves texture-only changes." :
              "Exact clean-ISO effect validation and safe materialization are required when selected and repeated at every launch.") :
@@ -2290,6 +2490,19 @@ ImportResult import_file(const std::string& path_text) {
   testing::DatInspection dat;
   std::vector<VaultCompanionPlan> companions;
   std::string member, error;
+  if (extension == ".png") {
+    // A portrait or stock icon on its own: the file name says which costume it is for.
+    std::string slot, kind;
+    if (!portrait_slot_from_name_impl(path_filename_utf8(path), &slot, &kind))
+      return {false, false, {}, "This picture's name does not say which costume it is for. Name it like "
+                                "\"Fox Green.png\" or \"PlFxGr stock.png\", or use Add portrait and pick the costume."};
+    if (!read_bounded(path, 16ull * 1024 * 1024, &bytes, &error)) return {false, false, {}, error};
+    std::lock_guard<std::mutex> lock(g_mutex);
+    ImportResult result = install_portrait_locked(slot, kind, bytes, path_filename_utf8(path));
+    if (result.ok && std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply it.";
+    g_message = result.message;
+    return result;
+  }
   if (extension == ".dat" || extension == ".usd") {
     if (!read_bounded(path, kMaxAssetBytes, &bytes, &error)) return {false, false, {}, error};
     dat = inspect_dat_impl(bytes);
@@ -2379,6 +2592,37 @@ ImportResult import_file(const std::string& path_text) {
       g_message = result.message;
       return result;
     }
+    if (recognized.empty() && candidates == 0) {
+      // A pack of pictures with no costume file: each PNG whose name identifies a costume.
+      size_t installed = 0, pictures = 0;
+      std::string skipped, last_id, failure;
+      std::lock_guard<std::mutex> lock(g_mutex);
+      for (const auto& entry : entries) {
+        if (lower(fs::path(entry.name).extension().string()) != ".png") continue;
+        ++pictures;
+        std::string slot, kind;
+        std::vector<uint8_t> picture;
+        if (!portrait_slot_from_name_impl(entry.name, &slot, &kind) ||
+            !extract_zip_member(path, entry, &picture, &error)) {
+          if (skipped.size() < 160) skipped += (skipped.empty() ? "" : ", ") + path_filename_utf8(fs::u8path(entry.name));
+          continue;
+        }
+        ImportResult one = install_portrait_locked(slot, kind, picture, path_filename_utf8(fs::u8path(entry.name)));
+        if (one.ok) { ++installed; last_id = one.asset_id; }
+        else failure = one.message;
+      }
+      if (pictures) {
+        ImportResult result;
+        result.ok = installed > 0;
+        result.asset_id = last_id;
+        result.message = installed ? std::to_string(installed) + " of " + std::to_string(pictures) + " pictures set." :
+                                     failure.empty() ? "No picture in the ZIP names a costume." : failure;
+        if (!skipped.empty()) result.message += " Names that identify no costume: " + skipped + ".";
+        if (result.ok && std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply them.";
+        g_message = result.message;
+        return result;
+      }
+    }
     if (recognized.empty())
       return {false, false, {}, "ZIP contains no valid DAT for a supported costume or stage resource."};
     if (recognized.size() != 1)
@@ -2402,7 +2646,7 @@ ImportResult import_file(const std::string& path_text) {
       companions.push_back(std::move(companion));
     }
   } else {
-    return {false, false, {}, "Choose a costume or stage .dat, .usd or .zip, or a Nucleus vault .zip."};
+    return {false, false, {}, "Choose a costume or stage .dat, .usd or .zip, a portrait .png, or a Nucleus vault .zip."};
   }
   std::lock_guard<std::mutex> lock(g_mutex);
   ImportResult result = install_asset_locked(path, extension == ".zip" ? "zip" : "dat", member,
@@ -2411,6 +2655,32 @@ ImportResult import_file(const std::string& path_text) {
     result.message += " Restart to apply the staged profile safely.";
   g_message = result.message;
   return result;
+}
+
+ImportResult import_portrait(const std::string& png_path, const std::string& slot, const std::string& kind) {
+  const fs::path path = fs::u8path(png_path);
+  std::vector<uint8_t> bytes;
+  std::string error;
+  if (!read_bounded(path, 16ull * 1024 * 1024, &bytes, &error)) return {false, false, {}, error};
+  std::lock_guard<std::mutex> lock(g_mutex);
+  ImportResult result = install_portrait_locked(slot, kind, bytes, path_filename_utf8(path));
+  if (result.ok && std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply it.";
+  g_message = result.message;
+  return result;
+}
+
+std::vector<CostumeSlot> costume_slots() {
+  std::vector<CostumeSlot> out;
+  for (const auto& family : families) {
+    // the family's own color order, which is the game's
+    std::string colors = family.colors;
+    for (size_t at = 0; at < colors.size(); at += 3) {
+      const std::string code = colors.substr(at, 2);
+      for (const auto& color : color_names)
+        if (code == color.code) out.push_back({slot_file({&family, &color}), family.display_name, color.label});
+    }
+  }
+  return out;
 }
 
 std::vector<AssetInfo> assets() {
@@ -2662,12 +2932,14 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
   }
   std::map<std::string, bool> effect_done;
   std::vector<std::string> runtime_errors;
+  std::vector<const AssetRecord*> portraits;
   for (const auto& pick : g_profile.selections) {
     if (pick.second == kVanillaSelection) continue;
     auto asset = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
       return item.info.id == pick.second && selection_key(item) == pick.first;
     });
     if (asset == g_assets.end()) { host::log("cosmetics: missing catalog asset %s", pick.second.c_str()); continue; }
+    if (asset->info.kind == kPortraitKind) { portraits.push_back(&*asset); continue; }
     if (asset->info.kind == "effect_visual" && effect_done[asset->info.target_path]) continue;
     if (asset->info.kind == "effect_visual") effect_done[asset->info.target_path] = true;
     std::vector<uint8_t> bytes = load_runtime_asset_locked(*asset, &error);
@@ -2773,8 +3045,33 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
       next->companions.push_back({companion.kind, asset->info.target_path, path.string()});
     }
   }
+  // A slot's own portrait and stock icon, after the skins: they replace the picture of the same
+  // kind a selected skin brought for that slot.
+  for (const AssetRecord* asset : portraits) {
+    const std::string slot = portrait_slot(asset->info.target_path);
+    bool any = false;
+    for (const auto& companion : asset->companions) {
+      if (companion.kind != "csp" && companion.kind != "stock") continue;
+      std::vector<uint8_t> picture;
+      const fs::path path = g_root / fs::u8path(companion.stored_path);
+      std::string picture_error;
+      if (!read_bounded(path, kMaxAssetBytes, &picture, &picture_error) || sha256(picture) != companion.sha256) {
+        host::log("cosmetics: %s for %s is missing or changed; using vanilla",
+                  companion.kind == "csp" ? "portrait" : "stock icon", slot.c_str());
+        continue;
+      }
+      next->companions.erase(std::remove_if(next->companions.begin(), next->companions.end(),
+          [&](const CompanionOverride& have) { return have.kind == companion.kind && have.target_path == slot; }),
+          next->companions.end());
+      next->companions.push_back({companion.kind, slot, path.string()});
+      host::log("cosmetics: %s for %s from %s", companion.kind == "csp" ? "portrait" : "stock icon", slot.c_str(),
+                companion.source_member.c_str());
+      any = true;
+    }
+    if (any) ++next->assets;
+  }
   std::atomic_store(&g_runtime, std::shared_ptr<const RuntimeState>(next));
-  g_message = next->by_start.empty() ? "No selected cosmetic matched this ISO." :
+  g_message = next->assets == 0 ? "No selected cosmetic matched this ISO." :
               std::to_string(next->assets) + " cosmetic override(s) active for this launch.";
   for (const auto& issue : runtime_errors) g_message += " " + issue;
 }
@@ -2837,7 +3134,17 @@ std::string choose_import_file() {
   wchar_t file[32768]{};
   OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof dialog;
   dialog.hwndOwner = GetActiveWindow();
-  dialog.lpstrFilter = L"Cosmetic imports (*.zip;*.dat;*.usd)\0*.zip;*.dat;*.usd\0Costume or stage file (*.dat;*.usd)\0*.dat;*.usd\0ZIP archive (*.zip)\0*.zip\0";
+  dialog.lpstrFilter = L"Cosmetic imports (*.zip;*.dat;*.usd;*.png)\0*.zip;*.dat;*.usd;*.png\0Costume or stage file (*.dat;*.usd)\0*.dat;*.usd\0ZIP archive (*.zip)\0*.zip\0Portrait or stock icon (*.png)\0*.png\0";
+  dialog.lpstrFile = file; dialog.nMaxFile = (DWORD)std::size(file);
+  dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+  return GetOpenFileNameW(&dialog) ? wide_to_utf8(file) : std::string();
+}
+
+std::string choose_portrait_file() {
+  wchar_t file[32768]{};
+  OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof dialog;
+  dialog.hwndOwner = GetActiveWindow();
+  dialog.lpstrFilter = L"Portrait or stock icon (*.png)\0*.png\0";
   dialog.lpstrFile = file; dialog.nMaxFile = (DWORD)std::size(file);
   dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   return GetOpenFileNameW(&dialog) ? wide_to_utf8(file) : std::string();
@@ -2863,6 +3170,9 @@ bool materialize_effect_dat(const std::string& target_path,
                             std::string* error) {
   std::string local; if (!error) error = &local;
   return materialize_effect_dat_impl(target_path, clean, candidate, runtime, classification, error);
+}
+bool portrait_slot_from_name(const std::string& name, std::string* slot, std::string* kind) {
+  return portrait_slot_from_name_impl(name, slot, kind);
 }
 bool inspect_zip(const std::string& path, std::vector<std::string>* names, std::string* error) {
   std::vector<ZipEntry> entries;

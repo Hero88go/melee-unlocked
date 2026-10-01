@@ -9,7 +9,7 @@
  *              landing. Pickable and throwable like an item; destroyed after its third bounce.
  *
  * ftDd_ItemLogic is the m-ex item table in the decomp's ItemLogicTable layout, one row per
- * article, in the order of ftData x48 (see mu_ak_index_fighter_item). */
+ * article, in the order of ftData x48 (see mu_ak_register_article). */
 #include "ftdiddy.h"
 
 #include <math.h>

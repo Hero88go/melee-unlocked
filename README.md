@@ -16,7 +16,7 @@ Version 0.8.5 added the **experimental Mod Update**. The launcher includes Sourc
 Static Recomp, with an integrated Mods page. Supported 20XX TE saves and Training Mode CE
 1.4d1 run on Source Port; Akaneia runs on Static Recomp with matching Direct builds.
 See [the Mod Update notes](release/RELEASE_NOTES_0.8.5.md) for installation and compatibility
-limits. The current release is 0.8.62; the notes for every version are in [release/](release).
+limits. The current release is 0.8.63; the notes for every version are in [release/](release).
 
 This project is not affiliated with, endorsed by, or supported by the Slippi team, Nintendo or
 HAL Laboratory. Slippi netplay compatibility is implemented from Slippi's open source code

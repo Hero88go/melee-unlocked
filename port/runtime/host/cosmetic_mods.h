@@ -61,6 +61,16 @@ void configure(const std::string& settings_path);
 // their fail-closed runtime validation policies.
 ImportResult import_file(const std::string& path);
 
+// A portrait (the character select picture) or a stock icon for one costume slot, imported on its
+// own with no costume file. It is a catalog entry of its own (kind character_portrait, target
+// "<slot>#portrait"), switched on and off like any other choice, and it wins over the picture a
+// selected skin brought with it. `slot` is the costume's disc file name ("PlFxGr.dat"); `kind` is
+// "csp" for the portrait or "stock" for the stock icon.
+ImportResult import_portrait(const std::string& png_path, const std::string& slot, const std::string& kind);
+// Every costume slot of the retail game, in the game's own order, for a slot picker.
+struct CostumeSlot { std::string target_path, character, costume; };
+std::vector<CostumeSlot> costume_slots();
+
 std::vector<AssetInfo> assets();
 bool refresh_catalog(std::string* error = nullptr);
 bool rename_asset(const std::string& asset_id, const std::string& display_name,
@@ -111,6 +121,8 @@ bool online_allowed(uint32_t vanilla_file_start);
 
 // Native Windows picker used by the ImGui Mods tab. An empty string means the player cancelled.
 std::string choose_import_file();
+// The same for one PNG (a portrait or stock icon).
+std::string choose_portrait_file();
 
 namespace testing {
 struct DatInspection {
@@ -133,6 +145,10 @@ bool materialize_effect_dat(const std::string& target_path,
                             std::vector<uint8_t>* runtime,
                             std::string* classification,
                             std::string* error);
+// The costume slot and kind ("csp" or "stock") a picture's file name identifies: the costume's
+// file code ("PlFxGr stock.png") or a fighter and a color ("Fox Green.png"). False when the name
+// does not identify exactly one costume.
+bool portrait_slot_from_name(const std::string& name, std::string* slot, std::string* kind);
 // Validates ZIP central-directory structure, paths, flags, methods, and resource sizes without
 // extracting. Returned entries use '/' separators exactly as the archive records them.
 bool inspect_zip(const std::string& path, std::vector<std::string>* entries, std::string* error);

@@ -2,7 +2,7 @@
  * See NOTES.md in this folder for what each routine is and what it needs from the integration. */
 #include "ftlizardon.h"
 
-#include <akaneia/mu_ak_fighter.h>
+#include "../mu_ak_fighter.h"
 
 #include <melee/ft/ftcamera.h>
 

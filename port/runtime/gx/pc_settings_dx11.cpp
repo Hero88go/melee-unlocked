@@ -225,11 +225,12 @@ struct PcSettingsUID3D11::Impl {
 
 PcSettingsUID3D11::PcSettingsUID3D11(void* window, ID3D11Device* device, ID3D11DeviceContext* context, const RenderOptions& options)
     : impl_(std::make_unique<Impl>()) {
-  impl_->state.open = options.settings_open;
-  impl_->state.panel_anim_target_open = options.settings_open;
+  const bool open = options.settings_open || settings_fills_window();
+  impl_->state.open = open;
+  impl_->state.panel_anim_target_open = open;
   impl_->state.panel_anim_initialized = true;
-  impl_->state.panel_anim_frame = options.settings_open ? 17.0f : 12.0f;
-  impl_->state.panel_slide_x = options.settings_open ? 0.0f : -720.0f;
+  impl_->state.panel_anim_frame = open ? 17.0f : 12.0f;
+  impl_->state.panel_slide_x = open ? 0.0f : -720.0f;
   impl_->state.panel_slide_start_x = impl_->state.panel_slide_x;
   impl_->state.running_d3d11 = true;   // so the panel can say a backend change needs a restart
   impl_->renderer.device = device;

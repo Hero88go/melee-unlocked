@@ -180,11 +180,11 @@ static MotionFlags const ftLz_MF_SpecialS_Coll =
 
 /* MEX_IndexFighterItem (console 803D7058): registers the fighter's article @p index as one of its
  * items, the m-ex counterpart of it_8026B3F8(article, It_Kind_*). */
-void mu_ak_mex_index_fighter_item(FighterKind kind, void* article, int index);
+void mu_ak_register_article(FighterKind kind, void* article, int index);
 /* MEX_GetFtItemID (console 803D7088): the ItemKind the fighter's item @p index was given. */
-int mu_ak_mex_get_ft_item_id(HSD_GObj* fighter_gobj, int index);
+ItemKind mu_ak_article_kind(HSD_GObj* fighter_gobj, int index);
 
-/* Charizard's items, in the order of ftData->x48_items and of mu_ak_mex_get_ft_item_id. */
+/* Charizard's items, in the order of ftData->x48_items and of mu_ak_article_kind. */
 enum {
     ftLz_Item_Fire = 0,      ///< Flamethrower flame (clone of Bowser's flame)
     ftLz_Item_Rock = 1,      ///< Rock Smash's held rock

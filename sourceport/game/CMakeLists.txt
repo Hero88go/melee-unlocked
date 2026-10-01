@@ -14,6 +14,12 @@ if(NOT CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_VERSION VERSION_LE
 endif()
 
 get_filename_component(REPO "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+# Assertions and the debug file name their source file. Without this they carry the full path of
+# the folder the game was built in, which then shows up in every player's crash report.
+add_compile_options("-ffile-prefix-map=${REPO}=.")
+get_filename_component(MU_TOOLCHAIN_ROOT "${CMAKE_C_COMPILER}" DIRECTORY)
+get_filename_component(MU_TOOLCHAIN_ROOT "${MU_TOOLCHAIN_ROOT}/.." ABSOLUTE)
+add_compile_options("-ffile-prefix-map=${MU_TOOLCHAIN_ROOT}=toolchain")
 set(MELEE_DECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../extern/melee" CACHE PATH "checkout of the game sources")
 set(D "${MELEE_DECOMP_DIR}")
 set(SDK "${D}/libs/dolphin/src/dolphin")
@@ -66,6 +72,27 @@ set_target_properties(mu_match_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
 target_link_libraries(mu_match_test PRIVATE game_flags)
 target_include_directories(mu_match_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include" "${REPO}/port/runtime/abi")
 add_test(NAME native_match_override COMMAND mu_match_test)
+
+# Run the exact production major runner with scene stubs, plus the content hook's real cache calls.
+set(CONTENT_MAJOR_RUNNER "${CMAKE_CURRENT_BINARY_DIR}/content_major_runner.h")
+if(MELEE_PYTHON)
+  set(CONTENT_TEST_PYTHON "${MELEE_PYTHON}")
+else()
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  set(CONTENT_TEST_PYTHON "${Python3_EXECUTABLE}")
+endif()
+add_custom_command(OUTPUT "${CONTENT_MAJOR_RUNNER}"
+  COMMAND "${CONTENT_TEST_PYTHON}" "${REPO}/tools/native_major_fixture.py"
+    "${D}/src/melee/gm/gm_1A3F.c" "${CONTENT_MAJOR_RUNNER}"
+  DEPENDS "${REPO}/tools/native_major_fixture.py" "${D}/src/melee/gm/gm_1A3F.c"
+  VERBATIM)
+add_executable(mu_content_transition_test EXCLUDE_FROM_ALL
+  tests/content_transition.c shim/mu_content.c "${CONTENT_MAJOR_RUNNER}")
+set_target_properties(mu_content_transition_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+target_link_libraries(mu_content_transition_test PRIVATE game_flags)
+target_include_directories(mu_content_transition_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+add_test(NAME native_content_transition COMMAND mu_content_transition_test)
+
 add_executable(mu_record_start_test tests/record_start.c)
 set_target_properties(mu_record_start_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
 target_link_libraries(mu_record_start_test PRIVATE game_flags)
@@ -152,13 +179,21 @@ list(APPEND SHIM_SOURCES ${GXNATIVE_SOURCES})
 option(MU_AKANEIA_FIGHTERS "Build the work-in-progress native Akaneia fighters" OFF)
 list(APPEND SHIM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/mu_ak_fighters.c")
 if(MU_AKANEIA_FIGHTERS)
+  target_compile_definitions(game_flags INTERFACE MU_AKANEIA_FIGHTERS=1)
+  add_executable(mu_ak_character_kind_test EXCLUDE_FROM_ALL tests/ak_character_kind.c)
+  set_target_properties(mu_ak_character_kind_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+  target_link_libraries(mu_ak_character_kind_test PRIVATE game_flags)
+  target_compile_options(mu_ak_character_kind_test PRIVATE -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables)
+  target_link_options(mu_ak_character_kind_test PRIVATE -Wl,--gc-sections)
+  add_test(NAME native_ak_character_kind COMMAND mu_ak_character_kind_test)
   file(GLOB_RECURSE AKANEIA_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/*/*.c")
   list(APPEND SHIM_SOURCES ${AKANEIA_SOURCES})
 endif()
 # A fighter joins the registry once akaneia/<fighter>/<fighter>.c exists (that file defines
 # mu_ak_<fighter>); until then the registry leaves it out and the fighter stays locked.
 foreach(ak_fighter wolf diddy charizard lucas sonic dedede tails)
-  if(MU_AKANEIA_FIGHTERS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/${ak_fighter}/${ak_fighter}.c")
+  if(MU_AKANEIA_FIGHTERS AND (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/${ak_fighter}/${ak_fighter}.c"
+      OR EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/${ak_fighter}/ft${ak_fighter}.c"))
     string(TOUPPER "${ak_fighter}" ak_upper)
     set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/mu_ak_fighters.c" APPEND PROPERTY
       COMPILE_DEFINITIONS "MU_AK_HAVE_${ak_upper}")

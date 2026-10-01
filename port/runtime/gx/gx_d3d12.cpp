@@ -104,6 +104,14 @@ struct Stopwatch {
 
 void check(HRESULT hr, const char* what) { if (FAILED(hr)) host::die("D3D12: %s failed (%08X)", what, (unsigned)hr); }
 template <class T> const IID& IID_PPV_ARGS_Helper_IID() { return __uuidof(T); }
+// The adapter has no room for a new resource (E_OUTOFMEMORY, or the older "out of video memory"
+// code some drivers still return). Only these are worth freeing textures and trying again for.
+bool out_of_video_memory(HRESULT hr) { return hr == E_OUTOFMEMORY || hr == (HRESULT)0x8876017CL; }
+// Video memory an RGBA8 texture takes, near enough for deciding how much to free.
+uint64_t texture_bytes(uint32_t w, uint32_t h, uint32_t levels) {
+  const uint64_t base = (uint64_t)w * h * 4;
+  return levels > 1 ? base + base / 3 : base;
+}
 
 struct PsoKey {
   uint64_t vs, ps;
@@ -122,6 +130,7 @@ struct TextureEntry {
   ComPtr<ID3D12Resource> resource;
   uint32_t width = 0, height = 0, levels = 1;
   uint64_t last_used = 0;
+  uint64_t replacement_bytes = 0;   // what a pack replacement charged to the replacement budget
 };
 
 using TextureSetKey = std::array<ID3D12Resource*, 8>;
@@ -147,16 +156,25 @@ class Ring {
   size_t page_size_ = 0, current_ = 0, slot_ = 0;
   std::vector<Page> slots_[3];      // one page set per frame in flight
   std::vector<Page>& pages() { return slots_[slot_]; }
-  Page make_page(size_t size) {
-    Page p; p.size = size;
+  // Asked to free video memory when an overflow page does not fit; true when a retry is worthwhile.
+  bool (*free_memory_)(void* user, uint64_t bytes) = nullptr;
+  void* free_memory_user_ = nullptr;
+  HRESULT create_page(size_t size, Page* p) {
+    *p = Page{}; p->size = size;
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_UPLOAD};
     D3D12_RESOURCE_DESC rd{};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = size; rd.Height = 1;
     rd.DepthOrArraySize = 1; rd.MipLevels = 1; rd.SampleDesc.Count = 1;
     rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-    check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
-        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&p.buffer)), "upload page");
-    check(p.buffer->Map(0, nullptr, (void**)&p.cpu), "upload page map");
+    HRESULT hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd,
+        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&p->buffer));
+    if (SUCCEEDED(hr)) hr = p->buffer->Map(0, nullptr, (void**)&p->cpu);
+    if (FAILED(hr)) { p->buffer.Reset(); p->cpu = nullptr; }
+    return hr;
+  }
+  Page make_page(size_t size) {
+    Page p;
+    check(create_page(size, &p), "upload page");
     return p;
   }
  public:
@@ -164,6 +182,7 @@ class Ring {
     device_ = dev; page_size_ = size;
     for (auto& set : slots_) set.push_back(make_page(size));
   }
+  void on_out_of_memory(bool (*free_memory)(void*, uint64_t), void* user) { free_memory_ = free_memory; free_memory_user_ = user; }
   // Selects the page set of frame slot `slot` (whose previous GPU work has completed).
   void reset(size_t slot) {
     slot_ = slot; current_ = 0;
@@ -174,8 +193,16 @@ class Ring {
   bool alloc(size_t bytes, size_t align, uint8_t** cpu, D3D12_GPU_VIRTUAL_ADDRESS* gpu) {
     size_t off = (pages()[current_].offset + align - 1) & ~(align - 1);
     if (off > pages()[current_].size || bytes > pages()[current_].size - off) {
+      // An overflow page that does not fit in video memory is not fatal: free what can be freed and
+      // try once more, then report failure so the caller drops this one draw or upload.
+      const size_t size = std::max(page_size_, (bytes + align - 1) & ~(align - 1));
+      Page page;
+      HRESULT hr = create_page(size, &page);
+      if (out_of_video_memory(hr) && free_memory_ && free_memory_(free_memory_user_, size)) hr = create_page(size, &page);
+      if (out_of_video_memory(hr)) return false;
+      check(hr, "upload page");
       ++current_;
-      pages().push_back(make_page(std::max(page_size_, (bytes + align - 1) & ~(align - 1))));
+      pages().push_back(std::move(page));
       off = 0;
     }
     auto& p = pages()[current_];
@@ -271,9 +298,28 @@ class D3D12Backend : public Backend {
   int dlss_failures_ = 0;
   int anisotropy_applied_ = 0, ssaa_applied_ = 0;
   // Custom texture packs. An HD pack can hold far more pixels than this machine has video memory,
-  // and textures_ is never evicted, so replacements stop once they have spent their share of the
-  // adapter and the rest of the game keeps its native textures instead of running the GPU dry.
+  // and textures_ is only trimmed when memory runs short (see trim_textures), so replacements stop
+  // once they have spent their share of the adapter and the rest of the game keeps its native
+  // textures instead of running the GPU dry.
   uint64_t replacement_bytes_ = 0, replacement_budget_ = 512ull * 1024 * 1024;
+  // Running short of video memory. textures_ keeps every distinct texture the game has shown, which
+  // on a small adapter (integrated graphics sharing 2 GB) eventually filled it and the next texture
+  // could not be created. Two defences, neither of which does anything while memory is plentiful:
+  // trim_textures drops textures nothing has drawn for a while once usage nears a small budget, and
+  // free_video_memory is the last resort when an allocation has already failed.
+  static constexpr uint64_t SMALL_VRAM_BUDGET = 4096ull * 1024 * 1024;   // trim only at or under this
+  static constexpr uint64_t TEXTURE_IDLE_FRAMES = 600;   // unused this long: the trim may take it
+  static constexpr uint64_t TEXTURE_RETRY_FRAMES = 120;  // before a texture that did not fit is tried again
+  uint64_t vram_usage_bytes_ = 0, vram_budget_bytes_ = 0;   // update_vram, every 30 frames
+  bool vram_tight_ = false;
+  double texture_trim_time_ = 0, oom_log_time_ = 0;
+  // Textures that could not be created, by cache key, and the frame they may be tried again. They
+  // draw as missing meanwhile, so a starved adapter is not asked for the same texture every draw.
+  std::unordered_map<uint64_t, uint64_t> texture_retry_frame_;
+  void trim_textures();
+  uint32_t free_video_memory(uint64_t bytes);
+  bool oom_log_due();
+  static bool free_memory_for_ring(void* self, uint64_t bytes);
   uint64_t texpack_report_frame_ = ~0ull;
   int forced_scale_ = 0;
   ComPtr<ID3D12Resource> mvec_, dlss_out_;
@@ -623,6 +669,7 @@ void D3D12Backend::init() {
   index_ring_.init(device_.Get(), 24 << 20);
   constant_ring_.init(device_.Get(), GX_CONSTANT_PAGE_SIZE);
   upload_ring_.init(device_.Get(), 64 << 20);
+  for (Ring* ring : {&vertex_ring_, &index_ring_, &constant_ring_, &upload_ring_}) ring->on_out_of_memory(&D3D12Backend::free_memory_for_ring, this);
 
   // Root signature: b0 (VS constants), b1 (PS constants), t0-7, s0-7.
   D3D12_DESCRIPTOR_RANGE srv_range{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 8, 0, 0, 0};
@@ -900,6 +947,83 @@ void D3D12Backend::update_vram() {
   if (FAILED(adapter3_->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) return;
   g_vram_used = (float)(info.CurrentUsage / 1073741824.0);
   g_vram_budget = (float)(info.Budget / 1073741824.0);
+  // The local segment group is dedicated plus shared memory on integrated graphics, so this is the
+  // whole allowance there. "Tight" is past 85 percent of a small one.
+  vram_usage_bytes_ = info.CurrentUsage; vram_budget_bytes_ = info.Budget;
+  vram_tight_ = info.Budget && info.Budget <= SMALL_VRAM_BUDGET && info.CurrentUsage > info.Budget / 100 * 85;
+}
+
+// Once a second at most, and only while video memory is tight (see update_vram): drop the game
+// textures nothing has drawn for TEXTURE_IDLE_FRAMES frames. Runs at the top of a frame, before
+// anything is recorded. Earlier frames still on the GPU may sample these, so they go to this slot's
+// garbage and are released when the slot comes round again, exactly as swap_in_ready_replacements
+// does; a texture drawn again later is simply decoded and uploaded again.
+void D3D12Backend::trim_textures() {
+  if (!vram_tight_) return;
+  const double now = Stopwatch::now();
+  if (now - texture_trim_time_ < 1.0) return;
+  texture_trim_time_ = now;
+  uint32_t dropped = 0;
+  for (auto it = textures_.begin(); it != textures_.end();) {
+    if (it->second.last_used + TEXTURE_IDLE_FRAMES >= frame_counter_) { ++it; continue; }
+    replacement_bytes_ -= std::min(replacement_bytes_, it->second.replacement_bytes);
+    frame_garbage_[slot_].push_back(it->second.resource);
+    it = textures_.erase(it);
+    ++dropped;
+  }
+  if (!dropped) return;
+  texture_sets_.clear();   // descriptor tables name resources by pointer
+  host::log("d3d12: video memory %.2f of %.2f GB in use; %u idle textures freed, %zu kept",
+            vram_usage_bytes_ / 1073741824.0, vram_budget_bytes_ / 1073741824.0, dropped, textures_.size());
+}
+
+// An allocation has just failed for lack of video memory. Frees cached game textures, the ones
+// drawn longest ago first, until about four times `bytes` (64 MB at least) has gone, and returns
+// how many. Unlike the trim this must give the memory back now, so it waits for the GPU to finish
+// every submitted frame and releases directly. The command list being recorded has not been
+// submitted, so the wait does not cover it: a texture used in the current frame (last_used ==
+// frame_counter_, which every lookup and creation this frame sets) is never touched, and neither is
+// this slot's garbage, which the list may still name.
+uint32_t D3D12Backend::free_video_memory(uint64_t bytes) {
+  wait_gpu();
+  for (int i = 0; i < FRAME_SLOTS; ++i) if (i != slot_) frame_garbage_[i].clear();   // retired in frames that are now complete
+  for (auto it = texture_retry_frame_.begin(); it != texture_retry_frame_.end();)   // forget retries that have come due
+    if (it->second <= frame_counter_) it = texture_retry_frame_.erase(it); else ++it;
+  std::vector<std::pair<uint64_t, uint64_t>> idle;   // (last_used, key)
+  idle.reserve(textures_.size());
+  for (const auto& entry : textures_)
+    if (entry.second.last_used != frame_counter_) idle.emplace_back(entry.second.last_used, entry.first);
+  std::sort(idle.begin(), idle.end());
+  const uint64_t want = std::max<uint64_t>(bytes * 4, 64ull * 1024 * 1024);
+  uint64_t freed_bytes = 0;
+  uint32_t freed = 0;
+  for (const auto& candidate : idle) {
+    if (freed_bytes >= want) break;
+    auto it = textures_.find(candidate.second);
+    if (it == textures_.end()) continue;
+    freed_bytes += texture_bytes(it->second.width, it->second.height, it->second.levels);
+    replacement_bytes_ -= std::min(replacement_bytes_, it->second.replacement_bytes);
+    textures_.erase(it);
+    ++freed;
+  }
+  if (freed) texture_sets_.clear();   // descriptor tables name resources by pointer
+  return freed;
+}
+
+// The out-of-memory lines are worth one a second, not one per failed texture.
+bool D3D12Backend::oom_log_due() {
+  const double now = Stopwatch::now();
+  if (now - oom_log_time_ < 1.0) return false;
+  oom_log_time_ = now;
+  return true;
+}
+
+bool D3D12Backend::free_memory_for_ring(void* self, uint64_t bytes) {
+  D3D12Backend* backend = static_cast<D3D12Backend*>(self);
+  const uint32_t freed = backend->free_video_memory(bytes);
+  if (backend->oom_log_due())
+    host::log("d3d12: out of video memory growing an upload buffer by %.0f MB; %u cached textures freed", bytes / 1048576.0, freed);
+  return true;   // the wait alone may have released retired resources
 }
 
 
@@ -1499,6 +1623,14 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
   uint64_t key = t.data->hash ^ hash_bytes(meta, sizeof meta);
   auto it = textures_.find(key);
   if (it != textures_.end()) { it->second.last_used = frame_counter_; *w = it->second.width; *h = it->second.height; return it->second.resource.Get(); }
+  // Recently refused for lack of video memory: missing (an empty descriptor) until its retry frame.
+  if (!texture_retry_frame_.empty()) {
+    auto retry = texture_retry_frame_.find(key);
+    if (retry != texture_retry_frame_.end()) {
+      if (frame_counter_ < retry->second) return nullptr;
+      texture_retry_frame_.erase(retry);
+    }
+  }
 
   // Custom texture pack or launch-scoped cosmetic companion: Dolphin's name for this texture,
   // then its PNG if either source has one. Both happen once per unique texture (this is the
@@ -1531,7 +1663,17 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
   D3D12_RESOURCE_DESC rd{};
   rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = res_w; rd.Height = res_h; rd.DepthOrArraySize = 1;
   rd.MipLevels = (UINT16)res_levels; rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
-  check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&e.resource)), "texture");
+  HRESULT hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&e.resource));
+  if (out_of_video_memory(hr)) {
+    // No room: free cached textures this frame has not drawn and try once more. If it still does
+    // not fit, the draw goes ahead with this texture missing (the same empty descriptor an unused
+    // stage gets, which needs no memory) and the texture is tried again a little later.
+    const uint32_t freed = free_video_memory(texture_bytes(res_w, res_h, res_levels));
+    hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&e.resource));
+    if (oom_log_due()) host::log("d3d12: out of video memory creating a %ux%u texture; %u cached textures freed", res_w, res_h, freed);
+    if (out_of_video_memory(hr)) { texture_retry_frame_[key] = frame_counter_ + TEXTURE_RETRY_FRAMES; return nullptr; }
+  }
+  check(hr, "texture");
   // Decode each level and copy through the upload ring. A replacement arrives already RGBA8, so it
   // skips the GX decoder and is copied straight out of the decoded PNG.
   lw = res_w; lh = res_h;
@@ -1548,7 +1690,14 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
     }
     uint32_t pitch = (lw * 4 + 255) & ~255u;
     uint8_t* cpu; D3D12_GPU_VIRTUAL_ADDRESS gpu;
-    if (!upload_ring_.alloc((size_t)pitch * lh, 512, &cpu, &gpu)) { host::log("d3d12: upload ring full"); break; }
+    if (!upload_ring_.alloc((size_t)pitch * lh, 512, &cpu, &gpu)) {
+      // No video memory for the upload either (the ring has logged it). A texture with levels
+      // missing must not enter the cache: retire it, since copies recorded for its earlier levels
+      // still name it, and draw without it until the retry.
+      frame_garbage_[slot_].push_back(e.resource);
+      texture_retry_frame_[key] = frame_counter_ + TEXTURE_RETRY_FRAMES;
+      return nullptr;
+    }
     for (uint32_t y = 0; y < lh; ++y) memcpy(cpu + (size_t)y * pitch, rgba + (size_t)y * lw * 4, lw * 4);
     D3D12_TEXTURE_COPY_LOCATION dst{e.resource.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX}; dst.SubresourceIndex = l;
     D3D12_TEXTURE_COPY_LOCATION srcloc{upload_ring_.resource(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
@@ -1560,7 +1709,7 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
       lw = std::max(1u, lw / 2); lh = std::max(1u, lh / 2);
     }
   }
-  if (replacement) replacement_bytes_ += replacement->bytes();
+  if (replacement) { e.replacement_bytes = replacement->bytes(); replacement_bytes_ += e.replacement_bytes; }
   D3D12_RESOURCE_BARRIER b{};
   b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   b.Transition = {e.resource.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
@@ -1888,7 +2037,17 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
     D3D12_RESOURCE_DESC rd{};
     rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = sw; rd.Height = sh; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
     rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1; rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-    check(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, dst_state, nullptr, IID_PPV_ARGS(&e.resource)), "efb copy tex");
+    HRESULT hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, dst_state, nullptr, IID_PPV_ARGS(&e.resource));
+    if (out_of_video_memory(hr)) {
+      // No room: free cached textures this frame has not drawn and try once more. If it still does
+      // not fit this copy is skipped (nothing has been recorded for it yet) and draws that sample
+      // its address fall back to the game's own texture data until a later copy succeeds.
+      const uint32_t freed = free_video_memory((uint64_t)sw * sh * 4);
+      hr = device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, dst_state, nullptr, IID_PPV_ARGS(&e.resource));
+      if (oom_log_due()) host::log("d3d12: out of video memory creating a %ux%u texture; %u cached textures freed", sw, sh, freed);
+      if (out_of_video_memory(hr)) { e = TextureEntry{}; return; }
+    }
+    check(hr, "efb copy tex");
     e.width = sw; e.height = sh;
     list_->ResourceBarrier(1, b);
   } else {
@@ -2506,6 +2665,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   frame_garbage_[slot_].clear();
   descriptor_garbage_[slot_].clear();
   swap_in_ready_replacements();
+  trim_textures();
   check(allocators_[slot_]->Reset(), "allocator reset");
   check(list_->Reset(allocators_[slot_].Get(), nullptr), "list reset");
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};

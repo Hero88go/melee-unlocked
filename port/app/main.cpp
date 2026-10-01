@@ -1395,6 +1395,10 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--no-music") slippi::jukebox::set_user_volume(0);
     else if (a == "--widescreen") { gfx.widescreen = true; gfx.true_widescreen = false; }
     else if (a == "--pal-stock-icons") gecko::option_pal_stock_icons = true;
+    else if (a == "--language") {   // game | japanese | english: the Game tab's language choice
+      const std::string value = next();
+      host::g_game_language.store(value == "japanese" ? 1 : value == "english" ? 2 : 0);
+    }
     else if (a == "--no-screen-shake") gecko::option_no_screen_shake = true;
     else if (a == "--vanilla-game") o.vanilla_game = true;
     else if (a == "--gecko-codes") { user_gecko::set_code_patches_allowed(!gfx.native_source); user_gecko::load(next(), {}, false); }   // scripted runs: that file's enabled codes
@@ -1512,7 +1516,7 @@ static int melee_main(int argc, char** argv) {
   if (settings_window_only) {
     gfx.pc_settings = true;
     gx::load_pc_settings(gfx, o.volume);
-    const int rc = app::run_settings_window(gfx, settings_standby, [&] { gx::load_pc_settings(gfx, o.volume); gfx.pc_settings = true; gfx.settings_open = true; });
+    const int rc = app::run_settings_window(gfx, settings_standby, [&] { gx::load_pc_settings(gfx, o.volume); gfx.pc_settings = true; });
     // The panel polls every controller so its live readouts work, which starts the adapter and
     // Switch Pro threads, and it can start an update check. Returning straight from here left those
     // threads running into static destruction, where a joinable std::thread ends the process: every
@@ -1687,6 +1691,7 @@ static int melee_main(int argc, char** argv) {
   install_rng_seed_hook();
   host::install_audio_pacing();
   host::install_console_clock();
+  host::install_language_override();
 #endif
   if (gx::RenderOptions::kModFeaturesAvailable && source_port::mods::auto_detect() && !gfx.native_source) {
     source_port::mods::StartupOptions scan;

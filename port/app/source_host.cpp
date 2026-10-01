@@ -51,6 +51,7 @@
 #include "mod_profile.h"
 #include "mod_scan.h"
 #include "cosmetic_mods.h"
+#include "texture_pack.h"
 #include "slippilib/SlippiGame.h"
 #include "window.h"
 
@@ -757,6 +758,8 @@ uint32_t h_game_options() {
          (gecko::option_pal_stock_icons ? MU_GAME_OPTION_PAL_STOCK_ICONS : 0u) |
          (gecko::option_widescreen ? MU_GAME_OPTION_WIDESCREEN : 0u) |   // the viewer's own, also in replays
          (gx::true_widescreen_active() ? MU_GAME_OPTION_TRUE_WIDESCREEN : 0u) |   // likewise: display only
+         (((uint32_t)host::g_game_language.load(std::memory_order_relaxed) << MU_GAME_OPTION_LANGUAGE_SHIFT) &
+          MU_GAME_OPTION_LANGUAGE_MASK) |   // the player's language choice: text, names and voices only
          (host::options.vanilla_game ? MU_GAME_OPTION_VANILLA : 0u) |
          (g_slippi_menus ? MU_GAME_OPT_SLIPPI_MENUS : 0u) |
          (mods::status().tmce && !g_replaying ? MU_GAME_OPTION_TMCE : 0u) |
@@ -2380,9 +2383,28 @@ int run(void (*shutdown)(int)) {
   // Tests only: 20XX TE's features without mounting its save (its menu memory changes scripted runs).
   if (std::getenv("MELEE_TEST_TE_OWNED")) mods::status().te_owned = true;
   if (!read_fst()) host::die("this disc image has no readable file table. Use a clean, uncompressed Melee NTSC 1.02 ISO (a trimmed or compressed image will not work)");
+  // A development game library built with the native Akaneia fighters exports this name; the shipped
+  // one does not, and an Akaneia disc stays refused. Looked up without running any of its code.
+  {
+    const char* named = std::getenv("MELEE_GAME_DLL");
+    if (HMODULE probe = LoadLibraryExA(named ? named : g_dll.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES)) {
+      const bool native_akaneia = GetProcAddress(probe, "mu_ak_native_build") != nullptr;
+      FreeLibrary(probe);
+      if (native_akaneia) {
+        allow_native_akaneia(true);
+        host::log("mods: development game library with native Akaneia fighters; Akaneia discs are accepted");
+      }
+    }
+  }
   load_mod_overlay();
   check_replay_content();
   load_cosmetics(g_replay || g_online_test_mode >= 0);
+  {
+    std::vector<gx::texpack::CosmeticCompanion> companions;
+    for (const auto& item : host::cosmetics::active_companions())
+      companions.push_back({item.kind, item.target_path, item.path});
+    gx::texpack::set_cosmetic_companions(std::move(companions));
+  }
   load_system_files(g_replay ? "--replay"
                     : g_online_test_mode >= 0 ? "--online-test"
                     : host::options.vanilla_game ? "--vanilla-game" : nullptr);

@@ -506,7 +506,9 @@ void input_begin_capture() {
   gcadapter_poll(gc);
   for (int idx = 0; idx < 4; ++idx) {
     XINPUT_STATE xs{};
-    g_capture_pad_baseline[idx] = (XInputGetState(idx, &xs) == ERROR_SUCCESS) ? xs.Gamepad.wButtons : 0;
+    g_capture_pad_baseline[idx] = (XInputGetState(idx, &xs) == ERROR_SUCCESS) ?
+        xinput_binding_buttons(xs.Gamepad.wButtons, xs.Gamepad.bLeftTrigger,
+                               xs.Gamepad.bRightTrigger, 140, 140) : 0;
     g_capture_gc_baseline[idx] = gc[idx];
   }
   { std::lock_guard<std::mutex> lock(g_ds4_mutex); for (int idx = 0; idx < 4; ++idx) g_capture_ds4_baseline[idx] = g_ds4_buttons[idx]; }
@@ -553,7 +555,9 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
     if (!wanted(CaptureDevice::XInputPad, idx)) continue;
     XINPUT_STATE xs{};
     if (XInputGetState(idx, &xs) != ERROR_SUCCESS) continue;
-    unsigned short newly = xs.Gamepad.wButtons & ~g_capture_pad_baseline[idx];
+    const uint16_t buttons = xinput_binding_buttons(xs.Gamepad.wButtons, xs.Gamepad.bLeftTrigger,
+                                                    xs.Gamepad.bRightTrigger, 140, 140);
+    unsigned short newly = buttons & ~g_capture_pad_baseline[idx];
     if (newly) {
       unsigned short lowest = newly & (~(newly - 1));
       g_capturing.store(false); device = CaptureDevice::XInputPad; value = lowest; device_index = idx; return true;
@@ -733,6 +737,16 @@ void apply_family_options(PadFamily family, PadState& pad) {
   const Deadzone& dz = g_deadzones[(size_t)family];
   apply_deadzone(dz, pad.stick_x, pad.stick_y, false);
   apply_deadzone(dz, pad.sub_x, pad.sub_y, true);
+  // Native physical click switches retain their defaults. A configured threshold
+  // overrides that click; XInput's default is synthesized while reading its axes.
+  if (family != PadFamily::Xbox && dz.click_l != kDefaultTriggerClick) {
+    pad.button &= (uint16_t)~PAD_L;
+    apply_trigger_click(dz.click_l, pad.trig_l, pad.button, PAD_L);
+  }
+  if (family != PadFamily::Xbox && dz.click_r != kDefaultTriggerClick) {
+    pad.button &= (uint16_t)~PAD_R;
+    apply_trigger_click(dz.click_r, pad.trig_r, pad.button, PAD_R);
+  }
   apply_trigger_cap(dz.trig_l, pad.trig_l, pad.button, PAD_L);
   apply_trigger_cap(dz.trig_r, pad.trig_r, pad.button, PAD_R);
 }
@@ -977,9 +991,14 @@ void input_poll(PadState out[4]) {
     // modifier coordinates, which then did nothing. The game already ignores a resting stick.
     const int sx = axis(g.sThumbLX), sy = axis(g.sThumbLY), cx = axis(g.sThumbRX), cy = axis(g.sThumbRY);
     x.stick_x = (int8_t)sx; x.stick_y = (int8_t)sy; x.sub_x = (int8_t)cx; x.sub_y = (int8_t)cy;
-    debug.xinput_actions[idx] = apply_actions(x, [&](int i) { const unsigned short m = g_pad_bindings[idx].mask[i]; return m && (g.wButtons & m); });
-    x.trig_l = g.bLeftTrigger; if (g.bLeftTrigger > 200) { x.button |= PAD_L; debug.xinput_actions[idx] |= 1u << (int)BindAction::L; }
-    x.trig_r = g.bRightTrigger; if (g.bRightTrigger > 200) { x.button |= PAD_R; debug.xinput_actions[idx] |= 1u << (int)BindAction::R; }
+    const Deadzone& dz = g_deadzones[(size_t)PadFamily::Xbox];
+    const uint16_t buttons = xinput_binding_buttons(g.wButtons, g.bLeftTrigger, g.bRightTrigger,
+                                                    dz.click_l, dz.click_r);
+    debug.xinput_actions[idx] = apply_actions(x, [&](int i) { const unsigned short m = g_pad_bindings[idx].mask[i]; return m && (buttons & m); });
+    x.trig_l = g.bLeftTrigger; apply_trigger_click(dz.click_l, x.trig_l, x.button, PAD_L);
+    x.trig_r = g.bRightTrigger; apply_trigger_click(dz.click_r, x.trig_r, x.button, PAD_R);
+    if (x.button & PAD_L) debug.xinput_actions[idx] |= 1u << (int)BindAction::L;
+    if (x.button & PAD_R) debug.xinput_actions[idx] |= 1u << (int)BindAction::R;
   }
 
   PadState ds4[4]{};
@@ -1039,30 +1058,7 @@ void input_poll(PadState out[4]) {
     if (hid_connected[idx]) apply_family_options(PadFamily::Box, hid[idx]);
   }
 
-  // 0.1.7 drove port 1 from the keyboard and the first pad together. The port-source table replaced
-  // that with the keyboard alone, so a lone Xbox pad landed on port 2 and a DS4 on no port at all,
-  // and players who had been port 1 reported their controller had stopped working. Keep the table,
-  // but let the first unrouted pad also drive a port still on the default keyboard source.
-  auto routed = [&](DeviceKind kind, int index) {
-    for (int q = 0; q < 4; ++q) if (g_port_sources[q].kind == kind && g_port_sources[q].index == index) return true;
-    return false;
-  };
-  auto keyboard_and_pad = [&](int port) {
-    PadState result = kb;
-    const PadState* pad = nullptr;
-    PortSource feeding{DeviceKind::Keyboard, 0};
-    for (int i = 0; i < 4 && !pad; ++i) if ((gc_mask & (1u << i)) && !routed(DeviceKind::GCAdapter, i)) { pad = &gc[i]; feeding = {DeviceKind::GCAdapter, i}; }
-    for (int i = 0; i < 4 && !pad; ++i) if (xin_connected[i] && !routed(DeviceKind::XInputPad, i)) { pad = &xin[i]; feeding = {DeviceKind::XInputPad, i}; }
-    for (int i = 0; i < 4 && !pad; ++i) if (ds4_connected[i] && !routed(DeviceKind::DS4Pad, i)) { pad = &ds4[i]; feeding = {DeviceKind::DS4Pad, i}; }
-    for (int i = 0; i < 4 && !pad; ++i) if (swpro_connected[i] && !routed(DeviceKind::SwitchPro, i)) { pad = &swpro[i]; feeding = {DeviceKind::SwitchPro, i}; }
-    for (int i = 0; i < 4 && !pad; ++i) if (hid_connected[i] && !routed(DeviceKind::HidPad, i)) { pad = &hid[i]; feeding = {DeviceKind::HidPad, i}; }
-    g_port_feeding[port] = feeding;
-    // With a controller connected, the default port is that controller alone: keys pressed while
-    // playing on a pad (hotkeys, typing) must not press game buttons. The keyboard drives the port
-    // when no controller is connected, or when it is chosen as the port's source in the F1 panel.
-    if (pad) result = *pad;
-    return result;
-  };
+  const InputDeviceFacts facts = input_device_facts(debug);
   // A port given a named box follows that box to whatever HID slot it is in this time.
   for (int port = 0; port < 4; ++port) {
     PortSource& src = g_port_sources[port];
@@ -1078,10 +1074,10 @@ void input_poll(PadState out[4]) {
     }
   }
   for (int port = 0; port < 4; ++port) {
-    const PortSource& src = g_port_sources[port];
-    g_port_feeding[port] = src;   // replaced below when the port falls back to another device
+    const PortSource src = effective_port_source(g_port_sources, facts, port);
+    g_port_feeding[port] = src;
     switch (src.kind) {
-      case DeviceKind::Keyboard: out[port] = keyboard_and_pad(port); break;
+      case DeviceKind::Keyboard: out[port] = kb; break;
       case DeviceKind::XInputPad:
         if (src.index >= 0 && src.index < 4 && xin_connected[src.index]) out[port] = xin[src.index];
         break;
@@ -1096,13 +1092,11 @@ void input_poll(PadState out[4]) {
         break;
       case DeviceKind::GCAdapter:
         if (src.index >= 0 && src.index < 4 && (gc_mask & (1u << src.index))) out[port] = gc[src.index];
-        // Nothing in that adapter socket: port 1 falls back to the keyboard and the first unrouted
-        // pad, so a player without an adapter is still player 1.
-        else if (port == 0) out[port] = keyboard_and_pad(port);
         break;
       case DeviceKind::None: default: break;
     }
     debug.ports[port] = out[port];
+    debug.feeding[port] = src;
   }
   // Background input off and another window in front: every port stays plugged in but neutral.
   if (!focused && !g_background_input)
@@ -1221,14 +1215,20 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     XINPUT_STATE xs{};
     if (XInputGetState(idx, &xs) != ERROR_SUCCESS) continue;
     snapshot.xinput_connected[idx] = true;
+    xin[idx].err = 0;
     auto& g = xs.Gamepad;
     auto axis = [](SHORT v) { int a = v / 258; return a > 127 ? 127 : a < -127 ? -127 : a; };
     // Same reading as input_poll: no deadzone, no trigger floor.
     const int sx = axis(g.sThumbLX), sy = axis(g.sThumbLY), cx = axis(g.sThumbRX), cy = axis(g.sThumbRY);
     xin[idx].stick_x = (int8_t)sx; xin[idx].stick_y = (int8_t)sy; xin[idx].sub_x = (int8_t)cx; xin[idx].sub_y = (int8_t)cy;
-    snapshot.xinput_actions[idx] = apply_actions(xin[idx], [&](int i) { const unsigned short m = g_pad_bindings[idx].mask[i]; return m && (g.wButtons & m); });
-    xin[idx].trig_l = g.bLeftTrigger; if (g.bLeftTrigger > 200) { xin[idx].button |= PAD_L; snapshot.xinput_actions[idx] |= 1u << (int)BindAction::L; }
-    xin[idx].trig_r = g.bRightTrigger; if (g.bRightTrigger > 200) { xin[idx].button |= PAD_R; snapshot.xinput_actions[idx] |= 1u << (int)BindAction::R; }
+    const Deadzone& dz = g_deadzones[(size_t)PadFamily::Xbox];
+    const uint16_t buttons = xinput_binding_buttons(g.wButtons, g.bLeftTrigger, g.bRightTrigger,
+                                                    dz.click_l, dz.click_r);
+    snapshot.xinput_actions[idx] = apply_actions(xin[idx], [&](int i) { const unsigned short m = g_pad_bindings[idx].mask[i]; return m && (buttons & m); });
+    xin[idx].trig_l = g.bLeftTrigger; apply_trigger_click(dz.click_l, xin[idx].trig_l, xin[idx].button, PAD_L);
+    xin[idx].trig_r = g.bRightTrigger; apply_trigger_click(dz.click_r, xin[idx].trig_r, xin[idx].button, PAD_R);
+    if (xin[idx].button & PAD_L) snapshot.xinput_actions[idx] |= 1u << (int)BindAction::L;
+    if (xin[idx].button & PAD_R) snapshot.xinput_actions[idx] |= 1u << (int)BindAction::R;
   }
 
   PadState ds4[4]{};
@@ -1271,11 +1271,18 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     }
   }
 
+  const InputDeviceFacts facts = input_device_facts(snapshot);
   for (int idx = 0; idx < 4; ++idx) {
     snapshot.gc_actions[idx] = 0;
     if (!(gc_mask & (1u << idx))) continue;
     snapshot.gc_actions[idx] = gc_apply_bindings(idx, gc[idx]);
-    snapshot.ports[idx] = gc[idx];
+  }
+  for (int idx = 0; idx < 4; ++idx) {
+    if (facts.gc[idx]) apply_family_options(PadFamily::GameCube, gc[idx]);
+    if (facts.xinput[idx]) apply_family_options(PadFamily::Xbox, xin[idx]);
+    if (facts.ds4[idx]) apply_family_options(PadFamily::PlayStation, ds4[idx]);
+    if (facts.switch_pro[idx]) apply_family_options(PadFamily::Switch, swpro[idx]);
+    if (facts.hid[idx]) apply_family_options(PadFamily::Box, hid[idx]);
   }
   snapshot.keyboard_pad = kb;
   for (int idx = 0; idx < 4; ++idx) {
@@ -1284,7 +1291,8 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     if (gc_mask & (1u << idx)) snapshot.gc_pad[idx] = gc[idx];
   }
   for (int port = 0; port < 4; ++port) {
-    const PortSource& src = g_port_sources[port];
+    const PortSource src = effective_port_source(g_port_sources, facts, port);
+    snapshot.feeding[port] = src;
     switch (src.kind) {
       case DeviceKind::Keyboard: snapshot.ports[port] = kb; break;
       case DeviceKind::XInputPad:

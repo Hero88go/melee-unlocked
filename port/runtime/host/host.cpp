@@ -5,6 +5,7 @@
 #include "cosmetic_mods.h"
 #include "mod_profile.h"
 #include "memory_range.h"
+#include "guest_heap_trace.h"
 #include <windows.h>
 #include <bcrypt.h>
 #include "guest_registry.h"
@@ -734,7 +735,74 @@ void init_state_digest() {
   }
 }
 
+namespace {
+struct GuestHeapCall { uint32_t handle = 0, requested = 0, caller = 0, stack = 0; bool available = false; };
+thread_local GuestHeapCall g_guest_heap_call;
+void record_guest_heap_call(ppc::Context& c) {
+  g_guest_heap_call = {c.r[3], c.r[4], c.lr, c.r[1], true};
+}
+bool heap_trace_read32(uint32_t address, uint32_t& value) {
+  if (!try_ptr(address, 4)) return false;
+  value = rd32(address);
+  return true;
+}
+bool heap_trace_literal(uint32_t address, const char* literal) {
+  const size_t bytes = std::strlen(literal) + 1;
+  const uint8_t* data = try_ptr(address, static_cast<uint32_t>(bytes));
+  return data && std::memcmp(data, literal, bytes) == 0;
+}
+void trace_guest_heap_assert(ppc::Context& c) {
+  // guest_002.cpp: before its __assert call, r24=Handle*, r30=32-byte-rounded request,
+  // and the allocator's caller LR is at r1+60. The __assert entry hook runs BEFORE its
+  // prologue overwrites r30 (guest_130.cpp:6532-6538), including direct C++ callers.
+  if (c.lr != 0x80015098u || c.r[4] != 233u || !heap_trace_literal(c.r[3], "lbmemory.c")) return;
+  const uint32_t handle = c.r[24], rounded = c.r[30];
+  uint32_t saved_caller = 0;
+  const bool have_saved_caller = c.r[1] <= 0xFFFFFFC3u && heap_trace_read32(c.r[1]+60u, saved_caller);
+  const bool have_original = g_guest_heap_call.available && g_guest_heap_call.handle == handle &&
+    ((g_guest_heap_call.requested + 31u) & ~31u) == rounded && g_guest_heap_call.stack >= 56u &&
+    g_guest_heap_call.stack - 56u == c.r[1];
+  log("[guest-heap] failure retrace=%u assert=lbmemory.c:233 assert_lr=%08X heap=%08X rounded=%08X "
+      "caller=%08X caller_available=%u original_requested=%08X original_available=%u", retrace_count(),
+      c.lr, handle, rounded, have_saved_caller ? saved_caller : have_original ? g_guest_heap_call.caller : 0u,
+      (unsigned)(have_saved_caller || have_original), have_original ? g_guest_heap_call.requested : 0u,
+      (unsigned)have_original);
+  log("[guest-heap] registers sp=%08X r24=%08X r25=%08X r26=%08X r27=%08X r29=%08X r30=%08X r31=%08X cr=%08X",
+      c.r[1], c.r[24], c.r[25], c.r[26], c.r[27], c.r[29], c.r[30], c.r[31], ppc::mfcr(c));
+  const auto snapshot = guest_heap_trace::inspect(handle, heap_trace_read32);
+  log("[guest-heap] bounds=%08X..%08X first=%08X blocks=%u free=%08X largest_gap=%08X "
+      "complete=%u error=%s", snapshot.lo, snapshot.hi, snapshot.first, (unsigned)snapshot.count,
+      snapshot.free, snapshot.largest_gap, (unsigned)snapshot.complete, snapshot.error ? snapshot.error : "none");
+  for (size_t i = 0; i < snapshot.count; ++i) {
+    const auto& block = snapshot.blocks[i];
+    log("[guest-heap] block=%u descriptor=%08X next=%08X address=%08X size=%08X",
+        (unsigned)i, block.descriptor, block.next, block.address, block.size);
+  }
+  // Exact retail Allocator offsets from guest_002.cpp, not a host-native struct cast.
+  for (uint32_t offset : {0u, 4u, 0x62Cu, 0x630u, 0x634u, 0x698u, 0x69Cu}) {
+    uint32_t value = 0;
+    const uint32_t address = 0x804318B0u + offset;
+    if (heap_trace_read32(address, value)) log("[guest-heap] allocator+%03X=%08X", offset, value);
+    else log("[guest-heap] allocator+%03X unreadable", offset);
+  }
+  log_flush();
+}
+} // namespace
+void install_guest_heap_trace() {
+  static bool installed = false;
+  const char* requested = std::getenv("MELEE_TRACE_GUEST_HEAP");
+  if (installed || !requested || std::strcmp(requested, "1") || !options.no_gc_adapter) return;
+  installed = true;
+  // enter() is present in compiled functions and interpret() entries, so this catches direct
+  // compiled __assert calls. Entirely RAM-local branches can bypass entry hooks; the assert-site
+  // register capture remains available if __assert itself reaches its known compiled entry.
+  ppc::add_entry_hook(0x80014FC8u, record_guest_heap_call);
+  ppc::add_entry_hook(0x80388220u, trace_guest_heap_assert);
+  log("[guest-heap] opt-in retail allocator failure hooks installed; no allocation behavior changes");
+}
+
 void boot_setup() {
+  install_guest_heap_trace();
   init_state_digest();
   if (!options.state_trace.empty()) {
     g_state_trace = std::fopen(options.state_trace.c_str(), "w");
@@ -1023,6 +1091,34 @@ uint64_t console_epoch_ticks() {
 }
 void install_console_clock() {
   if (!ppc::redirect_to_host(0x8034C3F0u, os_get_time_dated)) log("clock: OSGetTime keeps the time since start (not replaced)");
+}
+
+// ---- the game's language as a PC setting ----
+std::atomic<int> g_game_language{0};
+int game_language_override() {
+  const int choice = g_game_language.load(std::memory_order_relaxed);
+  return choice == 1 ? 0 : choice == 2 ? 1 : -1;
+}
+// Static Recomp. The game reads its saved language through three small functions (lblanguage.c:
+// lbLang_GetSavedLanguage, lbLang_IsSavedLanguageJP, lbLang_IsSavedLanguageUS). Each is replaced by a
+// host function that answers with the player's choice, or reads the save exactly as the original
+// does: GamePrefs.saved_language, the byte at +0x16 of the preferences at +0x1CB0 of the save data
+// (r13 - 0x77C0 holds its address).
+static uint32_t saved_language(ppc::Context& c) {
+  const int forced = game_language_override();
+  if (forced >= 0) return (uint32_t)forced;
+  const uint32_t save = rd32(c.r[13] - 0x77C0u);
+  if (!try_ptr(save + 0x1CB0u + 0x16u, 1)) return 1;   // before the save data exists: English, as the disc sets it
+  return rd8(save + 0x1CB0u + 0x16u);
+}
+static void lang_get_saved(ppc::Context& c, uint8_t*) { c.r[3] = saved_language(c); }
+static void lang_is_saved_jp(ppc::Context& c, uint8_t*) { c.r[3] = saved_language(c) == 0 ? 1u : 0u; }
+static void lang_is_saved_us(ppc::Context& c, uint8_t*) { c.r[3] = saved_language(c) == 1 ? 1u : 0u; }
+void install_language_override() {
+  const bool get = ppc::redirect_to_host(0x8000ADF4u, lang_get_saved);
+  const bool jp = ppc::redirect_to_host(0x8000AE58u, lang_is_saved_jp);
+  const bool us = ppc::redirect_to_host(0x8000AE90u, lang_is_saved_us);
+  if (!get || !jp || !us) log("language: the saved-language functions could not be replaced; the game's own choice applies");
 }
 // True 16:9 on the Static Recomp. The renderer shows more to each side, but the game's draw test
 // (ftLib_80086A8C) still answers for its own 73:60 camera, so a fighter in the added sides was not
