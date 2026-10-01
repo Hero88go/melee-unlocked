@@ -4,6 +4,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <memory>
@@ -93,6 +94,12 @@ void dvd_poll() {
     if (host::cpu->tb < r.ready_tb) return;
     if (!r.done->load(std::memory_order_acquire)) { host::SimCostScope cost(host::SIM_DVD); std::unique_lock<std::mutex> lk(g_dvd_mutex); g_dvd_done_cv.wait(lk, [&] { return r.done->load(std::memory_order_acquire); }); }
     std::memcpy(host::ptr(r.addr, r.length), r.data->data(), r.length);
+    // The renderer reuses a texture snapshot while this memory's write version is unchanged, so the
+    // copy must count as a write (as host::disc_read does when it reads straight into guest memory).
+    // Without it a texture drawn before its file arrived stayed blank (0.8.6: black track names).
+    // MELEE_TEST_DVD_NO_MARK=1 (tests): the 0.8.6 behaviour, to prove the stale-snapshot check.
+    static const bool no_mark = [] { const char* v = std::getenv("MELEE_TEST_DVD_NO_MARK"); return v && *v == '1'; }();
+    if (!no_mark) host::mark_ram_write(r.addr, r.length);
     finish_read(r.block, r.addr, r.length, r.disc_offset);
     if (r.callback) { uint32_t cb = r.callback, len = r.length, blk = r.block; host::post_completion([cb, len, blk] { host::call_guest(cb, len, blk); }); }
     g_dvd_pending.pop_front();

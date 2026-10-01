@@ -100,6 +100,38 @@ int main() {
   CHECK(gx::frame_in_match(event_frame) && gx::frame_has_widenable_scene(event_frame));
   event_frame.scene_minor = 3;
   CHECK(!gx::frame_in_match(event_frame) && gx::frame_has_widenable_scene(event_frame));
+  // Widescreen presents every scene wide (the menus too: their cameras widen), except the
+  // opening movie, a video on the 2D layer that would only be stretched.
+  event_frame.scene_major = 0x01; event_frame.scene_minor = 0;
+  CHECK(!gx::frame_in_match(event_frame) && gx::frame_has_widenable_scene(event_frame));
+  event_frame.scene_major = 0x20;   // Home-Run Contest
+  CHECK(gx::frame_has_widenable_scene(event_frame));
+  event_frame.scene_major = 0x18;
+  CHECK(!gx::frame_has_widenable_scene(event_frame));
+  // "Visual effects": only decoration drawn by the world camera is skipped. A HUD drawn in
+  // perspective by a camera of its own always draws (a mod's song title text neither tests nor
+  // writes depth, and Minimal used to remove it).
+  {
+    gx::Frame match{};
+    match.scene_major = 2; match.scene_minor = 2;
+    match.draws.resize(4);
+    const float world[6] = {3.066f, 0, 3.732f, 0, -6.1e-06f, -0.1f}, hud[6] = {2.167f, 0, 2.637f, 0, -0.00029f, -1.0f};
+    for (int i = 0; i < 3; ++i) std::memcpy(&match.draws[i].xf_regs[0x20], world, sizeof world);
+    std::memcpy(&match.draws[3].xf_regs[0x20], hud, sizeof hud);
+    match.draws[0].owner_player = 0; match.draws[0].skinned = true;                                   // a fighter: the world camera
+    match.draws[1].bp.reg[gx::BP_BLENDMODE] = 0x0429; match.draws[1].bp.reg[gx::BP_ZMODE] = 0x07;     // additive spark, depth tested
+    match.draws[2].bp.reg[gx::BP_BLENDMODE] = 0x04A9; match.draws[2].bp.reg[gx::BP_ZMODE] = 0x00;     // overlay in the world
+    match.draws[3].bp.reg[gx::BP_BLENDMODE] = 0x04A9; match.draws[3].bp.reg[gx::BP_ZMODE] = 0x00;     // HUD text
+    const gx::EffectsFilter full = gx::effects_filter(match, 0), reduced = gx::effects_filter(match, 1),
+                            minimal = gx::effects_filter(match, 2);
+    for (const auto& d : match.draws) CHECK(!gx::skip_for_effects(full, d));
+    CHECK(!gx::skip_for_effects(reduced, match.draws[0]) && gx::skip_for_effects(reduced, match.draws[1]));
+    CHECK(!gx::skip_for_effects(reduced, match.draws[2]) && !gx::skip_for_effects(reduced, match.draws[3]));
+    CHECK(!gx::skip_for_effects(minimal, match.draws[0]) && gx::skip_for_effects(minimal, match.draws[1]));
+    CHECK(gx::skip_for_effects(minimal, match.draws[2]) && !gx::skip_for_effects(minimal, match.draws[3]));
+    match.scene_minor = 0;   // character select: nothing is filtered outside a match
+    CHECK(!gx::skip_for_effects(gx::effects_filter(match, 2), match.draws[1]));
+  }
   gx::RenderOptions aspect_options;
   CHECK(aspect_options.te_options == 0x10u); // recognized TE save is enabled by default
   aspect_options.widescreen = true;

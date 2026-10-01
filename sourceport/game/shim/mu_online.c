@@ -510,9 +510,9 @@ int mu_online_pad_alarm_gate(void)
         return 0;   /* the rollback logic asked for these pads */
     }
     if (trace_renew()) {
-        long long OSGetTime(void);
+        unsigned long long mu_ticks_since_start(void);
         logf_("pad alarm (rollback %d) retrace %d tbms %d", mu_online.rollback_active, (int) mu_online_abi_retrace_count(),
-              (int) (OSGetTime() / 40500));
+              (int) (mu_ticks_since_start() / 40500));
     }
     if (mu_online.rollback_active) {
         /* The pad alarm fired during a rollback: renew at the earliest safe time instead. */
@@ -678,9 +678,9 @@ static int check_predictions(int frame)
     }
     if (rollback_required) {
         if (trace_renew()) {
-            long long OSGetTime(void);
+            unsigned long long mu_ticks_since_start(void);
             logf_("rollback trigger frame %d retrace %d tbms %d", frame,
-                  (int) mu_online_abi_retrace_count(), (int) (OSGetTime() / 40500));
+                  (int) mu_online_abi_retrace_count(), (int) (mu_ticks_since_start() / 40500));
         }
         mu_online.selftest_rollback = 0;
         mu_online.rollback_active = 1;
@@ -1129,8 +1129,8 @@ int mu_online_frame_end(void)
     }
     mu_online_audio_rollback_end();   /* after resim is off, or deferred music would defer again */
     if (trace_renew()) {
-        long long OSGetTime(void);
-        logf_("rollback done retrace %d tbms %d", (int) mu_online_abi_retrace_count(), (int) (OSGetTime() / 40500), 0);
+        unsigned long long mu_ticks_since_start(void);
+        logf_("rollback done retrace %d tbms %d", (int) mu_online_abi_retrace_count(), (int) (mu_ticks_since_start() / 40500), 0);
     }
     return ENGINE_ROLLBACK_DONE;
 }

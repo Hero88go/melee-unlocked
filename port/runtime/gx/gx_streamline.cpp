@@ -314,6 +314,7 @@ bool dlss_optimal_size(DlssMode mode, uint32_t out_w, uint32_t out_h, uint32_t* 
 }
 
 bool g_allocated = false;   // the DLSS feature exists for the current mode and size (dlss_allocate)
+bool g_allocate_tried = false;   // dlss_allocate has asked once for the current mode and size
 
 bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h, bool color_is_hdr) {
   if (!available()) return false;
@@ -332,7 +333,7 @@ bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h, bool color_
   }
   sl::Result res = slDLSSSetOptions(g_viewport, o);
   if (res != sl::Result::eOk) { host::log("dlss: slDLSSSetOptions failed (%d)", (int)res); return false; }
-  if (o.mode != g_mode || out_w != g_out_w || out_h != g_out_h) g_allocated = false;
+  if (o.mode != g_mode || out_w != g_out_w || out_h != g_out_h) g_allocated = g_allocate_tried = false;
   g_mode = o.mode; g_out_w = out_w; g_out_h = out_h;
   if (mode == DlssMode::Off) g_have_prev = false;
   return true;
@@ -342,8 +343,14 @@ bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h, bool color_
 // the Source Port first evaluates DLSS on the first frame of a match (menus are shown as rendered),
 // so every first match with DLSS on stalled for about 2.7 seconds. Done on a menu frame instead,
 // once per mode and output size.
+// Asked once per mode and size. Streamline refuses while no input is tagged (result 25), which is
+// every menu frame: the menus are not upscaled. Asking again on each of those frames, as this did,
+// was thousands of failed calls after a window that changed size (a maximized or fullscreen
+// window does right after start), each one logged by Streamline as an error. The feature is then
+// created by the first evaluate instead.
 void dlss_allocate(ID3D12GraphicsCommandList* list) {
-  if (!available() || g_allocated || g_mode == sl::DLSSMode::eOff || !list) return;
+  if (!available() || g_allocated || g_allocate_tried || g_mode == sl::DLSSMode::eOff || !list) return;
+  g_allocate_tried = true;
   const sl::Result res = slAllocateResources(list, sl::kFeatureDLSS, g_viewport);
   g_allocated = res == sl::Result::eOk;
   host::log("dlss: feature allocated ahead of the first match (%d)", (int)res);

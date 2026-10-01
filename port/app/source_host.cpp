@@ -30,6 +30,7 @@
 #include "ax_ucode.h"
 #include "native_practice.h"
 #include "gx_core.h"
+#include "gx_shader.h"
 #include "render_options.h"
 #include "training_overlay.h"
 #include "jukebox.h"
@@ -664,7 +665,7 @@ template <class F> void guarded(F&& f) {
     write_replay_recording();
     log_native_pose_bridge_stats();
     if (g_shutdown) g_shutdown(stop.code);
-    ExitProcess((UINT)stop.code);
+    host::end_process(stop.code);   // everything is saved: do not run the libraries' unload code
   }
 }
 
@@ -693,7 +694,9 @@ void h_panic(const char* file, int32_t line, const char* message) {
   host::die("game stopped at %s:%d: %s", file ? file : "?", line, message ? message : "");
 }
 uint64_t h_ticks() { return host::cpu->tb; }
-uint64_t h_boot_time() { return 0; }
+// The date the game's calendar works from. It was zero, so every save and every Training Mode CE
+// export was dated January 1, 2000.
+uint64_t h_boot_time() { return host::console_epoch_ticks(); }
 
 void native_audio_done(void*) {
   if (g_game.ai_dma_done) g_game.ai_dma_done();
@@ -753,6 +756,7 @@ uint32_t h_game_options() {
   return (gecko::option_no_screen_shake ? MU_GAME_OPTION_NO_SCREEN_SHAKE : 0u) |
          (gecko::option_pal_stock_icons ? MU_GAME_OPTION_PAL_STOCK_ICONS : 0u) |
          (gecko::option_widescreen ? MU_GAME_OPTION_WIDESCREEN : 0u) |   // the viewer's own, also in replays
+         (gx::true_widescreen_active() ? MU_GAME_OPTION_TRUE_WIDESCREEN : 0u) |   // likewise: display only
          (host::options.vanilla_game ? MU_GAME_OPTION_VANILLA : 0u) |
          (g_slippi_menus ? MU_GAME_OPT_SLIPPI_MENUS : 0u) |
          (mods::status().tmce && !g_replaying ? MU_GAME_OPTION_TMCE : 0u) |
@@ -1549,7 +1553,9 @@ void card_mount_files() {
             g_card_dir.string().c_str(), slot, card_used_blocks(), CARD_TOTAL_BLOCKS);
 }
 void card_reset_mount() { card_clear_files(); g_card_mounted = false; }
-uint32_t card_time_2000() { return host::cpu ? (uint32_t)(host::cpu->tb / host::TB_HZ) : 0; }
+// Seconds since 2000-01-01 on the console clock (its date at start plus game time), as the game's
+// own calendar reads it: a save file used to be stamped January 1, 2000.
+uint32_t card_time_2000() { return host::cpu ? (uint32_t)((host::console_epoch_ticks() + host::cpu->tb) / host::TB_HZ) : 0; }
 void card_fill_stat(const SourceCardFile& file, SourceCardStat& stat) {
   std::memset(&stat, 0, sizeof stat);
   std::memcpy(stat.fileName, file.dir + 8, 32);

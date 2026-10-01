@@ -119,8 +119,11 @@ void mu_raise_interrupt(int interrupt)
 OSInterruptMask __OSUnmaskInterrupts(OSInterruptMask mask) { return mask; }
 
 /* ---- time ----
- * One clock, the console's, owned by the host. Two runs of the same script see the same values. */
+ * One clock, the console's, owned by the host. boot_time() is the date the console clock showed at
+ * start (the PC's local date and time); a test run that needs two runs to see the same values
+ * presets it with --time-base. */
 OSTime OSGetTime(void) { return (OSTime) (mu_host->boot_time() + mu_host->ticks()); }
+unsigned long long mu_ticks_since_start(void) { return mu_host->ticks(); }   /* for traces: no date in it */
 OSTick OSGetTick(void) { return (OSTick) mu_host->ticks(); }
 
 static const int mu_days_in_month[12] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
