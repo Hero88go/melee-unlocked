@@ -83,6 +83,7 @@ extern uint64_t g_enter_count;
 extern bool g_trace_funcs;          // --trace-func: log entries of selected guest functions
 void hang_check(Context& c);
 void trace_enter(Context& c, uint32_t pc);
+void set_any_entry_hook(void (*fn)(Context&, uint32_t));   // diagnostics: every function entry
 
 void add_trace_func(uint32_t addr, uint32_t limit);
 // Bounded M7 diagnostic hook used only by an instrumented translated spline function.
@@ -152,6 +153,7 @@ extern uint64_t g_resumed_returns;
 // chooses its normal return. This distinguishes "path was checked" from "adjusted return taken".
 extern uint64_t g_computed_return_checks;
 void fatal(Context& c, const char* what, uint32_t a);
+void interpreter_dump_recent(Context& c);   // MELEE_INTERP_RING diagnostics
 // Releases one level of guest call depth when the call returns or is unwound by an exception.
 struct CallDepthScope { Context& c; ~CallDepthScope() { --c.call_depth; } };
 // __longjmp: thrown by the HLE, caught by the translated function that called __setjmp on

@@ -733,6 +733,8 @@ void apply_family_options(PadFamily family, PadState& pad) {
   const Deadzone& dz = g_deadzones[(size_t)family];
   apply_deadzone(dz, pad.stick_x, pad.stick_y, false);
   apply_deadzone(dz, pad.sub_x, pad.sub_y, true);
+  apply_trigger_cap(dz.trig_l, pad.trig_l, pad.button, PAD_L);
+  apply_trigger_cap(dz.trig_r, pad.trig_r, pad.button, PAD_R);
 }
 }  // namespace
 void input_mark_match_start() { g_match_start_retrace.store(retrace_count()); }
@@ -1027,7 +1029,7 @@ void input_poll(PadState out[4]) {
   for (int idx = 0; idx < 4; ++idx)
     if (gc_mask & (1u << idx)) debug.gc_actions[idx] = gc_apply_bindings(idx, gc[idx]);
 
-  // Per-family options (deadzones). Before routing, so the port overlay and everything downstream
+  // Per-family options (deadzones, trigger values). Before routing, so the port overlay and everything downstream
   // see what the game gets.
   for (int idx = 0; idx < 4; ++idx) {
     if (gc_mask & (1u << idx)) apply_family_options(PadFamily::GameCube, gc[idx]);

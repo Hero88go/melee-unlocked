@@ -35,6 +35,9 @@ EDITS = [
      'MatchHUDElement *hud = MEX_MATCHHUD_ELEMENT(ply);'),
     ('savestate_v1.c', 'MatchHUDElement *hud = &stc_matchhud->element_data[i];',
      'MatchHUDElement *hud = MEX_MATCHHUD_ELEMENT(i);'),
+    # a bad friction value (a layout regression) must give a wrong target size, never a frozen game:
+    # the loop runs about 20 steps for every fighter, 600 is 10 seconds of sliding
+    ('wavedash.c', 'while (mag > 0)', 'for (int mu_steps = 0; mag > 0 && mu_steps < 600; mu_steps++)'),
     # Playerblock.gobj: the header puts it at 0xAC, the game keeps it at 0xB0 (twin extras mu_gobj0/1)
     ('savestate_v1.c', 'fighter_gobj[0] = playerblock->gobj[0];', 'fighter_gobj[0] = playerblock->mu_gobj0;'),
     ('savestate_v1.c', 'fighter_gobj[1] = playerblock->gobj[1];', 'fighter_gobj[1] = playerblock->mu_gobj1;'),

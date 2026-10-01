@@ -12,7 +12,7 @@ namespace slippi::online {
 
 struct Config {
   std::string lobby_code;        // One explicit launcher-approved Direct match; never a Discord invite.
-  int lobby_character = 2;
+  int lobby_character = 2;       // external character id (a mod disc has more than 26)
   std::string lobby_status_file;
   std::string user_dir = "runtime/slippi/User/Slippi";   // user.json, direct-codes.json (Slippi Launcher layout)
   int delay = 2;                 // Slippi Online input delay (frames)
