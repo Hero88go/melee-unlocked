@@ -77,6 +77,7 @@ struct RuntimeState {
   uint64_t generation = 0;
   std::string fingerprint;
   std::unordered_map<uint32_t, RuntimeAsset> by_start;
+  uint32_t assets = 0;   // selected assets applied (an asset with an English twin has two files in by_start)
   std::vector<CompanionOverride> companions;
 };
 
@@ -120,6 +121,13 @@ void put_be32(uint8_t* p, uint32_t value) {
 std::string lower(std::string value) {
   for (char& c : value) c = (char)std::tolower((unsigned char)c);
   return value;
+}
+
+// A DAT archive is named .dat, or .usd when it is the English variant of a file the disc keeps
+// per language (Captain Falcon's red costume, Pokemon Stadium). A mod ships under either name.
+bool dat_extension(const std::string& name) {
+  const std::string extension = lower(fs::path(name).extension().string());
+  return extension == ".dat" || extension == ".usd";
 }
 
 std::string selection_key(const AssetRecord& asset);
@@ -596,7 +604,7 @@ bool parse_zip(const fs::path& path, std::vector<ZipEntry>* entries, std::string
     if (le16(h + 34) != 0 || entry.local_header_offset >= cd_offset) {
       *error = "A ZIP entry points outside the local-file area."; return false;
     }
-    if (entry.uncompressed > kMaxAssetBytes && lower(fs::path(entry.name).extension().string()) == ".dat") {
+    if (entry.uncompressed > kMaxAssetBytes && dat_extension(entry.name)) {
       *error = "A DAT resource in the ZIP exceeds the 64 MB safety limit."; return false;
     }
     if (total_uncompressed > kMaxArchiveBytes - entry.uncompressed) {
@@ -1343,7 +1351,7 @@ bool inspect_nested_costume(const std::vector<uint8_t>& archive_bytes,
   if (!parsed) { DeleteFileW(temporary.c_str()); return false; }
   size_t recognized = 0;
   for (const auto& entry : entries) {
-    if (lower(fs::path(entry.name).extension().string()) != ".dat") continue;
+    if (!dat_extension(entry.name)) continue;
     std::vector<uint8_t> candidate;
     if (!extract_zip_member(temporary, entry, &candidate, error)) {
       DeleteFileW(temporary.c_str()); return false;
@@ -1373,7 +1381,7 @@ bool inspect_nested_visual(const std::vector<uint8_t>& archive_bytes,
   if (!parse_zip(temporary, &entries, error)) { DeleteFileW(temporary.c_str()); return false; }
   size_t recognized = 0;
   for (const auto& entry : entries) {
-    if (lower(fs::path(entry.name).extension().string()) != ".dat") continue;
+    if (!dat_extension(entry.name)) continue;
     std::vector<uint8_t> candidate;
     if (!extract_zip_member(temporary, entry, &candidate, error)) {
       DeleteFileW(temporary.c_str()); return false;
@@ -1435,7 +1443,7 @@ std::string selection_key(const AssetRecord& asset) {
 bool stage_dat_target(const std::string& filename, std::string* path, std::string* display) {
   const std::string name = lower(filename.substr(filename.find_last_of("/\\") == std::string::npos ?
                                               0 : filename.find_last_of("/\\") + 1));
-  if (name.size() < 7 || name.substr(name.size() - 4) != ".dat") return false;
+  if (name.size() < 7 || !dat_extension(name)) return false;
   const std::string stem = name.substr(0, name.size() - 4);
   static constexpr struct { const char* token; const char* path; const char* label; } resources[] = {
       {"grps1", "GrPs1.dat", "Pokémon Stadium — Fire"},
@@ -2282,7 +2290,7 @@ ImportResult import_file(const std::string& path_text) {
   testing::DatInspection dat;
   std::vector<VaultCompanionPlan> companions;
   std::string member, error;
-  if (extension == ".dat") {
+  if (extension == ".dat" || extension == ".usd") {
     if (!read_bounded(path, kMaxAssetBytes, &bytes, &error)) return {false, false, {}, error};
     dat = inspect_dat_impl(bytes);
     if (!dat.ok) {
@@ -2324,8 +2332,7 @@ ImportResult import_file(const std::string& path_text) {
     std::vector<VaultResourcePlan> stage_resources;
     uint32_t candidates = 0;
     for (const auto& entry : entries) {
-      std::string ext = lower(fs::path(entry.name).extension().string());
-      if (ext != ".dat") continue;
+      if (!dat_extension(entry.name)) continue;
       if (++candidates > kMaxDatCandidates)
         return {false, false, {}, "ZIP contains too many DAT candidates for a bounded import."};
       std::vector<uint8_t> candidate;
@@ -2395,7 +2402,7 @@ ImportResult import_file(const std::string& path_text) {
       companions.push_back(std::move(companion));
     }
   } else {
-    return {false, false, {}, "Choose a costume or stage .dat/.zip, or a Nucleus vault .zip."};
+    return {false, false, {}, "Choose a costume or stage .dat, .usd or .zip, or a Nucleus vault .zip."};
   }
   std::lock_guard<std::mutex> lock(g_mutex);
   ImportResult result = install_asset_locked(path, extension == ".zip" ? "zip" : "dat", member,
@@ -2666,17 +2673,29 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
     std::vector<uint8_t> bytes = load_runtime_asset_locked(*asset, &error);
     if (bytes.empty()) { host::log("cosmetics: %s", error.c_str()); continue; }
     std::string wanted = lower(asset->info.target_path);
-    std::vector<FstFile*> matches;
+    // The English twin of a per-language file. The disc holds PlCaRe.usd and GrPs.usd beside the
+    // .dat, and the game loads the .usd when its language is English, so a costume or stage for
+    // the .dat slot replaces both: replacing only the .dat changed nothing for English players.
+    std::string english;
+    if (asset->info.kind != "effect_visual" && wanted.size() > 4 &&
+        wanted.compare(wanted.size() - 4, 4, ".dat") == 0)
+      english = wanted.substr(0, wanted.size() - 4) + ".usd";
+    std::vector<FstFile*> matches, english_matches;
     for (auto& file : files) {
       std::string path = lower(file.path);
       size_t slash = path.find_last_of('/');
       std::string base = slash == std::string::npos ? path : path.substr(slash + 1);
-      if (path == wanted || (wanted.find('/') == std::string::npos && base == wanted)) matches.push_back(&file);
+      const bool by_name = wanted.find('/') == std::string::npos;
+      if (path == wanted || (by_name && base == wanted)) matches.push_back(&file);
+      else if (!english.empty() && (path == english || (by_name && base == english))) english_matches.push_back(&file);
     }
-    if (matches.size() != 1) {
-      host::log("cosmetics: %s resolved to %zu ISO files; override not applied", pick.first.c_str(), matches.size());
+    if (matches.size() != 1 || english_matches.size() > 1) {
+      host::log("cosmetics: %s resolved to %zu ISO files (%zu English); override not applied", pick.first.c_str(),
+                matches.size(), english_matches.size());
       continue;
     }
+    std::vector<FstFile*> targets{matches[0]};
+    if (!english_matches.empty()) targets.push_back(english_matches[0]);
     FstFile& file = *matches[0];
     if (asset->info.kind == "effect_visual") {
       std::vector<uint8_t> clean(file.size);
@@ -2695,36 +2714,51 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
       host::log("cosmetics: composed %zu effect move(s) for %s",
                 selected_effects_locked(g_profile, asset->info.target_path).size(), file.path.c_str());
     }
-    bool online_allowed = true;
-    if (asset->info.kind == "stage_visual") {
-      std::vector<uint8_t> clean(file.size);
-      std::string validation_error;
-      online_allowed = host::disc_read(file.start, clean.data(), file.size) &&
-                       visual_dat_only(clean, bytes, &validation_error);
-      host::log("cosmetics: stage %s %s online (%s)", file.path.c_str(),
-                online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
-      // The offline DAT may be shorter than the disc resource. Keep the disc's
-      // original extent available for aligned DVD reads during online fallback.
-      if (!online_allowed && bytes.size() < file.size) bytes.resize(file.size, 0);
+    bool applied = false;
+    for (FstFile* target : targets) {
+      FstFile& disc_file = *target;
+      std::vector<uint8_t> served = bytes;   // per disc file: the online rule and the length below are per file
+      bool online_allowed = true;
+      if (asset->info.kind == "stage_visual") {
+        std::vector<uint8_t> clean(disc_file.size);
+        std::string validation_error;
+        online_allowed = host::disc_read(disc_file.start, clean.data(), disc_file.size) &&
+                         visual_dat_only(clean, served, &validation_error);
+        host::log("cosmetics: stage %s %s online (%s)", disc_file.path.c_str(),
+                  online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
+      }
+      if (asset->info.kind == "character_costume") {
+        std::vector<uint8_t> clean(disc_file.size);
+        std::string validation_error;
+        online_allowed = host::disc_read(disc_file.start, clean.data(), disc_file.size) &&
+                         costume_skeleton_matches(clean, served, &validation_error);
+        host::log("cosmetics: costume %s %s online (%s)", disc_file.path.c_str(),
+                  online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
+      }
+      if (!online_allowed) {
+        // This file is the override offline and the disc's own file online, and the game sees one
+        // length for it (the FST is patched once). The game also checks that an archive's own
+        // length field equals the file's length (HSD_ArchiveParse) and stops when they differ.
+        // So the file's length is the longer of the two, the shorter one is padded with zeros,
+        // and the length field of whichever is served says that length (the disc's: see read()).
+        const size_t extent = std::max<size_t>(served.size(), disc_file.size);
+        if (extent > std::numeric_limits<uint32_t>::max() || served.size() < 4) continue;
+        served.resize(extent, 0);
+        put_be32(served.data(), (uint32_t)extent);
+      }
+      if (served.size() > std::numeric_limits<uint32_t>::max()) continue;
+      put_be32(fst + (size_t)disc_file.index * 12 + 8, (uint32_t)served.size());
+      RuntimeAsset active{asset->info.id, asset->info.target_path,
+                          std::make_shared<const std::vector<uint8_t>>(std::move(served)),
+                          disc_file.size, online_allowed};
+      next->by_start[disc_file.start] = std::move(active);
+      host::log("cosmetics: %s -> %s at %08X (%u vanilla bytes, %zu override bytes)",
+                asset->info.name.c_str(), disc_file.path.c_str(), disc_file.start, disc_file.size,
+                next->by_start[disc_file.start].bytes->size());
+      applied = true;
     }
-    if (asset->info.kind == "character_costume") {
-      std::vector<uint8_t> clean(file.size);
-      std::string validation_error;
-      online_allowed = host::disc_read(file.start, clean.data(), file.size) &&
-                       costume_skeleton_matches(clean, bytes, &validation_error);
-      host::log("cosmetics: costume %s %s online (%s)", file.path.c_str(),
-                online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
-      if (!online_allowed && bytes.size() < file.size) bytes.resize(file.size, 0);
-    }
-    if (bytes.size() > std::numeric_limits<uint32_t>::max()) continue;
-    put_be32(fst + (size_t)file.index * 12 + 8, (uint32_t)bytes.size());
-    RuntimeAsset active{asset->info.id, asset->info.target_path,
-                        std::make_shared<const std::vector<uint8_t>>(std::move(bytes)),
-                        file.size, online_allowed};
-    next->by_start[file.start] = std::move(active);
-    host::log("cosmetics: %s -> %s at %08X (%u vanilla bytes, %zu override bytes)",
-              asset->info.name.c_str(), file.path.c_str(), file.start, file.size,
-              next->by_start[file.start].bytes->size());
+    if (!applied) continue;
+    ++next->assets;
     for (const auto& companion : asset->companions) {
       if (companion.kind == "preview") continue;
       std::vector<uint8_t> companion_bytes;
@@ -2741,7 +2775,7 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
   }
   std::atomic_store(&g_runtime, std::shared_ptr<const RuntimeState>(next));
   g_message = next->by_start.empty() ? "No selected cosmetic matched this ISO." :
-              std::to_string(next->by_start.size()) + " cosmetic override(s) active for this launch.";
+              std::to_string(next->assets) + " cosmetic override(s) active for this launch.";
   for (const auto& issue : runtime_errors) g_message += " " + issue;
 }
 
@@ -2758,6 +2792,11 @@ OverrideRead read(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, 
     if (disc_size && !host::disc_read(vanilla_file_start + file_offset, dst, disc_size))
       return OverrideRead::Failed;
     if (disc_size < size) std::memset((uint8_t*)dst + disc_size, 0, size - disc_size);
+    // The archive's length field (its first four bytes) says the length the game was given for
+    // this file, which is the override's when that is the longer one (apply_to_fst).
+    uint8_t length_field[4]; put_be32(length_field, (uint32_t)exposed_size);
+    for (uint32_t at = file_offset; at < 4 && at - file_offset < size; ++at)
+      ((uint8_t*)dst)[at - file_offset] = length_field[at];
     return OverrideRead::Success;
   }
   const auto& bytes = *found->second.bytes;
@@ -2790,7 +2829,7 @@ void freeze_for_online_session() { g_online_freezes.store(1, std::memory_order_r
 void thaw_after_online_session() { g_online_freezes.store(0, std::memory_order_relaxed); }
 SessionProfile session_profile() {
   auto runtime = std::atomic_load(&g_runtime);
-  return {runtime->generation, runtime->fingerprint, (uint32_t)runtime->by_start.size(),
+  return {runtime->generation, runtime->fingerprint, runtime->assets,
           g_online_freezes.load(std::memory_order_relaxed) != 0};
 }
 
@@ -2798,7 +2837,7 @@ std::string choose_import_file() {
   wchar_t file[32768]{};
   OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof dialog;
   dialog.hwndOwner = GetActiveWindow();
-  dialog.lpstrFilter = L"Cosmetic imports (*.zip;*.dat)\0*.zip;*.dat\0DAT costume (*.dat)\0*.dat\0ZIP archive (*.zip)\0*.zip\0";
+  dialog.lpstrFilter = L"Cosmetic imports (*.zip;*.dat;*.usd)\0*.zip;*.dat;*.usd\0Costume or stage file (*.dat;*.usd)\0*.dat;*.usd\0ZIP archive (*.zip)\0*.zip\0";
   dialog.lpstrFile = file; dialog.nMaxFile = (DWORD)std::size(file);
   dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   return GetOpenFileNameW(&dialog) ? wide_to_utf8(file) : std::string();
