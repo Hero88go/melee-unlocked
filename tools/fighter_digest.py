@@ -32,6 +32,9 @@ def load_schema(path, native_debug, field_map, extension=False):
     schema = json.loads(Path(path).read_text(encoding="utf-8"))
     validate_schema(schema, extension)
     provenance = schema["provenance"]
+    # The schema names the one game library it was reviewed against. Every native offset is
+    # still proven against the supplied field map below; the two hashes tie that map and the
+    # debug artifact to the schema, so another library needs its own reviewed schema copy.
     if sha256_file(native_debug) != provenance["native_debug_sha256"]:
         raise ValueError("schema native debug SHA-256 does not match the supplied debug artifact")
     if sha256_file(field_map) != provenance["native_field_map_sha256"]:

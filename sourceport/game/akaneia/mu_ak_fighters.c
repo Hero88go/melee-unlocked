@@ -211,6 +211,22 @@ static int fill_effect_file(int slot)
     return index;
 }
 
+/* The particle code (sysdolphin particle.c, generator.c): `bank` is the effect file of an added
+ * fighter, whose generators are numbered bank * 1000 + n whatever its header says. */
+int mu_ak_effect_bank(int bank)
+{
+    int slot;
+    if (bank <= 0 || bank >= MU_AK_EFFECT_FILES) {
+        return 0;
+    }
+    for (slot = 0; slot < MU_AK_KIND_SLOTS; slot++) {
+        if (ak_effect_file[slot] == bank) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* Creation layer steps 3 and 4: the files a fighter kind is created from. Empty in the retail
  * view, as every other added slot. */
 static void clear_files(int slot)
@@ -518,7 +534,16 @@ int mu_ak_article(int item_kind, void** article, void** logic)
 {
     MuAkArticle* a = find_article(item_kind);
     const MuAkFighter* ft = a != NULL ? ak_fighter[a->slot] : NULL;
-    if (ft == NULL || ft->articles == NULL || a->local >= ft->article_count || a->data == NULL) {
+    const ItemLogicTable* table = NULL;
+    if (ft != NULL && a->local < ft->article_count) {
+        table = ft->article_tables != NULL ? ft->article_tables[a->local] :
+                ft->articles != NULL ? &ft->articles[a->local] : NULL;
+        /* An article with no state table has no code (a model only, or an unused slot). */
+        if (table != NULL && table->states == NULL) {
+            table = NULL;
+        }
+    }
+    if (ft == NULL || table == NULL || a->data == NULL) {
         if (a != NULL) {
             OSReport("[ak] item kind %d (article %d of fighter slot %d) has no %s\n", item_kind,
                      a->local, a->slot, ft == NULL ? "native fighter" : a->data == NULL ? "article data" : "logic table");
@@ -526,7 +551,7 @@ int mu_ak_article(int item_kind, void** article, void** logic)
         return 0;
     }
     *article = a->data;
-    *logic = (void*) &ft->articles[a->local];
+    *logic = (void*) table;
     return 1;
 }
 
@@ -552,13 +577,68 @@ int mu_ak_call(int kind, int hook, struct HSD_GObj* gobj)
 
 /* ---- the character select screen ---- */
 
+#ifdef MU_AKANEIA_FIGHTERS
+/* Development only: with MELEE_AK_CSS set in the environment the character select screen offers
+ * every added fighter whose files were found, ready or not. Read once. Never set for players:
+ * without it every added fighter stays locked. */
+static int ak_css_override(void)
+{
+    extern char* getenv(const char* name);
+    static int state = -1;
+    if (state < 0) {
+        state = getenv("MELEE_AK_CSS") != NULL;
+        if (state) {
+            OSReport("[ak] MELEE_AK_CSS: the added fighters are selectable (development)\n");
+        }
+    }
+    return state;
+}
+#endif
+
+#ifdef MU_AKANEIA_FIGHTERS
+/* Test only: with MELEE_AK_RESULTS set in the environment a VS match ends the way the retail
+ * game ends it (results screen), where the General Codes otherwise send every match straight
+ * back to the character select (gm/gmvsmelee.c, gmVsMelee_ExitVs). Read once. */
+int mu_ak_test_results(void)
+{
+    extern char* getenv(const char* name);
+    static int state = -1;
+    if (state < 0) {
+        state = getenv("MELEE_AK_RESULTS") != NULL;
+        if (state) {
+            OSReport("[ak] MELEE_AK_RESULTS: matches end at the results screen (test)\n");
+        }
+    }
+    return state;
+}
+#endif
+
+/* An added character kind the character select screen may offer and start a match with. */
+int mu_ak_ckind_selectable(int ckind)
+{
+#ifdef MU_AKANEIA_FIGHTERS
+    if (MU_AK_CKIND(ckind) && ak_css_override()) {
+        const int slot = ckind - MU_AK_CKIND_BASE;
+        return ak_fighter[slot] != NULL && ak_ext[slot] >= 0;
+    }
+#else
+    (void) ckind;
+#endif
+    return 0;
+}
+
 int mu_ak_css_selectable(int ext)
 {
+    /* Not yet for any fighter: every added fighter stays locked, whatever its registry state
+     * (MU_AK_READY), until the validation in CREATION_LAYER_PLAN.md is done. The development
+     * switch above is the only way in. */
+#ifdef MU_AKANEIA_FIGHTERS
+    if (ak_css_override()) {
+        return mu_ak_ckind_selectable(mu_ak_ckind_from_mex(ext));
+    }
+#else
     (void) ext;
-    /* Not yet for any fighter: an added fighter also needs the creation layer described in
-     * INTEGRATION.md ("What still blocks a fighter"): its character kind, fighter and animation
-     * files, costumes and common data slots. Until that lands every added fighter stays locked,
-     * whatever its registry state (MU_AK_READY). */
+#endif
     return 0;
 }
 
@@ -646,6 +726,7 @@ void mu_ak_apply(void)
     }
 #ifdef MU_AKANEIA_FIGHTERS
     mu_ak_services_apply(1);
+    mu_ak_sound_view(1);
 #endif
     slots = ak_shift < MU_AK_KIND_SLOTS ? ak_shift : MU_AK_KIND_SLOTS;
     if (ak_shift > MU_AK_KIND_SLOTS) {

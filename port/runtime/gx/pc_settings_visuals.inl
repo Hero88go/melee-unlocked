@@ -72,6 +72,13 @@ static ImFont* g_settings_heading_font = nullptr;
 static ImFont* g_settings_body_font = nullptr;
 static ImFont* g_settings_classic_font = nullptr;
 static ImFont* g_settings_old_font = nullptr;
+static ImFont* g_settings_old_vector_font = nullptr;
+// The 0.6.61 font. It is a pixel font: exact at its own size, uneven when a scaled frame draws it
+// at 1.33 or 2.5 times that, so a scaled frame takes the outline version of the same design.
+static ImFont* settings_old_font() {
+  return g_frame_ui_scale.load(std::memory_order_relaxed) > 1.0f && g_settings_old_vector_font ?
+      g_settings_old_vector_font : g_settings_old_font;
+}
 static int g_settings_form_style = 0;
 static int g_settings_palette = 0;
 static bool g_settings_custom_color_enabled = false;
@@ -131,7 +138,7 @@ struct SettingsAppearanceScope {
       ImGui::GetStyle() = ImGuiStyle();
       ImGui::StyleColorsDark();
       ImGui::GetStyle().ScaleAllSizes(1.25f);
-      ImGui::PushFont(g_settings_old_font);
+      ImGui::PushFont(settings_old_font());
       return;
     }
     const ImVec4 accent = ImGui::ColorConvertU32ToFloat4(settings_accent(appearance));

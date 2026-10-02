@@ -20,7 +20,12 @@
 #include "pc_settings.h"
 #include "window.h"
 #include "host.h"
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
+#include <string>
+#include <vector>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3d12.lib")
@@ -80,12 +85,111 @@ static bool standby_wait(void* hwnd) {
   return true;
 }
 
+// The window is 620 by 700 at 96 DPI and the panel is drawn in those units. On a scaled display both
+// grow by dpi/96: the window was 620 by 700 pixels whatever the scaling, so at 250 percent on a 4K
+// monitor it came out at 40 percent of the size of the launcher that opened it, with text to match.
+constexpr int kBaseWidth = 620, kBaseHeight = 700;
+
+// MELEE_TEST_UI_DPI=<dpi> (tests): the window behaves as if its monitor reported that DPI, so the
+// scaled layout can be captured on a display that is not scaled. 192 is 200 percent.
+static int g_test_dpi = 0;
+// MELEE_TEST_SETTINGS_SHOT=<file.bmp> (tests): the window stays hidden, draws a few frames on
+// Direct3D 11, writes the last one to that file and exits.
+static std::string g_test_shot;
+static int g_test_shot_frames = 0;
+constexpr int kTestShotFrame = 8;   // the layout and the fonts have settled by then
+
+static int window_dpi(HWND hwnd) {
+  if (g_test_dpi) return g_test_dpi;
+  const UINT dpi = GetDpiForWindow(hwnd);
+  return dpi ? (int)dpi : 96;
+}
+
+// The client area for `dpi`, no larger than the monitor's work area, with the window moved back
+// inside that area if growing pushed it over an edge.
+static void size_window_for_dpi(HWND hwnd, int dpi) {
+  MONITORINFO monitor{sizeof(monitor)};
+  RECT window{}, client{};
+  if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &monitor) ||
+      !GetWindowRect(hwnd, &window) || !GetClientRect(hwnd, &client)) return;
+  // The frame is measured from the window itself: AdjustWindowRect answers for the system DPI,
+  // which is not this monitor's when the two differ.
+  const int frame_w = (int)(window.right - window.left) - (int)client.right;
+  const int frame_h = (int)(window.bottom - window.top) - (int)client.bottom;
+  const RECT& work = monitor.rcWork;
+  const int w = std::min(MulDiv(kBaseWidth, dpi, 96) + frame_w, (int)(work.right - work.left));
+  const int h = std::min(MulDiv(kBaseHeight, dpi, 96) + frame_h, (int)(work.bottom - work.top));
+  const int x = std::clamp((int)window.left, (int)work.left, (int)work.right - w);
+  const int y = std::clamp((int)window.top, (int)work.top, (int)work.bottom - h);
+  SetWindowPos(hwnd, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// The back buffer as a 32-bit BMP, for MELEE_TEST_SETTINGS_SHOT.
+static void save_test_shot(ID3D11Device* device, ID3D11DeviceContext* context, IDXGISwapChain* swapchain) {
+  ComPtr<ID3D11Texture2D> back, copy;
+  if (FAILED(swapchain->GetBuffer(0, IID_PPV_ARGS(&back)))) return;
+  D3D11_TEXTURE2D_DESC desc{};
+  back->GetDesc(&desc);
+  desc.Usage = D3D11_USAGE_STAGING; desc.BindFlags = 0; desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ; desc.MiscFlags = 0;
+  if (FAILED(device->CreateTexture2D(&desc, nullptr, &copy))) return;
+  context->CopyResource(copy.Get(), back.Get());
+  D3D11_MAPPED_SUBRESOURCE map{};
+  if (FAILED(context->Map(copy.Get(), 0, D3D11_MAP_READ, 0, &map))) return;
+  std::vector<uint8_t> pixels((size_t)desc.Width * desc.Height * 4);
+  for (UINT y = 0; y < desc.Height; ++y) {
+    const uint8_t* from = (const uint8_t*)map.pData + (size_t)y * map.RowPitch;
+    uint8_t* to = pixels.data() + (size_t)y * desc.Width * 4;
+    for (UINT x = 0; x < desc.Width; ++x) {   // the back buffer is RGBA, a BMP is BGRA
+      to[x * 4 + 0] = from[x * 4 + 2]; to[x * 4 + 1] = from[x * 4 + 1];
+      to[x * 4 + 2] = from[x * 4 + 0]; to[x * 4 + 3] = 255;
+    }
+  }
+  context->Unmap(copy.Get(), 0);
+  BITMAPFILEHEADER file{};
+  BITMAPINFOHEADER info{};
+  file.bfType = 0x4D42; file.bfOffBits = sizeof file + sizeof info;
+  file.bfSize = file.bfOffBits + (DWORD)pixels.size();
+  info.biSize = sizeof info; info.biWidth = (LONG)desc.Width; info.biHeight = -(LONG)desc.Height;   // top row first
+  info.biPlanes = 1; info.biBitCount = 32; info.biCompression = BI_RGB;
+  FILE* out = std::fopen(g_test_shot.c_str(), "wb");
+  if (!out) { host::log("settings: cannot write %s", g_test_shot.c_str()); return; }
+  std::fwrite(&file, sizeof file, 1, out);
+  std::fwrite(&info, sizeof info, 1, out);
+  std::fwrite(pixels.data(), 1, pixels.size(), out);
+  std::fclose(out);
+  host::log("settings: test shot %ux%u written to %s", desc.Width, desc.Height, g_test_shot.c_str());
+}
+
 int run_settings_window(gx::RenderOptions& options, unsigned long standby_parent, std::function<void()> reload) {
   g_standby_parent = standby_parent;
   g_standby_reload = std::move(reload);
+  if (const char* dpi = std::getenv("MELEE_TEST_UI_DPI")) g_test_dpi = std::clamp(std::atoi(dpi), 96, 384);
+  if (const char* shot = std::getenv("MELEE_TEST_SETTINGS_SHOT")) g_test_shot = shot;
+  // This window scales itself, so the process says so before the window exists: nothing else
+  // declares this executable DPI aware, and an unaware process is told 96 DPI and has its picture
+  // stretched by Windows instead. The call fails harmlessly when the awareness is already set. The
+  // game does not come this way and is not changed.
+  SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   gx::settings_fill_window(true);   // the panel IS this window, not a box floating inside it
-  void* hwnd = host::window_create(620, 700, L"Melee Unlocked settings", standby_parent == 0);
+  // Created hidden, sized for its monitor, then shown, so it never appears at the wrong size.
+  const bool visible = standby_parent == 0 && g_test_shot.empty();
+  void* hwnd = host::window_create(kBaseWidth, kBaseHeight, L"Melee Unlocked settings", false);
   if (!hwnd) { host::log("settings: cannot create a window"); return 1; }
+  // At 96 DPI the window and the panel are left exactly as they were created.
+  if (const int dpi = window_dpi((HWND)hwnd); dpi != 96) {
+    size_window_for_dpi((HWND)hwnd, dpi);
+    gx::settings_set_window_scale(dpi / 96.0f);
+    host::log("settings: window scaled for %d DPI", dpi);
+  }
+  // A move to a monitor with another DPI: the panel follows, and the window takes the size Windows
+  // suggests for it there.
+  host::window_set_dpi_callback([](int dpi) { if (!g_test_dpi) gx::settings_set_window_scale(dpi / 96.0f); });
+  if (visible) ShowWindow((HWND)hwnd, SW_SHOW);
+  if (!g_test_shot.empty()) {
+    const int rc = run_settings_d3d11(options, hwnd);
+    host::window_set_dpi_callback({});
+    return rc == 2 ? 1 : rc;
+  }
   // The backend the game is set to, so the panel runs on the renderer this machine will use. If it
   // cannot be created the other one still opens the settings rather than leaving no way in.
   const bool prefer_d3d12 = options.api == gx::RenderApi::D3D12;
@@ -94,6 +198,7 @@ int run_settings_window(gx::RenderOptions& options, unsigned long standby_parent
     host::log("settings: falling back to the other graphics API");
     rc = prefer_d3d12 ? run_settings_d3d11(options, hwnd) : run_settings_d3d12(options, hwnd);
   }
+  host::window_set_dpi_callback({});
   return rc;
 }
 
@@ -160,6 +265,8 @@ int run_settings_d3d11(gx::RenderOptions& options, void* hwnd) {
       context->RSSetViewports(1, &vp);
     }
     ui.draw();
+    if (!g_test_shot.empty() && ++g_test_shot_frames == kTestShotFrame)
+      save_test_shot(device.Get(), context.Get(), swapchain.Get());
     swapchain->Present(1, 0);   // vsync: this window has nothing to race
     drawing = false;
   };
@@ -169,6 +276,7 @@ int run_settings_d3d11(gx::RenderOptions& options, void* hwnd) {
     host::window_pump();
     poll_pads_for_panel();
     draw_frame();
+    if (g_test_shot_frames >= kTestShotFrame) break;   // MELEE_TEST_SETTINGS_SHOT: one picture, then out
     // A settings box must not cost what a game costs. Unfocused it redraws a few times a second;
     // focused, vsync above already holds it at the monitor rate for one ImGui window.
     if (GetForegroundWindow() != (HWND)hwnd) Sleep(120);

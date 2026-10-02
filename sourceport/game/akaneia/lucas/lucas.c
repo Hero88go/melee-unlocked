@@ -424,4 +424,7 @@ const MuAkFighter mu_ak_lucas = {
     .onsmashf = ftLc_AttackS4_Enter,
     .move_logic = ftLc_MotionStates,
     .move_logic_count = ftLc_MS_SelfCount,
+
+    .articles = ftLc_ArticleLogic,
+    .article_count = ftLc_Art_Count,
 };

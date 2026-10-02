@@ -81,6 +81,8 @@ static void ftWf_SpecialN_SpawnGun(HSD_GObj* gobj)
     spawn.kind = mu_ak_item_kind(fp->kind, ftWf_Article_Blaster);
     if ((int) spawn.kind < 0) {
         /* Not an m-ex case: the registry has no item kind for the article (retail view). */
+        OSReport("[ak] Wolf: no item kind for the blaster article (fighter kind %d)\n",
+                 (int) fp->kind);
         ftWf_MV(fp)->SpecialN.gun_gobj = NULL;
         fp->cmd_vars[1] = 0;
         Fighter_SetDamageCallback(gobj, ftWf_SpecialN_DestroyGun);
@@ -154,6 +156,20 @@ static void ftWf_SpecialN_FireLaser(HSD_GObj* gobj)
     spawn.x48_ground_or_air = GA_Ground;
 
     laser = ftWf_CreateItem(&spawn);
+    {
+        /* Bring-up evidence (the first shots only): where the shot leaves from. On the console
+         * recording the first shot of a Wolf standing at x 41.35 appears at (53.32, 5.36). */
+        static int logged;
+        if (logged < 6) {
+            Item* gp = GET_ITEM(gun);
+            logged++;
+            OSReport("[ak] Wolf laser: wolf (%.2f, %.2f) facing %.0f, gun item (%.2f, %.2f, %.2f), "
+                     "muzzle (%.2f, %.2f, %.2f), middle (%.2f, %.2f), created %d\n",
+                     fp->cur_pos.x, fp->cur_pos.y, fp->facing_dir, gp->pos.x, gp->pos.y,
+                     gp->pos.z, muzzle_pos.x, muzzle_pos.y, muzzle_pos.z, center.x, center.y,
+                     laser != NULL);
+        }
+    }
     if (laser == NULL) {
         return;
     }

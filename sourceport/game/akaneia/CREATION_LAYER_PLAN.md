@@ -146,6 +146,29 @@ Found while reading, for step 10: the CPU tables of PlCo (`Fighter_804D64FC` x4 
 `ft/ftcpuattack.c` and `ftCo_0A01.c`) are indexed by `fp->kind` with no remap, so an added
 fighter must not be a CPU player until those reads use the m-ex internal id.
 
+## Status after bring-up rounds 1 to 5 (experimental build only)
+
+The Akaneia disc now boots on the experimental build and all seven fighters play a 4700 frame
+match (run evidence and the per-round list: `run-source/rel09-b1-wolf/PROGRESS.md`).
+
+| Step | State |
+|---|---|
+| 1 character kinds | done; select screen pick only under the development switch `MELEE_AK_CSS` |
+| 3 fighter files | done, run (`anim_num` is {0, count} per fighter) |
+| 4 costumes | done, run |
+| 5 PlCo common data | done, run (plus the shared thrown skeleton, entry 33) |
+| 6 per-kind resets | done, run |
+| 7 effects | done, run for models; particle bank numbering fixed in round 4, not yet seen |
+| 8 sounds | step 1 of 3 written (table room); bank load and id remap open |
+| 9 Kirby | guarded off (no ability, no hat); not run |
+| 10 kind checks | CPU tables done and run; others as found |
+| 11 items | done, run for creation; hit, reflect and shield not confirmed |
+| 12 results screen | written, never reached (the General Codes skip it; use `--vanilla-game`) |
+
+Corrections to the table at the top: `ssm_files` (14) is indexed by the external id, and a
+fighter's effect and sound ids are relative (5000+n model effect, 6000+n particle generator,
+5000+n sound) and resolved through the owner's effect file and sound bank.
+
 ## Legacy index-site list (character kind, incomplete)
 
 The original counts sum to 113 and lack a counting method. The pinned lexical

@@ -121,6 +121,9 @@ Item_GObj* ftDd_Win_SpawnGun(HSD_GObj* gobj, Fighter_Part bone)
     Item_GObj* gun = ftDd_SpawnArticle(gobj, ftDd_Article_Popgun, 8, &fp->cur_pos, GA_Ground);
 
     ftDd_MV(fp)->specialn.gun = gun;
+    if (gun == NULL) {
+        return NULL;   /* a failed create: no gun to attach */
+    }
     Item_8026AB54(gun, gobj, bone);
     ftDd_SpecialN_GunChangeModel(gun, 0);
     return gun;
@@ -389,6 +392,9 @@ const MuAkFighter mu_ak_diddy = {
     .enterdoublejump = ftDd_Init_EnterDoubleJump,
     .move_logic = ftDd_MotionStateTable,
     .move_logic_count = ftDd_MS_SelfCount,
+
+    .articles = ftDd_ItemLogic,
+    .article_count = 3,
 };
 
 #undef DD_ITEM_EVENT

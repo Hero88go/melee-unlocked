@@ -174,11 +174,16 @@ static void SpecialS_GordoThink(HSD_GObj* gobj)
             lb_8000B1CC(fp->parts[bone].joint, NULL, &pos);
             gordo = ftDe_SpecialS_SpawnGordo(gobj, &pos, mu_ak_article_kind(gobj, ftDe_Article_Gordo),
                                              fp->facing_dir);
-            Item_8026AB54(gordo, gobj, bone);
-            fv->held_gordo = gordo;
-            mv->specials.spawned = 1;
-            fp->x1984_heldItemSpec = gordo;
-            SpecialS_SetCallbacks(gobj);
+            /* A failed create (item limit, no article data): the throw plays with empty
+             * hands, as a retail fighter's move does when its item is not created. The
+             * console code does not check. */
+            if (gordo != NULL) {
+                Item_8026AB54(gordo, gobj, bone);
+                fv->held_gordo = gordo;
+                mv->specials.spawned = 1;
+                fp->x1984_heldItemSpec = gordo;
+                SpecialS_SetCallbacks(gobj);
+            }
         }
     }
 

@@ -151,6 +151,9 @@ int g_frames_to_skip = 0, g_frames_to_advance = 0, g_fall_behind = 0, g_fall_far
 bool g_currently_skipping = false, g_currently_advancing = false;
 std::mt19937 g_rng((uint32_t)time_ms());
 uint64_t g_rollbacks = 0;
+// For the one-line summary at the end of an online game (delay, ping, rollbacks, stalls).
+static uint64_t g_match_rollbacks_start = 0, g_match_stalls = 0;
+static int g_match_delay = 0;
 bool g_in_online_match = false;
 // Determinism oracle: the game hands us a checksum of its finalized state each frame and the
 // opponent's client sends theirs; a mismatch is a desync between the two simulations.
@@ -482,7 +485,9 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     g_frames_to_skip = 0; g_currently_skipping = false;
     g_frames_to_advance = 0; g_currently_advancing = false; g_fall_behind = 0; g_fall_far_behind = 0;
     g_local_selections.Reset();
-    if (g_netplay) g_netplay->StartSlippiGame();
+    g_match_rollbacks_start = g_rollbacks; g_match_stalls = 0; g_match_delay = delay;
+    if (g_netplay) { g_netplay->GetAndResetAvgPingMs(); g_netplay->StartSlippiGame(); }
+    host::log("slippi: online game starts, delay %d frames, direct peer to peer", (int)delay);
     g_in_online_match = true;
     host::input_mark_match_start();
     g_local_checksums.clear(); g_checksums_compared = 0; g_checksums_mismatched = 0; std::fill(std::begin(g_last_checksum_frame), std::end(g_last_checksum_frame), 0);
@@ -495,7 +500,7 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
   if (finalized > 0 && finalized_checksum) { g_local_checksums[finalized] = finalized_checksum; while (g_local_checksums.size() > 600) g_local_checksums.erase(g_local_checksums.begin()); }
   g_netplay->DropOldRemoteInputs(finalized);
   bool skip = should_skip_online_frame(frame, finalized);
-  if (skip) g_netplay->SendSlippiPad(nullptr);
+  if (skip) { ++g_match_stalls; g_netplay->SendSlippiPad(nullptr); }
   else {
     if (frame == 1) for (int i = 1; i <= delay; ++i) g_netplay->SendSlippiPad(std::make_unique<Pad>(i));
     g_netplay->SendSlippiPad(std::make_unique<Pad>(frame + delay, finalized, finalized_checksum, inputs));
@@ -976,6 +981,9 @@ void handle_report_game(const uint8_t* p) {
   int stage = be16(info_block + 0xE);
   host::log("slippi: game report: mode %u, %u frames, game %u, tiebreak %u, winner %d, end %u, lras %d, stage %d",
             mode, frames, game_index, tiebreak, winner, end_method, lras, stage);
+  host::log("slippi: online game summary: delay %d frames, average ping %.1f ms, %llu rollbacks, %llu stalled frames, %u frames",
+            g_match_delay, g_netplay ? g_netplay->GetAndResetAvgPingMs() : 0.0,
+            (unsigned long long)(g_rollbacks - g_match_rollbacks_start), (unsigned long long)g_match_stalls, frames);
   host::publish_lobby_result(winner, end_method);
   {
     // Exactly CEXISlippi::handleReportGame: one report per game with every slot's result.
