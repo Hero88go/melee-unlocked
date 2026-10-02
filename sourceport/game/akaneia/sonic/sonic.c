@@ -455,4 +455,7 @@ const MuAkFighter mu_ak_sonic = {
 
     .move_logic = ftSn_MotionStateTable,
     .move_logic_count = ftSn_MS_SelfCount,
+
+    .articles = &ftSn_Spring_LogicTable,
+    .article_count = 1,
 };

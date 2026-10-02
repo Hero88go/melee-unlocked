@@ -14,6 +14,8 @@
  * Wolf code creates; they are not served (see NOTES.md). */
 #include "wolf.h"
 
+#include <dolphin/os.h>
+
 #include <melee/it/forward.h>
 
 #include <math.h>
@@ -64,6 +66,20 @@ static bool itWf_Laser_Shoot_Anim(Item_GObj* gobj)
     jobj->rotate.x = (float) (atan2f(ip->x40_vel.y, back_x) + PI);
     HSD_JObjSetMtxDirtySub(jobj);
 
+    {
+        /* Bring-up evidence (the first frames only): the shot's flight. On the console
+         * recording it moves 2.3 a frame at y 5.36 and its timer counts down from 24. */
+        static int logged;
+        if (logged < 30) {
+            logged++;
+            OSReport("[ak] Wolf laser frame: pos (%.2f, %.2f, %.2f) vel (%.2f, %.2f) timer %.0f "
+                     "hitbox0 state %d dmg %.0f at (%.2f, %.2f, %.2f)\n",
+                     ip->pos.x, ip->pos.y, ip->pos.z, ip->x40_vel.x, ip->x40_vel.y, ip->xD44_lifeTimer,
+                     (int) ip->x5D4_hitboxes[0].hit.state, ip->x5D4_hitboxes[0].hit.damage,
+                     ip->x5D4_hitboxes[0].hit.x4C.x, ip->x5D4_hitboxes[0].hit.x4C.y,
+                     ip->x5D4_hitboxes[0].hit.x4C.z);
+        }
+    }
     return it_80273130(gobj);
 }
 
@@ -102,6 +118,9 @@ static void itWf_Laser_OnSpawn(Item_GObj* gobj)
 /* [OnGiveDamage], [OnTakeDamage], [onClank], [onHitShieldDetermineDestroy]: the laser is used up. */
 static bool itWf_Laser_Destroyed(Item_GObj* gobj)
 {
+    Item* ip = GET_ITEM(gobj);
+    OSReport("[ak] Wolf laser used up at (%.2f, %.2f), timer %.0f\n", ip->pos.x, ip->pos.y,
+             ip->xD44_lifeTimer);
     return true;
 }
 

@@ -1112,8 +1112,28 @@ bool lobby_game_ready() {
   return false;
 }
 
+// Why the chosen disc cannot be played, or empty. Both engines need the retail NTSC 1.02 disc as the
+// base; a compressed image or another game used to reach the engine and end in a crash report.
+static std::wstring base_disc_problem(const std::string& path) {
+  std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
+  if (!f) return L"The disc image could not be opened. Choose your Melee NTSC 1.02 ISO again.";
+  unsigned char hdr[8]{}; f.read((char*)hdr, 8);
+  if (!std::memcmp(hdr, "RVZ\x01", 4) || !std::memcmp(hdr, "WIA\x01", 4) || !std::memcmp(hdr, "CISO", 4) ||
+      (hdr[0] == 0x01 && hdr[1] == 0xC0 && hdr[2] == 0x0B && hdr[3] == 0xB1))
+    return L"This disc image is compressed (RVZ, GCZ, WIA or CISO). In Dolphin, right-click the game, choose Convert File and pick ISO, then choose that ISO here.";
+  if (std::memcmp(hdr, "GALE01", 6) != 0)
+    return L"This file is not a Melee NTSC disc image. Choose your own Melee NTSC 1.02 ISO.";
+  if (hdr[7] != 2)
+    return L"This is Melee NTSC 1.0" + std::to_wstring((int)hdr[7]) + L". Version 1.02 is required.";
+  return {};
+}
+
 void start_game() {
   if (g_playing || g_iso.empty()) return;
+  if (const std::wstring problem = base_disc_problem(g_iso); !problem.empty()) {
+    MessageBoxW(g_main, problem.c_str(), L"Melee Unlocked Launcher", MB_OK | MB_ICONWARNING);
+    return;
+  }
   g_game_exe = !g_mod_launch_iso.empty() ? (g_mod_launch_engine == "source" ? source_exe_dir() + "\\melee_source.exe" : static_recomp_exe()) : game_exe();
   if (!file_exists(g_game_exe) && !g_mod_launch_iso.empty()) {
     MessageBoxW(g_main,L"The required game engine is not installed. Install it before playing this mod.",L"Mods",MB_ICONINFORMATION);
