@@ -143,6 +143,14 @@ int mu_lab_input(void* fighter, MuLabInput* out);   /* fighter: Fighter* */
 #define MU_TE2_HANDWARMERS 0x10000u
 #define MU_TE2_STAGE_STRIKE 0x20000u
 #define MU_TE2_LOCK 0x40000u   /* the settings cannot change until this is off */
+/* (0x80000 to 0x400000 hold the L-cancel flash choices, port/runtime/abi/mu_lcancel_flash.h.) */
+#define MU_TE2_20XX_CPUS 0x800000u   /* CPUs play with the 20XX Hack Pack's AI (shim/mu_20xx_ai.c) */
+/* 20XX Hack Pack CPU AI. mu_20xx_ai_enabled() is nonzero when "20XX CPUs" is in effect (mu_te2), or
+ * when MELEE_TEST_20XX_AI=1 forces it for a hidden test run; never online. mu_20xx_ai() is called
+ * where the game stores a CPU fighter's buttons for the frame (ft/fighter.c, Fighter_procInput):
+ * it may rewrite the fighter's sticks and trigger and returns the buttons to hold. */
+int mu_20xx_ai_enabled(void);
+unsigned int mu_20xx_ai(void* fighter, unsigned int buttons);   /* fighter: Fighter* */
 /* shim/mu_te_debugmenu.c: 20XX TE's settings menu (Tournament Melee with TE on). */
 void* mu_te_debug_menu(void);   /* the debug menu's root table, or NULL for the game's own */
 void mu_te_debug_menu_save(void);

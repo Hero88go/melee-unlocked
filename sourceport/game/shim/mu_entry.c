@@ -55,7 +55,8 @@ _Static_assert(MU_TE2_NEUTRAL_SPAWNS == MU_GAME_OPTION2_TE_NEUTRAL_SPAWNS && MU_
                MU_TE2_CPU_SMART_DI == MU_GAME_OPTION2_TE_CPU_SMART_DI &&
                MU_TE2_COLOR_OVERLAYS == MU_GAME_OPTION2_TE_COLOR_OVERLAYS &&
                MU_TE2_HANDWARMERS == MU_GAME_OPTION2_TE_HANDWARMERS &&
-               MU_TE2_STAGE_STRIKE == MU_GAME_OPTION2_TE_STAGE_STRIKE, "20XX TE second word bits");
+               MU_TE2_STAGE_STRIKE == MU_GAME_OPTION2_TE_STAGE_STRIKE &&
+               MU_TE2_20XX_CPUS == MU_GAME_OPTION2_TE_20XX_CPUS, "20XX TE second word bits");
 
 unsigned int mu_mod_flags(void)
 {

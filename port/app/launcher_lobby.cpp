@@ -46,7 +46,7 @@ enum { URL=500, NAME, CODE, LOCATION, MAIN1, MAIN2, MAIN3, JOIN, LEAVE, PLAYERS,
        FRIEND_DECLINE, REMOVE_FRIEND, STATUS, MODE, URL_LABEL, HISTORY, RECORD, GO_ONLINE, ONLINE_HINT,
        TAB_CHAT, TAB_FRIENDS, TAB_HISTORY, TAB_PROFILE, SAVE_PROFILE, PROFILE_NAME, PROFILE_CODE,
        PROFILE_LOCATION, PROFILE_MAINS, PROFILE_MODE, PLAYER_HEADING, EMPTY_PLAYERS, EMPTY_FRIENDS, EMPTY_CHAT, ADVANCED, FRIEND_CODE, FRIEND_SEND, FRIEND_HINT, EMOJI, AUTO_REJECT, REQUEST_SOUND, VOLUME_LABEL, OPEN_TO,
-       PLAYER_FILTER, INVITE_FRIEND, COPY_CODE };
+       PLAYER_FILTER, INVITE_FRIEND, COPY_CODE, PM_PLAYER, PM_FRIEND };
 HWND owner{}, window{};
 std::string directory, build;
 std::string account_name, account_code;
@@ -104,6 +104,16 @@ Json roster_all=Json::array();                  // everyone online, whatever the
 // "Can't reach X. Use Slippi Direct with their code": the code, while that line is the notice (the
 // Copy code button next to it). Guarded by `mutex`; copy_button_code is the window thread's copy.
 std::string copy_code, copy_code_notice, copy_button_code;
+// Private chat, as the window thread sees it (the rooms themselves live in launcher_lobby_p2p.cpp).
+Json private_rooms=Json::array();               // open and closed rooms, oldest first: one tab each
+std::string active_room;                        // the room in front on the Chat page; "" is the public lobby chat
+std::map<std::string,std::string> room_seen;    // room -> the last message the player has had in front of them
+std::set<std::string> rooms_known;              // rooms that already have a tab
+std::set<std::string> rooms_closing;            // closed here, until the lobby worker has dropped them
+std::set<std::string> private_prompted;         // incoming requests with a banner up
+std::vector<RECT> room_tab_hits, room_close_hits;   // the tabs as last painted, for the mouse
+std::vector<std::string> room_tab_ids;
+bool chat_switched=false;                       // another room came to the front: refill the message list
 // The hidden test launcher (MELEE_LAUNCHER_TEST) never takes the foreground, flashes or chimes.
 const bool test_mode=std::getenv("MELEE_LAUNCHER_TEST")!=nullptr;
 void layout();
@@ -441,8 +451,10 @@ void work() {
               if(c.action=="leave") { joined=false; go_online_requested=false; }
             }
             std::lock_guard<std::mutex> lock(mutex);
-            notice=peer_mode(cfg)?"You're online. Select a player to send a match request.":
-                                   "Connected. Location and Slippi code are player supplied.";
+            // A private chat action leaves the status line alone (its own messages arrive as notices).
+            if(c.action.rfind("pm",0)!=0)
+              notice=peer_mode(cfg)?"You're online. Select a player to send a match request.":
+                                     "Connected. Location and Slippi code are player supplied.";
           } catch(const std::exception& ex) {
             std::lock_guard<std::mutex> lock(mutex); notice=ex.what();
             if(c.action=="join") go_online_requested=joined;
@@ -699,6 +711,65 @@ void process_invites(const Json& state,const std::map<std::string,int>& ping,con
     if(!found) { close_banner("request:"+it->first); it=incoming_since.erase(it); } else ++it;
   }
 }
+// Private chat requests: a banner with Accept, Decline and Block, like a match request but without
+// a sound and without taking the foreground. It goes when the request is answered, withdrawn or
+// runs out.
+void process_private(const Json& state) {
+  if(!owner) return;
+  std::set<std::string> waiting;
+  for(const auto& room:state.value("private",Json::array())) {
+    if(room.value("state",std::string())!="incoming") continue;
+    const auto id=room.value("id",std::string());
+    if(id.empty()) continue;
+    waiting.insert(id);
+    if(!private_prompted.insert(id).second) continue;
+    show_banner("pm:"+id,launcher::lang::tr("lobby.pm.request_from",{{"name",room.value("name",std::string("Player"))}}),
+                launcher::lang::tr("lobby.pm.request_detail"),
+                {{"Accept",true},{"Decline",false},{"Block",false}},
+                [id](int button){
+                  Json data={{"room",id}};
+                  if(button==2) data["block"]=true;
+                  enqueue(button==0?"pm_accept":"pm_decline",data);
+                  if(window) SetTimer(window,2,150,nullptr);
+                },5);
+    if(!test_mode) { FLASHWINFO flash{sizeof flash,owner,FLASHW_TRAY|FLASHW_TIMERNOFG,3,0}; FlashWindowEx(&flash); }
+  }
+  for(auto it=private_prompted.begin();it!=private_prompted.end();) {
+    if(waiting.count(*it)) { ++it; continue; }
+    close_banner("pm:"+*it); it=private_prompted.erase(it);
+  }
+}
+// Closes a private room for this player (the other one is told) and takes its tab away at once.
+void close_room(const std::string& id,bool block) {
+  Json data={{"room",id}};
+  if(block) data["block"]=true;
+  enqueue("pm_close",data);
+  rooms_closing.insert(id);
+  if(active_room==id) show_room(std::string());
+}
+// Right click on a private tab: close it, or close it and ignore that player's requests.
+void room_menu(HWND w,const std::string& id,POINT at) {
+  const Json* room=find_room(id); if(!room) return;
+  std::string name=room->value("name",std::string());
+  for(size_t i=name.find('&');i!=std::string::npos;i=name.find('&',i+2)) name.insert(i,1,'&');   // not a menu shortcut
+  HMENU menu=CreatePopupMenu();
+  AppendMenuW(menu,MF_STRING,1,launcher::lang::trw("lobby.pm.close").c_str());
+  AppendMenuW(menu,MF_STRING,2,launcher::lang::trw("lobby.pm.block",{{"name",name}}).c_str());
+  ClientToScreen(w,&at);
+  const int pick=(int)TrackPopupMenu(menu,TPM_RETURNCMD|TPM_NONOTIFY|TPM_LEFTALIGN|TPM_TOPALIGN,at.x,at.y,0,w,nullptr);
+  DestroyMenu(menu);
+  if(pick==1 || pick==2) close_room(id,pick==2);
+}
+// Private Chat on a player or a friend: the room with them if there is one, else a request.
+void open_private(HWND w,const std::string& target) {
+  for(const auto& room:private_rooms)
+    if(room.value("peer",std::string())==target && room.value("state",std::string())=="open") {
+      show_room(room.value("id",std::string())); lobby_tab=0;
+      return;
+    }
+  enqueue("pm_request",{{"target",target}});
+  SetTimer(w,2,150,nullptr);
+}
 // The Show filter over the Players list. A player passes when they take requests for that version
 // (a mod also installed, a custom ISO announced); the player's own card always shows.
 bool shown_by_filter(const Json& p) {
@@ -798,14 +869,66 @@ void refresh() {
   if(history_visible) SendMessageW(past,WM_SETREDRAW,TRUE,0); InvalidateRect(past,nullptr,FALSE);
   displayed_history=history;
   }
+  // Private rooms: one tab each once the request is accepted. A room that has just opened comes to
+  // the front on both sides.
+  {
+    std::vector<Json> open_rooms;
+    std::set<std::string> present, listed;
+    for(const auto& room:state.value("private",Json::array())) {
+      const auto id=room.value("id",std::string()), room_state=room.value("state",std::string());
+      listed.insert(id);
+      if(id.empty() || rooms_closing.count(id) || (room_state!="open" && room_state!="closed")) continue;
+      open_rooms.push_back(room); present.insert(id);
+    }
+    for(auto it=rooms_closing.begin();it!=rooms_closing.end();) if(!listed.count(*it)) it=rooms_closing.erase(it); else ++it;
+    std::stable_sort(open_rooms.begin(),open_rooms.end(),[](const Json& a,const Json& b){
+      return a.value("created",0ull)<b.value("created",0ull); });
+    const int tab_before=lobby_tab; const std::string room_before=active_room;
+    for(const auto& room:open_rooms)
+      if(rooms_known.insert(room.value("id",std::string())).second && room.value("state",std::string())=="open") {
+        show_room(room.value("id",std::string())); lobby_tab=0;
+      }
+    for(auto it=rooms_known.begin();it!=rooms_known.end();) if(!present.count(*it)) it=rooms_known.erase(it); else ++it;
+    for(auto it=room_seen.begin();it!=room_seen.end();) if(!present.count(it->first)) it=room_seen.erase(it); else ++it;
+    if(!active_room.empty() && !present.count(active_room)) show_room(std::string());
+    private_rooms=Json(open_rooms);
+    // The room in front, on the page in front, is read.
+    if(!active_room.empty() && lobby_tab==0 && IsWindowVisible(window)) {
+      const Json* room=find_room(active_room);
+      const Json messages=room?room->value("messages",Json::array()):Json::array();
+      if(messages.is_array() && !messages.empty()) room_seen[active_room]=messages.back().value("id",std::string());
+    }
+    // Repaint the tabs when anything they show changed.
+    std::string strip=active_room+"|"+std::to_string(lobby_tab);
+    for(const auto& room:private_rooms)
+      strip+="|"+room.value("id",std::string())+room.value("name",std::string())+room.value("state",std::string())+(room_unread(room)?"*":"");
+    static std::string strip_drawn;
+    if(strip!=strip_drawn || tab_before!=lobby_tab || room_before!=active_room) {
+      strip_drawn=strip;
+      RedrawWindow(window,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
+    }
+  }
   Json next_chat=state.value("messages",Json::array());
-  if(next_chat!=chat_messages) {
+  if(!active_room.empty()) {
+    // The list shows the room in front; a private room's messages are never mixed with the lobby's.
+    next_chat=Json::array();
+    if(const Json* room=find_room(active_room)) {
+      next_chat=room->value("messages",Json::array());
+      if(room->value("state",std::string())=="closed") {
+        const Json line={{"id","closed"},{"system",true},{"sender",""},{"name",""},
+                         {"text",launcher::lang::tr("lobby.pm.closed_by",{{"name",room->value("name",std::string())}})}};
+        next_chat.push_back(line);
+      }
+    }
+  }
+  if(next_chat!=chat_messages || chat_switched) {
     chat_messages=std::move(next_chat);HWND list=GetDlgItem(window,CHATLOG);
     int old_count=(int)SendMessageW(list,LB_GETCOUNT,0,0);
     int top=(int)SendMessageW(list,LB_GETTOPINDEX,0,0);
     RECT bounds{};GetClientRect(list,&bounds);
     int visible=std::max(1,int(bounds.bottom-bounds.top)/std::max(1,U(60)));
-    bool at_bottom=old_count==0 || top+visible>=old_count-1;
+    bool at_bottom=chat_switched || old_count==0 || top+visible>=old_count-1;
+    chat_switched=false;
     SendMessageW(list,WM_SETREDRAW,FALSE,0);SendMessageW(list,LB_RESETCONTENT,0,0);
     for(const auto& message:chat_messages) SendMessageW(list,LB_ADDSTRING,0,(LPARAM)wide(message.value("name",std::string("Player"))).c_str());
     SendMessageW(list,LB_SETTOPINDEX,at_bottom?std::max(0,int(chat_messages.size())-5):top,0);
@@ -824,14 +947,24 @@ void refresh() {
     const bool online_friend=pick>=0 && pick<(int)friends.size() && !friends[pick].value("incoming",false) &&
                              friends[pick].value("online",false);
     EnableWindow(GetDlgItem(window,INVITE_FRIEND),online_friend && !playing && can_play);
+    // Private chat needs no game setup, only the other player online (peer-to-peer lobby only).
+    const bool peer_lobby=peer_mode(local_profile);
+    const std::string chosen=selected(GetDlgItem(window,PLAYERS),rows);
+    EnableWindow(GetDlgItem(window,PM_FRIEND),online_friend && peer_lobby);
+    EnableWindow(GetDlgItem(window,PM_PLAYER),active && peer_lobby && !chosen.empty() && chosen!=me);
   }
   if(!can_play && !playing) label(STATUS,"To play, finish disc and Slippi setup on the Play tab.");
   // Copy code sits next to "Can't reach X. Use Slippi Direct with their code" while the status says it.
   copy_button_code=(can_play || playing)?copy:std::string();
   label(PLAYER_HEADING,launcher::lang::tr("lobby.players_online",{{"count",std::to_string(roster_all.size())}}));
   EnableWindow(GetDlgItem(window,ADD_FRIEND),TRUE);
-  EnableWindow(GetDlgItem(window,SEND),active);
+  {
+    // Send: the public chat while online, a private room while it is open.
+    const Json* room=active_room.empty()?nullptr:find_room(active_room);
+    EnableWindow(GetDlgItem(window,SEND),active_room.empty()?active:(room && room->value("state",std::string())=="open"));
+  }
   process_invites(state,ping,me,playing);
+  process_private(state);
   for(int i=0;i<26;++i) EnableWindow(GetDlgItem(window,CHARACTER_FIRST+i),!playing);
   layout();
 }
@@ -971,6 +1104,8 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     control(FRIEND_ACCEPT,L"BUTTON",L"Accept Friend"); control(FRIEND_DECLINE,L"BUTTON",L"Decline");
     control(INVITE_FRIEND,L"BUTTON",launcher::lang::trw("lobby.invite").c_str());
     control(REMOVE_FRIEND,L"BUTTON",L"Remove Friend");
+    control(PM_PLAYER,L"BUTTON",launcher::lang::trw("lobby.pm.button").c_str());
+    control(PM_FRIEND,L"BUTTON",launcher::lang::trw("lobby.pm.button").c_str());
     control(CHATLOG,L"LISTBOX",L"",WS_VSCROLL);
     control(CHAT,L"EDIT",L"",ES_AUTOHSCROLL); SetWindowSubclass(GetDlgItem(w,CHAT),chat_proc,1,0); SendMessageW(GetDlgItem(w,CHAT),EM_SETLIMITTEXT,300,0);
     SendMessageW(GetDlgItem(w,CHAT),EM_SETCUEBANNER,TRUE,(LPARAM)launcher::lang::txw(L"Send a message...").c_str());
@@ -1101,7 +1236,24 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     }
   }
   if(msg==WM_DESTROY) { KillTimer(w,1); if(emoji_popup) DestroyWindow(emoji_popup); DeleteObject(ui_font); DeleteObject(ui_small); DeleteObject(ui_small_bold); DeleteObject(ui_title); DeleteObject(ui_brush); DeleteObject(ui_background); DeleteObject(ui_field_brush); DeleteObject(ui_name); for(auto icon:stock_icons) if(icon) DestroyIcon(icon); lobby_tips=nullptr; return 0; }
-  if(msg==WM_TIMER) { refresh(); return 0; }
+  // Timer 2: one early refresh after a chat action, so its result shows without waiting a second.
+  if(msg==WM_TIMER) { if(wp==2) KillTimer(w,2); refresh(); return 0; }
+  // The private chat tabs (painted by paint_room_tabs): click to bring a room to the front, the
+  // close mark to close it, right click for the menu with Block.
+  if((msg==WM_LBUTTONDOWN || msg==WM_RBUTTONUP) && lobby_tab==0) {
+    const POINT pt{GET_X_LPARAM(lp),GET_Y_LPARAM(lp)};
+    for(size_t i=0;i<room_tab_hits.size() && i<room_tab_ids.size() && i<room_close_hits.size();++i) {
+      if(!PtInRect(&room_tab_hits[i],pt)) continue;
+      const std::string room=room_tab_ids[i];
+      if(msg==WM_LBUTTONDOWN) {
+        if(!room.empty() && PtInRect(&room_close_hits[i],pt)) close_room(room,false);
+        else show_room(room);
+      } else if(!room.empty()) room_menu(w,room,pt);
+      refresh(); RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
+      if(msg==WM_LBUTTONDOWN && active_room==room) SetFocus(GetDlgItem(w,CHAT));
+      return 0;
+    }
+  }
   if(msg==WM_COMMAND) {
     int id=LOWORD(wp);
     if(id==EMOJI && HIWORD(wp)==BN_CLICKED) {show_emoji_picker();return 0;}
@@ -1147,7 +1299,7 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     }
     if(id==CHATLOG && HIWORD(wp)==LBN_SELCHANGE) {
       int index=(int)SendMessageW(GetDlgItem(w,CHATLOG),LB_GETCURSEL,0,0);
-      if(index>=0 && index<(int)chat_messages.size()) {
+      if(index>=0 && index<(int)chat_messages.size() && !chat_messages[index].value("system",false)) {
         auto sender=chat_messages[index].value("sender",std::string());
         // A player the Show filter hides: show everyone again, then select them.
         auto listed=[&](const Json& list){ for(const auto& p:list) if(p.value("id",std::string())==sender) return true; return false; };
@@ -1176,7 +1328,24 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       } else enqueue("leave");
       refresh();
     }
-    else if(id==SEND && !text(CHAT).empty()) { enqueue("chat",{{"text",text(CHAT)}}); label(CHAT,""); }
+    else if(id==SEND && !text(CHAT).empty()) {
+      // With a private room in front the line goes to that room's other player only, never to the
+      // public chat (also when the room has closed meanwhile: the player is then told so).
+      if(active_room.empty()) enqueue("chat",{{"text",text(CHAT)}});
+      else enqueue("pm",{{"room",active_room},{"text",text(CHAT)}});
+      SetWindowTextW(GetDlgItem(w,CHAT),L""); SetTimer(w,2,150,nullptr);
+    }
+    else if((id==PM_PLAYER || id==PM_FRIEND) && HIWORD(wp)==BN_CLICKED) {
+      std::string target;
+      if(id==PM_PLAYER) target=selected(GetDlgItem(w,PLAYERS),rows);
+      else {
+        const int pick=(int)SendMessageW(GetDlgItem(w,FRIENDS),LB_GETCURSEL,0,0);
+        if(pick>=0 && pick<(int)friends.size() && !friends[pick].value("incoming",false)) target=friends[pick].value("id",std::string());
+      }
+      if(target.empty() || target==self) return 0;
+      open_private(w,target);
+      refresh(); RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN);
+    }
     else if(id==REQUEST) {
       auto target=selected(GetDlgItem(w,PLAYERS),rows); if(target.empty() || target==self) return 0;
       Json them=Json::object(); for(const auto& p:rows) if(p.value("id",std::string())==target) { them=p; break; }
@@ -1271,7 +1440,7 @@ void refresh_theme() {
   InvalidateRect(window,nullptr,FALSE);
   for(int id:{GO_ONLINE,REQUEST,ADD_FRIEND,TAB_PROFILE,TAB_FRIENDS,TAB_HISTORY,TAB_CHAT,
               AUTO_REJECT,REQUEST_SOUND,OPEN_TO,SAVE_PROFILE,SEND,EMOJI,ACCEPT,DECLINE,
-              PLAYER_FILTER,INVITE_FRIEND,COPY_CODE})
+              PLAYER_FILTER,INVITE_FRIEND,COPY_CODE,PM_PLAYER,PM_FRIEND})
     if(HWND h=GetDlgItem(window,id)) InvalidateRect(h,nullptr,FALSE);
   for(int i=0;i<26;++i) if(HWND h=GetDlgItem(window,CHARACTER_FIRST+i)) InvalidateRect(h,nullptr,FALSE);
 }
@@ -1369,6 +1538,7 @@ void tick_ui() {
   Json state; std::map<std::string,int> ping; std::string me; bool playing;
   { std::lock_guard<std::mutex> lock(mutex); state=snapshot; ping=pings; me=self; playing=running; }
   process_invites(state,ping,me,playing);
+  process_private(state);
 }
 void owner_resized() { banner_place(); }
 void refresh_language() {

@@ -43,6 +43,71 @@ void ink_runs(HDC dc,const std::vector<TextRun>& runs,RECT r) {
     r.left+=size.cx;
   }
 }
+// ---- private chat rooms: a tab each on the Chat page, next to the public lobby chat ----
+const Json* find_room(const std::string& id) {
+  for(const auto& room:private_rooms) if(room.value("id",std::string())==id) return &room;
+  return nullptr;
+}
+// The other player wrote something the player has not had in front of them yet.
+bool room_unread(const Json& room) {
+  const Json messages=room.value("messages",Json::array());
+  if(!messages.is_array() || messages.empty()) return false;
+  const Json& last=messages.back();
+  if(last.value("sender",std::string())!=room.value("peer",std::string())) return false;
+  const auto seen=room_seen.find(room.value("id",std::string()));
+  return seen==room_seen.end() || seen->second!=last.value("id",std::string());
+}
+bool any_room_unread() {
+  for(const auto& room:private_rooms) if(room_unread(room)) return true;
+  return false;
+}
+// Brings a room (or "" for the public lobby chat) to the front. What was typed for the room in front
+// is cleared, so a line meant for one room can never be sent to another.
+void show_room(const std::string& id) {
+  if(active_room==id) return;
+  active_room=id; chat_switched=true;
+  if(window) SetWindowTextW(GetDlgItem(window,CHAT),L"");
+}
+// The tabs, drawn where the "Lobby chat" heading otherwise is. Each private tab has a close mark; a
+// dot and bold text mean unread messages. The hit boxes are kept for the mouse.
+void paint_room_tabs(HDC dc,const RECT& card) {
+  struct Tab { std::string id; std::wstring title; bool unread; };
+  std::vector<Tab> tabs;
+  tabs.push_back({std::string(),launcher::lang::trw("lobby.pm.tab_public"),false});
+  for(const auto& room:private_rooms)
+    tabs.push_back({room.value("id",std::string()),wide(room.value("name",std::string("?"))),room_unread(room)});
+  const int gap=U(6), pad=U(11), cross=U(18), dot=U(12);
+  const int x0=card.left+U(14), x1=card.right-U(14), top=card.top+U(10), bottom=card.top+U(40);
+  const int count=(int)tabs.size();
+  const int share=std::max(U(40),(x1-x0-gap*(count-1))/count);
+  int x=x0;
+  for(const auto& tab:tabs) {
+    const bool front=tab.id==active_room, closable=!tab.id.empty();
+    HFONT font=(tab.unread || front)?ui_name:ui_font;
+    auto old=SelectObject(dc,font);
+    SIZE size{}; GetTextExtentPoint32W(dc,tab.title.c_str(),(int)tab.title.size(),&size);
+    SelectObject(dc,old);
+    const int width=std::min(share,int(size.cx)+2*pad+(closable?cross:0)+(tab.unread?dot:0));
+    RECT r{x,top,x+width,bottom};
+    if(r.right>x1) break;
+    box(dc,r,front?launcher::theme::mix(launcher::theme::accent,ui_panel,.55):RGB(33,43,66),9);
+    RECT label_rect{r.left+pad,r.top,r.right-pad-(closable?cross:0),r.bottom};
+    if(tab.unread) {
+      RECT mark{r.left+pad,r.top+(r.bottom-r.top)/2-U(3),r.left+pad+U(7),r.top+(r.bottom-r.top)/2+U(4)};
+      box(dc,mark,launcher::theme::glow(),7);
+      label_rect.left+=dot;
+    }
+    ink(dc,tab.title,label_rect,font,(front || tab.unread)?ui_text:ui_dim);
+    RECT close_rect{};
+    if(closable) {
+      close_rect=RECT{r.right-pad-U(12),r.top,r.right-U(5),r.bottom};
+      // The multiplication sign as a close mark.
+      ink(dc,std::wstring(1,(wchar_t)0x00D7),close_rect,ui_font,front?ui_text:ui_dim,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    }
+    room_tab_hits.push_back(r); room_close_hits.push_back(close_rect); room_tab_ids.push_back(tab.id);
+    x=r.right+gap;
+  }
+}
 // Line breaks at spaces, measured with the font that draws the text. DrawText's own word break
 // split a Russian heading inside a word; text without spaces (Japanese, Chinese) is left for
 // DT_WORDBREAK to break by character.
@@ -186,7 +251,9 @@ void layout() {
   place(PLAYER_HEADING,right+14,124,264,24);
   // The Show filter has its own row: beside the heading it would not fit in every language.
   place(PLAYER_FILTER,right+12,154,268,28,!roster_all.empty());
-  place(PLAYERS,right+12,190,268,bottom-202,!rows.empty());
+  // Private Chat sits under the list, inside the Players card.
+  place(PLAYERS,right+12,190,268,bottom-240,!rows.empty());
+  place(PM_PLAYER,right+12,bottom-46,268,32,!rows.empty());
   place(REQUEST,right,bottom+12,181,34); place(ADD_FRIEND,right+189,bottom+12,103,34);
   bool pending=!requests.empty() && lobby_tab==0;
   int content_bottom=bottom-(pending?122:0);
@@ -205,6 +272,7 @@ void layout() {
   const bool chosen_friend=lobby_tab==1&&!incoming&&choice>=0&&!adding_friend;
   place(INVITE_FRIEND,38,bottom-44,140,30,chosen_friend);
   place(REMOVE_FRIEND,186,bottom-44,120,30,chosen_friend);
+  place(PM_FRIEND,314,bottom-44,140,30,chosen_friend);
   place(RECORD,38,168,left_width-28,24,lobby_tab==2);
   place(HISTORY,38,202,left_width-28,bottom-216,lobby_tab==2&&!history.empty());
   const bool profile=lobby_tab==3;
@@ -297,6 +365,11 @@ void draw_control(DRAWITEMSTRUCT* d) {
     }
     wchar_t caption[128]{}; GetWindowTextW(d->hwndItem,caption,128);
     ink(d->hDC,caption,r,ui_font,enabled?(primary?launcher::theme::on_accent():ui_text):ui_dim,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+    // Back to Chat carries a dot while a private room has unread messages.
+    if(id==TAB_CHAT && any_room_unread()) {
+      RECT mark{r.right-U(15),r.top+U(6),r.right-U(8),r.top+U(13)};
+      box(d->hDC,mark,launcher::theme::glow(),7);
+    }
     if((d->itemState&ODS_FOCUS) && !(d->itemState&ODS_NOFOCUSRECT)) { InflateRect(&r,-4,-4); DrawFocusRect(d->hDC,&r); }
     return;
   }
@@ -305,6 +378,11 @@ void draw_control(DRAWITEMSTRUCT* d) {
   if(d->itemID==(UINT)-1) return;
   if(id==CHATLOG && d->itemID<chat_messages.size()) {
     const auto& message=chat_messages[d->itemID];
+    if(message.value("system",false)) {   // a line from the launcher itself: the other player closed the room
+      RECT line{r.left+U(12),r.top,r.right-U(12),r.bottom};
+      ink(d->hDC,wide(message.value("text",std::string())),line,ui_small,ui_dim,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
+      return;
+    }
     RECT name{r.left+U(12),r.top+U(5),r.right-U(78),r.top+U(27)};
     ink(d->hDC,wide(message.value("name",std::string("Player"))),name,ui_name,launcher::theme::glow());
     std::string stamp="";auto wall=message.value("wall_time",int64_t(0));
@@ -412,7 +490,10 @@ void paint_lobby(HWND w,HDC print=nullptr) {
   RECT left{U(24),U(110),right-U(18),bottom}, players{right,U(110),r.right-U(24),bottom};
   for(auto card:{left,players}) { box(dc,card,ui_border,12); InflateRect(&card,-1,-1); box(dc,card,ui_panel,12); }
   const wchar_t* headings[]={L"Lobby chat",L"Friends",L"Match history",L"Your profile"};
-  RECT heading{left.left+U(16),left.top+U(12),left.right-U(16),left.top+U(42)}; ink(dc,launcher::lang::txw(headings[lobby_tab]),heading,ui_name,ui_text);
+  RECT heading{left.left+U(16),left.top+U(12),left.right-U(16),left.top+U(42)};
+  room_tab_hits.clear(); room_close_hits.clear(); room_tab_ids.clear();
+  if(lobby_tab==0 && !private_rooms.empty()) paint_room_tabs(dc,left);
+  else ink(dc,launcher::lang::txw(headings[lobby_tab]),heading,ui_name,ui_text);
   if(lobby_tab==3) {
     RECT track{U(slider_left),U(slider_y),U(slider_right),U(slider_y+5)}; box(dc,track,ui_border,5);
     RECT amount=track; amount.right=amount.left+(amount.right-amount.left)*sound_volume/100; box(dc,amount,launcher::theme::accent,5);
@@ -435,7 +516,13 @@ void paint_lobby(HWND w,HDC print=nullptr) {
     RECT description{x,y+U(132),area.right-U(24),y+U(196)}; ink(dc,wrap_words(dc,ui_font,launcher::lang::txw(detail),description.right-description.left),description,ui_font,ui_dim,DT_LEFT|DT_WORDBREAK);
   };
   if(rows.empty()) { RECT area=players; area.top+=U(46); empty_state(area,L"Find your next match",L"Go online to discover players.\nTheir location and mains appear here.",true); }
-  if(lobby_tab==0&&chat_messages.empty()) { RECT area=left; area.top+=U(46); empty_state(area,L"Ready for a few games?",L"Join the lobby, say hello, and send a match request when you're ready.",false); }
+  if(lobby_tab==0&&chat_messages.empty()&&!active_room.empty()) {
+    // An open private room nobody has written in yet: who it is with, and that it is private.
+    const Json* room=find_room(active_room);
+    RECT hint{left.left+U(24),left.top+U(64),left.right-U(24),left.top+U(128)};
+    const std::wstring text=launcher::lang::trw("lobby.pm.empty",{{"name",room?room->value("name",std::string()):std::string()}});
+    ink(dc,wrap_words(dc,ui_font,text,hint.right-hint.left),hint,ui_font,ui_dim,DT_LEFT|DT_WORDBREAK);
+  } else if(lobby_tab==0&&chat_messages.empty()) { RECT area=left; area.top+=U(46); empty_state(area,L"Ready for a few games?",L"Join the lobby, say hello, and send a match request when you're ready.",false); }
   if(lobby_tab==1&&friends.empty()) { RECT area=left; area.top+=U(46); empty_state(area,L"Friends, one click away.",L"Add a player to see when they're online and ready for another game.",true); }
   if(lobby_tab==2&&history.empty()) { RECT area=left; area.top+=U(68); empty_state(area,L"Match history",L"Completed lobby games appear here, with your wins and losses.",false); }
   BitBlt(target,0,0,r.right,r.bottom,dc,0,0,SRCCOPY); SelectObject(dc,old); DeleteObject(bmp); DeleteDC(dc);

@@ -21,6 +21,8 @@ namespace fs = std::filesystem;
 
 static std::string g_disc_target;
 static std::vector<uint8_t> g_disc_bytes;
+// A test disc with several files: name -> (offset, size) inside g_disc_bytes. Looked up first.
+static std::map<std::string, std::pair<uint32_t, uint32_t>> g_disc_table;
 
 // cosmetic_mods.cpp only needs runtime logging; keep this unit target independent of generated
 // guest code and the rest of the Windows renderer/runtime.
@@ -30,6 +32,8 @@ void log(const char* format, ...) {
   std::fputc('\n', stdout);
 }
 bool disc_find_file(const std::string& path, uint32_t* offset, uint32_t* size) {
+  const auto listed = g_disc_table.find(path);
+  if (listed != g_disc_table.end()) { *offset = listed->second.first; *size = listed->second.second; return true; }
   if (path != g_disc_target || g_disc_bytes.empty()) return false;
   *offset = 0; *size = (uint32_t)g_disc_bytes.size(); return true;
 }
@@ -781,6 +785,17 @@ int main(int argc, char** argv) {
   uint32_t file_length = read_be32(longer_fst.data() + 20);
   check(file_length == four_joints.size() && !host::cosmetics::online_allowed(0),
         "an offline-only costume longer than the disc file gives the file the costume's length");
+  {
+    // The verdict is in the listing the Mods tab draws, not only in the log.
+    const auto listed = host::cosmetics::assets();
+    const auto longer = std::find_if(listed.begin(), listed.end(),
+        [&](const auto& asset) { return asset.id == longer_import.asset_id; });
+    check(longer != listed.end() && !longer->online_allowed && longer->online_message == "skeleton shape differs",
+          "a costume with an extra joint is listed as off online, with the reason");
+    uint32_t swapped_stages = 7;
+    check(host::cosmetics::swapped_online_count(&swapped_stages) == 1 && swapped_stages == 0,
+          "one applied costume is counted as swapped online");
+  }
   std::vector<uint8_t> offline(file_length), online(file_length, 0xcc);
   check(host::cosmetics::read(0, 0, offline.data(), file_length) == OverrideRead::Success && offline == four_joints,
         "offline the longer costume is served as it is");
@@ -817,6 +832,40 @@ int main(int argc, char** argv) {
   check(host::cosmetics::read(0, 0, online.data(), file_length) == OverrideRead::Success && online == four_joints,
         "online the disc's own longer file is served unchanged");
   host::cosmetics::thaw_after_online_session();
+  {
+    const auto listed = host::cosmetics::assets();
+    const auto shorter = std::find_if(listed.begin(), listed.end(),
+        [&](const auto& asset) { return asset.id == shorter_import.asset_id; });
+    const auto longer = std::find_if(listed.begin(), listed.end(),
+        [&](const auto& asset) { return asset.id == longer_import.asset_id; });
+    check(shorter != listed.end() && !shorter->online_allowed && !shorter->online_message.empty(),
+          "the applied costume carries its own verdict");
+    check(longer != listed.end() && longer->online_allowed && longer->online_message.empty(),
+          "a costume that is not applied has no verdict");
+  }
+  // A costume that only changes how joints are drawn keeps the standard skeleton: it stays on.
+  const auto same_skeleton = skeleton_dat(0x2 | 0x10 | 0x40000, 5.0f, false);
+  fs::path matching_path = length_folder / L"matching.dat";
+  write_file(matching_path, same_skeleton);
+  auto matching_import = host::cosmetics::import_file(matching_path.string());
+  check(matching_import.ok && host::cosmetics::select_variant("PlFxNr.dat", matching_import.asset_id, &error),
+        "a costume with the standard skeleton imports and can be selected");
+  g_disc_bytes = three_joints;
+  auto matching_fst = one_file_fst(0, (uint32_t)three_joints.size(), "PlFxNr.dat");
+  host::cosmetics::apply_to_fst(matching_fst.data(), (uint32_t)matching_fst.size());
+  {
+    const auto listed = host::cosmetics::assets();
+    const auto matching = std::find_if(listed.begin(), listed.end(),
+        [&](const auto& asset) { return asset.id == matching_import.asset_id; });
+    check(matching != listed.end() && matching->online_allowed && matching->online_message == "3 joints match",
+          "a costume with the standard skeleton is listed as on online, with the joint count");
+    check(host::cosmetics::swapped_online_count() == 0 && host::cosmetics::online_allowed(0),
+          "nothing is counted as swapped when every applied costume stays on");
+  }
+  check(host::cosmetics::online_reason_short("Skeleton joint 4 rest pose differs from the vanilla costume.") == "rest pose differs" &&
+            host::cosmetics::online_reason_short("61 joints match") == "61 joints match" &&
+            host::cosmetics::online_reason_short("Something else.") == "Something else",
+        "the short reason names the difference");
   g_disc_bytes.clear();
 
   // Portraits and stock icons with no costume file. The name of a picture can say its costume.
@@ -977,6 +1026,96 @@ int main(int argc, char** argv) {
   fs::path nameless = picture_folder / L"cool.png";
   write_file(nameless, png(136, 188));
   check(!host::cosmetics::import_file(nameless.string()).ok, "a picture whose name names no costume is refused with advice");
+
+  // Skins inside a mod disc. The game disc has Fox's default and green costumes; the mod disc has
+  // a changed default costume (same skeleton) and the same green one.
+  {
+    fs::path disc_folder = folder / L"disc-skins";
+    fs::create_directories(disc_folder, ec);
+    host::cosmetics::configure((disc_folder / L"port-settings.ini").string());
+    const auto retail_default = skeleton_dat(0x2, 5.0f, false), retail_green = fox_dat();
+    const auto mod_default = skeleton_dat(0x2 | 0x10, 5.0f, false);
+    constexpr uint32_t retail_default_at = 0x100, retail_green_at = 0x400;
+    g_disc_bytes.assign(0x800, 0);
+    std::copy(retail_default.begin(), retail_default.end(), g_disc_bytes.begin() + retail_default_at);
+    std::copy(retail_green.begin(), retail_green.end(), g_disc_bytes.begin() + retail_green_at);
+    g_disc_table = {{"PlFxNr.dat", {retail_default_at, (uint32_t)retail_default.size()}},
+                    {"PlFxGr.dat", {retail_green_at, (uint32_t)retail_green.size()}}};
+    constexpr uint32_t fst_at = 0x500, mod_default_at = 0x800, mod_green_at = 0xC00;
+    const auto mod_fst = two_file_fst("PlFxNr.dat", mod_default_at, (uint32_t)mod_default.size(),
+                                      "PlFxGr.dat", mod_green_at, (uint32_t)retail_green.size());
+    std::vector<uint8_t> image(0x1000, 0);
+    be32(image, 0x424, fst_at); be32(image, 0x428, (uint32_t)mod_fst.size());
+    std::copy(mod_fst.begin(), mod_fst.end(), image.begin() + fst_at);
+    std::copy(mod_default.begin(), mod_default.end(), image.begin() + mod_default_at);
+    std::copy(retail_green.begin(), retail_green.end(), image.begin() + mod_green_at);
+    fs::path iso_path = disc_folder / L"mod.iso";
+    write_file(iso_path, image);
+
+    auto scan = host::cosmetics::scan_disc_skins(iso_path.string(), "Test Pack", &error);
+    auto listed = host::cosmetics::assets();
+    check(scan.ok && !scan.already_present && listed.size() == 1, "one costume of the mod disc differs and is listed");
+    check(listed.size() == 1 && listed[0].source == "disc" && listed[0].source_name == "Test Pack" &&
+              listed[0].target_path == "PlFxNr.dat" && listed[0].name == "Fox Default: from Test Pack" &&
+              !listed[0].selected && listed[0].available && !listed[0].disc_path.empty(),
+          "the disc skin is a choice for its costume, named after the pack, and not selected");
+    check(host::cosmetics::disc_skin_count(iso_path.string()) == 1, "the disc's skin count is known");
+    std::error_code walk;
+    size_t dat_copies = 0;
+    for (fs::recursive_directory_iterator it(disc_folder / L"CosmeticMods", walk), end; !walk && it != end; it.increment(walk))
+      if (it->path().extension() == ".dat") ++dat_copies;
+    check(dat_copies == 0, "no copy of the disc's costume is stored");
+    auto again = host::cosmetics::scan_disc_skins(iso_path.string(), "Test Pack", &error);
+    check(again.ok && again.already_present && host::cosmetics::assets().size() == 1, "an unchanged disc is not scanned twice");
+    host::cosmetics::configure((disc_folder / L"port-settings.ini").string());
+    listed = host::cosmetics::assets();
+    check(listed.size() == 1 && listed[0].source == "disc" && listed[0].available, "the disc skin reloads from the catalog");
+    const std::string disc_id = listed.empty() ? std::string() : listed[0].id;
+    check(host::cosmetics::select_variant("PlFxNr.dat", disc_id, &error), "the disc skin can be selected");
+    auto disc_fst = one_file_fst(retail_default_at, (uint32_t)retail_default.size(), "PlFxNr.dat");
+    host::cosmetics::apply_to_fst(disc_fst.data(), (uint32_t)disc_fst.size());
+    std::vector<uint8_t> served(mod_default.size());
+    check(host::cosmetics::read(retail_default_at, 0, served.data(), (uint32_t)served.size()) ==
+              host::cosmetics::OverrideRead::Success && served == mod_default,
+          "the disc skin is served from the mod disc's bytes");
+    listed = host::cosmetics::assets();
+    check(listed.size() == 1 && listed[0].online_allowed && listed[0].online_message == "3 joints match",
+          "the disc skin gets the same online verdict as an imported one");
+    // The disc is replaced by another file: the entry says so and the costume goes back to standard.
+    image[mod_default_at + 0x20 + 0x30] ^= 0x01;
+    image.push_back(0);
+    write_file(iso_path, image);
+    check(host::cosmetics::refresh_catalog(&error), "the catalog refreshes after the disc changed");
+    listed = host::cosmetics::assets();
+    check(listed.size() == 1 && !listed[0].available && !listed[0].selected &&
+              listed[0].availability_message == "disc file missing or changed",
+          "a changed disc makes its skin unavailable, with the reason");
+    auto gone_fst = one_file_fst(retail_default_at, (uint32_t)retail_default.size(), "PlFxNr.dat");
+    host::cosmetics::apply_to_fst(gone_fst.data(), (uint32_t)gone_fst.size());
+    check(host::cosmetics::read(retail_default_at, 0, served.data(), 4) == host::cosmetics::OverrideRead::NotOverridden,
+          "an unavailable disc skin overrides nothing");
+    // Scanning the changed disc brings the entry back under the same identity.
+    auto rescan = host::cosmetics::scan_disc_skins(iso_path.string(), "Test Pack", &error);
+    listed = host::cosmetics::assets();
+    check(rescan.ok && !rescan.already_present && listed.size() == 1 && listed[0].id == disc_id && listed[0].available,
+          "a changed disc is scanned again and keeps its entry's identity");
+    // A files pack: the same costume as a loose file.
+    fs::path pack_folder = disc_folder / L"pack";
+    fs::create_directories(pack_folder, ec);
+    write_file(pack_folder / L"PlFxNr.dat", mod_default);
+    write_file(pack_folder / L"PlFxGr.dat", retail_green);
+    write_file(pack_folder / L"PlFxAJ.dat", mod_default);
+    auto folder_scan = host::cosmetics::scan_disc_skins(pack_folder.string(), "My Files", &error);
+    check(folder_scan.ok && host::cosmetics::disc_skin_count(pack_folder.string()) == 1 &&
+              host::cosmetics::assets().size() == 2,
+          "a files pack lists its changed costume and nothing else");
+    // The mod disc is deleted: its entry leaves the list at the next scan of anything.
+    fs::remove(iso_path, ec);
+    host::cosmetics::scan_disc_skins(pack_folder.string(), "My Files", &error);
+    check(host::cosmetics::assets().size() == 1 && host::cosmetics::assets()[0].source_name == "My Files",
+          "entries of a disc that no longer exists are dropped");
+    g_disc_table.clear(); g_disc_bytes.clear();
+  }
 
   fs::remove_all(folder, ec);
   if (failures) std::fprintf(stderr, "%d cosmetic mod test(s) failed\n", failures);

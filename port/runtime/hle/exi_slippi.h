@@ -2,6 +2,7 @@
 // buffers) and DMA reads (responses). Port of Dolphin's CEXISlippi, grown feature by feature.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include <functional>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -17,6 +18,8 @@ void imm_write(uint32_t data, uint32_t size);
 uint32_t imm_read(uint32_t size);
 // Diagnostics.
 uint32_t gct_load_address();
+// Calls visit(address, bytes) for every place Slippi's main code list writes in the game.
+void for_each_served_code_write(const std::function<void(uint32_t addr, uint32_t size)>& visit);
 uint64_t commands_seen();
 uint64_t replays_written();
 const std::string& replay_directory();

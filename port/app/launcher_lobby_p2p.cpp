@@ -212,6 +212,27 @@ std::string normalize_code(std::string code) {
 }
 bool valid_code(const std::string& code) { return code.size()<=10 && code_format(code); }
 bool valid_iso_name(const std::string& name) { return !name.empty() && plain_text(name,32,96); }
+std::string clean_chat_text(const std::string& value) {
+  std::string out; out.reserve(value.size());
+  for(size_t i=0;i<value.size();) {
+    const unsigned char c=static_cast<unsigned char>(value[i]);
+    const size_t length=c<0x80?1:(c>>5)==6?2:(c>>4)==14?3:(c>>3)==30?4:0;
+    if(!length || i+length>value.size()) return {};
+    uint32_t cp=length==1?c:length==2?(c&0x1Fu):length==3?(c&0x0Fu):(c&0x07u);
+    for(size_t k=1;k<length;++k) {
+      const unsigned char n=static_cast<unsigned char>(value[i+k]);
+      if((n&0xC0)!=0x80) return {};
+      cp=(cp<<6)|(n&0x3Fu);
+    }
+    if((length==2 && cp<0x80) || (length==3 && cp<0x800) || (length==4 && cp<0x10000)) return {};
+    if((cp>=0xD800 && cp<=0xDFFF) || cp>0x10FFFF) return {};
+    const bool control=cp<32 || (cp>=0x7F && cp<0xA0);
+    const bool direction=(cp>=0x202A && cp<=0x202E) || (cp>=0x2066 && cp<=0x2069) || cp==0x200E || cp==0x200F;
+    if(!control && !direction) out.append(value,i,length);
+    i+=length;
+  }
+  return out;
+}
 bool open_to(const Json& profile,const std::string& mode) {
   // A profile without the field (0.8.1, or 0.8.5 before any choice) plays vanilla only.
   if(!profile.is_object() || !profile.count("open") || !profile["open"].is_array()) return mode=="vanilla";
@@ -383,6 +404,7 @@ struct PeerLobby::Impl {
     Bytes32 xkey{};
     Json profile=Json::object();
     ULONGLONG seen=0,hello_sent=0,ping_sent=0,last_chat=0,last_request=0,last_friend_confirm=0,last_friend_request=0;
+    ULONGLONG last_private_request=0,last_private_reply=0;
     bool visible=false;
     int protocol=1;                 // from the hello; 0.8.1 sends none
     std::string status="Offline",ping_nonce;
@@ -424,6 +446,84 @@ struct PeerLobby::Impl {
   // with a sequence number so the launcher shows every one once, in the player's language.
   std::deque<Json> notices; unsigned notice_seq=0;
   std::map<std::string,ULONGLONG> log_seen,skew_seen,skew_replied;
+  // Private chat. A room is "outgoing" (this player asked, no answer yet), "incoming" (the other
+  // player asked), "open", or "closed" (the other player closed it; kept so this player can still
+  // read it until they close it too). There is at most one room per other player, and a message is
+  // only ever stored in the room whose peer sent it.
+  struct PrivateRoom {
+    std::string peer,name,state;
+    ULONGLONG created=0,expires=0,last_in=0,last_out=0;
+    bool delivered=false;
+    std::vector<Json> messages;
+  };
+  std::map<std::string,PrivateRoom> rooms;       // by room id
+  std::set<std::string> private_blocked;         // players whose requests are ignored, this session only
+  ULONGLONG last_private_request=0;
+
+  ULONGLONG private_wait() const { return test.private_request_ms?test.private_request_ms:30000; }
+  bool knows_private() const { return !test.no_private && (!test.protocol || test.protocol>=private_protocol); }
+  static bool room_id(const std::string& value) {
+    return value.size()==32 && std::all_of(value.begin(),value.end(),[](char c){ return (c>='0'&&c<='9')||(c>='a'&&c<='f'); });
+  }
+  std::string room_with(const std::string& peer_id) const {
+    for(const auto& room:rooms) if(room.second.peer==peer_id) return room.first;
+    return {};
+  }
+  size_t private_live() const {
+    size_t count=0;
+    for(const auto& room:rooms) if(room.second.state!="closed") ++count;
+    return count;
+  }
+  // Strangers can ask inside the public lobby; friends anywhere.
+  bool private_reach(const std::string& other,const Peer& peer) const {
+    return (visible && peer.visible) || friends.count(other)!=0;
+  }
+  void private_append(PrivateRoom& room,const Json& message) {
+    room.messages.push_back(message);
+    if(room.messages.size()>private_max_messages)
+      room.messages.erase(room.messages.begin(),room.messages.begin()+(room.messages.size()-private_max_messages));
+  }
+  // The same room under a new id (what it holds stays).
+  PrivateRoom& private_move(const std::string& from,const std::string& to) {
+    PrivateRoom room=std::move(rooms[from]); rooms.erase(from);
+    return rooms[to]=std::move(room);
+  }
+  // Closed rooms the player left lying around must not grow without end.
+  void private_trim() {
+    while(rooms.size()>private_max_rooms*2) {
+      auto oldest=rooms.end();
+      for(auto it=rooms.begin();it!=rooms.end();++it)
+        if(it->second.state=="closed" && (oldest==rooms.end() || it->second.created<oldest->second.created)) oldest=it;
+      if(oldest==rooms.end()) break;
+      rooms.erase(oldest);
+    }
+  }
+  // A request this player no longer stands behind (it ran out, or was withdrawn) stops being resent,
+  // so a late copy cannot open a room on the other side.
+  void private_forget(const std::string& rid) {
+    for(auto it=outbound.begin();it!=outbound.end();) {
+      const auto& packet=it->second.data;
+      if(packet.value("action",std::string())=="pm_request" && packet["data"].value("room",std::string())==rid) it=outbound.erase(it);
+      else ++it;
+    }
+  }
+  static size_t event_size(const std::string& action,const Json& data) {
+    return Json{{"k","event"},{"id",std::string(32,'0')},{"action",action},{"data",data}}.dump().size();
+  }
+  void private_open(const std::string& rid) {
+    auto& room=rooms.at(rid);
+    room.state="open"; room.expires=0; room.name=peer_name(room.peer);
+    say("lobby.pm.opened",{{"name",room.name},{"room",rid}},"pm_open");
+    log("private chat "+short_id(rid)+" open with "+short_id(room.peer));
+  }
+  // An answer to a private chat message this player cannot use, at most one every three seconds per
+  // player, so a flood of them cannot fill the outgoing queue.
+  void private_reply(const std::string& sender,Peer& peer,const std::string& action,const Json& data) {
+    const auto now=GetTickCount64();
+    if(peer.last_private_reply && now-peer.last_private_reply<3000) return;
+    peer.last_private_reply=now;
+    queue_event(sender,action,data);
+  }
 
   long long wall_clock() const { return static_cast<long long>(std::time(nullptr))+test.clock_offset; }
   static std::string short_id(const std::string& value) { return value.substr(0,8); }
@@ -515,6 +615,11 @@ struct PeerLobby::Impl {
     if(bootstrap.empty() && !test.no_dht) {
       if(resolve("router.bittorrent.com:6881",address)) seeds.push_back(address);
       if(resolve("dht.transmissionbt.com:6881",address)) seeds.push_back(address);
+      // Two entry points were not enough: on a day when the first did not answer and the second
+      // gave a handful of nodes, players could not see each other at all. More independent ones.
+      if(resolve("dht.libtorrent.org:25401",address)) seeds.push_back(address);
+      if(resolve("router.utorrent.com:6881",address)) seeds.push_back(address);
+      if(resolve("dht.aelitis.com:6881",address)) seeds.push_back(address);
     }
     const bool dht_only=bootstrap.rfind("dht://",0)==0;
     const auto custom=dht_only?bootstrap.substr(6):bootstrap;
@@ -635,7 +740,7 @@ struct PeerLobby::Impl {
   Json hello_body() {
     const auto nonce=nonce_id(12);
     hello_nonces.push_back(nonce); while(hello_nonces.size()>64) hello_nonces.pop_front();
-    Json body={{"v",1},{"lv",lobby_protocol},{"t","hello"},{"pk",id},{"xk",hex(x_public.data(),x_public.size())},
+    Json body={{"v",1},{"lv",test.protocol?test.protocol:lobby_protocol},{"t","hello"},{"pk",id},{"xk",hex(x_public.data(),x_public.size())},
                {"profile",profile},{"visible",visible},{"time",wall_clock()},{"nonce",nonce}};
     auto content=body.dump(); Bytes64 signature{};
     crypto_ed25519_sign(signature.data(),ed_secret.data(),reinterpret_cast<const uint8_t*>(content.data()),content.size());
@@ -802,6 +907,9 @@ struct PeerLobby::Impl {
     auto peer=peers.find(sender); if(peer==peers.end()) return false;
     auto now=GetTickCount64();
     const auto name=peer_name(sender);
+    // Tests: a launcher from before private chat does not know these actions (see the end of this
+    // function: an unknown action is never acknowledged).
+    if(action.rfind("pm",0)==0 && !knows_private()) return false;
     if(action=="friend") {
       // Anyone who found this player (in the public lobby, or by their Slippi code while they are
       // hidden) may ask; the player still has to accept. A friend asking again, because their side
@@ -922,6 +1030,115 @@ struct PeerLobby::Impl {
         declined(sender,code,mode,data);
         log("request "+short_id(rid)+" declined by "+short_id(sender)+": "+(code.empty()?std::string("no reason"):code));
       }
+    } else if(action=="pm_request") {
+      const auto rid=data.value("room",std::string());
+      if(!room_id(rid)) return false;
+      auto known=rooms.find(rid);
+      if(known!=rooms.end()) return known->second.peer==sender;   // a resend
+      // A blocked player gets no answer at all: their request runs out as if nobody was there.
+      if(private_blocked.count(sender)) return false;
+      if(peer->second.last_private_request && now-peer->second.last_private_request<2000) {
+        log_limited("pm hold "+sender,"hold private chat request from "+short_id(sender)+": another one within 2 s");
+        return false;
+      }
+      peer->second.last_private_request=now;
+      if(!private_reach(sender,peer->second)) {
+        queue_event(sender,"pm_decline",{{"room",rid},{"code","hidden"}});
+        return true;
+      }
+      const auto held=room_with(sender);
+      if(!held.empty()) {
+        const auto state=rooms[held].state;
+        if(state=="outgoing") {
+          // Both players asked at once. The one with the lower id drops its own request and opens
+          // this one; the other keeps its own, which the first is now accepting.
+          if(id<sender) {
+            for(auto it=outbound.begin();it!=outbound.end();)
+              if(it->second.target==sender && it->second.data.value("action",std::string())=="pm_request") it=outbound.erase(it); else ++it;
+            private_move(held,rid);
+            queue_event(sender,"pm_accept",{{"room",rid}});
+            private_open(rid);
+          }
+          return true;
+        }
+        if(state=="open") {
+          // They lost this room (their close never arrived) or a request crossed an accept: carry on
+          // in the room they ask for.
+          private_move(held,rid);
+          queue_event(sender,"pm_accept",{{"room",rid}});
+          return true;
+        }
+        if(state=="incoming") rooms.erase(held);   // they asked again: the newer request replaces it
+      }
+      if(private_live()>=private_max_rooms) {
+        queue_event(sender,"pm_decline",{{"room",rid},{"code","full"}});
+        return true;
+      }
+      // A room they closed earlier continues, with what was said in it, if this request is accepted.
+      auto& room=held.empty() || !rooms.count(held)?rooms[rid]:private_move(held,rid);
+      room.peer=sender; room.name=name; room.state="incoming"; room.created=now; room.expires=now+private_wait();
+      private_trim();
+      say("lobby.pm.incoming",{{"name",name},{"room",rid}},"pm_request");
+      log("private chat request "+short_id(rid)+" in from "+short_id(sender));
+    } else if(action=="pm_accept") {
+      const auto rid=data.value("room",std::string());
+      if(!room_id(rid)) return false;
+      auto it=rooms.find(rid);
+      if(it==rooms.end()) {
+        const auto held=room_with(sender);
+        // They answer under another id than the room held here (see "open" above): follow them.
+        if(!held.empty() && rooms[held].state=="open") private_move(held,rid);
+        // Answered after the request ran out here: close it on their side too.
+        else private_reply(sender,peer->second,"pm_close",{{"room",rid}});
+        return true;
+      }
+      if(it->second.peer!=sender) return false;
+      if(it->second.state=="outgoing") private_open(rid);
+    } else if(action=="pm_decline") {
+      const auto rid=data.value("room",std::string());
+      auto it=rooms.find(rid);
+      if(it!=rooms.end() && it->second.peer==sender && it->second.state=="outgoing") {
+        const auto code=data.value("code",std::string());
+        rooms.erase(it);
+        say(code=="hidden"?"lobby.pm.declined.hidden":code=="full"?"lobby.pm.declined.full":"lobby.pm.declined",
+            {{"name",name}},"pm_declined");
+        log("private chat request "+short_id(rid)+" declined by "+short_id(sender));
+      }
+    } else if(action=="pm") {
+      const auto rid=data.value("room",std::string());
+      if(!room_id(rid) || !data.count("text") || !data["text"].is_string()) return false;
+      // Only the room held with the player this message came from can take it, whatever id it names.
+      auto it=rooms.find(rid);
+      if(it==rooms.end() || it->second.peer!=sender) {
+        const auto held=room_with(sender);
+        it=held.empty()?rooms.end():rooms.find(held);
+      }
+      if(it==rooms.end() || it->second.state=="closed") {
+        // This player closed the room and they did not hear it: tell them again.
+        if(!private_blocked.count(sender)) private_reply(sender,peer->second,"pm_close",{{"room",rid}});
+        return true;
+      }
+      auto& room=it->second;
+      if(room.state!="open") return true;   // nothing is shown before the request is accepted
+      const auto raw=data["text"].get<std::string>();
+      const auto value=raw.size()>private_max_text?std::string():clean_chat_text(raw);
+      if(value.empty()) return true;        // acknowledged and dropped
+      if(room.last_in && now-room.last_in<1000) return false;
+      room.last_in=now; room.name=name;
+      private_append(room,{{"id",event["id"]},{"sender",sender},{"name",peer->second.profile.value("name",std::string("?"))},
+                           {"text",value},{"time",now},{"wall_time",std::time(nullptr)}});
+    } else if(action=="pm_close") {
+      const auto rid=data.value("room",std::string());
+      auto it=rooms.find(rid);
+      if(it!=rooms.end() && it->second.peer==sender) {
+        const auto state=it->second.state;
+        if(state=="open") { it->second.state="closed"; it->second.name=name; }
+        else if(state!="closed") {
+          rooms.erase(it);
+          say(state=="outgoing"?"lobby.pm.declined":"lobby.pm.missed",{{"name",name}},state=="outgoing"?"pm_declined":"pm_missed");
+        }
+        log("private chat "+short_id(rid)+" closed by "+short_id(sender));
+      }
     } else return false;
     return true;
   }
@@ -1035,6 +1252,10 @@ struct PeerLobby::Impl {
           request->second["delivered"]=true; tracking.erase(rid);
           say("lobby.delivered",{{"name",peer_name(sender)}},"delivered");
           log("request "+short_id(rid)+" delivered to "+short_id(sender));
+        }
+        if(action=="pm_request") {
+          auto room=rooms.find(pending->second.data["data"].value("room",std::string()));
+          if(room!=rooms.end() && room->second.state=="outgoing") room->second.delivered=true;
         }
         outbound.erase(pending);
       }
@@ -1218,6 +1439,85 @@ struct PeerLobby::Impl {
       log("request "+short_id(rid)+" out to "+short_id(target)+", mode "+mode+", their protocol "+std::to_string(peer->second.protocol));
       return;
     }
+    if(action=="pm_request") {
+      auto peer=peers.find(target);
+      if(target==id || peer==peers.end() || now-peer->second.seen>=20000) throw std::runtime_error(lang::tr("lobby.error.offline"));
+      const auto name=peer_name(target);
+      if(!private_reach(target,peer->second)) throw std::runtime_error(lang::tr("lobby.error.left",{{"name",name}}));
+      // A launcher from before private chat never answers the request, so say why straight away.
+      if(peer->second.protocol<private_protocol) throw std::runtime_error(lang::tr("lobby.pm.unsupported",{{"name",name}}));
+      private_blocked.erase(target);   // asking someone unblocks them
+      const auto held=room_with(target);
+      if(!held.empty()) {
+        const auto state=rooms[held].state;
+        if(state=="open") throw std::runtime_error(lang::tr("lobby.pm.already",{{"name",name}}));
+        if(state=="outgoing") throw std::runtime_error(lang::tr("lobby.pm.pending",{{"name",name}}));
+        if(state=="incoming") {       // they already asked: this is the answer
+          queue_event(target,"pm_accept",{{"room",held}});
+          private_open(held);
+          return;
+        }
+      }
+      if(now-last_private_request<3000) throw std::runtime_error(lang::tr("lobby.pm.wait"));
+      if(private_live()>=private_max_rooms) throw std::runtime_error(lang::tr("lobby.pm.full"));
+      last_private_request=now;
+      const auto rid=nonce_id();
+      // A room they closed earlier continues, with what was said in it, if they accept.
+      auto& room=held.empty()?rooms[rid]:private_move(held,rid);
+      room.peer=target; room.name=name; room.state="outgoing"; room.created=now; room.expires=now+private_wait(); room.delivered=false;
+      private_trim();
+      queue_event(target,"pm_request",{{"room",rid}});
+      say("lobby.pm.sent",{{"name",name}},"pm_sent");
+      log("private chat request "+short_id(rid)+" out to "+short_id(target));
+      return;
+    }
+    if(action=="pm_accept" || action=="pm_decline") {
+      const auto rid=data.value("room",std::string()); auto it=rooms.find(rid);
+      if(it==rooms.end() || it->second.state!="incoming") throw std::runtime_error(lang::tr("lobby.pm.gone"));
+      const auto other=it->second.peer;
+      if(action=="pm_accept") {
+        queue_event(other,"pm_accept",{{"room",rid}});
+        private_open(rid);
+      } else {
+        rooms.erase(it);
+        queue_event(other,"pm_decline",{{"room",rid},{"code","user"}});
+        if(data.value("block",false)) { private_blocked.insert(other); say("lobby.pm.blocked",{{"name",peer_name(other)}},"pm_blocked"); }
+        log("declined private chat request "+short_id(rid)+" from "+short_id(other));
+      }
+      return;
+    }
+    if(action=="pm") {
+      const auto rid=data.value("room",std::string()); auto it=rooms.find(rid);
+      if(it==rooms.end() || it->second.state!="open") throw std::runtime_error(lang::tr("lobby.pm.closed"));
+      auto& room=it->second;
+      auto peer=peers.find(room.peer);
+      if(peer==peers.end() || now-peer->second.seen>=20000) throw std::runtime_error(lang::tr("lobby.error.offline"));
+      const auto value=clean_chat_text(data.value("text",std::string()));
+      const Json body={{"room",rid},{"text",value}};
+      // 500 bytes is what one encrypted peer message holds (send_data); quotes and backslashes count twice.
+      if(value.empty() || value.size()>private_max_text || (room.last_out && now-room.last_out<1000) || event_size("pm",body)>500)
+        throw std::runtime_error(lang::tr("lobby.error.chat"));
+      room.last_out=now;
+      private_append(room,{{"id",nonce_id()},{"sender",id},{"name",profile.value("name",std::string())},
+                           {"text",value},{"time",now},{"wall_time",std::time(nullptr)}});
+      queue_event(room.peer,"pm",body);   // to that one player, never to the lobby
+      return;
+    }
+    if(action=="pm_close") {
+      const auto rid=data.value("room",std::string()); auto it=rooms.find(rid);
+      if(it==rooms.end()) return;
+      const auto other=it->second.peer, state=it->second.state;
+      rooms.erase(it);
+      if(state=="outgoing") private_forget(rid);
+      if(peers.count(other)) {
+        if(state=="incoming") queue_event(other,"pm_decline",{{"room",rid},{"code","user"}});
+        else if(state!="closed") queue_event(other,"pm_close",{{"room",rid}});
+      }
+      if(data.value("block",false)) { private_blocked.insert(other); say("lobby.pm.blocked",{{"name",peer_name(other)}},"pm_blocked"); }
+      log("closed private chat "+short_id(rid)+" with "+short_id(other));
+      return;
+    }
+    if(action=="pm_unblock") { private_blocked.erase(target); return; }
     if(action=="accept" || action=="cancel") {
       auto rid=data.value("request",std::string()); auto it=requests.find(rid);
       if(it==requests.end() || it->second.value("state",std::string())!="pending") throw std::runtime_error(lang::tr("lobby.error.expired"));
@@ -1355,6 +1655,21 @@ struct PeerLobby::Impl {
       tracking.erase(it->first); request_expiry.erase(it->first); it=requests.erase(it);
     } else ++it;
     for(auto it=tracking.begin();it!=tracking.end();) if(!requests.count(it->first)) it=tracking.erase(it); else ++it;
+    // A private chat request nobody answered. An older launcher never acknowledges one, so the
+    // request also ends here for a player whose version this launcher got wrong.
+    for(auto it=rooms.begin();it!=rooms.end();) {
+      const auto& room=it->second;
+      if((room.state!="outgoing" && room.state!="incoming") || now<room.expires) { ++it; continue; }
+      const auto rid=it->first, other=room.peer, state=room.state;
+      const bool delivered=room.delivered;
+      it=rooms.erase(it);
+      if(state=="outgoing") {
+        private_forget(rid);
+        say(delivered?"lobby.pm.expired":"lobby.pm.no_answer",{{"name",peer_name(other)}},"pm_expired");
+        if(peers.count(other)) queue_event(other,"pm_close",{{"room",rid}});
+      } else say("lobby.pm.missed",{{"name",peer_name(other)}},"pm_missed");
+      log("private chat request "+short_id(rid)+" expired ("+state+(delivered?", delivered)":")"));
+    }
     bool lookups_done=false;
     for(auto it=code_lookups.begin();it!=code_lookups.end();) if(now>=it->second) {
       say("lobby.friend.not_found",{{"code",it->first},{"version",build_version(profile.value("build",std::string()))}},"warn");
@@ -1410,6 +1725,20 @@ struct PeerLobby::Impl {
       result["requests"].push_back(item);
     }
     if(visible) for(const auto& message:messages) if(now-message.value("time",now)<3600000) result["messages"].push_back(message);
+    // Private rooms, each with its own messages: never part of "messages" above.
+    result["private"]=Json::array(); result["private_blocked"]=Json::array();
+    for(const auto& item:rooms) {
+      const auto& room=item.second;
+      auto peer=peers.find(room.peer);
+      const bool online=peer!=peers.end() && peer->second.seen && now-peer->second.seen<20000;
+      const auto known=peer==peers.end()?std::string():peer->second.profile.value("name",std::string());
+      Json entry={{"id",item.first},{"peer",room.peer},{"name",!known.empty()?known:!room.name.empty()?room.name:peer_name(room.peer)},
+                  {"state",room.state},{"online",online},{"created",room.created},
+                  {"remaining",room.expires>now?static_cast<int>((room.expires-now)/1000):0},{"messages",Json::array()}};
+      if(room.state=="open" || room.state=="closed") for(const auto& message:room.messages) entry["messages"].push_back(message);
+      result["private"].push_back(entry);
+    }
+    for(const auto& blocked:private_blocked) result["private_blocked"].push_back(blocked);
     return result;
   }
   std::map<std::string,int> pings() const {
