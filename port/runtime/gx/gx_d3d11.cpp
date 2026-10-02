@@ -520,6 +520,13 @@ void D3D11Backend::init() {
     require(factory->CreateSwapChainForHwnd(device_.Get(), hwnd_, &sd, nullptr, nullptr, &swapchain_), "swapchain");
   }
   factory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
+  // With V-Sync on, the default lets three finished frames wait in line for the display. After a
+  // stall the game runs slightly fast to catch up and that line filled, and it stayed filled:
+  // up to 50 ms of extra delay for the rest of the session. One frame in line is enough.
+  {
+    ComPtr<IDXGIDevice1> dxgi_device;
+    if (SUCCEEDED(device_.As(&dxgi_device))) dxgi_device->SetMaximumFrameLatency(1);
+  }
 
   create_swapchain_targets(false);
   create_efb();

@@ -61,7 +61,7 @@ int main(int argc, char** argv) {
       check(!gx::texpack::enabled() && gx::texpack::cosmetics_enabled(),
             "cosmetic lookup remains active with the general texture-pack toggle off");
       const std::string csp_name = "tex1_136x188_344dd1ecdd6c1ce7_0000000000000000_9";
-      const std::string stock_name = "tex1_24x24_9af3cce4366b97bf_0000000000000000_8";
+      const std::string stock_name = "tex1_24x24_f9e2c8c1f7328ccd_0000000000000000_8";
       check(gx::texpack::has(csp_name) && gx::texpack::has(stock_name),
             "green Fox native companion identities resolve");
       auto csp = gx::texpack::load(csp_name, ~0ull);

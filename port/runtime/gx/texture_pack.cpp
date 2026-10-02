@@ -36,7 +36,8 @@
 #include "gx_texture.h"
 #include "host.h"
 #include "texture_snapshot.h"
-#include "companion_texture_map.h"
+#include <map>
+#include "companion_texture_match.h"
 
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
@@ -133,6 +134,8 @@ struct State {
   std::unordered_map<std::string, bool> dumped;
   std::unordered_map<uint64_t, std::string> cosmetic_csp;
   std::unordered_map<uint64_t, std::string> cosmetic_stock;
+  // Stock icons whose image another costume also uses: image hash and palette hash together.
+  std::map<std::pair<uint64_t, uint64_t>, std::string> cosmetic_stock_palette;
   // When the last look found nothing, and whether "no pack folder" has been said already.
   std::chrono::steady_clock::time_point last_empty_scan{};
   bool scanned_empty = false, reported_no_folder = false;
@@ -355,33 +358,19 @@ bool decode_png(const std::string& path, std::vector<uint8_t>& out, uint32_t* wi
   return true;
 }
 
-std::string selector_target(std::string target) {
-  // CSS/HUD treats Sheik as Zelda at the same costume ordinal.
-  if (target.rfind("PlSk", 0) == 0) target.replace(2, 2, "Zd");
-  // Nana's physical costume suffixes differ from Popo's, but each array element is the same Ice
-  // Climbers selector ordinal.
-  static constexpr const char* nana[] = {"PlNnNr.dat", "PlNnYe.dat", "PlNnAq.dat", "PlNnWh.dat"};
-  static constexpr const char* popo[] = {"PlPpNr.dat", "PlPpGr.dat", "PlPpOr.dat", "PlPpRe.dat"};
-  for (size_t i = 0; i < std::size(nana); ++i) if (target == nana[i]) return popo[i];
-  return target;
-}
-
 const std::string* cosmetic_path(const std::string& base) {
-  const std::unordered_map<uint64_t, std::string>* map = nullptr;
-  size_t hash_at = std::string::npos;
-  for (const auto& prefix : {std::string("tex1_136x188_"), std::string("tex1_136x188_m_")}) {
-    if (base.rfind(prefix, 0) == 0) { map = &g.cosmetic_csp; hash_at = prefix.size(); break; }
+  if (g.cosmetic_csp.empty() && g.cosmetic_stock.empty() && g.cosmetic_stock_palette.empty()) return nullptr;
+  const native_companions::TextureName name = native_companions::parse_texture_name(base);
+  if (!name.ok) return nullptr;
+  if (!name.stock) {
+    auto found = g.cosmetic_csp.find(name.tex);
+    return found == g.cosmetic_csp.end() ? nullptr : &found->second;
   }
-  if (!map) for (const auto& prefix : {std::string("tex1_24x24_"), std::string("tex1_24x24_m_")}) {
-    if (base.rfind(prefix, 0) == 0) { map = &g.cosmetic_stock; hash_at = prefix.size(); break; }
-  }
-  if (!map || hash_at + 16 > base.size() || base[hash_at + 16] != '_') return nullptr;
-  const std::string hash_text = base.substr(hash_at, 16);
-  char* end = nullptr;
-  uint64_t hash = std::strtoull(hash_text.c_str(), &end, 16);
-  if (!end || *end) return nullptr;
-  auto found = map->find(hash);
-  return found == map->end() ? nullptr : &found->second;
+  auto found = g.cosmetic_stock.find(name.tex);
+  if (found != g.cosmetic_stock.end()) return &found->second;
+  if (!name.has_tlut) return nullptr;
+  auto shared = g.cosmetic_stock_palette.find({name.tex, name.tlut});
+  return shared == g.cosmetic_stock_palette.end() ? nullptr : &shared->second;
 }
 
 }  // namespace
@@ -391,29 +380,28 @@ void clear_cache();
 void set_cosmetic_companions(std::vector<CosmeticCompanion> companions) {
   g.cosmetic_csp.clear();
   g.cosmetic_stock.clear();
+  g.cosmetic_stock_palette.clear();
   for (const auto& companion : companions) {
-    const std::string target = selector_target(companion.target_path);
-    for (const auto& slot : native_companions::kSlots) {
-      if (target != slot.target) continue;
-      if (companion.kind == "csp") g.cosmetic_csp[slot.csp_hash] = companion.path;
-      else if (companion.kind == "stock") {
-        if (slot.stock_hash == native_companions::kAmbiguousStockHash) {
-          host::log("cosmetics: stock identity for %s shares native image bytes; using vanilla until palette identity is mapped",
-                    companion.target_path.c_str());
-          continue;
-        }
-        g.cosmetic_stock[slot.stock_hash] = companion.path;
-      }
+    const auto found = native_companions::identities(companion.kind, companion.target_path);
+    if (found.empty())
+      host::log("cosmetics: no retail %s texture is known for %s; using vanilla",
+                companion.kind.c_str(), companion.target_path.c_str());
+    for (const auto& identity : found) {
+      if (companion.kind == "csp") g.cosmetic_csp[identity.tex] = companion.path;
+      else if (identity.needs_tlut) g.cosmetic_stock_palette[{identity.tex, identity.tlut}] = companion.path;
+      else g.cosmetic_stock[identity.tex] = companion.path;
     }
   }
   clear_cache();
   host::log("cosmetics: %zu CSP and %zu stock texture identities active",
-            g.cosmetic_csp.size(), g.cosmetic_stock.size());
+            g.cosmetic_csp.size(), g.cosmetic_stock.size() + g.cosmetic_stock_palette.size());
 }
 
 bool enabled() { return g.on; }
 bool dumping() { return g.dump; }
-bool cosmetics_enabled() { return !g.cosmetic_csp.empty() || !g.cosmetic_stock.empty(); }
+bool cosmetics_enabled() {
+  return !g.cosmetic_csp.empty() || !g.cosmetic_stock.empty() || !g.cosmetic_stock_palette.empty();
+}
 
 // Scanning is separate from replacing. A player who has a pack installed should see it listed
 // without having to switch anything on first: the index is filenames only, and building it is a
