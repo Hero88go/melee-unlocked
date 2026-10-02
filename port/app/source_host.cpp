@@ -52,7 +52,9 @@
 #include "source_mod_overlay.h"
 #include "mod_profile.h"
 #include "net_trace.h"
+#include "replay_control.h"
 #include "mod_scan.h"
+#include "hackpack_source.h"
 #include "pack_skin_rule.h"
 #include "disc_skin_scan.h"
 #include "cosmetic_mods.h"
@@ -464,6 +466,21 @@ void load_mod_overlay() {
       host::log("mods: Training Mode CE files found; its events run natively");
     }
   }
+  // The 20XX Hack Pack (hackpack_source.h): its stages, music and costumes load like any other
+  // pack's files; its menu files and the files that carry its code do not (pack_keeps below), and
+  // the game's native rewrites of its features get its data tables through command 0xFA.
+  std::filesystem::path pack_iso;
+  for (const auto& file : g_mod_overlay.files()) {
+    if (!hackpack::is_pack_marker(file.path) || file.iso.empty() || !has("/mnslchr.0sd")) continue;
+    pack_iso = file.iso;
+    hackpack::attach(file.iso, file.iso_offset, file.length);
+    mods::status().hackpack = true;
+    host::log("mods: 20XX Hack Pack files found in %s; its content loads with the retail menus, none of its code runs",
+              file.iso.filename().u8string().c_str());
+  }
+  const auto pack_keeps = [&](const ModOverlay::File& file) {
+    return !pack_iso.empty() && file.iso == pack_iso && hackpack::keeps_retail(file.path);
+  };
 
   // The profile's own memory card, named after the profile, or after the content for layers given
   // on the command line. The ordinary card is never written by a modded session.
@@ -499,8 +516,9 @@ void load_mod_overlay() {
             g_mod_profile_name.empty() ? "(command line)" : g_mod_profile_name.c_str(),
             g_mod_fingerprint.substr(0, 16).c_str(), g_mod_layers.size(), summary.c_str());
 
-  uint32_t replaced = 0, added = 0;
+  uint32_t replaced = 0, added = 0, pack_kept = 0;
   for (const auto& file : g_mod_overlay.files()) {
+    if (pack_keeps(file)) { ++pack_kept; continue; }   // retail menus, and no file that carries code
     auto found = g_paths.find(file.path);
     int32_t entry;
     if (found != g_paths.end()) {
@@ -512,10 +530,13 @@ void load_mod_overlay() {
     g_fst[entry] = {file.start, file.length, false};
   }
   if (replaced || added) host::log("mods: %u disc files replaced, %u added", replaced, added);
+  if (pack_kept)
+    host::log("mods: 20XX Hack Pack: %u of its files are not served (its menu files and the files that carry its code)", pack_kept);
 
   // The retail view of every file the layers changed.
   g_view_alias.clear();
   for (const auto& file : g_mod_overlay.files()) {
+    if (pack_keeps(file)) continue;   // not served: the disc's own entry, the same in both views
     const auto now = g_paths.find(file.path);
     if (now == g_paths.end()) continue;
     const auto base = base_paths.find(file.path);
@@ -826,6 +847,7 @@ void h_hud_player(int32_t slot, int32_t present, int32_t damage, int32_t stocks,
 bool g_replaying = false;
 uint32_t g_replay_feature_options = 0;
 uint32_t g_replay_feature_options2 = 0;
+uint32_t g_replay_feature_options3 = 0;
 // "20XX CPUs" (Game tab) rides in word 2 as MU_GAME_OPTION2_TE_20XX_CPUS but is a plain option, not a
 // 20XX TE feature: it goes to the game with or without a TE save, and the game gates it itself
 // (mu_option2_offline: offline only, never in a TM-CE event).
@@ -833,6 +855,14 @@ uint32_t cpu_20xx_bit() { return gx::RenderOptions::live_cpu_20xx() ? MU_GAME_OP
 uint32_t h_game_options2() {
   if (g_replaying) return g_replay_feature_options2;
   return (mods::status().te_owned ? gx::RenderOptions::live_te_options2() : 0u) | cpu_20xx_bit();
+}
+// The 20XX Hack Pack training options for CPUs (Game tab), word 3: plain options, the game gates
+// them itself (mu_options3_offline: offline only, never in a TM-CE event).
+// The upper bits are the 20XX Hack Pack stage of the match (hackpack_source.h): the game reports
+// them when a match is picked and they ride in the same word, so a replay records and replays them.
+uint32_t h_game_options3() {
+  if (g_replaying) return g_replay_feature_options3;
+  return (gx::RenderOptions::live_cpu_training() & MU_GAME_OPTION3_CPU_ALL) | hackpack::stage_bits();
 }
 uint32_t h_game_options() {
   return (gecko::option_no_screen_shake ? MU_GAME_OPTION_NO_SCREEN_SHAKE : 0u) |
@@ -878,7 +908,7 @@ void mem1_watch_begin(const std::vector<MuStateRegion>& ranges);
 // The snapshot of an online match: the game's capture ranges (all of main memory and the image's
 // writable sections) minus its exclusions. They are fixed within a match, so the spans are computed
 // once, at online frame 1.
-void begin_native_savestates() {
+void begin_native_savestates(int slots = slippi::ROLLBACK_MAX_FRAMES) {   // a replay viewer keeps more (replay_keep)
   std::vector<MuStateRegion> ranges(g_game.snapshot_ranges(nullptr, 0));
   g_game.snapshot_ranges(ranges.data(), (uint32_t)ranges.size());
   std::vector<MuStateRegion> exclusions(g_game.state_exclusions(nullptr, 0));
@@ -941,7 +971,7 @@ void begin_native_savestates() {
   for (const auto& r : ranges)
     host::log("online: snapshot range %08llX +%X", (unsigned long long)(uintptr_t)r.address, r.size);
   auto spans = native_savestate::subtract(ranges, exclusions);
-  g_savestates.begin(std::move(spans), slippi::ROLLBACK_MAX_FRAMES);
+  g_savestates.begin(std::move(spans), slots);
   mem1_watch_begin(ranges);
   host::log("online: snapshots cover %zu bytes in %zu spans (first range %u bytes, %zu exclusions)",
             g_savestates.bytes(), g_savestates.spans().size(), ranges.empty() ? 0u : ranges[0].size,
@@ -1093,6 +1123,10 @@ constexpr uint8_t CMD_SELFTEST_KEEP = 0xF0, CMD_SELFTEST_COMPARE = 0xF1;   // na
 constexpr uint8_t CMD_LAB_SAVE = 0xF2, CMD_LAB_LOAD = 0xF3, CMD_LAB_ADVANTAGE = 0xF4, CMD_CONTENT_MODE = 0xF5;
 void apply_content_mode(int mode);
 constexpr int32_t kLabFrame = -1000000;
+// The replay viewer's controls (shim/mu_replay.c mu_replay_frame_begin, host/replay_control.h):
+// payload s32 next replay frame (BE), u8 0 ask / 1 restore now. Defined with the replay host below.
+constexpr uint8_t CMD_REPLAY_GATE = 0xFA;
+uint8_t replay_gate(int32_t frame, uint8_t phase);
 void lab_save() {
   if (!g_savestates.active()) begin_native_savestates();
   g_savestates.capture(kLabFrame);
@@ -1211,11 +1245,23 @@ void cycle_costume_skin(int character, int costume, int direction, std::vector<u
     if (!pick.message.empty()) host::log("cosmetics: %s skin not changed (%s)", slot.c_str(), pick.message.c_str());
     return;
   }
-  if (!republish_cosmetic_slot(slot)) {
+  // The Ice Climbers: Nana's slot changed with Popo's (pick.partner_slot), and is published the same
+  // way. A slot that cannot be given an entry gets its previous pick back; so does Nana's when
+  // Popo's failed, so the pair never ends half changed by a failure.
+  const auto put_back = [](const std::string& which, const std::string& previous_id) {
     std::string error;
-    host::cosmetics::select_variant_live(slot, pick.previous_id, &error);
-    republish_cosmetic_slot(slot);
+    host::cosmetics::select_variant_live(which, previous_id, &error);
+    republish_cosmetic_slot(which);
+  };
+  if (!republish_cosmetic_slot(slot)) {
+    put_back(slot, pick.previous_id);
+    if (!pick.partner_slot.empty()) put_back(pick.partner_slot, pick.partner_previous_id);
     return;
+  }
+  if (!pick.partner_slot.empty()) {
+    if (republish_cosmetic_slot(pick.partner_slot))
+      host::log("cosmetics: character select pairs %s with %s", pick.partner_slot.c_str(), slot.c_str());
+    else put_back(pick.partner_slot, pick.partner_previous_id);
   }
   // The pictures the new choice brings (its portrait and stock icon), for the renderer's next frame.
   std::vector<gx::texpack::CosmeticCompanion> companions;
@@ -1225,6 +1271,26 @@ void cycle_costume_skin(int character, int costume, int direction, std::vector<u
   host::log("cosmetics: character select picked %s for %s", pick.name.c_str(), slot.c_str());
   reply[0] = 1;
   reply.insert(reply.end(), pick.name.begin(), pick.name.begin() + (std::ptrdiff_t)std::min<size_t>(pick.name.size(), 63));
+}
+
+// ---- voice mods: the fighter banks of the match about to load (lb/lbaudio_ax.c, docs/voice-mods.md) ----
+// payload: fighter and costume for each of the four ports (fighter 0xFF: nobody).
+// reply: a count, then the game's bank number of each bank whose served content changed.
+constexpr uint8_t CMD_VOICE_MATCH = 0xFA;
+void plan_voice_banks(const uint8_t* p, std::vector<uint8_t>& reply) {
+  reply.assign(1, 0);
+  if (!host::cosmetics::voice_bank_count()) return;
+  host::cosmetics::MatchFighter ports[4];
+  for (int i = 0; i < 4; ++i) {
+    if (p[2 * i] == 0xFF) continue;
+    ports[i].character = p[2 * i];
+    ports[i].costume = p[2 * i + 1];
+  }
+  for (const auto& bank : host::cosmetics::plan_match_voices(ports).changed) {
+    if (bank.bank < 0 || bank.bank > 0xFF || reply.size() >= 32) continue;
+    reply.push_back((uint8_t)bank.bank);
+    ++reply[0];
+  }
 }
 
 int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t payload_size,
@@ -1254,8 +1320,10 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
         if (c == CMD_SELFTEST_KEEP && n == 4) { g_savestates.keep_reference((int32_t)read_be32(p)); return true; }
         if (c == CMD_LAB_SAVE) { lab_save(); return true; }
         if (c == CMD_LAB_LOAD) { lab_load(); return true; }
+        if (c == CMD_REPLAY_GATE && n == 5) { reply.push_back(replay_gate((int32_t)read_be32(p), p[4])); return true; }
         if (c == CMD_LAB_ADVANTAGE && n == 5) { training_overlay::set_advantage((int32_t)read_be32(p), p[4]); return true; }
         if (c == CMD_SKIN_CYCLE && n == 4) { cycle_costume_skin(p[1], p[2], p[3] ? 1 : -1, reply); return true; }
+        if (c == CMD_VOICE_MATCH && n == 8) { plan_voice_banks(p, reply); return true; }
         if (c == 0xF6 && n == 1) {
           // 20XX TE switches from inside the game (stage select Y: Frozen Mode), for this session.
           if (p[0] == 0) {
@@ -1263,6 +1331,12 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
             host::log("20xx: Frozen Mode %s", (gx::RenderOptions::live_te_options() & MU_GAME_OPTION_TE_FROZEN_STAGES) ? "on" : "off");
           }
           reply.push_back((gx::RenderOptions::live_te_options() & MU_GAME_OPTION_TE_FROZEN_STAGES) ? 1 : 0);
+          return true;
+        }
+        if (c == MU_HP_COMMAND) {
+          // 20XX Hack Pack data and choices for the game's native rewrites (hackpack_source.h).
+          // Choices and the stage state change only offline, outside replay playback.
+          hackpack::command(p, n, reply, slippi::online::session_mode() < 0 && !g_replaying);
           return true;
         }
         if (c == 0xF7 && n == 1) {
@@ -1953,7 +2027,9 @@ void* h_native_alloc(uint32_t size) { return std::malloc(size); }
 void h_native_free(void* ptr) { std::free(ptr); }
 
 uint32_t h_mem1_size() { return MEM1_SIZE; }
-uint32_t h_mod_flags() { return g_mod_overlay.files().empty() ? 0 : MU_MOD_ASSETS_PRESENT; }
+uint32_t h_mod_flags() {
+  return (g_mod_overlay.files().empty() ? 0 : MU_MOD_ASSETS_PRESENT) | (hackpack::loaded() ? MU_MOD_HACKPACK : 0u);
+}
 int32_t h_sound_mode() { return 1; }
 void h_set_sound_mode(int32_t) {}
 int32_t h_progressive_mode() { return 0; }
@@ -1998,6 +2074,40 @@ std::vector<uint8_t> g_replay_game_start;   // the original Game Start payload (
 std::vector<uint8_t> g_replay_game_end;
 slippi::NativeReplayStream g_replay_stream;
 bool g_replay_written = false;
+
+// ---- the replay viewer's controls (host/replay_control.h) ----
+// The game calls in at the top of every engine frame of the replay's match (mu_replay_frame_begin):
+// that is where a pause holds and where speed is paced. Jumping back uses the rollback snapshot
+// engine: a state is kept every few seconds at that same point, and a jump restores the newest one
+// at or before its target and runs forward from it, unseen and unpaced. The recording of the
+// played-back game is put back to where it stood at that state, so frames played again are
+// recorded once.
+std::map<int32_t, slippi::NativeReplayStream::Mark> g_replay_marks;   // per kept state: the recording then
+
+void replay_keep(int32_t frame) {
+  if (!g_savestates.active()) begin_native_savestates(replay_control::kMaxKeptStates);
+  g_savestates.capture(frame);
+  g_replay_marks[frame] = g_replay_stream.mark();
+}
+
+int32_t replay_restore(int32_t target) {
+  int32_t frame = 0;
+  if (!g_savestates.active() || !g_savestates.newest_at_or_before(target, &frame)) return replay_control::kNoFrame;
+  const auto mark = g_replay_marks.find(frame);
+  if (mark == g_replay_marks.end() || !g_savestates.load_keep(frame)) return replay_control::kNoFrame;
+  g_replay_stream.rewind(mark->second);
+  g_replay_marks.erase(std::next(mark), g_replay_marks.end());
+  gx::mark_discontinuity();   // the next frame shown continues from this older state
+  return frame;
+}
+
+// CMD_REPLAY_GATE. Phase 0, every frame: 1 when the viewer wants to go back (the game then calls
+// again with phase 1, with its timers held), else 0. Phase 1: the state is restored.
+uint8_t replay_gate(int32_t frame, uint8_t phase) {
+  if (!g_replay) return 0;
+  if (phase == 0) return replay_control::gate(frame) == replay_control::Gate::GoBack ? 1 : 0;
+  return replay_control::go_back() == replay_control::Gate::Restored ? 2 : 0;
+}
 
 // The Game Start event's payload, from the file's raw element (the recording reuses it as is).
 std::vector<uint8_t> read_replay_event(const std::string& path, uint8_t wanted) {
@@ -2191,6 +2301,7 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
                                             ? 0u : (gx::RenderOptions::live_te_options() & 0x7FF0u));
     g_replay_stream.set_feature_options2(online ? 0u : (mods::status().te_owned ? gx::RenderOptions::live_te_options2() : 0u) |
                                                       cpu_20xx_bit());   // "20XX CPUs" too: playback replays it
+    g_replay_stream.set_feature_options3(online ? 0u : h_game_options3());   // CPU training options, likewise
     if (!g_replay_stream.begin_slippi(start, codes, (int64_t)std::time(nullptr)))
       host::log("replay: cannot start native recording: %s", g_replay_stream.error().c_str());
     else if (online)
@@ -2222,6 +2333,9 @@ void h_replay_finished() {
     return; // An ordinary VS match returns to the menu, ready to record the next match.
   }
   host::log("replay: playback finished");
+  if (g_savestates.active() && !g_replay_marks.empty())
+    host::log("replay: %zu states were kept for jumping back (%zu MB)", g_savestates.kept(), g_savestates.pool_bytes() >> 20);
+  replay_control::end();
   if (!g_replay_game_end.empty() && g_replay_stream.last_frame() >= g_replay->GetLatestIndex())
     h_replay_event(0x39, g_replay_game_end.data(), (uint32_t)g_replay_game_end.size());
   write_replay_recording();
@@ -2272,6 +2386,7 @@ MuHostApi make_host() {
   h.hud_scales = h_hud_scales;
   h.hud_player = h_hud_player;
   h.vi_idle_step = h_vi_idle_step;
+  h.game_options3 = h_game_options3;
   return h;
 }
 
@@ -2434,13 +2549,14 @@ bool set_match(const char* spec) {
 // The "modProfile" metadata a native recording made with mod layers carries (see
 // NativeReplayStream::set_mod_profile); empty for the retail game and for other recorders.
 std::string g_replay_mod_profile;
-uint32_t read_replay_feature_options(const char* path, bool second = false) {
+uint32_t read_replay_feature_options(const char* path, int word = 0) {   // 0 "muOptions", 1 "muOptions2", 2 "muOptions3"
   std::ifstream in(std::filesystem::u8path(path), std::ios::binary);
   std::vector<char> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   static const char key1[] = "U\x09muOptionsl";
   static const char key2[] = "U\x0AmuOptions2l";
-  const char* key = second ? key2 : key1;
-  const size_t key_len = second ? sizeof key2 - 1 : sizeof key1 - 1;
+  static const char key3[] = "U\x0AmuOptions3l";
+  const char* key = word == 2 ? key3 : word == 1 ? key2 : key1;
+  const size_t key_len = word == 2 ? sizeof key3 - 1 : word == 1 ? sizeof key2 - 1 : sizeof key1 - 1;
   const auto at = std::search(bytes.begin(), bytes.end(), key, key + key_len);
   if (at == bytes.end() || bytes.end() - at < (std::ptrdiff_t)(key_len + 4)) return 0;
   const uint8_t* p = (const uint8_t*)&*(at + key_len);
@@ -2471,7 +2587,8 @@ void check_replay_content() {
 bool set_replay(const char* path) {
   g_replay_mod_profile = read_replay_mod_profile(path);
   g_replay_feature_options = read_replay_feature_options(path);
-  g_replay_feature_options2 = read_replay_feature_options(path, true);
+  g_replay_feature_options2 = read_replay_feature_options(path, 1);
+  g_replay_feature_options3 = read_replay_feature_options(path, 2);
   g_replaying = true;
   if (g_replay_feature_options) host::log("replay: recorded with game options %08X", g_replay_feature_options);
   g_replay = Slippi::SlippiGame::FromFile(path);
@@ -2513,6 +2630,12 @@ bool set_replay(const char* path) {
             path, g_replay->GetVersionString().c_str(), Slippi::GAME_FIRST_FRAME, g_replay->GetLatestIndex(),
             (unsigned)s->stage, s->randomSeed, (unsigned)s->isFrozenPS, (unsigned)g_replay_start.ps_frozen_toggle,
             g_replay_start.resync ? ", resync on" : "");
+  // The viewer's controls: this engine can keep states of the game and return to them.
+  replay_control::Engine engine;
+  engine.keep = replay_keep;
+  engine.restore = replay_restore;
+  replay_control::set_replay_path(path);
+  replay_control::begin(Slippi::GAME_FIRST_FRAME, g_replay->GetLatestIndex(), engine);
   return true;
 }
 

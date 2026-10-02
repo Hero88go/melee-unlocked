@@ -44,6 +44,7 @@
 #include "lab_view.h"
 #include "training_overlay.h"
 #include "net_overlay.h"
+#include "replay_bar.h"
 // Lab view is hidden until its silhouette packs can ship at a reasonable size: no F3 toggle, no
 // Overlays switch, never drawn (so the renderers never skip the scene for it). Code kept intact.
 constexpr bool kLabViewAvailable = false;
@@ -1694,6 +1695,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // Start in the game. F1 and the launcher Settings entry remain available at any time.
   options.settings_open = false;
   options.cpu_20xx = false;   // a file without the key: off
+  options.cpu_tech = options.cpu_getup = options.cpu_di = options.cpu_sdi = 0;   // files without the keys: off
+  options.cpu_no_taunt = options.cpu_lcancel = options.cpu_no_rapid_jab = options.cpu_no_transform = false;
   options.mod_choices.clear();
   g_advanced_open[0] = g_advanced_open[1] = false;   // a file without the keys (0.8.1 and older): closed
   // One setting per line: the key, then everything after it on that line. Reading the value as a
@@ -1818,6 +1821,14 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "backgroundinput") host::g_background_input = value != "0";
       else if (key == "gamelanguage") host::g_game_language.store(value == "1" ? 1 : value == "2" ? 2 : 0);
       else if (key == "cpu_20xx") options.cpu_20xx = value == "1";
+      else if (key == "cpu_tech") options.cpu_tech = std::clamp(std::atoi(value.c_str()), 0, 5);
+      else if (key == "cpu_getup") options.cpu_getup = std::clamp(std::atoi(value.c_str()), 0, 5);
+      else if (key == "cpu_di") options.cpu_di = std::clamp(std::atoi(value.c_str()), 0, 3);
+      else if (key == "cpu_sdi") options.cpu_sdi = std::clamp(std::atoi(value.c_str()), 0, 6);
+      else if (key == "cpu_notaunt") options.cpu_no_taunt = value == "1";
+      else if (key == "cpu_lcancel") options.cpu_lcancel = value == "1";
+      else if (key == "cpu_nojab") options.cpu_no_rapid_jab = value == "1";
+      else if (key == "cpu_notransform") options.cpu_no_transform = value == "1";
       else if (key == "editdevice") g_saved_edit_tab = std::atoi(value.c_str());
       else if (key == "editdevice_follow") g_edit_follow_active = value != "0";
       // "activeprofile<device> <name>": the profile each controller uses, so it is still the one
@@ -1991,6 +2002,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   if (options.te_options2 & 0x800000u) { options.cpu_20xx = true; options.te_options2 &= ~0x800000u; }
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
   host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
+  RenderOptions::live_cpu_training() = options.cpu_training_word();
   // Explicit new choices win over legacy keys regardless of their order in the file. A legacy
   // TE_ENABLE alone remains both flashes, white success and red miss, including old recordings.
   if (saved_lcancel_flash >= 0) {
@@ -3068,6 +3080,14 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nbackgroundinput " << (host::g_background_input ? 1 : 0)
        << "\ngamelanguage " << host::g_game_language.load()
        << "\ncpu_20xx " << (options.cpu_20xx ? 1 : 0)
+       << "\ncpu_tech " << options.cpu_tech
+       << "\ncpu_getup " << options.cpu_getup
+       << "\ncpu_di " << options.cpu_di
+       << "\ncpu_sdi " << options.cpu_sdi
+       << "\ncpu_notaunt " << (options.cpu_no_taunt ? 1 : 0)
+       << "\ncpu_lcancel " << (options.cpu_lcancel ? 1 : 0)
+       << "\ncpu_nojab " << (options.cpu_no_rapid_jab ? 1 : 0)
+       << "\ncpu_notransform " << (options.cpu_no_transform ? 1 : 0)
        << "\neditdevice " << g_saved_edit_tab
        << "\neditdevice_follow " << (g_edit_follow_active ? 1 : 0)
        << (g_custom_preset.set ? "\ncustompreset " + std::to_string(g_custom_preset.efb) + " " + std::to_string(g_custom_preset.ssaa) + " " +
@@ -3567,7 +3587,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   }
   if (state.legacy_presentation) options.overlay_style = launcher_window ? 7 : options.legacy_menu_style;
   const bool tab_pressed = host::window_take_practice_toggle();
-  if (tab_pressed && !state.open && !state.menu_open && !state.fill_window && practice.tab_available) {
+  if (tab_pressed && !state.open && !state.menu_open && !state.fill_window && practice.tab_available &&
+      !replay_bar::active()) {   // while a replay plays, Tab is its fast forward
     const bool was_open = state.practice_open;
     state.practice_open = !state.practice_open;
     if (state.practice_open) state.practice_focus_code = practice.phase == slippi::native_practice::Phase::Idle;
@@ -3650,6 +3671,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                              !state.fill_window,
                          ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   net_overlay::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+  replay_bar::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y, state.open || state.menu_open || state.practice_open || state.fill_window);
   // Start on the controller closes the panel from any page (the open chord is Start + Down + Z,
   // which the input layer swallows whole, so this never fires on the press that opened it).
   if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
@@ -3728,7 +3750,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   const bool panel_visible = state.open || state.panel_slide_x > -720.0f;
   const bool practice_capture = state.practice_open || practice_force_capture ||
                                 state.practice_release_capture;
-  host::window_input_capture(state.open || state.menu_open || practice_capture);
+  host::window_input_capture(state.open || state.menu_open || practice_capture || replay_bar::wants_cursor());
   state.intervals[state.cursor++ % state.intervals.size()] = ImGui::GetIO().DeltaTime*1000.f;
   if (streamline::reflex_available())
     state.latencies[state.latency_cursor++ % state.latencies.size()] = streamline::reflex_latency_ms();
@@ -5844,7 +5866,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         if (ImGui::Button("Add portrait...")) ImGui::OpenPopup("add_portrait");
         if (ImGui::IsItemHovered())
           ImGui::SetTooltip("Give one costume its own character select portrait or stock icon from a PNG.\n"
-                            "It works on the original costume and on a skin, and replaces the picture a skin brought.");
+                            "It shows on the original costume and on a skin that has no picture of its own.\n"
+                            "To give one skin a picture, use Portrait in the skin's Details.");
         if (ImGui::BeginPopupModal("add_portrait", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
           static const std::vector<host::cosmetics::CostumeSlot> slots = host::cosmetics::costume_slots();
           static int fighter = 0, costume = 0, picture_kind = 0;
@@ -5979,8 +6002,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 ImGui::TextUnformatted(costume.first.c_str());
                 int current = 0;
                 std::vector<std::string> option_storage{"Vanilla"};
+                // Two skins with one name are told apart by where they came from (the pack or the file).
+                std::map<std::string, int> same_name;
+                for (const CosmeticAsset* variant : variants) ++same_name[variant->name];
                 for (size_t i = 0; i < variants.size(); ++i) {
-                  option_storage.push_back(variants[i]->name +
+                  const bool twin = same_name[variants[i]->name] > 1;
+                  const std::string from = variants[i]->source_name.empty() ? variants[i]->id.substr(0, 16) : variants[i]->source_name;
+                  option_storage.push_back(variants[i]->name + (twin ? " [" + from + "]" : "") +
+                      (variants[i]->voice.empty() ? "" : " (voice)") +
                       (variants[i]->available ? "" : " (unavailable)"));
                   if (variants[i]->selected && variants[i]->available) current = (int)i + 1;
                 }
@@ -5995,6 +6024,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                   if (!ok) mod_message = error;
                   else { mod_message = host::cosmetics::last_message(); changed = true; }
                 }
+                // How many skins the costume has, imported and from packs; the standard one is not counted.
+                ImGui::SameLine();
+                ImGui::TextDisabled("%zu %s", variants.size(), variants.size() == 1 ? "skin" : "skins");
                 if (current != 0) {
                   ImGui::SameLine();
                   if (ImGui::SmallButton("Use Vanilla")) {
@@ -6034,6 +6066,52 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                   }
                   for (const auto& companion : details->unsupported_companions)
                     ImGui::TextWrapped("Companion: %s", companion.c_str());
+                  // This skin's own pictures: the first entry says which one shows, the rest change it.
+                  // A skin's own picture shows; the costume's added picture fills in where it has none.
+                  for (int picture_row = 0; picture_row < 2; ++picture_row) {
+                    const std::string picture_kind = picture_row == 0 ? "csp" : "stock";
+                    const auto picture_source = host::cosmetics::skin_portrait_source(details->id, picture_kind);
+                    const auto picture_choices = host::cosmetics::portrait_choices(details->id, picture_kind);
+                    const bool own_picture = picture_source == host::cosmetics::PortraitSource::Own;
+                    std::vector<std::string> picture_storage{
+                        own_picture ? "This skin's own" :
+                        picture_source == host::cosmetics::PortraitSource::Costume ? "The costume's added picture" : "Standard"};
+                    for (const auto& choice : picture_choices) picture_storage.push_back("Use picture from: " + choice.label);
+                    picture_storage.push_back("Choose a picture file...");
+                    if (own_picture) picture_storage.push_back("Remove this skin's picture");
+                    std::vector<const char*> picture_names;
+                    for (const auto& option : picture_storage) picture_names.push_back(option.c_str());
+                    int picked = 0;
+                    ImGui::SetNextItemWidth(280.0f);
+                    if (settings_combo(picture_row == 0 ? "Portrait" : "Stock icon", &picked, picture_names.data(),
+                                       (int)picture_names.size()) && picked > 0) {
+                      const size_t at = (size_t)picked - 1;
+                      std::string error;
+                      if (at < picture_choices.size()) {
+                        if (!host::cosmetics::set_skin_portrait_from(details->id, picture_choices[at].asset_id, picture_kind, &error))
+                          mod_message = error;
+                        else { mod_message = host::cosmetics::last_message(); changed = true; }
+                      } else if (at == picture_choices.size()) {
+                        const std::string path = host::cosmetics::choose_portrait_file();
+                        if (!path.empty()) {
+                          const auto result = host::cosmetics::set_skin_portrait(details->id, path, picture_kind);
+                          mod_message = result.message;
+                          if (result.ok) changed = true;
+                        }
+                      } else if (!host::cosmetics::clear_skin_portrait(details->id, picture_kind, &error)) mod_message = error;
+                      else { mod_message = host::cosmetics::last_message(); changed = true; }
+                    }
+                  }
+                  if (!details->voice.empty()) {
+                    // The skin's own fighter sounds: heard in a match while this skin is the costume worn.
+                    ImGui::TextWrapped("Voice: %s (from %s). Online: stays on.", details->voice.c_str(), details->voice_source.c_str());
+                    if (ImGui::SmallButton("Remove voice")) {
+                      std::string error;
+                      if (!host::cosmetics::remove_voice(details->id, &error)) mod_message = error;
+                      else { mod_message = host::cosmetics::last_message(); changed = true; }
+                    }
+                    ImGui::SameLine();
+                  }
                   if (ImGui::SmallButton("Rename...")) {
                     rename_id = details->id;
                     rename_text.fill(0);
@@ -6194,6 +6272,35 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         "Static Recomp: needs the 20XX Hack Pack disc under Mods (the Source Port has its own version).");
     if (!options.native_source && !host::hackpack_ai::status().blob_ok)
       ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.40f, 1.0f), "Install the 20XX Hack Pack under Mods");
+    // 20XX Hack Pack training options for CPUs (Source Port, shim/mu_20xx_cpu.c): plain offline
+    // options carried in option word 3. They work with the game's own CPUs and with "20XX CPUs".
+    if (options.native_source) {
+      bool cpu_changed = false;
+      static const char* cpu_tech_names[] = {"Off", "In place", "Roll forward", "Roll back", "Miss", "Random"};
+      cpu_changed |= settings_combo("CPU tech", &options.cpu_tech, cpu_tech_names, 6);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How a CPU techs when it lands in tumble. Offline only.");
+      static const char* cpu_getup_names[] = {"Off", "Stand", "Roll forward", "Roll back", "Getup attack", "Random"};
+      cpu_changed |= settings_combo("CPU getup", &options.cpu_getup, cpu_getup_names, 6);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("What a CPU does from the floor after a missed tech. Offline only.");
+      static const char* cpu_di_names[] = {"Off", "None", "Random", "Survival"};
+      cpu_changed |= settings_combo("CPU DI", &options.cpu_di, cpu_di_names, 4);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Which way a CPU holds the stick when it is launched. Offline only.");
+      static const char* cpu_sdi_names[] = {"Off", "None", "Random", "With the hit", "Against the hit", "Up", "Down"};
+      cpu_changed |= settings_combo("CPU smash DI", &options.cpu_sdi, cpu_sdi_names, 7);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Which way a CPU shifts during hitlag. Offline only.");
+      cpu_changed |= settings_toggle("CPUs never taunt", &options.cpu_no_taunt);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("CPUs never start a taunt. Offline only.");
+      cpu_changed |= settings_toggle("CPUs always L-cancel", &options.cpu_lcancel);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every CPU aerial landing is L-cancelled. Offline only.");
+      cpu_changed |= settings_toggle("CPU Falcon: no rapid jab", &options.cpu_no_rapid_jab);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("A CPU Captain Falcon never starts his rapid jab. Offline only.");
+      cpu_changed |= settings_toggle("CPU Zelda and Sheik: no transform", &options.cpu_no_transform);
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("A CPU Zelda or Sheik never uses the down special. Offline only.");
+      if (cpu_changed) {
+        RenderOptions::live_cpu_training() = options.cpu_training_word();
+        changed = true;
+      }
+    }
 
     // Slippi's Lagless FoD code is a real game patch, so expose it as an offline/direct setting
     // instead of silently forcing the performance-oriented variant on every player.
@@ -7307,7 +7414,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   // Same rule as at the top of the frame. With only the in-game (Esc) menu open, this used to say
   // "not captured" while the top said "captured", so the pointer was shown and hidden every frame.
   host::window_input_capture(state.open || state.menu_open || practice_capture ||
-                             state.practice_release_capture);
+                             state.practice_release_capture || replay_bar::wants_cursor());
   if (!state.fill_window && !state.open && !state.menu_open && options.show_player_nicknames)
     draw_player_nicknames();
   {

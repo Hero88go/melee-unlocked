@@ -67,14 +67,19 @@ struct AssetRecord {
   // online" before the skin was ever applied. Imports have none until they are applied.
   bool online_known = false, online_ok = false;
   std::string online_note;
+  // The fighter sound bank this skin brings (docs/voice-mods.md): a file of the catalog, checked
+  // against its SHA-256 when it is applied. `bank` is the disc file it replaces ("fox.ssm"). Empty
+  // stored_path: the skin has none.
+  struct Voice { std::string stored_path, sha256, source_member, bank; } voice;
 };
 
 // One line per scanned disc: scanning reads every costume file, so it runs once per disc and again
 // only when the file's size or time changes, or when the scan itself learned something new (rules).
 struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32_t rules = 0; };
 // 1: .dat and .usd costumes. 2: alternate costumes under other extensions (.lat, .rat) and the online
-// verdict taken at scan time. A disc scanned under an older number is scanned again at the next boot.
-constexpr uint32_t kScanRules = 2;
+// verdict taken at scan time. 3: the pack's own portraits, from its character select file. A disc
+// scanned under an older number is scanned again at the next boot.
+constexpr uint32_t kScanRules = 3;
 constexpr const char* kImportPack = "import";
 constexpr const char* kDiscSource = "disc";
 constexpr const char* kDiscChanged = "disc file missing or changed";
@@ -93,6 +98,21 @@ struct RuntimeAsset {
   bool online_allowed = true;
   std::string kind;            // the catalog kind, for the counts the notice shows
   std::string online_reason;   // short text for the Mods tab; empty when there is no online rule (effects)
+  // A voice bank file only (kind kVoiceKind): the length the file table carries for it. `bytes` is
+  // the chosen skin's bank padded to that length, or null while the disc's own bank is served.
+  uint32_t length = 0;
+};
+
+constexpr const char* kVoiceKind = "voice_bank";
+
+// One disc bank file ("audio/us/fox.ssm") that at least one installed skin has a fitting bank for.
+// The candidates are fixed at startup; plan_match_voices picks among them.
+struct VoiceFile {
+  uint32_t start = 0, disc_size = 0, length = 0;
+  std::string bank, path;   // "fox.ssm", and the disc path for the log
+  int bank_index = -1;      // the game's bank number
+  std::string chosen;       // the skin serving it now, "" the disc's own bank
+  std::map<std::string, std::shared_ptr<const std::vector<uint8_t>>> candidates;   // skin id -> served bytes
 };
 
 struct RuntimeState {
@@ -102,6 +122,7 @@ struct RuntimeState {
   std::unordered_map<uint32_t, RuntimeAsset> by_start;
   uint32_t assets = 0;   // selected assets applied (an asset with an English twin has two files in by_start)
   std::vector<CompanionOverride> companions;
+  std::vector<VoiceFile> voice_files;
 };
 
 struct ZipEntry {
@@ -339,6 +360,24 @@ void load_companions(const json& item, AssetRecord* asset) {
   }
 }
 
+// A skin's sound bank is its own "voice" object, not one of "companions": a build that predates
+// voice mods refuses a catalog with a companion kind it does not know, and ignores a key it does not
+// know. A malformed entry is dropped (the skin stays); it never invalidates the catalog.
+void load_voice(const json& item, AssetRecord* asset) {
+  const auto found = item.find("voice");
+  if (found == item.end() || !found->is_object()) return;
+  AssetRecord::Voice voice;
+  voice.stored_path = found->value("stored_path", std::string());
+  voice.sha256 = found->value("sha256", std::string());
+  voice.source_member = found->value("source_member", std::string());
+  voice.bank = found->value("bank", std::string());
+  if (!safe_relative_path(voice.stored_path) || voice.sha256.size() != 64 || voice.bank.empty() ||
+      voice.bank.find('/') != std::string::npos || voice.bank.find('\\') != std::string::npos) return;
+  asset->voice = std::move(voice);
+  asset->info.voice = asset->voice.bank;
+  asset->info.voice_source = asset->voice.source_member;
+}
+
 // The public listing says where a skin comes from; a disc-backed record also says where its bytes are.
 void load_disc_fields(const json& item, AssetRecord* asset) {
   asset->info.source = asset->source_kind == kDiscSource ? "disc" : "import";
@@ -398,6 +437,9 @@ json catalog_json_locked() {
                                       {"source_member", companion.source_member},
                                       {"status", "native_texture_override"}});
     }
+    if (!asset.voice.stored_path.empty())
+      item["voice"] = {{"stored_path", asset.voice.stored_path}, {"sha256", asset.voice.sha256},
+                       {"source_member", asset.voice.source_member}, {"bank", asset.voice.bank}};
     root["assets"].push_back(std::move(item));
   }
   return root;
@@ -446,6 +488,7 @@ std::string desired_fingerprint_locked() {
     if (found != g_assets.end()) {
       source += pick.first + "=" + pick.second + "=" + found->info.sha256;
       for (const auto& companion : found->companions) source += "+" + companion.kind + ":" + companion.sha256;
+      if (!found->voice.stored_path.empty()) source += "+voice:" + found->voice.sha256;
       source += "\n";
     }
   }
@@ -493,6 +536,7 @@ void load_catalog_locked() {
       asset.info.dependencies = get_string_array(item, "dependencies");
       asset.info.unsupported_companions = get_string_array(item, "unsupported_companions");
       load_companions(item, &asset);
+      load_voice(item, &asset);
       if (item.find("source") != item.end() && item["source"].is_object()) {
         asset.source_kind = item["source"].value("kind", std::string());
         asset.source_name = item["source"].value("name", std::string());
@@ -575,6 +619,7 @@ bool load_state_locked(bool* exists) {
       asset.info.dependencies = get_string_array(item, "dependencies");
       asset.info.unsupported_companions = get_string_array(item, "unsupported_companions");
       load_companions(item, &asset);
+      load_voice(item, &asset);
       if (item.find("source") != item.end() && item["source"].is_object()) {
         asset.source_kind = item["source"].value("kind", std::string());
         asset.source_name = item["source"].value("name", std::string());
@@ -897,6 +942,192 @@ bool find_slot(const std::string& target_path, SlotName* out) {
   return false;
 }
 
+// ---- voice mods: fighter sound banks (docs/voice-mods.md) ----
+// A fighter's voice and move sounds are one bank file on the disc, audio/us/<bank>.ssm for English
+// and audio/<bank>.ssm for Japanese. The file is four big-endian words (size of the sound table,
+// size of the sample data, number of sounds, id of the first sound), the sound table (per sound:
+// channel count, sample rate, then 0x40 bytes per channel: loop flag, format, the loop, end and
+// start addresses in nibbles from the start of the sample data, and the ADPCM state), padding to
+// 32 bytes, and the samples. The game plays a sound by id, so a replacement has to keep the count
+// and the first id; the loader reads the file in three parts and budgets the samples from a fixed
+// table, so it also has to keep the table's shape and stay inside that budget.
+//
+// The rows below: the disc file, the game's bank number (its place in the loader's file list), the
+// costume file codes of the fighters that use the bank, the sample bytes the loader budgets for it,
+// and for the English and the Japanese file the number of sounds, the id of the first one, and
+// which sounds have two channels. NTSC 1.02. The disc's own files are compared again at launch.
+struct BankIdentity { uint32_t count, base; const char* stereo; };
+struct VoiceBank { const char* file; int index; const char* fighters; uint32_t budget; BankIdentity language[2]; };
+constexpr const char* kBankLanguages[2] = {"English", "Japanese"};
+constexpr VoiceBank voice_banks[] = {
+    {"captain.ssm", 6, "Ca", 443328, {{28, 336, ""}, {28, 336, "0"}}},
+    {"clink.ssm", 7, "Cl", 298400, {{40, 364, ""}, {40, 364, ""}}},
+    {"dk.ssm", 8, "Dk", 206368, {{23, 404, ""}, {23, 404, ""}}},
+    {"drmario.ssm", 9, "Dr", 430560, {{36, 427, ""}, {37, 427, "0"}}},
+    {"falco.ssm", 10, "Fc", 599712, {{53, 463, "2 33 34"}, {55, 464, "0 2 35 36"}}},
+    {"fox.ssm", 11, "Fx", 573216, {{50, 516, "30 31"}, {54, 519, "0 34 35"}}},
+    {"ice.ssm", 13, "Pp Nn", 477600, {{44, 589, ""}, {44, 596, "0"}}},
+    {"kirby.ssm", 14, "Kb", 586208, {{52, 633, ""}, {52, 640, "0"}}},
+    {"koopa.ssm", 15, "Kp", 526752, {{26, 685, "4 5 6 7 8 9 10 11 12 13 14 15 16"}, {26, 692, "0 4 5 6 7 8 9 10 11 12 13 14 15 16"}}},
+    {"link.ssm", 16, "Lk", 328672, {{37, 711, ""}, {37, 718, "0"}}},
+    {"luigi.ssm", 17, "Lg", 372992, {{35, 748, ""}, {35, 755, ""}}},
+    {"mario.ssm", 18, "Mr", 372736, {{32, 783, ""}, {32, 790, ""}}},
+    {"mars.ssm", 19, "Ms", 513088, {{46, 815, ""}, {46, 822, "0"}}},
+    {"mewtwo.ssm", 20, "Mt", 562912, {{32, 861, "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20"}, {35, 868, "0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23"}}},
+    {"ness.ssm", 21, "Ns", 509024, {{35, 893, "26"}, {35, 903, "26"}}},
+    {"peach.ssm", 22, "Pe", 416736, {{30, 928, ""}, {30, 938, "0"}}},
+    {"pichu.ssm", 23, "Pc", 580128, {{32, 958, "25 30"}, {32, 968, "0 25 30"}}},
+    {"pikachu.ssm", 24, "Pk", 613088, {{36, 990, "30 35"}, {36, 1000, "0 30 35"}}},
+    {"purin.ssm", 25, "Pr", 334528, {{23, 1026, ""}, {26, 1036, "0"}}},
+    {"samus.ssm", 26, "Ss", 319040, {{25, 1049, "14"}, {25, 1062, "0 14"}}},
+    {"zs.ssm", 27, "Zd Sk", 590176, {{62, 1074, ""}, {62, 1087, "0 1"}}},
+    {"yoshi.ssm", 28, "Ys", 321472, {{33, 1136, ""}, {33, 1149, "0"}}},
+    {"gw.ssm", 29, "Gw", 165344, {{21, 1169, ""}, {21, 1182, "0"}}},
+    {"ganon.ssm", 30, "Gn", 427872, {{28, 1190, ""}, {28, 1203, "0"}}},
+    {"emblem.ssm", 31, "Fe", 495520, {{45, 1218, ""}, {45, 1231, "0"}}},
+};
+
+const VoiceBank* family_bank(const FighterFamily& family) {
+  for (const auto& bank : voice_banks)
+    if ((std::string(" ") + bank.fighters + " ").find(std::string(" ") + family.file_code + " ") != std::string::npos)
+      return &bank;
+  return nullptr;
+}
+const VoiceBank* bank_by_file(const std::string& name) {
+  const std::string wanted = lower(name);
+  for (const auto& bank : voice_banks) if (wanted == bank.file) return &bank;
+  return nullptr;
+}
+// "Fox", "Zelda and Sheik": whose bank it is, for a message.
+std::string bank_fighters(const VoiceBank& bank) {
+  std::string out;
+  for (const auto& family : families)
+    if (family_bank(family) == &bank) out += (out.empty() ? "" : " and ") + std::string(family.display_name);
+  return out;
+}
+
+struct BankLayout {
+  uint32_t table_size = 0, data_size = 0, count = 0, base = 0, data_offset = 0;
+  std::vector<uint8_t> channels;   // per sound: 1 or 2
+};
+
+// Reads a bank's header and sound table the way the game's loader does, and refuses anything the
+// loader would misread: a table that does not end where the header says, a sound with a channel
+// count the game does not play, a format other than ADPCM, an address outside the sample data.
+bool parse_bank(const std::vector<uint8_t>& bytes, BankLayout* out, std::string* error) {
+  *out = BankLayout{};
+  if (bytes.size() < 0x20) { *error = "The sound bank is too short to have a header."; return false; }
+  out->table_size = be32(bytes.data()); out->data_size = be32(bytes.data() + 4);
+  out->count = be32(bytes.data() + 8); out->base = be32(bytes.data() + 12);
+  if (!out->count || out->count > 4096 || out->table_size < 0x10 || out->table_size > bytes.size() - 0x10) {
+    *error = "The file does not start with a sound bank header."; return false;
+  }
+  const uint64_t table_end = 0x10ull + out->table_size;
+  out->data_offset = (uint32_t)((table_end + 31) & ~31ull);
+  if (!out->data_size || (uint64_t)out->data_offset + out->data_size > bytes.size()) {
+    *error = "The sound bank's sample data runs past the end of the file."; return false;
+  }
+  uint64_t at = 0x10;
+  for (uint32_t sound = 0; sound < out->count; ++sound) {
+    if (at + 8 > table_end) { *error = "The sound table ends before sound " + std::to_string(sound) + "."; return false; }
+    const uint32_t channels = be32(bytes.data() + at);
+    if (channels != 1 && channels != 2) {
+      *error = "Sound " + std::to_string(sound) + " has " + std::to_string(channels) + " channels; the game plays 1 or 2.";
+      return false;
+    }
+    if (at + 8 + (uint64_t)channels * 0x40 > table_end) {
+      *error = "The sound table ends inside sound " + std::to_string(sound) + "."; return false;
+    }
+    for (uint32_t channel = 0; channel < channels; ++channel) {
+      const uint8_t* voice = bytes.data() + at + 8 + (size_t)channel * 0x40;
+      const uint32_t format = be16(voice + 2), loop = be32(voice + 4), end = be32(voice + 8), start = be32(voice + 12);
+      if (format != 0) { *error = "Sound " + std::to_string(sound) + " is not ADPCM; the game's banks are."; return false; }
+      // Nibble addresses from the start of the sample data. The loader moves all three by the
+      // bank's place in audio memory, the loop address also for a sound that does not loop.
+      if (start > end || loop > end || (uint64_t)end >= (uint64_t)out->data_size * 2) {
+        *error = "Sound " + std::to_string(sound) + " points outside the bank's sample data."; return false;
+      }
+    }
+    out->channels.push_back((uint8_t)channels);
+    at += 8 + (uint64_t)channels * 0x40;
+  }
+  if (at != table_end) {
+    *error = "The sound table is " + std::to_string(out->table_size) + " bytes; its " + std::to_string(out->count) +
+             " sounds take " + std::to_string(at - 0x10) + "."; return false;
+  }
+  return true;
+}
+
+std::vector<uint8_t> identity_channels(const BankIdentity& identity) {
+  std::vector<uint8_t> channels(identity.count, 1);
+  std::istringstream list(identity.stereo);
+  for (uint32_t sound; list >> sound;) if (sound < channels.size()) channels[sound] = 2;
+  return channels;
+}
+
+// The first sound whose channel count differs, or -1 when the two tables have the same shape.
+int first_channel_difference(const std::vector<uint8_t>& game, const std::vector<uint8_t>& candidate) {
+  if (game.size() != candidate.size()) return 0;
+  for (size_t i = 0; i < game.size(); ++i) if (game[i] != candidate[i]) return (int)i;
+  return -1;
+}
+
+// The room the loader takes for a bank's samples: a whole number of 32 byte blocks.
+uint32_t bank_sample_room(const BankLayout& layout) { return (layout.data_size + 31) & ~31u; }
+
+// Which of the game's fighter banks a parsed bank is, and which language's (0 English, 1 Japanese),
+// from its own header: the same number of sounds, the same first id, the same channels per sound,
+// and samples that fit the room the game keeps for the bank. `name_hint` (a file name) only makes
+// the refusal say more. Null with the reason otherwise.
+const VoiceBank* match_bank(const BankLayout& layout, const std::string& name_hint, int* language, std::string* error) {
+  const VoiceBank* near_bank = nullptr; int near_language = 0, near_sound = 0;
+  for (const auto& bank : voice_banks)
+    for (int which = 0; which < 2; ++which) {
+      const BankIdentity& identity = bank.language[which];
+      if (identity.count != layout.count || identity.base != layout.base) continue;
+      const int differs = first_channel_difference(identity_channels(identity), layout.channels);
+      if (differs >= 0) { if (!near_bank) { near_bank = &bank; near_language = which; near_sound = differs; } continue; }
+      if (bank_sample_room(layout) > bank.budget) {
+        *error = std::string(bank.file) + " holds " + std::to_string(bank_sample_room(layout) / 1024) +
+                 " KB of samples; the game keeps room for " + std::to_string(bank.budget / 1024) +
+                 " KB for this bank. Shorten or resample the longest sounds.";
+        return nullptr;
+      }
+      *language = which;
+      return &bank;
+    }
+  if (near_bank) {
+    const uint32_t have = (size_t)near_sound < layout.channels.size() ? layout.channels[(size_t)near_sound] : 0;
+    *error = std::string(near_bank->file) + ": sound " + std::to_string(near_sound) + " has " + std::to_string(have) +
+             (have == 1 ? " channel" : " channels") + "; the game's (" + kBankLanguages[near_language] + ") has " +
+             std::to_string(have == 1 ? 2 : 1) + ". A voice bank keeps the channel count of every sound.";
+    return nullptr;
+  }
+  const size_t slash = name_hint.find_last_of("/\\");
+  if (const VoiceBank* named = bank_by_file(slash == std::string::npos ? name_hint : name_hint.substr(slash + 1))) {
+    *error = std::string(named->file) + " here has " + std::to_string(layout.count) + " sounds from id " +
+             std::to_string(layout.base) + "; the game's has " + std::to_string(named->language[0].count) + " from id " +
+             std::to_string(named->language[0].base) + " (English) or " + std::to_string(named->language[1].count) +
+             " from id " + std::to_string(named->language[1].base) +
+             " (Japanese). A voice bank keeps every sound of the bank it replaces, so each sound id means the same sound.";
+    return nullptr;
+  }
+  *error = "This is not one of the game's fighter sound banks (" + std::to_string(layout.count) + " sounds from id " +
+           std::to_string(layout.base) + ").";
+  return nullptr;
+}
+
+// The bank as it is served: the file up to the end of its samples, the samples filled to a whole
+// 32 byte block (the header says the filled size), then zeros up to `length`, the one length the
+// file table carries for this disc file.
+std::vector<uint8_t> served_bank(const std::vector<uint8_t>& bytes, const BankLayout& layout, uint32_t length) {
+  std::vector<uint8_t> out(bytes.begin(), bytes.begin() + layout.data_offset + layout.data_size);
+  out.resize((size_t)layout.data_offset + bank_sample_room(layout), 0);
+  put_be32(out.data() + 4, bank_sample_room(layout));
+  if (out.size() < length) out.resize(length, 0);
+  return out;
+}
+
 // The slot a picture's name identifies. First the costume's own file code ("plfxgr"), which is
 // what packs made beside a skin use; otherwise one fighter name and one color word. A name that
 // fits two costumes, or a color the fighter does not have, identifies nothing.
@@ -1194,7 +1425,11 @@ bool parse_visual_layout(const std::vector<uint8_t>& bytes, VisualLayout* out,
 namespace skeleton {
 // 0x1, 0x2 and 0x4 (skeleton, skeleton root, envelope model) only say how the mesh is skinned for
 // drawing. Model tools rewrite them on export, which kept every re-exported skin off online.
-constexpr uint32_t kVisualFlags = 0x1u | 0x2u | 0x4u | 0x10u | 0x20u | 0x40u | 0x80u | 0x100u | 0x10000u |
+// 0x8 (classical scaling) is not the costume's to decide: every time an animation is put on a
+// fighter joint the game sets or clears that bit from the animation itself (lbanim.c), so the value
+// in the file does not last. Model tools set it on every joint when they export, and that alone
+// kept nine of the ten rejected costumes on a widely used training pack off online.
+constexpr uint32_t kVisualFlags = 0x1u | 0x2u | 0x4u | 0x8u | 0x10u | 0x20u | 0x40u | 0x80u | 0x100u | 0x10000u |
                                   0x40000u | 0x80000u | 0x100000u | 0x70000000u;
 // A skin exported from a model tool carries the same rest pose with different rounding in the last
 // digits, and a bit-for-bit comparison refused it. The nine values (rotation, scale, translation)
@@ -1206,7 +1441,10 @@ inline bool rest_pose_close(const uint8_t* p, const uint8_t* q) {
     if (ua == ub) continue;
     if (!std::isfinite(fa) || !std::isfinite(fb)) return false;
     const float scale = std::max(1.0f, std::max(std::fabs(fa), std::fabs(fb)));
-    if (std::fabs(fa - fb) > 1e-3f * scale) return false;
+    // The first three values are the rest rotation, which a fighter's animations replace on every
+    // frame, so an exporter's rounding there gets more room than in scale and translation.
+    const float tolerance = i < 3 ? 1e-2f : 1e-3f;
+    if (std::fabs(fa - fb) > tolerance * scale) return false;
   }
   return true;
 }
@@ -1567,6 +1805,18 @@ bool png_companion(const std::vector<uint8_t>& bytes, std::string* error) {
     *error = "A companion PNG has unsupported dimensions."; return false;
   }
   return true;
+}
+
+// A picture the player gave a skin afterwards (set_skin_portrait) is stored under a name with its
+// hash in it ("csp-0123456789abcdef.png"); the ones an import or a scan brings are csp.png and
+// stock.png. So a scan that writes its csp.png again never touches the player's picture.
+std::string player_picture_file(const std::string& kind, const std::string& digest) {
+  return kind + "-" + digest.substr(0, 16) + ".png";
+}
+bool player_picture(const AssetRecord::Companion& companion) {
+  if (companion.kind != "csp" && companion.kind != "stock") return false;
+  const size_t slash = companion.stored_path.find_last_of('/');
+  return companion.stored_path.substr(slash == std::string::npos ? 0 : slash + 1) != companion.kind + ".png";
 }
 
 const ZipEntry* unique_basename(const std::vector<ZipEntry>& entries, const std::string& name,
@@ -2177,6 +2427,204 @@ ImportResult install_portrait_locked(const std::string& slot_target, const std::
   return result;
 }
 
+// ---- voice mods: import ----
+
+// A sound bank checked for one costume slot before anything is written: it parses, it is one of the
+// game's fighter banks, and that bank is the fighter's of `slot_target`.
+struct VoiceCheck { const VoiceBank* bank = nullptr; int language = 0; BankLayout layout; };
+bool check_voice(const std::vector<uint8_t>& ssm, const std::string& source_name, const std::string& slot_target,
+                 VoiceCheck* out, std::string* error) {
+  if (!parse_bank(ssm, &out->layout, error)) return false;
+  out->bank = match_bank(out->layout, source_name, &out->language, error);
+  if (!out->bank) return false;
+  if (slot_target.empty()) return true;
+  SlotName slot;
+  if (!find_slot(slot_target, &slot) || family_bank(*slot.family) != out->bank) {
+    *error = std::string(out->bank->file) + " is the sound bank of " + bank_fighters(*out->bank) + "; this skin is " +
+             (find_slot(slot_target, &slot) ? std::string(slot.family->display_name) + "'s." : std::string("another fighter's."));
+    return false;
+  }
+  return true;
+}
+
+// Gives an installed skin a sound bank, or replaces the one it has. The file is stored beside the
+// skin's pictures; the record's "voice" entry names it.
+ImportResult attach_voice_locked(const std::string& asset_id, const std::vector<uint8_t>& ssm,
+                                 const std::string& source_name) {
+  ImportResult result;
+  std::string error;
+  if (!mutable_profile_locked(&error)) { result.message = error; return result; }
+  auto asset = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+    return item.info.id == asset_id && item.info.kind == "character_costume";
+  });
+  if (asset == g_assets.end()) { result.message = "A sound bank belongs to an installed skin; that skin is not in the list."; return result; }
+  if (ssm.empty() || ssm.size() > kMaxAssetBytes) { result.message = "The sound bank is empty or larger than the 64 MB safety limit."; return result; }
+  VoiceCheck check;
+  if (!check_voice(ssm, source_name, asset->info.target_path, &check, &error)) {
+    result.message = "Sound bank refused: " + error; return result;
+  }
+  const std::string digest = sha256(ssm);
+  if (digest.empty()) { result.message = "The sound bank could not be hashed."; return result; }
+  AssetRecord::Voice voice;
+  voice.stored_path = (fs::path(L"assets") / fs::u8path(asset->info.id) / L"companions" / L"voice.ssm").generic_u8string();
+  voice.sha256 = digest;
+  voice.source_member = source_name;
+  voice.bank = check.bank->file;
+  const bool same = asset->voice.sha256 == digest;
+  if (!write_atomic(g_root / fs::u8path(voice.stored_path), ssm.data(), ssm.size(), &error)) { result.message = error; return result; }
+  const AssetRecord previous = *asset;
+  const Profile previous_profile = g_profile;
+  asset->voice = voice;
+  asset->info.voice = voice.bank;
+  asset->info.voice_source = voice.source_member;
+  if (!same) ++g_profile.generation;   // the same skin, another voice
+  if (!save_state_locked(&error)) { *asset = previous; g_profile = previous_profile; result.message = error; return result; }
+  g_message = std::string(check.bank->file) + " (" + std::to_string(check.layout.count) + " sounds, fits the " +
+              kBankLanguages[check.language] + " bank) is the voice of " + asset->info.name + ".";
+  result.ok = true; result.already_present = same; result.asset_id = asset->info.id; result.message = g_message;
+  return result;
+}
+
+// The installed skin a bank that came without a costume file belongs to: the selected skin of the
+// costume `slot_hint` names, or with no hint the only selected skin among the bank's fighters, or
+// the only installed one. Null with advice when that does not single one out.
+const AssetRecord* voice_target_locked(const VoiceBank& bank, const std::string& slot_hint, std::string* error) {
+  const auto selected_skin = [&](const std::string& slot) -> const AssetRecord* {
+    const auto pick = g_profile.selections.find(slot);
+    if (pick == g_profile.selections.end() || pick->second == kVanillaSelection) return nullptr;
+    for (const auto& item : g_assets)
+      if (item.info.id == pick->second && item.info.kind == "character_costume" && selection_key(item) == slot) return &item;
+    return nullptr;
+  };
+  std::vector<const AssetRecord*> selected, installed;
+  SlotName hinted;
+  const bool has_hint = !slot_hint.empty() && find_slot(slot_hint, &hinted);
+  if (has_hint && family_bank(*hinted.family) != &bank) {
+    *error = std::string(bank.file) + " is the sound bank of " + bank_fighters(bank) + ", not of " +
+             hinted.family->display_name + ".";
+    return nullptr;
+  }
+  for (const auto& item : g_assets) {
+    SlotName slot;
+    if (item.info.kind != "character_costume" || !find_slot(item.info.target_path, &slot) ||
+        family_bank(*slot.family) != &bank) continue;
+    if (has_hint && lower(item.info.target_path) != lower(slot_file(hinted))) continue;
+    installed.push_back(&item);
+    if (selected_skin(item.info.target_path) == &item) selected.push_back(&item);
+  }
+  if (selected.size() == 1) return selected[0];
+  if (selected.empty() && installed.size() == 1) return installed[0];
+  const std::string who = has_hint ? std::string(hinted.family->display_name) + ", " + hinted.color->label : bank_fighters(bank);
+  *error = installed.empty() ?
+      std::string(bank.file) + " is a voice for " + who + ", and no skin is installed for it. A voice belongs to a skin: "
+          "put the costume file in the same zip, or import the skin first." :
+      std::string(bank.file) + " is a voice for " + who + ", and " + std::to_string(installed.size()) +
+          " skins could take it. Name the file after the costume (for example \"Fox Green.ssm\"), or select the one skin it belongs to first.";
+  return nullptr;
+}
+
+// A bank that came without a costume file. `slot_hint` is a costume slot ("PlFxGr.dat") when the
+// manifest named one; otherwise the first of `names` (file names) that names a costume is the hint.
+ImportResult attach_loose_voice_locked(const std::vector<uint8_t>& ssm, const std::string& source_name,
+                                       std::string slot_hint, const std::vector<std::string>& names) {
+  ImportResult result;
+  std::string error;
+  if (!mutable_profile_locked(&error)) { result.message = error; return result; }
+  VoiceCheck check;
+  if (!check_voice(ssm, source_name, {}, &check, &error)) { result.message = "Sound bank refused: " + error; return result; }
+  for (size_t i = 0; slot_hint.empty() && i < names.size(); ++i) {
+    std::string slot, kind;
+    if (portrait_slot_from_name_impl(names[i], &slot, &kind)) slot_hint = slot;
+  }
+  const AssetRecord* target = voice_target_locked(*check.bank, slot_hint, &error);
+  if (!target) { result.message = error; return result; }
+  return attach_voice_locked(target->info.id, ssm, source_name);
+}
+
+// The optional manifest of a mod zip (mod.json): the mod's name, the costume it is for when the zip
+// has no costume file, and which bank is the voice when the zip has several.
+struct ModManifest { std::string name, slot, voice; };
+bool parse_mod_manifest(const std::vector<uint8_t>& bytes, ModManifest* out, std::string* error) {
+  json root = json::parse(bytes.begin(), bytes.end(), nullptr, false);
+  if (!root.is_object()) { *error = "mod.json is not a JSON object."; return false; }
+  const auto text = [&](const char* key, std::string* value) {
+    const auto found = root.find(key);
+    if (found == root.end()) return true;
+    if (!found->is_string()) return false;
+    *value = found->get<std::string>();
+    return value->size() <= 256 && std::none_of(value->begin(), value->end(), [](char c) { return (unsigned char)c < 0x20; });
+  };
+  if (!text("name", &out->name) || !text("slot", &out->slot) || !text("voice", &out->voice)) {
+    *error = "mod.json: \"name\", \"slot\" and \"voice\" are short texts."; return false;
+  }
+  if (out->name.size() > 96) out->name.resize(96);
+  if (!out->slot.empty()) {
+    // A costume by file code ("PlFxGr") or by fighter and color ("Fox Green"). The suffix keeps a
+    // dot inside a name ("Dr. Mario Red") from being read as a file extension.
+    std::string slot, kind;
+    if (!portrait_slot_from_name_impl(out->slot + ".slot", &slot, &kind)) {
+      *error = "mod.json: \"slot\" does not name one costume (write it like \"Fox Green\" or \"PlFxGr\")."; return false;
+    }
+    out->slot = slot;
+  }
+  return true;
+}
+
+// The manifest and the voice bank of a mod zip, when it has them. The bank is the one the manifest
+// names, or the only .ssm in the zip.
+bool read_mod_extras(const fs::path& path, const std::vector<ZipEntry>& entries, ModManifest* manifest,
+                     std::vector<uint8_t>* voice, std::string* voice_member, std::string* error) {
+  const auto base_name = [](const std::string& name) {
+    const size_t slash = name.find_last_of('/');
+    return lower(slash == std::string::npos ? name : name.substr(slash + 1));
+  };
+  std::vector<const ZipEntry*> banks;
+  const ZipEntry* manifest_entry = nullptr;
+  for (const auto& entry : entries) {
+    if (entry.name.empty() || entry.name.back() == '/') continue;
+    if (lower(fs::path(entry.name).extension().string()) == ".ssm") banks.push_back(&entry);
+    else if (base_name(entry.name) == "mod.json" && !manifest_entry) manifest_entry = &entry;
+  }
+  if (manifest_entry) {
+    std::vector<uint8_t> text;
+    if (manifest_entry->uncompressed > 64 * 1024) { *error = "mod.json is larger than 64 KB."; return false; }
+    if (!extract_zip_member(path, *manifest_entry, &text, error) || !parse_mod_manifest(text, manifest, error)) return false;
+  }
+  if (banks.empty()) {
+    if (!manifest->voice.empty()) { *error = "mod.json names a voice bank the zip does not have: " + manifest->voice; return false; }
+    return true;
+  }
+  const ZipEntry* chosen = nullptr;
+  if (!manifest->voice.empty()) {
+    for (const ZipEntry* bank : banks)
+      if (lower(bank->name) == lower(manifest->voice) || base_name(bank->name) == base_name(manifest->voice)) { chosen = bank; break; }
+    if (!chosen) { *error = "mod.json names a voice bank the zip does not have: " + manifest->voice; return false; }
+  } else if (banks.size() == 1) chosen = banks[0];
+  else { *error = "The zip has " + std::to_string(banks.size()) + " sound banks. A mod has one voice: keep one, or name it in mod.json (\"voice\")."; return false; }
+  if (chosen->uncompressed > kMaxAssetBytes) { *error = "The sound bank in the zip exceeds the 64 MB safety limit."; return false; }
+  if (!extract_zip_member(path, *chosen, voice, error)) return false;
+  *voice_member = chosen->name;
+  return true;
+}
+
+// After a mod zip's costume was installed: the manifest's name for a new entry, and the voice.
+void finish_mod_locked(ImportResult* result, const ModManifest& manifest, const std::string& name_suffix,
+                       const std::vector<uint8_t>& voice, const std::string& voice_member) {
+  if (!result->ok) return;
+  if (!manifest.name.empty() && !result->already_present) {
+    const auto asset = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+      return item.info.id == result->asset_id;
+    });
+    std::string ignored;
+    if (asset != g_assets.end()) { asset->info.name = manifest.name + name_suffix; save_catalog_locked(&ignored); }
+  }
+  if (voice.empty()) return;
+  const std::string costume_message = result->message;
+  const ImportResult attached = attach_voice_locked(result->asset_id, voice, voice_member);
+  result->message = costume_message + " " + attached.message;
+  g_message = result->message;
+}
+
 bool materialize_effect_with_open_disc(const std::string& target_path,
                                        const std::vector<uint8_t>& candidate,
                                        std::vector<uint8_t>* runtime,
@@ -2578,8 +3026,19 @@ bool disc_skin_member(const std::string& raw, std::string* variant) {
   return true;
 }
 
+// A pack's character select file, where its portraits are: the English MnSlChr.usd when the pack
+// has one (it is the one this game loads), otherwise MnSlChr.dat.
+void note_select_screen(const std::string& name, const fs::path& file, uint64_t offset, uint64_t length,
+                        DiscCandidate* screen) {
+  const std::string wanted = lower(name);
+  if (wanted == "mnslchr.usd" || (wanted == "mnslchr.dat" && screen->member.empty()))
+    *screen = {name, file, offset, length};
+}
+
 // Every file in a disc image whose name is a costume of a slot of the game (disc_skin_member).
-bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, std::string* error) {
+// *screen gets the disc's character select file when it has one.
+bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, DiscCandidate* screen,
+                        std::string* error) {
   std::vector<uint8_t> header;
   if (!read_range(iso, 0, 0x440, &header)) { *error = "The disc image could not be read."; return false; }
   const uint64_t fst_offset = be32(header.data() + 0x424), fst_size = be32(header.data() + 0x428);
@@ -2593,22 +3052,292 @@ bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, st
     const size_t slash = file.path.find_last_of('/');
     const std::string name = slash == std::string::npos ? file.path : file.path.substr(slash + 1);
     std::string variant;
+    note_select_screen(name, iso, file.start, file.size, screen);
     if (!disc_skin_member(name, &variant)) continue;
     out->push_back({name, iso, file.start, file.size});
   }
   return true;
 }
 
-void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out) {
+void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out, DiscCandidate* screen) {
   std::error_code ec;
   for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
     if (!it->is_regular_file(ec)) continue;
     const std::string name = path_filename_utf8(it->path());
     std::string variant;
-    if (!disc_skin_member(name, &variant)) continue;
     const uint64_t length = it->file_size(ec);
-    if (!ec) out->push_back({name, it->path(), 0, length});
+    if (ec) continue;
+    note_select_screen(name, it->path(), 0, length, screen);
+    if (!disc_skin_member(name, &variant)) continue;
+    out->push_back({name, it->path(), 0, length});
   }
+}
+
+// ---- a pack's own portraits ----
+// The character select file keeps every portrait in one texture animation: an image table, a
+// palette table, and a track of keys that says which table entry each frame shows. The game shows
+// a costume's portrait by setting that animation to frame "fighter column + 30 * costume"
+// (mn/mncharsel.c), so the keys, not the order of the table, name the picture of a slot. This is
+// the reading tools/companion_texture_diagnostic.py does to make companion_texture_map.h.
+constexpr uint32_t kPortraitWidth = 136, kPortraitHeight = 188, kPortraitFormat = 9;   // 8 bit palette indices
+constexpr uint32_t kPortraitBytes = (kPortraitWidth / 8) * (kPortraitHeight / 4) * 32;
+struct SelectPortrait { uint32_t pixels = 0, colors = 0, palette_format = 0, palette_entries = 0; };
+
+// Frame -> value of one animation track that holds whole-number keys. `block` is the archive's data
+// block; every read stays inside it.
+bool texture_track_keys(const uint8_t* block, size_t size, uint32_t track, std::map<int, int>* keys) {
+  keys->clear();
+  if ((uint64_t)track + 0x14 > size) return false;
+  const uint32_t length = be32(block + track + 4);
+  const uint8_t value_format = block[track + 0xD], slope_format = block[track + 0xE];
+  size_t at = be32(block + track + 0x10);
+  if (at > size || length > size - at) return false;
+  const size_t end = at + length;
+  static constexpr uint32_t sizes[] = {4, 2, 2, 1, 1};   // float, s16, u16, s8, u8
+  const uint32_t kind = value_format >> 5, slope_kind = slope_format >> 5;
+  if (kind > 4) return false;
+  const double scale = (double)(1u << (value_format & 31));
+  uint64_t frame = 0;
+  while (at < end) {
+    uint8_t byte = block[at++];
+    const uint32_t opcode = byte & 0xF;
+    uint32_t count = (byte >> 4) & 7, shift = 3;
+    while (byte & 0x80) {
+      if (at >= size || shift > 24) return false;
+      byte = block[at++];
+      count |= (uint32_t)(byte & 0x7F) << shift; shift += 7;
+    }
+    for (uint32_t i = 0; i <= count; ++i) {
+      bool has_value = false;
+      double value = 0;
+      if (opcode == 1 || opcode == 2 || opcode == 3 || opcode == 4 || opcode == 6) {
+        if (size - at < sizes[kind]) return false;
+        const uint8_t* raw = block + at;
+        at += sizes[kind];
+        switch (kind) {
+          case 0: { const uint32_t bits = le32(raw); float real = 0; std::memcpy(&real, &bits, 4); value = real; break; }
+          case 1: value = (int16_t)le16(raw) / scale; break;
+          case 2: value = le16(raw) / scale; break;
+          case 3: value = (int8_t)raw[0] / scale; break;
+          default: value = raw[0] / scale; break;
+        }
+        has_value = true;
+      }
+      if (opcode == 4 || opcode == 5) {
+        if (slope_kind > 4 || size - at < sizes[slope_kind]) return false;
+        at += sizes[slope_kind];
+      }
+      uint32_t wait = 0, wait_shift = 0;
+      for (;;) {
+        if (at >= size || wait_shift > 28) return false;
+        byte = block[at++];
+        wait |= (uint32_t)(byte & 0x7F) << wait_shift; wait_shift += 7;
+        if (!(byte & 0x80)) break;
+      }
+      if (has_value) {
+        if (!std::isfinite(value) || value < 0 || value > 65535 || frame > 65535 || keys->size() >= 4096) return false;
+        (*keys)[(int)frame] = (int)value;
+      }
+      frame += wait;
+    }
+  }
+  return !keys->empty();
+}
+
+// Frame -> portrait of a character select file, from the first texture animation whose tables hold
+// portraits. False when the file has no such animation (not a character select file, or one built
+// another way): then no portrait is taken from it.
+bool select_portraits(const std::vector<uint8_t>& dat, std::map<int, SelectPortrait>* frames) {
+  frames->clear();
+  if (dat.size() < 0x20) return false;
+  const uint64_t data_size = be32(dat.data() + 4), relocations = be32(dat.data() + 8);
+  if (0x20ull + data_size + relocations * 4ull > dat.size()) return false;
+  const uint8_t* block = dat.data() + 0x20;
+  std::vector<uint32_t> offsets((size_t)relocations);
+  for (size_t i = 0; i < offsets.size(); ++i) offsets[i] = be32(block + data_size + i * 4);
+  std::vector<uint32_t> sorted = offsets;
+  std::sort(sorted.begin(), sorted.end());
+  auto relocated = [&](uint32_t at) { return std::binary_search(sorted.begin(), sorted.end(), at); };
+  auto word = [&](uint64_t at) { return be32(block + at); };
+  for (const uint32_t pointer : offsets) {
+    // pointer is the image table field of a texture animation:
+    // {next, id, animation, image table, palette table, images (16 bit), palettes (16 bit)}
+    if (pointer < 0xC || (uint64_t)pointer + 12 > data_size) continue;
+    const uint32_t anim = pointer - 0xC;
+    if (!relocated(pointer + 4) || !relocated(anim + 8)) continue;
+    const uint32_t images = word(pointer), palettes = word(pointer + 4);
+    const uint32_t image_count = be16(block + pointer + 8), palette_count = be16(block + pointer + 10);
+    if (image_count < 20 || image_count > 400 || image_count != palette_count) continue;
+    if ((uint64_t)images + 4ull * image_count > data_size || (uint64_t)palettes + 4ull * image_count > data_size) continue;
+    std::vector<SelectPortrait> entries(image_count);
+    std::vector<bool> valid(image_count, false);
+    size_t good = 0;
+    bool broken = false;
+    for (uint32_t i = 0; i < image_count; ++i) {
+      const uint32_t image = word(images + 4ull * i), palette = word(palettes + 4ull * i);
+      if ((uint64_t)image + 24 > data_size || (uint64_t)palette + 14 > data_size) { broken = true; break; }
+      SelectPortrait entry;
+      entry.pixels = word(image);
+      if (be16(block + image + 4) != kPortraitWidth || be16(block + image + 6) != kPortraitHeight ||
+          word(image + 8) != kPortraitFormat || (uint64_t)entry.pixels + kPortraitBytes > data_size) continue;
+      entry.colors = word(palette);
+      entry.palette_format = word(palette + 4);
+      entry.palette_entries = be16(block + palette + 12);
+      if (entry.palette_format > 2 || !entry.palette_entries || entry.palette_entries > 256 ||
+          (uint64_t)entry.colors + 2ull * entry.palette_entries > data_size) continue;
+      entries[i] = entry; valid[i] = true; ++good;
+    }
+    if (broken || good * 5 < (size_t)image_count * 4) continue;
+    // animation -> its first track; the image index track is type 1
+    const uint32_t animation = word(anim + 8);
+    if ((uint64_t)animation + 12 > data_size) continue;
+    std::map<int, int> keys;
+    bool have_keys = false;
+    uint32_t track = word(animation + 8);
+    for (int guard = 0; track && guard < 64; ++guard) {
+      if ((uint64_t)track + 0x14 > data_size) { have_keys = false; break; }
+      if (block[track + 0xC] == 1) have_keys = texture_track_keys(block, (size_t)data_size, track, &keys);
+      track = word(track);
+    }
+    if (!have_keys) continue;
+    bool in_table = true;
+    for (const auto& key : keys) in_table &= key.second >= 0 && (uint32_t)key.second < image_count;
+    if (!in_table) continue;
+    for (const auto& key : keys)
+      if (valid[(size_t)key.second]) (*frames)[key.first] = entries[(size_t)key.second];
+    return !frames->empty();
+  }
+  return false;
+}
+
+// The frame that shows a costume slot's portrait, or -1 for a slot with no cell of its own: Nana
+// (the Ice Climbers' cell is Popo's), Sheik (Zelda's cell), and Mr. Game & Watch (four cells, one
+// costume file).
+int portrait_frame(const SlotName& slot) {
+  static constexpr const char* columns[] = {"Ca", "Dk", "Fx", "Gw", "Kb", "Kp", "Lk", "Lg", "Mr", "Ms", "Mt", "Ns", "Pe",
+                                            "Pk", "Pp", "Pr", "Ss", "Ys", "Zd", "Fc", "Cl", "Dr", "Fe", "Pc", "Gn"};
+  const std::string code = slot.family->file_code;
+  if (code == "Gw") return -1;
+  const std::string colors = slot.family->colors;   // the game's costume order
+  const size_t at = (std::string(" ") + colors).find(std::string(" ") + slot.color->code);
+  if (at == std::string::npos) return -1;
+  for (size_t column = 0; column < std::size(columns); ++column)
+    if (code == columns[column]) return (int)column + (int)(at / 3) * 30;
+  return -1;
+}
+
+// One portrait as 8 bit RGBA, top row first. The image is rows of 8x4 texel blocks of palette
+// indices; the palette is 16 bit colors in one of the console's three palette formats.
+std::vector<uint8_t> decode_portrait(const uint8_t* block, const SelectPortrait& portrait) {
+  std::vector<uint8_t> rgba((size_t)kPortraitWidth * kPortraitHeight * 4, 0);
+  const uint8_t* source = block + portrait.pixels;
+  for (uint32_t block_y = 0; block_y < kPortraitHeight; block_y += 4)
+    for (uint32_t block_x = 0; block_x < kPortraitWidth; block_x += 8)
+      for (uint32_t y = 0; y < 4; ++y)
+        for (uint32_t x = 0; x < 8; ++x) {
+          const uint32_t index = *source++;
+          if (index >= portrait.palette_entries) continue;   // no such color: left transparent
+          const uint32_t color = be16(block + portrait.colors + 2 * index);
+          uint32_t r, g, b, a = 255;
+          if (portrait.palette_format == 0) {          // intensity and alpha
+            r = g = b = color & 0xFF; a = color >> 8;
+          } else if (portrait.palette_format == 1) {   // 5:6:5
+            r = (color >> 11) & 31; g = (color >> 5) & 63; b = color & 31;
+            r = (r << 3) | (r >> 2); g = (g << 2) | (g >> 4); b = (b << 3) | (b >> 2);
+          } else if (color & 0x8000) {                 // 5:5:5, opaque
+            r = (color >> 10) & 31; g = (color >> 5) & 31; b = color & 31;
+            r = (r << 3) | (r >> 2); g = (g << 3) | (g >> 2); b = (b << 3) | (b >> 2);
+          } else {                                     // 4:4:4 with 3 bits of alpha
+            a = (color >> 12) & 7; r = (color >> 8) & 15; g = (color >> 4) & 15; b = color & 15;
+            a = (a << 5) | (a << 2) | (a >> 1); r *= 17; g *= 17; b *= 17;
+          }
+          uint8_t* out = rgba.data() + ((size_t)(block_y + y) * kPortraitWidth + block_x + x) * 4;
+          out[0] = (uint8_t)r; out[1] = (uint8_t)g; out[2] = (uint8_t)b; out[3] = (uint8_t)a;
+        }
+  return rgba;
+}
+
+// A PNG of 8 bit RGBA pixels. The picture is small and written once per scan, so the data is
+// stored without compression: no encoder to depend on, and any PNG reader accepts it.
+std::vector<uint8_t> rgba_png(const std::vector<uint8_t>& rgba, uint32_t width, uint32_t height) {
+  std::vector<uint8_t> raw;
+  raw.reserve(((size_t)width * 4 + 1) * height);
+  for (uint32_t y = 0; y < height; ++y) {
+    raw.push_back(0);   // filter: none
+    raw.insert(raw.end(), rgba.begin() + (size_t)y * width * 4, rgba.begin() + (size_t)(y + 1) * width * 4);
+  }
+  std::vector<uint8_t> packed{0x78, 0x01};
+  uint32_t sum_a = 1, sum_b = 0;
+  for (const uint8_t byte : raw) { sum_a = (sum_a + byte) % 65521u; sum_b = (sum_b + sum_a) % 65521u; }
+  for (size_t at = 0; at < raw.size();) {
+    const size_t chunk = std::min<size_t>(raw.size() - at, 65535);
+    packed.push_back(at + chunk == raw.size() ? 1 : 0);
+    packed.push_back((uint8_t)chunk); packed.push_back((uint8_t)(chunk >> 8));
+    packed.push_back((uint8_t)~chunk); packed.push_back((uint8_t)(~chunk >> 8));
+    packed.insert(packed.end(), raw.begin() + at, raw.begin() + at + chunk);
+    at += chunk;
+  }
+  const uint32_t checksum = (sum_b << 16) | sum_a;
+  for (int shift = 24; shift >= 0; shift -= 8) packed.push_back((uint8_t)(checksum >> shift));
+  std::vector<uint8_t> png{0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+  auto chunk = [&](const char* type, const std::vector<uint8_t>& data) {
+    std::vector<uint8_t> body(type, type + 4);
+    body.insert(body.end(), data.begin(), data.end());
+    uint8_t word[4];
+    put_be32(word, (uint32_t)data.size()); png.insert(png.end(), word, word + 4);
+    png.insert(png.end(), body.begin(), body.end());
+    put_be32(word, crc32(body.data(), body.size())); png.insert(png.end(), word, word + 4);
+  };
+  std::vector<uint8_t> header(13, 0);
+  put_be32(header.data(), width); put_be32(header.data() + 4, height);
+  header[8] = 8; header[9] = 6;   // 8 bits a channel, RGBA
+  chunk("IHDR", header);
+  chunk("IDAT", packed);
+  chunk("IEND", {});
+  return png;
+}
+
+// Gives each plain costume of a scan the portrait the pack's character select file shows for its
+// slot, when that picture differs from the game's own. The picture is written beside the catalog as
+// the skin's "csp" companion. Alternate sets are skipped: the file has one cell per slot, and it is
+// the plain costume's. Returns how many portraits were stored. The game disc's English file is the
+// one compared against, since its portraits are the ones the renderer replaces.
+size_t pack_portraits_locked(const DiscCandidate& screen, std::map<std::string, AssetRecord>* fresh) {
+  if (screen.member.empty()) return 0;
+  bool wanted = false;
+  for (const auto& item : *fresh) wanted |= item.second.info.variant.empty();
+  if (!wanted) return 0;
+  uint32_t retail_offset = 0, retail_size = 0;
+  std::vector<uint8_t> pack, retail;
+  if (!host::disc_find_file("MnSlChr.usd", &retail_offset, &retail_size) || !retail_size || retail_size > kMaxAssetBytes ||
+      !read_range(screen.file, screen.offset, screen.length, &pack)) return 0;
+  retail.resize(retail_size);
+  if (!host::disc_read(retail_offset, retail.data(), retail_size) || pack == retail) return 0;
+  std::map<int, SelectPortrait> ours, theirs;
+  if (!select_portraits(retail, &ours) || !select_portraits(pack, &theirs)) return 0;
+  size_t stored = 0;
+  for (auto& item : *fresh) {
+    AssetRecord& asset = item.second;
+    SlotName slot;
+    if (!asset.info.variant.empty() || !find_slot(asset.info.target_path, &slot)) continue;
+    const int frame = portrait_frame(slot);
+    const auto standard = ours.find(frame), picture = theirs.find(frame);
+    if (frame < 0 || standard == ours.end() || picture == theirs.end()) continue;
+    const std::vector<uint8_t> rgba = decode_portrait(pack.data() + 0x20, picture->second);
+    if (rgba == decode_portrait(retail.data() + 0x20, standard->second)) continue;   // the game's own picture
+    const std::vector<uint8_t> png = rgba_png(rgba, kPortraitWidth, kPortraitHeight);
+    AssetRecord::Companion companion;
+    companion.kind = "csp";
+    companion.sha256 = sha256(png);
+    companion.source_member = screen.member;
+    companion.stored_path = (fs::path(L"assets") / fs::u8path(asset.info.id) / L"companions" / L"csp.png").generic_u8string();
+    std::string write_error;
+    if (companion.sha256.empty() ||
+        !write_atomic(g_root / fs::u8path(companion.stored_path), png.data(), png.size(), &write_error)) continue;
+    asset.companions.push_back(std::move(companion));
+    ++stored;
+  }
+  return stored;
 }
 
 }  // namespace
@@ -2636,8 +3365,9 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
         return result;
       }
   std::vector<DiscCandidate> candidates;
-  if (folder) folder_costume_files(root, &candidates);
-  else if (!disc_costume_files(root, &candidates, error)) { result.message = *error; return result; }
+  DiscCandidate select_screen;   // the pack's character select file, when it has one
+  if (folder) folder_costume_files(root, &candidates, &select_screen);
+  else if (!disc_costume_files(root, &candidates, &select_screen, error)) { result.message = *error; return result; }
   // The plain .dat of a slot first, then its English .usd: when both differ from the game's and from
   // each other, the English one is the one this game loads, so it is the one listed.
   std::stable_sort(candidates.begin(), candidates.end(), [](const DiscCandidate& a, const DiscCandidate& b) {
@@ -2703,16 +3433,22 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     if (!file_stamp(candidate.file, &asset.disc_size, &asset.disc_mtime)) { ++skipped; continue; }
     fresh[fresh_key] = std::move(asset);
   }
+  const size_t portraits = pack_portraits_locked(select_screen, &fresh);
   // Replace this disc's earlier records: files that no longer differ go away, changed ones are
   // updated, and a name the player gave an entry is kept. Records of a disc that no longer exists
   // go too; they hold no data and a new scan brings them back.
   auto previous_assets = g_assets;
   auto previous_scans = g_disc_scans;
   std::map<std::string, std::string> names;
+  std::map<std::string, AssetRecord::Voice> voices;   // a voice bank the player gave a pack's skin stays with it
+  std::map<std::string, std::vector<AssetRecord::Companion>> pictures;   // and so does a picture (set_skin_portrait)
   g_assets.erase(std::remove_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
     if (item.source_kind != kDiscSource) return false;
     if (item.source_id == key) {
       if (item.info.name.find(": from ") == std::string::npos) names[item.info.id] = item.info.name;
+      if (!item.voice.stored_path.empty()) voices[item.info.id] = item.voice;
+      for (const auto& companion : item.companions)
+        if (player_picture(companion)) pictures[item.info.id].push_back(companion);
       return true;
     }
     std::error_code gone;
@@ -2721,6 +3457,20 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
   for (auto& item : fresh) {
     const auto renamed = names.find(item.second.info.id);
     if (renamed != names.end()) item.second.info.name = renamed->second;
+    const auto voiced = voices.find(item.second.info.id);
+    if (voiced != voices.end()) {
+      item.second.voice = voiced->second;
+      item.second.info.voice = voiced->second.bank;
+      item.second.info.voice_source = voiced->second.source_member;
+    }
+    const auto pictured = pictures.find(item.second.info.id);
+    if (pictured != pictures.end())
+      for (const auto& kept : pictured->second) {
+        auto& have = item.second.companions;
+        have.erase(std::remove_if(have.begin(), have.end(),
+            [&](const AssetRecord::Companion& c) { return c.kind == kept.kind; }), have.end());
+        have.push_back(kept);
+      }
     g_assets.push_back(std::move(item.second));
   }
   g_disc_scans.erase(std::remove_if(g_disc_scans.begin(), g_disc_scans.end(),
@@ -2735,6 +3485,8 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
                    std::to_string(same) + " costume files are the standard ones, " + std::to_string(skipped) +
                    " not usable).";
   host::log("cosmetics: scanned %s: %zu skins listed, %zu standard, %zu not usable", key.c_str(), fresh.size(), same, skipped);
+  if (!select_screen.member.empty())
+    host::log("cosmetics: %zu portraits taken from the %s of %s", portraits, select_screen.member.c_str(), key.c_str());
   return result;
 }
 
@@ -2929,6 +3681,19 @@ ImportResult import_file(const std::string& path_text) {
   testing::DatInspection dat;
   std::vector<VaultCompanionPlan> companions;
   std::string member, error;
+  // A mod zip's own extras (docs/voice-mods.md): its manifest and the fighter's sound bank.
+  ModManifest manifest;
+  std::vector<uint8_t> voice;
+  std::string voice_member;
+  if (extension == ".ssm") {
+    // A sound bank on its own: it becomes the voice of an installed skin of its fighter.
+    if (!read_bounded(path, kMaxAssetBytes, &bytes, &error)) return {false, false, {}, error};
+    std::lock_guard<std::mutex> lock(g_mutex);
+    ImportResult result = attach_loose_voice_locked(bytes, path_filename_utf8(path), {}, {path_filename_utf8(path)});
+    if (result.ok && std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply it.";
+    g_message = result.message;
+    return result;
+  }
   if (extension == ".png") {
     // A portrait or stock icon on its own: the file name says which costume it is for.
     std::string slot, kind;
@@ -2979,6 +3744,7 @@ ImportResult import_file(const std::string& path_text) {
       g_message = result.message;
       return result;
     }
+    if (!read_mod_extras(path, entries, &manifest, &voice, &voice_member, &error)) return {false, false, {}, error};
     std::vector<std::pair<ZipEntry, testing::DatInspection>> recognized;
     std::vector<std::vector<uint8_t>> recognized_bytes;
     std::vector<VaultResourcePlan> stage_resources;
@@ -3031,6 +3797,16 @@ ImportResult import_file(const std::string& path_text) {
       g_message = result.message;
       return result;
     }
+    if (recognized.empty() && candidates == 0 && !voice.empty()) {
+      // A voice with no costume file: for the costume the manifest, the bank's name or the zip's
+      // name says, else for the one skin of that fighter it can only be meant for.
+      std::lock_guard<std::mutex> lock(g_mutex);
+      ImportResult result = attach_loose_voice_locked(voice, voice_member, manifest.slot,
+                                                      {voice_member, path_filename_utf8(path)});
+      if (result.ok && std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply it.";
+      g_message = result.message;
+      return result;
+    }
     if (recognized.empty() && candidates == 0) {
       // A pack of pictures with no costume file: each PNG whose name identifies a costume.
       size_t installed = 0, pictures = 0;
@@ -3064,8 +3840,70 @@ ImportResult import_file(const std::string& path_text) {
     }
     if (recognized.empty())
       return {false, false, {}, "ZIP contains no valid DAT for a supported costume or stage resource."};
-    if (recognized.size() != 1)
-      return {false, false, {}, "ZIP contains multiple supported DATs; multi-asset bundle import is not enabled in this milestone."};
+    // The same costume twice (a .dat and its .usd with the same content) is one costume.
+    for (size_t i = 0; i < recognized.size(); ++i)
+      for (size_t k = recognized.size(); k-- > i + 1;)
+        if (lower(recognized[k].second.target_path) == lower(recognized[i].second.target_path) &&
+            recognized_bytes[k] == recognized_bytes[i]) {
+          recognized.erase(recognized.begin() + (std::ptrdiff_t)k);
+          recognized_bytes.erase(recognized_bytes.begin() + (std::ptrdiff_t)k);
+        }
+    // The bank is checked before anything is written: a mod goes in whole or not at all.
+    if (!voice.empty())
+      for (const auto& costume : recognized) {
+        VoiceCheck check;
+        if (!check_voice(voice, voice_member, costume.second.target_path, &check, &error))
+          return {false, false, {}, "Sound bank refused: " + error + " Nothing from this zip was imported."};
+      }
+    if (recognized.size() != 1) {
+      // Several costumes in one mod: one entry per costume slot, each with the pictures whose
+      // names say that costume, and all of them with the mod's voice.
+      std::map<std::string, size_t> slots;
+      for (size_t i = 0; i < recognized.size(); ++i)
+        if (!slots.emplace(lower(recognized[i].second.target_path), i).second)
+          return {false, false, {}, "ZIP contains two different costume files for " + recognized[i].second.target_path +
+                                    "; a mod has one file per costume."};
+      std::vector<std::vector<VaultCompanionPlan>> pictures(recognized.size());
+      for (const auto& entry : entries) {
+        if (lower(fs::path(entry.name).extension().string()) != ".png") continue;
+        std::string slot, kind;
+        if (!portrait_slot_from_name_impl(entry.name, &slot, &kind)) continue;
+        const auto owner = slots.find(lower(slot));
+        if (owner == slots.end()) continue;
+        auto& mine = pictures[owner->second];
+        if (std::any_of(mine.begin(), mine.end(), [&](const VaultCompanionPlan& item) { return item.kind == kind; })) continue;
+        VaultCompanionPlan picture;
+        picture.kind = kind;
+        picture.source_member = entry.name;
+        if (!extract_zip_member(path, entry, &picture.bytes, &error) || !png_companion(picture.bytes, &error))
+          return {false, false, {}, error};
+        mine.push_back(std::move(picture));
+      }
+      std::lock_guard<std::mutex> lock(g_mutex);
+      ImportResult result;
+      size_t installed = 0;
+      for (size_t i = 0; i < recognized.size(); ++i) {
+        ImportResult one = install_asset_locked(path, "zip", recognized[i].first.name, std::move(recognized_bytes[i]),
+                                                recognized[i].second, std::move(pictures[i]));
+        finish_mod_locked(&one, manifest, ", " + recognized[i].second.costume, voice, voice_member);
+        if (!one.ok) { result.message = one.message; break; }
+        ++installed;
+        result.asset_id = one.asset_id;
+        result.already_present = installed == 1 ? one.already_present : result.already_present && one.already_present;
+      }
+      result.ok = installed == recognized.size();
+      if (result.ok) {
+        result.message = std::to_string(installed) + " costumes imported from " + path_filename_utf8(path) +
+                         (voice.empty() ? std::string(".") : ", each with the voice bank " +
+                              path_filename_utf8(fs::u8path(voice_member)) + ".");
+        if (std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply the staged profile safely.";
+      } else if (installed) {
+        result.message = std::to_string(installed) + " of " + std::to_string(recognized.size()) +
+                         " costumes imported, then: " + result.message;
+      }
+      g_message = result.message;
+      return result;
+    }
     member = recognized[0].first.name;
     dat = std::move(recognized[0].second);
     bytes = std::move(recognized_bytes[0]);
@@ -3085,11 +3923,12 @@ ImportResult import_file(const std::string& path_text) {
       companions.push_back(std::move(companion));
     }
   } else {
-    return {false, false, {}, "Choose a costume or stage .dat, .usd or .zip, a portrait .png, or a Nucleus vault .zip."};
+    return {false, false, {}, "Choose a costume or stage .dat, .usd or .zip, a portrait .png, a voice bank .ssm, or a Nucleus vault .zip."};
   }
   std::lock_guard<std::mutex> lock(g_mutex);
   ImportResult result = install_asset_locked(path, extension == ".zip" ? "zip" : "dat", member,
                                              std::move(bytes), dat, std::move(companions));
+  finish_mod_locked(&result, manifest, {}, voice, voice_member);
   if (result.ok && std::atomic_load(&g_runtime)->initialized)
     result.message += " Restart to apply the staged profile safely.";
   g_message = result.message;
@@ -3106,6 +3945,198 @@ ImportResult import_portrait(const std::string& png_path, const std::string& slo
   if (result.ok && std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply it.";
   g_message = result.message;
   return result;
+}
+
+ImportResult import_voice(const std::string& ssm_path, const std::string& asset_id) {
+  const fs::path path = fs::u8path(ssm_path);
+  std::vector<uint8_t> bytes;
+  std::string error;
+  if (!read_bounded(path, kMaxAssetBytes, &bytes, &error)) return {false, false, {}, error};
+  std::lock_guard<std::mutex> lock(g_mutex);
+  ImportResult result = attach_voice_locked(asset_id, bytes, path_filename_utf8(path));
+  if (result.ok && std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply it.";
+  g_message = result.message;
+  return result;
+}
+
+bool remove_voice(const std::string& asset_id, std::string* error) {
+  std::string local; if (!error) error = &local;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (!mutable_profile_locked(error)) return false;
+  auto asset = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) { return item.info.id == asset_id; });
+  if (asset == g_assets.end() || asset->voice.stored_path.empty()) { *error = "That skin has no voice bank."; return false; }
+  const AssetRecord previous = *asset;
+  const Profile previous_profile = g_profile;
+  const fs::path stored = g_root / fs::u8path(asset->voice.stored_path);
+  asset->voice = AssetRecord::Voice{};
+  asset->info.voice.clear(); asset->info.voice_source.clear();
+  ++g_profile.generation;
+  if (!save_state_locked(error)) { *asset = previous; g_profile = previous_profile; return false; }
+  DeleteFileW(stored.c_str());
+  g_message = asset->info.name + " uses the game's own voice again" +
+              (std::atomic_load(&g_runtime)->initialized ? "; restart to apply it." : ".");
+  return true;
+}
+
+// ---- a skin's own portrait and stock icon ----
+
+static const char* picture_word(const std::string& kind) { return kind == "csp" ? "portrait" : "stock icon"; }
+static AssetRecord* skin_locked(const std::string& skin_id) {
+  for (auto& item : g_assets)
+    if (item.info.id == skin_id && item.info.kind == "character_costume") return &item;
+  return nullptr;
+}
+static const AssetRecord::Companion* picture_of(const AssetRecord& asset, const std::string& kind) {
+  for (const auto& companion : asset.companions) if (companion.kind == kind) return &companion;
+  return nullptr;
+}
+// The fighter a skin or a costume's picture entry belongs to; null for stages and effects.
+static const FighterFamily* entry_family(const AssetRecord& asset) {
+  SlotName slot;
+  if (asset.info.kind != "character_costume" && asset.info.kind != kPortraitKind) return nullptr;
+  return find_slot(portrait_slot(asset.info.target_path), &slot) ? slot.family : nullptr;
+}
+
+// Stores `png` as the skin's own picture of that kind. The file is written under a new name first
+// and the record changed after, so a failed save leaves the old picture as it was.
+static ImportResult attach_picture_locked(const std::string& skin_id, const std::string& kind,
+                                          const std::vector<uint8_t>& png, const std::string& source_name) {
+  ImportResult result;
+  std::string error;
+  if (!mutable_profile_locked(&error)) { result.message = error; return result; }
+  if (kind != "csp" && kind != "stock") { result.message = "A picture is a portrait or a stock icon."; return result; }
+  AssetRecord* asset = skin_locked(skin_id);
+  if (!asset) { result.message = "A picture belongs to an installed skin; that skin is not in the list."; return result; }
+  if (!png_companion(png, &error)) { result.message = error; return result; }
+  const std::string digest = sha256(png);
+  if (digest.empty()) { result.message = "The picture could not be hashed."; return result; }
+  AssetRecord::Companion picture;
+  picture.kind = kind;
+  picture.stored_path = (fs::path(L"assets") / fs::u8path(asset->info.id) / L"companions" /
+                         fs::u8path(player_picture_file(kind, digest))).generic_u8string();
+  picture.sha256 = digest;
+  picture.source_member = source_name;
+  const AssetRecord::Companion* had = picture_of(*asset, kind);
+  const bool same = had && had->sha256 == digest;
+  const std::string old_path = had ? had->stored_path : std::string();
+  const std::string old_source = had ? had->source_member : std::string();
+  if (!write_atomic(g_root / fs::u8path(picture.stored_path), png.data(), png.size(), &error)) { result.message = error; return result; }
+  const AssetRecord previous = *asset;
+  const Profile previous_profile = g_profile;
+  asset->companions.erase(std::remove_if(asset->companions.begin(), asset->companions.end(),
+      [&](const AssetRecord::Companion& c) { return c.kind == kind; }), asset->companions.end());
+  asset->companions.push_back(picture);
+  // The portrait first: the list's preview is the first picture it finds.
+  std::stable_sort(asset->companions.begin(), asset->companions.end(),
+      [](const AssetRecord::Companion& a, const AssetRecord::Companion& b) { return a.kind == "csp" && b.kind != "csp"; });
+  // The note about the picture this one replaces goes with it.
+  if (!old_source.empty()) {
+    auto& notes = asset->info.unsupported_companions;
+    const std::string tail = ": " + old_source;
+    notes.erase(std::remove_if(notes.begin(), notes.end(), [&](const std::string& note) {
+      return note.size() >= tail.size() && note.compare(note.size() - tail.size(), tail.size(), tail) == 0;
+    }), notes.end());
+  }
+  if (!same) ++g_profile.generation;   // the same skin, another picture
+  if (!save_state_locked(&error)) {
+    *asset = previous; g_profile = previous_profile;
+    if (picture.stored_path != old_path) DeleteFileW((g_root / fs::u8path(picture.stored_path)).c_str());
+    result.message = error; return result;
+  }
+  if (!old_path.empty() && old_path != picture.stored_path) DeleteFileW((g_root / fs::u8path(old_path)).c_str());
+  g_message = std::string(kind == "csp" ? "Portrait" : "Stock icon") + " of " + asset->info.name + " set from " +
+              source_name + ".";
+  result.ok = true; result.already_present = same; result.asset_id = asset->info.id; result.message = g_message;
+  return result;
+}
+
+ImportResult set_skin_portrait(const std::string& skin_id, const std::string& png_path, const std::string& kind) {
+  const fs::path path = fs::u8path(png_path);
+  std::vector<uint8_t> bytes;
+  std::string error;
+  if (!read_bounded(path, 16ull * 1024 * 1024, &bytes, &error)) return {false, false, {}, error};
+  std::lock_guard<std::mutex> lock(g_mutex);
+  ImportResult result = attach_picture_locked(skin_id, kind, bytes, path_filename_utf8(path));
+  if (result.ok && std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply it.";
+  g_message = result.message;
+  return result;
+}
+
+bool set_skin_portrait_from(const std::string& skin_id, const std::string& source_asset_id,
+                            const std::string& kind, std::string* error) {
+  std::string local; if (!error) error = &local;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const AssetRecord* skin = skin_locked(skin_id);
+  const auto source = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+    return item.info.id == source_asset_id;
+  });
+  const AssetRecord::Companion* picture = source == g_assets.end() ? nullptr : picture_of(*source, kind);
+  if (!skin || !picture || source_asset_id == skin_id || !entry_family(*source) ||
+      entry_family(*source) != entry_family(*skin)) {
+    *error = std::string("That entry has no ") + picture_word(kind) + " for this skin."; return false;
+  }
+  std::vector<uint8_t> bytes;
+  if (!read_bounded(g_root / fs::u8path(picture->stored_path), 16ull * 1024 * 1024, &bytes, error) ||
+      sha256(bytes) != picture->sha256) {
+    *error = "The " + std::string(picture_word(kind)) + " of " + source->info.name + " is missing or changed."; return false;
+  }
+  const std::string from = source->info.name;   // attach_picture_locked changes the list's records
+  ImportResult result = attach_picture_locked(skin_id, kind, bytes, from);
+  if (result.ok && std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply it.";
+  if (result.ok) g_message = result.message; else *error = result.message;
+  return result.ok;
+}
+
+bool clear_skin_portrait(const std::string& skin_id, const std::string& kind, std::string* error) {
+  std::string local; if (!error) error = &local;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (!mutable_profile_locked(error)) return false;
+  AssetRecord* asset = skin_locked(skin_id);
+  const AssetRecord::Companion* had = asset ? picture_of(*asset, kind) : nullptr;
+  if (!had) { *error = std::string("That skin has no ") + picture_word(kind) + " of its own."; return false; }
+  const AssetRecord previous = *asset;
+  const Profile previous_profile = g_profile;
+  const fs::path stored = g_root / fs::u8path(had->stored_path);
+  const std::string tail = ": " + had->source_member;
+  auto& notes = asset->info.unsupported_companions;
+  notes.erase(std::remove_if(notes.begin(), notes.end(), [&](const std::string& note) {
+    return tail.size() > 2 && note.size() >= tail.size() && note.compare(note.size() - tail.size(), tail.size(), tail) == 0;
+  }), notes.end());
+  asset->companions.erase(std::remove_if(asset->companions.begin(), asset->companions.end(),
+      [&](const AssetRecord::Companion& c) { return c.kind == kind; }), asset->companions.end());
+  ++g_profile.generation;
+  if (!save_state_locked(error)) { *asset = previous; g_profile = previous_profile; return false; }
+  DeleteFileW(stored.c_str());
+  g_message = asset->info.name + " has no " + picture_word(kind) + " of its own now" +
+              (std::atomic_load(&g_runtime)->initialized ? "; restart to apply it." : ".");
+  return true;
+}
+
+std::vector<PortraitChoice> portrait_choices(const std::string& skin_id, const std::string& kind) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  std::vector<PortraitChoice> out;
+  const AssetRecord* skin = skin_locked(skin_id);
+  const FighterFamily* family = skin ? entry_family(*skin) : nullptr;
+  if (!family) return out;
+  for (const auto& item : g_assets)
+    if (item.info.id != skin_id && entry_family(item) == family && picture_of(item, kind))
+      out.push_back({item.info.id, item.info.name});
+  return out;
+}
+
+PortraitSource skin_portrait_source(const std::string& skin_id, const std::string& kind) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const AssetRecord* skin = skin_locked(skin_id);
+  if (!skin) return PortraitSource::Standard;
+  if (picture_of(*skin, kind)) return PortraitSource::Own;
+  // The costume's added picture counts while its entry is switched on.
+  const std::string target = skin->info.target_path + kPortraitSuffix;
+  const auto pick = g_profile.selections.find(target);
+  if (pick == g_profile.selections.end() || pick->second == kVanillaSelection) return PortraitSource::Standard;
+  for (const auto& item : g_assets)
+    if (item.info.id == pick->second && item.info.kind == kPortraitKind && item.info.target_path == target &&
+        picture_of(item, kind)) return PortraitSource::Costume;
+  return PortraitSource::Standard;
 }
 
 std::vector<CostumeSlot> costume_slots() {
@@ -3131,12 +4162,14 @@ std::vector<AssetInfo> assets() {
   const auto runtime = std::atomic_load(&g_runtime);
   std::map<std::string, const RuntimeAsset*> verdicts;
   for (const auto& entry : runtime->by_start) {
+    if (entry.second.kind == kVoiceKind) continue;   // a bank file carries the skin's id and no verdict
     const RuntimeAsset*& have = verdicts[entry.second.id];
     if (!have || (have->online_allowed && !entry.second.online_allowed)) have = &entry.second;
   }
   for (const auto& record : g_assets) {
     AssetInfo info = record.info;
     info.pack = pack_key(record);
+    if (info.source_name.empty()) info.source_name = record.source_name;   // an import: the file it came from
     const auto verdict = verdicts.find(info.id);
     if (verdict != verdicts.end()) {
       info.online_allowed = verdict->second->online_allowed;
@@ -3376,6 +4409,84 @@ std::vector<CompanionOverride> active_companions() {
 // changed it, so publishing them leaves nothing waiting for a restart.
 static bool g_live_in_step = false, g_live_unpublished = false;
 
+// Voice banks, at startup only (docs/voice-mods.md). Every disc bank file that an installed skin has
+// a fitting bank for becomes a served file: it starts as the disc's own bank, and plan_match_voices
+// switches it between the disc's and the skins' at each match load. Every installed skin counts,
+// selected or not, so a skin picked later on the character select screen brings its voice. The
+// file table gets one length per bank file for the whole session, the longest of the disc's and
+// the candidates', and everything served is padded to it: the entry never changes again, and a
+// read that started on one bank and ends on another never runs past the file.
+static void publish_voices_locked(uint8_t* fst, const std::vector<FstFile>& files, RuntimeState* next) {
+  struct Loaded {
+    const AssetRecord* asset = nullptr; const VoiceBank* bank = nullptr;
+    std::vector<uint8_t> bytes; BankLayout layout; bool used = false;
+  };
+  std::vector<Loaded> voices;
+  for (const auto& asset : g_assets) {
+    if (asset.info.kind != "character_costume" || !asset.info.available || asset.voice.stored_path.empty()) continue;
+    Loaded item;
+    item.asset = &asset; item.bank = bank_by_file(asset.voice.bank);
+    std::string error;
+    SlotName slot;
+    if (!item.bank || !find_slot(asset.info.target_path, &slot) || family_bank(*slot.family) != item.bank ||
+        !safe_relative_path(asset.voice.stored_path) ||
+        !read_bounded(g_root / fs::u8path(asset.voice.stored_path), kMaxAssetBytes, &item.bytes, &error) ||
+        sha256(item.bytes) != asset.voice.sha256 || !parse_bank(item.bytes, &item.layout, &error)) {
+      host::log("cosmetics: the voice bank of %s is missing or changed; the game's own sounds are used",
+                asset.info.name.c_str());
+      continue;
+    }
+    voices.push_back(std::move(item));
+  }
+  if (voices.empty()) return;
+  for (const auto& file : files) {
+    const std::string path = lower(file.path);
+    const size_t slash = path.find_last_of('/');
+    const VoiceBank* bank = bank_by_file(slash == std::string::npos ? path : path.substr(slash + 1));
+    if (!bank || path.rfind("audio/", 0) != 0 || next->by_start.count(file.start)) continue;
+    if (std::none_of(voices.begin(), voices.end(), [&](const Loaded& voice) { return voice.bank == bank; })) continue;
+    if (file.size < 0x20 || file.size > kMaxAssetBytes) continue;
+    std::vector<uint8_t> disc(file.size);
+    BankLayout disc_layout;
+    std::string error;
+    if (!host::disc_read(file.start, disc.data(), file.size) || !parse_bank(disc, &disc_layout, &error)) {
+      host::log("cosmetics: %s on this disc is not a bank the voice mods can replace (%s)", file.path.c_str(), error.c_str());
+      continue;
+    }
+    VoiceFile served;
+    served.start = file.start; served.disc_size = file.size; served.length = file.size;
+    served.bank = bank->file; served.path = file.path; served.bank_index = bank->index;
+    std::vector<Loaded*> fitting;
+    for (auto& voice : voices) {
+      // The same sounds as this disc file: count, first id and channels per sound, and samples
+      // inside the room the game's loader budgets for the bank.
+      if (voice.bank != bank || voice.layout.count != disc_layout.count || voice.layout.base != disc_layout.base ||
+          first_channel_difference(disc_layout.channels, voice.layout.channels) >= 0 ||
+          bank_sample_room(voice.layout) > bank->budget) continue;
+      fitting.push_back(&voice);
+      served.length = std::max<uint32_t>(served.length, voice.layout.data_offset + bank_sample_room(voice.layout));
+    }
+    if (fitting.empty()) continue;
+    for (Loaded* voice : fitting) {
+      served.candidates[voice->asset->info.id] =
+          std::make_shared<const std::vector<uint8_t>>(served_bank(voice->bytes, voice->layout, served.length));
+      voice->used = true;
+      host::log("cosmetics: voice bank of %s fits %s (%u sounds from id %u)", voice->asset->info.name.c_str(),
+                file.path.c_str(), disc_layout.count, disc_layout.base);
+    }
+    if (served.length != file.size) put_be32(fst + (size_t)file.index * 12 + 8, served.length);
+    next->by_start[file.start] = RuntimeAsset{std::string(), bank->file, nullptr, file.size, true, kVoiceKind,
+                                              std::string(), served.length};
+    next->voice_files.push_back(std::move(served));
+  }
+  for (const auto& voice : voices)
+    if (!voice.used)
+      host::log("cosmetics: the voice bank of %s fits no %s on this disc (%u sounds from id %u); the game's own sounds are used",
+                voice.asset->info.name.c_str(), voice.bank->file, voice.layout.count, voice.layout.base);
+  if (!next->voice_files.empty())
+    host::log("cosmetics: %zu sound bank files can be served by a skin's voice", next->voice_files.size());
+}
+
 // The whole profile at startup (only_slot null), or one costume slot again while the game runs
 // (republish_slot): the snapshot is then a copy of the running one with that slot's files replaced.
 static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* only_slot, RepublishResult* republished) {
@@ -3546,8 +4657,8 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
       next->companions.push_back({companion.kind, asset->info.target_path, path.string()});
     }
   }
-  // A slot's own portrait and stock icon, after the skins: they replace the picture of the same
-  // kind a selected skin brought for that slot.
+  // A slot's own portrait and stock icon, after the skins: they show where the selected skin brought
+  // no picture of that kind.
   for (const AssetRecord* asset : portraits) {
     const std::string slot = portrait_slot(asset->info.target_path);
     bool any = false;
@@ -3561,9 +4672,13 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
                   companion.kind == "csp" ? "portrait" : "stock icon", slot.c_str());
         continue;
       }
-      next->companions.erase(std::remove_if(next->companions.begin(), next->companions.end(),
-          [&](const CompanionOverride& have) { return have.kind == companion.kind && have.target_path == slot; }),
-          next->companions.end());
+      // One rule for the player: a skin that brings its own picture shows it; a picture added to
+      // the slot on its own fills in wherever there is none (the standard costume, or a skin
+      // without one). So stepping through skins on the character select always changes the picture
+      // with the skin, and taking the skin off brings the added picture back.
+      const bool skin_has_own = std::any_of(next->companions.begin(), next->companions.end(),
+          [&](const CompanionOverride& have) { return have.kind == companion.kind && have.target_path == slot; });
+      if (skin_has_own) continue;
       next->companions.push_back({companion.kind, slot, path.string()});
       host::log("cosmetics: %s for %s from %s", companion.kind == "csp" ? "portrait" : "stock icon", slot.c_str(),
                 companion.source_member.c_str());
@@ -3571,6 +4686,9 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
     }
     if (any && !only_slot) ++next->assets;   // one slot again: its portrait entry was counted at startup
   }
+  // One slot again keeps the bank files as they are (they came with the copy of the snapshot): which
+  // bank a file serves is decided at match load, from the skins the slots serve then.
+  if (!only_slot) publish_voices_locked(fst, files, next.get());
   std::atomic_store(&g_runtime, std::shared_ptr<const RuntimeState>(next));
   if (only_slot) {
     bool served = false;
@@ -3699,6 +4817,61 @@ bool select_variant_live(const std::string& slot, const std::string& asset_id, s
   return select_live_locked(slot, asset_id, error);
 }
 
+// Nana's costume slot for one of Popo's (the same place in each one's costume order), or empty.
+static std::string climber_partner(const std::string& target) {
+  static constexpr const char* popo[] = {"PlPpNr.dat", "PlPpGr.dat", "PlPpOr.dat", "PlPpRe.dat"};
+  static constexpr const char* nana[] = {"PlNnNr.dat", "PlNnYe.dat", "PlNnAq.dat", "PlNnWh.dat"};
+  for (size_t i = 0; i < std::size(popo); ++i) if (lower(target) == lower(popo[i])) return nana[i];
+  return {};
+}
+
+// The skin for `partner_target` that belongs with `skin`: the same pack and the same set of it, or
+// for a vault import the skin the vault itself names as the pair. Null when there is none.
+static const AssetRecord* partner_skin_locked(const std::string& skin_id, const std::string& partner_target) {
+  if (skin_id.empty()) return nullptr;
+  const auto skin = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+    return item.info.id == skin_id && item.info.kind == "character_costume";
+  });
+  if (skin == g_assets.end()) return nullptr;
+  for (const auto& other : g_assets) {
+    if (other.info.kind != "character_costume" || !other.info.available || selection_key(other) != partner_target ||
+        other.source_kind != skin->source_kind) continue;
+    if (skin->source_kind == kDiscSource) {
+      if (other.source_id == skin->source_id && other.info.variant == skin->info.variant) return &other;
+      continue;
+    }
+    if (other.source_name != skin->source_name || other.source_id.empty() || skin->source_id.empty()) continue;
+    const auto names = [](const AssetRecord& a, const AssetRecord& b) {
+      return std::find(a.info.dependencies.begin(), a.info.dependencies.end(), b.source_id) != a.info.dependencies.end();
+    };
+    if (names(*skin, other) || names(other, *skin)) return &other;
+  }
+  return nullptr;
+}
+
+// After Popo's slot went from previous_id to asset_id: Nana's follows (see LiveCycle).
+static void pair_climbers_locked(const std::string& target, LiveCycle* result) {
+  const std::string partner = climber_partner(target);
+  if (partner.empty()) return;
+  const auto picked = g_profile.selections.find(partner);
+  const std::string wears = picked == g_profile.selections.end() || picked->second == kVanillaSelection ?
+      std::string() : picked->second;
+  const AssetRecord* before = partner_skin_locked(result->previous_id, partner);
+  const AssetRecord* after = partner_skin_locked(result->asset_id, partner);
+  // She follows only from where Popo's previous pick put her: its partner, or the standard costume
+  // when it had none. Anything else is a pick of her own.
+  if (wears != (before ? before->info.id : std::string())) return;
+  const std::string message = g_message;
+  std::string wanted = after ? after->info.id : std::string(), error;
+  bool changed = wanted != wears && select_live_locked(partner, wanted, &error);
+  // Her partner skin cannot be picked (online, or its file is gone): not left in the old pair's skin.
+  if (!changed && !wanted.empty() && !wears.empty()) { wanted.clear(); changed = select_live_locked(partner, wanted, &error); }
+  g_message = message;
+  if (!changed) return;
+  result->partner_slot = partner;
+  result->partner_previous_id = wears;
+}
+
 LiveCycle cycle_slot_live(const std::string& slot, int direction) {
   LiveCycle result;
   std::lock_guard<std::mutex> lock(g_mutex);
@@ -3731,13 +4904,112 @@ LiveCycle cycle_slot_live(const std::string& slot, int direction) {
     break;
   }
   if (!result.changed && result.message.empty()) result.message = "No other skin is installed for this costume.";
+  if (result.changed) pair_climbers_locked(target, &result);
   return result;
 }
+
+// ---- voice mods: which bank a match hears (docs/voice-mods.md) ----
+
+// The skin a costume slot serves right now, from the running snapshot: what the match will load for
+// that costume. Empty for the standard costume, and for a skin that online play shows as the
+// standard costume (its voice goes with it).
+static std::string served_skin(const RuntimeState& runtime, const std::string& slot) {
+  const std::string wanted = lower(slot);
+  std::string id;
+  for (const auto& entry : runtime.by_start) {
+    const RuntimeAsset& file = entry.second;
+    if (file.kind != "character_costume" || lower(file.target_path) != wanted) continue;
+    if (!file.online_allowed && online_active()) return {};
+    id = file.id;
+  }
+  return id;
+}
+
+// The other costume file a port's fighter also wears: Nana's for Popo's, and for Zelda and Sheik
+// each other's of the same color (the two share a bank and a port).
+static std::string voice_partner(const std::string& slot) {
+  const std::string nana = climber_partner(slot);
+  if (!nana.empty()) return nana;
+  const std::string name = lower(slot);
+  if (name.size() == 10 && name.compare(0, 4, "plzd") == 0) return "PlSk" + slot.substr(4);
+  if (name.size() == 10 && name.compare(0, 4, "plsk") == 0) return "PlZd" + slot.substr(4);
+  return {};
+}
+
+VoicePlan plan_match_voices(const MatchFighter ports[4]) {
+  VoicePlan plan;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const auto current = std::atomic_load(&g_runtime);
+  if (!ports || !current->initialized || current->voice_files.empty()) return plan;
+  auto next = std::make_shared<RuntimeState>(*current);
+  const auto skin_name = [&](const std::string& id) {
+    if (id.empty()) return std::string("the game's own sounds");
+    for (const auto& item : g_assets) if (item.info.id == id) return item.info.name;
+    return id;
+  };
+  bool any = false;
+  for (auto& file : next->voice_files) {
+    // The voice a port's costume asks for on this bank file: its skin's bank, else its partner
+    // costume's, else the game's own (also when the skin's bank fits the other language only).
+    const auto wanted_by = [&](const std::string& slot) {
+      const std::string own = served_skin(*next, slot);
+      if (!own.empty() && file.candidates.count(own)) return own;
+      const std::string partner = voice_partner(slot);
+      const std::string other = partner.empty() ? std::string() : served_skin(*next, partner);
+      return !other.empty() && file.candidates.count(other) ? other : std::string();
+    };
+    int decider = -1;
+    std::string wanted;
+    for (int port = 0; port < 4; ++port) {
+      const std::string slot = costume_slot_file(ports[port].character, ports[port].costume);
+      SlotName known;
+      if (slot.empty() || !find_slot(slot, &known)) continue;
+      const VoiceBank* bank = family_bank(*known.family);
+      if (!bank || file.bank != bank->file) continue;
+      const std::string asks = wanted_by(slot);
+      if (decider < 0) { decider = port; wanted = asks; continue; }
+      if (asks == wanted) continue;
+      // One bank per fighter file: the lowest port decided, this one is told.
+      plan.notes.push_back(asks.empty() ?
+          "voice: port " + std::to_string(port + 1) + "'s costume gets port " + std::to_string(decider + 1) + "'s voice (" +
+              skin_name(wanted) + "): the game loads one " + file.bank :
+          "voice: port " + std::to_string(port + 1) + "'s " + skin_name(asks) + " is not used: port " +
+              std::to_string(decider + 1) + " decides " + file.bank + " (" + skin_name(wanted) + ")");
+    }
+    if (decider < 0) continue;   // no fighter of this bank in the match: it keeps what it serves
+    if (wanted == file.chosen) continue;
+    plan.notes.push_back("voice: " + file.path + " is " + skin_name(wanted) + " for this match (port " +
+                         std::to_string(decider + 1) + ")");
+    file.chosen = wanted;
+    RuntimeAsset& served = next->by_start[file.start];
+    served.id = wanted;
+    served.bytes = wanted.empty() ? nullptr : file.candidates[wanted];
+    any = true;
+    if (std::none_of(plan.changed.begin(), plan.changed.end(), [&](const VoiceChange& have) { return have.file == file.bank; }))
+      plan.changed.push_back({file.bank, file.bank_index});
+  }
+  if (any) std::atomic_store(&g_runtime, std::shared_ptr<const RuntimeState>(next));
+  for (const auto& note : plan.notes) host::log("cosmetics: %s", note.c_str());
+  return plan;
+}
+
+uint32_t voice_bank_count() { return (uint32_t)std::atomic_load(&g_runtime)->voice_files.size(); }
 
 OverrideRead read(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, uint32_t size) {
   auto runtime = std::atomic_load(&g_runtime);
   auto found = runtime->by_start.find(vanilla_file_start);
   if (found == runtime->by_start.end()) return OverrideRead::NotOverridden;
+  if (found->second.kind == kVoiceKind && !found->second.bytes) {
+    // A bank file while no skin's voice is chosen for it: the disc's own bank, under the one length
+    // the file table carries for this file, with zeros past the disc file's end.
+    const uint32_t vanilla_size = found->second.vanilla_size;
+    const uint64_t exposed_size = found->second.length;
+    if (file_offset > exposed_size || (uint64_t)file_offset + size > exposed_size + 31) return OverrideRead::Failed;
+    const uint32_t disc_size = file_offset < vanilla_size ? std::min(size, vanilla_size - file_offset) : 0;
+    if (disc_size && !host::disc_read(vanilla_file_start + file_offset, dst, disc_size)) return OverrideRead::Failed;
+    if (disc_size < size) std::memset((uint8_t*)dst + disc_size, 0, size - disc_size);
+    return OverrideRead::Success;
+  }
   if (!found->second.online_allowed && online_active()) {
     const uint32_t vanilla_size = found->second.vanilla_size;
     const uint64_t exposed_size = std::max<size_t>(vanilla_size, found->second.bytes->size());
@@ -3802,7 +5074,7 @@ std::string choose_import_file() {
   wchar_t file[32768]{};
   OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof dialog;
   dialog.hwndOwner = GetActiveWindow();
-  dialog.lpstrFilter = L"Cosmetic imports (*.zip;*.dat;*.usd;*.png)\0*.zip;*.dat;*.usd;*.png\0Costume or stage file (*.dat;*.usd)\0*.dat;*.usd\0ZIP archive (*.zip)\0*.zip\0Portrait or stock icon (*.png)\0*.png\0";
+  dialog.lpstrFilter = L"Cosmetic imports (*.zip;*.dat;*.usd;*.png;*.ssm)\0*.zip;*.dat;*.usd;*.png;*.ssm\0Costume or stage file (*.dat;*.usd)\0*.dat;*.usd\0ZIP archive (*.zip)\0*.zip\0Portrait or stock icon (*.png)\0*.png\0Voice bank (*.ssm)\0*.ssm\0";
   dialog.lpstrFile = file; dialog.nMaxFile = (DWORD)std::size(file);
   dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   return GetOpenFileNameW(&dialog) ? wide_to_utf8(file) : std::string();
@@ -3841,6 +5113,14 @@ bool materialize_effect_dat(const std::string& target_path,
 }
 bool portrait_slot_from_name(const std::string& name, std::string* slot, std::string* kind) {
   return portrait_slot_from_name_impl(name, slot, kind);
+}
+bool inspect_bank(const std::vector<uint8_t>& bytes, std::string* bank, std::string* language, std::string* error) {
+  std::string local; if (!error) error = &local;
+  VoiceCheck check;
+  if (!check_voice(bytes, {}, {}, &check, error)) return false;
+  if (bank) *bank = check.bank->file;
+  if (language) *language = kBankLanguages[check.language];
+  return true;
 }
 bool inspect_zip(const std::string& path, std::vector<std::string>* names, std::string* error) {
   std::vector<ZipEntry> entries;

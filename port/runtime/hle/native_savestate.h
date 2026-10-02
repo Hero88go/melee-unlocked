@@ -10,6 +10,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -58,7 +59,20 @@ class Engine {
   void capture(int32_t frame);
   // False when no state is kept under `frame` (nothing changes).
   bool load(int32_t frame);
+  // The same restore for a replay viewer's jump back: the states kept under `frame` and before it
+  // stay kept (it can be returned to again), only the newer ones are dropped.
+  bool load_keep(int32_t frame);
   bool has(int32_t frame) const { return active_.count(frame) != 0; }
+  // The newest kept frame at or below `frame`; false when there is none.
+  bool newest_at_or_before(int32_t frame, int32_t* found) const {
+    auto it = active_.upper_bound(frame);
+    if (it == active_.begin()) return false;
+    *found = std::prev(it)->first;
+    return true;
+  }
+  size_t kept() const { return active_.size(); }
+  // Memory held for the shadow and the kept states (the page pool, used or spare).
+  size_t pool_bytes() const { return pool_blocks_.size() * (size_t)256 * kPage; }
 
   // Determinism self-test: keep the current state under `frame` as a reference, then later compare
   // the live state (re-simulated to the same frame with the same inputs) against it. Returns the

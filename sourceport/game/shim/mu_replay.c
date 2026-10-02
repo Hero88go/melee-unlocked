@@ -949,3 +949,51 @@ void mu_replay_record_stadium(int state, int kind)
     mu_replay_abi_event(0x41, b + 1, sizeof b - 1);
     frame_has_events = 1;
 }
+
+/* ---- the viewer's controls (host: port/runtime/host/replay_control.h) ----
+ * Top of an engine frame (gmscene.c, beside the online and lab hooks), while a replay's match is
+ * running. The host is told which replay frame comes next. It holds the call while playback is
+ * paused, paces slow motion and fast forward, and keeps a state of the game now and then.
+ *
+ * When the viewer jumps back the host answers 1, and a second call restores one of those states,
+ * here, where a frame starts and no game code is in the middle of anything (as a rollback load
+ * does). Nothing of this changes what a frame computes: the frames come from the replay as before. */
+#define CMD_REPLAY_GATE 0xFA   /* payload: s32 next replay frame (BE), u8 0 ask / 1 restore now */
+
+int mu_online_abi_command(unsigned int command, const unsigned char* payload, unsigned int size,
+                          unsigned char* response, unsigned int capacity, unsigned int* response_size);
+void mu_alarms_hold(void);
+void mu_alarms_release(void);
+
+void mu_replay_frame_begin(void)
+{
+    static unsigned char response[4096];   /* the host's minimum response capacity */
+    unsigned char payload[5];
+    unsigned int got = 0;
+
+    if (!mu_replay_on() || finished || mu_replay_abi_last_result() != REPLAY_CONTINUE) {
+        return;
+    }
+    put32(payload, 0, (u32) (frame_index + 1));
+    payload[4] = 0;
+    if (mu_online_abi_command(CMD_REPLAY_GATE, payload, sizeof payload, response, sizeof response, &got) != 0 ||
+        got < 1 || response[0] != 1) {
+        return;
+    }
+    {
+        /* On the stack, where the load does not reach. The pad queue belongs to the engine loop
+         * this call sits in (it runs one frame per queued sample): it keeps its present counts
+         * through the load, or the loop and the queue would disagree about the samples left.
+         * Playback takes no input from it. */
+        PadLibData pads = HSD_PadLibData;
+        mu_alarms_hold();   /* timers are hardware: they keep their schedule through a load */
+        payload[4] = 1;
+        mu_online_abi_command(CMD_REPLAY_GATE, payload, sizeof payload, response, sizeof response, &got);
+        mu_alarms_release();
+        HSD_PadLibData = pads;
+    }
+    /* frame_index is the restored state's now. The last fetched frame is host plumbing, outside the
+     * state (mu_replay_abi.c): fetch it again, so what reads it before this frame's own fetch sees
+     * what it saw the first time. */
+    mu_replay_abi_fetch(frame_index);
+}

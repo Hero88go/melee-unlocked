@@ -64681,10 +64681,29 @@ index d1b08867f..9947b3265 100644
                      {
                          Vec3 pos = { 1.8, 0, 0 };
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_AppealS.c b/src/melee/ft/kinds/ftCommon/ftCo_AppealS.c
-index 230beac62..85f7f90ca 100644
+index 230beac62..7770bee4d 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_AppealS.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_AppealS.c
-@@ -69,7 +69,7 @@ void ftCo_800DEA28(Fighter_GObj* gobj)
+@@ -40,8 +40,18 @@ bool ftCo_800DE9B8(Fighter_GObj* gobj)
+     return false;
+ }
+ 
++#ifdef MU_NATIVE
++#include <mu_20xx_cpu.h>
++#endif
++
+ bool ftCo_800DE9D8(Fighter_GObj* gobj)
+ {
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "CPU - Disable Taunting" (800DE9D8, entry). Off: 0. */
++    if (mu_20xx_cpu_no_taunt(GET_FIGHTER(gobj))) {
++        return false;
++    }
++#endif
+     if (ftCo_800DE9B8(gobj)) {
+         ftCo_800DEA28(gobj);
+         return true;
+@@ -69,7 +79,7 @@ void ftCo_800DEA28(Fighter_GObj* gobj)
          ftCo_800DEBD0(gobj);
          break;
      }
@@ -64693,7 +64712,7 @@ index 230beac62..85f7f90ca 100644
  }
  
  void ftCo_800DEAE8(Fighter_GObj* gobj, FtMotionId msid0, FtMotionId msid1)
-@@ -138,5 +138,11 @@ void ftCo_AppealS_Phys(Fighter_GObj* gobj)
+@@ -138,5 +148,11 @@ void ftCo_AppealS_Phys(Fighter_GObj* gobj)
  
  void ftCo_AppealS_Coll(Fighter_GObj* gobj)
  {
@@ -64722,10 +64741,43 @@ index afe6cefca..141f9474c 100644
  /* 0DECF4 */ void ftCo_AppealS_Anim(Fighter_GObj* gobj);
  /* 0DED30 */ void ftCo_AppealS_IASA(Fighter_GObj* gobj);
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_Attack100.c b/src/melee/ft/kinds/ftCommon/ftCo_Attack100.c
-index d9ea99d94..37f3ba2c5 100644
+index d9ea99d94..dcd4f3cdc 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_Attack100.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_Attack100.c
-@@ -282,13 +282,13 @@ void fn_800D6F58(Fighter_GObj* gobj, Item_GObj* item_gobj)
+@@ -64,9 +64,19 @@ bool ftCo_800D688C(Fighter* fp)
+     return false;
+ }
+ 
++#ifdef MU_NATIVE
++#include <mu_20xx_cpu.h>
++#endif
++
+ bool ftCo_800D68C0(Fighter_GObj* gobj)
+ {
+     Fighter* fp = GET_FIGHTER(gobj);
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "Sheik/Zelda CPU Disable Transformations" (800D68D8, entry). Off: 0. */
++    if (mu_20xx_cpu_no_transform(fp)) {
++        return false;
++    }
++#endif
+     if (ftData_SpecialLw[fp->kind] == NULL) {
+         return false;
+     }
+@@ -158,6 +168,12 @@ void ftCo_800D6B00(Fighter_GObj* gobj, enum_t msid)
+ void fn_800D6B8C(Fighter_GObj* gobj)
+ {
+     PAD_STACK(4);
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "CPU - Disable Rapid Jabs for C. Falcon" (800D6B8C, entry). Off: 0. */
++    if (mu_20xx_cpu_no_rapid_jab(GET_FIGHTER(gobj))) {
++        return;
++    }
++#endif
+     ftCo_800D6B00(gobj, ftCo_MS_Attack100Start);
+ }
+ 
+@@ -282,13 +298,13 @@ void fn_800D6F58(Fighter_GObj* gobj, Item_GObj* item_gobj)
      if (itGetKind(fp->item_gobj) == It_Kind_WStar) {
          part = FtPart_TopN;
      } else {
@@ -65619,7 +65671,7 @@ index fa6e5a357..e74ed8012 100644
      if (!ftAnim_IsFramesRemaining(gobj)) {
          ftCo_8009B2F8(gobj);
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_Damage.c b/src/melee/ft/kinds/ftCommon/ftCo_Damage.c
-index bcbd18a17..e98aadd04 100644
+index bcbd18a17..4e5b1c85f 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_Damage.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_Damage.c
 @@ -57,6 +57,16 @@
@@ -66022,23 +66074,39 @@ index bcbd18a17..e98aadd04 100644
      ftCommon_8007F824(gobj);
      if (fp->motion_id == 0x145) {
          return;
-@@ -566,14 +505,22 @@ bool ftCo_Damage_CheckAirMotion(Fighter* fp)
+@@ -566,30 +505,59 @@ bool ftCo_Damage_CheckAirMotion(Fighter* fp)
      }
  }
  
 -void ftCo_Damage_OnEveryHitlag(Fighter_GObj* gobj)
++#ifdef MU_NATIVE
++#include <mu_20xx_cpu.h>
++#endif
++
 +MU_NO_CONTRACT void ftCo_Damage_OnEveryHitlag(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "20XX SDI Options" (8008E510, after the allow_sdi test): for a CPU the
++     * option replaces the stick this test and the shift below use. Off: the fighter's stick. */
++    Vec2 mu_stick = fp->input.lstick[0];
++    if (fp->allow_sdi) {
++        mu_20xx_cpu_sdi(fp, &mu_stick.x, &mu_stick.y);
++    }
++#define MU_SDI_STICK mu_stick
++#else
++#define MU_SDI_STICK fp->input.lstick[0]
++#endif
      if (fp->allow_sdi &&
+-        VEC2_SQ_LEN(fp->input.lstick[0]) >=
+-            SQ(p_ftCommonData->sdi_min_stick_mag) &&
+-        (fp->x670_timer_lstick_tilt_x < p_ftCommonData->sdi_stick_window ||
+-         fp->x671_timer_lstick_tilt_y < p_ftCommonData->sdi_stick_window))
 +#ifdef MU_NATIVE
 +        /* TM-CE SDI Display/SDI Display Main (8008e52c): counts and shows, returns 1 */
 +        (!mu_tmce_active() || mu_tmce_osd_sdi(fp)) &&
 +#endif
-         VEC2_SQ_LEN(fp->input.lstick[0]) >=
--            SQ(p_ftCommonData->sdi_min_stick_mag) &&
--        (fp->x670_timer_lstick_tilt_x < p_ftCommonData->sdi_stick_window ||
--         fp->x671_timer_lstick_tilt_y < p_ftCommonData->sdi_stick_window))
++        VEC2_SQ_LEN(MU_SDI_STICK) >=
 +            MU_P(SQ(p_ftCommonData->sdi_min_stick_mag)) &&
 +        (fp->active_timer.lstick.x < p_ftCommonData->sdi_stick_window ||
 +         fp->active_timer.lstick.y < p_ftCommonData->sdi_stick_window
@@ -66048,9 +66116,11 @@ index bcbd18a17..e98aadd04 100644
 +         ))
      {
          float scaled_lstick_x =
-             fp->input.lstick[0].x * p_ftCommonData->sdi_pos_scale;
-@@ -581,9 +528,9 @@ void ftCo_Damage_OnEveryHitlag(Fighter_GObj* gobj)
-             fp->input.lstick[0].y * p_ftCommonData->sdi_pos_scale;
+-            fp->input.lstick[0].x * p_ftCommonData->sdi_pos_scale;
++            MU_SDI_STICK.x * p_ftCommonData->sdi_pos_scale;
+         float scaled_lstick_y =
+-            fp->input.lstick[0].y * p_ftCommonData->sdi_pos_scale;
++            MU_SDI_STICK.y * p_ftCommonData->sdi_pos_scale;
          fp->cur_pos.x += scaled_lstick_x;
          fp->cur_pos.y += scaled_lstick_y;
 -        fp->x670_timer_lstick_tilt_x = 254;
@@ -66062,7 +66132,19 @@ index bcbd18a17..e98aadd04 100644
                      scaled_lstick_y);
      }
  }
-@@ -626,7 +573,7 @@ void ftCo_Damage_OnExitHitlag(Fighter_GObj* gobj)
++#undef MU_SDI_STICK
+ 
+ void ftCo_8008E5A4(Fighter* fp)
+ {
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "20XX Random DI Options" (8008E5CC, before the stick is read): for a CPU
++     * the option sets the stick this DI calculation uses. Off: nothing. */
++    mu_20xx_cpu_di(fp);
++#endif
+     if (fp->input.lstick[0].x || fp->input.lstick[0].y) {
+         float kb_x = fp->x8c_kb_vel.x;
+         float kb_y = fp->x8c_kb_vel.y;
+@@ -626,7 +594,7 @@ void ftCo_Damage_OnExitHitlag(Fighter_GObj* gobj)
      Fighter* fp = GET_FIGHTER(gobj);
      bool isPointInCircle;
      if (VEC2_SQ_LEN(fp->input.lstick[0]) >=
@@ -66071,7 +66153,7 @@ index bcbd18a17..e98aadd04 100644
      {
          isPointInCircle = true;
      } else {
-@@ -645,7 +592,7 @@ void ftCo_Damage_OnExitHitlag(Fighter_GObj* gobj)
+@@ -645,7 +613,7 @@ void ftCo_Damage_OnExitHitlag(Fighter_GObj* gobj)
          }
          fp->cur_pos.x += x;
          fp->cur_pos.y += y;
@@ -66080,7 +66162,7 @@ index bcbd18a17..e98aadd04 100644
      }
      if (fp->mv.co.damage.x4) {
          fp->mv.co.damage.x4 = false;
-@@ -693,9 +640,10 @@ bool ftCo_8008E984(Fighter* fp)
+@@ -693,9 +661,10 @@ bool ftCo_8008E984(Fighter* fp)
      }
  }
  
@@ -66093,7 +66175,7 @@ index bcbd18a17..e98aadd04 100644
      ftCo_800C8D00(gobj);
      if (fp->motion_id == 0xe0 || fp->motion_id == 0xe1) {
          ftCo_800DC284(gobj);
-@@ -703,13 +651,6 @@ static inline void inlineF0(Fighter_GObj* gobj)
+@@ -703,13 +672,6 @@ static inline void inlineF0(Fighter_GObj* gobj)
      if (fp->motion_id == 0xe3 || fp->motion_id == 0xe4) {
          ftCo_800DC3A4(gobj);
      }
@@ -66107,7 +66189,7 @@ index bcbd18a17..e98aadd04 100644
      scaled_kb = ftCo_ScaleBy154(fp->dmg.kb_applied);
      if (ftCo_8008DA4C(gobj, fp->dmg.x1860_element, ftCo_8008D8E8(scaled_kb))) {
          ftCo_800C0408(gobj);
-@@ -731,66 +672,108 @@ static bool inlineB0(Fighter* fp)
+@@ -731,66 +693,108 @@ static bool inlineB0(Fighter* fp)
      return false;
  }
  
@@ -66183,7 +66265,7 @@ index bcbd18a17..e98aadd04 100644
 +    MU_WOBBLE_COUNT(fp)++;
 +    if (gm_8016B168() || MU_WOBBLE_COUNT(fp) <= 3) {
 +        return false;
-+    }
+     }
 +    ftCo_800DA698(grabber, prev != 0);
 +    nana = Player_GetEntityAtIndex(gfp->player_idx, 1);
 +    if (nana != NULL) {
@@ -66202,7 +66284,7 @@ index bcbd18a17..e98aadd04 100644
 +                                          1.0F, 0.0F, NULL);
 +            }
 +        }
-     }
++    }
 +    return true;
 +}
  
@@ -66260,7 +66342,7 @@ index bcbd18a17..e98aadd04 100644
  
  static inline void inlineB2(Fighter_GObj* gobj)
  {
-@@ -888,7 +871,11 @@ void ftCo_8008EC90(Fighter_GObj* gobj)
+@@ -888,7 +892,11 @@ void ftCo_8008EC90(Fighter_GObj* gobj)
                          }
                      }
                      fp->input.pressed_buttons = fp->input.released_buttons = 0;
@@ -66272,7 +66354,7 @@ index bcbd18a17..e98aadd04 100644
                      goto ret_A8C;
                  }
                  {
-@@ -960,6 +947,12 @@ void ftCo_8008EC90(Fighter_GObj* gobj)
+@@ -960,6 +968,12 @@ void ftCo_8008EC90(Fighter_GObj* gobj)
          }
      }
  ret_A8C:
@@ -66285,7 +66367,7 @@ index bcbd18a17..e98aadd04 100644
      if (ret0) {
          ftCo_800C3598(gobj);
      }
-@@ -988,7 +981,13 @@ static bool inlineC0(Fighter_GObj* gobj)
+@@ -988,7 +1002,13 @@ static bool inlineC0(Fighter_GObj* gobj)
      Fighter* fp = GET_FIGHTER(gobj);
      if (fp->mv.co.damage.x14 && fp->mv.co.damage.x14 <= p_ftCommonData->x1D0) {
          fp->input.pressed_buttons |= HSD_PAD_XY;
@@ -66299,7 +66381,7 @@ index bcbd18a17..e98aadd04 100644
      } else {
          return false;
      }
-@@ -1000,7 +999,7 @@ void ftCo_Damage_Anim(Fighter_GObj* gobj)
+@@ -1000,7 +1020,7 @@ void ftCo_Damage_Anim(Fighter_GObj* gobj)
      ftCo_8008F744(gobj);
      if (!ftAnim_IsFramesRemaining(gobj) && !fp->x221C_b6) {
          if (fp->ground_or_air == GA_Air) {
@@ -66308,7 +66390,7 @@ index bcbd18a17..e98aadd04 100644
                  ftCo_80090780(gobj);
              } else if (!inlineC0(gobj)) {
                  ftCo_Fall_Enter(gobj);
-@@ -1024,20 +1023,15 @@ bool doIasa(Fighter_GObj* gobj)
+@@ -1024,20 +1044,15 @@ bool doIasa(Fighter_GObj* gobj)
      if (!(!fp->mv.co.damage.x1B)) {
          goto ret_inline;
      }
@@ -66337,7 +66419,7 @@ index bcbd18a17..e98aadd04 100644
  ret_inline:
      if (ftCo_Jump_GetInput(gobj)) {
          fp->mv.co.damage.x14 = fp->mv.co.damage.x0;
-@@ -1063,8 +1057,22 @@ void ftCo_Damage_IASA(Fighter_GObj* gobj)
+@@ -1063,8 +1078,22 @@ void ftCo_Damage_IASA(Fighter_GObj* gobj)
                  fp->input.pressed_buttons |= HSD_PAD_XY;
              }
              if (fp->ground_or_air == GA_Air) {
@@ -66360,7 +66442,7 @@ index bcbd18a17..e98aadd04 100644
                  ftCo_Wait_IASA(gobj);
              }
          }
-@@ -1087,13 +1095,13 @@ void ftCo_Damage_Phys(Fighter_GObj* gobj)
+@@ -1087,13 +1116,13 @@ void ftCo_Damage_Phys(Fighter_GObj* gobj)
      }
  }
  
@@ -66376,7 +66458,7 @@ index bcbd18a17..e98aadd04 100644
              ftCo_80097D40(gobj);
          } else {
              float mag = sqrtf(VEC2_SQ_LEN(fp->x8c_kb_vel));
-@@ -1113,26 +1121,28 @@ void ftCo_8008FC94(Fighter_GObj* gobj)
+@@ -1113,26 +1142,28 @@ void ftCo_8008FC94(Fighter_GObj* gobj)
      ftCommon_8007D5D4(gobj->user_data);
  }
  
@@ -66420,7 +66502,7 @@ index bcbd18a17..e98aadd04 100644
  
  static inline void inlineD0(Fighter_GObj* gobj)
  {
-@@ -1200,7 +1210,7 @@ static void inlineE0(Fighter_GObj* gobj)
+@@ -1200,7 +1231,7 @@ static void inlineE0(Fighter_GObj* gobj)
      }
  }
  
@@ -66429,7 +66511,7 @@ index bcbd18a17..e98aadd04 100644
  {
      Fighter* fp = GET_FIGHTER(gobj);
      if (fp->ground_or_air == GA_Air) {
-@@ -1264,7 +1274,7 @@ void ftCo_DamageFlyRoll_IASA(Fighter_GObj* gobj)
+@@ -1264,7 +1295,7 @@ void ftCo_DamageFlyRoll_IASA(Fighter_GObj* gobj)
      }
  }
  
@@ -66742,11 +66824,74 @@ index 8ae61e985..43e6c144e 100644
              }
          }
      }
+diff --git a/src/melee/ft/kinds/ftCommon/ftCo_DownAttack.c b/src/melee/ft/kinds/ftCommon/ftCo_DownAttack.c
+index 91e141a7c..8aead6be3 100644
+--- a/src/melee/ft/kinds/ftCommon/ftCo_DownAttack.c
++++ b/src/melee/ft/kinds/ftCommon/ftCo_DownAttack.c
+@@ -22,6 +22,10 @@
+  */
+ static itECB ecb_offset = { 14.0f, 0.0f, -3.0f, +3.0f };
+ 
++#ifdef MU_NATIVE
++#include <mu_20xx_cpu.h>
++#endif
++
+ static inline bool inlineA0(Fighter* fp)
+ {
+     if (fp->input.pressed_buttons & HSD_PAD_AB) {
+@@ -98,6 +102,20 @@ bool ftCo_800986B0(Fighter_GObj* gobj)
+ bool ftCo_8009872C(Fighter_GObj* gobj)
+ {
+     PAD_STACK(4);
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "20XX Teching Options" (80098754, after the hammer test of the check
++     * below): a CPU techs in place or misses by the option. Off: 0, the game's own test. */
++    if (!ftCo_800C5240(gobj)) {
++        const int forced = mu_20xx_cpu_tech_place(gobj->user_data);
++        if (forced == 1) {
++            ftCo_800987D0(gobj);
++            return true;
++        }
++        if (forced == 2) {
++            return false;
++        }
++    }
++#endif
+     if (ftCo_800986B0(gobj)) {
+         ftCo_800987D0(gobj);
+         return true;
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_DownBound.c b/src/melee/ft/kinds/ftCommon/ftCo_DownBound.c
-index 05242aa0f..9da91c9c4 100644
+index 05242aa0f..1356ad1a7 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_DownBound.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_DownBound.c
-@@ -301,7 +301,7 @@ void ftCo_80097F38(Fighter_GObj* gobj)
+@@ -232,9 +232,26 @@ void ftCo_80097D88(Fighter_GObj* gobj)
+     inlineA1(gobj);
+ }
+ 
++#ifdef MU_NATIVE
++#include <mu_20xx_cpu.h>
++#endif
++
+ void ftCo_DownBound_Anim(Fighter_GObj* gobj)
+ {
+     RETURN_IF(ftAnim_IsFramesRemaining(gobj));
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "20XX Teching Options" (80097DE0): a CPU that missed its tech gets up the
++     * way the option says, or lies down for a while first. Off: 0, the game's own checks. */
++    switch (mu_20xx_cpu_getup_bound(gobj)) {
++    case 1:
++        return;
++    case 2:
++        ftCo_80097E8C(gobj);
++        return;
++    default:
++        break;
++    }
++#endif
+     RETURN_IF(ftCo_80098400(gobj));
+     RETURN_IF(ftCo_Down_CheckInput(gobj));
+     ftCo_80097E8C(gobj);
+@@ -301,7 +318,7 @@ void ftCo_80097F38(Fighter_GObj* gobj)
  void ftCo_DownWait_Anim(Fighter_GObj* gobj)
  {
      Fighter* fp = gobj->user_data;
@@ -66755,6 +66900,18 @@ index 05242aa0f..9da91c9c4 100644
          fp->mv.co.downwait.x0 -= 1;
      }
      if (fp->mv.co.downwait.x0 <= 0) {
+@@ -313,6 +330,11 @@ void ftCo_DownWait_Anim(Fighter_GObj* gobj)
+ 
+ void ftCo_DownWait_IASA(Fighter_GObj* gobj)
+ {
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "20XX Teching Options" (8009803C): the same choice each frame on the
++     * floor, after the wait runs out. Off: 0, the game's own checks. */
++    RETURN_IF(mu_20xx_cpu_getup_wait(gobj));
++#endif
+     RETURN_IF(ftCo_800984D4(gobj));
+     RETURN_IF(ftCo_Down_CheckInput(gobj));
+     RETURN_IF(ftCo_800980BC(gobj));
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_DownDamage.c b/src/melee/ft/kinds/ftCommon/ftCo_DownDamage.c
 index f1dfda1fa..0da4b41c5 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_DownDamage.c
@@ -68235,10 +68392,10 @@ index 6ebe91d10..5a323deda 100644
      RETURN_IF(ftCo_Turn_CheckInput(gobj));
      RETURN_IF(ftCo_Walk_CheckInput(gobj));
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c b/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c
-index 01a42a899..8ae11b006 100644
+index 01a42a899..07835609a 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c
-@@ -11,11 +11,44 @@
+@@ -11,11 +11,45 @@
  #include <melee/ft/ftcommon.h>
  #include <melee/ft/types.h>
  
@@ -68247,6 +68404,7 @@ index 01a42a899..8ae11b006 100644
 +#include <mu_native.h>
 +#include "mu_lcancel_flash.h"
 +#include <mu_tmce_osd.h>
++#include <mu_20xx_cpu.h>
 +
 +/* 20XX TE "Flash on L-Cancel": a short white flash for an L-cancel pressed in time, red for a
 + * missed one, on the overlay slot the game uses for its passing color effects. An effect the game
@@ -68283,10 +68441,11 @@ index 01a42a899..8ae11b006 100644
      Fighter* fp = GET_FIGHTER(gobj);
      if (fp->cmd_vars[0]) {
          switch (fp->motion_id) {
-@@ -40,6 +73,30 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
+@@ -40,7 +74,37 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
              lag = fp->co_attrs.landingairlw_lag;
              break;
          }
+-        if (msid != ftCo_MS_None && fp->x67F < p_ftCommonData->xE4) {
 +#ifdef MU_NATIVE
 +        /* Slippi recording, GetLCancelStatus (8008D698). */
 +        if (msid != ftCo_MS_None) {
@@ -68311,10 +68470,17 @@ index 01a42a899..8ae11b006 100644
 +            }
 +        }
 +#endif
-         if (msid != ftCo_MS_None && fp->x67F < p_ftCommonData->xE4) {
++        if (msid != ftCo_MS_None && (fp->x67F < p_ftCommonData->xE4
++#ifdef MU_NATIVE
++                                     /* 20XX Hack Pack "L-Cancel Options" (8008D698): the landing
++                                      * of a CPU counts as L-cancelled. Off: 0. */
++                                     || mu_20xx_cpu_lcancel(fp)
++#endif
++                                     )) {
              float div_lag = lag / p_ftCommonData->xE8;
              int int_lag = div_lag;
-@@ -51,7 +108,19 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
+             if ((int) div_lag == 0) {
+@@ -51,7 +115,19 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
      }
      if (msid != ftCo_MS_None) {
          ftCo_LandingAir_EnterWithMsidLag(gobj, msid, lag);
@@ -68334,7 +68500,7 @@ index 01a42a899..8ae11b006 100644
          ftCo_Landing_Enter_Basic(gobj);
      }
  }
-@@ -63,6 +132,12 @@ void ftCo_LandingAir_EnterWithMsidLag(Fighter_GObj* gobj, FtMotionId msid,
+@@ -63,6 +139,12 @@ void ftCo_LandingAir_EnterWithMsidLag(Fighter_GObj* gobj, FtMotionId msid,
      ftCommon_8007D7FC(GET_FIGHTER(gobj));
      Fighter_ChangeMotionState(gobj, msid, Ft_MF_None, 0, 1, 0, NULL);
      ftAnim_SetAnimRate(gobj, (ftAnim_8006F484(gobj) + 0.1f) / lag);
@@ -68482,10 +68648,40 @@ index 5c35d2e89..22e058b41 100644
      ftCommon_8007EBAC(fp, 12, 0);
      ftCo_800BFFD0(fp, 120, 0);
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_PassiveStand.c b/src/melee/ft/kinds/ftCommon/ftCo_PassiveStand.c
-index 2ea0e06d7..58624c395 100644
+index 2ea0e06d7..f6e4000da 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_PassiveStand.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_PassiveStand.c
-@@ -41,7 +41,7 @@ void ftCo_800989D4(Fighter_GObj* gobj, FtMotionId msid)
+@@ -19,9 +19,29 @@
+ 
+ /* 09855C */ static void ftCo_800989D4(Fighter_GObj* gobj, FtMotionId msid);
+ 
++#ifdef MU_NATIVE
++#include <mu_20xx_cpu.h>
++#endif
++
+ bool ftCo_80098928(Fighter_GObj* gobj)
+ {
+     Fighter* fp = gobj->user_data;
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "20XX Teching Options" (80098948, after the tech test below, which only
++     * reads): the tech roll of a CPU is the option's choice. Off: 0, the game's own test. */
++    switch (mu_20xx_cpu_tech_roll(fp)) {
++    case 1:
++        ftCo_800989D4(gobj, ftCo_MS_PassiveStandF);
++        return true;
++    case 2:
++        ftCo_800989D4(gobj, ftCo_MS_PassiveStandB);
++        return true;
++    case 3:
++        return false;
++    default:
++        break;
++    }
++#endif
+     if (ftCo_800986B0(gobj)) {
+         if (ABS(fp->input.lstick[0].x) >= p_ftCommonData->x254) {
+             FtMotionId msid = fp->input.lstick[0].x * fp->facing_dir >= 0
+@@ -41,7 +61,7 @@ void ftCo_800989D4(Fighter_GObj* gobj, FtMotionId msid)
          ftCommon_8007D7FC(fp);
      }
      Fighter_ChangeMotionState(gobj, msid, Ft_MF_None, 0, 1, 0, NULL);
@@ -68557,10 +68753,35 @@ index ade9fea5a..2ce22b48c 100644
      ftCommon_8007EBAC(fp, 24, 0U);
      ftColl_8007B62C(gobj, 2);
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_SpecialAir.c b/src/melee/ft/kinds/ftCommon/ftCo_SpecialAir.c
-index 1f3e36074..2bac869ef 100644
+index 1f3e36074..b6d00e63e 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_SpecialAir.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_SpecialAir.c
-@@ -43,7 +43,7 @@ bool ftCo_SpecialAir_CheckInput(Fighter_GObj* gobj)
+@@ -8,6 +8,10 @@
+ #include <melee/ft/ftdata.h>
+ #include <melee/ft/types.h>
+ 
++#ifdef MU_NATIVE
++#include <mu_20xx_cpu.h>
++#endif
++
+ bool ftCo_SpecialAir_CheckInput(Fighter_GObj* gobj)
+ {
+     Fighter* fp = gobj->user_data;
+@@ -24,6 +28,13 @@ bool ftCo_SpecialAir_CheckInput(Fighter_GObj* gobj)
+             if (ftData_SpecialAirLw[fp->kind] == NULL) {
+                 return false;
+             }
++#ifdef MU_NATIVE
++            /* 20XX Hack Pack "Sheik/Zelda CPU Disable Transformations" (80096728, before the
++             * down special call). Off: 0. */
++            if (mu_20xx_cpu_no_transform(fp)) {
++                return false;
++            }
++#endif
+             ftData_SpecialAirLw[fp->kind](gobj);
+             fp->x2227_b5 = true;
+             return true;
+@@ -43,7 +54,7 @@ bool ftCo_SpecialAir_CheckInput(Fighter_GObj* gobj)
          if (ftData_SpecialAirN[fp->kind] == NULL) {
              return false;
          }
@@ -98839,7 +99060,7 @@ diff --git a/src/melee/gm/gm_1A45.c b/src/melee/gm/gmscene.c
 similarity index 70%
 rename from src/melee/gm/gm_1A45.c
 rename to src/melee/gm/gmscene.c
-index be743ad04..b7ec9fc00 100644
+index be743ad04..add7193e8 100644
 --- a/src/melee/gm/gm_1A45.c
 +++ b/src/melee/gm/gmscene.c
 @@ -1,7 +1,6 @@
@@ -98966,7 +99187,7 @@ index be743ad04..b7ec9fc00 100644
          lb_800195D0();
  
          if (HSD_PadGetResetSwitch()) {
-@@ -294,9 +340,24 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
+@@ -294,9 +340,26 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
          }
  
          for (i = 0; i < pad_queue_count; i++) {
@@ -98980,6 +99201,8 @@ index be743ad04..b7ec9fc00 100644
 +            /* Training Lab: savestates and collision bubbles (Training mode, offline). */
 +            mu_te_frame_begin();
 +            mu_lab_frame_begin();
++            /* Replay playback: the viewer's pause, speed and jumps (shim/mu_replay.c). */
++            mu_replay_frame_begin();
 +#endif
              lb_800198E0();
 -            if (DbLevel >= DbLKind_DebugRom) {
@@ -98992,7 +99215,7 @@ index be743ad04..b7ec9fc00 100644
                  gm_801A4970(&temp_r25->unk_10.db_input);
              }
              if (gm_801A46B8(0) || !gm_GetDbPauseFlag(0)) {
-@@ -331,14 +392,19 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
+@@ -331,14 +394,19 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
                  temp_r25->unk_10.unk_28 |=
                      ~gm_803DA8C8[temp_r25->unk_10.unk_34];
              }
@@ -99014,7 +99237,7 @@ index be743ad04..b7ec9fc00 100644
              if (temp_r25->unk_0 != -2) {
                  temp_r25->unk_0++;
              }
-@@ -355,7 +421,24 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
+@@ -355,7 +423,24 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
              if (temp_r25->unk_C != 0) {
                  break;
              }
@@ -99039,7 +99262,7 @@ index be743ad04..b7ec9fc00 100644
          if (temp_r25->unk_C == 2) {
              break;
          }
-@@ -368,6 +451,9 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
+@@ -368,6 +453,9 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
          HSD_Init_803755A8();
          HSD_PerfSetDrawTime();
          HSD_VICopyXFBAsync(HSD_RP_SCREEN);
@@ -99049,7 +99272,7 @@ index be743ad04..b7ec9fc00 100644
          if (temp_r25->unk_4 != -2U) {
              temp_r25->unk_4++;
          }
-@@ -375,5 +461,14 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
+@@ -375,5 +463,14 @@ void gm_801A4D34(void (*on_frame)(void), UNUSED GameSceneInfo* info)
          HSD_PerfSetTotalTime();
          HSD_PerfInitStat();
      }
@@ -150617,7 +150840,7 @@ index db7f79319..790ef73eb 100644
              tail = &(*tail)->next;
          }
 diff --git a/src/melee/lb/lbaudio_ax.c b/src/melee/lb/lbaudio_ax.c
-index 0854fb240..b957de4b9 100644
+index 0854fb240..1c7e728d3 100644
 --- a/src/melee/lb/lbaudio_ax.c
 +++ b/src/melee/lb/lbaudio_ax.c
 @@ -27,9 +27,11 @@
@@ -151233,7 +151456,7 @@ index 0854fb240..b957de4b9 100644
          if (lbl_804338A4[i] == 1 && lbl_80433984[i] == 1) {
              lbl_80433984[i] = 2;
          }
-@@ -1850,6 +1943,86 @@ void lbAudioAx_80027648(void)
+@@ -1850,12 +1943,150 @@ void lbAudioAx_80027648(void)
      }
  }
  
@@ -151317,10 +151540,74 @@ index 0854fb240..b957de4b9 100644
 +}
 +#endif
 +
++#ifdef MU_NATIVE
++/* Voice mods (docs/voice-mods.md). Before the banks of a fight are requested, the host is told the
++ * fighters of the match and decides each fighter bank (the lowest port that plays the fighter
++ * decides). It answers with the banks whose served content changed: one that is still in audio
++ * memory is let go and marked not loaded, so the loader below reads it again in this same load.
++ * An older host answers nothing and nothing changes. Sound data only: the sounds asked for and
++ * their timing are the game's own. */
++int mu_online_abi_command(unsigned int command, const unsigned char* payload, unsigned int size,
++                          unsigned char* response, unsigned int capacity, unsigned int* response_size);
++#define CMD_VOICE_MATCH 0xFA   /* payload: fighter, costume per port (fighter 0xFF: empty); reply: count, bank numbers */
++
++static void mu_voice_banks_plan(void)
++{
++    unsigned char response[64] = { 0 };
++    unsigned char payload[8];
++    unsigned int got = 0;
++    unsigned int i;
++    int stopped = 0;
++
++    for (i = 0; i < 4; i++) {
++        if (Player_GetPlayerSlotType((int) i) != Gm_PKind_NA) {
++            payload[2 * i] = (unsigned char) Player_GetPlayerCharacter((int) i);
++            payload[2 * i + 1] = (unsigned char) Player_GetCostumeId((int) i);
++        } else {
++            payload[2 * i] = 0xFF;
++            payload[2 * i + 1] = 0;
++        }
++    }
++    if (mu_online_abi_command(CMD_VOICE_MATCH, payload, sizeof payload, response, sizeof response, &got) != 0 ||
++        got < 1)
++    {
++        return;
++    }
++    for (i = 0; i < response[0] && i + 1 < got; i++) {
++        const int bank = response[1 + i];
++        if (bank >= 55 || lbl_80433984[bank] == -1) {
++            continue; /* not in audio memory: the load that follows reads the new bank */
++        }
++        if (!stopped) {
++            /* The loader stops this bank's sounds before it packs the bank again, a moment later;
++             * here it comes first, so nothing still plays from the samples that are let go. */
++            HSD_SynthSFXStopRange(2);
++            stopped = 1;
++        }
++        HSD_SynthSFXGroupDataRemove(lbl_80433A64[bank]);
++        lbl_80433A64[bank] = -1;
++        lbl_80433984[bank] = -1;
++        lbl_804D6448 -= offsets_arr_803BC4E4[bank][0];
++        OSReport("[content] %s is let go from audio memory; this match loads the picked voice\n",
++                 ssm_files[bank]);
++    }
++}
++#endif
++
  void lbAudioAx_8002785C(void)
  {
      u64 result = 0;
-@@ -1886,12 +2059,38 @@ void lbAudioAx_8002785C(void)
+     int i;
+     StKind stkind;
+ 
++#ifdef MU_NATIVE
++    mu_voice_banks_plan();
++#endif
++
+     if (gm_8016B184()) {
+         result = lbAudioAx_80026E84(Player_GetPlayerCharacter(0));
+         for (i = 0; i < 3; i++) {
+@@ -1886,12 +2117,38 @@ void lbAudioAx_8002785C(void)
      lbl_804D38D8 = s32_arr_803BB6B0[Stage_8022519C(stkind)][1];
      result |= lbAudioAx_80026EBC(stkind);
  
@@ -151359,7 +151646,7 @@ index 0854fb240..b957de4b9 100644
  }
  
  static char str_audio_us[0xC] = "/audio/us/";
-@@ -1929,7 +2128,7 @@ void lbAudioAx_80027AB0(int id)
+@@ -1929,7 +2186,7 @@ void lbAudioAx_80027AB0(int id)
  
          {
              int i;
@@ -151368,7 +151655,7 @@ index 0854fb240..b957de4b9 100644
                  if (i != 0) {
                      lbl_80433A64[i] = -1;
                      lbl_804337C4[i] = -1;
-@@ -2013,7 +2212,7 @@ void lbAudioAx_80027DF8(void)
+@@ -2013,7 +2270,7 @@ void lbAudioAx_80027DF8(void)
  
      if (lbl_804D6420 != 0) {
          if (lbl_804D38F0 != -1) {
@@ -151377,7 +151664,7 @@ index 0854fb240..b957de4b9 100644
                  lbl_804D38F0 = fn_80023750(0x84, lbl_804D6428, PAN_MID, 5, 4);
              } else {
                  lbAudioAx_80024B58(lbl_804D38F0, lbl_804D6428);
-@@ -2036,7 +2235,7 @@ void lbAudioAx_80027DF8(void)
+@@ -2036,7 +2293,7 @@ void lbAudioAx_80027DF8(void)
  
      if (lbl_804D6424 != 0) {
          if (lbl_804D38F4 != -1) {
@@ -151386,7 +151673,7 @@ index 0854fb240..b957de4b9 100644
                  lbl_804D38F4 = fn_80023750(0x85, lbl_804D642C, PAN_MID, 6, 4);
              } else {
                  lbAudioAx_80024B58(lbl_804D38F4, lbl_804D642C);
-@@ -2087,6 +2286,13 @@ void lbAudioAx_8002835C(void)
+@@ -2087,6 +2344,13 @@ void lbAudioAx_8002835C(void)
      HSD_ObjAllocInit(&lbl_80433710, sizeof(lbAudioAx_UserData), 4);
  }
  
@@ -151400,7 +151687,7 @@ index 0854fb240..b957de4b9 100644
  void lbAudioAx_8002838C(void)
  {
      static u32 ar_stack[0x10];
-@@ -2119,28 +2325,33 @@ void lbAudioAx_8002838C(void)
+@@ -2119,28 +2383,33 @@ void lbAudioAx_8002838C(void)
      lbl_804D6438 = lbl_804D643C + lbl_804D6440 + lbl_804D6444;
      lbl_804D3870 = lbl_804D6438;
  
@@ -151440,7 +151727,7 @@ index 0854fb240..b957de4b9 100644
          lbl_804337C4[i] = -1;
          lbl_804338A4[i] = -1;
          lbl_80433984[i] = -1;
-@@ -2185,7 +2396,7 @@ void lbAudioAx_80028690(void)
+@@ -2185,7 +2454,7 @@ void lbAudioAx_80028690(void)
          strcpy(&cur_ssm_file[ssm_stem_pos], "smash2.sem");
          AXDriver_8038DA70(cur_ssm_file, lb_800195D0);
  
@@ -151449,7 +151736,7 @@ index 0854fb240..b957de4b9 100644
              if (i != 0) {
                  lbl_80433A64[i] = -1;
                  lbl_804337C4[i] = -1;
-@@ -2274,3 +2485,21 @@ void lbAudioAx_80028B90(void)
+@@ -2274,3 +2543,21 @@ void lbAudioAx_80028B90(void)
  {
      lbl_804D38CC = 0x7F;
  }
@@ -155385,16 +155672,24 @@ index 427fada1b..71d32b9ba 100644
  
  #endif // MELEE_LB_FILE_H
 diff --git a/src/melee/lb/lbheap.c b/src/melee/lb/lbheap.c
-index 3fa41d59e..d1db2e6e0 100644
+index 3fa41d59e..4ced9cf4b 100644
 --- a/src/melee/lb/lbheap.c
 +++ b/src/melee/lb/lbheap.c
-@@ -1,5 +1,3 @@
+@@ -1,10 +1,11 @@
 -#include <stddef.h> // offsetof
 -
  #include "lbheap.static.h"
  #include "lbmemory.h"
  #include <sysdolphin/baselib/debug.h>
-@@ -13,28 +11,18 @@ struct lbHeap_HeapDesc {
+ #include <sysdolphin/baselib/initialize.h>
+ #include <sysdolphin/baselib/memory.h>
++#ifdef MU_NATIVE
++#include <mu_hp.h>
++#endif
+ 
+ struct lbHeap_HeapDesc {
+     u32 idx;
+@@ -13,28 +14,18 @@ struct lbHeap_HeapDesc {
      u32 size;
  };
  
@@ -155431,7 +155726,7 @@ index 3fa41d59e..d1db2e6e0 100644
      heap->id = -1;
      heap->handle = (Handle*) -1;
      heap->start = 0;
-@@ -44,12 +32,10 @@ static inline void lbHeap_ResetHeap(struct Heap* heap)
+@@ -44,12 +35,10 @@ static inline void lbHeap_ResetHeap(struct Heap* heap)
      heap->status = LbHeapStatus_Destroy;
  }
  
@@ -155447,7 +155742,7 @@ index 3fa41d59e..d1db2e6e0 100644
          if (heap->type == 0) {
              OSDestroyHeap(heap->id);
              heap->id = -1;
-@@ -61,12 +47,10 @@ lbHeap_DestroyOffsetViewIfCreated(struct lbHeap_HeapOffsetView* view)
+@@ -61,12 +50,10 @@ lbHeap_DestroyOffsetViewIfCreated(struct lbHeap_HeapOffsetView* view)
      }
  }
  
@@ -155463,7 +155758,7 @@ index 3fa41d59e..d1db2e6e0 100644
          if (heap->type == 0) {
              heap->id = OSCreateHeap((void*) heap->start,
                                      (void*) (heap->start + heap->size));
-@@ -90,33 +74,22 @@ int lbHeap_800158E8(int arg0)
+@@ -90,33 +77,22 @@ int lbHeap_800158E8(int arg0)
  
  void lbHeap_80015900(void)
  {
@@ -155506,7 +155801,7 @@ index 3fa41d59e..d1db2e6e0 100644
          }
      }
  
-@@ -125,14 +98,14 @@ void lbHeap_80015900(void)
+@@ -125,14 +101,14 @@ void lbHeap_80015900(void)
      aram_lo = lbHeap_80431FA0.aram_lo;
      aram_hi = lbHeap_80431FA0.aram_hi;
  
@@ -155525,7 +155820,7 @@ index 3fa41d59e..d1db2e6e0 100644
                  }
                  break;
  
-@@ -143,19 +116,19 @@ void lbHeap_80015900(void)
+@@ -143,19 +119,19 @@ void lbHeap_80015900(void)
                  break;
  
              case 4:
@@ -155550,7 +155845,7 @@ index 3fa41d59e..d1db2e6e0 100644
      main_heap->size = arena_hi - arena_lo;
      main_heap->status = LbHeapStatus_Create;
      main_heap->type = 0;
-@@ -168,12 +141,9 @@ void lbHeap_80015900(void)
+@@ -168,12 +144,9 @@ void lbHeap_80015900(void)
      aram_heap->status = LbHeapStatus_Create;
      aram_heap->type = 3;
  
@@ -155565,7 +155860,7 @@ index 3fa41d59e..d1db2e6e0 100644
          }
      }
  }
-@@ -185,7 +155,7 @@ LbHeapStatus lbHeap_80015BB8(int arg0)
+@@ -185,7 +158,7 @@ LbHeapStatus lbHeap_80015BB8(int arg0)
  
  void* lbHeap_80015BD0(int heap_id, size_t size)
  {
@@ -155574,7 +155869,7 @@ index 3fa41d59e..d1db2e6e0 100644
      int enabled = OSDisableInterrupts();
      struct Heap* p = &lbHeap_80431FA0.heap_array[heap_id];
  
-@@ -198,7 +168,7 @@ void* lbHeap_80015BD0(int heap_id, size_t size)
+@@ -198,7 +171,7 @@ void* lbHeap_80015BD0(int heap_id, size_t size)
          } else {
              result = lbMemory_80014FC8(p->handle, size);
              if (p->type == 3) {
@@ -155583,7 +155878,7 @@ index 3fa41d59e..d1db2e6e0 100644
              }
          }
      } else {
-@@ -208,7 +178,7 @@ void* lbHeap_80015BD0(int heap_id, size_t size)
+@@ -208,7 +181,7 @@ void* lbHeap_80015BD0(int heap_id, size_t size)
      return result;
  }
  
@@ -155592,7 +155887,7 @@ index 3fa41d59e..d1db2e6e0 100644
  {
      int enabled = OSDisableInterrupts();
      struct Heap* p = &lbHeap_80431FA0.heap_array[arg0];
-@@ -217,10 +187,10 @@ void lbHeap_80015CA8(int arg0, void* arg1)
+@@ -217,10 +190,10 @@ void lbHeap_80015CA8(int arg0, void* arg1)
      if (p->type == 0) {
          int cur_heap = HSD_GetHeap();
          HSD_SetHeap(p->id);
@@ -155605,7 +155900,7 @@ index 3fa41d59e..d1db2e6e0 100644
      }
      OSRestoreInterrupts(enabled);
  }
-@@ -253,7 +223,7 @@ void lbHeap_80015DF8(void)
+@@ -253,7 +226,7 @@ void lbHeap_80015DF8(void)
  
      OSReport("[lbHeap] -- Report --\n");
  
@@ -155614,7 +155909,7 @@ index 3fa41d59e..d1db2e6e0 100644
          OSReport("%s :", lbHeap_803BA448[i]);
          p = &lbHeap_80431FA0.heap_array[i];
          if (p->status == LbHeapStatus_Create) {
-@@ -284,25 +254,30 @@ void lbHeap_80015F3C(void)
+@@ -284,25 +257,37 @@ void lbHeap_80015F3C(void)
      struct Heap* curr_heap;
      struct Heap* prev_heap;
      struct lbHeap_HeapDesc* desc;
@@ -155625,6 +155920,13 @@ index 3fa41d59e..d1db2e6e0 100644
 +     * allocation layout identical when no disc-file overlay is active. */
 +    lbHeap_803BA380[1].size = 0x4F8800 +
 +        ((mu_mod_flags() & MU_MOD_ASSETS_PRESENT) ? 0x200000 : 0);
++    /* 20XX Hack Pack, "HAL Heap 4 Size Increase" (the table word at 803BA3BC,
++     * 0x96C800 to 0x9C0000): the audio RAM heap the fighter animation files
++     * preload into. The pack's animation files are up to 294 KB larger than
++     * the retail ones. Only with the pack's files loaded; the host's audio
++     * RAM is 32 MB, so the rest of that arena does not shrink below the
++     * console's. */
++    lbHeap_803BA380[3].size = mu_hp_loaded() ? 0x9C0000 : 0x96C800;
 +#endif
  
      HSD_GetNextArena(&lbHeap_80431FA0.arena_lo, &lbHeap_80431FA0.arena_hi);

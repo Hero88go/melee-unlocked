@@ -18,6 +18,8 @@ void set_user_volume(int percent);                      // PC settings "Music" (
 // A gain for the song about to start (1 = unchanged); start_song() takes it for that song only.
 void set_next_song_gain(float gain);
 int user_volume();
+// A replay viewer that is paused or seeking: the music stops where it is and goes on from there.
+void set_paused(bool paused);
 // Mixes `frames` stereo 32 kHz samples into `out` (adds to what is there). Audio-thread safe.
 // `master` is the Volume setting as a fraction, applied on top of Melee's own music volume and the
 // Music slider. Without it the master volume only ever gated the music on or off, because the

@@ -35,8 +35,9 @@ struct AssetInfo {
   // enough for one status line: "61 joints match", "rest pose differs", "textures only".
   bool online_allowed = true;
   std::string online_message;
-  // "import": a file the player added, copied into the catalog. "disc": a costume inside a mod disc
-  // or files pack, read from there (disc_path) with no copy; source_name is the pack's name.
+  // "import": a file the player added, copied into the catalog; source_name is that file's name.
+  // "disc": a costume inside a mod disc or files pack, read from there (disc_path) with no copy;
+  // source_name is the pack's name.
   std::string source = "import";
   std::string source_name;
   std::string disc_path;
@@ -44,6 +45,10 @@ struct AssetInfo {
   // "alt L" or "alt R" for a pack's alternate costumes of the same slot.
   std::string pack;
   std::string variant;
+  // The fighter sound bank this skin brings with it ("fox.ssm"), or empty; voice_source is the file
+  // it was imported from. See docs/voice-mods.md.
+  std::string voice;
+  std::string voice_source;
 };
 
 // The skins grouped by where they came from: imports as one pack, each scanned disc or folder as
@@ -98,15 +103,66 @@ ImportResult import_file(const std::string& path);
 
 // A portrait (the character select picture) or a stock icon for one costume slot, imported on its
 // own with no costume file. It is a catalog entry of its own (kind character_portrait, target
-// "<slot>#portrait"), switched on and off like any other choice, and it wins over the picture a
-// selected skin brought with it. `slot` is the costume's disc file name ("PlFxGr.dat"); `kind` is
+// "<slot>#portrait"), switched on and off like any other choice, and it shows wherever the selected
+// skin has no picture of its own. `slot` is the costume's disc file name ("PlFxGr.dat"); `kind` is
 // "csp" for the portrait or "stock" for the stock icon.
 ImportResult import_portrait(const std::string& png_path, const std::string& slot, const std::string& kind);
+// ---- a skin's own portrait and stock icon, given to it after the import ----
+// The rule the pictures follow: a selected skin that has its own picture shows it; the costume's
+// added picture (the entry above) fills in only where the skin has none. These give one installed
+// skin its own picture of that kind ("csp" or "stock"), replacing the one it had. A skin from a mod
+// disc or a files pack works too: the picture is kept in the catalog, like the ones a scan stores,
+// and stays with the skin when its disc is scanned again.
+ImportResult set_skin_portrait(const std::string& skin_id, const std::string& png_path, const std::string& kind);
+// The same with the picture of another catalog entry: another skin's own, or a costume's added one.
+// The bytes are copied, so removing the source later changes nothing.
+bool set_skin_portrait_from(const std::string& skin_id, const std::string& source_asset_id,
+                            const std::string& kind, std::string* error = nullptr);
+// Takes the skin's own picture away: the costume's added picture, or the game's own, shows then.
+bool clear_skin_portrait(const std::string& skin_id, const std::string& kind, std::string* error = nullptr);
+// Every other catalog entry of the same fighter that has a picture of that kind, for a picker.
+struct PortraitChoice { std::string asset_id, label; };
+std::vector<PortraitChoice> portrait_choices(const std::string& skin_id, const std::string& kind);
+// Which picture of that kind shows while the skin is the selected one.
+enum class PortraitSource { Standard, Own, Costume };
+PortraitSource skin_portrait_source(const std::string& skin_id, const std::string& kind);
+// ---- voice mods: a skin's own fighter sound bank (docs/voice-mods.md) ----
+// Attaches a replacement sound bank (.ssm) to an installed skin, or replaces the one it has. The
+// bank must be the skin's fighter's, with the same sounds as the game's bank (see the .cpp). The
+// same checks run for a bank inside a mod zip (import_file), which calls this for its costume.
+ImportResult import_voice(const std::string& ssm_path, const std::string& asset_id);
+// Takes the bank away from a skin again.
+bool remove_voice(const std::string& asset_id, std::string* error = nullptr);
+
+// One port of the match that is about to load: the game's own fighter number (0 Captain Falcon to
+// 25 Ganondorf, the numbers costume_slot_file takes) and costume index, or character -1 for an
+// empty port.
+struct MatchFighter { int character = -1; int costume = 0; };
+// A fighter bank whose served content changed: its file name ("fox.ssm") and the game's bank number
+// (11). The engine lets the copy the game holds in audio memory go, so the loader reads it again.
+struct VoiceChange { std::string file; int bank = -1; };
+struct VoicePlan {
+  std::vector<VoiceChange> changed;
+  std::vector<std::string> notes;   // one line per bank decided and per conflict; also logged
+};
+// Decides every fighter bank for the match about to load and swaps the served banks as a whole.
+// Per bank: the lowest port that plays the bank's fighter decides. Its skin (the saved selection of
+// its costume slot) brings its bank, or the game's own sounds when it has none; a higher port that
+// would have chosen otherwise is named in `notes`. A bank no port uses keeps what it serves. Changes
+// no selection and no file table entry; safe while the profile is frozen for an online session.
+VoicePlan plan_match_voices(const MatchFighter ports[4]);
+// How many disc bank files have a usable voice mod this launch. 0: nothing to plan at match load.
+uint32_t voice_bank_count();
+
 // Lists the costumes of a mod disc (.iso) or a files pack (a folder) as skins, without copying them.
 // Each costume file that differs from the open game disc's becomes a choice named
 // "<fighter> <color>: from <pack_name>" in that costume's list; nothing is selected. Needs the game
 // disc open (host::disc_open) to compare against. Scanning the same unchanged disc again does
 // nothing; a changed disc updates its entries and drops the ones that no longer differ.
+// A pack that carries its own character select file (MnSlChr.usd or .dat) also gives each of its
+// plain costumes the portrait that file shows for the slot, when it differs from the game's: it is
+// stored as the skin's "csp" picture, like the portrait an imported skin brings. A pack's
+// alternate sets have no cell of their own in that file and get none.
 ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pack_name,
                              std::string* error = nullptr);
 // How many skins the catalog lists from that disc or folder.
@@ -157,9 +213,16 @@ bool select_variant_live(const std::string& slot, const std::string& asset_id, s
 // One step through the slot's choices: the standard costume, then each installed skin in catalog
 // order. direction > 0 is the next one. Choices select_variant_live refuses are stepped over.
 // `name` is short enough for a label ("Standard", "My skin", "Pack name (alt L)").
+// The Ice Climbers are two costume files, and the character select names Popo's. When Popo's slot
+// changes, Nana's follows where the same pack (and the same set of it) has a skin for her, and goes
+// back to the standard costume when she wore the partner of Popo's previous skin and the new one
+// has none. A pick of her own (another pack, an import) is left alone. partner_slot is her slot
+// when it changed with this step (the caller publishes it again too), partner_previous_id what it
+// held before ("" the standard costume).
 struct LiveCycle {
   bool ok = false, changed = false;
   std::string asset_id, previous_id, name, message;
+  std::string partner_slot, partner_previous_id;
 };
 LiveCycle cycle_slot_live(const std::string& slot, int direction);
 // Publishes one costume slot again from the saved profile: the same work apply_to_fst does for it,
@@ -245,6 +308,9 @@ bool portrait_slot_from_name(const std::string& name, std::string* slot, std::st
 // Validates ZIP central-directory structure, paths, flags, methods, and resource sizes without
 // extracting. Returned entries use '/' separators exactly as the archive records them.
 bool inspect_zip(const std::string& path, std::vector<std::string>* entries, std::string* error);
+// The fighter bank a sound bank file is ("fox.ssm") and which of the game's two it fits ("English"
+// or "Japanese"), from its own header. False, with the reason, for anything the importer refuses.
+bool inspect_bank(const std::vector<uint8_t>& bytes, std::string* bank, std::string* language, std::string* error);
 }
 
 }  // namespace host::cosmetics

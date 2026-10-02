@@ -16,9 +16,12 @@
 #include "window.h"
 #include "ax_ucode.h"
 #include "exi_slippi.h"
+#include "jukebox.h"
 #include "slippi_online.h"
 #include "gecko_data.h"
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
@@ -526,6 +529,7 @@ static void load_dol_from_disc() {
     log("boot: mod disc; vanilla code from %s, the mod's code follows", options.mod_base_iso.c_str());
     if (disc_is_fixed_address_pack() && !std::getenv("MELEE_MOD_NO_CLEAN")) {
       g_mod_clean = true;
+      install_clean_mode_music();
       log("mods: this disc runs in clean mode (its own code only, without Slippi's codes); online play and replays are off for it");
     }
     return;
@@ -1197,7 +1201,9 @@ void install_language_override() {
 // That instruction is compiled to follow the Slippi option, which also widens the cameras, so here
 // the same change is made in RAM and the function runs from there (a few calls per frame).
 // Only when the instruction is the game's own: a mod that changed this function is left alone.
+void clean_mode_music_frame();
 void apply_wide_fighter_draw() {
+  clean_mode_music_frame();
   constexpr uint32_t kSite = 0x80086B24u, kBranch = 0x4182000Cu, kNop = 0x60000000u;
   static bool live = false;
   const bool want = gx::true_widescreen_active() && !gecko::option_widescreen;
@@ -1303,6 +1309,50 @@ void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
     }
   }
   c.r[3] = (uint32_t)entry;
+}
+// Clean mode (a mod disc that runs without Slippi's codes) has none of the code that hands the music
+// to the host's player, and the game's own disc stream does not advance here: every song repeated
+// its first 1.8 seconds. The pack replaces the function that starts a stream with its own code, so
+// nothing is hooked. Once per game frame the host reads the game's own bookkeeping: the id of the
+// music stream (HSD_Synth_804D7760) and the disc entry it opened (HSD_Synth_804D7764). A new stream
+// starts that file in the player Slippi's codes use, the game's own stream voice is kept silent
+// (its volumes in the voice table, hsd_SynthSFXNodes), and the player stops when the stream is gone.
+// The level follows the game's music level, the value Slippi's volume code sends
+// (lbl_804D38AC * lbl_804D3884 * 2).
+static std::atomic<bool> g_clean_music = false;
+void install_clean_mode_music() { g_clean_music.store(true); }
+void clean_mode_music_frame() {
+  if (!g_clean_music.load(std::memory_order_relaxed)) return;
+  static uint32_t playing_id = 0;
+  const uint32_t id = rd32(0x804D7760u);
+  const uint32_t node = 0x804C2C64u + (id & 0x3Fu) * 0x50u;
+  const bool live = (int32_t)id > 0 && rd32(node) == id;
+  if (!live) {
+    if (playing_id) { slippi::jukebox::stop(); playing_id = 0; }
+    return;
+  }
+  if (id != playing_id) {
+    const uint32_t entry = rd32(0x804D7764u), fst = rd32(0x80000038u);
+    const uint32_t count = fst ? rd32(fst + 8) : 0;
+    if (entry > 0 && entry < count && rd8(fst + entry * 12) == 0) {
+      slippi::jukebox::start_song(rd32(fst + entry * 12 + 4), rd32(fst + entry * 12 + 8));
+      static bool told = false;
+      if (!told) { told = true; log("mods: this disc's music plays through the host's player"); }
+    }
+    playing_id = id;
+  }
+  // The stream voice itself stays silent: its three volume factors, then the flag that makes the
+  // sound driver apply them.
+  if (rd32(node + 0x28) | rd32(node + 0x2C) | rd32(node + 0x34)) {
+    wr32(node + 0x28, 0); wr32(node + 0x2C, 0); wr32(node + 0x34, 0);
+    wr8(node + 0x26, 1);
+  }
+  const uint32_t bits = rd32(0x804D38ACu);
+  float level; std::memcpy(&level, &bits, 4);
+  if (!std::isfinite(level)) return;
+  static int last = -1;
+  const int volume = (int)std::clamp(level * (float)(rd32(0x804D3884u) * 2u), 0.0f, 254.0f);
+  if (volume != last) { last = volume; slippi::jukebox::set_melee_volume((uint8_t)volume); }
 }
 void install_mod_disc_guards() {
   if (!mod_disc_active()) return;

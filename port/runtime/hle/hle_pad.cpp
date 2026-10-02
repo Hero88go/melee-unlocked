@@ -23,6 +23,7 @@ constexpr uint16_t kPadR = 0x0020, kPadL = 0x0040;
 constexpr uint32_t kScene = 0x80479D30u;          // major scene; +3 the minor one
 constexpr uint32_t kDoors = 0x803F0DFCu;          // mnCharSel doors: 4 x 0x24
 constexpr uint32_t kIcons = 0x803F0B24u;          // mnCharSel icons: 0x1C each, +1 the fighter
+constexpr uint32_t kOnlineMode = 0x804D6640u;     // Slippi's online mode: 1 Unranked, 2 Direct, 3 Teams
 constexpr uint32_t kPreload = 0x80432078u;        // lbDvd's preload cache
 constexpr uint32_t kPreloadSceneChanges = kPreload + 0x54, kPreloadEntries = kPreload + 0xAC;
 constexpr uint32_t kPreloadEntrySize = 0x1C, kPreloadCount = 80, kPreloadHeap = kPreload + 0x96C;
@@ -56,21 +57,28 @@ void cycle(int door, int direction) {
     return;
   }
   const uint32_t fst = host::rd32(0x80000038u), fst_size = host::disc_fst_size();
-  const auto result = host::cosmetics::republish_slot(host::ptr(fst, fst_size), fst_size, slot);
-  if (!result.ok) return;
-  for (const auto& file : result.files) {
-    host::mark_ram_write(fst + file.fst_index * 12 + 8, 4);   // the length the catalog wrote there
-    // The copy preloaded under this entry has the old skin and the old length. Its entry number is
-    // taken away (0xFFFE names no file), so the game's next preload pass finds nothing for the file,
-    // loads it again, and frees the orphan with the other unused entries of its heap.
-    for (uint32_t i = 0; i < kPreloadCount; ++i) {
-      const uint32_t entry = kPreloadEntries + i * kPreloadEntrySize;
-      const uint8_t state = host::rd8(entry);
-      if (host::rd16(entry + 6) != (uint16_t)file.fst_index) continue;
-      if (state == 3 || state == 4) host::wr16(entry + 6, 0xFFFE);
-      else if (state == 1) host::wr32(entry + 0x0C, 0);   // still waiting to load: its length is read again then
+  const auto publish = [&](const std::string& which) {
+    const auto result = host::cosmetics::republish_slot(host::ptr(fst, fst_size), fst_size, which);
+    if (!result.ok) return false;
+    for (const auto& file : result.files) {
+      host::mark_ram_write(fst + file.fst_index * 12 + 8, 4);   // the length the catalog wrote there
+      // The copy preloaded under this entry has the old skin and the old length. Its entry number is
+      // taken away (0xFFFE names no file), so the game's next preload pass finds nothing for the file,
+      // loads it again, and frees the orphan with the other unused entries of its heap.
+      for (uint32_t i = 0; i < kPreloadCount; ++i) {
+        const uint32_t entry = kPreloadEntries + i * kPreloadEntrySize;
+        const uint8_t state = host::rd8(entry);
+        if (host::rd16(entry + 6) != (uint16_t)file.fst_index) continue;
+        if (state == 3 || state == 4) host::wr16(entry + 6, 0xFFFE);
+        else if (state == 1) host::wr32(entry + 0x0C, 0);   // still waiting to load: its length is read again then
+      }
     }
-  }
+    return true;
+  };
+  if (!publish(slot)) return;
+  // The Ice Climbers: Nana's slot changed with Popo's, and is published the same way.
+  if (!pick.partner_slot.empty() && publish(pick.partner_slot))
+    host::log("cosmetics: character select pairs %s with %s", pick.partner_slot.c_str(), slot.c_str());
   // The game's own "the scene changed" mark (lbDvd_8001823C): the preload pass runs again this frame.
   host::wr32(kPreloadSceneChanges, host::rd32(kPreloadSceneChanges) + 1);
   std::vector<gx::texpack::CosmeticCompanion> companions;
@@ -102,13 +110,97 @@ void apply(const host::PadState pads[4]) {
       if (pressed[i]) cycle(i, (pressed[i] & kPadR) ? 1 : -1);
   } else if (major == 8) {
     // The online character select has one door, the local player's. No change in Teams (the team
-    // picks the color); a queued or running match is refused by the catalog itself.
-    if (slippi::online::session_mode() == 3) return;
+    // picks the color): the mode the player chose in the online menu is the game's own byte
+    // (Slippi's online mode, r13 - 0x5060), since the session has no mode before its first search.
+    // After lock-in the catalog itself refuses (the profile is frozen from the search on), and
+    // inside the online flow it only lets a skin proven to change looks alone, or the standard one.
+    if (slippi::online::session_mode() == 3 || host::rd8(kOnlineMode) == 3) return;
     for (int i = 0; i < 4; ++i)
       if (pressed[i]) { cycle(0, (pressed[i] & kPadR) ? 1 : -1); break; }
   }
 }
 }  // namespace css_skins
+
+// Voice mods (docs/voice-mods.md). When a fight is about to load, the catalog decides each fighter
+// sound bank from the fighters of that match. A bank the game still holds in audio memory with
+// other content is let go here with the game's own routine and marked not loaded, so the game's
+// loader reads it again in this same load. Host only, and before the scene's own entry runs: the
+// three fight scene entries are called through the scene tables, which the dispatch table sees.
+namespace voice_banks {
+constexpr uint32_t kSceneEntries[3] = {0x8016E934u, 0x8016EBC0u, 0x8016EC28u};   // VS, Sudden Death, Training
+constexpr uint32_t kBankState = 0x80433984u;      // per bank: -1 not loaded, 1 loaded, 2 in use
+constexpr uint32_t kBankEntry = 0x80433A64u;      // per bank: the entry number it was loaded from
+constexpr uint32_t kLoadedBytes = 0x804D6448u;    // sample bytes loaded in the fighter and stage bank
+constexpr uint32_t kBankSizes = 0x803BC4E4u;      // per bank: two words, the first its sample bytes
+constexpr uint32_t kStopBank = 0x803899B0u;       // HSD_SynthSFXStopRange(bank id)
+constexpr uint32_t kRemoveGroup = 0x80388E08u;    // HSD_SynthSFXGroupDataRemove(entry number)
+constexpr int kBanks = 55;
+ppc::Fn g_entry[3] = {};
+
+// The loader's tables as the game keeps them: every state is -1, 1 or 2.
+bool tables_sane() {
+  for (int i = 0; i < kBanks; ++i) {
+    const uint32_t state = host::rd32(kBankState + 4u * (uint32_t)i);
+    if (state != 0xFFFFFFFFu && state != 1 && state != 2) return false;
+  }
+  return true;
+}
+
+void plan(uint32_t start_data) {
+  if (!host::cosmetics::voice_bank_count() || host::mod_disc_active()) return;
+  if (!host::try_ptr(start_data, 0x60 + 4 * 0x24)) return;
+  host::cosmetics::MatchFighter ports[4];
+  for (uint32_t i = 0; i < 4; ++i) {
+    const uint32_t player = start_data + 0x60 + i * 0x24;   // the match's players: fighter, slot type, stocks, costume
+    if (host::rd8(player + 1) == 3) continue;                // nobody in this port
+    ports[i].character = (int8_t)host::rd8(player);
+    ports[i].costume = host::rd8(player + 3);
+  }
+  const auto made = host::cosmetics::plan_match_voices(ports);
+  if (made.changed.empty()) return;
+  if (!tables_sane()) { host::log("cosmetics: voice banks are not reloaded (unknown sound loader layout)"); return; }
+  bool stopped = false;
+  for (const auto& bank : made.changed) {
+    if (bank.bank < 0 || bank.bank >= kBanks) continue;
+    const uint32_t state = kBankState + 4u * (uint32_t)bank.bank, entry = kBankEntry + 4u * (uint32_t)bank.bank;
+    if (host::rd32(state) == 0xFFFFFFFFu) continue;   // not in audio memory: the load that follows reads the new bank
+    // The game stops this bank's sounds itself before it packs the bank again, a moment later in
+    // this load; here it comes first, so nothing still plays from the samples that are let go.
+    if (!stopped) { host::call_guest(kStopBank, 2); stopped = true; }
+    host::call_guest(kRemoveGroup, host::rd32(entry));
+    host::wr32(entry, 0xFFFFFFFFu);
+    host::wr32(state, 0xFFFFFFFFu);
+    host::wr32(kLoadedBytes, host::rd32(kLoadedBytes) - host::rd32(kBankSizes + 8u * (uint32_t)bank.bank));
+    host::log("cosmetics: %s is let go from audio memory; this match loads the picked voice", bank.file.c_str());
+  }
+}
+
+template <int N> void scene_entry(ppc::Context& c, uint8_t* m) {
+  // The entry's own arguments survive the guest calls plan() may make.
+  uint32_t saved[10];
+  for (int i = 0; i < 10; ++i) saved[i] = c.r[3 + i];
+  plan(c.r[3]);
+  for (int i = 0; i < 10; ++i) c.r[3 + i] = saved[i];
+  g_entry[N](c, m);
+}
+
+// Once, at the first pad poll: the dispatch table exists by then.
+void install() {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  const ppc::Fn hooks[3] = {scene_entry<0>, scene_entry<1>, scene_entry<2>};
+  for (int i = 0; i < 3; ++i) {
+    const ppc::Fn previous = ppc::set_hook(kSceneEntries[i], hooks[i]);
+    if (!previous) {
+      ppc::set_hook(kSceneEntries[i], nullptr);   // never leave a hook with nothing to call behind it
+      host::log("cosmetics: voice bank hook not installed at %08X (not in the dispatch table)", kSceneEntries[i]);
+      continue;
+    }
+    g_entry[i] = previous;
+  }
+}
+}  // namespace voice_banks
 
 HLE(PADInit) { RET(1); }
 HLE(PADReset) { RET(1); }
@@ -153,6 +245,7 @@ HLE(PADRead) {
   // replay and sent to the opponent exactly like a press the player made.
   lcancel::apply(pads);
   css_skins::apply(pads);
+  voice_banks::install();
   // The player's own Gecko codes (data writes only), re-applied each frame like the Gecko handler.
   user_gecko::apply();
   host::apply_wide_fighter_draw();

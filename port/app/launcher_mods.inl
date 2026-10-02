@@ -337,7 +337,13 @@ std::map<std::string, Installed> installed() {
   }
   return out;
 }
+// A scan is running. Until it ends, what the page shows comes from the last scan, which after an
+// update is the previous version's verdict: a disc that version could not run would read "Not
+// supported yet" for as long as the new scan takes to read the disc again.
+std::atomic<int> g_scans_running{0};
+bool scanning() { return g_scans_running.load() > 0; }
 void scan_installed() {
+  struct Running { Running() { ++g_scans_running; post_refresh(); } ~Running() { --g_scans_running; post_refresh(); } } running;
   source_port::mods::ScanOptions options;
   options.mods_dir = fs::u8path(mods_dir()); options.base_iso = fs::u8path(g_iso);
   options.source_port = g_engine == ENGINE_SOURCE;
@@ -670,7 +676,7 @@ void refresh_window() {
     const bool busy = is_busy(m.id), playable = row.found && catalog_core::playable(f);
     std::string primary; bool enabled = true; LONG_PTR style = 0;
     if (busy) primary = "Cancel";
-    else if (row.found) { primary = playable ? "Play" : "Not supported yet"; enabled = playable && !g_playing; style = STYLE_ACCENT; }
+    else if (row.found) { primary = playable ? "Play" : scanning() ? "Checking..." : "Not supported yet"; enabled = playable && !g_playing; style = STYLE_ACCENT; }
     else if (m.one_click) { primary = "Get"; style = STYLE_ACCENT; enabled = !m.url.empty() || !m.repo.empty(); }
     else { primary = "Open download page"; enabled = !m.page.empty(); }
     SetWindowTextW(g_buttons[i], widen(tx(primary)).c_str());
@@ -772,6 +778,7 @@ void paint_page(HDC dc) {
     // Last line: what is happening now, else what runs this mod.
     std::string line; COLORREF line_color = C_DIM;
     if (status.count(m.id) && (is_busy(m.id) || status[m.id].rfind("Installed", 0) != 0)) { line = tx(status[m.id]); line_color = C_TEXT; }
+    else if (row.found && !catalog_core::playable(f) && scanning()) { line = tx("Checking this disc..."); line_color = C_DIM; }
     else if (row.found && !catalog_core::playable(f)) { line = m.note.empty() ? tx("This version is not supported yet.") : tx(m.note); line_color = C_WARN; }
     else if (row.found && f.kind != "te" && f.kind != "tmce") {
       // Once the game has listed the disc's costumes as skins, say how many and where to pick them.
@@ -781,6 +788,10 @@ void paint_page(HDC dc) {
         const std::string named = sets_text(sets);
         line = launcher::lang::fill(tx("Skins: {count} in your skin list{sets}. Pick them in Settings, Mods."),
                                     launcher::lang::Args{{"count", std::to_string(skins)}, {"sets", named.empty() ? "" : " (" + named + ")"}});
+        line_color = C_DIM;
+      } else if (f.kind == "hack_pack") {
+        // This pack has no online play at all, so the Direct line would be wrong for it.
+        line = tx(m.note.empty() ? "Plays on the Static Recomp, offline (no online play or replays)." : m.note);
         line_color = C_DIM;
       } else {
         line = tx(f.needs_engine == "recomp" ? "Direct only. Same mod required; different builds can desync. Launch vanilla for Unranked."

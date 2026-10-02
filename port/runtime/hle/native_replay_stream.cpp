@@ -26,11 +26,13 @@ bool NativeReplayStream::fail(const char* reason) {
 bool NativeReplayStream::begin(const std::vector<uint8_t>& start,
                              const std::vector<uint8_t>& codes) {
   std::string mod_profile = std::move(mod_profile_);   // set for the match about to start
-  const uint32_t feature_options = feature_options_, feature_options2 = feature_options2_;
+  const uint32_t feature_options = feature_options_, feature_options2 = feature_options2_,
+                 feature_options3 = feature_options3_;
   *this = NativeReplayStream{};
   mod_profile_ = std::move(mod_profile);
   feature_options_ = feature_options;
   feature_options2_ = feature_options2;
+  feature_options3_ = feature_options3;
   if (start.size() < 0x140 || start.size() > UINT16_MAX)
     return fail("invalid Game Start payload length");
   active_ = true;
@@ -52,11 +54,13 @@ bool NativeReplayStream::begin(const std::vector<uint8_t>& start,
 bool NativeReplayStream::begin_slippi(const std::vector<uint8_t>& start,
                                       const std::vector<uint8_t>& codes, int64_t start_time) {
   std::string mod_profile = std::move(mod_profile_);   // set for the match about to start
-  const uint32_t feature_options = feature_options_, feature_options2 = feature_options2_;
+  const uint32_t feature_options = feature_options_, feature_options2 = feature_options2_,
+                 feature_options3 = feature_options3_;
   *this = NativeReplayStream{};
   mod_profile_ = std::move(mod_profile);
   feature_options_ = feature_options;
   feature_options2_ = feature_options2;
+  feature_options3_ = feature_options3;
   if (start.size() < 0x140 || start.size() > UINT16_MAX)
     return fail("invalid Game Start payload length");
   if (codes.size() > UINT16_MAX) return fail("Gecko list exceeds the declared 16-bit size");
@@ -151,6 +155,7 @@ std::vector<uint8_t> NativeReplayStream::encode() const {
     if (!mod_profile_.empty()) { text("modProfile"); out.push_back('S'); text(mod_profile_); }
     if (feature_options_) { text("muOptions"); out.push_back('l'); put32(out, feature_options_); }
     if (feature_options2_) { text("muOptions2"); out.push_back('l'); put32(out, feature_options2_); }
+    if (feature_options3_) { text("muOptions3"); out.push_back('l'); put32(out, feature_options3_); }
     out.push_back('}'); out.push_back('}');
     return out;
   }
@@ -172,6 +177,11 @@ std::vector<uint8_t> NativeReplayStream::encode() const {
     const std::string key = "muOptions2";
     out.push_back('U'); out.push_back(uint8_t(key.size())); out.insert(out.end(), key.begin(), key.end());
     out.push_back('l'); put32(out, feature_options2_);
+  }
+  if (feature_options3_) {
+    const std::string key = "muOptions3";
+    out.push_back('U'); out.push_back(uint8_t(key.size())); out.insert(out.end(), key.begin(), key.end());
+    out.push_back('l'); put32(out, feature_options3_);
   }
   out.push_back('}'); out.push_back('}');
   return out;

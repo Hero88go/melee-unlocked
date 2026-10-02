@@ -328,6 +328,7 @@ void mu_replay_boot_mode(unsigned char* mode);
 void mu_replay_prepare_scene(void);
 void mu_replay_start_melee(struct StartMeleeData* data);
 void mu_replay_scene_think(int match_result);
+void mu_replay_frame_begin(void);   /* top of an engine frame: the replay viewer's controls */
 int mu_replay_terminated(void);
 int mu_replay_stock_steal(int pad_port);
 void mu_replay_input(struct Fighter* fp);

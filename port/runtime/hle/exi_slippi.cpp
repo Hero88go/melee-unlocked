@@ -116,6 +116,7 @@ std::vector<uint8_t> generate_metadata() {
 }
 
 bool g_discard_replay = false;   // this match cannot be played back from its file (see discard_current_replay)
+const char* g_discard_reason = nullptr;   // why, for the log; null is the 20XX CPUs
 
 void close_file() {
   if (!g_file) return;
@@ -123,7 +124,9 @@ void close_file() {
   if (g_discard_replay) {
     g_discard_replay = false;
     std::remove(g_replay_path.c_str());
-    host::log("slippi: replay not kept: %s (20XX CPUs were on, and a replay cannot hold what they do)", g_replay_path.c_str());
+    host::log("slippi: replay not kept: %s (%s)", g_replay_path.c_str(),
+              g_discard_reason ? g_discard_reason : "20XX CPUs were on, and a replay cannot hold what they do");
+    g_discard_reason = nullptr;
     return;
   }
   ++g_replays_written;
@@ -774,6 +777,6 @@ void dma_read(uint32_t addr, uint32_t size) {
 }
 
 bool gct_range(uint32_t* lo, uint32_t* hi) { return gct_range_local(lo, hi); }
-void discard_current_replay() { if (g_file) g_discard_replay = true; }
+void discard_current_replay(const char* reason) { if (g_file) { g_discard_replay = true; g_discard_reason = reason; } }
 
 }  // namespace slippi

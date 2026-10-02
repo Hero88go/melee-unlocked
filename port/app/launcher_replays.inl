@@ -3,10 +3,10 @@
 #include <map>
 #include <memory>
 #include <tuple>
-enum { ID_REPLAY_LIST=800, ID_REPLAY_BROWSE, ID_REPLAY_WATCH, ID_REPLAY_REFRESH, ID_REPLAY_BACK, ID_REPLAY_PREV, ID_REPLAY_NEXT };
+enum { ID_REPLAY_LIST=800, ID_REPLAY_BROWSE, ID_REPLAY_WATCH, ID_REPLAY_REFRESH, ID_REPLAY_BACK, ID_REPLAY_PREV, ID_REPLAY_NEXT, ID_REPLAY_ASPLAYED };
 const UINT WM_APP_REPLAYS_LISTED = WM_APP + 20;   // lParam: heap ReplayScan*
 const UINT WM_APP_REPLAY_LOADED = WM_APP + 21;    // lParam: heap ReplayLoaded*
-HWND g_replays[7]{};             // list, browse, watch, refresh, back, prev, next
+HWND g_replays[8]{};             // list, browse, watch, refresh, back, prev, next, "as it was played"
 HWND g_replay_stats=nullptr;     // the scrolling stats page
 std::vector<std::filesystem::path> g_replay_files;
 std::vector<launcher::replay::Info> g_replay_info;
@@ -73,6 +73,21 @@ std::wstring replay_duration(const launcher::replay::Info& r) {
 std::wstring player_tag(const launcher::replay::Player& p) { return widen(p.code.empty()?p.name:p.code); }
 
 void replay_status(const std::string& message) { g_replay_status=message; InvalidateRect(g_main,nullptr,FALSE); }
+
+// "Show it as it was played": an online match leaves a session trace beside its replay, the same
+// name with the extension .trace (what the player actually got: waits, rollbacks, long frames). The
+// box (g_replay_as_played, kept in launcher.ini) can be ticked only for a replay that has one.
+int replay_current() { return g_replay_view>=0?g_replay_view:(g_replays[0]?(int)SendMessageW(g_replays[0],LB_GETCURSEL,0,0):-1); }
+bool replay_has_trace(int index) {
+  if(index<0||index>=(int)g_replay_files.size()) return false;
+  auto trace=g_replay_files[index]; trace.replace_extension(L".trace");
+  std::error_code ec; return std::filesystem::is_regular_file(trace,ec);
+}
+void replay_trace_changed() {
+  if(!g_replays[7]) return;
+  EnableWindow(g_replays[7],replay_has_trace(replay_current()));
+  InvalidateRect(g_replays[7],nullptr,FALSE);
+}
 
 // ---------------------------------------------------------------------------- scanning
 void refresh_replays(const std::filesystem::path& selected={}) {
@@ -142,6 +157,7 @@ void replays_listed(ReplayScan* scan) {
     g_replay_view=it==g_replay_files.end()?-1:int(it-g_replay_files.begin());
   }
   EnableWindow(g_replays[2],!g_replay_files.empty()&&!g_playing&&!g_building);
+  replay_trace_changed();
   replay_status(g_replay_files.empty()?"Choose a Slippi replay to get started.":launcher::lang::fill(launcher::lang::tx("{count} replays"),launcher::lang::Args{{"count",std::to_string(g_replay_files.size())}}));
   stats_changed();
 }
@@ -158,6 +174,7 @@ void replay_layout() {
   const bool on=g_tab==3, stats=on&&g_replay_view>=0;
   for(int i:{0,1,3}) if(g_replays[i]) ShowWindow(g_replays[i],on&&!stats?SW_SHOW:SW_HIDE);
   for(int i:{4,5,6}) if(g_replays[i]) ShowWindow(g_replays[i],stats?SW_SHOW:SW_HIDE);
+  if(g_replays[7]) { ShowWindow(g_replays[7],on?SW_SHOW:SW_HIDE); replay_trace_changed(); }
   if(g_replay_stats) ShowWindow(g_replay_stats,stats?SW_SHOW:SW_HIDE);
   if(g_replays[2]) {
     RECT r=stats?LR(800,22,158,38):LR(808,622,150,34);
@@ -176,7 +193,7 @@ void replay_open_stats(int index) {
 }
 void replay_back() { g_replay_view=-1; replay_layout(); SetFocus(g_replays[0]); }
 void replay_step(int delta) { if(g_replay_view>=0) replay_open_stats(std::clamp(g_replay_view+delta,0,(int)g_replay_files.size()-1)); }
-void replay_selection_changed() { InvalidateRect(g_replays[0],nullptr,FALSE); }
+void replay_selection_changed() { InvalidateRect(g_replays[0],nullptr,FALSE); replay_trace_changed(); }
 
 void browse_replay() {
   wchar_t file[32768]{}; auto folder=widen(g_dir+"\\Replays");
@@ -215,6 +232,8 @@ void watch_replay() {
   if(!file_exists(sys+"\\codehandler.bin")) { replay_status("The playback system files are missing from this installation."); return; }
   const auto cwd=work_dir();
   std::wstring command=widen("\""+exe+"\""+game_args()+" --sys-dir \""+sys+"\" --replay \"")+g_replay_files[index].wstring()+L"\"";
+  // The viewer finds "<replay>.trace" beside the replay itself and shows the session's own timing.
+  if(g_replay_as_played&&replay_has_trace(index)) command+=L" --as-experienced";
   PROCESS_INFORMATION process{}; DWORD error=launcher::start_process(widen(exe),command,widen(cwd),0,process);
   if(error) { report_launch_error(error,exe,cwd); return; }
   CloseHandle(process.hThread); crash_report::note_launch(); g_playing=true; g_replay_active=true;
@@ -544,10 +563,11 @@ void create_replay_controls() {
   g_replays[4]=make(L"BUTTON",L"\x2190",BS_OWNERDRAW,212,26,36,34,ID_REPLAY_BACK);
   g_replays[5]=make(L"BUTTON",L"\x2039",BS_OWNERDRAW,800,68,30,26,ID_REPLAY_PREV);
   g_replays[6]=make(L"BUTTON",L"\x203A",BS_OWNERDRAW,928,68,30,26,ID_REPLAY_NEXT);
+  g_replays[7]=make(L"BUTTON",L"",BS_OWNERDRAW,212,668,520,24,ID_REPLAY_ASPLAYED);   // drawn by draw_button, as the other tick box
   WNDCLASSEXW wc{sizeof wc}; wc.lpfnWndProc=stats_proc; wc.hInstance=GetModuleHandleW(nullptr);
   wc.hCursor=LoadCursorW(nullptr,IDC_ARROW); wc.lpszClassName=L"MeleeUnlockedReplayStats";
   RegisterClassExW(&wc);
-  g_replay_stats=CreateWindowExW(0,wc.lpszClassName,L"",WS_CHILD|WS_VSCROLL,S(212),S(112),S(756),S(REPLAY_H-112),g_main,nullptr,wc.hInstance,nullptr);
+  g_replay_stats=CreateWindowExW(0,wc.lpszClassName,L"",WS_CHILD|WS_VSCROLL,S(212),S(112),S(756),S(REPLAY_H-112-38),g_main,nullptr,wc.hInstance,nullptr);
   SetWindowTheme(g_replay_stats,L"DarkMode_Explorer",nullptr);
   replay_layout();
 }
