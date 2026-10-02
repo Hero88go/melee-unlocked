@@ -8,6 +8,7 @@
 #endif
 #include <windows.h>
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -115,6 +116,10 @@ namespace {
 uint8_t* g_tramp_pool = nullptr;
 size_t g_tramp_used = 0, g_tramp_cap = 0;
 std::vector<uint32_t> g_redirected;   // sorted guest addresses
+// The five bytes each redirected entry had before its jump was written, so undo_redirect can put them
+// back; and the compiled entries disable_dispatch_range removed, so restore_dispatch_range can.
+std::vector<std::pair<uint32_t, std::array<uint8_t, 5>>> g_redirect_saved;
+std::vector<std::pair<uint32_t, Fn>> g_disabled_dispatch;
 void* alloc_near(const void* target, size_t size) {
   SYSTEM_INFO si; GetSystemInfo(&si);
   const uintptr_t gran = si.dwAllocationGranularity;
@@ -137,6 +142,10 @@ static void mark_inline(uint32_t lo, uint32_t hi) {
   for (uint32_t a = lo & ~3u; a < hi; a += 4) { const uint32_t off = a - RAM_BASE; if (off < RAM_SIZE) g_inline_map[off / 4] = 1; }
 }
 void add_ram_code_range(uint32_t lo, uint32_t hi) { mark_inline(lo, hi); }
+void remove_ram_code_range(uint32_t lo, uint32_t hi) {
+  if (g_inline_map.empty()) return;
+  for (uint32_t a = lo & ~3u; a < hi; a += 4) { const uint32_t off = a - RAM_BASE; if (off < RAM_SIZE) g_inline_map[off / 4] = 0; }
+}
 
 bool runs_from_ram(uint32_t addr) {
   if (g_inline_map.empty()) return false;
@@ -157,7 +166,20 @@ bool function_bounds(uint32_t addr, uint32_t* lo, uint32_t* hi) {
 void disable_dispatch_range(uint32_t lo, uint32_t hi) {
   for (uint32_t a = lo & ~3u; a < hi; a += 4) {
     const uint32_t off = a - RAM_BASE;
-    if (off < RAM_SIZE && !g_dispatch.empty()) g_dispatch[off / 4] = nullptr;
+    if (off < RAM_SIZE && !g_dispatch.empty() && g_dispatch[off / 4]) {
+      g_disabled_dispatch.push_back({a, g_dispatch[off / 4]});
+      g_dispatch[off / 4] = nullptr;
+    }
+  }
+}
+
+void restore_dispatch_range(uint32_t lo, uint32_t hi) {
+  if (g_dispatch.empty()) return;
+  for (size_t i = 0; i < g_disabled_dispatch.size();) {
+    const auto& entry = g_disabled_dispatch[i];
+    if (entry.first < lo || entry.first >= hi) { ++i; continue; }
+    g_dispatch[(entry.first - RAM_BASE) / 4] = entry.second;
+    g_disabled_dispatch.erase(g_disabled_dispatch.begin() + (ptrdiff_t)i);
   }
 }
 
@@ -186,11 +208,14 @@ bool redirect_to_interpreter(uint32_t addr) {
   t[16] = 0xFF; t[17] = 0xE0;
   DWORD old = 0;
   if (!VirtualProtect(code, 5, PAGE_EXECUTE_READWRITE, &old)) return false;
+  std::array<uint8_t, 5> before;
+  std::memcpy(before.data(), code, 5);
   const int32_t r = (int32_t)rel;
   code[0] = 0xE9; std::memcpy(code + 1, &r, 4);
   VirtualProtect(code, 5, old, &old);
   FlushInstructionCache(GetCurrentProcess(), code, 5);
   g_redirected.insert(at, addr);
+  g_redirect_saved.push_back({addr, before});
   uint32_t lo = 0, hi = 0;
   if (function_bounds(addr, &lo, &hi)) mark_inline(lo, hi);
   return true;
@@ -200,6 +225,26 @@ bool redirect_function_at(uint32_t addr) {
   uint32_t lo = 0, hi = 0;
   if (!function_bounds(addr, &lo, &hi) || addr >= hi) return false;
   return redirect_to_interpreter(lo);
+}
+
+bool undo_redirect(uint32_t addr) {
+  auto at = std::lower_bound(g_redirected.begin(), g_redirected.end(), addr);
+  if (at == g_redirected.end() || *at != addr) return false;
+  Fn fn = lookup(addr);
+  auto saved = std::find_if(g_redirect_saved.begin(), g_redirect_saved.end(), [&](const auto& e) { return e.first == addr; });
+  if (!fn || saved == g_redirect_saved.end()) return false;
+  uint8_t* code = reinterpret_cast<uint8_t*>(fn);
+  DWORD old = 0;
+  if (!VirtualProtect(code, 5, PAGE_EXECUTE_READWRITE, &old)) return false;
+  std::memcpy(code, saved->second.data(), 5);
+  VirtualProtect(code, 5, old, &old);
+  FlushInstructionCache(GetCurrentProcess(), code, 5);
+  g_redirected.erase(at);
+  g_redirect_saved.erase(saved);
+  uint32_t lo = 0, hi = 0;
+  if (function_bounds(addr, &lo, &hi) && !g_inline_map.empty())
+    for (uint32_t a = lo & ~3u; a < hi; a += 4) { const uint32_t off = a - RAM_BASE; if (off < RAM_SIZE) g_inline_map[off / 4] = 0; }
+  return true;   // (the trampoline slot stays allocated; 32 bytes)
 }
 
 bool redirect_to_host(uint32_t addr, Fn fn) {
@@ -390,8 +435,21 @@ void trace_enter(Context& c, uint32_t pc) {
   for (auto& t : g_traced) {
     if (t.first != pc || !t.second) continue;
     --t.second;
-    host::log("[trace] frame %u %s(%08X) r3=%08X r4=%08X r5=%08X lr=%08X (from %s)", host::retrace_count(), host::symbol_name(pc), pc,
-              c.r[3], c.r[4], c.r[5], c.lr, host::symbol_name(c.lr));
+    // r3 as text when it points at a printable string (file names, format strings).
+    char text[64] = "";
+    if (const uint8_t* s = host::try_ptr(c.r[3], 48)) {
+      size_t n = 0;
+      while (n < 47 && s[n] >= 0x20 && s[n] < 0x7F) ++n;
+      if (n >= 3 && s[n] == 0) { text[0] = ' '; text[1] = '"'; std::memcpy(text + 2, s, n); text[n + 2] = '"'; text[n + 3] = 0; }
+    }
+    host::log("[trace] frame %u %s(%08X) r3=%08X r4=%08X r5=%08X r6=%08X lr=%08X (from %s)%s", host::retrace_count(), host::symbol_name(pc), pc,
+              c.r[3], c.r[4], c.r[5], c.r[6], c.lr, host::symbol_name(c.lr), text);
+    // A first argument that is text (a file name, a format string) is worth reading next to the call.
+    if (const uint8_t* s = host::try_ptr(c.r[3], 64)) {
+      size_t n = 0;
+      while (n < 63 && s[n] >= 0x20 && s[n] < 0x7F) ++n;
+      if (n >= 3 && s[n] == 0) host::log("[trace]   r3 text: %s", (const char*)s);
+    }
   }
 }
 

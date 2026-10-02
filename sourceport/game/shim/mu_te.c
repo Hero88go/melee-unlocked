@@ -88,6 +88,28 @@ int mu_te_general(void)
     return te_on_offline();
 }
 
+/* A plain option carried in the second word that is not a 20XX TE feature ("20XX CPUs", Game tab):
+ * in effect offline in the normal game, with or without a TE save, never online or while online is
+ * pending or in Slippi's online menus, never in a TM-CE event. No TE master, no Tournament Mode test.
+ * In replay playback the host passes the recorded word, so a replay plays back as it was played. */
+int mu_option2_offline(unsigned int bit)
+{
+    if (!(mu_game_options2() & bit) || (mu_game_options() & MU_OPTION_VANILLA) || te_in_tmce_event()) {
+        return 0;
+    }
+    if (mu_online_active() || mu_online_pending() || mu_slippi_in_online_mode()) {
+        return 0;
+    }
+    {
+        static unsigned int used = 0;
+        if (!(used & bit)) {
+            used |= bit;
+            OSReport("[20xx] option2 %08X in effect\n", bit);
+        }
+    }
+    return 1;
+}
+
 /* TE's conveniences that only show with Tournament Mode off (the green "Ready to Fight" banner). */
 int mu_te_casual(void)
 {

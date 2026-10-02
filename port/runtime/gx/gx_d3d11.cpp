@@ -118,7 +118,13 @@ struct TextureEntry {
   ComPtr<ID3D11RenderTargetView> rtv;   // EFB copies only
   uint32_t width = 0, height = 0, levels = 1;
   uint64_t last_used = 0;
+  uint64_t replacement_bytes = 0;   // what a pack replacement charged to the replacement budget, given back when evicted
 };
+// Video memory an RGBA8 texture takes, near enough for keeping the cache inside its budget.
+uint64_t texture_bytes(uint32_t w, uint32_t h, uint32_t levels) {
+  const uint64_t base = (uint64_t)w * h * 4;
+  return levels > 1 ? base + base / 3 : base;
+}
 
 struct SamplerKey {
   uint32_t mode0, mode1, anisotropy;
@@ -453,11 +459,31 @@ class D3D11Backend : public Backend {
   HANDLE present_timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* high resolution */, TIMER_ALL_ACCESS);
   double present_deadline_ = 0, present_wait_ = 0;
   uint64_t frame_counter_ = 0;
-  // Replacement textures are decoded PNGs, far bigger than the originals, so they get a budget
-  // rather than being allowed to fill video memory. Same figures as the D3D12 backend.
   // Replacement textures are decoded PNGs and far bigger than the originals, so they get a budget
   // rather than being allowed to fill video memory. Same figures as the D3D12 backend.
   uint64_t replacement_bytes_ = 0, replacement_budget_ = 512ull * 1024 * 1024;
+  // The whole game texture cache has a budget too (a quarter of the adapter's dedicated memory,
+  // floor 256 MB, ceiling 2 GB, set in init): textures_ used to keep every texture the game had
+  // ever shown, so a long session only ever grew. trim_textures evicts the least recently drawn
+  // above it, once a second at most.
+  uint64_t texture_budget_bytes_ = 512ull * 1024 * 1024;
+  double texture_trim_time_ = 0;
+  void trim_textures();
+  // GPU time per frame and GPU queue depth for the "gpu:" diagnostic line. A disjoint query plus
+  // two timestamps bracket each frame's work; an event query marks its end. Results are read back
+  // kTimerRing frames later and only if ready (never a stall), and the events still outstanding at
+  // the start of a frame are the frames the GPU has not finished.
+  static constexpr int kTimerRing = 4;
+  struct GpuTimer {
+    ComPtr<ID3D11Query> disjoint, start, end, done;
+    bool timing_pending = false, done_pending = false;
+  };
+  GpuTimer gpu_timers_[kTimerRing];
+  int gpu_timer_slot_ = 0;
+  double gpu_frame_ms_sum_ = 0; uint32_t gpu_frame_ms_samples_ = 0;   // since the last "gpu:" line
+  void gpu_frame_begin();
+  void gpu_frame_end();
+  unsigned gpu_frames_queued();
   uint64_t texpack_report_frame_ = ~0ull;
   uint32_t frames_presented_ = 0;
   bool capture_pending_ = false;
@@ -493,8 +519,27 @@ void D3D11Backend::init() {
     DXGI_ADAPTER_DESC1 desc; chosen->GetDesc1(&desc);
     char name[128]; WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof name, nullptr, nullptr);
     host::log("d3d11: using %s (feature level %d.%d)", name, (level >> 12) & 0xF, (level >> 8) & 0xF);
+    // A quarter of the adapter, floor 256 MB, ceiling 2 GB, the same share the D3D12 backend uses:
+    // bounds the texture cache on every GPU instead of letting it grow for the whole session.
+    texture_budget_bytes_ = std::clamp<uint64_t>((uint64_t)desc.DedicatedVideoMemory / 4,
+                                                 256ull * 1024 * 1024, 2048ull * 1024 * 1024);
   }
   context_.As(&context1_);
+  {
+    // Frame timing queries (see gpu_frame_begin). A device that refuses any of them simply reports
+    // 0 ms and 0 queued in the diagnostic line.
+    bool ok = true;
+    for (GpuTimer& t : gpu_timers_) {
+      D3D11_QUERY_DESC qd{};
+      qd.Query = D3D11_QUERY_TIMESTAMP_DISJOINT; ok = ok && SUCCEEDED(device_->CreateQuery(&qd, &t.disjoint));
+      qd.Query = D3D11_QUERY_TIMESTAMP; ok = ok && SUCCEEDED(device_->CreateQuery(&qd, &t.start)) && SUCCEEDED(device_->CreateQuery(&qd, &t.end));
+      qd.Query = D3D11_QUERY_EVENT; ok = ok && SUCCEEDED(device_->CreateQuery(&qd, &t.done));
+    }
+    if (!ok) {
+      for (GpuTimer& t : gpu_timers_) { t.disjoint.Reset(); t.start.Reset(); t.end.Reset(); t.done.Reset(); }
+      host::log("d3d11: GPU timestamp queries unavailable; the gpu: line reports 0 ms");
+    }
+  }
   {
     D3D11_FEATURE_DATA_D3D11_OPTIONS o{};
     if (context1_ && SUCCEEDED(device_->CheckFeatureSupport(D3D11_FEATURE_D3D11_OPTIONS, &o, sizeof o)))
@@ -1245,6 +1290,7 @@ TextureEntry* D3D11Backend::get_texture(const TextureRef& t) {
   }
   TextureEntry e;
   e.width = widths[0]; e.height = heights[0]; e.levels = actual; e.last_used = frame_counter_;
+  if (replacement) e.replacement_bytes = image.size();   // so an eviction gives the budget back
   D3D11_TEXTURE2D_DESC td{};
   td.Width = widths[0]; td.Height = heights[0]; td.MipLevels = actual; td.ArraySize = 1;
   td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
@@ -1584,6 +1630,87 @@ void D3D11Backend::flush_captures() {
   pending_captures_.clear();
 }
 
+// Once a second at most: keeps the game texture cache inside texture_budget_bytes_ by dropping the
+// textures drawn longest ago first, never one this frame has used, down to a tenth under the budget
+// so it does not run every second. D3D11 keeps a released texture alive for as long as recorded
+// work still names it, so nothing has to wait for the GPU here; a texture drawn again later is
+// simply decoded and uploaded again. The resize out-of-memory retry stays as it was.
+void D3D11Backend::trim_textures() {
+  const double now = Stopwatch::now();
+  if (now - texture_trim_time_ < 1.0) return;
+  texture_trim_time_ = now;
+  uint64_t cached = 0;
+  for (const auto& entry : textures_) cached += texture_bytes(entry.second.width, entry.second.height, entry.second.levels);
+  if (cached <= texture_budget_bytes_) return;
+  std::vector<std::pair<uint64_t, uint64_t>> order;   // (last_used, key)
+  order.reserve(textures_.size());
+  for (const auto& entry : textures_)
+    if (entry.second.last_used != frame_counter_) order.emplace_back(entry.second.last_used, entry.first);
+  std::sort(order.begin(), order.end());
+  const uint64_t target = texture_budget_bytes_ - texture_budget_bytes_ / 10;
+  uint64_t freed = 0;
+  uint32_t dropped = 0;
+  for (const auto& candidate : order) {
+    if (cached - freed <= target) break;
+    auto it = textures_.find(candidate.second);
+    if (it == textures_.end()) continue;
+    freed += texture_bytes(it->second.width, it->second.height, it->second.levels);
+    replacement_bytes_ -= std::min(replacement_bytes_, it->second.replacement_bytes);
+    textures_.erase(it);
+    ++dropped;
+  }
+  if (!dropped) return;
+  reset_bound();   // the redundant-state filter remembers views by pointer, and a new texture may reuse one
+  host::log("d3d11: texture cache %.0f of %.0f MB budget; %u textures freed (%.0f MB), %zu kept",
+            cached / 1048576.0, texture_budget_bytes_ / 1048576.0, dropped, freed / 1048576.0, textures_.size());
+}
+
+// Reads back the timing of the frame that used this ring slot kTimerRing frames ago, if the GPU
+// has finished it (a result that is not ready is skipped, never waited for), then starts timing
+// this frame.
+void D3D11Backend::gpu_frame_begin() {
+  GpuTimer& t = gpu_timers_[gpu_timer_slot_];
+  if (!t.disjoint) return;
+  if (t.timing_pending) {
+    t.timing_pending = false;
+    D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
+    UINT64 start = 0, end = 0;
+    if (context_->GetData(t.disjoint.Get(), &dj, sizeof dj, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK && !dj.Disjoint && dj.Frequency &&
+        context_->GetData(t.start.Get(), &start, sizeof start, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK &&
+        context_->GetData(t.end.Get(), &end, sizeof end, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK && end > start) {
+      gpu_frame_ms_sum_ += (double)(end - start) * 1000.0 / (double)dj.Frequency;
+      ++gpu_frame_ms_samples_;
+    }
+  }
+  context_->Begin(t.disjoint.Get());
+  context_->End(t.start.Get());
+}
+
+// Closes this frame's timing and marks its end with an event, then moves to the next ring slot.
+void D3D11Backend::gpu_frame_end() {
+  GpuTimer& t = gpu_timers_[gpu_timer_slot_];
+  if (!t.disjoint) return;
+  context_->End(t.end.Get());
+  context_->End(t.disjoint.Get());
+  context_->End(t.done.Get());
+  t.timing_pending = true; t.done_pending = true;
+  gpu_timer_slot_ = (gpu_timer_slot_ + 1) % kTimerRing;
+}
+
+// Submitted frames the GPU has not finished: the end-of-frame events still outstanding. D3D11 has
+// no fence value to compare, and SetMaximumFrameLatency(1) in init is what keeps this small.
+unsigned D3D11Backend::gpu_frames_queued() {
+  unsigned queued = 0;
+  for (GpuTimer& t : gpu_timers_) {
+    if (!t.done_pending || !t.done) continue;
+    BOOL finished = FALSE;
+    const HRESULT hr = context_->GetData(t.done.Get(), &finished, sizeof finished, D3D11_ASYNC_GETDATA_DONOTFLUSH);
+    if (hr == S_FALSE) ++queued;
+    else t.done_pending = false;
+  }
+  return queued;
+}
+
 // ---------------------------------------------------------------- frame
 void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
   video_bg::set_enabled(opts_.video_backgrounds);
@@ -1617,6 +1744,11 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     replacement_bytes_ = 0;
     texpack_report_frame_ = frame_counter_ + 600;
   }
+  // A skin picked on the character select screen brought other portraits or stock icons: the same.
+  if (texpack::take_cosmetics_changed()) {
+    textures_.clear();
+    replacement_bytes_ = 0;
+  }
   if (texpack::enabled() && frame_counter_ >= texpack_report_frame_) {
     texpack::report();
     texpack_report_frame_ = frame_counter_ + 3600;
@@ -1629,6 +1761,18 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   }
   shader_wait_budget_us_ = 12000;
   ++frame_counter_;
+  trim_textures();
+  // Queue depth before this frame's work is issued, then this frame's timing starts (and the
+  // frame from kTimerRing ago is read back). The line a "gets laggier the longer I play" report
+  // needs: if the delay grows over a session, one of these grows with it.
+  const unsigned frames_queued = gpu_frames_queued();
+  gpu_frame_begin();
+  if (frame_counter_ % 300 == 0) {
+    host::log("gpu: %.2f ms/frame, %u frames queued, solver pairs %zu, textures %zu",
+              gpu_frame_ms_samples_ ? gpu_frame_ms_sum_ / gpu_frame_ms_samples_ : 0.0, frames_queued,
+              solver_pair_counter().load(std::memory_order_relaxed), textures_.size());
+    gpu_frame_ms_sum_ = 0; gpu_frame_ms_samples_ = 0;
+  }
 
   // ---- plan the frame before touching the GPU: indices and constants are built in one sweep
   // over the draw list (each DrawCall is ~5 KB, so a second sweep would miss cache on all of it),
@@ -1833,6 +1977,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     ++frames_presented_;
     if (capture) { capture_sequence_ = frame.sequence; write_capture(path, frame.sequence); }
   }
+  gpu_frame_end();
 }
 
 // ---------------------------------------------------------------- pipeline prewarm

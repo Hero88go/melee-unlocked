@@ -74,6 +74,8 @@ class SubFrameSolver {
   // prev (t = 0) and cur (t = 1). Extrapolate: pose t frames beyond cur.
   void build(double t, bool interpolate, std::vector<DrawMatrices>& out, bool authored = false) const;
   const SubFrameStats& stats() const { return stats_; }
+  // Entries in the pairing table for the current frame (one per draw of `cur`). Diagnostic only.
+  size_t pair_count() const { return pairs_.size(); }
   // Menus, character select, stage select and everything else that is not a running match. There
   // the solver sticks to the treatment that was in place before the stage and geometry work: no
   // blending of rebuilt vertex streams, no camera-locked static geometry, and a stream that cannot

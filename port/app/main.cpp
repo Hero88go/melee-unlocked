@@ -23,6 +23,7 @@
 #include "texture_pack.h"
 #include "cosmetic_mods.h"
 #include "disc_skin_scan.h"
+#include "hackpack_ai.h"
 #include "mod_scan.h"
 #include "threaded_backend.h"
 #include "window.h"
@@ -1174,6 +1175,12 @@ static int melee_main(int argc, char** argv) {
     if (arg == "--frame-mode") explicit_frame_mode = true;
     if (arg == "--settings-window") settings_window_only = true;
     if (arg == "--settings-standby" && i+1 < argc) settings_standby = std::strtoul(argv[++i], nullptr, 10);
+    // --settings-tab <name>: the tab the panel opens on (the launcher's "Choose skins" asks for mods).
+    if (arg == "--settings-tab" && i+1 < argc) {
+      static const char* const tabs[] = {"video", "audio", "game", "controls", "overlays", "customize", "gecko", "mods"};
+      const std::string wanted = argv[++i];
+      for (int t = 0; t < 8; ++t) if (wanted == tabs[t]) gx::settings_set_initial_tab(t);
+    }
     if (arg == "--load-settings") load_settings = true;
     if (arg == "--card-dir") explicit_card_dir = true;
   }
@@ -1456,6 +1463,7 @@ static int melee_main(int argc, char** argv) {
 #endif
     else if (a == "--settings-window") {}
     else if (a == "--settings-standby") next();
+    else if (a == "--settings-tab") next();
     else { usage(); return 2; }
   }
   if ((hidden || headless || scripted) && !allow_matchmaking) slippi::Matchmaking::server_allowed = false;
@@ -1739,6 +1747,11 @@ static int melee_main(int argc, char** argv) {
     if (o.mod_base_iso.empty()) source_port::mods::scan_detected_disc_skins(std::filesystem::u8path(o.iso));
     if (!explicit_card_dir && !found.card_dir.empty()) o.card_dir = found.card_dir.u8string();
   }
+#ifndef MELEE_SOURCE_PORT
+  // "20XX CPUs": the 20XX Hack Pack's own AI block from its disc under Mods, applied at each offline
+  // match start (the Source Port plays its native version instead).
+  host::hackpack_ai::boot();
+#endif
   host::boot_setup();
   {
     std::vector<gx::texpack::CosmeticCompanion> companions;

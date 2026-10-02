@@ -144,9 +144,10 @@ int mu_lab_input(void* fighter, MuLabInput* out);   /* fighter: Fighter* */
 #define MU_TE2_STAGE_STRIKE 0x20000u
 #define MU_TE2_LOCK 0x40000u   /* the settings cannot change until this is off */
 /* (0x80000 to 0x400000 hold the L-cancel flash choices, port/runtime/abi/mu_lcancel_flash.h.) */
-#define MU_TE2_20XX_CPUS 0x800000u   /* CPUs play with the 20XX Hack Pack's AI (shim/mu_20xx_ai.c) */
-/* 20XX Hack Pack CPU AI. mu_20xx_ai_enabled() is nonzero when "20XX CPUs" is in effect (mu_te2), or
- * when MELEE_TEST_20XX_AI=1 forces it for a hidden test run; never online. mu_20xx_ai() is called
+#define MU_TE2_20XX_CPUS 0x800000u   /* "20XX CPUs" (Game tab): not a TE feature, carried in this word */
+/* 20XX Hack Pack CPU AI (shim/mu_20xx_ai.c). mu_20xx_ai_enabled() is nonzero when the plain "20XX
+ * CPUs" option is in effect (mu_option2_offline: offline, no TE save needed, never online), or when
+ * MELEE_TEST_20XX_AI=1 forces it for a hidden test run; never online. mu_20xx_ai() is called
  * where the game stores a CPU fighter's buttons for the frame (ft/fighter.c, Fighter_procInput):
  * it may rewrite the fighter's sticks and trigger and returns the buttons to hold. */
 int mu_20xx_ai_enabled(void);
@@ -156,6 +157,7 @@ void* mu_te_debug_menu(void);   /* the debug menu's root table, or NULL for the 
 void mu_te_debug_menu_save(void);
 unsigned int mu_game_options2(void);
 int mu_te2(unsigned int feature);   /* a second-word 20XX TE feature is in effect */
+int mu_option2_offline(unsigned int bit);   /* a plain second-word option is in effect (offline, no TE master) */
 /* 20XX TE's general conveniences (unlocks, boot rules, no title demo, C-Stick in 1P, menu tweaks):
  * on whenever TE is on, offline, outside the online menus. */
 int mu_te_general(void);

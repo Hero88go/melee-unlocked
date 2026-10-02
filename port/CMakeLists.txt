@@ -94,11 +94,23 @@ target_include_directories(port_settings_nav_test PRIVATE runtime/host)
 target_compile_features(port_settings_nav_test PRIVATE cxx_std_17)
 add_test(NAME port_settings_nav COMMAND port_settings_nav_test)
 
+add_executable(port_net_trace_test tests/net_trace_test.cpp runtime/host/net_trace_file.cpp)
+target_include_directories(port_net_trace_test PRIVATE runtime/host)
+target_compile_features(port_net_trace_test PRIVATE cxx_std_17)
+target_compile_options(port_net_trace_test PRIVATE /EHsc)
+add_test(NAME port_net_trace COMMAND port_net_trace_test)
+
 add_executable(port_pack_skin_rule_test tests/pack_skin_rule_test.cpp runtime/host/pack_skin_rule.cpp)
 target_include_directories(port_pack_skin_rule_test PRIVATE runtime/host)
 target_compile_features(port_pack_skin_rule_test PRIVATE cxx_std_17)
 target_compile_options(port_pack_skin_rule_test PRIVATE /EHsc)
 add_test(NAME port_pack_skin_rule COMMAND port_pack_skin_rule_test)
+
+add_executable(port_hackpack_ai_test tests/hackpack_ai_test.cpp)
+target_include_directories(port_hackpack_ai_test PRIVATE runtime/host)
+target_compile_features(port_hackpack_ai_test PRIVATE cxx_std_17)
+target_compile_options(port_hackpack_ai_test PRIVATE /EHsc)
+add_test(NAME port_hackpack_ai COMMAND port_hackpack_ai_test)
 
 add_executable(port_gd_melee_ui_motion_test tests/gd_melee_ui_motion_test.cpp)
 target_include_directories(port_gd_melee_ui_motion_test PRIVATE runtime/gx)

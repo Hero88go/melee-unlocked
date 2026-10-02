@@ -32,6 +32,12 @@ struct CosmeticCompanion {
 // independent of the user's Dolphin texture-pack toggle and are removed by Restore Vanilla on the
 // next launch. Unknown or ambiguous native identities are deliberately left vanilla.
 void set_cosmetic_companions(std::vector<CosmeticCompanion> companions);
+// The same while the game runs (a skin picked on the character select screen), from any thread: the
+// set is kept until the renderer takes it. Does nothing when it equals the set in use.
+void refresh_cosmetic_companions(std::vector<CosmeticCompanion> companions);
+// Renderer, at the start of a frame: installs a waiting set and returns true, meaning the caller
+// must drop the textures it already uploaded so they are rebuilt with the new pictures.
+bool take_cosmetics_changed();
 
 // Turns pack loading on or off. With `enabled` false this returns immediately and touches no files.
 // Returns true when the state changed, meaning the caller must drop textures it already uploaded so

@@ -139,10 +139,15 @@ bool redirect_function_at(uint32_t addr);   // the same for the function contain
 // The original cannot be called afterwards: `fn` has to do everything it did.
 bool redirect_to_host(uint32_t addr, Fn fn);
 void disable_dispatch_range(uint32_t lo, uint32_t hi);   // calls into [lo, hi) run RAM code (interpreted)
+void restore_dispatch_range(uint32_t lo, uint32_t hi);   // undoes it: the compiled entries it removed come back
 bool runs_from_ram(uint32_t addr);   // addr lies in a function redirected to its RAM code
 // Code areas the interpreter follows from RAM even where compiled twins exist (Slippi's code tables in
 // a mod session: their compiled caves return into compiled game code, not into RAM code).
 void add_ram_code_range(uint32_t lo, uint32_t hi);
+void remove_ram_code_range(uint32_t lo, uint32_t hi);   // undoes it (a per-scene block that is gone)
+// Undoes redirect_to_interpreter for the function at `addr`: its compiled entry is restored byte for
+// byte and its words are no longer followed in RAM. False when it was not redirected.
+bool undo_redirect(uint32_t addr);
 size_t redirect_changed_functions(const uint8_t* reference, const uint8_t* m, uint32_t base, uint32_t size);
 // Sends to RAM every compiled function that has a redirected function built into it (inlined by the
 // compiler) instead of calling it. Returns how many were added.

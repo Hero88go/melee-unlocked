@@ -124,7 +124,7 @@ def run(slp, out, args, common_identity):
             cached = load_cache(cache_path, identity)
             if cached is not None:
                 return cached
-        if shutil.disk_usage(out.anchor or out.parent).free < 15 * 1024 ** 3:
+        if shutil.disk_usage(out.anchor or out.parent).free < 2 * 1024 ** 3:
             return dict(result, status="skipped-low-disk")
         # A cache miss gets fresh card/settings/User directories, including after failures.
         run_dir = case_dir / f"attempt-{time.time_ns()}"

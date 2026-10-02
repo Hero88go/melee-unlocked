@@ -23,6 +23,7 @@
 #include <condition_variable>
 #include <vector>
 #include "gx_d3d12.h"
+#include "gx_backend.h"   // solver_pair_counter, for the "gpu:" diagnostic line
 #include "exi_slippi.h"
 #include "gx_shader.h"
 #include "gx_dxr_scene.h"
@@ -240,6 +241,7 @@ class D3D12Backend : public Backend {
     integrate_compiled_psos(); flush_captures(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: captures flushed");
     save_pipeline_recipes(); save_pipeline_library(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: pipeline cache saved");
     if (fence_event_) CloseHandle(fence_event_); if (present_timer_) CloseHandle(present_timer_);
+    if (frame_latency_waitable_) CloseHandle(frame_latency_waitable_);
     last_poses_.clear();
 #ifdef GX_DLSS5
     dlss5::shutdown();
@@ -298,20 +300,25 @@ class D3D12Backend : public Backend {
   int dlss_failures_ = 0;
   int anisotropy_applied_ = 0, ssaa_applied_ = 0;
   // Custom texture packs. An HD pack can hold far more pixels than this machine has video memory,
-  // and textures_ is only trimmed when memory runs short (see trim_textures), so replacements stop
-  // once they have spent their share of the adapter and the rest of the game keeps its native
-  // textures instead of running the GPU dry.
+  // and textures_ is trimmed only once a second (see trim_textures), so replacements stop once they
+  // have spent their share of the adapter and the rest of the game keeps its native textures
+  // instead of running the GPU dry.
   uint64_t replacement_bytes_ = 0, replacement_budget_ = 512ull * 1024 * 1024;
-  // Running short of video memory. textures_ keeps every distinct texture the game has shown, which
-  // on a small adapter (integrated graphics sharing 2 GB) eventually filled it and the next texture
-  // could not be created. Two defences, neither of which does anything while memory is plentiful:
-  // trim_textures drops textures nothing has drawn for a while once usage nears a small budget, and
+  // Video memory held by game textures. textures_ keeps every distinct texture the game has shown,
+  // which on a small adapter (integrated graphics sharing 2 GB) eventually filled it and the next
+  // texture could not be created, and on a large one simply grew for the whole session. Three
+  // defences: trim_textures evicts the least recently drawn textures above texture_budget_bytes_
+  // on every GPU, drops idle textures as well once a small adapter's usage nears its limit, and
   // free_video_memory is the last resort when an allocation has already failed.
-  static constexpr uint64_t SMALL_VRAM_BUDGET = 4096ull * 1024 * 1024;   // trim only at or under this
+  static constexpr uint64_t SMALL_VRAM_BUDGET = 4096ull * 1024 * 1024;   // idle trim only at or under this
   static constexpr uint64_t TEXTURE_IDLE_FRAMES = 600;   // unused this long: the trim may take it
   static constexpr uint64_t TEXTURE_RETRY_FRAMES = 120;  // before a texture that did not fit is tried again
   uint64_t vram_usage_bytes_ = 0, vram_budget_bytes_ = 0;   // update_vram, every 30 frames
   bool vram_tight_ = false;
+  // A quarter of the adapter's dedicated memory, floor 256 MB, ceiling 2 GB (set in init): the
+  // texture cache is bounded on every machine, not only where memory is already short.
+  uint64_t texture_budget_bytes_ = 512ull * 1024 * 1024;
+  uint64_t texture_cache_bytes_ = 0;   // what textures_ held at the last trim pass
   double texture_trim_time_ = 0, oom_log_time_ = 0;
   // Textures that could not be created, by cache key, and the frame they may be tried again. They
   // draw as missing meanwhile, so a starved adapter is not asked for the same texture every draw.
@@ -388,8 +395,10 @@ class D3D12Backend : public Backend {
   void save_pipeline_recipes();
   std::vector<uint32_t> index_scratch_;
   void init();
+  void create_swapchain(bool waitable);
   void create_swapchain_targets(bool resize);
   void apply_fullscreen_mode();
+  void wait_frame_latency();
   void create_efb();
   int pick_scale() const;
   float output_aspect() const;
@@ -459,13 +468,31 @@ class D3D12Backend : public Backend {
   bool load_shader_blob(const std::string& path, ComPtr<ID3DBlob>& blob);
   void save_shader_blob(const std::string& path, ID3DBlob* blob);
   ComPtr<ID3D12CommandQueue> queue_;
+  ComPtr<IDXGIFactory4> factory_;   // kept: the swap chain is created again when exclusive fullscreen toggles
   ComPtr<IDXGISwapChain3> swapchain_;
+  // Frame latency. Without a limit DXGI lets three finished frames wait in line for the display,
+  // and whenever the GPU is the bottleneck every one of them is input delay. The swap chain is
+  // created with the frame latency waitable object, its maximum latency set to one, and the render
+  // thread waits on the object before recording a frame (wait_frame_latency). The flag is refused
+  // in exclusive fullscreen, so that mode runs a plain swap chain and the two frame slots below cap
+  // the queue instead. MELEE_D3D12_NO_WAITABLE=1 turns the whole thing off for comparison runs.
+  bool swapchain_waitable_ = false;   // the current swap chain carries the waitable flag
+  HANDLE frame_latency_waitable_ = nullptr;   // null: no waitable object, present with the default queue
+  uint32_t waitable_timeouts_ = 0;   // consecutive waits that timed out; three in a row give the wait up
+  static bool waitable_wanted() { static const bool off = [] { const char* v = std::getenv("MELEE_D3D12_NO_WAITABLE"); return v && *v == '1'; }(); return !off; }
+  UINT swapchain_flags() const { return DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING | (swapchain_waitable_ ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0); }
   ComPtr<ID3D12DescriptorHeap> rtv_heap_, dsv_heap_, srv_heap_, sampler_heap_;
   ComPtr<ID3D12Resource> backbuffers_[3];
   ComPtr<ID3D12Resource> efb_color_, efb_depth_;
   // Frames in flight: each slot owns a command allocator, upload rings and the resources it
   // retired; a slot is reused only after the fence value recorded at its submission completes.
-  static constexpr int FRAME_SLOTS = 3;
+  // Two slots, not three: with three the CPU could run two whole GPU frames ahead, and when the GPU
+  // was the bottleneck (uncapped, no V-Sync, where the waitable object above rarely blocks) those
+  // two frames sat in the queue as input delay for the whole session. The slot fence only ever
+  // waits when the GPU is already more than a frame behind, which is exactly when the queue has to
+  // be held back; a paced or CPU-bound machine never reaches it.
+  static constexpr int FRAME_SLOTS = 2;
+  static constexpr int TIMERS_PER_SLOT = 6;   // timestamp queries per slot, see timer_heap_
   ComPtr<ID3D12CommandAllocator> allocators_[FRAME_SLOTS];
   uint64_t slot_fence_[FRAME_SLOTS] = {};
   // --flicker-scan: each presented frame's EFB is copied into its slot's readback buffer, and read
@@ -481,11 +508,15 @@ class D3D12Backend : public Backend {
   // GPU-timed cost of the DLAA/DLSS pass and the DLSS 5 pass, each frame, read back the same way as
   // the flicker scan above (same slot_, so it is already fence-safe). For the settings panel: "how
   // much is this setting actually costing", not just the total render latency Reflex reports.
+  // Timers 4 and 5 of each slot bracket the whole command list: the GPU time per frame for the
+  // "gpu:" diagnostic line, which is what a "gets laggier over a session" report needs to show
+  // whether the GPU itself is slowing down.
   ComPtr<ID3D12QueryHeap> timer_heap_;
   ComPtr<ID3D12Resource> timer_rb_[FRAME_SLOTS];
-  uint8_t timer_mask_[FRAME_SLOTS] = {};   // bit 0: DLAA/DLSS queried this slot; bit 1: DLSS 5 queried
+  uint8_t timer_mask_[FRAME_SLOTS] = {};   // bit 0: DLAA/DLSS queried this slot; bit 1: DLSS 5 queried; bit 2: whole frame
   bool timer_pending_[FRAME_SLOTS] = {};
   uint64_t timer_freq_ = 0;
+  double gpu_frame_ms_sum_ = 0; uint32_t gpu_frame_ms_samples_ = 0;   // since the last "gpu:" line
   void read_gpu_timers();
   int slot_ = 0;
   ComPtr<ID3D12GraphicsCommandList> list_;
@@ -573,6 +604,9 @@ void D3D12Backend::init() {
       // character pack at 4x, and small enough that the game never competes with itself for VRAM.
       replacement_budget_ = std::clamp<uint64_t>((uint64_t)desc.DedicatedVideoMemory / 4,
                                                  256ull * 1024 * 1024, 2048ull * 1024 * 1024);
+      // The same share bounds the whole game texture cache (trim_textures), so it stops growing
+      // at a known size on every GPU instead of only when a small adapter runs short.
+      texture_budget_bytes_ = replacement_budget_;
       g_vram_total = (float)((double)desc.DedicatedVideoMemory / 1073741824.0);   // the card's own size, for the VRAM meter
       adapter.As(&adapter3_);   // for the VRAM meter (Windows 10 and later)
       streamline::set_device(device_.Get());
@@ -596,17 +630,12 @@ void D3D12Backend::init() {
   }
   D3D12_COMMAND_QUEUE_DESC qd{}; qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
   check(device_->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue_)), "queue");
-  DXGI_SWAP_CHAIN_DESC1 sd{};
-  sd.Width = client_w_; sd.Height = client_h_; sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.SampleDesc.Count = 1;
-  sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.BufferCount = 3; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-  // No DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH: with it, going exclusive changes the display mode
-  // to match the window, so the desktop resolution became whatever "Window size" was set to.
-  // Without it exclusive fullscreen keeps the desktop's own mode and refresh rate.
-  sd.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
-  ComPtr<IDXGISwapChain1> sc1;
-  check(factory->CreateSwapChainForHwnd(queue_.Get(), hwnd_, &sd, nullptr, nullptr, &sc1), "swapchain");
-  check(sc1.As(&swapchain_), "swapchain3");
-  factory->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
+  factory_ = factory;
+  // Exclusive fullscreen refuses the waitable flag (SetFullscreenState fails), so a session that
+  // starts exclusive gets the plain swap chain; apply_fullscreen_mode swaps between the two.
+  if (opts_.exclusive_fullscreen && waitable_wanted())
+    host::log("d3d12: exclusive fullscreen requested; the frame latency waitable object is not allowed there, the frame slots hold the queue instead");
+  create_swapchain(waitable_wanted() && !opts_.exclusive_fullscreen);
 
   D3D12_DESCRIPTOR_HEAP_DESC hd{};
   hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = 8;
@@ -645,15 +674,16 @@ void D3D12Backend::init() {
   fence_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
 
   // GPU timers for the settings panel's latency breakdown (see gpu_pass_cost). Timer 0 = DLAA/DLSS
-  // start, 1 = its end, 2 = DLSS 5 start, 3 = its end, per frame slot. queue_->GetTimestampFrequency
-  // can fail on hardware/drivers that do not support GPU timestamps; the readouts just stay at 0.
-  D3D12_QUERY_HEAP_DESC qhd{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, FRAME_SLOTS * 4};
+  // start, 1 = its end, 2 = DLSS 5 start, 3 = its end, 4 = the frame's first command, 5 = its
+  // last, per frame slot. queue_->GetTimestampFrequency can fail on hardware/drivers that do not
+  // support GPU timestamps; the readouts just stay at 0.
+  D3D12_QUERY_HEAP_DESC qhd{D3D12_QUERY_HEAP_TYPE_TIMESTAMP, FRAME_SLOTS * TIMERS_PER_SLOT};
   if (SUCCEEDED(device_->CreateQueryHeap(&qhd, IID_PPV_ARGS(&timer_heap_))) &&
       SUCCEEDED(queue_->GetTimestampFrequency(&timer_freq_))) {
     for (int i = 0; i < FRAME_SLOTS; ++i) {
       D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_READBACK};
       D3D12_RESOURCE_DESC rd{};
-      rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = 4 * sizeof(uint64_t); rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
+      rd.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER; rd.Width = TIMERS_PER_SLOT * sizeof(uint64_t); rd.Height = 1; rd.DepthOrArraySize = 1; rd.MipLevels = 1;
       rd.SampleDesc.Count = 1; rd.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
       device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&timer_rb_[i]));
     }
@@ -798,10 +828,68 @@ float4 PS(O i) : SV_Target {
   check(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&blit_pso_)), "blit pso");
 }
 
+// Creates the swap chain, with the frame latency waitable object when `waitable` is set and the
+// driver allows it. Streamline may hand back a proxy (DLSS frame generation presents through it);
+// the IDXGISwapChain2 calls go through the proxy like everything else, and if the proxy or the
+// driver does not give us the object the swap chain simply presents with the default queue, with
+// one log line saying so. Any previous swap chain must already be released by the caller.
+void D3D12Backend::create_swapchain(bool waitable) {
+  if (frame_latency_waitable_) { CloseHandle(frame_latency_waitable_); frame_latency_waitable_ = nullptr; }
+  waitable_timeouts_ = 0;
+  DXGI_SWAP_CHAIN_DESC1 sd{};
+  sd.Width = client_w_; sd.Height = client_h_; sd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; sd.SampleDesc.Count = 1;
+  sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; sd.BufferCount = 3; sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+  // No DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH: with it, going exclusive changes the display mode
+  // to match the window, so the desktop resolution became whatever "Window size" was set to.
+  // Without it exclusive fullscreen keeps the desktop's own mode and refresh rate.
+  swapchain_waitable_ = waitable;
+  sd.Flags = swapchain_flags();
+  ComPtr<IDXGISwapChain1> sc1;
+  HRESULT hr = factory_->CreateSwapChainForHwnd(queue_.Get(), hwnd_, &sd, nullptr, nullptr, &sc1);
+  if (FAILED(hr) && waitable) {
+    host::log("d3d12: swap chain with the frame latency waitable object refused (0x%08X); presenting with the default queue", (unsigned)hr);
+    swapchain_waitable_ = false;
+    sd.Flags = swapchain_flags();
+    hr = factory_->CreateSwapChainForHwnd(queue_.Get(), hwnd_, &sd, nullptr, nullptr, &sc1);
+  }
+  check(hr, "swapchain");
+  check(sc1.As(&swapchain_), "swapchain3");
+  factory_->MakeWindowAssociation(hwnd_, DXGI_MWA_NO_ALT_ENTER);
+  if (swapchain_waitable_) {
+    ComPtr<IDXGISwapChain2> sc2;
+    if (SUCCEEDED(swapchain_.As(&sc2))) {
+      const HRESULT latency_hr = sc2->SetMaximumFrameLatency(1);
+      if (FAILED(latency_hr)) host::log("d3d12: SetMaximumFrameLatency(1) failed (0x%08X)", (unsigned)latency_hr);
+      frame_latency_waitable_ = sc2->GetFrameLatencyWaitableObject();
+    }
+    if (frame_latency_waitable_) host::log("d3d12: waitable swap chain, at most one frame in line for the display");
+    else host::log("d3d12: frame latency waitable object unavailable on this swap chain; presenting with the default queue");
+  }
+}
+
+// Blocks until DXGI has room for another presented frame (at most one in line, see
+// swapchain_waitable_). Called before a presented frame is recorded, so a GPU that falls behind
+// stalls the render thread here instead of stacking frames of input delay in the queue. A wait
+// that fails or keeps timing out gives up for the session rather than slowing the game to the
+// timeout, and says so once.
+void D3D12Backend::wait_frame_latency() {
+  if (!frame_latency_waitable_) return;
+  const DWORD result = WaitForSingleObjectEx(frame_latency_waitable_, 100, FALSE);
+  if (result == WAIT_OBJECT_0) { waitable_timeouts_ = 0; return; }
+  if (result == WAIT_TIMEOUT) {
+    if (++waitable_timeouts_ < 3) return;
+    host::log("d3d12: frame latency wait timed out three frames in a row; presenting with the default queue from now on");
+  } else {
+    host::log("d3d12: frame latency wait failed (%lu, error %lu); presenting with the default queue from now on", (unsigned long)result, (unsigned long)GetLastError());
+  }
+  CloseHandle(frame_latency_waitable_);
+  frame_latency_waitable_ = nullptr;
+}
+
 void D3D12Backend::create_swapchain_targets(bool resize) {
   for (auto& b : backbuffers_) b.Reset();
   if (resize) check(swapchain_->ResizeBuffers(3, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM,
-                                               DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING), "resize");
+                                               swapchain_flags()), "resize");
   for (UINT i = 0; i < 3; ++i) {
     check(swapchain_->GetBuffer(i, IID_PPV_ARGS(&backbuffers_[i])), "backbuffer");
     D3D12_CPU_DESCRIPTOR_HANDLE h = rtv_heap_->GetCPUDescriptorHandleForHeapStart();
@@ -826,6 +914,19 @@ void D3D12Backend::apply_fullscreen_mode() {
     if (FAILED(hr)) host::log("d3d12: leaving exclusive fullscreen failed (0x%08X)", (unsigned)hr);
   }
   if (host::window_is_fullscreen()) host::window_set_fullscreen(false);
+  // The frame latency waitable object is not allowed in exclusive fullscreen (SetFullscreenState
+  // refuses a swap chain created with the flag), so the swap chain is made again without it on the
+  // way in, and with it again on the way out. DXGI allows one flip-model swap chain per window, so
+  // the old one is released first; the GPU is idle from the wait above.
+  if (want_exclusive && swapchain_waitable_) {
+    host::log("d3d12: exclusive fullscreen: swap chain made again without the frame latency waitable object (not allowed there); the frame slots hold the queue instead");
+    swapchain_.Reset();
+    create_swapchain(false);
+  } else if (!want_exclusive && !swapchain_waitable_ && waitable_wanted()) {
+    host::log("d3d12: leaving exclusive fullscreen: swap chain made again with the frame latency waitable object");
+    swapchain_.Reset();
+    create_swapchain(true);
+  }
   if (want_exclusive) {
     ComPtr<IDXGIOutput> output;
     DXGI_OUTPUT_DESC desc{};
@@ -953,28 +1054,57 @@ void D3D12Backend::update_vram() {
   vram_tight_ = info.Budget && info.Budget <= SMALL_VRAM_BUDGET && info.CurrentUsage > info.Budget / 100 * 85;
 }
 
-// Once a second at most, and only while video memory is tight (see update_vram): drop the game
-// textures nothing has drawn for TEXTURE_IDLE_FRAMES frames. Runs at the top of a frame, before
-// anything is recorded. Earlier frames still on the GPU may sample these, so they go to this slot's
-// garbage and are released when the slot comes round again, exactly as swap_in_ready_replacements
-// does; a texture drawn again later is simply decoded and uploaded again.
+// Once a second at most: keeps the game texture cache inside texture_budget_bytes_ by dropping the
+// textures drawn longest ago first (never one this frame has used), and while video memory is
+// tight on a small adapter (see update_vram) also drops everything nothing has drawn for
+// TEXTURE_IDLE_FRAMES frames. Runs at the top of a frame, before anything is recorded. Earlier
+// frames still on the GPU may sample these, so they go to this slot's garbage and are released
+// when the slot comes round again, exactly as swap_in_ready_replacements does; a texture drawn
+// again later is simply decoded and uploaded again. The out-of-memory retry (free_video_memory)
+// is separate and unchanged: this is the budget, that is the emergency.
 void D3D12Backend::trim_textures() {
-  if (!vram_tight_) return;
   const double now = Stopwatch::now();
   if (now - texture_trim_time_ < 1.0) return;
   texture_trim_time_ = now;
-  uint32_t dropped = 0;
-  for (auto it = textures_.begin(); it != textures_.end();) {
-    if (it->second.last_used + TEXTURE_IDLE_FRAMES >= frame_counter_) { ++it; continue; }
+  uint64_t cached = 0;
+  for (const auto& entry : textures_) cached += texture_bytes(entry.second.width, entry.second.height, entry.second.levels);
+  texture_cache_bytes_ = cached;
+  if (!vram_tight_ && cached <= texture_budget_bytes_) return;
+  uint32_t dropped = 0, idle_dropped = 0;
+  uint64_t freed = 0;
+  auto drop = [&](std::unordered_map<uint64_t, TextureEntry>::iterator it) {
+    freed += texture_bytes(it->second.width, it->second.height, it->second.levels);
     replacement_bytes_ -= std::min(replacement_bytes_, it->second.replacement_bytes);
     frame_garbage_[slot_].push_back(it->second.resource);
-    it = textures_.erase(it);
     ++dropped;
+    return textures_.erase(it);
+  };
+  if (vram_tight_) {
+    for (auto it = textures_.begin(); it != textures_.end();) {
+      if (it->second.last_used + TEXTURE_IDLE_FRAMES >= frame_counter_) { ++it; continue; }
+      it = drop(it); ++idle_dropped;
+    }
+  }
+  if (cached - freed > texture_budget_bytes_) {
+    // Least recently drawn first, down to a tenth under the budget so this does not run every second.
+    std::vector<std::pair<uint64_t, uint64_t>> order;   // (last_used, key)
+    order.reserve(textures_.size());
+    for (const auto& entry : textures_)
+      if (entry.second.last_used != frame_counter_) order.emplace_back(entry.second.last_used, entry.first);
+    std::sort(order.begin(), order.end());
+    const uint64_t target = texture_budget_bytes_ - texture_budget_bytes_ / 10;
+    for (const auto& candidate : order) {
+      if (cached - freed <= target) break;
+      auto it = textures_.find(candidate.second);
+      if (it != textures_.end()) drop(it);
+    }
   }
   if (!dropped) return;
+  texture_cache_bytes_ = cached - freed;
   texture_sets_.clear();   // descriptor tables name resources by pointer
-  host::log("d3d12: video memory %.2f of %.2f GB in use; %u idle textures freed, %zu kept",
-            vram_usage_bytes_ / 1073741824.0, vram_budget_bytes_ / 1073741824.0, dropped, textures_.size());
+  host::log("d3d12: texture cache %.0f of %.0f MB budget (video memory %.2f of %.2f GB); %u textures freed (%.0f MB, %u idle), %zu kept",
+            cached / 1048576.0, texture_budget_bytes_ / 1048576.0, vram_usage_bytes_ / 1073741824.0, vram_budget_bytes_ / 1073741824.0,
+            dropped, freed / 1048576.0, idle_dropped, textures_.size());
 }
 
 // An allocation has just failed for lack of video memory. Frees cached game textures, the ones
@@ -1253,24 +1383,28 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
   char vs_name[64], ps_name[64];
   snprintf(vs_name, sizeof vs_name, "vs_%016llX.dxbc", (unsigned long long)key.vs);
   snprintf(ps_name, sizeof ps_name, "ps_%016llX.dxbc", (unsigned long long)key.ps);
-  if (!vs && !load_shader_blob(opts_.shader_cache + "/" + vs_name, vs)) {
+  auto compile_vs = [&] {
     std::string src = generate_vertex_shader(vsu);
     ComPtr<ID3DBlob> err;
+    vs.Reset();
     if (FAILED(D3DCompile(src.c_str(), src.size(), "vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs, &err))) {
       host::log("vertex shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
       host::die("vertex shader compile failed");
     }
     save_shader_blob(opts_.shader_cache + "/" + vs_name, vs.Get());
-  }
-  if (!ps && !load_shader_blob(opts_.shader_cache + "/" + ps_name, ps)) {
+  };
+  auto compile_ps = [&] {
     std::string src = generate_pixel_shader(psu);
     ComPtr<ID3DBlob> err;
+    ps.Reset();
     if (FAILED(D3DCompile(src.c_str(), src.size(), "ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &err))) {
       host::log("pixel shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
       host::die("pixel shader compile failed");
     }
     save_shader_blob(opts_.shader_cache + "/" + ps_name, ps.Get());
-  }
+  };
+  if (!vs && !load_shader_blob(opts_.shader_cache + "/" + vs_name, vs)) compile_vs();
+  if (!ps && !load_shader_blob(opts_.shader_cache + "/" + ps_name, ps)) compile_ps();
   D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
   describe_pipeline(pd, key, topo, root_.Get(), vs.Get(), ps.Get());
   ComPtr<ID3D12PipelineState> pso;
@@ -1278,7 +1412,24 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
   swprintf_s(pso_name, L"%016llX-%016llX-%X-%X-%X-%X-%X-%X", (unsigned long long)key.vs, (unsigned long long)key.ps, key.blend, key.zmode, key.cull, key.topology, key.pixel_format, key.mvec);
   std::lock_guard<std::mutex> lk(pipeline_library_mutex_);
   if (!pipeline_library_ || FAILED(pipeline_library_->LoadGraphicsPipeline(pso_name, &pd, IID_PPV_ARGS(&pso)))) {
-    check(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso)), "pso");
+    HRESULT hr = device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso));
+    if (FAILED(hr)) {
+      // A shader file in the cache that was cut short or damaged is refused here. Both shaders are
+      // built again from source, which also replaces the files. If the pipeline is still refused
+      // the draw keeps the generic pipeline: one surface shaded roughly instead of a stopped game.
+      compile_vs();
+      compile_ps();
+      pd = D3D12_GRAPHICS_PIPELINE_STATE_DESC{};
+      describe_pipeline(pd, key, topo, root_.Get(), vs.Get(), ps.Get());
+      const HRESULT again = device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso));
+      if (FAILED(again)) {
+        host::log("d3d12: pipeline %ls refused (%08X, then %08X with rebuilt shaders); its draws use the generic pipeline",
+                  pso_name, (unsigned)hr, (unsigned)again);
+        return nullptr;
+      }
+      static std::atomic<int> told{0};   // a whole damaged cache would otherwise fill the log
+      if (told.fetch_add(1) < 8) host::log("d3d12: pipeline %ls refused (%08X); built again from source and accepted", pso_name, (unsigned)hr);
+    }
     if (pipeline_library_ && SUCCEEDED(pipeline_library_->StorePipeline(pso_name, pso.Get()))) pipeline_library_dirty_ = true;
   }
   return pso;
@@ -1308,7 +1459,7 @@ void D3D12Backend::integrate_compiled_psos() {
     psos_pending_.erase(r.key);
     if (r.vs && !vs_blobs_[r.key.vs]) vs_blobs_[r.key.vs] = r.vs;
     if (r.ps && !ps_blobs_[r.key.ps]) ps_blobs_[r.key.ps] = r.ps;
-    if (r.key.mvec == 0 && pipeline_recipes_.size() < 16384) pipeline_recipes_.push_back(r.recipe);
+    if (r.pso && r.key.mvec == 0 && pipeline_recipes_.size() < 16384) pipeline_recipes_.push_back(r.recipe);
   }
 }
 
@@ -1427,7 +1578,10 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   g_prof[6] += sw.lap(); ++g_pso_lookups;   // uid build + hash
   auto it = psos_.find(key);
   g_prof[7] += sw.lap();                    // map lookup
-  if (it != psos_.end()) { dc.cached_pipeline_owner = owner; dc.cached_pipeline = it->second.Get(); return it->second.Get(); }
+  if (it != psos_.end()) {
+    if (!it->second) return fallback_pso(key, dc, topo);   // the driver refused this pipeline
+    dc.cached_pipeline_owner = owner; dc.cached_pipeline = it->second.Get(); return it->second.Get();
+  }
   PipelineRecipe recipe{}; recipe.topology = (uint32_t)topo; recipe.components = dc.components;
   recipe.bp = dc.bp; std::memcpy(recipe.xf, dc.xf_regs, sizeof(recipe.xf));
   if (!prewarming_ && !pso_threads_.empty()) {
@@ -1449,7 +1603,10 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
       pso_wait_budget_us_ -= (int)(wait_sw.lap() * 1e6);
       integrate_compiled_psos();
       auto ready = psos_.find(key);
-      if (ready != psos_.end()) { dc.cached_pipeline_owner = owner; dc.cached_pipeline = ready->second.Get(); return ready->second.Get(); }
+      if (ready != psos_.end()) {
+        if (!ready->second) return fallback_pso(key, dc, topo);
+        dc.cached_pipeline_owner = owner; dc.cached_pipeline = ready->second.Get(); return ready->second.Get();
+      }
     }
     ++g_pso_skips;
     return fallback_pso(key, dc, topo);   // approximate shading until the worker delivers the pipeline
@@ -1459,6 +1616,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   ComPtr<ID3DBlob>& ps = ps_blobs_[ph];
   ComPtr<ID3D12PipelineState> pso = build_pso(key, vsu, psu, topo, vs, ps);
   psos_[key] = pso;
+  if (!pso) return fallback_pso(key, dc, topo);
   if (!prewarming_ && pipeline_recipes_.size() < 4096) pipeline_recipes_.push_back(recipe);
   dc.cached_pipeline_owner = owner; dc.cached_pipeline = pso.Get();
   return pso.Get();
@@ -2143,8 +2301,8 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
     }
     in.out_w = dlss_out_w_; in.out_h = dlss_out_h_;
     const bool timing = timer_heap_ != nullptr;
-    timer_mask_[slot_] = 0;
-    if (timing) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 0);
+    timer_mask_[slot_] &= 4;   // the whole-frame pair (bit 2) is recorded by submit_frame; the pass bits start clean
+    if (timing) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * TIMERS_PER_SLOT + 0);
     if (xess_active()) {
       // XeSS takes its inputs as non-pixel-shader resources; DLSS takes them in place.
       D3D12_RESOURCE_BARRIER xb[3]{};
@@ -2179,7 +2337,7 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
       }
       if (!upscaled) upscaled = streamline::evaluate(list_.Get(), in);
     }
-    if (timing) { list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 1); timer_mask_[slot_] |= 1; }
+    if (timing) { list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * TIMERS_PER_SLOT + 1); timer_mask_[slot_] |= 1; }
     if (!upscaled && ++dlss_failures_ >= 30) {
       host::log("dlss: evaluation keeps failing; switching Upscaling back to Native");
       opts_.dlss_mode = 0; dlss_failures_ = 0;
@@ -2195,16 +2353,16 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
       n.guide_x = in.in_left; n.guide_y = in.in_top; n.guide_w = in.in_w; n.guide_h = in.in_h;
       n.reset = dlss5_reset_; n.tuning = opts_.dlss5_tuning;
       n.fence = fence_.Get(); n.signal_value = fence_value_ + 1;
-      if (timing) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 2);
+      if (timing) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * TIMERS_PER_SLOT + 2);
       const bool neural_ok = dlss5::evaluate(n);
-      if (timing) { list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4 + 3); timer_mask_[slot_] |= 2; }
+      if (timing) { list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * TIMERS_PER_SLOT + 3); timer_mask_[slot_] |= 2; }
       dlss5_reset_ = !neural_ok;
     } else {
       dlss5_reset_ = true;
     }
 #endif
-    if (timing && timer_mask_[slot_]) {
-      list_->ResolveQueryData(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * 4, 4, timer_rb_[slot_].Get(), 0);
+    if (timing && (timer_mask_[slot_] & 3)) {
+      list_->ResolveQueryData(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * TIMERS_PER_SLOT, 4, timer_rb_[slot_].Get(), 0);
       timer_pending_[slot_] = true;
     }
     ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
@@ -2412,7 +2570,7 @@ void D3D12Backend::read_gpu_timers() {
   if (!(mask & 2)) g_dlss5_pass_ms = 0.0f;
 #endif
   if (!mask) return;
-  const D3D12_RANGE range{0, 4 * sizeof(uint64_t)};
+  const D3D12_RANGE range{0, TIMERS_PER_SLOT * sizeof(uint64_t)};
   uint64_t* ts = nullptr;
   if (FAILED(timer_rb_[slot_]->Map(0, &range, (void**)&ts))) return;
   auto ms = [&](int a, int b) { return ts[b] > ts[a] ? (float)((double)(ts[b] - ts[a]) * 1000.0 / (double)timer_freq_) : -1.0f; };
@@ -2420,12 +2578,15 @@ void D3D12Backend::read_gpu_timers() {
 #ifdef GX_DLSS5
   if (mask & 2) { const float v = ms(2, 3); if (v >= 0.0f) g_dlss5_pass_ms = v; }
 #endif
+  if (mask & 4) { const float v = ms(4, 5); if (v >= 0.0f) { gpu_frame_ms_sum_ += v; ++gpu_frame_ms_samples_; } }
   static uint64_t logged = 0;
+  if (mask & 3) {
 #ifdef GX_DLSS5
-  if (++logged % 180 == 1) host::log("gputimer: mask %u freq %llu dlaa %.2f ms dlss5 %.2f ms", mask, (unsigned long long)timer_freq_, g_dlaa_pass_ms.load(), g_dlss5_pass_ms.load());
+    if (++logged % 180 == 1) host::log("gputimer: mask %u freq %llu dlaa %.2f ms dlss5 %.2f ms", mask, (unsigned long long)timer_freq_, g_dlaa_pass_ms.load(), g_dlss5_pass_ms.load());
 #else
-  if (++logged % 180 == 1) host::log("gputimer: mask %u freq %llu dlaa %.2f ms", mask, (unsigned long long)timer_freq_, g_dlaa_pass_ms.load());
+    if (++logged % 180 == 1) host::log("gputimer: mask %u freq %llu dlaa %.2f ms", mask, (unsigned long long)timer_freq_, g_dlaa_pass_ms.load());
 #endif
+  }
   const D3D12_RANGE none{0, 0};
   timer_rb_[slot_]->Unmap(0, &none);
 }
@@ -2619,6 +2780,13 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     replacement_bytes_ = 0;
     texpack_report_frame_ = frame_counter_ + 600;
   }
+  // A skin picked on the character select screen brought other portraits or stock icons: the same.
+  if (texpack::take_cosmetics_changed()) {
+    wait_gpu();
+    textures_.clear();
+    texture_sets_.clear();
+    replacement_bytes_ = 0;
+  }
   if (adapter3_ && (frame_counter_ % 30) == 0) update_vram();
   if (adapter3_ && frame_counter_ && (frame_counter_ % 3600) == 0) {
     float used = 0, total = 0;
@@ -2654,11 +2822,30 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   const bool dxr_scene_diag_frame = dxr_device_ && dxr_list_ && dxr_scene_diag && in_match_ &&
                                     frame_counter_ % 120 == 0;
   if (!opts_.dump_path.empty() && frame_counter_ == opts_.dump_frame) dump_frame(frame, opts_.dump_path);
+  // A frame that will be shown waits for its place in the display queue first (see
+  // swapchain_waitable_); a backlog frame presents nothing and takes no place.
+  if (!skip_present_) wait_frame_latency();
+  diag("frame latency wait");
+  // Submitted frames the GPU has not finished, sampled before this frame's slot wait: the GPU
+  // queue depth the CPU found when it arrived, which is the latency the player feels.
+  const uint64_t fence_completed = fence_->GetCompletedValue();
+  const unsigned frames_queued = fence_value_ > fence_completed ? (unsigned)(fence_value_ - fence_completed) : 0u;
   slot_ = (int)(frame_counter_ % FRAME_SLOTS);
   wait_fence(slot_fence_[slot_]);   // this slot's previous frame (FRAME_SLOTS frames ago) is complete
   diag("frame slot fence");
   if (scan_pending_[slot_]) read_flicker_scan();
   if (timer_pending_[slot_]) read_gpu_timers();
+  timer_mask_[slot_] = 0;   // this slot's new frame records its own timers
+  if (frame_counter_ % 300 == 0) {
+    // The line a "gets laggier the longer I play" report needs: GPU time per frame from the
+    // timestamp pair around the command list (read back a slot later, so it never stalls), the
+    // queue depth found above, the solver's pairing table and the texture cache. If the delay
+    // grows over a session, one of these grows with it.
+    host::log("gpu: %.2f ms/frame, %u frames queued, solver pairs %zu, textures %zu",
+              gpu_frame_ms_samples_ ? gpu_frame_ms_sum_ / gpu_frame_ms_samples_ : 0.0, frames_queued,
+              solver_pair_counter().load(std::memory_order_relaxed), textures_.size());
+    gpu_frame_ms_sum_ = 0; gpu_frame_ms_samples_ = 0;
+  }
   vertex_ring_.reset(slot_); index_ring_.reset(slot_); constant_ring_.reset(slot_); upload_ring_.reset(slot_);
   select_frame_geometry(frame);
   diag("geometry upload fence");
@@ -2670,6 +2857,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   check(list_->Reset(allocators_[slot_].Get(), nullptr), "list reset");
   ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
   list_->SetDescriptorHeaps(2, heaps);
+  if (timer_heap_) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * TIMERS_PER_SLOT + 4);   // frame start, for the "gpu:" line
   DxrScene dxr_scene;
   bool dxr_scene_ready = false;
   if (dxr_device_ && dxr_list_ && dxr_path_tracer_.ready() && in_match_ &&
@@ -2826,6 +3014,13 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       else execute_copy(c);
       if (c.clear) clear_efb(c);
     }
+  }
+  if (timer_heap_) {
+    // Frame end: the pair is resolved into the slot's readback after the pass timers (offsets 0 to
+    // 3) and read when this slot comes round again, after its fence.
+    list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * TIMERS_PER_SLOT + 5);
+    list_->ResolveQueryData(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * TIMERS_PER_SLOT + 4, 2, timer_rb_[slot_].Get(), 4 * sizeof(uint64_t));
+    timer_mask_[slot_] |= 4; timer_pending_[slot_] = true;
   }
   check(list_->Close(), "list close");
   ID3D12CommandList* lists[] = {list_.Get()};

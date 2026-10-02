@@ -63,11 +63,19 @@ struct AssetRecord {
   std::string disc_path;
   uint64_t disc_offset = 0, disc_length = 0, disc_size = 0;
   int64_t disc_mtime = 0;
+  // The skeleton verdict taken when the scan had both files in hand, so the list can say "stays on
+  // online" before the skin was ever applied. Imports have none until they are applied.
+  bool online_known = false, online_ok = false;
+  std::string online_note;
 };
 
 // One line per scanned disc: scanning reads every costume file, so it runs once per disc and again
-// only when the file's size or time changes.
-struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; };
+// only when the file's size or time changes, or when the scan itself learned something new (rules).
+struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32_t rules = 0; };
+// 1: .dat and .usd costumes. 2: alternate costumes under other extensions (.lat, .rat) and the online
+// verdict taken at scan time. A disc scanned under an older number is scanned again at the next boot.
+constexpr uint32_t kScanRules = 2;
+constexpr const char* kImportPack = "import";
 constexpr const char* kDiscSource = "disc";
 constexpr const char* kDiscChanged = "disc file missing or changed";
 
@@ -345,7 +353,18 @@ void load_disc_fields(const json& item, AssetRecord* asset) {
   asset->info.disc_path = asset->disc_path;
   if (asset->disc_path.empty() || !asset->disc_length || asset->disc_length > kMaxAssetBytes)
     throw std::runtime_error("disc");
+  asset->info.variant = item.value("variant", std::string());
+  const auto online = item.find("online");
+  if (online != item.end() && online->is_object()) {
+    asset->online_known = true;
+    asset->online_ok = online->value("ok", false);
+    asset->online_note = online->value("note", std::string());
+  }
 }
+
+// Which set of a pack a record belongs to ("" for the plain costume, "alt L" and "alt R" for the
+// 20XX style alternates), and which pack: imports are one pack, each scanned disc or folder another.
+std::string pack_key(const AssetRecord& asset) { return asset.source_kind == kDiscSource ? asset.source_id : kImportPack; }
 
 json catalog_json_locked() {
   json root;
@@ -369,6 +388,8 @@ json catalog_json_locked() {
     if (asset.source_kind == kDiscSource)
       item["disc"] = {{"path", asset.disc_path}, {"offset", asset.disc_offset}, {"length", asset.disc_length},
                       {"size", asset.disc_size}, {"mtime", asset.disc_mtime}};
+    if (!asset.info.variant.empty()) item["variant"] = asset.info.variant;
+    if (asset.online_known) item["online"] = {{"ok", asset.online_ok}, {"note", asset.online_note}};
     item["companions"] = json::array();
     for (const auto& companion : asset.companions) {
       item["companions"].push_back({{"kind", companion.kind},
@@ -400,7 +421,7 @@ bool save_state_locked(std::string* error) {
   state["profile"] = profile_json_locked();
   state["disc_scans"] = json::array();
   for (const auto& scan : g_disc_scans)
-    state["disc_scans"].push_back({{"path", scan.path}, {"size", scan.size}, {"mtime", scan.mtime}});
+    state["disc_scans"].push_back({{"path", scan.path}, {"size", scan.size}, {"mtime", scan.mtime}, {"rules", scan.rules}});
   if (!write_atomic(g_root / L"state.json", state.dump(2) + "\n", error)) return false;
   // These readable mirrors preserve compatibility with older builds and diagnostics. state.json is
   // authoritative because it publishes catalog and profile together in one atomic replacement.
@@ -580,7 +601,7 @@ bool load_state_locked(bool* exists) {
     if (scan_list != state.end() && scan_list->is_array())
       for (const auto& scan : *scan_list)
         scans.push_back({scan.at("path").get<std::string>(), scan.value("size", (uint64_t)0),
-                         scan.value("mtime", (int64_t)0)});
+                         scan.value("mtime", (int64_t)0), scan.value("rules", 1u)});
     g_assets = std::move(assets); g_profile = std::move(next); g_disc_scans = std::move(scans);
     g_catalog_valid = g_profile_valid = true;
     return true;
@@ -2539,8 +2560,25 @@ bool parse_fst(uint8_t* fst, uint32_t fst_size, std::vector<FstFile>* files, std
 // ---- skins inside a mod disc or a files pack ----
 struct DiscCandidate { std::string member; fs::path file; uint64_t offset = 0, length = 0; };
 
-// Every file in a disc image whose name is a costume slot of the game ("PlFxGr.dat", or the English
-// "PlCaRe.usd"). The name decides here; the content is checked by the caller.
+// A file name that holds a costume of a slot of the game: "PlFxGr.dat", the English "PlCaRe.usd", or
+// a pack's alternate costume for the slot under another extension ending in "at" ("PlFxGr.lat" and
+// "PlFxGr.rat" are the 20XX style L and R alternates). *variant names the set: "" for the costume
+// itself, "alt L", "alt R", or "alt <EXT>" for any other such extension. The name decides here; the
+// content is checked by the caller (it must be a costume of that slot).
+bool disc_skin_member(const std::string& raw, std::string* variant) {
+  const std::string name = lower(raw);
+  SlotName slot;
+  if (name.size() != 10 || name[6] != '.' || !find_slot(name.substr(0, 6) + ".dat", &slot)) return false;
+  const std::string extension = name.substr(7);
+  if (extension == "dat" || extension == "usd") { variant->clear(); return true; }
+  if (extension.size() != 3 || extension.compare(1, 2, "at") != 0) return false;
+  if (extension == "lat") *variant = "alt L";
+  else if (extension == "rat") *variant = "alt R";
+  else *variant = std::string("alt ") + (char)std::toupper((unsigned char)extension[0]) + "AT";
+  return true;
+}
+
+// Every file in a disc image whose name is a costume of a slot of the game (disc_skin_member).
 bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, std::string* error) {
   std::vector<uint8_t> header;
   if (!read_range(iso, 0, 0x440, &header)) { *error = "The disc image could not be read."; return false; }
@@ -2554,8 +2592,8 @@ bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, st
   for (const auto& file : files) {
     const size_t slash = file.path.find_last_of('/');
     const std::string name = slash == std::string::npos ? file.path : file.path.substr(slash + 1);
-    SlotName slot;
-    if (name.size() != 10 || !dat_extension(name) || !find_slot(name.substr(0, 6) + ".dat", &slot)) continue;
+    std::string variant;
+    if (!disc_skin_member(name, &variant)) continue;
     out->push_back({name, iso, file.start, file.size});
   }
   return true;
@@ -2566,8 +2604,8 @@ void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out)
   for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
     if (!it->is_regular_file(ec)) continue;
     const std::string name = path_filename_utf8(it->path());
-    SlotName slot;
-    if (name.size() != 10 || !dat_extension(name) || !find_slot(name.substr(0, 6) + ".dat", &slot)) continue;
+    std::string variant;
+    if (!disc_skin_member(name, &variant)) continue;
     const uint64_t length = it->file_size(ec);
     if (!ec) out->push_back({name, it->path(), 0, length});
   }
@@ -2592,7 +2630,7 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
   // time to compare, so it is read every time.
   if (!folder)
     for (const auto& scan : g_disc_scans)
-      if (scan.path == key && scan.size == root_size && scan.mtime == root_mtime) {
+      if (scan.path == key && scan.size == root_size && scan.mtime == root_mtime && scan.rules >= kScanRules) {
         result.ok = result.already_present = true;
         result.message = "Skins of " + pack_name + " are already in the skin list.";
         return result;
@@ -2605,12 +2643,17 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
   std::stable_sort(candidates.begin(), candidates.end(), [](const DiscCandidate& a, const DiscCandidate& b) {
     return lower(a.member) < lower(b.member);
   });
-  std::map<std::string, AssetRecord> fresh;   // by target slot
+  std::map<std::string, AssetRecord> fresh;   // by target slot and variant
   size_t same = 0, skipped = 0;
   for (const auto& candidate : candidates) {
     uint32_t retail_offset = 0, retail_size = 0;
     std::vector<uint8_t> bytes, retail;
-    if (!host::disc_find_file(candidate.member, &retail_offset, &retail_size) || !retail_size ||
+    std::string variant;
+    if (!disc_skin_member(candidate.member, &variant)) { ++skipped; continue; }
+    // An alternate costume is compared with the slot's own costume on the game disc: that is the
+    // file it replaces when chosen, and the skeleton it must keep.
+    const std::string retail_name = variant.empty() ? candidate.member : candidate.member.substr(0, 6) + ".dat";
+    if (!host::disc_find_file(retail_name, &retail_offset, &retail_size) || !retail_size ||
         retail_size > kMaxAssetBytes || !read_range(candidate.file, candidate.offset, candidate.length, &bytes)) {
       ++skipped; continue;
     }
@@ -2622,13 +2665,21 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     if (!dat.ok || lower(dat.target_path) != lower(slot_name)) { ++skipped; continue; }
     const std::string digest = sha256(bytes);
     if (digest.empty()) { ++skipped; continue; }
-    const auto have = fresh.find(dat.target_path);
+    const std::string fresh_key = dat.target_path + "\n" + variant;
+    const auto have = fresh.find(fresh_key);
     if (have != fresh.end() && have->second.info.sha256 == digest) continue;   // .dat and .usd carry the same skin
     AssetRecord asset;
     // The identity is where the skin is, not what it is: a newer build of the same disc keeps the
     // player's selection.
     asset.info.id = "disc-" + sha256_text(key + "\n" + lower(candidate.member));
-    asset.info.name = dat.character + " " + dat.costume + ": from " + pack_name;
+    asset.info.name = dat.character + " " + dat.costume + ": from " + pack_name + (variant.empty() ? "" : " (" + variant + ")");
+    asset.info.variant = variant;
+    {
+      std::string detail;
+      asset.online_known = true;
+      asset.online_ok = costume_skeleton_matches(retail, bytes, &detail);
+      asset.online_note = online_reason_short(detail);
+    }
     asset.info.kind = "character_costume";
     asset.info.target_path = dat.target_path;
     asset.info.character = dat.character;
@@ -2650,7 +2701,7 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     asset.disc_offset = candidate.offset;
     asset.disc_length = candidate.length;
     if (!file_stamp(candidate.file, &asset.disc_size, &asset.disc_mtime)) { ++skipped; continue; }
-    fresh[dat.target_path] = std::move(asset);
+    fresh[fresh_key] = std::move(asset);
   }
   // Replace this disc's earlier records: files that no longer differ go away, changed ones are
   // updated, and a name the player gave an entry is kept. Records of a disc that no longer exists
@@ -2674,7 +2725,7 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
   }
   g_disc_scans.erase(std::remove_if(g_disc_scans.begin(), g_disc_scans.end(),
       [&](const DiscScan& scan) { return scan.path == key; }), g_disc_scans.end());
-  if (!folder) g_disc_scans.push_back({key, root_size, root_mtime});
+  if (!folder) g_disc_scans.push_back({key, root_size, root_mtime, kScanRules});
   if (!save_state_locked(error)) {
     g_assets = std::move(previous_assets); g_disc_scans = std::move(previous_scans);
     result.message = *error; return result;
@@ -2694,6 +2745,106 @@ uint32_t disc_skin_count(const std::string& iso_path) {
   return (uint32_t)std::count_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
     return item.source_kind == kDiscSource && item.source_id == key;
   });
+}
+
+std::vector<PackInfo> packs() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  std::vector<PackInfo> out;
+  std::map<std::string, size_t> index;
+  std::map<std::string, std::map<std::string, bool>> slots;   // pack key -> covered slots
+  for (const auto& asset : g_assets) {
+    if (asset.info.kind != "character_costume") continue;
+    const std::string key = pack_key(asset);
+    auto at = index.find(key);
+    if (at == index.end()) {
+      PackInfo pack;
+      pack.key = key;
+      pack.disc = asset.source_kind == kDiscSource;
+      pack.name = pack.disc ? asset.source_name : "Imported skins";
+      out.push_back(std::move(pack));
+      at = index.emplace(key, out.size() - 1).first;
+    }
+    PackInfo& pack = out[at->second];
+    ++pack.skins;
+    slots[key][asset.info.target_path] = true;
+    if (std::find(pack.variants.begin(), pack.variants.end(), asset.info.variant) == pack.variants.end())
+      pack.variants.push_back(asset.info.variant);
+    if (asset.online_known) pack.online_on += asset.online_ok ? 1 : 0;
+    else ++pack.online_unchecked;
+    const auto picked = g_profile.selections.find(asset.info.target_path);
+    if (picked != g_profile.selections.end() && picked->second == asset.info.id) ++pack.selected;
+  }
+  for (auto& pack : out) {
+    pack.slots = (uint32_t)slots[pack.key].size();
+    std::sort(pack.variants.begin(), pack.variants.end());   // "" first, then "alt L", "alt R"
+  }
+  // Imports first, then the packs by name.
+  std::stable_sort(out.begin(), out.end(), [](const PackInfo& a, const PackInfo& b) {
+    if (a.disc != b.disc) return !a.disc;
+    return lower(a.name) < lower(b.name);
+  });
+  return out;
+}
+
+PackSetResult apply_pack_set(const std::string& pack, const std::string& variant, bool preview) {
+  PackSetResult result;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  std::string error;
+  if (!preview && !mutable_profile_locked(&error)) { result.message = error; return result; }
+  const bool none = variant == "none";
+  // The pack's choice for each slot: the record of that variant, an available one when there is more
+  // than one. For "none", every record of the pack counts, since any of them may be selected now.
+  std::map<std::string, const AssetRecord*> choice;
+  std::map<std::string, const AssetRecord*> by_id;
+  for (const auto& asset : g_assets) {
+    by_id[asset.info.id] = &asset;
+    if (asset.info.kind != "character_costume" || pack_key(asset) != pack) continue;
+    if (!none && asset.info.variant != variant) continue;
+    const AssetRecord*& have = choice[asset.info.target_path];
+    if (!have || (!have->info.available && asset.info.available)) have = &asset;
+  }
+  if (choice.empty()) { result.message = "That pack has no skins of that set."; return result; }
+  Profile next = g_profile;
+  std::map<std::string, uint32_t> replaced_from;
+  for (const auto& slot : choice) {
+    const auto current = next.selections.find(slot.first);
+    const std::string current_id = current == next.selections.end() ? std::string() : current->second;
+    const auto current_record = by_id.find(current_id);
+    const bool current_is_skin = current_record != by_id.end() && current_id != kVanillaSelection;
+    if (none) {
+      // Only this pack's own picks go back to the standard costume; another pack's choice is kept.
+      if (current_is_skin && pack_key(*current_record->second) == pack) {
+        next.selections[slot.first] = kVanillaSelection; ++result.cleared;
+      }
+      continue;
+    }
+    if (!slot.second->info.available) continue;
+    if (current_id == slot.second->info.id) continue;
+    if (current_is_skin && pack_key(*current_record->second) != pack) {
+      ++result.replaced;
+      ++replaced_from[current_record->second->source_kind == kDiscSource ? current_record->second->source_name
+                                                                          : std::string("Imported skins")];
+    }
+    next.selections[slot.first] = slot.second->info.id; ++result.set;
+  }
+  uint32_t most = 0;
+  for (const auto& from : replaced_from) if (from.second > most) { most = from.second; result.replaced_from = from.first; }
+  if (replaced_from.size() > 1) result.replaced_from = "other packs";
+  result.ok = true;
+  if (preview) return result;
+  if (result.set || result.cleared) {
+    Profile previous = g_profile;
+    g_profile = std::move(next);
+    if (!none) g_profile.enabled = true;
+    ++g_profile.generation;
+    if (!save_profile_locked(&error)) { g_profile = std::move(previous); result.ok = false; result.message = error; return result; }
+  }
+  result.message = none ? std::to_string(result.cleared) + " costumes back to standard; restart to apply."
+                        : std::to_string(result.set) + " costumes set" +
+                          (result.replaced ? ", " + std::to_string(result.replaced) + " replaced from " + result.replaced_from : "") +
+                          "; restart to apply.";
+  g_message = result.message;
+  return result;
 }
 
 void configure(const std::string& settings_path) {
@@ -2985,10 +3136,15 @@ std::vector<AssetInfo> assets() {
   }
   for (const auto& record : g_assets) {
     AssetInfo info = record.info;
+    info.pack = pack_key(record);
     const auto verdict = verdicts.find(info.id);
     if (verdict != verdicts.end()) {
       info.online_allowed = verdict->second->online_allowed;
       info.online_message = verdict->second->online_reason;
+    } else if (record.online_known) {
+      // A disc skin was judged when it was scanned, against the same standard file.
+      info.online_allowed = record.online_ok;
+      info.online_message = record.online_note;
     }
     for (const auto& companion : record.companions) {
       if (companion.kind != "csp" && companion.kind != "preview" && companion.kind != "stock") continue;
@@ -3216,12 +3372,21 @@ std::vector<CompanionOverride> active_companions() {
   return std::atomic_load(&g_runtime)->companions;
 }
 
-void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
-  std::lock_guard<std::mutex> lock(g_mutex);
-  auto next = std::make_shared<RuntimeState>();
+// True when the running snapshot matched the saved profile before the live picks not published yet
+// changed it, so publishing them leaves nothing waiting for a restart.
+static bool g_live_in_step = false, g_live_unpublished = false;
+
+// The whole profile at startup (only_slot null), or one costume slot again while the game runs
+// (republish_slot): the snapshot is then a copy of the running one with that slot's files replaced.
+static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* only_slot, RepublishResult* republished) {
+  const auto current = std::atomic_load(&g_runtime);
+  auto next = only_slot ? std::make_shared<RuntimeState>(*current) : std::make_shared<RuntimeState>();
   next->initialized = true; next->generation = g_profile.generation;
-  next->fingerprint = desired_fingerprint_locked();
-  if (!g_configured || !g_catalog_valid || !g_profile_valid || !g_profile.enabled) {
+  if (!only_slot || g_live_in_step) next->fingerprint = desired_fingerprint_locked();
+  if (only_slot && (!g_configured || !g_catalog_valid || !g_profile_valid || !current->initialized)) {
+    republished->message = "The cosmetic catalog is not running."; return;
+  }
+  if (!only_slot && (!g_configured || !g_catalog_valid || !g_profile_valid || !g_profile.enabled)) {
     std::atomic_store(&g_runtime, std::shared_ptr<const RuntimeState>(next));
     host::log("cosmetics: vanilla profile (%s)", !g_profile.enabled ? "disabled" : "catalog unavailable");
     return;
@@ -3229,13 +3394,45 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
   std::vector<FstFile> files; std::string error;
   if (!parse_fst(fst, fst_size, &files, &error)) {
     g_message = error; host::log("cosmetics: %s", error.c_str());
+    if (only_slot) { republished->message = error; return; }
     std::atomic_store(&g_runtime, std::shared_ptr<const RuntimeState>(next)); return;
+  }
+  std::vector<FstFile> slot_files;   // the slot's disc files, with the disc's own lengths
+  if (only_slot) {
+    // The table carries the lengths published so far: every overridden file gets the disc's own
+    // length back in the list, which is what the checks below compare against.
+    for (auto& file : files) {
+      const auto served = current->by_start.find(file.start);
+      if (served != current->by_start.end()) file.size = served->second.vanilla_size;
+    }
+    const std::string wanted = lower(*only_slot);
+    const std::string english = wanted.size() > 4 && wanted.compare(wanted.size() - 4, 4, ".dat") == 0 ?
+        wanted.substr(0, wanted.size() - 4) + ".usd" : std::string();
+    for (const auto& file : files) {
+      const std::string path = lower(file.path);
+      const size_t slash = path.find_last_of('/');
+      const std::string base = slash == std::string::npos ? path : path.substr(slash + 1);
+      if (base == wanted || (!english.empty() && base == english)) slot_files.push_back(file);
+    }
+    if (slot_files.empty()) { republished->message = "This disc has no " + *only_slot + "."; return; }
+    // Back to the disc's own files first; the slot's pick, if it has one, is applied by the loop.
+    bool was_served = false;
+    for (const auto& file : slot_files) {
+      was_served |= next->by_start.erase(file.start) != 0;
+      put_be32(fst + (size_t)file.index * 12 + 8, file.size);
+    }
+    if (was_served && next->assets) --next->assets;
+    next->companions.erase(std::remove_if(next->companions.begin(), next->companions.end(),
+        [&](const CompanionOverride& have) { return lower(have.target_path) == wanted; }), next->companions.end());
   }
   std::map<std::string, bool> effect_done;
   std::vector<std::string> runtime_errors;
   std::vector<const AssetRecord*> portraits;
   for (const auto& pick : g_profile.selections) {
     if (pick.second == kVanillaSelection) continue;
+    // One slot: its skin and its own portrait entry, and nothing while the profile is switched off.
+    if (only_slot && (!g_profile.enabled || (lower(pick.first) != lower(*only_slot) &&
+                                              lower(pick.first) != lower(*only_slot + kPortraitSuffix)))) continue;
     auto asset = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
       return item.info.id == pick.second && selection_key(item) == pick.first;
     });
@@ -3372,12 +3569,169 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
                 companion.source_member.c_str());
       any = true;
     }
-    if (any) ++next->assets;
+    if (any && !only_slot) ++next->assets;   // one slot again: its portrait entry was counted at startup
   }
   std::atomic_store(&g_runtime, std::shared_ptr<const RuntimeState>(next));
+  if (only_slot) {
+    bool served = false;
+    for (const auto& file : slot_files) {
+      RepublishedFile out;
+      out.fst_index = file.index; out.vanilla_start = file.start; out.length = file.size;
+      const auto now = next->by_start.find(file.start);
+      if (now != next->by_start.end()) {
+        out.overridden = served = true;
+        out.length = (uint32_t)now->second.bytes->size();
+        out.online_allowed = now->second.online_allowed;
+        out.asset_id = now->second.id;
+      }
+      republished->files.push_back(std::move(out));
+    }
+    if (!served) host::log("cosmetics: %s is the standard costume again", only_slot->c_str());
+    g_live_unpublished = false;
+    republished->ok = true;
+    return;
+  }
   g_message = next->assets == 0 ? "No selected cosmetic matched this ISO." :
               std::to_string(next->assets) + " cosmetic override(s) active for this launch.";
   for (const auto& issue : runtime_errors) g_message += " " + issue;
+}
+
+void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  publish_locked(fst, fst_size, nullptr, nullptr);
+}
+
+RepublishResult republish_slot(uint8_t* fst, uint32_t fst_size, const std::string& slot) {
+  RepublishResult result;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  SlotName known;
+  if (!fst || !find_slot(slot, &known)) { result.message = "That is not a costume slot."; return result; }
+  const std::string target = slot_file(known);
+  publish_locked(fst, fst_size, &target, &result);
+  if (!result.ok) host::log("cosmetics: %s was not published again (%s)", target.c_str(), result.message.c_str());
+  return result;
+}
+
+std::string applied_asset(uint32_t vanilla_file_start) {
+  const auto runtime = std::atomic_load(&g_runtime);
+  const auto found = runtime->by_start.find(vanilla_file_start);
+  return found == runtime->by_start.end() ? std::string() : found->second.id;
+}
+
+// The character select's fighter numbers, in its own order, as the families' file codes.
+std::string costume_slot_file(int css_character, int costume) {
+  static constexpr const char* codes[] = {"Ca", "Dk", "Fx", "Gw", "Kb", "Kp", "Lk", "Lg", "Mr", "Ms", "Mt", "Ns", "Pe",
+                                          "Pk", "Pp", "Pr", "Ss", "Ys", "Zd", "Sk", "Fc", "Cl", "Dr", "Fe", "Pc", "Gn"};
+  if (css_character < 0 || css_character >= (int)std::size(codes) || costume < 0) return {};
+  for (const auto& family : families) {
+    if (std::string(family.file_code) != codes[css_character]) continue;
+    const std::string colors = family.colors;   // "Nr Or La Gr": the game's costume order
+    const size_t at = (size_t)costume * 3;
+    if (at + 2 > colors.size()) return {};
+    return std::string("Pl") + family.file_code + colors.substr(at, 2) + ".dat";
+  }
+  return {};
+}
+
+// The online verdict of a skin that is about to be picked live. A disc skin was judged when it was
+// scanned; an import is compared with the standard costume here, the way startup does it.
+static bool live_online_ok_locked(const AssetRecord& asset, const std::vector<uint8_t>& candidate) {
+  if (asset.online_known) return asset.online_ok;
+  uint32_t offset = 0, size = 0;
+  if (!host::disc_find_file(asset.info.target_path, &offset, &size) || !size || size > kMaxAssetBytes) return false;
+  std::vector<uint8_t> clean(size);
+  std::string detail;
+  return host::disc_read(offset, clean.data(), size) && costume_skeleton_matches(clean, candidate, &detail);
+}
+
+static bool select_live_locked(const std::string& slot, const std::string& asset_id, std::string* error) {
+  if (!ready_locked(error)) return false;
+  if (g_online_freezes.load(std::memory_order_relaxed)) {
+    *error = "Skins cannot change while an online match is queued or running."; return false;
+  }
+  SlotName known;
+  if (!find_slot(slot, &known)) { *error = "That is not a costume slot."; return false; }
+  const std::string target = slot_file(known);
+  const bool standard = asset_id.empty() || asset_id == kVanillaSelection;
+  std::string name = "the standard costume";
+  if (!standard) {
+    auto asset = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+      return item.info.id == asset_id && item.info.kind == "character_costume" && selection_key(item) == target;
+    });
+    if (asset == g_assets.end()) { *error = "The selected variant does not belong to that slot."; return false; }
+    const bool online = online_active();
+    // A scanned skin known to be off online is refused before its file is read.
+    if (online && asset->online_known && !asset->online_ok) {
+      *error = "That skin is off online (" + asset->online_note + ")."; return false;
+    }
+    std::string validation_error;
+    const std::vector<uint8_t> candidate = load_runtime_asset_locked(*asset, &validation_error);
+    asset->info.available = !candidate.empty();
+    if (!asset->info.available) {
+      asset->info.availability_message = validation_error;
+      *error = "The selected variant is unavailable or invalid; the costume is unchanged."; return false;
+    }
+    if (online && !live_online_ok_locked(*asset, candidate)) {
+      *error = "That skin changes more than looks, so it cannot be picked online."; return false;
+    }
+    name = asset->info.name;
+  }
+  const auto current = g_profile.selections.find(target);
+  const std::string now = current == g_profile.selections.end() ? std::string(kVanillaSelection) : current->second;
+  if (standard ? now == kVanillaSelection : (now == asset_id && g_profile.enabled)) return true;
+  if (!g_live_unpublished) {
+    const auto runtime = std::atomic_load(&g_runtime);
+    g_live_in_step = runtime->initialized && runtime->fingerprint == desired_fingerprint_locked();
+  }
+  Profile previous = g_profile;
+  if (standard) g_profile.selections[target] = kVanillaSelection;
+  else { g_profile.enabled = true; g_profile.selections[target] = asset_id; }
+  ++g_profile.generation;
+  if (!save_profile_locked(error)) { g_profile = std::move(previous); return false; }
+  g_live_unpublished = true;
+  g_message = name + " selected for " + target + ".";
+  return true;
+}
+
+bool select_variant_live(const std::string& slot, const std::string& asset_id, std::string* error) {
+  std::string local; if (!error) error = &local;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return select_live_locked(slot, asset_id, error);
+}
+
+LiveCycle cycle_slot_live(const std::string& slot, int direction) {
+  LiveCycle result;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  SlotName known;
+  if (!ready_locked(&result.message)) return result;
+  if (!find_slot(slot, &known)) { result.message = "That is not a costume slot."; return result; }
+  const std::string target = slot_file(known);
+  // The standard costume, then the slot's skins in catalog order.
+  std::vector<std::string> ids{std::string()}, names{"Standard"};
+  for (const auto& asset : g_assets) {
+    if (asset.info.kind != "character_costume" || !asset.info.available || selection_key(asset) != target) continue;
+    ids.push_back(asset.info.id);
+    // A pack's skin is labelled by the pack and its set; an import by the name the player gave it.
+    names.push_back(asset.source_kind == kDiscSource ?
+        asset.source_name + (asset.info.variant.empty() ? "" : " (" + asset.info.variant + ")") : asset.info.name);
+  }
+  size_t at = 0;
+  const auto picked = g_profile.selections.find(target);
+  if (g_profile.enabled && picked != g_profile.selections.end())
+    for (size_t i = 1; i < ids.size(); ++i) if (ids[i] == picked->second) at = i;
+  result.previous_id = ids[at];
+  result.asset_id = ids[at]; result.name = names[at];
+  result.ok = true;
+  const size_t count = ids.size();
+  for (size_t step = 1; step < count; ++step) {
+    const size_t next = direction > 0 ? (at + step) % count : (at + count - step) % count;
+    std::string error;
+    if (!select_live_locked(target, ids[next], &error)) { result.message = error; continue; }
+    result.changed = true; result.asset_id = ids[next]; result.name = names[next]; result.message.clear();
+    break;
+  }
+  if (!result.changed && result.message.empty()) result.message = "No other skin is installed for this costume.";
+  return result;
 }
 
 OverrideRead read(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, uint32_t size) {
