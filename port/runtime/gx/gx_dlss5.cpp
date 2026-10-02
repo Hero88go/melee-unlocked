@@ -179,7 +179,7 @@ struct State {
   Tuning feature_tuning;
   ComPtr<ID3D12Resource> out[2], depth_copy, reduced_input, resolved;
   uint32_t resolved_w = 0, resolved_h = 0;
-  ComPtr<ID3D12Resource> coarse_in, coarse_out, restored;   // tone restore (see tone_restore_strength)
+  ComPtr<ID3D12Resource> coarse_in, coarse_out, mean_in, mean_out, restored;   // tone restore (see tone_restore_strength)
   uint32_t restored_w = 0, restored_h = 0;
   Scaling scaling;
   ComPtr<ID3D12Fence> fence;
@@ -549,8 +549,9 @@ bool evaluate(const Inputs& in) {
     result = g.resolved.Get();
   }
   if (scaled) barrier(list, g.reduced_input.Get(), npsr, uav);
-  // Tone restore: the model squeezes the brightness range on every pass. Give the result the
-  // coarse brightness and colour of the picture it was given; its detail stays.
+  // Tone restore: the model lifts the black level on every pass (a grey haze). Take the lift out
+  // per colour channel, measured as the change in the whole frame's average, and stretch back to
+  // full range. The model's own detail and colours stay.
   if (const uint32_t restore = tone_restore_strength(); ok && !in.warm_only && restore) {
     const auto f16 = DXGI_FORMAT_R16G16B16A16_FLOAT;
     const auto rw = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -561,13 +562,21 @@ bool evaluate(const Inputs& in) {
     }
     if (ok && !g.coarse_in) ok = make_texture(g.coarse_in, 32, 18, f16, rw, uav, "coarse input");
     if (ok && !g.coarse_out) ok = make_texture(g.coarse_out, 32, 18, f16, rw, uav, "coarse output");
+    if (ok && !g.mean_in) ok = make_texture(g.mean_in, 1, 1, f16, rw, uav, "mean input");
+    if (ok && !g.mean_out) ok = make_texture(g.mean_out, 1, 1, f16, rw, uav, "mean output");
     if (ok) {   // otherwise make_texture has recorded the failure
     barrier(list, result, uav, npsr);
     ok = g.scaling.dispatch(g.device, list, in.fence, in.signal_value, in.color, in.color, in.color, g.coarse_in.Get(), 0, 0) &&
          g.scaling.dispatch(g.device, list, in.fence, in.signal_value, result, result, result, g.coarse_out.Get(), 0, 0);
     barrier(list, g.coarse_in.Get(), uav, npsr); barrier(list, g.coarse_out.Get(), uav, npsr);
-    ok = ok && g.scaling.dispatch(g.device, list, in.fence, in.signal_value, result, g.coarse_out.Get(), g.coarse_in.Get(),
+    // Whole-frame averages (two area steps): a per-block correction left halos round fighters the
+    // model recolours, a whole-frame one cannot.
+    ok = ok && g.scaling.dispatch(g.device, list, in.fence, in.signal_value, g.coarse_in.Get(), g.coarse_in.Get(), g.coarse_in.Get(), g.mean_in.Get(), 0, 0) &&
+         g.scaling.dispatch(g.device, list, in.fence, in.signal_value, g.coarse_out.Get(), g.coarse_out.Get(), g.coarse_out.Get(), g.mean_out.Get(), 0, 0);
+    barrier(list, g.mean_in.Get(), uav, npsr); barrier(list, g.mean_out.Get(), uav, npsr);
+    ok = ok && g.scaling.dispatch(g.device, list, in.fence, in.signal_value, result, g.mean_out.Get(), g.mean_in.Get(),
                                   g.restored.Get(), 3, restore);
+    barrier(list, g.mean_in.Get(), npsr, uav); barrier(list, g.mean_out.Get(), npsr, uav);
     barrier(list, g.coarse_in.Get(), npsr, uav); barrier(list, g.coarse_out.Get(), npsr, uav);
     barrier(list, result, npsr, uav);
     if (!ok) fail(g.scaling.error());
@@ -616,7 +625,7 @@ void shutdown() {
   for (auto& feature : g.feature) feature = nullptr;
   for (auto& out : g.out) out.Reset();
   g.depth_copy.Reset(); g.reduced_input.Reset(); g.resolved.Reset(); g.scaling.shutdown();
-  g.coarse_in.Reset(); g.coarse_out.Reset(); g.restored.Reset();
+  g.coarse_in.Reset(); g.coarse_out.Reset(); g.mean_in.Reset(); g.mean_out.Reset(); g.restored.Reset();
   if (g.caps) { if (g.core_destroy) g.core_destroy(g.caps); g.caps = nullptr; }
   g.fence.Reset();
   g.ready = false; g.failed = false; g.tried = false; g.tuning_failed = false;

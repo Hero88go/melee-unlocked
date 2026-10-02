@@ -59,12 +59,14 @@ float3 coarse(Texture2D<float4> tex, uint2 p) {
   if (id.x>=dw || id.y>=dh) return;
   uint2 p=id.xy;
   if (mode==3) {
-    // Tone restore: the model compresses the brightness range (lifted blacks, dimmed highlights,
-    // less colour) on every pass. Put back the original picture's coarse brightness and colour
-    // (original = coarse average of the picture before the model, baseline = the same of its
-    // output) and keep the model's detail. filter carries the strength, 256 = full.
+    // Tone restore: the model lifts the black level on every pass. original = the average of the
+    // picture before the model, baseline = the average of its output (1x1 for a whole-frame
+    // correction). A lift is removed as a levels change, so black returns to black and white
+    // stays white; a drop is added back. filter carries the strength, 256 = full.
     float4 out_px=source.Load(int3(p,0));
-    float3 fixed=out_px.rgb+(coarse(original,p)-coarse(baseline,p))*(filter/256.0);
+    float3 lift=(coarse(baseline,p)-coarse(original,p))*(filter/256.0);
+    float3 up=max(lift,0.0);
+    float3 fixed=(out_px.rgb-up)/max(1.0-up,0.25)-min(lift,0.0);
     target[p]=float4(saturate(fixed),out_px.a);
     return;
   }

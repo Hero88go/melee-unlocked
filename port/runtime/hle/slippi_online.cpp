@@ -152,7 +152,8 @@ bool g_currently_skipping = false, g_currently_advancing = false;
 std::mt19937 g_rng((uint32_t)time_ms());
 uint64_t g_rollbacks = 0;
 // For the one-line summary at the end of an online game (delay, ping, rollbacks, stalls).
-static uint64_t g_match_rollbacks_start = 0, g_match_stalls = 0;
+static uint64_t g_match_rollbacks_start = 0, g_match_stalls = 0, g_match_input_waits = 0, g_match_advances = 0;
+static int g_input_wait_frames = 0;   // length of the wait for remote inputs that is running now
 static int g_match_delay = 0;
 bool g_in_online_match = false;
 // Determinism oracle: the game hands us a checksum of its finalized state each frame and the
@@ -328,7 +329,22 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
       continue;
     }
   }
-  if (any_needs_inputs) return true;
+  // A report of "it froze, then felt delayed" cannot be judged without knowing which side stopped.
+  // The start and the end of every wait for the other player's inputs are logged for that.
+  if (any_needs_inputs) {
+    if (g_input_wait_frames++ == 0) {
+      ++g_match_input_waits;
+      auto pad = g_netplay->GetSlippiRemotePad(0, ROLLBACK_MAX_FRAMES);
+      host::log("slippi: waiting for the other player's inputs on frame %d (their latest frame %d, ping %u ms)",
+                frame, pad->latest_frame, (unsigned)g_netplay->LastPingMs());
+    }
+    return true;
+  }
+  if (g_input_wait_frames > 0) {
+    host::log("slippi: inputs arrived on frame %d after waiting %d frames (%.2f s)", frame, g_input_wait_frames,
+              g_input_wait_frames / 60.0);
+    g_input_wait_frames = 0;
+  }
   const int32_t frame_time = 16683, t1 = 10000, t2 = 2 * frame_time + t1;
   // Every 30 frames for the whole match, as Slippi Dolphin does: a strict threshold while the match
   // starts, then only when over two frames ahead (t2). Checking only the first 120 frames left an
@@ -340,6 +356,8 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
       int max_skip = frame <= 120 ? 5 : 1;
       g_frames_to_skip = std::min(((offset - t1) / frame_time) + 1, max_skip);
       host::log("slippi: halting on frame %d for time sync (offset %d us, %d frames)", frame, offset, g_frames_to_skip);
+    } else if (offset > t1 || offset < -t1) {
+      host::log("slippi: time offset %d us on frame %d (no frame shed)", offset, frame);
     }
   }
   if (g_frames_to_skip > 0) { --g_frames_to_skip; return true; }
@@ -377,7 +395,7 @@ bool should_advance_online_frame(int32_t frame) {
   }
   if (g_frames_to_advance > 0) {
     if (frame % 5 != 0) return false;
-    --g_frames_to_advance;
+    --g_frames_to_advance; ++g_match_advances;
     return true;
   }
   g_currently_advancing = false;
@@ -486,6 +504,7 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     g_frames_to_advance = 0; g_currently_advancing = false; g_fall_behind = 0; g_fall_far_behind = 0;
     g_local_selections.Reset();
     g_match_rollbacks_start = g_rollbacks; g_match_stalls = 0; g_match_delay = delay;
+    g_match_input_waits = 0; g_match_advances = 0; g_input_wait_frames = 0;
     if (g_netplay) { g_netplay->GetAndResetAvgPingMs(); g_netplay->StartSlippiGame(); }
     host::log("slippi: online game starts, delay %d frames, direct peer to peer", (int)delay);
     g_in_online_match = true;
@@ -981,9 +1000,10 @@ void handle_report_game(const uint8_t* p) {
   int stage = be16(info_block + 0xE);
   host::log("slippi: game report: mode %u, %u frames, game %u, tiebreak %u, winner %d, end %u, lras %d, stage %d",
             mode, frames, game_index, tiebreak, winner, end_method, lras, stage);
-  host::log("slippi: online game summary: delay %d frames, average ping %.1f ms, %llu rollbacks, %llu stalled frames, %u frames",
+  host::log("slippi: online game summary: delay %d frames, average ping %.1f ms, %llu rollbacks, %llu stalled frames, %llu waits for the other player, %llu frames advanced, %u frames",
             g_match_delay, g_netplay ? g_netplay->GetAndResetAvgPingMs() : 0.0,
-            (unsigned long long)(g_rollbacks - g_match_rollbacks_start), (unsigned long long)g_match_stalls, frames);
+            (unsigned long long)(g_rollbacks - g_match_rollbacks_start), (unsigned long long)g_match_stalls,
+            (unsigned long long)g_match_input_waits, (unsigned long long)g_match_advances, frames);
   host::publish_lobby_result(winner, end_method);
   {
     // Exactly CEXISlippi::handleReportGame: one report per game with every slot's result.
