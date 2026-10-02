@@ -1,6 +1,7 @@
 /* The library's entry point, and the host table everything else in the shim calls through. */
 #include "mu_host.h"
 #include "mu_shim.h"
+#include "mu_20xx_cpu.h"
 
 _Static_assert(MU_OPTION_NO_SCREEN_SHAKE == MU_GAME_OPTION_NO_SCREEN_SHAKE, "option bits");
 _Static_assert(MU_OPTION_PAL_STOCK_ICONS == MU_GAME_OPTION_PAL_STOCK_ICONS, "option bits");
@@ -57,6 +58,21 @@ _Static_assert(MU_TE2_NEUTRAL_SPAWNS == MU_GAME_OPTION2_TE_NEUTRAL_SPAWNS && MU_
                MU_TE2_HANDWARMERS == MU_GAME_OPTION2_TE_HANDWARMERS &&
                MU_TE2_STAGE_STRIKE == MU_GAME_OPTION2_TE_STAGE_STRIKE &&
                MU_TE2_20XX_CPUS == MU_GAME_OPTION2_TE_20XX_CPUS, "20XX TE second word bits");
+
+unsigned int mu_game_options3(void)
+{
+    return mu_host && mu_host->version >= 17 && mu_host->game_options3 ? mu_host->game_options3() : 0;
+}
+
+_Static_assert(MU_CPU_TECH_MASK == MU_GAME_OPTION3_CPU_TECH_MASK && MU_CPU_TECH_SHIFT == MU_GAME_OPTION3_CPU_TECH_SHIFT &&
+               MU_CPU_GETUP_MASK == MU_GAME_OPTION3_CPU_GETUP_MASK &&
+               MU_CPU_GETUP_SHIFT == MU_GAME_OPTION3_CPU_GETUP_SHIFT &&
+               MU_CPU_DI_MASK == MU_GAME_OPTION3_CPU_DI_MASK && MU_CPU_DI_SHIFT == MU_GAME_OPTION3_CPU_DI_SHIFT &&
+               MU_CPU_SDI_MASK == MU_GAME_OPTION3_CPU_SDI_MASK && MU_CPU_SDI_SHIFT == MU_GAME_OPTION3_CPU_SDI_SHIFT &&
+               MU_CPU_NO_TAUNT == MU_GAME_OPTION3_CPU_NO_TAUNT && MU_CPU_LCANCEL == MU_GAME_OPTION3_CPU_LCANCEL &&
+               MU_CPU_NO_RAPID_JAB == MU_GAME_OPTION3_CPU_NO_RAPID_JAB &&
+               MU_CPU_NO_TRANSFORM == MU_GAME_OPTION3_CPU_NO_TRANSFORM && MU_CPU_ALL == MU_GAME_OPTION3_CPU_ALL,
+               "CPU training option bits");
 
 unsigned int mu_mod_flags(void)
 {

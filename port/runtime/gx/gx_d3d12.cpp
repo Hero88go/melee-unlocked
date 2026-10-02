@@ -477,6 +477,7 @@ class D3D12Backend : public Backend {
   // in exclusive fullscreen, so that mode runs a plain swap chain and the two frame slots below cap
   // the queue instead. MELEE_D3D12_NO_WAITABLE=1 turns the whole thing off for comparison runs.
   bool swapchain_waitable_ = false;   // the current swap chain carries the waitable flag
+  bool exclusive_deferred_ = false;   // exclusive was asked for mid-session on a waitable swap chain: borderless until restart
   HANDLE frame_latency_waitable_ = nullptr;   // null: no waitable object, present with the default queue
   uint32_t waitable_timeouts_ = 0;   // consecutive waits that timed out; three in a row give the wait up
   static bool waitable_wanted() { static const bool off = [] { const char* v = std::getenv("MELEE_D3D12_NO_WAITABLE"); return v && *v == '1'; }(); return !off; }
@@ -902,9 +903,20 @@ void D3D12Backend::apply_fullscreen_mode() {
   if (!swapchain_) return;
   BOOL was_exclusive = FALSE;
   swapchain_->GetFullscreenState(&was_exclusive, nullptr);
-  const bool want_exclusive = opts_.exclusive_fullscreen;
+  // Exclusive fullscreen needs a swap chain without the frame latency waitable object, and a swap
+  // chain cannot change that after it is made. Making a second one for the same window in the
+  // middle of a session was refused on players' machines ("Access is denied": the first one is
+  // still held), which stopped the game. So a session that started windowed or borderless shows
+  // borderless fullscreen when exclusive is switched on, and exclusive starts with the next launch,
+  // where the swap chain is made for it from the beginning.
+  if (opts_.exclusive_fullscreen && swapchain_waitable_ && !exclusive_deferred_) {
+    exclusive_deferred_ = true;
+    host::log("d3d12: exclusive fullscreen starts with the next launch; borderless fullscreen for the rest of this session");
+  }
+  if (!opts_.exclusive_fullscreen) exclusive_deferred_ = false;
+  const bool want_exclusive = opts_.exclusive_fullscreen && !exclusive_deferred_;
   if ((was_exclusive != FALSE) == want_exclusive) {
-    if (!want_exclusive) host::window_set_fullscreen(opts_.fullscreen);
+    if (!want_exclusive) host::window_set_fullscreen(opts_.fullscreen || exclusive_deferred_);
     return;
   }
   wait_gpu();
@@ -918,15 +930,9 @@ void D3D12Backend::apply_fullscreen_mode() {
   // refuses a swap chain created with the flag), so the swap chain is made again without it on the
   // way in, and with it again on the way out. DXGI allows one flip-model swap chain per window, so
   // the old one is released first; the GPU is idle from the wait above.
-  if (want_exclusive && swapchain_waitable_) {
-    host::log("d3d12: exclusive fullscreen: swap chain made again without the frame latency waitable object (not allowed there); the frame slots hold the queue instead");
-    swapchain_.Reset();
-    create_swapchain(false);
-  } else if (!want_exclusive && !swapchain_waitable_ && waitable_wanted()) {
-    host::log("d3d12: leaving exclusive fullscreen: swap chain made again with the frame latency waitable object");
-    swapchain_.Reset();
-    create_swapchain(true);
-  }
+  // The swap chain is never made again here (see above). A session that started in exclusive
+  // fullscreen keeps its swap chain without the waitable object after leaving it: the frame slots
+  // hold the queue, as they do in exclusive.
   if (want_exclusive) {
     ComPtr<IDXGIOutput> output;
     DXGI_OUTPUT_DESC desc{};
@@ -2352,6 +2358,12 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
       n.mvec = mvec_.Get(); n.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
       n.guide_x = in.in_left; n.guide_y = in.in_top; n.guide_w = in.in_w; n.guide_h = in.in_h;
       n.reset = dlss5_reset_; n.tuning = opts_.dlss5_tuning;
+      // In-place DLAA leaves the whole EFB, which the present blit only later squeezes to the shown
+      // aspect (c.src_w x c.src_h of it into a viewport of output_aspect()). Give the model the
+      // frame at the shape it has on screen, or it sees fighters stretched tall.
+      if (dlss_in_place_ && c.src_w && c.src_h)
+        dlss5::display_model_size(n.w, n.h, output_aspect() * ((float)EFB_WIDTH / (float)c.src_w) * ((float)c.src_h / (float)EFB_HEIGHT),
+                                  &n.model_w, &n.model_h);
       n.fence = fence_.Get(); n.signal_value = fence_value_ + 1;
       if (timing) list_->EndQuery(timer_heap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot_ * TIMERS_PER_SLOT + 2);
       const bool neural_ok = dlss5::evaluate(n);
@@ -2371,11 +2383,23 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
 #ifdef GX_DLSS5
   // DLSS 5 runs only in matches, and building it on the first match frame froze the countdown for a
   // tenth of a second. On a menu, build it and run it once with the picture left untouched.
-  else if (opts_.dlss5 && dlss_active_ && dlss_out_ && !xess_active() &&
-           dlss5::needs_warmup(dlss_out_w_, dlss_out_h_, opts_.dlss5_tuning)) {
+  // The model size is the one a match will ask for (see the call above): the aspect of a widenable
+  // scene, not this menu's, or the first match frame would rebuild the model anyway.
+  else if (const auto warm = [&] {
+             std::pair<uint32_t, uint32_t> size{0, 0};
+             if (dlss_in_place_ && c.src_w && c.src_h)
+               dlss5::display_model_size(dlss_out_w_, dlss_out_h_,
+                                         presented_aspect(opts_, client_w_, client_h_, true) *
+                                             ((float)EFB_WIDTH / (float)c.src_w) * ((float)c.src_h / (float)EFB_HEIGHT),
+                                         &size.first, &size.second);
+             return size;
+           }();
+           opts_.dlss5 && dlss_active_ && dlss_out_ && !xess_active() &&
+           dlss5::needs_warmup(dlss_out_w_, dlss_out_h_, opts_.dlss5_tuning, warm.first, warm.second)) {
     dlss5::Inputs n{};
     n.device = device_.Get(); n.list = list_.Get();
     n.color = dlss_out_.Get(); n.w = dlss_out_w_; n.h = dlss_out_h_;
+    n.model_w = warm.first; n.model_h = warm.second;
     n.depth = efb_depth_.Get(); n.depth_state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
     n.mvec = mvec_.Get(); n.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
     n.guide_x = 0; n.guide_y = 0; n.guide_w = (uint32_t)efb_w_; n.guide_h = (uint32_t)efb_h_;

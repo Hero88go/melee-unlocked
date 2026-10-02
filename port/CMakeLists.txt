@@ -94,7 +94,7 @@ target_include_directories(port_settings_nav_test PRIVATE runtime/host)
 target_compile_features(port_settings_nav_test PRIVATE cxx_std_17)
 add_test(NAME port_settings_nav COMMAND port_settings_nav_test)
 
-add_executable(port_net_trace_test tests/net_trace_test.cpp runtime/host/net_trace_file.cpp)
+add_executable(port_net_trace_test tests/net_trace_test.cpp runtime/host/net_trace_file.cpp runtime/host/net_trace_read.cpp)
 target_include_directories(port_net_trace_test PRIVATE runtime/host)
 target_compile_features(port_net_trace_test PRIVATE cxx_std_17)
 target_compile_options(port_net_trace_test PRIVATE /EHsc)
@@ -317,7 +317,7 @@ target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcry
 
 # WIN32: no console window when the game is double-clicked or started from the launcher. Command-line
 # use still works, because main() reattaches to a parent console when there is one (see app/main.cpp).
-add_executable(melee_port WIN32 app/main.cpp app/settings_window.cpp app/melee_unlocked.rc)
+add_executable(melee_port WIN32 app/main.cpp app/settings_window.cpp app/melee_unlocked.rc app/utf8.manifest)
 # The source port: the whole application (renderers, DLSS, sub-frame, input, panel) with the game
 # coming from melee_game.dll, built from the decompiled sources by sourceport/game with GCC.
 # melee_source_probe is the bare first stage (no window, no runtime), for chasing boot crashes.
@@ -329,7 +329,7 @@ add_custom_command(OUTPUT "${NATIVE_RECORDING_CODES}"
           "${CMAKE_CURRENT_SOURCE_DIR}/slippi_sys_general/GameSettings/GALE01r2.ini"
           "${CMAKE_CURRENT_SOURCE_DIR}/slippi_sys/GameSettings/GALE01r2.ini"
   VERBATIM)
-add_executable(melee_source WIN32 app/main.cpp app/settings_window.cpp app/source_host.cpp app/source_guest_boundary.cpp app/melee_unlocked.rc)
+add_executable(melee_source WIN32 app/main.cpp app/settings_window.cpp app/source_host.cpp app/source_guest_boundary.cpp app/melee_unlocked.rc app/utf8.manifest)
 target_sources(melee_source PRIVATE "${NATIVE_RECORDING_CODES}")
 target_include_directories(melee_source PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_include_directories(melee_source PRIVATE runtime/abi app)
@@ -478,7 +478,7 @@ if(EXISTS "${PORT_GEN_PLAYBACK}/guest_sources.cmake")
   # The .rc carries the icon and the version resource. This target never had it, so the playback
   # build shipped with a blank Explorer icon and no company or product name at all, which is the
   # profile an unsigned executable is judged on.
-  add_executable(melee_port_playback app/main.cpp app/settings_window.cpp app/melee_unlocked.rc)
+  add_executable(melee_port_playback app/main.cpp app/settings_window.cpp app/melee_unlocked.rc app/utf8.manifest)
   target_link_libraries(melee_port_playback PRIVATE runtime guest_playback dbghelp)
   target_compile_options(melee_port_playback PRIVATE /EHsc)
   # It ships in the release now, and the packager refuses an executable that does not report the

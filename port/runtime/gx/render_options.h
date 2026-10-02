@@ -148,6 +148,32 @@ struct RenderOptions {
   // the Static Recomp runs the pack's own AI block from its disc under Mods (host/hackpack_ai.cpp).
   bool cpu_20xx = false;
   static bool& live_cpu_20xx() { static bool value = false; return value; }
+  // 20XX Hack Pack training options for CPUs (Game tab, Source Port only, offline only), native in
+  // shim/mu_20xx_cpu.c. Plain options like "20XX CPUs": no pack or save needed. They go to the game
+  // packed in option word 3 (MU_GAME_OPTION3_CPU_*, host API 17) and into a replay as "muOptions3".
+  // Ini keys: cpu_tech, cpu_getup, cpu_di, cpu_sdi, cpu_notaunt, cpu_lcancel, cpu_nojab,
+  // cpu_notransform.
+  int cpu_tech = 0;     // 0 off, 1 in place, 2 roll forward, 3 roll back, 4 miss, 5 random
+  int cpu_getup = 0;    // 0 off, 1 stand, 2 roll forward, 3 roll back, 4 getup attack, 5 random
+  int cpu_di = 0;       // 0 off, 1 none, 2 random, 3 survival
+  int cpu_sdi = 0;      // 0 off, 1 none, 2 random, 3 with the hit, 4 against it, 5 up, 6 down
+  bool cpu_no_taunt = false;
+  bool cpu_lcancel = false;
+  bool cpu_no_rapid_jab = false;
+  bool cpu_no_transform = false;
+  // The packed word (the bit layout of MU_GAME_OPTION3_CPU_* in mu_host.h; out of range values
+  // count as off).
+  uint32_t cpu_training_word() const {
+    const auto field = [](int value, int max, int shift) {
+      return value >= 1 && value <= max ? (uint32_t)value << shift : 0u;
+    };
+    return field(cpu_tech, 5, 0) | field(cpu_getup, 5, 3) | field(cpu_di, 3, 6) | field(cpu_sdi, 6, 8) |
+           (cpu_no_taunt ? 0x800u : 0u) | (cpu_lcancel ? 0x1000u : 0u) | (cpu_no_rapid_jab ? 0x2000u : 0u) |
+           (cpu_no_transform ? 0x4000u : 0u);
+  }
+  // What the game is given: set from cpu_training_word() when the settings load and when a row
+  // changes (it takes effect on the next frame, like "20XX CPUs").
+  static uint32_t& live_cpu_training() { static uint32_t value = 0; return value; }
   // Bumped when the game changes both TE words from 20XX TE's in-game settings menu (host command
   // 0xF8); the settings panel then saves them, so the file and the menu agree.
   static std::atomic<uint32_t>& live_te_game_changes() { static std::atomic<uint32_t> value{0}; return value; }

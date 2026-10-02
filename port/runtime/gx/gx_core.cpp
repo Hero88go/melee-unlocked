@@ -6,6 +6,7 @@
 #include "host.h"
 #include "audio.h"
 #include "native_pose_bridge.h"
+#include "replay_control.h"
 #include "slippi_online.h"
 #include <algorithm>
 #include <atomic>
@@ -600,8 +601,12 @@ void bp_write(uint32_t value) {
         g_frame.tick = host::tick_timing();
         g_frame.discontinuous = g_discontinuity;
         g_discontinuity = false;
-        if (g_backend) g_backend->submit_and_recycle(g_frame);   // hands over the buffers, returns recycled ones
+        // A replay viewer on the way to a jump's target simulates frames nobody sees: they are not
+        // handed to the renderer, and the next frame that is shown is not the last shown one's neighbour.
+        const bool unseen = replay_control::skip_render();
+        if (g_backend && !unseen) g_backend->submit_and_recycle(g_frame);   // hands over the buffers, returns recycled ones
         else g_frame.clear();
+        if (unseen) g_discontinuity = true;
         g_texture_snapshots.end_frame();
         g_dl_calls.clear(); g_immediate_draws.clear(); g_native_object_scopes.clear(); g_native_draw_scopes.clear(); native_pose_bridge_frame_reset(); finish_observed_frame();
         host::note_frame_submitted();   // the game now only waits for the retrace (audio pacing, host.cpp)

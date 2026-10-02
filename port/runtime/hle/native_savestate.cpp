@@ -459,4 +459,45 @@ bool Engine::load(int32_t frame) {
   return true;
 }
 
+// As load(), then the timeline is cut after the target instead of emptied: the shadow is the
+// target's state, every older checkpoint still has its undo list, and the newer ones (whose undo
+// lists were just consumed) are gone.
+bool Engine::load_keep(int32_t frame) {
+  auto it = active_.find(frame);
+  if (it == active_.end()) {
+    ++stats_.missing_loads;
+    return false;
+  }
+  const auto start = std::chrono::steady_clock::now();
+  const size_t target = it->second;
+  collect_dirty();
+  const uint32_t gen = stamp_gen_;
+  for (size_t k = timeline_.size(); k-- > target + 1;) {
+    for (const auto& u : timeline_[k].undo) {
+      free_page(shadow_[u.chunk]);
+      shadow_[u.chunk] = u.page;
+      if (stamp_[u.chunk] != gen) {
+        stamp_[u.chunk] = gen;
+        dirty_.push_back(u.chunk);
+      }
+    }
+    timeline_[k].undo.clear();
+  }
+  run(dirty_.size(), [this](size_t b, size_t e) {
+    for (size_t i = b; i < e; ++i) {
+      const uint32_t c = dirty_[i];
+      std::memcpy(chunks_[c].address, shadow_[c], chunks_[c].size);
+    }
+  });
+  last_chunks_ = dirty_.size();
+  timeline_.erase(timeline_.begin() + (std::ptrdiff_t)target + 1, timeline_.end());
+  reindex();
+  reset_watches();   // the restore's own writes are not game writes
+  const double ms = elapsed_ms(start);
+  ++stats_.loads;
+  stats_.load_ms_total += ms;
+  stats_.load_ms_max = std::max(stats_.load_ms_max, ms);
+  return true;
+}
+
 }  // namespace native_savestate
