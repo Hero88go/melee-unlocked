@@ -1125,6 +1125,22 @@ static std::wstring base_disc_problem(const std::string& path) {
     return L"This file is not a Melee NTSC disc image. Choose your own Melee NTSC 1.02 ISO.";
   if (hdr[7] != 2)
     return L"This is Melee NTSC 1.0" + std::to_wstring((int)hdr[7]) + L". Version 1.02 is required.";
+  // A mod disc keeps the game id. Its game code (main.dol) differs from the original, which both
+  // engines check at startup (host.cpp disc_has_vanilla_dol: the same size and SHA-1).
+  unsigned char at[4]{};
+  f.seekg(0x420); f.read((char*)at, 4);
+  const uint32_t dol = ((uint32_t)at[0] << 24) | ((uint32_t)at[1] << 16) | ((uint32_t)at[2] << 8) | at[3];
+  std::vector<unsigned char> image(0x4385E0u);
+  f.seekg(dol); f.read((char*)image.data(), (std::streamsize)image.size());
+  if (!f) return L"This file is not a full Melee disc image. Choose a clean, uncompressed Melee NTSC 1.02 ISO.";
+  const unsigned char expected[20] = {0x08,0xe0,0xbf,0x20,0x13,0x4d,0xfc,0xb2,0x60,0x69,0x96,0x71,0x00,0x45,0x27,0xb2,0xd6,0xbb,0x1a,0x45};
+  unsigned char digest[20]{};
+  BCRYPT_ALG_HANDLE algorithm = nullptr;
+  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA1_ALGORITHM, nullptr, 0) < 0) return {};
+  const NTSTATUS status = BCryptHash(algorithm, nullptr, 0, image.data(), (ULONG)image.size(), digest, sizeof digest);
+  BCryptCloseAlgorithmProvider(algorithm, 0);
+  if (status >= 0 && std::memcmp(digest, expected, sizeof digest) != 0)
+    return L"This is a modded Melee disc. The disc chosen here has to be your original Melee NTSC 1.02 ISO. Add the modded disc under Mods instead.";
   return {};
 }
 
