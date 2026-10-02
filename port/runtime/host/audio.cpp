@@ -41,6 +41,7 @@ constexpr int SAMPLE_RATE = 32000;
 constexpr int BLOCK_BYTES = 640;      // one 5 ms AI DMA frame: 160 stereo samples
 constexpr int BLOCKS = 24;            // 120 ms of queue; more than that is dropped (fast mode)
 std::atomic<int> g_volume{0};
+std::atomic<bool> g_muted{false};     // audio_set_muted: the game's blocks are not queued
 std::mutex g_mutex;
 uint64_t g_frames = 0, g_dropped = 0;
 bool g_open = false;
@@ -1135,6 +1136,7 @@ void asio_close() {
 }  // namespace
 
 void audio_set_volume(int volume) { g_volume.store(std::clamp(volume, 0, 100)); }
+void audio_set_muted(bool muted) { g_muted.store(muted, std::memory_order_relaxed); }
 void audio_set_device(const char* id) { g_requested_device = id ? id : ""; }
 void audio_set_remember(bool remember) { g_remember = remember; }
 void audio_set_speed(double speed) { g_speed.store(std::clamp(speed, 0.5, 2.0), std::memory_order_relaxed); }
@@ -1259,6 +1261,9 @@ void audio_close() {
 static void audio_push_ordered(const uint8_t* samples, size_t bytes,
                                bool little_endian) {
   if (!g_open) return;
+  // A replay viewer that is paused, seeking or not at normal speed: the output runs dry and holds
+  // silence, as it does through any gap, and resumes with the first block queued afterwards.
+  if (g_muted.load(std::memory_order_relaxed)) return;
   std::unique_lock<std::mutex> winmm_lock(g_mutex, std::defer_lock);
   const bool ring = g_client || g_asio_running.load(std::memory_order_relaxed);
   if (!ring) winmm_lock.lock();   // the WASAPI path is lock free; only the fallback needs this

@@ -65,12 +65,21 @@ struct Inputs {
   bool warm_only = false;                        // build and run the model but leave in.color untouched
   ID3D12Fence* fence = nullptr;                   // queue fence for resource/descriptor lifetime
   uint64_t signal_value = 0;                     // value signalled after this list executes
+  // Size the model works at before the neural resolution scale, 0 = w/h. Smaller than the frame on
+  // one axis when the frame is stored anamorphic (see display_model_size); the result is still
+  // written back at w x h.
+  uint32_t model_w = 0, model_h = 0;
 };
+
+// The size at which a w x h frame has square pixels on screen. display_shape is the width / height
+// the WHOLE frame would have at the presented aspect. One axis is kept and the other shrunk, both
+// even. Gives 0, 0 (no change) when the frame is within 2% of that shape already.
+void display_model_size(uint32_t w, uint32_t h, float display_shape, uint32_t* model_w, uint32_t* model_h);
 
 // Whether the model still has to be built (or rebuilt) for this size and tuning. The first build and
 // the first evaluation take about a tenth of a second; doing them on a menu frame with warm_only set
-// keeps that stall out of the match countdown.
-bool needs_warmup(uint32_t w, uint32_t h, const Tuning& t);
+// keeps that stall out of the match countdown. model_w/model_h as in Inputs.
+bool needs_warmup(uint32_t w, uint32_t h, const Tuning& t, uint32_t model_w = 0, uint32_t model_h = 0);
 
 // Runs the model over in.color. Returns true when the image was edited.
 bool evaluate(const Inputs& in);

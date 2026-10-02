@@ -16,5 +16,11 @@ bool enabled();
 // overlay is on or not (it also counts presented frames for the trace). Draws while an online
 // match is feeding records. MELEE_TEST_NET_OVERLAY=1 draws it with sample data, for screenshots.
 void draw(float width, float height);
+// A replay shown as it was played (host/replay_trace.h feeds the ring from the session trace file
+// beside the replay): the overlay is drawn whatever the setting says, its records are never taken
+// for a finished match, and the title says what it is. Any thread.
+void set_replay(bool on);
+// A line under the legend for `seconds`: the true length of a freeze the viewer shortened. Any thread.
+void set_replay_note(const char* text, double seconds);
 
 }  // namespace net_overlay

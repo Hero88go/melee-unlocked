@@ -271,9 +271,9 @@ std::vector<uint8_t> two_file_fst(const std::string& first, uint32_t first_start
 }
 
 // A three-joint skeleton (root, child, child's sibling) under a _Share_joint root.
-std::vector<uint8_t> skeleton_dat(uint32_t root_flags, float child_y, bool extra_joint) {
+std::vector<uint8_t> skeleton_dat(uint32_t root_flags, float child_y, bool extra_joint,
+                                  const std::string& name = "PlyFox5K_Share_joint") {
   const uint32_t joints = extra_joint ? 4 : 3, data = joints * 0x40;
-  const std::string name = "PlyFox5K_Share_joint";
   std::vector<uint8_t> out(0x20 + data + 8 + name.size() + 1, 0);
   be32(out, 0, (uint32_t)out.size()); be32(out, 4, data); be32(out, 12, 1);
   auto joint = [&](uint32_t index) { return (size_t)0x20 + index * 0x40; };
@@ -287,6 +287,61 @@ std::vector<uint8_t> skeleton_dat(uint32_t root_flags, float child_y, bool extra
   be32(out, 0x20 + data, 0); be32(out, 0x20 + data + 4, 0);
   std::memcpy(out.data() + 0x20 + data + 8, name.c_str(), name.size() + 1);
   return out;
+}
+
+// A fighter sound bank as the disc keeps it: the header (size of the sound table, size of the
+// sample data, number of sounds, id of the first), per sound its channel count and sample rate and
+// 0x40 bytes per channel, padding to 32 bytes, then the samples. Every channel gets `channel_bytes`
+// of samples filled with `fill`; the sounds listed in `stereo` have two channels.
+std::vector<uint8_t> sound_bank(uint32_t count, uint32_t base, const std::vector<uint32_t>& stereo, uint8_t fill,
+                                uint32_t channel_bytes = 32, uint16_t format = 0) {
+  std::vector<uint8_t> table;
+  uint32_t cursor = 0;
+  auto word = [&](uint32_t value) { table.resize(table.size() + 4); be32(table, table.size() - 4, value); };
+  for (uint32_t sound = 0; sound < count; ++sound) {
+    const uint32_t channels = std::find(stereo.begin(), stereo.end(), sound) != stereo.end() ? 2 : 1;
+    word(channels); word(16000);
+    for (uint32_t channel = 0; channel < channels; ++channel) {
+      const size_t voice = table.size();
+      table.resize(voice + 0x40, 0);
+      table[voice + 3] = (uint8_t)format;
+      be32(table, voice + 4, cursor * 2 + 2);                       // loop address, in nibbles
+      be32(table, voice + 8, (cursor + channel_bytes) * 2 - 1);     // end address
+      be32(table, voice + 12, cursor * 2 + 2);                      // start address
+      cursor += channel_bytes;
+    }
+  }
+  std::vector<uint8_t> out(0x10, 0);
+  be32(out, 0, (uint32_t)table.size()); be32(out, 4, cursor); be32(out, 8, count); be32(out, 12, base);
+  out.insert(out.end(), table.begin(), table.end());
+  out.resize((out.size() + 31) & ~(size_t)31, 0);
+  out.resize(out.size() + cursor, fill);
+  return out;
+}
+// Where a bank's samples start, and its first sample byte.
+size_t bank_samples_at(const std::vector<uint8_t>& bank) { return ((size_t)0x10 + read_be32(bank.data()) + 31) & ~(size_t)31; }
+
+// A disc table with the sound folders: audio/<bank> (Japanese), audio/us/<bank> (English), then
+// files in the root. Entry numbers: 2 the Japanese bank, 4 the English one, 5 and up the root files.
+struct TableFile { std::string name; uint32_t start, size; };
+std::vector<uint8_t> audio_fst(const std::string& bank, uint32_t jp_start, uint32_t jp_size,
+                               uint32_t us_start, uint32_t us_size, const std::vector<TableFile>& root_files) {
+  const uint32_t entries = 5 + (uint32_t)root_files.size();
+  std::string names;
+  auto name = [&](const std::string& text) { const uint32_t at = (uint32_t)names.size(); names += text; names.push_back('\0'); return at; };
+  std::vector<uint8_t> fst(entries * 12, 0);
+  be32(fst, 0, 0x01000000); be32(fst, 8, entries);
+  be32(fst, 12, 0x01000000 | name("audio")); be32(fst, 16, 0); be32(fst, 20, 5);
+  const uint32_t bank_name = name(bank);
+  be32(fst, 24, bank_name); be32(fst, 28, jp_start); be32(fst, 32, jp_size);
+  be32(fst, 36, 0x01000000 | name("us")); be32(fst, 40, 1); be32(fst, 44, 5);
+  be32(fst, 48, bank_name); be32(fst, 52, us_start); be32(fst, 56, us_size);
+  for (size_t i = 0; i < root_files.size(); ++i) {
+    const size_t at = 60 + i * 12;
+    be32(fst, at, name(root_files[i].name)); be32(fst, at + 4, root_files[i].start); be32(fst, at + 8, root_files[i].size);
+  }
+  fst.insert(fst.end(), names.begin(), names.end());
+  return fst;
 }
 
 int main(int argc, char** argv) {
@@ -385,7 +440,9 @@ int main(int argc, char** argv) {
           "costume skeleton: drawing-only joint flags may differ");
     check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2, 5.5f, false), &why),
           "costume skeleton: a moved bone keeps the costume offline");
-    check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2 | 0x8, 5.0f, false), &why),
+    check(host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2 | 0x8, 5.0f, false), &why),
+          "costume skeleton: the classical scaling flag may differ (animations set it themselves)");
+    check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2 | 0x20000, 5.0f, false), &why),
           "costume skeleton: a transform flag change keeps the costume offline");
     check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2, 5.0f, true), &why),
           "costume skeleton: an extra joint keeps the costume offline");
@@ -991,7 +1048,8 @@ int main(int argc, char** argv) {
   host::cosmetics::apply_to_fst(picture_fst.data(), (uint32_t)picture_fst.size());
   pictures_active = host::cosmetics::active_companions();
   check(pictures_active.size() == 2, "portrait and stock icon are both active");
-  // A skin with its own portrait: the costume's own portrait wins.
+  // A skin with its own portrait: the skin's picture shows; the slot's added picture fills in only
+  // where a skin brings none.
   fs::path skin_zip = picture_folder / L"skin.zip";
   write_file(skin_zip, stored_zip({{"PlFxGr.dat", dat}, {"skin csp.png", png(136, 188)}}));
   auto skin_import = host::cosmetics::import_file(skin_zip.string());
@@ -1004,7 +1062,7 @@ int main(int argc, char** argv) {
     if (item.kind == "csp" && item.target_path == "PlFxGr.dat") {
       ++fox_portraits; own_wins = item.path.find("portrait-PlFxGr") != std::string::npos;
     }
-  check(fox_portraits == 1 && own_wins, "the costume's own portrait replaces the one the skin brought");
+  check(fox_portraits == 1 && !own_wins, "a skin that brings its own portrait shows it over the slot's added one");
   check(host::cosmetics::disable_target("PlFxGr.dat#portrait", &error), "the portrait entry can be switched off");
   host::cosmetics::apply_to_fst(picture_fst.data(), (uint32_t)picture_fst.size());
   pictures_active = host::cosmetics::active_companions();
@@ -1208,9 +1266,9 @@ int main(int argc, char** argv) {
       std::ifstream in(state, std::ios::binary);
       std::string text((std::istreambuf_iterator<char>(in)), {});
       in.close();
-      const size_t at = text.find("\"rules\": 2");
+      const size_t at = text.find("\"rules\": 3");
       check(at != std::string::npos, "the scan records the rules it used");
-      if (at != std::string::npos) text.replace(at, 10, "\"rules\": 1");
+      if (at != std::string::npos) text.replace(at, 10, "\"rules\": 2");
       std::ofstream out(state, std::ios::binary); out << text;
     }
     host::cosmetics::configure((alt_folder / L"port-settings.ini").string());
@@ -1355,6 +1413,617 @@ int main(int argc, char** argv) {
               host::cosmetics::costume_slot_file(2, 4).empty() && host::cosmetics::costume_slot_file(14, 1) == "PlPpGr.dat" &&
               host::cosmetics::costume_slot_file(0, 1) == "PlCaGy.dat" && host::cosmetics::costume_slot_file(26, 0).empty(),
           "a fighter number and costume index name the costume's file");
+    g_disc_table.clear(); g_disc_bytes.clear();
+  }
+
+  // Character select L / R on the Ice Climbers: the screen names Popo's slot, and Nana's follows
+  // where the same pack and set has a skin for her.
+  {
+    using host::cosmetics::OverrideRead;
+    host::cosmetics::thaw_after_online_session();
+    host::cosmetics::set_online_probe(nullptr);
+    fs::path pair_folder = folder / L"climbers";
+    fs::create_directories(pair_folder, ec);
+    host::cosmetics::configure((pair_folder / L"port-settings.ini").string());
+    const auto popo_retail = costume_dat("PlyPopo5K"), nana_retail = costume_dat("PlyNana5K");
+    const auto popo_l = costume_dat("PlyPopo5K", false), nana_l = costume_dat("PlyNana5K", false);
+    const auto popo_r = rooted_dat({"PlyPopo5K_Share_joint", "PlyPopo5K_Share_matanim_joint", "extra"});
+    const auto nana_own = rooted_dat({"PlyNana5K_Share_joint", "own"});
+    constexpr uint32_t popo_at = 0x100, nana_at = 0x200;
+    g_disc_bytes.assign(0x400, 0);
+    std::copy(popo_retail.begin(), popo_retail.end(), g_disc_bytes.begin() + popo_at);
+    std::copy(nana_retail.begin(), nana_retail.end(), g_disc_bytes.begin() + nana_at);
+    g_disc_table = {{"PlPpNr.dat", {popo_at, (uint32_t)popo_retail.size()}},
+                    {"PlNnNr.dat", {nana_at, (uint32_t)nana_retail.size()}}};
+    // The pack has an L set for both climbers and an R set for Popo alone.
+    fs::path pack_folder = pair_folder / L"pack";
+    fs::create_directories(pack_folder, ec);
+    write_file(pack_folder / L"PlPpNr.lat", popo_l);
+    write_file(pack_folder / L"PlNnNr.lat", nana_l);
+    write_file(pack_folder / L"PlPpNr.rat", popo_r);
+    auto scan = host::cosmetics::scan_disc_skins(pack_folder.string(), "Pair", &error);
+    std::string popo_l_id, popo_r_id, nana_l_id;
+    for (const auto& item : host::cosmetics::assets()) {
+      if (item.target_path == "PlPpNr.dat" && item.variant == "alt L") popo_l_id = item.id;
+      if (item.target_path == "PlPpNr.dat" && item.variant == "alt R") popo_r_id = item.id;
+      if (item.target_path == "PlNnNr.dat" && item.variant == "alt L") nana_l_id = item.id;
+    }
+    fs::path own_path = pair_folder / L"nana-own.dat";
+    write_file(own_path, nana_own);
+    auto own = host::cosmetics::import_file(own_path.string());
+    check(scan.ok && own.ok && !popo_l_id.empty() && !popo_r_id.empty() && !nana_l_id.empty(),
+          "the pack has an L set for both climbers, an R set for Popo, and Nana has an import of her own");
+    auto fst = two_file_fst("PlPpNr.dat", popo_at, (uint32_t)popo_retail.size(),
+                            "PlNnNr.dat", nana_at, (uint32_t)nana_retail.size());
+    host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size());
+    auto selected = [](const std::string& id) {
+      for (const auto& item : host::cosmetics::assets()) if (item.id == id) return item.selected;
+      return false;
+    };
+
+    auto step = host::cosmetics::cycle_slot_live("PlPpNr.dat", 1);
+    check(step.ok && step.changed && step.asset_id == popo_l_id && step.partner_slot == "PlNnNr.dat" &&
+              step.partner_previous_id.empty() && selected(nana_l_id),
+          "Popo's L skin brings Nana's L skin with it");
+    auto popo_published = host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), "PlPpNr.dat");
+    auto nana_published = host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), step.partner_slot);
+    // These fixture costumes have no skeleton, so they are off online: the served file is padded to
+    // the disc file's length and its own length field (the first four bytes) says that length.
+    std::vector<uint8_t> served(nana_l.size());
+    check(popo_published.ok && nana_published.ok && nana_published.files.size() == 1 &&
+              nana_published.files[0].asset_id == nana_l_id &&
+              nana_published.files[0].length == std::max(nana_l.size(), nana_retail.size()) &&
+              host::cosmetics::read(nana_at, 0, served.data(), (uint32_t)served.size()) == OverrideRead::Success &&
+              std::equal(served.begin() + 4, served.end(), nana_l.begin() + 4) &&
+              host::cosmetics::applied_asset(popo_at) == popo_l_id,
+          "both slots serve the pair's skins once they are published again");
+    check(!host::cosmetics::pending_restart(), "the pair leaves nothing waiting for a restart");
+
+    step = host::cosmetics::cycle_slot_live("PlPpNr.dat", 1);
+    check(step.changed && step.asset_id == popo_r_id && step.partner_slot == "PlNnNr.dat" &&
+              step.partner_previous_id == nana_l_id && !selected(nana_l_id),
+          "a set with no skin for Nana puts her back in the standard costume, not in the old pair's");
+    step = host::cosmetics::cycle_slot_live("PlPpNr.dat", 1);
+    check(step.changed && step.asset_id.empty() && step.partner_slot.empty(),
+          "back to the standard costume: Nana is already there and is not touched");
+
+    // A pick of her own is left alone, whatever Popo wears.
+    check(host::cosmetics::select_variant_live("PlNnNr.dat", own.asset_id, &error), "Nana can have a skin of her own");
+    step = host::cosmetics::cycle_slot_live("PlPpNr.dat", 1);
+    check(step.changed && step.asset_id == popo_l_id && step.partner_slot.empty() && selected(own.asset_id) &&
+              !selected(nana_l_id),
+          "Nana's own pick stays when Popo's skin changes");
+    step = host::cosmetics::cycle_slot_live("PlNnNr.dat", 1);
+    check(step.changed && step.partner_slot.empty(), "Nana's slot leads no pair");
+
+    // Online, a partner skin that is off online stays out: Popo changes alone.
+    check(host::cosmetics::select_variant_live("PlNnNr.dat", "", &error) &&
+              host::cosmetics::select_variant_live("PlPpNr.dat", "", &error),
+          "both climbers back in the standard costume");
+    bool popo_l_online = false, nana_l_online = false;
+    for (const auto& item : host::cosmetics::assets()) {
+      if (item.id == popo_l_id) popo_l_online = item.online_allowed;
+      if (item.id == nana_l_id) nana_l_online = item.online_allowed;
+    }
+    host::cosmetics::set_online_probe([] { return true; });
+    step = host::cosmetics::cycle_slot_live("PlPpNr.dat", 1);
+    check(!step.changed || step.partner_slot.empty() || (popo_l_online && nana_l_online),
+          "online, Nana follows only with a skin that stays on online");
+    check(selected(nana_l_id) == (step.changed && step.asset_id == popo_l_id && nana_l_online),
+          "online, the pair's saved picks match what was allowed");
+    host::cosmetics::set_online_probe(nullptr);
+    g_disc_table.clear(); g_disc_bytes.clear();
+  }
+
+  // A pack's own portraits: its character select file keeps one picture per costume, shown through
+  // the keys of a texture animation. A plain costume of the pack gets the picture of its slot when
+  // it differs from the game's; an alternate set gets none.
+  {
+    host::cosmetics::thaw_after_online_session();
+    host::cosmetics::set_online_probe(nullptr);
+    fs::path portrait_folder = folder / L"pack-portraits";
+    fs::create_directories(portrait_folder, ec);
+    host::cosmetics::configure((portrait_folder / L"port-settings.ini").string());
+    // Twenty 136x188 pictures of palette indices. Frame f of the animation shows picture 19 - f, so
+    // Captain Falcon's standard costume (frame 0) is picture 19 and Fox's (frame 2) is picture 17.
+    // Every picture's palette is opaque blues, except the ones given another color here.
+    auto select_screen = [](uint16_t fox_color, uint16_t falcon_color) {
+      constexpr uint32_t pictures = 20, data_size = 0x80000;
+      std::vector<uint8_t> out(0x20 + data_size + 12, 0);
+      be32(out, 0, (uint32_t)out.size()); be32(out, 4, data_size); be32(out, 8, 3);
+      auto at = [](uint32_t offset) { return (size_t)0x20 + offset; };
+      be32(out, at(0x08), 0x20); be32(out, at(0x0C), 0x100); be32(out, at(0x10), 0x180);
+      out[at(0x15)] = pictures; out[at(0x17)] = pictures;
+      be32(out, at(0x28), 0x30);       // the animation's first track
+      be32(out, at(0x34), 42);         // 42 bytes of keys
+      out[at(0x3C)] = 1;               // the image index track
+      out[at(0x3D)] = 0x80;            // values are unsigned bytes
+      be32(out, at(0x40), 0x50);
+      out[at(0x50)] = 0xB1; out[at(0x51)] = 2;   // twenty constant keys
+      for (uint32_t frame = 0; frame < pictures; ++frame) {
+        out[at(0x52 + 2 * frame)] = (uint8_t)(pictures - 1 - frame);
+        out[at(0x53 + 2 * frame)] = 1;           // one frame to the next key
+      }
+      for (uint32_t i = 0; i < pictures; ++i) {
+        const uint32_t image = 0x200 + i * 0x18, palette = 0x400 + i * 0x10, colors = 0x600 + i * 0x200,
+                       pixels = 0x3000 + i * 0x6400;
+        be32(out, at(0x100 + 4 * i), image); be32(out, at(0x180 + 4 * i), palette);
+        be32(out, at(image), pixels); out[at(image + 5)] = 136; out[at(image + 7)] = 188; be32(out, at(image + 8), 9);
+        be32(out, at(palette), colors); be32(out, at(palette + 4), 2); out[at(palette + 12)] = 1;   // 256 colors
+        const uint16_t special = i == 17 ? fox_color : i == 19 ? falcon_color : 0;
+        for (uint32_t k = 0; k < 256; ++k) {
+          const uint16_t color = special ? special : (uint16_t)(0x8000 | (k & 31));
+          out[at(colors + 2 * k)] = (uint8_t)(color >> 8); out[at(colors + 2 * k + 1)] = (uint8_t)color;
+        }
+        std::fill(out.begin() + at(pixels), out.begin() + at(pixels) + 17 * 47 * 32, (uint8_t)i);
+      }
+      be32(out, 0x20 + data_size, 0x0C); be32(out, 0x20 + data_size + 4, 0x10); be32(out, 0x20 + data_size + 8, 0x08);
+      return out;
+    };
+    const auto retail_default = skeleton_dat(0x2, 5.0f, false);
+    const auto plain = skeleton_dat(0x2 | 0x10, 5.0f, false);
+    const auto alt_l = skeleton_dat(0x2 | 0x20, 5.0f, false);
+    const auto retail_screen = select_screen(0, 0);
+    constexpr uint32_t costume_at = 0x100, screen_at = 0x400;
+    g_disc_bytes.assign(screen_at + retail_screen.size(), 0);
+    std::copy(retail_default.begin(), retail_default.end(), g_disc_bytes.begin() + costume_at);
+    std::copy(retail_screen.begin(), retail_screen.end(), g_disc_bytes.begin() + screen_at);
+    g_disc_table = {{"PlFxNr.dat", {costume_at, (uint32_t)retail_default.size()}},
+                    {"MnSlChr.usd", {screen_at, (uint32_t)retail_screen.size()}}};
+
+    // Fox's picture in this pack is opaque red.
+    fs::path pack_folder = portrait_folder / L"pack";
+    fs::create_directories(pack_folder, ec);
+    write_file(pack_folder / L"PlFxNr.dat", plain);
+    write_file(pack_folder / L"PlFxNr.lat", alt_l);
+    write_file(pack_folder / L"MnSlChr.usd", select_screen(0xFC00, 0));
+    auto scan = host::cosmetics::scan_disc_skins(pack_folder.string(), "Pictures", &error);
+    std::string plain_id, alt_id, plain_picture, alt_picture;
+    for (const auto& item : host::cosmetics::assets()) {
+      if (item.variant.empty()) { plain_id = item.id; plain_picture = item.preview_path; }
+      else { alt_id = item.id; alt_picture = item.preview_path; }
+    }
+    check(scan.ok && !plain_id.empty() && !alt_id.empty(), "the pack's plain costume and its L alternate are listed");
+    check(!plain_picture.empty() && alt_picture.empty(),
+          "the plain costume gets the pack's portrait of its slot; the alternate, with no cell of its own, gets none");
+    const auto picture = read_file(fs::path(plain_picture));
+    static constexpr uint8_t png_signature[] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+    check(picture.size() > 57 && !std::memcmp(picture.data(), png_signature, 8) && !std::memcmp(picture.data() + 12, "IHDR", 4) &&
+              read_be32(picture.data() + 16) == 136 && read_be32(picture.data() + 20) == 188 && picture[24] == 8 && picture[25] == 6,
+          "the portrait is stored as a 136x188 RGBA PNG");
+    // signature 8, header chunk 25, data chunk header 8, stream header 2, block header 5, row filter 1
+    check(picture.size() > 57 && picture[49] == 0xFF && picture[50] == 0 && picture[51] == 0 && picture[52] == 0xFF,
+          "its pixels are the pack's picture for that frame, through the palette");
+    // Scanning again changes nothing.
+    auto again = host::cosmetics::scan_disc_skins(pack_folder.string(), "Pictures", &error);
+    std::string picture_again;
+    for (const auto& item : host::cosmetics::assets()) if (item.id == plain_id) picture_again = item.preview_path;
+    check(again.ok && host::cosmetics::assets().size() == 2 && picture_again == plain_picture &&
+              read_file(fs::path(picture_again)) == picture,
+          "a second scan keeps one portrait, the same one");
+    // The picture is live with the skin, and gone with the alternate.
+    check(host::cosmetics::select_variant("PlFxNr.dat", plain_id, &error), "the plain costume is selected");
+    auto fst = one_file_fst(costume_at, (uint32_t)retail_default.size(), "PlFxNr.dat");
+    host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size());
+    auto companions = host::cosmetics::active_companions();
+    check(companions.size() == 1 && companions[0].kind == "csp" && companions[0].target_path == "PlFxNr.dat",
+          "the applied skin brings its portrait");
+    check(host::cosmetics::select_variant_live("PlFxNr.dat", alt_id, &error) &&
+              host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), "PlFxNr.dat").ok &&
+              host::cosmetics::active_companions().empty(),
+          "the alternate shows the game's own portrait");
+
+    // A pack whose file changes another fighter's picture only, and one whose file is no character
+    // select file at all: no portrait for Fox from either.
+    fs::path other_folder = portrait_folder / L"other";
+    fs::create_directories(other_folder, ec);
+    write_file(other_folder / L"PlFxNr.dat", plain);
+    write_file(other_folder / L"MnSlChr.usd", select_screen(0, 0xFC00));
+    fs::path odd_folder = portrait_folder / L"odd";
+    fs::create_directories(odd_folder, ec);
+    write_file(odd_folder / L"PlFxNr.dat", plain);
+    write_file(odd_folder / L"MnSlChr.usd", visual_dat());
+    auto other_scan = host::cosmetics::scan_disc_skins(other_folder.string(), "Other", &error);
+    auto odd_scan = host::cosmetics::scan_disc_skins(odd_folder.string(), "Odd", &error);
+    bool other_listed = false, odd_listed = false, extra_picture = false;
+    for (const auto& item : host::cosmetics::assets()) {
+      if (item.source_name != "Other" && item.source_name != "Odd") continue;
+      (item.source_name == "Other" ? other_listed : odd_listed) = true;
+      extra_picture |= !item.preview_path.empty();
+    }
+    check(other_scan.ok && odd_scan.ok && other_listed && odd_listed && !extra_picture,
+          "a picture equal to the game's is not stored, and a file that is not a character select file gives none");
+    g_disc_table.clear(); g_disc_bytes.clear();
+  }
+
+  // Voice mods: a skin's own fighter sound bank, one zip per mod (docs/voice-mods.md).
+  {
+    using host::cosmetics::MatchFighter;
+    using host::cosmetics::OverrideRead;
+    host::cosmetics::thaw_after_online_session();
+    host::cosmetics::set_online_probe(nullptr);
+    fs::path voice_folder = folder / L"voice-mods";
+    fs::create_directories(voice_folder, ec);
+    host::cosmetics::configure((voice_folder / L"port-settings.ini").string());
+    auto text_bytes = [](const std::string& text) { return std::vector<uint8_t>(text.begin(), text.end()); };
+    auto listed = [](const std::string& id) {
+      for (const auto& item : host::cosmetics::assets()) if (item.id == id) return item;
+      return host::cosmetics::AssetInfo{};
+    };
+
+    // The disc: Fox's English bank (50 sounds from id 516), his Japanese bank (54 from id 519) and
+    // two of his costumes.
+    const std::vector<uint32_t> us_stereo{30, 31}, jp_stereo{0, 34, 35};
+    const auto disc_us = sound_bank(50, 516, us_stereo, 0x11), disc_jp = sound_bank(54, 519, jp_stereo, 0x12);
+    const auto green_retail = skeleton_dat(0x2, 5.0f, false, "PlyFox5KGr_Share_joint");
+    const auto default_retail = skeleton_dat(0x2, 5.0f, false);
+    constexpr uint32_t us_at = 0x1000, jp_at = 0x4000, green_at = 0x7000, default_at = 0x7800;
+    g_disc_bytes.assign(0x8000, 0);
+    std::copy(disc_us.begin(), disc_us.end(), g_disc_bytes.begin() + us_at);
+    std::copy(disc_jp.begin(), disc_jp.end(), g_disc_bytes.begin() + jp_at);
+    std::copy(green_retail.begin(), green_retail.end(), g_disc_bytes.begin() + green_at);
+    std::copy(default_retail.begin(), default_retail.end(), g_disc_bytes.begin() + default_at);
+    g_disc_table = {{"PlFxGr.dat", {green_at, (uint32_t)green_retail.size()}},
+                    {"PlFxNr.dat", {default_at, (uint32_t)default_retail.size()}}};
+    check(disc_us.size() < 0x3000 && disc_jp.size() < 0x3000, "the fixture banks fit their place on the test disc");
+
+    // A bank's own header says which fighter bank it is, and what is wrong with it.
+    std::string bank_name, language, why;
+    check(host::cosmetics::testing::inspect_bank(disc_us, &bank_name, &language, &why) && bank_name == "fox.ssm" &&
+              language == "English",
+          "a bank with Fox's English sounds is recognised as fox.ssm");
+    check(host::cosmetics::testing::inspect_bank(disc_jp, &bank_name, &language, &why) && bank_name == "fox.ssm" &&
+              language == "Japanese",
+          "and the Japanese one too");
+    check(!host::cosmetics::testing::inspect_bank(sound_bank(49, 516, us_stereo, 0), &bank_name, &language, &why),
+          "a bank with one sound fewer is refused");
+    check(!host::cosmetics::testing::inspect_bank(sound_bank(50, 516, {30}, 0), &bank_name, &language, &why) &&
+              why.find("channel") != std::string::npos,
+          "a sound with another channel count is refused, and the message says so");
+    check(!host::cosmetics::testing::inspect_bank(sound_bank(50, 516, us_stereo, 0, 32, 0x0A), &bank_name, &language, &why) &&
+              why.find("ADPCM") != std::string::npos,
+          "a sound that is not ADPCM is refused");
+    check(!host::cosmetics::testing::inspect_bank(sound_bank(50, 516, us_stereo, 0, 12000), &bank_name, &language, &why) &&
+              why.find("room") != std::string::npos,
+          "samples larger than the room the game keeps for the bank are refused");
+    {
+      auto cut = disc_us; cut.resize(cut.size() - 40);
+      check(!host::cosmetics::testing::inspect_bank(cut, &bank_name, &language, &why), "a bank cut short is refused");
+      auto outside = disc_us; be32(outside, 0x10 + 8 + 8, 0x00FFFFFF);   // the first sound's end address
+      check(!host::cosmetics::testing::inspect_bank(outside, &bank_name, &language, &why) &&
+                why.find("outside") != std::string::npos,
+            "a sound that points outside the sample data is refused");
+    }
+
+    // One zip per mod: the costume, the bank and a manifest with the mod's name.
+    const auto wolf_costume = skeleton_dat(0x2 | 0x10, 5.0f, false, "PlyFox5KGr_Share_joint");   // looks only
+    const auto wolf_bank = sound_bank(50, 516, us_stereo, 0xAA);
+    fs::path wolf_zip = voice_folder / L"wolf.zip";
+    write_file(wolf_zip, stored_zip({{"Wolf/PlFxGr.dat", wolf_costume}, {"Wolf/sound/wolf.ssm", wolf_bank},
+                                     {"Wolf/mod.json", text_bytes("{\"name\": \"Wolf\"}")}}));
+    auto wolf = host::cosmetics::import_file(wolf_zip.string());
+    check(wolf.ok && listed(wolf.asset_id).name == "Wolf" && listed(wolf.asset_id).voice == "fox.ssm" &&
+              listed(wolf.asset_id).target_path == "PlFxGr.dat" && listed(wolf.asset_id).selected,
+          "a zip with a costume and a bank imports one skin that carries the voice");
+    check(read_file(voice_folder / L"CosmeticMods" / L"assets" / fs::u8path(wolf.asset_id) / L"companions" / L"voice.ssm") == wolf_bank,
+          "the bank is stored beside the skin's pictures");
+
+    // A bank that does not keep the game's sounds: the whole zip is refused, the costume too.
+    fs::path short_zip = voice_folder / L"short.zip";
+    write_file(short_zip, stored_zip({{"PlFxNr.dat", skeleton_dat(0x2 | 0x10, 5.0f, false)},
+                                      {"fox.ssm", sound_bank(49, 516, us_stereo, 0xCC)}}));
+    auto refused = host::cosmetics::import_file(short_zip.string());
+    check(!refused.ok && refused.message.find("49 sounds") != std::string::npos &&
+              refused.message.find("50 from id 516") != std::string::npos && host::cosmetics::assets().size() == 1,
+          "a bank with a different sound count is refused with both counts, and nothing of the zip is imported");
+    fs::path falco_zip = voice_folder / L"falco.zip";
+    write_file(falco_zip, stored_zip({{"PlFxNr.dat", skeleton_dat(0x2 | 0x10, 5.0f, false)},
+                                      {"voice.ssm", sound_bank(53, 463, {2, 33, 34}, 0xCC)}}));
+    refused = host::cosmetics::import_file(falco_zip.string());
+    check(!refused.ok && refused.message.find("Falco") != std::string::npos && host::cosmetics::assets().size() == 1,
+          "another fighter's bank is refused for this skin");
+
+    // A second skin, for the default costume, with a moved bone (off online); then a bank on its own.
+    fs::path kitsune_path = voice_folder / L"kitsune.dat";
+    write_file(kitsune_path, skeleton_dat(0x2, 5.5f, false));
+    auto kitsune = host::cosmetics::import_file(kitsune_path.string());
+    const auto kitsune_bank = sound_bank(50, 516, us_stereo, 0xBB, 64);   // longer than the disc's bank
+    fs::path loose_bank = voice_folder / L"fox.ssm";
+    write_file(loose_bank, kitsune_bank);
+    auto loose = host::cosmetics::import_file(loose_bank.string());
+    check(kitsune.ok && !loose.ok && loose.message.find("2 skins") != std::string::npos,
+          "a bank alone is refused with advice when two skins could take it");
+    fs::path named_bank = voice_folder / L"Fox Default.ssm";
+    write_file(named_bank, kitsune_bank);
+    loose = host::cosmetics::import_file(named_bank.string());
+    check(loose.ok && loose.asset_id == kitsune.asset_id && listed(kitsune.asset_id).voice == "fox.ssm" &&
+              listed(kitsune.asset_id).voice_source == "Fox Default.ssm",
+          "a bank named after a costume becomes the voice of that costume's skin");
+    check(host::cosmetics::import_voice(named_bank.string(), kitsune.asset_id).already_present,
+          "giving a skin the same bank again changes nothing");
+    check(!host::cosmetics::import_voice(named_bank.string(), "no-such-skin").ok, "a bank needs an installed skin");
+
+    // The catalog on disk keeps the voices.
+    host::cosmetics::configure((voice_folder / L"port-settings.ini").string());
+    check(listed(wolf.asset_id).voice == "fox.ssm" && listed(kitsune.asset_id).voice == "fox.ssm" &&
+              listed(wolf.asset_id).selected && listed(kitsune.asset_id).selected,
+          "the voices are still there after the catalog is loaded again");
+
+    // The game starts. The English bank file has two candidate voices; the Japanese one fits none.
+    auto fst = audio_fst("fox.ssm", jp_at, (uint32_t)disc_jp.size(), us_at, (uint32_t)disc_us.size(),
+                         {{"PlFxGr.dat", green_at, (uint32_t)green_retail.size()},
+                          {"PlFxNr.dat", default_at, (uint32_t)default_retail.size()}});
+    host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size());
+    const uint32_t bank_length = (uint32_t)kitsune_bank.size();
+    check(host::cosmetics::voice_bank_count() == 1 && read_be32(fst.data() + 56) == bank_length &&
+              read_be32(fst.data() + 32) == disc_jp.size() && bank_length > disc_us.size(),
+          "the English bank file gets the longest candidate's length for the session; the Japanese file is untouched");
+    check(host::cosmetics::applied_asset(green_at) == wolf.asset_id && host::cosmetics::applied_asset(default_at) == kitsune.asset_id,
+          "both skins are applied");
+    const size_t samples_at = bank_samples_at(disc_us);
+    auto serves = [&](const std::vector<uint8_t>& bank) {
+      std::vector<uint8_t> got(bank_length, 0x77);
+      if (host::cosmetics::read(us_at, 0, got.data(), bank_length) != OverrideRead::Success) return false;
+      return std::equal(bank.begin(), bank.end(), got.begin()) &&
+             std::all_of(got.begin() + (std::ptrdiff_t)bank.size(), got.end(), [](uint8_t byte) { return byte == 0; });
+    };
+    uint8_t probe[4];
+    check(serves(disc_us) && host::cosmetics::read(jp_at, 0, probe, 4) == OverrideRead::NotOverridden,
+          "before a match the bank file is the disc's own, with zeros up to the session length");
+    check(host::cosmetics::read(us_at, bank_length - 8, probe, 4) == OverrideRead::Success &&
+              host::cosmetics::read(us_at, bank_length + 64, probe, 4) == OverrideRead::Failed,
+          "reads stay inside the session length");
+
+    // A match with green Fox on port 1: the skin's bank is served, and named for the engine to reload.
+    MatchFighter ports[4];
+    ports[0] = {2, 3};
+    auto plan = host::cosmetics::plan_match_voices(ports);
+    check(plan.changed.size() == 1 && plan.changed[0].file == "fox.ssm" && plan.changed[0].bank == 11 && serves(wolf_bank),
+          "the bank is served when its skin is the costume in the match");
+    {
+      std::vector<uint8_t> header(0x20), samples(32);
+      check(host::cosmetics::read(us_at, 0, header.data(), 0x20) == OverrideRead::Success &&
+                host::cosmetics::read(us_at, (uint32_t)samples_at, samples.data(), 32) == OverrideRead::Success &&
+                read_be32(header.data() + 8) == 50 && read_be32(header.data() + 12) == 516 && samples[0] == 0xAA,
+            "the loader's own reads (header, then samples) see the skin's bank");
+    }
+    check(host::cosmetics::plan_match_voices(ports).changed.empty() && serves(wolf_bank),
+          "the same match again changes nothing, so nothing is reloaded");
+    ports[0] = {2, 1};   // orange Fox: the standard costume
+    plan = host::cosmetics::plan_match_voices(ports);
+    check(plan.changed.size() == 1 && serves(disc_us), "the disc's bank is served when the costume in the match has no skin");
+    ports[0] = {20, 0};   // Falco alone
+    check(host::cosmetics::plan_match_voices(ports).changed.empty() && serves(disc_us),
+          "a match without the bank's fighter leaves the bank as it is");
+
+    // Two Foxes with different voices: one bank per fighter, the lowest port decides.
+    auto noted = [](const host::cosmetics::VoicePlan& made, const char* text) {
+      for (const auto& note : made.notes) if (note.find(text) != std::string::npos) return true;
+      return false;
+    };
+    ports[0] = {2, 0}; ports[1] = {2, 3};
+    plan = host::cosmetics::plan_match_voices(ports);
+    check(plan.changed.size() == 1 && serves(kitsune_bank) && noted(plan, "port 2's Wolf is not used: port 1 decides fox.ssm"),
+          "two Foxes with different voices: port 1's is served and port 2's is reported");
+    ports[0] = {2, 3}; ports[1] = {2, 0};
+    plan = host::cosmetics::plan_match_voices(ports);
+    check(plan.changed.size() == 1 && serves(wolf_bank) && noted(plan, "port 2's") && noted(plan, "port 1 decides"),
+          "with the ports swapped the other voice wins");
+    ports[0] = {2, 1}; ports[1] = {2, 3};
+    plan = host::cosmetics::plan_match_voices(ports);
+    check(plan.changed.size() == 1 && serves(disc_us) && noted(plan, "port 2's Wolf is not used"),
+          "the lowest port decides also when its choice is the game's own sounds");
+    ports[0] = {-1, 0}; ports[1] = {2, 3}; ports[3] = {2, 0};
+    plan = host::cosmetics::plan_match_voices(ports);
+    check(serves(wolf_bank) && noted(plan, "port 4's") && noted(plan, "port 2 decides"),
+          "an empty port decides nothing: the lowest port that plays the fighter does");
+    ports[1] = {}; ports[3] = {};
+
+    // Online: sound data only, so a voice stays on. A skin that online play shows as the standard
+    // costume keeps the game's voice too.
+    host::cosmetics::set_online_probe([] { return true; });
+    host::cosmetics::freeze_for_online_session();
+    ports[0] = {2, 3};
+    plan = host::cosmetics::plan_match_voices(ports);
+    check(host::cosmetics::online_allowed(green_at) && serves(wolf_bank), "online, a skin that stays on keeps its voice");
+    ports[0] = {2, 0};
+    plan = host::cosmetics::plan_match_voices(ports);
+    check(!host::cosmetics::online_allowed(default_at) && plan.changed.size() == 1 && serves(disc_us),
+          "online, a skin shown as the standard costume has the standard voice");
+    host::cosmetics::thaw_after_online_session();
+    host::cosmetics::set_online_probe(nullptr);
+    plan = host::cosmetics::plan_match_voices(ports);
+    check(plan.changed.size() == 1 && serves(kitsune_bank), "offline again, that skin has its voice");
+
+    // The character select's L / R: the bank follows the skin the slot serves at the next match load.
+    ports[0] = {2, 3};
+    plan = host::cosmetics::plan_match_voices(ports);
+    check(serves(wolf_bank), "green Fox has the skin's voice");
+    check(host::cosmetics::select_variant_live("PlFxGr.dat", "", &error) &&
+              host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), "PlFxGr.dat").ok &&
+              host::cosmetics::voice_bank_count() == 1 && serves(wolf_bank),
+          "picking the standard costume publishes the slot again and leaves the bank until the next match load");
+    plan = host::cosmetics::plan_match_voices(ports);
+    check(plan.changed.size() == 1 && serves(disc_us), "the next match load serves the disc's bank for the standard costume");
+    check(host::cosmetics::select_variant_live("PlFxGr.dat", wolf.asset_id, &error) &&
+              host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), "PlFxGr.dat").ok,
+          "the skin is picked again");
+    plan = host::cosmetics::plan_match_voices(ports);
+    check(plan.changed.size() == 1 && serves(wolf_bank) && read_be32(fst.data() + 56) == bank_length,
+          "and its voice is back at the next match load, under the same file length");
+
+    // Several costumes of one fighter in one mod, and a voice for a costume named by the manifest.
+    fs::path pair_zip = voice_folder / L"star.zip";
+    write_file(pair_zip, stored_zip({{"PlFxOr.dat", costume_dat("PlyFox5KOr")}, {"PlFxLa.dat", costume_dat("PlyFox5KLa")},
+                                     {"star.ssm", wolf_bank}, {"mod.json", text_bytes("{\"name\":\"Star\"}")},
+                                     {"PlFxOr csp.png", png(136, 188)}}));
+    auto pair = host::cosmetics::import_file(pair_zip.string());
+    size_t star_voices = 0, star_pictures = 0;
+    for (const auto& item : host::cosmetics::assets()) {
+      if (item.name != "Star, Orange" && item.name != "Star, Lavender") continue;
+      star_voices += item.voice == "fox.ssm";
+      star_pictures += !item.preview_path.empty();
+    }
+    check(pair.ok && star_voices == 2 && star_pictures == 1,
+          "a zip with two costumes of one fighter gives both the voice, and each the picture named for it");
+    std::string orange_id;
+    for (const auto& item : host::cosmetics::assets()) if (item.name == "Star, Orange") orange_id = item.id;
+    check(host::cosmetics::remove_voice(orange_id, &error) && listed(orange_id).voice.empty(), "a voice can be taken away again");
+    fs::path voice_zip = voice_folder / L"voice only.zip";
+    write_file(voice_zip, stored_zip({{"sounds/new.ssm", kitsune_bank},
+                                      {"mod.json", text_bytes("{\"slot\": \"Fox Orange\"}")}}));
+    auto voice_only = host::cosmetics::import_file(voice_zip.string());
+    check(voice_only.ok && voice_only.asset_id == orange_id && listed(orange_id).voice == "fox.ssm",
+          "a zip with only a bank goes to the skin of the costume its manifest names");
+    fs::path two_zip = voice_folder / L"two banks.zip";
+    write_file(two_zip, stored_zip({{"a.ssm", wolf_bank}, {"b.ssm", kitsune_bank}}));
+    check(!host::cosmetics::import_file(two_zip.string()).ok, "a zip with two banks and no manifest is refused");
+
+    // The applied snapshot is this launch's: the voices added since wait for a restart.
+    check(host::cosmetics::pending_restart(), "a voice added while the game runs waits for a restart");
+    g_disc_table.clear(); g_disc_bytes.clear();
+  }
+
+  // A picture given to one skin afterwards: the skin's own shows, the costume's added one fills in
+  // where a skin has none.
+  {
+    using host::cosmetics::PortraitSource;
+    host::cosmetics::thaw_after_online_session();
+    host::cosmetics::set_online_probe(nullptr);
+    fs::path own_folder = folder / L"skin-pictures";
+    fs::create_directories(own_folder, ec);
+    host::cosmetics::configure((own_folder / L"port-settings.ini").string());
+    const auto retail_default = skeleton_dat(0x2, 5.0f, false);
+    const auto pack_skin = skeleton_dat(0x2 | 0x10, 5.0f, false);
+    const auto imported = skeleton_dat(0x2, 5.0f, true);
+    constexpr uint32_t retail_default_at = 0x100;
+    g_disc_bytes.assign(0x400, 0);
+    std::copy(retail_default.begin(), retail_default.end(), g_disc_bytes.begin() + retail_default_at);
+    g_disc_table = {{"PlFxNr.dat", {retail_default_at, (uint32_t)retail_default.size()}}};
+    fs::path pack_folder = own_folder / L"pack";
+    fs::create_directories(pack_folder, ec);
+    write_file(pack_folder / L"PlFxNr.dat", pack_skin);
+    auto scan = host::cosmetics::scan_disc_skins(pack_folder.string(), "Pack", &error);
+    fs::path import_path = own_folder / L"mine.dat";
+    write_file(import_path, imported);
+    auto mine = host::cosmetics::import_file(import_path.string());
+    std::string disc_id;
+    for (const auto& item : host::cosmetics::assets()) if (item.source == "disc") disc_id = item.id;
+    check(scan.ok && mine.ok && !disc_id.empty(), "the slot has a pack skin and an import");
+    bool import_named = false;
+    for (const auto& item : host::cosmetics::assets()) import_named |= item.id == mine.asset_id && item.source_name == "mine.dat";
+    check(import_named, "an import's listing names the file it came from");
+
+    auto csp_path_of = [](const std::string& slot) {
+      std::string path; size_t count = 0;
+      for (const auto& item : host::cosmetics::active_companions())
+        if (item.kind == "csp" && item.target_path == slot) { path = item.path; ++count; }
+      return count == 1 ? path : std::string();
+    };
+    auto fst = one_file_fst(retail_default_at, (uint32_t)retail_default.size(), "PlFxNr.dat");
+    auto apply = [&] { host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size()); };
+
+    // From a PNG.
+    fs::path first_png = own_folder / L"first.png", bad_png = own_folder / L"bad.png";
+    write_file(first_png, png(136, 188));
+    write_file(bad_png, {1, 2, 3, 4});
+    check(host::cosmetics::skin_portrait_source(mine.asset_id, "csp") == PortraitSource::Standard,
+          "a skin with no picture and no added one shows the standard picture");
+    check(!host::cosmetics::set_skin_portrait(mine.asset_id, bad_png.string(), "csp").ok &&
+              !host::cosmetics::set_skin_portrait("no-such-skin", first_png.string(), "csp").ok &&
+              !host::cosmetics::set_skin_portrait(mine.asset_id, first_png.string(), "banner").ok,
+          "a file that is no PNG, an unknown skin and an unknown kind are refused");
+    auto set = host::cosmetics::set_skin_portrait(mine.asset_id, first_png.string(), "csp");
+    check(set.ok && set.asset_id == mine.asset_id && host::cosmetics::skin_portrait_source(mine.asset_id, "csp") == PortraitSource::Own,
+          "a PNG becomes the skin's own portrait");
+    // The costume's added picture, and one for another costume and another fighter.
+    fs::path slot_png = own_folder / L"slot.png";
+    write_file(slot_png, png(136, 189));
+    check(host::cosmetics::import_portrait(slot_png.string(), "PlFxNr.dat", "csp").ok &&
+              host::cosmetics::import_portrait(slot_png.string(), "PlFxGr.dat", "csp").ok &&
+              host::cosmetics::import_portrait(slot_png.string(), "PlCaNr.dat", "csp").ok,
+          "costumes get added pictures");
+    check(host::cosmetics::skin_portrait_source(disc_id, "csp") == PortraitSource::Costume &&
+              host::cosmetics::skin_portrait_source(mine.asset_id, "csp") == PortraitSource::Own &&
+              host::cosmetics::skin_portrait_source(mine.asset_id, "stock") == PortraitSource::Standard,
+          "the list says which picture each skin shows");
+    check(host::cosmetics::select_variant("PlFxNr.dat", mine.asset_id, &error), "the import is selected");
+    apply();
+    check(csp_path_of("PlFxNr.dat").find(mine.asset_id) != std::string::npos,
+          "the selected skin's own portrait is the one shown");
+    // Another skin of the same slot, with none of its own: the costume's added picture, also live.
+    check(host::cosmetics::select_variant_live("PlFxNr.dat", disc_id, &error) &&
+              host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), "PlFxNr.dat").ok &&
+              csp_path_of("PlFxNr.dat").find("portrait-PlFxNr") != std::string::npos,
+          "a skin without its own portrait shows the costume's added one");
+    check(host::cosmetics::select_variant_live("PlFxNr.dat", mine.asset_id, &error) &&
+              host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), "PlFxNr.dat").ok &&
+              csp_path_of("PlFxNr.dat").find(mine.asset_id) != std::string::npos,
+          "stepping back to the skin with its own portrait shows that one again");
+
+    // Copied from another entry, onto the pack's skin (which has no stored file of its own).
+    auto choices = host::cosmetics::portrait_choices(disc_id, "csp");
+    bool offers_import = false, offers_slot = false, offers_green = false, offers_other = false;
+    for (const auto& choice : choices) {
+      offers_import |= choice.asset_id == mine.asset_id && !choice.label.empty();
+      offers_slot |= choice.asset_id == "portrait-PlFxNr";
+      offers_green |= choice.asset_id == "portrait-PlFxGr";
+      offers_other |= choice.asset_id == "portrait-PlCaNr" || choice.asset_id == disc_id;
+    }
+    check(choices.size() == 3 && offers_import && offers_slot && offers_green && !offers_other,
+          "the choices are the fighter's other entries that have a portrait");
+    check(host::cosmetics::portrait_choices(disc_id, "stock").empty(), "no entry has a stock icon to offer");
+    check(!host::cosmetics::set_skin_portrait_from(disc_id, "portrait-PlCaNr", "csp", &error) &&
+              !host::cosmetics::set_skin_portrait_from(disc_id, mine.asset_id, "stock", &error),
+          "another fighter's picture, or a picture the source does not have, is refused");
+    check(host::cosmetics::set_skin_portrait_from(disc_id, mine.asset_id, "csp", &error) &&
+              host::cosmetics::skin_portrait_source(disc_id, "csp") == PortraitSource::Own,
+          "a pack skin takes a copy of another skin's portrait");
+    check(host::cosmetics::select_variant("PlFxNr.dat", disc_id, &error), "the pack skin is selected");
+    apply();
+    const std::string disc_picture = csp_path_of("PlFxNr.dat");
+    check(disc_picture.find(disc_id) != std::string::npos && read_file(fs::path(disc_picture)) == png(136, 188),
+          "the pack skin shows its copy, kept in the catalog");
+
+    // Taken away from the source: the copy stays, and the source falls back to the costume's picture.
+    check(host::cosmetics::clear_skin_portrait(mine.asset_id, "csp", &error) &&
+              !host::cosmetics::clear_skin_portrait(mine.asset_id, "csp", &error) &&
+              host::cosmetics::skin_portrait_source(mine.asset_id, "csp") == PortraitSource::Costume,
+          "a skin's own portrait can be removed, once");
+    apply();
+    check(csp_path_of("PlFxNr.dat") == disc_picture && read_file(fs::path(disc_picture)) == png(136, 188),
+          "removing the source's picture leaves the copy in place");
+    check(host::cosmetics::select_variant("PlFxNr.dat", mine.asset_id, &error), "the import is selected again");
+    apply();
+    check(csp_path_of("PlFxNr.dat").find("portrait-PlFxNr") != std::string::npos,
+          "the skin whose portrait was removed shows the costume's added one");
+    // A stock icon, replaced by another: one picture of the kind stays.
+    fs::path stock_png = own_folder / L"stock.png", stock_two = own_folder / L"stock two.png";
+    write_file(stock_png, png(24, 24));
+    write_file(stock_two, png(24, 25));
+    check(host::cosmetics::set_skin_portrait(mine.asset_id, stock_png.string(), "stock").ok &&
+              host::cosmetics::set_skin_portrait(mine.asset_id, stock_two.string(), "stock").ok,
+          "a stock icon is set and replaced");
+    apply();
+    size_t stocks = 0, new_stocks = 0;
+    for (const auto& item : host::cosmetics::active_companions())
+      if (item.kind == "stock" && item.target_path == "PlFxNr.dat") {
+        ++stocks; new_stocks += read_file(fs::path(item.path)) == png(24, 25);
+      }
+    check(stocks == 1 && new_stocks == 1, "the replaced stock icon is the one shown");
+
+    // The catalog is read again, and the pack is scanned again: the pictures stay with their skins.
+    host::cosmetics::configure((own_folder / L"port-settings.ini").string());
+    check(host::cosmetics::skin_portrait_source(disc_id, "csp") == PortraitSource::Own &&
+              host::cosmetics::skin_portrait_source(mine.asset_id, "stock") == PortraitSource::Own &&
+              host::cosmetics::skin_portrait_source(mine.asset_id, "csp") == PortraitSource::Costume,
+          "the skins' own pictures are there after the catalog is read again");
+    auto rescan = host::cosmetics::scan_disc_skins(pack_folder.string(), "Pack", &error);
+    check(rescan.ok && host::cosmetics::skin_portrait_source(disc_id, "csp") == PortraitSource::Own &&
+              host::cosmetics::select_variant("PlFxNr.dat", disc_id, &error),
+          "scanning the pack again keeps the picture the player gave its skin");
+    apply();
+    check(csp_path_of("PlFxNr.dat") == disc_picture, "and it is still the one shown");
     g_disc_table.clear(); g_disc_bytes.clear();
   }
 

@@ -1,5 +1,6 @@
 #include "net_trace.h"
 #include "net_trace_file.h"
+#include "net_trace_read.h"
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -103,6 +104,76 @@ int main() {
   expect(net_trace::trace_path("replays\\Game_20260101T120000.slp") == "replays\\Game_20260101T120000.trace");
   expect(net_trace::trace_path("a.b\\Game_1.SLP") == "a.b\\Game_1.trace");
   expect(net_trace::trace_path("Game_2") == "Game_2.trace");
+
+  // Reading a trace back: the rows the writer makes, then a row cut off by a closing game.
+  {
+    std::string text = net_trace::csv_header();
+    auto add = [&](int frame, double wall, int wait) {
+      Record row = r;
+      row.frame = frame; row.wall = wall; row.wait_frames = (uint16_t)wait;
+      row.flags = wait ? net_trace::kWait : net_trace::kAdvance;
+      if (wait) { row.rollbacks = 0; row.rollback_depth = 0; }
+      char out_line[256];
+      expect(net_trace::csv_row(row, out_line, sizeof out_line) > 0);
+      text += out_line;
+    };
+    add(1, 10.0000, 0);
+    add(2, 10.0167, 0);
+    add(3, 10.0334, 1); add(3, 10.0501, 2); add(3, 10.0668, 3);   // waited three ticks for the other player
+    add(3, 10.0835, 0);
+    add(4, 10.1002, 0);
+    add(5, 15.1002, 0);                                           // a five second freeze
+    add(6, 15.1169, 0);
+    text += "7,15.13";                                            // no line end: dropped
+    net_trace::Trace trace;
+    std::string error;
+    expect(net_trace::parse_trace(text.data(), text.size(), &trace, &error));
+    expect(trace.records.size() == 9 && trace.skipped == 1);
+    const Record& first = trace.records[0];
+    expect(first.frame == 1 && first.wall == 10.0 && first.sim_ms == 3.5f && first.offset_us == -12000);
+    expect(first.ping_ms == 48 && first.presents == 2 && first.rollbacks == 1 && first.rollback_depth == 3);
+    expect(first.flags == net_trace::kAdvance && std::memcmp(first.pad, pad, sizeof pad) == 0);
+    expect(trace.records[2].flags == net_trace::kWait && trace.records[2].wait_frames == 1);
+    expect(trace.records[5].flags == net_trace::kAdvance && trace.records[5].frame == 3);
+
+    // The schedule by replay frame: online frame 1 is replay frame -123.
+    net_trace::Schedule schedule;
+    schedule.build(trace);
+    expect(schedule.size() == 9 && schedule.first_frame() == -123 && schedule.last_frame() == -118);
+    size_t at = 0, count = 0;
+    expect(schedule.frame_records(-121, &at, &count) && at == 2 && count == 4);
+    expect(schedule.frame_records(-119, &at, &count) && at == 7 && count == 1);
+    expect(!schedule.frame_records(-117, &at, &count) && !schedule.frame_records(-124, &at, &count));
+    expect(schedule.gap(7) == 2.0 && schedule.true_gap(7) > 4.99 && schedule.true_gap(7) < 5.01);   // clamped for viewing
+
+    // Holds: none for frames that ran on time, three ticks for the wait, two seconds for the freeze.
+    net_trace::Pacer pacer(&schedule);
+    std::vector<net_trace::Pacer::Step> steps;
+    double real = -1.0;
+    expect(pacer.next(-123, &steps, &real) == 0.0 && steps.size() == 1 && steps[0].record == 0 && real == 0.0);
+    expect(pacer.next(-122, &steps) == 0.0 && steps.size() == 1 && steps[0].wait == 0.0);
+    double hold = pacer.next(-121, &steps, &real);
+    expect(hold > 0.045 && hold < 0.055 && steps.size() == 4 && real > 0.045 && real < 0.055);
+    double waits = 0.0;
+    for (const auto& step : steps) { expect(step.wait > 0.0); waits += step.wait; }
+    expect(waits > hold - 1e-9 && waits < hold + 1e-9 && steps[3].record == 5);
+    expect(pacer.next(-120, &steps) == 0.0);
+    hold = pacer.next(-119, &steps, &real);
+    expect(hold > 1.97 && hold < 2.0 && real > 4.97 && real < 5.0 && steps.size() == 1);
+    expect(pacer.next(-118, &steps) == 0.0);
+    expect(pacer.next(500, &steps) == 0.0 && steps.empty());   // a frame the trace does not have
+
+    // Columns are found by name: another order and columns this build does not know.
+    const std::string other = "wall_s,later_column,frame,ping_ms\r\n1.5,x,7,33\r\n2.5,y\r\n";
+    expect(net_trace::parse_trace(other.data(), other.size(), &trace, &error));
+    expect(trace.records.size() == 1 && trace.skipped == 1);
+    expect(trace.records[0].frame == 7 && trace.records[0].wall == 1.5 && trace.records[0].ping_ms == 33);
+    // Not a trace.
+    const std::string wrong = "a,b\n1,2\n";
+    expect(!net_trace::parse_trace(wrong.data(), wrong.size(), &trace, &error) && !error.empty());
+    expect(!net_trace::parse_trace("", 0, &trace, &error));
+    expect(!net_trace::read_trace("no such folder\\no such file.trace", &trace, &error));
+  }
 
   namespace fs = std::filesystem;
   std::error_code ec;

@@ -8,6 +8,9 @@
 
 namespace host {
 void audio_set_volume(int volume);
+// Replay viewer controls: while muted the game's sound is not queued at all (the volume setting
+// and the settings menu's own sounds are untouched). Any thread.
+void audio_set_muted(bool muted);
 // 0 = Auto (adaptive, remembered per device), 1 = Low latency (fixed), 2 = Exclusive (WASAPI
 // exclusive, falls back to Low latency), 3 = ASIO (the driver set by audio_set_asio; falls back to
 // Auto). Mode and device apply when the device opens (restart).

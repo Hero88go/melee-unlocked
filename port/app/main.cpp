@@ -32,6 +32,7 @@
 #include "user_gecko.h"
 #include "updater.h"
 #include "discord_presence.h"
+#include "replay_control.h"
 namespace app { int run_settings_window(gx::RenderOptions& options, unsigned long standby_parent, std::function<void()> reload); }
 #ifdef MELEE_SOURCE_PORT
 #include "source_host.h"
@@ -689,6 +690,9 @@ static void trace_root_fobj_entry(ppc::Context& context) {
 #endif
 #include <algorithm>
 #include <atomic>
+#include <csignal>
+#include <exception>
+#include <stdexcept>
 #include <thread>
 #include <unordered_map>
 #include <vector>
@@ -704,6 +708,7 @@ static void usage() {
               "           [--settings-path file --load-settings --import-cosmetic file|--scan-disc-skins mod.iso|--select-cosmetic id|--enable-project-effects|--restore-vanilla-cosmetics|--cosmetic-status]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
   std::printf("           [--lobby-direct NAME#123 --lobby-character 0..255 --lobby-status-file path]\n");
+  std::printf("           [--replay <file.slp> [--as-experienced | --trace <file.trace>]]\n");
 #ifdef MELEE_SOURCE_PORT
   std::printf("           [--card-self-test <new scratch directory>]\n"
               "           [--replay <file.slp> --replay-dir <directory>] [--record-native]\n"
@@ -914,6 +919,53 @@ struct SimProfiler {
 };
 static SimProfiler g_profiler;
 static bool g_profile = false;
+// What an unhandled C++ exception said. The thrown object and its type list are in the exception
+// record (the Visual C++ layout for 64-bit programs: every pointer in the type list is an offset
+// from the image base in parameter 3). Only an object that is a std::exception is read.
+static void cxx_exception_text(const EXCEPTION_RECORD* er, char* out, size_t size) {
+  out[0] = 0;
+  if (er->ExceptionCode != 0xE06D7363u || er->NumberParameters < 4) return;
+  __try {
+    const uint8_t* base = (const uint8_t*)er->ExceptionInformation[3];
+    const uint8_t* object = (const uint8_t*)er->ExceptionInformation[1];
+    const int32_t* throw_info = (const int32_t*)er->ExceptionInformation[2];
+    if (!base || !object || !throw_info) return;
+    const int32_t* types = (const int32_t*)(base + throw_info[3]);
+    for (int32_t i = 0; i < types[0] && i < 16; ++i) {
+      const int32_t* type = (const int32_t*)(base + types[1 + i]);
+      const char* name = (const char*)(base + type[1]) + 2 * sizeof(void*);
+      if (i == 0) std::snprintf(out, size, "type %s", name);
+      if (std::strcmp(name, ".?AVexception@std@@") != 0 || type[3] != -1) continue;
+      const std::exception* e = (const std::exception*)(object + type[2]);
+      const char* first = (const char*)(base + ((const int32_t*)(base + types[1]))[1]) + 2 * sizeof(void*);
+      std::snprintf(out, size, "%s: %s", first, e->what());
+      return;
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+// The call stack of the thread that stopped, as module+offset lines (no symbols are shipped).
+static void crash_stack(const CONTEXT* at, FILE* f) {
+  CONTEXT c = *at;
+  for (int frame = 0; frame < 32 && c.Rip; ++frame) {
+    HMODULE module = nullptr; char name[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)c.Rip, &module))
+      GetModuleFileNameA(module, name, MAX_PATH);
+    const char* leaf = std::strrchr(name, '\\') ? std::strrchr(name, '\\') + 1 : name;
+    char line[400];
+    std::snprintf(line, sizeof line, "stack %2d: %s+0x%llX", frame, leaf, (unsigned long long)(c.Rip - (DWORD64)module));
+    host::log("%s", line);
+    if (f) std::fprintf(f, "%s\n", line);
+    DWORD64 image = 0;
+    PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(c.Rip, &image, nullptr);
+    if (!function) {   // a leaf function: the return address is at the top of the stack
+      __try { c.Rip = *(const DWORD64*)c.Rsp; c.Rsp += 8; } __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+      continue;
+    }
+    void* handler_data = nullptr; DWORD64 establisher = 0;
+    __try { RtlVirtualUnwind(UNW_FLAG_NHANDLER, image, c.Rip, function, &c, &handler_data, &establisher, nullptr); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return; }
+  }
+}
 static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
   static volatile LONG entered = 0;
   if (InterlockedExchange(&entered, 1)) return EXCEPTION_CONTINUE_SEARCH;
@@ -926,9 +978,14 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
   std::snprintf(head, sizeof head, "CRASH: exception %08lX at %p (%s+0x%llX), version %s", er->ExceptionCode, er->ExceptionAddress,
                 std::strrchr(module_name, '\\') ? std::strrchr(module_name, '\\') + 1 : module_name, (unsigned long long)offset, MELEE_PORT_VERSION);
   host::log("%s", head);
-  host::log_flush();
+  char said[400];
+  cxx_exception_text(er, said, sizeof said);
+  if (said[0]) host::log("exception text: %s", said);
   if (FILE* f = std::fopen("melee_port_crash.txt", "w")) {
     std::fprintf(f, "%s\n", head);
+    if (said[0]) std::fprintf(f, "exception text: %s\n", said);
+    crash_stack(info->ContextRecord, f);
+    host::log_flush();
     if (host::cpu) {
       std::fprintf(f, "last guest function %08X %s, lr %08X\nrecent guest functions (oldest first):\n", host::cpu->last_pc, host::symbol_name(host::cpu->last_pc), host::cpu->lr);
       for (uint32_t i = 0; i < 64; ++i) { uint32_t pc = host::cpu->trace[(host::cpu->trace_pos + i) & 63]; if (pc) std::fprintf(f, "  %08X %s\n", pc, host::symbol_name(pc)); }
@@ -1001,6 +1058,9 @@ static void arm_test_crash(bool automated) {
     host::log("test: crash armed for frame %lu", frame);
     while (now() < frame) Sleep(1);
     host::log("test: forced crash at frame %u", now());
+    // MELEE_TEST_CRASH_KIND=throw: an unhandled C++ exception instead, for the report's text line.
+    if (const char* kind = std::getenv("MELEE_TEST_CRASH_KIND"); kind && std::strcmp(kind, "throw") == 0)
+      throw std::runtime_error("test exception text");
     volatile int* volatile target = nullptr;
     *target = 1;
   }).detach();
@@ -1115,11 +1175,36 @@ static int melee_main(int argc, char** argv);
 
 // Both entry points exist so the executable links whichever subsystem it is built for: WinMain for the
 // windowed build (no terminal alongside the game), main if it is ever built as a console program.
+// A C++ exception that nothing handles (a file name the system cannot convert, a damaged file a
+// parser gives up on) used to end the game with a bare exception code. It is reported with its own
+// text instead, so the crash report says what failed.
+[[noreturn]] static void report_unhandled() {
+  try {
+    if (std::exception_ptr error = std::current_exception()) std::rethrow_exception(error);
+  } catch (const std::exception& error) {
+    host::die("the game stopped on an internal error: %s", error.what());
+  } catch (...) {
+    host::die("the game stopped on an internal error of an unknown kind");
+  }
+  host::die("the game stopped itself (abort)");
+}
+static int guarded_main(int argc, char** argv) {
+  // The same for an exception that escapes any other thread: the C++ runtime ends the program
+  // there (terminate, then abort) without passing through the crash report. The terminate handler
+  // is per thread, the abort signal is not, so the report is written from both.
+  std::set_terminate([] { report_unhandled(); });
+  std::signal(SIGABRT, [](int) { report_unhandled(); });
+  try {
+    return melee_main(argc, argv);
+  } catch (const std::exception& error) {
+    host::die("the game stopped on an internal error: %s", error.what());
+  }
+}
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
   attach_parent_console();
-  return melee_main(__argc, __argv);
+  return guarded_main(__argc, __argv);
 }
-int main(int argc, char** argv) { return melee_main(argc, argv); }
+int main(int argc, char** argv) { return guarded_main(argc, argv); }
 
 static int melee_main(int argc, char** argv) {
   if (!cpu_has_avx2()) {
@@ -1345,6 +1430,11 @@ static int melee_main(int argc, char** argv) {
 #else
     else if (a == "--replay") slippi::playback::set_replay(next());   // playback build: play this .slp
 #endif
+    // Replay viewing, both engines: show the session as the player had it, from the trace file an
+    // online match leaves beside its replay. --trace names the file; --as-experienced looks for
+    // "<replay>.trace" beside the replay. Without a usable trace the replay plays normally.
+    else if (a == "--trace") replay_control::set_trace_file(next());
+    else if (a == "--as-experienced") replay_control::set_as_experienced(true);
     else if (a == "--user-dir") slippi::online::config().user_dir = next();
     else if (a == "--lobby-direct") {
       std::string code = next();
@@ -1452,6 +1542,7 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--mod-gci") source_port::set_mod_gci(next());
     else if (a == "--te-options") gx::RenderOptions::live_te_options() = (uint32_t)std::strtoul(next(), nullptr, 16);
     else if (a == "--te-options2") gx::RenderOptions::live_te_options2() = (uint32_t)std::strtoul(next(), nullptr, 16);
+    else if (a == "--cpu-training") gx::RenderOptions::live_cpu_training() = (uint32_t)std::strtoul(next(), nullptr, 16);   // option word 3 (hex), tests
     else if (a == "--mod-profile") { if (!source_port::set_mod_profile(next())) return 2; }
     else if (a == "--mod-opponent-unverified") gx::RenderOptions::live_mods_dolphin_ok() = true;
     else if (a == "--record-native") _putenv_s("MELEE_SOURCE_RECORD", "1");
@@ -1545,8 +1636,9 @@ static int melee_main(int argc, char** argv) {
     if (cosmetic_status) {
       std::printf("profile %s\n", host::cosmetics::profile_enabled() ? "enabled" : "disabled");
       for (const auto& asset : host::cosmetics::assets())
-        std::printf("%c %s | %s | %s | %s\n", asset.selected ? '*' : '-', asset.target_path.c_str(),
-                    asset.name.c_str(), asset.id.c_str(), asset.sha256.c_str());
+        std::printf("%c %s | %s | %s | %s%s%s\n", asset.selected ? '*' : '-', asset.target_path.c_str(),
+                    asset.name.c_str(), asset.id.c_str(), asset.sha256.c_str(),
+                    asset.voice.empty() ? "" : " | voice ", asset.voice.c_str());
     }
     return ok ? 0 : 1;
   }

@@ -163,6 +163,31 @@ int main(int argc, char** argv) {
       require(created==before,"remove haze must not rebuild features");
     }
     in.tuning.tone_restore=0.0f;
+    // A display-shaped model size shrinks one axis only: the model works at that size, the frame
+    // keeps its own, and an identity model still returns the input. Then with a neural scale on top.
+    for(int scale:{100,50,73}) {
+      in.tuning.resolution_scale=scale; in.model_w=64; in.model_h=24;
+      require(gx::dlss5::needs_warmup(64,32,in.tuning,64,24),"a new model size asks for a warm-up");
+      frame(true,original); check_calls(4,true);
+      require(state.feature_w==64u*scale/100 && state.feature_h==24u*scale/100,"model works at the display-shaped size");
+      require(calls[0].output->GetDesc().Width==state.feature_w && calls[0].output->GetDesc().Height==state.feature_h,"model output size");
+      require(!gx::dlss5::needs_warmup(64,32,in.tuning,64,24),"unchanged model size needs no warm-up");
+      const int before=created;
+      frame(true,original); check_calls(4,false);
+      require(created==before,"unchanged model size must reuse features");
+    }
+    // A model size equal to the frame is the same as none.
+    in.tuning.resolution_scale=100; in.model_w=64; in.model_h=32;
+    frame(true,original);
+    { const int before=created; in.model_w=in.model_h=0; frame(true,original); check_calls(4,false);
+      require(created==before,"frame-sized model size is the unscaled path"); }
+    { uint32_t mw=1,mh=1;
+      gx::dlss5::display_model_size(1920,1584,(16.0f/9.0f)*(480.0f/528.0f),&mw,&mh);
+      require(mw==1920 && mh==1188,"widescreen frame gets a display-shaped model size");
+      gx::dlss5::display_model_size(1920,1584,(4.0f/3.0f)*(480.0f/528.0f),&mw,&mh);
+      require(mw==0 && mh==0,"a frame already display-shaped is left alone");
+      gx::dlss5::display_model_size(1920,1584,(73.0f/60.0f)*(480.0f/528.0f),&mw,&mh);
+      require(mw==1752 && mh==1584,"a frame stored too wide keeps its height"); }
     // A later failure must discard even a visibly modified earlier pass.
     in.tuning.resolution_scale=100; in.tuning.passes=2;
     Bytes altered(original.size(),37); auto synthetic=gpu.texture(64,32,&altered);
