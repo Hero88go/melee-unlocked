@@ -32,6 +32,9 @@ struct Tuning {
   int upsample_filter = 0;        // 0 bilinear, 1 bicubic, 2 nearest
   int reconstruction = 0;         // 0 RGB residual, 1 processed image
   int passes = 1;                 // 1..4, each with its own temporal feature
+  float tone_restore = 0.0f;      // 0..1: how much of the black level lift is taken back out after the model
+  // The feature comparison. tone_restore is left out on purpose: the correction runs after the
+  // model, so moving its slider must not rebuild the feature.
   bool operator!=(const Tuning& o) const {
     return intensity != o.intensity || detail != o.detail || tone != o.tone || skin != o.skin ||
            style != o.style || preset != o.preset || auto_mask != o.auto_mask ||

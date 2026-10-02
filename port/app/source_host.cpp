@@ -19,6 +19,7 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -50,6 +51,7 @@
 #include "native_recording_codes.h"
 #include "source_mod_overlay.h"
 #include "mod_profile.h"
+#include "net_trace.h"
 #include "mod_scan.h"
 #include "pack_skin_rule.h"
 #include "disc_skin_scan.h"
@@ -557,14 +559,26 @@ std::vector<CosmeticFile> g_cosmetic_files;
 std::unordered_map<int32_t, int32_t> g_cosmetic_alias;
 bool native_online_mode();
 constexpr uint32_t kCosmeticBase = 0xF0000000u;
+// Kept past startup for the character select's L / R skin cycling (republish_cosmetic_slot): the
+// table with the lengths published so far, the next free address of the cosmetic range, the path of
+// each entry of the disc's table, and the entry that serves each (disc entry, skin) pair, so a skin
+// picked again reuses its entry and its range ("" is the disc's own file).
+std::vector<uint8_t> g_cosmetic_fst;
+uint64_t g_cosmetic_next = kCosmeticBase;
+std::vector<std::string> g_raw_paths;
+std::map<std::pair<uint32_t, std::string>, int32_t> g_cosmetic_live;
 
 void load_cosmetics(bool always_vanilla_unsafe) {
   if (g_fst_raw.size() < 12) return;
   if (always_vanilla_unsafe) host::cosmetics::freeze_for_online_session();
-  std::vector<uint8_t> fst = g_fst_raw;
+  std::vector<uint8_t>& fst = g_cosmetic_fst;
+  fst = g_fst_raw;
   host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size());
   const uint32_t count = be32(fst.data() + 8);
-  uint64_t next = kCosmeticBase;
+  uint64_t& next = g_cosmetic_next;
+  g_raw_paths.assign(count, std::string());
+  for (const auto& path : g_paths)
+    if (path.second > 0 && (uint32_t)path.second < count) g_raw_paths[(size_t)path.second] = path.first;
   for (uint32_t i = 1; i < count && i < g_fst.size(); ++i) {
     const uint8_t* e = fst.data() + i * 12;
     if (e[0]) continue;
@@ -579,6 +593,7 @@ void load_cosmetics(bool always_vanilla_unsafe) {
     g_cosmetic_files.push_back({(uint32_t)next, vanilla_start, length, false});
     g_fst[i] = {(uint32_t)next, length, false};
     next += span;
+    g_cosmetic_live[{i, host::cosmetics::applied_asset(vanilla_start)}] = (int32_t)i;
     if (!host::cosmetics::online_allowed(vanilla_start)) {
       const int32_t alias = (int32_t)g_fst.size();
       g_fst.push_back({vanilla_start, be32(g_fst_raw.data() + i * 12 + 8), false});
@@ -811,9 +826,13 @@ void h_hud_player(int32_t slot, int32_t present, int32_t damage, int32_t stocks,
 bool g_replaying = false;
 uint32_t g_replay_feature_options = 0;
 uint32_t g_replay_feature_options2 = 0;
+// "20XX CPUs" (Game tab) rides in word 2 as MU_GAME_OPTION2_TE_20XX_CPUS but is a plain option, not a
+// 20XX TE feature: it goes to the game with or without a TE save, and the game gates it itself
+// (mu_option2_offline: offline only, never in a TM-CE event).
+uint32_t cpu_20xx_bit() { return gx::RenderOptions::live_cpu_20xx() ? MU_GAME_OPTION2_TE_20XX_CPUS : 0u; }
 uint32_t h_game_options2() {
   if (g_replaying) return g_replay_feature_options2;
-  return mods::status().te_owned ? gx::RenderOptions::live_te_options2() : 0u;
+  return (mods::status().te_owned ? gx::RenderOptions::live_te_options2() : 0u) | cpu_20xx_bit();
 }
 uint32_t h_game_options() {
   return (gecko::option_no_screen_shake ? MU_GAME_OPTION_NO_SCREEN_SHAKE : 0u) |
@@ -1059,7 +1078,7 @@ void native_load(int32_t frame, const uint8_t* payload) {
   // The frame the game finishes next continues from this older state; the renderer must not blend
   // across the jump.
   gx::mark_discontinuity();
-  slippi::online::note_rollback();
+  slippi::online::note_rollback(frame);
   if (g_savestates.stats().loads % 200 == 0) log_savestate_stats("so far");
 }
 
@@ -1129,6 +1148,85 @@ void report_selftest(int32_t frame, std::vector<uint8_t>& reply) {
   }
 }
 
+// ---- character select L / R skin cycling (mn/mncharsel.c, shim/mu_content.c) ----
+// payload: port, character select fighter number, costume, direction (1 next, 0 previous).
+// reply: 1 when the slot's skin changed (0 otherwise), then the choice's name for the door label.
+constexpr uint8_t CMD_SKIN_CYCLE = 0xF9;
+
+// The slot's disc files after the catalog published it again: each one gets the entry that serves
+// it now, and the path opens that entry. A skin is a new entry number in its own range past
+// kCosmeticBase, so nothing the game preloaded under the old number is reused; a skin not proven to
+// change looks alone also gets the alias entry that names the disc's copy for online play, as at
+// startup. False when a file could not be given an entry (the caller puts the old pick back).
+bool republish_cosmetic_slot(const std::string& slot) {
+  const auto result = host::cosmetics::republish_slot(g_cosmetic_fst.data(), (uint32_t)g_cosmetic_fst.size(), slot);
+  if (!result.ok) return false;
+  bool ok = true;
+  for (const auto& file : result.files) {
+    const uint32_t i = file.fst_index;
+    if (i >= g_raw_paths.size() || g_raw_paths[i].empty() || (size_t)i * 12 + 12 > g_fst_raw.size()) continue;
+    if (g_fst[i].offset != file.vanilla_start && g_fst[i].offset < kCosmeticBase) {
+      host::log("cosmetics: entry %u is replaced by a mod pack; cosmetic selection skipped", i);
+      continue;
+    }
+    const uint32_t vanilla_length = be32(g_fst_raw.data() + (size_t)i * 12 + 8);
+    const std::pair<uint32_t, std::string> key{i, file.overridden ? file.asset_id : std::string()};
+    int32_t entry;
+    const auto known = g_cosmetic_live.find(key);
+    if (known != g_cosmetic_live.end()) entry = known->second;
+    else if (!file.overridden && g_fst[i].offset == file.vanilla_start) entry = (int32_t)i;
+    else if (!file.overridden) {
+      entry = (int32_t)g_fst.size();
+      g_fst.push_back({file.vanilla_start, vanilla_length, false});
+    } else {
+      const uint64_t span = ((uint64_t)file.length + 0xFFFFu) & ~0xFFFFull;
+      if (g_cosmetic_next + span > 0xFFFF0000ull) {
+        host::log("cosmetics: selections exceed the cosmetic range; %s keeps its previous skin", slot.c_str());
+        ok = false;
+        continue;
+      }
+      entry = (int32_t)g_fst.size();
+      g_fst.push_back({(uint32_t)g_cosmetic_next, file.length, false});
+      g_cosmetic_files.push_back({(uint32_t)g_cosmetic_next, file.vanilla_start, file.length, false});
+      g_cosmetic_next += span;
+      if (!file.online_allowed) {
+        const int32_t alias = (int32_t)g_fst.size();
+        g_fst.push_back({file.vanilla_start, vanilla_length, false});
+        g_cosmetic_alias[entry] = alias;
+      }
+    }
+    g_cosmetic_live[key] = entry;
+    g_paths[g_raw_paths[i]] = entry;
+  }
+  return ok;
+}
+
+void cycle_costume_skin(int character, int costume, int direction, std::vector<uint8_t>& reply) {
+  reply.assign(1, 0);
+  if (g_replaying || g_cosmetic_fst.empty()) return;
+  const std::string slot = host::cosmetics::costume_slot_file(character, costume);
+  if (slot.empty()) return;
+  const auto pick = host::cosmetics::cycle_slot_live(slot, direction);
+  if (!pick.ok || !pick.changed) {
+    if (!pick.message.empty()) host::log("cosmetics: %s skin not changed (%s)", slot.c_str(), pick.message.c_str());
+    return;
+  }
+  if (!republish_cosmetic_slot(slot)) {
+    std::string error;
+    host::cosmetics::select_variant_live(slot, pick.previous_id, &error);
+    republish_cosmetic_slot(slot);
+    return;
+  }
+  // The pictures the new choice brings (its portrait and stock icon), for the renderer's next frame.
+  std::vector<gx::texpack::CosmeticCompanion> companions;
+  for (const auto& item : host::cosmetics::active_companions())
+    companions.push_back({item.kind, item.target_path, item.path});
+  gx::texpack::refresh_cosmetic_companions(std::move(companions));
+  host::log("cosmetics: character select picked %s for %s", pick.name.c_str(), slot.c_str());
+  reply[0] = 1;
+  reply.insert(reply.end(), pick.name.begin(), pick.name.begin() + (std::ptrdiff_t)std::min<size_t>(pick.name.size(), 63));
+}
+
 int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t payload_size,
                          uint8_t* response, uint32_t response_capacity, uint32_t* response_size) {
   return slippi::online::native_command(
@@ -1157,6 +1255,7 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
         if (c == CMD_LAB_SAVE) { lab_save(); return true; }
         if (c == CMD_LAB_LOAD) { lab_load(); return true; }
         if (c == CMD_LAB_ADVANTAGE && n == 5) { training_overlay::set_advantage((int32_t)read_be32(p), p[4]); return true; }
+        if (c == CMD_SKIN_CYCLE && n == 4) { cycle_costume_skin(p[1], p[2], p[3] ? 1 : -1, reply); return true; }
         if (c == 0xF6 && n == 1) {
           // 20XX TE switches from inside the game (stage select Y: Frozen Mode), for this session.
           if (p[0] == 0) {
@@ -2023,6 +2122,7 @@ void write_replay_recording() {
     g_replay_written = ok && closed;
     host::log("replay: %s %s (%zu bytes)", g_replay_written ? "recording written to" : "write failed for",
               out.string().c_str(), file.size());
+    if (g_replay_written) net_trace::replay_saved(out.string().c_str());
   } else {
     host::log("replay: cannot write %s (error %lu)", out.string().c_str(), GetLastError());
   }
@@ -2089,7 +2189,8 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
     // The 20XX TE features in effect (offline only; online matches never carry them).
     g_replay_stream.set_feature_options(online || !mods::status().te_owned
                                             ? 0u : (gx::RenderOptions::live_te_options() & 0x7FF0u));
-    g_replay_stream.set_feature_options2(online || !mods::status().te_owned ? 0u : gx::RenderOptions::live_te_options2());
+    g_replay_stream.set_feature_options2(online ? 0u : (mods::status().te_owned ? gx::RenderOptions::live_te_options2() : 0u) |
+                                                      cpu_20xx_bit());   // "20XX CPUs" too: playback replays it
     if (!g_replay_stream.begin_slippi(start, codes, (int64_t)std::time(nullptr)))
       host::log("replay: cannot start native recording: %s", g_replay_stream.error().c_str());
     else if (online)

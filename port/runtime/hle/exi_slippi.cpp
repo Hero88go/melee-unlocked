@@ -115,9 +115,17 @@ std::vector<uint8_t> generate_metadata() {
   return m;
 }
 
+bool g_discard_replay = false;   // this match cannot be played back from its file (see discard_current_replay)
+
 void close_file() {
   if (!g_file) return;
   std::fclose(g_file); g_file = nullptr;
+  if (g_discard_replay) {
+    g_discard_replay = false;
+    std::remove(g_replay_path.c_str());
+    host::log("slippi: replay not kept: %s (20XX CPUs were on, and a replay cannot hold what they do)", g_replay_path.c_str());
+    return;
+  }
   ++g_replays_written;
   host::log("slippi: replay written: %s (%u raw bytes, last frame %d)", g_replay_path.c_str(), g_written, g_last_frame);
 }
@@ -482,6 +490,13 @@ void prepare_gct_length() {
   append_u32(g_read_queue, (uint32_t)gecko::slippi_gct_size);
 }
 
+bool gct_range_local(uint32_t* lo, uint32_t* hi) {
+  if (!g_gct_address) return false;
+  *lo = g_gct_address;
+  *hi = g_gct_address + (uint32_t)gecko::slippi_gct_size;
+  return true;
+}
+
 void prepare_gct_load(const uint8_t* payload) {
   g_read_queue.clear();
   g_gct_address = be32(payload);
@@ -686,6 +701,7 @@ uint32_t gct_load_address() { return g_gct_address; }
 uint64_t commands_seen() { return g_commands; }
 const std::string& replay_directory() { return g_replay_dir; }
 const std::string& last_replay_path() { return g_replay_path; }
+bool recording() { return g_file != nullptr; }
 
 void imm_write(uint32_t, uint32_t) {}
 uint32_t imm_read(uint32_t) { return 0; }
@@ -756,5 +772,8 @@ void dma_read(uint32_t addr, uint32_t size) {
   std::memcpy(host::ptr(addr, size), g_read_queue.data(), size);
   host::mark_ram_write(addr, size);
 }
+
+bool gct_range(uint32_t* lo, uint32_t* hi) { return gct_range_local(lo, hi); }
+void discard_current_replay() { if (g_file) g_discard_replay = true; }
 
 }  // namespace slippi

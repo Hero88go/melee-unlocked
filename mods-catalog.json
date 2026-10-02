@@ -99,7 +99,7 @@
       "patch_sha256": "7f675995e000eda80cfdb340a1272b4370d8ef492cc7f576bf9bfa5e581048a5",
       "output_md5": "d926ba5b39551f5245fd655bc1dfeb3f",
       "output_sha256": "6a23c731a95a076e531ce38d60c699b4c73fc11a035e42afb390f6d4ab96acea",
-      "note": "Stops at startup on the Static Recomp. Not supported yet."
+      "note": "Plays on the Static Recomp, offline (no online play or replays)."
     }
   ]
 }

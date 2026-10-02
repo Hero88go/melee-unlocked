@@ -46,8 +46,10 @@ bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vect
 bool valid_command_payload(uint8_t cmd, const uint8_t* payload, uint32_t payload_len);
 // Counts rollback loads so the renderer can treat them as discontinuities.
 uint64_t rollback_count();
-// A native savestate load (the source port serves Slippi's savestate commands itself).
-void note_rollback();
+// A native savestate load (the source port serves Slippi's savestate commands itself). `to_frame`
+// is the frame loaded, for the session trace's rollback depth.
+constexpr int32_t kRollbackFrameUnknown = INT32_MIN;
+void note_rollback(int32_t to_frame = kRollbackFrameUnknown);
 bool is_online_match();
 // The in-game slot the local player occupies in the running online match (0-3).
 int local_player_slot();

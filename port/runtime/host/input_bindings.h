@@ -23,8 +23,10 @@ enum class BindAction : uint8_t {
 inline constexpr bool is_cstick_action(int i) { return i >= (int)BindAction::CUp && i <= (int)BindAction::CRight; }
 inline constexpr bool is_stick_action(int i) { return i >= (int)BindAction::SUp && i <= (int)BindAction::SRight; }
 
-struct KeyBindings { int vk[(size_t)BindAction::Count]; };
-struct PadBindings { unsigned short mask[(size_t)BindAction::Count]; };  // 0 = unbound
+// Every table carries a `level` per binding beside the binding itself: its own analog threshold,
+// 0 = default (see "per-binding analog level" below).
+struct KeyBindings { int vk[(size_t)BindAction::Count]; uint8_t level[(size_t)BindAction::Count]; };
+struct PadBindings { unsigned short mask[(size_t)BindAction::Count]; uint8_t level[(size_t)BindAction::Count]; };  // 0 = unbound
 // XInput reserves these wButtons bits. They identify analog triggers in binding
 // capture and profiles; hardware button bits are masked before they are added.
 inline constexpr uint16_t kXInputBindLT = 0x0400, kXInputBindRT = 0x0800;
@@ -35,11 +37,11 @@ inline uint16_t xinput_binding_buttons(uint16_t buttons, uint8_t left, uint8_t r
   if (right > right_threshold) buttons |= kXInputBindRT;
   return buttons;
 }
-struct GCBindings { unsigned short mask[(size_t)BindAction::Count]; };  // GC adapter raw button mask, same layout as kActionPadBit
+struct GCBindings { unsigned short mask[(size_t)BindAction::Count]; uint8_t level[(size_t)BindAction::Count]; };  // GC adapter raw button mask, same layout as kActionPadBit
 // Generic HID gamepads (B0XX, Frame1, vJoy, third-party pads). Thirty-two bits rather than sixteen
 // because a box controller really does have more than sixteen buttons, and the numbering is the
 // device's own: bit N is HID button N+1, whatever that button happens to be labelled.
-struct HidBindings { uint32_t mask[(size_t)BindAction::Count]; };
+struct HidBindings { uint32_t mask[(size_t)BindAction::Count]; uint8_t level[(size_t)BindAction::Count]; };
 
 // Native DualShock 4 HID button masks. These are independent of XInput and are
 // populated from the controller's USB/Bluetooth Raw Input report.
@@ -246,8 +248,48 @@ inline void apply_trigger_click(int threshold, uint8_t value, uint16_t& button, 
 }
 inline void apply_trigger_cap(int cap, uint8_t& value, uint16_t& button, uint16_t click) {
   if (cap >= 255) return;
+  // The full press arrived while the trigger itself is at rest: it comes from a button bound to L or
+  // R, not from the trigger's travel. That button stays a full press (full shield, L+R+A+Start).
+  if ((button & click) && value < 43) { value = 255; return; }
   if (value > cap) value = (uint8_t)(cap < 0 ? 0 : cap);
   button &= (uint16_t)~click;
+}
+
+// ---- per-binding analog level ----
+// Stored beside each binding (`level` in the tables above). 0, the default, is exactly the
+// behaviour from before the level existed. Otherwise, out of 255:
+//  - the bound source is analog (an Xbox LT/RT, a PlayStation L2/R2): it counts as pressed above
+//    this value, whatever it is bound to;
+//  - the source is a button and the action is L or R, whose output is analog: how far the button
+//    presses the trigger. Below 255 that is a light press, with no click.
+inline constexpr int kPlayStationTriggerPress = 30;   // where the pad reader itself sets L2/R2 (playstation_pad.cpp)
+inline constexpr bool is_trigger_action(int i) { return i == (int)BindAction::L || i == (int)BindAction::R; }
+// An Xbox binding: `buttons` are the pad's own wButtons, the triggers their raw values. The
+// thresholds are the family's, used while the binding has no level of its own.
+inline bool xinput_binding_pressed(uint16_t mask, int level, uint16_t buttons, uint8_t left, uint8_t right,
+                                   int left_threshold, int right_threshold) {
+  if ((mask & kXInputBindLT) && left > (level ? level : left_threshold)) return true;
+  if ((mask & kXInputBindRT) && right > (level ? level : right_threshold)) return true;
+  return (buttons & mask & (uint16_t)~(kXInputBindLT | kXInputBindRT)) != 0;
+}
+// A PlayStation binding: `buttons` as the pad reader decoded them (L2/R2 set above its own press
+// point, and the trigger values zero below it, so a level under that point acts as that point).
+inline bool ds4_binding_pressed(uint16_t mask, int level, uint16_t buttons, uint8_t left, uint8_t right) {
+  if (!level) return (buttons & mask) != 0;
+  if ((mask & DS4_L2) && left > level) return true;
+  if ((mask & DS4_R2) && right > level) return true;
+  return (buttons & mask & (uint16_t)~(DS4_L2 | DS4_R2)) != 0;
+}
+// A pressed binding into the pad. `depth` is the binding's level when its source is a button, 0
+// when the source is analog (the level was its press point). L and R with a depth below 255 press
+// the trigger that far and do not click; everything else is the button, as before.
+inline void apply_bound_press(int action, int depth, PadState& pad) {
+  if (is_trigger_action(action) && depth > 0 && depth < 255) {
+    uint8_t& trigger = action == (int)BindAction::L ? pad.trig_l : pad.trig_r;
+    if (trigger < depth) trigger = (uint8_t)depth;
+    return;
+  }
+  pad.button |= kActionPadBit[action];
 }
 extern std::array<Deadzone, (size_t)PadFamily::Count> g_deadzones;
 inline void apply_deadzone(const Deadzone& dz, int8_t& x, int8_t& y, bool c) {

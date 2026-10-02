@@ -151,6 +151,18 @@ int main(int argc, char** argv) {
       frame(true,original); check_calls(passes,false);
       require(created==before,"unchanged settings must reuse features");
     }
+    // Remove haze runs after the model: turning it up keeps the features and their history, and a
+    // model that lifts nothing leaves the picture as it was, at reduced and full size.
+    for(int scale:{73,100}) {
+      in.tuning.resolution_scale=scale; in.tuning.tone_restore=0.0f;
+      frame(true,original);
+      const int before=created;
+      in.tuning.tone_restore=1.0f;
+      require(!gx::dlss5::needs_warmup(64,32,in.tuning),"remove haze must not ask for a warm-up");
+      frame(true,original); check_calls(4,false);
+      require(created==before,"remove haze must not rebuild features");
+    }
+    in.tuning.tone_restore=0.0f;
     // A later failure must discard even a visibly modified earlier pass.
     in.tuning.resolution_scale=100; in.tuning.passes=2;
     Bytes altered(original.size(),37); auto synthetic=gpu.texture(64,32,&altered);

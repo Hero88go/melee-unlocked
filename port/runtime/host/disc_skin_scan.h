@@ -30,11 +30,18 @@ inline void scan_detected_disc_skins(const std::filesystem::path& open_disc) {
     const std::string name = (d.name.empty() ? d.path.stem().u8string() : d.name) + " disc";
     const auto result = host::cosmetics::scan_disc_skins(d.path.u8string(), name);
     if (!result.ok) { host::log("mods: skins of %s not listed: %s", d.path.u8string().c_str(), result.message.c_str()); continue; }
-    listed += fs::absolute(d.path, ec).u8string() + "\t" +
-              std::to_string(host::cosmetics::disc_skin_count(d.path.u8string())) + "\n";
+    // The sets the disc has ("alt L,alt R"), so the launcher can name them.
+    std::string sets;
+    const std::string key = fs::absolute(d.path, ec).u8string();
+    for (const auto& pack : host::cosmetics::packs()) {
+      if (pack.key != key) continue;
+      for (const auto& variant : pack.variants) if (!variant.empty()) sets += (sets.empty() ? "" : ",") + variant;
+    }
+    listed += key + "\t" + std::to_string(host::cosmetics::disc_skin_count(d.path.u8string())) + "\t" + sets + "\n";
   }
   if (listed.empty()) return;
-  // For the launcher's Mods page, which does not load the skin catalog: disc path, tab, skin count.
+  // For the launcher's Mods page, which does not load the skin catalog: disc path, tab, skin count,
+  // tab, the alternate sets by name.
   std::error_code ec;
   const fs::path cache = mods_folder() / ".cache";
   fs::create_directories(cache, ec);

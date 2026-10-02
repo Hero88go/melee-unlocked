@@ -16,6 +16,7 @@
 #include <chrono>
 #include <string>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <future>
 #include <cmath>
@@ -48,6 +49,12 @@ class ThreadedBackend final : public Backend {
     double cap_period = options_.fps_cap > 0 ? 1.0 / options_.fps_cap : 0.0;
     double refresh_check = 0;
     double render_budget = 0.004;
+    // "Uncapped" used to present as fast as this thread could go. Against a GPU that cannot keep
+    // up that keeps the GPU's queue full, and a full queue is input latency; it also ran this
+    // thread and the solver workers flat out against the simulation and input threads. Uncapped
+    // is now held at twice the display's refresh rate, which still shows every sub-frame a monitor
+    // can use. MELEE_PRESENT_UNCAPPED=1 restores the old behaviour for comparison runs.
+    static const bool present_uncapped = [] { const char* v = std::getenv("MELEE_PRESENT_UNCAPPED"); return v && *v == '1'; }();
     struct Trace {
       FILE* file = nullptr;
       explicit Trace(const std::string& path) {
@@ -75,9 +82,12 @@ class ThreadedBackend final : public Backend {
     for (;;) {
       host::window_pump();
       const auto& live_options = render_options(renderer);
-      if (live_options.fps_cap >= 0) cap_period = live_options.fps_cap > 0 ? 1.0/live_options.fps_cap : 0;
-      if (live_options.fps_cap < 0 && host::now_seconds() >= refresh_check) {
-        cap_period = 1.0 / host::window_refresh_rate();
+      if (live_options.fps_cap > 0) cap_period = 1.0 / live_options.fps_cap;
+      else if (live_options.fps_cap == 0 && present_uncapped) cap_period = 0;
+      else if (host::now_seconds() >= refresh_check) {
+        // -1 follows the monitor; 0 (uncapped) is held at twice the monitor's rate, see above.
+        const double refresh = std::max(host::window_refresh_rate(), 1.0);
+        cap_period = 1.0 / (live_options.fps_cap < 0 ? refresh : 2.0 * refresh);
         refresh_check = host::now_seconds() + 1.0;
       }
       if (host::window_closed()) { queue.finish(true); break; }
@@ -193,6 +203,7 @@ class ThreadedBackend final : public Backend {
         ++burst_logged;
       }
       renderer->set_present_deadline(subframes && cap_period > 0 ? next_present : 0);
+      solver_pair_counter().store(subframes ? solver.pair_count() : 0, std::memory_order_relaxed);   // for the backends' "gpu:" line
       const double render_start = host::now_seconds();
       double solver_ms = 0;
       if (subframes && have_prev) {
@@ -252,11 +263,17 @@ class ThreadedBackend final : public Backend {
         const SubFrameStats& s = solver.stats();
         wchar_t title[256];
         _snwprintf_s(title, _TRUNCATE, L"%ls  |  DISPLAY %.0f fps%s  |  game logic %.0f Hz (always 60, like Rivals' physics)  |  %s  |  draws %u paired %u",
-                     host::window_title_base().c_str(), stats_presented / (now - stats_time), cap_period > 0 ? L" (capped)" : L" (uncapped)", stats_sim / (now - stats_time),
+                     host::window_title_base().c_str(), stats_presented / (now - stats_time),
+                     cap_period <= 0 ? L" (uncapped)" : live_options.fps_cap == 0 ? L" (uncapped, held at 2x refresh)" : L" (capped)", stats_sim / (now - stats_time),
                      !subframes ? L"locked" : authored ? L"authored" : interpolate ? L"interpolate" : L"extrapolate", s.draws, s.paired);
         host::window_set_title(title);
         if (++stats_lines % 5 == 0) {
-          host::log("display: %.0f fps (sim %.0f Hz, %s, %u draws, %u paired, %u cuts)", stats_presented / (now - stats_time), stats_sim / (now - stats_time),
+          // The cap the pacing actually used, not the setting: "uncapped" is held at twice the
+          // display's refresh unless MELEE_PRESENT_UNCAPPED=1, and -1 is whatever the monitor runs at.
+          char cap_text[64];
+          if (cap_period <= 0) std::snprintf(cap_text, sizeof cap_text, "no cap");
+          else std::snprintf(cap_text, sizeof cap_text, "cap %.0f%s", 1.0 / cap_period, live_options.fps_cap == 0 ? " = 2x refresh" : live_options.fps_cap < 0 ? " = monitor" : "");
+          host::log("display: %.0f fps (%s, sim %.0f Hz, %s, %u draws, %u paired, %u cuts)", stats_presented / (now - stats_time), cap_text, stats_sim / (now - stats_time),
                     !subframes ? "locked" : authored ? "authored" : interpolate ? "interpolate" : "extrapolate", s.draws, s.paired, s.cuts);
           if (subframes) host::log("pair rejection: missing %u, HUD %u, geometry %u, state %u (last BP %02X), projection %u, authored %u, camera-only %u, vertex-blended %u, FLIPS %u | phases <.25:%u <.5:%u <.75:%u <1:%u =1:%u",
                                    s.missing, s.hud, s.geometry, s.state, s.state_register, s.projection, s.authored, s.carried, s.vertex_blended, s.pair_flips, phase_bins[0], phase_bins[1], phase_bins[2], phase_bins[3], phase_bins[4]);

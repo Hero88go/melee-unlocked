@@ -358,19 +358,40 @@ bool decode_png(const std::string& path, std::vector<uint8_t>& out, uint32_t* wi
   return true;
 }
 
-const std::string* cosmetic_path(const std::string& base) {
-  if (g.cosmetic_csp.empty() && g.cosmetic_stock.empty() && g.cosmetic_stock_palette.empty()) return nullptr;
+// The companion maps can change while the game runs (a skin picked on the character select), and
+// the loader thread reads them too, so every look at them holds this lock and copies the path out.
+std::mutex g_cosmetic_mutex;
+std::atomic<bool> g_cosmetic_any{false};
+// The set waiting for the render thread (refresh_cosmetic_companions), and the list it was built from.
+std::vector<CosmeticCompanion> g_cosmetic_list, g_cosmetic_pending;
+std::atomic<bool> g_cosmetic_refresh{false};
+
+bool cosmetic_path(const std::string& base, std::string* path = nullptr) {
+  if (!g_cosmetic_any.load(std::memory_order_relaxed)) return false;
   const native_companions::TextureName name = native_companions::parse_texture_name(base);
-  if (!name.ok) return nullptr;
+  if (!name.ok) return false;
+  std::lock_guard<std::mutex> lk(g_cosmetic_mutex);
+  const std::string* hit = nullptr;
   if (!name.stock) {
     auto found = g.cosmetic_csp.find(name.tex);
-    return found == g.cosmetic_csp.end() ? nullptr : &found->second;
+    if (found != g.cosmetic_csp.end()) hit = &found->second;
+  } else {
+    auto found = g.cosmetic_stock.find(name.tex);
+    if (found != g.cosmetic_stock.end()) hit = &found->second;
+    else if (name.has_tlut) {
+      auto shared = g.cosmetic_stock_palette.find({name.tex, name.tlut});
+      if (shared != g.cosmetic_stock_palette.end()) hit = &shared->second;
+    }
   }
-  auto found = g.cosmetic_stock.find(name.tex);
-  if (found != g.cosmetic_stock.end()) return &found->second;
-  if (!name.has_tlut) return nullptr;
-  auto shared = g.cosmetic_stock_palette.find({name.tex, name.tlut});
-  return shared == g.cosmetic_stock_palette.end() ? nullptr : &shared->second;
+  if (hit && path) *path = *hit;
+  return hit != nullptr;
+}
+
+bool same_companions(const std::vector<CosmeticCompanion>& a, const std::vector<CosmeticCompanion>& b) {
+  if (a.size() != b.size()) return false;
+  for (size_t i = 0; i < a.size(); ++i)
+    if (a[i].kind != b[i].kind || a[i].target_path != b[i].target_path || a[i].path != b[i].path) return false;
+  return true;
 }
 
 }  // namespace
@@ -378,30 +399,56 @@ const std::string* cosmetic_path(const std::string& base) {
 void clear_cache();
 
 void set_cosmetic_companions(std::vector<CosmeticCompanion> companions) {
-  g.cosmetic_csp.clear();
-  g.cosmetic_stock.clear();
-  g.cosmetic_stock_palette.clear();
-  for (const auto& companion : companions) {
-    const auto found = native_companions::identities(companion.kind, companion.target_path);
-    if (found.empty())
-      host::log("cosmetics: no retail %s texture is known for %s; using vanilla",
-                companion.kind.c_str(), companion.target_path.c_str());
-    for (const auto& identity : found) {
-      if (companion.kind == "csp") g.cosmetic_csp[identity.tex] = companion.path;
-      else if (identity.needs_tlut) g.cosmetic_stock_palette[{identity.tex, identity.tlut}] = companion.path;
-      else g.cosmetic_stock[identity.tex] = companion.path;
+  size_t portraits = 0, stocks = 0;
+  {
+    std::lock_guard<std::mutex> lk(g_cosmetic_mutex);
+    g.cosmetic_csp.clear();
+    g.cosmetic_stock.clear();
+    g.cosmetic_stock_palette.clear();
+    for (const auto& companion : companions) {
+      const auto found = native_companions::identities(companion.kind, companion.target_path);
+      if (found.empty())
+        host::log("cosmetics: no retail %s texture is known for %s; using vanilla",
+                  companion.kind.c_str(), companion.target_path.c_str());
+      for (const auto& identity : found) {
+        if (companion.kind == "csp") g.cosmetic_csp[identity.tex] = companion.path;
+        else if (identity.needs_tlut) g.cosmetic_stock_palette[{identity.tex, identity.tlut}] = companion.path;
+        else g.cosmetic_stock[identity.tex] = companion.path;
+      }
     }
+    portraits = g.cosmetic_csp.size();
+    stocks = g.cosmetic_stock.size() + g.cosmetic_stock_palette.size();
+    g_cosmetic_any.store(portraits || stocks, std::memory_order_relaxed);
+    g_cosmetic_list = std::move(companions);
   }
   clear_cache();
-  host::log("cosmetics: %zu CSP and %zu stock texture identities active",
-            g.cosmetic_csp.size(), g.cosmetic_stock.size() + g.cosmetic_stock_palette.size());
+  host::log("cosmetics: %zu CSP and %zu stock texture identities active", portraits, stocks);
+}
+
+void refresh_cosmetic_companions(std::vector<CosmeticCompanion> companions) {
+  std::lock_guard<std::mutex> lk(g_cosmetic_mutex);
+  // The same pictures as now (a skin with no portrait of its own): nothing to rebuild.
+  if (!g_cosmetic_refresh.load(std::memory_order_relaxed) && same_companions(companions, g_cosmetic_list)) return;
+  g_cosmetic_pending = std::move(companions);
+  g_cosmetic_refresh.store(true, std::memory_order_release);
+}
+
+bool take_cosmetics_changed() {
+  if (!g_cosmetic_refresh.load(std::memory_order_acquire)) return false;
+  std::vector<CosmeticCompanion> companions;
+  {
+    std::lock_guard<std::mutex> lk(g_cosmetic_mutex);
+    companions = std::move(g_cosmetic_pending);
+    g_cosmetic_pending.clear();
+    g_cosmetic_refresh.store(false, std::memory_order_release);
+  }
+  set_cosmetic_companions(std::move(companions));
+  return true;
 }
 
 bool enabled() { return g.on; }
 bool dumping() { return g.dump; }
-bool cosmetics_enabled() {
-  return !g.cosmetic_csp.empty() || !g.cosmetic_stock.empty() || !g.cosmetic_stock_palette.empty();
-}
+bool cosmetics_enabled() { return g_cosmetic_any.load(std::memory_order_relaxed); }
 
 // Scanning is separate from replacing. A player who has a pack installed should see it listed
 // without having to switch anything on first: the index is filenames only, and building it is a
@@ -641,7 +688,7 @@ std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes
       g_cache_bytes -= r->pixels.size();
       g_cache.erase(hit);
       auto found = g.index.find(base);
-      const bool cosmetic = cosmetic_path(base) != nullptr;
+      const bool cosmetic = cosmetic_path(base);
       if (!cosmetic && found != g.index.end()) {
         const int pack = found->second.pack;
         if (pack >= 0 && pack < (int)g.packs.size() && !g.packs[(size_t)pack].enabled) return nullptr;
@@ -654,10 +701,11 @@ std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes
 
 std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes) {
   if (base.empty()) return nullptr;
-  if (const std::string* path = cosmetic_path(base)) {
+  std::string cosmetic;
+  if (cosmetic_path(base, &cosmetic)) {
     auto out = std::make_unique<Replacement>();
     uint32_t width = 0, height = 0;
-    if (!decode_png(*path, out->pixels, &width, &height)) { ++g.decode_failed; return nullptr; }
+    if (!decode_png(cosmetic, out->pixels, &width, &height)) { ++g.decode_failed; return nullptr; }
     // No budget here: the budget keeps a huge pack from exhausting video memory, and a pack that
     // had used it up took the player's portraits and stock icons down with it. These are a few
     // small pictures the player chose one by one.

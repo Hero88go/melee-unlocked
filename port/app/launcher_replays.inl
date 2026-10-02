@@ -192,6 +192,15 @@ void watch_replay() {
   int index=g_replay_view>=0?g_replay_view:(int)SendMessageW(g_replays[0],LB_GETCURSEL,0,0);
   if(index<0||index>=(int)g_replay_files.size()) return;
   if(g_iso.empty()||!file_exists(g_iso)) { replay_status("Choose your Melee disc image on the Play page first."); return; }
+  // A replay of a match played on a mod (its stage is not in the standard game) would sit on a blank
+  // screen: the standard game has no such stage. Say so instead of starting it.
+  {
+    const auto info=launcher::replay::inspect(g_replay_files[index]);
+    if(info.valid&&info.stage_id>85) {
+      replay_status(launcher::lang::fill(launcher::lang::tx("This replay was recorded with a mod (stage {id} is not in the standard game). It needs that mod to play."),launcher::lang::Args{{"id",std::to_string(info.stage_id)}}));
+      return;
+    }
+  }
   std::string exe;
   if(g_engine==ENGINE_SOURCE&&!source_exe_dir().empty()) exe=source_exe_dir()+"\\melee_source.exe";
   else {
@@ -208,7 +217,7 @@ void watch_replay() {
   std::wstring command=widen("\""+exe+"\""+game_args()+" --sys-dir \""+sys+"\" --replay \"")+g_replay_files[index].wstring()+L"\"";
   PROCESS_INFORMATION process{}; DWORD error=launcher::start_process(widen(exe),command,widen(cwd),0,process);
   if(error) { report_launch_error(error,exe,cwd); return; }
-  CloseHandle(process.hThread); g_playing=true; g_replay_active=true;
+  CloseHandle(process.hThread); crash_report::note_launch(); g_playing=true; g_replay_active=true;
   launcher::lobby::game_running(true); EnableWindow(g_play_btn,FALSE); EnableWindow(g_replays[2],FALSE);
   replay_status(launcher::lang::fill(launcher::lang::tx("Watching {file}"),launcher::lang::Args{{"file",g_replay_files[index].filename().u8string()}}));
   ShowWindow(g_main,SW_MINIMIZE);
