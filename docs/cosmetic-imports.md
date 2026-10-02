@@ -125,8 +125,15 @@ for an original costume, for a skin that came without one, or as a pack of pictu
 
 Each costume has one entry for its pictures (catalog kind `character_portrait`, target
 `<slot>.dat#portrait`). It is switched on and off like any other choice, independently of the
-costume's skin, and its pictures replace the ones a selected skin brought. It overrides no disc
-file. A build that predates the kind finds no disc file by that target and leaves the entry alone.
+costume's skin. It overrides no disc file. A build that predates the kind finds no disc file by
+that target and leaves the entry alone.
+
+Which picture shows: a skin's own picture shows while that skin is selected. A picture can be
+attached to any skin from its **Details** in the Mods tab (the **Portrait** and **Stock icon**
+rows): from a PNG, or copied from another skin or costume of the same fighter, and taken away
+again there. A picture added to the costume fills in where a skin has none, and on the original
+costume. This also holds for skins from a mod disc or a files pack; the picture is kept in the
+catalog and stays with the skin when the pack is scanned again.
 
 The active runtime map owns immutable byte buffers and is published before the guest initializes
 DVD. Settings changes affect only the desired on-disk profile. Restarting drops guest RAM, DVD

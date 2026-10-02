@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 16
+#define MU_HOST_API_VERSION 17
 #define MU_GAME_API_VERSION 6
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -336,9 +336,46 @@ typedef struct MuHostApi {
      * next block then, as the console's AI interrupt did, instead of three blocks in a burst after
      * the retrace. Returns 0 when no deadline is left before the retrace, or when pacing is off. */
     int32_t (*vi_idle_step)(void);
+
+    /* Version 17. The third option word: the 20XX Hack Pack training options for CPUs
+     * (MU_GAME_OPTION3_CPU_*), plain offline options like "20XX CPUs". During replay playback, the
+     * word the replay was recorded with ("muOptions3"). */
+    uint32_t (*game_options3)(void);
 } MuHostApi;
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
+/* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,
+ * stage variants). None of its code runs: the game's native rewrites of its features
+ * (sourceport/game/shim/mu_hp.c) are offered only with this bit, offline. No host API version
+ * change: an older host never sets the bit. */
+#define MU_MOD_HACKPACK 0x2u
+
+/* Private command 0xFA on slippi_command, 20XX Hack Pack data and settings for the native game
+ * (host: port/runtime/host/hackpack_source.h, game: shim/mu_hp.c). The first payload byte picks:
+ *   0x01 addr(4) len(2)   bytes of the pack's main.dol at a console address (its data tables: music
+ *                         names, playlists, default stage file names). Data only, never run.
+ *   0x02                  the settings block (MU_HP_SETTINGS_SIZE bytes), kept in the settings file
+ *   0x03 index value      set one settings byte; the reply is the block
+ *   0x04 word(4)          the stage variant of the match about to start, as MU_GAME_OPTION3_HP_STAGE_*
+ *                         bits; the host puts them in option word 3 so a replay records them
+ *   0x05                  the pack's StageSwapTable.bin, whole
+ * An empty reply means the pack is not loaded (or the request is out of range). */
+#define MU_HP_COMMAND            0xFAu
+#define MU_HP_OP_DOL_READ        0x01u
+#define MU_HP_OP_GET_SETTINGS    0x02u
+#define MU_HP_OP_SET_SETTING     0x03u
+#define MU_HP_OP_STAGE_STATE     0x04u
+#define MU_HP_OP_STAGE_TABLE     0x05u
+#define MU_HP_SETTINGS_SIZE      24u
+/* Settings block layout. Playlist types are the pack's: 0 the list's first track, 1 random from the
+ * list, 2 random original track, 3 random custom track, 4 random of both. */
+#define MU_HP_SET_PLAYLIST_TYPE  0u    /* 11 bytes: menu, then the pack's nine stage lists, then global */
+#define MU_HP_SET_CUSTOM_SONGS   11u   /* how many custom tracks (0x31 and up) take part in types 3 and 4 */
+#define MU_HP_SET_GLOBAL_ON      12u   /* the global playlist replaces every stage song */
+#define MU_HP_SET_GLOBAL_MENUS   13u   /* and the menu songs */
+#define MU_HP_SET_LEGAL_VARIANT  14u   /* 6 bytes: Stadium, Dream Land, Fountain, Yoshi's Story, Final
+                                          Destination, Battlefield; 0..14 a variant, 15 and up random */
+#define MU_HP_SET_STAGE_PAGE     20u   /* stage select page, 0..3 */
 
 #define MU_GAME_OPTION_NO_SCREEN_SHAKE 0x1u   /* camera quake offset zeroed before it is applied */
 #define MU_GAME_OPTION_PAL_STOCK_ICONS 0x2u   /* stock row at PAL size and height; lost stocks hide */
@@ -417,6 +454,35 @@ typedef struct MuHostApi {
     (MU_GAME_OPTION2_TE_NEUTRAL_SPAWNS | MU_GAME_OPTION2_TE_V100 | MU_GAME_OPTION2_TE_DL64_QUIET |  \
      MU_GAME_OPTION2_TE_RESET_TOURNAMENT | MU_GAME_OPTION2_TE_FROZEN_TOGGLE |                     \
      MU_GAME_OPTION2_TE_HANDWARMERS | MU_GAME_OPTION2_TE_STAGE_STRIKE | MU_GAME_OPTION2_TE_LOCK_SETTINGS)
+
+/* Third option word (host API 17, game_options3): 20XX Hack Pack training options for CPUs, native
+ * (sourceport/game/shim/mu_20xx_cpu.c). Plain options from the Game tab: no pack or save needed,
+ * offline only, never in a TM-CE event; recorded in a replay as "muOptions3". */
+#define MU_GAME_OPTION3_CPU_TECH_MASK    0x00000007u   /* 0 off, 1 in place, 2 roll forward, 3 roll back, 4 miss, 5 random */
+#define MU_GAME_OPTION3_CPU_TECH_SHIFT   0
+#define MU_GAME_OPTION3_CPU_GETUP_MASK   0x00000038u   /* 0 off, 1 stand, 2 roll forward, 3 roll back, 4 attack, 5 random */
+#define MU_GAME_OPTION3_CPU_GETUP_SHIFT  3
+#define MU_GAME_OPTION3_CPU_DI_MASK      0x000000C0u   /* 0 off, 1 none, 2 random, 3 survival */
+#define MU_GAME_OPTION3_CPU_DI_SHIFT     6
+#define MU_GAME_OPTION3_CPU_SDI_MASK     0x00000700u   /* 0 off, 1 none, 2 random, 3 with the hit, 4 against it, 5 up, 6 down */
+#define MU_GAME_OPTION3_CPU_SDI_SHIFT    8
+#define MU_GAME_OPTION3_CPU_NO_TAUNT     0x00000800u   /* CPUs never taunt */
+#define MU_GAME_OPTION3_CPU_LCANCEL      0x00001000u   /* CPUs L-cancel every aerial landing */
+#define MU_GAME_OPTION3_CPU_NO_RAPID_JAB 0x00002000u   /* CPU Captain Falcon never starts his rapid jab */
+#define MU_GAME_OPTION3_CPU_NO_TRANSFORM 0x00004000u   /* CPU Zelda and Sheik never use their down special */
+#define MU_GAME_OPTION3_CPU_ALL          0x00007FFFu
+/* The same word, upper bits: the 20XX Hack Pack stage of the match (shim/mu_hp.c), so a replay
+ * loads the stage file the match was played on. Not a setting: the game reports them when a match
+ * is picked (MU_HP_OP_STAGE_STATE) and the host only carries them, offline, with the pack loaded.
+ * ON: the pack's stage file names were in use. CHAR: the variant letter of the picked stage's file
+ * (0 the pack's default name, 1..10 '0'..'9', 11..36 'a'..'z'). FLAGS: the stage swap table's
+ * custom flag byte for the pick. */
+#define MU_GAME_OPTION3_HP_STAGE_ON          0x00008000u
+#define MU_GAME_OPTION3_HP_STAGE_CHAR_MASK   0x003F0000u
+#define MU_GAME_OPTION3_HP_STAGE_CHAR_SHIFT  16
+#define MU_GAME_OPTION3_HP_STAGE_FLAGS_MASK  0x3FC00000u
+#define MU_GAME_OPTION3_HP_STAGE_FLAGS_SHIFT 22
+#define MU_GAME_OPTION3_HP_STAGE_ALL         0x3FFF8000u
 
 /* One writable region of game-owned state. Regions do not include the live native stack, host
  * timing, ARAM, or process allocations; callers must capture those separately for rollback. */

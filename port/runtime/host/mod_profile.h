@@ -77,6 +77,10 @@ struct Status {
   bool te_owned = false;             // the 20XX Tournament Edition save
   bool akaneia = false;              // the Akaneia 1.0.1 disc
   bool tmce = false;                 // Training Mode CE's disc files (TM/), on the vanilla game
+  // The 20XX Hack Pack's disc files (StageSwapTable.bin and its stage, music and costume files) are
+  // loaded as an overlay. None of its code runs: the retail menu files stay, and its features are
+  // native rewrites (run-source/rel09-hackpack/PLAN.md section 3), offline only.
+  bool hackpack = false;
   // The session's mods came from the Mods folder (mod_scan.h), not a profile or --mod-* flags; then
   // switching 20XX TE on the Mods page takes effect at once.
   bool detected = false;

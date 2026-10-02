@@ -7,6 +7,8 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
+#include <string>
 
 namespace net_overlay {
 namespace {
@@ -18,6 +20,10 @@ constexpr float kPingScaleMs = 200.0f; // top of the ping line's scale
 constexpr int kDepthScale = 7;         // deepest rollback the game makes
 
 std::atomic<bool> g_enabled{false};
+std::atomic<bool> g_replay{false};   // a replay shown as it was played: see set_replay
+std::mutex g_note_mutex;
+std::string g_note;
+double g_note_until = 0.0;
 
 bool test_mode() {
   static const bool on = std::getenv("MELEE_TEST_NET_OVERLAY") != nullptr;
@@ -47,20 +53,34 @@ size_t sample(net_trace::Record* out) {
 
 void set_enabled(bool on) { g_enabled.store(on, std::memory_order_relaxed); }
 bool enabled() { return g_enabled.load(std::memory_order_relaxed); }
+void set_replay(bool on) { g_replay.store(on, std::memory_order_relaxed); }
+void set_replay_note(const char* text, double seconds) {
+  std::lock_guard<std::mutex> lock(g_note_mutex);
+  g_note = text ? text : "";
+  g_note_until = host::now_seconds() + seconds;
+}
 
 void draw(float width, float height) {
   net_trace::note_present();
   const bool test = test_mode();
-  if (!test && !g_enabled.load(std::memory_order_relaxed)) return;
+  const bool replay = g_replay.load(std::memory_order_relaxed);
+  if (!test && !replay && !g_enabled.load(std::memory_order_relaxed)) return;
   static net_trace::Record recs[kWindow];   // UI thread only
   size_t n = net_trace::snapshot(recs, kWindow);
-  // Between matches the ring keeps the last match's end; the overlay leaves with the match.
-  if (n > 0 && host::now_seconds() - recs[n - 1].wall > 2.0) n = 0;
+  // Between matches the ring keeps the last match's end; the overlay leaves with the match. A
+  // replay's records carry the session's clock, not this run's, and stay while the replay plays.
+  if (!replay && n > 0 && host::now_seconds() - recs[n - 1].wall > 2.0) n = 0;
   if (n == 0 && test) n = sample(recs);
   if (n == 0) return;
+  std::string note;
+  if (replay) {
+    std::lock_guard<std::mutex> lock(g_note_mutex);
+    if (host::now_seconds() < g_note_until) note = g_note;
+  }
 
   const float text_h = ImGui::GetTextLineHeight();
-  const float panel_w = std::min(640.0f, width - 24.0f), panel_h = 2.0f * text_h + 116.0f;
+  const float panel_w = std::min(640.0f, width - 24.0f);
+  const float panel_h = 2.0f * text_h + 116.0f + (note.empty() ? 0.0f : text_h + 4.0f);
   if (panel_w < 240.0f || height < panel_h + 24.0f) return;
   const ImVec2 o(width - panel_w - 12.0f, 12.0f);   // top right: the FPS and ping lines are top left
   const float plot_x = o.x + 8.0f, plot_w = panel_w - 16.0f;
@@ -128,7 +148,8 @@ void draw(float width, float height) {
 
   const net_trace::Record& last = recs[n - 1];
   char line[160];
-  std::snprintf(line, sizeof line, "Network and timing   ping %u ms   rollbacks %u (deepest %u)   waited %u frames   shed %u   advanced %u",
+  std::snprintf(line, sizeof line, "%s   ping %u ms   rollbacks %u (deepest %u)   waited %u frames   shed %u   advanced %u",
+                replay ? "As it was played" : "Network and timing",
                 (unsigned)last.ping_ms, rollbacks, deepest, waited, shed, advanced);
   dl->PushClipRect(o, ImVec2(o.x + panel_w, o.y + panel_h), true);
   dl->AddText(ImVec2(plot_x, o.y + 6.0f), text, line);
@@ -145,6 +166,7 @@ void draw(float width, float height) {
     dl->AddText(ImVec2(kx + 11.0f, ky), dim, k.label);
     kx += 11.0f + ImGui::CalcTextSize(k.label).x + 10.0f;
   }
+  if (!note.empty()) dl->AddText(ImVec2(plot_x, ky + text_h + 4.0f), slow_col, note.c_str());
   dl->PopClipRect();
 }
 

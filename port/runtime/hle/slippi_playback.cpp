@@ -3,7 +3,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "slippi_playback.h"
 #include "slippi_playback_legacy.h"
+#include "exi_slippi.h"
 #include "host.h"
+#include "replay_control.h"
 // Which replay code list this build was translated against. A playback build has exactly one
 // translated into it; a replay from a different Slippi version carries a different list, whose
 // code caves this build never compiled. Those would run as writes nothing was built against and
@@ -143,9 +145,26 @@ void character_frame_data(const Slippi::FrameData* frame, uint8_t port, bool fol
   append_f32(q, d.percent);
   q.push_back(d.cstickXRaw); q.push_back(d.cstickYRaw);
 }
+
+// The viewer's jump back (host/replay_control.h). This engine keeps no state a jump of seconds
+// could return to: the online savestates hold what a rollback of a few frames needs (Slippi's
+// memory regions), not the host's side of the console (disc reads in flight, the sound driver,
+// alarms). So the match is started again, the way the game takes the next replay of a queue: the
+// frame request is answered "terminate", the waiting scene asks whether a file is ready, and the
+// same file is. The viewer then runs unseen and unpaced up to the target frame. The copy being
+// recorded is only a part and is not kept; the pass that reaches the end writes the whole one.
+bool g_restart = false;
+bool restart_match() {
+  g_restart = true;
+  slippi::discard_current_replay("the viewer started the match again for a jump back");
+  return true;
+}
 }  // namespace
 
-void set_replay(const std::string& path) { g_path = path; }
+void set_replay(const std::string& path) {
+  g_path = path;
+  replay_control::set_replay_path(path);
+}
 
 std::vector<KeptCode> gameplay_codes(const std::vector<uint8_t>& source, const std::string& sys_dir, size_t* dropped) {
   std::vector<KeptCode> kept;
@@ -173,9 +192,20 @@ bool enabled() { return !g_path.empty(); }
 
 void prepare_is_file_ready(std::vector<uint8_t>& q) {
   q.clear();
+  if (g_restart && g_game) {   // the same replay again, for a jump back (see restart_match)
+    g_restart = false;
+    host::log("playback: starting the match again for a jump back");
+    q.push_back(1);
+    return;
+  }
   if (!enabled() || g_loaded_once) {
     q.push_back(0);
-    if (g_loaded_once && !g_finished) { g_finished = true; host::log("playback: replay finished; exiting"); host::request_exit(0); }
+    if (g_loaded_once && !g_finished) {
+      g_finished = true;
+      replay_control::end();
+      host::log("playback: replay finished; exiting");
+      host::request_exit(0);
+    }
     return;
   }
   g_game = Slippi::SlippiGame::FromFile(g_path);
@@ -221,6 +251,10 @@ void prepare_game_info(const uint8_t*, std::vector<uint8_t>& q) {
   prepare_gecko_list();
   append_u32(q, (uint32_t)g_gecko_list.size());
   g_current_frame = Slippi::GAME_FIRST_FRAME;
+  // The match starts (or starts again for a jump back): the viewer's controls take this range.
+  replay_control::Engine engine;
+  engine.restart = restart_match;
+  replay_control::begin(Slippi::GAME_FIRST_FRAME, g_game->GetLatestIndex(), engine);
 }
 
 void prepare_gecko_codes(std::vector<uint8_t>& q) { q.assign(g_gecko_list.begin(), g_gecko_list.end()); }
@@ -264,6 +298,13 @@ void prepare_frame_data(const uint8_t* payload, std::vector<uint8_t>& q) {
   }
   bool ready = found && (complete || fully);
   if (!ready) { q.push_back(complete ? FRAME_RESP_TERMINATE : FRAME_RESP_WAIT); if (complete) host::log("playback: game terminates on frame %d", frame); return; }
+  // The viewer's controls, before the frame is handed to the game: this is where a pause holds,
+  // where slow motion and fast forward are paced, and where a jump back ends this pass of the match.
+  {
+    replay_control::Gate gate = replay_control::gate(frame);
+    if (gate == replay_control::Gate::GoBack) gate = replay_control::go_back();
+    if (gate == replay_control::Gate::Restart) { q.push_back(FRAME_RESP_TERMINATE); return; }
+  }
   g_current_frame = frame;
   q.push_back(FRAME_RESP_CONTINUE);
   Slippi::FrameData* f = g_game->GetFrame(frame);

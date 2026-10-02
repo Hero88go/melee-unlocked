@@ -110,6 +110,24 @@ int mu_option2_offline(unsigned int bit)
     return 1;
 }
 
+/* The third option word (the 20XX Hack Pack training options for CPUs, shim/mu_20xx_cpu.c) when it
+ * is in effect, else 0. The same limits as mu_option2_offline: the normal game, offline, not while
+ * online is pending or in Slippi's online menus, never in a TM-CE event. In replay playback the
+ * host passes the recorded word. */
+unsigned int mu_game_options3(void);
+
+unsigned int mu_options3_offline(void)
+{
+    const unsigned int word = mu_game_options3();
+    if (word == 0 || (mu_game_options() & MU_OPTION_VANILLA) || te_in_tmce_event()) {
+        return 0;
+    }
+    if (mu_online_active() || mu_online_pending() || mu_slippi_in_online_mode()) {
+        return 0;
+    }
+    return word;
+}
+
 /* TE's conveniences that only show with Tournament Mode off (the green "Ready to Fight" banner). */
 int mu_te_casual(void)
 {

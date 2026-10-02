@@ -154,6 +154,9 @@ using launcher::ENGINE_LEGACY; using launcher::ENGINE_SOURCE;
 int g_engine = ENGINE_LEGACY;
 bool g_install_requested = false;
 bool g_warm_cache_on_play = false;
+// Replay Viewer: "Show it as it was played" (launcher.ini replayasplayed=1). It applies to a replay
+// that has a session trace file beside it; see launcher_replays.inl.
+bool g_replay_as_played = false;
 std::string g_slippi_line, g_version_line;
 COLORREF g_version_dot = C_FAINT;
 std::atomic<bool> g_building{false}, g_playing{false};
@@ -234,6 +237,7 @@ void load_ini() {
         if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
       } else if (line.rfind("activeversion=", 0) == 0 && safe_version_folder(line.substr(14))) g_active_version = line.substr(14);
       else if (line == "warmcache=1") g_warm_cache_on_play = true;
+      else if (line == "replayasplayed=1") g_replay_as_played = true;
       else if (line.rfind("lobbyopen=", 0) == 0) g_lobby_prefs.open_to = line.substr(10);
       else if (line.rfind("lobbyiso=", 0) == 0) g_lobby_prefs.custom_iso = line.substr(9);
       else if (line.rfind("lobbyisoname=", 0) == 0) g_lobby_prefs.custom_name = line.substr(13);
@@ -263,6 +267,7 @@ void save_ini() {
     f << "iso=" << g_iso << "\n";
     if (!g_active_version.empty()) f << "activeversion=" << g_active_version << "\n";
     if (g_warm_cache_on_play) f << "warmcache=1\n";
+    if (g_replay_as_played) f << "replayasplayed=1\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
     if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
     if (g_engine != ENGINE_LEGACY) f << "engine=" << g_engine << "\n";
@@ -854,7 +859,8 @@ void draw_button(DRAWITEMSTRUCT* di) {
   bool disabled = (di->itemState & ODS_DISABLED) != 0;
   bool down = (di->itemState & ODS_SELECTED) != 0;
   bool primary = di->hwndItem == g_play_btn;
-  bool checkbox = di->hwndItem == g_warm_cache_check;
+  const bool replay_check = di->CtlID == ID_REPLAY_ASPLAYED;
+  bool checkbox = di->hwndItem == g_warm_cache_check || replay_check;
   if(di->CtlID==ID_THEME) {
     vgrad(di->hDC,di->rcItem,content_bg_at(wr.top),content_bg_at(wr.bottom));
     theme_wheel(di->hDC,16,16,13,true);
@@ -867,8 +873,8 @@ void draw_button(DRAWITEMSTRUCT* di) {
   if (checkbox) {
     RECT box{r.left + S(1), r.top + S(5), r.left + S(17), r.top + S(21)};
     round_rect(di->hDC, box, 3, C_FIELD, C_FIELD, C_BTN_BORDER);
-    if (g_warm_cache_on_play) {
-      HPEN pen = CreatePen(PS_SOLID, S(2), C_ACC_HI);
+    if (replay_check ? g_replay_as_played : g_warm_cache_on_play) {
+      HPEN pen = CreatePen(PS_SOLID, S(2), disabled ? C_FAINT : C_ACC_HI);
       HGDIOBJ old_pen = SelectObject(di->hDC, pen);
       MoveToEx(di->hDC, box.left + S(3), box.top + S(8), nullptr);
       LineTo(di->hDC, box.left + S(7), box.bottom - S(4));
@@ -876,7 +882,9 @@ void draw_button(DRAWITEMSTRUCT* di) {
       SelectObject(di->hDC, old_pen); DeleteObject(pen);
     }
     RECT label = r; label.left += S(24);
-    draw_text(di->hDC, L"Warm cache from remembered ISO before Play", label, g_font_small,
+    const std::wstring check_label = replay_check ? launcher::lang::txw(L"Show it as it was played (uses the .trace file)")
+                                                  : std::wstring(L"Warm cache from remembered ISO before Play");
+    draw_text(di->hDC, check_label, label, g_font_small,
               disabled ? C_FAINT : C_DIM, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
     return;
   }
@@ -1507,6 +1515,13 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_REPLAY_BACK: replay_back(); break;
         case ID_REPLAY_PREV: replay_step(-1); break;
         case ID_REPLAY_NEXT: replay_step(1); break;
+        case ID_REPLAY_ASPLAYED:
+          if (HIWORD(wp) == BN_CLICKED) {
+            g_replay_as_played = !g_replay_as_played;
+            InvalidateRect(g_replays[7], nullptr, FALSE);
+            save_ini();
+          }
+          break;
         case ID_SLIPPI_GET: ShellExecuteW(hwnd, L"open", L"https://slippi.gg/downloads", nullptr, nullptr, SW_SHOWNORMAL); break;
       }
       return 0;

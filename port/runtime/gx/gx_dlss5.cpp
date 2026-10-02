@@ -137,9 +137,24 @@ bool profile_delete(const std::string& name) {
   return std::filesystem::remove(profile_path(name), ec);
 }
 
+void display_model_size(uint32_t w, uint32_t h, float display_shape, uint32_t* model_w, uint32_t* model_h) {
+  *model_w = 0; *model_h = 0;
+  if (!w || !h || !std::isfinite(display_shape) || display_shape <= 0.0f) return;
+  const auto even = [](double v, uint32_t limit) {
+    return std::clamp<uint32_t>((uint32_t)std::lround(v * 0.5) * 2u, 2u, std::max(limit, 2u));
+  };
+  // Keep the width and shrink the height; a frame stored too wide keeps its height instead, so the
+  // model never works above the frame size.
+  uint32_t mw = w, mh = even((double)w / display_shape, h);
+  if ((double)w / display_shape > (double)h) { mh = h; mw = even((double)h * display_shape, w); }
+  if (mw > w || mh > h) return;   // only a frame smaller than 2 pixels
+  if ((double)mw >= (double)w * 0.98 && (double)mh >= (double)h * 0.98) return;
+  *model_w = mw; *model_h = mh;
+}
+
 #ifndef GX_DLSS5
 bool evaluate(const Inputs&) { return false; }
-bool needs_warmup(uint32_t, uint32_t, const Tuning&) { return false; }
+bool needs_warmup(uint32_t, uint32_t, const Tuning&, uint32_t, uint32_t) { return false; }
 bool running() { return false; }
 const char* status() { return "not built into this version"; }
 bool model_found() { return false; }
@@ -437,11 +452,16 @@ static Tuning clamped(Tuning t) {
   return bounded_tuning(t);
 }
 
-bool needs_warmup(uint32_t w, uint32_t h, const Tuning& t) {
+// The model's base size: the frame, or the display-shaped size asked for (never above the frame).
+static uint32_t model_base(uint32_t frame, uint32_t model) {
+  return model ? std::min(model, frame) : frame;
+}
+
+bool needs_warmup(uint32_t w, uint32_t h, const Tuning& t, uint32_t model_w, uint32_t model_h) {
   const Tuning tune = clamped(t);
   if (tune.intensity == 0.0f) return false;
-  w = std::max(1u, w * (uint32_t)tune.resolution_scale / 100u);
-  h = std::max(1u, h * (uint32_t)tune.resolution_scale / 100u);
+  w = std::max(1u, model_base(w, model_w) * (uint32_t)tune.resolution_scale / 100u);
+  h = std::max(1u, model_base(h, model_h) * (uint32_t)tune.resolution_scale / 100u);
   if (g.failed && !can_retry(w, h, tune)) return false;
   return !g.feature[0] || g.feature_w != w || g.feature_h != h || g.feature_tuning != tune || g.evaluations == 0;
 }
@@ -450,8 +470,10 @@ bool evaluate(const Inputs& in) {
   if (g.release) collect_retired();
   if (!in.color || !in.depth || !in.mvec || !in.w || !in.h || !in.guide_w || !in.guide_h) return false;
   const Tuning t = clamped(in.tuning);
-  const uint32_t w = std::max(1u, in.w * (uint32_t)t.resolution_scale / 100u);
-  const uint32_t h = std::max(1u, in.h * (uint32_t)t.resolution_scale / 100u);
+  // The two axes may shrink by different amounts (display-shaped model size); the scaling shader
+  // works per axis.
+  const uint32_t w = std::max(1u, model_base(in.w, in.model_w) * (uint32_t)t.resolution_scale / 100u);
+  const uint32_t h = std::max(1u, model_base(in.h, in.model_h) * (uint32_t)t.resolution_scale / 100u);
   if (g.failed) {
     if (!can_retry(w, h, t)) return false;
     g.failed = false; g.tuning_failed = false; g.history_dirty = true; g.failures = 0;

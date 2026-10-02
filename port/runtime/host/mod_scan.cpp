@@ -782,7 +782,13 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
     if (const std::string version = hack_pack_version(md5_hex); !version.empty()) {
       d.kind = Kind::HackPack; d.name = "20XX Hack Pack"; d.version = version; d.key = content_key(d.hash); d.catalog_id = "hackpack";
       // 5.0.2 boots and plays on the Static Recomp with its own code and no Slippi codes (offline, no
-      // replays). Older builds take the same path and have not been run.
+      // replays). Older builds take the same path and have not been run. The Source Port loads the
+      // disc's files over the normal game (stages, music, costumes) and runs none of its code. It is
+      // not a switchable layer (can_enable stays false): it loads only when the player starts it
+      // from the launcher's Mods page or with --mod-iso, so the normal game is never changed by a
+      // disc that is in Mods for "20XX CPUs" or its skins.
+      // The Source Port side (Engine::Either) is written but has never been run: it stays off the
+      // launcher until it has been played through.
       set_support(d, Engine::Recomp, version == "5.0.2" ? Support::Supported : Support::Untested, false);
       d.message = "Detected: " + d.name + " " + d.version + ". Plays on the Static Recomp, offline (no online play or replays).";
       return d;
@@ -891,7 +897,7 @@ Detected identify(const fs::path& file, const ScanOptions& options, std::string*
 // The scan cache: Mods/.cache/scan.txt, one line per file keyed by path, size and time (and, for
 // discs, the retail disc they were compared with), so a boot never reads an unchanged disc again.
 namespace {
-constexpr const char kCacheHeader[] = "mu-scan 8";
+constexpr const char kCacheHeader[] = "mu-scan 9";   // 9: the 20XX Hack Pack runs on either engine
 struct CacheEntry { std::string key, base; Detected d; };
 
 std::string cache_key(const fs::path& file) {

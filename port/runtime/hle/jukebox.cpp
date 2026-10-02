@@ -41,6 +41,7 @@ std::atomic<uint32_t> g_song_generation{0};   // a stop() or a newer start_song(
 std::atomic<int> g_melee_volume{254}, g_user_volume{100};
 std::atomic<float> g_next_song_gain{1.0f}, g_song_gain{1.0f};
 std::atomic<DiscReader> g_reader{nullptr};
+std::atomic<bool> g_paused{false};   // set_paused: a replay viewer holding the picture
 
 uint32_t be32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
 int16_t be16(const uint8_t* p) { return (int16_t)((p[0] << 8) | p[1]); }
@@ -187,7 +188,10 @@ bool render(Song& song, float* acc, size_t frames, double step, double target, c
 }
 }  // namespace
 
+void set_paused(bool paused) { g_paused.store(paused, std::memory_order_relaxed); }
+
 void mix(int16_t* out, size_t frames, double master, double output_rate) {
+  if (g_paused.load(std::memory_order_relaxed)) return;   // the song keeps its place and goes on from it
   std::shared_ptr<Song> song, fading;
   { std::lock_guard<std::mutex> lk(g_mutex); song = g_song; fading = g_fading; }
   if (!song && !fading) { g_gain_now = -1.0; return; }

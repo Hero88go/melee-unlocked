@@ -12,6 +12,7 @@
 #include "authored_pose.h"
 #include "window.h"
 #include "gx_core.h"
+#include "replay_control.h"
 #include <algorithm>
 #include <chrono>
 #include <string>
@@ -69,6 +70,7 @@ class ThreadedBackend final : public Backend {
     } trace(options_.frame_times);
     double last_submission = 0; uint64_t drained = 0, discontinuities = 0;
     double next_present = host::now_seconds();
+    double idle_repaint = 0.0;   // when a standing picture is next submitted again (replay_control::repaint_wanted)
     double stats_time = next_present; uint64_t stats_presented = 0, stats_sim = 0, stats_lines = 0;
     uint32_t phase_bins[5] = {};
     double build_seconds = 0, submit_seconds = 0; uint64_t cost_presented = 0;   // presented phases: [0,.25) [.25,.5) [.5,.75) [.75,1) exactly 1
@@ -169,11 +171,16 @@ class ThreadedBackend final : public Backend {
       double t = 0.0;
       if (!subframes) {
         should_render = current.sequence != rendered_sequence;   // once per simulation frame
+        // A paused replay sends no new frames, but its bar and the settings panel still have to be
+        // drawn: the frame on screen is submitted again, 60 times a second.
+        if (!should_render && !queue.drained() && replay_control::repaint_wanted() && host::now_seconds() >= idle_repaint)
+          should_render = true;
         if (!should_render) {
           if (queue.drained()) break;
           queue.wait_available(std::chrono::milliseconds(2));
           continue;
         }
+        idle_repaint = host::now_seconds() + SIM_PERIOD;
       } else {
         double now = host::now_seconds();
         t = (now - current.time) / SIM_PERIOD;

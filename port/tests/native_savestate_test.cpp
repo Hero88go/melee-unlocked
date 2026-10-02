@@ -275,6 +275,31 @@ int main() {
   CHECK(e.load(12) && mem[0] == 0);
   CHECK(!e.load(99) && e.stats().missing_loads == 1);
 
+  // A replay viewer's jump back: the state returned to and the older ones stay kept, newer ones go,
+  // and the same state can be returned to again after playing on.
+  e.end();
+  e.begin(subtract({reg(m, 0, 100), reg(m, 200, 100)}, {reg(m, 40, 10)}), 8);
+  for (int i = 0; i < 400; ++i) mem[i] = (uint8_t)i;
+  e.capture(100);
+  mem[5] = 0x11; mem[250] = 0x12; e.capture(200);
+  mem[5] = 0x21; mem[60] = 0x22; e.capture(300);
+  mem[5] = 0x31; mem[250] = 0x32; mem[45] = 0x33; e.capture(400);
+  mem[7] = 0x41;
+  int32_t found = 0;
+  CHECK(e.newest_at_or_before(399, &found) && found == 300 && e.newest_at_or_before(100, &found) && found == 100);
+  CHECK(!e.newest_at_or_before(99, &found) && e.kept() == 4);
+  CHECK(e.load_keep(200));
+  CHECK(mem[5] == 0x11 && mem[250] == 0x12 && mem[60] == 60 && mem[7] == 7);
+  CHECK(mem[45] == 0x33);                       // excluded byte keeps its live value
+  CHECK(e.has(100) && e.has(200) && !e.has(300) && !e.has(400));
+  mem[5] = 0x51; mem[8] = 0x52; e.capture(300); // playing on from the jump
+  mem[9] = 0x61;
+  CHECK(e.load_keep(200) && mem[5] == 0x11 && mem[8] == 8 && mem[9] == 9 && e.has(200) && !e.has(300));
+  CHECK(e.load_keep(100) && mem[5] == 5 && mem[250] == 250 && e.has(100) && !e.has(200));
+  CHECK(e.load_keep(100) && mem[5] == 5);       // and again, with nothing newer
+  CHECK(!e.load_keep(200));
+  mem[45] = 45;
+
   e.end();
   CHECK(!e.active());
   e.capture(1);                                 // inactive engine ignores commands
