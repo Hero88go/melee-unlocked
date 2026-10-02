@@ -56,7 +56,20 @@ struct AssetRecord {
   std::string source_member;
   std::string source_id;
   std::vector<Companion> companions;
+  // A skin that lives inside a mod disc or a files pack (source_kind "disc"): no copy is kept. The
+  // bytes are read from disc_path at disc_offset when the skin is applied, and checked against the
+  // catalog's SHA-256 then. disc_size and disc_mtime are the container's size and time at the scan,
+  // for a cheap "is it still the same file" check at startup. source_id is the scanned disc or folder.
+  std::string disc_path;
+  uint64_t disc_offset = 0, disc_length = 0, disc_size = 0;
+  int64_t disc_mtime = 0;
 };
+
+// One line per scanned disc: scanning reads every costume file, so it runs once per disc and again
+// only when the file's size or time changes.
+struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; };
+constexpr const char* kDiscSource = "disc";
+constexpr const char* kDiscChanged = "disc file missing or changed";
 
 struct Profile {
   bool enabled = true;
@@ -70,6 +83,8 @@ struct RuntimeAsset {
   std::shared_ptr<const std::vector<uint8_t>> bytes;
   uint32_t vanilla_size = 0;
   bool online_allowed = true;
+  std::string kind;            // the catalog kind, for the counts the notice shows
+  std::string online_reason;   // short text for the Mods tab; empty when there is no online rule (effects)
 };
 
 struct RuntimeState {
@@ -95,6 +110,7 @@ struct ZipEntry {
 std::mutex g_mutex;
 fs::path g_root;
 std::vector<AssetRecord> g_assets;
+std::vector<DiscScan> g_disc_scans;
 Profile g_profile;
 bool g_configured = false;
 bool g_catalog_valid = true;
@@ -198,6 +214,30 @@ bool read_bounded(const fs::path& path, uint64_t limit, std::vector<uint8_t>* ou
   return true;
 }
 
+bool file_stamp(const fs::path& path, uint64_t* size, int64_t* mtime) {
+  std::error_code ec;
+  if (!fs::is_regular_file(path, ec) || ec) return false;
+  *size = fs::file_size(path, ec);
+  if (ec) return false;
+  *mtime = (int64_t)fs::last_write_time(path, ec).time_since_epoch().count();
+  return !ec;
+}
+
+// A bounded read of one file inside a disc image (or of a whole loose file, offset 0).
+bool read_range(const fs::path& path, uint64_t offset, uint64_t length, std::vector<uint8_t>* out) {
+  out->clear();
+  if (!length || length > kMaxAssetBytes) return false;
+  std::error_code ec;
+  const uint64_t size = fs::file_size(path, ec);
+  if (ec || offset > size || length > size - offset) return false;
+  std::ifstream file(path, std::ios::binary);
+  if (!file) return false;
+  file.seekg((std::streamoff)offset);
+  out->resize((size_t)length);
+  if (!file.read((char*)out->data(), (std::streamsize)length)) { out->clear(); return false; }
+  return true;
+}
+
 uint32_t crc32(const uint8_t* data, size_t size) {
   uint32_t crc = 0xffffffffu;
   for (size_t i = 0; i < size; ++i) {
@@ -291,6 +331,22 @@ void load_companions(const json& item, AssetRecord* asset) {
   }
 }
 
+// The public listing says where a skin comes from; a disc-backed record also says where its bytes are.
+void load_disc_fields(const json& item, AssetRecord* asset) {
+  asset->info.source = asset->source_kind == kDiscSource ? "disc" : "import";
+  if (asset->source_kind != kDiscSource) return;
+  const json& disc = item.at("disc");
+  asset->disc_path = disc.at("path").get<std::string>();
+  asset->disc_offset = disc.at("offset").get<uint64_t>();
+  asset->disc_length = disc.at("length").get<uint64_t>();
+  asset->disc_size = disc.value("size", (uint64_t)0);
+  asset->disc_mtime = disc.value("mtime", (int64_t)0);
+  asset->info.source_name = asset->source_name;
+  asset->info.disc_path = asset->disc_path;
+  if (asset->disc_path.empty() || !asset->disc_length || asset->disc_length > kMaxAssetBytes)
+    throw std::runtime_error("disc");
+}
+
 json catalog_json_locked() {
   json root;
   root["schema_version"] = kCatalogSchema;
@@ -310,6 +366,9 @@ json catalog_json_locked() {
     item["unsupported_companions"] = string_array(asset.info.unsupported_companions);
     item["source"] = {{"kind", asset.source_kind}, {"name", asset.source_name},
                        {"member", asset.source_member}, {"id", asset.source_id}};
+    if (asset.source_kind == kDiscSource)
+      item["disc"] = {{"path", asset.disc_path}, {"offset", asset.disc_offset}, {"length", asset.disc_length},
+                      {"size", asset.disc_size}, {"mtime", asset.disc_mtime}};
     item["companions"] = json::array();
     for (const auto& companion : asset.companions) {
       item["companions"].push_back({{"kind", companion.kind},
@@ -339,6 +398,9 @@ bool save_state_locked(std::string* error) {
   state["schema_version"] = kStateSchema;
   state["catalog"] = catalog_json_locked();
   state["profile"] = profile_json_locked();
+  state["disc_scans"] = json::array();
+  for (const auto& scan : g_disc_scans)
+    state["disc_scans"].push_back({{"path", scan.path}, {"size", scan.size}, {"mtime", scan.mtime}});
   if (!write_atomic(g_root / L"state.json", state.dump(2) + "\n", error)) return false;
   // These readable mirrors preserve compatibility with older builds and diagnostics. state.json is
   // authoritative because it publishes catalog and profile together in one atomic replacement.
@@ -416,6 +478,7 @@ void load_catalog_locked() {
         asset.source_member = item["source"].value("member", std::string());
         asset.source_id = item["source"].value("id", std::string());
       }
+      load_disc_fields(item, &asset);
       if (asset.info.id.empty() || asset.info.name.empty() || asset.info.sha256.size() != 64 ||
           !safe_relative_path(asset.stored_path) || asset.info.target_path.find('/') != std::string::npos ||
           asset.info.target_path.find('\\') != std::string::npos)
@@ -458,7 +521,7 @@ bool ready_locked(std::string* error) {
 }
 
 bool load_state_locked(bool* exists) {
-  g_assets.clear(); g_profile = Profile{}; g_catalog_valid = g_profile_valid = true;
+  g_assets.clear(); g_disc_scans.clear(); g_profile = Profile{}; g_catalog_valid = g_profile_valid = true;
   json state; std::string error;
   if (!load_json_file(g_root / L"state.json", &state, exists, &error)) {
     g_assets.clear(); g_profile = Profile{}; g_catalog_valid = g_profile_valid = false;
@@ -497,6 +560,7 @@ bool load_state_locked(bool* exists) {
         asset.source_member = item["source"].value("member", std::string());
         asset.source_id = item["source"].value("id", std::string());
       }
+      load_disc_fields(item, &asset);
       if (asset.info.id.empty() || asset.info.name.empty() || asset.info.sha256.size() != 64 ||
           !safe_relative_path(asset.stored_path) || asset.info.target_path.find('/') != std::string::npos ||
           asset.info.target_path.find('\\') != std::string::npos)
@@ -511,7 +575,13 @@ bool load_state_locked(bool* exists) {
           it.key().find('\\') != std::string::npos) throw std::runtime_error("selection");
       next.selections[it.key()] = it.value().get<std::string>();
     }
-    g_assets = std::move(assets); g_profile = std::move(next);
+    std::vector<DiscScan> scans;
+    const auto scan_list = state.find("disc_scans");
+    if (scan_list != state.end() && scan_list->is_array())
+      for (const auto& scan : *scan_list)
+        scans.push_back({scan.at("path").get<std::string>(), scan.value("size", (uint64_t)0),
+                         scan.value("mtime", (int64_t)0)});
+    g_assets = std::move(assets); g_profile = std::move(next); g_disc_scans = std::move(scans);
     g_catalog_valid = g_profile_valid = true;
     return true;
   } catch (...) {
@@ -1101,8 +1171,24 @@ bool parse_visual_layout(const std::vector<uint8_t>& bytes, VisualLayout* out,
 // Flags that only affect drawing (hidden, lighting, texgen, specular, opaque/translucent classes)
 // may differ. Anything else and the costume stays offline; online the vanilla model is loaded.
 namespace skeleton {
-constexpr uint32_t kVisualFlags = 0x10u | 0x20u | 0x40u | 0x80u | 0x100u | 0x10000u | 0x40000u |
-                                  0x80000u | 0x100000u | 0x70000000u;
+// 0x1, 0x2 and 0x4 (skeleton, skeleton root, envelope model) only say how the mesh is skinned for
+// drawing. Model tools rewrite them on export, which kept every re-exported skin off online.
+constexpr uint32_t kVisualFlags = 0x1u | 0x2u | 0x4u | 0x10u | 0x20u | 0x40u | 0x80u | 0x100u | 0x10000u |
+                                  0x40000u | 0x80000u | 0x100000u | 0x70000000u;
+// A skin exported from a model tool carries the same rest pose with different rounding in the last
+// digits, and a bit-for-bit comparison refused it. The nine values (rotation, scale, translation)
+// are compared as numbers with a small tolerance; a real change of a joint is far larger.
+inline bool rest_pose_close(const uint8_t* p, const uint8_t* q) {
+  for (int i = 0; i < 9; ++i) {
+    uint32_t ua = be32(p + i * 4), ub = be32(q + i * 4);
+    float fa, fb; std::memcpy(&fa, &ua, 4); std::memcpy(&fb, &ub, 4);
+    if (ua == ub) continue;
+    if (!std::isfinite(fa) || !std::isfinite(fb)) return false;
+    const float scale = std::max(1.0f, std::max(std::fabs(fa), std::fabs(fb)));
+    if (std::fabs(fa - fb) > 1e-3f * scale) return false;
+  }
+  return true;
+}
 bool share_joint_root(const std::vector<uint8_t>& bytes, uint32_t* data_size, uint32_t* root,
                       std::string* error) {
   if (bytes.size() < 0x20) { *error = "DAT header is truncated."; return false; }
@@ -1147,7 +1233,7 @@ bool same_tree(const std::vector<uint8_t>& a, uint32_t asize, uint32_t ja,
     if ((be32(p + 4) & ~kVisualFlags) != (be32(q + 4) & ~kVisualFlags)) {
       *error = "Skeleton joint " + std::to_string(*joints - 1) + " flags differ from the vanilla costume."; return false;
     }
-    if (std::memcmp(p + 0x14, q + 0x14, 36)) {
+    if (!rest_pose_close(p + 0x14, q + 0x14)) {
       *error = "Skeleton joint " + std::to_string(*joints - 1) + " rest pose differs from the vanilla costume."; return false;
     }
     stack.push_back({be32(p + 0x0C), be32(q + 0x0C), false});   // next sibling
@@ -1157,8 +1243,12 @@ bool same_tree(const std::vector<uint8_t>& a, uint32_t asize, uint32_t ja,
 }
 }  // namespace skeleton
 
+}  // namespace
+
+// Public: the Source Port asks the same question about a live pack's costume files.
 bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
                               std::string* error) {
+  std::string local; if (!error) error = &local;
   uint32_t asize = 0, aroot = 0, bsize = 0, broot = 0, joints = 0;
   if (!skeleton::share_joint_root(clean, &asize, &aroot, error) ||
       !skeleton::share_joint_root(candidate, &bsize, &broot, error)) return false;
@@ -1167,6 +1257,26 @@ bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vect
   *error = std::to_string(joints) + " joints match";
   return true;
 }
+
+// The player reads this beside "Online: standard costume", so it only has to name the difference.
+// The full sentence stays in the log.
+std::string online_reason_short(const std::string& detail) {
+  if (detail.empty()) return "the standard file could not be read";
+  if (detail.find("joints match") != std::string::npos) return detail;
+  if (detail.find("rest pose differs") != std::string::npos) return "rest pose differs";
+  if (detail.find("flags differ") != std::string::npos) return "joint settings differ";
+  if (detail.find("hierarchy differs") != std::string::npos) return "skeleton shape differs";
+  if (detail.find("more than 1024 joints") != std::string::npos) return "skeleton too large";
+  if (detail.find("No _Share_joint") != std::string::npos) return "no skeleton found";
+  if (detail.find("non-texture data") != std::string::npos) return "changes more than textures";
+  if (detail.find("changes layout") != std::string::npos) return "changes the file layout";
+  if (detail.find("identical to the clean resource") != std::string::npos) return "same as the standard file";
+  std::string text = detail;
+  while (!text.empty() && (text.back() == '.' || text.back() == ' ')) text.pop_back();
+  return text;
+}
+
+namespace {
 
 bool visual_dat_only(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
                      std::string* error) {
@@ -1561,11 +1671,11 @@ bool stage_dat_target(const std::string& filename, std::string* path, std::strin
   if (name.size() < 7 || !dat_extension(name)) return false;
   const std::string stem = name.substr(0, name.size() - 4);
   static constexpr struct { const char* token; const char* path; const char* label; } resources[] = {
-      {"grps1", "GrPs1.dat", "Pokémon Stadium — Fire"},
-      {"grps2", "GrPs2.dat", "Pokémon Stadium — Water"},
-      {"grps3", "GrPs3.dat", "Pokémon Stadium — Rock"},
-      {"grps4", "GrPs4.dat", "Pokémon Stadium — Grass"},
-      {"grps", "GrPs.dat", "Pokémon Stadium — Base"},
+      {"grps1", "GrPs1.dat", "Pokémon Stadium: Fire"},
+      {"grps2", "GrPs2.dat", "Pokémon Stadium: Water"},
+      {"grps3", "GrPs3.dat", "Pokémon Stadium: Rock"},
+      {"grps4", "GrPs4.dat", "Pokémon Stadium: Grass"},
+      {"grps", "GrPs.dat", "Pokémon Stadium: Base"},
       {"grop", "GrOp.dat", "Dream Land"},
       {"grnba", "GrNBa.dat", "Battlefield"},
       {"grnla", "GrNLa.dat", "Final Destination"},
@@ -1879,7 +1989,8 @@ ImportResult install_asset_locked(const fs::path& source, const std::string& sou
     return true;
   };
   auto duplicate = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& a) {
-    return a.info.sha256 == digest && a.info.target_path == dat.target_path;
+    // A disc-backed record has no stored copy to refresh: an import of the same file is its own entry.
+    return a.info.sha256 == digest && a.info.target_path == dat.target_path && a.source_kind != kDiscSource;
   });
   if (duplicate != g_assets.end()) {
     std::string validation_error;
@@ -1953,7 +2064,7 @@ ImportResult install_asset_locked(const fs::path& source, const std::string& sou
       result.message = "The asset was cataloged, but selection could not be saved: " + error; return result;
     }
   }
-  g_message = asset.info.name + " imported as " + dat.character + " — " + dat.costume +
+  g_message = asset.info.name + " imported as " + dat.character + ": " + dat.costume +
               " (" + dat.target_path + ")" +
               (auto_selected ? " and automatically selected." :
                                "; the existing selection was preserved.");
@@ -2319,10 +2430,18 @@ ImportResult install_vault_locked(const fs::path& source, VaultPlan plan,
 
 std::vector<uint8_t> load_runtime_asset_locked(const AssetRecord& asset, std::string* error) {
   std::vector<uint8_t> bytes;
-  if (!safe_relative_path(asset.stored_path) ||
-      !read_bounded(g_root / fs::u8path(asset.stored_path), kMaxAssetBytes, &bytes, error)) return {};
-  if (sha256(bytes) != asset.info.sha256) {
-    *error = asset.info.name + ": stored DAT hash no longer matches the catalog."; return {};
+  if (asset.source_kind == kDiscSource) {
+    // Read from the disc itself, and never trust it unseen: the hash is what the scan recorded.
+    if (!read_range(fs::u8path(asset.disc_path), asset.disc_offset, asset.disc_length, &bytes) ||
+        sha256(bytes) != asset.info.sha256) {
+      *error = kDiscChanged; return {};
+    }
+  } else {
+    if (!safe_relative_path(asset.stored_path) ||
+        !read_bounded(g_root / fs::u8path(asset.stored_path), kMaxAssetBytes, &bytes, error)) return {};
+    if (sha256(bytes) != asset.info.sha256) {
+      *error = asset.info.name + ": stored DAT hash no longer matches the catalog."; return {};
+    }
   }
   if (asset.info.kind == "character_costume") {
     auto dat = inspect_dat_impl(bytes);
@@ -2346,7 +2465,17 @@ bool refresh_assets_locked(bool prune_invalid_selections, std::string* error) {
   std::vector<std::string> invalid_selected;
   for (auto& asset : g_assets) {
     std::string validation_error;
-    asset.info.available = !load_runtime_asset_locked(asset, &validation_error).empty();
+    if (asset.source_kind == kDiscSource) {
+      // Startup only asks whether the disc is still the file that was scanned. Hashing every skin of
+      // every disc here would read tens of megabytes on each launch; the hash is checked when a
+      // skin is selected and when it is applied.
+      uint64_t size = 0; int64_t mtime = 0;
+      asset.info.available = file_stamp(fs::u8path(asset.disc_path), &size, &mtime) &&
+                             size == asset.disc_size && mtime == asset.disc_mtime;
+      validation_error = kDiscChanged;
+    } else {
+      asset.info.available = !load_runtime_asset_locked(asset, &validation_error).empty();
+    }
     asset.info.availability_message = asset.info.available ?
         (asset.info.kind == "character_costume" || asset.info.kind == kPortraitKind ? std::string() :
          asset.info.kind == "stage_visual" ?
@@ -2407,7 +2536,165 @@ bool parse_fst(uint8_t* fst, uint32_t fst_size, std::vector<FstFile>* files, std
   return true;
 }
 
+// ---- skins inside a mod disc or a files pack ----
+struct DiscCandidate { std::string member; fs::path file; uint64_t offset = 0, length = 0; };
+
+// Every file in a disc image whose name is a costume slot of the game ("PlFxGr.dat", or the English
+// "PlCaRe.usd"). The name decides here; the content is checked by the caller.
+bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, std::string* error) {
+  std::vector<uint8_t> header;
+  if (!read_range(iso, 0, 0x440, &header)) { *error = "The disc image could not be read."; return false; }
+  const uint64_t fst_offset = be32(header.data() + 0x424), fst_size = be32(header.data() + 0x428);
+  std::vector<uint8_t> fst;
+  if (fst_size < 12 || fst_size > 2u * 1024u * 1024u || !read_range(iso, fst_offset, fst_size, &fst)) {
+    *error = "The disc image has no readable file table."; return false;
+  }
+  std::vector<FstFile> files;
+  if (!parse_fst(fst.data(), (uint32_t)fst.size(), &files, error)) return false;
+  for (const auto& file : files) {
+    const size_t slash = file.path.find_last_of('/');
+    const std::string name = slash == std::string::npos ? file.path : file.path.substr(slash + 1);
+    SlotName slot;
+    if (name.size() != 10 || !dat_extension(name) || !find_slot(name.substr(0, 6) + ".dat", &slot)) continue;
+    out->push_back({name, iso, file.start, file.size});
+  }
+  return true;
+}
+
+void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out) {
+  std::error_code ec;
+  for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
+    if (!it->is_regular_file(ec)) continue;
+    const std::string name = path_filename_utf8(it->path());
+    SlotName slot;
+    if (name.size() != 10 || !dat_extension(name) || !find_slot(name.substr(0, 6) + ".dat", &slot)) continue;
+    const uint64_t length = it->file_size(ec);
+    if (!ec) out->push_back({name, it->path(), 0, length});
+  }
+}
+
 }  // namespace
+
+ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pack_name, std::string* error) {
+  std::string local; if (!error) error = &local;
+  ImportResult result;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (!mutable_profile_locked(error)) { result.message = *error; return result; }
+  std::error_code ec;
+  const fs::path root = fs::absolute(fs::u8path(iso_path), ec);
+  const std::string key = root.u8string();
+  const bool folder = fs::is_directory(root, ec);
+  uint64_t root_size = 0; int64_t root_mtime = 0;
+  if (!folder && !file_stamp(root, &root_size, &root_mtime)) {
+    *error = result.message = "The disc image could not be opened."; return result;
+  }
+  // A disc scanned before, unchanged since: nothing to read. A folder is small and has no single
+  // time to compare, so it is read every time.
+  if (!folder)
+    for (const auto& scan : g_disc_scans)
+      if (scan.path == key && scan.size == root_size && scan.mtime == root_mtime) {
+        result.ok = result.already_present = true;
+        result.message = "Skins of " + pack_name + " are already in the skin list.";
+        return result;
+      }
+  std::vector<DiscCandidate> candidates;
+  if (folder) folder_costume_files(root, &candidates);
+  else if (!disc_costume_files(root, &candidates, error)) { result.message = *error; return result; }
+  // The plain .dat of a slot first, then its English .usd: when both differ from the game's and from
+  // each other, the English one is the one this game loads, so it is the one listed.
+  std::stable_sort(candidates.begin(), candidates.end(), [](const DiscCandidate& a, const DiscCandidate& b) {
+    return lower(a.member) < lower(b.member);
+  });
+  std::map<std::string, AssetRecord> fresh;   // by target slot
+  size_t same = 0, skipped = 0;
+  for (const auto& candidate : candidates) {
+    uint32_t retail_offset = 0, retail_size = 0;
+    std::vector<uint8_t> bytes, retail;
+    if (!host::disc_find_file(candidate.member, &retail_offset, &retail_size) || !retail_size ||
+        retail_size > kMaxAssetBytes || !read_range(candidate.file, candidate.offset, candidate.length, &bytes)) {
+      ++skipped; continue;
+    }
+    retail.resize(retail_size);
+    if (!host::disc_read(retail_offset, retail.data(), retail_size)) { ++skipped; continue; }
+    if (bytes == retail) { ++same; continue; }
+    const auto dat = inspect_dat_impl(bytes);
+    const std::string slot_name = candidate.member.substr(0, 6) + ".dat";
+    if (!dat.ok || lower(dat.target_path) != lower(slot_name)) { ++skipped; continue; }
+    const std::string digest = sha256(bytes);
+    if (digest.empty()) { ++skipped; continue; }
+    const auto have = fresh.find(dat.target_path);
+    if (have != fresh.end() && have->second.info.sha256 == digest) continue;   // .dat and .usd carry the same skin
+    AssetRecord asset;
+    // The identity is where the skin is, not what it is: a newer build of the same disc keeps the
+    // player's selection.
+    asset.info.id = "disc-" + sha256_text(key + "\n" + lower(candidate.member));
+    asset.info.name = dat.character + " " + dat.costume + ": from " + pack_name;
+    asset.info.kind = "character_costume";
+    asset.info.target_path = dat.target_path;
+    asset.info.character = dat.character;
+    asset.info.costume = dat.costume;
+    asset.info.sha256 = digest;
+    asset.info.roots = dat.roots;
+    asset.info.available = true;
+    asset.info.source = "disc";
+    asset.info.source_name = pack_name;
+    asset.info.disc_path = candidate.file.u8string();
+    // Never written: a build that does not know disc-backed skins finds no file here and lists the
+    // entry as unavailable, instead of refusing the whole catalog.
+    asset.stored_path = "disc/" + asset.info.id + "/" + dat.target_path;
+    asset.source_kind = kDiscSource;
+    asset.source_name = pack_name;
+    asset.source_member = candidate.member;
+    asset.source_id = key;
+    asset.disc_path = asset.info.disc_path;
+    asset.disc_offset = candidate.offset;
+    asset.disc_length = candidate.length;
+    if (!file_stamp(candidate.file, &asset.disc_size, &asset.disc_mtime)) { ++skipped; continue; }
+    fresh[dat.target_path] = std::move(asset);
+  }
+  // Replace this disc's earlier records: files that no longer differ go away, changed ones are
+  // updated, and a name the player gave an entry is kept. Records of a disc that no longer exists
+  // go too; they hold no data and a new scan brings them back.
+  auto previous_assets = g_assets;
+  auto previous_scans = g_disc_scans;
+  std::map<std::string, std::string> names;
+  g_assets.erase(std::remove_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+    if (item.source_kind != kDiscSource) return false;
+    if (item.source_id == key) {
+      if (item.info.name.find(": from ") == std::string::npos) names[item.info.id] = item.info.name;
+      return true;
+    }
+    std::error_code gone;
+    return !fs::exists(fs::u8path(item.disc_path), gone);
+  }), g_assets.end());
+  for (auto& item : fresh) {
+    const auto renamed = names.find(item.second.info.id);
+    if (renamed != names.end()) item.second.info.name = renamed->second;
+    g_assets.push_back(std::move(item.second));
+  }
+  g_disc_scans.erase(std::remove_if(g_disc_scans.begin(), g_disc_scans.end(),
+      [&](const DiscScan& scan) { return scan.path == key; }), g_disc_scans.end());
+  if (!folder) g_disc_scans.push_back({key, root_size, root_mtime});
+  if (!save_state_locked(error)) {
+    g_assets = std::move(previous_assets); g_disc_scans = std::move(previous_scans);
+    result.message = *error; return result;
+  }
+  result.ok = true;
+  result.message = std::to_string(fresh.size()) + " skins from " + pack_name + " are in the skin list (" +
+                   std::to_string(same) + " costume files are the standard ones, " + std::to_string(skipped) +
+                   " not usable).";
+  host::log("cosmetics: scanned %s: %zu skins listed, %zu standard, %zu not usable", key.c_str(), fresh.size(), same, skipped);
+  return result;
+}
+
+uint32_t disc_skin_count(const std::string& iso_path) {
+  std::error_code ec;
+  const std::string key = fs::absolute(fs::u8path(iso_path), ec).u8string();
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return (uint32_t)std::count_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+    return item.source_kind == kDiscSource && item.source_id == key;
+  });
+}
 
 void configure(const std::string& settings_path) {
   std::lock_guard<std::mutex> lock(g_mutex);
@@ -2688,8 +2975,21 @@ std::vector<AssetInfo> assets() {
   std::lock_guard<std::mutex> lock(g_mutex);
   std::vector<AssetInfo> out;
   out.reserve(g_assets.size());
+  // The online verdict of each applied choice, from the snapshot this launch runs with. A costume
+  // with an English twin has two disc files: it is off online when either one is.
+  const auto runtime = std::atomic_load(&g_runtime);
+  std::map<std::string, const RuntimeAsset*> verdicts;
+  for (const auto& entry : runtime->by_start) {
+    const RuntimeAsset*& have = verdicts[entry.second.id];
+    if (!have || (have->online_allowed && !entry.second.online_allowed)) have = &entry.second;
+  }
   for (const auto& record : g_assets) {
     AssetInfo info = record.info;
+    const auto verdict = verdicts.find(info.id);
+    if (verdict != verdicts.end()) {
+      info.online_allowed = verdict->second->online_allowed;
+      info.online_message = verdict->second->online_reason;
+    }
     for (const auto& companion : record.companions) {
       if (companion.kind != "csp" && companion.kind != "preview" && companion.kind != "stock") continue;
       const fs::path preview = g_root / fs::u8path(companion.stored_path);
@@ -2992,6 +3292,7 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
       FstFile& disc_file = *target;
       std::vector<uint8_t> served = bytes;   // per disc file: the online rule and the length below are per file
       bool online_allowed = true;
+      std::string online_reason;   // kept for the Mods tab: the verdict is never only in the log
       if (asset->info.kind == "stage_visual") {
         std::vector<uint8_t> clean(disc_file.size);
         std::string validation_error;
@@ -2999,6 +3300,7 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
                          visual_dat_only(clean, served, &validation_error);
         host::log("cosmetics: stage %s %s online (%s)", disc_file.path.c_str(),
                   online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
+        online_reason = online_allowed ? std::string("textures only") : online_reason_short(validation_error);
       }
       if (asset->info.kind == "character_costume") {
         std::vector<uint8_t> clean(disc_file.size);
@@ -3007,6 +3309,7 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
                          costume_skeleton_matches(clean, served, &validation_error);
         host::log("cosmetics: costume %s %s online (%s)", disc_file.path.c_str(),
                   online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
+        online_reason = online_reason_short(validation_error);
       }
       if (!online_allowed) {
         // This file is the override offline and the disc's own file online, and the game sees one
@@ -3023,7 +3326,7 @@ void apply_to_fst(uint8_t* fst, uint32_t fst_size) {
       put_be32(fst + (size_t)disc_file.index * 12 + 8, (uint32_t)served.size());
       RuntimeAsset active{asset->info.id, asset->info.target_path,
                           std::make_shared<const std::vector<uint8_t>>(std::move(served)),
-                          disc_file.size, online_allowed};
+                          disc_file.size, online_allowed, asset->info.kind, std::move(online_reason)};
       next->by_start[disc_file.start] = std::move(active);
       host::log("cosmetics: %s -> %s at %08X (%u vanilla bytes, %zu override bytes)",
                 asset->info.name.c_str(), disc_file.path.c_str(), disc_file.start, disc_file.size,
@@ -3122,6 +3425,16 @@ bool online_allowed(uint32_t vanilla_file_start) {
   auto runtime = std::atomic_load(&g_runtime);
   auto found = runtime->by_start.find(vanilla_file_start);
   return found == runtime->by_start.end() || found->second.online_allowed;
+}
+uint32_t swapped_online_count(uint32_t* stages) {
+  auto runtime = std::atomic_load(&g_runtime);
+  std::map<std::string, bool> costumes, stage_ids;
+  for (const auto& entry : runtime->by_start) {
+    if (entry.second.online_allowed) continue;
+    (entry.second.kind == "stage_visual" ? stage_ids : costumes)[entry.second.id] = true;
+  }
+  if (stages) *stages = (uint32_t)stage_ids.size();
+  return (uint32_t)costumes.size();
 }
 void freeze_for_online_session() { g_online_freezes.store(1, std::memory_order_relaxed); }
 void thaw_after_online_session() { g_online_freezes.store(0, std::memory_order_relaxed); }

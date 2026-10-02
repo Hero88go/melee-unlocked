@@ -410,6 +410,14 @@ static std::vector<uint32_t> g_mod_block_versions;                  // write gen
 
 bool mod_disc_active() { return g_mod_disc; }
 
+// Clean mode: a mod disc that was built for the plain game and cannot share RAM with Slippi's code
+// (the 20XX Hack Pack calls code inside its character select file at fixed heap addresses, and
+// Slippi's heap table moves that file). Such a disc runs without Slippi's codes: only the disc's own
+// code is in RAM, and every function Slippi's codes touch runs from RAM too, because the compiled
+// game has those codes built in. No online play and no replays in this mode.
+static bool g_mod_clean = false;
+bool mod_clean_mode() { return g_mod_clean; }
+
 bool mod_reference_from_table() {
   static const bool boot_only = [] { const char* v = std::getenv("MELEE_MOD_REFERENCE"); return v && std::strcmp(v, "boot") == 0; }();
   return !boot_only;
@@ -423,6 +431,16 @@ static uint8_t* reference_byte(std::vector<uint8_t>& image, uint32_t addr) {
     at += r.second;
   }
   return nullptr;
+}
+
+// Makes the reference differ from RAM at these bytes, so the function that owns them runs from RAM.
+// A function the port implements on the host keeps that implementation: Slippi's change to it never
+// ran in the compiled game either.
+static void mod_reference_force(uint32_t addr, uint32_t n) {
+  uint32_t lo = 0, hi = 0;
+  if (ppc::function_bounds(addr, &lo, &hi) && ppc::compiled_as_host_function(lo)) return;
+  for (uint32_t i = 0; i < n; ++i)
+    if (uint8_t* p = reference_byte(g_mod_reference, addr + i)) *p = (uint8_t)~rd8(addr + i);
 }
 
 bool mod_reference_set(uint32_t addr, const uint8_t* bytes, uint32_t n) {
@@ -487,6 +505,14 @@ static void load_dol_from_file(const std::string& path) {
   for (const auto& r : g_text_ranges) { const uint8_t* p = ptr(r.first, r.second); g_vanilla_text.insert(g_vanilla_text.end(), p, p + r.second); }
 }
 
+// Recognised by what the disc carries, never by its file name: the pack's two code and table files,
+// its numbered character select file and its renamed HUD file, with the retail names gone.
+static bool disc_is_fixed_address_pack() {
+  return disc_find_file("AI_Engine.bin", nullptr, nullptr) && disc_find_file("StageSwapTable.bin", nullptr, nullptr) &&
+         disc_find_file("MnSlChr.0sd", nullptr, nullptr) && disc_find_file("IfAl0.usd", nullptr, nullptr) &&
+         !disc_find_file("MnSlChr.usd", nullptr, nullptr) && !disc_find_file("IfAll.usd", nullptr, nullptr);
+}
+
 static void load_dol_from_disc() {
   const uint32_t dol_offset = disc_dol_offset();
   if (!disc_has_vanilla_dol()) {
@@ -497,6 +523,10 @@ static void load_dol_from_disc() {
     load_dol_from_file(options.mod_base_iso);
     g_mod_disc = true;
     log("boot: mod disc; vanilla code from %s, the mod's code follows", options.mod_base_iso.c_str());
+    if (disc_is_fixed_address_pack() && !std::getenv("MELEE_MOD_NO_CLEAN")) {
+      g_mod_clean = true;
+      log("mods: this disc runs in clean mode (its own code only, without Slippi's codes); online play and replays are off for it");
+    }
     return;
   }
   uint8_t dh[0x100];
@@ -552,6 +582,19 @@ static void apply_mod_code() {
     g_mod_reference.insert(g_mod_reference.end(), p, p + r.second);
   }
   g_mod_reference_boot = g_mod_reference;
+  // Clean mode: Slippi's handler and boot table leave RAM before the mod's code goes in (the mod may
+  // use that low memory itself), and nothing may reach their compiled twins by address any more. The
+  // same holds for the heap addresses the compiled copies of Slippi's main list were made for: the
+  // mod's own files load there now.
+  if (g_mod_clean && gecko::codehandler_bin_size) {
+    std::memset(ptr(0x80001800u, (uint32_t)gecko::codehandler_bin_size), 0, gecko::codehandler_bin_size);
+    std::memset(ptr(0x800028B8u, (uint32_t)gecko::bootloader_gct_size), 0, gecko::bootloader_gct_size);
+    const uint32_t text_start = g_text_ranges.empty() ? 0x80003100u : g_text_ranges.front().first;
+    ppc::disable_dispatch_range(0x80001800u, std::min(text_start, 0x80001800u + (uint32_t)gecko::codehandler_bin_size));
+    ppc::disable_dispatch_range(0x800028B8u, std::min(text_start, 0x800028B8u + (uint32_t)gecko::bootloader_gct_size));
+    if (gecko::gct_base_used)
+      ppc::disable_dispatch_range(gecko::gct_base_used, gecko::gct_base_used + (uint32_t)gecko::slippi_gct_size + 0x1000u);
+  }
   const uint32_t dol_offset = disc_dol_offset();
   uint8_t dh[0x100];
   if (!disc_read(dol_offset, dh, sizeof dh)) die("cannot read the mod's DOL header");
@@ -562,7 +605,14 @@ static void apply_mod_code() {
     if (!try_ptr(addr, size) || !disc_read(dol_offset + off, ptr(addr, size), size)) die("cannot read the mod's DOL section %d", i);
   }
   // Slippi's boot patches again over the mod's code, as Slippi Dolphin applies them to any disc.
-  if (gecko::codehandler_bin_size) {
+  if (g_mod_clean) {
+    // The reference so far is retail plus Slippi's boot codes. Every word Slippi's main list would
+    // install is compiled in as well, so each of those is forced to differ: the functions that own
+    // them run the disc's code from RAM, whatever the optional codes are set to.
+    uint32_t forced = 0;
+    slippi::for_each_served_code_write([&](uint32_t addr, uint32_t n) { mod_reference_force(addr, n); ++forced; });
+    log("mods: clean mode; %u places Slippi's main list changes run the disc's code", forced);
+  } else if (gecko::codehandler_bin_size) {
     apply_gecko_boot_ram();
     ppc::add_ram_code_range(0x80001800u, 0x80001800u + (uint32_t)gecko::codehandler_bin_size);
     ppc::add_ram_code_range(0x800028B8u, 0x800028B8u + (uint32_t)gecko::bootloader_gct_size);
@@ -572,11 +622,26 @@ static void apply_mod_code() {
     total += ppc::redirect_changed_functions(g_mod_reference.data() + at, ram, r.first, r.second);
     at += r.second;
   }
+  // Clean mode sends functions to RAM that the compiled game never expected to differ (everything
+  // Slippi's codes touch), many of them small enough to be built into their callers.
+  if (g_mod_clean) total += ppc::redirect_inlined_callers(ram);
   g_mod_block_versions.assign(ppc::RAM_WATCH_COUNT, 0);
   for (const auto& r : g_text_ranges) ppc::watch_ram_range(r.first & 0x3FFFFFFFu, r.second);
   for (uint32_t b = 0; b < ppc::RAM_WATCH_COUNT; ++b) g_mod_block_versions[b] = ppc::g_ram_versions[b].load();
   log("mods: the mod's main.dol is in; %zu game functions run its code", total);
 
+  // Clean mode has no Slippi code in the game, so there is no online menu and nothing to pair: the
+  // build is marked as a mod without an identity, which every matchmaking mode refuses.
+  if (g_mod_clean) {
+    char title[0x41] = {};
+    disc_read(0x20, title, 0x40);
+    slippi::online::LocalBuild build;
+    build.mod_view = true;
+    build.name = title[0] ? std::string(title) : std::string("a modded disc");
+    slippi::online::set_local_build(build);
+    slippi::online::set_native_gameplay_profile(slippi::online::NativeGameplayProfile::OtherMod);
+    return;
+  }
   // Online: a mod disc plays Direct only, against the same mod (Unranked, Teams and Party refuse).
   // Hash the entire disc, including every file payload and DOL data section. The patched text
   // also binds the identity to Slippi's boot code. No path/mtime cache can reuse a stale digest.
@@ -630,6 +695,7 @@ static void check_mod_code_writes() {
       const size_t off = at + (lo - r.first);
       const size_t n = ppc::redirect_changed_functions(g_mod_reference.data() + off, ram, lo, hi - lo);
       if (n) log("mods: %zu more functions run code written at run time (block %08X)", n, lo);
+      if (n && g_mod_clean) ppc::redirect_inlined_callers(ram);
       ppc::report_kept_compiled(g_mod_reference_boot.data() + off, g_mod_reference.data() + off, ram, lo, hi - lo);
     }
     at += r.second;

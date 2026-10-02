@@ -22,6 +22,7 @@
 #include "pc_settings.h"
 #include "texture_pack.h"
 #include "cosmetic_mods.h"
+#include "disc_skin_scan.h"
 #include "mod_scan.h"
 #include "threaded_backend.h"
 #include "window.h"
@@ -699,7 +700,7 @@ static void usage() {
               "           [--aspect auto|73:60|4:3|16:9|stretch] [--widescreen|--true-widescreen]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
               "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--music 0-100|--no-music] [--volume 0-100] [--audio-dump out.wav]\n"
-              "           [--settings-path file --load-settings --import-cosmetic file|--enable-project-effects|--restore-vanilla-cosmetics|--cosmetic-status]\n"
+              "           [--settings-path file --load-settings --import-cosmetic file|--scan-disc-skins mod.iso|--select-cosmetic id|--enable-project-effects|--restore-vanilla-cosmetics|--cosmetic-status]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
   std::printf("           [--lobby-direct NAME#123 --lobby-character 0..255 --lobby-status-file path]\n");
 #ifdef MELEE_SOURCE_PORT
@@ -1154,7 +1155,7 @@ static int melee_main(int argc, char** argv) {
   bool scripted = false, allow_matchmaking = false;   // automated runs stay off Slippi's servers
   std::string card_self_test_dir;
   std::string replay_arg;   // Source engine --replay
-  std::string cosmetic_import;
+  std::string cosmetic_import, cosmetic_scan_disc, cosmetic_select;
   bool cosmetic_enable_effects = false, cosmetic_restore = false, cosmetic_status = false;
   gx::RenderOptions gfx;
 #ifdef MELEE_SOURCE_PORT
@@ -1260,6 +1261,10 @@ static int melee_main(int argc, char** argv) {
       if ((int)gfx.aspect < 0) { std::fprintf(stderr, "--aspect auto|73:60|4:3|16:9|stretch\n"); return 2; } }
     else if (a == "--settings-path") gfx.settings_path = next();
     else if (a == "--import-cosmetic") cosmetic_import = next();
+    // Hidden tests: list a mod disc's costumes as skins (needs --iso to compare against), and pick
+    // one by the id --cosmetic-status prints. Both exit without starting the game.
+    else if (a == "--scan-disc-skins") cosmetic_scan_disc = next();
+    else if (a == "--select-cosmetic") cosmetic_select = next();
     else if (a == "--enable-project-effects") cosmetic_enable_effects = true;
     else if (a == "--restore-vanilla-cosmetics") cosmetic_restore = true;
     else if (a == "--cosmetic-status") cosmetic_status = true;
@@ -1476,11 +1481,38 @@ static int melee_main(int argc, char** argv) {
   // Cosmetic catalog/profile storage follows --settings-path just like controller and video
   // settings. Configure it for normal, standalone-settings, and automated diagnostic launches.
   host::cosmetics::configure(gfx.settings_path);
-  if (!cosmetic_import.empty() || cosmetic_enable_effects || cosmetic_restore || cosmetic_status) {
+  if (!cosmetic_import.empty() || !cosmetic_scan_disc.empty() || !cosmetic_select.empty() ||
+      cosmetic_enable_effects || cosmetic_restore || cosmetic_status) {
     bool ok = true;
     if (!cosmetic_import.empty()) {
       auto result = host::cosmetics::import_file(cosmetic_import);
       std::printf("%s\n", result.message.c_str()); ok &= result.ok;
+    }
+    if (!cosmetic_scan_disc.empty()) {
+      // A costume is a skin only where it differs from the game disc's, so that disc must be open.
+      if (o.iso.empty()) {
+        std::fprintf(stderr, "--scan-disc-skins requires --iso (your Melee disc) to compare the mod disc against\n");
+        ok = false;
+      } else if (!host::disc_open(o.iso)) {
+        std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str());
+        ok = false;
+      } else {
+        const std::string name = std::filesystem::u8path(cosmetic_scan_disc).stem().u8string() + " disc";
+        auto result = host::cosmetics::scan_disc_skins(cosmetic_scan_disc, name);
+        std::printf("%s\n", result.message.c_str()); ok &= result.ok;
+      }
+    }
+    if (!cosmetic_select.empty()) {
+      std::string error = "no skin has that id";
+      bool selected = false;
+      for (const auto& asset : host::cosmetics::assets())
+        if (asset.id == cosmetic_select) {
+          const std::string slot = asset.target_path + (asset.scope.empty() ? "" : "#" + asset.scope);
+          selected = host::cosmetics::select_variant(slot, asset.id, &error);
+          break;
+        }
+      if (selected) std::printf("%s\n", host::cosmetics::last_message().c_str());
+      else { std::fprintf(stderr, "%s\n", error.c_str()); ok = false; }
     }
     if (cosmetic_enable_effects) {
       std::string error;
@@ -1702,6 +1734,9 @@ static int melee_main(int argc, char** argv) {
     scan.use_profile_card = !explicit_card_dir;
     const auto found = source_port::mods::startup(scan);
     for (const auto& line : found.log) host::log("mods: %s", line.c_str());
+    // The costumes of the mod discs found become choices in the skin list of this, the normal game.
+    // Not when this session's own disc is a mod disc: there is no standard costume to compare with.
+    if (o.mod_base_iso.empty()) source_port::mods::scan_detected_disc_skins(std::filesystem::u8path(o.iso));
     if (!explicit_card_dir && !found.card_dir.empty()) o.card_dir = found.card_dir.u8string();
   }
   host::boot_setup();

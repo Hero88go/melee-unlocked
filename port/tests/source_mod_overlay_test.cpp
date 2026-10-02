@@ -175,6 +175,27 @@ int main(int argc, char** argv) {
   CHECK(overlay.files()[3].path == "/new.dat");
   CHECK(overlay.read(overlay.files()[3].start, out, 7) == Overlay::Read::Success);
   CHECK(std::memcmp(out, "newdata", 7) == 0);
+  // The disc's PlMrNr.dat equals the retail copy, so the pack does not carry it: nothing for the
+  // skin rule to judge, and the retail file is what every view reads.
+  CHECK(std::none_of(overlay.files().begin(), overlay.files().end(),
+      [](const Overlay::File& f) { return f.profile == "iso-preset" && f.path == "/plmrnr.dat"; }));
+  // A costume in a files pack is read whole in one call at its exact length (the skin rule
+  // compares the complete file with the retail one), also when the length is not a multiple of 32.
+  {
+    const auto skins = fs::path(root.string() + "-skins");
+    CHECK(fs::create_directory(skins));
+    std::vector<unsigned char> costume(1000);
+    for (size_t i = 0; i < costume.size(); ++i) costume[i] = (unsigned char)(i * 7 + 3);
+    { std::ofstream f(skins / "PlFxNr.dat", std::ios::binary); f.write((const char*)costume.data(), (std::streamsize)costume.size()); }
+    Overlay pack;
+    CHECK(pack.add_directory(skins, "layer 1 skins", error));
+    CHECK(pack.files().size() == 1 && pack.files()[0].path == "/plfxnr.dat" && pack.files()[0].length == costume.size());
+    std::vector<unsigned char> whole(costume.size(), 0);
+    CHECK(pack.read(pack.files()[0].start, whole.data(), (uint32_t)whole.size()) == Overlay::Read::Success);
+    CHECK(whole == costume);
+    CHECK(fs::remove(skins / "PlFxNr.dat"));
+    CHECK(fs::remove(skins));
+  }
   // Reject Akaneia by its disc files, including renamed ISOs and existing directory profiles.
   // A refused pack must not publish any of its menu or costume assets.
   const char* ak_files[] = {"MxDt.dat", "PlSn.dat", "PlTs.dat"};

@@ -80,6 +80,16 @@ struct Status {
   // The session's mods came from the Mods folder (mod_scan.h), not a profile or --mod-* flags; then
   // switching 20XX TE on the Mods page takes effect at once.
   bool detected = false;
+  // Costume files of the loaded packs and what online modes that play the standard game do with
+  // each: `served` ones stay on there, the rest show the standard costume. Empty when no pack
+  // changes a costume, and then the panel draws exactly what it drew before.
+  struct SkinNote {
+    std::string path, layer, reason;   // "PlFxGr.dat", the layer's file name, "61 joints match"
+    bool served = false, identical = false;
+  };
+  std::vector<SkinNote> pack_skins;
+  // The game is showing the standard files right now (an online mode that plays the standard game).
+  bool retail_view = false;
 };
 Status& status();
 // Profile names found in Mods/Profiles (*.ini), sorted.

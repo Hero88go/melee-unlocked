@@ -411,6 +411,8 @@ typedef struct MuHostApi {
 #define MU_GAME_OPTION2_TE_HANDWARMERS      0x00010000u   /* 1-minute time matches: fighters pass through each other */
 #define MU_GAME_OPTION2_TE_STAGE_STRIKE     0x00020000u   /* X on stage select strikes a stage */
 #define MU_GAME_OPTION2_TE_LOCK_SETTINGS    0x00040000u   /* host only: the TE settings cannot be changed */
+/* 0x00080000 to 0x00400000: the L-cancel flash choices (mu_lcancel_flash.h). */
+#define MU_GAME_OPTION2_TE_20XX_CPUS        0x00800000u   /* CPUs play with the 20XX Hack Pack's AI */
 #define MU_GAME_OPTION2_TE_TOURNAMENT_SAFE                                                        \
     (MU_GAME_OPTION2_TE_NEUTRAL_SPAWNS | MU_GAME_OPTION2_TE_V100 | MU_GAME_OPTION2_TE_DL64_QUIET |  \
      MU_GAME_OPTION2_TE_RESET_TOURNAMENT | MU_GAME_OPTION2_TE_FROZEN_TOGGLE |                     \

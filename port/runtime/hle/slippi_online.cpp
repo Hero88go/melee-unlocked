@@ -693,7 +693,7 @@ int build_verdict(uint8_t remote_count, std::string* why) {
     }
     if (g_local_build.mod_view) {
       if (!native_direct_builds_match(true, g_local_build.fingerprint, rb.mod_view, rb.fingerprint)) {
-        *why = "Your opponent is not on " + g_local_build.name + ". This Direct match needs the same build";
+        *why = "Your opponent is not on the same mod. This Direct match needs the same build on both sides";
         return -1;
       }
     } else if (rb.mod_view) {
@@ -707,9 +707,17 @@ int build_verdict(uint8_t remote_count, std::string* why) {
   const uint64_t now = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now().time_since_epoch()).count();
   if (since == 0 || now - since < kBuildWaitMs) return 0;
-  // The game shows at most 120 characters.
-  *why = "Opponent did not confirm " + g_local_build.name + ". For Slippi Dolphin, tick Opponent uses it on Slippi Dolphin";
-  return -1;
+  // No build arrived in the wait: the opponent is on Slippi Dolphin (or a version from before the
+  // build message), which cannot say what it runs. This used to be refused unless the player had
+  // found and ticked a switch for it, every session; players read the switch as the opponent's and
+  // could not play at all. Direct is a match both players arranged, so it starts, and the log says why.
+  static uint64_t logged_for = 0;
+  if (logged_for != since) {
+    logged_for = since;
+    host::log("slippi: the opponent sent no build (Slippi Dolphin); the Direct match starts without the mod check for %s",
+              g_local_build.name.c_str());
+  }
+  return 1;
 }
 
 // Retrace of the last CMD_GET_MATCH_STATE. The game polls it every frame the online menus are up

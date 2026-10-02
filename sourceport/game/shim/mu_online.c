@@ -152,7 +152,7 @@ typedef struct MuOnlineState {
     /* Determinism self-test (MELEE_ONLINE_SELFTEST=every:depth, test harness only). */
     int selftest_every, selftest_depth, selftest_ref_frame;
     /* Diagnostics. */
-    unsigned int rollbacks, resim_frames, max_depth, loads, captures, skips, advances;
+    unsigned int rollbacks, resim_frames, max_depth, loads, captures, skips, advances, skip_run;
     unsigned int test_inputs;
     unsigned int wait_retrace;
     u8 match_state[RESPONSE_CAPACITY];
@@ -820,9 +820,16 @@ int mu_online_pad_renew(PADStatus* stat)
     tx[12] = mu_online.delay;
     memcpy(tx + 13, mu_online.last_local, PAD_SIZE);
     if (command(CMD_ONLINE_INPUTS, tx, sizeof tx, mu_online.rxb, &got) != 0 || got < RXB_SIZE) {
-        /* No answer means no match: treat it as a disconnect. */
+        /* No answer, or the host's one-byte "disconnected" answer, means no match. This used to
+         * return here with no pad sample, on every retrace: the engine then never ran again, so the
+         * frame that shows DISCONNECTED and ends the game was never reached and the match stood
+         * frozen until the player quit. The frame runs with the last pads the buffer holds. */
+        if (!mu_online.disconnected) {
+            logf_("online: host reply %d bytes (first byte %d) at frame %d, treating as disconnect", (int) got,
+                  got > 0 ? (int) mu_online.rxb[RXB_RESULT] : -1, (int) mu_online.frame);
+        }
         mu_online.disconnected = 1;
-        return 1;
+        mu_online.rxb[RXB_RESULT] = RESP_DISCONNECTED;
     }
 
     /* Section 5: skip (both games wait for each other), disconnect, or advance. */
@@ -830,6 +837,11 @@ int mu_online_pad_renew(PADStatus* stat)
     switch (mu_online.rxb[RXB_RESULT]) {
     case RESP_SKIP:
         if (!mu_online.game_over) {
+            /* The start and the end of each run of skipped frames, so a report of a stalled match
+             * shows how long this game waited (the host's own lines say why). */
+            if (mu_online.skip_run++ == 0) {
+                logf_("online: skip starts at frame %d", (int) mu_online.frame, 0, 0);
+            }
             mu_online.skips++;
             return 1;
         }
@@ -845,6 +857,10 @@ int mu_online_pad_renew(PADStatus* stat)
         break;
     }
 
+    if (mu_online.skip_run > 0) {
+        logf_("online: skip ends at frame %d after %d retraces", (int) mu_online.frame, (int) mu_online.skip_run, 0);
+        mu_online.skip_run = 0;
+    }
     /* Section 6: the local player's pad is the one from `delay` frames ago. */
     wire_to_pad(&stat[mu_online.local_index], mu_online.delay_buffer[mu_online.delay_index]);
     /* Section 7: keep it for rollbacks. */

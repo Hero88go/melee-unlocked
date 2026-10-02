@@ -11,6 +11,9 @@ namespace launcher::lobby {
 struct PeerTestOptions {
   bool no_dht = false;          // skip the public DHT entirely: only peers given by address (two in one process)
   long long clock_offset = 0;   // seconds added to this peer's wall clock, to test clock skew
+  int protocol = 0;             // announce this lobby protocol instead of the current one (an older launcher)
+  bool no_private = false;      // treat private chat messages as an older launcher does: unknown, never acknowledged
+  unsigned private_request_ms = 0;   // how long a private chat request waits for an answer (0: the default)
 };
 // One instance per process with the DHT (it is process-wide); any number with no_dht.
 // Runs on the launcher's lobby worker thread.
@@ -24,8 +27,10 @@ public:
   void join(const nlohmann::json& profile);               // update the profile and show it in the public lobby
   void update_profile(const nlohmann::json& profile);     // re-announce (ready, Game Build, mods) without joining
   // Actions: leave, available, profile, chat, friend, friend_code, friend_accept, friend_decline,
-  // unfriend, request (target, mode), accept, cancel (request, optional code). Throws a message
-  // for the player, in their language, when an action cannot go ahead.
+  // unfriend, request (target, mode), accept, cancel (request, optional code). Private chat:
+  // pm_request (target), pm_accept (room), pm_decline (room, optional block), pm (room, text),
+  // pm_close (room, optional block), pm_unblock (target). Throws a message for the player, in
+  // their language, when an action cannot go ahead.
   void command(const std::string& action, const nlohmann::json& data = nlohmann::json::object());
   void presence(const nlohmann::json& status);
   void tick();
@@ -44,7 +49,16 @@ private:
 };
 
 // Shared by the lobby window and the tests.
-constexpr int lobby_protocol = 2;        // 1 is 0.8.1; 2 adds refusal reasons, delivery, friend codes and mods
+constexpr int lobby_protocol = 3;        // 1 is 0.8.1; 2 adds refusal reasons, delivery, friend codes and mods; 3 adds private chat
+// Private chat: one room per pair of players, opened by a request the other player accepts. Its
+// messages travel only between those two launchers, encrypted like every other peer message.
+constexpr int private_protocol = 3;          // the first lobby protocol that knows private chat
+constexpr size_t private_max_rooms = 8;      // open or waiting for an answer, per player
+constexpr size_t private_max_messages = 100; // kept per room, like the public chat
+constexpr size_t private_max_text = 300;     // bytes of UTF-8 per message, like the public chat
+// A chat message as it may be shown: control characters and text direction overrides removed.
+// Returns "" for text that is not valid UTF-8.
+std::string clean_chat_text(const std::string& text);
 std::string normalize_code(std::string code);             // "abc#123 " -> "ABC#123" (full-width # too)
 bool valid_code(const std::string& code);
 bool valid_iso_name(const std::string& name);             // a custom ISO's name: plain text, 1 to 32 characters

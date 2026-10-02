@@ -689,6 +689,20 @@ void draw_check(HDC dc, int x, int y, bool on) {
   MoveToEx(dc, S(x + 5), S(y + 9), nullptr); LineTo(dc, S(x + 8), S(y + 12)); LineTo(dc, S(x + 13), S(y + 6));
   SelectObject(dc, old); DeleteObject(pen);
 }
+// How many of a mod disc's costumes the game listed as skins (it writes Mods/.cache/disc-skins.txt
+// at boot: path, tab, count). 0 until the game has run once with the disc in the Mods folder.
+int disc_skins(const std::string& disc_path) {
+  std::ifstream in(fs::u8path(mods_dir() + "/.cache/disc-skins.txt"), std::ios::binary);
+  std::string line;
+  while (std::getline(in, line)) {
+    const size_t tab = line.rfind('\t');
+    if (tab == std::string::npos) continue;
+    std::error_code ec;
+    if (fs::equivalent(fs::u8path(line.substr(0, tab)), fs::u8path(disc_path), ec) && !ec)
+      return std::atoi(line.c_str() + tab + 1);
+  }
+  return 0;
+}
 void paint_page(HDC dc) {
   RECT client{}; GetClientRect(g_window, &client);
   vgrad(dc, client, C_CONTENT_TOP, C_CONTENT_BOT);
@@ -733,8 +747,14 @@ void paint_page(HDC dc) {
     if (status.count(m.id) && (is_busy(m.id) || status[m.id].rfind("Installed", 0) != 0)) { line = tx(status[m.id]); line_color = C_TEXT; }
     else if (row.found && !catalog_core::playable(f)) { line = m.note.empty() ? tx("This version is not supported yet.") : tx(m.note); line_color = C_WARN; }
     else if (row.found && f.kind != "te" && f.kind != "tmce") {
-      line = tx(f.needs_engine == "recomp" ? "Direct only. Same mod required; different builds can desync. Launch vanilla for Unranked."
-                                         : "Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked.");
+      // Once the game has listed the disc's costumes as skins, say that they work outside the mod too.
+      const bool skins = disc_skins(f.path) > 0;
+      if (f.needs_engine == "recomp")
+        line = tx(skins ? "Plays Direct only, same mod required. Its skins work in the normal game from your skin list."
+                        : "Direct only. Same mod required; different builds can desync. Launch vanilla for Unranked.");
+      else
+        line = tx(skins ? "Direct needs matching mods; Unranked plays the standard game. Skins: available in your skin list."
+                        : "Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked.");
       line_color = C_WARN;
     }
     else if (!m.note.empty()) { line = tx(m.note); line_color = m.note.find("nsupported") != std::string::npos || m.note.find("ntested") != std::string::npos || m.note.find("not supported") != std::string::npos ? C_WARN : C_DIM; }

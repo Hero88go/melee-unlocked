@@ -133,6 +133,28 @@ DVD. Settings changes affect only the desired on-disk profile. Restarting drops 
 requests, model data, and renderer textures before a different snapshot is published; Restore
 Vanilla therefore needs no backup and never writes to the ISO.
 
+## Skins online, and skins from a mod disc
+
+One rule on both engines: a skin that only changes looks stays on online, everywhere. Anything
+else is listed as off online, with the reason.
+
+- A costume stays on when its skeleton equals the standard costume's (same joints, same shape,
+  same rest pose). Otherwise the standard costume is shown online and in replays.
+- The Mods tab says which it is under each selected skin: "Online: stays on (61 joints match)" or
+  "Online: standard costume (rest pose differs)". The check runs when the game starts.
+- When the online menus open with at least one selected skin swapped, a notice says how many for
+  15 seconds. The log has one line per skin.
+- Costumes inside a mod disc or a files pack in the Mods folder are listed as skins too, named
+  "Fox Green: from <pack name>". Nothing is copied: the catalog records where the file is in the
+  disc and its SHA-256, and reads it from there. Nothing is selected for you.
+- Only costume files that differ from your Melee disc are listed. If the disc is moved or
+  replaced, its skins show "disc file missing or changed" until the game scans it again.
+- The scan runs once per disc at startup. For tests: `--iso <Melee disc> --scan-disc-skins <mod.iso>`,
+  then `--cosmetic-status` for the ids and `--select-cosmetic <id>` to pick one.
+
+This is how a mod disc's skins reach Unranked on the Static Recomp: the disc itself still plays
+Direct only, and its costumes are picked in the normal game.
+
 ## Catalog, variants, and conflicts
 
 Files live beside `port-settings.ini`:

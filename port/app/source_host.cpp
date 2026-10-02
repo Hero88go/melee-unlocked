@@ -23,6 +23,7 @@
 #include <string>
 #include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include "host.h"
 #include "audio.h"
@@ -50,6 +51,8 @@
 #include "source_mod_overlay.h"
 #include "mod_profile.h"
 #include "mod_scan.h"
+#include "pack_skin_rule.h"
+#include "disc_skin_scan.h"
 #include "cosmetic_mods.h"
 #include "texture_pack.h"
 #include "slippilib/SlippiGame.h"
@@ -142,6 +145,11 @@ std::vector<uint8_t> g_fst_raw;                      // the disc's table as read
 // both views.
 std::unordered_map<int32_t, int32_t> g_view_alias;   // mod entry -> retail entry, or -1
 bool g_retail_view = false;
+// A pack's costume files that only change looks stay on in the retail view (pack_skin_rule.h): the
+// same rule a skin from the Mods tab follows, so a skin behaves the same wherever it came from.
+// Every costume file of the loaded packs has a verdict here, served or not, for the log and the panel.
+std::vector<skins::Verdict> g_pack_skins;
+std::unordered_set<int32_t> g_pack_skin_served;
 slippi::online::NativeGameplayProfile g_mod_gameplay_profile = slippi::online::NativeGameplayProfile::Vanilla;
 std::string g_mod_display_name;
 
@@ -281,6 +289,10 @@ void apply_detected_mods() {
   options.source_port = true;
   const mods::Startup found = mods::startup(options);
   for (const auto& line : found.log) host::log("mods: %s", line.c_str());
+  // Every mod disc found, loaded here or not, offers its costumes in the skin list (the same list
+  // on both engines). A skin picked there for a file a loaded pack replaces is skipped below, so a
+  // loaded pack's own costume wins.
+  mods::scan_detected_disc_skins(options.base_iso);
   if (!g_mod_layers.empty()) {
     const std::string chooser = g_mod_profile_name.empty() ? std::string("the command line") : "profile " + g_mod_profile_name;
     host::log("mods: %s chose this session's mods; the Mods folder's packs are only listed", chooser.c_str());
@@ -289,6 +301,52 @@ void apply_detected_mods() {
   mods::status().detected = true;
   mods::status().te_owned = found.te;
   g_mod_layers.insert(g_mod_layers.end(), found.layers.begin(), found.layers.end());
+}
+
+// Decides, once at load, which of the packs' costume files stay on in the retail view. A file equal
+// to the standard costume, or with the standard skeleton, cannot change what the game simulates:
+// it is served from the pack in every mode. Anything else follows the retail alias like the pack's
+// other files. Only runs when a pack changed a file the standard game has.
+void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& base_paths,
+                                const std::vector<FstFile>& base_fst) {
+  g_pack_skins.clear();
+  g_pack_skin_served.clear();
+  auto& notes = mods::status().pack_skins;
+  notes.clear();
+  for (const auto& file : g_mod_overlay.files()) {
+    if (!skins::is_costume_file(file.path)) continue;
+    const auto now = g_paths.find(file.path);
+    const auto base = base_paths.find(file.path);
+    if (now == g_paths.end() || base == base_paths.end() || base_fst[base->second].dir) continue;
+    const auto alias = g_view_alias.find(now->second);
+    if (alias == g_view_alias.end() || alias->second < 0) continue;   // a costume only the pack has
+    skins::Verdict verdict;
+    verdict.path = skins::display_name(file.path);
+    verdict.entry = now->second;
+    // The layer label is "layer N <path>": the panel shows the file or folder name.
+    const size_t name_at = file.profile.find(' ', file.profile.find(' ') + 1);
+    verdict.layer = name_at == std::string::npos ? file.profile
+                    : std::filesystem::u8path(file.profile.substr(name_at + 1)).filename().u8string();
+    const FstFile& standard = base_fst[base->second];
+    std::vector<uint8_t> pack(file.length), clean(standard.length);
+    if (pack.empty() || clean.empty() ||
+        g_mod_overlay.read(file.start, pack.data(), file.length) != ModOverlay::Read::Success ||
+        !host::disc_read(standard.offset, clean.data(), standard.length)) {
+      verdict.reason = "the file could not be read";
+    } else if (pack == clean) {
+      verdict.identical = verdict.served = true;
+      verdict.reason = "same as the standard costume";
+    } else {
+      std::string detail;
+      verdict.served = host::cosmetics::costume_skeleton_matches(clean, pack, &detail);
+      verdict.reason = host::cosmetics::online_reason_short(detail);
+    }
+    if (verdict.served) g_pack_skin_served.insert(verdict.entry);
+    host::log("mods: skin %s %s online (%s)", verdict.path.c_str(), verdict.served ? "stays on" : "swapped",
+              verdict.reason.c_str());
+    notes.push_back({verdict.path, verdict.layer, verdict.reason, verdict.served, verdict.identical});
+    g_pack_skins.push_back(std::move(verdict));
+  }
 }
 
 void load_mod_overlay() {
@@ -471,6 +529,10 @@ void load_mod_overlay() {
   g_mod_display_name = summary.empty() ? std::string("this mod") : summary;
   if (!g_view_alias.empty())
     host::log("mods: %zu files have a retail view: Unranked, Teams and Party play the retail game", g_view_alias.size());
+  // After the aliases: the verdicts only say which entries keep their own number in that view. The
+  // alias table itself is left whole, because its being empty or not is what decides the gameplay
+  // profile above and how replays are tagged.
+  if (!g_view_alias.empty()) compute_pack_skin_verdicts(base_paths, base_fst);
 }
 
 // Serves a read inside the overlay range; false when the offset is ordinary disc.
@@ -1181,6 +1243,7 @@ void apply_content_mode(int mode) {
     host::log("content: %s view (%s)", retail ? "retail" : "mod",
               mode < 0 ? "offline" : mode == 2 ? "Direct" : "online mode that plays the retail game");
   g_retail_view = retail;
+  mods::status().retail_view = retail;   // the panel's notice counts the pack skins swapped in this view
   slippi::online::set_local_build(content_build_for_mode(mode));
 }
 
@@ -1332,8 +1395,10 @@ int32_t h_disc_entrynum(const char* path) {
   if (p.empty() || p[0] != '/') p = "/" + p;
   auto it = g_paths.find(p);
   if (it != g_paths.end() && g_retail_view) {
-    const auto view = g_view_alias.find(it->second);
-    if (view != g_view_alias.end()) return view->second;   // the retail copy, or -1: not in the retail game
+    // The retail copy, or -1 for a file the retail game does not have. A pack costume that only
+    // changes looks keeps its own entry, so it is the same file (and the same cached copy) in both views.
+    const int32_t opened = skins::resolve_open(true, it->second, g_view_alias, g_pack_skin_served);
+    if (opened != it->second) return opened;
   }
   if (it != g_paths.end() && !g_cosmetic_alias.empty()) {
     const auto alias = g_cosmetic_alias.find(it->second);
