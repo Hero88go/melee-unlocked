@@ -30,6 +30,7 @@ std::mutex g_keys_mutex;
 bool g_closed = false;
 int g_client_w = 1280, g_client_h = 960;
 ResizeCallback g_on_resize;
+DpiCallback g_on_dpi;
 std::atomic<bool> g_fullscreen_toggle{false};
 std::atomic<bool> g_settings_toggle{false};
 std::atomic<bool> g_legacy_settings_toggle{false};
@@ -96,6 +97,17 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
         if (g_on_resize && g_client_w > 0 && g_client_h > 0) g_on_resize(g_client_w, g_client_h);
       }
       return 0;
+    // The window moved to a monitor with another DPI. The callback hears the new DPI first, so the
+    // frame drawn by the resize below is already at the new scale.
+    case WM_DPICHANGED:
+      if (g_on_dpi) {
+        g_on_dpi(HIWORD(w));
+        const RECT* to = (const RECT*)l;
+        SetWindowPos(h, nullptr, to->left, to->top, to->right - to->left, to->bottom - to->top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        return 0;
+      }
+      break;
     case WM_KILLFOCUS: { std::lock_guard<std::mutex> lock(g_keys_mutex); std::memset(g_keys, 0, sizeof g_keys); return 0; }
   }
   return DefWindowProcW(h, m, w, l);
@@ -269,6 +281,7 @@ bool window_ui_pads(PadState pads[4]) {
   return g_ui_has_pad;
 }
 void window_set_resize_callback(ResizeCallback cb) { g_on_resize = std::move(cb); }
+void window_set_dpi_callback(DpiCallback cb) { g_on_dpi = std::move(cb); }
 bool window_take_fullscreen_toggle() { return g_fullscreen_toggle.exchange(false); }
 // Several presses while nothing was being drawn count as one: the player pressed F1 again because
 // nothing seemed to happen, and wants the panel, not an even number of toggles.

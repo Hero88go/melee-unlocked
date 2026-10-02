@@ -226,7 +226,26 @@ def game_command(args):
         cmd += ["--backend", args.backend]
     # Preserve the existing whitespace-separated batch option convention.
     cmd += os.environ.get("REPLAY_COMPARE_EXTRA", "").split()
+    cmd += extra_json_arguments()
     return cmd
+
+
+def extra_json_arguments():
+    """Extra game arguments as a JSON list of strings (REPLAY_COMPARE_EXTRA_JSON).
+
+    Unlike REPLAY_COMPARE_EXTRA, which is split on whitespace, each element is passed as one
+    argument, so a path with spaces survives.
+    """
+    text = os.environ.get("REPLAY_COMPARE_EXTRA_JSON", "").strip()
+    if not text:
+        return []
+    try:
+        values = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"REPLAY_COMPARE_EXTRA_JSON is not valid JSON: {exc}") from None
+    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
+        raise ValueError("REPLAY_COMPARE_EXTRA_JSON must be a JSON list of strings")
+    return values
 
 
 def print_comparison(result):

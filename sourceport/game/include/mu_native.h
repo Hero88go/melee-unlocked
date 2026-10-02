@@ -172,6 +172,7 @@ int mu_mex_active(void);
  * Sandbag) behind them; per-kind tables in its PlCo.dat follow that order. The shift, 0 without m-ex. */
 int mu_mex_special_kind_shift(void);
 int mu_mex_parts_costume(int kind, int costume);   /* retail costume whose parts tables it uses */
+int mu_mex_insignia(int ext);                      /* emblem frame of an external fighter id */
 int mu_mex_costume_info(int ckind, int which);     /* 0 count, 1 red, 2 blue, 3 green; -1 retail */
 /* The m-ex tables behind the added fighters (ids are m-ex internal ids, special fighters shifted). */
 int mu_mex_fighter_internal_count(void);                        /* 0 without m-ex */
@@ -185,7 +186,9 @@ int mu_mex_fighter_anim_count(int mex_internal);
 int mu_mex_fighter_effect_file(int mex_internal);               /* index into mexData.effect.files */
 int mu_mex_effect_file(int index, const char** file, const char** symbol);   /* 1 when usable */
 const char* mu_mex_fighter_demo(int mex_internal, int which);   /* 0 result, 1 intro, 2 ending, 3 wait */
-int mu_mex_fighter_ssm(int mex_internal);                       /* sound bank id */
+int mu_mex_fighter_ssm(int ext);                                /* sound bank id, by EXTERNAL id */
+int mu_mex_ssm_count(void);                                     /* sound banks on the disc */
+int mu_mex_ssm_bank(int id, const char** file, unsigned int* size, signed char row[4]);
 int mu_mex_fighter_walljump(int mex_internal);
 const char* mu_mex_fighter_name(int ext);
 const char* mu_mex_fighter_result_file(int ext);
@@ -217,6 +220,15 @@ int mu_ak_ckind_from_mex(int ext);      /* native character kind, -1 if the disc
 int mu_ak_mex_external(int ckind);      /* disc / Slippi external id, -1 for an absent native slot */
 int mu_ak_mex_internal(int kind);       /* disc internal id for a native fighter kind */
 int mu_ak_ckind_from_kind(int kind);    /* added fighter kind -> native character kind, -1 otherwise */
+/* The index of a fighter kind into the CPU tables of PlCo.dat (Fighter_804D64FC, read in
+ * ft/ftcpuattack.c and ftCo_0A01.c). Those tables stay in the disc's order, so an added fighter
+ * reads the entry of its m-ex internal id, as on the console. Every other kind is its own index,
+ * and without the experimental fighters this is the kind itself. */
+#ifdef MU_AKANEIA_FIGHTERS
+#define MU_AK_CPU_KIND(kind) (MU_AK_KIND(kind) ? mu_ak_mex_internal(kind) : (int) (kind))
+#else
+#define MU_AK_CPU_KIND(kind) (kind)
+#endif
 /* The m-ex fighter hooks that have no retail per-kind table (m-ex ftFunction indexes). */
 enum {
     MU_AK_HOOK_FLOAT = 31,        /* bool (*)(HSD_GObj*, int): enter float; returns entered */
@@ -232,6 +244,17 @@ void mu_ak_apply(void);                  /* at each content view change (shim/mu
 void* mu_ak_hook(int kind, int hook);    /* the callback, NULL when the slot is empty */
 int mu_ak_call(int kind, int hook, struct HSD_GObj* gobj);   /* calls a (HSD_GObj*) hook; 1 if run */
 int mu_ak_css_selectable(int ext);       /* an added fighter the character select may offer */
+int mu_ak_ckind_selectable(int ckind);   /* the same, by native character kind */
+#ifdef MU_AKANEIA_FIGHTERS
+/* The added fighters' sounds (akaneia/common/mu_ak_sound.c, lb/lbaudio_ax.c). */
+struct Fighter;
+struct Item;
+int mu_ak_sound_bank(int ckind);                         /* sound bank of an added kind, -1 none */
+int mu_ak_sound_request(int bank);                       /* ask for an added bank at the next load */
+int mu_ak_sound_id(struct Fighter* fp, int id);          /* 5000+n of fp's bank -> the game's id */
+int mu_ak_sound_item_id(struct Item* ip, int id);        /* the same, by the item's creator */
+void mu_ak_sound_view(int mod_view);                     /* at each content view change */
+#endif
 /* Articles of the added fighters: item kinds past the retail ones. */
 int mu_ak_article(int item_kind, void** article, void** logic);   /* 1 when item_kind is one */
 void mu_ak_article_store(int item_kind, void* article);

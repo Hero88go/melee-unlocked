@@ -393,7 +393,8 @@ static bool vanilla_dol_image(const std::vector<uint8_t>& image) {
 }
 bool disc_has_vanilla_dol() {
   std::vector<uint8_t> image(kVanillaDolSize);
-  if (!disc_read(disc_dol_offset(), image.data(), kVanillaDolSize)) die("cannot read full Melee DOL");
+  if (!disc_read(disc_dol_offset(), image.data(), kVanillaDolSize))
+    die("this file is not a full Melee disc image. Use a clean, uncompressed Melee NTSC 1.02 ISO (a trimmed or compressed image will not work)");
   return vanilla_dol_image(image);
 }
 // ---- mod discs (Static Recomp) ----

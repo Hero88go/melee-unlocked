@@ -69,6 +69,9 @@ typedef struct MuAkFighter {
      * mu_ak_item_kind(fp->kind, i). */
     const ItemLogicTable* articles;
     int article_count;
+    /* The same list as pointers, for a fighter that keeps one table per article and has
+     * articles with no code (a NULL entry). Used instead of `articles` when set. */
+    ItemLogicTable* const* article_tables;
 } MuAkFighter;
 
 #define MU_AK_READY 0x1u

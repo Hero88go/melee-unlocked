@@ -27,6 +27,10 @@ bool settings_fills_window();
 // True in the launcher's Settings window: the panel is the window and is always open there,
 // whatever the saved "open the overlay at startup" choice is.
 bool settings_fills_window();
+// Standalone settings window on a scaled display: its monitor's DPI over 96 (2 at 200 percent). The
+// panel is laid out in 96 DPI units and drawn this much larger, with its text rasterised at the
+// final size. Stays 1 in the game window, which is never asked to scale this way.
+void settings_set_window_scale(float scale);
 // True once after the panel asks to close. The standalone window has nothing to return to, so that
 // is its cue to exit. Reading it clears it.
 bool settings_close_requested();
