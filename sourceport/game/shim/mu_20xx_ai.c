@@ -3045,7 +3045,9 @@ int mu_20xx_ai_enabled(void)
         /* Tests only. Same limits as the option: not online, not in replay playback. */
         return !(mu_online_active() || mu_online_pending() || mu_replay_abi_active());
     }
-    return mu_te2(MU_TE2_20XX_CPUS);
+    /* The plain "20XX CPUs" option (Game tab), with or without a 20XX TE save; in replay playback
+     * the host passes the recorded word, so the replay plays back as it was played. */
+    return mu_option2_offline(MU_TE2_20XX_CPUS);
 }
 
 unsigned int mu_20xx_ai(void* fighter, unsigned int buttons)

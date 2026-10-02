@@ -25,7 +25,7 @@ namespace host {
 
 enum class ProfileDevice : uint8_t { Keyboard, XInput, PlayStation, GCAdapter, SwitchPro, Hid, Count };
 
-constexpr int kProfileActions = 16;   // BindAction::Count, in BindAction order (C-stick directions last)
+constexpr int kProfileActions = 20;   // BindAction::Count, in BindAction order (C-stick, then control stick directions)
 using ProfileBindings = std::array<uint32_t, kProfileActions>;
 
 // The folder profiles live in, from the settings file's own path.

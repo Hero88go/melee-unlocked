@@ -686,6 +686,19 @@ std::string hack_pack_version(const std::string& md5) {
   return {};
 }
 
+bool read_disc_file(const fs::path& image, const char* path, std::vector<uint8_t>* out) {
+  std::error_code ec;
+  const uint64_t size = fs::file_size(image, ec);
+  std::ifstream in(image, std::ios::binary);
+  if (ec || !in || !out) return false;
+  const DiscInfo info = parse_disc(in, size);
+  if (!info.ok) return false;
+  const auto found = info.paths.find(lower(path));
+  if (found == info.paths.end() || found->second.dir) return false;
+  out->resize(found->second.length);
+  return out->empty() || read_at(in, found->second.offset, out->data(), out->size());
+}
+
 // ================================================================================================
 // Identifying one file
 namespace {
@@ -768,10 +781,10 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
     }
     if (const std::string version = hack_pack_version(md5_hex); !version.empty()) {
       d.kind = Kind::HackPack; d.name = "20XX Hack Pack"; d.version = version; d.key = content_key(d.hash); d.catalog_id = "hackpack";
-      // Tested 09-30 (5.0.2): it stops at startup on the Static Recomp. Its disc has no English copy of
-      // IfAll (IfAll.usd), which the game asks for with Slippi's codes in place.
-      set_support(d, Engine::Recomp, Support::NotSupportedYet, false);
-      d.message = "Detected: " + d.name + " " + d.version + ". Not supported yet: it stops at startup on the Static Recomp.";
+      // 5.0.2 boots and plays on the Static Recomp with its own code and no Slippi codes (offline, no
+      // replays). Older builds take the same path and have not been run.
+      set_support(d, Engine::Recomp, version == "5.0.2" ? Support::Supported : Support::Untested, false);
+      d.message = "Detected: " + d.name + " " + d.version + ". Plays on the Static Recomp, offline (no online play or replays).";
       return d;
     }
   }
@@ -878,7 +891,7 @@ Detected identify(const fs::path& file, const ScanOptions& options, std::string*
 // The scan cache: Mods/.cache/scan.txt, one line per file keyed by path, size and time (and, for
 // discs, the retail disc they were compared with), so a boot never reads an unchanged disc again.
 namespace {
-constexpr const char kCacheHeader[] = "mu-scan 7";
+constexpr const char kCacheHeader[] = "mu-scan 8";
 struct CacheEntry { std::string key, base; Detected d; };
 
 std::string cache_key(const fs::path& file) {

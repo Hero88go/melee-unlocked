@@ -40,8 +40,10 @@ struct RenderOptions {
   int audio_asio_buffer = 0;       // ASIO buffer in frames; 0 = the driver's preferred size
   std::string audio_device;        // output endpoint id; empty = Windows default
   int audio_buffer_ms = 40;        // software output buffer; independent of the game mixer
-  // Presentation timeline (threaded renderer only). fps_cap 0 = uncapped. With a SubFrameMode other
-  // than Off the renderer presents new sub-frames between 60 Hz simulation frames.
+  // Presentation timeline (threaded renderer only). fps_cap 0 = uncapped, which the presentation
+  // loop holds at twice the display's refresh rate (MELEE_PRESENT_UNCAPPED=1 removes that limit for
+  // tests). With a SubFrameMode other than Off the renderer presents new sub-frames between 60 Hz
+  // simulation frames.
   double fps_cap = 60; // -1 follows the active monitor
   bool fullscreen = false;
   bool exclusive_fullscreen = false;
@@ -140,6 +142,12 @@ struct RenderOptions {
   // The second 20XX TE word (MU_GAME_OPTION2_TE_*): the features added with host API 14.
   uint32_t te_options2 = 0;
   static uint32_t& live_te_options2() { static uint32_t value = 0; return value; }
+  // "20XX CPUs" (Game tab, ini key cpu_20xx): CPUs play with the 20XX Hack Pack's AI, offline only.
+  // One plain option on both engines, not a 20XX TE feature and no TE save needed: the Source Port
+  // plays its native version (shim/mu_20xx_ai.c, carried to the game as MU_GAME_OPTION2_TE_20XX_CPUS),
+  // the Static Recomp runs the pack's own AI block from its disc under Mods (host/hackpack_ai.cpp).
+  bool cpu_20xx = false;
+  static bool& live_cpu_20xx() { static bool value = false; return value; }
   // Bumped when the game changes both TE words from 20XX TE's in-game settings menu (host command
   // 0xF8); the settings panel then saves them, so the file and the menu agree.
   static std::atomic<uint32_t>& live_te_game_changes() { static std::atomic<uint32_t> value{0}; return value; }

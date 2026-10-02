@@ -126,10 +126,77 @@ void check_trigger_cap() {
   v = 0; b = 0;
   host::apply_trigger_cap(100, v, b, kClick);                 // released stays released
   CHECK(v == 0 && b == 0);
+  v = 0; b = kClick;
+  host::apply_trigger_cap(43, v, b, kClick);                  // a button bound to L, trigger at rest
+  CHECK(v == 255 && b == kClick);                             // stays a full press (L+R+A+Start)
+}
+
+// Per-binding levels: 0, the default, is exactly the behaviour from before they existed; a level is
+// honoured; and a bumper bound to L under a low trigger value is still a full press.
+void check_binding_levels() {
+  const int L = (int)host::BindAction::L, R = (int)host::BindAction::R, Z = (int)host::BindAction::Z;
+  const uint16_t kL = host::kActionPadBit[L], kZ = host::kActionPadBit[Z];
+  // Every table starts with no levels.
+  for (int i = 0; i < (int)host::BindAction::Count; ++i)
+    CHECK(!host::default_key_bindings().level[i] && !host::default_pad_bindings()[0].level[i] &&
+          !host::default_gc_bindings()[0].level[i] && !host::default_swpro_bindings()[0].level[i] &&
+          !host::default_hid_bindings()[0].level[i] && !host::vjoy_b0xx_bindings().level[i]);
+
+  // An Xbox trigger as a binding source. Default: the same answer as the old combined button word,
+  // reserved bits in the pad's own word included.
+  const uint16_t masks[] = {host::kXInputBindLT, host::kXInputBindRT, XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_A, 0};
+  const uint16_t held = XINPUT_GAMEPAD_LEFT_SHOULDER | host::kXInputBindLT;
+  for (int left : {0, 100, 200, 201, 255}) for (int right : {0, 140, 141, 255}) for (uint16_t mask : masks) {
+    const uint16_t old_buttons = host::xinput_binding_buttons(held, (uint8_t)left, (uint8_t)right, 200, 140);
+    CHECK(host::xinput_binding_pressed(mask, 0, held, (uint8_t)left, (uint8_t)right, 200, 140) == ((old_buttons & mask) != 0));
+  }
+  // Its own level: pressed above it, whatever the family's press point is.
+  CHECK(!host::xinput_binding_pressed(host::kXInputBindLT, 60, 0, 60, 0, 200, 200));
+  CHECK(host::xinput_binding_pressed(host::kXInputBindLT, 60, 0, 61, 0, 200, 200));
+  CHECK(!host::xinput_binding_pressed(host::kXInputBindRT, 250, 0, 255, 240, 200, 200));
+  CHECK(host::xinput_binding_pressed(host::kXInputBindRT, 250, 0, 0, 251, 200, 200));
+  CHECK(host::xinput_binding_pressed(XINPUT_GAMEPAD_A, 60, XINPUT_GAMEPAD_A, 0, 0, 200, 200));   // a button has no press point
+
+  // A PlayStation trigger as a binding source. Default: the reader's own L2/R2 bit.
+  CHECK(host::ds4_binding_pressed(host::DS4_R2, 0, host::DS4_R2, 0, 40));
+  CHECK(!host::ds4_binding_pressed(host::DS4_R2, 0, 0, 0, 0));
+  CHECK(!host::ds4_binding_pressed(host::DS4_R2, 0, host::DS4_L2, 255, 0));
+  CHECK(!host::ds4_binding_pressed(host::DS4_R2, 120, host::DS4_R2, 0, 120));
+  CHECK(host::ds4_binding_pressed(host::DS4_R2, 120, host::DS4_R2, 0, 121));
+  CHECK(host::ds4_binding_pressed(host::DS4_L2, 120, host::DS4_L2, 200, 0));
+  CHECK(host::ds4_binding_pressed(host::DS4_CROSS, 120, host::DS4_CROSS, 0, 0));
+  CHECK(!host::ds4_binding_pressed(host::DS4_CROSS, 120, host::DS4_L2, 255, 0));
+
+  // A button bound to L or R. Default (and 255): the button, as before.
+  host::PadState pad{};
+  host::apply_bound_press(L, 0, pad);
+  CHECK(pad.button == kL && pad.trig_l == 0 && pad.trig_r == 0);
+  pad = {}; host::apply_bound_press(L, 255, pad);
+  CHECK(pad.button == kL && pad.trig_l == 0);
+  // Its own depth: the trigger pressed that far, no click, the other trigger untouched.
+  pad = {}; host::apply_bound_press(L, 100, pad);
+  CHECK(pad.button == 0 && pad.trig_l == 100 && pad.trig_r == 0);
+  pad = {}; pad.trig_r = 180; host::apply_bound_press(R, 100, pad);   // never below the trigger's own travel
+  CHECK(pad.button == 0 && pad.trig_r == 180 && pad.trig_l == 0);
+  pad = {}; host::apply_bound_press(Z, 100, pad);                     // only L and R have a depth
+  CHECK(pad.button == kZ && pad.trig_l == 0 && pad.trig_r == 0);
+
+  // The 0.8.67 rule: a bumper bound to L, trigger at rest, low trigger value: a full press.
+  pad = {}; host::apply_bound_press(L, 0, pad);
+  host::apply_trigger_cap(43, pad.trig_l, pad.button, kL);
+  CHECK(pad.trig_l == 255 && pad.button == kL);
+  // Given a depth of its own, the same bumper is a light press and the trigger value bounds it.
+  pad = {}; host::apply_bound_press(L, 100, pad);
+  host::apply_trigger_cap(60, pad.trig_l, pad.button, kL);
+  CHECK(pad.trig_l == 60 && pad.button == 0);
+  pad = {}; host::apply_bound_press(L, 50, pad);
+  host::apply_trigger_cap(255, pad.trig_l, pad.button, kL);
+  CHECK(pad.trig_l == 50 && pad.button == 0);
 }
 
 int main() {
   check_trigger_cap();
+  check_binding_levels();
   check_layout(Kind::Ds4Usb, "DS4 USB");
   check_layout(Kind::Ds4Bt, "DS4 Bluetooth");
   check_layout(Kind::DualSenseUsb, "DualSense USB");

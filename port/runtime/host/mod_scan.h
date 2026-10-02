@@ -52,6 +52,9 @@ inline bool is_card_mod(const Detected& d) { return d.kind == Kind::Te || d.kind
 bool runs_on(const Detected& d, bool source_port);
 // Official whole-disc MD5 fingerprints. Empty means no recognized Hack Pack build.
 std::string hack_pack_version(const std::string& md5);
+// One file of a disc image, by its path on the disc ("/ai_engine.bin"; case does not matter), read in
+// full. False when the image or the file cannot be read.
+bool read_disc_file(const std::filesystem::path& image, const char* path, std::vector<uint8_t>* out);
 
 // ---- Melee saves (GCI) ----
 // A Melee NTSC save file: 11 blocks, the first holding the comment, banner and icons; each of the

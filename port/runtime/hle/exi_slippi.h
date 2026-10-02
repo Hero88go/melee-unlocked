@@ -24,6 +24,7 @@ uint64_t commands_seen();
 uint64_t replays_written();
 const std::string& replay_directory();
 const std::string& last_replay_path();   // the .slp most recently written (for the game report upload)
+bool recording();                        // a .slp is open and taking this game's events (Static Recomp)
 // Widescreen 16:9 (Slippi's optional code, compiled in both ways). request_* is thread-safe and
 // takes effect on the simulation thread at the next retrace; the initial value comes from the
 // command line / settings before the game loads the code table.
@@ -34,5 +35,9 @@ void poll_options();
 // Sys/GameFiles/GALE01/<name> as the EXI file commands (D1/D2) serve it: the loose file, or its
 // .diff applied to the disc copy. Empty when missing or when the diff fails.
 std::vector<uint8_t> system_game_file(const std::string& name);
+// Where the game loaded Slippi's code table, [*lo, *hi). False before the game has loaded it.
+bool gct_range(uint32_t* lo, uint32_t* hi);
+// The replay being written is removed when it closes: the match runs code a replay cannot reproduce.
+void discard_current_replay();
 
 }  // namespace slippi

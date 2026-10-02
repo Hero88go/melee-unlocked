@@ -130,7 +130,7 @@ std::vector<CatalogMod> default_catalog() {
       "patch_sha256": "7f675995e000eda80cfdb340a1272b4370d8ef492cc7f576bf9bfa5e581048a5",
       "output_md5": "d926ba5b39551f5245fd655bc1dfeb3f",
       "output_sha256": "6a23c731a95a076e531ce38d60c699b4c73fc11a035e42afb390f6d4ab96acea",
-      "note": "Stops at startup on the Static Recomp. Not supported yet."
+      "note": "Plays on the Static Recomp, offline (no online play or replays)."
     }
   ]
 })catalog", &mods, &error);
@@ -593,10 +593,11 @@ bool tools_present() {
 
 // ---- the page ----
 enum { ID_MOD_BUTTON = 3000, ID_MOD_UPDATE = 4000, ID_MOD_REMOVE = 5000, ID_MOD_TOGGLE = 6000,
-       ID_MOD_FOLDER = 7000, ID_MOD_LINK };
+       ID_MOD_FOLDER = 7000, ID_MOD_LINK, ID_MOD_SKINS = 8000 };
 struct Row { CatalogMod catalog; Installed installed; bool found = false; };
+int disc_skins(const std::string& disc_path, std::string* sets);
 std::vector<Row> g_rows;
-std::vector<HWND> g_buttons, g_updates, g_removes, g_toggles;
+std::vector<HWND> g_buttons, g_updates, g_removes, g_toggles, g_skins;
 HWND g_folder_btn = nullptr, g_link_btn = nullptr;
 int g_top = 0;
 bool g_tools_ok = true;
@@ -643,6 +644,7 @@ void refresh_window() {
     };
     g_buttons.push_back(make(ID_MOD_BUTTON + i)); g_updates.push_back(make(ID_MOD_UPDATE + i));
     g_removes.push_back(make(ID_MOD_REMOVE + i)); g_toggles.push_back(make(ID_MOD_TOGGLE + i));
+    g_skins.push_back(make(ID_MOD_SKINS + i));
   }
   const int shown = visible_rows();
   g_top = std::max(0, std::min(g_top, std::max(0, (int)g_rows.size() - shown)));
@@ -650,7 +652,7 @@ void refresh_window() {
   SetScrollInfo(g_window, SB_VERT, &scroll, TRUE);
   for (size_t i = 0; i < g_buttons.size(); ++i) {
     const bool visible = i < g_rows.size() && (int)i >= g_top && (int)i < g_top + shown;
-    HWND controls[] = {g_buttons[i], g_updates[i], g_removes[i], g_toggles[i]};
+    HWND controls[] = {g_buttons[i], g_updates[i], g_removes[i], g_toggles[i], g_skins[i]};
     if (!visible) { for (HWND h : controls) ShowWindow(h, SW_HIDE); continue; }
     const RECT card = card_rect((int)i - g_top);
     const int right = units(card.right) - 16, top = units(card.top);
@@ -658,7 +660,13 @@ void refresh_window() {
     MoveWindow(g_removes[i], S(right - 84), S(top + 92), S(84), S(28), TRUE);
     MoveWindow(g_updates[i], S(right - 176), S(top + 92), S(84), S(28), TRUE);
     MoveWindow(g_buttons[i], S(right - 308), S(top + 92), S(124), S(28), TRUE);
+    MoveWindow(g_skins[i], S(right - 428), S(top + 92), S(112), S(28), TRUE);
     const auto& row = g_rows[i]; const auto& m = row.catalog; const auto& f = row.installed;
+    // "Choose skins" opens the Settings window on the Mods tab, where the disc's costumes are picked.
+    // Only once the game has listed them (disc-skins.txt), so the button never leads to an empty list.
+    const bool has_skins = row.found && disc_skins(f.path, nullptr) > 0;
+    SetWindowTextW(g_skins[i], launcher::lang::txw(L"Choose skins").c_str());
+    EnableWindow(g_skins[i], has_skins && !g_playing);
     const bool busy = is_busy(m.id), playable = row.found && catalog_core::playable(f);
     std::string primary; bool enabled = true; LONG_PTR style = 0;
     if (busy) primary = "Cancel";
@@ -676,7 +684,7 @@ void refresh_window() {
     SetWindowTextW(g_toggles[i], launcher::lang::txw(f.enabled && row.found ? L"On" : L"Off").c_str());
     SetWindowLongPtrW(g_toggles[i], GWLP_USERDATA, row.found && f.enabled ? STYLE_ON : 0);
     EnableWindow(g_toggles[i], playable && !busy && !g_playing);
-    for (HWND h : controls) { ShowWindow(h, SW_SHOW); InvalidateRect(h, nullptr, FALSE); }
+    for (HWND h : controls) { ShowWindow(h, h == g_skins[i] && !has_skins ? SW_HIDE : SW_SHOW); InvalidateRect(h, nullptr, FALSE); }
   }
   InvalidateRect(g_window, nullptr, FALSE);
 }
@@ -690,18 +698,37 @@ void draw_check(HDC dc, int x, int y, bool on) {
   SelectObject(dc, old); DeleteObject(pen);
 }
 // How many of a mod disc's costumes the game listed as skins (it writes Mods/.cache/disc-skins.txt
-// at boot: path, tab, count). 0 until the game has run once with the disc in the Mods folder.
-int disc_skins(const std::string& disc_path) {
+// at boot: path, tab, count, tab, the alternate sets by name such as "alt L,alt R"). 0 until the
+// game has run once with the disc in the Mods folder. *sets gets the set names, "" when it has none.
+int disc_skins(const std::string& disc_path, std::string* sets) {
   std::ifstream in(fs::u8path(mods_dir() + "/.cache/disc-skins.txt"), std::ios::binary);
   std::string line;
   while (std::getline(in, line)) {
-    const size_t tab = line.rfind('\t');
-    if (tab == std::string::npos) continue;
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    const size_t first = line.find('\t');
+    if (first == std::string::npos) continue;
+    const size_t second = line.find('\t', first + 1);
     std::error_code ec;
-    if (fs::equivalent(fs::u8path(line.substr(0, tab)), fs::u8path(disc_path), ec) && !ec)
-      return std::atoi(line.c_str() + tab + 1);
+    if (!fs::equivalent(fs::u8path(line.substr(0, first)), fs::u8path(disc_path), ec) || ec) continue;
+    if (sets) *sets = second == std::string::npos ? std::string() : line.substr(second + 1);
+    return std::atoi(line.c_str() + first + 1);
   }
   return 0;
+}
+// "alt L and alt R sets" from "alt L,alt R"; empty when the disc has no alternate sets.
+std::string sets_text(const std::string& sets) {
+  if (sets.empty()) return {};
+  std::string text;
+  size_t at = 0;
+  while (at <= sets.size()) {
+    const size_t comma = sets.find(',', at);
+    const std::string one = sets.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+    if (!text.empty()) text += comma == std::string::npos ? " and " : ", ";
+    text += one;
+    if (comma == std::string::npos) break;
+    at = comma + 1;
+  }
+  return text + (sets.find(',') == std::string::npos ? " set" : " sets");
 }
 void paint_page(HDC dc) {
   RECT client{}; GetClientRect(g_window, &client);
@@ -747,15 +774,19 @@ void paint_page(HDC dc) {
     if (status.count(m.id) && (is_busy(m.id) || status[m.id].rfind("Installed", 0) != 0)) { line = tx(status[m.id]); line_color = C_TEXT; }
     else if (row.found && !catalog_core::playable(f)) { line = m.note.empty() ? tx("This version is not supported yet.") : tx(m.note); line_color = C_WARN; }
     else if (row.found && f.kind != "te" && f.kind != "tmce") {
-      // Once the game has listed the disc's costumes as skins, say that they work outside the mod too.
-      const bool skins = disc_skins(f.path) > 0;
-      if (f.needs_engine == "recomp")
-        line = tx(skins ? "Plays Direct only, same mod required. Its skins work in the normal game from your skin list."
-                        : "Direct only. Same mod required; different builds can desync. Launch vanilla for Unranked.");
-      else
-        line = tx(skins ? "Direct needs matching mods; Unranked plays the standard game. Skins: available in your skin list."
-                        : "Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked.");
-      line_color = C_WARN;
+      // Once the game has listed the disc's costumes as skins, say how many and where to pick them.
+      std::string sets;
+      const int skins = disc_skins(f.path, &sets);
+      if (skins > 0) {
+        const std::string named = sets_text(sets);
+        line = launcher::lang::fill(tx("Skins: {count} in your skin list{sets}. Pick them in Settings, Mods."),
+                                    launcher::lang::Args{{"count", std::to_string(skins)}, {"sets", named.empty() ? "" : " (" + named + ")"}});
+        line_color = C_DIM;
+      } else {
+        line = tx(f.needs_engine == "recomp" ? "Direct only. Same mod required; different builds can desync. Launch vanilla for Unranked."
+                                           : "Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked.");
+        line_color = C_WARN;
+      }
     }
     else if (!m.note.empty()) { line = tx(m.note); line_color = m.note.find("nsupported") != std::string::npos || m.note.find("ntested") != std::string::npos || m.note.find("not supported") != std::string::npos ? C_WARN : C_DIM; }
     RECT last = LR(x + 44, y + 70, units(card.right) - 16 - (x + 44), 16);
@@ -868,6 +899,7 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       const int base = (id / 1000) * 1000, index = id - base;
       if (index < 0 || index >= (int)g_rows.size()) return 0;
       const Row row = g_rows[index];
+      if (base == ID_MOD_SKINS) { if (!g_playing) open_settings("mods"); return 0; }
       if (base == ID_MOD_BUTTON && is_busy(row.catalog.id)) { cancel_job(row.catalog.id); set_status(row.catalog.id, "Cancelling..."); return 0; }
       if (base == ID_MOD_BUTTON && row.found) {
         if (g_playing || !catalog_core::playable(row.installed)) return 0;

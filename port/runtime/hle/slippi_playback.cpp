@@ -182,6 +182,14 @@ void prepare_is_file_ready(std::vector<uint8_t>& q) {
   g_loaded_once = true;
   if (!g_game) { host::log("playback: cannot open replay %s", g_path.c_str()); q.push_back(0); host::request_exit(2); return; }
   host::log("playback: loaded %s (version %s, last frame %d)", g_path.c_str(), g_game->GetVersionString().c_str(), g_game->GetLatestIndex());
+  // A match played on a mod: its stage is not in the standard game, and the game would wait on a
+  // blank screen for a stage that never loads.
+  if (const uint16_t stage = g_game->GetSettings()->stage; stage > 85) {
+    host::log("playback: this replay was recorded with a mod (stage %u is not in the standard game); it needs that mod to play", (unsigned)stage);
+    q.push_back(0);
+    host::request_exit(3);
+    return;
+  }
   q.push_back(1);
 }
 

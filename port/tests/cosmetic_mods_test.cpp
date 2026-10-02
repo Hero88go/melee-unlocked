@@ -1117,6 +1117,247 @@ int main(int argc, char** argv) {
     g_disc_table.clear(); g_disc_bytes.clear();
   }
 
+  // A pack's alternate costumes: PlFxNr.lat and PlFxNr.rat beside PlFxNr.dat, the way the 20XX
+  // Hack Pack keeps its L and R sets. Each differing one is its own choice for the slot.
+  {
+    fs::path alt_folder = folder / L"alt-skins";
+    fs::create_directories(alt_folder, ec);
+    host::cosmetics::configure((alt_folder / L"port-settings.ini").string());
+    const auto retail_default = skeleton_dat(0x2, 5.0f, false);
+    const auto alt_l = skeleton_dat(0x2 | 0x10, 5.0f, false);   // drawing flag only: same skeleton
+    const auto alt_r = retail_default;                            // identical to the game's: not a skin
+    const auto moved = skeleton_dat(0x2, 5.5f, false);           // a moved bone: off online
+    constexpr uint32_t retail_default_at = 0x100;
+    g_disc_bytes.assign(0x400, 0);
+    std::copy(retail_default.begin(), retail_default.end(), g_disc_bytes.begin() + retail_default_at);
+    g_disc_table = {{"PlFxNr.dat", {retail_default_at, (uint32_t)retail_default.size()}}};
+    // Four root files: the plain costume (a moved bone), the L and R alternates, and an animation
+    // bank named like a costume, which is never a skin.
+    struct Member { const char* name; uint32_t at; const std::vector<uint8_t>* bytes; };
+    const Member members[] = {{"PlFxNr.dat", 0x800, &moved}, {"PlFxNr.lat", 0xC00, &alt_l},
+                              {"PlFxNr.rat", 0x1000, &alt_r}, {"PlFxAJ.dat", 0x1400, &alt_l}};
+    std::vector<uint8_t> fst(12 * 5, 0);
+    be32(fst, 0, 0x01000000); be32(fst, 8, 5);
+    std::string names;
+    for (size_t i = 0; i < 4; ++i) {
+      be32(fst, 12 * (i + 1), (uint32_t)names.size());
+      be32(fst, 12 * (i + 1) + 4, members[i].at);
+      be32(fst, 12 * (i + 1) + 8, (uint32_t)members[i].bytes->size());
+      names += members[i].name; names.push_back('\0');
+    }
+    fst.insert(fst.end(), names.begin(), names.end());
+    constexpr uint32_t fst_at = 0x500;
+    std::vector<uint8_t> image(0x1800, 0);
+    be32(image, 0x424, fst_at); be32(image, 0x428, (uint32_t)fst.size());
+    std::copy(fst.begin(), fst.end(), image.begin() + fst_at);
+    for (const auto& member : members) std::copy(member.bytes->begin(), member.bytes->end(), image.begin() + member.at);
+    fs::path iso_path = alt_folder / L"hack.iso";
+    write_file(iso_path, image);
+
+    auto scan = host::cosmetics::scan_disc_skins(iso_path.string(), "Hack disc", &error);
+    auto listed = host::cosmetics::assets();
+    check(scan.ok && listed.size() == 2, "the plain costume and the L alternate are listed; the identical R one is not");
+    const host::cosmetics::AssetInfo* plain = nullptr; const host::cosmetics::AssetInfo* left = nullptr;
+    for (const auto& item : listed) (item.variant.empty() ? plain : left) = &item;
+    check(plain && left && plain->id != left->id && plain->target_path == "PlFxNr.dat" && left->target_path == "PlFxNr.dat",
+          "both are choices for the same slot with different identities");
+    check(plain && plain->name == "Fox Default: from Hack disc" && left && left->name == "Fox Default: from Hack disc (alt L)" &&
+              left->variant == "alt L",
+          "the alternate is labelled with its set");
+    check(plain && !plain->online_allowed && plain->online_message == "rest pose differs" &&
+              left && left->online_allowed && left->online_message == "3 joints match",
+          "the online verdict is known from the scan, before any skin is applied");
+    // The pack view and its set buttons.
+    auto packs = host::cosmetics::packs();
+    check(packs.size() == 1 && packs[0].name == "Hack disc" && packs[0].skins == 2 && packs[0].slots == 1 &&
+              packs[0].variants == std::vector<std::string>{"", "alt L"} && packs[0].online_on == 1 && packs[0].selected == 0,
+          "the pack lists its sets, slots and online count");
+    // An imported skin on the same slot, selected: the pack's set replaces it after saying so.
+    fs::path import_path = alt_folder / L"mine.dat";
+    write_file(import_path, skeleton_dat(0x2 | 0x40, 5.0f, false));
+    auto mine = host::cosmetics::import_file(import_path.string());
+    check(mine.ok && host::cosmetics::select_variant("PlFxNr.dat", mine.asset_id, &error), "an imported skin holds the slot");
+    packs = host::cosmetics::packs();
+    check(packs.size() == 2 && packs[0].name == "Imported skins" && packs[0].selected == 1 && packs[0].online_unchecked == 1,
+          "imports are a pack of their own, listed first, with the verdict still to come");
+    auto preview = host::cosmetics::apply_pack_set(packs[1].key, "alt L", true);
+    check(preview.ok && preview.set == 1 && preview.replaced == 1 && preview.replaced_from == "Imported skins" &&
+              host::cosmetics::assets().size() == 3,
+          "the preview counts the replaced skin and changes nothing");
+    bool still_mine = false;
+    for (const auto& item : host::cosmetics::assets()) if (item.id == mine.asset_id) still_mine = item.selected;
+    check(still_mine, "a preview leaves the selection alone");
+    auto applied = host::cosmetics::apply_pack_set(packs[1].key, "alt L", false);
+    bool left_selected = false;
+    for (const auto& item : host::cosmetics::assets()) if (item.id == left->id) left_selected = item.selected;
+    check(applied.ok && applied.set == 1 && applied.replaced == 1 && left_selected, "the set is applied in one change");
+    auto disc_fst = one_file_fst(retail_default_at, (uint32_t)retail_default.size(), "PlFxNr.dat");
+    host::cosmetics::apply_to_fst(disc_fst.data(), (uint32_t)disc_fst.size());
+    std::vector<uint8_t> served(alt_l.size());
+    check(host::cosmetics::read(retail_default_at, 0, served.data(), (uint32_t)served.size()) == OverrideRead::Success &&
+              served == alt_l,
+          "the slot serves the alternate's own bytes");
+    auto none = host::cosmetics::apply_pack_set(packs[1].key, "none", false);
+    bool any_selected = false;
+    for (const auto& item : host::cosmetics::assets()) any_selected |= item.selected;
+    check(none.ok && none.cleared == 1 && !any_selected, "the pack's picks go back to the standard costume");
+    check(!host::cosmetics::apply_pack_set(packs[1].key, "alt R", true).ok, "a set the pack does not have is refused");
+    // A disc scanned under the old rules is scanned again, so players get the alternates without doing anything.
+    {
+      const fs::path state = alt_folder / L"CosmeticMods" / L"state.json";
+      std::ifstream in(state, std::ios::binary);
+      std::string text((std::istreambuf_iterator<char>(in)), {});
+      in.close();
+      const size_t at = text.find("\"rules\": 2");
+      check(at != std::string::npos, "the scan records the rules it used");
+      if (at != std::string::npos) text.replace(at, 10, "\"rules\": 1");
+      std::ofstream out(state, std::ios::binary); out << text;
+    }
+    host::cosmetics::configure((alt_folder / L"port-settings.ini").string());
+    auto rescan = host::cosmetics::scan_disc_skins(iso_path.string(), "Hack disc", &error);
+    check(rescan.ok && !rescan.already_present, "a disc scanned under older rules is scanned again");
+    check(host::cosmetics::scan_disc_skins(iso_path.string(), "Hack disc", &error).already_present,
+          "and then not a third time");
+    // A files pack with an alternate.
+    fs::path pack_folder = alt_folder / L"pack";
+    fs::create_directories(pack_folder, ec);
+    write_file(pack_folder / L"PlFxNr.lat", alt_l);
+    auto folder_scan = host::cosmetics::scan_disc_skins(pack_folder.string(), "Loose", &error);
+    bool loose_alt = false;
+    for (const auto& item : host::cosmetics::assets()) loose_alt |= item.source_name == "Loose" && item.variant == "alt L";
+    check(folder_scan.ok && loose_alt, "a loose .lat file is an alt L skin too");
+    g_disc_table.clear(); g_disc_bytes.clear();
+  }
+
+  // Character select L / R: a skin is picked and published while the game runs, with no restart.
+  {
+    using host::cosmetics::OverrideRead;
+    host::cosmetics::thaw_after_online_session();
+    host::cosmetics::set_online_probe(nullptr);
+    fs::path live_folder = folder / L"live-skins";
+    fs::create_directories(live_folder, ec);
+    host::cosmetics::configure((live_folder / L"port-settings.ini").string());
+    const auto retail_default = skeleton_dat(0x2, 5.0f, false);
+    const auto alt_l = skeleton_dat(0x2 | 0x10, 5.0f, false);   // drawing flag only: stays on online
+    const auto moved = skeleton_dat(0x2, 5.5f, false);           // a moved bone: off online
+    const auto longer = skeleton_dat(0x2, 5.0f, true);           // one more joint: off online, and a longer file
+    constexpr uint32_t retail_default_at = 0x100;
+    g_disc_bytes.assign(0x400, 0);
+    std::copy(retail_default.begin(), retail_default.end(), g_disc_bytes.begin() + retail_default_at);
+    g_disc_table = {{"PlFxNr.dat", {retail_default_at, (uint32_t)retail_default.size()}}};
+    constexpr uint32_t fst_at = 0x500, moved_at = 0x800, alt_at = 0xC00;
+    const auto pack_fst = two_file_fst("PlFxNr.dat", moved_at, (uint32_t)moved.size(),
+                                       "PlFxNr.lat", alt_at, (uint32_t)alt_l.size());
+    std::vector<uint8_t> image(0x1000, 0);
+    be32(image, 0x424, fst_at); be32(image, 0x428, (uint32_t)pack_fst.size());
+    std::copy(pack_fst.begin(), pack_fst.end(), image.begin() + fst_at);
+    std::copy(moved.begin(), moved.end(), image.begin() + moved_at);
+    std::copy(alt_l.begin(), alt_l.end(), image.begin() + alt_at);
+    fs::path iso_path = live_folder / L"pack.iso";
+    write_file(iso_path, image);
+    auto scan = host::cosmetics::scan_disc_skins(iso_path.string(), "Pack", &error);
+    fs::path import_path = live_folder / L"mine.dat";
+    write_file(import_path, longer);
+    auto mine = host::cosmetics::import_file(import_path.string());
+    std::string left_id, moved_id;
+    for (const auto& item : host::cosmetics::assets()) {
+      if (item.source == "disc" && item.variant == "alt L") left_id = item.id;
+      if (item.source == "disc" && item.variant.empty()) moved_id = item.id;
+    }
+    check(scan.ok && mine.ok && !left_id.empty() && !moved_id.empty() && longer.size() > retail_default.size(),
+          "the slot has three skins: two from a pack and an import");
+
+    // The game starts with the standard costume.
+    auto fst = one_file_fst(retail_default_at, (uint32_t)retail_default.size(), "PlFxNr.dat");
+    host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size());
+    std::vector<uint8_t> served(longer.size());
+    check(host::cosmetics::read(retail_default_at, 0, served.data(), 4) == OverrideRead::NotOverridden,
+          "nothing is overridden before a skin is picked");
+
+    // A live pick: saved, no restart asked, and served after the slot is published again.
+    check(host::cosmetics::select_variant_live("PlFxNr.dat", left_id, &error), "a skin can be picked live");
+    check(host::cosmetics::last_message().find("restart") == std::string::npos, "a live pick asks for no restart");
+    auto published = host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), "PlFxNr.dat");
+    check(published.ok && published.files.size() == 1 && published.files[0].fst_index == 1 &&
+              published.files[0].vanilla_start == retail_default_at && published.files[0].overridden &&
+              published.files[0].online_allowed && published.files[0].asset_id == left_id &&
+              published.files[0].length == alt_l.size(),
+          "publishing the slot again reports its file as served by the picked skin");
+    served.assign(alt_l.size(), 0);
+    check(host::cosmetics::read(retail_default_at, 0, served.data(), (uint32_t)served.size()) == OverrideRead::Success &&
+              served == alt_l && host::cosmetics::applied_asset(retail_default_at) == left_id,
+          "the slot serves the picked skin's bytes");
+    check(!host::cosmetics::pending_restart(), "nothing waits for a restart after a live pick");
+
+    // Another skin, longer than the disc's file: the bytes switch and the table gets the new length.
+    check(host::cosmetics::select_variant_live("PlFxNr.dat", mine.asset_id, &error), "another skin can be picked live");
+    published = host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), "PlFxNr.dat");
+    served.assign(longer.size(), 0);
+    check(published.ok && published.files.size() == 1 && published.files[0].asset_id == mine.asset_id &&
+              published.files[0].length == longer.size() && read_be32(fst.data() + 20) == longer.size() &&
+              host::cosmetics::read(retail_default_at, 0, served.data(), (uint32_t)served.size()) == OverrideRead::Success &&
+              served == longer,
+          "the served bytes switch to the new skin and the table carries its length");
+    // It is not proven to change looks alone: the caller gives it the alias entry, and online the
+    // disc's own costume is what the slot serves.
+    check(published.files.size() == 1 && !published.files[0].online_allowed && !host::cosmetics::online_allowed(retail_default_at),
+          "a skin with another skeleton is reported as off online, for the caller's alias entry");
+    host::cosmetics::set_online_probe([] { return true; });
+    served.assign(retail_default.size(), 0);
+    check(host::cosmetics::read(retail_default_at, 0, served.data(), (uint32_t)served.size()) == OverrideRead::Success &&
+              std::equal(served.begin() + 4, served.end(), retail_default.begin() + 4),
+          "online the slot serves the disc's own costume");
+
+    // The online rule for live picks: only a skin proven to change looks alone, or the standard costume.
+    check(!host::cosmetics::select_variant_live("PlFxNr.dat", moved_id, &error),
+          "online, a pack skin scanned as off online cannot be picked");
+    check(host::cosmetics::select_variant_live("PlFxNr.dat", left_id, &error),
+          "online, a skin that stays on online can be picked");
+    check(!host::cosmetics::select_variant_live("PlFxNr.dat", mine.asset_id, &error),
+          "online, an import with another skeleton cannot be picked");
+    check(host::cosmetics::select_variant_live("PlFxNr.dat", "", &error), "online, the standard costume can be picked");
+    host::cosmetics::freeze_for_online_session();
+    check(!host::cosmetics::select_variant_live("PlFxNr.dat", left_id, &error),
+          "no live pick while an online match is queued or running");
+    host::cosmetics::thaw_after_online_session();
+
+    // Back to the standard costume: the disc's file and its length again.
+    published = host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), "PlFxNr.dat");
+    check(published.ok && published.files.size() == 1 && !published.files[0].overridden &&
+              published.files[0].length == retail_default.size() && read_be32(fst.data() + 20) == retail_default.size() &&
+              host::cosmetics::read(retail_default_at, 0, served.data(), 4) == OverrideRead::NotOverridden,
+          "the standard costume puts the disc's file and length back");
+
+    // Cycling online steps over the skins that are off online: standard, the alt L skin, standard.
+    auto step = host::cosmetics::cycle_slot_live("PlFxNr.dat", 1);
+    check(step.ok && step.changed && step.asset_id == left_id && step.previous_id.empty() && step.name == "Pack (alt L)",
+          "online, L / R goes from the standard costume to the one skin that stays on");
+    step = host::cosmetics::cycle_slot_live("PlFxNr.dat", 1);
+    check(step.ok && step.changed && step.asset_id.empty() && step.previous_id == left_id && step.name == "Standard",
+          "and then back to the standard costume");
+    // Offline every skin is a step, and both directions come back around.
+    host::cosmetics::set_online_probe(nullptr);
+    std::map<std::string, bool> seen;
+    for (int i = 0; i < 4; ++i) {
+      step = host::cosmetics::cycle_slot_live("PlFxNr.dat", 1);
+      check(step.ok && step.changed, "offline, every press picks another choice");
+      seen[step.asset_id] = true;
+    }
+    check(seen.size() == 4 && step.asset_id.empty(), "four presses visit the three skins and return to the standard costume");
+    step = host::cosmetics::cycle_slot_live("PlFxNr.dat", -1);
+    const std::string last = step.asset_id;
+    step = host::cosmetics::cycle_slot_live("PlFxNr.dat", 1);
+    check(!last.empty() && step.asset_id.empty(), "the other direction steps back the same way");
+    check(!host::cosmetics::cycle_slot_live("PlFxGr.dat", 1).changed, "a costume with no skins has nothing to cycle");
+
+    // The character select's fighter numbers and costume order.
+    check(host::cosmetics::costume_slot_file(2, 0) == "PlFxNr.dat" && host::cosmetics::costume_slot_file(2, 3) == "PlFxGr.dat" &&
+              host::cosmetics::costume_slot_file(2, 4).empty() && host::cosmetics::costume_slot_file(14, 1) == "PlPpGr.dat" &&
+              host::cosmetics::costume_slot_file(0, 1) == "PlCaGy.dat" && host::cosmetics::costume_slot_file(26, 0).empty(),
+          "a fighter number and costume index name the costume's file");
+    g_disc_table.clear(); g_disc_bytes.clear();
+  }
+
   fs::remove_all(folder, ec);
   if (failures) std::fprintf(stderr, "%d cosmetic mod test(s) failed\n", failures);
   else std::puts("cosmetic mod tests passed");

@@ -51,7 +51,7 @@ static const TeRow te_rows[] = {
     {2, MU_TE2_BUBBLES, "Collision bubbles :"},
     {2, MU_TE2_INPUT_DISPLAY, "Input display :"},
     {2, MU_TE2_CPU_SMART_DI, "CPU smart DI :"},
-    {2, MU_TE2_20XX_CPUS, "20XX CPUs :"},
+    /* ("20XX CPUs" is a plain option on the Game tab, not a TE row: one switch, not two.) */
     {2, MU_TE2_COLOR_OVERLAYS, "Color overlays :"},
     {2, MU_TE2_LOCK, "Lock settings :"},
 };

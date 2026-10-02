@@ -31,6 +31,9 @@ bool settings_fills_window();
 // panel is laid out in 96 DPI units and drawn this much larger, with its text rasterised at the
 // final size. Stays 1 in the game window, which is never asked to scale this way.
 void settings_set_window_scale(float scale);
+// The tab the panel opens on the first time it is drawn (0 Video to 7 Mods), for --settings-tab.
+// Negative, the default, leaves the saved behaviour.
+void settings_set_initial_tab(int tab);
 // True once after the panel asks to close. The standalone window has nothing to return to, so that
 // is its cue to exit. Reading it clears it.
 bool settings_close_requested();
