@@ -522,6 +522,7 @@ static void load_dol_from_disc() {
     // tables are installed (apply_mod_code, boot_setup).
     load_dol_from_file(options.mod_base_iso);
     g_mod_disc = true;
+    install_mod_disc_guards();
     log("boot: mod disc; vanilla code from %s, the mod's code follows", options.mod_base_iso.c_str());
     if (disc_is_fixed_address_pack() && !std::getenv("MELEE_MOD_NO_CLEAN")) {
       g_mod_clean = true;
@@ -1162,6 +1163,7 @@ void install_console_clock() {
 
 // ---- the game's language as a PC setting ----
 std::atomic<int> g_game_language{0};
+std::atomic<bool> g_cpu_20xx{false};   // "20XX CPUs", see hackpack_ai.cpp
 int game_language_override() {
   const int choice = g_game_language.load(std::memory_order_relaxed);
   return choice == 1 ? 0 : choice == 2 ? 1 : -1;
@@ -1210,6 +1212,102 @@ void apply_wide_fighter_draw() {
     if (rd32(kSite) == kNop) wr32(kSite, kBranch);
     live = false;
   }
+}
+// A mod disc can ask for a file it does not ship (ACE's results screen asks for /audio/ff_step1.hps
+// for one of its fighters). The game then opens entry -1, DVDFastOpen refuses and leaves the file
+// information of whatever was opened last, and the music stream reads its header out of that file:
+// junk, which stops the game. Only the music stream opens a file without checking its name first, so
+// in a mod session an entry outside the table opens a short victory tune the disc does have
+// (ff_good.hps, else the first ff_*.hps): the wrong tune instead of a stop.
+void dvd_fast_open_checked(ppc::Context& c, uint8_t*) {
+  uint32_t entry = c.r[3];
+  const uint32_t info = c.r[4];
+  const uint32_t fst = rd32(0x80000038);
+  const uint32_t count = fst ? rd32(fst + 8) : 0;
+  auto is_file = [&](uint32_t e) { return e < count && rd8(fst + e * 12) == 0; };
+  if (!is_file(entry) && (int32_t)entry < 0) {
+    static uint32_t fallback = 0;
+    if (!fallback) {
+      const uint32_t strings = fst + count * 12;
+      for (uint32_t e = 1; e < count; ++e) {
+        if (rd8(fst + e * 12)) continue;
+        const char* name = (const char*)try_ptr(strings + (rd32(fst + e * 12) & 0x00FFFFFFu), 16);
+        if (!name || std::strncmp(name, "ff_", 3) != 0 || !std::strstr(name, ".hps")) continue;
+        if (!fallback) fallback = e;
+        if (!std::strcmp(name, "ff_good.hps")) { fallback = e; break; }
+      }
+      log("mods: the game asked for a music file this disc does not have; %s", fallback ? "another tune plays in its place" : "no tune to play instead");
+    }
+    if (fallback) entry = fallback;
+  }
+  if (!is_file(entry)) { c.r[3] = 0; return; }   // as the game's own code: refused, information untouched
+  wr32(info + 0x30, rd32(fst + entry * 12 + 4));   // startAddr
+  wr32(info + 0x34, rd32(fst + entry * 12 + 8));   // length
+  wr32(info + 0x38, 0);                            // callback
+  wr32(info + 0x0C, 0);                            // cb.state
+  c.r[3] = 1;
+}
+// The game's own name search (DVDConvertPathToEntrynum), rule for rule, without the 8.3 name check:
+// from the root or the given directory, one path part at a time, letters compared without case.
+static int32_t fst_find_path(const char* path) {
+  const uint32_t fst = rd32(0x80000038);
+  const uint32_t count = fst ? rd32(fst + 8) : 0;
+  if (!count) return -1;
+  const uint32_t strings = fst + count * 12;
+  auto is_dir = [&](uint32_t e) { return rd8(fst + e * 12) != 0; };
+  auto next_of = [&](uint32_t e) { return rd32(fst + e * 12 + 8); };
+  uint32_t dir = 0;
+  for (;;) {
+    if (*path == '\0') return (int32_t)dir;
+    if (*path == '/') { dir = 0; ++path; continue; }
+    if (*path == '.') {
+      if (path[1] == '.') {
+        if (path[2] == '/') { dir = rd32(fst + dir * 12 + 4); path += 3; continue; }
+        if (path[2] == '\0') return (int32_t)rd32(fst + dir * 12 + 4);
+      } else if (path[1] == '/') { path += 2; continue; }
+      else if (path[1] == '\0') return (int32_t)dir;
+    }
+    const char* end = path;
+    while (*end != '\0' && *end != '/') ++end;
+    const bool want_dir = *end != '\0';
+    uint32_t found = 0;
+    const uint32_t stop = std::min(next_of(dir), count);
+    for (uint32_t e = dir + 1; e < stop; e = is_dir(e) ? std::max(next_of(e), e + 1) : e + 1) {
+      if (!is_dir(e) && want_dir) continue;
+      const char* name = (const char*)try_ptr(strings + (rd32(fst + e * 12) & 0x00FFFFFFu), 1);
+      if (!name) continue;
+      const char* p = path;
+      while (*name != '\0' && std::tolower((unsigned char)*p) == std::tolower((unsigned char)*name)) { ++p; ++name; }
+      if (*name == '\0' && (*p == '/' || *p == '\0')) { found = e; break; }
+    }
+    if (!found) return -1;
+    if (!want_dir) return (int32_t)found;
+    dir = found;
+    path = end + 1;
+  }
+}
+// A mod can send the results screen for a fighter that has no results animation on any disc (Master
+// Hand, picked from a mod's debug menu, wins a match: GmRstMMh.dat). The game stops on the missing
+// file. In a mod session a results animation the disc does not have opens as Mario's instead.
+void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
+  const char* path = (const char*)try_ptr(c.r[3], 1);
+  if (!path) { c.r[3] = 0xFFFFFFFFu; return; }
+  int32_t entry = fst_find_path(path);
+  if (entry < 0) {
+    const char* slash = std::strrchr(path, '/');
+    const char* base = slash ? slash + 1 : path;
+    if (std::strlen(base) == 12 && !_strnicmp(base, "GmRstM", 6) && !_stricmp(base + 8, ".dat")) {
+      entry = fst_find_path("GmRstMMr.dat");
+      static bool told = false;
+      if (!told && entry >= 0) { told = true; log("mods: the game asked for a results animation this disc does not have (%s); another fighter's plays in its place", base); }
+    }
+  }
+  c.r[3] = (uint32_t)entry;
+}
+void install_mod_disc_guards() {
+  if (!mod_disc_active()) return;
+  if (!ppc::redirect_to_host(0x80337C60u, dvd_fast_open_checked)) log("mods: DVDFastOpen keeps the game's own code");
+  if (!ppc::redirect_to_host(0x8033796Cu, dvd_convert_path_checked)) log("mods: the file name search keeps the game's own code");
 }
 void install_audio_pacing() {
   if (ppc::Fn previous = ppc::set_hook(0x80019894u, pad_queue_count_paced)) g_pad_queue_count = previous;

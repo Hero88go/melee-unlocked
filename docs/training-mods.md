@@ -16,6 +16,20 @@ The public download includes native implementations, not the packs' disc images 
 20XX TE and the 20XX Training Hack Pack are different mods. Adding a Hack Pack disc as an
 asset overlay does not execute its PowerPC patches or recreate its menu.
 
+## 20XX CPUs
+
+**Settings > Game > 20XX CPUs** makes the CPU players play with the 20XX Hack Pack's AI, on both
+engines, in offline matches only: never online, never in replay playback (a replay of such a match
+plays back the recorded inputs with the option off). It is a plain option, saved as `cpu_20xx`, and
+needs no 20XX TE save; a settings file from before this option had it as a TE switch turns it on once.
+The Source Port plays its own native version of the pack's AI. The Static Recomp runs the pack's own
+AI block, read from your copy of the Hack Pack disc under Mods at startup (the block itself is not
+part of the download, only its checksum is); without that disc the row says
+"Install the 20XX Hack Pack under Mods" and CPUs play as usual. The log says which happened:
+`20XX CPUs: AI block loaded at ... for this match`, or `20XX CPUs: 20XX Hack Pack disc not under
+Mods; CPUs play as usual`. The two engines' CPUs do not play identically (the pack's code versus the
+native rewrite).
+
 ## Two ways to change 20XX TE
 
 The game's Tournament Melee entry opens a native **20XX TE Settings** menu. Use the stick

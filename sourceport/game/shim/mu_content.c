@@ -85,4 +85,41 @@ void mu_content_begin_major(int mode)
     preload_view = view;
 }
 
+/* Character select, L / R on a highlighted costume (mn/mncharsel.c): the host steps that costume
+ * slot through its installed skins (the standard costume, then each skin in the catalog's order),
+ * saves the pick like a Mods tab choice and serves the slot's file from the new skin under a new
+ * entry number. Returns 1 when the skin changed; name gets the choice's label ("Standard", the
+ * skin's or its pack's name), NUL-terminated. An older host, a replay, an online match that is
+ * queued or running, or a skin that is not allowed online: 0, nothing changed. */
+#define CMD_SKIN_CYCLE 0xF9   /* payload: port, fighter (character select number), costume, 1 next / 0 previous */
+
+int mu_skin_cycle(int port, int char_kind, int costume, int next, char* name, int capacity)
+{
+    static unsigned char response[4096];
+    unsigned char payload[4];
+    unsigned int got = 0;
+    unsigned int i;
+    if (name != NULL && capacity > 0) {
+        name[0] = '\0';
+    }
+    payload[0] = (unsigned char) port;
+    payload[1] = (unsigned char) char_kind;
+    payload[2] = (unsigned char) costume;
+    payload[3] = next ? 1 : 0;
+    if (mu_online_abi_command(CMD_SKIN_CYCLE, payload, sizeof payload, response, sizeof response, &got) != 0 ||
+        got < 1 || response[0] == 0)
+    {
+        return 0;
+    }
+    if (name != NULL && capacity > 0) {
+        for (i = 0; i + 1 < got && (int) i + 1 < capacity; i++) {
+            name[i] = (char) response[i + 1];
+        }
+        name[i] = '\0';
+    }
+    OSReport("[content] skin for fighter %d costume %d: %s\n", char_kind, costume,
+             name != NULL && capacity > 0 ? name : "");
+    return 1;
+}
+
 MU_EXCLUSIONS(content, MU_EXCLUDE(content_vanilla), MU_EXCLUDE(preload_view))

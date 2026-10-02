@@ -160,7 +160,8 @@ int main() {
          "dlss5tone 10\n"
          "dlss5skin 8\n"
          "dlss5resolution 73\ndlss5passes 3\ndlss5downsample 2\ndlss5upsample 1\ndlss5reconstruction 1\n"
-         "dlss5intensity nan\ndlss5detail inf\ndlss5tone -inf\ndlss5skin nan\n"
+         "dlss5tonerestore 0.75\n"
+         "dlss5intensity nan\ndlss5detail inf\ndlss5tone -inf\ndlss5skin nan\ndlss5tonerestore nan\n"
 #endif
          "key_A 88\n"
          "port0 2\nport1 18\n"
@@ -210,6 +211,19 @@ int main() {
   CHECK(options.dlss5_tuning.resolution_scale == 73 && options.dlss5_tuning.passes == 3);
   CHECK(options.dlss5_tuning.downsample_filter == 2 && options.dlss5_tuning.upsample_filter == 1);
   CHECK(options.dlss5_tuning.reconstruction == 1);
+  CHECK(options.dlss5_tuning.tone_restore == 0.75f);
+  CHECK(gx::dlss5::Tuning{}.tone_restore == 0.0f);                  // off unless asked for
+  {
+    // "Remove haze" is saved with the rest but is not part of the feature comparison: changing it
+    // must not rebuild the model.
+    gx::dlss5::Tuning a, b;
+    b.tone_restore = 1.0f;
+    CHECK(!(a != b));
+    gx::RenderOptions again;
+    again.settings_path = path.string();
+    gx::load_pc_settings(again, volume);                            // the file saved above
+    CHECK(again.dlss5_tuning.tone_restore == 0.75f);
+  }
   {
     // Profiles: every field round-trips, old profiles get the default processing, bounds and bad
     // records are handled without touching the caller's tuning.
@@ -220,13 +234,15 @@ int main() {
     gx::dlss5::Tuning loaded;
     CHECK(gx::dlss5::profile_load("roundtrip", loaded));
     CHECK(!(loaded != options.dlss5_tuning));
+    CHECK(loaded.tone_restore == 0.75f);
     { std::ofstream f(folder / "Dlss5Profiles" / "legacy.txt"); f << "# Melee Unlocked DLSS 5 profile\nintensity 0.75\nstyle 2\n"; }
     CHECK(gx::dlss5::profile_load("legacy", loaded));
     CHECK(loaded.intensity == 0.75f && loaded.style == 2 && loaded.passes == 1 && loaded.resolution_scale == 100);
-    { std::ofstream f(folder / "Dlss5Profiles" / "bounds.txt"); f << "resolution -20\npasses 999\ndownsample -1\nupsample 99\nreconstruction 99\n"; }
+    CHECK(loaded.tone_restore == 0.0f);
+    { std::ofstream f(folder / "Dlss5Profiles" / "bounds.txt"); f << "resolution -20\npasses 999\ndownsample -1\nupsample 99\nreconstruction 99\ntonerestore 7\n"; }
     CHECK(gx::dlss5::profile_load("bounds", loaded));
     CHECK(loaded.resolution_scale == 25 && loaded.passes == 4 && loaded.downsample_filter == 0 &&
-          loaded.upsample_filter == 2 && loaded.reconstruction == 1);
+          loaded.upsample_filter == 2 && loaded.reconstruction == 1 && loaded.tone_restore == 1.0f);
     { std::ofstream f(folder / "Dlss5Profiles" / "invalid.txt"); f << "intensity nan\n"; }
     const auto before_invalid = loaded;
     CHECK(!gx::dlss5::profile_load("invalid", loaded));
@@ -436,6 +452,40 @@ int main() {
     std::error_code ec;
     fs::remove(trig_path, ec);
   }
+  // Per-binding levels: read beside their bindings, clamped, saved only when set; a file without
+  // them leaves every binding at its default and saving writes no level line.
+  {
+    const fs::path level_path = fs::temp_directory_path() / "melee_unlocked_settings_level_test.ini";
+    const int L = (int)host::BindAction::L, R = (int)host::BindAction::R, Z = (int)host::BindAction::Z, A = (int)host::BindAction::A;
+    { std::ofstream f(level_path);
+      f << "ds40_Z 2048\nds40_Z_level 120\nkey_L_level 90\nswpro2_R_level 999\nhid1_L_level 70\npad3_A_level 150\ngc0_R_level -4\n"; }
+    gx::RenderOptions o;
+    o.settings_path = level_path.string();
+    int vol = 0;
+    gx::load_pc_settings(o, vol);
+    CHECK(host::g_ds4_bindings[0].mask[Z] == 2048 && host::g_ds4_bindings[0].level[Z] == 120);
+    CHECK(host::g_key_bindings.level[L] == 90 && host::g_key_bindings.level[R] == 0);
+    CHECK(host::g_swpro_bindings[2].level[R] == 255 && host::g_gc_bindings[0].level[R] == 0);   // clamped
+    CHECK(host::g_hid_bindings[1].level[L] == 70 && host::g_pad_bindings[3].level[A] == 150);
+    CHECK(gx::save_pc_settings(o, vol));
+    host::g_key_bindings.level[L] = 0; host::g_ds4_bindings[0].level[Z] = 0;
+    gx::RenderOptions again;
+    again.settings_path = level_path.string();
+    gx::load_pc_settings(again, vol);
+    CHECK(host::g_key_bindings.level[L] == 90 && host::g_ds4_bindings[0].level[Z] == 120);
+    CHECK(host::g_ds4_bindings[0].mask[Z] == 2048);                     // the binding itself is untouched
+    const std::string written = read_text(level_path);
+    CHECK(written.find("\nkey_L_level 90\n") != std::string::npos && written.find("\nds40_Z_level 120\n") != std::string::npos);
+    CHECK(written.find("\nhid1_L_level 70\n") != std::string::npos && written.find("\ngc0_R_level") == std::string::npos);
+    { std::ofstream f(level_path); f << "volume 50\n"; }
+    gx::load_pc_settings(again, vol);
+    CHECK(host::g_key_bindings.level[L] == 0 && host::g_ds4_bindings[0].level[Z] == 0 &&
+          host::g_swpro_bindings[2].level[R] == 0 && host::g_hid_bindings[1].level[L] == 0 && host::g_pad_bindings[3].level[A] == 0);
+    CHECK(gx::save_pc_settings(again, vol));
+    CHECK(read_text(level_path).find("_level ") == std::string::npos);
+    std::error_code ec;
+    fs::remove(level_path, ec);
+  }
   // Audio mode 3 (ASIO) with its driver name (spaces) and buffer round-trips; out-of-range modes clamp.
   {
     const fs::path asio_path = fs::temp_directory_path() / "melee_unlocked_settings_asio_test.ini";
@@ -542,6 +592,49 @@ int main() {
     CHECK(lcancel::indicator_enabled() && legacy_mu.te_options2 == 0);
     std::error_code ec;
     fs::remove(flash_path, ec);
+  }
+
+  // "20XX CPUs" (Game tab) round-trips as cpu_20xx on both the option and the host's atomic, a file
+  // without the key reads as off, and a file from when it was 20XX TE's word 2 bit 0x800000 turns the
+  // option on once: the bit itself is cleared, not saved again, and the other TE bits stay.
+  {
+    const fs::path cpu_path = fs::temp_directory_path() / "melee_unlocked_settings_cpu20xx_test.ini";
+    int vol = 0;
+    gx::RenderOptions o;
+    o.settings_path = cpu_path.string();
+    { std::ofstream f(cpu_path); f << "cpu_20xx 1\n"; }
+    gx::load_pc_settings(o, vol);
+    CHECK(o.cpu_20xx && gx::RenderOptions::live_cpu_20xx() && host::g_cpu_20xx.load());
+    CHECK(gx::save_pc_settings(o, vol));
+    CHECK(read_text(cpu_path).find("\ncpu_20xx 1\n") != std::string::npos);
+    gx::RenderOptions again;
+    again.settings_path = cpu_path.string();
+    gx::load_pc_settings(again, vol);
+    CHECK(again.cpu_20xx && again.te_options2 == 0);
+    { std::ofstream f(cpu_path); f << "volume 50\n"; }
+    gx::load_pc_settings(o, vol);
+    CHECK(!o.cpu_20xx && !gx::RenderOptions::live_cpu_20xx() && !host::g_cpu_20xx.load());
+    { std::ofstream f(cpu_path); f << "te_options2 800100\n"; }
+    gx::load_pc_settings(o, vol);
+    CHECK(o.cpu_20xx && host::g_cpu_20xx.load());
+    CHECK(o.te_options2 == 0x100u && gx::RenderOptions::live_te_options2() == 0x100u);
+    CHECK(gx::save_pc_settings(o, vol));
+    const std::string written = read_text(cpu_path);
+    CHECK(written.find("\nte_options2 100\n") != std::string::npos && written.find("800100") == std::string::npos);
+    CHECK(written.find("\ncpu_20xx 1\n") != std::string::npos);
+    gx::RenderOptions migrated;
+    migrated.settings_path = cpu_path.string();
+    gx::load_pc_settings(migrated, vol);
+    CHECK(migrated.cpu_20xx && migrated.te_options2 == 0x100u);
+    // An explicit "cpu_20xx 0" beside a stale bit: the migration still turns it on, once, and the next
+    // save settles it (the file then has no bit left to migrate).
+    { std::ofstream f(cpu_path); f << "cpu_20xx 0\nte_options2 800000\n"; }
+    gx::load_pc_settings(o, vol);
+    CHECK(o.cpu_20xx && o.te_options2 == 0);
+    CHECK(gx::save_pc_settings(o, vol));
+    CHECK(read_text(cpu_path).find("te_options2 8") == std::string::npos);
+    std::error_code ec;
+    fs::remove(cpu_path, ec);
   }
 
   if (g_failures == 0) std::printf("settings load: all checks passed\n");

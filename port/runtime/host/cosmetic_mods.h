@@ -40,7 +40,32 @@ struct AssetInfo {
   std::string source = "import";
   std::string source_name;
   std::string disc_path;
+  // Which pack this skin belongs to (packs().key) and which of its sets: "" for the costume itself,
+  // "alt L" or "alt R" for a pack's alternate costumes of the same slot.
+  std::string pack;
+  std::string variant;
 };
+
+// The skins grouped by where they came from: imports as one pack, each scanned disc or folder as
+// another. `variants` is sorted, "" first. online_on counts the skins known to stay on online;
+// online_unchecked the imports not applied yet (their verdict comes when the game starts).
+struct PackInfo {
+  std::string key, name;
+  bool disc = false;
+  std::vector<std::string> variants;
+  uint32_t slots = 0, skins = 0, online_on = 0, online_unchecked = 0, selected = 0;
+};
+std::vector<PackInfo> packs();
+// Sets every costume slot the pack covers to its skin of that set ("" or "alt L" and so on) in one
+// profile change, or with "none" puts the pack's own picks back to the standard costume. `replaced`
+// counts the slots that held a skin from another pack, `replaced_from` names it. With preview true
+// nothing changes: the counts are for a "replaces N skins from X" line before the player confirms.
+struct PackSetResult {
+  bool ok = false;
+  uint32_t set = 0, cleared = 0, replaced = 0;
+  std::string replaced_from, message;
+};
+PackSetResult apply_pack_set(const std::string& pack_key, const std::string& variant, bool preview = false);
 
 struct ImportResult {
   bool ok = false;
@@ -116,6 +141,44 @@ std::vector<CompanionOverride> active_companions();
 // Called after the vanilla FST has been copied into guest RAM. It resolves selected logical paths
 // against that exact ISO, patches their FST lengths, and publishes an immutable read snapshot.
 void apply_to_fst(uint8_t* fst, uint32_t fst_size);
+
+// ---- character select L / R skin cycling (both engines) ----
+// A skin picked on the character select screen is saved like a Mods tab choice and applied at once,
+// with no restart: the slot's disc file is published again before the match opens it.
+
+// The costume slot ("PlFxGr.dat") of a character select fighter number (0 Captain Falcon to 25
+// Ganondorf) and a costume index in the game's order; empty when the game has no such costume. The
+// Ice Climbers give Popo's slot.
+std::string costume_slot_file(int css_character, int costume);
+// Like select_variant for a costume slot, without the restart: an empty asset_id is the standard
+// costume. Refused while an online match is queued or running. Inside the online flow only a skin
+// proven to change looks alone (verdict online_allowed) can be picked; the standard costume always can.
+bool select_variant_live(const std::string& slot, const std::string& asset_id, std::string* error = nullptr);
+// One step through the slot's choices: the standard costume, then each installed skin in catalog
+// order. direction > 0 is the next one. Choices select_variant_live refuses are stepped over.
+// `name` is short enough for a label ("Standard", "My skin", "Pack name (alt L)").
+struct LiveCycle {
+  bool ok = false, changed = false;
+  std::string asset_id, previous_id, name, message;
+};
+LiveCycle cycle_slot_live(const std::string& slot, int direction);
+// Publishes one costume slot again from the saved profile: the same work apply_to_fst does for it,
+// on the table apply_to_fst patched at startup. The slot's entries get their new lengths and the
+// read snapshot is swapped as a whole, so a reader sees the old file or the new one, never a mix.
+// `files` lists the slot's disc files (the .dat and its English twin) as they are served now.
+struct RepublishedFile {
+  uint32_t fst_index = 0, vanilla_start = 0, length = 0;
+  bool overridden = false, online_allowed = true;
+  std::string asset_id;
+};
+struct RepublishResult {
+  bool ok = false;
+  std::string message;
+  std::vector<RepublishedFile> files;
+};
+RepublishResult republish_slot(uint8_t* fst, uint32_t fst_size, const std::string& slot);
+// The skin serving this disc file now, or empty for the disc's own file.
+std::string applied_asset(uint32_t vanilla_file_start);
 
 enum class OverrideRead { NotOverridden, Success, Failed };
 // Handles a file-relative read. The final aligned DVD read may extend up to 31 bytes past the

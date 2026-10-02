@@ -764,6 +764,7 @@ void paint_build(HDC dc) {
   round_rect(dc, LR(CX, 226, CW, 106), 8, C_LOG_BG, C_LOG_BG, RGB(0x24, 0x2E, 0x46));
 }
 
+namespace crash_report { void note_launch(); }   // launcher_crash.inl, below: the replay viewer counts as a launch too
 #include "launcher_replays.inl"
 #include "launcher_match_character.inl"
 #include "launcher_theme_picker.inl"
@@ -808,6 +809,7 @@ void capture_test_client(HWND window, const char* name) {
   }
   if (bitmap) DeleteObject(bitmap); DeleteDC(dc); ReleaseDC(nullptr, screen);
 }
+void open_settings(const std::string& tab);   // below; the Mods page's "Choose skins" opens the Mods tab
 #include "launcher_mods.inl"
 
 // The Language button: a menu of the languages, each named in itself. Picking one saves it and
@@ -903,7 +905,7 @@ void draw_button(DRAWITEMSTRUCT* di) {
 // ---------------------------------------------------------------------------- behaviour
 
 void refresh_updater();
-void open_settings();
+void open_settings(const std::string& tab = std::string());
 void settings_standby_start();
 void settings_standby_stop();
 void choose_rail_image();
@@ -1057,12 +1059,16 @@ void choose_rail_image() {
   load_rail_art();
   InvalidateRect(g_main, nullptr, FALSE);
 }
-void open_settings() {
+// `tab` names the tab the window opens on ("mods" from the Mods page's "Choose skins"); empty keeps
+// the panel's own start. A window already waiting in standby cannot change its tab, so a tab request
+// starts a fresh one.
+void open_settings(const std::string& tab) {
   if (g_playing) return;
   g_game_exe = game_exe();
   if (!file_exists(g_game_exe)) {
     select_tab(1); refresh_updater(); start_build(); return;
   }
+  if (!tab.empty()) settings_standby_stop();
   if (g_settings_standby && WaitForSingleObject(g_settings_standby, 0) == WAIT_TIMEOUT && g_settings_standby_exe == g_game_exe) {
     AllowSetForegroundWindow(GetProcessId(g_settings_standby));
     SetEvent(g_settings_show);
@@ -1074,6 +1080,7 @@ void open_settings() {
   std::string cwd = work_dir();
   // --settings-window: the panel alone, no disc, no match engine, no prewarm.
   std::string cmd = "\"" + g_game_exe + "\" --settings-window --settings-path \"" + settings_ini_path() + "\"";
+  if (!tab.empty()) cmd += " --settings-tab " + tab;
   PROCESS_INFORMATION pi{};
   const DWORD error = launcher::start_process(widen(g_game_exe), widen(cmd), widen(cwd), 0, pi);
   if (error != ERROR_SUCCESS) {

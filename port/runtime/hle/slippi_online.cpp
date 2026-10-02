@@ -13,6 +13,7 @@
 #include "discord_presence.h"
 #include "gx_core.h"
 #include "cosmetic_mods.h"
+#include "net_trace.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -156,6 +157,35 @@ static uint64_t g_match_rollbacks_start = 0, g_match_stalls = 0, g_match_input_w
 static int g_input_wait_frames = 0;   // length of the wait for remote inputs that is running now
 static int g_match_delay = 0;
 bool g_in_online_match = false;
+// Session trace (net_trace.h): one record per online tick for the "Network and timing" overlay.
+// A record stays open until the next tick asks for inputs, because its work time, its rollbacks
+// and the frames presented during it are only known by then. Observation only.
+static net_trace::Record g_trace_record;
+static bool g_trace_open = false;
+static int32_t g_trace_offset_us = 0;   // the time sync offset as last measured (every 30 frames)
+void trace_close_tick() {
+  if (!g_trace_open) return;
+  g_trace_open = false;
+  g_trace_record.sim_ms = (float)host::last_sim_frame_ms();
+  g_trace_record.presents = (uint16_t)std::min<uint32_t>(net_trace::take_presents(), 0xFFFFu);
+  net_trace::push(g_trace_record);
+}
+// The match is over (game report) or the connection is gone: the last record goes out and the
+// session trace file is closed. The file work is the trace's own thread's.
+void trace_end_match() {
+  trace_close_tick();
+  net_trace::file_end();
+}
+// A savestate load in the open tick. `to_frame` is the frame loaded, or kRollbackFrameUnknown. The
+// game asks for frame N's inputs first, finds the misprediction in that answer, and loads at the
+// start of frame N: the depth is N minus the loaded frame, the game's own count of it.
+void trace_rollback(int32_t to_frame) {
+  if (!g_trace_open) return;
+  if (g_trace_record.rollbacks < 0xFF) ++g_trace_record.rollbacks;
+  if (to_frame == kRollbackFrameUnknown) return;
+  const int depth = std::clamp(g_trace_record.frame - to_frame, 0, 0xFF);
+  if (depth > g_trace_record.rollback_depth) g_trace_record.rollback_depth = (uint8_t)depth;
+}
 // Determinism oracle: the game hands us a checksum of its finalized state each frame and the
 // opponent's client sends theirs; a mismatch is a desync between the two simulations.
 std::map<int32_t, uint32_t> g_local_checksums;
@@ -304,6 +334,7 @@ void cleanup_connection() {
   g_overwrite_selections.clear();
   g_play_session_active = false;
   g_in_online_match = false;
+  trace_end_match();
   host::set_emulation_speed(1.0);
   update_discord_presence(true);   // back to "In the menus" straight away, not two seconds later
 }
@@ -351,6 +382,7 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
   // instance that drifted ahead there for the rest of the match, predicting and rolling back.
   if (frame % ONLINE_LOCKSTEP_INTERVAL == 0 && !g_currently_skipping) {
     int32_t offset = g_netplay->CalcTimeOffsetUs();
+    g_trace_offset_us = offset;
     if (offset > (frame <= 120 ? t1 : t2)) {
       g_currently_skipping = true;
       int max_skip = frame <= 120 ? 5 : 1;
@@ -375,6 +407,7 @@ bool should_advance_online_frame(int32_t frame) {
   if (opponent_runahead()) return false;
   if (frame % ONLINE_LOCKSTEP_INTERVAL == 0) {
     int32_t offset = g_netplay->CalcTimeOffsetUs();
+    g_trace_offset_us = offset;
     float deviation = 0;
     if (offset > -250 && offset < 8000) deviation = 0;
     else if (offset < 0) deviation = std::min(-offset / (3 * 16683.0f), 1.0f) * 0.01f;
@@ -505,6 +538,17 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     g_local_selections.Reset();
     g_match_rollbacks_start = g_rollbacks; g_match_stalls = 0; g_match_delay = delay;
     g_match_input_waits = 0; g_match_advances = 0; g_input_wait_frames = 0;
+    // The game resends frame 1 while it waits for the opponent: the trace starts on the first one.
+    if (!g_trace_open || g_trace_record.frame != 1) {
+      g_trace_open = false; g_trace_offset_us = 0;
+      net_trace::take_presents();
+      net_trace::begin_match();
+      // The session trace file sits beside the match's replay, under its name. The Static Recomp's
+      // replay is open and named by now; the Source Port names its replay when it writes it and
+      // reports it then (net_trace::replay_saved). No replay, no trace.
+      if (host::game_image) net_trace::file_begin(host::options.replay_dir.c_str(), nullptr);
+      else if (slippi::recording()) net_trace::file_begin(slippi::replay_directory().c_str(), slippi::last_replay_path().c_str());
+    }
     if (g_netplay) { g_netplay->GetAndResetAvgPingMs(); g_netplay->StartSlippiGame(); }
     host::log("slippi: online game starts, delay %d frames, direct peer to peer", (int)delay);
     g_in_online_match = true;
@@ -525,6 +569,18 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     g_netplay->SendSlippiPad(std::make_unique<Pad>(frame + delay, finalized, finalized_checksum, inputs));
   }
   prepare_opponent_inputs(frame, skip, q);
+  // Session trace: the tick before is complete now; open this one.
+  trace_close_tick();
+  g_trace_record = {};
+  g_trace_record.wall = host::now_seconds();
+  g_trace_record.frame = frame;
+  g_trace_record.offset_us = g_trace_offset_us;
+  g_trace_record.wait_frames = (uint16_t)std::min(g_input_wait_frames, 0xFFFF);
+  g_trace_record.ping_ms = (uint16_t)std::clamp(g_netplay->LastPingMs(), 0, 0xFFFF);
+  if (skip) g_trace_record.flags |= g_input_wait_frames > 0 ? net_trace::kWait : net_trace::kShed;
+  else if (!q.empty() && q[0] == 4) g_trace_record.flags |= net_trace::kAdvance;
+  std::memcpy(g_trace_record.pad, inputs, PAD_DATA_SIZE);
+  g_trace_open = true;
 }
 
 void handle_capture_savestate(const uint8_t* payload) {
@@ -548,6 +604,7 @@ void handle_load_savestate(const uint8_t* payload) {
     blocks.push_back({be32(payload + i), be32(payload + i + 4)});
   g_active_savestates[frame]->Load(blocks);
   ++g_rollbacks;
+  trace_rollback(frame);
   // The next frame the game finishes continues from this older state, not from the frame on screen.
   // Blending the two (sub-frame animation) would draw positions that never existed on either
   // timeline, which on continuously animated stages showed as a glitch that only ever happened
@@ -1012,6 +1069,7 @@ void handle_report_game(const uint8_t* p) {
             g_match_delay, g_netplay ? g_netplay->GetAndResetAvgPingMs() : 0.0,
             (unsigned long long)(g_rollbacks - g_match_rollbacks_start), (unsigned long long)g_match_stalls,
             (unsigned long long)g_match_input_waits, (unsigned long long)g_match_advances, frames);
+  trace_end_match();
   host::publish_lobby_result(winner, end_method);
   {
     // Exactly CEXISlippi::handleReportGame: one report per game with every slot's result.
@@ -1071,7 +1129,7 @@ void set_native_gameplay_profile(NativeGameplayProfile profile) {
   g_native_gameplay_profile = profile;
 }
 uint64_t rollback_count() { return g_rollbacks; }
-void note_rollback() { ++g_rollbacks; }
+void note_rollback(int32_t to_frame) { ++g_rollbacks; trace_rollback(to_frame); }
 bool is_online_match() { return g_in_online_match; }
 int local_player_slot() { return g_local_player_index; }
 std::array<std::string, 4> player_names_for_overlay() {

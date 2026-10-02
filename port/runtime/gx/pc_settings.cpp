@@ -38,10 +38,12 @@
 #include "discord_presence.h"
 #include "controller_profiles.h"
 #include "cosmetic_mods.h"
+#include "hackpack_ai.h"
 #include "mod_profile.h"
 #include "mod_scan.h"
 #include "lab_view.h"
 #include "training_overlay.h"
+#include "net_overlay.h"
 // Lab view is hidden until its silhouette packs can ship at a reasonable size: no F3 toggle, no
 // Overlays switch, never drawn (so the renderers never skip the scene for it). Code kept intact.
 constexpr bool kLabViewAvailable = false;
@@ -595,6 +597,75 @@ static void binding_set(host::CaptureDevice kind, int index, int action, uint32_
   }
 }
 
+// ---- per-binding analog level (input_bindings.h), saved as "<the binding's key>_level" ----
+static uint8_t* binding_level(host::CaptureDevice kind, int index, int action) {
+  switch (kind) {
+    case host::CaptureDevice::Keyboard:  return &host::g_key_bindings.level[action];
+    case host::CaptureDevice::XInputPad: return &host::g_pad_bindings[index].level[action];
+    case host::CaptureDevice::DS4Pad:    return &host::g_ds4_bindings[index].level[action];
+    case host::CaptureDevice::SwitchPro: return &host::g_swpro_bindings[index].level[action];
+    case host::CaptureDevice::HidPad:    return &host::g_hid_bindings[index].level[action];
+    case host::CaptureDevice::GCAdapter: return &host::g_gc_bindings[index].level[action];
+    default: return nullptr;
+  }
+}
+
+// What the level means on this row. 0: nothing, no control is shown. 1: the press point of an
+// analog source (an Xbox LT/RT, a PlayStation L2/R2). 2: how far a button bound to L or R presses
+// the trigger. The same split window.cpp makes when it applies the bindings.
+static int binding_level_kind(host::CaptureDevice kind, int index, int action) {
+  const uint32_t v = binding_get(kind, index, action);
+  if (!v) return 0;
+  if (kind == host::CaptureDevice::XInputPad && (v & (host::kXInputBindLT | host::kXInputBindRT))) return 1;
+  if (kind == host::CaptureDevice::DS4Pad && (v & (host::DS4_L2 | host::DS4_R2))) return 1;
+  if (!host::is_trigger_action(action)) return 0;
+  // The adapter's own L and R clicks come with its analog triggers.
+  if (kind == host::CaptureDevice::GCAdapter &&
+      (v & (host::kActionPadBit[(size_t)host::BindAction::L] | host::kActionPadBit[(size_t)host::BindAction::R]))) return 0;
+  return 2;
+}
+
+struct BindingKeyPrefix { host::CaptureDevice kind; const char* prefix; };
+static const BindingKeyPrefix kBindingKeyPrefixes[] = {
+  {host::CaptureDevice::XInputPad, "pad"}, {host::CaptureDevice::GCAdapter, "gc"}, {host::CaptureDevice::DS4Pad, "ds4"},
+  {host::CaptureDevice::SwitchPro, "swpro"}, {host::CaptureDevice::HidPad, "hid"}};
+
+static void reset_binding_levels() {
+  for (int i = 0; i < (int)host::BindAction::Count; ++i) {
+    host::g_key_bindings.level[i] = 0;
+    for (const BindingKeyPrefix& f : kBindingKeyPrefixes)
+      for (int idx = 0; idx < 4; ++idx) *binding_level(f.kind, idx, i) = 0;
+  }
+}
+
+static bool load_binding_level(const std::string& key, const std::string& value) {
+  static const std::string suffix = "_level";
+  if (key.size() <= suffix.size() || key.compare(key.size() - suffix.size(), suffix.size(), suffix) != 0) return false;
+  const std::string base = key.substr(0, key.size() - suffix.size());
+  const uint8_t level = (uint8_t)std::clamp(std::atoi(value.c_str()), 0, 255);
+  for (int i = 0; i < (int)host::BindAction::Count; ++i) {
+    if (base == std::string("key_") + kActionNames[i]) { host::g_key_bindings.level[i] = level; return true; }
+    for (const BindingKeyPrefix& f : kBindingKeyPrefixes)
+      for (int idx = 0; idx < 4; ++idx)
+        if (base == f.prefix + std::to_string(idx) + "_" + kActionNames[i]) { *binding_level(f.kind, idx, i) = level; return true; }
+  }
+  return false;
+}
+
+// Written only when set, so a file that never used them stays as it was.
+static std::string binding_levels_text() {
+  std::string out;
+  for (int i = 0; i < (int)host::BindAction::Count; ++i)
+    if (host::g_key_bindings.level[i])
+      out += std::string("\nkey_") + kActionNames[i] + "_level " + std::to_string(host::g_key_bindings.level[i]);
+  for (const BindingKeyPrefix& f : kBindingKeyPrefixes)
+    for (int idx = 0; idx < 4; ++idx)
+      for (int i = 0; i < (int)host::BindAction::Count; ++i)
+        if (const int level = *binding_level(f.kind, idx, i))
+          out += std::string("\n") + f.prefix + std::to_string(idx) + "_" + kActionNames[i] + "_level " + std::to_string(level);
+  return out;
+}
+
 static std::string binding_label(host::CaptureDevice kind, int index, int action) {
   const uint32_t v = binding_get(kind, index, action);
   char label[32];
@@ -789,7 +860,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
     }
     for (const std::string& name : list) {
       if (ImGui::Selectable(name.c_str(), !is_default && name == current)) {
-        host::ProfileBindings pb{};
+        host::ProfileBindings pb = bindings_of(tab);   // an older profile keeps the current stick keys
         if (host::profile_load(device, name, pb)) {
           for (int i = 0; i < (int)host::BindAction::Count; ++i) binding_set(kind, index, i, pb[i]);
           g_active_profile[tab] = name;
@@ -1618,9 +1689,11 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   capture_default_bindings();   // the built-in buttons, before the saved ones replace them
   g_edit_follow_active = true;
   for (host::Deadzone& dz : host::g_deadzones) dz.click_l = dz.click_r = host::kDefaultTriggerClick;
+  reset_binding_levels();   // a file without the keys: every binding as it always was
   std::ifstream file(options.settings_path);
   // Start in the game. F1 and the launcher Settings entry remain available at any time.
   options.settings_open = false;
+  options.cpu_20xx = false;   // a file without the key: off
   options.mod_choices.clear();
   g_advanced_open[0] = g_advanced_open[1] = false;   // a file without the keys (0.8.1 and older): closed
   // One setting per line: the key, then everything after it on that line. Reading the value as a
@@ -1689,6 +1762,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "showfps") options.show_fps = value == "1";
       else if (key == "showvram") options.show_vram = value == "1";
       else if (key == "showping") options.show_ping = value == "1";
+      else if (key == "netoverlay") net_overlay::set_enabled(value == "1");
       // Diagnostic, off unless someone is hunting a one-frame glitch: see RenderOptions::flicker_scan.
       // Settings-file only rather than a control in the panel, because it costs a readback on every
       // presented frame and nobody should switch it on by browsing.
@@ -1743,6 +1817,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "rumble") host::g_rumble_enabled.store(value != "0", std::memory_order_relaxed);
       else if (key == "backgroundinput") host::g_background_input = value != "0";
       else if (key == "gamelanguage") host::g_game_language.store(value == "1" ? 1 : value == "2" ? 2 : 0);
+      else if (key == "cpu_20xx") options.cpu_20xx = value == "1";
       else if (key == "editdevice") g_saved_edit_tab = std::atoi(value.c_str());
       else if (key == "editdevice_follow") g_edit_follow_active = value != "0";
       // "activeprofile<device> <name>": the profile each controller uses, so it is still the one
@@ -1756,6 +1831,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
         if (std::sscanf(value.c_str(), "%d %d %d %d %lf %d", &c.efb, &c.ssaa, &c.aniso, &c.dlss, &c.fps, &c.sub) == 6) g_custom_preset = c;
       }
       else if (load_family_option(key, value)) {}
+      else if (load_binding_level(key, value)) {}
       else if (key == "autoopenoverlay") options.settings_open = value == "1";
       else if (key == "dlss") { int m = std::stoi(value); if (m >= 0 && m <= 10) options.dlss_mode = m; }
       // Pre-multiplier saves wrote 0 or 1; both still mean what they always meant (off / 2x).
@@ -1783,6 +1859,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "dlss5upsample") options.dlss5_tuning.upsample_filter = std::clamp(std::stoi(value), 0, 2);
       else if (key == "dlss5reconstruction") options.dlss5_tuning.reconstruction = std::clamp(std::stoi(value), 0, 1);
       else if (key == "dlss5passes") options.dlss5_tuning.passes = std::clamp(std::stoi(value), 1, 4);
+      else if (key == "dlss5tonerestore") dlss5_float(value, options.dlss5_tuning.tone_restore, 0.0f, 1.0f);
 #endif
       // Low spec: the switch, then what the player had before it was turned on, so turning it off
       // after a restart still restores their own settings rather than the defaults.
@@ -1908,6 +1985,12 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.te_options &= 0x00007FFFu;
   // 20XX TE's "L-cancel training wheels" is not offered: the port's own Auto L-cancel does that.
   options.te_options2 &= ~0x800u;
+  // "20XX CPUs" is a plain option now (Game tab, cpu_20xx, both engines, no TE save needed). A file
+  // from when it was 20XX TE's word 2 bit 0x800000 turns the option on once; the bit itself is
+  // cleared here and never saved again, so the migration happens one time.
+  if (options.te_options2 & 0x800000u) { options.cpu_20xx = true; options.te_options2 &= ~0x800000u; }
+  RenderOptions::live_cpu_20xx() = options.cpu_20xx;
+  host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
   // Explicit new choices win over legacy keys regardless of their order in the file. A legacy
   // TE_ENABLE alone remains both flashes, white success and red miss, including old recordings.
   if (saved_lcancel_flash >= 0) {
@@ -1951,6 +2034,8 @@ std::atomic<bool> g_fill_window{false};
 std::atomic<bool> g_close_requested{false};
 bool settings_close_requested() { return g_close_requested.exchange(false, std::memory_order_relaxed); }
 void settings_fill_window(bool on) { g_fill_window.store(on, std::memory_order_relaxed); }
+std::atomic<int> g_initial_tab{-1};
+void settings_set_initial_tab(int tab) { g_initial_tab.store(tab, std::memory_order_relaxed); }
 bool settings_fills_window() { return g_fill_window.load(std::memory_order_relaxed); }
 // One scale for everything ImGui draws in a frame. The panels are full of pixel literals (item
 // widths, column offsets, button sizes, font sizes), so rather than scale each one, the whole frame
@@ -2907,6 +2992,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\naudio_mode " << options.audio_mode << "\naudio_buffer_ms " << options.audio_buffer_ms << "\naudio_device " << options.audio_device
        << "\naudio_asio_driver " << options.audio_asio_driver << "\naudio_asio_buffer " << options.audio_asio_buffer
        << "\nshowfps " << options.show_fps << "\nshowvram " << (options.show_vram ? 1 : 0) << "\nshowping " << options.show_ping
+       << "\nnetoverlay " << (net_overlay::enabled() ? 1 : 0)
        << "\ndlss " << options.dlss_mode << "\nframegen " << options.frame_generation_mode
        << "\nfgmax " << options.fg_cached_max << "\nfgdynamic " << (options.fg_cached_dynamic ? 1 : 0)
        << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
@@ -2919,6 +3005,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ndlss5skin " << options.dlss5_tuning.skin << "\ndlss5style " << options.dlss5_tuning.style
        << "\ndlss5preset " << options.dlss5_tuning.preset << "\ndlss5automask " << (options.dlss5_tuning.auto_mask ? 1 : 0)
        << "\ndlss5resolution " << options.dlss5_tuning.resolution_scale << "\ndlss5passes " << options.dlss5_tuning.passes
+       << "\ndlss5tonerestore " << options.dlss5_tuning.tone_restore
        << "\ndlss5downsample " << options.dlss5_tuning.downsample_filter << "\ndlss5upsample " << options.dlss5_tuning.upsample_filter
        << "\ndlss5reconstruction " << options.dlss5_tuning.reconstruction
 #endif
@@ -2980,6 +3067,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nrumble " << (host::g_rumble_enabled.load(std::memory_order_relaxed) ? 1 : 0)
        << "\nbackgroundinput " << (host::g_background_input ? 1 : 0)
        << "\ngamelanguage " << host::g_game_language.load()
+       << "\ncpu_20xx " << (options.cpu_20xx ? 1 : 0)
        << "\neditdevice " << g_saved_edit_tab
        << "\neditdevice_follow " << (g_edit_follow_active ? 1 : 0)
        << (g_custom_preset.set ? "\ncustompreset " + std::to_string(g_custom_preset.efb) + " " + std::to_string(g_custom_preset.ssaa) + " " +
@@ -3029,6 +3117,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
   for (int idx = 0; idx < 4; ++idx)
     for (int i = 0; i < (int)host::BindAction::Count; ++i)
       file << "\nhid" << idx << "_" << kActionNames[i] << " " << host::g_hid_bindings[idx].mask[i];
+  file << binding_levels_text();
   for (int n = 0; n < 4; ++n)
     file << "\nport" << n << " " << port_source_to_combo(host::g_port_sources[n]);
   for (int n = 0; n < 4; ++n)
@@ -3184,6 +3273,46 @@ static int dlss5_percent_slider(const char* label, float& v, bool* changed) {
   return shown;
 }
 #endif
+
+// The level of one binding as a compact slider, for the rows where it means something. Returns
+// true when it changed.
+static bool binding_level_slider(host::CaptureDevice kind, int index, int action) {
+  const int what = binding_level_kind(kind, index, action);
+  uint8_t* level = binding_level(kind, index, action);
+  if (!what || !level) return false;
+  bool changed = false;
+  char label[96];
+  const std::string bound_to = binding_label(kind, index, action);
+  ImGui::PushID(action);
+  ImGui::SetNextItemWidth(200.0f);
+  if (what == 1) {
+    std::snprintf(label, sizeof label, "%s (%s) pressed at", kActionTitles[action], bound_to.c_str());
+    int shown = *level;
+    if (settings_slider(label, &shown, 0, 254, shown ? "%d" : "Default")) {
+      // The PlayStation reader reports nothing below its own press point.
+      if (kind == host::CaptureDevice::DS4Pad && shown > 0 && shown <= host::kPlayStationTriggerPress)
+        shown = host::kPlayStationTriggerPress + 1;
+      *level = (uint8_t)std::clamp(shown, 0, 254);
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("How far the trigger travels (out of 255) before this binding counts as pressed.\n"
+                        "Default uses the controller's own press point.");
+  } else {
+    std::snprintf(label, sizeof label, "%s (%s) press depth", kActionTitles[action], bound_to.c_str());
+    int shown = *level ? *level : 255;
+    if (settings_slider(label, &shown, 1, 255, shown >= 255 ? "Full" : "%d")) {
+      *level = (uint8_t)(shown >= 255 ? 0 : std::clamp(shown, 1, 254));
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("How far this button presses the trigger (out of 255).\n"
+                        "Full: a full press with the click, for a full shield.\n"
+                        "A number: a light press with no click. Melee shields lightly from 43 to 140.");
+  }
+  ImGui::PopID();
+  return changed;
+}
 
 static void game_mods_panel(const RenderOptions& options) {
   namespace mods = source_port::mods;
@@ -3378,7 +3507,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   static bool test_tab_set = false;
   if (!test_tab_set) {
     test_tab_set = true;
-    if (const char* tab = std::getenv("MELEE_TEST_SETTINGS_TAB"))
+    // --settings-tab (the launcher's "Choose skins" opens the Mods tab), or the test hook.
+    const int initial = g_initial_tab.load(std::memory_order_relaxed);
+    if (initial >= 0) state.active_tab = std::clamp(initial, 0, 7);
+    else if (const char* tab = std::getenv("MELEE_TEST_SETTINGS_TAB"))
       state.active_tab = std::clamp(std::atoi(tab), 0, 7);
   }
   const auto reset_settings_home = [&state](const char* why) {
@@ -3517,6 +3649,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                              ((RenderOptions::live_te_options() & 0x48000u) == 0x48000u || te_input_row) &&
                              !state.fill_window,
                          ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+  net_overlay::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // Start on the controller closes the panel from any page (the open chord is Start + Down + Z,
   // which the input layer swallows whole, so this never fires on the press that opened it).
   if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
@@ -4874,6 +5007,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         bool skin_auto = t.skin < 0.0f;
         if (settings_toggle("Skin structure: automatic", &skin_auto)) { t.skin = skin_auto ? -1.0f : 1.0f; changed = true; }
         if (!skin_auto) dlss5_percent_slider("Skin structure strength", t.skin, &changed);
+        // Applied after the model, so it follows the drag: nothing is rebuilt.
+        int haze_pct = (int)std::lround(t.tone_restore * 100.0f);
+        if (settings_slider("Remove haze", &haze_pct, 0, 100, "%d%%")) {
+          t.tone_restore = std::clamp(haze_pct, 0, 100) / 100.0f;
+          changed = true;
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("DLSS 5 lifts the black level a little on every pass, which shows as a grey haze.\n"
+                            "This takes it back out. 0%% is the model's own output.");
         ImGui::BeginDisabled(t.resolution_scale == 100);
         const char* down_filters[] = {"Area", "Bilinear", "Nearest"};
         const char* up_filters[] = {"Bilinear", "Bicubic", "Nearest"};
@@ -5686,6 +5828,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::TextUnformatted("Cosmetic mods");
         ImGui::TextWrapped("Imports use one shared native profile. Stage DATs that fail the exact-ISO "
                            "visual check use the clean disc resource online. Changes take effect after restart.");
+        ImGui::TextWrapped("On the character select screen, L and R step the highlighted costume through "
+                           "its installed skins, no restart needed.");
         if (ImGui::Button("Import / Refresh...")) {
           std::string path = host::cosmetics::choose_import_file();
           if (!path.empty()) mod_message = host::cosmetics::import_file(path).message;
@@ -5749,6 +5893,62 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           std::string error;
           if (!host::cosmetics::set_profile_enabled(use_mods, &error)) mod_message = error;
           else { mod_message = host::cosmetics::last_message(); changed = true; }
+        }
+
+        // Costume packs: every source of skins as one row, with buttons that fill every slot the pack
+        // covers in one go. A set that would replace another pack's picks says so first; the viewer
+        // has no dialogs, so the confirm step is a second row of buttons.
+        {
+          const auto skin_packs = host::cosmetics::packs();
+          static std::string pending_pack, pending_variant, pending_label;
+          static host::cosmetics::PackSetResult pending_preview;
+          if (!skin_packs.empty()) {
+            ImGui::Spacing();
+            ImGui::TextUnformatted("Costume packs");
+            ImGui::TextWrapped("Each button sets every costume the pack has. Skins that stay on online keep working in "
+                               "Unranked, Teams and Party; the rest show the standard costume there.");
+            for (const auto& pack : skin_packs) {
+              ImGui::PushID(pack.key.c_str());
+              std::string summary = pack.name + ": " + std::to_string(pack.skins) + (pack.skins == 1 ? " skin, " : " skins, ") +
+                                    std::to_string(pack.online_on) + " stay on online";
+              if (pack.online_unchecked) summary += " (" + std::to_string(pack.online_unchecked) + " checked when the game starts)";
+              if (pack.selected) summary += ", " + std::to_string(pack.selected) + " selected";
+              ImGui::TextWrapped("%s", summary.c_str());
+              auto ask = [&](const char* label, const std::string& variant) {
+                if (!ImGui::SmallButton(label)) return;
+                pending_pack = pack.key; pending_variant = variant; pending_label = pack.name;
+                pending_preview = host::cosmetics::apply_pack_set(pack.key, variant, true);
+                if (!pending_preview.ok) { mod_message = pending_preview.message; pending_pack.clear(); }
+              };
+              const bool one_set = pack.variants.size() == 1;
+              for (const auto& variant : pack.variants) {
+                const std::string label = one_set ? "Use all" : variant.empty() ? "Use standard set" : "Use " + variant;
+                ask(label.c_str(), variant);
+                ImGui::SameLine();
+              }
+              ask("Use none", "none");
+              if (pending_pack == pack.key) {
+                std::string ask_line = pending_variant == "none"
+                    ? std::to_string(pending_preview.cleared) + " costumes go back to standard."
+                    : std::to_string(pending_preview.set) + " costumes change" +
+                      (pending_preview.replaced ? ", replacing " + std::to_string(pending_preview.replaced) + " skins from " +
+                                                  pending_preview.replaced_from : std::string()) + ".";
+                if (pending_variant != "none" && !pending_preview.set) ask_line = "Nothing to change: this set is already in use.";
+                ImGui::TextColored(ImVec4(1, .75f, .25f, 1), "%s", ask_line.c_str());
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Apply")) {
+                  const auto result = host::cosmetics::apply_pack_set(pending_pack, pending_variant, false);
+                  mod_message = result.message;
+                  if (result.ok) changed = true;
+                  pending_pack.clear();
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Cancel")) pending_pack.clear();
+              }
+              ImGui::PopID();
+            }
+            ImGui::Spacing();
+          }
         }
 
         const auto installed_mods = host::cosmetics::assets();
@@ -5977,6 +6177,23 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "as the game's own Options > Language does.\n"
                           "The game's own choice follows that option. Applies as each screen loads.");
     }
+
+    // "20XX CPUs": one plain option on both engines, not a 20XX TE feature (no TE save needed). The
+    // Source Port plays its native version of the 20XX Hack Pack's AI (shim/mu_20xx_ai.c); the Static
+    // Recomp runs the pack's own AI block, read from the player's copy of the pack's disc under Mods
+    // (host/hackpack_ai.cpp). Offline matches only; online and replay playback never see it.
+    ImGui::TextUnformatted("CPU players");
+    if (settings_toggle("20XX CPUs", &options.cpu_20xx)) {
+      RenderOptions::live_cpu_20xx() = options.cpu_20xx;
+      host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
+      if (options.cpu_20xx && !options.native_source) host::hackpack_ai::reload();   // the disc may have arrived since boot
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("CPUs play with the 20XX Hack Pack's AI. Offline matches only, never online or in replays.\n"
+                        "Static Recomp: needs the 20XX Hack Pack disc under Mods (the Source Port has its own version).");
+    if (!options.native_source && !host::hackpack_ai::status().blob_ok)
+      ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.40f, 1.0f), "Install the 20XX Hack Pack under Mods");
 
     // Slippi's Lagless FoD code is a real game patch, so expose it as an offline/direct setting
     // instead of silently forcing the performance-oriented variant on every player.
@@ -6523,7 +6740,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               "a full shield).\n"
               "A number: the trigger is analog only, like Dolphin's L-Analog / R-Analog setting. Its\n"
               "value stops there and it never clicks, so a digital or hair trigger gives a light\n"
-              "shield. Melee shields lightly from 43 (lightest) to 140 (hardest).";
+              "shield. Melee shields lightly from 43 (lightest) to 140 (hardest).\n"
+              "For a full press as well (full shield, L+R+A+Start), bind L or R to a button such as\n"
+              "a bumper: the trigger keeps its light shield and the button gives the full press.";
           ImGui::SetNextItemWidth(200.0f);
           changed |= settings_slider("L trigger", &dz.trig_l, 43, 255, dz.trig_l >= 255 ? "Full" : "%d");
           if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kTrigTip);
@@ -6541,6 +6760,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           changed |= settings_slider("R full press at", &dz.click_r, 1, 254, dz.click_r == host::kDefaultTriggerClick ? "Default" : "%d");
           if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kClickTip);
           settings_hint("Applies to every %s controller.", cur_family.name);
+        }
+        // Each binding's own analog level, only for the bindings that have one: a trigger bound
+        // as a button (its press point) and a button bound to L or R (how far it presses).
+        {
+          bool any = false;
+          for (int i = 0; i < (int)host::BindAction::Count; ++i) {
+            if (!binding_level_kind(tab_kind, tab_index, i)) continue;
+            if (!any) { ImGui::Spacing(); ImGui::SeparatorText("Per button"); any = true; }
+            changed |= binding_level_slider(tab_kind, tab_index, i);
+          }
         }
         if (tab_kind == host::CaptureDevice::HidPad && ImGui::CollapsingHeader("Box layouts")) {
           if (ImGui::Button("B0XX (vJoy / b0xx-ahk)")) { host::g_hid_bindings[tab_index] = host::vjoy_b0xx_bindings(); changed = true; }
@@ -6590,6 +6819,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     changed |= settings_toggle("FPS counter (top left)", &options.show_fps);
     // VRAM has its own line in the Video tab, right by the settings that move it; no overlay needed.
     changed |= settings_toggle("Ping while online (under the FPS)", &options.show_ping);
+    {
+      bool net = net_overlay::enabled();
+      if (settings_toggle("Network and timing", &net)) { net_overlay::set_enabled(net); changed = true; }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Online only: the last 10 seconds as you got them. Frame time, waits for the\nother player's inputs, rollbacks, time sync and ping. Display only.");
+    }
     // Render latency, a developer readout, is under Advanced at the bottom of this tab.
     if (kLabViewAvailable) {
     ImGui::BeginDisabled(options.native_source);

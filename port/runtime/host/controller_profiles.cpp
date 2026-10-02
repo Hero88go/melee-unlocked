@@ -13,7 +13,8 @@ namespace {
 
 // Action names as the settings file already spells them (pc_settings.cpp kActionNames).
 constexpr const char* kActions[kProfileActions] = {"A", "B", "X", "Y", "Z", "Start", "L", "R", "DUp", "DDown", "DLeft", "DRight",
-                                                    "CUp", "CDown", "CLeft", "CRight"};
+                                                    "CUp", "CDown", "CLeft", "CRight", "SUp", "SDown", "SLeft", "SRight"};
+constexpr int kFirstStickAction = 16;   // profiles written before the control stick was rebindable stop here
 constexpr const char* kDeviceKeys[(int)ProfileDevice::Count] = {"keyboard", "xinput", "playstation", "gcadapter", "switchpro", "hid"};
 constexpr const char* kHeader = "# Melee Unlocked controller profile";
 constexpr const char* kExtension = ".profile";
@@ -102,6 +103,9 @@ bool profile_load(ProfileDevice device, const std::string& name, ProfileBindings
   std::ifstream in(file_for(clean));
   if (!in) return false;
   ProfileBindings read{};   // an action a profile does not mention is left unbound
+  // Except the control stick directions: an older profile has no lines for them, and unbinding
+  // them would take a keyboard player's movement keys away. They keep what the caller passed in.
+  for (int i = kFirstStickAction; i < kProfileActions; ++i) read[i] = bindings[i];
   bool device_ok = false;
   std::string line;
   while (std::getline(in, line)) {

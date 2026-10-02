@@ -58,6 +58,7 @@ Tuning bounded_tuning(Tuning t) {
   t.upsample_filter = std::clamp(t.upsample_filter, 0, 2);
   t.reconstruction = std::clamp(t.reconstruction, 0, 1);
   t.passes = std::clamp(t.passes, 1, 4);
+  t.tone_restore = bound(t.tone_restore, 0.0f, 0.0f, 1.0f);
   return t;
 }
 }  // namespace
@@ -91,7 +92,7 @@ bool profile_save(const std::string& name, const Tuning& t) {
     << "\nstyle " << saved.style << "\npreset " << saved.preset << "\nautomask " << (saved.auto_mask ? 1 : 0) << "\n";
   f << "resolution " << saved.resolution_scale << "\ndownsample " << saved.downsample_filter
     << "\nupsample " << saved.upsample_filter << "\nreconstruction " << saved.reconstruction
-    << "\npasses " << saved.passes << "\n";
+    << "\npasses " << saved.passes << "\ntonerestore " << saved.tone_restore << "\n";
   return f.good();
 }
 bool profile_load(const std::string& name, Tuning& t) {
@@ -105,7 +106,8 @@ bool profile_load(const std::string& name, Tuning& t) {
     std::string key, value, extra;
     if (!(fields >> key) || key[0] == '#') continue;
     float* number = key == "intensity" ? &loaded.intensity : key == "detail" ? &loaded.detail :
-                    key == "tone" ? &loaded.tone : key == "skin" ? &loaded.skin : nullptr;
+                    key == "tone" ? &loaded.tone : key == "skin" ? &loaded.skin :
+                    key == "tonerestore" ? &loaded.tone_restore : nullptr;
     int* integer = key == "style" ? &loaded.style : key == "preset" ? &loaded.preset :
                    key == "resolution" ? &loaded.resolution_scale : key == "downsample" ? &loaded.downsample_filter :
                    key == "upsample" ? &loaded.upsample_filter : key == "reconstruction" ? &loaded.reconstruction :
@@ -125,7 +127,7 @@ bool profile_load(const std::string& name, Tuning& t) {
   }
   if (f.bad()) return false;
   if (!std::isfinite(loaded.intensity) || !std::isfinite(loaded.detail) ||
-      !std::isfinite(loaded.tone) || !std::isfinite(loaded.skin)) return false;
+      !std::isfinite(loaded.tone) || !std::isfinite(loaded.skin) || !std::isfinite(loaded.tone_restore)) return false;
   t = bounded_tuning(loaded);
   return true;
 }
@@ -420,14 +422,15 @@ bool create_feature(ID3D12GraphicsCommandList* list, uint32_t w, uint32_t h, con
 }
 }  // namespace
 
-// MELEE_DLSS5_TONE_RESTORE=<0..100>: how much of the original picture's coarse brightness and
-// colour is put back after the model (0 = the model's own output, the default).
-static uint32_t tone_restore_strength() {
-  static const uint32_t strength = [] {
+// How much of the black level lift is taken back out after the model, 0..256 (0 = the model's own
+// output, the default). From the tuning ("Remove haze"); MELEE_DLSS5_TONE_RESTORE=<0..100> is a
+// test override and wins when set.
+static uint32_t tone_restore_strength(const Tuning& t) {
+  static const int forced = [] {
     char v[16]; const DWORD n = GetEnvironmentVariableA("MELEE_DLSS5_TONE_RESTORE", v, sizeof v);
-    return n && n < sizeof v ? (uint32_t)std::clamp(std::atoi(v), 0, 100) * 256u / 100u : 0u;
+    return n && n < sizeof v ? std::clamp(std::atoi(v), 0, 100) * 256 / 100 : -1;
   }();
-  return strength;
+  return forced >= 0 ? (uint32_t)forced : (uint32_t)std::lround(t.tone_restore * 256.0f);
 }
 
 static Tuning clamped(Tuning t) {
@@ -552,7 +555,7 @@ bool evaluate(const Inputs& in) {
   // Tone restore: the model lifts the black level on every pass (a grey haze). Take the lift out
   // per colour channel, measured as the change in the whole frame's average, and stretch back to
   // full range. The model's own detail and colours stay.
-  if (const uint32_t restore = tone_restore_strength(); ok && !in.warm_only && restore) {
+  if (const uint32_t restore = tone_restore_strength(t); ok && !in.warm_only && restore) {
     const auto f16 = DXGI_FORMAT_R16G16B16A16_FLOAT;
     const auto rw = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     if (!g.restored || g.restored_w != in.w || g.restored_h != in.h) {
