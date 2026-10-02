@@ -252,6 +252,88 @@ size_t redirect_changed_functions(const uint8_t* reference, const uint8_t* m, ui
   return redirected;
 }
 
+// The compiler builds small translated functions into their callers. A caller built that way carries
+// its own copy of the callee as it was translated, so redirecting the callee's entry does not reach
+// it. Where the translated callee is not what RAM holds (it runs from RAM), such a caller has to run
+// from RAM as well. A caller is found by its branch in RAM (an unredirected function's RAM words are
+// the words it was translated from), and it kept a real call if its machine code has a call or jump
+// to the callee's entry. Repeats until nothing changes: a caller sent to RAM may be inlined too.
+// The machine code of a compiled guest function: from its entry to the next compiled entry.
+static size_t host_code_size(Fn fn) {
+  static const std::vector<uintptr_t> entries = [] {
+    std::vector<uintptr_t> out;
+    out.reserve(guest::fn_table_count);
+    for (size_t i = 0; i < guest::fn_table_count; ++i) out.push_back(reinterpret_cast<uintptr_t>(guest::fn_table[i].fn));
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+  }();
+  const uintptr_t lo = reinterpret_cast<uintptr_t>(fn);
+  auto next = std::upper_bound(entries.begin(), entries.end(), lo);
+  return next == entries.end() ? 0 : (size_t)std::min<uintptr_t>(*next - lo, 8u << 20);
+}
+
+// True when the compiled function at `addr` is a host implementation standing in for the guest
+// function (the recompiler emits a short stub that calls it), not a translation of its code: far
+// less machine code than a translation of that many instructions could be.
+bool compiled_as_host_function(uint32_t addr) {
+  uint32_t lo = 0, hi = 0;
+  Fn fn = lookup(addr);
+  if (!fn || !function_bounds(addr, &lo, &hi) || lo != addr || hi - lo < 0x20u) return false;
+  return host_code_size(fn) < (hi - lo) / 2;   // under two bytes per guest instruction
+}
+
+size_t redirect_inlined_callers(const uint8_t* m) {
+  if (g_redirected.empty() || g_dispatch.empty()) return 0;
+  auto has_call = [&](Fn caller, Fn callee) {
+    const uintptr_t lo = reinterpret_cast<uintptr_t>(caller), target = reinterpret_cast<uintptr_t>(callee);
+    const uintptr_t hi = lo + host_code_size(caller);
+    const uint8_t* code = reinterpret_cast<const uint8_t*>(lo);
+    for (uintptr_t i = 0; lo + i + 5 <= hi; ++i) {
+      if (code[i] != 0xE8 && code[i] != 0xE9) continue;
+      int32_t rel; std::memcpy(&rel, code + i + 1, 4);
+      if (lo + i + 5 + (intptr_t)rel == target) return true;
+    }
+    return false;
+  };
+  // (callee entry, caller entry) for every direct branch from one compiled function to another's entry.
+  std::vector<std::pair<uint32_t, uint32_t>> calls;
+  for (size_t i = 0; i + 1 < guest::name_table_count; ++i) {
+    const uint32_t lo = guest::name_table[i].addr, hi = guest::name_table[i + 1].addr;
+    if (lo - RAM_BASE >= RAM_SIZE || hi - RAM_BASE > RAM_SIZE || hi <= lo || hi - lo > 0x40000u || !lookup(lo)) continue;
+    for (uint32_t a = lo; a < hi; a += 4) {
+      const uint8_t* p = m + (a - RAM_BASE);
+      if ((p[0] >> 2) != 18 || (p[3] & 2)) continue;   // b / bl, relative
+      uint32_t li = ((uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]) & 0x03FFFFFCu;
+      if (li & 0x02000000u) li |= 0xFC000000u;
+      const uint32_t t = a + li;
+      if (t >= lo && t < hi) continue;
+      calls.push_back({t, lo});
+    }
+  }
+  std::sort(calls.begin(), calls.end());
+  calls.erase(std::unique(calls.begin(), calls.end()), calls.end());
+  size_t added = 0;
+  std::vector<uint32_t> work = g_redirected;
+  while (!work.empty()) {
+    const uint32_t callee = work.back();
+    work.pop_back();
+    Fn callee_fn = lookup(callee);
+    if (!callee_fn) continue;
+    for (auto at = std::lower_bound(calls.begin(), calls.end(), std::make_pair(callee, 0u)); at != calls.end() && at->first == callee; ++at) {
+      const uint32_t caller = at->second;
+      if (std::binary_search(g_redirected.begin(), g_redirected.end(), caller)) continue;
+      Fn caller_fn = lookup(caller);
+      if (!caller_fn || compiled_as_host_function(caller) || has_call(caller_fn, callee_fn)) continue;
+      if (!redirect_to_interpreter(caller)) continue;
+      ++added;
+      host::log("mods: %08X %s runs from RAM: it has %s built in", caller, host::symbol_name(caller), host::symbol_name(callee));
+      work.push_back(caller);
+    }
+  }
+  return added;
+}
+
 void report_kept_compiled(const uint8_t* boot_reference, const uint8_t* reference, const uint8_t* m, uint32_t base, uint32_t size) {
   static std::vector<uint32_t> reported;   // sorted owners already logged
   if (!guest::name_table_count || std::memcmp(boot_reference, reference, size) == 0) return;   // nothing the served codes explain here

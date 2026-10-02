@@ -425,6 +425,9 @@ std::atomic<int> g_widescreen_request{-1};
 std::atomic<int> g_fod_reflections_request{-1};
 
 void apply_optional_codes() {
+  // Clean mode: the disc's code is the only code in RAM. Writing an optional code's words (or the
+  // retail words it replaces) would overwrite the disc's own changes at those addresses.
+  if (host::mod_clean_mode()) return;
   // Only the switched codes' lines change in RAM: the rest of the table keeps the return branches the
   // applier wrote into its caves (copying the whole table back erased them, and a cave running from
   // RAM on a mod disc then ran into a zero word).
@@ -496,6 +499,20 @@ void prepare_gct_load(const uint8_t* payload) {
               (int)((int64_t)g_gct_address - (int64_t)gecko::gct_base_used));
   }
   g_read_queue.insert(g_read_queue.end(), gecko::slippi_gct, gecko::slippi_gct + gecko::slippi_gct_size);
+  // Slippi's heap setup asks the disc for the size of IfAll.usd by name. A mod disc that renamed
+  // that file (the 20XX Hack Pack carries it as IfAl0.usd, byte for byte the same) has no such file,
+  // and the game stops three frames in. The request is given the name this disc uses.
+  if (host::mod_disc_active() && !host::disc_find_file("IfAll.usd", nullptr, nullptr) &&
+      host::disc_find_file("IfAl0.usd", nullptr, nullptr)) {
+    static const char want[] = "IfAll.usd", have[] = "IfAl0.usd";
+    uint32_t renamed = 0;
+    for (size_t at = 0; at + sizeof want <= g_read_queue.size(); ++at)
+      if (std::memcmp(&g_read_queue[at], want, sizeof want - 1) == 0) {
+        std::memcpy(&g_read_queue[at], have, sizeof have - 1);
+        ++renamed;
+      }
+    if (renamed) host::log("slippi: this disc has IfAl0.usd in place of IfAll.usd; %u requests renamed", renamed);
+  }
   rebuild_optional_codes(g_read_queue.data());
   record_optional_installs(g_gct_address);
   // A mod disc with the table where it was translated: every word the applier is about to install from
@@ -603,6 +620,7 @@ void prepare_file(const uint8_t* payload, bool load) {
 // request from the game (menus, CSS) is a cache hit instead of a multi-megabyte read plus VCDIFF
 // on the simulation thread.
 static void preload_game_files() {
+  if (host::mod_clean_mode()) return;   // the game never asks: Slippi's file loader is not in it
   std::error_code ec;
   std::filesystem::path dir = std::filesystem::path(host::options.sys_dir) / "GameFiles" / "GALE01";
   std::vector<std::string> names;
@@ -618,6 +636,16 @@ static void preload_game_files() {
 // The same bytes the EXI file commands serve, for the Source Port's system-file layer. Built
 // directly (not through the Legacy cache): the native host calls it once per file at boot.
 std::vector<uint8_t> system_game_file(const std::string& name) { return build_game_file(name); }
+
+// Every place Slippi's main list writes when the game's applier installs it, with all optional codes
+// on, plus the optional single writes. Clean mode uses it to find the functions that have Slippi's
+// code compiled in.
+void for_each_served_code_write(const std::function<void(uint32_t addr, uint32_t size)>& visit) {
+  walk_applier(gecko::slippi_gct, 8, (uint32_t)gecko::slippi_gct_size, [&](uint32_t type, uint32_t, uint32_t addr, uint32_t n) {
+    visit(addr, type == 0x06 ? n : 4u);
+  });
+  for (size_t i = 0; i < gecko::optional_writes_count; ++i) visit(gecko::optional_writes[i].addr, gecko::optional_writes[i].size);
+}
 
 void init() { g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; preload_game_files(); online::init(); }
 void request_widescreen(bool on) { g_widescreen_request.store(on ? 1 : 0); }

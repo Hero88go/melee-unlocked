@@ -50349,7 +50349,7 @@ index cb13bc8d7..c2e3b799b 100644
  struct FtPartsVis {
      /* fp+5AC */ u32 model_num;
 diff --git a/src/melee/ft/fighter.c b/src/melee/ft/fighter.c
-index 20d0df28a..19c305c6b 100644
+index 20d0df28a..88cd9ed5a 100644
 --- a/src/melee/ft/fighter.c
 +++ b/src/melee/ft/fighter.c
 @@ -91,8 +91,11 @@
@@ -51225,7 +51225,7 @@ index 20d0df28a..19c305c6b 100644
  
                  fp->input.triggers[0] = (tempf0 > tempf1) ? tempf0 : tempf1;
              }
-@@ -1869,16 +2032,21 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1869,16 +2032,28 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                  fp->input.triggers[0] = 0.0f;
              }
  
@@ -51237,6 +51237,13 @@ index 20d0df28a..19c305c6b 100644
 +#endif
 +            if (ftCo_IsCpuControlled(fp)) {
                  fp->input.held_buttons[0] = ftCo_GetCpuButtons(fp);
++#ifdef MU_NATIVE
++                /* 20XX Hack Pack CPU AI (shim/mu_20xx_ai.c), at its own entry point (8006b008,
++                 * the store above). Off: the line above is all that runs. */
++                if (mu_20xx_ai_enabled()) {
++                    fp->input.held_buttons[0] = mu_20xx_ai(fp, fp->input.held_buttons[0]);
++                }
++#endif
              } else {
                  fp->input.held_buttons[0] =
 -                    HSD_PadGameStatus[fp->x618_player_id].button;
@@ -51250,7 +51257,7 @@ index 20d0df28a..19c305c6b 100644
                      fp->input.held_buttons[0] &= HSD_PAD_A | HSD_PAD_XY;
                  } else {
                      fp->input.held_buttons[0] &= HSD_PAD_A;
-@@ -1890,7 +2058,12 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1890,7 +2065,12 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                  } else if (fp->input.triggers[0]) {
                      fp->input.held_buttons[0] |= HSD_PAD_LR;
                  }
@@ -51263,7 +51270,7 @@ index 20d0df28a..19c305c6b 100644
                      if (fp->input.held_buttons[0] & HSD_PAD_Z) {
                          fp->input.held_buttons[0] |= HSD_PAD_LR | HSD_PAD_A;
                          fp->input.triggers[0] =
-@@ -1899,12 +2072,16 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1899,12 +2079,16 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                  }
              }
  
@@ -51284,7 +51291,7 @@ index 20d0df28a..19c305c6b 100644
              }
  
              if (fp->input.lstick[0].x >=
-@@ -1914,22 +2091,22 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1914,22 +2098,22 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                      p_ftCommonData->horizontal_stick_smash_deadzone)
                  {
                      // Fighter_ClampThreeValues
@@ -51319,7 +51326,7 @@ index 20d0df28a..19c305c6b 100644
                      fp->x2228_b7 = 1;
                  }
              } else if (fp->input.lstick[0].x <=
-@@ -1939,34 +2116,34 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1939,34 +2123,34 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                      -p_ftCommonData->horizontal_stick_smash_deadzone)
                  {
                      // Fighter_ClampThreeValues
@@ -51372,7 +51379,7 @@ index 20d0df28a..19c305c6b 100644
              }
  
              if (fp->input.lstick[0].y >=
-@@ -1976,22 +2153,22 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1976,22 +2160,22 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                      p_ftCommonData->vertical_stick_smash_deadzone)
                  {
                      // Fighter_ClampThreeValues
@@ -51407,7 +51414,7 @@ index 20d0df28a..19c305c6b 100644
                      fp->x2229_b0 = 0;
                  }
              } else if (fp->input.lstick[0].y <=
-@@ -2001,28 +2178,28 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -2001,28 +2185,28 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                      -p_ftCommonData->vertical_stick_smash_deadzone)
                  {
                      // Fighter_ClampThreeValues
@@ -51451,7 +51458,7 @@ index 20d0df28a..19c305c6b 100644
              }
  
              if (lb_8000D148(fp->input.lstick[1].x, fp->input.lstick[1].y,
-@@ -2030,14 +2207,18 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -2030,14 +2214,18 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                              0.0f,
                              p_ftCommonData->horizontal_stick_smash_deadzone))
              {
@@ -51475,7 +51482,7 @@ index 20d0df28a..19c305c6b 100644
              }
  
              if (fp->input.triggers[0] >=
-@@ -2047,83 +2228,83 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -2047,83 +2235,83 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                      p_ftCommonData->shield_press_threshold)
                  {
                      // Fighter_ClampThreeValues
@@ -51584,7 +51591,7 @@ index 20d0df28a..19c305c6b 100644
  
              Fighter_UnkInitLoad_80068914_Inner1(gobj);
          }
-@@ -2135,6 +2316,12 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -2135,6 +2323,12 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
              ftCo_800DF0D0(gobj);
              ftCommon_8008031C(gobj);
              Fighter_UnkIncrementCounters_8006ABEC(gobj);
@@ -51597,7 +51604,7 @@ index 20d0df28a..19c305c6b 100644
  
              if (fp->input_cb) {
                  fp->input_cb(gobj);
-@@ -2156,7 +2343,7 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
+@@ -2156,7 +2350,7 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
      Fighter* fp = GET_FIGHTER(gobj);
      Vec3 windOffset;
  
@@ -51606,7 +51613,7 @@ index 20d0df28a..19c305c6b 100644
          return;
      }
  
-@@ -2199,12 +2386,22 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
+@@ -2199,12 +2393,22 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
                      {
                          p_kb_vel->x = p_kb_vel->y = 0;
                      } else {
@@ -51629,7 +51636,7 @@ index 20d0df28a..19c305c6b 100644
                      }
                  }
  
-@@ -2253,12 +2450,22 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
+@@ -2253,12 +2457,22 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
                      // p_stc_ftcommon->x3e8_shield_kb_frameDecay)/atkShieldKB_len
                      // float atkShieldKBAngle = atan2_80022C30(pAtkShieldKB->y,
                      // pAtkShieldKB->x);
@@ -51652,7 +51659,7 @@ index 20d0df28a..19c305c6b 100644
                  }
                  fp->xF4_ground_attacker_shield_kb_vel = 0;
              } else {
-@@ -2296,6 +2503,19 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
+@@ -2296,6 +2510,19 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
  
          PSVECAdd(&fp->self_vel, &fp->x74_self_accel, &fp->self_vel);
          VEC_CLEAR(fp->x74_self_accel);
@@ -51672,7 +51679,7 @@ index 20d0df28a..19c305c6b 100644
  
          // copy selfVel into a stack storage variable
          selfVel = fp->self_vel; ///< @todo these double_lower_32bit variables
-@@ -2476,9 +2696,9 @@ static inline float Fighter_GetPosY(Fighter* fp)
+@@ -2476,9 +2703,9 @@ static inline float Fighter_GetPosY(Fighter* fp)
  
  void Fighter_procMap(Fighter_GObj* gobj)
  {
@@ -51684,7 +51691,7 @@ index 20d0df28a..19c305c6b 100644
          if (fp->ecb_lock) {
              fp->ecb_lock--;
              if (!fp->ecb_lock) {
-@@ -2488,6 +2708,10 @@ void Fighter_procMap(Fighter_GObj* gobj)
+@@ -2488,6 +2715,10 @@ void Fighter_procMap(Fighter_GObj* gobj)
  
          fp->x2223_b5 = 0;
  
@@ -51695,7 +51702,7 @@ index 20d0df28a..19c305c6b 100644
          HSD_JObjSetTranslate(gobj->hsd_obj, &fp->cur_pos);
  
          if (fp->coll_cb) {
-@@ -2496,7 +2720,7 @@ void Fighter_procMap(Fighter_GObj* gobj)
+@@ -2496,7 +2727,7 @@ void Fighter_procMap(Fighter_GObj* gobj)
          }
  
          if (fp->ground_or_air == GA_Ground) {
@@ -51704,7 +51711,7 @@ index 20d0df28a..19c305c6b 100644
          }
  
          if (DbLevel >= DbLKind_DebugRom) {
-@@ -2516,21 +2740,21 @@ void Fighter_procMap(Fighter_GObj* gobj)
+@@ -2516,21 +2747,21 @@ void Fighter_procMap(Fighter_GObj* gobj)
      }
  }
  
@@ -51730,7 +51737,7 @@ index 20d0df28a..19c305c6b 100644
          if (fp->x2219_b5) {
              if (fp->accessory3_cb) {
                  fp->accessory3_cb(gobj);
-@@ -2550,11 +2774,11 @@ void Fighter_CallAcessoryCallbacks_8006C624(Fighter_GObj* gobj)
+@@ -2550,11 +2781,11 @@ void Fighter_CallAcessoryCallbacks_8006C624(Fighter_GObj* gobj)
      }
  }
  
@@ -51744,7 +51751,7 @@ index 20d0df28a..19c305c6b 100644
          efAsync_QueueFlush(gobj, &fp->x60C);
          Fighter_UnkApplyTransformation_8006C0F0(gobj);
  
-@@ -2575,7 +2799,7 @@ void Fighter_8006C80C(Fighter_GObj* gobj)
+@@ -2575,7 +2806,7 @@ void Fighter_8006C80C(Fighter_GObj* gobj)
          if (fp->ground_or_air == GA_Air &&
              fp->cur_pos.y < Stage_GetCamBoundsBottomOffset())
          {
@@ -51753,7 +51760,7 @@ index 20d0df28a..19c305c6b 100644
                  Vec3 cam_offset;
                  Stage_UnkSetVec3TCam_Offset(&cam_offset);
  
-@@ -2587,17 +2811,17 @@ void Fighter_8006C80C(Fighter_GObj* gobj)
+@@ -2587,17 +2818,17 @@ void Fighter_8006C80C(Fighter_GObj* gobj)
      }
  }
  
@@ -51774,7 +51781,7 @@ index 20d0df28a..19c305c6b 100644
                  }
                  ftColl_80078754(gobj, fp->victim_gobj, 0);
                  fp->grab_cb(gobj);
-@@ -2608,7 +2832,7 @@ void Fighter_UnkProcessGrab_8006CA5C(Fighter_GObj* gobj)
+@@ -2608,7 +2839,7 @@ void Fighter_UnkProcessGrab_8006CA5C(Fighter_GObj* gobj)
  
              if (fp->target_item_gobj) {
                  if (!fp->x2225_b1) {
@@ -51783,7 +51790,7 @@ index 20d0df28a..19c305c6b 100644
                  }
                  it_8027B4A4(gobj, fp->target_item_gobj);
                  if (fp->x2194) {
-@@ -2619,12 +2843,12 @@ void Fighter_UnkProcessGrab_8006CA5C(Fighter_GObj* gobj)
+@@ -2619,12 +2850,12 @@ void Fighter_UnkProcessGrab_8006CA5C(Fighter_GObj* gobj)
      }
  }
  
@@ -51798,7 +51805,7 @@ index 20d0df28a..19c305c6b 100644
          ftColl_800765E0();
          ftColl_80078C70(gobj);
          ft_8007C77C(gobj);
-@@ -2661,9 +2885,9 @@ void Fighter_TakeDamage_8006CC7C(Fighter* fp, float damage_amount)
+@@ -2661,9 +2892,9 @@ void Fighter_TakeDamage_8006CC7C(Fighter* fp, float damage_amount)
          if (fp->dmg.x1830_percent > 999.0f) {
              fp->dmg.x1830_percent = 999.0f;
          }
@@ -51810,7 +51817,7 @@ index 20d0df28a..19c305c6b 100644
                      damage_amount);
          ftCo_800C8C84(fp->gobj);
      }
-@@ -2710,7 +2934,7 @@ void Fighter_8006CDA4(Fighter* fp, s32 arg1)
+@@ -2710,7 +2941,7 @@ void Fighter_8006CDA4(Fighter* fp, s32 arg1)
  
  void Fighter_8006CF5C(Fighter* fp, s32 arg1)
  {
@@ -51819,7 +51826,7 @@ index 20d0df28a..19c305c6b 100644
          fp->dmg.x18F0 += arg1;
          ftCo_800BFFD0(fp, 8, 0);
          ftCommon_8007EBAC(fp, 2, 0);
-@@ -2804,7 +3028,7 @@ void Fighter_8006D10C(Fighter_GObj* gobj)
+@@ -2804,7 +3035,7 @@ void Fighter_8006D10C(Fighter_GObj* gobj)
      }
  }
  
@@ -51828,7 +51835,7 @@ index 20d0df28a..19c305c6b 100644
  {
      Fighter* fp = GET_FIGHTER(gobj);
      bool bool1 = 0;
-@@ -2814,7 +3038,7 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -2814,7 +3045,7 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
      bool bool4 = 0;
      float forceAppliedOnHit;
  
@@ -51837,7 +51844,7 @@ index 20d0df28a..19c305c6b 100644
          if (!fp->x221A_b7) {
              if (fp->shield_health < p_ftCommonData->x260_startShieldHealth) {
                  fp->shield_health += p_ftCommonData->x27C;
-@@ -2826,6 +3050,9 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -2826,6 +3057,9 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
          }
  
          if (fp->x221A_b7) {
@@ -51847,7 +51854,7 @@ index 20d0df28a..19c305c6b 100644
              fp->shield_health -=
                  (p_ftCommonData->x284 *
                   ((fp->x19A0_shieldDamageTaken) *
-@@ -2838,7 +3065,7 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -2838,7 +3072,7 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
                  fp->shield_health = p_ftCommonData->x280_unkShieldHealth;
                  /// this function is called when shield is broken
                  pl_8003E058(fp->x19BC_shieldDamageTaken3, fp->x221F_b6,
@@ -51856,7 +51863,7 @@ index 20d0df28a..19c305c6b 100644
              }
          }
  
-@@ -2892,6 +3119,12 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -2892,6 +3126,12 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
                  bool1 = damage_bool;
  
              } else {
@@ -51869,7 +51876,7 @@ index 20d0df28a..19c305c6b 100644
                  switch (fp->kind) {
                  case Ft_Kind_MasterH:
                      ftMh_MS_341_8014FE58(gobj);
-@@ -2900,9 +3133,18 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -2900,9 +3140,18 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
                      ftCh_Init_80156014(gobj);
                      break;
                  default:
@@ -51888,7 +51895,7 @@ index 20d0df28a..19c305c6b 100644
                  ftCo_8008E9D0(gobj);
              }
          } else if (fp->dmg.x18a0) {
-@@ -3048,38 +3290,43 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -3048,38 +3297,43 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
      }
  }
  
@@ -51942,7 +51949,7 @@ index 20d0df28a..19c305c6b 100644
      }
  }
  
-@@ -3111,7 +3358,7 @@ void Fighter_Unload_8006DABC(void* user_data)
+@@ -3111,7 +3365,7 @@ void Fighter_Unload_8006DABC(void* user_data)
      HSD_JObjUnref(fp->x2184);
      ftData_800859A8(fp);
      HSD_LObjRemoveAll(fp->x588);

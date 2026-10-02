@@ -63,6 +63,8 @@ void install_guest_heap_trace();
 const char* symbol_name(uint32_t addr);
 // Static Recomp: the boot disc is a mod (its changed code runs from RAM; see --mod-base-iso).
 bool mod_disc_active();
+// The mod disc runs without Slippi's codes (see host.cpp): nothing of Slippi's may be written into RAM.
+bool mod_clean_mode();
 // The mod's reference image: the code the compiled guest runs (vanilla, Slippi's boot codes and the
 // words the in-game applier installs from Slippi's served table). A function whose RAM words all match
 // it stays compiled. Sets `n` bytes at `addr` where they fall in the text ranges; false when none do.

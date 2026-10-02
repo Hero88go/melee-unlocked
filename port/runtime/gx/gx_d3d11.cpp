@@ -658,7 +658,22 @@ void D3D11Backend::create_swapchain_targets(bool resize) {
     context_->ClearState(); reset_bound();
     context_->Flush();
     DXGI_SWAP_CHAIN_DESC1 sd{}; swapchain_->GetDesc1(&sd);
-    fail(swapchain_->ResizeBuffers(sd.BufferCount, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM, sd.Flags), "resize");
+    // A resize that runs out of memory (reported on integrated graphics, with the internal
+    // resolution going up at the same moment) used to close the game. It is tried again with one
+    // buffer fewer, and failing that the old size is kept: a picture scaled to the window is
+    // better than a crash report.
+    HRESULT hr = swapchain_->ResizeBuffers(sd.BufferCount, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM, sd.Flags);
+    if (FAILED(hr) && sd.BufferCount > 2) {
+      host::log("d3d11: resize to %ux%u failed (%08X); trying with %u buffers", client_w_, client_h_, (unsigned)hr, sd.BufferCount - 1);
+      context_->Flush();
+      hr = swapchain_->ResizeBuffers(sd.BufferCount - 1, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM, sd.Flags);
+    }
+    if (FAILED(hr)) {
+      host::log("d3d11: resize to %ux%u failed (%08X); keeping %ux%u", client_w_, client_h_, (unsigned)hr, sd.Width, sd.Height);
+      hr = swapchain_->ResizeBuffers(sd.BufferCount, sd.Width, sd.Height, DXGI_FORMAT_R8G8B8A8_UNORM, sd.Flags);
+      if (SUCCEEDED(hr)) { client_w_ = sd.Width; client_h_ = sd.Height; }   // drawn at the old size, stretched by DXGI
+    }
+    fail(hr, "resize");
   }
   ComPtr<ID3D11Texture2D> back;
   fail(swapchain_->GetBuffer(0, IID_PPV_ARGS(&back)), "backbuffer");
