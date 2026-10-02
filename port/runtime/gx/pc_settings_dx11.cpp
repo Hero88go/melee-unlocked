@@ -176,7 +176,10 @@ void render_draw_data(ImGuiD3D11& r, ImDrawData* draw_data) {
     r.context->Unmap(r.constants.Get(), 0);
   }
 
-  D3D11_VIEWPORT vp{0, 0, draw_data->DisplaySize.x, draw_data->DisplaySize.y, 0.0f, 1.0f};
+  // DisplaySize is in layout units; the framebuffer scale turns it into pixels. It is 1 except in
+  // the standalone settings window on a scaled display (settings_set_window_scale).
+  D3D11_VIEWPORT vp{0, 0, draw_data->DisplaySize.x * draw_data->FramebufferScale.x,
+                    draw_data->DisplaySize.y * draw_data->FramebufferScale.y, 0.0f, 1.0f};
   r.context->RSSetViewports(1, &vp);
   UINT stride = sizeof(ImDrawVert), offset = 0;
   ID3D11Buffer* vb = r.vertices.Get();

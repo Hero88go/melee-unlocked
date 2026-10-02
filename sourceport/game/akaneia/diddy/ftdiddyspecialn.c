@@ -37,6 +37,10 @@ static inline void ftDd_SpecialN_SetCallbacks(Fighter* fp)
 /* Gun_ChangeModel: the popgun's three looks are its item states 0 (idle), 1 (danger), 2 (blow). */
 void ftDd_SpecialN_GunChangeModel(Item_GObj* gun, int model)
 {
+    /* The console code assumes the gun was created. A failed create leaves no gun to change. */
+    if (gun == NULL) {
+        return;
+    }
     Item_80268E5C(gun, model, ITEM_ANIM_UPDATE);
 }
 
@@ -47,6 +51,11 @@ void ftDd_SpecialN_GunSpawn(HSD_GObj* gobj)
     Item_GObj* gun = ftDd_SpawnArticle(gobj, ftDd_Article_Popgun, 8, &fp->cur_pos, GA_Ground);
 
     ftDd_MV(fp)->specialn.gun = gun;
+    /* A failed create (item limit, no article data): the move runs without the gun, as a
+     * retail fighter's does when its item is not created. */
+    if (gun == NULL) {
+        return;
+    }
     Item_8026AB54(gun, gobj, ftParts_GetBoneIndex(fp, (Fighter_Part) ftDd_Part_GunHand));
     ftDd_SpecialN_GunChangeModel(gun, 0);
 }
@@ -70,18 +79,27 @@ void ftDd_SpecialN_GunShoot(HSD_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
     ftDd_DatAttrs* da = ftDd_Attrs(fp);
-    HSD_JObj* gun_jobj = GET_JOBJ(ftDd_MV(fp)->specialn.gun);
+    HSD_JObj* gun_jobj;
     HSD_JObj* barrel;
     Vec3 muzzle;
     Item_GObj* nut;
     Item* ip;
     float charge, full, early, speed, angle, recoil;
 
+    /* Without a gun there is no barrel to fire from; without a peanut there is nothing to
+     * launch. The console code checks neither. */
+    if (ftDd_MV(fp)->specialn.gun == NULL) {
+        return;
+    }
+    gun_jobj = GET_JOBJ(ftDd_MV(fp)->specialn.gun);
     HSD_JObjSetMtxDirtySub(gun_jobj);
     lb_80011E24(gun_jobj, &barrel, 7, -1);
     lb_8000B1CC(barrel, NULL, &muzzle);
 
     nut = ftDd_SpawnArticle(gobj, ftDd_Article_Peanut, 8, &muzzle, GA_Air);
+    if (nut == NULL) {
+        return;
+    }
     ip = GET_ITEM(nut);
 
     charge = ftDd_MV(fp)->specialn.charge;

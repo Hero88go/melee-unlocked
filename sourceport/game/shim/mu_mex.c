@@ -118,6 +118,14 @@ typedef struct MexEffectFile {
     u32 runtime;
 } DISC_STRUCT MexEffectFile;
 
+/* The sound bank table: one entry per bank in each list. */
+typedef struct MexSsm {
+    DISC_PTR(MexStr) files;   /* file name, no folder ("wolf.ssm") */
+    DISC_PTR(u8) sizes;       /* {sample data bytes, flag}, two big-endian words per bank */
+    DISC_PTR(u8) rows;        /* {group, load priority, unload priority, pitch threshold} */
+    DISC_PTR(void) runtime;
+} DISC_STRUCT MexSsm;
+
 typedef struct MexEffect {
     DISC_PTR(MexEffectFile) files;
 } DISC_STRUCT MexEffect;
@@ -129,7 +137,7 @@ typedef struct MexData {
     /* [m-ex ftFunction index] -> [internal] console addresses of the default callbacks (retail
      * functions, or 0); a fighter file's ftFunction export overrides its own entries. */
     DISC_PTR(MexWords) fighter_function;
-    DISC_PTR(void) ssm;
+    DISC_PTR(MexSsm) ssm;         /* the sound banks, by bank id */
     DISC_PTR(void) music;
     DISC_PTR(MexEffect) effect;   /* the effect files, by effect file index */
 } DISC_STRUCT MexData;
@@ -482,6 +490,24 @@ int mu_mex_costume_info(int ckind, int which)
     MexFighter* ft;
     MexCostumeInfo* info;
     int kind;
+#ifdef MU_AKANEIA_FIGHTERS
+    if (MU_AK_CKIND(ckind)) {
+        /* An added character: its costumes are the ones mu_mex_ak_costumes found, its team
+         * colors the disc's, by its external id. 0 costumes when it has none. */
+        const int ext = mu_ak_mex_external(ckind);
+        kind = MU_AK_KIND_BASE + (ckind - MU_AK_CKIND_BASE);
+        if (mex == NULL || ext < 0 || ext >= mex_ext_count || !mex_widened[kind]) {
+            return 0;
+        }
+        info = &DP(DP(mex->fighter)->costume_info)[ext];
+        switch (which) {
+        case 0: return mex_costume_count[kind];
+        case 1: return info->red < mex_costume_count[kind] ? info->red : 0;
+        case 2: return info->blue < mex_costume_count[kind] ? info->blue : 0;
+        default: return info->green < mex_costume_count[kind] ? info->green : 0;
+        }
+    }
+#endif
     if (mex == NULL || ckind < 0 || ckind >= mex_ext_count || ckind >= CKind_Playable_Count) {
         return -1;
     }
@@ -637,14 +663,50 @@ const char* mu_mex_fighter_demo(int mex_internal, int which)
     }
 }
 
-/* The sound bank (SSM id) of an internal fighter, -1 when none. */
-int mu_mex_fighter_ssm(int mex_internal)
+/* The sound bank (SSM id) of a fighter, -1 when none. The table is indexed by the EXTERNAL
+ * fighter id, like the retail table it replaces (the m-ex header says internal; the disc and
+ * every m-ex reader say external: Wolf, external 26, has bank 62, wolf.ssm). */
+int mu_mex_fighter_ssm(int ext)
 {
     MexSsmFile* files;
-    if (!mex_internal_ok(mex_internal) || (files = DP(DP(mex->fighter)->ssm_files)) == NULL) {
+    if (!mex_external_ok(ext) || (files = DP(DP(mex->fighter)->ssm_files)) == NULL) {
         return -1;
     }
-    return files[mex_internal].ssm_id;
+    return files[ext].ssm_id;
+}
+
+/* The disc's sound bank table (mexData.ssm): how many banks, and for bank `id` its file name
+ * (no folder), its sample data size and its row {group, load priority, unload priority, pitch
+ * threshold}. Returns 0 when there is no such bank. */
+int mu_mex_ssm_count(void)
+{
+    return mex != NULL ? (int) DP(mex->metadata)->ssm : 0;
+}
+
+int mu_mex_ssm_bank(int id, const char** file, unsigned int* size, signed char row[4])
+{
+    MexSsm* ssm;
+    MexStr* files;
+    const u8* sizes;
+    const u8* rows;
+    const char* name;
+    if (mex == NULL || id < 0 || id >= mu_mex_ssm_count() || (ssm = DP(mex->ssm)) == NULL ||
+        (files = DP(ssm->files)) == NULL || (sizes = DP(ssm->sizes)) == NULL ||
+        (rows = DP(ssm->rows)) == NULL)
+    {
+        return 0;
+    }
+    name = DP(files[id]);
+    if (name == NULL || name[0] == 0) {
+        return 0;
+    }
+    *file = name;
+    *size = mex_be32(sizes + 8 * id);
+    row[0] = (signed char) rows[4 * id];
+    row[1] = (signed char) rows[4 * id + 1];
+    row[2] = (signed char) rows[4 * id + 2];
+    row[3] = (signed char) rows[4 * id + 3];
+    return 1;
 }
 
 /* Wall jump ability of an internal fighter (0 or 1), -1 when the table is missing. */
@@ -666,10 +728,16 @@ const char* mu_mex_fighter_name(int ext)
 const char* mu_mex_fighter_result_file(int ext)
 {
     MexStr* files;
+    const char* file;
     if (!mex_external_ok(ext) || (files = DP(DP(mex->fighter)->result_file)) == NULL) {
         return NULL;
     }
-    return DP(files[ext]);
+    /* Only a file the disc has: the results screen opens it without a check. */
+    file = DP(files[ext]);
+    if (file == NULL || file[0] == 0 || DVDConvertPathToEntrynum(lbFileGetFullName(file)) < 0) {
+        return NULL;
+    }
+    return file;
 }
 
 float mu_mex_fighter_result_scale(int ext)

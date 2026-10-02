@@ -76,7 +76,8 @@ def run_identity(args):
     if args.mod_base_iso:
         paths.add(args.mod_base_iso)
     env_options = {k: v for k, v in os.environ.items()
-                   if k.startswith("MELEE_") or k == "REPLAY_COMPARE_EXTRA"}
+                   if k.startswith("MELEE_") or k in ("REPLAY_COMPARE_EXTRA",
+                                                      "REPLAY_COMPARE_EXTRA_JSON")}
     return dict(cache_version=CACHE_VERSION,
                 files=[file_identity(p) for p in sorted(paths, key=str)],
                 options=dict(engine=args.engine, backend=args.backend, timeout=args.timeout,

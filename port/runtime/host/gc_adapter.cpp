@@ -48,6 +48,9 @@ bool g_logged_restart = false;   // logged once per open when the adapter is sil
 struct Origin { bool set = false; uint8_t sx = 128, sy = 128, cx = 128, cy = 128, tl = 0, tr = 0; } g_origin[4];
 std::atomic<uint8_t> g_rumble[4]{};
 std::atomic<bool> g_rumble_dirty{false};
+std::thread g_writer;
+std::mutex g_rumble_mutex;
+std::condition_variable g_rumble_wake;
 
 // Finds the adapter and records the VID:PID of everything else, so a log from someone whose adapter
 // is not recognised says what they actually had plugged in.
@@ -141,19 +144,36 @@ void reader_thread() {
       }
       if (++failures > 20) { log("gc adapter: read failed (%s), adapter disconnected", libusb_error_name(rc)); break; }
     }
-    if (g_rumble_dirty.exchange(false)) {
-      uint8_t cmd[5] = {0x11, g_rumble[0], g_rumble[1], g_rumble[2], g_rumble[3]};
-      int wrote = 0;
-      libusb_interrupt_transfer(g_dev, g_ep_out, cmd, (int)sizeof cmd, &wrote, 100);
-    }
   }
   g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
   g_running.store(false);
+  g_rumble_wake.notify_all();
+}
+
+// Rumble commands go out on their own thread, as in Dolphin. They used to be sent from the reader
+// between two reads, so every motor change delayed the next read by the length of an output
+// transfer and the adapter saw a gap in its polling.
+void writer_thread() {
+  while (g_running.load()) {
+    {
+      std::unique_lock<std::mutex> lock(g_rumble_mutex);
+      g_rumble_wake.wait_for(lock, std::chrono::milliseconds(100),
+                             [] { return g_rumble_dirty.load() || !g_running.load(); });
+    }
+    if (!g_running.load()) break;
+    if (g_rumble_dirty.exchange(false)) {
+      uint8_t cmd[5] = {0x11, g_rumble[0], g_rumble[1], g_rumble[2], g_rumble[3]};
+      int wrote = 0;
+      libusb_interrupt_transfer(g_dev, g_ep_out, cmd, (int)sizeof cmd, &wrote, 32);
+    }
+  }
 }
 
 void close_adapter() {
   g_running.store(false);
+  g_rumble_wake.notify_all();
   if (g_thread.joinable()) g_thread.join();
+  if (g_writer.joinable()) g_writer.join();
   g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
   if (g_dev) {
     if (g_claimed) libusb_release_interface(g_dev, g_iface);
@@ -240,6 +260,7 @@ bool open_adapter() {
   g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
   g_running.store(true);
   g_thread = std::thread(reader_thread);
+  g_writer = std::thread(writer_thread);
   return true;
 }
 
@@ -327,7 +348,7 @@ void gcadapter_recalibrate(int port) {
 void gcadapter_rumble(int port, bool on) {
   if (port < 0 || port > 3) return;
   uint8_t v = on ? 1 : 0;
-  if (g_rumble[port] != v) { g_rumble[port] = v; g_rumble_dirty = true; }
+  if (g_rumble[port] != v) { g_rumble[port] = v; g_rumble_dirty = true; g_rumble_wake.notify_one(); }
 }
 
 void gcadapter_shutdown() {

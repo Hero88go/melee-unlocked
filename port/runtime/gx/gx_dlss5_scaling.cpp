@@ -47,9 +47,27 @@ float4 area(uint2 p) {
     }
   return sum/((b.x-a.x)*(b.y-a.y));
 }
+float3 coarse(Texture2D<float4> tex, uint2 p) {
+  uint cw, ch; tex.GetDimensions(cw, ch);
+  float2 at=(float2(p)+0.5)*float2(cw,ch)/float2(dw,dh)-0.5;
+  int2 lo=int2(floor(at)), hi=int2(cw-1,ch-1); float2 t=frac(at);
+  float3 a=tex.Load(int3(clamp(lo,int2(0,0),hi),0)).rgb, b=tex.Load(int3(clamp(lo+int2(1,0),int2(0,0),hi),0)).rgb;
+  float3 c=tex.Load(int3(clamp(lo+int2(0,1),int2(0,0),hi),0)).rgb, d=tex.Load(int3(clamp(lo+int2(1,1),int2(0,0),hi),0)).rgb;
+  return lerp(lerp(a,b,t.x),lerp(c,d,t.x),t.y);
+}
 [numthreads(8,8,1)] void main(uint3 id:SV_DispatchThreadID) {
   if (id.x>=dw || id.y>=dh) return;
   uint2 p=id.xy;
+  if (mode==3) {
+    // Tone restore: the model compresses the brightness range (lifted blacks, dimmed highlights,
+    // less colour) on every pass. Put back the original picture's coarse brightness and colour
+    // (original = coarse average of the picture before the model, baseline = the same of its
+    // output) and keep the model's detail. filter carries the strength, 256 = full.
+    float4 out_px=source.Load(int3(p,0));
+    float3 fixed=out_px.rgb+(coarse(original,p)-coarse(baseline,p))*(filter/256.0);
+    target[p]=float4(saturate(fixed),out_px.a);
+    return;
+  }
   if (mode==0) {
     target[p]=filter==0 ? area(p) : resize(source,p,filter==1 ? 0 : 2);
     return;

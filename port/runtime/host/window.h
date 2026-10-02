@@ -16,6 +16,12 @@ bool window_ui_pads(PadState pads[4]);
 using ResizeCallback = std::function<void(int, int)>;
 void* window_create(int w, int h, const wchar_t* title, bool visible = true);
 void window_set_resize_callback(ResizeCallback cb);
+// For a window that scales its own contents with the monitor (the standalone settings window).
+// While a callback is set, a move to a monitor with another DPI calls it with the new DPI and then
+// resizes the window to the rectangle Windows suggests. Without one the message is left alone, so
+// the game window keeps its size in pixels wherever it is dragged.
+using DpiCallback = std::function<void(int)>;
+void window_set_dpi_callback(DpiCallback cb);
 void window_pump();
 void window_set_fullscreen(bool enabled);
 bool window_is_fullscreen();

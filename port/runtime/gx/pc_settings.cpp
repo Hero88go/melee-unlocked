@@ -1907,6 +1907,31 @@ std::atomic<bool> g_close_requested{false};
 bool settings_close_requested() { return g_close_requested.exchange(false, std::memory_order_relaxed); }
 void settings_fill_window(bool on) { g_fill_window.store(on, std::memory_order_relaxed); }
 bool settings_fills_window() { return g_fill_window.load(std::memory_order_relaxed); }
+// One scale for everything ImGui draws in a frame. The panels are full of pixel literals (item
+// widths, column offsets, button sizes, font sizes), so rather than scale each one, the whole frame
+// is laid out in smaller units and ImGui's framebuffer scale draws it larger: settings_frame divides
+// the display size by the scale, the pointer is divided to match, and the fonts are rasterised at
+// the final pixel size, so nothing is stretched.
+// g_window_scale is the standalone settings window's, from its monitor's DPI. The game window works
+// its own out from its height (game_ui_scale). g_frame_ui_scale is whichever the last frame used.
+std::atomic<float> g_window_scale{1.0f};
+std::atomic<float> g_frame_ui_scale{1.0f};
+ImVec2 g_frame_pixel_size(0, 0);   // the window's client area in pixels, before the division
+void settings_set_window_scale(float scale) {
+  g_window_scale.store(std::clamp(scale, 1.0f, 4.0f), std::memory_order_relaxed);
+}
+// The game window: laid out as if it were 1080 pixels high once it is taller than that, so a 1440p
+// window draws the panels 1.33 times larger and a 4K one twice. At 1080 and below the scale is
+// exactly 1 and nothing changes. MELEE_TEST_UI_SCALE=<scale> (tests) replaces the result, so a
+// small hidden run can show the scaled layout.
+static float game_ui_scale(float client_height) {
+  static const float forced = [] {
+    const char* v = std::getenv("MELEE_TEST_UI_SCALE");
+    return v ? std::clamp((float)std::atof(v), 1.0f, 3.0f) : 0.0f;
+  }();
+  if (forced > 0.0f) return forced;
+  return client_height > 1080.0f ? std::min(client_height / 1080.0f, 3.0f) : 1.0f;
+}
 bool settings_textures_dirty() { return g_textures_dirty.exchange(false, std::memory_order_relaxed); }
 
 // The appearance layouts share one settings model and page controls; each supplies its own
@@ -2553,6 +2578,9 @@ void settings_context_create(void* window, bool open_at_startup) {
   const std::string heading_font_path = ui_source_asset_path("gd_melee", "kit/SourceSans3-Black.otf");
   if (std::filesystem::exists(heading_font_path))
     g_settings_heading_font = io.Fonts->AddFontFromFileTTF(heading_font_path.c_str(), 28.0f);
+  // ImGui's outline version of the old font, for scaled frames (see settings_old_font). Added last,
+  // so the fonts above keep their places, and nothing is rasterised from it until it is used.
+  g_settings_old_vector_font = io.Fonts->AddFontDefaultVector();
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
   // Every input change is handled in the frame it arrives. ImGui otherwise takes one change per key
   // per frame, and with two sources feeding the same gamepad keys (our GameCube pad and ImGui's own
@@ -2583,6 +2611,15 @@ void settings_context_create(void* window, bool open_at_startup) {
   }
   ImGui_ImplWin32_Init(window);
   host::window_set_message_callback([](void* w, uint32_t m, uintptr_t a, intptr_t b) {
+    // The pointer arrives in pixels and a scaled frame is laid out in smaller units (see
+    // g_frame_ui_scale), so its position is converted before ImGui reads it. Only this copy changes:
+    // the window procedure still has the original message.
+    if (m == WM_MOUSEMOVE) {
+      if (const float scale = g_frame_ui_scale.load(std::memory_order_relaxed); scale != 1.0f) {
+        const long x = std::lround((short)LOWORD(b) / scale), y = std::lround((short)HIWORD(b) / scale);
+        b = (intptr_t)MAKELPARAM(x, y);
+      }
+    }
     return ImGui_ImplWin32_WndProcHandler((HWND)w, m, a, b) != 0;
   });
 }
@@ -3195,6 +3232,23 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
   }
   ImGui_ImplWin32_NewFrame();
+  // The backend has just set the display size in pixels. On a scaled frame (the standalone settings
+  // window on a scaled display, the game window above 1080 pixels high) lay it out in smaller units
+  // instead and let the framebuffer scale draw it at full size (see g_frame_ui_scale). Rounded up so
+  // a panel that fills the window still covers the last pixel row. At a scale of 1 the display size
+  // is left alone.
+  {
+    auto& io = ImGui::GetIO();
+    g_frame_pixel_size = io.DisplaySize;
+    const float ui_scale = g_fill_window.load(std::memory_order_relaxed) ?
+        g_window_scale.load(std::memory_order_relaxed) : game_ui_scale(io.DisplaySize.y);
+    // The small allowance keeps float rounding from turning an exact 1080 into 1081.
+    if (ui_scale != 1.0f)
+      io.DisplaySize = ImVec2(std::ceil(io.DisplaySize.x / ui_scale - 0.001f),
+                              std::ceil(io.DisplaySize.y / ui_scale - 0.001f));
+    io.DisplayFramebufferScale = ImVec2(ui_scale, ui_scale);
+    g_frame_ui_scale.store(ui_scale, std::memory_order_relaxed);
+  }
   // UI navigation is armed only after the selected pad has returned to neutral. A held A that
   // opened no UI cannot click Start, Cancel, or acknowledge a later disconnect.
   host::PadState pads[4]{};
@@ -3273,7 +3327,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   if (launcher_old_look) {
     launcher_saved_style = ImGui::GetStyle();
     ImGui::GetStyle() = g_input_overlay_style;
-    if (g_settings_old_font) ImGui::PushFont(g_settings_old_font);
+    if (g_settings_old_font) ImGui::PushFont(settings_old_font());
   }
   set_hud_scales(options.stock_hud_scale, options.damage_hud_scale, gecko::option_pal_stock_icons);
   static bool test_tab_set = false;
@@ -4125,7 +4179,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "Menus, character and stage select, matches, training and replays all fill the\n"
                           "screen. Only the opening movie keeps its side bars.\n%s", kExperimentalNote);
     }
-    float win_w = ImGui::GetIO().DisplaySize.x, win_h = ImGui::GetIO().DisplaySize.y;
+    // In pixels: on a scaled frame the display size is in layout units, not the window's size.
+    float win_w = g_frame_pixel_size.x, win_h = g_frame_pixel_size.y;
 
     // Aspect ratio and window size are presentation only: they change nothing the game computes,
     // so they cannot desync and the two players in a match may each pick their own.
@@ -6815,7 +6870,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     ImGuiStyle& live_style = ImGui::GetStyle();
     const ImGuiStyle menu_style = live_style;
     live_style = g_input_overlay_style;
-    if (g_settings_old_font) ImGui::PushFont(g_settings_old_font);
+    if (g_settings_old_font) ImGui::PushFont(settings_old_font());
     for (int i = 0; i < 4; ++i)
       if (mask & (1 << i)) draw_input_overlay(i, row++, lone, state.open, options.input_overlay_hide_border, options.input_overlay_values, options.input_overlay_stick);
     if (g_settings_old_font) ImGui::PopFont();

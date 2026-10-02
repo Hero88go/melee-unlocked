@@ -238,4 +238,8 @@ const MuAkFighter mu_ak_dedede = {
 
     .move_logic = ftDe_MotionStateTable,
     .move_logic_count = FTDE_MS_COUNT,
+
+    /* One table per article, by pointer: article 0 is a model only and has no code. */
+    .article_tables = ftDe_ArticleLogic,
+    .article_count = ftDe_Article_Count,
 };

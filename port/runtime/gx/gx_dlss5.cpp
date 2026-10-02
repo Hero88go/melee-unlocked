@@ -179,6 +179,8 @@ struct State {
   Tuning feature_tuning;
   ComPtr<ID3D12Resource> out[2], depth_copy, reduced_input, resolved;
   uint32_t resolved_w = 0, resolved_h = 0;
+  ComPtr<ID3D12Resource> coarse_in, coarse_out, restored;   // tone restore (see tone_restore_strength)
+  uint32_t restored_w = 0, restored_h = 0;
   Scaling scaling;
   ComPtr<ID3D12Fence> fence;
   uint64_t retire_after = 0;
@@ -418,6 +420,16 @@ bool create_feature(ID3D12GraphicsCommandList* list, uint32_t w, uint32_t h, con
 }
 }  // namespace
 
+// MELEE_DLSS5_TONE_RESTORE=<0..100>: how much of the original picture's coarse brightness and
+// colour is put back after the model (0 = the model's own output, the default).
+static uint32_t tone_restore_strength() {
+  static const uint32_t strength = [] {
+    char v[16]; const DWORD n = GetEnvironmentVariableA("MELEE_DLSS5_TONE_RESTORE", v, sizeof v);
+    return n && n < sizeof v ? (uint32_t)std::clamp(std::atoi(v), 0, 100) * 256u / 100u : 0u;
+  }();
+  return strength;
+}
+
 static Tuning clamped(Tuning t) {
   return bounded_tuning(t);
 }
@@ -537,6 +549,32 @@ bool evaluate(const Inputs& in) {
     result = g.resolved.Get();
   }
   if (scaled) barrier(list, g.reduced_input.Get(), npsr, uav);
+  // Tone restore: the model squeezes the brightness range on every pass. Give the result the
+  // coarse brightness and colour of the picture it was given; its detail stays.
+  if (const uint32_t restore = tone_restore_strength(); ok && !in.warm_only && restore) {
+    const auto f16 = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    const auto rw = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    if (!g.restored || g.restored_w != in.w || g.restored_h != in.h) {
+      retire_resource(g.restored);
+      ok = make_texture(g.restored, in.w, in.h, DXGI_FORMAT_R8G8B8A8_UNORM, rw, uav, "tone restore");
+      g.restored_w = in.w; g.restored_h = in.h;
+    }
+    if (ok && !g.coarse_in) ok = make_texture(g.coarse_in, 32, 18, f16, rw, uav, "coarse input");
+    if (ok && !g.coarse_out) ok = make_texture(g.coarse_out, 32, 18, f16, rw, uav, "coarse output");
+    if (ok) {   // otherwise make_texture has recorded the failure
+    barrier(list, result, uav, npsr);
+    ok = g.scaling.dispatch(g.device, list, in.fence, in.signal_value, in.color, in.color, in.color, g.coarse_in.Get(), 0, 0) &&
+         g.scaling.dispatch(g.device, list, in.fence, in.signal_value, result, result, result, g.coarse_out.Get(), 0, 0);
+    barrier(list, g.coarse_in.Get(), uav, npsr); barrier(list, g.coarse_out.Get(), uav, npsr);
+    ok = ok && g.scaling.dispatch(g.device, list, in.fence, in.signal_value, result, g.coarse_out.Get(), g.coarse_in.Get(),
+                                  g.restored.Get(), 3, restore);
+    barrier(list, g.coarse_in.Get(), npsr, uav); barrier(list, g.coarse_out.Get(), npsr, uav);
+    barrier(list, result, npsr, uav);
+    if (!ok) fail(g.scaling.error());
+    result = g.restored.Get();
+    }
+    if (ok && g.evaluations == 0) host::log("dlss5: tone restore %u/256", restore);
+  }
   // No partial result: all passes and the resolve must succeed before touching the source.
   if (ok && !in.warm_only) {
     barrier(list, result, uav, D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -578,6 +616,7 @@ void shutdown() {
   for (auto& feature : g.feature) feature = nullptr;
   for (auto& out : g.out) out.Reset();
   g.depth_copy.Reset(); g.reduced_input.Reset(); g.resolved.Reset(); g.scaling.shutdown();
+  g.coarse_in.Reset(); g.coarse_out.Reset(); g.restored.Reset();
   if (g.caps) { if (g.core_destroy) g.core_destroy(g.caps); g.caps = nullptr; }
   g.fence.Reset();
   g.ready = false; g.failed = false; g.tried = false; g.tuning_failed = false;

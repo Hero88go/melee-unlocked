@@ -179,6 +179,12 @@ static Fighter* effect_fighter(HSD_GObj* gobj)
     return fp != NULL && MU_AK_KIND(fp->kind) ? fp : NULL;
 }
 
+/* The same lookup for the sound code (mu_ak_sound.c). */
+Fighter* mu_ak_effect_owner(HSD_GObj* gobj)
+{
+    return effect_fighter(gobj);
+}
+
 /* Resolves a fighter-relative effect id. Returns 1 with the game's own id, the kind (0 model,
  * 1 particle) and the placement type; 0 (after a log line) when the fighter has no such effect. */
 static int effect_resolve(Fighter* fp, int gfx_id, int* game_id, int* is_ptcl, int* type)
