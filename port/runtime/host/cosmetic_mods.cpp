@@ -736,11 +736,12 @@ struct FighterFamily {
 };
 // These are the existing NTSC 1.02 costume files only. Defaults use an un-suffixed 5K root even
 // though their disc filename ends in Nr. Bosses, wireframes, Sandbag, extra CSS slots, and base
-// fighter data archives are intentionally absent.
+// fighter data archives are intentionally absent. Colors are in the game's costume order (the
+// order the character select screen cycles through), which is not the order of the file names.
 constexpr FighterFamily families[] = {
-    {"Ca", "Captain", "Captain Falcon", "Nr Re Wh Gr Bu Gy"},
-    {"Cl", "Clink", "Young Link", "Nr Re Wh Bk Bu"},
-    {"Dk", "Donkey", "Donkey Kong", "Nr Re Bu Gr Bk"},
+    {"Ca", "Captain", "Captain Falcon", "Nr Gy Re Wh Gr Bu"},
+    {"Cl", "Clink", "Young Link", "Nr Re Bu Wh Bk"},
+    {"Dk", "Donkey", "Donkey Kong", "Nr Bk Re Bu Gr"},
     {"Dr", "Drmario", "Dr. Mario", "Nr Re Bu Gr Bk"},
     {"Fc", "Falco", "Falco", "Nr Re Bu Gr"},
     {"Fe", "Emblem", "Roy", "Nr Re Bu Gr Ye"},
@@ -759,7 +760,7 @@ constexpr FighterFamily families[] = {
     {"Pc", "Pichu", "Pichu", "Nr Re Bu Gr"},
     {"Pe", "Peach", "Peach", "Nr Ye Wh Bu Gr"},
     {"Pk", "Pikachu", "Pikachu", "Nr Re Bu Gr"},
-    {"Pp", "Popo", "Ice Climbers (Popo)", "Nr Re Gr Or"},
+    {"Pp", "Popo", "Ice Climbers (Popo)", "Nr Gr Or Re"},
     {"Pr", "Purin", "Jigglypuff", "Nr Re Bu Gr Ye"},
     {"Sk", "Seak", "Sheik", "Nr Re Bu Gr Wh"},
     {"Ss", "Samus", "Samus", "Nr Pi Bk Gr La"},

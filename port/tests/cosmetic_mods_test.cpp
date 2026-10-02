@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
 #include "cosmetic_mods.h"
+#include "../runtime/gx/companion_texture_match.h"
 
 #include <windows.h>
 
@@ -840,6 +841,71 @@ int main(int argc, char** argv) {
     check(!portrait_slot_from_name("Fox.png", &slot, &kind), "a fighter with no color names no costume");
     check(!portrait_slot_from_name("Mario and Luigi red.png", &slot, &kind), "two fighters name no costume");
     check(!portrait_slot_from_name("readme.png", &slot, &kind), "an unrelated name names no costume");
+  }
+  // Which retail texture a costume's picture replaces. The hashes are the retail NTSC 1.02
+  // textures at frame column + 30 * costume of the portrait and stock icon animations.
+  {
+    namespace nc = gx::texpack::native_companions;
+    auto one = [](const char* kind, const char* target) {
+      auto found = nc::identities(kind, target);
+      return found.size() == 1 ? found[0] : nc::Identity{};
+    };
+    // The portrait table is packed and its last 13 entries are not in column order.
+    check(one("csp", "PlCaBu.dat").tex == 0xcbdcafb99d9a68e1ull, "Captain Falcon's blue portrait is its own texture");
+    check(one("csp", "PlPrYe.dat").tex == 0x5e1e74f0a5666906ull, "Jigglypuff's fifth portrait is its own texture");
+    check(one("csp", "PlCaGr.dat").tex == 0xcafa49cf41691873ull && one("csp", "PlCaNr.dat").tex == 0xd46c9af694a6fe76ull,
+          "portraits the table has in column order keep their textures");
+    check(one("csp", "PlMsWh.dat").tex == 0x688145fe5c90aabfull && one("csp", "PlKbWh.dat").tex == 0xdf8057c0d6820cbaull &&
+              one("csp", "PlYsAq.dat").tex == 0x5bb2be668712dfc1ull,
+          "the other portraits past the fourth costume are their own textures");
+    // The stock table has 26 columns a costume (Sheik is the last), not the portraits' 25.
+    check(one("stock", "PlCaNr.dat").tex == 0xd42ea081a61c4adcull && one("stock", "PlCaGy.dat").tex == 0x1f32ae66d4886dcbull &&
+              one("stock", "PlFxGr.dat").tex == 0xf9e2c8c1f7328ccdull && one("stock", "PlCaBu.dat").tex == 0xf655b41f0359df60ull,
+          "a stock icon of a later costume is its own texture");
+    check(!one("stock", "PlCaGy.dat").needs_tlut, "a stock icon with an image of its own needs no palette to tell it apart");
+    const auto young_red = one("stock", "PlClRe.dat"), young_blue = one("stock", "PlClBu.dat");
+    check(young_red.tex == young_blue.tex && young_red.needs_tlut && young_blue.needs_tlut &&
+              young_red.tlut == 0xc64209e07041e51dull && young_blue.tlut == 0x332d5996bd41fe9cull,
+          "two costumes that share a stock image are told apart by palette");
+    check(one("stock", "PlSkNr.dat").tex == 0x6973293830927135ull && one("stock", "PlSkNr.dat").tex != one("stock", "PlZdNr.dat").tex &&
+              one("csp", "PlSkNr.dat").tex == one("csp", "PlZdNr.dat").tex && one("csp", "PlZdNr.dat").tex != 0,
+          "Sheik has her own stock icon and Zelda's portrait");
+    check(one("stock", "PlNnYe.dat").tex == one("stock", "PlPpGr.dat").tex && one("csp", "PlNnWh.dat").tex == one("csp", "PlPpRe.dat").tex,
+          "Nana's pictures are the Ice Climbers' at the same costume");
+    check(nc::identities("csp", "PlGwNr.dat").size() == 4 && nc::identities("stock", "PlGwNr.dat").size() == 4,
+          "Mr. Game & Watch's one costume file covers his four selector cells");
+    check(nc::identities("csp", "PlFxBu.dat").empty() && nc::identities("preview", "PlFxGr.dat").empty(),
+          "an unknown costume or kind has no texture");
+    bool distinct = true;
+    for (const auto& a : nc::kSlots)
+      for (const auto& b : nc::kSlots) {
+        if (&a == &b) continue;
+        if (a.csp_hash && a.csp_hash == b.csp_hash) distinct = false;
+        if (a.stock_hash == b.stock_hash && a.stock_tlut_hash == b.stock_tlut_hash) distinct = false;
+      }
+    check(distinct && std::size(nc::kSlots) == 123, "every costume has a portrait and a stock identity of its own");
+
+    auto name = nc::parse_texture_name("tex1_136x188_cbdcafb99d9a68e1_0123456789abcdef_9");
+    check(name.ok && !name.stock && name.tex == 0xcbdcafb99d9a68e1ull && name.has_tlut && name.tlut == 0x0123456789abcdefull,
+          "a portrait's texture name gives its image and palette hashes");
+    name = nc::parse_texture_name("tex1_24x24_52300b4c906938c3_332d5996bd41fe9c_8");
+    check(name.ok && name.stock && name.tex == young_blue.tex && name.has_tlut && name.tlut == young_blue.tlut,
+          "a stock icon's texture name gives its image and palette hashes");
+    name = nc::parse_texture_name("tex1_24x24_m_1f32ae66d4886dcb_2817b39e889e22ef_8");
+    check(name.ok && name.stock && name.tex == 0x1f32ae66d4886dcbull && name.has_tlut,
+          "the mipmapped spelling of a texture name is read too");
+    name = nc::parse_texture_name("tex1_24x24_1f32ae66d4886dcb_8");
+    check(name.ok && name.stock && !name.has_tlut, "a name with no palette hash still gives the image hash");
+    check(!nc::parse_texture_name("tex1_32x32_1f32ae66d4886dcb_8").ok && !nc::parse_texture_name("tex1_24x24_xyz_8").ok,
+          "other textures are not portraits or stock icons");
+  }
+  {
+    // The picker lists a fighter's costumes in the order the game cycles through them.
+    const auto slots = host::cosmetics::costume_slots();
+    const char* falcon[] = {"PlCaNr.dat", "PlCaGy.dat", "PlCaRe.dat", "PlCaWh.dat", "PlCaGr.dat", "PlCaBu.dat"};
+    bool in_order = slots.size() >= 6;
+    for (size_t i = 0; in_order && i < 6; ++i) in_order = slots[i].target_path == falcon[i];
+    check(in_order, "Captain Falcon's costumes are listed in the game's order");
   }
   fs::path picture_folder = folder / L"pictures";
   fs::create_directories(picture_folder, ec);
