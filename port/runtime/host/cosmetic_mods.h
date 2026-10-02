@@ -30,6 +30,16 @@ struct AssetInfo {
   bool available = true;
   std::string availability_message;
   bool selected = false;
+  // What happens to this choice in online play, for the launch that is running. Filled only for a
+  // choice that was applied at startup; online_message is empty otherwise. The message is short
+  // enough for one status line: "61 joints match", "rest pose differs", "textures only".
+  bool online_allowed = true;
+  std::string online_message;
+  // "import": a file the player added, copied into the catalog. "disc": a costume inside a mod disc
+  // or files pack, read from there (disc_path) with no copy; source_name is the pack's name.
+  std::string source = "import";
+  std::string source_name;
+  std::string disc_path;
 };
 
 struct ImportResult {
@@ -67,6 +77,15 @@ ImportResult import_file(const std::string& path);
 // selected skin brought with it. `slot` is the costume's disc file name ("PlFxGr.dat"); `kind` is
 // "csp" for the portrait or "stock" for the stock icon.
 ImportResult import_portrait(const std::string& png_path, const std::string& slot, const std::string& kind);
+// Lists the costumes of a mod disc (.iso) or a files pack (a folder) as skins, without copying them.
+// Each costume file that differs from the open game disc's becomes a choice named
+// "<fighter> <color>: from <pack_name>" in that costume's list; nothing is selected. Needs the game
+// disc open (host::disc_open) to compare against. Scanning the same unchanged disc again does
+// nothing; a changed disc updates its entries and drops the ones that no longer differ.
+ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pack_name,
+                             std::string* error = nullptr);
+// How many skins the catalog lists from that disc or folder.
+uint32_t disc_skin_count(const std::string& iso_path);
 // Every costume slot of the retail game, in the game's own order, for a slot picker.
 struct CostumeSlot { std::string target_path, character, costume; };
 std::vector<CostumeSlot> costume_slots();
@@ -118,6 +137,17 @@ void set_online_probe(OnlineProbe probe);
 bool online_active();
 // False when this disc file has an override that must not be used online (not proven visual-only).
 bool online_allowed(uint32_t vanilla_file_start);
+// How many applied costumes show the standard costume online (each costume counts once, also when
+// two disc files serve it). *stages gets the same count for stage choices.
+uint32_t swapped_online_count(uint32_t* stages = nullptr);
+
+// Online rule for costumes: the _Share_joint skeleton equals the standard costume's (same joints,
+// same hierarchy, same rest pose; see the .cpp). On success *detail says how many joints matched;
+// on failure it says what differs.
+bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
+                              std::string* detail);
+// The same verdict in a few words for a status line: "rest pose differs", "61 joints match".
+std::string online_reason_short(const std::string& detail);
 
 // Native Windows picker used by the ImGui Mods tab. An empty string means the player cancelled.
 std::string choose_import_file();
@@ -136,7 +166,7 @@ struct DatInspection {
 DatInspection inspect_dat(const std::vector<uint8_t>& bytes);
 bool visual_dat_only(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
                      std::string* error);
-// Online rule for costumes: the _Share_joint skeleton equals the vanilla slot's (see the .cpp).
+// The public costume_skeleton_matches, kept under its old name for the tests.
 bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
                               std::string* error);
 bool materialize_effect_dat(const std::string& target_path,

@@ -73,6 +73,19 @@ their executable patches.
 The event menu, exercise entry and pause-menu crash reproduction have been tested. That is
 not exhaustive validation of every exercise condition, score-saving path or TE switch.
 
+## Skins in a loaded mod, online
+
+Unranked, Teams and Party play the standard game, so the files of a loaded mod are switched to
+the standard ones there. Costume files are the exception: a costume in the mod that keeps the
+standard skeleton only changes looks, so it stays on in every mode. A costume that changes the
+skeleton shows the standard costume in those modes.
+
+Settings > Mods lists every costume file of the loaded mod under "Skins in this mod", each with
+"stays on" or "standard costume" and the reason. The log has the same lines (`mods: skin
+PlFxGr.dat stays on online (61 joints match)`). Direct with "Use this mod in Direct" still uses
+the whole mod. The mod's costumes are also offered in the skin list of the normal game; see
+`cosmetic-imports.md`.
+
 ## Audio controls
 
 Graphics preparation now finishes before simulation and audio start: startup evaluates the

@@ -144,6 +144,12 @@ bool runs_from_ram(uint32_t addr);   // addr lies in a function redirected to it
 // a mod session: their compiled caves return into compiled game code, not into RAM code).
 void add_ram_code_range(uint32_t lo, uint32_t hi);
 size_t redirect_changed_functions(const uint8_t* reference, const uint8_t* m, uint32_t base, uint32_t size);
+// Sends to RAM every compiled function that has a redirected function built into it (inlined by the
+// compiler) instead of calling it. Returns how many were added.
+size_t redirect_inlined_callers(const uint8_t* m);
+// The compiled function starting at `addr` is a host implementation, not a translation of guest code.
+bool compiled_as_host_function(uint32_t addr);
+bool function_bounds(uint32_t addr, uint32_t* lo, uint32_t* hi);   // the guest function containing addr
 // Logs, once per function, each function in [base, base+size) that stays compiled only because the
 // reference now includes Slippi's served codes: RAM differs from `boot_reference` there but matches
 // `reference` everywhere in the function.

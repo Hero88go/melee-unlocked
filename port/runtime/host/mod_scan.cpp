@@ -401,6 +401,9 @@ const KnownDisc kHackPackMd5[] = {
 // disc (the same fingerprint as source_host.cpp's iso_layer_fingerprint and kKnownPacks).
 const KnownDisc kMexSha256[] = {
   {"b1b60a188421c8d0e564fa276a4762fe67e8de271ac2e131c20f70ee715af6cd", "Akaneia", "1.0.1", "akaneia"},
+  // ACE is built on Akaneia 1.0.0 and keeps that title in its disc header, so by the header alone
+  // it was listed as "Akaneia 1.0.0". It is named by its own bytes.
+  {"0d7ba36bef3505cdf6c0209d9ae34977e23cf6cae4d24366e8d405810f798993", "ACE", "2.0.0", "ace"},
 };
 const KnownDisc kMexFingerprint[] = {
   {"9a1a48b999a2f8f4deaee2554e5f177cb265666b95676a508406db80b181246b", "Akaneia", "1.0.1", "akaneia"},
@@ -875,7 +878,7 @@ Detected identify(const fs::path& file, const ScanOptions& options, std::string*
 // The scan cache: Mods/.cache/scan.txt, one line per file keyed by path, size and time (and, for
 // discs, the retail disc they were compared with), so a boot never reads an unchanged disc again.
 namespace {
-constexpr const char kCacheHeader[] = "mu-scan 6";
+constexpr const char kCacheHeader[] = "mu-scan 7";
 struct CacheEntry { std::string key, base; Detected d; };
 
 std::string cache_key(const fs::path& file) {

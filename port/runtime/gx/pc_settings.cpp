@@ -1555,11 +1555,56 @@ static void draw_discord_invite_overlay() {
   ImGui::End();
 }
 
+// Online, a skin that is not proven to change looks only is shown as the standard costume. That
+// used to happen with no sign to the player. Once per visit to the online flow, when at least one
+// selected skin is swapped, say so for 15 seconds and point at the list. With no skin selected and
+// no mod loaded both counts are zero and nothing is drawn.
+static void draw_skin_online_notice() {
+  static bool shown_this_visit = false;
+  static double show_until = 0.0;
+  // The moments the swap applies to a player: the online menus and character select, a search, a
+  // match. Asked of the Slippi layer, which is safe on this thread; the game itself is not called
+  // here. Replays also show standard costumes, but they are not an online mode and get no notice.
+  const bool online = slippi::online::in_online_menus() || slippi::online::is_online_match();
+  if (!online) { shown_this_visit = false; show_until = 0.0; return; }
+  uint32_t stages = 0;
+  uint32_t skins = host::cosmetics::swapped_online_count(&stages);
+  const auto& mod_status = source_port::mods::status();
+  if (mod_status.retail_view)
+    for (const auto& skin : mod_status.pack_skins) skins += skin.served ? 0u : 1u;
+  if (!shown_this_visit && skins + stages > 0) {
+    shown_this_visit = true;
+    show_until = ImGui::GetTime() + 15.0;
+  }
+  if (ImGui::GetTime() >= show_until || skins + stages == 0) return;
+  const OverlayBounds bounds = overlay_bounds();
+  // Below the L-cancel and Discord notices, which use the top of the same column.
+  ImGui::SetNextWindowPos(ImVec2((bounds.left + bounds.right) * 0.5f, bounds.top + 64), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+  ImGui::SetNextWindowBgAlpha(0.85f);
+  ImGui::Begin("SkinOnlineNotice", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                                                ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+                                                ImGuiWindowFlags_NoFocusOnAppearing);
+  clamp_overlay_window();
+  const ImVec4 yellow(1, .75f, .25f, 1);
+  if (skins == 1)
+    ImGui::TextColored(yellow, "1 skin is off for this online mode and shows as the standard costume.");
+  else if (skins > 1)
+    ImGui::TextColored(yellow, "%u skins are off for this online mode and show as the standard costume.", skins);
+  if (stages == 1)
+    ImGui::TextColored(yellow, "1 stage mod is off for this online mode and shows as the standard stage.");
+  else if (stages > 1)
+    ImGui::TextColored(yellow, "%u stage mods are off for this online mode and show as the standard stage.", stages);
+  ImGui::TextUnformatted("Settings > Mods lists them.");
+  ImGui::End();
+}
+
 // The volume the settings file holds. state.volume is only assigned while the Audio tab is being
 // drawn, and ImGui runs a tab's body only when it is the selected one, so saving from any other
 // tab used to write whatever that field happened to start as, which is zero. Players saw the
 // volume set itself to 0 on a later launch.
-int g_volume = 100;
+// 70 is what a game without a saved volume plays at (main.cpp). At 100, saving from the launcher's
+// Settings window before any volume was stored wrote 100, and the next game start was loud.
+int g_volume = 70;
 
 #ifdef GX_DLSS5
 // A saved DLSS 5 strength: a NaN or infinite value keeps the previous one instead of reaching the model.
@@ -4728,7 +4773,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetNextItemWidth(-1.0f);
       if (ImGui::BeginCombo(label, preview.c_str())) {
         for (const auto& texture : observed) {
-          const std::string item = texture.name + " — " + std::to_string(texture.width) + "x" +
+          const std::string item = texture.name + ": " + std::to_string(texture.width) + "x" +
               std::to_string(texture.height) + ", " +
               std::to_string(texture.distinct_frames) + " frames / " +
               std::to_string(texture.observations) + " observations";
@@ -4849,12 +4894,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (state.active_tab == 1) {
     ImGui::PushItemWidth(330.0f);
     int music = slippi::jukebox::user_volume();
-    if (settings_slider("Music", &music, 0, 100, "%d%%")) slippi::jukebox::set_user_volume(music);
+    if (settings_slider("Music", &music, 0, 100, "%d%%")) { slippi::jukebox::set_user_volume(music); changed = true; }
     // With a game running the device holds the live value. Without one, which is the settings
     // window the launcher opens, the saved value is all there is: reading back from an audio module
     // that was never opened returned zero every frame and dragged the slider back to it.
     if (host::audio_running()) g_volume = host::audio_volume();
-    if (settings_slider("Volume", &g_volume, 0, 100, "%d%%")) host::audio_set_volume(g_volume);
+    // Moving only this slider did not mark the settings as changed, so the new volume was not saved
+    // and the next start came back at the old one.
+    if (settings_slider("Volume", &g_volume, 0, 100, "%d%%")) { host::audio_set_volume(g_volume); changed = true; }
     state.volume = g_volume;
     const char* audio_modes[] = {"Auto: Windows shared (recommended)", "Low latency: Windows shared", "WASAPI exclusive", "ASIO\xC2\xAE (audio interface)"};
     static const int mode_at_start = options.audio_mode;
@@ -5467,8 +5514,29 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             }
             for (const auto& line : mod_status.notes) ImGui::TextWrapped("%s", line.c_str());
             ImGui::Spacing();
-            ImGui::TextWrapped("Online: Unranked, Teams and Party always play the standard game. Direct can use "
-                               "this mod, and then only against a player on the same build.");
+            if (mod_status.pack_skins.empty()) {
+              ImGui::TextWrapped("Online: Unranked, Teams and Party always play the standard game. Direct can use "
+                                 "this mod, and then only against a player on the same build.");
+            } else {
+              // The mod carries costume files: say which of them stay on online and why the rest do not.
+              ImGui::TextWrapped("Online: Unranked, Teams and Party play the standard game. Skins in this mod that "
+                                 "keep the standard skeleton stay on; the rest show the standard costume. "
+                                 "Direct can use the whole mod, and then only against a player on the same build.");
+              size_t skins_on = 0;
+              for (const auto& skin : mod_status.pack_skins) skins_on += skin.served ? 1 : 0;
+              char skins_header[96];
+              std::snprintf(skins_header, sizeof skins_header, "Skins in this mod (%zu on, %zu swapped)###pack_skins",
+                            skins_on, mod_status.pack_skins.size() - skins_on);
+              if (ImGui::CollapsingHeader(skins_header)) {
+                for (const auto& skin : mod_status.pack_skins) {
+                  if (skin.served)
+                    ImGui::TextColored(ImVec4(.37f, .84f, .53f, 1), "%s: stays on (%s)", skin.path.c_str(), skin.reason.c_str());
+                  else
+                    ImGui::TextColored(ImVec4(1, .75f, .25f, 1), "%s: standard costume (%s)", skin.path.c_str(), skin.reason.c_str());
+                  if (mod_status.layers.size() > 1 && ImGui::IsItemHovered()) ImGui::SetTooltip("From %s", skin.layer.c_str());
+                }
+              }
+            }
             bool in_direct = options.mods_in_direct;
             if (settings_toggle("Use this mod in Direct", &in_direct)) {
               options.mods_in_direct = in_direct;
@@ -5476,11 +5544,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               changed = true;
             }
             if (in_direct) {
-              bool dolphin = RenderOptions::live_mods_dolphin_ok();
-              if (settings_toggle("Opponent uses it on Slippi Dolphin", &dolphin)) RenderOptions::live_mods_dolphin_ok() = dolphin;
-              if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Slippi Dolphin cannot confirm which build it runs. Tick this only for an opponent\n"
-                                  "you know has the same mod. Until you close the game.");
+              // There was a switch here for an opponent on Slippi Dolphin. Players took it for
+              // something the opponent had to set, and it reset every session. The game now sees
+              // that the opponent sent no build and starts the match itself (slippi_online.cpp).
+              settings_hint("An opponent on Slippi Dolphin with the same mod works too: nothing to set on either side.");
             }
           }
           ImGui::Spacing();
@@ -5739,8 +5806,19 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 if (variants.size() > 1)
                   ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
                                      "%zu variants; the saved selection wins.", variants.size());
+                // What online play does with the selected skin, said here instead of only in the log.
+                // The check runs when the game starts, so a skin picked just now has no verdict yet.
+                if (current != 0) {
+                  const CosmeticAsset* chosen = variants[(size_t)current - 1];
+                  if (chosen->online_message.empty())
+                    ImGui::TextDisabled("Online: checked when the game starts");
+                  else if (chosen->online_allowed)
+                    ImGui::TextColored(ImVec4(.37f, .84f, .53f, 1), "Online: stays on (%s)", chosen->online_message.c_str());
+                  else
+                    ImGui::TextColored(ImVec4(1, .75f, .25f, 1), "Online: standard costume (%s)", chosen->online_message.c_str());
+                }
                 const CosmeticAsset* details = current > 0 ? variants[(size_t)current - 1] : variants.front();
-                std::string details_label = "Details — " + details->name;
+                std::string details_label = "Details: " + details->name;
                 if (ImGui::TreeNode(details_label.c_str())) {
                   draw_cosmetic_preview(*details);
                   ImGui::Text("Target: %s", details->target_path.c_str());
@@ -5806,6 +5884,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               else { mod_message = host::cosmetics::last_message(); changed = true; }
             }
             const CosmeticAsset* details = current > 0 ? variants[(size_t)current - 1] : variants.front();
+            // Stages have an online rule too (textures only). Pictures and effects have none, and
+            // then there is no verdict and no line.
+            if (current != 0 && !details->online_message.empty()) {
+              if (details->online_allowed)
+                ImGui::TextColored(ImVec4(.37f, .84f, .53f, 1), "Online: stays on (%s)", details->online_message.c_str());
+              else
+                ImGui::TextColored(ImVec4(1, .75f, .25f, 1), "Online: standard %s (%s)",
+                                   details->kind == "stage_visual" ? "stage" : "file", details->online_message.c_str());
+            }
             draw_cosmetic_preview(*details);
             if (!details->availability_message.empty())
               ImGui::TextWrapped("%s", details->availability_message.c_str());
@@ -5979,6 +6066,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Frames of your own input held back before the game uses it, as in Slippi Dolphin.\n"
                           "Higher means fewer rollbacks on a bad connection and more input lag.\n"
                           "2 is Slippi's default. Takes effect from the next online match.");
+      // A player ran at 3 without knowing and reported the game as feeling slow. The cost is
+      // shown whenever the value is above the default; the tooltip alone is not seen on a controller.
+      if (delay > 2)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                           "%d frames: about %d ms more input delay than the default of 2.", delay, (delay - 2) * 17);
       // Slippi's quick chat on the online character select screen, the same three choices as
       // Slippi Dolphin. Off also stops showing the other player's messages.
       static const char* chat_choices[] = {"On", "Direct matches only", "Off"};
@@ -6888,6 +6980,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   if (!state.fill_window) {
     draw_lcancel_overlays();
     draw_discord_invite_overlay();
+    draw_skin_online_notice();
     // The plain readouts: frame rate and, while online, the ping. Small, top left, no window
     // chrome, the way a Dolphin OSD line looks, and separate from the performance graph.
     // Reflex flash indicator: a white square on the frame A goes down on port 1, and the matching

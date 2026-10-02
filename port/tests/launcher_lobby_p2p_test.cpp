@@ -1,8 +1,10 @@
 // Match requests between two peer lobbies in one process, end to end over loopback UDP: discovery,
 // delivery, acceptance, refusals with their reasons on both sides, crossed requests, one-way packet
 // loss, clock skew, friends by code while hidden, the 0.8.5 mod fields (badges, "open to", custom
-// ISOs) and an Akaneia match's disc from the Mods folder scan. No DHT (each lobby is told the other's
-// address), no window, no focus: ctest runs it.
+// ISOs) and an Akaneia match's disc from the Mods folder scan. Private chat too: request, accept,
+// decline, block, timeout, messages reaching only the room's other player, launchers from before
+// private chat, and the message limits. No DHT (each lobby is told the other's address), no window,
+// no focus: ctest runs it.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <winsock2.h>
 #include "launcher_lobby_p2p.h"
@@ -448,6 +450,342 @@ void mod_match_disc() {
   check(launcher::lobby::has_game_save(card.u8string()), "the mod's own Melee save completes the card prompt gate");
   fs::remove_all(game, ec);
 }
+
+// ---- private chat: request, accept, decline, block, timeout, routing, older launchers, limits ----
+
+Pair make_pair_with(const std::string& name, const Json& pa, const Json& pb,
+                    launcher::lobby::PeerTestOptions a_options, launcher::lobby::PeerTestOptions b_options) {
+  Pair pair;
+  pair.dir = fs::temp_directory_path() / ("mu-p2p-" + std::to_string(GetCurrentProcessId()) + "-" + name);
+  std::error_code ec; fs::remove_all(pair.dir, ec); fs::create_directories(pair.dir, ec);
+  a_options.no_dht = true; b_options.no_dht = true;
+  pair.a = std::make_unique<PeerLobby>((pair.dir / "a").u8string(), "", 0, a_options);
+  pair.b = std::make_unique<PeerLobby>((pair.dir / "b").u8string(), "127.0.0.1:" + std::to_string(pair.a->port()), 0, b_options);
+  pair.a->join(pa); pair.b->join(pb);
+  return pair;
+}
+// The private room `p` holds with `other`, or an empty object.
+Json room_of(const PeerLobby& p, const std::string& other) {
+  const Json state = p.state();
+  for (const auto& room : state["private"]) if (room.value("peer", std::string()) == other) return room;
+  return Json::object();
+}
+std::string room_state(const PeerLobby& p, const std::string& other) { return room_of(p, other).value("state", std::string()); }
+Json room_messages(const PeerLobby& p, const std::string& other) { return room_of(p, other).value("messages", Json::array()); }
+size_t room_count(const PeerLobby& p) { return p.state()["private"].size(); }
+// A asks, B accepts: the room both then hold.
+std::string open_room(PeerLobby& a, PeerLobby& b) {
+  const auto error = error_of([&] { a.command("pm_request", {{"target", b.id()}}); });
+  if (!error.empty()) return {};
+  if (!pump(a, b, 3000, [&] { return room_state(b, a.id()) == "incoming"; })) return {};
+  const std::string room = room_of(b, a.id()).value("id", std::string());
+  b.command("pm_accept", {{"room", room}});
+  if (!pump(a, b, 3000, [&] { return room_state(a, b.id()) == "open" && room_state(b, a.id()) == "open"; })) return {};
+  return room;
+}
+
+void private_accept_flow() {
+  std::cout << "-- private chat: A asks, B accepts, both talk, A closes" << std::endl;
+  auto pair = make_pair("pm-accept", profile("Alpha", "ALPH#101", "t:recomp", 2), profile("Beta", "BETA#202", "t:recomp", 2));
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "discovery");
+  check(a.state()["players"][0].value("protocol", 0) >= launcher::lobby::private_protocol, "the other launcher announces a protocol with private chat");
+  const auto sent = error_of([&] { a.command("pm_request", {{"target", b.id()}}); });
+  check(sent.empty() && has_notice(a, "lobby.pm.sent"), "the request leaves: " + sent);
+  check(error_of([&] { a.command("pm_request", {{"target", b.id()}}); }) == launcher::lang::tr("lobby.pm.pending", {{"name", "Beta"}}),
+        "a second request to the same player is refused while the first waits");
+  pump(a, b, 3000, [&] { return room_state(b, a.id()) == "incoming"; });
+  const Json asked = room_of(b, a.id()), asking = room_of(a, b.id());
+  check(asked.value("state", std::string()) == "incoming" && asked.value("name", std::string()) == "Alpha" &&
+        has_notice(b, "lobby.pm.incoming"), "B sees a private chat request from Alpha");
+  check(asking.value("state", std::string()) == "outgoing" && asking.value("id", std::string("a")) == asked.value("id", std::string("b")),
+        "A holds the same room, waiting for the answer");
+  check(asked.value("messages", Json::array()).empty() && room_count(a) == 1 && room_count(b) == 1, "nothing is in the room before it is accepted");
+  const std::string room = asked.value("id", std::string());
+  check(!error_of([&] { a.command("pm", {{"room", room}, {"text", "too early"}}); }).empty(), "A cannot write before B accepts");
+  b.command("pm_accept", {{"room", room}});
+  const bool open = pump(a, b, 3000, [&] { return room_state(a, b.id()) == "open" && room_state(b, a.id()) == "open"; });
+  check(open && has_notice(a, "lobby.pm.opened") && has_notice(b, "lobby.pm.opened"), "the room opens on both sides");
+  check(error_of([&] { a.command("pm_request", {{"target", b.id()}}); }) == launcher::lang::tr("lobby.pm.already", {{"name", "Beta"}}),
+        "asking again with the room open is refused");
+  if (!open) return;
+
+  const auto first = error_of([&] { a.command("pm", {{"room", room}, {"text", "first line"}}); });
+  check(first.empty(), "A writes: " + first);
+  pump(a, b, 3000, [&] { return room_messages(b, a.id()).size() == 1; });
+  pump(a, b, 1200);   // resends must not add a second copy
+  Json at_b = room_messages(b, a.id());
+  check(at_b.size() == 1 && at_b[0]["text"] == "first line" && at_b[0]["sender"] == a.id() && at_b[0]["name"] == "Alpha",
+        "B gets it once, from Alpha");
+  check(room_messages(a, b.id()).size() == 1, "A keeps its own copy");
+  const auto reply = error_of([&] { b.command("pm", {{"room", room}, {"text", "second line"}}); });
+  check(reply.empty(), "B answers: " + reply);
+  pump(a, b, 3000, [&] { return room_messages(a, b.id()).size() == 2; });
+  const Json at_a = room_messages(a, b.id());
+  check(at_a.size() == 2 && at_a[0]["text"] == "first line" && at_a[1]["text"] == "second line" && at_a[1]["sender"] == b.id(),
+        "A has both lines in order");
+  check(a.state()["messages"].empty() && b.state()["messages"].empty(), "nothing went to the public chat");
+
+  // The public chat keeps working next to it, and stays separate.
+  a.command("chat", {{"text", "public line"}});
+  pump(a, b, 3000, [&] { return b.state()["messages"].size() == 1; });
+  check(b.state()["messages"].size() == 1 && b.state()["messages"][0]["text"] == "public line", "a public line reaches the lobby chat");
+  check(room_messages(a, b.id()).size() == 2 && room_messages(b, a.id()).size() == 2, "and is not added to the private room");
+
+  a.command("pm_close", {{"room", room}});
+  const bool closed = pump(a, b, 3000, [&] { return room_state(b, a.id()) == "closed"; });
+  check(closed && room_count(a) == 0, "A closes: its room is gone, B's is marked closed");
+  check(room_messages(b, a.id()).size() == 2, "B can still read what was said");
+  check(error_of([&] { b.command("pm", {{"room", room}, {"text", "anyone?"}}); }) == launcher::lang::tr("lobby.pm.closed"),
+        "B cannot write into the closed room");
+  b.command("pm_close", {{"room", room}});
+  check(room_count(b) == 0, "B closes it too");
+}
+
+void private_decline_and_block() {
+  std::cout << "-- private chat: decline, block, and a request that runs out" << std::endl;
+  launcher::lobby::PeerTestOptions quick; quick.private_request_ms = 2500;
+  auto pair = make_pair_with("pm-decline", profile("Alpha", "ALPH#101", "t:recomp", 2), profile("Beta", "BETA#202", "t:recomp", 2), quick, quick);
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "discovery");
+  a.command("pm_request", {{"target", b.id()}});
+  pump(a, b, 2000, [&] { return room_state(b, a.id()) == "incoming"; });
+  std::string room = room_of(b, a.id()).value("id", std::string());
+  check(!room.empty(), "B gets the request");
+  b.command("pm_decline", {{"room", room}});
+  check(pump(a, b, 3000, [&] { return has_notice(a, "lobby.pm.declined"); }), "A is told that B declined");
+  check(room_count(a) == 0 && room_count(b) == 0, "no room is left on either side");
+  check(error_of([&] { a.command("pm_request", {{"target", b.id()}}); }) == launcher::lang::tr("lobby.pm.wait"),
+        "asking again at once is held back");
+  check(!error_of([&] { b.command("pm_accept", {{"room", room}}); }).empty(), "a declined request cannot be accepted afterwards");
+
+  pump(a, b, 3200);
+  check(error_of([&] { a.command("pm_request", {{"target", b.id()}}); }).empty(), "a few seconds later A may ask again");
+  pump(a, b, 2000, [&] { return room_state(b, a.id()) == "incoming"; });
+  room = room_of(b, a.id()).value("id", std::string());
+  check(!room.empty(), "B gets the second request");
+  b.command("pm_decline", {{"room", room}, {"block", true}});
+  pump(a, b, 3000, [&] { return room_count(a) == 0; });
+  const Json blocked = b.state()["private_blocked"];
+  check(blocked.size() == 1 && blocked[0] == a.id() && has_notice(b, "lobby.pm.blocked"), "B blocks A for the session");
+
+  pump(a, b, 3200);
+  const auto asked_at = std::chrono::steady_clock::now();
+  check(error_of([&] { a.command("pm_request", {{"target", b.id()}}); }).empty(), "A asks a third time");
+  bool shown = false;
+  const bool ended = pump(a, b, 6000, [&] {
+    if (room_count(b)) shown = true;
+    return has_notice(a, "lobby.pm.no_answer");
+  });
+  const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - asked_at).count();
+  check(ended && seconds >= 2.0 && seconds <= 4.5, "the request ends by itself, with no answer (" + std::to_string(seconds) + " s)");
+  check(!shown && room_count(a) == 0, "B never saw a request from the blocked player, and A's room is gone");
+  pump(a, b, 1500);
+  check(room_count(b) == 0, "later copies of the request do not get through either");
+
+  // Asking the blocked player unblocks them, and their Private Chat button then answers the request.
+  check(error_of([&] { b.command("pm_request", {{"target", a.id()}}); }).empty(), "B asks A");
+  check(b.state()["private_blocked"].empty(), "which lifts the block");
+  pump(a, b, 2000, [&] { return room_state(a, b.id()) == "incoming"; });
+  check(room_state(a, b.id()) == "incoming", "A gets B's request");
+  check(error_of([&] { a.command("pm_request", {{"target", b.id()}}); }).empty(), "A pressing Private Chat on B accepts it");
+  check(pump(a, b, 3000, [&] { return room_state(a, b.id()) == "open" && room_state(b, a.id()) == "open"; }), "and the room opens");
+}
+
+void private_timeout() {
+  std::cout << "-- private chat: a request nobody answers" << std::endl;
+  launcher::lobby::PeerTestOptions quick; quick.private_request_ms = 2500;
+  auto pair = make_pair_with("pm-timeout", profile("Alpha", "ALPH#101", "t:recomp", 2), profile("Beta", "BETA#202", "t:recomp", 2), quick, quick);
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "discovery");
+  a.command("pm_request", {{"target", b.id()}});
+  check(pump(a, b, 2000, [&] { return room_state(b, a.id()) == "incoming"; }), "B has the request");
+  check(room_of(b, a.id()).value("remaining", -1) >= 0 && room_of(b, a.id()).value("remaining", 99) <= 3, "with the seconds left to answer");
+  const bool ended = pump(a, b, 6000, [&] { return has_notice(a, "lobby.pm.expired") && has_notice(b, "lobby.pm.missed"); });
+  check(ended, "it runs out: A is told there was no answer, B that a request was missed");
+  check(room_count(a) == 0 && room_count(b) == 0, "and no room is left behind");
+  check(!has_notice(a, "lobby.pm.no_answer"), "a delivered request is not reported as unreachable");
+}
+
+void private_old_versions() {
+  std::cout << "-- private chat: a launcher from before private chat" << std::endl;
+  {
+    // It announces lobby protocol 2: the request is not sent and the player is told why at once.
+    launcher::lobby::PeerTestOptions current, old; old.protocol = 2;
+    auto pair = make_pair_with("pm-old", profile("Alpha", "ALPH#101", "t:recomp", 2), profile("Beta", "BETA#202", "t:recomp", 9), current, old);
+    auto& a = *pair.a; auto& b = *pair.b;
+    check(see_each_other(pair), "an older launcher is still discovered");
+    check(a.state()["players"][0].value("protocol", 0) == 2, "and is known to be older");
+    const auto error = error_of([&] { a.command("pm_request", {{"target", b.id()}}); });
+    check(error == launcher::lang::tr("lobby.pm.unsupported", {{"name", "Beta"}}), "asking says their version has no private chat: " + error);
+    check(room_count(a) == 0, "no room waits for an answer that cannot come");
+    pump(a, b, 500);
+    check(room_count(b) == 0, "nothing was sent to the older launcher");
+  }
+  {
+    // Its version is not known (it claims the current protocol) and it treats the new messages as
+    // any launcher treats an action it does not know: no answer, no acknowledgement. The request
+    // must end by itself, and everything the older launcher does know must keep working.
+    launcher::lobby::PeerTestOptions quick, old; quick.private_request_ms = 2500; old.no_private = true;
+    auto pair = make_pair_with("pm-unknown", profile("Alpha", "ALPH#101", "t:recomp", 20), profile("Beta", "BETA#202", "t:recomp", 9), quick, old);
+    auto& a = *pair.a; auto& b = *pair.b;
+    check(see_each_other(pair), "discovery");
+    const auto asked_at = std::chrono::steady_clock::now();
+    check(error_of([&] { a.command("pm_request", {{"target", b.id()}}); }).empty(), "the request is sent");
+    const bool ended = pump(a, b, 6000, [&] { return has_notice(a, "lobby.pm.no_answer"); });
+    const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - asked_at).count();
+    check(ended && seconds <= 4.5 && room_count(a) == 0, "it ends without an answer instead of hanging (" + std::to_string(seconds) + " s)");
+    check(room_count(b) == 0 && b.state()["notices"].empty(), "the older launcher ignored it: no room, no message for its player");
+    a.command("chat", {{"text", "still here"}});
+    check(pump(a, b, 3000, [&] { return b.state()["messages"].size() == 1; }), "public chat still reaches the older launcher");
+    check(error_of([&] { a.command("request", {{"target", b.id()}}); }).empty(), "a match request still leaves");
+    pump(a, b, 3000, [&] { return b.state()["requests"].size() == 1; });
+    const Json requests = b.state()["requests"];
+    check(requests.size() == 1, "and arrives");
+    if (requests.size() == 1) {
+      b.command("accept", {{"request", requests[0]["id"]}});
+      Json la, lb; bool got_a = false, got_b = false;
+      pump(a, b, 5000, [&] {
+        if (!got_a) got_a = a.take_launch(la);
+        if (!got_b) got_b = b.take_launch(lb);
+        return got_a && got_b;
+      });
+      check(got_a && got_b, "and the match starts on both sides");
+    }
+  }
+}
+
+void private_routing() {
+  std::cout << "-- private chat: three players, two rooms" << std::endl;
+  const fs::path dir = fs::temp_directory_path() / ("mu-p2p-" + std::to_string(GetCurrentProcessId()) + "-pm-three");
+  std::error_code ec; fs::remove_all(dir, ec); fs::create_directories(dir, ec);
+  launcher::lobby::PeerTestOptions options; options.no_dht = true;
+  PeerLobby a((dir / "a").u8string(), "", 0, options);
+  const std::string seed = "127.0.0.1:" + std::to_string(a.port());
+  PeerLobby b((dir / "b").u8string(), seed, 0, options), c((dir / "c").u8string(), seed, 0, options);
+  c.add_address("127.0.0.1:" + std::to_string(b.port()));
+  a.join(profile("Alpha", "ALPH#101", "t:recomp", 2)); b.join(profile("Beta", "BETA#202", "t:recomp", 2));
+  c.join(profile("Gamma", "GAMM#303", "t:recomp", 2));
+  auto pump3 = [&](int ms, const std::function<bool()>& done) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < end) {
+      a.tick(); b.tick(); c.tick();
+      if (done && done()) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return done ? done() : true;
+  };
+  check(pump3(8000, [&] { return a.state()["players"].size() == 2 && b.state()["players"].size() == 2 && c.state()["players"].size() == 2; }),
+        "all three players see each other");
+  // A and B open a room, then C and B.
+  a.command("pm_request", {{"target", b.id()}});
+  c.command("pm_request", {{"target", b.id()}});
+  pump3(3000, [&] { return room_state(b, a.id()) == "incoming" && room_state(b, c.id()) == "incoming"; });
+  const std::string with_a = room_of(b, a.id()).value("id", std::string()), with_c = room_of(b, c.id()).value("id", std::string());
+  check(!with_a.empty() && !with_c.empty() && with_a != with_c, "B has a request from each, in separate rooms");
+  if (with_a.empty() || with_c.empty()) return;
+  b.command("pm_accept", {{"room", with_a}}); b.command("pm_accept", {{"room", with_c}});
+  check(pump3(3000, [&] { return room_state(a, b.id()) == "open" && room_state(c, b.id()) == "open"; }), "both rooms open: several can be open at once");
+
+  a.command("pm", {{"room", with_a}, {"text", "for Beta only"}});
+  pump3(3000, [&] { return room_messages(b, a.id()).size() == 1; });
+  pump3(1200, {});
+  check(room_messages(b, a.id()).size() == 1 && room_messages(b, a.id())[0]["text"] == "for Beta only", "B gets A's line in the room with A");
+  check(room_messages(b, c.id()).empty(), "not in the room with C");
+  check(room_messages(c, b.id()).empty() && room_of(c, a.id()).empty() && room_count(c) == 1, "C gets nothing: it only holds its own room with B");
+  check(a.state()["messages"].empty() && b.state()["messages"].empty() && c.state()["messages"].empty(), "and nothing is in anyone's public chat");
+  check(c.state().dump().find("for Beta only") == std::string::npos, "the line is nowhere in C's lobby state");
+
+  c.command("pm", {{"room", with_c}, {"text", "from Gamma"}});
+  pump3(3000, [&] { return room_messages(b, c.id()).size() == 1; });
+  check(room_messages(b, c.id()).size() == 1 && room_messages(b, c.id())[0]["sender"] == c.id(), "C's line lands in B's room with C");
+  check(room_messages(b, a.id()).size() == 1 && room_messages(a, b.id()).size() == 1, "and not in the room between A and B, on either side");
+  check(error_of([&] { c.command("pm", {{"room", with_a}, {"text", "let me in"}}); }) == launcher::lang::tr("lobby.pm.closed"),
+        "C cannot write into the room between A and B");
+
+  // Closing one room leaves the other alone.
+  b.command("pm_close", {{"room", with_c}});
+  check(pump3(3000, [&] { return room_state(c, b.id()) == "closed"; }), "B closes the room with C");
+  check(room_state(b, a.id()) == "open" && room_state(a, b.id()) == "open", "the room with A stays open");
+}
+
+void private_crossed() {
+  std::cout << "-- private chat: both players ask at once" << std::endl;
+  auto pair = make_pair("pm-crossed", profile("Alpha", "ALPH#101", "t:recomp", 2), profile("Beta", "BETA#202", "t:recomp", 2));
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "discovery");
+  const auto ea = error_of([&] { a.command("pm_request", {{"target", b.id()}}); });
+  const auto eb = error_of([&] { b.command("pm_request", {{"target", a.id()}}); });
+  check(ea.empty() && eb.empty(), "both requests leave");
+  const bool open = pump(a, b, 4000, [&] { return room_state(a, b.id()) == "open" && room_state(b, a.id()) == "open"; });
+  pump(a, b, 1200);
+  check(open && room_count(a) == 1 && room_count(b) == 1, "one room opens, without either having to accept");
+  check(room_of(a, b.id()).value("id", std::string("a")) == room_of(b, a.id()).value("id", std::string("b")), "the same room on both sides");
+  const std::string room = room_of(a, b.id()).value("id", std::string());
+  check(error_of([&] { a.command("pm", {{"room", room}, {"text", "crossed"}}); }).empty() &&
+        pump(a, b, 3000, [&] { return room_messages(b, a.id()).size() == 1; }), "and it carries messages");
+}
+
+void private_limits() {
+  std::cout << "-- private chat: limits and plain text" << std::endl;
+  using launcher::lobby::clean_chat_text;
+  check(clean_chat_text("plain") == "plain", "plain text is kept");
+  check(clean_chat_text("a\x07" "b\tc\r\nd") == "abcd", "control characters are removed");
+  check(clean_chat_text("\xE2\x80\xAE" "abc" "\xE2\x81\xA6") == "abc", "text direction overrides are removed");
+  check(clean_chat_text("ok \xF0\x9F\x91\x8B \xE3\x81\x82") == "ok \xF0\x9F\x91\x8B \xE3\x81\x82", "emoji and other scripts are kept");
+  check(clean_chat_text("broken \xC3").empty() && clean_chat_text("\xC0\xAF").empty(), "text that is not valid UTF-8 is refused whole");
+  check(clean_chat_text("<b>bold</b> [url]") == "<b>bold</b> [url]", "markup is only ever text");
+
+  auto pair = make_pair("pm-limits", profile("Alpha", "ALPH#101", "t:recomp", 2), profile("Beta", "BETA#202", "t:recomp", 2));
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "discovery");
+  const std::string chat_error = launcher::lang::tr("lobby.error.chat");
+  check(!error_of([&] { a.command("pm_request", {{"target", a.id()}}); }).empty(), "a player cannot ask themselves");
+  check(!error_of([&] { a.command("pm_request", {{"target", std::string(64, '0')}}); }).empty(), "or a player who is not there");
+  check(error_of([&] { a.command("pm", {{"room", std::string(32, '0')}, {"text", "hello"}}); }) == launcher::lang::tr("lobby.pm.closed"),
+        "a message needs an open room");
+  const std::string room = open_room(a, b);
+  check(!room.empty(), "a room opens");
+  if (room.empty()) return;
+
+  check(error_of([&] { a.command("pm", {{"room", room}, {"text", ""}}); }) == chat_error, "an empty message is refused");
+  check(error_of([&] { a.command("pm", {{"room", room}, {"text", "\x01\x02\n"}}); }) == chat_error, "so is one made of control characters only");
+  check(error_of([&] { a.command("pm", {{"room", room}, {"text", std::string(301, 'x')}}); }) == chat_error, "301 bytes are too long");
+  check(error_of([&] { a.command("pm", {{"room", room}, {"text", std::string(300, '"')}}); }) == chat_error,
+        "a message too large for one packet is refused, not lost");
+  check(room_messages(a, b.id()).empty(), "a refused message is not kept");
+
+  check(error_of([&] { a.command("pm", {{"room", room}, {"text", "he\x01llo\nthere\x7F"}}); }).empty(), "a line with control characters is sent");
+  check(error_of([&] { a.command("pm", {{"room", room}, {"text", "again"}}); }) == chat_error, "a second message within a second is refused");
+  pump(a, b, 3000, [&] { return room_messages(b, a.id()).size() == 1; });
+  Json at_b = room_messages(b, a.id());
+  check(at_b.size() == 1 && at_b[0]["text"] == "hellothere", "and arrives without them");
+
+  pump(a, b, 1100);
+  check(error_of([&] { a.command("pm", {{"room", room}, {"text", std::string(300, 'x')}}); }).empty(), "300 bytes are fine");
+  pump(a, b, 3000, [&] { return room_messages(b, a.id()).size() == 2; });
+  at_b = room_messages(b, a.id());
+  check(at_b.size() == 2 && at_b[1]["text"] == std::string(300, 'x'), "and arrive whole");
+
+  // Several lines, one a second: each arrives once and in order.
+  for (int i = 0; i < 3; ++i) {
+    pump(a, b, 1100);
+    a.command("pm", {{"room", room}, {"text", "line " + std::to_string(i)}});
+  }
+  pump(a, b, 4000, [&] { return room_messages(b, a.id()).size() == 5; });
+  at_b = room_messages(b, a.id());
+  check(at_b.size() == 5 && at_b[2]["text"] == "line 0" && at_b[3]["text"] == "line 1" && at_b[4]["text"] == "line 2",
+        "several lines arrive once each, in order");
+
+  // B leaves the public lobby: the open room keeps working, a new request from a stranger does not.
+  b.command("leave");
+  pump(a, b, 1500);
+  check(error_of([&] { b.command("pm", {{"room", room}, {"text", "still talking"}}); }).empty() &&
+        pump(a, b, 3000, [&] { return room_messages(a, b.id()).size() == 6; }), "an open room outlives leaving the public lobby");
+  a.command("pm_close", {{"room", room}});
+  pump(a, b, 500);
+  check(!error_of([&] { a.command("pm_request", {{"target", b.id()}}); }).empty(), "a player outside the public lobby cannot be asked by a stranger");
+}
 }  // namespace
 
 int main() {
@@ -463,6 +801,13 @@ int main() {
     friends_by_code();
     mods();
     mod_match_disc();
+    private_accept_flow();
+    private_decline_and_block();
+    private_timeout();
+    private_old_versions();
+    private_routing();
+    private_crossed();
+    private_limits();
   } catch (const std::exception& ex) {
     std::cerr << "unexpected exception: " << ex.what() << std::endl;
     ++failures;

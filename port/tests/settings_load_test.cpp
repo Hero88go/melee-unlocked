@@ -174,12 +174,22 @@ int main() {
 
   CHECK(options.mod_choices.at("te") == 0 && options.mod_choices.at("tmce") == 1);
   CHECK(source_port::mods::choices() == options.mod_choices);
+  // With no pack loaded the panel's skin lines and the online notice have nothing to show: no pack
+  // skins, standard view off. Loading settings does not change that.
+  CHECK(source_port::mods::status().pack_skins.empty() && !source_port::mods::status().retail_view);
+  CHECK(source_port::mods::Status().pack_skins.empty() && !source_port::mods::Status().retail_view);
+  CHECK(!source_port::mods::Status::SkinNote().served && !source_port::mods::Status::SkinNote().identical);
   CHECK(gx::save_pc_settings(options, volume));
   gx::RenderOptions reloaded;
   reloaded.settings_path = path.string();
   gx::load_pc_settings(reloaded, volume);
   CHECK(reloaded.mod_choices == options.mod_choices);
   CHECK(reloaded.mod_choices.at("abcdef0123456789") == 0);
+  // The volume a player set survives a save and a restart. It came back at full volume before.
+  CHECK(gx::save_pc_settings(options, 35));
+  int restarted = 70;
+  gx::load_pc_settings(reloaded, restarted);
+  CHECK(restarted == 35);
 
   CHECK(options.efb_scale == 2);
   CHECK(!options.fod_reflections);
