@@ -50,7 +50,11 @@ std::string source_port_reason(uint32_t addr, uint32_t len) {
   if (!s) return "writes memory at " + hex8(addr) + ", which is not a game variable the Source Port can find";
   const std::string name = s->name;
   switch (s->kind) {
+#ifdef MELEE_NO_SLIPPI   // no other engine to name in the build with one
+    case kCode: return "writes game code at " + name + ", which is compiled C here";
+#else
     case kCode: return "writes game code at " + name + ": needs the Static Recomp engine";
+#endif
     case kPointers: return "writes " + name + ", which holds pointers";
     case kPrivate: return "writes " + name + ", which the Source Port keeps private to one source file";
     case kConstant: return "writes " + name + ", a constant the Source Port compiles into its code";

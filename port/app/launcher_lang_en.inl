@@ -13,8 +13,13 @@
 {"lobby.expired", "The match request to {name} expired without an answer."},
 {"lobby.missed", "You missed a match request from {name}."},
 {"lobby.request_from", "Match request from {name}"},
+// Five lines here (these two, lobby.error.profile, lobby.error.code_format and lobby.code_copied) are
+// never said by the launcher built without the Slippi layer, which has its own lobby.p2p.* lines for
+// the same moments, so that build's table leaves them out.
+#ifndef MELEE_NO_SLIPPI
 {"lobby.unreachable", "Can't reach {name}. Use Slippi Direct with their code: {code}"},
 {"lobby.accept_unreachable", "Can't reach {name} to start the match. Use Slippi Direct with their code: {code}"},
+#endif
 {"lobby.no_answer_legacy", "No answer from {name}. They are on {version}: both players need 0.8.5 or newer."},
 {"lobby.clock_skew", "{name}'s PC clock is {minutes} minutes off, so you can't see each other. Set the time automatically in Windows settings."},
 {"lobby.identity_copied", "Your lobby ID was copied."},
@@ -63,9 +68,13 @@
 {"lobby.error.discovery", "Cannot start player discovery."},
 {"lobby.error.save_identity", "Cannot save your lobby identity."},
 {"lobby.error.identity", "Your lobby identity file is damaged. Delete lobby-peer-identity.json to make a new one."},
+#ifndef MELEE_NO_SLIPPI
 {"lobby.error.profile", "Your profile needs a name, a Slippi code and at least one main."},
+#endif
 {"lobby.error.iso_name", "The custom ISO name must be 1 to 32 plain characters."},
+#ifndef MELEE_NO_SLIPPI
 {"lobby.error.code_format", "A Slippi code looks like ABCD#123."},
+#endif
 {"lobby.error.too_many_lookups", "Too many friend searches at once. Try again in a minute."},
 {"lobby.error.chat", "Messages must be 1 to 300 characters, one per second."},
 {"lobby.error.offline", "That player is offline."},
@@ -86,7 +95,9 @@
 {"lobby.card.setup_unfinished", "Setup not finished"},
 {"lobby.invite", "Invite to Match"},
 {"lobby.copy_code", "Copy code"},
+#ifndef MELEE_NO_SLIPPI
 {"lobby.code_copied", "Copied {code}. Use it in Slippi Direct."},
+#endif
 {"lobby.mod_disc_missing", "This match needs a mod disc this PC no longer has. Check the Mods page."},
 {"lobby.starting_mod", "Match accepted. Starting {mode} on Static Recomp..."},
 {"lobby.pm.button", "Private Chat"},
@@ -155,4 +166,7 @@
 {"lobby.profile.code", "Your player code (from your name and your key)"},
 {"lobby.friend.code_cue", "Player code, e.g. FOX#123"},
 {"lobby.friend.code_hint", "Enter an online player's code."},
+{"lobby.p2p.error.profile", "Your profile needs a name and at least one main."},
+{"lobby.p2p.error.code_format", "A player code looks like ABCD#123."},
+{"lobby.p2p.code_copied", "Copied {code}."},
 {"crash.offer", "The game crashed. Send a crash report so it can be fixed?\n\nThese files are sent:\n{files}\nThey contain the error, the game's log and your lobby log. Nothing else."},

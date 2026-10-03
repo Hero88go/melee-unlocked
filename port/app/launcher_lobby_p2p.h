@@ -7,6 +7,13 @@
 #include <vector>
 
 namespace launcher::lobby {
+// A match request's transport when it is not this project's own peer-to-peer match. The build
+// without that online service never starts one, so it does not carry the service's name either.
+#ifdef MELEE_NO_SLIPPI
+inline constexpr const char* kHostedTransport = "hosted";
+#else
+inline constexpr const char* kHostedTransport = "slippi-direct";
+#endif
 // Test switches. A real launcher leaves them all off.
 struct PeerTestOptions {
   bool no_dht = false;          // skip the public DHT entirely: only peers given by address (two in one process)

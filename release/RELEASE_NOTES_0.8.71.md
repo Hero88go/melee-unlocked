@@ -18,6 +18,7 @@ Controller fixes from your reports, L and R split into click and analog, marks f
 - Controls: L and R are each two bindings now, the click (L, R) and the travel (L analog, R analog), so a light shield and a full press can sit on different buttons. Your existing bindings are carried over.
 - Controls: every button bound to an analog input (a trigger or a stick direction) has its own press point slider.
 - Online: mark a moment for a report without leaving the controller. D-pad Left "looked wrong", D-pad Right "input wrong", D-pad Down "sounded wrong". On the keyboard: F6, F7 and F9, with F8 as a plain mark. The marks are in the `Game_*.trace` file beside the replay.
+- Slippi online: when Slippi's servers announce a newer version than the one this build speaks, the game stays out of online play and tells you to update Melee Unlocked, so an outdated build is never matched with updated players.
 - Source Port: your Gecko codes that only write game variables run here too. Codes that change the game's code still need the Static Recomp, and the list says which function or variable each one writes. Never applied online or in replays.
 - 20XX Hack Pack on the Source Port (still opened from the debug menu): the pack's color overlays (hitlag, hitstun, IASA, auto-cancel, wavedash).
 

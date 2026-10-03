@@ -357,7 +357,11 @@ bool open_libusb() {
   if (rc != 0) {
     g_dev = nullptr;
     if (!g_logged_missing) {
+#ifdef MELEE_NO_SLIPPI
+      log("gc adapter: found but cannot open (%s): it may have no usable driver. Install WinUSB, libusbK or libusb-win32 on it with Zadig.", libusb_error_name(rc));
+#else
       log("gc adapter: found but cannot open (%s): it may have no usable driver. Install WinUSB, libusbK or libusb-win32 on it with Zadig, as Slippi does.", libusb_error_name(rc));
+#endif
       g_logged_missing = true;
     }
     return false;
@@ -369,7 +373,11 @@ bool open_libusb() {
   rc = libusb_claim_interface(g_dev, g_iface);
   if (rc != 0) {
     if (!g_logged_missing) {
+#ifdef MELEE_NO_SLIPPI
+      log("gc adapter: cannot claim the adapter (%s): another program (Dolphin?) is using it. Close it and try again.", libusb_error_name(rc));
+#else
       log("gc adapter: cannot claim the adapter (%s): another program (Dolphin or Slippi?) is using it. Close it and try again.", libusb_error_name(rc));
+#endif
       g_logged_missing = true;
     }
     libusb_close(g_dev); g_dev = nullptr;

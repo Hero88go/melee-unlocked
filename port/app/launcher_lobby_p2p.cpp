@@ -1251,7 +1251,7 @@ struct PeerLobby::Impl {
       }
       peer->second.last_request=now;
       if(!requests.count(rid)) {
-        requests[rid]={{"id",rid},{"from",sender},{"to",id},{"state","pending"},{"transport",p2p_on()?"p2p":"slippi-direct"},{"mode",mode}};
+        requests[rid]={{"id",rid},{"from",sender},{"to",id},{"state","pending"},{"transport",p2p_on()?"p2p":kHostedTransport},{"mode",mode}};
         request_expiry[rid]=now+(automatic?auto_request_wait:30000);
         peer->second.ping_nonce=nonce_id(8); peer->second.ping_sent=now;
         send_data(sender,{{"k","ping"},{"nonce",peer->second.ping_nonce}});
@@ -1637,7 +1637,8 @@ struct PeerLobby::Impl {
       if(next.count("p2p_col") && next["p2p_col"].is_number_integer() && next["p2p_col"].get<int>()>=0 && next["p2p_col"].get<int>()<=5) p2p_col=next["p2p_col"].get<int>();
     }
     Json candidate=public_profile(next);
-    if(!valid_profile(candidate)) throw std::runtime_error(lang::tr("lobby.error.profile"));
+    // With peer-to-peer matches the code is made from the name: the message names what the player sets.
+    if(!valid_profile(candidate)) throw std::runtime_error(lang::tr(p2p_matches?"lobby.p2p.error.profile":"lobby.error.profile"));
     if(candidate.count("iso")) {
       const auto& iso=candidate["iso"];
       if(!iso.is_object() || !iso.count("n") || !iso["n"].is_string() || !valid_iso_name(iso["n"].get<std::string>()))
@@ -1663,7 +1664,7 @@ struct PeerLobby::Impl {
   // searched for a minute (players announce their own code there, public lobby or not).
   void add_friend_by_code(const std::string& raw) {
     const auto code=normalize_code(raw);
-    if(!valid_code(code)) throw std::runtime_error(lang::tr("lobby.error.code_format"));
+    if(!valid_code(code)) throw std::runtime_error(lang::tr(p2p_matches?"lobby.p2p.error.code_format":"lobby.error.code_format"));
     if(code==normalize_code(profile.value("code",std::string()))) throw std::runtime_error(lang::tr("lobby.friend.self"));
     for(const auto& f:friends) if(normalize_code(f.second.value("code",std::string()))==code)
       throw std::runtime_error(lang::tr("lobby.friend.already",{{"name",f.second.value("name",std::string("?"))}}));
@@ -1828,7 +1829,7 @@ struct PeerLobby::Impl {
       last_request=now; auto rid=nonce_id();
       // auto: sent by automatic pairing to a player who is searching too; their launcher answers.
       const bool automatic=p2p_on() && data.count("auto") && data["auto"].is_boolean() && data["auto"].get<bool>();
-      requests[rid]={{"id",rid},{"from",id},{"to",target},{"state","pending"},{"transport",p2p_on()?"p2p":"slippi-direct"},{"mode",mode},{"delivered",false}};
+      requests[rid]={{"id",rid},{"from",id},{"to",target},{"state","pending"},{"transport",p2p_on()?"p2p":kHostedTransport},{"mode",mode},{"delivered",false}};
       request_expiry[rid]=now+(automatic?auto_request_wait:30000); tracking[rid]={now,false};
       Json body={{"request",rid},{"mode",mode},{"build",profile.value("build",std::string())},{"ready",true}};
       if(automatic) { requests[rid]["auto"]=true; body["auto"]=true; }

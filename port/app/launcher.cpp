@@ -765,15 +765,17 @@ void paint_play(HDC dc) {
   // With melee_source.exe or melee_game.dll missing from the game folder, the Source Port segment
   // says so in the disabled-button colours, cannot be picked, and PLAY starts Static Recomp.
   draw_text(dc, L"GAME BUILD", LR(CX, 102, 130, 19), g_font_label, C_FAINT, DT_LEFT | DT_SINGLELINE | DT_VCENTER, S(1));
+#ifdef MELEE_NO_SLIPPI
+  // One Game Build here, so the row names it in plain text where the two segments start: a segment
+  // reads as a button, and there is nothing to pick.
+  draw_text(dc, source_available() ? L"Source Port" : L"Source Port (not installed)", LR(CX + 96, 98, CW - 96, 28), g_font,
+            source_available() ? C_TEXT : C_WARN, DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+#else
   {
     const bool installed = source_available();
     const int on = g_engine == ENGINE_SOURCE && installed ? 0 : 1;
     const wchar_t* names[2] = {installed ? L"Source Port (Beta)" : L"Source Port (Beta, not installed)", L"Static Recomp (Legacy)"};
-#ifdef MELEE_NO_SLIPPI
-    const int segments = 1;   // the Source Port is the only Game Build of this launcher
-#else
     const int segments = 2;
-#endif
     for (int i = 0; i < segments; ++i) {
       const RECT r = build_seg_rect(i);
       COLORREF top = C_BTN, bot = C_BTN, border = C_BTN_BORDER, text = C_DIM;
@@ -783,6 +785,7 @@ void paint_play(HDC dc) {
       draw_text(dc, names[i], r, g_font_small, text, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
     }
   }
+#endif
 
   dot(dc, CX, 215, g_slippi_missing ? C_WARN : C_OK);   // centred on the first line of slippi_text_rect
   draw_text(dc, widen(g_slippi_line), slippi_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
@@ -1027,7 +1030,11 @@ void build_thread() {
   g_game_exe = game_exe();
   if (!file_exists(g_game_exe)) {
     std::string root = repo_root();
+#ifdef MELEE_NO_SLIPPI   // the one game this launcher starts
+    if (root.empty()) { log_line("melee_source.exe or melee_game.dll is missing next to this launcher and this is not a source checkout."); PostMessageW(g_main, WM_APP_BUILD_DONE, 1, 0); return; }
+#else
     if (root.empty()) { log_line("melee_port.exe is missing next to this launcher and this is not a source checkout."); PostMessageW(g_main, WM_APP_BUILD_DONE, 1, 0); return; }
+#endif
     log_line("Source checkout at %s: running build.bat (20 to 40 minutes the first time)", root.c_str());
     DWORD code = run_logged("cmd /c \"\"" + root + "\\build.bat\" \"" + g_iso + "\"\" <nul", root);
     if (code != 0 || !file_exists(g_game_exe)) { log_line("Build failed (exit code %lu).", code); PostMessageW(g_main, WM_APP_BUILD_DONE, 1, 0); return; }
@@ -1239,7 +1246,11 @@ void start_game() {
   }
   g_game_exe = !g_mod_launch_iso.empty() ? (g_mod_launch_engine == "source" ? source_exe_dir() + "\\melee_source.exe" : static_recomp_exe()) : game_exe();
   if (!file_exists(g_game_exe) && !g_mod_launch_iso.empty()) {
+#ifdef MELEE_NO_SLIPPI   // one game here: it is that game which is missing
+    MessageBoxW(g_main,L"The game is not installed beside this launcher. Install it before playing this mod.",L"Mods",MB_ICONINFORMATION);
+#else
     MessageBoxW(g_main,L"The required game engine is not installed. Install it before playing this mod.",L"Mods",MB_ICONINFORMATION);
+#endif
     g_mod_launch_iso.clear(); g_mod_launch_engine.clear(); g_mod_launch_kind.clear(); return;
   }
   if (!file_exists(g_game_exe)) {
@@ -1277,9 +1288,16 @@ void launch_game_now() {
         if (entry.second.kind == "te" && entry.second.enabled && launcher::mod_catalog::playable(entry.second))
           args += " --mod-gci \"" + entry.second.path + "\"";
 
+#ifdef MELEE_NO_SLIPPI
+    // As in game_args(): that game has no user folder option and refuses it.
+    if (file_exists(base + "\\Sys\\codehandler.bin"))
+      args += " --sys-dir \"" + base + "\\Sys\" --replay-dir \"" + g_dir +
+              "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\Mods\\" + g_mod_launch_key + "\"";
+#else
     if (file_exists(base + "\\Sys\\codehandler.bin"))
       args += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + g_dir +
               "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\Mods\\" + g_mod_launch_key + "\"";
+#endif
     g_mod_launch_iso.clear(); g_mod_launch_engine.clear(); g_mod_launch_kind.clear();
   }
   std::string cmd = "\"" + exe + "\"" + args + g_lobby_launch_args +
@@ -1454,18 +1472,29 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_play[i++] = g_iso_edit = make(L"EDIT", L"", ES_AUTOHSCROLL | ES_READONLY, CX + 10, 66, 360, 18, ID_ISO_EDIT);
       g_play[i++] = make(L"BUTTON", L"Browse...", BS_OWNERDRAW, 602, 58, 96, 34, ID_BROWSE);
       g_play[i++] = g_play_btn = make(L"BUTTON", L"PLAY", BS_OWNERDRAW, CX, 134, CW, 62, ID_PLAY, g_font_big);
+#ifdef MELEE_NO_SLIPPI
+      // No account button and no version picker in this build (the older versions it lists are the
+      // other Game Build). Their g_play slots stay, empty, so the indices below keep their meaning,
+      // and Mods and Language start at the left edge where the version picker was.
+      g_play[i++] = g_slippi_btn = nullptr;
+      g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_OWNERDRAW, 554, 246, 144, 30, ID_UPDATE);
+      g_play[i++] = g_versions_btn = nullptr;
+      const int mods_x = CX, lang_x = CX + 86;
+#else
       g_play[i++] = g_slippi_btn = make(L"BUTTON", L"Get Slippi Launcher", BS_OWNERDRAW, 554, 214, 144, 30, ID_SLIPPI_GET);
       g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_OWNERDRAW, 554, 246, 144, 30, ID_UPDATE);
       g_play[i++] = g_versions_btn = make(L"BUTTON", L"Choose version...", BS_OWNERDRAW, CX, 348, 174, 32, ID_VERSIONS);
+      const int mods_x = 392, lang_x = 478;
+#endif
       g_play[i++] = make(L"BUTTON",L"Launcher color",BS_OWNERDRAW,666,348,32,32,ID_THEME);
       {
         const auto* current = launcher::lang::find(launcher::lang::current());
         g_lang_btn = CreateWindowExW(0, L"BUTTON", current ? current->native : L"English", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                     S(478), S(348), S(176), S(32), hwnd, (HMENU)(INT_PTR)ID_LANGUAGE, GetModuleHandleW(nullptr), nullptr);
+                                     S(lang_x), S(348), S(176), S(32), hwnd, (HMENU)(INT_PTR)ID_LANGUAGE, GetModuleHandleW(nullptr), nullptr);
         SendMessageW(g_lang_btn, WM_SETFONT, (WPARAM)g_font, TRUE);
         g_play[i++] = g_lang_btn;
       }
-      g_play[i++] = make(L"BUTTON", L"Mods", BS_OWNERDRAW, 392, 348, 80, 32, ID_MODS);
+      g_play[i++] = make(L"BUTTON", L"Mods", BS_OWNERDRAW, mods_x, 348, 80, 32, ID_MODS);
       {
         HWND tips=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,
                                   0,0,0,0,hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
@@ -1482,6 +1511,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       create_replay_controls();
       select_tab(0);
       load_ini();
+#ifdef MELEE_NO_SLIPPI
+      // An older version kept in Versions is the other Game Build, and nothing here could switch
+      // back from one: the current install always.
+      g_active_version.clear();
+#endif
       set_iso(g_iso);
       if (!g_iso.empty()) save_ini();   // remember wherever it came from
 #ifdef MELEE_NO_SLIPPI
@@ -1489,7 +1523,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 #endif
       refresh_account_line();
       ShowWindow(g_slippi_btn, g_slippi_missing ? SW_SHOW : SW_HIDE);
+#ifndef MELEE_NO_SLIPPI   // the public releases are the other build: this one must never install them over itself
       if (!g_launcher_test) { host::updater::check(MELEE_PORT_VERSION); refresh_updater(); }
+#endif
       SetTimer(hwnd, ID_TIMER, 500, nullptr);
       if (!g_launcher_test) SetTimer(hwnd, ID_TIMER_STANDBY, 1500, nullptr);
       DragAcceptFiles(hwnd, TRUE);
@@ -1575,6 +1611,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_PLAY: start_game(); break;
         case ID_BUILD: start_build(); break;
         case ID_UPDATE:
+#ifdef MELEE_NO_SLIPPI
+          break;   // no update source for this build (see the check at start)
+#endif
           if (host::updater::rollback_state() == host::updater::RollbackState::Downloading) break;
           if (host::updater::state() == host::updater::State::Failed) host::updater::check(MELEE_PORT_VERSION);
           else { settings_standby_stop(); host::updater::download_and_install(); }
@@ -1603,7 +1642,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             save_ini();
           }
           break;
+#ifndef MELEE_NO_SLIPPI   // that button does not exist in the build without an account
         case ID_SLIPPI_GET: ShellExecuteW(hwnd, L"open", L"https://slippi.gg/downloads", nullptr, nullptr, SW_SHOWNORMAL); break;
+#endif
       }
       return 0;
     case WM_DROPFILES: {
@@ -1694,7 +1735,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           std::string hint;
           if (g_iso.empty()) hint = "no disc";
           else if (!file_exists(game_exe())) hint = "game not built";
+#ifndef MELEE_NO_SLIPPI   // the build without that layer has nothing to sign in to
           else if (g_slippi_missing) hint = "not signed in to Slippi";
+#endif
           launcher::lobby::set_game_state(std::string(MELEE_PORT_VERSION) + (g_engine == ENGINE_SOURCE ? ":source" : ":recomp"),
                                           lobby_game_ready(), hint);
 #ifdef MELEE_NO_SLIPPI
