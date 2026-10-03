@@ -229,6 +229,7 @@ class D3D12Backend : public Backend {
     if (opts_.pc_settings) settings_ui_ = std::make_unique<PcSettingsUI>(hwnd, device_.Get(), queue_.Get(), opts_);
 #endif
     set_hud_scales(opts_.stock_hud_scale, opts_.damage_hud_scale, gecko::option_pal_stock_icons);
+    set_low_poly_fighters(opts_.low_poly_fighters != 0);
   }
   ~D3D12Backend() override { if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend shutdown / gpu wait");
     wait_gpu(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: gpu idle / settings destroy");

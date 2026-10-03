@@ -117,6 +117,29 @@ export function tailBytes(text, cap) {
   return newline < 0 ? "" : decoder.decode(tail.subarray(newline + 1));
 }
 
+// The game log says what the session was once, at its start: the version, the settings, the mods and
+// the skins in use. A long session pushed those lines out of the newest `cap` bytes, and the report
+// could then not say whether a mod or a skin was involved. So when the log is cut, its first whole
+// lines are kept as well (few and short: a long first line is not a start-up line), scrubbed the
+// same way as every other line.
+const HEAD_BYTES = 6 * 1024, HEAD_LINES = 60, HEAD_LINE_BYTES = 400;
+function sessionStart(bytes, start, names) {
+  const region = decoder.decode(bytes.subarray(0, Math.min(start, 4 * HEAD_BYTES))).replace(/\r+\n?/g, "\n");
+  const lines = region.split("\n");
+  lines.pop();   // the last piece may be half a line
+  const kept = [];
+  let used = 0, omitted = 0;
+  for (const line of lines.slice(0, HEAD_LINES)) {
+    if (/^[ \t]*$/.test(line)) continue;
+    const size = encoder.encode(line).length + 1;
+    if (size > HEAD_LINE_BYTES || used + size > HEAD_BYTES) break;
+    const safe = scrubLine(line, names);
+    if (safe === null) { ++omitted; continue; }
+    kept.push(safe); used += size;
+  }
+  return { text: kept.length ? kept.join("\n") + "\n" : "", omitted };
+}
+
 export function sanitizedText(bytes, cap, filename, extraNames = []) {
   const start = Math.max(0, bytes.length - cap);
   const text = decoder.decode(bytes.subarray(start)).replace(/\r+\n?/g, "\n");
@@ -129,7 +152,9 @@ export function sanitizedText(bytes, cap, filename, extraNames = []) {
     const safe = filename === "lobby.log" || (start && index === 0) ? null : scrubLine(lines[index], names);
     if (safe === null) ++omitted; else kept.push(safe);
   }
-  const header = `[Privacy: ${omitted} private lines omitted]\n` + (start ? "[Earlier input bytes omitted]\n" : "");
+  const head = start && filename === "melee_port.log" ? sessionStart(bytes, start, names) : { text: "", omitted: 0 };
+  omitted += head.omitted;
+  const header = `[Privacy: ${omitted} private lines omitted]\n` + head.text + (start ? "[Earlier input bytes omitted]\n" : "");
   const body = tailBytes(kept.join("\n"), Math.max(0, cap - encoder.encode(header).length - 1));
   return encoder.encode(header + body + "\n");
 }

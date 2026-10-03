@@ -147,6 +147,8 @@ bool g_profile_valid = true;
 std::string g_message;
 std::shared_ptr<const RuntimeState> g_runtime = std::make_shared<RuntimeState>();
 std::atomic<uint32_t> g_online_freezes{0};
+// The mod disc this session serves as its own files (set_session_pack), spelled as a scan's key.
+std::string g_session_pack;
 
 uint16_t le16(const uint8_t* p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
 uint32_t le32(const uint8_t* p) {
@@ -4893,6 +4895,26 @@ static void pair_climbers_locked(const std::string& target, LiveCycle* result) {
   result->partner_previous_id = wears;
 }
 
+// A skin scanned from the disc this session serves as its own files.
+static bool session_pack_record(const AssetRecord& asset) {
+  return !g_session_pack.empty() && asset.source_kind == kDiscSource && asset.source_id == g_session_pack;
+}
+
+void set_session_pack(const std::string& iso_path) {
+  std::error_code ec;
+  const std::string key = iso_path.empty() ? std::string() : fs::absolute(fs::u8path(iso_path), ec).u8string();
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_session_pack = key;
+}
+
+bool session_pack_skin(const std::string& asset_id) {
+  if (asset_id.empty()) return false;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return std::any_of(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+    return item.info.id == asset_id && item.info.kind == "character_costume" && session_pack_record(item);
+  });
+}
+
 LiveCycle cycle_slot_live(const std::string& slot, int direction) {
   LiveCycle result;
   std::lock_guard<std::mutex> lock(g_mutex);
@@ -4900,10 +4922,12 @@ LiveCycle cycle_slot_live(const std::string& slot, int direction) {
   if (!ready_locked(&result.message)) return result;
   if (!find_slot(slot, &known)) { result.message = "That is not a costume slot."; return result; }
   const std::string target = slot_file(known);
-  // The standard costume, then the slot's skins in catalog order.
+  // The standard costume, then the slot's skins in catalog order. The session pack's plain costume
+  // is left out: this session already serves it as the standard costume (set_session_pack).
   std::vector<std::string> ids{std::string()}, names{"Standard"};
   for (const auto& asset : g_assets) {
     if (asset.info.kind != "character_costume" || !asset.info.available || selection_key(asset) != target) continue;
+    if (asset.info.variant.empty() && session_pack_record(asset)) continue;
     ids.push_back(asset.info.id);
     // A pack's skin is labelled by the pack and its set; an import by the name the player gave it.
     names.push_back(asset.source_kind == kDiscSource ?

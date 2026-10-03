@@ -98,6 +98,11 @@ struct RenderOptions {
   // effects that do not write depth (sparks, glow, smoke), 2 skips translucent world geometry too.
   // Purely presentational, so unlike a Gecko code it cannot desync and both players may differ.
   int effects_level = 0;
+  // "Low poly fighters": 0 the game decides, 1 the fighter draw always shows the game's own far
+  // (low-polygon) model, the one it draws in reflections, shadows and the magnifier bubble. Display
+  // only: it changes DObj hidden flags and nothing the simulation or a replay reads, so it is safe
+  // online and each player may differ. Both engines (ftdrawcommon.c; host.cpp parts_show_low_poly).
+  int low_poly_fighters = 0;
   // "Low spec": one switch that puts every setting which costs frames at its cheapest, for
   // integrated graphics and older laptops. Turning it off must give the player their own settings
   // back rather than a hardcoded default, so what they had is kept here while it is on. Both the
@@ -174,6 +179,9 @@ struct RenderOptions {
   // What the game is given: set from cpu_training_word() when the settings load and when a row
   // changes (it takes effect on the next frame, like "20XX CPUs").
   static uint32_t& live_cpu_training() { static uint32_t value = 0; return value; }
+  // Bumped when the game sets that word from the 20XX Hack Pack's debug menu (host command 0xFA,
+  // MU_HP_OP_CPU_WORD); the settings panel then takes the rows from it and saves them.
+  static std::atomic<uint32_t>& live_cpu_game_changes() { static std::atomic<uint32_t> value{0}; return value; }
   // Bumped when the game changes both TE words from 20XX TE's in-game settings menu (host command
   // 0xF8); the settings panel then saves them, so the file and the menu agree.
   static std::atomic<uint32_t>& live_te_game_changes() { static std::atomic<uint32_t> value{0}; return value; }

@@ -15,7 +15,8 @@
 //     settings file like 20XX TE's menu song (settings(), key hp_settings).
 //   - the stage variant of the running match, carried into option word 3 for the replay.
 //
-// Header only, used by port/app/source_host.cpp (and the settings panel for the saved block).
+// Header only, used by port/app/source_host.cpp and the settings panel (port/runtime/gx/pc_settings.cpp),
+// which loads and saves the block (key hp_settings) and saves it again when the game changes it.
 #pragma once
 #include <algorithm>
 #include <array>
@@ -27,7 +28,7 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include "mu_host.h"
+#include "../abi/mu_host.h"   // (relative, like host.h: the settings panel includes this file too)
 
 namespace source_port::hackpack {
 
@@ -83,6 +84,7 @@ inline uint8_t clamp_setting(uint32_t index, uint8_t value) {
   if (index == MU_HP_SET_GLOBAL_ON || index == MU_HP_SET_GLOBAL_MENUS) return value ? 1 : 0;
   if (index >= MU_HP_SET_LEGAL_VARIANT && index < MU_HP_SET_LEGAL_VARIANT + 6) return value > 15 ? 15 : value;
   if (index == MU_HP_SET_STAGE_PAGE) return value > 3 ? 0 : value;
+  if (index == MU_HP_SET_TRAINING) return value & (MU_HP_TRAINING_ON | MU_HP_TRAINING_LOOP);
   return 0;                                                                        // spare bytes stay zero
 }
 // The settings file's form: 48 hex digits. Anything else leaves the defaults.

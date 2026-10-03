@@ -69,7 +69,7 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   }
   if (g_on_message && g_on_message(h, m, w, l)) return 1;
   switch (m) {
-    case WM_CLOSE: g_closed = true; request_exit(0); return 0;
+    case WM_CLOSE: g_closed = true; request_user_exit(); return 0;
     case WM_APP + 7:   // kCursorRefresh, see window_input_capture
       if (GetForegroundWindow() == h) SetCursor(w ? LoadCursor(nullptr, IDC_ARROW) : nullptr);
       return 0;

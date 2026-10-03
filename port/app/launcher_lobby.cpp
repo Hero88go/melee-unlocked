@@ -967,6 +967,15 @@ void refresh() {
   process_private(state);
   for(int i=0;i<26;++i) EnableWindow(GetDlgItem(window,CHARACTER_FIRST+i),!playing);
   layout();
+  // The page paints its empty states (the badge and text of an empty list) itself. When a list
+  // fills or empties, or a private room opens, what was painted is out of date in the strips no
+  // control covers: the badge's top edge stayed above the first player. Repaint the page then.
+  {
+    static std::string painted;
+    std::string now=std::to_string(lobby_tab)+(rows.empty()?"r":"R")+(chat_messages.empty()?"c":"C")+(friends.empty()?"f":"F")+
+                    (history.empty()?"h":"H")+(requests.empty()?"q":"Q")+"|"+active_room+"|"+std::to_string(private_rooms.size());
+    if(painted!=now) { painted=now; InvalidateRect(window,nullptr,FALSE); }
+  }
 }
 void prefs_updated() {
   label(OPEN_TO,launcher::lang::tx("Open to:")+" "+open_summary());
@@ -1185,7 +1194,18 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     if(!target.empty() && target!=self && !mode.empty()) enqueue("request",{{"target",target},{"mode",mode}});
     return 0;
   }
-  if(msg==WM_DRAWITEM) { draw_control((DRAWITEMSTRUCT*)lp); return TRUE; }
+  if(msg==WM_DRAWITEM) {
+    // Drawn off screen and copied in one step: drawn straight into the control, each repaint showed
+    // the background fill before the row or button itself, which read as flicker.
+    DRAWITEMSTRUCT* d=(DRAWITEMSTRUCT*)lp; const RECT r=d->rcItem; const int cw=r.right-r.left, ch=r.bottom-r.top;
+    HDC mem=cw>0&&ch>0?CreateCompatibleDC(d->hDC):nullptr; HBITMAP bmp=mem?CreateCompatibleBitmap(d->hDC,cw,ch):nullptr;
+    if(!bmp) { if(mem) DeleteDC(mem); draw_control(d); return TRUE; }
+    auto old=SelectObject(mem,bmp); SetViewportOrgEx(mem,-r.left,-r.top,nullptr);
+    DRAWITEMSTRUCT copy=*d; copy.hDC=mem; draw_control(&copy);
+    SetViewportOrgEx(mem,0,0,nullptr); BitBlt(d->hDC,r.left,r.top,cw,ch,mem,0,0,SRCCOPY);
+    SelectObject(mem,old); DeleteObject(bmp); DeleteDC(mem);
+    return TRUE;
+  }
   if(msg==WM_MEASUREITEM) { ((MEASUREITEMSTRUCT*)lp)->itemHeight=U(((MEASUREITEMSTRUCT*)lp)->CtlID==CHATLOG?60:76); return TRUE; }
   if(msg==WM_NOTIFY && ((NMHDR*)lp)->code==TTN_GETDISPINFOW) {
     auto* tip=(NMTTDISPINFOW*)lp;HWND list=(HWND)tip->hdr.idFrom;

@@ -131,6 +131,12 @@ void current_scene(uint32_t* major, uint32_t* minor, uint32_t* match_frame);
 void deliver_interrupt(uint32_t number);
 bool exit_requested();
 void request_exit(int code);
+// The player closed the window or chose Quit. While a replay is on screen and has not reached its
+// end the exit code is kViewerClosedExit, so the launcher's replay queue stops instead of starting
+// the next replay; in every other case it is 0, as before.
+constexpr int kViewerClosedExit = 4;
+void request_user_exit();
+void set_replay_viewing(bool on);
 // Local launcher mailbox for an explicitly accepted lobby Direct match.
 // Only a normal completed game with one known winner contributes to W/L history.
 void publish_lobby_result(int winner_index, int end_method);
@@ -166,6 +172,8 @@ void install_mod_disc_guards();   // Static Recomp, mod disc: a file the disc la
 void apply_wide_fighter_draw();   // Static Recomp, once per game frame: fighters in the added sides draw under True 16:9
 void install_console_clock();  // Static Recomp: OSGetTime carries the date (see os_get_time_dated)
 void install_language_override();  // Static Recomp: the functions that read the saved language follow g_game_language
+void install_low_poly_fighters();  // Static Recomp: the fighter parts hook behind "Low poly fighters" (gx::low_poly_fighters_active)
+void apply_low_poly_fighters();    // Static Recomp, once per game frame: runs the fighter draw from RAM while the option is on
 uint64_t console_epoch_ticks(); // the console clock at start: ticks since 2000-01-01, local time
 void note_frame_submitted();   // the game handed over the frame's picture; until the retrace it only waits
 // Retrace pacing multiplier (Slippi Online nudges it by up to 1% to keep peers in step).
