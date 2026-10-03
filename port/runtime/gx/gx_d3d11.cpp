@@ -42,7 +42,11 @@
 #include "gx_d3d11.h"
 #include "flicker_scan.h"
 #include "gx_backend.h"
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"   // the same names, answered from the neutral netplay state
+#else
 #include "exi_slippi.h"
+#endif
 #include "gx_shader.h"
 #include "gx_texture.h"
 #include "texture_pack.h"
@@ -1640,6 +1644,24 @@ void D3D11Backend::trim_textures() {
   const double now = Stopwatch::now();
   if (now - texture_trim_time_ < 1.0) return;
   texture_trim_time_ = now;
+  // EFB copies are kept by the guest address they were copied to and nothing took one out again,
+  // so every address any scene had copied to held a texture of up to the whole internal frame for
+  // the rest of the session, outside the budget below. Once more than a few exist, a copy nothing
+  // has written or sampled for a minute goes; a draw that samples the address later falls back to
+  // the game's own texture data until the game copies there again (as the D3D12 backend does).
+  constexpr uint64_t kCopyIdleFrames = 3600;
+  constexpr size_t kCopiesKept = 16;
+  if (efb_copies_.size() > kCopiesKept) {
+    uint32_t copies = 0;
+    for (auto it = efb_copies_.begin(); it != efb_copies_.end();) {
+      if (it->second.last_used + kCopyIdleFrames >= frame_counter_) { ++it; continue; }
+      it = efb_copies_.erase(it); ++copies;
+    }
+    if (copies) {
+      reset_bound();   // the redundant-state filter remembers views by pointer
+      host::log("d3d11: %u idle EFB copy textures freed, %zu kept", copies, efb_copies_.size());
+    }
+  }
   uint64_t cached = 0;
   for (const auto& entry : textures_) cached += texture_bytes(entry.second.width, entry.second.height, entry.second.levels);
   if (cached <= texture_budget_bytes_) return;

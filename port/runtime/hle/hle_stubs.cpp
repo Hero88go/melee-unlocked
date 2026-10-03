@@ -4,8 +4,13 @@
 #include "hle.h"
 #include "ax_ucode.h"
 #include "audio.h"
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"   // no device on that EXI channel: transfers do nothing and read zero
+#else
 #include "exi_slippi.h"
+#endif
 #include "memory_range.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -93,6 +98,9 @@ void sram_command(uint32_t cmd) {
 
 void sram_transfer(uint32_t buf, uint32_t len, bool write) {
   sram_load();
+  // Only the bytes that fall inside SRAM are touched, so only those need to be in memory.
+  const uint32_t span = s_sram_offset < SRAM_SIZE ? std::min(len, SRAM_SIZE - s_sram_offset) : 0u;
+  if (!hle::guest_buffer("EXI SRAM transfer", buf, span)) return;
   for (uint32_t i = 0; i < len; ++i) {
     const uint32_t off = s_sram_offset + i;
     if (off >= SRAM_SIZE) break;
@@ -115,6 +123,8 @@ static bool exi_is_slippi(uint32_t chan) { return chan == SLIPPI_CHANNEL && s_ex
 HLE(EXIImm) {
   // (chan, buf, len, type, callback): type 0 read, 1 write, 2 read/write.
   uint32_t chan = ARG0, buf = ARG1, len = ARG2, type = ARG3;
+  // An immediate transfer moves at most four bytes. A buffer outside memory transfers nothing.
+  if (!hle::guest_buffer("EXIImm", buf, std::min(len, 4u))) { RET(1); return; }
   if (exi_is_slippi(chan)) {
     if (type != 0) { uint32_t data = 0; for (uint32_t i = 0; i < len && i < 4; ++i) data |= (uint32_t)host::rd8(buf + i) << (24 - 8 * i); slippi::imm_write(data, len); }
     if (type != 1) { uint32_t data = slippi::imm_read(len); for (uint32_t i = 0; i < len && i < 4; ++i) host::wr8(buf + i, (uint8_t)(data >> (24 - 8 * i))); }
@@ -140,6 +150,8 @@ HLE(EXIImm) {
 }
 HLE(EXIImmEx) {
   uint32_t chan = ARG0, buf = ARG1, len = ARG2, type = ARG3;
+  const bool sram = !exi_is_slippi(chan) && exi_is_sram(chan) && s_sram_offset < SRAM_SIZE;   // guards its own span
+  if (!sram && !hle::guest_buffer("EXIImmEx", buf, len)) { RET(1); return; }
   if (exi_is_slippi(chan)) {
     if (type != 0) slippi::dma_write(buf, len);
     if (type != 1) slippi::dma_read(buf, len);
@@ -152,6 +164,8 @@ HLE(EXIImmEx) {
 }
 HLE(EXIDma) {
   uint32_t chan = ARG0, buf = ARG1, len = ARG2, type = ARG3;
+  const bool sram = !exi_is_slippi(chan) && exi_is_sram(chan) && s_sram_offset < SRAM_SIZE;   // guards its own span
+  if (!sram && !hle::guest_buffer("EXIDma", buf, len)) { RET(1); return; }
   if (exi_is_slippi(chan)) {
     if (type == 1) slippi::dma_write(buf, len);
     else slippi::dma_read(buf, len);

@@ -129,7 +129,8 @@ bool parse_trace(const char* text, size_t size, Trace* out, std::string* error) 
     if (sync < 0) r.flags |= kShed;
     else if (sync > 0) r.flags |= kAdvance;
     else if (r.wait_frames > 0) r.flags |= kWait;
-    if (integer(C_MARK, 0, 1)) r.flags |= kMark;
+    const long mark = integer(C_MARK, 0, 4);   // 1 plain, 2 looked wrong, 3 input wrong, 4 sounded wrong
+    if (mark) r.flags |= mark == 4 ? kMarkAudio : mark == 3 ? kMarkInput : mark == 2 ? kMarkVisual : kMark;
     const long buttons = integer(C_BUTTONS, 0, 0xFFFF, 16);
     r.pad[0] = (uint8_t)(buttons >> 8);
     r.pad[1] = (uint8_t)buttons;

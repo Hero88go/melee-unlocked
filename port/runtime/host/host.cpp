@@ -15,9 +15,13 @@
 #include "authored_pose.h"
 #include "window.h"
 #include "ax_ucode.h"
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"   // the same names, answered from the neutral netplay state
+#else
 #include "exi_slippi.h"
 #include "jukebox.h"
 #include "slippi_online.h"
+#endif
 #include "gecko_data.h"
 #include <algorithm>
 #include <chrono>

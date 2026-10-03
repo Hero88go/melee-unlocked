@@ -13,7 +13,9 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <cfloat>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -77,9 +79,11 @@ struct AssetRecord {
 // only when the file's size or time changes, or when the scan itself learned something new (rules).
 struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32_t rules = 0; };
 // 1: .dat and .usd costumes. 2: alternate costumes under other extensions (.lat, .rat) and the online
-// verdict taken at scan time. 3: the pack's own portraits, from its character select file. A disc
-// scanned under an older number is scanned again at the next boot.
-constexpr uint32_t kScanRules = 3;
+// verdict taken at scan time. 3: the pack's own portraits, from its character select file. 4: the
+// skeleton check reads the relocation table (a joint at data offset 0 is a joint) and its reason
+// names the bone. 5: a costume whose blended mesh names a bone with no bind matrix is marked, since
+// the game stops when it draws one. A disc scanned under an older number is scanned again at the next boot.
+constexpr uint32_t kScanRules = 5;
 constexpr const char* kImportPack = "import";
 constexpr const char* kDiscSource = "disc";
 constexpr const char* kDiscChanged = "disc file missing or changed";
@@ -1436,28 +1440,38 @@ constexpr uint32_t kVisualFlags = 0x1u | 0x2u | 0x4u | 0x8u | 0x10u | 0x20u | 0x
 // A skin exported from a model tool carries the same rest pose with different rounding in the last
 // digits, and a bit-for-bit comparison refused it. The nine values (rotation, scale, translation)
 // are compared as numbers with a small tolerance; a real change of a joint is far larger.
-inline bool rest_pose_close(const uint8_t* p, const uint8_t* q) {
+// Returns which parts of the rest pose differ (0 when none do), so the reason can say what changed.
+constexpr uint32_t kRestRotated = 1, kRestResized = 2, kRestMoved = 4;
+inline uint32_t rest_pose_difference(const uint8_t* p, const uint8_t* q) {
+  uint32_t differs = 0;
   for (int i = 0; i < 9; ++i) {
     uint32_t ua = be32(p + i * 4), ub = be32(q + i * 4);
     float fa, fb; std::memcpy(&fa, &ua, 4); std::memcpy(&fb, &ub, 4);
     if (ua == ub) continue;
-    if (!std::isfinite(fa) || !std::isfinite(fb)) return false;
+    const uint32_t part = i < 3 ? kRestRotated : i < 6 ? kRestResized : kRestMoved;
+    if (!std::isfinite(fa) || !std::isfinite(fb)) { differs |= part; continue; }
     const float scale = std::max(1.0f, std::max(std::fabs(fa), std::fabs(fb)));
     // The first three values are the rest rotation, which a fighter's animations replace on every
     // frame, so an exporter's rounding there gets more room than in scale and translation.
     const float tolerance = i < 3 ? 1e-2f : 1e-3f;
-    if (std::fabs(fa - fb) > tolerance * scale) return false;
+    if (std::fabs(fa - fb) > tolerance * scale) differs |= part;
   }
-  return true;
+  return differs;
 }
+// `relocated` receives the data offsets the relocation table lists, sorted. A pointer in this format
+// is an offset into the data block, so a joint stored at data offset 0 is pointed to by the value 0:
+// only the relocation table tells that pointer from "no joint".
 bool share_joint_root(const std::vector<uint8_t>& bytes, uint32_t* data_size, uint32_t* root,
-                      std::string* error) {
+                      std::vector<uint32_t>* relocated, std::string* error) {
   if (bytes.size() < 0x20) { *error = "DAT header is truncated."; return false; }
   const uint64_t dsize = be32(bytes.data() + 4), relocations = be32(bytes.data() + 8),
                  roots = be32(bytes.data() + 12), references = be32(bytes.data() + 16);
   const uint64_t root_table = 0x20ull + dsize + relocations * 4ull;
   const uint64_t strings = root_table + (roots + references) * 8ull;
   if (roots > 1024 || references > 1024 || strings > bytes.size()) { *error = "DAT tables point outside the file."; return false; }
+  relocated->resize((size_t)relocations);
+  for (uint64_t i = 0; i < relocations; ++i) (*relocated)[(size_t)i] = be32(&bytes[(size_t)(0x20ull + dsize + i * 4ull)]);
+  std::sort(relocated->begin(), relocated->end());
   for (uint64_t i = 0; i < roots; ++i) {
     const uint8_t* record = &bytes[(size_t)(root_table + i * 8)];
     const uint64_t name = strings + be32(record + 4);
@@ -1473,18 +1487,49 @@ bool share_joint_root(const std::vector<uint8_t>& bytes, uint32_t* data_size, ui
   }
   *error = "No _Share_joint skeleton root."; return false;
 }
-bool same_tree(const std::vector<uint8_t>& a, uint32_t asize, uint32_t ja,
-               const std::vector<uint8_t>& b, uint32_t bsize, uint32_t jb,
+inline bool is_pointer(const std::vector<uint32_t>& relocated, uint32_t slot) {
+  return std::binary_search(relocated.begin(), relocated.end(), slot);
+}
+// The number of joints in one tree, stopping past 1024 (a cycle or a broken file). Only used to
+// word the reason once the two trees are known to differ in shape.
+uint32_t count_joints(const std::vector<uint8_t>& bytes, uint32_t size, const std::vector<uint32_t>& relocated,
+                      uint32_t root) {
+  uint32_t count = 0;
+  std::vector<uint32_t> stack{root};
+  while (!stack.empty() && count <= 1024) {
+    const uint32_t x = stack.back(); stack.pop_back();
+    if (x + 0x40ull > size) continue;
+    ++count;
+    const uint8_t* p = &bytes[0x20ull + x];
+    if (is_pointer(relocated, x + 0x0C)) stack.push_back(be32(p + 0x0C));
+    if (is_pointer(relocated, x + 0x08)) stack.push_back(be32(p + 0x08));
+  }
+  return count;
+}
+// `a` is the standard file, `b` the costume. Joints are numbered depth first (child, then next),
+// from 0 at the root, and every refusal names the joint so the player can find it in a model tool.
+bool same_tree(const std::vector<uint8_t>& a, uint32_t asize, uint32_t ja, const std::vector<uint32_t>& arel,
+               const std::vector<uint8_t>& b, uint32_t bsize, uint32_t jb, const std::vector<uint32_t>& brel,
                uint32_t* joints, std::string* error) {
   // Iterative walk of both trees in lockstep (child first, then next), bounded against cycles.
-  // Child and next pointers of 0 are null; the root itself may sit at data offset 0.
-  struct Pair { uint32_t x, y; bool root; };
-  std::vector<Pair> stack{{ja, jb, true}};
+  // A child or next slot holds a joint only when the relocation table lists the slot: the value 0
+  // is a real pointer to a joint stored at data offset 0, and reading it as "no joint" called a
+  // matching skeleton a different shape.
+  struct Pair { uint32_t x, y; bool has_x, has_y; };
+  std::vector<Pair> stack{{ja, jb, true, true}};
   while (!stack.empty()) {
     const Pair top = stack.back(); stack.pop_back();
     const uint32_t x = top.x, y = top.y;
-    if (!top.root && (!x || !y)) {
-      if (x || y) { *error = "Skeleton hierarchy differs from the vanilla costume."; return false; }
+    if (!top.has_x || !top.has_y) {
+      if (top.has_x || top.has_y) {
+        const uint32_t standard = count_joints(a, asize, arel, ja), costume = count_joints(b, bsize, brel, jb);
+        if (standard != costume)
+          *error = "Skeleton joint count differs from the vanilla costume (" + std::to_string(costume) +
+                   " instead of " + std::to_string(standard) + ").";
+        else
+          *error = "Skeleton joint " + std::to_string(*joints) + " hierarchy differs from the vanilla costume.";
+        return false;
+      }
       continue;
     }
     if (x + 0x40ull > asize || y + 0x40ull > bsize) { *error = "Skeleton joint points outside the data block."; return false; }
@@ -1494,11 +1539,77 @@ bool same_tree(const std::vector<uint8_t>& a, uint32_t asize, uint32_t ja,
     if ((be32(p + 4) & ~kVisualFlags) != (be32(q + 4) & ~kVisualFlags)) {
       *error = "Skeleton joint " + std::to_string(*joints - 1) + " flags differ from the vanilla costume."; return false;
     }
-    if (!rest_pose_close(p + 0x14, q + 0x14)) {
-      *error = "Skeleton joint " + std::to_string(*joints - 1) + " rest pose differs from the vanilla costume."; return false;
+    if (const uint32_t differs = rest_pose_difference(p + 0x14, q + 0x14)) {
+      std::string what;
+      if (differs & kRestRotated) what += "rotated";
+      if (differs & kRestResized) what += what.empty() ? "resized" : ", resized";
+      if (differs & kRestMoved) what += what.empty() ? "moved" : ", moved";
+      *error = "Skeleton joint " + std::to_string(*joints - 1) + " rest pose differs from the vanilla costume (" + what + ").";
+      return false;
     }
-    stack.push_back({be32(p + 0x0C), be32(q + 0x0C), false});   // next sibling
-    stack.push_back({be32(p + 0x08), be32(q + 0x08), false});   // first child
+    stack.push_back({be32(p + 0x0C), be32(q + 0x0C), is_pointer(arel, x + 0x0C), is_pointer(brel, y + 0x0C)});   // next sibling
+    stack.push_back({be32(p + 0x08), be32(q + 0x08), is_pointer(arel, x + 0x08), is_pointer(brel, y + 0x08)});   // first child
+  }
+  return true;
+}
+// The game stops (pobj.c, assertion "jp->envelopemtx") when it draws an envelope mesh whose blended
+// matrix names a joint that has no inverse bind matrix: the joint description's pointer at 0x38 is
+// what the loader copies into the joint, and a blend of two or more joints multiplies by it for
+// every joint in the list. A console stops the same way, so such a costume is never handed to the
+// game. A list whose first weight is 1 takes the game's unchecked path and is left alone here.
+// Only a certain defect refuses: anything that points outside the data block is skipped, since the
+// other checks own malformed files.
+bool envelopes_bound(const std::vector<uint8_t>& bytes, uint32_t size, const std::vector<uint32_t>& relocated,
+                     uint32_t root, std::string* error) {
+  constexpr uint32_t kNoMeshFlags = 0x20u | 0x4000u;   // particle and spline joints keep other data in the mesh slot
+  constexpr size_t kMaxWalk = 65536;                   // against cycles in a broken file
+  std::vector<uint32_t> order;                         // joints depth first (child, then next), as same_tree numbers them
+  std::vector<uint32_t> stack{root};
+  while (!stack.empty() && order.size() <= 1024) {
+    const uint32_t x = stack.back(); stack.pop_back();
+    if (x + 0x40ull > size) continue;
+    order.push_back(x);
+    const uint8_t* p = &bytes[0x20ull + x];
+    if (is_pointer(relocated, x + 0x0C)) stack.push_back(be32(p + 0x0C));
+    if (is_pointer(relocated, x + 0x08)) stack.push_back(be32(p + 0x08));
+  }
+  if (order.size() > 1024) return true;
+  size_t walked = 0;
+  for (const uint32_t x : order) {
+    const uint8_t* p = &bytes[0x20ull + x];
+    if ((be32(p + 4) & kNoMeshFlags) || !is_pointer(relocated, x + 0x10)) continue;
+    for (uint32_t d = be32(p + 0x10);; d = be32(&bytes[0x20ull + d + 0x04])) {          // display objects
+      if (d + 0x10ull > size || ++walked > kMaxWalk) break;
+      if (is_pointer(relocated, d + 0x0C))
+        for (uint32_t o = be32(&bytes[0x20ull + d + 0x0C]);; o = be32(&bytes[0x20ull + o + 0x04])) {   // polygon objects
+          if (o + 0x18ull > size || ++walked > kMaxWalk) break;
+          const uint8_t* po = &bytes[0x20ull + o];
+          const uint32_t type = (((uint32_t)po[0x0C] << 8) | po[0x0D]) & 0x3000u;
+          if (type == 0x2000u && is_pointer(relocated, o + 0x14)) {
+            // The envelope list: pointers to arrays of (joint, weight), each ended by a slot that is no pointer.
+            for (uint64_t slot = be32(po + 0x14); slot + 4 <= size && is_pointer(relocated, (uint32_t)slot); slot += 4) {
+              if (++walked > kMaxWalk) break;
+              const uint64_t first = be32(&bytes[(size_t)(0x20ull + slot)]);
+              if (first + 8 > size || !is_pointer(relocated, (uint32_t)first)) continue;
+              const uint32_t bits = be32(&bytes[(size_t)(0x20ull + first + 4)]);
+              float weight; std::memcpy(&weight, &bits, 4);
+              if (weight >= 1.0f - FLT_EPSILON) continue;
+              for (uint64_t e = first; e + 8 <= size && is_pointer(relocated, (uint32_t)e); e += 8) {
+                if (++walked > kMaxWalk) break;
+                const uint32_t joint = be32(&bytes[(size_t)(0x20ull + e)]);
+                if (joint + 0x40ull > size || is_pointer(relocated, joint + 0x38)) continue;
+                const auto found = std::find(order.begin(), order.end(), joint);
+                *error = "A mesh is skinned to bone " +
+                         (found == order.end() ? "at " + std::to_string(joint) : std::to_string(found - order.begin())) +
+                         ", which has no bind matrix: the game would stop when it is drawn.";
+                return false;
+              }
+            }
+          }
+          if (!is_pointer(relocated, o + 0x04)) break;
+        }
+      if (!is_pointer(relocated, d + 0x04)) break;
+    }
   }
   return true;
 }
@@ -1506,15 +1617,28 @@ bool same_tree(const std::vector<uint8_t>& a, uint32_t asize, uint32_t ja,
 
 }  // namespace
 
+// Public: whether the game can draw this costume at all. Offline and online alike, unlike the
+// skeleton comparison below: a file that fails here stops the game on any machine.
+bool costume_draw_safe(const std::vector<uint8_t>& candidate, std::string* error) {
+  std::string local; if (!error) error = &local;
+  uint32_t size = 0, root = 0;
+  std::vector<uint32_t> relocated;
+  std::string unused;
+  // No skeleton root or a truncated file is some other check's finding, not a drawing defect.
+  if (!skeleton::share_joint_root(candidate, &size, &root, &relocated, &unused) || size + 0x20ull > candidate.size()) return true;
+  return skeleton::envelopes_bound(candidate, size, relocated, root, error);
+}
+
 // Public: the Source Port asks the same question about a live pack's costume files.
 bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
                               std::string* error) {
   std::string local; if (!error) error = &local;
   uint32_t asize = 0, aroot = 0, bsize = 0, broot = 0, joints = 0;
-  if (!skeleton::share_joint_root(clean, &asize, &aroot, error) ||
-      !skeleton::share_joint_root(candidate, &bsize, &broot, error)) return false;
+  std::vector<uint32_t> arel, brel;
+  if (!skeleton::share_joint_root(clean, &asize, &aroot, &arel, error) ||
+      !skeleton::share_joint_root(candidate, &bsize, &broot, &brel, error)) return false;
   if (asize + 0x20ull > clean.size() || bsize + 0x20ull > candidate.size()) { *error = "DAT data block is truncated."; return false; }
-  if (!skeleton::same_tree(clean, asize, aroot, candidate, bsize, broot, &joints, error)) return false;
+  if (!skeleton::same_tree(clean, asize, aroot, arel, candidate, bsize, broot, brel, &joints, error)) return false;
   *error = std::to_string(joints) + " joints match";
   return true;
 }
@@ -1524,9 +1648,24 @@ bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vect
 std::string online_reason_short(const std::string& detail) {
   if (detail.empty()) return "the standard file could not be read";
   if (detail.find("joints match") != std::string::npos) return detail;
-  if (detail.find("rest pose differs") != std::string::npos) return "rest pose differs";
-  if (detail.find("flags differ") != std::string::npos) return "joint settings differ";
-  if (detail.find("hierarchy differs") != std::string::npos) return "skeleton shape differs";
+  // "Skeleton joint 12 ... (moved)." names the bone, so a player knows which one to put back, and
+  // the bracket (what changed, or the two joint counts) is carried over as written.
+  const size_t open = detail.find('('), close = detail.find(')');
+  const std::string bracket = open != std::string::npos && close != std::string::npos && close > open
+                                  ? " " + detail.substr(open, close - open + 1) : std::string();
+  static constexpr char kJoint[] = "Skeleton joint ";
+  constexpr size_t kJointLength = sizeof kJoint - 1;
+  if (detail.find("joint count differs") != std::string::npos) return "bone count differs" + bracket;
+  if (detail.compare(0, kJointLength, kJoint) == 0) {
+    size_t end = kJointLength;
+    while (end < detail.size() && std::isdigit((unsigned char)detail[end])) ++end;
+    if (end > kJointLength) {
+      const std::string bone = "bone " + detail.substr(kJointLength, end - kJointLength) + ": ";
+      if (detail.find("rest pose differs") != std::string::npos) return bone + "rest pose differs" + bracket;
+      if (detail.find("flags differ") != std::string::npos) return bone + "settings differ";
+      if (detail.find("hierarchy differs") != std::string::npos) return bone + "shape differs";
+    }
+  }
   if (detail.find("more than 1024 joints") != std::string::npos) return "skeleton too large";
   if (detail.find("No _Share_joint") != std::string::npos) return "no skeleton found";
   if (detail.find("non-texture data") != std::string::npos) return "changes more than textures";
@@ -2919,6 +3058,10 @@ std::vector<uint8_t> load_runtime_asset_locked(const AssetRecord& asset, std::st
     if (!dat.ok || dat.target_path != asset.info.target_path) {
       *error = asset.info.name + ": stored DAT identity no longer matches its catalog target."; return {};
     }
+    // Every way a costume reaches the game passes here, so one that the game cannot draw is
+    // refused offline too and the slot keeps the standard costume.
+    std::string defect;
+    if (!costume_draw_safe(bytes, &defect)) { *error = asset.info.name + ": " + defect; return {}; }
   } else if (asset.info.kind == "stage_visual" || asset.info.kind == "effect_visual") {
     VisualLayout layout;
     if (!parse_visual_layout(bytes, &layout, error)) {
@@ -3411,6 +3554,9 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
       asset.online_known = true;
       asset.online_ok = costume_skeleton_matches(retail, bytes, &detail);
       asset.online_note = online_reason_short(detail);
+      // A costume the game cannot draw stays listed with its reason, and the load refuses it
+      // everywhere (load_runtime_asset_locked); the online verdict carries the reason to the list.
+      if (!costume_draw_safe(bytes, &detail)) { asset.online_ok = false; asset.online_note = online_reason_short(detail); }
     }
     asset.info.kind = "character_costume";
     asset.info.target_path = dat.target_path;
@@ -4735,6 +4881,32 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
   g_message = next->assets == 0 ? "No selected cosmetic matched this ISO." :
               std::to_string(next->assets) + " cosmetic override(s) active for this launch.";
   for (const auto& issue : runtime_errors) g_message += " " + issue;
+  // The game loads every stage and fighter file whole into heaps of a fixed size, laid out for the
+  // disc's own files (lbheap.c: 5.0 MB and 6.3 MB of main memory), and stops with
+  // `assertion "memp_kouho"` in lbmemory.c when a file finds no room there. That includes the
+  // title screen, which preloads a random demo stage and four fighters. Nothing is changed here:
+  // a file that grew by more than this is named, so the stop has a cause the player can act on.
+  constexpr size_t kLargeGrowth = 1u << 20;
+  size_t large = 0, growth = 0;
+  std::string largest; size_t largest_growth = 0;
+  for (const auto& served : next->by_start) {
+    const RuntimeAsset& item = served.second;
+    if (!item.bytes || item.bytes->size() <= (size_t)item.vanilla_size + kLargeGrowth) continue;
+    const size_t grew = item.bytes->size() - item.vanilla_size;
+    ++large; growth += grew;
+    if (grew > largest_growth) { largest_growth = grew; largest = item.target_path; }
+    host::log("cosmetics: %s is %.1f MB larger than the game's file; the game's memory is laid out for the original",
+              item.target_path.c_str(), grew / 1048576.0);
+  }
+  if (large) {
+    char text[256];
+    std::snprintf(text, sizeof text, " %zu mod file(s) are much larger than the game's own (%.1f MB more in all, the most in %s). "
+                  "The game can stop with a memory error when it loads them; if it does, turn the largest ones off.",
+                  large, growth / 1048576.0, largest.c_str());
+    g_message += text;
+    host::log("cosmetics: %zu oversized override(s), %.1f MB over the originals; a lbmemory.c stop on load means one did not fit",
+              large, growth / 1048576.0);
+  }
 }
 
 void apply_to_fst(uint8_t* fst, uint32_t fst_size) {

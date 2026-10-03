@@ -310,6 +310,7 @@ bool verify_iso(const std::string& path, std::string* why) {
 // drive, so anyone whose install is elsewhere was told to log in when they already had. The folder
 // is searched now rather than assumed: read only, bounded depth, and it opens nothing but the one
 // filename it is looking for.
+#ifndef MELEE_NO_SLIPPI
 std::string find_user_json(const std::filesystem::path& root, int depth) {
   std::error_code ec;
   if (depth < 0 || !std::filesystem::is_directory(root, ec)) return {};
@@ -350,6 +351,22 @@ std::string slippi_account_line() {
   }
   launcher::lobby::set_account("", "");
   return "Slippi online needs an account: install the Slippi Launcher and log in once.";
+}
+#endif
+// The line under PLAY and whether online play is missing something. The build without the Slippi
+// layer has no account to look for: it shows the lobby name and the code made from it, and a match
+// needs only the disc and the game files.
+void refresh_account_line() {
+#ifdef MELEE_NO_SLIPPI
+  std::string name, code;
+  launcher::lobby::p2p_player(name, code);
+  g_slippi_line = name.empty() ? launcher::lang::tr("lobby.p2p.name_missing")
+                               : launcher::lang::tr("lobby.p2p.name", {{"name", name}, {"code", code}});
+  g_slippi_missing = false;
+#else
+  g_slippi_line = slippi_account_line();
+  g_slippi_missing = g_slippi_line.rfind("Slippi account:", 0) != 0;
+#endif
 }
 
 // Runs a command line with stdout/stderr piped into the log. Returns the exit code.
@@ -418,6 +435,10 @@ std::string game_exe() {
     const std::string d = source_exe_dir();
     if (!d.empty()) return d + "\\melee_source.exe";
   }
+#ifdef MELEE_NO_SLIPPI
+  // There is no Static Recomp to fall back to here: the Source Port, or nothing to start.
+  return active_dir() + "\\melee_source.exe";
+#endif
   // Automatic only hands over the compatibility build to a processor that cannot run the other one.
   // A machine that can, keeps it. The two explicit choices exist so that a player who knows their
   // machine is not stuck arguing with a detector.
@@ -448,8 +469,14 @@ std::string settings_ini_path() { return (g_active_version.empty() ? work_dir() 
 std::string game_args() {
   std::string base = active_dir();
   std::string a = " --iso \"" + g_iso + "\" --threaded-renderer --settings-path \"" + settings_ini_path() + "\"";
+#ifdef MELEE_NO_SLIPPI
+  // That game has no Slippi user folder and refuses the option.
+  if (file_exists(base + "\\Sys\\codehandler.bin"))
+    a += " --sys-dir \"" + base + "\\Sys\" --replay-dir \"" + g_dir + "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\CardA\"";
+#else
   if (file_exists(base + "\\Sys\\codehandler.bin"))
     a += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + g_dir + "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\CardA\"";
+#endif
   return a;
 }
 
@@ -539,7 +566,14 @@ void dot(HDC dc, int x, int y, COLORREF c) {
 }
 
 // Rail order: Play, Settings, Lobby, Replays, Mods, Build.
+#ifdef MELEE_NO_SLIPPI
+// That build records no replays, so the Replay Viewer has no rail entry and the rest move up.
+bool nav_shown(int i) { return i != 4; }
+int nav_slot(int i) { static const int slot[6] = {0, 1, 4, 2, 5, 3}; return i >= 0 && i < 6 ? slot[i] : i; }
+#else
+bool nav_shown(int) { return true; }
 int nav_slot(int i) { static const int slot[6] = {0, 1, 5, 2, 3, 4}; return i >= 0 && i < 6 ? slot[i] : i; }
+#endif
 RECT nav_rect(int i) { return LR(12, NAV_Y + nav_slot(i) * NAV_GAP, RAIL_W - 24, NAV_H); }
 // The two build segments, side by side on the GAME BUILD row: 0 Source Port, 1 Static Recomp (Legacy).
 RECT build_seg_rect(int i) {
@@ -550,6 +584,9 @@ RECT build_seg_rect(int i) {
 // segment with nothing installed behind it. The file check only runs over that segment.
 int build_seg_at(POINT p) {
   if (g_tab != 0) return -1;
+#ifdef MELEE_NO_SLIPPI
+  return -1;   // one Game Build: nothing to pick
+#endif
   for (int i = 0; i < 2; ++i) {
     RECT r = build_seg_rect(i);
     if (PtInRect(&r, p)) return i == 0 && !source_available() ? -1 : i;
@@ -704,6 +741,7 @@ void paint_rail(HDC dc) {
 
   const wchar_t* names[6] = {L"Play", L"Settings", L"Build", L"Multiplayer Lobby", L"Replay Viewer", L"Mods"};
   for (int i = 0; i < 6; ++i) {
+    if (!nav_shown(i)) continue;
     RECT nr = nav_rect(i);
     const int page = i == 0 ? 0 : (i == 2 ? 1 : (i == 3 ? 2 : (i == 4 ? 3 : (i == 5 ? 4 : -1))));
     if (page >= 0 && g_tab == page) {
@@ -731,7 +769,12 @@ void paint_play(HDC dc) {
     const bool installed = source_available();
     const int on = g_engine == ENGINE_SOURCE && installed ? 0 : 1;
     const wchar_t* names[2] = {installed ? L"Source Port (Beta)" : L"Source Port (Beta, not installed)", L"Static Recomp (Legacy)"};
-    for (int i = 0; i < 2; ++i) {
+#ifdef MELEE_NO_SLIPPI
+    const int segments = 1;   // the Source Port is the only Game Build of this launcher
+#else
+    const int segments = 2;
+#endif
+    for (int i = 0; i < segments; ++i) {
       const RECT r = build_seg_rect(i);
       COLORREF top = C_BTN, bot = C_BTN, border = C_BTN_BORDER, text = C_DIM;
       if (i == on) { top = C_ACC_HI; bot = C_ACC_LO; border = NO_FILL; text = C_PLAY_TEXT; }
@@ -1138,6 +1181,9 @@ void select_engine(int engine) {
 bool lobby_game_ready() {
   if (g_iso.empty() || !file_exists(game_exe()) || g_building || g_playing ||
       !g_active_version.empty() || g_slippi_missing) return false;
+#ifdef MELEE_NO_SLIPPI
+  return true;   // a peer-to-peer match is told its characters and stage: no menu, no account, no save needed
+#endif
   if (g_engine == ENGINE_SOURCE && source_available()) return true;
   // Slippi's normal boot loads/creates the Melee save. First-run card prompts need the player's
   // choice before we can promise that accepting a lobby request starts a match without input.
@@ -1251,6 +1297,9 @@ void launch_game_now() {
   const DWORD error = launcher::start_process(widen(exe), widen(cmd), widen(cwd), 0, pi);
   if (error != ERROR_SUCCESS) {
     launcher::lobby::game_running(false);
+#ifdef MELEE_NO_SLIPPI
+    launcher::lobby::restart_after_match();   // no game took the lobby's port after all
+#endif
     report_launch_error(error, exe, cwd);
     return;
   }
@@ -1435,8 +1484,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       load_ini();
       set_iso(g_iso);
       if (!g_iso.empty()) save_ini();   // remember wherever it came from
-      g_slippi_line = slippi_account_line();
-      g_slippi_missing = g_slippi_line.rfind("Slippi account:", 0) != 0;
+#ifdef MELEE_NO_SLIPPI
+      g_engine = ENGINE_SOURCE;   // the only Game Build here, whatever launcher.ini last held
+#endif
+      refresh_account_line();
       ShowWindow(g_slippi_btn, g_slippi_missing ? SW_SHOW : SW_HIDE);
       if (!g_launcher_test) { host::updater::check(MELEE_PORT_VERSION); refresh_updater(); }
       SetTimer(hwnd, ID_TIMER, 500, nullptr);
@@ -1460,7 +1511,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MOUSEMOVE: {
       POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
       int hot = -1;
-      for (int i = 0; i < 6; ++i) { RECT r = nav_rect(i); if (PtInRect(&r, p)) hot = i; }
+      for (int i = 0; i < 6; ++i) { RECT r = nav_rect(i); if (nav_shown(i) && PtInRect(&r, p)) hot = i; }
       if (hot != g_nav_hot) {
         int was = g_nav_hot; g_nav_hot = hot;
         if (was >= 0) invalidate(nav_rect(was));
@@ -1489,7 +1540,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       }
       for (int i = 0; i < 6; ++i) {
         RECT r = nav_rect(i);
-        if (!PtInRect(&r, p)) continue;
+        if (!nav_shown(i) || !PtInRect(&r, p)) continue;
         // Settings is not a page here. The launcher used to draw its own copy of the options, which
         // is a second settings UI to keep in step with the real one; this opens the game's own F1
         // panel instead, so it is the same UI by construction and cannot drift from it.
@@ -1497,8 +1548,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (i == 4) { select_tab(3); refresh_replays(); return 0; }
         if (i == 5) { mod_manager::open(); return 0; }
         if (i == 3) {
-          g_slippi_line=slippi_account_line();
-          g_slippi_missing=g_slippi_line.rfind("Slippi account:",0)!=0;
+          refresh_account_line();
           select_tab(2);
           launcher::lobby::open(std::string(MELEE_PORT_VERSION) + (g_engine == ENGINE_SOURCE ? ":source" : ":recomp"),
                                 lobby_game_ready());
@@ -1609,8 +1659,14 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       if(replay_game_done((DWORD)wp)) return 0;
       launcher::lobby::game_running(false);
       set_text(g_play_btn, "PLAY");
+#ifdef MELEE_NO_SLIPPI
+      launcher::lobby::restart_after_match();   // before any dialog: the lobby is back while it is read
+      if (g_lobby_game_active && wp != 0 && !g_launcher_test)
+        MessageBoxW(hwnd, L"The match could not connect or the game exited with an error. A direct connection needs one of you to be reachable: the same network, or a forwarded port. Check melee_port.log, then request another match.", L"Lobby match ended", MB_ICONWARNING);
+#else
       if (g_lobby_game_active && wp != 0)
         MessageBoxW(hwnd, L"The lobby match could not complete its connection or the game exited with an error. Check your Slippi login/code and melee_port.log, then request another match.", L"Lobby match ended", MB_ICONWARNING);
+#endif
       g_lobby_game_active = false;
       set_iso(g_iso);
       // Also after a zero exit code: offer() only acts on a crash file newer than this launch.
@@ -1641,10 +1697,46 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           else if (g_slippi_missing) hint = "not signed in to Slippi";
           launcher::lobby::set_game_state(std::string(MELEE_PORT_VERSION) + (g_engine == ENGINE_SOURCE ? ":source" : ":recomp"),
                                           lobby_game_ready(), hint);
+#ifdef MELEE_NO_SLIPPI
+          // Lobby mods run on the Static Recomp, which this launcher does not start: none are offered.
+          launcher::lobby::refresh_mods({mod_manager::mods_dir() + "\\.cache\\detected.json"}, false);
+          // The name is typed on the Lobby page: the Play page follows it.
+          const std::string line_before = g_slippi_line;
+          refresh_account_line();
+          if (line_before != g_slippi_line) invalidate(slippi_text_rect());
+#else
           launcher::lobby::refresh_mods({mod_manager::mods_dir() + "\\.cache\\detected.json"}, file_exists(static_recomp_exe()));
+#endif
         }
       }
       launcher::lobby::Match match;
+#ifdef MELEE_NO_SLIPPI
+      if (launcher::lobby::take_match(match)) {
+        // A peer-to-peer match: both launchers agreed on ports, characters, stage and seed over the
+        // lobby's encrypted channel, and the lobby hands over the game's --p2p-* arguments already
+        // checked field by field (launcher_lobby_p2p.cpp, p2p_arguments). The game connects to the
+        // other player by itself; no matchmaking server and no account are involved.
+        if (!match.p2p_args.empty() && match.mode == "vanilla" && !g_playing && !g_building && !g_iso.empty() &&
+            g_active_version.empty() && file_exists(game_exe())) {
+          std::error_code ec;
+          std::filesystem::create_directories(std::filesystem::u8path(g_dir + "\\p2p-results"), ec);
+          // The two games start seconds apart and each takes several more to open its port, so
+          // each keeps dialing (and keeps its router mapping alive) far longer than the bare default.
+          // --p2p-games 0: the two keep playing over the one connection until one of them quits a
+          // game or closes the window (a game started by hand plays one game unless told otherwise).
+          g_lobby_launch_args = match.p2p_args + " --p2p-connect-seconds 45 --p2p-games 0";
+          // The game binds the lobby's own UDP port, the one the other player's router already lets
+          // through: the lobby closes its socket first and comes back when the game exits.
+          launcher::lobby::stop_for_match(match);
+          g_game_exe = game_exe(); launch_game_now();
+        } else {
+          launcher::lobby::game_running(false);
+          if (!g_launcher_test)
+            MessageBoxW(hwnd, L"The match could not start. Select an installed current build and disc, then request another match.",
+                        L"Lobby", MB_ICONWARNING);
+        }
+      }
+#else
       if (launcher::lobby::take_match(match)) {
         // Codes arrive from another user. Never concatenate unchecked text into a command line.
         bool valid = !match.code.empty() && match.code.size() <= 18 && match.code.find('#') != std::string::npos;
@@ -1674,6 +1766,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                       L"Lobby", MB_ICONWARNING);
         }
       }
+#endif
       refresh_updater();
       if (g_tab == 0 && host::updater::rollback_state() == host::updater::RollbackState::Downloading) invalidate(LR(398, 348, 300, 32));
       return 0;

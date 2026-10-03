@@ -591,9 +591,25 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
   if (skip) g_trace_record.flags |= g_input_wait_frames > 0 ? net_trace::kWait : net_trace::kShed;
   else if (!q.empty() && q[0] == 4) g_trace_record.flags |= net_trace::kAdvance;
   // F8: the player marks "that just felt wrong", so a report can point at the moment.
-  if (host::window_take_trace_mark()) {
-    g_trace_record.flags |= net_trace::kMark;
-    host::log("slippi: marked frame %d in the session trace", frame);
+  static const char* const kMarkNames[] = {"", "", "looked wrong", "input wrong", "sounded wrong"};
+  static const uint8_t kMarkFlags[] = {0, net_trace::kMark, net_trace::kMarkVisual, net_trace::kMarkInput, net_trace::kMarkAudio};
+  auto mark = [&](int kind) {
+    g_trace_record.flags |= kMarkFlags[kind];
+    if (kind == 1) host::log("slippi: marked frame %d in the session trace", frame);
+    else host::log("slippi: marked frame %d in the session trace (%s)", frame, kMarkNames[kind]);
+  };
+  if (const int kind = host::window_take_trace_mark()) mark(kind);
+  // The same from the controller, and saying which kind: D-pad Left "that looked wrong", D-pad
+  // Right "my input came out wrong or late", D-pad Down "that sounded wrong". None of the three does anything in a match, and the
+  // press is read from the pad the game is given, so it works on every controller and binding.
+  {
+    static uint8_t held = 0;
+    const uint8_t dpad = inputs[1] & 0x07;   // PAD_BUTTON_LEFT 1, PAD_BUTTON_RIGHT 2, PAD_BUTTON_DOWN 4
+    const uint8_t pressed = (uint8_t)(dpad & ~held);
+    held = dpad;
+    if (pressed & 1) mark(2);
+    if (pressed & 2) mark(3);
+    if (pressed & 4) mark(4);
   }
   std::memcpy(g_trace_record.pad, inputs, PAD_DATA_SIZE);
   g_trace_open = true;

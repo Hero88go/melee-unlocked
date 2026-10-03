@@ -12,6 +12,7 @@
 #include <windows.h>
 #include <bcrypt.h>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <dht.h>
 #include <monocypher.h>
@@ -185,8 +186,149 @@ const char* wire_reason(const std::string& code) {
   if(code=="mode_version") return "has a different version of that mod";
   if(code=="mode_hash") return "has a different custom ISO";
   if(code=="expired") return "the request expired";
+  if(code=="p2p_version") return "needs a launcher of the same kind and version for peer-to-peer matches";
+  if(code=="p2p_fighter") return "was sent a character or color that does not exist";
   return "cannot play right now";
 }
+// ---- peer-to-peer matches (the build without the Slippi layer) ----
+// The legal stages as the game's stage select numbers them (external ids): Battlefield, Final
+// Destination, Dream Land, Yoshi's Story, Fountain of Dreams, Pokemon Stadium.
+constexpr int legal_stages[6]={0x1F,0x20,0x1C,0x08,0x02,0x03};
+// An automatic request is answered by a launcher, not a person, so it does not wait thirty seconds.
+constexpr ULONGLONG auto_request_wait=8000;
+bool hex_text(const std::string& value,size_t size) {
+  return value.size()==size && std::all_of(value.begin(),value.end(),[](char c){ return (c>='0'&&c<='9')||(c>='a'&&c<='f'); });
+}
+// A UDP port nothing holds right now. The game binds it a moment later; a port taken in between
+// fails that game's session, which the player sees as a match that did not start.
+int free_udp_port() {
+  SOCKET s=::socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP); if(s==INVALID_SOCKET) return 0;
+  sockaddr_in a{}; a.sin_family=AF_INET; a.sin_addr.s_addr=htonl(INADDR_ANY);
+  int port=0,size=sizeof a;
+  if(bind(s,reinterpret_cast<sockaddr*>(&a),sizeof a)==0 && getsockname(s,reinterpret_cast<sockaddr*>(&a),&size)==0) port=ntohs(a.sin_port);
+  closesocket(s); return port;
+}
+// This PC's own IPv4 addresses (never loopback): where a player on the same network reaches it.
+std::vector<std::string> lan_addresses() {
+  std::vector<std::string> out; char host[256]{};
+  if(gethostname(host,sizeof host)!=0) return out;
+  addrinfo hint{},*result=nullptr; hint.ai_family=AF_INET; hint.ai_socktype=SOCK_DGRAM;
+  if(getaddrinfo(host,nullptr,&hint,&result)!=0) return out;
+  for(auto* a=result;a && out.size()<3;a=a->ai_next) {
+    const auto* in=reinterpret_cast<const sockaddr_in*>(a->ai_addr);
+    if((ntohl(in->sin_addr.s_addr)>>24)==127) continue;
+    char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET,&in->sin_addr,ip,sizeof ip);
+    if(std::find(out.begin(),out.end(),std::string(ip))==out.end()) out.push_back(ip);
+  }
+  freeaddrinfo(result); return out;
+}
+// The character and color of a setup: a character the select screen has, and a color that
+// character has. A setup that names no color means the first one.
+bool legal_fighter(const Json& s) {
+  if(!s.is_object() || !s.count("ch") || !s["ch"].is_number_integer()) return false;
+  const int ch=s["ch"].get<int>();
+  if(ch<0 || ch>25) return false;
+  if(!s.count("col")) return true;
+  return s["col"].is_number_integer() && s["col"].get<int>()>=0 && s["col"].get<int>()<p2p_color_count(ch);
+}
+// One player's half of a match setup as it arrives: the game's UDP port, where to reach it besides
+// the address the lobby sees, the character, its color and the name.
+bool valid_setup(const Json& s) {
+  if(!s.is_object() || !s.count("port") || !s["port"].is_number_integer() || s["port"].get<int>()<1 || s["port"].get<int>()>65535) return false;
+  if(!legal_fighter(s)) return false;
+  if(!s.count("name") || !s["name"].is_string() || s["name"].get<std::string>().size()>96) return false;
+  if(s.count("lobby") && !s["lobby"].is_boolean()) return false;
+  if(!s.count("addrs") || !s["addrs"].is_array() || s["addrs"].size()>4) return false;
+  for(const auto& a:s["addrs"]) { sockaddr_in e{}; if(!a.is_string() || !numeric_endpoint(a.get<std::string>(),e)) return false; }
+  return true;
+}
+}
+
+std::string derived_code(const std::string& name,const std::string& identity_key) {
+  std::string code;
+  for(unsigned char c:name) {
+    if(code.size()>=4) break;
+    if(c<128 && std::isalnum(c)) code+=static_cast<char>(std::toupper(c));
+  }
+  if(code.empty()) code="MU";   // a name with no Latin letter or digit still gets a valid code
+  uint8_t digest[4]{};
+  crypto_blake2b(digest,sizeof digest,reinterpret_cast<const uint8_t*>(identity_key.data()),identity_key.size());
+  char digits[8]{}; std::snprintf(digits,sizeof digits,"#%03u",((unsigned(digest[0])<<16)|(unsigned(digest[1])<<8)|digest[2])%1000u);
+  return code+digits;
+}
+std::string identity_key(const std::string& directory) {
+  try {
+    const auto path=std::filesystem::u8path(directory+"/lobby-peer-identity.json");
+    Bytes32 seed{},pub{}; Bytes64 secret{};
+    std::error_code ec;
+    if(std::filesystem::exists(path,ec)) {
+      std::ifstream in(path,std::ios::binary); const auto file=Json::parse(in,nullptr,false);
+      if(!file.is_object() || !file.count("ed_seed") || !file["ed_seed"].is_string() ||
+         !unhex(file["ed_seed"].get<std::string>(),seed.data(),seed.size())) return {};
+    } else {
+      // The same file the lobby makes on its first start (PeerLobby::Impl::save).
+      Bytes32 x{}; random_bytes(seed.data(),seed.size()); random_bytes(x.data(),x.size());
+      std::filesystem::create_directories(std::filesystem::u8path(directory),ec);
+      std::ofstream out(path,std::ios::binary|std::ios::trunc); if(!out) return {};
+      out<<Json{{"ed_seed",hex(seed.data(),seed.size())},{"x_secret",hex(x.data(),x.size())},{"profile",Json::object()},
+                {"friends",Json::array()},{"incoming",Json::array()},{"outgoing",Json::array()}}.dump(2);
+      crypto_wipe(x.data(),x.size());
+    }
+    crypto_ed25519_key_pair(secret.data(),pub.data(),seed.data());   // wipes the seed
+    crypto_wipe(secret.data(),secret.size());
+    return hex(pub.data(),pub.size());
+  } catch(...) { return {}; }
+}
+std::string p2p_name(const std::string& name) {
+  const std::string clean=clean_chat_text(name);
+  std::string out;
+  for(size_t i=0;i<clean.size();) {
+    const unsigned char c=static_cast<unsigned char>(clean[i]);
+    const size_t length=c<0x80?1:(c>>5)==6?2:(c>>4)==14?3:4;
+    if(out.size()+length>31) break;
+    // The colon separates the two names; a quote or a backslash would change how the game's command
+    // line is split.
+    if(!(length==1 && (c==':' || c=='"' || c=='\\'))) out.append(clean,i,length);
+    i+=length;
+  }
+  while(!out.empty() && out.back()==' ') out.pop_back();
+  while(!out.empty() && out.front()==' ') out.erase(out.begin());
+  return out.empty()?std::string("Player"):out;
+}
+int p2p_color_count(int character) {
+  // In the order of the character select screen's ids (the lobby's `characters` list).
+  static constexpr int counts[26]={6,5,4,4,6,4,5,4,5,5,4,4,5,4,4,5,5,6,5,5,4,5,5,5,4,5};
+  return character>=0 && character<26?counts[character]:0;
+}
+std::string p2p_arguments(const Json& p,const std::string& identity_file,const std::string& result_file) {
+  try {
+    if(!p.is_object()) return {};
+    const int slot=p.value("slot",-1),port=p.value("port",0),stage=p.value("stage",-1),delay=p.value("delay",0);
+    const std::string seed=p.value("seed",std::string()),expect=p.value("expect",std::string());
+    if(slot<0 || slot>1 || port<1 || port>65535 || delay<1 || delay>15) return {};
+    if(std::find(std::begin(legal_stages),std::end(legal_stages),stage)==std::end(legal_stages)) return {};
+    if(!hex_text(seed,8) || !hex_text(expect,64)) return {};
+    if(identity_file.empty() || result_file.empty() || identity_file.find('"')!=std::string::npos || result_file.find('"')!=std::string::npos) return {};
+    const Json chars=p.value("chars",Json::array()),names=p.value("names",Json::array()),peers=p.value("peers",Json::array());
+    if(!chars.is_array() || chars.size()!=2 || !names.is_array() || names.size()!=2 || !names[0].is_string() || !names[1].is_string() ||
+       !peers.is_array() || peers.empty() || peers.size()>6) return {};
+    std::string out=" --p2p-port "+std::to_string(port);
+    for(const auto& peer:peers) {
+      // Written back from the parsed address, so no text of the other player's reaches the command line.
+      sockaddr_in address{};
+      if(!peer.is_string() || !numeric_endpoint(peer.get<std::string>(),address)) return {};
+      out+=" --p2p-peer "+endpoint_key(address);
+    }
+    std::string fighters;
+    for(const auto& c:chars) {
+      if(!c.is_array() || c.size()!=2 || !c[0].is_number_integer() || !c[1].is_number_integer() ||
+         c[0].get<int>()<0 || c[0].get<int>()>25 || c[1].get<int>()<0 || c[1].get<int>()>=p2p_color_count(c[0].get<int>())) return {};
+      fighters+=(fighters.empty()?"":":")+std::to_string(c[0].get<int>())+"/"+std::to_string(c[1].get<int>());
+    }
+    return out+" --p2p-slot "+std::to_string(slot)+" --p2p-chars "+fighters+" --p2p-stage "+std::to_string(stage)+
+           " --p2p-seed "+seed+" --p2p-delay "+std::to_string(delay)+" --p2p-identity \""+identity_file+"\" --p2p-expect "+expect+
+           " --p2p-result \""+result_file+"\" --p2p-names \""+p2p_name(names[0].get<std::string>())+":"+p2p_name(names[1].get<std::string>())+"\"";
+  } catch(const std::exception&) { return {}; }
 }
 
 // "0.8.1:source" -> "Source Port 0.8.1", as the Play page names the builds.
@@ -277,6 +419,7 @@ Json clean_profile(const Json& profile) {
             valid_iso_name(iso["n"].get<std::string>()) && hex16(iso["h"].get<std::string>());
     if(!ok) out.erase("iso");
   }
+  if(out.count("searching") && !out["searching"].is_boolean()) out.erase("searching");
   return out;
 }
 std::string mode_problem(const Json& receiver,const Json& sender,const std::string& mode) {
@@ -407,6 +550,7 @@ struct PeerLobby::Impl {
     Json profile=Json::object();
     ULONGLONG seen=0,hello_sent=0,ping_sent=0,last_chat=0,last_request=0,last_friend_confirm=0,last_friend_request=0;
     ULONGLONG last_private_request=0,last_private_reply=0;
+    ULONGLONG probe_since=0;        // automatic pairing: when this player's ping was first asked for
     bool visible=false;
     int protocol=1;                 // from the hello; 0.8.1 sends none
     std::string status="Offline",ping_nonce;
@@ -461,6 +605,82 @@ struct PeerLobby::Impl {
   std::map<std::string,PrivateRoom> rooms;       // by room id
   std::set<std::string> private_blocked;         // players whose requests are ignored, this session only
   ULONGLONG last_private_request=0;
+  // Peer-to-peer matches (p2p_on). searching: this player wants an automatic pairing, and says so in
+  // the profile every hello carries. blocked: players never paired with and never answered, kept
+  // with the friends. invites: pasted "Connect by address" lines, by identity key, until when.
+  bool searching=false;
+  // The character and color for this player's matches, from the launcher's settings with every
+  // profile update: -1 is "the first main". Never sent with the profile, only in a match setup.
+  int p2p_ch=-1,p2p_col=0;
+  std::set<std::string> blocked;
+  std::map<std::string,ULONGLONG> auto_skip,invites;   // auto_skip: not asked again before this time
+  ULONGLONG last_auto=0,lan_at=0;                       // last_auto: when automatic pairing looks next
+  std::string invite_found; unsigned invite_seq=0;
+  std::vector<std::string> lan;                  // this PC's own addresses, refreshed now and then
+  std::string observed;                          // this lobby's address as another player's launcher saw it
+  // Tests: MELEE_P2P_SEPARATE_PORT=1 gives the game a free port of its own, and the lobby stays up.
+  const bool separate_port=[]{ const char* v=std::getenv("MELEE_P2P_SEPARATE_PORT"); return v && std::string(v)=="1"; }();
+  // A launcher announcing an older protocol (tests) plays the older flow.
+  bool p2p_on() const { return p2p_matches && (!test.protocol || test.protocol>=p2p_protocol); }
+  void set_searching(bool on) {
+    if(searching==on) return;
+    searching=on; auto_skip.clear(); last_auto=0;
+    for(auto& peer:peers) { peer.second.hello_sent=0; peer.second.probe_since=0; }   // everyone hears on the next tick
+    log(on?"searching for a match":"stopped searching");
+  }
+  // This player's half of a match setup, made once per request.
+  Json p2p_mine(const std::string& rid) {
+    auto& r=requests[rid];
+    if(r.count("p2p_mine")) return r["p2p_mine"];
+    // The game takes over this lobby's own port: the path between the two lobby sockets is the one
+    // path known to work, and a router that has never seen a new port would turn the other game away.
+    const int port=separate_port?free_udp_port():listen_port;
+    Json addrs=Json::array();
+    for(const auto& ip:lan_addresses()) addrs.push_back(ip+":"+std::to_string(port));
+    const auto mains=profile.value("mains",Json::array());
+    // The character chosen on the Profile page, else the first main; the color chosen there when
+    // that character has it, else its first.
+    const int ch=p2p_ch>=0?p2p_ch:!mains.empty() && mains[0].is_number_integer()?mains[0].get<int>():2;
+    const int col=p2p_col>=0 && p2p_col<p2p_color_count(ch)?p2p_col:0;
+    r["p2p_mine"]={{"port",port},{"addrs",addrs},{"ch",ch},{"col",col},
+                   {"name",p2p_name(profile.value("name",std::string()))}};
+    if(!separate_port) r["p2p_mine"]["lobby"]=true;   // dial the address this lobby is heard from, port included
+    return r["p2p_mine"];
+  }
+  // A refusal this player is not told about: an automatic request, or one from a blocked player.
+  void refuse_quietly(const std::string& sender,const std::string& rid,const std::string& code,const std::string& mode) {
+    queue_event(sender,"decline",{{"request",rid},{"code",code},{"mode",mode},{"build",profile.value("build",std::string())},
+                                  {"reason",wire_reason(code)}});
+    log("quietly refuse request "+short_id(rid)+" from "+short_id(sender)+": "+code);
+  }
+  // Invited player answers: Accept, or an automatic request between two searching players.
+  void accept_request(const std::string& rid) {
+    auto& r=requests.at(rid);
+    const auto target=r.value("from",std::string()); const auto now=GetTickCount64();
+    // An automatic match nobody confirms must not hold this player for two minutes.
+    r["state"]="accepted"; r["confirmed"]=false; request_expiry[rid]=now+(r.value("auto",false)?15000:120000);
+    tracking[rid]={now,false};
+    Json body={{"request",rid}};
+    if(p2p_on()) body["p2p"]=p2p_mine(rid);
+    queue_event(target,"accept",body);
+    log("accepted request "+short_id(rid)+" from "+short_id(target));
+  }
+  std::string invite_text() const {
+    std::string addrs;
+    auto add=[&](const std::string& a){ if(addrs.find(a)==std::string::npos) addrs+=(addrs.empty()?"":",")+a; };
+    if(!observed.empty()) add(observed);
+    for(const auto& ip:lan) add(ip+":"+std::to_string(listen_port));
+    return "MUINVITE1|"+id+"|"+addrs+"|"+profile.value("name",std::string());
+  }
+  // Who an automatic request may go to: searching, ready, free, the same version, reachable under the
+  // same rule as a request by hand, not blocked and not just tried.
+  bool auto_candidate(const std::string& other,const Peer& peer,ULONGLONG now) const {
+    if(!peer.seen || now-peer.seen>=20000 || peer.protocol<p2p_protocol || peer.status!="Online") return false;
+    if(!peer.profile.count("searching") || !peer.profile["searching"].is_boolean() || !peer.profile["searching"].get<bool>()) return false;
+    if(!peer.profile.value("ready",false) || blocked.count(other) || auto_skip.count(other)) return false;
+    if(!(visible && peer.visible) && !friends.count(other)) return false;
+    return mode_problem(peer.profile,profile,"vanilla").empty() && mode_problem(profile,peer.profile,"vanilla").empty();
+  }
 
   ULONGLONG private_wait() const { return test.private_request_ms?test.private_request_ms:30000; }
   bool knows_private() const { return !test.no_private && (!test.protocol || test.protocol>=private_protocol); }
@@ -630,7 +850,9 @@ struct PeerLobby::Impl {
       seeds.insert(seeds.begin(),address);
       if(!dht_only) add_candidate(address); // A manually supplied peer can connect before DHT convergence.
     }
-    if(seeds.empty() && !test.no_dht) throw std::runtime_error(lang::tr("lobby.error.no_dht"));
+    // With peer-to-peer matches a lobby without the DHT still works: players on the same network
+    // (or behind a forwarded port) find each other with an invite.
+    if(seeds.empty() && !test.no_dht && !p2p_on()) throw std::runtime_error(lang::tr("lobby.error.no_dht"));
     socket=::socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP);
     sockaddr_in local{}; local.sin_family=AF_INET; local.sin_port=htons(static_cast<u_short>(requested_port));
     local.sin_addr.s_addr=htonl(INADDR_ANY);
@@ -665,6 +887,7 @@ struct PeerLobby::Impl {
     for(const auto& item:friends) file["friends"].push_back(item.second);
     for(const auto& item:incoming) file["incoming"].push_back(item.second);
     for(const auto& item:outgoing_friends) file["outgoing"].push_back(item);
+    if(!blocked.empty()) file["blocked"]=Json(blocked);
     auto path=std::filesystem::u8path(directory+"/lobby-peer-identity.json");
     std::ofstream out(path,std::ios::binary|std::ios::trunc);
     if(!out) throw std::runtime_error(lang::tr("lobby.error.save_identity"));
@@ -683,6 +906,7 @@ struct PeerLobby::Impl {
       for(const auto& f:file.value("friends",Json::array())) if(f.is_object() && f.value("id",std::string()).size()==64) friends[f["id"]]=f;
       for(const auto& f:file.value("incoming",Json::array())) if(f.is_object() && f.value("id",std::string()).size()==64) incoming[f["id"]]=f;
       for(const auto& f:file.value("outgoing",Json::array())) if(f.is_string() && f.get<std::string>().size()==64) outgoing_friends.insert(f.get<std::string>());
+      for(const auto& f:file.value("blocked",Json::array())) if(f.is_string() && f.get<std::string>().size()==64 && blocked.size()<1000) blocked.insert(f.get<std::string>());
     } else {
       random_bytes(ed_seed.data(),ed_seed.size()); random_bytes(x_secret.data(),x_secret.size());
       save();
@@ -742,8 +966,11 @@ struct PeerLobby::Impl {
   Json hello_body() {
     const auto nonce=nonce_id(12);
     hello_nonces.push_back(nonce); while(hello_nonces.size()>64) hello_nonces.pop_front();
+    // Searching is said in the profile, but is this session's state: it is never saved with it.
+    Json shown=profile;
+    if(searching) shown["searching"]=true;
     Json body={{"v",1},{"lv",test.protocol?test.protocol:lobby_protocol},{"t","hello"},{"pk",id},{"xk",hex(x_public.data(),x_public.size())},
-               {"profile",profile},{"visible",visible},{"time",wall_clock()},{"nonce",nonce}};
+               {"profile",shown},{"visible",visible},{"time",wall_clock()},{"nonce",nonce}};
     auto content=body.dump(); Bytes64 signature{};
     crypto_ed25519_sign(signature.data(),ed_secret.data(),reinterpret_cast<const uint8_t*>(content.data()),content.size());
     body["sig"]=hex(signature.data(),signature.size());
@@ -854,11 +1081,41 @@ struct PeerLobby::Impl {
     auto peer=peers.find(other);
     if(peer==peers.end()) { log("launch "+short_id(rid)+": the other player is no longer known"); return; }
     const auto mains=profile.value("mains",Json::array());
+    Json launch={{"request",rid},{"opponent",other},{"name",peer->second.profile.value("name",std::string())},
+                 {"code",peer->second.profile.value("code",std::string())},{"build",profile.value("build",std::string())},
+                 {"mode",r.value("mode",std::string("vanilla"))},
+                 {"character",!mains.empty() && mains[0].is_number_integer()?mains[0].get<int>():2}};
+    if(p2p_on()) {
+      // Everything both games must pass identically comes from the request id and the two halves of
+      // the setup, so the two launchers build the same match without another message. The requester
+      // is slot 0. Two players on the same character and color: the second takes the next color.
+      if(!r.count("p2p_mine") || !r.count("p2p_theirs")) { log("launch "+short_id(rid)+": the match setup is incomplete"); return; }
+      const bool requester=r.value("from",std::string())==id;
+      const Json& mine=r["p2p_mine"]; const Json& theirs=r["p2p_theirs"];
+      const Json& first=requester?mine:theirs; const Json& second=requester?theirs:mine;
+      uint8_t digest[4]{};
+      crypto_blake2b(digest,sizeof digest,reinterpret_cast<const uint8_t*>(rid.data()),rid.size());
+      const uint32_t seed=(uint32_t(digest[0])<<24)|(uint32_t(digest[1])<<16)|(uint32_t(digest[2])<<8)|digest[3];
+      // Where the other game listens. Their game on their lobby's port: exactly the address this
+      // lobby hears them from, port included (what their router shows for that socket, which is not
+      // the port they bound). Their game on a port of its own: that address with the game's port.
+      // Then the addresses they named themselves (the same network).
+      char ip[INET_ADDRSTRLEN]{}; inet_ntop(AF_INET,&peer->second.address.sin_addr,ip,sizeof ip);
+      Json reach=Json::array({theirs.value("lobby",false)?endpoint_key(peer->second.address)
+                                                         :std::string(ip)+":"+std::to_string(theirs["port"].get<int>())});
+      for(const auto& a:theirs["addrs"]) if(reach.size()<6 && std::find(reach.begin(),reach.end(),a)==reach.end()) reach.push_back(a);
+      const int c0=first["ch"].get<int>(),c1=second["ch"].get<int>();
+      const int k0=first.value("col",0); int k1=second.value("col",0);
+      if(c1==c0 && k1==k0) k1=(k0+1)%p2p_color_count(c0);   // both checked against that character's colors (valid_setup)
+      launch["p2p"]={{"slot",requester?0:1},{"port",mine["port"]},{"peers",reach},
+                     {"chars",Json::array({Json::array({c0,k0}),Json::array({c1,k1})})},
+                     {"stage",legal_stages[seed%6]},{"seed",hex(digest,sizeof digest)},{"delay",p2p_input_delay},{"expect",other},
+                     {"names",Json::array({p2p_name(first["name"].get<std::string>()),p2p_name(second["name"].get<std::string>())})},
+                     {"auto",r.value("auto",false)}};
+      set_searching(false);   // a match started: searching ends on both sides
+    }
     launched.insert(rid);
-    launches.push_back({{"request",rid},{"opponent",other},{"name",peer->second.profile.value("name",std::string())},
-                        {"code",peer->second.profile.value("code",std::string())},{"build",profile.value("build",std::string())},
-                        {"mode",r.value("mode",std::string("vanilla"))},
-                        {"character",!mains.empty() && mains[0].is_number_integer()?mains[0].get<int>():2}});
+    launches.push_back(launch);
     say("lobby.accepted_start",{{"name",peer_name(other)}},"launch");
     log("launch "+short_id(rid)+" against "+short_id(other)+", mode "+r.value("mode",std::string("vanilla")));
   }
@@ -943,6 +1200,7 @@ struct PeerLobby::Impl {
       friends.erase(sender); incoming.erase(sender); outgoing_friends.erase(sender); refresh_topics(); save();
     } else if(action=="chat") {
       if(!visible || !peer->second.visible || !data.count("text") || !data["text"].is_string()) return false;
+      if(blocked.count(sender)) return true;   // acknowledged and dropped
       auto value=data["text"].get<std::string>(); if(value.empty() || value.size()>300) return false;
       if(now-peer->second.last_chat<1000) return false;
       peer->second.last_chat=now;
@@ -951,6 +1209,10 @@ struct PeerLobby::Impl {
     } else if(action=="request") {
       auto rid=data.value("request",std::string());
       if(rid.size()!=32) return false;
+      // A blocked player is answered, so their launcher stops resending, but with nothing to read
+      // into it, and this player never hears of it.
+      if(blocked.count(sender)) { refuse_quietly(sender,rid,"unavailable","vanilla"); return true; }
+      const bool automatic=p2p_on() && data.count("auto") && data["auto"].is_boolean() && data["auto"].get<bool>();
       if(now-peer->second.last_request<3000) {
         log_limited("hold "+sender,"hold request from "+short_id(sender)+": another one within 3 s");
         return false;
@@ -961,6 +1223,11 @@ struct PeerLobby::Impl {
       Json sender_profile=peer->second.profile;
       if(data.count("build") && data["build"].is_string() && data["build"].get<std::string>().size()<=80) sender_profile["build"]=data["build"];
       std::string refusal=refusal_for(sender,peer->second,data,sender_profile,mode);
+      // A peer-to-peer match needs the setup both launchers exchange on accept, which an older
+      // launcher (or one that starts Slippi Direct) does not send. Only vanilla is played this way.
+      if(refusal.empty() && p2p_on() && (peer->second.protocol<p2p_protocol || mode!="vanilla")) refusal="p2p_version";
+      // An automatic request is for a player who is searching too, and is never shown as a prompt.
+      if(refusal.empty() && automatic && !searching) refusal="not_searching";
       if(refusal.empty() && !requests.empty() && !requests.count(rid)) {
         // Both players pressed Send Match Request at once: each has its own request out to the other.
         // The one with the lower id withdraws its own and takes this one, so its player gets the
@@ -978,14 +1245,19 @@ struct PeerLobby::Impl {
           return true;   // our request stands; the other side is taking it (see above)
         } else refusal="answering";
       }
-      if(!refusal.empty()) { refuse(sender,rid,refusal,mode,sender_profile); return true; }
+      if(!refusal.empty()) {
+        if(automatic) refuse_quietly(sender,rid,refusal,mode); else refuse(sender,rid,refusal,mode,sender_profile);
+        return true;
+      }
       peer->second.last_request=now;
       if(!requests.count(rid)) {
-        requests[rid]={{"id",rid},{"from",sender},{"to",id},{"state","pending"},{"transport","slippi-direct"},{"mode",mode}};
-        request_expiry[rid]=now+30000;
+        requests[rid]={{"id",rid},{"from",sender},{"to",id},{"state","pending"},{"transport",p2p_on()?"p2p":"slippi-direct"},{"mode",mode}};
+        request_expiry[rid]=now+(automatic?auto_request_wait:30000);
         peer->second.ping_nonce=nonce_id(8); peer->second.ping_sent=now;
         send_data(sender,{{"k","ping"},{"nonce",peer->second.ping_nonce}});
-        log("request "+short_id(rid)+" in from "+short_id(sender)+", mode "+mode);
+        log("request "+short_id(rid)+" in from "+short_id(sender)+", mode "+mode+(automatic?", automatic":""));
+        // Two searching players: the answer is yes, at once.
+        if(automatic) { requests[rid]["auto"]=true; accept_request(rid); }
       }
     } else if(action=="accept") {
       auto rid=data.value("request",std::string()); auto it=requests.find(rid);
@@ -1005,6 +1277,21 @@ struct PeerLobby::Impl {
         log("accept of "+short_id(rid)+" arrived while in a game");
         return true;
       }
+      if(p2p_on()) {
+        // The accept carries the other player's half of the match setup; this player's half goes
+        // back with the acknowledgment (on_data). Without theirs there is no match to start.
+        if(data.count("p2p") && data["p2p"].is_object() && !legal_fighter(data["p2p"])) {
+          // A character or color the game does not have: refused with a reason both players read,
+          // never passed on to the game.
+          requests.erase(it); request_expiry.erase(rid); tracking.erase(rid);
+          queue_event(sender,"decline",{{"request",rid},{"code","p2p_fighter"},{"reason",wire_reason("p2p_fighter")}});
+          say("lobby.refused.p2p_fighter",{{"name",name}},"warn");
+          log("accept of "+short_id(rid)+" refused: character or color out of range");
+          return true;
+        }
+        if(!data.count("p2p") || !valid_setup(data["p2p"])) { log("accept of "+short_id(rid)+" without a usable match setup"); return false; }
+        it->second["p2p_theirs"]=data["p2p"]; p2p_mine(rid);
+      }
       it->second["state"]="accepted"; it->second["confirmed"]=true; request_expiry[rid]=now+120000; tracking.erase(rid);
       log("request "+short_id(rid)+" accepted by "+short_id(sender));
       push_launch(rid);
@@ -1014,7 +1301,9 @@ struct PeerLobby::Impl {
         const bool mine=it->second.value("from",std::string())==id;
         const bool pending=it->second.value("state",std::string())=="pending";
         const auto code=data.value("code",std::string("user"));
-        if(mine && pending) say(code=="auto"?"lobby.declined.auto":"lobby.declined.user",{{"name",name}},"declined");
+        // An automatic request that fell through goes back to searching without a word.
+        if(pending && it->second.value("auto",false)) auto_skip[sender]=now+4000;
+        else if(mine && pending) say(code=="auto"?"lobby.declined.auto":"lobby.declined.user",{{"name",name}},"declined");
         else if(!mine && pending) { if(code!="crossed") say("lobby.withdrawn",{{"name",name}},"withdrawn"); }
         else say("lobby.cancelled",{{"name",name}},"warn");
         requests.erase(it); request_expiry.erase(rid); tracking.erase(rid);
@@ -1028,8 +1317,12 @@ struct PeerLobby::Impl {
         std::string code=data.value("code",std::string());
         if(code.size()>24 || !plain_text(code,24,24)) code.clear();
         const auto mode=it->second.value("mode",std::string("vanilla"));
+        const bool automatic=it->second.value("auto",false);
         requests.erase(it); request_expiry.erase(rid); tracking.erase(rid);
-        declined(sender,code,mode,data);
+        // An automatic request refused: try someone else first, this player again a little later
+        // (they were busy), or much later (they cannot play this launcher at all).
+        if(automatic) auto_skip[sender]=now+(code=="busy" || code=="answering" || code=="not_searching"?4000:30000);
+        else declined(sender,code,mode,data);
         log("request "+short_id(rid)+" declined by "+short_id(sender)+": "+(code.empty()?std::string("no reason"):code));
       }
     } else if(action=="pm_request") {
@@ -1038,7 +1331,7 @@ struct PeerLobby::Impl {
       auto known=rooms.find(rid);
       if(known!=rooms.end()) return known->second.peer==sender;   // a resend
       // A blocked player gets no answer at all: their request runs out as if nobody was there.
-      if(private_blocked.count(sender)) return false;
+      if(private_blocked.count(sender) || blocked.count(sender)) return false;
       if(peer->second.last_private_request && now-peer->second.last_private_request<2000) {
         log_limited("pm hold "+sender,"hold private chat request from "+short_id(sender)+": another one within 2 s");
         return false;
@@ -1235,10 +1528,20 @@ struct PeerLobby::Impl {
       it->second.visible=content.value("visible",false);
       it->second.status=value; it->second.stocks=value=="In match"?stocks:Json::array();
     } else if(kind=="ping") {
-      auto nonce=content.value("nonce",std::string()); if(nonce.size()==16) send_data(sender,{{"k","pong"},{"nonce",nonce}});
+      auto nonce=content.value("nonce",std::string());
+      if(nonce.size()==16) {
+        Json pong={{"k","pong"},{"nonce",nonce}};
+        // Where this launcher hears them from: the address their invite should name, which a
+        // launcher behind a router cannot know by itself.
+        if(p2p_on()) pong["you"]=endpoint_key(from);
+        send_data(sender,pong);
+      }
     } else if(kind=="pong") {
       if(content.value("nonce",std::string())==it->second.ping_nonce && it->second.ping_sent)
         it->second.ping=static_cast<int>(GetTickCount64()-it->second.ping_sent);
+      sockaddr_in seen_as{};
+      if(p2p_on() && content.count("you") && content["you"].is_string() && numeric_endpoint(content["you"].get<std::string>(),seen_as))
+        observed=endpoint_key(seen_as);
     } else if(kind=="ack") {
       auto ref=content.value("ref",std::string()); auto pending=outbound.find(ref);
       if(pending!=outbound.end() && pending->second.target==sender) {
@@ -1246,8 +1549,23 @@ struct PeerLobby::Impl {
         const auto rid=pending->second.data["data"].value("request",std::string());
         auto request=requests.find(rid);
         if(action=="accept" && request!=requests.end() && request->second.value("state",std::string())=="accepted") {
-          request->second["confirmed"]=true; tracking.erase(rid);
-          push_launch(rid);
+          // A peer-to-peer match starts only with the requester's half of the setup, which this
+          // acknowledgment carries. One without it (the request was gone on their side) starts nothing.
+          bool complete=true;
+          if(p2p_on()) {
+            complete=content.count("p2p") && valid_setup(content["p2p"]);
+            if(complete) request->second["p2p_theirs"]=content["p2p"];
+            else if(content.count("p2p") && content["p2p"].is_object() && !legal_fighter(content["p2p"])) {
+              say("lobby.refused.p2p_fighter",{{"name",peer_name(sender)}},"warn");
+              log("accept of "+short_id(rid)+" acknowledged with a character or color out of range");
+            }
+            else log("accept of "+short_id(rid)+" acknowledged without a match setup");
+          }
+          if(complete) {
+            request->second["confirmed"]=true; tracking.erase(rid);
+            if(request->second.value("auto",false)) request_expiry[rid]=GetTickCount64()+120000;   // it had the short wait
+            push_launch(rid);
+          }
         }
         if(action=="request" && request!=requests.end() && request->second.value("state",std::string())=="pending" &&
            !request->second.value("delivered",false)) {
@@ -1267,7 +1585,16 @@ struct PeerLobby::Impl {
       if(seen!=seen_events.end() || handle_event(sender,content)) {
         if(seen_events.size()>=2048) seen_events.erase(seen_events.begin());
         seen_events[event_id]=GetTickCount64();
-        send_data(sender,{{"k","ack"},{"ref",event_id}});
+        Json ack={{"k","ack"},{"ref",event_id}};
+        // The acknowledgment of an accept carries the requester's half of the match setup, on a
+        // resend too (the first one may be the packet that was lost).
+        if(p2p_on() && content.count("action") && content["action"].is_string() && content["action"].get<std::string>()=="accept" &&
+           content.count("data") && content["data"].is_object() && content["data"].count("request") && content["data"]["request"].is_string()) {
+          auto r=requests.find(content["data"]["request"].get<std::string>());
+          if(r!=requests.end() && r->second.value("from",std::string())==id && r->second.value("to",std::string())==sender &&
+             r->second.count("p2p_mine")) ack["p2p"]=r->second["p2p_mine"];
+        }
+        send_data(sender,ack);
       }
     } else if(kind=="peers" && content.count("list") && content["list"].is_array()) {
       size_t count=0;
@@ -1302,6 +1629,13 @@ struct PeerLobby::Impl {
   // Re-announces this player (ready, Game Build, mods) to everyone known, without joining the public
   // lobby: players who keep it hidden still show friends the right state.
   void update_profile(const Json& next,bool show=false) {
+    // The match character and color ride with the launcher's settings; they are not profile fields
+    // (public_profile leaves them out), so other players learn them only in a match setup.
+    p2p_ch=-1; p2p_col=0;
+    if(next.is_object()) {
+      if(next.count("p2p_ch") && next["p2p_ch"].is_number_integer() && next["p2p_ch"].get<int>()>=0 && next["p2p_ch"].get<int>()<=25) p2p_ch=next["p2p_ch"].get<int>();
+      if(next.count("p2p_col") && next["p2p_col"].is_number_integer() && next["p2p_col"].get<int>()>=0 && next["p2p_col"].get<int>()<=5) p2p_col=next["p2p_col"].get<int>();
+    }
     Json candidate=public_profile(next);
     if(!valid_profile(candidate)) throw std::runtime_error(lang::tr("lobby.error.profile"));
     if(candidate.count("iso")) {
@@ -1353,6 +1687,7 @@ struct PeerLobby::Impl {
     if(action=="leave") {
       if(visible) log("left the public lobby");
       visible=false; refresh_topics(); last_presence=0;
+      set_searching(false);   // only players in the public lobby are paired
       for(const auto& peer:peers) if(peer.second.seen && GetTickCount64()-peer.second.seen<20000) {
         const bool share=friends.count(peer.first)!=0;
         send_data(peer.first,{{"k","presence"},{"visible",false},
@@ -1388,7 +1723,63 @@ struct PeerLobby::Impl {
     }
     if(action=="profile") { update_profile(data); return; }
     if(action=="friend_code") { add_friend_by_code(data.value("code",std::string())); return; }
+    if(action=="search" && p2p_on()) {
+      const bool on=data.value("on",false);
+      if(on && !visible) throw std::runtime_error(lang::tr("lobby.search.offline"));
+      if(on && !profile.value("ready",false)) throw std::runtime_error(lang::tr("lobby.error.self_not_ready"));
+      if(on!=searching) { set_searching(on); say(on?"lobby.search.on":"lobby.search.off",Json::object(),"search"); }
+      return;
+    }
+    if(action=="connect" && p2p_on()) {
+      // "MUINVITE1|<identity key>|<address>,<address>|<name>": the addresses become direct peer
+      // candidates, and the player is selected once their launcher answers.
+      std::string line=data.value("invite",std::string());
+      while(!line.empty() && static_cast<unsigned char>(line.back())<=32) line.pop_back();
+      while(!line.empty() && static_cast<unsigned char>(line.front())<=32) line.erase(line.begin());
+      const auto a=line.find('|'),b=a==std::string::npos?a:line.find('|',a+1),c=b==std::string::npos?b:line.find('|',b+1);
+      if(c==std::string::npos || line.size()>600 || line.substr(0,a)!="MUINVITE1") throw std::runtime_error(lang::tr("lobby.invite.bad"));
+      const std::string key=line.substr(a+1,b-a-1),list=line.substr(b+1,c-b-1);
+      if(!hex_text(key,64)) throw std::runtime_error(lang::tr("lobby.invite.bad"));
+      if(key==id) throw std::runtime_error(lang::tr("lobby.invite.self"));
+      int added=0;
+      for(size_t at=0;at<=list.size() && added<4;) {
+        size_t comma=list.find(',',at); if(comma==std::string::npos) comma=list.size();
+        const std::string item=list.substr(at,comma-at);
+        sockaddr_in address{};
+        if(!item.empty() && item.size()<=80 && resolve(item,address)) {
+          add_candidate(address); candidates[endpoint_key(address)].hello_sent=0; ++added;
+        }
+        at=comma+1;
+      }
+      if(!added) throw std::runtime_error(lang::tr("lobby.invite.bad"));
+      invites[key]=now+30000;
+      std::string name=clean_chat_text(line.substr(c+1));
+      if(name.empty() || name.size()>96) name=lang::tr("lobby.other_player");
+      say("lobby.invite.trying",{{"name",name}});
+      log("invite: "+std::to_string(added)+" address(es) for "+short_id(key));
+      return;
+    }
     auto target=data.value("target",std::string());
+    if((action=="block" || action=="unblock") && p2p_on()) {
+      if(!hex_text(target,64) || target==id) throw std::runtime_error(lang::tr("lobby.error.offline"));
+      if(action=="unblock") {
+        if(blocked.erase(target)) { save(); say("lobby.unblocked",{{"name",peer_name(target)}}); }
+        return;
+      }
+      if(blocked.size()>=1000) throw std::runtime_error(lang::tr("lobby.error.block_full"));
+      blocked.insert(target); save();
+      // Whatever is pending between the two ends here.
+      for(auto it=requests.begin();it!=requests.end();) {
+        const auto& r=it->second;
+        if(r.value("state",std::string())=="pending" && (r.value("from",std::string())==target || r.value("to",std::string())==target)) {
+          if(peers.count(target)) queue_event(target,"cancel",{{"request",it->first},{"code","auto"}});
+          request_expiry.erase(it->first); tracking.erase(it->first); it=requests.erase(it);
+        } else ++it;
+      }
+      say("lobby.blocked",{{"name",peer_name(target)}});
+      log("blocked "+short_id(target));
+      return;
+    }
     if(action=="friend" || action=="friend_accept" || action=="friend_decline" || action=="unfriend") {
       if(action=="friend") {
         if(!peers.count(target) || now-peers.at(target).seen>=20000) throw std::runtime_error(lang::tr("lobby.error.offline"));
@@ -1419,8 +1810,11 @@ struct PeerLobby::Impl {
       // Friends can play while either of them is out of the public lobby.
       if(peer==peers.end() || now-peer->second.seen>=20000 || (!(visible && peer->second.visible) && !friends.count(target)))
         throw std::runtime_error(lang::tr("lobby.error.left",{{"name",name}}));
+      if(blocked.count(target)) throw std::runtime_error(lang::tr("lobby.error.blocked",{{"name",name}}));
       if(busy()) throw std::runtime_error(lang::tr("lobby.error.self_busy"));
       if(!profile.value("ready",false)) throw std::runtime_error(lang::tr("lobby.error.self_not_ready"));
+      // A launcher that does not know the peer-to-peer match setup would start something else.
+      if(p2p_on() && peer->second.protocol<p2p_protocol) throw std::runtime_error(lang::tr("lobby.declined.p2p_version",{{"name",name}}));
       if(peer->second.status!="Online") throw std::runtime_error(lang::tr("lobby.declined.busy",{{"name",name}}));
       if(!peer->second.profile.value("ready",false)) throw std::runtime_error(lang::tr("lobby.declined.not_ready",{{"name",name}}));
       std::string mode=data.value("mode",std::string("vanilla"));
@@ -1432,13 +1826,17 @@ struct PeerLobby::Impl {
       if(!own.empty()) throw std::runtime_error(lang::tr("lobby.error.self_mode",{{"mode",mode_label(mode,profile)}}));
       if(!requests.empty() || now-last_request<3000) throw std::runtime_error(lang::tr("lobby.error.pending"));
       last_request=now; auto rid=nonce_id();
-      requests[rid]={{"id",rid},{"from",id},{"to",target},{"state","pending"},{"transport","slippi-direct"},{"mode",mode},{"delivered",false}};
-      request_expiry[rid]=now+30000; tracking[rid]={now,false};
-      queue_event(target,"request",{{"request",rid},{"mode",mode},{"build",profile.value("build",std::string())},{"ready",true}});
+      // auto: sent by automatic pairing to a player who is searching too; their launcher answers.
+      const bool automatic=p2p_on() && data.count("auto") && data["auto"].is_boolean() && data["auto"].get<bool>();
+      requests[rid]={{"id",rid},{"from",id},{"to",target},{"state","pending"},{"transport",p2p_on()?"p2p":"slippi-direct"},{"mode",mode},{"delivered",false}};
+      request_expiry[rid]=now+(automatic?auto_request_wait:30000); tracking[rid]={now,false};
+      Json body={{"request",rid},{"mode",mode},{"build",profile.value("build",std::string())},{"ready",true}};
+      if(automatic) { requests[rid]["auto"]=true; body["auto"]=true; }
+      queue_event(target,"request",body);
       peer->second.ping_nonce=nonce_id(8); peer->second.ping_sent=now;
       send_data(target,{{"k","ping"},{"nonce",peer->second.ping_nonce}});
-      say("lobby.sent",{{"name",name}},"sent");
-      log("request "+short_id(rid)+" out to "+short_id(target)+", mode "+mode+", their protocol "+std::to_string(peer->second.protocol));
+      say(automatic?"lobby.search.asking":"lobby.sent",{{"name",name}},"sent");
+      log("request "+short_id(rid)+" out to "+short_id(target)+", mode "+mode+", their protocol "+std::to_string(peer->second.protocol)+(automatic?", automatic":""));
       return;
     }
     if(action=="pm_request") {
@@ -1527,10 +1925,7 @@ struct PeerLobby::Impl {
       target=incoming_request?it->second.value("from",std::string()):it->second.value("to",std::string());
       if(action=="accept") {
         if(!incoming_request || busy()) throw std::runtime_error(lang::tr("lobby.error.cannot_accept"));
-        it->second["state"]="accepted"; it->second["confirmed"]=false; request_expiry[rid]=now+120000;
-        tracking[rid]={now,false};
-        queue_event(target,"accept",{{"request",rid}});
-        log("accepted request "+short_id(rid)+" from "+short_id(target));
+        accept_request(rid);
       } else {
         // code: "user" (Decline), "auto" (auto reject). 0.8.1 reads only the request id.
         std::string code=data.value("code",std::string("user"));
@@ -1542,6 +1937,40 @@ struct PeerLobby::Impl {
       return;
     }
     throw std::runtime_error(lang::tr("lobby.error.unknown_action"));
+  }
+  // P2P Unranked: while this player is searching and free, ask the best candidate for a match, at
+  // most one request at a time. Candidates are pinged first so the choice is the lowest ping, and
+  // near-equal pings are settled at random, so three players do not keep asking in the same circle.
+  void auto_pair(ULONGLONG now) {
+    if(!searching || now<last_auto) return;
+    uint32_t pick=0; random_bytes(&pick,sizeof pick);
+    last_auto=now+2000+pick%1000;   // the next look, not in step with the other searching launchers
+    for(auto it=auto_skip.begin();it!=auto_skip.end();) if(now>=it->second) it=auto_skip.erase(it); else ++it;
+    if(!visible || busy() || !requests.empty() || !profile.value("ready",false) || now-last_request<3000) return;
+    std::vector<std::pair<int,std::string>> pool;
+    bool measuring=false;
+    for(auto& item:peers) {
+      auto& peer=item.second;
+      if(!auto_candidate(item.first,peer,now)) continue;
+      if(!peer.probe_since) peer.probe_since=now;
+      if(now-peer.ping_sent>(peer.ping<0?1000u:5000u)) {
+        peer.ping_nonce=nonce_id(8); peer.ping_sent=now;
+        send_data(item.first,{{"k","ping"},{"nonce",peer.ping_nonce}});
+      }
+      // No answer to the ping yet: wait for it a little, then count this player as far away.
+      if(peer.ping<0 && now-peer.probe_since<2500) { measuring=true; continue; }
+      pool.emplace_back(peer.ping<0?999:peer.ping/10,item.first);
+    }
+    if(pool.empty() || measuring) return;
+    const int best=std::min_element(pool.begin(),pool.end())->first;
+    std::vector<std::string> nearest;
+    for(const auto& item:pool) if(item.first==best) nearest.push_back(item.second);
+    const std::string target=nearest[(pick>>12)%nearest.size()];
+    try { command("request",{{"target",target},{"mode","vanilla"},{"auto",true}}); }
+    catch(const std::exception&) {
+      auto_skip[target]=now+5000;
+      log("automatic request to "+short_id(target)+" could not be sent");
+    }
   }
   void tick() {
     const auto now=GetTickCount64();
@@ -1594,6 +2023,12 @@ struct PeerLobby::Impl {
         send_hello(peer.second.address); peer.second.hello_sent=now;
       }
       if(now-peer.second.seen>20000) continue;
+      // A first ping to each player: its answer says how this launcher is seen from outside (for the
+      // invite) and gives automatic pairing a ping to compare before it asks anyone.
+      if(p2p_on() && peer.second.protocol>=p2p_protocol && peer.second.ping<0 && now-peer.second.ping_sent>3000) {
+        peer.second.ping_nonce=nonce_id(8); peer.second.ping_sent=now;
+        send_data(peer.first,{{"k","ping"},{"nonce",peer.second.ping_nonce}});
+      }
       if(visible || friends.count(peer.first)) {
         if(now-last_presence>1500)
           send_data(peer.first,{{"k","presence"},{"visible",visible},{"status",status.value("status",std::string("Online"))},
@@ -1633,7 +2068,12 @@ struct PeerLobby::Impl {
       const auto other=outgoing?r.value("to",std::string()):r.value("from",std::string());
       auto peer=peers.find(other);
       const bool heard=peer!=peers.end() && peer->second.seen>track->second.sent;
-      if(outgoing && heard && peer_protocol(other)<2) {
+      if(r.value("auto",false)) {
+        // Automatic pairing moves on to someone else by itself.
+      } else if(p2p_on()) {
+        // There is no code to fall back on here: the way around is an invite (Connect by address).
+        say(outgoing?"lobby.p2p.unreachable":"lobby.p2p.accept_unreachable",{{"name",peer_name(other)}},"warn");
+      } else if(outgoing && heard && peer_protocol(other)<2) {
         // An older launcher that hears us refuses without a word; its version says who must update.
         say("lobby.no_answer_legacy",{{"name",peer_name(other)},{"version",build_version(profile.value("build",std::string()))}},"warn");
       } else {
@@ -1645,12 +2085,19 @@ struct PeerLobby::Impl {
     }
     for(auto it=requests.begin();it!=requests.end();) if(now>=request_expiry[it->first]) {
       const auto state=it->second.value("state",std::string());
-      if(state=="pending") {
+      if(it->second.value("auto",false)) {
+        // An automatic request nobody took: both players go on searching, and this one asks
+        // someone else before it asks the same player again.
+        const bool mine=it->second.value("from",std::string())==id;
+        if(mine) auto_skip[it->second.value("to",std::string())]=now+15000;
+      } else if(state=="pending") {
         if(it->second.value("from",std::string())==id) {
           const auto to=it->second.value("to",std::string());
           if(it->second.value("delivered",false)) say("lobby.expired",{{"name",peer_name(to)}},"expired");
-          else if(!tracking.count(it->first) || !tracking[it->first].warned)
-            say("lobby.unreachable",{{"name",peer_name(to)},{"code",peer_code(to)}},"unreachable");
+          else if(!tracking.count(it->first) || !tracking[it->first].warned) {
+            if(p2p_on()) say("lobby.p2p.unreachable",{{"name",peer_name(to)}},"warn");
+            else say("lobby.unreachable",{{"name",peer_name(to)},{"code",peer_code(to)}},"unreachable");
+          }
         } else say("lobby.missed",{{"name",peer_name(it->second.value("from",std::string()))}},"missed");
       }
       log("request "+short_id(it->first)+" expired ("+state+")");
@@ -1679,6 +2126,24 @@ struct PeerLobby::Impl {
       it=code_lookups.erase(it); lookups_done=true;
     } else ++it;
     if(lookups_done) refresh_topics();
+    if(p2p_on()) {
+      if(!lan_at || now-lan_at>30000) { lan=lan_addresses(); lan_at=now; }
+      // A pasted invite: the player is selected once their launcher answers at one of its addresses.
+      for(auto it=invites.begin();it!=invites.end();) {
+        auto peer=peers.find(it->first);
+        if(peer!=peers.end() && peer->second.seen && now-peer->second.seen<20000) {
+          invite_found=it->first; ++invite_seq;
+          say("lobby.invite.found",{{"name",peer_name(it->first)}});
+          log("invite: "+short_id(it->first)+" answered");
+          it=invites.erase(it);
+        } else if(now>=it->second) {
+          say("lobby.invite.not_found",Json::object(),"warn");
+          log("invite: no answer from "+short_id(it->first));
+          it=invites.erase(it);
+        } else ++it;
+      }
+      auto_pair(now);
+    }
     for(auto it=seen_events.begin();it!=seen_events.end();) if(now-it->second>120000) it=seen_events.erase(it); else ++it;
     for(auto it=candidates.begin();it!=candidates.end();) if(now-it->second.seen>120000) it=candidates.erase(it); else ++it;
   }
@@ -1699,6 +2164,7 @@ struct PeerLobby::Impl {
       player["id"]=peer.first; player["status"]=peer.second.status; player["stocks"]=peer.second.stocks;
       player["busy"]=peer.second.status!="Online"; player["protocol"]=peer.second.protocol;
       player["friend"]=friends.count(peer.first)!=0;
+      if(blocked.count(peer.first)) player["blocked"]=true;
       result["players"].push_back(player);
     }
     for(const auto& friend_entry:friends) {
@@ -1740,7 +2206,12 @@ struct PeerLobby::Impl {
       if(room.state=="open" || room.state=="closed") for(const auto& message:room.messages) entry["messages"].push_back(message);
       result["private"].push_back(entry);
     }
-    for(const auto& blocked:private_blocked) result["private_blocked"].push_back(blocked);
+    for(const auto& item:private_blocked) result["private_blocked"].push_back(item);
+    if(p2p_on()) {
+      result["self"]["searching"]=searching;
+      result["blocked"]=Json(blocked);
+      result["invite"]={{"text",invite_text()},{"port",listen_port},{"found",invite_found},{"seq",invite_seq}};
+    }
     return result;
   }
   std::map<std::string,int> pings() const {
@@ -1759,6 +2230,7 @@ void PeerLobby::join(const Json& profile) { p_->join(profile); }
 void PeerLobby::update_profile(const Json& profile) { p_->update_profile(profile); }
 void PeerLobby::command(const std::string& action,const Json& data) { p_->command(action,data); }
 void PeerLobby::presence(const Json& status) { p_->set_presence(status); }
+void PeerLobby::presence_now() { p_->last_presence=0; }
 void PeerLobby::tick() { p_->tick(); }
 Json PeerLobby::state() const { return p_->state(); }
 std::map<std::string,int> PeerLobby::pings() const { return p_->pings(); }
@@ -1766,6 +2238,7 @@ bool PeerLobby::take_launch(Json& launch) {
   if(p_->launches.empty()) return false;
   launch=p_->launches.front(); p_->launches.pop_front(); return true;
 }
+std::string PeerLobby::invite() const { return p_->invite_text(); }
 void PeerLobby::add_address(const std::string& host_port) {
   sockaddr_in address{};
   if(!resolve(host_port,address)) { p_->log("add address: cannot resolve"); throw std::runtime_error(lang::tr("lobby.error.bootstrap")); }

@@ -13,8 +13,11 @@ namespace {
 
 // Action names as the settings file already spells them (pc_settings.cpp kActionNames).
 constexpr const char* kActions[kProfileActions] = {"A", "B", "X", "Y", "Z", "Start", "L", "R", "DUp", "DDown", "DLeft", "DRight",
-                                                    "CUp", "CDown", "CLeft", "CRight", "SUp", "SDown", "SLeft", "SRight"};
-constexpr int kFirstStickAction = 16;   // profiles written before the control stick was rebindable stop here
+                                                    "CUp", "CDown", "CLeft", "CRight", "SUp", "SDown", "SLeft", "SRight",
+                                                    "LAnalog", "RAnalog"};
+// Profiles written before the control stick was rebindable stop here; ones written before L and R
+// were split stop four later. Either way the missing actions keep what the caller passed in.
+constexpr int kFirstStickAction = 16;
 constexpr const char* kDeviceKeys[(int)ProfileDevice::Count] = {"keyboard", "xinput", "playstation", "gcadapter", "switchpro", "hid"};
 constexpr const char* kHeader = "# Melee Unlocked controller profile";
 constexpr const char* kExtension = ".profile";

@@ -7,9 +7,14 @@
 // int __write_console(u32 handle, u8* buf, u32* count, void (*idle)(void))
 HLE(__write_console) {
   uint32_t buf = ARG1, count_ptr = ARG2;
+  // Console text is only for the log, so a count or text pointer outside memory prints nothing
+  // instead of ending the game.
+  const uint8_t* count = hle::guest_buffer("__write_console", count_ptr, 4);
+  if (!count) { RET(0); return; }
   uint32_t n = host::rd32(count_ptr);
-  std::string s;
-  for (uint32_t i = 0; i < n; ++i) s += (char)host::rd8(buf + i);
+  const uint8_t* text = hle::guest_buffer("__write_console", buf, n);
+  if (!text) { RET(0); return; }
+  std::string s((const char*)text, n);
   host::log_guest_text(s.data(), s.size());
   RET(0);
 }
