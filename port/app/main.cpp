@@ -1007,6 +1007,33 @@ static LONG WINAPI crash_filter(EXCEPTION_POINTERS* info) {
   return EXCEPTION_EXECUTE_HANDLER;
 }
 
+// Where the last C++ exception was thrown. One that reaches the top of the program is reported with
+// its text, but its call stack is gone by then: "No mapping for the Unicode character exists in the
+// target multi-byte code page" did not say which file operation had failed. A vectored handler sees
+// every throw first and keeps the return addresses; the report prints the last one. Ordinary caught
+// exceptions pass through here too, so it only records (a few microseconds per throw).
+static void* g_throw_stack[24];
+static volatile LONG g_throw_depth = 0;
+static volatile LONG g_throw_frozen = 0;
+static LONG WINAPI note_throw(EXCEPTION_POINTERS* info) {
+  if (info->ExceptionRecord->ExceptionCode == 0xE06D7363u && !g_throw_frozen)
+    InterlockedExchange(&g_throw_depth, (LONG)RtlCaptureStackBackTrace(0, 24, g_throw_stack, nullptr));
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+static void throw_stack_lines(FILE* f) {
+  const LONG depth = g_throw_depth;
+  for (LONG i = 0; i < depth && i < 24; ++i) {
+    HMODULE module = nullptr; char name[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)g_throw_stack[i], &module))
+      GetModuleFileNameA(module, name, MAX_PATH);
+    const char* leaf = std::strrchr(name, '\\') ? std::strrchr(name, '\\') + 1 : name;
+    char line[400];
+    std::snprintf(line, sizeof line, "throw %2ld: %s+0x%llX", (long)i, leaf, (unsigned long long)((uintptr_t)g_throw_stack[i] - (uintptr_t)module));
+    host::log("%s", line);
+    if (f) std::fprintf(f, "%s\n", line);
+  }
+}
+
 // host::die (a guest fault, including one in a mod's own code, or any other fatal error) exits
 // without an exception, so it writes the same report here: melee_port_crash.txt, a minidump of the
 // process, and the dialog that points at the launcher's Send button.
@@ -1015,6 +1042,13 @@ static void die_report(const char* message) {
   std::snprintf(head, sizeof head, "FATAL: %s, version %s", message, MELEE_PORT_VERSION);
   if (FILE* f = std::fopen("melee_port_crash.txt", "w")) {
     std::fprintf(f, "%s\n", head);
+    // An internal error is an exception that reached the top: say where it was thrown.
+    if (std::strstr(message, "internal error")) throw_stack_lines(f);
+    // The host's own call stack too: a guest fault is raised by the host function that read the bad
+    // address, and the guest trace alone does not say which one.
+    CONTEXT here{}; here.ContextFlags = CONTEXT_FULL;
+    RtlCaptureContext(&here);
+    crash_stack(&here, f);
     if (host::cpu) {
       std::fprintf(f, "last guest function %08X %s, lr %08X\nrecent guest functions (oldest first):\n", host::cpu->last_pc, host::symbol_name(host::cpu->last_pc), host::cpu->lr);
       for (uint32_t i = 0; i < 64; ++i) { uint32_t pc = host::cpu->trace[(host::cpu->trace_pos + i) & 63]; if (pc) std::fprintf(f, "  %08X %s\n", pc, host::symbol_name(pc)); }
@@ -1179,6 +1213,7 @@ static int melee_main(int argc, char** argv);
 // parser gives up on) used to end the game with a bare exception code. It is reported with its own
 // text instead, so the crash report says what failed.
 [[noreturn]] static void report_unhandled() {
+  InterlockedExchange(&g_throw_frozen, 1);   // the rethrow below is not where it came from
   try {
     if (std::exception_ptr error = std::current_exception()) std::rethrow_exception(error);
   } catch (const std::exception& error) {
@@ -1274,6 +1309,7 @@ static int melee_main(int argc, char** argv) {
   o.no_gc_adapter = automated;   // a hidden test run must not take the adapter from a game the player is running
   if (std::getenv("MELEE_NO_GC_ADAPTER")) o.no_gc_adapter = true;   // same, for a visible test window
   SetUnhandledExceptionFilter(crash_filter);
+  AddVectoredExceptionHandler(1, note_throw);
   host::set_die_hook(die_report);
   if (!automated) {
     // Interpolate by default: it never overshoots a stop, so menus, cursors and stage geometry stay
@@ -1834,6 +1870,7 @@ static int melee_main(int argc, char** argv) {
   host::install_audio_pacing();
   host::install_console_clock();
   host::install_language_override();
+  host::install_low_poly_fighters();
 #endif
   if (gx::RenderOptions::kModFeaturesAvailable && source_port::mods::auto_detect() && !gfx.native_source) {
     source_port::mods::StartupOptions scan;

@@ -32,6 +32,7 @@
 #include <sysdolphin/baselib/controller.h>
 #include <sysdolphin/baselib/gobj.h>
 
+#include "mu_hp.h"
 #include "mu_native.h"
 
 int mu_online_active(void);
@@ -85,8 +86,24 @@ static int lab_on(void)
     if (any_mode < 0) {
         any_mode = getenv("MELEE_LAB_ANY_MODE") != NULL;
     }
-    return (options & MU_OPTION_LAB) != 0 && (gm_GetCurrentGameMode() == GM_TRAINING || any_mode) &&
+    /* The 20XX Hack Pack's "SAVE STATES/REPLAYS" switch (its debug menu, shim/mu_hp_menu.c) turns
+     * the same tools on with the pack loaded, without the lab option. */
+    return ((options & MU_OPTION_LAB) != 0 || mu_hp_training(MU_HP_TRAINING_ON)) &&
+           (gm_GetCurrentGameMode() == GM_TRAINING || any_mode) &&
            !mu_online_active() && !mu_online_pending() && !mu_replay_abi_active();
+}
+
+/* The lab sets the bubble display only when its own option is on (not for the Hack Pack's switch,
+ * which leaves the bubbles to 20XX TE's "Collision bubbles"). */
+static int lab_owns_bubbles(void)
+{
+    return (mu_game_options() & MU_OPTION_LAB) != 0 && lab_on();
+}
+
+/* A played back recording repeats: the lab's option or the Hack Pack's "LOOP REPLAY". */
+static int lab_loop(void)
+{
+    return (mu_game_options() & MU_OPTION_LAB_LOOP) != 0 || mu_hp_training(MU_HP_TRAINING_LOOP);
 }
 
 static int lab_command(unsigned int cmd)
@@ -209,7 +226,7 @@ static void lab_bubbles(void)
 void mu_te_frame_begin(void)
 {
     static int shown;
-    const int want = mu_te2(MU_TE2_BUBBLES) && !lab_on();
+    const int want = mu_te2(MU_TE2_BUBBLES) && !lab_owns_bubbles();
     HSD_GObj* gobj;
     if (mu_te2(MU_TE2_COLOR_OVERLAYS)) {
         /* 20XX TE "Color overlays": green on every frame a fighter can act, so gaps between
@@ -310,7 +327,7 @@ void mu_lab_frame_begin(void)
     }
     if (lab_loop_pending) {
         lab_loop_pending = 0;
-        if (lab_saved && lab_rec_len > 0 && (mu_game_options() & MU_OPTION_LAB_LOOP)) {
+        if (lab_saved && lab_rec_len > 0 && lab_loop()) {
             mu_alarms_hold();
             lab_command(CMD_LAB_LOAD);
             mu_alarms_release();
@@ -348,7 +365,9 @@ void mu_lab_frame_begin(void)
         lab_mode = LAB_IDLE;   /* a plain return stops any recording or playback */
         OSReport("[lab] state loaded\n");
     }
-    lab_bubbles();
+    if (mu_game_options() & MU_OPTION_LAB) {
+        lab_bubbles();
+    }
 }
 
 /* Fighter input (Fighter_procInput): the recording drives the dummy (player 2); while recording,
@@ -675,7 +694,7 @@ int mu_lab_input(void* fighter, MuLabInput* out)
         *out = lab_rec[lab_pos++];
         if (lab_pos >= lab_rec_len) {
             lab_mode = LAB_IDLE;   /* the dummy goes back to its own behavior */
-            lab_loop_pending = (mu_game_options() & MU_OPTION_LAB_LOOP) != 0;
+            lab_loop_pending = lab_loop();
             if (lab_loop_pending && dummy_logs < 32) {
                 dummy_logs++;
                 OSReport("[lab] playback looped at frame %d\n", gm_GetFrameCount());
@@ -717,6 +736,24 @@ int mu_test_classic_stage(void)
     while (*v >= '0' && *v <= '9') {
         n = n * 10 + (*v++ - '0');
         if (n > 10) {
+            return -1;
+        }
+    }
+    return *v == '\0' ? n : -1;
+}
+
+/* MELEE_TEST_ADVENTURE_SCENE=<n> (tests only): Adventure starts at scene n, the decimal minor id
+ * (stage * 8 + part: 33 is the Kirby team, 34 Giant Kirby, 25 the Zelda fight). Unset: -1. */
+int mu_test_adventure_scene(void)
+{
+    const char* v = getenv("MELEE_TEST_ADVENTURE_SCENE");
+    int n = 0;
+    if (v == NULL || *v < '0' || *v > '9') {
+        return -1;
+    }
+    while (*v >= '0' && *v <= '9') {
+        n = n * 10 + (*v++ - '0');
+        if (n > 0x67) {
             return -1;
         }
     }

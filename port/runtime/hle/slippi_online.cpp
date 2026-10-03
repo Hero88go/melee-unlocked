@@ -155,6 +155,7 @@ uint64_t g_rollbacks = 0;
 // For the one-line summary at the end of an online game (delay, ping, rollbacks, stalls).
 static uint64_t g_match_rollbacks_start = 0, g_match_stalls = 0, g_match_input_waits = 0, g_match_advances = 0;
 static int g_input_wait_frames = 0;   // length of the wait for remote inputs that is running now
+static int g_input_wait_latest = 0;   // the other player's newest frame when that wait began
 static int g_match_delay = 0;
 bool g_in_online_match = false;
 // Session trace (net_trace.h): one record per online tick for the "Network and timing" overlay.
@@ -366,14 +367,22 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
     if (g_input_wait_frames++ == 0) {
       ++g_match_input_waits;
       auto pad = g_netplay->GetSlippiRemotePad(0, ROLLBACK_MAX_FRAMES);
+      g_input_wait_latest = pad->latest_frame;
       host::log("slippi: waiting for the other player's inputs on frame %d (their latest frame %d, ping %u ms)",
                 frame, pad->latest_frame, (unsigned)g_netplay->LastPingMs());
     }
     return true;
   }
   if (g_input_wait_frames > 0) {
-    host::log("slippi: inputs arrived on frame %d after waiting %d frames (%.2f s)", frame, g_input_wait_frames,
-              g_input_wait_frames / 60.0);
+    // Which side stopped: while this side waited N frames, a game that kept running sent N or more
+    // new frames, and they arrive together once the connection lets them through. A game that had
+    // itself stopped comes back with few.
+    auto pad = g_netplay->GetSlippiRemotePad(0, ROLLBACK_MAX_FRAMES);
+    const int gained = pad->latest_frame - g_input_wait_latest;
+    host::log("slippi: inputs arrived on frame %d after waiting %d frames (%.2f s); their latest frame went %d to %d: %s", frame,
+              g_input_wait_frames, g_input_wait_frames / 60.0, g_input_wait_latest, pad->latest_frame,
+              gained >= g_input_wait_frames ? "their game kept running, the inputs were held up on the way"
+                                            : "their game fell behind too");
     g_input_wait_frames = 0;
   }
   const int32_t frame_time = 16683, t1 = 10000, t2 = 2 * frame_time + t1;

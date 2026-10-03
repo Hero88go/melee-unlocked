@@ -39,6 +39,7 @@
 #include "controller_profiles.h"
 #include "cosmetic_mods.h"
 #include "hackpack_ai.h"
+#include "hackpack_source.h"
 #include "mod_profile.h"
 #include "mod_scan.h"
 #include "lab_view.h"
@@ -1796,6 +1797,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "playernicknames") options.show_player_nicknames = value == "1";
       else if (key == "matchmakinghint") options.matchmaking_hint = value != "0";
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
+      else if (key == "lowpoly") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 1) options.low_poly_fighters = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
       else if (key == "labview") options.lab_view = value == "1";
       else if (key == "labskipscene") options.lab_skip_scene = value != "0";
@@ -1890,6 +1892,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "mods_in_direct") options.mods_in_direct = value != "0";
       else if (key == "te_options2") options.te_options2 = (uint32_t)std::strtoul(value.c_str(), nullptr, 16);
       else if (key == "te_menu_music") options.te_menu_music = std::atoi(value.c_str());
+      // 20XX Hack Pack choices (MU_HP_SET_*): playlists, stage variants and page, its menu's switches.
+      else if (key == "hp_settings") source_port::hackpack::settings_parse(value);
       else if (key == "discord_app_id") { if (value.find_first_not_of("0123456789") == std::string::npos && value.size() <= 24) options.discord_app_id = value; }
       else if (key == "backend") options.api = value == "d3d11" ? RenderApi::D3D11 : RenderApi::D3D12;
       else if (key == "volume") { volume = std::clamp(std::stoi(value), 0, 100); g_volume = volume; }
@@ -3058,6 +3062,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ninputoverlayvalues " << options.input_overlay_values
        << "\ninputoverlaystick " << options.input_overlay_stick
        << "\neffects " << options.effects_level
+       << "\nlowpoly " << options.low_poly_fighters
        // Low spec: the switch, and the settings it is holding for the player while it is on.
        << "\nlowspec " << (options.low_spec ? 1 : 0)
        << "\nlowspec_prev_backend " << (options.low_spec_previous.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
@@ -3102,6 +3107,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
   if (!options.mods_in_direct) file << "\nmods_in_direct 0";
   if (options.te_options2) { char te2[16]; std::snprintf(te2, sizeof te2, "%X", options.te_options2); file << "\nte_options2 " << te2; }
   if (options.te_menu_music) file << "\nte_menu_music " << options.te_menu_music;
+  if (!source_port::hackpack::settings_are_default()) file << "\nhp_settings " << source_port::hackpack::settings_text();
   { char te[16]; std::snprintf(te, sizeof te, "%X", options.te_options); file << "\nte_options " << te; }
   // One line per pack that is switched off. Without this the loader parsed "texpackoff" but
   // nothing ever wrote it, so switching a pack off lasted only until the next launch. The
@@ -3524,6 +3530,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (g_settings_old_font) ImGui::PushFont(settings_old_font());
   }
   set_hud_scales(options.stock_hud_scale, options.damage_hud_scale, gecko::option_pal_stock_icons);
+  set_low_poly_fighters(options.low_poly_fighters != 0);
   static bool test_tab_set = false;
   if (!test_tab_set) {
     test_tab_set = true;
@@ -3608,6 +3615,38 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   if (const int song = RenderOptions::live_te_menu_music().load(); song != options.te_menu_music) {
     options.te_menu_music = song;
     state.saved = write_settings_file(state, options);
+  }
+  // 20XX Hack Pack: a choice changed in the game (its debug menu, the stage select page, host
+  // command 0xFA). Saved now, like TE's.
+  {
+    static uint32_t hp_seen = 0;
+    if (const uint32_t seen = source_port::hackpack::settings().changes.load(); seen != hp_seen) {
+      hp_seen = seen;
+      state.saved = write_settings_file(state, options);
+    }
+  }
+  // 20XX Hack Pack: the CPU training options changed in the pack's debug menu. The Game tab's rows
+  // take the new word (the layout of cpu_training_word) and are saved now.
+  {
+    static uint32_t cpu_seen = 0;
+    if (const uint32_t seen = RenderOptions::live_cpu_game_changes().load(); seen != cpu_seen) {
+      cpu_seen = seen;
+      const uint32_t word = RenderOptions::live_cpu_training();
+      const auto field = [word](int shift, uint32_t mask, int max) {
+        const int value = (int)((word >> shift) & mask);
+        return value <= max ? value : 0;
+      };
+      options.cpu_tech = field(0, 7, 5);
+      options.cpu_getup = field(3, 7, 5);
+      options.cpu_di = field(6, 3, 3);
+      options.cpu_sdi = field(8, 7, 6);
+      options.cpu_no_taunt = (word & 0x800u) != 0;
+      options.cpu_lcancel = (word & 0x1000u) != 0;
+      options.cpu_no_rapid_jab = (word & 0x2000u) != 0;
+      options.cpu_no_transform = (word & 0x4000u) != 0;
+      RenderOptions::live_cpu_training() = options.cpu_training_word();
+      state.saved = write_settings_file(state, options);
+    }
   }
   // 20XX TE: the settings changed in the game's own TE menu (Tournament Melee). Saved now too.
   {
@@ -4481,6 +4520,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Skips decorative effects during matches to help slower PCs: glow, sparks and\n"
                           "flashes (Reduced), plus full-screen overlays (Minimal). Menus, fighters, the\n"
                           "stage and the HUD always draw. Display only: safe online.");
+    }
+    // The game's own far fighter models, always. Both engines; the live value reaches them through
+    // set_low_poly_fighters (the native game reads it each draw, the Static Recomp's parts hook too).
+    {
+      const char* low_poly[] = {"Off (the game decides)", "Always"};
+      if (settings_combo("Low poly fighters", &options.low_poly_fighters, low_poly, 2)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Always draws the low-polygon fighter models the game itself uses in the Fountain of\n"
+                          "Dreams reflection, in shadows and in the magnifier bubble, for weak PCs. A fighter\n"
+                          "without one keeps its full model.\n"
+                          "Display only: safe online and in replays; the other player sees their own choice.");
     }
     // Creating a device and a swapchain on another API means restarting; the choice is saved and
     // read again at the next launch (see load_pc_settings and --backend).
@@ -7249,7 +7299,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                     "ESC  BACK TO GAME     F1  SETTINGS");
     } else {
       const bool enter = ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
-      if (action("##confirm_quit", "QUIT", 0) || enter) { state.menu_open = false; host::request_exit(0); }
+      if (action("##confirm_quit", "QUIT", 0) || enter) { state.menu_open = false; host::request_user_exit(); }
       if (action("##cancel_quit", "CANCEL", 1)) { state.menu_open = false; state.menu_quit = false; }
       draw->AddText(ImVec2(p.x + 20, p.y + 144), IM_COL32(167, 162, 178, 255),
                     "QUIT MELEE UNLOCKED?     ENTER  QUIT     ESC  CANCEL");

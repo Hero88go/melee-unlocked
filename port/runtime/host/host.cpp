@@ -251,9 +251,16 @@ void mark_ram_write(uint32_t a, uint32_t bytes) { ppc::mark_ram_write(a, bytes);
 void wr32(uint32_t a, uint32_t v) { v = _byteswap_ulong(v); std::memcpy(ptr(a, 4), &v, 4); mark_ram_write(a, 4); }
 void wr16(uint32_t a, uint16_t v) { v = _byteswap_ushort(v); std::memcpy(ptr(a, 2), &v, 2); mark_ram_write(a, 2); }
 void wr8(uint32_t a, uint8_t v) { *ptr(a) = v; mark_ram_write(a, 1); }
+// A guest string for a report. A pointer outside RAM (a panic raised with a bad argument) names
+// itself instead of stopping the report that was about to say what went wrong.
 std::string cstr(uint32_t addr, size_t max) {
   std::string s;
-  for (size_t i = 0; i < max; ++i) { char ch = (char)rd8(addr + (uint32_t)i); if (!ch) break; s += ch; }
+  for (size_t i = 0; i < max; ++i) {
+    const uint8_t* p = try_ptr(addr + (uint32_t)i, 1);
+    if (!p) { char bad[40]; std::snprintf(bad, sizeof bad, "<bad pointer %08X>", addr); return s + bad; }
+    if (!*p) break;
+    s += (char)*p;
+  }
   return s;
 }
 
@@ -987,6 +994,9 @@ void set_pe_finish_pending() { g_pe_finish_pending = true; }
 void set_pe_token_pending(uint16_t token) { g_pe_token = token; g_pe_token_pending = true; }
 bool exit_requested() { return g_exit; }
 void request_exit(int code) { g_exit_code.store(code); g_exit.store(true); }
+static std::atomic<bool> g_replay_viewing{false};
+void set_replay_viewing(bool on) { g_replay_viewing.store(on); }
+void request_user_exit() { request_exit(g_replay_viewing.load() ? kViewerClosedExit : 0); }
 void request_restart() {
   // Start the replacement first and only then ask for a clean shutdown: if the launch fails there
   // is nothing to recover to, so the running game is left alone rather than closed into nothing.
@@ -1226,6 +1236,74 @@ void apply_wide_fighter_draw() {
     live = false;
   }
 }
+// "Low poly fighters" on the Static Recomp. The game's fighter draw (ftDrawCommon_800805C8) picks
+// the model with four calls to ftParts_800750C8(fp, table, show) at 80080A54..80080ACC: table 1
+// (the far, low-polygon model) hidden, table 4 hidden, then table 2 (metal) hidden and table 0 (the
+// full model) shown, or 0 hidden and 2 shown for a metal fighter. The decision is in those immediate
+// operands, not in data, so the Source Port swaps tables 0 and 1 in C (ftdrawcommon.c) and here the
+// same swap is made in front of the parts function: a dispatch-table hook that, for a call returning
+// into that range (the link register), with the option on and the fighter owning a far model
+// (x5AC.xC[1], fp + 0x5BC), exchanges 0 and 1 and then runs the compiled original. Compiled code
+// calls its functions directly and never sees the table, so while the option is on the draw function
+// runs from its own unchanged RAM bytes (the widescreen pattern above), whose calls do. Every other
+// caller (the reflection, shadow and magnifier passes, which draw the far model already) is passed
+// through untouched, and so is everything while the option is off. No RAM word is written. The hook
+// changes DObj hidden flags only, which nothing but the draw reads: no simulation state, replay
+// digest or online state moves.
+static ppc::Fn g_parts_show_original = nullptr;
+static void parts_show_low_poly(ppc::Context& c, uint8_t* m) {
+  constexpr uint32_t kFirstReturn = 0x80080A58u, kLastReturn = 0x80080AD0u;
+  if (gx::low_poly_fighters_active() && c.lr >= kFirstReturn && c.lr <= kLastReturn && c.r[4] <= 1u) {
+    const uint32_t fp = c.r[3];
+    if (try_ptr(fp + 0x5BCu, 4) && rd32(fp + 0x5BCu) != 0) c.r[4] ^= 1u;
+  }
+  g_parts_show_original(c, m);
+}
+void install_low_poly_fighters() {
+  constexpr uint32_t kPartsShow = 0x800750C8u;
+  if (g_parts_show_original) return;
+  g_parts_show_original = ppc::set_hook(kPartsShow, parts_show_low_poly);
+  if (!g_parts_show_original) {
+    ppc::set_hook(kPartsShow, nullptr);   // never leave a hook with nothing to call behind it
+    log("low poly: the fighter parts function has no dispatch entry; the option has no effect");
+  }
+}
+// MELEE_TEST_ADVENTURE_SCENE=<decimal scene id> (tests only, Static Recomp): Adventure starts at
+// that scene (stage * 8 + part: 25 is the Zelda fight, 33 the Kirby team), as the Source Port's hook
+// of the same name does, so a hidden run can reach a later stage. The game's own start function
+// (gm_801B4350) is run from RAM so that its call to gm_SetNextGameModeStateId goes through the
+// dispatch table, and the id is replaced there. Nothing is installed without the variable.
+static ppc::Fn g_set_next_scene_original = nullptr;
+static int g_test_adventure_scene = -1;
+static void set_next_scene_test(ppc::Context& c, uint8_t* m) {
+  constexpr uint32_t kAdventureStart = 0x801B4350u, kAdventureStartEnd = 0x801B4408u;
+  if (g_test_adventure_scene >= 0 && c.lr >= kAdventureStart && c.lr < kAdventureStartEnd) c.r[3] = (uint32_t)g_test_adventure_scene;
+  g_set_next_scene_original(c, m);
+}
+static void apply_test_adventure_scene() {
+  constexpr uint32_t kSetNextScene = 0x801A42A0u, kAdventureStart = 0x801B4350u;
+  static bool tried = false;
+  if (tried || !ram) return;
+  tried = true;
+  const char* v = std::getenv("MELEE_TEST_ADVENTURE_SCENE");
+  if (!v || !*v) return;
+  g_set_next_scene_original = ppc::set_hook(kSetNextScene, set_next_scene_test);
+  if (!g_set_next_scene_original) { ppc::set_hook(kSetNextScene, nullptr); log("test: the scene function has no dispatch entry"); return; }
+  if (!ppc::redirect_to_interpreter(kAdventureStart)) { log("test: the Adventure start could not be run from RAM"); return; }
+  g_test_adventure_scene = std::atoi(v);
+  log("test: Adventure starts at scene %d", g_test_adventure_scene);
+}
+void apply_low_poly_fighters() {
+  apply_test_adventure_scene();
+  constexpr uint32_t kFighterDraw = 0x800805C8u;
+  static bool live = false;
+  if (live || !ram || !g_parts_show_original || !gx::low_poly_fighters_active()) return;
+  // Once from RAM, it stays there (a few hundred instructions per fighter draw): switching the option
+  // off makes the hook pass every call through, which is the game's own picture again.
+  if (!ppc::redirect_to_interpreter(kFighterDraw)) { log("low poly: the fighter draw could not be run from RAM; the option has no effect"); gx::set_low_poly_fighters(false); return; }
+  live = true;
+  log("low poly: fighters draw with the game's far models");
+}
 // A mod disc can ask for a file it does not ship (ACE's results screen asks for /audio/ff_step1.hps
 // for one of its fighters). The game then opens entry -1, DVDFastOpen refuses and leaves the file
 // information of whatever was opened last, and the music stream reads its header out of that file:
@@ -1338,7 +1416,18 @@ void clean_mode_music_frame() {
     if (playing_id) { slippi::jukebox::stop(); playing_id = 0; }
     return;
   }
+  // MELEE_TRACE_CLEAN_MUSIC (tests only): what became of the previous stream's voice slot two
+  // seconds after the game replaced it. A slot still holding the old id was never freed.
+  static const bool trace = std::getenv("MELEE_TRACE_CLEAN_MUSIC") != nullptr;
+  static uint32_t watched_id = 0, watched_frames = 0;
+  if (trace && watched_id && ++watched_frames == 120) {
+    const uint32_t old_node = 0x804C2C64u + (watched_id & 0x3Fu) * 0x50u;
+    log("mods: music stream %08X two seconds after it was replaced: slot holds %08X, flags %02X, pending %u (%s)", watched_id,
+        rd32(old_node), rd8(old_node + 0x09), rd8(old_node + 0x26), rd32(old_node) == watched_id ? "NOT freed" : "freed");
+    watched_id = 0;
+  }
   if (id != playing_id) {
+    if (trace && playing_id) { watched_id = playing_id; watched_frames = 0; }
     const uint32_t entry = rd32(0x804D7764u), fst = rd32(0x80000038u);
     const uint32_t count = fst ? rd32(fst + 8) : 0;
     if (entry > 0 && entry < count && rd8(fst + entry * 12) == 0) {
@@ -1350,11 +1439,23 @@ void clean_mode_music_frame() {
     }
     playing_id = id;
   }
-  // The stream voice itself stays silent: its three volume factors, then the flag that makes the
-  // sound driver apply them.
+  // The stream voice itself stays silent: its three volume factors, then the node is queued for the
+  // sound driver's volume pass exactly as the game queues one (HSD_SynthSFXUpdateVolume): linked
+  // into the list at HSD_Synth_804D774C with its pending byte set. The byte means "already on the
+  // list". Setting it alone, as this did, kept the node off the list for good, and the driver's
+  // key-off of that voice goes through the same list: the slot was never faded or freed, and a
+  // sound that later landed in it could not be stopped until the game closed (reported as one
+  // sound repeating after a few matches). A stream still loading (flag 8) queues itself when its
+  // first data arrives and reads the zeroed factors then.
   if (rd32(node + 0x28) | rd32(node + 0x2C) | rd32(node + 0x34)) {
+    constexpr uint32_t kVolumeList = 0x804D774Cu;
     wr32(node + 0x28, 0); wr32(node + 0x2C, 0); wr32(node + 0x34, 0);
-    wr8(node + 0x26, 1);
+    // MELEE_TEST_CLEAN_MUSIC_OLD (tests only): the byte alone, as before, to show the slot leak.
+    static const bool old_way = std::getenv("MELEE_TEST_CLEAN_MUSIC_OLD") != nullptr;
+    if (old_way) wr8(node + 0x26, 1);
+    else if (rd8(node + 0x26) == 0 && (rd8(node + 0x09) & 8) == 0) {
+      wr32(node + 0x20, rd32(kVolumeList)); wr32(kVolumeList, node); wr8(node + 0x26, 1);
+    }
   }
   const uint32_t bits = rd32(0x804D38ACu);
   float level; std::memcpy(&level, &bits, 4);

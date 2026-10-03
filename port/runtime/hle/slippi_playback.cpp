@@ -164,6 +164,7 @@ bool restart_match() {
 void set_replay(const std::string& path) {
   g_path = path;
   replay_control::set_replay_path(path);
+  host::set_replay_viewing(!path.empty());
 }
 
 std::vector<KeptCode> gameplay_codes(const std::vector<uint8_t>& source, const std::string& sys_dir, size_t* dropped) {
@@ -204,6 +205,7 @@ void prepare_is_file_ready(std::vector<uint8_t>& q) {
       g_finished = true;
       replay_control::end();
       host::log("playback: replay finished; exiting");
+      host::set_replay_viewing(false);
       host::request_exit(0);
     }
     return;

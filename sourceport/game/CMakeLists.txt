@@ -38,6 +38,7 @@ target_compile_options(game_flags INTERFACE
   -mno-ms-bitfields          # the console compiler packs a u8 and a u16 bitfield into one run; the MS layout does not
   -fno-strict-aliasing       # the sources read floats through integer pointers throughout
   -fwrapv
+  -fno-aggressive-loop-optimizations   # the sources read one entry past a table on a loop's last pass; GCC took that as proof the pass never runs and dropped it (Peach's third down special item)
   -fno-builtin               # no folding sin() at compile time or sqrt() into an instruction: the game's own maths decides
   -ffp-contract=on           # fuse a*b+c only inside one expression, as the console compiler did
   -fexec-charset=CP932       # the game's string literals are Shift-JIS at run time

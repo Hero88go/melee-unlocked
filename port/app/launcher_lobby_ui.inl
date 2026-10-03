@@ -410,7 +410,7 @@ void draw_control(DRAWITEMSTRUCT* d) {
     std::string kind;
     if(auto colon=version.find(':'); colon!=std::string::npos) { kind=version.substr(colon+1); version.resize(colon); }
     if(!version.empty() && version[0]!='v' && version[0]!='V') version="v"+version;
-    // Both players need the same Game Build: show it, not only the version.
+    // Show the Game Build with the version (the two builds play each other; the version must match).
     if(kind=="source") version+="  Source Port"; else if(kind=="recomp") version+="  Static Recomp";
     // Share the header using the fonts that actually draw it. A fixed 150-unit build
     // slot left only 64 units for the nickname and localized "(You)" on a roster card.
