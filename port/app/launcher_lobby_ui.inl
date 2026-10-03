@@ -245,15 +245,24 @@ void layout() {
   const int height=MulDiv(r.bottom,96,owner?GetDpiForWindow(owner):96);
   const int right=width-316, left_width=right-42, bottom=height-94;
   place(GO_ONLINE,width-132,24,108,30);
-  place(ONLINE_HINT,24,66,width-48,34);
+  // Peer-to-peer matches: Find match beside Go Online, and the Connect by address row where the
+  // Go Online hint is otherwise (the invite field's own cue says what it is for).
+  place(ONLINE_HINT,24,66,width-48,34,!p2p_matches);
+  if(p2p_matches) {
+    place(FIND_MATCH,width-132-148,24,140,30);
+    place(INVITE_EDIT,30,72,width-60-272,22);
+    place(INVITE_CONNECT,width-24-262,68,104,30); place(INVITE_COPY,width-24-150,68,150,30);
+    // Nothing but vanilla is played peer to peer, so there is no version to filter by or be open to.
+    place(BLOCK_PLAYER,right+12+178,bottom-46,90,32,!rows.empty());
+  }
   place(TAB_PROFILE,24,bottom+12,82,34); place(TAB_FRIENDS,114,bottom+12,82,34); place(TAB_HISTORY,204,bottom+12,82,34);
   place(TAB_CHAT,294,bottom+12,132,34,lobby_tab!=0);
   place(PLAYER_HEADING,right+14,124,264,24);
   // The Show filter has its own row: beside the heading it would not fit in every language.
-  place(PLAYER_FILTER,right+12,154,268,28,!roster_all.empty());
-  // Private Chat sits under the list, inside the Players card.
-  place(PLAYERS,right+12,190,268,bottom-240,!rows.empty());
-  place(PM_PLAYER,right+12,bottom-46,268,32,!rows.empty());
+  place(PLAYER_FILTER,right+12,154,268,28,!roster_all.empty() && !p2p_matches);
+  // Private Chat sits under the list, inside the Players card (with Block beside it, see above).
+  place(PLAYERS,right+12,p2p_matches?154:190,268,bottom-(p2p_matches?204:240),!rows.empty());
+  place(PM_PLAYER,right+12,bottom-46,p2p_matches?170:268,32,!rows.empty());
   place(REQUEST,right,bottom+12,181,34); place(ADD_FRIEND,right+189,bottom+12,103,34);
   bool pending=!requests.empty() && lobby_tab==0;
   int content_bottom=bottom-(pending?122:0);
@@ -281,7 +290,8 @@ void layout() {
     // The Location field shares its row with the Open to button.
     place(NAME+i,44,194+i*64,i==2?left_width-40-206:left_width-40,24,profile);
   }
-  place(OPEN_TO,left_width-196,191+2*64,196,30,profile);
+  place(OPEN_TO,left_width-196,191+2*64,196,30,profile && !p2p_matches);
+  place(P2P_FIGHTER,left_width-196,191+2*64,196,30,profile && p2p_matches);   // the same slot: only one of the two exists in a build
   place(PROFILE_MAINS,40,358,left_width-32,20,profile);
   for(int i=0;i<26;++i) place(CHARACTER_FIRST+i,40+(i%9)*42,388+(i/9)*42,36,36,profile);
   for(int id:{ADVANCED,PROFILE_MODE,MODE,URL_LABEL,URL}) ShowWindow(GetDlgItem(window,id),SW_HIDE);
@@ -311,12 +321,19 @@ Json profile_config() {
     cfg["name"]=text(NAME); cfg["location"]=text(LOCATION);
   } else if(!prior_peer) cfg["url"]=std::string();
   if(cfg.value("name",std::string()).empty()) cfg["name"]=account_name;
+  if(p2p_matches) {
+    // No account: the code follows the name typed here and this launcher's identity key.
+    account_name=cfg.value("name",std::string());
+    account_code=identity.empty()?std::string():derived_code(account_name,identity);
+    if(window) label(CODE,account_code);
+  }
   cfg["code"]=account_code;
   cfg["build"]=build; cfg["ready"]=can_play; cfg["mains"]=selected_mains;
-  // What this PC has and what the player takes requests for (see launcher_lobby_p2p.h).
-  if(!mod_has.empty()) cfg["has"]=mod_has; else cfg.erase("has");
-  cfg["open"]=open_list();
-  if(custom_launch_ready && !custom_hash.empty() && valid_iso_name(current_prefs.custom_name))
+  // What this PC has and what the player takes requests for (see launcher_lobby_p2p.h). Mods and
+  // custom ISOs run on the Static Recomp, which a launcher with peer-to-peer matches does not start.
+  if(!mod_has.empty() && !p2p_matches) cfg["has"]=mod_has; else cfg.erase("has");
+  if(p2p_matches) cfg["open"]=Json::array({"vanilla"}); else cfg["open"]=open_list();
+  if(!p2p_matches && custom_launch_ready && !custom_hash.empty() && valid_iso_name(current_prefs.custom_name))
     cfg["iso"]={{"n",current_prefs.custom_name},{"h",custom_hash}};
   else cfg.erase("iso");
   int wins=0,losses=0;
@@ -345,9 +362,9 @@ void draw_control(DRAWITEMSTRUCT* d) {
       return;
     }
     bool active=(id>=TAB_CHAT&&id<=TAB_PROFILE&&id-TAB_CHAT==lobby_tab);
-    bool primary=id==REQUEST||id==GO_ONLINE||id==ACCEPT||id==INVITE_FRIEND||active;
+    bool primary=id==REQUEST||id==GO_ONLINE||id==ACCEPT||id==INVITE_FRIEND||id==FIND_MATCH||active;
     bool enabled=!(d->itemState&ODS_DISABLED);
-    box(d->hDC,r,id==GO_ONLINE||id==REQUEST||id==ADD_FRIEND||id==TAB_PROFILE||id==TAB_HISTORY||id==TAB_FRIENDS||id==TAB_CHAT||id==COPY_CODE?ui_bg:ui_panel);
+    box(d->hDC,r,id==GO_ONLINE||id==REQUEST||id==ADD_FRIEND||id==TAB_PROFILE||id==TAB_HISTORY||id==TAB_FRIENDS||id==TAB_CHAT||id==COPY_CODE||id==FIND_MATCH||id==INVITE_CONNECT||id==INVITE_COPY?ui_bg:ui_panel);
     COLORREF top=primary?launcher::theme::top():RGB(33,43,66), bot=primary?launcher::theme::bottom():top;
     if(!enabled) top=bot=RGB(26,33,50);
     if(d->itemState&ODS_SELECTED) top=bot=primary?launcher::theme::pressed():RGB(24,33,52);
@@ -500,8 +517,8 @@ void paint_lobby(HWND w,HDC print=nullptr) {
     int knob=track.left+(track.right-track.left)*sound_volume/100;
     RECT circle{knob-U(7),track.top-U(5),knob+U(7),track.bottom+U(5)}; box(dc,circle,launcher::theme::glow(),14);
   }
-  for(int id:{CHAT,NAME,CODE,LOCATION,URL,FRIEND_CODE}) {
-    HWND h=GetDlgItem(window,id); if(!(GetWindowLongPtrW(h,GWL_STYLE)&WS_VISIBLE)) continue;
+  for(int id:{CHAT,NAME,CODE,LOCATION,URL,FRIEND_CODE,INVITE_EDIT}) {
+    HWND h=GetDlgItem(window,id); if(!h || !(GetWindowLongPtrW(h,GWL_STYLE)&WS_VISIBLE)) continue;
     RECT field{}; GetWindowRect(h,&field); MapWindowPoints(nullptr,w,(POINT*)&field,2); InflateRect(&field,U(5),U(5));
     box(dc,field,ui_border,7); InflateRect(&field,-1,-1); box(dc,field,ui_field,7);
   }

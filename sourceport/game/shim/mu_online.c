@@ -188,6 +188,8 @@ typedef struct MuOnlineState {
     unsigned int rollbacks, resim_frames, max_depth, loads, captures, skips, advances, skip_run;
     unsigned int test_inputs;
     unsigned int wait_retrace;
+    int loop_entered;         /* the scene's engine loop has reached its pad wait */
+    int engine_started;       /* the engine body of frame 0 has begun */
     u8 match_state[RESPONSE_CAPACITY];
 } MuOnlineState;
 
@@ -511,6 +513,66 @@ static int trace_renew(void)
     return on;
 }
 
+/* Diagnostic (MELEE_TRACE_P2P_PADS=1): the pads every port got on each frame, and the values the
+ * frame's checksum is made of. Two games' logs of one match must be the same line for line on every
+ * frame both ran with confirmed pads ("conf 1"); the first line that differs names the frame, the
+ * port and the value. */
+static int trace_pads(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        char* getenv(const char* name);
+        const char* v = getenv("MELEE_TRACE_P2P_PADS");
+        on = v != NULL && v[0] == '1';
+    }
+    return on;
+}
+
+static void trace_pads_line(const PADStatus* stat, int frame, const char* kind, int confirmed)
+{
+    char line[200];
+    int p, at;
+    if (!trace_pads()) {
+        return;
+    }
+    at = snprintf(line, sizeof line, "pads f %d %s conf %d local %d:", frame, kind, confirmed,
+                  (int) mu_online.local_index);
+    for (p = 0; p < 4; p++) {
+        u8 w[PAD_SIZE];
+        int k;
+        pad_to_wire(w, &stat[p]);
+        line[at++] = ' ';
+        for (k = 0; k < PAD_SIZE; k++) {
+            at += snprintf(line + at, sizeof line - (unsigned int) at, "%02X", w[k]);
+        }
+    }
+    mu_online_abi_log(line);
+}
+
+static void trace_state_line(int frame, u32 checksum)
+{
+    char line[240];
+    int i, at;
+    if (!trace_pads()) {
+        return;
+    }
+    at = snprintf(line, sizeof line, "state f %d sum %08X seed %08X:", frame, (unsigned int) checksum,
+                  (unsigned int) *HSD_RandSeedPtr);
+    for (i = 0; i < 4; i++) {
+        HSD_GObj* gobj = player_slots[i].player_entity[0];
+        Fighter* fp;
+        if (gobj == NULL) {
+            continue;
+        }
+        fp = gobj->user_data;
+        at += snprintf(line + at, sizeof line - (unsigned int) at, " p%d m %d x %08X y %08X d %08X s %d", i,
+                       (int) fp->motion_id, (unsigned int) float_bits(fp->cur_pos.x),
+                       (unsigned int) float_bits(fp->cur_pos.y), (unsigned int) float_bits(fp->dmg.x1830_percent),
+                       (int) (u8) player_slots[i].stocks);
+    }
+    mu_online_abi_log(line);
+}
+
 static void selftest_command(unsigned int cmd, int frame)
 {
     u8 payload[4];
@@ -770,6 +832,23 @@ int mu_online_pad_renew(PADStatus* stat)
     }
     frame = mu_online.frame;
 
+    /* The engine body of frame 0 takes a sample from before the match and online pad N goes to the
+     * body of frame N (see the top of this file). On a console that sample is always there, left in
+     * the queue by the menus. A game that boots straight into the match can reach the engine loop
+     * with an empty queue: body 0 then took online pad 1 and that game applied every pad one frame
+     * earlier than the other one. So no online pad is fetched before the engine loop waits for
+     * pads, and when the loop finds the queue empty body 0 gets a neutral sample of its own. */
+    if (!mu_online.engine_started) {
+        if (!mu_online.loop_entered) {
+            return 1;
+        }
+        if (HSD_PadGetRawQueueCount() == 0) {
+            memset(stat, 0, 4 * sizeof *stat);
+            trace_pads_line(stat, 0, "first", 1);
+            return 0;
+        }
+    }
+
     /* During a rollback the pads come from history; nothing new is sent. */
     if (mu_online.rollback_active && !mu_online.rollback_should_load) {
         int idx, p, slot = used_slot(frame);
@@ -815,6 +894,7 @@ int mu_online_pad_renew(PADStatus* stat)
                 }
             }
             record_used_pads(stat, frame, confirmed);
+            trace_pads_line(stat, frame, "resim", confirmed);
         }
         mu_online.frame = frame + 1;
         mu_online.resim_frames++;
@@ -943,7 +1023,11 @@ int mu_online_pad_renew(PADStatus* stat)
         return 1;
     }
     /* Section 10: remote pads for this frame, predicted where they have not arrived. */
-    record_used_pads(stat, frame, load_opponent_inputs(stat, frame, 1));
+    {
+        int confirmed = load_opponent_inputs(stat, frame, 1);
+        record_used_pads(stat, frame, confirmed);
+        trace_pads_line(stat, frame, "run", confirmed);
+    }
     mu_online.frame = frame + 1;
     return 0;
 }
@@ -955,6 +1039,7 @@ int mu_online_engine_gate(int* count)
     if (!hooks_on()) {
         return *count != 0;
     }
+    mu_online.loop_entered = 1;
     if (*count <= 0 && !mu_online.rollback_active) {
         if (mu_online.force_pad_renew) {
             mu_online.force_pad_renew = 0;
@@ -1105,6 +1190,7 @@ void mu_online_frame_begin(void)
     if (!hooks_on()) {
         return;
     }
+    mu_online.engine_started = 1;
     mu_online_audio_frame_begin();
     engine = mu_gm_engine_state();
     frame = (int) engine->unk_8;
@@ -1173,6 +1259,7 @@ rollback_inputs_done:
         }
         mu_online.desync_local[idx].frame = frame;
         mu_online.desync_local[idx].checksum = compute_checksum();
+        trace_state_line(frame, mu_online.desync_local[idx].checksum);
         written = &mu_online.desync_local[idx];
         store_recovery(written);
     }

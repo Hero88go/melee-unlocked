@@ -7,7 +7,11 @@
 #include "audio.h"
 #include "native_pose_bridge.h"
 #include "replay_control.h"
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"   // the same names, answered from the neutral netplay state
+#else
 #include "slippi_online.h"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <cmath>

@@ -34,7 +34,7 @@ DpiCallback g_on_dpi;
 std::atomic<bool> g_fullscreen_toggle{false};
 std::atomic<bool> g_settings_toggle{false};
 std::atomic<bool> g_legacy_settings_toggle{false};
-std::atomic<bool> g_trace_mark{false};
+std::atomic<int> g_trace_mark{0};   // 0 none, else the kind of the last mark key pressed (window.h)
 std::atomic<int> g_settings_controller_port{-1};
 std::atomic<bool> g_practice_toggle{false};
 std::atomic<bool> g_escape_press{false};
@@ -90,7 +90,12 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
       // and ImGui's repeat turned a held key into the panel flickering open and shut.
       if (w == VK_F1 && !(l & (1 << 30))) g_settings_toggle.store(true);
       if (w == VK_F11 && !(l & (1 << 30))) g_legacy_settings_toggle.store(true);
-      if (w == VK_F8 && !(l & (1 << 30))) g_trace_mark.store(true);
+      if (!(l & (1 << 30))) {   // F6 looked wrong, F7 input wrong, F8 plain, F9 sounded wrong
+        if (w == VK_F8) g_trace_mark.store(1);
+        else if (w == VK_F6) g_trace_mark.store(2);
+        else if (w == VK_F7) g_trace_mark.store(3);
+        else if (w == VK_F9) g_trace_mark.store(4);
+      }
       if (w == VK_ESCAPE && !(l & (1 << 30))) g_escape_press.store(true);   // the in-game menu, same rules as F1
       std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = true; return 0;
     }
@@ -291,7 +296,7 @@ bool window_take_fullscreen_toggle() { return g_fullscreen_toggle.exchange(false
 // Several presses while nothing was being drawn count as one: the player pressed F1 again because
 // nothing seemed to happen, and wants the panel, not an even number of toggles.
 bool window_take_settings_toggle() { return g_settings_toggle.exchange(false); }
-bool window_take_trace_mark() { return g_trace_mark.exchange(false); }
+int window_take_trace_mark() { return g_trace_mark.exchange(0); }
 bool window_take_legacy_settings_toggle() { return g_legacy_settings_toggle.exchange(false); }
 int window_take_settings_controller_port() { return g_settings_controller_port.exchange(-1); }
 bool window_take_practice_toggle() { return g_practice_toggle.exchange(false); }
@@ -456,6 +461,9 @@ constexpr uint16_t ds4_action_mask(BindAction action) {
     case BindAction::DDown: return DS4_DPAD_DOWN;
     case BindAction::DLeft: return DS4_DPAD_LEFT;
     case BindAction::DRight: return DS4_DPAD_RIGHT;
+    // The travel of L2 and R2 always reached the game as the analog triggers; now it says so.
+    case BindAction::LAnalog: return DS4_L2;
+    case BindAction::RAnalog: return DS4_R2;
     default: return 0;
   }
 }
@@ -692,32 +700,27 @@ static uint32_t g_match_rt_start = 0, g_match_rt_last = 0;
 // remappable table, and returns the same thing as BindAction bit indices for the settings panel.
 // The L/R shoulders are digital on this pad, so a press bottoms the analog trigger out the way a
 // digital press does on hardware: Melee shields from the trigger value, not from the L/R bit.
-uint16_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad) {
-  uint32_t actions = 0;
-  for (int i = 0; i < (int)BindAction::Count; ++i) {
-    if (!(g_hid_bindings[idx].mask[i] & buttons)) continue;
-    apply_bound_press(i, g_hid_bindings[idx].level[i], pad);
-    actions |= (uint32_t)(1u << i);
-  }
+// Thirty-two bits back: the two travel actions sit above bit 16.
+uint32_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad) {
+  const HidBindings& bind = g_hid_bindings[idx];
+  // The device's own trigger axes, when it has them, are already in trig_l/trig_r and pass through
+  // (they have no source bit to bind); a button on L analog or R analog presses on top of them.
+  const uint32_t actions = button_apply_bindings(pad, pad.trig_l, pad.trig_r,
+      [&](int i) { return (bind.mask[i] & buttons) != 0; }, [&](int i) { return (int)bind.level[i]; });
   // A box has no analog triggers: its L and R are buttons, and the game needs a full press to see
   // a shield. Light shield on such a device is a firmware feature, reported on an analog axis when
-  // the device has one, which the axis path above has already put into trig_l/trig_r.
+  // the device has one.
   if (pad.button & kActionPadBit[(size_t)BindAction::L] && !pad.trig_l) pad.trig_l = 255;
   if (pad.button & kActionPadBit[(size_t)BindAction::R] && !pad.trig_r) pad.trig_r = 255;
-  apply_cstick_actions(actions, pad.sub_x, pad.sub_y);
   return actions;
 }
 
-uint16_t swpro_apply_bindings(int idx, uint16_t buttons, PadState& pad) {
-  uint32_t actions = 0;
-  for (int i = 0; i < (int)BindAction::Count; ++i) {
-    if (!(g_swpro_bindings[idx].mask[i] & buttons)) continue;
-    apply_bound_press(i, g_swpro_bindings[idx].level[i], pad);
-    actions |= (uint32_t)(1u << i);
-  }
+uint32_t swpro_apply_bindings(int idx, uint16_t buttons, PadState& pad) {
+  const PadBindings& bind = g_swpro_bindings[idx];
+  const uint32_t actions = button_apply_bindings(pad, 0, 0,
+      [&](int i) { return (bind.mask[i] & buttons) != 0; }, [&](int i) { return (int)bind.level[i]; });
   if (pad.button & kActionPadBit[(size_t)BindAction::L]) pad.trig_l = 255;
   if (pad.button & kActionPadBit[(size_t)BindAction::R]) pad.trig_r = 255;
-  apply_cstick_actions(actions, pad.sub_x, pad.sub_y);
   return actions;
 }
 
@@ -742,31 +745,17 @@ void apply_known_box_layout(int idx) {
   }
 }
 
-// Every family's binding table the same way: `pressed(i)` says whether action i's binding is down,
-// `depth(i)` how far a button bound to L or R presses the trigger (see apply_bound_press).
-// Returns the actions as BindAction bits for the settings panel.
-template <class Pressed, class Depth> uint32_t apply_actions(PadState& pad, Pressed pressed, Depth depth) {
-  uint32_t actions = 0;
-  for (int i = 0; i < (int)BindAction::Count; ++i) {
-    if (!pressed(i)) continue;
-    actions |= (uint32_t)(1u << i);
-    apply_bound_press(i, depth(i), pad);
-  }
-  apply_cstick_actions(actions, pad.sub_x, pad.sub_y);
-  return actions;
-}
+// The binding tables themselves are applied in input_bindings.h (apply_actions and the per-family
+// functions beside it), where the unit tests reach them. Both callers of each (input_poll and
+// input_debug_snapshot) go through the same function, so the game and the Controls tab agree.
 
-// The adapter reports GameCube buttons already; its table remaps them (the default is the identity).
-// The analog triggers stay with the physical triggers; a digital L or R arriving from another button
-// bottoms its trigger out, as a box's L/R do, since the game shields from the analog value.
-uint16_t gc_apply_bindings(int idx, PadState& pad) {
-  const uint16_t raw = pad.button;
-  pad.button = 0;
-  // The controller's own L and R clicks come with its analog triggers, so they have no depth.
-  const uint32_t actions = apply_actions(pad, [&](int i) { const uint16_t m = g_gc_bindings[idx].mask[i]; return m && (raw & m); },
-                                         [&](int i) { return (g_gc_bindings[idx].mask[i] & (PAD_L | PAD_R)) ? 0 : (int)g_gc_bindings[idx].level[i]; });
-  if (pad.button & PAD_L && !pad.trig_l) pad.trig_l = 255;
-  if (pad.button & PAD_R && !pad.trig_r) pad.trig_r = 255;
+// The keyboard: every key is a button, and a key on L or R bottoms the trigger out with its click.
+template <class Key> uint32_t keyboard_apply_bindings(PadState& kb, Key key) {
+  const uint32_t actions = button_apply_bindings(kb, 0, 0,
+      [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); }, [](int i) { return (int)g_key_bindings.level[i]; });
+  apply_stick_actions(actions, kb.stick_x, kb.stick_y);
+  if (kb.button & PAD_L) kb.trig_l = 255;
+  if (kb.button & PAD_R) kb.trig_r = 255;
   return actions;
 }
 
@@ -1005,11 +994,7 @@ void input_poll(PadState out[4]) {
       if (live && vk >= 8 && vk != VK_TAB) return (GetAsyncKeyState(vk) & 0x8000) != 0;
       return g_keys[vk];
     };
-    keyboard_actions = apply_actions(kb, [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); },
-                                     [](int i) { return (int)g_key_bindings.level[i]; });
-    apply_stick_actions(keyboard_actions, kb.stick_x, kb.stick_y);
-    if (kb.button & PAD_L) kb.trig_l = 255;
-    if (kb.button & PAD_R) kb.trig_r = 255;
+    keyboard_actions = keyboard_apply_bindings(kb, key);
   }
 
   PadState xin[4];
@@ -1030,17 +1015,10 @@ void input_poll(PadState out[4]) {
     const int sx = axis(g.sThumbLX), sy = axis(g.sThumbLY), cx = axis(g.sThumbRX), cy = axis(g.sThumbRY);
     x.stick_x = (int8_t)sx; x.stick_y = (int8_t)sy; x.sub_x = (int8_t)cx; x.sub_y = (int8_t)cy;
     const Deadzone& dz = g_deadzones[(size_t)PadFamily::Xbox];
-    // The triggers first: a button bound to L or R with a depth of its own presses on top of them.
-    // LT and RT as binding sources press at the family's full-press point, or at the binding's own.
-    x.trig_l = g.bLeftTrigger; x.trig_r = g.bRightTrigger;
-    const PadBindings& bind = g_pad_bindings[idx];
-    debug.xinput_actions[idx] = apply_actions(x,
-        [&](int i) { return xinput_binding_pressed(bind.mask[i], bind.level[i], g.wButtons, g.bLeftTrigger, g.bRightTrigger, dz.click_l, dz.click_r); },
-        [&](int i) { return (bind.mask[i] & (kXInputBindLT | kXInputBindRT)) ? 0 : (int)bind.level[i]; });
-    apply_trigger_click(dz.click_l, x.trig_l, x.button, PAD_L);
-    apply_trigger_click(dz.click_r, x.trig_r, x.button, PAD_R);
-    if (x.button & PAD_L) debug.xinput_actions[idx] |= 1u << (int)BindAction::L;
-    if (x.button & PAD_R) debug.xinput_actions[idx] |= 1u << (int)BindAction::R;
+    // The triggers reach the game only through bindings: their travel through L analog / R analog,
+    // their click through L / R. LT and RT as binding sources press at the family's full-press
+    // point, or at the binding's own.
+    debug.xinput_actions[idx] = xinput_apply_bindings(g_pad_bindings[idx], g.wButtons, g.bLeftTrigger, g.bRightTrigger, dz.click_l, dz.click_r, x);
   }
 
   PadState ds4[4]{};
@@ -1053,11 +1031,7 @@ void input_poll(PadState out[4]) {
       ds4_connected[idx] = g_ds4_devices[idx] != nullptr;
       ds4[idx].err = ds4_connected[idx] ? 0 : -1;
       if (!ds4_connected[idx]) continue;
-      const PadBindings& bind = g_ds4_bindings[idx];
-      const uint8_t l2 = ds4[idx].trig_l, r2 = ds4[idx].trig_r;   // as read, before a bound button presses on top
-      debug.ds4_actions[idx] = apply_actions(ds4[idx],
-          [&](int i) { return ds4_binding_pressed(bind.mask[i], bind.level[i], ds4_buttons[idx], l2, r2); },
-          [&](int i) { return (bind.mask[i] & (DS4_L2 | DS4_R2)) ? 0 : (int)bind.level[i]; });
+      debug.ds4_actions[idx] = ds4_apply_bindings(g_ds4_bindings[idx], ds4_buttons[idx], ds4[idx]);
       debug.ds4_connected[idx] = true;
     }
   }
@@ -1092,7 +1066,7 @@ void input_poll(PadState out[4]) {
   }
 
   for (int idx = 0; idx < 4; ++idx)
-    if (gc_mask & (1u << idx)) debug.gc_actions[idx] = gc_apply_bindings(idx, gc[idx]);
+    if (gc_mask & (1u << idx)) debug.gc_actions[idx] = gc_apply_bindings(g_gc_bindings[idx], gc[idx]);
 
   // Per-family options (deadzones, trigger values). Before routing, so the port overlay and everything downstream
   // see what the game gets.
@@ -1249,11 +1223,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   {
     std::lock_guard<std::mutex> lock(g_keys_mutex);
     auto key = [](int vk) { return g_keys[vk & 0xFF]; };
-    snapshot.keyboard_actions = apply_actions(kb, [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); },
-                                              [](int i) { return (int)g_key_bindings.level[i]; });
-    apply_stick_actions(snapshot.keyboard_actions, kb.stick_x, kb.stick_y);
-    if (kb.button & PAD_L) kb.trig_l = 255;
-    if (kb.button & PAD_R) kb.trig_r = 255;
+    snapshot.keyboard_actions = keyboard_apply_bindings(kb, key);
   }
 
   PadState xin[4];
@@ -1269,15 +1239,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     const int sx = axis(g.sThumbLX), sy = axis(g.sThumbLY), cx = axis(g.sThumbRX), cy = axis(g.sThumbRY);
     xin[idx].stick_x = (int8_t)sx; xin[idx].stick_y = (int8_t)sy; xin[idx].sub_x = (int8_t)cx; xin[idx].sub_y = (int8_t)cy;
     const Deadzone& dz = g_deadzones[(size_t)PadFamily::Xbox];
-    xin[idx].trig_l = g.bLeftTrigger; xin[idx].trig_r = g.bRightTrigger;
-    const PadBindings& bind = g_pad_bindings[idx];
-    snapshot.xinput_actions[idx] = apply_actions(xin[idx],
-        [&](int i) { return xinput_binding_pressed(bind.mask[i], bind.level[i], g.wButtons, g.bLeftTrigger, g.bRightTrigger, dz.click_l, dz.click_r); },
-        [&](int i) { return (bind.mask[i] & (kXInputBindLT | kXInputBindRT)) ? 0 : (int)bind.level[i]; });
-    apply_trigger_click(dz.click_l, xin[idx].trig_l, xin[idx].button, PAD_L);
-    apply_trigger_click(dz.click_r, xin[idx].trig_r, xin[idx].button, PAD_R);
-    if (xin[idx].button & PAD_L) snapshot.xinput_actions[idx] |= 1u << (int)BindAction::L;
-    if (xin[idx].button & PAD_R) snapshot.xinput_actions[idx] |= 1u << (int)BindAction::R;
+    snapshot.xinput_actions[idx] = xinput_apply_bindings(g_pad_bindings[idx], g.wButtons, g.bLeftTrigger, g.bRightTrigger, dz.click_l, dz.click_r, xin[idx]);
   }
 
   PadState ds4[4]{};
@@ -1287,11 +1249,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     ds4_buttons[idx] = g_ds4_buttons[idx]; ds4[idx] = g_ds4_pads[idx];
     if (!g_ds4_devices[idx]) { ds4[idx].err = -1; continue; }
     snapshot.ds4_connected[idx] = true; ds4[idx].err = 0;
-    const PadBindings& bind = g_ds4_bindings[idx];
-    const uint8_t l2 = ds4[idx].trig_l, r2 = ds4[idx].trig_r;
-    snapshot.ds4_actions[idx] = apply_actions(ds4[idx],
-        [&](int i) { return ds4_binding_pressed(bind.mask[i], bind.level[i], ds4_buttons[idx], l2, r2); },
-        [&](int i) { return (bind.mask[i] & (DS4_L2 | DS4_R2)) ? 0 : (int)bind.level[i]; });
+    snapshot.ds4_actions[idx] = ds4_apply_bindings(g_ds4_bindings[idx], ds4_buttons[idx], ds4[idx]);
   }
 
   PadState swpro[4];
@@ -1328,7 +1286,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   for (int idx = 0; idx < 4; ++idx) {
     snapshot.gc_actions[idx] = 0;
     if (!(gc_mask & (1u << idx))) continue;
-    snapshot.gc_actions[idx] = gc_apply_bindings(idx, gc[idx]);
+    snapshot.gc_actions[idx] = gc_apply_bindings(g_gc_bindings[idx], gc[idx]);
   }
   for (int idx = 0; idx < 4; ++idx) {
     if (facts.gc[idx]) apply_family_options(PadFamily::GameCube, gc[idx]);

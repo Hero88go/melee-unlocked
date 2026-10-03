@@ -710,7 +710,10 @@ void imm_write(uint32_t, uint32_t) {}
 uint32_t imm_read(uint32_t) { return 0; }
 
 void dma_write(uint32_t addr, uint32_t size) {
-  const uint8_t* mem = host::ptr(addr, size);
+  // The EXI calls check the buffer and log the caller; this keeps any other caller from ending the
+  // game on a pointer outside memory, where a console would send garbage and carry on.
+  const uint8_t* mem = host::try_ptr(addr, size);
+  if (!mem) return;
   uint32_t loc = 0;
   uint8_t byte = mem[0];
   if (byte == CMD_RECEIVE_COMMANDS) {
@@ -771,8 +774,10 @@ void dma_write(uint32_t addr, uint32_t size) {
 void dma_read(uint32_t addr, uint32_t size) {
   if (g_gecko_list_pending) { g_gecko_list_pending = false; playback::note_gecko_list_dma(addr, size); }
   if (g_read_queue.empty()) { host::log("slippi: DMA read of %u bytes with an empty response queue", size); return; }
+  uint8_t* out = host::try_ptr(addr, size);   // outside memory: the answer goes nowhere, as on a console
+  if (!out) return;
   g_read_queue.resize(size, 0);
-  std::memcpy(host::ptr(addr, size), g_read_queue.data(), size);
+  std::memcpy(out, g_read_queue.data(), size);
   host::mark_ram_write(addr, size);
 }
 

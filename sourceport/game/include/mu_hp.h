@@ -101,4 +101,46 @@ int mu_hp_training(unsigned int bit);
 #define MU_HP_TE_OPTIONS2 (MU_TE2_NO_SCREEN_RUMBLE | MU_TE2_LCANCEL_FLASH | 0x00780000u | MU_TE2_BUBBLES | \
                            MU_TE2_INPUT_DISPLAY | MU_TE2_COLOR_OVERLAYS)
 
+/* ---- training displays (ledger_M6.md, shim/mu_hp_train.c) ---- */
+
+/* Settings bytes past the first 24 (the host's block has to be MU_HP_TRAIN_SETTINGS bytes long for
+ * them to be kept; with a shorter block they read 0, the pack's own defaults, and their menu rows
+ * show as not available). All of them are displays: nothing here changes what a match plays, so
+ * they are not recorded in a replay. */
+#define MU_HP_SET_LCANCEL_OFF     24u   /* bits 0..3: no white flash for P1..P4; bits 4..7: no red flash */
+#define MU_HP_SET_BUBBLE_FLAGS    25u   /* bit 0: hitbox colors by hitbox id */
+#define MU_HP_SET_HITBOX_ALPHA    26u   /* the hitbox bubble's alpha, stored xor 0x80 (0 is the pack's 128) */
+#define MU_HP_SET_OVERLAY_PLAYERS 27u   /* bits 0..3: the pack's color overlays for P1..P4 */
+#define MU_HP_SET_OVERLAY_COLOR   28u   /* 9 bytes, a color 0 (none) to 22, in the order of MU_HP_OV_* */
+#define MU_HP_SET_OVERLAY_ALPHA   37u   /* the overlays' alpha, stored xor 0xFF (0 is the pack's 255) */
+#define MU_HP_TRAIN_SETTINGS      48u
+enum {
+    MU_HP_OV_HITLAG,       /* HITLAG (DEFENDER), 803FA4A4 */
+    MU_HP_OV_HITSTUN,      /* HITSTUN, 803FA4A8 */
+    MU_HP_OV_AUTOCANCEL,   /* AUTO-CANCEL ENABLED, 803FA4B0 */
+    MU_HP_OV_IASA,         /* IASA ENABLED, 803FA4B4 */
+    MU_HP_OV_SMASH_TURN,   /* MISSED SMASH TURN, 803FAEC8 */
+    MU_HP_OV_NANA,         /* NANA CPU TYPE DESYNCED, 803FA328 */
+    MU_HP_OV_WD_TIMING,    /* PERFECT WAVEDASH TIMING, 803FA4AC */
+    MU_HP_OV_WD_WINDOW,    /* WAVEDASH JOYSTICK WINDOW, 803FA4BC */
+    MU_HP_OV_WD_BOTH,      /* PERFECT TIMING AND IN WINDOW, 803FA4C0 */
+    MU_HP_OV_COUNT
+};
+/* One settings byte, 0 unless the pack is loaded, offline, the normal game, outside replay playback
+ * (shim/mu_hp_menu.c, read from the host once and again after the menu saves). */
+int mu_hp_setting(unsigned int index);
+
+struct Fighter;
+/* "L-Cancel Options", 8008D698 (ftCo_LandingAir_EnterWithLag): the pack's flash switches are per
+ * player. 1 when this player's flash for this result (in time or missed) is switched off. */
+int mu_hp_lcancel_flash_off(const struct Fighter* fp, int in_time);
+/* "Hitbox Color IDs", 80009F60 (lbColl_80009F54, entry): the hitbox bubble's color by hitbox id and
+ * its alpha. ft/ftdrawcommon.c names the id of the fighter hitbox about to be drawn (-1 after its
+ * loop); lb/lbcollision.c hands over the color the game is about to use (four bytes: r, g, b, a). */
+void mu_hp_hitbox_id(int id);
+void mu_hp_hitbox_color(unsigned char* rgba);
+/* "20XX Color Overlays", 800BF550 (ftMaterial_800BF534, entry): a color over the fighter while it
+ * is in hitlag, hitstun, an aerial that would auto-cancel, IASA frames, and so on. */
+void mu_hp_overlay(struct Fighter* fp);
+
 #endif

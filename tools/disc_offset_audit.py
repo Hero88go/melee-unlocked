@@ -1,3 +1,4 @@
+import os
 #!/usr/bin/env python3
 """Check every DISC_STRUCT field's native (x64 GCC) offset against the decomp's /* +XX */ annotation.
 
@@ -15,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DECOMP = ROOT / 'sourceport/extern/melee'
 BUILD = ROOT / 'build-sourceport-gcc'
-NINJA = r'C:/Users/Chandler/toolchains/winlibs-gcc-15.3/mingw64/bin/ninja.exe'
+NINJA = os.environ.get('MELEE_NINJA', 'ninja')   # set MELEE_NINJA to a full path when ninja is not on PATH
 TEMPLATE_OBJ = ('CMakeFiles/melee_game.dir/C_/Users/Chandler/NEW_project/melee-sourceport/'
                 'sourceport/extern/melee/src/melee/ft/kinds/ftLink/ftlinkattackair.c.obj')
 

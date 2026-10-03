@@ -457,6 +457,8 @@ int main() {
   {
     const fs::path level_path = fs::temp_directory_path() / "melee_unlocked_settings_level_test.ini";
     const int L = (int)host::BindAction::L, R = (int)host::BindAction::R, Z = (int)host::BindAction::Z, A = (int)host::BindAction::A;
+    // A file from before L and R were split: a leveled L was "press the trigger this deep", which is L analog now.
+    const int LA = (int)host::BindAction::LAnalog;
     { std::ofstream f(level_path);
       f << "ds40_Z 2048\nds40_Z_level 120\nkey_L_level 90\nswpro2_R_level 999\nhid1_L_level 70\npad3_A_level 150\ngc0_R_level -4\n"; }
     gx::RenderOptions o;
@@ -464,19 +466,19 @@ int main() {
     int vol = 0;
     gx::load_pc_settings(o, vol);
     CHECK(host::g_ds4_bindings[0].mask[Z] == 2048 && host::g_ds4_bindings[0].level[Z] == 120);
-    CHECK(host::g_key_bindings.level[L] == 90 && host::g_key_bindings.level[R] == 0);
+    CHECK(host::g_key_bindings.level[LA] == 90 && host::g_key_bindings.level[L] == 0 && host::g_key_bindings.level[R] == 0);
     CHECK(host::g_swpro_bindings[2].level[R] == 255 && host::g_gc_bindings[0].level[R] == 0);   // clamped
-    CHECK(host::g_hid_bindings[1].level[L] == 70 && host::g_pad_bindings[3].level[A] == 150);
+    CHECK(host::g_hid_bindings[1].level[LA] == 70 && host::g_pad_bindings[3].level[A] == 150);
     CHECK(gx::save_pc_settings(o, vol));
-    host::g_key_bindings.level[L] = 0; host::g_ds4_bindings[0].level[Z] = 0;
+    host::g_key_bindings.level[LA] = 0; host::g_ds4_bindings[0].level[Z] = 0;
     gx::RenderOptions again;
     again.settings_path = level_path.string();
     gx::load_pc_settings(again, vol);
-    CHECK(host::g_key_bindings.level[L] == 90 && host::g_ds4_bindings[0].level[Z] == 120);
+    CHECK(host::g_key_bindings.level[LA] == 90 && host::g_ds4_bindings[0].level[Z] == 120);
     CHECK(host::g_ds4_bindings[0].mask[Z] == 2048);                     // the binding itself is untouched
     const std::string written = read_text(level_path);
-    CHECK(written.find("\nkey_L_level 90\n") != std::string::npos && written.find("\nds40_Z_level 120\n") != std::string::npos);
-    CHECK(written.find("\nhid1_L_level 70\n") != std::string::npos && written.find("\ngc0_R_level") == std::string::npos);
+    CHECK(written.find("\nkey_LAnalog_level 90\n") != std::string::npos && written.find("\nds40_Z_level 120\n") != std::string::npos);
+    CHECK(written.find("\nhid1_LAnalog_level 70\n") != std::string::npos && written.find("\ngc0_R_level") == std::string::npos);
     { std::ofstream f(level_path); f << "volume 50\n"; }
     gx::load_pc_settings(again, vol);
     CHECK(host::g_key_bindings.level[L] == 0 && host::g_ds4_bindings[0].level[Z] == 0 &&

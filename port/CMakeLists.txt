@@ -1,5 +1,213 @@
 # Native Melee port: recompiled guest code + host runtime.
 cmake_minimum_required(VERSION 3.15)
+
+# A Source Port with no Slippi code compiled or linked: -DMELEE_NO_SLIPPI=ON in a build directory of
+# its own. Only melee_source is defined there, from the same runtime sources minus the Slippi layer
+# (runtime_ns), so the translated game, the playback build, the launcher and the tests, which all
+# need that layer or the generated translation, are simply not part of that build directory.
+# Everything after this block is the normal build; the option being OFF changes nothing in it.
+# When a setting of the runtime or of melee_source changes below, change it here as well.
+option(MELEE_NO_SLIPPI "Build only melee_source, without the Slippi layer" OFF)
+if(MELEE_NO_SLIPPI)
+  message(STATUS "melee: CPU baseline ${MELEE_CPU_BASELINE}, Source Port without the Slippi layer")
+  # Two generated headers are all this build reads from the translation folder (the HLE prototypes
+  # and the game's symbol addresses); none of the translated code is compiled or linked.
+  set(PORT_GEN "${CMAKE_CURRENT_SOURCE_DIR}/generated" CACHE PATH "Guest translation source directory")
+  if(NOT EXISTS "${PORT_GEN}/hle_decls.h" OR NOT EXISTS "${PORT_GEN}/guest_symbols.h")
+    message(FATAL_ERROR "port: ${PORT_GEN} has no hle_decls.h and guest_symbols.h; run python port/recomp/recomp.py --no-slippi")
+  endif()
+  file(GLOB RUNTIME_NS_SOURCES runtime/ppc/*.cpp runtime/hle/*.cpp runtime/host/*.cpp runtime/gx/*.cpp
+       runtime/mu_net/*.cpp)   # mu_net: the project's own peer-to-peer session, when present
+  foreach(ns_removed
+      runtime/hle/exi_slippi.cpp runtime/hle/slippi_net.cpp runtime/hle/slippi_online.cpp
+      runtime/hle/slippi_report.cpp runtime/hle/slippi_playback.cpp runtime/hle/native_practice.cpp
+      runtime/hle/native_practice_model.cpp runtime/hle/native_replay_stream.cpp runtime/hle/jukebox.cpp
+      runtime/host/hackpack_ai.cpp)   # the Static Recomp's loader for the pack's AI block
+    list(REMOVE_ITEM RUNTIME_NS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/${ns_removed}")
+  endforeach()
+  option(MELEE_ENABLE_DLSS5 "Build experimental DLSS 5 neural rendering" OFF)
+  if(NOT MELEE_ENABLE_DLSS5)
+    list(REMOVE_ITEM RUNTIME_NS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/gx_dlss5.cpp")
+    list(REMOVE_ITEM RUNTIME_NS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/gx_dlss5_scaling.cpp")
+  endif()
+  enable_language(C)
+  file(GLOB ENET_SOURCES third_party/enet/*.c)
+  add_library(port_enet STATIC ${ENET_SOURCES})
+  target_include_directories(port_enet PUBLIC third_party/enet/include)
+  target_compile_definitions(port_enet PRIVATE _CRT_SECURE_NO_WARNINGS _WINSOCK_DEPRECATED_NO_WARNINGS)
+  target_link_libraries(port_enet PUBLIC ws2_32 winmm)
+  add_library(port_libusb STATIC
+    third_party/libusb/libusb/core.c
+    third_party/libusb/libusb/descriptor.c
+    third_party/libusb/libusb/hotplug.c
+    third_party/libusb/libusb/io.c
+    third_party/libusb/libusb/strerror.c
+    third_party/libusb/libusb/sync.c
+    third_party/libusb/libusb/os/events_windows.c
+    third_party/libusb/libusb/os/threads_windows.c
+    third_party/libusb/libusb/os/windows_common.c
+    third_party/libusb/libusb/os/windows_usbdk.c
+    third_party/libusb/libusb/os/windows_winusb.c)
+  target_include_directories(port_libusb PUBLIC third_party/libusb/libusb PRIVATE third_party/libusb/msvc)
+  target_compile_definitions(port_libusb PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_link_libraries(port_libusb PUBLIC advapi32 ole32 setupapi)
+  file(STRINGS "${PROJECT_SOURCE_DIR}/VERSION" MELEE_PORT_VERSION LIMIT_COUNT 1)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/VERSION")
+  string(REPLACE "." ";" MELEE_VERSION_PARTS "${MELEE_PORT_VERSION}")
+  list(LENGTH MELEE_VERSION_PARTS MELEE_VERSION_PART_COUNT)
+  while(MELEE_VERSION_PART_COUNT LESS 4)
+    list(APPEND MELEE_VERSION_PARTS "0")
+    list(LENGTH MELEE_VERSION_PARTS MELEE_VERSION_PART_COUNT)
+  endwhile()
+  list(SUBLIST MELEE_VERSION_PARTS 0 4 MELEE_VERSION_PARTS)
+  list(JOIN MELEE_VERSION_PARTS "," MELEE_VERSION_COMMAS)
+
+  add_library(runtime_ns STATIC ${RUNTIME_NS_SOURCES} app/source_noslippi.cpp
+    third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c)   # mu_net: keys, signatures, packet sealing
+  target_include_directories(runtime_ns PUBLIC third_party/monocypher)
+  target_compile_definitions(runtime_ns PRIVATE MELEE_NO_SLIPPI MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
+    MELEE_PLAYBACK_GCT_BASE=0u MELEE_PLAYBACK_GCT_SIZE=0u)
+  if(WIN32)
+    set(MELEE_ASIO_SOURCES third_party/asio/asio.cpp third_party/asio/asiodrivers.cpp third_party/asio/asiolist.cpp)
+    target_sources(runtime_ns PRIVATE ${MELEE_ASIO_SOURCES})
+    set_source_files_properties(${MELEE_ASIO_SOURCES} PROPERTIES COMPILE_OPTIONS "/UUNICODE;/U_UNICODE;/W0")
+    target_link_libraries(runtime_ns PUBLIC advapi32)
+  endif()
+  target_include_directories(runtime_ns PUBLIC runtime/ppc runtime/host runtime/hle runtime/gx runtime/mu_net
+    "${PORT_GEN}" "${PROJECT_SOURCE_DIR}/native" third_party)
+  target_compile_features(runtime_ns PUBLIC cxx_std_17)
+  target_compile_options(runtime_ns PRIVATE /EHsc ${MELEE_ARCH_FLAG} /fp:precise /W3)
+  target_compile_definitions(runtime_ns PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
+  target_link_libraries(runtime_ns PUBLIC native_animation port_enet port_libusb bcrypt comdlg32 d3d12 d3d11 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb hid mfplat mfreadwrite mfuuid ole32 shell32)
+
+  add_executable(melee_source WIN32 app/main.cpp app/settings_window.cpp app/source_host.cpp app/source_guest_boundary.cpp
+    app/source_p2p.cpp   # the --p2p-* command line: one mu_net session on the game's command channel
+    app/melee_unlocked.rc app/utf8.manifest)
+  target_include_directories(melee_source PRIVATE runtime/abi app)
+  target_link_libraries(melee_source PRIVATE runtime_ns dbghelp)
+  target_link_options(melee_source PRIVATE /MAP:$<TARGET_FILE_DIR:melee_source>/melee_source.map)
+  target_compile_options(melee_source PRIVATE /EHsc)
+  target_compile_definitions(melee_source PRIVATE MELEE_SOURCE_PORT MELEE_NO_SLIPPI NOMINMAX _CRT_SECURE_NO_WARNINGS
+    MELEE_PORT_VERSION="${MELEE_PORT_VERSION}" MELEE_CPU_BASELINE_NAME="${MELEE_CPU_BASELINE}"
+    MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS})
+  add_test(NAME source_card_roundtrip COMMAND melee_source --hidden --volume 0
+    --log-file "${CMAKE_CURRENT_BINARY_DIR}/source-card-roundtrip.log"
+    --card-self-test "${CMAKE_CURRENT_BINARY_DIR}/source-card-roundtrip")
+
+  # The D3D12 ray-tracing library, beside the executable (the normal build copies it with melee_port).
+  set(MELEE_DXC_HINT "C:/Program Files (x86)/Windows Kits/10/bin/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64")
+  find_program(MELEE_DXC_EXECUTABLE NAMES dxc.exe HINTS "${MELEE_DXC_HINT}")
+  if(NOT MELEE_DXC_EXECUTABLE)
+    message(FATAL_ERROR "The Windows SDK DXC compiler (dxc.exe) is required to build the DXR path shader")
+  endif()
+  set(MELEE_DXR_DXIL "${CMAKE_CURRENT_BINARY_DIR}/dxr_pathtrace.dxil")
+  add_custom_command(OUTPUT "${MELEE_DXR_DXIL}"
+    COMMAND "${MELEE_DXC_EXECUTABLE}" -T lib_6_3 -HV 2021 -O3
+            -Fo "${MELEE_DXR_DXIL}" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/dxr_pathtrace.hlsl"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/shaders/dxr_pathtrace.hlsl"
+    VERBATIM)
+  add_custom_target(melee_dxr_shader DEPENDS "${MELEE_DXR_DXIL}")
+  add_dependencies(melee_source melee_dxr_shader)
+  add_custom_command(TARGET melee_source POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_DXR_DXIL}"
+            "$<TARGET_FILE_DIR:melee_source>/dxr_pathtrace.dxil"
+    VERBATIM)
+
+  # Cache identity follows shader generation, constant layout and pipeline setup.
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    runtime/gx/gx_shader.cpp runtime/gx/gx_shader.h runtime/gx/gx_d3d12.cpp)
+  file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/gx_shader.cpp" GX_SHADER_HASH)
+  file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/gx_shader.h" GX_LAYOUT_HASH)
+  file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/gx_d3d12.cpp" GX_PIPELINE_HASH)
+  string(SHA256 GX_CACHE_HASH "${GX_SHADER_HASH}${GX_LAYOUT_HASH}${GX_PIPELINE_HASH}")
+  target_compile_definitions(runtime_ns PRIVATE GX_SHADER_CACHE_VERSION="${GX_CACHE_HASH}")
+
+  add_library(port_imgui STATIC
+    third_party/imgui/imgui.cpp third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/backends/imgui_impl_dx12.cpp third_party/imgui/backends/imgui_impl_win32.cpp)
+  target_include_directories(port_imgui PUBLIC third_party/imgui)
+  target_compile_features(port_imgui PUBLIC cxx_std_17)
+  target_compile_options(port_imgui PRIVATE ${MELEE_ARCH_FLAG})
+  target_link_libraries(port_imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
+  target_compile_definitions(runtime_ns PRIVATE GX_PC_SETTINGS)
+  target_link_libraries(runtime_ns PUBLIC port_imgui)
+
+  # NVIDIA Streamline, Intel XeSS and the experimental DLSS 5 helper: the same optional pieces as
+  # the normal build, enabled only when their headers, import library and runtime DLLs are present.
+  set(MELEE_STREAMLINE_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/streamline" CACHE PATH
+      "NVIDIA Streamline SDK root (headers, import library, and x64 runtime plugins)")
+  if(EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h" AND
+     EXISTS "${MELEE_STREAMLINE_ROOT}/lib/x64/sl.interposer.lib" AND
+     EXISTS "${MELEE_STREAMLINE_ROOT}/bin/x64/sl.interposer.dll" AND
+     EXISTS "${MELEE_STREAMLINE_ROOT}/bin/x64/sl.common.dll")
+    target_compile_definitions(runtime_ns PRIVATE GX_STREAMLINE)
+    target_include_directories(runtime_ns PRIVATE "${MELEE_STREAMLINE_ROOT}/include")
+    target_link_libraries(runtime_ns PUBLIC "${MELEE_STREAMLINE_ROOT}/lib/x64/sl.interposer.lib" wintrust crypt32 delayimp)
+    target_link_options(melee_source PRIVATE /DELAYLOAD:sl.interposer.dll)
+    foreach(sl_dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll sl.dlss_d.dll nvngx_dlssd.dll sl.dlss_g.dll nvngx_dlssg.dll sl.reflex.dll sl.pcl.dll)
+      if(EXISTS "${MELEE_STREAMLINE_ROOT}/bin/x64/${sl_dll}")
+        add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${MELEE_STREAMLINE_ROOT}/bin/x64/${sl_dll}" "$<TARGET_FILE_DIR:melee_source>/${sl_dll}")
+      endif()
+    endforeach()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xess/bin/libxess.dll")
+      add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xess/bin/libxess.dll" "$<TARGET_FILE_DIR:melee_source>/libxess.dll")
+    endif()
+    if(MELEE_ENABLE_DLSS5)
+      if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ngx/include/nvsdk_ngx.h")
+        message(FATAL_ERROR "DLSS 5 requires the NGX SDK headers")
+      endif()
+      target_compile_definitions(runtime_ns PUBLIC GX_DLSS5)
+      target_include_directories(runtime_ns PRIVATE third_party/ngx/include)
+      add_library(dlss5_forwarder SHARED dlss5_forwarder/forwarder.cpp)
+      target_compile_features(dlss5_forwarder PRIVATE cxx_std_17)
+      target_compile_definitions(dlss5_forwarder PRIVATE NOMINMAX)
+      target_include_directories(dlss5_forwarder PRIVATE third_party/ngx/include)
+      target_link_libraries(dlss5_forwarder PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ngx/lib/nvsdk_ngx_d.lib" advapi32 user32)
+      target_link_options(dlss5_forwarder PRIVATE /MAP:$<TARGET_FILE_DIR:dlss5_forwarder>/dlss5_forwarder.map)
+      set_target_properties(dlss5_forwarder PROPERTIES OUTPUT_NAME "nvngx.dll_meleedlss5" PREFIX "" SUFFIX ".dll")
+      add_dependencies(melee_source dlss5_forwarder)
+      add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:dlss5_forwarder>" "$<TARGET_FILE_DIR:melee_source>/nvngx.dll_meleedlss5.dll")
+    endif()
+  elseif(EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h")
+    message(STATUS "NVIDIA Streamline runtime is incomplete; building without Streamline/DLSS")
+  endif()
+  if(MELEE_ENABLE_DLSS5 AND NOT TARGET dlss5_forwarder)
+    message(FATAL_ERROR "DLSS 5 requires Streamline and NGX")
+  endif()
+
+  # The launcher for this build: the same sources and settings as the normal melee_unlocked target
+  # further down, plus MELEE_NO_SLIPPI. With it the lobby needs no Slippi account, an accepted match
+  # starts melee_source with --p2p-* (a peer-to-peer session), and automatic pairing is offered.
+  # When the normal target's sources or settings change below, change them here as well.
+  add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp
+    third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
+    runtime/host/updater.cpp app/launcher.rc)
+  set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
+  target_include_directories(melee_unlocked PRIVATE runtime/host runtime/ppc runtime/hle runtime/gx "${PORT_GEN}" third_party third_party/dht third_party/monocypher)
+  target_compile_features(melee_unlocked PRIVATE cxx_std_17)
+  target_compile_options(melee_unlocked PRIVATE /EHsc)
+  target_compile_definitions(melee_unlocked PRIVATE MELEE_NO_SLIPPI NOMINMAX UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS MELEE_PORT_VERSION="${MELEE_PORT_VERSION}"
+    MELEE_VERSION_COMMAS=${MELEE_VERSION_COMMAS})
+  target_link_libraries(melee_unlocked PRIVATE comctl32 winhttp ws2_32 bcrypt user32 gdi32 shell32 comdlg32 msimg32 uxtheme winmm)
+
+  # The lobby's peer-to-peer match flow, as two (and three) peer lobbies in one process over
+  # loopback: the match setup both launchers agree on, automatic pairing, the block list, and the
+  # refusal an older launcher gets. The same test file as the normal build's port_launcher_lobby_p2p,
+  # which with this define runs only those cases.
+  add_executable(port_launcher_lobby_p2p_ns_test tests/launcher_lobby_p2p_test.cpp app/launcher_lobby_p2p.cpp
+    third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c)
+  target_include_directories(port_launcher_lobby_p2p_ns_test PRIVATE app third_party third_party/dht third_party/monocypher)
+  target_compile_features(port_launcher_lobby_p2p_ns_test PRIVATE cxx_std_17)
+  target_compile_definitions(port_launcher_lobby_p2p_ns_test PRIVATE MELEE_NO_SLIPPI NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_options(port_launcher_lobby_p2p_ns_test PRIVATE /EHsc)
+  target_link_libraries(port_launcher_lobby_p2p_ns_test PRIVATE ws2_32 bcrypt user32 gdi32)
+  add_test(NAME port_launcher_lobby_p2p_ns COMMAND port_launcher_lobby_p2p_ns_test)
+  return()
+endif()
 add_executable(port_launch_process_test tests/launch_process_test.cpp)
 target_compile_features(port_launch_process_test PRIVATE cxx_std_17)
 add_test(NAME port_launch_process COMMAND port_launch_process_test)
@@ -314,6 +522,26 @@ target_compile_features(runtime PUBLIC cxx_std_17)
 target_compile_options(runtime PRIVATE /EHsc ${MELEE_ARCH_FLAG} /fp:precise /W3)
 target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
 target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcrypt comdlg32 d3d12 d3d11 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb hid mfplat mfreadwrite mfuuid ole32 shell32)
+
+# mu_net: the project's own peer-to-peer session (no Slippi code). Keys, signatures and packet
+# sealing come from Monocypher, the transport is ENet. Built where its sources are present.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/runtime/mu_net/session_types.cpp" AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/monocypher/monocypher.c")
+add_library(port_monocypher STATIC third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c)
+target_include_directories(port_monocypher PUBLIC third_party/monocypher)
+add_library(mu_net STATIC runtime/mu_net/session_types.cpp runtime/mu_net/peer_identity.cpp
+  runtime/mu_net/session_security.cpp runtime/mu_net/input_transport.cpp runtime/mu_net/peer_connector.cpp
+  runtime/mu_net/rollback_session.cpp runtime/mu_net/result_outbox.cpp)
+target_include_directories(mu_net PUBLIC runtime/mu_net)
+target_compile_features(mu_net PUBLIC cxx_std_17)
+target_compile_definitions(mu_net PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+target_compile_options(mu_net PRIVATE /EHsc /utf-8)
+target_link_libraries(mu_net PUBLIC port_enet PRIVATE port_monocypher bcrypt)
+add_executable(port_mu_net_test tests/mu_net_test.cpp)
+target_compile_definitions(port_mu_net_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(port_mu_net_test PRIVATE /EHsc /utf-8)
+target_link_libraries(port_mu_net_test PRIVATE mu_net)
+add_test(NAME port_mu_net COMMAND port_mu_net_test)
+endif()
 
 # WIN32: no console window when the game is double-clicked or started from the launcher. Command-line
 # use still works, because main() reattaches to a parent console when there is one (see app/main.cpp).

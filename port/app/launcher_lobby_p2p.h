@@ -30,14 +30,20 @@ public:
   // unfriend, request (target, mode), accept, cancel (request, optional code). Private chat:
   // pm_request (target), pm_accept (room), pm_decline (room, optional block), pm (room, text),
   // pm_close (room, optional block), pm_unblock (target). Throws a message for the player, in
-  // their language, when an action cannot go ahead.
+  // their language, when an action cannot go ahead. The build without the Slippi layer adds: search
+  // (on), block / unblock (target), connect (invite), and "auto" on a request.
   void command(const std::string& action, const nlohmann::json& data = nlohmann::json::object());
   void presence(const nlohmann::json& status);
+  void presence_now();                                    // the next tick tells every player the status, not the next due one
   void tick();
   nlohmann::json state() const;
   std::map<std::string, int> pings() const;
   // An accepted match to start, once per request: request, opponent, name, code, build, mode, character.
+  // A peer-to-peer match (p2p_matches) also carries "p2p": slot, port, peers, chars, stage, seed,
+  // delay, expect, names, auto (see p2p_arguments). The port is this lobby's own (port()) unless
+  // MELEE_P2P_SEPARATE_PORT=1: the lobby must be destroyed before the game can bind it.
   bool take_launch(nlohmann::json& launch);
+  std::string invite() const;                             // this player's "Connect by address" line
   void add_address(const std::string& host_port);         // contact a player at a known address
   void test_drop(bool incoming, bool outgoing);            // tests: lose every packet one way
   const std::string& id() const;
@@ -49,7 +55,35 @@ private:
 };
 
 // Shared by the lobby window and the tests.
-constexpr int lobby_protocol = 3;        // 1 is 0.8.1; 2 adds refusal reasons, delivery, friend codes and mods; 3 adds private chat
+// 1 is 0.8.1; 2 adds refusal reasons, delivery, friend codes and mods; 3 adds private chat; 4 adds
+// the peer-to-peer match setup on accept and its acknowledgment, searching, and automatic requests.
+// Only the build without the Slippi layer speaks 4: its accepted matches start the game's own
+// peer-to-peer session instead of Slippi Direct, so it refuses matches with anything older.
+#ifdef MELEE_NO_SLIPPI
+constexpr bool p2p_matches = true;
+constexpr int lobby_protocol = 4;
+#else
+constexpr bool p2p_matches = false;
+constexpr int lobby_protocol = 3;
+#endif
+constexpr int p2p_protocol = 4;          // the first lobby protocol that knows the peer-to-peer match setup
+constexpr int p2p_input_delay = 2;       // frames, the same on both sides
+// The player code of a launcher without a Slippi account: up to four letters or digits of the name,
+// then # and three digits from the identity key. Stable for that key and name, and in the format
+// every code check, the friend lookup and older launchers expect.
+std::string derived_code(const std::string& name, const std::string& identity_key);
+// The identity key (64 hex digits) kept in <directory>/lobby-peer-identity.json, made on first use.
+// Call it before the lobby worker starts. "" when the file cannot be read or written.
+std::string identity_key(const std::string& directory);
+// A profile name as the game's --p2p-names takes it: no colon, quote, backslash or control
+// character, at most 31 bytes of UTF-8, never empty.
+std::string p2p_name(const std::string& name);
+// How many colors a character has (character select screen ids 0 to 25); 0 for any other id. A
+// match setup's color must be below it.
+int p2p_color_count(int character);
+// The game's arguments for a launch's "p2p" object (" --p2p-port ... --p2p-names \"a:b\""), every
+// field checked again since half of them came from the other player. "" when one does not hold.
+std::string p2p_arguments(const nlohmann::json& p2p, const std::string& identity_file, const std::string& result_file);
 // Private chat: one room per pair of players, opened by a request the other player accepts. Its
 // messages travel only between those two launchers, encrypted like every other peer message.
 constexpr int private_protocol = 3;          // the first lobby protocol that knows private chat
