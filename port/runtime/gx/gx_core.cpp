@@ -36,6 +36,7 @@ uint64_t g_frame_sequence = 0;
 bool g_discontinuity = false;   // simulation thread only, like the rest of this file's state
 std::atomic<int> g_stock_hud_scale{100}, g_damage_hud_scale{100};
 std::atomic<bool> g_pal_stock_hud{false};
+std::atomic<bool> g_low_poly_fighters{false};
 std::array<HudPlayerSnapshot, 4> g_native_hud{};   // the native game's players (set_native_hud_player)
 
 bool guest_object(uint32_t address, uint32_t bytes) {
@@ -748,6 +749,9 @@ void set_hud_scales(int stocks_percent, int damage_percent, bool pal_stocks) {
   g_damage_hud_scale.store(damage_percent, std::memory_order_relaxed);
   g_pal_stock_hud.store(pal_stocks, std::memory_order_relaxed);
 }
+
+void set_low_poly_fighters(bool on) { g_low_poly_fighters.store(on, std::memory_order_relaxed); }
+bool low_poly_fighters_active() { return g_low_poly_fighters.load(std::memory_order_relaxed); }
 
 void set_native_hud_player(int slot, bool present, int damage, int stocks, float tag_x, float tag_y,
                            bool tag_visible) {

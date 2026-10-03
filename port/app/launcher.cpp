@@ -157,6 +157,10 @@ bool g_warm_cache_on_play = false;
 // Replay Viewer: "Show it as it was played" (launcher.ini replayasplayed=1). It applies to a replay
 // that has a session trace file beside it; see launcher_replays.inl.
 bool g_replay_as_played = false;
+// Replay Viewer list: the sort order (launcher.ini replaysort=1..3; none or 0 is most recent first,
+// an index into kReplaySorts) and "Hide short games" (replayhideshort=1).
+int g_replay_sort = 0;
+bool g_replay_hide_short = false;
 std::string g_slippi_line, g_version_line;
 COLORREF g_version_dot = C_FAINT;
 std::atomic<bool> g_building{false}, g_playing{false};
@@ -238,6 +242,8 @@ void load_ini() {
       } else if (line.rfind("activeversion=", 0) == 0 && safe_version_folder(line.substr(14))) g_active_version = line.substr(14);
       else if (line == "warmcache=1") g_warm_cache_on_play = true;
       else if (line == "replayasplayed=1") g_replay_as_played = true;
+      else if (line == "replayhideshort=1") g_replay_hide_short = true;
+      else if (line.rfind("replaysort=", 0) == 0) g_replay_sort = std::clamp(std::atoi(line.c_str() + 11), 0, 3);
       else if (line.rfind("lobbyopen=", 0) == 0) g_lobby_prefs.open_to = line.substr(10);
       else if (line.rfind("lobbyiso=", 0) == 0) g_lobby_prefs.custom_iso = line.substr(9);
       else if (line.rfind("lobbyisoname=", 0) == 0) g_lobby_prefs.custom_name = line.substr(13);
@@ -268,6 +274,8 @@ void save_ini() {
     if (!g_active_version.empty()) f << "activeversion=" << g_active_version << "\n";
     if (g_warm_cache_on_play) f << "warmcache=1\n";
     if (g_replay_as_played) f << "replayasplayed=1\n";
+    if (g_replay_sort != 0) f << "replaysort=" << g_replay_sort << "\n";
+    if (g_replay_hide_short) f << "replayhideshort=1\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
     if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
     if (g_engine != ENGINE_LEGACY) f << "engine=" << g_engine << "\n";
@@ -852,6 +860,24 @@ void paint(HWND hwnd, HDC target, RECT dirty) {
   DeleteDC(dc);
 }
 
+// An owner-drawn control is drawn off screen and copied to the window in one step. Drawn straight
+// into the control, every repaint showed the background fill, then the shape, then the text, so
+// buttons flickered whenever they were redrawn.
+template <typename Draw> void draw_buffered(DRAWITEMSTRUCT* di, Draw draw) {
+  const RECT r = di->rcItem;
+  const int w = r.right - r.left, h = r.bottom - r.top;
+  HDC mem = w > 0 && h > 0 ? CreateCompatibleDC(di->hDC) : nullptr;
+  HBITMAP bmp = mem ? CreateCompatibleBitmap(di->hDC, w, h) : nullptr;
+  if (!bmp) { if (mem) DeleteDC(mem); draw(di); return; }
+  HGDIOBJ old = SelectObject(mem, bmp);
+  SetViewportOrgEx(mem, -r.left, -r.top, nullptr);   // the drawing code keeps the control's own coordinates
+  DRAWITEMSTRUCT copy = *di; copy.hDC = mem;
+  draw(&copy);
+  SetViewportOrgEx(mem, 0, 0, nullptr);
+  BitBlt(di->hDC, r.left, r.top, w, h, mem, 0, 0, SRCCOPY);
+  SelectObject(mem, old); DeleteObject(bmp); DeleteDC(mem);
+}
+
 void draw_button(DRAWITEMSTRUCT* di) {
   RECT wr; GetWindowRect(di->hwndItem, &wr);
   MapWindowPoints(nullptr, g_main, (POINT*)&wr, 2);
@@ -1429,7 +1455,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       EndPaint(hwnd, &ps);
       return 0;
     }
-    case WM_DRAWITEM: if(((DRAWITEMSTRUCT*)lp)->CtlID==ID_REPLAY_LIST) draw_replay((DRAWITEMSTRUCT*)lp); else draw_button((DRAWITEMSTRUCT*)lp); return TRUE;
+    case WM_DRAWITEM: if(((DRAWITEMSTRUCT*)lp)->CtlID==ID_REPLAY_LIST) draw_replay((DRAWITEMSTRUCT*)lp); else draw_buffered((DRAWITEMSTRUCT*)lp, draw_button); return TRUE;
     case WM_MEASUREITEM: if(((MEASUREITEMSTRUCT*)lp)->CtlID==ID_REPLAY_LIST) { ((MEASUREITEMSTRUCT*)lp)->itemHeight=S(84); return TRUE; } break;
     case WM_MOUSEMOVE: {
       POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
@@ -1515,6 +1541,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_REPLAY_BACK: replay_back(); break;
         case ID_REPLAY_PREV: replay_step(-1); break;
         case ID_REPLAY_NEXT: replay_step(1); break;
+        case ID_REPLAY_SEARCH: if(HIWORD(wp)==EN_CHANGE) replay_filter_changed(); break;
+        case ID_REPLAY_SORT: pick_replay_sort(); break;
+        case ID_REPLAY_HIDESHORT: replay_hide_short_toggle(); break;
+        case ID_REPLAY_QUEUE: watch_replay_queue(); break;
+        case ID_REPLAY_QUEUE_CLEAR: replay_queue_clear(); break;
         case ID_REPLAY_ASPLAYED:
           if (HIWORD(wp) == BN_CLICKED) {
             g_replay_as_played = !g_replay_as_played;
@@ -1573,7 +1604,9 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     case WM_APP_GAME_DONE:
       g_playing = false;
-      if(g_replay_active) { g_replay_active=false; EnableWindow(g_replays[2],!g_replay_files.empty()); replay_status(wp?"Replay playback ended with an error. Check melee_port.log.":"Replay finished."); }
+      // A replay queue that went on to its next replay: that game is running now, so nothing below
+      // applies yet and the launcher stays minimized.
+      if(replay_game_done((DWORD)wp)) return 0;
       launcher::lobby::game_running(false);
       set_text(g_play_btn, "PLAY");
       if (g_lobby_game_active && wp != 0)

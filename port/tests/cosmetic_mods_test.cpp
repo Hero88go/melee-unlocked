@@ -1515,6 +1515,97 @@ int main(int argc, char** argv) {
     g_disc_table.clear(); g_disc_bytes.clear();
   }
 
+  // The session's own pack (the 20XX Hack Pack as the Source Port's overlay): its plain costume is
+  // the standard one already, so L / R goes standard, its L set, its R set, then the other skins.
+  {
+    host::cosmetics::thaw_after_online_session();
+    host::cosmetics::set_online_probe(nullptr);
+    fs::path session_folder = folder / L"session-pack";
+    fs::create_directories(session_folder, ec);
+    host::cosmetics::configure((session_folder / L"port-settings.ini").string());
+    const auto retail_default = skeleton_dat(0x2, 5.0f, false);
+    const auto plain = skeleton_dat(0x2 | 0x40000, 5.0f, false);   // the pack's own plain costume
+    const auto alt_l = skeleton_dat(0x2 | 0x10, 5.0f, false);      // drawing flag only: stays on online
+    const auto alt_r = skeleton_dat(0x2, 5.5f, false);             // a moved bone: off online
+    const auto longer = skeleton_dat(0x2, 5.0f, true);
+    constexpr uint32_t retail_default_at = 0x100;
+    g_disc_bytes.assign(0x400, 0);
+    std::copy(retail_default.begin(), retail_default.end(), g_disc_bytes.begin() + retail_default_at);
+    g_disc_table = {{"PlFxNr.dat", {retail_default_at, (uint32_t)retail_default.size()}}};
+    fs::path pack_folder = session_folder / L"pack";
+    fs::create_directories(pack_folder, ec);
+    write_file(pack_folder / L"PlFxNr.dat", plain);
+    write_file(pack_folder / L"PlFxNr.lat", alt_l);
+    write_file(pack_folder / L"PlFxNr.rat", alt_r);
+    auto scan = host::cosmetics::scan_disc_skins(pack_folder.string(), "20XX", &error);
+    fs::path import_path = session_folder / L"mine.dat";
+    write_file(import_path, longer);
+    auto mine = host::cosmetics::import_file(import_path.string());
+    std::string plain_id, left_id, right_id;
+    for (const auto& item : host::cosmetics::assets()) {
+      if (item.source != "disc" || item.target_path != "PlFxNr.dat") continue;
+      if (item.variant.empty()) plain_id = item.id;
+      if (item.variant == "alt L") left_id = item.id;
+      if (item.variant == "alt R") right_id = item.id;
+    }
+    check(scan.ok && mine.ok && !plain_id.empty() && !left_id.empty() && !right_id.empty(),
+          "the pack lists its plain costume and its L and R sets as skins of the slot");
+    auto fst = one_file_fst(retail_default_at, (uint32_t)retail_default.size(), "PlFxNr.dat");
+    host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size());
+
+    // No session pack: the pack is any other disc, and its plain costume is a step too.
+    check(!host::cosmetics::session_pack_skin(left_id) && !host::cosmetics::session_pack_skin(plain_id),
+          "with no session pack no skin is the session pack's");
+    std::map<std::string, bool> seen;
+    for (int i = 0; i < 5; ++i) seen[host::cosmetics::cycle_slot_live("PlFxNr.dat", 1).asset_id] = true;
+    check(seen.size() == 5 && seen.count(plain_id) && host::cosmetics::cycle_slot_live("PlFxNr.dat", 1).changed,
+          "with no session pack, five presses visit the standard costume, the pack's three and the import");
+    check(host::cosmetics::select_variant_live("PlFxNr.dat", "", &error), "back to the standard costume");
+
+    // The pack is the session's disc.
+    host::cosmetics::set_session_pack(pack_folder.string());
+    check(host::cosmetics::session_pack_skin(plain_id) && host::cosmetics::session_pack_skin(left_id) &&
+              host::cosmetics::session_pack_skin(right_id) && !host::cosmetics::session_pack_skin(mine.asset_id) &&
+              !host::cosmetics::session_pack_skin(""),
+          "the session pack's skins are known as its own, the import and the standard costume are not");
+    auto step = host::cosmetics::cycle_slot_live("PlFxNr.dat", 1);
+    check(step.changed && step.asset_id == left_id && step.previous_id.empty() && step.name == "20XX (alt L)",
+          "the first press goes from the standard costume to the pack's L set");
+    auto published = host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), "PlFxNr.dat");
+    std::vector<uint8_t> served(alt_l.size());
+    check(published.ok && published.files.size() == 1 && published.files[0].overridden &&
+              published.files[0].asset_id == left_id && published.files[0].online_allowed &&
+              host::cosmetics::read(retail_default_at, 0, served.data(), (uint32_t)served.size()) ==
+                  host::cosmetics::OverrideRead::Success && served == alt_l,
+          "the slot serves the pack's L costume once it is published again");
+    step = host::cosmetics::cycle_slot_live("PlFxNr.dat", 1);
+    check(step.changed && step.asset_id == right_id && step.name == "20XX (alt R)", "then its R set");
+    published = host::cosmetics::republish_slot(fst.data(), (uint32_t)fst.size(), "PlFxNr.dat");
+    check(published.ok && published.files.size() == 1 && published.files[0].asset_id == right_id &&
+              !published.files[0].online_allowed,
+          "a set with another skeleton is reported as off online, for the caller's alias entry");
+    step = host::cosmetics::cycle_slot_live("PlFxNr.dat", 1);
+    check(step.changed && step.asset_id == mine.asset_id, "then the other skins of the slot");
+    step = host::cosmetics::cycle_slot_live("PlFxNr.dat", 1);
+    check(step.changed && step.asset_id.empty() && step.name == "Standard",
+          "and back to the standard costume, never through the pack's plain costume");
+    step = host::cosmetics::cycle_slot_live("PlFxNr.dat", -1);
+    check(step.changed && step.asset_id == mine.asset_id, "the other direction steps back the same way");
+    check(host::cosmetics::select_variant_live("PlFxNr.dat", "", &error), "back to the standard costume again");
+
+    // Online the skeleton rule decides, as for every skin: only the L set stays a step.
+    host::cosmetics::set_online_probe([] { return true; });
+    step = host::cosmetics::cycle_slot_live("PlFxNr.dat", 1);
+    check(step.changed && step.asset_id == left_id, "online, the pack's L set (same skeleton) is a step");
+    step = host::cosmetics::cycle_slot_live("PlFxNr.dat", 1);
+    check(step.changed && step.asset_id.empty(), "online, the R set and the import are stepped over");
+    host::cosmetics::set_online_probe(nullptr);
+
+    host::cosmetics::set_session_pack("");
+    check(!host::cosmetics::session_pack_skin(left_id), "clearing the session pack forgets its skins");
+    g_disc_table.clear(); g_disc_bytes.clear();
+  }
+
   // A pack's own portraits: its character select file keeps one picture per costume, shown through
   // the keys of a texture animation. A plain costume of the pack gets the picture of its slot when
   // it differs from the game's; an alternate set gets none.

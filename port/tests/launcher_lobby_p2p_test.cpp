@@ -121,6 +121,30 @@ void accept_flow() {
   check(!a.take_launch(extra) && !b.take_launch(extra), "no second launch on either side");
 }
 
+// The two Game Builds play each other: the same version on Source Port and on Static Recomp is a match.
+void cross_build_flow() {
+  std::cout << "-- A (Source Port) requests B (Static Recomp), same version" << std::endl;
+  auto pair = make_pair("cross-build", profile("Alpha", "ALPH#101", "0.8.5:source", 20), profile("Beta", "BETA#202", "0.8.5:recomp", 9));
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "cross build: both players see each other");
+  const std::string sent = error_of([&] { a.command("request", {{"target", b.id()}}); });
+  check(sent.empty(), "cross build: the request is sent: " + sent);
+  pump(a, b, 3000, [&] { return b.state()["requests"].size() == 1; });
+  const Json requests = b.state()["requests"];
+  check(requests.size() == 1 && requests[0]["state"] == "pending", "cross build: B holds the request, not a refusal");
+  check(!has_notice(a, "lobby.declined.build") && !has_notice(b, "lobby.refused.build"), "cross build: nobody is told to change Game Build");
+  if (requests.size() != 1) return;
+  b.command("accept", {{"request", requests[0]["id"]}});
+  Json la, lb; bool got_a = false, got_b = false;
+  pump(a, b, 5000, [&] {
+    if (!got_a) got_a = a.take_launch(la);
+    if (!got_b) got_b = b.take_launch(lb);
+    return got_a && got_b;
+  });
+  check(got_a && la["build"] == "0.8.5:source" && la["code"] == "BETA#202", "cross build: A launches its own build against Beta");
+  check(got_b && lb["build"] == "0.8.5:recomp" && lb["code"] == "ALPH#101", "cross build: B launches its own build against Alpha");
+}
+
 // A sends while it still sees B as able to play; B changes before the request arrives. Both sides
 // must then say why, each from its own side.
 void refusal(const std::string& name, const std::function<void(PeerLobby&, Json&)>& spoil,
@@ -148,8 +172,6 @@ void refusals() {
           "lobby.declined.not_ready", "lobby.refused.not_ready");
   refusal("busy", [](PeerLobby& b, Json&) { b.presence({{"status", "In game"}, {"stocks", Json::array()}}); },
           "lobby.declined.busy", "lobby.refused.busy");
-  refusal("different Game Build", [](PeerLobby& b, Json& pb) { pb["build"] = "0.8.5:source"; b.update_profile(pb); },
-          "lobby.declined.build", "lobby.refused.build");
   refusal("older version", [](PeerLobby& b, Json& pb) { pb["build"] = "0.8.1:recomp"; b.update_profile(pb); },
           "lobby.declined.update_them", "lobby.refused.update_you");
 
@@ -278,12 +300,10 @@ void mods() {
   check(seen["open"] == pa["open"], "what A is open to reaches B");
   check(seen["iso"]["n"] == "Summit ISO" && seen["iso"]["h"] == hash, "A's custom ISO name and hash reach B");
   const auto modes = launcher::lobby::common_modes(a.state()["self"]["profile"], b.state()["self"]["profile"]);
-  // Vanilla needs the same Game Build (these differ); a mod only needs the same version.
-  const std::vector<std::string> expected{"akaneia", "custom:" + hash};
-  check(modes == expected, "the common versions are Akaneia and the matching custom ISO, not vanilla or ACE");
+  // The Game Builds differ and the version is the same: vanilla and the mods both only need the version.
+  const std::vector<std::string> expected{"vanilla", "akaneia", "custom:" + hash};
+  check(modes == expected, "the common versions are vanilla, Akaneia and the matching custom ISO, not ACE");
   check(launcher::lobby::iso_hash(seen) == launcher::lobby::iso_hash(b.state()["self"]["profile"]), "the same ISO is recognised under two names");
-  const auto vanilla = error_of([&] { a.command("request", {{"target", b.id()}, {"mode", "vanilla"}}); });
-  check(!vanilla.empty(), "vanilla is refused before sending (different Game Build): " + vanilla);
   const auto ace = error_of([&] { a.command("request", {{"target", b.id()}, {"mode", "ace"}}); });
   check(!ace.empty(), "ACE is refused before sending (B does not have it): " + ace);
   const auto sent = error_of([&] { a.command("request", {{"target", b.id()}, {"mode", "akaneia"}}); });
@@ -793,6 +813,7 @@ int main() {
   if (WSAStartup(MAKEWORD(2, 2), &ws)) { std::cerr << "no Winsock\n"; return 2; }
   try {
     accept_flow();
+    cross_build_flow();
     refusals();
     crossed_requests();
     one_way_loss(true);

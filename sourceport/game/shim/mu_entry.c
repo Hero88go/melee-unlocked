@@ -64,6 +64,19 @@ unsigned int mu_game_options3(void)
     return mu_host && mu_host->version >= 17 && mu_host->game_options3 ? mu_host->game_options3() : 0;
 }
 
+/* Display-only options, read live (a host before version 18 has none). */
+unsigned int mu_display_options(void)
+{
+    return mu_host && mu_host->version >= 18 && mu_host->display_options ? mu_host->display_options() : 0;
+}
+
+int mu_low_poly_fighters(void)
+{
+    return (mu_display_options() & MU_DISPLAY_LOW_POLY) != 0;
+}
+
+_Static_assert(MU_DISPLAY_LOW_POLY == MU_DISPLAY_OPTION_LOW_POLY, "display option bits");
+
 _Static_assert(MU_CPU_TECH_MASK == MU_GAME_OPTION3_CPU_TECH_MASK && MU_CPU_TECH_SHIFT == MU_GAME_OPTION3_CPU_TECH_SHIFT &&
                MU_CPU_GETUP_MASK == MU_GAME_OPTION3_CPU_GETUP_MASK &&
                MU_CPU_GETUP_SHIFT == MU_GAME_OPTION3_CPU_GETUP_SHIFT &&

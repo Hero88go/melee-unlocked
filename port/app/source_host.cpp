@@ -481,6 +481,16 @@ void load_mod_overlay() {
   const auto pack_keeps = [&](const ModOverlay::File& file) {
     return !pack_iso.empty() && file.iso == pack_iso && hackpack::keeps_retail(file.path);
   };
+  // The pack's extra costumes (PlFxNr.lat, PlFxNr.rat and the other sets) become skins of their
+  // costume slot, the same scan that lists a Mods folder disc's costumes (a disc scanned before and
+  // unchanged is not read again), so L / R on the character select steps through them. The pack is
+  // this session's disc: its plain costumes are already the standard ones, and its sets may serve
+  // a costume file it replaced (load_cosmetics, republish_cosmetic_slot).
+  if (!pack_iso.empty()) {
+    const auto scan = host::cosmetics::scan_disc_skins(pack_iso.u8string(), pack_iso.stem().u8string() + " disc");
+    if (!scan.ok) host::log("mods: 20XX Hack Pack costumes not listed as skins: %s", scan.message.c_str());
+    host::cosmetics::set_session_pack(pack_iso.u8string());
+  }
 
   // The profile's own memory card, named after the profile, or after the content for layers given
   // on the command line. The ordinary card is never written by a modded session.
@@ -589,6 +599,24 @@ uint64_t g_cosmetic_next = kCosmeticBase;
 std::vector<std::string> g_raw_paths;
 std::map<std::pair<uint32_t, std::string>, int32_t> g_cosmetic_live;
 
+// A new entry for disc entry i's skin, in its own range past kCosmeticBase, and for a skin not
+// proven to change looks alone the alias entry that names the disc's copy for online play. -1 when
+// the range is full.
+int32_t add_cosmetic_entry(uint32_t i, uint32_t vanilla_start, uint32_t length, bool online_allowed) {
+  const uint64_t span = ((uint64_t)length + 0xFFFFu) & ~0xFFFFull;
+  if (g_cosmetic_next + span > 0xFFFF0000ull) return -1;
+  const int32_t entry = (int32_t)g_fst.size();
+  g_fst.push_back({(uint32_t)g_cosmetic_next, length, false});
+  g_cosmetic_files.push_back({(uint32_t)g_cosmetic_next, vanilla_start, length, false});
+  g_cosmetic_next += span;
+  if (!online_allowed) {
+    const int32_t alias = (int32_t)g_fst.size();
+    g_fst.push_back({vanilla_start, be32(g_fst_raw.data() + (size_t)i * 12 + 8), false});
+    g_cosmetic_alias[entry] = alias;
+  }
+  return entry;
+}
+
 void load_cosmetics(bool always_vanilla_unsafe) {
   if (g_fst_raw.size() < 12) return;
   if (always_vanilla_unsafe) host::cosmetics::freeze_for_online_session();
@@ -606,7 +634,18 @@ void load_cosmetics(bool always_vanilla_unsafe) {
     const uint32_t vanilla_start = be32(e + 4), length = be32(e + 8);
     if (host::cosmetics::read(vanilla_start, 0, nullptr, 0) == host::cosmetics::OverrideRead::NotOverridden) continue;
     if (g_fst[i].offset != vanilla_start) {
-      host::log("cosmetics: entry %u is replaced by a mod pack; cosmetic selection skipped", i);
+      // A costume file the loaded pack replaced. Only that pack's own sets may serve it (the 20XX
+      // Hack Pack's L / R costumes); they get an entry of their own and entry i stays the pack's
+      // file, which is the standard costume of this session.
+      const std::string applied = host::cosmetics::applied_asset(vanilla_start);
+      if (!host::cosmetics::session_pack_skin(applied) || i >= g_raw_paths.size() || g_raw_paths[i].empty()) {
+        host::log("cosmetics: entry %u is replaced by a mod pack; cosmetic selection skipped", i);
+        continue;
+      }
+      const int32_t entry = add_cosmetic_entry(i, vanilla_start, length, host::cosmetics::online_allowed(vanilla_start));
+      if (entry < 0) { host::log("cosmetics: selections exceed the cosmetic range; rest skipped"); break; }
+      g_cosmetic_live[{i, applied}] = entry;
+      g_paths[g_raw_paths[i]] = entry;
       continue;
     }
     const uint64_t span = ((uint64_t)length + 0xFFFFu) & ~0xFFFFull;
@@ -843,6 +882,9 @@ int32_t h_native_owner_tracking() { return gx::owner_tracking_enabled() ? 1 : 0;
 int32_t h_native_draw_identity() { return 1; }
 // The HUD sliders (stock icon and damage number size), display only, as the backend last set them.
 uint32_t h_hud_scales() { return gx::hud_scales_packed(); }
+// Display-only options (MU_DISPLAY_OPTION_*), read live by the native game's draw code. Never part
+// of a replay or of the match the opponent plays: the viewer's own, as the HUD sizes are.
+uint32_t h_display_options() { return gx::low_poly_fighters_active() ? MU_DISPLAY_OPTION_LOW_POLY : 0u; }
 void h_hud_player(int32_t slot, int32_t present, int32_t damage, int32_t stocks, float tag_x, float tag_y,
                   int32_t tag_visible) {
   gx::set_native_hud_player(slot, present != 0, damage, stocks, tag_x, tag_y, tag_visible != 0);
@@ -856,9 +898,21 @@ uint32_t g_replay_feature_options3 = 0;
 // 20XX TE feature: it goes to the game with or without a TE save, and the game gates it itself
 // (mu_option2_offline: offline only, never in a TM-CE event).
 uint32_t cpu_20xx_bit() { return gx::RenderOptions::live_cpu_20xx() ? MU_GAME_OPTION2_TE_20XX_CPUS : 0u; }
+// The 20XX Hack Pack's debug menu (shim/mu_hp_menu.c) switches the 20XX TE features the pack also
+// has, without a TE save. Then only these bits go to the game, never TE itself (MU_GAME_OPTION_TE):
+// the game accepts them with the pack loaded (mu_te.c), and TE's menus and rules stay off.
+constexpr uint32_t kHpTeOptions = MU_GAME_OPTION_TE_NO_STAR_KO | MU_GAME_OPTION_TE_TAUNT_CANCEL |
+                                  MU_GAME_OPTION_TE_FIXED_CAMERA;
+constexpr uint32_t kHpTeOptions2 = MU_GAME_OPTION2_TE_NO_SCREEN_RUMBLE | MU_GAME_OPTION2_TE_LCANCEL_FLASH |
+                                   0x00780000u |   // the flash choices (mu_lcancel_flash.h)
+                                   MU_GAME_OPTION2_TE_BUBBLES | MU_GAME_OPTION2_TE_INPUT_DISPLAY |
+                                   MU_GAME_OPTION2_TE_COLOR_OVERLAYS;
+bool hp_te_words() { return !mods::status().te_owned && hackpack::loaded(); }
+uint32_t te_words_mask1() { return mods::status().te_owned ? 0x00007FF0u : hp_te_words() ? kHpTeOptions : 0u; }
+uint32_t te_words_mask2() { return mods::status().te_owned ? 0xFFFFFFFFu : hp_te_words() ? kHpTeOptions2 : 0u; }
 uint32_t h_game_options2() {
   if (g_replaying) return g_replay_feature_options2;
-  return (mods::status().te_owned ? gx::RenderOptions::live_te_options2() : 0u) | cpu_20xx_bit();
+  return (gx::RenderOptions::live_te_options2() & te_words_mask2()) | cpu_20xx_bit();
 }
 // The 20XX Hack Pack training options for CPUs (Game tab), word 3: plain options, the game gates
 // them itself (mu_options3_offline: offline only, never in a TM-CE event).
@@ -879,14 +933,16 @@ uint32_t h_game_options() {
          (g_slippi_menus ? MU_GAME_OPT_SLIPPI_MENUS : 0u) |
          (mods::status().tmce && !g_replaying ? MU_GAME_OPTION_TMCE : 0u) |
          (g_replaying ? g_replay_feature_options
-                   : gx::RenderOptions::live_te_options() & (mods::status().te_owned ? 0x00007FF0u : 0u));
-  // (Only 20XX TE's own bits, and only with its save. The Training Lab bits above 0x7FF0 are not
-  // offered any more: Training Mode CE replaces the lab.)
+                   : gx::RenderOptions::live_te_options() & te_words_mask1());
+  // (Only 20XX TE's own bits, and only with its save, or the Hack Pack's share of them with the pack.
+  // The Training Lab bits above 0x7FF0 are not offered any more: Training Mode CE replaces it.)
 }
 // Match conveniences implemented by the host follow the same gates as mu_te2 in the game.
 bool te_host_feature(uint32_t feature) {
   const uint32_t options = h_game_options();
-  if (!(options & MU_GAME_OPTION_TE) || (options & MU_GAME_OPTION_VANILLA) ||
+  // Without TE itself, only the Hack Pack's share (its menu), with the pack or in a replay of it.
+  const bool hp = (feature & ~kHpTeOptions2) == 0 && (hp_te_words() || g_replaying);
+  if ((!(options & MU_GAME_OPTION_TE) && !hp) || (options & MU_GAME_OPTION_VANILLA) ||
       !(h_game_options2() & feature) || slippi::online::session_mode() >= 0) return false;
   if ((options & MU_GAME_OPTION_TE_TOURNAMENT) &&
       !(feature & MU_GAME_OPTION2_TE_TOURNAMENT_SAFE)) return false;
@@ -1203,8 +1259,12 @@ bool republish_cosmetic_slot(const std::string& slot) {
   for (const auto& file : result.files) {
     const uint32_t i = file.fst_index;
     if (i >= g_raw_paths.size() || g_raw_paths[i].empty() || (size_t)i * 12 + 12 > g_fst_raw.size()) continue;
-    if (g_fst[i].offset != file.vanilla_start && g_fst[i].offset < kCosmeticBase) {
-      host::log("cosmetics: entry %u is replaced by a mod pack; cosmetic selection skipped", i);
+    // A file the loaded pack replaced: entry i is the pack's file, the standard costume of this
+    // session, and only the pack's own sets may serve it instead (load_cosmetics).
+    const bool pack_replaced = g_fst[i].offset != file.vanilla_start && g_fst[i].offset < kCosmeticBase;
+    if (pack_replaced && (!file.overridden || !host::cosmetics::session_pack_skin(file.asset_id))) {
+      if (file.overridden) host::log("cosmetics: entry %u is replaced by a mod pack; cosmetic selection skipped", i);
+      g_paths[g_raw_paths[i]] = (int32_t)i;
       continue;
     }
     const uint32_t vanilla_length = be32(g_fst_raw.data() + (size_t)i * 12 + 8);
@@ -1217,20 +1277,11 @@ bool republish_cosmetic_slot(const std::string& slot) {
       entry = (int32_t)g_fst.size();
       g_fst.push_back({file.vanilla_start, vanilla_length, false});
     } else {
-      const uint64_t span = ((uint64_t)file.length + 0xFFFFu) & ~0xFFFFull;
-      if (g_cosmetic_next + span > 0xFFFF0000ull) {
+      entry = add_cosmetic_entry(i, file.vanilla_start, file.length, file.online_allowed);
+      if (entry < 0) {
         host::log("cosmetics: selections exceed the cosmetic range; %s keeps its previous skin", slot.c_str());
         ok = false;
         continue;
-      }
-      entry = (int32_t)g_fst.size();
-      g_fst.push_back({(uint32_t)g_cosmetic_next, file.length, false});
-      g_cosmetic_files.push_back({(uint32_t)g_cosmetic_next, file.vanilla_start, file.length, false});
-      g_cosmetic_next += span;
-      if (!file.online_allowed) {
-        const int32_t alias = (int32_t)g_fst.size();
-        g_fst.push_back({file.vanilla_start, vanilla_length, false});
-        g_cosmetic_alias[entry] = alias;
       }
     }
     g_cosmetic_live[key] = entry;
@@ -1337,6 +1388,18 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           reply.push_back((gx::RenderOptions::live_te_options() & MU_GAME_OPTION_TE_FROZEN_STAGES) ? 1 : 0);
           return true;
         }
+        if (c == MU_HP_COMMAND && n >= 1 && p[0] == MU_HP_OP_CPU_WORD) {
+          // The Hack Pack's menu (shim/mu_hp_menu.c): the CPU training options, the same store as
+          // the Game tab's rows (option word 3, saved by the settings panel). Empty without the pack.
+          if (!hackpack::loaded()) return true;
+          if (n == 5 && slippi::online::session_mode() < 0 && !g_replaying) {
+            gx::RenderOptions::live_cpu_training() = read_be32(p + 1) & MU_GAME_OPTION3_CPU_ALL;
+            gx::RenderOptions::live_cpu_game_changes().fetch_add(1);
+            host::log("20xx-hp: CPU training options from the pack's menu %08X", gx::RenderOptions::live_cpu_training());
+          }
+          append_be32(reply, gx::RenderOptions::live_cpu_training() & MU_GAME_OPTION3_CPU_ALL);
+          return true;
+        }
         if (c == MU_HP_COMMAND) {
           // 20XX Hack Pack data and choices for the game's native rewrites (hackpack_source.h).
           // Choices and the stage state change only offline, outside replay playback.
@@ -1359,9 +1422,19 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           // 20XX TE's in-game settings menu (shim/mu_te_debugmenu.c): both feature words, big-endian,
           // the same bits as the F1 panel. Empty asks for the current ones. With "Lock settings" on,
           // only switching the lock off goes through.
+          // The 20XX Hack Pack's menu (shim/mu_hp_menu.c) uses the same command without a TE save:
+          // then only its share of the bits changes (kHpTeOptions, kHpTeOptions2) and TE's lock,
+          // which that menu does not show, does not apply.
           auto& w1 = gx::RenderOptions::live_te_options();
           auto& w2 = gx::RenderOptions::live_te_options2();
-          if (n == 8 && (h_game_options() & MU_GAME_OPTION_TE) && slippi::online::session_mode() < 0 && !g_replaying) {
+          if (n == 8 && hp_te_words() && slippi::online::session_mode() < 0 && !g_replaying) {
+            const uint32_t next1 = read_be32(p), next2 = read_be32(p + 4);
+            w1 = (w1 & ~kHpTeOptions) | (next1 & kHpTeOptions);
+            w2 = (w2 & ~kHpTeOptions2) | (next2 & kHpTeOptions2);
+            if (w2 & MU_GAME_OPTION2_TE_LCANCEL_FLASH) lcancel::set_indicator(false);   // one flash at a time
+            gx::RenderOptions::live_te_game_changes().fetch_add(1);
+            host::log("20xx-hp: settings from the pack's menu %08X %08X", w1 & kHpTeOptions, w2 & kHpTeOptions2);
+          } else if (n == 8 && (h_game_options() & MU_GAME_OPTION_TE) && slippi::online::session_mode() < 0 && !g_replaying) {
             const uint32_t next1 = read_be32(p), next2 = read_be32(p + 4);
             if (w2 & MU_GAME_OPTION2_TE_LOCK_SETTINGS) {
               if (!(next2 & MU_GAME_OPTION2_TE_LOCK_SETTINGS)) w2 &= ~MU_GAME_OPTION2_TE_LOCK_SETTINGS;
@@ -1688,28 +1761,44 @@ int32_t card_find(const std::string& name) {
   }
   return -1;
 }
+// Plain ASCII whatever the locale calls a letter: a byte above 0x7F is not valid text for the path
+// conversion that follows.
 std::string card_safe_name(const SourceCardFile& file) {
-  std::string name(reinterpret_cast<const char*>(file.dir), 6);
+  std::string name;
+  for (int i = 0; i < 6; ++i) { const unsigned char ch = file.dir[i]; name += (ch < 0x80 && std::isalnum(ch)) ? (char)ch : '_'; }
   name += "-";
-  for (char ch : file.name())
-    name += (std::isalnum((unsigned char)ch) || ch == '_' || ch == '-' || ch == '.') ? ch : '_';
+  for (char ch : file.name()) {
+    const unsigned char u = (unsigned char)ch;
+    name += (u < 0x80 && (std::isalnum(u) || ch == '_' || ch == '-' || ch == '.')) ? ch : '_';
+  }
   return name + ".gci";
 }
+// A path as text for the log. Turning a path into narrow text can fail (a folder name the system
+// code page cannot hold), and on the Static Recomp that failure inside a save ended the game. The
+// save path here stays wide and never ends the game either.
+std::string card_shown(const std::filesystem::path& p) {
+  try { const auto text = p.u8string(); return std::string(text.begin(), text.end()); }
+  catch (...) { return "<name not printable>"; }
+}
 void card_save(SourceCardFile& file) {
-  if (file.path.empty()) file.path = g_card_dir / card_safe_name(file);
-  std::filesystem::path temporary = file.path.string() + ".tmp";
-  FILE* out = std::fopen(temporary.string().c_str(), "wb");
-  if (!out) { host::log("card: cannot write %s", file.path.string().c_str()); return; }
-  const bool ok = std::fwrite(file.dir, 1, sizeof file.dir, out) == sizeof file.dir &&
-                  std::fwrite(file.data.data(), 1, file.data.size(), out) == file.data.size();
-  std::fclose(out);
-  std::error_code ec;
-  if (ok && !MoveFileExW(temporary.c_str(), file.path.c_str(),
-                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-    ec = std::error_code((int)GetLastError(), std::system_category());
-  if (!ok || ec) {
-    std::filesystem::remove(temporary, ec);
-    host::log("card: failed to save %s", file.path.string().c_str());
+  try {
+    if (file.path.empty()) file.path = g_card_dir / card_safe_name(file);
+    std::filesystem::path temporary = file.path; temporary += L".tmp";
+    FILE* out = _wfopen(temporary.c_str(), L"wb");
+    if (!out) { host::log("card: cannot write %s", card_shown(file.path).c_str()); return; }
+    const bool ok = std::fwrite(file.dir, 1, sizeof file.dir, out) == sizeof file.dir &&
+                    std::fwrite(file.data.data(), 1, file.data.size(), out) == file.data.size();
+    std::fclose(out);
+    std::error_code ec;
+    if (ok && !MoveFileExW(temporary.c_str(), file.path.c_str(),
+                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+      ec = std::error_code((int)GetLastError(), std::system_category());
+    if (!ok || ec) {
+      std::filesystem::remove(temporary, ec);
+      host::log("card: failed to save %s", card_shown(file.path).c_str());
+    }
+  } catch (const std::exception& error) {
+    host::log("card: failed to save %s (%s)", card_safe_name(file).c_str(), error.what());
   }
 }
 void card_clear_files() {
@@ -1725,8 +1814,8 @@ void card_mount_files() {
   g_card_files.assign(CARD_MAX_FILES, nullptr);
   size_t slot = 0;
   for (const auto& entry : std::filesystem::directory_iterator(g_card_dir, ec)) {
-    if (ec || entry.path().extension() != ".gci" || slot >= CARD_MAX_FILES) continue;
-    FILE* in = std::fopen(entry.path().string().c_str(), "rb");
+    if (ec || entry.path().extension() != L".gci" || slot >= CARD_MAX_FILES) continue;
+    FILE* in = _wfopen(entry.path().c_str(), L"rb");
     if (!in) continue;
     auto* file = new SourceCardFile;
     bool ok = std::fread(file->dir, 1, sizeof file->dir, in) == sizeof file->dir;
@@ -1795,7 +1884,7 @@ void card_mount_files() {
   }
   g_card_mounted = true;
   host::log("card: source slot A mounted from %s (%zu files, %u of %u blocks used)",
-            g_card_dir.string().c_str(), slot, card_used_blocks(), CARD_TOTAL_BLOCKS);
+            card_shown(g_card_dir).c_str(), slot, card_used_blocks(), CARD_TOTAL_BLOCKS);
 }
 void card_reset_mount() { card_clear_files(); g_card_mounted = false; }
 // Seconds since 2000-01-01 on the console clock (its date at start plus game time), as the game's
@@ -2301,9 +2390,9 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
     // Only layers that change the disc's files make a replay need them (a save file alone does not).
     g_replay_stream.set_mod_profile(g_retail_view || g_view_alias.empty() ? std::string() : g_mod_fingerprint);
     // The 20XX TE features in effect (offline only; online matches never carry them).
-    g_replay_stream.set_feature_options(online || !mods::status().te_owned
-                                            ? 0u : (gx::RenderOptions::live_te_options() & 0x7FF0u));
-    g_replay_stream.set_feature_options2(online ? 0u : (mods::status().te_owned ? gx::RenderOptions::live_te_options2() : 0u) |
+    // (Or the Hack Pack's share of them, with the pack and no TE save: te_words_mask1/2.)
+    g_replay_stream.set_feature_options(online ? 0u : (gx::RenderOptions::live_te_options() & te_words_mask1()));
+    g_replay_stream.set_feature_options2(online ? 0u : (gx::RenderOptions::live_te_options2() & te_words_mask2()) |
                                                       cpu_20xx_bit());   // "20XX CPUs" too: playback replays it
     g_replay_stream.set_feature_options3(online ? 0u : h_game_options3());   // CPU training options, likewise
     if (!g_replay_stream.begin_slippi(start, codes, (int64_t)std::time(nullptr)))
@@ -2343,6 +2432,7 @@ void h_replay_finished() {
   if (!g_replay_game_end.empty() && g_replay_stream.last_frame() >= g_replay->GetLatestIndex())
     h_replay_event(0x39, g_replay_game_end.data(), (uint32_t)g_replay_game_end.size());
   write_replay_recording();
+  host::set_replay_viewing(false);   // played to its end: the launcher may start the next queued replay
   host::request_exit(0);
 }
 
@@ -2391,6 +2481,7 @@ MuHostApi make_host() {
   h.hud_player = h_hud_player;
   h.vi_idle_step = h_vi_idle_step;
   h.game_options3 = h_game_options3;
+  h.display_options = h_display_options;
   return h;
 }
 
@@ -2640,6 +2731,7 @@ bool set_replay(const char* path) {
   engine.restore = replay_restore;
   replay_control::set_replay_path(path);
   replay_control::begin(Slippi::GAME_FIRST_FRAME, g_replay->GetLatestIndex(), engine);
+  host::set_replay_viewing(true);
   return true;
 }
 

@@ -167,6 +167,15 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
                              std::string* error = nullptr);
 // How many skins the catalog lists from that disc or folder.
 uint32_t disc_skin_count(const std::string& iso_path);
+// The mod disc (or files pack) this session loads as its own files, as scan_disc_skins was given
+// it: the 20XX Hack Pack as the Source Port's overlay. Its plain costumes are what the session
+// already serves as the standard ones, so L / R leaves them out (cycle_slot_live), and its other
+// sets ("alt L", "alt R") step after the standard costume like any skin. Empty: no such disc
+// (the default, and always on the Static Recomp, where a pack disc runs its own L / R).
+void set_session_pack(const std::string& iso_path);
+// True for a costume skin scanned from that disc. The Source Port lets these serve a costume file
+// the pack itself replaced; a skin from anywhere else leaves the pack's own file in place.
+bool session_pack_skin(const std::string& asset_id);
 // Every costume slot of the retail game, in the game's own order, for a slot picker.
 struct CostumeSlot { std::string target_path, character, costume; };
 std::vector<CostumeSlot> costume_slots();

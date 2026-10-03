@@ -387,11 +387,13 @@ void download_and_install() {
       << "tasklist /FI \"IMAGENAME eq melee_port_dlss5.exe\" 2>nul | find /i \"melee_port_dlss5.exe\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
       << "tasklist /FI \"IMAGENAME eq melee_port_dlss5_compat.exe\" 2>nul | find /i \"melee_port_dlss5_compat.exe\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
       << "rmdir /s /q update_tmp 2>nul\r\nmkdir update_tmp\r\n"
-      << "tar -xf update.zip -C update_tmp\r\n"
-      << "if errorlevel 1 (echo could not unpack update.zip>> %LOG% & echo Could not unpack the update. & pause & exit /b 1)\r\n"
+      // Windows bsdtar reports "Cannot restore time" and other benign warnings with exit code 1
+      // even when every entry was extracted. Treat the presence of a release folder as the real
+      // success signal: SRC detection below catches genuine extraction failures.
+      << "tar -xf update.zip -C update_tmp 2>> %LOG%\r\n"
       << "set SRC=\r\n"
       << "for /d %%d in (update_tmp\\MeleeUnlocked-* update_tmp\\MeleePort-*) do set SRC=%%d\r\n"
-      << "if not defined SRC (echo no release folder inside update.zip>> %LOG% & echo The update did not contain a release folder. & pause & exit /b 1)\r\n"
+      << "if not defined SRC (echo could not unpack update.zip>> %LOG% & echo Could not unpack the update. & pause & exit /b 1)\r\n"
       << "echo copying from %SRC%>> %LOG%\r\n"
       // /r overwrites read-only files: Windows marks files unpacked from a downloaded zip read-only
       // often enough that the copy failed outright with "Could not copy the update into place".

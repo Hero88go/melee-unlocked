@@ -19,7 +19,7 @@ constexpr uint32_t SECTOR = 0x2000, MAX_FILES = 127, TOTAL_BLOCKS = 2043, MEM_SI
 struct File {
   uint8_t dir[64] = {};        // CARDDir, big-endian as on the card
   std::vector<uint8_t> data;   // blocks * SECTOR
-  std::string path;            // .gci on disk
+  std::filesystem::path path;  // .gci on disk; never turned into narrow text to open it (see shown())
   std::string name() const { return std::string((const char*)dir + 8, strnlen((const char*)dir + 8, 32)); }
   uint16_t blocks() const { return (uint16_t)((dir[0x38] << 8) | dir[0x39]); }
 };
@@ -43,47 +43,76 @@ int32_t find(const std::string& name) {
   return -1;
 }
 
+// A file name made of plain ASCII whatever the locale says a letter is: isalnum() accepts bytes
+// above 0x7F in some locales, and such a byte is not valid text for the path conversion.
 std::string safe_name(const File& f) {
-  std::string s((const char*)f.dir, 6);
+  std::string s;
+  for (int i = 0; i < 6; ++i) { const unsigned char ch = f.dir[i]; s += (ch < 0x80 && std::isalnum(ch)) ? (char)ch : '_'; }
   s += "-";
-  for (char ch : f.name()) s += (std::isalnum((unsigned char)ch) || ch == '_' || ch == '-' || ch == '.') ? ch : '_';
+  for (char ch : f.name()) {
+    const unsigned char u = (unsigned char)ch;
+    s += (u < 0x80 && (std::isalnum(u) || ch == '_' || ch == '-' || ch == '.')) ? ch : '_';
+  }
   return s + ".gci";
 }
 
+// A path as text for the log. Turning a path into narrow text can fail (a folder name the system
+// code page cannot hold); the log then gets a marker instead. Paths themselves stay wide: a save
+// that converted its own file name back and forth stopped the game with "No mapping for the Unicode
+// character exists in the target multi-byte code page" (crash report, the save after Adventure).
+std::string shown(const std::filesystem::path& p) {
+  try { const auto text = p.u8string(); return std::string(text.begin(), text.end()); }
+  catch (...) { return "<name not printable>"; }
+}
+std::filesystem::path folder_path(const std::string& text) {
+  try { return std::filesystem::path(text); } catch (...) {}
+  try { return std::filesystem::u8path(text); } catch (...) {}
+  return {};
+}
+
 void save(File& f) {
-  if (f.path.empty()) f.path = (g_dir / safe_name(f)).string();
-  std::filesystem::path tmp = f.path + ".tmp";
-  FILE* out = std::fopen(tmp.string().c_str(), "wb");
-  if (!out) { host::log("card: cannot write %s", f.path.c_str()); return; }
-  bool ok = std::fwrite(f.dir, 1, 64, out) == 64 && std::fwrite(f.data.data(), 1, f.data.size(), out) == f.data.size();
-  std::fclose(out);
-  std::error_code ec;
-  if (ok) std::filesystem::rename(tmp, f.path, ec);
-  if (!ok || ec) host::log("card: failed to save %s", f.path.c_str());
+  // Nothing in here may end the game: a save that cannot be written is logged and the match goes on.
+  try {
+    if (f.path.empty()) f.path = g_dir / safe_name(f);
+    std::filesystem::path tmp = f.path; tmp += L".tmp";
+    FILE* out = _wfopen(tmp.c_str(), L"wb");
+    if (!out) { host::log("card: cannot write %s", shown(f.path).c_str()); return; }
+    bool ok = std::fwrite(f.dir, 1, 64, out) == 64 && std::fwrite(f.data.data(), 1, f.data.size(), out) == f.data.size();
+    std::fclose(out);
+    std::error_code ec;
+    if (ok) std::filesystem::rename(tmp, f.path, ec);
+    if (!ok || ec) host::log("card: failed to save %s", shown(f.path).c_str());
+  } catch (const std::exception& error) {
+    host::log("card: failed to save %s (%s)", safe_name(f).c_str(), error.what());
+  }
 }
 
 void mount() {
   if (g_mounted) return;
-  g_dir = host::options.card_dir;
+  g_dir = folder_path(host::options.card_dir);
   std::error_code ec;
   std::filesystem::create_directories(g_dir, ec);
   for (File* f : g_files) delete f;
   g_files.assign(MAX_FILES, nullptr);
   size_t slot = 0;
-  for (auto& entry : std::filesystem::directory_iterator(g_dir, ec)) {
-    if (entry.path().extension() != ".gci" || slot >= MAX_FILES) continue;
-    FILE* in = std::fopen(entry.path().string().c_str(), "rb");
-    if (!in) continue;
-    auto* f = new File;
-    bool ok = std::fread(f->dir, 1, 64, in) == 64;
-    if (ok) { f->data.resize((size_t)f->blocks() * SECTOR); ok = std::fread(f->data.data(), 1, f->data.size(), in) == f->data.size(); }
-    std::fclose(in);
-    if (!ok || f->blocks() == 0 || f->blocks() > TOTAL_BLOCKS) { host::log("card: ignoring %s", entry.path().string().c_str()); delete f; continue; }
-    f->path = entry.path().string();
-    g_files[slot++] = f;
+  try {
+    for (auto& entry : std::filesystem::directory_iterator(g_dir, ec)) {
+      if (entry.path().extension() != L".gci" || slot >= MAX_FILES) continue;
+      FILE* in = _wfopen(entry.path().c_str(), L"rb");
+      if (!in) continue;
+      auto* f = new File;
+      bool ok = std::fread(f->dir, 1, 64, in) == 64;
+      if (ok) { f->data.resize((size_t)f->blocks() * SECTOR); ok = std::fread(f->data.data(), 1, f->data.size(), in) == f->data.size(); }
+      std::fclose(in);
+      if (!ok || f->blocks() == 0 || f->blocks() > TOTAL_BLOCKS) { host::log("card: ignoring %s", shown(entry.path()).c_str()); delete f; continue; }
+      f->path = entry.path();
+      g_files[slot++] = f;
+    }
+  } catch (const std::exception& error) {
+    host::log("card: the save folder could not be read to the end (%s)", error.what());
   }
   g_mounted = true;
-  host::log("card: slot A mounted from %s (%zu files, %u of %u blocks used)", g_dir.string().c_str(), slot, used_blocks(), TOTAL_BLOCKS);
+  host::log("card: slot A mounted from %s (%zu files, %u of %u blocks used)", shown(g_dir).c_str(), slot, used_blocks(), TOTAL_BLOCKS);
 }
 
 void unmount() {
