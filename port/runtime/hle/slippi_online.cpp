@@ -412,7 +412,9 @@ bool should_advance_online_frame(int32_t frame) {
     if (offset > -250 && offset < 8000) deviation = 0;
     else if (offset < 0) deviation = std::min(-offset / (3 * 16683.0f), 1.0f) * 0.01f;
     else deviation = std::min(offset / (3 * 16683.0f), 1.0f) * -0.005f;
-    host::set_emulation_speed(1.0 + deviation);
+    // Slippi Dolphin runs the console's 59.94 Hz (16683 us a frame) and its time sync is built on
+    // that; the host ticks 16667 us, which left this side drifting ahead until the opponent sped up.
+    host::set_emulation_speed(16667.0 / 16683.0 * (1.0 + deviation));
     const int32_t frame_time = 16683, t1 = 10000, t2 = frame_time + t1;
     g_fall_behind += offset < -t1 ? 1 : 0;
     g_fall_far_behind += offset < -t2 ? 1 : 0;
@@ -579,6 +581,11 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
   g_trace_record.ping_ms = (uint16_t)std::clamp(g_netplay->LastPingMs(), 0, 0xFFFF);
   if (skip) g_trace_record.flags |= g_input_wait_frames > 0 ? net_trace::kWait : net_trace::kShed;
   else if (!q.empty() && q[0] == 4) g_trace_record.flags |= net_trace::kAdvance;
+  // F8: the player marks "that just felt wrong", so a report can point at the moment.
+  if (host::window_take_trace_mark()) {
+    g_trace_record.flags |= net_trace::kMark;
+    host::log("slippi: marked frame %d in the session trace", frame);
+  }
   std::memcpy(g_trace_record.pad, inputs, PAD_DATA_SIZE);
   g_trace_open = true;
 }
@@ -1070,7 +1077,9 @@ void handle_report_game(const uint8_t* p) {
             (unsigned long long)(g_rollbacks - g_match_rollbacks_start), (unsigned long long)g_match_stalls,
             (unsigned long long)g_match_input_waits, (unsigned long long)g_match_advances, frames);
   trace_end_match();
-  host::publish_lobby_result(winner, end_method);
+  // The Source Port's game publishes its lobby result from its Game End record (h_replay_event);
+  // a second line here would count the game twice.
+  if (!host::game_image) host::publish_lobby_result(winner, end_method);
   {
     // Exactly CEXISlippi::handleReportGame: one report per game with every slot's result.
     UserInfo me = g_user->GetUserInfo();

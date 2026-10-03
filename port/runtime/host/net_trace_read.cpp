@@ -10,11 +10,11 @@ namespace {
 
 enum Column {
   C_FRAME, C_WALL, C_SIM, C_WAIT, C_ROLLBACKS, C_DEPTH, C_OFFSET, C_SYNC, C_PING, C_BUTTONS,
-  C_STICK_X, C_STICK_Y, C_CSTICK_X, C_CSTICK_Y, C_TRIGGER_L, C_TRIGGER_R, C_PRESENTS, C_COUNT
+  C_STICK_X, C_STICK_Y, C_CSTICK_X, C_CSTICK_Y, C_TRIGGER_L, C_TRIGGER_R, C_PRESENTS, C_MARK, C_COUNT
 };
 const char* const kColumnNames[C_COUNT] = {
     "frame", "wall_s", "sim_ms", "wait_frames", "rollbacks", "rollback_depth", "offset_us", "sync", "ping_ms", "buttons",
-    "stick_x", "stick_y", "cstick_x", "cstick_y", "trigger_l", "trigger_r", "presents"};
+    "stick_x", "stick_y", "cstick_x", "cstick_y", "trigger_l", "trigger_r", "presents", "mark"};
 
 struct Field {
   const char* begin;
@@ -129,6 +129,7 @@ bool parse_trace(const char* text, size_t size, Trace* out, std::string* error) 
     if (sync < 0) r.flags |= kShed;
     else if (sync > 0) r.flags |= kAdvance;
     else if (r.wait_frames > 0) r.flags |= kWait;
+    if (integer(C_MARK, 0, 1)) r.flags |= kMark;
     const long buttons = integer(C_BUTTONS, 0, 0xFFFF, 16);
     r.pad[0] = (uint8_t)(buttons >> 8);
     r.pad[1] = (uint8_t)buttons;

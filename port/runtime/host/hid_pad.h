@@ -31,6 +31,9 @@ uint32_t hidpad_poll(PadState out[kHidPadSlots], uint32_t buttons[kHidPadSlots])
 // so the caller can stop looking. Devices that already have a dedicated reader must be offered to
 // that reader first.
 bool hidpad_raw_input(void* device, const uint8_t* report, uint32_t size, uint32_t count);
+// Windows said the device is gone (WM_INPUT_DEVICE_CHANGE, GIDC_REMOVAL): its slot is emptied, so
+// its last report is no longer read as held input. A device plugged in again starts over.
+void hidpad_device_removed(void* device);
 
 // Sony pads have a reader of their own (window.cpp). DualSense is one of them: through the generic
 // path its right stick lands on Z/Rz and its triggers on Rx/Ry, which a generic reader takes the other

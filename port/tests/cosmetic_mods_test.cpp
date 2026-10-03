@@ -2024,6 +2024,18 @@ int main(int argc, char** argv) {
           "scanning the pack again keeps the picture the player gave its skin");
     apply();
     check(csp_path_of("PlFxNr.dat") == disc_picture, "and it is still the one shown");
+
+    // A costume's picture entry given to a skin of that costume switches itself off, so the standard
+    // costume shows the game's picture again; another costume's entry stays on.
+    check(host::cosmetics::set_skin_portrait_from(mine.asset_id, "portrait-PlFxGr", "csp", &error) &&
+              host::cosmetics::clear_skin_portrait(mine.asset_id, "csp", &error) &&
+              host::cosmetics::skin_portrait_source(mine.asset_id, "csp") == PortraitSource::Costume,
+          "taking another costume's picture leaves this costume's entry on");
+    check(host::cosmetics::set_skin_portrait_from(mine.asset_id, "portrait-PlFxNr", "csp", &error) &&
+              host::cosmetics::skin_portrait_source(mine.asset_id, "csp") == PortraitSource::Own &&
+              host::cosmetics::clear_skin_portrait(mine.asset_id, "csp", &error) &&
+              host::cosmetics::skin_portrait_source(mine.asset_id, "csp") == PortraitSource::Standard,
+          "a skin that takes its costume's picture entry turns that entry off");
     g_disc_table.clear(); g_disc_bytes.clear();
   }
 

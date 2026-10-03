@@ -209,6 +209,15 @@ uint8_t hid_trigger_value(long logical_min, long logical_max, long raw, int8_t r
   return (uint8_t)std::clamp((int)std::lround(t * 255.0), 0, 255);
 }
 
+void hidpad_device_removed(void* device_handle) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  for (auto& s : g_slots)
+    if (s.device && s.device == (HANDLE)device_handle) {
+      host::log("hid pad: %s disconnected", s.name.c_str());
+      s = Slot{};
+    }
+}
+
 bool hidpad_raw_input(void* device_handle, const uint8_t* report, uint32_t size, uint32_t count) {
   HANDLE device = (HANDLE)device_handle;
   if (!report || !size || !count) return false;
