@@ -2,11 +2,20 @@
 # Melee Unlocked - Beta
 
 A native Windows build of Super Smash Bros. Melee (NTSC 1.02) with **Slippi online play** and an
-**unlocked display frame rate.**
+**unlocked display frame rate.** It has two engines, and the launcher lets you pick.
 
-The game's own PowerPC code is translated ahead of time into C++ (static recompilation of the
-retail executable plus Slippi's Gecko codes) and runs against a native D3D12 or D3D11 renderer, so the
-game logic stays exactly what the GameCube ran, at 60 Hz, while the display runs at any rate.
+**Source Port (the main build).** The game is compiled for Windows from C source code, the
+decompilation of Melee, and built as a native library. No GameCube code is run, emulated or
+translated. A native runtime stands in for the console around it: the game's drawing commands go to
+a D3D12 or D3D11 renderer, its sound goes through a native mixer, controllers are read directly, and
+the game's data is read from your own ISO. Slippi's rollback netplay is written natively too, and it
+plays against Slippi Dolphin.
+
+**Static Recomp.** The retail game's own PowerPC code, with Slippi's Gecko codes, translated ahead
+of time into C++ and run on the same runtime. It is the engine this project started with, and it is
+kept for the mods that need the game's original code.
+
+On both, the game logic runs at the console's 60 Hz while the display runs at any rate.
 In-between frames come from the game's own animation data and physics state, not from image
 interpolation, so an unlocked 200 Hz display shows real intermediate poses with no added latency.
 
