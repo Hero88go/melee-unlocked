@@ -116,11 +116,16 @@ Info inspect(const std::filesystem::path& path,bool with_stats) {
   std::array<unsigned,256> sizes{};
   for(size_t i=2;i+2<first_event;i+=3) sizes[raw[i]]=be16(raw.data()+i+1);
   std::vector<FrameData> frames;
+  // A recording's frames arrive in order (a rollback steps back a few), so a frame far past the ones
+  // read so far is a damaged file: skipped, so a file cannot make the list allocate for frames it
+  // does not hold.
+  constexpr int64_t kMaxFrames=8*60*60*60, kMaxJump=60*60;
   auto slot=[&](const uint8_t* event)->FrameSlot* {
-    const int index=int32_t(be32(event+1))-first_frame;
-    if(index<0 || index>=8*60*60*60) return nullptr;
-    if(size_t(index)>=frames.size()) frames.resize(std::max<size_t>(index+1,frames.size()*2));
-    return &frames[index][event[5]];
+    const int64_t index=int64_t(int32_t(be32(event+1)))-first_frame;
+    if(index<0 || index>=kMaxFrames || index>int64_t(frames.size())+kMaxJump) return nullptr;
+    if(size_t(index)>=frames.size())
+      frames.resize(size_t(std::min<int64_t>(kMaxFrames,std::max<int64_t>(index+1,int64_t(frames.size())*2))));
+    return &frames[size_t(index)][event[5]];
   };
   for(size_t i=first_event;i<raw.size();) {
     const uint8_t command=raw[i]; const unsigned payload=sizes[command];
@@ -135,7 +140,8 @@ Info inspect(const std::filesystem::path& path,bool with_stats) {
         Player player;player.port=p+1; player.character=event[0x65+p*0x24];
         player.start_stocks=event[0x67+p*0x24]; player.costume=event[0x68+p*0x24];
         player.name=game_text(event+0x1a5+p*0x1f,0x1f);
-        player.code=game_code(event+0x221+p*0xa,0xa);
+        // Older recordings end before the connect codes (the fourth player's ends at 0x249).
+        if(length>=size_t(0x221+(p+1)*0xa)) player.code=game_code(event+0x221+p*0xa,0xa);
         if(player.name.empty()) player.name=player.code.empty()?"Player "+std::to_string(p+1):player.code;
         info.players.push_back(player);
       }
@@ -145,10 +151,11 @@ Info inspect(const std::filesystem::path& path,bool with_stats) {
                      befloat(event+0x33),befloat(event+0x37),be16(event+0x31)};
     } else if(command==0x38 && with_stats && length>0x26 && event[5]<4 && event[6]==0) {
       const int frame=int32_t(be32(event+1));
-      if(auto* target=slot(event))
+      if(auto* target=slot(event)) {
         target->post={true,int(be16(event+8)),event[7],event[0x21],event[0x1e],length>0x33?event[0x33]:0,
                       befloat(event+0x16),befloat(event+0x22)};
-      info.last_frame=std::max(info.last_frame,frame);
+        info.last_frame=std::max(info.last_frame,frame);
+      }
     }
     i+=length;
   }

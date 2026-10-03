@@ -886,6 +886,29 @@ void mu_replay_online_start(StartMeleeData* data, const unsigned char* msrb)
           (int) *HSD_RandSeedPtr);
 }
 
+/* The match's game info block in console layout (MATCH_STRUCT_LEN, 0x138 bytes), which Slippi's game
+ * report copies from 0x80480530 at the end of an online game: the rules and six players as the
+ * match runs, without the Game Start event's recording-only fixes. Pointer slots stay zero. */
+void mu_replay_game_info_block(unsigned char* out, const StartMeleeData* data)
+{
+    int i;
+    record_rules(out, &data->rules);
+    for (i = 0; i < 6; ++i) record_player(out + 0x60 + 0x24 * i, &data->players[i]);
+#ifdef MU_AKANEIA_FIGHTERS
+    /* The disc's external ids, as in the recorded copy (emit_game_start). */
+    for (i = 0; i < 6; ++i) {
+        u8* p = out + 0x60 + 0x24 * i;
+        const int ext = mu_ak_mex_external(data->players[i].ckind);
+        if (MU_AK_CKIND(data->players[i].ckind) ||
+            (data->players[i].ckind >= CKind_Playable_Count &&
+             data->players[i].ckind < ChKind_Max))
+        {
+            p[0] = ext >= 0 ? (u8) ext : ChKind_None;
+        }
+    }
+#endif
+}
+
 /* ResetLCancelStatus (8006C324, Fighter_procMap) and GetLCancelStatus (8008D698, an aerial's
  * landing): 1 when the landing was L-cancelled, 2 when it was not. */
 void mu_replay_lcancel_reset(Fighter* fp)

@@ -20,8 +20,13 @@ int mu_hp_loaded(void);
  * select page. Remembers the stage file variant and the custom flag byte for that match. */
 int mu_hp_sss_pick(int stkind);
 /* "Reload SSS with D-Pad Up/Down", 8025BAFC (same function, before the B test): D-pad down and up
- * step through the four stage select pages. Returns 1 when the page changed. */
+ * step through the four stage select pages. Returns 1 when the page changed (the host saved it);
+ * the caller then loads the stage select screen again. */
 int mu_hp_sss_input(unsigned int pressed);
+/* The pack's stage select file for the current page (its "Default File Name Changes" turn
+ * MnSlMap.usd into MnSlMap.1sd; the D-pad steps the digit), or NULL for the game's own.
+ * mn/mnstagesel.c, where the screen loads its file. */
+const char* mu_hp_sss_file(void);
 /* The stage file name to open for a stage: the pack's variant for the picked stage, else the
  * pack's default name for that stage, else `name` itself. gr/ground.c, where the stage file is
  * preloaded and loaded. */
@@ -30,12 +35,16 @@ const char* mu_hp_stage_file(int grkind, const char* name);
 int mu_hp_stage_flags(void);
 /* Pokemon Stadium's fixed transformation sets the 0x80 bit once it has transformed. */
 void mu_hp_stage_flags_or(int bits);
+/* The pack's stage rules are in effect for the match in play (offline with the pack, or playback of
+ * a replay recorded with it). For the stage mods that test the game mode, not the flag byte. */
+int mu_hp_stage_on(void);
 /* gm/gmvs.c, start of a match: tells the host the stage state before the recording starts. */
 void mu_hp_match_begin(int stkind);
 /* gm/gm_1A3F.c, 801A4160: a match state (id 2) was left for another state through an explicit
  * next state. The pack puts its patched file name and flag byte back there. */
 void mu_hp_stage_leave(void);
-/* Scripted runs (--match): the stage after the table, when MELEE_TEST_HP_PAGE asks for a page. */
+/* Scripted runs (--match): the stage after the table, when MELEE_TEST_HP_PAGE asks for a page
+ * (1 to 4, as the pack numbers them). gm/gmvsmelee.c, where the request's stage is set. */
 int mu_hp_match_stage(int stkind);
 
 /* The pack's stage flag bits, as its hooks test them. */
@@ -52,6 +61,10 @@ int mu_hp_stadium_fixed(void);
 /* "Pokemon Stadium Frozen Transform Immediately", 801D1538 (grStadium_801D1520): 1 when the
  * transformation logic must run although the stage is frozen. */
 int mu_hp_stadium_run_frozen(void);
+/* The Stage Swap Engine's stage file patch for a fixed transformation stage (80018130, in
+ * lbDvd_GetPreloadedArchive): the transformation timings zeroed so it transforms at once. Returns
+ * `param`, or a copy with those words zeroed. gr/grpstadium.c, where OnInit takes the parameters. */
+const void* mu_hp_stadium_param(const void* param, unsigned int size);
 
 /* ---- music (ledger_M3.md) ---- */
 
@@ -62,5 +75,9 @@ const char* mu_hp_music_file(int song);
 /* "Music Playlist Code Supplements", 80225180 (Stage_80225074, end) and 801A1C30 (title screen):
  * the menu playlist draws a new track the next time a song starts. */
 void mu_hp_music_mark(void);
+/* "Match Start - D-Pad Up to Reload Music", 8006B6A0 (Fighter_procInput, where input is disabled):
+ * D-pad up before the match clock starts plays the stage's song again, so its playlist draws anew.
+ * `pressed` is the fighter's pressed buttons. */
+void mu_hp_music_dpad(unsigned int pressed);
 
 #endif

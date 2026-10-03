@@ -105,6 +105,13 @@ static void open_log_file() {
   std::remove(previous.c_str());
   std::rename(path.c_str(), previous.c_str());
   g_log_file = std::fopen(path.c_str(), "w");
+  // Which build wrote the log comes first, so a report always says it.
+  if (g_log_file) {
+    char exe[MAX_PATH] = "";
+    GetModuleFileNameA(nullptr, exe, MAX_PATH);
+    const char* name = std::strrchr(exe, '\\');
+    std::fprintf(g_log_file, "Melee Unlocked %s, %s\n", MELEE_PORT_VERSION, name ? name + 1 : exe);
+  }
 }
 // Lines are formatted by the caller and written (and flushed) by a background thread. Flushing on
 // the caller made the simulation thread wait for the disk: with a busy disk (a build, a download)
@@ -1338,6 +1345,8 @@ void clean_mode_music_frame() {
       slippi::jukebox::start_song(rd32(fst + entry * 12 + 4), rd32(fst + entry * 12 + 8));
       static bool told = false;
       if (!told) { told = true; log("mods: this disc's music plays through the host's player"); }
+      const char* name = (const char*)try_ptr(fst + count * 12 + (rd32(fst + entry * 12) & 0x00FFFFFFu), 1);
+      log("mods: music stream %08X starts %s (entry %u, %u bytes)", id, name ? name : "?", entry, rd32(fst + entry * 12 + 8));
     }
     playing_id = id;
   }

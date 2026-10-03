@@ -152,6 +152,33 @@ int main(int argc,char** argv) {
   if(!info.l_cancel_available || info.players[0].l_success!=1 || info.players[0].l_fail!=0) return 3;
   if(info.start_at!="2026-09-27T03:17:02Z" || launcher::replay::display_date(info).find("2026")==std::string::npos) return 4;
   if(launcher::replay::move_name(14)!=std::string("Forward Air") || launcher::replay::move_name(-1)!=std::string("Self Destruct")) return 7;
+  auto inspect_raw=[&](const Bytes& events) {
+    Bytes slp{'{','U',3,'r','a','w','[','$','U','#','l'};put32(slp,uint32_t(events.size()));
+    slp.insert(slp.end(),events.begin(),events.end());
+    {std::ofstream out(path,std::ios::binary);out.write((const char*)slp.data(),slp.size());}
+    auto result=launcher::replay::inspect(path,true);
+    std::filesystem::remove(path);
+    return result;
+  };
+  // A Game Start of 0x241 bytes with four players: the names and the first three connect codes fit,
+  // the fourth code (to 0x249) is not read, so nothing past the event is touched.
+  {
+    Bytes events{0x35,7,0x36,0x02,0x40,0x38,0,84};
+    Bytes short_start(start.begin(),start.begin()+0x241);
+    for(int p=0;p<4;++p) short_start[0x66+p*0x24]=0;
+    short_start[0x23f]='A';short_start[0x240]='B';   // the start of a fourth code the event cuts off
+    events.insert(events.end(),short_start.begin(),short_start.end());
+    auto old=inspect_raw(events);
+    if(!old.valid || old.players.size()!=4 || old.players[0].name!="Fox player" || old.players[0].code!="FOX#123" ||
+       !old.players[3].code.empty()) return 8;
+  }
+  // A frame far past the ones read so far is skipped instead of growing the frame list to reach it.
+  {
+    Bytes events=raw;
+    post(events,200000,0x0e,0);
+    auto sparse=inspect_raw(events);
+    if(!sparse.valid || sparse.last_frame!=4) return 9;
+  }
   if(argc>1) {
     auto actual=launcher::replay::inspect(argv[1],true);
     if(!actual.valid) return 5;

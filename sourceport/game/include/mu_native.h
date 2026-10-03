@@ -384,6 +384,7 @@ void mu_online_after_pad_renew(void);              /* ForceInputRefetchOnAdvance
 void mu_online_start_melee(struct StartMeleeData* data);   /* InitOnlinePlay */
 void mu_online_match_exit(void);
 void mu_online_scene_loop_exit(void);              /* the scene loop left, maybe mid rollback */
+void mu_online_reset_game_index(void);             /* a new opponent search: game reports count from 1 */
 
 /* Rollback-safe audio and rumble for online play, shim/mu_online_audio.c: sounds a re-executed
  * frame starts again adopt the voices its previous execution started; music and rumble requests

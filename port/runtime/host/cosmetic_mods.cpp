@@ -4000,7 +4000,8 @@ static const FighterFamily* entry_family(const AssetRecord& asset) {
 // Stores `png` as the skin's own picture of that kind. The file is written under a new name first
 // and the record changed after, so a failed save leaves the old picture as it was.
 static ImportResult attach_picture_locked(const std::string& skin_id, const std::string& kind,
-                                          const std::vector<uint8_t>& png, const std::string& source_name) {
+                                          const std::vector<uint8_t>& png, const std::string& source_name,
+                                          const std::string& from_entry = std::string()) {
   ImportResult result;
   std::string error;
   if (!mutable_profile_locked(&error)) { result.message = error; return result; }
@@ -4038,6 +4039,26 @@ static ImportResult attach_picture_locked(const std::string& skin_id, const std:
     }), notes.end());
   }
   if (!same) ++g_profile.generation;   // the same skin, another picture
+  // A costume's picture entry for this skin's own costume, whose every picture the skin now carries,
+  // has done its job: it is switched off, so the standard costume shows the game's picture again.
+  bool retired = false;
+  const auto entry = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+    return !from_entry.empty() && item.info.id == from_entry && item.info.kind == kPortraitKind &&
+           item.info.target_path == asset->info.target_path + kPortraitSuffix;
+  });
+  if (entry != g_assets.end()) {
+    const auto pick = g_profile.selections.find(entry->info.target_path);
+    const bool carried = std::all_of(entry->companions.begin(), entry->companions.end(),
+        [&](const AssetRecord::Companion& c) {
+          const AssetRecord::Companion* mine = picture_of(*asset, c.kind);
+          return (c.kind != "csp" && c.kind != "stock") || (mine && mine->sha256 == c.sha256);
+        });
+    if (pick != g_profile.selections.end() && pick->second == from_entry && carried) {
+      pick->second = kVanillaSelection;
+      ++g_profile.generation;
+      retired = true;
+    }
+  }
   if (!save_state_locked(&error)) {
     *asset = previous; g_profile = previous_profile;
     if (picture.stored_path != old_path) DeleteFileW((g_root / fs::u8path(picture.stored_path)).c_str());
@@ -4045,7 +4066,7 @@ static ImportResult attach_picture_locked(const std::string& skin_id, const std:
   }
   if (!old_path.empty() && old_path != picture.stored_path) DeleteFileW((g_root / fs::u8path(old_path)).c_str());
   g_message = std::string(kind == "csp" ? "Portrait" : "Stock icon") + " of " + asset->info.name + " set from " +
-              source_name + ".";
+              source_name + "." + (retired ? " The standard costume shows its own picture again." : "");
   result.ok = true; result.already_present = same; result.asset_id = asset->info.id; result.message = g_message;
   return result;
 }
@@ -4081,7 +4102,7 @@ bool set_skin_portrait_from(const std::string& skin_id, const std::string& sourc
     *error = "The " + std::string(picture_word(kind)) + " of " + source->info.name + " is missing or changed."; return false;
   }
   const std::string from = source->info.name;   // attach_picture_locked changes the list's records
-  ImportResult result = attach_picture_locked(skin_id, kind, bytes, from);
+  ImportResult result = attach_picture_locked(skin_id, kind, bytes, from, source_asset_id);
   if (result.ok && std::atomic_load(&g_runtime)->initialized) result.message += " Restart to apply it.";
   if (result.ok) g_message = result.message; else *error = result.message;
   return result.ok;

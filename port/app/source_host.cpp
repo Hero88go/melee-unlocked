@@ -655,7 +655,10 @@ bool g_slippi_menus_requested = true;   // --slippi-menus on|off
 bool g_slippi_menus = false;            // requested and the layer loaded
 struct SystemFile { std::string path; uint32_t start; std::vector<uint8_t> data; };
 std::vector<SystemFile> g_system_files;
-constexpr uint32_t kSystemFileBase = 0xC0000000u;   // past the mod overlay range (0xA0000000)
+// Between the disc (under 1.5 GB) and the mod overlay range (0xA0000000 up to the cosmetics at
+// 0xF0000000). It used to sit at 0xC0000000, inside the overlay's range: a pack large enough to
+// reach it (the 20XX Hack Pack's 776 files) had its files there refused, and the game waited on them.
+constexpr uint32_t kSystemFileBase = 0x90000000u;
 const char* const kSystemFileNames[] = {
   "MnMaAll.usd", "MnMaAll.dat", "SdMenu.usd", "SdMenu.dat", "MnSlMap.usd", "MnSlMap.dat",
   "SdSlChr.usd", "SdSlChr.dat", "MnExtAll.usd", "MnExtAll.dat", "slpCSS.dat",
@@ -683,6 +686,7 @@ void load_system_files(const char* forced_off_by) {
     std::vector<uint8_t> data = slippi::system_game_file(name);
     if (data.empty()) { host::log("slippi menus: off (cannot build %s)", name); return; }
     const uint32_t size = (uint32_t)data.size();
+    if (uint64_t(next) + size > ModOverlay::base) { host::log("slippi menus: off (system files exceed their range)"); return; }
     files.push_back({path, next, std::move(data)});
     next += (size + 0xFFFFu) & ~0xFFFFu;
   }
@@ -708,7 +712,7 @@ void load_system_files(const char* forced_off_by) {
 
 // Serves a read inside the system-file range; false when the offset is outside it.
 bool read_system_file(uint32_t offset, void* dst, uint32_t size, bool* ok) {
-  if (offset < kSystemFileBase || g_system_files.empty()) return false;
+  if (offset < kSystemFileBase || offset >= ModOverlay::base || g_system_files.empty()) return false;
   for (const auto& f : g_system_files) {
     if (offset < f.start || offset >= f.start + (uint32_t)f.data.size()) continue;
     // The game reads in 32-byte-rounded chunks, so the last read runs a few bytes past the end,

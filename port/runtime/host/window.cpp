@@ -34,6 +34,7 @@ DpiCallback g_on_dpi;
 std::atomic<bool> g_fullscreen_toggle{false};
 std::atomic<bool> g_settings_toggle{false};
 std::atomic<bool> g_legacy_settings_toggle{false};
+std::atomic<bool> g_trace_mark{false};
 std::atomic<int> g_settings_controller_port{-1};
 std::atomic<bool> g_practice_toggle{false};
 std::atomic<bool> g_escape_press{false};
@@ -46,6 +47,7 @@ bool g_ui_has_pad = false;
 bool g_ui_gamecube = false;
 bool g_ui_settings_chord_held[4]{};
 void raw_input(HRAWINPUT raw);
+void input_device_removed(HANDLE device);
 void ds4_init_defaults();
 
 LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -72,6 +74,7 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
       if (GetForegroundWindow() == h) SetCursor(w ? LoadCursor(nullptr, IDC_ARROW) : nullptr);
       return 0;
     case WM_INPUT: raw_input((HRAWINPUT)l); return 0;
+    case WM_INPUT_DEVICE_CHANGE: if (w == GIDC_REMOVAL) input_device_removed((HANDLE)l); return 0;
     case WM_DESTROY: PostQuitMessage(0); return 0;
     case WM_SYSKEYDOWN:
       if (w == VK_RETURN && (l & (1 << 29)) && !(l & (1 << 30))) { g_fullscreen_toggle.store(true); return 0; }   // Alt+Enter, first press only
@@ -87,6 +90,7 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
       // and ImGui's repeat turned a held key into the panel flickering open and shut.
       if (w == VK_F1 && !(l & (1 << 30))) g_settings_toggle.store(true);
       if (w == VK_F11 && !(l & (1 << 30))) g_legacy_settings_toggle.store(true);
+      if (w == VK_F8 && !(l & (1 << 30))) g_trace_mark.store(true);
       if (w == VK_ESCAPE && !(l & (1 << 30))) g_escape_press.store(true);   // the in-game menu, same rules as F1
       std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = true; return 0;
     }
@@ -132,8 +136,9 @@ void* window_create(int w, int h, const wchar_t* title, bool visible) {
   // itself usage 0x04, Joystick, so registering only 0x05 means its reports never arrive at all.
   // Anything else on 0x04 is filtered out by device id below, as it already was on 0x05.
   RAWINPUTDEVICE rid[2]{};
-  rid[0].usUsagePage = 0x01; rid[0].usUsage = 0x05; rid[0].dwFlags = RIDEV_INPUTSINK;
-  rid[1].usUsagePage = 0x01; rid[1].usUsage = 0x04; rid[1].dwFlags = RIDEV_INPUTSINK;
+  // RIDEV_DEVNOTIFY: WM_INPUT_DEVICE_CHANGE when a pad is plugged in or pulled out.
+  rid[0].usUsagePage = 0x01; rid[0].usUsage = 0x05; rid[0].dwFlags = RIDEV_INPUTSINK | RIDEV_DEVNOTIFY;
+  rid[1].usUsagePage = 0x01; rid[1].usUsage = 0x04; rid[1].dwFlags = RIDEV_INPUTSINK | RIDEV_DEVNOTIFY;
   RECT r{0, 0, w, h};
   AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
   g_hwnd = CreateWindowExW(0, wc.lpszClassName, title, WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
@@ -286,6 +291,7 @@ bool window_take_fullscreen_toggle() { return g_fullscreen_toggle.exchange(false
 // Several presses while nothing was being drawn count as one: the player pressed F1 again because
 // nothing seemed to happen, and wants the panel, not an even number of toggles.
 bool window_take_settings_toggle() { return g_settings_toggle.exchange(false); }
+bool window_take_trace_mark() { return g_trace_mark.exchange(false); }
 bool window_take_legacy_settings_toggle() { return g_legacy_settings_toggle.exchange(false); }
 int window_take_settings_controller_port() { return g_settings_controller_port.exchange(-1); }
 bool window_take_practice_toggle() { return g_practice_toggle.exchange(false); }
@@ -460,9 +466,24 @@ void ds4_init_defaults() {
 }
 
 int ds4_slot(HANDLE device) {
+  std::lock_guard<std::mutex> lock(g_ds4_mutex);
   for (int i = 0; i < 4; ++i) if (g_ds4_devices[i] == device) return i;
   for (int i = 0; i < 4; ++i) if (!g_ds4_devices[i]) { g_ds4_devices[i] = device; return i; }
   return -1;
+}
+
+// Windows said a device is gone. A PlayStation pad's slot is emptied (it used to keep its last
+// report, so a direction held while it was unplugged stayed held); the other readers do their own.
+void input_device_removed(HANDLE device) {
+  {
+    std::lock_guard<std::mutex> lock(g_ds4_mutex);
+    for (int i = 0; i < 4; ++i)
+      if (g_ds4_devices[i] == device) {
+        g_ds4_devices[i] = nullptr; g_ds4_buttons[i] = 0; g_ds4_pads[i] = PadState{};
+        log("input: PlayStation pad %d disconnected", i + 1);
+      }
+  }
+  hidpad_device_removed(device);
 }
 
 bool ds4_device(HANDLE device, bool* dualsense) {
