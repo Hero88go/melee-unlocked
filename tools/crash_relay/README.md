@@ -69,12 +69,16 @@ before it.
 Deploy (once):
 
 1. `cd tools/crash_relay`
-2. `npx wrangler kv namespace create RATE`, then put the printed id in `wrangler.toml`.
-3. `npx wrangler secret put DISCORD_WEBHOOK_URL` and paste the webhook URL.
-4. `npx wrangler deploy`. Put the printed `https://melee-crash-relay.<account>.workers.dev/report`
-   URL into `kCrashRelayUrl` in `port/app/launcher_crash.inl`.
+2. `npx wrangler secret put DISCORD_WEBHOOK_URL` and paste the webhook URL.
+3. `npx wrangler deploy` (creates the `QuotaGate` Durable Object from the migration in `wrangler.toml`).
+   Put the printed `https://melee-crash-relay.<account>.workers.dev/report` URL into `kCrashRelayUrl`
+   in `port/app/launcher_crash.inl`.
 
-Limits: zip only, 8 MB, one report per IP per 10 minutes, 50 per day.
+Limits: zip only, 8 MB, one report per IP per 10 minutes, 50 per day. The counters live in one Durable
+Object that checks and reserves in a single step, so reports sent at the same moment cannot pass the
+limits together (the earlier KV counters could: their reads and writes are not atomic). With no
+`QUOTA` binding the relay answers 503 instead of running without limits. Tests: `test/quota.test.js`.
+This quota change is **pending deployment**, together with the privacy update above.
 
 Deployed 2026-09-30 as `melee-crash-relay` (KV namespace RATE 36cc7f4af26b4a8abd15d99aa824aae9, preview URLs off):
 https://melee-crash-relay.firescribe-share-worker.workers.dev/report. Checked: GET 405, wrong type 415,

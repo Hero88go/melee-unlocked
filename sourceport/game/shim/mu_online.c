@@ -47,6 +47,9 @@ struct gm_80479D58_t* mu_gm_engine_state(void);
 void mu_gmvs_request_online_end(int pauser);
 void mu_alarms_hold(void);
 void mu_alarms_release(void);
+void mu_replay_game_info_block(unsigned char* out, const StartMeleeData* data);
+u32 gm_801A4BA8(void);    /* MenuController_LoadTimer1: engine bodies run this match */
+u32 pl_80040AF0(int slot);   /* PlayerBlock_GetCliffhangerStat: ledge grabs */
 extern StaticPlayer player_slots[];
 
 enum {
@@ -70,7 +73,9 @@ enum {
     CMD_CAPTURE_SAVESTATE = 0xB1,
     CMD_LOAD_SAVESTATE = 0xB2,
     CMD_GET_MATCH_STATE = 0xB3,
-    CMD_SELFTEST_KEEP = 0xF0,      /* native test only: keep the state as a reference */
+    CMD_REPORT_GAME = 0xBD,
+    CMD_REPORT_MATCH_STATUS = 0xC4,
+    CMD_SELFTEST_KEEP = 0xF0,     /* native test only: keep the state as a reference */
     CMD_SELFTEST_COMPARE = 0xF1,   /* native test only: compare the state with the reference */
     RESPONSE_CAPACITY = 4096,
     /* The match state response (Slippi's MSRB), byte offsets. */
@@ -95,6 +100,25 @@ enum {
     RXB_OPNT_INPUTS = RXB_SMALLEST_LATEST + 4,
     RXB_SHOULD_DESPAWN = RXB_OPNT_INPUTS + PAD_SIZE * RXB_INPUTS_COUNT * REMOTES,
     RXB_SIZE = RXB_SHOULD_DESPAWN + REMOTES,
+    /* The game report (Slippi's RGB without its command byte), byte offsets. */
+    RGB_ONLINE_MODE = 0,
+    RGB_FRAME_LENGTH = 1,
+    RGB_GAME_INDEX = 5,
+    RGB_TIEBREAKER_INDEX = 9,
+    RGB_WINNER_IDX = 13,
+    RGB_GAME_END_METHOD = 14,
+    RGB_LRAS_INITIATOR = 15,
+    RGB_SYNCED_TIMER = 16,
+    RGB_P1_RGPB = 20,
+    RGPB_SIZE = 9,   /* slot type, stocks, damage done (float), synced stocks, synced damage (u16) */
+    RGB_GAME_INFO_BLOCK = RGB_P1_RGPB + 4 * RGPB_SIZE,
+    MATCH_STRUCT_LEN = 0x138,
+    RGB_SIZE = RGB_GAME_INFO_BLOCK + MATCH_STRUCT_LEN,   /* 368, the bridge's CMD_REPORT_GAME size */
+    ONLINE_MODE_RANKED = 0,
+    LGL_LIMIT = 45,   /* ledge grabs past this lose a timeout */
+    END_TIME = 1,
+    END_GAME = 2,
+    END_LRAS = 7,
 };
 
 enum { ENGINE_CONTINUE = 0, ENGINE_RESIM = 1, ENGINE_ROLLBACK_DONE = 2 };
@@ -102,6 +126,10 @@ enum { ENGINE_CONTINUE = 0, ENGINE_RESIM = 1, ENGINE_ROLLBACK_DONE = 2 };
 typedef struct DesyncLocal {
     int frame;
     unsigned int checksum;
+    /* Desync recovery (DDLE_RECOVERY_*): the frame's timer and every port's stocks and percent. */
+    unsigned int recovery_timer;
+    u8 recovery_stocks[4];
+    u16 recovery_percent[4];
 } DesyncLocal;
 
 typedef struct MuOnlineState {
@@ -137,6 +165,11 @@ typedef struct MuOnlineState {
     int desync_last_frame;
     u8 desync_write_idx;
     DesyncLocal desync_local[DESYNC_ENTRIES];
+    /* The recovery values of the latest frame both games agreed on (ODB_DESYNC_RECOVERY_*). */
+    unsigned int recovery_timer;
+    u8 recovery_stocks[4];
+    u16 recovery_percent[4];
+    StartMeleeData* start_data;   /* the match's game info (0x80480530), for the game report */
     unsigned int tx_checksum; /* the checksum field of the last pad sent (Slippi reuses its buffer) */
     int direct_renew;         /* depth of pad renews the rollback logic called itself */
     int resim;                /* re-simulating after a rollback load */
@@ -159,6 +192,11 @@ typedef struct MuOnlineState {
 } MuOnlineState;
 
 static MuOnlineState mu_online;
+
+/* GPDO_CUR_GAME of Slippi's game prep data: the online games since the player last searched for an
+ * opponent, 1 for the first. It outlives each match (arming clears mu_online) and only changes
+ * outside one, as Slippi's own counter does. */
+static unsigned int online_game_index;
 
 static void logf_(const char* fmt, int a, int b, int c)
 {
@@ -960,11 +998,109 @@ static void end_game(void)
     mu_gmvs_request_online_end((int) mu_online.remote_index);
 }
 
+/* StartEngineLoop's desync recovery values for a checksum entry: the seconds left on the timer and
+ * each port's percent and stocks (PlayerBlock_LoadDamage, PlayerBlock_LoadStocksLeft). Read only. */
+static void store_recovery(DesyncLocal* entry)
+{
+    int i;
+    entry->recovery_timer = gmVs_GetSceneState()->timer_seconds;
+    for (i = 0; i < 4; i++) {
+        entry->recovery_percent[i] = (u16) Player_GetDamage(i);
+        entry->recovery_stocks[i] = (u8) Player_GetStocks(i);
+    }
+}
+
+/* SinglesDetermineWinner (the online major's GPDO_FN_COMPUTE_RANKED_WINNER, set in every mode):
+ * ports 1 and 2 only. A timeout goes to the ledge grab limit, then stocks, then percent; a
+ * finished game to whoever has stocks left. -1 for a tie and for any other end (LRA-Start). */
+static int singles_winner(int end_method)
+{
+    if (end_method == END_TIME) {
+        int lg1 = (int) pl_80040AF0(0), lg2 = (int) pl_80040AF0(1);
+        int s1, s2, d1, d2;
+        if (!(lg1 > LGL_LIMIT && lg2 > LGL_LIMIT)) {   /* both over: the limit is ignored */
+            if (lg1 > LGL_LIMIT) {
+                return 1;
+            }
+            if (lg2 > LGL_LIMIT) {
+                return 0;
+            }
+        }
+        s1 = Player_GetStocks(0);
+        s2 = Player_GetStocks(1);
+        if (s1 != s2) {
+            return s1 > s2 ? 0 : 1;
+        }
+        d1 = Player_GetDamage(0);
+        d2 = Player_GetDamage(1);
+        if (d1 != d2) {
+            return d1 < d2 ? 0 : 1;
+        }
+        return -1;
+    }
+    if (end_method == END_GAME) {
+        if (Player_GetStocks(0) != 0) {
+            return 0;
+        }
+        if (Player_GetStocks(1) != 0) {
+            return 1;
+        }
+    }
+    return -1;
+}
+
+/* InitOnlinePlay's FN_HandleGameCompleted, called once the game can no longer be rolled back: the
+ * game report (CMD_REPORT_GAME). Slippi runs CreateMatchEndData first only for the winner callback,
+ * which reads nothing from it but the end method, so that is read from the scene state directly
+ * and the match end data is left alone. Everything here is read only. */
+static void report_game(void)
+{
+    u8 b[RGB_SIZE];
+    VsSceneState* st = gmVs_GetSceneState();
+    int end_method = st->match_result;
+    int winner, i;
+
+    memset(b, 0, sizeof b);
+    b[RGB_ONLINE_MODE] = (u8) mu_online.mode;
+    put32(b + RGB_FRAME_LENGTH, gm_801A4BA8());
+    put32(b + RGB_GAME_INDEX, online_game_index);
+    /* GPDO_TIEBREAK_GAME_NUM: only Ranked's set logic (the GameSetup state, not ported) sets it. */
+    put32(b + RGB_TIEBREAKER_INDEX, 0);
+    winner = singles_winner(end_method);
+    if (mu_online.disconnect_displayed) {
+        winner = -3;
+    } else if (mu_online.desync_displayed) {
+        winner = -2;
+    }
+    b[RGB_WINNER_IDX] = (u8) winner;
+    b[RGB_GAME_END_METHOD] = (u8) end_method;
+    b[RGB_LRAS_INITIATOR] = (u8) (end_method == END_LRAS ? st->pauser : -1);
+    put32(b + RGB_SYNCED_TIMER, mu_online.recovery_timer);
+    for (i = 0; i < 4; i++) {
+        u8* p = b + RGB_P1_RGPB + RGPB_SIZE * i;
+        const StaticPlayer* sp = &player_slots[i];
+        p[0] = (u8) sp->pkind;                                /* static block +0x8 */
+        p[1] = (u8) sp->stocks;                               /* +0x8E */
+        put32(p + 2, float_bits(sp->stale_moves.xC6C));       /* +0xC6C+188: damage done */
+        p[6] = mu_online.recovery_stocks[i];
+        p[7] = (u8) (mu_online.recovery_percent[i] >> 8);
+        p[8] = (u8) mu_online.recovery_percent[i];
+    }
+    if (mu_online.start_data != NULL) {
+        mu_replay_game_info_block(b + RGB_GAME_INFO_BLOCK, mu_online.start_data);
+    }
+    command(CMD_REPORT_GAME, b, sizeof b, mu_online.match_state, NULL);
+    logf_("online: game report sent: game %d, winner %d, end method %d", (int) online_game_index, winner,
+          end_method);
+}
+
 void mu_online_frame_begin(void)
 {
     struct gm_80479D58_t* engine;
     int frame, i;
     u8* rxb;
+    DesyncLocal* written;
+    DesyncLocal* confirmed;
 
     if (!hooks_on()) {
         return;
@@ -1037,9 +1173,14 @@ rollback_inputs_done:
         }
         mu_online.desync_local[idx].frame = frame;
         mu_online.desync_local[idx].checksum = compute_checksum();
+        written = &mu_online.desync_local[idx];
+        store_recovery(written);
     }
 
-    /* Compare the remote checksums of finalized frames with ours. */
+    /* Compare the remote checksums of finalized frames with ours. The recovery values follow the
+     * first of our entries a remote checksum matched; on frame 0 they are this frame's own, so a game
+     * that never hears from the opponent still recovers to something that is not all zeroes. */
+    confirmed = frame == 0 ? written : NULL;
     if (frame != 0 && !mu_online.desync_displayed) {
         int remote_count = rxb[RXB_OPNT_COUNT];
         for (i = 0; i < remote_count && i < REMOTES; i++) {
@@ -1054,6 +1195,9 @@ rollback_inputs_done:
                 int diff;
                 if (mu_online.desync_local[k].frame != cf) {
                     continue;
+                }
+                if (confirmed == NULL) {
+                    confirmed = &mu_online.desync_local[k];   /* Slippi's comparison always keeps the first */
                 }
                 local = mu_online.desync_local[k].checksum;
                 diff = (int) (s16) (local & 0xFFFF) - (int) (s16) (remote & 0xFFFF);
@@ -1074,6 +1218,12 @@ rollback_inputs_done:
             }
         }
     }
+    /* Not desynced (a hard desync skips this): keep the agreed values for the game report. */
+    if (confirmed != NULL) {
+        mu_online.recovery_timer = confirmed->recovery_timer;
+        memcpy(mu_online.recovery_stocks, confirmed->recovery_stocks, sizeof mu_online.recovery_stocks);
+        memcpy(mu_online.recovery_percent, confirmed->recovery_percent, sizeof mu_online.recovery_percent);
+    }
 
 desync_done:
     /* Keep this frame while any remote input in it is predicted (the self-test keeps every frame). */
@@ -1092,6 +1242,8 @@ desync_done:
             if (frame - mu_online.game_end_frame > ROLLBACK_MAX) {
                 mu_online.game_over = 1;
                 logf_("online: match over at frame %d", frame, 0, 0);
+                /* HANDLE_GAME_CONFIRMED_OVER: the game end handler InitOnlinePlay installed. */
+                report_game();
             }
         }
     }
@@ -1270,6 +1422,9 @@ void mu_online_start_melee(StartMeleeData* data)
     }
     mu_online.pending = 0;
     mu_online_rules_clear();
+    /* The game index counts up before every game. Slippi leaves Ranked's to its set logic (the
+     * GameSetup state), which is not ported, so Ranked counts here too: 1, 2, 3 from its search. */
+    online_game_index++;
     /* FN_LoadMatchState: the match as the host negotiated it. */
     if (fetch_match_state(&size) != 0 || size < MSRB_SIZE) {
         mu_online_abi_log("online: no match state at match start; playing offline");
@@ -1284,6 +1439,7 @@ void mu_online_start_melee(StartMeleeData* data)
     mu_online.rng_offset = be32(mu_online.match_state + MSRB_RNG_OFFSET);
     *HSD_RandSeedPtr = mu_online.rng_offset;
     mu_replay_apply_game_info(data, mu_online.match_state + MSRB_GAME_INFO_BLOCK);
+    mu_online.start_data = data;
     delay = mu_online.match_state[MSRB_DELAY_FRAMES];
     if (delay < MIN_DELAY) {
         delay = MIN_DELAY;
@@ -1309,6 +1465,19 @@ void mu_online_start_melee(StartMeleeData* data)
           mu_online.delay, (int) mu_online.rng_offset);
     /* SendGameInfo (8016E74C, right after InitOnlinePlay): every online match is recorded. */
     mu_replay_online_start(data, mu_online.match_state);
+    /* HANDLE_RANKED_MATCH_START: a Ranked game that is not a tiebreak tells the server it starts
+     * (message 20 is game 1). No game is a tiebreak here (see report_game). Sent last, since the
+     * reply buffer is the match state the lines above still read. */
+    if (mu_online.mode == ONLINE_MODE_RANKED) {
+        u8 status = (u8) (online_game_index + 19);
+        command(CMD_REPORT_MATCH_STATUS, &status, 1, mu_online.match_state, NULL);
+    }
+}
+
+/* FN_TX_FIND_MATCH (HandleInputsOnCSS): a new search starts the game index over. */
+void mu_online_reset_game_index(void)
+{
+    online_game_index = 0;
 }
 
 /* What Slippi's recording reads from the online state (FlushFrameBuffer, SendGameEnd). */

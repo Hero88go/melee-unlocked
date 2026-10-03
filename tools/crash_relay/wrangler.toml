@@ -3,8 +3,17 @@ main = "src/index.js"
 compatibility_date = "2026-09-01"
 preview_urls = false
 
-# Rate limits. Create once with: npx wrangler kv namespace create RATE
-# then paste the printed id below.
+# Rate limits: one Durable Object (class QuotaGate in src/index.js) holds the per-IP and daily
+# counters, so a check and its reservation are one step. Created by the migration below on deploy.
+[[durable_objects.bindings]]
+name = "QUOTA"
+class_name = "QuotaGate"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["QuotaGate"]
+
+# The earlier KV counters (no longer read); kept so a rollback to the previous source still deploys.
 [[kv_namespaces]]
 binding = "RATE"
 id = "36cc7f4af26b4a8abd15d99aa824aae9"

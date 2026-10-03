@@ -21,4 +21,8 @@ std::string rollback_folder();                    // ready, validated side-by-si
 bool install_release(const std::string& version, bool experimental, const std::string& install_root);
 void download_and_install();                      // background download, then writes update.bat and exits the game to run it
 void shutdown();                                  // joins the background thread; call before process exit
+// The checks a download passes before it is installed (exposed for the unit test): the SHA-256 the
+// release lists ("" = none listed, size check only), and every archive entry inside `root`.
+bool download_matches(const std::string& body, const std::string& sha256_hex);
+bool archive_inside(const std::string& zip_path_utf8, const std::string& root);
 }  // namespace host::updater

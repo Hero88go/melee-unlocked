@@ -182,10 +182,12 @@ const MuMatchState* mu_slippi_match_state(void)
     return &last_match;
 }
 
-/* Find Match Transfer Buffer: mode, 18 Shift-JIS bytes. */
+/* Find Match Transfer Buffer: mode, 18 Shift-JIS bytes. FN_TX_FIND_MATCH first resets the game
+ * prep data's game index (and tiebreak, which this build never sets). */
 void mu_slippi_find_opponent(int mode, const unsigned char* code_sjis18)
 {
     u8 b[19];
+    mu_online_reset_game_index();
     memset(b, 0, sizeof b);
     b[0] = (u8) mode;
     if (code_sjis18 != NULL) {

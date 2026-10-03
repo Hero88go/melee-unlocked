@@ -8,6 +8,9 @@ import { crashMarkdown, sanitizedReport, storedTextFiles, MAX_MARKDOWN_BYTES } f
 import { reportNames, scrubLine } from "../src/privacy.js";
 import relay from "../src/index.js";
 
+// A quota that always lets the report through (the limits have their own tests in quota.test.js).
+const openQuota = { idFromName: () => "quota", get: () => ({ fetch: async () => Response.json({ ok: true }) }) };
+
 function crc32(bytes) {
   let crc = 0xFFFFFFFF;
   for (const byte of bytes) {
@@ -182,7 +185,7 @@ test("relay mock sends ZIP and Markdown under one id without upload protocol cha
     const request = new Request("https://relay.invalid/report", { method: "POST", body: bytes,
       headers: { "content-type": "application/zip", "content-length": String(bytes.length),
         "x-mu-version": "0.8.5", "x-mu-engine": "Static Recomp" } });
-    const response = await relay.fetch(request, { DISCORD_WEBHOOK_URL: "https://webhook.invalid/local-mock" });
+    const response = await relay.fetch(request, { QUOTA: openQuota, DISCORD_WEBHOOK_URL: "https://webhook.invalid/local-mock" });
     assert.equal(response.status, 200);
     const zipped = captured.get("files[0]"), markdown = captured.get("files[1]");
     assert.match(zipped.name, /^crash-\d+\.zip$/);
@@ -250,7 +253,7 @@ test("personal metadata headers cannot leak through payload JSON or either attac
       headers: { "content-type": "application/zip", "content-length": String(bytes.length),
         "x-mu-version": "0.8.63 AlicePrivate", "x-mu-engine": "Static Recomp BobPrivate",
         "x-mu-crash": "FATAL: missing itPublicData C:\\Users\\AlicePrivate\\build\\source.c:94 connect ALICE#123 192.0.2.42",
-        "cf-connecting-ip": "192.0.2.42" } }), { DISCORD_WEBHOOK_URL: "https://webhook.invalid/mock" });
+        "cf-connecting-ip": "192.0.2.42" } }), { QUOTA: openQuota, DISCORD_WEBHOOK_URL: "https://webhook.invalid/mock" });
     assert.equal(response.status, 200);
     const payload = sent.get("payload_json"), markdown = await sent.get("files[1]").text();
     const outgoing = Buffer.from(await sent.get("files[0]").arrayBuffer()).toString("utf8");
@@ -273,7 +276,7 @@ test("unsupported ZIPs return 415 without calling a webhook", async () => {
     for (const bytes of examples) {
       const response = await relay.fetch(new Request("https://relay.invalid/report", { method: "POST", body: bytes,
         headers: { "content-type": "application/zip", "content-length": String(bytes.length) } }),
-      { DISCORD_WEBHOOK_URL: "https://webhook.invalid/mock" });
+      { QUOTA: openQuota, DISCORD_WEBHOOK_URL: "https://webhook.invalid/mock" });
       assert.equal(response.status, 415);
     }
     assert.equal(calls, 0);

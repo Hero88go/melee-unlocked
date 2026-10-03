@@ -299,15 +299,20 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
           c.second.is_disconnected = true;
         }
       }
-      FrameTiming timing = last_frame_timing_[pidx];
-      if (!has_game_started_) { timing.frame = 0; timing.time_us = cur_time; }
-      int64_t opponent_send_time_us = (int64_t)cur_time - (int64_t)(ping_us_[pidx] / 2);
-      int64_t frame_diff_offset_us = 16683 * (int64_t)(timing.frame - frame);
-      int64_t time_offset_us = opponent_send_time_us - (int64_t)timing.time_us + frame_diff_offset_us;
-      auto& fod = frame_offset_data_[pidx];
-      if ((int)fod.buf.size() < ONLINE_LOCKSTEP_INTERVAL) fod.buf.push_back((int32_t)time_offset_us);
-      else fod.buf[fod.idx] = (int32_t)time_offset_us;
-      fod.idx = (fod.idx + 1) % ONLINE_LOCKSTEP_INTERVAL;
+      {
+        // The game thread writes the frame timing when it sends its pad and reads the offsets for
+        // time sync: both sides under timing_mutex_.
+        std::lock_guard<std::mutex> lk(timing_mutex_);
+        FrameTiming timing = last_frame_timing_[pidx];
+        if (!has_game_started_) { timing.frame = 0; timing.time_us = cur_time; }
+        int64_t opponent_send_time_us = (int64_t)cur_time - (int64_t)(ping_us_[pidx] / 2);
+        int64_t frame_diff_offset_us = 16683 * (int64_t)(timing.frame - frame);
+        int64_t time_offset_us = opponent_send_time_us - (int64_t)timing.time_us + frame_diff_offset_us;
+        auto& fod = frame_offset_data_[pidx];
+        if ((int)fod.buf.size() < ONLINE_LOCKSTEP_INTERVAL) fod.buf.push_back((int32_t)time_offset_us);
+        else fod.buf[fod.idx] = (int32_t)time_offset_us;
+        fod.idx = (fod.idx + 1) % ONLINE_LOCKSTEP_INTERVAL;
+      }
       int64_t inputs_to_copy;
       {
         std::lock_guard<std::mutex> lk(pad_mutex_);
@@ -354,14 +359,14 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         if (idx >= remote_player_count_) break;
         host::log("slippi: received selections from player %u (char %u color %u stage %u)", s->player_idx, s->character_id, s->character_color, s->stage_id);
         match_info_.remote[idx].Merge(*s);
-        has_game_started_ = false;
-        remote_pad_queue_[idx].clear();
+        { std::lock_guard<std::mutex> lk(timing_mutex_); has_game_started_ = false; }
+        { std::lock_guard<std::mutex> lk(pad_mutex_); remote_pad_queue_[idx].clear(); }
       }
       break;
     }
     case NP_MSG_SLIPPI_CHAT_MESSAGE: {
       auto s = ReadChatMessage(packet);
-      if (!s->error) remote_chat_message_selection_ = std::move(s);
+      if (!s->error) { std::lock_guard<std::mutex> lk(chat_mutex_); remote_chat_message_selection_ = std::move(s); }
       break;
     }
     case NP_MSG_MU_BUILD: {
@@ -625,12 +630,15 @@ void NetplayClient::ThreadFunc() {
 }
 
 void NetplayClient::StartSlippiGame() {
-  has_game_started_ = false;
   local_pad_queue_.clear();
-  for (int i = 0; i < remote_player_count_; ++i) {
-    last_frame_timing_[i] = {0, time_us()};
-    last_frame_acked_[i] = 0;
-    ack_timers_[i].clear();
+  {
+    std::lock_guard<std::mutex> lk(timing_mutex_);
+    has_game_started_ = false;
+    for (int i = 0; i < remote_player_count_; ++i) last_frame_timing_[i] = {0, time_us()};
+  }
+  {
+    std::lock_guard<std::mutex> lk(ack_mutex_);
+    for (int i = 0; i < remote_player_count_; ++i) { last_frame_acked_[i] = 0; ack_timers_[i].clear(); }
   }
   match_info_.Reset();
 }
@@ -640,9 +648,12 @@ void NetplayClient::SendSlippiPad(std::unique_ptr<Pad> pad) {
   if (st == ConnectStatus::FAILED || st == ConnectStatus::DISCONNECTED) return;
   if (pad) local_pad_queue_.push_front(std::move(pad));
   int min_ack = INT_MAX;
-  for (int i = 0; i < remote_player_count_; ++i) {
-    if (!player_active_[match_info_.remote[i].player_idx].load(std::memory_order_acquire)) continue;
-    min_ack = std::min(min_ack, last_frame_acked_[i]);
+  {
+    std::lock_guard<std::mutex> lk(ack_mutex_);
+    for (int i = 0; i < remote_player_count_; ++i) {
+      if (!player_active_[match_info_.remote[i].player_idx].load(std::memory_order_acquire)) continue;
+      min_ack = std::min(min_ack, last_frame_acked_[i]);
+    }
   }
   if (!local_pad_queue_.empty()) min_ack = std::max(min_ack, local_pad_queue_.front()->frame - 128);
   while (!local_pad_queue_.empty() && local_pad_queue_.back()->frame < min_ack) local_pad_queue_.pop_back();
@@ -653,11 +664,14 @@ void NetplayClient::SendSlippiPad(std::unique_ptr<Pad> pad) {
   for (auto& p : local_pad_queue_) spac->append(p->buf, PAD_DATA_SIZE);
   SendAsync(std::move(spac));
   uint64_t t = time_us();
-  has_game_started_ = true;
-  for (int i = 0; i < remote_player_count_; ++i) {
-    last_frame_timing_[i] = {frame, t};
+  {
+    std::lock_guard<std::mutex> lk(timing_mutex_);
+    has_game_started_ = true;
+    for (int i = 0; i < remote_player_count_; ++i) last_frame_timing_[i] = {frame, t};
+  }
+  {
     std::lock_guard<std::mutex> lk(ack_mutex_);
-    ack_timers_[i].push_back({frame, t});
+    for (int i = 0; i < remote_player_count_; ++i) ack_timers_[i].push_back({frame, t});
   }
 }
 
@@ -675,6 +689,7 @@ void NetplayClient::SendChatMessage(int message_id) {
   SendAsync(std::move(spac));
 }
 PlayerSelections NetplayClient::GetSlippiRemoteChatMessage(bool chat_enabled) {
+  std::lock_guard<std::mutex> lk(chat_mutex_);
   PlayerSelections copied;
   if (remote_chat_message_selection_ && chat_enabled) {
     copied.message_id = remote_chat_message_selection_->message_id;
@@ -768,8 +783,9 @@ int32_t NetplayClient::CalcTimeOffsetUs() {
   std::vector<int> offsets;
   for (int i = 0; i < remote_player_count_; ++i) {
     if (!player_active_[match_info_.remote[i].player_idx].load(std::memory_order_acquire)) continue;
-    if (frame_offset_data_[i].buf.empty()) continue;
-    std::vector<int32_t> buf = frame_offset_data_[i].buf;
+    std::vector<int32_t> buf;
+    { std::lock_guard<std::mutex> lk(timing_mutex_); buf = frame_offset_data_[i].buf; }
+    if (buf.empty()) continue;
     std::sort(buf.begin(), buf.end());
     int n = (int)buf.size(), off = (int)((1.0f / 3.0f) * n), end = n - off;
     int sum = 0;
