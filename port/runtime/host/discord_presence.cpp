@@ -246,6 +246,7 @@ Pump handle_frames(HANDLE pipe, Reader& reader) {
       set_status("Discord refused the request: " + (text.empty() ? std::string("check the application ID") : text));
       return Pump::Refused;
     }
+#ifndef MELEE_NO_SLIPPI   // that build publishes no join secret and has no Direct menu for one to go to
     if (evt == "ACTIVITY_JOIN" && has_data) {
       const std::string secret = str_field(*data, "secret");
       if (!valid_connect_code(secret)) {
@@ -266,6 +267,7 @@ Pump handle_frames(HANDLE pipe, Reader& reader) {
       set_status(mine.empty() ? "Join received from " + secret + ". Open Online > Direct to use it."
                               : "Joining " + secret + ". Open Online > Direct; your code " + mine + " is on the clipboard for them.");
     }
+#endif
   }
   return reader.bad || reader.closed ? Pump::Drop : Pump::Ok;
 }
@@ -288,7 +290,11 @@ void worker() {
           last_activity.clear();
           last_update_ms = 0;
           host::log("discord: connected to the Discord client");
+#ifdef MELEE_NO_SLIPPI
+          set_status("Connected. Friends can see Melee Unlocked.");
+#else
           set_status("Connected. Friends can see Melee Unlocked and press Join.");
+#endif
         } else if (should_quit()) {
           // stopping; leave the status alone
         } else if (!result.refusal.empty()) {

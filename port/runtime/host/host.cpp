@@ -548,7 +548,11 @@ static void load_dol_from_disc() {
     if (disc_is_fixed_address_pack() && !std::getenv("MELEE_MOD_NO_CLEAN")) {
       g_mod_clean = true;
       install_clean_mode_music();
+#ifdef MELEE_NO_SLIPPI   // the same lines of this file's boot path, worded for the build without that layer
+      log("mods: this disc runs in clean mode (its own code only); online play and replays are off for it");
+#else
       log("mods: this disc runs in clean mode (its own code only, without Slippi's codes); online play and replays are off for it");
+#endif
     }
     return;
   }
@@ -587,11 +591,17 @@ static void apply_gecko_boot_ram() {
   }
 }
 static void install_gecko_boot() {
-  if (!gecko::codehandler_bin_size) { log("boot: translated without Slippi code tables"); return; }
+#ifdef MELEE_NO_SLIPPI
+#define BOOT_TABLES_NAME "code tables"
+#else
+#define BOOT_TABLES_NAME "Slippi code tables"
+#endif
+  if (!gecko::codehandler_bin_size) { log("boot: translated without " BOOT_TABLES_NAME); return; }
   apply_gecko_boot_ram();
   slippi::init();
-  log("boot: Slippi code tables installed (%zu boot writes, %zu boot hooks, main GCT %zu bytes served over EXI)",
+  log("boot: " BOOT_TABLES_NAME " installed (%zu boot writes, %zu boot hooks, main GCT %zu bytes served over EXI)",
       gecko::boot_writes_count, gecko::boot_hooks_count, gecko::slippi_gct_size);
+#undef BOOT_TABLES_NAME
 }
 
 // The mod's main.dol over the vanilla code in RAM, then the Slippi tables again (as Dolphin applies
@@ -634,7 +644,11 @@ static void apply_mod_code() {
     // them run the disc's code from RAM, whatever the optional codes are set to.
     uint32_t forced = 0;
     slippi::for_each_served_code_write([&](uint32_t addr, uint32_t n) { mod_reference_force(addr, n); ++forced; });
+#ifdef MELEE_NO_SLIPPI
+    log("mods: clean mode; %u places the main code list changes run the disc's code", forced);
+#else
     log("mods: clean mode; %u places Slippi's main list changes run the disc's code", forced);
+#endif
   } else if (gecko::codehandler_bin_size) {
     apply_gecko_boot_ram();
     ppc::add_ram_code_range(0x80001800u, 0x80001800u + (uint32_t)gecko::codehandler_bin_size);

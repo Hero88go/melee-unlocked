@@ -24,6 +24,7 @@
 #include <chrono>
 #include <sstream>
 #include <string>
+#include "slippi_version.h"
 
 namespace {
 int g_failures = 0;
@@ -42,6 +43,11 @@ bool has_key_line(const std::string& text, const std::string& key) {
 }
 
 int main() {
+  // The Slippi version gate's comparison: numeric per part, not text.
+  CHECK(slippi::version_newer("3.6.5", "3.6.4") && slippi::version_newer("3.6.10", "3.6.4") && slippi::version_newer("3.7.0", "3.6.9"));
+  CHECK(slippi::version_newer("4.0", "3.9.9") && slippi::version_newer("3.6.4.1", "3.6.4"));
+  CHECK(!slippi::version_newer("3.6.4", "3.6.4") && !slippi::version_newer("3.6.3", "3.6.4") && !slippi::version_newer("", "3.6.4"));
+  CHECK(!slippi::version_newer("3.6.4-beta", "3.6.4") && !slippi::version_newer("garbage", "3.6.4"));
   namespace fs = std::filesystem;
   host::AudioBufferPolicy audio;
   audio.configure(0, 40);

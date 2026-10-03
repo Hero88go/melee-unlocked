@@ -158,7 +158,13 @@ bool replay_listed(int index,const std::vector<std::wstring>& words) {
 }
 void replay_count_status() {
   const auto all=std::to_string(g_replay_files.size());
+  // The launcher built without the Slippi layer never shows this page (no rail entry): there the
+  // lines of this file that name those replays, look for them or start their viewer are left out.
+#ifdef MELEE_NO_SLIPPI
+  if(g_replay_files.empty()) replay_status("");
+#else
   if(g_replay_files.empty()) replay_status("Choose a Slippi replay to get started.");
+#endif
   else if(g_replay_visible.size()==g_replay_files.size()) replay_status(launcher::lang::fill(launcher::lang::tx("{count} replays"),launcher::lang::Args{{"count",all}}));
   else replay_status(launcher::lang::fill(launcher::lang::tx("{shown} of {count} replays"),launcher::lang::Args{{"shown",std::to_string(g_replay_visible.size())},{"count",all}}));
   g_replay_status_count=true;
@@ -262,8 +268,10 @@ void refresh_replays(const std::filesystem::path& selected={}) {
   auto choice=selected;
   if(const int previous=replay_selected();choice.empty()&&previous>=0) choice=g_replay_files[previous];
   std::vector<std::filesystem::path> folders{std::filesystem::u8path(g_dir)/"Replays",std::filesystem::u8path(work_dir())/"Replays"};
+#ifndef MELEE_NO_SLIPPI   // that build never reads the other program's replay folder
   PWSTR documents=nullptr;
   if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents,0,nullptr,&documents))) { folders.push_back(std::filesystem::path(documents)/"Slippi");CoTaskMemFree(documents); }
+#endif
   const unsigned gen=++g_replay_gen;
   if(g_replay_files.empty()) replay_status("Loading replays...");
   std::thread([gen,folders,choice]{
@@ -278,8 +286,10 @@ void refresh_replays(const std::filesystem::path& selected={}) {
         if(it.depth()>3) it.disable_recursion_pending();
         auto extension=it->path().extension().wstring();
         std::transform(extension.begin(),extension.end(),extension.begin(),::towlower);
+#ifndef MELEE_NO_SLIPPI   // nothing is a replay there
         std::error_code fe;
         if(extension==L".slp"&&it->is_regular_file(fe)) found.emplace_back(it->last_write_time(fe),it->path());
+#endif
         it.increment(ec);
       }
     }
@@ -374,7 +384,10 @@ void browse_replay() {
   wchar_t file[32768]{}; auto folder=widen(g_dir+"\\Replays");
   OPENFILENAMEW dialog{sizeof dialog}; dialog.hwndOwner=g_main;
   const std::wstring dialog_title=launcher::lang::txw(L"Open replay");
-  dialog.lpstrFilter=L"Slippi replays (*.slp)\0*.slp\0"; dialog.lpstrTitle=dialog_title.c_str();
+#ifndef MELEE_NO_SLIPPI
+  dialog.lpstrFilter=L"Slippi replays (*.slp)\0*.slp\0";
+#endif
+  dialog.lpstrTitle=dialog_title.c_str();
   dialog.lpstrFile=file; dialog.nMaxFile=32768; dialog.lpstrInitialDir=folder.c_str();
   dialog.Flags=OFN_FILEMUSTEXIST|OFN_PATHMUSTEXIST|OFN_NOCHANGEDIR;
   // The file the player went looking for is listed and selected whatever the search box says.
@@ -408,13 +421,17 @@ ReplayStart replay_start(const std::filesystem::path& file,int place=0,int count
   if(g_engine==ENGINE_SOURCE&&!source_exe_dir().empty()) exe=source_exe_dir()+"\\melee_source.exe";
   else {
     std::vector<std::string> candidates{active_dir()+"\\melee_port_playback.exe"};
+#ifndef MELEE_NO_SLIPPI
     auto root=repo_root();
     if(g_active_version.empty()&&!root.empty()) for(auto dir:{"build-sourceport-slippi","build-sourceport","build-playback"}) candidates.push_back(root+"\\"+dir+"\\port\\Release\\melee_port_playback.exe");
+#endif
     for(const auto& path:candidates) if(file_exists(path)) { exe=path; break; }
   }
   if(exe.empty()||!file_exists(exe)) { replay_status("Replay playback is not installed for this build."); return ReplayStart::Failed; }
   auto sys=active_dir()+"\\SysPlayback";
+#ifndef MELEE_NO_SLIPPI
   if(!file_exists(sys+"\\codehandler.bin")) sys=repo_root()+"\\port\\slippi_sys_playback";
+#endif
   if(!file_exists(sys+"\\codehandler.bin")) { replay_status("The playback system files are missing from this installation."); return ReplayStart::Failed; }
   const auto cwd=work_dir();
   std::wstring command=widen("\""+exe+"\""+game_args()+" --sys-dir \""+sys+"\" --replay \"")+file.wstring()+L"\"";
@@ -913,7 +930,9 @@ void paint_replays(HDC dc) {
     const bool loading=g_replay_status.rfind("Loading",0)==0, none=g_replay_files.empty();
     draw_text(dc,!none?L"No replays match":(loading?L"Loading replays...":L"No replays yet"),LR(212,316,748,34),g_font_big,C_TEXT,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
     if(!none) draw_text(dc,L"Try another search, or untick Hide short games.",LR(212,354,748,28),g_font,C_DIM,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+#ifndef MELEE_NO_SLIPPI
     else if(!loading) draw_text(dc,L"Play a match or browse for a .slp file.",LR(212,354,748,28),g_font,C_DIM,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
+#endif
   }
   draw_text(dc,widen(g_replay_status),LR(460,622,330,34),g_font_small,C_DIM,DT_LEFT|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
 }

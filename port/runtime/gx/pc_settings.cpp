@@ -3338,8 +3338,13 @@ static bool settings_lcancel_flash(RenderOptions& options) {
         lcancel::set_indicator(mode == MU_LCFLASH_MU_MISSED);
         changed = true;
       }
+#ifdef MELEE_NO_SLIPPI   // one engine: only the save can be missing
+      if (unavailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Requires a loaded 20XX TE save.");
+#else
       if (unavailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Requires the Source Port and a loaded 20XX TE save.");
+#endif
       ImGui::EndDisabled();
     }
     ImGui::EndCombo();
@@ -3517,11 +3522,16 @@ static void game_mods_panel(const RenderOptions& options) {
       bool on = d.enabled;
       ImGui::BeginDisabled(!engine_ok || view.scanning || view.importing);
       if (settings_toggle(on ? "On" : "Off", &on)) mods::choose(d.key, on);
+#ifdef MELEE_NO_SLIPPI   // one engine in this build: there is no other one to send the player to
+      ImGui::EndDisabled();
+      if (!engine_ok) ImGui::TextDisabled("This build cannot play it.");
+#else
       if (!engine_ok && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("This pack runs on the %s. Choose that engine in the launcher.",
                           d.needs == mods::Engine::Source ? "Source Port" : "Static Recomp");
       ImGui::EndDisabled();
       if (!engine_ok) ImGui::TextDisabled("Runs on the %s", d.needs == mods::Engine::Source ? "Source Port" : "Static Recomp");
+#endif
       else if (!options.native_source && !d.card)
         ImGui::TextDisabled("Play this disc from the launcher's Mods page.");
       else if (d.restart || (!options.native_source && d.kind == mods::Kind::Te))
@@ -4534,13 +4544,27 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // one-instruction change). Experimental because the game still lays out and culls scenery for
     // 73:60: geometry can be missing or pop in at the new edges.
     {
+#ifdef MELEE_NO_SLIPPI   // the same two modes under neutral names; the saved setting is unchanged
+      const char* widescreen_modes[] = {"Off", "16:9 code", "True 16:9 (experimental)"};
+#else
       const char* widescreen_modes[] = {"Off", "Slippi code", "True 16:9 (experimental)"};
+#endif
       int widescreen_mode = options.widescreen ? 1 : options.true_widescreen ? 2 : 0;
       if (settings_combo("Widescreen", &widescreen_mode, widescreen_modes, 3)) {
         options.widescreen = widescreen_mode == 1;
         options.true_widescreen = widescreen_mode == 2;
         changed = true;
       }
+#ifdef MELEE_NO_SLIPPI
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("16:9 code: the widely used 16:9 widescreen code, rebuilt in the game with the same\n"
+                          "values. Online safe: it changes only what you see. The view widens from the next screen.\n"
+                          "True 16:9: widens the camera in the renderer instead of running that code, and\n"
+                          "applies at once. Fighters in the added sides are drawn, as with the 16:9 code.\n"
+                          "Watch the edges for missing or popping scenery: the game still culls for 73:60.\n"
+                          "Menus, character and stage select, matches and training all fill the\n"
+                          "screen. Only the opening movie keeps its side bars.\n%s", kExperimentalNote);
+#else
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Slippi code: Slippi's widescreen code (on the Source Port, rebuilt with the same\n"
                           "values). Online safe: it changes only what you see. The view widens from the next screen.\n"
@@ -4549,6 +4573,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "Watch the edges for missing or popping scenery: the game still culls for 73:60.\n"
                           "Menus, character and stage select, matches, training and replays all fill the\n"
                           "screen. Only the opening movie keeps its side bars.\n%s", kExperimentalNote);
+#endif
     }
     // In pixels: on a scaled frame the display size is in layout units, not the window's size.
     float win_w = g_frame_pixel_size.x, win_h = g_frame_pixel_size.y;
@@ -4564,8 +4589,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         settings_hint("Fills the whole window or screen, so the picture is stretched. Pick a 4:3 window\n"
                             "size below and a wider screen to get the stretched resolution players use.");
       else
+#ifdef MELEE_NO_SLIPPI
+        settings_hint("Melee's camera asks for 73:60, not 4:3; the 16:9 widescreen code widens it to 16:9.\n"
+                            "Auto follows Widescreen above.");
+#else
         settings_hint("Melee's camera asks for 73:60, not 4:3; the Slippi widescreen code widens it to 16:9.\n"
                             "Auto follows Widescreen above, which is what Slippi Dolphin does.");
+#endif
 
       // Window size, the way Dolphin lets a player choose one. 4:3 sizes first: those are what
       // Melee players run (1440x1080 is the common one), then the 16:9 sizes.
@@ -5468,8 +5498,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             draw->AddRectFilled(ImVec2(p.x+8,p.y+preview_h*.43f),
                                 ImVec2(p.x+left_w-3,p.y+preview_h*.57f),
                                 IM_COL32(255,196,25,255),2.0f);
+#ifdef MELEE_NO_SLIPPI   // the game menu behind the panel in this thumbnail: a retail menu entry here
+            draw->AddText(ImGui::GetFont(),9.0f,ImVec2(p.x+12,p.y+preview_h*.455f),
+                          IM_COL32(20,19,16,255),"Vs. Mode");
+#else
             draw->AddText(ImGui::GetFont(),9.0f,ImVec2(p.x+12,p.y+preview_h*.455f),
                           IM_COL32(20,19,16,255),"Unranked");
+#endif
             const float x=p.x+left_w;
             draw->AddRectFilled(ImVec2(x,p.y),q,IM_COL32(17,18,29,250));
             const ImVec2 banner[]={ImVec2(x,p.y),ImVec2(q.x,p.y),
@@ -5860,6 +5895,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             }
             for (const auto& line : mod_status.notes) ImGui::TextWrapped("%s", line.c_str());
             ImGui::Spacing();
+#ifndef MELEE_NO_SLIPPI   // the online modes these lines and the switch are about are not in that build
             if (mod_status.pack_skins.empty()) {
               ImGui::TextWrapped("Online: Unranked, Teams and Party always play the standard game. Direct can use "
                                  "this mod, and then only against a player on the same build.");
@@ -5895,6 +5931,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               // that the opponent sent no build and starts the match itself (slippi_online.cpp).
               settings_hint("An opponent on Slippi Dolphin with the same mod works too: nothing to set on either side.");
             }
+#endif
           }
           ImGui::Spacing();
           ImGui::Separator();
@@ -6110,8 +6147,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (!skin_packs.empty()) {
             ImGui::Spacing();
             ImGui::TextUnformatted("Costume packs");
+#ifdef MELEE_NO_SLIPPI   // the same rule without the other build's mode names
+            ImGui::TextWrapped("Each button sets every costume the pack has. Skins that stay on online keep working in "
+                               "online matches; the rest show the standard costume there.");
+#else
             ImGui::TextWrapped("Each button sets every costume the pack has. Skins that stay on online keep working in "
                                "Unranked, Teams and Party; the rest show the standard costume there.");
+#endif
             for (const auto& pack : skin_packs) {
               ImGui::PushID(pack.key.c_str());
               std::string summary = pack.name + ": " + std::to_string(pack.skins) + (pack.skins == 1 ? " skin, " : " skins, ") +
@@ -6449,9 +6491,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (options.cpu_20xx && !options.native_source) host::hackpack_ai::reload();   // the disc may have arrived since boot
       changed = true;
     }
+#ifdef MELEE_NO_SLIPPI   // one engine, no replays: the rest of the line is about the other build
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("CPUs play with the 20XX Hack Pack's AI. Offline matches only, never online.");
+#else
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("CPUs play with the 20XX Hack Pack's AI. Offline matches only, never online or in replays.\n"
                         "Static Recomp: needs the 20XX Hack Pack disc under Mods (the Source Port has its own version).");
+#endif
     if (!options.native_source && !host::hackpack_ai::status().blob_ok)
       ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.40f, 1.0f), "Install the 20XX Hack Pack under Mods");
     // 20XX Hack Pack training options for CPUs (Source Port, shim/mu_20xx_cpu.c): plain offline
@@ -6484,6 +6531,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       }
     }
 
+#ifndef MELEE_NO_SLIPPI   // only the Static Recomp runs this switch, so the build without it has no such section
     // Slippi's Lagless FoD code is a real game patch, so expose it as an offline/direct setting
     // instead of silently forcing the performance-oriented variant on every player.
     ImGui::TextUnformatted("Stage effects");
@@ -6499,6 +6547,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     else if (ImGui::IsItemHovered())
       ImGui::SetTooltip("On: keep Fountain of Dreams' water reflection and particles.\n"
                         "Off: use the Lagless FoD code for lower GPU cost. Takes effect at the next retrace.");
+#endif
 
     // ---- L-cancel helpers ----
     // The indicator reads the fighter's action state and never writes anything, so it is display
@@ -6512,11 +6561,19 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       bool automatic = lcancel::automatic_enabled();
       if (settings_toggle("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
       ImGui::SameLine();
+#ifdef MELEE_NO_SLIPPI   // this build's matches are all the one kind, where it works
+      settings_hint("(NOTE: Works offline and in online matches)");
+      if (automatic) {
+        ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
+                           "network like any other, so it cannot desync. In an online match both players should agree "
+                           "to use it: it is a fairness question, not a safety one.");
+#else
       settings_hint("(NOTE: Works offline and in Direct, not in Unranked or Teams)");
       if (automatic) {
         ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
                            "network like any other, so it cannot desync. In a Direct match both players should agree "
                            "to use it: it is a fairness question, not a safety one.");
+#endif
         if (const char* mode = lcancel::auto_suppressed_mode())
           ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Disabled right now: this is %s.", mode);
       }
@@ -6602,7 +6659,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       host::discord::configure(options.discord_app_id);
     }
     const bool discord_was = options.discord_presence;
+#ifdef MELEE_NO_SLIPPI   // presence only: this build publishes no code for Join to hand over
+    settings_toggle("Discord presence (show what you are playing)", &options.discord_presence);
+#else
     settings_toggle("Discord presence (show what you are playing; friends can press Join)", &options.discord_presence);
+#endif
     if (options.discord_presence != discord_was) {
       host::discord::configure(options.discord_app_id);
       host::discord::enable(options.discord_presence);   // starts or stops one background thread
@@ -6610,7 +6671,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (options.discord_presence) {
       ImGui::TextWrapped("%s", host::discord::status().c_str());
       settings_hint("A new Application ID is picked up the next time you switch this off and on.");
+#ifdef MELEE_NO_SLIPPI
+      ImGui::TextWrapped("Your IP address is never published. Who can see what you are playing depends on your Discord activity privacy settings.");
+#else
       ImGui::TextWrapped("Discord Join sends the other player's code to Online > Direct; selecting Direct automatically uses it for that attempt. Your Slippi code is copied to the clipboard for the other player. Your IP address is never published. Who can see or join depends on your Discord activity privacy settings.");
+#endif
     } else {
       settings_hint("Off. Nothing is sent to Discord. Needs an Application ID from discord.com/developers/applications.");
     }
@@ -7128,6 +7193,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("Online only: the last 10 seconds as you got them. Frame time, waits for the\nother player's inputs, rollbacks, time sync and ping. Display only.");
     }
     // Render latency, a developer readout, is under Advanced at the bottom of this tab.
+#ifndef MELEE_NO_SLIPPI   // the Lab view is the Static Recomp's: no switch for it in the build without that engine
     if (kLabViewAvailable) {
     ImGui::BeginDisabled(options.native_source);
     changed |= settings_toggle("Lab view (F3)", &options.lab_view);
@@ -7144,6 +7210,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         "draws hitboxes inside the match itself.");
     // Its "Skip the 3D scene underneath" switch is under Advanced.
     }
+#endif
     // With 20XX TE on this is also TE's "Input display" (te_pairs_linked).
     if (settings_toggle("Controller overlay", &options.input_overlay)) {
       te_follow_ours(options, kTeInputDisplay, options.input_overlay);
@@ -7183,6 +7250,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Shows the measured render latency under the FPS counter. Works whether or\n"
                           "not NVIDIA Reflex Low Latency (Video tab) is On, so Off has a number too.\n"
                           "The full breakdown by stage is on the performance graph.");
+#ifndef MELEE_NO_SLIPPI   // as for the Lab view switch above
       if (kLabViewAvailable) {
         // Only with the Lab view on, and only on the engine that has it.
         ImGui::BeginDisabled(options.native_source || !options.lab_view);
@@ -7196,24 +7264,60 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                             "weak laptop runs smoother. The game itself runs exactly the same.%s",
                             options.lab_view ? "" : "\nTurn on Lab view (F3) above to use it.");
       }
+#endif
     }
       }
       if (state.active_tab == 6 && options.native_source) {
     // The Source Port runs the game as C: a Gecko code is PowerPC written over console addresses,
     // so there is nothing for it to patch. Slippi's optional codes are rebuilt in C instead, and
     // these switches are the same settings as their copies on the other tabs.
+#ifdef MELEE_NO_SLIPPI   // the same switches under neutral names
+    ImGui::TextUnformatted("Built-in codes");
+#else
     ImGui::TextUnformatted("Slippi's codes, built in");
+#endif
     if (settings_toggle("Widescreen 16:9", &options.widescreen)) {
       if (options.widescreen) options.true_widescreen = false;
       changed = true;
     }
+#ifdef MELEE_NO_SLIPPI
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The 16:9 widescreen code. Online safe. From the next screen.");
+#else
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Slippi's widescreen code with the same values. Online safe. From the next screen.");
+#endif
     if (settings_toggle("Disable Screen Shake", &gecko::option_no_screen_shake)) {
       te_follow_ours(options, kTeNoScreenRumble, gecko::option_no_screen_shake);
       changed = true;
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Camera only. Online safe.%s", te_pair_hover(kTeNoScreenRumble));
     if (settings_lcancel_flash(options)) changed = true;
+#ifdef MELEE_NO_SLIPPI
+    // This build plays the retail game (no General Codes), and it is the only engine: the lines
+    // below say what runs here without naming another one.
+    ImGui::Separator();
+    ImGui::TextUnformatted("Your codes");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("From:\n%s\nCodes that only write game variables run. Other codes are PowerPC and cannot run in this build.", user_gecko::path().c_str());
+    if (user_gecko::codes().empty()) {
+      settings_hint("None. Put a GeckoCodes.ini next to port-settings.ini to add codes.");
+    } else {
+      for (user_gecko::Code& c : user_gecko::codes()) {
+        ImGui::PushID(&c);
+        const char* built_in = user_gecko::native_equivalent(c);
+        const bool runs_here = c.supported && !built_in;
+        ImGui::BeginDisabled(!runs_here);
+        if (settings_toggle(c.name.c_str(), &c.enabled) && runs_here) { changed = true; g_gecko_chosen = true; }
+        ImGui::EndDisabled();
+        if (built_in)
+          engine_only_reason("Built in: \"%s\" above is the switch that applies here.", built_in);
+        else if (!runs_here)
+          engine_only_reason("Cannot run in this build: this code %s.", c.reason.c_str());
+        else if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Writes game variables only, so it runs here.\nNever applied online.");
+        ImGui::PopID();
+      }
+    }
+#else
     settings_hint("Always on, as in Slippi: the General Codes (UCF 0.84 and the rest) and Lagless FoD.");
     ImGui::Separator();
     ImGui::TextUnformatted("Your codes");
@@ -7244,6 +7348,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::PopID();
       }
     }
+#endif
       } else if (state.active_tab == 6) {
     // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
     // Always shown: a code the other player does not have desyncs the match.

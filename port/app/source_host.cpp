@@ -565,8 +565,13 @@ void load_mod_overlay() {
                                      : slippi::online::NativeGameplayProfile::OtherMod;
   slippi::online::set_native_gameplay_profile(g_mod_gameplay_profile);
   g_mod_display_name = summary.empty() ? std::string("this mod") : summary;
+#ifdef MELEE_NO_SLIPPI   // the same fact without the other build's mode names
+  if (!g_view_alias.empty())
+    host::log("mods: %zu files have a retail view: online matches play the retail game", g_view_alias.size());
+#else
   if (!g_view_alias.empty())
     host::log("mods: %zu files have a retail view: Unranked, Teams and Party play the retail game", g_view_alias.size());
+#endif
   // After the aliases: the verdicts only say which entries keep their own number in that view. The
   // alias table itself is left whole, because its being empty or not is what decides the gameplay
   // profile above and how replays are tagged.

@@ -555,8 +555,13 @@ void work() {
             std::lock_guard<std::mutex> lock(mutex);
             // A private chat action leaves the status line alone (its own messages arrive as notices).
             if(c.action.rfind("pm",0)!=0)
+#ifdef MELEE_NO_SLIPPI
+              notice=peer_mode(cfg)?"You're online. Select a player to send a match request.":
+                                     "Connected. Location and player code are player supplied.";
+#else
               notice=peer_mode(cfg)?"You're online. Select a player to send a match request.":
                                      "Connected. Location and Slippi code are player supplied.";
+#endif
           } catch(const std::exception& ex) {
             std::lock_guard<std::mutex> lock(mutex); notice=ex.what();
             if(c.action=="join") go_online_requested=joined;
@@ -637,19 +642,24 @@ void work() {
                 notice=launcher::lang::tr("lobby.p2p.starting",{{"name",m.opponent}});
                 continue;
               }
+#ifndef MELEE_NO_SLIPPI   // in the build without that layer every match took the peer-to-peer branch above
               matches.push_back(m);
               notice=m.mode=="vanilla"?"Match accepted. Starting Slippi Direct...":
                      launcher::lang::tr("lobby.starting_mod",{{"mode",m.mod_name}});
+#endif
             }
-          } else for(auto& r:state.value("requests",Json::array())) {
+          }
+#ifndef MELEE_NO_SLIPPI   // the hosted service's matches start Direct, which the build without that layer does not have
+          else for(auto& r:state.value("requests",Json::array())) {
             if(r.value("state",std::string())!="accepted" || !r.value("confirmed",true) || playing || !joined) continue;
             std::string id=r["id"], peer_id=r["from"]==self?r["to"].get<std::string>():r["from"].get<std::string>();
             if(launched.count(id)) continue;
-            for(auto& p:state["players"]) if(p["id"]==peer_id && r.value("transport",std::string())=="slippi-direct") {
+            for(auto& p:state["players"]) if(p["id"]==peer_id && r.value("transport",std::string())==launcher::lobby::kHostedTransport) {
               launched.insert(id); matches.push_back({id,p["code"].get<std::string>(),cfg["mains"][0].get<int>(),cfg.value("build",std::string()),p.value("name",std::string())});
               notice="Match accepted. Starting Slippi Direct...";
             }
           }
+#endif
         }
       } catch(const std::exception& ex) { std::lock_guard<std::mutex> lock(mutex); notice=ex.what(); snapshot=Json::object(); pings.clear(); }
     }
@@ -1094,7 +1104,11 @@ void refresh() {
     EnableWindow(GetDlgItem(window,PM_FRIEND),online_friend && peer_lobby);
     EnableWindow(GetDlgItem(window,PM_PLAYER),active && peer_lobby && !chosen.empty() && chosen!=me);
   }
+#ifdef MELEE_NO_SLIPPI
+  if(!can_play && !playing) label(STATUS,launcher::lang::tr("lobby.p2p.setup_hint"));
+#else
   if(!can_play && !playing) label(STATUS,p2p_matches?launcher::lang::tr("lobby.p2p.setup_hint"):std::string("To play, finish disc and Slippi setup on the Play tab."));
+#endif
   // Copy code sits next to "Can't reach X. Use Slippi Direct with their code" while the status says it.
   copy_button_code=(can_play || playing)?copy:std::string();
   label(PLAYER_HEADING,launcher::lang::tr("lobby.players_online",{{"count",std::to_string(roster_all.size())}}));
@@ -1302,15 +1316,24 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       emoji_icons[i]=(HICON)LoadImageW(GetModuleHandleW(nullptr),MAKEINTRESOURCEW(300+i),IMAGE_ICON,U(24),U(24),LR_SHARED);
       emoji_icon_offsets[i]=visible_icon_offset(emoji_icons[i]);
     }
+#ifdef MELEE_NO_SLIPPI   // the code controls get their text further down, with the other peer-to-peer controls
+    control(FRIEND_CODE,L"EDIT",L"",ES_AUTOHSCROLL);
+    control(FRIEND_SEND,L"BUTTON",L"Send Friend Request"); control(FRIEND_HINT,L"STATIC",L""); control(STATUS,L"STATIC",L""); control(RECORD,L"STATIC",L"");
+    control(COPY_CODE,L"BUTTON",launcher::lang::trw("lobby.copy_code").c_str());
+    control(PROFILE_NAME,L"STATIC",L"Display name"); control(PROFILE_CODE,L"STATIC",L"");
+#else
     control(FRIEND_CODE,L"EDIT",L"",ES_AUTOHSCROLL); SendMessageW(GetDlgItem(w,FRIEND_CODE),EM_SETCUEBANNER,TRUE,(LPARAM)launcher::lang::txw(L"Slippi code, e.g. FOX#123").c_str());
     control(FRIEND_SEND,L"BUTTON",L"Send Friend Request"); control(FRIEND_HINT,L"STATIC",L"Enter an online player's Slippi code."); control(STATUS,L"STATIC",L""); control(RECORD,L"STATIC",L"");
     control(COPY_CODE,L"BUTTON",launcher::lang::trw("lobby.copy_code").c_str());
     control(PROFILE_NAME,L"STATIC",L"Display name"); control(PROFILE_CODE,L"STATIC",L"Slippi connect code (linked)");
+#endif
     control(PROFILE_LOCATION,L"STATIC",L"Location"); control(PROFILE_MAINS,L"STATIC",L"Your three mains");
     control(PROFILE_MODE,L"STATIC",L"Connection"); control(URL_LABEL,L"STATIC",L"Bootstrap peer (optional)");
     for(int id:{NAME,CODE,LOCATION,URL}) control(id,L"EDIT",L"",ES_AUTOHSCROLL);
     SendMessageW(GetDlgItem(w,CODE),EM_SETREADONLY,TRUE,0);
+#ifndef MELEE_NO_SLIPPI
     SendMessageW(GetDlgItem(w,CODE),EM_SETCUEBANNER,TRUE,(LPARAM)launcher::lang::txw(L"Sign in through Slippi Launcher").c_str());
+#endif
     HWND tips=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,0,0,0,0,w,nullptr,GetModuleHandleW(nullptr),nullptr);
     lobby_tips=tips;
     for(int i=0;i<26;++i) {
@@ -1419,8 +1442,12 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
           auto sender=chat_messages[index].value("sender",std::string());
           for(const auto& player:roster_all) if(player.value("id",std::string())==sender) {code=player.value("code",std::string());break;}
         }
+#ifdef MELEE_NO_SLIPPI
+        hover_code=wide(code);
+#else
         if(p2p_matches) hover_code=wide(code);
         else hover_code=wide(code.empty()?launcher::lang::tx("Slippi code unavailable"):launcher::lang::tx("Slippi code:")+" "+code);
+#endif
       }
       tip->lpszText=hover_code.empty()?const_cast<wchar_t*>(L""):hover_code.data();
     }
@@ -1484,7 +1511,11 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     }
     if(id==FRIEND_SEND && HIWORD(wp)==BN_CLICKED) {
       const std::string code=normalize_code(text(FRIEND_CODE));
+#ifdef MELEE_NO_SLIPPI
+      if(!valid_code(code)) { label(FRIEND_HINT,launcher::lang::tr("lobby.friend.code_hint")); return 0; }
+#else
       if(!valid_code(code)) { label(FRIEND_HINT,p2p_matches?launcher::lang::tr("lobby.friend.code_hint"):std::string("Enter a Slippi code such as FOX#123.")); return 0; }
+#endif
       if(code==account_code) { label(FRIEND_HINT,"That is your own code."); return 0; }
       for(const auto& player:rows) if(!player.value("is_self",false) && player.value("code",std::string())==code) { enqueue("friend",{{"target",player["id"]}}); label(FRIEND_HINT,"Friend request sent. Waiting for acceptance."); return 0; }
       // Not in the public list: the peer lobby looks the code up directly, so a player who never
@@ -1540,7 +1571,9 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       if(online && (text(NAME).empty() || account_code.empty() || selected_mains.empty())) {
         lobby_tab=3; layout();
         if(p2p_matches) label(STATUS,identity.empty()?launcher::lang::tr("lobby.p2p.identity_failed"):std::string("Choose a display name and at least one main in Profile."));
+#ifndef MELEE_NO_SLIPPI
         else label(STATUS,account_code.empty()?"Sign in through Slippi Launcher, then reopen this tab.":"Choose a display name and at least one main in Profile.");
+#endif
         SetFocus(GetDlgItem(w,NAME)); return 0;
       }
       { std::lock_guard<std::mutex> lock(mutex);
@@ -1592,7 +1625,7 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       // The status line then confirms the copy, and the button goes until the next "Can't reach".
       const std::string code=copy_button_code;
       if(code.empty() || !copy_text(w,wide(code))) { MessageBeep(MB_ICONWARNING); return 0; }
-      { std::lock_guard<std::mutex> lock(mutex); notice=launcher::lang::tr("lobby.code_copied",{{"code",code}}); }
+      { std::lock_guard<std::mutex> lock(mutex); notice=launcher::lang::tr(p2p_matches?"lobby.p2p.code_copied":"lobby.code_copied",{{"code",code}}); }
       refresh();
     } else if(id==FIND_MATCH && HIWORD(wp)==BN_CLICKED) {
       // P2P Unranked: the lobby pairs this player with another searching player by itself.

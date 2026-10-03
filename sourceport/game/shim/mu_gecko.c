@@ -39,9 +39,11 @@ static void ucf_trace(const char* what, const Fighter* fp)
 void mu_general_codes_boot(void)
 {
 #ifdef MU_NO_SLIPPI
-    /* This build is the retail game, whatever the host passes and also in a network match: no
-     * General Codes and, through them, no UCF (mu_ucf_enabled). */
-    general_codes = 0;
+    /* This build always runs the code set (everything unlocked, tournament default rules, neutral
+     * spawns, UCF 0.84 and the rest), offline and in a network match: both sides of a match are
+     * this build, so they agree. The host's vanilla option still switches off what it gates
+     * elsewhere (the host music player, the training packs), which this build does not have. */
+    general_codes = 1;
 #else
     general_codes = (mu_game_options() & MU_OPTION_VANILLA) == 0;
 #endif
@@ -54,7 +56,7 @@ int mu_general_codes(void)
     if (general_codes < 0)
         mu_general_codes_boot();
 #ifdef MU_NO_SLIPPI
-    return 0;
+    return general_codes;
 #endif
     /* Online opponents always play with the General Codes, so an online match does too. */
     return general_codes || mu_online_codes() != 0;

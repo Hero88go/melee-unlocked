@@ -704,19 +704,30 @@ static void trace_root_fobj_entry(ppc::Context& context) {
 namespace ppc { void init_dispatch(); }
 
 static void usage() {
-  std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
+#ifdef MELEE_NO_SLIPPI   // this build is melee_source.exe; it has no lobby code, replay or recording options
+#define USAGE_EXE "melee_source"
+#else
+#define USAGE_EXE "melee_port"
+#endif
+  std::printf(USAGE_EXE " --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
               "           [--dlss-mode 0..5 --frame-generation[=2x|3x|4x|5x|6x|dynamic]] [--ssao 0..1]\n"
               "           [--aspect auto|73:60|4:3|16:9|stretch] [--widescreen|--true-widescreen]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
               "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--music 0-100|--no-music] [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--settings-path file --load-settings --import-cosmetic file|--scan-disc-skins mod.iso|--select-cosmetic id|--enable-project-effects|--restore-vanilla-cosmetics|--cosmetic-status]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
+#undef USAGE_EXE
+#ifdef MELEE_NO_SLIPPI
+  std::printf("           [--lobby-status-file path] [--card-self-test <new scratch directory>]\n"
+              "           [--mod-profile <name>] [--mod-dir <disc files directory>]... [--mod-iso <patched ISO>]... [--mod-gci <save.gci>]...\n");
+#else
   std::printf("           [--lobby-direct NAME#123 --lobby-character 0..255 --lobby-status-file path]\n");
   std::printf("           [--replay <file.slp> [--as-experienced | --trace <file.trace>]]\n");
 #ifdef MELEE_SOURCE_PORT
   std::printf("           [--card-self-test <new scratch directory>]\n"
               "           [--replay <file.slp> --replay-dir <directory>] [--record-native]\n"
               "           [--mod-profile <name>] [--mod-dir <disc files directory>]... [--mod-iso <patched ISO>]... [--mod-gci <save.gci>]...\n");
+#endif
 #endif
 #ifdef MELEE_NO_SLIPPI
   std::printf("           [--p2p-port <local udp port> --p2p-peer <ip:port>... --p2p-slot 0|1 --p2p-chars <id>[/<color>]:<id>[/<color>]\n"
@@ -1599,12 +1610,14 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--cpu-training") gx::RenderOptions::live_cpu_training() = (uint32_t)std::strtoul(next(), nullptr, 16);   // option word 3 (hex), tests
     else if (a == "--mod-profile") { if (!source_port::set_mod_profile(next())) return 2; }
     else if (a == "--mod-opponent-unverified") gx::RenderOptions::live_mods_dolphin_ok() = true;
+#ifndef MELEE_NO_SLIPPI   // the build without that layer has no recording, no such menus and no such test entry: unknown options there
     else if (a == "--record-native") _putenv_s("MELEE_SOURCE_RECORD", "1");
     else if (a == "--slippi-menus") { const std::string v = next();
       if (v != "on" && v != "off") { std::fprintf(stderr, "--slippi-menus on|off\n"); return 2; }
       source_port::set_slippi_menus(v == "on"); }
     else if (a == "--online-test") { if (!source_port::set_online_test(next())) {
       std::fprintf(stderr, "--online-test direct|unranked|teams[:<character>[:<color>]] (with --local-peer)\n"); return 2; } }
+#endif
 #endif
     else if (a == "--settings-window") {}
     else if (a == "--settings-standby") next();
@@ -1632,7 +1645,11 @@ static int melee_main(int argc, char** argv) {
   // The Static Recomp runs Slippi's code from its code table; the Source Port game reads the same
   // flag (MU_GAME_OPTION_WIDESCREEN) and runs its native version of the code.
   gecko::option_widescreen = gfx.widescreen;
+#ifdef MELEE_NO_SLIPPI
+  if (gfx.widescreen) std::fprintf(stderr, "widescreen: 16:9 code on\n");
+#else
   if (gfx.widescreen) std::fprintf(stderr, "widescreen: Slippi 16:9 on\n");
+#endif
   gecko::option_lagless_fod = !gfx.fod_reflections; // the Gecko flag is the inverse of the UI label
   if (fps_requested && gfx.subframe == gx::SubFrameMode::Off) {
     std::fprintf(stderr, "--fps requires explicit experimental --frame-mode interpolate, extrapolate or authored\n");
@@ -1967,7 +1984,9 @@ static int melee_main(int argc, char** argv) {
   if (ppc::g_computed_return_checks || ppc::g_resumed_returns)
     host::log("gecko: adjusted-return checks %llu, resumed %llu (UCF Shield Drop and the like)",
               (unsigned long long)ppc::g_computed_return_checks, (unsigned long long)ppc::g_resumed_returns);
+#ifndef MELEE_NO_SLIPPI   // nothing to count in the build without that layer
   host::log("slippi: %llu EXI commands, %llu replays written, GCT at %08X", (unsigned long long)slippi::commands_seen(),
             (unsigned long long)slippi::replays_written(), slippi::gct_load_address());
+#endif
   host::end_process(code);   // everything is saved: do not run the libraries' unload code (host.cpp)
 }
