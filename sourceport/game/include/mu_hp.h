@@ -1,6 +1,7 @@
-/* 20XX Hack Pack content features, as native C (shim/mu_hp.c): milestones 1 to 3 of
- * run-source/rel09-hackpack/PLAN.md section 3. One row per code library mod and data file in
- * run-source/rel09-hackpack/ledger_M1.md, ledger_M2.md and ledger_M3.md.
+/* 20XX Hack Pack content features, as native C (shim/mu_hp.c, and the debug menu in
+ * shim/mu_hp_menu.c): milestones 1 to 4 of run-source/rel09-hackpack/PLAN.md section 3. One row per
+ * code library mod and data file in run-source/rel09-hackpack/ledger_M1.md, ledger_M2.md and
+ * ledger_M3.md, one per menu page and option in ledger_M4.md.
  *
  * None of the pack's code runs. The host loads the pack's disc as a file overlay and says so
  * (MU_MOD_HACKPACK in mod_flags). The functions here are called from the decompiled statement each
@@ -79,5 +80,25 @@ void mu_hp_music_mark(void);
  * D-pad up before the match clock starts plays the stage's song again, so its playlist draws anew.
  * `pressed` is the fighter's pressed buttons. */
 void mu_hp_music_dpad(unsigned int pressed);
+
+/* ---- the debug menu (ledger_M4.md, shim/mu_hp_menu.c) ---- */
+
+/* The pack's debug menu as a native table for the game's own debug menu engine, reached like the
+ * pack's "Debug Menu" entry: VS Mode, Tournament Melee (gm/gmdebugmode.c, onEnterMenu0). NULL unless
+ * the pack is loaded, offline, not the vanilla game. Only rows whose feature is native are in it. */
+void* mu_hp_debug_menu(void);
+/* Leaving the menu (B on its first page): each changed choice goes to the host, which saves it. */
+void mu_hp_debug_menu_save(void);
+/* The pack's "SAVE STATES/REPLAYS" switches (settings byte MU_HP_SET_TRAINING), in effect with the
+ * pack loaded, offline, outside replay playback. shim/mu_lab.c turns its tools on by them. */
+#define MU_HP_TRAINING_ON   0x01u   /* savestates and recording on the D-pad in Training mode */
+#define MU_HP_TRAINING_LOOP 0x02u   /* a played back recording repeats until a D-pad press */
+int mu_hp_training(unsigned int bit);
+/* The 20XX TE features the pack's menu switches without a TE save. The host passes these bits alone
+ * then (port/app/source_host.cpp, kHpTeOptions and kHpTeOptions2) and mu_te.c accepts them with the
+ * pack loaded. The 0x780000 bits are the L-cancel flash choices (mu_lcancel_flash.h). */
+#define MU_HP_TE_OPTIONS  (MU_TE_NO_STAR_KO | MU_TE_TAUNT_CANCEL | MU_TE_FIXED_CAMERA)
+#define MU_HP_TE_OPTIONS2 (MU_TE2_NO_SCREEN_RUMBLE | MU_TE2_LCANCEL_FLASH | 0x00780000u | MU_TE2_BUBBLES | \
+                           MU_TE2_INPUT_DISPLAY | MU_TE2_COLOR_OVERLAYS)
 
 #endif

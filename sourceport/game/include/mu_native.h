@@ -78,6 +78,12 @@ int mu_widescreen(void);
  * game: a fighter in the added sides is drawn (ftdrawcommon.c). */
 #define MU_OPTION_TRUE_WIDESCREEN 0x20000000u
 int mu_wide_picture(void);
+/* Display-only options from the PC settings (MuHostApi.display_options, shim/mu_entry.c). Values
+ * match MU_DISPLAY_OPTION_* in mu_host.h. "Low poly fighters": the fighter draw shows the game's own
+ * far model in place of the full one (ftdrawcommon.c). Nonzero while the player has it on. */
+#define MU_DISPLAY_LOW_POLY 0x1u
+unsigned int mu_display_options(void);
+int mu_low_poly_fighters(void);
 /* The language chosen in the PC settings, in the game's own numbering: 0 Japanese, 1 English, or -1
  * when the choice is left to the game's save (Options > Language). lblanguage.c answers with it
  * wherever the game reads its saved language; the save is not changed. */
@@ -615,4 +621,5 @@ void mu_tmce_on_scene_change(void);         /* TM-CE OnSceneChange / OnStartMele
 void mu_tmce_on_start_melee(void);
 int mu_tmce_active(void);                    /* enabled and loaded: the hooks run */
 int mu_test_classic_stage(void);             /* MELEE_TEST_CLASSIC_STAGE, -1 when unset (tests only) */
+int mu_test_adventure_scene(void);           /* MELEE_TEST_ADVENTURE_SCENE, -1 when unset (tests only) */
 #endif

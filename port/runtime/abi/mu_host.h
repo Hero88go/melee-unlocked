@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 17
+#define MU_HOST_API_VERSION 18
 #define MU_GAME_API_VERSION 6
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -341,7 +341,16 @@ typedef struct MuHostApi {
      * (MU_GAME_OPTION3_CPU_*), plain offline options like "20XX CPUs". During replay playback, the
      * word the replay was recorded with ("muOptions3"). */
     uint32_t (*game_options3)(void);
+
+    /* Version 18. Display-only options (MU_DISPLAY_OPTION_*), read live each draw. Never recorded
+     * in a replay and never sent to an opponent: nothing the simulation reads follows them. */
+    uint32_t (*display_options)(void);
 } MuHostApi;
+
+/* "Low poly fighters": the fighter draw shows the game's own far model (the one it draws in the
+ * Fountain of Dreams reflection, the shadow pass and the magnifier bubble) in place of the full
+ * one, for a fighter that has one. Only the DObj hidden flags change (ftdrawcommon.c). */
+#define MU_DISPLAY_OPTION_LOW_POLY 0x1u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,
@@ -359,6 +368,9 @@ typedef struct MuHostApi {
  *   0x04 word(4)          the stage variant of the match about to start, as MU_GAME_OPTION3_HP_STAGE_*
  *                         bits; the host puts them in option word 3 so a replay records them
  *   0x05                  the pack's StageSwapTable.bin, whole
+ *   0x06 [word(4)]        the CPU training options (MU_GAME_OPTION3_CPU_* bits), the Game tab's store:
+ *                         with the word sets them (offline, not in playback), empty asks; the reply
+ *                         is the word in effect. For the pack's debug menu (shim/mu_hp_menu.c).
  * An empty reply means the pack is not loaded (or the request is out of range). */
 #define MU_HP_COMMAND            0xFAu
 #define MU_HP_OP_DOL_READ        0x01u
@@ -366,6 +378,7 @@ typedef struct MuHostApi {
 #define MU_HP_OP_SET_SETTING     0x03u
 #define MU_HP_OP_STAGE_STATE     0x04u
 #define MU_HP_OP_STAGE_TABLE     0x05u
+#define MU_HP_OP_CPU_WORD        0x06u
 #define MU_HP_SETTINGS_SIZE      24u
 /* Settings block layout. Playlist types are the pack's: 0 the list's first track, 1 random from the
  * list, 2 random original track, 3 random custom track, 4 random of both. */
@@ -376,6 +389,9 @@ typedef struct MuHostApi {
 #define MU_HP_SET_LEGAL_VARIANT  14u   /* 6 bytes: Stadium, Dream Land, Fountain, Yoshi's Story, Final
                                           Destination, Battlefield; 0..14 a variant, 15 and up random */
 #define MU_HP_SET_STAGE_PAGE     20u   /* stage select page, 0..3 */
+#define MU_HP_SET_TRAINING       21u   /* the pack's "SAVE STATES/REPLAYS" switches (shim/mu_lab.c): */
+#define MU_HP_TRAINING_ON        0x01u /*   savestates and recording on the D-pad in Training mode */
+#define MU_HP_TRAINING_LOOP      0x02u /*   a played back recording repeats until a D-pad press */
 
 #define MU_GAME_OPTION_NO_SCREEN_SHAKE 0x1u   /* camera quake offset zeroed before it is applied */
 #define MU_GAME_OPTION_PAL_STOCK_ICONS 0x2u   /* stock row at PAL size and height; lost stocks hide */

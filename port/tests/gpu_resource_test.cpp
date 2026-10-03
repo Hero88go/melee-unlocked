@@ -30,7 +30,7 @@ void loading_close() {}
 namespace slippi { void request_widescreen(bool) {} void request_fod_reflections(bool) {} }
 // These visual setting hooks are not exercised by the resource-pool test. Keep the production
 // D3D12 backend linkable without pulling in the full game core or generated Gecko data.
-namespace gx { void set_hud_scales(int, int, bool) {} }
+namespace gx { void set_hud_scales(int, int, bool) {} void set_low_poly_fighters(bool) {} }
 namespace gecko { bool option_pal_stock_icons = false; }
 // This renderer regression test deliberately links the production D3D12 backend without Media
 // Foundation. Keep its video-background hooks inert so it exercises descriptor/upload behavior.

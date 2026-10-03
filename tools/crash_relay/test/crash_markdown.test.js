@@ -320,3 +320,19 @@ test("new launcher scrubbed text survives the relay's second privacy pass unchan
   assert.ok(report.markdown.includes("[Privacy: 0 private lines omitted]\n" + text));
   assert.match(report.where, /C0000005/);
 });
+
+test("a cut game log keeps its session start lines, scrubbed, before the newest lines", () => {
+  const start = "Melee Unlocked 0.8.69, melee_port.exe\n" +
+                "gecko: no user codes (C:\\Users\\Somebody\\Games\\Melee\\GeckoCodes.ini not found)\n" +
+                "settings: D3D12, frame cap 240, sub-frame off\n" +
+                "cosmetics: 3 disc files overridden\n";
+  const middle = "sim frame 1 took 20.0 ms\n".repeat(40 * 1024);
+  const report = crashMarkdown(zip([["melee_port.log", start + middle + "FATAL: OSPanic at pobj.c:1896"]]));
+  assert.ok(Buffer.byteLength(report, "utf8") <= MAX_MARKDOWN_BYTES);
+  assert.match(report, /Melee Unlocked 0\.8\.69, melee_port\.exe/);
+  assert.match(report, /cosmetics: 3 disc files overridden/);
+  assert.doesNotMatch(report, /Somebody/);
+  assert.match(report, /Earlier input bytes omitted/);
+  assert.match(report, /pobj\.c:1896/);
+  assert.ok(report.indexOf("cosmetics: 3 disc files") < report.indexOf("Earlier input bytes omitted"));
+});

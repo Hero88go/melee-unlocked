@@ -221,6 +221,10 @@ struct Frame {
 void set_hud_scales(int stocks_percent, int damage_percent, bool pal_stocks);
 // The same sizes for the native game (MuHostApi.hud_scales): stock | damage << 8, percent.
 uint32_t hud_scales_packed();
+// "Low poly fighters" (RenderOptions::low_poly_fighters), published the same way: the native game
+// reads it through MuHostApi.display_options, the Static Recomp's parts hook (host.cpp) reads it live.
+void set_low_poly_fighters(bool on);
+bool low_poly_fighters_active();
 // The native game's players (MuHostApi.hud_player), each drawn frame: the Static Recomp reads the
 // same HUD objects from guest RAM (capture_match_hud). Simulation thread.
 void set_native_hud_player(int slot, bool present, int damage, int stocks, float tag_x, float tag_y,

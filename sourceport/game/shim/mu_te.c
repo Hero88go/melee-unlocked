@@ -5,6 +5,7 @@
  * conveniences: an online match and replay playback always play the unmodified rules, so a replay
  * or an opponent never sees them. Tournament Mode keeps only the features tournaments allow. */
 #include "mu_host.h"
+#include "mu_hp.h"
 #include "mu_native.h"
 
 int mu_online_active(void);
@@ -21,6 +22,22 @@ static int te_in_tmce_event(void)
 }
 
 void OSReport(const char* msg, ...);
+int mu_slippi_in_online_mode(void);
+
+/* The 20XX Hack Pack's share of the TE features (MU_HP_TE_OPTIONS, MU_HP_TE_OPTIONS2): its debug
+ * menu (shim/mu_hp_menu.c) switches them without a TE save. The host then passes those bits alone,
+ * without TE itself, so TE's menus and rules stay off. In effect offline with the pack loaded, or in
+ * playback of a replay that recorded them. */
+static int te_hp_share(unsigned int feature, unsigned int share)
+{
+    if ((feature & ~share) != 0 || (mu_game_options() & MU_OPTION_VANILLA)) {
+        return 0;
+    }
+    if (!mu_hp_loaded() && !mu_replay_abi_active()) {
+        return 0;
+    }
+    return !(mu_online_active() || mu_online_pending() || mu_slippi_in_online_mode());
+}
 
 int mu_te(unsigned int feature)
 {
@@ -31,7 +48,10 @@ int mu_te(unsigned int feature)
         OSReport("[20xx] options %08X (online %d, replay %d)\n", reported,
                  mu_online_active() | mu_online_pending() << 1, mu_replay_abi_active());
     }
-    if (!(options & MU_OPTION_TE) || !(options & feature) || (options & MU_OPTION_VANILLA) || te_in_tmce_event()) {
+    if (!(options & feature) || (options & MU_OPTION_VANILLA) || te_in_tmce_event()) {
+        return 0;
+    }
+    if (!(options & MU_OPTION_TE) && !te_hp_share(feature, MU_HP_TE_OPTIONS)) {
         return 0;
     }
     if ((options & MU_OPTION_TE_TOURNAMENT) && !(feature & MU_GAME_OPTION_TE_TOURNAMENT_SAFE)) {
@@ -53,8 +73,6 @@ int mu_te(unsigned int feature)
     return 1;
 }
 
-int mu_slippi_in_online_mode(void);
-
 static int te_on_offline(void)
 {
     const unsigned int options = mu_game_options();
@@ -67,7 +85,10 @@ static int te_on_offline(void)
 int mu_te2(unsigned int feature)
 {
     const unsigned int options2 = mu_game_options2();
-    if (!(options2 & feature) || !te_on_offline() || te_in_tmce_event()) {
+    if (!(options2 & feature) || te_in_tmce_event()) {
+        return 0;
+    }
+    if (!te_on_offline() && !te_hp_share(feature, MU_HP_TE_OPTIONS2)) {
         return 0;
     }
     if ((mu_game_options() & MU_OPTION_TE_TOURNAMENT) && !(feature & MU_GAME_OPTION2_TE_TOURNAMENT_SAFE)) {

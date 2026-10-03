@@ -283,7 +283,9 @@ std::string mode_problem(const Json& receiver,const Json& sender,const std::stri
   const auto mine=receiver.value("build",std::string()), theirs=sender.value("build",std::string());
   if(mode=="vanilla") {
     if(!open_to(receiver,"vanilla")) return "mode_closed";
-    if(mine!=theirs) return build_version(mine)!=build_version(theirs)?"version":"build";
+    // Source Port and Static Recomp play each other online (one netcode, checked against each other
+    // before every release), so the Game Build may differ; only the version has to match.
+    if(build_version(mine)!=build_version(theirs)) return "version";
     return {};
   }
   // Mods run on Static Recomp whichever Game Build either player picked, so only the version counts.
