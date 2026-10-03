@@ -5,8 +5,10 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <bcrypt.h>
 #include <winhttp.h>
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <fstream>
@@ -16,6 +18,7 @@
 #include <vector>
 
 #pragma comment(lib, "winhttp.lib")
+#pragma comment(lib, "bcrypt.lib")
 
 namespace host::updater {
 namespace {
@@ -23,10 +26,12 @@ namespace {
 const char* REPO_API = "https://api.github.com/repos/hero88go/melee-unlocked/releases?per_page=100";
 std::atomic<State> g_state{State::Idle};
 std::mutex g_mutex;
-std::string g_current, g_latest, g_zip_url, g_message, g_zip_path;
+std::string g_current, g_latest, g_zip_url, g_message, g_zip_path, g_zip_digest;
 size_t g_zip_size = 0;
 std::thread g_thread;
-struct Download { Release release; std::string root_name, legacy_url, experimental_url; size_t legacy_size = 0, experimental_size = 0; };
+// `*_digest`: the SHA-256 GitHub lists for the asset (lowercase hex), empty when the release has none.
+struct Download { Release release; std::string root_name, legacy_url, experimental_url, legacy_digest, experimental_digest;
+                  size_t legacy_size = 0, experimental_size = 0; };
 std::vector<Download> g_releases;
 std::atomic<RollbackState> g_rollback_state{RollbackState::Idle};
 std::string g_rollback_message, g_rollback_folder;
@@ -34,6 +39,41 @@ std::thread g_rollback_thread;
 
 std::wstring widen(const std::string& s) { int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0); std::wstring w(n ? n - 1 : 0, 0); if (n) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n); return w; }
 void set_message(const std::string& m) { std::lock_guard<std::mutex> lk(g_mutex); g_message = m; }
+
+std::string sha256_hex(const std::string& data) {
+  BCRYPT_ALG_HANDLE algorithm = nullptr; BCRYPT_HASH_HANDLE hash = nullptr;
+  unsigned char digest[32]{};
+  bool ok = BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) >= 0 &&
+            BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) >= 0;
+  for (size_t at = 0; ok && at < data.size(); at += 1u << 30) {
+    const ULONG part = (ULONG)std::min<size_t>(data.size() - at, 1u << 30);
+    ok = BCryptHashData(hash, (PUCHAR)data.data() + at, part, 0) >= 0;
+  }
+  ok = ok && BCryptFinishHash(hash, digest, sizeof digest, 0) >= 0;
+  if (hash) BCryptDestroyHash(hash);
+  if (algorithm) BCryptCloseAlgorithmProvider(algorithm, 0);
+  if (!ok) return {};
+  static const char* hex = "0123456789abcdef";
+  std::string out;
+  for (unsigned char b : digest) { out += hex[b >> 4]; out += hex[b & 15]; }
+  return out;
+}
+// GitHub's "digest" for a release asset ("sha256:<hex>"), as lowercase hex; empty if absent or another kind.
+std::string asset_digest(const nlohmann::json& asset) {
+  std::string value = asset.value("digest", std::string());
+  if (value.rfind("sha256:", 0) != 0 || value.size() != 7 + 64) return {};
+  value.erase(0, 7);
+  for (char& c : value) {
+    if (c >= 'A' && c <= 'F') c = char(c - 'A' + 'a');
+    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return {};
+  }
+  return value;
+}
+// A download that does not match the digest the release lists is refused (size alone cannot tell a
+// damaged archive of the same length). Releases without a listed digest keep the size check only.
+bool digest_matches(const std::string& body, const std::string& digest) {
+  return digest.empty() || sha256_hex(body) == digest;
+}
 
 // GET with redirects (GitHub release assets redirect to a CDN). Returns the body.
 bool http_get(const std::string& url, std::string* out, int* status) {
@@ -52,7 +92,8 @@ bool http_get(const std::string& url, std::string* out, int* status) {
     const std::wstring request_path = std::wstring(path, uc.dwUrlPathLength) + std::wstring(extra, uc.dwExtraInfoLength);
     HINTERNET req = WinHttpOpenRequest(conn, L"GET", request_path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0);
     if (req) {
-      DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
+      // Redirects are followed (release assets move to a CDN), but never from HTTPS down to HTTP.
+      DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
       WinHttpSetOption(req, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof redirect);
       if (WinHttpSendRequest(req, L"User-Agent: MeleeUnlocked\r\nAccept: application/vnd.github+json\r\n", (DWORD)-1, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) && WinHttpReceiveResponse(req, nullptr)) {
         DWORD code = 0, size = sizeof code;
@@ -186,9 +227,9 @@ void check(const std::string& current_version, bool install_experimental) {
         const std::string name = a.value("name", std::string());
         const std::string url = a.value("browser_download_url", std::string());
         if (!release_url(url)) continue;
-        if (name == "MeleeUnlocked-" + tag + "-win64.zip") { d.legacy_url = url; d.legacy_size = a.value("size", size_t(0)); d.release.legacy = true; }
-        if (name == "MeleePort-" + tag + "-win64.zip") { d.root_name = "MeleePort-" + tag; d.legacy_url = url; d.legacy_size = a.value("size", size_t(0)); d.release.legacy = true; }
-        if (name == "MeleeUnlocked-" + tag + "-DLSS5-Experimental.zip") { d.experimental_url = url; d.experimental_size = a.value("size", size_t(0)); d.release.experimental = true; }
+        if (name == "MeleeUnlocked-" + tag + "-win64.zip") { d.legacy_url = url; d.legacy_size = a.value("size", size_t(0)); d.legacy_digest = asset_digest(a); d.release.legacy = true; }
+        if (name == "MeleePort-" + tag + "-win64.zip") { d.root_name = "MeleePort-" + tag; d.legacy_url = url; d.legacy_size = a.value("size", size_t(0)); d.legacy_digest = asset_digest(a); d.release.legacy = true; }
+        if (name == "MeleeUnlocked-" + tag + "-DLSS5-Experimental.zip") { d.experimental_url = url; d.experimental_size = a.value("size", size_t(0)); d.experimental_digest = asset_digest(a); d.release.experimental = true; }
       }
       if (d.release.legacy || d.release.experimental) catalog.push_back(std::move(d));
       if (!j.is_object()) j = r;
@@ -196,7 +237,7 @@ void check(const std::string& current_version, bool install_experimental) {
     if (!j.is_object()) { set_message("Update check failed (bad response)"); g_state = State::Failed; return; }
     std::string tag = j["tag_name"].get<std::string>();
     if (!tag.empty() && tag[0] == 'v') tag.erase(0, 1);
-    std::string zip;
+    std::string zip, zip_digest;
     size_t zip_size = 0;
     char module[MAX_PATH]{}; GetModuleFileNameA(nullptr, module, MAX_PATH);
     std::string dir(module); auto slash = dir.find_last_of("\\/");
@@ -209,15 +250,21 @@ void check(const std::string& current_version, bool install_experimental) {
     const std::string wanted = "MeleeUnlocked-" + tag + "-win64.zip";
     const std::string fallback = "MeleeUnlocked-" + tag + "-DLSS5-Experimental.zip";
     if (j.count("assets") && j["assets"].is_array()) {
-      for (auto& a : j["assets"]) if (a.is_object() && a.value("name", std::string()) == wanted) { zip = a.value("browser_download_url", std::string()); zip_size = a.value("size", size_t(0)); break; }
+      for (auto& a : j["assets"]) if (a.is_object() && a.value("name", std::string()) == wanted) { zip = a.value("browser_download_url", std::string()); zip_size = a.value("size", size_t(0)); zip_digest = asset_digest(a); break; }
       if (zip.empty())
-        for (auto& a : j["assets"]) if (a.is_object() && a.value("name", std::string()) == fallback) { zip = a.value("browser_download_url", std::string()); zip_size = a.value("size", size_t(0)); break; }
+        for (auto& a : j["assets"]) if (a.is_object() && a.value("name", std::string()) == fallback) { zip = a.value("browser_download_url", std::string()); zip_size = a.value("size", size_t(0)); zip_digest = asset_digest(a); break; }
     }
-    { std::lock_guard<std::mutex> lk(g_mutex); g_latest = tag; g_zip_url = zip; g_zip_size = zip_size; g_releases = std::move(catalog); }
+    if (!zip.empty() && !release_url(zip)) zip.clear();   // the same origin rule as the version list
+    { std::lock_guard<std::mutex> lk(g_mutex); g_latest = tag; g_zip_url = zip; g_zip_size = zip_size; g_zip_digest = zip_digest; g_releases = std::move(catalog); }
     if ((newer(tag, g_current) || install_experimental) && !zip.empty()) { set_message(install_experimental ? "Installing experimental build: " + tag : "Update available: " + tag); g_state = State::UpdateAvailable; host::log("updater: version %s available (running %s)", tag.c_str(), g_current.c_str()); }
     else if (zip.empty() && install_experimental) { set_message("Experimental download missing from the latest release"); g_state = State::Failed; }
     else { set_message("Up to date (" + g_current + ")"); g_state = State::UpToDate; }
   });
+}
+
+bool download_matches(const std::string& body, const std::string& sha256_hex) { return digest_matches(body, sha256_hex); }
+bool archive_inside(const std::string& zip_path_utf8, const std::string& root) {
+  return archive_paths_safe(std::filesystem::u8path(zip_path_utf8), root);
 }
 
 void shutdown() { join(); if (g_rollback_thread.joinable()) g_rollback_thread.join(); }
@@ -267,6 +314,9 @@ bool install_release(const std::string& version, bool experimental, const std::s
     std::string body; int status = 0;
     if (!http_get(url, &body, &status) || status != 200 || body.size() < 1000000 ||
         (expected && body.size() != expected)) { fail("Version download failed or was incomplete"); return; }
+    if (!digest_matches(body, experimental ? chosen.experimental_digest : chosen.legacy_digest)) {
+      fail("Version download is damaged (checksum does not match the release)"); return;
+    }
     const fs::path zip = stage / "release.zip";
     { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) { fail("Cannot save version archive"); return; } }
     const fs::path unpack = stage / "unpack";
@@ -291,10 +341,14 @@ void download_and_install() {
   g_state = State::Downloading;
   set_message("Downloading update...");
   g_thread = std::thread([] {
-    std::string url; size_t expected;
-    { std::lock_guard<std::mutex> lk(g_mutex); url = g_zip_url; expected = g_zip_size; }
+    std::string url, digest, tag; size_t expected;
+    { std::lock_guard<std::mutex> lk(g_mutex); url = g_zip_url; expected = g_zip_size; digest = g_zip_digest; tag = g_latest; }
     std::string body; int status = 0;
     if (!http_get(url, &body, &status) || status != 200 || body.size() < 1000000 || (expected && body.size() != expected)) { set_message("Download failed or incomplete"); g_state = State::Failed; return; }
+    if (!digest_matches(body, digest)) {
+      set_message("Download is damaged (checksum does not match the release); try again"); g_state = State::Failed;
+      host::log("updater: %zu bytes downloaded, SHA-256 does not match the release's", body.size()); return;
+    }
     char exe[MAX_PATH]{}; DWORD length = GetModuleFileNameA(nullptr, exe, MAX_PATH);
     if (!length || length >= MAX_PATH) { set_message("Cannot resolve application path"); g_state = State::Failed; return; }
     std::string dir(exe); auto separator = dir.find_last_of("\\/");
@@ -302,6 +356,13 @@ void download_and_install() {
     dir.resize(separator);
     std::string zip = dir + "\\update.zip", bat = dir + "\\update.bat";
     { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) { set_message("Cannot write update.zip"); g_state = State::Failed; return; } }
+    // The same entry check the side-by-side install makes: every path inside the release folder,
+    // none absolute, with a drive or with "..".
+    if (!archive_paths_safe(zip, "MeleeUnlocked-" + tag) && !archive_paths_safe(zip, "MeleePort-" + tag)) {
+      std::error_code removed; std::filesystem::remove(zip, removed);
+      set_message("The update archive has unexpected contents; not installed"); g_state = State::Failed;
+      host::log("updater: update.zip rejected, an entry is outside its release folder"); return;
+    }
     // Relaunch exactly what was started, so this works the same from the release batch file, the
     // launcher, or a development shortcut with its own arguments. Percent signs would be eaten by
     // the batch interpreter.

@@ -1731,6 +1731,16 @@ static int melee_main(int argc, char** argv) {
   host::audio_set_remember(!hidden);
   host::audio_open(o.volume, o.audio_dump.c_str(), !headless);
   arm_test_crash(automated);   // no-op unless MELEE_TEST_CRASH is set on a hidden run
+  // The settings that decide how a match feels, in one line, so a report on stutter or lag says them.
+  {
+    static const char* const subframes[] = {"off", "extrapolate", "interpolate", "authored", "authored + interpolate"};
+    host::log("settings: %s, frame cap %s, sub-frame %s, internal resolution %s, upscaler %d, vsync %s, %s",
+              gfx.api == gx::RenderApi::D3D11 ? "D3D11" : "D3D12",
+              gfx.fps_cap < 0 ? "monitor" : gfx.fps_cap == 0 ? "off" : std::to_string((int)gfx.fps_cap).c_str(),
+              subframes[std::min<size_t>((size_t)gfx.subframe, 4)],
+              gfx.efb_scale ? ("x" + std::to_string(gfx.efb_scale)).c_str() : "auto", gfx.dlss_mode,
+              gfx.vsync ? "on" : "off", gfx.exclusive_fullscreen ? "exclusive fullscreen" : "windowed or borderless");
+  }
 
 #ifdef MELEE_SOURCE_PORT
   // The game from source: nothing below this point applies (it is the recompiled guest's boot).

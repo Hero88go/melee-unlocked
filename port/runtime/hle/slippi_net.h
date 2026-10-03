@@ -202,6 +202,9 @@ class NetplayClient {
   std::unique_ptr<PlayerSelections> ReadChatMessage(Packet& p);
 
   std::mutex pad_mutex_, ack_mutex_, async_mutex_;
+  // timing_mutex_: last_frame_timing_, has_game_started_, frame_offset_data_ (network thread and game
+  // thread). chat_mutex_: remote_chat_message_selection_.
+  std::mutex timing_mutex_, chat_mutex_;
   std::deque<std::unique_ptr<Packet>> async_queue_;
   _ENetHost* client_ = nullptr;
   std::vector<_ENetPeer*> server_;
