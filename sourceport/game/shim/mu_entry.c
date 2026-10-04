@@ -33,10 +33,11 @@ _Static_assert(MU_OPTION_LAB_DI_MASK == MU_GAME_OPTION_LAB_DI_MASK &&
 unsigned int mu_game_options(void)
 {
 #ifdef MU_NO_SLIPPI
-    /* The retail game whatever host loads this library: the vanilla switch on (the game's own music
-     * stream, no added menu rows), the online menus off. */
-    return ((mu_host && mu_host->game_options ? mu_host->game_options() : 0) | MU_GAME_OPTION_VANILLA) &
-           ~MU_GAME_OPT_SLIPPI_MENUS;
+    /* Only the online menus are forced off. The vanilla switch is the host's to pass, as in the
+     * normal build: forcing it on here also switched off the training packs, which have nothing to
+     * do with the online service this build leaves out. Music stays the game's own stream
+     * (mu_jukebox_music in mu_audio.c). */
+    return (mu_host && mu_host->game_options ? mu_host->game_options() : 0) & ~MU_GAME_OPT_SLIPPI_MENUS;
 #else
     return mu_host && mu_host->game_options ? mu_host->game_options() : 0;
 #endif

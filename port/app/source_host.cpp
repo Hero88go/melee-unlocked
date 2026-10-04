@@ -2869,6 +2869,7 @@ int run(void (*shutdown)(int)) {
   host::game_image_size = nt->OptionalHeader.SizeOfImage;
   auto entry = (MuGameEntry)GetProcAddress(module, "mu_game_entry");
   user_gecko::set_native_writer((user_gecko::NativeWrite)GetProcAddress(module, "mu_user_gecko_write"));
+  user_gecko::set_native_reader((user_gecko::NativeRead)GetProcAddress(module, "mu_user_gecko_read"));
   if (!entry) host::die("%s has no mu_game_entry", g_dll.c_str());
   static MuHostApi api = make_host();
   if (entry(&api, &g_game) != 0) host::die("%s refused host API version %u", g_dll.c_str(), api.version);

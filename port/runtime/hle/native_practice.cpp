@@ -65,6 +65,8 @@ int g_matchmaking_state = 0;
 uint32_t g_search_ticks = 0;
 uint32_t g_generation = 0;
 uint32_t g_return_ticks = 0;
+constexpr uint32_t kReturnTimeoutTicks = 600;   // ten seconds of frames
+uint32_t g_return_wait_ticks = 0;   // since the return was asked for, whatever scene the game is in
 uint8_t g_origin_major = 1;
 bool g_restore_training = false;
 Phase g_logged_phase = Phase::Idle;
@@ -240,6 +242,7 @@ void run_decision(const Decision& d) {
     if (g_content_bridge) g_content_bridge(-1, true);
     request_major(g_origin_major);
     g_return_ticks = 0;
+    g_return_wait_ticks = 0;
     host::log("native practice: returning to offline scene %02X after pre-match disconnect",
               g_origin_major);
   }
@@ -500,6 +503,19 @@ void tick() {
       ++g_generation;
       host::log("native practice: offline scene %02X restored%s", g_origin_major,
                 g_restore_training ? " with Training configuration" : "");
+    }
+    // The return is a request to the game, and the player can leave for somewhere else before it
+    // lands (or it never lands). Without this the phase stayed for the rest of the session, with
+    // its notice on screen in every later scene, online matches included.
+    // Time spent in the origin scene itself (Training's character select) is not counted: the
+    // fields are restored when its match starts, however long the player takes there.
+    else if (slippi::online::is_online_match() ||
+             (current_major() != g_origin_major && ++g_return_wait_ticks > kReturnTimeoutTicks)) {
+      host::log("native practice: return to offline scene %02X given up (%s)", g_origin_major,
+                slippi::online::is_online_match() ? "an online match started" : "timed out");
+      g_lifecycle.practice_restored();
+      clear_search_metadata();
+      ++g_generation;
     }
   }
 

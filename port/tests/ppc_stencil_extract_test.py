@@ -70,12 +70,14 @@ def coff(model):
         payload.extend(b"".join(struct.pack("<IIH", *r) for r in section["relocations"]))
         headers.extend(struct.pack("<8sIIIIIIHHI", section["name"].encode("ascii"), 0, 0,
                                    len(section["code"]), raw_at, reloc_at, 0,
-                                   len(section["relocations"]), 0, 0x60000020))
+                                   len(section["relocations"]), 0, section.get("flags", 0x60000020)))
     symbols = bytearray()
     for i, name in enumerate(model["functions"]):
         symbols.extend(symbol_name(name) + struct.pack("<IhHBB", 0, i + 1, 0x20, 2, 0))
     for name in model["dependencies"]:
         symbols.extend(symbol_name(name) + struct.pack("<IhHBB", 0, 0, 0, 2, 0))
+    for name, value, section in model.get("defined", []):  # static symbols inside a section
+        symbols.extend(symbol_name(name) + struct.pack("<IhHBB", value, section, 0, 3, 0))
     struct.pack_into("<I", strings, 0, len(strings))
     symbol_at = 20 + len(headers) + len(payload)
     header = struct.pack("<HHIIIHH", 0x8664, section_count, 0, symbol_at, len(symbols) // 18, 0, 0)
@@ -415,7 +417,7 @@ class ExtractTest(unittest.TestCase):
         self.rejected("unwind metadata")
 
     def test_unwind_metadata_on_any_stencil(self):
-        for target in (1, len(self.model["functions"]) - 1):
+        for target in (1, self.model["functions"].index("mu_stencil_exit")):
             with self.subTest(target=target):
                 self.setUp()
                 self.model["sections"].append({"name": ".pdata", "code": b"\0" * 12,
@@ -436,6 +438,260 @@ class ExtractTest(unittest.TestCase):
         offset, target, _ = self.section("Add")["relocations"][0]
         self.section("Add")["relocations"][0] = (offset, target, 5)
         self.assertNotEqual(original, extractor.extract(coff(self.model))["sha256"])
+
+    # ---- call-capable stencils: unwind data, host symbols, constants ----
+    def add_symbol(self, name):
+        self.model["dependencies"].append(name)
+        return len(self.model["functions"]) + len(self.model["dependencies"]) - 1
+
+    def add_defined(self, name, value, section_number):
+        # Defined symbols follow every undefined one, so add all host symbols first.
+        self.model.setdefault("defined", []).append((name, value, section_number))
+        return len(self.model["functions"]) + len(self.model["dependencies"]) + len(self.model["defined"]) - 1
+
+    def add_section(self, name, code, relocations=(), flags=0x40300040):
+        self.model["sections"].append({"name": name, "code": code, "relocations": list(relocations), "flags": flags})
+        return len(self.model["sections"])  # 1-based section number
+
+    def add_unwind(self, operation, info, begin=0, end=None, extra=()):
+        """A .pdata record and its .xdata for one stencil."""
+        function = self.names.index(operation)
+        size = len(self.section(operation)["code"]) if end is None else end
+        xdata_number = self.add_section(".xdata", info, extra)
+        unwind_symbol = self.add_defined("$unwind$%d" % xdata_number, 0, xdata_number)
+        self.add_section(".pdata", struct.pack("<III", begin, size, 0),
+                         [(0, function, 3), (4, function, 3), (8, unwind_symbol, 3)])
+        return unwind_symbol
+
+    PLAIN_UNWIND = bytes([1, 4, 1, 0, 4, 0x42, 0, 0])  # version 1, prolog 4, one code: sub rsp,28h
+
+    def test_call_capable_stencil_keeps_its_unwind_data(self):
+        self.add_unwind("Stw", self.PLAIN_UNWIND)
+        table = extractor.extract(coff(self.model))
+        item = table["stencils"][self.names.index("Stw")]
+        size = len(self.section("Stw")["code"])
+        self.assertEqual(item["unwind"], [{"begin": 0, "end": size, "info": self.PLAIN_UNWIND.hex(), "parent": -1}])
+        header = extractor.render_header(table)
+        self.assertIn("UnwindRecord unwind_Stw[]", header)
+        self.assertIn("unwind_Stw, 1}", header)
+        self.assertNotIn("unwind", table["stencils"][self.names.index("Add")])
+
+    def test_unwind_data_changes_the_hash(self):
+        original = extractor.extract(coff(self.model))["sha256"]
+        self.add_unwind("Stw", self.PLAIN_UNWIND)
+        self.assertNotEqual(original, extractor.extract(coff(self.model))["sha256"])
+
+    def test_unsupported_unwind_data_is_rejected(self):
+        for info, message in (
+                (bytes([2, 4, 1, 0, 4, 0x42, 0, 0]), "version or flags"),             # version 2
+                (bytes([1 | (1 << 3), 4, 1, 0, 4, 0x42, 0, 0]), "version or flags"),  # exception handler
+                (bytes([1 | (2 << 3), 4, 1, 0, 4, 0x42, 0, 0]), "version or flags"),  # termination handler
+                (bytes([1, 4, 1, 5, 4, 0x42, 0, 0]), "frame register"),
+                (bytes([1, 4, 1, 0, 4, 0x03, 0, 0]), "unwind code"),                  # UWOP_SET_FPREG
+                (bytes([1, 4, 1, 0, 4, 0x0A, 0, 0]), "unwind code"),                  # UWOP_PUSH_MACHFRAME
+                (bytes([1, 4, 1, 0, 9, 0x42, 0, 0]), "unwind code"),                  # a code after the prolog
+                (bytes([1, 200, 1, 0, 4, 0x42, 0, 0]), "prolog longer"),
+                (bytes([1, 4, 3, 0, 4, 0x42, 0, 0]), "truncated"),
+                (bytes([1, 4, 2, 0, 4, 0x42, 4, 0x01]), "truncated unwind codes"),    # ALLOC_LARGE cut short
+                (bytes([1, 4]), "truncated"),
+        ):
+            with self.subTest(info=info):
+                self.setUp()
+                self.add_unwind("Stw", info)
+                self.rejected(message)
+
+    def test_unwind_record_must_cover_the_stencil(self):
+        size = len(self.section("Stw")["code"])
+        for begin, end in ((1, size), (0, size - 1), (0, size + 4)):
+            with self.subTest(begin=begin, end=end):
+                self.setUp()
+                self.add_unwind("Stw", self.PLAIN_UNWIND, begin, end)
+                self.rejected("does not cover the whole stencil")
+
+    def test_unwind_data_with_a_handler_relocation_is_rejected(self):
+        handler = self.add_symbol("__CxxFrameHandler4")
+        self.add_unwind("Stw", self.PLAIN_UNWIND + b"\0" * 4, extra=[(4, handler, 3)])
+        self.rejected("relocation")
+
+    def test_unwind_data_must_live_in_xdata(self):
+        function = self.names.index("Stw")
+        size = len(self.section("Stw")["code"])
+        number = self.add_section(".rdata", self.PLAIN_UNWIND)
+        symbol = self.add_defined("$unwind$x", 0, number)
+        self.add_section(".pdata", struct.pack("<III", 0, size, 0), [(0, function, 3), (4, function, 3), (8, symbol, 3)])
+        self.rejected("not in .xdata")
+
+    def chained(self, parent_begin=0, parent_end=None):
+        """Two records for Stmw: [0, split) plain and [split, size) chained to the first."""
+        function = self.names.index("Stmw")
+        size = len(self.section("Stmw")["code"])
+        split = size // 2
+        first_unwind = self.add_unwind("Stmw", self.PLAIN_UNWIND, 0, split)
+        chained = bytes([1 | (4 << 3), 0, 0, 0]) + struct.pack(
+            "<III", parent_begin, split if parent_end is None else parent_end, 0)
+        number = self.add_section(".xdata", chained, [(4, function, 3), (8, function, 3), (12, first_unwind, 3)])
+        symbol = self.add_defined("$chain$%d" % number, 0, number)
+        self.add_section(".pdata", struct.pack("<III", split, size, 0), [(0, function, 3), (4, function, 3), (8, symbol, 3)])
+        return split, size
+
+    def test_chained_unwind_records_are_kept_in_order(self):
+        split, size = self.chained()
+        table = extractor.extract(coff(self.model))
+        records = table["stencils"][self.names.index("Stmw")]["unwind"]
+        self.assertEqual([(r["begin"], r["end"], r["parent"]) for r in records], [(0, split, -1), (split, size, 0)])
+        self.assertEqual(records[1]["info"], (bytes([1 | (4 << 3), 0, 0, 0]) + b"\0" * 12).hex())
+        self.assertIn("unwind_Stmw, 2}", extractor.render_header(table))
+
+    def test_chained_unwind_record_needs_its_parent(self):
+        self.chained(parent_begin=4)
+        self.rejected("without its parent")
+
+    def test_unwind_records_must_not_leave_a_gap(self):
+        function = self.names.index("Stmw")
+        size = len(self.section("Stmw")["code"])
+        self.add_unwind("Stmw", self.PLAIN_UNWIND, 0, 8)
+        number = self.add_section(".xdata", self.PLAIN_UNWIND)
+        symbol = self.add_defined("$unwind$b", 0, number)
+        self.add_section(".pdata", struct.pack("<III", 12, size, 0), [(0, function, 3), (4, function, 3), (8, symbol, 3)])
+        self.rejected("does not cover the whole stencil")
+
+    def test_chained_unwind_record_without_its_relocations_is_rejected(self):
+        function = self.names.index("Stmw")
+        size = len(self.section("Stmw")["code"])
+        self.add_unwind("Stmw", self.PLAIN_UNWIND, 0, 8)
+        number = self.add_section(".xdata", bytes([1 | (4 << 3), 0, 0, 0]) + b"\0" * 12)
+        symbol = self.add_defined("$chain$b", 0, number)
+        self.add_section(".pdata", struct.pack("<III", 8, size, 0), [(0, function, 3), (4, function, 3), (8, symbol, 3)])
+        self.rejected("chained unwind relocations")
+
+    def refer(self, operation, symbol, kind=4, prefix=b"\xE8", addend=0):
+        """Prepends a reference to a symbol to a stencil."""
+        section = self.section(operation)
+        shift = len(prefix) + 4
+        section["relocations"] = [(len(prefix), symbol, kind)] + [
+            (offset + shift, target, k) for offset, target, k in section["relocations"]]
+        section["code"] = prefix + struct.pack("<i", addend) + section["code"]
+
+    MMIO_WRITE = "?mmio_write@ppc@@YAXAEAUContext@1@IIH@Z"
+
+    def test_listed_host_call_in_a_call_capable_stencil(self):
+        self.refer("Stw", self.add_symbol(self.MMIO_WRITE))
+        table = extractor.extract(coff(self.model))
+        self.assertEqual(table["externals"], [{"name": self.MMIO_WRITE, "kind": "Direct"}])
+        first = table["stencils"][self.names.index("Stw")]["relocations"][0]
+        self.assertEqual((first["hole"], first["index"], first["offset"], first["bias"]), ("External", 0, 1, 0))
+        header = extractor.render_header(table)
+        self.assertIn("reinterpret_cast<const void*>(&ppc::mmio_write), ExternalKind::Direct", header)
+        self.assertIn("externals, 1", header)
+
+    def test_host_symbols_are_numbered_once(self):
+        write = self.add_symbol(self.MMIO_WRITE)
+        self.refer("Stw", write)
+        self.refer("Stwu", write)
+        self.refer("Lwz", self.add_symbol("?mmio_read@ppc@@YAIAEAUContext@1@IH@Z"))
+        table = extractor.extract(coff(self.model))
+        self.assertEqual(sorted(item["name"].split("@")[0] for item in table["externals"]), ["?mmio_read", "?mmio_write"])
+        indices = {table["stencils"][self.names.index(name)]["relocations"][0]["index"] for name in ("Stw", "Stwu")}
+        self.assertEqual(len(indices), 1)
+
+    def test_unlisted_host_call_in_a_call_capable_stencil_is_rejected(self):
+        self.refer("Stw", self.add_symbol("?fatal@ppc@@YAXAEAUContext@1@PEBDI@Z"))
+        self.rejected(r"unexpected stencil dependency in mu_stencil_stw: \?fatal")
+
+    def test_listed_host_call_in_a_leaf_stencil_is_rejected(self):
+        for operation in ("Add", "Fadd", "Backedge"):
+            with self.subTest(operation=operation):
+                self.setUp()
+                self.refer(operation, self.add_symbol("?call@ppc@@YAXAEAUContext@1@PEAEI@Z"))
+                self.rejected("unexpected stencil dependency")
+
+    def test_host_call_with_an_addend_is_rejected(self):
+        self.refer("Stw", self.add_symbol(self.MMIO_WRITE), addend=8)
+        self.rejected("with an addend")
+
+    def test_image_relative_host_data(self):
+        versions = self.add_symbol("?g_ram_versions@ppc@@3PAU?$atomic@I@std@@A")
+        image = self.add_symbol("__ImageBase")
+        self.refer("Stw", versions, kind=3, prefix=b"\x8B\x84\x81", addend=4)
+        self.refer("Stw", image, prefix=b"\x4C\x8D\x0D")
+        table = extractor.extract(coff(self.model))
+        holes = table["stencils"][self.names.index("Stw")]["relocations"][:2]
+        self.assertEqual((holes[0]["hole"], holes[0]["addend"]), ("External", 0))
+        self.assertEqual((holes[1]["hole"], holes[1]["addend"], holes[1]["bias"]), ("ExternalRva", 4, 0))
+        self.assertEqual([item["kind"] for item in table["externals"]], ["ImageBase", "Direct"])
+        # The addend lives in the table, not in the copied bytes.
+        code = bytes.fromhex(table["stencils"][self.names.index("Stw")]["code"])
+        self.assertEqual(code[holes[1]["offset"]:holes[1]["offset"] + 4], b"\0\0\0\0")
+        self.assertIn('{"__ImageBase", nullptr, ExternalKind::ImageBase}', extractor.render_header(table))
+
+    def test_image_relative_reference_to_the_image_base_or_a_slot_is_rejected(self):
+        for name in ("__ImageBase", "__imp_trunc"):
+            with self.subTest(name=name):
+                self.setUp()
+                self.refer("Stw", self.add_symbol(name), kind=3, prefix=b"\x8B\x84\x81")
+                self.rejected("image-relative reference")
+
+    def test_absolute_relocation_to_a_host_symbol_is_rejected(self):
+        self.refer("Stw", self.add_symbol(self.MMIO_WRITE), kind=1)
+        self.rejected("unsupported relocation")
+
+    def test_import_pointer_becomes_a_slot(self):
+        self.refer("Fctiwz", self.add_symbol("__imp_trunc"), prefix=b"\xFF\x15")
+        table = extractor.extract(coff(self.model))
+        self.assertEqual(table["externals"], [{"name": "__imp_trunc", "kind": "Slot"}])
+        self.assertIn("ExternalKind::Slot", extractor.render_header(table))
+
+    def constant(self, operation, data, flags=0x40400040, name=".rdata", relocations=(), addend=0):
+        number = self.add_section(name, data, relocations, flags)
+        self.refer(operation, self.add_defined("__real@%d" % number, 0, number), prefix=b"\xF2\x0F\x10\x05", addend=addend)
+
+    def test_compiler_constant_travels_with_the_table(self):
+        self.constant("Fctiwz", struct.pack("<d", 2147483647.0))
+        table = extractor.extract(coff(self.model))
+        self.assertEqual(table["constants"], [{"bytes": struct.pack("<d", 2147483647.0).hex(), "alignment": 8}])
+        first = table["stencils"][self.names.index("Fctiwz")]["relocations"][0]
+        self.assertEqual((first["hole"], first["index"], first["addend"]), ("Constant", 0, 0))
+        header = extractor.render_header(table)
+        self.assertIn("Constant constants[]", header)
+        self.assertIn("constants, 1", header)
+
+    def test_equal_constants_are_stored_once(self):
+        self.constant("Fctiwz", struct.pack("<d", 1.0))
+        self.constant("Fctiw", struct.pack("<d", 1.0))
+        self.constant("Fsel", struct.pack("<d", -0.0))
+        self.assertEqual(len(extractor.extract(coff(self.model))["constants"]), 2)
+
+    def test_constant_offset_is_kept_and_bounded(self):
+        self.constant("Fctiwz", b"\0" * 16, addend=8)
+        table = extractor.extract(coff(self.model))
+        self.assertEqual(table["stencils"][self.names.index("Fctiwz")]["relocations"][0]["addend"], 8)
+        self.setUp()
+        self.constant("Fctiwz", b"\0" * 16, addend=16)
+        self.rejected("outside its section")
+
+    def test_data_that_is_not_a_constant_is_rejected(self):
+        for kwargs in ({"flags": 0xC0400040},                       # writable
+                       {"flags": 0x60400020},                       # code
+                       {"name": ".data"},
+                       {"relocations": [(0, 0, 1)]},                # a constant holding an address
+                       {"data": b"\0" * 80}):                       # too large to be a constant
+            with self.subTest(kwargs=kwargs):
+                self.setUp()
+                kwargs = dict(kwargs)
+                self.constant("Fctiwz", kwargs.pop("data", b"\0" * 8), **kwargs)
+                self.rejected("unexpected stencil dependency in mu_stencil_fctiwz")
+
+    def test_constant_in_a_leaf_stencil_is_rejected(self):
+        self.constant("Fadd", struct.pack("<d", 1.0))
+        self.rejected("unexpected stencil dependency in mu_stencil_fadd")
+
+    def test_call_capable_rows_are_the_same_in_the_runtime_header(self):
+        text = (ROOT / "port/runtime/ppc/stencil_format.h").read_text(encoding="utf-8")
+        body = text.split("#define MU_STENCIL_OPERATIONS(X)", 1)[1].split("enum class Operation", 1)[0]
+        marked = {name for name, letters in re.findall(r"X\((\w+),\s*([A-Z0-9|]+)\)", body) if "C" in letters.split("|")}
+        self.assertEqual(marked, extractor.MAY_CALL)
+        self.assertNotIn("Add", marked)
+        self.assertIn("Stw", marked)
 
 
 if __name__ == "__main__":

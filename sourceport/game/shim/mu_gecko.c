@@ -43,7 +43,7 @@ void mu_general_codes_boot(void)
      * spawns, UCF 0.84 and the rest), offline and in a network match: both sides of a match are
      * this build, so they agree. The host's vanilla option still switches off what it gates
      * elsewhere (the host music player, the training packs), which this build does not have. */
-    general_codes = 1;
+    general_codes = (mu_game_options() & MU_OPTION_VANILLA) == 0;
 #else
     general_codes = (mu_game_options() & MU_OPTION_VANILLA) == 0;
 #endif
@@ -397,5 +397,29 @@ __declspec(dllexport) int mu_user_gecko_write(unsigned int addr, const unsigned 
         return 0;
     for (k = 0; k < len; ++k)
         t->native[gecko_native_offset(t->layout, addr - t->addr + k)] = bytes[k];
+    return 1;
+}
+
+/* The same for a read: `len` bytes of the native variable at console address `addr`, handed back
+ * big-endian. The same three results as the write. */
+__declspec(dllexport) int mu_user_gecko_read(unsigned int addr, unsigned char* bytes, unsigned int len)
+{
+    unsigned int lo = 0, hi = sizeof gecko_targets / sizeof gecko_targets[0], k;
+    const MuGeckoTarget* t;
+
+    if (mu_online_active())
+        return -1;
+    while (hi - lo > 1) {
+        unsigned int mid = lo + (hi - lo) / 2;
+        if (gecko_targets[mid].addr <= addr)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    t = &gecko_targets[lo];
+    if (len == 0 || addr < t->addr || addr - t->addr >= t->size || len > t->size - (addr - t->addr))
+        return 0;
+    for (k = 0; k < len; ++k)
+        bytes[k] = t->native[gecko_native_offset(t->layout, addr - t->addr + k)];
     return 1;
 }
