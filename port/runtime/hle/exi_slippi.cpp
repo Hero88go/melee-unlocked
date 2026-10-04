@@ -580,10 +580,23 @@ bool read_whole_file(const std::string& path, std::vector<uint8_t>& out) {
   return ok;
 }
 
+// The name comes from the game (its code and the disc's codes choose it) and is joined to the
+// GameFiles folder: one with "..", a drive colon or a leading separator would reach outside it.
+// Such a name is refused (logged once) and reads as a file that is not there.
+bool game_file_name_allowed(const std::string& name) {
+  const bool bad = name.find("..") != std::string::npos || name.find(':') != std::string::npos ||
+                   (!name.empty() && (name[0] == '/' || name[0] == '\\'));
+  if (!bad) return true;
+  static std::atomic<bool> logged{false};
+  if (!logged.exchange(true)) host::log("slippi: refused a game file name that leaves the GameFiles folder");
+  return false;
+}
+
 // Reads and patches one file. Runs without the cache lock held: the preload worker must never
 // make the simulation thread wait behind a multi-megabyte read plus VCDIFF.
 std::vector<uint8_t> build_game_file(const std::string& name) {
   std::vector<uint8_t> out;
+  if (!game_file_name_allowed(name)) return out;
   std::string base = host::options.sys_dir + "/GameFiles/GALE01/" + name;
   std::vector<uint8_t> blob;
   if (name != "MxDt.dat" && read_whole_file(base, blob)) {
@@ -612,6 +625,8 @@ std::vector<uint8_t> build_game_file(const std::string& name) {
 }
 
 const std::vector<uint8_t>& load_game_file(const std::string& name) {
+  static const std::vector<uint8_t> not_found;
+  if (!game_file_name_allowed(name)) return not_found;   // never cached: the names are unbounded
   {
     std::lock_guard<std::mutex> lock(g_file_cache_mutex);   // node-based map: element references survive later inserts
     auto it = g_file_cache.find(name);

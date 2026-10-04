@@ -70,6 +70,9 @@ std::shared_ptr<Song> decode_hps(const std::vector<uint8_t>& file) {
   if (file.size() < 0x80 || std::memcmp(file.data(), " HALPST\0", 8) != 0) { host::log("jukebox: not an HPS file"); return nullptr; }
   uint32_t rate = be32(file.data() + 8), channels = be32(file.data() + 12);
   if (channels != 2) { host::log("jukebox: %u channels unsupported", channels); return nullptr; }
+  // The resampler below makes 32000 / rate output frames per input frame: a rate of a few Hz would
+  // ask for gigabytes. No song is recorded under 8 kHz (0 plays as 32 kHz).
+  if (rate != 0 && rate < 8000) { host::log("jukebox: %u Hz unsupported", rate); return nullptr; }
   int16_t coef[2][16];
   for (int ch = 0; ch < 2; ++ch) {
     const uint8_t* info = file.data() + 0x10 + ch * 0x38;
@@ -80,10 +83,17 @@ std::shared_ptr<Song> decode_hps(const std::vector<uint8_t>& file) {
   std::vector<Block> blocks;
   std::vector<int16_t> left, right;
   uint32_t off = 0x80;
-  while (off + 0x20 <= file.size()) {
+  // The lengths and offsets are the file's own, so they are checked in 64 bits (a 32-bit sum wraps
+  // and passes). Blocks do not overlap in a real song, so one holds at most size / 0x20 blocks and
+  // size bytes of frames: a file that chains past either is damaged, and what was read so far plays.
+  const uint64_t size = file.size();
+  const size_t max_blocks = (size_t)(size / 0x20);
+  uint64_t budget = size;
+  while ((uint64_t)off + 0x20 <= size && blocks.size() < max_blocks) {
     const uint8_t* b = file.data() + off;
     uint32_t len = be32(b), next = be32(b + 8);
-    if (off + 0x20 + len > file.size() || (len % 8) != 0) break;
+    if (len > size - off - 0x20 || len > budget || (len % 8) != 0) break;
+    budget -= len;
     int16_t h1l = be16(b + 0x0C + 2), h2l = be16(b + 0x0C + 4), h1r = be16(b + 0x14 + 2), h2r = be16(b + 0x14 + 4);
     size_t frames = len / 8, half = frames / 2;
     left.clear(); right.clear();
@@ -94,7 +104,8 @@ std::shared_ptr<Song> decode_hps(const std::vector<uint8_t>& file) {
     blk.pcm.reserve(n * 2);
     for (size_t i = 0; i < n; ++i) { blk.pcm.push_back(left[i]); blk.pcm.push_back(right[i]); }
     blocks.push_back(std::move(blk));
-    if (next == 0xFFFFFFFFu || next <= off || next >= file.size()) break;
+    // The chain only moves forward (a next at or before this block is the loop point), so it ends.
+    if (next == 0xFFFFFFFFu || next <= off || next >= size) break;
     off = next;
   }
   if (blocks.empty()) { host::log("jukebox: no blocks"); return nullptr; }
