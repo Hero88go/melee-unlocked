@@ -1,6 +1,6 @@
 ## Install
 
-Download `MeleeUnlocked-0.8.80-win64.zip` from this release. Close the game and launcher, then extract it over your existing Melee Unlocked folder. Settings, saves, mods and replays stay in place. Use your own Melee NTSC 1.02 ISO.
+Download `MeleeUnlocked-0.8.72-win64.zip` from this release. Close the game and launcher, then extract it over your existing Melee Unlocked folder. Settings, saves, mods and replays stay in place. Use your own Melee NTSC 1.02 ISO.
 
 A fix for a message stuck on screen online, skins listed per costume slot, and many more Gecko codes on the Source Port.
 
