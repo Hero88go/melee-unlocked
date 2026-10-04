@@ -5,12 +5,19 @@
 // This used to talk to WinUSB directly, which meant an adapter installed with libusbK or
 // libusb-win32 was invisible here while Dolphin reported it detected at 1 kHz, and players were told
 // to replace a driver that already worked for them. libusb's Windows backend speaks all three.
+//
+// When libusb cannot reach the adapter, the same reports are read through the HID interface instead.
+// That is the case under Wine and Proton, which have no WinUSB for a real USB device but can pass the
+// adapter through as a HID device, and on Windows for an adapter still on its stock HID driver.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "host.h"
 #define NOMINMAX
 #include <windows.h>
+#include <setupapi.h>
+#include <hidsdi.h>
 #include <libusb.h>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
@@ -36,6 +43,13 @@ bool g_claimed = false;
 // perfectly: detected, claimed, and silent. These are discovered from the descriptors instead.
 int g_iface = 0;
 uint8_t g_ep_in = 0x81, g_ep_out = 0x02;
+// The HID route: used only while g_dev is null. A HID report carries its id in the first byte, and
+// the adapter's ids are its command bytes (0x13, 0x11, 0x21), so the bytes are the same on both routes.
+HANDLE g_hid = INVALID_HANDLE_VALUE;
+HANDLE g_hid_read_event = nullptr, g_hid_write_event = nullptr;
+DWORD g_hid_in_len = 37, g_hid_out_len = 5;
+std::mutex g_hid_write_mutex;   // the reader re-sends start while the writer sends rumble
+bool g_logged_hid_fail = false;
 std::thread g_thread;
 std::atomic<bool> g_running{false};
 std::atomic<double> g_poll_rate_hz{0.0};
@@ -72,6 +86,51 @@ libusb_device* find_adapter(libusb_device** list, ssize_t count, std::string* ot
   return adapter;
 }
 
+// One overlapped read or write on the HID handle, with the result in libusb's terms so both routes
+// share the reader's error handling.
+int hid_transfer(bool write, uint8_t* data, DWORD length, DWORD* done, DWORD timeout_ms) {
+  OVERLAPPED ov{};
+  ov.hEvent = write ? g_hid_write_event : g_hid_read_event;
+  ResetEvent(ov.hEvent);
+  *done = 0;
+  const BOOL ok = write ? WriteFile(g_hid, data, length, done, &ov) : ReadFile(g_hid, data, length, done, &ov);
+  if (ok) return 0;
+  if (GetLastError() != ERROR_IO_PENDING) return LIBUSB_ERROR_IO;
+  if (WaitForSingleObject(ov.hEvent, timeout_ms) == WAIT_OBJECT_0)
+    return GetOverlappedResult(g_hid, &ov, done, FALSE) ? 0 : LIBUSB_ERROR_IO;
+  // The request must be finished before `ov` leaves scope; one that completed during the cancel counts.
+  CancelIoEx(g_hid, &ov);
+  return GetOverlappedResult(g_hid, &ov, done, TRUE) ? 0 : LIBUSB_ERROR_TIMEOUT;
+}
+
+int adapter_write(const uint8_t* data, int length, int* wrote, unsigned timeout_ms) {
+  if (g_dev) return libusb_interrupt_transfer(g_dev, g_ep_out, const_cast<uint8_t*>(data), length, wrote, timeout_ms);
+  // Windows wants every output report padded to the longest one the device declares. If that is
+  // refused, the exact length is tried: a raw passthrough may hand the bytes to the device as they are.
+  std::lock_guard<std::mutex> lock(g_hid_write_mutex);
+  uint8_t padded[64] = {};
+  std::memcpy(padded, data, (size_t)length);
+  const DWORD full = g_hid_out_len > (DWORD)length ? (g_hid_out_len < sizeof padded ? g_hid_out_len : (DWORD)sizeof padded) : (DWORD)length;
+  DWORD done = 0;
+  int rc = hid_transfer(true, padded, full, &done, timeout_ms);
+  if (rc == LIBUSB_ERROR_IO && full != (DWORD)length) rc = hid_transfer(true, padded, (DWORD)length, &done, timeout_ms);
+  *wrote = rc == 0 ? length : 0;
+  return rc;
+}
+
+int adapter_read(uint8_t* data, int length, int* got, unsigned timeout_ms) {
+  if (g_dev) return libusb_interrupt_transfer(g_dev, g_ep_in, data, length, got, timeout_ms);
+  uint8_t report[256];
+  const DWORD want = g_hid_in_len < sizeof report ? g_hid_in_len : (DWORD)sizeof report;
+  DWORD done = 0;
+  const int rc = hid_transfer(false, report, want, &done, timeout_ms);
+  *got = 0;
+  if (rc != 0) return rc;
+  *got = (int)done < length ? (int)done : length;
+  std::memcpy(data, report, (size_t)*got);
+  return 0;
+}
+
 void reader_thread() {
   // The adapter is polled as fast as this thread asks again. The simulation and render threads run
   // above normal priority, and at normal priority this one was sometimes late with the next request:
@@ -81,11 +140,11 @@ void reader_thread() {
   auto send_start = [&] {
     uint8_t start = 0x13;
     int wrote = 0;
-    int rc = libusb_interrupt_transfer(g_dev, g_ep_out, &start, 1, &wrote, 100);
-    if (rc == LIBUSB_ERROR_PIPE) {
+    int rc = adapter_write(&start, 1, &wrote, 100);
+    if (rc == LIBUSB_ERROR_PIPE && g_dev) {
       libusb_clear_halt(g_dev, g_ep_out);
       wrote = 0;
-      rc = libusb_interrupt_transfer(g_dev, g_ep_out, &start, 1, &wrote, 100);
+      rc = adapter_write(&start, 1, &wrote, 100);
     }
     if (rc != 0 || wrote != 1) log("gc adapter: start command failed (%s, wrote %d)", libusb_error_name(rc), wrote);
   };
@@ -93,7 +152,7 @@ void reader_thread() {
   // Some Wii U-mode adapters need the all-off rumble command after report startup.
   uint8_t rumble_off[5] = {0x11, 0, 0, 0, 0};
   int rumble_wrote = 0;
-  const int rumble_rc = libusb_interrupt_transfer(g_dev, g_ep_out, rumble_off, sizeof rumble_off, &rumble_wrote, 100);
+  const int rumble_rc = adapter_write(rumble_off, sizeof rumble_off, &rumble_wrote, 100);
   if (rumble_rc != 0 || rumble_wrote != sizeof rumble_off)
     log("gc adapter: initial rumble reset failed (%s, wrote %d)", libusb_error_name(rumble_rc), rumble_wrote);
   int failures = 0, silent = 0;
@@ -111,7 +170,7 @@ void reader_thread() {
     }
     uint8_t buf[37];
     int got = 0;
-    const int rc = libusb_interrupt_transfer(g_dev, g_ep_in, buf, (int)sizeof buf, &got, 100);
+    const int rc = adapter_read(buf, (int)sizeof buf, &got, 100);
     if (rc == 0) {
       failures = 0; silent = 0;
       if (got == 37 && buf[0] == 0x21) {
@@ -136,7 +195,7 @@ void reader_thread() {
         // does exactly this. Reset the read pipe and ask it to start again about once a second.
         if (++silent >= 10) {
           silent = 0;
-          libusb_clear_halt(g_dev, g_ep_in);
+          if (g_dev) libusb_clear_halt(g_dev, g_ep_in);
           send_start();
           if (!g_logged_restart) { log("gc adapter: no reports yet, clearing the pipe and re-sending start"); g_logged_restart = true; }
         }
@@ -164,7 +223,7 @@ void writer_thread() {
     if (g_rumble_dirty.exchange(false)) {
       uint8_t cmd[5] = {0x11, g_rumble[0], g_rumble[1], g_rumble[2], g_rumble[3]};
       int wrote = 0;
-      libusb_interrupt_transfer(g_dev, g_ep_out, cmd, (int)sizeof cmd, &wrote, 32);
+      adapter_write(cmd, (int)sizeof cmd, &wrote, 32);
     }
   }
 }
@@ -181,12 +240,76 @@ void close_adapter() {
     g_dev = nullptr;
   }
   g_claimed = false;
+  if (g_hid != INVALID_HANDLE_VALUE) { CloseHandle(g_hid); g_hid = INVALID_HANDLE_VALUE; }
   std::lock_guard<std::mutex> lk(g_mutex);
   g_have_report = false;
   for (auto& o : g_origin) o.set = false;
 }
 
-bool open_adapter() {
+bool adapter_open() { return g_dev || g_hid != INVALID_HANDLE_VALUE; }
+
+void start_threads() {
+  g_logged_missing = false;
+  g_logged_restart = false;
+  g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
+  g_running.store(true);
+  g_thread = std::thread(reader_thread);
+  g_writer = std::thread(writer_thread);
+}
+
+// The adapter as a HID device. Only interface paths that name the adapter are opened, so no other
+// HID device is touched by the scan.
+bool open_hid() {
+  GUID hid_guid;
+  HidD_GetHidGuid(&hid_guid);
+  HDEVINFO set = SetupDiGetClassDevsA(&hid_guid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
+  if (set == INVALID_HANDLE_VALUE) return false;
+  bool seen = false;
+  DWORD open_error = 0;
+  SP_DEVICE_INTERFACE_DATA itf{};
+  itf.cbSize = sizeof itf;
+  for (DWORD i = 0; g_hid == INVALID_HANDLE_VALUE && SetupDiEnumDeviceInterfaces(set, nullptr, &hid_guid, i, &itf); ++i) {
+    union { SP_DEVICE_INTERFACE_DETAIL_DATA_A detail; char bytes[1024]; } buf{};
+    buf.detail.cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA_A);
+    if (!SetupDiGetDeviceInterfaceDetailA(set, &itf, &buf.detail, sizeof buf - 1, nullptr, nullptr)) continue;
+    std::string path = buf.detail.DevicePath;
+    std::string lower = path;
+    for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+    if (lower.find("vid_057e&pid_0337") == std::string::npos) continue;
+    seen = true;
+    HANDLE file = CreateFileA(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                              OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
+    if (file == INVALID_HANDLE_VALUE) { open_error = GetLastError(); continue; }
+    g_hid_in_len = 37; g_hid_out_len = 5;
+    PHIDP_PREPARSED_DATA parsed = nullptr;
+    if (HidD_GetPreparsedData(file, &parsed)) {
+      HIDP_CAPS caps{};
+      if (HidP_GetCaps(parsed, &caps) == HIDP_STATUS_SUCCESS) {
+        if (caps.InputReportByteLength) g_hid_in_len = caps.InputReportByteLength;
+        if (caps.OutputReportByteLength) g_hid_out_len = caps.OutputReportByteLength;
+      }
+      HidD_FreePreparsedData(parsed);
+    }
+    g_hid = file;
+  }
+  SetupDiDestroyDeviceInfoList(set);
+  if (g_hid == INVALID_HANDLE_VALUE) {
+    if (seen && !g_logged_hid_fail) {
+      log("gc adapter: present as a HID device but cannot be opened (error %lu)", (unsigned long)open_error);
+      g_logged_hid_fail = true;
+    }
+    return false;
+  }
+  if (!g_hid_read_event) g_hid_read_event = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+  if (!g_hid_write_event) g_hid_write_event = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+  log("gc adapter: opened through HID (input report %lu bytes, output report %lu bytes)",
+      (unsigned long)g_hid_in_len, (unsigned long)g_hid_out_len);
+  g_logged_hid_fail = false;
+  start_threads();
+  return true;
+}
+
+bool open_libusb() {
   if (!g_ctx && libusb_init(&g_ctx) != 0) {
     if (!g_logged_missing) { log("gc adapter: libusb could not start; keyboard/XInput stay active"); g_logged_missing = true; }
     g_ctx = nullptr;
@@ -234,7 +357,11 @@ bool open_adapter() {
   if (rc != 0) {
     g_dev = nullptr;
     if (!g_logged_missing) {
+#ifdef MELEE_NO_SLIPPI
+      log("gc adapter: found but cannot open (%s): it may have no usable driver. Install WinUSB, libusbK or libusb-win32 on it with Zadig.", libusb_error_name(rc));
+#else
       log("gc adapter: found but cannot open (%s): it may have no usable driver. Install WinUSB, libusbK or libusb-win32 on it with Zadig, as Slippi does.", libusb_error_name(rc));
+#endif
       g_logged_missing = true;
     }
     return false;
@@ -246,7 +373,11 @@ bool open_adapter() {
   rc = libusb_claim_interface(g_dev, g_iface);
   if (rc != 0) {
     if (!g_logged_missing) {
+#ifdef MELEE_NO_SLIPPI
+      log("gc adapter: cannot claim the adapter (%s): another program (Dolphin?) is using it. Close it and try again.", libusb_error_name(rc));
+#else
       log("gc adapter: cannot claim the adapter (%s): another program (Dolphin or Slippi?) is using it. Close it and try again.", libusb_error_name(rc));
+#endif
       g_logged_missing = true;
     }
     libusb_close(g_dev); g_dev = nullptr;
@@ -255,13 +386,13 @@ bool open_adapter() {
   g_claimed = true;
   // Leave a successfully opened pipe alone. The timeout path recovers a genuinely silent pipe.
   log("gc adapter: opened through libusb (interface %d, endpoints in 0x%02X out 0x%02X)", g_iface, g_ep_in, g_ep_out);
-  g_logged_missing = false;
-  g_logged_restart = false;
-  g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
-  g_running.store(true);
-  g_thread = std::thread(reader_thread);
-  g_writer = std::thread(writer_thread);
+  start_threads();
   return true;
+}
+
+// libusb first, so an adapter that works today is opened exactly as before.
+bool open_adapter() {
+  return open_libusb() || open_hid();
 }
 
 // Finding and opening the adapter runs here, never on the game's thread. Listing the USB devices
@@ -274,8 +405,8 @@ std::condition_variable g_scanner_wake;
 
 void scanner_thread() {
   while (g_scanner_run.load()) {
-    if (!g_dev || !g_running.load()) {
-      if (g_dev && !g_running.load()) close_adapter();
+    if (!adapter_open() || !g_running.load()) {
+      if (adapter_open() && !g_running.load()) close_adapter();
       open_adapter();
     }
     std::unique_lock<std::mutex> lock(g_scanner_mutex);

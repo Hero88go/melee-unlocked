@@ -379,7 +379,7 @@ typedef struct MuHostApi {
 #define MU_HP_OP_STAGE_STATE     0x04u
 #define MU_HP_OP_STAGE_TABLE     0x05u
 #define MU_HP_OP_CPU_WORD        0x06u
-#define MU_HP_SETTINGS_SIZE      24u
+#define MU_HP_SETTINGS_SIZE      48u
 /* Settings block layout. Playlist types are the pack's: 0 the list's first track, 1 random from the
  * list, 2 random original track, 3 random custom track, 4 random of both. */
 #define MU_HP_SET_PLAYLIST_TYPE  0u    /* 11 bytes: menu, then the pack's nine stage lists, then global */

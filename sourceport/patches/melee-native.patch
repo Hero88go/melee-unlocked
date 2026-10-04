@@ -61001,20 +61001,21 @@ index 2b0f190f4..22a6c7b46 100644
  
  #endif
 diff --git a/src/melee/ft/ftdrawcommon.c b/src/melee/ft/ftdrawcommon.c
-index cd8f9169e..8e3f0c4d8 100644
+index cd8f9169e..b9c83ef52 100644
 --- a/src/melee/ft/ftdrawcommon.c
 +++ b/src/melee/ft/ftdrawcommon.c
-@@ -22,6 +22,9 @@
+@@ -22,6 +22,10 @@
  #include <sysdolphin/baselib/cobj.h>
  #include <sysdolphin/baselib/gobj.h>
  #include <sysdolphin/baselib/state.h>
 +#ifdef MU_NATIVE
 +#include <mu_tmce_codes.h>
++#include <mu_hp.h>
 +#endif
  
  static U8Vec4 ftDrawCommon_804D3A88 = { 0xFF, 0xFF, 0xFF, 0x80 };
  static U8Vec4 ftDrawCommon_804D3A8C = { 0x80, 0x80, 0xFF, 0x80 };
-@@ -75,6 +78,17 @@ MtxPtr ftDrawCommon_8008051C(HSD_GObj* arg1, MtxPtr arg2)
+@@ -75,6 +79,17 @@ MtxPtr ftDrawCommon_8008051C(HSD_GObj* arg1, MtxPtr arg2)
      return NULL;
  }
  
@@ -61032,7 +61033,7 @@ index cd8f9169e..8e3f0c4d8 100644
  static const GXColor ftDrawCommon_804D836C = { 0xFF, 0xFF, 0xFF, 0xFE };
  static const GXColor ftDrawCommon_804D8370 = { 0xFF, 0xFF, 0xFF, 0xFF };
  
-@@ -100,11 +114,25 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -100,11 +115,28 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
      do_invalidate = false;
      if (fighter->x21FC_flag.b6 != 0) {
          for (i = 0; i < ARRAY_SIZE(fighter->x914); i++) {
@@ -61041,6 +61042,8 @@ index cd8f9169e..8e3f0c4d8 100644
 +            HitCapsule* hit = mu_tmce_active()
 +                                  ? mu_tmce_code_hitbox_order(fighter->x914, i)
 +                                  : &fighter->x914[i];
++            /* 20XX Hack Pack "Hitbox Color IDs" (80009F60) colors a bubble by this id. */
++            mu_hp_hitbox_id((int) (hit - fighter->x914));
 +            if (lbColl_80009F54(hit, arg1, fighter->x34_scale.y))
 +#else
              if (lbColl_80009F54(&fighter->x914[i], arg1, fighter->x34_scale.y))
@@ -61050,6 +61053,7 @@ index cd8f9169e..8e3f0c4d8 100644
              }
          }
 +#ifdef MU_NATIVE
++        mu_hp_hitbox_id(-1);   /* no fighter hitbox is being drawn any more */
 +        /* TM-CE Hitbox Visualizer, Main (80080638): boomerang catch and Popo up-B radii */
 +        if (mu_tmce_active()) {
 +            mu_tmce_code_hitbox_extras(fighter);
@@ -61058,7 +61062,7 @@ index cd8f9169e..8e3f0c4d8 100644
          if (fighter->x221D_b6) {
              for (i = 0; i < (unsigned) fighter->hurt_capsules_len; i++) {
                  if (lbColl_8000A584(&fighter->hurt_capsules[i].capsule, 1,
-@@ -117,6 +145,12 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -117,6 +149,12 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
          } else {
              fighter_2 = fighter->x1988;
              if (fighter_2 == 0 && fighter->x198C == 0) {
@@ -61071,7 +61075,7 @@ index cd8f9169e..8e3f0c4d8 100644
                  for (i = 0; i < (unsigned) fighter->hurt_capsules_len; i++) {
                      if (lbColl_8000A244(&fighter->hurt_capsules[i].capsule,
                                          arg1, ftCommon_8007F804(fighter),
-@@ -125,6 +159,11 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -125,6 +163,11 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
                          do_invalidate = true;
                      }
                  }
@@ -61083,7 +61087,7 @@ index cd8f9169e..8e3f0c4d8 100644
              } else {
                  if (fighter->x198C == 2 || fighter_2 == 2) {
                      phi_r24 = 2;
-@@ -187,21 +226,23 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -187,21 +230,23 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
      }
      if (fighter->x21FC_flag.b2 != 0) {
          itPickup* temp_r24 = &fighter->x294_itPickup;
@@ -61111,7 +61115,7 @@ index cd8f9169e..8e3f0c4d8 100644
                                   arg1, fighter->facing_dir))
          {
              do_invalidate = true;
-@@ -231,6 +272,29 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -231,6 +276,29 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
      }
  
      if (!fighter->invisible && !fighter->x221E_b5 && arg2) {
@@ -61141,7 +61145,7 @@ index cd8f9169e..8e3f0c4d8 100644
          ftParts_800750C8(fighter, 1, 0);
          ftParts_800750C8(fighter, 4, 0);
          if (fighter->is_metal || fighter->x2226_b5 || fighter->x2227_b3) {
-@@ -240,6 +304,7 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -240,6 +308,7 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
              ftParts_800750C8(fighter, 2, 0);
              ftParts_800750C8(fighter, 0, 1);
          }
@@ -61149,7 +61153,7 @@ index cd8f9169e..8e3f0c4d8 100644
          ftCo_8009F5AC(fighter);
          fighter->x2223_b2 = false;
          fighter->x2227_b7 = true;
-@@ -261,7 +326,7 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
+@@ -261,7 +330,7 @@ void ftDrawCommon_800805C8(HSD_GObj* gobj, s32 arg1, bool arg2)
      ftCo_800C2600(gobj, arg1);
  }
  
@@ -61158,7 +61162,7 @@ index cd8f9169e..8e3f0c4d8 100644
  {
      Mtx sp70;
      Mtx sp18;
-@@ -368,6 +433,17 @@ static inline void ftDrawCommon_80080E18_inline2(HSD_GObj* gobj, Fighter* old)
+@@ -368,6 +437,17 @@ static inline void ftDrawCommon_80080E18_inline2(HSD_GObj* gobj, Fighter* old)
      Vec3* pos;
  
      MtxPtr matrix = HSD_CObjGetInvViewingMtxPtr(Camera_800310B8());
@@ -61176,7 +61180,7 @@ index cd8f9169e..8e3f0c4d8 100644
      /// @todo this seems to be using the wrong common attributes
      PSMTXMultVec(matrix, (Vec3*) &old->mv.co.walk.fast_anim_frame,
                   &fp->cur_pos);
-@@ -376,11 +452,111 @@ static inline void ftDrawCommon_80080E18_inline2(HSD_GObj* gobj, Fighter* old)
+@@ -376,11 +456,111 @@ static inline void ftDrawCommon_80080E18_inline2(HSD_GObj* gobj, Fighter* old)
      HSD_JObjSetTranslate(jobj, pos);
  }
  
@@ -61291,7 +61295,7 @@ index cd8f9169e..8e3f0c4d8 100644
          switch (Camera_80031060()) {
          case 1:
              if (fp->x2220_b7) {
-@@ -397,7 +573,15 @@ void ftDrawCommon_80080E18(HSD_GObj* gobj, int arg1)
+@@ -397,7 +577,15 @@ void ftDrawCommon_80080E18(HSD_GObj* gobj, int arg1)
              ftDrawCommon_800805C8(gobj, arg1,
                                    fp->x5AC.xC[4] != NULL ? false : true);
          }
@@ -61307,7 +61311,7 @@ index cd8f9169e..8e3f0c4d8 100644
  }
  
  void ftDrawCommon_80081118(void)
-@@ -412,10 +596,22 @@ void ftDrawCommon_80081118(void)
+@@ -412,10 +600,22 @@ void ftDrawCommon_80081118(void)
  void ftDrawCommon_80081140(void)
  {
      HSD_GObj* gobj = HSD_GObjPLinkHead[HSD_GOBJ_PLINK_FIGHTER];
@@ -62230,12 +62234,16 @@ index a3321c937..fe68c00fd 100644
      Vec v;
      float f;
 diff --git a/src/melee/ft/ftmaterial.c b/src/melee/ft/ftmaterial.c
-index bb6af6c93..9549755c1 100644
+index bb6af6c93..2e4433bc4 100644
 --- a/src/melee/ft/ftmaterial.c
 +++ b/src/melee/ft/ftmaterial.c
-@@ -18,41 +18,33 @@
+@@ -17,42 +17,37 @@
+ #include <sysdolphin/baselib/state.h>
  #include <sysdolphin/baselib/tev.h>
  #include <sysdolphin/baselib/tobj.h>
++#ifdef MU_NATIVE
++#include <mu_hp.h>
++#endif
  
 -HSD_MObjInfo ftMObj = { ftMaterial_800BF260 };
 -
@@ -62296,16 +62304,24 @@ index bb6af6c93..9549755c1 100644
  }
  
  void ftMaterial_800BF2B8(HSD_MObj* mobj, u32 rendermode, u32 unused)
-@@ -159,7 +151,7 @@ HSD_TExp* ftMaterial_800BF534(Fighter* fp, HSD_MObj* mobj, HSD_TExp* texp,
+@@ -159,8 +154,15 @@ HSD_TExp* ftMaterial_800BF534(Fighter* fp, HSD_MObj* mobj, HSD_TExp* texp,
      HSD_TevDesc sp_tevdesc;
      s32 reg;
      bool chk;
 -    struct ft_MObjInfo* info = (struct ft_MObjInfo*) &ftMObj;
 +    struct ft_MObjInfo* info = &ftMObj;
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "20XX Color Overlays" (800BF550): the pack's training color for this fighter
++     * (hitlag, hitstun, IASA and so on) goes onto its overlay before the overlay to draw is
++     * picked. A display only (shim/mu_hp_train.c). Off: nothing is touched. */
++    ColorOverlay* overlay = (mu_hp_overlay(fp), ftCo_800C0658(fp));
++#else
      ColorOverlay* overlay = ftCo_800C0658(fp);
++#endif
  
      if (overlay->x7C_flag2 && overlay->x7C_light_enable) {
-@@ -213,12 +205,12 @@ void ftMaterial_800BF6BC(Fighter* fp, HSD_MObj* mobj, HSD_TExp* texp)
+         if (!(rendermode & RENDER_XLU) && !fp->x2223_b2) {
+@@ -213,12 +215,12 @@ void ftMaterial_800BF6BC(Fighter* fp, HSD_MObj* mobj, HSD_TExp* texp)
      s32 var_r3;
      ColorOverlay* overlay;
      s32 var_r5;
@@ -62320,7 +62336,7 @@ index bb6af6c93..9549755c1 100644
          if (fp->x2228_b0 && fp->x2224_b0) {
              if (fp->is_metal) {
                  var_r5 = 4;
-@@ -275,7 +267,7 @@ void ftMaterial_800BF6BC(Fighter* fp, HSD_MObj* mobj, HSD_TExp* texp)
+@@ -275,7 +277,7 @@ void ftMaterial_800BF6BC(Fighter* fp, HSD_MObj* mobj, HSD_TExp* texp)
                  chk1 = 1;
              } else {
                  chk1 = 1;
@@ -68458,10 +68474,10 @@ index 6ebe91d10..5a323deda 100644
      RETURN_IF(ftCo_Turn_CheckInput(gobj));
      RETURN_IF(ftCo_Walk_CheckInput(gobj));
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c b/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c
-index 01a42a899..07835609a 100644
+index 01a42a899..5f2383feb 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c
-@@ -11,11 +11,45 @@
+@@ -11,11 +11,46 @@
  #include <melee/ft/ftcommon.h>
  #include <melee/ft/types.h>
  
@@ -68471,6 +68487,7 @@ index 01a42a899..07835609a 100644
 +#include "mu_lcancel_flash.h"
 +#include <mu_tmce_osd.h>
 +#include <mu_20xx_cpu.h>
++#include <mu_hp.h>
 +
 +/* 20XX TE "Flash on L-Cancel": a short white flash for an L-cancel pressed in time, red for a
 + * missed one, on the overlay slot the game uses for its passing color effects. An effect the game
@@ -68507,7 +68524,7 @@ index 01a42a899..07835609a 100644
      Fighter* fp = GET_FIGHTER(gobj);
      if (fp->cmd_vars[0]) {
          switch (fp->motion_id) {
-@@ -40,7 +74,37 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
+@@ -40,7 +75,37 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
              lag = fp->co_attrs.landingairlw_lag;
              break;
          }
@@ -68546,7 +68563,7 @@ index 01a42a899..07835609a 100644
              float div_lag = lag / p_ftCommonData->xE8;
              int int_lag = div_lag;
              if ((int) div_lag == 0) {
-@@ -51,7 +115,19 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
+@@ -51,7 +116,21 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
      }
      if (msid != ftCo_MS_None) {
          ftCo_LandingAir_EnterWithMsidLag(gobj, msid, lag);
@@ -68554,7 +68571,9 @@ index 01a42a899..07835609a 100644
 +        /* EnterWithMsidLag changes motion with Ft_MF_None, which resets x488. Apply the
 +         * optional display effect afterwards so it reaches the draw; the helper still
 +         * preserves any effect the landing state itself installed on this slot. */
-+        if (te_flash) mu_te_lcancel_flash(fp, te_in_time);
++        /* 20XX Hack Pack "L-Cancel Options" (8008D698): its flash switches are per player
++         * (shim/mu_hp_train.c). Off: 0. */
++        if (te_flash && !mu_hp_lcancel_flash_off(fp, te_in_time)) mu_te_lcancel_flash(fp, te_in_time);
 +#endif
      } else {
 +        #ifdef MU_NATIVE
@@ -68566,7 +68585,7 @@ index 01a42a899..07835609a 100644
          ftCo_Landing_Enter_Basic(gobj);
      }
  }
-@@ -63,6 +139,12 @@ void ftCo_LandingAir_EnterWithMsidLag(Fighter_GObj* gobj, FtMotionId msid,
+@@ -63,6 +142,12 @@ void ftCo_LandingAir_EnterWithMsidLag(Fighter_GObj* gobj, FtMotionId msid,
      ftCommon_8007D7FC(GET_FIGHTER(gobj));
      Fighter_ChangeMotionState(gobj, msid, Ft_MF_None, 0, 1, 0, NULL);
      ftAnim_SetAnimRate(gobj, (ftAnim_8006F484(gobj) + 0.1f) / lag);
@@ -155382,10 +155401,20 @@ index 000000000..94dae33b6
 +
 +#endif
 diff --git a/src/melee/lb/lbcollision.c b/src/melee/lb/lbcollision.c
-index affc43a9c..44d25065d 100644
+index affc43a9c..9507d20f7 100644
 --- a/src/melee/lb/lbcollision.c
 +++ b/src/melee/lb/lbcollision.c
-@@ -440,6 +440,12 @@ static inline bool end(Vec3* a, Vec3* b, float unk_sum)
+@@ -13,6 +13,9 @@
+ #include <dolphin/gx.h>
+ #include <dolphin/mtx.h>
+ #include <melee/ft/types.h>
++#ifdef MU_NATIVE
++#include <mu_hp.h>
++#endif
+ #include <sysdolphin/baselib/cobj.h>
+ #include <sysdolphin/baselib/jobj.h>
+ #include <sysdolphin/baselib/mtx.h>
+@@ -440,6 +443,12 @@ static inline bool end(Vec3* a, Vec3* b, float unk_sum)
      return true;
  }
  
@@ -155398,7 +155427,7 @@ index affc43a9c..44d25065d 100644
  bool lbColl_80006094(Vec3* arg0, Vec3* arg1, Vec3* arg2, Vec3* arg3,
                       Vec3* arg4, Vec3* arg5, float arg6, float arg7)
  {
-@@ -1264,8 +1270,14 @@ bool lbColl_80006E58(Vec3* hit_start, Vec3* hit_end, Vec3* hurt_start,
+@@ -1264,8 +1273,14 @@ bool lbColl_80006E58(Vec3* hit_start, Vec3* hit_end, Vec3* hurt_start,
                          (hit_delta.x * offset.x + midpoint.y * offset.y);
      }
      hurt_len_sq = axis.y * axis.y;
@@ -155413,7 +155442,7 @@ index affc43a9c..44d25065d 100644
      closest_denom = (hit_len_sq * hurt_len_sq) - (segment_dot * segment_dot);
      (void) hit_len_sq;
      if (approximatelyZero(hurt_len_sq)) {
-@@ -1442,6 +1454,43 @@ bool lbColl_80006E58(Vec3* hit_start, Vec3* hit_end, Vec3* hurt_start,
+@@ -1442,6 +1457,43 @@ bool lbColl_80006E58(Vec3* hit_start, Vec3* hit_end, Vec3* hurt_start,
      }
      return true;
  }
@@ -155457,7 +155486,7 @@ index affc43a9c..44d25065d 100644
  
  static inline float sqrDistance(Vec3* a, Vec3* b)
  {
-@@ -1567,11 +1616,11 @@ bool lbColl_80007AFC(HitCapsule* a, HitCapsule* b, float x, float y)
+@@ -1567,11 +1619,11 @@ bool lbColl_80007AFC(HitCapsule* a, HitCapsule* b, float x, float y)
                             &b->hurt_coll_pos, &a->hurt_coll_pos, b_val, a_val);
  }
  
@@ -155473,7 +155502,7 @@ index affc43a9c..44d25065d 100644
  }
  
  bool lbColl_80007BCC(HitCapsule* arg0, HitResult* shield_hit, void* arg2,
-@@ -1679,10 +1728,36 @@ bool lbColl_80007ECC(HitCapsule* arg0, HurtCapsule* arg1, Mtx arg2,
+@@ -1679,10 +1731,36 @@ bool lbColl_80007ECC(HitCapsule* arg0, HurtCapsule* arg1, Mtx arg2,
          } else {
              hit_radius = arg0->scale * hit_scl_y;
          }
@@ -155510,7 +155539,7 @@ index affc43a9c..44d25065d 100644
      }
      return 0;
  }
-@@ -2047,7 +2122,7 @@ static inline bool isSmall(float x)
+@@ -2047,7 +2125,7 @@ static inline bool isSmall(float x)
      }
  }
  
@@ -155519,7 +155548,7 @@ index affc43a9c..44d25065d 100644
                       f32 arg4)
  {
      Mtx sp104;
-@@ -2180,7 +2255,7 @@ void lbColl_80008FC8(Vec3 arg0, Vec3 arg1, GXColor* arg2, GXColor* arg3,
+@@ -2180,7 +2258,7 @@ void lbColl_80008FC8(Vec3 arg0, Vec3 arg1, GXColor* arg2, GXColor* arg3,
      HSD_StateInitTev();
  }
  
@@ -155528,6 +155557,18 @@ index affc43a9c..44d25065d 100644
                       GXColor* arg4, f32 arg5)
  {
      Mtx sp108;
+@@ -2367,6 +2445,11 @@ bool lbColl_80009F54(HitCapsule* hit, u32 arg1, float arg8)
+     float var_f1;
+     u32 var_r0;
+ 
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "Hitbox Color IDs" (80009F60): the hitbox bubble's color by hitbox id and its
++     * alpha, both the pack's menu choices (shim/mu_hp_train.c). Off: the color is left as it is. */
++    mu_hp_hitbox_color((unsigned char*) &lbColl_804D36A0);
++#endif
+     if (hit->state != HitCapsule_Disabled && !hit->x43_b2) {
+         switch (hit->element) {
+         case HitElement_Catch:
 diff --git a/src/melee/lb/lbcollision.h b/src/melee/lb/lbcollision.h
 index 590bdcd2d..ff05bc7da 100644
 --- a/src/melee/lb/lbcollision.h

@@ -172,7 +172,9 @@ static int hp_settings(unsigned char* out)
 {
     const unsigned char op = MU_HP_OP_GET_SETTINGS;
     unsigned int got;
-    if (!hp_command(&op, 1, &got) || got != MU_HP_SETTINGS_SIZE) {
+    /* A longer block is the same one with the training display bytes after it (mu_hp.h,
+     * MU_HP_TRAIN_SETTINGS); this file uses the first 24 only. */
+    if (!hp_command(&op, 1, &got) || got < MU_HP_SETTINGS_SIZE) {
         return 0;
     }
     memcpy(out, hp_reply, MU_HP_SETTINGS_SIZE);
@@ -430,7 +432,7 @@ int mu_hp_sss_input(unsigned int pressed)
     p[0] = MU_HP_OP_SET_SETTING;
     p[1] = MU_HP_SET_STAGE_PAGE;
     p[2] = (unsigned char) next;
-    if (!hp_command(p, sizeof p, &got) || got != MU_HP_SETTINGS_SIZE || hp_reply[MU_HP_SET_STAGE_PAGE] != next) {
+    if (!hp_command(p, sizeof p, &got) || got < MU_HP_SETTINGS_SIZE || hp_reply[MU_HP_SET_STAGE_PAGE] != next) {
         return 0;
     }
     OSReport("[20xx-hp] stage select page %d\n", next + 1);

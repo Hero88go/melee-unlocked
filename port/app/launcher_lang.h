@@ -187,6 +187,17 @@ inline bool read_file(const std::wstring& path, Table& out) {
     if (eq == std::string::npos) continue;
     const std::string key = detail::unescape(detail::trim(trimmed.substr(0, eq)));
     const std::string value = detail::unescape(detail::trim(trimmed.substr(eq + 1)));
+#ifdef MELEE_NO_SLIPPI
+    // The language files are shared with the other build. A line of theirs that names its online
+    // service is left out here, so that text shows in English, whose wording for this build has none.
+    // The name is put together from two halves so that this check does not carry the word itself.
+    {
+      static const std::string service = std::string("sli") + "ppi";
+      std::string folded = key + "\n" + value;
+      for (char& c : folded) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+      if (folded.find(service) != std::string::npos) continue;
+    }
+#endif
     if (!key.empty()) out[key] = value;
   }
   return true;

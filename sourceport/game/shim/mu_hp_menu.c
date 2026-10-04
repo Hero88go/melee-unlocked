@@ -22,7 +22,11 @@
  *     has. Without a TE save the host changes and passes only the pack's share (MU_HP_TE_OPTIONS and
  *     MU_HP_TE_OPTIONS2 in mu_hp.h);
  *   - option word 3 (host command 0xFA, MU_HP_OP_CPU_WORD): the CPU training options, the Game tab's
- *     own rows, which the settings panel saves.
+ *     own rows, which the settings panel saves;
+ *   - the training display bytes after the first 24 of the settings block (milestone 6,
+ *     ledger_M6.md, MU_HP_SET_LCANCEL_OFF and up in mu_hp.h): per player L-cancel flash, hitbox
+ *     alpha and id colors, the pack's color overlays. A host whose block is still 24 bytes keeps
+ *     none of them, and their rows show as not available.
  * Offline only, never with the vanilla game; the host refuses changes online and in playback. */
 #include <dolphin/os.h>
 #include <melee/if/textlib.h>
@@ -41,7 +45,8 @@
 #define HPM_OP_GET_SETTINGS   0x02u
 #define HPM_OP_SET_SETTING    0x03u
 #define HPM_OP_CPU_WORD       0x06u
-#define HPM_SETTINGS_SIZE     24
+#define HPM_SETTINGS_SIZE     24                     /* the least the host answers with */
+#define HPM_SETTINGS_MAX      MU_HP_TRAIN_SETTINGS   /* with the training display bytes */
 #define HPM_SET_PLAYLIST_TYPE 0
 #define HPM_SET_GLOBAL_ON     12
 #define HPM_SET_GLOBAL_MENUS  13
@@ -78,7 +83,10 @@ enum {
     K_SET,          /* the settings byte `arg` */
     K_TRAIN,        /* the bit `arg` of the settings byte MU_HP_SET_TRAINING */
     K_CPU,          /* the field `bits` (shift `arg`) of option word 3 */
+    K_BIT,          /* the bit `bits & 0xFF` of the settings byte `arg`; HPM_INVERT: ON is the bit clear */
+    K_INT,          /* the settings byte `arg` as a number 0..255, stored xor `bits` (engine type 3) */
 };
+#define HPM_INVERT 0x100u
 
 typedef struct HpmRow {
     unsigned char kind;
@@ -91,7 +99,7 @@ typedef struct HpmRow {
 
 enum {
     P_ROOT, P_GENERAL, P_TRAINING, P_TOGGLES, P_SAVESTATES, P_BUBBLES, P_LCANCEL, P_OVERLAYS, P_STAGE,
-    P_CPU, P_DI, P_TECH, P_MUSIC, P_PLAYLISTS, P_MECHANICS, P_TEXTURES, P_COUNT
+    P_CPU, P_DI, P_TECH, P_MUSIC, P_PLAYLISTS, P_MECHANICS, P_TEXTURES, P_WAVEDASH, P_COUNT
 };
 
 static char* hpm_off_on[] = {"OFF", "ON"};
@@ -100,7 +108,13 @@ static char* hpm_play_types[] = {
     "SINGLE SONG", "RANDOM - PLAYLIST", "RANDOM - VANILLA (GOOD) ONLY", "RANDOM - CUSTOM ONLY",
     "RANDOM - VANILLA AND CUSTOM",
 };
-static char* hpm_di_names[] = {"VANILLA", "NO DI", "RANDOM", "SURVIVAL"};
+/* The pack's overlay colors: the value is the index into its color table (8032DCAC), 0 none. */
+static char* hpm_color_names[] = {
+    "NONE", "BLACK", "GRAY", "WHITE", "RED", "SALMON", "ORANGE", "KHAKI", "GOLD", "YELLOW", "OLIVEDRAB", "GREEN",
+    "FOREST GREEN", "CYAN", "AQUA MARINE", "STEEL BLUE", "BLUE", "PURPLE", "MAGENTA", "HOT PINK", "PINK", "TAN",
+    "BROWN",
+};
+static char* hpm_di_names[] ={"VANILLA", "NO DI", "RANDOM", "SURVIVAL"};
 static char* hpm_sdi_names[] = {"VANILLA", "NONE", "RANDOM", "TOWARD", "AWAY", "UP", "DOWN"};
 static char* hpm_tech_names[] = {"OFF", "TECH IN PLACE", "TECH ROLL FORWARD", "TECH ROLL BACKWARD", "MISS", "RANDOM"};
 static char* hpm_getup_names[] = {"OFF", "STANDUP", "GETUP ROLL FORWARD", "GETUP ROLL BACKWARD", "GETUP ATTACK",
@@ -142,6 +156,8 @@ static char* hpm_ps_names[] = {
 #define HEAD(label) {K_HEAD, 0, 0, 0, label, 0}
 #define TEXT(label) {K_TEXT, 0, 0, 0, label, 0}
 #define END {K_END, 0, 0, 0, 0, 0}
+#define BIT(byte, mask, label) {K_BIT, 2, byte, mask, label, hpm_off_on}
+#define COLOR(which, label) {K_SET, 23, MU_HP_SET_OVERLAY_COLOR + (which), 0, label, hpm_color_names}
 
 static const HpmRow hpm_root[] = {
     HEAD("<20XX HACK PACK>"),
@@ -198,6 +214,10 @@ static const HpmRow hpm_bubbles[] = {
     HEAD("<COLLISION BUBBLE CODES>"),
     {K_TE2, ONOFF, MU_TE2_BUBBLES, "COLLISION BUBBLES :", hpm_off_on},
     TEXT("HITBOXES AND HURTBOXES OVER THE MODEL"),
+    TEXT(""),
+    TEXT("HITBOX BUBBLE ALPHA, 0 TO 255"),
+    {K_INT, 0, MU_HP_SET_HITBOX_ALPHA, 0x80, "HITBOX :", 0},
+    BIT(MU_HP_SET_BUBBLE_FLAGS, 0x01, "HITBOX ID COLORS :"),
     END,
 };
 static const HpmRow hpm_lcancel[] = {
@@ -205,12 +225,51 @@ static const HpmRow hpm_lcancel[] = {
     TEXT("<ALL PLAYERS>"),
     {K_FLASH_WHITE, ONOFF, 0, "FLASH WHITE ON SUCCESSFUL :", hpm_off_on},
     {K_FLASH_RED, ONOFF, 0, "FLASH RED ON UNSUCCESSFUL :", hpm_off_on},
+    /* The pack's rows are per player (803FA3C8 and 803FA208, minus 4 per player). Here a player
+     * flashes when the row above and the player's own row are both ON; the byte holds the players
+     * switched off, so all zero is every player. */
+    TEXT("<PLAYER 1>"),
+    BIT(MU_HP_SET_LCANCEL_OFF, 0x01 | HPM_INVERT, "FLASH WHITE ON SUCCESSFUL :"),
+    BIT(MU_HP_SET_LCANCEL_OFF, 0x10 | HPM_INVERT, "FLASH RED ON UNSUCCESSFUL :"),
+    TEXT("<PLAYER 2>"),
+    BIT(MU_HP_SET_LCANCEL_OFF, 0x02 | HPM_INVERT, "FLASH WHITE ON SUCCESSFUL :"),
+    BIT(MU_HP_SET_LCANCEL_OFF, 0x20 | HPM_INVERT, "FLASH RED ON UNSUCCESSFUL :"),
+    TEXT("<PLAYER 3>"),
+    BIT(MU_HP_SET_LCANCEL_OFF, 0x04 | HPM_INVERT, "FLASH WHITE ON SUCCESSFUL :"),
+    BIT(MU_HP_SET_LCANCEL_OFF, 0x40 | HPM_INVERT, "FLASH RED ON UNSUCCESSFUL :"),
+    TEXT("<PLAYER 4>"),
+    BIT(MU_HP_SET_LCANCEL_OFF, 0x08 | HPM_INVERT, "FLASH WHITE ON SUCCESSFUL :"),
+    BIT(MU_HP_SET_LCANCEL_OFF, 0x80 | HPM_INVERT, "FLASH RED ON UNSUCCESSFUL :"),
     END,
 };
 static const HpmRow hpm_overlays[] = {
     HEAD("<CHARACTER COLOR OVERLAYS>"),
-    {K_TE2, ONOFF, MU_TE2_COLOR_OVERLAYS, "ALL PLAYERS :", hpm_off_on},
+    BIT(MU_HP_SET_OVERLAY_PLAYERS, 0x01, "P1 :"),
+    BIT(MU_HP_SET_OVERLAY_PLAYERS, 0x02, "P2 :"),
+    BIT(MU_HP_SET_OVERLAY_PLAYERS, 0x04, "P3 :"),
+    BIT(MU_HP_SET_OVERLAY_PLAYERS, 0x08, "P4 :"),
+    PAGE(P_WAVEDASH, "WAVEDASH OVERLAYS >"),
+    COLOR(MU_HP_OV_HITLAG, "HITLAG (DEFENDER) :"),
+    COLOR(MU_HP_OV_HITSTUN, "HITSTUN :"),
+    COLOR(MU_HP_OV_AUTOCANCEL, "AUTO-CANCEL ENABLED :"),
+    COLOR(MU_HP_OV_IASA, "IASA ENABLED :"),
+    COLOR(MU_HP_OV_SMASH_TURN, "MISSED SMASH TURN :"),
+    COLOR(MU_HP_OV_NANA, "NANA CPU TYPE DESYNCED :"),
+    {K_INT, 0, MU_HP_SET_OVERLAY_ALPHA, 0xFF, "ALPHA (TRANSPARENCY) VALUE :", 0},
+    TEXT(""),
+    /* Not a row of the pack: 20XX TE's overlay, kept from the first version of this page. */
+    {K_TE2, ONOFF, MU_TE2_COLOR_OVERLAYS, "20XXTE CAN ACT, ALL PLAYERS :", hpm_off_on},
     TEXT("GREEN ON EVERY FRAME A CHARACTER CAN ACT"),
+    END,
+};
+/* The stick window rows (X-MAX, X-MIN, Y-MAX, Y-MIN) are not here: the window is the pack's own
+ * default (shim/mu_hp_train.c). */
+static const HpmRow hpm_wavedash[] = {
+    HEAD("<WAVEDASH OVERLAYS>"),
+    COLOR(MU_HP_OV_WD_TIMING, "PERFECT WAVEDASH TIMING :"),
+    COLOR(MU_HP_OV_WD_WINDOW, "WAVEDASH JOYSTICK WINDOW :"),
+    TEXT("WINDOW : X 0.95, Y -0.2875"),
+    COLOR(MU_HP_OV_WD_BOTH, "PERFECT TIMING AND IN WINDOW :"),
     END,
 };
 static const HpmRow hpm_stage[] = {
@@ -289,21 +348,28 @@ static const HpmRow hpm_textures[] = {
 #undef HEAD
 #undef TEXT
 #undef END
+#undef BIT
+#undef COLOR
 
 static const HpmRow* const hpm_pages[P_COUNT] = {
     hpm_root, hpm_general, hpm_training, hpm_toggles, hpm_savestates, hpm_bubbles, hpm_lcancel, hpm_overlays,
     hpm_stage, hpm_cpu, hpm_di, hpm_tech, hpm_music, hpm_playlists, hpm_mechanics, hpm_textures,
+    hpm_wavedash,
 };
 
 /* What the menu was opened with, and the engine's tables built from it. */
 static unsigned char hpm_reply[HPM_REPLY];
-static unsigned char hpm_set[HPM_SETTINGS_SIZE];
+static unsigned char hpm_set[HPM_SETTINGS_MAX];
+static unsigned int hpm_set_size;   /* how many bytes the host's block has (24, or 48 with the display bytes) */
 static unsigned int hpm_w1, hpm_w2, hpm_cpu_word;
 static int hpm_te_ok, hpm_cpu_ok, hpm_locked;
 static struct un_80304138_objalloc_t_x8 hpm_items[P_COUNT][HPM_ROWS + 1];
 static int hpm_values[P_COUNT][HPM_ROWS];
 static char hpm_text[P_COUNT][HPM_ROWS][64];
-static int hpm_training_cache = -1;   /* MU_HP_SET_TRAINING as last read or saved, -1 not read yet */
+/* The block as last read, for the game-side switches: 0 not read yet, 1 read, -1 the host did not
+ * answer (not asked again until the menu saves). */
+static unsigned char hpm_cache[HPM_SETTINGS_MAX];
+static int hpm_cache_state;
 
 static unsigned int hpm_be32(const unsigned char* p)
 {
@@ -334,29 +400,76 @@ static unsigned int hpm_command(unsigned int command, const unsigned char* paylo
     return got;
 }
 
-static int hpm_read_settings(unsigned char* out)
+/* The host's block into `out` (HPM_SETTINGS_MAX bytes, zero past what the host has). Returns its
+ * size, 0 when the host did not answer with a block. */
+static unsigned int hpm_read_settings(unsigned char* out)
 {
     const unsigned char op = HPM_OP_GET_SETTINGS;
-    if (hpm_command(HPM_COMMAND, &op, 1) != HPM_SETTINGS_SIZE) {
+    const unsigned int got = hpm_command(HPM_COMMAND, &op, 1);
+    if (got < HPM_SETTINGS_SIZE || got > HPM_SETTINGS_MAX) {
         return 0;
     }
-    memcpy(out, hpm_reply, HPM_SETTINGS_SIZE);
-    return 1;
+    memset(out, 0, HPM_SETTINGS_MAX);
+    memcpy(out, hpm_reply, got);
+    return got;
+}
+
+char* getenv(const char* name);
+
+/* Tests only: MELEE_TEST_HP_TRAIN=<hex digits> stands in for the bytes from MU_HP_SET_LCANCEL_OFF
+ * on (two digits each), so a hidden run can check the displays without the menu or a saved block.
+ * Returns -1 for a byte the variable does not give. */
+static int hpm_test_byte(unsigned int index)
+{
+    static int parsed;
+    static unsigned char bytes[HPM_SETTINGS_MAX - HPM_SETTINGS_SIZE];
+    static unsigned int count;
+    if (!parsed) {
+        const char* spec = getenv("MELEE_TEST_HP_TRAIN");
+        parsed = 1;
+        while (spec != NULL && count < sizeof bytes) {
+            int v = 0, k;
+            for (k = 0; k < 2; k++) {
+                const char c = spec[k];
+                const int d = c >= '0' && c <= '9'   ? c - '0'
+                              : c >= 'A' && c <= 'F' ? c - 'A' + 10
+                              : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                                                     : -1;
+                if (d < 0) {
+                    break;
+                }
+                v = v * 16 + d;
+            }
+            if (k < 2) {
+                break;
+            }
+            bytes[count++] = (unsigned char) v;
+            spec += 2;
+        }
+    }
+    return index - HPM_SETTINGS_SIZE < count ? bytes[index - HPM_SETTINGS_SIZE] : -1;
+}
+
+int mu_hp_setting(unsigned int index)
+{
+    if (index >= HPM_SETTINGS_MAX || !hpm_live()) {
+        return 0;
+    }
+    if (index >= HPM_SETTINGS_SIZE) {
+        const int test = hpm_test_byte(index);
+        if (test >= 0) {
+            return test;
+        }
+    }
+    if (hpm_cache_state == 0) {
+        hpm_cache_state = hpm_read_settings(hpm_cache) != 0 ? 1 : -1;
+    }
+    return hpm_cache_state > 0 ? hpm_cache[index] : 0;
 }
 
 int mu_hp_training(unsigned int bit)
 {
-    if (!hpm_live()) {
-        return 0;
-    }
-    if (hpm_training_cache < 0) {
-        unsigned char set[HPM_SETTINGS_SIZE];
-        if (!hpm_read_settings(set)) {
-            return 0;
-        }
-        hpm_training_cache = set[HPM_SET_TRAINING];
-    }
-    return (hpm_training_cache & bit) != 0;
+    return (mu_hp_setting(HPM_SET_TRAINING) & bit) != 0;
 }
 
 static int hpm_flash_white(unsigned int w2)
@@ -389,6 +502,10 @@ static int hpm_read(const HpmRow* row)
         return (hpm_set[HPM_SET_TRAINING] & row->arg) != 0;
     case K_CPU:
         return (int) ((hpm_cpu_word & row->bits) >> row->arg);
+    case K_BIT:
+        return ((hpm_set[row->arg] & row->bits & 0xFF) != 0) != ((row->bits & HPM_INVERT) != 0);
+    case K_INT:
+        return (int) (hpm_set[row->arg] ^ (row->bits & 0xFF));
     default:
         return 0;
     }
@@ -405,6 +522,10 @@ static int hpm_available(const HpmRow* row)
         return hpm_te_ok;
     case K_CPU:
         return hpm_cpu_ok;
+    case K_SET:
+    case K_BIT:
+    case K_INT:
+        return row->arg < hpm_set_size;   /* the host's block has this byte */
     default:
         return 1;
     }
@@ -461,6 +582,19 @@ static void hpm_build(void)
             case K_PAGE:
                 item->x0 = 1;   /* selectable; A runs x4 */
                 item->x4 = hpm_open;
+                break;
+            case K_INT:
+                hpm_values[p][i] = hpm_read(row);
+                if (hpm_editable(row)) {
+                    item->x0 = 3;   /* a number at x10, from x14 to x18 in steps of x1C */
+                    item->x10 = &hpm_values[p][i];
+                    item->x18 = 255.0f;
+                    item->x1C = 1.0f;
+                } else {
+                    hpm_compose(hpm_text[p][i], row->label, "(NOT AVAILABLE)");
+                    item->x0 = 1;
+                    item->x8 = hpm_text[p][i];
+                }
                 break;
             default:
                 value = hpm_read(row);
@@ -543,7 +677,7 @@ void* mu_hp_debug_menu(void)
 {
     unsigned int got;
     unsigned char op;
-    if (!hpm_live() || !hpm_read_settings(hpm_set)) {
+    if (!hpm_live() || (hpm_set_size = hpm_read_settings(hpm_set)) == 0) {
         return NULL;
     }
     got = hpm_command(HPM_TE_COMMAND, NULL, 0);
@@ -570,7 +704,7 @@ void* mu_hp_debug_menu(void)
 
 void mu_hp_debug_menu_save(void)
 {
-    unsigned char set[HPM_SETTINGS_SIZE];
+    unsigned char set[HPM_SETTINGS_MAX];
     unsigned char payload[8];
     unsigned int w1 = hpm_w1, w2 = hpm_w2, cpu = hpm_cpu_word;
     int white = hpm_flash_white(hpm_w2), red = hpm_flash_red(hpm_w2);
@@ -611,6 +745,15 @@ void mu_hp_debug_menu_save(void)
             case K_CPU:
                 cpu = (cpu & ~row->bits) | (((unsigned int) v << row->arg) & row->bits);
                 break;
+            case K_BIT: {
+                const unsigned char mask = (unsigned char) (row->bits & 0xFF);
+                const int bit_set = (v != 0) != ((row->bits & HPM_INVERT) != 0);
+                set[row->arg] = (unsigned char) (bit_set ? (set[row->arg] | mask) : (set[row->arg] & ~mask));
+                break;
+            }
+            case K_INT:
+                set[row->arg] = (unsigned char) ((v & 0xFF) ^ (row->bits & 0xFF));
+                break;
             }
         }
     }
@@ -623,7 +766,7 @@ void mu_hp_debug_menu_save(void)
             w2 = mu_lcancel_with_success_color(w2, MU_LCFLASH_SUCCESS_WHITE);   /* the pack's flash is white */
         }
     }
-    for (i = 0; i < HPM_SETTINGS_SIZE; i++) {
+    for (i = 0; i < (int) hpm_set_size; i++) {
         if (set[i] != hpm_set[i]) {
             payload[0] = HPM_OP_SET_SETTING;
             payload[1] = (unsigned char) i;
@@ -645,6 +788,6 @@ void mu_hp_debug_menu_save(void)
         sent++;
     }
     /* What the host now has, read back for the lab's switches. */
-    hpm_training_cache = -1;
+    hpm_cache_state = 0;
     OSReport("[20xx-hp] debug menu saved: %d change(s), TE %08X %08X, CPU %08X\n", sent, w1, w2, cpu);
 }

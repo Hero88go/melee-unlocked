@@ -18,9 +18,14 @@ enum class BindAction : uint8_t {
   // not be rebound: the stick was hard wired to the arrow keys while every other key was a
   // setting, so anyone who did not want their right hand on the arrows was stuck. Left unbound on
   // a pad, whose analog stick feeds these directly.
-  SUp, SDown, SLeft, SRight, Count
+  SUp, SDown, SLeft, SRight,
+  // A GameCube trigger is two inputs: the analog travel (light shield) and the click at its end
+  // (full shield, tech, air dodge). L and R above are the click alone; these are the travel alone.
+  // Appended, so saved profiles and every table indexed by this enum keep their meaning.
+  LAnalog, RAnalog, Count
 };
 inline constexpr bool is_cstick_action(int i) { return i >= (int)BindAction::CUp && i <= (int)BindAction::CRight; }
+inline constexpr bool is_analog_action(int i) { return i == (int)BindAction::LAnalog || i == (int)BindAction::RAnalog; }
 inline constexpr bool is_stick_action(int i) { return i >= (int)BindAction::SUp && i <= (int)BindAction::SRight; }
 
 // Every table carries a `level` per binding beside the binding itself: its own analog threshold,
@@ -69,7 +74,8 @@ bool switchpro_raw_input(void* device, const uint8_t* report, size_t size, size_
 inline constexpr uint16_t kActionPadBit[(size_t)BindAction::Count] = {
   0x0100, 0x0200, 0x0400, 0x0800, 0x0010, 0x1000, 0x0040, 0x0020, 0x0008, 0x0004, 0x0001, 0x0002,
   0, 0, 0, 0,  // C-stick directions are not buttons (see apply_cstick_actions)
-  0, 0, 0, 0   // control stick directions likewise (see apply_stick_actions)
+  0, 0, 0, 0,  // control stick directions likewise (see apply_stick_actions)
+  0, 0         // the trigger travel is a value, not a button (see apply_actions)
 };
 
 // Pushes the C-stick for bound C-stick directions in `actions` (BindAction bit indices).
@@ -131,6 +137,12 @@ inline std::array<PadBindings, 4> default_pad_bindings() {
     p.mask[(size_t)BindAction::DDown]  = XINPUT_GAMEPAD_DPAD_DOWN;
     p.mask[(size_t)BindAction::DLeft]  = XINPUT_GAMEPAD_DPAD_LEFT;
     p.mask[(size_t)BindAction::DRight] = XINPUT_GAMEPAD_DPAD_RIGHT;
+    // The triggers, as they always behaved: the travel is the light shield, and the click comes at
+    // the family's full-press point (Deadzone::click_l / click_r, which a binding with no level uses).
+    p.mask[(size_t)BindAction::LAnalog] = kXInputBindLT;
+    p.mask[(size_t)BindAction::RAnalog] = kXInputBindRT;
+    p.mask[(size_t)BindAction::L]      = kXInputBindLT;
+    p.mask[(size_t)BindAction::R]      = kXInputBindRT;
   }
   return pads;
 }
@@ -150,6 +162,9 @@ inline std::array<GCBindings, 4> default_gc_bindings() {
     g.mask[(size_t)BindAction::DDown]  = kActionPadBit[(size_t)BindAction::DDown];
     g.mask[(size_t)BindAction::DLeft]  = kActionPadBit[(size_t)BindAction::DLeft];
     g.mask[(size_t)BindAction::DRight] = kActionPadBit[(size_t)BindAction::DRight];
+    // As a source of a travel binding, the L and R bits mean that trigger's own analog travel.
+    g.mask[(size_t)BindAction::LAnalog] = kActionPadBit[(size_t)BindAction::L];
+    g.mask[(size_t)BindAction::RAnalog] = kActionPadBit[(size_t)BindAction::R];
   }
   return gc;
 }
@@ -258,11 +273,19 @@ inline void apply_trigger_cap(int cap, uint8_t& value, uint16_t& button, uint16_
 // ---- per-binding analog level ----
 // Stored beside each binding (`level` in the tables above). 0, the default, is exactly the
 // behaviour from before the level existed. Otherwise, out of 255:
-//  - the bound source is analog (an Xbox LT/RT, a PlayStation L2/R2): it counts as pressed above
-//    this value, whatever it is bound to;
-//  - the source is a button and the action is L or R, whose output is analog: how far the button
-//    presses the trigger. Below 255 that is a light press, with no click.
+//  - the bound source is analog (an Xbox LT/RT, a PlayStation L2/R2, a GameCube L/R): it counts
+//    as pressed above this value, whatever it is bound to;
+//  - the source is a button and the action is L analog or R analog, whose output is a travel: how
+//    far the button presses the trigger (0 here is kDefaultAnalogDepth). Never a click.
+//
+// ---- the trigger model ----
+// L and R are the click alone: a button source clicks while held, an analog source clicks past its
+// press point. L analog and R analog are the travel alone: an analog trigger passes its travel
+// through, a button presses a fixed depth. Travel reaches the game only through those two bindings,
+// so a trigger bound to Z alone neither shields nor clicks. The defaults are each family's old fixed
+// behaviour written out as bindings, so a default profile gives the game the same pad as before.
 inline constexpr int kPlayStationTriggerPress = 30;   // where the pad reader itself sets L2/R2 (playstation_pad.cpp)
+inline constexpr int kDefaultAnalogDepth = 100;       // a button on L analog / R analog with no level: a light shield
 inline constexpr bool is_trigger_action(int i) { return i == (int)BindAction::L || i == (int)BindAction::R; }
 // An Xbox binding: `buttons` are the pad's own wButtons, the triggers their raw values. The
 // thresholds are the family's, used while the binding has no level of its own.
@@ -272,6 +295,20 @@ inline bool xinput_binding_pressed(uint16_t mask, int level, uint16_t buttons, u
   if ((mask & kXInputBindRT) && right > (level ? level : right_threshold)) return true;
   return (buttons & mask & (uint16_t)~(kXInputBindLT | kXInputBindRT)) != 0;
 }
+// The player gives an Xbox input to an action. A trigger given to anything but its own shoulder (Z
+// on LT) becomes that action's alone: the shoulder bindings still sitting on it, as the defaults do,
+// let go and read "Not bound", or one pull would grab and then shield. The yield happens here, at
+// the moment of binding, so the table always says exactly what the pad does; binding L analog (or
+// L) to LT again afterwards keeps both, since that is then the player's own choice.
+inline void xinput_bind(PadBindings& bind, int action, uint16_t source) {
+  bind.mask[action] = source;
+  const int own[2][2] = {{(int)BindAction::L, (int)BindAction::LAnalog}, {(int)BindAction::R, (int)BindAction::RAnalog}};
+  const uint16_t trigger[2] = {kXInputBindLT, kXInputBindRT};
+  for (int side = 0; side < 2; ++side) {
+    if (source != trigger[side] || action == own[side][0] || action == own[side][1]) continue;
+    for (int a : own[side]) if (bind.mask[a] == trigger[side]) bind.mask[a] = 0;
+  }
+}
 // A PlayStation binding: `buttons` as the pad reader decoded them (L2/R2 set above its own press
 // point, and the trigger values zero below it, so a level under that point acts as that point).
 inline bool ds4_binding_pressed(uint16_t mask, int level, uint16_t buttons, uint8_t left, uint8_t right) {
@@ -280,16 +317,125 @@ inline bool ds4_binding_pressed(uint16_t mask, int level, uint16_t buttons, uint
   if ((mask & DS4_R2) && right > level) return true;
   return (buttons & mask & (uint16_t)~(DS4_L2 | DS4_R2)) != 0;
 }
-// A pressed binding into the pad. `depth` is the binding's level when its source is a button, 0
-// when the source is analog (the level was its press point). L and R with a depth below 255 press
-// the trigger that far and do not click; everything else is the button, as before.
-inline void apply_bound_press(int action, int depth, PadState& pad) {
-  if (is_trigger_action(action) && depth > 0 && depth < 255) {
-    uint8_t& trigger = action == (int)BindAction::L ? pad.trig_l : pad.trig_r;
-    if (trigger < depth) trigger = (uint8_t)depth;
-    return;
+// A GameCube adapter binding: `buttons` are the controller's own, where L and R are the physical
+// clicks at the end of the trigger's travel. With no level a trigger bound to something is that
+// click, as before; with one it is the trigger's travel, so it can press without bottoming out.
+inline bool gc_binding_pressed(uint16_t mask, int level, uint16_t buttons, uint8_t left, uint8_t right) {
+  const uint16_t click_l = kActionPadBit[(size_t)BindAction::L], click_r = kActionPadBit[(size_t)BindAction::R];
+  if (!level) return (buttons & mask) != 0;
+  if ((mask & click_l) && left > level) return true;
+  if ((mask & click_r) && right > level) return true;
+  return (buttons & mask & (uint16_t)~(click_l | click_r)) != 0;
+}
+// The travel an L analog / R analog binding gives. `analog_l` / `analog_r` are the bits of `mask`
+// that name the device's analog triggers (either may feed either side), `left` / `right` their
+// travel as read; any other bit is a button of `buttons`, which presses `level` deep while held.
+inline uint8_t analog_binding_travel(uint32_t mask, int level, uint32_t buttons, uint32_t analog_l, uint32_t analog_r,
+                                     uint8_t left, uint8_t right) {
+  int travel = 0;
+  if (mask & analog_l) travel = left;
+  if ((mask & analog_r) && right > travel) travel = right;
+  if (mask & buttons & ~(analog_l | analog_r)) {
+    const int depth = level ? level : kDefaultAnalogDepth;
+    if (depth > travel) travel = depth;
   }
-  pad.button |= kActionPadBit[action];
+  return (uint8_t)travel;
+}
+// Every family's binding table the same way: `pressed(i)` says whether action i's binding is down,
+// `travel(i)` what an L analog / R analog binding gives (those two are asked nothing else).
+// Returns the actions as BindAction bits for the settings panel.
+template <class Pressed, class Travel> uint32_t apply_actions(PadState& pad, Pressed pressed, Travel travel) {
+  uint32_t actions = 0;
+  pad.trig_l = travel((int)BindAction::LAnalog);
+  pad.trig_r = travel((int)BindAction::RAnalog);
+  if (pad.trig_l) actions |= 1u << (int)BindAction::LAnalog;
+  if (pad.trig_r) actions |= 1u << (int)BindAction::RAnalog;
+  for (int i = 0; i < (int)BindAction::Count; ++i) {
+    if (is_analog_action(i) || !pressed(i)) continue;
+    actions |= (uint32_t)(1u << i);
+    pad.button |= kActionPadBit[i];
+  }
+  apply_cstick_actions(actions, pad.sub_x, pad.sub_y);
+  return actions;
+}
+// An Xbox pad: `buttons` its own wButtons, `left` / `right` the raw triggers, the click points the
+// family's. Writes the buttons and both trigger values of `pad`.
+inline uint32_t xinput_apply_bindings(const PadBindings& bind, uint16_t buttons, uint8_t left, uint8_t right,
+                                      int click_l, int click_r, PadState& pad) {
+  return apply_actions(pad,
+      [&](int i) { return xinput_binding_pressed(bind.mask[i], bind.level[i], buttons, left, right, click_l, click_r); },
+      [&](int i) { return analog_binding_travel(bind.mask[i], bind.level[i], buttons, kXInputBindLT, kXInputBindRT, left, right); });
+}
+// A PlayStation pad: `buttons` and the trigger values of `pad` as the reader decoded them.
+inline uint32_t ds4_apply_bindings(const PadBindings& bind, uint16_t buttons, PadState& pad) {
+  const uint8_t l2 = pad.trig_l, r2 = pad.trig_r;   // as read, before the bindings decide the travel
+  return apply_actions(pad,
+      [&](int i) { return ds4_binding_pressed(bind.mask[i], bind.level[i], buttons, l2, r2); },
+      [&](int i) { return analog_binding_travel(bind.mask[i], bind.level[i], buttons, DS4_L2, DS4_R2, l2, r2); });
+}
+// A GameCube adapter pad: `pad` as the adapter reported it, remapped in place (the default table is
+// the identity). A click arriving with its trigger at rest (from another button) bottoms the
+// trigger out, as before, since the game shields from the analog value.
+inline uint32_t gc_apply_bindings(const GCBindings& bind, PadState& pad) {
+  const uint16_t click_l = kActionPadBit[(size_t)BindAction::L], click_r = kActionPadBit[(size_t)BindAction::R];
+  const uint16_t raw = pad.button;
+  const uint8_t left = pad.trig_l, right = pad.trig_r;
+  pad.button = 0;
+  const uint32_t actions = apply_actions(pad,
+      [&](int i) { return gc_binding_pressed(bind.mask[i], bind.level[i], raw, left, right); },
+      [&](int i) { return analog_binding_travel(bind.mask[i], bind.level[i], raw, click_l, click_r, left, right); });
+  if ((pad.button & click_l) && !pad.trig_l) pad.trig_l = 255;
+  if ((pad.button & click_r) && !pad.trig_r) pad.trig_r = 255;
+  return actions;
+}
+// A table of plain buttons (keyboard, Switch Pro, a box): `held(i)` says whether binding i is down.
+// `axis_l` / `axis_r` are a box's own trigger axes, which have no source bit of their own and so
+// always pass through; zero elsewhere.
+template <class Held, class Level> uint32_t button_apply_bindings(PadState& pad, uint8_t axis_l, uint8_t axis_r, Held held, Level level) {
+  return apply_actions(pad, held, [&](int i) {
+    const int axis = i == (int)BindAction::LAnalog ? axis_l : axis_r;
+    const int depth = held(i) ? (level(i) ? level(i) : kDefaultAnalogDepth) : 0;
+    return (uint8_t)(depth > axis ? depth : axis);
+  });
+}
+
+// ---- tables saved before L and R were split ----
+// One binding per trigger then meant all of this at once, and each piece becomes its own binding:
+//  - the travel was fixed to the device's own trigger (`analog_l` / `analog_r`, 0 on a device with
+//    none): that is L analog / R analog now. On an Xbox pad a trigger bound to another action, with
+//    L not on it by hand, gave no travel: there it stays unbound;
+//  - a button bound to L with a level 1..254 pressed the trigger that deep and never clicked: it
+//    moves to L analog with that level, and L is left unbound;
+//  - anything else bound to L was the click and stays L;
+//  - an Xbox trigger with travel also clicked at the family's full-press point whatever L was bound
+//    to: the trigger joins L's binding beside the button.
+// `mask` and `level` are one table's arrays (key codes work the same way: one source per binding).
+template <class M> void migrate_trigger_bindings(M* mask, uint8_t* level, uint32_t analog_l, uint32_t analog_r, bool xinput) {
+  const int click[2] = {(int)BindAction::L, (int)BindAction::R};
+  const int analog[2] = {(int)BindAction::LAnalog, (int)BindAction::RAnalog};
+  const uint32_t own[2] = {analog_l, analog_r};
+  uint32_t travel[2];
+  for (int side = 0; side < 2; ++side) {   // both decided from the old table, before either is rewritten
+    travel[side] = own[side];
+    if (!xinput || ((uint32_t)mask[click[side]] & own[side])) continue;
+    for (int i = 0; i < (int)BindAction::LAnalog; ++i)
+      if (i != click[side] && ((uint32_t)mask[i] & own[side])) travel[side] = 0;
+  }
+  for (int side = 0; side < 2; ++side) {
+    const int c = click[side], a = analog[side];
+    const uint32_t old = (uint32_t)mask[c];
+    uint32_t now_click = old, now_analog = travel[side];
+    int analog_level = 0;
+    if (old && !(old & (analog_l | analog_r)) && level[c] > 0 && level[c] < 255) {
+      now_analog |= old; analog_level = level[c];
+      now_click = 0; level[c] = 0;
+    }
+    if (xinput && travel[side] && !(now_click & own[side])) {
+      if (!(now_click & (analog_l | analog_r))) level[c] = 0;   // a button's 255 meant "full": the trigger keeps the family's point
+      now_click |= own[side];
+    }
+    mask[c] = (M)now_click; mask[a] = (M)now_analog; level[a] = (uint8_t)analog_level;
+  }
 }
 extern std::array<Deadzone, (size_t)PadFamily::Count> g_deadzones;
 inline void apply_deadzone(const Deadzone& dz, int8_t& x, int8_t& y, bool c) {

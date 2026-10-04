@@ -30,25 +30,31 @@
 #include "audio.h"
 #include "audio_core.h"
 #include "ax_ucode.h"
-#include "native_practice.h"
 #include "gx_core.h"
 #include "gx_shader.h"
 #include "render_options.h"
 #include "training_overlay.h"
-#include "jukebox.h"
 #include "lcancel.h"
+#include "user_gecko.h"
 #include "mu_host.h"
 #include "ppc.h"
 #include "render_observer.h"
+#include "native_state_layout.h"
+#include "native_savestate.h"
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"   // the same names, answered from the neutral netplay state
+#else
+#include "native_practice.h"
+#include "jukebox.h"
 #include "slippi_playback.h"
 #include "slippi_online.h"
 #include "exi_slippi.h"
 #include "native_slippi_bridge.h"
-#include "native_state_layout.h"
-#include "native_savestate.h"
 #include "native_replay_stream.h"
 #include "slippi_net.h"
 #include "native_recording_codes.h"
+#include "slippilib/SlippiGame.h"
+#endif
 #include "source_mod_overlay.h"
 #include "mod_profile.h"
 #include "net_trace.h"
@@ -59,7 +65,6 @@
 #include "disc_skin_scan.h"
 #include "cosmetic_mods.h"
 #include "texture_pack.h"
-#include "slippilib/SlippiGame.h"
 #include "window.h"
 
 // The settings panel's port-code options (pc_settings.cpp); the native game reads them through
@@ -560,8 +565,13 @@ void load_mod_overlay() {
                                      : slippi::online::NativeGameplayProfile::OtherMod;
   slippi::online::set_native_gameplay_profile(g_mod_gameplay_profile);
   g_mod_display_name = summary.empty() ? std::string("this mod") : summary;
+#ifdef MELEE_NO_SLIPPI   // the same fact without the other build's mode names
+  if (!g_view_alias.empty())
+    host::log("mods: %zu files have a retail view: online matches play the retail game", g_view_alias.size());
+#else
   if (!g_view_alias.empty())
     host::log("mods: %zu files have a retail view: Unranked, Teams and Party play the retail game", g_view_alias.size());
+#endif
   // After the aliases: the verdicts only say which entries keep their own number in that view. The
   // alias table itself is left whole, because its being empty or not is what decides the gameplay
   // profile above and how replays are tagged.
@@ -710,6 +720,10 @@ uint32_t fnv1a(const uint8_t* p, size_t n) {
 }
 
 void load_system_files(const char* forced_off_by) {
+#ifdef MELEE_NO_SLIPPI
+  // This build has no patched menu files to serve: the game reads the disc's own, always.
+  (void)forced_off_by;
+#else
   if (!g_slippi_menus_requested) { host::log("slippi menus: off (--slippi-menus off)"); return; }
   if (forced_off_by) { host::log("slippi menus: off (%s)", forced_off_by); return; }
   std::vector<SystemFile> files;
@@ -747,6 +761,7 @@ void load_system_files(const char* forced_off_by) {
   g_system_files = std::move(files);
   g_slippi_menus = true;
   host::log("slippi menus: on, %u system files replaced, %u added", replaced, added);
+#endif
 }
 
 // Serves a read inside the system-file range; false when the offset is outside it.
@@ -1514,6 +1529,23 @@ void h_resim_phase(int32_t entering) {
 // --online-test: the harness enters an online match without menus. The first time the game asks,
 // matchmaking starts (local test peering, from --local-peer); the game then waits for the match.
 int32_t h_online_test_match(MuOnlineMatch* out) {
+#ifdef MELEE_NO_SLIPPI
+  // A session asks for a match through the neutral state (netplay_state.h). The game calls this at
+  // boot, to pick its first scene, and again in that scene before it waits for the match state.
+  const host::netplay::MatchRequest request = host::netplay::match_request();
+  if (!request.requested) return 0;
+  if (!g_online_test_started) {
+    g_online_test_started = true;
+    apply_content_mode(request.mode);
+    host::log("netplay: the game enters a requested match (mode %d, pad port %d)", request.mode, request.local_port);
+  }
+  if (out) {
+    std::memset(out, 0, sizeof *out);
+    out->mode = (uint8_t)request.mode;
+    out->local_port = (uint8_t)(request.local_port & 3);
+  }
+  return request.harness ? 1 : 2;
+#else
   const auto& lobby = slippi::online::config();
   const bool from_lobby = !lobby.lobby_code.empty();
   if (g_online_test_mode < 0 && !from_lobby) return 0;
@@ -1538,6 +1570,7 @@ int32_t h_online_test_match(MuOnlineMatch* out) {
     out->local_port = 0;
   }
   return from_lobby ? 2 : 1; // ABI: 1 = diagnostic harness, 2 = user-approved lobby match.
+#endif
 }
 void h_vi_configure(uint32_t w, uint32_t h, uint32_t interlaced) { host::log("VI: %ux%u%s", w, h, interlaced ? " interlaced" : ""); }
 void h_vi_set_next_framebuffer(void*) {}   // presentation follows the EFB copy, as in the recompiled build
@@ -1581,6 +1614,9 @@ void h_pad_read(MuPadStatus out[4]) {
   host::PadState pads[4];
   host::input_poll(pads);
   lcancel::apply(pads);   // auto L-cancel, upstream of the game exactly as in the recompiled build
+  // The player's data-only Gecko codes, once per frame. Offline only: the writer in the game
+  // library also refuses during an online match, whichever kind.
+  if (slippi::online::session_mode() < 0 && !g_replaying) user_gecko::apply();
   if (host::audio_tracing()) {
     // Latency trace: the first read that shows a new press on port 1 (buttons or the stick leaving
     // its center), the moment the game sees it.
@@ -1790,12 +1826,19 @@ void card_save(SourceCardFile& file) {
                     std::fwrite(file.data.data(), 1, file.data.size(), out) == file.data.size();
     std::fclose(out);
     std::error_code ec;
-    if (ok && !MoveFileExW(temporary.c_str(), file.path.c_str(),
-                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
-      ec = std::error_code((int)GetLastError(), std::system_category());
-    if (!ok || ec) {
+    // Another program (a virus scanner, the search indexer) can hold the new file or the old one
+    // open for a moment right after it is written, and the replace is refused. Seen about once in
+    // ten saves on one PC. Try again for a short while before giving the save up.
+    DWORD code = 0;
+    for (int attempt = 0; ok && attempt < 20; ++attempt) {
+      if (MoveFileExW(temporary.c_str(), file.path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) { code = 0; break; }
+      code = GetLastError();
+      if (code != ERROR_SHARING_VIOLATION && code != ERROR_ACCESS_DENIED && code != ERROR_LOCK_VIOLATION) break;
+      Sleep(10);
+    }
+    if (!ok || code) {
       std::filesystem::remove(temporary, ec);
-      host::log("card: failed to save %s", card_shown(file.path).c_str());
+      host::log("card: failed to save %s (error %lu)", card_shown(file.path).c_str(), (unsigned long)code);
     }
   } catch (const std::exception& error) {
     host::log("card: failed to save %s (%s)", card_safe_name(file).c_str(), error.what());
@@ -2154,6 +2197,18 @@ void h_rng_seed_override(uint32_t* seed, int32_t* has_value) {
 // marks it.
 void h_mark_match_start() { host::input_mark_match_start(); }
 
+#ifdef MELEE_NO_SLIPPI
+// No replay playback and no recording in this build. The game is told there is no replay; the
+// callbacks stay in the host table so the same game interface version is served.
+constexpr bool g_replay = false;
+uint8_t replay_gate(int32_t, uint8_t) { return 0; }
+void write_replay_recording() {}
+const MuReplayStart* h_replay_start() { return nullptr; }
+void h_replay_frame(int32_t, MuReplayFrame* out) { *out = MuReplayFrame{}; out->result = MU_REPLAY_TERMINATE; }
+int32_t h_replay_stock_steal(int32_t, int32_t) { return 0; }
+void h_replay_event(uint8_t, const uint8_t*, uint32_t) {}
+void h_replay_finished() {}
+#else
 // ---- --replay: Slippi replay playback (host API version 9) ----
 // The host side of Slippi's playback: what Dolphin's CEXISlippi answers the playback codes over EXI
 // (prepareGameInfo, prepareFrameData, prepareIsStockSteal), in the Legacy port's "normal" mode with
@@ -2435,6 +2490,7 @@ void h_replay_finished() {
   host::set_replay_viewing(false);   // played to its end: the launcher may start the next queued replay
   host::request_exit(0);
 }
+#endif
 
 MuHostApi make_host() {
   MuHostApi h{};
@@ -2640,6 +2696,10 @@ bool set_match(const char* spec) {
   return true;
 }
 
+#ifdef MELEE_NO_SLIPPI
+void check_replay_content() {}
+bool set_replay(const char*) { return false; }   // main refuses --replay before it gets here
+#else
 // --replay <file.slp>: play a Slippi replay and record it again (see h_replay_start above).
 // The "modProfile" metadata a native recording made with mod layers carries (see
 // NativeReplayStream::set_mod_profile); empty for the retail game and for other recorders.
@@ -2734,6 +2794,7 @@ bool set_replay(const char* path) {
   host::set_replay_viewing(true);
   return true;
 }
+#endif
 
 bool reserve_memory() {
   // First, before anything else in the process can take the range: the game's 32-bit disc pointers
@@ -2807,6 +2868,7 @@ int run(void (*shutdown)(int)) {
   host::game_image = (uint8_t*)module;
   host::game_image_size = nt->OptionalHeader.SizeOfImage;
   auto entry = (MuGameEntry)GetProcAddress(module, "mu_game_entry");
+  user_gecko::set_native_writer((user_gecko::NativeWrite)GetProcAddress(module, "mu_user_gecko_write"));
   if (!entry) host::die("%s has no mu_game_entry", g_dll.c_str());
   static MuHostApi api = make_host();
   if (entry(&api, &g_game) != 0) host::die("%s refused host API version %u", g_dll.c_str(), api.version);

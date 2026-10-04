@@ -270,22 +270,66 @@ std::vector<uint8_t> two_file_fst(const std::string& first, uint32_t first_start
 }
 }
 
-// A three-joint skeleton (root, child, child's sibling) under a _Share_joint root.
+// A three-joint skeleton (root, child, child's sibling) under a _Share_joint root. Every pointer
+// has its relocation entry, as in a real archive: that entry, not the value, makes it a pointer.
+// child_at_zero stores the child at data offset 0 (the root moves to 0x40), so the root's child
+// pointer has the value 0. sibling_as_child hangs joint 2 under joint 1 instead of beside it: the
+// same number of joints in a different shape. drop_child_relocation leaves the root's child
+// pointer out of the relocation table, which makes it no pointer at all.
 std::vector<uint8_t> skeleton_dat(uint32_t root_flags, float child_y, bool extra_joint,
-                                  const std::string& name = "PlyFox5K_Share_joint") {
+                                  const std::string& name = "PlyFox5K_Share_joint",
+                                  bool child_at_zero = false, bool sibling_as_child = false,
+                                  bool drop_child_relocation = false) {
   const uint32_t joints = extra_joint ? 4 : 3, data = joints * 0x40;
-  std::vector<uint8_t> out(0x20 + data + 8 + name.size() + 1, 0);
-  be32(out, 0, (uint32_t)out.size()); be32(out, 4, data); be32(out, 12, 1);
-  auto joint = [&](uint32_t index) { return (size_t)0x20 + index * 0x40; };
+  const uint32_t at[4] = {child_at_zero ? 0x40u : 0u, child_at_zero ? 0u : 0x40u, 0x80u, 0xC0u};
+  std::vector<uint32_t> relocations;
+  std::vector<uint8_t> out(0x20 + data, 0);
+  auto joint = [&](uint32_t index) { return (size_t)0x20 + at[index]; };
+  auto point = [&](uint32_t from, uint32_t field, uint32_t to, bool relocate = true) {
+    be32(out, joint(from) + field, at[to]);
+    if (relocate) relocations.push_back(at[from] + field);
+  };
   be32(out, joint(0) + 4, root_flags);
-  be32(out, joint(0) + 8, 0x40);                     // child: joint 1
-  be32(out, joint(1) + 12, 0x80);                    // next: joint 2
-  if (extra_joint) be32(out, joint(2) + 8, 0xC0);    // joint 2 gains a child
+  point(0, 8, 1, !drop_child_relocation);            // child: joint 1
+  point(1, sibling_as_child ? 8 : 12, 2);            // next (or child): joint 2
+  if (extra_joint) point(2, 8, 3);                   // joint 2 gains a child
   uint32_t bits; std::memcpy(&bits, &child_y, 4); be32(out, joint(1) + 0x30, bits);
   for (uint32_t i = 0; i < joints; ++i) { float one = 1.0f; std::memcpy(&bits, &one, 4);
     be32(out, joint(i) + 0x20, bits); be32(out, joint(i) + 0x24, bits); be32(out, joint(i) + 0x28, bits); }
-  be32(out, 0x20 + data, 0); be32(out, 0x20 + data + 4, 0);
-  std::memcpy(out.data() + 0x20 + data + 8, name.c_str(), name.size() + 1);
+  const size_t table = out.size(), root = table + relocations.size() * 4;
+  out.resize(root + 8 + name.size() + 1, 0);
+  for (size_t i = 0; i < relocations.size(); ++i) be32(out, table + i * 4, relocations[i]);
+  be32(out, 0, (uint32_t)out.size()); be32(out, 4, data); be32(out, 8, (uint32_t)relocations.size()); be32(out, 12, 1);
+  be32(out, root, at[0]); be32(out, root + 4, 0);
+  std::memcpy(out.data() + root + 8, name.c_str(), name.size() + 1);
+  return out;
+}
+
+// The same three joints with a mesh on the root: one display object, one envelope polygon object,
+// one envelope that blends joint 1 and joint 2 with `weight` each. Joint 1 always has an inverse
+// bind matrix; joint 2 has one only when `bound`. The game asserts on a blended joint without one.
+std::vector<uint8_t> envelope_dat(bool bound, float weight = 0.5f) {
+  const std::string name = "PlyFox5K_Share_joint";
+  const uint32_t data = 0x138, dobj = 0xC0, pobj = 0xD0, list = 0xE8, descs = 0xF0, matrix = 0x108;
+  std::vector<uint32_t> relocations;
+  std::vector<uint8_t> out(0x20 + data, 0);
+  auto point = [&](uint32_t slot, uint32_t to) { be32(out, (size_t)0x20 + slot, to); relocations.push_back(slot); };
+  uint32_t bits; std::memcpy(&bits, &weight, 4);
+  be32(out, 0x20 + 4, 0x2);
+  point(0x08, 0x40); point(0x40 + 0x0C, 0x80);       // root's child, the child's sibling
+  point(0x10, dobj); point(dobj + 0x0C, pobj);       // root's mesh
+  out[0x20 + pobj + 0x0C] = 0x20;                    // polygon flags: envelope type
+  point(pobj + 0x14, list); point(list, descs);      // one envelope; the slot after it is no pointer
+  point(descs, 0x40); be32(out, 0x20 + descs + 4, bits);
+  point(descs + 8, 0x80); be32(out, 0x20 + descs + 12, bits);
+  point(0x40 + 0x38, matrix);
+  if (bound) point(0x80 + 0x38, matrix);
+  const size_t table = out.size(), root = table + relocations.size() * 4;
+  out.resize(root + 8 + name.size() + 1, 0);
+  for (size_t i = 0; i < relocations.size(); ++i) be32(out, table + i * 4, relocations[i]);
+  be32(out, 0, (uint32_t)out.size()); be32(out, 4, data); be32(out, 8, (uint32_t)relocations.size()); be32(out, 12, 1);
+  be32(out, root, 0); be32(out, root + 4, 0);
+  std::memcpy(out.data() + root + 8, name.c_str(), name.size() + 1);
   return out;
 }
 
@@ -448,6 +492,36 @@ int main(int argc, char** argv) {
           "costume skeleton: an extra joint keeps the costume offline");
     check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, fox_dat(), &why),
           "costume skeleton: a different tree is refused");
+    using host::cosmetics::online_reason_short;
+    const std::string name = "PlyFox5K_Share_joint";
+    // A pointer is an offset into the data block, so the value 0 points at the joint stored first.
+    check(host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2, 5.0f, false, name, true), &why) &&
+              why == "3 joints match",
+          "costume skeleton: a child joint stored at data offset 0 is a joint");
+    check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2, 5.0f, false, name, false, true), &why) &&
+              online_reason_short(why) == "bone 2: shape differs",
+          "costume skeleton: a missing joint against a present one names the bone");
+    check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2, 5.0f, false, name, true, false, true), &why) &&
+              online_reason_short(why) == "bone count differs (1 instead of 3)",
+          "costume skeleton: a value with no relocation entry is not a pointer");
+    check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2, 5.5f, false), &why) &&
+              online_reason_short(why) == "bone 1: rest pose differs (moved)",
+          "costume skeleton: a moved bone is named and said to have moved");
+    check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2 | 0x20000, 5.0f, false), &why) &&
+              online_reason_short(why) == "bone 0: settings differ",
+          "costume skeleton: a transform flag change names the bone");
+    check(!host::cosmetics::testing::costume_skeleton_matches(vanilla, skeleton_dat(0x2, 5.0f, true), &why) &&
+              online_reason_short(why) == "bone count differs (4 instead of 3)",
+          "costume skeleton: a different joint count gives both counts");
+    using host::cosmetics::costume_draw_safe;
+    check(costume_draw_safe(envelope_dat(true), &why), "costume mesh: blended bones with bind matrices are drawn");
+    check(!costume_draw_safe(envelope_dat(false), &why) &&
+              why == "A mesh is skinned to bone 2, which has no bind matrix: the game would stop when it is drawn.",
+          "costume mesh: a blended bone without a bind matrix refuses the costume and names the bone");
+    check(costume_draw_safe(envelope_dat(false, 1.0f), &why),
+          "costume mesh: a full-weight envelope takes the game's unchecked path and is left alone");
+    check(costume_draw_safe(vanilla, &why) && costume_draw_safe(fox_dat(), &why),
+          "costume mesh: a file with no envelope mesh, or no skeleton root, is not refused");
   }
   auto inspected = host::cosmetics::testing::inspect_dat(dat);
   check(inspected.ok, "synthetic Fox DAT validates");
@@ -847,7 +921,7 @@ int main(int argc, char** argv) {
     const auto listed = host::cosmetics::assets();
     const auto longer = std::find_if(listed.begin(), listed.end(),
         [&](const auto& asset) { return asset.id == longer_import.asset_id; });
-    check(longer != listed.end() && !longer->online_allowed && longer->online_message == "skeleton shape differs",
+    check(longer != listed.end() && !longer->online_allowed && longer->online_message == "bone count differs (4 instead of 3)",
           "a costume with an extra joint is listed as off online, with the reason");
     uint32_t swapped_stages = 7;
     check(host::cosmetics::swapped_online_count(&swapped_stages) == 1 && swapped_stages == 0,
@@ -919,7 +993,10 @@ int main(int argc, char** argv) {
     check(host::cosmetics::swapped_online_count() == 0 && host::cosmetics::online_allowed(0),
           "nothing is counted as swapped when every applied costume stays on");
   }
-  check(host::cosmetics::online_reason_short("Skeleton joint 4 rest pose differs from the vanilla costume.") == "rest pose differs" &&
+  check(host::cosmetics::online_reason_short("Skeleton joint 4 rest pose differs from the vanilla costume (rotated, moved).") == "bone 4: rest pose differs (rotated, moved)" &&
+            host::cosmetics::online_reason_short("Skeleton joint 7 flags differ from the vanilla costume.") == "bone 7: settings differ" &&
+            host::cosmetics::online_reason_short("Skeleton joint 9 hierarchy differs from the vanilla costume.") == "bone 9: shape differs" &&
+            host::cosmetics::online_reason_short("Skeleton joint count differs from the vanilla costume (62 instead of 61).") == "bone count differs (62 instead of 61)" &&
             host::cosmetics::online_reason_short("61 joints match") == "61 joints match" &&
             host::cosmetics::online_reason_short("Something else.") == "Something else",
         "the short reason names the difference");
@@ -1222,7 +1299,7 @@ int main(int argc, char** argv) {
     check(plain && plain->name == "Fox Default: from Hack disc" && left && left->name == "Fox Default: from Hack disc (alt L)" &&
               left->variant == "alt L",
           "the alternate is labelled with its set");
-    check(plain && !plain->online_allowed && plain->online_message == "rest pose differs" &&
+    check(plain && !plain->online_allowed && plain->online_message == "bone 1: rest pose differs (moved)" &&
               left && left->online_allowed && left->online_message == "3 joints match",
           "the online verdict is known from the scan, before any skin is applied");
     // The pack view and its set buttons.
@@ -1266,9 +1343,9 @@ int main(int argc, char** argv) {
       std::ifstream in(state, std::ios::binary);
       std::string text((std::istreambuf_iterator<char>(in)), {});
       in.close();
-      const size_t at = text.find("\"rules\": 3");
+      const size_t at = text.find("\"rules\": 5");
       check(at != std::string::npos, "the scan records the rules it used");
-      if (at != std::string::npos) text.replace(at, 10, "\"rules\": 2");
+      if (at != std::string::npos) text.replace(at, 10, "\"rules\": 4");
       std::ofstream out(state, std::ios::binary); out << text;
     }
     host::cosmetics::configure((alt_folder / L"port-settings.ini").string());

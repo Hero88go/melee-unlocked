@@ -9,6 +9,12 @@ namespace net_trace {
 namespace {
 
 constexpr auto kBatch = std::chrono::milliseconds(500);   // rows wait this long at most for the disk
+// What the log lines below start with: a neutral word in the build without the Slippi layer.
+#ifdef MELEE_NO_SLIPPI
+#define NET_TRACE_LOG_PREFIX "net: "
+#else
+#define NET_TRACE_LOG_PREFIX "slippi: "
+#endif
 
 std::string file_name(const std::string& path) {
   const size_t slash = path.find_last_of("\\/");
@@ -102,7 +108,7 @@ void Writer::run() {
 void Writer::report_saved(const std::string& path, size_t rows) {
   if (!log_) return;
   char line[400];
-  std::snprintf(line, sizeof line, "slippi: session trace saved to %s (%zu rows)", file_name(path).c_str(), rows);
+  std::snprintf(line, sizeof line, NET_TRACE_LOG_PREFIX "session trace saved to %s (%zu rows)", file_name(path).c_str(), rows);
   log_(line);
 }
 
@@ -128,7 +134,7 @@ void Writer::close_file() {
     if (!ec) report_saved(final_, rows_);
     else if (log_) {
       char line[400];
-      std::snprintf(line, sizeof line, "slippi: session trace left at %s (cannot rename it, error %d)", file_name(path_).c_str(), ec.value());
+      std::snprintf(line, sizeof line, NET_TRACE_LOG_PREFIX "session trace left at %s (cannot rename it, error %d)", file_name(path_).c_str(), ec.value());
       log_(line);
     }
   } else {
@@ -158,7 +164,7 @@ void Writer::handle(const Command& command) {
       if (!file_) {
         if (log_) {
           char line[400];
-          std::snprintf(line, sizeof line, "slippi: cannot create session trace %s", file_name(path_).c_str());
+          std::snprintf(line, sizeof line, NET_TRACE_LOG_PREFIX "cannot create session trace %s", file_name(path_).c_str());
           log_(line);
         }
         path_.clear(); final_.clear();

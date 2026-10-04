@@ -5,8 +5,12 @@
 #include <cstring>
 #include "lcancel.h"
 #include "user_gecko.h"
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"   // the same names, answered from the neutral netplay state
+#else
 #include "slippi_online.h"
 #include "slippi_playback.h"
+#endif
 #include "cosmetic_mods.h"
 #include "texture_pack.h"
 

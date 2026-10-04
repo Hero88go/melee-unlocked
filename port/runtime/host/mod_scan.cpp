@@ -790,7 +790,11 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
       // The Source Port side (Engine::Either) is written but has never been run: it stays off the
       // launcher until it has been played through.
       set_support(d, Engine::Recomp, version == "5.0.2" ? Support::Supported : Support::Untested, false);
+#ifdef MELEE_NO_SLIPPI   // one engine in this build, and it is not the one this disc needs
+      d.message = "Detected: " + d.name + " " + d.version + ". This build cannot play it.";
+#else
       d.message = "Detected: " + d.name + " " + d.version + ". Plays on the Static Recomp, offline (no online play or replays).";
+#endif
       return d;
     }
   }
@@ -836,8 +840,12 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
     if (known) { d.name = known->name; d.version = known->version; d.catalog_id = known->id; }
     if (known && d.hash == known->hash && used_base) *used_base = false;   // a known build by its own bytes
     set_support(d, Engine::Recomp, known && std::string(known->id) == "akaneia" ? Support::Supported : Support::Untested, true);
+#ifdef MELEE_NO_SLIPPI   // as for the Hack Pack above
+    d.message = "Detected: " + d.name + (d.version.empty() ? "" : " " + d.version) + ". This build cannot play it.";
+#else
     d.message = "Detected: " + d.name + (d.version.empty() ? "" : " " + d.version) +
                 ". Plays on the Static Recomp: launcher > Mods > Play.";
+#endif
     return d;
   }
   if (!dol_retail || has_codes) {

@@ -32,7 +32,14 @@ _Static_assert(MU_OPTION_LAB_DI_MASK == MU_GAME_OPTION_LAB_DI_MASK &&
 
 unsigned int mu_game_options(void)
 {
+#ifdef MU_NO_SLIPPI
+    /* The retail game whatever host loads this library: the vanilla switch on (the game's own music
+     * stream, no added menu rows), the online menus off. */
+    return ((mu_host && mu_host->game_options ? mu_host->game_options() : 0) | MU_GAME_OPTION_VANILLA) &
+           ~MU_GAME_OPT_SLIPPI_MENUS;
+#else
     return mu_host && mu_host->game_options ? mu_host->game_options() : 0;
+#endif
 }
 
 unsigned int mu_game_options2(void)

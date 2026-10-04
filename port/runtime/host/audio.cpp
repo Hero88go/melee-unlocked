@@ -22,7 +22,11 @@
 #include <vector>
 #include "audio.h"
 #include "host.h"
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"   // music is the game's own stream: nothing is mixed in here
+#else
 #include "jukebox.h"
+#endif
 #include "audio_buffer_policy.h"
 #include "audio_sample_conversion.h"
 #include <future>
