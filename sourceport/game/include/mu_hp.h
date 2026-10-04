@@ -143,4 +143,45 @@ void mu_hp_hitbox_color(unsigned char* rgba);
  * is in hitlag, hitstun, an aerial that would auto-cancel, IASA frames, and so on. */
 void mu_hp_overlay(struct Fighter* fp);
 
+/* ---- extra characters (ledger_M7.md, shim/mu_hp_css.c) ---- */
+
+/* The pack's character select features are in effect: the pack is loaded, the normal game,
+ * offline, outside replay playback. */
+int mu_hp_css_live(void);
+/* The pack's every frame code on the character select screen (the branch at 80263350, the part at
+ * 80FD03EC): Z pressed alone by a player who holds a coin over one of seven icons swaps that
+ * icon's character with its hidden one. `icon` is the icon's index in the game's table, `ckind`
+ * the character it shows now; returns the character to write into the icon, -1 for none. */
+int mu_hp_css_swap(int icon, int ckind);
+/* The character an icon goes back to when the screen opens without the pack's features (an
+ * online screen must never offer a hidden fighter): the pair's normal character for the six non
+ * playable ones, `ckind` itself for anything else. Works whatever the mode. */
+int mu_hp_css_base(int ckind);
+/* "Disable X/Y Alt Costumes for Extra Characters", 802600D8 (mnCharSel_CostumeChange), and "CSS B
+ * Button Return Cursor Fix", 8025FE50 (mnCharSel_8025FDEC): 1 for a character past the playable
+ * ones (Master Hand to Popo) while the pack's features are in effect. */
+int mu_hp_css_extra(int ckind);
+/* "Extra Chars Don't Reset Port If Unavailable", 80264EEC (mnCharSel_802640A0, where a port whose
+ * character is on no icon is emptied): the icon the port's coin goes to instead, -1 for the game's
+ * own way. `slot_type` is the port's (3 is closed). */
+int mu_hp_css_keep_icon(int ckind, int slot_type);
+/* "Extra Character Nametag Changes" (data, 803D4F7C and on): the pack's name for a character, NULL
+ * for the game's own. `english` is the saved language. gm/gm_1601.c, where a character's name is
+ * looked up. */
+const char* mu_hp_ckind_name(int ckind, int english);
+/* "Fighting Wireframes And Popo Announcer", 80168C70 (gm_80168C5C): the announcer call for a
+ * character the game has none for, 0 for the game's own. */
+int mu_hp_announce(int ckind);
+/* "Giga-Bowser & Sandbag Always Fall On Match Start", 80069328 (Fighter_Create, where the entry
+ * is picked): 1 when this fighter starts the match falling instead of on its entry. */
+int mu_hp_spawn_falling(const struct Fighter* fp);
+/* "MasterHand & CrazyHand Controlled By All Ports", 801508B8 (ftMh_MS_341_80150894) and 80156AFC
+ * (ftCh_Init_80156AD8): the buttons a hand's player commands come from. `pad` is what the game
+ * reads (the third controller for Master Hand, the fourth for Crazy Hand); with the pack's rules
+ * in effect the fighter's own held buttons come back instead. */
+unsigned int mu_hp_boss_buttons(const struct Fighter* fp, unsigned int pad);
+/* "CrazyHand - Disable D-Pad Up+B Attack", 80156CE0, and "Crazy Hand Tag Team Fix", 8015C2F8
+ * (ftBossLib_8015C2E0): 1 while the pack's match rules are in effect (mu_hp_stage_on). */
+int mu_hp_boss_rules(void);
+
 #endif

@@ -79,9 +79,12 @@ void plans() {
     const auto code = bytes(words);
     return ppc::stencil::plan_leaf(code.data(), code.size(), ppc::RAM_BASE, plan, error);
   };
-  // Forward b: one Jump straight to the target's stencil.
-  CHECK(planned({branch(8), kNop, kBlr}) && plan.size() == 3);
-  CHECK(plan[0].operation == Operation::Jump && plan[0].next == 2 && plan[1].next == 2 && plan[2].operation == Operation::Return);
+  // Forward b: one Jump straight to the target's stencil. The word it jumps over is not reached
+  // and not planned.
+  CHECK(planned({branch(8), kNop, kBlr}) && plan.size() == 2);
+  CHECK(plan[0].operation == Operation::Jump && plan[0].next == 1 && plan[1].operation == Operation::Return);
+  // With a branch into it the same word is planned.
+  CHECK(planned({bc(12, 2, 8), branch(8), kNop, kBlr}) && plan.size() == 4 && plan[2].next == 3);
   // bdnz backward: CTR test, then the back-edge counter, then the exit taken every 1024th time.
   CHECK(planned({li(3, 5), mtspr(9, 3), addi(4, 4, 1), bc(16, 0, -4), kBlr}) && plan.size() == 7);
   CHECK(plan[3].operation == Operation::BranchCtrNonzero && plan[3].taken == 4 && plan[3].next == 6);
@@ -108,20 +111,13 @@ void plans() {
   // An unconditional backward b needs no Jump: the Backedge stencil is the branch.
   CHECK(planned({kNop, branch(-4)}) && plan.size() == 3 && plan[1].operation == Operation::Backedge && plan[1].next == 0);
 
+  // Branches that leave the function are calls and tail calls now (ppc_leaf_call_test.cpp); what
+  // is still refused here is a function that can run off its end, and the forms no stencil models.
   const std::vector<std::vector<uint32_t>> rejected = {
-    {branch(8), kBlr},               // b to the address after the function
-    {branch(-4), kBlr},              // b before the function
-    {kBlr, branch(8)},
-    {branch(4) | 1, kBlr},           // bl
-    {branch(4) | 2, kBlr},           // ba
-    {bc(12, 2, 4) | 1, kBlr},        // bcl
-    {bc(12, 2, 4) | 2, kBlr},        // bca
-    {bc(12, 2, 8), kBlr},            // conditional branch past the end
-    {bc(12, 2, -8), kBlr},
-    {bclr(12, 2) | 1, kBlr},         // beqlrl
+    {branch(8) | 1},                 // a call as the last instruction returns to nothing
+    {bc(12, 2, 8)},                  // conditional tail call, then nothing
     {bclr(20, 0) | (1u << 11), kBlr},// bclr with a reserved field
-    {xlform(20, 0, 0, 528), kBlr},   // bctr
-    {xlform(12, 2, 0, 528), kBlr},   // beqctr
+    {xlform(16, 0, 0, 528), kBlr},   // bdnzctr
     {kNop, bc(12, 2, -4)},           // falls off the end when not taken
     {bc(16, 0, 0)},                  // bdnz to itself, then falls off
     {bclr(12, 2)},                   // conditional return with nothing after it

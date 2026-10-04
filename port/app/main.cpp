@@ -1625,9 +1625,9 @@ static int melee_main(int argc, char** argv) {
     else { usage(); return 2; }
   }
 #ifdef MELEE_NO_SLIPPI
-  // This build is always the game without the General Codes: retail menus, rules and music.
+  // Retail menus and the game's own music stream; the code set and the training packs follow the
+  // same switches as in the normal build (--vanilla-game turns them off).
   (void)allow_matchmaking;
-  o.vanilla_game = true;
   if (!source_p2p::check()) { usage(); return 2; }
 #else
   if ((hidden || headless || scripted) && !allow_matchmaking) slippi::Matchmaking::server_allowed = false;
