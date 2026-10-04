@@ -171,7 +171,8 @@ class NetplayClient {
   void ForceDisconnectPlayer(uint8_t player_idx);
   void ForceDisconnect(DisconnectReason reason = DisconnectReason::UNSPECIFIED);
   DisconnectReason GetDisconnectReason() const { return (DisconnectReason)disconnect_reason_.load(std::memory_order_acquire); }
-  MatchInfo* GetMatchInfo() { return &match_info_; }
+  // A copy: the network thread merges the remote players' selections while the game reads them.
+  MatchInfo GetMatchInfo() { std::lock_guard<std::mutex> lk(selection_mutex_); return match_info_; }
   PlayerSelections GetSlippiRemoteChatMessage(bool chat_enabled);
   uint8_t GetSlippiRemoteSentChatMessage(bool chat_enabled);
   int32_t CalcTimeOffsetUs();
@@ -203,8 +204,13 @@ class NetplayClient {
 
   std::mutex pad_mutex_, ack_mutex_, async_mutex_;
   // timing_mutex_: last_frame_timing_, has_game_started_, frame_offset_data_ (network thread and game
-  // thread). chat_mutex_: remote_chat_message_selection_.
-  std::mutex timing_mutex_, chat_mutex_;
+  // thread). chat_mutex_: remote_chat_message_selection_. selection_mutex_: match_info_ (the network
+  // thread merges remote selections, the game thread reads, resets and sets its own; the player_idx
+  // fields are written once in the constructor and read without it).
+  // Lock order: these are leaf locks. Each is taken alone and released before the next, with one
+  // nesting only: chat_mutex_ then async_mutex_ (the chat-disabled reply is queued under chat_mutex_).
+  // async_mutex_ is never held while taking another, so no two are ever taken in opposite orders.
+  std::mutex timing_mutex_, chat_mutex_, selection_mutex_;
   std::deque<std::unique_ptr<Packet>> async_queue_;
   _ENetHost* client_ = nullptr;
   std::vector<_ENetPeer*> server_;
@@ -243,6 +249,22 @@ class Matchmaking {
   enum ProcessState { IDLE, INITIALIZING, MATCHMAKING, OPPONENT_CONNECTING, CONNECTION_SUCCESS, ERROR_ENCOUNTERED };
   struct MatchSearchSettings { OnlinePlayMode mode = UNRANKED; std::string connect_code; };
   struct MatchmakeResult { std::string id; std::vector<UserInfo> players; std::vector<uint16_t> stages; uint32_t items = 0; };
+  // The match a get-ticket-resp describes, read without trusting any of it. ok is false (and error
+  // says why) unless there are 2 to 4 players, every port is 1..4 and used once, and one of them is
+  // the local player; then no count or index taken from it can pass the fixed per-player arrays.
+  struct ParsedTicket {
+    bool ok = false;
+    std::string error;
+    std::string match_id;
+    std::vector<UserInfo> players;          // in the ticket's order
+    int local_player_index = 0;             // the local player's port - 1
+    std::vector<std::string> remote_ips;    // "ip:port" per remote, in the ticket's order
+    bool is_host = false;
+    std::vector<uint16_t> stages;
+    uint32_t items = 0;
+  };
+  // Pure parsing of a get-ticket-resp body (JSON text). Never throws; no sockets, no state.
+  static ParsedTicket ParseTicket(const std::string& json_text);
   // Local test peering (no matchmaking server): fixed player index, local port and the address of
   // every other player ("ip:port", in player-index order with the local player left out). One
   // remote is a two-player match; three is a four-player (Teams) match.
@@ -258,15 +280,29 @@ class Matchmaking {
   ~Matchmaking();
   void FindMatch(MatchSearchSettings settings);
   ProcessState GetMatchmakeState() const { return state_; }
-  std::string GetErrorMessage() const { return error_msg_; }
+  std::string GetErrorMessage() const { std::lock_guard<std::mutex> lk(result_mutex_); return error_msg_; }
   bool IsSearching() const { return state_ == INITIALIZING || state_ == MATCHMAKING || state_ == OPPONENT_CONNECTING; }
-  std::unique_ptr<NetplayClient> GetNetplayClient() { return std::move(netplay_client_); }
-  int LocalPlayerIndex() const { return local_player_index_; }
-  std::vector<UserInfo> GetPlayerInfo() const { return player_info_; }
-  std::string GetPlayerName(uint8_t port) const { return port < player_info_.size() ? player_info_[port].display_name : ""; }
-  std::vector<uint16_t> GetStages() const { return allowed_stages_; }
-  uint8_t RemotePlayerCount() const { return player_info_.empty() ? 0 : (uint8_t)(player_info_.size() - 1); }
-  MatchmakeResult GetMatchmakeResult() const { return mm_result_; }
+  std::unique_ptr<NetplayClient> GetNetplayClient() { std::lock_guard<std::mutex> lk(result_mutex_); return std::move(netplay_client_); }
+  int LocalPlayerIndex() const { std::lock_guard<std::mutex> lk(result_mutex_); return local_player_index_; }
+  std::vector<UserInfo> GetPlayerInfo() const { std::lock_guard<std::mutex> lk(result_mutex_); return player_info_; }
+  std::string GetPlayerName(uint8_t port) const {
+    std::lock_guard<std::mutex> lk(result_mutex_);
+    return port < player_info_.size() ? player_info_[port].display_name : "";
+  }
+  std::vector<uint16_t> GetStages() const { std::lock_guard<std::mutex> lk(result_mutex_); return allowed_stages_; }
+  // Never more than REMOTE_PLAYER_MAX: callers index fixed per-remote arrays with it.
+  uint8_t RemotePlayerCount() const {
+    std::lock_guard<std::mutex> lk(result_mutex_);
+    const size_t n = player_info_.empty() ? 0 : player_info_.size() - 1;
+    return (uint8_t)(n < (size_t)REMOTE_PLAYER_MAX ? n : (size_t)REMOTE_PLAYER_MAX);
+  }
+  // True when every player but the local one is a bot (asked every frame of a match: no copy).
+  bool AllRemotesAreBots() const {
+    std::lock_guard<std::mutex> lk(result_mutex_);
+    for (size_t i = 0; i < player_info_.size(); ++i) { if ((int)i == local_player_index_) continue; if (!player_info_[i].is_bot) return false; }
+    return true;
+  }
+  MatchmakeResult GetMatchmakeResult() const { std::lock_guard<std::mutex> lk(result_mutex_); return mm_result_; }
   static bool IsFixedRulesMode(OnlinePlayMode m) { return m == UNRANKED || m == PARTY; }
   static LocalPeer local_peer;          // set from the command line for local 2-4 instance tests
   static uint16_t forced_port;          // 0 = random 41000..50999
@@ -282,23 +318,35 @@ class Matchmaking {
   void disconnectFromServer();
   void terminateMmConnection();
   struct Ticket;                          // a get-ticket-resp body (defined in slippi_net.cpp)
-  void ingest_ticket(const Ticket& ticket);
+  bool ingest_ticket(const Ticket& ticket);   // false: the ticket was refused and the search has failed
+  void fail(const std::string& message);      // the search ends with this error text
 
   User* user_;
   _ENetHost* client_ = nullptr;
   _ENetPeer* server_ = nullptr;
-  bool is_mm_connected_ = false, is_mm_terminated_ = false;
+  bool is_mm_connected_ = false;
+  std::atomic<bool> is_mm_terminated_{false};
   std::thread thread_;
   MatchSearchSettings search_settings_;
   std::atomic<ProcessState> state_{IDLE};
+  // result_mutex_: what the game thread reads of a search while the matchmaking thread works:
+  // error_msg_, local_player_index_, mm_result_, player_info_, allowed_stages_, netplay_client_.
+  // The matchmaking thread builds a result aside and swaps it in complete, and stores the error text
+  // before the state that announces it. It is a leaf lock: nothing else is taken while it is held
+  // (not the user record's mutex, none of the netplay client's), and no netplay client is created or
+  // destroyed under it. The matchmaking thread is the only writer after FindMatch, so it reads its
+  // own copies without the lock.
+  mutable std::mutex result_mutex_;
   std::string error_msg_;
-  int host_port_ = 0, local_player_index_ = 0;
-  std::vector<std::string> remote_ips_;
+  int local_player_index_ = 0;
   MatchmakeResult mm_result_;
   std::vector<UserInfo> player_info_;
   std::vector<uint16_t> allowed_stages_;
-  bool is_host_ = false;
   std::unique_ptr<NetplayClient> netplay_client_;
+  // Matchmaking thread only.
+  int host_port_ = 0;
+  std::vector<std::string> remote_ips_;
+  bool is_host_ = false;
 };
 
 // Helpers shared with the EXI device.

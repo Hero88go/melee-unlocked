@@ -173,6 +173,7 @@ bool wait_until_console_time(uint64_t tb);
 void install_audio_pacing();
 void install_clean_mode_music();   // Static Recomp, clean mode: music through the host's player
 void install_mod_disc_guards();   // Static Recomp, mod disc: a file the disc lacks opens as an empty file   // Static Recomp: audio blocks at their 5 ms times during the frame wait
+void report_heap_panic(ppc::Context& c);   // OSPanic at lbmemory.c:233: logs the heap that had no room and the title demo's draw
 void apply_wide_fighter_draw();   // Static Recomp, once per game frame: fighters in the added sides draw under True 16:9
 void install_console_clock();  // Static Recomp: OSGetTime carries the date (see os_get_time_dated)
 void install_language_override();  // Static Recomp: the functions that read the saved language follow g_game_language

@@ -84,6 +84,13 @@ bool http(const char* method, const std::string& url, const std::wstring& header
 }  // namespace
 bool http_get(const std::string& url, std::string* response, int* status) { return http("GET", url, L"", "", status, response); }
 namespace {
+// A member of a JSON object, or null when j is not an object or has no such key. Never throws.
+const json* json_member(const json& j, const char* key) {
+  if (!j.is_object()) return nullptr;
+  auto it = j.find(key);
+  return it == j.end() ? nullptr : &*it;
+}
+
 // GraphQL POST; returns the `data` object or null (and logs) on failure.
 json graphql(const std::string& query, const json& variables) {
   json body = {{"query", query}, {"variables", variables}};
@@ -91,9 +98,11 @@ json graphql(const std::string& query, const json& variables) {
   if (!http("POST", ENDPOINT, L"Content-Type: application/json\r\n", body.dump(), &status, &response)) { host::log("slippi report: request failed (network)"); return nullptr; }
   json r = json::parse(response, nullptr, false);
   if (r.is_discarded()) { host::log("slippi report: bad response (HTTP %d): %s", status, response.substr(0, 200).c_str()); return nullptr; }
-  if (r.count("errors") && r["errors"].is_array() && !r["errors"].empty()) { host::log("slippi report: server error: %s", r["errors"].dump().substr(0, 300).c_str()); return nullptr; }
-  if (!r.count("data")) return nullptr;
-  return r["data"];
+  const json* errors = json_member(r, "errors");
+  if (errors && errors->is_array() && !errors->empty()) { host::log("slippi report: server error: %s", errors->dump().substr(0, 300).c_str()); return nullptr; }
+  const json* data = json_member(r, "data");
+  if (!data) return nullptr;
+  return *data;
 }
 
 // ---- gzip container with stored (uncompressed) deflate blocks: valid gzip, no zlib needed.
@@ -182,11 +191,14 @@ bool send_game(Job& job) {
                   {"gameDurationFrames", g.duration_frames}, {"gameIndex", g.game_index}, {"tiebreakIndex", g.tiebreak_index}, {"winnerIdx", g.winner_index},
                   {"gameEndMethod", g.game_end_method}, {"lrasInitiator", g.lras_initiator}, {"stageId", g.stage_id}};
   json data = graphql("mutation ($report: OnlineGameReportInput!) { reportOnlineGame (report: $report) { success uploadUrl } }", {{"report", payload}});
-  bool success = !data.is_null() && data.count("reportOnlineGame") && data["reportOnlineGame"].value("success", false);
+  // Type-checked: the answer can be null, or an object without these fields, when the server refuses.
+  const json* r = json_member(data, "reportOnlineGame");
+  const json* ok = r ? json_member(*r, "success") : nullptr;
+  bool success = ok && ok->is_boolean() && ok->get<bool>();
   if (success) {
     host::log("slippi report: game %u of %s reported", g.game_index, g.match_id.c_str());
-    auto& r = data["reportOnlineGame"];
-    if (r.count("uploadUrl") && r["uploadUrl"].is_string() && !g.replay_path.empty()) upload_replay(g.replay_path, r["uploadUrl"].get<std::string>());
+    const json* url = json_member(*r, "uploadUrl");
+    if (url && url->is_string() && !g.replay_path.empty()) upload_replay(g.replay_path, url->get<std::string>());
     return true;
   }
   if (job.attempts >= MAX_ATTEMPTS) { host::log("slippi report: giving up on game report for %s after %d attempts", g.match_id.c_str(), job.attempts); return true; }
@@ -194,8 +206,29 @@ bool send_game(Job& job) {
   return false;
 }
 
+// Nothing may leave this thread as an exception (that would end the process): a report whose
+// request or answer throws is logged and dropped, like one that ran out of attempts.
+bool send_game_guarded(Job& job) {
+  try {
+    return send_game(job);
+  } catch (const std::exception& e) {
+    host::log("slippi report: game report for %s dropped: %s", job.game.match_id.c_str(), e.what());
+  } catch (...) {
+    host::log("slippi report: game report for %s dropped (unknown error)", job.game.match_id.c_str());
+  }
+  return true;
+}
+
 void worker() {
-  hash_iso();
+  try {
+    hash_iso();
+  } catch (const std::exception& e) {
+    host::log("slippi report: ISO hash failed: %s", e.what());
+    g_hash_done = true;
+  } catch (...) {
+    host::log("slippi report: ISO hash failed");
+    g_hash_done = true;
+  }
   for (;;) {
     Job job;
     {
@@ -205,7 +238,7 @@ void worker() {
       job = g_queue.front();
       if (g_quit) { g_queue.pop_front(); job.attempts = MAX_ATTEMPTS - 1; }   // one last attempt each on shutdown
     }
-    bool done = send_game(job);
+    bool done = send_game_guarded(job);
     std::lock_guard<std::mutex> lk(g_mutex);
     if (!g_queue.empty() && !g_quit) { if (done) g_queue.pop_front(); else g_queue.front().attempts = job.attempts; }
   }

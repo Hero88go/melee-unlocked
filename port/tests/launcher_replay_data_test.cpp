@@ -179,6 +179,37 @@ int main(int argc,char** argv) {
     auto sparse=inspect_raw(events);
     if(!sparse.valid || sparse.last_frame!=4) return 9;
   }
+  // A small file that walks its frame numbers up one allowed jump at a time: the frame list stays
+  // within the frame events the file has room for plus one jump, so only the first step is taken
+  // (before the bound, all forty were, and the list doubled its way to 120,000 frames and beyond).
+  {
+    Bytes events=raw;
+    for(int step=1;step<=40;++step) post(events,3000*step,0x0e,0);
+    auto walk=inspect_raw(events);
+    if(!walk.valid || walk.last_frame!=3000) return 10;
+    if(walk.players[0].l_success!=1 || walk.players[0].l_fail!=0) return 11;
+  }
+  // A recording of ordinary shape, longer than several jumps: every frame is kept and the same
+  // landing sequence as above, placed in its last five frames, gives the same statistics.
+  {
+    const int count=9000;
+    Bytes events{0x35,7,0x36,3,0,0x38,0,84};
+    events.insert(events.end(),start.begin(),start.end());
+    const uint16_t actions[5]={0x46,0x46,0x1d,0x46,0x0e};
+    const uint8_t statuses[5]={2,0,0,1,0};
+    for(int i=0;i<count;++i) {
+      const int tail=i-(count-5);
+      post(events,-123+i,tail>=0?actions[tail]:uint16_t(0x0e),tail>=0?statuses[tail]:uint8_t(0));
+      post(events,-123+i,0x0e,0,1);
+    }
+    auto whole=inspect_raw(events);
+    if(!whole.valid || whole.players.size()!=2 || whole.last_frame!=-123+count-1) return 12;
+    for(int p=0;p<2;++p) {
+      const auto& a=whole.players[p];const auto& b=info.players[p];
+      if(a.l_success!=b.l_success || a.l_fail!=b.l_fail || a.kills!=b.kills || a.openings!=b.openings ||
+         a.rolls!=b.rolls || a.stocks!=b.stocks) return 13;
+    }
+  }
   if(argc>1) {
     auto actual=launcher::replay::inspect(argv[1],true);
     if(!actual.valid) return 5;

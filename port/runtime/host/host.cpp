@@ -1395,12 +1395,83 @@ static int32_t fst_find_path(const char* path) {
     path = end + 1;
   }
 }
+// Where a code list's branch at `at` leads (the code it put in place of that instruction), or 0 when
+// the instruction there is not a plain branch.
+static uint32_t mod_code_behind(uint32_t at) {
+  const uint32_t first = rd32(at);
+  if ((first & 0xFC000003u) != 0x48000000u) return 0;
+  const uint32_t code = at + (uint32_t)((int32_t)(first << 6) >> 6);
+  return code >= 0x80000000u && code < 0x81800000u ? code : 0;
+}
+// m-ex replaces gm_80160438 (the results animation file of a fighter) with a read of its own table:
+//   lwz r4,N(r2) ; mulli r3,r3,4 ; lwzx r3,r3,r4 ; blr
+// A row can name a file the disc does not have (ACE 2.0.0: Crazy Hand's row names GmRstMGk.dat). The game
+// itself has no file for such a fighter and its results screen then shows no model for it (a NULL row).
+// Rows without a file are cleared when the results screen opens its own file, before any fighter is
+// asked for. Nothing is read or written unless that exact code is behind the function's entry, so the
+// retail game and a mod without this table are left alone. A cleared row is skipped from then on.
+//
+// A row can also name a file the disc has for a fighter that has no results animation in any file
+// (ACE 2.0.0: Master Hand's row names Mario's file). m-ex then looks up the fighter's symbol name, an
+// empty string, and stops ("fighter N has no symbol"). Such a row is cleared too, but only when both of
+// m-ex's reads are confirmed the same way: the fighter id table (Player_80036E20: lwz r3,8(r2)) and the
+// symbol name table with its stop (ftDemo_SetArchiveData: lwz r4,0x78(r2)).
+static void clear_result_rows_without_file(ppc::Context& c) {
+  auto in_ram = [](uint32_t a, uint32_t n) { return a >= 0x80000000u && a < 0x81800000u && try_ptr(a, n) != nullptr; };
+  const uint32_t code = mod_code_behind(0x80160438u);
+  if (!code || !in_ram(code, 16) || (rd32(code) & 0xFFFF0000u) != 0x80820000u || rd32(code + 4) != 0x1C630004u ||
+      rd32(code + 8) != 0x7C63202Eu || rd32(code + 12) != 0x4E800020u) return;
+  const uint32_t holder = c.r[2] + (uint32_t)(int32_t)(int16_t)(rd32(code) & 0xFFFFu);
+  if (!in_ram(holder, 4)) return;
+  const uint32_t table = rd32(holder);
+  // The fighter id of a row (3 bytes a row, the id first) and the symbol names of a fighter (4 a fighter,
+  // the results one first), both 0 unless m-ex's code for them is in place.
+  uint32_t ids = 0, symbols = 0;
+  const uint32_t id_code = mod_code_behind(0x80036E34u), symbol_code = mod_code_behind(0x800BEBC8u);
+  if (id_code && in_ram(id_code, 8) && rd32(id_code) == 0x80620008u && rd32(id_code + 4) == 0x3803FFE0u &&
+      rd32(0x80036E24u) == 0x1CC30003u && rd32(0x80036E3Cu) == 0x7FE03214u && rd32(0x80036E50u) == 0x887F0020u &&
+      symbol_code && in_ram(symbol_code, 0x48) && rd32(symbol_code + 0x10) == 0x7C7D1B78u &&
+      rd32(symbol_code + 0x18) == 0x80820078u && rd32(symbol_code + 0x1C) == 0x1C1D0004u &&
+      rd32(symbol_code + 0x20) == 0x7C84002Eu && rd32(symbol_code + 0x24) == 0x1C050004u &&
+      rd32(symbol_code + 0x28) == 0x7F84002Eu && rd32(symbol_code + 0x40) == 0x2C030000u &&
+      rd32(symbol_code + 0x44) == 0x4182000Cu && in_ram(c.r[2] + 8u, 4) && in_ram(c.r[2] + 0x78u, 4)) {
+    ids = rd32(c.r[2] + 8u);
+    symbols = rd32(c.r[2] + 0x78u);
+  }
+  for (uint32_t row = 0; row < 256; ++row) {
+    if (!in_ram(table + row * 4, 4)) break;
+    const uint32_t at = rd32(table + row * 4);
+    if (!at) continue;
+    if (!in_ram(at, 16)) break;
+    const char* name = (const char*)try_ptr(at, 16);
+    if (!*name) continue;                                                    // a fighter without an entry
+    if (_strnicmp(name, "GmRstM", 6) != 0 || !std::memchr(name, '\0', 16)) break;   // past the table
+    if (fst_find_path(name) < 0) {
+      log("mods: results table row for character %u named a file this disc does not have (%s); cleared", row, name);
+      wr32(table + row * 4, 0);
+      continue;
+    }
+    if (!ids || !symbols || !in_ram(ids + row * 3, 1)) continue;
+    const uint32_t fighter = rd8(ids + row * 3);
+    if (fighter >= 0x80u || !in_ram(symbols + fighter * 4, 4)) continue;
+    const uint32_t names = rd32(symbols + fighter * 4);
+    if (!in_ram(names, 4) || !in_ram(rd32(names), 1) || rd8(rd32(names)) != 0) continue;
+    log("mods: results table row for character %u named a file (%s) for fighter %u, which has no results animation in any file; cleared", row, name, fighter);
+    wr32(table + row * 4, 0);
+  }
+}
 // A mod can send the results screen for a fighter that has no results animation on any disc (Master
 // Hand, picked from a mod's debug menu, wins a match: GmRstMMh.dat). The game stops on the missing
 // file. In a mod session a results animation the disc does not have opens as Mario's instead.
 void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
   const char* path = (const char*)try_ptr(c.r[3], 1);
   if (!path) { c.r[3] = 0xFFFFFFFFu; return; }
+  {
+    // The results screen asks for its own file before any fighter's (see clear_result_rows_without_file).
+    const char* slash0 = std::strrchr(path, '/');
+    const char* base0 = slash0 ? slash0 + 1 : path;
+    if (!_stricmp(base0, "GmRst.usd") || !_stricmp(base0, "GmRst.dat")) clear_result_rows_without_file(c);
+  }
   int32_t entry = fst_find_path(path);
   if (entry < 0) {
     const char* slash = std::strrchr(path, '/');
@@ -1482,10 +1553,79 @@ void clean_mode_music_frame() {
   const int volume = (int)std::clamp(level * (float)(rd32(0x804D3884u) * 2u), 0.0f, 254.0f);
   if (volume != last) { last = volume; slippi::jukebox::set_melee_volume((uint8_t)volume); }
 }
+// The title demo preloads four fighters and a stage into two heaps of a fixed size, sized for the 26
+// fighters of the retail disc. A disc that draws the demo from a larger roster and keeps those sizes
+// (ACE 2.0.0) stops with `assertion "memp_kouho"` in lbmemory.c when the draw is too large. At the entry
+// of gm_PreloadTitleDemo (801BF3F8) the four picks are at 8049E548 (costumes at +4). A pick that is not
+// one of the 26 becomes one of them, worked out from the pick itself (no random number is drawn); those
+// always fit. 0x21 is the game's "no fighter" and loads nothing, so it stays. The retail game never has
+// another value here, and this hook is only installed for a mod disc.
+static void title_demo_fit(ppc::Context&) {
+  constexpr uint32_t kPicks = 0x8049E548u;
+  constexpr uint8_t kRetailFighters = 0x1Au, kNoFighter = 0x21u, kZelda = 0x12u, kSheik = 0x13u;
+  uint8_t pick[4];
+  for (int i = 0; i < 4; ++i) pick[i] = rd8(kPicks + i);
+  for (int i = 0; i < 4; ++i) {
+    if (pick[i] < kRetailFighters || pick[i] == kNoFighter) continue;
+    // As the game's own draw: no fighter twice, and never Zelda and Sheik together.
+    auto taken = [&](uint8_t v) {
+      for (int j = 0; j < 4; ++j)
+        if (j != i && (pick[j] == v || (v == kZelda && pick[j] == kSheik) || (v == kSheik && pick[j] == kZelda))) return true;
+      return false;
+    };
+    uint8_t v = (uint8_t)(pick[i] % kRetailFighters);
+    while (taken(v)) v = (uint8_t)((v + 1u) % kRetailFighters);
+    log("mods: the title demo drew fighter %u, which its memory was not sized for; fighter %u of the original game plays in its place", (unsigned)pick[i], (unsigned)v);
+    pick[i] = v;
+    wr8(kPicks + i, v);
+    wr8(kPicks + 4 + i, 0);
+  }
+}
+// The same stop, should it still happen (a disc with larger files of the 26, a stage too large): one
+// line with the heap that had no room and the title demo's draw, so a report names the cause. At the
+// entry of __assert (80388220) called from lbMemory_80014FC8 for line 233, r24 is the heap's handle and
+// r30 the size asked, rounded up to 32 bytes (see trace_guest_heap_assert, the test switch's full trace).
+static void report_heap_stop_lines(uint32_t handle, uint32_t rounded, uint32_t caller) {
+  static bool told = false;   // the entry hook and the panic itself can both come here for one stop
+  if (told) return;
+  told = true;
+  const auto heap = guest_heap_trace::inspect(handle, heap_trace_read32);
+  log("heap: no room in a fixed heap: handle %08X, %08X..%08X (%u bytes), asked %u, free %u, largest gap %u, %u blocks%s, asked by %08X",
+      handle, heap.lo, heap.hi, heap.hi - heap.lo, rounded, heap.free, heap.largest_gap, (unsigned)heap.count,
+      heap.complete ? "" : " (list not read to its end)", caller);
+  constexpr uint32_t kPicks = 0x8049E548u;
+  if (try_ptr(kPicks, 0x10))
+    log("heap: title demo draw: fighters %02X %02X %02X %02X, costumes %02X %02X %02X %02X, stage %04X", rd8(kPicks), rd8(kPicks + 1),
+        rd8(kPicks + 2), rd8(kPicks + 3), rd8(kPicks + 4), rd8(kPicks + 5), rd8(kPicks + 6), rd8(kPicks + 7), rd16(kPicks + 0xC));
+  log_flush();
+}
+static void report_heap_stop(ppc::Context& c) {
+  if (c.lr != 0x80015098u || c.r[4] != 233u || !heap_trace_literal(c.r[3], "lbmemory.c")) return;
+  uint32_t caller = 0;
+  if (c.r[1] > 0xFFFFFFC3u || !heap_trace_read32(c.r[1] + 60u, caller)) caller = 0;
+  report_heap_stop_lines(c.r[24], c.r[30], caller);
+}
+// The same two lines for any disc, from the panic itself (no entry hook is installed for the retail
+// disc). At the entry of OSPanic the stack holds the frame of the panic helper (80388278), then
+// __assert's, where the size asked was saved (+0x18), then the allocator's, which holds __assert's
+// return address (+4) and, above its 0x38 bytes, its own caller's. r24 is still the heap's handle:
+// neither function in between uses it. Anything that does not match this exactly prints nothing.
+void report_heap_panic(ppc::Context& c) {
+  uint32_t helper = c.r[1], assert_frame = 0, allocator = 0, back = 0, rounded = 0, caller = 0;
+  if (c.lr != 0x80388300u || !heap_trace_read32(helper, assert_frame) || !heap_trace_read32(assert_frame, allocator) ||
+      allocator > 0xFFFFFFC3u || !heap_trace_read32(allocator + 4u, back) || back != 0x80015098u ||
+      assert_frame > 0xFFFFFFE7u || !heap_trace_read32(assert_frame + 0x18u, rounded)) return;
+  if (!heap_trace_read32(allocator + 60u, caller)) caller = 0;
+  report_heap_stop_lines(c.r[24], rounded, caller);
+}
 void install_mod_disc_guards() {
   if (!mod_disc_active()) return;
   if (!ppc::redirect_to_host(0x80337C60u, dvd_fast_open_checked)) log("mods: DVDFastOpen keeps the game's own code");
   if (!ppc::redirect_to_host(0x8033796Cu, dvd_convert_path_checked)) log("mods: the file name search keeps the game's own code");
+  // MELEE_TEST_NO_DEMO_FIT (tests only, hidden and headless runs): the draw is left as the disc made
+  // it, to show the stop and its report.
+  if (!(std::getenv("MELEE_TEST_NO_DEMO_FIT") && options.no_gc_adapter)) ppc::add_entry_hook(0x801BF3F8u, title_demo_fit);
+  ppc::add_entry_hook(0x80388220u, report_heap_stop);
 }
 void install_audio_pacing() {
   if (ppc::Fn previous = ppc::set_hook(0x80019894u, pad_queue_count_paced)) g_pad_queue_count = previous;
