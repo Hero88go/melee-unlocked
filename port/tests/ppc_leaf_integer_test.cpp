@@ -323,16 +323,9 @@ void rejections() {
     xform(3, 4, 5, 202),            // addze with a reserved RB field
     xform(4, 3, 5, 954),            // extsb with a reserved RB field
     xform(4, 3, 5, 26),             // cntlzw with a reserved RB field
-    xform(3, 4, 5, 136),            // subfe: its stencil needs a saved register (see README)
     xform(3, 4, 5, 9),              // no such extended opcode
-    xform(3, 4, 5, 23),             // lwzx: memory
     xform(3, 4, 5, 339),            // mfspr of an SPR outside XER, LR and CTR
-    dform(32, 3, 4, 0),             // lwz: memory
-    dform(36, 3, 4, 0),             // stw: memory
     0x44000002u,                    // sc
-    0x4E800021u,                    // blrl
-    0x4E800420u,                    // bctr
-    0x48000005u,                    // bl
     dform(11, (7 << 2) | 1, 4, 0),  // cmpwi with L=1
     dform(10, (7 << 2) | 2, 4, 0),  // cmplwi with the reserved bit
     xform((7 << 2) | 1, 4, 5, 0),   // cmpw with L=1
@@ -341,9 +334,6 @@ void rejections() {
     mtcrf(0xFF, 3) | (1u << 20),    // mtocrf form
     xlform(1, 4, 0, 0),             // mcrf with reserved bits
     xlform(1 << 2, 2 << 2, 0, 0) | 1, // mcrf with LK
-    // CR logical forms: their stencils need saved registers (see README).
-    xlform(3, 4, 5, 257), xlform(3, 4, 5, 449), xlform(3, 4, 5, 193), xlform(3, 4, 5, 225),
-    xlform(3, 4, 5, 33), xlform(3, 4, 5, 289), xlform(3, 4, 5, 129), xlform(3, 4, 5, 417),
     mfspr(3, 268),                  // mftb through mfspr numbering
     mtspr(22, 3),                   // mtdec
   };

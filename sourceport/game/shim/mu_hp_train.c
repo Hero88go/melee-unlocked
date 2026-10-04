@@ -24,10 +24,21 @@
 int mu_hp_lcancel_flash_off(const struct Fighter* fp, int in_time)
 {
     const int off = mu_hp_setting(MU_HP_SET_LCANCEL_OFF);
+    static unsigned int said;
+    int bit;
     if (off == 0 || fp->player_idx > 3) {
         return 0;
     }
-    return (off >> (fp->player_idx + (in_time ? 0 : 4))) & 1;
+    bit = fp->player_idx + (in_time ? 0 : 4);
+    if (!((off >> bit) & 1)) {
+        return 0;
+    }
+    /* One log line the first time each player's flash is held back, for a hidden run. */
+    if (!(said & (1u << bit))) {
+        said |= 1u << bit;
+        OSReport("[20xx-hp] l-cancel flash off: player %d, %s\n", fp->player_idx + 1, in_time ? "in time" : "missed");
+    }
+    return 1;
 }
 
 /* ---- "Hitbox Color IDs", 80009F60 ---- */
@@ -315,6 +326,14 @@ void mu_hp_overlay(struct Fighter* fp)
     }
     /* The pack's 22 "action state overlay" rows follow here in its code; they are not wired, and
      * at the pack's default (no action chosen) they do nothing. */
+    /* Nothing to show (80195FA4): once the game has switched the color off, the pack's own state
+     * goes too. Without this a 0x83 whose top bit the game cleared would come back as the pack's
+     * color the next time the game turns its own color on. The pack zeroes the whole byte; only
+     * its two bits are dropped here, the game's other flags stay the game's. */
+    if (!co->x7C_color_enable && (co->x7C_flag7 || co->x7C_flag8)) {
+        co->x7C_flag7 = 0;
+        co->x7C_flag8 = 0;
+    }
     return;
 
 apply:

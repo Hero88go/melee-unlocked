@@ -2,78 +2,84 @@
 // The corpus header is written at build time by tools/ppc_stencils/generate_emit_corpus.py, which
 // runs the unmodified port/recomp/emit.py. Each function also runs through the hand-written
 // reference, so the reference used by the larger random tests is itself checked against emit.py.
+// Three worlds (ppc_leaf_worlds.h): 0 native, 1 emit.py's C++, 2 the reference.
 // SPDX-License-Identifier: GPL-2.0-or-later
-#include "ppc_leaf_reference.h"
+#include "ppc_leaf_worlds.h"
 #include "ppc_leaf_stencils.generated.h"
 #include "ppc_emit_corpus.generated.h"
-#include <array>
-
-namespace {
-using namespace reference;
-struct Polls { uint64_t count, digest; };
-void reset_polls() { ppc::g_poll_count = 0; ppc::g_poll_digest = 1469598103934665603ull; }
-Polls polls() { return {ppc::g_poll_count, ppc::g_poll_digest}; }
-bool same(const Polls& a, const Polls& b) { return a.count == b.count && a.digest == b.digest; }
-} // namespace
 
 int main() {
+  using namespace reference;
   Random random(0x2026100100000003ull);
-  static std::array<uint8_t, 8192> ram{};
-  uint64_t comparisons = 0, polled = 0, total_polls = 0, words = 0;
+  if (!worlds::init(3, random)) return 1;
+  static const unsigned modes[] = {0x1F80, 0x7F80, 0x5F80, 0x3F80, 0x9FC0};
+  uint64_t comparisons = 0, polled = 0, total_polls = 0, words = 0, set_aside = 0, resumed = 0, local_sites = 0;
   size_t functions = 0;
+  // What analyze.py would know about the stand-in callees with a computed return.
+  std::vector<ppc::stencil::Callee> callees;
+  std::vector<std::pair<uint32_t, uint32_t>> resumes;
+  for (uint32_t i = 0; i < host::kResumeCount; ++i) {
+    const uint32_t address = host::kResumeBase + 4 * i;
+    callees.push_back({address, {host::resume_delta(address)}});
+    resumes.push_back({address, host::resume_delta(address)});
+  }
   for (const auto& function : emit_corpus::functions) {
     const std::vector<uint32_t> guest(function.words, function.words + function.count);
     const auto code = bytes(guest);
-    const size_t at = function.address - ppc::RAM_BASE;
-    if (at + code.size() > ram.size()) { std::printf("FAIL: corpus function outside the test RAM\n"); return 1; }
-    ram.fill(0);
-    std::memcpy(ram.data() + at, code.data(), code.size());
     ppc::stencil::CompiledLeaf leaf;
     std::string error;
     if (!ppc::stencil::translate_leaf(code.data(), code.size(), function.address,
-                                      ppc::stencil::generated::table, leaf, error)) {
+                                      ppc::stencil::generated::table, leaf, error, &callees)) {
       std::printf("FAIL: %s function %zu does not translate: %s\n", function.kind, functions, error.c_str());
       for (uint32_t word : guest) std::printf("  %08X\n", word);
       return 1;
     }
     const bool branching = std::strcmp(function.kind, "branching") == 0;
-    for (int sample = 0; sample < 48; ++sample) {
-      ppc::Context native, emitted, stepped;
-      randomize(native, random);
+    if ((functions & 31) == 0) worlds::watch(random, 3);
+    worlds::g_start_mxcsr = modes[functions % 5];
+    for (int sample = 0; sample < 32; ++sample) {
+      ppc::Context start;
+      randomize_rich(start, random);
       // Half of the branching samples start just below the poll interval, so short loops poll too.
-      if (branching && (sample & 1)) native.backedges = (random.u32() & ~0x3FFu) | (0x3FFu - random.below(6));
-      std::memcpy(&emitted, &native, sizeof native);
-      std::memcpy(&stepped, &native, sizeof native);
-      const auto before_ram = ram;
-      reset_polls();
-      function.fn(emitted, ram.data());
-      const Polls emitted_polls = polls();
-      reset_polls();
-      const bool stepped_ok = run(stepped, guest, function.address);
-      const Polls stepped_polls = polls();
-      reset_polls();
-      const bool native_ok = leaf.run(native, ram.data());
-      const Polls native_polls = polls();
+      if (branching && (sample & 1)) start.backedges = (random.u32() & ~0x3FFu) | (0x3FFu - random.below(6));
+      worlds::install(function.address, code);
+      worlds::run(0, start, [&](ppc::Context& c, uint8_t* m) { return leaf.run(c, m); });
+      worlds::run(1, start, [&](ppc::Context& c, uint8_t* m) { function.fn(c, m); return true; });
+      g_nan_order_open = false;
+      worlds::run(2, start, [&](ppc::Context& c, uint8_t* m) { return run(c, m, guest, function.address, 1u << 22, &resumes); });
+      // Two NaN operands of an addition, a multiplication or a fused multiply-add: C++ leaves the
+      // resulting NaN to the compiler (ppc_leaf_reference.h). One instruction: either NaN is
+      // accepted in the float registers. A longer function: the sample is set aside.
+      if (g_nan_order_open && function.count > 2) { ++set_aside; worlds::resync(); continue; }
+      worlds::g_accept_either_nan = g_nan_order_open;
+      const char* what = worlds::difference();
+      worlds::g_accept_either_nan = false;
       ++comparisons;
-      if (emitted_polls.count) { ++polled; total_polls += emitted_polls.count; }
-      if (!native_ok || !stepped_ok || !same(native, emitted) || !same(stepped, emitted) ||
-          !same(native_polls, emitted_polls) || !same(stepped_polls, emitted_polls) || ram != before_ram) {
-        std::printf("FAIL: %s function %zu sample %d (native %d, reference %d, polls %llu/%llu/%llu)\n",
-                    function.kind, functions, sample, native_ok, stepped_ok,
-                    (unsigned long long)native_polls.count, (unsigned long long)stepped_polls.count,
-                    (unsigned long long)emitted_polls.count);
+      const auto& emitted = worlds::g_world[1].result;
+      if (emitted.poll_count) { ++polled; total_polls += emitted.poll_count; }
+      resumed += emitted.resumed;
+      if (emitted.fatals || worlds::g_world[0].result.fatals) what = "a return into inline data";
+      if (what) {
+        std::printf("FAIL: %s function %zu sample %d differs in %s (native %d, reference %d)\n",
+                    function.kind, functions, sample, what, worlds::g_world[0].result.ok, worlds::g_world[2].result.ok);
         for (uint32_t word : guest) std::printf("  %08X\n", word);
-        std::printf(" native versus emit.py:\n"); describe(native, emitted);
-        std::printf(" reference versus emit.py:\n"); describe(stepped, emitted);
+        std::printf(" native versus emit.py:\n"); describe(worlds::g_world[0].result.context, emitted.context);
+        std::printf(" reference versus emit.py:\n"); describe(worlds::g_world[2].result.context, emitted.context);
         return 1;
       }
     }
     ++functions;
     words += function.count;
+    for (uint32_t word : guest) local_sites += ((word >> 26) == 18 || (word >> 26) == 16) && (word & 1) &&
+        std::strcmp(function.kind, "local") == 0;
   }
   std::printf("leaf emit corpus: %zu functions (%llu guest words) emitted by emit.py, %llu three-way "
-              "full-context comparisons passed; %llu runs polled, %llu polls in all; corpus %s\n",
+              "full-context comparisons passed; %llu runs polled, %llu polls in all; %llu host calls compared; "
+              "%llu call sites in the functions with local calls, %llu returns resumed past their call; "
+              "%llu samples set aside and either NaN accepted in %llu for a NaN result the compiler chooses; corpus %s\n",
               functions, (unsigned long long)words, (unsigned long long)comparisons,
-              (unsigned long long)polled, (unsigned long long)total_polls, emit_corpus::sha256);
+              (unsigned long long)polled, (unsigned long long)total_polls, (unsigned long long)worlds::g_host_events,
+              (unsigned long long)local_sites, (unsigned long long)resumed,
+              (unsigned long long)set_aside, (unsigned long long)worlds::g_either_nan_accepted, emit_corpus::sha256);
   return 0;
 }

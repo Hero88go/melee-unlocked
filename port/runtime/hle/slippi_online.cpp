@@ -193,6 +193,14 @@ std::map<int32_t, uint32_t> g_local_checksums;
 uint32_t g_checksums_compared = 0, g_checksums_mismatched = 0;
 int32_t g_last_checksum_frame[REMOTE_PLAYER_MAX] = {};   // per remote: every peer's checksums are compared, not only the first to report a frame
 
+// The match's remote player count, never past the fixed per-remote arrays it indexes
+// (g_stall_frame_counts, the per-frame pad results). Matchmaking refuses a ticket with more players
+// and bounds its own answer; this is the bound at the point of use.
+uint8_t bounded_remote_count() {
+  const int n = g_matchmaking ? (int)g_matchmaking->RemotePlayerCount() : 0;
+  return (uint8_t)std::min(n, REMOTE_PLAYER_MAX);
+}
+
 bool is_disconnected() { return !g_netplay || g_netplay->GetSlippiConnectStatus() != NetplayClient::ConnectStatus::CONNECTED; }
 bool chat_enabled() { return g_last_search.mode == Matchmaking::DIRECT ? (g_config.chat == 0 || g_config.chat == 1) : g_config.chat == 0; }
 
@@ -345,7 +353,7 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
   auto st = g_netplay->GetSlippiConnectStatus();
   if (st == NetplayClient::ConnectStatus::FAILED || st == NetplayClient::ConnectStatus::DISCONNECTED) return false;
   bool any_needs_inputs = false;
-  uint8_t remote_count = g_matchmaking->RemotePlayerCount();
+  uint8_t remote_count = bounded_remote_count();
   for (uint8_t i = 0; i < remote_count; ++i) {
     auto pad = g_netplay->GetSlippiRemotePad(i, ROLLBACK_MAX_FRAMES);
     if (pad->is_disconnected) { g_stall_frame_counts[i] = 0; continue; }
@@ -407,9 +415,7 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
 }
 
 bool opponent_runahead() {
-  auto info = g_matchmaking->GetPlayerInfo();
-  for (size_t i = 0; i < info.size(); ++i) { if ((int)i == g_matchmaking->LocalPlayerIndex()) continue; if (!info[i].is_bot) return false; }
-  return true;
+  return g_matchmaking->AllRemotesAreBots();
 }
 
 bool should_advance_online_frame(int32_t frame) {
@@ -454,7 +460,7 @@ void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_
   else if (st != NetplayClient::ConnectStatus::CONNECTED) frame_result = 3;
   else if (should_advance_online_frame(frame)) frame_result = 4;
   q.push_back(frame_result);
-  uint8_t remote_count = g_matchmaking->RemotePlayerCount();
+  uint8_t remote_count = bounded_remote_count();
   q.push_back(remote_count);
   std::unique_ptr<RemotePadOutput> results[REMOTE_PLAYER_MAX];
   int32_t latest_from_opps = -123 - 1;
@@ -621,7 +627,14 @@ void handle_capture_savestate(const uint8_t* payload) {
   trace_online_frame("capture", frame);
   std::unique_ptr<Savestate> ss;
   if (!g_available_savestates.empty()) { ss = std::move(g_available_savestates.back()); g_available_savestates.pop_back(); }
-  else { auto it = g_active_savestates.begin(); ss = std::move(it->second); g_active_savestates.erase(it); }
+  else if (!g_active_savestates.empty()) { auto it = g_active_savestates.begin(); ss = std::move(it->second); g_active_savestates.erase(it); }
+  else {
+    // Both pools are empty: no online game has started them, or this is the native game, which keeps
+    // its own snapshots and creates none here. There is nothing to capture into.
+    static bool logged = false;
+    if (!logged) { logged = true; host::log("slippi: savestate capture for frame %d ignored: no savestate pool", frame); }
+    return;
+  }
   if (g_active_savestates.count(frame)) { g_available_savestates.push_back(std::move(g_active_savestates[frame])); g_active_savestates.erase(frame); }
   ss->Capture();
   g_active_savestates[frame] = std::move(ss);
@@ -691,7 +704,8 @@ bool tag_matches_input(const uint8_t* input, uint8_t len, const std::string& tag
 }
 
 void handle_name_entry_load(const uint8_t* payload, std::vector<uint8_t>& q) {
-  uint8_t len = payload[24];
+  // The field holds 8 characters (24 bytes of payload); a longer length from the game is cut to that.
+  uint8_t len = std::min<uint8_t>(payload[24], 8);
   uint32_t initial = be32(payload + 25);
   uint8_t scroll = payload[29], mode = payload[30];
   DirectCodes* history = mode == Matchmaking::TEAMS ? g_teams_codes.get() : g_direct_codes.get();
@@ -846,7 +860,7 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
   UserInfo me = g_user->GetUserInfo();
   uint16_t alt_stage_mode = 0;
   if (mm_state == Matchmaking::CONNECTION_SUCCESS) {
-    g_local_player_index = (uint8_t)g_matchmaking->LocalPlayerIndex();
+    g_local_player_index = (uint8_t)std::clamp(g_matchmaking->LocalPlayerIndex(), 0, PLAYER_COUNT_MAX - 1);
     if (!g_netplay) {
       g_netplay = g_matchmaking->GetNetplayClient();
       g_recent_mm_result = g_matchmaking->GetMatchmakeResult();
@@ -857,12 +871,12 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
       g_netplay->SetMatchSelections(g_local_selections);
     }
     bool connected = g_netplay->GetSlippiConnectStatus() == NetplayClient::ConnectStatus::CONNECTED;
-    if (g_netplay->GetActivePlayerIndices().size() != g_matchmaking->RemotePlayerCount()) connected = false;
+    if (g_netplay->GetActivePlayerIndices().size() != bounded_remote_count()) connected = false;
     if (!connected) {
       // The opponent may have refused first and left: a build that was already received still
       // explains why, instead of a plain disconnect.
       std::string refusal;
-      if (build_verdict(g_matchmaking->RemotePlayerCount(), &refusal) < 0) {
+      if (build_verdict(bounded_remote_count(), &refusal) < 0) {
         host::log("slippi: build check: %s", refusal.c_str());
         cleanup_connection();
         g_forced_error = refusal;
@@ -871,10 +885,10 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
       }
     }
     if (connected) {
-      MatchInfo* mi = g_netplay->GetMatchInfo();
+      const MatchInfo mi = g_netplay->GetMatchInfo();
       remote_ready = 1;
-      uint8_t remote_count = g_matchmaking->RemotePlayerCount();
-      for (int i = 0; i < remote_count; ++i) if (!mi->remote[i].is_character_selected) remote_ready = 0;
+      uint8_t remote_count = bounded_remote_count();
+      for (int i = 0; i < remote_count; ++i) if (!mi.remote[i].is_character_selected) remote_ready = 0;
       std::string refusal;
       const int verdict = build_verdict(remote_count, &refusal);
       if (verdict < 0) {
@@ -923,11 +937,11 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
   }
   if (local_ready && remote_ready) {
     bool decider = g_netplay->IsDecider();
-    uint8_t remote_count = g_matchmaking->RemotePlayerCount();
-    MatchInfo* mi = g_netplay->GetMatchInfo();
-    PlayerSelections lps = mi->local;
+    uint8_t remote_count = bounded_remote_count();
+    const MatchInfo mi = g_netplay->GetMatchInfo();
+    PlayerSelections lps = mi.local;
     PlayerSelections rps[REMOTE_PLAYER_MAX];
-    for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) rps[i] = mi->remote[i];
+    for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) rps[i] = mi.remote[i];
     bool local_char_ok = lps.character_id < 26, remote_char_ok = true;
     for (int i = 0; i < remote_count; ++i) if (rps[i].character_id >= 26) remote_char_ok = false;
     std::vector<PlayerSelections*> ordered(remote_count + 1, nullptr);

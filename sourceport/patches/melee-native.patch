@@ -50376,7 +50376,7 @@ index cb13bc8d7..c2e3b799b 100644
  struct FtPartsVis {
      /* fp+5AC */ u32 model_num;
 diff --git a/src/melee/ft/fighter.c b/src/melee/ft/fighter.c
-index 20d0df28a..7e18bc045 100644
+index 20d0df28a..3e9aca16b 100644
 --- a/src/melee/ft/fighter.c
 +++ b/src/melee/ft/fighter.c
 @@ -1,5 +1,9 @@
@@ -50424,7 +50424,7 @@ index 20d0df28a..7e18bc045 100644
  ftCommonData* p_ftCommonData;
  
  void Fighter_800679B0(void)
-@@ -178,36 +185,101 @@ void Fighter_FirstInitialize_80067A84(void)
+@@ -178,36 +185,102 @@ void Fighter_FirstInitialize_80067A84(void)
  
  void Fighter_LoadCommonData(void)
  {
@@ -50493,8 +50493,9 @@ index 20d0df28a..7e18bc045 100644
 +        static FighterPartsTableSlot parts[FT_KIND_TABLE_MAX];
 +        static Fighter_804D6540_Slot slots[FT_KIND_TABLE_MAX];
 +#else
-+        static FighterPartsTableSlot parts[Ft_Kind_Max];
-+        static Fighter_804D6540_Slot slots[Ft_Kind_Max];
++        /* One more than the fighters: entry Ft_Kind_None is the thrown animations' skeleton. */
++        static FighterPartsTableSlot parts[Ft_Kind_Max + 1];
++        static Fighter_804D6540_Slot slots[Ft_Kind_Max + 1];
 +#endif
 +        const int shift = mu_mex_special_kind_shift();
 +        /* 20XX TE v1.00 mode: Link and Young Link's Z-air catch states without the flags v1.02 added
@@ -50534,6 +50535,7 @@ index 20d0df28a..7e18bc045 100644
 +                __builtin_memcpy(&slots[MU_AK_KIND_BASE + k],
 +                                 &Fighter_804D6540[Ft_Kind_MasterH + k], sizeof slots[0]);
 +            }
++#endif
 +            /* The entry after the last fighter is the shared skeleton of the animations every
 +             * fighter file marks with kind 33 (the thrown animations; 27 entries per file). The
 +             * disc keeps it behind the special fighters; the animation code indexes it as
@@ -50542,7 +50544,6 @@ index 20d0df28a..7e18bc045 100644
 +                             sizeof parts[0]);
 +            __builtin_memcpy(&slots[Ft_Kind_None], &Fighter_804D6540[Ft_Kind_None + shift],
 +                             sizeof slots[0]);
-+#endif
 +            ftPartsTable = parts;
 +            Fighter_804D6540 = slots;
 +        }
@@ -50551,7 +50552,7 @@ index 20d0df28a..7e18bc045 100644
  }
  
  void Fighter_UpdateModelScale(Fighter_GObj* gobj)
-@@ -235,8 +307,8 @@ void Fighter_UnkInitReset_80067C98(Fighter* fp)
+@@ -235,8 +308,8 @@ void Fighter_UnkInitReset_80067C98(Fighter* fp)
      float x, y, z;
  
      fp->x8_spawnNum = Fighter_NewSpawn_80068E40();
@@ -50562,7 +50563,7 @@ index 20d0df28a..7e18bc045 100644
  
      player_coords.x = fp->facing_dir * ftCommon_800804EC(fp) + player_coords.x;
      x = player_coords.x;
-@@ -301,7 +373,7 @@ void Fighter_UnkInitReset_80067C98(Fighter* fp)
+@@ -301,7 +374,7 @@ void Fighter_UnkInitReset_80067C98(Fighter* fp)
      fp->hitlag_mul = 0;
      fp->x2064_ledgeCooldown = 0;
  
@@ -50571,7 +50572,7 @@ index 20d0df28a..7e18bc045 100644
  
      fp->dmg.x1838_percentTemp = 0;
  
-@@ -480,7 +552,7 @@ void Fighter_UnkInitReset_80067C98(Fighter* fp)
+@@ -480,7 +553,7 @@ void Fighter_UnkInitReset_80067C98(Fighter* fp)
      fp->x2038 = 0;
      fp->x1980 = 0;
  
@@ -50580,7 +50581,7 @@ index 20d0df28a..7e18bc045 100644
  
      fp->x2224_b4 = false;
      fp->capture_timer = 0;
-@@ -511,7 +583,7 @@ void Fighter_UnkInitReset_80067C98(Fighter* fp)
+@@ -511,7 +584,7 @@ void Fighter_UnkInitReset_80067C98(Fighter* fp)
      fp->x2229_b4 = true;
  }
  
@@ -50589,7 +50590,7 @@ index 20d0df28a..7e18bc045 100644
  {
      Fighter* fp = GET_FIGHTER(gobj);
  
-@@ -554,8 +626,8 @@ void Fighter_UnkProcessDeath_80068354(Fighter_GObj* gobj)
+@@ -554,8 +627,8 @@ void Fighter_UnkProcessDeath_80068354(Fighter_GObj* gobj)
          ftData_OnDeath[fp->kind](gobj);
      }
  
@@ -50600,7 +50601,7 @@ index 20d0df28a..7e18bc045 100644
  
      efAsync_QueueClear(&fp->x60C);
      ft_8007C17C(gobj);
-@@ -568,7 +640,7 @@ void Fighter_UnkUpdateCostumeJoint_800686E4(Fighter_GObj* gobj)
+@@ -568,7 +641,7 @@ void Fighter_UnkUpdateCostumeJoint_800686E4(Fighter_GObj* gobj)
      HSD_JObj* jobj;
  
      fp->x108_costume_joint = CostumeListsForeachCharacter[fp->kind]
@@ -50609,7 +50610,7 @@ index 20d0df28a..7e18bc045 100644
                                   .joint;
      ftPartsPObjSetDefaultClass();
      jobj = HSD_JObjLoadJoint(fp->x108_costume_joint);
-@@ -615,41 +687,41 @@ void Fighter_ResetInputData_80068854(Fighter_GObj* gobj)
+@@ -615,41 +688,41 @@ void Fighter_ResetInputData_80068854(Fighter_GObj* gobj)
      fp->input.pressed_buttons = 0;
      fp->input.held_buttons[0] = 0;
  
@@ -50686,7 +50687,7 @@ index 20d0df28a..7e18bc045 100644
  }
  
  static void Fighter_UnkInitLoad_80068914_Inner1(Fighter_GObj* gobj)
-@@ -666,18 +738,22 @@ static void Fighter_UnkInitLoad_80068914_Inner1(Fighter_GObj* gobj)
+@@ -666,18 +739,22 @@ static void Fighter_UnkInitLoad_80068914_Inner1(Fighter_GObj* gobj)
      fp->input.pressed_buttons = 0;
      fp->input.held_buttons[0] = 0;
  
@@ -50715,7 +50716,7 @@ index 20d0df28a..7e18bc045 100644
  }
  
  void Fighter_UnkInitLoad_80068914(Fighter_GObj* gobj,
-@@ -686,43 +762,41 @@ void Fighter_UnkInitLoad_80068914(Fighter_GObj* gobj,
+@@ -686,43 +763,41 @@ void Fighter_UnkInitLoad_80068914(Fighter_GObj* gobj,
      Fighter* fp = GET_FIGHTER(gobj);
      s32 costume_id;
      fp->kind = argdata->internal_id;
@@ -50781,7 +50782,7 @@ index 20d0df28a..7e18bc045 100644
      fp->gobj = gobj;
      fp->ft_data = gFtDataList[fp->kind];
      ftCo_800D0FA0(gobj);
-@@ -731,8 +805,8 @@ void Fighter_UnkInitLoad_80068914(Fighter_GObj* gobj,
+@@ -731,8 +806,8 @@ void Fighter_UnkInitLoad_80068914(Fighter_GObj* gobj,
      fp->x18 = 0x155;
      fp->x1C_actionStateList = ftData_MotionStateList;
      fp->x20_actionStateList = ftData_CharacterStateTables[fp->kind];
@@ -50792,7 +50793,7 @@ index 20d0df28a..7e18bc045 100644
  
      fp->input.lstick[2].y = 0.0f;
      fp->input.lstick[2].x = 0.0f;
-@@ -744,7 +818,7 @@ void Fighter_UnkInitLoad_80068914(Fighter_GObj* gobj,
+@@ -744,7 +819,7 @@ void Fighter_UnkInitLoad_80068914(Fighter_GObj* gobj,
      Fighter_UnkInitLoad_80068914_Inner1(gobj);
  
      fp->x594_s32 = 0;
@@ -50801,7 +50802,7 @@ index 20d0df28a..7e18bc045 100644
  
      fp->invisible = false;
      fp->x221E_b1 = 0;
-@@ -757,10 +831,10 @@ void Fighter_UnkInitLoad_80068914(Fighter_GObj* gobj,
+@@ -757,10 +832,10 @@ void Fighter_UnkInitLoad_80068914(Fighter_GObj* gobj,
      fp->x221F_b0 = 0;
      fp->x21EC = 0;
  
@@ -50815,7 +50816,7 @@ index 20d0df28a..7e18bc045 100644
  
      fp->x2220_b0 = 0;
  
-@@ -790,7 +864,7 @@ void Fighter_UnkInitLoad_80068914(Fighter_GObj* gobj,
+@@ -790,7 +865,7 @@ void Fighter_UnkInitLoad_80068914(Fighter_GObj* gobj,
  
      fp->can_walljump = false;
  
@@ -50824,7 +50825,7 @@ index 20d0df28a..7e18bc045 100644
  
      fp->x2225_b3 = 0;
      fp->is_sandbag = 0;
-@@ -857,12 +931,20 @@ Fighter_GObj* Fighter_Create(struct plAllocInfo* input)
+@@ -857,12 +932,20 @@ Fighter_GObj* Fighter_Create(struct plAllocInfo* input)
       * contents. For example, Luigi's @c x222C_cycloneCharge.
       */
      fp = HSD_ObjAlloc(&fighter_alloc_data);
@@ -50846,7 +50847,7 @@ index 20d0df28a..7e18bc045 100644
  
      Fighter_UnkUpdateCostumeJoint_800686E4(gobj);
  
-@@ -873,6 +955,13 @@ Fighter_GObj* Fighter_Create(struct plAllocInfo* input)
+@@ -873,6 +956,13 @@ Fighter_GObj* Fighter_Create(struct plAllocInfo* input)
      ftCo_800C884C(gobj);
  
      Fighter_80068E64(gobj);
@@ -50860,7 +50861,7 @@ index 20d0df28a..7e18bc045 100644
  
      ftParts_800749CC(gobj);
      ftAnim_8007077C(gobj);
-@@ -894,22 +983,22 @@ Fighter_GObj* Fighter_Create(struct plAllocInfo* input)
+@@ -894,22 +984,22 @@ Fighter_GObj* Fighter_Create(struct plAllocInfo* input)
  
      jobj = GET_JOBJ(gobj);
      lbShadow_8000ED54(&fp->x20A4, jobj);
@@ -50897,16 +50898,22 @@ index 20d0df28a..7e18bc045 100644
  
      if (fp->kind == Ft_Kind_MasterH) {
          ftMh_MS_341_8014FE10(gobj);
-@@ -917,7 +1006,7 @@ Fighter_GObj* Fighter_Create(struct plAllocInfo* input)
+@@ -917,7 +1007,13 @@ Fighter_GObj* Fighter_Create(struct plAllocInfo* input)
          ftCh_Init_80155FCC(gobj);
      } else if (input->has_transformation) {
          ftCo_800BFD04(gobj);
 -    } else if (Player_GetFlagsBit3(fp->player_id) != 0) {
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "Giga-Bowser & Sandbag Always Fall On Match Start" (80069328): those two
++     * skip the entry and start falling (shim/mu_hp_css.c). Off: 0. */
++    } else if (mu_hp_spawn_falling(fp)) {
++        ftCommon_8007D92C(gobj);
++#endif
 +    } else if (Player_GetFlagsBit3(fp->player_idx) != 0) {
          ftCo_800C61B0(gobj);
      } else {
          if (!fp->no_normal_motion) {
-@@ -926,7 +1015,7 @@ Fighter_GObj* Fighter_Create(struct plAllocInfo* input)
+@@ -926,7 +1022,7 @@ Fighter_GObj* Fighter_Create(struct plAllocInfo* input)
              HSD_ASSERTREPORT(1065, 0, "ellegal flag fp->no_normal_motion\n");
          }
      }
@@ -50915,7 +50922,7 @@ index 20d0df28a..7e18bc045 100644
      return gobj;
  }
  
-@@ -944,6 +1033,12 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
+@@ -944,6 +1040,12 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
      bool animflags_bool;
      union Struct2070 x2070;
  
@@ -50928,7 +50935,7 @@ index 20d0df28a..7e18bc045 100644
      fp->motion_id = msid;
      fp->facing_dir1 = fp->facing_dir;
  
-@@ -1035,7 +1130,7 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
+@@ -1035,7 +1137,7 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
          fp->x2098 = p_ftCommonData->x4CC;
      }
  
@@ -50937,7 +50944,7 @@ index 20d0df28a..7e18bc045 100644
      fp->x2219_b1 = 0;
      fp->x2219_b2 = 0;
  
-@@ -1100,6 +1195,12 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
+@@ -1100,6 +1202,12 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
  
      if ((flags & Ft_MF_KeepFastFall) == 0) {
          fp->fall_fast = 0;
@@ -50950,7 +50957,7 @@ index 20d0df28a..7e18bc045 100644
      }
  
      if ((flags & Ft_MF_SkipColAnim) == 0) {
-@@ -1118,6 +1219,12 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
+@@ -1118,6 +1226,12 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
      }
  
      if (fp->ground_or_air == GA_Ground) {
@@ -50963,7 +50970,7 @@ index 20d0df28a..7e18bc045 100644
          if (fp->kind == Ft_Kind_Peach) {
              fp->u.pe.has_float = true;
          }
-@@ -1129,11 +1236,11 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
+@@ -1129,11 +1243,11 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
          fp->x213C = -1;
  
          if (fp->x2227_b4 != 0U) {
@@ -50977,7 +50984,7 @@ index 20d0df28a..7e18bc045 100644
          fp->x2140 = 0;
          fp->used_tether = false;
          fp->x2180 = 6;
-@@ -1243,6 +1350,11 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
+@@ -1243,6 +1357,11 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
                  anim_speed = 0.0f;
              }
  
@@ -50989,7 +50996,7 @@ index 20d0df28a..7e18bc045 100644
              if (arg3 != NULL) {
                  unk_struct_x18 =
                      &((Fighter*) arg3->user_data)->x24[fp->anim_id];
-@@ -1260,7 +1372,7 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
+@@ -1260,7 +1379,7 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
                  } else {
                      ftData_80085CD8(fp, fp, fp->anim_id);
                  }
@@ -50998,7 +51005,7 @@ index 20d0df28a..7e18bc045 100644
                  fp->x3E4_fighterCmdScript.loop_count = 0;
  
                  if (anim_start) {
-@@ -1390,11 +1502,11 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
+@@ -1390,11 +1509,11 @@ void Fighter_ChangeMotionState(Fighter_GObj* gobj, FtMotionId msid,
      }
  }
  
@@ -51012,7 +51019,7 @@ index 20d0df28a..7e18bc045 100644
          if (fp->dmg.x1954 > 0.0f) {
              fp->dmg.x1954 -= 1.0f;
              if (fp->dmg.x1954 <= 0.0f) {
-@@ -1441,11 +1553,11 @@ void Fighter_8006A1BC(Fighter_GObj* gobj)
+@@ -1441,11 +1560,11 @@ void Fighter_8006A1BC(Fighter_GObj* gobj)
      }
  }
  
@@ -51026,7 +51033,7 @@ index 20d0df28a..7e18bc045 100644
          fp->pos_delta.x = fp->cur_pos.x - fp->prev_pos.x;
          fp->pos_delta.y = fp->cur_pos.y - fp->prev_pos.y;
          fp->pos_delta.z = fp->cur_pos.z - fp->prev_pos.z;
-@@ -1472,7 +1584,7 @@ void Fighter_8006A360(Fighter_GObj* gobj)
+@@ -1472,7 +1591,7 @@ void Fighter_8006A360(Fighter_GObj* gobj)
              }
          }
  
@@ -51035,7 +51042,7 @@ index 20d0df28a..7e18bc045 100644
              fp->x1994--;
              if (fp->x1994 == 0) {
                  fp->x198C = (fp->x2221_b0 || fp->x1990 != 0) ? 2 : 0;
-@@ -1592,10 +1704,29 @@ void Fighter_8006A360(Fighter_GObj* gobj)
+@@ -1592,10 +1711,29 @@ void Fighter_8006A360(Fighter_GObj* gobj)
              }
          }
  
@@ -51068,7 +51075,7 @@ index 20d0df28a..7e18bc045 100644
                  {
                      fp->dmg.x1910++;
                  } else {
-@@ -1615,9 +1746,9 @@ void Fighter_8006A360(Fighter_GObj* gobj)
+@@ -1615,9 +1753,9 @@ void Fighter_8006A360(Fighter_GObj* gobj)
              if (fp->dmg.x1830_percent > 0.0f) {
                  fp->dmg.x1830_percent--;
                  ft_80088640(fp, 0x7D, 0x7F, 0x40);
@@ -51080,7 +51087,7 @@ index 20d0df28a..7e18bc045 100644
              }
  
              if (fp->dmg.x1830_percent <= 0.0f) {
-@@ -1658,7 +1789,7 @@ void Fighter_8006A360(Fighter_GObj* gobj)
+@@ -1658,7 +1796,7 @@ void Fighter_8006A360(Fighter_GObj* gobj)
          }
  
          if (!fp->x2219_b5) {
@@ -51089,7 +51096,7 @@ index 20d0df28a..7e18bc045 100644
                  fp->x209A--;
              }
              if (fp->x2223_b0) {
-@@ -1684,26 +1815,55 @@ void Fighter_8006A360(Fighter_GObj* gobj)
+@@ -1684,26 +1822,55 @@ void Fighter_8006A360(Fighter_GObj* gobj)
              ftAnim_8006EBA4(gobj);
              ftCo_800D71D8(gobj);
              ftColl_800764DC(gobj);
@@ -51148,7 +51155,7 @@ index 20d0df28a..7e18bc045 100644
          ftCo_800B3900(gobj);
      }
  }
-@@ -1716,31 +1876,31 @@ void Fighter_UnkIncrementCounters_8006ABEC(Fighter_GObj* gobj)
+@@ -1716,31 +1883,31 @@ void Fighter_UnkIncrementCounters_8006ABEC(Fighter_GObj* gobj)
      if (ftCo_Jump_GetInput(gobj)) {
          fp->x68A = fp->x685;
          fp->x685 = 0;
@@ -51185,7 +51192,7 @@ index 20d0df28a..7e18bc045 100644
          fp->x689++;
      }
  }
-@@ -1755,7 +1915,7 @@ void Fighter_UnkIncrementCounters_8006ABEC(Fighter_GObj* gobj)
+@@ -1755,7 +1922,7 @@ void Fighter_UnkIncrementCounters_8006ABEC(Fighter_GObj* gobj)
          *stickY = y;                                                          \
      } while (0)
  
@@ -51194,7 +51201,7 @@ index 20d0df28a..7e18bc045 100644
  {
      s32 temp0_loc_1;
      s32 temp0_loc_0;
-@@ -1774,22 +1934,22 @@ static void Fighter_Spaghetti_8006AD10_Inner1(Fighter* fp)
+@@ -1774,22 +1941,22 @@ static void Fighter_Spaghetti_8006AD10_Inner1(Fighter* fp)
      }
  }
  
@@ -51222,7 +51229,7 @@ index 20d0df28a..7e18bc045 100644
              } else {
                  SET_STICKS(fp->input.lstick[1].x, fp->input.lstick[1].y,
                             fp->input.lstick[0].x, fp->input.lstick[0].y);
-@@ -1799,7 +1959,22 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1799,7 +1966,22 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                  fp->input.held_buttons[1] = fp->input.held_buttons[0];
              }
  
@@ -51246,7 +51253,7 @@ index 20d0df28a..7e18bc045 100644
                  SET_STICKS(fp->input.lstick[0].x, fp->input.lstick[0].y,
                             ftCo_GetCpuLStickX(fp), ftCo_GetCpuLStickY(fp));
                  if (DbLevel < DbLKind_DebugRom &&
-@@ -1819,22 +1994,21 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1819,22 +2001,21 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
  
              } else {
                  SET_STICKS(fp->input.lstick[0].x, fp->input.lstick[0].y,
@@ -51276,7 +51283,7 @@ index 20d0df28a..7e18bc045 100644
  
                  fp->input.triggers[0] = (tempf0 > tempf1) ? tempf0 : tempf1;
              }
-@@ -1869,16 +2043,28 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1869,16 +2050,28 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                  fp->input.triggers[0] = 0.0f;
              }
  
@@ -51308,7 +51315,7 @@ index 20d0df28a..7e18bc045 100644
                      fp->input.held_buttons[0] &= HSD_PAD_A | HSD_PAD_XY;
                  } else {
                      fp->input.held_buttons[0] &= HSD_PAD_A;
-@@ -1890,7 +2076,12 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1890,7 +2083,12 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                  } else if (fp->input.triggers[0]) {
                      fp->input.held_buttons[0] |= HSD_PAD_LR;
                  }
@@ -51321,7 +51328,7 @@ index 20d0df28a..7e18bc045 100644
                      if (fp->input.held_buttons[0] & HSD_PAD_Z) {
                          fp->input.held_buttons[0] |= HSD_PAD_LR | HSD_PAD_A;
                          fp->input.triggers[0] =
-@@ -1899,12 +2090,16 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1899,12 +2097,16 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                  }
              }
  
@@ -51342,7 +51349,7 @@ index 20d0df28a..7e18bc045 100644
              }
  
              if (fp->input.lstick[0].x >=
-@@ -1914,22 +2109,22 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1914,22 +2116,22 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                      p_ftCommonData->horizontal_stick_smash_deadzone)
                  {
                      // Fighter_ClampThreeValues
@@ -51377,7 +51384,7 @@ index 20d0df28a..7e18bc045 100644
                      fp->x2228_b7 = 1;
                  }
              } else if (fp->input.lstick[0].x <=
-@@ -1939,34 +2134,34 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1939,34 +2141,34 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                      -p_ftCommonData->horizontal_stick_smash_deadzone)
                  {
                      // Fighter_ClampThreeValues
@@ -51430,7 +51437,7 @@ index 20d0df28a..7e18bc045 100644
              }
  
              if (fp->input.lstick[0].y >=
-@@ -1976,22 +2171,22 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -1976,22 +2178,22 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                      p_ftCommonData->vertical_stick_smash_deadzone)
                  {
                      // Fighter_ClampThreeValues
@@ -51465,7 +51472,7 @@ index 20d0df28a..7e18bc045 100644
                      fp->x2229_b0 = 0;
                  }
              } else if (fp->input.lstick[0].y <=
-@@ -2001,28 +2196,28 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -2001,28 +2203,28 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                      -p_ftCommonData->vertical_stick_smash_deadzone)
                  {
                      // Fighter_ClampThreeValues
@@ -51509,7 +51516,7 @@ index 20d0df28a..7e18bc045 100644
              }
  
              if (lb_8000D148(fp->input.lstick[1].x, fp->input.lstick[1].y,
-@@ -2030,14 +2225,18 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -2030,14 +2232,18 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                              0.0f,
                              p_ftCommonData->horizontal_stick_smash_deadzone))
              {
@@ -51533,7 +51540,7 @@ index 20d0df28a..7e18bc045 100644
              }
  
              if (fp->input.triggers[0] >=
-@@ -2047,83 +2246,87 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -2047,83 +2253,87 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
                      p_ftCommonData->shield_press_threshold)
                  {
                      // Fighter_ClampThreeValues
@@ -51646,7 +51653,7 @@ index 20d0df28a..7e18bc045 100644
  
              Fighter_UnkInitLoad_80068914_Inner1(gobj);
          }
-@@ -2135,6 +2338,12 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
+@@ -2135,6 +2345,12 @@ void Fighter_Spaghetti_8006AD10(Fighter_GObj* gobj)
              ftCo_800DF0D0(gobj);
              ftCommon_8008031C(gobj);
              Fighter_UnkIncrementCounters_8006ABEC(gobj);
@@ -51659,7 +51666,7 @@ index 20d0df28a..7e18bc045 100644
  
              if (fp->input_cb) {
                  fp->input_cb(gobj);
-@@ -2156,7 +2365,7 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
+@@ -2156,7 +2372,7 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
      Fighter* fp = GET_FIGHTER(gobj);
      Vec3 windOffset;
  
@@ -51668,7 +51675,7 @@ index 20d0df28a..7e18bc045 100644
          return;
      }
  
-@@ -2199,12 +2408,22 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
+@@ -2199,12 +2415,22 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
                      {
                          p_kb_vel->x = p_kb_vel->y = 0;
                      } else {
@@ -51691,7 +51698,7 @@ index 20d0df28a..7e18bc045 100644
                      }
                  }
  
-@@ -2253,12 +2472,22 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
+@@ -2253,12 +2479,22 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
                      // p_stc_ftcommon->x3e8_shield_kb_frameDecay)/atkShieldKB_len
                      // float atkShieldKBAngle = atan2_80022C30(pAtkShieldKB->y,
                      // pAtkShieldKB->x);
@@ -51714,7 +51721,7 @@ index 20d0df28a..7e18bc045 100644
                  }
                  fp->xF4_ground_attacker_shield_kb_vel = 0;
              } else {
-@@ -2296,6 +2525,19 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
+@@ -2296,6 +2532,19 @@ void Fighter_procUpdate(Fighter_GObj* gobj)
  
          PSVECAdd(&fp->self_vel, &fp->x74_self_accel, &fp->self_vel);
          VEC_CLEAR(fp->x74_self_accel);
@@ -51734,7 +51741,7 @@ index 20d0df28a..7e18bc045 100644
  
          // copy selfVel into a stack storage variable
          selfVel = fp->self_vel; ///< @todo these double_lower_32bit variables
-@@ -2476,9 +2718,9 @@ static inline float Fighter_GetPosY(Fighter* fp)
+@@ -2476,9 +2725,9 @@ static inline float Fighter_GetPosY(Fighter* fp)
  
  void Fighter_procMap(Fighter_GObj* gobj)
  {
@@ -51746,7 +51753,7 @@ index 20d0df28a..7e18bc045 100644
          if (fp->ecb_lock) {
              fp->ecb_lock--;
              if (!fp->ecb_lock) {
-@@ -2488,6 +2730,10 @@ void Fighter_procMap(Fighter_GObj* gobj)
+@@ -2488,6 +2737,10 @@ void Fighter_procMap(Fighter_GObj* gobj)
  
          fp->x2223_b5 = 0;
  
@@ -51757,7 +51764,7 @@ index 20d0df28a..7e18bc045 100644
          HSD_JObjSetTranslate(gobj->hsd_obj, &fp->cur_pos);
  
          if (fp->coll_cb) {
-@@ -2496,7 +2742,7 @@ void Fighter_procMap(Fighter_GObj* gobj)
+@@ -2496,7 +2749,7 @@ void Fighter_procMap(Fighter_GObj* gobj)
          }
  
          if (fp->ground_or_air == GA_Ground) {
@@ -51766,7 +51773,7 @@ index 20d0df28a..7e18bc045 100644
          }
  
          if (DbLevel >= DbLKind_DebugRom) {
-@@ -2516,21 +2762,21 @@ void Fighter_procMap(Fighter_GObj* gobj)
+@@ -2516,21 +2769,21 @@ void Fighter_procMap(Fighter_GObj* gobj)
      }
  }
  
@@ -51792,7 +51799,7 @@ index 20d0df28a..7e18bc045 100644
          if (fp->x2219_b5) {
              if (fp->accessory3_cb) {
                  fp->accessory3_cb(gobj);
-@@ -2550,11 +2796,11 @@ void Fighter_CallAcessoryCallbacks_8006C624(Fighter_GObj* gobj)
+@@ -2550,11 +2803,11 @@ void Fighter_CallAcessoryCallbacks_8006C624(Fighter_GObj* gobj)
      }
  }
  
@@ -51806,7 +51813,7 @@ index 20d0df28a..7e18bc045 100644
          efAsync_QueueFlush(gobj, &fp->x60C);
          Fighter_UnkApplyTransformation_8006C0F0(gobj);
  
-@@ -2575,7 +2821,7 @@ void Fighter_8006C80C(Fighter_GObj* gobj)
+@@ -2575,7 +2828,7 @@ void Fighter_8006C80C(Fighter_GObj* gobj)
          if (fp->ground_or_air == GA_Air &&
              fp->cur_pos.y < Stage_GetCamBoundsBottomOffset())
          {
@@ -51815,7 +51822,7 @@ index 20d0df28a..7e18bc045 100644
                  Vec3 cam_offset;
                  Stage_UnkSetVec3TCam_Offset(&cam_offset);
  
-@@ -2587,17 +2833,17 @@ void Fighter_8006C80C(Fighter_GObj* gobj)
+@@ -2587,17 +2840,17 @@ void Fighter_8006C80C(Fighter_GObj* gobj)
      }
  }
  
@@ -51836,7 +51843,7 @@ index 20d0df28a..7e18bc045 100644
                  }
                  ftColl_80078754(gobj, fp->victim_gobj, 0);
                  fp->grab_cb(gobj);
-@@ -2608,7 +2854,7 @@ void Fighter_UnkProcessGrab_8006CA5C(Fighter_GObj* gobj)
+@@ -2608,7 +2861,7 @@ void Fighter_UnkProcessGrab_8006CA5C(Fighter_GObj* gobj)
  
              if (fp->target_item_gobj) {
                  if (!fp->x2225_b1) {
@@ -51845,7 +51852,7 @@ index 20d0df28a..7e18bc045 100644
                  }
                  it_8027B4A4(gobj, fp->target_item_gobj);
                  if (fp->x2194) {
-@@ -2619,12 +2865,12 @@ void Fighter_UnkProcessGrab_8006CA5C(Fighter_GObj* gobj)
+@@ -2619,12 +2872,12 @@ void Fighter_UnkProcessGrab_8006CA5C(Fighter_GObj* gobj)
      }
  }
  
@@ -51860,7 +51867,7 @@ index 20d0df28a..7e18bc045 100644
          ftColl_800765E0();
          ftColl_80078C70(gobj);
          ft_8007C77C(gobj);
-@@ -2661,9 +2907,9 @@ void Fighter_TakeDamage_8006CC7C(Fighter* fp, float damage_amount)
+@@ -2661,9 +2914,9 @@ void Fighter_TakeDamage_8006CC7C(Fighter* fp, float damage_amount)
          if (fp->dmg.x1830_percent > 999.0f) {
              fp->dmg.x1830_percent = 999.0f;
          }
@@ -51872,7 +51879,7 @@ index 20d0df28a..7e18bc045 100644
                      damage_amount);
          ftCo_800C8C84(fp->gobj);
      }
-@@ -2710,7 +2956,7 @@ void Fighter_8006CDA4(Fighter* fp, s32 arg1)
+@@ -2710,7 +2963,7 @@ void Fighter_8006CDA4(Fighter* fp, s32 arg1)
  
  void Fighter_8006CF5C(Fighter* fp, s32 arg1)
  {
@@ -51881,7 +51888,7 @@ index 20d0df28a..7e18bc045 100644
          fp->dmg.x18F0 += arg1;
          ftCo_800BFFD0(fp, 8, 0);
          ftCommon_8007EBAC(fp, 2, 0);
-@@ -2804,7 +3050,7 @@ void Fighter_8006D10C(Fighter_GObj* gobj)
+@@ -2804,7 +3057,7 @@ void Fighter_8006D10C(Fighter_GObj* gobj)
      }
  }
  
@@ -51890,7 +51897,7 @@ index 20d0df28a..7e18bc045 100644
  {
      Fighter* fp = GET_FIGHTER(gobj);
      bool bool1 = 0;
-@@ -2814,7 +3060,7 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -2814,7 +3067,7 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
      bool bool4 = 0;
      float forceAppliedOnHit;
  
@@ -51899,7 +51906,7 @@ index 20d0df28a..7e18bc045 100644
          if (!fp->x221A_b7) {
              if (fp->shield_health < p_ftCommonData->x260_startShieldHealth) {
                  fp->shield_health += p_ftCommonData->x27C;
-@@ -2826,6 +3072,9 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -2826,6 +3079,9 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
          }
  
          if (fp->x221A_b7) {
@@ -51909,7 +51916,7 @@ index 20d0df28a..7e18bc045 100644
              fp->shield_health -=
                  (p_ftCommonData->x284 *
                   ((fp->x19A0_shieldDamageTaken) *
-@@ -2838,7 +3087,7 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -2838,7 +3094,7 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
                  fp->shield_health = p_ftCommonData->x280_unkShieldHealth;
                  /// this function is called when shield is broken
                  pl_8003E058(fp->x19BC_shieldDamageTaken3, fp->x221F_b6,
@@ -51918,7 +51925,7 @@ index 20d0df28a..7e18bc045 100644
              }
          }
  
-@@ -2892,6 +3141,12 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -2892,6 +3148,12 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
                  bool1 = damage_bool;
  
              } else {
@@ -51931,7 +51938,7 @@ index 20d0df28a..7e18bc045 100644
                  switch (fp->kind) {
                  case Ft_Kind_MasterH:
                      ftMh_MS_341_8014FE58(gobj);
-@@ -2900,9 +3155,18 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -2900,9 +3162,18 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
                      ftCh_Init_80156014(gobj);
                      break;
                  default:
@@ -51950,7 +51957,7 @@ index 20d0df28a..7e18bc045 100644
                  ftCo_8008E9D0(gobj);
              }
          } else if (fp->dmg.x18a0) {
-@@ -3048,38 +3312,43 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
+@@ -3048,38 +3319,43 @@ void Fighter_ProcessHit_8006D1EC(Fighter_GObj* gobj)
      }
  }
  
@@ -52004,7 +52011,7 @@ index 20d0df28a..7e18bc045 100644
      }
  }
  
-@@ -3111,7 +3380,7 @@ void Fighter_Unload_8006DABC(void* user_data)
+@@ -3111,7 +3387,7 @@ void Fighter_Unload_8006DABC(void* user_data)
      HSD_JObjUnref(fp->x2184);
      ftData_800859A8(fp);
      HSD_LObjRemoveAll(fp->x588);
@@ -56140,10 +56147,21 @@ index e0535c76c..de72c1b8c 100644
  
              for (j = 0; j < data->x2; j++) {
 diff --git a/src/melee/ft/ftbosslib.c b/src/melee/ft/ftbosslib.c
-index d47d3bed3..cf7b49636 100644
+index d47d3bed3..1a886988a 100644
 --- a/src/melee/ft/ftbosslib.c
 +++ b/src/melee/ft/ftbosslib.c
-@@ -36,13 +36,20 @@ void ftBossLib_8015BD20(HSD_GObj* gobj)
+@@ -20,6 +20,10 @@
+ #include <sysdolphin/baselib/jobj.h>
+ #include <sysdolphin/baselib/random.h>
+ 
++#ifdef MU_NATIVE
++#include <mu_hp.h>
++#endif
++
+ /// @todo Float reorder hack
+ #ifdef MUST_MATCH
+ static float get_zero(void)
+@@ -36,13 +40,20 @@ void ftBossLib_8015BD20(HSD_GObj* gobj)
  void ftBossLib_8015BD24(s32 arg0, float* arg1, float arg2, s32 arg3, s32 arg4,
                          s32 arg5)
  {
@@ -56165,7 +56183,7 @@ index d47d3bed3..cf7b49636 100644
      HSD_ASSERTREPORT(103,
                       kind == Gm_PKind_Human || kind == Gm_PKind_Boss ||
                           kind == Gm_PKind_Cpu,
-@@ -51,10 +58,10 @@ void ftBossLib_ReportGObjSlotType(HSD_GObj* gobj)
+@@ -51,10 +62,10 @@ void ftBossLib_ReportGObjSlotType(HSD_GObj* gobj)
  
  static inline float my_lbvector_Len(Vec3* vec)
  {
@@ -56178,7 +56196,21 @@ index d47d3bed3..cf7b49636 100644
                          float arg4)
  {
      Fighter* fp = GET_FIGHTER(gobj);
-@@ -199,7 +206,7 @@ bool ftBossLib_8015C31C(void)
+@@ -181,6 +192,13 @@ bool ftBossLib_8015C2E0(void)
+     if (msid == 0x158 || msid == 0x159) {
+         return true;
+     }
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "Crazy Hand Tag Team Fix" (8015C2F8): the answer is also yes when the
++     * lookup gives 0, which is what it gives with no Master Hand in the match. Off: 0. */
++    if (msid == 0 && mu_hp_boss_rules()) {
++        return true;
++    }
++#endif
+ 
+     return false;
+ }
+@@ -199,7 +217,7 @@ bool ftBossLib_8015C31C(void)
  bool ftBossLib_8015C358(void)
  {
      HSD_GObj* gobj = ftBossLib_GetFighterGObj(Ft_Kind_MasterH);
@@ -56187,7 +56219,7 @@ index d47d3bed3..cf7b49636 100644
          return true;
      }
  
-@@ -209,7 +216,7 @@ bool ftBossLib_8015C358(void)
+@@ -209,7 +227,7 @@ bool ftBossLib_8015C358(void)
  bool ftBossLib_8015C3A0(void)
  {
      HSD_GObj* gobj = ftBossLib_GetFighterGObj(Ft_Kind_CrezyH);
@@ -56196,7 +56228,7 @@ index d47d3bed3..cf7b49636 100644
          return true;
      }
  
-@@ -266,7 +273,7 @@ s32 ftBossLib_8015C530(int cpu_level)
+@@ -266,7 +284,7 @@ s32 ftBossLib_8015C530(int cpu_level)
  
      if (gobj != NULL) {
          ftMasterHand_SpecialAttrs* ftCo_DatAttrs =
@@ -56205,7 +56237,7 @@ index d47d3bed3..cf7b49636 100644
          switch (cpu_level) {
          case 0:
              return ftCo_DatAttrs->x0;
-@@ -325,7 +332,7 @@ ftMasterHand_SpecialAttrs* ftBossLib_8015C6BC(void)
+@@ -325,7 +343,7 @@ ftMasterHand_SpecialAttrs* ftBossLib_8015C6BC(void)
  
              {
                  ftMasterHand_SpecialAttrs* ftCo_DatAttrs =
@@ -68474,7 +68506,7 @@ index 6ebe91d10..5a323deda 100644
      RETURN_IF(ftCo_Turn_CheckInput(gobj));
      RETURN_IF(ftCo_Walk_CheckInput(gobj));
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c b/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c
-index 01a42a899..5f2383feb 100644
+index 01a42a899..489049371 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_LandingAir.c
 @@ -11,11 +11,46 @@
@@ -68524,7 +68556,7 @@ index 01a42a899..5f2383feb 100644
      Fighter* fp = GET_FIGHTER(gobj);
      if (fp->cmd_vars[0]) {
          switch (fp->motion_id) {
-@@ -40,7 +75,37 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
+@@ -40,9 +75,45 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
              lag = fp->co_attrs.landingairlw_lag;
              break;
          }
@@ -68562,8 +68594,16 @@ index 01a42a899..5f2383feb 100644
 +                                     )) {
              float div_lag = lag / p_ftCommonData->xE8;
              int int_lag = div_lag;
++#ifdef MU_NATIVE
++            /* 20XX Hack Pack "L-Cancel Options" (8008D698): the flash follows the result, and the
++             * pack counts a CPU's landing before it picks the flash. A human gets here only with
++             * the press in time, so nothing changes for one. */
++            te_in_time = 1;
++#endif
              if ((int) div_lag == 0) {
-@@ -51,7 +116,21 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
+                 int_lag = 1;
+             }
+@@ -51,7 +122,21 @@ void ftCo_LandingAir_EnterWithLag(Fighter_GObj* gobj)
      }
      if (msid != ftCo_MS_None) {
          ftCo_LandingAir_EnterWithMsidLag(gobj, msid, lag);
@@ -68585,7 +68625,7 @@ index 01a42a899..5f2383feb 100644
          ftCo_Landing_Enter_Basic(gobj);
      }
  }
-@@ -63,6 +142,12 @@ void ftCo_LandingAir_EnterWithMsidLag(Fighter_GObj* gobj, FtMotionId msid,
+@@ -63,6 +148,12 @@ void ftCo_LandingAir_EnterWithMsidLag(Fighter_GObj* gobj, FtMotionId msid,
      ftCommon_8007D7FC(GET_FIGHTER(gobj));
      Fighter_ChangeMotionState(gobj, msid, Ft_MF_None, 0, 1, 0, NULL);
      ftAnim_SetAnimRate(gobj, (ftAnim_8006F484(gobj) + 0.1f) / lag);
@@ -69146,22 +69186,31 @@ index 33541d440..c63b54791 100644
  
      ftCo_8008DCE0(gobj, calcKnockbackAngle(is_upward), calcFacingDir(fp));
 diff --git a/src/melee/ft/kinds/ftCommon/ftCo_ThrownKirby.c b/src/melee/ft/kinds/ftCommon/ftCo_ThrownKirby.c
-index 48a81958f..7ccddc418 100644
+index 48a81958f..d315e1ed5 100644
 --- a/src/melee/ft/kinds/ftCommon/ftCo_ThrownKirby.c
 +++ b/src/melee/ft/kinds/ftCommon/ftCo_ThrownKirby.c
-@@ -45,6 +45,11 @@ FighterKind ftCo_800BD9E0(Fighter_GObj* gobj, Fighter_GObj* victim_gobj)
+@@ -45,6 +45,20 @@ FighterKind ftCo_800BD9E0(Fighter_GObj* gobj, Fighter_GObj* victim_gobj)
      ftKb_Fighter* fp = GET_FIGHTER(gobj);
      Fighter* victim_fp = GET_FIGHTER(victim_gobj);
      FighterKind victim_kind = victim_fp->kind;
 +#if defined(MU_NATIVE) && defined(MU_AKANEIA_FIGHTERS)
 +    if (MU_AK_KIND(victim_kind)) {
-+        return fp->u.kb.hat.kind; /* No added copy ability or hat resource yet. */
++        /* No added copy ability or hat resource yet: as for a wireframe, Kirby keeps what he
++         * has. The mod itself gives a copy ability here (PlKbCp<Xx>.dat, not ported). */
++        static int logged;
++        if (logged < 8) {
++            logged++;
++            OSReport("[ak] Kirby swallowed added fighter kind %d: no copy ability in this "
++                     "build, he keeps ability %d\n",
++                     (int) victim_kind, (int) fp->u.kb.hat.kind);
++        }
++        return fp->u.kb.hat.kind;
 +    }
 +#endif
      if (victim_kind == Ft_Kind_Kirby) {
          ftCo_800BDA50(victim_gobj);
          return victim_fp->u.kb.hat.kind;
-@@ -96,31 +101,24 @@ static inline float inlineB1(Fighter_GObj* gobj)
+@@ -96,31 +110,24 @@ static inline float inlineB1(Fighter_GObj* gobj)
      return GET_FIGHTER(gobj)->co_attrs.kirby_b_star_damage;
  }
  
@@ -69200,7 +69249,7 @@ index 48a81958f..7ccddc418 100644
      Fighter_ChangeMotionState(gobj, msid, Ft_MF_SkipThrowException, 0.0f, 1.0f,
                                0.0f, thrower_gobj);
      fp->take_dmg_2_cb = ftCo_800BE7C0;
-@@ -146,7 +144,7 @@ void ftCo_800BDB58(Fighter_GObj* gobj, Fighter_GObj* thrower_gobj)
+@@ -146,7 +153,7 @@ void ftCo_800BDB58(Fighter_GObj* gobj, Fighter_GObj* thrower_gobj)
      Fighter* fp = GET_FIGHTER(gobj);
      Vec3 scale;
      PAD_STACK(36);
@@ -69209,7 +69258,7 @@ index 48a81958f..7ccddc418 100644
               ftKb_SpecialN_800F58AC, ftKb_SpecialN_800F5A88, false);
  
      /// @todo Possibly another callback in #inlineB2
-@@ -163,7 +161,7 @@ void ftCo_ThrownKirbyStar_IASA(Fighter_GObj* gobj) {}
+@@ -163,7 +170,7 @@ void ftCo_ThrownKirbyStar_IASA(Fighter_GObj* gobj) {}
  static inline void inlineA0(Fighter_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -69218,7 +69267,7 @@ index 48a81958f..7ccddc418 100644
      if (vel_mag > fp->mv.co.thrownkirby.x4) {
          fp->self_vel.x =
              (fp->self_vel.x * (vel_mag - fp->mv.co.thrownkirby.x4)) / vel_mag;
-@@ -180,7 +178,7 @@ static inline void inlineA0(Fighter_GObj* gobj)
+@@ -180,7 +187,7 @@ static inline void inlineA0(Fighter_GObj* gobj)
      fp->grab_timer -= ftKb_SpecialN_800F5AC0();
  }
  
@@ -69227,7 +69276,7 @@ index 48a81958f..7ccddc418 100644
  {
      Fighter* fp = GET_FIGHTER(gobj);
      inlineA0(gobj);
-@@ -216,7 +214,7 @@ void ftCo_800BE000(Fighter_GObj* gobj, Fighter_GObj* thrower_gobj)
+@@ -216,7 +223,7 @@ void ftCo_800BE000(Fighter_GObj* gobj, Fighter_GObj* thrower_gobj)
      u32 unused2;
      Vec3 scale;
      PAD_STACK(12);
@@ -71076,10 +71125,21 @@ index 2450f32bb..d6003c775 100644
      }
  }
 diff --git a/src/melee/ft/kinds/ftCrazyHand/ftcrazyhandwait10.c b/src/melee/ft/kinds/ftCrazyHand/ftcrazyhandwait10.c
-index b9765a155..bea8813ac 100644
+index b9765a155..bec925ad3 100644
 --- a/src/melee/ft/kinds/ftCrazyHand/ftcrazyhandwait10.c
 +++ b/src/melee/ft/kinds/ftCrazyHand/ftcrazyhandwait10.c
-@@ -124,7 +124,7 @@ void ftCh_Init_80156198(HSD_GObj* gobj)
+@@ -36,6 +36,10 @@
+ #include <sysdolphin/baselib/controller.h>
+ #include <sysdolphin/baselib/random.h>
+ 
++#ifdef MU_NATIVE
++#include <mu_hp.h>
++#endif
++
+ static void ftCh_Init_80156310(HSD_GObj* gobj);
+ static void ftCh_Init_80156AD8(HSD_GObj* gobj);
+ 
+@@ -124,7 +128,7 @@ void ftCh_Init_80156198(HSD_GObj* gobj)
  static void ftCh_Init_80156310(HSD_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -71088,7 +71148,7 @@ index b9765a155..bea8813ac 100644
      fp->cmd_vars[1] = 0;
      fp->u.mh.x2258 = ftMh_MS_Wait1_0;
      fp->motion_id = 0x183;
-@@ -165,7 +165,7 @@ void ftCh_Wait1_0_Anim(HSD_GObj* gobj)
+@@ -165,7 +169,7 @@ void ftCh_Wait1_0_Anim(HSD_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
      struct ftCh_Init_803D4878_t* data = &ftCh_Init_803D4878;
@@ -71097,7 +71157,7 @@ index b9765a155..bea8813ac 100644
      PAD_STACK(4);
  
      if (fp->cmd_vars[1] != 0) {
-@@ -183,7 +183,7 @@ void ftCh_Wait1_0_Anim(HSD_GObj* gobj)
+@@ -183,7 +187,7 @@ void ftCh_Wait1_0_Anim(HSD_GObj* gobj)
          }
      } else {
          if (--fp->u.mh.x223C < 0) {
@@ -71106,7 +71166,7 @@ index b9765a155..bea8813ac 100644
              Vec3 vec;
              PAD_STACK(4);
  
-@@ -214,7 +214,7 @@ void ftCh_Wait1_0_Anim(HSD_GObj* gobj)
+@@ -214,7 +218,7 @@ void ftCh_Wait1_0_Anim(HSD_GObj* gobj)
  
                  fp->u.ch.x224C = tmp;
                  fp->u.ch.x2250 = tmp2;
@@ -71115,7 +71175,7 @@ index b9765a155..bea8813ac 100644
                      tmp2 = ftMh_MS_Wait1_0;
                  }
                  switch (tmp2) {
-@@ -328,7 +328,7 @@ void ftCh_Wait1_0_Anim(HSD_GObj* gobj)
+@@ -328,7 +332,7 @@ void ftCh_Wait1_0_Anim(HSD_GObj* gobj)
  void ftCh_Wait1_0_IASA(HSD_GObj* gobj)
  {
      Fighter* ft = GET_FIGHTER(gobj);
@@ -71124,15 +71184,36 @@ index b9765a155..bea8813ac 100644
          ftBossLib_8015BD20(gobj);
      }
  }
-@@ -344,7 +344,7 @@ static void ftCh_Init_80156AD8(HSD_GObj* gobj)
+@@ -344,8 +348,14 @@ static void ftCh_Init_80156AD8(HSD_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
      u32 button;
 -    ftCrazyHand_DatAttrs* da = fp->ft_data->ext_attr;
 +    ftCrazyHand_DatAttrs* da = DP(fp->ft_data->ext_attr);
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "MasterHand & CrazyHand Controlled By All Ports" (80156AFC): the hand takes
++     * its own player's held buttons (shim/mu_hp_css.c). Off: the fourth controller, as below. */
++    u32 button_tmp = mu_hp_boss_buttons(fp, HSD_PadMasterStatus[3].button);
++#else
      u32 button_tmp = HSD_PadMasterStatus[3].button;
++#endif
      Vec3 pos;
      button = button_tmp;
+ 
+@@ -384,7 +394,13 @@ static void ftCh_Init_80156AD8(HSD_GObj* gobj)
+         pos.y = da->x50;
+         pos.z = 0;
+         ftCh_GrabUnk1_8015BA34(gobj, fn_80158144, &pos);
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "CrazyHand - Disable D-Pad Up+B Attack" (80156CE0): this attack is never
++     * started by a player. Off: 0. */
++    } else if (!mu_hp_boss_rules() && button_tmp & (HSD_PAD_B) && button_tmp & (HSD_PAD_DPADUP)) {
++#else
+     } else if (button_tmp & (HSD_PAD_B) && button_tmp & (HSD_PAD_DPADUP)) {
++#endif
+         float rand = HSD_Randf();
+         pos.x = da->x90 * rand * 2 + da->x88_pos.x - da->x90;
+         rand = HSD_Randf();
 diff --git a/src/melee/ft/kinds/ftCrazyHand/ftcrazyhandwait11.c b/src/melee/ft/kinds/ftCrazyHand/ftcrazyhandwait11.c
 index 0456ddc80..0dc15e773 100644
 --- a/src/melee/ft/kinds/ftCrazyHand/ftcrazyhandwait11.c
@@ -78283,10 +78364,21 @@ index b83350b9f..1cfb4711f 100644
      }
  }
 diff --git a/src/melee/ft/kinds/ftMasterHand/ftmasterhandwait10.c b/src/melee/ft/kinds/ftMasterHand/ftmasterhandwait10.c
-index a09c9cc1f..5b8f78bcd 100644
+index a09c9cc1f..c8dfe86c2 100644
 --- a/src/melee/ft/kinds/ftMasterHand/ftmasterhandwait10.c
 +++ b/src/melee/ft/kinds/ftMasterHand/ftmasterhandwait10.c
-@@ -121,7 +121,7 @@ void ftMh_MS_341_8014FFDC(HSD_GObj* gobj)
+@@ -34,6 +34,10 @@
+ #include <sysdolphin/baselib/controller.h>
+ #include <sysdolphin/baselib/random.h>
+ 
++#ifdef MU_NATIVE
++#include <mu_hp.h>
++#endif
++
+ static void ifStage251(HSD_GObj* gobj);
+ 
+ void ftMh_MS_341_8014FE10(HSD_GObj* gobj)
+@@ -121,7 +125,7 @@ void ftMh_MS_341_8014FFDC(HSD_GObj* gobj)
  static void ifStage251(HSD_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -78295,7 +78387,7 @@ index a09c9cc1f..5b8f78bcd 100644
      fp->u.mh.x2258 = ftMh_MS_Wait1_0;
      fp->motion_id = ftMh_MS_Entry;
      fp->cur_pos.x = da->x30_pos2.x;
-@@ -201,7 +201,7 @@ void ftMh_Wait1_0_Anim(HSD_GObj* gobj)
+@@ -201,7 +205,7 @@ void ftMh_Wait1_0_Anim(HSD_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
      u8 _[4];
@@ -78304,7 +78396,7 @@ index a09c9cc1f..5b8f78bcd 100644
          ftMh_MS_341_80150894(gobj);
          if (!ftAnim_IsFramesRemaining(gobj)) {
              if (fp->motion_id == ftMh_MS_Wait1_0) {
-@@ -212,7 +212,7 @@ void ftMh_Wait1_0_Anim(HSD_GObj* gobj)
+@@ -212,7 +216,7 @@ void ftMh_Wait1_0_Anim(HSD_GObj* gobj)
          }
      } else {
          if (--fp->u.mh.x223C < 0) {
@@ -78313,7 +78405,7 @@ index a09c9cc1f..5b8f78bcd 100644
              Vec3 vec;
  
              u8 _[20];
-@@ -273,7 +273,7 @@ void ftMh_Wait1_0_Anim(HSD_GObj* gobj)
+@@ -273,7 +277,7 @@ void ftMh_Wait1_0_Anim(HSD_GObj* gobj)
  
                  fp->u.mh.x224C = tmp;
                  fp->u.mh.x2250 = tmp2;
@@ -78322,7 +78414,7 @@ index a09c9cc1f..5b8f78bcd 100644
                      tmp2 = ftMh_MS_Wait1_0;
                  }
                  switch (tmp2) {
-@@ -357,7 +357,7 @@ void ftMh_Wait1_0_Anim(HSD_GObj* gobj)
+@@ -357,7 +361,7 @@ void ftMh_Wait1_0_Anim(HSD_GObj* gobj)
  void ftMh_Wait1_0_IASA(HSD_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -78331,7 +78423,17 @@ index a09c9cc1f..5b8f78bcd 100644
          ftBossLib_8015BD20(gobj);
      }
  }
-@@ -373,7 +373,7 @@ void ftMh_Wait1_0_Coll(HSD_GObj* gobj) {}
+@@ -369,11 +373,17 @@ void ftMh_Wait1_0_Phys(HSD_GObj* gobj)
+ 
+ void ftMh_Wait1_0_Coll(HSD_GObj* gobj) {}
+ 
++#ifdef MU_NATIVE
++/* 20XX Hack Pack "MasterHand & CrazyHand Controlled By All Ports" (801508B8): the hand takes its
++ * own player's held buttons (shim/mu_hp_css.c). Off: the third controller, as here. */
++#define buttons (mu_hp_boss_buttons(fp, HSD_PadMasterStatus[2].button))
++#else
+ #define buttons (HSD_PadMasterStatus[2].button)
++#endif
  void ftMh_MS_341_80150894(HSD_GObj* gobj)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -85254,7 +85356,7 @@ index bdc4d71b6..1887dec0f 100644
  typedef struct ChallengerData ChallengerData;
  typedef struct MatchEnd MatchEnd;
 diff --git a/src/melee/gm/gm_1601.c b/src/melee/gm/gm_1601.c
-index 7ad706ec1..c995edfb3 100644
+index 7ad706ec1..ed29dd75a 100644
 --- a/src/melee/gm/gm_1601.c
 +++ b/src/melee/gm/gm_1601.c
 @@ -10,9 +10,9 @@
@@ -85276,8 +85378,14 @@ index 7ad706ec1..c995edfb3 100644
  #include <sysdolphin/baselib/controller.h>
  #include <sysdolphin/baselib/gobjplink.h>
  #include <sysdolphin/baselib/hsd_3924.h>
-@@ -43,6 +44,16 @@
+@@ -41,8 +42,22 @@
+ #include <sysdolphin/baselib/sislib.h>
+ #include <sysdolphin/baselib/video.h>
  
++#ifdef MU_NATIVE
++#include <mu_hp.h>
++#endif
++
  /* 166A8C */ static f32 fn_80166A8C(Vec3*, Vec3*);
  
 +#if defined(MU_NATIVE) && defined(MU_AKANEIA_FIGHTERS)
@@ -85293,7 +85401,7 @@ index 7ad706ec1..c995edfb3 100644
  /// JP character names
  char* lbl_803D4D74[] = {
      "Ｃ．ファルコン",
-@@ -470,6 +481,13 @@ u32 fn_80160400(CharacterKind ckind)
+@@ -470,6 +485,13 @@ u32 fn_80160400(CharacterKind ckind)
  {
      struct VictoryTheme* theme = ckind_victory_themes;
  
@@ -85307,7 +85415,7 @@ index 7ad706ec1..c995edfb3 100644
      while (true) {
          if (theme->ckind == ckind) {
              return theme->theme_id;
-@@ -492,6 +510,14 @@ char* gm_80160438(s32 ckind)
+@@ -492,6 +514,14 @@ char* gm_80160438(s32 ckind)
      struct ResultAnimEntry* entry = lbl_803D53A8;
      s32 id;
  
@@ -85322,7 +85430,7 @@ index 7ad706ec1..c995edfb3 100644
      while (true) {
          id = entry->ckind;
          if (id == ckind || id == ChKind_None) {
-@@ -507,6 +533,11 @@ char* gm_80160438(s32 ckind)
+@@ -507,6 +537,11 @@ char* gm_80160438(s32 ckind)
  
  bool gm_80160474(CharacterKind ckind, GameModeKind mode)
  {
@@ -85334,7 +85442,7 @@ index 7ad706ec1..c995edfb3 100644
      switch (mode) {
      case GM_CLASSIC_GOVER:
      case GM_CLASSIC:
-@@ -523,6 +554,12 @@ char* gm_801604DC(CharacterKind ckind, GameModeKind mode)
+@@ -523,6 +558,12 @@ char* gm_801604DC(CharacterKind ckind, GameModeKind mode)
  {
      int var_r3;
  
@@ -85347,7 +85455,7 @@ index 7ad706ec1..c995edfb3 100644
      switch (mode) {
      case GM_CLASSIC_GOVER:
      case GM_CLASSIC:
-@@ -536,13 +573,19 @@ char* gm_801604DC(CharacterKind ckind, GameModeKind mode)
+@@ -536,13 +577,19 @@ char* gm_801604DC(CharacterKind ckind, GameModeKind mode)
          var_r3 = lbl_803B7A00[ckind];
          break;
      }
@@ -85368,7 +85476,7 @@ index 7ad706ec1..c995edfb3 100644
      switch (mode) {
      case GM_CLASSIC_GOVER:
      case GM_CLASSIC:
-@@ -556,7 +599,7 @@ char* gm_80160564(CharacterKind ckind, GameModeKind mode)
+@@ -556,7 +603,7 @@ char* gm_80160564(CharacterKind ckind, GameModeKind mode)
          var_r3 = lbl_803B7A00[ckind];
          break;
      }
@@ -85377,7 +85485,7 @@ index 7ad706ec1..c995edfb3 100644
  }
  
  u8 gm_SelKindToUnlockIndex(SelectableCharacterKind selkind)
-@@ -707,6 +750,11 @@ GXColor gm_80160968(u32 arg0)
+@@ -707,6 +754,18 @@ GXColor gm_80160968(u32 arg0)
  /// Get SJIS character name for a given CharacterKind
  const char* gm_80160980(u8 ckind)
  {
@@ -85386,10 +85494,17 @@ index 7ad706ec1..c995edfb3 100644
 +        return gm_mu_ak_name(ckind);
 +    }
 +#endif
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "Extra Character Nametag Changes" (803D4F7C and on): its names for the
++     * wireframes and for Popo alone, who has none in the game (shim/mu_hp_css.c). Off: NULL. */
++    if (mu_hp_ckind_name(ckind, lbLang_IsSavedLanguageUS()) != NULL) {
++        return mu_hp_ckind_name(ckind, lbLang_IsSavedLanguageUS());
++    }
++#endif
      if (lbLang_IsSavedLanguageUS()) {
          return lbl_803D4FDC[ckind];
      } else {
-@@ -716,6 +764,11 @@ const char* gm_80160980(u8 ckind)
+@@ -716,6 +775,17 @@ const char* gm_80160980(u8 ckind)
  
  const char* fn_801609E0(u8 ckind)
  {
@@ -85398,10 +85513,16 @@ index 7ad706ec1..c995edfb3 100644
 +        return gm_mu_ak_name(ckind);
 +    }
 +#endif
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "Extra Character Nametag Changes", as in gm_80160980. Off: NULL. */
++    if (mu_hp_ckind_name(ckind, lbLang_IsSavedLanguageUS()) != NULL) {
++        return mu_hp_ckind_name(ckind, lbLang_IsSavedLanguageUS());
++    }
++#endif
      if (lbLang_IsSavedLanguageUS()) {
          if (lbl_803D50E4[ckind] != NULL) {
              return lbl_803D50E4[ckind];
-@@ -735,6 +788,11 @@ const char* gm_80160A60(int arg0)
+@@ -735,6 +805,11 @@ const char* gm_80160A60(int arg0)
  
      if (Player_GetPlayerSlotType(arg0) != Gm_PKind_NA) {
          ckind = Player_GetPlayerCharacter(arg0);
@@ -85413,7 +85534,20 @@ index 7ad706ec1..c995edfb3 100644
          if (ckind == CKind_Zelda || ckind == CKind_Seak) {
              if (Player_80036394(arg0) == Ft_Kind_Seak) {
                  if (lbLang_IsSavedLanguageUS()) {
-@@ -776,6 +834,12 @@ void gm_80160B40(HSD_Text* text, u8 ckind, u8 arg2)
+@@ -750,6 +825,12 @@ const char* gm_80160A60(int arg0)
+                 }
+             }
+         }
++#ifdef MU_NATIVE
++        /* 20XX Hack Pack "Extra Character Nametag Changes", as in gm_80160980. Off: NULL. */
++        if (mu_hp_ckind_name(ckind, lbLang_IsSavedLanguageUS()) != NULL) {
++            return mu_hp_ckind_name(ckind, lbLang_IsSavedLanguageUS());
++        }
++#endif
+         if (lbLang_IsSavedLanguageUS()) {
+             return lbl_803D4FDC[ckind];
+         } else {
+@@ -776,6 +857,12 @@ void gm_80160B40(HSD_Text* text, u8 ckind, u8 arg2)
  
      gm_80160B40_init_text(text, &tmp_text);
      str = arg2 ? fn_801609E0(tmp_ckind) : gm_80160980(tmp_ckind);
@@ -85426,7 +85560,7 @@ index 7ad706ec1..c995edfb3 100644
      if (lbLang_IsSavedLanguageUS()) {
          bool tmp = arg2 && lbl_803D50E4[tmp_ckind] != NULL;
          var_f31 = tmp ? lbl_803B7784[tmp_ckind] : lbl_803B767C[tmp_ckind];
-@@ -800,6 +864,14 @@ void gm_80160C90(HSD_Text* text, u8 fighter_id, u8 arg2)
+@@ -800,6 +887,14 @@ void gm_80160C90(HSD_Text* text, u8 fighter_id, u8 arg2)
      }
      str = arg2 ? fn_801609E0(tmp_ckind) : gm_80160980(tmp_ckind);
  
@@ -85441,7 +85575,7 @@ index 7ad706ec1..c995edfb3 100644
      if (lbLang_IsSavedLanguageUS() != 0) {
          f32 temp;
          use_alt_name = false;
-@@ -844,6 +916,13 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -844,6 +939,13 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
      }
      str = arg3 ? fn_801609E0(tmp_ckind) : gm_80160980(tmp_ckind);
  
@@ -85455,7 +85589,7 @@ index 7ad706ec1..c995edfb3 100644
      if (lbLang_IsSavedLanguageUS() != 0) {
          f32 temp;
          use_alt_name = false;
-@@ -851,9 +930,9 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -851,9 +953,9 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
              use_alt_name = true;
          }
          if (use_alt_name) {
@@ -85467,7 +85601,7 @@ index 7ad706ec1..c995edfb3 100644
          }
          size = temp;
      } else {
-@@ -863,7 +942,7 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -863,7 +965,7 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
              use_alt_name = true;
          }
          if (use_alt_name) {
@@ -85476,7 +85610,7 @@ index 7ad706ec1..c995edfb3 100644
          } else {
              temp = lbl_803B75F8[tmp_ckind];
          }
-@@ -876,6 +955,11 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
+@@ -876,6 +978,11 @@ void fn_80160DE8(HSD_JObj* arg0, u8 arg1, s32 arg2, u8 arg3, f32 farg0,
  f32 fn_80160F58(u8 ckind)
  {
      f32 result;
@@ -85488,7 +85622,7 @@ index 7ad706ec1..c995edfb3 100644
      if (lbLang_IsSavedLanguageUS()) {
          result = lbl_803D50E4[ckind] != NULL ? lbl_803B7784[ckind]
                                               : lbl_803B767C[ckind];
-@@ -962,8 +1046,8 @@ s32 fn_80161154(MatchEnd* arg0)
+@@ -962,8 +1069,8 @@ s32 fn_80161154(MatchEnd* arg0)
          if (spC[i]) {
              if (idx == 4) {
                  idx = i;
@@ -85499,7 +85633,7 @@ index 7ad706ec1..c995edfb3 100644
              {
                  idx = i;
              }
-@@ -974,7 +1058,7 @@ s32 fn_80161154(MatchEnd* arg0)
+@@ -974,7 +1081,7 @@ s32 fn_80161154(MatchEnd* arg0)
      for (i = 0; i < 4; i++) {
          if (spC[i] && idx != i) {
              player = &arg0->player_standings[i];
@@ -85508,7 +85642,7 @@ index 7ad706ec1..c995edfb3 100644
                  cnt += 1;
              } else {
                  spC[i] = 0;
-@@ -1079,29 +1163,6 @@ s32 fn_80161154(MatchEnd* arg0)
+@@ -1079,29 +1186,6 @@ s32 fn_80161154(MatchEnd* arg0)
      }
  }
  
@@ -85538,7 +85672,7 @@ index 7ad706ec1..c995edfb3 100644
  static inline u32 fn_80161C90_count_players(MatchEnd* match_end)
  {
      u32 count = 0;
-@@ -1115,31 +1176,23 @@ static inline u32 fn_80161C90_count_players(MatchEnd* match_end)
+@@ -1115,31 +1199,23 @@ static inline u32 fn_80161C90_count_players(MatchEnd* match_end)
      return count;
  }
  
@@ -85581,7 +85715,7 @@ index 7ad706ec1..c995edfb3 100644
      {
          if (arg1 == fn_80165548(arg0, fn_80165418(arg0), fn_801654A0(arg0))) {
              flag = 1;
-@@ -1147,7 +1200,7 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
+@@ -1147,7 +1223,7 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
              flag = 0;
          }
          if (flag != 0) {
@@ -85590,7 +85724,7 @@ index 7ad706ec1..c995edfb3 100644
          }
      }
      if (arg1 == fn_80161154(arg0)) {
-@@ -1156,36 +1209,21 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
+@@ -1156,36 +1232,21 @@ void fn_80161C90(MatchEnd* arg0, int arg1, u16* arg2)
          flag = 0;
      }
      if (flag != 0) {
@@ -85638,7 +85772,7 @@ index 7ad706ec1..c995edfb3 100644
      }
  }
  
-@@ -1203,12 +1241,22 @@ void fn_80162068(MatchEnd* match_end)
+@@ -1203,12 +1264,22 @@ void fn_80162068(MatchEnd* match_end)
          if (pdata_i->pkind == 3) {
              continue;
          }
@@ -85661,7 +85795,7 @@ index 7ad706ec1..c995edfb3 100644
              if (pdata_i->kills[j] +
                      fd->fighter_kos[gm_CKindToSelKind(pdata_j->ckind)] >
                  U16_MAX)
-@@ -1220,7 +1268,7 @@ void fn_80162068(MatchEnd* match_end)
+@@ -1220,7 +1291,7 @@ void fn_80162068(MatchEnd* match_end)
              }
              fd->fighter_kos[gm_CKindToSelKind(pdata_j->ckind)] = (u16) sum;
          }
@@ -85670,7 +85804,7 @@ index 7ad706ec1..c995edfb3 100644
      }
  }
  void fn_80162170(MatchEnd* arg0)
-@@ -1242,6 +1290,11 @@ void fn_80162170(MatchEnd* arg0)
+@@ -1242,6 +1313,11 @@ void fn_80162170(MatchEnd* arg0)
          if (p->x4 == 0x78) {
              continue;
          }
@@ -85682,7 +85816,7 @@ index 7ad706ec1..c995edfb3 100644
          {
              struct NameTagData* nt = GetPersistentNameData(p->x4);
              for (j = 0; j < 4; j++) {
-@@ -1269,7 +1322,7 @@ void fn_80162170(MatchEnd* arg0)
+@@ -1269,7 +1345,7 @@ void fn_80162170(MatchEnd* arg0)
                  nt->play_time_by_fighter[gm_CKindToSelKind(p->ckind)] =
                      play_time;
              }
@@ -85691,7 +85825,7 @@ index 7ad706ec1..c995edfb3 100644
          }
      }
  }
-@@ -1359,6 +1412,12 @@ void gm_80162574(u8 arg0, u8 arg1)
+@@ -1359,6 +1435,12 @@ void gm_80162574(u8 arg0, u8 arg1)
      u16* ptr;
      u32 val;
  
@@ -85704,7 +85838,7 @@ index 7ad706ec1..c995edfb3 100644
      if (arg1 == 7) {
          return;
      }
-@@ -1389,7 +1448,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
+@@ -1389,7 +1471,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
  
      if ((u8) (arg1 - 7) <= 1) {
          u32* p = gmMainLib_GetMatchResetCounter();
@@ -85713,7 +85847,7 @@ index 7ad706ec1..c995edfb3 100644
          return;
      }
      if (gm_GetCurrentGameMode() == GM_STAMINA_VS) {
-@@ -1406,7 +1465,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
+@@ -1406,7 +1488,7 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
              counter = gmMainLib_GetCoinMatchTotal();
              {
                  struct gmm_retval_EDBC* q = gmMainLib_8015EDBC();
@@ -85722,7 +85856,7 @@ index 7ad706ec1..c995edfb3 100644
              }
              break;
          case MatchKind_Bonus:
-@@ -1414,18 +1473,18 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
+@@ -1414,18 +1496,18 @@ void gm_SetupHumanResultsScreen(u8 arg0, u8 arg1)
              break;
          }
      }
@@ -85745,7 +85879,7 @@ index 7ad706ec1..c995edfb3 100644
      }
  }
  
-@@ -1562,6 +1621,12 @@ bool fn_80162BFC(s8 ckind, int arg1)
+@@ -1562,6 +1644,12 @@ bool fn_80162BFC(s8 ckind, int arg1)
  {
      int* temp_r3;
  
@@ -85758,7 +85892,7 @@ index 7ad706ec1..c995edfb3 100644
      temp_r3 = (int*) gmMainLib_8015D0C0(gm_CKindToSelKind((u8) ckind));
      if ((u32) *temp_r3 < (u32) arg1) {
          *temp_r3 = arg1;
-@@ -1615,14 +1680,12 @@ u8 gm_80162D6C(void)
+@@ -1615,14 +1703,12 @@ u8 gm_80162D6C(void)
      s32 i;
      u8 min;
  
@@ -85775,7 +85909,7 @@ index 7ad706ec1..c995edfb3 100644
  
      return min;
  }
-@@ -1636,6 +1699,12 @@ s32 fn_80162DF8(u8 ckind, u32 arg1)
+@@ -1636,6 +1722,12 @@ s32 fn_80162DF8(u8 ckind, u32 arg1)
  {
      s32* temp_r3;
  
@@ -85788,7 +85922,7 @@ index 7ad706ec1..c995edfb3 100644
      temp_r3 = gmMainLib_8015D1E8(gm_CKindToSelKind(ckind));
      if (*temp_r3 < arg1) {
          *temp_r3 = arg1;
-@@ -1692,14 +1761,12 @@ u8 gm_80162F68(void)
+@@ -1692,14 +1784,12 @@ u8 gm_80162F68(void)
      s32 i;
      u8 min;
  
@@ -85805,7 +85939,7 @@ index 7ad706ec1..c995edfb3 100644
  
      return min;
  }
-@@ -1713,6 +1780,12 @@ bool fn_80162FF4(u8 ckind, u32 arg1)
+@@ -1713,6 +1803,12 @@ bool fn_80162FF4(u8 ckind, u32 arg1)
  {
      s32* temp_r3;
  
@@ -85818,7 +85952,7 @@ index 7ad706ec1..c995edfb3 100644
      temp_r3 = gmMainLib_8015D310(gm_CKindToSelKind(ckind));
      if (*temp_r3 < arg1) {
          *temp_r3 = arg1;
-@@ -1766,14 +1839,12 @@ u8 gm_80163164(void)
+@@ -1766,14 +1862,12 @@ u8 gm_80163164(void)
      s32 i;
      u8 min;
  
@@ -85835,7 +85969,7 @@ index 7ad706ec1..c995edfb3 100644
  
      return min;
  }
-@@ -1814,6 +1885,11 @@ bool gm_80163298(s8 c_kind, u16 arg1)
+@@ -1814,6 +1908,11 @@ bool gm_80163298(s8 c_kind, u16 arg1)
      u16* record;
      u16 score;
  
@@ -85847,7 +85981,7 @@ index 7ad706ec1..c995edfb3 100644
      index = gm_CKindToSelKind(c_kind);
      record = gmMainLib_8015D7EC(index);
      score = arg1;
-@@ -2136,6 +2212,11 @@ u8 gm_SelKindToCKind(u8 selkind)
+@@ -2136,6 +2235,11 @@ u8 gm_SelKindToCKind(u8 selkind)
  
  u8 gm_CKindToSelKind(u8 ckind)
  {
@@ -85859,7 +85993,7 @@ index 7ad706ec1..c995edfb3 100644
      return ckind_to_selkind_map[ckind];
  }
  
-@@ -2199,25 +2280,23 @@ bool gm_IsStageUnlocked(u16 stkind)
+@@ -2199,25 +2303,23 @@ bool gm_IsStageUnlocked(u16 stkind)
  
  bool fn_801642A0(void)
  {
@@ -85897,7 +86031,7 @@ index 7ad706ec1..c995edfb3 100644
          return false;
      }
      return true;
-@@ -2256,63 +2335,64 @@ bool gm_80164330(s32 arg0)
+@@ -2256,63 +2358,64 @@ bool gm_80164330(s32 arg0)
                                                                        : false;
  }
  
@@ -85994,7 +86128,7 @@ index 7ad706ec1..c995edfb3 100644
          gmMainLib_8015D818(notify_val);
          *stage_unlock_mask |= (1LL << (s32) unlock_idx);
      }
-@@ -2326,6 +2406,11 @@ bool gm_80164600(void)
+@@ -2326,6 +2429,11 @@ bool gm_80164600(void)
  
      for (i = 0; i < NUM_UNLOCKABLE_STAGES; i++) {
          if (!(*stage_unlock_mask & (1LL << i))) {
@@ -86006,7 +86140,7 @@ index 7ad706ec1..c995edfb3 100644
              return false;
          }
      }
-@@ -2366,6 +2451,12 @@ int gm_801647F8(u8 arg0)
+@@ -2366,6 +2474,12 @@ int gm_801647F8(u8 arg0)
  /// Is a specific character unlocked?
  bool gm_IsCKindUnlocked(u8 ckind)
  {
@@ -86019,7 +86153,7 @@ index 7ad706ec1..c995edfb3 100644
      u16* unlocked_chars_bitmask = gmMainLib_GetUnlockedCharactersBitmaskPtr();
      u8 selkind = ckind_to_selkind_map[ckind];
      u8 unlock_bit = gm_SelKindToUnlockIndex(selkind);
-@@ -2375,6 +2466,11 @@ bool gm_IsCKindUnlocked(u8 ckind)
+@@ -2375,6 +2489,11 @@ bool gm_IsCKindUnlocked(u8 ckind)
      {
          return true;
      }
@@ -86031,7 +86165,7 @@ index 7ad706ec1..c995edfb3 100644
      return false;
  }
  
-@@ -2386,6 +2482,11 @@ void gm_UnlockCKind(CharacterKind ckind)
+@@ -2386,6 +2505,11 @@ void gm_UnlockCKind(CharacterKind ckind)
      u8 unlock_idx;
      u8 notify_val;
  
@@ -86043,7 +86177,7 @@ index 7ad706ec1..c995edfb3 100644
      char_unlock_mask = gmMainLib_GetUnlockedCharactersBitmaskPtr();
      selkind = ckind_to_selkind_map[(u8) ckind];
  
-@@ -2409,6 +2510,11 @@ void gm_UnlockCKind(CharacterKind ckind)
+@@ -2409,6 +2533,11 @@ void gm_UnlockCKind(CharacterKind ckind)
  /// Lock character?
  void gm_80164A0C(u8 ckind)
  {
@@ -86055,7 +86189,7 @@ index 7ad706ec1..c995edfb3 100644
      u16* unlockable_character_bitfield =
          gmMainLib_GetUnlockedCharactersBitmaskPtr();
      s32 selkind = ckind_to_selkind_map[ckind];
-@@ -2428,6 +2534,11 @@ bool gm_80164ABC(void)
+@@ -2428,6 +2557,11 @@ bool gm_80164ABC(void)
          if (!(*unlockable_character_bitfield & (1LL << i))) {
              /// @remarks Gekko codes which unlock all characters change this to
              ///          return @c true.
@@ -86067,7 +86201,7 @@ index 7ad706ec1..c995edfb3 100644
              return false;
          }
      }
-@@ -2697,8 +2808,8 @@ u32 fn_801656A8(MatchEnd* arg0, u32 arg1)
+@@ -2697,8 +2831,8 @@ u32 fn_801656A8(MatchEnd* arg0, u32 arg1)
          s32 j;
          for (j = 0; j < 6; j++) {
              if (arg0->player_standings[j].pkind != 3 &&
@@ -86078,7 +86212,7 @@ index 7ad706ec1..c995edfb3 100644
              {
                  cnt_gt += 1;
              }
-@@ -2738,35 +2849,37 @@ static inline s32 fn_8016588C_clamp(s32 v)
+@@ -2738,35 +2872,37 @@ static inline s32 fn_8016588C_clamp(s32 v)
      return result;
  }
  
@@ -86132,7 +86266,7 @@ index 7ad706ec1..c995edfb3 100644
      }
  }
  
-@@ -2940,10 +3053,10 @@ s32 fn_801661E0(MatchEnd* arg0)
+@@ -2940,10 +3076,10 @@ s32 fn_801661E0(MatchEnd* arg0)
      return (s32) arg0;
  }
  
@@ -86145,7 +86279,7 @@ index 7ad706ec1..c995edfb3 100644
      u64 stack_padding;
      f32 sp48_y;
      f32 sp48_x;
-@@ -2964,7 +3077,7 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
+@@ -2964,7 +3100,7 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
              arg0->player_standings[i].ckind = Player_GetPlayerCharacter(i);
              arg0->player_standings[i].ftkind = Player_80036394(i);
              arg0->player_standings[i].stocks = Player_GetStocks(i);
@@ -86154,7 +86288,7 @@ index 7ad706ec1..c995edfb3 100644
              arg0->player_standings[i].x4 = Player_GetNametagSlotID(i);
              arg0->player_standings[i].x1C = Player_GetCoins(i);
              arg0->player_standings[i].x28 = Player_GetMatchFrameCount(i);
-@@ -2972,12 +3085,12 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
+@@ -2972,12 +3108,12 @@ void gm_80166378(lbl_8046B6A0_24C_t* arg0_raw)
                  arg0->player_standings[i].x28 = gm_GetFrameCount();
              }
              arg0->player_standings[i].self_destructs =
@@ -86170,7 +86304,7 @@ index 7ad706ec1..c995edfb3 100644
              arg0->player_standings[i].x9 = (s8) Player_GetRemainingHP(i);
              cnt = Player_GetJoystickCountByIndex(i, 0);
              sp48_y = (a = 0.031f) * ((f32) cnt * fn_8016B5B0());
-@@ -3082,6 +3195,20 @@ float fn_80166A8C(register Vec3* src, register Vec3* dst)
+@@ -3082,6 +3218,20 @@ float fn_80166A8C(register Vec3* src, register Vec3* dst)
      register float x = src->x;
      asm { psq_st x, Vec3.x(dst), 1, qr3 }
      return x;
@@ -86191,7 +86325,7 @@ index 7ad706ec1..c995edfb3 100644
  #endif
  }
  
-@@ -3112,7 +3239,7 @@ s32 gm_80166A98(MatchEnd* arg0, u8 arg1, s8 arg2, u8 arg3, s8 arg4, u8 arg5,
+@@ -3112,7 +3262,7 @@ s32 gm_80166A98(MatchEnd* arg0, u8 arg1, s8 arg2, u8 arg3, s8 arg4, u8 arg5,
  
      // Apply player color to all 4 players?
      for (i = 0; i < 4; i++) {
@@ -86200,7 +86334,7 @@ index 7ad706ec1..c995edfb3 100644
      }
  
      arg0->player_standings[0].score = score0;
-@@ -3274,12 +3401,12 @@ void fn_8016719C(s32 slot, s32 subchar)
+@@ -3274,12 +3424,12 @@ void fn_8016719C(s32 slot, s32 subchar)
  {
      Vec3 respawn_pos;
      Vec3 offset;
@@ -86215,7 +86349,7 @@ index 7ad706ec1..c995edfb3 100644
      stkind = gm_GetStKind();
      if (Stage_80224DC8(stkind) != 0) {
          var_r30 = Ground_801C5774();
-@@ -3305,11 +3432,12 @@ void fn_8016719C(s32 slot, s32 subchar)
+@@ -3305,11 +3455,12 @@ void fn_8016719C(s32 slot, s32 subchar)
      respawn_pos.y = Stage_GetCamBoundsTopOffset();
      Player_80032768(slot, &respawn_pos);
      Player_SetFacingDirection(slot, respawn_pos.x >= 0.0f ? -1.0f : 1.0f);
@@ -86230,7 +86364,7 @@ index 7ad706ec1..c995edfb3 100644
          if (temp_r4->b0) {
              temp_r4->b0 = true;
              Camera_800310E8();
-@@ -3386,22 +3514,22 @@ void gm_801674C4(s8 arg0, u8 arg1, s8 arg2, s8 arg3, GmRouteCallback arg4)
+@@ -3386,22 +3537,22 @@ void gm_801674C4(s8 arg0, u8 arg1, s8 arg2, s8 arg3, GmRouteCallback arg4)
  
  void fn_8016758C(void)
  {
@@ -86260,7 +86394,7 @@ index 7ad706ec1..c995edfb3 100644
              return i;
          }
      }
-@@ -3432,10 +3560,10 @@ s32 fn_80167638(s32 arg0, Vec3* arg1, Vec3* arg2)
+@@ -3432,10 +3583,10 @@ s32 fn_80167638(s32 arg0, Vec3* arg1, Vec3* arg2)
              arg2->y = 0.0f;
          }
          {
@@ -86274,7 +86408,7 @@ index 7ad706ec1..c995edfb3 100644
          }
      }
      return tmp;
-@@ -3463,7 +3591,7 @@ u8 gm_801677F0(void)
+@@ -3463,7 +3614,7 @@ u8 gm_801677F0(void)
  bool gm_RumbleEnabledForPlayer(int port, int nametag)
  {
      bool result = false;
@@ -86283,7 +86417,7 @@ index 7ad706ec1..c995edfb3 100644
          if (GetRumbleSettingOfPort(port)) {
              result = true;
          }
-@@ -3500,7 +3628,7 @@ void gm_SetupPlayerDefaults(struct PlayerInitData* player)
+@@ -3500,7 +3651,7 @@ void gm_SetupPlayerDefaults(struct PlayerInitData* player)
      player->handicap = 9;
      player->team = 0;
      player->rumble_enabled = false;
@@ -86292,7 +86426,7 @@ index 7ad706ec1..c995edfb3 100644
      player->xC_b1 = true;
      player->cpu_kind = 4;
      player->cpu_level = 0;
-@@ -3627,6 +3755,14 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3627,6 +3778,14 @@ void gm_80167BC8(VsModeData* vs_data)
              }
              break;
          case 2:
@@ -86307,7 +86441,7 @@ index 7ad706ec1..c995edfb3 100644
              vs_data->start.players[i].attack_ratio =
                  lbl_803B7930[(u8) vs_data->start.players[i].handicap - 1].x;
              vs_data->start.players[i].defense_ratio =
-@@ -3639,8 +3775,7 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3639,8 +3798,7 @@ void gm_80167BC8(VsModeData* vs_data)
      vs_data->start.rules.x30 = 0.1f * rules->damage_ratio;
      vs_data->start.rules.item_freq = (s8) prefs->item_freq;
      prefs = gmMainLib_GetGamePrefs();
@@ -86317,7 +86451,7 @@ index 7ad706ec1..c995edfb3 100644
          u8 item = lbl_803B7844[(u8) i];
          if ((s32) item != 0x23) {
              if (prefs->item_mask & (1LL << i)) {
-@@ -3649,8 +3784,7 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3649,8 +3807,7 @@ void gm_80167BC8(VsModeData* vs_data)
                  vs_data->start.rules.x20 &= ~(1LL << item);
              }
          }
@@ -86327,7 +86461,7 @@ index 7ad706ec1..c995edfb3 100644
  
      switch (gmMainLib_8015ED30()) {
      case 1:
-@@ -3669,6 +3803,12 @@ void gm_80167BC8(VsModeData* vs_data)
+@@ -3669,6 +3826,12 @@ void gm_80167BC8(VsModeData* vs_data)
      } else {
          vs_data->start.rules.disable_pausing = 1;
      }
@@ -86340,7 +86474,7 @@ index 7ad706ec1..c995edfb3 100644
      if ((rules->score_display != 0) && (rules->mode == 0)) {
          vs_data->start.rules.x3_0 = 1;
          return;
-@@ -3850,54 +3990,69 @@ int gm_80168940(MatchEnd* match_end)
+@@ -3850,54 +4013,69 @@ int gm_80168940(MatchEnd* match_end)
  
  void gm_8016895C(HSD_JObj* arg0, DynamicModelDesc* arg1, int idx)
  {
@@ -86430,7 +86564,7 @@ index 7ad706ec1..c995edfb3 100644
      if (ckind == CKind_GKoops) {
          return 58.0F;
      }
-@@ -3930,11 +4085,32 @@ float gm_80168BF8(int arg0)
+@@ -3930,11 +4108,40 @@ float gm_80168BF8(int arg0)
  {
      CharacterKind ckind = Player_GetPlayerCharacter(arg0);
      u32 costume = Player_GetCostumeId(arg0);
@@ -86461,10 +86595,18 @@ index 7ad706ec1..c995edfb3 100644
 +        return;
 +    }
 +#endif
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "Fighting Wireframes And Popo Announcer" (80168C70): a call for the
++     * characters the game has none for (shim/mu_hp_css.c). Off: 0. */
++    if (mu_hp_announce((int) arg0) != 0) {
++        lbAudioAx_800243F4(mu_hp_announce((int) arg0));
++        return;
++    }
++#endif
      switch (arg0) {
      case 0:
          lbAudioAx_800243F4(0x7C830);
-@@ -4164,14 +4340,32 @@ u8 gm_GetNumCostumesForCKind(u8 ckind)
+@@ -4164,14 +4371,32 @@ u8 gm_GetNumCostumesForCKind(u8 ckind)
          HSD_Randi(0);
          HSD_Randi(0);
      }
@@ -86497,7 +86639,7 @@ index 7ad706ec1..c995edfb3 100644
      if (ckind >= ARRAY_SIZE(lbl_803D51A0)) {
          return 0;
      }
-@@ -4180,6 +4374,11 @@ u8 gm_80169264(u8 ckind)
+@@ -4180,6 +4405,11 @@ u8 gm_80169264(u8 ckind)
  
  u8 gm_80169290(u8 ckind)
  {
@@ -86509,7 +86651,7 @@ index 7ad706ec1..c995edfb3 100644
      if (ckind >= ARRAY_SIZE(lbl_803D51A0)) {
          return 0;
      }
-@@ -4188,6 +4387,11 @@ u8 gm_80169290(u8 ckind)
+@@ -4188,6 +4418,11 @@ u8 gm_80169290(u8 ckind)
  
  u8 gm_801692BC(u8 ckind)
  {
@@ -88097,7 +88239,7 @@ index aeb53d743..da02d0aaa 100644
      int selkind;
      int var_r29;
 diff --git a/src/melee/gm/gm_1798.c b/src/melee/gm/gm_1798.c
-index 071155858..658a262f1 100644
+index 071155858..15d25634f 100644
 --- a/src/melee/gm/gm_1798.c
 +++ b/src/melee/gm/gm_1798.c
 @@ -40,10 +40,15 @@
@@ -88185,7 +88327,7 @@ index 071155858..658a262f1 100644
      HSD_GObjObject_80390A70(gobj, HSD_GObj_LightKind, lobj);
      GObj_SetupGXLink(gobj, HSD_GObj_LObjCallback, 0, 0);
  }
-@@ -364,6 +369,62 @@ void fn_8017A078(s32 arg0)
+@@ -364,6 +369,65 @@ void fn_8017A078(s32 arg0)
      GObj_SetupGXLinkMax(gobj, callbacks.funcs[arg0], 5);
  }
  
@@ -88226,6 +88368,9 @@ index 071155858..658a262f1 100644
 +        __builtin_memcpy(&dst[i], &bits, 4);
 +    }
 +    mu_result_cam[ckind - MU_AK_CKIND_BASE].have = 1;
++    OSReport("[ak] results: character kind %d camera row from its results file (y %g, x %g, "
++             "zoom %g, clap %g)\n",
++             ckind, (double) dst[0], (double) dst[4], (double) dst[8], (double) dst[11]);
 +}
 +#define RESULT_AK_CAM(k) (MU_AK_CKIND(k) && mu_result_cam[(k) - MU_AK_CKIND_BASE].have)
 +#define RESULT_KIND(data, k)                                                                \
@@ -88248,7 +88393,7 @@ index 071155858..658a262f1 100644
  HSD_GObj* fn_8017A318(s32 arg0)
  {
      static Scissor const scissor_init = { 270, 370, 124, 276 };
-@@ -401,7 +462,7 @@ HSD_GObj* fn_8017A318(s32 arg0)
+@@ -401,7 +465,7 @@ HSD_GObj* fn_8017A318(s32 arg0)
      }
  
      gobj = GObj_Create(0x13, 0x14, 0);
@@ -88257,7 +88402,7 @@ index 071155858..658a262f1 100644
      HSD_GObjObject_80390A70(gobj, HSD_GObj_CameraKind, cobj);
  
      {
-@@ -416,28 +477,28 @@ HSD_GObj* fn_8017A318(s32 arg0)
+@@ -416,28 +480,28 @@ HSD_GObj* fn_8017A318(s32 arg0)
  
      kind_data = disp->state.char_kind[arg0];
      (void) kind_data;
@@ -88292,7 +88437,7 @@ index 071155858..658a262f1 100644
              interest.y += y_off;
          }
      }
-@@ -447,12 +508,12 @@ HSD_GObj* fn_8017A318(s32 arg0)
+@@ -447,12 +511,12 @@ HSD_GObj* fn_8017A318(s32 arg0)
      }
  
      vi = ((s32) variant <= 2) ? variant : 3;
@@ -88308,7 +88453,7 @@ index 071155858..658a262f1 100644
      }
  
      HSD_CObjSetEyePosition(cobj, &eye);
-@@ -496,10 +557,19 @@ Fighter_GObj* fn_8017A67C(CharacterKind kind, int arg1, int arg2)
+@@ -496,10 +560,19 @@ Fighter_GObj* fn_8017A67C(CharacterKind kind, int arg1, int arg2)
              }
          }
  
@@ -88329,7 +88474,7 @@ index 071155858..658a262f1 100644
          Player_SetSlottype(arg2, Gm_PKind_Demo);
  
          if (kind == CKind_GameWatch) {
-@@ -537,6 +607,13 @@ Fighter_GObj* fn_8017A67C(CharacterKind kind, int arg1, int arg2)
+@@ -537,6 +610,13 @@ Fighter_GObj* fn_8017A67C(CharacterKind kind, int arg1, int arg2)
                  pos2 = *(Vec3*) &config->x80;
                  pos2.y = 100.0f * (f32) (arg2 + 1);
                  Player_80032A04(arg2, &pos2);
@@ -88343,7 +88488,7 @@ index 071155858..658a262f1 100644
                  Player_SetScale(arg2,
                                  1.8f * gmResultCharacterData.scale[kind]);
                  Player_80036F34(arg2, variant);
-@@ -549,7 +626,11 @@ Fighter_GObj* fn_8017A67C(CharacterKind kind, int arg1, int arg2)
+@@ -549,7 +629,11 @@ Fighter_GObj* fn_8017A67C(CharacterKind kind, int arg1, int arg2)
                  } else {
                      var_idx = 3;
                  }
@@ -88355,7 +88500,7 @@ index 071155858..658a262f1 100644
                  Player_80036F34(arg2, variant);
                  Player_SetScale(
                      arg2,
-@@ -570,7 +651,7 @@ Fighter_GObj* fn_8017A67C(CharacterKind kind, int arg1, int arg2)
+@@ -570,7 +654,7 @@ Fighter_GObj* fn_8017A67C(CharacterKind kind, int arg1, int arg2)
  static inline void inline1(HSD_ImageDesc* imgs, int slot, const u16* w,
                             const u16* h)
  {
@@ -88364,7 +88509,7 @@ index 071155858..658a262f1 100644
      lb_800121FC(&imgs[slot], *w, *h, 5, 0);
  }
  
-@@ -611,7 +692,7 @@ void fn_8017AA78(const u8* arg0)
+@@ -611,7 +695,7 @@ void fn_8017AA78(const u8* arg0)
      efAsync_LoadSync(0);
      ftDemo_ObjAllocInit();
      Player_InitAllPlayers();
@@ -88373,7 +88518,7 @@ index 071155858..658a262f1 100644
      lb_800121FC(&lbl_8046E1B0.shared_img, 0x64, 0x98, GX_TF_RGB5A3, 0);
      lbl_8046E3AC.match_end = *fn_80174274();
  
-@@ -619,12 +700,26 @@ void fn_8017AA78(const u8* arg0)
+@@ -619,12 +703,26 @@ void fn_8017AA78(const u8* arg0)
      lbl_8046E3AC.x0_4 = 0;
      lbl_8046E3AC.x0_6 = 0;
  
@@ -88400,7 +88545,7 @@ index 071155858..658a262f1 100644
  
      for (i = 0; i < 4; i++) {
          lbl_8046E3AC.player_flags[i] = 0;
-@@ -637,7 +732,20 @@ void fn_8017AA78(const u8* arg0)
+@@ -637,7 +735,20 @@ void fn_8017AA78(const u8* arg0)
                  .is_big_loser = 1;
          }
          lbl_8046E3AC.x6[i] = 0;
@@ -151452,7 +151597,7 @@ index db7f79319..790ef73eb 100644
              tail = &(*tail)->next;
          }
 diff --git a/src/melee/lb/lbaudio_ax.c b/src/melee/lb/lbaudio_ax.c
-index 0854fb240..4583a5e4d 100644
+index 0854fb240..1ab0d0171 100644
 --- a/src/melee/lb/lbaudio_ax.c
 +++ b/src/melee/lb/lbaudio_ax.c
 @@ -27,9 +27,12 @@
@@ -151535,7 +151680,7 @@ index 0854fb240..4583a5e4d 100644
  }
  
  static int fn_80023750(int id, int vol, int pan, int track, int channel)
-@@ -238,11 +263,17 @@ static int fn_80023750(int id, int vol, int pan, int track, int channel)
+@@ -238,11 +263,25 @@ static int fn_80023750(int id, int vol, int pan, int track, int channel)
      if (pan > 0xFF) {
          pan = 0xFF;
      }
@@ -151548,13 +151693,21 @@ index 0854fb240..4583a5e4d 100644
 +#if defined(MU_NATIVE) && defined(MU_AKANEIA_FIGHTERS)
 +    /* Ids of the banks the disc adds lie past the retail "no sound" id. */
 +    if (id >= 560000 && id / 10000 < lb_ssm_n) {
-+        return fn_80023750(id, vol, pan, 0, 7);
++        const int voice = fn_80023750(id, vol, pan, 0, 7);
++        /* Bring-up evidence (the first sounds only): -1 means the sound driver refused the id
++         * (no such script in the disc's sound table, or the bank is not in audio memory). */
++        static int logged;
++        if (logged < 12) {
++            logged++;
++            OSReport("[ak] sound: id %d started, voice %d\n", id, voice);
++        }
++        return voice;
 +    }
 +#endif
      if (id >= 0x83D61) {
          return fn_80023750(0x83D60, 0, PAN_MID, 0, 7);
      } else {
-@@ -262,39 +293,42 @@ int lbAudioAx_80023870(int id, int vol, int pan, int track)
+@@ -262,39 +301,42 @@ int lbAudioAx_80023870(int id, int vol, int pan, int track)
      return fn_80023750(id, vol, pan, track, 7);
  }
  
@@ -151609,7 +151762,7 @@ index 0854fb240..4583a5e4d 100644
  
  #ifdef MUST_MATCH
      if (arg0 < 0 && arg0 >= 30) {
-@@ -303,7 +337,7 @@ int lbAudioAx_80023968(int arg0)
+@@ -303,7 +345,7 @@ int lbAudioAx_80023968(int arg0)
  #endif
  
      var_r4 = getAudioLoadData(arg0);
@@ -151618,7 +151771,7 @@ index 0854fb240..4583a5e4d 100644
          var_r4++;
          i++;
      }
-@@ -312,7 +346,7 @@ int lbAudioAx_80023968(int arg0)
+@@ -312,7 +354,7 @@ int lbAudioAx_80023968(int arg0)
  
  int lbAudioAx_80023A44(int arg0, int arg1)
  {
@@ -151627,7 +151780,7 @@ index 0854fb240..4583a5e4d 100644
  
  #ifdef MUST_MATCH
      if (arg0 < 0 && arg0 >= 0x1E) {
-@@ -324,7 +358,7 @@ int lbAudioAx_80023A44(int arg0, int arg1)
+@@ -324,7 +366,7 @@ int lbAudioAx_80023A44(int arg0, int arg1)
  #endif
  
      var_r3 = getAudioLoadData(arg0);
@@ -151636,7 +151789,7 @@ index 0854fb240..4583a5e4d 100644
  }
  
  static inline void fn_800269AC_delay(void)
-@@ -356,7 +390,7 @@ int lbAudioAx_80023B24(int id)
+@@ -356,7 +398,7 @@ int lbAudioAx_80023B24(int id)
  
              {
                  int k;
@@ -151645,7 +151798,7 @@ index 0854fb240..4583a5e4d 100644
                      if (s32_arr_803BB5D0[k][2] != 5) {
                          lbl_804337C4[k] = -1;
                          lbl_804338A4[k] = -1;
-@@ -391,7 +425,7 @@ static bool fn_80023ED4(const char* path, int vol, int arg2)
+@@ -391,7 +433,7 @@ static bool fn_80023ED4(const char* path, int vol, int arg2)
      if (arg2 >= 9) {
          arg2 = 8;
      }
@@ -151654,7 +151807,7 @@ index 0854fb240..4583a5e4d 100644
  }
  
  static inline const char* getHPSFile(int arg0)
-@@ -414,7 +448,12 @@ static inline int lbAudioAx_80023F28_helper1(const char* filename)
+@@ -414,7 +456,12 @@ static inline int lbAudioAx_80023F28_helper1(const char* filename)
      } else if (strcmp(cur_hps_stem, filename) != 0) {
          lbAudioAx_800236DC();
          strcpy(cur_hps_stem, filename);
@@ -151667,7 +151820,7 @@ index 0854fb240..4583a5e4d 100644
          result = 0;
      } else {
          result = 1;
-@@ -426,6 +465,15 @@ int lbAudioAx_80023F28(int arg0)
+@@ -426,6 +473,15 @@ int lbAudioAx_80023F28(int arg0)
  {
      const char* filename;
  
@@ -151683,7 +151836,7 @@ index 0854fb240..4583a5e4d 100644
      if (arg0 < 0 || arg0 >= 0x62) {
          return true;
      }
-@@ -461,6 +509,9 @@ int lbAudioAx_800240B4(int id)
+@@ -461,6 +517,9 @@ int lbAudioAx_800240B4(int id)
  
  int lbAudioAx_8002411C(int id)
  {
@@ -151693,7 +151846,7 @@ index 0854fb240..4583a5e4d 100644
      return fn_80023750(id, VOL_MAX, PAN_MID, 0, 6);
  }
  
-@@ -775,7 +826,22 @@ static void fn_80024654(int arg0)
+@@ -775,7 +834,22 @@ static void fn_80024654(int arg0)
          lbl_804D6404 = lbl_804D38A8;
      }
      lbl_804D38AC = temp_f31 * (lbl_804D38EC * (lbl_804D38C4 * lbl_804D38E8));
@@ -151716,7 +151869,7 @@ index 0854fb240..4583a5e4d 100644
      if (arg0 == 1) {
          HSD_SynthSFXUpdateAllVolume((u8) lbl_804D3888, 4, 1);
          lbl_804D63F4 = lbl_804D3888;
-@@ -785,18 +851,18 @@ static void fn_80024654(int arg0)
+@@ -785,18 +859,18 @@ static void fn_80024654(int arg0)
      }
      lbl_804D38E0 = lbl_804D38D8;
      if (arg0 == 1) {
@@ -151743,7 +151896,7 @@ index 0854fb240..4583a5e4d 100644
          lbl_804D38DC = lbl_804D38E0;
      }
  }
-@@ -809,7 +875,7 @@ void lbAudioAx_80024B1C(int voice, int pan)
+@@ -809,7 +883,7 @@ void lbAudioAx_80024B1C(int voice, int pan)
      if (pan > 0x7F) {
          pan = 0x7F;
      }
@@ -151752,7 +151905,7 @@ index 0854fb240..4583a5e4d 100644
  }
  
  void lbAudioAx_80024B58(int voice, int vol)
-@@ -820,7 +886,7 @@ void lbAudioAx_80024B58(int voice, int vol)
+@@ -820,7 +894,7 @@ void lbAudioAx_80024B58(int voice, int vol)
      if (vol > VOL_MAX) {
          vol = VOL_MAX;
      }
@@ -151761,7 +151914,7 @@ index 0854fb240..4583a5e4d 100644
  }
  
  int lbAudioAx_80024B94(int voice, int arg1)
-@@ -832,7 +898,7 @@ int lbAudioAx_80024B94(int voice, int arg1)
+@@ -832,7 +906,7 @@ int lbAudioAx_80024B94(int voice, int arg1)
      if (arg1 > limit) {
          arg1 = limit;
      }
@@ -151770,7 +151923,7 @@ index 0854fb240..4583a5e4d 100644
  }
  
  bool lbAudioAx_80024BD0(void)
-@@ -889,10 +955,10 @@ void lbAudioAx_80024C84(void)
+@@ -889,10 +963,10 @@ void lbAudioAx_80024C84(void)
      lbl_804D38B4 = 1.0F;
      lbl_804D38B8 = 1.0F;
      lbl_804D38BC = 1.0F;
@@ -151785,7 +151938,7 @@ index 0854fb240..4583a5e4d 100644
      lbl_804D38D8 = 1;
      lbl_804D38CC = 0x7F;
  }
-@@ -944,45 +1010,45 @@ void lbAudioAx_80024E84(bool arg0)
+@@ -944,45 +1018,45 @@ void lbAudioAx_80024E84(bool arg0)
      if (arg0) {
          lbl_804D38E4 = 0.2F;
          lbl_804D38E8 = 0.2F;
@@ -151855,7 +152008,21 @@ index 0854fb240..4583a5e4d 100644
      }
  }
  
-@@ -1436,7 +1502,7 @@ HSD_GObj* lbAudioAx_800263E8(float f1, HSD_GObj* owner, int arg2, int sfx_id,
+@@ -1423,7 +1497,13 @@ HSD_GObj* lbAudioAx_800263E8(float f1, HSD_GObj* owner, int arg2, int sfx_id,
+     HSD_GObj* gobj;
+     SoundParams params;
+ 
++#if defined(MU_NATIVE) && defined(MU_AKANEIA_FIGHTERS)
++    /* Ids of the banks the disc adds lie past the retail "no sound" id (an added fighter's
++     * animation script sounds come through here). */
++    if (sfx_id < 0x83D60 || (sfx_id >= 560000 && sfx_id / 10000 < lb_ssm_n)) {
++#else
+     if (sfx_id < 0x83D60) {
++#endif
+         params.owner = owner;
+         params.x4 = arg2;
+         params.sfx_id = sfx_id;
+@@ -1436,7 +1516,7 @@ HSD_GObj* lbAudioAx_800263E8(float f1, HSD_GObj* owner, int arg2, int sfx_id,
          params.x24 = arg9;
          params.voice = voice;
  
@@ -151864,7 +152031,7 @@ index 0854fb240..4583a5e4d 100644
          if (gobj != NULL) {
              userdata = HSD_ObjAlloc(&lbl_80433710);
              if (userdata == NULL) {
-@@ -1480,7 +1546,7 @@ bool lbAudioAx_80026510(HSD_GObj* target)
+@@ -1480,7 +1560,7 @@ bool lbAudioAx_80026510(HSD_GObj* target)
      PAD_STACK(8);
  
      if (target != NULL) {
@@ -151873,7 +152040,7 @@ index 0854fb240..4583a5e4d 100644
  
          while (cur != NULL) {
              lbAudioAx_UserData* ud = GET_SOUND(cur);
-@@ -1488,7 +1554,7 @@ bool lbAudioAx_80026510(HSD_GObj* target)
+@@ -1488,7 +1568,7 @@ bool lbAudioAx_80026510(HSD_GObj* target)
  
              if (ud != NULL && ud->owner == target) {
                  if (ud->voice_id != -1) {
@@ -151882,7 +152049,7 @@ index 0854fb240..4583a5e4d 100644
                  }
                  if (cur != NULL) {
                      HSD_GObjFree(cur);
-@@ -1508,14 +1574,14 @@ bool lbAudioAx_800265C4(HSD_GObj* target_obj, int voice)
+@@ -1508,14 +1588,14 @@ bool lbAudioAx_800265C4(HSD_GObj* target_obj, int voice)
  
      PAD_STACK(8);
  
@@ -151899,7 +152066,7 @@ index 0854fb240..4583a5e4d 100644
              if (cur != NULL) {
                  HSD_GObjFree(cur);
              }
-@@ -1531,7 +1597,7 @@ static int fn_80026650(void)
+@@ -1531,7 +1611,7 @@ static int fn_80026650(void)
      int i;
      int priority;
      for (priority = 4; priority >= 0; priority--) {
@@ -151908,7 +152075,7 @@ index 0854fb240..4583a5e4d 100644
              if (priority == s32_arr_803BB5D0[i][1] && lbl_804338A4[i] == 1 &&
                  lbl_80433984[i] == -1)
              {
-@@ -1551,13 +1617,13 @@ static void fn_800267B0(void)
+@@ -1551,13 +1631,13 @@ static void fn_800267B0(void)
      }
  
      for (i = 0; i < 5; i++) {
@@ -151924,7 +152091,7 @@ index 0854fb240..4583a5e4d 100644
                  lbl_80433A64[j] = -1;
                  lbl_80433984[j] = -1;
                  lbl_804D6448 -= offsets_arr_803BC4E4[j][0];
-@@ -1577,7 +1643,7 @@ static void fn_800268B4(void)
+@@ -1577,7 +1657,7 @@ static void fn_800268B4(void)
      lbl_804D644C = 0;
      lbl_804D6448 = 0;
  
@@ -151933,7 +152100,7 @@ index 0854fb240..4583a5e4d 100644
          int flag1, flag2;
          int flags;
  
-@@ -1620,7 +1686,7 @@ static void fn_800269AC(void)
+@@ -1620,7 +1700,7 @@ static void fn_800269AC(void)
      PAD_STACK(8);
  
      if (HSD_SynthSFXGetPendingLoadCount() != 0) {
@@ -151942,7 +152109,7 @@ index 0854fb240..4583a5e4d 100644
              if (s32_arr_803BB5D0[i][1] != 5 && lbl_80433A64[i] != -1 &&
                  lbl_80433984[i] == -1)
              {
-@@ -1639,7 +1705,7 @@ static void fn_800269AC(void)
+@@ -1639,7 +1719,7 @@ static void fn_800269AC(void)
          if (HSD_SynthSFXGetPendingLoadCount() != 0) {
              HSD_SynthSFXWaitForLoadCompletion(lb_800195D0);
              HSD_SynthSFXUnloadBank(2);
@@ -151951,7 +152118,7 @@ index 0854fb240..4583a5e4d 100644
                  if (s32_arr_803BB5D0[i][1] != 5) {
                      lbl_80433984[i] = -1;
                      lbl_80433A64[i] = -1;
-@@ -1655,7 +1721,7 @@ static void fn_80026C04(int arg0, int unused)
+@@ -1655,7 +1735,7 @@ static void fn_80026C04(int arg0, int unused)
      int slot;
  
      if (arg0 != -1) {
@@ -151960,7 +152127,7 @@ index 0854fb240..4583a5e4d 100644
              if (arg0 == lbl_80433A64[i]) {
                  lbl_80433984[i] = 1;
                  lbl_804D644C -= offsets_arr_803BC4E4[i][0];
-@@ -1669,7 +1735,10 @@ static void fn_80026C04(int arg0, int unused)
+@@ -1669,7 +1749,10 @@ static void fn_80026C04(int arg0, int unused)
      slot = fn_80026650();
      if (slot != -1) {
          strcpy(&cur_ssm_file[ssm_stem_pos], ssm_files[slot]);
@@ -151972,7 +152139,7 @@ index 0854fb240..4583a5e4d 100644
      }
  }
  
-@@ -1729,12 +1798,29 @@ void lbAudioAx_80026F2C(u32 flags)
+@@ -1729,12 +1812,29 @@ void lbAudioAx_80026F2C(u32 flags)
          mask += 0x0014000000000000ULL;
      }
  
@@ -152002,7 +152169,7 @@ index 0854fb240..4583a5e4d 100644
  }
  
  void lbAudioAx_8002702C(u32 flags, u64 mask)
-@@ -1760,7 +1846,11 @@ void lbAudioAx_8002702C(u32 flags, u64 mask)
+@@ -1760,7 +1860,11 @@ void lbAudioAx_8002702C(u32 flags, u64 mask)
          result += 0x14000000000000ULL;
      }
  
@@ -152014,7 +152181,7 @@ index 0854fb240..4583a5e4d 100644
          if ((result & 1) && (mask & 1)) {
              lbl_804337C4[i] = 1;
          }
-@@ -1772,7 +1862,7 @@ void lbAudioAx_8002702C(u32 flags, u64 mask)
+@@ -1772,7 +1876,7 @@ void lbAudioAx_8002702C(u32 flags, u64 mask)
  static inline void lbAudioAx_80027168_inline(void)
  {
      int i;
@@ -152023,7 +152190,7 @@ index 0854fb240..4583a5e4d 100644
          if (s32_arr_803BB5D0[i][1] != 5 && lbl_80433984[i] == 2) {
              lbl_80433984[i] = 1;
          }
-@@ -1784,7 +1874,8 @@ static inline void lbAudioAx_80027168_inline_2(void)
+@@ -1784,7 +1888,8 @@ static inline void lbAudioAx_80027168_inline_2(void)
      int slot = fn_80026650();
      if (slot != -1) {
          strcpy(&cur_ssm_file[ssm_stem_pos], ssm_files[slot]);
@@ -152033,7 +152200,7 @@ index 0854fb240..4583a5e4d 100644
      }
  }
  
-@@ -1796,7 +1887,7 @@ void lbAudioAx_80027168(void)
+@@ -1796,7 +1901,7 @@ void lbAudioAx_80027168(void)
  
      lbAudioAx_80027168_inline();
  
@@ -152042,7 +152209,7 @@ index 0854fb240..4583a5e4d 100644
          if (s32_arr_803BB5D0[i][1] != 5 && lbl_804337C4[i] != -1) {
              count++;
          }
-@@ -1808,13 +1899,25 @@ void lbAudioAx_80027168(void)
+@@ -1808,13 +1913,25 @@ void lbAudioAx_80027168(void)
  
      fn_800269AC();
  
@@ -152069,7 +152236,7 @@ index 0854fb240..4583a5e4d 100644
      if (lbl_804D6438 < lbl_804D6448 + lbl_804D6450) {
          OSReport("******** CAUTION ********\n"
                   "FGM load size is over\n");
-@@ -1828,13 +1931,13 @@ static int fn_80027488(void)
+@@ -1828,13 +1945,13 @@ static int fn_80027488(void)
  {
      int i;
  
@@ -152085,7 +152252,7 @@ index 0854fb240..4583a5e4d 100644
          if (lbl_804338A4[i] == 1 && lbl_80433984[i] == 1) {
              lbl_80433984[i] = 2;
          }
-@@ -1850,12 +1953,150 @@ void lbAudioAx_80027648(void)
+@@ -1850,12 +1967,150 @@ void lbAudioAx_80027648(void)
      }
  }
  
@@ -152236,7 +152403,7 @@ index 0854fb240..4583a5e4d 100644
      if (gm_8016B184()) {
          result = lbAudioAx_80026E84(Player_GetPlayerCharacter(0));
          for (i = 0; i < 3; i++) {
-@@ -1886,12 +2127,38 @@ void lbAudioAx_8002785C(void)
+@@ -1886,12 +2141,38 @@ void lbAudioAx_8002785C(void)
      lbl_804D38D8 = s32_arr_803BB6B0[Stage_8022519C(stkind)][1];
      result |= lbAudioAx_80026EBC(stkind);
  
@@ -152275,7 +152442,7 @@ index 0854fb240..4583a5e4d 100644
  }
  
  static char str_audio_us[0xC] = "/audio/us/";
-@@ -1929,7 +2196,7 @@ void lbAudioAx_80027AB0(int id)
+@@ -1929,7 +2210,7 @@ void lbAudioAx_80027AB0(int id)
  
          {
              int i;
@@ -152284,7 +152451,7 @@ index 0854fb240..4583a5e4d 100644
                  if (i != 0) {
                      lbl_80433A64[i] = -1;
                      lbl_804337C4[i] = -1;
-@@ -2013,7 +2280,7 @@ void lbAudioAx_80027DF8(void)
+@@ -2013,7 +2294,7 @@ void lbAudioAx_80027DF8(void)
  
      if (lbl_804D6420 != 0) {
          if (lbl_804D38F0 != -1) {
@@ -152293,7 +152460,7 @@ index 0854fb240..4583a5e4d 100644
                  lbl_804D38F0 = fn_80023750(0x84, lbl_804D6428, PAN_MID, 5, 4);
              } else {
                  lbAudioAx_80024B58(lbl_804D38F0, lbl_804D6428);
-@@ -2036,7 +2303,7 @@ void lbAudioAx_80027DF8(void)
+@@ -2036,7 +2317,7 @@ void lbAudioAx_80027DF8(void)
  
      if (lbl_804D6424 != 0) {
          if (lbl_804D38F4 != -1) {
@@ -152302,7 +152469,7 @@ index 0854fb240..4583a5e4d 100644
                  lbl_804D38F4 = fn_80023750(0x85, lbl_804D642C, PAN_MID, 6, 4);
              } else {
                  lbAudioAx_80024B58(lbl_804D38F4, lbl_804D642C);
-@@ -2087,6 +2354,13 @@ void lbAudioAx_8002835C(void)
+@@ -2087,6 +2368,13 @@ void lbAudioAx_8002835C(void)
      HSD_ObjAllocInit(&lbl_80433710, sizeof(lbAudioAx_UserData), 4);
  }
  
@@ -152316,7 +152483,7 @@ index 0854fb240..4583a5e4d 100644
  void lbAudioAx_8002838C(void)
  {
      static u32 ar_stack[0x10];
-@@ -2119,28 +2393,33 @@ void lbAudioAx_8002838C(void)
+@@ -2119,28 +2407,33 @@ void lbAudioAx_8002838C(void)
      lbl_804D6438 = lbl_804D643C + lbl_804D6440 + lbl_804D6444;
      lbl_804D3870 = lbl_804D6438;
  
@@ -152356,7 +152523,7 @@ index 0854fb240..4583a5e4d 100644
          lbl_804337C4[i] = -1;
          lbl_804338A4[i] = -1;
          lbl_80433984[i] = -1;
-@@ -2185,7 +2464,7 @@ void lbAudioAx_80028690(void)
+@@ -2185,7 +2478,7 @@ void lbAudioAx_80028690(void)
          strcpy(&cur_ssm_file[ssm_stem_pos], "smash2.sem");
          AXDriver_8038DA70(cur_ssm_file, lb_800195D0);
  
@@ -152365,7 +152532,7 @@ index 0854fb240..4583a5e4d 100644
              if (i != 0) {
                  lbl_80433A64[i] = -1;
                  lbl_804337C4[i] = -1;
-@@ -2274,3 +2553,21 @@ void lbAudioAx_80028B90(void)
+@@ -2274,3 +2567,21 @@ void lbAudioAx_80028B90(void)
  {
      lbl_804D38CC = 0x7F;
  }
@@ -158989,7 +159156,7 @@ index cfd3e0527..e6707a8ed 100644
 -#pragma pop
 -#endif
 diff --git a/src/melee/mn/mncharsel.c b/src/melee/mn/mncharsel.c
-index d580c0aa4..b220e3baa 100644
+index d580c0aa4..c9d4d4866 100644
 --- a/src/melee/mn/mncharsel.c
 +++ b/src/melee/mn/mncharsel.c
 @@ -28,6 +28,8 @@
@@ -159001,7 +159168,7 @@ index d580c0aa4..b220e3baa 100644
  #include <sysdolphin/baselib/dobj.h>
  #include <sysdolphin/baselib/fog.h>
  #include <sysdolphin/baselib/gobj.h>
-@@ -41,6 +43,12 @@
+@@ -41,6 +43,13 @@
  #include <sysdolphin/baselib/mobj.h>
  #include <sysdolphin/baselib/random.h>
  #include <sysdolphin/baselib/sislib.h>
@@ -159009,12 +159176,13 @@ index d580c0aa4..b220e3baa 100644
 +#ifdef MU_NATIVE
 +#include <melee/gm/gmvs.h>
 +#include <melee/gm/gmvsmelee.h>
++#include <mu_hp.h>
 +#include <mu_tmce_event.h>
 +#endif
  
  static u8 mnCharSel_804D50C8[4] = { 1, 2, 4, 8 };
  static u8 mnCharSel_804D50CC[4] = { 1, 0, 0, 2 };
-@@ -61,12 +69,12 @@ typedef struct MnSelectChrModels {
+@@ -61,12 +70,12 @@ typedef struct MnSelectChrModels {
  } MnSelectChrModels;
  
  typedef struct MnSelectChrDataTable {
@@ -159032,7 +159200,7 @@ index d580c0aa4..b220e3baa 100644
  
  static CSSData* mnCharSel_804D6CB0;
  static MnSelectChrDataTable* css_data_table;
-@@ -158,7 +166,14 @@ static CSSIconsData mnCharSel_803F0A48 = {
+@@ -158,7 +167,14 @@ static CSSIconsData mnCharSel_803F0A48 = {
      },
  };
  
@@ -159047,7 +159215,7 @@ index d580c0aa4..b220e3baa 100644
      // -------- Icons Top Row --------
  
      { // Dr. Mario -                      0x803F0B24
-@@ -268,6 +283,35 @@ static CSSIcon icons[25 + 1] = {
+@@ -268,6 +284,35 @@ static CSSIcon icons[25 + 1] = {
        ICONJOINT_EMBLEM, 0x000000DA, ICONBNDS_COL7_L, 23.6, ICONROWHT_BTM_TOP,
        ICONROWHT_BTM_BTM }
  };
@@ -159083,7 +159251,7 @@ index d580c0aa4..b220e3baa 100644
  
  static CSSDoorsData mnCharSel_803F0DFC = {
      { { 0x2E, 0x33, 0x38, 0x85, 0x29,  0xA6,  0x3D,  0x41,
-@@ -295,6 +339,146 @@ static struct CSSDoorsMisc mnCharSel_803F0EBC = {
+@@ -295,6 +340,146 @@ static struct CSSDoorsMisc mnCharSel_803F0EBC = {
      0x2F, 0x01, 0, 0, 0,    NULL, -10.9, -4.2, 12.5, 19.6, -6.8, -12.1,
  };
  
@@ -159230,7 +159398,7 @@ index d580c0aa4..b220e3baa 100644
  static struct CSSDoorsData2 data2 = {
      { 0x35, 0x39, 0x36, 0x38, 0x37 },
      0,
-@@ -314,47 +498,47 @@ static struct CSSDoorsData2 data2 = {
+@@ -314,47 +499,47 @@ static struct CSSDoorsData2 data2 = {
      },
  };
  
@@ -159305,7 +159473,7 @@ index d580c0aa4..b220e3baa 100644
  
      match_type = mnCharSel_804D6CB0->match_type;
  
-@@ -368,9 +552,9 @@ void mnCharSel_8025BD30(void)
+@@ -368,9 +553,9 @@ void mnCharSel_8025BD30(void)
      }
      if (lbLang_IsSavedLanguageJP()) {
          if (gmMainLib_GetGameRules()->mode == 1) {
@@ -159317,7 +159485,7 @@ index d580c0aa4..b220e3baa 100644
              HSD_SisLib_803A660C(0, 0x4A, 0x53);
          } else {
              HSD_SisLib_803A6530(0, 0x4A, 0x51);
-@@ -393,8 +577,7 @@ void mnCharSel_8025BD30(void)
+@@ -393,8 +578,7 @@ void mnCharSel_8025BD30(void)
          switch (gmMainLib_GetGameRules()->mode) {
          case Mode_Time:
              if (gmMainLib_GetGameRules()->time_limit != 0) {
@@ -159327,7 +159495,7 @@ index d580c0aa4..b220e3baa 100644
                  HSD_SisLib_803A660C(0, 0x4A, 0x53);
              } else {
                  HSD_SisLib_803A6530(0, 0x4A, 0x51);
-@@ -402,7 +585,7 @@ void mnCharSel_8025BD30(void)
+@@ -402,7 +586,7 @@ void mnCharSel_8025BD30(void)
              HSD_SisLib_803A660C(0, 0x4A, 0x4B);
              return;
          case Mode_Stock:
@@ -159336,7 +159504,7 @@ index d580c0aa4..b220e3baa 100644
              if (gmMainLib_GetGameRules()->stock_count < 2U) {
                  HSD_SisLib_803A660C(0, 0x4A, 0x55);
              } else {
-@@ -412,8 +595,7 @@ void mnCharSel_8025BD30(void)
+@@ -412,8 +596,7 @@ void mnCharSel_8025BD30(void)
              return;
          case Mode_Coin:
              if (gmMainLib_GetGameRules()->time_limit != 0) {
@@ -159346,7 +159514,7 @@ index d580c0aa4..b220e3baa 100644
                  HSD_SisLib_803A660C(0, 0x4A, 0x53);
              } else {
                  HSD_SisLib_803A6530(0, 0x4A, 0x51);
-@@ -422,8 +604,7 @@ void mnCharSel_8025BD30(void)
+@@ -422,8 +605,7 @@ void mnCharSel_8025BD30(void)
              return;
          case Mode_Bonus:
              if (gmMainLib_GetGameRules()->time_limit != 0) {
@@ -159356,7 +159524,7 @@ index d580c0aa4..b220e3baa 100644
                  HSD_SisLib_803A660C(0, 0x4A, 0x53);
              } else {
                  HSD_SisLib_803A6530(0, 0x4A, 0x51);
-@@ -874,12 +1055,12 @@ void mnCharSel_8025D1C4(int port, int mode)
+@@ -874,12 +1056,12 @@ void mnCharSel_8025D1C4(int port, int mode)
                  text->text_color.a = 0xA0;
              }
              {
@@ -159372,7 +159540,7 @@ index d580c0aa4..b220e3baa 100644
              HSD_JObjSetFlags(sp10 = HSD_JObjGetChild(sp10), JOBJ_HIDDEN);
              HSD_JObjSetFlags(sp10 = HSD_JObjGetNext(sp10), JOBJ_HIDDEN);
              HSD_JObjSetFlags(sp10 = HSD_JObjGetNext(HSD_JObjGetNext(sp10)),
-@@ -973,9 +1154,14 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
+@@ -973,9 +1155,14 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
      int i;
  
      if (mnCharSel_804D6CF5 == 1) {
@@ -159388,7 +159556,7 @@ index d580c0aa4..b220e3baa 100644
              sethidden(sp5C, hidden);
  
              sp58 =
-@@ -984,7 +1170,7 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
+@@ -984,7 +1171,7 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
              return;
          }
          sp54 =
@@ -159397,7 +159565,7 @@ index d580c0aa4..b220e3baa 100644
          sethidden(sp54, hidden);
  
          sp50 =
-@@ -995,7 +1181,12 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
+@@ -995,7 +1182,12 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
          }
          for (i = 0; i < 5; i++) {
              u8 tmp = data2.xf0[i];
@@ -159410,7 +159578,7 @@ index d580c0aa4..b220e3baa 100644
          }
          mnCharSel_8025C020(hidden);
          return;
-@@ -1006,6 +1197,11 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
+@@ -1006,6 +1198,11 @@ void mnCharSel_8025D5AC(int door, int frame, bool hidden)
                          TOBJ_MASK, (float) frame);
      sethidden(sp48, hidden);
  
@@ -159422,7 +159590,7 @@ index d580c0aa4..b220e3baa 100644
      sp44 = animateJoint(mnCharSel_804D6CC0,
                          mnCharSel_803F0DFC.doors[door].emblem_joint, TOBJ_MASK,
                          (float) frame);
-@@ -1028,7 +1224,7 @@ static inline bool isDuplicateCostumeWith(int door, CSSData* css,
+@@ -1028,7 +1225,7 @@ static inline bool isDuplicateCostumeWith(int door, CSSData* css,
      for (j = 0; j < num_doors; j++) {
          CSSDoor* other_door = &mnCharSel_803F0DFC.doors[j];
          if (door != j && other_door->p_kind != 3 &&
@@ -159431,7 +159599,7 @@ index d580c0aa4..b220e3baa 100644
              other_door->sel_icon == base_door->sel_icon &&
              base_door->costume == other_door->costume)
          {
-@@ -1071,7 +1267,7 @@ static inline bool isDuplicateCostumeCached(int door)
+@@ -1071,7 +1268,7 @@ static inline bool isDuplicateCostumeCached(int door)
      (void) cost;
      for (j = 0; j < num_doors; j++) {
          if (door != j && mnCharSel_803F0DFC.doors[j].p_kind != 3 &&
@@ -159440,7 +159608,7 @@ index d580c0aa4..b220e3baa 100644
              equalU8(mnCharSel_803F0DFC.doors[j].sel_icon, sel) &&
              cost == mnCharSel_803F0DFC.doors[j].costume)
          {
-@@ -1098,7 +1294,7 @@ static inline bool isDuplicateCostumeExact(int door)
+@@ -1098,7 +1295,7 @@ static inline bool isDuplicateCostumeExact(int door)
      for (j = 0; j < num_doors; j++) {
          CSSDoor* other_door = &mnCharSel_803F0DFC.doors[j];
          if (door != j && other_door->p_kind != 3 &&
@@ -159449,7 +159617,7 @@ index d580c0aa4..b220e3baa 100644
              other_door->sel_icon == base_door->sel_icon &&
              base_door->costume == other_door->costume)
          {
-@@ -1123,7 +1319,7 @@ static inline bool isDuplicateCostume(int door)
+@@ -1123,7 +1320,7 @@ static inline bool isDuplicateCostume(int door)
      for (j = 0; j < num_doors; j++) {
          CSSDoor* other_door = &mnCharSel_803F0DFC.doors[j];
          if (door != j && other_door->p_kind != 3 &&
@@ -159458,7 +159626,7 @@ index d580c0aa4..b220e3baa 100644
              other_door->sel_icon == base_door->sel_icon &&
              base_door->costume == other_door->costume)
          {
-@@ -1133,9 +1329,6 @@ static inline bool isDuplicateCostume(int door)
+@@ -1133,9 +1330,6 @@ static inline bool isDuplicateCostume(int door)
      return false;
  }
  
@@ -159468,7 +159636,7 @@ index d580c0aa4..b220e3baa 100644
  bool mnCharSel_8025DAA0(int door)
  {
      int num_doors;
-@@ -1149,7 +1342,7 @@ bool mnCharSel_8025DAA0(int door)
+@@ -1149,7 +1343,7 @@ bool mnCharSel_8025DAA0(int door)
  
      for (j = 0; j < num_doors; j++) {
          if (door != j && mnCharSel_803F0DFC.doors[j].p_kind != 3 &&
@@ -159477,7 +159645,7 @@ index d580c0aa4..b220e3baa 100644
              mnCharSel_803F0DFC.doors[j].sel_icon ==
                  mnCharSel_803F0DFC.doors[door].sel_icon &&
              mnCharSel_803F0DFC.doors[door].costume ==
-@@ -1160,9 +1353,6 @@ bool mnCharSel_8025DAA0(int door)
+@@ -1160,9 +1354,6 @@ bool mnCharSel_8025DAA0(int door)
      }
      return false;
  }
@@ -159487,7 +159655,7 @@ index d580c0aa4..b220e3baa 100644
  
  static inline void pickUniqueCostume(int door)
  {
-@@ -1207,9 +1397,9 @@ void mnCharSel_8025DB34(u8 arg0)
+@@ -1207,9 +1398,9 @@ void mnCharSel_8025DB34(u8 arg0)
      mnCharSel_8025D5AC((int) arg0, 0, 1);
  
      /* Name display */
@@ -159499,7 +159667,7 @@ index d580c0aa4..b220e3baa 100644
              HSD_SisLib_803A70A0(mnCharSel_803F0E8C[arg0].data->text, 0,
                                  (char*) mnCharSel_803F0A48.gnw_name);
          } else {
-@@ -1253,7 +1443,7 @@ void mnCharSel_8025DB34(u8 arg0)
+@@ -1253,7 +1444,7 @@ void mnCharSel_8025DB34(u8 arg0)
              animateJoint(mnCharSel_804D6CC0, 0x2B, MOBJ_MASK, anim_frame);
          }
          if (mnCharSel_803F0E8C[arg0].data->use_tag == 0 &&
@@ -159508,7 +159676,7 @@ index d580c0aa4..b220e3baa 100644
          {
              mnCharSel_803F0E8C[arg0].data->text->hidden = 1;
          } else {
-@@ -1516,7 +1706,7 @@ void mnCharSel_8025DB34(u8 arg0)
+@@ -1516,7 +1707,7 @@ void mnCharSel_8025DB34(u8 arg0)
          /* Hide/show nametag text */
          if (mnCharSel_803F0DFC.doors[arg0].p_kind == 3 ||
              (mnCharSel_803F0E8C[arg0].data->use_tag == 0 &&
@@ -159517,7 +159685,7 @@ index d580c0aa4..b220e3baa 100644
          {
              mnCharSel_803F0E8C[arg0].data->text->hidden = 1;
          } else {
-@@ -1527,7 +1717,7 @@ void mnCharSel_8025DB34(u8 arg0)
+@@ -1527,7 +1718,7 @@ void mnCharSel_8025DB34(u8 arg0)
      /* Final: costume color assignment */
      {
          u8 final_icon = mnCharSel_803F0DFC.doors[arg0].sel_icon;
@@ -159526,8 +159694,20 @@ index d580c0aa4..b220e3baa 100644
              if (mnCharSel_804D6CF5 == 1 ||
                  mnCharSel_804D6CB0->vs.start.rules.is_teams == 0)
              {
-@@ -1559,8 +1749,27 @@ void mnCharSel_8025DB34(u8 arg0)
+@@ -1557,10 +1748,39 @@ void mnCharSel_8025DB34(u8 arg0)
+                 } else {
+                     port = arg0;
                  }
++#ifdef MU_NATIVE
++                /* 20XX Hack Pack: a hidden fighter has one costume. Not a hook of the pack,
++                 * which leaves whatever the door held; the native game would read past the
++                 * fighter's costume table. Popo keeps his: they are the Ice Climbers'. Off: 0. */
++                if (mu_hp_css_extra(icons[final_icon].char_kind) &&
++                    icons[final_icon].char_kind != ChKind_Popo)
++                {
++                    color = 0;
++                }
++#endif
                  mnCharSel_804D6CB0->vs.start.players[port].color = color;
              }
 +#ifdef MU_NATIVE
@@ -159554,7 +159734,7 @@ index d580c0aa4..b220e3baa 100644
          }
      }
  }
-@@ -1684,21 +1893,21 @@ void fn_8025F0E0(HSD_GObj* gobj)
+@@ -1684,21 +1904,21 @@ void fn_8025F0E0(HSD_GObj* gobj)
                          AOBJ_ARG_AF, 0.0f);
      }
  
@@ -159579,7 +159759,81 @@ index d580c0aa4..b220e3baa 100644
                      HSD_ForeachAnim(sp48, JOBJ_TYPE, TOBJ_MASK,
                                      HSD_AObjReqAnim, AOBJ_ARG_AF, 0.0f);
                      HSD_JObjAnimAll(sp48);
-@@ -2029,7 +2238,7 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
+@@ -2022,6 +2242,73 @@ static inline s32 getPlayerForDoor(u8 door)
+     return door;
+ }
+ 
++#ifdef MU_NATIVE
++/* 20XX Hack Pack extra characters (shim/mu_hp_css.c, run-source/rel09-hackpack/ledger_M7.md). */
++
++/* "CSS B Button Return Cursor Fix" (8025FE50): a hidden fighter that an icon shows now. */
++static int mu_hp_css_on_icon(int ckind)
++{
++    int i;
++    if (!mu_hp_css_extra(ckind)) {
++        return 0;
++    }
++    for (i = 0; i < CSS_NONE; i++) {
++        if (icons[i].char_kind == ckind) {
++            return 1;
++        }
++    }
++    return 0;
++}
++
++/* The six icons that can hold a non playable fighter go back to their own character whenever
++ * this screen opens without the pack's features, so an online screen never offers one. */
++static void mu_hp_css_enter(void)
++{
++    int i;
++    if (mu_hp_css_live()) {
++        return;
++    }
++    for (i = 0; i < 0x19; i++) {
++        icons_retail[i].char_kind = (u8) mu_hp_css_base(icons_retail[i].char_kind);
++    }
++}
++
++/* The pack's every frame code on this screen (the branch at 80263350, the part at 80FD03EC): Z
++ * pressed alone by a player who holds a coin over one of seven icons swaps that icon's character
++ * with its hidden one (Sheik, Giga Bowser, Popo alone, the wireframes, the hands); A then picks
++ * it. The pack also swaps the icon's picture. The retail file shown here has no such pictures, so
++ * the name under the portrait is drawn again instead. As the pack, the coin's holder is matched
++ * by controller number, and only the first held coin found is looked at. Off: nothing runs. */
++static void mu_hp_css_frame(void)
++{
++    int port, k, n;
++    if (!mu_hp_css_live() || mex_select != NULL) {
++        return;
++    }
++    n = mnCharSel_804D6CB0->match_type == TRAINING_MODE ? 2 : mnCharSel_804D6CF5;
++    for (port = 0; port < 4; port++) {
++        if ((HSD_PadCopyStatus[port].trigger & 0xFFFF) != HSD_PAD_Z) {
++            continue;
++        }
++        for (k = 0; k < n && k < 4; k++) {
++            struct CSSCharModel* coin = mnCharSel_804A0BD0[k];
++            if (coin != NULL && coin->x5 == port + 1 && coin->x4 < 4) {
++                CSSDoor* door = &mnCharSel_803F0DFC.doors[coin->x4];
++                if (door->sel_icon < CSS_NONE && door->sel_icon == door->sel_icon_prev) {
++                    const int next =
++                        mu_hp_css_swap(door->sel_icon, icons[door->sel_icon].char_kind);
++                    if (next >= 0) {
++                        icons[door->sel_icon].char_kind = (u8) next;
++                        mnCharSel_8025DB34(coin->x4);
++                    }
++                }
++                return;
++            }
++        }
++    }
++}
++#endif
++
+ void mnCharSel_8025FB50(u8 door, s32 arg1)
+ {
+     s32 icon_idx;
+@@ -2029,7 +2316,7 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
      HSD_JObj* icon_jobj;
  
      do {
@@ -159588,7 +159842,7 @@ index d580c0aa4..b220e3baa 100644
          icon_idx = temp;
          icon_offset = getIconOffset(icon_idx);
      } while (icons[icon_idx].state == 0);
-@@ -2061,11 +2270,11 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
+@@ -2061,11 +2348,11 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
                              mnCharSel_804A0BC0[mnCharSel_804D6CF5 - 1]->gobj);
  
      if (mnCharSel_804D6CF5 == 1) {
@@ -159604,7 +159858,7 @@ index d580c0aa4..b220e3baa 100644
      }
      HSD_ForeachAnim(icon_jobj, JOBJ_TYPE, TOBJ_MASK, HSD_AObjReqAnim,
                      AOBJ_ARG_AF, 10.0);
-@@ -2080,9 +2289,6 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
+@@ -2080,9 +2367,6 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
      }
  }
  
@@ -159614,22 +159868,28 @@ index d580c0aa4..b220e3baa 100644
  s32 mnCharSel_8025FDEC(u8 door)
  {
      CSSData* css;
-@@ -2104,7 +2310,14 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2104,7 +2388,20 @@ s32 mnCharSel_8025FDEC(u8 door)
      css = mnCharSel_804D6CB0;
      c_kind = css->vs.start.players[player].ckind;
  
 +#if defined(MU_NATIVE) && defined(MU_AKANEIA_FIGHTERS)
 +    /* A door also comes back to an added character it chose, while that character is
 +     * selectable (the development switch, akaneia/mu_ak_fighters.c). */
-+    if (c_kind < CKind_Playable_Count ||
++    /* 20XX Hack Pack "CSS B Button Return Cursor Fix" (8025FE50): and to a hidden fighter an
++     * icon shows now. Off: 0. */
++    if (c_kind < CKind_Playable_Count || mu_hp_css_on_icon(c_kind) ||
 +        (MU_AK_CKIND(c_kind) && mu_ak_ckind_selectable(c_kind))) {
++#elif defined(MU_NATIVE)
++    /* 20XX Hack Pack "CSS B Button Return Cursor Fix" (8025FE50): a door also comes back to a
++     * hidden fighter an icon shows now. Off: 0. */
++    if (c_kind < CKind_Playable_Count || mu_hp_css_on_icon(c_kind)) {
 +#else
      if (c_kind < CKind_Playable_Count) {
 +#endif
          if (c_kind != icons[mnCharSel_803F0DFC.doors[door].sel_icon].char_kind)
          {
              mnCharSel_803F0DFC.doors[door].costume = 0;
-@@ -2112,7 +2325,7 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2112,7 +2409,7 @@ s32 mnCharSel_8025FDEC(u8 door)
  
          {
              CSSIcon* icon = icons;
@@ -159638,7 +159898,7 @@ index d580c0aa4..b220e3baa 100644
                  if (css->vs.start.players[player].ckind ==
                      icon[icon_idx].char_kind)
                  {
-@@ -2134,30 +2347,18 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2134,30 +2431,18 @@ s32 mnCharSel_8025FDEC(u8 door)
          mnCharSel_804A0BD0[door]->x5 = 0;
  
          if (mnCharSel_804D6CF5 == 1) {
@@ -159674,7 +159934,7 @@ index d580c0aa4..b220e3baa 100644
  
          if (mnCharSel_804D6CF6 != 3 && mnCharSel_804D6CF6 != 4) {
              int sel = mnCharSel_803F0DFC.doors[door].sel_icon;
-@@ -2168,21 +2369,247 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2168,21 +2453,255 @@ s32 mnCharSel_8025FDEC(u8 door)
      }
      return 1;
  }
@@ -159902,16 +160162,24 @@ index d580c0aa4..b220e3baa 100644
 +#ifdef MU_NATIVE
 +    /* PreventColorChange: none in Teams, none while locked in (online CSS). */
 +    if (mu_slippi_css_block_costume_change()) {
-+        return;
-+    }
+         return;
+     }
+-    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= 0x19) {
 +#endif
 +    if (mnCharSel_803F0DFC.doors[door].sel_icon >= CSS_NONE) {
          return;
      }
--    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= 0x19) {
 +    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= CSS_NONE) {
-         return;
-     }
++        return;
++    }
++
++#ifdef MU_NATIVE
++    /* 20XX Hack Pack "Disable X/Y Alt Costumes for Extra Characters" (802600D8): a hidden fighter
++     * keeps its costume (the game has no costume count for it). Off: 0. */
++    if (mu_hp_css_extra(icons[mnCharSel_803F0DFC.doors[door].sel_icon].char_kind)) {
++        return;
++    }
++#endif
  
 +#ifdef MU_NATIVE
 +    /* L or R alone: the costume stays, its skin changes (not both at once, which is the start of
@@ -159926,7 +160194,7 @@ index d580c0aa4..b220e3baa 100644
      if (input & HSD_PAD_X) {
          do {
              mnCharSel_803F0DFC.doors[door].costume =
-@@ -2270,6 +2697,12 @@ static inline void updateCursorDisplay(HSD_JObj* jobj,
+@@ -2270,6 +2789,12 @@ static inline void updateCursorDisplay(HSD_JObj* jobj,
              }
  
              lb_80011E24(jobj, color_jobj, 3, -1);
@@ -159939,7 +160207,7 @@ index d580c0aa4..b220e3baa 100644
              {
                  HSD_JObj* anim_jobj = *color_jobj;
                  HSD_ForeachAnim(anim_jobj, JOBJ_TYPE, TOBJ_MASK,
-@@ -2402,6 +2835,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2402,6 +2927,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
      }
  
      if (mnCharSel_804D6CF6 == 0) {
@@ -159952,7 +160220,7 @@ index d580c0aa4..b220e3baa 100644
          cursor->x8 = 0;
  
          if (mnCharSel_804D6CF5 == 1) {
-@@ -2430,9 +2869,20 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2430,9 +2961,20 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
              getStickDelta(port, &dx, &dy);
  
              if (HSD_PadCopyStatus[cursor->x4].err != 0) {
@@ -159973,7 +160241,7 @@ index d580c0aa4..b220e3baa 100644
                      cursor->xA = 0;
                      if (cursor->x5 == 1) {
                          door = cursor->x6;
-@@ -2448,7 +2898,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2448,7 +2990,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                          }
                      } else {
                          if (mnCharSel_803F0DFC.doors[cursor->x4].sel_icon >=
@@ -159982,7 +160250,7 @@ index d580c0aa4..b220e3baa 100644
                              mnCharSel_803F0DFC.doors[cursor->x4].p_kind != 3 &&
                              mnCharSel_8025FDEC(cursor->x4) != 0)
                          {
-@@ -2456,9 +2906,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2456,9 +2998,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                          }
                      }
                      if (mnCharSel_803F0DFC.doors[cursor->x4].p_kind == 0) {
@@ -160000,7 +160268,7 @@ index d580c0aa4..b220e3baa 100644
                          mnCharSel_804D6CB0->vs.start.players[cursor->x4]
                              .nametag = 0x78;
                          mnCharSel_803F0E8C[cursor->x4].data->use_tag = 0;
-@@ -2565,7 +3023,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2565,7 +3115,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  lbAudioAx_800237A8(0xB8, 0x7F, 0x40);
                              } else {
                                  mnCharSel_804A0BD0[door]->x5 = 0;
@@ -160009,7 +160277,7 @@ index d580c0aa4..b220e3baa 100644
                                  {
                                      s32 player_idx;
                                      if (mnCharSel_804D6CF5 == 1) {
-@@ -2594,14 +3052,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2594,14 +3144,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                       (m->x8 > 24.4f && m->x8 < 30.2f)))
                                  {
                                      s32 icon_count;
@@ -160026,7 +160294,7 @@ index d580c0aa4..b220e3baa 100644
                                          mnCharSel_8025FB50(door, 0);
                                          while (true) {
                                              mnCharSel_803F0DFC.doors[door]
-@@ -2617,6 +3075,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2617,6 +3167,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                  break;
                                              }
                                          }
@@ -160037,7 +160305,7 @@ index d580c0aa4..b220e3baa 100644
                                          mnCharSel_8025DB34(door);
                                          cursor->x5 = 2;
                                          lbAudioAx_800237A8(0xB8, 0x7F, 0x40);
-@@ -2629,13 +3091,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2629,13 +3183,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  struct CSSCharModel* m2 =
                                      mnCharSel_804A0BD0[door];
                                  s32 i;
@@ -160056,7 +160324,7 @@ index d580c0aa4..b220e3baa 100644
                                          mnCharSel_803F0DFC.doors[door]
                                              .sel_icon = (u8) i;
                                          mnCharSel_8025DB34(door);
-@@ -2652,6 +3118,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2652,6 +3210,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                              } else {
                                                  player_idx = door;
                                              }
@@ -160071,7 +160339,7 @@ index d580c0aa4..b220e3baa 100644
                                              mnCharSel_804D6CB0->vs.start
                                                  .players[player_idx]
                                                  .ckind =
-@@ -2661,12 +3135,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2661,12 +3227,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                      .char_kind;
                                              if (mnCharSel_804D6CF5 == 1) {
                                                  lb_80011E24(
@@ -160088,7 +160356,7 @@ index d580c0aa4..b220e3baa 100644
                                              }
                                              HSD_ForeachAnim(sp98, JOBJ_TYPE,
                                                              TOBJ_MASK,
-@@ -2709,15 +3183,28 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2709,15 +3275,28 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                      }
                                  }
                                  mnCharSel_803F0DFC.doors[door].sel_icon_prev =
@@ -160120,7 +160388,7 @@ index d580c0aa4..b220e3baa 100644
                                          }
                                      } else {
                                          mnCharSel_CostumeChange((s32) door,
-@@ -2999,7 +3486,16 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2999,7 +3578,16 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          /* Retail nudges both toggle-box
                                           * bounds outward by 1/10485760. */
                                          if (cy4 < 0.20000009536743146 &&
@@ -160138,7 +160406,7 @@ index d580c0aa4..b220e3baa 100644
                                          {
                                              cursor->x10 = -2.2f;
                                              {
-@@ -3019,9 +3515,19 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3019,9 +3607,19 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                          .p_kind = 3;
                                                      break;
                                                  case 4:
@@ -160158,7 +160426,7 @@ index d580c0aa4..b220e3baa 100644
                                                      {
                                                          mnCharSel_803F0DFC
                                                              .doors[door]
-@@ -3042,11 +3548,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3042,11 +3640,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                              if (mnCharSel_803F0DFC.doors[door]
                                                      .p_kind == 1)
                                              {
@@ -160177,7 +160445,7 @@ index d580c0aa4..b220e3baa 100644
                                                  if (mnCharSel_803F0DFC
                                                              .doors[door]
                                                              .selected_since_load ==
-@@ -3186,6 +3699,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3186,6 +3791,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          -1);
                                  }
                                  lb_8000B1CC(sp98, NULL, (&sp88));
@@ -160188,7 +160456,7 @@ index d580c0aa4..b220e3baa 100644
                                  {
                                      if (cursor->xC > (sp88.x - 4.7f) &&
                                          cursor->xC < (5.2f + sp88.x))
-@@ -3232,7 +3749,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3232,7 +3841,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          mnCharSel_803F0DFC.doors[ci].p_kind;
                                      if (pk2 != 3 &&
                                          mnCharSel_803F0DFC.doors[ci].sel_icon <
@@ -160197,7 +160465,7 @@ index d580c0aa4..b220e3baa 100644
                                          (pk2 != 0 || (s32) cursor->x4 == ci))
                                      {
                                          struct CSSCharModel* mc =
-@@ -3252,7 +3769,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3252,7 +3861,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  }
                              }
  
@@ -160211,7 +160479,7 @@ index d580c0aa4..b220e3baa 100644
                                  u8 cport4 = cursor->x4;
                                  s32 closest_door = (u8) closest;
                                  mnCharSel_804A0BD0[(u8) closest]->x5 =
-@@ -3273,12 +3795,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3273,12 +3887,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                             -2.0f);
                              }
                          }
@@ -160231,7 +160499,7 @@ index d580c0aa4..b220e3baa 100644
                          {
                              f32 cy8 = cursor->x10;
                              if (cy8 > 0.2f && cy8 < 22.0f) {
-@@ -3306,7 +3833,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3306,7 +3925,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  mnCharSel_804D6CB0->match_type != 1)
                              {
                                  if (mnCharSel_803F0DFC.doors[cport6].p_kind ==
@@ -160251,7 +160519,7 @@ index d580c0aa4..b220e3baa 100644
                                  {
                                      mnCharSel_803F0DFC.doors[cport6].p_kind =
                                          0;
-@@ -3320,7 +3858,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3320,7 +3950,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  {
                                      u8 cport7 = cursor->x4;
                                      if (mnCharSel_803F0DFC.doors[cport7]
@@ -160260,7 +160528,7 @@ index d580c0aa4..b220e3baa 100644
                                      {
                                          mnCharSel_804A0BD0[cport7]->x5 =
                                              (u8) (next_port = cport7 + 1);
-@@ -3408,7 +3946,7 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3408,7 +4038,7 @@ void fn_80262648(HSD_GObj* gobj)
          u8 door = model->x4;
  
          if ((p_kind = mnCharSel_803F0DFC.doors[door].p_kind) == 3 ||
@@ -160269,7 +160537,7 @@ index d580c0aa4..b220e3baa 100644
          {
              HSD_JObjSetFlagsAll(jobj, JOBJ_HIDDEN);
              return;
-@@ -3435,6 +3973,12 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3435,6 +4065,12 @@ void fn_80262648(HSD_GObj* gobj)
                  mnCharSel_804D50E0[mnCharSel_803F0DFC.doors[door].team];
          }
      }
@@ -160282,7 +160550,7 @@ index d580c0aa4..b220e3baa 100644
  
      HSD_JObjClearFlagsAll(jobj, JOBJ_HIDDEN);
      model->x7 = (u8) (model->x7 + 1);
-@@ -3474,7 +4018,7 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3474,7 +4110,7 @@ void fn_80262648(HSD_GObj* gobj)
  
                  for (j = 0; j < (s32) n_doors; j++) {
                      if (j != (s32) model->x4 && (*bdp)->x5 == 0 &&
@@ -160291,7 +160559,7 @@ index d580c0aa4..b220e3baa 100644
                      {
                          f32 dx;
                          f32 dy;
-@@ -3624,6 +4168,7 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3624,6 +4260,7 @@ void fn_80262F44(HSD_GObj* gobj)
  {
      HSD_JObj* jobj = GET_JOBJ(gobj);
      int i;
@@ -160299,7 +160567,7 @@ index d580c0aa4..b220e3baa 100644
      PAD_STACK(0x8);
  
      if (mnCharSel_804D6CB0->match_type == VS_CAMERA) {
-@@ -3640,7 +4185,7 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3640,7 +4277,7 @@ void fn_80262F44(HSD_GObj* gobj)
  
      if (mnCharSel_804D6CF5 == 1) {
          if (mnCharSel_804A0BC0[0]->x5 == 1 ||
@@ -160308,7 +160576,7 @@ index d580c0aa4..b220e3baa 100644
          {
              mnCharSel_804D6CF7 = 0;
          } else {
-@@ -3648,18 +4193,23 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3648,18 +4285,23 @@ void fn_80262F44(HSD_GObj* gobj)
          }
          HSD_JObjSetFlagsAll(jobj, JOBJ_HIDDEN);
      } else {
@@ -160334,7 +160602,7 @@ index d580c0aa4..b220e3baa 100644
              if (mnCharSel_804D6CB0->vs.start.rules.is_teams == 1) {
                  for (i = 0; i < (s32) (mnCharSel_804D6CF5 - 1); i++) {
                      s32 j;
-@@ -3721,6 +4271,32 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3721,6 +4363,32 @@ void fn_80262F44(HSD_GObj* gobj)
              }
          }
  
@@ -160367,7 +160635,17 @@ index d580c0aa4..b220e3baa 100644
          if (mnCharSel_804D6CF2 == 0 && (trigger & HSD_PAD_START)) {
              if (mnCharSel_804D6CF7 != 0) {
                  mnCharSel_804D6CF6 = 1;
-@@ -3820,6 +4396,12 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3750,6 +4418,9 @@ void fn_80262F44(HSD_GObj* gobj)
+             }
+         }
+     }
++#ifdef MU_NATIVE
++    mu_hp_css_frame();   /* 20XX Hack Pack: Z over an icon swaps in its hidden fighter. Off: nothing */
++#endif
+ }
+ 
+ void fn_80263354(HSD_GObj* gobj)
+@@ -3820,6 +4491,12 @@ void fn_802633B0(HSD_GObj* gobj)
      } else {
          num_entries = num_entries - 7;
      }
@@ -160380,7 +160658,7 @@ index d580c0aa4..b220e3baa 100644
  
      if (mnCharSel_804D6CF5 == 1) {
          lb_80011E24(mnCharSel_804D6CC0, &list_jobj, mnCharSel_803F0EBC.xc4,
-@@ -3834,9 +4416,9 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3834,9 +4511,9 @@ void fn_802633B0(HSD_GObj* gobj)
      switch ((s32) tag->state) {
      case 1:
          mnCharSel_8025D1C4((s32) tag->port, 1);
@@ -160392,7 +160670,7 @@ index d580c0aa4..b220e3baa 100644
              {
                  HSD_SisLib_803A70A0(tag->name_ls, 0,
                                      (char*) mnCharSel_803F0A48.gnw_name);
-@@ -3939,13 +4521,25 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3939,13 +4616,25 @@ void fn_802633B0(HSD_GObj* gobj)
          }
  
          HSD_SisLib_803A746C(tag->name_ls, 0, 0.0f, tag->x8);
@@ -160418,7 +160696,7 @@ index d580c0aa4..b220e3baa 100644
              for (j = 0; j < 9; j++) {
                  row_idx = j - page_off;
                  if (row_idx < 0) {
-@@ -3977,6 +4571,10 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3977,6 +4666,10 @@ void fn_802633B0(HSD_GObj* gobj)
          }
  
          if (trigger & HSD_PAD_A) {
@@ -160429,7 +160707,7 @@ index d580c0aa4..b220e3baa 100644
              if (mnCharSel_804D6CF5 == 1) {
                  lb_80011E24(mnCharSel_804D6CC0, &list_origin_jobj,
                              mnCharSel_803F0EBC.name_list_joint, -1);
-@@ -3992,7 +4590,7 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3992,7 +4685,7 @@ void fn_802633B0(HSD_GObj* gobj)
  
              if ((s32) cursor_row == 0) {
                  if (lbLang_IsSavedLanguageUS() != 0 &&
@@ -160438,7 +160716,7 @@ index d580c0aa4..b220e3baa 100644
                  {
                      HSD_SisLib_803A70A0(tag->text, 0,
                                          (char*) mnCharSel_803F0A48.gnw_name);
-@@ -4004,7 +4602,7 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -4004,7 +4697,7 @@ void fn_802633B0(HSD_GObj* gobj)
                                  .char_kind));
                  }
                  tag->text->default_kerning = 1;
@@ -160447,7 +160725,7 @@ index d580c0aa4..b220e3baa 100644
                      tag->text->hidden = 0;
                  } else {
                      tag->text->hidden = 1;
-@@ -4039,7 +4637,14 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -4039,7 +4732,14 @@ void fn_802633B0(HSD_GObj* gobj)
                  goto check_cancel;
              }
  
@@ -160462,7 +160740,7 @@ index d580c0aa4..b220e3baa 100644
                  if (IsNameListFull() == 0) {
                      if (mnCharSel_804D6CF5 == 1) {
                          mnCharSel_804D6CF9 = mnCharSel_804D6CF0;
-@@ -4063,7 +4668,12 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -4063,7 +4763,12 @@ void fn_802633B0(HSD_GObj* gobj)
                  goto check_cancel;
              }
  
@@ -160475,7 +160753,7 @@ index d580c0aa4..b220e3baa 100644
                  {
                      s32 p;
                      for (p = 0; p < (s32) mnCharSel_804D6CF5; p++) {
-@@ -4178,6 +4788,40 @@ void fn_8026407C(HSD_GObj* gobj)
+@@ -4178,6 +4883,40 @@ void fn_8026407C(HSD_GObj* gobj)
      HSD_FogSet(GET_FOG(gobj));
  }
  
@@ -160516,7 +160794,7 @@ index d580c0aa4..b220e3baa 100644
  static const GXColor mnCharSel_804DC580 = { 255, 255, 0, 255 };
  static const GXColor mnCharSel_804DC584 = { 20, 80, 160, 255 };
  static const GXColor mnCharSel_804DC588 = { 60, 140, 80, 255 };
-@@ -4185,6 +4829,99 @@ static const GXColor mnCharSel_804DC58C = { 160, 160, 0, 255 };
+@@ -4185,6 +4924,99 @@ static const GXColor mnCharSel_804DC58C = { 160, 160, 0, 255 };
  static const GXColor mnCharSel_804DC590 = { 180, 80, 0, 255 };
  static const GXColor mnCharSel_804DC594 = { 220, 0, 0, 255 };
  
@@ -160616,7 +160894,7 @@ index d580c0aa4..b220e3baa 100644
  s32 mnCharSel_802640A0(void)
  {
      HSD_JObj* sp108;
-@@ -4220,6 +4957,10 @@ s32 mnCharSel_802640A0(void)
+@@ -4220,6 +5052,10 @@ s32 mnCharSel_802640A0(void)
      u8 match_type = mnCharSel_804D6CB0->match_type;
  
      if (match_type != 0) {
@@ -160627,7 +160905,7 @@ index d580c0aa4..b220e3baa 100644
          lbAudioAx_800237A8(mnCharSel_803F0A48.mode_info[match_type].enter_sfx,
                             0x7F, 0x40);
      } else {
-@@ -4239,11 +4980,19 @@ s32 mnCharSel_802640A0(void)
+@@ -4239,11 +5075,19 @@ s32 mnCharSel_802640A0(void)
          }
      }
  
@@ -160647,7 +160925,7 @@ index d580c0aa4..b220e3baa 100644
      mnCharSel_804D6CF3 = 0;
      {
          u8* mt_p = &mnCharSel_804D6CB0->match_type;
-@@ -4272,14 +5021,18 @@ s32 mnCharSel_802640A0(void)
+@@ -4272,14 +5116,18 @@ s32 mnCharSel_802640A0(void)
      if ((u8) mnCharSel_804D6CF4 != 0) {
          mnCharSel_804D6CF4 = 0;
          for (i = 0; i < num_players; i++) {
@@ -160667,7 +160945,7 @@ index d580c0aa4..b220e3baa 100644
          HSD_GObjObject_80390A70(gobj, HSD_GObj_CameraKind, cobj);
      }
      GObj_SetupGXLinkMax(gobj, HSD_GObj_803910D8, 0);
-@@ -4289,8 +5042,8 @@ s32 mnCharSel_802640A0(void)
+@@ -4289,8 +5137,8 @@ s32 mnCharSel_802640A0(void)
  
      gobj = GObj_Create(3, 4, 0x80);
      {
@@ -160678,7 +160956,7 @@ index d580c0aa4..b220e3baa 100644
          HSD_LObjSetNext(lobj0, lobj1);
          HSD_GObjObject_80390A70(gobj, HSD_GObj_LightKind, lobj0);
      }
-@@ -4298,35 +5051,57 @@ s32 mnCharSel_802640A0(void)
+@@ -4298,35 +5146,57 @@ s32 mnCharSel_802640A0(void)
  
      gobj = GObj_Create(0xE, 2, 0);
      {
@@ -160749,7 +161027,7 @@ index d580c0aa4..b220e3baa 100644
      {
          u8 obj_kind = HSD_GObj_JObjKind;
          HSD_GObjObject_80390A70(mnCharSel_804D6CBC, obj_kind,
-@@ -4339,6 +5114,12 @@ s32 mnCharSel_802640A0(void)
+@@ -4339,6 +5209,12 @@ s32 mnCharSel_802640A0(void)
      HSD_ForeachAnim(mnCharSel_804D6CC0, JOBJ_TYPE, ALL_TYPE_MASK,
                      HSD_AObjStopAnim, AOBJ_ARG_AOV, 0, 0);
  
@@ -160762,7 +161040,7 @@ index d580c0aa4..b220e3baa 100644
      if (gm_IsCKindUnlocked(CKind_Luigi) == 0) {
          row_a = 2;
          row_b = 0x13;
-@@ -4363,7 +5144,7 @@ s32 mnCharSel_802640A0(void)
+@@ -4363,7 +5239,7 @@ s32 mnCharSel_802640A0(void)
      icons[row_b].bound_u = ICONROWHT_TOP_TOP;
      icons[row_b].bound_d = ICONROWHT_MID_TOP;
  
@@ -160771,7 +161049,7 @@ index d580c0aa4..b220e3baa 100644
          icons[icon].state = gm_IsCKindUnlocked(icons[icon].char_kind);
          icons[icon].anim_timer = 0;
          if (mnCharSel_804D6CF5 == 1) {
-@@ -4404,21 +5185,24 @@ s32 mnCharSel_802640A0(void)
+@@ -4404,21 +5280,24 @@ s32 mnCharSel_802640A0(void)
              break;
          }
      }
@@ -160800,7 +161078,7 @@ index d580c0aa4..b220e3baa 100644
              HSD_JObjReqAnimAll(mnCharSel_804D6CC8, 0.0f);
              HSD_ForeachAnim(mnCharSel_804D6CC8, JOBJ_TYPE, ALL_TYPE_MASK,
                              HSD_AObjStopAnim, AOBJ_ARG_AOV, 0, 0);
-@@ -4428,13 +5212,18 @@ s32 mnCharSel_802640A0(void)
+@@ -4428,13 +5307,18 @@ s32 mnCharSel_802640A0(void)
      if (mnCharSel_804D6CB0->match_type == 0x17) {
          u8 ck;
          gobj = GObj_Create(4, 5, 0x80);
@@ -160823,7 +161101,7 @@ index d580c0aa4..b220e3baa 100644
          HSD_JObjReqAnimAll(mnCharSel_804D6CC4, 0.0f);
          HSD_ForeachAnim(mnCharSel_804D6CC4, JOBJ_TYPE, ALL_TYPE_MASK,
                          HSD_AObjStopAnim, AOBJ_ARG_AOV, 0, 0);
-@@ -4443,7 +5232,7 @@ s32 mnCharSel_802640A0(void)
+@@ -4443,7 +5327,7 @@ s32 mnCharSel_802640A0(void)
              u8* char_kinds;
              s32 icon_off;
              do {
@@ -160832,7 +161110,7 @@ index d580c0aa4..b220e3baa 100644
              } while (icons[i].state == 0);
              char_kinds = &icons[0].char_kind;
              icon_off = getIconOffset(i);
-@@ -4457,14 +5246,14 @@ s32 mnCharSel_802640A0(void)
+@@ -4457,14 +5341,14 @@ s32 mnCharSel_802640A0(void)
  
      if (mnCharSel_804D6CB0->match_type == 1) {
          gobj = GObj_Create(4, 5, 0x80);
@@ -160851,7 +161129,7 @@ index d580c0aa4..b220e3baa 100644
          HSD_JObjReqAnimAll(mnCharSel_804D6CCC, 0.0f);
      }
  
-@@ -4472,15 +5261,15 @@ s32 mnCharSel_802640A0(void)
+@@ -4472,15 +5356,15 @@ s32 mnCharSel_802640A0(void)
          HSD_GObj* cursor_gobj;
          struct CSSCursorData* cursor;
          cursor_gobj = GObj_Create(4, 5, 0x80);
@@ -160871,7 +161149,7 @@ index d580c0aa4..b220e3baa 100644
          HSD_JObjReqAnimAll(jobj, 0.0f);
          HSD_JObjAnimAll(jobj);
          HSD_ForeachAnim(jobj, JOBJ_TYPE, ALL_TYPE_MASK, HSD_AObjStopAnim,
-@@ -4494,13 +5283,17 @@ s32 mnCharSel_802640A0(void)
+@@ -4494,13 +5378,17 @@ s32 mnCharSel_802640A0(void)
          cursor->x6 = 0;
          cursor->x5 = 2;
          cursor->xC = (f32) ((15.0f * (f32) i) - 31.0f);
@@ -160890,7 +161168,7 @@ index d580c0aa4..b220e3baa 100644
              {
                  int player;
                  struct CSSCharModel* model = HSD_MemAlloc(sizeof(*model));
-@@ -4508,9 +5301,9 @@ s32 mnCharSel_802640A0(void)
+@@ -4508,9 +5396,9 @@ s32 mnCharSel_802640A0(void)
                  GObj_InitUserData(model_gobj, 4, HSD_Free, model);
                  GObj_SetupGXLink(model_gobj, HSD_GObj_JObjCallback, 2, 0x80);
                  HSD_GObj_SetupProc(model_gobj, fn_80262648, 2);
@@ -160903,7 +161181,7 @@ index d580c0aa4..b220e3baa 100644
                  HSD_JObjReqAnimAll(jobj, 0.0f);
                  {
                      HSD_JObj* anim_jobj = jobj;
-@@ -4532,7 +5325,7 @@ s32 mnCharSel_802640A0(void)
+@@ -4532,7 +5420,7 @@ s32 mnCharSel_802640A0(void)
                  } else {
                      player = i;
                  }
@@ -160912,16 +161190,29 @@ index d580c0aa4..b220e3baa 100644
                      if (mnCharSel_804D6CB0->vs.start.players[player].ckind ==
                              icons[found].char_kind &&
                          gm_IsCKindUnlocked(
-@@ -4542,7 +5335,7 @@ s32 mnCharSel_802640A0(void)
+@@ -4542,7 +5430,20 @@ s32 mnCharSel_802640A0(void)
                          break;
                      }
                  }
 -                if (found >= 0x19) {
++#ifdef MU_NATIVE
++                /* 20XX Hack Pack "Extra Chars Don't Reset Port If Unavailable" (80264EEC): a
++                 * port whose character is one of a hidden pair keeps it, its coin on the pair's
++                 * icon, whichever of the two the icon shows. Off: -1. */
++                if (found >= CSS_NONE && mex_select == NULL) {
++                    const int keep = mu_hp_css_keep_icon(
++                        mnCharSel_804D6CB0->vs.start.players[player].ckind,
++                        mnCharSel_804D6CB0->vs.start.players[player].slot_type);
++                    if (keep >= 0) {
++                        found = keep;
++                    }
++                }
++#endif
 +                if (found >= CSS_NONE) {
                      u8* slot_type;
                      mnCharSel_804D6CB0->vs.start.players[player].ckind =
                          CKind_Playable_Count;
-@@ -4650,6 +5443,12 @@ s32 mnCharSel_802640A0(void)
+@@ -4650,6 +5551,12 @@ s32 mnCharSel_802640A0(void)
              HSD_SisLib_803A6B98(td->text, 80.0f, 0.0f,
                                  "\x81\x45\x81\x45\x81\x45\x81\x45");
          }
@@ -160934,7 +161225,7 @@ index d580c0aa4..b220e3baa 100644
          if (mnCharSel_804D6CF5 == 1) {
              lb_80011E24(mnCharSel_804D6CC0, &sp108,
                          mnCharSel_803F0EBC.name_list_joint, -1);
-@@ -4661,6 +5460,10 @@ s32 mnCharSel_802640A0(void)
+@@ -4661,6 +5568,10 @@ s32 mnCharSel_802640A0(void)
              }
          }
          lb_8000B1CC(sp108, NULL, &spEC);
@@ -160945,7 +161236,7 @@ index d580c0aa4..b220e3baa 100644
          td->name_ls = HSD_SisLib_803A6754(0, ctx);
          td->name_ls->default_fitting = 1;
          text = td->name_ls;
-@@ -4697,6 +5500,9 @@ s32 mnCharSel_802640A0(void)
+@@ -4697,6 +5608,9 @@ s32 mnCharSel_802640A0(void)
              HSD_SisLib_803A6B98(td->name_ls, 10.0f, 0.0f,
                                  "\x81\x45\x81\x45\x81\x45\x81\x45");
          }
@@ -160955,7 +161246,7 @@ index d580c0aa4..b220e3baa 100644
          for (found = 0; found < 0x78; found++) {
              if (GetNameText((u8) found) == NULL) {
                  break;
-@@ -4745,10 +5551,14 @@ s32 mnCharSel_802640A0(void)
+@@ -4745,10 +5659,14 @@ s32 mnCharSel_802640A0(void)
                  mnCharSel_804D6CF8 - 1;
              mnCharSel_804D6CF8 = td->next_tag;
          }
@@ -160970,7 +161261,7 @@ index d580c0aa4..b220e3baa 100644
              td->use_tag = 1;
              HSD_SisLib_803A70A0(
                  td->text, 0,
-@@ -5156,6 +5966,33 @@ s32 mnCharSel_802640A0(void)
+@@ -5156,6 +6074,33 @@ s32 mnCharSel_802640A0(void)
          u8 mt;
          s32 clear;
          mnCharSel_803F0EBC.scroll_flag = 0;
@@ -161004,7 +161295,7 @@ index d580c0aa4..b220e3baa 100644
          text =
              HSD_SisLib_803A5ACC(0, ctx, -12.0f, -23.3f, 0.0f, 450.0f, 32.0f);
          text->default_alignment = 1;
-@@ -5164,6 +6001,10 @@ s32 mnCharSel_802640A0(void)
+@@ -5164,6 +6109,10 @@ s32 mnCharSel_802640A0(void)
          text->font_size.x = 0.07f;
          text->font_size.y = 0.07f;
          HSD_SisLib_803A6368(text, 0x4A);
@@ -161015,7 +161306,7 @@ index d580c0aa4..b220e3baa 100644
          mnCharSel_8025BD30();
          mt = mnCharSel_804D6CB0->match_type;
          if ((s32) mt < 3) {
-@@ -5190,6 +6031,26 @@ s32 mnCharSel_802640A0(void)
+@@ -5190,6 +6139,26 @@ s32 mnCharSel_802640A0(void)
                  text->font_size.x = 0.07f;
                  text->font_size.y = 0.07f;
                  mnCharSel_8025D1C4(i, 0);
@@ -161042,7 +161333,7 @@ index d580c0aa4..b220e3baa 100644
              }
          } else {
              for (i = 0; i < (s32) mnCharSel_804D6CF5; i++) {
-@@ -5203,13 +6064,13 @@ s32 mnCharSel_802640A0(void)
+@@ -5203,13 +6172,13 @@ s32 mnCharSel_802640A0(void)
      (void) ((u8*) text)[num_players];
      (void) icons[num_players];
      gobj = GObj_Create(4, 5, 0x80);
@@ -161060,7 +161351,7 @@ index d580c0aa4..b220e3baa 100644
      HSD_JObjReqAnimAll(jobj, 0.0f);
      HSD_ForeachAnim(jobj, JOBJ_TYPE, ALL_TYPE_MASK, HSD_AObjStopAnim,
                      AOBJ_ARG_AOV, 0, 0);
-@@ -5296,6 +6157,12 @@ s32 mnCharSel_802640A0(void)
+@@ -5296,6 +6265,12 @@ s32 mnCharSel_802640A0(void)
          }
      }
  
@@ -161073,7 +161364,17 @@ index d580c0aa4..b220e3baa 100644
      mnCharSel_8025EE8C(mnCharSel_804D6CB0->match_type);
      PAD_STACK(0x20);
      return lbAudioAx_80023F28(gmMainLib_8015ECB0());
-@@ -5341,6 +6208,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5308,6 +6283,9 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+     lbCardNew_AllocWorkArea();
+     lbCardGame_LoadArchive(0);
+     mnCharSel_804D6CB0 = (CSSData*) arg0;
++#ifdef MU_NATIVE
++    mu_hp_css_enter();   /* 20XX Hack Pack: no hidden fighter on an icon unless its features are on */
++#endif
+ 
+     mnCharSel_804D6CF0 = mnCharSel_804D6CB0->unk_0x0 - 1;
+ 
+@@ -5341,6 +6319,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      css_data_table = HSD_ArchiveGetPublicAddress(mnCharSel_804D6CD0,
                                                   "MnSelectChrDataTable");
      css_models = &css_data_table->models;
@@ -161098,7 +161399,7 @@ index d580c0aa4..b220e3baa 100644
      if (lbLang_IsSavedLanguageJP() != 0) {
          HSD_SisLib_803A62A0(0, "SdSlChr.dat", "SIS_SelCharData");
      } else {
-@@ -5348,6 +6233,10 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5348,6 +6344,10 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      }
      mnCharSel_804D6CF4 = 0;
      mnCharSel_802640A0();
@@ -161109,7 +161410,7 @@ index d580c0aa4..b220e3baa 100644
  }
  
  void mnCharSel_Scene_OnFrame(void)
-@@ -5359,6 +6248,10 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5359,6 +6359,10 @@ void mnCharSel_Scene_OnFrame(void)
  
      PAD_STACK(8);
  
@@ -161120,7 +161421,7 @@ index d580c0aa4..b220e3baa 100644
      mnCharSel_804D6CEC += 1;
      if (mnCharSel_804D6CF6 <= 1) {
          cache = &lbDvd_GetPreloadCacheScene()->game_cache;
-@@ -5415,9 +6308,45 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5415,9 +6419,45 @@ void mnCharSel_Scene_OnFrame(void)
                  }
              }
          }
@@ -161167,7 +161468,7 @@ index d580c0aa4..b220e3baa 100644
          sfxBack();
          lb_800145F4();
          mn_8022F138(1, 8);
-@@ -5444,6 +6373,22 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5444,6 +6484,22 @@ void mnCharSel_Scene_OnFrame(void)
              if (mnCharSel_804D6CF5 == 4) {
                  lbAudioAx_8002411C(0x147);
              }
@@ -161190,7 +161491,7 @@ index d580c0aa4..b220e3baa 100644
              sfxForward();
          }
          break;
-@@ -5466,6 +6411,10 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5466,6 +6522,10 @@ void mnCharSel_Scene_OnFrame(void)
          sfxForward();
          break;
      }
@@ -161201,7 +161502,7 @@ index d580c0aa4..b220e3baa 100644
  }
  
  void mnCharSel_Scene_OnExit(void* unused)
-@@ -5476,6 +6425,12 @@ void mnCharSel_Scene_OnExit(void* unused)
+@@ -5476,6 +6536,12 @@ void mnCharSel_Scene_OnExit(void* unused)
      u8 type;
  
      HSD_SisLib_803A5FBC();
@@ -161214,7 +161515,7 @@ index d580c0aa4..b220e3baa 100644
      if (mnCharSel_804D6CD0 != NULL) {
          lbArchive_80016EFC(mnCharSel_804D6CD0);
          mnCharSel_804D6CD0 = NULL;
-@@ -5526,3 +6481,35 @@ void mnCharSel_Scene_OnExit(void* unused)
+@@ -5526,3 +6592,35 @@ void mnCharSel_Scene_OnExit(void* unused)
      lbAudioAx_8002702C(4, tmp);
      lbAudioAx_80027168();
  }

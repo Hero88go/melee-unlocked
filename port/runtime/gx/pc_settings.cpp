@@ -152,6 +152,46 @@ void draw_cosmetic_preview(const host::cosmetics::AssetInfo& asset) {
     ImGui::Image(preview->GetTexRef(), ImVec2(preview->Width * scale, preview->Height * scale));
   }
 }
+
+// The same picture for a list row. A list can ask for dozens at once, so this reads and decodes at
+// most one file in a frame: a row whose picture is not ready gets nullptr (the placeholder tile)
+// and asks again on the next frame. Decoded pictures stay in g_cosmetic_previews.
+ImTextureData* cosmetic_thumbnail(const std::string& path) {
+  if (path.empty()) return nullptr;
+  auto cached = g_cosmetic_previews.find(path);
+  if (cached != g_cosmetic_previews.end()) return cached->second.get();
+  static int decoded_frame = -1;
+  const int frame = ImGui::GetFrameCount();
+  if (decoded_frame == frame) return nullptr;
+  decoded_frame = frame;
+  return cosmetic_preview(path);
+}
+
+// One thumbnail tile at `a`: the picture fitted inside w by h, or a neutral figure when the skin
+// has no picture (or it is not decoded yet). Nothing is asked for while the tile is out of view.
+void draw_cosmetic_tile_at(ImDrawList* draw, ImVec2 a, float w, float h, const std::string& path) {
+  const ImVec2 b(a.x + w, a.y + h);
+  if (!ImGui::IsRectVisible(a, b)) return;
+  draw->AddRectFilled(a, b, IM_COL32(30, 36, 48, 255), 3.0f);
+  if (ImTextureData* picture = cosmetic_thumbnail(path)) {
+    const float scale = std::min(w / (float)picture->Width, h / (float)picture->Height);
+    const ImVec2 size(picture->Width * scale, picture->Height * scale);
+    const ImVec2 at(a.x + (w - size.x) * 0.5f, a.y + (h - size.y) * 0.5f);
+    draw->AddImage(picture->GetTexRef(), at, ImVec2(at.x + size.x, at.y + size.y));
+  } else {
+    const ImU32 figure = IM_COL32(74, 86, 106, 255);
+    draw->AddCircleFilled(ImVec2((a.x + b.x) * 0.5f, a.y + h * 0.34f), w * 0.17f, figure, 16);
+    draw->AddRectFilled(ImVec2(a.x + w * 0.24f, a.y + h * 0.54f), ImVec2(b.x - w * 0.24f, b.y - h * 0.12f), figure, 3.0f);
+  }
+  draw->AddRect(a, b, IM_COL32(96, 110, 134, 160), 3.0f);
+}
+
+// The tile as an item of the current line.
+void draw_cosmetic_tile(const std::string& path, float w, float h) {
+  const ImVec2 a = ImGui::GetCursorScreenPos();
+  ImGui::Dummy(ImVec2(w, h));
+  draw_cosmetic_tile_at(ImGui::GetWindowDrawList(), a, w, h, path);
+}
 }
 
 void settings_guest_options_frame(uint8_t menu, uint16_t selection, uint32_t buttons) {
@@ -2971,7 +3011,8 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
   }
 
   if (slippi::native_practice::phase_shows_return_overlay(practice.phase,
-                                                          practice.in_practice)) {
+                                                          practice.in_practice) &&
+      !slippi::online::is_online_match()) {   // never over a match, whatever the phase says
     ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowBgAlpha(0.88f);
     ImGui::Begin("##native_practice_return", nullptr,
@@ -6216,16 +6257,106 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           }
           static std::string rename_id;
           static std::array<char, 97> rename_text{};
+          // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=skins): the list opens with every fighter
+          // that has a skin, and comes into view once.
+          static const bool skins_shot = [] {
+            const char* target = std::getenv("MELEE_SETTINGS_SCROLL_TO");
+            return target && std::strcmp(target, "skins") == 0;
+          }();
+          if (skins_shot) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
           if (ImGui::CollapsingHeader("Characters")) {
+            {
+              static int scroll_frames = 0;
+              if (skins_shot && scroll_frames < 30) { ImGui::SetScrollHereY(0.0f); ++scroll_frames; }
+            }
+            // Every fighter with each of its color slots, in the game's order: one row per slot with
+            // the picture and the name of the skin it wears. A skin belongs to one slot (the costume
+            // file it replaces), so a slot's picker lists the skins installed for that slot.
+            struct CostumeRow {
+              std::string label, target, picture;   // picture: the slot's added portrait, when switched on
+              std::vector<const CosmeticAsset*> variants;
+            };
+            struct FighterRows { std::string node; size_t skins = 0; std::vector<CostumeRow> rows; };
+            static const std::vector<host::cosmetics::CostumeSlot> all_slots = host::cosmetics::costume_slots();
+            const auto slot_key = [](std::string name) {
+              name = name.substr(0, name.find('#'));
+              for (char& c : name) c = (char)std::tolower((unsigned char)c);
+              return name;
+            };
+            std::map<std::string, std::string> slot_pictures;
+            for (const auto& slot : pictures)
+              for (const CosmeticAsset* picture : slot.second)
+                if (picture->selected && !picture->preview_path.empty())
+                  slot_pictures[slot_key(picture->target_path)] = picture->preview_path;
+            std::vector<FighterRows> fighters;
+            std::map<std::string, bool> listed;   // the costume files that have a row
+            for (size_t i = 0; i < all_slots.size(); ++i) {
+              if (i == 0 || all_slots[i].character != all_slots[i - 1].character) {
+                fighters.emplace_back();
+                fighters.back().node = all_slots[i].character;
+              }
+              CostumeRow row;
+              row.label = all_slots[i].costume;
+              row.target = all_slots[i].target_path;
+              const std::string key = slot_key(row.target);
+              const auto picture = slot_pictures.find(key);
+              if (picture != slot_pictures.end()) row.picture = picture->second;
+              const auto fighter = characters.find(all_slots[i].character);
+              if (fighter != characters.end())
+                for (const auto& costume : fighter->second)
+                  if (slot_key(costume.second.front()->target_path) == key) {
+                    row.variants = costume.second;
+                    row.target = costume.second.front()->target_path;
+                    listed[costume.second.front()->target_path] = true;
+                  }
+              fighters.back().skins += row.variants.size();
+              fighters.back().rows.push_back(std::move(row));
+            }
+            for (auto& fighter : fighters) {
+              const std::string name = fighter.node;
+              if (fighter.skins)
+                fighter.node += " (" + std::to_string(fighter.skins) + (fighter.skins == 1 ? " skin)" : " skins)");
+              fighter.node += "###" + name;
+            }
+            // A costume file outside that list keeps a row under its own name, after the fighters.
             for (const auto& character : characters) {
-              if (!ImGui::TreeNode(character.first.c_str())) continue;
+              FighterRows other;
+              other.node = character.first + "###other " + character.first;
               for (const auto& costume : character.second) {
-                const auto& variants = costume.second;
-                const std::string& target = variants.front()->target_path;
+                const std::string& target = costume.second.front()->target_path;
+                if (listed.count(target)) continue;
+                const auto picture = slot_pictures.find(slot_key(target));
+                other.rows.push_back({costume.first, target, picture != slot_pictures.end() ? picture->second : std::string(),
+                                      costume.second});
+                other.skins += costume.second.size();
+              }
+              if (!other.rows.empty()) fighters.push_back(std::move(other));
+            }
+            const float tile_w = 34.0f, tile_h = 47.0f;   // a portrait is 136 by 188
+            for (const auto& character : fighters) {
+              if (skins_shot && character.skins) ImGui::SetNextItemOpen(true, ImGuiCond_Once);
+              if (!ImGui::TreeNode(character.node.c_str())) continue;
+              for (const auto& costume : character.rows) {
+                const auto& variants = costume.variants;
+                const std::string& target = costume.target;
                 ImGui::PushID(target.c_str());
-                ImGui::TextUnformatted(costume.first.c_str());
                 int current = 0;
-                std::vector<std::string> option_storage{"Vanilla"};
+                for (size_t i = 0; i < variants.size(); ++i)
+                  if (variants[i]->selected && variants[i]->available) current = (int)i + 1;
+                // The picture the slot shows: the skin's own, else the costume's added one.
+                const std::string& worn_picture = current > 0 && !variants[(size_t)current - 1]->preview_path.empty()
+                    ? variants[(size_t)current - 1]->preview_path : costume.picture;
+                draw_cosmetic_tile(worn_picture, tile_w, tile_h);
+                ImGui::SameLine();
+                ImGui::BeginGroup();
+                ImGui::TextUnformatted(costume.label.c_str());
+                if (variants.empty()) {
+                  ImGui::TextDisabled("Standard costume (no skins installed)");
+                  ImGui::EndGroup();
+                  ImGui::PopID();
+                  continue;
+                }
+                std::vector<std::string> option_storage{"Standard costume"};
                 // Two skins with one name are told apart by where they came from (the pack or the file).
                 std::map<std::string, int> same_name;
                 for (const CosmeticAsset* variant : variants) ++same_name[variant->name];
@@ -6235,13 +6366,40 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                   option_storage.push_back(variants[i]->name + (twin ? " [" + from + "]" : "") +
                       (variants[i]->voice.empty() ? "" : " (voice)") +
                       (variants[i]->available ? "" : " (unavailable)"));
-                  if (variants[i]->selected && variants[i]->available) current = (int)i + 1;
                 }
-                std::vector<const char*> option_names;
-                for (const auto& option : option_storage) option_names.push_back(option.c_str());
+                // The picker: each choice with its picture, its name and, once the game has judged
+                // it, what online play does with it.
                 int selected = current;
                 ImGui::SetNextItemWidth(280.0f);
-                if (settings_combo("##variant", &selected, option_names.data(), (int)option_names.size())) {
+                if (ImGui::BeginCombo("##variant", option_storage[(size_t)current].c_str(), ImGuiComboFlags_HeightLarge)) {
+                  float names_w = 0.0f;
+                  for (const auto& option : option_storage) names_w = std::max(names_w, ImGui::CalcTextSize(option.c_str()).x);
+                  for (int i = 0; i < (int)option_storage.size(); ++i) {
+                    const CosmeticAsset* item = i > 0 ? variants[(size_t)i - 1] : nullptr;
+                    ImGui::PushID(i);
+                    const ImVec2 at = ImGui::GetCursorScreenPos();
+                    if (ImGui::Selectable("##pick", i == current, 0, ImVec2(0.0f, tile_h))) selected = i;
+                    if (i == current) ImGui::SetItemDefaultFocus();
+                    if (ImGui::IsItemVisible()) {
+                      ImDrawList* draw = ImGui::GetWindowDrawList();
+                      draw_cosmetic_tile_at(draw, at, tile_w, tile_h, item ? item->preview_path : costume.picture);
+                      const char* online = !item || item->online_message.empty() ? nullptr :
+                          item->online_allowed ? "Online: stays on" : "Online: standard costume";
+                      const float text_x = at.x + tile_w + 8.0f, line_h = ImGui::GetTextLineHeight();
+                      draw->AddText(ImVec2(text_x, at.y + (online ? tile_h * 0.5f - line_h : (tile_h - line_h) * 0.5f)),
+                                    ImGui::GetColorU32(ImGuiCol_Text), option_storage[(size_t)i].c_str());
+                      if (online)
+                        draw->AddText(ImVec2(text_x, at.y + tile_h * 0.5f + 1.0f),
+                                      item->online_allowed ? IM_COL32(94, 214, 135, 255) : IM_COL32(255, 191, 64, 255), online);
+                    }
+                    // The row's width, so the list grows to fit the longest name.
+                    ImGui::SameLine(0.0f, 0.0f);
+                    ImGui::Dummy(ImVec2(tile_w + 16.0f + names_w, 0.0f));
+                    ImGui::PopID();
+                  }
+                  ImGui::EndCombo();
+                }
+                if (selected != current) {
                   std::string error;
                   bool ok = selected == 0 ? host::cosmetics::disable_target(target, &error) :
                       host::cosmetics::select_variant(target, variants[(size_t)selected - 1]->id, &error);
@@ -6253,7 +6411,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 ImGui::TextDisabled("%zu %s", variants.size(), variants.size() == 1 ? "skin" : "skins");
                 if (current != 0) {
                   ImGui::SameLine();
-                  if (ImGui::SmallButton("Use Vanilla")) {
+                  if (ImGui::SmallButton("Use standard costume")) {
                     std::string error;
                     if (!host::cosmetics::disable_target(target, &error)) mod_message = error;
                     else { mod_message = host::cosmetics::last_message(); changed = true; }
@@ -6356,6 +6514,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                   }
                   ImGui::TreePop();
                 }
+                ImGui::EndGroup();
                 ImGui::PopID();
               }
               ImGui::TreePop();

@@ -120,11 +120,19 @@ Info inspect(const std::filesystem::path& path,bool with_stats) {
   // read so far is a damaged file: skipped, so a file cannot make the list allocate for frames it
   // does not hold.
   constexpr int64_t kMaxFrames=8*60*60*60, kMaxJump=60*60;
+  // Every frame of a recording has at least one frame event, so the list is also held to the frame
+  // events the file has room for (plus one jump): a small file cannot walk it up to the cap a jump
+  // at a time.
+  size_t frame_event=0;
+  if(sizes[0x37]+1u>=0x3bu) frame_event=sizes[0x37]+1u;
+  if(sizes[0x38]+1u>0x26u && (!frame_event || sizes[0x38]+1u<frame_event)) frame_event=sizes[0x38]+1u;
+  const int64_t max_slots=frame_event?
+    std::min<int64_t>(kMaxFrames,int64_t((raw.size()-first_event)/frame_event)+kMaxJump):0;
   auto slot=[&](const uint8_t* event)->FrameSlot* {
     const int64_t index=int64_t(int32_t(be32(event+1)))-first_frame;
-    if(index<0 || index>=kMaxFrames || index>int64_t(frames.size())+kMaxJump) return nullptr;
+    if(index<0 || index>=max_slots || index>int64_t(frames.size())+kMaxJump) return nullptr;
     if(size_t(index)>=frames.size())
-      frames.resize(size_t(std::min<int64_t>(kMaxFrames,std::max<int64_t>(index+1,int64_t(frames.size())*2))));
+      frames.resize(size_t(std::min<int64_t>(max_slots,std::max<int64_t>(index+1,int64_t(frames.size())*2))));
     return &frames[size_t(index)][event[5]];
   };
   for(size_t i=first_event;i<raw.size();) {
