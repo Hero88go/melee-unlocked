@@ -85,9 +85,15 @@ inline uint8_t clamp_setting(uint32_t index, uint8_t value) {
   if (index >= MU_HP_SET_LEGAL_VARIANT && index < MU_HP_SET_LEGAL_VARIANT + 6) return value > 15 ? 15 : value;
   if (index == MU_HP_SET_STAGE_PAGE) return value > 3 ? 0 : value;
   if (index == MU_HP_SET_TRAINING) return value & (MU_HP_TRAINING_ON | MU_HP_TRAINING_LOOP);
+  // Training displays (bytes 24 on, the game side names them in mu_hp_train.c).
+  if (index == 24 || index == 26 || index == 37) return value;
+  if (index == 25) return value & 1;
+  if (index == 27) return value & 0x0F;
+  if (index >= 28 && index < 37) return value > 22 ? 0 : value;
   return 0;                                                                        // spare bytes stay zero
 }
-// The settings file's form: 48 hex digits. Anything else leaves the defaults.
+// The settings file's form: 96 hex digits (48 from a file saved before the training displays: the
+// rest start at zero). Anything else leaves the defaults.
 inline std::string settings_text() {
   static const char digits[] = "0123456789ABCDEF";
   std::string out;
@@ -99,11 +105,12 @@ inline bool settings_are_default() {
   return true;
 }
 inline void settings_parse(const std::string& text) {
-  if (text.size() != MU_HP_SETTINGS_SIZE * 2) return;
+  const uint32_t count = (uint32_t)text.size() / 2;
+  if (text.size() != MU_HP_SETTINGS_SIZE * 2 && text.size() != 48) return;
   auto nibble = [](char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'A' && c <= 'F' ? c - 'A' + 10 :
                                     c >= 'a' && c <= 'f' ? c - 'a' + 10 : -1; };
-  uint8_t parsed[MU_HP_SETTINGS_SIZE];
-  for (uint32_t i = 0; i < MU_HP_SETTINGS_SIZE; ++i) {
+  uint8_t parsed[MU_HP_SETTINGS_SIZE] = {};
+  for (uint32_t i = 0; i < count; ++i) {
     const int hi = nibble(text[i * 2]), lo = nibble(text[i * 2 + 1]);
     if (hi < 0 || lo < 0) return;
     parsed[i] = (uint8_t)(hi << 4 | lo);

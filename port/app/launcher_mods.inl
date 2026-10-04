@@ -25,6 +25,23 @@ using launcher::mod_catalog::Installed;
 namespace catalog_core = launcher::mod_catalog;
 namespace fs = std::filesystem;
 using launcher::lang::tx;
+// Whether this launcher can start an installed mod, and whether it offers a catalog mod at all. The
+// launcher with one Game Build has no Static Recomp: a disc that needs it is listed as not supported,
+// and a catalog mod whose note names it is not offered (the note is all a catalog entry says about
+// engines, also in a catalog fetched later). Otherwise these are playable() and "every mod".
+bool runs_here(const Installed& m) {
+#ifdef MELEE_NO_SLIPPI
+  if (m.needs_engine == "recomp") return false;
+#endif
+  return launcher::mod_catalog::playable(m);
+}
+bool offered_here(const CatalogMod& m) {
+#ifdef MELEE_NO_SLIPPI
+  if (m.note.find("Static Recomp") != std::string::npos) return false;
+#endif
+  (void)m;
+  return true;
+}
 // Built in; a newer list at kCatalogUrl (our GitHub, metadata only) can update versions and pins
 // without a launcher update. The same text is published as mods-catalog.json.
 std::vector<CatalogMod> default_catalog() {
@@ -372,7 +389,7 @@ std::string summary() {
   std::string packs;
   for (const auto& entry : installed()) {
     const auto& m = entry.second;
-    if (m.enabled && catalog_core::playable(m)) packs += " " + m.name + " \xE2\x9C\x93";
+    if (m.enabled && runs_here(m)) packs += " " + m.name + " \xE2\x9C\x93";
   }
   return packs.empty() ? tx("Mods: none detected") : tx("Mods:") + packs;
 }
@@ -400,7 +417,7 @@ std::wstring find_file(const std::wstring& dir, const std::wstring& suffix) {
 void enable_installed(const std::string& id) {
   const auto found = installed();
   const auto it = found.find(id);
-  if (it == found.end() || it->second.enabled || !catalog_core::playable(it->second)) return;
+  if (it == found.end() || it->second.enabled || !runs_here(it->second)) return;
   std::string error;
   if (catalog_core::enable_pack(fs::u8path(settings_ini_path()), it->second.key, true, &error)) scan_installed();
 }
@@ -635,6 +652,7 @@ void refresh_window() {
     Row row; row.catalog = m;
     const auto f = found.find(m.id);
     if (f != found.end()) { row.installed = f->second; row.found = true; listed.insert(f->first); }
+    else if (!offered_here(m)) continue;   // nothing to Get for a mod this launcher cannot start
     g_rows.push_back(std::move(row));
   }
   for (const auto& f : found) if (!listed.count(f.first)) {
@@ -673,7 +691,7 @@ void refresh_window() {
     const bool has_skins = row.found && disc_skins(f.path, nullptr) > 0;
     SetWindowTextW(g_skins[i], launcher::lang::txw(L"Choose skins").c_str());
     EnableWindow(g_skins[i], has_skins && !g_playing);
-    const bool busy = is_busy(m.id), playable = row.found && catalog_core::playable(f);
+    const bool busy = is_busy(m.id), playable = row.found && runs_here(f);
     std::string primary; bool enabled = true; LONG_PTR style = 0;
     if (busy) primary = "Cancel";
     else if (row.found) { primary = playable ? "Play" : scanning() ? "Checking..." : "Not supported yet"; enabled = playable && !g_playing; style = STYLE_ACCENT; }
@@ -769,8 +787,10 @@ void paint_page(HDC dc) {
     std::string state; COLORREF state_color = C_DIM;
     if (row.found) {
       state = "\xE2\x9C\x93 " + (f.version.empty() ? tx("Installed") : launcher::lang::fill(tx("Installed {version}"), launcher::lang::Args{{"version", f.version}}));
+#ifndef MELEE_NO_SLIPPI   // with one Game Build there is no engine to name
       state += " | " + std::string(f.needs_engine == "source" ? "Source Port" : f.needs_engine == "recomp" ? "Static Recomp" : tx("Both engines"));
-      if (catalog_core::playable(f)) state += " | " + tx(f.enabled ? "On" : "Off");
+#endif
+      if (runs_here(f)) state += " | " + tx(f.enabled ? "On" : "Off");
       if (f.status == "untested") state += " | " + tx("Untested");
       state_color = f.status == "supported" ? C_OK : C_WARN;
     } else state = tx(m.one_click ? "Not installed" : "Not installed. Put the file in the Mods folder.");
@@ -778,8 +798,12 @@ void paint_page(HDC dc) {
     // Last line: what is happening now, else what runs this mod.
     std::string line; COLORREF line_color = C_DIM;
     if (status.count(m.id) && (is_busy(m.id) || status[m.id].rfind("Installed", 0) != 0)) { line = tx(status[m.id]); line_color = C_TEXT; }
-    else if (row.found && !catalog_core::playable(f) && scanning()) { line = tx("Checking this disc..."); line_color = C_DIM; }
-    else if (row.found && !catalog_core::playable(f)) { line = m.note.empty() ? tx("This version is not supported yet.") : tx(m.note); line_color = C_WARN; }
+    else if (row.found && !runs_here(f) && scanning()) { line = tx("Checking this disc..."); line_color = C_DIM; }
+#ifdef MELEE_NO_SLIPPI   // the note of such a mod names an engine this launcher does not have
+    else if (row.found && !runs_here(f)) { line = tx("This version is not supported yet."); line_color = C_WARN; }
+#else
+    else if (row.found && !runs_here(f)) { line = m.note.empty() ? tx("This version is not supported yet.") : tx(m.note); line_color = C_WARN; }
+#endif
     else if (row.found && f.kind != "te" && f.kind != "tmce") {
       // Once the game has listed the disc's costumes as skins, say how many and where to pick them.
       std::string sets;
@@ -789,7 +813,9 @@ void paint_page(HDC dc) {
         line = launcher::lang::fill(tx("Skins: {count} in your skin list{sets}. Pick them in Settings, Mods."),
                                     launcher::lang::Args{{"count", std::to_string(skins)}, {"sets", named.empty() ? "" : " (" + named + ")"}});
         line_color = C_DIM;
-      } else if (f.kind == "hack_pack") {
+      }
+#ifndef MELEE_NO_SLIPPI   // both lines name an engine and online modes the build without that layer does not have: no line there
+      else if (f.kind == "hack_pack") {
         // This pack has no online play at all, so the Direct line would be wrong for it.
         line = tx(m.note.empty() ? "Plays on the Static Recomp, offline (no online play or replays)." : m.note);
         line_color = C_DIM;
@@ -798,6 +824,7 @@ void paint_page(HDC dc) {
                                            : "Direct needs matching mods; different builds can desync. Source Port uses vanilla for Unranked.");
         line_color = C_WARN;
       }
+#endif
     }
     else if (!m.note.empty()) { line = tx(m.note); line_color = m.note.find("nsupported") != std::string::npos || m.note.find("ntested") != std::string::npos || m.note.find("not supported") != std::string::npos ? C_WARN : C_DIM; }
     RECT last = LR(x + 44, y + 70, units(card.right) - 16 - (x + 44), 16);
@@ -913,7 +940,7 @@ LRESULT CALLBACK proc(HWND w, UINT msg, WPARAM wp, LPARAM lp) {
       if (base == ID_MOD_SKINS) { if (!g_playing) open_settings("mods"); return 0; }
       if (base == ID_MOD_BUTTON && is_busy(row.catalog.id)) { cancel_job(row.catalog.id); set_status(row.catalog.id, "Cancelling..."); return 0; }
       if (base == ID_MOD_BUTTON && row.found) {
-        if (g_playing || !catalog_core::playable(row.installed)) return 0;
+        if (g_playing || !runs_here(row.installed)) return 0;
         std::string error;
         if (!catalog_core::enable_pack(fs::u8path(settings_ini_path()), row.installed.key, true, &error)) { set_status(row.catalog.id, error); return 0; }
         g_mod_launch_iso = row.installed.path; g_mod_launch_key = row.installed.key; g_mod_launch_kind = row.installed.kind;

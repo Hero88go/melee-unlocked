@@ -26,7 +26,11 @@ struct Options {
   bool rng_seed_set = false;
   int volume = 0;                // audio output volume percent (0 = muted, the development default)
   double hang_watch = 0.0;       // seconds without a retrace before the guest is declared hung (0 = off)
+#ifdef MELEE_NO_SLIPPI
+  std::string sys_dir = "Sys";               // system files beside the game (the DSP coefficient table)
+#else
   std::string sys_dir = "port/slippi_sys";   // Slippi Sys folder (code tables, GameFiles served over the EXI device)
+#endif
   std::string replay_dir = "replays";        // where .slp recordings are written
   std::string lab_dir = "Lab";               // Lab view character packs (tools/build_lab_assets.py)
   std::string card_dir = "User/GC/CardA";    // memory card slot A as a folder of .gci files

@@ -338,12 +338,16 @@ const int16_t* polyphase_coefs() {
   if (const char* p = std::getenv("MELEE_DSP_COEF")) paths[0] = p;
   paths[1] = "User\\GC\\dsp_coef.bin";
   paths[2] = "Sys\\GC\\dsp_coef.bin";
+#ifndef MELEE_NO_SLIPPI
+  // The build without the Slippi layer reads nothing from another program's folders: it stops at
+  // the game folder's own table.
   if (const char* a = std::getenv("APPDATA")) {
     const std::string base = std::string(a) + "\\Slippi Launcher\\";
     paths[3] = base + "netplay\\Sys\\GC\\dsp_coef.bin";
     paths[4] = base + "playback\\Sys\\GC\\dsp_coef.bin";
     paths[5] = base + "netplay-beta\\Sys\\GC\\dsp_coef.bin";
   }
+#endif
   for (const std::string& path : paths) {
     if (path.empty()) continue;
     FILE* f = std::fopen(path.c_str(), "rb");
@@ -378,8 +382,12 @@ const int16_t* polyphase_coefs() {
     host::log("audio: DSP coefficient table %s Adler-32 %08x (%s)", path.c_str(), adler, dsp_coef_name(adler));
     return table.data();
   }
+#ifdef MELEE_NO_SLIPPI
+  host::log("audio: no DSP coefficient table (MELEE_DSP_COEF, User\\GC, Sys\\GC): voices use linear interpolation");
+#else
   host::log("audio: no DSP coefficient table (MELEE_DSP_COEF, User\\GC, Sys\\GC, Slippi Launcher folders): "
             "voices use linear interpolation");
+#endif
   return nullptr;
 }
 

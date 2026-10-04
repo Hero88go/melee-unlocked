@@ -24,7 +24,11 @@
 #include <vector>
 #include "gx_d3d12.h"
 #include "gx_backend.h"   // solver_pair_counter, for the "gpu:" diagnostic line
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"   // the same names, answered from the neutral netplay state
+#else
 #include "exi_slippi.h"
+#endif
 #include "gx_shader.h"
 #include "gx_dxr_scene.h"
 #include "gx_dxr_gpu_scene.h"
@@ -314,6 +318,13 @@ class D3D12Backend : public Backend {
   static constexpr uint64_t SMALL_VRAM_BUDGET = 4096ull * 1024 * 1024;   // idle trim only at or under this
   static constexpr uint64_t TEXTURE_IDLE_FRAMES = 600;   // unused this long: the trim may take it
   static constexpr uint64_t TEXTURE_RETRY_FRAMES = 120;  // before a texture that did not fit is tried again
+  // EFB copies are kept by the guest address they were copied to, and nothing took one out again:
+  // every address any scene had copied to held a texture of up to the whole internal frame for the
+  // rest of the session, outside the texture budget and out of reach of free_video_memory. An hour
+  // of single-player modes filled a 2 GB shared adapter that way. trim_textures now drops a copy
+  // nothing has written or sampled for this long once more than a few exist (sooner when tight).
+  static constexpr uint64_t EFB_COPY_IDLE_FRAMES = 3600;
+  static constexpr size_t EFB_COPIES_KEPT = 16;
   uint64_t vram_usage_bytes_ = 0, vram_budget_bytes_ = 0;   // update_vram, every 30 frames
   bool vram_tight_ = false;
   // A quarter of the adapter's dedicated memory, floor 256 MB, ceiling 2 GB (set in init): the
@@ -1073,6 +1084,25 @@ void D3D12Backend::trim_textures() {
   const double now = Stopwatch::now();
   if (now - texture_trim_time_ < 1.0) return;
   texture_trim_time_ = now;
+  // Retries that have come due are forgotten here too: a texture that was refused and never drawn
+  // again (its contents changed) otherwise left its key behind for good.
+  for (auto it = texture_retry_frame_.begin(); it != texture_retry_frame_.end();)
+    if (it->second <= frame_counter_) it = texture_retry_frame_.erase(it); else ++it;
+  if (vram_tight_ || efb_copies_.size() > EFB_COPIES_KEPT) {
+    // Idle EFB copies (see EFB_COPY_IDLE_FRAMES). A draw that samples the address later falls back
+    // to the game's own texture data until the game copies there again, as before the first copy.
+    const uint64_t idle = vram_tight_ ? TEXTURE_IDLE_FRAMES : EFB_COPY_IDLE_FRAMES;
+    uint32_t copies = 0;
+    for (auto it = efb_copies_.begin(); it != efb_copies_.end();) {
+      if (it->second.last_used + idle >= frame_counter_) { ++it; continue; }
+      if (it->second.resource) frame_garbage_[slot_].push_back(it->second.resource);
+      it = efb_copies_.erase(it); ++copies;
+    }
+    if (copies) {
+      texture_sets_.clear();   // descriptor tables name resources by pointer
+      host::log("d3d12: %u idle EFB copy textures freed, %zu kept", copies, efb_copies_.size());
+    }
+  }
   uint64_t cached = 0;
   for (const auto& entry : textures_) cached += texture_bytes(entry.second.width, entry.second.height, entry.second.levels);
   texture_cache_bytes_ = cached;
@@ -1142,6 +1172,12 @@ uint32_t D3D12Backend::free_video_memory(uint64_t bytes) {
     replacement_bytes_ -= std::min(replacement_bytes_, it->second.replacement_bytes);
     textures_.erase(it);
     ++freed;
+  }
+  // EFB copies nothing has written or sampled for a while go too: they are the largest textures
+  // held and were never part of this. The copy being made now is marked used before it gets here.
+  for (auto it = efb_copies_.begin(); it != efb_copies_.end();) {
+    if (it->second.last_used + TEXTURE_IDLE_FRAMES >= frame_counter_) { ++it; continue; }
+    it = efb_copies_.erase(it); ++freed;
   }
   if (freed) texture_sets_.clear();   // descriptor tables name resources by pointer
   return freed;
@@ -2185,6 +2221,7 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   if (c.half_scale) { w = std::max(1u, w / 2); h = std::max(1u, h / 2); }
   uint32_t sw = w * scale_, sh = h * scale_;
   TextureEntry& e = efb_copies_[c.dest_addr];
+  e.last_used = frame_counter_;   // before anything can free idle copies: `e` must stay in the map
   // Melee's EFB is RGB8 (no alpha): on hardware every copy from it is opaque. Our EFB keeps an alpha
   // channel that the game never meant to fill (0 after most clears), and a raw copy of it made the
   // Classic STAGE CLEAR zoom (a blurred copy of the last frame, drawn with its alpha) invisible.

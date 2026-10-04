@@ -32,7 +32,7 @@ bool window_take_fullscreen_toggle();   // true once per Alt+Enter press in the 
 bool window_take_escape();              // true once per Esc press, like the F1 toggle
 bool window_take_settings_toggle();     // true once per F1 press (auto-repeat ignored), however late it is read
 bool window_take_legacy_settings_toggle(); // true once per F11 press (auto-repeat ignored)
-bool window_take_trace_mark();            // true once per F8 press: mark this moment in the online session trace
+int window_take_trace_mark();             // once per mark key press, its kind: 1 plain (F8), 2 looked wrong (F6), 3 input wrong (F7), 4 sounded wrong (F9); else 0
 int window_take_settings_controller_port(); // adapter port that last opened settings with Z+Start, or -1
 bool window_take_practice_toggle();     // true once per Tab press (auto-repeat ignored)
 double window_refresh_rate();

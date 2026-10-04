@@ -2,7 +2,11 @@
 #include "replay_control.h"
 #include "audio.h"
 #include "host.h"
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"   // no host music player to pause in this build
+#else
 #include "jukebox.h"
+#endif
 #include "net_overlay.h"
 #include "net_trace.h"
 #include "net_trace_file.h"

@@ -2,6 +2,8 @@
 // its "GCI folder" cards: 64-byte directory entry followed by the file's 8 KiB blocks. Slot A holds
 // one 128 Mbit card (2043 blocks); slot B is empty. Saves made in Slippi Dolphin can be dropped in.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <chrono>
+#include <thread>
 #include "hle.h"
 #include <algorithm>
 #include <cstdio>
@@ -80,8 +82,14 @@ void save(File& f) {
     bool ok = std::fwrite(f.dir, 1, 64, out) == 64 && std::fwrite(f.data.data(), 1, f.data.size(), out) == f.data.size();
     std::fclose(out);
     std::error_code ec;
-    if (ok) std::filesystem::rename(tmp, f.path, ec);
-    if (!ok || ec) host::log("card: failed to save %s", shown(f.path).c_str());
+    // Another program can hold the new file or the old one open for a moment right after it is
+    // written, and the replace is refused: try again for a short while (see the Source Port's save).
+    for (int attempt = 0; ok && attempt < 20; ++attempt) {
+      std::filesystem::rename(tmp, f.path, ec);
+      if (!ec) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!ok || ec) host::log("card: failed to save %s (%s)", shown(f.path).c_str(), ok ? ec.message().c_str() : "write error");
   } catch (const std::exception& error) {
     host::log("card: failed to save %s (%s)", safe_name(f).c_str(), error.what());
   }

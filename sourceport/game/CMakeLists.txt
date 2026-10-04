@@ -94,12 +94,14 @@ target_link_libraries(mu_content_transition_test PRIVATE game_flags)
 target_include_directories(mu_content_transition_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME native_content_transition COMMAND mu_content_transition_test)
 
+if(NOT MU_NO_SLIPPI)   # tests the replay recording, which a MU_NO_SLIPPI tree does not have (option: see below)
 add_executable(mu_record_start_test tests/record_start.c)
 set_target_properties(mu_record_start_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
 target_link_libraries(mu_record_start_test PRIVATE game_flags)
 target_compile_options(mu_record_start_test PRIVATE -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables)
 target_link_options(mu_record_start_test PRIVATE -Wl,--gc-sections)
 add_test(NAME native_record_start COMMAND mu_record_start_test)
+endif()
 
 add_executable(mu_setjmp_test EXCLUDE_FROM_ALL tests/setjmp.c shim/mu_setjmp.c)
 set_target_properties(mu_setjmp_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
@@ -171,6 +173,25 @@ list(APPEND SDK_SOURCES "${SDK}/os/OSAlloc.c" "${SDK}/os/OSArena.c" "${SDK}/pad/
 # Written for the hardware itself, or in its assembly; the native build has its own versions of these.
 list(REMOVE_ITEM SDK_SOURCES "${SDK}/gx/GXFifo.c" "${SDK}/mtx/psmtx.c")
 file(GLOB_RECURSE SHIM_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shim/*.c")
+# A game library with no Slippi code in it (-DMU_NO_SLIPPI=ON, its own build directory): the online
+# menus, replay playback and recording, practice matchmaking and the online rule codes are left out.
+# Three small files stand in for them: the entry points the game sources call (shim/mu_noslippi.c),
+# the match block copy a network match starts from (shim/mu_match_info.c) and the menu-less entry
+# into such a match (shim/mu_p2p_entry.c). The rollback engine itself (shim/mu_online*.c) stays.
+# The library keeps its names: melee_game.dll, .dbg and .snapexcl.
+option(MU_NO_SLIPPI "Build the game without the Slippi menus, replays and online codes" OFF)
+set(MU_NO_SLIPPI_ONLY mu_noslippi.c mu_match_info.c mu_p2p_entry.c)
+if(MU_NO_SLIPPI)
+  foreach(removed mu_slippi_menu.c mu_slippi_css.c mu_slippi_chat.c mu_slippi_splash.c mu_slippi_sss.c
+                  mu_replay.c mu_replay_abi.c mu_practice.c mu_online_rules.c)
+    list(REMOVE_ITEM SHIM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/shim/${removed}")
+  endforeach()
+  target_compile_definitions(game_flags INTERFACE MU_NO_SLIPPI)
+else()
+  foreach(removed ${MU_NO_SLIPPI_ONLY})
+    list(REMOVE_ITEM SHIM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/shim/${removed}")
+  endforeach()
+endif()
 # Replacements for SDK files written against the hardware itself (see the REMOVE_ITEM above).
 file(GLOB GXNATIVE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gxnative/*.c")
 list(APPEND SHIM_SOURCES ${GXNATIVE_SOURCES})

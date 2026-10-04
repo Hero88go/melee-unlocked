@@ -29,7 +29,10 @@ void finish_read(uint32_t block, uint32_t addr, uint32_t length, uint32_t disc_o
 void do_file_read(uint32_t block, uint32_t addr, uint32_t length, uint32_t file_start,
                   uint32_t file_offset) {
   host::SimCostScope cost(host::SIM_DVD);
-  if (!host::disc_read_file(file_start, file_offset, host::ptr(addr, length), length))
+  // A destination outside memory: the drive's transfer lands nowhere and the read still completes.
+  uint8_t* dest = hle::guest_buffer("DVDReadPrio", addr, length);
+  if (!dest) { finish_read(block, addr, length, file_start + file_offset); return; }
+  if (!host::disc_read_file(file_start, file_offset, dest, length))
     host::die("disc file read failed: start %08X offset %X length %X to %08X",
               file_start, file_offset, length, addr);
   finish_read(block, addr, length, file_start + file_offset);
@@ -77,7 +80,9 @@ void start_read(AsyncRead r) {
   r.ready_tb = host::cpu->tb + host::TB_PER_FRAME / 4;
   r.done = std::make_shared<std::atomic<bool>>(false);
   r.data = std::make_shared<std::vector<uint8_t>>();
-  (void)host::ptr(r.addr, r.length);   // validates the destination now, where the request is made
+  // Checked now, where the request is made and the caller is known. A destination outside memory is
+  // logged and the read still completes on time; its bytes are dropped in dvd_poll.
+  (void)hle::guest_buffer("DVDReadAsync", r.addr, r.length);
   g_dvd_pending.push_back(r);
   std::lock_guard<std::mutex> lk(g_dvd_mutex);
   if (!g_dvd_started) { g_dvd_started = true; g_dvd_thread = std::thread(dvd_worker); g_dvd_thread.detach(); }
@@ -93,13 +98,14 @@ void dvd_poll() {
     AsyncRead& r = g_dvd_pending.front();
     if (host::cpu->tb < r.ready_tb) return;
     if (!r.done->load(std::memory_order_acquire)) { host::SimCostScope cost(host::SIM_DVD); std::unique_lock<std::mutex> lk(g_dvd_mutex); g_dvd_done_cv.wait(lk, [&] { return r.done->load(std::memory_order_acquire); }); }
-    std::memcpy(host::ptr(r.addr, r.length), r.data->data(), r.length);
+    uint8_t* dest = host::try_ptr(r.addr, r.length);   // null was logged by start_read
+    if (dest) std::memcpy(dest, r.data->data(), r.length);
     // The renderer reuses a texture snapshot while this memory's write version is unchanged, so the
     // copy must count as a write (as host::disc_read does when it reads straight into guest memory).
     // Without it a texture drawn before its file arrived stayed blank (0.8.6: black track names).
     // MELEE_TEST_DVD_NO_MARK=1 (tests): the 0.8.6 behaviour, to prove the stale-snapshot check.
     static const bool no_mark = [] { const char* v = std::getenv("MELEE_TEST_DVD_NO_MARK"); return v && *v == '1'; }();
-    if (!no_mark) host::mark_ram_write(r.addr, r.length);
+    if (dest && !no_mark) host::mark_ram_write(r.addr, r.length);
     finish_read(r.block, r.addr, r.length, r.disc_offset);
     if (r.callback) { uint32_t cb = r.callback, len = r.length, blk = r.block; host::post_completion([cb, len, blk] { host::call_guest(cb, len, blk); }); }
     g_dvd_pending.pop_front();

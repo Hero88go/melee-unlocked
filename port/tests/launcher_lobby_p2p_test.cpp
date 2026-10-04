@@ -17,6 +17,11 @@
 #include <memory>
 #include <string>
 #include <thread>
+#ifdef MELEE_NO_SLIPPI
+#include <monocypher.h>   // the peer-to-peer cases check the seed: BLAKE2b over the request id
+#include <cstdio>
+#include <vector>
+#endif
 
 using Json = nlohmann::json;
 using launcher::lobby::PeerLobby;
@@ -806,12 +811,286 @@ void private_limits() {
   pump(a, b, 500);
   check(!error_of([&] { a.command("pm_request", {{"target", b.id()}}); }).empty(), "a player outside the public lobby cannot be asked by a stranger");
 }
+
+#ifdef MELEE_NO_SLIPPI
+// ---- peer-to-peer matches: the launcher built without the Slippi layer (MELEE_NO_SLIPPI) ----
+bool searching(const PeerLobby& p) { return p.state()["self"].value("searching", false); }
+bool has_kind(const PeerLobby& p, const std::string& kind) {
+  const Json state = p.state();
+  for (const auto& n : state["notices"]) if (n.value("kind", std::string()) == kind) return true;
+  return false;
+}
+
+// Both launchers build the same match from the request id and the two halves of the setup.
+void p2p_setup() {
+  std::cout << "-- p2p: A requests B, B accepts, both hold the same match setup" << std::endl;
+  auto pair = make_pair("p2p-setup", profile("Alpha", "ALPH#101", "t:source", 2), profile("Be:ta", "BETA#202", "t:source", 2));
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "p2p: both players see each other");
+  check(a.state()["self"]["protocol"] == 4 && a.state()["players"][0].value("protocol", 0) == 4, "p2p: both announce lobby protocol 4");
+  check(error_of([&] { a.command("request", {{"target", b.id()}}); }).empty(), "p2p: the request is sent");
+  pump(a, b, 3000, [&] { return b.state()["requests"].size() == 1; });
+  const Json requests = b.state()["requests"];
+  check(requests.size() == 1 && requests[0]["transport"] == "p2p", "p2p: B holds the request, marked peer-to-peer");
+  if (requests.size() != 1) return;
+  b.command("accept", {{"request", requests[0]["id"]}});
+  Json la, lb; bool got_a = false, got_b = false;
+  pump(a, b, 5000, [&] {
+    if (!got_a) got_a = a.take_launch(la);
+    if (!got_b) got_b = b.take_launch(lb);
+    return got_a && got_b;
+  });
+  check(got_a && got_b && la.count("p2p") && lb.count("p2p"), "p2p: both sides launch with a match setup");
+  if (!(got_a && got_b && la.count("p2p") && lb.count("p2p"))) return;
+  const Json pa = la["p2p"], pb = lb["p2p"];
+  check(la["request"] == lb["request"], "p2p: the same match on both sides");
+  check(pa["slot"] == 0 && pb["slot"] == 1, "p2p: the requester is slot 0, the other player slot 1");
+  check(pa["seed"] == pb["seed"] && pa["stage"] == pb["stage"] && pa["delay"] == pb["delay"] && pa["delay"] == 2,
+        "p2p: the same seed, stage and delay");
+  // The seed is the first four bytes of BLAKE2b over the request id, and it draws the stage.
+  const std::string rid = la["request"].get<std::string>();
+  uint8_t digest[4]{};
+  crypto_blake2b(digest, sizeof digest, reinterpret_cast<const uint8_t*>(rid.data()), rid.size());
+  char seed[9]{}; std::snprintf(seed, sizeof seed, "%02x%02x%02x%02x", digest[0], digest[1], digest[2], digest[3]);
+  const uint32_t value = (uint32_t(digest[0]) << 24) | (uint32_t(digest[1]) << 16) | (uint32_t(digest[2]) << 8) | digest[3];
+  const int legal[6] = {0x1F, 0x20, 0x1C, 0x08, 0x02, 0x03};
+  check(pa["seed"] == seed && pa["stage"] == legal[value % 6], "p2p: the seed comes from the request id and picks a legal stage");
+  // Both on Fox: the second player gets the next color. Slot 0's character is first.
+  const Json chars = Json::array({Json::array({2, 0}), Json::array({2, 1})});
+  check(pa["chars"] == chars && pb["chars"] == chars, "p2p: the same characters in slot order, the same character on two colors");
+  const Json names = Json::array({"Alpha", "Beta"});
+  check(pa["names"] == names && pb["names"] == names, "p2p: the same names in slot order, without the colon");
+  check(pa["expect"] == b.id() && pb["expect"] == a.id(), "p2p: each expects the other's identity key");
+  const int port_a = pa.value("port", 0), port_b = pb.value("port", 0);
+  // The game takes the lobby's own port (the path between the two lobby sockets is the open one),
+  // and the first address to dial is the one this lobby hears the other from.
+  check(port_a > 0 && port_b > 0 && port_a != port_b && port_a == a.port() && port_b == b.port(), "p2p: each game takes its lobby's UDP port");
+  check(pa["peers"].size() >= 1 && pa["peers"][0] == "127.0.0.1:" + std::to_string(b.port()) &&
+        pb["peers"].size() >= 1 && pb["peers"][0] == "127.0.0.1:" + std::to_string(a.port()),
+        "p2p: each dials the other's lobby address as observed, first");
+  for (const Json* p : {&pa, &pb})
+    for (size_t i = 1; i < (*p)["peers"].size(); ++i) {
+      const std::string peer = (*p)["peers"][i].get<std::string>(), port = ":" + std::to_string(p == &pa ? b.port() : a.port());
+      check(peer.size() > port.size() && peer.compare(peer.size() - port.size(), port.size(), port) == 0,
+            "p2p: the other's own addresses carry its lobby port: " + peer);
+    }
+  const std::string args = launcher::lobby::p2p_arguments(pa, "C:\\mu\\lobby-peer-identity.json", "C:\\mu\\p2p-results\\r.json");
+  std::cout << "      " << args << std::endl;
+  check(args.find(" --p2p-port " + std::to_string(port_a) + " --p2p-peer 127.0.0.1:" + std::to_string(port_b)) == 0 &&
+        args.find(" --p2p-slot 0 --p2p-chars 2/0:2/1 --p2p-stage " + std::to_string(pa["stage"].get<int>()) + " --p2p-seed " + seed + " --p2p-delay 2") != std::string::npos &&
+        args.find(" --p2p-identity \"C:\\mu\\lobby-peer-identity.json\" --p2p-expect " + b.id() + " --p2p-result \"C:\\mu\\p2p-results\\r.json\" --p2p-names \"Alpha:Beta\"") != std::string::npos,
+        "p2p: the game's arguments carry the whole setup");
+  Json bad = pa; bad["peers"][0] = "1.2.3.4:5\" --iso x";
+  check(launcher::lobby::p2p_arguments(bad, "i.json", "r.json").empty(), "p2p: an address that is not one never reaches the command line");
+  bad = pa; bad["stage"] = 0x55;
+  check(launcher::lobby::p2p_arguments(bad, "i.json", "r.json").empty(), "p2p: a stage outside the legal list is refused");
+  bad = pa; bad["chars"][0][1] = 4;   // Fox has four colors, 0 to 3
+  check(launcher::lobby::p2p_arguments(bad, "i.json", "r.json").empty(), "p2p: a color the character does not have is refused");
+  bad = pa; bad["chars"][1][0] = 26;
+  check(launcher::lobby::p2p_arguments(bad, "i.json", "r.json").empty(), "p2p: a character id past the last one is refused");
+  bad = pa; bad["chars"] = Json::array({Json::array({0, 5}), Json::array({17, 5})});
+  check(launcher::lobby::p2p_arguments(bad, "i.json", "r.json").find(" --p2p-chars 0/5:17/5 ") != std::string::npos,
+        "p2p: the sixth color of a character that has six is passed on");
+  check(launcher::lobby::p2p_color_count(2) == 4 && launcher::lobby::p2p_color_count(0) == 6 && launcher::lobby::p2p_color_count(25) == 5 &&
+        launcher::lobby::p2p_color_count(26) == 0 && launcher::lobby::p2p_color_count(-1) == 0, "p2p: color counts by character");
+  check(launcher::lobby::p2p_name("a:b\"c\\d") == "abcd" && launcher::lobby::p2p_name(std::string(40, 'x')).size() == 31 &&
+        launcher::lobby::p2p_name(" : ") == "Player", "p2p: names are cut to what the game takes");
+  const std::string code = launcher::lobby::derived_code("Alpha", a.id());
+  check(launcher::lobby::valid_code(code) && code.rfind("ALPH#", 0) == 0 && code.size() == 8 && code == launcher::lobby::derived_code("Alpha", a.id()) &&
+        launcher::lobby::valid_code(launcher::lobby::derived_code("\xE6\x97\xA5", a.id())), "p2p: the code made from the name and the key is a valid, stable code: " + code);
+  pump(a, b, 1500);
+  Json extra;
+  check(!a.take_launch(extra) && !b.take_launch(extra), "p2p: no second launch on either side");
+}
+
+// The accept is lost on the way to A at first: the setup still arrives whole with a resend.
+void p2p_setup_loss() {
+  std::cout << "-- p2p: the acknowledgment carrying A's half of the setup is lost at first" << std::endl;
+  auto pair = make_pair("p2p-loss", profile("Alpha", "ALPH#101", "t:source", 20), profile("Beta", "BETA#202", "t:source", 9));
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "p2p loss: discovery");
+  a.command("request", {{"target", b.id()}});
+  pump(a, b, 3000, [&] { return b.state()["requests"].size() == 1; });
+  const Json requests = b.state()["requests"];
+  if (requests.size() != 1) { check(false, "p2p loss: the request arrives"); return; }
+  a.test_drop(false, true);   // A hears the accept but its acknowledgments go nowhere
+  b.command("accept", {{"request", requests[0]["id"]}});
+  Json la, lb; bool got_a = false, got_b = false;
+  pump(a, b, 1500, [&] { if (!got_a) got_a = a.take_launch(la); if (!got_b) got_b = b.take_launch(lb); return false; });
+  check(got_a && !got_b, "p2p loss: B does not launch without A's half of the setup");
+  a.test_drop(false, false);
+  pump(a, b, 4000, [&] { if (!got_b) got_b = b.take_launch(lb); return got_b; });
+  check(got_b && lb.count("p2p") && la.count("p2p") && lb["p2p"]["seed"] == la["p2p"]["seed"] &&
+        lb["p2p"]["peers"][0] == "127.0.0.1:" + std::to_string(la["p2p"].value("port", 0)), "p2p loss: a resent acknowledgment completes it");
+}
+
+void p2p_auto_two() {
+  std::cout << "-- p2p: two searching players are paired, once" << std::endl;
+  auto pair = make_pair("p2p-auto", profile("Alpha", "ALPH#101", "t:source", 20), profile("Beta", "BETA#202", "t:source", 9));
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "auto: discovery");
+  check(error_of([&] { a.command("search", {{"on", true}}); }).empty() && error_of([&] { b.command("search", {{"on", true}}); }).empty(),
+        "auto: both start searching");
+  check(searching(a) && searching(b), "auto: both say so");
+  std::vector<Json> launches_a, launches_b;
+  auto collect = [&] { Json l; while (a.take_launch(l)) launches_a.push_back(l); while (b.take_launch(l)) launches_b.push_back(l); };
+  pump(a, b, 20000, [&] { collect(); return !launches_a.empty() && !launches_b.empty(); });
+  pump(a, b, 6000, [&] { collect(); return false; });
+  check(launches_a.size() == 1 && launches_b.size() == 1, "auto: exactly one match, launched once on each side (" +
+        std::to_string(launches_a.size()) + ", " + std::to_string(launches_b.size()) + ")");
+  if (launches_a.size() != 1 || launches_b.size() != 1) return;
+  const Json pa = launches_a[0]["p2p"], pb = launches_b[0]["p2p"];
+  check(launches_a[0]["request"] == launches_b[0]["request"] && pa["seed"] == pb["seed"] && pa["chars"] == pb["chars"] &&
+        pa["slot"] != pb["slot"] && pa.value("auto", false) && pb.value("auto", false), "auto: the same automatic match, distinct slots");
+  check(!searching(a) && !searching(b), "auto: searching ends for both when the match starts");
+  check(!has_kind(a, "refused") && !has_kind(b, "refused") && !has_kind(a, "declined") && !has_kind(b, "declined"),
+        "auto: nobody is shown a refusal");
+}
+
+void p2p_auto_three() {
+  std::cout << "-- p2p: three searching players, one match, one still searching" << std::endl;
+  const fs::path dir = fs::temp_directory_path() / ("mu-p2p-" + std::to_string(GetCurrentProcessId()) + "-p2p-three");
+  std::error_code ec; fs::remove_all(dir, ec); fs::create_directories(dir, ec);
+  launcher::lobby::PeerTestOptions options; options.no_dht = true;
+  PeerLobby a((dir / "a").u8string(), "", 0, options);
+  const std::string seed = "127.0.0.1:" + std::to_string(a.port());
+  PeerLobby b((dir / "b").u8string(), seed, 0, options), c((dir / "c").u8string(), seed, 0, options);
+  c.add_address("127.0.0.1:" + std::to_string(b.port()));
+  a.join(profile("Alpha", "ALPH#101", "t:source", 2)); b.join(profile("Beta", "BETA#202", "t:source", 9));
+  c.join(profile("Gamma", "GAMM#303", "t:source", 20));
+  PeerLobby* all[3] = {&a, &b, &c};
+  std::vector<Json> launches[3];
+  auto pump3 = [&](int ms, const std::function<bool()>& done) {
+    const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < end) {
+      for (int i = 0; i < 3; ++i) { all[i]->tick(); Json l; while (all[i]->take_launch(l)) launches[i].push_back(l); }
+      if (done && done()) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return done ? done() : true;
+  };
+  check(pump3(8000, [&] { return a.state()["players"].size() == 2 && b.state()["players"].size() == 2 && c.state()["players"].size() == 2; }),
+        "three: all three players see each other");
+  for (auto* p : all) p->command("search", {{"on", true}});
+  auto total = [&] { return launches[0].size() + launches[1].size() + launches[2].size(); };
+  pump3(25000, [&] { return total() >= 2; });
+  pump3(12000, {});   // long enough for the player left over to ask the other two again
+  check(total() == 2, "three: one match, launched once on each of its two sides (" + std::to_string(total()) + " launches)");
+  int matched = 0, still = 0; std::string request;
+  bool same = true;
+  for (int i = 0; i < 3; ++i) {
+    if (launches[i].size() == 1) {
+      ++matched;
+      const std::string id = launches[i][0].value("request", std::string());
+      if (request.empty()) request = id; else same = same && request == id;
+      check(!searching(*all[i]), "three: a matched player stopped searching");
+    } else if (launches[i].empty() && searching(*all[i])) ++still;
+  }
+  check(matched == 2 && same, "three: two players hold the same match");
+  check(still == 1, "three: the third is still searching");
+}
+
+void p2p_block() {
+  std::cout << "-- p2p: a blocked player is never paired and never answered" << std::endl;
+  auto pair = make_pair("p2p-block", profile("Alpha", "ALPH#101", "t:source", 20), profile("Beta", "BETA#202", "t:source", 9));
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "block: discovery");
+  check(error_of([&] { a.command("block", {{"target", b.id()}}); }).empty(), "block: A blocks B");
+  const Json blocked = a.state()["blocked"];
+  check(blocked.size() == 1 && blocked[0] == b.id() && a.state()["players"][0].value("blocked", false), "block: A's list holds B");
+  check(!error_of([&] { a.command("request", {{"target", b.id()}}); }).empty(), "block: A cannot ask a player it blocked");
+  // B asks by hand: refused without a reason B could read anything into, and A is told nothing.
+  check(error_of([&] { b.command("request", {{"target", a.id()}}); }).empty(), "block: B's request leaves");
+  check(pump(a, b, 4000, [&] { return has_notice(b, "lobby.declined.other"); }), "block: B is told A cannot play right now");
+  check(a.state()["requests"].empty() && !has_kind(a, "refused"), "block: A sees no request and no notice about it");
+  // Both search: no match, however long.
+  pump(a, b, 3200);
+  a.command("search", {{"on", true}}); b.command("search", {{"on", true}});
+  Json launch; bool any = false;
+  pump(a, b, 9000, [&] { any = any || a.take_launch(launch) || b.take_launch(launch); return any; });
+  check(!any && searching(a) && searching(b), "block: two searching players, one blocked, are never paired");
+  // The list is kept with the friends: a new lobby on the same folder still has it.
+  const std::string folder = (pair.dir / "a").u8string();
+  const std::string b_id = b.id();
+  pair.a.reset();
+  launcher::lobby::PeerTestOptions options; options.no_dht = true;
+  PeerLobby again(folder, "", 0, options);
+  again.update_profile(profile("Alpha", "ALPH#101", "t:source", 20));
+  const Json kept = again.state()["blocked"];
+  check(kept.size() == 1 && kept[0] == b_id, "block: the list survives a restart");
+  check(error_of([&] { again.command("unblock", {{"target", b_id}}); }).empty() && again.state()["blocked"].empty(), "block: and can be undone");
+}
+
+void p2p_old_protocol() {
+  std::cout << "-- p2p: a launcher on an older lobby protocol is refused, with the reason" << std::endl;
+  launcher::lobby::PeerTestOptions current, old; old.protocol = 3;
+  auto pair = make_pair_with("p2p-old", profile("Alpha", "ALPH#101", "t:source", 20), profile("Beta", "BETA#202", "t:source", 9), current, old);
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "old: an older launcher is still discovered");
+  check(a.state()["players"][0].value("protocol", 0) == 3, "old: and is known to be older");
+  const auto error = error_of([&] { a.command("request", {{"target", b.id()}}); });
+  check(error == launcher::lang::tr("lobby.declined.p2p_version", {{"name", "Beta"}}), "old: asking them says why at once: " + error);
+  check(a.state()["requests"].empty(), "old: nothing was sent");
+  // The older launcher asks: it gets a refusal it can show, and this player is told too.
+  check(error_of([&] { b.command("request", {{"target", a.id()}}); }).empty(), "old: their request leaves");
+  check(pump(a, b, 4000, [&] { return has_notice(a, "lobby.refused.p2p_version") && b.state()["requests"].empty(); }),
+        "old: it is refused, and this player hears why");
+  const Json refused = notice(b, "lobby.declined.p2p_version");
+  check(!refused.is_null() && a.state()["requests"].empty(), "old: the older launcher is told the reason");
+  Json launch;
+  pump(a, b, 1000);
+  check(!a.take_launch(launch) && !b.take_launch(launch), "old: no match starts");
+  // An older launcher that is searching is never asked by automatic pairing.
+  pump(a, b, 3200);
+  a.command("search", {{"on", true}});
+  bool any = false;
+  pump(a, b, 6000, [&] { any = any || a.take_launch(launch) || b.take_launch(launch); return any; });
+  check(!any && searching(a) && a.state()["requests"].empty(), "old: automatic pairing leaves them alone");
+}
+
+// Connect by address: B never heard of A (no bootstrap); A's invite line is all it gets.
+void p2p_invite() {
+  std::cout << "-- p2p: connect by address with an invite line" << std::endl;
+  const fs::path dir = fs::temp_directory_path() / ("mu-p2p-" + std::to_string(GetCurrentProcessId()) + "-p2p-invite");
+  std::error_code ec; fs::remove_all(dir, ec); fs::create_directories(dir, ec);
+  launcher::lobby::PeerTestOptions options; options.no_dht = true;
+  PeerLobby a((dir / "a").u8string(), "", 0, options), b((dir / "b").u8string(), "", 0, options);
+  a.join(profile("Alpha", "ALPH#101", "t:source", 20)); b.join(profile("Beta", "BETA#202", "t:source", 9));
+  pump(a, b, 300);
+  const std::string own = a.invite();
+  check(own.rfind("MUINVITE1|" + a.id() + "|", 0) == 0 && own.size() > 5 && own.substr(own.size() - 6) == "|Alpha", "invite: the line holds the key and the name");
+  // This PC may have no network address but loopback, so the test writes the address itself.
+  const std::string line = "MUINVITE1|" + a.id() + "|127.0.0.1:" + std::to_string(a.port()) + "|Alpha";
+  check(!error_of([&] { b.command("connect", {{"invite", "hello"}}); }).empty(), "invite: text that is not an invite is refused");
+  check(!error_of([&] { a.command("connect", {{"invite", line}}); }).empty(), "invite: a player's own invite is refused");
+  check(error_of([&] { b.command("connect", {{"invite", "  " + line + "\r\n"}}); }).empty(), "invite: a pasted line is taken");
+  check(pump(a, b, 6000, [&] { return has_notice(b, "lobby.invite.found"); }), "invite: the two launchers find each other");
+  const Json found = b.state()["invite"];
+  check(found.value("found", std::string()) == a.id() && found.value("seq", 0) == 1 && b.state()["players"].size() == 1,
+        "invite: the player is named for the list to select");
+}
+#endif
 }  // namespace
 
 int main() {
   WSADATA ws{};
   if (WSAStartup(MAKEWORD(2, 2), &ws)) { std::cerr << "no Winsock\n"; return 2; }
   try {
+#ifdef MELEE_NO_SLIPPI
+    // The launcher built without the Slippi layer: its accepted matches are peer-to-peer and it
+    // refuses the older flow, so only the cases written for it run here (the rest of this file is
+    // the normal build's port_launcher_lobby_p2p).
+    p2p_setup();
+    p2p_setup_loss();
+    p2p_auto_two();
+    p2p_auto_three();
+    p2p_block();
+    p2p_old_protocol();
+    p2p_invite();
+    WSACleanup();
+    std::cout << (failures ? "FAILED: " + std::to_string(failures) : std::string("PASS: launcher lobby peer-to-peer matches")) << std::endl;
+    return failures ? 1 : 0;
+#endif
     accept_flow();
     cross_build_flow();
     refusals();

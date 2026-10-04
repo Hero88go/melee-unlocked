@@ -10,6 +10,6 @@ cmd=$(cd "$ROOT" && $N -C build-sourceport-gcc -t commands "$obj" | tail -1)
 [ -z "$cmd" ] && { echo "no build command for $rel"; exit 2; }
 out="$(cygpath -m "${TMP:-/tmp}")/cc1_$$_$(basename "$rel").obj"
 cmd=$(printf '%s' "$cmd" | tr '\' '/' | sed -E "s# -o [^ ]+# -o \"$out\"#; s# -MD -MT [^ ]+ -MF [^ ]+##")
-cd "$ROOT/build-sourceport-gcc" && eval "$cmd" 2>&1 | grep -E "error|note: in expansion" | sed 's#C:/Users/Chandler/NEW project/melee-sourceport/sourceport/extern/melee/##'
+cd "$ROOT/build-sourceport-gcc" && eval "$cmd" 2>&1 | grep -E "error|note: in expansion" | sed "s#$ROOT/sourceport/extern/melee/##"
 rc=${PIPESTATUS:-0}
 rm -f "$out"

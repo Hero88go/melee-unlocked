@@ -8,12 +8,17 @@
 #include <psapi.h>
 #include "host.h"
 #include "gecko_data.h"
-#include "slippi_playback.h"
 #include "render_observer.h"
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"   // the same names, answered from the neutral netplay state
+#include "source_p2p.h"      // --p2p-*: a peer-to-peer match from the command line
+#else
+#include "slippi_playback.h"
 #include "exi_slippi.h"
 #include "slippi_online.h"
 #include "slippi_net.h"
 #include "jukebox.h"
+#endif
 #include "audio.h"
 #include "guest_registry.h"
 #include "gx_backend.h"
@@ -28,7 +33,6 @@
 #include "threaded_backend.h"
 #include "window.h"
 #include "lcancel.h"
-#include "jukebox.h"
 #include "user_gecko.h"
 #include "updater.h"
 #include "discord_presence.h"
@@ -700,19 +704,36 @@ static void trace_root_fobj_entry(ppc::Context& context) {
 namespace ppc { void init_dispatch(); }
 
 static void usage() {
-  std::printf("melee_port --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
+#ifdef MELEE_NO_SLIPPI   // this build is melee_source.exe; it has no lobby code, replay or recording options
+#define USAGE_EXE "melee_source"
+#else
+#define USAGE_EXE "melee_port"
+#endif
+  std::printf(USAGE_EXE " --iso <path> [--frames N] [--fast] [--headless] [--scale N|auto] [--window WxH] [--vsync]\n"
               "           [--dlss-mode 0..5 --frame-generation[=2x|3x|4x|5x|6x|dynamic]] [--ssao 0..1]\n"
               "           [--aspect auto|73:60|4:3|16:9|stretch] [--widescreen|--true-widescreen]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
               "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--music 0-100|--no-music] [--volume 0-100] [--audio-dump out.wav]\n"
               "           [--settings-path file --load-settings --import-cosmetic file|--scan-disc-skins mod.iso|--select-cosmetic id|--enable-project-effects|--restore-vanilla-cosmetics|--cosmetic-status]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
+#undef USAGE_EXE
+#ifdef MELEE_NO_SLIPPI
+  std::printf("           [--lobby-status-file path] [--card-self-test <new scratch directory>]\n"
+              "           [--mod-profile <name>] [--mod-dir <disc files directory>]... [--mod-iso <patched ISO>]... [--mod-gci <save.gci>]...\n");
+#else
   std::printf("           [--lobby-direct NAME#123 --lobby-character 0..255 --lobby-status-file path]\n");
   std::printf("           [--replay <file.slp> [--as-experienced | --trace <file.trace>]]\n");
 #ifdef MELEE_SOURCE_PORT
   std::printf("           [--card-self-test <new scratch directory>]\n"
               "           [--replay <file.slp> --replay-dir <directory>] [--record-native]\n"
               "           [--mod-profile <name>] [--mod-dir <disc files directory>]... [--mod-iso <patched ISO>]... [--mod-gci <save.gci>]...\n");
+#endif
+#endif
+#ifdef MELEE_NO_SLIPPI
+  std::printf("           [--p2p-port <local udp port> --p2p-peer <ip:port>... --p2p-slot 0|1 --p2p-chars <id>[/<color>]:<id>[/<color>]\n"
+              "            --p2p-stage <id> --p2p-seed <hex> --p2p-delay 1..15 --p2p-identity <file> --p2p-expect <64 hex identity key>\n"
+              "            --p2p-result <file> --p2p-names <a>:<b> --p2p-connect-seconds <1..600> --p2p-games <n, 0 = no limit>]\n"
+              "            (both players pass the same chars, stage, seed, delay and names)\n");
 #endif
 }
 
@@ -1471,6 +1492,13 @@ static int melee_main(int argc, char** argv) {
     // "<replay>.trace" beside the replay. Without a usable trace the replay plays normally.
     else if (a == "--trace") replay_control::set_trace_file(next());
     else if (a == "--as-experienced") replay_control::set_as_experienced(true);
+#ifdef MELEE_NO_SLIPPI
+    // No matchmaking in this build: only the two launch settings a session of its own still reads.
+    else if (a == "--lobby-status-file") slippi::online::config().lobby_status_file = next();
+    else if (a == "--online-delay") slippi::online::config().delay = std::atoi(next());
+    // A peer-to-peer match at boot (source_p2p.cpp); every --p2p-* option takes one value.
+    else if (a.rfind("--p2p-", 0) == 0) { if (!source_p2p::option(a, next())) { usage(); return 2; } }
+#else
     else if (a == "--user-dir") slippi::online::config().user_dir = next();
     else if (a == "--lobby-direct") {
       std::string code = next();
@@ -1519,6 +1547,7 @@ static int melee_main(int argc, char** argv) {
       if (stage < 0 || stage > 0xFFFF) { std::fprintf(stderr, "--test-stage requires a legal Slippi stage id\n"); return 2; }
       lp.test_stage = stage;
     }
+#endif
     else if (a == "--dump-frame") gfx.dump_frame = (uint32_t)std::strtoul(next(), nullptr, 0);
     else if (a == "--trace-calls") o.trace_calls = true;
     else if (a == "--quiet") o.quiet = true;
@@ -1581,6 +1610,7 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--cpu-training") gx::RenderOptions::live_cpu_training() = (uint32_t)std::strtoul(next(), nullptr, 16);   // option word 3 (hex), tests
     else if (a == "--mod-profile") { if (!source_port::set_mod_profile(next())) return 2; }
     else if (a == "--mod-opponent-unverified") gx::RenderOptions::live_mods_dolphin_ok() = true;
+#ifndef MELEE_NO_SLIPPI   // the build without that layer has no recording, no such menus and no such test entry: unknown options there
     else if (a == "--record-native") _putenv_s("MELEE_SOURCE_RECORD", "1");
     else if (a == "--slippi-menus") { const std::string v = next();
       if (v != "on" && v != "off") { std::fprintf(stderr, "--slippi-menus on|off\n"); return 2; }
@@ -1588,11 +1618,18 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--online-test") { if (!source_port::set_online_test(next())) {
       std::fprintf(stderr, "--online-test direct|unranked|teams[:<character>[:<color>]] (with --local-peer)\n"); return 2; } }
 #endif
+#endif
     else if (a == "--settings-window") {}
     else if (a == "--settings-standby") next();
     else if (a == "--settings-tab") next();
     else { usage(); return 2; }
   }
+#ifdef MELEE_NO_SLIPPI
+  // This build is always the game without the General Codes: retail menus, rules and music.
+  (void)allow_matchmaking;
+  o.vanilla_game = true;
+  if (!source_p2p::check()) { usage(); return 2; }
+#else
   if ((hidden || headless || scripted) && !allow_matchmaking) slippi::Matchmaking::server_allowed = false;
   if (slippi::Matchmaking::local_peer.test_stage >= 0) {
     const int stage = slippi::Matchmaking::local_peer.test_stage;
@@ -1604,10 +1641,15 @@ static int melee_main(int argc, char** argv) {
       return 2;
     }
   }
+#endif
   // The Static Recomp runs Slippi's code from its code table; the Source Port game reads the same
   // flag (MU_GAME_OPTION_WIDESCREEN) and runs its native version of the code.
   gecko::option_widescreen = gfx.widescreen;
+#ifdef MELEE_NO_SLIPPI
+  if (gfx.widescreen) std::fprintf(stderr, "widescreen: 16:9 code on\n");
+#else
   if (gfx.widescreen) std::fprintf(stderr, "widescreen: Slippi 16:9 on\n");
+#endif
   gecko::option_lagless_fod = !gfx.fod_reflections; // the Gecko flag is the inverse of the UI label
   if (fps_requested && gfx.subframe == gx::SubFrameMode::Off) {
     std::fprintf(stderr, "--fps requires explicit experimental --frame-mode interpolate, extrapolate or authored\n");
@@ -1704,10 +1746,17 @@ static int melee_main(int argc, char** argv) {
   if (gx::RenderOptions::kModFeaturesAvailable && !source_port::has_mod_layers() && !gfx.mod_profile.empty() &&
       !source_port::set_mod_profile(gfx.mod_profile.c_str()))
     host::log("mods: saved profile %s could not be loaded; starting the retail game", gfx.mod_profile.c_str());
+#ifdef MELEE_NO_SLIPPI
+  if (!replay_arg.empty()) {
+    std::fprintf(stderr, "--replay is not available in this build\n");
+    return 2;
+  }
+#else
   if (!replay_arg.empty() && !source_port::set_replay(replay_arg.c_str())) {
     std::fprintf(stderr, "cannot play replay %s\n", replay_arg.c_str());
     return 1;
   }
+#endif
 #endif
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
@@ -1794,9 +1843,17 @@ static int melee_main(int argc, char** argv) {
     host::discord::shutdown();
     host::gcadapter_shutdown();
     host::switchpro_shutdown();
+#ifdef MELEE_NO_SLIPPI
+    source_p2p::shutdown();   // the result file once more, then the session's thread and socket
+#endif
     slippi::shutdown();
     host::log_flush();   // the process ends with ExitProcess right after this (source_host.cpp guarded)
   };
+#ifdef MELEE_NO_SLIPPI
+  // With --p2p-port and --p2p-peer: the session starts connecting now, and the game boots straight
+  // into the match scene and waits there for it.
+  source_p2p::start(hidden || headless || scripted);
+#endif
   if (g_profile) g_profiler.start();   // the native game runs on this thread; shutdown() reports
   const int source_code = source_port::run(shutdown);
   shutdown(source_code);
@@ -1927,7 +1984,9 @@ static int melee_main(int argc, char** argv) {
   if (ppc::g_computed_return_checks || ppc::g_resumed_returns)
     host::log("gecko: adjusted-return checks %llu, resumed %llu (UCF Shield Drop and the like)",
               (unsigned long long)ppc::g_computed_return_checks, (unsigned long long)ppc::g_resumed_returns);
+#ifndef MELEE_NO_SLIPPI   // nothing to count in the build without that layer
   host::log("slippi: %llu EXI commands, %llu replays written, GCT at %08X", (unsigned long long)slippi::commands_seen(),
             (unsigned long long)slippi::replays_written(), slippi::gct_load_address());
+#endif
   host::end_process(code);   // everything is saved: do not run the libraries' unload code (host.cpp)
 }

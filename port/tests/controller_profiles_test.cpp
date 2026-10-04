@@ -28,7 +28,7 @@ int main() {
 
   // Round trip, including values only a HID pad or the keyboard would use.
   host::ProfileBindings box{};
-  for (int i = 0; i < host::kProfileActions; ++i) box[i] = 1u << (i + 12);
+  for (int i = 0; i < host::kProfileActions; ++i) box[i] = 1u << (i % 20 + 12);
   box[4] = 0;   // an unbound action stays unbound
   CHECK(host::profile_save(host::ProfileDevice::Hid, "B0XX tournament", box));
   host::ProfileBindings read{};

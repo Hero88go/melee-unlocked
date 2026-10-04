@@ -394,7 +394,11 @@ void report_kept_compiled(const uint8_t* boot_reference, const uint8_t* referenc
     if (at != reported.end() && *at == owner) return;
     reported.insert(at, owner);
     if (std::binary_search(g_redirected.begin(), g_redirected.end(), owner)) return;   // already runs from RAM
+#ifdef MELEE_NO_SLIPPI
+    host::log("mods: kept compiled %08X %s: %u words, main code list", owner, name, words);
+#else
     host::log("mods: kept compiled %08X %s: %u words, Slippi main list", owner, name, words);
+#endif
   };
   for (uint32_t off = 0; off + 4 <= size; off += 4) {
     const uint32_t addr = base + off;

@@ -21,7 +21,13 @@
 #include "gx_backend.h"
 #include "gx_shader.h"
 #include "gx_d3d12.h"
+#ifdef MELEE_NO_SLIPPI
+#include "netplay_state.h"   // the same names, answered from the neutral netplay state
+#else
 #include "jukebox.h"
+#include "slippi_online.h"
+#include "native_practice.h"
+#endif
 #include "window.h"
 #include "audio.h"
 #include "host.h"
@@ -31,8 +37,6 @@
 #include "../abi/mu_lcancel_flash.h"
 #include "user_gecko.h"
 #include "gecko_data.h"
-#include "slippi_online.h"
-#include "native_practice.h"
 #include "hid_pad.h"
 #include "updater.h"
 #include "discord_presence.h"
@@ -239,13 +243,17 @@ static const char* kActionNames[(size_t)host::BindAction::Count] = {
   "CUp", "CDown", "CLeft", "CRight",
   // Added after the control stick became rebindable. A settings file written before that has no
   // these lines, so the arrow key defaults stand and nobody's setup changes on upgrade.
-  "SUp", "SDown", "SLeft", "SRight"
+  "SUp", "SDown", "SLeft", "SRight",
+  // Added when L and R were split into the click and the travel. A file without these lines is an
+  // older one, whose single L / R bindings are carried over (see split_old_trigger_bindings).
+  "LAnalog", "RAnalog"
 };
 // The same, as the controls picture writes them.
 static const char* kActionTitles[(size_t)host::BindAction::Count] = {
   "A", "B", "X", "Y", "Z", "Start", "L", "R", "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right",
   "C Up", "C Down", "C Left", "C Right",
-  "Stick Up", "Stick Down", "Stick Left", "Stick Right"
+  "Stick Up", "Stick Down", "Stick Left", "Stick Right",
+  "L analog", "R analog"
 };
 
 // ---- Port-source <-> combo-box index, shared by load/save and the Port assignment UI ----
@@ -612,19 +620,34 @@ static uint8_t* binding_level(host::CaptureDevice kind, int index, int action) {
   }
 }
 
+// The bits of this kind of device's bindings that name its analog triggers (0: it has none that can
+// be bound), and whether it is an Xbox pad, whose triggers used to click by themselves.
+static void trigger_sources(host::CaptureDevice kind, uint32_t* left, uint32_t* right, bool* xinput) {
+  *left = *right = 0; *xinput = false;
+  switch (kind) {
+    case host::CaptureDevice::XInputPad: *left = host::kXInputBindLT; *right = host::kXInputBindRT; *xinput = true; break;
+    case host::CaptureDevice::DS4Pad:    *left = host::DS4_L2; *right = host::DS4_R2; break;
+    case host::CaptureDevice::GCAdapter:
+      *left = host::kActionPadBit[(size_t)host::BindAction::L]; *right = host::kActionPadBit[(size_t)host::BindAction::R]; break;
+    default: break;
+  }
+}
+
 // What the level means on this row. 0: nothing, no control is shown. 1: the press point of an
-// analog source (an Xbox LT/RT, a PlayStation L2/R2). 2: how far a button bound to L or R presses
-// the trigger. The same split window.cpp makes when it applies the bindings.
+// analog source (an Xbox LT/RT, a PlayStation L2/R2, a GameCube trigger). 2: how far a button bound
+// to L analog or R analog presses the trigger. The same split input_bindings.h makes when it
+// applies the bindings.
 static int binding_level_kind(host::CaptureDevice kind, int index, int action) {
   const uint32_t v = binding_get(kind, index, action);
   if (!v) return 0;
-  if (kind == host::CaptureDevice::XInputPad && (v & (host::kXInputBindLT | host::kXInputBindRT))) return 1;
-  if (kind == host::CaptureDevice::DS4Pad && (v & (host::DS4_L2 | host::DS4_R2))) return 1;
-  if (!host::is_trigger_action(action)) return 0;
-  // The adapter's own L and R clicks come with its analog triggers.
-  if (kind == host::CaptureDevice::GCAdapter &&
-      (v & (host::kActionPadBit[(size_t)host::BindAction::L] | host::kActionPadBit[(size_t)host::BindAction::R]))) return 0;
-  return 2;
+  uint32_t left, right; bool xinput;
+  trigger_sources(kind, &left, &right, &xinput);
+  // The travel bindings: a trigger passes its travel through and has nothing to set; a button has
+  // its depth.
+  if (host::is_analog_action(action)) return (v & ~(left | right)) ? 2 : 0;
+  // The D-pad and Start are plain presses whatever they are bound to.
+  if (action == (int)host::BindAction::Start || (action >= (int)host::BindAction::DUp && action <= (int)host::BindAction::DRight)) return 0;
+  return (v & (left | right)) ? 1 : 0;
 }
 
 struct BindingKeyPrefix { host::CaptureDevice kind; const char* prefix; };
@@ -668,21 +691,39 @@ static std::string binding_levels_text() {
   return out;
 }
 
-static std::string binding_label(host::CaptureDevice kind, int index, int action) {
-  const uint32_t v = binding_get(kind, index, action);
+static std::string binding_source_label(host::CaptureDevice kind, int action, uint32_t v) {
   char label[32];
   switch (kind) {
     case host::CaptureDevice::Keyboard:  format_key_label((int)v, label, sizeof label); return label;
-    case host::CaptureDevice::XInputPad:
-      if (action == (int)host::BindAction::L && !v) return "LT analog";
-      if (action == (int)host::BindAction::R && !v) return "RT analog";
-      return xinput_button_name((unsigned short)v);
+    case host::CaptureDevice::XInputPad: return xinput_button_name((unsigned short)v);
     case host::CaptureDevice::DS4Pad:    return ds4_button_name((unsigned short)v);
     case host::CaptureDevice::SwitchPro: return swpro_button_name((unsigned short)v);
     case host::CaptureDevice::HidPad:    return hid_button_name(v);
-    case host::CaptureDevice::GCAdapter: return gc_button_name((unsigned short)v);
+    case host::CaptureDevice::GCAdapter:
+      // On a travel binding the adapter's L and R bits are the trigger's travel, not its click.
+      if (host::is_analog_action(action) && v == host::kActionPadBit[(size_t)host::BindAction::L]) return "L trigger";
+      if (host::is_analog_action(action) && v == host::kActionPadBit[(size_t)host::BindAction::R]) return "R trigger";
+      return gc_button_name((unsigned short)v);
     default: return "?";
   }
+}
+
+static std::string binding_label(host::CaptureDevice kind, int index, int action) {
+  const uint32_t v = binding_get(kind, index, action);
+  if (!v && (host::is_trigger_action(action) || host::is_analog_action(action))) {
+    // A box's own trigger axis has no source to bind: it always feeds the travel.
+    if (kind == host::CaptureDevice::HidPad && host::is_analog_action(action)) return "Device axis";
+    return "Not bound";
+  }
+  // A binding carried over from before L and R were split can hold two sources (a bumper and the
+  // trigger that also clicked): both are named. Key codes are numbers, not bits.
+  if (kind != host::CaptureDevice::Keyboard && (v & (v - 1))) {
+    std::string joined;
+    for (uint32_t bit = 1; bit; bit <<= 1)
+      if (v & bit) joined += (joined.empty() ? "" : " + ") + binding_source_label(kind, action, bit);
+    return joined;
+  }
+  return binding_source_label(kind, action, v);
 }
 
 static host::ProfileDevice profile_device_for(host::CaptureDevice kind) {
@@ -757,6 +798,54 @@ static void set_bindings_of(int tab, const host::ProfileBindings& b) {
   int index; const host::CaptureDevice kind = tab_kind_of(tab, &index);
   for (int i = 0; i < (int)host::BindAction::Count; ++i) binding_set(kind, index, i, b[i]);
 }
+// ---- bindings saved before L and R were split into the click and the travel ----
+// One table (the settings file's, or a profile's) carried over so it plays exactly as it did; the
+// rule is in input_bindings.h (migrate_trigger_bindings). Levels live in the device's own table.
+static void split_old_trigger_bindings(host::CaptureDevice kind, int index, host::ProfileBindings& b) {
+  uint32_t left, right; bool xinput;
+  trigger_sources(kind, &left, &right, &xinput);
+  if (uint8_t* level = binding_level(kind, index, 0)) host::migrate_trigger_bindings(b.data(), level, left, right, xinput);
+}
+// Which tables the settings file being read mentions at all, and which of those have an L analog or
+// R analog line (bit = device number). A table with lines but neither of those is an older one.
+static uint32_t g_binding_tables_seen = 0, g_binding_tables_split = 0;
+// Looks at a settings key without claiming it: always false, so the line is still read below.
+static bool note_binding_table(const std::string& key) {
+  static const std::string suffix = "_level";
+  std::string base = key;
+  if (base.size() > suffix.size() && base.compare(base.size() - suffix.size(), suffix.size(), suffix) == 0) base.resize(base.size() - suffix.size());
+  int tab = -1;
+  std::string action;
+  if (base.rfind("key_", 0) == 0) { tab = 0; action = base.substr(4); }
+  else if (base.rfind("pad_", 0) == 0) { tab = 1; action = base.substr(4); }   // the oldest format: Xbox pad 1
+  else {
+    for (const BindingKeyPrefix& f : kBindingKeyPrefixes) {
+      const size_t n = std::char_traits<char>::length(f.prefix);
+      if (base.size() <= n + 2 || base.compare(0, n, f.prefix) != 0 || base[n] < '0' || base[n] > '3' || base[n + 1] != '_') continue;
+      const int first = f.kind == host::CaptureDevice::XInputPad ? 1 : f.kind == host::CaptureDevice::DS4Pad ? 5
+                      : f.kind == host::CaptureDevice::GCAdapter ? 9 : f.kind == host::CaptureDevice::SwitchPro ? 13 : 17;
+      tab = first + (base[n] - '0'); action = base.substr(n + 2);
+      break;
+    }
+  }
+  if (tab < 0) return false;
+  for (int i = 0; i < (int)host::BindAction::Count; ++i) {
+    if (action != kActionNames[i]) continue;
+    g_binding_tables_seen |= 1u << tab;
+    if (host::is_analog_action(i)) g_binding_tables_split |= 1u << tab;
+  }
+  return false;
+}
+static void split_old_trigger_tables() {
+  for (int tab = 0; tab < kDeviceTabs; ++tab) {
+    if (!(g_binding_tables_seen & (1u << tab)) || (g_binding_tables_split & (1u << tab))) continue;
+    int index; const host::CaptureDevice kind = tab_kind_of(tab, &index);
+    host::ProfileBindings b = bindings_of(tab);
+    split_old_trigger_bindings(kind, index, b);
+    set_bindings_of(tab, b);
+  }
+}
+
 static void capture_default_bindings() {
   if (g_defaults_captured) return;
   for (int t = 0; t < kDeviceTabs; ++t) g_default_bindings[t] = bindings_of(t);
@@ -863,7 +952,14 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
     for (const std::string& name : list) {
       if (ImGui::Selectable(name.c_str(), !is_default && name == current)) {
         host::ProfileBindings pb = bindings_of(tab);   // an older profile keeps the current stick keys
+        const int la = (int)host::BindAction::LAnalog, ra = (int)host::BindAction::RAnalog;
+        pb[la] = pb[ra] = host::kProfileActionAbsent;
         if (host::profile_load(device, name, pb)) {
+          // A profile from before L and R were split: its single L / R bindings are carried over.
+          if (pb[la] == host::kProfileActionAbsent || pb[ra] == host::kProfileActionAbsent) {
+            pb[la] = pb[ra] = 0;
+            split_old_trigger_bindings(kind, index, pb);
+          }
           for (int i = 0; i < (int)host::BindAction::Count; ++i) binding_set(kind, index, i, pb[i]);
           g_active_profile[tab] = name;
           g_named_profile_active[tab] = true;
@@ -995,7 +1091,9 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
   for (int i = kHalf - 2; i >= 1; --i) pts[n++] = C(1198 - left_half[i][0], left_half[i][1]);
   // Shoulders sit behind the body, only their tops showing: L grey on the left, R grey on the right
   // with the blue Z on top of it (measured: L 416..485 x 138..183, Z 713..779 x 147..177).
-  const bool l_on = (live >> (int)A::L) & 1, r_on = (live >> (int)A::R) & 1, z_on = (live >> (int)A::Z) & 1;
+  // A shoulder lights for its click and for its travel alike.
+  const bool l_on = ((live >> (int)A::L) | (live >> (int)A::LAnalog)) & 1, r_on = ((live >> (int)A::R) | (live >> (int)A::RAnalog)) & 1;
+  const bool z_on = (live >> (int)A::Z) & 1;
   const ImU32 shoulder = IM_COL32(150, 150, 158, 255), shoulder_on = IM_COL32(240, 150, 40, 255);
   dl->AddEllipseFilled(C(451, 166), ImVec2(37 * kc, 21 * kc), l_on ? shoulder_on : shoulder, -0.45f, 40);
   dl->AddEllipseFilled(C(747, 166), ImVec2(37 * kc, 21 * kc), r_on ? shoulder_on : shoulder, 0.45f, 40);
@@ -1110,10 +1208,12 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
   };
 
   // ---- callouts: grouped the way Ultimate groups them ----
+  // Each shoulder has its click and its travel as separate boxes (L, L analog; R, R analog, then Z).
+  // The right group holds three, so its rows sit closer than the others to end above the face group.
   std::vector<GcCallout> boxes = {
-    {(int)A::L, 24, 30, 200},
+    {(int)A::L, 24, 30, 200}, {(int)A::LAnalog, 24, 70, 200},
     {(int)A::DUp, 24, 120, 200}, {(int)A::DDown, 24, 160, 200}, {(int)A::DLeft, 24, 200, 200}, {(int)A::DRight, 24, 240, 200},
-    {(int)A::R, 736, 30, 200}, {(int)A::Z, 736, 70, 200},
+    {(int)A::R, 736, 22, 200}, {(int)A::RAnalog, 736, 56, 200}, {(int)A::Z, 736, 90, 200},
     {(int)A::Y, 736, 142, 200}, {(int)A::X, 736, 182, 200}, {(int)A::A, 736, 222, 200}, {(int)A::B, 736, 262, 200},
     {(int)A::Start, 380, 6, 200},
   };
@@ -1130,8 +1230,9 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
   constexpr float kBoxH = 32;
   // Grey group panels behind the boxes.
   const ImU32 group = IM_COL32(172, 173, 182, 255);
+  dl->AddRectFilled(P(14, 20), P(234, 106), group, 8 * k);     // L and L analog
   dl->AddRectFilled(P(14, 110), P(234, 282), group, 8 * k);
-  dl->AddRectFilled(P(726, 20), P(946, 112), group, 8 * k);
+  dl->AddRectFilled(P(726, 14), P(946, 128), group, 8 * k);    // R, R analog and Z
   dl->AddRectFilled(P(726, 132), P(946, 304), group, 8 * k);
   if (!analog_c) dl->AddRectFilled(P(206, 342), P(762, 432), group, 8 * k);   // both direction rows
 
@@ -1146,12 +1247,12 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
   // Where each callout points, and the cyan outline drawn round that part when it is active.
   auto target_of = [&](int action) -> ImVec2 {
     switch (action) {
-      case (int)A::L: return C(440, 145);
+      case (int)A::L: case (int)A::LAnalog: return C(440, 145);   // one bracket round L and L analog
       case (int)A::DUp: return C(528, 344 - 24);
       case (int)A::DDown: return C(528, 344 + 24);
       case (int)A::DLeft: return C(528 - 24, 344);
       case (int)A::DRight: return C(528 + 24, 344);
-      case (int)A::R: case (int)A::Z: return C(790, 160);   // one bracket round R and Z
+      case (int)A::R: case (int)A::RAnalog: case (int)A::Z: return C(790, 160);   // one bracket round R, R analog and Z
       case (int)A::A: case (int)A::B: case (int)A::X: case (int)A::Y: return C(800, 240);
       case (int)A::Start: return start_c;
       default: break;
@@ -1177,23 +1278,26 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
     } else if (action == kCStickModeBox || (action >= (int)A::CUp && action <= (int)A::CRight))
       dl->AddNgon(cst_c, 37 * kc, col, 8, th);
     else if (action == (int)A::Start) dl->AddCircle(start_c, 14 * kc, col, 24, th);
-    else if (action == (int)A::L) dl->AddEllipse(C(451, 166), ImVec2(41 * kc, 25 * kc), col, -0.45f, 40, th);
-    else if (action == (int)A::R) dl->AddEllipse(C(747, 166), ImVec2(41 * kc, 25 * kc), col, 0.45f, 40, th);
+    else if (action == (int)A::L || action == (int)A::LAnalog) dl->AddEllipse(C(451, 166), ImVec2(41 * kc, 25 * kc), col, -0.45f, 40, th);
+    else if (action == (int)A::R || action == (int)A::RAnalog) dl->AddEllipse(C(747, 166), ImVec2(41 * kc, 25 * kc), col, 0.45f, 40, th);
     else if (action == (int)A::Z) dl->AddEllipse(C(746, 164), ImVec2(38 * kc, 17 * kc), col, 0.38f, 32, th);
   };
 
   // Leader lines: one per group, from the group's edge to its part, as on Ultimate's screen.
-  auto leader = [&](ImVec2 from, ImVec2 to, bool active) {
-    const ImU32 col = active ? IM_COL32(255, 255, 255, 255) : cyan;
-    const ImVec2 elbow(to.x, from.y);
-    dl->AddLine(from, elbow, col, 2.0f * k);
-    dl->AddLine(elbow, to, col, 2.0f * k);
-    dl->AddCircleFilled(from, 3.5f * k, col, 12);
-  };
   auto active = [&](int action) { return action == hovered || action == capturing; };
   auto any_active = [&](std::initializer_list<int> list) { for (int a : list) if (active(a)) return true; return false; };
   const ImU32 white = IM_COL32(255, 255, 255, 255);
-  leader(P(224, 46), target_of((int)A::L), active((int)A::L));
+  {  // L and L analog share one bracket, the mirror of the right shoulder's
+    const ImVec2 to = target_of((int)A::L);
+    const ImU32 col = any_active({(int)A::L, (int)A::LAnalog}) ? white : cyan;
+    const float x = P(244, 0).x, y0 = P(0, 46).y, y1 = P(0, 86).y;
+    dl->AddLine(P(234, 46), ImVec2(x, y0), col, 2.0f * k);
+    dl->AddLine(P(234, 86), ImVec2(x, y1), col, 2.0f * k);
+    dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), col, 2.0f * k);
+    dl->AddLine(ImVec2(x, to.y), to, col, 2.0f * k);
+    dl->AddCircleFilled(P(234, 46), 3.5f * k, col, 12);
+    dl->AddCircleFilled(P(234, 86), 3.5f * k, col, 12);
+  }
   {  // D-pad: across to the pad, then to the arm being pointed at
     int dir = -1;
     for (int a : {(int)A::DUp, (int)A::DDown, (int)A::DLeft, (int)A::DRight}) if (active(a)) dir = a;
@@ -1204,16 +1308,16 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
     dl->AddLine(corner, dir >= 0 ? target_of(dir) : C(528 - 24, 344), col, 2.0f * k);
     dl->AddCircleFilled(from, 3.5f * k, col, 12);
   }
-  {  // R and Z share one bracket
+  {  // R, R analog and Z share one bracket
     const ImVec2 to = target_of((int)A::R);
-    const ImU32 col = any_active({(int)A::R, (int)A::Z}) ? white : cyan;
-    dl->AddLine(P(726, 46), ImVec2(P(716, 0).x, P(0, 46).y), col, 2.0f * k);
-    dl->AddLine(P(726, 86), ImVec2(P(716, 0).x, P(0, 86).y), col, 2.0f * k);
-    dl->AddLine(ImVec2(P(716, 0).x, P(0, 46).y), ImVec2(P(716, 0).x, P(0, 86).y), col, 2.0f * k);
-    dl->AddLine(ImVec2(P(716, 0).x, to.y), to, col, 2.0f * k);
-    dl->AddLine(ImVec2(P(716, 0).x, to.y), ImVec2(P(716, 0).x, P(0, 46).y), col, 2.0f * k);
-    dl->AddCircleFilled(P(726, 46), 3.5f * k, col, 12);
-    dl->AddCircleFilled(P(726, 86), 3.5f * k, col, 12);
+    const ImU32 col = any_active({(int)A::R, (int)A::RAnalog, (int)A::Z}) ? white : cyan;
+    const float x = P(716, 0).x, y0 = P(0, 38).y, y1 = P(0, 106).y;
+    for (float y : {38.0f, 72.0f, 106.0f}) {   // the three rows' middles
+      dl->AddLine(P(726, y), ImVec2(x, P(0, y).y), col, 2.0f * k);
+      dl->AddCircleFilled(P(726, y), 3.5f * k, col, 12);
+    }
+    dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), col, 2.0f * k);
+    dl->AddLine(ImVec2(x, to.y), to, col, 2.0f * k);
   }
   {  // face buttons: across, then up to the right side of their frame
     const ImVec2 to = target_of((int)A::A);
@@ -1243,6 +1347,8 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
       case (int)A::Z: bg = IM_COL32(45, 75, 190, 255); t = "Z"; break;
       case (int)A::L: t = "L"; break;
       case (int)A::R: t = "R"; break;
+      case (int)A::LAnalog: t = "La"; break;
+      case (int)A::RAnalog: t = "Ra"; break;
       case (int)A::Start: t = "S"; break;
       default: break;
     }
@@ -1692,6 +1798,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   g_edit_follow_active = true;
   for (host::Deadzone& dz : host::g_deadzones) dz.click_l = dz.click_r = host::kDefaultTriggerClick;
   reset_binding_levels();   // a file without the keys: every binding as it always was
+  g_binding_tables_seen = g_binding_tables_split = 0;
   std::ifstream file(options.settings_path);
   // Start in the game. F1 and the launcher Settings entry remain available at any time.
   options.settings_open = false;
@@ -1843,6 +1950,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
         CustomPreset c; c.set = true;
         if (std::sscanf(value.c_str(), "%d %d %d %d %lf %d", &c.efb, &c.ssaa, &c.aniso, &c.dlss, &c.fps, &c.sub) == 6) g_custom_preset = c;
       }
+      else if (note_binding_table(key)) {}   // never true: it only notes which controller the line is for
       else if (load_family_option(key, value)) {}
       else if (load_binding_level(key, value)) {}
       else if (key == "autoopenoverlay") options.settings_open = value == "1";
@@ -1979,6 +2087,9 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       }
     } catch (...) { /* Ignore a malformed preference, retaining the safe default. */ }
   }
+  // A controller saved before L and R were split into the click and the travel keeps playing as it
+  // did. After the whole file, since a binding and its level can come in either order.
+  split_old_trigger_tables();
   // The old Ultra preset (4x supersampling under DLAA) becomes the new one (DLAA alone); see the
   // presets. Only that exact combination is changed.
   if (options.efb_scale == 0 && options.ssaa == 2 && options.anisotropy == 16 && options.dlss_mode == 1) options.ssaa = 1;
@@ -3227,8 +3338,13 @@ static bool settings_lcancel_flash(RenderOptions& options) {
         lcancel::set_indicator(mode == MU_LCFLASH_MU_MISSED);
         changed = true;
       }
+#ifdef MELEE_NO_SLIPPI   // one engine: only the save can be missing
+      if (unavailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Requires a loaded 20XX TE save.");
+#else
       if (unavailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Requires the Source Port and a loaded 20XX TE save.");
+#endif
       ImGui::EndDisabled();
     }
     ImGui::EndCombo();
@@ -3326,17 +3442,38 @@ static bool binding_level_slider(host::CaptureDevice kind, int index, int action
                         "Default uses the controller's own press point.");
   } else {
     std::snprintf(label, sizeof label, "%s (%s) press depth", kActionTitles[action], bound_to.c_str());
-    int shown = *level ? *level : 255;
-    if (settings_slider(label, &shown, 1, 255, shown >= 255 ? "Full" : "%d")) {
-      *level = (uint8_t)(shown >= 255 ? 0 : std::clamp(shown, 1, 254));
+    // 0 is "not set", which presses the default depth; the slider shows that depth and stores a number.
+    int shown = *level ? *level : host::kDefaultAnalogDepth;
+    if (settings_slider(label, &shown, 1, 255, "%d")) {
+      *level = (uint8_t)std::clamp(shown, 1, 255);
       changed = true;
     }
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("How far this button presses the trigger (out of 255).\n"
-                        "Full: a full press with the click, for a full shield.\n"
-                        "A number: a light press with no click. Melee shields lightly from 43 to 140.");
+                        "It is the travel only and never clicks: Melee shields lightly from 43 to 140.\n"
+                        "For the full press (full shield, tech, air dodge) bind L or R as well.");
   }
   ImGui::PopID();
+  return changed;
+}
+
+// The same press point inside a row of the button list, as a percent of the travel. Only rows whose
+// source is analog get one; 0 is the default, so an untouched row stays exactly as it was.
+static bool binding_press_at_slider(host::CaptureDevice kind, int index, int action, float width) {
+  uint8_t* level = binding_level(kind, index, action);
+  if (!level || binding_level_kind(kind, index, action) != 1) return false;
+  int shown = *level ? (*level * 100 + 127) / 255 : 0;
+  ImGui::SetNextItemWidth(width);
+  const bool changed = ImGui::SliderInt("##press_at", &shown, 0, 99, shown ? "Press at %d%%" : "Press at default");
+  if (changed) {
+    int value = shown ? std::clamp((shown * 255 + 50) / 100, 1, 254) : 0;
+    // The PlayStation reader reports nothing below its own press point.
+    if (kind == host::CaptureDevice::DS4Pad && value > 0 && value <= host::kPlayStationTriggerPress)
+      value = host::kPlayStationTriggerPress + 1;
+    *level = (uint8_t)value;
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("How far this has to be pushed before it counts as pressed.");
   return changed;
 }
 
@@ -3385,11 +3522,16 @@ static void game_mods_panel(const RenderOptions& options) {
       bool on = d.enabled;
       ImGui::BeginDisabled(!engine_ok || view.scanning || view.importing);
       if (settings_toggle(on ? "On" : "Off", &on)) mods::choose(d.key, on);
+#ifdef MELEE_NO_SLIPPI   // one engine in this build: there is no other one to send the player to
+      ImGui::EndDisabled();
+      if (!engine_ok) ImGui::TextDisabled("This build cannot play it.");
+#else
       if (!engine_ok && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("This pack runs on the %s. Choose that engine in the launcher.",
                           d.needs == mods::Engine::Source ? "Source Port" : "Static Recomp");
       ImGui::EndDisabled();
       if (!engine_ok) ImGui::TextDisabled("Runs on the %s", d.needs == mods::Engine::Source ? "Source Port" : "Static Recomp");
+#endif
       else if (!options.native_source && !d.card)
         ImGui::TextDisabled("Play this disc from the launcher's Mods page.");
       else if (d.restart || (!options.native_source && d.kind == mods::Kind::Te))
@@ -4402,13 +4544,27 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // one-instruction change). Experimental because the game still lays out and culls scenery for
     // 73:60: geometry can be missing or pop in at the new edges.
     {
+#ifdef MELEE_NO_SLIPPI   // the same two modes under neutral names; the saved setting is unchanged
+      const char* widescreen_modes[] = {"Off", "16:9 code", "True 16:9 (experimental)"};
+#else
       const char* widescreen_modes[] = {"Off", "Slippi code", "True 16:9 (experimental)"};
+#endif
       int widescreen_mode = options.widescreen ? 1 : options.true_widescreen ? 2 : 0;
       if (settings_combo("Widescreen", &widescreen_mode, widescreen_modes, 3)) {
         options.widescreen = widescreen_mode == 1;
         options.true_widescreen = widescreen_mode == 2;
         changed = true;
       }
+#ifdef MELEE_NO_SLIPPI
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("16:9 code: the widely used 16:9 widescreen code, rebuilt in the game with the same\n"
+                          "values. Online safe: it changes only what you see. The view widens from the next screen.\n"
+                          "True 16:9: widens the camera in the renderer instead of running that code, and\n"
+                          "applies at once. Fighters in the added sides are drawn, as with the 16:9 code.\n"
+                          "Watch the edges for missing or popping scenery: the game still culls for 73:60.\n"
+                          "Menus, character and stage select, matches and training all fill the\n"
+                          "screen. Only the opening movie keeps its side bars.\n%s", kExperimentalNote);
+#else
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Slippi code: Slippi's widescreen code (on the Source Port, rebuilt with the same\n"
                           "values). Online safe: it changes only what you see. The view widens from the next screen.\n"
@@ -4417,6 +4573,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "Watch the edges for missing or popping scenery: the game still culls for 73:60.\n"
                           "Menus, character and stage select, matches, training and replays all fill the\n"
                           "screen. Only the opening movie keeps its side bars.\n%s", kExperimentalNote);
+#endif
     }
     // In pixels: on a scaled frame the display size is in layout units, not the window's size.
     float win_w = g_frame_pixel_size.x, win_h = g_frame_pixel_size.y;
@@ -4432,8 +4589,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         settings_hint("Fills the whole window or screen, so the picture is stretched. Pick a 4:3 window\n"
                             "size below and a wider screen to get the stretched resolution players use.");
       else
+#ifdef MELEE_NO_SLIPPI
+        settings_hint("Melee's camera asks for 73:60, not 4:3; the 16:9 widescreen code widens it to 16:9.\n"
+                            "Auto follows Widescreen above.");
+#else
         settings_hint("Melee's camera asks for 73:60, not 4:3; the Slippi widescreen code widens it to 16:9.\n"
                             "Auto follows Widescreen above, which is what Slippi Dolphin does.");
+#endif
 
       // Window size, the way Dolphin lets a player choose one. 4:3 sizes first: those are what
       // Melee players run (1440x1080 is the common one), then the 16:9 sizes.
@@ -5336,8 +5498,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             draw->AddRectFilled(ImVec2(p.x+8,p.y+preview_h*.43f),
                                 ImVec2(p.x+left_w-3,p.y+preview_h*.57f),
                                 IM_COL32(255,196,25,255),2.0f);
+#ifdef MELEE_NO_SLIPPI   // the game menu behind the panel in this thumbnail: a retail menu entry here
+            draw->AddText(ImGui::GetFont(),9.0f,ImVec2(p.x+12,p.y+preview_h*.455f),
+                          IM_COL32(20,19,16,255),"Vs. Mode");
+#else
             draw->AddText(ImGui::GetFont(),9.0f,ImVec2(p.x+12,p.y+preview_h*.455f),
                           IM_COL32(20,19,16,255),"Unranked");
+#endif
             const float x=p.x+left_w;
             draw->AddRectFilled(ImVec2(x,p.y),q,IM_COL32(17,18,29,250));
             const ImVec2 banner[]={ImVec2(x,p.y),ImVec2(q.x,p.y),
@@ -5728,6 +5895,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             }
             for (const auto& line : mod_status.notes) ImGui::TextWrapped("%s", line.c_str());
             ImGui::Spacing();
+#ifndef MELEE_NO_SLIPPI   // the online modes these lines and the switch are about are not in that build
             if (mod_status.pack_skins.empty()) {
               ImGui::TextWrapped("Online: Unranked, Teams and Party always play the standard game. Direct can use "
                                  "this mod, and then only against a player on the same build.");
@@ -5763,6 +5931,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               // that the opponent sent no build and starts the match itself (slippi_online.cpp).
               settings_hint("An opponent on Slippi Dolphin with the same mod works too: nothing to set on either side.");
             }
+#endif
           }
           ImGui::Spacing();
           ImGui::Separator();
@@ -5978,8 +6147,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (!skin_packs.empty()) {
             ImGui::Spacing();
             ImGui::TextUnformatted("Costume packs");
+#ifdef MELEE_NO_SLIPPI   // the same rule without the other build's mode names
+            ImGui::TextWrapped("Each button sets every costume the pack has. Skins that stay on online keep working in "
+                               "online matches; the rest show the standard costume there.");
+#else
             ImGui::TextWrapped("Each button sets every costume the pack has. Skins that stay on online keep working in "
                                "Unranked, Teams and Party; the rest show the standard costume there.");
+#endif
             for (const auto& pack : skin_packs) {
               ImGui::PushID(pack.key.c_str());
               std::string summary = pack.name + ": " + std::to_string(pack.skins) + (pack.skins == 1 ? " skin, " : " skins, ") +
@@ -6317,9 +6491,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (options.cpu_20xx && !options.native_source) host::hackpack_ai::reload();   // the disc may have arrived since boot
       changed = true;
     }
+#ifdef MELEE_NO_SLIPPI   // one engine, no replays: the rest of the line is about the other build
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("CPUs play with the 20XX Hack Pack's AI. Offline matches only, never online.");
+#else
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("CPUs play with the 20XX Hack Pack's AI. Offline matches only, never online or in replays.\n"
                         "Static Recomp: needs the 20XX Hack Pack disc under Mods (the Source Port has its own version).");
+#endif
     if (!options.native_source && !host::hackpack_ai::status().blob_ok)
       ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.40f, 1.0f), "Install the 20XX Hack Pack under Mods");
     // 20XX Hack Pack training options for CPUs (Source Port, shim/mu_20xx_cpu.c): plain offline
@@ -6352,6 +6531,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       }
     }
 
+#ifndef MELEE_NO_SLIPPI   // only the Static Recomp runs this switch, so the build without it has no such section
     // Slippi's Lagless FoD code is a real game patch, so expose it as an offline/direct setting
     // instead of silently forcing the performance-oriented variant on every player.
     ImGui::TextUnformatted("Stage effects");
@@ -6367,6 +6547,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     else if (ImGui::IsItemHovered())
       ImGui::SetTooltip("On: keep Fountain of Dreams' water reflection and particles.\n"
                         "Off: use the Lagless FoD code for lower GPU cost. Takes effect at the next retrace.");
+#endif
 
     // ---- L-cancel helpers ----
     // The indicator reads the fighter's action state and never writes anything, so it is display
@@ -6380,11 +6561,19 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       bool automatic = lcancel::automatic_enabled();
       if (settings_toggle("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
       ImGui::SameLine();
+#ifdef MELEE_NO_SLIPPI   // this build's matches are all the one kind, where it works
+      settings_hint("(NOTE: Works offline and in online matches)");
+      if (automatic) {
+        ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
+                           "network like any other, so it cannot desync. In an online match both players should agree "
+                           "to use it: it is a fairness question, not a safety one.");
+#else
       settings_hint("(NOTE: Works offline and in Direct, not in Unranked or Teams)");
       if (automatic) {
         ImGui::TextWrapped("Presses the analog trigger for you during an aerial. It is a real input, sent over the "
                            "network like any other, so it cannot desync. In a Direct match both players should agree "
                            "to use it: it is a fairness question, not a safety one.");
+#endif
         if (const char* mode = lcancel::auto_suppressed_mode())
           ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Disabled right now: this is %s.", mode);
       }
@@ -6426,6 +6615,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         te_pair_hover(kTeNoScreenRumble));
 
 
+#ifndef MELEE_NO_SLIPPI   // the build without that layer has neither setting
     // ---- Online ----
     // Slippi's local input delay: frames of your own input held back so there is less to roll back.
     // The game asks for it when an online match is set up, so a change applies from the next match.
@@ -6456,6 +6646,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         settings_hint("(applies from the next match)");
       }
     }
+#endif
 
     // ---- Discord presence ----
     // Off by default, and inert without an application ID. Nothing reaches Discord until the box
@@ -6468,7 +6659,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       host::discord::configure(options.discord_app_id);
     }
     const bool discord_was = options.discord_presence;
+#ifdef MELEE_NO_SLIPPI   // presence only: this build publishes no code for Join to hand over
+    settings_toggle("Discord presence (show what you are playing)", &options.discord_presence);
+#else
     settings_toggle("Discord presence (show what you are playing; friends can press Join)", &options.discord_presence);
+#endif
     if (options.discord_presence != discord_was) {
       host::discord::configure(options.discord_app_id);
       host::discord::enable(options.discord_presence);   // starts or stops one background thread
@@ -6476,7 +6671,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (options.discord_presence) {
       ImGui::TextWrapped("%s", host::discord::status().c_str());
       settings_hint("A new Application ID is picked up the next time you switch this off and on.");
+#ifdef MELEE_NO_SLIPPI
+      ImGui::TextWrapped("Your IP address is never published. Who can see what you are playing depends on your Discord activity privacy settings.");
+#else
       ImGui::TextWrapped("Discord Join sends the other player's code to Online > Direct; selecting Direct automatically uses it for that attempt. Your Slippi code is copied to the clipboard for the other player. Your IP address is never published. Who can see or join depends on your Discord activity privacy settings.");
+#endif
     } else {
       settings_hint("Off. Nothing is sent to Discord. Needs an Application ID from discord.com/developers/applications.");
     }
@@ -6801,7 +7000,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               // Whichever controller of this kind answered is the one being set up: the player
               // need not know its adapter socket or pad number.
               const int idx = tab_kind == host::CaptureDevice::Keyboard ? 0 : device_index;
-              binding_set(tab_kind, idx, state.rebind_action, (uint32_t)value);
+              // An Xbox trigger given to another action leaves its default shoulder bindings (xinput_bind).
+              if (tab_kind == host::CaptureDevice::XInputPad) host::xinput_bind(host::g_pad_bindings[idx & 3], state.rebind_action, (uint16_t)value);
+              else binding_set(tab_kind, idx, state.rebind_action, (uint32_t)value);
               state.rebind_action = -1;
               changed = true;
               if (idx != tab_index) select_tab(tab - tab_index + idx);
@@ -6919,7 +7120,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           settings_hint("Applies to every %s controller.", cur_family.name);
         }
         // Each binding's own analog level, only for the bindings that have one: a trigger bound
-        // as a button (its press point) and a button bound to L or R (how far it presses).
+        // as a button (its press point) and a button bound to L analog or R analog (how far it
+        // presses). Never the D-pad or Start (binding_level_kind).
         {
           bool any = false;
           for (int i = 0; i < (int)host::BindAction::Count; ++i) {
@@ -6952,9 +7154,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               char row[64];
               std::snprintf(row, sizeof row, "%-12s %s", kActionTitles[i], i == waiting ? "(press...)" : binding_label(tab_kind, tab_index, i).c_str());
               if (pressed_now) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.95f, 0.55f, 1.0f));
-              if (ImGui::Selectable(row, i == waiting || i == hovered, ImGuiSelectableFlags_None, ImVec2(ImGui::GetContentRegionAvail().x - 58.0f, 0))) begin_rebind(i);
+              // An analog source gets its press point beside the binding; a digital one nothing.
+              const float press_w = binding_level_kind(tab_kind, tab_index, i) == 1 ? 132.0f : 0.0f;
+              const float press_gap = press_w > 0.0f ? press_w + ImGui::GetStyle().ItemSpacing.x : 0.0f;
+              if (ImGui::Selectable(row, i == waiting || i == hovered, ImGuiSelectableFlags_None, ImVec2(ImGui::GetContentRegionAvail().x - 58.0f - press_gap, 0))) begin_rebind(i);
               if (pressed_now) ImGui::PopStyleColor();
               if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) unbind(i);
+              if (press_w > 0.0f) {
+                ImGui::SameLine();
+                changed |= binding_press_at_slider(tab_kind, tab_index, i, press_w);
+              }
               ImGui::SameLine();
               if (ImGui::SmallButton("Clear")) unbind(i);
               ImGui::PopID();
@@ -6970,8 +7179,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shows each online player's name at Melee's player-tag anchor. Local display only.");
     changed |= settings_toggle("Show the \"Settings: F1\" reminder", &options.settings_hint);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("F1, or Start + D-pad Down + Z on a GameCube controller, opens settings.");
+#ifndef MELEE_NO_SLIPPI   // no matchmaking panel in the build without that layer
     changed |= settings_toggle("Show the \"Matchmaking: Tab\" reminder", &options.matchmaking_hint);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tab still opens matchmaking with it off.");
+#endif
     settings_toggle("Performance overlay", &options.performance_overlay);
     changed |= settings_toggle("FPS counter (top left)", &options.show_fps);
     // VRAM has its own line in the Video tab, right by the settings that move it; no overlay needed.
@@ -6982,6 +7193,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("Online only: the last 10 seconds as you got them. Frame time, waits for the\nother player's inputs, rollbacks, time sync and ping. Display only.");
     }
     // Render latency, a developer readout, is under Advanced at the bottom of this tab.
+#ifndef MELEE_NO_SLIPPI   // the Lab view is the Static Recomp's: no switch for it in the build without that engine
     if (kLabViewAvailable) {
     ImGui::BeginDisabled(options.native_source);
     changed |= settings_toggle("Lab view (F3)", &options.lab_view);
@@ -6998,6 +7210,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         "draws hitboxes inside the match itself.");
     // Its "Skip the 3D scene underneath" switch is under Advanced.
     }
+#endif
     // With 20XX TE on this is also TE's "Input display" (te_pairs_linked).
     if (settings_toggle("Controller overlay", &options.input_overlay)) {
       te_follow_ours(options, kTeInputDisplay, options.input_overlay);
@@ -7037,6 +7250,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Shows the measured render latency under the FPS counter. Works whether or\n"
                           "not NVIDIA Reflex Low Latency (Video tab) is On, so Off has a number too.\n"
                           "The full breakdown by stage is on the performance graph.");
+#ifndef MELEE_NO_SLIPPI   // as for the Lab view switch above
       if (kLabViewAvailable) {
         // Only with the Lab view on, and only on the engine that has it.
         ImGui::BeginDisabled(options.native_source || !options.lab_view);
@@ -7050,24 +7264,60 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                             "weak laptop runs smoother. The game itself runs exactly the same.%s",
                             options.lab_view ? "" : "\nTurn on Lab view (F3) above to use it.");
       }
+#endif
     }
       }
       if (state.active_tab == 6 && options.native_source) {
     // The Source Port runs the game as C: a Gecko code is PowerPC written over console addresses,
     // so there is nothing for it to patch. Slippi's optional codes are rebuilt in C instead, and
     // these switches are the same settings as their copies on the other tabs.
+#ifdef MELEE_NO_SLIPPI   // the same switches under neutral names
+    ImGui::TextUnformatted("Built-in codes");
+#else
     ImGui::TextUnformatted("Slippi's codes, built in");
+#endif
     if (settings_toggle("Widescreen 16:9", &options.widescreen)) {
       if (options.widescreen) options.true_widescreen = false;
       changed = true;
     }
+#ifdef MELEE_NO_SLIPPI
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The 16:9 widescreen code. Online safe. From the next screen.");
+#else
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Slippi's widescreen code with the same values. Online safe. From the next screen.");
+#endif
     if (settings_toggle("Disable Screen Shake", &gecko::option_no_screen_shake)) {
       te_follow_ours(options, kTeNoScreenRumble, gecko::option_no_screen_shake);
       changed = true;
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Camera only. Online safe.%s", te_pair_hover(kTeNoScreenRumble));
     if (settings_lcancel_flash(options)) changed = true;
+#ifdef MELEE_NO_SLIPPI
+    // This build plays the retail game (no General Codes), and it is the only engine: the lines
+    // below say what runs here without naming another one.
+    ImGui::Separator();
+    ImGui::TextUnformatted("Your codes");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("From:\n%s\nCodes that only write game variables run. Other codes are PowerPC and cannot run in this build.", user_gecko::path().c_str());
+    if (user_gecko::codes().empty()) {
+      settings_hint("None. Put a GeckoCodes.ini next to port-settings.ini to add codes.");
+    } else {
+      for (user_gecko::Code& c : user_gecko::codes()) {
+        ImGui::PushID(&c);
+        const char* built_in = user_gecko::native_equivalent(c);
+        const bool runs_here = c.supported && !built_in;
+        ImGui::BeginDisabled(!runs_here);
+        if (settings_toggle(c.name.c_str(), &c.enabled) && runs_here) { changed = true; g_gecko_chosen = true; }
+        ImGui::EndDisabled();
+        if (built_in)
+          engine_only_reason("Built in: \"%s\" above is the switch that applies here.", built_in);
+        else if (!runs_here)
+          engine_only_reason("Cannot run in this build: this code %s.", c.reason.c_str());
+        else if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Writes game variables only, so it runs here.\nNever applied online.");
+        ImGui::PopID();
+      }
+    }
+#else
     settings_hint("Always on, as in Slippi: the General Codes (UCF 0.84 and the rest) and Lagless FoD.");
     ImGui::Separator();
     ImGui::TextUnformatted("Your codes");
@@ -7081,18 +7331,24 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       for (user_gecko::Code& c : user_gecko::codes()) {
         ImGui::PushID(&c);
         const char* built_in = user_gecko::native_equivalent(c);
-        ImGui::BeginDisabled();
-        settings_toggle(c.name.c_str(), &c.enabled);
+        // A code that only writes variables this build can place runs here too (user_gecko.h);
+        // the rest keep the rule above.
+        const bool runs_here = c.supported && !built_in;
+        ImGui::BeginDisabled(!runs_here);
+        if (settings_toggle(c.name.c_str(), &c.enabled) && runs_here) { changed = true; g_gecko_chosen = true; }
         ImGui::EndDisabled();
         if (built_in)
           engine_only_reason("Built into the Source Port: \"%s\" above is the switch that applies here.\n"
                              "This one is your setting for the Static Recomp.", built_in);
-        else
-          engine_only_reason("Static Recomp only. A Gecko code is PowerPC written over the console's\n"
-                             "addresses, and the Source Port runs the game as C.");
+        else if (!runs_here)
+          engine_only_reason("Cannot run on the Source Port: this code %s.\n"
+                             "It keeps its setting for the Static Recomp.", c.reason.c_str());
+        else if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Writes game variables only, so it runs on the Source Port too.\nNever applied online or in replays.");
         ImGui::PopID();
       }
     }
+#endif
       } else if (state.active_tab == 6) {
     // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
     // Always shown: a code the other player does not have desyncs the match.

@@ -19,6 +19,9 @@ enum : uint8_t {
   kShed = 2,      // the tick did not advance: time sync halted this side (it was ahead)
   kAdvance = 4,   // the game ran an extra frame this tick: time sync (this side was behind)
   kMark = 8,      // the player pressed the mark key (F8) during the tick
+  kMarkVisual = 16,   // marked from the controller as "that looked wrong" (D-pad Left)
+  kMarkInput = 32,    // marked from the controller as "my input came out wrong or late" (D-pad Right)
+  kMarkAudio = 64,    // marked as "that sounded wrong" (D-pad Down)
 };
 
 struct Record {
@@ -74,7 +77,7 @@ inline size_t csv_row(const Record& r, char* out, size_t size) {
                               (unsigned)r.rollback_depth, (int)r.offset_us, sync, (unsigned)r.ping_ms,
                               (unsigned)((r.pad[0] << 8) | r.pad[1]), (int)(int8_t)r.pad[2], (int)(int8_t)r.pad[3],
                               (int)(int8_t)r.pad[4], (int)(int8_t)r.pad[5], (unsigned)r.pad[6], (unsigned)r.pad[7],
-                              (unsigned)r.presents, (r.flags & kMark) ? 1 : 0);
+                              (unsigned)r.presents, (r.flags & kMarkAudio) ? 4 : (r.flags & kMarkInput) ? 3 : (r.flags & kMarkVisual) ? 2 : (r.flags & kMark) ? 1 : 0);
   return n > 0 && (size_t)n < size ? (size_t)n : 0;
 }
 

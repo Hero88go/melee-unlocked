@@ -11,7 +11,21 @@ namespace launcher::lobby {
 struct Match {
   std::string id, code; int character = 2; std::string build, opponent;
   std::string mode = "vanilla", mod_path, mod_name;
+  // A peer-to-peer match (the build without the Slippi layer): the game's --p2p-* arguments, checked
+  // and complete, and the result file the game writes for it. Empty for a Slippi Direct match.
+  std::string p2p_args, p2p_result;
+  // The game binds the lobby's own UDP port: the lobby has to be stopped before the game starts.
+  bool p2p_lobby_port = false;
 };
+// A peer-to-peer match on the lobby's port. stop_for_match says "In game" to the players known,
+// closes the lobby's socket and returns once it is closed (the DHT and the lobby are quiet for the
+// length of the match; friends, profile and history stay). restart_after_match opens the lobby
+// again on the same port and announces the player as before. Both do nothing for any other match.
+void stop_for_match(const Match& match);
+void restart_after_match();
+// The build without the Slippi layer: the player's lobby name and the code made from it and the
+// identity key, as the Play page shows them. Empty name: none chosen yet.
+void p2p_player(std::string& name, std::string& code);
 void set_account(const std::string& name, const std::string& code);
 void init(HWND owner, const std::string& directory);
 void open(const std::string& build, bool can_play);

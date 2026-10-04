@@ -22,6 +22,8 @@
 #include <sstream>
 #include <thread>
 
+#include "slippi_version.h"
+
 using json = nlohmann::json;
 
 namespace slippi {
@@ -176,6 +178,8 @@ void User::RefreshFromServer() {
       for (auto& m : j["chatMessages"]) info_.chat_messages.push_back(m.get<std::string>());
     }
     host::log("slippi: profile refreshed from server: %s (%s)", info_.display_name.c_str(), info_.connect_code.c_str());
+    if (!latest.empty()) host::log("slippi: the servers are on version %s, this build speaks %s%s", latest.c_str(), SLIPPI_SEMVER,
+                                   version_newer(latest, SLIPPI_SEMVER) ? ": online play is off until Melee Unlocked is updated" : "");
   }).detach();
 }
 bool User::AttemptLogin() {
@@ -819,6 +823,16 @@ void Matchmaking::FindMatch(MatchSearchSettings settings) {
     error_msg_ = "Matchmaking is off in automated runs";
     state_ = ERROR_ENCOUNTERED;
     host::log("slippi: matchmaking blocked: hidden or scripted run without --allow-matchmaking");
+    return;
+  }
+  // Version gate (slippi_version.h): Slippi's servers have named a newer version than the one this
+  // build speaks, so it stays out of every online mode until it is updated. Local test peering has
+  // no server and is not gated.
+  const std::string latest = local_peer.enabled || !user_ ? std::string() : user_->GetUserInfo().latest_version;
+  if (version_newer(latest, SLIPPI_SEMVER)) {
+    error_msg_ = "Slippi " + latest + " is out. Update Melee Unlocked";
+    state_ = ERROR_ENCOUNTERED;
+    host::log("slippi: matchmaking blocked: Slippi is on %s and this build speaks %s; update Melee Unlocked", latest.c_str(), SLIPPI_SEMVER);
     return;
   }
   state_ = INITIALIZING;

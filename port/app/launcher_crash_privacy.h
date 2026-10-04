@@ -37,10 +37,12 @@ namespace scrub {
 
 inline constexpr size_t kMaxLine = 4096;   // characters
 inline constexpr const char* kPrivatePrefixes[] = {
+#ifndef MELEE_NO_SLIPPI   // lines only the build with that online service writes
   "slippi: logged in as", "slippi: logged out", "slippi: not logged in", "slippi: login requested",
   "slippi: matchmaking started", "slippi: cannot create peer", "slippi: disconnect from",
   "slippi: got disconnect from", "slippi: local peer test", "slippi: cannot parse",
   "slippi: using the Slippi Launcher login", "slippi: keeping direct/teams code history",
+#endif
   "discord:", "peer ", "lobby", "another launcher is using this lobby identity", "add address:"};
 inline constexpr const char* kPrivateWords[] = {"displayname", "connectcode", "playkey", "\"uid\"", "password",
   "token", "secret", "authorization"};
