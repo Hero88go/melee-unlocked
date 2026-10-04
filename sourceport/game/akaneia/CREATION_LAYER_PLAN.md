@@ -165,6 +165,16 @@ match (run evidence and the per-round list: `run-source/rel09-b1-wolf/PROGRESS.m
 | 11 items | done, run for creation; hit, reflect and shield not confirmed |
 | 12 results screen | written, never reached (the General Codes skip it; use `--vanilla-game`) |
 
+Later state (rounds 6 to 12, `run-source/rel09-b1-wolf/PROGRESS.md`): step 8 is written for all
+seven (bank table rows from the disc, load by bank id at match start, ids 5000+n remapped for
+fighters and their items; a started voice is not yet proven), step 12 runs for Wolf (results
+screen with his own camera row, scale, name, icons, emblem and portrait), the select screen pick
+runs for Wolf under `MELEE_AK_CSS`, and the digest against the Static Recomp passes for all seven
+over frames 0 to 1100. Step 9 stays the safe fallback: the mod defines a copy ability and a hat
+for every added fighter (`PlKbCp<Xx>.dat`) and none is ported. The per-fighter list of what
+`MU_AK_READY` still needs, with the test recipe of each row, is
+`run-source/rel09-b1-wolf/READY_CHECKLIST.md`.
+
 Corrections to the table at the top: `ssm_files` (14) is indexed by the external id, and a
 fighter's effect and sound ids are relative (5000+n model effect, 6000+n particle generator,
 5000+n sound) and resolved through the owner's effect file and sound bank.

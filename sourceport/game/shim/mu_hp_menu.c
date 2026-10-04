@@ -99,7 +99,7 @@ typedef struct HpmRow {
 
 enum {
     P_ROOT, P_GENERAL, P_TRAINING, P_TOGGLES, P_SAVESTATES, P_BUBBLES, P_LCANCEL, P_OVERLAYS, P_STAGE,
-    P_CPU, P_DI, P_TECH, P_MUSIC, P_PLAYLISTS, P_MECHANICS, P_TEXTURES, P_WAVEDASH, P_COUNT
+    P_CPU, P_DI, P_TECH, P_MUSIC, P_PLAYLISTS, P_MECHANICS, P_TEXTURES, P_WAVEDASH, P_CSS, P_COUNT
 };
 
 static char* hpm_off_on[] = {"OFF", "ON"};
@@ -170,6 +170,9 @@ static const HpmRow hpm_root[] = {
     PAGE(P_MUSIC, "MUSIC CODES >"),
     PAGE(P_MECHANICS, "MECHANICS CODES >"),
     PAGE(P_TEXTURES, "TEXTURES >"),
+    /* In the pack this page sits after CPU CODES. Here it is the last one, so the rows above keep
+     * their places (the hidden test scripts walk this page by counting rows). */
+    PAGE(P_CSS, "CHARACTER SELECT SCREEN CODES >"),
     TEXT(""),
     TEXT("B TO SAVE AND EXIT"),
     END,
@@ -343,6 +346,25 @@ static const HpmRow hpm_textures[] = {
     END,
 };
 
+/* Milestone 7 (ledger_M7.md, shim/mu_hp_css.c). The pack has no row for its hidden characters:
+ * they are always there, on Z. None of the pack's own rows of this page is native yet, so the
+ * page only says how the hidden characters are reached. */
+static const HpmRow hpm_css[] = {
+    HEAD("<CHARACTER SELECT SCREEN CODES>"),
+    TEXT("HIDDEN CHARACTERS : ALWAYS ON"),
+    TEXT("HOLD A COIN OVER AN ICON, PRESS Z, THEN A"),
+    TEXT("Z AGAIN PUTS THE ICON BACK"),
+    TEXT(""),
+    TEXT("ZELDA : SHEIK"),
+    TEXT("BOWSER : GIGA BOWSER"),
+    TEXT("ICE CLIMBERS : POPO ALONE"),
+    TEXT("C. FALCON : MALE WIREFRAME"),
+    TEXT("PEACH : FEMALE WIREFRAME"),
+    TEXT("PICHU : MASTER HAND"),
+    TEXT("PIKACHU : CRAZY HAND"),
+    END,
+};
+
 #undef ONOFF
 #undef PAGE
 #undef HEAD
@@ -354,7 +376,7 @@ static const HpmRow hpm_textures[] = {
 static const HpmRow* const hpm_pages[P_COUNT] = {
     hpm_root, hpm_general, hpm_training, hpm_toggles, hpm_savestates, hpm_bubbles, hpm_lcancel, hpm_overlays,
     hpm_stage, hpm_cpu, hpm_di, hpm_tech, hpm_music, hpm_playlists, hpm_mechanics, hpm_textures,
-    hpm_wavedash,
+    hpm_wavedash, hpm_css,
 };
 
 /* What the menu was opened with, and the engine's tables built from it. */

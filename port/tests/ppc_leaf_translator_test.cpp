@@ -2,6 +2,7 @@
 // No game, ISO, window, device or interpreter dependency.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "leaf_translator.h"
+#include "ppc_leaf_host.h"
 #include "leaf_translation_plan.h"
 #include "ppc_leaf_stencils.generated.h"
 #include <array>
@@ -11,13 +12,6 @@
 #include <utility>
 #include <vector>
 
-namespace ppc {
-uint64_t g_enter_count = 0;
-bool g_trace_funcs = false;
-void hang_check(Context&) {}
-void trace_enter(Context&, uint32_t) {}
-void loop_poll(Context&) {}
-}
 namespace {
 int failures = 0;
 #define CHECK(x) do { if (!(x)) { std::printf("FAIL %d: %s\n", __LINE__, #x); ++failures; } } while (0)
@@ -59,21 +53,25 @@ int main() {
   CHECK(plan[2].source == 0 && plan[2].destination == 5 && plan[8].source == 0);
   // Primary opcodes with no accepted form at all; the extended ones are probed in the other tests.
   for (uint32_t op = 0; op < 64; ++op) {
+    // With every field zero: update forms name r0 as their base and lmw loads its own base, so
+    // those are refused; op 4 is ps_cmpu0 and op 63 fcmpu.
     const bool accepted = (op >= 7 && op <= 8) || (op >= 10 && op <= 16) || (op >= 18 && op <= 21) ||
-                          (op >= 23 && op <= 29) || op == 31;
+                          (op >= 23 && op <= 29) || op == 31 || op == 4 || op == 63 || op == 47 || op == 56 ||
+                          op == 60 || (op >= 32 && op <= 54 && !(op & 1) && op != 46);
     if (accepted) continue;
     const auto unsupported = bytes({op << 26, 0x4E800020});
     CHECK(!plan_leaf(unsupported.data(), unsupported.size(), ppc::RAM_BASE, plan, error));
     CHECK(plan.empty());
   }
+  // A word no path reaches is not planned: here the nop after the return.
   const auto early = bytes({0x4E800020, 0x60000000});
-  CHECK(!plan_leaf(early.data(), early.size(), ppc::RAM_BASE, plan, error));
+  CHECK(plan_leaf(early.data(), early.size(), ppc::RAM_BASE, plan, error) && plan.size() == 1);
   CHECK(!plan_leaf(code.data(), code.size()-4, ppc::RAM_BASE, plan, error));
   CHECK(!plan_leaf(nullptr, 4, ppc::RAM_BASE, plan, error));
   CHECK(!plan_leaf(code.data(), 0, ppc::RAM_BASE, plan, error));
   CHECK(!plan_leaf(code.data(), code.size(), ppc::RAM_BASE+1, plan, error));
   CHECK(!plan_leaf(code.data(), code.size(), ppc::RAM_BASE+ppc::RAM_SIZE-4, plan, error));
-  CHECK(!plan_leaf(code.data(), 4100, ppc::RAM_BASE, plan, error));
+  CHECK(!plan_leaf(code.data(), kMaxFunctionBytes + 4, ppc::RAM_BASE, plan, error));
 
   std::array<uint8_t,4096> ram{};
   std::memcpy(ram.data(), code.data(), code.size());

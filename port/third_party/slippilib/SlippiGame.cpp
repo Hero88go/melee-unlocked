@@ -6,12 +6,21 @@
 
 namespace Slippi {
 
+  // The largest replay file that is read (the launcher's replay list has the same limit)
+  const std::streamoff MAX_REPLAY_FILE_SIZE = 512 * 1024 * 1024;
+
   //**********************************************************************
   //*                         Event Handlers
   //**********************************************************************
   //The read operators will read a value and increment the index so the next read will read in the correct location
+  // A value is read only when all of its bytes are inside the payload (a replay file is untrusted,
+  // and a payload may end in the middle of a value)
+  bool canRead(int idx, uint32_t maxSize, int size) {
+    return idx >= 0 && (int64_t)idx + size <= (int64_t)maxSize;
+  }
+
   uint8_t readByte(uint8_t* a, int& idx, uint32_t maxSize, uint8_t defaultValue) {
-    if (idx >= (int)maxSize) {
+    if (!canRead(idx, maxSize, 1)) {
       idx += 1;
       return defaultValue;
     }
@@ -20,7 +29,7 @@ namespace Slippi {
   }
 
   uint16_t readHalf(uint8_t* a, int& idx, uint32_t maxSize, uint16_t defaultValue) {
-    if (idx >= (int)maxSize) {
+    if (!canRead(idx, maxSize, 2)) {
       idx += 2;
       return defaultValue;
     }
@@ -31,7 +40,7 @@ namespace Slippi {
   }
 
   uint32_t readWord(uint8_t* a, int& idx, uint32_t maxSize, uint32_t defaultValue) {
-    if (idx >= (int)maxSize) {
+    if (!canRead(idx, maxSize, 4)) {
       idx += 4;
       return defaultValue;
     }
@@ -163,6 +172,11 @@ namespace Slippi {
   void handleFrameStart(Game* game, uint32_t maxSize) {
     int idx = 0;
 
+    if (maxSize < 4) {
+      // Too short to hold a frame number: not a frame, so no frame is created for it
+      return;
+    }
+
     //Check frame count
     int32_t frameCount = readWord(data, idx, maxSize, 0);
     game->frameCount = frameCount;
@@ -184,6 +198,11 @@ namespace Slippi {
   void handlePreFrameUpdate(Game* game, uint32_t maxSize) {
     int idx = 0;
 
+    if (maxSize < 4) {
+      // Too short to hold a frame number
+      return;
+    }
+
     //Check frame count
     int32_t frameCount = readWord(data, idx, maxSize, 0);
     game->frameCount = frameCount;
@@ -192,7 +211,7 @@ namespace Slippi {
     FrameData* frame = frameUniquePtr.get();
     bool isNewFrame = true;
 
-    if (game->framesByIndex.count(frameCount)) {
+    if (game->framesByIndex.count(frameCount) && !game->frames.empty()) {
       // If this frame already exists, get the current frame
       frame = game->frames.back().get();
       isNewFrame = false;
@@ -258,10 +277,15 @@ namespace Slippi {
     //Check frame count
     int32_t frameCount = readWord(data, idx, maxSize, 0);
 
-    FrameData* frame;
-    if (game->framesByIndex.count(frameCount)) {
+    FrameData* frame = nullptr;
+    if (game->framesByIndex.count(frameCount) && !game->frames.empty()) {
       // If this frame already exists, get the current frame
       frame = game->frames.back().get();
+    }
+
+    if (!frame) {
+      // A post frame update for a frame that never started (a damaged or crafted file)
+      return;
     }
 
     // As soon as a post frame update happens, we know we have received all the inputs
@@ -354,15 +378,25 @@ namespace Slippi {
       return {};
     }
 
-    int payloadLength = buffer[1];
+    // The length is one unsigned byte (as a signed char, 0x80 and up sized the vector below negative)
+    uint32_t payloadLength = (uint8_t)buffer[1];
     std::unordered_map<uint8_t, uint32_t> messageSizes = {
       { EVENT_PAYLOAD_SIZES, payloadLength }
     };
 
+    if (payloadLength < 1) {
+      return messageSizes;
+    }
 
+    // Only whole entries (command, two size bytes) that were actually read are used
     std::vector<char> messageSizesBuffer(payloadLength - 1);
-    f->read(&messageSizesBuffer[0], payloadLength - 1);
-    for (int i = 0; i < payloadLength - 1; i += 3) {
+    f->read(messageSizesBuffer.data(), payloadLength - 1);
+    int entriesLength = (int)f->gcount();
+    if (!f->good()) {
+      f->clear();
+    }
+
+    for (int i = 0; i + 2 < entriesLength; i += 3) {
       uint8_t command = messageSizesBuffer[i];
 
       // Extract the bytes in u8s. Without this the chars don't or together well
@@ -384,6 +418,15 @@ namespace Slippi {
 
     // This function will process as much data as possible
     int startPos = (int)file->tellg();
+
+    // Positions here are ints and the rest of the file is read in one piece. A replay is a few
+    // megabytes: a file far beyond that is not read at all
+    file->seekg(0, std::ios::end);
+    if ((std::streamoff)file->tellg() > MAX_REPLAY_FILE_SIZE) {
+      isProcessingComplete = true;
+      return;
+    }
+
     file->seekg(startPos);
     if (startPos == 0) {
       file->seekg(0, std::ios::end);
@@ -408,8 +451,8 @@ namespace Slippi {
       file->seekg(startPos);
       file->read(buffer, 2);
       file->seekg(startPos);
-      auto messageSizesSize = (int)buffer[1];
-      if (rawDataLen < messageSizesSize) {
+      auto messageSizesSize = (int)(uint8_t)buffer[1];
+      if (rawDataLen < messageSizesSize + 1) {
         // If we haven't received the full payload sizes message, return
         // Reset to begining so that the startPos condition will be hit again
         file->seekg(0);
@@ -457,15 +500,21 @@ namespace Slippi {
       uint32_t outerPayloadSize = payloadSize;
 
       // Handle a split message, combining in until we possess the entire message
-      if (command == EVENT_SPLIT_MESSAGE) {
+      // A split message holds a 512 byte block, then the block's length, the real command and the
+      // last-message flag. One too short for those four bytes is skipped like an unknown event
+      if (command == EVENT_SPLIT_MESSAGE && payloadSize >= SPLIT_MESSAGE_INTERNAL_DATA_LEN + 4) {
         if (shouldResetSplitMessageBuf)
         {
           splitMessageBuf.clear();
           shouldResetSplitMessageBuf = false;
         }
 
-        int _ = 0;
-        uint16_t blockSize = readHalf(&data[SPLIT_MESSAGE_INTERNAL_DATA_LEN], _, payloadSize, 0);
+        int _ = SPLIT_MESSAGE_INTERNAL_DATA_LEN;
+        uint16_t blockSize = readHalf(data, _, payloadSize, 0);
+        if (blockSize > SPLIT_MESSAGE_INTERNAL_DATA_LEN) {
+          // The length is the file's own: no more than the block that is there is taken
+          blockSize = SPLIT_MESSAGE_INTERNAL_DATA_LEN;
+        }
         splitMessageBuf.insert(splitMessageBuf.end(), data, data + blockSize);
 
         isSplitComplete = data[SPLIT_MESSAGE_INTERNAL_DATA_LEN + 3];
@@ -473,7 +522,7 @@ namespace Slippi {
         {
           // Transform this message into a different message
           command = data[SPLIT_MESSAGE_INTERNAL_DATA_LEN + 2];
-          data = &splitMessageBuf[0];
+          data = splitMessageBuf.data();
           payloadSize = splitMessageBuf.size();
           shouldResetSplitMessageBuf = true;
         }
