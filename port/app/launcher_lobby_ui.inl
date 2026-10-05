@@ -364,7 +364,7 @@ void draw_control(DRAWITEMSTRUCT* d) {
     bool active=(id>=TAB_CHAT&&id<=TAB_PROFILE&&id-TAB_CHAT==lobby_tab);
     bool primary=id==REQUEST||id==GO_ONLINE||id==ACCEPT||id==INVITE_FRIEND||id==FIND_MATCH||active;
     bool enabled=!(d->itemState&ODS_DISABLED);
-    box(d->hDC,r,id==GO_ONLINE||id==REQUEST||id==ADD_FRIEND||id==TAB_PROFILE||id==TAB_HISTORY||id==TAB_FRIENDS||id==TAB_CHAT||id==COPY_CODE||id==FIND_MATCH||id==INVITE_CONNECT||id==INVITE_COPY?ui_bg:ui_panel);
+    box(d->hDC,r,id==GO_ONLINE||id==REQUEST||id==ADD_FRIEND||id==TAB_PROFILE||id==TAB_HISTORY||id==TAB_FRIENDS||id==TAB_CHAT||id==COPY_CODE||id==FIND_MATCH||id==INVITE_CONNECT||id==INVITE_COPY||id==P2P_REQUEST||id==P2P_FIGHTER_TEST?ui_bg:ui_panel);
     COLORREF top=primary?launcher::theme::top():RGB(33,43,66), bot=primary?launcher::theme::bottom():top;
     if(!enabled) top=bot=RGB(26,33,50);
     if(d->itemState&ODS_SELECTED) top=bot=primary?launcher::theme::pressed():RGB(24,33,52);

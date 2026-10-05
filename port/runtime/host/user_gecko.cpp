@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "user_gecko.h"
 #include "host.h"
+// port/tests/user_gecko_test.cpp includes this file with a small made-up table of its own in place
+// of the generated one, so the rules below are tested on an image the test controls.
+#ifndef USER_GECKO_TEST_TARGETS
 #include "user_gecko_targets.h"
+#endif
 
 #include <algorithm>
-#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -74,7 +77,20 @@ std::string source_port_reason(uint32_t addr, uint32_t len) {
 
 // Reads one code for the Source Port: every line becomes a step with its address worked out
 // (Code::plan), or the code is refused with the reason. The same rules, in the form the unit test
-// runs, are the Compiler of tools/gecko_coverage.py.
+// runs, are the Compiler of tools/gecko_coverage.py. Every rule is the console handler's own
+// (port/slippi_sys/codehandler.bin, loaded at 80001800; the addresses below are its instructions).
+//
+// WHAT IS NOT THE HANDLER'S: ONE CODE AT A TIME
+// The handler knows no codes, only one list of lines. Once per frame it starts at the top with the
+// base address and the pointer at 80000000 and every condition clear (80001F64 to 80001F6C), and
+// nothing but a terminator line (E0, E2) changes that before the list ends: a base, a pointer or an
+// open if left behind by one code is still there for the next, and an F0 line ends the whole list,
+// the codes after it included (80002618). Here each code is read and run on its own: it starts with
+// both at 80000000 and no condition, and an F0 ends only that code. A code that ends with its
+// terminator, as codes are written, does the same either way. One that leans on what the code
+// before it left behind (a missing terminator) runs here as if it came first, and a code whose if
+// is never closed does not switch off the codes listed after it. The 16 Gecko registers are the
+// one thing shared by every code and kept from frame to frame, in both.
 struct Compiler {
   Code& c;
   // The base address and the pointer, whether each is known here, and the if-depth each was last
@@ -92,11 +108,15 @@ struct Compiler {
   static const char* called(int which) { return which ? "pointer" : "base address"; }
   static int which_base(uint32_t w) { return ((w >> 24) & 0x10) ? 1 : 0; }
 
-  // The base a line counts from: the pointer for the types with bit 0x10, else the base address.
+  // What a line counts from, the handler's r12 (80001FC0 to 80001FD4): the pointer in full for the
+  // types with bit 0x10, else only the top seven bits of the base address (rlwinm r12,r6,0,0,6).
+  // A base address anywhere in 80000000 to 81FFFFFF therefore counts as 80000000: the line's own
+  // 25 bits of address do the rest. Only "add to the base address" (42 with the add bit) and the
+  // value a store writes (44, 4C) see the base address in full.
   bool base_of(uint32_t w, uint32_t& out) {
     const int which = which_base(w);
     if (!known[which]) return refuse(std::string("uses the ") + called(which) + " after a condition that changed it has ended");
-    out = base[which];
+    out = which ? base[1] : base[0] & 0xFE000000u;
     return true;
   }
   bool address(uint32_t w, uint32_t& out) {
@@ -165,7 +185,7 @@ struct Compiler {
     switch (sub) {
       case 0: bytes.assign((v >> 16) + 1, (uint8_t)v); break;
       case 1: for (uint32_t k = 0; k <= (v >> 16); ++k) { bytes.push_back((uint8_t)(v >> 8)); bytes.push_back((uint8_t)v); } break;
-      case 2: return write32(addr, v);
+      case 2: return write32(addr & ~3u, v);   // the handler rounds a 32-bit write down to a word (80002050)
       case 3: {
         const size_t rows = ((size_t)v + 7) / 8;
         if (rows && rows >= c.lines.size() - i) return refuse("has a string write cut short");
@@ -197,14 +217,17 @@ struct Compiler {
     return write(addr, bytes.data(), (uint32_t)bytes.size());
   }
 
-  // 20 to 2E: the ifs. An address ending in 1 ends one if first.
+  // 20 to 2E: the ifs. An address ending in 1 ends one if first. The handler adds the line's 25
+  // bits, the 1 included, and then rounds down to what it reads: a word (80002104) or a half
+  // (80002110).
   bool if_line(uint32_t w, uint32_t v, uint32_t sub) {
     if (w & 1) endif(1, false);
     uint32_t from = 0;
     if (!base_of(w, from)) return false;
     Op op;
-    op.kind = Op::If; op.addr = from + (w & 0x01FFFFFEu); op.aux = (uint8_t)(sub & 3);
+    op.kind = Op::If; op.aux = (uint8_t)(sub & 3);
     op.width = (uint8_t)(sub < 4 ? 4 : 2);
+    op.addr = (from + (w & 0x01FFFFFFu)) & ~(uint32_t)(op.width - 1);
     if (!read(op.addr, op.width)) return false;
     if (op.width == 4) { op.value = v; op.count = 0xFFFFFFFFu; }
     else { op.value = v & 0xFFFFu; op.count = ~(v >> 16) & 0xFFFFu; }
@@ -213,33 +236,38 @@ struct Compiler {
     return true;
   }
 
-  // 40 to 4E: the base address and the pointer.
+  // 40 to 4E: the base address and the pointer. The handler tests one bit of each flag digit
+  // (80002198 to 800021F0): add (bit 20), relative (bit 16), plus a register (bit 12).
   bool base_line(uint32_t w, uint32_t v, uint32_t sub) {
     const int target = (sub & 4) ? 1 : 0;
     const std::string type = hex8(w).substr(0, 2);
-    const uint32_t add = (w >> 20) & 0xF, relative = (w >> 16) & 0xF, by_register = (w >> 12) & 0xF;
+    const uint32_t add = (w >> 20) & 1, relative = (w >> 16) & 1, by_register = (w >> 12) & 1;
     if ((sub & 3) == 0)
       return refuse(std::string("loads the ") + called(target) + " from game memory (code type " + type + "): a pointer there is a PC address here");
     if ((sub & 3) == 3) return refuse("takes the address of its own lines (code type " + type + ")");
     if (by_register) return refuse("adds a register to an address (code type " + type + ")");
-    uint32_t operand = v;
-    if (relative) {
-      uint32_t from = 0;
-      if (!base_of(w, from)) return false;
-      operand += from;
-    }
     const std::string lost = std::string("uses the ") + called(target) + " after a condition that changed it has ended";
     if ((sub & 3) == 1) {   // set
-      if (add) {
+      uint32_t operand = v;
+      if (relative) {   // plus what a line counts from (base_of: the base address's top bits only)
+        uint32_t from = 0;
+        if (!base_of(w, from)) return false;
+        operand += from;
+      }
+      if (add) {        // plus the register being set, in full (800021F8, 80002200)
         if (!known[target]) return refuse(lost);
         operand += base[target];
       }
       base[target] = operand; known[target] = true; set_at[target] = depth;
       return true;
     }
-    // store: the register's value, a console address, written as a number
+    // store: the register's value in full, a console address, written as a number. The handler
+    // counts the address from the base whether or not the relative bit is set (stwx r6,r12,r4 at
+    // 8000221C): 44000000 00400034 writes at 80400034, and 44000000 80400034 at 00400034.
+    uint32_t from = 0;
+    if (!base_of(w, from)) return false;
     if (!known[target]) return refuse(lost);
-    return write32(operand, base[target]);
+    return write32(from + v, base[target]);
   }
 
   // 80 to 8E: the Gecko registers.
@@ -250,13 +278,13 @@ struct Compiler {
     op.reg = (uint8_t)(w & 0xF);
     if (sub <= 2) {
       uint32_t operand = v;
-      if (relative) {
+      if (relative & 1) {   // the handler tests bit 16 alone (800022F8, 80002364)
         uint32_t from = 0;
         if (!base_of(w, from)) return false;
         operand += from;
       }
-      if (sub == 0) {   // 80: set or add a number
-        op.kind = Op::GrSet; op.value = operand; op.aux = (uint8_t)(high ? 1 : 0);
+      if (sub == 0) {   // 80: set or add a number (add: bit 20 alone, 80002370)
+        op.kind = Op::GrSet; op.value = operand; op.aux = (uint8_t)(high & 1);
         c.plan.push_back(op);
         return true;
       }
@@ -280,8 +308,12 @@ struct Compiler {
         op.kind = sub == 3 ? Op::GrOp : Op::GrOpGr;
         op.value = sub == 3 ? v : (v & 0xF);
       } else if (relative == 2 && sub == 3) {
-        if (!read(v, 4)) return false;
-        op.kind = Op::GrOpMem; op.addr = v; op.width = 4;
+        // The number is an address, which the handler always counts from the base (add r19,r12,r19
+        // at 800023B8): 86020002 00400034 reads 80400034.
+        uint32_t from = 0;
+        if (!base_of(w, from)) return false;
+        op.kind = Op::GrOpMem; op.addr = from + v; op.width = 4;
+        if (!read(op.addr, 4)) return false;
       } else {
         return refuse("uses a register as an address (code type " + type + ")");
       }
@@ -295,7 +327,8 @@ struct Compiler {
   bool code_line(uint32_t w, uint32_t sub) {
     const std::string type = hex8(w).substr(0, 2);
     if (sub == 1) {
-      const ConsoleSymbol* at = known[which_base(w)] ? symbol_at(base[which_base(w)] + (w & 0x01FFFFFFu)) : nullptr;
+      uint32_t from = 0;
+      const ConsoleSymbol* at = known[which_base(w)] && base_of(w, from) ? symbol_at((from + (w & 0x01FFFFFFu)) & ~3u) : nullptr;
       if (at && at->kind == kCode) return refuse(std::string("injects PowerPC code into ") + at->name + " (C2), which this build cannot run");
       return refuse("injects PowerPC code (C2), which this build cannot run");
     }
@@ -327,7 +360,8 @@ struct Compiler {
             close_to(0, false);
             reset_bases(v);
           } else if (type == 0xE2) {
-            endif(w & 0xFFu, ((w >> 20) & 1) != 0);
+            // How many ifs end: five bits (clrlwi. r9,r3,27 at 80002740), then else (bit 20).
+            endif(w & 0x1Fu, ((w >> 20) & 1) != 0);
             reset_bases(v);
           } else {
             ok = refuse("uses code type " + name + ", which has no meaning here");
@@ -346,8 +380,12 @@ uint32_t be(const uint8_t* b, uint32_t width) {
   return v;
 }
 
-// One Gecko register operation (code types 86 and 88), as the handler's PowerPC does it: shifts by
-// 32 or more give 0 (or the sign, for the arithmetic one), the float ones work on the bit patterns.
+// One Gecko register operation (code types 86 and 88), as the handler's PowerPC does it. `a` is the
+// register the result goes to, `b` the number, the memory or the other register. The handler loads
+// a into r4 and b into r9 (80002440) and its shifts and its rotate are "slw r4,r9,r4" and the like
+// (800023F4 to 8000240C): the OPERAND is shifted, BY the register, not the other way round as the
+// written descriptions of these codes say. A shift by 32 or more gives 0 (or the sign, for the
+// arithmetic one); the float ones work on the bit patterns.
 uint32_t operate(uint32_t a, uint32_t b, uint8_t operation) {
   switch (operation) {
     case 0: return a + b;
@@ -355,13 +393,13 @@ uint32_t operate(uint32_t a, uint32_t b, uint8_t operation) {
     case 2: return a | b;
     case 3: return a & b;
     case 4: return a ^ b;
-    case 5: return (b & 0x20u) ? 0u : a << (b & 0x1Fu);
-    case 6: return (b & 0x20u) ? 0u : a >> (b & 0x1Fu);
-    case 7: { const uint32_t n = b & 0x1Fu; return n ? (a << n) | (a >> (32u - n)) : a; }
+    case 5: return (a & 0x20u) ? 0u : b << (a & 0x1Fu);
+    case 6: return (a & 0x20u) ? 0u : b >> (a & 0x1Fu);
+    case 7: { const uint32_t n = a & 0x1Fu; return n ? (b << n) | (b >> (32u - n)) : b; }
     case 8: {
-      const uint32_t n = std::min<uint32_t>(b & 0x3Fu, 31u);
-      const uint32_t fill = (a & 0x80000000u) && n ? ~(0xFFFFFFFFu >> n) : 0u;
-      return (a >> n) | fill;
+      const uint32_t n = std::min<uint32_t>(a & 0x3Fu, 31u);
+      const uint32_t fill = (b & 0x80000000u) && n ? ~(0xFFFFFFFFu >> n) : 0u;
+      return (b >> n) | fill;
     }
     default: {
       float fa, fb;
@@ -394,6 +432,12 @@ int32_t run_plan(const Code& c, uint32_t& bad) {
       continue;
     }
     if (op.kind == Op::Endif) {
+      // The handler keeps one bit per open if, the innermost lowest, and an if opened inside a
+      // block that is being skipped copies that block's bit (rlwimi r8,r8,1,0,30 at 800020E4): the
+      // set bits are always the lowest ones, which is what this count is. An endif shifts the bits
+      // out (srw r8,r8,r9 at 80002748). An else then flips the innermost bit only when the bit
+      // above it is clear (8000274C to 80002754): inside an outer block that is being skipped it
+      // changes nothing, which is the last case below.
       skipping = skipping > op.count ? skipping - op.count : 0;
       if (op.aux) skipping = skipping == 0 ? 1 : skipping == 1 ? 0 : skipping;
       continue;
@@ -574,21 +618,18 @@ void load(const std::string& path, const std::vector<std::string>& enabled_names
 }
 
 const char* native_equivalent(const Code& c) {
-  // Slippi's optional codes (GALE01r2.ini) that the Source Port carries as C, by name or by the
-  // code's first line.
-  struct Known { const char* name; uint32_t w, v; const char* label; };
+  // Slippi's optional codes (GALE01r2.ini) that the Source Port carries as C, by the code's first
+  // line. Never by its name: a code is what its lines do, and one that only shares a name with a
+  // built-in switch is judged like any other.
+  struct Known { uint32_t w, v; const char* label; };
   static const Known known[] = {
-      {"widescreen 16:9", 0x043BB05Cu, 0x3EB00000u, "Widescreen 16:9"},
-      {"disable screen shake", 0x04030E44u, 0x4E800020u, "Disable Screen Shake"},
-      {"flash red on failed l-cancel", 0xC20C0148u, 0x0000000Cu, "Flash Red on Failed L-Cancel"},
-      {"lagless fod", 0xC21CBB90u, 0x00000005u, "Lagless FoD"},
+      {0x043BB05Cu, 0x3EB00000u, "Widescreen 16:9"},
+      {0x04030E44u, 0x4E800020u, "Disable Screen Shake"},
+      {0xC20C0148u, 0x0000000Cu, "Flash Red on Failed L-Cancel"},
+      {0xC21CBB90u, 0x00000005u, "Lagless FoD"},
   };
-  std::string name = c.name;
-  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
-  for (const Known& k : known) {
-    if (name.find(k.name) != std::string::npos) return k.label;
+  for (const Known& k : known)
     if (!c.lines.empty() && c.lines[0].first == k.w && c.lines[0].second == k.v) return k.label;
-  }
   // Any other code: built in when every one of its patches is one the Source Port carries as C,
   // by address and exact words (kBuiltInUnits; tools/gecko_targets.py, built_in_label). A patch is
   // one write, one string or serial write with its data lines, or one block of PowerPC with its

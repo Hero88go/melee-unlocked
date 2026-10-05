@@ -237,6 +237,14 @@ class SourcePortGeckoCodeTypeTest(unittest.TestCase):
         self.run_code([(0x01400002, 0x000000AB)])   # 81400002
         self.assertEqual(self.memory["far_bytes"][2], 0xAB)
 
+    def test_32_bit_write_is_rounded_down_to_a_word(self):
+        # The handler: rlwinm r12,r12,0,0,29 before the stw (80002050).
+        self.run_code([(0x04400006, 0x3FC00000)])
+        self.assertEqual(struct.unpack("<4f", self.memory["tunable_floats"]), (0.0, 1.5, 0.0, 0.0))
+        # The 16-bit and 8-bit writes are not rounded.
+        self.run_code([(0x02400031, 0x00001234)])
+        self.assertEqual(self.memory["tunable_bytes"], b"\x00\x12\x34\x00")
+
     # -- the base address and the pointer --
 
     def test_pointer_set_and_pointer_relative_writes(self):
@@ -248,17 +256,51 @@ class SourcePortGeckoCodeTypeTest(unittest.TestCase):
         self.assertEqual(self.shorts()[0], 0x1234)
         self.assertEqual(self.memory["tunable_bytes"][0], 0xCD)
 
-    def test_base_address_set_added_to_and_reset_by_the_terminator(self):
-        self.run_code([(0x42000000, 0x80400000),    # ba = 80400000
-                       (0x42100000, 0x00000010),    # ba += 0x10
-                       (0x02000000, 0x00000001),    # 16-bit at ba
+    def test_pointer_set_added_to_and_reset_by_the_terminator(self):
+        self.run_code([(0x4A000000, 0x80400000),    # po = 80400000
+                       (0x4A100000, 0x00000010),    # po += 0x10
+                       (0x12000000, 0x00000001),    # 16-bit at po
                        (0xE0000000, 0x80008000),    # ba = po = 80000000
-                       (0x02400012, 0x00000002)])
+                       (0x12400012, 0x00000002)])
         self.assertEqual(self.shorts()[:2], (1, 2))
 
+    def test_base_address_counts_by_its_top_seven_bits_only(self):
+        # The handler: rlwinm r12,r6,0,0,6 (80001FCC). A base address of 80400010 counts as
+        # 80000000, so the line's own address decides where the write lands.
+        self.run_code([(0x42000000, 0x80400010), (0x02400012, 0x00000002)])
+        self.assertEqual(self.shorts(), (0, 2, 0, 0))
+        self.assertEqual(self.refusal([(0x42000000, 0x80400010), (0x02000000, 0x00000001)]),
+                         ("outside", "writes outside game memory (80000000)"))
+        # The same for an if, for a register load and for a number made relative.
+        struct.pack_into("<I", self.memory["counter"], 0, 5)
+        self.run_code([(0x42000000, 0x80400010), (0x20400034, 5), (0x00400030, 0x000000EE), (0xE2000001, 0),
+                       (0x82210001, 0x00400034),    # gr1 = [ba + 400034]
+                       (0x84010001, 0x00400031),    # [ba + 400031] = gr1, 8-bit
+                       (0x4A010000, 0x00400032),    # po = ba + 400032
+                       (0x10000000, 0x000000CD)])
+        self.assertEqual(self.memory["tunable_bytes"], b"\xEE\x05\xCD\x00")
+        # A base address outside 80000000 to 81FFFFFF does move the line.
+        self.assertEqual(self.refusal([(0x42000000, 0x90000000), (0x02400012, 0x00000002)]),
+                         ("outside", "writes outside game memory (90400012)"))
+
+    def test_base_address_flags_are_one_bit_each(self):
+        # 4202: the relative digit's bit 0 is clear, so nothing is added (rlwinm r14,r3,16,31,31).
+        self.run_code([(0x4A020000, 0x80400030), (0x10000000, 0x00000011)])
+        self.assertEqual(self.memory["tunable_bytes"][0], 0x11)
+        # 4A20: the add digit's bit 0 is clear, so the pointer is set, not added to.
+        self.run_code([(0x4A000000, 0x80400000), (0x4A200000, 0x80400031), (0x10000000, 0x00000022)])
+        self.assertEqual(self.memory["tunable_bytes"][1], 0x22)
+
     def test_base_address_stored_is_a_number(self):
-        self.run_code([(0x42000000, 0x80400010), (0x44000000, 0x80400034)])
+        # The value stored is the base address in full, the add included. The address is always
+        # counted from the base (stwx r6,r12,r4 at 8000221C).
+        self.run_code([(0x42000000, 0x80400000), (0x42100000, 0x00000010), (0x44000000, 0x00400034)])
         self.assertEqual(struct.unpack("<I", self.memory["counter"]), (0x80400010,))
+        self.assertEqual(self.refusal([(0x42000000, 0x80400010), (0x44000000, 0x80400034)]),
+                         ("outside", "writes outside game memory (00400034)"))
+        # The pointer, stored through the pointer: 5C counts the address from the pointer.
+        self.run_code([(0x4A000000, 0x80400000), (0x5C000000, 0x00000034)])
+        self.assertEqual(struct.unpack("<I", self.memory["counter"]), (0x80400000,))
 
     def test_pointer_loaded_from_memory_is_refused(self):
         self.assertEqual(self.refusal([(0x48000000, 0x80400034), (0x14000000, 1)])[0], "pointer")
@@ -267,15 +309,24 @@ class SourcePortGeckoCodeTypeTest(unittest.TestCase):
         self.assertEqual(self.refusal([(0x42001003, 0x80400000)])[0], "pointer")   # plus a register
 
     def test_base_set_inside_an_if_is_unknown_after_it(self):
-        lines = [(0x20400034, 0), (0x42000000, 0x80400000), (0x04000000, 0x3F800000), (0xE2000001, 0)]
+        lines = [(0x20400034, 0), (0x4A000000, 0x80400000), (0x14000000, 0x3F800000), (0xE2000001, 0)]
         self.run_code(lines)   # known inside the block
         self.assertEqual(struct.unpack("<4f", self.memory["tunable_floats"])[0], 1.0)
-        cls, reason = self.refusal(lines + [(0x04000004, 0)])
+        cls, reason = self.refusal(lines + [(0x14000004, 0)])
+        self.assertEqual(cls, "base")
+        self.assertIn("pointer", reason)
+        # The endif that resets the pointer makes it known again.
+        self.run_code(lines[:3] + [(0xE2000001, 0x00008000), (0x14400004, 0x40000000)])
+        self.assertEqual(struct.unpack("<4f", self.memory["tunable_floats"])[1], 2.0)
+        # The base address the same way.
+        lines = [(0x20400034, 0), (0x42000000, 0x80400000), (0x04400000, 0x40400000), (0xE2000001, 0)]
+        self.run_code(lines)
+        self.assertEqual(struct.unpack("<4f", self.memory["tunable_floats"])[0], 3.0)
+        cls, reason = self.refusal(lines + [(0x04400004, 0)])
         self.assertEqual(cls, "base")
         self.assertIn("base address", reason)
-        # The endif that resets the base address makes it known again.
-        self.run_code(lines[:3] + [(0xE2000001, 0x80000000), (0x04400004, 0x40000000)])
-        self.assertEqual(struct.unpack("<4f", self.memory["tunable_floats"])[1], 2.0)
+        self.run_code(lines[:3] + [(0xE2000001, 0x80000000), (0x04400004, 0x40800000)])
+        self.assertEqual(struct.unpack("<4f", self.memory["tunable_floats"])[1], 4.0)
 
     def test_base_set_inside_an_if_is_unknown_in_its_else(self):
         cls, _ = self.refusal([(0x20400034, 0), (0x42000000, 0x80400000), (0xE2100000, 0), (0x04000004, 0)])
@@ -300,6 +351,17 @@ class SourcePortGeckoCodeTypeTest(unittest.TestCase):
             self.run_code([(0x28400010, value), (0x00400030, 0x000000EE), (0xE2000001, 0)])
             self.assertEqual(self.memory["tunable_bytes"][0] == 0xEE, passes, hex(value))
 
+    def test_if_address_is_rounded_down_to_what_it_reads(self):
+        # The handler: a word for the 32-bit ifs (80002104), a half for the 16-bit ones (80002110).
+        struct.pack_into("<I", self.memory["counter"], 0, 5)
+        struct.pack_into("<H", self.memory["tunable_shorts"], 2, 0x1234)
+        self.run_code([(0x20400036, 5), (0x00400030, 0x000000EE), (0xE2000001, 0),    # reads 80400034
+                       (0x20400034, 6),                                               # false
+                       (0x20400037, 5), (0x00400031, 0x000000DD), (0xE2000001, 0),    # endif, reads 80400034
+                       (0x28400034, 9),                                               # false
+                       (0x28400013, 0x00001234), (0x00400032, 0x000000CC), (0xE2000001, 0)])   # endif, reads 80400012
+        self.assertEqual(self.memory["tunable_bytes"], b"\xEE\xDD\xCC\x00")
+
     def test_nested_ifs_and_endif_counts(self):
         struct.pack_into("<I", self.memory["counter"], 0, 5)
         self.run_code([(0x20400034, 6),            # false
@@ -308,6 +370,40 @@ class SourcePortGeckoCodeTypeTest(unittest.TestCase):
                        (0xE2000001, 0),            # ends the inner if: still skipping
                        (0x00400031, 0x000000BB),   # skipped
                        (0xE2000001, 0),            # ends the outer if
+                       (0x00400032, 0x000000CC)])  # runs
+        self.assertEqual(self.memory["tunable_bytes"], b"\x00\x00\xCC\x00")
+
+    def test_endif_count_is_five_bits(self):
+        # The handler: clrlwi. r9,r3,27 (80002740). E2000021 ends one if, not 33.
+        self.run_code([(0x20400034, 1),            # false
+                       (0x20400034, 1),            # skipped: one deeper
+                       (0xE2000021, 0),            # ends the inner if only
+                       (0x00400030, 0x000000AA),   # still skipped
+                       (0xE2000001, 0),
+                       (0x00400031, 0x000000BB)])  # runs
+        self.assertEqual(self.memory["tunable_bytes"][:2], b"\x00\xBB")
+
+    def test_else_inside_a_skipped_block_changes_nothing(self):
+        # The handler flips the innermost if only when the one around it is running (8000274C).
+        self.run_code([(0x20400034, 1),            # false
+                       (0x20400034, 0),            # skipped (it would be true)
+                       (0x00400030, 0x000000AA),   # skipped
+                       (0xE2100000, 0),            # else of the inner if: the outer one is still false
+                       (0x00400031, 0x000000BB),   # skipped
+                       (0xE2000001, 0),
+                       (0x00400032, 0x000000CC),   # skipped: the outer if
+                       (0xE2100000, 0),            # else of the outer if
+                       (0x00400033, 0x000000DD),   # runs
+                       (0xE2000001, 0)])
+        self.assertEqual(self.memory["tunable_bytes"], b"\x00\x00\x00\xDD")
+        # An endif and an else in one line: one if ends, then the one around it turns into its else.
+        self.memory["tunable_bytes"][:] = bytes(4)
+        self.run_code([(0x20400034, 0),            # true
+                       (0x20400034, 1),            # false
+                       (0x00400030, 0x000000AA),   # skipped
+                       (0xE2100001, 0),            # ends the inner if; the outer one, true, turns false
+                       (0x00400031, 0x000000BB),   # skipped
+                       (0xE2000001, 0),
                        (0x00400032, 0x000000CC)])  # runs
         self.assertEqual(self.memory["tunable_bytes"], b"\x00\x00\xCC\x00")
 
@@ -353,20 +449,39 @@ class SourcePortGeckoCodeTypeTest(unittest.TestCase):
         self.assertEqual(op(0xF0, 0x0F, 2), 0xFF)
         self.assertEqual(op(0xF0, 0x3C, 3), 0x30)
         self.assertEqual(op(0xF0, 0x3C, 4), 0xCC)
-        self.assertEqual((op(1, 31, 5), op(1, 32, 5)), (0x80000000, 0))
-        self.assertEqual((op(0x80000000, 31, 6), op(0x80000000, 32, 6)), (1, 0))
-        self.assertEqual((op(0x80000001, 1, 7), op(5, 0, 7)), (3, 5))
-        self.assertEqual((op(0x80000000, 4, 8), op(0x80000000, 40, 8), op(0x40000000, 4, 8)),
+        # The shifts and the rotate: the handler shifts the operand by the register (slw r4,r9,r4
+        # at 800023F4, with the register in r4 and the operand in r9).
+        self.assertEqual((op(31, 1, 5), op(32, 1, 5)), (0x80000000, 0))
+        self.assertEqual((op(31, 0x80000000, 6), op(32, 0x80000000, 6)), (1, 0))
+        self.assertEqual((op(1, 0x80000001, 7), op(0, 5, 7)), (3, 5))
+        self.assertEqual((op(4, 0x80000000, 8), op(40, 0x80000000, 8), op(4, 0x40000000, 8)),
                          (0xF8000000, 0xFFFFFFFF, 0x04000000))
         self.assertEqual(op(0x3F800000, 0x40000000, 9), 0x40400000)    # 1.0 + 2.0
         self.assertEqual(op(0x40000000, 0x40400000, 10), 0x40C00000)   # 2.0 * 3.0
 
     def test_register_and_memory_and_two_registers(self):
+        # The memory operand's address is always counted from the base (add r19,r12,r19 at 800023B8).
         struct.pack_into("<I", self.memory["counter"], 0, 0x30)
-        self.run_code([(0x80000002, 0x0000000C), (0x86020002, 0x80400034),   # gr2 += [counter]
+        self.run_code([(0x80000002, 0x0000000C), (0x86020002, 0x00400034),   # gr2 += [counter]
                        (0x80000005, 0x00000003), (0x88100002, 0x00000005),   # gr2 *= gr5
                        (0x84000002, 0x80400030)])
         self.assertEqual(self.memory["tunable_bytes"][0], 0xB4)
+        self.assertEqual(self.refusal([(0x86020002, 0x80400034)]), ("outside", "reads outside game memory (00400034)"))
+        # Through the pointer (96): counted from the pointer.
+        self.run_code([(0x4A000000, 0x80400000), (0x80000002, 0x00000001), (0x96020002, 0x00000034),
+                       (0x84000002, 0x80400031)])
+        self.assertEqual(self.memory["tunable_bytes"][1], 0x31)
+
+    def test_register_shift_is_the_operand_shifted_by_the_register(self):
+        self.run_code([(0x80000004, 0x00000004), (0x86500004, 0x00000003),   # gr4 = 3 << gr4
+                       (0x84000004, 0x80400030)])
+        self.assertEqual(self.memory["tunable_bytes"][0], 0x30)
+
+    def test_register_set_flags_are_one_bit_each(self):
+        # 8020: the add digit's bit 0 is clear, so the register is set (andi. r5,r14,1 at 80002370).
+        self.run_code([(0x80000003, 0x00000007), (0x80200003, 0x00000005), (0x84000003, 0x80400030),
+                       (0x80100003, 0x00000001), (0x84000003, 0x80400031)])
+        self.assertEqual(self.memory["tunable_bytes"][:2], b"\x05\x06")
 
     def test_register_used_as_an_address_is_refused(self):
         self.assertEqual(self.refusal([(0x86010002, 1)])[0], "pointer")

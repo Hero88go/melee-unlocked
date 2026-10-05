@@ -41,13 +41,16 @@
 #include "render_observer.h"
 #include "native_state_layout.h"
 #include "native_savestate.h"
-#ifdef MELEE_NO_SLIPPI
-#include "netplay_state.h"   // the same names, answered from the neutral netplay state
-#else
+// Both builds: the neutral netplay state. In the build without the Slippi layer it also answers the
+// Slippi names; in the normal build a peer-to-peer session (--p2p-*) is found through it.
+#include "netplay_state.h"
+#ifndef MELEE_NO_SLIPPI
 #include "native_practice.h"
 #include "jukebox.h"
 #include "slippi_playback.h"
 #include "slippi_online.h"
+#include "replay_bar.h"
+#include "card_backup.h"
 #include "exi_slippi.h"
 #include "native_slippi_bridge.h"
 #include "native_replay_stream.h"
@@ -1268,8 +1271,10 @@ constexpr uint8_t CMD_SKIN_CYCLE = 0xF9;
 // kCosmeticBase, so nothing the game preloaded under the old number is reused; a skin not proven to
 // change looks alone also gets the alias entry that names the disc's copy for online play, as at
 // startup. False when a file could not be given an entry (the caller puts the old pick back).
-bool republish_cosmetic_slot(const std::string& slot) {
-  const auto result = host::cosmetics::republish_slot(g_cosmetic_fst.data(), (uint32_t)g_cosmetic_fst.size(), slot);
+bool republish_cosmetic_slot(const std::string& slot, bool stage = false) {
+  const auto result = stage
+      ? host::cosmetics::republish_stage(g_cosmetic_fst.data(), (uint32_t)g_cosmetic_fst.size(), slot)
+      : host::cosmetics::republish_slot(g_cosmetic_fst.data(), (uint32_t)g_cosmetic_fst.size(), slot);
   if (!result.ok) return false;
   bool ok = true;
   for (const auto& file : result.files) {
@@ -1304,6 +1309,31 @@ bool republish_cosmetic_slot(const std::string& slot) {
     g_paths[g_raw_paths[i]] = entry;
   }
   return ok;
+}
+
+// ---- stage select skin cycling (mn/mnstagesel.c, shim/mu_content.c) ----
+// payload: direction (1 next, 0 previous), then the stage's file name. reply: 1 when it changed.
+constexpr uint8_t CMD_STAGE_SKIN_CYCLE = 0xFB;
+// Title demo memory check (shim/mu_content.c mu_title_demo_stage): reply is four bytes, big endian,
+// the sum of the four largest growths among the installed skins that are not stage files.
+constexpr uint8_t CMD_SKIN_GROWTH = 0xFC;
+void cycle_stage_skin(const std::string& file, int direction, std::vector<uint8_t>& reply) {
+  reply.assign(1, 0);
+  if (g_replaying || g_cosmetic_fst.empty() || slippi::online::session_mode() >= 0) return;
+  const auto pick = host::cosmetics::cycle_stage_live(file, direction);
+  if (!pick.ok || !pick.changed) {
+    if (!pick.message.empty()) host::log("cosmetics: %s skin not changed (%s)", file.c_str(), pick.message.c_str());
+    return;
+  }
+  if (!republish_cosmetic_slot(file, true)) {
+    // No entry for it: the previous pick goes back, saved and published.
+    host::cosmetics::cycle_stage_live(file, -direction);
+    republish_cosmetic_slot(file, true);
+    return;
+  }
+  screen_label::show(("Stage skin: " + pick.name).c_str(), 2.5);
+  host::log("cosmetics: stage select picked %s for %s", pick.name.c_str(), file.c_str());
+  reply[0] = 1;
 }
 
 void cycle_costume_skin(int character, int costume, int direction, std::vector<uint8_t>& reply) {
@@ -1394,6 +1424,21 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
         if (c == CMD_REPLAY_GATE && n == 5) { reply.push_back(replay_gate((int32_t)read_be32(p), p[4])); return true; }
         if (c == CMD_LAB_ADVANTAGE && n == 5) { training_overlay::set_advantage((int32_t)read_be32(p), p[4]); return true; }
         if (c == CMD_SKIN_CYCLE && n == 4) { cycle_costume_skin(p[1], p[2], p[3] ? 1 : -1, reply); return true; }
+        if (c == CMD_SKIN_GROWTH && n == 0) {
+          uint32_t growth = host::cosmetics::largest_fighter_growth();
+          // MELEE_TEST_DEMO_GROWTH=<bytes>: test runs only, stands in for installed skins that much larger.
+          static const uint32_t test_growth = [] {
+            const char* v = std::getenv("MELEE_TEST_DEMO_GROWTH");
+            return v && host::options.no_gc_adapter ? (uint32_t)std::strtoul(v, nullptr, 0) : 0u;
+          }();
+          growth += test_growth;
+          reply = {(uint8_t)(growth >> 24), (uint8_t)(growth >> 16), (uint8_t)(growth >> 8), (uint8_t)growth};
+          return true;
+        }
+        if (c == CMD_STAGE_SKIN_CYCLE && n >= 2 && n <= 65) {
+          cycle_stage_skin(std::string((const char*)p + 1, strnlen((const char*)p + 1, n - 1)), p[0] ? 1 : -1, reply);
+          return true;
+        }
         if (c == CMD_VOICE_MATCH && n == 8) { plan_voice_banks(p, reply); return true; }
         if (c == 0xF6 && n == 1) {
           // 20XX TE switches from inside the game (stage select Y: Frozen Mode), for this session.
@@ -1483,6 +1528,12 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           }
           last_pad_frame = pad_frame;
         }
+#ifndef MELEE_NO_SLIPPI
+        // A peer-to-peer session (--p2p-*, source_p2p.cpp) installed its handler: it owns the
+        // session commands for this run, and Slippi's session code is never entered. The handler is
+        // only ever installed after such a session started, so every other run takes the line below.
+        if (host::netplay::has_command_handler()) return host::netplay::handle(c, p, n, reply);
+#endif
         return slippi::online::handle(c, p, n, reply);
       });
 }
@@ -1547,6 +1598,23 @@ int32_t h_online_test_match(MuOnlineMatch* out) {
   }
   return request.harness ? 1 : 2;
 #else
+  // A peer-to-peer session asked for the match (--p2p-*, source_p2p.cpp): the same answer as the
+  // build without the Slippi layer gives, and Slippi's matchmaking is never started. No such
+  // request (every run without --p2p-*): the Slippi path below, unchanged.
+  const host::netplay::MatchRequest request = host::netplay::match_request();
+  if (request.requested) {
+    if (!g_online_test_started) {
+      g_online_test_started = true;
+      apply_content_mode(request.mode);
+      host::log("netplay: the game enters a requested match (mode %d, pad port %d)", request.mode, request.local_port);
+    }
+    if (out) {
+      std::memset(out, 0, sizeof *out);
+      out->mode = (uint8_t)request.mode;
+      out->local_port = (uint8_t)(request.local_port & 3);
+    }
+    return request.harness ? 1 : 2;
+  }
   const auto& lobby = slippi::online::config();
   const bool from_lobby = !lobby.lobby_code.empty();
   if (g_online_test_mode < 0 && !from_lobby) return 0;
@@ -1854,6 +1922,7 @@ void card_mount_files() {
   g_card_dir = g_profile_card.empty() ? std::filesystem::u8path(host::options.card_dir) : g_profile_card;
   std::error_code ec;
   std::filesystem::create_directories(g_card_dir, ec);
+  host::backup_card_folder(g_card_dir);
   card_clear_files();
   g_card_files.assign(CARD_MAX_FILES, nullptr);
   size_t slot = 0;
