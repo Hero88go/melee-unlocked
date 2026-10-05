@@ -85587,7 +85587,7 @@ index bdc4d71b6..1887dec0f 100644
  typedef struct ChallengerData ChallengerData;
  typedef struct MatchEnd MatchEnd;
 diff --git a/src/melee/gm/gm_1601.c b/src/melee/gm/gm_1601.c
-index 7ad706ec1..ed29dd75a 100644
+index 7ad706ec1..3919ecb95 100644
 --- a/src/melee/gm/gm_1601.c
 +++ b/src/melee/gm/gm_1601.c
 @@ -10,9 +10,9 @@
@@ -86317,7 +86317,7 @@ index 7ad706ec1..ed29dd75a 100644
          return true;
      }
 +#ifdef MU_NATIVE
-+    if (mu_general_codes()) {
++    if (mu_unlock_all()) {
 +        return true;   /* General Codes, "Unlock All Characters and Stages" */
 +    }
 +#endif
@@ -86364,7 +86364,7 @@ index 7ad706ec1..ed29dd75a 100644
      for (i = 0; i < NUM_UNLOCKABLE_STAGES; i++) {
          if (!(*stage_unlock_mask & (1LL << i))) {
 +#ifdef MU_NATIVE
-+            if (mu_general_codes()) {
++            if (mu_unlock_all()) {
 +                return true;   /* General Codes, "Unlock All Characters and Stages" */
 +            }
 +#endif
@@ -86389,7 +86389,7 @@ index 7ad706ec1..ed29dd75a 100644
          return true;
      }
 +#ifdef MU_NATIVE
-+    if (mu_general_codes()) {
++    if (mu_unlock_all()) {
 +        return true;   /* General Codes, "Unlock All Characters and Stages" */
 +    }
 +#endif
@@ -86425,7 +86425,7 @@ index 7ad706ec1..ed29dd75a 100644
              /// @remarks Gekko codes which unlock all characters change this to
              ///          return @c true.
 +#ifdef MU_NATIVE
-+            if (mu_general_codes()) {
++            if (mu_unlock_all()) {
 +                return true;
 +            }
 +#endif
@@ -87571,7 +87571,7 @@ index 9cd503dcc..d9a2d3099 100644
  
  struct lbl_8046B668_t* gm_8016A98C(void)
 diff --git a/src/melee/gm/gm_16F1.c b/src/melee/gm/gm_16F1.c
-index b2db884b3..e8915d807 100644
+index b2db884b3..ee59dd1c8 100644
 --- a/src/melee/gm/gm_16F1.c
 +++ b/src/melee/gm/gm_16F1.c
 @@ -1,5 +1,7 @@
@@ -88134,7 +88134,7 @@ index b2db884b3..e8915d807 100644
  {
      if (gm_801721EC_2() || gm_801721EC_4()) {
 +#ifdef MU_NATIVE
-+        if (mu_general_codes()) {
++        if (mu_unlock_all()) {
 +            return false;   /* General Codes: the "pending message" answer is always no */
 +        }
 +#endif
@@ -88313,7 +88313,7 @@ index 72ea0a145..557cdae50 100644
  
  #endif
 diff --git a/src/melee/gm/gm_1736.c b/src/melee/gm/gm_1736.c
-index aeb53d743..da02d0aaa 100644
+index aeb53d743..f0db4e4cf 100644
 --- a/src/melee/gm/gm_1736.c
 +++ b/src/melee/gm/gm_1736.c
 @@ -33,10 +33,6 @@ void gm_InitChallengerData(u8 human_ckind, u8 human_color, u8 human_slot,
@@ -88332,7 +88332,7 @@ index aeb53d743..da02d0aaa 100644
          gm_SetPendingGameMode(GM_CHALLENGER_APPROACH);
          gm_SetNewGameModePending();
 +#ifdef MU_NATIVE
-+        if (mu_general_codes()) {
++        if (mu_unlock_all()) {
 +            return false;   /* General Codes; unreachable while gm_801721EC answers no */
 +        }
 +#endif
@@ -96302,7 +96302,7 @@ index c01f25836..23158b49b 100644
      gmMainLib_8015FCC0();
      lbMthp_8001F87C();
 diff --git a/src/melee/gm/gmmain_lib.c b/src/melee/gm/gmmain_lib.c
-index 45f41e52f..85c012700 100644
+index 45f41e52f..fa69e870d 100644
 --- a/src/melee/gm/gmmain_lib.c
 +++ b/src/melee/gm/gmmain_lib.c
 @@ -1,4 +1,7 @@
@@ -96873,7 +96873,7 @@ index 45f41e52f..85c012700 100644
 +#ifdef MU_NATIVE
 +    /* General Codes, "Disable Special Messages": the function returns at its first instruction,
 +     * leaving its argument as the result. */
-+    if (mu_general_codes()) {
++    if (mu_unlock_all()) {
 +        return arg0;
 +    }
 +#endif
@@ -96897,7 +96897,7 @@ index 45f41e52f..85c012700 100644
 +#ifdef MU_NATIVE
 +    /* General Codes, "Disable Trophy Messages": returns at once with its argument, which both
 +     * callers test as a whole word. */
-+    if (mu_general_codes()) {
++    if (mu_unlock_all()) {
 +        return arg0 != 0;
 +    }
 +#endif
@@ -97185,7 +97185,7 @@ index 45f41e52f..85c012700 100644
  {
 -    return gmMainLib_GetSaveData()->x186C & 4;
 +#ifdef MU_NATIVE
-+    if (mu_general_codes()) {
++    if (mu_unlock_all()) {
 +        return 1;   /* General Codes, "Unlock All Characters and Stages" */
 +    }
 +#endif
@@ -97208,7 +97208,7 @@ index 45f41e52f..85c012700 100644
  {
 -    return gmMainLib_GetSaveData()->x186C & 1;
 +#ifdef MU_NATIVE
-+    if (mu_general_codes()) {
++    if (mu_unlock_all()) {
 +        return 1;   /* General Codes, "Unlock All Characters and Stages" */
 +    }
 +#endif
@@ -97231,7 +97231,7 @@ index 45f41e52f..85c012700 100644
  {
 -    return gmMainLib_GetSaveData()->x186C & 2;
 +#ifdef MU_NATIVE
-+    if (mu_general_codes()) {
++    if (mu_unlock_all()) {
 +        return 1;   /* General Codes, "Unlock All Characters and Stages" */
 +    }
 +#endif
@@ -97256,7 +97256,7 @@ index 45f41e52f..85c012700 100644
  {
 -    return gmMainLib_GetSaveData()->x186C & 8;
 +#ifdef MU_NATIVE
-+    if (mu_general_codes()) {
++    if (mu_unlock_all()) {
 +        return 1;   /* General Codes, "Unlock All Characters and Stages" */
 +    }
 +#endif
@@ -175474,7 +175474,7 @@ index d2a9360e1..86ca75e12 100644
  typedef struct TyLightSymbolEntry TyLightSymbolEntry;
  typedef struct TyListArg TyListArg;
 diff --git a/src/melee/ty/toy.c b/src/melee/ty/toy.c
-index e4e03af90..da6f18abc 100644
+index e4e03af90..66263d8fd 100644
 --- a/src/melee/ty/toy.c
 +++ b/src/melee/ty/toy.c
 @@ -4,7 +4,6 @@
@@ -175547,7 +175547,7 @@ index e4e03af90..da6f18abc 100644
          return 1;
      } else {
 +#ifdef MU_NATIVE
-+        if (mu_general_codes()) {
++        if (mu_unlock_all()) {
 +            return 1;   /* General Codes, "Unlock All Characters and Stages" */
 +        }
 +#endif
@@ -175640,7 +175640,7 @@ index e4e03af90..da6f18abc 100644
  {
 -    return idk()[arg0] & 0xFF;
 +#ifdef MU_NATIVE
-+    if (mu_general_codes()) {
++    if (mu_unlock_all()) {
 +        (void) getTrophyFlags()[arg0];
 +        return 99;   /* General Codes, "Unlock All Characters and Stages": every trophy, 99 held */
 +    }

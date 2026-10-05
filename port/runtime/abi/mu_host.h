@@ -499,6 +499,9 @@ typedef struct MuHostApi {
 #define MU_GAME_OPTION3_HP_STAGE_FLAGS_MASK  0x3FC00000u
 #define MU_GAME_OPTION3_HP_STAGE_FLAGS_SHIFT 22
 #define MU_GAME_OPTION3_HP_STAGE_ALL         0x3FFF8000u
+/* "Unlock everything" switched off (Game tab): the save file decides what is unlocked. A plain
+ * option; the game ignores it in a network session (shim/mu_gecko.c mu_unlock_all). */
+#define MU_GAME_OPTION3_LOCKED_CONTENT       0x80000000u
 
 /* One writable region of game-owned state. Regions do not include the live native stack, host
  * timing, ARAM, or process allocations; callers must capture those separately for rollback. */

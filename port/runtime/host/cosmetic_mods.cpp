@@ -10,6 +10,7 @@
 #include <bcrypt.h>
 
 #include <algorithm>
+#include <functional>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -5278,6 +5279,19 @@ uint32_t swapped_online_count(uint32_t* stages) {
   }
   if (stages) *stages = (uint32_t)stage_ids.size();
   return (uint32_t)costumes.size();
+}
+uint32_t largest_fighter_growth() {
+  auto runtime = std::atomic_load(&g_runtime);
+  std::vector<uint32_t> growth;
+  for (const auto& entry : runtime->by_start) {
+    const RuntimeAsset& a = entry.second;
+    if (a.kind == "stage_visual" || !a.bytes || a.bytes->size() <= a.vanilla_size) continue;
+    growth.push_back((uint32_t)std::min<size_t>(a.bytes->size() - a.vanilla_size, 0x7FFFFFFFu));
+  }
+  std::sort(growth.begin(), growth.end(), std::greater<uint32_t>());
+  uint64_t sum = 0;
+  for (size_t i = 0; i < growth.size() && i < 4; ++i) sum += growth[i];
+  return (uint32_t)std::min<uint64_t>(sum, 0x7FFFFFFFu);
 }
 void freeze_for_online_session() { g_online_freezes.store(1, std::memory_order_relaxed); }
 void thaw_after_online_session() { g_online_freezes.store(0, std::memory_order_relaxed); }
