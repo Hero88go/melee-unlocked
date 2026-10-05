@@ -65,7 +65,8 @@ static void SpecialN_ChangeAndReset(HSD_GObj* gobj, FtMotionId msid, MotionFlags
 void ftDe_SpecialN_GetMouthPos(HSD_GObj* gobj, Vec3* out)
 {
     Fighter* fp = GET_FIGHTER(gobj);
-    ftDe_DatAttrs* da = ftDe_Attrs(fp);
+    /* Dedede's own attributes, or the hat's for a Kirby who holds his ability. */
+    ftDe_DatAttrs* da = ftDe_CaptorAttrs(fp);
     out->x = da->specialn_mouth_x * fp->facing_dir + fp->cur_pos.x;
     out->y = fp->cur_pos.y + da->specialn_mouth_y;
     out->z = fp->cur_pos.z;

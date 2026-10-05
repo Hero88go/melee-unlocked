@@ -48,6 +48,40 @@ static HSD_GObj* ThrowerOf(Fighter* fp)
     return (HSD_GObj*) MU_Z(fp->mv.co.thrownkirby.thrower_gobj);
 }
 
+/* Who inhaled: Dedede, or a Kirby who holds Dedede's ability. Kirby's copy of the move
+ * (PlKbCpDe.dat, dedede_kirby.c) carries every routine of this file again, and each is the same
+ * routine with three things changed:
+ *   - the values come from the hat data (MEX_GetKirbyCpData of the kind Kirby copied, the word
+ *     at +0xC: a block with the layout of the start of ftDe_DatAttrs) where Dedede reads his
+ *     own attributes;
+ *   - the star a spat fighter rides in is the joint at hat data +0x18, where Dedede takes the
+ *     model of his article 0;
+ *   - the two places that look at the inhaler's state or change it (the full mouth test and
+ *     the struggle hop) name Kirby's states.
+ * So the routines below serve both, through these three helpers. */
+ftDe_DatAttrs* ftDe_CaptorAttrs(Fighter* captor)
+{
+    if (captor->kind == Ft_Kind_Kirby) {
+        return ftKbDe_Attrs(captor);
+    }
+    return ftDe_Attrs(captor);
+}
+
+static HSD_Joint* CaptorStarJoint(Fighter* captor)
+{
+    DISC_PTR(Article)* articles;
+    Article* star;
+    ItemModelDesc* star_model;
+
+    if (captor->kind == Ft_Kind_Kirby) {
+        return ftKbDe_StarJoint(captor);
+    }
+    articles = (void*) DP(captor->ft_data->x48_items);
+    star = DP(articles[ftDe_Article_StarModel]);
+    star_model = DP(star->x10_modelDesc);
+    return DP(star_model->x0_joint);
+}
+
 /* Kirby's pull-in and shrink, shared by the fighter and the item version: move `offset` (the
  * distance still to cover) at most `limit` per frame, and shrink the model inside `shrink.x`. */
 static float PullShrinkFactor(float dist, Vec2* shrink)
@@ -122,7 +156,7 @@ void ftDe_SpecialN_OnVictim(HSD_GObj* gobj, HSD_GObj* dedede_gobj)
     Fighter_ChangeMotionState(gobj, FTDE_CO_CAPTUREKIRBY, 0, 0.0f, 1.0f, 0.0f, NULL);
     ftCommon_8007D5D4(fp);
 
-    da = ftDe_Attrs(dfp);
+    da = ftDe_CaptorAttrs(dfp);
     ftDe_SpecialN_GetMouthPos(dedede_gobj, &mouth);
     fp->mv.co.capturekirby.pos_offset.x = fp->cur_pos.x - mouth.x;
     fp->mv.co.capturekirby.pos_offset.y = fp->cur_pos.y - mouth.y;
@@ -145,7 +179,12 @@ void ftDe_SpecialN_OnVictim(HSD_GObj* gobj, HSD_GObj* dedede_gobj)
 /* Dedede_CheckIfEatWait: Dedede is standing or floating with a full mouth. */
 static bool Dedede_IsEatWait(HSD_GObj* dedede_gobj)
 {
-    FtMotionId msid = GET_FIGHTER(dedede_gobj)->motion_id;
+    Fighter* dfp = GET_FIGHTER(dedede_gobj);
+    FtMotionId msid = dfp->motion_id;
+
+    if (dfp->kind == Ft_Kind_Kirby) {
+        return ftKbDe_IsEatWait(dfp);
+    }
     return msid == ftDe_MS_SpecialNEatWait || msid == ftDe_MS_SpecialAirNEatWait;
 }
 
@@ -155,8 +194,12 @@ static void Dedede_StruggleHop(HSD_GObj* dedede_gobj, int dir)
 {
     Fighter* dfp = GET_FIGHTER(dedede_gobj);
     if (dfp->ground_or_air == GA_Ground) {
-        ftDe_SpecialN_EatWait_Fall(dedede_gobj);
-        dfp->self_vel.y = ftDe_Attrs(dfp)->specialn_struggle_speed * (float) dir;
+        if (dfp->kind == Ft_Kind_Kirby) {
+            ftKbDe_EatWait_Fall(dedede_gobj);
+        } else {
+            ftDe_SpecialN_EatWait_Fall(dedede_gobj);
+        }
+        dfp->self_vel.y = ftDe_CaptorAttrs(dfp)->specialn_struggle_speed * (float) dir;
     }
 }
 
@@ -164,7 +207,7 @@ static void Dedede_StruggleHop(HSD_GObj* dedede_gobj, int dir)
 static void Dedede_StruggleNudge(HSD_GObj* dedede_gobj, float dir)
 {
     Fighter* dfp = GET_FIGHTER(dedede_gobj);
-    float speed = ftDe_Attrs(dfp)->specialn_struggle_speed * dir;
+    float speed = ftDe_CaptorAttrs(dfp)->specialn_struggle_speed * dir;
     if (dfp->ground_or_air == GA_Ground) {
         dfp->gr_vel = speed;
     } else {
@@ -201,7 +244,7 @@ void ftDe_CaptureWaitKirby_IASA(HSD_GObj* gobj)
     Fighter* fp = GET_FIGHTER(gobj);
     HSD_JObj* jobj = GET_JOBJ(gobj);
     Fighter* dfp = GET_FIGHTER(fp->victim_gobj);
-    ftDe_DatAttrs* da = ftDe_Attrs(dfp);
+    ftDe_DatAttrs* da = ftDe_CaptorAttrs(dfp);
 
     if (Dedede_IsEatWait(fp->victim_gobj)) {
         ftCommonData* cd = p_ftCommonData;
@@ -270,7 +313,7 @@ void ftDe_SpecialN_ItemCaptured(Item_GObj* gobj, HSD_GObj* dedede_gobj, float fa
 {
     Item* ip = GET_ITEM(gobj);
     HSD_JObj* jobj = GET_JOBJ(gobj);
-    ftDe_DatAttrs* da = ftDe_Attrs(GET_FIGHTER(dedede_gobj));
+    ftDe_DatAttrs* da = ftDe_CaptorAttrs(GET_FIGHTER(dedede_gobj));
     Vec3 mouth;
 
     /* m-ex writes the owner to ip+4 here where it_802F23EC writes atk_victim (ip+D04); ip+4 is
@@ -316,10 +359,8 @@ void ftDe_SpecialN_EnterStarSpit(HSD_GObj* gobj, HSD_GObj* dedede_gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
     Fighter* dfp = GET_FIGHTER(dedede_gobj);
-    ftDe_DatAttrs* da = ftDe_Attrs(dfp);
-    DISC_PTR(Article)* articles = (void*) DP(dfp->ft_data->x48_items);
-    Article* star = DP(articles[ftDe_Article_StarModel]);
-    ItemModelDesc* star_model = DP(star->x10_modelDesc);
+    ftDe_DatAttrs* da = ftDe_CaptorAttrs(dfp);
+    HSD_Joint* star_joint = CaptorStarJoint(dfp);
     float scale_value;
     Vec3 scale;
 
@@ -349,11 +390,15 @@ void ftDe_SpecialN_EnterStarSpit(HSD_GObj* gobj, HSD_GObj* dedede_gobj)
     fp->mv.co.thrownkirby.x18_b0 = false;
     fp->mv.co.thrownkirby.x18_b1 = false;
 
-    ftCommon_SetAccessory(fp, DP(star_model->x0_joint));
     scale_value = fp->co_attrs.xDC;
     scale.x = scale.y = scale.z = scale_value;
-    HSD_JObjSetScale(fp->x20A0_accessory, &scale);
-    lb_8000C2F8(fp->x20A0_accessory, fp->parts[ftParts_GetBoneIndex(fp, FtPart_YRotN)].joint);
+    /* star_joint is NULL only for a Kirby without any hat data of Dedede's in the scene (not an
+     * m-ex case): the fighter then flies without the star around it. */
+    if (star_joint != NULL) {
+        ftCommon_SetAccessory(fp, star_joint);
+        HSD_JObjSetScale(fp->x20A0_accessory, &scale);
+        lb_8000C2F8(fp->x20A0_accessory, fp->parts[ftParts_GetBoneIndex(fp, FtPart_YRotN)].joint);
+    }
     ftColl_8007ABD0(&fp->x914[0], (s32) fp->co_attrs.kirby_b_star_damage, gobj);
 
     fp->mv.co.thrownkirby.coll_box.top = da->star_coll_box[0] * scale_value;
@@ -368,7 +413,7 @@ void ftDe_SpecialN_EnterStarSpit(HSD_GObj* gobj, HSD_GObj* dedede_gobj)
 static void ThrownStar_Phys(HSD_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
-    ftDe_DatAttrs* da = ftDe_Attrs(GET_FIGHTER(ThrowerOf(fp)));
+    ftDe_DatAttrs* da = ftDe_CaptorAttrs(GET_FIGHTER(ThrowerOf(fp)));
     float vx = fp->self_vel.x;
     float vy = fp->self_vel.y;
     float speed = sqrtf(vx * vx + vy * vy);
@@ -426,7 +471,7 @@ static void StarSpitEnd_Accessory(HSD_GObj* gobj)
 static void StarSpitEnd_Phys(HSD_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
-    ftDe_DatAttrs* da = ftDe_Attrs(GET_FIGHTER(ThrowerOf(fp)));
+    ftDe_DatAttrs* da = ftDe_CaptorAttrs(GET_FIGHTER(ThrowerOf(fp)));
     fp->grab_timer -= da->star_time_decay;
     if (fp->mv.co.thrownkirby.x18_b0 || fp->grab_timer <= 0.0f) {
         Fighter_UpdateModelScale(gobj);
@@ -438,7 +483,7 @@ static void StarSpitEnd_Phys(HSD_GObj* gobj)
 static void StarSpit_End(HSD_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
-    ftDe_DatAttrs* da = ftDe_Attrs(GET_FIGHTER(ThrowerOf(fp)));
+    ftDe_DatAttrs* da = ftDe_CaptorAttrs(GET_FIGHTER(ThrowerOf(fp)));
 
     Fighter_ChangeMotionState(gobj, FTDE_CO_THROWNKIRBY, Ft_MF_Unk06, 0.0f, 1.0f, 0.0f, NULL);
     fp->phys_cb = StarSpitEnd_Phys;
@@ -474,13 +519,26 @@ static void StarSpit_End(HSD_GObj* gobj)
 /* ItemSpawn_StarSpit: an eaten item comes back out as article 1. */
 void ftDe_SpecialN_SpawnSpitStar(HSD_GObj* gobj, Vec3* pos, Vec3* vel, float lifetime, float decel)
 {
+    ftDe_SpecialN_SpawnSpitStarAs(gobj, ftDe_Article_SpitStar, pos, vel, lifetime, decel);
+}
+
+/* The routine above with the article as an argument: Kirby's copy of the move
+ * (PlKbCpDe.dat +0x35E4) is the same instructions with article 5. */
+void ftDe_SpecialN_SpawnSpitStarAs(HSD_GObj* gobj, int article, Vec3* pos, Vec3* vel, float lifetime,
+                                   float decel)
+{
     SpawnItem spawn;
     Item_GObj* item_gobj;
 
     memset(&spawn, 0, sizeof(spawn));
     spawn.x0_parent_gobj = gobj;
     spawn.x4_parent_gobj2 = gobj;
-    spawn.kind = mu_ak_article_kind(gobj, ftDe_Article_SpitStar);
+    spawn.kind = mu_ak_article_kind(gobj, article);
+    /* Not an m-ex case: no item kind for the article (m-ex stops the game there). It can only
+     * happen to a Kirby whose copied fighter's list was not registered. */
+    if ((int) spawn.kind < 0) {
+        return;
+    }
     spawn.pos.x = pos->x;
     spawn.pos.y = pos->y;
     spawn.pos.z = 0.0f;

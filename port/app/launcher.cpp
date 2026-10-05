@@ -31,6 +31,7 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstdint>
+#include <climits>
 #include <cstring>
 #include <cwctype>
 #include <cstdio>
@@ -49,6 +50,7 @@
 #include "launcher_lobby_p2p.h"
 #include "launcher_theme.h"
 #include "launcher_replay_data.h"
+#include "launcher_trace_view.h"
 #include "launcher_lang.h"
 #include "launcher_crash_text.h"   // with launcher_crash_zip.h; launcher_crash.inl sits inside the namespace below
 // Every message box shows in the player's language (fixed English wording is looked up).
@@ -1532,6 +1534,18 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       return 0;
     }
     case WM_ERASEBKGND: return 1;        // WM_PAINT paints every pixel from a memory DC
+    case WM_APP + 46: {
+      // An isolated fixture opened by the hidden launcher capture harness.
+      if(!g_launcher_test) return 0;
+      const char* file=std::getenv("MELEE_LAUNCHER_TEST_REPLAY_STATS");
+      if(!file||!*file) return 0;
+      ++g_replay_gen;
+      const auto path=std::filesystem::u8path(file);
+      g_replay_files={path};g_replay_info={launcher::replay::inspect(path,true)};
+      g_replay_traces={launcher::trace::load(path)};
+      g_replay_view=0;g_stats_scroll=0;g_trace_hover=-1;
+      select_tab(3);replay_layout();stats_changed();return 0;
+    }
     case WM_PRINTCLIENT: {
       RECT r; GetClientRect(hwnd, &r); paint(hwnd, (HDC)wp, r); print_client_children(hwnd, (HDC)wp); return 0;
     }

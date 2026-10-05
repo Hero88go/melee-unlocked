@@ -136,8 +136,11 @@ unified behind an attribute struct. `sonic/` was not touched.
    structs, but the PlCo.dat tables it normally gets are big-endian disc data. Tails's tables are
    written in disc order (`ftTails_CpuAttack` is `DISC_STRUCT`) to match PlCo.dat, so they will
    read correctly once that reader honours byte order (it is wrong for the vanilla tables too).
-10. **Shot OnDestroy with a Kirby owner**: console clears Kirby's slot at fp+0x596C (m-ex's
-    extended Kirby ability area). Not ported; the Tails owner path is.
+10. **Shot OnDestroy with a Kirby owner**: console clears the word at Kirby's fp+0x596C. That is
+    not an m-ex area: it is past the end of the Fighter (0x2420 bytes on the disc). Natively the
+    slot is `ftKbTs_ShotSlot` (`ftTs_types.h`), cleared here only while it names the shot that is
+    being destroyed. Kirby's copy of the move is `tails_kirby.c`; article 1 (`itTs_Articles[1]`)
+    is its shot. See `run-source/rel09-b1-wolf/kirby/TAILS.md`.
 11. `ftTs_OnSpawnParticle` finds its fighter through the generator's `userfunc` pointer
     (`container_of` on `ftTails_ParticleHook`) instead of the console's fixed offsets, so the
     native layout of `HSD_PSUserFunc` does not matter.

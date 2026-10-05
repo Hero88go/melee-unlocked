@@ -287,5 +287,7 @@ const MuAkFighter mu_ak_charizard = {
     .move_logic_count = ftLz_MS_SelfCount,
 
     .articles = mu_ak_charizard_item_logic,
-    .article_count = ftLz_Item_Count,
+    .article_count = ftLz_Item_TableCount,
+
+    .kirby = &ftKbLz_Copy,
 };

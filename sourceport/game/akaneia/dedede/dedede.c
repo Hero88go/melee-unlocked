@@ -241,5 +241,7 @@ const MuAkFighter mu_ak_dedede = {
 
     /* One table per article, by pointer: article 0 is a model only and has no code. */
     .article_tables = ftDe_ArticleLogic,
-    .article_count = ftDe_Article_Count,
+    .article_count = ftDe_Article_TableCount,
+
+    .kirby = &ftKbDe_Copy,
 };

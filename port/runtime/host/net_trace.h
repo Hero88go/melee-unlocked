@@ -67,17 +67,18 @@ class Ring {
 // 1 for an advanced frame, 0 otherwise.
 inline const char* csv_header() {
   return "frame,wall_s,sim_ms,wait_frames,rollbacks,rollback_depth,offset_us,sync,ping_ms,"
-         "buttons,stick_x,stick_y,cstick_x,cstick_y,trigger_l,trigger_r,presents,mark\n";
+         "buttons,stick_x,stick_y,cstick_x,cstick_y,trigger_l,trigger_r,presents,mark,mark_flags\n";
 }
 // Writes the record's line (with the newline) and returns its length, 0 when `size` is too small.
 inline size_t csv_row(const Record& r, char* out, size_t size) {
   const int sync = (r.flags & kShed) ? -1 : (r.flags & kAdvance) ? 1 : 0;
-  const int n = std::snprintf(out, size, "%d,%.4f,%.2f,%u,%u,%u,%d,%d,%u,%04X,%d,%d,%d,%d,%u,%u,%u,%d\n",
+  const unsigned marks = r.flags & (kMark | kMarkVisual | kMarkInput | kMarkAudio);
+  const int n = std::snprintf(out, size, "%d,%.4f,%.2f,%u,%u,%u,%d,%d,%u,%04X,%d,%d,%d,%d,%u,%u,%u,%d,%u\n",
                               (int)r.frame, r.wall, (double)r.sim_ms, (unsigned)r.wait_frames, (unsigned)r.rollbacks,
                               (unsigned)r.rollback_depth, (int)r.offset_us, sync, (unsigned)r.ping_ms,
                               (unsigned)((r.pad[0] << 8) | r.pad[1]), (int)(int8_t)r.pad[2], (int)(int8_t)r.pad[3],
                               (int)(int8_t)r.pad[4], (int)(int8_t)r.pad[5], (unsigned)r.pad[6], (unsigned)r.pad[7],
-                              (unsigned)r.presents, (r.flags & kMarkAudio) ? 4 : (r.flags & kMarkInput) ? 3 : (r.flags & kMarkVisual) ? 2 : (r.flags & kMark) ? 1 : 0);
+                              (unsigned)r.presents, (r.flags & kMarkAudio) ? 4 : (r.flags & kMarkInput) ? 3 : (r.flags & kMarkVisual) ? 2 : (r.flags & kMark) ? 1 : 0, marks);
   return n > 0 && (size_t)n < size ? (size_t)n : 0;
 }
 

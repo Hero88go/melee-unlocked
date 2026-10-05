@@ -575,13 +575,16 @@ static void load_dol_from_disc() {
 // already contains these patches; this keeps RAM identical to what the game expects to read.
 static void apply_gecko_boot_ram() {
   std::memcpy(ptr(0x80001800u, (uint32_t)gecko::codehandler_bin_size), gecko::codehandler_bin, gecko::codehandler_bin_size);
+  mark_ram_write(0x80001800u, (uint32_t)gecko::codehandler_bin_size);
   wr32(0x80001D6Cu, 0x4E800020u);   // USB Gecko I/O replaced by blr, as Slippi does
   wr32(0x80001800u, 0xD01F1BADu);   // handler magic
   std::memcpy(ptr(0x800028B8u, (uint32_t)gecko::bootloader_gct_size), gecko::bootloader_gct, gecko::bootloader_gct_size);
+  mark_ram_write(0x800028B8u, (uint32_t)gecko::bootloader_gct_size);
   wr8(0x80001807u, 1);              // codes on
   for (size_t i = 0; i < gecko::boot_writes_count; ++i) {
     const gecko::Write& w = gecko::boot_writes[i];
     std::memcpy(ptr(w.addr, w.size), w.data, w.size);
+    mark_ram_write(w.addr, w.size);
   }
   for (size_t i = 0; i < gecko::boot_hooks_count; ++i) {
     const gecko::HookInstall& h = gecko::boot_hooks[i];
@@ -622,6 +625,8 @@ static void apply_mod_code() {
   if (g_mod_clean && gecko::codehandler_bin_size) {
     std::memset(ptr(0x80001800u, (uint32_t)gecko::codehandler_bin_size), 0, gecko::codehandler_bin_size);
     std::memset(ptr(0x800028B8u, (uint32_t)gecko::bootloader_gct_size), 0, gecko::bootloader_gct_size);
+    mark_ram_write(0x80001800u, (uint32_t)gecko::codehandler_bin_size);
+    mark_ram_write(0x800028B8u, (uint32_t)gecko::bootloader_gct_size);
     const uint32_t text_start = g_text_ranges.empty() ? 0x80003100u : g_text_ranges.front().first;
     ppc::disable_dispatch_range(0x80001800u, std::min(text_start, 0x80001800u + (uint32_t)gecko::codehandler_bin_size));
     ppc::disable_dispatch_range(0x800028B8u, std::min(text_start, 0x800028B8u + (uint32_t)gecko::bootloader_gct_size));

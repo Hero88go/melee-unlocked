@@ -5,6 +5,7 @@
 // same whether translated or interpreted.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "ppc.h"
+#include "ram_translator.h"
 #include "host.h"
 #include <algorithm>
 #include <cstdio>
@@ -17,19 +18,19 @@ namespace ppc {
 Fn lookup(uint32_t addr);
 bool function_bounds(uint32_t addr, uint32_t* lo, uint32_t* hi);
 
-namespace {
-
 // Test runs (MELEE_INTERP_POLL=compiled): poll for host events only where translated code does, on a
 // backward branch without link that stays inside its function. The default also counts calls to lower
 // addresses and branches out of a function, so the same function run here or compiled takes events at
 // other instructions: harmless timing, but it hides everything else in a whole-RAM comparison of the two.
-inline void branch_poll(Context& c, uint32_t pc, uint32_t t, bool link) {
+void ram_branch_poll(Context& c, uint32_t pc, uint32_t t, bool link) {
   if (t > pc) return;
   static const bool like_compiled = [] { const char* v = std::getenv("MELEE_INTERP_POLL"); return v && std::string(v) == "compiled"; }();
   if (!like_compiled) { backedge(c); return; }
   uint32_t lo = 0, hi = 0;
   if (!link && function_bounds(pc, &lo, &hi) && t >= lo && pc < hi) backedge(c);
 }
+
+namespace {
 
 inline uint32_t bits(uint32_t w, int start, int count) { return (w >> (32 - start - count)) & ((1u << count) - 1); }
 inline uint32_t sext16(uint32_t v) { return (uint32_t)(int32_t)(int16_t)v; }
@@ -217,7 +218,7 @@ struct Interp {
         bool take = cond(bo, bi);
         if (!take) break;
         if (w & 1) c.lr = pc + 4;
-        branch_poll(c, pc, t, (w & 1) != 0);
+        ram_branch_poll(c, pc, t, (w & 1) != 0);
         transfer(t, (w & 1) != 0);
         return;
       }
@@ -225,7 +226,7 @@ struct Interp {
         uint32_t li = w & 0x03FFFFFC; if (li & 0x02000000) li |= 0xFC000000u;
         uint32_t t = (w & 2) ? li : pc + li;
         if (w & 1) c.lr = pc + 4;
-        branch_poll(c, pc, t, (w & 1) != 0);
+        ram_branch_poll(c, pc, t, (w & 1) != 0);
         transfer(t, (w & 1) != 0);
         return;
       }
@@ -483,12 +484,12 @@ std::unordered_map<uint32_t, uint64_t>* g_profile = nullptr;
 
 }  // namespace
 
-void interpret(Context& c, uint8_t* m, uint32_t addr) {
+void resume_interpret(Context& c, uint8_t* m, uint32_t addr, uint32_t entry_lr) {
   if (!fast(m, addr) || (addr & 3)) fatal(c, "call to unmapped guest address", addr);
   ++g_interpreted_calls;
-  enter(c, addr);
   Interp::note_start(addr, c.lr);
   Interp in(c, m, addr);
+  in.entry_lr = entry_lr;
   static const bool profile = [] { const char* v = std::getenv("MELEE_INTERP_PROFILE"); return v && (*v == '1' || *v == '2'); }();
   if (profile) {
     if (!g_profile) g_profile = new std::unordered_map<uint32_t, uint64_t>();
@@ -528,6 +529,11 @@ void interpret(Context& c, uint8_t* m, uint32_t addr) {
     return;
   }
   while (!in.done) { in.step(); ++g_interpreted_insns; }
+}
+
+void interpret(Context& c, uint8_t* m, uint32_t addr) {
+  enter(c, addr);
+  resume_interpret(c, m, addr, c.lr);
 }
 
 void interpreter_dump_recent(Context& c) {   // the ring and the jump history, for host-side checks

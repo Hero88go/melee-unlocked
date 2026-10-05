@@ -126,7 +126,7 @@ std::vector<CatalogMod> default_catalog() {
       "tool_sha256": "d81f59b2fe5e8589c0ee9782e231c805084f4d23dfade413903a4cad63b4e342",
       "patch_sha256": "a451bf67acd1333836847acead02191fa2122a254b6295e949620c49e3b8b984",
       "output_sha256": "0d7ba36bef3505cdf6c0209d9ae34977e23cf6cae4d24366e8d405810f798993",
-      "note": "Untested on the Static Recomp."
+      "note": "Runs on the Static Recomp."
     },
     {
       "id": "hackpack",

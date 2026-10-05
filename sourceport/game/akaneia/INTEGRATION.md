@@ -28,9 +28,18 @@ the None sentinel; every retail mapping stays unchanged. These character-kind
 edits are source only, unbuilt and unrun, behind `MU_AKANEIA_FIGHTERS`. The default
 build retains the retail character table size and all added fighters remain locked.
 
-The per-kind tables are sized `FT_KIND_TABLE_MAX` (`ft/forward.h`: `MU_FT_KIND_CAP` = 0x32
-natively, `Ft_Kind_Max` on the console). Retail entries are unchanged. The added slots are NULL
+The per-kind tables are sized `FT_KIND_TABLE_MAX` (`ft/forward.h`: `MU_FT_KIND_CAP` natively,
+`Ft_Kind_Max` on the console). Retail entries are unchanged. The added slots are NULL
 until the registry fills them.
+
+The same layer serves ACE 2.0.0 (Akaneia plus 24 fighters: 32 added slots, internal 27 to 58,
+native kinds 0x22 to 0x41, slot 7 empty). `MU_AK_KIND_SLOTS` is 40 in the experimental build
+(cap 0x4A) and stays 16 in the release build, where no added fighter is created. How many slots
+a disc has comes from its MxDt (`mu_mex_special_kind_shift`). A fighter MxDt names that has no
+descriptor in the build is logged once (`[ak] <name> (<file>): no native code in this build,
+locked`) and keeps no table entry, no character kind and no files: it cannot be created or
+picked. What was widened for ACE, and the test recipes, are in
+`run-source/rel09-ace-native/LAYER_APPLIED.md`.
 
 ## Retail, online and replays
 
@@ -44,10 +53,15 @@ until the registry fills them.
 
 1. Write `<fighter>/<fighter>.c` defining `const MuAkFighter mu_ak_<fighter> = { ... };` with
    `.name`, `.file` (the disc file, for example `"PlWf.dat"`) and the callbacks you have.
-2. CMake picks up every `akaneia/**/*.c`. It defines `MU_AK_HAVE_<FIGHTER>` for
-   `mu_ak_fighters.c` only when `<fighter>/<fighter>.c` exists, so the registry names your symbol
-   only then. Weak symbols do not work for this in the MinGW DLL link: an undefined weak fails to
-   link, and a weak definition overrides the strong one.
+2. CMake picks up every `akaneia/**/*.c` (and `ace/*/*.c` for the fighters ACE adds, same
+   layout and header). Write the descriptor line exactly as above, at the start of a line: the
+   build lists every such line in `mu_ak_registry.inc` and the registry includes it
+   (`MU_AK_REGISTRY_GENERATED`), so a new folder needs no edit of a shared file. A descriptor
+   added to an existing file needs CMake run again. Without the generated list the registry
+   falls back to the seven Akaneia names (`MU_AK_HAVE_<FIGHTER>`). One code set under two disc
+   files takes two descriptors (`mu_ak_wolf` for `PlWf.dat`, `mu_ak_wolf_ssbu` for ACE's
+   `PlWfU.dat`). Weak symbols do not work for this in the MinGW DLL link: an undefined weak
+   fails to link, and a weak definition overrides the strong one.
 3. Leave a field NULL to get the m-ex default for that fighter. That is the retail function MxDt
    names for it, found by comparing it with MxDt's entries for the retail fighters. For example,
    Charizard's MxDt defaults are Bowser's functions and the common double jump. An empty default
@@ -110,6 +124,9 @@ are misleading: use the "is really" column.
 | 35 | onsmashf | onFSmash | MU_AK_HOOK_FSMASH | ftCo_AttackS4.c decideFighter (empty = common forward smash) | void (HSD_GObj*) |
 | 36 | onsmashhi | onUSmash | MU_AK_HOOK_USMASH | ftCo_AttackHi4.c both CheckInput functions | void (HSD_GObj*) |
 | 37 | onsmashlw | onDSmash | MU_AK_HOOK_DSMASH | ftCo_AttackLw4.c ftCo_AttackLw4_CheckInput | void (HSD_GObj*) |
+| 38 | (MxDt only) | demo motion file getter | ftData_803C24EC | ftdemo.c ftDemo_GetMotionFileString | char* (enum_t); default only (ACE: Mario's, Luigi's, Giga Bowser's) |
+| 39 | (MxDt only) | demo state range | ftData_UnkDemoCallbacks0 | ftdemo.c ftDemo_CreateFighter (demo types 9 and up) | void (int, int*, int*); default only |
+| 45 | gettraildata | GetTrailData (ACE: Daisy, Zero, Lucina) | registry hook MU_AK_HOOK_TRAILDATA | none yet: the m-ex caller is not located | unknown |
 | 40 | (MxDt only) | MoveLogicDemo | ftData_UnkMotionStates0 | ftdemo.c (`x20_actionStateList` of demo fighters) | MotionState[]; default only (Tails: Mario's) |
 
 Notes:
@@ -123,7 +140,12 @@ Notes:
   fighter needs it.
 - **#38 and #39.** `onGetExtResultAnim` and `onIndexExtResultAnim` are MxDt-only results-screen
   hooks (ftDemo_GetMotionFileString, ftDemo_CreateFighter). They are empty for all seven Akaneia
-  fighters, so they belong to the creation layer.
+  fighters. The registry fills them from the retail fighter MxDt names (experimental build).
+- **Hook defaults (#31, #32, #35 to #37).** When a fighter does not export one of these, MxDt may
+  name a retail function by its console address (Daisy's forward smash is
+  `ftPe_AttackS4_Enter`). `mu_ak_hook_defaults` in `mu_ak_fighters.c` maps the addresses the
+  retail sites choose between; an address not in it is logged and the slot stays empty (the
+  common behavior).
 - **Direct code patches.** An ftFunction relocation entry with bit 31 set in `ReplaceThis` is a
   direct code patch (a branch written into the DOL), not a table slot. Wolf has none. If a
   fighter has any, ask the integration owner for a named hook: never patch code.

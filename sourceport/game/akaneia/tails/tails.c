@@ -300,6 +300,8 @@ const MuAkFighter mu_ak_tails = {
     .move_logic = ftTs_MotionStateTable,
     .move_logic_count = ftTs_MS_SelfCount,
 
-    .articles = &itTs_Shot_Logic,
-    .article_count = 1,
+    .articles = itTs_Articles,
+    .article_count = 2,
+
+    .kirby = &ftKbTs_Copy,
 };

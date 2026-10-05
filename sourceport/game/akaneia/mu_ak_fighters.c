@@ -1,5 +1,8 @@
-/* Akaneia's added fighters: the registry between the m-ex data (shim/mu_mex.c) and the fighters'
- * C (sourceport/game/akaneia/<fighter>/).
+/* The fighters an m-ex disc adds: the registry between the m-ex data (shim/mu_mex.c) and the
+ * fighters' C (sourceport/game/akaneia/<fighter>/ for Akaneia 1.0.1's seven, sourceport/game/ace/
+ * <fighter>/ for the ones ACE 2.0.0 adds). One build serves both discs: how many slots there are
+ * and which fighter sits in which comes from the disc's MxDt, and a fighter is found by its file
+ * name, so nothing here knows which disc is mounted.
  *
  * m-ex numbers the fighters it adds right after Roy (internal 27 on) and moves the special fighters
  * (Master Hand to Sandbag) behind them. The native game keeps every retail kind where it is and gives
@@ -21,6 +24,12 @@
 #include <melee/ft/ftdata.h>
 #include <melee/ft/ftdemo.h>
 #include <melee/ft/kinds/ftCommon/ftCo_JumpAerial.h>
+#include <melee/ft/kinds/ftGameWatch/ftgamewatchattacks4.h>
+#include <melee/ft/kinds/ftNess/ftnessattackhi4.h>
+#include <melee/ft/kinds/ftNess/ftnessattacklw4.h>
+#include <melee/ft/kinds/ftNess/ftnessattacks4.h>
+#include <melee/ft/kinds/ftPeach/ftpeachattacks4.h>
+#include <melee/ft/kinds/ftPeach/ftpeachfloat.h>
 #include <melee/ft/types.h>
 #include <melee/it/forward.h>
 #include <melee/it/kinds/types.h>
@@ -36,6 +45,8 @@ _Static_assert(MU_AK_CKIND_BASE == ChKind_Max + 1, "added character kinds start 
 #ifdef MU_AKANEIA_FIGHTERS
 _Static_assert(CK_KIND_TABLE_MAX == MU_CK_KIND_CAP, "experimental character mapping has added slots");
 #endif
+/* Kinds and the ids kept per slot are stored in signed bytes (ftMapping_list, ak_mex, ak_ext). */
+_Static_assert(MU_FT_KIND_CAP <= 0x7F && MU_CK_KIND_CAP <= 0x7F, "added kinds fit a signed byte");
 
 /* The retail per-kind tables ftdata.h does not declare (defined in ft/ftdata.c). */
 extern MotionState* ftData_CharacterStateTables[FT_KIND_TABLE_MAX];
@@ -55,6 +66,7 @@ struct MuAkCallbackPair {
 };
 extern struct MuAkCallbackPair ftData_UnkCallbackPairs0[FT_KIND_TABLE_MAX];
 #ifdef MU_AKANEIA_FIGHTERS
+#include <melee/ef/types.h>
 /* The file tables of the creation layer (CREATION_LAYER_PLAN.md step 3). */
 struct MuAkStringPair {
     char* a;   /* the fighter file */
@@ -69,14 +81,31 @@ struct MuAkEffectFile {
     char* symbol;
     void* data;
 };
-extern struct MuAkEffectFile efAsync_DatEntries[51];
-#define MU_AK_EFFECT_FILES 50
+extern struct MuAkEffectFile efAsync_DatEntries[EF_DAT_FILE_MAX + 1];
+#define MU_AK_EFFECT_FILES EF_DAT_FILE_MAX
+_Static_assert(sizeof(struct MuAkEffectFile) == sizeof(EF_DAT_Entry), "the game's effect file entry");
 #endif
 
-/* ---- the fighters this build has (CMakeLists.txt defines MU_AK_HAVE_<FIGHTER> per file present) */
+/* ---- the fighters this build has ----
+ * With MU_AK_REGISTRY_GENERATED the list is mu_ak_registry.inc, written at configure time: one
+ * MU_AK_FIGHTER(symbol) line per descriptor found in the akaneia and ace sources (mu_ak_fighter.h
+ * says how a descriptor is written). Without it the list is the seven Akaneia names, each
+ * present when CMakeLists.txt defines MU_AK_HAVE_<FIGHTER>. */
+#ifdef MU_AK_REGISTRY_GENERATED
+#define MU_AK_FIGHTER(symbol) extern const MuAkFighter symbol;
+#include "mu_ak_registry.inc"
+#undef MU_AK_FIGHTER
+static const MuAkFighter* const mu_ak_registry[] = {
+#define MU_AK_FIGHTER(symbol) &symbol,
+#include "mu_ak_registry.inc"
+#undef MU_AK_FIGHTER
+    NULL,
+};
+#else
 static const MuAkFighter* const mu_ak_registry[] = {
 #ifdef MU_AK_HAVE_WOLF
     &mu_ak_wolf,
+    &mu_ak_wolf_ssbu,   /* the same code under ACE's second file, PlWfU.dat */
 #endif
 #ifdef MU_AK_HAVE_DIDDY
     &mu_ak_diddy,
@@ -98,6 +127,7 @@ static const MuAkFighter* const mu_ak_registry[] = {
 #endif
     NULL,
 };
+#endif
 
 /* ---- the table slots the registry writes: m-ex ftFunction index -> decomp table ---- */
 #define NO_FIELD -1
@@ -151,17 +181,42 @@ static const MuAkSlotSpec mu_ak_slots[] = {
      * fighter; a fighter's own function goes to the first callback of its pair (ftAnim_80070654). */
     { 29, FIELD(onactionstatechangewhileeyetextureischanged), (void*) &ftData_UnkCallbackPairs0[0].x0,
       (unsigned short) sizeof(ftData_UnkCallbackPairs0[0]), MU_AK_SLOT_NO_DEFAULT },
+#ifdef MU_AKANEIA_FIGHTERS
+    /* The two demo fighter callbacks (results screen, 1P movies): not fighter exports, only the
+     * MxDt default. Empty for Akaneia's seven; ACE's Sonic BM, Metal Mario and Toad name Mario's,
+     * Luigi & Boo and Dr. Luigi name Luigi's, Giga Bowser names his retail ones. */
+    { 38, NO_FIELD, TABLE(ftData_803C24EC), 0 },
+    { 39, NO_FIELD, TABLE(ftData_UnkDemoCallbacks0), 0 },
+#endif
     /* MoveLogicDemo: not a fighter export, only the MxDt default (Tails uses Mario's). */
     { 40, NO_FIELD, TABLE(ftData_UnkMotionStates0), 0 },
 };
 
-/* The m-ex hooks with no retail table (mu_native.h MU_AK_HOOK_*), by field. */
-static const short mu_ak_hook_fields[] = {
-    FIELD(enterfloat), FIELD(enterdoublejump), FIELD(entertether), FIELD(onlanding),
-    FIELD(onsmashf), FIELD(onsmashhi), FIELD(onsmashlw),
+/* The m-ex hooks with no retail table (mu_native.h MU_AK_HOOK_*): the m-ex ftFunction index and
+ * the fighter's field. */
+#define MU_AK_HOOK_COUNT 8
+static const struct MuAkHookSpec {
+    unsigned char mex;
+    short field;
+} mu_ak_hook_specs[MU_AK_HOOK_COUNT] = {
+    { MU_AK_HOOK_FLOAT, FIELD(enterfloat) },
+    { MU_AK_HOOK_DOUBLEJUMP, FIELD(enterdoublejump) },
+    { MU_AK_HOOK_ZAIR, FIELD(entertether) },
+    { MU_AK_HOOK_LANDING, FIELD(onlanding) },
+    { MU_AK_HOOK_FSMASH, FIELD(onsmashf) },
+    { MU_AK_HOOK_USMASH, FIELD(onsmashhi) },
+    { MU_AK_HOOK_DSMASH, FIELD(onsmashlw) },
+    { MU_AK_HOOK_TRAILDATA, FIELD(gettraildata) },
 };
-#define MU_AK_HOOK_FIRST MU_AK_HOOK_FLOAT
-#define MU_AK_HOOK_COUNT ((int) (sizeof mu_ak_hook_fields / sizeof mu_ak_hook_fields[0]))
+
+/* The index of a hook in mu_ak_hook_specs and ak_hooks, -1 when it is none. */
+static int hook_index(int hook)
+{
+    if (hook >= MU_AK_HOOK_FLOAT && hook <= MU_AK_HOOK_DSMASH) {
+        return hook - MU_AK_HOOK_FLOAT;
+    }
+    return hook == MU_AK_HOOK_TRAILDATA ? MU_AK_HOOK_COUNT - 1 : -1;
+}
 
 /* ---- state, rebuilt at each content view change ---- */
 static const MuAkFighter* ak_fighter[MU_AK_KIND_SLOTS];   /* by slot (kind - MU_AK_KIND_BASE) */
@@ -169,10 +224,12 @@ static signed char ak_mex[MU_AK_KIND_SLOTS];               /* m-ex internal id, 
 #ifdef MU_AKANEIA_FIGHTERS
 static signed char ak_ext[MU_AK_CKIND_SLOTS];              /* first m-ex external id, -1 = absent */
 #endif
-static void* ak_hooks[MU_AK_KIND_SLOTS][7];
+static void* ak_hooks[MU_AK_KIND_SLOTS][MU_AK_HOOK_COUNT];
+static unsigned char ak_locked_logged[MU_AK_KIND_SLOTS];   /* the "locked" line was written */
 static int ak_shift;                                      /* m-ex special fighter shift, 0 = off */
 
-#define MU_AK_MAX_ARTICLES 128
+/* Akaneia 1.0.1 has 33 article kinds, ACE 2.0.0 has 104. */
+#define MU_AK_MAX_ARTICLES 192
 typedef struct MuAkArticle {
     short item_kind;
     signed char slot, local;
@@ -201,8 +258,15 @@ static int fill_effect_file(int slot)
         return -1;
     }
     if (efAsync_DatEntries[index].file != NULL) {
-        /* A retail entry, or one another added fighter filled: usable only if it is this file. */
-        return same_file(efAsync_DatEntries[index].file, file) ? index : -1;
+        /* A retail entry (ACE's clones use a retail fighter's file: Daisy has Peach's), or one
+         * another added fighter filled (Wolf SSBU has Wolf's): usable only if it is this file.
+         * The entry is then not this slot's to clear. */
+        if (same_file(efAsync_DatEntries[index].file, file)) {
+            return index;
+        }
+        OSReport("[ak] kind %d: effect file %d is %s on the disc and %s in the game; none used\n",
+                 MU_AK_KIND_BASE + slot, index, file, efAsync_DatEntries[index].file);
+        return -1;
     }
     efAsync_DatEntries[index].file = (char*) file;
     efAsync_DatEntries[index].symbol = (char*) symbol;
@@ -212,7 +276,8 @@ static int fill_effect_file(int slot)
 }
 
 /* The particle code (sysdolphin particle.c, generator.c): `bank` is the effect file of an added
- * fighter, whose generators are numbered bank * 1000 + n whatever its header says. */
+ * fighter, whose generators are numbered bank * 1000 + n whatever its header says. A retail
+ * fighter's file that an added fighter shares is not one: it keeps the numbering of its header. */
 int mu_ak_effect_bank(int bank)
 {
     int slot;
@@ -241,8 +306,8 @@ static void clear_files(int slot)
     ftData_UnkIntPairs[kind].count = 0;
     ftData_UnkBytePerCharacter[kind] = (u8) -1;
     ftData_803C2468[kind] = NULL;
-    ftData_803C24EC[kind] = NULL;
-    ftData_UnkDemoCallbacks0[kind] = NULL;
+    /* ftData_803C24EC and ftData_UnkDemoCallbacks0 are registry slots (38 and 39): cleared and
+     * filled with the others (clear_slots, fill_fighter). */
     __builtin_memset(&ak_demo[slot], 0, sizeof ak_demo[slot]);
     if (ak_effect_file[slot] > 0) {
         const int index = ak_effect_file[slot];
@@ -282,9 +347,10 @@ static int fill_files(int slot)
     /* The fighter's effect file (plan step 7); "none", as for Master Hand, when it has none. */
     effect = fill_effect_file(slot);
     ftData_UnkBytePerCharacter[kind] = effect >= 0 ? (u8) effect : (u8) -1;
-    /* The demo fighter (results screen and the 1P movies, plan step 12): the animation symbols
-     * and the retail count of demo states. The per-kind demo callback stays empty, as for most
-     * retail fighters; it is only called for the special demo types. */
+    /* The demo fighter (results screen and the 1P movies, plan step 12): the animation symbols,
+     * by name from MxDt (a clone names a retail fighter's: Lucas TDX has Ness's), and the retail
+     * count of demo states. The per-kind demo callbacks are the m-ex defaults of slots 38 and
+     * 39, filled by fill_fighter: empty for most fighters, as for most retail ones. */
     ak_demo[slot].result_filename = (char*) mu_mex_fighter_demo(mex, 0);
     ak_demo[slot].intro_filename = (char*) mu_mex_fighter_demo(mex, 1);
     ak_demo[slot].ending_filename = (char*) mu_mex_fighter_demo(mex, 2);
@@ -469,6 +535,63 @@ static void* retail_double_jump(int kind)
     }
 }
 
+/* The m-ex defaults of the hooks with no retail table. MxDt names a retail function by its
+ * console address (NTSC 1.02); the retail sites pick these by fighter kind in a switch, so no
+ * retail table has them in a row to compare with. An empty default is the common behavior. */
+static bool default_float(HSD_GObj* gobj, int arg)
+{
+    ftPe_8011BB6C(gobj, arg);
+    return true;
+}
+
+static const struct MuAkHookDefault {
+    unsigned char hook;
+    unsigned int address;
+    void* fn;
+} mu_ak_hook_defaults[] = {
+    { MU_AK_HOOK_FLOAT, 0x8011BB6C, (void*) default_float },
+    { MU_AK_HOOK_DOUBLEJUMP, 0x800CBBC0, (void*) ftCo_JumpAerial_Enter_Basic },
+    { MU_AK_HOOK_DOUBLEJUMP, 0x800CBD18, (void*) ftNs_JumpAerial_Enter },
+    { MU_AK_HOOK_DOUBLEJUMP, 0x800CBE98, (void*) ftYs_JumpAerial_Enter },
+    { MU_AK_HOOK_DOUBLEJUMP, 0x800CC0E8, (void*) ftPe_JumpAerial_Enter },
+    { MU_AK_HOOK_DOUBLEJUMP, 0x800CC238, (void*) ftMt_JumpAerial_Enter },
+    { MU_AK_HOOK_FSMASH, 0x80114C24, (void*) ftNs_AttackS4_Enter },
+    { MU_AK_HOOK_FSMASH, 0x8011C1C0, (void*) ftPe_AttackS4_Enter },
+    { MU_AK_HOOK_FSMASH, 0x8014AA10, (void*) ftGw_AttackS4_Enter },
+    { MU_AK_HOOK_USMASH, 0x80115BB0, (void*) ftNs_AttackHi4_Enter },
+    { MU_AK_HOOK_DSMASH, 0x8011659C, (void*) ftNs_AttackLw4_Enter },
+};
+
+/* The m-ex default of hook `hook` for an internal fighter, NULL when it has none. Slots 33
+ * (tether) and 34 (landing) have no retail function to name, and slot 45 is not looked up. */
+static void* hook_default(int hook, int mex_internal)
+{
+    unsigned int want;
+    size_t i;
+    if (hook != MU_AK_HOOK_FLOAT && hook != MU_AK_HOOK_DOUBLEJUMP && hook != MU_AK_HOOK_FSMASH &&
+        hook != MU_AK_HOOK_USMASH && hook != MU_AK_HOOK_DSMASH)
+    {
+        return NULL;
+    }
+    want = mu_mex_fighter_function(hook, mex_internal);
+    if (want == 0) {
+        return NULL;
+    }
+    for (i = 0; i < sizeof mu_ak_hook_defaults / sizeof mu_ak_hook_defaults[0]; i++) {
+        if (mu_ak_hook_defaults[i].hook == hook && mu_ak_hook_defaults[i].address == want) {
+            return mu_ak_hook_defaults[i].fn;
+        }
+    }
+    if (hook == MU_AK_HOOK_DOUBLEJUMP) {
+        /* Not one of the five by address: the retail fighter whose row has it, as before. */
+        const int as = default_kind(hook, mex_internal);
+        return as >= 0 ? retail_double_jump(as) : NULL;
+    }
+    OSReport("[ak] m-ex default %08X (ftFunction %d) of fighter %d is no known retail function; left empty\n",
+             want, hook, mex_internal);
+    return NULL;
+}
+
 /* ---- articles ---- */
 
 static void build_articles(void)
@@ -559,10 +682,11 @@ int mu_ak_article(int item_kind, void** article, void** logic)
 
 void* mu_ak_hook(int kind, int hook)
 {
-    if (!MU_AK_KIND(kind) || hook < MU_AK_HOOK_FIRST || hook >= MU_AK_HOOK_FIRST + MU_AK_HOOK_COUNT) {
+    const int index = hook_index(hook);
+    if (!MU_AK_KIND(kind) || index < 0) {
         return NULL;
     }
-    return ak_hooks[kind - MU_AK_KIND_BASE][hook - MU_AK_HOOK_FIRST];
+    return ak_hooks[kind - MU_AK_KIND_BASE][index];
 }
 
 int mu_ak_call(int kind, int hook, struct HSD_GObj* gobj)
@@ -665,6 +789,7 @@ static void clear_slots(void)
     }
 #ifdef MU_AKANEIA_FIGHTERS
     Player_MuSetAkKind(ChKind_None, -1);
+    mu_ak_kirby_reset();   /* no hat data survives a content view change (common/mu_ak_kirby.c) */
 #endif
     ak_article_count = 0;
 }
@@ -701,10 +826,9 @@ static void fill_fighter(int slot, const MuAkFighter* ft)
         *table_slot(spec, kind) = fn;
     }
     for (h = 0; h < MU_AK_HOOK_COUNT; h++) {
-        void* fn = ft != NULL ? fighter_field(ft, mu_ak_hook_fields[h]) : NULL;
-        if (fn == NULL && MU_AK_HOOK_FIRST + h == MU_AK_HOOK_DOUBLEJUMP) {
-            const int as = default_kind(MU_AK_HOOK_DOUBLEJUMP, mex);
-            fn = as >= 0 ? retail_double_jump(as) : NULL;
+        void* fn = ft != NULL ? fighter_field(ft, mu_ak_hook_specs[h].field) : NULL;
+        if (fn == NULL) {
+            fn = hook_default(mu_ak_hook_specs[h].mex, mex);
         }
         ak_hooks[slot][h] = fn;
     }
@@ -743,8 +867,15 @@ void mu_ak_apply(void)
         ft = find_fighter(file);
         ak_fighter[slot] = ft;
         if (ft == NULL) {
-            OSReport("[ak] %s: kind %d, no native code in this build (locked)\n", file,
-                     MU_AK_KIND_BASE + slot);
+            /* No descriptor for this file: the slot keeps no table entry, no character kind
+             * and no files, so the fighter is never created and its icon stays locked
+             * (mu_mex_css_icons). Said once per slot, not at every view change. */
+            if (!ak_locked_logged[slot]) {
+                const char* name = mu_mex_fighter_name(mu_mex_external_of_internal(mex));
+                ak_locked_logged[slot] = 1;
+                OSReport("[ak] %s (%s): no native code in this build, locked\n",
+                         name != NULL ? name : "?", file);
+            }
             continue;
         }
         fill_fighter(slot, ft);
@@ -766,9 +897,14 @@ void mu_ak_apply(void)
 }
 
 #ifdef MU_AKANEIA_FIGHTERS
-/* The host refuses an Akaneia disc unless the game library says it has the native fighters. */
+/* The host refuses an m-ex disc unless the game library says it has native fighters. */
 __declspec(dllexport) int mu_ak_native_build(void)
 {
     return 1;
 }
+
+/* What this library can play, for the host to read without running any of its code: the
+ * descriptors of the fighters built in, ended by NULL. A descriptor starts with two strings, the
+ * display name and the fighter file (MuAkFighter). */
+__declspec(dllexport) const MuAkFighter* const* const mu_ak_native_fighters = mu_ak_registry;
 #endif
