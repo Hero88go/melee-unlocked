@@ -213,11 +213,9 @@ if(MU_AKANEIA_FIGHTERS)
   list(APPEND SHIM_SOURCES ${AKANEIA_SOURCES})
   # The registry list: one line per fighter descriptor in those sources (a line that starts
   # "const MuAkFighter mu_ak_<name> = "), so a new fighter folder under akaneia/ or ace/ needs no
-  # edit here or in mu_ak_fighters.c. Track contents as well as added/removed files so a
-  # descriptor added to an existing source refreshes the registry on the next build.
+  # edit here or in mu_ak_fighters.c. A descriptor added to an existing file: run CMake again.
   set(MU_AK_REGISTRY "")
   foreach(ak_source ${AKANEIA_SOURCES})
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ak_source}")
     file(STRINGS "${ak_source}" ak_lines REGEX "^const MuAkFighter mu_ak_[A-Za-z0-9_]+ = ")
     foreach(ak_line ${ak_lines})
       string(REGEX REPLACE "^const MuAkFighter (mu_ak_[A-Za-z0-9_]+) = .*$" "\\1" ak_symbol "${ak_line}")

@@ -68,23 +68,23 @@ static const MotionState ftKx_MotionStateTable[ftKx_MS_SelfCount] = {
     /* 352 */ ftKx_STATE(306, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialSEnd),
     /* 353 */ ftKx_STATE(307, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialAirSStart),
     /* 354 */ ftKx_STATE(309, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialAirSEnd),
-    /* 355 */ ftKx_STATE(311, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialS),
-    /* 356 */ ftKx_STATE(313, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialAirS),
-    /* 357 */ ftKx_STATE(312, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialS),
-    /* 358 */ ftKx_STATE(314, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialAirS),
-    /* 359 */ ftKx_STATE(304, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwStart),
-    /* 360 */ ftKx_STATE(306, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwEnd),
-    /* 361 */ ftKx_STATE(307, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialAirLwStart),
-    /* 362 */ ftKx_STATE(309, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialAirLwEnd),
-    /* 363 */ ftKx_STATE(305, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwCharge),
-    /* 364 */ ftKx_STATE(315, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwRun),
-    /* 365 */ ftKx_STATE(316, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwRunTurn),
-    /* 366 */ ftKx_STATE(317, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwRunJump),
-    /* 367 */ ftKx_STATE(318, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwDive),
-    /* 368 */ ftKx_STATE(14, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwRunBrake),
-    /* 369 */ ftKx_STATE(319, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwStopWall),
-    /* 370 */ ftKx_STATE(320, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwStopWall),
-    /* 371 */ ftKx_STATE(321, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialAirSTurn),
+    /* 355 */ ftKx_STATE(310, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialSHold),
+    /* 356 */ ftKx_STATE(311, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialS),
+    /* 357 */ ftKx_STATE(313, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialAirS),
+    /* 358 */ ftKx_STATE(312, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialS),
+    /* 359 */ ftKx_STATE(314, ftKx_MF_SpecialS, FtMoveId_SpecialS, SpecialAirS),
+    /* 360 */ ftKx_STATE(304, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwStart),
+    /* 361 */ ftKx_STATE(306, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwEnd),
+    /* 362 */ ftKx_STATE(307, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialAirLwStart),
+    /* 363 */ ftKx_STATE(309, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialAirLwEnd),
+    /* 364 */ ftKx_STATE(305, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwCharge),
+    /* 365 */ ftKx_STATE(315, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwRun),
+    /* 366 */ ftKx_STATE(316, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwRunTurn),
+    /* 367 */ ftKx_STATE(317, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwRunJump),
+    /* 368 */ ftKx_STATE(318, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwDive),
+    /* 369 */ ftKx_STATE(14, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwRunBrake),
+    /* 370 */ ftKx_STATE(319, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwStopWall),
+    /* 371 */ ftKx_STATE(320, ftKx_MF_SpecialLw, FtMoveId_SpecialLw, SpecialLwStopWall),
 };
 
 /* ---------------------------------------------------------------------------------------------
@@ -118,12 +118,11 @@ void ftKx_Init_OnLoad(HSD_GObj* gobj)
     fv->color = NULL;
     fv->specials_charge = 0;
     fv->run_shoes_spawned = 0;
-    fv->air_side_used = 0;
 
     if (mu_ak_sonic_hooks.costume_archive != NULL) {
         HSD_Archive* archive = mu_ak_sonic_hooks.costume_archive(fp->kind, fp->costume_id);
         if (archive != NULL) {
-            fv->color = (ftKnuckles_ColorData*) HSD_ArchiveGetPublicAddress(archive, "PlyKnuxColor");
+            fv->color = (ftKnuckles_ColorData*) HSD_ArchiveGetPublicAddress(archive, "PlySonicColor");
         }
     }
 
@@ -135,7 +134,6 @@ void ftKx_Init_OnLoad(HSD_GObj* gobj)
     } else {
         HSD_GObj_SetupProc(gobj, ftKx_ProcessMouth, 15);
     }
-    ftKx_InitCpu(gobj);
 }
 
 /* OnDeath (m-ex debug name OnRespawn) */
@@ -144,7 +142,6 @@ void ftKx_Init_OnDeath(HSD_GObj* gobj)
     Fighter* fp = GET_FIGHTER(gobj);
 
     ftKx_FV(fp)->specials_charge = 0;
-    ftKx_FV(fp)->air_side_used = 0;
     ftParts_80074A4C(gobj, 0, 0);
     ftParts_80074A4C(gobj, 1, 0);
     ftParts_80074A4C(gobj, 2, 0);
@@ -230,13 +227,57 @@ void ftKx_Init_EyeTextureNormal(HSD_GObj* gobj)
 /* OnFrame: a trail behind the dash attack, shoe blur while running. */
 void ftKx_Init_OnFrame(HSD_GObj* gobj)
 {
+    Fighter* fp = GET_FIGHTER(gobj);
+    ftKnuckles_FighterVars* fv = ftKx_FV(fp);
+    EF_Effect* effect;
+    HSD_JObj* jobj;
 
+    if (fp->motion_id == ftCo_MS_AttackDash) {
+        if (fp->accessory4_cb == NULL) {
+            fp->accessory4_cb = ftKx_GFXTrail;
+        }
+        fv->run_shoes_spawned = 0;
+        return;
+    }
+    if (fp->motion_id != ftCo_MS_Run) {
+        fv->run_shoes_spawned = 0;
+        return;
+    }
+    if (fv->run_shoes_spawned) {
+        return;
+    }
+
+    effect = efSync_Spawn(ftKx_Ef_RunShoes, gobj, fp->parts[FtPart_TransN].joint, NULL);
+    if (effect == NULL) {
+        return;
+    }
+    effect->update = ftKx_RunEffectCallback;
+    effect->user_data = gobj;
+    ftKx_RunEffectCallback(effect);
+    fp->x21EC = efLib_DestroyAll;
+
+    /* The m-ex code compares the effect jobj against the address of an empty function, which
+     * is never equal: the shoes are always recolored. */
+    jobj = effect->gobj->hsd_obj;
+    if (jobj != NULL) {
+        ftKnuckles_ColorData* color = fv->color;
+        ftKx_ColorShoes(jobj, 2, color);
+        ftKx_ColorShoes(jobj, 3, color);
+        ftKx_ColorShoes(jobj, 7, color);
+        ftKx_ColorShoes(jobj, 9, color);
+    }
+    fv->run_shoes_spawned = 1;
 }
 
 /* OnActionStateChange: a stored full spin dash charge keeps its color overlay. */
 void ftKx_Init_OnActionStateChange(HSD_GObj* gobj)
 {
+    Fighter* fp = GET_FIGHTER(gobj);
 
+    if (ftKx_FV(fp)->specials_charge >= ftKx_DA(fp)->specials_max_charge) {
+        ftKx_DiscSlot* items = (ftKx_DiscSlot*) DP(fp->ft_data->x48_items);
+        lb_800144C8(&fp->x488, (struct Fighter_804D653C_t*) DP(items[1]), 0, 0);
+    }
 }
 
 /* EnterDoubleJump */
@@ -249,9 +290,11 @@ void ftKx_Init_EnterDoubleJump(HSD_GObj* gobj)
 void ftKx_Init_OnSmashHi(HSD_GObj* gobj)
 {
     Fighter* fp = GET_FIGHTER(gobj);
+
     fp->allow_interrupt = false;
     Fighter_ChangeMotionState(gobj, ftCo_MS_AttackHi4, Ft_MF_None, 0.0F, 1.0F, 0.0F, NULL);
     ftAnim_8006EBA4(gobj);
+    fp->accessory4_cb = ftKx_GFXTrail;
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -341,7 +384,7 @@ static void ftKx_CheckWinAudio(HSD_GObj* gobj)
     if (fp->cmd_vars[0] == 0) {
         return;
     }
-    if (ftKx_DidHeLose(fp->player_idx, "Sonic")) {
+    if (ftKx_DidHeLose(fp->player_idx, "Tails")) {
         ft_800881D8(fp, fp->cmd_vars[1], 0x7F, 0x40);
     } else {
         ft_800881D8(fp, fp->cmd_vars[0], 0x7F, 0x40);
@@ -380,7 +423,7 @@ void ftKx_GXLink(HSD_GObj* gobj, intptr_t pass)
  * The fighter
  * ------------------------------------------------------------------------------------------- */
 
-const MuAkFighter mu_ak_knuckles = {
+const MuAkFighter mu_kx_review = {
     .name = "Knuckles",
     .file = "PlKx.dat",
 
@@ -409,7 +452,6 @@ const MuAkFighter mu_ak_knuckles = {
     .onactionstatechange = ftKx_Init_OnActionStateChange,
     .onrespawn = ftKx_Init_ResetAttributes,
     .enterdoublejump = ftKx_Init_EnterDoubleJump,
-    .onlanding = ftKx_Init_OnLanding,
     .onsmashhi = ftKx_Init_OnSmashHi,
 
     .move_logic = ftKx_MotionStateTable,
@@ -421,9 +463,3 @@ const MuAkFighter mu_ak_knuckles = {
     /* The ability Kirby copies has no articles (PlKbCpSn.dat has no itFunction). */
     .kirby = NULL,
 };
-
-/* OnLanding +09E4: another air side special is available after touching ground. */
-void ftKx_Init_OnLanding(HSD_GObj* gobj)
-{
-    ftKx_FV(GET_FIGHTER(gobj))->air_side_used = 0;
-}
