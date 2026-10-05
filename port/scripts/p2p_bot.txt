@@ -1,0 +1,120 @@
+# In-match inputs for a peer-to-peer test match (tools/p2p_pair.py): no menu walk, the game boots
+# straight into the match. Frames count from the match's frame 1. About 1200 frames of short walks,
+# jumps, attacks, specials, shields and grabs, so the other side's prediction is wrong often and
+# rollbacks happen; the walks cancel out so the fighter stays near its spawn point. From frame 1200
+# the stick is held left: the fighter runs off the stage until its stocks are gone, which ends the
+# game and lets both sides write their result.
+@match
+10 sx=35
+22
+30 A
+34
+50 sx=-35
+62
+70 X
+73
+85 sy=-100 A
+89
+120 B
+124
+150 L
+175
+185 sy=-80 A
+190
+205 cy=100
+209
+230 sx=-35
+242
+250 Y
+253
+262 A
+266
+275 sx=35
+287
+291 Z
+295
+310 sx=35
+322
+330 A
+334
+350 sx=-35
+362
+370 X
+373
+385 A
+389
+420 sy=-127 B
+424
+450 R
+475
+485 sy=80 A
+490
+505 cx=-100
+509
+530 sx=-35
+542
+550 Y
+553
+562 B
+566
+575 sx=35
+587
+591 Z
+595
+610 sx=35
+622
+630 A
+634
+650 sx=-35
+662
+670 X
+673
+685 A
+689
+720 B
+724
+750 L
+775
+785 sy=-80 A
+790
+805 cx=100
+809
+830 sx=-35
+842
+850 Y
+853
+862 A
+866
+875 sx=35
+887
+891 Z
+895
+910 sx=35
+922
+930 A
+934
+950 sx=-35
+962
+970 X
+973
+985 sy=-100 A
+989
+1020 sy=-127 B
+1024
+1050 R
+1075
+1085 sy=80 A
+1090
+1105 cy=100
+1109
+1130 sx=-35
+1142
+1150 Y
+1153
+1162 B
+1166
+1175 sx=35
+1187
+1191 Z
+1195
+1200 sx=-127

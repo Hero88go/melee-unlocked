@@ -17,3 +17,10 @@ bool wants_cursor();
 bool active();
 
 }  // namespace replay_bar
+
+// A short label near the bottom of the picture for a moment (the stage skin just picked on the
+// stage select screen). Any thread may set it; the UI thread draws it.
+namespace screen_label {
+void show(const char* text, double seconds);
+void draw(float width, float height);
+}  // namespace screen_label

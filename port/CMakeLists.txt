@@ -309,6 +309,17 @@ target_include_directories(port_net_trace_test PRIVATE runtime/host)
 target_compile_features(port_net_trace_test PRIVATE cxx_std_17)
 target_compile_options(port_net_trace_test PRIVATE /EHsc)
 add_test(NAME port_net_trace COMMAND port_net_trace_test)
+add_executable(port_replay_revisions_test tests/replay_revisions_test.cpp runtime/host/replay_revisions.cpp)
+target_include_directories(port_replay_revisions_test PRIVATE runtime/host)
+target_compile_features(port_replay_revisions_test PRIVATE cxx_std_17)
+target_compile_options(port_replay_revisions_test PRIVATE /EHsc)
+add_test(NAME port_replay_revisions COMMAND port_replay_revisions_test)
+add_executable(port_user_gecko_test tests/user_gecko_test.cpp)
+target_include_directories(port_user_gecko_test PRIVATE runtime/host runtime/ppc)
+target_compile_features(port_user_gecko_test PRIVATE cxx_std_17)
+target_compile_options(port_user_gecko_test PRIVATE /EHsc)
+target_compile_definitions(port_user_gecko_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+add_test(NAME port_user_gecko COMMAND port_user_gecko_test)
 
 add_executable(port_pack_skin_rule_test tests/pack_skin_rule_test.cpp runtime/host/pack_skin_rule.cpp)
 target_include_directories(port_pack_skin_rule_test PRIVATE runtime/host)
@@ -535,7 +546,7 @@ add_library(port_monocypher STATIC third_party/monocypher/monocypher.c third_par
 target_include_directories(port_monocypher PUBLIC third_party/monocypher)
 add_library(mu_net STATIC runtime/mu_net/session_types.cpp runtime/mu_net/peer_identity.cpp
   runtime/mu_net/session_security.cpp runtime/mu_net/input_transport.cpp runtime/mu_net/peer_connector.cpp
-  runtime/mu_net/rollback_session.cpp runtime/mu_net/result_outbox.cpp)
+  runtime/mu_net/rollback_session.cpp runtime/mu_net/result_outbox.cpp runtime/mu_net/nat_discovery.cpp)
 target_include_directories(mu_net PUBLIC runtime/mu_net)
 target_compile_features(mu_net PUBLIC cxx_std_17)
 target_compile_definitions(mu_net PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
@@ -567,6 +578,10 @@ target_sources(melee_source PRIVATE "${NATIVE_RECORDING_CODES}")
 target_include_directories(melee_source PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_include_directories(melee_source PRIVATE runtime/abi app)
 target_link_libraries(melee_source PRIVATE runtime dbghelp)
+# The --p2p-* command line: one mu_net session on the game's command channel, chosen at run time when
+# those options are given. Without them nothing of it runs and Slippi play is as before.
+target_sources(melee_source PRIVATE app/source_p2p.cpp)
+target_link_libraries(melee_source PRIVATE mu_net)
 # A link map lets the package audit verify no translated guest/interpreter objects enter Source.
 target_link_options(melee_source PRIVATE /MAP:$<TARGET_FILE_DIR:melee_source>/melee_source.map)
 target_compile_options(melee_source PRIVATE /EHsc)

@@ -50,7 +50,22 @@ void raw_input(HRAWINPUT raw);
 void input_device_removed(HANDLE device);
 void ds4_init_defaults();
 
+// The pointer also goes away after it has rested over the game for a few seconds in the two cases
+// the rule below leaves it up: a menu or panel is open (a player driving it with a controller does
+// not need the arrow), and the game window is not the focused one. It comes back the moment the
+// mouse moves. The window thread only (wnd_proc and window_pump).
+constexpr ULONGLONG kPointerRestMs = 2500;
+ULONGLONG g_pointer_moved = 0;      // tick of the last real mouse movement over the window
+LPARAM g_pointer_at = -1;           // where it was then (client coordinates as WM_MOUSEMOVE packs them)
+bool g_pointer_rested = false;      // hidden by the rest rule, until the next movement
+
 LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  if (m == WM_MOUSEMOVE && l != g_pointer_at) {   // Windows also sends this when nothing moved
+    g_pointer_at = l;
+    g_pointer_moved = GetTickCount64();
+    g_pointer_rested = false;
+  }
+  if (m == WM_SETCURSOR && LOWORD(l) == HTCLIENT && g_pointer_rested) { SetCursor(nullptr); return TRUE; }
   // No mouse pointer over the game while it has focus and the settings panel is closed. The pointer
   // has nothing to do there, and after alt-tabbing back from a music player it sat in the middle of
   // the screen for the rest of the match. It comes back the moment the panel opens or focus leaves.
@@ -311,6 +326,16 @@ void window_pump() {
   while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
+  }
+  // The rest rule: the pointer has been still over the game's picture for a while.
+  if (g_hwnd && !g_pointer_rested && g_pointer_moved && GetTickCount64() - g_pointer_moved >= kPointerRestMs) {
+    POINT at;
+    RECT client;
+    if (GetCursorPos(&at) && WindowFromPoint(at) == g_hwnd && GetClientRect(g_hwnd, &client) &&
+        ScreenToClient(g_hwnd, &at) && PtInRect(&client, at)) {
+      g_pointer_rested = true;
+      SetCursor(nullptr);
+    }
   }
 }
 

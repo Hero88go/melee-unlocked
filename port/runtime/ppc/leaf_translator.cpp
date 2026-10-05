@@ -239,15 +239,64 @@ void* allocate_near(uintptr_t low, uintptr_t high, size_t size) {
   }
   return nullptr;
 }
+// Translations are cut, page by page, from shared regions. One system allocation each put every
+// translation on its own 64 KB boundary: the same offsets of all of them then compete for the
+// same cache sets, each one costs TLB entries of its own, and finding a free range near the image
+// walked past every earlier one. A page range is written, then made executable; it is never
+// handed out again. Its pages are given back when the translation dies, the region when its last
+// translation has (the region still being filled is kept). Used by one thread, as the cache is.
+constexpr size_t kPage = 4096, kRegionBytes = size_t(1) << 20;
+struct Region {
+  uint8_t* base;
+  size_t used, live;
+  uintptr_t image;
+};
+Region* g_region = nullptr; // The region being filled.
+void* region_allocate(uintptr_t image, uintptr_t image_end, size_t size, void*& owner) {
+  owner = nullptr;
+  const size_t pages = align_up(size, kPage);
+  if (pages > kRegionBytes / 4) // A large one keeps an allocation of its own.
+    return image ? allocate_near(image, image_end, size)
+                 : VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+  if (!g_region || g_region->image != image || g_region->used + pages > kRegionBytes) {
+    if (g_region && !g_region->live) {
+      VirtualFree(g_region->base, 0, MEM_RELEASE);
+      delete g_region;
+    }
+    g_region = nullptr;
+    void* base = image ? allocate_near(image, image_end, kRegionBytes)
+                       : VirtualAlloc(nullptr, kRegionBytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!base) return nullptr;
+    g_region = new Region{static_cast<uint8_t*>(base), 0, 0, image};
+  }
+  void* result = g_region->base + g_region->used;
+  g_region->used += pages;
+  ++g_region->live;
+  owner = g_region;
+  return result;
+}
+void region_release(void* owner, void* allocation, size_t size) {
+  auto* region = static_cast<Region*>(owner);
+  VirtualFree(allocation, align_up(size, kPage), MEM_DECOMMIT);
+  if (--region->live == 0 && region != g_region) {
+    VirtualFree(region->base, 0, MEM_RELEASE);
+    delete region;
+  }
+}
 } // namespace
 
 void CompiledLeaf::release() {
   if (function_table_) RtlDeleteFunctionTable(static_cast<PRUNTIME_FUNCTION>(function_table_));
-  if (allocation_) VirtualFree(allocation_, 0, MEM_RELEASE);
+  if (allocation_) {
+    if (region_) region_release(region_, allocation_, size_);
+    else VirtualFree(allocation_, 0, MEM_RELEASE);
+  }
   allocation_ = nullptr; size_ = 0; function_table_ = nullptr; unwind_entries_ = 0;
+  region_ = nullptr;
   entry_ = nullptr; address_ = 0; source_.clear(); exits_.clear(); local_returns_.clear();
   has_local_calls_ = false;
   guest_entries_.clear();
+  unreachable_runs_.clear();
 }
 CompiledLeaf::~CompiledLeaf() { release(); }
 CompiledLeaf::CompiledLeaf(CompiledLeaf&& other) noexcept { *this = std::move(other); }
@@ -265,6 +314,8 @@ CompiledLeaf& CompiledLeaf::operator=(CompiledLeaf&& other) noexcept {
     local_returns_ = std::move(other.local_returns_);
     has_local_calls_ = std::exchange(other.has_local_calls_, false);
     guest_entries_ = std::move(other.guest_entries_);
+    unreachable_runs_ = std::move(other.unreachable_runs_);
+    region_ = std::exchange(other.region_, nullptr);
   }
   return *this;
 }
@@ -291,7 +342,19 @@ bool CompiledLeaf::run(Context& context, uint8_t* ram, const RuntimeHooks* runti
     }
     return nullptr;
   };
-  uint32_t exit = entry_(context, ram);
+  // Runtime mode: the entry of the guest instruction at `next`, or null when the driver has to
+  // find other code for it.
+  const auto guest_entry = [&](uint32_t next) -> Entry {
+    if ((next & 3) || next < address_) return nullptr;
+    const size_t index = (next - address_) / 4;
+    return index < guest_entries_.size() ? guest_entries_[index] : nullptr;
+  };
+  Entry first = entry_;
+  if (runtime && runtime->start && runtime->start != address_) {
+    first = guest_entry(runtime->start);
+    if (!first) return false;
+  }
+  uint32_t exit = first(context, ram);
   while (exit) {
     if (exit > exits_.size()) return false;
     const ExitAction& action = exits_[exit - 1];
@@ -309,18 +372,31 @@ bool CompiledLeaf::run(Context& context, uint8_t* ram, const RuntimeHooks* runti
                               (uint32_t(p[2]) << 8) | uint32_t(p[3]);
         const uint32_t next = runtime->branch(context, ram, action.value, word, entry_lr);
         if (!next) return true;
-        const uint32_t index = (next - address_) / 4;
-        if ((next & 3) || next < address_ || index >= guest_entries_.size() || !guest_entries_[index]) {
+        resume = guest_entry(next);
+        if (!resume) {
           if (!runtime->resume_pc) throw ppc::RamTranslationResume{next};
           *runtime->resume_pc = next;
           return true;
         }
-        resume = guest_entries_[index];
         break;
       }
       case ExitKind::Poll:
         // A back-edge whose counter reached the poll interval: ppc::backedge split at its call.
         ppc::loop_poll(context);
+        if (runtime && runtime->transfer && action.value) {
+          // A native runtime back-edge (action.value is its target). The interpreter polls and
+          // then transfers, so what the poll ran decides where the branch lands.
+          const uint32_t next = runtime->transfer(context, ram, action.value, entry_lr);
+          if (!next) return true;
+          if (next != action.value) {
+            resume = guest_entry(next);
+            if (!resume) {
+              if (!runtime->resume_pc) throw ppc::RamTranslationResume{next};
+              *runtime->resume_pc = next;
+              return true;
+            }
+          }
+        }
         break;
       case ExitKind::LocalCall:
         lrs[lrn++ & 31u] = action.value;
@@ -358,7 +434,8 @@ bool CompiledLeaf::run(Context& context, uint8_t* ram, const RuntimeHooks* runti
 
 bool translate_leaf(const uint8_t* code, size_t bytes, uint32_t address,
                     const Table& table, CompiledLeaf& result, std::string& error,
-                    const std::vector<Callee>* callees, bool runtime) {
+                    const std::vector<Callee>* callees, bool runtime,
+                    const std::vector<uint8_t>* direct) {
   result.release();
   error.clear();
 #if !defined(_M_X64)
@@ -366,7 +443,8 @@ bool translate_leaf(const uint8_t* code, size_t bytes, uint32_t address,
   return false;
 #else
   Plan whole;
-  if (!plan_function(code, bytes, address, whole, error, nullptr, callees, runtime)) return false;
+  if (!plan_function(code, bytes, address, whole, error, nullptr, callees, runtime,
+                     runtime ? direct : nullptr)) return false;
   const std::vector<Instruction>& plan = whole.stencils;
   ByOperation by_operation{};
   if (!validate_table(table, by_operation, error)) return false;
@@ -408,8 +486,7 @@ bool translate_leaf(const uint8_t* code, size_t bytes, uint32_t address,
   CompiledLeaf candidate;
   candidate.source_.assign(code, code + bytes);
   candidate.address_ = address;
-  candidate.allocation_ = image ? allocate_near(image, image_end, allocation_size)
-                                : VirtualAlloc(nullptr, allocation_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+  candidate.allocation_ = region_allocate(image, image_end, allocation_size, candidate.region_);
   if (!candidate.allocation_) {
     error = image ? "no free address range within reach of the host image" : "cannot allocate translation";
     return false;
@@ -522,6 +599,7 @@ bool translate_leaf(const uint8_t* code, size_t bytes, uint32_t address,
   }
   for (uint32_t index : whole.guest_entries)
     candidate.guest_entries_.push_back(index == kNoStencil ? nullptr : reinterpret_cast<Entry>(base + offsets[index]));
+  candidate.unreachable_runs_ = whole.unreachable_runs;
   candidate.entry_ = reinterpret_cast<Entry>(base);
   result = std::move(candidate);
   return true;

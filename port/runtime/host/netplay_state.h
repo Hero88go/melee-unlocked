@@ -128,6 +128,9 @@ namespace detail {
 inline std::atomic<CommandHandler>& handler() { static std::atomic<CommandHandler> h{nullptr}; return h; }
 }  // namespace detail
 inline void set_command_handler(CommandHandler handler) { detail::handler().store(handler); }
+// True once a session installed its handler. The build with the Slippi layer asks this to pick who
+// answers the game's session commands: this session, or Slippi's.
+inline bool has_command_handler() { return detail::handler().load() != nullptr; }
 
 // Without a session every session command gets the answer "there is no match": the game then plays
 // offline (kMatchState) or ends the match as disconnected (kInputs) instead of waiting forever.

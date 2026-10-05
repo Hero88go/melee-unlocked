@@ -140,6 +140,7 @@ void start_game();
 std::string static_recomp_exe();
 std::string g_lobby_launch_args;
 bool g_lobby_game_active = false;
+bool g_lobby_game_p2p = false;   // that lobby game is a P2P Direct match (the launcher that also starts Slippi Direct)
 launcher::lobby::Prefs g_lobby_prefs;   // launcher.ini lobbyopen / lobbyiso / lobbyisoname
 std::string g_active_version; // folder name inside Versions; empty means the current install
 bool g_rollback_consumed = true;
@@ -1189,11 +1190,16 @@ void select_engine(int engine) {
 
 bool lobby_game_ready() {
   if (g_iso.empty() || !file_exists(game_exe()) || g_building || g_playing ||
-      !g_active_version.empty() || g_slippi_missing) return false;
+      !g_active_version.empty()) return false;
 #ifdef MELEE_NO_SLIPPI
   return true;   // a peer-to-peer match is told its characters and stage: no menu, no account, no save needed
 #endif
-  if (g_engine == ENGINE_SOURCE && source_available()) return true;
+  // The Source Port needs no save, and its P2P Direct match no account either: ready without a
+  // Slippi sign-in. The lobby knows whether one is there (set_account) and refuses a Slippi Direct
+  // request without it, in both directions, with that reason.
+  if (p2p_test_shown() && g_engine == ENGINE_SOURCE && source_available()) return true;
+  if (g_slippi_missing) return false;
+  if (g_engine == ENGINE_SOURCE && source_available()) return true;   // with the sign-in, as before
   // Slippi's normal boot loads/creates the Melee save. First-run card prompts need the player's
   // choice before we can promise that accepting a lobby request starts a match without input.
   for (const auto& base : {g_dir, work_dir()}) {
@@ -1719,8 +1725,15 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       if (g_lobby_game_active && wp != 0 && !g_launcher_test)
         MessageBoxW(hwnd, L"The match could not connect or the game exited with an error. A direct connection needs one of you to be reachable: the same network, or a forwarded port. Check melee_port.log, then request another match.", L"Lobby match ended", MB_ICONWARNING);
 #else
-      if (g_lobby_game_active && wp != 0)
+      // After a P2P Direct match the lobby opens again on its port (it does nothing after any other
+      // match), before any dialog: the lobby is back while it is read.
+      launcher::lobby::restart_after_match();
+      if (g_lobby_game_active && wp != 0 && g_lobby_game_p2p) {
+        if (!g_launcher_test)
+          MessageBoxW(hwnd, L"The P2P Direct match could not connect or the game exited with an error. A direct connection needs one of you to be reachable: the same network, or a forwarded port. Check melee_port.log, then request another match.", L"Lobby match ended", MB_ICONWARNING);
+      } else if (g_lobby_game_active && wp != 0)
         MessageBoxW(hwnd, L"The lobby match could not complete its connection or the game exited with an error. Check your Slippi login/code and melee_port.log, then request another match.", L"Lobby match ended", MB_ICONWARNING);
+      g_lobby_game_p2p = false;
 #endif
       g_lobby_game_active = false;
       set_iso(g_iso);
@@ -1794,7 +1807,36 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
       }
 #else
-      if (launcher::lobby::take_match(match)) {
+      // Chosen per match: one whose request was P2P Direct arrives with the game's --p2p-* arguments
+      // (launcher_lobby.cpp fills them only for such a request); any other is Slippi Direct.
+      const bool have_match = launcher::lobby::take_match(match);
+      if (have_match && !match.p2p_args.empty()) {
+        // As in the build without Slippi: both launchers agreed on ports, characters, stage and seed
+        // over the lobby's encrypted channel, and the arguments were checked field by field
+        // (launcher_lobby_p2p.cpp, p2p_arguments). Here it also needs the Source Port to be the Game
+        // Build that is picked and installed (the Static Recomp has no such session), vanilla, and
+        // no mod profile: nothing of a mod launch is passed on.
+        const bool source_ready = g_engine == ENGINE_SOURCE && source_available();
+        if (source_ready && match.mode == "vanilla" && !g_playing && !g_building && !g_iso.empty() &&
+            g_active_version.empty() && file_exists(game_exe())) {
+          std::error_code ec;
+          std::filesystem::create_directories(std::filesystem::u8path(g_dir + "\\p2p-results"), ec);
+          g_mod_launch_iso.clear(); g_mod_launch_key.clear(); g_mod_launch_engine.clear(); g_mod_launch_kind.clear();
+          // The two games start seconds apart, so each keeps dialing well past the bare default.
+          // --p2p-games 1: one game per session in this phase.
+          g_lobby_launch_args = match.p2p_args + " --p2p-connect-seconds 45 --p2p-games 1";
+          g_lobby_game_p2p = true;
+          // The game binds the lobby's own UDP port, the one the other player's router already lets
+          // through: the lobby closes its socket first and comes back when the game exits.
+          launcher::lobby::stop_for_match(match);
+          g_game_exe = game_exe(); launch_game_now();
+        } else {
+          launcher::lobby::game_running(false);
+          if (!g_launcher_test)
+            MessageBoxW(hwnd, launcher::lang::trw(source_ready ? "lobby.p2p.setup_failed" : "lobby.p2p.error.launch_engine").c_str(),
+                        L"Lobby", MB_ICONWARNING);
+        }
+      } else if (have_match) {
         // Codes arrive from another user. Never concatenate unchecked text into a command line.
         bool valid = !match.code.empty() && match.code.size() <= 18 && match.code.find('#') != std::string::npos;
         for (char c : match.code) if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '#')) valid = false;

@@ -37,6 +37,61 @@ struct Instruction {
   ExitKind exit = ExitKind::Poll;
   uint32_t exit_value = 0;
 };
+// Runtime mode: operations that cannot write guest RAM, change the dispatch, call guest or host
+// code that could, or leave the translation. Register work, compares, native branch tests and
+// loads (a load never has a side effect: see mmio_read). After an instruction made only of these
+// the code guard of the next instruction has nothing new to detect, so the fall-through skips it.
+// Anything not listed keeps its guard: stores, quantized forms, calls, exits, cache invalidation.
+constexpr bool runtime_pure(Operation operation) {
+  switch (operation) {
+    case Operation::Add: case Operation::Or: case Operation::Xor: case Operation::AndRecord:
+    case Operation::AddReg: case Operation::Subf: case Operation::Mullw: case Operation::Mulhw:
+    case Operation::Mulhwu: case Operation::Divw: case Operation::Divwu: case Operation::Neg:
+    case Operation::Addc: case Operation::Adde: case Operation::Addze: case Operation::Addme:
+    case Operation::Subfc: case Operation::Subfze: case Operation::Subfme: case Operation::Subfe:
+    case Operation::Addic: case Operation::Subfic: case Operation::Mulli:
+    case Operation::AndReg: case Operation::OrReg: case Operation::XorReg: case Operation::Nand:
+    case Operation::Nor: case Operation::Eqv: case Operation::Andc: case Operation::Orc:
+    case Operation::Extsb: case Operation::Extsh: case Operation::Cntlzw:
+    case Operation::Slw: case Operation::Srw: case Operation::Sraw: case Operation::Srawi:
+    case Operation::Rlwinm: case Operation::Rlwnm: case Operation::Rlwimi: case Operation::Record:
+    case Operation::Cmpw: case Operation::Cmplw: case Operation::Cmpwi: case Operation::Cmplwi:
+    case Operation::Mfcr: case Operation::Mtcrf: case Operation::Mcrf: case Operation::Mcrxr:
+    case Operation::Mflr: case Operation::Mtlr: case Operation::Mfctr: case Operation::Mtctr:
+    case Operation::Mfxer: case Operation::Mtxer:
+    case Operation::Jump: case Operation::BranchCrSet: case Operation::BranchCrClear:
+    case Operation::BranchCtrNonzero: case Operation::BranchCtrZero:
+    case Operation::Crand: case Operation::Cror: case Operation::Crxor: case Operation::Crnand:
+    case Operation::Crnor: case Operation::Creqv: case Operation::Crandc: case Operation::Crorc:
+    case Operation::Lbz: case Operation::Lhz: case Operation::Lha: case Operation::Lwz:
+    case Operation::Lbzu: case Operation::Lhzu: case Operation::Lhau: case Operation::Lwzu:
+    case Operation::Lbzx: case Operation::Lhzx: case Operation::Lhax: case Operation::Lwzx:
+    case Operation::Lbzux: case Operation::Lhzux: case Operation::Lhaux: case Operation::Lwzux:
+    case Operation::Lmw: case Operation::Lwbrx: case Operation::Lhbrx:
+    case Operation::Lfs: case Operation::Lfsu: case Operation::Lfsx: case Operation::Lfsux:
+    case Operation::Lfd: case Operation::Lfdu: case Operation::Lfdx: case Operation::Lfdux:
+    case Operation::Fadd: case Operation::Fsub: case Operation::Fmul: case Operation::Fdiv:
+    case Operation::Fmadd: case Operation::Fmsub: case Operation::Fnmadd: case Operation::Fnmsub:
+    case Operation::Fadds: case Operation::Fsubs: case Operation::Fmuls: case Operation::Fdivs:
+    case Operation::Fmadds: case Operation::Fmsubs: case Operation::Fnmadds: case Operation::Fnmsubs:
+    case Operation::Fres: case Operation::Frsqrte: case Operation::Frsp:
+    case Operation::Fmr: case Operation::Fneg: case Operation::Fabs: case Operation::Fnabs:
+    case Operation::Fsel: case Operation::Fcmp: case Operation::Fctiw: case Operation::Fctiwz:
+    case Operation::Mffs: case Operation::Mtfsf: case Operation::Mtfsb0: case Operation::Mtfsb1:
+    case Operation::Mtfsfi: case Operation::Mcrfs:
+    case Operation::PsAdd: case Operation::PsSub: case Operation::PsMul: case Operation::PsDiv:
+    case Operation::PsMuls0: case Operation::PsMuls1:
+    case Operation::PsMadd: case Operation::PsMsub: case Operation::PsNmadd: case Operation::PsNmsub:
+    case Operation::PsMadds0: case Operation::PsMadds1: case Operation::PsSum0: case Operation::PsSum1:
+    case Operation::PsRes: case Operation::PsRsqrte: case Operation::PsSel:
+    case Operation::PsMr: case Operation::PsNeg: case Operation::PsAbs: case Operation::PsNabs:
+    case Operation::PsMerge00: case Operation::PsMerge01: case Operation::PsMerge10:
+    case Operation::PsMerge11: case Operation::FcmpPs1:
+      return true;
+    default:
+      return false;
+  }
+}
 // A return address of a local call (emit.py's info.local_returns) and the stencil the return goes
 // to. kNoStencil: the words after that call are inline data, which nothing may return into.
 struct LocalReturn { uint32_t address; uint32_t stencil; };
@@ -142,10 +197,19 @@ inline std::vector<uint32_t> computed_returns(const uint8_t* code, size_t bytes)
 // own addresses): LR is set, the return address is remembered for this invocation and control
 // jumps. `data_calls` marks, by word index, the local calls whose return address is inline data
 // (see plan_function): the words after such a call are not reached by it.
+//
+// `direct` (runtime mode only, one byte per guest word, or null): nonzero where a branch without
+// link may land without asking the driver, because the interpreter would simply continue there
+// (the word is not a compiled dispatch target). The caller owns that promise and retires the
+// translation when it stops holding. With it, a b or bc to such a word of this function is native
+// (the standalone branch stencils, the back-edge poll included) and code guards are kept only
+// where something could have changed since the last one. Without it every branch is a
+// RuntimeBranch exit and every instruction starts with its guard.
 inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
                          Plan& result, std::string& error,
                          std::vector<Refused>* all, const std::vector<Callee>* callees,
-                         const std::vector<uint8_t>& data_calls, bool runtime = false) {
+                         const std::vector<uint8_t>& data_calls, bool runtime = false,
+                         const std::vector<uint8_t>* direct = nullptr) {
   result = Plan{};
   error.clear();
   if (all) all->clear();
@@ -159,9 +223,19 @@ inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
   }
   const uint32_t count = uint32_t(bytes / 4);
   // While planning, a link at or above kGuest names the first stencil of a guest instruction.
-  constexpr uint32_t kGuest = 0x80000000u;
+  // With kBody as well it names the first stencil after that instruction's code guard.
+  constexpr uint32_t kGuest = 0x80000000u, kBody = 0x40000000u;
   std::vector<Instruction> plan;
   std::vector<uint32_t> first(count + 1, kNoStencil);
+  // Runtime guard placement (only with `direct`). body: the first stencil after the guard.
+  // pure: the instruction is made of runtime_pure stencils and native branch tests only.
+  // cold: instructions whose guard no fall-through needs; it is appended after the hot code and
+  // serves only as the driver's entry (guest_entries).
+  const bool elide = runtime && direct != nullptr;
+  std::vector<uint32_t> body(count + 1, kNoStencil), cold;
+  std::vector<uint8_t> pure(count, 0);
+  uint32_t open = kNoStencil; // The last planned instruction, not yet classified.
+  size_t open_body = 0;
   std::vector<uint32_t> words(count);
   for (uint32_t index = 0; index < count; ++index) {
     const size_t at = size_t(index) * 4;
@@ -232,6 +306,35 @@ inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
   uint32_t exits = 0;
   bool refused_any = false;
   plan.reserve(count * 2);
+  // Classifies the instruction planned last, once all its stencils are known. A pure one passes
+  // control to the stencil after the next instruction's guard, and that guard becomes cold.
+  const auto settle = [&] {
+    if (!elide || open == kNoStencil) return;
+    const uint32_t after = kGuest | (open + 1);
+    if (plan.size() == open_body) {
+      if (first[open] == kNoStencil) {
+        // A cold guard and no stencil of its own (a cache hint): something has to stand here.
+        Instruction pass{};
+        pass.operation = Operation::Jump; pass.next = after;
+        plan.push_back(pass);
+        nothing[open] = 0;
+      } else {
+        body[open] = first[open]; // Only its guard: that is what a native arrival runs.
+        if (plan[first[open]].next == after) plan[first[open]].next = after | kBody;
+        pure[open] = 1;
+        open = kNoStencil;
+        return;
+      }
+    }
+    bool clean = true;
+    for (size_t i = open_body; i < plan.size(); ++i) clean = clean && runtime_pure(plan[i].operation);
+    if (clean) {
+      for (size_t i = open_body; i < plan.size(); ++i)
+        if (plan[i].next == after) plan[i].next = after | kBody;
+      pure[open] = 1;
+    }
+    open = kNoStencil;
+  };
   for (uint32_t index = 0; index < count; ++index) {
     const size_t at = size_t(index) * 4;
     const uint32_t word = words[index];
@@ -241,6 +344,7 @@ inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
       else result.unreachable_runs.push_back({index, index});
       continue;
     }
+    settle();
     const size_t planned_before = plan.size();
     struct Nothing { // Marks an instruction that planned no stencil, on every way out of the loop body.
       std::vector<uint8_t>& flags; const std::vector<Instruction>& plan; size_t before; uint32_t index;
@@ -262,16 +366,80 @@ inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
     const uint32_t simm = (immediate & 0x8000u) ? immediate | 0xFFFF0000u : immediate;
     const uint32_t fall = kGuest | (index + 1);
     const uint32_t here = address + uint32_t(at);
+    bool guard_inline = false;
     if (runtime) {
-      Instruction guard{};
-      guard.operation = Operation::CodeGuard; guard.immediate = here;
-      guard.next = uint32_t(plan.size()) + 1;
-      plan.push_back(guard);
+      // The guard stays in line at the entry and wherever the instruction before could have
+      // written RAM, changed the dispatch or come back from the driver.
+      guard_inline = !elide || index == 0 || !reachable[index - 1] || !pure[index - 1];
+      if (guard_inline) {
+        Instruction guard{};
+        guard.operation = Operation::CodeGuard; guard.immediate = here;
+        guard.next = uint32_t(plan.size()) + 1;
+        plan.push_back(guard);
+      } else {
+        first[index] = kNoStencil; // Set when the cold guards are appended.
+        cold.push_back(index);
+      }
+      body[index] = uint32_t(plan.size());
+      open = index; open_body = plan.size();
       const uint32_t xo = (word >> 1) & 0x3FF;
       if (op == 16 || op == 18 || (op == 19 && (xo == 16 || xo == 528))) {
         if (op == 19 && (third || (xo == 528 && !(first_field & 4)))) {
           if (!refuse(third ? Refusal::ReservedBits : Refusal::CounterBranch)) return false;
           continue;
+        }
+        if (elide && op != 19 && !(word & 1)) {
+          // b or bc without link. Interp::step: cond() (CTR first, then the CR bit), then for a
+          // taken branch ram_branch_poll (a target at or before the branch counts a back-edge)
+          // and transfer(), which continues in RAM at a word that is not a compiled target.
+          uint32_t displacement = op == 18 ? word & 0x03FFFFFCu : word & 0xFFFCu;
+          if (op == 18 ? displacement & 0x02000000u : displacement & 0x8000u)
+            displacement |= op == 18 ? 0xFC000000u : 0xFFFF0000u;
+          const uint32_t target = (word & 2) ? displacement : here + displacement;
+          const uint32_t bo = op == 18 ? 20u : first_field;
+          const bool test_ctr = !(bo & 4), test_cr = !(bo & 16);
+          const uint32_t to = (target - address) / 4;
+          if (target >= address && target - address < bytes && to < direct->size() && (*direct)[to] &&
+              reachable[to] && ((!test_ctr && !test_cr) || index + 1 < count)) {
+            const uint32_t tests = uint32_t(test_ctr) + uint32_t(test_cr);
+            const uint32_t start = uint32_t(plan.size());
+            const bool back = to <= index;
+            const uint32_t skip = fall | kBody, land = kGuest | kBody | to;
+            const uint32_t taken = back ? start + tests : land;
+            if (test_ctr) {
+              Instruction test{};
+              test.operation = (bo & 2) ? Operation::BranchCtrZero : Operation::BranchCtrNonzero;
+              test.taken = test_cr ? start + 1 : taken;
+              test.next = skip;
+              plan.push_back(test);
+            }
+            if (test_cr) {
+              Instruction test{};
+              test.operation = (bo & 8) ? Operation::BranchCrSet : Operation::BranchCrClear;
+              test.source = second >> 2; test.immediate = 8u >> (second & 3);
+              test.taken = taken;
+              test.next = skip;
+              plan.push_back(test);
+            }
+            if (back) {
+              // ppc::backedge split at its call, as in a standalone plan. The Exit carries the
+              // target: after the poll the driver asks where the transfer lands now, and it
+              // resumes at the target's guard, because the poll may have run anything.
+              Instruction poll{}, leave{};
+              poll.operation = Operation::Backedge;
+              poll.next = land; poll.taken = uint32_t(plan.size()) + 1;
+              plan.push_back(poll);
+              leave.operation = Operation::Exit; leave.immediate = ++exits;
+              leave.exit = ExitKind::Poll; leave.exit_value = target; leave.taken = kGuest | to;
+              plan.push_back(leave);
+            } else if (!tests) {
+              Instruction jump{};
+              jump.operation = Operation::Jump; jump.next = land;
+              plan.push_back(jump);
+            }
+            pure[index] = 1;
+            continue;
+          }
         }
         Instruction branch{};
         branch.operation = Operation::Exit; branch.immediate = ++exits;
@@ -798,20 +966,32 @@ inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
     }
     if (!accepted && !refuse(reason)) return false;
     // Runtime cache hints still need to reach the next guard.
-    if (runtime && plan.size() == planned_before + 1) plan.back().next = fall;
+    if (runtime && guard_inline && plan.size() == planned_before + 1) plan.back().next = fall;
+  }
+  settle();
+  // The guards no fall-through runs, after all the hot code. A refused plan is discarded anyway.
+  if (elide && !refused_any) {
+    for (uint32_t index : cold) {
+      Instruction guard{};
+      guard.operation = Operation::CodeGuard; guard.immediate = address + index * 4;
+      guard.next = body[index];
+      first[index] = uint32_t(plan.size());
+      plan.push_back(guard);
+    }
   }
   // The stencil a guest instruction starts with. An instruction that plans as nothing (sync, a
   // cache hint) stands for the one after it; past the last word, or into a word that was not
-  // planned, there is nothing.
-  const auto resolve = [&](uint32_t index) {
+  // planned, there is nothing. `inner` asks for the stencil after the instruction's runtime guard.
+  const auto resolve = [&](uint32_t index, bool inner = false) {
     while (index < count && reachable[index] && nothing[index]) ++index;
-    return index < count && reachable[index] ? first[index] : kNoStencil;
+    if (index >= count || !reachable[index]) return kNoStencil;
+    return inner ? body[index] : first[index];
   };
   bool falls = false;
   for (auto& instruction : plan) {
     for (uint32_t* link : {&instruction.next, &instruction.taken}) {
       if (*link == kNoStencil || *link < kGuest) continue;
-      *link = resolve(*link & ~kGuest);
+      *link = resolve(*link & ~(kGuest | kBody), (*link & kBody) != 0);
       if (*link == kNoStencil) falls = true;
     }
   }
@@ -848,11 +1028,11 @@ inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
 inline bool plan_function(const uint8_t* code, size_t bytes, uint32_t address,
                           Plan& result, std::string& error,
                           std::vector<Refused>* all = nullptr, const std::vector<Callee>* callees = nullptr,
-                          bool runtime = false) {
+                          bool runtime = false, const std::vector<uint8_t>* direct = nullptr) {
   std::vector<uint8_t> data_calls(bytes / 4 + 1, 0);
   std::vector<Refused> refused;
   for (;;) {
-    if (plan_attempt(code, bytes, address, result, error, &refused, callees, data_calls, runtime)) {
+    if (plan_attempt(code, bytes, address, result, error, &refused, callees, data_calls, runtime, direct)) {
       if (all) all->clear();
       return true;
     }

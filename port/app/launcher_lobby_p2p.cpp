@@ -188,9 +188,13 @@ const char* wire_reason(const std::string& code) {
   if(code=="expired") return "the request expired";
   if(code=="p2p_version") return "needs a launcher of the same kind and version for peer-to-peer matches";
   if(code=="p2p_fighter") return "was sent a character or color that does not exist";
+  if(code=="p2p_engine") return "needs Source Port selected on both sides for a peer-to-peer match";
+  if(code=="no_account") return "has no account for that kind of match";
+  if(code=="transport") return "does not know that kind of match";
   return "cannot play right now";
 }
-// ---- peer-to-peer matches (the build without the Slippi layer) ----
+// ---- peer-to-peer matches (every match of the build without the Slippi layer, a request's own
+// choice in the other build) ----
 // The legal stages as the game's stage select numbers them (external ids): Battlefield, Final
 // Destination, Dream Land, Yoshi's Story, Fountain of Dreams, Pokemon Stadium.
 constexpr int legal_stages[6]={0x1F,0x20,0x1C,0x08,0x02,0x03};
@@ -339,6 +343,12 @@ static std::string build_name(const std::string& build) {
   return version.empty()?name:name+" "+version;
 }
 std::string build_version(const std::string& build) { return build.substr(0,build.find(':')); }
+// "0.8.5:source" -> "source": the Game Build a profile is on.
+static std::string build_engine(const Json& profile) {
+  const std::string build=profile.is_object()?profile.value("build",std::string()):std::string();
+  const auto colon=build.find(':');
+  return colon==std::string::npos?std::string():build.substr(colon+1);
+}
 int compare_versions(const std::string& a,const std::string& b) {
   int x[4]={0,0,0,0},y[4]={0,0,0,0};
   std::sscanf(a.c_str(),"%d.%d.%d.%d",&x[0],&x[1],&x[2],&x[3]);
@@ -553,6 +563,8 @@ struct PeerLobby::Impl {
     ULONGLONG probe_since=0;        // automatic pairing: when this player's ping was first asked for
     bool visible=false;
     int protocol=1;                 // from the hello; 0.8.1 sends none
+    // The matches this player's launcher starts (on_hello): peer to peer, and the hosted kind.
+    bool p2p=false,hosted=true;
     std::string status="Offline",ping_nonce;
     Json stocks=Json::array();
     int ping=-1;
@@ -605,13 +617,17 @@ struct PeerLobby::Impl {
   std::map<std::string,PrivateRoom> rooms;       // by room id
   std::set<std::string> private_blocked;         // players whose requests are ignored, this session only
   ULONGLONG last_private_request=0;
-  // Peer-to-peer matches (p2p_on). searching: this player wants an automatic pairing, and says so in
+  // The launcher where every match is peer to peer (p2p_on). searching: this player wants an automatic pairing, and says so in
   // the profile every hello carries. blocked: players never paired with and never answered, kept
   // with the friends. invites: pasted "Connect by address" lines, by identity key, until when.
   bool searching=false;
   // The character and color for this player's matches, from the launcher's settings with every
   // profile update: -1 is "the first main". Never sent with the profile, only in a match setup.
   int p2p_ch=-1,p2p_col=0;
+  // Whether this player can start the hosted kind of match right now (an account for it), from the
+  // launcher's settings with every profile update like the two above. A profile that does not say is
+  // one that can. Never sent with the profile: a hosted request is refused with "no_account".
+  bool hosted_ok=true;
   std::set<std::string> blocked;
   std::map<std::string,ULONGLONG> auto_skip,invites;   // auto_skip: not asked again before this time
   ULONGLONG last_auto=0,lan_at=0;                       // last_auto: when automatic pairing looks next
@@ -621,7 +637,15 @@ struct PeerLobby::Impl {
   // Tests: MELEE_P2P_SEPARATE_PORT=1 gives the game a free port of its own, and the lobby stays up.
   const bool separate_port=[]{ const char* v=std::getenv("MELEE_P2P_SEPARATE_PORT"); return v && std::string(v)=="1"; }();
   // A launcher announcing an older protocol (tests) plays the older flow.
-  bool p2p_on() const { return p2p_matches && (!test.protocol || test.protocol>=p2p_protocol); }
+  bool p2p_capable() const { return !test.protocol || test.protocol>=p2p_protocol; }
+  // Every match of this launcher is peer to peer: the build without the other transport (or a test
+  // standing in for it). It alone has searching, automatic requests, blocking and invites. Whether
+  // one match is peer to peer is asked of its request (p2p_request), never of this.
+  bool p2p_on() const { return (p2p_matches || test.p2p_only) && p2p_capable(); }
+  static bool p2p_request(const Json& request) { return request.value("transport",std::string())==kP2pTransport; }
+  // A peer-to-peer match with this player: their launcher knows the setup and is of this launcher's
+  // kind (the two kinds of game refuse each other in their handshake).
+  bool p2p_peer(const Peer& peer) const { return p2p_capable() && peer.p2p && peer.hosted==!p2p_on(); }
   void set_searching(bool on) {
     if(searching==on) return;
     searching=on; auto_skip.clear(); last_auto=0;
@@ -661,7 +685,7 @@ struct PeerLobby::Impl {
     r["state"]="accepted"; r["confirmed"]=false; request_expiry[rid]=now+(r.value("auto",false)?15000:120000);
     tracking[rid]={now,false};
     Json body={{"request",rid}};
-    if(p2p_on()) body["p2p"]=p2p_mine(rid);
+    if(p2p_request(r)) body["p2p"]=p2p_mine(rid);
     queue_event(target,"accept",body);
     log("accepted request "+short_id(rid)+" from "+short_id(target));
   }
@@ -675,7 +699,7 @@ struct PeerLobby::Impl {
   // Who an automatic request may go to: searching, ready, free, the same version, reachable under the
   // same rule as a request by hand, not blocked and not just tried.
   bool auto_candidate(const std::string& other,const Peer& peer,ULONGLONG now) const {
-    if(!peer.seen || now-peer.seen>=20000 || peer.protocol<p2p_protocol || peer.status!="Online") return false;
+    if(!peer.seen || now-peer.seen>=20000 || !p2p_peer(peer) || peer.status!="Online") return false;
     if(!peer.profile.count("searching") || !peer.profile["searching"].is_boolean() || !peer.profile["searching"].get<bool>()) return false;
     if(!peer.profile.value("ready",false) || blocked.count(other) || auto_skip.count(other)) return false;
     if(!(visible && peer.visible) && !friends.count(other)) return false;
@@ -971,6 +995,10 @@ struct PeerLobby::Impl {
     if(searching) shown["searching"]=true;
     Json body={{"v",1},{"lv",test.protocol?test.protocol:lobby_protocol},{"t","hello"},{"pk",id},{"xk",hex(x_public.data(),x_public.size())},
                {"profile",shown},{"visible",visible},{"time",wall_clock()},{"nonce",nonce}};
+    // The matches this launcher starts, when it starts more than one kind. A launcher where every
+    // match is peer to peer sends no list, and neither does an older one: on_hello reads the
+    // protocol number for those. Older launchers ignore the field like any they do not know.
+    if(p2p_capable() && !p2p_on()) body["tp"]=Json::array({kHostedTransport,kP2pTransport});
     auto content=body.dump(); Bytes64 signature{};
     crypto_ed25519_sign(signature.data(),ed_secret.data(),reinterpret_cast<const uint8_t*>(content.data()),content.size());
     body["sig"]=hex(signature.data(),signature.size());
@@ -1085,7 +1113,7 @@ struct PeerLobby::Impl {
                  {"code",peer->second.profile.value("code",std::string())},{"build",profile.value("build",std::string())},
                  {"mode",r.value("mode",std::string("vanilla"))},
                  {"character",!mains.empty() && mains[0].is_number_integer()?mains[0].get<int>():2}};
-    if(p2p_on()) {
+    if(p2p_request(r)) {
       // Everything both games must pass identically comes from the request id and the two halves of
       // the setup, so the two launchers build the same match without another message. The requester
       // is slot 0. Two players on the same character and color: the second takes the next color.
@@ -1222,10 +1250,28 @@ struct PeerLobby::Impl {
       // The request carries the sender's current Game Build, which beats the profile last heard.
       Json sender_profile=peer->second.profile;
       if(data.count("build") && data["build"].is_string() && data["build"].get<std::string>().size()<=80) sender_profile["build"]=data["build"];
+      // The request's own transport. A launcher where every match is peer to peer does not read the
+      // field (and sends none); in the other one a request without it is the hosted kind, as from
+      // an older launcher, which is also what a launcher on an older protocol makes of any request.
+      std::string transport=p2p_on()?kP2pTransport:kHostedTransport;
+      bool known_transport=true;
+      if(!p2p_on() && p2p_capable() && data.count("transport")) {
+        const std::string named=data["transport"].is_string()?data["transport"].get<std::string>():std::string();
+        if(named==kP2pTransport) transport=named; else if(named!=kHostedTransport) known_transport=false;
+      }
+      const bool p2p=transport==kP2pTransport;
       std::string refusal=refusal_for(sender,peer->second,data,sender_profile,mode);
+      if(refusal.empty() && !known_transport) refusal="transport";
+      // A launcher where every match is peer to peer names no transport, so its request reads as the
+      // hosted kind here: it is neither, and the two kinds of game do not play each other.
+      if(refusal.empty() && !p2p_on() && p2p_capable() && !peer->second.hosted) refusal="p2p_version";
       // A peer-to-peer match needs the setup both launchers exchange on accept, which an older
-      // launcher (or one that starts Slippi Direct) does not send. Only vanilla is played this way.
-      if(refusal.empty() && p2p_on() && (peer->second.protocol<p2p_protocol || mode!="vanilla")) refusal="p2p_version";
+      // launcher (or one of the other kind) does not send. Only vanilla is played this way.
+      if(refusal.empty() && p2p && (!p2p_peer(peer->second) || mode!="vanilla")) refusal="p2p_version";
+      // Where both engines exist, only the Source Port plays peer to peer, on both sides.
+      if(refusal.empty() && p2p && !p2p_on() && (build_engine(profile)!="source" || build_engine(sender_profile)!="source")) refusal="p2p_engine";
+      // The hosted kind needs this player's account for it.
+      if(refusal.empty() && !p2p && !hosted_ok) refusal="no_account";
       // An automatic request is for a player who is searching too, and is never shown as a prompt.
       if(refusal.empty() && automatic && !searching) refusal="not_searching";
       if(refusal.empty() && !requests.empty() && !requests.count(rid)) {
@@ -1251,11 +1297,11 @@ struct PeerLobby::Impl {
       }
       peer->second.last_request=now;
       if(!requests.count(rid)) {
-        requests[rid]={{"id",rid},{"from",sender},{"to",id},{"state","pending"},{"transport",p2p_on()?"p2p":kHostedTransport},{"mode",mode}};
+        requests[rid]={{"id",rid},{"from",sender},{"to",id},{"state","pending"},{"transport",transport},{"mode",mode}};
         request_expiry[rid]=now+(automatic?auto_request_wait:30000);
         peer->second.ping_nonce=nonce_id(8); peer->second.ping_sent=now;
         send_data(sender,{{"k","ping"},{"nonce",peer->second.ping_nonce}});
-        log("request "+short_id(rid)+" in from "+short_id(sender)+", mode "+mode+(automatic?", automatic":""));
+        log("request "+short_id(rid)+" in from "+short_id(sender)+", mode "+mode+(p2p?", peer to peer":"")+(automatic?", automatic":""));
         // Two searching players: the answer is yes, at once.
         if(automatic) { requests[rid]["auto"]=true; accept_request(rid); }
       }
@@ -1277,7 +1323,7 @@ struct PeerLobby::Impl {
         log("accept of "+short_id(rid)+" arrived while in a game");
         return true;
       }
-      if(p2p_on()) {
+      if(p2p_request(it->second)) {
         // The accept carries the other player's half of the match setup; this player's half goes
         // back with the acknowledgment (on_data). Without theirs there is no match to start.
         if(data.count("p2p") && data["p2p"].is_object() && !legal_fighter(data["p2p"])) {
@@ -1478,7 +1524,17 @@ struct PeerLobby::Impl {
     auto& peer=peers[sender]; peer.address=from; peer.xkey=xpub; peer.profile=clean_profile(packet["profile"]);
     peer.protocol=packet.count("lv") && packet["lv"].is_number_integer() && packet["lv"].get<int>()>=1 && packet["lv"].get<int>()<1000
                   ? packet["lv"].get<int>() : 1;
+    // The matches their launcher starts. With a list ("tp"): what it names. Without one: a launcher
+    // that knows the peer-to-peer setup plays nothing else, and an older one only the hosted kind.
+    peer.p2p=peer.protocol>=p2p_protocol; peer.hosted=!peer.p2p;
+    // (A test standing in for the launcher where every match is peer to peer, as released before
+    // the list existed, does not read it either.)
+    if(peer.p2p && !test.p2p_only && packet.count("tp") && packet["tp"].is_array() && packet["tp"].size()<=8) {
+      peer.p2p=false;
+      for(const auto& item:packet["tp"]) if(item.is_string()) { if(item.get<std::string>()==kP2pTransport) peer.p2p=true; else peer.hosted=true; }
+    }
     if(!known) log("peer "+short_id(sender)+" at "+endpoint_tag(from)+", protocol "+std::to_string(peer.protocol)+
+                   (peer.p2p?(peer.hosted?", both kinds of match":", peer-to-peer matches only"):"")+
                    ", build "+peer.profile.value("build",std::string())+(peer.profile.value("ready",false)?"":", setup needed"));
     auto now=GetTickCount64();
     if(now-peer.hello_sent>1000) { send_hello(from); peer.hello_sent=now; }
@@ -1552,7 +1608,7 @@ struct PeerLobby::Impl {
           // A peer-to-peer match starts only with the requester's half of the setup, which this
           // acknowledgment carries. One without it (the request was gone on their side) starts nothing.
           bool complete=true;
-          if(p2p_on()) {
+          if(p2p_request(request->second)) {
             complete=content.count("p2p") && valid_setup(content["p2p"]);
             if(complete) request->second["p2p_theirs"]=content["p2p"];
             else if(content.count("p2p") && content["p2p"].is_object() && !legal_fighter(content["p2p"])) {
@@ -1588,11 +1644,11 @@ struct PeerLobby::Impl {
         Json ack={{"k","ack"},{"ref",event_id}};
         // The acknowledgment of an accept carries the requester's half of the match setup, on a
         // resend too (the first one may be the packet that was lost).
-        if(p2p_on() && content.count("action") && content["action"].is_string() && content["action"].get<std::string>()=="accept" &&
+        if(p2p_capable() && content.count("action") && content["action"].is_string() && content["action"].get<std::string>()=="accept" &&
            content.count("data") && content["data"].is_object() && content["data"].count("request") && content["data"]["request"].is_string()) {
           auto r=requests.find(content["data"]["request"].get<std::string>());
           if(r!=requests.end() && r->second.value("from",std::string())==id && r->second.value("to",std::string())==sender &&
-             r->second.count("p2p_mine")) ack["p2p"]=r->second["p2p_mine"];
+             p2p_request(r->second) && r->second.count("p2p_mine")) ack["p2p"]=r->second["p2p_mine"];
         }
         send_data(sender,ack);
       }
@@ -1631,8 +1687,9 @@ struct PeerLobby::Impl {
   void update_profile(const Json& next,bool show=false) {
     // The match character and color ride with the launcher's settings; they are not profile fields
     // (public_profile leaves them out), so other players learn them only in a match setup.
-    p2p_ch=-1; p2p_col=0;
+    p2p_ch=-1; p2p_col=0; hosted_ok=true;
     if(next.is_object()) {
+      if(next.count("hosted_ok") && next["hosted_ok"].is_boolean()) hosted_ok=next["hosted_ok"].get<bool>();
       if(next.count("p2p_ch") && next["p2p_ch"].is_number_integer() && next["p2p_ch"].get<int>()>=0 && next["p2p_ch"].get<int>()<=25) p2p_ch=next["p2p_ch"].get<int>();
       if(next.count("p2p_col") && next["p2p_col"].is_number_integer() && next["p2p_col"].get<int>()>=0 && next["p2p_col"].get<int>()<=5) p2p_col=next["p2p_col"].get<int>();
     }
@@ -1814,11 +1871,25 @@ struct PeerLobby::Impl {
       if(blocked.count(target)) throw std::runtime_error(lang::tr("lobby.error.blocked",{{"name",name}}));
       if(busy()) throw std::runtime_error(lang::tr("lobby.error.self_busy"));
       if(!profile.value("ready",false)) throw std::runtime_error(lang::tr("lobby.error.self_not_ready"));
-      // A launcher that does not know the peer-to-peer match setup would start something else.
-      if(p2p_on() && peer->second.protocol<p2p_protocol) throw std::runtime_error(lang::tr("lobby.declined.p2p_version",{{"name",name}}));
+      // The request's own transport: peer to peer when every match of this launcher is, or when the
+      // player asked for it; else the hosted kind.
+      const bool p2p=p2p_on() || (p2p_capable() && data.count("transport") && data["transport"].is_string() &&
+                                  data["transport"].get<std::string>()==kP2pTransport);
+      // A launcher that does not know the peer-to-peer match setup would start something else, and
+      // one of the other kind starts a game this one's does not play with.
+      if(p2p && !p2p_peer(peer->second)) throw std::runtime_error(lang::tr("lobby.declined.p2p_version",{{"name",name}}));
+      // The same from the other side: a launcher where every match is peer to peer has no hosted kind.
+      if(!p2p && p2p_capable() && !peer->second.hosted) throw std::runtime_error(lang::tr("lobby.declined.p2p_version",{{"name",name}}));
+      if(!p2p && !hosted_ok) throw std::runtime_error(lang::tr("lobby.error.self_no_account"));
       if(peer->second.status!="Online") throw std::runtime_error(lang::tr("lobby.declined.busy",{{"name",name}}));
       if(!peer->second.profile.value("ready",false)) throw std::runtime_error(lang::tr("lobby.declined.not_ready",{{"name",name}}));
       std::string mode=data.value("mode",std::string("vanilla"));
+      if(p2p && !p2p_on()) {
+        // Where both engines and mods exist: peer to peer is vanilla on the Source Port, both sides.
+        if(mode!="vanilla") throw std::runtime_error(lang::tr("lobby.p2p.error.vanilla"));
+        if(build_engine(profile)!="source") throw std::runtime_error(lang::tr("lobby.p2p.error.engine"));
+        if(build_engine(peer->second.profile)!="source") throw std::runtime_error(lang::tr("lobby.declined.p2p_engine",{{"name",name}}));
+      }
       // The same checks the other launcher makes, from its side, so a request that would be refused
       // is not sent at all and the reason shows straight away.
       const auto problem=mode_problem(peer->second.profile,profile,mode);
@@ -1829,15 +1900,18 @@ struct PeerLobby::Impl {
       last_request=now; auto rid=nonce_id();
       // auto: sent by automatic pairing to a player who is searching too; their launcher answers.
       const bool automatic=p2p_on() && data.count("auto") && data["auto"].is_boolean() && data["auto"].get<bool>();
-      requests[rid]={{"id",rid},{"from",id},{"to",target},{"state","pending"},{"transport",p2p_on()?"p2p":kHostedTransport},{"mode",mode},{"delivered",false}};
+      requests[rid]={{"id",rid},{"from",id},{"to",target},{"state","pending"},{"transport",p2p?kP2pTransport:kHostedTransport},{"mode",mode},{"delivered",false}};
       request_expiry[rid]=now+(automatic?auto_request_wait:30000); tracking[rid]={now,false};
       Json body={{"request",rid},{"mode",mode},{"build",profile.value("build",std::string())},{"ready",true}};
+      // Named only where a request can be either kind: the launcher where every match is peer to
+      // peer never sent the field, and a hosted request stays exactly what an older launcher sends.
+      if(p2p && !p2p_on()) body["transport"]=kP2pTransport;
       if(automatic) { requests[rid]["auto"]=true; body["auto"]=true; }
       queue_event(target,"request",body);
       peer->second.ping_nonce=nonce_id(8); peer->second.ping_sent=now;
       send_data(target,{{"k","ping"},{"nonce",peer->second.ping_nonce}});
       say(automatic?"lobby.search.asking":"lobby.sent",{{"name",name}},"sent");
-      log("request "+short_id(rid)+" out to "+short_id(target)+", mode "+mode+", their protocol "+std::to_string(peer->second.protocol)+(automatic?", automatic":""));
+      log("request "+short_id(rid)+" out to "+short_id(target)+", mode "+mode+(p2p?", peer to peer":"")+", their protocol "+std::to_string(peer->second.protocol)+(automatic?", automatic":""));
       return;
     }
     if(action=="pm_request") {
@@ -2074,6 +2148,10 @@ struct PeerLobby::Impl {
       } else if(p2p_on()) {
         // There is no code to fall back on here: the way around is an invite (Connect by address).
         say(outgoing?"lobby.p2p.unreachable":"lobby.p2p.accept_unreachable",{{"name",peer_name(other)}},"warn");
+      } else if(p2p_request(r)) {
+        // A peer-to-peer request of the launcher with both kinds: no invite to offer, and the other
+        // player's code would start a different kind of match.
+        say("lobby.p2p.no_route",{{"name",peer_name(other)}},"warn");
       } else if(outgoing && heard && peer_protocol(other)<2) {
         // An older launcher that hears us refuses without a word; its version says who must update.
         say("lobby.no_answer_legacy",{{"name",peer_name(other)},{"version",build_version(profile.value("build",std::string()))}},"warn");
@@ -2097,6 +2175,7 @@ struct PeerLobby::Impl {
           if(it->second.value("delivered",false)) say("lobby.expired",{{"name",peer_name(to)}},"expired");
           else if(!tracking.count(it->first) || !tracking[it->first].warned) {
             if(p2p_on()) say("lobby.p2p.unreachable",{{"name",peer_name(to)}},"warn");
+            else if(p2p_request(it->second)) say("lobby.p2p.no_route",{{"name",peer_name(to)}},"warn");
             else say("lobby.unreachable",{{"name",peer_name(to)},{"code",peer_code(to)}},"unreachable");
           }
         } else say("lobby.missed",{{"name",peer_name(it->second.value("from",std::string()))}},"missed");
@@ -2165,6 +2244,7 @@ struct PeerLobby::Impl {
       player["id"]=peer.first; player["status"]=peer.second.status; player["stocks"]=peer.second.stocks;
       player["busy"]=peer.second.status!="Online"; player["protocol"]=peer.second.protocol;
       player["friend"]=friends.count(peer.first)!=0;
+      player["p2p"]=p2p_peer(peer.second);   // a peer-to-peer match with them can be asked for
       if(blocked.count(peer.first)) player["blocked"]=true;
       result["players"].push_back(player);
     }
@@ -2178,7 +2258,7 @@ struct PeerLobby::Impl {
       item["status"]=online?peer->second.status:std::string("Offline");
       item["stocks"]=online?peer->second.stocks:Json::array();
       item["online"]=online;
-      if(online) { item["protocol"]=peer->second.protocol; item["visible"]=peer->second.visible; }
+      if(online) { item["protocol"]=peer->second.protocol; item["visible"]=peer->second.visible; item["p2p"]=p2p_peer(peer->second); }
       result["friends"].push_back(item);
     }
     for(const auto& request:incoming) result["friend_requests"].push_back(request.second);

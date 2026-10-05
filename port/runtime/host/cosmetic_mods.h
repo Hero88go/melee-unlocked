@@ -249,6 +249,12 @@ struct RepublishResult {
   std::vector<RepublishedFile> files;
 };
 RepublishResult republish_slot(uint8_t* fst, uint32_t fst_size, const std::string& slot);
+// ---- stage select skin cycling (both engines) ----
+// The same two steps for a stage file ("GrSt.dat", with or without a leading slash): one step
+// through the standard stage and the stage skins installed for that file, saved like a Mods tab
+// choice, then the file published again. Offline only: refused while an online session is up.
+LiveCycle cycle_stage_live(const std::string& stage_file, int direction);
+RepublishResult republish_stage(uint8_t* fst, uint32_t fst_size, const std::string& stage_file);
 // The skin serving this disc file now, or empty for the disc's own file.
 std::string applied_asset(uint32_t vanilla_file_start);
 
