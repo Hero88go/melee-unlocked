@@ -88,6 +88,13 @@ static float g_settings_gd_scale = 1.0f;
 static std::string g_settings_gd_help;
 static float g_settings_gd_back_x = 0;
 static bool g_settings_focus_next_gd_row = false;
+// The GD list (the settings page's scrolling child) and where its rows are this frame, in screen
+// pixels: used to rest the scroll on a row boundary and to keep the focused row whole.
+static ImGuiWindow* g_settings_gd_list = nullptr;
+static float g_settings_gd_snap = 0.0f;        // nearest row top minus the list's top
+static bool g_settings_gd_snap_found = false;
+static float g_settings_gd_focus_top = 0.0f;   // top of the row holding the controller focus frame
+static bool g_settings_gd_focus_seen = false;
 
 static ImU32 settings_accent_for(int appearance, int variant) {
   static constexpr ImU32 palette[7][4] = {
@@ -207,6 +214,22 @@ static SettingsGdRow settings_gd_row(const char* label) {
   ImGui::SetCursorScreenPos(row.point(88.5f, row.y));
   row.activated = settings_shaped_hit_button("##kit_row", ImVec2(451.5f * g_settings_gd_scale, 30.0f * g_settings_gd_scale));
   const bool nav_frame = settings_nav_frame_on_item();
+  if (ImGuiWindow* list = ImGui::GetCurrentWindow(); list == g_settings_gd_list) {
+    const float top = ImGui::GetItemRectMin().y, bottom = ImGui::GetItemRectMax().y;
+    const float offset = top - list->InnerRect.Min.y;
+    if (!g_settings_gd_snap_found || std::fabs(offset) < std::fabs(g_settings_gd_snap))
+      g_settings_gd_snap = offset;
+    g_settings_gd_snap_found = true;
+    if (nav_frame) { g_settings_gd_focus_seen = true; g_settings_gd_focus_top = top; }
+    // The row that has just taken the focus is brought fully inside the list, clear of the hint
+    // bar below it. Once per change of focus, so the wheel can still scroll past it afterwards.
+    static ImGuiID focus_scrolled = 0;
+    if (ImGui::IsItemFocused() && focus_scrolled != ImGui::GetItemID()) {
+      focus_scrolled = ImGui::GetItemID();
+      if (top < list->InnerRect.Min.y) ImGui::SetScrollFromPosY(top - list->Pos.y, 0.0f);
+      else if (bottom > list->InnerRect.Max.y) ImGui::SetScrollFromPosY(bottom - list->Pos.y, 1.0f);
+    }
+  }
   row.selected = ImGui::IsItemHovered() || ImGui::IsItemFocused() || ImGui::IsItemActive();
   if (g_settings_focus_next_gd_row) {
     // SetKeyboardFocusHere(-1) here targets the item before this row (the category
@@ -267,36 +290,57 @@ static bool settings_gd_combo(const char* label, int* value, const char* const i
     if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft)) direction=-1;
     if (ImGui::IsKeyPressed(ImGuiKey_RightArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadRight)) direction=1;
   }
+  // The text shown for the current value: a few rows use a shorter form of their long names.
+  const auto shown_value=[&]() -> const char* {
+    const char* text= *value>=0 && *value<count ? items[*value] : "Custom";
+    if(std::strcmp(label,"Aspect ratio")==0) {
+      static constexpr const char* short_aspects[]={
+          "Auto (73:60 / 16:9)","73:60 native","4:3","16:9","Stretch"};
+      if(*value>=0 && *value<5) text=short_aspects[*value];
+    } else if(std::strcmp(label,"Display")==0) {
+      // The full names are in the list and on hover.
+      static constexpr const char* short_displays[]={"Window","Borderless","Exclusive"};
+      if(*value>=0 && *value<3) text=short_displays[*value];
+    } else if(std::strcmp(label,"Widescreen")==0) {
+#ifdef MELEE_NO_SLIPPI
+      static constexpr const char* short_widescreen[]={"Off","16:9 code","True 16:9"};
+#else
+      static constexpr const char* short_widescreen[]={"Off","Slippi code","True 16:9"};
+#endif
+      if(*value>=0 && *value<3) text=short_widescreen[*value];
+    }
+    return text;
+  };
+  // The value sits between the two arrows: 158 units wide, with "<" at 340 and ">" at 522. A longer
+  // value keeps its right edge and moves "<" toward the label, as far as the label leaves room,
+  // so it is cut only when the whole row is too short for it.
+  const float label_end=112+std::min(216.0f,gd_kit_text_width("row",label))+14;
+  const auto left_arrow=[&](const char* text) {
+    const float need=gd_kit_text_width("row",text);
+    return need<=158.0f ? 340.0f : std::max(std::min(340.0f,label_end),498.0f-need);
+  };
   if (row.activated) {
     const float mouse_design = (ImGui::GetIO().MousePos.x-g_settings_gd_origin.x)/g_settings_gd_scale-(240-row.y-15)*.25f;
-    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && mouse_design<370) direction=-1;
+    if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && mouse_design<left_arrow(shown_value())+30) direction=-1;
     else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && mouse_design>500) direction=1;
     else ImGui::OpenPopup("##kit_choices");
   }
   bool changed = direction != 0 && count>0;
   if (changed) *value=(*value+direction+count)%count;
-  const float x=340+row.lift, baseline=row.y+20.28f+row.lift;
+  const char* shown=shown_value();
+  const float arrow=left_arrow(shown);
+  const float x=arrow+row.lift, baseline=row.y+20.28f+row.lift;
   row.text(x,baseline,"<",row.ink);
-  row.text(x+182,baseline,">",row.ink);
-  const char* shown= *value>=0 && *value<count ? items[*value] : "Custom";
-  if(std::strcmp(label,"Aspect ratio")==0) {
-    static constexpr const char* short_aspects[]={
-        "Auto (73:60 / 16:9)","73:60 native","4:3","16:9","Stretch"};
-    if(*value>=0 && *value<5) shown=short_aspects[*value];
-  } else if(std::strcmp(label,"Display")==0) {
-    // The value box holds about 20 characters; the full names are in the list and on hover.
-    static constexpr const char* short_displays[]={"Window","Borderless","Exclusive"};
-    if(*value>=0 && *value<3) shown=short_displays[*value];
-  } else if(std::strcmp(label,"Widescreen")==0) {
-#ifdef MELEE_NO_SLIPPI
-    static constexpr const char* short_widescreen[]={"Off","16:9 code","True 16:9"};
-#else
-    static constexpr const char* short_widescreen[]={"Off","Slippi code","True 16:9"};
-#endif
-    if(*value>=0 && *value<3) shown=short_widescreen[*value];
+  row.text(522+row.lift,baseline,">",row.ink);
+  const float value_room=498.0f-arrow;
+  const float value_need=gd_kit_text_width("row",shown);
+  const float value_width=std::min(value_room,value_need);
+  row.text(x+16+(value_room-value_width)*.5f,baseline,shown,row.ink,value_room);
+  if (value_need>value_room) {
+    // Still cut: the whole value on hover, and in the hint bar while the row is selected.
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s: %s",label,shown);
+    if (row.selected) g_settings_gd_help=std::string(label)+": "+shown;
   }
-  const float value_width=std::min(158.0f,gd_kit_text_width("row",shown));
-  row.text(x+95-value_width*.5f,baseline,shown,row.ink,158);
   if (ImGui::BeginPopup("##kit_choices")) {
     for (int i=0;i<count;++i)
       if (ImGui::Selectable(items[i],*value==i)) { *value=i;changed=true; }

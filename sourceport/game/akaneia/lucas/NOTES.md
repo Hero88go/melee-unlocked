@@ -197,3 +197,20 @@ the only code not carried over is the unreachable MexCPU custom-table path.
 - `ftNs_JumpAerial_Phys_Cb` (static) is reached by calling the public `ftNs_JumpAerial_Enter`,
   which the disc's double jump inlines step for step.
 - `ftCo_800B2790 / 800B2AFC / 800B33B0` (static) are reached through the public `ftCo_800B3900`.
+
+## Kirby's copy ability
+
+`lucas_kirby.c` is the m-ex `kbFunction` of `PlKbCpLc.dat` (no debug symbols; written from
+`run-source/rel09-b1-wolf/kirby/listings/PlKbCpLc.listing.txt`). It is PK Freeze again with the
+parameters read from the hat data, the held freeze kept in Kirby's fighter variables
+(`ftKbLc_PKFreeze`, console fp+0x2270), article 10 for the projectile and Kirby's part 4. It
+reuses `ftLc_PKFreeze_Spawn` and the state callbacks whose instructions are the same.
+
+Article 10 (item kind 276 on Akaneia, `ftLc_Art_KirbyPKFreeze`) is the eleventh entry of
+`ftLc_ArticleLogic`. Its code, in the hat file's `itFunction`, is article 0's with the holder's
+word at fp+0x2270: `lucas_it_pkfreeze.c` picks the word by the holder's kind
+(`ftLc_PKFreeze_HeldSlot`). `ftLc_Art_Count` stays 10: it is the number of articles OnLoad
+registers from `ft_data->x48_items`; the table and `article_count` use `ftLc_Art_TableCount`.
+
+Function table, what is proven and the test: `run-source/rel09-b1-wolf/kirby/LUCAS.md`. Written,
+not compiled, not run.

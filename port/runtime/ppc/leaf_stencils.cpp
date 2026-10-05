@@ -10,6 +10,7 @@
 // a leaf stencil, any host symbol that is not on its list, and a non-tail Next everywhere.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "ppc.h"
+#include "ram_translator.h"
 
 extern "C" {
 extern const uint32_t mu_stencil_destination;
@@ -48,6 +49,18 @@ MU_STENCIL(and_record) {
   MU_NEXT;
 }
 MU_STENCIL(return) { (void)c; (void)m; return 0; }
+MU_STENCIL(code_guard) {
+  if (mu_ram_invalidated ||
+      (mu_ram_version0 && mu_ram_version0->load(std::memory_order_relaxed) != mu_ram_expected0) ||
+      (mu_ram_version1 && mu_ram_version1->load(std::memory_order_relaxed) != mu_ram_expected1))
+    mu_ram_translation_guard(I);
+  MU_NEXT;
+}
+MU_STENCIL(invalidate_code) {
+  const uint32_t ra = mu_stencil_source;
+  mu_ram_translation_invalidate(((ra ? c.r[ra] : 0u) + B) & ~31u, 32);
+  MU_NEXT;
+}
 
 // ---- integer register forms: D = rD, S = rA, B = rB ----
 MU_STENCIL(add_reg) { D = S + B; MU_NEXT; }

@@ -1,4 +1,5 @@
-/* Akaneia's Lucas: the PK Freeze projectile (article 0). A copy of Ness's PK Flash item
+/* Akaneia's Lucas: the PK Freeze projectile (article 0, and article 10 for Kirby's copy of the
+ * move, see ftLc_PKFreeze_HeldSlot). A copy of Ness's PK Flash item
  * (itnesspkflash.c) reworked by the m-ex authors: state 0 charges and drifts, steered by Lucas's
  * stick while he still holds it; state 1 is the burst (at 2x scale), state 2 the burst on
  * contact with the stage. Source: PlLc.dat itFunction item 0 (offsets below are into its code). */
@@ -50,7 +51,18 @@ static inline ftLc_PKFreezeAttrs* ftLc_PKFreeze_Attrs(Item* ip)
     return DP(ip->xC4_article_data->x4_specialAttributes);
 }
 
-/* Is the owner still Lucas holding this freeze in his PK Freeze state? */
+/* Where the fighter that holds the move keeps this freeze. Kirby's copy of the move uses article 10,
+ * whose code (itFunction of PlKbCpLc.dat) is this file's code again with one change: the three
+ * routines that look at the holder (State0_AnimCB +0xF4, State0_PhysCB +0x80, OnDestroy +0x5C of
+ * that block) read fp+0x2270 where Lucas's own read fp+0x2240. Every other word is the same after
+ * relocation, and its OnDestroy lacks only the null test of the holder's Fighter. Article 10 is
+ * only ever spawned by a Kirby and article 0 only by Lucas, so the holder's kind picks the word. */
+static inline Item_GObj** ftLc_PKFreeze_HeldSlot(Fighter* fp)
+{
+    return fp->kind == Ft_Kind_Kirby ? ftKbLc_PKFreeze(fp) : &ftLc_Vars(fp)->pkfreeze_gobj;
+}
+
+/* Is the owner still Lucas (or Kirby) holding this freeze in his PK Freeze state? */
 static Fighter* ftLc_PKFreeze_Holder(Item* ip)
 {
     ftLc_PKFreezeVars* vars = ftLc_PKFreeze_Vars(ip);
@@ -59,7 +71,7 @@ static Fighter* ftLc_PKFreeze_Holder(Item* ip)
         return NULL;
     }
     fp = GET_FIGHTER(vars->owner);
-    if (fp == NULL || ftLc_Vars(fp)->pkfreeze_gobj == NULL) {
+    if (fp == NULL || *ftLc_PKFreeze_HeldSlot(fp) == NULL) {
         return NULL;
     }
     return fp;
@@ -85,7 +97,7 @@ static bool ftLc_PKFreeze_State0_Anim(Item_GObj* gobj)
         vars->charge = charge > attrs->x4_MAX_CHARGE ? attrs->x4_MAX_CHARGE : charge;
         if (vars->owner != NULL && vars->owner == ip->owner) {
             Fighter* fp = GET_FIGHTER(vars->owner);
-            if (fp == NULL || ftLc_Vars(fp)->pkfreeze_gobj == NULL) {
+            if (fp == NULL || *ftLc_PKFreeze_HeldSlot(fp) == NULL) {
                 /* Lucas let go: burst. */
                 ftLc_PKFreeze_Burst(gobj);
                 return false;
@@ -209,8 +221,9 @@ void ftLc_PKFreeze_OnDestroy(Item_GObj* gobj)
         if (vars->owner == ip->owner) {
             Fighter* fp = GET_FIGHTER(vars->owner);
             if (fp != NULL) {
-                if (ftLc_Vars(fp)->pkfreeze_gobj != NULL) {
-                    ftLc_Vars(fp)->pkfreeze_gobj = NULL;
+                Item_GObj** held = ftLc_PKFreeze_HeldSlot(fp);
+                if (*held != NULL) {
+                    *held = NULL;
                 }
                 fp->death2_cb = NULL;
                 fp->take_dmg_cb = NULL;

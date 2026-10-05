@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "leaf_translator.h"
 #include "leaf_translation_plan.h"
+#include "ram_translator.h"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -246,6 +247,7 @@ void CompiledLeaf::release() {
   allocation_ = nullptr; size_ = 0; function_table_ = nullptr; unwind_entries_ = 0;
   entry_ = nullptr; address_ = 0; source_.clear(); exits_.clear(); local_returns_.clear();
   has_local_calls_ = false;
+  guest_entries_.clear();
 }
 CompiledLeaf::~CompiledLeaf() { release(); }
 CompiledLeaf::CompiledLeaf(CompiledLeaf&& other) noexcept { *this = std::move(other); }
@@ -262,19 +264,20 @@ CompiledLeaf& CompiledLeaf::operator=(CompiledLeaf&& other) noexcept {
     exits_ = std::move(other.exits_);
     local_returns_ = std::move(other.local_returns_);
     has_local_calls_ = std::exchange(other.has_local_calls_, false);
+    guest_entries_ = std::move(other.guest_entries_);
   }
   return *this;
 }
-bool CompiledLeaf::run(Context& context, uint8_t* ram) const {
+bool CompiledLeaf::run(Context& context, uint8_t* ram, const RuntimeHooks* runtime, bool code_verified) const {
   if (!entry_ || !ram || context.entry ||
-      std::memcmp(ram + (address_ - RAM_BASE), source_.data(), source_.size())) return false;
+      (!code_verified && std::memcmp(ram + (address_ - RAM_BASE), source_.data(), source_.size()))) return false;
   // This frame is the invocation: the `uint32_t lrs[32]; uint32_t lrn = 0;` and the
   // `const uint32_t entry_lr = c.lr;` that emit.py writes at the top of a function live here, and
   // every Exit of the chain is one of the statements that use them (or the back-edge poll).
   uint32_t lrs[32];
   uint32_t lrn = 0;
-  const uint32_t entry_lr = context.lr;
-  ppc::enter(context, address_);
+  const uint32_t entry_lr = runtime ? runtime->entry_lr : context.lr;
+  if (!runtime || !runtime->continuation) ppc::enter(context, address_);
   // `if (ppc::local_return(lrs, lrn, t)) { if (t == r) goto L_r; ... }`: where to resume, or null
   // when t is not a local return of this invocation. `data` is set when it is one whose words are
   // inline data: nothing may return there.
@@ -295,6 +298,26 @@ bool CompiledLeaf::run(Context& context, uint8_t* ram) const {
     Entry resume = action.resume;
     bool data = false;
     switch (action.kind) {
+      case ExitKind::RuntimeBranch: {
+        if (!runtime || !runtime->branch) {
+          ppc::fatal(context, "runtime translation has no branch driver", action.value);
+          return false;
+        }
+        const size_t off = action.value - address_;
+        const uint8_t* p = source_.data() + off;
+        const uint32_t word = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
+                              (uint32_t(p[2]) << 8) | uint32_t(p[3]);
+        const uint32_t next = runtime->branch(context, ram, action.value, word, entry_lr);
+        if (!next) return true;
+        const uint32_t index = (next - address_) / 4;
+        if ((next & 3) || next < address_ || index >= guest_entries_.size() || !guest_entries_[index]) {
+          if (!runtime->resume_pc) throw ppc::RamTranslationResume{next};
+          *runtime->resume_pc = next;
+          return true;
+        }
+        resume = guest_entries_[index];
+        break;
+      }
       case ExitKind::Poll:
         // A back-edge whose counter reached the poll interval: ppc::backedge split at its call.
         ppc::loop_poll(context);
@@ -335,7 +358,7 @@ bool CompiledLeaf::run(Context& context, uint8_t* ram) const {
 
 bool translate_leaf(const uint8_t* code, size_t bytes, uint32_t address,
                     const Table& table, CompiledLeaf& result, std::string& error,
-                    const std::vector<Callee>* callees) {
+                    const std::vector<Callee>* callees, bool runtime) {
   result.release();
   error.clear();
 #if !defined(_M_X64)
@@ -343,7 +366,7 @@ bool translate_leaf(const uint8_t* code, size_t bytes, uint32_t address,
   return false;
 #else
   Plan whole;
-  if (!plan_function(code, bytes, address, whole, error, nullptr, callees)) return false;
+  if (!plan_function(code, bytes, address, whole, error, nullptr, callees, runtime)) return false;
   const std::vector<Instruction>& plan = whole.stencils;
   ByOperation by_operation{};
   if (!validate_table(table, by_operation, error)) return false;
@@ -497,6 +520,8 @@ bool translate_leaf(const uint8_t* code, size_t bytes, uint32_t address,
     candidate.local_returns_.push_back({item.address, item.stencil == kNoStencil ? nullptr
                                         : reinterpret_cast<Entry>(base + offsets[item.stencil])});
   }
+  for (uint32_t index : whole.guest_entries)
+    candidate.guest_entries_.push_back(index == kNoStencil ? nullptr : reinterpret_cast<Entry>(base + offsets[index]));
   candidate.entry_ = reinterpret_cast<Entry>(base);
   result = std::move(candidate);
   return true;

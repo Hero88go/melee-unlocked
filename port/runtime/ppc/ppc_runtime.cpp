@@ -1,6 +1,7 @@
 // Runtime services for recompiled Gekko code: dispatch, MMIO routing, SPRs, PSQ, fres/frsqrte.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "ppc.h"
+#include "ram_translator.h"
 #include "guest_registry.h"
 #include "host.h"
 #ifndef NOMINMAX
@@ -75,6 +76,7 @@ uint64_t g_computed_return_checks = 0; // see ppc.h
 // Covers all of RAM: Gecko caves live below .text (bootloader at 0x800028B8) and in the heap
 // (the main code table the game loads), and their subroutines are called through pointers.
 void init_dispatch() {
+  reset_ram_translator();
   g_dispatch.assign(RAM_SIZE / 4, nullptr);
   for (size_t i = 0; i < guest::fn_table_count; ++i) {
     const auto& e = guest::fn_table[i];
@@ -186,7 +188,7 @@ void restore_dispatch_range(uint32_t lo, uint32_t hi) {
 void interp_entry(Context& c, uint8_t* m, uint32_t addr) {
   const uint32_t start = c.entry ? c.entry : addr;   // a mid-function thunk asked for this entry
   c.entry = 0;
-  interpret(c, m, start);
+  if (!try_translate_ram(c, m, start)) interpret(c, m, start);
 }
 
 bool redirect_to_interpreter(uint32_t addr) {
@@ -422,7 +424,7 @@ void call(Context& c, uint8_t* m, uint32_t addr) {
   // (seen after thousands of rollbacks in a long online session).
   CallDepthScope scope{c};
   if (fn) fn(c, m);
-  else interpret(c, m, addr);   // code that only exists in RAM (dat-loaded routines)
+  else if (!try_translate_ram(c, m, addr)) interpret(c, m, addr); // dat-loaded routines
 }
 
 uint64_t g_enter_count = 0;

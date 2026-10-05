@@ -2229,6 +2229,16 @@ static float game_ui_scale(float client_height) {
   if (forced > 0.0f) return forced;
   return client_height > 1080.0f ? std::min(client_height / 1080.0f, 3.0f) : 1.0f;
 }
+// MELEE_TEST_MENU_STYLE=<0..5> (tests): the panel uses that menu style, and the standalone settings
+// window draws it the way the game does instead of its own old screen, so a hidden
+// MELEE_TEST_SETTINGS_SHOT run can capture any style. -1 when the variable is not set.
+static int test_menu_style() {
+  static const int forced = [] {
+    const char* v = std::getenv("MELEE_TEST_MENU_STYLE");
+    return v ? std::clamp(std::atoi(v), 0, 5) : -1;
+  }();
+  return forced;
+}
 bool settings_textures_dirty() { return g_textures_dirty.exchange(false, std::memory_order_relaxed); }
 
 // The appearance layouts share one settings model and page controls; each supplies its own
@@ -3706,7 +3716,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   }
   ImGui::NewFrame();
   ImGuiStyle launcher_saved_style;
-  const bool launcher_old_look = g_fill_window.load(std::memory_order_relaxed);
+  const bool launcher_old_look = g_fill_window.load(std::memory_order_relaxed) && test_menu_style() < 0;
   if (launcher_old_look) {
     launcher_saved_style = ImGui::GetStyle();
     ImGui::GetStyle() = g_input_overlay_style;
@@ -3722,6 +3732,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (initial >= 0) state.active_tab = std::clamp(initial, 0, 7);
     else if (const char* tab = std::getenv("MELEE_TEST_SETTINGS_TAB"))
       state.active_tab = std::clamp(std::atoi(tab), 0, 7);
+    if (test_menu_style() >= 0) options.overlay_style = test_menu_style();
   }
   const auto reset_settings_home = [&state](const char* why) {
     if (g_ui_diag) host::log("ui diag: settings reset to home (%s), tab %d", why, state.active_tab);
@@ -3770,7 +3781,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   // controls continue editing the same D3D12Options values and persistence file.
   // The launcher's Settings window always shows the old (0.6.61) settings screen, whatever
   // appearance or legacy choice the game uses; the chosen appearance is restored and saved as is.
-  const bool launcher_window = g_fill_window.load(std::memory_order_relaxed);
+  const bool launcher_window = g_fill_window.load(std::memory_order_relaxed) && test_menu_style() < 0;
   if (launcher_window && !state.legacy_presentation) {
     state.legacy_saved_appearance = options.overlay_style;
     state.legacy_presentation = true;
@@ -4004,7 +4015,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,ImVec2(4.0f,2.0f));
       if (g_settings_classic_font) ImGui::PushFont(g_settings_classic_font);
     }
-    state.fill_window = g_fill_window.load(std::memory_order_relaxed);
+    state.fill_window = g_fill_window.load(std::memory_order_relaxed) && test_menu_style() < 0;
     const ImVec2 display = ImGui::GetIO().DisplaySize;
     const float motion_scale = std::max(0.1f, display.y / 480.0f);
     if (state.fill_window) {
@@ -4220,6 +4231,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           // The v0.6.6 layout began with the category tabs, not the modern
           // oversized SETTINGS banner.
           ImGui::SetCursorPos(ImVec2(8, 12));
+        } else if (wide_detail_theme) {
+          // Wide tabs: settings_wide_home has already drawn this style's header and its title.
+          // Drawing the shared banner as well put a second SETTINGS on top of it.
+          ImGui::SetCursorPos(ImVec2(20, 56));
         } else {
           ImGui::PushFont(settings_heading_font());
           ImGui::TextUnformatted("SETTINGS");
@@ -4395,7 +4410,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         radial_detail_page ? ImVec2(14.0f, 9.0f) : ImVec2(12.0f, 8.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, old_menu ? ImVec2(10.0f, 5.0f) : classic_menu ? ImVec2(5.0f, 4.0f) :
         gd_page ? ImVec2(4.0f * gd_scale, 4.0f * gd_scale) : ImVec2(12.0f, 12.0f));
-    ImVec2 settings_content_size = gd_page ? ImVec2(532.0f * gd_scale, 306.0f * gd_scale) : ImVec2(0, -48);
+    // GD Melee, in the kit's 640x480 space: the list starts at 84 and the hint bar's top is at 398.
+    // The list ends a clear gap above the bar and holds a whole number of rows (30 high, 4 apart),
+    // so a row at rest is not left cut along the bar.
+    constexpr float kGdListTop = 84.0f, kGdHintTop = 398.0f, kGdHintGap = 8.0f;
+    constexpr float kGdRowHeight = 30.0f, kGdRowSpacing = 4.0f, kGdRowPitch = kGdRowHeight + kGdRowSpacing;
+    const float gd_list_height =
+        std::floor((kGdHintTop - kGdHintGap - kGdListTop + kGdRowSpacing) / kGdRowPitch) * kGdRowPitch - kGdRowSpacing;
+    ImVec2 settings_content_size = gd_page ? ImVec2(532.0f * gd_scale, gd_list_height * gd_scale) : ImVec2(0, -48);
     if (options.overlay_style == 3) {
       const ImVec2 window_pos = ImGui::GetWindowPos(), window_size = ImGui::GetWindowSize();
       constexpr float kRadialDetailSideInset = 64.0f;
@@ -4415,6 +4437,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       // follows any other scroll change (scrollbar drag, keyboard or controller navigation).
       ImGuiWindow* content = ImGui::GetCurrentWindow();
       ImGuiStorage* storage = ImGui::GetStateStorage();
+      // GD Melee: the rows report where they are this frame (settings_gd_row).
+      g_settings_gd_list = gd_page ? content : nullptr;
+      g_settings_gd_snap_found = false;
+      g_settings_gd_focus_seen = false;
       const ImGuiID target_id = ImGui::GetID("##smooth_scroll_target");
       const ImGuiID applied_id = ImGui::GetID("##smooth_scroll_applied");
       const float current = content->Scroll.y;
@@ -6069,7 +6095,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               {0x8000u, "Color overlays", "Fighters turn green on the frames they can act, to show frame holes.", false},
             };
             ImGui::TextWrapped("Always on with 20XX TE: everything unlocked, 4 stock / 8 minute / friendly fire rules at start, "
-                               "C-Stick in 1P modes, neutral spawns, no results screen (A+B for a rematch), UCF, "
+                               "C-Stick in 1P modes, neutral spawns, A+B at the end of a match for a rematch, UCF, "
                                "D-pad up/down on character select for rumble.");
             const bool te_locked = (options.te_options2 & 0x40000u) != 0;
             for (const auto& feature : te_features2) {
@@ -6251,7 +6277,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           std::map<std::string, std::map<std::string, std::vector<const CosmeticAsset*>>> effects;
           for (const auto& asset : installed_mods) {
             if (asset.kind == "character_costume") characters[asset.character][asset.costume].push_back(&asset);
-            else if (asset.kind == "stage_visual" && asset.available) stages[asset.costume].push_back(&asset);
+            // One row per disc file: two imports of the same file can carry different labels.
+            else if (asset.kind == "stage_visual" && asset.available) stages[asset.target_path].push_back(&asset);
             else if (asset.kind == "character_portrait") pictures[asset.character + ", " + asset.costume].push_back(&asset);
             else if (asset.kind == "effect_visual") effects[asset.character][asset.costume].push_back(&asset);
           }
@@ -6562,7 +6589,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (!pictures.empty() && ImGui::CollapsingHeader("Portraits and stock icons", ImGuiTreeNodeFlags_DefaultOpen))
             for (const auto& slot : pictures) draw_resource_slot(slot.first, slot.second);
           if (!stages.empty() && ImGui::CollapsingHeader("Stages", ImGuiTreeNodeFlags_DefaultOpen))
-            for (const auto& stage : stages) draw_resource_slot(stage.first, stage.second);
+            for (const auto& stage : stages) draw_resource_slot(stage.second.back()->costume, stage.second);
           if (!effects.empty() && ImGui::CollapsingHeader("Effects")) {
             if (ImGui::Button("Enable project effects")) {
               std::string error;
@@ -7573,6 +7600,29 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       }
     }
     }
+    if (gd_page && g_settings_gd_list && g_settings_gd_list == ImGui::GetCurrentWindow() &&
+        g_settings_gd_snap_found) {
+      // GD Melee: once the wheel or the scrollbar has stopped, the nearest row's top moves to the
+      // top of the list, so the list rests on whole rows instead of one cut along the hint bar.
+      // Only within half a row, and never when it would push the focused row out of view.
+      ImGuiWindow* content = g_settings_gd_list;
+      ImGuiStorage* storage = ImGui::GetStateStorage();
+      const ImGuiID target_id = ImGui::GetID("##smooth_scroll_target");
+      const float current = content->Scroll.y;
+      const float target = storage->GetFloat(target_id, current);
+      const float snapped = std::clamp(current + g_settings_gd_snap, 0.0f, content->ScrollMax.y);
+      const float shift = snapped - current;   // the rows move up by this much
+      const float row_height = kGdRowHeight * gd_scale;
+      const bool keeps_focus = !g_settings_gd_focus_seen ||
+          (g_settings_gd_focus_top - shift >= content->InnerRect.Min.y - 1.0f &&
+           g_settings_gd_focus_top + row_height - shift <= content->InnerRect.Max.y + 1.0f);
+      const bool at_rest = std::fabs(target - current) < 0.5f && ImGui::GetIO().MouseWheel == 0.0f &&
+                           !ImGui::IsMouseDown(ImGuiMouseButton_Left) && content->ScrollTarget.y == FLT_MAX;
+      if (at_rest && keeps_focus && std::fabs(shift) >= 1.0f &&
+          std::fabs(g_settings_gd_snap) <= kGdRowPitch * 0.5f * gd_scale)
+        storage->SetFloat(target_id, snapped);
+    }
+    g_settings_gd_list = nullptr;
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
     ImGui::PopStyleVar(3);

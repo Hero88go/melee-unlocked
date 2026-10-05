@@ -28,7 +28,8 @@ What Charizard is made of:
 | `ftlz_specials.c` | Flame Wheel, states 353-360 |
 | `ftlz_specialhi.c` | Fly, states 349-350 |
 | `ftlz_speciallw.c` | Rock Smash, states 351-352 |
-| `itlizardon.c` | The three items (Fire, Rock, RockBurst): spawn, state tables, logic tables |
+| `itlizardon.c` | The three items (Fire, Rock, RockBurst): spawn, state tables, logic tables; item 3, the Fire of Kirby's copy ability, is the Fire table again |
+| `charizard_kirby.c` | The ability Kirby copies (`PlKbCpLz.dat` kbFunction): `ftKbLz_Copy`, six states, the per-frame refill |
 
 ## Routines
 
@@ -94,7 +95,10 @@ ClampRotation (the decomp's `Item_ClampAngle`), Flame_ECBUpdatePosition (a point
 | 1 | Rock | anim: destroy unless the owner is in state 351/352, empty phys, coll returns false | destroyed clears the owner's rock, picked_up re-enters state 0 |
 | 2 | RockBurst | anim `it_80273130`, empty phys, coll returns false | destroyed spawns effect 0x177B, hit_shield returns true |
 
-`mu_ak_charizard_item_logic[3]` holds these as `ItemLogicTable`s, in m-ex itFunction order.
+`mu_ak_charizard_item_logic[4]` holds these as `ItemLogicTable`s, in m-ex itFunction order. Entry
+3 (item kind 265 on Akaneia) is the flame of Kirby's copy ability: its code, in Kirby's hat file,
+is word for word item 0's, so it repeats the Fire table. Its article data comes from the hat file
+(`ftKbLz_InitCopyItems`), not from `ftData->x48_items`.
 
 ## What the integration layer must provide
 
@@ -159,9 +163,13 @@ ClampRotation (the decomp's `Item_ClampAngle`), Flame_ECBUpdatePosition (a point
   0x2D8) where the rest uses `dat_attrs`. OnLoad makes them the same pointer, so the C always uses
   `dat_attrs`.
 
-## Missing
+## Kirby's copy ability
 
-- **Kirby's Charizard copy ability**: `PlKbCpLz.dat` carries its own m-ex `kbFunction` and
-  `itFunction` code (no debug symbols). `MuAkFighter` has no Kirby slots, so it is not ported. The
-  flame code already has the Kirby sound branch (`fp->kind == Ft_Kind_Kirby`), and the copy's
-  code will probably reuse this file's flame spawn.
+`charizard_kirby.c` is the m-ex `kbFunction` of `PlKbCpLz.dat` (no debug symbols; written from
+`run-source/rel09-b1-wolf/kirby/listings/PlKbCpLz.listing.txt`). It is the Flamethrower again with
+the hat file's own parameter block (`ftKbLz_Params`), the reserves in Kirby's fighter variables
+(`ftKbLz_Vars`, console fp+0x2274 and fp+0x2278), item 3 for the flame and Kirby's part 44. It
+reuses `itLzFire_Spawn`, the three effect tables (now non-static in `ftlz_specialn.c`) and the
+state callbacks whose instructions are the same (the empty IASA callbacks, the six physics
+callbacks, both end animations). Function table, what is proven and the test:
+`run-source/rel09-b1-wolf/kirby/CHARIZARD.md`. Written, not compiled, not run.

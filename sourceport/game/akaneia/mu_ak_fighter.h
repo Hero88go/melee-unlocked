@@ -1,4 +1,4 @@
-/* Akaneia's new fighters, native.
+/* The fighters an m-ex disc adds, native (Akaneia 1.0.1 and ACE 2.0.0 share this layer).
  *
  * Akaneia (an m-ex build) ships each new fighter's behavior as PowerPC code inside its Pl<Xx>.dat,
  * exported as the m-ex "ftFunction" table (the names in sourceport/game/tmce/MexTK/ftFunction.txt)
@@ -22,9 +22,11 @@
 
 typedef void (*MuAkEvent)(HSD_GObj* gobj);
 
+struct MuAkKirbyCopy;   /* common/mu_ak_kirby.h */
+
 typedef struct MuAkFighter {
     const char* name;          /* "Wolf" */
-    const char* file;          /* the fighter file on the Akaneia disc, "PlWf.dat" */
+    const char* file;          /* the fighter file MxDt names, "PlWf.dat": the slot is found by it */
 
     /* The m-ex ftFunction exports, same order and meaning (MexTK/ftFunction.txt). NULL = default.
      * Several MexTK names do not say what the slot is, and some slots are not (HSD_GObj*) events:
@@ -72,15 +74,28 @@ typedef struct MuAkFighter {
     /* The same list as pointers, for a fighter that keeps one table per article and has
      * articles with no code (a NULL entry). Used instead of `articles` when set. */
     ItemLogicTable* const* article_tables;
+    /* m-ex ftFunction slot 45, GetTrailData (ACE: Daisy, Zero, Lucina). Kept as
+     * MU_AK_HOOK_TRAILDATA; nothing calls it yet. */
+    MuAkEvent gettraildata;
+    /* The ability Kirby copies from this fighter (common/mu_ak_kirby.h): the m-ex kbFunction
+     * exports of its hat file, rewritten. NULL until written: Kirby then keeps what he has. */
+    const struct MuAkKirbyCopy* kirby;
 } MuAkFighter;
 
 #define MU_AK_READY 0x1u
 
-/* One per fighter (sourceport/game/akaneia/<fighter>/<fighter>.c). The build links a fighter in
- * when that file exists (CMakeLists.txt, MU_AK_HAVE_<FIGHTER>); until then the fighter stays locked
- * on the character select screen. */
-extern const MuAkFighter mu_ak_wolf, mu_ak_diddy, mu_ak_charizard, mu_ak_lucas, mu_ak_sonic,
-    mu_ak_dedede, mu_ak_tails;
+/* One per fighter file: sourceport/game/akaneia/<fighter>/<fighter>.c for Akaneia's seven,
+ * sourceport/game/ace/<fighter>/<fighter>.c for the ones ACE adds. A descriptor is written
+ *
+ *     const MuAkFighter mu_ak_<fighter> = {
+ *
+ * at the start of a line: the build lists every such line of akaneia and ace sources in the
+ * registry (CMakeLists.txt, mu_ak_registry.inc), so a new fighter folder needs no edit of a
+ * shared file. Two disc files with the same code get two descriptors with the same callbacks
+ * (Wolf: PlWf.dat and ACE's PlWfU.dat, akaneia/wolf/wolf.c). A fighter MxDt names that has no
+ * descriptor stays locked: never created, never pickable. */
+extern const MuAkFighter mu_ak_wolf, mu_ak_wolf_ssbu, mu_ak_diddy, mu_ak_charizard, mu_ak_lucas,
+    mu_ak_sonic, mu_ak_dedede, mu_ak_tails;
 
 /* ---- the integration layer's services to fighter code (mu_ak_fighters.c) ---- */
 /* The registered fighter behind a native fighter kind (MU_AK_KIND(kind)), NULL for any other. */

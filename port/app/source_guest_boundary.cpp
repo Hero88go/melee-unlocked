@@ -4,6 +4,7 @@
 #include "guest_registry.h"
 #include "host.h"
 #include "gecko_data.h"
+#include "ram_translator.h"
 
 // Shared settings still store these choices. No PPC code tables are embedded;
 // native equivalents are implemented and enabled individually after validation.
@@ -29,6 +30,12 @@ const size_t name_table_count = 0;
 }
 
 namespace ppc {
+bool try_translate_ram(Context&, uint8_t*, uint32_t) { return false; }
+void configure_ram_translator(bool enabled) {
+  if (enabled) host::die("Source engine rejected the PowerPC RAM translator");
+}
+void reset_ram_translator() {}
+RamTranslatorStats ram_translator_stats() { return {}; }
 void interpret(Context&, uint8_t*, uint32_t address) {
   host::die("Source engine rejected PowerPC execution at %08X; this feature needs a native implementation", address);
 }

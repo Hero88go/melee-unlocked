@@ -334,9 +334,15 @@ static ItemLogicTable itDe_HiStar_Logic = {
 
 /* ---------------------------------------------------------------- the table */
 
-ItemLogicTable* const ftDe_ArticleLogic[ftDe_Article_Count] = {
+ItemLogicTable* const ftDe_ArticleLogic[ftDe_Article_TableCount] = {
     NULL,
     &itDe_SpitStar_Logic,
     &itDe_Gordo_Logic,
     &itDe_HiStar_Logic,
+    /* Kirby's copy of the inhale (PlKbCpDe.dat itFunction). Article 4 has no code there.
+     * Article 5 (80 words) is the spit star's code again: the state table, OnUnk3
+     * (it_8026B894), the fade (it_80273130), the slowing down and the wall test
+     * (it_8026DFB0). */
+    NULL,
+    &itDe_SpitStar_Logic,
 };

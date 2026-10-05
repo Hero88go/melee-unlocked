@@ -131,7 +131,11 @@ Rough total: 100% of the exported and internal routines written, 0% run.
    0x1778 (jet hammer flame / full charge, `efAsync_Spawn`), 0x49E (Up B ceiling bonk); sound
    0x13A1 (`ft_80088510`). 0x1770+ are m-ex fighter effect ids, so the m-ex effect bank for
    Dedede must be loaded.
-9. **Kirby copying Dedede** is not in PlDe.dat (it lives in MxDt kirby data); not covered here.
+9. **Kirby copying Dedede** is `dedede_kirby.c` (the kbFunction of `PlKbCpDe.dat`). The other
+   side of his inhale is this folder's `ftDe_SpecialNCapture.c`, which asks who inhaled
+   (`ftDe_CaptorAttrs`): the hat file carries those routines again with the values read from
+   the hat data. Articles 4 and 5 (`ftDe_ArticleLogic`) are the hat file's. See
+   `run-source/rel09-b1-wolf/kirby/DEDEDE.md`.
 
 ## Deviations from the m-ex code (deliberate, all small)
 

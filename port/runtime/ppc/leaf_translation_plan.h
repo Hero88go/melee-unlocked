@@ -21,6 +21,7 @@ enum class ExitKind : uint8_t {
                //          if (t == entry_lr) return; ppc::call(c, m, t); }`, then resume.
   TailCall,    // `{ const uint32_t tl = c.lr; ppc::call(c, m, target); [local return on tl] return; }`
   TailCallCtr, // the same with `ppc::call(c, m, c.ctr);`
+  RuntimeBranch, // Runtime mode uses the interpreter's RAM transfer and return rules.
 };
 // One stencil instance. A guest instruction becomes zero or more of these (a record form is its
 // operation followed by Record; a branch is its tests, then its body: Backedge and Exit when it
@@ -48,6 +49,7 @@ struct Plan {
   bool has_local_calls = false;
   uint32_t unreachable = 0; // Words no path from the entry reaches: inline data, dead code.
   std::vector<std::pair<uint32_t, uint32_t>> unreachable_runs; // [first, last] word indices of each run
+  std::vector<uint32_t> guest_entries; // Runtime mode: guest word -> first stencil, or kNoStencil.
 };
 // Why the planner refused. The first two are about the whole function.
 #define MU_REFUSALS(X) \
@@ -143,7 +145,7 @@ inline std::vector<uint32_t> computed_returns(const uint8_t* code, size_t bytes)
 inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
                          Plan& result, std::string& error,
                          std::vector<Refused>* all, const std::vector<Callee>* callees,
-                         const std::vector<uint8_t>& data_calls) {
+                         const std::vector<uint8_t>& data_calls, bool runtime = false) {
   result = Plan{};
   error.clear();
   if (all) all->clear();
@@ -260,6 +262,32 @@ inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
     const uint32_t simm = (immediate & 0x8000u) ? immediate | 0xFFFF0000u : immediate;
     const uint32_t fall = kGuest | (index + 1);
     const uint32_t here = address + uint32_t(at);
+    if (runtime) {
+      Instruction guard{};
+      guard.operation = Operation::CodeGuard; guard.immediate = here;
+      guard.next = uint32_t(plan.size()) + 1;
+      plan.push_back(guard);
+      const uint32_t xo = (word >> 1) & 0x3FF;
+      if (op == 16 || op == 18 || (op == 19 && (xo == 16 || xo == 528))) {
+        if (op == 19 && (third || (xo == 528 && !(first_field & 4)))) {
+          if (!refuse(third ? Refusal::ReservedBits : Refusal::CounterBranch)) return false;
+          continue;
+        }
+        Instruction branch{};
+        branch.operation = Operation::Exit; branch.immediate = ++exits;
+        branch.exit = ExitKind::RuntimeBranch; branch.exit_value = here;
+        plan.push_back(branch);
+        continue;
+      }
+      if (op == 31 && xo == 982) { // icbi
+        if (first_field || record) { if (!refuse(Refusal::ReservedBits)) return false; continue; }
+        Instruction invalidate{};
+        invalidate.operation = Operation::InvalidateCode; invalidate.source = second;
+        invalidate.source2 = third; invalidate.next = fall;
+        plan.push_back(invalidate);
+        continue;
+      }
+    }
     // Appends one stencil; a record form is followed by Record of the destination register.
     const auto emit = [&](Operation operation, uint32_t destination, uint32_t source,
                           uint32_t value, uint32_t source2, uint32_t value2, bool with_record) {
@@ -769,6 +797,8 @@ inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
       accepted = false; reason = Refusal::NotDecoded;
     }
     if (!accepted && !refuse(reason)) return false;
+    // Runtime cache hints still need to reach the next guard.
+    if (runtime && plan.size() == planned_before + 1) plan.back().next = fall;
   }
   // The stencil a guest instruction starts with. An instruction that plans as nothing (sync, a
   // cache hint) stands for the one after it; past the last word, or into a word that was not
@@ -798,6 +828,11 @@ inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
   }
   if (falls || refused_any) { result.local_returns.clear(); return false; }
   result.stencils = std::move(plan);
+  if (runtime) {
+    result.guest_entries.resize(count, kNoStencil);
+    for (uint32_t i = 0; i < count; ++i)
+      if (reachable[i]) result.guest_entries[i] = resolve(i);
+  }
   return true;
 }
 // The whole plan of a function, or the reason it is refused.
@@ -812,11 +847,12 @@ inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
 // instructions emit.py would write for it, which nothing executes either way.
 inline bool plan_function(const uint8_t* code, size_t bytes, uint32_t address,
                           Plan& result, std::string& error,
-                          std::vector<Refused>* all = nullptr, const std::vector<Callee>* callees = nullptr) {
+                          std::vector<Refused>* all = nullptr, const std::vector<Callee>* callees = nullptr,
+                          bool runtime = false) {
   std::vector<uint8_t> data_calls(bytes / 4 + 1, 0);
   std::vector<Refused> refused;
   for (;;) {
-    if (plan_attempt(code, bytes, address, result, error, &refused, callees, data_calls)) {
+    if (plan_attempt(code, bytes, address, result, error, &refused, callees, data_calls, runtime)) {
       if (all) all->clear();
       return true;
     }

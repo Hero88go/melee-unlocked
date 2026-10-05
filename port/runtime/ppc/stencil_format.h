@@ -82,7 +82,9 @@ constexpr uint32_t kHoleMask = C - 1;
   X(PsMerge00, D|S|B|N) X(PsMerge01, D|S|B|N) X(PsMerge10, D|S|B|N) X(PsMerge11, D|S|B|N) \
   X(FcmpPs1, D|S|B|N) \
   /* Calls through the dispatch: I = return address or target, J = target. */ \
-  X(Call, I|J|N|C) X(CallCtr, I|N|C) X(TailCall, I|N|C) X(TailCallCtr, N|C)   /* Fourth set. SetLr precedes the Exit of a local call. CallChecked and ResumeTest are a call of      a callee with computed returns: I = return address (ResumeTest: the address to resume at). */   X(SetLr, I|N) X(CallChecked, I|J|N|C) X(ResumeTest, I|N|T|C)
+  X(Call, I|J|N|C) X(CallCtr, I|N|C) X(TailCall, I|N|C) X(TailCallCtr, N|C)   /* Fourth set. SetLr precedes the Exit of a local call. CallChecked and ResumeTest are a call of      a callee with computed returns: I = return address (ResumeTest: the address to resume at). */   X(SetLr, I|N) X(CallChecked, I|J|N|C) X(ResumeTest, I|N|T|C) \
+  /* Runtime guards and explicit instruction-cache invalidation. */ \
+  X(CodeGuard, I|N|C) X(InvalidateCode, S|B|N|C)
 enum class Operation : uint8_t {
 #define MU_STENCIL_ENUM(name, holes) name,
   MU_STENCIL_OPERATIONS(MU_STENCIL_ENUM)

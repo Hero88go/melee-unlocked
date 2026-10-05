@@ -7,6 +7,7 @@
 #include <tlhelp32.h>
 #include <psapi.h>
 #include "host.h"
+#include "ram_translator.h"
 #include "gecko_data.h"
 #include "render_observer.h"
 #ifdef MELEE_NO_SLIPPI
@@ -704,6 +705,9 @@ static void trace_root_fobj_entry(ppc::Context& context) {
 namespace ppc { void init_dispatch(); }
 
 static void usage() {
+#ifndef MELEE_SOURCE_PORT
+  std::printf("Static engine: [--mod-base-iso <retail.iso>] [--ram-translator|--no-ram-translator] (default: off)\n");
+#endif
 #ifdef MELEE_NO_SLIPPI   // this build is melee_source.exe; it has no lobby code, replay or recording options
 #define USAGE_EXE "melee_source"
 #else
@@ -1293,6 +1297,7 @@ static int melee_main(int argc, char** argv) {
     SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof throttling);
   }
   host::Options& o = host::options;
+  bool ram_translator = false;
   bool headless = false, hidden = false, threaded = false, fps_requested = false;
   bool scripted = false, allow_matchmaking = false;   // automated runs stay off Slippi's servers
   std::string card_self_test_dir;
@@ -1377,6 +1382,8 @@ static int melee_main(int argc, char** argv) {
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
     if (a == "--iso") o.iso = next();
     else if (a == "--mod-base-iso") o.mod_base_iso = next();   // Static Recomp: --iso is a mod disc, this is the vanilla one
+    else if (a == "--ram-translator") ram_translator = true;
+    else if (a == "--no-ram-translator") ram_translator = false;
     else if (a == "--state-trace") o.state_trace = next();
     else if (a == "--state-digest") o.state_digest = next();
     else if (a == "--frames") o.frames = (uint32_t)std::strtoul(next(), nullptr, 0);
@@ -1922,6 +1929,7 @@ static int melee_main(int argc, char** argv) {
   }
 #endif
   ppc::init_dispatch();
+  ppc::configure_ram_translator(ram_translator);
 #ifndef MELEE_SOURCE_PORT
   install_rng_seed_hook();
   host::install_audio_pacing();
@@ -1981,6 +1989,10 @@ static int melee_main(int argc, char** argv) {
   slippi::shutdown();
   { uint64_t calls = 0, insns = 0; ppc::interpreter_stats(&calls, &insns);
     if (calls) host::log("interpreter: %llu calls into RAM-resident code, %llu instructions", (unsigned long long)calls, (unsigned long long)insns); }
+  { const auto s = ppc::ram_translator_stats();
+    if (s.translated || s.refused) host::log("RAM translator totals: native=%llu refused=%llu hits=%llu invalidated=%llu resumed=%llu cache=%zu bytes=%zu",
+      (unsigned long long)s.translated, (unsigned long long)s.refused, (unsigned long long)s.hits,
+      (unsigned long long)s.invalidated, (unsigned long long)s.resumed, s.entries, s.native_bytes); }
   if (ppc::g_computed_return_checks || ppc::g_resumed_returns)
     host::log("gecko: adjusted-return checks %llu, resumed %llu (UCF Shield Drop and the like)",
               (unsigned long long)ppc::g_computed_return_checks, (unsigned long long)ppc::g_resumed_returns);

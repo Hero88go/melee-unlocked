@@ -44,6 +44,10 @@ size_t sample(net_trace::Record* out) {
     if (i % 23 == 5) { r.rollbacks = 1; r.rollback_depth = (uint8_t)(1 + (i / 23) % kDepthScale); }
     if (i == 90) r.flags |= net_trace::kShed;
     if (i == 480) r.flags |= net_trace::kAdvance;
+    if (i == 120) r.flags |= net_trace::kMark;
+    if (i == 200) r.flags |= net_trace::kMarkVisual;
+    if (i == 355) r.flags |= net_trace::kMarkInput;
+    if (i == 450) r.flags |= net_trace::kMarkAudio;
     out[i] = r;
   }
   return kWindow;
@@ -80,11 +84,21 @@ void draw(float width, float height) {
 
   const float text_h = ImGui::GetTextLineHeight();
   const float panel_w = std::min(640.0f, width - 24.0f);
-  const float panel_h = 2.0f * text_h + 116.0f + (note.empty() ? 0.0f : text_h + 4.0f);
+  const char* const labels[] = {"frame time", "work", "wait", "rollback (top: 7)",
+      "shed", "advanced", "ping (top: 200 ms)", "mark", "visual", "input", "audio"};
+  int legend_rows = 1;
+  float legend_used = 0;
+  for (const char* label : labels) {
+    const float size = 21.0f + ImGui::CalcTextSize(label).x;
+    if (legend_used > 0 && legend_used + size > panel_w - 16.0f) { ++legend_rows; legend_used = 0; }
+    legend_used += size;
+  }
+  const float panel_h = 3.0f * text_h + 116.0f + (legend_rows - 1) * (text_h + 3.0f)
+                        + (note.empty() ? 0.0f : text_h + 4.0f);
   if (panel_w < 240.0f || height < panel_h + 24.0f) return;
   const ImVec2 o(width - panel_w - 12.0f, 12.0f);   // top right: the FPS and ping lines are top left
   const float plot_x = o.x + 8.0f, plot_w = panel_w - 16.0f;
-  const float time_y = o.y + 8.0f + text_h + 4.0f, time_h = 64.0f;   // frame time, waits, sync, ping
+  const float time_y = o.y + 8.0f + 2.0f * text_h + 4.0f, time_h = 64.0f;   // frame time, waits, sync, ping
   const float roll_y = time_y + time_h + 4.0f, roll_h = 24.0f;       // rollbacks
   const float col_w = plot_w / (float)kWindow;
   const float bar_w = std::max(1.0f, col_w);
@@ -95,6 +109,8 @@ void draw(float width, float height) {
   const ImU32 slow_col = IM_COL32(250, 214, 60, 255), wait_col = IM_COL32(230, 70, 70, 220);
   const ImU32 shed_col = IM_COL32(250, 214, 60, 255), advance_col = IM_COL32(120, 200, 255, 255);
   const ImU32 roll_col = IM_COL32(255, 150, 60, 255), ping_col = IM_COL32(0, 255, 255, 200);
+  const ImU32 mark_colors[] = {text, IM_COL32(220, 130, 255, 255), IM_COL32(100, 180, 255, 255), IM_COL32(240, 130, 180, 255)};
+  const uint8_t mark_flags[] = {net_trace::kMark, net_trace::kMarkVisual, net_trace::kMarkInput, net_trace::kMarkAudio};
 
   ImDrawList* dl = ImGui::GetForegroundDrawList();
   dl->AddRectFilled(o, ImVec2(o.x + panel_w, o.y + panel_h), back, 6.0f);
@@ -103,7 +119,7 @@ void draw(float width, float height) {
 
   // Newest tick at the right edge; a match younger than the window fills in from the right.
   auto column = [&](size_t i) { return plot_x + col_w * (float)(kWindow - n + i); };
-  unsigned rollbacks = 0, deepest = 0, waited = 0, shed = 0, advanced = 0;
+  unsigned rollbacks = 0, deepest = 0, waited = 0, shed = 0, advanced = 0, marks = 0;
   float prev_ping_x = 0, prev_ping_y = 0;
   for (size_t i = 0; i < n; ++i) {
     const net_trace::Record& r = recs[i];
@@ -142,29 +158,41 @@ void draw(float width, float height) {
     if (i > 0) dl->AddLine(ImVec2(prev_ping_x, prev_ping_y), ImVec2(px, py), ping_col, 1.0f);
     prev_ping_x = px; prev_ping_y = py;
   }
+  // Marks cross both plots so a reported visual, input or audio problem can
+  // be lined up with its timing and rollback history.
+  for (size_t i = 0; i < n; ++i) {
+    for (size_t m = 0; m < 4; ++m) if (recs[i].flags & mark_flags[m]) {
+      ++marks;
+      const float x = column(i);
+      dl->AddLine(ImVec2(x, time_y), ImVec2(x, roll_y + roll_h), mark_colors[m], 1.0f);
+      dl->AddTriangleFilled(ImVec2(x - 3, roll_y + roll_h - 5), ImVec2(x + 3, roll_y + roll_h - 5),
+                            ImVec2(x, roll_y + roll_h), mark_colors[m]);
+    }
+  }
   // One tick at the game's rate, as a guide across the frame time plot.
   const float guide_y = time_y + time_h - time_h * (kFrameMs / kTimeScaleMs);
   dl->AddLine(ImVec2(plot_x, guide_y), ImVec2(plot_x + plot_w, guide_y), IM_COL32(210, 215, 225, 90), 1.0f);
 
   const net_trace::Record& last = recs[n - 1];
   char line[160];
-  std::snprintf(line, sizeof line, "%s   ping %u ms   rollbacks %u (deepest %u)   waited %u frames   shed %u   advanced %u",
+  std::snprintf(line, sizeof line, "%s   ping %u ms   rollbacks %u (deepest %u)",
                 replay ? "As it was played" : "Network and timing",
-                (unsigned)last.ping_ms, rollbacks, deepest, waited, shed, advanced);
+                (unsigned)last.ping_ms, rollbacks, deepest);
   dl->PushClipRect(o, ImVec2(o.x + panel_w, o.y + panel_h), true);
   dl->AddText(ImVec2(plot_x, o.y + 6.0f), text, line);
+  std::snprintf(line, sizeof line, "waited %u ticks   shed %u   advanced %u   marks %u", waited, shed, advanced, marks);
+  dl->AddText(ImVec2(plot_x, o.y + 6.0f + text_h), dim, line);
   // Legend, each word beside the color of its mark.
-  struct Key { const char* label; ImU32 col; };
-  const Key keys[] = {
-      {"frame time", interval_col}, {"work", work_col}, {"waiting for inputs", wait_col}, {"rollback (height: frames)", roll_col},
-      {"shed", shed_col}, {"advanced", advance_col}, {"ping (top: 200 ms)", ping_col},
-  };
+  const ImU32 colors[] = {interval_col, work_col, wait_col, roll_col, shed_col, advance_col, ping_col,
+                         mark_colors[0], mark_colors[1], mark_colors[2], mark_colors[3]};
   float kx = plot_x;
-  const float ky = roll_y + roll_h + 4.0f;
-  for (const Key& k : keys) {
-    dl->AddRectFilled(ImVec2(kx, ky + 3.0f), ImVec2(kx + 8.0f, ky + text_h - 3.0f), k.col);
-    dl->AddText(ImVec2(kx + 11.0f, ky), dim, k.label);
-    kx += 11.0f + ImGui::CalcTextSize(k.label).x + 10.0f;
+  float ky = roll_y + roll_h + 4.0f;
+  for (size_t i = 0; i < sizeof labels / sizeof labels[0]; ++i) {
+    const float size = 21.0f + ImGui::CalcTextSize(labels[i]).x;
+    if (kx > plot_x && kx + size > plot_x + plot_w) { kx = plot_x; ky += text_h + 3.0f; }
+    dl->AddRectFilled(ImVec2(kx, ky + 3.0f), ImVec2(kx + 8.0f, ky + text_h - 3.0f), colors[i]);
+    dl->AddText(ImVec2(kx + 11.0f, ky), dim, labels[i]);
+    kx += size;
   }
   if (!note.empty()) dl->AddText(ImVec2(plot_x, ky + text_h + 4.0f), slow_col, note.c_str());
   dl->PopClipRect();

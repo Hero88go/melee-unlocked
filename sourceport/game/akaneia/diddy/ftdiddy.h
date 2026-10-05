@@ -29,6 +29,8 @@
 
 #include <mu_disc.h>
 
+#include "../common/mu_ak_kirby.h"
+
 /* ------------------------------------------------------------------------------------------ */
 /* Motion states (m-ex move_logic, numbered from ftCo_MS_Count = 341)                          */
 /* ------------------------------------------------------------------------------------------ */
@@ -207,6 +209,25 @@ typedef struct ftDd_DatAttrs {
 
 #define ftDd_DatAttrs_Size 0x100
 
+/* The thirteen values of a popgun shot, in host order: the first thirteen fields of the attribute
+ * block, under the same names. Diddy fills one from his attributes; the ability Kirby copies has
+ * its own, compiled into its code (diddy_kirby.c). */
+typedef struct ftDd_PeanutParams {
+    float specialn_angle_charge;
+    float specialn_speed_min;
+    float specialn_speed_max;
+    float specialn_angle_min_charge;
+    float specialn_angle_max_charge;
+    float specialn_dmg_min;
+    float specialn_dmg_max;
+    float specialn_bkb_min;
+    float specialn_bkb_max;
+    float specialn_kbg_min;
+    float specialn_kbg_max;
+    float specialn_recoil_min;
+    float specialn_recoil_max;
+} ftDd_PeanutParams;
+
 /* ------------------------------------------------------------------------------------------ */
 /* Fighter and motion vars                                                                    */
 /* ------------------------------------------------------------------------------------------ */
@@ -291,7 +312,10 @@ Item_GObj* mu_ak_item_create(SpawnItem* spawn);
 /* ------------------------------------------------------------------------------------------ */
 
 extern MotionState ftDd_MotionStateTable[ftDd_MS_SelfCount];
-extern ItemLogicTable ftDd_ItemLogic[3];
+/* Diddy's three articles, then the two of the ability Kirby copies from him (articles 3 and 4,
+ * item kinds 260 and 261 on Akaneia): the popgun and the peanut again, with their data in the hat
+ * file (itdiddy.c). */
+extern ItemLogicTable ftDd_ItemLogic[5];
 
 void ftDd_Init_OnLoad(HSD_GObj* gobj);
 void ftDd_Init_OnDeath(HSD_GObj* gobj);
@@ -323,9 +347,12 @@ Item_GObj* ftDd_SpawnArticle(HSD_GObj* gobj, int article, int hold_kind, Vec3* p
 void ftDd_SpecialN_Enter(HSD_GObj* gobj);
 void ftDd_SpecialAirN_Enter(HSD_GObj* gobj);
 void ftDd_SpecialN_GunSpawn(HSD_GObj* gobj);
+void ftDd_SpecialN_GunSpawnArticle(HSD_GObj* gobj, int article);
 void ftDd_SpecialN_GunDestroy(HSD_GObj* gobj);
 void ftDd_SpecialN_GunChangeModel(Item_GObj* gun, int model);
 void ftDd_SpecialN_GunShoot(HSD_GObj* gobj);
+void ftDd_SpecialN_GunShootWith(HSD_GObj* gobj, int article, const ftDd_PeanutParams* da,
+                                float charge_frames);
 
 void ftDd_SpecialNStart_Anim(HSD_GObj* gobj);
 void ftDd_SpecialNStart_IASA(HSD_GObj* gobj);
@@ -491,5 +518,11 @@ void ftDd_SpecialAirLw_Coll(HSD_GObj* gobj);
 
 /* Puts a released banana into its thrown-from-hand state. */
 void itDdBanana_SpawnThrown_Enter(Item_GObj* gobj);
+
+/* ------------------------------------------------------------------------------------------ */
+/* The ability Kirby copies from Diddy (diddy_kirby.c, m-ex kbFunction of PlKbCpDd.dat)        */
+/* ------------------------------------------------------------------------------------------ */
+
+extern const MuAkKirbyCopy ftKbDd_Copy;
 
 #endif

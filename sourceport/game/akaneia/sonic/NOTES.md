@@ -27,6 +27,7 @@ has been built, linked or run.
 | `sonic_specialhi.c` | spring jump + Spawn_Spring |
 | `sonic_speciallw.c` | spin charge (12 states) + the up/neutral-B check used from RunJump |
 | `sonic_spring.c` | the spring article: 3 item states + item logic table |
+| `sonic_kirby.c` | the ability Kirby copies (`PlKbCpSn.dat` kbFunction): written 2026-10-04, see `run-source/rel09-b1-wolf/kirby/SONIC.md`. For it `sonic_specialn.c` now has `ftSn_SpecialN_SearchTarget` and a `ftSn_SpecialN_ClampReboundVel` that take the values as an argument, and `sonic_effects.c` has `ftSn_SpawnTrailEffectAt`; Sonic's own routines call them with his attributes and fields |
 
 ## Routine status
 
@@ -46,7 +47,7 @@ uncertain points below.
 | effects | GFXTrail, GFXTrailLoop, GFXSpin, GFXSpinAndTrail(+VelocityDirection), UpdateTrailPosAndRot, SpawnTrailEffect, RunEffectCallback, Color_Shoes | done |
 | misc | ProcessMouth, Sonic_CheckWinAudio, DidHeLose, Fighter_CheckSameTeam, GXLink_Sonic, DrawTarget, DrawRadius, GX init/end | done |
 | spring article | item_state_table, onspawn, ondestroy, ongivedamage, ontakedamage, onreflect, onhitshieldbounce, onhitshielddeterminedestroy, Idle/Fall/Rebound states, Spring_JumpedOn | done |
-| Kirby copy ability | `PlKbCpSn.dat` / m-ex kirby functions | **missing**, out of scope here |
+| Kirby copy ability | `PlKbCpSn.dat` / m-ex kirby functions | written (`sonic_kirby.c`), not built, not run |
 
 ## What the integration layer must provide
 
