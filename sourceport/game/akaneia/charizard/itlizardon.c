@@ -7,6 +7,8 @@
  *   1 Rock: Rock Smash's held rock. One child of its model is shown per floor material; it
  *     destroys itself when its owner leaves the move.
  *   2 RockBurst: the pieces the rock breaks into, thrown at a random angle and spun randomly.
+ *   3 the Fire of the ability Kirby copies (charizard_kirby.c): the same code as 0, data from
+ *     Kirby's hat file. Not in x48_items.
  *
  * The item state tables and logic tables below are what m-ex installs for these item kinds; the
  * integration layer registers them for the kinds mu_ak_article_kind hands out. */
@@ -419,7 +421,7 @@ static ItemStateTable itLzRockBurst_States[] = {
 /* Logic tables (m-ex itFunction order == ItemLogicTable)                                     */
 /* ========================================================================================= */
 
-ItemLogicTable mu_ak_charizard_item_logic[ftLz_Item_Count] = {
+ItemLogicTable mu_ak_charizard_item_logic[ftLz_Item_TableCount] = {
     [ftLz_Item_Fire] = {
         .states = itLzFire_States,
         .dmg_dealt = itLzFire_DmgDealt,
@@ -434,5 +436,14 @@ ItemLogicTable mu_ak_charizard_item_logic[ftLz_Item_Count] = {
         .states = itLzRockBurst_States,
         .destroyed = itLzRockBurst_Destroyed,
         .hit_shield = itLzRockBurst_HitShield,
+    },
+    /* Item 3 (item kind 265 on Akaneia): the flame of Kirby's copy ability. Its code is the
+     * itFunction of Kirby's hat file (PlKbCpLz.dat, slot 3, 127 words with its constants), word
+     * for word item 0's after relocation, with the same exports (0, 6, 13); MxDt has no defaults
+     * for either kind (262, 265). So the Fire table is listed twice. */
+    [ftLz_Item_KirbyFire] = {
+        .states = itLzFire_States,
+        .dmg_dealt = itLzFire_DmgDealt,
+        .hit_shield = itLzFire_HitShield,
     },
 };

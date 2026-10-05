@@ -18,6 +18,8 @@ if(MELEE_NO_SLIPPI)
   endif()
   file(GLOB RUNTIME_NS_SOURCES runtime/ppc/*.cpp runtime/hle/*.cpp runtime/host/*.cpp runtime/gx/*.cpp
        runtime/mu_net/*.cpp)   # mu_net: the project's own peer-to-peer session, when present
+  list(REMOVE_ITEM RUNTIME_NS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppc/leaf_stencils.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppc/leaf_translator.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppc/ram_translator.cpp")
   foreach(ns_removed
       runtime/hle/exi_slippi.cpp runtime/hle/slippi_net.cpp runtime/hle/slippi_online.cpp
       runtime/hle/slippi_report.cpp runtime/hle/slippi_playback.cpp runtime/hle/native_practice.cpp
@@ -185,7 +187,7 @@ if(MELEE_NO_SLIPPI)
   # When the normal target's sources or settings change below, change them here as well.
   add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp
     third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
-    runtime/host/updater.cpp app/launcher.rc)
+    runtime/host/updater.cpp runtime/host/net_trace_read.cpp app/launcher_trace_view.cpp app/launcher.rc)
   set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
   target_include_directories(melee_unlocked PRIVATE runtime/host runtime/ppc runtime/hle runtime/gx "${PORT_GEN}" third_party third_party/dht third_party/monocypher)
   target_compile_features(melee_unlocked PRIVATE cxx_std_17)
@@ -438,6 +440,8 @@ endif()
 
 # Host runtime: CPU helpers, memory, HLE, host services.
 file(GLOB RUNTIME_SOURCES runtime/ppc/*.cpp runtime/hle/*.cpp runtime/host/*.cpp runtime/gx/*.cpp)
+list(REMOVE_ITEM RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppc/leaf_stencils.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppc/leaf_translator.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppc/ram_translator.cpp")
 option(MELEE_ENABLE_DLSS5 "Build experimental DLSS 5 neural rendering" OFF)
 if(NOT MELEE_ENABLE_DLSS5)
   list(REMOVE_ITEM RUNTIME_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/runtime/gx/gx_dlss5.cpp")
@@ -521,6 +525,7 @@ target_include_directories(runtime PUBLIC runtime/ppc runtime/host runtime/hle r
 target_compile_features(runtime PUBLIC cxx_std_17)
 target_compile_options(runtime PRIVATE /EHsc ${MELEE_ARCH_FLAG} /fp:precise /W3)
 target_compile_definitions(runtime PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING)
+include(runtime/ppc/ram_translator.cmake)
 target_link_libraries(runtime PUBLIC native_animation port_enet port_libusb bcrypt comdlg32 d3d12 d3d11 dxgi d3dcompiler xinput9_1_0 winmm user32 gdi32 setupapi winusb hid mfplat mfreadwrite mfuuid ole32 shell32)
 
 # mu_net: the project's own peer-to-peer session (no Slippi code). Keys, signatures and packet
@@ -629,13 +634,19 @@ endif()
 # Melee Unlocked client: Win32 launcher (Play page, Build tab, self-update). No runtime dependency.
 add_executable(melee_unlocked WIN32 app/launcher_mod_catalog.cpp runtime/host/mod_scan.cpp runtime/host/mod_profile.cpp app/launcher.cpp app/launcher_replay_data.cpp app/launcher_lobby.cpp app/launcher_lobby_p2p.cpp
   third_party/dht/dht.c third_party/monocypher/monocypher.c third_party/monocypher/monocypher-ed25519.c
-  runtime/host/updater.cpp app/launcher.rc)
+  runtime/host/updater.cpp runtime/host/net_trace_read.cpp app/launcher_trace_view.cpp app/launcher.rc)
 set_target_properties(melee_unlocked PROPERTIES OUTPUT_NAME MeleeUnlockedLauncher)
 add_executable(port_launcher_replay_data_test tests/launcher_replay_data_test.cpp app/launcher_replay_data.cpp)
 target_include_directories(port_launcher_replay_data_test PRIVATE app third_party)
 target_compile_features(port_launcher_replay_data_test PRIVATE cxx_std_17)
 target_compile_options(port_launcher_replay_data_test PRIVATE /EHsc)
 add_test(NAME port_launcher_replay_data COMMAND port_launcher_replay_data_test)
+add_executable(port_launcher_trace_view_test tests/launcher_trace_view_test.cpp
+  app/launcher_trace_view.cpp runtime/host/net_trace_read.cpp)
+target_include_directories(port_launcher_trace_view_test PRIVATE app runtime/host)
+target_compile_features(port_launcher_trace_view_test PRIVATE cxx_std_17)
+target_compile_options(port_launcher_trace_view_test PRIVATE /EHsc)
+add_test(NAME port_launcher_trace_view COMMAND port_launcher_trace_view_test)
 add_executable(port_hps_bound_test tests/hps_bound_test.cpp)
 target_include_directories(port_hps_bound_test PRIVATE runtime/hle runtime/host runtime/ppc)
 target_compile_features(port_hps_bound_test PRIVATE cxx_std_17)

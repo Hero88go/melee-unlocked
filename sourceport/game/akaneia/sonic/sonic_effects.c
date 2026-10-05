@@ -67,17 +67,22 @@ void ftSn_GFXTrailLoop(HSD_GObj* gobj)
 
 /* SpawnTrailEffect: lay a trail segment from last frame's bone 2 position to this frame's.
  * A segment spawns only when asked, while moving forward, and when the step is short enough
- * (distance squared <= 400) to not smear across a teleport. */
-void ftSn_SpawnTrailEffect(HSD_GObj* gobj, bool spawn)
+ * (distance squared <= 400) to not smear across a teleport.
+ *
+ * @p trail_pos and @p trail_angle are where last frame's position and angle are kept, and
+ * @p tint the color the segment's material gets (NULL: as modeled). Sonic keeps the two in his
+ * fighter variables and tints from his costume (ftSn_SpawnTrailEffect below); Kirby's copy keeps
+ * them in Kirby's and tints with a fixed color (sonic_kirby.c). The routine is the same. */
+void ftSn_SpawnTrailEffectAt(HSD_GObj* gobj, bool spawn, Vec3* trail_pos, float* trail_angle,
+                             const GXColor* tint)
 {
     Fighter* fp = GET_FIGHTER(gobj);
-    ftSonic_FighterVars* fv = ftSn_FV(fp);
     Vec3 pos;
     float angle;
 
     lb_8000B1CC(fp->parts[FtPart_XRotN].joint, NULL, &pos);
 
-    angle = atan2f(pos.y - fv->trail_pos.y, pos.x - fv->trail_pos.x);
+    angle = atan2f(pos.y - trail_pos->y, pos.x - trail_pos->x);
     if (angle < 0.0F) {
         do {
             angle = (float) (angle + ftSn_TAU);
@@ -87,9 +92,9 @@ void ftSn_SpawnTrailEffect(HSD_GObj* gobj, bool spawn)
         angle = (float) (angle - ftSn_TAU);
     }
 
-    if (fv->trail_pos.x != pos.x || fv->trail_pos.y != pos.y) {
+    if (trail_pos->x != pos.x || trail_pos->y != pos.y) {
         float forward = fp->self_vel.x * fp->facing_dir;
-        float dist2 = ftSn_Vec3_DistSquared(&fv->trail_pos, &pos);
+        float dist2 = ftSn_Vec3_DistSquared(trail_pos, &pos);
 
         if (spawn && !(forward < 0.0F) && dist2 <= 400.0F) {
             Vec3 zero = { 0.0F, 0.0F, 0.0F };
@@ -119,19 +124,33 @@ void ftSn_SpawnTrailEffect(HSD_GObj* gobj, bool spawn)
 
                 tail = head->next;
                 tail->scale = scale;
-                tail->translate = fv->trail_pos;
-                tail->rotate.z = fv->trail_angle;
+                tail->translate = *trail_pos;
+                tail->rotate.z = *trail_angle;
 
-                if (fv->color != NULL) {
+                if (tint != NULL) {
                     HSD_DObj* dobj = root->u.dobj;
-                    dobj->mobj->mat->diffuse = fv->color->trail_diffuse;
+                    dobj->mobj->mat->diffuse = *tint;
                 }
             }
         }
     }
 
-    fv->trail_pos = pos;
-    fv->trail_angle = angle;
+    *trail_pos = pos;
+    *trail_angle = angle;
+}
+
+/* SpawnTrailEffect, Sonic's own. */
+void ftSn_SpawnTrailEffect(HSD_GObj* gobj, bool spawn)
+{
+    ftSonic_FighterVars* fv = ftSn_FV(GET_FIGHTER(gobj));
+
+    if (fv->color != NULL) {
+        GXColor tint = fv->color->trail_diffuse;
+
+        ftSn_SpawnTrailEffectAt(gobj, spawn, &fv->trail_pos, &fv->trail_angle, &tint);
+    } else {
+        ftSn_SpawnTrailEffectAt(gobj, spawn, &fv->trail_pos, &fv->trail_angle, NULL);
+    }
 }
 
 /* Sonic_GFXSpin: the spin ball, once per move (x2219_b0 marks it spawned). Installed as

@@ -93,6 +93,11 @@ Item_GObj* ftDd_SpawnArticle(HSD_GObj* gobj, int article, int hold_kind, Vec3* p
     spawn.x0_parent_gobj = gobj;
     spawn.x4_parent_gobj2 = gobj;
     spawn.kind = mu_ak_article_kind(gobj, article);
+    /* Not an m-ex case: no item kind for the article (m-ex stops the game there). It can only
+     * happen to a Kirby whose copied kind has no item list in this view. */
+    if ((int) spawn.kind < 0) {
+        return NULL;
+    }
     spawn.hold_kind = hold_kind;
     spawn.x10 = 0;
     spawn.pos = *pos;
@@ -393,8 +398,11 @@ const MuAkFighter mu_ak_diddy = {
     .move_logic = ftDd_MotionStateTable,
     .move_logic_count = ftDd_MS_SelfCount,
 
+    /* Articles 3 and 4 are the popgun and the peanut of the ability Kirby copies (itdiddy.c,
+     * diddy_kirby.c); Diddy himself registers and uses 0 to 2 only. */
     .articles = ftDd_ItemLogic,
-    .article_count = 3,
+    .article_count = 5,
+    .kirby = &ftKbDd_Copy,
 };
 
 #undef DD_ITEM_EVENT

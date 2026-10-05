@@ -130,13 +130,13 @@ void ftSn_SpecialNCharge_Coll(HSD_GObj* gobj)
 
 /* ---- target search -------------------------------------------------------------------------- */
 
-/* SpecialN_SearchTarget_EnterAttack: the nearest opponent within range (aimed a little above
- * the feet); failing that, the nearest break-the-targets target; failing that, a miss. The
- * control stick nudges the aim point. */
-static void ftSn_SpecialN_SearchTarget_EnterAttack(HSD_GObj* gobj)
+/* The search of SpecialN_SearchTarget_EnterAttack: the nearest opponent within range (aimed a
+ * little above the feet); failing that, the nearest break-the-targets target. Returns false when
+ * there is neither. @p da is where the range and the offset come from: Sonic's attributes, or
+ * the copy of them in Kirby's hat file (sonic_kirby.c), whose search is this routine. */
+bool ftSn_SpecialN_SearchTarget(HSD_GObj* gobj, ftSonic_DatAttrs* da, float* out_x, float* out_y)
 {
     Fighter* fp = GET_FIGHTER(gobj);
-    ftSonic_DatAttrs* da = ftSn_DA(fp);
     float best = ftSn_FLT_MAX;
     float target_x = 0.0F;
     float target_y = 0.0F;
@@ -192,10 +192,25 @@ static void ftSn_SpecialN_SearchTarget_EnterAttack(HSD_GObj* gobj)
             best = dist2;
             found = true;
         }
-        if (!found) {
-            ftSn_SpecialNAttackMiss_Enter(gobj);
-            return;
-        }
+    }
+
+    *out_x = target_x;
+    *out_y = target_y;
+    return found;
+}
+
+/* SpecialN_SearchTarget_EnterAttack: dash at what the search found, or dive when it found
+ * nothing. The control stick nudges the aim point. */
+static void ftSn_SpecialN_SearchTarget_EnterAttack(HSD_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    ftSonic_DatAttrs* da = ftSn_DA(fp);
+    float target_x;
+    float target_y;
+
+    if (!ftSn_SpecialN_SearchTarget(gobj, da, &target_x, &target_y)) {
+        ftSn_SpecialNAttackMiss_Enter(gobj);
+        return;
     }
 
     ftSn_SpecialNAttack_Enter(gobj, da->specialn_aim_stick_x * fp->input.lstick[0].x + target_x,
@@ -407,10 +422,10 @@ void ftSn_SpecialNLanding_Coll(HSD_GObj* gobj)
 
 /* ---- Rebound / Hit -------------------------------------------------------------------------- */
 
-static void ftSn_SpecialN_ClampReboundVel(Fighter* fp, float vel_y)
+/* The end of SpecialNRebound_Enter and SpecialNHit_Enter. @p da as in
+ * ftSn_SpecialN_SearchTarget: Kirby's copy clamps with the values of its hat file. */
+void ftSn_SpecialN_ClampReboundVel(Fighter* fp, ftSonic_DatAttrs* da, float vel_y)
 {
-    ftSonic_DatAttrs* da = ftSn_DA(fp);
-
     if (fp->self_vel.x > da->specialn_rebound_max_vel_x) {
         fp->self_vel.x = da->specialn_rebound_max_vel_x;
     }
@@ -436,7 +451,7 @@ static void ftSn_SpecialNRebound_Enter(HSD_GObj* gobj, u32 env_flags)
     } else if (env_flags & Collide_FloorMask) {
         fp->self_vel.x = fp->self_vel.x * da->specialn_rebound_mul_x;
     }
-    ftSn_SpecialN_ClampReboundVel(fp, -fp->self_vel.y);
+    ftSn_SpecialN_ClampReboundVel(fp, da, -fp->self_vel.y);
 }
 
 /* SpecialNRebound_OnEnter: the miss dive's deal_dmg_cb (it hit a shield or an opponent). */
@@ -460,7 +475,7 @@ static void ftSn_SpecialNHit_Enter(HSD_GObj* gobj)
         vel_y = 2.0F;
     }
     fp->self_vel.y = vel_y;
-    ftSn_SpecialN_ClampReboundVel(fp, vel_y);
+    ftSn_SpecialN_ClampReboundVel(fp, ftSn_DA(fp), vel_y);
 }
 
 void ftSn_SpecialNRebound_Anim(HSD_GObj* gobj)

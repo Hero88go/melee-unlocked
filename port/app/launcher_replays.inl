@@ -14,6 +14,9 @@ HWND g_replay_stats=nullptr;     // the scrolling stats page
 // this page (the stats page, the loader's late results, playback). Only the list box counts in rows.
 std::vector<std::filesystem::path> g_replay_files;
 std::vector<launcher::replay::Info> g_replay_info;
+std::vector<launcher::trace::Overview> g_replay_traces;
+RECT g_trace_plot{};
+int g_trace_hover=-1;
 // The list's rows: indexes into the two above, after the search, "Hide short games" and the sort.
 std::vector<int> g_replay_visible;
 // The watch queue in the order the player picked. Paths, so it outlives a refresh, a search or a sort.
@@ -36,7 +39,7 @@ HWND make(const wchar_t* cls,const wchar_t* text,DWORD style,int x,int y,int w,i
 namespace crash_report { bool newer_than_launch(const std::string&); }   // launcher_crash.inl, below
 
 struct ReplayScan { unsigned gen=0; std::vector<std::filesystem::path> files; std::vector<launcher::replay::Info> info; int selected=-1; };
-struct ReplayLoaded { unsigned gen=0; size_t index=0; launcher::replay::Info info; };
+struct ReplayLoaded { unsigned gen=0; size_t index=0; launcher::replay::Info info; launcher::trace::Overview trace; };
 
 HFONT replay_font(int px,int weight,const wchar_t* face=L"Segoe UI") {
   static std::map<std::tuple<int,int,std::wstring>,HFONT> fonts;
@@ -312,7 +315,7 @@ void refresh_replays(const std::filesystem::path& selected={}) {
     if(g_replay_gen!=gen||!PostMessageW(g_main,WM_APP_REPLAYS_LISTED,0,(LPARAM)scan)) { delete scan; return; }
     // Then every match's full stats, newest first, so winners and the stats page fill in.
     for(size_t i=0;i<files.size()&&g_replay_gen==gen;++i) {
-      auto* loaded=new ReplayLoaded{gen,i,launcher::replay::inspect(files[i],true)};
+      auto* loaded=new ReplayLoaded{gen,i,launcher::replay::inspect(files[i],true),launcher::trace::load(files[i])};
       if(!PostMessageW(g_main,WM_APP_REPLAY_LOADED,0,(LPARAM)loaded)) { delete loaded; return; }
     }
   }).detach();
@@ -325,6 +328,7 @@ void replays_listed(ReplayScan* scan) {
   const bool stats=g_replay_view>=0;
   const auto shown=g_replay_view>=0&&g_replay_view<(int)g_replay_files.size()?g_replay_files[g_replay_view]:std::filesystem::path();
   g_replay_files=std::move(scan->files); g_replay_info=std::move(scan->info);
+  g_replay_traces.clear(); g_replay_traces.resize(g_replay_files.size()); g_trace_hover=-1;
   // The stats page's replay first: the rows below are built for the page as it will be shown.
   if(g_replay_view>=0) {
     auto it=std::find(g_replay_files.begin(),g_replay_files.end(),shown);
@@ -340,6 +344,7 @@ void replays_listed(ReplayScan* scan) {
 void replay_loaded(ReplayLoaded* loaded) {
   std::unique_ptr<ReplayLoaded> own(loaded);
   if(loaded->gen!=g_replay_gen||loaded->index>=g_replay_info.size()) return;
+  g_replay_traces[loaded->index]=std::move(loaded->trace);
   replay_info_changed((int)loaded->index,std::move(loaded->info));
   if((int)loaded->index==g_replay_view) stats_changed();
 }
@@ -367,7 +372,7 @@ void replay_layout() {
 void replay_open_stats(int index) {
   if(index<0||index>=(int)g_replay_info.size()) return;
   if(!g_replay_info[index].stats_loaded) replay_info_changed(index,launcher::replay::inspect(g_replay_files[index],true));
-  g_replay_view=index; g_stats_scroll=0;
+  g_replay_view=index; g_stats_scroll=0; g_trace_hover=-1;
   if(const int row=replay_row_of(index);row>=0) SendMessageW(g_replays[0],LB_SETCURSEL,row,0);
   replay_layout(); stats_changed(); SetFocus(g_replay_stats);
 }
@@ -674,17 +679,105 @@ void cell(HDC dc,const std::wstring& s,RECT r,COLORREF c,HFONT f=nullptr,UINT al
   r.left+=S(10); r.right-=S(6);
   draw_text(dc,s,r,f?f:replay_font(12,FW_NORMAL),c,align|DT_VCENTER|DT_SINGLELINE|DT_END_ELLIPSIS);
 }
+// Full match, wall-clock columns: isolated peaks and marks survive reduction.
+int draw_trace_overview(HDC dc,int x,int width,int y,const launcher::trace::Overview& view) {
+  if(!view.present) return 0;
+  draw_text(dc,L"Network and timing",RECT{x,y,x+width,y+S(28)},replay_font(20,FW_SEMIBOLD),C_TEXT,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+  if(!view.error.empty()) {
+    cell(dc,widen(view.error),RECT{x,y+S(32),x+width,y+S(72)},C_DIM);
+    return S(90);
+  }
+  if(view.bins.empty()) return S(40);
+  wchar_t text[256];
+  swprintf_s(text,L"%.1f seconds   %zu waits   %zu rollbacks   %zu shed   %zu advanced   %zu marks",
+             view.seconds,view.waits,view.rollbacks,view.sheds,view.advances,
+             view.marks[0]+view.marks[1]+view.marks[2]+view.marks[3]);
+  cell(dc,text,RECT{x,y+S(30),x+width,y+S(56)},C_DIM);
+  const int px=x+S(10), pw=std::max(1,width-S(20));
+  const int ty=y+S(64), th=S(90), ry=y+S(160), rh=S(24), my=y+S(190);
+  g_trace_plot=RECT{px,ty,px+pw,my+S(18)};
+  fill(dc,RECT{px,ty,px+pw,ty+th},C_FIELD);
+  fill(dc,RECT{px,ry,px+pw,ry+rh},C_FIELD);
+  const COLORREF interval=RGB(90,110,140),work=RGB(120,220,140),wait=RGB(230,70,70);
+  const COLORREF roll=RGB(255,150,60),ping=RGB(0,220,220),shed=C_GOLD,advance=RGB(120,200,255);
+  const COLORREF mark_colors[4]={C_TEXT,RGB(220,130,255),RGB(100,180,255),RGB(240,130,180)};
+  const uint8_t mark_flags[4]={net_trace::kMark,net_trace::kMarkVisual,net_trace::kMarkInput,net_trace::kMarkAudio};
+  int previous_x=0,previous_ping_y=0; bool previous=false;
+  HPEN pen=CreatePen(PS_SOLID,std::max(1,S(1)),ping); HGDIOBJ old_pen=SelectObject(dc,pen);
+  for(size_t i=0;i<view.bins.size();++i) {
+    const auto& b=view.bins[i];
+    const int bx=px+int(i*pw/view.bins.size()),end=std::max(bx+1,px+int((i+1)*pw/view.bins.size()));
+    if(b.waits) fill(dc,RECT{bx,ty,end,ty+th},wait);
+    const int ih=int(th*std::clamp(b.interval_ms/50.0,0.0,1.0));
+    const int wh=int(th*std::clamp(b.work_ms/50.0f,0.0f,1.0f));
+    fill(dc,RECT{bx,ty+th-ih,end,ty+th},b.interval_ms>25?C_GOLD:interval);
+    fill(dc,RECT{bx,ty+th-wh,end,ty+th},work);
+    if(b.sheds) fill(dc,RECT{bx,ty,end,ty+S(4)},shed);
+    if(b.advances) fill(dc,RECT{bx,ty+S(5),end,ty+S(9)},advance);
+    if(b.rollbacks) {
+      const int h=std::max(S(2),rh*int(std::min<unsigned>(b.depth,7))/7);
+      fill(dc,RECT{bx,ry+rh-h,end,ry+rh},roll);
+    }
+    for(int m=0;m<4;++m) if(b.flags&mark_flags[m])
+      fill(dc,RECT{bx,my+S(m*4),std::max(end,bx+S(2)),my+S(m*4+3)},mark_colors[m]);
+    if(b.ticks) {
+      const int ping_y=ty+th-int(th*std::min<unsigned>(b.ping_ms,200)/200);
+      if(previous) { MoveToEx(dc,previous_x,previous_ping_y,nullptr); LineTo(dc,bx,ping_y); }
+      previous_x=bx;previous_ping_y=ping_y;previous=true;
+    } else previous=false;
+  }
+  SelectObject(dc,old_pen);DeleteObject(pen);
+  fill(dc,RECT{px,ty+th-int(th*(1000.0/60.0)/50),px+pw,ty+th-int(th*(1000.0/60.0)/50)+1},C_FAINT);
+  cell(dc,L"0:00",RECT{px-S(10),y+S(212),px+pw/2,y+S(232)},C_DIM);
+  const int seconds=int(std::min(view.seconds, double(INT_MAX)));
+  swprintf_s(text,L"%d:%02d elapsed",seconds/60,seconds%60);
+  cell(dc,text,RECT{px+pw/2,y+S(212),px+pw+S(6),y+S(232)},C_DIM,nullptr,DT_RIGHT);
+  struct Key { const wchar_t* label; COLORREF color; };
+  const Key keys[]={{L"Frame (top: 50 ms)",interval},{L"Work",work},{L"Wait",wait},{L"Rollback (top: 7)",roll},
+    {L"Ping (top: 200 ms)",ping},{L"Shed",shed},{L"Advanced",advance},
+    {L"Mark",mark_colors[0]},{L"Visual",mark_colors[1]},{L"Input",mark_colors[2]},{L"Audio",mark_colors[3]}};
+  int kx=px,ky=y+S(236);
+  for(const auto& key:keys) {
+    const int kw=S(18)+text_width(dc,key.label,replay_font(11,FW_NORMAL));
+    if(kx>px&&kx+kw>px+pw) { kx=px;ky+=S(20); }
+    fill(dc,RECT{kx,ky+S(5),kx+S(7),ky+S(12)},key.color);
+    draw_text(dc,key.label,RECT{kx+S(10),ky,kx+kw,ky+S(18)},replay_font(11,FW_NORMAL),C_DIM,DT_LEFT|DT_VCENTER|DT_SINGLELINE);
+    kx+=kw+S(8);
+  }
+  const int detail_y=ky+S(25);
+  if(g_trace_hover>=0&&g_trace_hover<(int)view.bins.size()) {
+    const auto& b=view.bins[g_trace_hover];
+    const int hx=px+int(size_t(g_trace_hover)*pw/view.bins.size());
+    fill(dc,RECT{hx,ty,hx+1,my+S(18)},C_TEXT);
+    swprintf_s(text,L"%.1f s   peak frame %.1f ms   work %.1f ms   ping %u ms",
+               view.seconds*g_trace_hover/view.bins.size(),b.interval_ms,double(b.work_ms),unsigned(b.ping_ms));
+    cell(dc,text,RECT{x,detail_y,x+width,detail_y+S(22)},C_TEXT);
+    swprintf_s(text,L"%u ticks   %u waits   %u rollbacks (depth %u)   %u shed   %u advanced",
+               b.ticks,b.waits,b.rollbacks,unsigned(b.depth),b.sheds,b.advances);
+    cell(dc,text,RECT{x,detail_y+S(22),x+width,detail_y+S(44)},C_DIM);
+  } else {
+    cell(dc,L"Move over the graph to inspect a time range.",RECT{x,detail_y,x+width,detail_y+S(22)},C_DIM);
+    if(view.skipped) {
+      swprintf_s(text,L"%zu incomplete or invalid timing records skipped.",view.skipped);
+      cell(dc,text,RECT{x,detail_y+S(22),x+width,detail_y+S(44)},C_DIM);
+    }
+  }
+  return detail_y+S(58)-y;
+}
 // Draws the page with its top at y (the scroll offset already applied) and returns its height.
 int draw_stats(HDC dc,int width,int y) {
   const int top=y;
+  g_trace_plot={};
   if(g_replay_view<0||g_replay_view>=(int)g_replay_info.size()) return 0;
   const auto& r=g_replay_info[g_replay_view];
   const int X0=S(4), W=width-S(8);
+  if(g_replay_view<(int)g_replay_traces.size())
+    y+=draw_trace_overview(dc,X0,W,y,g_replay_traces[g_replay_view]);
   if(r.players.size()!=2||!r.valid) {
     draw_text(dc,r.valid?L"Detailed stats are shown for one-on-one matches.":L"This file has no readable match data.",RECT{X0,y+S(40),X0+W,y+S(80)},replay_font(14,FW_NORMAL),C_DIM,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-    return S(120);
+    return y-top+S(120);
   }
-  if(!r.stats_loaded) { draw_text(dc,L"Reading the match...",RECT{X0,y+S(40),X0+W,y+S(80)},replay_font(14,FW_NORMAL),C_DIM,DT_CENTER|DT_VCENTER|DT_SINGLELINE); return S(120); }
+  if(!r.stats_loaded) { draw_text(dc,L"Reading the match...",RECT{X0,y+S(40),X0+W,y+S(80)},replay_font(14,FW_NORMAL),C_DIM,DT_CENTER|DT_VCENTER|DT_SINGLELINE); return y-top+S(120); }
   // Overall
   draw_text(dc,L"Overall",RECT{X0,y+S(8),X0+W,y+S(40)},replay_font(20,FW_SEMIBOLD),C_TEXT,DT_LEFT|DT_VCENTER|DT_SINGLELINE); y+=S(48);
   const int c0=W*50/100, cw=(W-c0)/2;
@@ -807,6 +900,21 @@ LRESULT CALLBACK stats_proc(HWND h,UINT m,WPARAM w,LPARAM l) {
       SelectObject(md,old); DeleteObject(b); DeleteDC(md); EndPaint(h,&ps);
       return 0;
     }
+    case WM_PRINTCLIENT: {
+      RECT cr;GetClientRect(h,&cr);fill((HDC)w,cr,C_CONTENT_BOT);
+      draw_stats((HDC)w,cr.right,-g_stats_scroll);return 0;
+    }
+    case WM_MOUSEMOVE: {
+      int hover=-1;POINT p{GET_X_LPARAM(l),GET_Y_LPARAM(l)};
+      if(PtInRect(&g_trace_plot,p)&&g_replay_view>=0&&g_replay_view<(int)g_replay_traces.size()) {
+        const auto size=g_replay_traces[g_replay_view].bins.size();
+        if(size) hover=int(std::min(size-1,size_t(p.x-g_trace_plot.left)*size/size_t(g_trace_plot.right-g_trace_plot.left)));
+      }
+      if(hover!=g_trace_hover) { g_trace_hover=hover;InvalidateRect(h,nullptr,FALSE); }
+      if(!g_launcher_test) { TRACKMOUSEEVENT tracking{sizeof tracking,TME_LEAVE,h,0};TrackMouseEvent(&tracking); }
+      return 0;
+    }
+    case WM_MOUSELEAVE: g_trace_hover=-1;InvalidateRect(h,nullptr,FALSE);return 0;
     case WM_MOUSEWHEEL: stats_scroll_to(g_stats_scroll-GET_WHEEL_DELTA_WPARAM(w)*S(90)/WHEEL_DELTA); return 0;
     case WM_VSCROLL: {
       SCROLLINFO si{sizeof si,SIF_ALL}; GetScrollInfo(h,SB_VERT,&si); int y=si.nPos;

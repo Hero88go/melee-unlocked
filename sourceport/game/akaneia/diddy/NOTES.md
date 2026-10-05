@@ -23,7 +23,8 @@ Files:
 | `ftdiddyspecials.c` | Monkey Flip (9 Diddy states + 6 victim "Taro" states, throw/break release) |
 | `ftdiddyspecialhi.c` | Rocketbarrel Boost (7 states used, 1 unused alias) |
 | `ftdiddyspeciallw.c` | Banana Peel, fighter side (2 states) |
-| `itdiddy.c` | the three articles as `ItemLogicTable ftDd_ItemLogic[3]` |
+| `itdiddy.c` | the three articles, then the two of Kirby's copy (the popgun and the peanut again), as `ItemLogicTable ftDd_ItemLogic[5]` |
+| `diddy_kirby.c` | the ability Kirby copies (`PlKbCpDd.dat` kbFunction): written 2026-10-04, see `run-source/rel09-b1-wolf/kirby/DIDDY.md`. `ftdiddyspecialn.c` gained `ftDd_SpecialN_GunSpawnArticle` and `ftDd_SpecialN_GunShootWith` for it (Diddy's own `GunSpawn` and `GunShoot` call them with his article numbers and values) |
 
 All six .c files pass `-fsyntax-only` with the project's gcc line (plus `-Wall -Wextra`, clean for
 these files). Nothing has been linked or run.

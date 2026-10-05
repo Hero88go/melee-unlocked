@@ -89,6 +89,7 @@ PsMerge00 DSBN PsMerge01 DSBN PsMerge10 DSBN PsMerge11 DSBN
 FcmpPs1 DSBN
 Call IJNC CallCtr INC TailCall INC TailCallCtr NC
 SetLr IN CallChecked IJNC ResumeTest INTC
+CodeGuard INC InvalidateCode SBNC
 """.split()
 OPERATIONS += [(_snake(name), name, letters) for name, letters in zip(_THIRD[0::2], _THIRD[1::2])]
 HOLE_LETTERS = {"D": "Destination", "S": "Source", "I": "Immediate", "N": "Next",
@@ -107,6 +108,13 @@ JUMPS = ("Next", "Taken")
 # Direct: a function or object of the host image. Slot: an import pointer, which becomes an 8-byte
 # slot in the translation. ImageBase: the linker's image base, found at translation time.
 EXTERNALS = {
+    "mu_ram_version0": ("&mu_ram_version0", "Direct"),
+    "mu_ram_version1": ("&mu_ram_version1", "Direct"),
+    "mu_ram_expected0": ("&mu_ram_expected0", "Direct"),
+    "mu_ram_expected1": ("&mu_ram_expected1", "Direct"),
+    "mu_ram_invalidated": ("&mu_ram_invalidated", "Direct"),
+    "mu_ram_translation_guard": ("&mu_ram_translation_guard", "Direct"),
+    "mu_ram_translation_invalidate": ("&mu_ram_translation_invalidate", "Direct"),
     "__ImageBase": ("nullptr", "ImageBase"),
     "?g_ram_watched@ppc@@3PAU?$atomic@E@std@@A": ("&ppc::g_ram_watched", "Direct"),
     "?g_ram_versions@ppc@@3PAU?$atomic@I@std@@A": ("&ppc::g_ram_versions", "Direct"),
@@ -471,7 +479,7 @@ def extract(data):
 def render_header(table):
     lines = ["// Generated from leaf_stencils.cpp; do not edit.",
              "// SPDX-License-Identifier: GPL-2.0-or-later", "#pragma once",
-             '#include "stencil_format.h"', '#include "ppc.h"', "#include <cmath>",
+             '#include "stencil_format.h"', '#include "ppc.h"', '#include "ram_translator.h"', "#include <cmath>",
              "namespace ppc::stencil::generated {"]
 
     def array(name, raw):

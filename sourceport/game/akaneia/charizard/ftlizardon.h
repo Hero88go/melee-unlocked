@@ -23,6 +23,8 @@
 
 #include <mu_disc.h>
 
+#include "../common/mu_ak_kirby.h"
+
 /* ---- Special attributes (ftData->ext_attr, 0xB0 bytes, disc data) ------------------------- */
 
 typedef struct ftLz_DatAttrs {
@@ -90,6 +92,39 @@ typedef union ftLz_MotionVars {
         /* fp+2344 */ int frames;       ///< frames rolled
     } specials;
 } ftLz_MotionVars;
+
+/* ---- Kirby with Charizard's ability (charizard_kirby.c) ------------------------------------ */
+
+/* The parameters of the ability Kirby copies. On the console they are 11 words inside the code
+ * block of Kirby's hat file (PlKbCpLz.dat kbFunction +0x2B8), with the layout of ftLz_DatAttrs
+ * from specialn_min_frames to fire_part. They are code data, so they are host values here. */
+typedef struct ftKbLz_Params {
+    /* +00 */ int specialn_min_frames;   ///< (40)
+    /* +04 */ float fire_speed_regen;    ///< (0.7)
+    /* +08 */ float fire_size_regen;     ///< (0.7)
+    /* +0C */ float fire_speed_max;      ///< (360)
+    /* +10 */ float fire_speed_min;      ///< (40)
+    /* +14 */ float fire_size_max;       ///< (380)
+    /* +18 */ float fire_size_min;       ///< (60)
+    /* +1C */ int specialn_quake_period; ///< (30)
+    /* +20 */ float fire_offset_x;       ///< (0)
+    /* +24 */ float fire_offset_y;       ///< (0)
+    /* +28 */ int fire_part;             ///< Kirby's fp->parts index flames spawn from (44)
+} ftKbLz_Params;
+
+/* Kirby keeps the reserves at console fp+0x2270: the texture list of the retail "parts" hats
+ * (fp->u.kb.x44), which nothing reads while Kirby wears a hat made of one joint, as this one is. */
+typedef struct ftKbLz_FighterVars {
+    /* fp+2270 */ const ftKbLz_Params* params; ///< written at the swallow as on the console; not read
+    /* fp+2274 */ float fire_speed;            ///< Charizard's fp+222C
+    /* fp+2278 */ float fire_size;             ///< Charizard's fp+2230
+} ftKbLz_FighterVars;
+
+static inline ftKbLz_FighterVars* ftKbLz_Vars(Fighter* fp)
+{
+    _Static_assert(sizeof(ftKbLz_FighterVars) <= sizeof(fp->u.kb.x44), "Kirby's flame reserves");
+    return (ftKbLz_FighterVars*) &fp->u.kb.x44;
+}
 
 static inline ftLz_DatAttrs* ftLz_Attrs(Fighter* fp)
 {
@@ -189,11 +224,18 @@ enum {
     ftLz_Item_Fire = 0,      ///< Flamethrower flame (clone of Bowser's flame)
     ftLz_Item_Rock = 1,      ///< Rock Smash's held rock
     ftLz_Item_RockBurst = 2, ///< the pieces the rock breaks into
-    ftLz_Item_Count = 3,
+    ftLz_Item_Count = 3,     ///< the items of PlLz.dat itself (ftData->x48_items)
+    /* MxDt lists one more item kind for Charizard (265 on Akaneia): the flame of the ability
+     * Kirby copies from him. Its data is in Kirby's hat file (PlKbCpLz.dat). */
+    ftLz_Item_KirbyFire = 3,
+    ftLz_Item_TableCount = 4, ///< entries of mu_ak_charizard_item_logic
 };
 
 /* Item logic tables in the m-ex itFunction layout (== ItemLogicTable), for the integration layer. */
-extern ItemLogicTable mu_ak_charizard_item_logic[ftLz_Item_Count];
+extern ItemLogicTable mu_ak_charizard_item_logic[ftLz_Item_TableCount];
+
+/* charizard_kirby.c: the ability Kirby copies from Charizard (m-ex kbFunction of PlKbCpLz.dat). */
+extern const MuAkKirbyCopy ftKbLz_Copy;
 
 /* ---- Routines ------------------------------------------------------------------------------ */
 
@@ -221,6 +263,9 @@ void ftLz_JumpAerial_Phys(HSD_GObj* gobj);
 void ftLz_JumpAerial_Coll(HSD_GObj* gobj);
 
 /* ftlz_specialn.c */
+extern int const ftLz_FireFlip[32];
+extern int const ftLz_FireGfxA[32];
+extern int const ftLz_FireGfxB[32];
 void ftLz_SpecialN_Enter(HSD_GObj* gobj);
 void ftLz_SpecialAirN_Enter(HSD_GObj* gobj);
 void ftLz_SpecialN_RefuelFire(HSD_GObj* gobj);

@@ -458,4 +458,7 @@ const MuAkFighter mu_ak_sonic = {
 
     .articles = &ftSn_Spring_LogicTable,
     .article_count = 1,
+
+    /* The ability Kirby copies has no articles (PlKbCpSn.dat has no itFunction). */
+    .kirby = &ftKbSn_Copy,
 };

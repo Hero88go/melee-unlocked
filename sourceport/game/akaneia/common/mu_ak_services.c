@@ -31,11 +31,19 @@ void mu_ak_register_article(FighterKind kind, void* article, int index)
     mu_ak_article_set(item_kind, article);
 }
 
-/* MEX_GetFtItemID: the item kind of the fighter's article `index`, -1 when it has none. */
+/* MEX_GetFtItemID (803D7088): the item kind of the fighter's article `index`, -1 when it has
+ * none. */
 ItemKind mu_ak_article_kind(HSD_GObj* fighter_gobj, int index)
 {
     Fighter* fp = GET_FIGHTER(fighter_gobj);
-    return (ItemKind) mu_ak_item_kind(fp->kind, index);
+    int kind = mu_ak_item_kind(fp->kind, index);
+    /* An index the fighter's own list does not have, asked by a Kirby who holds an ability, is
+     * looked up in the list of the fighter he copied (+03C to +07C of the routine). Kirby is a
+     * retail kind, so his own lookup is always -1 here. */
+    if (kind < 0 && fp->kind == Ft_Kind_Kirby && fp->u.kb.hat.kind != Ft_Kind_Kirby) {
+        kind = mu_ak_item_kind(fp->u.kb.hat.kind, index);
+    }
+    return (ItemKind) kind;
 }
 
 /* MEX_GetData(MXDT_FTCOSTUMEARCHIVE)[kind].runtimes[costume].archive: the loaded costume file. */

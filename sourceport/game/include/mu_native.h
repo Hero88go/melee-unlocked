@@ -27,6 +27,15 @@ int mu_ps_frozen_toggle(void);             /* online byte online, the replay's t
 
 /* Count leading zeros. The PowerPC instruction answers 32 for zero; the x86 one is undefined there. */
 static inline int mu_cntlzw(unsigned int value) { return value ? __builtin_clz(value) : 32; }
+/* float to unsigned as the console converts it: a negative value or a NaN gives 0 and a value
+ * past the range gives the largest. The PC conversion wraps instead (-1 becomes 4294967295). */
+static inline unsigned int mu_f2u(float value)
+{
+    if (!(value > 0.0f)) {
+        return 0;
+    }
+    return value >= 4294967296.0f ? 0xFFFFFFFFu : (unsigned int) value;
+}
 #define __cntlzw(value) mu_cntlzw((unsigned int) (value))
 
 /* The rest are real functions (shim/mu_math.c) because MetroTRK/intrinsics.h prototypes them by
@@ -223,7 +232,14 @@ int mu_mex_ak_costumes(int kind, int mex_internal);            /* usable costume
  * registry fills those slots. No kind in that range exists in the retail view or on a retail disc,
  * so every hook below is inert there. */
 #define MU_AK_KIND_BASE 0x22
+/* The slot count covers the largest disc served: Akaneia 1.0.1 has 8 added slots, ACE 2.0.0 has
+ * 32 (native kinds up to 0x41). The slots a disc really has come from its MxDt
+ * (mu_mex_special_kind_shift). The release build keeps its 16: no added fighter is created there. */
+#ifdef MU_AKANEIA_FIGHTERS
+#define MU_AK_KIND_SLOTS 40
+#else
 #define MU_AK_KIND_SLOTS 16
+#endif
 #define MU_FT_KIND_CAP (MU_AK_KIND_BASE + MU_AK_KIND_SLOTS)
 #define MU_AK_KIND(kind) ((unsigned) ((int) (kind) - MU_AK_KIND_BASE) < (unsigned) MU_AK_KIND_SLOTS)
 /* Native character ids also keep the retail special kinds and None at their original values.
@@ -254,6 +270,9 @@ enum {
     MU_AK_HOOK_FSMASH = 35,       /* void (*)(HSD_GObj*): enter the forward smash */
     MU_AK_HOOK_USMASH = 36,       /* void (*)(HSD_GObj*): enter the up smash */
     MU_AK_HOOK_DSMASH = 37,       /* void (*)(HSD_GObj*): enter the down smash */
+    /* GetTrailData (ACE: Daisy, Zero, Lucina). Kept by the registry; no site reads it yet, its
+     * caller in the m-ex code list is not located (run-source/rel09-ace-native/PLAN.md, 6.5). */
+    MU_AK_HOOK_TRAILDATA = 45,
 };
 struct HSD_GObj;
 void mu_ak_apply(void);                  /* at each content view change (shim/mu_mex.c) */
@@ -266,10 +285,28 @@ int mu_ak_ckind_selectable(int ckind);   /* the same, by native character kind *
 struct Fighter;
 struct Item;
 int mu_ak_sound_bank(int ckind);                         /* sound bank of an added kind, -1 none */
-int mu_ak_sound_request(int bank);                       /* ask for an added bank at the next load */
+int mu_ak_sound_request(int bank);                       /* ask for a bank the disc adds at the next load */
 int mu_ak_sound_id(struct Fighter* fp, int id);          /* 5000+n of fp's bank -> the game's id */
 int mu_ak_sound_item_id(struct Item* ip, int id);        /* the same, by the item's creator */
 void mu_ak_sound_view(int mod_view);                     /* at each content view change */
+/* Kirby's copy abilities of the added fighters (akaneia/common/mu_ak_kirby.c). An added kind is
+ * a native fighter kind (MU_AK_KIND). These are the only declarations of these functions. */
+int mu_ak_kirby_has_copy(int kind);                        /* native ability and hat loaded */
+void mu_ak_kirby_reset(void);                              /* ftKb_Init_800EE528, view change */
+void mu_ak_kirby_preload(int kind);                        /* ftKb_SpecialN_800EEC34 */
+void mu_ak_kirby_load(int kind);                           /* ftKb_SpecialN_800EED50 */
+void mu_ak_kirby_gain(struct HSD_GObj* gobj, int kind);    /* ftKb_SpecialN_800F1BAC */
+void mu_ak_kirby_lose(struct HSD_GObj* gobj, int kind);    /* ftKb_SpecialN_800EEEC4 */
+int mu_ak_kirby_special_n(struct HSD_GObj* gobj, int air); /* 1 when the ability's special ran */
+void mu_ak_kirby_init_items(struct HSD_GObj* gobj, int kind);   /* ftKb_SpecialN_800F16D0 */
+void mu_ak_kirby_hurt(struct HSD_GObj* gobj, int kind);    /* ftKb_SpecialN_800F1A8C */
+void mu_ak_kirby_frame(struct HSD_GObj* gobj, int kind);   /* ftKb_Init_UnkMotionStates3 */
+/* The added kind whose effect file and sound bank serve Kirby `fp`; any other value (it is
+ * Ft_Kind_None) fails MU_AK_KIND. */
+int mu_ak_kirby_copy_kind(struct Fighter* fp);
+/* MxDt "kirby" (shim/mu_mex.c). */
+int mu_mex_kirby_cap(int mex_internal, const char** file, const char** symbol);   /* 1 when usable */
+int mu_mex_kirby_effect_file(int mex_internal);            /* effect file index, 0xFF none, -1 no table */
 #endif
 /* Articles of the added fighters: item kinds past the retail ones. */
 int mu_ak_article(int item_kind, void** article, void** logic);   /* 1 when item_kind is one */

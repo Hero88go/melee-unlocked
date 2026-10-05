@@ -24,16 +24,17 @@
 #include <sysdolphin/baselib/random.h>
 
 /* Flame gfx variants (PlLz .rodata fire_effect_table1..3), the same values as Bowser's
- * ftKp_Init_803CF2A0: 32 entries each. */
-static int const ftLz_FireFlip[32] = {
+ * ftKp_Init_803CF2A0: 32 entries each. Kirby's copy of the move (charizard_kirby.c) has the same
+ * three tables in its own code block and reads these. */
+int const ftLz_FireFlip[32] = {
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
 };
-static int const ftLz_FireGfxA[32] = {
+int const ftLz_FireGfxA[32] = {
     0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3, 3, 3, 3, 3,
     0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3, 3, 3, 3, 3,
 };
-static int const ftLz_FireGfxB[32] = {
+int const ftLz_FireGfxB[32] = {
     1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2,
     1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2,
 };

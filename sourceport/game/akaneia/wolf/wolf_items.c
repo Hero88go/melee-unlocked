@@ -10,8 +10,11 @@
  *     functions; the rest are empty.
  *   article 1, the blaster in Wolf's hand: states and picked_up are Wolf's; MxDt has no defaults.
  *
- * Wolf's lookup lists two more kinds (255, a copy of Fox's laser defaults, and 256, empty) that no
- * Wolf code creates; they are not served (see NOTES.md). */
+ * Wolf's lookup lists two more kinds (255 and 256 on Akaneia): articles 2 and 3, the laser and the
+ * blaster of the ability Kirby copies from Wolf (wolf_kirby.c). Their data is in Kirby's hat file
+ * (PlKbCpWf.dat) and their code, that file's itFunction, is word for word articles 0 and 1 of
+ * Wolf's own; MxDt's defaults are the same too (255 has Fox's laser functions like 253, 256 is
+ * empty like 254). So the two tables are listed twice. */
 #include "wolf.h"
 
 #include <dolphin/os.h>
@@ -162,28 +165,35 @@ static ItemStateTable itWf_Gun_States[] = {
     { 0, itWf_Gun_Nothing, itWf_Gun_Phys, itWf_Gun_Nothing },
 };
 
-const ItemLogicTable itWf_Articles[2] = {
-    {
-        /* article 0 (item kind 253 on Akaneia): the laser */
-        .states = itWf_Laser_States,
-        .spawned = itWf_Laser_OnSpawn,
-        .destroyed = NULL,
-        .picked_up = NULL,
-        .dropped = NULL,
-        .thrown = NULL,
-        .dmg_dealt = itWf_Laser_Destroyed,
-        .dmg_received = itWf_Laser_Destroyed,
-        .entered_air = NULL,
-        .reflected = itWf_Laser_OnReflect,
-        .clanked = itWf_Laser_Destroyed,
-        .absorbed = itFoxLaser_Logic94_Absorbed,
-        .shield_bounced = itFoxLaser_Logic94_ShieldBounced,
-        .hit_shield = itWf_Laser_Destroyed,
-        .evt_unk = itFoxLaser_Logic94_EvtUnk,
-    },
-    {
-        /* article 1 (item kind 254 on Akaneia): the blaster */
-        .states = itWf_Gun_States,
-        .picked_up = itWf_Gun_OnPickup,
-    },
+/* C cannot copy an earlier element of a constant table, so the two tables are macros. */
+#define ITWF_LASER_TABLE                                                      \
+    {                                                                         \
+        .states = itWf_Laser_States,                                          \
+        .spawned = itWf_Laser_OnSpawn,                                        \
+        .destroyed = NULL,                                                    \
+        .picked_up = NULL,                                                    \
+        .dropped = NULL,                                                      \
+        .thrown = NULL,                                                       \
+        .dmg_dealt = itWf_Laser_Destroyed,                                    \
+        .dmg_received = itWf_Laser_Destroyed,                                 \
+        .entered_air = NULL,                                                  \
+        .reflected = itWf_Laser_OnReflect,                                    \
+        .clanked = itWf_Laser_Destroyed,                                      \
+        .absorbed = itFoxLaser_Logic94_Absorbed,                              \
+        .shield_bounced = itFoxLaser_Logic94_ShieldBounced,                   \
+        .hit_shield = itWf_Laser_Destroyed,                                   \
+        .evt_unk = itFoxLaser_Logic94_EvtUnk,                                 \
+    }
+
+#define ITWF_BLASTER_TABLE                                                    \
+    {                                                                         \
+        .states = itWf_Gun_States,                                            \
+        .picked_up = itWf_Gun_OnPickup,                                       \
+    }
+
+const ItemLogicTable itWf_Articles[4] = {
+    ITWF_LASER_TABLE,   /* article 0 (item kind 253 on Akaneia): Wolf's laser */
+    ITWF_BLASTER_TABLE, /* article 1 (254): Wolf's blaster */
+    ITWF_LASER_TABLE,   /* article 2 (255): Kirby's laser, data from PlKbCpWf.dat */
+    ITWF_BLASTER_TABLE, /* article 3 (256): Kirby's blaster, data from PlKbCpWf.dat */
 };

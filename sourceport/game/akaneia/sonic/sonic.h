@@ -20,6 +20,7 @@
 #include <sysdolphin/baselib/forward.h>
 
 #include "../mu_ak_fighter.h"
+#include "../common/mu_ak_kirby.h"
 
 /* ---------------------------------------------------------------------------------------------
  * Special action states (move_logic), numbered from ftCo_MS_Count exactly as m-ex numbers them.
@@ -316,6 +317,8 @@ void ftSn_GFXSpinAndTrail(HSD_GObj* gobj);
 void ftSn_GFXSpinAndTrailVelocityDirection(HSD_GObj* gobj);
 void ftSn_UpdateTrailPosAndRot(HSD_GObj* gobj);
 void ftSn_SpawnTrailEffect(HSD_GObj* gobj, bool spawn);
+void ftSn_SpawnTrailEffectAt(HSD_GObj* gobj, bool spawn, Vec3* trail_pos, float* trail_angle,
+                             const GXColor* tint);
 void ftSn_RunEffectCallback(EF_Effect* effect);
 void ftSn_ColorShoes(HSD_JObj* jobj, int dobj_index, ftSonic_ColorData* color);
 void ftSn_SetEffectCallbacks(Fighter* fp, HSD_GObjEvent on_hit);
@@ -351,6 +354,9 @@ void ftSn_SpecialNRebound_Anim(HSD_GObj* gobj);
 void ftSn_SpecialNRebound_IASA(HSD_GObj* gobj);
 void ftSn_SpecialNRebound_Phys(HSD_GObj* gobj);
 void ftSn_SpecialNRebound_Coll(HSD_GObj* gobj);
+bool ftSn_SpecialN_SearchTarget(HSD_GObj* gobj, ftSonic_DatAttrs* da, float* out_x,
+                                float* out_y);
+void ftSn_SpecialN_ClampReboundVel(Fighter* fp, ftSonic_DatAttrs* da, float vel_y);
 void ftSn_GXLink_DrawTarget(HSD_GObj* gobj);
 void ftSn_GXLink_DrawRadius(HSD_GObj* gobj);
 
@@ -439,5 +445,8 @@ void ftSn_SpecialLwStopWall_Anim(HSD_GObj* gobj);
 void ftSn_SpecialLwStopWall_IASA(HSD_GObj* gobj);
 void ftSn_SpecialLwStopWall_Phys(HSD_GObj* gobj);
 void ftSn_SpecialLwStopWall_Coll(HSD_GObj* gobj);
+
+/* ---- sonic_kirby.c: the ability Kirby copies from Sonic (m-ex kbFunction of PlKbCpSn.dat) ---- */
+extern const MuAkKirbyCopy ftKbSn_Copy;
 
 #endif

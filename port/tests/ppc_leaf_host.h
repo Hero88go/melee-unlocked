@@ -150,3 +150,13 @@ void psq_store(Context& c, uint8_t* m, uint32_t ea, uint32_t rs, uint32_t w, uin
   if (!w) st32(c, m, ea + 4, double_to_float_bits(c.f[rs & 31].ps1));
 }
 } // namespace ppc
+
+// The isolated emit.py suites do not install runtime translations.
+extern "C" {
+const std::atomic<uint32_t>* mu_ram_version0 = nullptr;
+const std::atomic<uint32_t>* mu_ram_version1 = nullptr;
+uint32_t mu_ram_expected0 = 0, mu_ram_expected1 = 0;
+bool mu_ram_invalidated = false;
+void mu_ram_translation_guard(uint32_t) {}
+void mu_ram_translation_invalidate(uint32_t, uint32_t) {}
+}

@@ -277,7 +277,7 @@ void ftLc_Snake_OnPickup(Item_GObj* gobj)
 /* ---------------------------------------------------------------------------------------------
  * The article table (itFunction order = the decomp's ItemLogicTable order).
  * ------------------------------------------------------------------------------------------- */
-ItemLogicTable ftLc_ArticleLogic[ftLc_Art_Count] = {
+ItemLogicTable ftLc_ArticleLogic[ftLc_Art_TableCount] = {
     [ftLc_Art_PKFreeze] = {
         .states = ftLc_PKFreeze_States,
         .destroyed = ftLc_PKFreeze_OnDestroy,
@@ -311,5 +311,15 @@ ItemLogicTable ftLc_ArticleLogic[ftLc_Art_Count] = {
     [ftLc_Art_Snake] = {
         .states = ftLc_Snake_States,
         .picked_up = ftLc_Snake_OnPickup,
+    },
+    /* Article 10 (item kind 276 on Akaneia): the PK Freeze of Kirby's copy ability. Its code is
+     * the itFunction of Kirby's hat file (PlKbCpLc.dat, 303 words), which sets the same three
+     * exports as article 0 (0, 2, 9) and is article 0's code with the holder's variable at
+     * fp+0x2270 where Lucas has fp+0x2240 (lucas_it_pkfreeze.c picks by the holder's kind). MxDt
+     * has no defaults for either kind (266, 276). */
+    [ftLc_Art_KirbyPKFreeze] = {
+        .states = ftLc_PKFreeze_States,
+        .destroyed = ftLc_PKFreeze_OnDestroy,
+        .reflected = ftLc_PKFreeze_OnReflect,
     },
 };
