@@ -1843,6 +1843,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // Start in the game. F1 and the launcher Settings entry remain available at any time.
   options.settings_open = false;
   options.cpu_20xx = false;   // a file without the key: off
+  options.unlock_all = true;   // a file without the key: on
   options.cpu_tech = options.cpu_getup = options.cpu_di = options.cpu_sdi = 0;   // files without the keys: off
   options.cpu_no_taunt = options.cpu_lcancel = options.cpu_no_rapid_jab = options.cpu_no_transform = false;
   options.mod_choices.clear();
@@ -1970,6 +1971,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "backgroundinput") host::g_background_input = value != "0";
       else if (key == "gamelanguage") host::g_game_language.store(value == "1" ? 1 : value == "2" ? 2 : 0);
       else if (key == "cpu_20xx") options.cpu_20xx = value == "1";
+      else if (key == "unlock_all") options.unlock_all = value != "0";
       else if (key == "cpu_tech") options.cpu_tech = std::clamp(std::atoi(value.c_str()), 0, 5);
       else if (key == "cpu_getup") options.cpu_getup = std::clamp(std::atoi(value.c_str()), 0, 5);
       else if (key == "cpu_di") options.cpu_di = std::clamp(std::atoi(value.c_str()), 0, 3);
@@ -2156,6 +2158,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // cleared here and never saved again, so the migration happens one time.
   if (options.te_options2 & 0x800000u) { options.cpu_20xx = true; options.te_options2 &= ~0x800000u; }
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
+  RenderOptions::live_unlock_all() = options.unlock_all;
   host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
   RenderOptions::live_cpu_training() = options.cpu_training_word();
   // Explicit new choices win over legacy keys regardless of their order in the file. A legacy
@@ -3247,6 +3250,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nbackgroundinput " << (host::g_background_input ? 1 : 0)
        << "\ngamelanguage " << host::g_game_language.load()
        << "\ncpu_20xx " << (options.cpu_20xx ? 1 : 0)
+       << "\nunlock_all " << (options.unlock_all ? 1 : 0)
        << "\ncpu_tech " << options.cpu_tech
        << "\ncpu_getup " << options.cpu_getup
        << "\ncpu_di " << options.cpu_di
@@ -6670,6 +6674,18 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // Source Port plays its native version of the 20XX Hack Pack's AI (shim/mu_20xx_ai.c); the Static
     // Recomp runs the pack's own AI block, read from the player's copy of the pack's disc under Mods
     // (host/hackpack_ai.cpp). Offline matches only; online and replay playback never see it.
+    // Slippi's "Unlock All Characters and Stages", switchable. Off, the save file decides, so a new
+    // save starts with the original fighters and stages and the game hands out the rest as it does
+    // on a console. A network session always has everything (host.cpp apply_code_switches, and
+    // shim/mu_gecko.c on the Source Port).
+    if (settings_toggle("Unlock everything", &options.unlock_all)) {
+      RenderOptions::live_unlock_all() = options.unlock_all;
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("On: every fighter, stage and mode is available from the start.\n"
+                        "Off: your save file decides, and the game unlocks things as you play.\n"
+                        "Offline only: online play always has everything. Takes effect on the next screen.");
     ImGui::TextUnformatted("CPU players");
     if (settings_toggle("20XX CPUs", &options.cpu_20xx)) {
       RenderOptions::live_cpu_20xx() = options.cpu_20xx;

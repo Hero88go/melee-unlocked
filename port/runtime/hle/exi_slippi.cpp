@@ -26,6 +26,11 @@ namespace gecko { bool option_pal_stock_icons_default = false; }
 #pragma comment(linker, "/alternatename:?option_pal_stock_icons@gecko@@3_NA=?option_pal_stock_icons_default@gecko@@3_NA")
 namespace gecko { bool option_no_screen_shake_default = false; }
 #pragma comment(linker, "/alternatename:?option_no_screen_shake@gecko@@3_NA=?option_no_screen_shake_default@gecko@@3_NA")
+// Same for the two switches over Slippi's own lines: a translation without them has the lines
+// compiled in, which is what "unlocked" and "no results screen" mean.
+namespace gecko { bool option_unlock_all_default = true; bool option_offline_results_default = false; }
+#pragma comment(linker, "/alternatename:?option_unlock_all@gecko@@3_NA=?option_unlock_all_default@gecko@@3_NA")
+#pragma comment(linker, "/alternatename:?option_offline_results@gecko@@3_NA=?option_offline_results_default@gecko@@3_NA")
 // Same for the Lagless FoD flag and the optional-code table (an older prebuilt playback guest has neither).
 namespace gecko { bool option_lagless_fod_default = false; extern const OptionalCode optional_codes_default[1] = {}; extern const size_t optional_codes_count_default = 0; }
 #pragma comment(linker, "/alternatename:?option_lagless_fod@gecko@@3_NA=?option_lagless_fod_default@gecko@@3_NA")
