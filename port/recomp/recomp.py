@@ -81,6 +81,7 @@ class GeckoSet:
         for h in self.main.hooks:
             if h.hook in port_hooks:
                 h.optional = port_hooks[h.hook]
+        self.optional_flags = sorted(set(self.optional_flags) | set(gecko.TWO_WAY_TEXT.values()))
         self.optional_text = {}    # addr -> (patched word, flag): translated as both variants
         self.optional_data = []    # (addr, patched bytes, original bytes, flag): applied/restored at run time
 
@@ -91,6 +92,10 @@ class GeckoSet:
         for p in [self.boot, self.main] + ([self.extra] if self.extra else []):
             for addr, blob in p.writes:
                 if not dol.in_ram(addr) or not dol.in_ram(addr + len(blob) - 1):
+                    continue
+                if p is self.main and addr in gecko.TWO_WAY_TEXT and dol.in_text(addr) and len(blob) == 4:
+                    # A line of Slippi's own table switched by the host: left out of the image.
+                    self.optional_text[addr] = (int.from_bytes(blob, "big"), gecko.TWO_WAY_TEXT[addr])
                     continue
                 if (addr, blob) in optional:
                     # Left out of the image: text becomes a two-way instruction, data is written at run time.

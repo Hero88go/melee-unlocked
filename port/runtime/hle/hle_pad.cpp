@@ -60,7 +60,7 @@ void cycle(int door, int direction) {
     if (!pick.message.empty()) host::log("cosmetics: %s skin not changed (%s)", slot.c_str(), pick.message.c_str());
     return;
   }
-  const uint32_t fst = host::rd32(0x80000038u), fst_size = host::disc_fst_size();
+  const uint32_t fst = host::disc_fst_addr(), fst_size = host::disc_fst_size();
   const auto publish = [&](const std::string& which) {
     const auto result = host::cosmetics::republish_slot(host::ptr(fst, fst_size), fst_size, which);
     if (!result.ok) return false;

@@ -17,6 +17,8 @@ const HookInstall boot_hooks[1] = {}; const size_t boot_hooks_count = 0;
 const OptionalWrite optional_writes[1] = {}; const size_t optional_writes_count = 0;
 const uint32_t gct_base_used = 0, optional_gct_offset = 0;
 bool option_widescreen = false, option_pal_stock_icons = false, option_no_screen_shake = false;
+// The native game decides both itself (shim/mu_gecko.c mu_unlock_all, gm/gmvsmelee.c).
+bool option_unlock_all = true, option_offline_results = false;
 // The native game carries Lagless FoD as C, latched at boot with the General Codes (mu_gecko.c).
 bool option_lagless_fod = false;
 const OptionalCode optional_codes[1] = {}; const size_t optional_codes_count = 0;
