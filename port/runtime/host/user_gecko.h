@@ -18,7 +18,15 @@
 // number (42, 4A) or stored (44, 4C), the if types 20 to 2E with their endifs (E2, an address
 // ending in 1) and the terminator E0, and the Gecko registers (80 to 88). Each line is turned into
 // a step with its address worked out when the code is read (Code::plan), so nothing a code computes
-// at run time can become an address. Any other code is listed with the reason, naming the function
+// at run time can become an address. The addresses follow the console handler's own arithmetic
+// (port/slippi_sys/codehandler.bin): a line counts from the pointer in full, but only from the top
+// seven bits of the base address, so a base address inside game memory counts as 80000000; 32-bit
+// writes and ifs round the address down to a word, 16-bit ifs to a half; a base or pointer store
+// (44, 4C) and a register operation on memory (86 with 2) always count their address from the base.
+// One thing differs from the handler, which runs every code as one list: here each code starts
+// with the base address and the pointer at 80000000 and no condition open, whatever the code
+// before it left behind, and an F0 line ends that code only (the note above Compiler in
+// user_gecko.cpp). Any other code is listed with the reason, naming the function
 // or variable it touches, and cannot be switched on: one that writes or injects PowerPC (C0, C2,
 // C6), follows a pointer read from game memory (40, 48), loops or jumps (60 to 68), or compares
 // registers (A0 to AE). C2 injections and the other handler-only types cannot run on the Static
@@ -90,7 +98,9 @@ const std::string& path();
 std::vector<Code>& codes();
 bool any_enabled();
 // The Source Port runs no PowerPC. For one of Slippi's optional codes it carries as C (widescreen,
-// screen shake, the L-cancel flash, Lagless FoD), the name of that built-in switch; else null.
+// screen shake, the L-cancel flash, Lagless FoD), the name of that built-in switch; else null. A
+// code is recognised by its lines (the first line of those four, or the table below), never by
+// what it is called.
 // Also for any code made only of patches the Source Port carries as C (the General Codes, the
 // optional codes above, PAL stock icons), matched patch by patch on the address and the exact
 // words (kBuiltInUnits in user_gecko_targets.h).

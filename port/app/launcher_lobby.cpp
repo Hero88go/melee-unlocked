@@ -48,10 +48,18 @@ enum { URL=500, NAME, CODE, LOCATION, MAIN1, MAIN2, MAIN3, JOIN, LEAVE, PLAYERS,
        PROFILE_LOCATION, PROFILE_MAINS, PROFILE_MODE, PLAYER_HEADING, EMPTY_PLAYERS, EMPTY_FRIENDS, EMPTY_CHAT, ADVANCED, FRIEND_CODE, FRIEND_SEND, FRIEND_HINT, EMOJI, AUTO_REJECT, REQUEST_SOUND, VOLUME_LABEL, OPEN_TO,
        PLAYER_FILTER, INVITE_FRIEND, COPY_CODE, PM_PLAYER, PM_FRIEND,
        // Peer-to-peer matches (the build without the Slippi layer; never created otherwise).
-       INVITE_EDIT, INVITE_CONNECT, INVITE_COPY, FIND_MATCH, BLOCK_PLAYER, P2P_FIGHTER };
+       INVITE_EDIT, INVITE_CONNECT, INVITE_COPY, FIND_MATCH, BLOCK_PLAYER, P2P_FIGHTER,
+       // P2P Direct as a test control in the launcher that also starts the other kind of match (never
+       // created in the build above): the request button and its own character button, both in the
+       // page header, which launcher_lobby_ui.inl's layout() leaves alone (layout_all places them).
+       P2P_REQUEST, P2P_FIGHTER_TEST };
 HWND owner{}, window{};
 std::string directory, build;
 std::string account_name, account_code;
+// The launcher with both kinds of match: the code of the account its hosted matches need, "" while
+// signed out. account_code is then the code made from the name and the identity key, so the player
+// can still go online and play peer to peer (announced_code).
+std::string hosted_code;
 // Peer-to-peer matches: there is no account. The name is the one typed on the Profile page and the
 // code is made from it and this identity key (lobby-peer-identity.json), read once in init().
 std::string identity;
@@ -199,10 +207,31 @@ std::string open_summary() {
 }
 Json profile_config();
 bool peer_mode(const Json& cfg);
+// The code this player is announced under. The launcher where every match is peer to peer makes it
+// in profile_config. The other one uses the account's code, and without an account the code made
+// from the name and the identity key: enough to go online and to play peer to peer.
+std::string announced_code() {
+  if(p2p_matches) return account_code;
+  if(!hosted_code.empty() || !p2p_test_shown()) return hosted_code;
+  std::string name=window?text(NAME):std::string();
+  if(name.empty()) { std::lock_guard<std::mutex> lock(mutex); name=config.value("name",std::string()); }
+  return identity.empty() || name.empty()?std::string():derived_code(name,identity);
+}
+// profile_config with that code, and whether a hosted match can be started here ("hosted_ok": read
+// by the peer lobby with the match character and color, never sent with the profile).
+Json own_profile() {
+  if(!p2p_matches) {
+    account_code=announced_code();
+    if(window) label(CODE,account_code);
+  }
+  Json cfg=profile_config();
+  if(!p2p_matches) cfg["hosted_ok"]=!hosted_code.empty();
+  return cfg;
+}
 // Re-announce the profile (Game Build, ready, mods, open to) to other players at once, public lobby
 // or not. The hosted service has no profile action; it gets the change at the next join.
 void announce() {
-  Json cfg=profile_config();
+  Json cfg=own_profile();
   bool peer;
   { std::lock_guard<std::mutex> lock(mutex); peer=peer_mode(config); cfg["mode"]=config.value("mode",std::string("peer")); config=cfg; }
   if(peer && !cfg.value("name",std::string()).empty() && !cfg.value("code",std::string()).empty()) enqueue("profile",cfg);
@@ -314,7 +343,7 @@ void record_match(const Match& match,const std::string& result,int game_number) 
                                       {"result",result},{"when",when},{"game",game_number}});
   try { save_history(); } catch(...) { history.erase(history.begin()); throw; }
   bool announce=false;{std::lock_guard<std::mutex> lock(mutex);announce=go_online_requested;}
-  if(announce) enqueue("join",profile_config());
+  if(announce) enqueue("join",own_profile());
 }
 void consume_results() {
   if(!pending_started || !pending_match || !result_mailbox_ready) return;
@@ -546,8 +575,8 @@ void work() {
               else { if(cfg.value("token",std::string()).empty()) continue; api(cfg,c.action,c.data); }
               // The match character and color were changed on the Profile page: the lobby that
               // opens again after a match is given `cfg`, so they are kept there too.
-              if(p2p_matches && c.action=="profile" && c.data.is_object()) {
-                for(const char* key:{"p2p_ch","p2p_col"}) { if(c.data.count(key)) cfg[key]=c.data[key]; else cfg.erase(key); }
+              if(c.action=="profile" && c.data.is_object()) {
+                for(const char* key:{"p2p_ch","p2p_col","hosted_ok"}) { if(c.data.count(key)) cfg[key]=c.data[key]; else cfg.erase(key); }
               }
               std::lock_guard<std::mutex> lock(mutex);
               if(c.action=="leave") { joined=false; go_online_requested=false; }
@@ -559,8 +588,10 @@ void work() {
               notice=peer_mode(cfg)?"You're online. Select a player to send a match request.":
                                      "Connected. Location and player code are player supplied.";
 #else
-              notice=peer_mode(cfg)?"You're online. Select a player to send a match request.":
-                                     "Connected. Location and Slippi code are player supplied.";
+              notice=!peer_mode(cfg)?"Connected. Location and Slippi code are player supplied.":
+                     // Online without the account: say what works, once, when the player goes online.
+                     c.action=="join" && !cfg.value("hosted_ok",true)?launcher::lang::tr("lobby.p2p.test_online"):
+                     "You're online. Select a player to send a match request.";
 #endif
           } catch(const std::exception& ex) {
             std::lock_guard<std::mutex> lock(mutex); notice=ex.what();
@@ -625,7 +656,9 @@ void work() {
               const std::string missing=find_match_disc(m.mode,mod_paths,custom_hash,current_prefs.custom_iso,
                                                         current_prefs.custom_name,m.mod_path,m.mod_name);
               if(!missing.empty()) { notice=missing; continue; }
-              if(p2p_matches) {
+              // A peer-to-peer match: every match of the build without the other kind, and here a
+              // request that asked for it (the lobby then hands over a "p2p" setup).
+              if(p2p_matches || launch.count("p2p")) {
                 // The request id names the result file and half of the setup came from the other
                 // player: both are checked before anything reaches a path or a command line. A match
                 // that cannot start frees this player again instead of leaving them "in a match".
@@ -643,6 +676,9 @@ void work() {
                 continue;
               }
 #ifndef MELEE_NO_SLIPPI   // in the build without that layer every match took the peer-to-peer branch above
+              // The code goes onto the game's command line as the opponent: never one this launcher made
+              // from a name, which is no account. (The lobby refuses these requests before they get here.)
+              if(!cfg.value("hosted_ok",true)) { notice=launcher::lang::tr("lobby.error.self_no_account"); commands.push_back({"available",Json::object()}); continue; }
               matches.push_back(m);
               notice=m.mode=="vanilla"?"Match accepted. Starting Slippi Direct...":
                      launcher::lang::tr("lobby.starting_mod",{{"mode",m.mod_name}});
@@ -668,6 +704,17 @@ void work() {
   WSACleanup();
 }
 #include "launcher_lobby_ui.inl"
+// layout(), then the two P2P Direct test controls of the launcher with both kinds of match: in the
+// page header, left of Go Online, where the other build has Find match. layout() does not know
+// them, so nothing is placed twice.
+void layout_all() {
+  layout();
+  if(p2p_matches || !window) return;
+  RECT r{}; GetClientRect(window,&r);
+  const int width=MulDiv(r.right,96,owner?GetDpiForWindow(owner):96);
+  place(P2P_REQUEST,width-132-158,24,150,30,p2p_test_shown());
+  place(P2P_FIGHTER_TEST,width-132-158-204,24,196,30,p2p_test_shown());
+}
 std::string selected(HWND h,const Json& list) {
   int i=(int)SendMessageW(h,LB_GETCURSEL,0,0);
   return i>=0 && i<(int)list.size()?list[i].value("id",std::string()):"";
@@ -821,11 +868,14 @@ void process_invites(const Json& state,const std::map<std::string,int>& ping,con
     const std::string mode=request.value("mode",std::string("vanilla"));
     Json mine; { std::lock_guard<std::mutex> lock(mutex); mine=config; }
     const std::string version=mode=="vanilla"?std::string():"  |  "+mode_title(mode,mine,player);
-    const std::string detail=location+"  |  "+latency+"  |  "+(mains.empty()?launcher::lang::tx("mains not shared"):mains)+version;
+    // A request of the other kind says so (only the launcher with both kinds has two to tell apart).
+    const bool p2p_test=!p2p_matches && request.value("transport",std::string())==kP2pTransport;
+    const std::string detail=location+"  |  "+latency+"  |  "+(mains.empty()?launcher::lang::tx("mains not shared"):mains)+version+
+                             (p2p_test?"  |  "+launcher::lang::tr("lobby.p2p.test_detail"):std::string());
     // A banner, not a blocking dialog: the launcher keeps working while the player decides, and a
     // request that expires or is withdrawn takes its banner with it. The title is one template, so
     // each language puts the name where its grammar wants it.
-    show_banner("request:"+id,launcher::lang::tr("lobby.request_from",{{"name",name}}),detail,
+    show_banner("request:"+id,launcher::lang::tr(p2p_test?"lobby.p2p.test_request_from":"lobby.request_from",{{"name",name}}),detail,
                 {{"Accept",true},{"Decline",false}},
                 [id](int button){
                   FLASHWINFO stop{sizeof stop,owner,FLASHW_STOP,0,0}; FlashWindowEx(&stop);
@@ -988,7 +1038,8 @@ void refresh() {
     std::string peer=r["from"]==me?r["to"].get<std::string>():r["from"].get<std::string>();
     std::string description=peer;
     for(auto& p:roster_all) if(p["id"]==peer) description=peer_text(p,ping);
-    return launcher::lang::tx(r["to"]==me?"Incoming:":"Sent:")+" "+description+" | "+launcher::lang::tx(r.value("state",std::string()))+" ("+std::to_string(r.value("remaining",0))+"s)";
+    const std::string kind=!p2p_matches && r.value("transport",std::string())==kP2pTransport?" | "+launcher::lang::tr("lobby.p2p.test_button"):std::string();
+    return launcher::lang::tx(r["to"]==me?"Incoming:":"Sent:")+" "+description+kind+" | "+launcher::lang::tx(r.value("state",std::string()))+" ("+std::to_string(r.value("remaining",0))+"s)";
   });
   Json social=state.value("friend_requests",Json::array()); for(auto& f:social) f["incoming"]=true;
   for(auto& f:state.value("friends",Json::array())) social.push_back(f);
@@ -1090,6 +1141,8 @@ void refresh() {
   SendMessageW(GetDlgItem(window,CODE),EM_SETREADONLY,TRUE,0);
   EnableWindow(GetDlgItem(window,GO_ONLINE),!playing);
   EnableWindow(GetDlgItem(window,REQUEST),active && !playing && can_play && !selected(GetDlgItem(window,PLAYERS),rows).empty() && selected(GetDlgItem(window,PLAYERS),rows)!=me);
+  // The same rule as Send Match Request; why a player cannot be asked this way shows when it is pressed.
+  EnableWindow(GetDlgItem(window,P2P_REQUEST),active && !playing && can_play && !selected(GetDlgItem(window,PLAYERS),rows).empty() && selected(GetDlgItem(window,PLAYERS),rows)!=me);
   EnableWindow(GetDlgItem(window,ACCEPT),active && !playing && can_play);
   // Invite to Match: a friend who is online now, while this PC can take a match. Friends can play
   // while out of the public lobby, so it does not wait for Go Online.
@@ -1108,6 +1161,8 @@ void refresh() {
   if(!can_play && !playing) label(STATUS,launcher::lang::tr("lobby.p2p.setup_hint"));
 #else
   if(!can_play && !playing) label(STATUS,p2p_matches?launcher::lang::tr("lobby.p2p.setup_hint"):std::string("To play, finish disc and Slippi setup on the Play tab."));
+  // The code field's caption follows what the code is: the account's, or the one made from the name.
+  if(!p2p_matches) label(PROFILE_CODE,hosted_code.empty()?launcher::lang::tr("lobby.profile.code"):std::string("Slippi connect code (linked)"));
 #endif
   // Copy code sits next to "Can't reach X. Use Slippi Direct with their code" while the status says it.
   copy_button_code=(can_play || playing)?copy:std::string();
@@ -1121,8 +1176,8 @@ void refresh() {
   process_invites(state,ping,me,playing);
   process_private(state);
   for(int i=0;i<26;++i) EnableWindow(GetDlgItem(window,CHARACTER_FIRST+i),!playing);
-  if(p2p_matches) EnableWindow(GetDlgItem(window,P2P_FIGHTER),!playing);
-  layout();
+  EnableWindow(GetDlgItem(window,p2p_matches?P2P_FIGHTER:P2P_FIGHTER_TEST),!playing);
+  layout_all();
   // The page paints its empty states (the badge and text of an empty list) itself. When a list
   // fills or empties, or a private room opens, what was painted is out of date in the strips no
   // control covers: the badge's top edge stayed above the first player. Repaint the page then.
@@ -1143,6 +1198,7 @@ void prefs_updated() {
 // back to its first. The choice is saved at once and goes to the lobby with the profile, which
 // puts it into the next match setup (launcher_lobby_p2p.cpp, p2p_mine).
 int fighter_character() { return p2p_character>=0?p2p_character:selected_mains.empty()?2:selected_mains[0]; }
+int fighter_button() { return p2p_matches?P2P_FIGHTER:P2P_FIGHTER_TEST; }   // the one of the two this build creates
 std::string fighter_caption() {
   const int ch=fighter_character(), colors=p2p_color_count(ch);
   const std::string who=p2p_character>=0?std::string(characters[ch])
@@ -1163,7 +1219,7 @@ void choose_fighter(HWND w) {
   // Two columns: twenty-six names in one would not fit a small screen.
   for(int i=0;i<26;++i)
     AppendMenuW(menu,MF_STRING|(p2p_character==i?MF_CHECKED:0)|(i==12?MF_MENUBARBREAK:0),CHARACTER+i,wide(characters[i]).c_str());
-  RECT anchor{}; GetWindowRect(GetDlgItem(w,P2P_FIGHTER),&anchor);
+  RECT anchor{}; GetWindowRect(GetDlgItem(w,fighter_button()),&anchor);
   const int pick=(int)TrackPopupMenu(menu,TPM_RETURNCMD|TPM_NONOTIFY|TPM_LEFTALIGN|TPM_TOPALIGN,anchor.left,anchor.bottom,0,w,nullptr);
   DestroyMenu(menu);   // the color menu goes with it
   if(pick<=0) return;
@@ -1172,7 +1228,7 @@ void choose_fighter(HWND w) {
   else if(pick>=COLOR && pick<COLOR+colors) p2p_color=pick-COLOR;
   if(p2p_color>=p2p_color_count(fighter_character())) p2p_color=0;
   { std::lock_guard<std::mutex> lock(mutex); config["p2p_ch"]=p2p_character; config["p2p_col"]=p2p_color; save(config); }
-  label(P2P_FIGHTER,fighter_caption());
+  label(fighter_button(),fighter_caption());
   announce();
 }
 // The Open to button: which versions this player takes match requests for. Mods not on this PC
@@ -1265,8 +1321,11 @@ bool copy_text(HWND w,const std::wstring& value) {
 }
 // Send Match Request (a player in the list) and Invite to Match (a friend): the version is chosen
 // from those both players can play before anything is sent.
-void send_request(HWND w,int button,const std::string& target,const Json& them) {
-  const Json mine=profile_config();
+void send_request(HWND w,int button,const std::string& target,const Json& them,bool p2p=false) {
+  // P2P Direct (the test control): vanilla only, so there is no version to pick. The lobby checks the
+  // rest (the other launcher, Source Port on both sides) and says what is missing.
+  if(p2p) { enqueue("request",{{"target",target},{"mode","vanilla"},{"transport",kP2pTransport}}); return; }
+  const Json mine=own_profile();
   const auto modes=common_modes(mine,them);
   // Vanilla alone goes straight out. When a mod is possible too (or only a mod), the player
   // picks; with nothing in common the request still goes out as vanilla so the reason shows.
@@ -1373,6 +1432,13 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       // In the Profile page's slot that Open to has in the other build (nothing but vanilla is
       // played peer to peer, so that button is never shown here).
       control(P2P_FIGHTER,L"BUTTON",L"");
+    } else {
+      // Both kinds of match: P2P Direct is a test control beside Go Online, with the character
+      // and color its matches are played with (a hosted match picks its character in the game).
+      control(P2P_REQUEST,L"BUTTON",launcher::lang::trw("lobby.p2p.test_button").c_str());
+      control(P2P_FIGHTER_TEST,L"BUTTON",L"");
+      static std::wstring p2p_tip; p2p_tip=launcher::lang::trw("lobby.p2p.test_tip");
+      TOOLINFOW tip{sizeof tip}; tip.uFlags=TTF_IDISHWND|TTF_SUBCLASS; tip.hwnd=w; tip.uId=(UINT_PTR)GetDlgItem(w,P2P_REQUEST); tip.lpszText=p2p_tip.data(); SendMessageW(tips,TTM_ADDTOOLW,0,(LPARAM)&tip);
     }
 
     control(EMPTY_PLAYERS,L"STATIC",L"No players here yet\nGo online to discover players.",SS_CENTER);
@@ -1395,10 +1461,10 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     label(OPEN_TO,launcher::lang::tx("Open to:")+" "+open_summary());
     label(PLAYER_FILTER,filter_caption());
     label(PROFILE_MAINS,launcher::lang::fill(launcher::lang::tx("Main characters ({count}/3)"),launcher::lang::Args{{"count",std::to_string(selected_mains.size())}}));
-    if(p2p_matches) label(P2P_FIGHTER,fighter_caption());
-    SetTimer(w,1,1000,nullptr); layout(); refresh(); return 0;
+    label(fighter_button(),fighter_caption());
+    SetTimer(w,1,1000,nullptr); layout_all(); refresh(); return 0;
   }
-  if(msg==WM_SIZE) { layout(); return 0; }
+  if(msg==WM_SIZE) { layout_all(); return 0; }
   if(msg==WM_ERASEBKGND) return 1;
   if(msg==WM_PAINT) { paint_lobby(w); return 0; }
   // The launcher's test captures (WM_APP+41) print every page off screen, this one included.
@@ -1506,7 +1572,7 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     if(id==ADD_FRIEND && HIWORD(wp)==BN_CLICKED) {
       auto target=selected(GetDlgItem(w,PLAYERS),rows);
       if(!target.empty()&&target!=self) { enqueue("friend",{{"target",target}}); label(STATUS,"Friend request sent."); }
-      else { lobby_tab=1; adding_friend=true; layout(); RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN); SetFocus(GetDlgItem(w,FRIEND_CODE)); }
+      else { lobby_tab=1; adding_friend=true; layout_all(); RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN); SetFocus(GetDlgItem(w,FRIEND_CODE)); }
       return 0;
     }
     if(id==FRIEND_SEND && HIWORD(wp)==BN_CLICKED) {
@@ -1524,13 +1590,13 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       if(peer_mode(cfg)) { enqueue("friend_code",{{"code",code}}); label(FRIEND_HINT,launcher::lang::fill(launcher::lang::tx("Looking for {code}. They get the request when their launcher is open."),launcher::lang::Args{{"code",code}})); return 0; }
       label(FRIEND_HINT,"Player not found yet. Both players must be online in the lobby."); return 0;
     }
-    if(id>=TAB_CHAT && id<=TAB_PROFILE && HIWORD(wp)==BN_CLICKED) { lobby_tab=id-TAB_CHAT; layout(); RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN); return 0; }
+    if(id>=TAB_CHAT && id<=TAB_PROFILE && HIWORD(wp)==BN_CLICKED) { lobby_tab=id-TAB_CHAT; layout_all(); RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN); return 0; }
     if(id>=CHARACTER_FIRST && id<CHARACTER_FIRST+26 && HIWORD(wp)==BN_CLICKED) {
       int character=id-CHARACTER_FIRST; auto found=std::find(selected_mains.begin(),selected_mains.end(),character);
       if(found!=selected_mains.end()) selected_mains.erase(found);
       else if(selected_mains.size()<3) selected_mains.push_back(character);
       label(PROFILE_MAINS,launcher::lang::fill(launcher::lang::tx("Main characters ({count}/3)"),launcher::lang::Args{{"count",std::to_string(selected_mains.size())}}));
-      if(p2p_matches) label(P2P_FIGHTER,fighter_caption());   // "First main" names the first of these
+      label(fighter_button(),fighter_caption());   // "First main" names the first of these
       InvalidateRect(GetDlgItem(w,id),nullptr,FALSE); return 0;
     }
     if(id==AUTO_REJECT && HIWORD(wp)==BN_CLICKED) {
@@ -1543,7 +1609,7 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     }
     if(id==SAVE_PROFILE && HIWORD(wp)==BN_CLICKED) {
       if(selected_mains.empty()) { label(STATUS,"Select at least one main."); return 0; }
-      auto cfg=profile_config(); bool online;
+      auto cfg=own_profile(); bool online;
       { std::lock_guard<std::mutex> lock(mutex); online=go_online_requested; config=cfg; save(config); notice="Profile saved."; }
       if(online) enqueue("join",cfg);
       lobby_tab=0; refresh(); RedrawWindow(w,nullptr,nullptr,RDW_INVALIDATE|RDW_ALLCHILDREN); return 0;
@@ -1556,7 +1622,7 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
         auto listed=[&](const Json& list){ for(const auto& p:list) if(p.value("id",std::string())==sender) return true; return false; };
         if(!listed(rows) && listed(roster_all)) set_filter("all");
         for(int i=0;i<(int)rows.size();++i) if(rows[i].value("id",std::string())==sender) {
-          SendMessageW(GetDlgItem(w,PLAYERS),LB_SETCURSEL,i,0);layout();InvalidateRect(w,nullptr,FALSE);
+          SendMessageW(GetDlgItem(w,PLAYERS),LB_SETCURSEL,i,0);layout_all();InvalidateRect(w,nullptr,FALSE);
           return 0;
         }
         label(STATUS,"That player is no longer online.");
@@ -1568,11 +1634,16 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       label(URL_LABEL,SendMessageW(GetDlgItem(w,MODE),CB_GETCURSEL,0,0)==0?"Bootstrap peer (optional)":"Lobby service URL");
     } else if(id==GO_ONLINE && HIWORD(wp)==BN_CLICKED) {
       bool online; { std::lock_guard<std::mutex> lock(mutex); online=!go_online_requested; }
-      if(online && (text(NAME).empty() || account_code.empty() || selected_mains.empty())) {
-        lobby_tab=3; layout();
+      // Going online needs a code to be announced under. Without the account that is the code made
+      // from the name (announced_code), which is enough for P2P Direct; a hosted request still asks
+      // for the account when it is sent.
+      const std::string online_code=announced_code();
+      if(online && (text(NAME).empty() || online_code.empty() || selected_mains.empty())) {
+        lobby_tab=3; layout_all();
         if(p2p_matches) label(STATUS,identity.empty()?launcher::lang::tr("lobby.p2p.identity_failed"):std::string("Choose a display name and at least one main in Profile."));
 #ifndef MELEE_NO_SLIPPI
-        else label(STATUS,account_code.empty()?"Sign in through Slippi Launcher, then reopen this tab.":"Choose a display name and at least one main in Profile.");
+        // No code although a name is there: no account, and no identity file to make one from.
+        else label(STATUS,online_code.empty() && !text(NAME).empty()?"Sign in through Slippi Launcher, then reopen this tab.":"Choose a display name and at least one main in Profile.");
 #endif
         SetFocus(GetDlgItem(w,NAME)); return 0;
       }
@@ -1581,7 +1652,7 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
         notice=online?"Joining the public lobby...":"Leaving the public roster; friend presence remains active.";
       }
       if(online) {
-        Json cfg=profile_config();
+        Json cfg=own_profile();
         enqueue("join",cfg);
       } else enqueue("leave");
       refresh();
@@ -1608,6 +1679,11 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       auto target=selected(GetDlgItem(w,PLAYERS),rows); if(target.empty() || target==self) return 0;
       Json them=Json::object(); for(const auto& p:rows) if(p.value("id",std::string())==target) { them=p; break; }
       send_request(w,REQUEST,target,them);
+    } else if(id==P2P_REQUEST && HIWORD(wp)==BN_CLICKED) {
+      // The same request and accept flow as Send Match Request, with the peer-to-peer transport.
+      auto target=selected(GetDlgItem(w,PLAYERS),rows); if(target.empty() || target==self) return 0;
+      Json them=Json::object(); for(const auto& p:rows) if(p.value("id",std::string())==target) { them=p; break; }
+      send_request(w,P2P_REQUEST,target,them,true);
     } else if(id==INVITE_FRIEND && HIWORD(wp)==BN_CLICKED) {
       // A friend can be asked while either player is out of the public lobby (launcher_lobby_p2p.cpp).
       auto target=selected(GetDlgItem(w,FRIENDS),friends); if(target.empty()) return 0;
@@ -1617,7 +1693,7 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
       auto target=selected(GetDlgItem(w,PLAYERS),rows); if(!target.empty() && target!=self) enqueue("friend",{{"target",target}});
     } else if(id==OPEN_TO && HIWORD(wp)==BN_CLICKED) {
       choose_open_to(w);
-    } else if(id==P2P_FIGHTER && HIWORD(wp)==BN_CLICKED) {
+    } else if((id==P2P_FIGHTER || id==P2P_FIGHTER_TEST) && HIWORD(wp)==BN_CLICKED) {
       choose_fighter(w);
     } else if(id==PLAYER_FILTER && HIWORD(wp)==BN_CLICKED) {
       choose_filter(w);
@@ -1662,8 +1738,11 @@ LRESULT CALLBACK proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
   return DefWindowProcW(w,msg,wp,lp);
 }
 }
-void set_account(const std::string& name,const std::string& code) {
-  bool changed=account_code!=code; account_name=name; account_code=code;
+void set_account(const std::string& name,const std::string& account) {
+  // Signed in, out, or as someone else: the player leaves the public lobby and joins again as who
+  // they now are. Without an account the code is the one made from the name (announced_code).
+  bool changed=hosted_code!=account; account_name=name; hosted_code=account;
+  const std::string code=announced_code(); account_code=code;
   bool leave=false;
   { std::lock_guard<std::mutex> lock(mutex); leave=changed&&go_online_requested;
     if(leave) go_online_requested=false;
@@ -1705,9 +1784,11 @@ void init(HWND parent,const std::string& dir) {
     // The match character and color: a damaged value is dropped, the rest of the profile stays.
     if(data.count("p2p_ch") && (!data["p2p_ch"].is_number_integer() || data["p2p_ch"].get<int>()<-1 || data["p2p_ch"].get<int>()>25)) data.erase("p2p_ch");
     if(data.count("p2p_col") && (!data["p2p_col"].is_number_integer() || data["p2p_col"].get<int>()<0 || data["p2p_col"].get<int>()>5)) data.erase("p2p_col");
+    // Whether an account was signed in when the profile was last saved says nothing about now.
+    if(data.is_object()) data.erase("hosted_ok");
     if(valid) config=data;
   } catch(...) {}
-  if(p2p_matches) {
+  {
     // Tests: "<character>/<color>" instead of the saved choice, so a run needs no click.
     if(const char* fighter=test_env("MELEE_LAUNCHER_TEST_LOBBY_FIGHTER")) {
       int ch=-1,col=0;
@@ -1720,12 +1801,12 @@ void init(HWND parent,const std::string& dir) {
   WNDCLASSW wc{}; wc.lpfnWndProc=proc; wc.hInstance=GetModuleHandleW(nullptr); wc.lpszClassName=L"MeleeUnlockedLobby";
   wc.hCursor=LoadCursor(nullptr,IDC_ARROW); wc.hbrBackground=nullptr; RegisterClassW(&wc);
   if(const char* name=test_env("MELEE_LAUNCHER_TEST_LOBBY_NAME")) config["name"]=std::string(name);
+  // Before the worker starts, so the identity file is made (or read) by one thread only.
+  identity=identity_key(dir);
   if(p2p_matches) {
-    // Before the worker starts, so the identity file is made (or read) by one thread only.
-    identity=identity_key(dir);
     account_name=config.value("name",std::string());
     account_code=identity.empty()?std::string():derived_code(account_name,identity);
-  }
+  } else account_code=announced_code();   // until the launcher names the account (set_account)
   config["code"]=account_code;
   if(config.value("name",std::string()).empty()) config["name"]=account_name;
   worker=std::thread(work);
@@ -1737,7 +1818,7 @@ void open(const std::string& version,bool ready) {
   if(!window) window=CreateWindowExW(0,L"MeleeUnlockedLobby",L"",WS_CHILD|WS_CLIPCHILDREN,
                                      MulDiv(190,dpi,96),0,client.right-MulDiv(190,dpi,96),client.bottom,
                                      owner,nullptr,GetModuleHandleW(nullptr),nullptr);
-  layout();
+  layout_all();
   ShowWindow(window,SW_SHOW); SetFocus(window); refresh();
 }
 void hide() { if(window) ShowWindow(window,SW_HIDE); }
@@ -1746,7 +1827,8 @@ void refresh_theme() {
   InvalidateRect(window,nullptr,FALSE);
   for(int id:{GO_ONLINE,REQUEST,ADD_FRIEND,TAB_PROFILE,TAB_FRIENDS,TAB_HISTORY,TAB_CHAT,
               AUTO_REJECT,REQUEST_SOUND,OPEN_TO,SAVE_PROFILE,SEND,EMOJI,ACCEPT,DECLINE,
-              PLAYER_FILTER,INVITE_FRIEND,COPY_CODE,PM_PLAYER,PM_FRIEND,INVITE_CONNECT,INVITE_COPY,FIND_MATCH,BLOCK_PLAYER,P2P_FIGHTER})
+              PLAYER_FILTER,INVITE_FRIEND,COPY_CODE,PM_PLAYER,PM_FRIEND,INVITE_CONNECT,INVITE_COPY,FIND_MATCH,BLOCK_PLAYER,P2P_FIGHTER,
+              P2P_REQUEST,P2P_FIGHTER_TEST})
     if(HWND h=GetDlgItem(window,id)) InvalidateRect(h,nullptr,FALSE);
   for(int i=0;i<26;++i) if(HWND h=GetDlgItem(window,CHARACTER_FIRST+i)) InvalidateRect(h,nullptr,FALSE);
 }
@@ -1776,7 +1858,7 @@ void game_running(bool value) {
         record_match(*pending_match,p2p_outcome(first),1);
         // Further games of the same session: "<id>.g2.json", "<id>.g3.json", ... beside the first
         // (source_p2p.cpp names them), until one is missing.
-        if(p2p_matches && first.size()>5) for(int game=2;game<=127;++game) {
+        if(first.size()>5) for(int game=2;game<=127;++game) {
           const std::string next=first.substr(0,first.size()-5)+".g"+std::to_string(game)+".json";
           std::error_code ec;
           if(!std::filesystem::exists(std::filesystem::u8path(next),ec)) break;
@@ -1861,17 +1943,20 @@ void set_prefs(const Prefs& next) {
 Prefs prefs() { std::lock_guard<std::mutex> lock(mutex); Prefs p=current_prefs; p.open_to=join_list(open_list()); return p; }
 void on_prefs_changed(std::function<void()> callback) { prefs_changed=std::move(callback); }
 
-// Test runs only (MELEE_LAUNCHER_TEST, the build with peer-to-peer matches): what a player would
-// click. MELEE_LAUNCHER_TEST_LOBBY_AUTOSEARCH=1 goes online and presses Find match;
-// MELEE_LAUNCHER_TEST_LOBBY_REQUEST=1 goes online and sends a match request to the first player
-// seen; MELEE_LAUNCHER_TEST_LOBBY_ACCEPT=1 goes online and accepts every request. One match per run.
+// Test runs only (MELEE_LAUNCHER_TEST): what a player would click.
+// MELEE_LAUNCHER_TEST_LOBBY_AUTOSEARCH=1 goes online and presses Find match (only the build where
+// every match is peer to peer has it); MELEE_LAUNCHER_TEST_LOBBY_REQUEST=1 goes online and sends a
+// peer-to-peer match request to the first player seen (in the launcher with both kinds of match
+// that is the P2P Direct test control; the value "hosted" sends the other kind instead);
+// MELEE_LAUNCHER_TEST_LOBBY_ACCEPT=1 goes online and accepts every request. One match per run.
 static void test_drive() {
-  static const bool search=test_env("MELEE_LAUNCHER_TEST_LOBBY_AUTOSEARCH")!=nullptr;
-  static const bool request=test_env("MELEE_LAUNCHER_TEST_LOBBY_REQUEST")!=nullptr;
+  static const bool search=p2p_matches && test_env("MELEE_LAUNCHER_TEST_LOBBY_AUTOSEARCH")!=nullptr;
+  static const char* const request_kind=test_env("MELEE_LAUNCHER_TEST_LOBBY_REQUEST");
+  static const bool request=request_kind!=nullptr;
   static const bool accept=test_env("MELEE_LAUNCHER_TEST_LOBBY_ACCEPT")!=nullptr;
   static bool searched=false;
   static ULONGLONG next_try=0;
-  if(!p2p_matches || (!search && !request && !accept) || !can_play || build.empty()) return;
+  if((!search && !request && !accept) || !can_play || build.empty()) return;
   Json state; std::string me; bool playing,taken;
   { std::lock_guard<std::mutex> lock(mutex); state=snapshot; me=self; playing=running; taken=test_match_taken; }
   if(playing || taken) return;
@@ -1879,7 +1964,7 @@ static void test_drive() {
   const Json mine=state.value("self",Json::object());
   if(!mine.is_object() || !mine.value("visible",false)) {
     if(now<next_try) return;
-    const Json cfg=profile_config();
+    const Json cfg=own_profile();
     if(cfg.value("name",std::string()).empty() || cfg.value("code",std::string()).empty()) return;
     { std::lock_guard<std::mutex> lock(mutex); go_online_requested=true; }
     enqueue("join",cfg); next_try=now+5000;
@@ -1900,7 +1985,9 @@ static void test_drive() {
     const auto id=p.value("id",std::string());
     if(id.empty() || id==me || p.value("status",std::string())!="Online" || !p.value("ready",false)) continue;
     next_try=now+5000;   // the lobby takes one request every three seconds
-    enqueue("request",{{"target",id},{"mode","vanilla"}});
+    Json data={{"target",id},{"mode","vanilla"}};
+    if(!p2p_matches && std::string(request_kind)!="hosted") data["transport"]=kP2pTransport;
+    enqueue("request",data);
     break;
   }
 }

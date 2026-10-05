@@ -14,6 +14,7 @@
 #include "gx_core.h"
 #include "cosmetic_mods.h"
 #include "net_trace.h"
+#include "netplay_state.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -1178,9 +1179,19 @@ void set_native_gameplay_profile(NativeGameplayProfile profile) {
 }
 uint64_t rollback_count() { return g_rollbacks; }
 void note_rollback(int32_t to_frame) { ++g_rollbacks; trace_rollback(to_frame); }
-bool is_online_match() { return g_in_online_match; }
-int local_player_slot() { return g_local_player_index; }
+// The project's own peer-to-peer session (app/source_p2p.cpp) publishes its state in
+// host::netplay::session(). Everything in the host that asks "is a network match running" asks the
+// functions below, so when Slippi has no session of its own they answer from that state: offline-only
+// features (the player's Gecko codes, 20XX options, skin changes, automatic L-cancel) then stay off
+// in a peer-to-peer match exactly as in a Slippi one. With a Slippi session, Slippi's answer stands.
+static bool slippi_session_up() {
+  return g_in_online_match || g_play_session_active || (g_matchmaking && g_matchmaking->IsSearching());
+}
+static bool p2p_session_up() { return !slippi_session_up() && host::netplay::session_mode() >= 0; }
+bool is_online_match() { return g_in_online_match || (p2p_session_up() && host::netplay::is_online_match()); }
+int local_player_slot() { return p2p_session_up() ? host::netplay::local_player_slot() : (int)g_local_player_index; }
 std::array<std::string, 4> player_names_for_overlay() {
+  if (p2p_session_up()) return host::netplay::player_names();
   std::array<std::string, 4> names{};
   if (!g_in_online_match || !g_matchmaking) return names;
   for (int i = 0; i < 4; ++i) names[i] = g_matchmaking->GetPlayerName((uint8_t)i);
@@ -1188,17 +1199,19 @@ std::array<std::string, 4> player_names_for_overlay() {
     names[g_local_player_index] = g_user->GetUserInfo().display_name;
   return names;
 }
-int ping_ms() { return g_netplay ? g_netplay->LastPingMs() : 0; }
+int ping_ms() { return p2p_session_up() ? host::netplay::ping_ms() : (g_netplay ? g_netplay->LastPingMs() : 0); }
 
 // g_last_search keeps the mode of the last search for the whole session, so it only means anything
 // while an online session is actually up: searching, set up (the online character select screen),
 // or in the match. Everywhere else this is offline and the answer is -1.
 int session_mode() {
   const bool session = g_in_online_match || g_play_session_active || (g_matchmaking && g_matchmaking->IsSearching());
-  return session ? (int)g_last_search.mode : -1;
+  if (!session) return host::netplay::session_mode();   // a peer-to-peer session, or -1
+  return (int)g_last_search.mode;
 }
-int local_player_index() { return (int)g_local_player_index; }
+int local_player_index() { return p2p_session_up() ? host::netplay::local_player_slot() : (int)g_local_player_index; }
 bool in_online_menus() {
+  if (p2p_session_up()) return host::netplay::in_online_menus();
   const uint32_t now = host::retrace_count();
   return g_last_match_state_retrace && now - g_last_match_state_retrace < 10;
 }

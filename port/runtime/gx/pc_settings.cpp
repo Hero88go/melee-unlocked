@@ -944,6 +944,37 @@ static CustomPreset g_custom_preset;
 // The panel has saved which user Gecko codes are on (until then GeckoCodes.ini's own list is used).
 static bool g_gecko_chosen = false;
 
+// "+ Add Gecko code": paste in a code without finding and editing GeckoCodes.ini by hand. A pasted
+// block may carry its own "$Name" line (Dolphin's format, what most sites hand out); if it does, that
+// name is used and the typed one is just what is offered until then. On both engines' code pages.
+// True when a code was added (the settings are then saved).
+static bool gecko_add_code_button() {
+  bool changed = false;
+      static char add_name[64] = "";
+      static char add_body[32768] = "";   // room for the longest codes going around (a few hundred lines)
+      static std::string add_error;
+      if (ImGui::Button("+ Add Gecko code")) { add_name[0] = 0; add_body[0] = 0; add_error.clear(); ImGui::OpenPopup("add_gecko_code"); }
+      if (ImGui::BeginPopup("add_gecko_code")) {
+        ImGui::TextUnformatted("Name");
+        ImGui::SetNextItemWidth(300.0f);
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        ImGui::InputText("##gecko_name", add_name, sizeof add_name);
+        ImGui::TextUnformatted("Code lines: paste them here (XXXXXXXX YYYYYYYY, one pair per line).");
+        ImGui::TextUnformatted("If the paste starts with a $Name line, that name is used.");
+        ImGui::InputTextMultiline("##gecko_body", add_body, sizeof add_body, ImVec2(440.0f, 180.0f));
+        if (!add_error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", add_error.c_str());
+        if (ImGui::Button("Add")) {
+          add_error = user_gecko::add(add_name, add_body);
+          if (add_error.empty()) { user_gecko::save(); changed = true; ImGui::CloseCurrentPopup(); }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+        ImGui::EndPopup();
+      }
+  return changed;
+}
+
+
 // The controller last shown in the Controls tab (its device number), so the tab opens on it again
 // rather than on whatever plays as port 1. -1: nothing saved yet.
 static int g_saved_edit_tab = -1;
@@ -3909,6 +3940,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                          ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   net_overlay::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   replay_bar::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y, state.open || state.menu_open || state.practice_open || state.fill_window);
+  screen_label::draw(ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // Start on the controller closes the panel from any page (the open chord is Start + Down + Z,
   // which the input layer swallows whole, so this never fires on the press that opened it).
   if (state.open && ImGui::IsKeyPressed(ImGuiKey_GamepadStart, false) &&
@@ -7501,7 +7533,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("From:\n%s\nCodes that only write game variables run. Other codes are PowerPC and cannot run in this build.", user_gecko::path().c_str());
     if (user_gecko::codes().empty()) {
-      settings_hint("None. Put a GeckoCodes.ini next to port-settings.ini to add codes.");
+      settings_hint("None yet. Use \"+ Add Gecko code\" below and paste a code, or put a GeckoCodes.ini next to port-settings.ini.");
     } else {
       for (user_gecko::Code& c : user_gecko::codes()) {
         ImGui::PushID(&c);
@@ -7526,7 +7558,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("From:\n%s\nOther codes are PowerPC and run on the Static Recomp engine.", user_gecko::path().c_str());
     if (user_gecko::codes().empty()) {
-      settings_hint("None. Codes you add on the Static Recomp engine are listed here too.");
+      settings_hint("None yet. Use \"+ Add Gecko code\" below and paste a code. Codes you add on the Static Recomp engine are listed here too.");
     } else {
       // The rule for settings one engine runs: each code keeps its switch (its Static Recomp
       // setting), greyed here, and hovering it says why.
@@ -7551,6 +7583,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       }
     }
 #endif
+    ImGui::Separator();
+    if (gecko_add_code_button()) changed = true;
       } else if (state.active_tab == 6) {
     // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
     // Always shown: a code the other player does not have desyncs the match.
@@ -7590,31 +7624,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (!to_remove.empty()) { user_gecko::remove(to_remove); user_gecko::save(); changed = true; }
     }
     ImGui::Separator();
-    // Paste in a code without needing to find and edit GeckoCodes.ini by hand. A pasted block may
-    // carry its own "$Name" line (Dolphin's format, what most sites hand out); if it does, that name
-    // is used and the typed one below is just what is offered until then.
-    {
-      static char add_name[64] = "";
-      static char add_body[2048] = "";
-      static std::string add_error;
-      if (ImGui::Button("+ Add Gecko code")) { add_name[0] = 0; add_body[0] = 0; add_error.clear(); ImGui::OpenPopup("add_gecko_code"); }
-      if (ImGui::BeginPopup("add_gecko_code")) {
-        ImGui::TextUnformatted("Name");
-        ImGui::SetNextItemWidth(300.0f);
-        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-        ImGui::InputText("##gecko_name", add_name, sizeof add_name);
-        ImGui::TextUnformatted("Code (XXXXXXXX YYYYYYYY, one pair per line -- paste the whole thing, name line and all, and it wins)");
-        ImGui::InputTextMultiline("##gecko_body", add_body, sizeof add_body, ImVec2(400.0f, 140.0f));
-        if (!add_error.empty()) ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", add_error.c_str());
-        if (ImGui::Button("Add")) {
-          add_error = user_gecko::add(add_name, add_body);
-          if (add_error.empty()) { user_gecko::save(); changed = true; ImGui::CloseCurrentPopup(); }
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-      }
-    }
+    if (gecko_add_code_button()) changed = true;
     }
     if (gd_page && g_settings_gd_list && g_settings_gd_list == ImGui::GetCurrentWindow() &&
         g_settings_gd_snap_found) {

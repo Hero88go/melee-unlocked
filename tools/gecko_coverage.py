@@ -96,7 +96,11 @@ def type_name(word):
 
 class Compiler:
     """One code being read on the Source Port. `symbols` is the table tools/gecko_targets.py
-    builds."""
+    builds. Every rule is the console handler's own (port/slippi_sys/codehandler.bin, loaded at
+    80001800), with one difference: the handler runs every code as one list, so a base address, a
+    pointer or an open if left behind by one code is still there for the next and an F0 line ends
+    the whole list; here each code starts with both at 80000000 and no condition, and an F0 ends
+    that code only (the note above Compiler in user_gecko.cpp)."""
 
     def __init__(self, symbols):
         self.symbols = symbols
@@ -115,11 +119,13 @@ class Compiler:
         return "po" if (word >> 24) & 0x10 else "ba"
 
     def base_of(self, word):
+        """What a line counts from, the handler's r12: the pointer in full for the types with bit
+        0x10, else only the top seven bits of the base address (rlwinm r12,r6,0,0,6 at 80001FCC)."""
         name = self.register(word)
         if self.base[name] is None:
             raise Refused("base", "uses the %s after a condition that changed it has ended"
                           % ("pointer" if name == "po" else "base address"))
-        return self.base[name]
+        return self.base[name] if name == "po" else self.base[name] & 0xFE000000
 
     def address(self, word):
         return (self.base_of(word) + (word & 0x01FFFFFF)) & 0xFFFFFFFF
@@ -204,7 +210,7 @@ class Compiler:
                 self.close_to(0)
                 self.reset_bases(value)
             elif kind == 0xE2:
-                count, otherwise = word & 0xFF, (word >> 20) & 1
+                count, otherwise = word & 0x1F, (word >> 20) & 1   # five bits of count (80002740)
                 self.plan.append(("endif", count, otherwise))
                 self.close_to(max(0, self.depth - count), bool(otherwise))
                 self.reset_bases(value)
@@ -221,7 +227,7 @@ class Compiler:
         elif sub == 1:
             self.write(addr, struct.pack(">H", value & 0xFFFF) * ((value >> 16) + 1))
         elif sub == 2:
-            self.write(addr, struct.pack(">I", value))
+            self.write(addr & ~3, struct.pack(">I", value))   # rounded down to a word (80002050)
         elif sub == 3:
             rows = (value + 7) // 8
             if i + rows >= len(lines) and rows:
@@ -248,8 +254,9 @@ class Compiler:
         if word & 1:   # an address ending in 1: one endif first
             self.plan.append(("endif", 1, 0))
             self.close_to(max(0, self.depth - 1))
-        addr = (self.base_of(word) + (word & 0x01FFFFFE)) & 0xFFFFFFFF
+        # The line's 25 bits, the 1 included, then rounded down to what is read (80002104, 80002110).
         width = 4 if sub < 4 else 2
+        addr = (self.base_of(word) + (word & 0x01FFFFFF)) & 0xFFFFFFFF & ~(width - 1)
         self.read(addr, width)
         if width == 4:
             self.plan.append(("if", addr, 4, sub & 3, value, 0xFFFFFFFF))
@@ -260,7 +267,8 @@ class Compiler:
     def base_line(self, word, value, sub):
         target = "po" if sub & 4 else "ba"
         called = "pointer" if target == "po" else "base address"
-        add, relative, by_register = (word >> 20) & 0xF, (word >> 16) & 0xF, (word >> 12) & 0xF
+        # The handler tests one bit of each flag digit (80002198 to 800021F0).
+        add, relative, by_register = (word >> 20) & 1, (word >> 16) & 1, (word >> 12) & 1
         if sub & 3 == 0:
             raise Refused("pointer", "loads the %s from game memory (code type %s): a pointer there is a PC address here"
                           % (called, type_name(word)))
@@ -268,29 +276,32 @@ class Compiler:
             raise Refused("pointer", "takes the address of its own lines (code type %s)" % type_name(word))
         if by_register:
             raise Refused("pointer", "adds a register to an address (code type %s)" % type_name(word))
-        operand = (value + (self.base_of(word) if relative else 0)) & 0xFFFFFFFF
-        if sub & 3 == 1:   # set
+        if sub & 3 == 1:   # set: the number, plus what a line counts from, plus the register in full
+            operand = (value + (self.base_of(word) if relative else 0)) & 0xFFFFFFFF
             if add:
                 if self.base[target] is None:
                     raise Refused("base", "uses the %s after a condition that changed it has ended" % called)
                 operand = (self.base[target] + operand) & 0xFFFFFFFF
             self.base[target], self.set_at[target] = operand, self.depth
             return
-        # store: the register's value, a console address, written as a number
+        # store: the register's value in full, a console address, written as a number. The handler
+        # counts the address from the base whether or not the relative bit is set (stwx r6,r12,r4
+        # at 8000221C): 44000000 00400034 writes at 80400034.
+        operand = (self.base_of(word) + value) & 0xFFFFFFFF
         if self.base[target] is None:
             raise Refused("base", "uses the %s after a condition that changed it has ended" % called)
         self.write(operand, struct.pack(">I", self.base[target]))
 
     def register_line(self, word, value, sub):
         high, relative, n = (word >> 20) & 0xF, (word >> 16) & 0xF, word & 0xF
-        if sub == 0:     # 80: set or add a number
-            operand = (value + (self.base_of(word) if relative else 0)) & 0xFFFFFFFF
-            self.plan.append(("grset", n, operand, 1 if high else 0))
+        if sub == 0:     # 80: set or add a number (relative: bit 16 alone; add: bit 20 alone)
+            operand = (value + (self.base_of(word) if relative & 1 else 0)) & 0xFFFFFFFF
+            self.plan.append(("grset", n, operand, high & 1))
         elif sub in (1, 2):   # 82 load, 84 store
             width = {0: 1, 1: 2, 2: 4}.get(high)
             if width is None:
                 raise Refused("malformed", "has a register %s of an unknown size" % ("load" if sub == 1 else "store"))
-            addr = (value + (self.base_of(word) if relative else 0)) & 0xFFFFFFFF
+            addr = (value + (self.base_of(word) if relative & 1 else 0)) & 0xFFFFFFFF
             if sub == 1:
                 self.read(addr, width)
                 self.plan.append(("grload", n, addr, width))
@@ -304,8 +315,11 @@ class Compiler:
             if relative == 0:
                 self.plan.append(("grop", n, high, value) if sub == 3 else ("gropgr", n, high, value & 0xF))
             elif relative == 2 and sub == 3:
-                self.read(value, 4)
-                self.plan.append(("gropmem", n, high, value))
+                # The number is an address, always counted from the base (add r19,r12,r19 at
+                # 800023B8): 86020002 00400034 reads 80400034.
+                addr = (self.base_of(word) + value) & 0xFFFFFFFF
+                self.read(addr, 4)
+                self.plan.append(("gropmem", n, high, addr))
             else:
                 raise Refused("pointer", "uses a register as an address (code type %s)" % type_name(word))
         else:
@@ -315,7 +329,7 @@ class Compiler:
         if sub == 1:
             target = None
             if self.base[self.register(word)] is not None:
-                target = gecko_targets.find(self.symbols, self.address(word))
+                target = gecko_targets.find(self.symbols, self.address(word) & ~3)
             if target is not None and target.kind == gecko_targets.CODE:
                 raise Refused("code-inject", "injects PowerPC code into %s (C2), which this build cannot run" % target.name)
             raise Refused("code-inject", "injects PowerPC code (C2), which this build cannot run")
@@ -332,7 +346,10 @@ def compile_code(lines, symbols):
 
 
 def operate(a, b, op):
-    """One Gecko register operation on 32-bit values (code types 86 and 88)."""
+    """One Gecko register operation on 32-bit values (code types 86 and 88). `a` is the register
+    the result goes to, `b` the number, the memory or the other register. The handler's shifts and
+    its rotate are "slw r4,r9,r4" and the like (800023F4 to 8000240C) with a in r4 and b in r9: the
+    OPERAND is shifted, BY the register."""
     if op == 0:
         r = a + b
     elif op == 1:
@@ -344,15 +361,15 @@ def operate(a, b, op):
     elif op == 4:
         r = a ^ b
     elif op == 5:
-        r = 0 if b & 0x20 else a << (b & 0x1F)
+        r = 0 if a & 0x20 else b << (a & 0x1F)
     elif op == 6:
-        r = 0 if b & 0x20 else a >> (b & 0x1F)
+        r = 0 if a & 0x20 else b >> (a & 0x1F)
     elif op == 7:
-        n = b & 0x1F
-        r = (a << n) | (a >> (32 - n)) if n else a
+        n = a & 0x1F
+        r = (b << n) | (b >> (32 - n)) if n else b
     elif op == 8:
-        signed = a - 0x100000000 if a & 0x80000000 else a
-        r = signed >> min(b & 0x3F, 31)
+        signed = b - 0x100000000 if b & 0x80000000 else b
+        r = signed >> min(a & 0x3F, 31)
     else:
         fa, fb = (struct.unpack(">f", struct.pack(">I", x))[0] for x in (a, b))
         try:
@@ -379,6 +396,9 @@ def run_plan(plan, read, write, registers):
             if not passed:
                 skipping = 1
         elif kind == "endif":
+            # The handler keeps one bit per open if; an else flips the innermost bit only when the
+            # one above it is clear (8000274C to 80002754), so inside an outer block that is being
+            # skipped it changes nothing: the last case below.
             skipping = max(0, skipping - op[1])
             if op[2]:
                 skipping = 1 if skipping == 0 else 0 if skipping == 1 else skipping

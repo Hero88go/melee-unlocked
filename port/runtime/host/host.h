@@ -6,6 +6,7 @@
 #include <functional>
 #include <string>
 #include <vector>
+#include <filesystem>
 #include "ppc.h"
 #include "../abi/mu_host.h"
 #include "tick_timing.h"

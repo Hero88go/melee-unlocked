@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include <cstdlib>
+// P2P Direct in the launcher that also has Slippi is a test feature until its full match flow is
+// in: its lobby controls, and going online without a Slippi sign-in, are there only when the
+// environment variable MELEE_P2P_TEST is set (the hidden test launcher, MELEE_LAUNCHER_TEST, has
+// them too). Without it this launcher looks and behaves as before.
+inline bool p2p_test_shown() {
+  static const bool on = std::getenv("MELEE_P2P_TEST") != nullptr || std::getenv("MELEE_LAUNCHER_TEST") != nullptr;
+  return on;
+}
 #include <nlohmann/json.hpp>
 #include <map>
 #include <memory>
@@ -14,6 +23,8 @@ inline constexpr const char* kHostedTransport = "hosted";
 #else
 inline constexpr const char* kHostedTransport = "slippi-direct";
 #endif
+// This project's own peer-to-peer match (P2P Direct): the transport of a request that starts one.
+inline constexpr const char* kP2pTransport = "p2p";
 // Test switches. A real launcher leaves them all off.
 struct PeerTestOptions {
   bool no_dht = false;          // skip the public DHT entirely: only peers given by address (two in one process)
@@ -21,6 +32,9 @@ struct PeerTestOptions {
   int protocol = 0;             // announce this lobby protocol instead of the current one (an older launcher)
   bool no_private = false;      // treat private chat messages as an older launcher does: unknown, never acknowledged
   unsigned private_request_ms = 0;   // how long a private chat request waits for an answer (0: the default)
+  // Stand in for the launcher built without the other transport, as first released: every match
+  // peer to peer, no transport named in a request, no transport list sent in the hello or read from one.
+  bool p2p_only = false;
 };
 // One instance per process with the DHT (it is process-wide); any number with no_dht.
 // Runs on the launcher's lobby worker thread.
@@ -37,8 +51,10 @@ public:
   // unfriend, request (target, mode), accept, cancel (request, optional code). Private chat:
   // pm_request (target), pm_accept (room), pm_decline (room, optional block), pm (room, text),
   // pm_close (room, optional block), pm_unblock (target). Throws a message for the player, in
-  // their language, when an action cannot go ahead. The build without the Slippi layer adds: search
-  // (on), block / unblock (target), connect (invite), and "auto" on a request.
+  // their language, when an action cannot go ahead. A request may name its "transport": kP2pTransport
+  // for a peer-to-peer match, else (or with none) the launcher's other kind of match. The build
+  // without the Slippi layer plays every match peer to peer and adds: search (on), block / unblock
+  // (target), connect (invite), and "auto" on a request.
   void command(const std::string& action, const nlohmann::json& data = nlohmann::json::object());
   void presence(const nlohmann::json& status);
   void presence_now();                                    // the next tick tells every player the status, not the next due one
@@ -46,7 +62,7 @@ public:
   nlohmann::json state() const;
   std::map<std::string, int> pings() const;
   // An accepted match to start, once per request: request, opponent, name, code, build, mode, character.
-  // A peer-to-peer match (p2p_matches) also carries "p2p": slot, port, peers, chars, stage, seed,
+  // A peer-to-peer match (its request's transport is kP2pTransport) also carries "p2p": slot, port, peers, chars, stage, seed,
   // delay, expect, names, auto (see p2p_arguments). The port is this lobby's own (port()) unless
   // MELEE_P2P_SEPARATE_PORT=1: the lobby must be destroyed before the game can bind it.
   bool take_launch(nlohmann::json& launch);
@@ -64,15 +80,21 @@ private:
 // Shared by the lobby window and the tests.
 // 1 is 0.8.1; 2 adds refusal reasons, delivery, friend codes and mods; 3 adds private chat; 4 adds
 // the peer-to-peer match setup on accept and its acknowledgment, searching, and automatic requests.
-// Only the build without the Slippi layer speaks 4: its accepted matches start the game's own
-// peer-to-peer session instead of Slippi Direct, so it refuses matches with anything older.
+// Every launcher speaks 4. Whether a match is peer to peer is a property of its request:
+//   - The launcher built without the Slippi layer (p2p_matches) plays every match peer to peer. Its
+//     requests carry no transport field and its hello no transport list.
+//   - The other launcher plays both kinds. Its hello carries "tp": [kHostedTransport, kP2pTransport],
+//     and a request for a peer-to-peer match carries "transport": kP2pTransport. A request without
+//     the field is the hosted kind, which is all a protocol 3 launcher sends or understands.
+// A peer-to-peer match needs two launchers of the same kind (the two kinds of game refuse each other
+// in their handshake), so a protocol 4 peer without the list is the first kind and is refused by the
+// second with "p2p_version", in both directions, before anything is started.
 #ifdef MELEE_NO_SLIPPI
-constexpr bool p2p_matches = true;
-constexpr int lobby_protocol = 4;
+constexpr bool p2p_matches = true;       // every match of this launcher is peer to peer
 #else
-constexpr bool p2p_matches = false;
-constexpr int lobby_protocol = 3;
+constexpr bool p2p_matches = false;      // peer to peer per request (its transport)
 #endif
+constexpr int lobby_protocol = 4;
 constexpr int p2p_protocol = 4;          // the first lobby protocol that knows the peer-to-peer match setup
 constexpr int p2p_input_delay = 2;       // frames, the same on both sides
 // The player code of a launcher without a Slippi account: up to four letters or digits of the name,

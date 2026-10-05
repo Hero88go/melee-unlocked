@@ -5126,6 +5126,74 @@ LiveCycle cycle_slot_live(const std::string& slot, int direction) {
   return result;
 }
 
+// ---- stage select skin cycling ----
+// The profile's key for a stage file: the target path of the stage skins installed for it, as the
+// catalog spells it. Empty when no stage skin is installed for that file.
+static std::string stage_target_locked(const std::string& stage_file) {
+  std::string wanted = lower(stage_file);
+  const size_t slash = wanted.find_last_of('/');
+  if (slash != std::string::npos) wanted = wanted.substr(slash + 1);
+  for (const auto& asset : g_assets) {
+    if (asset.info.kind != "stage_visual" || !asset.info.available) continue;
+    std::string have = lower(asset.info.target_path);
+    const size_t at = have.find_last_of('/');
+    if (at != std::string::npos) have = have.substr(at + 1);
+    if (have == wanted) return selection_key(asset);
+  }
+  return {};
+}
+
+LiveCycle cycle_stage_live(const std::string& stage_file, int direction) {
+  LiveCycle result;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (!ready_locked(&result.message)) return result;
+  if (g_online_freezes.load(std::memory_order_relaxed) || online_active()) {
+    result.message = "Stage skins cannot change while an online session is up."; return result;
+  }
+  const std::string target = stage_target_locked(stage_file);
+  if (target.empty()) { result.message = "No skin is installed for this stage."; return result; }
+  std::vector<std::string> ids{std::string()}, names{"Standard"};
+  for (const auto& asset : g_assets) {
+    if (asset.info.kind != "stage_visual" || !asset.info.available || selection_key(asset) != target) continue;
+    ids.push_back(asset.info.id);
+    names.push_back(asset.source_kind == kDiscSource ?
+        asset.source_name + (asset.info.variant.empty() ? "" : " (" + asset.info.variant + ")") : asset.info.name);
+  }
+  size_t at = 0;
+  const auto picked = g_profile.selections.find(target);
+  if (g_profile.enabled && picked != g_profile.selections.end())
+    for (size_t i = 1; i < ids.size(); ++i) if (ids[i] == picked->second) at = i;
+  result.previous_id = ids[at]; result.asset_id = ids[at]; result.name = names[at];
+  result.ok = true;
+  const size_t count = ids.size();
+  if (count < 2) { result.message = "No skin is installed for this stage."; return result; }
+  const size_t next = direction > 0 ? (at + 1) % count : (at + count - 1) % count;
+  const bool standard = ids[next].empty();
+  if (!g_live_unpublished) {
+    const auto runtime = std::atomic_load(&g_runtime);
+    g_live_in_step = runtime->initialized && runtime->fingerprint == desired_fingerprint_locked();
+  }
+  Profile previous = g_profile;
+  if (standard) g_profile.selections[target] = kVanillaSelection;
+  else { g_profile.enabled = true; g_profile.selections[target] = ids[next]; }
+  ++g_profile.generation;
+  if (!save_profile_locked(&result.message)) { g_profile = std::move(previous); return result; }
+  g_live_unpublished = true;
+  g_message = names[next] + " selected for " + target + ".";
+  result.changed = true; result.asset_id = ids[next]; result.name = names[next];
+  return result;
+}
+
+RepublishResult republish_stage(uint8_t* fst, uint32_t fst_size, const std::string& stage_file) {
+  RepublishResult result;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const std::string target = stage_target_locked(stage_file);
+  if (!fst || target.empty()) { result.message = "No skin is installed for this stage."; return result; }
+  publish_locked(fst, fst_size, &target, &result);
+  if (!result.ok) host::log("cosmetics: %s was not published again (%s)", target.c_str(), result.message.c_str());
+  return result;
+}
+
 // ---- voice mods: which bank a match hears (docs/voice-mods.md) ----
 
 // The skin a costume slot serves right now, from the running snapshot: what the match will load for
