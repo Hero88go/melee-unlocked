@@ -717,11 +717,11 @@ void ftKx_SpecialLwRunJump_Phys(HSD_GObj* gobj)
 
     vel = da->speciallw_air_drift * fp->input.lstick[0].x + fp->self_vel.x;
     fp->self_vel.x = vel;
-    if (!(vel >= -da->speciallw_air_max_vel_x)) {
+    if (vel < -da->speciallw_air_max_vel_x) {
         vel = -da->speciallw_air_max_vel_x;
     }
     fp->self_vel.x = vel;
-    if (!(da->speciallw_air_max_vel_x >= vel)) {
+    if (da->speciallw_air_max_vel_x < vel) {
         vel = da->speciallw_air_max_vel_x;
     }
     fp->self_vel.x = vel;

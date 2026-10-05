@@ -1,6 +1,12 @@
 /* Knuckles native port working copy; PlKx.dat comparison review in progress. */
-/* ACE Knuckles: ground dash, aerial dash and aerial turn.
- * The PlKx.dat callbacks skip the inherited charging state. */
+/* Akaneia's Sonic: side special, the spin dash.
+ *
+ * Start -> Hold: he spins in place (ground or air) charging one point per frame, kicking up
+ * dust. After 8 frames B launches the dash, L/R/Z cancels and throws the charge away. Reaching
+ * the full 75 ends the move with the charge STORED: the next side B skips straight to a
+ * full-power dash (SpecialSMax / SpecialAirSMax), and while stored every state change reapplies
+ * a color overlay (OnActionStateChange). Dash speed scales from 4 to 6 with the charge.
+ * Hand-written from PlSn.dat's ftFunction code; see NOTES.md. */
 #include "knuckles.h"
 
 #include <melee/ef/eflib.h>
@@ -8,18 +14,10 @@
 #include <melee/ef/types.h>
 #include <melee/ft/fighter.h>
 #include <melee/ft/ft_081B.h>
-#include <melee/ft/ft_0819.h>
 #include <melee/ft/ft_084E.h>
 #include <melee/ft/ft_0881.h>
 #include <melee/ft/ft_0892.h>
 #include <melee/ft/ftanim.h>
-#include <melee/ft/ftcliffcommon.h>
-#include <melee/ft/ftwalljump.h>
-#include <melee/ft/ftwalkcommon.h>
-#include <melee/ft/kinds/ftCommon/ftCo_Jump.h>
-#include <melee/ft/kinds/ftCommon/ftCo_AirCatch.h>
-#include <melee/ft/kinds/ftCommon/ftCo_JumpAerial.h>
-#include <melee/mp/mpcoll.h>
 #include <melee/ft/ftcommon.h>
 #include <melee/ft/inlines.h>
 #include <melee/ft/kinds/ftCommon/ftCo_Fall.h>
@@ -34,6 +32,9 @@
 
 static void ftKx_SpecialSStart_Enter(HSD_GObj* gobj);
 static void ftKx_SpecialAirSStart_Enter(HSD_GObj* gobj);
+static void ftKx_SpecialSHold_Enter(HSD_GObj* gobj);
+static void ftKx_SpecialSEnd_Enter(HSD_GObj* gobj);
+static void ftKx_SpecialAirSEnd_Enter(HSD_GObj* gobj);
 static void ftKx_SpecialSAttack_EnterAirOrGround(HSD_GObj* gobj);
 static void ftKx_SpecialSStart_Trans(HSD_GObj* gobj);
 static void ftKx_SpecialAirSStart_Trans(HSD_GObj* gobj);
@@ -43,31 +44,6 @@ static void ftKx_SpecialS_Trans(HSD_GObj* gobj);
 static void ftKx_SpecialAirS_Trans(HSD_GObj* gobj);
 static void ftKx_SpecialS_OnHit(HSD_GObj* gobj);
 static void ftKx_SpecialS_GiveDamage(HSD_GObj* gobj);
-
-/* PlKx compares r3 after the void collision helper at 800831CC. Its ground
- * callback leaves the ground-validation result there; otherwise the last wall/ledge check
- * leaves its boolean. Keep that branch without reading a native void return. */
-static bool ftKx_AirSideCollision(HSD_GObj* gobj)
-{
-    Fighter* fp = GET_FIGHTER(gobj);
-    CollData* coll = &fp->coll_data;
-    bool landed;
-    coll->last_pos = coll->cur_pos;
-    coll->cur_pos = fp->cur_pos;
-    if (fp->x2064_ledgeCooldown || fp->stamina_dead) {
-        landed = mpColl_80047AC8(coll, NULL, gobj);
-    } else {
-        mpCollSetFacingDir(coll, fp->facing_dir < 0.0F ? -1 : 1);
-        landed = mpColl_80047E14(coll, NULL, gobj);
-    }
-    fp->cur_pos = coll->cur_pos;
-    if (!ft_80081A00(gobj) && landed) {
-        ftKx_SpecialS_Trans(gobj);
-        return true;
-    }
-    if (ftWallJump_8008169C(gobj)) return true;
-    return ftCliffCommon_80081298(gobj);
-}
 
 /* ---- entry ---------------------------------------------------------------------------------- */
 
@@ -99,34 +75,29 @@ void ftKx_SpecialS_EnterAirOrGround(HSD_GObj* gobj)
 
 static void ftKx_SpecialSStart_Enter(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
-    Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialS, Ft_MF_None, 0.0F, 1.0F, 0.0F, NULL);
-    fp->self_vel.x = ftKx_DA(fp)->specials_min_speed * fp->facing_dir;
+    Fighter* fp = GET_FIGHTER(gobj);
+
+    Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialSStart, Ft_MF_None, 0.0F, 1.0F, 0.0F, NULL);
     fp->self_vel.y = 0.0F;
     ftKx_SetEffectCallbacks(fp, ftKx_SpecialS_OnHit);
 }
 
 static void ftKx_SpecialAirSStart_Enter(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
-    if (ftKx_FV(fp)->air_side_used == 1) {
-        if (fp->facing_dir1 == 1.0F) fp->facing_dir = 1.0F;
-        else if (fp->facing_dir1 == -1.0F) fp->facing_dir = -1.0F;
-        return;
-    }
-    fp->self_vel.x = (float) (fp->facing_dir * 0.85);
-    fp->self_vel.y = 0.0F;
-    Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirS, Ft_MF_None, 0.0F, 1.0F, 0.0F, NULL);
+    Fighter* fp = GET_FIGHTER(gobj);
+
+    Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirSStart, Ft_MF_None, 0.0F, 1.0F, 0.0F,
+                              NULL);
     ftKx_SetEffectCallbacks(fp, ftKx_SpecialS_OnHit);
-    ftKx_FV(fp)->air_side_used = 1;
-    fp->cmd_vars[3] = 0;
 }
 
 /* ---- Start ---------------------------------------------------------------------------------- */
 
 void ftKx_SpecialSStart_Anim(HSD_GObj* gobj)
 {
-
+    if (!ftAnim_IsFramesRemaining(gobj)) {
+        ftKx_SpecialSHold_Enter(gobj);
+    }
 }
 
 void ftKx_SpecialSStart_IASA(HSD_GObj* gobj) {}
@@ -145,7 +116,9 @@ void ftKx_SpecialSStart_Coll(HSD_GObj* gobj)
 
 void ftKx_SpecialAirSStart_Anim(HSD_GObj* gobj)
 {
-
+    if (!ftAnim_IsFramesRemaining(gobj)) {
+        ftKx_SpecialSHold_Enter(gobj);
+    }
 }
 
 void ftKx_SpecialAirSStart_IASA(HSD_GObj* gobj) {}
@@ -164,9 +137,10 @@ void ftKx_SpecialAirSStart_Coll(HSD_GObj* gobj)
 
 static void ftKx_SpecialSStart_Trans(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
-    Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialS, ftCommon_GroundAirColl_MF,
-                             fp->cur_anim_frame, 1.0F, 0.0F, NULL);
+    Fighter* fp = GET_FIGHTER(gobj);
+
+    Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialSStart, ftCommon_GroundAirColl_MF,
+                              fp->cur_anim_frame, 1.0F, 0.0F, NULL);
     ftCommon_8007D7FC(fp);
     fp->self_vel.y = 0.0F;
     ftKx_SetEffectCallbacks(fp, ftKx_SpecialS_OnHit);
@@ -174,39 +148,165 @@ Fighter* fp = GET_FIGHTER(gobj);
 
 static void ftKx_SpecialAirSStart_Trans(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
-    Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirS, ftCommon_GroundAirColl_MF,
-                             fp->cur_anim_frame, 1.0F, 0.0F, NULL);
+    Fighter* fp = GET_FIGHTER(gobj);
+
+    Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirSStart, ftCommon_GroundAirColl_MF,
+                              fp->cur_anim_frame, 1.0F, 0.0F, NULL);
     ftCommon_8007D5D4(fp);
     ftKx_SetEffectCallbacks(fp, ftKx_SpecialS_OnHit);
-    ftKx_FV(fp)->air_side_used = 1;
 }
 
 /* ---- Hold ----------------------------------------------------------------------------------- */
 
+static void ftKx_SpecialSHold_Enter(HSD_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
 
+    Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialSHold, Ft_MF_None, 0.0F, 1.0F, 0.0F, NULL);
+    ftKx_SetEffectCallbacks(fp, ftKx_SpecialS_OnHit);
+}
 
 /* SpecialS_OnFinishCharge */
+static void ftKx_SpecialS_OnFinishCharge(HSD_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
 
+    ftKx_FV(fp)->specials_charge = ftKx_DA(fp)->specials_max_charge;
+    ft_800881D8(fp, ftKx_Sfx_ChargeFull, 0x7F, 0x40);
+}
 
 /* SpecialS_SpawnChargeEffect: dust at the feet every few frames, randomly turned; also marks the
  * move's effects as spawned (x2219_b0). */
+static void ftKx_SpecialS_SpawnChargeEffect(HSD_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    ftKnuckles_DatAttrs* da = ftKx_DA(fp);
+    ftKnuckles_SpecialSVars* mv = &ftKx_MV(fp)->specials;
+    EF_Effect* effect;
+    Vec3 pos;
 
+    if (!fp->x2219_b0) {
+        fp->x2219_b0 = true;
+    }
+    if (mv->dust_timer > 0) {
+        mv->dust_timer--;
+        return;
+    }
 
+    lb_8000B1CC(fp->parts[FtPart_TopN].joint, NULL, &pos);
+    effect = efSync_Spawn(ftKx_Ef_ChargeDust, gobj, &pos);
+    if (effect != NULL && effect->gobj != NULL) {
+        HSD_JObj* jobj = effect->gobj->hsd_obj;
+        if (jobj != NULL) {
+            double turn = HSD_Randf() * ftKx_PI;
+            jobj->rotate.y = (float) (turn + turn);
+            jobj->rotate.z = HSD_Randf() - 0.5F;
+            if (fp->ground_or_air == GA_Air) {
+                jobj->translate.y = jobj->translate.y - 7.0F;
+            }
+        }
+    }
+    mv->dust_timer = da->specials_dust_interval;
+}
 
+void ftKx_SpecialSHold_Anim(HSD_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    ftKnuckles_FighterVars* fv = ftKx_FV(fp);
 
+    if (fv->specials_charge >= ftKx_DA(fp)->specials_max_charge) {
+        ftKx_SpecialS_OnFinishCharge(gobj);
+        if (fp->ground_or_air == GA_Air) {
+            ftKx_SpecialAirSEnd_Enter(gobj);
+        } else {
+            ftKx_SpecialSEnd_Enter(gobj);
+        }
+        return;
+    }
+    ftKx_SpecialS_SpawnChargeEffect(gobj);
+    fv->specials_charge++;
+}
 
+void ftKx_SpecialSHold_IASA(HSD_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    ftKnuckles_DatAttrs* da = ftKx_DA(fp);
+    ftKnuckles_SpecialSVars* mv = &ftKx_MV(fp)->specials;
+    HSD_Pad pressed = fp->input.pressed_buttons;
 
+    if (pressed & (HSD_PAD_L | HSD_PAD_R | HSD_PAD_Z)) {
+        mv->cancel = 1;
+    }
+    if (mv->hold_frames >= da->specials_min_hold_frames) {
+        if (fp->ground_or_air == GA_Air) {
+            if (mv->cancel == 1) {
+                mv->cancel = 0;
+                ftKx_FV(fp)->specials_charge = 0;
+                ftKx_SpecialAirSEnd_Enter(gobj);
+            } else if (pressed & HSD_PAD_B) {
+                ftKx_SpecialSAttack_EnterAirOrGround(gobj);
+            }
+        } else {
+            if (mv->cancel == 1) {
+                mv->cancel = 0;
+                ftKx_FV(fp)->specials_charge = 0;
+                ftKx_SpecialSEnd_Enter(gobj);
+            } else if (pressed & HSD_PAD_B) {
+                ftKx_SpecialSAttack_EnterAirOrGround(gobj);
+            }
+        }
+    }
+    /* Runs even after leaving the state above, as shipped. */
+    mv->hold_frames++;
+}
 
+void ftKx_SpecialSHold_Phys(HSD_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    ftKnuckles_DatAttrs* da = ftKx_DA(fp);
+
+    if (fp->ground_or_air == GA_Air) {
+        ftCommon_Fall(fp, da->specials_hold_gravity, da->specials_hold_terminal_vel);
+        ftCommon_CalcSelfAccel_Deaccel(fp, da->specials_hold_air_decel);
+    } else {
+        ft_80084F3C(gobj);
+    }
+}
 
 /* Hold works on the ground and in the air in one state: only the ground/air flag flips. */
+void ftKx_SpecialSHold_Coll(HSD_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
 
+    if (fp->ground_or_air == GA_Ground) {
+        if (!ft_80082708(gobj)) {
+            ftCommon_8007D5D4(fp);
+        }
+    } else if (fp->ground_or_air == GA_Air) {
+        ftCollisionBox box = ftKx_CollBox(fp);
+        if (ft_800824A0(gobj, &box) == true) {
+            ftCommon_8007D7FC(fp);
+        }
+    }
+}
 
 /* ---- End ------------------------------------------------------------------------------------ */
 
+static void ftKx_SpecialSEnd_Enter(HSD_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
 
+    Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialSEnd, Ft_MF_None, 0.0F,
+                              ftKx_DA(fp)->specials_end_anim_rate, 0.0F, NULL);
+}
 
+static void ftKx_SpecialAirSEnd_Enter(HSD_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
 
+    Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirSEnd, Ft_MF_None, 0.0F,
+                              ftKx_DA(fp)->specials_end_anim_rate, 0.0F, NULL);
+}
 
 static void ftKx_SpecialSEnd_ClearCallbacks(Fighter* fp)
 {
@@ -269,19 +369,22 @@ void ftKx_SpecialAirSEnd_Coll(HSD_GObj* gobj)
 
 static void ftKx_SpecialSEnd_Trans(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
+    Fighter* fp = GET_FIGHTER(gobj);
+
     Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialSEnd, ftCommon_GroundAirColl_MF,
-                             fp->cur_anim_frame, 1.0F, 0.0F, NULL);
+                              fp->cur_anim_frame, ftKx_DA(fp)->specials_end_anim_rate, 0.0F,
+                              NULL);
     ftCommon_8007D7FC(fp);
 }
 
 static void ftKx_SpecialAirSEnd_Trans(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
+    Fighter* fp = GET_FIGHTER(gobj);
+
     Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirSEnd, ftCommon_GroundAirColl_MF,
-                             fp->cur_anim_frame, 1.0F, 0.0F, NULL);
+                              fp->cur_anim_frame, ftKx_DA(fp)->specials_end_anim_rate, 0.0F,
+                              NULL);
     ftCommon_8007D5D4(fp);
-    ftKx_FV(fp)->air_side_used = 1;
 }
 
 /* ---- the dash ------------------------------------------------------------------------------- */
@@ -289,23 +392,29 @@ Fighter* fp = GET_FIGHTER(gobj);
 /* SpecialSAttack_EnterAirOrGround: launch with speed lerped by the charge, spending it. */
 static void ftKx_SpecialSAttack_EnterAirOrGround(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
+    Fighter* fp = GET_FIGHTER(gobj);
     ftKnuckles_DatAttrs* da = ftKx_DA(fp);
     ftKnuckles_FighterVars* fv = ftKx_FV(fp);
+    ftKnuckles_SpecialSVars* mv;
     float ratio;
     FtMotionId msid;
+
     if (fv->specials_charge >= da->specials_max_charge) {
         msid = fp->ground_or_air == GA_Ground ? ftKx_MS_SpecialSMax : ftKx_MS_SpecialAirSMax;
     } else {
         msid = fp->ground_or_air == GA_Ground ? ftKx_MS_SpecialS : ftKx_MS_SpecialAirS;
     }
     Fighter_ChangeMotionState(gobj, msid, Ft_MF_None, 0.0F, 1.0F, 0.0F, NULL);
+
+    mv = &ftKx_MV(fp)->specials;
     ratio = (float) fv->specials_charge / (float) da->specials_max_charge;
-    ftKx_MV(fp)->specials.charge_ratio = ratio;
+    mv->charge_ratio = ratio;
     fp->self_vel.x = ((da->specials_max_speed - da->specials_min_speed) * ratio +
-                     da->specials_min_speed) * fp->facing_dir;
+                      da->specials_min_speed) *
+                     fp->facing_dir;
     fp->self_vel.y = 0.0F;
-    fv->specials_charge = 2;
+    fv->specials_charge = 0;
+
     ftKx_SetEffectCallbacks(fp, ftKx_SpecialS_OnHit);
     fp->deal_dmg_cb = ftKx_SpecialS_GiveDamage;
     fp->cmd_vars[0] = 0;
@@ -314,17 +423,23 @@ Fighter* fp = GET_FIGHTER(gobj);
 /* SpecialS_ApplyFriction: scale x velocity down each frame, stopping under 0.5. */
 static void ftKx_SpecialS_ApplyFriction(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
-    fp->self_vel.x = fp->self_vel.x * (1.0F - ftKx_DA(fp)->specials_friction);
+    Fighter* fp = GET_FIGHTER(gobj);
+    float vel = (1.0F - ftKx_DA(fp)->specials_friction) * fp->self_vel.x;
+    float speed = vel < 0.0F ? -vel : vel;
+
+    if (speed < 0.5F) {
+        vel = 0.0F;
+    }
+    fp->self_vel.x = vel;
 }
 
 void ftKx_SpecialS_Anim(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
+    Fighter* fp = GET_FIGHTER(gobj);
+
     if (!ftAnim_IsFramesRemaining(gobj)) {
         fp->gr_vel = 0.0F;
         ft_8008A2BC(gobj);
-        ftKx_FV(fp)->air_side_used = 0;
     }
 }
 
@@ -354,77 +469,35 @@ void ftKx_SpecialS_Coll(HSD_GObj* gobj)
 
 void ftKx_SpecialAirS_Anim(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
-    if (!ftAnim_IsFramesRemaining(gobj)) ftCo_Fall_Enter(gobj);
-    if (!(fp->cur_anim_frame < 25.0F)) return;
-    if (fp->facing_dir == -1.0F && fp->input.lstick[0].x > 0.5F) {
-        if (ftWalkCommon_800DFC70(gobj) != 1) {
-            fp->self_vel.x = (float) (fp->facing_dir * 0.85);
-            Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirSTurn, Ft_MF_None,
-                                     0.0F, 1.0F, 0.0F, NULL);
-        }
-        if (!(fp->cur_anim_frame < 25.0F)) return;
+    Fighter* fp = GET_FIGHTER(gobj);
+    ftKnuckles_DatAttrs* da = ftKx_DA(fp);
+
+    if (ftAnim_IsFramesRemaining(gobj)) {
+        return;
     }
-    if (fp->facing_dir == 1.0F && !(fp->input.lstick[0].x >= -0.5F) &&
-        ftWalkCommon_800DFC70(gobj) != 1) {
-        fp->self_vel.x = (float) (fp->facing_dir * 0.85);
-        Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirSTurn, Ft_MF_None,
-                                 0.0F, 1.0F, 0.0F, NULL);
+    if (da->specials_landing_lag == 0.0F) {
+        ftCo_Fall_Enter(gobj);
+    } else {
+        ftCo_80096900(gobj, 1, 1, false, da->specials_fall_mobility, da->specials_landing_lag);
     }
 }
 
-void ftKx_SpecialAirS_IASA(HSD_GObj* gobj) {
-Fighter* fp = GET_FIGHTER(gobj);
-    float frame = fp->cur_anim_frame;
-    if (!(frame > 2.0F)) goto fall;
-    if (!(frame < 25.0F)) goto legacy_decel;
-    if (fp->facing_dir == 1.0F && fp->input.lstick[0].x >= 0.85) {
-        if (ftWalkCommon_800DFC70(gobj) != 0) {
-            fp->self_vel.x = (float) (fp->facing_dir * 1.6);
-            Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirS, Ft_MF_None,
-                                     0.0F, 1.0F, 0.0F, NULL);
-        }
-        frame = fp->cur_anim_frame;
-        if (!(frame > 2.0F)) goto fall;
-        if (!(frame < 25.0F)) goto legacy_decel;
-    }
-    if (fp->facing_dir == -1.0F && !(fp->input.lstick[0].x > -0.85) &&
-        ftWalkCommon_800DFC70(gobj) != 0) {
-        fp->self_vel.x = (float) (fp->facing_dir * 1.6);
-        Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirS, Ft_MF_None,
-                                 0.0F, 1.0F, 0.0F, NULL);
-        goto fall;
-    }
-    if (fp->cur_anim_frame <= 25.0F) goto fall;
-legacy_decel:
-    /* +1A54 passes the GObj to a Fighter-only acceleration helper. It does not
-     * update this fighter's acceleration. The guest heap side effect needs its
-     * own check before this port can be declared ready. */
-fall:
-    if (ftCo_Fall_IASA_Inner(gobj)) {
-        ftCo_Fall_IASA_Inner(gobj);
-        if (ftCo_800CB870(gobj) && ftCo_Jump_GetInput(gobj)) {
-            Fighter_ChangeMotionState(gobj, ftCo_MS_JumpAerialF, Ft_MF_None,
-                                     0.0F, 1.0F, 0.0F, NULL);
-        }
-    }
-}
+void ftKx_SpecialAirS_IASA(HSD_GObj* gobj) {}
 
 void ftKx_SpecialAirS_Phys(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
+    Fighter* fp = GET_FIGHTER(gobj);
     ftKnuckles_DatAttrs* da = ftKx_DA(fp);
+
     ftCommon_Fall(fp, da->specials_air_gravity, da->specials_air_terminal_vel);
-    if (fp->cur_anim_frame > 20.0F) ftKx_SpecialS_ApplyFriction(gobj);
-    if (fp->cur_anim_frame < 10.0F) fp->self_vel.x = (float) (fp->facing_dir * 1.2);
+    ftKx_SpecialS_ApplyFriction(gobj);
 }
 
 void ftKx_SpecialAirS_Coll(HSD_GObj* gobj)
 {
-    if (ftKx_AirSideCollision(gobj)) ftWallJump_8008169C(gobj);
-    if (ft_80081D0C(gobj) == true) ftKx_SpecialS_Trans(gobj);
-    ftCo_800C3A14(gobj);
-    ftCliffCommon_80081298(gobj);
+    if (ft_80081D0C(gobj) == true) { /* landed */
+        ftKx_SpecialS_Trans(gobj);
+    }
 }
 
 /* Landing and leaving the ground always pick the uncharged dash states, even from the full-power
@@ -443,12 +516,12 @@ static void ftKx_SpecialS_Trans(HSD_GObj* gobj)
 
 static void ftKx_SpecialAirS_Trans(HSD_GObj* gobj)
 {
-Fighter* fp = GET_FIGHTER(gobj);
+    Fighter* fp = GET_FIGHTER(gobj);
+
     Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirS,
-                             ftCommon_GroundAirColl_MF | Ft_MF_SkipHit,
-                             fp->cur_anim_frame, 1.0F, 0.0F, NULL);
+                              ftCommon_GroundAirColl_MF | Ft_MF_SkipHit, fp->cur_anim_frame,
+                              1.0F, 0.0F, NULL);
     ftCommon_8007D5D4(fp);
-    ftKx_FV(fp)->air_side_used = 1;
     ftKx_SetEffectCallbacks(fp, ftKx_SpecialS_OnHit);
     fp->deal_dmg_cb = ftKx_SpecialS_GiveDamage;
 }
@@ -466,41 +539,3 @@ static void ftKx_SpecialS_OnHit(HSD_GObj* gobj)
 
 /* SpecialS_GiveDamage: empty in the shipped code (the dash keeps going through a hit). */
 static void ftKx_SpecialS_GiveDamage(HSD_GObj* gobj) {}
-/* PlKx +2A64..+2C50: separate air turnaround state. */
-void ftKx_SpecialAirSTurn_Anim(HSD_GObj* gobj)
-{
-    if (!ftAnim_IsFramesRemaining(gobj)) {
-        Fighter_ChangeMotionState(gobj, ftKx_MS_SpecialAirS,
-                                 ftCommon_GroundAirColl_MF | Ft_MF_SkipHit,
-                                 0.0F, 1.0F, 0.0F, NULL);
-    }
-}
-
-void ftKx_SpecialAirSTurn_IASA(HSD_GObj* gobj)
-{
-    Fighter* fp = GET_FIGHTER(gobj);
-    if (fp->input.pressed_buttons & HSD_PAD_A) ftCo_Fall_IASA_Inner(gobj);
-    if (ftCo_800CB870(gobj) && ftCo_Jump_GetInput(gobj)) {
-        Fighter_ChangeMotionState(gobj, ftCo_MS_JumpAerialF, Ft_MF_None,
-                                 0.0F, 1.0F, 0.0F, NULL);
-    }
-}
-
-void ftKx_SpecialAirSTurn_Phys(HSD_GObj* gobj)
-{
-    Fighter* fp = GET_FIGHTER(gobj);
-    fp->self_vel.x = (float) (fp->facing_dir * 0.85);
-    fp->self_vel.y = -0.45F;
-    /* +2B94 has the same GObj/Fighter mismatch as +1A54; preserve fighter
-     * acceleration and keep the guest heap consequence open for verification. */
-    if (fp->cmd_vars[3] != 0) {
-        fp->cmd_vars[3] = 0;
-        fp->facing_dir = fp->facing_dir == 1.0F ? -1.0F : 1.0F;
-    }
-}
-
-void ftKx_SpecialAirSTurn_Coll(HSD_GObj* gobj)
-{
-    if (ftKx_AirSideCollision(gobj)) ftWallJump_8008169C(gobj);
-    if (ft_80081D0C(gobj) == true) ftKx_SpecialS_Trans(gobj);
-}

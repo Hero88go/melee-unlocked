@@ -27,37 +27,37 @@
  * Special action states (move_logic), numbered from ftCo_MS_Count exactly as m-ex numbers them.
  * ------------------------------------------------------------------------------------------- */
 typedef enum ftKnuckles_MotionState {
-    ftKx_MS_SpecialNStart = ftCo_MS_Count,  /* 341 */
-    ftKx_MS_SpecialAirNStart,               /* 342 */
-    ftKx_MS_SpecialNCharge,                 /* 343 */
-    ftKx_MS_SpecialNAttackMiss,             /* 344 */
-    ftKx_MS_SpecialNAttack,                 /* 345 */
-    ftKx_MS_SpecialNCancel,                 /* 346 */
-    ftKx_MS_SpecialNLanding,                /* 347 */
-    ftKx_MS_SpecialNRebound,                /* 348 */
-    ftKx_MS_SpecialNHit,                    /* 349 */
-    ftKx_MS_SpecialHi,                      /* 350 */
-    ftKx_MS_SpecialSStart,                  /* 351 */
-    ftKx_MS_SpecialSEnd,                    /* 352 */
-    ftKx_MS_SpecialAirSStart,               /* 353 */
-    ftKx_MS_SpecialAirSEnd,                 /* 354 */
-    ftKx_MS_SpecialS,                       /* 355 */
-    ftKx_MS_SpecialAirS,                    /* 356 */
-    ftKx_MS_SpecialSMax,                    /* 357 */
-    ftKx_MS_SpecialAirSMax,                 /* 358 */
-    ftKx_MS_SpecialLwStart,                 /* 359 */
-    ftKx_MS_SpecialLwEnd,                   /* 360 */
-    ftKx_MS_SpecialAirLwStart,              /* 361 */
-    ftKx_MS_SpecialAirLwEnd,                /* 362 */
-    ftKx_MS_SpecialLwCharge,                /* 363 */
-    ftKx_MS_SpecialLwRun,                   /* 364 */
-    ftKx_MS_SpecialLwRunTurn,               /* 365 */
-    ftKx_MS_SpecialLwRunJump,               /* 366 */
-    ftKx_MS_SpecialLwDive,                  /* 367 */
-    ftKx_MS_SpecialLwRunBrake,              /* 368 */
-    ftKx_MS_SpecialLwStopWallL,             /* 369 */
-    ftKx_MS_SpecialLwStopWallR,             /* 370 */
-    ftKx_MS_SpecialAirSTurn,                /* 371 */
+    ftKx_MS_SpecialNStart = ftCo_MS_Count, /* 341: homing attack windup (ground anim) */
+    ftKx_MS_SpecialAirNStart,              /* 342: homing attack windup (air anim) */
+    ftKx_MS_SpecialNCharge,                /* 343: curled up, searching for a target */
+    ftKx_MS_SpecialNAttackMiss,            /* 344: no target, dives forward and down */
+    ftKx_MS_SpecialNAttack,                /* 345: homing dash toward the target */
+    ftKx_MS_SpecialNCancel,                /* 346: dash ended without a hit */
+    ftKx_MS_SpecialNLanding,               /* 347 */
+    ftKx_MS_SpecialNRebound,               /* 348: bounced off a wall/floor/shield */
+    ftKx_MS_SpecialNHit,                   /* 349: bounce after hitting the target */
+    ftKx_MS_SpecialHi,                     /* 350: spring jump */
+    ftKx_MS_SpecialSStart,                 /* 351: spin dash (side B) */
+    ftKx_MS_SpecialSEnd,                   /* 352 */
+    ftKx_MS_SpecialAirSStart,              /* 353 */
+    ftKx_MS_SpecialAirSEnd,                /* 354 */
+    ftKx_MS_SpecialSHold,                  /* 355: charging, ground and air */
+    ftKx_MS_SpecialS,                      /* 356: the dash */
+    ftKx_MS_SpecialAirS,                   /* 357 */
+    ftKx_MS_SpecialSMax,                   /* 358: the dash from a stored full charge */
+    ftKx_MS_SpecialAirSMax,                /* 359 */
+    ftKx_MS_SpecialLwStart,                /* 360: spin charge (down B) */
+    ftKx_MS_SpecialLwEnd,                  /* 361 */
+    ftKx_MS_SpecialAirLwStart,             /* 362 */
+    ftKx_MS_SpecialAirLwEnd,               /* 363 */
+    ftKx_MS_SpecialLwCharge,               /* 364: mashing B, ground and air */
+    ftKx_MS_SpecialLwRun,                  /* 365: rolling along the ground */
+    ftKx_MS_SpecialLwRunTurn,              /* 366 */
+    ftKx_MS_SpecialLwRunJump,              /* 367: jumped or rolled off an edge */
+    ftKx_MS_SpecialLwDive,                 /* 368: released in the air */
+    ftKx_MS_SpecialLwRunBrake,             /* 369: roll ran out (anim is the common RunBrake) */
+    ftKx_MS_SpecialLwStopWallL,            /* 370: rolled into a wall facing left */
+    ftKx_MS_SpecialLwStopWallR,            /* 371: rolled into a wall facing right */
     ftKx_MS_SelfCount_End
 } ftKnuckles_MotionState;
 
@@ -76,7 +76,7 @@ enum {
 enum {
     ftKx_Sfx_Trail = 5001,      /* 0x1389: spin charge jump / trail */
     ftKx_Sfx_SpinCharge = 5007, /* 0x138F */
-    ftKx_Sfx_Spring = 5013,     /* 0x1395 */
+    ftKx_Sfx_Spring = 5019,     /* 0x139B */
     ftKx_Sfx_ChargeFull = 5049, /* 0x13B9 */
 };
 
@@ -184,7 +184,6 @@ typedef struct ftKnuckles_FighterVars {
     /* 2238 */ Vec3 trail_pos;                /* bone 2 world position last trail frame */
     /* 2244 */ float trail_angle;
     /* 2248 */ int run_shoes_spawned;
-    /* 224C */ int air_side_used;
 } ftKnuckles_FighterVars;
 
 typedef struct ftKnuckles_SpecialNVars {
@@ -298,8 +297,6 @@ void ftKx_Init_OnActionStateChange(HSD_GObj* gobj);
 void ftKx_Init_ResetAttributes(HSD_GObj* gobj);
 void ftKx_Init_EnterDoubleJump(HSD_GObj* gobj);
 void ftKx_Init_OnSmashHi(HSD_GObj* gobj);
-void ftKx_Init_OnLanding(HSD_GObj* gobj);
-void ftKx_InitCpu(HSD_GObj* gobj);
 bool ftKx_CheckSameTeam(int team, int slot);
 
 /* ---- sonic_effects.c ---- */
@@ -383,10 +380,6 @@ void ftKx_SpecialAirS_Anim(HSD_GObj* gobj);
 void ftKx_SpecialAirS_IASA(HSD_GObj* gobj);
 void ftKx_SpecialAirS_Phys(HSD_GObj* gobj);
 void ftKx_SpecialAirS_Coll(HSD_GObj* gobj);
-void ftKx_SpecialAirSTurn_Anim(HSD_GObj* gobj);
-void ftKx_SpecialAirSTurn_IASA(HSD_GObj* gobj);
-void ftKx_SpecialAirSTurn_Phys(HSD_GObj* gobj);
-void ftKx_SpecialAirSTurn_Coll(HSD_GObj* gobj);
 
 /* ---- sonic_specialhi.c (spring jump) ---- */
 void ftKx_SpecialHi_Enter(HSD_GObj* gobj);

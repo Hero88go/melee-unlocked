@@ -427,14 +427,14 @@ void ftKx_SpecialNLanding_Coll(HSD_GObj* gobj)
  * ftKx_SpecialN_SearchTarget: Kirby's copy clamps with the values of its hat file. */
 void ftKx_SpecialN_ClampReboundVel(Fighter* fp, ftKnuckles_DatAttrs* da, float vel_y)
 {
-    if (!(fp->self_vel.x <= da->specialn_rebound_max_vel_x)) {
+    if (fp->self_vel.x > da->specialn_rebound_max_vel_x) {
         fp->self_vel.x = da->specialn_rebound_max_vel_x;
     }
-    if (!(fp->self_vel.x >= -da->specialn_rebound_max_vel_x)) {
+    if (fp->self_vel.x < -da->specialn_rebound_max_vel_x) {
         fp->self_vel.x = -da->specialn_rebound_max_vel_x;
     }
-    fp->self_vel.y = vel_y <= da->specialn_rebound_max_vel_y ? vel_y
-                                                           : da->specialn_rebound_max_vel_y;
+    fp->self_vel.y = da->specialn_rebound_max_vel_y < vel_y ? da->specialn_rebound_max_vel_y
+                                                            : vel_y;
     fp->cmd_vars[0] = 0;
 }
 
@@ -526,6 +526,8 @@ static void ftKx_GXLink_Init(void)
     GXSetTevOrder(GX_TEVSTAGE0, GX_TEXCOORD_NULL, GX_TEXMAP_NULL, GX_COLOR0A0);
     GXSetTevOp(GX_TEVSTAGE0, GX_PASSCLR);
     GXSetNumChans(1);
+    GXSetChanCtrl(GX_COLOR0A0, GX_FALSE, GX_SRC_REG, GX_SRC_VTX, GX_LIGHT_NULL, GX_DF_NONE,
+                  GX_AF_NONE);
     GXSetCullMode(GX_CULL_NONE);
     GXClearVtxDesc();
     GXSetVtxAttrFmt(GX_VTXFMT0, GX_VA_POS, GX_POS_XYZ, GX_F32, 0);
