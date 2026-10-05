@@ -46,8 +46,16 @@ void mu_lcancel_view(MuLcancelView* out)
         if (Player_GetPlayerSlotType(slot) != Gm_PKind_Human)
             continue;
         port = (s8) Player_GetSubColor(slot);
-        if (port < 0 || port > 3 || out->port[port].present)
+        if (port < 0 || port > 3)
             continue;
+        /* In a network match every player reads the same controller value here, so the second
+         * player would be left out: it takes the entry of its own slot instead. The host keeps
+         * only the local player's entry in such a match (lcancel.cpp gather). */
+        if (out->port[port].present) {
+            if (!mu_online_active() || out->port[slot].present)
+                continue;
+            port = slot;
+        }
         if (Player_GetPlayerState(slot) == 0)
             continue;
         gobj = Player_GetEntityAtIndex(slot, 0);

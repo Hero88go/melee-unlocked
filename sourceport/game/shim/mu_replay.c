@@ -513,7 +513,8 @@ static void dump_fighter(Fighter* fp)
  * fighter's draw, where the console's refresh happens (ftDrawCommon_80080E18). */
 void mu_refresh_part_matrices(Fighter* fp)
 {
-    if (fp->parts == NULL || fp->kind >= 33) {
+    if (fp->parts == NULL || (unsigned) fp->kind >= FT_KIND_TABLE_MAX ||
+        DP(ftPartsTable[fp->kind]) == NULL) {
         return;
     }
     u32 n = DP(ftPartsTable[fp->kind])->parts_num;

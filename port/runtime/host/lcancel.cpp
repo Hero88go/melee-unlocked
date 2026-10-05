@@ -226,7 +226,17 @@ void (*g_native_view)(MuLcancelView* out) = nullptr;
 // Everything apply() decides from, read once per retrace.
 void gather(MuLcancelView& v) {
   std::memset(&v, 0, sizeof v);
-  if (g_native_view) { g_native_view(&v); return; }
+  if (g_native_view) {
+    g_native_view(&v);
+    // A network match: only the local player's fighter, as local_fighters does for the recompiled
+    // game. The flash is feedback for the person at this PC, not for the opponent's misses.
+    if (slippi::online::session_mode() >= 0) {
+      const int local = slippi::online::local_player_index();
+      for (int p = 0; p < 4; ++p)
+        if (v.port[p].present && v.port[p].slot != local) v.port[p] = MuLcancelFighter{};
+    }
+    return;
+  }
   v.pad_shift = rd8(kHsdPadLibData + kPlShift); v.pad_max = rd8(kHsdPadLibData + kPlMax);
   v.pad_min = rd8(kHsdPadLibData + kPlMin); v.pad_scale = rd8(kHsdPadLibData + kPlScale);
   const uint32_t common = rd32(kPFtCommonData);

@@ -329,6 +329,7 @@ unsigned int mu_music_volume(void);   /* MuHostApi.music_volume, 0-100 */
  * same behavior as C at each patched site (shim/mu_gecko.c holds the shared parts). Nonzero unless
  * the host asked for the vanilla game. Latched at boot. */
 int mu_general_codes(void);
+int mu_unlock_all(void);   /* General Codes, "Unlock All Characters and Stages", switchable offline */
 void mu_general_codes_boot(void);
 
 /* UCF 0.84 (part of the General Codes). The pad-buffer code keeps, per controller port, the last

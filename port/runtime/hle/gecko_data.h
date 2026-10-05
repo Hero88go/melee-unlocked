@@ -22,6 +22,13 @@ extern bool option_pal_stock_icons;            // PAL-sized stock icons (a port 
 extern bool option_pal_stock_icons_default;
 extern bool option_no_screen_shake;            // camera shake off (a port code, see recomp/gecko.py)
 extern bool option_no_screen_shake_default;
+// Two switches over lines of Slippi's own code set, kept by the host every frame (host.cpp,
+// apply_code_switches): "Unlock All Characters and Stages" follows the player's setting offline and
+// is always on in a network session; the results screen after a VS match is kept offline only.
+extern bool option_unlock_all;
+extern bool option_unlock_all_default;
+extern bool option_offline_results;
+extern bool option_offline_results_default;
 extern const uint32_t optional_gct_offset;     // where the optional codes start inside slippi_gct
 extern const uint32_t port_gct_offset;         // where the always-present port suffix starts
 struct OptionalWrite { uint32_t addr; uint32_t size; const uint8_t* patched; const uint8_t* original; const char* flag; };

@@ -153,6 +153,12 @@ struct RenderOptions {
   // the Static Recomp runs the pack's own AI block from its disc under Mods (host/hackpack_ai.cpp).
   bool cpu_20xx = false;
   static bool& live_cpu_20xx() { static bool value = false; return value; }
+  // "Unlock everything" (Game tab, ini key unlock_all, on unless the file says 0): Slippi's "Unlock
+  // All Characters and Stages". Off, the save file decides what is unlocked, offline only: a network
+  // session always has everything. Static Recomp: gecko::option_unlock_all (host.cpp); Source Port:
+  // MU_GAME_OPTION3_LOCKED_CONTENT (shim/mu_gecko.c mu_unlock_all).
+  bool unlock_all = true;
+  static bool& live_unlock_all() { static bool value = true; return value; }
   // 20XX Hack Pack training options for CPUs (Game tab, Source Port only, offline only), native in
   // shim/mu_20xx_cpu.c. Plain options like "20XX CPUs": no pack or save needed. They go to the game
   // packed in option word 3 (MU_GAME_OPTION3_CPU_*, host API 17) and into a replay as "muOptions3".

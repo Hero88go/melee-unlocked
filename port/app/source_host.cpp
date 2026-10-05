@@ -935,7 +935,8 @@ uint32_t h_game_options2() {
 // them when a match is picked and they ride in the same word, so a replay records and replays them.
 uint32_t h_game_options3() {
   if (g_replaying) return g_replay_feature_options3;
-  return (gx::RenderOptions::live_cpu_training() & MU_GAME_OPTION3_CPU_ALL) | hackpack::stage_bits();
+  return (gx::RenderOptions::live_cpu_training() & MU_GAME_OPTION3_CPU_ALL) | hackpack::stage_bits() |
+         (gx::RenderOptions::live_unlock_all() ? 0u : MU_GAME_OPTION3_LOCKED_CONTENT);
 }
 uint32_t h_game_options() {
   return (gecko::option_no_screen_shake ? MU_GAME_OPTION_NO_SCREEN_SHAKE : 0u) |

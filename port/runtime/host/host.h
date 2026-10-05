@@ -103,6 +103,7 @@ bool disc_read(uint32_t offset, void* dst, uint32_t size);
 bool disc_read_file(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, uint32_t size);
 uint32_t disc_fst_offset();
 uint32_t disc_fst_size();
+uint32_t disc_fst_addr();   // the file table as boot placed it (repairs the low-memory pointer when it was overwritten)
 uint32_t disc_fst_max_size();
 bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size);
 

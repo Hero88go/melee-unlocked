@@ -174,7 +174,7 @@ static bool ftKx_Spring_JumpedOn(HSD_GObj* gobj)
 
     next = sv->bounce_vel - sa->bounce_vel_loss;
     sv->bounce_vel = next;
-    sv->bounce_vel = next < sa->min_bounce_vel ? sa->min_bounce_vel : next;
+    sv->bounce_vel = next >= sa->min_bounce_vel ? next : sa->min_bounce_vel;
 
     ftKx_Spring_Idle_Enter(gobj);
     ft_80088478(ftKx_SpringOwner(ip), ftKx_Sfx_Spring, 0xFF, 0x40);
