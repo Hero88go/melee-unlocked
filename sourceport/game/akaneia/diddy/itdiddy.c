@@ -9,7 +9,15 @@
  *              landing. Pickable and throwable like an item; destroyed after its third bounce.
  *
  * ftDd_ItemLogic is the m-ex item table in the decomp's ItemLogicTable layout, one row per
- * article, in the order of ftData x48 (see mu_ak_register_article). */
+ * article, in the order of ftData x48 (see mu_ak_register_article).
+ *
+ * Diddy's MxDt item lookup lists two more kinds (260 and 261 on Akaneia): articles 3 and 4, the
+ * popgun and the peanut of the ability Kirby copies from him (diddy_kirby.c). Their data is in
+ * Kirby's hat file (PlKbCpDd.dat) and their code is that file's itFunction. Article 3 is word for
+ * word article 0. Article 4 is article 1 compiled again: the same exports (0, 1, 6, 7, 9, 10, 13),
+ * the same calls and constants, with the pop (Nut_SpawnPtcl) a function of its own where
+ * PlDd.dat has it inlined, and the item constants read through a relocated pointer. MxDt has no
+ * defaults for kinds 257 to 261. So rows 0 and 1 are listed twice. */
 #include "ftdiddy.h"
 
 #include <math.h>
@@ -605,29 +613,34 @@ static bool itDdBanana_OnHitShield(Item_GObj* gobj)
 /* The table                                                                                  */
 /* ------------------------------------------------------------------------------------------ */
 
-ItemLogicTable ftDd_ItemLogic[3] = {
-    {
-        /* 0 Popgun */
-        itDdGun_States,
-    },
-    {
-        /* 1 Peanut */
-        itDdNut_States,
-        itDdNut_OnSpawn, /* spawned */
-        NULL,            /* destroyed */
-        NULL,            /* picked_up */
-        NULL,            /* dropped */
-        NULL,            /* thrown */
-        itDdNut_Pop,     /* dmg_dealt */
-        itDdNut_Pop,     /* dmg_received */
-        NULL,            /* entered_air */
-        itDdNut_OnReflect,
-        itDdNut_Pop,     /* clanked */
-        NULL,            /* absorbed */
-        NULL,            /* shield_bounced */
-        itDdNut_Pop,     /* hit_shield */
-        NULL,
-    },
+/* C cannot copy an earlier element of a table, so the two rows Kirby's copy repeats are macros. */
+#define ITDD_POPGUN_TABLE                                                                        \
+    {                                                                                            \
+        itDdGun_States,                                                                          \
+    }
+
+#define ITDD_PEANUT_TABLE                                                                        \
+    {                                                                                            \
+        itDdNut_States,                                                                          \
+        itDdNut_OnSpawn, /* spawned */                                                           \
+        NULL,            /* destroyed */                                                         \
+        NULL,            /* picked_up */                                                         \
+        NULL,            /* dropped */                                                           \
+        NULL,            /* thrown */                                                            \
+        itDdNut_Pop,     /* dmg_dealt */                                                         \
+        itDdNut_Pop,     /* dmg_received */                                                      \
+        NULL,            /* entered_air */                                                       \
+        itDdNut_OnReflect,                                                                       \
+        itDdNut_Pop,     /* clanked */                                                           \
+        NULL,            /* absorbed */                                                          \
+        NULL,            /* shield_bounced */                                                    \
+        itDdNut_Pop,     /* hit_shield */                                                        \
+        NULL,                                                                                    \
+    }
+
+ItemLogicTable ftDd_ItemLogic[5] = {
+    ITDD_POPGUN_TABLE, /* 0 Popgun (item kind 257 on Akaneia) */
+    ITDD_PEANUT_TABLE, /* 1 Peanut (258) */
     {
         /* 2 Banana */
         itDdBanana_States,
@@ -646,4 +659,9 @@ ItemLogicTable ftDd_ItemLogic[3] = {
         itDdBanana_OnHitShield,
         NULL,
     },
+    ITDD_POPGUN_TABLE, /* 3 (260): Kirby's popgun, data from PlKbCpDd.dat */
+    ITDD_PEANUT_TABLE, /* 4 (261): Kirby's peanut, data from PlKbCpDd.dat */
 };
+
+#undef ITDD_POPGUN_TABLE
+#undef ITDD_PEANUT_TABLE

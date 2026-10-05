@@ -85,9 +85,10 @@ the laser keeps MxDt's `absorbed`, `shield_bounced` and `evt_unk`, which are Fox
 (`itFoxLaser_Logic94_*`); the blaster has no MxDt defaults.
 
 Wolf's MxDt item lookup has four kinds (253 to 256) and his `ftData.x48_items` has three
-articles. Kinds 255 (MxDt defaults: a copy of Fox's laser table) and 256 (empty) have no Wolf
-code and nothing of Wolf's creates them, so `article_count` is 2. If anything else spawns them, the
-registry logs and falls into the stage-item branch.
+articles. Kinds 255 (MxDt defaults: a copy of Fox's laser table) and 256 (empty) are Kirby's:
+the laser and the blaster of the ability he copies from Wolf (`wolf_kirby.c`). Their data is in
+Kirby's hat file `PlKbCpWf.dat` and their code is the same as articles 0 and 1, so
+`article_count` is 4 and `itWf_Articles` lists the two tables twice.
 
 ## Overall
 

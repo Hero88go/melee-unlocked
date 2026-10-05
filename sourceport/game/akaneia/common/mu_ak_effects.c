@@ -14,8 +14,10 @@
  * m-ex engine patches do with that table, as plain C: the direct spawn (efSync_Spawn), the spawn
  * from a fighter's or an item's animation script, and the deferred spawn in between.
  *
- * Kirby's copies of these effects (7000 and 8000, and 5000/6000 when Kirby himself asks) are not
- * served: Kirby gets no copy ability from an added fighter in this build. */
+ * A Kirby who holds the ability of an added fighter is served from that fighter's file (5000 and
+ * 6000; m-ex hooks at 8005FF38 and 8006747C). The ranges 7000 and 8000 (which m-ex reads through
+ * the asking fighter's copied kind when it is not Kirby) are not served: nothing on Akaneia 1.0.1
+ * was seen to use them. */
 #include <dolphin/os.h>
 #include <melee/ef/efasync.h>
 #include <melee/ef/efdata.h>
@@ -49,10 +51,10 @@
 #define AK_EF_PTCL_START 6000
 #define AK_EF_COPY_START 7000
 #define AK_EF_END 9000
-#define AK_EF_FILES 50          /* the game's effect file table holds this many loadable files */
+#define AK_EF_FILES EF_DAT_FILE_MAX   /* the game's effect file table holds this many loadable files */
 #define AK_EF_ASYNC_KIND 9      /* queued spawn kinds from here on are placement types */
 
-extern EF_DAT_Entry efAsync_DatEntries[51];
+extern EF_DAT_Entry efAsync_DatEntries[EF_DAT_FILE_MAX + 1];
 
 /* "effBehaviorTable" of an effect file: one placement type per model effect and per particle
  * generator. */
@@ -88,8 +90,10 @@ enum {
     AK_PTCL_TYPES
 };
 
-/* The behavior table of each loaded effect file. An entry is only used while the game holds the
- * file's data (efAsync_DatEntries[index].data), which the game clears at every scene start. */
+/* The behavior table of each loaded effect file, an added fighter's own or a retail fighter's
+ * (ACE's clones use the retail file of the fighter they are built on, with their effects added
+ * to it and to its behavior table). An entry is only used while the game holds the file's data
+ * (efAsync_DatEntries[index].data), which the game clears at every scene start. */
 static AkEffBehavior* ak_behavior[AK_EF_FILES];
 
 /* The fighter that created an added item (m-ex keeps this in the item as its first owner; the
@@ -105,12 +109,21 @@ static int ak_item_owner_next;
  * directly. */
 static int ak_deferred_position;
 
+/* The id of the last efSync_Spawn call (ef/efsync.c), for the log line of
+ * mu_ak_effect_file_missing. */
+int mu_ak_effect_asked;
+
+/* One log line per effect file that was asked for while not loaded; the last entry stands for
+ * every index outside the table. Cleared for a file when it is loaded. */
+static u8 ak_missing_logged[AK_EF_FILES + 1];
+
 /* efAsync_LoadSync: an effect file was loaded (or found already loaded) under `index`. */
 void mu_ak_effect_file_loaded(int index, HSD_Archive* archive)
 {
     if (index < 0 || index >= AK_EF_FILES) {
         return;
     }
+    ak_missing_logged[index] = 0;
     ak_behavior[index] =
         archive != NULL ? HSD_ArchiveGetPublicAddress(archive, "effBehaviorTable") : NULL;
 }
@@ -159,8 +172,59 @@ static HSD_GObj* item_first_owner(HSD_GObj* item_gobj)
     return ip->owner;
 }
 
-/* The added fighter whose effect file serves a spawn asked for by `gobj` (the fighter itself, or
- * an item it created); NULL when there is none. */
+/* efLib_Create: model effect `id` (the game's own id: effect file index * 1000 + n) is asked for
+ * by `parent_gobj`. Returns 1 when the effect file is not loaded, so there is no descriptor to
+ * read and nothing is made; 0 when the game goes on as usual.
+ *
+ * This is the retail effect id of borrowed retail code. m-ex leaves ids up to 1298 to the game's
+ * own switch (its hook at 8005FF38 starts with that test), which picks the retail fighter's file
+ * and entry: Link's spin attack, 1211, is entry 0 of file 6 whoever asks. An added fighter loads
+ * the file MxDt names for it (Zero: file 52), so file 6 is only there when a Link is in the
+ * match. With it the effect shows, as on the mod; without it the mod reads the descriptor at
+ * address 0 plus the entry and makes nothing (an emulator hands such a read 0, so the joint is
+ * NULL and efLib_Create gives up; a console has no memory there). Particle generators need no
+ * such test: hsd_8039F05C refuses an id past the count of a bank that is not loaded. */
+int mu_ak_effect_file_missing(int id, HSD_GObj* parent_gobj)
+{
+    const int file = id < 0 ? -1 : id / 1000;
+    const int slot = file >= 0 && file < AK_EF_FILES ? file : AK_EF_FILES;
+    const char* name = "none";
+    HSD_GObj* owner = parent_gobj;
+    int kind = -1;
+    if (slot == file && efAsync_DatEntries[file].data != NULL) {
+        return 0;
+    }
+    if (ak_missing_logged[slot]) {
+        return 1;
+    }
+    ak_missing_logged[slot] = 1;
+    if (slot == file && efAsync_DatEntries[file].ef_DAT_file != NULL) {
+        name = efAsync_DatEntries[file].ef_DAT_file;
+    }
+    if (owner != NULL && owner->classifier == HSD_GOBJ_CLASS_ITEM) {
+        owner = item_first_owner(owner);
+    }
+    if (owner != NULL && owner->classifier == HSD_GOBJ_CLASS_FIGHTER && owner->user_data != NULL) {
+        kind = ((Fighter*) owner->user_data)->kind;
+    }
+    OSReport("[ak] effect %d: fighter kind %d asks for model effect %d of effect file %d (%s), which is not loaded; nothing is spawned (logged once per file)\n",
+             mu_ak_effect_asked, kind, id, file, name);
+    return 1;
+}
+
+/* The fighter kind whose effect file serves `fp`: an added fighter's own, or for a Kirby the
+ * added fighter he copied (akaneia/common/mu_ak_kirby.c). Ft_Kind_None when neither. */
+static int effect_kind(Fighter* fp)
+{
+    if (MU_AK_KIND(fp->kind)) {
+        return fp->kind;
+    }
+    return mu_ak_kirby_copy_kind(fp);
+}
+
+/* The fighter whose spawn is served from an added fighter's effect file, asked for by `gobj` (the
+ * fighter itself, or an item it created): an added fighter, or a Kirby who holds the ability of
+ * one. NULL when there is none. */
 static Fighter* effect_fighter(HSD_GObj* gobj)
 {
     Fighter* fp;
@@ -176,7 +240,7 @@ static Fighter* effect_fighter(HSD_GObj* gobj)
         return NULL;
     }
     fp = gobj->user_data;
-    return fp != NULL && MU_AK_KIND(fp->kind) ? fp : NULL;
+    return fp != NULL && MU_AK_KIND(effect_kind(fp)) ? fp : NULL;
 }
 
 /* The same lookup for the sound code (mu_ak_sound.c). */
@@ -189,27 +253,30 @@ Fighter* mu_ak_effect_owner(HSD_GObj* gobj)
  * 1 particle) and the placement type; 0 (after a log line) when the fighter has no such effect. */
 static int effect_resolve(Fighter* fp, int gfx_id, int* game_id, int* is_ptcl, int* type)
 {
-    const int file = ftData_UnkBytePerCharacter[fp->kind];
+    /* The file is the copied fighter's when a Kirby asks. A kind that is not an added one (a
+     * Kirby who lost the ability between the request and a deferred spawn) has none. */
+    const int kind = effect_kind(fp);
+    const int file = MU_AK_KIND(kind) ? ftData_UnkBytePerCharacter[kind] : -1;
     const int ptcl = gfx_id >= AK_EF_PTCL_START;
     const int n = gfx_id - (ptcl ? AK_EF_PTCL_START : AK_EF_MODEL_START);
     AkEffBehavior* table;
     u8* types;
     u32 count;
     if (gfx_id < AK_EF_MODEL_START || gfx_id >= AK_EF_COPY_START) {
-        return 0;   /* Kirby's copy ranges */
+        return 0;   /* 7000 and 8000: not served */
     }
     if (file < 0 || file >= AK_EF_FILES || efAsync_DatEntries[file].data == NULL ||
         (table = ak_behavior[file]) == NULL)
     {
         OSReport("[ak] effect %d: fighter kind %d has no loaded effect file with a behavior table (file index %d)\n",
-                 gfx_id, (int) fp->kind, file);
+                 gfx_id, kind, file);
         return 0;
     }
     count = ptcl ? table->ptcl_count : table->model_count;
     types = ptcl ? DP(table->ptcl_type) : DP(table->model_type);
     if ((u32) n >= count || types == NULL) {
         OSReport("[ak] effect %d: fighter kind %d does not have %s effect %d (its file has %u)\n",
-                 gfx_id, (int) fp->kind, ptcl ? "particle" : "model", n, (unsigned) count);
+                 gfx_id, kind, ptcl ? "particle" : "model", n, (unsigned) count);
         return 0;
     }
     *game_id = file * 1000 + n;

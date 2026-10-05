@@ -24,6 +24,7 @@
 
 #include <mu_disc.h>
 
+#include "../common/mu_ak_kirby.h"
 #include "../mu_ak_fighter.h"
 
 /* ---------------------------------------------------------------- motion states (move_logic) */
@@ -101,7 +102,12 @@ enum ftDe_Article {
     ftDe_Article_SpitStar = 1,  /* star spat out after swallowing an item */
     ftDe_Article_Gordo = 2,     /* Side B */
     ftDe_Article_HiStar = 3,    /* the two stars of the Up B landing */
-    ftDe_Article_Count = 4
+    ftDe_Article_Count = 4,     /* the articles of PlDe.dat, registered at load */
+    /* The two articles of Kirby's copy of the inhale. Their data is in the hat file
+     * (PlKbCpDe.dat, hat data +0x10 and +0x14), registered when Kirby gains the ability. */
+    ftDe_Article_KbStarModel = 4, /* item kind 282 on Akaneia: no code, not used by the code */
+    ftDe_Article_KbSpitStar = 5,  /* item kind 283: the spit star again */
+    ftDe_Article_TableCount = 6
 };
 
 /* Common motion states the m-ex code names by number (0x120, 0x122, 0x124, 0x45, 0xFA). */
@@ -323,6 +329,16 @@ void ftDe_CaptureWaitKirby_IASA(HSD_GObj* victim_gobj);
 void ftDe_SpecialN_ItemCaptured(Item_GObj* item_gobj, HSD_GObj* dedede_gobj, float facing_dir);
 void ftDe_SpecialN_EnterStarSpit(HSD_GObj* victim_gobj, HSD_GObj* dedede_gobj);
 void ftDe_SpecialN_SpawnSpitStar(HSD_GObj* gobj, Vec3* pos, Vec3* vel, float lifetime, float decel);
+void ftDe_SpecialN_SpawnSpitStarAs(HSD_GObj* gobj, int article, Vec3* pos, Vec3* vel, float lifetime,
+                                   float decel);
+/* The inhale's values of whoever inhaled: Dedede's attributes, or the hat's for a Kirby. */
+ftDe_DatAttrs* ftDe_CaptorAttrs(Fighter* captor);
+/* dedede_kirby.c: the ability Kirby copies from Dedede (the kbFunction of PlKbCpDe.dat) */
+extern const MuAkKirbyCopy ftKbDe_Copy;
+ftDe_DatAttrs* ftKbDe_Attrs(Fighter* kirby);
+HSD_Joint* ftKbDe_StarJoint(Fighter* kirby);
+bool ftKbDe_IsEatWait(Fighter* kirby);
+void ftKbDe_EatWait_Fall(HSD_GObj* gobj);
 
 /* ftDe_SpecialS.c */
 void ftDe_SpecialS_Enter(HSD_GObj* gobj);
@@ -338,6 +354,6 @@ void ftDe_SpecialLw_Enter(HSD_GObj* gobj);
 void ftDe_SpecialAirLw_Enter(HSD_GObj* gobj);
 
 /* itDe_Articles.c: one ItemLogicTable per article, index = enum ftDe_Article, NULL = no code. */
-extern ItemLogicTable* const ftDe_ArticleLogic[ftDe_Article_Count];
+extern ItemLogicTable* const ftDe_ArticleLogic[ftDe_Article_TableCount];
 
 #endif

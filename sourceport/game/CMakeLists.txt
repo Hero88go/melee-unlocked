@@ -208,8 +208,25 @@ if(MU_AKANEIA_FIGHTERS)
   target_compile_options(mu_ak_character_kind_test PRIVATE -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables)
   target_link_options(mu_ak_character_kind_test PRIVATE -Wl,--gc-sections)
   add_test(NAME native_ak_character_kind COMMAND mu_ak_character_kind_test)
-  file(GLOB_RECURSE AKANEIA_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/*/*.c")
+  file(GLOB_RECURSE AKANEIA_SOURCES CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/*/*.c" "${CMAKE_CURRENT_SOURCE_DIR}/ace/*/*.c")
   list(APPEND SHIM_SOURCES ${AKANEIA_SOURCES})
+  # The registry list: one line per fighter descriptor in those sources (a line that starts
+  # "const MuAkFighter mu_ak_<name> = "), so a new fighter folder under akaneia/ or ace/ needs no
+  # edit here or in mu_ak_fighters.c. A descriptor added to an existing file: run CMake again.
+  set(MU_AK_REGISTRY "")
+  foreach(ak_source ${AKANEIA_SOURCES})
+    file(STRINGS "${ak_source}" ak_lines REGEX "^const MuAkFighter mu_ak_[A-Za-z0-9_]+ = ")
+    foreach(ak_line ${ak_lines})
+      string(REGEX REPLACE "^const MuAkFighter (mu_ak_[A-Za-z0-9_]+) = .*$" "\\1" ak_symbol "${ak_line}")
+      string(APPEND MU_AK_REGISTRY "MU_AK_FIGHTER(${ak_symbol})\n")
+    endforeach()
+  endforeach()
+  file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/mu_ak/mu_ak_registry.inc" CONTENT "${MU_AK_REGISTRY}")
+  set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/mu_ak_fighters.c" APPEND PROPERTY
+    COMPILE_DEFINITIONS MU_AK_REGISTRY_GENERATED)
+  set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/mu_ak_fighters.c" APPEND PROPERTY
+    INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR}/mu_ak")
 endif()
 # A fighter joins the registry once akaneia/<fighter>/<fighter>.c exists (that file defines
 # mu_ak_<fighter>); until then the registry leaves it out and the fighter stays locked.

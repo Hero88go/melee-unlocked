@@ -44,11 +44,13 @@ void ftDd_SpecialN_GunChangeModel(Item_GObj* gun, int model)
     Item_80268E5C(gun, model, ITEM_ANIM_UPDATE);
 }
 
-/* Gun_Spawn */
-void ftDd_SpecialN_GunSpawn(HSD_GObj* gobj)
+/* Gun_Spawn. @p article is the popgun's place in the item list the fighter's articles come from:
+ * Diddy's own popgun, or the one of the ability Kirby copies from him (diddy_kirby.c), whose
+ * routine is this one with another article number. */
+void ftDd_SpecialN_GunSpawnArticle(HSD_GObj* gobj, int article)
 {
     Fighter* fp = GET_FIGHTER(gobj);
-    Item_GObj* gun = ftDd_SpawnArticle(gobj, ftDd_Article_Popgun, 8, &fp->cur_pos, GA_Ground);
+    Item_GObj* gun = ftDd_SpawnArticle(gobj, article, 8, &fp->cur_pos, GA_Ground);
 
     ftDd_MV(fp)->specialn.gun = gun;
     /* A failed create (item limit, no article data): the move runs without the gun, as a
@@ -58,6 +60,12 @@ void ftDd_SpecialN_GunSpawn(HSD_GObj* gobj)
     }
     Item_8026AB54(gun, gobj, ftParts_GetBoneIndex(fp, (Fighter_Part) ftDd_Part_GunHand));
     ftDd_SpecialN_GunChangeModel(gun, 0);
+}
+
+/* Gun_Spawn, Diddy's own. */
+void ftDd_SpecialN_GunSpawn(HSD_GObj* gobj)
+{
+    ftDd_SpecialN_GunSpawnArticle(gobj, ftDd_Article_Popgun);
 }
 
 /* Gun_Destroy, also the take-damage and death callback of every Special N state. */
@@ -74,11 +82,16 @@ void ftDd_SpecialN_GunDestroy(HSD_GObj* gobj)
 }
 
 /* Gun_Shoot: a peanut from the barrel (gun joint 7). Its speed, damage and knockback scale with
- * the whole charge; its angle flattens and the recoil grows until specialn_angle_charge of it. */
-void ftDd_SpecialN_GunShoot(HSD_GObj* gobj)
+ * the whole charge; its angle flattens and the recoil grows until specialn_angle_charge of it.
+ *
+ * @p article is the peanut's place in the item list, @p da the thirteen values of the shot and
+ * @p charge_frames the length of a whole charge. Diddy reads them from his attributes and his
+ * fighter variables (ftDd_SpecialN_GunShoot below); the ability Kirby copies carries its own
+ * (diddy_kirby.c). The routine is the same in both files. */
+void ftDd_SpecialN_GunShootWith(HSD_GObj* gobj, int article, const ftDd_PeanutParams* da,
+                                float charge_frames)
 {
     Fighter* fp = GET_FIGHTER(gobj);
-    ftDd_DatAttrs* da = ftDd_Attrs(fp);
     HSD_JObj* gun_jobj;
     HSD_JObj* barrel;
     Vec3 muzzle;
@@ -96,15 +109,15 @@ void ftDd_SpecialN_GunShoot(HSD_GObj* gobj)
     lb_80011E24(gun_jobj, &barrel, 7, -1);
     lb_8000B1CC(barrel, NULL, &muzzle);
 
-    nut = ftDd_SpawnArticle(gobj, ftDd_Article_Peanut, 8, &muzzle, GA_Air);
+    nut = ftDd_SpawnArticle(gobj, article, 8, &muzzle, GA_Air);
     if (nut == NULL) {
         return;
     }
     ip = GET_ITEM(nut);
 
     charge = ftDd_MV(fp)->specialn.charge;
-    full = charge / ftDd_FV(fp)->peanut_charge_frames;
-    early = charge / (ftDd_FV(fp)->peanut_charge_frames * da->specialn_angle_charge);
+    full = charge / charge_frames;
+    early = charge / (charge_frames * da->specialn_angle_charge);
     if (early > 1.0F) {
         early = 1.0F;
     }
@@ -134,6 +147,31 @@ void ftDd_SpecialN_GunShoot(HSD_GObj* gobj)
     } else {
         fp->self_vel.x += recoil;
     }
+}
+
+/* Gun_Shoot, Diddy's own: the values of his attribute block (disc data, read into host order)
+ * and the charge length his onload measured. */
+void ftDd_SpecialN_GunShoot(HSD_GObj* gobj)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    ftDd_DatAttrs* attrs = ftDd_Attrs(fp);
+    ftDd_PeanutParams da;
+
+    da.specialn_angle_charge = attrs->specialn_angle_charge;
+    da.specialn_speed_min = attrs->specialn_speed_min;
+    da.specialn_speed_max = attrs->specialn_speed_max;
+    da.specialn_angle_min_charge = attrs->specialn_angle_min_charge;
+    da.specialn_angle_max_charge = attrs->specialn_angle_max_charge;
+    da.specialn_dmg_min = attrs->specialn_dmg_min;
+    da.specialn_dmg_max = attrs->specialn_dmg_max;
+    da.specialn_bkb_min = attrs->specialn_bkb_min;
+    da.specialn_bkb_max = attrs->specialn_bkb_max;
+    da.specialn_kbg_min = attrs->specialn_kbg_min;
+    da.specialn_kbg_max = attrs->specialn_kbg_max;
+    da.specialn_recoil_min = attrs->specialn_recoil_min;
+    da.specialn_recoil_max = attrs->specialn_recoil_max;
+    ftDd_SpecialN_GunShootWith(gobj, ftDd_Article_Peanut, &da,
+                               ftDd_FV(fp)->peanut_charge_frames);
 }
 
 /* ------------------------------------------------------------------------------------------ */

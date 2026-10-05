@@ -1,4 +1,4 @@
-// An isolated translator prototype; no dispatch or game boot path uses it yet.
+// Copy-and-patch translator, also used by the optional Static RAM-code cache.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "ppc.h"
@@ -8,6 +8,13 @@
 #include <vector>
 
 namespace ppc::stencil {
+struct RuntimeHooks {
+  // 0 = invocation returned; otherwise the guest address where execution continues.
+  uint32_t (*branch)(Context&, uint8_t*, uint32_t pc, uint32_t word, uint32_t entry_lr);
+  uint32_t entry_lr = 0;
+  bool continuation = false;
+  uint32_t* resume_pc = nullptr;
+};
 // A stencil chain's entry. The result is 0 when the guest function returned.
 using Entry = uint32_t (*)(Context&, uint8_t*);
 class CompiledLeaf {
@@ -21,7 +28,8 @@ public:
   // Reject mid-function entries and changed code rather than executing stale bytes.
   // This byte comparison is deliberately only a prototype validation path. Runtime caching and
   // generation invalidation must be measured before this can be installed into game dispatch.
-  bool run(Context& context, uint8_t* ram) const;
+  bool run(Context& context, uint8_t* ram, const RuntimeHooks* runtime = nullptr,
+           bool code_verified = false) const;
   bool ready() const { return allocation_ != nullptr; }
   uint32_t address() const { return address_; }
   // The copied code and its data: for tests and crash reports that ask whose address this is.
@@ -31,11 +39,12 @@ public:
     return base && p >= base && p < base + size_;
   }
   const void* base() const { return allocation_; }
+  size_t allocation_bytes() const { return size_; }
   // Unwind records of the call-capable stencil copies in this translation, all registered.
   size_t unwind_entries() const { return unwind_entries_; }
 private:
   friend bool translate_leaf(const uint8_t*, size_t, uint32_t, const Table&, CompiledLeaf&, std::string&,
-                             const std::vector<Callee>*);
+                             const std::vector<Callee>*, bool);
   // What the driver does at each Exit stencil, by exit number less one.
   struct ExitAction { ExitKind kind; uint32_t value; Entry resume; };
   void release();
@@ -50,6 +59,7 @@ private:
   // Return addresses of local calls and where each resumes; null for inline data.
   std::vector<std::pair<uint32_t, Entry>> local_returns_;
   bool has_local_calls_ = false;
+  std::vector<Entry> guest_entries_;
 };
 
 // On failure result stays empty. Accepted instructions are listed in tools/ppc_stencils/README.md.
@@ -59,5 +69,5 @@ private:
 // `callees`: what is known about the functions this one calls (their computed returns), or null.
 bool translate_leaf(const uint8_t* code, size_t bytes, uint32_t address,
                     const Table& table, CompiledLeaf& result, std::string& error,
-                    const std::vector<Callee>* callees = nullptr);
+                    const std::vector<Callee>* callees = nullptr, bool runtime = false);
 } // namespace ppc::stencil

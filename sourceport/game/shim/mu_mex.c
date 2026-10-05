@@ -130,6 +130,16 @@ typedef struct MexEffect {
     DISC_PTR(MexEffectFile) files;
 } DISC_STRUCT MexEffect;
 
+/* MxDt "kirby": what Kirby needs per copied fighter. Read on Akaneia 1.0.1 (41 internal ids). */
+typedef struct MexKirby {
+    DISC_PTR(MexPlFile) cap_files;    /* +0  [internal] {hat file "PlKbCpWf.dat", "ftDataKirbyCopyWolf"} */
+    DISC_PTR(void) x4;                /* +4  [internal] words, all zero on the disc (runtime) */
+    DISC_PTR(void) costume_files;     /* +8  [internal] per-costume hat files; only retail kinds have any */
+    DISC_PTR(void) costume_runtime;   /* +C  [internal] */
+    DISC_PTR(u8) effect_ids;          /* +10 [internal] the effect file loaded with the hat, 0xFF none */
+    DISC_PTR(void) x14;               /* +14 [internal] words, all zero on the disc (runtime) */
+} DISC_STRUCT MexKirby;
+
 typedef struct MexData {
     DISC_PTR(MexMeta) metadata;
     DISC_PTR(MexMenu) menu;
@@ -140,11 +150,22 @@ typedef struct MexData {
     DISC_PTR(MexSsm) ssm;         /* the sound banks, by bank id */
     DISC_PTR(void) music;
     DISC_PTR(MexEffect) effect;   /* the effect files, by effect file index */
+    DISC_PTR(void) item;          /* +1C the item tables */
+    DISC_PTR(MexKirby) kirby;     /* +20 */
+    /* +24 [kbFunction index] -> [internal]: retail functions, 0 for every added fighter (their hat
+     * files export their own). Not read: the added abilities are C (akaneia/common/mu_ak_kirby.c). */
+    DISC_PTR(MexWords) kirby_function;
 } DISC_STRUCT MexData;
 
 /* ---- state, fixed after boot ---- */
 #define MEX_MAX_COSTUMES 16
+#ifdef MU_AKANEIA_FIGHTERS
+/* The most fighters an MxDt may list (internal or external). Nothing is sized by it: Akaneia
+ * 1.0.1 has 41, ACE 2.0.0 has 65. Ids past it would not fit the signed bytes that hold them. */
+#define MEX_MAX_EXTERNAL 127
+#else
 #define MEX_MAX_EXTERNAL 64
+#endif
 
 static MexData* mex;          /* the active tables: NULL in the retail view and on a retail disc */
 static MexData* mex_loaded;   /* MxDt.dat once read (the mod view's tables) */
@@ -812,3 +833,46 @@ int mu_mex_fighter_item(int mex_internal, int local)
     ids = DP(lookup[mex_internal].ids);
     return ids != NULL ? (int) (ids[2 * local] << 8 | ids[2 * local + 1]) : -1;
 }
+
+#ifdef MU_AKANEIA_FIGHTERS
+/* ---- Kirby's copies (sourceport/game/akaneia/common/mu_ak_kirby.c) ---- */
+
+/* The hat file of an internal fighter and the symbol of its hat data. Returns 0 when the fighter
+ * has none or the file is not on the disc. */
+int mu_mex_kirby_cap(int mex_internal, const char** file, const char** symbol)
+{
+    MexKirby* kirby;
+    MexPlFile* files;
+    const char* name;
+    const char* data;
+    if (!mex_internal_ok(mex_internal) || (kirby = DP(mex->kirby)) == NULL ||
+        (files = DP(kirby->cap_files)) == NULL)
+    {
+        return 0;
+    }
+    name = DP(files[mex_internal].file);
+    data = DP(files[mex_internal].symbol);
+    if (name == NULL || name[0] == '\0' || data == NULL || data[0] == '\0' ||
+        DVDConvertPathToEntrynum(lbFileGetFullName((char*) name)) < 0)
+    {
+        return 0;
+    }
+    *file = name;
+    *symbol = data;
+    return 1;
+}
+
+/* The effect file Kirby loads with the hat of an internal fighter: an index into the game's effect
+ * file table, 0xFF when the disc names none, -1 when the table is missing. */
+int mu_mex_kirby_effect_file(int mex_internal)
+{
+    MexKirby* kirby;
+    const u8* bytes;
+    if (!mex_internal_ok(mex_internal) || (kirby = DP(mex->kirby)) == NULL ||
+        (bytes = DP(kirby->effect_ids)) == NULL)
+    {
+        return -1;
+    }
+    return bytes[mex_internal];
+}
+#endif

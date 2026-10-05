@@ -12,6 +12,8 @@
 #include <melee/it/kinds/types.h>
 #include <sysdolphin/baselib/forward.h>
 
+#include "../common/mu_ak_kirby.h"
+
 /* tails.c: the fighter's own callbacks (m-ex ftFunction exports) */
 void ftTs_OnLoad(Fighter_GObj* gobj);
 void ftTs_OnRespawn(Fighter_GObj* gobj);           /* m-ex "ondeath" slot */
@@ -159,9 +161,13 @@ extern const ftTails_Colors ftTs_MetalColor;
 extern const ftTails_CpuData ftTs_CpuData;
 void ftTs_MexCPU_InitCustomData(Fighter_GObj* gobj, const ftTails_CpuData* data);
 
-/* itTs_shot.c: the SpecialN article */
+/* itTs_shot.c: the SpecialN article, and the same article again for Kirby's copy of the move */
 void ftTs_SpecialN_SpawnProjectile(Fighter_GObj* gobj);
+void ftTs_SpecialN_SpawnProjectileWith(Fighter_GObj* gobj, int article, HSD_GObj** slot);
 extern ItemStateTable itTs_Shot_StateTable[3];
-extern ItemLogicTable itTs_Shot_Logic;
+extern ItemLogicTable itTs_Articles[2];
+
+/* tails_kirby.c: the ability Kirby copies from Tails (the kbFunction of PlKbCpTs.dat) */
+extern const MuAkKirbyCopy ftKbTs_Copy;
 
 #endif

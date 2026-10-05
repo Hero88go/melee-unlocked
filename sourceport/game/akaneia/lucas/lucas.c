@@ -426,5 +426,7 @@ const MuAkFighter mu_ak_lucas = {
     .move_logic_count = ftLc_MS_SelfCount,
 
     .articles = ftLc_ArticleLogic,
-    .article_count = ftLc_Art_Count,
+    .article_count = ftLc_Art_TableCount,
+
+    .kirby = &ftKbLc_Copy,
 };

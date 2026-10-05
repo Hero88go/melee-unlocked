@@ -23,6 +23,7 @@
 #include <sysdolphin/baselib/forward.h>
 
 #include "../mu_ak_fighter.h"
+#include "../common/mu_ak_kirby.h"
 
 /* The disc's float compares use cror with the unordered bit in places; this keeps the NaN
  * branches identical where it matters. */
@@ -100,7 +101,11 @@ enum ftLucas_Article {
     ftLc_Art_PKThunderTail4 = 7,  /* 9 */
     ftLc_Art_Stick = 8,           /* forward smash stick, win pose stick */
     ftLc_Art_Snake = 9,           /* Rope Snake: grab, tether, taunt, intro */
-    ftLc_Art_Count = 10,
+    ftLc_Art_Count = 10,          /* the articles of PlLc.dat itself (ft_data->x48_items) */
+    /* MxDt lists one more item kind for Lucas (276 on Akaneia): the PK Freeze of the ability Kirby
+     * copies from him. Its data is in Kirby's hat file (PlKbCpLc.dat), not in x48_items. */
+    ftLc_Art_KirbyPKFreeze = 10,
+    ftLc_Art_TableCount = 11,     /* entries of ftLc_ArticleLogic */
 };
 
 /* ---------------------------------------------------------------------------------------------
@@ -283,6 +288,15 @@ static inline ftLucasAttributes* ftLc_Attrs(Fighter* fp)
     return (ftLucasAttributes*) fp->dat_attrs;
 }
 
+/* Kirby with Lucas's ability keeps the PK Freeze he holds at console fp+0x2270, where Lucas has
+ * fp+0x2240. That word is the start of the texture list of the retail "parts" hats
+ * (fp->u.kb.x44), which nothing reads while Kirby wears a hat made of one joint, as this one is. */
+static inline Item_GObj** ftKbLc_PKFreeze(Fighter* fp)
+{
+    _Static_assert(sizeof(Item_GObj*) <= sizeof(fp->u.kb.x44), "Kirby's PK Freeze slot");
+    return (Item_GObj**) &fp->u.kb.x44;
+}
+
 /* fp+0x233C: the int just below the motion vars (the decomp's x2338.y). The disc code keeps the
  * PK Freeze copy and PSI Magnet's minimum-frames counter there. */
 #define ftLc_X233C(fp) ((fp)->x2338.y)
@@ -437,7 +451,10 @@ void ftLc_Rope_Render(HSD_GObj* gobj);
 void ftLc_Catch_Accessory(HSD_GObj* gobj);
 
 /* Articles (itFunction). Index = enum ftLucas_Article; slot 2 is empty on the disc. */
-extern ItemLogicTable ftLc_ArticleLogic[ftLc_Art_Count];
+extern ItemLogicTable ftLc_ArticleLogic[ftLc_Art_TableCount];
+
+/* lucas_kirby.c: the ability Kirby copies from Lucas (m-ex kbFunction of PlKbCpLc.dat). */
+extern const MuAkKirbyCopy ftKbLc_Copy;
 
 /* lucas_it_pkfreeze.c / lucas_it_pkfire.c / lucas_it_pkthunder.c / lucas_it_misc.c */
 Item_GObj* ftLc_PKFreeze_Spawn(HSD_GObj* owner, Vec3* pos, ItemKind kind, float facing);

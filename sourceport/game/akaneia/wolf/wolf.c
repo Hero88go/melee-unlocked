@@ -501,37 +501,52 @@ const MotionState ftWf_Init_MotionStateTable[ftWf_MS_SelfCount] = {
  * slots are stored cast and must be called back as Fighter_ItemEvent (see NOTES.md). */
 #define WF_ITEM_EVENT(fn) ((MuAkEvent) (void (*)(void)) (Fighter_ItemEvent) (fn))
 
+/* Everything of the descriptor but the name and the disc file. Every routine is written, but
+ * nothing has run yet and two services are missing (the item create hook and the m-ex effect ids,
+ * NOTES.md), so Wolf is not marked MU_AK_READY. */
+#define WF_DESCRIPTOR                                                         \
+    .onload = ftWf_Init_OnLoad,                                               \
+    .ondeath = ftWf_Init_OnDeath,                                             \
+    .onunknown = ftWf_Init_OnDestroy,                                         \
+    .specialn = ftWf_SpecialN_Enter,                                          \
+    .specialairn = ftWf_SpecialAirN_Enter,                                    \
+    .specials = ftWf_SpecialS_Enter,                                          \
+    .specialairs = ftWf_SpecialAirS_Enter,                                    \
+    .specialhi = ftWf_SpecialHi_Enter,                                        \
+    .specialairhi = ftWf_SpecialAirHi_Enter,                                  \
+    .speciallw = ftWf_SpecialLw_Enter,                                        \
+    .specialairlw = ftWf_SpecialAirLw_Enter,                                  \
+    .onitempickup = WF_ITEM_EVENT(ftWf_Init_OnItemPickup),                    \
+    .onitemdrop = WF_ITEM_EVENT(ftWf_Init_OnItemDrop),                        \
+    .onitemcatch = WF_ITEM_EVENT(ftWf_Init_OnItemPickup),                     \
+    .onunknownitemrelated = WF_ITEM_EVENT(ftWf_Init_OnItemDrop),              \
+    .onhit = ftWf_Init_OnKnockbackEnter,                                      \
+    .onunknowneyetexturerelated = ftWf_Init_OnKnockbackExit,                  \
+    .onframe = ftWf_Init_OnFrame,                                             \
+    .onrespawn = ftWf_Init_LoadSpecialAttrs,                                  \
+    .enterdoublejump = ftWf_Init_EnterDoubleJump,                             \
+    .move_logic = ftWf_Init_MotionStateTable,                                 \
+    .move_logic_count = ftWf_MS_SelfCount,                                    \
+    .flags = 0,                                                               \
+    .articles = itWf_Articles,                                                \
+    .article_count = 4,                                                       \
+    .kirby = &ftKbWf_Copy
+
 const MuAkFighter mu_ak_wolf = {
     .name = "Wolf",
     .file = "PlWf.dat",
+    WF_DESCRIPTOR,
+};
 
-    .onload = ftWf_Init_OnLoad,
-    .ondeath = ftWf_Init_OnDeath,
-    .onunknown = ftWf_Init_OnDestroy,
-    .specialn = ftWf_SpecialN_Enter,
-    .specialairn = ftWf_SpecialAirN_Enter,
-    .specials = ftWf_SpecialS_Enter,
-    .specialairs = ftWf_SpecialAirS_Enter,
-    .specialhi = ftWf_SpecialHi_Enter,
-    .specialairhi = ftWf_SpecialAirHi_Enter,
-    .speciallw = ftWf_SpecialLw_Enter,
-    .specialairlw = ftWf_SpecialAirLw_Enter,
-    .onitempickup = WF_ITEM_EVENT(ftWf_Init_OnItemPickup),
-    .onitemdrop = WF_ITEM_EVENT(ftWf_Init_OnItemDrop),
-    .onitemcatch = WF_ITEM_EVENT(ftWf_Init_OnItemPickup),
-    .onunknownitemrelated = WF_ITEM_EVENT(ftWf_Init_OnItemDrop),
-    .onhit = ftWf_Init_OnKnockbackEnter,
-    .onunknowneyetexturerelated = ftWf_Init_OnKnockbackExit,
-    .onframe = ftWf_Init_OnFrame,
-    .onrespawn = ftWf_Init_LoadSpecialAttrs,
-    .enterdoublejump = ftWf_Init_EnterDoubleJump,
-
-    .move_logic = ftWf_Init_MotionStateTable,
-    .move_logic_count = ftWf_MS_SelfCount,
-
-    /* Every routine is written, but nothing has run yet and two services are missing (the item
-     * create hook and the m-ex effect ids, NOTES.md), so Wolf is not marked MU_AK_READY. */
-    .flags = 0,
-    .articles = itWf_Articles,
-    .article_count = 2,
+/* ACE 2.0.0 carries the same code a second time as PlWfU.dat (its fighter and article blocks are
+ * byte for byte PlWf.dat's), with its own animation file, costumes, sound bank and item kinds.
+ * Nothing here keeps a fighter kind or an item kind: both come from fp->kind through the
+ * registry, so the two can be in one match. The attribute block is the one compiled into the
+ * code (ftWf_Init_Attrs), the same for both. */
+/* Kirby copies the same ability from both: ACE's MxDt names PlKbCpWf.dat and ftDataKirbyCopyWolf
+ * for PlWfU.dat too, and gives it four item kinds like PlWf.dat (wolf_kirby.c). */
+const MuAkFighter mu_ak_wolf_ssbu = {
+    .name = "Wolf SSBU",
+    .file = "PlWfU.dat",
+    WF_DESCRIPTOR,
 };

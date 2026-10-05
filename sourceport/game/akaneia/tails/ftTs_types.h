@@ -339,6 +339,18 @@ static inline ftTails_FighterVars* ftTs_Vars(Fighter* fp)
     return (ftTails_FighterVars*) &fp->u;
 }
 
+/* Kirby with Tails's ability: the live shot, one at a time, as ftTails_FighterVars.shot_gobj is
+ * for Tails himself. The mod's code keeps it at console fp+0x596C, which is past the end of the
+ * Fighter (0x2420 bytes on that disc): an out of bounds word of the game heap (see
+ * run-source/rel09-b1-wolf/kirby/TAILS.md). Here it is the first word of the texture list of the
+ * retail "parts" hats (fp->u.kb.x44, console fp+0x2270), which nothing reads while Kirby wears a
+ * hat made of one joint, as this one is. Tails's own Kirby states keep nothing there. */
+static inline Item_GObj** ftKbTs_ShotSlot(Fighter* fp)
+{
+    _Static_assert(sizeof(Item_GObj*) <= sizeof(fp->u.kb.x44), "Kirby's energy shot slot");
+    return (Item_GObj**) &fp->u.kb.x44;
+}
+
 static inline ftTails_SpecialHiVars* ftTs_HiVars(Fighter* fp)
 {
     return (ftTails_SpecialHiVars*) &fp->mv;

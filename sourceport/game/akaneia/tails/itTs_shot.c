@@ -163,14 +163,24 @@ static bool itTs_Shot_OnHitShieldDetermineDie(Item_GObj* gobj)
 /* code+0x30 OnSpawn: empty on the disc. */
 static void itTs_Shot_OnSpawn(Item_GObj* gobj) {}
 
-/* code+0x34 OnDestroy: free the owner's one-shot slot. */
+/* code+0x34 OnDestroy: free the owner's one-shot slot. The same routine is article 1 of
+ * PlKbCpTs.dat (+0x34 there): a Kirby owner's slot is the word at console fp+0x596C, natively
+ * ftKbTs_ShotSlot.
+ *
+ * For a Kirby the slot is cleared only while it names this shot. The console clears the word
+ * whatever it holds; the two differ only when Kirby lost the ability while a shot was alive
+ * (his loss removes the shot, so that needs a death) and the word has since been given to
+ * another hat's texture list, which the console's out of bounds word never is. */
 static void itTs_Shot_OnDestroy(Item_GObj* gobj)
 {
     Fighter* owner = GET_FIGHTER(itTs_ShotVars(GET_ITEM(gobj))->owner);
 
     if (owner->kind == Ft_Kind_Kirby) {
-        /* Kirby's copy of the move keeps its slot at console fp+0x596C, in m-ex's extended Kirby
-         * ability area; that belongs to the Kirby copy-ability layer (not ported here). */
+        Item_GObj** slot = ftKbTs_ShotSlot(owner);
+
+        if (*slot == gobj) {
+            *slot = NULL;
+        }
         return;
     }
     ftTs_Vars(owner)->shot_gobj = NULL;
@@ -213,27 +223,45 @@ ItemStateTable itTs_Shot_StateTable[3] = {
     { itTs_Shot_MS_Die, itTs_Shot_Die_Anim, itTs_Shot_Move_Phys, itTs_Shot_Move_Coll },
 };
 
-/* The article's m-ex itFunction table, in ItemLogicTable order. */
-ItemLogicTable itTs_Shot_Logic = {
-    itTs_Shot_StateTable,
-    itTs_Shot_OnSpawn,
-    itTs_Shot_OnDestroy,
-    NULL,                               /* picked_up */
-    NULL,                               /* dropped */
-    NULL,                               /* thrown */
-    itTs_Shot_OnGiveDamage,             /* dmg_dealt */
-    itTs_Shot_OnTakeDamage,             /* dmg_received */
-    NULL,                               /* entered_air */
-    itTs_Shot_OnReflect,                /* reflected */
-    itTs_Shot_OnClank,                  /* clanked */
-    NULL,                               /* absorbed */
-    itTs_Shot_OnHitShield,              /* shield_bounced */
-    itTs_Shot_OnHitShield,              /* hit_shield */
-    NULL,                               /* evt_unk */
+/* The shot's m-ex itFunction table, in ItemLogicTable order. */
+#define ITTS_SHOT_TABLE                                                                          \
+    {                                                                                            \
+        itTs_Shot_StateTable,                                                                    \
+        itTs_Shot_OnSpawn,                                                                       \
+        itTs_Shot_OnDestroy,                                                                     \
+        NULL,                   /* picked_up */                                                  \
+        NULL,                   /* dropped */                                                    \
+        NULL,                   /* thrown */                                                     \
+        itTs_Shot_OnGiveDamage, /* dmg_dealt */                                                  \
+        itTs_Shot_OnTakeDamage, /* dmg_received */                                               \
+        NULL,                   /* entered_air */                                                \
+        itTs_Shot_OnReflect,    /* reflected */                                                  \
+        itTs_Shot_OnClank,      /* clanked */                                                    \
+        NULL,                   /* absorbed */                                                   \
+        itTs_Shot_OnHitShield,  /* shield_bounced */                                             \
+        itTs_Shot_OnHitShield,  /* hit_shield */                                                 \
+        NULL,                   /* evt_unk */                                                    \
+    }
+
+/* Tails's articles, in the order of his m-ex item list. Article 1 is the shot of Kirby's copy
+ * of the move: its data is in the hat file (PlKbCpTs.dat, hat data +0x14) and its code there
+ * (itFunction article 1, 304 words) is this same routine set, export for export (0, 1, 2, 6, 7,
+ * 9, 10, 12, 13) and state for state, so the row is the shot's again. */
+ItemLogicTable itTs_Articles[2] = {
+    ITTS_SHOT_TABLE, /* 0 the energy shot */
+    ITTS_SHOT_TABLE, /* 1 Kirby's energy shot (item kind 285 on Akaneia) */
 };
 
 /* code+0x6340 SpecialN_SpawnProjectile (fighter side) */
 void ftTs_SpecialN_SpawnProjectile(Fighter_GObj* gobj)
+{
+    ftTs_SpecialN_SpawnProjectileWith(gobj, 0, &ftTs_Vars(GET_FIGHTER(gobj))->shot_gobj);
+}
+
+/* The routine above with the article and the place of the one-shot slot as arguments: Kirby's
+ * copy of the move (PlKbCpTs.dat +0xD30) is the same instructions with article 1 and its own
+ * slot. The source joint is part 0x34 in both, looked up in the bone table of whoever fires. */
+void ftTs_SpecialN_SpawnProjectileWith(Fighter_GObj* gobj, int article, HSD_GObj** slot)
 {
     Fighter* fp = GET_FIGHTER(gobj);
     Vec3 pos;
@@ -255,7 +283,12 @@ void ftTs_SpecialN_SpawnProjectile(Fighter_GObj* gobj)
     memset(&spawn, 0, sizeof(spawn));
     spawn.x0_parent_gobj = gobj;
     spawn.x4_parent_gobj2 = gobj;
-    spawn.kind = mu_ak_article_kind(gobj, 0);
+    spawn.kind = mu_ak_article_kind(gobj, article);
+    /* Not an m-ex case: no item kind for the article (m-ex stops the game there). It can only
+     * happen to a Kirby whose copied fighter's list was not registered. */
+    if ((int) spawn.kind < 0) {
+        return;
+    }
     spawn.pos = pos;
     spawn.prev_pos = pos;
     spawn.facing_dir = fp->facing_dir;
@@ -273,7 +306,7 @@ void ftTs_SpecialN_SpawnProjectile(Fighter_GObj* gobj)
         vars->life = attrs->lifetime;
         vars->owner = gobj;
         vars->bounces = 0;
-        ftTs_Vars(fp)->shot_gobj = shot_gobj;
+        *slot = shot_gobj;
 
         it_802762BC(ip);
         Item_80268E5C(shot_gobj, itTs_Shot_MS_Air, ITEM_ANIM_UPDATE);

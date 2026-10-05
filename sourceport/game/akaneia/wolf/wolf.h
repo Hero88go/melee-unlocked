@@ -27,6 +27,7 @@
 #include <melee/it/types.h>
 
 #include "../mu_ak_fighter.h"
+#include "../common/mu_ak_kirby.h"
 #include "mu_disc.h"
 
 /* ---- Action states ---------------------------------------------------------------------------- *
@@ -349,8 +350,14 @@ void ftWf_SpecialAirLwTurn_IASA(HSD_GObj* gobj);
 void ftWf_SpecialAirLwTurn_Phys(HSD_GObj* gobj);
 void ftWf_SpecialAirLwTurn_Coll(HSD_GObj* gobj);
 
-/* ---- wolf_items.c: the laser (article 0) and the blaster Wolf holds (article 1) --------------- *
- * One m-ex itFunction export table per article, rewritten, in article order (MuAkFighter.articles). */
-extern const ItemLogicTable itWf_Articles[2];
+/* ---- wolf_items.c: the laser (article 0) and the blaster Wolf holds (article 1), and Kirby's
+ * two (articles 2 and 3) ----------------------------------------------------------------------- *
+ * One m-ex itFunction export table per article, rewritten, in article order (MuAkFighter.articles).
+ * Articles 2 and 3 (item kinds 255 and 256 on Akaneia) are the same two articles for Kirby's copy
+ * of the blaster: the hat file's itFunction code for them is word for word Wolf's own. */
+extern const ItemLogicTable itWf_Articles[4];
+
+/* ---- wolf_kirby.c: the ability Kirby copies from Wolf (m-ex kbFunction of PlKbCpWf.dat) ------- */
+extern const MuAkKirbyCopy ftKbWf_Copy;
 
 #endif
