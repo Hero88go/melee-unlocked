@@ -34,7 +34,10 @@ RUNTIME_OPTIONAL = {
 # Stages": off, the save file decides what is unlocked. The host keeps the flag on in a network match.
 TWO_WAY_TEXT = {addr: "unlock_all" for addr in (
     0x8015EE98, 0x8015EDDC, 0x80164B14, 0x801648F4, 0x8015EE4C, 0x8015EE14, 0x8015D968, 0x8015D9D8,
-    0x8017229C, 0x801737B0, 0x80164658, 0x801644E8, 0x8030490C, 0x803044F0)}
+    0x8017229C, 0x801737B0, 0x80164658, 0x801644E8, 0x8030490C, 0x803044F0,
+    # "Disable Special Messages" and "Disable Trophy Messages" (a return at each function's entry):
+    # with locked content the game's own unlock notices are shown again.
+    0x8015D94C, 0x8015D984)}
 
 # Codes the port adds to the table itself (they are not in Slippi's code list). Each is always in
 # the table, at the end of the part that is never cut, so its cave and data sit in RAM at a fixed

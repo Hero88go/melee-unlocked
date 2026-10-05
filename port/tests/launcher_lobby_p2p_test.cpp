@@ -3,8 +3,10 @@
 // loss, clock skew, friends by code while hidden, the 0.8.5 mod fields (badges, "open to", custom
 // ISOs) and an Akaneia match's disc from the Mods folder scan. Private chat too: request, accept,
 // decline, block, timeout, messages reaching only the room's other player, launchers from before
-// private chat, and the message limits. No DHT (each lobby is told the other's address), no window,
-// no focus: ctest runs it.
+// private chat, and the message limits. The transport of a request too: a P2P Direct request and a
+// Slippi Direct request side by side, the default without the field, and the refusals for an older
+// launcher and for the launcher where every match is peer to peer. No DHT (each lobby is told the
+// other's address), no window, no focus: ctest runs it.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <winsock2.h>
 #include "launcher_lobby_p2p.h"
@@ -1069,6 +1071,182 @@ void p2p_invite() {
   check(found.value("found", std::string()) == a.id() && found.value("seq", 0) == 1 && b.state()["players"].size() == 1,
         "invite: the player is named for the list to select");
 }
+#else
+// ---- the launcher with both kinds of match: peer to peer is a request's own transport ----
+const char* const kP2p = launcher::lobby::kP2pTransport;
+const char* const kHosted = launcher::lobby::kHostedTransport;
+
+bool launch_both(PeerLobby& a, PeerLobby& b, Json& la, Json& lb) {
+  bool got_a = false, got_b = false;
+  pump(a, b, 5000, [&] {
+    if (!got_a) got_a = a.take_launch(la);
+    if (!got_b) got_b = b.take_launch(lb);
+    return got_a && got_b;
+  });
+  return got_a && got_b;
+}
+// The one request `p` holds, or null.
+Json held(const PeerLobby& p) {
+  const Json requests = p.state()["requests"];
+  return requests.size() == 1 ? requests[0] : Json();
+}
+// Both players are free again and may send the next request (the lobby takes one every three seconds).
+void next_request(PeerLobby& a, PeerLobby& b) {
+  a.command("available"); b.command("available");
+  pump(a, b, 3300);
+}
+
+void transport_side_by_side() {
+  std::cout << "-- transport: a P2P Direct request, then a Slippi Direct request, between the same two launchers" << std::endl;
+  auto pair = make_pair("tp-both", profile("Alpha", "ALPH#101", "0.8.5:source", 2), profile("Beta", "BETA#202", "0.8.5:source", 9));
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "transport: both players see each other");
+  check(a.state()["self"]["protocol"] == 4 && a.state()["players"][0].value("protocol", 0) == 4 &&
+        launcher::lobby::lobby_protocol == launcher::lobby::p2p_protocol, "transport: this launcher announces the lobby protocol with the peer-to-peer setup");
+  check(a.state()["players"][0].value("p2p", false) && b.state()["players"][0].value("p2p", false),
+        "transport: each knows the other can be asked for a peer-to-peer match");
+
+  // 1. P2P Direct: the request names its transport, and the match carries the setup.
+  std::string sent = error_of([&] { a.command("request", {{"target", b.id()}, {"transport", kP2p}}); });
+  check(sent.empty(), "transport: the P2P Direct request is sent: " + sent);
+  pump(a, b, 3000, [&] { return b.state()["requests"].size() == 1; });
+  Json request = held(b);
+  check(!request.is_null() && request["transport"] == kP2p && !held(a).is_null() && held(a)["transport"] == kP2p,
+        "transport: both sides hold it as a peer-to-peer request");
+  if (request.is_null()) return;
+  b.command("accept", {{"request", request["id"]}});
+  Json la, lb;
+  const bool p2p_started = launch_both(a, b, la, lb) && la.count("p2p") && lb.count("p2p");
+  check(p2p_started, "transport: both sides launch it with a match setup");
+  if (!p2p_started) return;
+  const Json pa = la["p2p"], pb = lb["p2p"];
+  check(la["request"] == lb["request"] && pa["slot"] == 0 && pb["slot"] == 1 && pa["seed"] == pb["seed"] && pa["stage"] == pb["stage"],
+        "transport: the same match on both sides, the requester in slot 0");
+  const Json chars = Json::array({Json::array({2, 0}), Json::array({9, 0})});
+  check(pa["chars"] == chars && pb["chars"] == chars && pa["expect"] == b.id() && pb["expect"] == a.id(),
+        "transport: the same characters, and each expects the other's identity key");
+  check(pa.value("port", 0) == a.port() && pb.value("port", 0) == b.port(), "transport: each game takes its lobby's UDP port");
+  check(!launcher::lobby::p2p_arguments(pa, "i.json", "r.json").empty() && !launcher::lobby::p2p_arguments(pb, "i.json", "r.json").empty(),
+        "transport: both setups pass the check that guards the game's command line");
+
+  // 2. Slippi Direct, the default: a request that names no transport, launched without a setup.
+  next_request(a, b);
+  sent = error_of([&] { a.command("request", {{"target", b.id()}}); });
+  check(sent.empty(), "transport: a request without the field is sent: " + sent);
+  pump(a, b, 3000, [&] { return b.state()["requests"].size() == 1; });
+  request = held(b);
+  check(!request.is_null() && request["transport"] == kHosted && !held(a).is_null() && held(a)["transport"] == kHosted,
+        "transport: without the field both sides hold a Slippi Direct request");
+  if (request.is_null()) return;
+  b.command("accept", {{"request", request["id"]}});
+  Json ha, hb;
+  const bool hosted_started = launch_both(a, b, ha, hb);
+  check(hosted_started && !ha.count("p2p") && !hb.count("p2p") && ha["code"] == "BETA#202" && hb["code"] == "ALPH#101" &&
+        ha["character"] == 2 && hb["character"] == 9, "transport: it launches as before: the other's code, the own main, no match setup");
+  check(hosted_started && ha["request"] != la["request"], "transport: a second match, not the first one again");
+
+  // 3. Naming the default is the same as not naming anything.
+  next_request(a, b);
+  sent = error_of([&] { b.command("request", {{"target", a.id()}, {"transport", kHosted}}); });
+  pump(a, b, 3000, [&] { return a.state()["requests"].size() == 1; });
+  check(sent.empty() && !held(a).is_null() && held(a)["transport"] == kHosted, "transport: the default named outright is still Slippi Direct: " + sent);
+}
+
+// A launcher from before the peer-to-peer setup (lobby protocol 3): Slippi Direct exactly as it was,
+// and a P2P Direct request never leaves.
+void transport_old_peer() {
+  std::cout << "-- transport: an older launcher (lobby protocol 3)" << std::endl;
+  launcher::lobby::PeerTestOptions current, old; old.protocol = 3;
+  auto pair = make_pair_with("tp-old", profile("Alpha", "ALPH#101", "0.8.5:source", 2), profile("Beta", "BETA#202", "0.8.5:source", 9), current, old);
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "old peer: an older launcher is still discovered");
+  check(a.state()["players"][0].value("protocol", 0) == 3 && !a.state()["players"][0].value("p2p", true),
+        "old peer: it is known to be older, and not to play peer to peer");
+  const std::string refused = error_of([&] { a.command("request", {{"target", b.id()}, {"transport", kP2p}}); });
+  check(refused == launcher::lang::tr("lobby.declined.p2p_version", {{"name", "Beta"}}), "old peer: a P2P Direct request says why at once: " + refused);
+  check(a.state()["requests"].empty() && b.state()["requests"].empty(), "old peer: nothing was sent");
+  // Slippi Direct, from the newer side.
+  const std::string sent = error_of([&] { a.command("request", {{"target", b.id()}}); });
+  check(sent.empty(), "old peer: a Slippi Direct request is sent: " + sent);
+  pump(a, b, 3000, [&] { return b.state()["requests"].size() == 1; });
+  Json request = held(b);
+  check(!request.is_null() && request["transport"] == kHosted, "old peer: the older launcher holds it as it always did");
+  if (request.is_null()) return;
+  b.command("accept", {{"request", request["id"]}});
+  Json la, lb;
+  check(launch_both(a, b, la, lb) && !la.count("p2p") && !lb.count("p2p") && la["code"] == "BETA#202" && lb["code"] == "ALPH#101",
+        "old peer: both launch Slippi Direct with each other's code");
+  // And from the older side.
+  next_request(a, b);
+  const std::string back = error_of([&] { b.command("request", {{"target", a.id()}}); });
+  pump(a, b, 3000, [&] { return a.state()["requests"].size() == 1; });
+  request = held(a);
+  check(back.empty() && !request.is_null() && request["transport"] == kHosted && request["state"] == "pending",
+        "old peer: its own request arrives as Slippi Direct: " + back);
+  check(!has_notice(a, "lobby.refused.p2p_version") && !has_notice(b, "lobby.declined.p2p_version"), "old peer: nobody is refused for it");
+}
+
+// The launcher where every match is peer to peer (lobby protocol 4, no transport list, no transport
+// field): its game and this launcher's do not play each other, so nothing is started either way.
+void transport_other_kind() {
+  std::cout << "-- transport: the launcher where every match is peer to peer" << std::endl;
+  launcher::lobby::PeerTestOptions current, only; only.p2p_only = true;
+  auto pair = make_pair_with("tp-kind", profile("Alpha", "ALPH#101", "0.8.5:source", 2), profile("Beta", "BETA#202", "0.8.5:source", 9), current, only);
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "other kind: the two launchers still see each other");
+  check(a.state()["players"][0].value("protocol", 0) == 4 && !a.state()["players"][0].value("p2p", true),
+        "other kind: the same lobby protocol, but not a launcher to play peer to peer with");
+  const std::string why = launcher::lang::tr("lobby.declined.p2p_version", {{"name", "Beta"}});
+  std::string error = error_of([&] { a.command("request", {{"target", b.id()}, {"transport", kP2p}}); });
+  check(error == why, "other kind: a P2P Direct request says why at once: " + error);
+  error = error_of([&] { a.command("request", {{"target", b.id()}}); });
+  check(error == why, "other kind: so does a Slippi Direct request, which that launcher does not have: " + error);
+  check(a.state()["requests"].empty(), "other kind: nothing was sent");
+  // It asks, the way it does: no transport named. Refused with the reason, on both sides.
+  error = error_of([&] { b.command("request", {{"target", a.id()}}); });
+  check(error.empty(), "other kind: its request leaves: " + error);
+  check(pump(a, b, 4000, [&] { return has_notice(a, "lobby.refused.p2p_version") && has_notice(b, "lobby.declined.p2p_version"); }),
+        "other kind: it is refused, and both players read why");
+  pump(a, b, 600);
+  Json launch;
+  check(a.state()["requests"].empty() && b.state()["requests"].empty() && !a.take_launch(launch) && !b.take_launch(launch),
+        "other kind: no request is left behind and no match starts");
+}
+
+// What each transport needs: Source Port on both sides for P2P Direct, the account for Slippi Direct.
+void transport_rules() {
+  refusal("no account", [](PeerLobby& b, Json& pb) { pb["hosted_ok"] = false; b.update_profile(pb); },
+          "lobby.declined.no_account", "lobby.refused.no_account");
+
+  std::cout << "-- transport: what each kind of match needs" << std::endl;
+  Json pa = profile("Alpha", "ALPH#101", "0.8.5:recomp", 2), pb = profile("Beta", "BETA#202", "0.8.5:source", 9);
+  auto pair = make_pair("tp-rules", pa, pb);
+  auto& a = *pair.a; auto& b = *pair.b;
+  check(see_each_other(pair), "rules: discovery");
+  std::string error = error_of([&] { a.command("request", {{"target", b.id()}, {"transport", kP2p}}); });
+  check(error == launcher::lang::tr("lobby.p2p.error.engine"), "rules: P2P Direct from Static Recomp names the Game Build to pick: " + error);
+  error = error_of([&] { b.command("request", {{"target", a.id()}, {"transport", kP2p}}); });
+  check(error == launcher::lang::tr("lobby.declined.p2p_engine", {{"name", "Alpha"}}), "rules: P2P Direct to a player on Static Recomp says so: " + error);
+  error = error_of([&] { b.command("request", {{"target", a.id()}, {"transport", kP2p}, {"mode", "akaneia"}}); });
+  check(error == launcher::lang::tr("lobby.p2p.error.vanilla"), "rules: P2P Direct is vanilla only: " + error);
+  // Without the account: no Slippi Direct request, and the reason names the way that does work.
+  pb["hosted_ok"] = false; b.update_profile(pb);
+  error = error_of([&] { b.command("request", {{"target", a.id()}}); });
+  check(error == launcher::lang::tr("lobby.error.self_no_account"), "rules: Slippi Direct without the account says so: " + error);
+  check(a.state()["requests"].empty() && b.state()["requests"].empty(), "rules: none of these was sent");
+  // P2P Direct needs no account: once both are on Source Port it goes through.
+  pa["build"] = "0.8.5:source"; a.update_profile(pa);
+  pump(a, b, 3000, [&] { return b.state()["players"].size() == 1 && b.state()["players"][0].value("build", std::string()) == "0.8.5:source"; });
+  error = error_of([&] { b.command("request", {{"target", a.id()}, {"transport", kP2p}}); });
+  pump(a, b, 3000, [&] { return a.state()["requests"].size() == 1; });
+  const Json request = held(a);
+  check(error.empty() && !request.is_null() && request["transport"] == kP2p, "rules: P2P Direct without the account is sent and arrives: " + error);
+  if (request.is_null()) return;
+  a.command("accept", {{"request", request["id"]}});
+  Json la, lb;
+  check(launch_both(a, b, la, lb) && la.count("p2p") && lb.count("p2p") && lb["p2p"]["slot"] == 0 && la["p2p"]["slot"] == 1,
+        "rules: and it starts, the requester in slot 0");
+}
 #endif
 }  // namespace
 
@@ -1077,9 +1255,9 @@ int main() {
   if (WSAStartup(MAKEWORD(2, 2), &ws)) { std::cerr << "no Winsock\n"; return 2; }
   try {
 #ifdef MELEE_NO_SLIPPI
-    // The launcher built without the Slippi layer: its accepted matches are peer-to-peer and it
+    // The launcher built without the Slippi layer: every one of its matches is peer-to-peer and it
     // refuses the older flow, so only the cases written for it run here (the rest of this file is
-    // the normal build's port_launcher_lobby_p2p).
+    // the normal build's port_launcher_lobby_p2p, where peer to peer is a request's own transport).
     p2p_setup();
     p2p_setup_loss();
     p2p_auto_two();
@@ -1108,6 +1286,12 @@ int main() {
     private_routing();
     private_crossed();
     private_limits();
+#ifndef MELEE_NO_SLIPPI
+    transport_side_by_side();
+    transport_old_peer();
+    transport_other_kind();
+    transport_rules();
+#endif
   } catch (const std::exception& ex) {
     std::cerr << "unexpected exception: " << ex.what() << std::endl;
     ++failures;

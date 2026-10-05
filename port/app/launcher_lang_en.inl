@@ -169,4 +169,22 @@
 {"lobby.p2p.error.profile", "Your profile needs a name and at least one main."},
 {"lobby.p2p.error.code_format", "A player code looks like ABCD#123."},
 {"lobby.p2p.code_copied", "Copied {code}."},
+// P2P Direct in the launcher that also starts Slippi Direct: a test control on the Lobby page. The
+// launcher built without the Slippi layer never says these, so its table leaves them out.
+#ifndef MELEE_NO_SLIPPI
+{"lobby.p2p.test_button", "P2P Direct (test)"},
+{"lobby.p2p.test_tip", "Test: asks the selected player for a peer-to-peer match, without Slippi's servers. Both players need this version, Source Port selected, and a direct connection (the same network, or a forwarded port). One game, vanilla."},
+{"lobby.p2p.test_request_from", "P2P Direct (test) request from {name}"},
+{"lobby.p2p.test_detail", "peer to peer, no Slippi servers"},
+{"lobby.p2p.test_online", "You're online for P2P Direct (test) only. Sign in through Slippi Launcher to use Slippi Direct too."},
+{"lobby.p2p.no_route", "Can't reach {name} for P2P Direct. It needs a direct connection: the same network, or a forwarded port."},
+{"lobby.p2p.error.engine", "P2P Direct needs Source Port. Select it under GAME BUILD on the Play page."},
+{"lobby.p2p.error.vanilla", "P2P Direct plays vanilla only."},
+{"lobby.p2p.error.launch_engine", "The P2P Direct match could not start: Source Port has to be the selected Game Build, with its game files and your disc in place. Select it on the Play page, then request another match."},
+{"lobby.refused.p2p_engine", "{name} tried to start a P2P Direct match, but it needs Source Port selected on both sides."},
+{"lobby.declined.p2p_engine", "P2P Direct needs Source Port selected on both sides. {name} or you are on another Game Build."},
+{"lobby.error.self_no_account", "Slippi Direct needs a Slippi sign-in. Sign in through Slippi Launcher, or use P2P Direct (test)."},
+{"lobby.refused.no_account", "{name} sent a Slippi Direct request, but you are not signed in to Slippi."},
+{"lobby.declined.no_account", "{name} is not signed in to Slippi, so only P2P Direct (test) works with them."},
+#endif
 {"crash.offer", "The game crashed. Send a crash report so it can be fixed?\n\nThese files are sent:\n{files}\nThey contain the error, the game's log and your lobby log. Nothing else."},

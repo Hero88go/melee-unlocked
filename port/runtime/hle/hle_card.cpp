@@ -5,6 +5,7 @@
 #include <chrono>
 #include <thread>
 #include "hle.h"
+#include "card_backup.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
@@ -100,6 +101,7 @@ void mount() {
   g_dir = folder_path(host::options.card_dir);
   std::error_code ec;
   std::filesystem::create_directories(g_dir, ec);
+  host::backup_card_folder(g_dir);
   for (File* f : g_files) delete f;
   g_files.assign(MAX_FILES, nullptr);
   size_t slot = 0;

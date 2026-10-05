@@ -13,6 +13,7 @@
 #endif
 #include "cosmetic_mods.h"
 #include "texture_pack.h"
+#include "replay_bar.h"
 
 static uint32_t s_spec = 5;
 
@@ -23,7 +24,12 @@ static uint32_t s_spec = 5;
 // match loads the picked skin. The press itself is left to the game, which gives L and R no
 // meaning of their own on this screen. Retail game only: a mod disc has its own screen and memory.
 namespace css_skins {
-constexpr uint16_t kPadR = 0x0020, kPadL = 0x0040;
+constexpr uint16_t kPadR = 0x0020, kPadL = 0x0040, kPadX = 0x0400, kPadY = 0x0800;
+// Stage select (mn/mnstagesel.c): the highlighted entry and the list, 0x1C per entry with the stage
+// kind at +0x0B; gr/stage.c stage_id_map (12 bytes per stage kind, the ground kind first) and
+// gr/ground.c stage_datas (a pointer per ground kind, the file name pointer at +8).
+constexpr uint32_t kStageCursor = 0x804D6CAEu, kStageList = 0x803F06D0u;
+constexpr uint32_t kStageIdMap = 0x803E9960u, kStageDatas = 0x803DFEDCu;
 constexpr uint32_t kScene = 0x80479D30u;          // major scene; +3 the minor one
 constexpr uint32_t kDoors = 0x803F0DFCu;          // mnCharSel doors: 4 x 0x24
 constexpr uint32_t kIcons = 0x803F0B24u;          // mnCharSel icons: 0x1C each, +1 the fighter
@@ -92,9 +98,63 @@ void cycle(int door, int direction) {
   host::log("cosmetics: character select picked %s for %s", pick.name.c_str(), slot.c_str());
 }
 
+// Stage select, X / Y (or R / L) on a highlighted stage: that stage's file steps through the
+// standard stage and its installed stage skins, like a costume on the character select. The copy
+// the game preloaded is let go the same way, so the match loads the pick.
+void cycle_stage(int direction) {
+  const uint8_t at = host::rd8(kStageCursor);
+  if (at >= 29) return;                                   // Random and the other non-stage entries
+  const uint32_t stkind = host::rd8(kStageList + at * 0x1Cu + 0x0B);
+  const uint32_t grkind = host::rd32(kStageIdMap + stkind * 12);
+  if (grkind >= 0x6Fu) return;
+  const uint32_t data = host::rd32(kStageDatas + grkind * 4);
+  if (!host::try_ptr(data, 12)) return;
+  const uint32_t name_at = host::rd32(data + 8);
+  if (!host::try_ptr(name_at, 1)) return;
+  const std::string file = host::cstr(name_at, 64);
+  bool loading = false;
+  if (!preload_sane(&loading) || loading) return;
+  const auto pick = host::cosmetics::cycle_stage_live(file, direction);
+  if (!pick.ok || !pick.changed) {
+    if (!pick.message.empty()) host::log("cosmetics: %s skin not changed (%s)", file.c_str(), pick.message.c_str());
+    return;
+  }
+  const uint32_t fst = host::disc_fst_addr(), fst_size = host::disc_fst_size();
+  const auto result = host::cosmetics::republish_stage(host::ptr(fst, fst_size), fst_size, file);
+  if (!result.ok) return;
+  for (const auto& item : result.files) {
+    host::mark_ram_write(fst + item.fst_index * 12 + 8, 4);
+    for (uint32_t i = 0; i < kPreloadCount; ++i) {
+      const uint32_t entry = kPreloadEntries + i * kPreloadEntrySize;
+      const uint8_t state = host::rd8(entry);
+      if (host::rd16(entry + 6) != (uint16_t)item.fst_index) continue;
+      if (state == 3 || state == 4) host::wr16(entry + 6, 0xFFFE);
+      else if (state == 1) host::wr32(entry + 0x0C, 0);
+    }
+  }
+  host::wr32(kPreloadSceneChanges, host::rd32(kPreloadSceneChanges) + 1);
+  screen_label::show(("Stage skin: " + pick.name).c_str(), 2.5);
+  host::log("cosmetics: stage select picked %s for %s", pick.name.c_str(), file.c_str());
+}
+
 // Called with the freshly polled pads, like lcancel::apply.
 void apply(const host::PadState pads[4]) {
   static uint16_t held[4];
+  // Stage select has its own edge memory, so the character select's is not disturbed.
+  static uint16_t stage_held[4];
+  if (!host::mod_disc_active() && !slippi::playback::enabled() && host::cosmetics::runtime_initialized() &&
+      slippi::online::session_mode() < 0 && host::rd8(kScene) == 2 && host::rd8(kScene + 3) == 1) {
+    for (int i = 0; i < 4; ++i) {
+      const uint16_t now = pads[i].err == 0 ? (uint16_t)(pads[i].button & (kPadL | kPadR | kPadX | kPadY)) : 0;
+      const uint16_t fresh = (uint16_t)(now & ~stage_held[i]);
+      stage_held[i] = now;
+      if ((now & (kPadL | kPadR)) == (kPadL | kPadR)) continue;   // the start of the reset combination
+      if (fresh & (kPadX | kPadR)) { cycle_stage(1); break; }
+      if (fresh & (kPadY | kPadL)) { cycle_stage(-1); break; }
+    }
+  } else {
+    for (int i = 0; i < 4; ++i) stage_held[i] = 0xFFFF;         // nothing held on arrival is a press
+  }
   uint16_t pressed[4];
   bool any = false;
   for (int i = 0; i < 4; ++i) {

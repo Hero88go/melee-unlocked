@@ -8,6 +8,8 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <mutex>
+#include <string>
 
 namespace replay_bar {
 namespace {
@@ -151,3 +153,32 @@ void draw(float width, float height, bool menu_open) {
 }
 
 }  // namespace replay_bar
+
+namespace screen_label {
+namespace {
+std::mutex g_lock;
+std::string g_text;
+double g_until = 0.0;
+}  // namespace
+
+void show(const char* text, double seconds) {
+  std::lock_guard<std::mutex> lock(g_lock);
+  g_text = text ? text : "";
+  g_until = host::now_seconds() + seconds;
+}
+
+void draw(float width, float height) {
+  std::string text;
+  {
+    std::lock_guard<std::mutex> lock(g_lock);
+    if (g_text.empty() || host::now_seconds() >= g_until) return;
+    text = g_text;
+  }
+  const ImVec2 size = ImGui::CalcTextSize(text.c_str());
+  const ImVec2 at((width - size.x) * 0.5f, height - size.y - 28.0f);
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilled(ImVec2(at.x - 10.0f, at.y - 6.0f), ImVec2(at.x + size.x + 10.0f, at.y + size.y + 6.0f),
+                    IM_COL32(10, 12, 18, 200), 6.0f);
+  dl->AddText(at, IM_COL32(236, 240, 246, 255), text.c_str());
+}
+}  // namespace screen_label

@@ -91,6 +91,21 @@ Fn lookup(uint32_t addr) {
   return g_dispatch[off / 4];
 }
 
+// The RAM translator plans native branches against what lookup() and runs_from_ram() answer. It
+// turns the watch on with its switch; off (the default, and always on the Source engine) the
+// calls below do nothing. On, a change in [lo, hi) is recorded as a write to those blocks, which
+// is how a running translation and the cache already learn that their code must be looked at.
+bool g_ram_dispatch_watch = false;
+uint32_t g_ram_dispatch_epoch = 0;
+static void dispatch_changed(uint32_t lo, uint32_t hi) {
+  if (!g_ram_dispatch_watch) return;
+  ++g_ram_dispatch_epoch;
+  lo &= ~3u;
+  const uint32_t off = lo - RAM_BASE;
+  if (hi <= lo || off >= RAM_SIZE) return;
+  mark_ram_write(lo, std::min<uint32_t>(hi - lo, RAM_SIZE - off));
+}
+
 // Replaces the function called at `addr` and hands back what was there, so a host implementation can
 // stand in front of a translated one and still call it. Every `bl` the recompiler emits goes through
 // ppc::call, which reads this table (emit.py), so a swap here is seen by the whole game.
@@ -107,6 +122,7 @@ Fn set_hook(uint32_t addr, Fn fn) {
   if (g_dispatch.empty() || off >= RAM_SIZE || (addr & 3)) return nullptr;
   Fn previous = g_dispatch[off / 4];
   g_dispatch[off / 4] = fn;
+  if (previous != fn) dispatch_changed(addr, addr + 4);
   return previous;
 }
 
@@ -142,11 +158,13 @@ static std::vector<uint8_t> g_inline_map;
 static void mark_inline(uint32_t lo, uint32_t hi) {
   if (g_inline_map.empty()) g_inline_map.assign(RAM_SIZE / 4, 0);
   for (uint32_t a = lo & ~3u; a < hi; a += 4) { const uint32_t off = a - RAM_BASE; if (off < RAM_SIZE) g_inline_map[off / 4] = 1; }
+  dispatch_changed(lo, hi);
 }
 void add_ram_code_range(uint32_t lo, uint32_t hi) { mark_inline(lo, hi); }
 void remove_ram_code_range(uint32_t lo, uint32_t hi) {
   if (g_inline_map.empty()) return;
   for (uint32_t a = lo & ~3u; a < hi; a += 4) { const uint32_t off = a - RAM_BASE; if (off < RAM_SIZE) g_inline_map[off / 4] = 0; }
+  dispatch_changed(lo, hi);
 }
 
 bool runs_from_ram(uint32_t addr) {
@@ -173,6 +191,7 @@ void disable_dispatch_range(uint32_t lo, uint32_t hi) {
       g_dispatch[off / 4] = nullptr;
     }
   }
+  dispatch_changed(lo, hi);
 }
 
 void restore_dispatch_range(uint32_t lo, uint32_t hi) {
@@ -183,6 +202,7 @@ void restore_dispatch_range(uint32_t lo, uint32_t hi) {
     g_dispatch[(entry.first - RAM_BASE) / 4] = entry.second;
     g_disabled_dispatch.erase(g_disabled_dispatch.begin() + (ptrdiff_t)i);
   }
+  dispatch_changed(lo, hi);
 }
 
 void interp_entry(Context& c, uint8_t* m, uint32_t addr) {
@@ -244,8 +264,10 @@ bool undo_redirect(uint32_t addr) {
   g_redirected.erase(at);
   g_redirect_saved.erase(saved);
   uint32_t lo = 0, hi = 0;
-  if (function_bounds(addr, &lo, &hi) && !g_inline_map.empty())
+  if (function_bounds(addr, &lo, &hi) && !g_inline_map.empty()) {
     for (uint32_t a = lo & ~3u; a < hi; a += 4) { const uint32_t off = a - RAM_BASE; if (off < RAM_SIZE) g_inline_map[off / 4] = 0; }
+    dispatch_changed(lo, hi);
+  }
   return true;   // (the trampoline slot stays allocated; 32 bytes)
 }
 

@@ -91,6 +91,96 @@ void mu_content_begin_major(int mode)
  * entry number. Returns 1 when the skin changed; name gets the choice's label ("Standard", the
  * skin's or its pack's name), NUL-terminated. An older host, a replay, an online match that is
  * queued or running, or a skin that is not allowed online: 0, nothing changed. */
+#define CMD_SKIN_GROWTH 0xFC   /* no payload; reply: u32 big endian */
+
+/* The title demo preloads four fighters and a stage into a heap of a fixed size (heap 4, 0x64B400
+ * bytes), sized for the original files: the largest original set leaves about 113 KB. A stage skin
+ * a megabyte or more larger than the file it replaces no longer fits with most fighter draws, and
+ * the game stops with lbmemory.c:233. gm_801BF684 (gm/gmopeningmode.c) passes the stage it drew
+ * through here: when that stage's file cannot fit beside the largest original fighter set plus
+ * the growth of the installed fighter skins, another stage of the game's own demo list that does
+ * fit is returned in its place. With original files every stage fits and nothing changes. */
+int mu_title_demo_stage(int stkind)
+{
+    extern const char* mu_ground_stage_file(int grkind);
+    extern int Stage_8022519C(int stkind);
+    extern int gm_801641CC(unsigned char index);
+    extern unsigned int lbFileGetSize(const char* basename);
+    static unsigned char response[64];
+    unsigned int got = 0;
+    unsigned int growth = 0;
+    unsigned int budget;
+    const char* file;
+    unsigned int size;
+    int i;
+    if (stkind < 0 || stkind >= 0x11E) {
+        return stkind;
+    }
+    if (mu_online_abi_command(CMD_SKIN_GROWTH, NULL, 0, response, sizeof response, &got) == 0 && got >= 4) {
+        growth = ((unsigned int) response[0] << 24) | ((unsigned int) response[1] << 16) |
+                 ((unsigned int) response[2] << 8) | response[3];
+    }
+    if (4170176u + growth >= 0x64B400u) {
+        return stkind;   /* nothing would fit: leave the draw alone */
+    }
+    budget = 0x64B400u - 4170176u - growth;
+    file = mu_ground_stage_file(Stage_8022519C(stkind));
+    if (file == NULL) {
+        return stkind;
+    }
+    size = lbFileGetSize(file);
+    if (((size + 31u) & ~31u) + 0x60u <= budget) {
+        return stkind;
+    }
+    for (i = 0; i < 0x1D; i++) {
+        const int other = gm_801641CC((unsigned char) i);
+        const char* name;
+        if (other == stkind || other < 0 || other >= 0x11E) {
+            continue;
+        }
+        name = mu_ground_stage_file(Stage_8022519C(other));
+        if (name == NULL) {
+            continue;
+        }
+        size = lbFileGetSize(name);
+        if (size != 0 && ((size + 31u) & ~31u) + 0x60u <= budget) {
+            OSReport("[mods] the title demo drew a stage whose skin does not fit its memory; stage %d plays instead of %d\n",
+                     other, stkind);
+            return other;
+        }
+    }
+    return stkind;
+}
+
+#define CMD_STAGE_SKIN_CYCLE 0xFB   /* payload: 1 next / 0 previous, then the stage's file name */
+
+/* Stage select, X / Y or R / L on a highlighted stage (mn/mnstagesel.c): the host steps that
+ * stage's file through the standard stage and its installed stage skins and serves the file from
+ * the pick under a new entry number. Returns 1 when it changed. Offline only (the host refuses
+ * in an online session and in a replay). */
+int mu_stage_skin_cycle(const char* file, int next)
+{
+    static unsigned char response[4096];
+    unsigned char payload[65];
+    unsigned int got = 0;
+    unsigned int n = 0;
+    if (file == NULL) {
+        return 0;
+    }
+    payload[0] = next ? 1 : 0;
+    while (n < 63 && file[n] != '\0') {
+        payload[1 + n] = (unsigned char) file[n];
+        n++;
+    }
+    payload[1 + n] = 0;
+    if (mu_online_abi_command(CMD_STAGE_SKIN_CYCLE, payload, n + 2, response, sizeof response, &got) != 0 ||
+        got < 1 || response[0] == 0)
+    {
+        return 0;
+    }
+    return 1;
+}
+
 #define CMD_SKIN_CYCLE 0xF9   /* payload: port, fighter (character select number), costume, 1 next / 0 previous */
 
 int mu_skin_cycle(int port, int char_kind, int costume, int next, char* name, int capacity)
