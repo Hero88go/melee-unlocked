@@ -49,6 +49,8 @@ The development 0.9 tree and live installations were not modified.
 - Final packaged SSE2 executable completed an ACE match with C0/C2 codes enabled and returned to
   valid character select. The packaged Source executable passed clean D3D12 boot and rejected
   the damaged-ISO fixture with the named archive error.
+- Final packaged retail Static match completed and reached the normal results scene (02:04),
+  exercising the upgraded results hooks from the older embedded table.
 
 ## Practical limits
 
