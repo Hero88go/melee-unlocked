@@ -4,6 +4,7 @@
 #include "slippi_net.h"
 #include "slippi_online.h"
 #include "slippi_report.h"
+#include "slippi_account.h"
 #include "host.h"
 #define NOMINMAX
 #include <winsock2.h>
@@ -216,12 +217,18 @@ void User::RefreshFromServer() {
     }
   }).detach();
 }
-bool User::AttemptLogin() {
-  std::ifstream f(dir_ + "/user.json");
-  if (!f) { logged_in_ = false; return false; }
-  try {
-    json j = json::parse(f);
-    std::lock_guard<std::mutex> lock(mutex_);
+bool User::AttemptLogin(bool rediscover) {
+  account::Profile profile;
+  if (rediscover || !account_discovered_) {
+    profile = account::resolve(dir_);
+    account_file_ = profile ? profile.file.string() : std::string();
+    account_discovered_ = true;
+  } else if (!account_file_.empty()) {
+    profile = account::read(account_file_);
+  }
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (profile) {
+    const json& j = profile.data;
     info_.uid = str_or(j, "uid", "");
     info_.play_key = str_or(j, "playKey", "");
     info_.display_name = str_or(j, "displayName", "");
@@ -232,10 +239,10 @@ bool User::AttemptLogin() {
       if (cm->is_array()) for (const auto& m : *cm) if (m.is_string()) info_.chat_messages.push_back(m.get<std::string>());
     if (info_.chat_messages.size() != 16) info_.chat_messages = GetDefaultChatMessages();
     bool was = logged_in_;
-    logged_in_ = !info_.uid.empty() && !info_.play_key.empty();
+    logged_in_ = true;
     if (logged_in_ && !was) host::log("slippi: logged in as %s (%s)", info_.display_name.c_str(), info_.connect_code.c_str());
-  } catch (const std::exception& e) {
-    host::log("slippi: cannot parse %s/user.json: %s", dir_.c_str(), e.what());
+  } else {
+    info_ = UserInfo();
     logged_in_ = false;
   }
   return logged_in_;
