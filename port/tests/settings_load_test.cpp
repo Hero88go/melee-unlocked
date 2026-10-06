@@ -204,6 +204,13 @@ int main() {
   CHECK(options.api == gx::RenderApi::D3D11);                       // after both multi-word lines
   CHECK(options.audio_mode == 1 && options.audio_buffer_ms == 17);
   CHECK(options.audio_asio_driver.empty() && options.audio_asio_buffer == 0);   // files without the ASIO keys
+  CHECK(!options.offline_delay && !gx::RenderOptions::live_offline_delay());
+  for (bool enabled : {true, false}) {
+    options.offline_delay = enabled;
+    CHECK(gx::save_pc_settings(options, volume));
+    gx::load_pc_settings(reloaded, volume);
+    CHECK(reloaded.offline_delay == enabled && gx::RenderOptions::live_offline_delay() == enabled);
+  }
   CHECK(options.overlay_style == 2);
   CHECK(options.legacy_menu_enabled);
   CHECK(options.legacy_menu_style == 7); // existing preferences default to original layout
@@ -565,7 +572,7 @@ int main() {
   {
     const fs::path flash_path = fs::temp_directory_path() / "melee_unlocked_lcancel_flash_test.ini";
     int vol = 0;
-    for (int mode = 0; mode < 5; ++mode) for (int color = 0; color < 3; ++color) {
+    for (int mode = 0; mode < 7; ++mode) for (int color = 0; color < 3; ++color) {
       for (int order = 0; order < 2; ++order) {
         const std::string legacy = "te_options2 40200\nlcancelindicator 1\n";
         const std::string explicit_choice = "lcancel_flash_mode " + std::to_string(mode) +
@@ -574,16 +581,16 @@ int main() {
         gx::RenderOptions o;
         o.settings_path = flash_path.string();
         gx::load_pc_settings(o, vol);
-        CHECK(mu_lcancel_flash_mode(o.te_options2, lcancel::indicator_enabled()) == mode);
+        CHECK(mu_lcancel_flash_mode(o.te_options2, lcancel::flash_mode()) == mode);
         CHECK(mu_lcancel_success_color(o.te_options2) == color);
         CHECK((o.te_options2 & 0x40000u) != 0);   // the stored lock is not discarded at load
-        CHECK(lcancel::indicator_enabled() == (mode == MU_LCFLASH_MU_MISSED));
+        CHECK(lcancel::indicator_enabled() == !!mu_lcancel_renderer_mode(mode));
         CHECK(gx::save_pc_settings(o, vol));
         gx::RenderOptions again;
         again.settings_path = flash_path.string();
         gx::load_pc_settings(again, vol);
         CHECK(again.te_options2 == o.te_options2);
-        CHECK(mu_lcancel_flash_mode(again.te_options2, lcancel::indicator_enabled()) == mode);
+        CHECK(mu_lcancel_flash_mode(again.te_options2, lcancel::flash_mode()) == mode);
       }
     }
     { std::ofstream f(flash_path); f << "te_options2 200\nlcancelindicator 1\n"; }

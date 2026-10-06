@@ -395,6 +395,32 @@ int main(int argc, char** argv) {
   std::error_code ec; fs::remove_all(folder, ec); fs::create_directories(folder, ec);
   check(!ec, "create temporary directory");
 
+  if (argc == 5 && std::string(argv[1]) == "--prepare-stage") {
+    host::cosmetics::configure(argv[3]);
+    const auto imported = fs::u8path(argv[2]).extension() == ".dat" ?
+        host::cosmetics::import_stage_dat(argv[2], "GrNBa.dat") : host::cosmetics::import_file(argv[2]);
+    bool ok = imported.ok;
+    g_disc_target = "GrNBa.dat"; g_disc_bytes = read_file(fs::u8path(argv[4]));
+    std::string error;
+    bool selected = false;
+    for (const auto& asset : host::cosmetics::assets()) {
+      if (asset.kind != "stage_visual" || asset.target_path != g_disc_target) continue;
+      std::printf("stage=%s available=%d target=%s\n", asset.name.c_str(), asset.available, asset.target_path.c_str());
+      selected = asset.available && host::cosmetics::select_variant(asset.target_path, asset.id, &error);
+      break;
+    }
+    ok &= selected && !g_disc_bytes.empty();
+    if (ok) {
+      auto fst = one_file_fst(0, (uint32_t)g_disc_bytes.size(), "GrNBa.dat");
+      host::cosmetics::apply_to_fst(fst.data(), (uint32_t)fst.size());
+      std::vector<uint8_t> served(read_be32(fst.data() + 20));
+      ok = host::cosmetics::read(0, 0, served.data(), (uint32_t)served.size()) == host::cosmetics::OverrideRead::Success;
+      std::printf("stage_runtime=%s bytes=%zu imported=%s error=%s\n", ok ? "active" : "failed", served.size(), imported.message.c_str(), error.c_str());
+    } else std::printf("stage_runtime=failed imported=%s error=%s\n", imported.message.c_str(), error.c_str());
+    fs::remove_all(folder, ec);
+    return ok ? 0 : 1;
+  }
+
   if (argc == 5 && std::string(argv[1]) == "--effect") {
     auto clean = read_file(fs::u8path(argv[3]));
     auto candidate = read_file(fs::u8path(argv[4]));
@@ -836,6 +862,41 @@ int main(int argc, char** argv) {
             bracket_assets[0].kind == "stage_visual" &&
             bracket_assets[0].target_path == "GrPu.dat",
         "project Poke Floats stage accepts a literal square-bracket DAT filename");
+
+  fs::path nucleus_download = folder / L"files.zip";
+  write_file(nucleus_download, one_file_zip("GrNBa_precursor_default.dat", visual_dat()));
+  auto nucleus_import = host::cosmetics::import_file(nucleus_download.string());
+  auto nucleus_assets = host::cosmetics::assets();
+  check(nucleus_import.ok && std::any_of(nucleus_assets.begin(), nucleus_assets.end(),
+        [](const auto& asset) { return asset.target_path == "GrNBa.dat" && asset.selected &&
+                                     asset.name == "GrNBa_precursor_default"; }),
+        "generic Nucleus download identifies its selected Battlefield variant by the DAT name");
+
+  auto named_stage = visual_dat(); named_stage[0x20 + 0x20] = 3;
+  fs::path named_stage_path = folder / L"Any Custom Name.dat";
+  write_file(named_stage_path, named_stage);
+  check(!host::cosmetics::import_file(named_stage_path.string()).ok,
+        "automatic import does not guess a stage from an arbitrary filename");
+  check(host::cosmetics::import_stage_dat(named_stage_path.string(), "GrNBa.dat").ok,
+        "a named raw DAT imports when the replacement stage is explicitly chosen");
+  const auto manual_assets = host::cosmetics::assets();
+  check(std::any_of(manual_assets.begin(), manual_assets.end(), [](const auto& asset) {
+          return asset.name == "Any Custom Name" && asset.target_path == "GrNBa.dat" && asset.selected;
+        }), "manual stage selection is persisted for the chosen target");
+  check(!host::cosmetics::import_stage_dat(named_stage_path.string(), "NotAStage.dat").ok,
+        "manual stage import rejects an unknown target");
+  auto disguised = visual_dat();
+  const auto name_at = std::search(disguised.begin(), disguised.end(), "map_head", "map_head" + 8);
+  if (name_at != disguised.end()) *name_at = 'x';
+  write_file(folder / "not a stage.dat", disguised);
+  check(!host::cosmetics::import_stage_dat((folder / "not a stage.dat").string(), "GrNBa.dat").ok,
+        "manual target selection cannot turn a non-stage DAT into a stage");
+  check(host::cosmetics::stage_slots().size() == 33,
+        "all 29 standard arenas and four Stadium transformations are offered");
+  fs::path corneria_path = folder / L"GrCn_custom.dat";
+  write_file(corneria_path, visual_dat());
+  check(host::cosmetics::import_file(corneria_path.string()).ok,
+        "raw stage recognition covers standard arenas beyond the tournament stages");
 
   fs::path stadium_path = folder / L"GrPs1.dat";
   write_file(stadium_path, visual_dat());

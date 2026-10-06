@@ -1422,7 +1422,10 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
     case CMD_GP_COMPLETE_STEP: case CMD_REPORT_SET_COMPLETE: case CMD_REPORT_MATCH_STATUS_UPDATE: return true;
     case CMD_GP_FETCH_STEP: q.assign(6, 0); return true;   // nothing ready
     case CMD_GET_PLAYER_SETTINGS: handle_get_player_settings(q); return true;
-    case CMD_GET_DELAY: q.clear(); q.push_back(1); q.push_back((uint8_t)g_config.delay); return true;
+    // Offline input now passes through the same host queue on both engines.
+    // Disable the console's second offline queue so inputs are delayed once.
+    case CMD_GET_DELAY: q.clear(); q.push_back(session_mode() >= 0 ? 1 : 0);
+      q.push_back(session_mode() >= 0 ? (uint8_t)g_config.delay : 0); return true;
     // Ranks: never shown. Visibility 0 hides every rank display; the rest reads as unranked.
     case CMD_GET_RANK: q.assign(16, 0); q[1] = 1; return true;
     case CMD_FETCH_RANK: return true;

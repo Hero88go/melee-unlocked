@@ -5,6 +5,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <tlhelp32.h>
 #include <bcrypt.h>
 #include <winhttp.h>
 #include <nlohmann/json.hpp>
@@ -37,7 +38,18 @@ std::atomic<RollbackState> g_rollback_state{RollbackState::Idle};
 std::string g_rollback_message, g_rollback_folder;
 std::thread g_rollback_thread;
 
-std::wstring widen(const std::string& s) { int n = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0); std::wstring w(n ? n - 1 : 0, 0); if (n) MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), n); return w; }
+std::wstring widen(const std::string& s) {
+  int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+  std::wstring w(n, 0);
+  if (n) MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), w.data(), n);
+  return w;
+}
+std::string utf8(const std::wstring& w) {
+  int n = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+  std::string s(n, 0);
+  if (n) WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), s.data(), n, nullptr, nullptr);
+  return s;
+}
 void set_message(const std::string& m) { std::lock_guard<std::mutex> lk(g_mutex); g_message = m; }
 
 std::string sha256_hex(const std::string& data) {
@@ -60,7 +72,9 @@ std::string sha256_hex(const std::string& data) {
 }
 // GitHub's "digest" for a release asset ("sha256:<hex>"), as lowercase hex; empty if absent or another kind.
 std::string asset_digest(const nlohmann::json& asset) {
-  std::string value = asset.value("digest", std::string());
+  const auto digest = asset.find("digest");
+  if (digest == asset.end() || !digest->is_string()) return {};
+  std::string value = digest->get<std::string>();
   if (value.rfind("sha256:", 0) != 0 || value.size() != 7 + 64) return {};
   value.erase(0, 7);
   for (char& c : value) {
@@ -267,6 +281,36 @@ bool archive_inside(const std::string& zip_path_utf8, const std::string& root) {
   return archive_paths_safe(std::filesystem::u8path(zip_path_utf8), root);
 }
 
+std::vector<unsigned long> install_processes(const std::string& install_root_utf8) {
+  namespace fs = std::filesystem;
+  std::vector<unsigned long> pids;
+  std::error_code ec;
+  const auto root = fs::weakly_canonical(fs::u8path(install_root_utf8), ec);
+  if (ec) return pids;
+  HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE) return pids;
+  PROCESSENTRY32W entry{}; entry.dwSize = sizeof entry;
+  if (Process32FirstW(snapshot, &entry)) do {
+    const wchar_t* names[] = {L"melee_source.exe", L"melee_source_compat.exe", L"melee_port.exe",
+      L"melee_port_compat.exe", L"melee_port_dlss5.exe", L"melee_port_dlss5_compat.exe",
+      L"MeleeUnlockedLauncher.exe"};
+    bool game = false;
+    for (const auto* name : names) game |= _wcsicmp(entry.szExeFile, name) == 0;
+    if (!game) continue;
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID);
+    if (!process) continue;
+    std::wstring path(32768, L'\0'); DWORD size = (DWORD)path.size();
+    const bool known = QueryFullProcessImageNameW(process, 0, path.data(), &size) != FALSE;
+    CloseHandle(process);
+    if (!known) continue;
+    path.resize(size);
+    const auto directory = fs::weakly_canonical(fs::path(path).parent_path(), ec);
+    if (!ec && _wcsicmp(directory.c_str(), root.c_str()) == 0) pids.push_back(entry.th32ProcessID);
+  } while (Process32NextW(snapshot, &entry));
+  CloseHandle(snapshot);
+  return pids;
+}
+
 void shutdown() { join(); if (g_rollback_thread.joinable()) g_rollback_thread.join(); }
 State state() { return g_state.load(); }
 std::string latest_version() { std::lock_guard<std::mutex> lk(g_mutex); return g_latest; }
@@ -292,11 +336,11 @@ bool install_release(const std::string& version, bool experimental, const std::s
   g_rollback_thread = std::thread([chosen, experimental, install_root] {
     namespace fs = std::filesystem;
     const std::string id = chosen.release.version + (experimental ? "-dlss5" : "-legacy");
-    const fs::path versions = fs::path(install_root) / "Versions";
+    const fs::path versions = fs::u8path(install_root) / "Versions";
     const fs::path target = versions / id;
     std::error_code ec;
     if (valid_install(target, experimental)) {
-      { std::lock_guard<std::mutex> lk(g_mutex); g_rollback_folder = target.string(); }
+      { std::lock_guard<std::mutex> lk(g_mutex); g_rollback_folder = target.u8string(); }
       rollback_message("Version " + chosen.release.version + " is ready"); g_rollback_state = RollbackState::Ready; return;
     }
     if (fs::exists(target, ec)) { rollback_message("Version folder exists but is incomplete; remove it before retrying"); g_rollback_state = RollbackState::Failed; return; }
@@ -329,7 +373,7 @@ bool install_release(const std::string& version, bool experimental, const std::s
     fs::rename(payload, target, ec);
     if (ec) { fail("Could not install version beside current build"); return; }
     fs::remove_all(stage, ec);
-    { std::lock_guard<std::mutex> lk(g_mutex); g_rollback_folder = target.string(); }
+    { std::lock_guard<std::mutex> lk(g_mutex); g_rollback_folder = target.u8string(); }
     rollback_message("Version " + chosen.release.version + " is ready"); g_rollback_state = RollbackState::Ready;
   });
   return true;
@@ -349,12 +393,11 @@ void download_and_install() {
       set_message("Download is damaged (checksum does not match the release); try again"); g_state = State::Failed;
       host::log("updater: %zu bytes downloaded, SHA-256 does not match the release's", body.size()); return;
     }
-    char exe[MAX_PATH]{}; DWORD length = GetModuleFileNameA(nullptr, exe, MAX_PATH);
-    if (!length || length >= MAX_PATH) { set_message("Cannot resolve application path"); g_state = State::Failed; return; }
-    std::string dir(exe); auto separator = dir.find_last_of("\\/");
-    if (separator == std::string::npos) { set_message("Cannot resolve application directory"); g_state = State::Failed; return; }
-    dir.resize(separator);
-    std::string zip = dir + "\\update.zip", bat = dir + "\\update.bat";
+    wchar_t exe[32768]{}; DWORD length = GetModuleFileNameW(nullptr, exe, 32768);
+    if (!length || length >= 32768) { set_message("Cannot resolve application path"); g_state = State::Failed; return; }
+    const auto directory = std::filesystem::path(exe).parent_path();
+    const std::string dir = directory.u8string();
+    const auto zip = directory / "update.zip", bat = directory / "update.bat";
     { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) { set_message("Cannot write update.zip"); g_state = State::Failed; return; } }
     // The same entry check the side-by-side install makes: every path inside the release folder,
     // none absolute, with a drive or with "..".
@@ -366,8 +409,10 @@ void download_and_install() {
     // Relaunch exactly what was started, so this works the same from the release batch file, the
     // launcher, or a development shortcut with its own arguments. Percent signs would be eaten by
     // the batch interpreter.
-    std::string relaunch = GetCommandLineA();
+    std::string relaunch = utf8(GetCommandLineW());
     for (size_t i = relaunch.find('%'); i != std::string::npos; i = relaunch.find('%', i + 2)) relaunch.insert(i, 1, '%');
+    std::string batch_dir = dir;
+    for (size_t i = batch_dir.find('%'); i != std::string::npos; i = batch_dir.find('%', i + 2)) batch_dir.insert(i, 1, '%');
 
     // The script waits for this process to exit, unpacks the zip (Windows 10+ ships tar for zips),
     // copies the release folder over this one (keeping User\, settings, saves, replays) and starts
@@ -375,17 +420,18 @@ void download_and_install() {
     // stray carriage return becomes part of the last argument on each line, which is what stopped
     // the relaunch from working.
     std::ofstream b(bat, std::ios::binary);
-    b << "@echo off\r\ncd /d \"" << dir << "\"\r\n"
-      << "set LOG=\"" << dir << "\\update.log\"\r\n"
+    b << "@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\ncd /d \"" << batch_dir << "\" || exit /b 1\r\n"
+      << "set LOG=\"" << batch_dir << "\\update.log\"\r\n"
       << "echo update started %DATE% %TIME%> %LOG%\r\n"
       << ":wait\r\ntasklist /FI \"PID eq " << GetCurrentProcessId() << "\" 2>nul | find \"" << GetCurrentProcessId() << "\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n"
-      // The game holds its own exe open. Updating from the launcher while a match is running used to
-      // fail the copy with a locked file, so wait for it too rather than fighting it.
-      << ":waitgame\r\n"
-      << "tasklist /FI \"IMAGENAME eq melee_port.exe\" 2>nul | find /i \"melee_port.exe\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
-      << "tasklist /FI \"IMAGENAME eq melee_port_compat.exe\" 2>nul | find /i \"melee_port_compat.exe\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
-      << "tasklist /FI \"IMAGENAME eq melee_port_dlss5.exe\" 2>nul | find /i \"melee_port_dlss5.exe\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
-      << "tasklist /FI \"IMAGENAME eq melee_port_dlss5_compat.exe\" 2>nul | find /i \"melee_port_dlss5_compat.exe\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n"
+      << ":waitgame\r\n";
+    // Source also holds the DLL open. Wait for both engines and other launchers
+    // from this folder, without blocking on games in unrelated installations.
+    for (const auto pid : install_processes(dir))
+      if (pid != GetCurrentProcessId())
+        b << "tasklist /FI \"PID eq " << pid << "\" 2>nul | find \"" << pid
+          << "\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n";
+    b
       << "rmdir /s /q update_tmp 2>nul\r\nmkdir update_tmp\r\n"
       // Windows bsdtar reports "Cannot restore time" and other benign warnings with exit code 1
       // even when every entry was extracted. Treat the presence of a release folder as the real
@@ -412,7 +458,7 @@ void download_and_install() {
       << "pause & exit /b 1\r\n"
       << ":copied\r\n"
       << "rmdir /s /q update_tmp\r\ndel update.zip\r\n"
-      << "echo restarting: " << relaunch << ">> %LOG%\r\n"
+      << "echo restarting application>> %LOG%\r\n"
       << "start \"\" " << relaunch << "\r\n"
       << "echo done>> %LOG%\r\n"
       << "del \"%~f0\"\r\n";
@@ -421,10 +467,10 @@ void download_and_install() {
     set_message("Update downloaded; restarting to install");
     g_state = State::ReadyToInstall;
     host::log("updater: %zu bytes downloaded, installing via update.bat", body.size());
-    STARTUPINFOA si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
+    STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
     // Doubled quotes: cmd strips one layer, and the path contains spaces.
-    std::string cmd = "cmd /c \"\"" + bat + "\"\"";
-    if (!CreateProcessA(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, dir.c_str(), &si, &pi)) {
+    std::wstring cmd = L"cmd /c \"\"" + bat.wstring() + L"\"\"";
+    if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, directory.c_str(), &si, &pi)) {
       set_message("Cannot start update installer"); g_state = State::Failed; return;
     }
     CloseHandle(pi.hProcess); CloseHandle(pi.hThread);

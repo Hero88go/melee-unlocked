@@ -1,4 +1,4 @@
-// L-cancel helpers: a display-only "you missed it" indicator, and an automatic L-cancel that works
+// L-cancel helpers: display-only red/green feedback, and an automatic L-cancel that works
 // by injecting an analog trigger press into the local pad before the game reads it.
 //
 // Both are off by default and neither one patches the simulation. The automatic press is a real
@@ -15,6 +15,9 @@ namespace lcancel {
 
 // ---- settings (owned here; the panel and the command line both write through these) ----
 void set_indicator(bool on);
+// Renderer feedback on either engine, independent of TE: missed, success or both.
+void set_flash_mode(int mode);
+int flash_mode();
 void set_automatic(bool on);
 bool indicator_enabled();
 bool automatic_enabled();
@@ -23,13 +26,13 @@ void set_log_path(const std::string& path);
 
 // Called from HLE(PADRead) with the freshly polled pads, before the guest sees them. Observes the
 // local fighters, raises the analog L trigger when the automatic press is enabled and allowed, and
-// flashes a fighter red when it landed an aerial without the landing lag halved.
+// flashes red on a missed L-cancel or green on success, according to the chosen feedback mode.
 void apply(host::PadState pads[4]);
 // The native game keeps its fighters in its own layout, so it hands the values this helper reads
 // over itself (MuGameApi.lcancel_view). Unset, they are read from guest memory (recompiled build).
 void set_native_view(void (*fill)(MuLcancelView* out));
 
-// The indicator itself needs nothing from the UI: a missed L-cancel flashes the fighter red through
+// The indicator itself needs nothing from the UI: feedback tints the fighter through
 // gx::set_player_tint, which is a renderer-side colour and never a write into the game.
 
 // ---- gating, for the panel and the character-select notice ----
