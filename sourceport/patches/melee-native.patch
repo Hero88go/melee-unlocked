@@ -156177,7 +156177,7 @@ index 5ea9c63cc..1e01ce507 100644
  
  /// SetTimerAnimation
 diff --git a/src/melee/lb/lbdvd.c b/src/melee/lb/lbdvd.c
-index 116b1407a..18b4a9a4d 100644
+index 116b1407a..515b668fd 100644
 --- a/src/melee/lb/lbdvd.c
 +++ b/src/melee/lb/lbdvd.c
 @@ -1,10 +1,15 @@
@@ -156197,7 +156197,7 @@ index 116b1407a..18b4a9a4d 100644
  #include "types.h"
  #include <dolphin/dvd.h>
  #include <melee/db/db.h>
-@@ -15,6 +20,29 @@
+@@ -15,6 +20,47 @@
  #include <melee/pl/player.h>
  #include <sysdolphin/baselib/debug.h>
  
@@ -156224,10 +156224,28 @@ index 116b1407a..18b4a9a4d 100644
 +/* 3BA68C */ static PreloadEntry lbDvd_803BA68C = { 0, 0, 0, 0, -1, 0, -1 };
 +/* 432078 */ static PreloadCache preloadCache;
 +
++#ifdef MU_NATIVE
++bool lbDvd_IsPreloadBlockPinned(HSD_AllocEntry* block)
++{
++    int i;
++    /* Parsed archives contain absolute pointers into their raw allocation;
++     * game objects also retain those addresses. Only unread/unparsed files
++     * can move without relocating every live reference. */
++    for (i = 0; i < (int) ARRAY_SIZE(preloadCache.entries); i++) {
++        PreloadEntry* entry = &preloadCache.entries[i];
++        if (entry->state != 0 && entry->load_state == 2 &&
++            (entry->raw_data == block || entry->archive == block)) {
++            return true;
++        }
++    }
++    return false;
++}
++#endif
++
  /* 0189EC */ static void lbDvd_800189EC(int);
  
  void lbDvd_SetupVsPreloadCache(void)
-@@ -24,13 +52,8 @@ void lbDvd_SetupVsPreloadCache(void)
+@@ -24,13 +70,8 @@ void lbDvd_SetupVsPreloadCache(void)
      lbDvd_80017700(4);
  }
  
@@ -156242,7 +156260,7 @@ index 116b1407a..18b4a9a4d 100644
      if (entry->archive != NULL) {
          lbHeap_80015CA8(entry->heap, entry->archive->addr);
      }
-@@ -39,6 +62,16 @@ void lbDvd_800174E8(int index)
+@@ -39,6 +80,16 @@ void lbDvd_800174E8(int index)
      }
      *entry = lbDvd_803BA68C;
  }
@@ -156259,7 +156277,7 @@ index 116b1407a..18b4a9a4d 100644
  #ifdef MUST_MATCH
  #pragma pop
  #endif
-@@ -230,27 +263,20 @@ static void lbDvd_80017A80(u32 unused)
+@@ -230,27 +281,20 @@ static void lbDvd_80017A80(u32 unused)
      lbDvd_80017CC4();
  }
  
@@ -156292,7 +156310,7 @@ index 116b1407a..18b4a9a4d 100644
      return lbHeap_80015D6C(heap, lbDvd_80017A80, heap);
  }
  
-@@ -262,7 +288,7 @@ void lbDvd_CachePreloadedFile(s32 index)
+@@ -262,7 +306,7 @@ void lbDvd_CachePreloadedFile(s32 index)
      entry = &preloadCache.entries[index];
      preloadEntry = entry;
  
@@ -156301,7 +156319,7 @@ index 116b1407a..18b4a9a4d 100644
  
      if (heap == 0) {
          preloadCache.persistent_heap = 6;
-@@ -290,7 +316,7 @@ void lbDvd_CachePreloadedFile(s32 index)
+@@ -290,7 +334,7 @@ void lbDvd_CachePreloadedFile(s32 index)
              lbFile_800164A4(preloadEntry->entry_num,
                              (uintptr_t) preloadEntry->raw_data->addr,
                              &preloadEntry->size, 2, lbDvd_80017E64,
@@ -156310,7 +156328,7 @@ index 116b1407a..18b4a9a4d 100644
          }
      }
  }
-@@ -332,7 +358,7 @@ void lbDvd_80017CC4(void)
+@@ -332,7 +376,7 @@ void lbDvd_80017CC4(void)
      }
  }
  
@@ -156319,7 +156337,7 @@ index 116b1407a..18b4a9a4d 100644
  {
      PreloadEntry* preloadEntry = &preloadCache.entries[index];
      if (cancelflag != 0) {
-@@ -378,19 +404,18 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
+@@ -378,19 +422,18 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
  
          switch (type) {
          case 2:
@@ -156345,7 +156363,7 @@ index 116b1407a..18b4a9a4d 100644
              break;
  
          default:
-@@ -401,60 +426,48 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
+@@ -401,60 +444,48 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
          entry->load_state = 2;
      }
      if (entry->archive) {
@@ -156427,7 +156445,7 @@ index 116b1407a..18b4a9a4d 100644
          }
      }
  }
-@@ -482,12 +495,11 @@ void lbDvd_8001823C(void)
+@@ -482,12 +513,11 @@ void lbDvd_8001823C(void)
          preloadCache.new_scene.mode_scene_changes + 1;
  }
  
@@ -156441,7 +156459,7 @@ index 116b1407a..18b4a9a4d 100644
      for (i = 0; i < (signed) ARRAY_SIZE(preloadCache.entries); i++) {
          entry = &preloadCache.entries[i];
          if (entry->state != 0) {
-@@ -498,18 +510,14 @@ static inline void inline_preload_entries(bool* enabled)
+@@ -498,18 +528,14 @@ static inline void inline_preload_entries(bool* enabled)
      }
  }
  
@@ -156453,18 +156471,18 @@ index 116b1407a..18b4a9a4d 100644
      u8 pad[0x10];
      (void) pad;
 -}
--
+ 
 -static inline void inline_cleanup_entries(void)
 -{
 -    PreloadEntry* cleanup_entry;
 -    int j = 0;
- 
+-
 -    for (; j < (signed) ARRAY_SIZE(preloadCache.entries); j++) {
 +    for (j = 0; j < (signed) ARRAY_SIZE(preloadCache.entries); j++) {
          cleanup_entry = &preloadCache.entries[j];
          if (cleanup_entry->load_score < 0) {
              if (cleanup_entry->state == 1) {
-@@ -540,53 +548,32 @@ void lbDvd_80018254(void)
+@@ -540,53 +566,32 @@ void lbDvd_80018254(void)
      }
  
      preloadCache.new_scene = preloadCache.scene;
@@ -156526,7 +156544,7 @@ index 116b1407a..18b4a9a4d 100644
  int lbDvd_800187F4(int entry_num)
  {
      int result = 0;
-@@ -594,10 +581,10 @@ int lbDvd_800187F4(int entry_num)
+@@ -594,10 +599,10 @@ int lbDvd_800187F4(int entry_num)
      int i;
  
      bool enabled = OSDisableInterrupts();
@@ -156541,7 +156559,7 @@ index 116b1407a..18b4a9a4d 100644
  
      for (i = 0; i < (signed) ARRAY_SIZE(preloadCache.entries); i++) {
          entry = &preloadCache.entries[i];
-@@ -613,7 +600,7 @@ int lbDvd_800187F4(int entry_num)
+@@ -613,7 +618,7 @@ int lbDvd_800187F4(int entry_num)
              continue;
          }
  
@@ -156550,7 +156568,7 @@ index 116b1407a..18b4a9a4d 100644
              result = 1;
              break;
          }
-@@ -624,8 +611,22 @@ int lbDvd_800187F4(int entry_num)
+@@ -624,8 +629,22 @@ int lbDvd_800187F4(int entry_num)
              result = 1;
              break;
          case 3:
@@ -156575,7 +156593,7 @@ index 116b1407a..18b4a9a4d 100644
                  result = 1;
                  break;
              }
-@@ -748,7 +749,16 @@ void lbDvd_80018C6C(void)
+@@ -748,7 +767,16 @@ void lbDvd_80018C6C(void)
  
  static s32 lbDvd_804D37F4[2] = { 4, 5 };
  
@@ -156593,7 +156611,7 @@ index 116b1407a..18b4a9a4d 100644
  {
      int i;
      int tmp;
-@@ -807,17 +817,9 @@ void lbDvd_80018CF4(int arg0)
+@@ -807,17 +835,9 @@ void lbDvd_80018CF4(int arg0)
          }
          break;
      }
@@ -156615,10 +156633,21 @@ index 116b1407a..18b4a9a4d 100644
  }
  
 diff --git a/src/melee/lb/lbdvd.h b/src/melee/lb/lbdvd.h
-index 6981ae003..063361f64 100644
+index 6981ae003..c8eeec2c7 100644
 --- a/src/melee/lb/lbdvd.h
 +++ b/src/melee/lb/lbdvd.h
-@@ -20,7 +20,7 @@ typedef void (*lbDvd_Callback)(int, int index, int, int);
+@@ -6,6 +6,10 @@
+ 
+ typedef void (*lbDvd_Callback)(int, int index, int, int);
+ 
++#ifdef MU_NATIVE
++bool lbDvd_IsPreloadBlockPinned(HSD_AllocEntry* block);
++#endif
++
+ /* 015BD0 */ void* lbDvd_80015BD0(s8, s32);
+ /* 01634C */ u32 lbDvd_8001634C(s16);
+ /* 0174BC */ void lbDvd_SetupVsPreloadCache(void);
+@@ -20,7 +24,7 @@ typedef void (*lbDvd_Callback)(int, int index, int, int);
  /* 017960 */ void lbDvd_80017960(void);
  /* 017AB0 */ void lbDvd_CachePreloadedFile(s32 index);
  /* 017CC4 */ void lbDvd_80017CC4(void);
@@ -157254,10 +157283,18 @@ index 67c7f2181..96925b5ed 100644
  enum_t lbLang_GetLanguageSetting(void);
  enum_t lbLang_SetLanguageSetting(enum_t language);
 diff --git a/src/melee/lb/lbmemory.c b/src/melee/lb/lbmemory.c
-index 0066e80f1..840e6354f 100644
+index 0066e80f1..4ef035f27 100644
 --- a/src/melee/lb/lbmemory.c
 +++ b/src/melee/lb/lbmemory.c
-@@ -9,201 +9,212 @@
+@@ -1,4 +1,7 @@
+ #include "lbmemory.h"
++#ifdef MU_NATIVE
++#include "lbdvd.h"
++#endif
+ 
+ #include <Runtime/platform.h>
+ 
+@@ -9,201 +12,217 @@
  #include <sysdolphin/baselib/debug.h>
  #include <sysdolphin/baselib/devcom.h>
  
@@ -157583,12 +157620,17 @@ index 0066e80f1..840e6354f 100644
      }
 -    memcpy(p->dst + temp_r6, p->src + temp_r6, var_r30);
 -    p->offset = p->offset + var_r30;
++#ifdef MU_NATIVE
++    /* Compaction moves toward the heap start and can overlap within a slice. */
++    memmove(p->dst + offset, p->src + offset, slice);
++#else
 +    memcpy(p->dst + offset, p->src + offset, slice);
++#endif
 +    p->offset = p->offset + slice;
      if (p->offset == p->size) {
          p->size = 0U;
          p->cb(0, p->cb_arg, 0, 0);
-@@ -213,162 +224,122 @@ static void fn_80015184(OSAlarm* alarm, OSContext* context)
+@@ -213,162 +232,135 @@ static void fn_80015184(OSAlarm* alarm, OSContext* context)
      OSSetAlarm(&p->alarm, OSMillisecondsToTicks(3), fn_80015184);
  }
  
@@ -157598,22 +157640,28 @@ index 0066e80f1..840e6354f 100644
 -    void* lo;
 -    Handle* iter;
 -    void** r7;
-+    HSD_AllocEntry* block;
- 
+-
 -    _p(x6E8) = arg1;
 -    _p(x6E0) = arg2;
 -    _p(x6E4) = h->x4_lo;
++    HSD_AllocEntry* block;
+ 
+-    r7 = &_p(x6E4);
 +    _p(compact_cb) = cb;
 +    _p(compact_arg) = arg;
 +    _p(compact_cursor) = (uintptr_t) h->lo;
  
--    r7 = &_p(x6E4);
--
 -    for (iter = h->xC_prev; iter != NULL; iter = iter->x0_next) {
 -        lo = iter->x4_lo;
 -        if (lo != *r7) {
 -            lbMemory_80015320(0, (int) iter, NULL, false);
 +    for (block = h->blocks; block != NULL; block = block->next) {
++#ifdef MU_NATIVE
++        if (lbDvd_IsPreloadBlockPinned(block)) {
++            _p(compact_cursor) = (uintptr_t) block->addr + block->size;
++            continue;
++        }
++#endif
 +        if ((uintptr_t) block->addr != _p(compact_cursor)) {
 +            lbMemory_80015320(0, (uintptr_t) block, NULL, false);
              return 1;
@@ -157682,6 +157730,13 @@ index 0066e80f1..840e6354f 100644
 -                                  lbMemory_80015320, handle->x0_next);
 -                return;
 +    if (block != NULL) {
++#ifdef MU_NATIVE
++        if (lbDvd_IsPreloadBlockPinned(block)) {
++            _p(compact_cursor) = (uintptr_t) block->addr + block->size;
++            lbMemory_80015320(0, (uintptr_t) block->next, NULL, false);
++            return;
++        }
++#endif
 +        if (block->addr != current) {
 +            src = block->addr;
 +            block->addr = current;
