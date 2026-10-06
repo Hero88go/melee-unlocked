@@ -79,17 +79,20 @@ PORT_CODES = [
     # Results screen after an offline VS match. Slippi's "Salty Runback" (C21A5B14, in
     # gmVsMelee_ExitVs) sets the next state in r27 to 2 when A and B are held and to 0 (character
     # select) otherwise. These two keep the game's own next state for the second case: the first
-    # saves it (r4 at entry) in a free word of the function's frame as it is copied to r27, the
-    # second puts it back when the code chose 0. A and B still replay the match. The host keeps the
+    # packs it (r4 at entry) above the low byte of r5, which the original function copies into
+    # nonvolatile r28. The low byte remains the sudden-death state. If a mod replaces the save
+    # hook, r28's high byte stays zero, so the remaining restore hook keeps its CSS flow rather
+    # than reading uninitialized stack data. The second restores it when the code chose 0.
+    # A and B still replay the match. The host keeps the
     # flag off in a network match, where the game goes to character select as the code has it.
     ("Port: Results Screen Offline, keep the next state", "offline_results", [
         (0xC21A5B00, 0x00000002),
-        (0x3B640000, 0x90810008),   # addi r27,r4,0 (the replaced instruction); stw r4,8(r1)
+        (0x3B640000, 0x5085442E),   # addi r27,r4,0; rlwimi r5,r4,8,16,23
         (0x60000000, 0x00000000)]), # nop; (branch back)
     ("Port: Results Screen Offline, use it", "offline_results", [
         (0xC21A5B18, 0x00000003),
         (0x2C1B0000, 0x40820008),   # cmpwi r27,0; bne +8
-        (0x83610008, 0x881F0064),   # lwz r27,8(r1); lbz r0,100(r31) (the replaced instruction)
+        (0x579BC63E, 0x881F0064),   # rlwinm r27,r28,24,24,31; lbz r0,100(r31)
         (0x60000000, 0x00000000)]), # nop; (branch back)
 ]
 

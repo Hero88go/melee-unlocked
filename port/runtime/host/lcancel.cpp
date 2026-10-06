@@ -38,6 +38,7 @@
 // newly pressed so it can never turn the player's aerial into a tether.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "lcancel.h"
+#include "../abi/mu_lcancel_flash.h"
 
 #include <algorithm>
 #include <atomic>
@@ -107,13 +108,14 @@ uint8_t rd8(uint32_t addr) { return mapped(addr, 1) ? host::rd8(addr) : 0; }
 float rdf32(uint32_t addr) { uint32_t v = rd32(addr); float f; std::memcpy(&f, &v, 4); return f; }
 
 // ---- settings
-std::atomic<bool> g_indicator{false}, g_automatic{false};
+std::atomic<int> g_indicator{MU_LCFLASH_OFF};
+std::atomic<bool> g_automatic{false};
 std::string g_log_path;
 FILE* g_log = nullptr;
 
 // ---- indicator state. One entry per Melee player slot, because that is what a draw carries.
 constexpr int kPlayerSlotCount = 6;
-struct SlotFlash { bool active = false; uint32_t start_retrace = 0; };
+struct SlotFlash { bool active = false; uint32_t start_retrace = 0; bool success = false; };
 SlotFlash g_flash[kPlayerSlotCount];
 bool g_tints_set = false;       // something was handed to the renderer and has to be taken back
 bool g_owner_tracking = false;  // last value pushed to the observer
@@ -260,11 +262,12 @@ void gather(MuLcancelView& v) {
   }
 }
 
-void raise_flash(int slot, int port, int frames_since_press, uint32_t retrace) {
+void raise_flash(int slot, int port, int frames_since_press, uint32_t retrace, bool success) {
   if (slot < 0 || slot >= kPlayerSlotCount) return;
-  g_flash[slot] = {true, retrace};
+  g_flash[slot] = {true, retrace, success};
   // Only while the diagnostic log is on: during normal play this fires several times a minute.
-  if (g_log) host::log("lcancel: P%d (slot %d) missed, %d frames since a trigger press", port + 1, slot, frames_since_press);
+  if (g_log) host::log("lcancel: P%d (slot %d) %s, %d frames since a trigger press", port + 1, slot,
+                       success ? "success" : "missed", frames_since_press);
 }
 
 // Hand the renderer the colour for every flashing slot and take it back when the flash is over.
@@ -283,7 +286,9 @@ void publish_tints(uint32_t retrace) {
     const float fade = age < kFlashSolidFrames
                            ? 1.0f
                            : 1.0f - (float)(age - kFlashSolidFrames) / (float)(kFlashFrames - kFlashSolidFrames);
-    gx::set_player_tint(slot, kFlashRed, kFlashGreen, kFlashBlue, kFlashAmount * fade);
+    gx::set_player_tint(slot, f.success ? 0.12f : kFlashRed,
+                        f.success ? 1.0f : kFlashGreen,
+                        f.success ? 0.12f : kFlashBlue, kFlashAmount * fade);
     any = true;
   }
   g_tints_set = any;
@@ -304,10 +309,14 @@ void log_row(uint32_t retrace, int port, int32_t motion, uint32_t ground_air, ui
 
 }  // namespace
 
-void set_indicator(bool on) { g_indicator.store(on, std::memory_order_relaxed); }
+void set_indicator(bool on) { set_flash_mode(on ? MU_LCFLASH_MU_MISSED : MU_LCFLASH_OFF); }
+void set_flash_mode(int mode) {
+  g_indicator.store(mu_lcancel_renderer_mode(mode) ? mode : MU_LCFLASH_OFF, std::memory_order_relaxed);
+}
+int flash_mode() { return g_indicator.load(std::memory_order_relaxed); }
 void set_native_view(void (*fill)(MuLcancelView* out)) { g_native_view = fill; }
 void set_automatic(bool on) { g_automatic.store(on, std::memory_order_relaxed); }
-bool indicator_enabled() { return g_indicator.load(std::memory_order_relaxed); }
+bool indicator_enabled() { return flash_mode() != MU_LCFLASH_OFF; }
 bool automatic_enabled() { return g_automatic.load(std::memory_order_relaxed); }
 
 void set_log_path(const std::string& path) {
@@ -394,9 +403,11 @@ void apply(host::PadState pads[4]) {
 
     // Indicator: the frame the fighter enters a LandingAir* state is the frame the game ran the
     // x67F < window test, and x67F has not moved since. Display only, so it is safe in every mode.
-    if (indicate && motion >= kLandingAirN && motion <= kLandingAirLw && motion != st.last_motion &&
-        since >= (uint8_t)std::min(window, 255))
-      raise_flash(fighter.slot, p, since, retrace);
+    if (indicate && motion >= kLandingAirN && motion <= kLandingAirLw && motion != st.last_motion) {
+      const bool success = since < (uint8_t)std::min(window, 255);
+      if (mu_lcancel_renderer_reports(flash_mode(), success))
+        raise_flash(fighter.slot, p, since, retrace, success);
+    }
 
     // Automatic press: only while the fighter is airborne in one of the five aerial attacks. An
     // aerial cannot be interrupted into an air dodge or a shield, so a shoulder input there has no

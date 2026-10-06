@@ -16,17 +16,21 @@ int main() {
           mu_lcancel_success_color(legacy) == MU_LCFLASH_SUCCESS_WHITE &&
           mu_lcancel_te_reports(legacy, 0) && mu_lcancel_te_reports(legacy, 1),
           "old TE settings and recordings retain white success and red miss");
-    for (int mode = 0; mode < 5; ++mode) {
+    for (int mode = 0; mode < 7; ++mode) {
         const unsigned int bits = mu_lcancel_with_flash_mode(unrelated | legacy, mode);
         check((bits & unrelated) == unrelated, "changing flash mode preserves unrelated TE choices");
-        check(mu_lcancel_flash_mode(bits, mode == MU_LCFLASH_MU_MISSED) == mode, "each exclusive flash choice round-trips");
-        if (mode < MU_LCFLASH_TE_MISSED)
+        check(mu_lcancel_flash_mode(bits, mu_lcancel_renderer_mode(mode) ? mode : 0) == mode, "each exclusive flash choice round-trips");
+        if (mode < MU_LCFLASH_TE_MISSED || mu_lcancel_renderer_mode(mode))
             check(!mu_lcancel_te_reports(bits, 0) && !mu_lcancel_te_reports(bits, 1), "Off and MU suppress the native TE effect");
         if (mode == MU_LCFLASH_TE_MISSED)
             check(mu_lcancel_te_reports(bits, 0) && !mu_lcancel_te_reports(bits, 1), "TE missed does not flash successful landings");
         if (mode == MU_LCFLASH_TE_SUCCESS)
             check(!mu_lcancel_te_reports(bits, 0) && mu_lcancel_te_reports(bits, 1), "TE success does not flash missed landings");
     }
+    check(mu_lcancel_renderer_reports(MU_LCFLASH_MU_SUCCESS, 1) &&
+          !mu_lcancel_renderer_reports(MU_LCFLASH_MU_SUCCESS, 0), "native success reports only successes");
+    check(mu_lcancel_renderer_reports(MU_LCFLASH_MU_BOTH, 1) &&
+          mu_lcancel_renderer_reports(MU_LCFLASH_MU_BOTH, 0), "native both reports successes and misses");
     for (int color = 0; color < 3; ++color) {
         const unsigned int bits = mu_lcancel_with_success_color(unrelated | legacy, color);
         check(mu_lcancel_success_color(bits) == color && (bits & unrelated) == unrelated,

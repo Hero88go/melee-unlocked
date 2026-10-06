@@ -5,6 +5,8 @@
 #include "slippi_online.h"
 #include "native_practice.h"
 #include "gecko_data.h"
+#include "unlock_code_policy.h"
+#include "offline_results_code_policy.h"
 #include "host.h"
 #include "vcdiff.h"
 #include "lab_view.h"
@@ -439,11 +441,21 @@ void record_optional_installs(uint32_t base) {
 
 std::atomic<int> g_widescreen_request{-1};
 std::atomic<int> g_fod_reflections_request{-1};
+std::vector<unlock_codes::Install> g_unlock_installs;
+int g_unlock_live = -1;
 
 void apply_optional_codes() {
   // Clean mode: the disc's code is the only code in RAM. Writing an optional code's words (or the
   // retail words it replaces) would overwrite the disc's own changes at those addresses.
   if (host::mod_clean_mode()) return;
+  if (host::mod_disc_active() && g_gct_address && g_unlock_live >= 0 &&
+      g_unlock_live != (gecko::option_unlock_all ? 1 : 0)) {
+    const bool on = gecko::option_unlock_all;
+    unlock_codes::write_table(host::ptr(g_gct_address, (uint32_t)gecko::slippi_gct_size), g_unlock_installs, on);
+    host::mark_ram_write(g_gct_address, (uint32_t)gecko::slippi_gct_size);
+    unlock_codes::change(g_unlock_installs, on, host::rd32, host::wr32);
+    g_unlock_live = on ? 1 : 0;
+  }
   // Only the switched codes' lines change in RAM: the rest of the table keeps the return branches the
   // applier wrote into its caves (copying the whole table back erased them, and a cave running from
   // RAM on a mod disc then ran into a zero word).
@@ -522,6 +534,17 @@ void prepare_gct_load(const uint8_t* payload) {
               (int)((int64_t)g_gct_address - (int64_t)gecko::gct_base_used));
   }
   g_read_queue.insert(g_read_queue.end(), gecko::slippi_gct, gecko::slippi_gct + gecko::slippi_gct_size);
+  g_unlock_installs.clear();
+  g_unlock_live = -1;
+  if (host::mod_disc_active() && !host::mod_clean_mode()) {
+    walk_applier(gecko::slippi_gct, 8, (uint32_t)gecko::slippi_gct_size,
+        [&](uint32_t type, uint32_t off, uint32_t addr, uint32_t) {
+      if (type == 0x04 && unlock_codes::switched_address(addr) && host::try_ptr(addr, 4))
+        g_unlock_installs.push_back({addr, off, be32(gecko::slippi_gct + off + 4), host::rd32(addr)});
+    });
+    unlock_codes::write_table(g_read_queue.data(), g_unlock_installs, gecko::option_unlock_all);
+    g_unlock_live = gecko::option_unlock_all ? 1 : 0;
+  }
   // Slippi's heap setup asks the disc for the size of IfAll.usd by name. A mod disc that renamed
   // that file (the 20XX Hack Pack carries it as IfAl0.usd, byte for byte the same) has no such file,
   // and the game stops three frames in. The request is given the name this disc uses.
@@ -537,6 +560,12 @@ void prepare_gct_load(const uint8_t* payload) {
     if (renamed) host::log("slippi: this disc has IfAl0.usd in place of IfAll.usd; %u requests renamed", renamed);
   }
   rebuild_optional_codes(g_read_queue.data());
+  results_codes::upgrade(g_read_queue.data(), g_read_queue.size());
+  // A prebuilt guest may still contain the old stack-slot form. Its end-of-match
+  // function must execute the upgraded RAM caves, rather than that older C.
+  std::vector<uint8_t> results_version(gecko::slippi_gct, gecko::slippi_gct + gecko::slippi_gct_size);
+  if (results_codes::upgrade(results_version.data(), results_version.size()))
+    ppc::redirect_to_interpreter(0x801A5AF0u);
   record_optional_installs(g_gct_address);
   // A mod disc with the table where it was translated: every word the applier is about to install from
   // it is code the compiled guest already runs, so it joins the reference image, and a function it
@@ -556,6 +585,11 @@ void prepare_gct_load(const uint8_t* payload) {
     }
     walk_applier(t, 8, (uint32_t)gecko::slippi_gct_size, [&](uint32_t type, uint32_t off, uint32_t addr, uint32_t n) {
       if (off < from || off >= to) return;
+      // These instructions are conditional in the compiled game. A mod may
+      // independently install the same word, so equality with the served
+      // table cannot prove the conditional compiled function is equivalent.
+      // Keep its boot reference and let the disc's current words run from RAM.
+      if (type == 0x04 && unlock_codes::switched_address(addr)) return;
       if (type == 0x04) writes += host::mod_reference_set(addr, t + off + 4, 4) ? 1 : 0;
       else if (type == 0x06) writes += host::mod_reference_set(addr, t + off + 8, n) ? 1 : 0;
       else { uint8_t w[4]; put_be32(w, c2_hook_word(g_gct_address, off, addr)); writes += host::mod_reference_set(addr, w, 4) ? 1 : 0; }

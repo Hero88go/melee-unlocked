@@ -68,8 +68,9 @@ their executable patches.
 - Eight-character tags and the console tag/save-format extensions remain unported. Keep the
   normal Melee save format; importing a TE save is not a promise that every extended field works.
 - TE's L-cancel training wheels are not exposed. The port's Auto L-cancel provides that helper.
-  The shared **L-cancel flash** selector offers Off, MU missed (red), TE missed (red), TE success,
-  and TE both. TE success can be Off, White or Green. MU and TE retain their different effect styles;
+  The shared **L-cancel flash** selector offers Off, MU missed (red), MU success (green), MU both
+  (red / green), TE missed (red), TE success, and TE both. All MU choices work on both engines
+  without a 20XX TE save. TE success can be Off, White or Green. MU and TE retain their different effect styles;
   choosing one prevents double flashes. Selecting a TE effect enables its feature master.
 - Widescreen is controlled under Video, not by importing a console widescreen patch.
 - Native TE match switches are disabled in online play. Native replay playback uses the

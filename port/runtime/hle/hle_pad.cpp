@@ -4,6 +4,8 @@
 #include <cstdio>
 #include <cstring>
 #include "lcancel.h"
+#include "offline_input_delay.h"
+#include "../gx/render_options.h"
 #include "user_gecko.h"
 #ifdef MELEE_NO_SLIPPI
 #include "netplay_state.h"   // the same names, answered from the neutral netplay state
@@ -308,6 +310,18 @@ HLE(PADRead) {
   // upstream of everything the game does with the pad, so the press is sampled, recorded into the
   // replay and sent to the opponent exactly like a press the player made.
   lcancel::apply(pads);
+  bool offline_gameplay = false;
+  if (gx::RenderOptions::live_offline_delay() && slippi::online::session_mode() < 0) {
+    for (uint32_t slot = 0; slot < 4; ++slot) {
+      const uint32_t player = 0x80453080u + slot * 0xE90u;
+      if (host::rd32(player) != 2 || host::rd32(player + 8) != 0) continue;
+      const uint32_t gobj = host::rd32(player + 0xB0);
+      if (!host::try_ptr(gobj, 0x30)) continue;
+      const uint32_t fp = host::rd32(gobj + 0x2C);
+      if (host::try_ptr(fp, 0x2400) && host::rd32(fp) == gobj) offline_gameplay = true;
+    }
+  }
+  host::offline_delay::apply(pads, offline_gameplay);
   css_skins::apply(pads);
   voice_banks::install();
   // The player's own Gecko codes (data writes only), re-applied each frame like the Gecko handler.
