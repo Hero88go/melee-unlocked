@@ -217,6 +217,9 @@ void input_last_pads(PadState out[4]);
 uint32_t gcadapter_poll(PadState out[4]);
 // Measured incoming USB reports per second, shared by the four adapter sockets; zero if stale.
 double gcadapter_poll_rate_hz();
+// Reconnect and recalibrate the adapter on its worker, without blocking game/render threads.
+bool gcadapter_request_reset();
+bool gcadapter_reset_pending();
 void gcadapter_rumble(int port, bool on);
 // Rumble for an IN-GAME port, delivered to whichever adapter socket the port assignment routes to
 // that port (or nowhere, for a device without a motor). The game names ports, not sockets: a

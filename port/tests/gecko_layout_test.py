@@ -159,7 +159,7 @@ class SourcePortGeckoTableTest(unittest.TestCase):
         for path, text in ((gecko_targets.OUT_GAME, gecko_targets.game_table(self.symbols)),
                            (gecko_targets.OUT_HOST, gecko_targets.host_table(self.symbols))):
             self.assertTrue(path.exists(), "%s is missing: run tools/gecko_targets.py" % path.name)
-            self.assertEqual(path.read_bytes().decode("utf-8"), text,
+            self.assertEqual(path.read_text(encoding="utf-8"), text,
                              "%s is stale: run tools/gecko_targets.py" % path.name)
 
     def test_supported_symbols_are_writable_data_of_proven_size(self):

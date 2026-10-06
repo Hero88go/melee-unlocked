@@ -23053,7 +23053,7 @@ static const ConsoleSymbol kConsoleSymbols[] = {
   {0x80433C24u, 0x40u, 7, "ar_stack$1962"},
   {0x80433C64u, 0xD400u, 7, "lbl_80433C64$1963"},
   {0x80441064u, 0x11C00u, 7, "lbl_80441064$1964"},
-  {0x80452C68u, 0x39Cu, 3, "game_camera"},
+  {0x80452C68u, 0x39Cu, 6, "game_camera"},
   {0x80453004u, 0x4u, 6, "cm_80453004.last_mode"},
   {0x80453008u, 0x58u, 0, "cm_80453004.ply_slot to _58"},
   {0x80453060u, 0x20u, 3, "cmsnap_data"},
