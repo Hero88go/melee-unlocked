@@ -383,6 +383,7 @@ class D3D12Backend : public Backend {
   std::mutex pso_mutex_, pipeline_library_mutex_;
   std::condition_variable pso_cv_, pso_done_cv_;
   int pso_wait_budget_us_ = 0;   // per presented frame: how long draws may wait for their real pipeline
+  bool capturing_efb_ = false;
   std::deque<PsoJob> pso_jobs_;
   std::vector<PsoResult> pso_done_;
   std::vector<std::thread> pso_threads_;
@@ -807,6 +808,10 @@ float3 path_to_display(float3 c) {
   return lerp(12.92 * c, 1.055 * pow(c, 1.0 / 2.4) - 0.055, step(0.0031308, c));
 }
 float4 PS(O i) : SV_Target {
+  if (color.w < -1.5) {
+    uint z = min((uint)((1.0 - src.Sample(samp, i.uv).r) * 16777216.0), 0xFFFFFFu);
+    return float4(float3((z >> 16) & 255u, (z >> 8) & 255u, z & 255u) / 255.0, 1.0);
+  }
   float2 depth_uv = i.uv * hudr.xy + hudr.zw;
   float4 scene = downsample(i.uv);
   scene.rgb *= ao(depth_uv);
@@ -1637,11 +1642,14 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
     // Give the workers a bounded slice of this presented frame to deliver the real pipeline (a
     // compile is usually 2 to 10 ms). Only past the budget does the draw fall back to the generic
     // pipeline, so a new matchup costs a short display hitch instead of black or missing surfaces.
-    while (pso_wait_budget_us_ > 0) {
+    // A fallback captured into an EFB texture lasts for the whole scene. Portrait
+    // depth must also use the exact shader: the generic fallback has no Z texture.
+    const bool exact = capturing_efb_ || (dc.bp.ztex2() & 12);
+    while (pso_wait_budget_us_ > 0 || exact) {
       Stopwatch wait_sw;
       {
         std::unique_lock<std::mutex> lk(pso_mutex_);
-        pso_done_cv_.wait_for(lk, std::chrono::microseconds(std::min(pso_wait_budget_us_, 2000)), [&] { return !pso_done_.empty(); });
+        pso_done_cv_.wait_for(lk, std::chrono::microseconds(exact ? 2000 : std::min(pso_wait_budget_us_, 2000)), [&] { return !pso_done_.empty(); });
       }
       pso_wait_budget_us_ -= (int)(wait_sw.lap() * 1e6);
       integrate_compiled_psos();
@@ -2227,12 +2235,14 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   // Classic STAGE CLEAR zoom (a blurred copy of the last frame, drawn with its alpha) invisible.
   // Those copies go through the blit with alpha forced to 1.
   const bool opaque = !c.efb_alpha && !c.is_depth;
-  const bool blit = c.half_scale || opaque;
+  const bool blit = c.half_scale || opaque || c.is_depth;
+  ID3D12Resource* source = c.is_depth ? efb_depth_.Get() : efb_color_.Get();
+  const D3D12_RESOURCE_STATES source_before = c.is_depth ? D3D12_RESOURCE_STATE_DEPTH_WRITE : D3D12_RESOURCE_STATE_RENDER_TARGET;
   const D3D12_RESOURCE_STATES dst_state = blit ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_COPY_DEST;
   const D3D12_RESOURCE_STATES src_state = blit ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : D3D12_RESOURCE_STATE_COPY_SOURCE;
   D3D12_RESOURCE_BARRIER b[2]{};
   b[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  b[0].Transition = {efb_color_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, src_state};
+  b[0].Transition = {source, 0, source_before, src_state};
   if (!e.resource || e.width != sw || e.height != sh) {
     if (e.resource) frame_garbage_[slot_].push_back(e.resource);
     D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
@@ -2261,7 +2271,10 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   if (blit) {
     uint32_t slot = reserve_srvs(4);
     D3D12_CPU_DESCRIPTOR_HANDLE sh_cpu = srv_heap_->GetCPUDescriptorHandleForHeapStart(); sh_cpu.ptr += slot * srv_size_;
-    for (int k = 0; k < 4; ++k) { D3D12_CPU_DESCRIPTOR_HANDLE hk = sh_cpu; hk.ptr += k * srv_size_; device_->CreateShaderResourceView(efb_color_.Get(), nullptr, hk); }
+    D3D12_SHADER_RESOURCE_VIEW_DESC depth_view{};
+    depth_view.Format = DXGI_FORMAT_R32_FLOAT; depth_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    depth_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING; depth_view.Texture2D.MipLevels = 1;
+    for (int k = 0; k < 4; ++k) { D3D12_CPU_DESCRIPTOR_HANDLE hk = sh_cpu; hk.ptr += k * srv_size_; device_->CreateShaderResourceView(source, c.is_depth ? &depth_view : nullptr, hk); }
     D3D12_GPU_DESCRIPTOR_HANDLE sh_gpu = srv_heap_->GetGPUDescriptorHandleForHeapStart(); sh_gpu.ptr += slot * srv_size_;
     D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += 4 * rtv_size_;  // transient slot
     device_->CreateRenderTargetView(e.resource.Get(), nullptr, rtv);
@@ -2277,7 +2290,7 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
     // (reflections, effects), not the presented image, so brightness/contrast/vibrance must not
     // touch it -- only the final blit to the backbuffer, below, applies those.
     float rect[20] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                      0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 0, 0, 0, 0, 1.0f, 1.0f, 1.0f, opaque ? -1.0f : 0.0f};   // no sharpening, averaging, HUD composite or grading here
+                      0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 0, 0, 0, 0, 1.0f, 1.0f, 1.0f, c.is_depth ? -2.0f : (opaque ? -1.0f : 0.0f)};
     list_->SetGraphicsRoot32BitConstants(1, 20, rect, 0);
     list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list_->DrawInstanced(3, 1, 0, 0);
@@ -2292,7 +2305,7 @@ void D3D12Backend::execute_copy(const EfbCopy& c) {
   }
   D3D12_RESOURCE_BARRIER back[2]{};
   back[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-  back[0].Transition = {efb_color_.Get(), 0, src_state, D3D12_RESOURCE_STATE_RENDER_TARGET};
+  back[0].Transition = {source, 0, src_state, source_before};
   back[1].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
   back[1].Transition = {e.resource.Get(), 0, dst_state, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
   list_->ResourceBarrier(2, back);
@@ -2874,6 +2887,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // AMD drivers can take long enough here to produce recurring visible hitches.
   // The fallback PSO keeps the draw alive while the worker publishes the real one.
   pso_wait_budget_us_ = 0;
+  capturing_efb_ = std::any_of(frame.copies.begin(),frame.copies.end(),[](const EfbCopy& c) { return !c.to_xfb; });
   ++frame_counter_;
   // Opt-in hardware-build probe: capture and upload one real match scene every two seconds.
   // Kept off in ordinary sessions until the ray dispatch and shading path are integrated.

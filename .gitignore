@@ -57,6 +57,7 @@ build-*/
 **/lobby.sqlite3*
 /Mods/
 /run-current-reports/
+/run-stage-skins/
 /tools/current_report_*.py
 /port/third_party/ngx/include/
 /port/third_party/ngx/lib/

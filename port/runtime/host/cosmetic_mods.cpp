@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
 #include "cosmetic_mods.h"
+#include "stage_dat_safety.h"
 
 #include "host.h"
 
@@ -91,6 +92,7 @@ constexpr const char* kDiscChanged = "disc file missing or changed";
 
 struct Profile {
   bool enabled = true;
+  bool random_stage_skins = false;
   uint64_t generation = 1;
   std::map<std::string, std::string> selections;
 };
@@ -128,6 +130,7 @@ struct RuntimeState {
   uint32_t assets = 0;   // selected assets applied (an asset with an English twin has two files in by_start)
   std::vector<CompanionOverride> companions;
   std::vector<VoiceFile> voice_files;
+  std::map<std::string, std::pair<uint64_t, std::string>> stage_matches;
 };
 
 struct ZipEntry {
@@ -457,6 +460,7 @@ json profile_json_locked() {
   root["schema_version"] = kProfileSchema;
   root["name"] = "Default";
   root["enabled"] = g_profile.enabled;
+  root["random_stage_skins"] = g_profile.random_stage_skins;
   root["generation"] = g_profile.generation;
   root["selections"] = json::object();
   for (const auto& pick : g_profile.selections) root["selections"][pick.first] = pick.second;
@@ -574,6 +578,7 @@ void load_profile_locked() {
     if (!root.is_object() || root.value("schema_version", 0u) != kProfileSchema ||
         !root["selections"].is_object()) throw std::runtime_error("schema");
     g_profile.enabled = root.value("enabled", true);
+    g_profile.random_stage_skins = root.value("random_stage_skins", false);
     g_profile.generation = std::max<uint64_t>(1, root.value("generation", 1ull));
     for (auto it = root["selections"].begin(); it != root["selections"].end(); ++it) {
       if (!it.value().is_string() || it.key().find('/') != std::string::npos ||
@@ -642,6 +647,7 @@ bool load_state_locked(bool* exists) {
     }
     Profile next;
     next.enabled = profile.value("enabled", true);
+    next.random_stage_skins = profile.value("random_stage_skins", false);
     next.generation = std::max<uint64_t>(1, profile.value("generation", 1ull));
     for (auto it = profile.at("selections").begin(); it != profile.at("selections").end(); ++it) {
       if (!it.value().is_string() || it.key().find('/') != std::string::npos ||
@@ -4739,7 +4745,8 @@ static void publish_voices_locked(uint8_t* fst, const std::vector<FstFile>& file
 
 // The whole profile at startup (only_slot null), or one costume slot again while the game runs
 // (republish_slot): the snapshot is then a copy of the running one with that slot's files replaced.
-static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* only_slot, RepublishResult* republished) {
+static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* only_slot, RepublishResult* republished,
+                           const std::string* stage_pick = nullptr) {
   const auto current = std::atomic_load(&g_runtime);
   auto next = only_slot ? std::make_shared<RuntimeState>(*current) : std::make_shared<RuntimeState>();
   next->initialized = true; next->generation = g_profile.generation;
@@ -4789,7 +4796,9 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
   std::map<std::string, bool> effect_done;
   std::vector<std::string> runtime_errors;
   std::vector<const AssetRecord*> portraits;
-  for (const auto& pick : g_profile.selections) {
+  auto selections = g_profile.selections;
+  if (stage_pick && only_slot) selections[*only_slot] = stage_pick->empty() ? kVanillaSelection : *stage_pick;
+  for (const auto& pick : selections) {
     if (pick.second == kVanillaSelection) continue;
     // One slot: its skin and its own portrait entry, and nothing while the profile is switched off.
     if (only_slot && (!g_profile.enabled || (lower(pick.first) != lower(*only_slot) &&
@@ -4855,10 +4864,10 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
         std::vector<uint8_t> clean(disc_file.size);
         std::string validation_error;
         online_allowed = host::disc_read(disc_file.start, clean.data(), disc_file.size) &&
-                         visual_dat_only(clean, served, &validation_error);
+                         stage_gameplay_matches(clean, served, &validation_error);
         host::log("cosmetics: stage %s %s online (%s)", disc_file.path.c_str(),
                   online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
-        online_reason = online_allowed ? std::string("textures only") : online_reason_short(validation_error);
+        online_reason = online_allowed ? validation_error : online_reason_short(validation_error);
       }
       if (asset->info.kind == "character_costume") {
         std::vector<uint8_t> clean(disc_file.size);
@@ -5271,6 +5280,101 @@ RepublishResult republish_stage(uint8_t* fst, uint32_t fst_size, const std::stri
   if (!fst || target.empty()) { result.message = "No skin is installed for this stage."; return result; }
   publish_locked(fst, fst_size, &target, &result);
   if (!result.ok) host::log("cosmetics: %s was not published again (%s)", target.c_str(), result.message.c_str());
+  return result;
+}
+
+bool stage_gameplay_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
+                            std::string* detail) {
+  std::string local;
+  if (!detail) detail = &local;
+  if (visual_dat_only(clean, candidate, detail)) { *detail = "textures only"; return true; }
+  return stage_safety::matches(clean, candidate, detail);
+}
+
+bool random_stage_skins() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_profile.random_stage_skins;
+}
+
+bool set_random_stage_skins(bool enabled, std::string* error) {
+  std::string local;
+  if (!error) error = &local;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (!mutable_profile_locked(error)) return false;
+  if (g_profile.random_stage_skins == enabled) return true;
+  const bool previous = g_profile.random_stage_skins;
+  g_profile.random_stage_skins = enabled;
+  if (!save_profile_locked(error)) { g_profile.random_stage_skins = previous; return false; }
+  g_message = enabled ? "Random installed stage skins enabled for the next match." :
+                        "Fixed stage skins restored at the next match.";
+  return true;
+}
+
+RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::string& stage_file,
+                               uint64_t match_token) {
+  RepublishResult result;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const auto current = std::atomic_load(&g_runtime);
+  const std::string target = stage_target_locked(stage_file);
+  if (!current->initialized || !fst || target.empty() || !g_profile.enabled) return result;
+  const auto previous = current->stage_matches.find(target);
+  if (previous != current->stage_matches.end() && previous->second.first == match_token) return result;
+  if (!g_profile.random_stage_skins && previous == current->stage_matches.end()) return result;
+
+  std::vector<std::string> eligible;
+  if (g_profile.random_stage_skins) {
+    std::vector<FstFile> files;
+    if (!parse_fst(fst, fst_size, &files, &result.message)) return result;
+    const std::string wanted = lower(target);
+    const std::string english = wanted.substr(0, wanted.size() - 4) + ".usd";
+    std::vector<std::vector<uint8_t>> originals;
+    for (const auto& file : files) {
+      const std::string basename = lower(fs::path(file.path).filename().string());
+      if (basename != wanted && basename != english) continue;
+      const auto applied = current->by_start.find(file.start);
+      const uint32_t size = applied == current->by_start.end() ? file.size : applied->second.vanilla_size;
+      if (size > kMaxAssetBytes) return result;
+      std::vector<uint8_t> bytes(size);
+      if (!host::disc_read(file.start, bytes.data(), size)) return result;
+      originals.push_back(std::move(bytes));
+    }
+    if (originals.empty() || originals.size() > 2) return result;
+    for (const auto& asset : g_assets) {
+      if (!asset.info.available || asset.info.kind != "stage_visual" || selection_key(asset) != target) continue;
+      std::string error;
+      const auto bytes = load_runtime_asset_locked(asset, &error);
+      if (bytes.empty()) continue;
+      bool allowed = true;
+      if (online_active())
+        for (const auto& original : originals)
+          if (!stage_gameplay_matches(original, bytes, &error)) { allowed = false; break; }
+      if (allowed) eligible.push_back(asset.info.id);
+    }
+  }
+  std::string chosen;
+  if (!g_profile.random_stage_skins) {
+    const auto fixed = g_profile.selections.find(target);
+    if (fixed != g_profile.selections.end() && fixed->second != kVanillaSelection) chosen = fixed->second;
+  } else if (!eligible.empty()) {
+    // Independent host entropy; never calls the game's RNG or changes its seed.
+    uint32_t random = 0;
+    const uint32_t count = (uint32_t)eligible.size(), threshold = (0u - count) % count;
+    do {
+      if (BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&random), sizeof random,
+                          BCRYPT_USE_SYSTEM_PREFERRED_RNG) < 0) {
+        result.message = "Stage skin random generator unavailable; fixed choice retained."; return result;
+      }
+    } while (random < threshold);
+    chosen = eligible[random % count];
+  }
+  publish_locked(fst, fst_size, &target, &result, &chosen);
+  if (!result.ok) return result;
+  auto next = std::make_shared<RuntimeState>(*std::atomic_load(&g_runtime));
+  next->stage_matches[target] = {match_token, chosen};
+  std::atomic_store(&g_runtime, std::shared_ptr<const RuntimeState>(next));
+  host::log("cosmetics: match %llu %s skin for %s: %s (%zu eligible)",
+            (unsigned long long)match_token, g_profile.random_stage_skins ? "random" : "fixed",
+            target.c_str(), chosen.empty() ? "Standard" : chosen.c_str(), eligible.size());
   return result;
 }
 

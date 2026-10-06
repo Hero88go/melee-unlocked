@@ -14,9 +14,17 @@ validated against the exact clean ISO; compatible byte changes are composed agai
 resource, and conflicting writes are rejected with the offset and variant names. Older profiles
 with a single effect choice per DAT migrate that choice to its move slot.
 
-Stage replacements that fail exact-ISO texture-only validation remain available offline. Online
+Stage replacements are checked against the exact ISO. Texture-only replacements and supported
+model replacements with matching gameplay data can remain active online. The model check preserves
+collision, platform transforms, stage parameters, and animation data. Unsupported archive layouts
+and replacements that change gameplay remain available offline. Online
 disc reads for those stage slots use the clean resource. Profile changes are frozen while an online
 search or match is active, and all changes require a restart to affect the running asset snapshot.
+
+In PC Settings > Mods, **Random installed stage skin each match** picks an installed skin for
+the stage the match selected. It is off by default. Online, only validated skins enter the pool;
+if none qualify, the standard stage is used. Random choices use host entropy and do not change
+the game's random seed. The saved fixed selection is restored when the option is turned off.
 
 The sections below document earlier importer milestones and may describe policies superseded by
 the v0.7 behavior above.

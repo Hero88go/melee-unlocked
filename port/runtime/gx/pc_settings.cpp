@@ -6179,6 +6179,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           ImGui::Separator();
         }
         ImGui::TextUnformatted("Cosmetic mods");
+        bool random_stage_skins = host::cosmetics::random_stage_skins();
+        if (ImGui::Checkbox("Random installed stage skin each match", &random_stage_skins)) {
+          std::string error;
+          if (!host::cosmetics::set_random_stage_skins(random_stage_skins, &error)) mod_message = error;
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Choose an installed skin for the stage being played, starting next match.\n"
+                            "Online uses only skins with matching gameplay data. Your fixed choices are saved.");
         ImGui::TextWrapped("Imports use one shared native profile. Stage DATs that fail the exact-ISO "
                            "visual check use the clean disc resource online. Changes take effect after restart.");
         ImGui::TextWrapped("On the character select screen, L and R step the highlighted costume through "

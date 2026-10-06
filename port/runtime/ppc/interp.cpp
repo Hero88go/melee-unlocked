@@ -263,11 +263,9 @@ struct Interp {
           uint32_t t = c.lr;
           if (w & 1) c.lr = pc + 4;
           if (t == entry_lr) { done = true; return; }       // return to the host caller (blrl: with the new LR)
-          if (!(w & 1) && lookup(t) && !runs_from_ram(t)) {
-            host::log("interpreter: blr at %08X to %08X, entered with LR %08X", pc, t, entry_lr);
-            dump_history();
-            fatal(c, "interpreter: blr into a function entry", t);
-          }
+          // A RAM hook can return into a generated continuation as well as RAM.
+          // bclr is an indirect branch: dispatch that continuation, just like a
+          // tail branch, and let its restored LR unwind to the original caller.
           transfer(t, (w & 1) != 0);
           return;
         }

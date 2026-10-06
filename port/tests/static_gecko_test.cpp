@@ -34,6 +34,24 @@ int main() {
   context.r[1] = 0x81500000; context.lr = 0x81234560; context.tb = 123456; context.msr = 0x8000;
   host::ram = memory.data(); host::cpu = &context; host::options.quiet = true;
   ppc::init_dispatch();
+  // Results hooks can reach a leaf through RAM and return to a generated
+  // continuation. The continuation restores the outer LR; it is a valid bclr
+  // target even though this interpreter invocation started with another LR.
+  constexpr uint32_t continuation = 0x81710000u;
+  ppc::set_hook(continuation, [](ppc::Context& c, uint8_t*) {
+    c.r[3] += 7;
+    c.lr = c.r[12];
+  });
+  host::wr32(data, 0x3C008171);       // lis r0,0x8171
+  host::wr32(data + 4, 0x7C0803A6);   // mtlr r0
+  host::wr32(data + 8, 0x4E800020);   // blr into generated continuation
+  ppc::Context returned{};
+  returned.lr = returned.r[12] = 0xDEAD0000u;
+  returned.r[3] = 5;
+  ppc::interpret(returned, memory.data(), data);
+  CHECK(returned.r[3] == 12 && returned.lr == 0xDEAD0000u && returned.call_depth == 0);
+  ppc::set_hook(continuation, nullptr);
+  std::memset(memory.data() + (data - ppc::RAM_BASE), 0, 12);
   user_gecko::install_static_runtime(); user_gecko::set_code_patches_allowed(true);
   CHECK(user_gecko::static_memory_required() == 0);
   CHECK(user_gecko::add("reserved", "04410000 11223344").empty());

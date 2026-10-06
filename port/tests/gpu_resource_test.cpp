@@ -89,6 +89,22 @@ int main(int argc, char** argv) {
     // The first red quad must survive every subsequent descriptor/page rollover.
     auto red=texture(0x1000,255,0), blue=texture(0x2000,0,255);
     gx::DrawCall d{}; d.primitive=0x80; d.vertex_count=4; d.components=gx::VB_HAS_UV0;
+    {
+      gx::DrawCall portrait=d;
+      portrait.xf_regs[0x3F]=1;
+      portrait.bp.reg[gx::BP_GENMODE]=1|(1u<<10); // two TEV stages
+      portrait.bp.reg[gx::BP_ZMODE]=3;
+      portrait.bp.reg[gx::BP_ZTEX2]=10; // Z24 replace, late depth
+      portrait.bp.reg[gx::BP_TREF]=64|(65u<<12);
+      portrait.bp.reg[gx::BP_TEV_COLOR_ENV+2]=0x8fff0; // keep previous color, consume depth independently
+      portrait.bp.reg[gx::BP_TEV_ALPHA_ENV+2]=0x8ff90;
+      const auto shader=gx::generate_pixel_shader(gx::make_ps_uid(portrait));
+      check(shader.find("SV_Depth")!=std::string::npos,"portrait writes texture depth");
+      check(shader.find("Tex[1].Sample")!=std::string::npos,"depth-only final TEV stage fetches its texture");
+      portrait.bp.reg[gx::BP_ZTEX2]=0;
+      check(gx::generate_pixel_shader(gx::make_ps_uid(portrait)).find("SV_Depth")==std::string::npos,
+            "ordinary draws retain hardware depth");
+    }
     d.posMatrices[0]=d.posMatrices[5]=d.posMatrices[10]=1;
     d.matrix_index_a=60u<<6; // identity texture matrix
     d.xf_regs[0x26]=1; d.xf_regs[0x3F]=1; d.xf_regs[0x40]=5u<<7;

@@ -91517,7 +91517,7 @@ index 4bafe4ed5..93dc8193d 100644
  
  #endif
 diff --git a/src/melee/gm/gm_1A3F.c b/src/melee/gm/gm_1A3F.c
-index 9fc7d6b09..fd38900d3 100644
+index 9fc7d6b09..f5930fcea 100644
 --- a/src/melee/gm/gm_1A3F.c
 +++ b/src/melee/gm/gm_1A3F.c
 @@ -1,9 +1,9 @@
@@ -91581,7 +91581,19 @@ index 9fc7d6b09..fd38900d3 100644
  /* 479D30 */ static struct stateMachine state_machine;
  
  void preloadState(GameModeState* state)
-@@ -57,10 +91,26 @@ void preloadState(GameModeState* state)
+@@ -51,16 +85,38 @@ void preloadState(GameModeState* state)
+     PreloadedGameModeState* preloaded_state;
+ 
+     lbDvd_80018CF4(state->preload);
++#ifdef MU_NATIVE
++    if (state->info.scene_kind == GS_VS || state->info.scene_kind == GS_TRAINING) {
++        extern void mu_stage_skin_match(int stkind);
++        mu_stage_skin_match(lbDvd_GetPreloadCacheScene()->game_cache.stkind);
++    }
++#endif
+     switch (state->info.scene_kind) {
+     case GS_STAFFROLL:
+     case GS_RESULTS:
          HSD_SisLib_803A6048(0xC000);
          break;
      case GS_CSS:
@@ -91608,7 +91620,7 @@ index 9fc7d6b09..fd38900d3 100644
          break;
      }
      preloaded_state = lbDvd_GetPreloadCacheScene();
-@@ -71,8 +121,8 @@ void preloadState(GameModeState* state)
+@@ -71,8 +127,8 @@ void preloadState(GameModeState* state)
          preloaded_state->is_heap_persistent[1] = true;
      }
      lbDvd_80018254();
@@ -91619,7 +91631,7 @@ index 9fc7d6b09..fd38900d3 100644
      lbSnap_8001E27C();
      Toy_803127D4();
      tyDisplay_8031C8B8();
-@@ -129,21 +179,34 @@ void gm_801A4014(GameMode* mode)
+@@ -129,21 +185,34 @@ void gm_801A4014(GameMode* mode)
      GameModeState* state;
      struct stateMachine* sm;
      struct GameSceneInfo* info;
@@ -91658,7 +91670,7 @@ index 9fc7d6b09..fd38900d3 100644
      gm_801A4BD4();
      gm_801A4B88(info);
      if (scene->on_enter != NULL) {
-@@ -161,24 +224,38 @@ void gm_801A4014(GameMode* mode)
+@@ -161,24 +230,38 @@ void gm_801A4014(GameMode* mode)
          state_machine.routing.prev_state_id = sm->routing.curr_state_id;
  
          if (sm->routing.next_state_id) {
@@ -91700,7 +91712,7 @@ index 9fc7d6b09..fd38900d3 100644
          gmMainLib_8015FBA4();
          gm_GetAllGameModes();
          memzero(&state_machine, sizeof(state_machine));
-@@ -228,11 +305,17 @@ void gm_SetNewGameModePending(void)
+@@ -228,11 +311,17 @@ void gm_SetNewGameModePending(void)
  
  void gm_SetPendingGameMode(u8 pending_mode)
  {
@@ -91718,7 +91730,7 @@ index 9fc7d6b09..fd38900d3 100644
      state_machine.routing.pending_mode = pending_mode;
      state_machine.pending_mode_change = true;
  }
-@@ -291,6 +374,12 @@ u8 runGameMode(u8 mode_kind)
+@@ -291,6 +380,12 @@ u8 runGameMode(u8 mode_kind)
      struct stateMachine* sm = &state_machine;
      PAD_STACK(2 * 4);
  
@@ -91731,7 +91743,7 @@ index 9fc7d6b09..fd38900d3 100644
      mode = findMode(mode_kind);
  
      state_machine.pending_mode_change = false;
-@@ -298,6 +387,13 @@ u8 runGameMode(u8 mode_kind)
+@@ -298,6 +393,13 @@ u8 runGameMode(u8 mode_kind)
      state_machine.routing.prev_state_id = 0;
      state_machine.routing.next_state_id = 0;
      lbDvd_80018F58(mode->preloaded);
@@ -91745,7 +91757,7 @@ index 9fc7d6b09..fd38900d3 100644
      if (mode->on_load != NULL) {
          mode->on_load();
      }
-@@ -316,13 +412,23 @@ u8 runGameMode(u8 mode_kind)
+@@ -316,13 +418,23 @@ u8 runGameMode(u8 mode_kind)
                  state_machine.routing = state_machine.backup_routing;
              }
          } else {
@@ -91769,7 +91781,7 @@ index 9fc7d6b09..fd38900d3 100644
  }
  
  /// UnclePunch: Scene_Main
-@@ -348,6 +454,20 @@ void gm_801A4510(void)
+@@ -348,6 +460,20 @@ void gm_801A4510(void)
      } else {
          state_machine.routing.curr_mode = GM_BOOT;
      }
@@ -91790,7 +91802,7 @@ index 9fc7d6b09..fd38900d3 100644
      state_machine.routing.prev_mode = GM_COUNT;
  
      while (true) {
-@@ -359,3 +479,9 @@ void gm_801A4510(void)
+@@ -359,3 +485,9 @@ void gm_801A4510(void)
          gamestate->routing.curr_mode = next_mode;
      }
  }

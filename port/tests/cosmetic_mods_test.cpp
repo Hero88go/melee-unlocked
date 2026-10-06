@@ -780,6 +780,21 @@ int main(int argc, char** argv) {
             std::equal(clean_stage.begin() + 4, clean_stage.end(), online_stage.begin() + 4),
         "unsafe project stage serves the disc's own stage during online play, with the file's length in its length field");
   host::cosmetics::thaw_after_online_session();
+  // Random skin choices belong to one match and never replace the saved fixed selection.
+  check(!host::cosmetics::random_stage_skins(), "random stage skins default off");
+  check(host::cosmetics::set_random_stage_skins(true,&error), "enable random stage skins");
+  auto pick=host::cosmetics::plan_stage_skin(stage_fst.data(),(uint32_t)stage_fst.size(),"GrNBa.dat",100);
+  check(pick.ok && host::cosmetics::applied_asset(stage_start)==stage_id, "offline random selects installed full stage");
+  check(!host::cosmetics::plan_stage_skin(stage_fst.data(),(uint32_t)stage_fst.size(),"GrNBa.dat",100).ok,
+        "one match token cannot reroll a stage");
+  host::cosmetics::freeze_for_online_session();
+  check(!host::cosmetics::set_random_stage_skins(false,&error), "online queue freezes random setting");
+  pick=host::cosmetics::plan_stage_skin(stage_fst.data(),(uint32_t)stage_fst.size(),"GrNBa.dat",101);
+  check(pick.ok && host::cosmetics::applied_asset(stage_start).empty(), "online random excludes unsafe stage and serves standard");
+  host::cosmetics::thaw_after_online_session();
+  check(host::cosmetics::set_random_stage_skins(false,&error), "disable random stage skins");
+  pick=host::cosmetics::plan_stage_skin(stage_fst.data(),(uint32_t)stage_fst.size(),"GrNBa.dat",102);
+  check(pick.ok && host::cosmetics::applied_asset(stage_start)==stage_id, "disabling random restores saved fixed stage");
   g_disc_bytes.clear();
   g_disc_bytes = visual_dat();
   g_disc_target = "EfFxData.dat";
