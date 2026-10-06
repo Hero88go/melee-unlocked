@@ -434,6 +434,7 @@ class D3D11Backend : public Backend {
   std::vector<std::thread> shader_threads_;
   bool shader_quit_ = false;
   int shader_wait_budget_us_ = 0;
+  bool capturing_efb_ = false;
 
   // ---- per-frame plan (built before any GPU work, see submit_frame) ----
   struct DrawPlan {
@@ -634,6 +635,10 @@ float ao(float2 uv) {
   return saturate(1.0 - (occ * 0.125) * color.w);
 }
 float4 PS(O i) : SV_Target {
+  if (color.w < -1.5) {
+    uint z = min((uint)((1.0 - src.Sample(samp, i.uv).r) * 16777216.0), 0xFFFFFFu);
+    return float4(float3((z >> 16) & 255u, (z >> 8) & 255u, z & 255u) / 255.0, 1.0);
+  }
   float4 c = downsample(i.uv);
   // Copies from an EFB without alpha read as opaque on hardware.
   if (color.w < 0.0) return float4(c.rgb, 1.0);
@@ -1125,16 +1130,18 @@ Pipeline* D3D11Backend::get_pipeline(const DrawCall& dc, uint32_t topo_type, D3D
       shader_jobs_.push_front(ShaderJob{key, vsu, psu, recipe});
       shader_cv_.notify_one();
     }
-    while (shader_wait_budget_us_ > 0) {
+    const bool exact = capturing_efb_ || (dc.bp.ztex2() & 12);
+    while (shader_wait_budget_us_ > 0 || exact) {
       Stopwatch wait_sw;
       {
         std::unique_lock<std::mutex> lk(shader_mutex_);
-        shader_done_cv_.wait_for(lk, std::chrono::microseconds(std::min(shader_wait_budget_us_, 2000)), [&] { return !shader_done_.empty(); });
+        shader_done_cv_.wait_for(lk, std::chrono::microseconds(exact ? 2000 : std::min(shader_wait_budget_us_, 2000)), [&] { return !shader_done_.empty(); });
       }
       shader_wait_budget_us_ -= (int)(wait_sw.lap() * 1e6);
       integrate_compiled_pipelines();
       auto ready = pipelines_.find(key);
       if (ready != pipelines_.end()) { dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = ready->second.get(); return ready->second.get(); }
+      if (!pipelines_pending_.count(key)) break; // compile failure
     }
     ++g_pipe_skips;
     return fallback_pipeline(key, dc, topology);
@@ -1410,6 +1417,9 @@ void D3D11Backend::execute_draw(const DrawCall& dc, const DrawPlan& plan) {
 }
 
 void D3D11Backend::clear_efb(const EfbCopy& c) {
+  // Presenting an XFB binds the backbuffer without a depth target. The copy's
+  // clear still applies to the EFB, including the depth used by portrait copies.
+  bind_efb_targets();
   float s = (float)scale_;
   D3D11_RECT r{(LONG)(c.src_x * s), (LONG)(c.src_y * s), (LONG)((c.src_x + c.src_w) * s), (LONG)((c.src_y + c.src_h) * s)};
   r.right = std::min<LONG>(r.right, efb_w_); r.bottom = std::min<LONG>(r.bottom, efb_h_);
@@ -1465,7 +1475,7 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
   }
   e.last_used = frame_counter_;
   const bool opaque = !c.efb_alpha && !c.is_depth;
-  if (c.half_scale || opaque) {
+  if (c.half_scale || opaque || c.is_depth) {
     unbind_shader_resources();
     ID3D11RenderTargetView* rtv = e.rtv.Get();
     context_->OMSetRenderTargets(1, &rtv, nullptr);
@@ -1474,8 +1484,8 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
     context_->RSSetViewports(1, &vp);
     context_->RSSetScissorRects(1, &sc);
     const float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
-                            0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 1.0f, 1.0f, 1.0f, opaque ? -1.0f : 0.0f};   // no sharpening, grading or averaging on this path
-    blit(efb_srv_.Get(), rect);
+                            0, 0, 0, 0, 1.0f, 1.0f, 0, 0, 1.0f, 1.0f, 1.0f, c.is_depth ? -2.0f : (opaque ? -1.0f : 0.0f)};
+    blit(c.is_depth ? efb_depth_srv_.Get() : efb_srv_.Get(), rect);
     bind_efb_targets();
   } else {
     D3D11_BOX box{c.src_x * (UINT)scale_, c.src_y * (UINT)scale_, 0, (c.src_x + c.src_w) * (UINT)scale_, (c.src_y + c.src_h) * (UINT)scale_, 1};
@@ -1783,6 +1793,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (pick_scale() != scale_) { host::log("d3d11: dropping %zu EFB copy textures, internal scale %d -> %d", efb_copies_.size(), scale_, pick_scale()); efb_copies_.clear(); create_efb(); }
   }
   shader_wait_budget_us_ = 12000;
+  capturing_efb_ = std::any_of(frame.copies.begin(),frame.copies.end(),[](const EfbCopy& c) { return !c.to_xfb; });
   ++frame_counter_;
   trim_textures();
   // Queue depth before this frame's work is issued, then this frame's timing starts (and the

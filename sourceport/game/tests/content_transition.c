@@ -24,6 +24,13 @@ static int host_view, next_view = -1, releases, resets, unload_done, failures;
 static int active_mode;
 static char callbacks[128];
 static int callback_count;
+static int skin_commands, skin_reloads;
+int Stage_8022519C(int stage) { return stage; }
+const char* mu_ground_stage_file(int stage) { (void)stage; return "GrNBa.dat"; }
+size_t lbFileGetSize(const char* name) { (void)name; return 4096; }
+int gm_801641CC(void) { return 31; }
+void lbDvd_8001823C(void) { ++skin_reloads; }
+extern void mu_stage_skin_match(int stage);
 
 static void check(int ok, const char* what)
 {
@@ -38,6 +45,10 @@ static void note(char event)
 int mu_online_abi_command(unsigned int command, const unsigned char* payload, unsigned int size,
                           unsigned char* response, unsigned int capacity, unsigned int* response_size)
 {
+    if (command == 0xFD) {
+        check(size == 10 && strcmp((const char*)payload,"GrNBa.dat")==0, "stage match command names the selected stage");
+        ++skin_commands; response[0]=1; *response_size=1; return 0;
+    }
     check(command == 0xF5 && size == 1 && capacity >= 1, "content command ABI");
     if (*payload != 0xFE) host_view = *payload != 0xFF;
     response[0] = (unsigned char) host_view;
@@ -148,5 +159,9 @@ int main(void)
     runGameMode(GM_DEBUG_VS);
     check(releases == 5 && resets == 5 && host_view == 1,
           "online DebugVS harness retains its explicitly requested retail view");
+    mu_stage_skin_match(-1); mu_stage_skin_match(0x148);
+    check(skin_commands==0 && skin_reloads==0,"invalid stages cannot request a skin reload");
+    mu_stage_skin_match(31);
+    check(skin_commands==1 && skin_reloads==1,"new match applies stage skin before the DVD preload");
     return failures ? 1 : 0;
 }

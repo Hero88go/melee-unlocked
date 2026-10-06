@@ -413,6 +413,8 @@ std::string generate_pixel_shader(const PSUid& uid) {
   uint32_t zmode = bp.zmode();
   bool ztest = zmode & 1;
   bool early_ztest = ((bp.zcontrol() >> 6) & 1) && ztest;
+  const uint32_t ztex_op = bits(bp.ztex2(), 2, 2);
+  const bool texture_depth = ztex_op != 0 && ztest && !early_ztest;
   uint32_t fog_fsel = bits(bp.fogparam3(), 21, 3), fog_proj = bits(bp.fogparam3(), 20, 1);
   bool fog_range = bits(bp.fogrange(0), 10, 1);
   bool forced_early_z = early_ztest && pretest == 2;
@@ -431,6 +433,7 @@ std::string generate_pixel_shader(const PSUid& uid) {
   if (forced_early_z) o.w("[earlydepthstencil]\n");
   if (uid.motion_vectors) o.w("void main(out float4 ocol0 : SV_Target0, out float2 omv : SV_Target1, out float ohud : SV_Target2, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
   else o.w("void main(out float4 ocol0 : SV_Target0, in float4 rawpos : SV_Position, in float4 colors_0 : COLOR0, in float4 colors_1 : COLOR1");
+  if (texture_depth) o.w(", out float odepth : SV_Depth");
   for (uint32_t i = 0; i < numTexgen; ++i) o.w(", in float3 uv%d : TEXCOORD%d", i, i);
   if (uid.motion_vectors) o.w(", in float4 clipPos : TEXCOORD%d, in float4 curPos : TEXCOORD%d, in float4 prevPos : TEXCOORD%d) {\n", numTexgen, numTexgen + 1, numTexgen + 2);
   else o.w(", in float4 clipPos : TEXCOORD%d) {\n", numTexgen);
@@ -471,7 +474,8 @@ std::string generate_pixel_shader(const PSUid& uid) {
     uint32_t cc = bp.tev_color(n), ac = bp.tev_alpha(n);
     auto ccUses = [&](uint32_t v) { return bits(cc, 12, 4) == v || bits(cc, 8, 4) == v || bits(cc, 4, 4) == v || bits(cc, 0, 4) == v; };
     auto acUses = [&](uint32_t v) { return bits(ac, 13, 3) == v || bits(ac, 10, 3) == v || bits(ac, 7, 3) == v || bits(ac, 4, 3) == v; };
-    bool texEnable = bp.order_enable(n) && (ccUses(8) || ccUses(9) || acUses(4));
+    bool texEnable = bp.order_enable(n) && (ccUses(8) || ccUses(9) || acUses(4) ||
+        (ztex_op && n + 1 == numStages));
     o.w("\n{\n");
     if (hasInd) {
       uint32_t bt = bits(ind, 0, 2), fmt = bits(ind, 2, 2), bias = bits(ind, 4, 3), bs = bits(ind, 7, 2), mid = bits(ind, 9, 4);
@@ -598,6 +602,12 @@ std::string generate_pixel_shader(const PSUid& uid) {
   }
   // depth value for fog (fast depth: hardware z reversed)
   o.w("wu zCoord = wuround((1.0 - rawpos.z) * 16777216.0);\nzCoord = clamp(zCoord, 0, 0xFFFFFF);\n");
+  // GX uses the final TEV texture sample for Z8/Z16/Z24, independently of its color output.
+  if (ztex_op && (texture_depth || fog_fsel)) {
+    o.w("zCoord = (idot(zbias[0], tex_ta[%d]) + zbias[1].w%s) & 0xFFFFFF;\n",
+        numStages - 1, ztex_op == 1 ? " + zCoord" : "");
+  }
+  if (texture_depth) o.w("odepth = 1.0 - float(zCoord) / 16777216.0;\n");
   if (fog_fsel != 0) {
     if (fog_proj == 0) o.w("float ze = (fogf[1].x * 16777216.0) / float(fogi.y - (zCoord >> fogi.w));\n");
     else o.w("float ze = fogf[1].x * (float(zCoord) / 16777216.0);\n");
@@ -820,6 +830,11 @@ void fill_ps_constants(const DrawCall& dc, PSConstants& c, int efb_scale) {
   }
   const float* vp = (const float*)&dc.xf_regs[0x1A];
   c.zbias[1][0] = (int)vp[5]; c.zbias[1][1] = (int)vp[2]; c.zbias[1][3] = bp.ztex1() & 0xFFFFFF;
+  switch (bp.ztex2() & 3) {
+    case 0: c.zbias[0][3] = 1; break;  // Z8: alpha
+    case 1: c.zbias[0][0] = 1; c.zbias[0][3] = 256; break;  // Z16: A,R
+    case 2: c.zbias[0][0] = 65536; c.zbias[0][1] = 256; c.zbias[0][2] = 1; break;
+  }
   for (int i = 0; i < 2; ++i) {
     uint32_t ts = bp.texscale(i);
     c.indtexscale[i][0] = ts & 15; c.indtexscale[i][1] = (ts >> 4) & 15; c.indtexscale[i][2] = (ts >> 8) & 15; c.indtexscale[i][3] = (ts >> 12) & 15;

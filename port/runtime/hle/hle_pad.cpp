@@ -268,6 +268,57 @@ void install() {
 }
 }  // namespace voice_banks
 
+namespace random_stage_skins {
+ppc::Fn previous = nullptr;
+void preload_scene(ppc::Context& c, uint8_t* m) {
+  const uint32_t state = c.r[3];
+  if (!host::mod_disc_active() && !slippi::playback::enabled() && host::try_ptr(state, 24)) {
+    const uint8_t kind = host::rd8(state + 12);
+    if (kind == 2 || kind == 4) { // new VS / Training; Sudden Death keeps the match choice
+      uint32_t saved[10];
+      for (int i = 0; i < 10; ++i) saved[i] = c.r[3 + i];
+      // Quiesce old preload reads before replacing a file snapshot, just as preloadState does.
+      host::call_guest(0x80018CF4u, host::rd8(state + 1));
+      const uint32_t stkind = host::rd32(css_skins::kPreload + 0x10);
+      if (stkind < 0x148u) {
+        const uint32_t grkind = host::rd32(css_skins::kStageIdMap + stkind * 12);
+        if (grkind < 0x6Fu) {
+          const uint32_t data = host::rd32(css_skins::kStageDatas + grkind * 4);
+          if (host::try_ptr(data, 12) && host::try_ptr(host::rd32(data + 8), 1)) {
+            const std::string file = host::cstr(host::rd32(data + 8), 64);
+            static uint64_t token = 0;
+            const uint32_t fst = host::disc_fst_addr(), size = host::disc_fst_size();
+            const auto result = host::cosmetics::plan_stage_skin(host::ptr(fst, size), size, file, ++token);
+            if (result.ok) {
+              for (const auto& item : result.files) {
+                host::mark_ram_write(fst + item.fst_index * 12 + 8, 4);
+                for (uint32_t i = 0; i < css_skins::kPreloadCount; ++i) {
+                  const uint32_t at = css_skins::kPreloadEntries + i * css_skins::kPreloadEntrySize;
+                  if (host::rd16(at + 6) != (uint16_t)item.fst_index) continue;
+                  const uint8_t phase = host::rd8(at);
+                  if (phase == 3 || phase == 4) host::wr16(at + 6, 0xFFFE);
+                  else if (phase == 1) host::wr32(at + 12, 0);
+                }
+              }
+              host::wr32(css_skins::kPreloadSceneChanges, host::rd32(css_skins::kPreloadSceneChanges) + 1);
+            }
+          }
+        }
+      }
+      for (int i = 0; i < 10; ++i) c.r[3 + i] = saved[i];
+    }
+  }
+  previous(c, m);
+}
+void install() {
+  static bool done = false;
+  if (done) return;
+  done = true;
+  previous = ppc::set_hook(0x801A3F48u, preload_scene);
+  if (!previous) { ppc::set_hook(0x801A3F48u, nullptr); host::log("cosmetics: random stage preload hook unavailable"); }
+}
+} // namespace random_stage_skins
+
 HLE(PADInit) { RET(1); }
 HLE(PADReset) { RET(1); }
 // The game asks for the controller's neutral to be re-read. We used to accept and do nothing, so a
@@ -324,6 +375,7 @@ HLE(PADRead) {
   host::offline_delay::apply(pads, offline_gameplay);
   css_skins::apply(pads);
   voice_banks::install();
+  random_stage_skins::install();
   // The player's own Gecko codes (data writes only), re-applied each frame like the Gecko handler.
   user_gecko::apply();
   host::apply_wide_fighter_draw();

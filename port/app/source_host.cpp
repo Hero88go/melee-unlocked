@@ -1273,10 +1273,7 @@ constexpr uint8_t CMD_SKIN_CYCLE = 0xF9;
 // kCosmeticBase, so nothing the game preloaded under the old number is reused; a skin not proven to
 // change looks alone also gets the alias entry that names the disc's copy for online play, as at
 // startup. False when a file could not be given an entry (the caller puts the old pick back).
-bool republish_cosmetic_slot(const std::string& slot, bool stage = false) {
-  const auto result = stage
-      ? host::cosmetics::republish_stage(g_cosmetic_fst.data(), (uint32_t)g_cosmetic_fst.size(), slot)
-      : host::cosmetics::republish_slot(g_cosmetic_fst.data(), (uint32_t)g_cosmetic_fst.size(), slot);
+bool publish_cosmetic_files(const std::string& slot, const host::cosmetics::RepublishResult& result) {
   if (!result.ok) return false;
   bool ok = true;
   for (const auto& file : result.files) {
@@ -1311,6 +1308,23 @@ bool republish_cosmetic_slot(const std::string& slot, bool stage = false) {
     g_paths[g_raw_paths[i]] = entry;
   }
   return ok;
+}
+
+bool republish_cosmetic_slot(const std::string& slot, bool stage = false) {
+  return publish_cosmetic_files(slot, stage
+      ? host::cosmetics::republish_stage(g_cosmetic_fst.data(), (uint32_t)g_cosmetic_fst.size(), slot)
+      : host::cosmetics::republish_slot(g_cosmetic_fst.data(), (uint32_t)g_cosmetic_fst.size(), slot));
+}
+
+// One command at the new match scene boundary, before any stage DVD preload.
+constexpr uint8_t CMD_STAGE_SKIN_MATCH = 0xFD;
+void plan_random_stage_skin(const std::string& file, std::vector<uint8_t>& reply) {
+  reply.assign(1, 0);
+  if (g_replaying || g_cosmetic_fst.empty()) return;
+  static uint64_t match_token = 0;
+  const auto result = host::cosmetics::plan_stage_skin(g_cosmetic_fst.data(),
+      (uint32_t)g_cosmetic_fst.size(), file, ++match_token);
+  if (result.ok && publish_cosmetic_files(file, result)) reply[0] = 1;
 }
 
 // ---- stage select skin cycling (mn/mnstagesel.c, shim/mu_content.c) ----
@@ -1426,6 +1440,10 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
         if (c == CMD_REPLAY_GATE && n == 5) { reply.push_back(replay_gate((int32_t)read_be32(p), p[4])); return true; }
         if (c == CMD_LAB_ADVANTAGE && n == 5) { training_overlay::set_advantage((int32_t)read_be32(p), p[4]); return true; }
         if (c == CMD_SKIN_CYCLE && n == 4) { cycle_costume_skin(p[1], p[2], p[3] ? 1 : -1, reply); return true; }
+        if (c == CMD_STAGE_SKIN_MATCH && n >= 2 && n <= 64 && p[n - 1] == 0) {
+          plan_random_stage_skin(std::string((const char*)p, strnlen((const char*)p, n)), reply);
+          return true;
+        }
         if (c == CMD_SKIN_GROWTH && n == 0) {
           uint32_t growth = host::cosmetics::largest_fighter_growth();
           // MELEE_TEST_DEMO_GROWTH=<bytes>: test runs only, stands in for installed skins that much larger.

@@ -259,6 +259,15 @@ RepublishResult republish_slot(uint8_t* fst, uint32_t fst_size, const std::strin
 // choice, then the file published again. Offline only: refused while an online session is up.
 LiveCycle cycle_stage_live(const std::string& stage_file, int direction);
 RepublishResult republish_stage(uint8_t* fst, uint32_t fst_size, const std::string& stage_file);
+// Default off. Takes effect at the next match; saved fixed choices are preserved.
+bool random_stage_skins();
+bool set_random_stage_skins(bool enabled, std::string* error = nullptr);
+// Called once before match DVD preload, with a host-owned monotonically increasing token.
+// Repeated calls with that token retain the same choice, including during rollback.
+RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::string& stage_file,
+                               uint64_t match_token);
+bool stage_gameplay_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
+                            std::string* detail);
 // The skin serving this disc file now, or empty for the disc's own file.
 std::string applied_asset(uint32_t vanilla_file_start);
 

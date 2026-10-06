@@ -154,6 +154,24 @@ int mu_title_demo_stage(int stkind)
 
 #define CMD_STAGE_SKIN_CYCLE 0xFB   /* payload: 1 next / 0 previous, then the stage's file name */
 
+/* Called after old preloads have quiesced, before this new match preloads its stage.
+ * This boundary is outside rollback; Sudden Death retains the existing match's skin. */
+void mu_stage_skin_match(int stkind)
+{
+    extern int Stage_8022519C(int stkind);
+    extern const char* mu_ground_stage_file(int grkind);
+    static unsigned char response[4096];
+    unsigned int got = 0, n = 0;
+    const char* file;
+    if (stkind < 0 || stkind >= 0x148) return;
+    file = mu_ground_stage_file(Stage_8022519C(stkind));
+    if (file == NULL) return;
+    while (n < 63 && file[n] != '\0') n++;
+    if (!n || file[n] != '\0') return;
+    if (mu_online_abi_command(0xFD, (const unsigned char*) file, n + 1, response, sizeof response, &got) == 0 &&
+        got >= 1 && response[0]) lbDvd_8001823C();
+}
+
 /* Stage select, X / Y or R / L on a highlighted stage (mn/mnstagesel.c): the host steps that
  * stage's file through the standard stage and its installed stage skins and serves the file from
  * the pick under a new entry number. Returns 1 when it changed. Offline only (the host refuses
