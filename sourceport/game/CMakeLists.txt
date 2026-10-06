@@ -130,6 +130,16 @@ set_target_properties(mu_alarm_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
 target_link_libraries(mu_alarm_test PRIVATE game_flags)
 add_test(NAME native_alarm COMMAND mu_alarm_test)
 
+add_executable(mu_preload_compaction_test EXCLUDE_FROM_ALL
+  tests/preload_compaction.c "${D}/src/sysdolphin/baselib/archive.c")
+set_target_properties(mu_preload_compaction_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+target_link_libraries(mu_preload_compaction_test PRIVATE game_flags)
+target_compile_options(mu_preload_compaction_test PRIVATE
+  -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables)
+target_link_options(mu_preload_compaction_test PRIVATE ${LOW_IMAGE_LINK_OPTIONS}
+  -Wl,--image-base,0x90000000 -Wl,--gc-sections)
+add_test(NAME native_preload_compaction COMMAND mu_preload_compaction_test)
+
 # Exercise the actual private sound-bank bookkeeping without disc/renderer dependencies.
 add_executable(mu_synth_bank_test EXCLUDE_FROM_ALL tests/synth_bank.c)
 set_target_properties(mu_synth_bank_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
