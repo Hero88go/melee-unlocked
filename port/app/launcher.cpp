@@ -53,6 +53,9 @@
 #include "launcher_trace_view.h"
 #include "launcher_lang.h"
 #include "launcher_crash_text.h"   // with launcher_crash_zip.h; launcher_crash.inl sits inside the namespace below
+#ifndef MELEE_NO_SLIPPI
+#include "slippi_account.h"
+#endif
 // Every message box shows in the player's language (fixed English wording is looked up).
 inline int mu_message_box(HWND owner, const wchar_t* text, const wchar_t* caption, UINT type) {
   return ::MessageBoxW(owner, launcher::lang::txw(text ? text : L"").c_str(),
@@ -306,51 +309,15 @@ bool verify_iso(const std::string& path, std::string* why) {
   return true;
 }
 
-// Slippi account: this folder's User\Slippi\user.json, else wherever the Slippi Launcher keeps it.
-//
-// Only one exact path used to be checked, %APPDATA%\Slippi Launcher\netplay\User\Slippi\user.json.
-// Where the netplay build lives is a setting in the Slippi Launcher and people move it to another
-// drive, so anyone whose install is elsewhere was told to log in when they already had. The folder
-// is searched now rather than assumed: read only, bounded depth, and it opens nothing but the one
-// filename it is looking for.
+// Use the game's account discovery and credential checks so this line reflects a usable login.
 #ifndef MELEE_NO_SLIPPI
-std::string find_user_json(const std::filesystem::path& root, int depth) {
-  std::error_code ec;
-  if (depth < 0 || !std::filesystem::is_directory(root, ec)) return {};
-  const std::filesystem::path direct = root / "User" / "Slippi" / "user.json";
-  if (file_exists(direct.string())) return direct.string();
-  std::filesystem::directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec);
-  if (ec) return {};
-  for (std::filesystem::directory_iterator end; it != end; it.increment(ec)) {
-    if (ec) { ec.clear(); continue; }
-    std::error_code kind;
-    if (!it->is_directory(kind) || kind) continue;
-    if (auto found = find_user_json(it->path(), depth - 1); !found.empty()) return found;
-  }
-  return {};
-}
-
 std::string slippi_account_line() {
-  std::vector<std::string> paths{g_dir + "\\User\\Slippi\\user.json"};
-  auto add_env = [&](const char* name) {
-    char* value = nullptr; size_t n = 0;
-    if (_dupenv_s(&value, &n, name) != 0 || !value) return;
-    const std::filesystem::path base = std::filesystem::path(value) / "Slippi Launcher";
-    free(value);
-    paths.push_back((base / "netplay" / "User" / "Slippi" / "user.json").string());
-    paths.push_back((base / "playback" / "User" / "Slippi" / "user.json").string());
-    if (auto found = find_user_json(base, 4); !found.empty()) paths.push_back(found);
-  };
-  add_env("APPDATA");
-  add_env("LOCALAPPDATA");
-  for (auto& p : paths) {
-    if (p.empty() || !file_exists(p)) continue;
-    std::ifstream f(p); auto j = nlohmann::json::parse(f, nullptr, false);
-    if (j.is_object() && j.value("connectCode",nlohmann::json()).is_string() && !j["connectCode"].get<std::string>().empty()) {
-      const auto name=j.value("displayName",std::string("?")), code=j["connectCode"].get<std::string>();
-      launcher::lobby::set_account(name,code);
-      return "Slippi account: " + name + " (" + code + ")";
-    }
+  if (auto profile = slippi::account::resolve(std::filesystem::path(g_dir) / "User" / "Slippi")) {
+    auto name = slippi::account::text(profile.data, "displayName");
+    if (name.empty()) name = "?";
+    const auto code = slippi::account::text(profile.data, "connectCode");
+    launcher::lobby::set_account(name, code);
+    return "Slippi account: " + name + " (" + code + ")";
   }
   launcher::lobby::set_account("", "");
   return "Slippi online needs an account: install the Slippi Launcher and log in once.";

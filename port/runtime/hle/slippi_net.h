@@ -114,7 +114,7 @@ struct UserInfo {
 class User {
  public:
   explicit User(std::string user_dir);
-  bool AttemptLogin();          // (re)reads user.json
+  bool AttemptLogin(bool rediscover = false);  // Log In rechecks shared launcher folders too.
   bool IsLoggedIn() const { return logged_in_; }
   UserInfo GetUserInfo() const { std::lock_guard<std::mutex> lock(mutex_); return info_; }
   void LogOut();
@@ -129,6 +129,8 @@ class User {
   void RefreshFromServer();
  private:
   std::string dir_;
+  std::string account_file_;
+  bool account_discovered_ = false;
   UserInfo info_;
   bool logged_in_ = false;
   mutable std::mutex mutex_;
