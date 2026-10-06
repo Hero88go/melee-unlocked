@@ -94,6 +94,23 @@ target_link_libraries(mu_content_transition_test PRIVATE game_flags)
 target_include_directories(mu_content_transition_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 add_test(NAME native_content_transition COMMAND mu_content_transition_test)
 
+set(CREDITS_PARTICLE_FUNCTION "${CMAKE_CURRENT_BINARY_DIR}/credits_particle_function.h")
+add_custom_command(OUTPUT "${CREDITS_PARTICLE_FUNCTION}"
+  COMMAND "${CONTENT_TEST_PYTHON}" "${REPO}/tools/native_major_fixture.py"
+    "${D}/src/melee/gm/gmstaffroll.c" "${CREDITS_PARTICLE_FUNCTION}" --function gm_801AB200_ptcl
+  DEPENDS "${REPO}/tools/native_major_fixture.py" "${D}/src/melee/gm/gmstaffroll.c"
+  VERBATIM)
+foreach(credits_variant native console)
+  add_executable(mu_credits_${credits_variant}_test EXCLUDE_FROM_ALL
+    tests/credits_particle.c "${CREDITS_PARTICLE_FUNCTION}")
+  set_target_properties(mu_credits_${credits_variant}_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+  target_include_directories(mu_credits_${credits_variant}_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  if(credits_variant STREQUAL "native")
+    target_compile_definitions(mu_credits_${credits_variant}_test PRIVATE MU_NATIVE)
+  endif()
+  add_test(NAME credits_particle_${credits_variant} COMMAND mu_credits_${credits_variant}_test)
+endforeach()
+
 if(NOT MU_NO_SLIPPI)   # tests the replay recording, which a MU_NO_SLIPPI tree does not have (option: see below)
 add_executable(mu_record_start_test tests/record_start.c)
 set_target_properties(mu_record_start_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)

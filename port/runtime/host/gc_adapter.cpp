@@ -53,6 +53,8 @@ bool g_logged_hid_fail = false;
 std::thread g_thread;
 std::atomic<bool> g_running{false};
 std::atomic<double> g_poll_rate_hz{0.0};
+std::atomic<bool> g_reset_requested{false};
+std::atomic<bool> g_resetting{false};
 std::mutex g_mutex;
 uint8_t g_report[37] = {};
 std::chrono::steady_clock::time_point g_report_time;
@@ -228,12 +230,22 @@ void writer_thread() {
   }
 }
 
-void close_adapter() {
+void close_adapter(bool reset_transport = false) {
   g_running.store(false);
   g_rumble_wake.notify_all();
   if (g_thread.joinable()) g_thread.join();
   if (g_writer.joinable()) g_writer.join();
   g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
+  for (auto& motor : g_rumble) motor.store(0);
+  g_rumble_dirty.store(false);
+  if (reset_transport && g_dev) {
+    // Both I/O threads have stopped before touching the device or its pipes.
+    const int rc = libusb_reset_device(g_dev);
+    log("gc adapter: USB reset %s; reopening the connection", libusb_error_name(rc));
+  } else if (reset_transport && g_hid != INVALID_HANDLE_VALUE) {
+    if (!HidD_FlushQueue(g_hid))
+      log("gc adapter: HID queue flush failed (%lu); reopening the connection", GetLastError());
+  }
   if (g_dev) {
     if (g_claimed) libusb_release_interface(g_dev, g_iface);
     libusb_close(g_dev);
@@ -402,15 +414,33 @@ std::thread g_scanner;
 std::atomic<bool> g_scanner_run{false};
 std::mutex g_scanner_mutex;
 std::condition_variable g_scanner_wake;
+std::once_flag g_scanner_started;
+
+void scanner_thread();
+
+void ensure_scanner_started() {
+  std::call_once(g_scanner_started, [] {
+    g_scanner_run.store(true);
+    g_scanner = std::thread(scanner_thread);
+  });
+}
 
 void scanner_thread() {
   while (g_scanner_run.load()) {
-    if (!adapter_open() || !g_running.load()) {
+    if (g_reset_requested.exchange(false)) {
+      log("gc adapter: resetting the connection and controller origins");
+      close_adapter(true);
+      g_logged_missing = false;
+      g_logged_hid_fail = false;
+      open_adapter();
+      g_resetting.store(false);
+    } else if (!adapter_open() || !g_running.load()) {
       if (adapter_open() && !g_running.load()) close_adapter();
       open_adapter();
     }
     std::unique_lock<std::mutex> lock(g_scanner_mutex);
-    g_scanner_wake.wait_for(lock, std::chrono::seconds(2), [] { return !g_scanner_run.load(); });
+    g_scanner_wake.wait_for(lock, std::chrono::seconds(2),
+                           [] { return !g_scanner_run.load() || g_reset_requested.load(); });
   }
 }
 
@@ -420,17 +450,36 @@ double gcadapter_poll_rate_hz() {
   return g_poll_rate_hz.load(std::memory_order_relaxed);
 }
 
+bool gcadapter_reset_pending() {
+  return g_resetting.load();
+}
+
+bool gcadapter_request_reset() {
+  if (options.no_gc_adapter) return false;
+  ensure_scanner_started();
+  std::lock_guard<std::mutex> scanner_lock(g_scanner_mutex);
+  if (!g_scanner_run.load() || g_resetting.exchange(true)) return false;
+  {
+    std::lock_guard<std::mutex> report_lock(g_mutex);
+    g_have_report = false;
+    for (auto& origin : g_origin) origin.set = false;
+  }
+  g_poll_rate_hz.store(0.0, std::memory_order_relaxed);
+  g_reset_requested.store(true);
+  g_scanner_wake.notify_one();
+  return true;
+}
+
 // Fills ports that have a controller plugged into the adapter; returns the mask of those ports.
 uint32_t gcadapter_poll(PadState out[4]) {
-  if (options.no_gc_adapter) return 0;
-  static std::once_flag started;
-  std::call_once(started, [] { g_scanner_run.store(true); g_scanner = std::thread(scanner_thread); });
+  if (options.no_gc_adapter || g_resetting.load()) return 0;
+  ensure_scanner_started();
   auto now = std::chrono::steady_clock::now();
   if (!g_running.load()) return 0;
   uint8_t rep[37];
   // Held for the whole report: the scanner thread resets the origins under it when the adapter closes.
   std::lock_guard<std::mutex> lk(g_mutex);
-  if (!g_have_report) return 0;
+  if (g_resetting.load() || !g_have_report) return 0;
   std::memcpy(rep, g_report, 37);
   {
     TickTiming& tick = tick_timing();
@@ -478,6 +527,7 @@ void gcadapter_recalibrate(int port) {
 
 void gcadapter_rumble(int port, bool on) {
   if (port < 0 || port > 3) return;
+  if (g_resetting.load()) on = false;
   uint8_t v = on ? 1 : 0;
   if (g_rumble[port] != v) { g_rumble[port] = v; g_rumble_dirty = true; g_rumble_wake.notify_one(); }
 }
@@ -489,6 +539,8 @@ void gcadapter_shutdown() {
     g_scanner.join();
   }
   close_adapter();
+  g_reset_requested.store(false);
+  g_resetting.store(false);
   if (g_ctx) { libusb_exit(g_ctx); g_ctx = nullptr; }
 }
 

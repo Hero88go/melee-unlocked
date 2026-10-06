@@ -7258,6 +7258,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       else settings_hint("Adapter polling rate: --");
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Incoming USB reports per second, shared by all four adapter sockets.\nThe game reads controller state once per frame.");
+      const bool resetting = host::gcadapter_reset_pending();
+      ImGui::BeginDisabled(resetting);
+      if (ImGui::Button(resetting ? "Resetting adapter..." : "Reset GameCube adapter"))
+        host::gcadapter_request_reset();
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Reopens the USB connection and recalibrates all four sockets.\nRelease buttons, sticks and triggers first. Use if inputs stick or the polling rate drops.");
       ImGui::Spacing();
     }
 

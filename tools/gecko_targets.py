@@ -1218,7 +1218,7 @@ def main():
     summary(symbols, args.list)
     stale = False
     for path, text in ((OUT_GAME, game_table(symbols)), (OUT_HOST, host_table(symbols))):
-        current = path.read_bytes().decode("utf-8") if path.exists() else None
+        current = path.read_text(encoding="utf-8") if path.exists() else None
         if current == text:
             continue
         if args.check:

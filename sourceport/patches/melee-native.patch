@@ -100656,7 +100656,7 @@ index 8e0598191..26666f3f9 100644
  
  void gm_Mode_SlowMo_OnLoad(void)
 diff --git a/src/melee/gm/gmstaffroll.c b/src/melee/gm/gmstaffroll.c
-index e59ae8095..764805027 100644
+index e59ae8095..81f85a202 100644
 --- a/src/melee/gm/gmstaffroll.c
 +++ b/src/melee/gm/gmstaffroll.c
 @@ -81,7 +81,7 @@ struct gm_804D6804_t {
@@ -100718,8 +100718,32 @@ index e59ae8095..764805027 100644
  {
      int i;
      HSD_GObj_803910D8(gobj, code);
-@@ -730,22 +730,22 @@ static inline void gm_801AB200_ptcl(s32 idx, GXColor* color)
+@@ -723,31 +723,48 @@ static inline void gm_801AB200_SetAppSRT(HSD_psAppSRT* appsrt, HSD_JObj* jobj)
+ 
+ static inline void gm_801AB200_ptcl(s32 idx, GXColor* color)
+ {
+-    HSD_JObj* jobj;
++    HSD_JObj* jobj = NULL;
+     StaffRollPtclNode* p;
+ 
+     if (idx < 7) {
          lb_80011E24(gm_804D682C, &jobj, gm_803DD1C8[idx], -1);
++#ifdef MU_NATIVE
++        /* Native particle setup can leave the credits highlight without a node.
++         * Only its color update is optional; the rest of the staff roll keeps running. */
++        p = jobj ? (StaffRollPtclNode*) jobj->u.ptcl : NULL;
++        if (!p) return;
++        int links = idx == 0 ? 3 : ((unsigned) (idx - 2) <= 1u ? 1 : 0);
++        while (links-- > 0) {
++            p = DP(p->x4.ptr);
++            if (!p) return;
++        }
++        p = DP(p->x8);
++        if (!p) return;
++        p = DP(p->xC);
++        if (!p) return;
++        p->x4.color = *(s32*) color;
++#else
          if (idx == 0) {
              p = (StaffRollPtclNode*) jobj->u.ptcl;
 -            p = p->x4.ptr;
@@ -100750,8 +100774,11 @@ index e59ae8095..764805027 100644
 +            p = DP(p->xC);
              p->x4.color = *(s32*) color;
          }
++#endif
      } else {
-@@ -1211,8 +1211,9 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
+         staffInfo[idx].win[0]->active_color = *color;
+         staffInfo[idx].win[1]->active_color = *color;
+@@ -1211,8 +1228,9 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
  
      efLib_Init();
      efAsync_LoadSync(0);
@@ -100763,7 +100790,7 @@ index e59ae8095..764805027 100644
      HSD_SisLib_803A62A0(0, "SdStRoll.dat", "SIS_StRollData");
      HSD_SisLib_803A611C(0, (HSD_GObj*) -1, 9, 13, 0, 18, 0, 19);
      lbAudioAx_80026F2C(28);
-@@ -1220,15 +1221,15 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
+@@ -1220,15 +1238,15 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
      lbAudioAx_80027168();
      gm_804D683C = lbArchive_80016DBC(
          "GmStRoll.dat", &gm_804D6840, "ScGamRegStaffroll_scene_data",
@@ -100782,7 +100809,7 @@ index e59ae8095..764805027 100644
          HSD_CObjReqAnim(cobj, 0.0F);
          HSD_GObj_SetupProc(gobj, fn_801AA7F8, 0);
      }
-@@ -1243,7 +1244,7 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
+@@ -1243,7 +1261,7 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
      {
          HSD_LObj* lobj;
          HSD_GObj* gobj = GObj_Create(gx_link, 3, 0);
@@ -100791,7 +100818,7 @@ index e59ae8095..764805027 100644
          HSD_GObjObject_80390A70(gobj, HSD_GObj_LightKind, lobj);
          GObj_SetupGXLink(gobj, HSD_GObj_LObjCallback, 0, 0);
          HSD_LObjReqAnimAll(lobj, 0.0F);
-@@ -1252,21 +1253,21 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
+@@ -1252,21 +1270,21 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
      {
          HSD_Fog* fog;
          HSD_GObj* gobj = GObj_Create(0xA, 3, 0);
@@ -100817,7 +100844,7 @@ index e59ae8095..764805027 100644
          HSD_JObjReqAnimAll(jobj, 0.0F);
          {
              if (lbLang_IsSettingUS()) {
-@@ -1281,16 +1282,16 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
+@@ -1281,16 +1299,16 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
          HSD_JObj* temp_jobj;
          HSD_GObj* gobj = GObj_Create(14, 15, 0);
          HSD_JObj* jobj;
@@ -100838,7 +100865,7 @@ index e59ae8095..764805027 100644
                  HSD_JObjReqAnimAll(temp_jobj, 0.0F);
                  while (temp_jobj->child != NULL) {
                      HSD_JObjReparent(temp_jobj->child, jobj);
-@@ -1301,10 +1302,10 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
+@@ -1301,10 +1319,10 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
      }
      {
          final_gobj = GObj_Create(14, 15, 0);
@@ -100851,7 +100878,7 @@ index e59ae8095..764805027 100644
          lb_80011E24(jobj, jobj_arr, ARRAY_SIZE(jobj_arr), 20, -1);
          HSD_JObjReqAnimAll(jobj_arr[0], 0.0F);
          HSD_JObjReqAnimAll(jobj_arr[1], 0.0F);
-@@ -1316,7 +1317,7 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
+@@ -1316,7 +1334,7 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
          lbAudioAx_80023F28(lbAudioAx_8002305C(gm_801BEFB0(), !-r));
          lbBgFlash_800209F4();
          gm_804D6804.x0 = gm_804D6804.x4 = 0.0F;
@@ -100860,7 +100887,7 @@ index e59ae8095..764805027 100644
          gm_80480D58[0] = 0;
          gm_80480D58[1] = 0;
          gm_80480D58[2] = 0;
-@@ -1336,3 +1337,11 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
+@@ -1336,3 +1354,11 @@ void gm_Scene_StaffRoll_OnEnter(void* unused)
  }
  
  void gm_Scene_StaffRoll_OnExit(void* unused) {}
