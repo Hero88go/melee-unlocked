@@ -29,13 +29,14 @@
 // user_gecko.cpp). Any other code is listed with the reason, naming the function
 // or variable it touches, and cannot be switched on: one that writes or injects PowerPC (C0, C2,
 // C6), follows a pointer read from game memory (40, 48), loops or jumps (60 to 68), or compares
-// registers (A0 to AE). C2 injections and the other handler-only types cannot run on the Static
-// Recomp either. The codes Slippi ships, and the port's own (widescreen, PAL stock icons, screen
+// registers (A0 to AE). Static Recomp instead runs the shipped console handler in reserved guest
+// memory, including assembly injections, pointers, loops, searches and register operations.
+// Changed functions execute their RAM instructions. Source never links this runner.
+// The codes Slippi ships, and the port's own (widescreen, PAL stock icons, screen
 // shake), are translated in and do not come from this file; a code made only of their patches is
 // shown as built in (native_equivalent).
 //
-// Every code changes the game, so an online match only stays in sync when both players run the
-// same ones. The panel says so whenever any code is on.
+// Imported codes run offline only and are suspended during online sessions and replay playback.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
@@ -90,6 +91,13 @@ void set_native_writer(NativeWrite write);
 // is then switched off with that reason the first time it would run.
 using NativeRead = int32_t (*)(uint32_t console_addr, uint8_t* big_endian_bytes, uint32_t length);
 void set_native_reader(NativeRead read);
+// Only the Static main installs these callbacks. Source never links the runner.
+using StaticRunner = void (*)(const std::vector<Code>&);
+using StaticReserve = uint32_t (*)();
+using StaticStart = void (*)(uint32_t, uint32_t);
+void set_static_runtime(StaticRunner run, StaticReserve reserve, StaticStart start);
+uint32_t static_memory_required();
+void static_memory_start(uint32_t address, uint32_t bytes);
 
 // Reads the file (missing is fine: no codes). `enabled_names` are the codes saved as on in the
 // settings file; until the panel has saved a choice (`chosen`), the file's [Gecko_Enabled] is used.

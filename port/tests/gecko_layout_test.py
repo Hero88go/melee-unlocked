@@ -3,6 +3,7 @@ Source Port accepts: which variables (tools/gecko_targets.py) and which code typ
 (tools/gecko_coverage.py, the rules port/runtime/host/user_gecko.cpp implements)."""
 
 import struct
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -15,6 +16,20 @@ import gecko_targets  # noqa: E402
 
 
 class GeckoLayoutTest(unittest.TestCase):
+    def test_results_upgrade_matches_new_generated_caves(self):
+        header = Path(__file__).resolve().parents[1] / "runtime/hle/offline_results_code_policy.h"
+        text = header.read_text()
+        save = int(re.search(r"kSaveNext = 0x([0-9A-Fa-f]+)u", text).group(1), 16)
+        restore = int(re.search(r"kRestoreNext = 0x([0-9A-Fa-f]+)u", text).group(1), 16)
+        codes = {lines[0][0]: lines for _, flag, lines in gecko.PORT_CODES if flag == "offline_results"}
+        self.assertEqual(codes[0xC21A5B00][1][1], save)
+        self.assertEqual(codes[0xC21A5B18][2][0], restore)
+
+    def test_mod_unlock_sites_match_generated_switches(self):
+        header = Path(__file__).resolve().parents[1] / "runtime/hle/unlock_code_policy.h"
+        addresses = {int(a, 16) for a in re.findall(r"case 0x([0-9A-Fa-f]+)u:", header.read_text())}
+        self.assertEqual(addresses, set(gecko.TWO_WAY_TEXT))
+
     def test_host_gated_port_codes_are_a_final_suffix(self):
         normal = gecko.GeckoCode("normal")
         normal.enabled = True

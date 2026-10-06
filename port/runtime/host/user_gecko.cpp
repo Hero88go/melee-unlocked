@@ -21,6 +21,9 @@ namespace {
 std::string g_path;
 std::vector<Code> g_codes;
 bool g_code_patches_allowed = false;
+StaticRunner g_static_run = nullptr;
+StaticReserve g_static_reserve = nullptr;
+StaticStart g_static_start = nullptr;
 
 // The DOL's code sections (main.dol: .init and .text). A write there changes instructions the
 // translated code will never read.
@@ -490,6 +493,24 @@ void classify(Code& c) {
     if (!c.supported) { c.reason = compiler.fail; c.plan.clear(); c.plan_bytes.clear(); c.reads = false; }
     return;
   }
+  // The Static runner uses the console handler for every code type. Check only
+  // structural bounds here; dynamic base/pointer addresses belong to that handler.
+  if (g_static_run) {
+    if (c.lines.size() > 65536) { c.reason = "exceeds the 512 KB code limit"; return; }
+    for (size_t i = 0; i < c.lines.size(); ++i) {
+      const uint32_t type = c.lines[i].first >> 24, value = c.lines[i].second;
+      size_t extra = 0;
+      if ((type & 0xEEu) == 0x06u) extra = ((uint64_t)value + 7) / 8;
+      else if ((type & 0xEEu) == 0xC0u || (type & 0xEEu) == 0xC2u || (type & 0xEEu) == 0xC4u) extra = value;
+      else if ((type & 0xEEu) == 0x08u) extra = 1;
+      else if ((type & 0xFEu) == 0xF2u || (type & 0xFEu) == 0xF4u) extra = value & 0xFFu;
+      else if ((type & 0xFEu) == 0xF6u) extra = c.lines[i].first & 0xFFu;
+      if (extra > c.lines.size() - i - 1) { c.reason = "has a code block cut short"; return; }
+      i += extra;
+    }
+    c.supported = true;
+    return;
+  }
   for (size_t i = 0; i < c.lines.size(); ++i) {
     const uint32_t w = c.lines[i].first, v = c.lines[i].second;
     const uint32_t type = w >> 24;
@@ -575,6 +596,11 @@ void restore_original(Code& c) {
 void set_code_patches_allowed(bool allowed) { g_code_patches_allowed = allowed; }
 void set_native_writer(NativeWrite write) { g_native_write = write; }
 void set_native_reader(NativeRead read) { g_native_read = read; }
+void set_static_runtime(StaticRunner run, StaticReserve reserve, StaticStart start) {
+  g_static_run = run; g_static_reserve = reserve; g_static_start = start;
+}
+uint32_t static_memory_required() { return g_static_reserve ? g_static_reserve() : 0; }
+void static_memory_start(uint32_t address, uint32_t bytes) { if (g_static_start) g_static_start(address, bytes); }
 
 void load(const std::string& path, const std::vector<std::string>& enabled_names, bool chosen) {
   g_path = path;
@@ -728,6 +754,7 @@ bool save() {
 
 void apply() {
   if (!g_code_patches_allowed) { apply_native(); return; }   // the Source Port has no console memory to write
+  if (g_static_run) { g_static_run(g_codes); return; }
   for (Code& c : g_codes) {
     if (!c.enabled) { if (c.patch_live) restore_original(c); continue; }
     if (!c.patches_code) {

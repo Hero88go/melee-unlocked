@@ -2078,12 +2078,7 @@ std::string selection_key(const AssetRecord& asset) {
 
 // A stage archive's metadata names the arena, but the DAT names the exact disc resource.
 // Stadium's base and four transformations must stay separate, even when a ZIP contains all five.
-bool stage_dat_target(const std::string& filename, std::string* path, std::string* display) {
-  const std::string name = lower(filename.substr(filename.find_last_of("/\\") == std::string::npos ?
-                                              0 : filename.find_last_of("/\\") + 1));
-  if (name.size() < 7 || !dat_extension(name)) return false;
-  const std::string stem = name.substr(0, name.size() - 4);
-  static constexpr struct { const char* token; const char* path; const char* label; } resources[] = {
+static constexpr struct { const char* token; const char* path; const char* label; } kStageResources[] = {
       {"grps1", "GrPs1.dat", "Pokémon Stadium: Fire"},
       {"grps2", "GrPs2.dat", "Pokémon Stadium: Water"},
       {"grps3", "GrPs3.dat", "Pokémon Stadium: Rock"},
@@ -2095,21 +2090,48 @@ bool stage_dat_target(const std::string& filename, std::string* path, std::strin
       {"griz", "GrIz.dat", "Fountain of Dreams"},
       {"grst", "GrSt.dat", "Yoshi's Story"},
       {"grpu", "GrPu.dat", "Poké Floats"},
+      {"grbb", "GrBb.dat", "Big Blue"},
+      {"grcn", "GrCn.dat", "Corneria"},
+      {"grcs", "GrCs.dat", "Princess Peach's Castle"},
+      {"grfs", "GrFs.dat", "Fourside"},
+      {"grfz", "GrFz.dat", "Flat Zone"},
+      {"grgb", "GrGb.dat", "Great Bay"},
+      {"grgd", "GrGd.dat", "Jungle Japes"},
+      {"grgr", "GrGr.dat", "Green Greens"},
+      {"gri1", "GrI1.dat", "Mushroom Kingdom"},
+      {"gri2", "GrI2.dat", "Mushroom Kingdom II"},
+      {"grim", "GrIm.dat", "Icicle Mountain"},
+      {"grkg", "GrKg.dat", "Kongo Jungle"},
+      {"grkr", "GrKr.dat", "Brinstar Depths"},
+      {"grmc", "GrMc.dat", "Mute City"},
+      {"grok", "GrOk.dat", "Kongo Jungle (64)"},
+      {"grot", "GrOt.dat", "Onett"},
+      {"groy", "GrOy.dat", "Yoshi's Island (64)"},
+      {"grrc", "GrRc.dat", "Rainbow Cruise"},
+      {"grsh", "GrSh.dat", "Temple"},
+      {"grve", "GrVe.dat", "Venom"},
+      {"gryt", "GrYt.dat", "Yoshi's Island"},
+      {"grze", "GrZe.dat", "Brinstar"},
   };
-  size_t match_index = std::size(resources);
-  for (size_t i = 0; i < std::size(resources); ++i) {
-    const auto& resource = resources[i];
+bool stage_dat_target(const std::string& filename, std::string* path, std::string* display) {
+  const std::string name = lower(filename.substr(filename.find_last_of("/\\") == std::string::npos ?
+                                              0 : filename.find_last_of("/\\") + 1));
+  if (name.size() < 7 || !dat_extension(name)) return false;
+  const std::string stem = name.substr(0, name.size() - 4);
+  size_t match_index = std::size(kStageResources);
+  for (size_t i = 0; i < std::size(kStageResources); ++i) {
+    const auto& resource = kStageResources[i];
     const std::string token = resource.token;
     size_t pos = stem.find(token);
     if (pos == std::string::npos) continue;
     const size_t end = pos + token.size();
     if ((pos && std::isalnum((unsigned char)stem[pos - 1])) ||
         (end < stem.size() && std::isalnum((unsigned char)stem[end]))) continue;
-    if (match_index != std::size(resources)) return false; // never guess an ambiguous disc file
+    if (match_index != std::size(kStageResources)) return false; // never guess an ambiguous disc file
     match_index = i;
   }
-  if (match_index == std::size(resources)) return false;
-  *path = resources[match_index].path; *display = resources[match_index].label;
+  if (match_index == std::size(kStageResources)) return false;
+  *path = kStageResources[match_index].path; *display = kStageResources[match_index].label;
   return true;
 }
 
@@ -2992,6 +3014,21 @@ ImportResult install_vault_locked(const fs::path& source, VaultPlan plan,
   }
 
   bool profile_changed = false;
+  // A standalone stage import is an explicit choice, including when another
+  // variant or Vanilla was already selected. Vault refreshes keep existing choices.
+  if (resource_source_kind == "standalone_stage") {
+    for (const auto& resource : plan.resources) {
+      auto chosen = std::find_if(next_assets.begin(), next_assets.end(), [&](const AssetRecord& item) {
+        return item.source_id == resource.source_id && item.info.target_path == resource.target_path;
+      });
+      if (chosen == next_assets.end()) continue;
+      const std::string key = selection_key(*chosen);
+      if (next_profile.selections[key] != chosen->info.id) {
+        next_profile.selections[key] = chosen->info.id; profile_changed = true;
+      }
+      if (!next_profile.enabled) { next_profile.enabled = true; profile_changed = true; }
+    }
+  }
   for (const auto& touched : touched_targets) {
     if (!touched.second) continue;
     if (next_profile.selections.find(touched.first) != next_profile.selections.end()) continue;
@@ -3798,24 +3835,67 @@ void configure(const std::string& settings_path) {
 
 bool make_standalone_stage(const fs::path& source, const std::string& member,
                            std::vector<uint8_t> bytes, VaultResourcePlan* resource,
-                           std::string* error) {
-  const std::string filename = member.empty() ? path_filename_utf8(source) : member;
+                           std::string* error, const std::string& target_override = {}) {
+  const std::string filename = !target_override.empty() ? target_override :
+                              member.empty() ? path_filename_utf8(source) : member;
   if (!stage_dat_target(filename, &resource->target_path, &resource->slot)) {
     *error = "The stage DAT name does not identify a supported disc resource."; return false;
   }
   VisualLayout layout;
   if (!parse_visual_layout(bytes, &layout, error)) return false;
+  if (!target_override.empty() && std::find(layout.roots.begin(), layout.roots.end(), "map_head") == layout.roots.end()) {
+    *error = "This DAT has no stage map; choose a stage DAT rather than a costume or image file."; return false;
+  }
   const std::string digest = sha256(bytes);
   if (digest.empty()) { *error = "The stage DAT could not be hashed."; return false; }
   resource->source_id = "standalone-stage:" + resource->target_path + ":" + digest;
   resource->kind = "stage_visual";
   resource->display_name = path_filename_utf8(source.stem());
+  // Nucleus downloads use files.zip. Name its stage after the DAT so the
+  // selection shows the imported variant instead of an indistinguishable "files".
+  if (!member.empty() && (lower(resource->display_name) == "files" || lower(resource->display_name) == "download"))
+    resource->display_name = path_filename_utf8(fs::u8path(member).stem());
   if (resource->display_name.empty() || lower(resource->display_name) == lower(resource->target_path))
     resource->display_name = resource->slot + " import";
   resource->group = "Stages";
   resource->source_member = member;
   resource->bytes = std::move(bytes);
   return true;
+}
+
+std::vector<StageSlot> stage_slots() {
+  std::vector<StageSlot> result;
+  for (const auto& resource : kStageResources) result.push_back({resource.path, resource.label});
+  std::stable_sort(result.begin(), result.end(), [](const StageSlot& a, const StageSlot& b) { return a.name < b.name; });
+  return result;
+}
+
+ImportResult import_stage_dat(const std::string& path_text, const std::string& target_path) {
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    std::string readiness;
+    if (!mutable_profile_locked(&readiness)) return {false, false, {}, readiness};
+  }
+  const fs::path path = fs::u8path(path_text);
+  if (lower(path.extension().string()) != ".dat")
+    return {false, false, {}, "Choose a raw stage DAT file. ZIP archives use Import / Refresh."};
+  const auto slots = stage_slots();
+  if (std::none_of(slots.begin(), slots.end(), [&](const StageSlot& slot) { return slot.target_path == target_path; }))
+    return {false, false, {}, "Choose a supported stage to replace."};
+  VaultResourcePlan stage;
+  std::vector<uint8_t> bytes;
+  std::string error;
+  if (!read_bounded(path, kMaxAssetBytes, &bytes, &error) ||
+      !make_standalone_stage(path, {}, std::move(bytes), &stage, &error, target_path))
+    return {false, false, {}, error};
+  VaultPlan plan;
+  plan.resources.push_back(std::move(stage)); plan.stage_records = 1;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  ImportResult result = install_vault_locked(path, std::move(plan), "standalone_stage");
+  if (result.ok && std::atomic_load(&g_runtime)->initialized)
+    result.message += " Restart to apply the staged profile safely.";
+  g_message = result.message;
+  return result;
 }
 
 ImportResult import_file(const std::string& path_text) {

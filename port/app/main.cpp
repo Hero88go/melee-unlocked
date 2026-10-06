@@ -7,6 +7,9 @@
 #include <tlhelp32.h>
 #include <psapi.h>
 #include "host.h"
+#ifndef MELEE_SOURCE_PORT
+#include "static_gecko.h"
+#endif
 #include "ram_translator.h"
 #include "gecko_data.h"
 #include "render_observer.h"
@@ -1273,6 +1276,9 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
 int main(int argc, char** argv) { return guarded_main(argc, argv); }
 
 static int melee_main(int argc, char** argv) {
+#ifndef MELEE_SOURCE_PORT
+  user_gecko::install_static_runtime();
+#endif
   if (!cpu_has_avx2()) {
     const char* msg = "Melee Unlocked needs a CPU with AVX2 (Intel Haswell 2013 or newer, AMD Ryzen or newer). This CPU does not support it.";
     std::fprintf(stderr, "%s\n", msg);
