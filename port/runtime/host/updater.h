@@ -25,4 +25,6 @@ void shutdown();                                  // joins the background thread
 // release lists ("" = none listed, size check only), and every archive entry inside `root`.
 bool download_matches(const std::string& body, const std::string& sha256_hex);
 bool archive_inside(const std::string& zip_path_utf8, const std::string& root);
+// Game processes from this installation that must close before replacement.
+std::vector<unsigned long> install_processes(const std::string& install_root_utf8);
 }  // namespace host::updater

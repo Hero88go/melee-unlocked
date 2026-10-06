@@ -17,7 +17,10 @@ enum MuLcancelFlashMode {
     MU_LCFLASH_MU_MISSED = 1,
     MU_LCFLASH_TE_MISSED = 2,
     MU_LCFLASH_TE_SUCCESS = 3,
-    MU_LCFLASH_TE_BOTH = 4
+    MU_LCFLASH_TE_BOTH = 4,
+    /* Append so existing settings and TE recordings keep their numeric meaning. */
+    MU_LCFLASH_MU_SUCCESS = 5,
+    MU_LCFLASH_MU_BOTH = 6
 };
 enum MuLcancelSuccessColor {
     MU_LCFLASH_SUCCESS_OFF = 0,
@@ -32,14 +35,23 @@ enum MuLcancelSuccessColor {
 #endif
 
 /* Old recordings have only TE_ENABLE: preserve their existing white success and red miss. */
-MU_LCFLASH_INLINE int mu_lcancel_flash_mode(unsigned int word, int renderer_on)
+MU_LCFLASH_INLINE int mu_lcancel_renderer_mode(int mode)
+{
+    return mode == MU_LCFLASH_MU_MISSED || mode == MU_LCFLASH_MU_SUCCESS || mode == MU_LCFLASH_MU_BOTH;
+}
+MU_LCFLASH_INLINE int mu_lcancel_renderer_reports(int mode, int success)
+{
+    return success ? mode == MU_LCFLASH_MU_SUCCESS || mode == MU_LCFLASH_MU_BOTH
+                   : mode == MU_LCFLASH_MU_MISSED || mode == MU_LCFLASH_MU_BOTH;
+}
+MU_LCFLASH_INLINE int mu_lcancel_flash_mode(unsigned int word, int renderer_mode)
 {
     if (word & MU_LCFLASH_TE_ENABLE) {
         if (word & MU_LCFLASH_TE_MISS_ONLY) return MU_LCFLASH_TE_MISSED;
         if (word & MU_LCFLASH_TE_SUCCESS_ONLY) return MU_LCFLASH_TE_SUCCESS;
         return MU_LCFLASH_TE_BOTH;
     }
-    return renderer_on ? MU_LCFLASH_MU_MISSED : MU_LCFLASH_OFF;
+    return mu_lcancel_renderer_mode(renderer_mode) ? renderer_mode : MU_LCFLASH_OFF;
 }
 MU_LCFLASH_INLINE int mu_lcancel_success_color(unsigned int word)
 {

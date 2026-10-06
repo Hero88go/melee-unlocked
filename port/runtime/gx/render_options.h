@@ -159,6 +159,8 @@ struct RenderOptions {
   // MU_GAME_OPTION3_LOCKED_CONTENT (shim/mu_gecko.c mu_unlock_all).
   bool unlock_all = true;
   static bool& live_unlock_all() { static bool value = true; return value; }
+  bool offline_delay = false;
+  static bool& live_offline_delay() { static bool value = false; return value; }
   // 20XX Hack Pack training options for CPUs (Game tab, Source Port only, offline only), native in
   // shim/mu_20xx_cpu.c. Plain options like "20XX CPUs": no pack or save needed. They go to the game
   // packed in option word 3 (MU_GAME_OPTION3_CPU_*, host API 17) and into a replay as "muOptions3".

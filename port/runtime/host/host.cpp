@@ -4,6 +4,7 @@
 #include "audio.h"
 #include "cosmetic_mods.h"
 #include "mod_profile.h"
+#include "user_gecko.h"
 #include "memory_range.h"
 #include "guest_heap_trace.h"
 #include <windows.h>
@@ -971,8 +972,12 @@ void boot_setup() {
   wr32(0x80000038, fst_addr);
   g_fst_addr = fst_addr;
   wr32(0x8000003C, g_fst_max);
-  wr32(0x80000034, fst_addr);                        // arena hi
-  log("boot: FST %u bytes at %08X (max %X), arena hi %08X", g_fst_size, fst_addr, g_fst_max, fst_addr);
+  const uint32_t gecko_bytes = user_gecko::static_memory_required();
+  const uint32_t gecko_address = gecko_bytes ? (fst_addr - gecko_bytes) & ~0xFFFFu : 0;
+  wr32(0x80000034, gecko_bytes ? gecko_address : fst_addr); // arena hi
+  if (gecko_bytes) user_gecko::static_memory_start(gecko_address, fst_addr - gecko_address);
+  log("boot: FST %u bytes at %08X (max %X), arena hi %08X", g_fst_size, fst_addr, g_fst_max,
+      gecko_bytes ? gecko_address : fst_addr);
   install_gecko_boot();
   if (g_mod_disc) apply_mod_code();
   // MELEE_TEST_INTERPRET=<addr>[,<addr>...]: run those functions in the interpreter on any disc, so

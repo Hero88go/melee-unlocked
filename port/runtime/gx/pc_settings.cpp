@@ -1875,6 +1875,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.settings_open = false;
   options.cpu_20xx = false;   // a file without the key: off
   options.unlock_all = true;   // a file without the key: on
+  options.offline_delay = false;
   options.cpu_tech = options.cpu_getup = options.cpu_di = options.cpu_sdi = 0;   // files without the keys: off
   options.cpu_no_taunt = options.cpu_lcancel = options.cpu_no_rapid_jab = options.cpu_no_transform = false;
   options.mod_choices.clear();
@@ -1941,6 +1942,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "audio_buffer_ms") options.audio_buffer_ms = std::clamp(std::stoi(value), 5, 120);
       else if (key == "quickchat") slippi::online::config().chat = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "onlinedelay") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 9) slippi::online::config().delay = d; }
+      else if (key == "offline_delay") options.offline_delay = value == "1";
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "showfps") options.show_fps = value == "1";
       else if (key == "showvram") options.show_vram = value == "1";
@@ -1990,7 +1992,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       if (!matched) {
       if (key == "inputoverlaystick") options.input_overlay_stick = std::clamp(std::atoi(value.c_str()), 1, 10);
       else if (key == "lcancelindicator") lcancel::set_indicator(value == "1");
-      else if (key == "lcancel_flash_mode") saved_lcancel_flash = std::clamp(std::stoi(value), 0, 4);
+      else if (key == "lcancel_flash_mode") saved_lcancel_flash = std::clamp(std::stoi(value), 0, 6);
       else if (key == "lcancel_success_flash") saved_lcancel_success = std::clamp(std::stoi(value), 0, 2);
       else if (key == "autolcancel") lcancel::set_automatic(value == "1");
       else if (key == "palstockicons") gecko::option_pal_stock_icons = value == "1";
@@ -2190,13 +2192,14 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   if (options.te_options2 & 0x800000u) { options.cpu_20xx = true; options.te_options2 &= ~0x800000u; }
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
   RenderOptions::live_unlock_all() = options.unlock_all;
+  RenderOptions::live_offline_delay() = options.offline_delay;
   host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
   RenderOptions::live_cpu_training() = options.cpu_training_word();
   // Explicit new choices win over legacy keys regardless of their order in the file. A legacy
   // TE_ENABLE alone remains both flashes, white success and red miss, including old recordings.
   if (saved_lcancel_flash >= 0) {
     options.te_options2 = mu_lcancel_with_flash_mode(options.te_options2, saved_lcancel_flash);
-    lcancel::set_indicator(saved_lcancel_flash == MU_LCFLASH_MU_MISSED);
+    lcancel::set_flash_mode(saved_lcancel_flash);
   } else if (options.te_options2 & MU_LCFLASH_TE_ENABLE) lcancel::set_indicator(false);
   if (saved_lcancel_success >= 0)
     options.te_options2 = mu_lcancel_with_success_color(options.te_options2, saved_lcancel_success);
@@ -3227,6 +3230,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
        << "\nonlinedelay " << slippi::online::config().delay
+       << "\noffline_delay " << (options.offline_delay ? 1 : 0)
        << "\nquickchat " << slippi::online::config().chat
        << "\nautoopenoverlay " << (options.settings_open ? 1 : 0)
        // Read since it was added and never written, so hiding the reminder lasted one session.
@@ -3269,7 +3273,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nlowspec_prev_effects " << options.low_spec_previous.effects_level
        << "\nlowspec_prev_dlss " << options.low_spec_previous.dlss_mode
        << "\nlowspec_prev_subframe " << (options.low_spec_previous.subframe == SubFrameMode::Off ? 0 : options.low_spec_previous.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1)
-       << "\nlcancel_flash_mode " << mu_lcancel_flash_mode(options.te_options2, lcancel::indicator_enabled())
+       << "\nlcancel_flash_mode " << mu_lcancel_flash_mode(options.te_options2, lcancel::flash_mode())
        << "\nlcancel_success_flash " << mu_lcancel_success_color(options.te_options2)
        << "\nlcancelindicator " << (lcancel::indicator_enabled() ? 1 : 0)
        << "\nautolcancel " << (lcancel::automatic_enabled() ? 1 : 0)
@@ -3403,25 +3407,26 @@ static void engine_only_reason(const char* format, ...) {
 // One display choice on Game, Mods and the built-in codes page. TE choices use its native
 // effect; the MU choice stays in the renderer and is safe online. Locked TE choices stay locked.
 static bool settings_lcancel_flash(RenderOptions& options) {
-  static const char* modes[] = {"Off", "MU: missed (red)", "TE: missed (red)", "TE: success", "TE: both"};
+  static const char* modes[] = {"Off", "MU: missed (red)", "TE: missed (red)", "TE: success", "TE: both",
+                               "MU: success (green)", "MU: both (red / green)"};
   const bool have_te = options.native_source && source_port::mods::status().te_owned;
   const bool locked = have_te && (options.te_options2 & kTeLockSettings) != 0;
-  int mode = mu_lcancel_flash_mode(options.te_options2, lcancel::indicator_enabled());
+  int mode = mu_lcancel_flash_mode(options.te_options2, lcancel::flash_mode());
   bool changed = false;
-  ImGui::BeginDisabled(locked);
   if (ImGui::BeginCombo("L-cancel flash", modes[mode])) {
-    for (int i = 0; i < 5; ++i) {
-      const bool unavailable = i >= MU_LCFLASH_TE_MISSED && !have_te;
-      ImGui::BeginDisabled(unavailable);
+    for (int i : {0, 1, 5, 6, 2, 3, 4}) {
+      const bool te_mode = i >= MU_LCFLASH_TE_MISSED && i <= MU_LCFLASH_TE_BOTH;
+      const bool unavailable = te_mode && !have_te;
+      ImGui::BeginDisabled(unavailable || (te_mode && locked));
       if (ImGui::Selectable(modes[i], i == mode)) {
         mode = i;
         options.te_options2 = mu_lcancel_with_flash_mode(options.te_options2, mode);
         RenderOptions::live_te_options2() = options.te_options2;
-        if (mode >= MU_LCFLASH_TE_MISSED) {
+        if (te_mode) {
           options.te_options |= 0x10;  // Selecting a TE effect also enables its feature master.
           RenderOptions::live_te_options() = options.te_options;
         }
-        lcancel::set_indicator(mode == MU_LCFLASH_MU_MISSED);
+        lcancel::set_flash_mode(mode);
         changed = true;
       }
 #ifdef MELEE_NO_SLIPPI   // one engine: only the save can be missing
@@ -3431,17 +3436,21 @@ static bool settings_lcancel_flash(RenderOptions& options) {
       if (unavailable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Requires the Source Port and a loaded 20XX TE save.");
 #endif
+      if (te_mode && locked && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Unlock 20XX TE settings before selecting a TE effect.");
       ImGui::EndDisabled();
     }
     ImGui::EndCombo();
   }
   if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-    ImGui::SetTooltip("MU: red on a miss, rendered outside the game; safe online.\n"
+    ImGui::SetTooltip("MU: red on a miss, green on success, or both. Works on both engines without 20XX TE.\n"
+                      "Rendered outside the game; safe online.\n"
                       "TE: the game's own effect, offline and outside Tournament Mode or TM-CE exercises.\n"
                       "TE success and missed are separate choices; Both combines them.\n"
                       "The same choice appears on Game, Mods and the built-in codes page.%s",
-                      locked ? "\nUnlock 20XX TE settings before changing this." : "");
+                      locked ? "\n20XX TE effects are locked; MU effects remain available." : "");
   if (mode == MU_LCFLASH_TE_SUCCESS || mode == MU_LCFLASH_TE_BOTH) {
+    ImGui::BeginDisabled(locked);
     int color = mu_lcancel_success_color(options.te_options2);
     static const char* colors[] = {"Off", "White", "Green"};
     if (settings_combo("Success flash", &color, colors, 3)) {
@@ -3452,8 +3461,8 @@ static bool settings_lcancel_flash(RenderOptions& options) {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       ImGui::SetTooltip("Color on a successful L-cancel. Off leaves missed flashes unchanged.\n"
                         "White is TE's original success color; Green changes only the color.");
+    ImGui::EndDisabled();
   }
-  ImGui::EndDisabled();
   return changed;
 }
 
@@ -6184,6 +6193,30 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                             "A portrait or stock icon PNG works too when its name says the costume\n"
                             "(\"Fox Green.png\", \"PlFxGr stock.png\"), alone or as a ZIP of pictures.");
         ImGui::SameLine();
+        static std::string stage_dat_path;
+        static int stage_dat_target = 0;
+        if (ImGui::Button("Add stage DAT...")) {
+          stage_dat_path = host::cosmetics::choose_import_file();
+          if (!stage_dat_path.empty()) ImGui::OpenPopup("Import stage DAT");
+        }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Import a raw stage DAT with any filename. Choose which stage it replaces; no ZIP is required.");
+        if (ImGui::BeginPopupModal("Import stage DAT", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+          static const auto slots = host::cosmetics::stage_slots();
+          std::vector<const char*> names;
+          for (const auto& slot : slots) names.push_back(slot.name.c_str());
+          ImGui::TextWrapped("Choose the stage this DAT replaces. Full custom stages are available offline.");
+          ImGui::SetNextItemWidth(280.f);
+          settings_combo("Stage to replace", &stage_dat_target, names.data(), (int)names.size());
+          if (ImGui::Button("Import stage")) {
+            mod_message = host::cosmetics::import_stage_dat(stage_dat_path, slots[stage_dat_target].target_path).message;
+            ImGui::CloseCurrentPopup();
+          }
+          ImGui::SameLine();
+          if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
+          ImGui::EndPopup();
+        }
+        ImGui::SameLine();
         // A portrait or stock icon for one costume, with no costume file: the player picks the costume.
         if (ImGui::Button("Add portrait...")) ImGui::OpenPopup("add_portrait");
         if (ImGui::IsItemHovered())
@@ -6864,6 +6897,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Frames of your own input held back before the game uses it, as in Slippi Dolphin.\n"
                           "Higher means fewer rollbacks on a bad connection and more input lag.\n"
                           "2 is Slippi's default. Takes effect from the next online match.");
+      ImGui::SameLine();
+      if (settings_toggle("Also use offline", &options.offline_delay)) {
+        RenderOptions::live_offline_delay() = options.offline_delay;
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Use this frame delay in all offline gameplay, including VS, Training and 1P modes.\n"
+                          "Both engines. Menus and replay playback keep their normal input.\n"
+                          "Online matches use Frame delay regardless of this checkbox.");
       // A player ran at 3 without knowing and reported the game as feeling slow. The cost is
       // shown whenever the value is above the default; the tooltip alone is not seen on a controller.
       if (delay > 2)
@@ -7587,17 +7629,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (gecko_add_code_button()) changed = true;
       } else if (state.active_tab == 6) {
     // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
-    // Always shown: a code the other player does not have desyncs the match.
-    ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.25f, 1.0f), "WARNING: Gecko codes can cause DESYNCS online.");
-    ImGui::TextWrapped("Codes change the game itself. Online, both players need exactly the same codes switched on, "
-                       "or the match falls out of sync. Switch codes off before playing online unless your opponent has them too.");
+    ImGui::TextWrapped("Imported Gecko codes run offline. They are suspended online and during replay playback.");
+    settings_hint("Restart the game after importing codes so they can run. Use codes for Melee NTSC 1.02; "
+                  "codes for another revision or conflicting mods may not work.");
     ImGui::Separator();
     ImGui::TextUnformatted("Your codes");
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Your own codes, in Dolphin's format, from:\n%s\n"
-                        "Codes that write work. On the Static Recomp that includes writes into the game's\n"
-                        "code (the functions they change run from memory). C2 injections cannot run and\n"
-                        "are shown greyed out, as are code patches on the Source Port.",
+                        "Static Recomp runs the console Gecko handler, including C0/C2 assembly,\n"
+                        "pointers, conditions, loops and register operations.\n"
+                        "Source Port supports compatible game-variable codes and native equivalents.",
                         user_gecko::path().c_str());
     if (user_gecko::codes().empty()) {
       settings_hint("No codes yet. Paste one below, or put a GeckoCodes.ini next to port-settings.ini.");
@@ -7615,8 +7656,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           std::string tip;
           for (const std::string& n : c.notes) tip += n + "\n";
           if (!c.supported) tip += "Cannot run here: this code " + c.reason + ".";
-          else if (c.patches_code) tip += "Changes the game's code: the functions it touches run from memory.\nDesyncs online unless your opponent runs it too.";
-          else tip += "Desyncs online unless your opponent runs it too.";
+          else tip += "Runs offline only. Restart after importing new codes.";
           ImGui::SetTooltip("%s", tip.c_str());
         }
         ImGui::PopID();

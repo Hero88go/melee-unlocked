@@ -100,6 +100,10 @@ void configure(const std::string& settings_path);
 // character variants commit as one transaction; supported project stages/effects remain subject to
 // their fail-closed runtime validation policies.
 ImportResult import_file(const std::string& path);
+struct StageSlot { std::string target_path, name; };
+std::vector<StageSlot> stage_slots();
+// A raw stage DAT with a custom filename: the user chooses which stage it replaces.
+ImportResult import_stage_dat(const std::string& path, const std::string& target_path);
 
 // A portrait (the character select picture) or a stock icon for one costume slot, imported on its
 // own with no costume file. It is a catalog entry of its own (kind character_portrait, target

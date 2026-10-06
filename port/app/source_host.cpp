@@ -35,6 +35,8 @@
 #include "render_options.h"
 #include "training_overlay.h"
 #include "lcancel.h"
+#include "offline_input_delay.h"
+#include "disc_archive.h"
 #include "user_gecko.h"
 #include "mu_host.h"
 #include "ppc.h"
@@ -1683,6 +1685,14 @@ void h_pad_read(MuPadStatus out[4]) {
   host::PadState pads[4];
   host::input_poll(pads);
   lcancel::apply(pads);   // auto L-cancel, upstream of the game exactly as in the recompiled build
+  bool offline_gameplay = false;
+  if (gx::RenderOptions::live_offline_delay() && !g_replaying &&
+      slippi::online::session_mode() < 0 && g_game.lcancel_view) {
+    MuLcancelView view{};
+    g_game.lcancel_view(&view);
+    for (const auto& fighter : view.port) offline_gameplay |= fighter.present != 0;
+  }
+  host::offline_delay::apply(pads, offline_gameplay);
   // The player's data-only Gecko codes, once per frame. Offline only: the writer in the game
   // library also refuses during an online match, whichever kind.
   if (slippi::online::session_mode() < 0 && !g_replaying) user_gecko::apply();
@@ -2899,6 +2909,21 @@ int run(void (*shutdown)(int)) {
   // Tests only: 20XX TE's features without mounting its save (its menu memory changes scripted runs).
   if (std::getenv("MELEE_TEST_TE_OWNED")) mods::status().te_owned = true;
   if (!read_fst()) host::die("this disc image has no readable file table. Use a clean, uncompressed Melee NTSC 1.02 ISO (a trimmed or compressed image will not work)");
+  // A readable FST and retail DOL do not prove that the disc's assets exist. A damaged image can
+  // have zero-filled file extents, which otherwise reach lbArchive_InitializeDAT during boot.
+  // Check the first required archive on the disc before building menus or entering the game DLL.
+  {
+    const auto rumble = g_paths.find("/lbrb.dat");
+    if (rumble == g_paths.end() || g_fst[rumble->second].dir)
+      host::die("The game ISO is missing LbRb.dat. Select a fresh, uncompressed Melee NTSC 1.02 ISO.");
+    const auto& file = g_fst[rumble->second];
+    uint8_t header[0x20]{};
+    std::string error;
+    if (!host::disc_read(file.offset, header, sizeof header))
+      host::die("The game ISO cannot read LbRb.dat. Select a fresh, uncompressed Melee NTSC 1.02 ISO.");
+    if (!host::disc_archive_header(header, sizeof header, file.length, &error))
+      host::die("The game ISO contains damaged LbRb.dat: %s. Select a fresh, uncompressed Melee NTSC 1.02 ISO; rebuild a modified ISO from a working base image.", error.c_str());
+  }
   // A development game library built with the native Akaneia fighters exports this name; the shipped
   // one does not, and an Akaneia disc stays refused. Looked up without running any of its code.
   {

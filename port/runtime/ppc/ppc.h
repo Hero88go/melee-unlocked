@@ -191,6 +191,11 @@ uint8_t* locked_cache();
 inline uint64_t read_tb(Context& c) { c.tb += 32; return c.tb; }
 
 // ---- memory ----
+using StoreObserver = void (*)(Context&, uint32_t address, uint32_t bytes, uint64_t value);
+inline StoreObserver& store_observer() { static StoreObserver observer = nullptr; return observer; }
+struct InterpreterBudget { bool active = false; uint64_t remaining = 0; };
+inline thread_local InterpreterBudget execution_budget;
+struct ExecutionBudgetExceeded {};
 // Host pointer for a guest address in RAM, or nullptr when it needs the slow path.
 inline uint8_t* fast(uint8_t* m, uint32_t ea) {
   uint32_t off = ea & 0x3FFFFFFFu;

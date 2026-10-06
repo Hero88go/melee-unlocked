@@ -56,3 +56,9 @@ build-*/
 **/lobby-game-status.json*
 **/lobby.sqlite3*
 /Mods/
+/run-current-reports/
+/tools/current_report_*.py
+/port/third_party/ngx/include/
+/port/third_party/ngx/lib/
+/port/third_party/mod_tools/7zr.exe
+/port/third_party/mod_tools/xdelta3.exe
