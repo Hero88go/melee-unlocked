@@ -69,6 +69,8 @@
 #include "pack_skin_rule.h"
 #include "disc_skin_scan.h"
 #include "cosmetic_mods.h"
+#include "stage_dat_safety.h"
+#include "pack_audio_safety.h"
 #include "texture_pack.h"
 #include "window.h"
 
@@ -149,6 +151,7 @@ void ax_native_wr32(uint32_t addr, uint32_t value) {
 struct FstFile { uint32_t offset, length; bool dir; };
 std::vector<FstFile> g_fst;
 std::unordered_map<std::string, int32_t> g_paths;   // lower-case "/dir/name" -> entry number
+std::unordered_map<uint32_t, std::string> g_music_paths;  // immutable HPS offset -> disc path
 std::vector<uint8_t> g_fst_raw;                      // the disc's table as read, for the cosmetic layer
 
 // ---- content views ----
@@ -317,10 +320,8 @@ void apply_detected_mods() {
   g_mod_layers.insert(g_mod_layers.end(), found.layers.begin(), found.layers.end());
 }
 
-// Decides, once at load, which of the packs' costume files stay on in the retail view. A file equal
-// to the standard costume, or with the standard skeleton, cannot change what the game simulates:
-// it is served from the pack in every mode. Anything else follows the retail alias like the pack's
-// other files. Only runs when a pack changed a file the standard game has.
+// Validate local cosmetics against the original disc before keeping them in the retail view.
+// Gameplay files and unverified replacements continue to use their original copies online.
 void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& base_paths,
                                 const std::vector<FstFile>& base_fst) {
   g_pack_skins.clear();
@@ -328,7 +329,10 @@ void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& 
   auto& notes = mods::status().pack_skins;
   notes.clear();
   for (const auto& file : g_mod_overlay.files()) {
-    if (!skins::is_costume_file(file.path)) continue;
+    const bool costume = skins::is_costume_file(file.path);
+    const bool stage = skins::is_stage_file(file.path);
+    const bool music = skins::is_music_file(file.path);
+    if (!costume && !stage && !music) continue;
     const auto now = g_paths.find(file.path);
     const auto base = base_paths.find(file.path);
     if (now == g_paths.end() || base == base_paths.end() || base_fst[base->second].dir) continue;
@@ -342,6 +346,13 @@ void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& 
     verdict.layer = name_at == std::string::npos ? file.profile
                     : std::filesystem::u8path(file.profile.substr(name_at + 1)).filename().u8string();
     const FstFile& standard = base_fst[base->second];
+    constexpr uint32_t limit = 64u * 1024 * 1024;
+    if (file.length > limit || standard.length > limit) {
+      verdict.reason = "replacement exceeds 64 MB";
+      notes.push_back({verdict.path, verdict.layer, verdict.reason, false, false});
+      g_pack_skins.push_back(std::move(verdict));
+      continue;
+    }
     std::vector<uint8_t> pack(file.length), clean(standard.length);
     if (pack.empty() || clean.empty() ||
         g_mod_overlay.read(file.start, pack.data(), file.length) != ModOverlay::Read::Success ||
@@ -349,14 +360,16 @@ void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& 
       verdict.reason = "the file could not be read";
     } else if (pack == clean) {
       verdict.identical = verdict.served = true;
-      verdict.reason = "same as the standard costume";
+      verdict.reason = "same as the original file";
     } else {
       std::string detail;
-      verdict.served = host::cosmetics::costume_skeleton_matches(clean, pack, &detail);
+      verdict.served = costume ? host::cosmetics::costume_skeleton_matches(clean, pack, &detail)
+                     : stage ? host::cosmetics::stage_safety::matches(clean, pack, &detail)
+                             : skins::music_is_valid(pack, &detail);
       verdict.reason = host::cosmetics::online_reason_short(detail);
     }
     if (verdict.served) g_pack_skin_served.insert(verdict.entry);
-    host::log("mods: skin %s %s online (%s)", verdict.path.c_str(), verdict.served ? "stays on" : "swapped",
+    host::log("mods: cosmetic %s %s online (%s)", verdict.path.c_str(), verdict.served ? "stays on" : "swapped",
               verdict.reason.c_str());
     notes.push_back({verdict.path, verdict.layer, verdict.reason, verdict.served, verdict.identical});
     g_pack_skins.push_back(std::move(verdict));
@@ -1801,6 +1814,48 @@ int32_t h_disc_file(int32_t entrynum, uint32_t* start, uint32_t* length) {
   *length = g_fst[entrynum].length;
   return 1;
 }
+// Music packs mirror the disc's /audio tree. A file with the original name replaces that track;
+// a sibling folder with the original stem is a random HPS playlist for that track.
+void index_music_paths() {
+  g_music_paths.clear();
+  for (const auto& path : g_paths) {
+    const int32_t index = path.second;
+    if (index <= 0 || index >= (int32_t)g_fst.size()) continue;
+    const FstFile& file = g_fst[(size_t)index];
+    if (file.dir || path.first.rfind("/audio/", 0) != 0 ||
+        _stricmp(std::filesystem::u8path(path.first).extension().string().c_str(), ".hps") != 0)
+      continue;
+    const std::string relative = path.first.substr(1);
+    g_music_paths.try_emplace(file.offset, relative);
+    const auto alias = g_view_alias.find(index);
+    if (alias != g_view_alias.end() && alias->second > 0 && alias->second < (int32_t)g_fst.size())
+      g_music_paths.try_emplace(g_fst[(size_t)alias->second].offset, relative);
+  }
+  wchar_t module[32768];
+  const DWORD n = GetModuleFileNameW(nullptr, module, (DWORD)_countof(module));
+  if (!n || n >= _countof(module)) return;
+  const std::filesystem::path root = std::filesystem::path(std::wstring(module, n)).parent_path() / L"MusicPacks";
+  std::error_code ec;
+  std::filesystem::create_directories(root, ec);
+  if (ec) return;
+  std::vector<std::string> paths;
+  paths.reserve(g_music_paths.size());
+  for (const auto& item : g_music_paths) paths.push_back(item.second);
+  std::sort(paths.begin(), paths.end());
+  paths.erase(std::unique(paths.begin(), paths.end()), paths.end());
+  std::ofstream list(root / L"Tracks.txt", std::ios::trunc);
+  if (!list) return;
+  list << "Menu and stage music files on this game disc:\n";
+  for (const auto& path : paths) list << "/" << path << "\n";
+}
+
+bool jukebox_music_pack_read(uint32_t offset, std::filesystem::path* out) {
+  if (!out) return false;
+  const auto source = g_music_paths.find(offset);
+  if (source == g_music_paths.end()) return false;
+  return slippi::jukebox::resolve_music_pack_path(source->second, out);
+}
+
 // The jukebox reads songs from where the game would: Slippi system files, the mod overlay, the disc.
 bool jukebox_disc_read(uint32_t offset, void* dst, uint32_t size) {
   bool ok = false;
@@ -2956,6 +3011,8 @@ int run(void (*shutdown)(int)) {
     }
   }
   load_mod_overlay();
+  index_music_paths();
+  slippi::jukebox::set_music_pack_reader(jukebox_music_pack_read);
   check_replay_content();
   load_cosmetics(g_replay || g_online_test_mode >= 0);
   {

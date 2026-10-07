@@ -107,6 +107,10 @@ uint32_t disc_fst_size();
 uint32_t disc_fst_addr();   // the file table as boot placed it (repairs the low-memory pointer when it was overwritten)
 uint32_t disc_fst_max_size();
 bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size);
+// Resolves an absolute disc file offset (as sent to the jukebox) to its case-normalized FST path.
+bool disc_find_path_by_offset(uint32_t offset, std::string* path);
+// Lists menu and stage HPS paths from the loaded disc's FST.
+bool disc_music_paths(std::vector<std::string>* paths);
 
 // ---- boot ----
 void boot_setup();               // low memory, FST placement, DOL load, registers

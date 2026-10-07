@@ -1935,6 +1935,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "ssaa") { int a = std::stoi(value); if (a == 1 || a == 2) options.ssaa = a; }
       else if (key == "subframe") options.subframe = value == "0" ? SubFrameMode::Off : value == "2" ? SubFrameMode::AuthoredInterpolate : SubFrameMode::Authored;
       else if (key == "music") slippi::jukebox::set_user_volume(std::stoi(value));
+      else if (key == "musicpacks") slippi::jukebox::set_music_packs_enabled(value == "1");
       else if (key == "audio_mode") options.audio_mode = std::clamp(std::stoi(value), 0, 3);
       else if (key == "audio_asio_driver") options.audio_asio_driver = value;
       else if (key == "audio_asio_buffer") { const int b = std::stoi(value); options.audio_asio_buffer = b == 0 ? 0 : std::clamp(b, 32, 2048); }
@@ -3229,6 +3230,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
+       << "\nmusicpacks " << (slippi::jukebox::music_packs_enabled() ? 1 : 0)
        << "\nonlinedelay " << slippi::online::config().delay
        << "\noffline_delay " << (options.offline_delay ? 1 : 0)
        << "\nquickchat " << slippi::online::config().chat
@@ -5182,10 +5184,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     ImGui::Separator();
     texpack::refresh_packs();
     const auto installed = texpack::packs();
-    ImGui::TextUnformatted("Texture packs");
+    ImGui::TextUnformatted("HUD and texture packs");
     ImGui::SameLine();
     if (ImGui::SmallButton("+ Add")) texpack::open_packs_folder();
-    wrapped_tooltip("Opens the TexturePacks folder. Put a pack folder in there and it appears in this list.");
+    wrapped_tooltip("Opens TexturePacks. Drop a folder of replacement PNGs there; HUD, menus, and stages are supported.");
+    ImGui::TextWrapped("Texture packs can replace the HUD, menu art, and stage textures. Put a pack folder in TexturePacks, then turn it on here.");
     if (installed.empty()) {
       ImGui::TextWrapped("None installed. Press + Add and drop a pack folder in.");
     } else {
@@ -5318,6 +5321,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Saves every texture the game draws into Dump\\Textures\\GALE01 with the exact\n"
                           "filenames a replacement has to use. Only useful if you are making a pack.");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Open texture dump")) texpack::open_dump_folder();
       if (RenderOptions::kPathTracingAvailable) {
         ImGui::BeginDisabled(!path_available);
         if (settings_toggle("DXR diffuse path tracing (experimental)", &options.path_tracing)) changed = true;
@@ -5383,6 +5388,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     ImGui::PushItemWidth(330.0f);
     int music = slippi::jukebox::user_volume();
     if (settings_slider("Music", &music, 0, 100, "%d%%")) { slippi::jukebox::set_user_volume(music); changed = true; }
+#ifndef MELEE_NO_SLIPPI
+    bool use_music_packs = slippi::jukebox::music_packs_enabled();
+    if (settings_toggle("Use custom music", &use_music_packs)) {
+      slippi::jukebox::set_music_packs_enabled(use_music_packs);
+      changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Open music packs")) slippi::jukebox::open_music_packs_folder();
+    ImGui::TextWrapped("Replace menu and stage tracks with HPS or common audio files, or add a folder of tracks for random picks. Vanilla audio mode keeps the disc music; open the folder for the naming guide.");
+#endif
     // With a game running the device holds the live value. Without one, which is the settings
     // window the launcher opens, the saved value is all there is: reading back from an audio module
     // that was never opened returned zero every frame and dragged the slider back to it.
@@ -6012,14 +6027,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
               ImGui::TextWrapped("Online: Unranked, Teams and Party always play the standard game. Direct can use "
                                  "this mod, and then only against a player on the same build.");
             } else {
-              // The mod carries costume files: say which of them stay on online and why the rest do not.
-              ImGui::TextWrapped("Online: Unranked, Teams and Party play the standard game. Skins in this mod that "
-                                 "keep the standard skeleton stay on; the rest show the standard costume. "
+              ImGui::TextWrapped("Online: Unranked, Teams and Party play the standard game. Verified costumes, "
+                                 "stage visuals and music stay on; other changes use the original files. "
                                  "Direct can use the whole mod, and then only against a player on the same build.");
               size_t skins_on = 0;
               for (const auto& skin : mod_status.pack_skins) skins_on += skin.served ? 1 : 0;
               char skins_header[96];
-              std::snprintf(skins_header, sizeof skins_header, "Skins in this mod (%zu on, %zu swapped)###pack_skins",
+              std::snprintf(skins_header, sizeof skins_header, "Cosmetics in this mod (%zu on, %zu swapped)###pack_skins",
                             skins_on, mod_status.pack_skins.size() - skins_on);
               if (ImGui::CollapsingHeader(skins_header)) {
                 for (const auto& skin : mod_status.pack_skins) {

@@ -7,6 +7,7 @@
 #include "user_gecko.h"
 #include "memory_range.h"
 #include "guest_heap_trace.h"
+#include "disc_fst_paths.h"
 #include <windows.h>
 #include <bcrypt.h>
 #include "guest_registry.h"
@@ -26,6 +27,7 @@
 #include "gecko_data.h"
 #include "render_options.h"
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <mutex>
@@ -395,6 +397,29 @@ bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size) {
     }
   }
   return false;
+}
+
+namespace {
+const std::vector<uint8_t>* disc_path_fst() {
+  static std::vector<uint8_t> fst;
+  static std::mutex mutex;
+  std::lock_guard<std::mutex> lock(mutex);
+  if (fst.empty() && g_fst_size) {
+    fst.resize(g_fst_size);
+    if (!disc_read(g_fst_offset, fst.data(), g_fst_size)) fst.clear();
+  }
+  return fst.empty() ? nullptr : &fst;
+}
+}  // namespace
+
+bool disc_find_path_by_offset(uint32_t offset, std::string* path) {
+  const auto* fst = disc_path_fst();
+  return fst && disc_fst::path_by_offset(*fst, offset, path);
+}
+
+bool disc_music_paths(std::vector<std::string>* paths) {
+  const auto* fst = disc_path_fst();
+  return fst && disc_fst::music_paths(*fst, paths);
 }
 uint32_t disc_fst_max_size() { return g_fst_max; }
 

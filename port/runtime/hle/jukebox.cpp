@@ -4,12 +4,22 @@
 #include "host.h"
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
+#include <filesystem>
+#include <fstream>
+#include <windows.h>
+#include <shellapi.h>
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <mferror.h>
+#include <objbase.h>
 
 namespace slippi::jukebox {
 namespace {
@@ -41,6 +51,8 @@ std::atomic<uint32_t> g_song_generation{0};   // a stop() or a newer start_song(
 std::atomic<int> g_melee_volume{254}, g_user_volume{100};
 std::atomic<float> g_next_song_gain{1.0f}, g_song_gain{1.0f};
 std::atomic<DiscReader> g_reader{nullptr};
+std::atomic<MusicPackReader> g_music_pack_reader{nullptr};
+std::atomic<bool> g_music_packs_enabled{true};
 std::atomic<bool> g_paused{false};   // set_paused: a replay viewer holding the picture
 
 uint32_t be32(const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; }
@@ -136,7 +148,138 @@ std::shared_ptr<Song> decode_hps(const std::vector<uint8_t>& file) {
   host::log("jukebox: song %u Hz, %zu frames, %s", rate, song->samples.size() / 2, song->loop_frame == SIZE_MAX ? "no loop" : "loops");
   return song;
 }
+
+std::shared_ptr<Song> decode_custom_file(const std::filesystem::path& path) {
+  std::string ext = path.extension().string();
+  std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+  if (ext == ".hps") {
+    std::error_code ec;
+    const uint64_t size = std::filesystem::file_size(path, ec);
+    if (ec || size > 64u * 1024 * 1024 || size < 0x80) return nullptr;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return nullptr;
+    std::vector<uint8_t> file((size_t)size);
+    if (!in.read((char*)file.data(), (std::streamsize)file.size())) return nullptr;
+    return decode_hps(file);
+  }
+
+  // Windows Media Foundation decodes common player formats (WAV, MP3, M4A/AAC and installed
+  // codecs) to the same stereo mixer format used by HPS. Unsupported formats fail back to disc.
+  const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+  const bool uninit_com = SUCCEEDED(com_hr);
+  if (FAILED(com_hr) && com_hr != RPC_E_CHANGED_MODE) return nullptr;
+  static std::once_flag mf_once;
+  static HRESULT mf_hr = E_FAIL;
+  std::call_once(mf_once, [] { mf_hr = MFStartup(MF_VERSION, MFSTARTUP_LITE); });
+  if (FAILED(mf_hr)) { if (uninit_com) CoUninitialize(); return nullptr; }
+
+  IMFSourceReader* reader = nullptr;
+  IMFMediaType* output_type = nullptr;
+  HRESULT hr = MFCreateSourceReaderFromURL(path.c_str(), nullptr, &reader);
+  if (SUCCEEDED(hr)) hr = MFCreateMediaType(&output_type);
+  if (SUCCEEDED(hr)) hr = output_type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+  if (SUCCEEDED(hr)) hr = output_type->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, OUTPUT_RATE);
+  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 4);
+  if (SUCCEEDED(hr)) hr = output_type->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, OUTPUT_RATE * 4);
+  if (SUCCEEDED(hr)) hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_AUDIO_STREAM, nullptr, output_type);
+  if (output_type) output_type->Release();
+  auto song = SUCCEEDED(hr) ? std::make_shared<Song>() : nullptr;
+  bool finished = false, too_long = false;
+  // Ten minutes of decoded stereo is about 77 MB held in memory; longer files use the disc track.
+  constexpr size_t MAX_FRAMES = OUTPUT_RATE * 60u * 10u;
+  while (song && !finished) {
+    DWORD stream = 0, flags = 0;
+    LONGLONG timestamp = 0;
+    IMFSample* sample = nullptr;
+    hr = reader->ReadSample(MF_SOURCE_READER_FIRST_AUDIO_STREAM, 0, &stream, &flags, &timestamp, &sample);
+    if (FAILED(hr)) { song.reset(); break; }
+    if (flags & MF_SOURCE_READERF_ENDOFSTREAM) finished = true;
+    if (sample) {
+      IMFMediaBuffer* buffer = nullptr;
+      hr = sample->ConvertToContiguousBuffer(&buffer);
+      if (SUCCEEDED(hr)) {
+        BYTE* data = nullptr;
+        DWORD maximum = 0, length = 0;
+        hr = buffer->Lock(&data, &maximum, &length);
+        if (SUCCEEDED(hr)) {
+          if ((length & 3u) != 0 || song->samples.size() / 2 + length / 4 > MAX_FRAMES) {
+            too_long = (length & 3u) == 0;
+            song.reset();
+          } else {
+            const size_t before = song->samples.size();
+            song->samples.resize(before + length / 2);
+            std::memcpy(song->samples.data() + before, data, length);
+          }
+          buffer->Unlock();
+        } else song.reset();
+        buffer->Release();
+      } else song.reset();
+      sample->Release();
+    }
+  }
+  if (reader) reader->Release();
+  if (uninit_com) CoUninitialize();
+  if (!song || song->samples.empty()) {
+    host::log("jukebox: custom audio %s %s, using the disc track", path.filename().string().c_str(),
+              too_long ? "is longer than 10 minutes" : "could not be decoded");
+    return nullptr;
+  }
+  song->loop_frame = 0;
+  host::log("jukebox: custom audio %s, %zu frames", path.filename().string().c_str(), song->samples.size() / 2);
+  return song;
+}
 }  // namespace
+
+bool resolve_music_pack_path(const std::string& disc_path, std::filesystem::path* out) {
+  if (!out || disc_path.empty()) return false;
+  const std::string relative_text = !disc_path.empty() && (disc_path[0] == '/' || disc_path[0] == '\\')
+      ? disc_path.substr(1) : disc_path;
+  const std::filesystem::path disc = std::filesystem::u8path(relative_text).lexically_normal();
+  for (const auto& part : disc) if (part == ".." || part == ".") return false;
+  const std::string first = disc.begin() == disc.end() ? std::string() : disc.begin()->string();
+  if (_stricmp(first.c_str(), "audio") != 0) return false;
+
+  wchar_t module[32768];
+  const DWORD n = GetModuleFileNameW(nullptr, module, (DWORD)_countof(module));
+  if (!n || n >= _countof(module)) return false;
+  const std::filesystem::path root = std::filesystem::path(std::wstring(module, n)).parent_path() / L"MusicPacks";
+  const std::filesystem::path direct = root / disc;
+  std::error_code ec;
+  if (std::filesystem::is_regular_file(direct, ec) && !ec) { *out = direct; return true; }
+  ec.clear();
+  for (const char* extension : {".mp3", ".wav", ".m4a", ".flac", ".ogg"}) {
+    std::filesystem::path alternate = direct;
+    alternate.replace_extension(extension);
+    if (std::filesystem::is_regular_file(alternate, ec) && !ec) { *out = alternate; return true; }
+    ec.clear();
+  }
+  const std::filesystem::path playlist = root / disc.parent_path() / disc.stem();
+  std::vector<std::filesystem::path> tracks;
+  std::filesystem::directory_iterator it(playlist, std::filesystem::directory_options::skip_permission_denied, ec);
+  for (std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec)) {
+    std::error_code item_ec;
+    if (!it->is_regular_file(item_ec) || item_ec) continue;
+    const std::string ext = it->path().extension().string();
+    if (_stricmp(ext.c_str(), ".hps") == 0 || _stricmp(ext.c_str(), ".wav") == 0 ||
+        _stricmp(ext.c_str(), ".mp3") == 0 || _stricmp(ext.c_str(), ".m4a") == 0 ||
+        _stricmp(ext.c_str(), ".flac") == 0 || _stricmp(ext.c_str(), ".ogg") == 0)
+      tracks.push_back(it->path());
+  }
+  if (tracks.empty()) return false;
+  std::sort(tracks.begin(), tracks.end());
+  static std::atomic<uint32_t> seed{(uint32_t)GetTickCount() ^ 0x9E3779B9u};
+  uint32_t value = seed.fetch_add(0x9E3779B9u, std::memory_order_relaxed);
+  value ^= value >> 16;
+  value *= 0x7FEB352Du;
+  value ^= value >> 15;
+  value *= 0x846CA68Bu;
+  value ^= value >> 16;
+  *out = tracks[value % tracks.size()];
+  return true;
+}
 
 // The disc read and HPS decode (tens of ms for a full track) run on a worker: music start time
 // is not part of the deterministic simulation, and the game's own audio must not hitch for it.
@@ -146,10 +289,27 @@ void start_song(uint32_t disc_offset, uint32_t size) {
   if (size == 0 || size > 64u * 1024 * 1024) { host::log("jukebox: bad song size %u", size); return; }
   const uint32_t generation = ++g_song_generation;
   std::thread([disc_offset, size, generation, song_gain] {
-    std::vector<uint8_t> file(size);
+    std::filesystem::path custom_path;
+    const MusicPackReader pack_reader = g_music_packs_enabled.load(std::memory_order_relaxed)
+        ? g_music_pack_reader.load() : nullptr;
+    bool custom = pack_reader && pack_reader(disc_offset, &custom_path);
+    if (!custom && g_music_packs_enabled.load(std::memory_order_relaxed)) {
+      std::string disc_path;
+      if (host::disc_find_path_by_offset(disc_offset, &disc_path))
+        custom = resolve_music_pack_path(disc_path, &custom_path);
+    }
+    if (custom) host::log("jukebox: music pack picked %s", custom_path.u8string().c_str());
+    std::shared_ptr<Song> song = custom ? decode_custom_file(custom_path) : nullptr;
     const DiscReader reader = g_reader.load();
-    if (!(reader ? reader(disc_offset, file.data(), size) : host::disc_read(disc_offset, file.data(), size))) { host::log("jukebox: cannot read song at %08X", disc_offset); return; }
-    auto song = decode_hps(file);
+    // A malformed optional replacement should never mute a song that otherwise worked.
+    if (!song) {
+      std::vector<uint8_t> file(size);
+      if (!(reader ? reader(disc_offset, file.data(), size) : host::disc_read(disc_offset, file.data(), size))) {
+        host::log("jukebox: cannot read song at %08X", disc_offset);
+        return;
+      }
+      song = decode_hps(file);
+    }
     if (song) song->gain = song_gain;
     std::lock_guard<std::mutex> lk(g_mutex);
     if (g_song_generation.load() == generation) {
@@ -161,6 +321,41 @@ void start_song(uint32_t disc_offset, uint32_t size) {
 }
 
 void set_disc_reader(DiscReader reader) { g_reader.store(reader); }
+void set_music_pack_reader(MusicPackReader reader) { g_music_pack_reader.store(reader); }
+void set_music_packs_enabled(bool enabled) { g_music_packs_enabled.store(enabled, std::memory_order_relaxed); }
+bool music_packs_enabled() { return g_music_packs_enabled.load(std::memory_order_relaxed); }
+void open_music_packs_folder() {
+  wchar_t path[32768];
+  const DWORD length = GetModuleFileNameW(nullptr, path, (DWORD)_countof(path));
+  const std::filesystem::path folder = length && length < _countof(path)
+      ? std::filesystem::path(std::wstring(path, length)).parent_path() / L"MusicPacks"
+      : std::filesystem::path(L"MusicPacks");
+  std::error_code ec;
+  std::filesystem::create_directories(folder, ec);
+  if (ec) { host::log("jukebox: cannot create music folder (%s)", ec.message().c_str()); return; }
+  if (!g_music_pack_reader.load()) {
+    std::vector<std::string> paths;
+    if (host::disc_music_paths(&paths) && !paths.empty()) {
+      std::ofstream list(folder / L"Tracks.txt", std::ios::trunc);
+      if (list) {
+        list << "Menu and stage music files on this game disc:\n";
+        for (const auto& disc_path : paths) list << disc_path << "\n";
+      }
+    }
+  }
+  const auto readme = folder / L"README.txt";
+  if (!std::filesystem::exists(readme, ec)) {
+    std::ofstream note(readme);
+    note << "Custom music\n\n"
+            "Tracks.txt lists the original menu and stage music files (refresh it from Audio settings while the game is running). For /audio/name.hps, replace it with\n"
+            "MusicPacks/audio/name.hps (HPS), or MusicPacks/audio/name.mp3 (MP3), MusicPacks/audio/name.wav\n"
+            "(WAV), or another supported audio extension. For a random playlist, put audio files in\n"
+            "MusicPacks/audio/name/. The game picks one each time it starts that song.\n"
+            "Windows Media Foundation handles common formats; HPS files must be stereo.\n"
+            "Custom tracks play locally; other players do not need the same pack. Vanilla audio mode keeps the disc music.\n";
+  }
+  ShellExecuteW(nullptr, L"open", folder.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
 void stop() {
   ++g_song_generation;
   std::lock_guard<std::mutex> lk(g_mutex);

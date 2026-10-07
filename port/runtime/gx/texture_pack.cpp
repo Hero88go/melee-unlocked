@@ -615,6 +615,17 @@ void open_packs_folder() {
   build_index();   // pick up anything already there, so the list is right the moment it opens
 }
 
+void open_dump_folder() {
+  const std::filesystem::path folder = exe_directory() / "Dump" / "Textures" / "GALE01";
+  std::error_code ec;
+  std::filesystem::create_directories(folder, ec);
+  if (ec) {
+    host::log("textures: cannot open dump folder %s (%s)", folder.string().c_str(), ec.message().c_str());
+    return;
+  }
+  ShellExecuteW(nullptr, L"open", folder.wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+}
+
 void prefetch_begin() {
   if (g_prefetching.load(std::memory_order_relaxed)) return;
   refresh_packs();
