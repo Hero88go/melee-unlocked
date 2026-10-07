@@ -10,17 +10,18 @@ enum class NativeGameplayProfile { Vanilla, Akaneia, OtherMod };
 // Slippi's mode IDs are Ranked=0, Unranked=1, Direct=2, Teams=3, Party=4.
 // Melee Unlocked does not offer Ranked, on either engine; every matchmaking entry (the game's own
 // online menus, practice matchmaking, Discord joins) goes through this check.
-// Direct is the only mode in which both clients can deliberately run Akaneia.
+// Direct and Teams are the modes in which every client can deliberately run the same mod: both are
+// played by code with friends, so the clients can check each other's build (see build_verdict).
 inline const char* native_profile_mode_error(NativeGameplayProfile profile, int mode) {
   if (mode < 0 || mode > 4) return "Unsupported matchmaking mode";
   if (mode == 0) return "Ranked is not available in Melee Unlocked. Play Unranked, Direct or Teams.";
-  // A mod's own gameplay (its fighters, stages and files) only in Direct, against the same build.
-  // Source content views switch those modes to retail files. A Static mod session has no such
-  // switch, so a non-Vanilla profile reaching here outside Direct is refused.
-  if (profile == NativeGameplayProfile::Akaneia && mode != 2)
-    return "Akaneia is available only in Direct mode; Unranked, Teams and Party require vanilla gameplay";
-  if (profile == NativeGameplayProfile::OtherMod && mode != 2)
-    return "Mods are available only in Direct mode; Unranked, Teams and Party require vanilla gameplay";
+  // A mod's own gameplay (its fighters, stages and files) only in Direct and Teams, against the same
+  // build on every side. Source content views switch the other modes to retail files. A Static mod
+  // session has no such switch, so a non-Vanilla profile reaching here elsewhere is refused.
+  if (profile == NativeGameplayProfile::Akaneia && mode != 2 && mode != 3)
+    return "Akaneia is available only in Direct and Teams; Unranked and Party require vanilla gameplay";
+  if (profile == NativeGameplayProfile::OtherMod && mode != 2 && mode != 3)
+    return "Mods are available only in Direct and Teams; Unranked and Party require vanilla gameplay";
   return nullptr;
 }
 // A missing, truncated or malformed content identity cannot establish a same-mod match.
