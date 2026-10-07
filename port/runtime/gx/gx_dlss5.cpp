@@ -1,6 +1,7 @@
 // EXPERIMENTAL DLSS 5 Neural Rendering (see gx_dlss5.h).
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gx_dlss5.h"
+#include "driver_call_guard.h"
 #include "gx_dlss5_scaling.h"
 #include "gx_streamline.h"
 #include "../../dlss5_forwarder/core_api.h"
@@ -289,6 +290,13 @@ bool fail_tuning(const std::string& why, uint32_t w, uint32_t h, const Tuning& t
   g.failed_w = w; g.failed_h = h; g.failed_tuning = t;
   return fail(why + "; choose different DLSS 5 settings to retry", true);
 }
+bool g_driver_failed = false;
+template<class Call> int driver_call(Call call) {
+  return gx::guarded_driver_call(g_driver_failed, call, (int)NVSDK_NGX_Result_Fail,
+    [](const std::system_error& error) {
+      fail(std::string("driver resource failure: ") + error.what());
+    });
+}
 bool can_retry(uint32_t w, uint32_t h, const Tuning& t) {
   return g.tuning_failed && (g.failed_w != w || g.failed_h != h || g.failed_tuning != t);
 }
@@ -368,7 +376,10 @@ void retire_resource(ComPtr<ID3D12Resource>& r) {
 void collect_retired() {
   for (size_t i = 0; i < g.retired.size();) {
     if (!g.fence || g.fence->GetCompletedValue() < g.retired[i].until) { ++i; continue; }
-    if (g.retired[i].feature) g.release(g.retired[i].feature);
+    if (g.retired[i].feature) {
+      const int result = driver_call([&] { return g.release(g.retired[i].feature); });
+      if (result != NVSDK_NGX_Result_Success) break; // Keep its resources alive until process exit.
+    }
     g.retired.erase(g.retired.begin() + i);
   }
 }
@@ -419,7 +430,7 @@ bool create_feature(ID3D12GraphicsCommandList* list, uint32_t w, uint32_t h, con
   set_uint("DLSSNR.UICorrection", 0);
   clear_ui_inputs();
   for (int pass = 0; pass < t.passes; ++pass) {
-    int r = g.create(list, g.caps, &g.feature[pass]);
+    int r = driver_call([&] { return g.create(list, g.caps, &g.feature[pass]); });
     if (r != NVSDK_NGX_Result_Success || !g.feature[pass]) {
       retire_feature(); // Includes initialization work already recorded by earlier passes.
       return fail_tuning("the DLSS 5 feature could not be created (" + hex((unsigned)r) + ")", w, h, t);
@@ -467,6 +478,7 @@ bool needs_warmup(uint32_t w, uint32_t h, const Tuning& t, uint32_t model_w, uin
 }
 
 bool evaluate(const Inputs& in) {
+  if (g_driver_failed) return false;
   if (g.release) collect_retired();
   if (!in.color || !in.depth || !in.mvec || !in.w || !in.h || !in.guide_w || !in.guide_h) return false;
   const Tuning t = clamped(in.tuning);
@@ -558,7 +570,7 @@ bool evaluate(const Inputs& in) {
     set_float("DLSSNR.MVecScaleX", (float)w / (float)in.guide_w);
     set_float("DLSSNR.MVecScaleY", (float)h / (float)in.guide_h);
     set_tuning(t);
-    r = g.eval(list, g.feature[pass], g.caps);
+    r = driver_call([&] { return g.eval(list, g.feature[pass], g.caps); });
     if (pass > 0) barrier(list, input, npsr, uav);
     if (r != NVSDK_NGX_Result_Success) break;
   }
@@ -642,6 +654,7 @@ const char* status() {
 }
 
 void shutdown() {
+  if (g_driver_failed) return; // The failed driver's resources stay alive until process exit.
   if (g.release) {
     for (auto& r : g.retired) if (r.feature) g.release(r.feature);
     for (auto* feature : g.feature) if (feature) g.release(feature);

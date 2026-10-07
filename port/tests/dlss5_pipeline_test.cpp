@@ -30,6 +30,7 @@ std::unordered_set<void*> alive;
 int created=0, released=0, fail_at=-1;
 int fail_create_after=-1;
 bool alias_create=false;
+bool throw_evaluate=false, throw_release=false;
 ID3D12Resource* replacement=nullptr;
 int __cdecl create(void*, void*, void** output) {
   if(fail_create_after==0) { *output=nullptr; return NVSDK_NGX_Result_FAIL_OutOfGPUMemory; }
@@ -38,10 +39,12 @@ int __cdecl create(void*, void*, void** output) {
   *output=new Feature{++created}; alive.insert(*output); return NVSDK_NGX_Result_Success;
 }
 int __cdecl release(void* feature) {
+  if (throw_release) throw std::system_error(std::make_error_code(std::errc::device_or_resource_busy));
   require(alive.erase(feature)==1,"feature released twice or without creation");
   delete (Feature*)feature; ++released; return NVSDK_NGX_Result_Success;
 }
 int __cdecl evaluate(void* raw_list, void* feature, void*) {
+  if (throw_evaluate) throw std::system_error(std::make_error_code(std::errc::device_or_resource_busy));
   const auto resource=[](const char* key) { return (ID3D12Resource*)(uintptr_t)parameters.integers.at(key); };
   auto* input=resource("DLSSNR.Color"); auto* output=resource("DLSSNR.Output");
   require(alive.count(feature)==1,"evaluation uses a live feature");
@@ -230,7 +233,21 @@ int main(int argc, char** argv) {
     require(released==before_release && !state.retired.empty(),"pending retirements must wait for the fence");
     require(gpu.read(pending.Get())==original,"multiple pending evaluations preserve identity"); gpu.validate();
     // Completion fences permit retired objects to be released; shutdown releases the rest.
+    const auto retained_count=state.retired.size();
+    const auto alive_count=alive.size();
+    throw_release=true; gx::dlss5::collect_retired();
+    require(gx::dlss5::g_driver_failed && state.failed && state.retired.size()==retained_count && alive.size()==alive_count,
+            "busy release retains features and their GPU resources without crashing");
+    gx::dlss5::shutdown();
+    require(state.retired.size()==retained_count,"failed driver is not reentered during shutdown");
+    // Reset only the simulated driver to independently test its evaluation boundary.
+    throw_release=false; gx::dlss5::g_driver_failed=false; state.failed=false;
     gx::dlss5::collect_retired(); require(state.retired.empty(),"completed retirements collected");
+    throw_evaluate=true; frame(false,original);
+    require(gx::dlss5::g_driver_failed && state.failed,"busy evaluation falls back without terminating");
+    frame(false,original); require(calls.empty(),"failed driver remains quarantined on following frames");
+    gpu.validate();
+    throw_evaluate=false; gx::dlss5::g_driver_failed=false; state.failed=false;
     state.caps=nullptr; gx::dlss5::shutdown();
     require(alive.empty() && released==created,"all temporal features released exactly once");
     printf("DLSS 5 pipeline: pass chaining, history, guide scaling, failure fallback, bypass and fence retirement passed with a simulated model on %s\n",gpu.backend);

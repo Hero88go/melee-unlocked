@@ -1,6 +1,7 @@
 // Runs the production resize/resolve shaders on WARP, without an ISO or NVIDIA runtime.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "dlss5_test_gpu.h"
+#include "../runtime/gx/driver_call_guard.h"
 #include <cmath>
 
 // Independent double-precision reference, in byte units before the final UNORM conversion.
@@ -35,6 +36,20 @@ static void reference_check(const Bytes& actual,const Bytes& source,int sw,int s
 }
 int main() {
   try {
+    bool failed = false;
+    int calls = 0, reports = 0;
+    const auto report = [&](const std::system_error&) { ++reports; };
+    require(gx::guarded_driver_call(failed, [&] { ++calls; return 7; }, -1, report) == 7,
+            "successful optional driver calls retain their result");
+    require(gx::guarded_driver_call(failed, [&]() -> int {
+      ++calls; throw std::system_error(std::make_error_code(std::errc::device_or_resource_busy));
+    }, -1, report) == -1 && failed && reports == 1, "busy driver falls back without terminating the game");
+    require(gx::guarded_driver_call(failed, [&] { ++calls; return 7; }, -1, report) == -1 && calls == 2,
+            "failed driver is not reentered on following frames");
+    bool ordinary_failed = false, rethrown = false;
+    try { gx::guarded_driver_call(ordinary_failed, []() -> int { throw std::runtime_error("ordinary bug"); }, -1, report); }
+    catch (const std::runtime_error&) { rethrown = true; }
+    require(rethrown && !ordinary_failed, "ordinary application bugs are not swallowed");
     GPU gpu;
     Bytes pattern(13*9*4);
     for(size_t i=0;i<pattern.size();++i) pattern[i]=(unsigned char)((i*53+17)%256);

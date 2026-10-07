@@ -29,6 +29,9 @@ bool init(const std::wstring& exe_dir, bool load_frame_generation);
 // it on takes effect at the next start.
 bool frame_generation_deferred();
 void shutdown();
+// A resource exception can also escape from the interposer's DXGI Present.
+// Stop optional driver effects before the renderer submits another frame.
+void disable_after_resource_error(const char* message);
 // The final process-exit path. Streamline's NGX unload can deadlock on this driver even
 // after GPU idle; the OS reclaims the interposer at process termination.
 void shutdown_for_process_exit();

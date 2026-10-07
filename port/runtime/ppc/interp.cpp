@@ -116,8 +116,11 @@ struct Interp {
     // Code that runs from RAM (a mod's changed function, a return from its hook into the middle of
     // one) is simply continued here: its compiled entry would start another interpreter, and a
     // mid-function entry has no return address of its own.
-    if (runs_from_ram(t)) { pc = t; return; }
     for (;;) {
+      // A compiled callee may restore LR into redirected RAM as well. Check every
+      // tail continuation, otherwise its dispatch thunk starts another interpreter
+      // and repeated returns consume the host stack.
+      if (runs_from_ram(t)) { pc = t; return; }
       if (Fn fn = lookup(t)) {
         if (++c.call_depth > 20000) fatal(c, "guest call depth exceeded", t);
         { CallDepthScope scope{c}; fn(c, m); }   // released on exception unwinds too
