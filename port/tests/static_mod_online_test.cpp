@@ -52,7 +52,8 @@ int main() {
   CHECK(native_direct_selection_supported(false, false, 25, 0x55));
   for (auto profile : {NativeGameplayProfile::Akaneia, NativeGameplayProfile::OtherMod}) {
     CHECK(native_profile_mode_error(profile, 2) == nullptr);
-    for (int mode : {0, 1, 3, 4}) CHECK(native_profile_mode_error(profile, mode) != nullptr);
+    CHECK(native_profile_mode_error(profile, 3) == nullptr);   // Teams: every player on the same build
+    for (int mode : {0, 1, 4}) CHECK(native_profile_mode_error(profile, mode) != nullptr);
   }
   fs::remove_all(root);
   std::puts("Static mod online identity and selection tests passed");
