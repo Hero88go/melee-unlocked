@@ -779,6 +779,22 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
       d.message = "Unmodified Melee 1.02 disc: there is nothing to load from it.";
       return d;
     }
+    // NKit images ("*.nkit.iso", "*.nkit.gcz") are the retail disc with its padding removed and its
+    // files moved: the game data is there, but not in the retail layout, so it is not the 1.02 ISO
+    // and not a mod either. NKit writes its tag at 0x200 of the disc header.
+    {
+      char tag[4] = {};
+      in.seekg(0x200);
+      in.read(tag, 4);
+      in.clear();
+      if (std::memcmp(tag, "NKIT", 4) == 0) {
+        d.kind = Kind::Unsupported;
+        set_support(d, Engine::Either, Support::NotSupportedYet, false);
+        d.message = "This is an NKit image, not a full ISO. Restore it to a full Melee NTSC 1.02 ISO "
+                    "with NKit's Recover to ISO, then select that ISO.";
+        return d;
+      }
+    }
     if (const std::string version = hack_pack_version(md5_hex); !version.empty()) {
       d.kind = Kind::HackPack; d.name = "20XX Hack Pack"; d.version = version; d.key = content_key(d.hash); d.catalog_id = "hackpack";
       // 5.0.2 boots and plays on the Static Recomp with its own code and no Slippi codes (offline, no

@@ -159,6 +159,11 @@ struct RenderOptions {
   // MU_GAME_OPTION3_LOCKED_CONTENT (shim/mu_gecko.c mu_unlock_all).
   bool unlock_all = true;
   static bool& live_unlock_all() { static bool value = true; return value; }
+  // "Show results screen" (Game tab, ini key results_screen, on unless the file says 0). Off, an
+  // offline match goes straight back to character select, as online play does. Static Recomp:
+  // gecko::option_offline_results (host.cpp); Source Port: MU_GAME_OPTION3_SKIP_RESULTS.
+  bool results_screen = true;
+  static bool& live_results_screen() { static bool value = true; return value; }
   bool offline_delay = false;
   static bool& live_offline_delay() { static bool value = false; return value; }
   // 20XX Hack Pack training options for CPUs (Game tab, Source Port only, offline only), native in

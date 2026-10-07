@@ -75,6 +75,14 @@ int mu_unlock_all(void)
            mu_online_codes() != 0;
 }
 
+/* "Show results screen" switched off: an offline match goes back to character select (gm/gmvsmelee.c).
+ * Online play always does. */
+int mu_skip_results(void)
+{
+    unsigned int mu_game_options3(void);
+    return (mu_game_options3() & 0x40000000u /* MU_GAME_OPTION3_SKIP_RESULTS */) != 0;
+}
+
 /* Slippi's optional "Widescreen 16:9" code, one MU_NATIVE branch per patched site with the code's own
  * values: cobj.c (camera aspect x 320/219 as it loads), lbbgflash.c (flash camera), ftdrawcommon.c
  * (fighters in the added sides draw), ifmagnify.c (bubbles) and ifnametag.c (tags). Read live, so like

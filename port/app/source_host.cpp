@@ -51,8 +51,6 @@
 #include "jukebox.h"
 #include "slippi_playback.h"
 #include "slippi_online.h"
-#include "replay_bar.h"
-#include "card_backup.h"
 #include "exi_slippi.h"
 #include "native_slippi_bridge.h"
 #include "native_replay_stream.h"
@@ -60,6 +58,8 @@
 #include "native_recording_codes.h"
 #include "slippilib/SlippiGame.h"
 #endif
+#include "replay_bar.h"     // both builds: the on-screen labels
+#include "card_backup.h"    // both builds: save backups
 #include "source_mod_overlay.h"
 #include "mod_profile.h"
 #include "net_trace.h"
@@ -88,6 +88,23 @@ constexpr uint32_t LOCKED_CACHE_SIZE = 16u << 10;
 // Right after MEM1, so the game's own statics (the font atlas, static textures) have a physical
 // address the GX texture and display-list registers can hold: 26 bits, the first 64 MB.
 constexpr uintptr_t GAME_IMAGE_BASE = 0x82800000u;
+
+// The game library must load at GAME_IMAGE_BASE. Everything the host does before loading it (mod
+// scans, cosmetics, the music pack index) allocates, and a heap block placed there moved the library
+// elsewhere and stopped the Source Port at startup. The range is held from before main and given
+// back the moment the library is loaded.
+struct GameImageReservation {
+  void* base = nullptr;
+  GameImageReservation() {
+    // Generous: the image's own size is checked again after the load.
+    base = VirtualAlloc((void*)GAME_IMAGE_BASE, 0x04000000u, MEM_RESERVE, PAGE_NOACCESS);
+  }
+  void release() {
+    if (base) VirtualFree(base, 0, MEM_RELEASE);
+    base = nullptr;
+  }
+};
+GameImageReservation g_game_image_reservation;
 
 MuGameApi g_game{};
 std::string g_dll = "melee_game.dll";
@@ -954,7 +971,8 @@ uint32_t h_game_options2() {
 uint32_t h_game_options3() {
   if (g_replaying) return g_replay_feature_options3;
   return (gx::RenderOptions::live_cpu_training() & MU_GAME_OPTION3_CPU_ALL) | hackpack::stage_bits() |
-         (gx::RenderOptions::live_unlock_all() ? 0u : MU_GAME_OPTION3_LOCKED_CONTENT);
+         (gx::RenderOptions::live_unlock_all() ? 0u : MU_GAME_OPTION3_LOCKED_CONTENT) |
+         (gx::RenderOptions::live_results_screen() ? 0u : MU_GAME_OPTION3_SKIP_RESULTS);
 }
 uint32_t h_game_options() {
   return (gecko::option_no_screen_shake ? MU_GAME_OPTION_NO_SCREEN_SHAKE : 0u) |
@@ -3031,6 +3049,7 @@ int run(void (*shutdown)(int)) {
     host::die("ISO DOL does not match vanilla Melee NTSC 1.02; the Source engine runs only the retail game (modded discs are not supported)");
   // Diagnostic builds of the game (for example the M0 maths audit) without replacing the shipped DLL.
   if (const char* dll = std::getenv("MELEE_GAME_DLL")) g_dll = dll;
+  g_game_image_reservation.release();
   HMODULE module = LoadLibraryA(g_dll.c_str());
   if (!module) host::die("cannot load %s (error %lu)", g_dll.c_str(), GetLastError());
   if ((uintptr_t)module != GAME_IMAGE_BASE) host::die("%s loaded at %p, not at %llX", g_dll.c_str(), (void*)module, (unsigned long long)GAME_IMAGE_BASE);

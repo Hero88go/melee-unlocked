@@ -55,6 +55,9 @@ int main() {
   user_gecko::install_static_runtime(); user_gecko::set_code_patches_allowed(true);
   CHECK(user_gecko::static_memory_required() == 0);
   CHECK(user_gecko::add("reserved", "04410000 11223344").empty());
+  // Imported but off: the game keeps its whole heap.
+  CHECK(user_gecko::static_memory_required() == 0);
+  for (auto& code : user_gecko::codes()) if (code.name == "reserved") code.enabled = true;
   CHECK(user_gecko::static_memory_required() == 0x10000u);
   user_gecko::static_memory_start(0x81600000, 0x10000);
   CHECK(user_gecko::entry != 0 && user_gecko::list > user_gecko::entry);
