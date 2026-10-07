@@ -83,7 +83,7 @@ int main() {
   char line[256];
   size_t n = net_trace::csv_row(r, line, sizeof line);
   expect(n == std::strlen(line));
-  expect(std::strcmp(line, "1234,5021.2500,3.50,0,1,3,-12000,1,48,0120,127,-128,-1,0,140,0,2,0,0\n") == 0);
+  expect(std::strcmp(line, "1234,5021.2500,3.50,0,1,3,-12000,1,48,0120,127,-128,-1,0,140,0,2,0,0,0\n") == 0);
   expect(commas(line) == commas(net_trace::csv_header()));
   expect(net_trace::csv_header()[std::strlen(net_trace::csv_header()) - 1] == '\n');
 
@@ -91,14 +91,14 @@ int main() {
   Record w;
   w.frame = -39; w.wall = 0.5; w.wait_frames = 12; w.flags = net_trace::kWait; w.ping_ms = 210;
   n = net_trace::csv_row(w, line, sizeof line);
-  expect(n > 0 && std::strcmp(line, "-39,0.5000,0.00,12,0,0,0,0,210,0000,0,0,0,0,0,0,0,0,0\n") == 0);
+  expect(n > 0 && std::strcmp(line, "-39,0.5000,0.00,12,0,0,0,0,210,0000,0,0,0,0,0,0,0,0,0,0\n") == 0);
   w.flags = net_trace::kShed; w.wait_frames = 0;
   n = net_trace::csv_row(w, line, sizeof line);
-  expect(n > 0 && std::strcmp(line, "-39,0.5000,0.00,0,0,0,0,-1,210,0000,0,0,0,0,0,0,0,0,0\n") == 0);
+  expect(n > 0 && std::strcmp(line, "-39,0.5000,0.00,0,0,0,0,-1,210,0000,0,0,0,0,0,0,0,0,0,0\n") == 0);
   // A tick the player marked (F8) reads back marked.
   w.flags = net_trace::kMark;
   n = net_trace::csv_row(w, line, sizeof line);
-  expect(n > 0 && std::strcmp(line, "-39,0.5000,0.00,0,0,0,0,0,210,0000,0,0,0,0,0,0,0,1,8\n") == 0);
+  expect(n > 0 && std::strcmp(line, "-39,0.5000,0.00,0,0,0,0,0,210,0000,0,0,0,0,0,0,0,1,8,0\n") == 0);
   {
     const std::string marked = std::string(net_trace::csv_header()) + line;
     net_trace::Trace trace;
@@ -226,7 +226,7 @@ int main() {
     const std::vector<std::string> a = lines(dir / "Game_A.trace");
     expect(a.size() == 4);
     expect(a[0] + "\n" == net_trace::csv_header());
-    expect(a[1] == "10,5021.2500,3.50,0,1,3,-12000,1,48,0120,127,-128,-1,0,140,0,2,0,0");
+    expect(a[1] == "10,5021.2500,3.50,0,1,3,-12000,1,48,0120,127,-128,-1,0,140,0,2,0,0,0");
     expect(a[3].rfind("12,", 0) == 0);
     expect(g_log.size() == 1 && g_log[0] == "slippi: session trace saved to Game_A.trace (3 rows)");
     writer.add(r);   // after the end: nowhere to go

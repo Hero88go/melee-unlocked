@@ -1345,6 +1345,10 @@ static int melee_main(int argc, char** argv) {
     if (arg == "--load-settings") load_settings = true;
     if (arg == "--card-dir") explicit_card_dir = true;
   }
+  // The launcher keeps a settings-window process on standby beside a running game. Sharing
+  // melee_port.log let it rotate the game's log away at its start, so a player's log held only the
+  // panel's three lines and every desync line of the match was lost.
+  if (settings_window_only && host::options.log_file.empty()) host::options.log_file = "melee_settings.log";
   gfx.pc_settings = !automated;
   g_crash_dialog = !automated;
   o.no_gc_adapter = automated;   // a hidden test run must not take the adapter from a game the player is running

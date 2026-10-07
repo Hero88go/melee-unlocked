@@ -9,6 +9,7 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -222,6 +223,11 @@ using DiscReader = bool (*)(uint32_t offset, void* dst, uint32_t size);
 inline void start_song(uint32_t, uint32_t) {}
 inline void stop() {}
 inline void set_disc_reader(DiscReader) {}
+inline void set_music_pack_reader(bool (*)(uint32_t, std::filesystem::path*)) {}
+inline bool resolve_music_pack_path(const std::string&, std::filesystem::path*) { return false; }
+inline void open_music_packs_folder() {}
+inline void set_music_packs_enabled(bool) {}
+inline bool music_packs_enabled() { return false; }
 inline void set_melee_volume(uint8_t) {}
 inline void set_next_song_gain(float) {}
 inline void set_paused(bool) {}

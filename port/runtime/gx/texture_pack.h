@@ -78,6 +78,8 @@ void refresh_packs();
 // Creates TexturePacks if it is missing and shows it in Explorer, so "+ Add" means "here is where
 // they go" rather than a file dialog that copies gigabytes of PNGs to a second place on disk.
 void open_packs_folder();
+// Opens the exact-name texture dump used to build replacements for the current game build.
+void open_dump_folder();
 std::vector<PackInfo> packs();
 // Switching a pack changes what the next texture lookup returns; it needs no rescan. Returns true
 // when the state changed, so the caller can drop textures it has already uploaded.

@@ -8,6 +8,8 @@
 namespace host {
 void log(const char*, ...) {}
 bool disc_read(uint32_t, void*, uint32_t) { return false; }
+bool disc_find_path_by_offset(uint32_t, std::string*) { return false; }
+bool disc_music_paths(std::vector<std::string>* paths) { if (paths) paths->clear(); return false; }
 void sim_cost_add(int, double) {}
 const double tsc_seconds = 0.0;
 }  // namespace host

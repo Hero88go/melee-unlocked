@@ -163,6 +163,7 @@ bool g_in_online_match = false;
 // A record stays open until the next tick asks for inputs, because its work time, its rollbacks
 // and the frames presented during it are only known by then. Observation only.
 static net_trace::Record g_trace_record;
+static bool g_trace_desync_pending = false;   // a checksum disagreed: marked on the next traced tick
 static bool g_trace_open = false;
 static int32_t g_trace_offset_us = 0;   // the time sync offset as last measured (every 30 frames)
 void trace_close_tick() {
@@ -474,7 +475,7 @@ void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_
       auto it = g_local_checksums.find(cf);
       if (it != g_local_checksums.end()) {
         g_last_checksum_frame[i] = cf; ++g_checksums_compared;
-        if (it->second != results[i]->checksum) { ++g_checksums_mismatched; host::log("slippi: DESYNC: checksum mismatch at frame %d (ours %08X, player %u %08X)", cf, it->second, results[i]->player_idx, results[i]->checksum); }
+        if (it->second != results[i]->checksum) { ++g_checksums_mismatched; g_trace_desync_pending = true; host::log("slippi: DESYNC: checksum mismatch at frame %d (ours %08X, player %u %08X)", cf, it->second, results[i]->player_idx, results[i]->checksum); }
         else if (g_checksums_compared % 20 == 0) host::log("slippi: checksums agree through frame %d (%u compared, %u mismatched)", cf, g_checksums_compared, g_checksums_mismatched);
       }
     }
@@ -571,7 +572,7 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     host::log("slippi: online game starts, delay %d frames, direct peer to peer", (int)delay);
     g_in_online_match = true;
     host::input_mark_match_start();
-    g_local_checksums.clear(); g_checksums_compared = 0; g_checksums_mismatched = 0; std::fill(std::begin(g_last_checksum_frame), std::end(g_last_checksum_frame), 0);
+    g_local_checksums.clear(); g_checksums_compared = 0; g_checksums_mismatched = 0; g_trace_desync_pending = false; std::fill(std::begin(g_last_checksum_frame), std::end(g_last_checksum_frame), 0);
   }
   if (is_disconnected()) {
     q.push_back(3);
@@ -597,6 +598,7 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
   g_trace_record.ping_ms = (uint16_t)std::clamp(g_netplay->LastPingMs(), 0, 0xFFFF);
   if (skip) g_trace_record.flags |= g_input_wait_frames > 0 ? net_trace::kWait : net_trace::kShed;
   else if (!q.empty() && q[0] == 4) g_trace_record.flags |= net_trace::kAdvance;
+  if (g_trace_desync_pending) { g_trace_record.flags |= net_trace::kDesync; g_trace_desync_pending = false; }
   // F8: the player marks "that just felt wrong", so a report can point at the moment.
   static const char* const kMarkNames[] = {"", "", "looked wrong", "input wrong", "sounded wrong"};
   static const uint8_t kMarkFlags[] = {0, net_trace::kMark, net_trace::kMarkVisual, net_trace::kMarkInput, net_trace::kMarkAudio};
