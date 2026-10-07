@@ -716,7 +716,7 @@ static void apply_mod_code() {
     slippi::online::set_native_gameplay_profile(slippi::online::NativeGameplayProfile::OtherMod);
     return;
   }
-  // Online: a mod disc plays Direct only, against the same mod (Unranked, Teams and Party refuse).
+  // Online: a mod disc plays Direct and Teams, against the same mod on every side (Unranked and Party refuse).
   // Hash the entire disc, including every file payload and DOL data section. The patched text
   // also binds the identity to Slippi's boot code. No path/mtime cache can reuse a stale digest.
   {
@@ -740,7 +740,7 @@ static void apply_mod_code() {
     build.name = title[0] ? std::string(title) : std::string("a modded disc");
     slippi::online::set_local_build(build);
     slippi::online::set_native_gameplay_profile(slippi::online::NativeGameplayProfile::OtherMod);
-    log("mods: online plays Direct only against the same mod (%s, %s)", build.name.c_str(), hex.substr(0, 16).c_str());
+    log("mods: online plays Direct and Teams against the same mod (%s, %s)", build.name.c_str(), hex.substr(0, 16).c_str());
   }
 }
 // At each retrace: code blocks written since the last look are compared again. A 64 KB block can

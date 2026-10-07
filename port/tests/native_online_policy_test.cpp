@@ -9,9 +9,9 @@ int main() {
   using slippi::online::native_profile_mode_error;
   for (int mode = 0; mode <= 4; ++mode) {
     CHECK((native_profile_mode_error(NativeGameplayProfile::Vanilla, mode) == nullptr) == (mode != 0));
-    CHECK((native_profile_mode_error(NativeGameplayProfile::Akaneia, mode) == nullptr) == (mode == 2));
-    // Every gameplay mod is Direct-only (against the same build, checked in netplay).
-    CHECK((native_profile_mode_error(NativeGameplayProfile::OtherMod, mode) == nullptr) == (mode == 2));
+    CHECK((native_profile_mode_error(NativeGameplayProfile::Akaneia, mode) == nullptr) == (mode == 2 || mode == 3));
+    // Every gameplay mod is Direct and Teams only (against the same build, checked in netplay).
+    CHECK((native_profile_mode_error(NativeGameplayProfile::OtherMod, mode) == nullptr) == (mode == 2 || mode == 3));
   }
   // Ranked is refused for every profile, with a message the game can show on its search screen.
   for (auto profile : {NativeGameplayProfile::Vanilla, NativeGameplayProfile::Akaneia, NativeGameplayProfile::OtherMod}) {
@@ -20,5 +20,5 @@ int main() {
   }
   CHECK(native_profile_mode_error(NativeGameplayProfile::Vanilla, 5) != nullptr);
   CHECK(std::strstr(native_profile_mode_error(NativeGameplayProfile::Akaneia, 1), "Direct") != nullptr);
-  CHECK(std::strstr(native_profile_mode_error(NativeGameplayProfile::OtherMod, 3), "Direct") != nullptr);
+  CHECK(std::strstr(native_profile_mode_error(NativeGameplayProfile::OtherMod, 1), "Direct") != nullptr);
 }

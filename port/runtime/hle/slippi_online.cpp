@@ -688,7 +688,8 @@ void start_find_match(const uint8_t* payload) {
     if (g_local_selections.is_stage_selected && std::find(g_allowed_stages.begin(), g_allowed_stages.end(), g_local_selections.stage_id) == g_allowed_stages.end()) {
       g_forced_error = "The stage being requested is not allowed in this mode"; return;
     }
-  } else if (search.mode == Matchmaking::TEAMS && g_local_selections.character_id >= 26) {
+  } else if (search.mode == Matchmaking::TEAMS && g_local_selections.character_id >= 26 &&
+             !(g_local_build.mod_view && g_local_build.extended_content)) {
     g_forced_error = "The character you selected is not allowed in this mode"; return;
   }
   if (!enet_ready()) { g_forced_error = "Networking unavailable"; return; }
@@ -785,7 +786,8 @@ void prepare_online_match_state(std::vector<uint8_t>& q);
 // both sides; an opponent claiming a mod there is refused too.
 int build_verdict(uint8_t remote_count, std::string* why) {
   if (!g_netplay) return 1;
-  const bool direct = g_last_search.mode == Matchmaking::DIRECT;
+  // Teams is played by code like Direct, so a mod build is checked on every remote player the same way.
+  const bool direct = g_last_search.mode == Matchmaking::DIRECT || g_last_search.mode == Matchmaking::TEAMS;
   bool waiting = false;
   for (int i = 0; i < remote_count; ++i) {
     const auto rb = g_netplay->GetRemoteBuild(i);
@@ -799,7 +801,7 @@ int build_verdict(uint8_t remote_count, std::string* why) {
     }
     if (g_local_build.mod_view) {
       if (!native_direct_builds_match(true, g_local_build.fingerprint, rb.mod_view, rb.fingerprint)) {
-        *why = "Your opponent is not on the same mod. This Direct match needs the same build on both sides";
+        *why = "Another player is not on the same mod. This match needs the same build on every side";
         return -1;
       }
     } else if (rb.mod_view) {
@@ -969,10 +971,10 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
       if (!local_char_ok) { cleanup_connection(); g_forced_error = "The character you selected is not allowed in this mode"; prepare_online_match_state(q); return; }
       if (!remote_char_ok) { cleanup_connection(); prepare_online_match_state(q); return; }
       if (std::find(g_allowed_stages.begin(), g_allowed_stages.end(), stage_id) == g_allowed_stages.end()) { cleanup_connection(); prepare_online_match_state(q); return; }
-    } else if (g_last_search.mode == Matchmaking::TEAMS) {
+    } else if (g_last_search.mode == Matchmaking::TEAMS && !(g_local_build.mod_view && g_local_build.extended_content)) {
       if (!local_char_ok) { cleanup_connection(); g_forced_error = "The character you selected is not allowed in this mode"; prepare_online_match_state(q); return; }
       if (!remote_char_ok) { cleanup_connection(); prepare_online_match_state(q); return; }
-    } else if (g_last_search.mode == Matchmaking::DIRECT) {
+    } else if (g_last_search.mode == Matchmaking::DIRECT || g_last_search.mode == Matchmaking::TEAMS) {
       // build_verdict already confirmed the peer's content. Only Static mod boot advertises that
       // it runs the disc's extended fighter/stage code; Source and retail keep vanilla limits.
       bool foreign = !native_direct_selection_supported(g_local_build.mod_view, g_local_build.extended_content,
