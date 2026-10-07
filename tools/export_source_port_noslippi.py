@@ -241,7 +241,7 @@ Only `hle_decls.h` and `guest_symbols.h` from that folder are used; nothing else
 ## 3. The game library (GCC)
 
     cmake -S sourceport/game -B build-game -G Ninja -DCMAKE_BUILD_TYPE=Release ^
-      -DCMAKE_TOOLCHAIN_FILE=sourceport/cmake/mingw-w64-x86_64.cmake ^
+      -DCMAKE_TOOLCHAIN_FILE=%CD%/sourceport/cmake/mingw-w64-x86_64.cmake ^
       -DMELEE_MINGW_ROOT=<folder holding bin/gcc.exe> -DMELEE_PYTHON=<python.exe> -DMU_NO_SLIPPI=ON
     cmake --build build-game --target melee_game
 
@@ -340,6 +340,13 @@ def main():
     export.copy_file('port/CMakeLists.txt')
     for name in app_closure():
         export.copy_file('port/app/' + name)
+    # The launcher's resource script and what it embeds (icons, bitmaps), which no #include reaches,
+    # and the trace viewer the launcher links.
+    for pattern in ('*.rc', '*.ico', '*.bmp', 'launcher_trace_view.*'):
+        for path in sorted((ROOT / 'port/app').glob(pattern)):
+            export.copy_file('port/app/' + path.name)
+    if (ROOT / 'port/app/stock_icons').is_dir():
+        export.copy_tree('port/app/stock_icons')
     export.copy_tree('port/runtime', HOST_EXCLUDED)
     export.copy_file('port/dlss5_forwarder/forwarder.cpp', required=False)
     for name in RECOMP_FILES:
@@ -355,7 +362,11 @@ def main():
         export.copy_file(name)
     # The peer-to-peer modes: protocol document, the two-instance test and its fault proxy, the bot script, tests.
     for name in ('docs/mu-net-protocol.md', 'tools/p2p_pair.py', 'tools/p2p_launcher_pair.py', 'tools/gecko_targets.py', 'tools/net_fault_proxy.py', 'tools/melee_iso.py',
-                 'port/scripts/p2p_bot.txt', 'port/tests/mu_net_test.cpp', 'port/tests/launcher_lobby_p2p_test.cpp'):
+                 'port/scripts/p2p_bot.txt', 'port/tests/mu_net_test.cpp', 'port/tests/launcher_lobby_p2p_test.cpp',
+                 # the shared regression checks the standalone build also runs (port/CMakeLists.txt)
+                 'port/tests/offline_input_delay_test.cpp', 'port/tests/stage_dat_safety_test.cpp',
+                 'port/tests/user_gecko_test.cpp', 'port/tests/disc_archive_test.cpp',
+                 'port/tests/disc_fst_paths_test.cpp', 'port/tests/cosmetic_mods_test.cpp'):
         export.copy_file(name, required=False)
     prepare = args.publish_tree / 'tools/prepare_native_sources.py'
     if not prepare.is_file():

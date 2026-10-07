@@ -1313,10 +1313,24 @@ void set_iso(const std::string& path) {
   invalidate(drop_sub_rect());
 }
 
+// An NKit image is the retail disc trimmed and repacked: not the 1.02 ISO and not a mod. Said
+// plainly instead of filing it under Mods, where Play then needed a retail disc the player lacks.
+bool nkit_image(const std::wstring& path) {
+  std::ifstream in(path, std::ios::binary);
+  char tag[4] = {};
+  if (!in.seekg(0x200) || !in.read(tag, 4)) return false;
+  return std::memcmp(tag, "NKIT", 4) == 0;
+}
+void explain_nkit() {
+  MessageBoxW(g_main, L"This is an NKit image, not a full disc image. Melee Unlocked needs the full Melee NTSC 1.02 ISO.\n\n"
+              L"Restore it with NKit's \"Recover to ISO\" and select the restored .iso.", L"NKit image", MB_ICONINFORMATION);
+}
+
 void browse() {
   wchar_t file[MAX_PATH]{};
   OPENFILENAMEW ofn{}; ofn.lStructSize = sizeof ofn; ofn.hwndOwner = g_main; ofn.lpstrFilter = L"GameCube disc image (*.iso;*.gcm)\0*.iso;*.gcm\0All files\0*.*\0"; ofn.lpstrFile = file; ofn.nMaxFile = MAX_PATH; ofn.Flags = OFN_FILEMUSTEXIST;
   if (GetOpenFileNameW(&ofn)) {
+    if (nkit_image(file)) { explain_nkit(); return; }
     if (mod_manager::hash_file(file, BCRYPT_MD5_ALGORITHM) != mod_manager::kVanillaMd5) {
       mod_manager::open(); std::thread(mod_manager::install_file, std::wstring(file), std::string(), g_iso).detach();
     } else { set_iso(narrow(file)); save_ini(); }
@@ -1654,6 +1668,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
           vanilla = mod_manager::hash_file(file, BCRYPT_MD5_ALGORITHM) == mod_manager::kVanillaMd5;
           SetCursor(old);
         }
+        if (nkit_image(file)) { explain_nkit(); continue; }
         if (mod_manager::is_mod_file(file) || (disc && !vanilla)) {
           mod_manager::open();
           std::thread(mod_manager::install_file, file, std::string(), base_iso).detach();

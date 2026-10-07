@@ -502,6 +502,9 @@ typedef struct MuHostApi {
 /* "Unlock everything" switched off (Game tab): the save file decides what is unlocked. A plain
  * option; the game ignores it in a network session (shim/mu_gecko.c mu_unlock_all). */
 #define MU_GAME_OPTION3_LOCKED_CONTENT       0x80000000u
+/* "Show results screen" switched off (Game tab): an offline match goes back to character select
+ * (shim/mu_gecko.c mu_skip_results). */
+#define MU_GAME_OPTION3_SKIP_RESULTS         0x40000000u
 
 /* One writable region of game-owned state. Regions do not include the live native stack, host
  * timing, ARAM, or process allocations; callers must capture those separately for rollback. */

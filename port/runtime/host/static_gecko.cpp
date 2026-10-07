@@ -57,8 +57,10 @@ void observe(ppc::Context&, uint32_t address, uint32_t bytes, uint64_t value) {
 }
 
 uint32_t reserve() {
-  // A launch with no imported codes keeps exactly the original guest memory map.
-  if (codes().empty()) return 0;
+  // A launch with no code switched on keeps exactly the original guest memory map: the reservation
+  // comes out of the game's heap, and large mod discs (ACE) were running out of it with codes
+  // imported but all off.
+  if (codes().empty() || !any_enabled()) return 0;
   size_t bytes = 0;
   for (const auto& code : codes()) bytes += code.lines.size() * 8;
   const uint64_t need = kHandlerOffset + gecko::codehandler_bin_size + bytes + kStackBytes + 32;

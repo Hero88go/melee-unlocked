@@ -1875,6 +1875,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.settings_open = false;
   options.cpu_20xx = false;   // a file without the key: off
   options.unlock_all = true;   // a file without the key: on
+  options.results_screen = true;
   options.offline_delay = false;
   options.cpu_tech = options.cpu_getup = options.cpu_di = options.cpu_sdi = 0;   // files without the keys: off
   options.cpu_no_taunt = options.cpu_lcancel = options.cpu_no_rapid_jab = options.cpu_no_transform = false;
@@ -2006,6 +2007,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "gamelanguage") host::g_game_language.store(value == "1" ? 1 : value == "2" ? 2 : 0);
       else if (key == "cpu_20xx") options.cpu_20xx = value == "1";
       else if (key == "unlock_all") options.unlock_all = value != "0";
+      else if (key == "results_screen") options.results_screen = value != "0";
       else if (key == "cpu_tech") options.cpu_tech = std::clamp(std::atoi(value.c_str()), 0, 5);
       else if (key == "cpu_getup") options.cpu_getup = std::clamp(std::atoi(value.c_str()), 0, 5);
       else if (key == "cpu_di") options.cpu_di = std::clamp(std::atoi(value.c_str()), 0, 3);
@@ -2193,6 +2195,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   if (options.te_options2 & 0x800000u) { options.cpu_20xx = true; options.te_options2 &= ~0x800000u; }
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
   RenderOptions::live_unlock_all() = options.unlock_all;
+  RenderOptions::live_results_screen() = options.results_screen;
   RenderOptions::live_offline_delay() = options.offline_delay;
   host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
   RenderOptions::live_cpu_training() = options.cpu_training_word();
@@ -3288,6 +3291,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ngamelanguage " << host::g_game_language.load()
        << "\ncpu_20xx " << (options.cpu_20xx ? 1 : 0)
        << "\nunlock_all " << (options.unlock_all ? 1 : 0)
+       << "\nresults_screen " << (options.results_screen ? 1 : 0)
        << "\ncpu_tech " << options.cpu_tech
        << "\ncpu_getup " << options.cpu_getup
        << "\ncpu_di " << options.cpu_di
@@ -6773,6 +6777,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetTooltip("On: every fighter, stage and mode is available from the start.\n"
                         "Off: your save file decides, and the game unlocks things as you play.\n"
                         "Offline only: online play always has everything. Takes effect on the next screen.");
+    if (settings_toggle("Show results screen", &options.results_screen)) {
+      RenderOptions::live_results_screen() = options.results_screen;
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("On: the results screen after each offline match.\n"
+                        "Off: straight back to character select, for playing sets back to back.\n"
+                        "Online play always goes back to character select.");
     ImGui::TextUnformatted("CPU players");
     if (settings_toggle("20XX CPUs", &options.cpu_20xx)) {
       RenderOptions::live_cpu_20xx() = options.cpu_20xx;
@@ -7659,7 +7671,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       } else if (state.active_tab == 6) {
     // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
     ImGui::TextWrapped("Imported Gecko codes run offline. They are suspended online and during replay playback.");
-    settings_hint("Restart the game after importing codes so they can run. Use codes for Melee NTSC 1.02; "
+    settings_hint("Restart the game after importing codes or turning on the first one, so they can run. Use codes for Melee NTSC 1.02; "
                   "codes for another revision or conflicting mods may not work.");
     ImGui::Separator();
     ImGui::TextUnformatted("Your codes");
@@ -7685,7 +7697,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           std::string tip;
           for (const std::string& n : c.notes) tip += n + "\n";
           if (!c.supported) tip += "Cannot run here: this code " + c.reason + ".";
-          else tip += "Runs offline only. Restart after importing new codes.";
+          else tip += "Runs offline only. Restart after importing new codes or turning on the first one.";
           ImGui::SetTooltip("%s", tip.c_str());
         }
         ImGui::PopID();

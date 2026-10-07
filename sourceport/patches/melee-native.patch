@@ -105236,7 +105236,7 @@ index edf865c17..df647f993 100644
  /* 16CF4C */ void fn_8016CF4C(int, MatchOutcome);
  /* 16CFE0 */ void fn_8016CFE0(void);
 diff --git a/src/melee/gm/gmvsmelee.c b/src/melee/gm/gmvsmelee.c
-index 61bebcfb0..88a81dec4 100644
+index 61bebcfb0..297a762e9 100644
 --- a/src/melee/gm/gmvsmelee.c
 +++ b/src/melee/gm/gmvsmelee.c
 @@ -18,6 +18,13 @@
@@ -105331,7 +105331,7 @@ index 61bebcfb0..88a81dec4 100644
      gm_SetupSubColors(start);
      gm_LoadRumbleEnabled(start);
      gm_LoadAnnouncer();
-@@ -211,6 +271,31 @@ void gmVsMelee_ExitVs(GameModeState* state, u8 id0, u8 id1)
+@@ -211,6 +271,33 @@ void gmVsMelee_ExitVs(GameModeState* state, u8 id0, u8 id1)
      MatchExitInfo* exit = gm_GetGameModeStateExitData(state);
      ssize_t i;
  
@@ -105347,8 +105347,10 @@ index 61bebcfb0..88a81dec4 100644
 +    if (mu_general_codes()) {
 +#endif
 +        /* Offline the results screen stays (the game's own next state) and only the rematch is
-+         * taken from the code; a network match goes to character select, as the code does. */
-+        u8 next = mu_online_codes() != 0 ? 0 : id0;
++         * taken from the code; a network match goes to character select, as the code does, and so
++         * does an offline one with the player's "Show results screen" off. */
++        extern int mu_skip_results(void);
++        u8 next = mu_online_codes() != 0 || mu_skip_results() ? 0 : id0;
 +        for (i = 0; i < 4; i++) {
 +            u32 held = (u32) gm_GetButtonsPressed((u8) i);
 +            if ((held & HSD_PAD_A) && (held & HSD_PAD_B)) {
@@ -105363,7 +105365,7 @@ index 61bebcfb0..88a81dec4 100644
      for (i = 0; i < GM_MAX_PLAYERS; i++) {
          if (exit->match_end.player_standings[i].pkind == Gm_PKind_Human) {
              gm_80162574(exit->match_end.player_standings[i].ckind,
-@@ -300,21 +385,21 @@ void gmVsMelee_ExitResults(GameModeState* state, VsModeData* vs, u8 state_id)
+@@ -300,21 +387,21 @@ void gmVsMelee_ExitResults(GameModeState* state, VsModeData* vs, u8 state_id)
              unk = gm_80172DD4(gmMainLib_8015ED98()->x0);
              if (unk != ChKind_None) {
                  gm_InitChallengerData(match_end->player_standings[idx].ckind,
