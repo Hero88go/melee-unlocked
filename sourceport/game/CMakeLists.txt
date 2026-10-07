@@ -179,7 +179,8 @@ add_test(NAME native_card_endian COMMAND mu_card_endian_test)
 
 # Every annotated DISC_STRUCT field sits at its console offset in the host layout (tools/disc_offset_audit.py).
 # An 8-byte pointer field in a disc struct shifted Link's attributes from +0x94 and went unnoticed.
-add_test(NAME native_disc_offsets COMMAND "${MELEE_PYTHON}" "${REPO}/tools/disc_offset_audit.py")
+add_test(NAME native_disc_offsets COMMAND "${CONTENT_TEST_PYTHON}" "${REPO}/tools/disc_offset_audit.py"
+  --build "${CMAKE_CURRENT_BINARY_DIR}" --decomp "${D}" --ninja "${CMAKE_MAKE_PROGRAM}")
 
 # ---- source implementations of assembly-only SDK maths ----
 # Native game builds never consume generated PPC translations or a retail DOL.

@@ -448,6 +448,10 @@ void apply_optional_codes() {
   // Clean mode: the disc's code is the only code in RAM. Writing an optional code's words (or the
   // retail words it replaces) would overwrite the disc's own changes at those addresses.
   if (host::mod_clean_mode()) return;
+  if (g_gct_address && results_codes::set_restore_enabled(
+        host::ptr(g_gct_address, (uint32_t)gecko::slippi_gct_size), gecko::slippi_gct_size,
+        gecko::option_offline_results))
+    host::mark_ram_write(g_gct_address, (uint32_t)gecko::slippi_gct_size);
   if (host::mod_disc_active() && g_gct_address && g_unlock_live >= 0 &&
       g_unlock_live != (gecko::option_unlock_all ? 1 : 0)) {
     const bool on = gecko::option_unlock_all;
@@ -561,6 +565,7 @@ void prepare_gct_load(const uint8_t* payload) {
   }
   rebuild_optional_codes(g_read_queue.data());
   results_codes::upgrade(g_read_queue.data(), g_read_queue.size());
+  results_codes::set_restore_enabled(g_read_queue.data(), g_read_queue.size(), gecko::option_offline_results);
   // A prebuilt guest may still contain the old stack-slot form. Its end-of-match
   // function must execute the upgraded RAM caves, rather than that older C.
   std::vector<uint8_t> results_version(gecko::slippi_gct, gecko::slippi_gct + gecko::slippi_gct_size);

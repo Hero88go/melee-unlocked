@@ -51,6 +51,26 @@ int main() {
   ppc::interpret(returned, memory.data(), data);
   CHECK(returned.r[3] == 12 && returned.lr == 0xDEAD0000u && returned.call_depth == 0);
   ppc::set_hook(continuation, nullptr);
+  // A compiled leaf tail-returns into a redirected RAM continuation. It must
+  // stay in this interpreter instead of recursively calling its dispatch thunk.
+  static constexpr uint32_t leaf = continuation + 0x100, ram_return = continuation + 0x200;
+  static unsigned thunk_calls = 0;
+  ppc::set_hook(leaf, [](ppc::Context& c, uint8_t*) { c.lr = ram_return; });
+  ppc::set_hook(ram_return, [](ppc::Context&, uint8_t*) { ++thunk_calls; });
+  ppc::add_ram_code_range(ram_return, ram_return + 12);
+  host::wr32(data, 0x48000000u | ((leaf - data) & 0x03FFFFFCu));
+  host::wr32(ram_return, 0x38630001);       // addi r3,r3,1
+  host::wr32(ram_return + 4, 0x7D8803A6);   // mtlr r12
+  host::wr32(ram_return + 8, 0x4E800020);   // blr to the outer invocation
+  for (unsigned i = 0; i < 10000; ++i) {
+    returned = {};
+    returned.lr = returned.r[12] = 0xDEAD0000u;
+    ppc::interpret(returned, memory.data(), data);
+    CHECK(returned.r[3] == 1 && returned.call_depth == 0);
+  }
+  CHECK(thunk_calls == 0);
+  ppc::remove_ram_code_range(ram_return, ram_return + 12);
+  ppc::set_hook(leaf, nullptr); ppc::set_hook(ram_return, nullptr);
   std::memset(memory.data() + (data - ppc::RAM_BASE), 0, 12);
   user_gecko::install_static_runtime(); user_gecko::set_code_patches_allowed(true);
   CHECK(user_gecko::static_memory_required() == 0);
@@ -84,6 +104,12 @@ int main() {
   CHECK(slippi::unlock_codes::read_word(old_results.data() + 20) == slippi::results_codes::kSaveNext);
   CHECK(slippi::unlock_codes::read_word(old_results.data() + 48) == slippi::results_codes::kRestoreNext);
   CHECK(!slippi::results_codes::upgrade(old_results.data(), old_results.size()));
+  const auto enabled_results = old_results;
+  CHECK(slippi::results_codes::set_restore_enabled(old_results.data(), old_results.size(), false));
+  CHECK(slippi::unlock_codes::read_word(old_results.data() + 48) == 0x60000000u);
+  CHECK(!slippi::results_codes::set_restore_enabled(old_results.data(), old_results.size(), false));
+  CHECK(slippi::results_codes::set_restore_enabled(old_results.data(), old_results.size(), true));
+  CHECK(old_results == enabled_results);
 
   choose("00410000 000200AB\n02410004 0001CDEF\n04410008 11223344\n"
          "06410010 0000000B\n01020304 05060708\n090A0B00 00000000\n"

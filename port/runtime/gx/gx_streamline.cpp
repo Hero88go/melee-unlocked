@@ -1,6 +1,7 @@
 // Streamline / DLSS integration (see gx_streamline.h).
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gx_streamline.h"
+#include "driver_call_guard.h"
 #include "host.h"
 #define NOMINMAX
 #include <windows.h>
@@ -52,6 +53,7 @@ void jitter(uint32_t index, float* jx, float* jy) {
 bool init(const std::wstring&, bool) { host::log("dlss: built without the Streamline SDK"); return false; }
 bool frame_generation_deferred() { return false; }
 void shutdown() {}
+void disable_after_resource_error(const char*) {}
 void shutdown_for_process_exit() {}
 bool available() { return false; }
 bool ray_reconstruction_available() { return false; }
@@ -95,6 +97,14 @@ bool g_reflex_ready = false;
 bool g_rr_evaluation_logged = false;
 sl::FrameToken* g_token = nullptr;
 sl::ViewportHandle g_viewport{0u};
+bool g_driver_failed = false;
+template<class Call> sl::Result driver_call(Call call) {
+  return gx::guarded_driver_call(g_driver_failed, call, sl::Result::eErrorInvalidState,
+    [](const std::system_error& error) {
+      disable_after_resource_error(error.what());
+    });
+}
+
 typedef HRESULT(WINAPI* PFunCreateDXGIFactory2)(UINT, REFIID, void**);
 typedef HRESULT(WINAPI* PFunD3D12CreateDevice)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
 PFunCreateDXGIFactory2 g_create_factory2 = nullptr;
@@ -211,7 +221,7 @@ bool init(const std::wstring& exe_dir, bool load_frame_generation) {
   pref.applicationId = 231313132;   // NVIDIA sample application id: valid for development builds of non-registered titles
   pref.projectId = "5d3d9a7e-1c2b-4c9e-9a0e-2f6b8c1d4e70";
   pref.renderAPI = sl::RenderAPI::eD3D12;
-  sl::Result res = slInit(pref, sl::kSDKVersion);
+  sl::Result res = driver_call([&] { return slInit(pref, sl::kSDKVersion); });
   if (res != sl::Result::eOk) { host::log("dlss: slInit failed (%d); DLSS unavailable", (int)res); return false; }
   g_ready = true;
   host::log("dlss: Streamline initialised (SDK %llu)", (unsigned long long)sl::kSDKVersion);
@@ -223,7 +233,7 @@ bool init(const std::wstring& exe_dir, bool load_frame_generation) {
 }
 
 void shutdown() {
-  if (g_ready) { slShutdown(); g_ready = false; }
+  if (g_ready) { driver_call([&] { return slShutdown(); }); g_ready = false; }
 }
 void shutdown_for_process_exit() {
   // Repeated clean-ISO captures reached slShutdown() and then blocked inside
@@ -235,6 +245,23 @@ void shutdown_for_process_exit() {
   g_dlss_ok = g_fg_ok = g_reflex_ok = g_rr_ok = g_fg_on = false;
 }
 bool available() { return g_ready && g_dlss_ok; }
+void disable_after_resource_error(const char* message) {
+  host::log("dlss: driver resource failure (%s); optional NVIDIA effects disabled for this session", message);
+  g_driver_failed = true;
+  g_dlss_ok = g_rr_ok = g_reflex_ok = false;
+  // Present runs through the interposer. Stop generation even though ordinary
+  // SDK calls are now quarantined. Keep its resources alive for in-flight work.
+  if (g_fg_on) {
+    try {
+      sl::DLSSGOptions off{};
+      off.mode = sl::DLSSGMode::eOff;
+      off.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
+      slDLSSGSetOptions(g_viewport, off);
+    } catch (const std::system_error&) {}
+  }
+  g_fg_ok = g_fg_on = false;
+  g_token = nullptr;
+}
 bool ray_reconstruction_available() { return g_ready && g_rr_ok; }
 
 long create_dxgi_factory2(uint32_t flags, const void* riid, void** out) {
@@ -247,15 +274,15 @@ long d3d12_create_device(void* adapter, int fl, const void* riid, void** out) {
 }
 void set_device(ID3D12Device* device) {
   if (!g_ready) return;
-  sl::Result res = slSetD3DDevice(device);
+  sl::Result res = driver_call([&] { return slSetD3DDevice(device); });
   if (res != sl::Result::eOk) { host::log("dlss: slSetD3DDevice failed (%d)", (int)res); g_dlss_ok = false; return; }
   sl::FeatureRequirements req{};
-  g_dlss_ok = slGetFeatureRequirements(sl::kFeatureDLSS, req) == sl::Result::eOk;
+  g_dlss_ok = driver_call([&] { return slGetFeatureRequirements(sl::kFeatureDLSS, req); }) == sl::Result::eOk;
   sl::FeatureRequirements fg_req{}, rx_req{};
-  g_fg_ok = slGetFeatureRequirements(sl::kFeatureDLSS_G, fg_req) == sl::Result::eOk;
-  g_reflex_ok = slGetFeatureRequirements(sl::kFeatureReflex, rx_req) == sl::Result::eOk;
+  g_fg_ok = driver_call([&] { return slGetFeatureRequirements(sl::kFeatureDLSS_G, fg_req); }) == sl::Result::eOk;
+  g_reflex_ok = driver_call([&] { return slGetFeatureRequirements(sl::kFeatureReflex, rx_req); }) == sl::Result::eOk;
   sl::FeatureRequirements rr_req{};
-  const sl::Result rr_requirements = slGetFeatureRequirements(sl::kFeatureDLSS_RR, rr_req);
+  const sl::Result rr_requirements = driver_call([&] { return slGetFeatureRequirements(sl::kFeatureDLSS_RR, rr_req); });
   g_rr_ok = rr_requirements == sl::Result::eOk;
   if (!g_rr_ok) host::log("dlss-rr: plugin did not initialize (%d)", (int)rr_requirements);
   host::log("dlss: %s", g_dlss_ok ? "available (off until selected under Upscaling in PC settings)" : "feature failed to initialise; native rendering only");
@@ -263,7 +290,7 @@ void set_device(ID3D12Device* device) {
 void* native_interface(void* proxy) {
   if (!g_ready || !proxy) return proxy;
   void* base = nullptr;
-  if (slGetNativeInterface(proxy, &base) != sl::Result::eOk || !base) return proxy;
+  if (driver_call([&] { return slGetNativeInterface(proxy, &base); }) != sl::Result::eOk || !base) return proxy;
   // slGetNativeInterface adds a reference; the proxy already holds one for as long as we use it.
   ((IUnknown*)base)->Release();
   return base;
@@ -275,7 +302,7 @@ bool dlss_supported(IDXGIAdapter* adapter) {
   sl::AdapterInfo info{};
   info.deviceLUID = (uint8_t*)&desc.AdapterLuid;
   info.deviceLUIDSizeInBytes = sizeof(LUID);
-  sl::Result res = slIsFeatureSupported(sl::kFeatureDLSS, info);
+  sl::Result res = driver_call([&] { return slIsFeatureSupported(sl::kFeatureDLSS, info); });
   if (res != sl::Result::eOk) {
     const char* why = res == sl::Result::eErrorOSOutOfDate ? "OS out of date" : res == sl::Result::eErrorDriverOutOfDate ? "driver out of date"
                     : res == sl::Result::eErrorNoSupportedAdapterFound || res == sl::Result::eErrorAdapterNotSupported ? "adapter not supported" : "not supported";
@@ -287,13 +314,13 @@ bool dlss_supported(IDXGIAdapter* adapter) {
     g_fg_ok = false;
     host::log("dlss: frame generation not loaded (off at startup; turning it on applies at the next start)");
   } else if (g_fg_ok) {
-    const sl::Result fg = slIsFeatureSupported(sl::kFeatureDLSS_G, info);
+    const sl::Result fg = driver_call([&] { return slIsFeatureSupported(sl::kFeatureDLSS_G, info); });
     g_fg_ok = fg == sl::Result::eOk;
     host::log("dlss: frame generation %s (%d)", g_fg_ok ? "available" : "not available on this system", (int)fg);
   }
-  if (g_reflex_ok) g_reflex_ok = slIsFeatureSupported(sl::kFeatureReflex, info) == sl::Result::eOk;
+  if (g_reflex_ok) g_reflex_ok = driver_call([&] { return slIsFeatureSupported(sl::kFeatureReflex, info); }) == sl::Result::eOk;
   if (g_rr_ok) {
-    const sl::Result rr = slIsFeatureSupported(sl::kFeatureDLSS_RR, info);
+    const sl::Result rr = driver_call([&] { return slIsFeatureSupported(sl::kFeatureDLSS_RR, info); });
     g_rr_ok = rr == sl::Result::eOk;
     host::log("dlss-rr: %s on this adapter (%d)%s",
               g_rr_ok ? "plugin ready" : "not supported", (int)rr,
@@ -307,7 +334,7 @@ bool dlss_optimal_size(DlssMode mode, uint32_t out_w, uint32_t out_h, uint32_t* 
   sl::DLSSOptions o{};
   o.mode = to_sl(mode); o.outputWidth = out_w; o.outputHeight = out_h;
   sl::DLSSOptimalSettings s{};
-  if (slDLSSGetOptimalSettings(o, s) != sl::Result::eOk) return false;
+  if (driver_call([&] { return slDLSSGetOptimalSettings(o, s); }) != sl::Result::eOk) return false;
   *rw = s.optimalRenderWidth; *rh = s.optimalRenderHeight;
   *min_w = s.renderWidthMin; *min_h = s.renderHeightMin; *max_w = s.renderWidthMax; *max_h = s.renderHeightMax;
   return true;
@@ -331,7 +358,7 @@ bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h, bool color_
     const sl::DLSSPreset p = *e == 'L' ? sl::DLSSPreset::ePresetL : *e == 'M' ? sl::DLSSPreset::ePresetM : sl::DLSSPreset::ePresetK;
     o.dlaaPreset = o.qualityPreset = o.balancedPreset = o.performancePreset = o.ultraPerformancePreset = p;
   }
-  sl::Result res = slDLSSSetOptions(g_viewport, o);
+  sl::Result res = driver_call([&] { return slDLSSSetOptions(g_viewport, o); });
   if (res != sl::Result::eOk) { host::log("dlss: slDLSSSetOptions failed (%d)", (int)res); return false; }
   if (o.mode != g_mode || out_w != g_out_w || out_h != g_out_h) g_allocated = g_allocate_tried = false;
   g_mode = o.mode; g_out_w = out_w; g_out_h = out_h;
@@ -351,7 +378,7 @@ bool dlss_set_options(DlssMode mode, uint32_t out_w, uint32_t out_h, bool color_
 void dlss_allocate(ID3D12GraphicsCommandList* list) {
   if (!available() || g_allocated || g_allocate_tried || g_mode == sl::DLSSMode::eOff || !list) return;
   g_allocate_tried = true;
-  const sl::Result res = slAllocateResources(list, sl::kFeatureDLSS, g_viewport);
+  const sl::Result res = driver_call([&] { return slAllocateResources(list, sl::kFeatureDLSS, g_viewport); });
   g_allocated = res == sl::Result::eOk;
   host::log("dlss: feature allocated ahead of the first match (%d)", (int)res);
 }
@@ -359,7 +386,7 @@ void dlss_allocate(ID3D12GraphicsCommandList* list) {
 void new_frame(uint32_t frame_index) {
   if (!available()) return;
   g_token = nullptr;
-  if (slGetNewFrameToken(g_token, &frame_index) != sl::Result::eOk) g_token = nullptr;
+  if (driver_call([&] { return slGetNewFrameToken(g_token, &frame_index); }) != sl::Result::eOk) g_token = nullptr;
 }
 
 bool set_constants(const FrameConstants& c) {
@@ -395,7 +422,7 @@ bool set_constants(const FrameConstants& c) {
   k.orthographicProjection = c.orthographic ? sl::Boolean::eTrue : sl::Boolean::eFalse;
   k.motionVectorsDilated = sl::Boolean::eFalse;
   k.motionVectorsJittered = sl::Boolean::eFalse;
-  sl::Result res = slSetConstants(k, *g_token, g_viewport);
+  sl::Result res = driver_call([&] { return slSetConstants(k, *g_token, g_viewport); });
   std::memcpy(g_prev_proj, c.projection, sizeof g_prev_proj);
   g_have_prev = true;
   if (res != sl::Result::eOk) { host::log("dlss: slSetConstants failed (%d)", (int)res); return false; }
@@ -410,7 +437,7 @@ void set_reflex(int mode) {
   sl::ReflexOptions r{};
   r.mode = mode >= 2 ? sl::ReflexMode::eLowLatencyWithBoost : mode == 1 ? sl::ReflexMode::eLowLatency : sl::ReflexMode::eOff;
   r.useMarkersToOptimize = mode > 0;
-  const sl::Result res = slReflexSetOptions(r);
+  const sl::Result res = driver_call([&] { return slReflexSetOptions(r); });
   g_reflex_ready = res == sl::Result::eOk;   // markers/telemetry can flow now, whatever the mode is
   host::log("reflex: %s (%d)", mode >= 2 ? "on + boost" : mode == 1 ? "on" : "off", (int)res);
 }
@@ -426,7 +453,7 @@ ReflexBreakdown reflex_breakdown() {
 void update_reflex_stats() {
   if (!g_reflex_ready) return;
   sl::ReflexState st{};
-  if (slReflexGetState(st) != sl::Result::eOk || !st.latencyReportAvailable) return;
+  if (driver_call([&] { return slReflexGetState(st); }) != sl::Result::eOk || !st.latencyReportAvailable) return;
   double total = 0, sim = 0, submit = 0, drv = 0, queue = 0, gpu = 0;
   int n = 0, ns = 0, nu = 0, nd = 0, nq = 0, ng = 0;
   auto span = [](uint64_t a, uint64_t b) { return b > a ? (double)(b - a) : -1.0; };
@@ -460,7 +487,7 @@ std::atomic<uint32_t> g_fg_status{0};
 void query_frame_generation_limits() {
   if (g_fg_queried || !frame_generation_available()) return;
   sl::DLSSGState st{};
-  if (slDLSSGGetState(g_viewport, st, nullptr) != sl::Result::eOk) return;
+  if (driver_call([&] { return slDLSSGGetState(g_viewport, st, nullptr); }) != sl::Result::eOk) return;
   g_fg_queried = true;
   g_fg_max = std::max<uint32_t>(1, st.numFramesToGenerateMax);
   g_fg_dynamic_ok = st.bIsDynamicMFGSupported == sl::Boolean::eTrue;
@@ -471,7 +498,7 @@ void query_frame_generation_limits() {
     sl::DLSSGOptions o{};
     o.mode = sl::DLSSGMode::eDynamic;
     o.numFramesToGenerate = g_fg_max.load();
-    const sl::Result res = slDLSSGSetOptions(g_viewport, o);
+    const sl::Result res = driver_call([&] { return slDLSSGSetOptions(g_viewport, o); });
     host::log("dlss: frame generation Dynamic refresh (%d)", (int)res);
   }
 }
@@ -485,7 +512,7 @@ void frame_generation_after_present() {
   // DLSS-G reports a count accumulated since GetState. Query on every Present so the result can
   // be summed over a known number of rendered frames instead of mislabeling a single sample.
   sl::DLSSGState st{};
-  if (slDLSSGGetState(g_viewport, st, nullptr) != sl::Result::eOk) return;
+  if (driver_call([&] { return slDLSSGGetState(g_viewport, st, nullptr); }) != sl::Result::eOk) return;
   g_fg_presented_since_log.fetch_add(st.numFramesActuallyPresented, std::memory_order_relaxed);
   g_fg_samples_since_log.fetch_add(1, std::memory_order_relaxed);
   g_fg_status.store((uint32_t)st.status, std::memory_order_relaxed);
@@ -513,7 +540,7 @@ void set_frame_generation(int mode, uint32_t render_w, uint32_t render_h, uint32
   o.colorBufferFormat = backbuffer_format;
   o.mvecBufferFormat = motion_format;
   o.depthBufferFormat = depth_format;
-  const sl::Result res = slDLSSGSetOptions(g_viewport, o);
+  const sl::Result res = driver_call([&] { return slDLSSGSetOptions(g_viewport, o); });
   g_fg_on = mode != 0 && res == sl::Result::eOk;
   g_fg_requested_mode = mode;
   static const char* names[] = {"off", "2x", "3x", "4x", "dynamic", "5x", "6x"};
@@ -527,7 +554,7 @@ bool frame_generation_prepare(ID3D12GraphicsCommandList* list, int mode, uint32_
   // then leave generation off with its resources kept; the renderer switches it on in matches.
   set_frame_generation(mode, render_w, render_h, output_w, output_h, backbuffer_count, backbuffer_format,
                        motion_format, depth_format);
-  const sl::Result res = slAllocateResources(list, sl::kFeatureDLSS_G, g_viewport);
+  const sl::Result res = driver_call([&] { return slAllocateResources(list, sl::kFeatureDLSS_G, g_viewport); });
   host::log("dlss: frame generation resources allocated ahead of the first match (%d)", (int)res);
   set_frame_generation(0, render_w, render_h, output_w, output_h, backbuffer_count, backbuffer_format,
                        motion_format, depth_format);
@@ -543,7 +570,7 @@ void log_frame_generation() {
 }
 void pcl_marker(int marker) {
   if (!g_token || !g_reflex_ready) return;
-  slPCLSetMarker((sl::PCLMarker)marker, *g_token);
+  driver_call([&] { return slPCLSetMarker((sl::PCLMarker)marker, *g_token); });
 }
 
 bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in) {
@@ -571,10 +598,10 @@ bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in) {
         sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),
         sl::ResourceTag(&mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),
     };
-    const sl::Result tag_res = slSetTagForFrame(*g_token, g_viewport, fg_tags, 2, list);
+    const sl::Result tag_res = driver_call([&] { return slSetTagForFrame(*g_token, g_viewport, fg_tags, 2, list); });
     if (tag_res != sl::Result::eOk) host::log("dlss: Frame Generation input tags failed (%d)", (int)tag_res);
   }
-  sl::Result res = slEvaluateFeature(sl::kFeatureDLSS, *g_token, inputs, input_count, list);
+  sl::Result res = driver_call([&] { return slEvaluateFeature(sl::kFeatureDLSS, *g_token, inputs, input_count, list); });
   if (res != sl::Result::eOk) {
     static int logged = 0;
     if (logged++ < 5) host::log("dlss: slEvaluateFeature failed (%d)", (int)res);
@@ -598,7 +625,7 @@ bool evaluate_ray_reconstruction(ID3D12GraphicsCommandList* list, const RayRecon
   options.outputHeight = in.out_h;
   options.colorBuffersHDR = sl::Boolean::eTrue;
   options.normalRoughnessMode = sl::DLSSDNormalRoughnessMode::ePacked;
-  sl::Result result = slDLSSDSetOptions(g_viewport, options);
+  sl::Result result = driver_call([&] { return slDLSSDSetOptions(g_viewport, options); });
   if (result != sl::Result::eOk) {
     host::log("dlss-rr: slDLSSDSetOptions failed (%d)", (int)result);
     return false;
@@ -623,7 +650,7 @@ bool evaluate_ray_reconstruction(ID3D12GraphicsCommandList* list, const RayRecon
   };
   const sl::BaseStructure* inputs[] = {&g_viewport, &tags[0], &tags[1], &tags[2], &tags[3],
                                        &tags[4], &tags[5], &tags[6]};
-  result = slEvaluateFeature(sl::kFeatureDLSS_RR, *g_token, inputs, (uint32_t)std::size(inputs), list);
+  result = driver_call([&] { return slEvaluateFeature(sl::kFeatureDLSS_RR, *g_token, inputs, (uint32_t)std::size(inputs), list); });
   if (result != sl::Result::eOk) {
     static int logged = 0;
     if (logged++ < 5) host::log("dlss-rr: slEvaluateFeature failed (%d)", (int)result);

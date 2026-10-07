@@ -801,7 +801,8 @@ int build_verdict(uint8_t remote_count, std::string* why) {
     }
     if (g_local_build.mod_view) {
       if (!native_direct_builds_match(true, g_local_build.fingerprint, rb.mod_view, rb.fingerprint)) {
-        *why = "Another player is not on the same mod. This match needs the same build on every side";
+          const int port = i < g_netplay->LocalPlayerPort() ? i + 1 : i + 2;
+          *why = "Player " + std::to_string(port) + " has a different mod build. Everyone needs the same ISO and game version";
         return -1;
       }
     } else if (rb.mod_view) {
