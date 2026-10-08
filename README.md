@@ -34,8 +34,8 @@ the Slippi team.
 
 No Monetization. No Donos. No Patreon. **FREE FOREVER**
 
+**v0.8.5 Akaenia/Mod support and more DLSS5 Footage** https://www.youtube.com/watch?v=126-FcptKMQ
 **v0.6.1 DLSS5 Footage** can be found here https://www.youtube.com/watch?v=qZXsNr7HmAo
-
 **v0.5.0 Gameplay footage** can be found here: https://www.youtube.com/watch?v=JlmTDW6wQms
 
 ## Discord / Help
