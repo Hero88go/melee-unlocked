@@ -100656,7 +100656,7 @@ index 8e0598191..26666f3f9 100644
  
  void gm_Mode_SlowMo_OnLoad(void)
 diff --git a/src/melee/gm/gmstaffroll.c b/src/melee/gm/gmstaffroll.c
-index e59ae8095..81f85a202 100644
+index e59ae8095..e6cd4dbf2 100644
 --- a/src/melee/gm/gmstaffroll.c
 +++ b/src/melee/gm/gmstaffroll.c
 @@ -81,7 +81,7 @@ struct gm_804D6804_t {
@@ -100724,25 +100724,25 @@ index e59ae8095..81f85a202 100644
  {
 -    HSD_JObj* jobj;
 +    HSD_JObj* jobj = NULL;
++#ifndef MU_NATIVE
      StaffRollPtclNode* p;
++#endif
  
      if (idx < 7) {
          lb_80011E24(gm_804D682C, &jobj, gm_803DD1C8[idx], -1);
 +#ifdef MU_NATIVE
-+        /* Native particle setup can leave the credits highlight without a node.
-+         * Only its color update is optional; the rest of the staff roll keeps running. */
-+        p = jobj ? (StaffRollPtclNode*) jobj->u.ptcl : NULL;
-+        if (!p) return;
++        /* jobj->u is the joint's DObj, a host object with 8-byte pointers, not disc data. The
++         * console code walks dobj->next (+4) 3, 1 or 0 times, then ->mobj (+8) ->mat (+C) and
++         * stores the color in mat->diffuse (+4), the same write mnstagesel.c does for its cursor.
++         * Read as 32-bit big-endian disc slots, each hop took half of a host pointer, byte-swapped. */
++        HSD_DObj* dobj = HSD_JObjGetDObj(jobj);
 +        int links = idx == 0 ? 3 : ((unsigned) (idx - 2) <= 1u ? 1 : 0);
-+        while (links-- > 0) {
-+            p = DP(p->x4.ptr);
-+            if (!p) return;
++        while (dobj != NULL && links-- > 0) {
++            dobj = dobj->next;
 +        }
-+        p = DP(p->x8);
-+        if (!p) return;
-+        p = DP(p->xC);
-+        if (!p) return;
-+        p->x4.color = *(s32*) color;
++        if (dobj != NULL && dobj->mobj != NULL && dobj->mobj->mat != NULL) {
++            dobj->mobj->mat->diffuse = *color;
++        }
 +#else
          if (idx == 0) {
              p = (StaffRollPtclNode*) jobj->u.ptcl;
