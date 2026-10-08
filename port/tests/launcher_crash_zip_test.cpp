@@ -295,22 +295,35 @@ int main() {
   CHECK(none.empty());
   CHECK(read_zip(launcher::crash::capped_zip(none), entries) && entries.empty());
   {
-    // "Send logs": the game log, the newest trace from a replay folder (one level down), and the
-    // crash text only when asked for. The trace keeps its rows; the log is scrubbed as usual.
+    // "Send logs": the game log, every trace of the last day from the replay folders (one level
+    // down), oldest first, each under a "# match" line, only the rows around its marks; the crash
+    // text only when asked for. The log is scrubbed as usual.
     const fs::path game = root / "logs-game", replays = root / "logs-replays";
     fs::create_directories(game); fs::create_directories(replays / "2026-10");
     put((game / "melee_port.log").u8string(), text("scene: major 02 minor 02 (frame 94)\nslippi: logged in as PlayerOne (PONE#123)\n"));
     put((game / "melee_port_crash.txt").u8string(), text("FATAL: old crash\n"));
-    put((replays / "2026-10" / "Game_old.trace").u8string(), text("frame,desync\n1,0\n"));
+    put((replays / "2026-10" / "Game_old.trace").u8string(), text("frame,mark\n1,2\n"));
     fs::last_write_time(replays / "2026-10" / "Game_old.trace", fs::file_time_type::clock::now() - std::chrono::hours(2));
-    put((replays / "2026-10" / "Game_new.trace").u8string(), text("frame,desync\n1,0\n2,1\n"));
+    put((replays / "2026-10" / "Game_new.trace").u8string(), text("frame,mark\n1,0\n2,4\n"));
+    {
+      // A long match marked once: the 10 s before the mark and 3 s after, nothing else.
+      std::string big = "frame,mark\n";
+      for (int f = 0; f < 3000; ++f) big += std::to_string(f) + (f == 2000 ? ",1\n" : ",0\n");
+      const auto kept = launcher::crash::marked_rows(text(big));
+      const std::string k(kept.begin(), kept.end());
+      CHECK(std::count(k.begin(), k.end(), '\n') == 1 + 600 + 1 + 180);
+      CHECK(k.find("\n1400,0\n") != std::string::npos && k.find("\n1399,0\n") == std::string::npos &&
+            k.find("\n2180,0\n") != std::string::npos && k.find("\n2181,0\n") == std::string::npos);
+      CHECK(launcher::crash::marked_rows(text("frame,mark\n1,0\n2,0\n")).empty());   // nothing marked
+    }
     auto logs = launcher::crash::collect_logs(game.u8string(), game.u8string(), {replays.u8string()}, false);
     CHECK(names(logs) == std::vector<std::string>({"melee_port.log", "session.trace"}));
     const auto zip = launcher::crash::capped_zip(logs);
     std::vector<Entry> got;
     CHECK(read_zip(zip, got) && names(got) == std::vector<std::string>({"melee_port.log", "session.trace"}));
     if (got.size() == 2) {
-      CHECK(std::string(got[1].data.begin(), got[1].data.end()) == "frame,desync\n1,0\n2,1\n");
+      CHECK(std::string(got[1].data.begin(), got[1].data.end()) ==
+            "# match Game_old.trace\nframe,mark\n1,2\n# match Game_new.trace\nframe,mark\n1,0\n2,4\n");
       const std::string log(got[0].data.begin(), got[0].data.end());
       CHECK(log.find("PlayerOne") == std::string::npos && log.find("frame 94") != std::string::npos);
     }

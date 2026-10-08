@@ -143,7 +143,13 @@ def main():
         # meta.version is the launcher's version; the crashed game's version is in the crash line.
         (folder / 'meta.json').write_text(json.dumps({'key': key, **meta}, indent=1), encoding='utf-8')
         if meta.get('trace'):
-            (folder / 'session.trace').write_bytes(fetch('/admin/trace?key=' + q, tok))
+            trace = fetch('/admin/trace?key=' + q, tok)
+            (folder / 'session.trace').write_bytes(trace)
+            # Send logs puts every marked match into one trace, each after a "# match <name>" line.
+            for part in trace.decode('utf-8', 'replace').split('# match ')[1:]:
+                name, _, rows = part.partition('\n')
+                safe = ''.join(c for c in name.strip() if c.isalnum() or c in '._-')[:80] or 'match.trace'
+                (folder / ('match-' + safe)).write_text(rows, encoding='utf-8')
         note = (meta.get('note') or '').replace('\n', ' ')[:120]
         print(f"{key[2:]}  {meta.get('kind', '?'):5}  {meta.get('version', '?'):8}  {meta.get('engine', '?'):13}  "
               f"{(meta.get('where') or '')[:70]}{'  | ' + note if note else ''}")
