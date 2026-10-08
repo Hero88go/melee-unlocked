@@ -59,6 +59,7 @@ bool available() { return false; }
 bool ray_reconstruction_available() { return false; }
 long create_dxgi_factory2(uint32_t flags, const void* riid, void** out) { return CreateDXGIFactory2(flags, *(const IID*)riid, out); }
 long d3d12_create_device(void* adapter, int fl, const void* riid, void** out) { return D3D12CreateDevice((IUnknown*)adapter, (D3D_FEATURE_LEVEL)fl, *(const IID*)riid, out); }
+bool device_faulted() { return false; }
 void set_device(ID3D12Device*) {}
 void* native_interface(void* proxy) { return proxy; }
 bool dlss_supported(IDXGIAdapter*) { return false; }
@@ -173,7 +174,28 @@ void mul4x4(const float a[16], const float b[16], float out[16]) {
 bool g_fg_deferred = false;
 bool frame_generation_deferred() { return g_fg_deferred; }
 
+// Streamline's features need an NVIDIA GPU; its interposer on another vendor's device (or one
+// without DLSS) crashed device creation at startup (two 0.8.83 reports, d3d12core.dll+0x1E3492).
+static bool has_nvidia_adapter() {
+  IDXGIFactory1* factory = nullptr;
+  if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), (void**)&factory))) return false;
+  bool found = false;
+  IDXGIAdapter1* adapter = nullptr;
+  for (UINT i = 0; !found && factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+    DXGI_ADAPTER_DESC1 desc;
+    if (SUCCEEDED(adapter->GetDesc1(&desc)) && !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) && desc.VendorId == 0x10DE) found = true;
+    adapter->Release();
+  }
+  factory->Release();
+  return found;
+}
+
 bool init(const std::wstring& exe_dir, bool load_frame_generation) {
+  const char* force_fault = std::getenv("MELEE_SL_TEST_DEVICE_FAULT");   // tests the fallback below
+  if (!has_nvidia_adapter() && !(force_fault && *force_fault == '1')) {
+    host::log("dlss: no NVIDIA GPU, Streamline not loaded (DLSS, Reflex and frame generation unavailable)");
+    return false;
+  }
   std::wstring path = exe_dir + L"\\sl.interposer.dll";
   if (GetFileAttributesW(path.c_str()) == INVALID_FILE_ATTRIBUTES) { host::log("dlss: sl.interposer.dll not found next to the executable; DLSS unavailable"); return false; }
   if (!sl::security::verifyEmbeddedSignature(path.c_str())) { host::log("dlss: sl.interposer.dll signature check failed; DLSS unavailable"); return false; }
@@ -268,10 +290,33 @@ long create_dxgi_factory2(uint32_t flags, const void* riid, void** out) {
   if (g_ready && g_create_factory2) return g_create_factory2(flags, *(const IID*)riid, out);
   return CreateDXGIFactory2(flags, *(const IID*)riid, out);
 }
+static bool g_device_faulted = false;
+
+// A fault inside the interposer or the driver while it creates the device: no C++ objects here, so
+// structured exception handling can catch it.
+static long guarded_create_device(PFunD3D12CreateDevice create, IUnknown* adapter, D3D_FEATURE_LEVEL fl, const IID& riid, void** out) {
+  __try {
+    const char* force = std::getenv("MELEE_SL_TEST_DEVICE_FAULT");
+    if (force && *force == '1') RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+    return create(adapter, fl, riid, out);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return E_FAIL;
+  }
+}
+
 long d3d12_create_device(void* adapter, int fl, const void* riid, void** out) {
-  if (g_ready && g_create_device) return g_create_device((IUnknown*)adapter, (D3D_FEATURE_LEVEL)fl, *(const IID*)riid, out);
+  if (g_ready && g_create_device) {
+    const long hr = guarded_create_device(g_create_device, (IUnknown*)adapter, (D3D_FEATURE_LEVEL)fl, *(const IID*)riid, out);
+    if (hr != E_FAIL) return hr;
+    // Streamline's device creation faulted: the game starts on plain DirectX 12 instead, without it.
+    host::log("dlss: creating the device through Streamline failed; starting without DLSS, Reflex and frame generation");
+    g_device_faulted = true;
+    g_ready = false;
+    return E_FAIL;
+  }
   return D3D12CreateDevice((IUnknown*)adapter, (D3D_FEATURE_LEVEL)fl, *(const IID*)riid, out);
 }
+bool device_faulted() { return g_device_faulted; }
 void set_device(ID3D12Device* device) {
   if (!g_ready) return;
   sl::Result res = driver_call([&] { return slSetD3DDevice(device); });
