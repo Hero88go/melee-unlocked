@@ -5,6 +5,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -85,13 +86,45 @@ inline std::vector<File> collect(const std::string& game_dir, const std::string&
   return files;
 }
 
+// "Send logs": the crash files that exist (a crash text only when it is newer than `since`, so an
+// old crash is not mixed into a new report), plus the newest session trace from the replay folders
+// when it was written in the last day. A trace is frame rows of inputs, timing and checksums only.
+inline std::vector<File> collect_logs(const std::string& game_dir, const std::string& launcher_dir,
+                                      const std::vector<std::string>& replay_dirs, bool include_crash) {
+  std::vector<File> files;
+  for (const Part& part : kParts) {
+    if (!include_crash && std::string(part.name) == "melee_port_crash.txt") continue;
+    auto data = read_tail((part.launcher_folder ? launcher_dir : game_dir) + "\\" + part.name, part.max_bytes);
+    if (!data.empty()) files.emplace_back(part.name, private_report_text(part.name, data, data.size() >= part.max_bytes));
+  }
+  std::filesystem::path newest;
+  std::filesystem::file_time_type newest_time{};
+  std::error_code ec;
+  for (const auto& dir : replay_dirs) {
+    for (std::filesystem::recursive_directory_iterator it(std::filesystem::u8path(dir), ec), end; !ec && it != end; it.increment(ec)) {
+      if (it.depth() > 2) { it.disable_recursion_pending(); continue; }
+      if (!it->is_regular_file(ec) || it->path().extension() != ".trace") continue;
+      const auto when = it->last_write_time(ec);
+      if (!ec && (newest.empty() || when > newest_time)) { newest = it->path(); newest_time = when; }
+    }
+    ec.clear();
+  }
+  if (!newest.empty() && std::filesystem::file_time_type::clock::now() - newest_time < std::chrono::hours(24)) {
+    constexpr size_t kTraceBytes = 3u * 1024 * 1024;
+    const auto u8 = newest.u8string();
+    auto data = read_tail(std::string(u8.begin(), u8.end()), kTraceBytes);
+    if (!data.empty()) files.emplace_back("session.trace", private_report_text("session.trace", data, data.size() >= kTraceBytes));
+  }
+  return files;
+}
+
 // Scrub and restrict `files`, then ZIP at most `max` bytes. Over the cap, the largest log goes
 // first; crash text always stays. `files` is left holding exactly what the outgoing ZIP holds.
 inline std::vector<uint8_t> capped_zip(std::vector<File>& files, size_t max = kMaxZipBytes) {
   // Recheck this boundary even for hand-built reports: no binary payloads or unknown files.
   std::vector<File> safe;
   for (const auto& f : files)
-    if (f.first == "melee_port_crash.txt" || f.first == "melee_port.log" || f.first == "lobby.log")
+    if (f.first == "melee_port_crash.txt" || f.first == "melee_port.log" || f.first == "lobby.log" || f.first == "session.trace")
       safe.emplace_back(f.first, private_report_text(f.first, f.second));
   files = std::move(safe);
   std::vector<uint8_t> zip = make_zip(files);

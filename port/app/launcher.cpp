@@ -80,7 +80,7 @@ inline int mu_message_box(HWND owner, const wchar_t* text, const wchar_t* captio
 #define IDB_BAILEY 5
 
 namespace {
-enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_WARM_CACHE, ID_VERSIONS, ID_THEME, ID_LANGUAGE, ID_MODS, ID_TIMER = 1, ID_TIMER_STANDBY = 2 };
+enum { ID_ISO_EDIT = 100, ID_BROWSE, ID_PLAY, ID_SLIPPI_GET, ID_UPDATE, ID_BUILD, ID_LOG, ID_WARM_CACHE, ID_VERSIONS, ID_THEME, ID_LANGUAGE, ID_MODS, ID_SEND_LOGS, ID_TIMER = 1, ID_TIMER_STANDBY = 2 };
 HWND g_lang_btn = nullptr;
 const UINT WM_APP_LOG = WM_APP + 1;      // lParam: heap std::string* to append to the log
 const UINT WM_APP_BUILD_DONE = WM_APP + 2;
@@ -121,7 +121,7 @@ const COLORREF C_OK = RGB(0x5A, 0xC8, 0x8A), C_WARN = RGB(0xE5, 0xA8, 0x4A), C_B
 const COLORREF NO_FILL = CLR_INVALID;
 
 HWND g_main;
-HWND g_play[9], g_build[3];
+HWND g_play[10], g_build[3];
 HWND g_iso_edit, g_play_btn, g_slippi_btn, g_update_btn, g_versions_btn, g_log, g_build_btn, g_warm_cache_check;
 HFONT g_font, g_font_big, g_font_mono, g_font_mark, g_font_nav, g_font_label, g_font_small;
 HICON g_mark = nullptr;          // IDI_MELEE_MARK, the wordmark drawn at the top of the rail
@@ -1484,6 +1484,8 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         g_play[i++] = g_lang_btn;
       }
       g_play[i++] = make(L"BUTTON", L"Mods", BS_OWNERDRAW, mods_x, 348, 80, 32, ID_MODS);
+      // Below "Update and restart": logs and a note go to the report relay (launcher_crash.inl).
+      g_play[i++] = make(L"BUTTON", L"Send logs", BS_OWNERDRAW, 554, 280, 144, 30, ID_SEND_LOGS);
       {
         HWND tips=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,
                                   0,0,0,0,hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
@@ -1624,6 +1626,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_THEME: open_theme_picker(); break;
         case ID_LANGUAGE: pick_language(); break;
         case ID_MODS: mod_manager::open(); break;
+        case ID_SEND_LOGS:
+          crash_report::send_logs(hwnd, work_dir(), g_engine == ENGINE_SOURCE ? "Source Port" : "Static Recomp",
+                                  {g_dir + "\\Replays", work_dir() + "\\Replays"});
+          break;
         case ID_REPLAY_BROWSE: browse_replay(); break;
         case ID_REPLAY_WATCH: watch_replay(); break;
         case ID_REPLAY_REFRESH: refresh_replays(); break;

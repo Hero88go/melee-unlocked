@@ -294,6 +294,33 @@ int main() {
   auto none = launcher::crash::collect((root / "missing").u8string(), (root / "missing").u8string());
   CHECK(none.empty());
   CHECK(read_zip(launcher::crash::capped_zip(none), entries) && entries.empty());
+  {
+    // "Send logs": the game log, the newest trace from a replay folder (one level down), and the
+    // crash text only when asked for. The trace keeps its rows; the log is scrubbed as usual.
+    const fs::path game = root / "logs-game", replays = root / "logs-replays";
+    fs::create_directories(game); fs::create_directories(replays / "2026-10");
+    put((game / "melee_port.log").u8string(), text("scene: major 02 minor 02 (frame 94)\nslippi: logged in as PlayerOne (PONE#123)\n"));
+    put((game / "melee_port_crash.txt").u8string(), text("FATAL: old crash\n"));
+    put((replays / "2026-10" / "Game_old.trace").u8string(), text("frame,desync\n1,0\n"));
+    fs::last_write_time(replays / "2026-10" / "Game_old.trace", fs::file_time_type::clock::now() - std::chrono::hours(2));
+    put((replays / "2026-10" / "Game_new.trace").u8string(), text("frame,desync\n1,0\n2,1\n"));
+    auto logs = launcher::crash::collect_logs(game.u8string(), game.u8string(), {replays.u8string()}, false);
+    CHECK(names(logs) == std::vector<std::string>({"melee_port.log", "session.trace"}));
+    const auto zip = launcher::crash::capped_zip(logs);
+    std::vector<Entry> got;
+    CHECK(read_zip(zip, got) && names(got) == std::vector<std::string>({"melee_port.log", "session.trace"}));
+    if (got.size() == 2) {
+      CHECK(std::string(got[1].data.begin(), got[1].data.end()) == "frame,desync\n1,0\n2,1\n");
+      const std::string log(got[0].data.begin(), got[0].data.end());
+      CHECK(log.find("PlayerOne") == std::string::npos && log.find("frame 94") != std::string::npos);
+    }
+    auto with_crash = launcher::crash::collect_logs(game.u8string(), game.u8string(), {replays.u8string()}, true);
+    CHECK(names(with_crash) == std::vector<std::string>({"melee_port_crash.txt", "melee_port.log", "session.trace"}));
+    fs::last_write_time(replays / "2026-10" / "Game_new.trace", fs::file_time_type::clock::now() - std::chrono::hours(30));
+    fs::last_write_time(replays / "2026-10" / "Game_old.trace", fs::file_time_type::clock::now() - std::chrono::hours(40));
+    CHECK(names(launcher::crash::collect_logs(game.u8string(), game.u8string(), {replays.u8string()}, false)) ==
+          std::vector<std::string>({"melee_port.log"}));
+  }
   fs::remove_all(root, ec);
   if (!g_failures) std::printf("launcher crash privacy/zip: all checks passed\n");
   return g_failures ? 1 : 0;
