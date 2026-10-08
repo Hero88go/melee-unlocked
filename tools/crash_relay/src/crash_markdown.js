@@ -131,6 +131,14 @@ export function makeStoredZip(texts) {
   return zip;
 }
 
+// "game 0.8.77 (launcher 0.8.82)" when the crash line names a game version that differs from the
+// launcher's, "0.8.82" when they agree or the line has none.
+export function gameVersionLabel(where, launcherVersion) {
+  const m = /version\s*(\d+(?:\.\d+){1,3})\s*$/.exec(String(where || ""));
+  if (!m || m[1] === launcherVersion) return launcherVersion;
+  return `game ${m[1]} (launcher ${launcherVersion})`;
+}
+
 export function sanitizedReport(input, version = "", engine = "", where = "", note = "", kind = "crash") {
   const extracted = storedTextFiles(input), texts = new Map();
   if (!extracted.size) reject("No supported diagnostic text was collected.");
@@ -149,7 +157,7 @@ export function sanitizedReport(input, version = "", engine = "", where = "", no
   const trace = rawTrace ? sanitizedText(rawTrace, TRACE_BYTES, TRACE_NAME, names) : null;
   let out = (kind === "logs" ? "# Melee Unlocked logs from a player\n\n" : "# Melee Unlocked crash report\n\n")
     + "## Build\n\n"
-    + block("Version: " + buildVersion + "\nEngine: " + buildEngine
+    + block("Version: " + gameVersionLabel(safeWhere, buildVersion) + "\nEngine: " + buildEngine
       + (safeWhere ? "\nReported crash: " + safeWhere : "")
       + (trace ? "\nSession trace: attached (" + trace.length + " bytes)" : ""));
   if (safeNote.trim()) out += "## What the player says happened\n\n" + block(safeNote, 4096);
