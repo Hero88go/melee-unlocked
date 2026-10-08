@@ -94,7 +94,7 @@ class SubFrameSolver {
  private:
   // bit i set: a 3x4 matrix starts at row i. Position and texture-coordinate matrices share the
   // array but are advanced differently, so they are tracked apart.
-  struct Pair { int prev_draw; uint64_t used_slots; uint64_t pos_slots; uint64_t tex_slots; bool blend_vertices; size_t blend_offset; };
+  struct Pair { int prev_draw; uint64_t used_slots; uint64_t pos_slots; uint64_t tex_slots; bool blend_vertices; size_t blend_offset; bool animate_projection = false; };
   const Frame* prev_ = nullptr;
   const Frame* cur_ = nullptr;
   std::vector<Pair> pairs_;
