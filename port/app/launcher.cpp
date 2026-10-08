@@ -1719,7 +1719,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       if (g_lobby_game_active && wp != 0 && g_lobby_game_p2p) {
         if (!g_launcher_test)
           MessageBoxW(hwnd, L"The P2P Direct match could not connect or the game exited with an error. A direct connection needs one of you to be reachable: the same network, or a forwarded port. Check melee_port.log, then request another match.", L"Lobby match ended", MB_ICONWARNING);
-      } else if (g_lobby_game_active && wp != 0)
+      } else if (g_lobby_game_active && wp != 0 && !g_launcher_test)
         MessageBoxW(hwnd, L"The lobby match could not complete its connection or the game exited with an error. Check your Slippi login/code and melee_port.log, then request another match.", L"Lobby match ended", MB_ICONWARNING);
       g_lobby_game_p2p = false;
 #endif

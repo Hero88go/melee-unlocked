@@ -91,6 +91,9 @@ bool offer(HWND owner, const std::string& dir, const std::string& engine) {
   const std::string markdown_path = dir + "\\melee_crash_report.md";
   const auto markdown = launcher::crash::make_markdown(files, MELEE_PORT_VERSION, engine);
   const bool markdown_saved = launcher::crash::save_report(markdown_path, markdown.data(), markdown.size());
+  // Automated launcher runs keep the local copy as evidence but never ask and never send: a test
+  // crash must not open a box nobody answers, or reach the real relay.
+  if (g_launcher_test) return true;
   const std::string where = !files.empty() && files[0].first == "melee_port_crash.txt" ? first_line(files[0].second) : std::string();
   std::string list;
   for (const auto& f : files) list += "  " + f.first + "\n";
