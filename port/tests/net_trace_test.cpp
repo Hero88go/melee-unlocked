@@ -214,10 +214,12 @@ int main() {
   const std::string d = dir.string();
   {
     net_trace::Writer writer(keep_log);
+    Record m = r;   // a row the player marked: only a marked match keeps its trace
+    m.flags |= net_trace::kMarkVisual;
 
     // Replay named at the match's start: rows land under the final name, header first.
     writer.begin(d, d + "\\Game_A.slp");
-    for (int i = 0; i < 3; ++i) { Record row = r; row.frame = 10 + i; writer.add(row); }
+    for (int i = 0; i < 3; ++i) { Record row = i == 2 ? m : r; row.frame = 10 + i; writer.add(row); }
     writer.wait_idle();
     expect(lines(dir / "Game_A.trace").size() == 4);   // on disk before the match ends
     expect(g_log.empty());
@@ -235,7 +237,7 @@ int main() {
 
     // Replay named after the match ended: nothing called .trace until then.
     writer.begin(d, "");
-    writer.add(r); writer.add(r);
+    writer.add(r); writer.add(m);
     writer.end();
     writer.wait_idle();
     expect(count_ext(dir, ".trace") == 1 && count_ext(dir, ".part") == 1);
@@ -249,13 +251,25 @@ int main() {
     writer.begin(d, "");
     writer.add(r);
     writer.replay_saved(d + "\\Game_C.slp");
-    writer.add(r); writer.add(r);
+    writer.add(r); writer.add(m);
     writer.wait_idle();
     expect(!fs::exists(dir / "Game_C.trace"));
     writer.end();
     writer.wait_idle();
     expect(lines(dir / "Game_C.trace").size() == 4);
     expect(g_log.size() == 3 && g_log[2] == "slippi: session trace saved to Game_C.trace (3 rows)");
+
+    // Nobody marked anything: the match leaves no trace, named early or late.
+    writer.begin(d, d + "\\Game_U1.slp");
+    writer.add(r); writer.add(r);
+    writer.end();
+    writer.begin(d, "");
+    writer.add(r);
+    writer.end();
+    writer.replay_saved(d + "\\Game_U2.slp");
+    writer.wait_idle();
+    expect(!fs::exists(dir / "Game_U1.trace") && !fs::exists(dir / "Game_U2.trace") && count_ext(dir, ".part") == 0);
+    expect(g_log.size() == 3);
 
     // A replay written with no trace waiting changes nothing.
     writer.replay_saved(d + "\\Game_D.slp");

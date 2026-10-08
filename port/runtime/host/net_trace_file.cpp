@@ -124,8 +124,8 @@ void Writer::close_file() {
   if (!file_) return;
   std::fclose(file_);
   file_ = nullptr;
-  if (rows_ == 0) {
-    std::remove(path_.c_str());
+  if (rows_ == 0 || !marked_) {
+    std::remove(path_.c_str());   // nothing marked: the match leaves no trace behind
   } else if (path_ == final_) {
     report_saved(final_, rows_);
   } else if (!final_.empty()) {
@@ -144,6 +144,7 @@ void Writer::close_file() {
   path_.clear();
   final_.clear();
   rows_ = 0;
+  marked_ = false;
 }
 
 void Writer::handle(const Command& command) {
@@ -172,6 +173,7 @@ void Writer::handle(const Command& command) {
       }
       std::fputs(csv_header(), file_);
       rows_ = 0;
+      marked_ = false;
       return;
     }
     case Command::Row: {
@@ -179,6 +181,7 @@ void Writer::handle(const Command& command) {
       char line[160];
       const size_t n = csv_row(command.record, line, sizeof line);
       if (n && std::fwrite(line, 1, n, file_) == n) ++rows_;
+      if (command.record.flags & (kMark | kMarkVisual | kMarkInput | kMarkAudio)) marked_ = true;
       return;
     }
     case Command::End:
