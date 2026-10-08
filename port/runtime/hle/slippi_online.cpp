@@ -393,6 +393,9 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
               g_input_wait_frames, g_input_wait_frames / 60.0, g_input_wait_latest, pad->latest_frame,
               gained >= g_input_wait_frames ? "their game kept running, the inputs were held up on the way"
                                             : "their game fell behind too");
+    // A wait the player can feel (6 frames, 0.1 s, or more) marks the trace by itself, so the match
+    // is kept and Send recent game logs carries it even when nobody pressed a mark button.
+    if (g_input_wait_frames >= 6) g_trace_record.flags |= net_trace::kMark;
     g_input_wait_frames = 0;
   }
   const int32_t frame_time = 16683, t1 = 10000, t2 = 2 * frame_time + t1;
