@@ -34,12 +34,77 @@ def fetch(path, tok):
         return response.read()
 
 
+BUG_CHANNEL = '1548156602945773589'   # #bug-reports
+BOT_TOKEN_FILE = Path(__file__).resolve().parents[2] / 'melee-nightwatch/secrets/bot-token.txt'
+
+
+def bot_token():
+    value = os.environ.get('MELEE_DISCORD_BOT_TOKEN')
+    if value:
+        return value.strip()
+    return BOT_TOKEN_FILE.read_text().strip() if BOT_TOKEN_FILE.exists() else None
+
+
+def discord(path, tok):
+    request = urllib.request.Request('https://discord.com/api/v10' + path,
+                                     headers={'Authorization': 'Bot ' + tok, 'User-Agent': 'DiscordBot (pull_reports, 1)'})
+    with urllib.request.urlopen(request, timeout=60) as response:
+        return json.loads(response.read())
+
+
+def pull_bug_channel(out, fresh):
+    """New #bug-reports messages, oldest first, each in its own folder with its attachments."""
+    tok = bot_token()
+    if not tok:
+        print('#bug-reports: skipped (no bot token)')
+        return
+    folder = out / 'discord-bug-reports'
+    folder.mkdir(parents=True, exist_ok=True)
+    state = folder / '.last_id'
+    after = '' if fresh or not state.exists() else state.read_text().strip()
+    messages = []
+    while True:
+        query = '?limit=100' + ('&after=' + after if after else '')
+        page = discord(f'/channels/{BUG_CHANNEL}/messages' + query, tok)
+        if not page:
+            break
+        page.sort(key=lambda m: int(m['id']))
+        messages += page
+        after = page[-1]['id']
+        if len(page) < 100 or (fresh and len(messages) >= 100):
+            break
+    if not messages:
+        print('#bug-reports: no new messages')
+        return
+    for m in messages:
+        target = folder / f"{m['timestamp'][:19].replace(':', '-')}-{m['id']}"
+        target.mkdir(exist_ok=True)
+        name = m['author'].get('global_name') or m['author']['username']
+        text = f"# #bug-reports message from {name}\n\nSent {m['timestamp']}\n\n{m.get('content', '')}\n"
+        for a in m.get('attachments', []):
+            safe = ''.join(c for c in a['filename'] if c.isalnum() or c in '._-')[:120] or 'file'
+            try:
+                with urllib.request.urlopen(urllib.request.Request(a['url'], headers={'User-Agent': 'pull_reports'}), timeout=120) as r:
+                    (target / safe).write_bytes(r.read())
+                text += f'\nAttachment: {safe}\n'
+            except Exception as error:   # an expired or removed attachment does not stop the pull
+                text += f'\nAttachment {safe} could not be downloaded: {error}\n'
+        (target / 'message.md').write_text(text, encoding='utf-8')
+        print(f"#bug-reports  {m['timestamp'][:16]}  {name[:20]:20}  {(m.get('content') or '').replace(chr(10), ' ')[:90]}"
+              f"{'  [' + str(len(m['attachments'])) + ' file(s)]' if m.get('attachments') else ''}")
+        state.write_text(m['id'])
+    print(f'{len(messages)} #bug-reports message(s) in {folder}')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', type=Path, default=Path('C:/Games/reports'))
     ap.add_argument('--all', action='store_true', help='ignore the remembered position')
     ap.add_argument('--limit', type=int, default=200)
+    ap.add_argument('--no-discord', action='store_true', help='skip the #bug-reports channel')
     args = ap.parse_args()
+    if not args.no_discord:
+        pull_bug_channel(args.out, args.all)
     tok = token()
     args.out.mkdir(parents=True, exist_ok=True)
     state = args.out / '.last_key'

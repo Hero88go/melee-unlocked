@@ -3,6 +3,10 @@ main = "src/index.js"
 compatibility_date = "2026-09-01"
 preview_urls = false
 
+[vars]
+# Store every report and also post it to the private Discord channel (webhook secret DISCORD_WEBHOOK_URL).
+FORWARD_DISCORD = "1"
+
 # Rate limits: one Durable Object (class QuotaGate in src/index.js) holds the per-IP and daily
 # counters, so a check and its reservation are one step. Created by the migration below on deploy.
 [[durable_objects.bindings]]

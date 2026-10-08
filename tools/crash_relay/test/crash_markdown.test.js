@@ -373,7 +373,7 @@ test("reports are stored with the player's note and trace, and only the admin to
   assert.doesNotMatch(md, /C:\\|logged in as/); // a name the player typed in the note stays; paths do not
   const trace = await (await relay.fetch(new Request("https://relay.invalid/admin/trace?key=" + encodeURIComponent(items[0].key),
     { headers: { authorization: "Bearer t0ken-long-enough" } }), env)).text();
-  assert.match(trace, /1,0000,abcd/);
+  assert.match(trace, /^frame,inputs,checksum\n1,0000,abcd/);
   const denied = await relay.fetch(new Request("https://relay.invalid/admin/list", { headers: { authorization: "Bearer wrong-token-xxxxx" } }), env);
   assert.equal(denied.status, 401);
 });
