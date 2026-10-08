@@ -28,8 +28,8 @@ test("reports sent at the same moment from one address: one passes", async () =>
 test("the daily limit holds for many addresses at once", async () => {
   const { run } = gatedStorage();
   const now = Date.parse("2026-10-02T12:00:00Z");
-  const results = await Promise.all(Array.from({ length: 250 }, (_, i) => run("10.0.0." + i, now)));
-  assert.equal(results.filter((r) => r.ok).length, 200);
+  const results = await Promise.all(Array.from({ length: 40 }, (_, i) => run("10.0.0." + i, now)));
+  assert.equal(results.filter((r) => r.ok).length, 20);
   assert.ok(results.filter((r) => !r.ok).every((r) => r.reason === "daily limit"));
 });
 

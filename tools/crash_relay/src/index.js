@@ -2,13 +2,13 @@
 // The launcher POSTs a ZIP after the player clicks Send. Older clients may include raw dumps/logs;
 // this relay forwards only a newly built ZIP and Markdown containing scrubbed log text (privacy.js).
 // Reports are stored in KV (REPORTS) and pulled with tools/pull_reports.py through /admin/*, which
-// needs the Worker secret ADMIN_TOKEN. Discord forwarding stays off unless FORWARD_DISCORD is "1".
-// Limits: zip only, 8 MB, one report per IP per 2 minutes, 200 per day in total (Durable Object QUOTA).
+// needs the Worker secret ADMIN_TOKEN. Each report is also posted to the private Discord channel when FORWARD_DISCORD is "1".
+// Limits: zip only, 8 MB, one report per IP per 2 minutes, 20 per day in total (Durable Object QUOTA).
 import { InvalidZip, sanitizedReport } from "./crash_markdown.js";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const PER_IP_SECONDS = 120;
-const DAILY_LIMIT = 200;
+const DAILY_LIMIT = 20;
 
 // The limits' counters. A Durable Object handles one request at a time while it waits on its own
 // storage, so a check and the reservation after it cannot interleave with another report.
@@ -125,7 +125,11 @@ export default {
     const meta = { kind, version: report.version, engine: report.engine, where: report.where.slice(0, 200),
                    note: report.note.slice(0, 300), trace: !!report.trace };
     await env.REPORTS.put(key, report.markdown, { metadata: meta, expirationTtl: KEEP_SECONDS });
-    if (report.trace) await env.REPORTS.put(key + "/trace", report.trace, { expirationTtl: KEEP_SECONDS });
+    if (report.trace) {
+      // The trace stays a plain CSV for tools/net_trace readers: drop the privacy header line.
+      const text = new TextDecoder().decode(report.trace).replace(/^\[Privacy:[^\n]*\n/, "");
+      await env.REPORTS.put(key + "/trace", text, { expirationTtl: KEEP_SECONDS });
+    }
 
     if (env.FORWARD_DISCORD === "1" && env.DISCORD_WEBHOOK_URL) {
       const form = new FormData();
@@ -136,8 +140,8 @@ export default {
       const reportId = now.getTime();
       form.append("files[0]", new Blob([report.zip], { type: "application/zip" }), `crash-${reportId}.zip`);
       form.append("files[1]", new Blob([report.markdown], { type: "text/markdown; charset=utf-8" }), `crash-${reportId}.md`);
-      const sent = await fetch(env.DISCORD_WEBHOOK_URL, { method: "POST", body: form });
-      if (!sent.ok) return new Response("relay failed", { status: 502 });
+      // The report is already stored, so a Discord outage does not fail the player's send.
+      try { await fetch(env.DISCORD_WEBHOOK_URL, { method: "POST", body: form }); } catch {}
     }
     return new Response("sent " + id, { status: 200 });
   },
