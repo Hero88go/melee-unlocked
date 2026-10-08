@@ -2,8 +2,10 @@
 
 Usage: py -3.12 tools/pull_reports.py [--out C:/Games/reports] [--all] [--limit N]
 
-Each report lands in <out>/<id>/report.md, plus session.trace when the player sent one. The newest
-key pulled is remembered in <out>/.last_key, so the next run only fetches what came in since.
+Each report lands in <out>/<id>/report.md with its relay metadata in meta.json, plus session.trace
+when the player sent one. #bug-reports messages land in <out>/discord-bug-reports/<time>-<id>/ as
+message.md, message.json (author, reply target, webhook) and their attachments. The newest key
+pulled is remembered in <out>/.last_key, so the next run only fetches what came in since.
 The admin token is read from MELEE_REPORTS_TOKEN or ~/.melee_reports_token (never from the repo).
 """
 from pathlib import Path
@@ -90,6 +92,12 @@ def pull_bug_channel(out, fresh):
             except Exception as error:   # an expired or removed attachment does not stop the pull
                 text += f'\nAttachment {safe} could not be downloaded: {error}\n'
         (target / 'message.md').write_text(text, encoding='utf-8')
+        # Who sent it and what it answers, for tools that sort reports from replies and webhook copies.
+        (target / 'message.json').write_text(json.dumps({
+            'id': m['id'], 'timestamp': m['timestamp'], 'author_id': m['author']['id'], 'author': name,
+            'bot': bool(m['author'].get('bot')), 'webhook_id': m.get('webhook_id'),
+            'reply_to': (m.get('message_reference') or {}).get('message_id'),
+            'attachments': [a['filename'] for a in m.get('attachments', [])]}, indent=1), encoding='utf-8')
         print(f"#bug-reports  {m['timestamp'][:16]}  {name[:20]:20}  {(m.get('content') or '').replace(chr(10), ' ')[:90]}"
               f"{'  [' + str(len(m['attachments'])) + ' file(s)]' if m.get('attachments') else ''}")
         state.write_text(m['id'])
@@ -119,6 +127,8 @@ def main():
         folder.mkdir(exist_ok=True)
         q = urllib.parse.quote(key)
         (folder / 'report.md').write_bytes(fetch('/admin/get?key=' + q, tok))
+        # meta.version is the launcher's version; the crashed game's version is in the crash line.
+        (folder / 'meta.json').write_text(json.dumps({'key': key, **meta}, indent=1), encoding='utf-8')
         if meta.get('trace'):
             (folder / 'session.trace').write_bytes(fetch('/admin/trace?key=' + q, tok))
         note = (meta.get('note') or '').replace('\n', ' ')[:120]

@@ -208,6 +208,43 @@ def load_folder(path, limits, extract):
     return report, None
 
 
+MARKDOWN_HEAD = "# Melee Unlocked "
+MARKDOWN_SECTION = re.compile(r"^## (\S+)\n\n```text\n(.*?)\n?```\n", re.MULTILINE | re.DOTALL)
+REPORTED_CRASH = re.compile(r"^Reported crash: (.+)$", re.MULTILINE)
+
+
+def is_markdown_report(path):
+    if path.suffix.lower() != ".md" or not path.is_file():
+        return False
+    with open(path, "rb") as f:
+        return f.read(len(MARKDOWN_HEAD)).decode("utf-8", "replace") == MARKDOWN_HEAD
+
+
+def load_markdown(path, limits):
+    """The readable report the relay stores (report.md) or posts to Discord (crash-<ms>.md): one fenced
+    block per diagnostic file. Its "Version:" line is the launcher's own version, not the game's, so the
+    version still comes from the crash line."""
+    size = path.stat().st_size
+    if size > limits.max_zip_bytes:
+        return None, f"{size} bytes, over --max-zip-bytes {limits.max_zip_bytes}"
+    report, texts = Report(source=str(path)), {}
+    markdown = read_tail(path, limits.max_zip_bytes).replace("\r\n", "\n")
+    for name, body in MARKDOWN_SECTION.findall(markdown):
+        if name in KNOWN and name not in texts:
+            # The relay breaks every "``" in a kept line with a zero-width space so no line can close
+            # the fence; undo that before parsing.
+            texts[name] = body.replace("``​", "``")
+            report.sizes[name] = len(texts[name].encode("utf-8"))
+    reported = REPORTED_CRASH.search(markdown)
+    if "melee_port_crash.txt" not in texts and reported:
+        texts["melee_port_crash.txt"] = reported.group(1)
+        report.notes.append("crash line taken from the report header")
+    if not texts:
+        return None, "no diagnostic sections"
+    parse(report, texts)
+    return report, None
+
+
 def parse(report, texts):
     txt, log = texts.get("melee_port_crash.txt", ""), texts.get("melee_port.log", "")
     head = HEAD.search(txt)
@@ -297,6 +334,8 @@ def discover(inputs, limits, skipped):
             candidates = [path]
         elif path.is_dir() and (path / "melee_port_crash.txt").is_file():
             candidates = [path]
+        elif path.is_dir() and is_markdown_report(path / "report.md"):
+            candidates = [path / "report.md"]
         elif path.is_dir():
             candidates = []
             with os.scandir(path) as entries:
@@ -306,10 +345,17 @@ def discover(inputs, limits, skipped):
                         skipped.append((str(path), f"stopped listing after {limits.max_scan} entries"))
                         break
                     try:
-                        if entry.is_file() and entry.name.lower().endswith(".zip"):
+                        name = entry.name.lower()
+                        if entry.is_file() and name.endswith(".zip"):
+                            candidates.append(Path(entry.path))
+                        elif entry.is_file() and name.endswith(".md") and \
+                                not (path / (entry.name[:-3] + ".zip")).is_file() and is_markdown_report(Path(entry.path)):
+                            # The Discord copy posts crash-<ms>.zip and .md together: the zip is read.
                             candidates.append(Path(entry.path))
                         elif entry.is_dir() and (Path(entry.path) / "melee_port_crash.txt").is_file():
                             candidates.append(Path(entry.path))
+                        elif entry.is_dir() and is_markdown_report(Path(entry.path) / "report.md"):
+                            candidates.append(Path(entry.path) / "report.md")
                     except OSError:
                         continue
         else:
@@ -640,6 +686,8 @@ def triage(inputs, options, limits):
     for path in discover(inputs, limits, skipped):
         if path.is_dir():
             report, why = load_folder(path, limits, options.extract)
+        elif path.suffix.lower() == ".md":
+            report, why = load_markdown(path, limits)
         else:
             report, why = load_zip(path, limits, options.extract)
         if report is None:
@@ -894,6 +942,45 @@ def self_test():
                not (temp / "escape.txt").exists(), "--extract writes only the known file names, inside its folder")
         expect(by_name["extracted-report"].engine == "Source Port" and by_name["extracted-report"].frames[0].key() ==
                "ucrtbase.dll+0x48AC3", "an extracted report folder reads too (game.log from test runs)")
+
+        # The relay's readable report: pull_reports.py saves it as <out>/<id>/report.md, the Discord copy
+        # posts it as crash-<ms>.md beside crash-<ms>.zip. Its Version line is the launcher's.
+        def fenced(name, text):
+            return f"## {name}\n\n```text\n{text}{'' if text.endswith(chr(10)) else chr(10)}```\n\n"
+        pulled = temp / "pulled"
+        (pulled / "2026-10-08T01-02-03-000Z-1a2b3c4d").mkdir(parents=True)
+        markdown = ("# Melee Unlocked crash report\n\n" +
+                    fenced("Build", "Version: 0.8.83\nEngine: Source Port\nReported crash: " +
+                           crash_txt(GAME_DLL, 0x3157D3, "0.8.5").splitlines()[0]) +
+                    fenced("melee_port_crash.txt", crash_txt(GAME_DLL, 0x3157D3, "0.8.5")) +
+                    fenced("melee_port.log", "note: ``​quoted`` text\n" + source_port_log(0x3157D3, same_stack)))
+        (pulled / "2026-10-08T01-02-03-000Z-1a2b3c4d" / "report.md").write_text(markdown, encoding="utf-8")
+        (pulled / "header-only").mkdir()
+        (pulled / "header-only" / "report.md").write_text(
+            "# Melee Unlocked logs from a player\n\n" +
+            fenced("Build", "Version: 0.8.83\nEngine: Static Recomp\nReported crash: " +
+                   crash_txt("melee_port.exe", 0x4010, "0.8.82").splitlines()[0]) +
+            fenced("lobby.log", "lobby: online\n"), encoding="utf-8")
+        discord = pulled / "discord-message"
+        discord.mkdir()
+        stored_zip(discord / "crash-1790903368400.zip", {"melee_port_crash.txt": crash_txt(GAME_DLL, 0x3157D3, "0.8.5"),
+                                                         "melee_port.log": source_port_log(0x3157D3, same_stack)})
+        (discord / "crash-1790903368400.md").write_text(markdown, encoding="utf-8")
+        md_result = triage([str(pulled), str(discord), str(reports / "sp-a.zip")], options, limits)
+        md_by = {"/".join(Path(r.source).parts[-2:]): r for r in md_result["reports"]}
+        relay_md = md_by.get("2026-10-08T01-02-03-000Z-1a2b3c4d/report.md")
+        expect(relay_md is not None and relay_md.code == "C0000005" and relay_md.version == "0.8.5" and
+               relay_md.engine == "Source Port" and
+               [f.offset for f in relay_md.frames] == [0x3157D3, *same_stack],
+               "a pulled report.md reads its crash, the game's version (not the launcher's) and its stack")
+        header = md_by.get("header-only/report.md")
+        expect(header is not None and header.version == "0.8.82" and header.engine == "Static Recomp" and
+               "crash line taken from the report header" in header.notes,
+               "a report.md without a crash file falls back to its Reported crash line")
+        expect("discord-message/crash-1790903368400.zip" in md_by and "discord-message/crash-1790903368400.md" not in md_by,
+               "a Discord crash pair is read once, from its zip")
+        same = next((g for g in md_result["groups"] if any(Path(r.source).name == "sp-a.zip" for r in g)), [])
+        expect(len(same) == 3, "the same crash from report.md, a Discord zip and a launcher zip is one group")
 
         capped = triage([str(reports)], options, Limits(max_reports=3, max_zip_bytes=256 * 1024, max_member_bytes=1 << 20))
         expect(len(capped["reports"]) + sum(1 for s, _ in capped["skipped"] if s != "(older reports)") == 3 and
