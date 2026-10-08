@@ -564,7 +564,7 @@ int build_seg_at(POINT p) {
   return -1;
 }
 RECT slippi_text_rect() { return LR(CX + 15, 212, 319, 34); }
-RECT version_text_rect() { return LR(CX + 15, 244, 319, 34); }
+RECT version_text_rect() { return LR(CX + 15, 236, 319, 24); }
 RECT drop_sub_rect() { return LR(CX, 86, CW, 20); }
 
 const wchar_t* HINT_TEXT =
@@ -760,10 +760,13 @@ void paint_play(HDC dc) {
   dot(dc, CX, 215, g_slippi_missing ? C_WARN : C_OK);   // centred on the first line of slippi_text_rect
   draw_text(dc, widen(g_slippi_line), slippi_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
 
-  dot(dc, CX, 247, g_version_dot);   // centred on the first line of version_text_rect
+  dot(dc, CX, 239, g_version_dot);   // centred on the first line of version_text_rect
   draw_text(dc, widen(g_version_line), version_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
 
-  draw_text(dc, widen(mod_manager::summary() + " | " + launcher::lang::tx("Open Mods folder")), LR(CX, 269, CW, 13), g_font_small, C_OK, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
+  // Same shape as the account and version lines: a dot, then dim text. Green dot while a mod is on.
+  const std::string mods_line = mod_manager::summary();
+  dot(dc, CX, 263, mods_line == launcher::lang::tx("Mods: none active") ? C_FAINT : C_OK);
+  draw_text(dc, widen(mods_line + " | " + launcher::lang::tx("Open Mods folder")), LR(CX + 15, 260, CW - 15, 17), g_font, C_DIM, DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS);
   RECT sep = LR(CX, 282, CW, 1);
   fill(dc, sep, C_SEP);
   draw_text(dc, HINT_TEXT, LR(CX, 294, CW, 44), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
@@ -1375,7 +1378,7 @@ void refresh_updater() {
   // label's rect from the background every tick is what stops old text showing through the new.
   if (line != g_version_line || d != g_version_dot) {
     g_version_line = line; g_version_dot = d;
-    if (g_tab == 0) { invalidate(version_text_rect()); invalidate(LR(CX, 247, 8, 8)); }
+    if (g_tab == 0) { invalidate(version_text_rect()); invalidate(LR(CX, 239, 8, 8)); }
   }
   ShowWindow(g_update_btn, (st == State::UpdateAvailable || st == State::Failed) && g_tab == 0 ? SW_SHOW : SW_HIDE);
   set_text(g_update_btn, st == State::Failed ? "Retry" : "Update and restart");
@@ -1468,24 +1471,25 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_play[i++] = g_slippi_btn = nullptr;
       g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_OWNERDRAW, 554, 246, 144, 30, ID_UPDATE);
       g_play[i++] = g_versions_btn = nullptr;
-      const int mods_x = CX, lang_x = CX + 86;
+      const int send_x = CX, lang_x = CX + 156, lang_w = 176;
 #else
       g_play[i++] = g_slippi_btn = make(L"BUTTON", L"Get Slippi Launcher", BS_OWNERDRAW, 554, 214, 144, 30, ID_SLIPPI_GET);
       g_play[i++] = g_update_btn = make(L"BUTTON", L"Update and restart", BS_OWNERDRAW, 554, 246, 144, 30, ID_UPDATE);
       g_play[i++] = g_versions_btn = make(L"BUTTON", L"Choose version...", BS_OWNERDRAW, CX, 348, 174, 32, ID_VERSIONS);
-      const int mods_x = 392, lang_x = 478;
+      const int send_x = 392, lang_x = 548, lang_w = 112;
 #endif
       g_play[i++] = make(L"BUTTON",L"Launcher color",BS_OWNERDRAW,666,348,32,32,ID_THEME);
       {
         const auto* current = launcher::lang::find(launcher::lang::current());
         g_lang_btn = CreateWindowExW(0, L"BUTTON", current ? current->native : L"English", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                     S(lang_x), S(348), S(176), S(32), hwnd, (HMENU)(INT_PTR)ID_LANGUAGE, GetModuleHandleW(nullptr), nullptr);
+                                     S(lang_x), S(348), S(lang_w), S(32), hwnd, (HMENU)(INT_PTR)ID_LANGUAGE, GetModuleHandleW(nullptr), nullptr);
         SendMessageW(g_lang_btn, WM_SETFONT, (WPARAM)g_font, TRUE);
         g_play[i++] = g_lang_btn;
       }
-      g_play[i++] = make(L"BUTTON", L"Mods", BS_OWNERDRAW, mods_x, 348, 80, 32, ID_MODS);
-      // Below "Update and restart": logs and a note go to the report relay (launcher_crash.inl).
-      g_play[i++] = make(L"BUTTON", L"Send logs", BS_OWNERDRAW, 554, 280, 144, 30, ID_SEND_LOGS);
+      // In the bottom row where a second Mods button was (the rail and the mods line open Mods):
+      // logs, the marked match traces and a note go to the report relay (launcher_crash.inl).
+      g_play[i++] = make(L"BUTTON", L"Send recent game logs", BS_OWNERDRAW, send_x, 348, 150, 32, ID_SEND_LOGS);
+      g_play[i++] = nullptr;   // keeps the slot count
       {
         HWND tips=CreateWindowExW(WS_EX_TOPMOST,TOOLTIPS_CLASSW,nullptr,WS_POPUP|TTS_ALWAYSTIP,
                                   0,0,0,0,hwnd,nullptr,GetModuleHandleW(nullptr),nullptr);
@@ -1571,7 +1575,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       break;
     case WM_LBUTTONDOWN: {
       POINT p{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
-      RECT mods_line = LR(CX, 269, CW, 13);
+      RECT mods_line = LR(CX, 260, CW, 17);
       if (g_tab == 0 && PtInRect(&mods_line, p)) {
         std::error_code ec; std::filesystem::create_directories(widen(mod_manager::mods_dir()), ec);
         ShellExecuteW(nullptr, L"open", widen(mod_manager::mods_dir()).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
