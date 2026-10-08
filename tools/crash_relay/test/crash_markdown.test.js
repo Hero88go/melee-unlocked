@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { crashMarkdown, sanitizedReport, storedTextFiles, MAX_MARKDOWN_BYTES } from "../src/crash_markdown.js";
+import { crashMarkdown, gameVersionLabel, sanitizedReport, storedTextFiles, MAX_MARKDOWN_BYTES } from "../src/crash_markdown.js";
 import { reportNames, scrubLine } from "../src/privacy.js";
 import relay from "../src/index.js";
 
@@ -376,4 +376,11 @@ test("reports are stored with the player's note and trace, and only the admin to
   assert.match(trace, /^frame,inputs,checksum\n1,0000,abcd/);
   const denied = await relay.fetch(new Request("https://relay.invalid/admin/list", { headers: { authorization: "Bearer wrong-token-xxxxx" } }), env);
   assert.equal(denied.status, 401);
+});
+
+test("the header names the crashed game's version when it differs from the launcher's", () => {
+  assert.equal(gameVersionLabel("CRASH: exception C00000FD at 00007FF6F63752F7 (melee_port.exe+0x1DF52F7), version 0.8.77", "0.8.82"),
+               "game 0.8.77 (launcher 0.8.82)");
+  assert.equal(gameVersionLabel("CRASH: exception C0000005 at 1 (melee_game.dll+0x1), version 0.8.82", "0.8.82"), "0.8.82");
+  assert.equal(gameVersionLabel("", "0.8.82"), "0.8.82");
 });
