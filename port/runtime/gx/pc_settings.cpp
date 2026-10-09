@@ -6945,6 +6945,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (delay > 2)
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
                            "%d frames: about %d ms more input delay than the default of 2.", delay, (delay - 2) * 17);
+      // A player at 1 frame and 50 ms ping rolled back on half of all frames and reported it as
+      // visual lag. Shown here in the settings only, never over the game.
+      else if (delay < 2)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                           "%d frame: more rollbacks than the default of 2. Fighters can jump or stutter online.", delay);
       // Slippi's quick chat on the online character select screen, the same three choices as
       // Slippi Dolphin. Off also stops showing the other player's messages.
       static const char* chat_choices[] = {"On", "Direct matches only", "Off"};
