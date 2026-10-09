@@ -15,6 +15,9 @@ bool vram_usage(float* used_gb, float* total_gb);
 bool dxr_path_tracing_available();
 void gpu_pass_cost(float* dlaa_ms, float* neural_ms);
 
+// Whether Direct3D 12 can start on this system (a DXGI factory and a hardware adapter that can make
+// a device), with faults inside DXGI or the driver caught. False: start on Direct3D 11 instead.
+bool d3d12_usable();
 Backend* create_d3d12_backend(void* hwnd, int client_w, int client_h, const D3D12Options& options);
 const D3D12Options& d3d12_options(Backend* backend);
 void d3d12_resize(Backend* backend, int w, int h);
