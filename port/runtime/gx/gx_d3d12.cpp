@@ -2607,9 +2607,12 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   float rect[20] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
                     1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), path_color ? 1.0f : 0.0f,
                     1.0f, 1.0f, hud_composite ? 1.0f : 0.0f, std::getenv("MELEE_DEBUG_HUDMASK") ? 1.0f : 0.0f,
-                    // Output uv to EFB uv: DLAA's image already is EFB-sized, so identity there.
-                    dlss_in_place_ ? 1.0f : (float)c.src_w / EFB_WIDTH, dlss_in_place_ ? 1.0f : (float)c.src_h / EFB_HEIGHT,
-                    dlss_in_place_ ? 0.0f : (float)c.src_x / EFB_WIDTH, dlss_in_place_ ? 0.0f : (float)c.src_y / EFB_HEIGHT,
+                    // Output uv to EFB uv, for the HUD mask and the depth the ambient occlusion reads.
+                    // Only an upscaled image that fills the output needs the mapping: the plain EFB
+                    // and DLAA's EFB-sized image are already sampled with EFB uv (rect above), and
+                    // mapping those a second time drew the occlusion edges away from their objects.
+                    fills_output ? (float)c.src_w / EFB_WIDTH : 1.0f, fills_output ? (float)c.src_h / EFB_HEIGHT : 1.0f,
+                    fills_output ? (float)c.src_x / EFB_WIDTH : 0.0f, fills_output ? (float)c.src_y / EFB_HEIGHT : 0.0f,
                     opts_.brightness, opts_.contrast, opts_.vibrance, opts_.screen_space_ao};
   // Averaging box when the rendered image is larger than the output. The two axes shrink by
   // different amounts (the picture is letterboxed to 16:9 inside the window), so they get their
