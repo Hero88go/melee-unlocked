@@ -43,6 +43,7 @@
 #include "controller_profiles.h"
 #include "dolphin_profile.h"
 #include "cosmetic_mods.h"
+#include "skin_thumbnail.h"
 #include "hackpack_ai.h"
 #include "hackpack_source.h"
 #include "mod_profile.h"
@@ -185,6 +186,13 @@ void draw_cosmetic_tile_at(ImDrawList* draw, ImVec2 a, float w, float h, const s
     draw->AddRectFilled(ImVec2(a.x + w * 0.24f, a.y + h * 0.54f), ImVec2(b.x - w * 0.24f, b.y - h * 0.12f), figure, 3.0f);
   }
   draw->AddRect(a, b, IM_COL32(96, 110, 134, 160), 3.0f);
+}
+
+// What a skin's tile shows: the portrait it came with, else a picture of its model drawn in the
+// background (empty until that is ready, so the tile shows the grey figure for a moment).
+std::string skin_picture(const host::cosmetics::AssetInfo& skin) {
+  if (!skin.preview_path.empty()) return skin.preview_path;
+  return skin.kind == "character_costume" && skin.available ? host::skin_thumbnail(skin.id) : std::string();
 }
 
 // The tile as an item of the current line.
@@ -6513,8 +6521,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 for (size_t i = 0; i < variants.size(); ++i)
                   if (variants[i]->selected && variants[i]->available) current = (int)i + 1;
                 // The picture the slot shows: the skin's own, else the costume's added one.
-                const std::string& worn_picture = current > 0 && !variants[(size_t)current - 1]->preview_path.empty()
-                    ? variants[(size_t)current - 1]->preview_path : costume.picture;
+                const std::string own_picture = current > 0 ? skin_picture(*variants[(size_t)current - 1]) : std::string();
+                const std::string& worn_picture = !own_picture.empty() ? own_picture : costume.picture;
                 draw_cosmetic_tile(worn_picture, tile_w, tile_h);
                 ImGui::SameLine();
                 ImGui::BeginGroup();
@@ -6551,7 +6559,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                     if (i == current) ImGui::SetItemDefaultFocus();
                     if (ImGui::IsItemVisible()) {
                       ImDrawList* draw = ImGui::GetWindowDrawList();
-                      draw_cosmetic_tile_at(draw, at, tile_w, tile_h, item ? item->preview_path : costume.picture);
+                      draw_cosmetic_tile_at(draw, at, tile_w, tile_h, item ? skin_picture(*item) : costume.picture);
                       const char* online = !item || item->online_message.empty() ? nullptr :
                           item->online_allowed ? "Online: stays on" : "Online: standard costume";
                       const float text_x = at.x + tile_w + 8.0f, line_h = ImGui::GetTextLineHeight();
