@@ -103,6 +103,10 @@ struct RenderOptions {
   // only: it changes DObj hidden flags and nothing the simulation or a replay reads, so it is safe
   // online and each player may differ. Both engines (ftdrawcommon.c; host.cpp parts_show_low_poly).
   int low_poly_fighters = 0;
+  // The P1 / P2 markers over the fighters stay up all match (the game shows them only at the start,
+  // off screen, or with a name tag). Display only, so it is each player's own online. Both engines
+  // (if/ifnametag.c; host.cpp apply_player_tags_always).
+  int player_tags_always = 0;
   // "Low spec": one switch that puts every setting which costs frames at its cheapest, for
   // integrated graphics and older laptops. Turning it off must give the player their own settings
   // back rather than a hardcoded default, so what they had is kept here while it is on. Both the

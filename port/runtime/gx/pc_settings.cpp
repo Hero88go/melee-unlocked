@@ -2024,6 +2024,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "playernicknames") options.show_player_nicknames = value == "1";
       else if (key == "matchmakinghint") options.matchmaking_hint = value != "0";
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
+      else if (key == "playertags") options.player_tags_always = value == "1";
       else if (key == "lowpoly") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 1) options.low_poly_fighters = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
       else if (key == "labview") options.lab_view = value == "1";
@@ -3312,6 +3313,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ninputoverlaystick " << options.input_overlay_stick
        << "\neffects " << options.effects_level
        << "\nlowpoly " << options.low_poly_fighters
+       << "\nplayertags " << options.player_tags_always
        // Low spec: the switch, and the settings it is holding for the player while it is on.
        << "\nlowspec " << (options.low_spec ? 1 : 0)
        << "\nlowspec_prev_backend " << (options.low_spec_previous.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
@@ -3818,6 +3820,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   }
   set_hud_scales(options.stock_hud_scale, options.damage_hud_scale, gecko::option_pal_stock_icons);
   set_low_poly_fighters(options.low_poly_fighters != 0);
+  set_player_tags_always(options.player_tags_always != 0);
   static bool test_tab_set = false;
   if (!test_tab_set) {
     test_tab_set = true;
@@ -6948,6 +6951,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Smaller stock icons, set a little higher, as in the PAL version.\n"
                         "Display only. Applies from the next match.");
+    // A player asked for the P1 / P2 markers to stay up: the game shows them at the start of a match
+    // and then only for a name tag or an off-screen fighter.
+    {
+      bool tags = options.player_tags_always != 0;
+      if (settings_toggle("Always show player tags", &tags)) { options.player_tags_always = tags ? 1 : 0; changed = true; }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The P1, P2, P3 and P4 markers over the fighters stay up for the whole match.\n"
+                          "Display only, so it is yours alone online. Takes effect immediately.");
+    }
     // Also a port code: zeroes the camera's shake offset before the game applies it. With 20XX TE on
     // it is the same setting as TE's "Disable screen rumble" (te_pairs_linked).
     if (settings_toggle("Disable screen shake", &gecko::option_no_screen_shake)) {

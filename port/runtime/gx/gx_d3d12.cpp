@@ -275,6 +275,7 @@ class D3D12Backend : public Backend {
 #endif
     set_hud_scales(opts_.stock_hud_scale, opts_.damage_hud_scale, gecko::option_pal_stock_icons);
     set_low_poly_fighters(opts_.low_poly_fighters != 0);
+    set_player_tags_always(opts_.player_tags_always != 0);
   }
   ~D3D12Backend() override { if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend shutdown / gpu wait");
     wait_gpu(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: gpu idle / settings destroy");
