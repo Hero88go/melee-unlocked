@@ -934,7 +934,10 @@ int32_t h_native_draw_identity() { return 1; }
 uint32_t h_hud_scales() { return gx::hud_scales_packed(); }
 // Display-only options (MU_DISPLAY_OPTION_*), read live by the native game's draw code. Never part
 // of a replay or of the match the opponent plays: the viewer's own, as the HUD sizes are.
-uint32_t h_display_options() { return gx::low_poly_fighters_active() ? MU_DISPLAY_OPTION_LOW_POLY : 0u; }
+uint32_t h_display_options() {
+  return (gx::low_poly_fighters_active() ? MU_DISPLAY_OPTION_LOW_POLY : 0u) |
+         (gx::player_tags_always_active() ? MU_DISPLAY_OPTION_PLAYER_TAGS : 0u);
+}
 void h_hud_player(int32_t slot, int32_t present, int32_t damage, int32_t stocks, float tag_x, float tag_y,
                   int32_t tag_visible) {
   gx::set_native_hud_player(slot, present != 0, damage, stocks, tag_x, tag_y, tag_visible != 0);
@@ -1391,6 +1394,8 @@ void cycle_costume_skin(int character, int costume, int direction, std::vector<u
   const auto pick = host::cosmetics::cycle_slot_live(slot, direction);
   if (!pick.ok || !pick.changed) {
     if (!pick.message.empty()) host::log("cosmetics: %s skin not changed (%s)", slot.c_str(), pick.message.c_str());
+    // Say why a press did nothing, except on a costume with no skins at all.
+    if (!pick.message.empty() && pick.message.rfind("No other skin", 0) != 0) screen_label::show(pick.message.c_str(), 3.0);
     return;
   }
   // The Ice Climbers: Nana's slot changed with Popo's (pick.partner_slot), and is published the same

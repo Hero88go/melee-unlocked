@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <string>
@@ -110,6 +111,45 @@ struct Stopwatch {
 
 void check(HRESULT hr, const char* what) { if (FAILED(hr)) host::die("D3D12: %s failed (%08X)", what, (unsigned)hr); }
 template <class T> const IID& IID_PPV_ARGS_Helper_IID() { return __uuidof(T); }
+
+// DXGI's own factory creation faulted at startup on one system (a 0.8.84 report, dxgi.dll+0x2EB9F)
+// right after CreateDXGIFactory1 had worked there. These hold no C++ objects, so structured
+// exception handling can catch the fault. MELEE_TEST_DXGI_FAULT=1 faults CreateDXGIFactory2,
+// =2 also the device check in d3d12_usable (the game then starts on Direct3D 11).
+int dxgi_test_fault() { const char* v = std::getenv("MELEE_TEST_DXGI_FAULT"); return v ? std::atoi(v) : 0; }
+HRESULT guarded_factory2(bool through_streamline, IDXGIFactory4** out) {
+  __try {
+    if (dxgi_test_fault() >= 1) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+    if (through_streamline) return (HRESULT)streamline::create_dxgi_factory2(0, &IID_PPV_ARGS_Helper_IID<IDXGIFactory4>(), (void**)out);
+    return CreateDXGIFactory2(0, __uuidof(IDXGIFactory4), (void**)out);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    *out = nullptr;
+    return E_ABORT;
+  }
+}
+HRESULT guarded_factory1(IDXGIFactory4** out) {
+  __try {
+    return CreateDXGIFactory1(__uuidof(IDXGIFactory4), (void**)out);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    *out = nullptr;
+    return E_ABORT;
+  }
+}
+HRESULT create_factory(bool through_streamline, IDXGIFactory4** out) {
+  const HRESULT hr = guarded_factory2(through_streamline, out);
+  if (hr != E_ABORT) return hr;
+  host::log("d3d12: CreateDXGIFactory2 faulted; using CreateDXGIFactory1 instead");
+  return guarded_factory1(out);
+}
+// Null out: only asks whether the adapter can make a device (S_FALSE = yes), nothing is created.
+HRESULT guarded_device_check(IDXGIAdapter1* adapter) {
+  __try {
+    if (dxgi_test_fault() >= 2) RaiseException(EXCEPTION_ACCESS_VIOLATION, 0, 0, nullptr);
+    return D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), nullptr);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return E_ABORT;
+  }
+}
 // The adapter has no room for a new resource (E_OUTOFMEMORY, or the older "out of video memory"
 // code some drivers still return). Only these are worth freeing textures and trying again for.
 bool out_of_video_memory(HRESULT hr) { return hr == E_OUTOFMEMORY || hr == (HRESULT)0x8876017CL; }
@@ -235,6 +275,7 @@ class D3D12Backend : public Backend {
 #endif
     set_hud_scales(opts_.stock_hud_scale, opts_.damage_hud_scale, gecko::option_pal_stock_icons);
     set_low_poly_fighters(opts_.low_poly_fighters != 0);
+    set_player_tags_always(opts_.player_tags_always != 0);
   }
   ~D3D12Backend() override { if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend shutdown / gpu wait");
     wait_gpu(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: gpu idle / settings destroy");
@@ -615,7 +656,7 @@ void D3D12Backend::init() {
   for (int attempt = 0; attempt < 2 && !device_; ++attempt) {
   if (attempt == 1 && !streamline::device_faulted()) break;
   factory.Reset();
-  check(streamline::create_dxgi_factory2(0, &IID_PPV_ARGS_Helper_IID<IDXGIFactory4>(), (void**)factory.GetAddressOf()), "factory");
+  check(create_factory(true, factory.GetAddressOf()), "factory");
   for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
     DXGI_ADAPTER_DESC1 desc; adapter->GetDesc1(&desc);
     if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
@@ -3427,6 +3468,25 @@ std::string d3d12_profile_line() {
   std::string line = std::string(buf) + tail;
   std::memset(g_prof, 0, sizeof g_prof); g_prof_frames = 0; g_prof_draws = g_pso_hits = g_pso_lookups = g_pso_creates = g_pso_skips = 0;
   return line;
+}
+
+// Asked before the renderer is made, through plain DXGI and D3D12 (Streamline is not loaded yet).
+// NVIDIA adapters are not test-created here: Streamline must see the first device on them, and its
+// own fault fallback covers that path.
+bool d3d12_usable() {
+  ComPtr<IDXGIFactory4> factory;
+  const HRESULT hr = create_factory(false, factory.GetAddressOf());
+  if (FAILED(hr) || !factory) { host::log("d3d12: no DXGI factory (0x%08X)", (unsigned)hr); return false; }
+  ComPtr<IDXGIAdapter1> adapter;
+  for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+    DXGI_ADAPTER_DESC1 desc;
+    if (FAILED(adapter->GetDesc1(&desc)) || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) continue;
+    if (desc.VendorId == 0x10DE && dxgi_test_fault() < 2) return true;
+    const HRESULT device = guarded_device_check(adapter.Get());
+    if (SUCCEEDED(device)) return true;
+    host::log("d3d12: adapter %u cannot make a device (%s0x%08X)", i, device == E_ABORT ? "fault, " : "", (unsigned)device);
+  }
+  return false;
 }
 
 Backend* create_d3d12_backend(void* hwnd, int w, int h, const D3D12Options& options) {

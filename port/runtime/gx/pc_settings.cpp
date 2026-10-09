@@ -41,6 +41,7 @@
 #include "updater.h"
 #include "discord_presence.h"
 #include "controller_profiles.h"
+#include "dolphin_profile.h"
 #include "cosmetic_mods.h"
 #include "hackpack_ai.h"
 #include "hackpack_source.h"
@@ -1062,6 +1063,48 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
     changed = true;
   }
   ImGui::EndDisabled();
+  // A layout made in Dolphin: read into a profile of the same name and put to use at once. Only the
+  // keyboard and XInput pads, since those are the devices whose Dolphin names map one to one.
+  if (kind == host::CaptureDevice::Keyboard || kind == host::CaptureDevice::XInputPad) {
+    ImGui::SameLine();
+    if (ImGui::Button("Import from Dolphin...")) {
+      const std::string path = host::dolphin_profile_choose_file();
+      if (!path.empty()) {
+        std::string name;
+        const host::DolphinProfile read = host::dolphin_profile_read_file(path, &name);
+        name = host::profile_clean_name(name);
+        if (!read.ok) status[tab] = read.message;
+        else if (read.device != device)
+          status[tab] = read.device == host::ProfileDevice::Keyboard ? "That is a keyboard profile: import it on the Keyboard tab."
+                                                                     : "That is an XInput pad profile: import it on that controller's tab.";
+        else if (name.empty()) status[tab] = "The profile's file name has no usable letters.";
+        else {
+          // A direction the Dolphin profile leaves to an analog stick keeps what it has here.
+          host::ProfileBindings pb = read.bindings;
+          const host::ProfileBindings now = bindings_of(tab);
+          for (int i = 0; i < (int)host::BindAction::Count; ++i)
+            if (pb[i] == 0 && (host::is_stick_action(i) || host::is_cstick_action(i))) pb[i] = now[i];
+          if (host::profile_save(device, name, pb)) {
+            for (int i = 0; i < (int)host::BindAction::Count; ++i) binding_set(kind, index, i, pb[i]);
+            g_active_profile[tab] = name;
+            g_named_profile_active[tab] = true;
+            cached_profiles(device, true);
+            char text[160];
+            if (read.skipped) std::snprintf(text, sizeof text, "Imported %s: %d buttons, %d not understood (bind those here).", name.c_str(), read.bound, read.skipped);
+            else std::snprintf(text, sizeof text, "Imported %s: %d buttons.", name.c_str(), read.bound);
+            status[tab] = text;
+            changed = true;
+          } else {
+            status[tab] = "Could not save to " + host::profiles_folder() + ".";
+          }
+        }
+      }
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Pick a profile from Dolphin's User\\Config\\Profiles\\GCPad folder (Slippi Launcher keeps it under\n"
+                        "AppData\\Roaming\\Slippi Launcher\\netplay\\User). Keyboard and XInput profiles can be read.\n"
+                        "Combined bindings such as A | B are left for you to bind here.");
+  }
   if (ImGui::BeginPopup("new_profile")) {
     ImGui::TextUnformatted("Name");
     ImGui::SetNextItemWidth(200.0f);
@@ -1086,6 +1129,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
     else if (is_default) std::snprintf(hint, sizeof hint, "Change any button and it is kept as %s.", active_profile_name(tab).c_str());
     else std::snprintf(hint, sizeof hint, "Changes save automatically.");
     if (room_after_last_item() > ImGui::CalcTextSize(hint).x + 16) { ImGui::SameLine(); ImGui::TextDisabled("%s", hint); }
+    else if (!status[tab].empty()) ImGui::TextDisabled("%s", hint);   // a result is never dropped for lack of room
   }
   return changed;
 }
@@ -1980,6 +2024,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "playernicknames") options.show_player_nicknames = value == "1";
       else if (key == "matchmakinghint") options.matchmaking_hint = value != "0";
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
+      else if (key == "playertags") options.player_tags_always = value == "1";
       else if (key == "lowpoly") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 1) options.low_poly_fighters = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
       else if (key == "labview") options.lab_view = value == "1";
@@ -3268,6 +3313,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ninputoverlaystick " << options.input_overlay_stick
        << "\neffects " << options.effects_level
        << "\nlowpoly " << options.low_poly_fighters
+       << "\nplayertags " << options.player_tags_always
        // Low spec: the switch, and the settings it is holding for the player while it is on.
        << "\nlowspec " << (options.low_spec ? 1 : 0)
        << "\nlowspec_prev_backend " << (options.low_spec_previous.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
@@ -3774,6 +3820,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   }
   set_hud_scales(options.stock_hud_scale, options.damage_hud_scale, gecko::option_pal_stock_icons);
   set_low_poly_fighters(options.low_poly_fighters != 0);
+  set_player_tags_always(options.player_tags_always != 0);
   static bool test_tab_set = false;
   if (!test_tab_set) {
     test_tab_set = true;
@@ -6904,6 +6951,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("Smaller stock icons, set a little higher, as in the PAL version.\n"
                         "Display only. Applies from the next match.");
+    // A player asked for the P1 / P2 markers to stay up: the game shows them at the start of a match
+    // and then only for a name tag or an off-screen fighter.
+    {
+      bool tags = options.player_tags_always != 0;
+      if (settings_toggle("Always show player tags", &tags)) { options.player_tags_always = tags ? 1 : 0; changed = true; }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The P1, P2, P3 and P4 markers over the fighters stay up for the whole match.\n"
+                          "Display only, so it is yours alone online. Takes effect immediately.");
+    }
     // Also a port code: zeroes the camera's shake offset before the game applies it. With 20XX TE on
     // it is the same setting as TE's "Disable screen rumble" (te_pairs_linked).
     if (settings_toggle("Disable screen shake", &gecko::option_no_screen_shake)) {
@@ -6945,6 +7001,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (delay > 2)
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
                            "%d frames: about %d ms more input delay than the default of 2.", delay, (delay - 2) * 17);
+      // A player at 1 frame and 50 ms ping rolled back on half of all frames and reported it as
+      // visual lag. Shown here in the settings only, never over the game.
+      else if (delay < 2)
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f),
+                           "%d frame: more rollbacks than the default of 2. Fighters can jump or stutter online.", delay);
       // Slippi's quick chat on the online character select screen, the same three choices as
       // Slippi Dolphin. Off also stops showing the other player's messages.
       static const char* chat_choices[] = {"On", "Direct matches only", "Off"};

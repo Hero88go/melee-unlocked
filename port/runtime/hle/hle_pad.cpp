@@ -66,6 +66,9 @@ void cycle(int door, int direction) {
   const auto pick = host::cosmetics::cycle_slot_live(slot, direction);
   if (!pick.ok || !pick.changed) {
     if (!pick.message.empty()) host::log("cosmetics: %s skin not changed (%s)", slot.c_str(), pick.message.c_str());
+    // A press that does nothing looked broken to a player: say why, except on a costume with no
+    // skins at all, where L and R are just shoulder buttons.
+    if (!pick.message.empty() && pick.message.rfind("No other skin", 0) != 0) screen_label::show(pick.message.c_str(), 3.0);
     return;
   }
   const uint32_t fst = host::disc_fst_addr(), fst_size = host::disc_fst_size();
@@ -98,6 +101,9 @@ void cycle(int door, int direction) {
     companions.push_back({item.kind, item.target_path, item.path});
   gx::texpack::refresh_cosmetic_companions(std::move(companions));
   host::log("cosmetics: character select picked %s for %s", pick.name.c_str(), slot.c_str());
+  // The select screen's model and portrait can look the same after a pick: name it, as the stage
+  // select does.
+  screen_label::show(("Skin: " + pick.name).c_str(), 2.5);
 }
 
 // Stage select, X / Y (or R / L) on a highlighted stage: that stage's file steps through the
@@ -380,6 +386,7 @@ HLE(PADRead) {
   user_gecko::apply();
   host::apply_wide_fighter_draw();
   host::apply_low_poly_fighters();
+  host::apply_player_tags_always();
   uint32_t base = ARG0, mask = 0;
   for (int i = 0; i < 4; ++i) {
     uint32_t p = base + i * 12;

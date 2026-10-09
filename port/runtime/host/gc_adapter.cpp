@@ -231,7 +231,12 @@ void writer_thread() {
 }
 
 void close_adapter(bool reset_transport = false) {
-  g_running.store(false);
+  {
+    // Under the writer's mutex: a store between its predicate check and its sleep would be a
+    // wakeup it never sees.
+    std::lock_guard<std::mutex> lock(g_rumble_mutex);
+    g_running.store(false);
+  }
   g_rumble_wake.notify_all();
   if (g_thread.joinable()) g_thread.join();
   if (g_writer.joinable()) g_writer.join();

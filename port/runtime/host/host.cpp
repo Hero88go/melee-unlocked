@@ -1434,6 +1434,19 @@ static void apply_test_adventure_scene() {
   g_test_adventure_scene = std::atoi(v);
   log("test: Adventure starts at scene %d", g_test_adventure_scene);
 }
+// "Always show player tags": the game's own "show every tag" bytes (if/ifnametag.c un_804D6D70, one
+// per player, which un_802FD404 sets for the modes that always show them) are held at 1 while the
+// option is on, and given back as 0 once when it goes off. Display only: nothing in the match reads
+// them. Retail game only, a mod disc has its own memory layout.
+void apply_player_tags_always() {
+  constexpr uint32_t kShowAllTags = 0x804D6D70u;
+  static bool held = false;
+  if (!ram || mod_disc_active()) return;
+  const bool on = gx::player_tags_always_active();
+  if (!on && !held) return;
+  for (uint32_t i = 0; i < 6; ++i) wr8(kShowAllTags + i, on ? 1 : 0);
+  held = on;
+}
 void apply_low_poly_fighters() {
   apply_test_adventure_scene();
   constexpr uint32_t kFighterDraw = 0x800805C8u;
