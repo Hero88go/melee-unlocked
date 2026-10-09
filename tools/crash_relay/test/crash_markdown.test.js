@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { crashMarkdown, gameVersionLabel, sanitizedReport, storedTextFiles, MAX_MARKDOWN_BYTES } from "../src/crash_markdown.js";
+import { crashMarkdown, gameVersionLabel, logGameVersion, sanitizedReport, storedTextFiles, MAX_MARKDOWN_BYTES } from "../src/crash_markdown.js";
 import { reportNames, scrubLine } from "../src/privacy.js";
 import relay from "../src/index.js";
 
@@ -383,4 +383,11 @@ test("the header names the crashed game's version when it differs from the launc
                "game 0.8.77 (launcher 0.8.82)");
   assert.equal(gameVersionLabel("CRASH: exception C0000005 at 1 (melee_game.dll+0x1), version 0.8.82", "0.8.82"), "0.8.82");
   assert.equal(gameVersionLabel("", "0.8.82"), "0.8.82");
+});
+
+test("a logs report names the game version from the game's own log", () => {
+  assert.equal(logGameVersion("[Privacy: 0 private lines omitted]\nMelee Unlocked 0.8.79, melee_port.exe\ngecko: x"), "0.8.79");
+  assert.equal(logGameVersion("no version line"), "");
+  assert.equal(gameVersionLabel("version " + logGameVersion("Melee Unlocked 0.8.79, melee_port.exe"), "0.8.84"),
+               "game 0.8.79 (launcher 0.8.84)");
 });

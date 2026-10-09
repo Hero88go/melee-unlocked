@@ -139,6 +139,13 @@ export function gameVersionLabel(where, launcherVersion) {
   return `game ${m[1]} (launcher ${launcherVersion})`;
 }
 
+// A "Send logs" report has no crash line; the game's own log names its version on its first line
+// ("Melee Unlocked 0.8.79, melee_port.exe"). A player can run an older game from the Versions list.
+export function logGameVersion(logText) {
+  const m = /^Melee Unlocked (\d+(?:\.\d+){1,3}),/m.exec(String(logText || ""));
+  return m ? m[1] : "";
+}
+
 export function sanitizedReport(input, version = "", engine = "", where = "", note = "", kind = "crash") {
   const extracted = storedTextFiles(input), texts = new Map();
   if (!extracted.size) reject("No supported diagnostic text was collected.");
@@ -152,12 +159,14 @@ export function sanitizedReport(input, version = "", engine = "", where = "", no
   const buildVersion = safeVersion(version), buildEngine = safeEngine(engine);
   // The header line is posted as visible message text, so it gets the same scrub as a log line.
   const safeWhere = (scrubLine(first, names) || "").slice(0, 300);
+  const logVersion = texts.has("melee_port.log") ? logGameVersion(decoder.decode(texts.get("melee_port.log"))) : "";
+  const label = gameVersionLabel(safeWhere || (logVersion ? "version " + logVersion : ""), buildVersion);
   const safeNote = String(note).split(/\r?\n/).map(line => scrubLine(line, names) || "").join("\n").slice(0, 2000);
   const rawTrace = extracted.get(TRACE_NAME);
   const trace = rawTrace ? sanitizedText(rawTrace, TRACE_BYTES, TRACE_NAME, names) : null;
   let out = (kind === "logs" ? "# Melee Unlocked logs from a player\n\n" : "# Melee Unlocked crash report\n\n")
     + "## Build\n\n"
-    + block("Version: " + gameVersionLabel(safeWhere, buildVersion) + "\nEngine: " + buildEngine
+    + block("Version: " + label + "\nEngine: " + buildEngine
       + (safeWhere ? "\nReported crash: " + safeWhere : "")
       + (trace ? "\nSession trace: attached (" + trace.length + " bytes)" : ""));
   if (safeNote.trim()) out += "## What the player says happened\n\n" + block(safeNote, 4096);
@@ -165,7 +174,7 @@ export function sanitizedReport(input, version = "", engine = "", where = "", no
   // Per-file UTF-8 caps total 896 KiB, leaving room for fixed headers and fences.
   if (encoder.encode(out).length > MAX_MARKDOWN_BYTES) throw new Error("Readable report exceeded its text limit");
   return { zip: makeStoredZip(texts), markdown: out, version: buildVersion, engine: buildEngine, where: safeWhere,
-           note: safeNote, trace };
+           note: safeNote, trace, label };
 }
 
 export function crashMarkdown(input, version = "", engine = "", where = "") {
