@@ -48,6 +48,7 @@ const char* local_matchmaking_error(int mode) {
 // Vanilla character select kinds are 0-25 and the stage kinds end with the heal stage (0x55); an id
 // past those comes from a build with more content (m-ex adds its fighters and stages after them).
 constexpr uint64_t kBuildWaitMs = 3000;   // how long a mod build waits for the opponent's build message
+static void (*g_plain_opponent_handler)(bool) = nullptr;   // see set_plain_opponent_handler
 
 // Command ids live in native_slippi_bridge.h, shared with the native game's call path.
 
@@ -694,6 +695,8 @@ void start_find_match(const uint8_t* payload) {
   else if (search.mode == Matchmaking::TEAMS) g_teams_codes->AddOrUpdateCode(shiftjis_to_utf8(sj));
   search.connect_code = sj;
   g_last_search = search;
+  // A new search: whoever answers may be on this build with the same mod, so the mod shows again.
+  if (g_plain_opponent_handler) g_plain_opponent_handler(false);
   if (Matchmaking::IsFixedRulesMode(search.mode)) {
     if (g_local_selections.character_id >= 26) { g_forced_error = "The character you selected is not allowed in this mode"; return; }
     if (g_local_selections.is_stage_selected && std::find(g_allowed_stages.begin(), g_allowed_stages.end(), g_local_selections.stage_id) == g_allowed_stages.end()) {
@@ -830,12 +833,16 @@ int build_verdict(uint8_t remote_count, std::string* why) {
   // No build arrived in the wait: the opponent is on Slippi Dolphin (or a version from before the
   // build message), which cannot say what it runs. This used to be refused unless the player had
   // found and ticked a switch for it, every session; players read the switch as the opponent's and
-  // could not play at all. Direct is a match both players arranged, so it starts, and the log says why.
+  // could not play at all. Then it started with the mod's files on this side only, and a report
+  // desynced on the first thing the mod's files do differently (a Stadium transformation, six games
+  // in). Slippi Dolphin plays the retail game unless the player says it has the same mod, so the
+  // match starts on the retail game: the host switches this side's files before any are loaded for it.
   static uint64_t logged_for = 0;
   if (logged_for != since) {
     logged_for = since;
-    host::log("slippi: the opponent sent no build (Slippi Dolphin); the Direct match starts without the mod check for %s",
+    host::log("slippi: the opponent sent no build (Slippi Dolphin); this Direct match plays the retail game without %s",
               g_local_build.name.c_str());
+    if (g_plain_opponent_handler) g_plain_opponent_handler(true);
   }
   return 1;
 }
@@ -1178,6 +1185,8 @@ void handle_get_player_settings(std::vector<uint8_t>& q) {
 }  // namespace
 
 Config& config() { return g_config; }
+void set_plain_opponent_handler(void (*handler)(bool plain)) { g_plain_opponent_handler = handler; }
+
 void set_local_build(const LocalBuild& build) {
   if (build.mod_view != g_local_build.mod_view || build.fingerprint != g_local_build.fingerprint ||
       build.allow_unverified != g_local_build.allow_unverified || build.extended_content != g_local_build.extended_content)
