@@ -41,6 +41,7 @@
 #include "updater.h"
 #include "discord_presence.h"
 #include "controller_profiles.h"
+#include "dolphin_profile.h"
 #include "cosmetic_mods.h"
 #include "hackpack_ai.h"
 #include "hackpack_source.h"
@@ -1062,6 +1063,48 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
     changed = true;
   }
   ImGui::EndDisabled();
+  // A layout made in Dolphin: read into a profile of the same name and put to use at once. Only the
+  // keyboard and XInput pads, since those are the devices whose Dolphin names map one to one.
+  if (kind == host::CaptureDevice::Keyboard || kind == host::CaptureDevice::XInputPad) {
+    ImGui::SameLine();
+    if (ImGui::Button("Import from Dolphin...")) {
+      const std::string path = host::dolphin_profile_choose_file();
+      if (!path.empty()) {
+        std::string name;
+        const host::DolphinProfile read = host::dolphin_profile_read_file(path, &name);
+        name = host::profile_clean_name(name);
+        if (!read.ok) status[tab] = read.message;
+        else if (read.device != device)
+          status[tab] = read.device == host::ProfileDevice::Keyboard ? "That is a keyboard profile: import it on the Keyboard tab."
+                                                                     : "That is an XInput pad profile: import it on that controller's tab.";
+        else if (name.empty()) status[tab] = "The profile's file name has no usable letters.";
+        else {
+          // A direction the Dolphin profile leaves to an analog stick keeps what it has here.
+          host::ProfileBindings pb = read.bindings;
+          const host::ProfileBindings now = bindings_of(tab);
+          for (int i = 0; i < (int)host::BindAction::Count; ++i)
+            if (pb[i] == 0 && (host::is_stick_action(i) || host::is_cstick_action(i))) pb[i] = now[i];
+          if (host::profile_save(device, name, pb)) {
+            for (int i = 0; i < (int)host::BindAction::Count; ++i) binding_set(kind, index, i, pb[i]);
+            g_active_profile[tab] = name;
+            g_named_profile_active[tab] = true;
+            cached_profiles(device, true);
+            char text[160];
+            if (read.skipped) std::snprintf(text, sizeof text, "Imported %s: %d buttons, %d not understood (bind those here).", name.c_str(), read.bound, read.skipped);
+            else std::snprintf(text, sizeof text, "Imported %s: %d buttons.", name.c_str(), read.bound);
+            status[tab] = text;
+            changed = true;
+          } else {
+            status[tab] = "Could not save to " + host::profiles_folder() + ".";
+          }
+        }
+      }
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Pick a profile from Dolphin's User\\Config\\Profiles\\GCPad folder (Slippi Launcher keeps it under\n"
+                        "AppData\\Roaming\\Slippi Launcher\\netplay\\User). Keyboard and XInput profiles can be read.\n"
+                        "Combined bindings such as A | B are left for you to bind here.");
+  }
   if (ImGui::BeginPopup("new_profile")) {
     ImGui::TextUnformatted("Name");
     ImGui::SetNextItemWidth(200.0f);
@@ -1086,6 +1129,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
     else if (is_default) std::snprintf(hint, sizeof hint, "Change any button and it is kept as %s.", active_profile_name(tab).c_str());
     else std::snprintf(hint, sizeof hint, "Changes save automatically.");
     if (room_after_last_item() > ImGui::CalcTextSize(hint).x + 16) { ImGui::SameLine(); ImGui::TextDisabled("%s", hint); }
+    else if (!status[tab].empty()) ImGui::TextDisabled("%s", hint);   // a result is never dropped for lack of room
   }
   return changed;
 }
