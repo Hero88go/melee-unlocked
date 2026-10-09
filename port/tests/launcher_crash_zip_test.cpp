@@ -172,7 +172,7 @@ int main() {
   const char* check_string = "123456789";
   CHECK(launcher::crash::crc32((const uint8_t*)check_string, 9) == 0xCBF43926u);
   CHECK(reference_crc32((const uint8_t*)check_string, 9) == 0xCBF43926u);
-  CHECK(std::size(launcher::crash::kParts) == 3);
+  CHECK(std::size(launcher::crash::kParts) == 4);   // crash text, the last session, the one before it, the lobby
   CHECK(launcher::crash::kMaxZipBytes == 8 * MB);
 
   const fs::path root = fs::temp_directory_path() /
@@ -202,6 +202,22 @@ int main() {
   auto files = launcher::crash::collect(game, launcher_dir);
   const std::vector<std::string> expected = {"melee_port_crash.txt", "melee_port.log", "lobby.log"};
   CHECK(names(files) == expected);
+  {
+    // The session before the last one travels too, when the game kept it: scrubbed like the last one,
+    // and it survives the outgoing ZIP's file list.
+    put(game + "/melee_port.prev.log", text("scene: major 02 minor 02 (frame 94)" + std::string(1, (char)10) + "slippi: logged in as PrivateTesterAlpha (PTA#123)" + std::string(1, (char)10)));
+    auto both = launcher::crash::collect(game, launcher_dir);
+    CHECK(names(both) == std::vector<std::string>({"melee_port_crash.txt", "melee_port.log", "melee_port.prev.log", "lobby.log"}));
+    const auto packed = launcher::crash::capped_zip(both);
+    std::vector<Entry> got;
+    CHECK(read_zip(packed, got) && names(got) == std::vector<std::string>({"melee_port_crash.txt", "melee_port.log", "melee_port.prev.log", "lobby.log"}));
+    for (const auto& entry : got)
+      if (entry.name == "melee_port.prev.log") {
+        const std::string body(entry.data.begin(), entry.data.end());
+        CHECK(body.find("PrivateTesterAlpha") == std::string::npos && body.find("scene: major 02") != std::string::npos);
+      }
+    std::remove((game + "/melee_port.prev.log").c_str());
+  }
   auto zip = launcher::crash::capped_zip(files);
   std::vector<Entry> entries;
   CHECK(read_zip(zip, entries));

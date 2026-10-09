@@ -152,7 +152,7 @@ export function sanitizedText(bytes, cap, filename, extraNames = []) {
     const safe = filename === "lobby.log" || (start && index === 0) ? null : scrubLine(lines[index], names);
     if (safe === null) ++omitted; else kept.push(safe);
   }
-  const head = start && filename === "melee_port.log" ? sessionStart(bytes, start, names) : { text: "", omitted: 0 };
+  const head = start && (filename === "melee_port.log" || filename === "melee_port.prev.log") ? sessionStart(bytes, start, names) : { text: "", omitted: 0 };
   omitted += head.omitted;
   const header = `[Privacy: ${omitted} private lines omitted]\n` + head.text + (start ? "[Earlier input bytes omitted]\n" : "");
   const body = tailBytes(kept.join("\n"), Math.max(0, cap - encoder.encode(header).length - 1));
