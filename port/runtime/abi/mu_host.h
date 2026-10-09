@@ -351,6 +351,7 @@ typedef struct MuHostApi {
  * Fountain of Dreams reflection, the shadow pass and the magnifier bubble) in place of the full
  * one, for a fighter that has one. Only the DObj hidden flags change (ftdrawcommon.c). */
 #define MU_DISPLAY_OPTION_LOW_POLY 0x1u
+#define MU_DISPLAY_OPTION_PLAYER_TAGS 0x2u   /* the P1 / P2 markers over the fighters stay up all match */
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,
