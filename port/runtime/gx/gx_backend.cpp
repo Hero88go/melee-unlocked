@@ -6,6 +6,13 @@
 #include "host.h"
 #include <d3d11.h>
 
+// Laptops with two GPUs: both vendors' drivers read these from the program file and start it on the
+// dedicated GPU. The renderer also asks DXGI for the fastest adapter itself (gx_adapter.h).
+extern "C" {
+__declspec(dllexport) unsigned long NvOptimusEnablement = 1;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+}
+
 namespace gx {
 
 // A device with no swapchain, created and dropped once. Everything that decides whether the D3D11
