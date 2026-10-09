@@ -24,6 +24,7 @@
 #include <condition_variable>
 #include <vector>
 #include "gx_d3d12.h"
+#include "gx_adapter.h"
 #include "gx_backend.h"   // solver_pair_counter, for the "gpu:" diagnostic line
 #ifdef MELEE_NO_SLIPPI
 #include "netplay_state.h"   // the same names, answered from the neutral netplay state
@@ -657,7 +658,18 @@ void D3D12Backend::init() {
   if (attempt == 1 && !streamline::device_faulted()) break;
   factory.Reset();
   check(create_factory(true, factory.GetAddressOf()), "factory");
-  for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+  if (attempt == 0) {
+    // Every GPU in the order they are tried, so a report shows when a machine has more than one.
+    std::string names;
+    for (UINT i = 0; enum_adapter_fastest_first(factory.Get(), i, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++i) {
+      DXGI_ADAPTER_DESC1 desc;
+      if (FAILED(adapter->GetDesc1(&desc)) || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) continue;
+      char name[128]; WideCharToMultiByte(CP_UTF8, 0, desc.Description, -1, name, sizeof name, nullptr, nullptr);
+      names += names.empty() ? name : std::string(", ") + name;
+    }
+    host::log("d3d12: GPUs, fastest first: %s", names.empty() ? "none" : names.c_str());
+  }
+  for (UINT i = 0; enum_adapter_fastest_first(factory.Get(), i, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++i) {
     DXGI_ADAPTER_DESC1 desc; adapter->GetDesc1(&desc);
     if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
     if (SUCCEEDED(streamline::d3d12_create_device(adapter.Get(), D3D_FEATURE_LEVEL_11_0, &IID_PPV_ARGS_Helper_IID<ID3D12Device>(), (void**)device_.GetAddressOf()))) {
@@ -3478,7 +3490,7 @@ bool d3d12_usable() {
   const HRESULT hr = create_factory(false, factory.GetAddressOf());
   if (FAILED(hr) || !factory) { host::log("d3d12: no DXGI factory (0x%08X)", (unsigned)hr); return false; }
   ComPtr<IDXGIAdapter1> adapter;
-  for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+  for (UINT i = 0; enum_adapter_fastest_first(factory.Get(), i, adapter.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND; ++i) {
     DXGI_ADAPTER_DESC1 desc;
     if (FAILED(adapter->GetDesc1(&desc)) || (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) continue;
     if (desc.VendorId == 0x10DE && dxgi_test_fault() < 2) return true;
