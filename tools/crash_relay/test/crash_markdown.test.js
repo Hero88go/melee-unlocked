@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { crashMarkdown, sanitizedReport, storedTextFiles, MAX_MARKDOWN_BYTES } from "../src/crash_markdown.js";
+import { crashMarkdown, gameVersionLabel, sanitizedReport, storedTextFiles, MAX_MARKDOWN_BYTES } from "../src/crash_markdown.js";
 import { reportNames, scrubLine } from "../src/privacy.js";
 import relay from "../src/index.js";
 
@@ -185,7 +185,7 @@ test("relay mock sends ZIP and Markdown under one id without upload protocol cha
     const request = new Request("https://relay.invalid/report", { method: "POST", body: bytes,
       headers: { "content-type": "application/zip", "content-length": String(bytes.length),
         "x-mu-version": "0.8.5", "x-mu-engine": "Static Recomp" } });
-    const response = await relay.fetch(request, { QUOTA: openQuota, DISCORD_WEBHOOK_URL: "https://webhook.invalid/local-mock" });
+    const response = await relay.fetch(request, { QUOTA: openQuota, REPORTS: memKV(), FORWARD_DISCORD: "1", DISCORD_WEBHOOK_URL: "https://webhook.invalid/local-mock" });
     assert.equal(response.status, 200);
     const zipped = captured.get("files[0]"), markdown = captured.get("files[1]");
     assert.match(zipped.name, /^crash-\d+\.zip$/);
@@ -253,7 +253,7 @@ test("personal metadata headers cannot leak through payload JSON or either attac
       headers: { "content-type": "application/zip", "content-length": String(bytes.length),
         "x-mu-version": "0.8.63 AlicePrivate", "x-mu-engine": "Static Recomp BobPrivate",
         "x-mu-crash": "FATAL: missing itPublicData C:\\Users\\AlicePrivate\\build\\source.c:94 connect ALICE#123 192.0.2.42",
-        "cf-connecting-ip": "192.0.2.42" } }), { QUOTA: openQuota, DISCORD_WEBHOOK_URL: "https://webhook.invalid/mock" });
+        "cf-connecting-ip": "192.0.2.42" } }), { QUOTA: openQuota, REPORTS: memKV(), FORWARD_DISCORD: "1", DISCORD_WEBHOOK_URL: "https://webhook.invalid/mock" });
     assert.equal(response.status, 200);
     const payload = sent.get("payload_json"), markdown = await sent.get("files[1]").text();
     const outgoing = Buffer.from(await sent.get("files[0]").arrayBuffer()).toString("utf8");
@@ -276,7 +276,7 @@ test("unsupported ZIPs return 415 without calling a webhook", async () => {
     for (const bytes of examples) {
       const response = await relay.fetch(new Request("https://relay.invalid/report", { method: "POST", body: bytes,
         headers: { "content-type": "application/zip", "content-length": String(bytes.length) } }),
-      { QUOTA: openQuota, DISCORD_WEBHOOK_URL: "https://webhook.invalid/mock" });
+      { QUOTA: openQuota, REPORTS: memKV(), FORWARD_DISCORD: "1", DISCORD_WEBHOOK_URL: "https://webhook.invalid/mock" });
       assert.equal(response.status, 415);
     }
     assert.equal(calls, 0);
@@ -335,4 +335,52 @@ test("a cut game log keeps its session start lines, scrubbed, before the newest 
   assert.match(report, /Earlier input bytes omitted/);
   assert.match(report, /pobj\.c:1896/);
   assert.ok(report.indexOf("cosmetics: 3 disc files") < report.indexOf("Earlier input bytes omitted"));
+});
+
+function memKV() {
+  const data = new Map();
+  return {
+    data,
+    async put(key, value, options = {}) { data.set(key, { value, metadata: options.metadata }); },
+    async get(key, type) {
+      const e = data.get(key); if (!e) return null;
+      if (type === "arrayBuffer") return typeof e.value === "string" ? new TextEncoder().encode(e.value).buffer : e.value.buffer ?? e.value;
+      return typeof e.value === "string" ? e.value : new TextDecoder().decode(e.value);
+    },
+    async delete(key) { data.delete(key); },
+    async list({ prefix = "" } = {}) {
+      return { keys: [...data.keys()].filter(k => k.startsWith(prefix)).map(name => ({ name, metadata: data.get(name).metadata })), list_complete: true };
+    },
+  };
+}
+
+test("reports are stored with the player's note and trace, and only the admin token reads them", async () => {
+  const kv = memKV();
+  const bytes = zip([["melee_port.log", "scene: major 02 minor 02 (frame 94)\nslippi: logged in as AlicePrivate"],
+    ["session.trace", "frame,inputs,checksum\n1,0000,abcd\n"]]);
+  const env = { QUOTA: openQuota, REPORTS: kv, ADMIN_TOKEN: "t0ken-long-enough" };
+  const response = await relay.fetch(new Request("https://relay.invalid/report", { method: "POST", body: bytes,
+    headers: { "content-type": "application/zip", "content-length": String(bytes.length), "x-mu-kind": "logs",
+      "x-mu-version": "0.8.83", "x-mu-engine": "Static Recomp",
+      "x-mu-note": encodeURIComponent("Desync at frame 94 vs AlicePrivate, C:\\Users\\AlicePrivate\\x") } }), env);
+  assert.equal(response.status, 200);
+  const list = await relay.fetch(new Request("https://relay.invalid/admin/list", { headers: { authorization: "Bearer t0ken-long-enough" } }), env);
+  const { items } = await list.json();
+  assert.equal(items.length, 1); assert.equal(items[0].meta.kind, "logs"); assert.equal(items[0].meta.trace, true);
+  const md = await (await relay.fetch(new Request("https://relay.invalid/admin/get?key=" + encodeURIComponent(items[0].key),
+    { headers: { authorization: "Bearer t0ken-long-enough" } }), env)).text();
+  assert.match(md, /What the player says happened/); assert.match(md, /Desync at frame 94/);
+  assert.doesNotMatch(md, /C:\\|logged in as/); // a name the player typed in the note stays; paths do not
+  const trace = await (await relay.fetch(new Request("https://relay.invalid/admin/trace?key=" + encodeURIComponent(items[0].key),
+    { headers: { authorization: "Bearer t0ken-long-enough" } }), env)).text();
+  assert.match(trace, /^frame,inputs,checksum\n1,0000,abcd/);
+  const denied = await relay.fetch(new Request("https://relay.invalid/admin/list", { headers: { authorization: "Bearer wrong-token-xxxxx" } }), env);
+  assert.equal(denied.status, 401);
+});
+
+test("the header names the crashed game's version when it differs from the launcher's", () => {
+  assert.equal(gameVersionLabel("CRASH: exception C00000FD at 00007FF6F63752F7 (melee_port.exe+0x1DF52F7), version 0.8.77", "0.8.82"),
+               "game 0.8.77 (launcher 0.8.82)");
+  assert.equal(gameVersionLabel("CRASH: exception C0000005 at 1 (melee_game.dll+0x1), version 0.8.82", "0.8.82"), "0.8.82");
+  assert.equal(gameVersionLabel("", "0.8.82"), "0.8.82");
 });

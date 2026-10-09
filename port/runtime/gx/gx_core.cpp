@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 #include <unordered_map>
 
 namespace gx {
@@ -399,13 +400,28 @@ void snapshot_textures(DrawCall& dc) {
     uint32_t total = texture_chain_bytes(t.width, t.height, t.format, t.mip_levels);
     uint32_t palette_bytes = t.format == 8 ? 32 : t.format == 9 ? 512 : t.format == 10 ? 32768 : 0;
     const uint8_t* texels = host::try_ptr(t.addr, total);
+    uint32_t readable = total;
+    if (!texels && host::try_ptr(t.addr, 1)) {
+      // The texture starts in RAM but runs past its end: a mod's stage code left a 1024x1024 RGBA8
+      // texture set at 0140DEC0 (0.8.83 report, Akaneia). The console's GPU reads whatever lies
+      // there; the part inside RAM is used and the rest reads as zero, instead of stopping the game.
+      uint32_t lo = 1, hi = total;
+      while (lo < hi) { uint32_t mid = lo + (hi - lo + 1) / 2; if (host::try_ptr(t.addr, mid)) lo = mid; else hi = mid - 1; }
+      readable = lo;
+      static thread_local std::vector<uint8_t> padded;
+      padded.assign(total, 0);
+      std::memcpy(padded.data(), host::try_ptr(t.addr, readable), readable);
+      texels = padded.data();
+      static bool logged = false;
+      if (!logged) { logged = true; host::log("gx: texture %08X+%X runs past RAM; the last %X bytes read as zero", t.addr, total, total - readable); }
+    }
     if (!texels || t.tlut_addr > sizeof g_tmem || palette_bytes > sizeof g_tmem - t.tlut_addr)
       host::die("GX texture range invalid: %08X+%X, palette %X+%X", t.addr, total, t.tlut_addr, palette_bytes);
     // Native writes never pass through ppc::mark_ram_write, so the RAM-version shortcut cannot
     // see them. The native game cannot run while one FIFO batch is parsed, though, so the batch
     // number is a valid version: a texture drawn again in the same batch skips the texel compare
     // (that compare, repeated for every draw, was most of the native build's texsnap cost).
-    const uint64_t source_version = host::game_image ? g_fifo_batch : ppc::watch_ram_range(t.addr & 0x3FFFFFFFu, total);
+    const uint64_t source_version = host::game_image ? g_fifo_batch : ppc::watch_ram_range(t.addr & 0x3FFFFFFFu, readable);
     t.data = g_texture_snapshots.capture(texels, total, g_tmem + t.tlut_addr,
                                          palette_bytes, source_version,
                                          palette_bytes ? g_tmem_generation : 0);

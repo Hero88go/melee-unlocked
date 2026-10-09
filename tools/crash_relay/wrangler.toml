@@ -3,6 +3,10 @@ main = "src/index.js"
 compatibility_date = "2026-09-01"
 preview_urls = false
 
+[vars]
+# Store every report and also post it to the private Discord channel (webhook secret DISCORD_WEBHOOK_URL).
+FORWARD_DISCORD = "1"
+
 # Rate limits: one Durable Object (class QuotaGate in src/index.js) holds the per-IP and daily
 # counters, so a check and its reservation are one step. Created by the migration below on deploy.
 [[durable_objects.bindings]]
@@ -17,3 +21,9 @@ new_sqlite_classes = ["QuotaGate"]
 [[kv_namespaces]]
 binding = "RATE"
 id = "36cc7f4af26b4a8abd15d99aa824aae9"
+
+# Every report is kept here (markdown, plus the session trace when the player sent one), and read
+# back with tools/pull_reports.py through the /admin endpoints (Worker secret ADMIN_TOKEN).
+[[kv_namespaces]]
+binding = "REPORTS"
+id = "9a31545752504dcebc2ea6ab57ca0743"

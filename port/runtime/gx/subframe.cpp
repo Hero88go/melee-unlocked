@@ -280,6 +280,23 @@ void SubFrameSolver::fractional(const float prev[12], const float cur[12], doubl
   }
 }
 
+static bool smooth_game_projection(const DrawCall& previous, const DrawCall& current) {
+  if (previous.xf_regs[0x26] != 0 || current.xf_regs[0x26] != 0) return false;
+  float a[6], b[6];
+  std::memcpy(a, &previous.xf_regs[0x20], sizeof a);
+  std::memcpy(b, &current.xf_regs[0x20], sizeof b);
+  for (int k = 0; k < 6; ++k) if (!std::isfinite(a[k]) || !std::isfinite(b[k])) return false;
+  // Positive perspective scales, a valid depth mapping, and a gradual lens
+  // change. Orthographic UI, camera-type switches and abrupt zoom cuts hold.
+  // Melee's match camera writes a tiny negative depth scale (about -6e-6) and a negative offset;
+  // the zoom moves only the lens terms, so the depth terms must simply stay the same.
+  if (a[0] <= 0 || a[2] <= 0 || b[0] <= 0 || b[2] <= 0 || a[5] >= 0 || b[5] >= 0 ||
+      std::abs(a[4] - b[4]) > 1e-6f || std::abs(a[5] - b[5]) > 1e-4f) return false;
+  for (int k : {0, 2}) if (std::abs(b[k] - a[k]) > std::min(a[k], b[k]) * .1f) return false;
+  if (std::abs(a[0] / a[2] - b[0] / b[2]) > .001f) return false;
+  return std::abs(a[1] - b[1]) <= .05f && std::abs(a[3] - b[3]) <= .05f;
+}
+
 void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   if (prev && cur && cur->sequence != prev->sequence + 1) prev = nullptr;
   prev_ = prev; cur_ = cur;
@@ -330,8 +347,12 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
       // already identified by generation, pass and draw ordinal (see same_draw_state).
       else if (!same_draw_state(pd, d, stats_.state_register, !d.object_generation) ||
                !same_textures(pd, d) || !same_matrix_bindings(pd, d)) { ++stats_.state; reason = 5; }
-      else if (std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 7 * sizeof(uint32_t))) { ++stats_.projection; reason = 6; }
+      else if (std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 7 * sizeof(uint32_t)) &&
+               !(frame_in_match(*prev) && frame_in_match(*cur) && smooth_game_projection(pd, d))) {
+        ++stats_.projection; reason = 6;
+      }
       else { valid = true; p.blend_vertices = !same_vertices; }
+      p.animate_projection = valid && std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 4 * sizeof(uint32_t)) != 0;
       if (dump_sequence() && cur->sequence == dump_sequence()) pair_reason_[i] = reason;
       // Did this identity pair last frame? Flipping between held and re-posed is what the eye
       // reads as an object flashing; a steady hold is invisible.
@@ -531,6 +552,25 @@ SolverPool& solver_pool() { static SolverPool pool(3); return pool; }
 void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>& out, bool authored) const {
   out.resize(cur_ ? cur_->draws.size() : 0);
   if (!cur_) return;
+  for (size_t i = 0; i < out.size(); ++i) {
+    DrawMatrices& o = out[i];
+    o.has_projection = false;
+    const Pair& p = pairs_[i];
+    if (!p.animate_projection || p.prev_draw < 0 || !std::isfinite(t)) continue;
+    const DrawCall& d = cur_->draws[i];
+    float previous[6];
+    std::memcpy(previous, &prev_->draws[p.prev_draw].xf_regs[0x20], sizeof previous);
+    std::memcpy(o.projection, &d.xf_regs[0x20], sizeof o.projection);
+    const float phase = (float)std::clamp(t, 0.0, 1.0);
+    for (int k = 0; k < 4; ++k) {
+      const float current = o.projection[k];
+      o.projection[k] = interpolate ? (phase == 1 ? current : phase == 0 ? previous[k] : previous[k] + (current - previous[k]) * phase)
+                                  : current + (current - previous[k]) * phase;
+    }
+    // Keep the game's current clipping planes: entering pause may switch near/
+    // far immediately. Only the continuous lens motion is re-timed.
+    o.has_projection = true;
+  }
   SubFrameStats* stats = &stats_;
   stats->rigid = stats->blended = stats->cuts = stats->authored = stats->carried = stats->vertex_blended = 0;
   stats->posed = stats->posed_skinned = 0;

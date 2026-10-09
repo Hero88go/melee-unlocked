@@ -361,6 +361,14 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
     if (pad->is_disconnected) { g_stall_frame_counts[i] = 0; continue; }
     int32_t latest = pad->latest_frame;
     bool enough = latest - finalized_frame >= (frame - finalized_frame - ROLLBACK_MAX_FRAMES);
+    // Start in step. The Source Port loads a match with no emulated disc time, so it reached frame 1
+    // well before a Slippi Dolphin opponent, ran into the countdown and froze at frame 8 (the rollback
+    // limit) until they caught up, then time sync halted it again at frame 30: in one player's log 47
+    // of 49 matches froze there, up to 1.25 s (GitHub #44). Holding frame 2 until the other side has
+    // started puts that wait before anything moves, and the two games then start together. Frame 2,
+    // not 1: both games have sent frame 1's inputs by then (frame 1 re-run would also redo the
+    // match setup), so neither waits on the other forever.
+    if (frame == 2 && latest < 1) enough = false;
     if (enough) { g_stall_frame_counts[i] = 0; continue; }
     g_stall_frame_counts[i]++;
     any_needs_inputs = true;
@@ -393,6 +401,9 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
               g_input_wait_frames, g_input_wait_frames / 60.0, g_input_wait_latest, pad->latest_frame,
               gained >= g_input_wait_frames ? "their game kept running, the inputs were held up on the way"
                                             : "their game fell behind too");
+    // A wait the player can feel (6 frames, 0.1 s, or more) marks the trace by itself, so the match
+    // is kept and Send recent game logs carries it even when nobody pressed a mark button.
+    if (g_input_wait_frames >= 6) g_trace_record.flags |= net_trace::kMark;
     g_input_wait_frames = 0;
   }
   const int32_t frame_time = 16683, t1 = 10000, t2 = 2 * frame_time + t1;

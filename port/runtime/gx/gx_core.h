@@ -156,6 +156,10 @@ struct DrawMatrices {
   // Effects that rewrite their vertex stream every simulation frame (sparks, shields, hit flashes)
   // cannot be moved by a matrix. When set, the renderer draws these vertices instead of the frame's.
   const Vertex* vertices = nullptr;
+  // A smoothly changing game camera (pause/unpause zoom) belongs on the same
+  // presentation timeline as its model-view matrices.
+  float projection[6] = {};
+  bool has_projection = false;
 };
 
 struct EfbCopy {

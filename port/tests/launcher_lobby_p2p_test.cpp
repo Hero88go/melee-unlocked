@@ -1250,53 +1250,66 @@ void transport_rules() {
 #endif
 }  // namespace
 
-int main() {
+struct Case {
+  const char* name;
+  std::function<void()> run;
+};
+
+// One entry per case, so ctest runs them side by side: port/CMakeLists.txt adds a test per name
+// and a ".list" test that fails when its list and this table drift apart. No argument runs every
+// case in order, as before.
+int main(int argc, char** argv) {
   WSADATA ws{};
   if (WSAStartup(MAKEWORD(2, 2), &ws)) { std::cerr << "no Winsock\n"; return 2; }
-  try {
 #ifdef MELEE_NO_SLIPPI
-    // The launcher built without the Slippi layer: every one of its matches is peer-to-peer and it
-    // refuses the older flow, so only the cases written for it run here (the rest of this file is
-    // the normal build's port_launcher_lobby_p2p, where peer to peer is a request's own transport).
-    p2p_setup();
-    p2p_setup_loss();
-    p2p_auto_two();
-    p2p_auto_three();
-    p2p_block();
-    p2p_old_protocol();
-    p2p_invite();
+  // The launcher built without the Slippi layer: every one of its matches is peer-to-peer and it
+  // refuses the older flow, so only the cases written for it run here (the rest of this file is
+  // the normal build's port_launcher_lobby_p2p, where peer to peer is a request's own transport).
+  const Case cases[] = {
+    {"p2p_setup", p2p_setup}, {"p2p_setup_loss", p2p_setup_loss}, {"p2p_auto_two", p2p_auto_two},
+    {"p2p_auto_three", p2p_auto_three}, {"p2p_block", p2p_block}, {"p2p_old_protocol", p2p_old_protocol},
+    {"p2p_invite", p2p_invite},
+  };
+  const std::string pass = "PASS: launcher lobby peer-to-peer matches";
+#else
+  const Case cases[] = {
+    {"accept_flow", accept_flow}, {"cross_build_flow", cross_build_flow}, {"refusals", refusals},
+    {"crossed_requests", crossed_requests},
+    {"one_way_loss_requests", [] { one_way_loss(true); }}, {"one_way_loss_answers", [] { one_way_loss(false); }},
+    {"clock_skew", clock_skew}, {"friends_by_code", friends_by_code}, {"mods", mods},
+    {"mod_match_disc", mod_match_disc}, {"private_accept_flow", private_accept_flow},
+    {"private_decline_and_block", private_decline_and_block}, {"private_timeout", private_timeout},
+    {"private_old_versions", private_old_versions}, {"private_routing", private_routing},
+    {"private_crossed", private_crossed}, {"private_limits", private_limits},
+    {"transport_side_by_side", transport_side_by_side}, {"transport_old_peer", transport_old_peer},
+    {"transport_other_kind", transport_other_kind}, {"transport_rules", transport_rules},
+  };
+  const std::string pass = "PASS: launcher lobby peer requests";
+#endif
+  const std::string only = argc > 1 ? argv[1] : "";
+  if (only == "--expect") {
+    // The names CMake registered must be exactly this table, in this order.
+    std::string table, registered;
+    for (const auto& c : cases) table += std::string(c.name) + " ";
+    for (int i = 2; i < argc; ++i) registered += std::string(argv[i]) + " ";
     WSACleanup();
-    std::cout << (failures ? "FAILED: " + std::to_string(failures) : std::string("PASS: launcher lobby peer-to-peer matches")) << std::endl;
-    return failures ? 1 : 0;
-#endif
-    accept_flow();
-    cross_build_flow();
-    refusals();
-    crossed_requests();
-    one_way_loss(true);
-    one_way_loss(false);
-    clock_skew();
-    friends_by_code();
-    mods();
-    mod_match_disc();
-    private_accept_flow();
-    private_decline_and_block();
-    private_timeout();
-    private_old_versions();
-    private_routing();
-    private_crossed();
-    private_limits();
-#ifndef MELEE_NO_SLIPPI
-    transport_side_by_side();
-    transport_old_peer();
-    transport_other_kind();
-    transport_rules();
-#endif
+    if (table == registered) { std::cout << "PASS: ctest runs every case\n"; return 0; }
+    std::cout << "FAILED: port/CMakeLists.txt lists [" << registered << "] but the test has [" << table << "]\n";
+    return 1;
+  }
+  bool found = only.empty();
+  try {
+    for (const auto& c : cases) {
+      if (!only.empty() && only != c.name) continue;
+      found = true;
+      c.run();
+    }
   } catch (const std::exception& ex) {
     std::cerr << "unexpected exception: " << ex.what() << std::endl;
     ++failures;
   }
   WSACleanup();
-  std::cout << (failures ? "FAILED: " + std::to_string(failures) : std::string("PASS: launcher lobby peer requests")) << std::endl;
+  if (!found) { std::cerr << "unknown case " << only << std::endl; return 2; }
+  std::cout << (failures ? "FAILED: " + std::to_string(failures) : pass + (only.empty() ? "" : " (" + only + ")")) << std::endl;
   return failures ? 1 : 0;
 }
