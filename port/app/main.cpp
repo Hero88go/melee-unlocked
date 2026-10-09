@@ -1304,9 +1304,15 @@ static int melee_main(int argc, char** argv) {
   {
     PROCESS_POWER_THROTTLING_STATE throttling{};
     throttling.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
-    throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
-    throttling.StateMask = 0;   // execution speed never throttled
-    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof throttling);
+    // Also: always honor this process's timer resolution request (Windows 11 otherwise drops it
+    // whenever it judges the window hidden or covered, and the frame waits go coarse).
+    throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED | 0x4 /* PROCESS_POWER_THROTTLING_IGNORE_TIMER_RESOLUTION */;
+    throttling.StateMask = 0;   // execution speed never throttled, timer resolution never ignored
+    if (!SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof throttling)) {
+      // Windows 10 does not know the timer bit and refuses the whole request: ask for the speed part alone.
+      throttling.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+      SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &throttling, sizeof throttling);
+    }
   }
   host::Options& o = host::options;
   bool ram_translator = false;
