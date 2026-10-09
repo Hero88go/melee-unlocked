@@ -152,7 +152,7 @@ LRESULT CALLBACK proc(HWND w, UINT m, WPARAM wp, LPARAM lp) {
       HWND edit = make(L"EDIT", L"", WS_BORDER | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_TABSTOP,
                        12, 32, 456, 120, ID_NOTE);
       SendMessageW(edit, EM_SETLIMITTEXT, 2000, 0);
-      make(L"STATIC", L"Sends your game log, lobby log, this session's crash file and your newest online session trace. "
+      make(L"STATIC", L"Sends your game logs (the last session and the one before), lobby log, this session's crash file and your marked online matches. "
                       L"Names, accounts, addresses and folder names are removed before anything leaves your PC.",
            0, 12, 160, 456, 34, 0);
       make(L"BUTTON", L"Send", BS_DEFPUSHBUTTON | WS_TABSTOP, 296, 202, 82, 28, ID_SEND);
@@ -214,9 +214,33 @@ void send_logs(HWND owner, const std::string& dir, const std::string& engine, co
   const auto zip = launcher::crash::capped_zip(files);
   const std::string where = files[0].first == "melee_port_crash.txt" ? first_line(files[0].second) : std::string();
   const bool sent = post(zip, engine, where, "logs", narrow(state.note));
-  MessageBoxW(owner, sent ? L"Logs sent. Thank you." :
-                            L"The logs could not be sent (no connection, or sent too recently: wait two minutes and try again).",
-              L"Send logs", MB_OK | (sent ? MB_ICONINFORMATION : MB_ICONWARNING));
+  if (!sent) {
+    MessageBoxW(owner, L"The logs could not be sent (no connection, or sent too recently: wait two minutes and try again).",
+                L"Send logs", MB_OK | MB_ICONWARNING);
+    return;
+  }
+  // What went out, so the player knows it worked and what the report holds (`files` is exactly what
+  // the ZIP held after capped_zip). A last session of a few kilobytes is a launch that was closed
+  // again at once: said plainly, since the session they meant is then the one before.
+  std::wstring text = L"Logs sent. Thank you.\n\nWhat was sent (" + widen(engine) + L"):";
+  const auto size = [](size_t bytes) { return bytes < 1024 ? std::wstring(L"under 1 KB") : std::to_wstring(bytes / 1024) + L" KB"; };
+  for (const auto& file : files) {
+    if (file.first == "melee_port.log") {
+      text += L"\n  - Game log of your last session (" + size(file.second.size()) + L")";
+      if (file.second.size() < 48 * 1024) text += L": a short session";
+    } else if (file.first == "melee_port.prev.log") text += L"\n  - Game log of the session before it (" + size(file.second.size()) + L")";
+    else if (file.first == "melee_port_crash.txt") text += L"\n  - This session's crash file";
+    else if (file.first == "lobby.log") text += L"\n  - Lobby log";
+    else if (file.first == "session.trace") {
+      size_t matches = 0;
+      static const char mark[] = "# match ";
+      for (size_t at = 0; at + sizeof mark - 1 <= file.second.size(); ++at)
+        if ((at == 0 || file.second[at - 1] == '\n') && std::memcmp(file.second.data() + at, mark, sizeof mark - 1) == 0) ++matches;
+      text += L"\n  - Marked moments from " + std::to_wstring(matches) + (matches == 1 ? L" online match" : L" online matches");
+    }
+  }
+  if (!state.note.empty()) text += L"\n  - Your note";
+  MessageBoxW(owner, text.c_str(), L"Send logs", MB_OK | MB_ICONINFORMATION);
 }
 
 }  // namespace crash_report

@@ -391,3 +391,14 @@ test("a logs report names the game version from the game's own log", () => {
   assert.equal(gameVersionLabel("version " + logGameVersion("Melee Unlocked 0.8.79, melee_port.exe"), "0.8.84"),
                "game 0.8.79 (launcher 0.8.84)");
 });
+
+test("the session before the last one is kept, scrubbed, after the last session's log", () => {
+  const bytes = zip([["melee_port.log", "Melee Unlocked 0.8.88, melee_source.exe" + String.fromCharCode(10) + "last session"],
+    ["melee_port.prev.log", "Melee Unlocked 0.8.88, melee_source.exe" + String.fromCharCode(10) + "the session before by PlayerOne"]]);
+  const report = sanitizedReport(bytes, "0.8.88", "Source Port", "stopped in C:\\Users\\PlayerOne\\src\\heap.c:12", "", "logs");
+  assert.deepEqual([...storedTextFiles(report.zip).keys()], ["melee_port.log", "melee_port.prev.log"]);
+  assert.match(report.markdown, /## melee_port\.prev\.log/);
+  assert.match(report.markdown, /the session before by \[user\]/);
+  assert.ok(report.markdown.indexOf("## melee_port.log") < report.markdown.indexOf("## melee_port.prev.log"));
+  assert.ok(MAX_MARKDOWN_BYTES >= (256 + 512 + 384 + 128) * 1024);
+});
