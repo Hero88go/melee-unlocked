@@ -6483,6 +6483,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 for (const auto& costume : fighter->second)
                   if (slot_key(costume.second.front()->target_path) == key) {
                     row.variants = costume.second;
+                    // Asked for as soon as the list is built, so the pictures are drawn before the
+                    // player opens the fighter's rows.
+                    for (const CosmeticAsset* skin : row.variants) (void)skin_picture(*skin);
                     row.target = costume.second.front()->target_path;
                     listed[costume.second.front()->target_path] = true;
                   }
@@ -6521,8 +6524,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                 for (size_t i = 0; i < variants.size(); ++i)
                   if (variants[i]->selected && variants[i]->available) current = (int)i + 1;
                 // The picture the slot shows: the skin's own, else the costume's added one.
+                // The standard costume's picture: the portrait added for the slot, else the disc's own
+                // costume file drawn the same way a skin is.
+                const std::string standard_picture = !costume.picture.empty() ? costume.picture : host::standard_costume_thumbnail(target);
                 const std::string own_picture = current > 0 ? skin_picture(*variants[(size_t)current - 1]) : std::string();
-                const std::string& worn_picture = !own_picture.empty() ? own_picture : costume.picture;
+                const std::string& worn_picture = !own_picture.empty() ? own_picture : standard_picture;
                 draw_cosmetic_tile(worn_picture, tile_w, tile_h);
                 ImGui::SameLine();
                 ImGui::BeginGroup();
@@ -6559,7 +6565,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                     if (i == current) ImGui::SetItemDefaultFocus();
                     if (ImGui::IsItemVisible()) {
                       ImDrawList* draw = ImGui::GetWindowDrawList();
-                      draw_cosmetic_tile_at(draw, at, tile_w, tile_h, item ? skin_picture(*item) : costume.picture);
+                      draw_cosmetic_tile_at(draw, at, tile_w, tile_h, item ? skin_picture(*item) : standard_picture);
                       const char* online = !item || item->online_message.empty() ? nullptr :
                           item->online_allowed ? "Online: stays on" : "Online: standard costume";
                       const float text_x = at.x + tile_w + 8.0f, line_h = ImGui::GetTextLineHeight();

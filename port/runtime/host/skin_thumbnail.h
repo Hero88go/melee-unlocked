@@ -21,6 +21,8 @@ bool render_costume_picture(const uint8_t* dat, size_t size, int width, int heig
 // has it drawn on a background thread (one at a time); a skin that cannot be drawn is not asked
 // for again this session.
 std::string skin_thumbnail(const std::string& asset_id);
+// The same for a standard costume, drawn from the disc's own file ("PlMsRe.dat").
+std::string standard_costume_thumbnail(const std::string& costume_file_name);
 void skin_thumbnails_shutdown();
 
 }  // namespace host

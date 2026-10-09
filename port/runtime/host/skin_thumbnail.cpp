@@ -2,6 +2,7 @@
 #include "skin_thumbnail.h"
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
@@ -17,7 +18,10 @@
 #include "stb/stb_image_write.h"
 
 namespace host {
-void log(const char* fmt, ...);   // host.h, which this file does not need the rest of
+// From host.h, which this file does not need the rest of.
+void log(const char* fmt, ...);
+bool disc_find_file(const std::string& name, uint32_t* offset, uint32_t* size);
+bool disc_read(uint32_t offset, void* dst, uint32_t size);
 namespace {
 
 // ---- the file: HAL's archive layout, every read checked against the data block ----
@@ -283,10 +287,15 @@ void rasterize(const Model& m, int width, int height, std::vector<uint8_t>* out)
   };
   const float y0 = at(ys, 0.003), y1 = at(ys, 0.997), x0 = at(xs, 0.02), x1 = at(xs, 0.98);
   const float tall = std::max(y1 - y0, 1e-3f) * 1.06f, wide = std::max(x1 - x0, 1e-3f) * 1.06f;
-  // Fit the height. Only a model far wider than tall is fitted on width: arms held out in the
-  // rest pose are wider than the picture and are meant to run off its sides.
-  const float scale = std::min((float)H / tall, (float)W / (wide * 0.62f));
-  const float cx = (x0 + x1) * 0.5f, cy = (y0 + y1) * 0.5f;
+  // A slim, upright fighter (most of them) is shown from the top of the head down to about the
+  // knees, so the face and the costume's colours read at tile size; a round or broad one is shown
+  // whole. Arms held out in the rest pose are wider than the picture and run off its sides.
+  const float core = std::max(at(xs, 0.80) - at(xs, 0.20), 1e-3f);
+  const bool slim = core < (y1 - y0) * 0.35f;
+  const float shown = slim ? tall * 0.66f : tall;
+  const float scale = std::min((float)H / shown, (float)W / (slim ? core * 2.4f : wide * 0.62f));
+  const float cx = (at(xs, 0.20) + at(xs, 0.80)) * 0.5f;
+  const float cy = slim ? y1 + (tall - (y1 - y0)) * 0.5f - shown * 0.5f : (y0 + y1) * 0.5f;
   std::vector<float> depth((size_t)W * H, -1e30f);
   std::vector<uint8_t> big((size_t)W * H * 4, 0);
   for (const Triangle& t : m.triangles) {
@@ -362,7 +371,8 @@ namespace {
 struct Shared {
   std::mutex mutex;
   std::condition_variable wake;
-  std::deque<std::string> queue;
+  struct Job { std::string id; uint32_t disc_offset = 0, disc_size = 0; };   // disc_size: a standard costume, read from the disc
+  std::deque<Job> queue;
   std::set<std::string> asked;      // queued, being drawn, or failed: not asked for again
   std::set<std::string> ready;      // drawn this session (the file is there)
   bool started = false, stop = false;
@@ -373,17 +383,22 @@ void write_png(void* context, void* data, int size) { ((std::ofstream*)context)-
 
 void work() {
   for (;;) {
-    std::string id;
+    Shared::Job job;
     {
       Shared& s = shared();
       std::unique_lock<std::mutex> lock(s.mutex);
       s.wake.wait(lock, [&] { return s.stop || !s.queue.empty(); });
       if (s.stop) return;
-      id = s.queue.front(); s.queue.pop_front();
+      job = s.queue.front(); s.queue.pop_front();
     }
     std::vector<uint8_t> bytes, pixels;
     std::string path;
-    if (!cosmetics::costume_file(id, &bytes, &path) || path.empty()) continue;
+    const std::string& id = job.id;
+    if (job.disc_size) {
+      path = cosmetics::costume_thumbnail_path(id);
+      bytes.resize(job.disc_size);
+      if (path.empty() || !disc_read(job.disc_offset, bytes.data(), job.disc_size)) continue;
+    } else if (!cosmetics::costume_file(id, &bytes, &path) || path.empty()) continue;
     constexpr int kWidth = 192, kHeight = 256;
     if (!render_costume_picture(bytes.data(), bytes.size(), kWidth, kHeight, &pixels)) { log("cosmetics: no picture could be drawn for %s", id.c_str()); continue; }
     namespace fs = std::filesystem;
@@ -413,7 +428,29 @@ std::string skin_thumbnail(const std::string& asset_id) {
   std::error_code ec;
   if (std::filesystem::is_regular_file(std::filesystem::u8path(path), ec)) { s.ready.insert(asset_id); return path; }
   s.asked.insert(asset_id);
-  s.queue.push_back(asset_id);
+  s.queue.push_back({asset_id, 0, 0});
+  if (!s.started) { s.started = true; std::thread(work).detach(); }
+  s.wake.notify_one();
+  return {};
+}
+
+std::string standard_costume_thumbnail(const std::string& costume_file_name) {
+  // The file is looked up here, on the caller's thread; only the read happens on the worker.
+  uint32_t offset = 0, size = 0;
+  if (costume_file_name.empty() || !disc_find_file(costume_file_name, &offset, &size) || size < 0x40 || size > 16u * 1024 * 1024) return {};
+  // Named by the file and its size, so another disc's costume of the same name gets its own picture.
+  std::string id = "standard-" + costume_file_name + "-" + std::to_string(size);
+  for (char& c : id) c = (char)std::tolower((unsigned char)c);
+  const std::string path = cosmetics::costume_thumbnail_path(id);
+  if (path.empty()) return {};
+  Shared& s = shared();
+  std::lock_guard<std::mutex> lock(s.mutex);
+  if (s.ready.count(id)) return path;
+  if (s.asked.count(id)) return {};
+  std::error_code ec;
+  if (std::filesystem::is_regular_file(std::filesystem::u8path(path), ec)) { s.ready.insert(id); return path; }
+  s.asked.insert(id);
+  s.queue.push_back({id, offset, size});
   if (!s.started) { s.started = true; std::thread(work).detach(); }
   s.wake.notify_one();
   return {};
