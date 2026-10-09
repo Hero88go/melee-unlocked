@@ -2023,7 +2023,8 @@ const double tsc_seconds = [] {
 static double g_sim_costs[SIM_COST_COUNT];
 static double g_sim_costs_window[SIM_COST_COUNT];   // accumulated over the 60-frame log interval
 static double g_sim_ms_window = 0, g_sim_ms_worst = 0;
-static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record", "gxdecode"};   // record includes texsnap and observe; gxdecode includes record and queue
+static ULONG64 g_slow_frame_cycles = 0;   // this thread's cycle count at the start of the frame, for the slow-frame line
+static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record", "gxdecode", "input", "wait", "late"};   // record includes texsnap and observe; gxdecode includes record and queue
 static double g_sim_frame_start = 0.0, g_last_sim_ms = 0.0;
 static ULONG64 g_sim_frame_start_cycles = 0;   // this thread's cycle count at g_sim_frame_start (MELEE_SIM_TIMES)
 void sim_cost_add(int slot, double seconds) { if (slot >= 0 && slot < SIM_COST_COUNT) { g_sim_costs[slot] += seconds; g_sim_costs_window[slot] += seconds; } }
@@ -2078,20 +2079,87 @@ static void apply_early_rng_seed() {
   log("rng-seed: early %08X at retrace %u", seed, at);
 }
 
+// ---- sleeps that can be trusted ----
+// A report: the game ran at a steady 48 Hz, every frame 20 to 23 ms long, with almost none of that
+// time spent on game work. 48 Hz is three frames per four ticks of Windows' default 15.6 ms timer:
+// on that system the frame wait's short sleeps were ending on the coarse tick instead of on time
+// (a power saving state can do this to a process whatever resolution it asked for). The frame wait
+// has a short sleep before each 5 ms audio step, and one that overshoots past the frame's end makes
+// the whole frame late.
+// So sleeping is trusted only as far as it is measured: a helper thread times a 1 ms sleep four
+// times a second, with the same call the frame wait uses, and publishes how late it wakes. The
+// frame wait sleeps only when there is room for that lateness and spins the rest. On a healthy
+// system the lateness is a few hundred microseconds and nothing changes.
+// MELEE_TEST_COARSE_SLEEP=1 makes every such sleep end on the next 15.625 ms boundary, to stand in
+// for such a system; =2 does the same with the measurement ignored, which is the old behaviour.
+static std::atomic<double> g_sleep_slack{0.0};   // seconds a timed sleep wakes late by, as last measured
+static int coarse_sleep_test() {
+  static const int mode = [] { const char* v = std::getenv("MELEE_TEST_COARSE_SLEEP"); return v ? std::atoi(v) : 0; }();
+  return mode;
+}
+// One timed sleep of about `seconds`: the high resolution timer, or a millisecond sleep before
+// Windows 1803. False when there is no timer and the time is too short to hand to Sleep.
+static bool timed_sleep(HANDLE timer, double seconds) {
+  if (coarse_sleep_test()) {
+    const double tick = 0.015625;
+    const double until = std::ceil((now_seconds() + seconds) / tick) * tick;
+    for (double left = until - now_seconds(); left > 0.0; left = until - now_seconds()) {
+      LARGE_INTEGER due; due.QuadPart = -(LONGLONG)(std::max(left - 0.0004, 0.0001) * 1e7);
+      if (left > 0.0008 && timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, INFINITE);
+      else YieldProcessor();
+    }
+    return true;
+  }
+  LARGE_INTEGER due; due.QuadPart = -(LONGLONG)(seconds * 1e7);
+  if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) { WaitForSingleObject(timer, INFINITE); return true; }
+  if (seconds > 0.0016) { Sleep(1); return true; }
+  return false;
+}
+static void sleep_probe_start() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    std::thread([] {
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);   // measured as the simulation thread sleeps
+      const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+      double late[8] = {};
+      bool coarse = false;
+      for (unsigned n = 0;; ++n) {
+        const double before = now_seconds();
+        timed_sleep(timer, 0.001);
+        late[n % 8] = std::max(0.0, now_seconds() - before - 0.001);
+        // The median of the last eight: one sleep cut into by another program is not the system's timer.
+        double sorted[8]; std::copy(std::begin(late), std::end(late), sorted); std::sort(std::begin(sorted), std::end(sorted));
+        const double typical = n < 7 ? sorted[7] : sorted[4];
+        g_sleep_slack.store(typical > 0.0007 ? typical : 0.0, std::memory_order_relaxed);
+        const bool now_coarse = typical > 0.002;
+        if (now_coarse != coarse && n >= 7) {
+          coarse = now_coarse;
+          if (coarse) log("timing: sleeps on this system wake %.1f ms late (a power saving state does this); the frame wait spins instead of sleeping so the game keeps 60 Hz", typical * 1000.0);
+          else log("timing: sleeps wake on time again; the frame wait sleeps as usual");
+        }
+        Sleep(250);
+      }
+    }).detach();
+  });
+}
+double sleep_slack() {
+  sleep_probe_start();
+  return coarse_sleep_test() == 2 ? 0.0 : g_sleep_slack.load(std::memory_order_relaxed);
+}
+
 // Every input waits for the next tick, so the tick wakes on time rather than on the millisecond
 // sleep granularity (0.7 ms late on average, 1.2 ms at p95): a high resolution timer to just
 // before the deadline, then a short spin. Without the high resolution timer (Windows before 1803)
-// a millisecond sleep stands in for it.
+// a millisecond sleep stands in for it. The sleep is as long as the measured lateness leaves room
+// for (sleep_slack): on a system whose sleeps overshoot, the wait spins instead.
 static void wait_for_tick(std::chrono::steady_clock::time_point deadline) {
   static const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
   for (;;) {
     const double remaining = std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
     if (remaining <= 0.0) return;
-    if (remaining > 0.0006) {
-      LARGE_INTEGER due; due.QuadPart = -(LONGLONG)((remaining - 0.0004) * 1e7);
-      if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, INFINITE);
-      else if (remaining > 0.002) Sleep(1);
-      else YieldProcessor();
+    const double slack = sleep_slack();
+    if (remaining > 0.0006 + slack) {
+      if (!timed_sleep(timer, remaining - 0.0004 - slack)) YieldProcessor();
     } else {
       YieldProcessor();
     }
@@ -2103,7 +2171,13 @@ bool wait_until_console_time(uint64_t tb) {
   // Position of `tb` inside the frame, as a fraction, mapped onto the frame's real-time period.
   const double into_frame = 1.0 - (double)(g_next_retrace_tb - tb) / (double)TB_PER_FRAME;
   const auto deadline = g_next_frame + std::chrono::microseconds((long long)(into_frame * 16667.0 / g_emulation_speed));
-  if (deadline > std::chrono::steady_clock::now()) wait_for_tick(deadline);
+  const auto before = std::chrono::steady_clock::now();
+  if (deadline > before) {
+    wait_for_tick(deadline);
+    const auto after = std::chrono::steady_clock::now();
+    sim_cost_add(SIM_WAIT, std::chrono::duration<double>(after - before).count());
+    sim_cost_add(SIM_LATE, std::chrono::duration<double>(after - deadline).count());
+  }
   if (cpu->tb < tb) cpu->tb = tb;
   return true;
 }
@@ -2128,7 +2202,11 @@ void retrace() {
         g_slow_sim_frames.push_back(completed_frame);
         char detail[256] = ""; size_t n = 0;
         for (int i = 0; i < SIM_COST_COUNT; ++i) if (g_sim_costs[i] * 1000.0 >= 0.5) n += (size_t)std::snprintf(detail + n, sizeof detail - n, " %s %.1f", g_sim_cost_names[i], g_sim_costs[i] * 1000.0);
-        log("sim frame %u took %.1f ms (ms:%s%s)", g_retraces, g_last_sim_ms, detail, n ? "" : " guest code");
+        // How long this thread actually ran during the frame: far below the frame's length means it
+        // was waiting or pushed aside, close to it means the work itself was slow.
+        ULONG64 cycles = 0; QueryThreadCycleTime(GetCurrentThread(), &cycles);
+        const double ran_ms = g_slow_frame_cycles ? (double)(cycles - g_slow_frame_cycles) * tsc_seconds * 1000.0 : 0.0;
+        log("sim frame %u took %.1f ms, thread ran %.1f ms (ms:%s%s)", g_retraces, g_last_sim_ms, ran_ms, detail, n ? "" : " guest code");
         // This is end-of-frame context rather than attribution. With --profile, the sampling
         // report below also names routines sampled during this exact slow frame.
         if (cpu) {
@@ -2205,6 +2283,7 @@ void retrace() {
     g_frame_time = now_seconds();
   }
   g_sim_frame_start = now_seconds();
+  QueryThreadCycleTime(GetCurrentThread(), &g_slow_frame_cycles);
   static const bool sim_times_wanted = [] { const char* v = std::getenv("MELEE_SIM_TIMES"); return v && *v; }();
   if (sim_times_wanted) QueryThreadCycleTime(GetCurrentThread(), &g_sim_frame_start_cycles);
   g_tick_timing = {g_frame_time, g_sim_frame_start, 0, -1};

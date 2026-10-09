@@ -198,7 +198,7 @@ class ThreadedBackend final : public Backend {
         } else if (cap_period > 0 && now < next_present - render_budget) {
           // Start early enough to finish GPU submission before the presentation deadline.
           double wait = next_present - render_budget - now;
-          if (wait > 0.0005) std::this_thread::sleep_for(std::chrono::microseconds((long long)(std::min(wait - 0.0003, 0.001) * 1e6)));
+          if (wait > 0.0005 + host::sleep_slack()) std::this_thread::sleep_for(std::chrono::microseconds((long long)(std::min(wait - 0.0003, 0.001) * 1e6)));   // not on a system whose sleeps overshoot
           else std::this_thread::yield();
           continue;
         }

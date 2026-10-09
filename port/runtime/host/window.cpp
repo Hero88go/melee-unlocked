@@ -882,7 +882,21 @@ bool input_load_script(const char* path) {
   return !g_script.empty();
 }
 
+// XInputGetState for one slot, without asking Windows about an empty slot on every read: a slot
+// that answered "not connected" is asked again once a second (each slot at its own moment). On
+// some systems the question about an empty slot takes milliseconds (it enumerates devices), and it
+// was asked for all four slots on every controller read.
+static bool xinput_state(int idx, XINPUT_STATE* state) {
+  static double next_ask[4] = {0, 0, 0, 0};
+  const double now = now_seconds();
+  if (now < next_ask[idx]) return false;
+  if (XInputGetState((DWORD)idx, state) == ERROR_SUCCESS) return true;
+  next_ask[idx] = now + 1.0 + 0.25 * idx;
+  return false;
+}
+
 void input_poll(PadState out[4]) {
+  struct InputCost { double start = now_seconds(); ~InputCost() { sim_cost_add(SIM_INPUT, now_seconds() - start); } } input_cost;
   struct UiSnapshot {
     PadState* pads; bool gamecube = false;
     ~UiSnapshot() {
@@ -1027,7 +1041,7 @@ void input_poll(PadState out[4]) {
   for (int idx = 0; idx < 4; ++idx) {
     PadState& x = xin[idx]; x = {}; x.err = -1;
     XINPUT_STATE xs{};
-    if (XInputGetState(idx, &xs) != ERROR_SUCCESS) continue;
+    if (!xinput_state(idx, &xs)) continue;
     xin_connected[idx] = true;
     debug.xinput_connected[idx] = true;
     x.err = 0;
