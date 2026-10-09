@@ -4,6 +4,10 @@ Download `MeleeUnlocked-0.8.88-win64.zip` from this release. Close the game and 
 
 ## Fixes
 
+- Performance: the game no longer asks Windows about empty controller slots on the game thread. On PCs where that question is slow, it caused slow motion and crackling sound, mostly for keyboard players.
+- Performance: the frame wait no longer relies on short sleeps ending on time, for PCs where they end late.
+- Display, D3D12: with ambient occlusion on, thin dark outlines were drawn a short way from the fighters and the stage. They are gone.
+- Launcher: Send recent game logs also sends the session before the last one, and the confirmation lists what was sent.
 - Online, Source Port: with a mod such as Training Mode CE on, a Direct match against someone on Slippi Dolphin now plays the standard game. It used to keep the mod's files on your side only, which could desync.
 - Mods: a stage skin is now checked the way a costume is, and one the game cannot draw is left out instead of stopping the game.
 - Display: started through Steam with its overlay, fullscreen now uses borderless instead of exclusive.
