@@ -22,6 +22,10 @@ jobs:
           python -m unittest discover -s tools -p release_integration_test.py
           python -m unittest discover -s tools -p test_slp_diff.py
           python -m unittest discover -s tools -p test_post_discord.py
+      - name: Check crash report tools
+        run: |
+          python tools/crash_triage.py --self-test
+          python -m unittest discover -s tools -p test_crash_report_text.py
       - name: Check translation and cosmetic diagnostics
         run: |
           for test in computed_return_test gecko_layout_test companion_texture_diagnostic_test cosmetic_import_diagnostic_test nucleus_vault_diagnostic_test stage_cosmetic_diagnostic_test effect_cosmetic_diagnostic_test; do

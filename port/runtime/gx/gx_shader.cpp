@@ -689,9 +689,10 @@ static bool is_nametag_layer(const float* p) {
          std::fabs(p[4] + 1.0f / 32767.9f) < 2e-6f;
 }
 
-void build_projection(const DrawCall& dc, float m[16]) {
+void build_projection(const DrawCall& dc, float m[16], const float* override_projection) {
   const float* vp = (const float*)&dc.xf_regs[0x1A];
-  const float* proj = (const float*)&dc.xf_regs[0x20];
+  const float* authored_proj = (const float*)&dc.xf_regs[0x20];
+  const float* proj = override_projection ? override_projection : authored_proj;
   uint32_t type = dc.xf_regs[0x26];
   std::memset(m, 0, 16 * sizeof(float));
   if (type == 0) {  // perspective
@@ -709,7 +710,7 @@ void build_projection(const DrawCall& dc, float m[16]) {
     // which the game's own cameras never are once the player's aspect is applied.
     // A corner-pinned perspective layer is excluded the same way (see is_authored_screen_pinned).
     if (g_true_widescreen.load(std::memory_order_relaxed) &&
-        !is_authored_fullscreen(proj) && !is_authored_screen_pinned(proj)) {
+        !is_authored_fullscreen(authored_proj) && !is_authored_screen_pinned(authored_proj)) {
       constexpr float kWiden = 219.0f / 320.0f;   // (73/60) * (320/219) == 16/9
       for (int i = 0; i < 4; ++i) m[i] *= kWiden;
     }
@@ -722,7 +723,7 @@ void build_projection(const DrawCall& dc, float m[16]) {
     // the shadow and silhouette layer, which has to stay aligned with the 3D it sits under.
     // Compensating it here compressed those shadows away from the platforms they belong to.
     // The one orthographic layer that is tied to the widened world is the P1/P2 tags.
-    if (g_true_widescreen.load(std::memory_order_relaxed) && is_nametag_layer(proj)) {
+    if (g_true_widescreen.load(std::memory_order_relaxed) && is_nametag_layer(authored_proj)) {
       constexpr float kWiden = 219.0f / 320.0f;
       for (int i = 0; i < 4; ++i) m[i] *= kWiden;
     }
@@ -744,7 +745,7 @@ void fill_vs_constants(const DrawCall& dc, VSConstants& c, int efb_scale, const 
   const float* nrm_matrices = override_matrices ? override_matrices->nrm : dc.normalMatrices;
   const float* vp = (const float*)&dc.xf_regs[0x1A];
   float m[16];
-  build_projection(dc, m);
+  build_projection(dc, m, override_matrices && override_matrices->has_projection ? override_matrices->projection : nullptr);
   std::memcpy(c.unjittered_projection, m, sizeof m);
   const float pixel_center_correction = 0.5f - 7.0f / 12.0f;
   float viewport_width = 2.0f * vp[0] * efb_scale, viewport_height = 2.0f * vp[1] * efb_scale;

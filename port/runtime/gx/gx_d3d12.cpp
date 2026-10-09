@@ -609,8 +609,13 @@ void D3D12Backend::init() {
     host::loading_show(L"Starting the graphics device", 2, 4);
   }
   ComPtr<IDXGIFactory4> factory;
-  check(streamline::create_dxgi_factory2(0, &IID_PPV_ARGS_Helper_IID<IDXGIFactory4>(), (void**)factory.GetAddressOf()), "factory");
   ComPtr<IDXGIAdapter1> adapter;
+  // Twice at most: when creating the device through Streamline faults, Streamline turns itself off
+  // and a plain factory and device are made instead (the game starts without DLSS).
+  for (int attempt = 0; attempt < 2 && !device_; ++attempt) {
+  if (attempt == 1 && !streamline::device_faulted()) break;
+  factory.Reset();
+  check(streamline::create_dxgi_factory2(0, &IID_PPV_ARGS_Helper_IID<IDXGIFactory4>(), (void**)factory.GetAddressOf()), "factory");
   for (UINT i = 0; factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
     DXGI_ADAPTER_DESC1 desc; adapter->GetDesc1(&desc);
     if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
@@ -631,6 +636,8 @@ void D3D12Backend::init() {
       if (!exe_dir_.empty()) xess::init(exe_dir_, device_.Get());
       break;
     }
+    if (streamline::device_faulted()) break;   // start over without Streamline
+  }
   }
   if (!device_) host::die("D3D12: no adapter");
   D3D12_FEATURE_DATA_D3D12_OPTIONS5 dxr_options{};

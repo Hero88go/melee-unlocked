@@ -207,7 +207,13 @@ if(MELEE_NO_SLIPPI)
   target_compile_definitions(port_launcher_lobby_p2p_ns_test PRIVATE MELEE_NO_SLIPPI NOMINMAX WIN32_LEAN_AND_MEAN)
   target_compile_options(port_launcher_lobby_p2p_ns_test PRIVATE /EHsc)
   target_link_libraries(port_launcher_lobby_p2p_ns_test PRIVATE ws2_32 bcrypt user32 gdi32)
-  add_test(NAME port_launcher_lobby_p2p_ns COMMAND port_launcher_lobby_p2p_ns_test)
+  # One ctest entry per case so they run side by side (each case waits on real timeouts); the
+  # .list entry fails when this list and the test's own table drift apart.
+  set(MELEE_P2P_NS_CASES p2p_setup p2p_setup_loss p2p_auto_two p2p_auto_three p2p_block p2p_old_protocol p2p_invite)
+  foreach(p2p_case IN LISTS MELEE_P2P_NS_CASES)
+    add_test(NAME port_launcher_lobby_p2p_ns.${p2p_case} COMMAND port_launcher_lobby_p2p_ns_test ${p2p_case})
+  endforeach()
+  add_test(NAME port_launcher_lobby_p2p_ns.list COMMAND port_launcher_lobby_p2p_ns_test --expect ${MELEE_P2P_NS_CASES})
 
   # Shared regression checks run against the standalone build as well.
   add_executable(port_offline_input_delay_ns_test tests/offline_input_delay_test.cpp)
@@ -819,7 +825,16 @@ target_compile_features(port_launcher_lobby_p2p_test PRIVATE cxx_std_17)
 target_compile_definitions(port_launcher_lobby_p2p_test PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
 target_compile_options(port_launcher_lobby_p2p_test PRIVATE /EHsc)
 target_link_libraries(port_launcher_lobby_p2p_test PRIVATE ws2_32 bcrypt user32 gdi32)
-add_test(NAME port_launcher_lobby_p2p COMMAND port_launcher_lobby_p2p_test)
+# One ctest entry per case so they run side by side (each case waits on real timeouts); the .list
+# entry fails when this list and the test's own table drift apart.
+set(MELEE_P2P_CASES accept_flow cross_build_flow refusals crossed_requests one_way_loss_requests
+    one_way_loss_answers clock_skew friends_by_code mods mod_match_disc private_accept_flow
+    private_decline_and_block private_timeout private_old_versions private_routing private_crossed
+    private_limits transport_side_by_side transport_old_peer transport_other_kind transport_rules)
+foreach(p2p_case IN LISTS MELEE_P2P_CASES)
+  add_test(NAME port_launcher_lobby_p2p.${p2p_case} COMMAND port_launcher_lobby_p2p_test ${p2p_case})
+endforeach()
+add_test(NAME port_launcher_lobby_p2p.list COMMAND port_launcher_lobby_p2p_test --expect ${MELEE_P2P_CASES})
 
 # Diagnostic for a future serverless rendezvous transport; intentionally separate from the launcher.
 # jech/dht is MIT licensed (third_party/dht/LICENCE) and only supplies BEP 5 endpoint discovery.

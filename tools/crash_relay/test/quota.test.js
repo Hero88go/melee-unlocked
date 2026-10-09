@@ -28,17 +28,17 @@ test("reports sent at the same moment from one address: one passes", async () =>
 test("the daily limit holds for many addresses at once", async () => {
   const { run } = gatedStorage();
   const now = Date.parse("2026-10-02T12:00:00Z");
-  const results = await Promise.all(Array.from({ length: 80 }, (_, i) => run("10.0.0." + i, now)));
-  assert.equal(results.filter((r) => r.ok).length, 50);
+  const results = await Promise.all(Array.from({ length: 40 }, (_, i) => run("10.0.0." + i, now)));
+  assert.equal(results.filter((r) => r.ok).length, 20);
   assert.ok(results.filter((r) => !r.ok).every((r) => r.reason === "daily limit"));
 });
 
-test("an address may send again after ten minutes, and a new day starts a new count", async () => {
+test("an address may send again after two minutes, and a new day starts a new count", async () => {
   const { data, run } = gatedStorage();
-  const now = Date.parse("2026-10-02T23:55:00Z");
+  const now = Date.parse("2026-10-02T23:59:00Z");
   assert.equal((await run("1.2.3.4", now)).ok, true);
-  assert.equal((await run("1.2.3.4", now + 9 * 60 * 1000)).ok, false);
-  assert.equal((await run("1.2.3.4", now + 10 * 60 * 1000 + 1)).ok, true);
+  assert.equal((await run("1.2.3.4", now + 1 * 60 * 1000)).ok, false);
+  assert.equal((await run("1.2.3.4", now + 2 * 60 * 1000 + 1)).ok, true);
   assert.equal(data.get("day:2026-10-03"), 1);
   assert.equal(data.has("day:2026-10-02"), false, "the previous day's counter is dropped");
 });

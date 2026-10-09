@@ -3,8 +3,10 @@
 // port_launcher_crash_zip_test build exactly the same zip.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -85,13 +87,98 @@ inline std::vector<File> collect(const std::string& game_dir, const std::string&
   return files;
 }
 
+// Only the rows around each marked moment of a trace: 10 s before a mark, 3 s after (60 rows a
+// second), plus the header. A match is minutes long; what the player flagged is a few seconds.
+inline std::vector<uint8_t> marked_rows(const std::vector<uint8_t>& data) {
+  constexpr size_t kBefore = 600, kAfter = 180;
+  std::vector<std::pair<size_t, size_t>> lines;   // [start, end) of each line, newline included
+  for (size_t i = 0, start = 0; i < data.size(); ++i)
+    if (data[i] == '\n' || i + 1 == data.size()) { lines.emplace_back(start, i + 1); start = i + 1; }
+  if (lines.size() < 2) return data;
+  // The "mark" column, found by name in the header so older traces read the same way.
+  int mark_col = -1, col = 0;
+  for (size_t i = lines[0].first, s = i; i <= lines[0].second; ++i) {
+    if (i == lines[0].second || data[i] == ',' || data[i] == '\n' || data[i] == '\r') {
+      if (std::string(data.begin() + s, data.begin() + i) == "mark") { mark_col = col; break; }
+      ++col; s = i + 1;
+      if (i < lines[0].second && (data[i] == '\n' || data[i] == '\r')) break;
+    }
+  }
+  if (mark_col < 0) return data;
+  std::vector<bool> keep(lines.size(), false);
+  keep[0] = true;
+  for (size_t l = 1; l < lines.size(); ++l) {
+    int c = 0; size_t i = lines[l].first;
+    while (i < lines[l].second && c < mark_col) { if (data[i] == ',') ++c; ++i; }
+    if (c == mark_col && i < lines[l].second && data[i] != '0' && data[i] != ',' && data[i] != '\n' && data[i] != '\r') {
+      for (size_t k = l > kBefore ? l - kBefore : 1; k <= std::min(lines.size() - 1, l + kAfter); ++k) keep[k] = true;
+    }
+  }
+  std::vector<uint8_t> out;
+  for (size_t l = 0; l < lines.size(); ++l)
+    if (keep[l]) out.insert(out.end(), data.begin() + lines[l].first, data.begin() + lines[l].second);
+  return out.size() > lines[0].second - lines[0].first ? out : std::vector<uint8_t>{};   // no mark: nothing
+}
+
+// "Send logs": the crash files that exist (a crash text only when it is newer than `since`, so an
+// old crash is not mixed into a new report), plus the newest session trace from the replay folders
+// when it was written in the last day. A trace is frame rows of inputs, timing and checksums only.
+inline std::vector<File> collect_logs(const std::string& game_dir, const std::string& launcher_dir,
+                                      const std::vector<std::string>& replay_dirs, bool include_crash) {
+  std::vector<File> files;
+  for (const Part& part : kParts) {
+    if (!include_crash && std::string(part.name) == "melee_port_crash.txt") continue;
+    auto data = read_tail((part.launcher_folder ? launcher_dir : game_dir) + "\\" + part.name, part.max_bytes);
+    if (!data.empty()) files.emplace_back(part.name, private_report_text(part.name, data, data.size() >= part.max_bytes));
+  }
+  // Every session trace from the last day, oldest first. A match keeps its trace only when the player
+  // marked a moment in it, so these are exactly the matches they flagged. They travel as one
+  // session.trace: each match starts with a "# match <name>" line (tools/pull_reports.py splits them
+  // again). When they would not all fit, the newest are kept.
+  std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> traces;
+  std::error_code ec;
+  const auto now = std::filesystem::file_time_type::clock::now();
+  for (const auto& dir : replay_dirs) {
+    for (std::filesystem::recursive_directory_iterator it(std::filesystem::u8path(dir), ec), end; !ec && it != end; it.increment(ec)) {
+      if (it.depth() > 2) { it.disable_recursion_pending(); continue; }
+      if (!it->is_regular_file(ec) || it->path().extension() != ".trace") continue;
+      const auto when = it->last_write_time(ec);
+      if (!ec && now - when < std::chrono::hours(24)) traces.emplace_back(when, it->path());
+    }
+    ec.clear();
+  }
+  std::sort(traces.begin(), traces.end());
+  constexpr size_t kTraceBytes = 3u * 1024 * 1024;
+  std::vector<std::vector<uint8_t>> parts;
+  size_t total = 0;
+  for (auto t = traces.rbegin(); t != traces.rend(); ++t) {   // newest first while it fits
+    const auto u8 = t->second.u8string();
+    auto data = marked_rows(read_tail(std::string(u8.begin(), u8.end()), 64u * 1024 * 1024));
+    if (data.empty()) continue;
+    const auto name = t->second.filename().u8string();
+    std::string head = "# match " + std::string(name.begin(), name.end()) + "\n";
+    if (total + head.size() + data.size() > kTraceBytes) break;
+    std::vector<uint8_t> part(head.begin(), head.end());
+    part.insert(part.end(), data.begin(), data.end());
+    if (part.back() != '\n') part.push_back('\n');
+    total += part.size();
+    parts.push_back(std::move(part));
+  }
+  if (!parts.empty()) {
+    std::vector<uint8_t> all;
+    for (auto p = parts.rbegin(); p != parts.rend(); ++p) all.insert(all.end(), p->begin(), p->end());   // oldest first
+    files.emplace_back("session.trace", private_report_text("session.trace", all, false));
+  }
+  return files;
+}
+
 // Scrub and restrict `files`, then ZIP at most `max` bytes. Over the cap, the largest log goes
 // first; crash text always stays. `files` is left holding exactly what the outgoing ZIP holds.
 inline std::vector<uint8_t> capped_zip(std::vector<File>& files, size_t max = kMaxZipBytes) {
   // Recheck this boundary even for hand-built reports: no binary payloads or unknown files.
   std::vector<File> safe;
   for (const auto& f : files)
-    if (f.first == "melee_port_crash.txt" || f.first == "melee_port.log" || f.first == "lobby.log")
+    if (f.first == "melee_port_crash.txt" || f.first == "melee_port.log" || f.first == "lobby.log" || f.first == "session.trace")
       safe.emplace_back(f.first, private_report_text(f.first, f.second));
   files = std::move(safe);
   std::vector<uint8_t> zip = make_zip(files);

@@ -5,7 +5,8 @@
 // The Static Recomp names its replay when the match starts, so its trace is written under the final
 // name from the first row. The Source Port names its replay when it writes it (at the match's end),
 // so its rows go to a ".trace.part" file that takes the replay's name once the recorder reports it;
-// a match whose replay is never written leaves no file.
+// a match whose replay is never written leaves no file, and neither does a match nobody marked:
+// a trace is kept only when the player pressed a mark button during it.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include "net_trace.h"
@@ -64,6 +65,7 @@ class Writer {
   std::string final_;     // the name it must end up with; empty while the replay's name is unknown
   std::string pending_;   // a closed ".part" file still waiting for its replay's name
   size_t rows_ = 0, pending_rows_ = 0;
+  bool marked_ = false;   // a player marked a moment (D-pad Left/Right/Down or F8): only then is the file kept
   std::thread thread_;
 };
 

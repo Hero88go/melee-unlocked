@@ -387,11 +387,13 @@ void scan_installed() {
 void rescan() { std::lock_guard<std::mutex> lock(g_install_mutex); scan_installed(); }
 std::string summary() {
   std::string packs;
+  int on = 0;
   for (const auto& entry : installed()) {
     const auto& m = entry.second;
-    if (m.enabled && runs_here(m)) packs += " " + m.name + " \xE2\x9C\x93";
+    if (m.enabled && runs_here(m)) { packs += (on ? ", " : " ") + m.name; ++on; }
   }
-  return packs.empty() ? tx("Mods: none detected") : tx("Mods:") + packs;
+  if (!on) return tx("Mods: none active");
+  return (on == 1 ? tx("Mod (1) active:") : tx("Mods") + " (" + std::to_string(on) + ") " + tx("active:")) + packs;
 }
 bool vanilla_iso_ok(const std::string& iso, std::string* why) {
   if (iso.empty() || !file_exists(iso)) { *why = "Choose your Melee disc image on the Play page first."; return false; }
