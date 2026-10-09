@@ -4,7 +4,7 @@
 // Reports are stored in KV (REPORTS) and pulled with tools/pull_reports.py through /admin/*, which
 // needs the Worker secret ADMIN_TOKEN. Each report is also posted to the private Discord channel when FORWARD_DISCORD is "1".
 // Limits: zip only, 8 MB, one report per IP per 2 minutes, 20 per day in total (Durable Object QUOTA).
-import { InvalidZip, gameVersionLabel, sanitizedReport } from "./crash_markdown.js";
+import { InvalidZip, sanitizedReport } from "./crash_markdown.js";
 
 const MAX_BYTES = 8 * 1024 * 1024;
 const PER_IP_SECONDS = 120;
@@ -136,12 +136,17 @@ export default {
       form.append("payload_json", JSON.stringify({
         // The header's version is the launcher's; the game that crashed names its own at the end of
         // the crash line, and a player can run an older game from the launcher's Versions list.
-        content: `${kind === "logs" ? "Logs" : "Crash report"}: ${gameVersionLabel(report.where, report.version)} (${report.engine})\n${report.where}`,
+        // Logs are a player's "Send logs" (the game kept running), not a crash: said so in the text
+        // and the file names, so the channel does not read as a list of crashes.
+        content: kind === "logs"
+          ? `Logs (not a crash): ${report.label} (${report.engine})`
+          : `Crash report: ${report.label} (${report.engine})\n${report.where}`,
         allowed_mentions: { parse: [] },
       }));
       const reportId = now.getTime();
-      form.append("files[0]", new Blob([report.zip], { type: "application/zip" }), `crash-${reportId}.zip`);
-      form.append("files[1]", new Blob([report.markdown], { type: "text/markdown; charset=utf-8" }), `crash-${reportId}.md`);
+      const stem = (kind === "logs" ? "logs-" : "crash-") + reportId;
+      form.append("files[0]", new Blob([report.zip], { type: "application/zip" }), `${stem}.zip`);
+      form.append("files[1]", new Blob([report.markdown], { type: "text/markdown; charset=utf-8" }), `${stem}.md`);
       // The report is already stored, so a Discord outage does not fail the player's send.
       try { await fetch(env.DISCORD_WEBHOOK_URL, { method: "POST", body: form }); } catch {}
     }

@@ -85,6 +85,12 @@ int mu_low_poly_fighters(void)
 
 _Static_assert(MU_DISPLAY_LOW_POLY == MU_DISPLAY_OPTION_LOW_POLY, "display option bits");
 
+int mu_player_tags_always(void)
+{
+    return (mu_display_options() & MU_DISPLAY_PLAYER_TAGS) != 0;
+}
+_Static_assert(MU_DISPLAY_PLAYER_TAGS == MU_DISPLAY_OPTION_PLAYER_TAGS, "display option bits");
+
 _Static_assert(MU_CPU_TECH_MASK == MU_GAME_OPTION3_CPU_TECH_MASK && MU_CPU_TECH_SHIFT == MU_GAME_OPTION3_CPU_TECH_SHIFT &&
                MU_CPU_GETUP_MASK == MU_GAME_OPTION3_CPU_GETUP_MASK &&
                MU_CPU_GETUP_SHIFT == MU_GAME_OPTION3_CPU_GETUP_SHIFT &&

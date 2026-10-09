@@ -229,6 +229,10 @@ uint32_t hud_scales_packed();
 // reads it through MuHostApi.display_options, the Static Recomp's parts hook (host.cpp) reads it live.
 void set_low_poly_fighters(bool on);
 bool low_poly_fighters_active();
+// "Always show player tags" (RenderOptions::player_tags_always), published the same way: the P1 / P2
+// markers over the fighters stay up for the whole match. Display only, both engines.
+void set_player_tags_always(bool on);
+bool player_tags_always_active();
 // The native game's players (MuHostApi.hud_player), each drawn frame: the Static Recomp reads the
 // same HUD objects from guest RAM (capture_match_hud). Simulation thread.
 void set_native_hud_player(int slot, bool present, int damage, int stocks, float tag_x, float tag_y,

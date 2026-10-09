@@ -249,6 +249,7 @@ class D3D11Backend : public Backend {
 #endif
       set_hud_scales(opts_.stock_hud_scale, opts_.damage_hud_scale, gecko::option_pal_stock_icons);
       set_low_poly_fighters(opts_.low_poly_fighters != 0);
+      set_player_tags_always(opts_.player_tags_always != 0);
     } catch (...) { stop_shader_workers(); throw; }   // the worker threads must not outlive a failed start
     starting_ = false;
   }

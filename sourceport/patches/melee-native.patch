@@ -127133,7 +127133,7 @@ index 6d7000275..d67b9cf18 100644
  /* 2FC3BC */ void ifMagnify_802FC3BC(void);
  /* 2FC3C0 */ void ifMagnify_802FC3C0(s32 slot);
 diff --git a/src/melee/if/ifnametag.c b/src/melee/if/ifnametag.c
-index f8c4573e8..bfdcdeafc 100644
+index f8c4573e8..89f026a7b 100644
 --- a/src/melee/if/ifnametag.c
 +++ b/src/melee/if/ifnametag.c
 @@ -100,8 +100,8 @@
@@ -127278,12 +127278,17 @@ index f8c4573e8..bfdcdeafc 100644
  void fn_802FCC44(HSD_GObj* gobj)
  {
      Vec3 vec;
-@@ -230,7 +247,11 @@ void fn_802FCC44(HSD_GObj* gobj)
+@@ -230,7 +247,16 @@ void fn_802FCC44(HSD_GObj* gobj)
      if (Player_GetPlayerSlotType(*slot) != Gm_PKind_NA &&
          Player_GetPlayerState(*slot) && Player_GetStocks(*slot) &&
          (un_804D6D70[*slot] || Player_GetNametagSlotID(*slot) != 'x' ||
 -         Player_80036058(*slot) || gm_8016B258(*slot)))
-+         Player_80036058(*slot) || gm_8016B258(*slot))
++         Player_80036058(*slot) || gm_8016B258(*slot)
++#ifdef MU_NATIVE
++         /* PC settings, "Always show player tags": display only */
++         || mu_player_tags_always()
++#endif
++        )
 +#ifdef MU_NATIVE
 +        && !mu_nametag_hidden(*slot)
 +#endif
@@ -127291,7 +127296,7 @@ index f8c4573e8..bfdcdeafc 100644
      {
          HSD_JObjClearFlags(HSD_JObjGetChild(jobj), JOBJ_HIDDEN);
      } else {
-@@ -263,31 +284,40 @@ static inline float inlineA1(float var_f31)
+@@ -263,31 +289,40 @@ static inline float inlineA1(float var_f31)
      }
  }
  
@@ -127341,7 +127346,7 @@ index f8c4573e8..bfdcdeafc 100644
              }
              HSD_JObjReqAnimAll(jobj, f);
          }
-@@ -301,20 +331,48 @@ void NameTag_Create(int slot)
+@@ -301,20 +336,48 @@ void NameTag_Create(int slot)
      HSD_GObj_SetupProc(gobj, fn_802FCC44, 17);
  }
  
@@ -127393,7 +127398,7 @@ index f8c4573e8..bfdcdeafc 100644
      }
      HSD_JObjReqAnimAll(jobj, f);
      HSD_JObjAnimAll(jobj);
-@@ -361,10 +419,21 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
+@@ -361,10 +424,21 @@ static inline HSD_GObj* un_802FD4C8_inline(int arg0)
      return GObj_Create(0xE, arg0, 0);
  }
  
@@ -127416,7 +127421,7 @@ index f8c4573e8..bfdcdeafc 100644
      int i;
      PAD_STACK(0x10);
      for (i = 0; i < Gm_Player_NumMax; i++) {
-@@ -374,18 +443,20 @@ void un_802FD4C8(void)
+@@ -374,18 +448,20 @@ void un_802FD4C8(void)
      un_804D6D6C = 0;
      memzero(un_804D6D70, i = sizeof(un_804D6D70));
      un_804D6D68 = (gobj = un_802FD4C8_inline(15));
