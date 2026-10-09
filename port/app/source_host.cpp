@@ -1391,6 +1391,8 @@ void cycle_costume_skin(int character, int costume, int direction, std::vector<u
   const auto pick = host::cosmetics::cycle_slot_live(slot, direction);
   if (!pick.ok || !pick.changed) {
     if (!pick.message.empty()) host::log("cosmetics: %s skin not changed (%s)", slot.c_str(), pick.message.c_str());
+    // Say why a press did nothing, except on a costume with no skins at all.
+    if (!pick.message.empty() && pick.message.rfind("No other skin", 0) != 0) screen_label::show(pick.message.c_str(), 3.0);
     return;
   }
   // The Ice Climbers: Nana's slot changed with Popo's (pick.partner_slot), and is published the same
