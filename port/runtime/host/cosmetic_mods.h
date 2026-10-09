@@ -311,6 +311,10 @@ std::string online_reason_short(const std::string& detail);
 
 // Native Windows picker used by the ImGui Mods tab. An empty string means the player cancelled.
 std::string choose_import_file();
+// For the skin list's pictures (skin_thumbnail.cpp): a catalog costume's file as the game would load
+// it, and where its drawn picture is kept. False for anything that is not an available costume.
+bool costume_file(const std::string& asset_id, std::vector<uint8_t>* bytes, std::string* thumbnail_path);
+std::string costume_thumbnail_path(const std::string& asset_id);
 // The same for one PNG (a portrait or stock icon).
 std::string choose_portrait_file();
 

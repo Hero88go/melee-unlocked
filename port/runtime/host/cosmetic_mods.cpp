@@ -5553,6 +5553,30 @@ SessionProfile session_profile() {
           g_online_freezes.load(std::memory_order_relaxed) != 0};
 }
 
+// The picture's file is named by the skin's id, which is "costume-" and a SHA-256 for an import;
+// anything else in an id (a disc skin's) is reduced to what is safe in a file name.
+std::string costume_thumbnail_path(const std::string& asset_id) {
+  if (asset_id.empty() || asset_id.size() > 200) return {};
+  std::string name;
+  for (unsigned char c : asset_id) name += std::isalnum(c) || c == '-' || c == '_' ? (char)c : '_';
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_root.empty()) return {};
+  return (g_root / L"thumbnails" / fs::u8path(name + ".png")).u8string();
+}
+
+bool costume_file(const std::string& asset_id, std::vector<uint8_t>* bytes, std::string* thumbnail_path) {
+  const std::string path = costume_thumbnail_path(asset_id);
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const auto asset = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+    return item.info.id == asset_id && item.info.kind == "character_costume";
+  });
+  if (asset == g_assets.end() || path.empty()) return false;
+  std::string error;
+  *bytes = load_runtime_asset_locked(*asset, &error);
+  *thumbnail_path = path;
+  return !bytes->empty();
+}
+
 std::string choose_import_file() {
   wchar_t file[32768]{};
   OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof dialog;
