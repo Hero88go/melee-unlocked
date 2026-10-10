@@ -14,6 +14,7 @@
 #define NOMINMAX
 #include <windows.h>
 #include <setupapi.h>
+#include <tlhelp32.h>
 #include <hidsdi.h>
 #include <libusb.h>
 #include <atomic>
@@ -326,6 +327,17 @@ bool open_hid() {
   return true;
 }
 
+bool steam_is_running() {
+  const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if (snapshot == INVALID_HANDLE_VALUE) return false;
+  PROCESSENTRY32W entry{}; entry.dwSize = sizeof entry;
+  bool found = false;
+  for (BOOL more = Process32FirstW(snapshot, &entry); more && !found; more = Process32NextW(snapshot, &entry))
+    found = _wcsicmp(entry.szExeFile, L"steam.exe") == 0;
+  CloseHandle(snapshot);
+  return found;
+}
+
 bool open_libusb() {
   if (!g_ctx && libusb_init(&g_ctx) != 0) {
     if (!g_logged_missing) { log("gc adapter: libusb could not start; keyboard/XInput stay active"); g_logged_missing = true; }
@@ -373,6 +385,13 @@ bool open_libusb() {
   libusb_free_device_list(list, 1);
   if (rc != 0) {
     g_dev = nullptr;
+    // Access denied with a driver in place means another program has the adapter open: Windows gives
+    // it to one program at a time. Steam takes GameCube adapters for its own controller support.
+    if (rc == LIBUSB_ERROR_ACCESS && !g_logged_missing) {
+      log("gc adapter: found, but another program has it open (LIBUSB_ERROR_ACCESS).%s Close that program and the adapter is picked up without a restart.",
+          steam_is_running() ? " Steam is running and takes GameCube adapters for its own controller support: close Steam, or turn that off in its Controller settings." : "");
+      g_logged_missing = true;
+    }
     if (!g_logged_missing) {
 #ifdef MELEE_NO_SLIPPI
       log("gc adapter: found but cannot open (%s): it may have no usable driver. Install WinUSB, libusbK or libusb-win32 on it with Zadig.", libusb_error_name(rc));
