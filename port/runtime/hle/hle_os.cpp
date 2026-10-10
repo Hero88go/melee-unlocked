@@ -32,6 +32,7 @@ HLE(OSResetSystem) {
 HLE(OSPanic) {
   std::string file = host::cstr(ARG0), msg = host::cstr(ARG2);
   if (ARG1 == 233 && file == "lbmemory.c") host::report_heap_panic(c);
+  host::report_recent_files();
   host::die("OSPanic at %s:%u: %s", file.c_str(), ARG1, msg.c_str());
 }
 HLE(__OSUnhandledException) {
