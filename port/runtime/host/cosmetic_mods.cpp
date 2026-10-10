@@ -5586,6 +5586,15 @@ uint32_t largest_fighter_growth() {
   for (size_t i = 0; i < growth.size() && i < 4; ++i) sum += growth[i];
   return (uint32_t)std::min<uint64_t>(sum, 0x7FFFFFFFu);
 }
+bool stage_skin_active(const char* stage) {
+  const std::string wanted = lower(stage);
+  auto runtime = std::atomic_load(&g_runtime);
+  for (const auto& entry : runtime->by_start) {
+    const RuntimeAsset& a = entry.second;
+    if (a.kind == "stage_visual" && a.bytes && lower(a.target_path).find(wanted) != std::string::npos) return true;
+  }
+  return false;
+}
 void freeze_for_online_session() { g_online_freezes.store(1, std::memory_order_relaxed); }
 void thaw_after_online_session() { g_online_freezes.store(0, std::memory_order_relaxed); }
 SessionProfile session_profile() {
