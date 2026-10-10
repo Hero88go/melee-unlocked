@@ -297,6 +297,8 @@ uint32_t swapped_online_count(uint32_t* stages = nullptr);
 // For the title demo's memory check (host.cpp): the sum of the four largest growths, in bytes, among
 // the active overrides that are not stage files (0 when none is larger than its original).
 uint32_t largest_fighter_growth();
+// Whether a stage skin is served for the stage file whose name holds `stage` ("GrNLa"), in any case.
+bool stage_skin_active(const char* stage);
 
 // Online rule for costumes: the _Share_joint skeleton equals the standard costume's (same joints,
 // same hierarchy, same rest pose; see the .cpp). On success *detail says how many joints matched;
