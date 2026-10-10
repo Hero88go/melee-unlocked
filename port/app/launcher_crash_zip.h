@@ -26,6 +26,10 @@ struct Part { const char* name; bool launcher_folder; size_t max_bytes; };
 inline constexpr Part kParts[] = {
   {"melee_port_crash.txt", false, 256 * 1024},
   {"melee_port.log", false, 2u * 1024 * 1024},
+  // The session before the last one (the game keeps it when it starts). A problem is often noticed,
+  // the game closed and started again, and only then reported: the last log is then a few seconds
+  // of menus and the session that mattered is this one.
+  {"melee_port.prev.log", false, 1u * 1024 * 1024},
   {"lobby.log", true, 512 * 1024},
 };
 
@@ -178,7 +182,8 @@ inline std::vector<uint8_t> capped_zip(std::vector<File>& files, size_t max = kM
   // Recheck this boundary even for hand-built reports: no binary payloads or unknown files.
   std::vector<File> safe;
   for (const auto& f : files)
-    if (f.first == "melee_port_crash.txt" || f.first == "melee_port.log" || f.first == "lobby.log" || f.first == "session.trace")
+    if (f.first == "melee_port_crash.txt" || f.first == "melee_port.log" || f.first == "melee_port.prev.log" ||
+        f.first == "lobby.log" || f.first == "session.trace")
       safe.emplace_back(f.first, private_report_text(f.first, f.second));
   files = std::move(safe);
   std::vector<uint8_t> zip = make_zip(files);

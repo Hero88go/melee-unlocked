@@ -219,6 +219,11 @@ void set_die_hook(void (*hook)(const char*)) { g_die_hook = hook; }
   }
   std::fflush(stderr);
   std::fflush(stdout);
+  // MELEE_TEST_RAM_DUMP=<file> (tests): the guest memory as it was when the game stopped, so a stop
+  // inside a mod's own code can be read afterwards (the code a mod writes at run time is in no file).
+  if (const char* path = std::getenv("MELEE_TEST_RAM_DUMP"); path && *path && ram && ram_size) {
+    if (FILE* f = std::fopen(path, "wb")) { std::fwrite(ram, 1, ram_size, f); std::fclose(f); }
+  }
   if (void (*hook)(const char*) = g_die_hook) {
     g_die_hook = nullptr;   // once, even if the hook itself fails
     char message[512];
@@ -696,9 +701,12 @@ static void apply_mod_code() {
     total += ppc::redirect_changed_functions(g_mod_reference.data() + at, ram, r.first, r.second);
     at += r.second;
   }
-  // Clean mode sends functions to RAM that the compiled game never expected to differ (everything
-  // Slippi's codes touch), many of them small enough to be built into their callers.
-  if (g_mod_clean) total += ppc::redirect_inlined_callers(ram);
+  // A function the mod changed may be small enough to have been built into its callers, and such a
+  // caller still carries the original. Every mod disc is checked, not only clean mode (where the
+  // functions Slippi's codes touch go to RAM too): a mod that rewrote the four-instruction lookup of
+  // Kirby's Yoshi egg model kept reading the original, empty table from the one caller that had it
+  // built in, and the game stopped on a missing model when that Kirby caught someone.
+  total += ppc::redirect_inlined_callers(ram);
   g_mod_block_versions.assign(ppc::RAM_WATCH_COUNT, 0);
   for (const auto& r : g_text_ranges) ppc::watch_ram_range(r.first & 0x3FFFFFFFu, r.second);
   for (uint32_t b = 0; b < ppc::RAM_WATCH_COUNT; ++b) g_mod_block_versions[b] = ppc::g_ram_versions[b].load();
@@ -769,7 +777,7 @@ static void check_mod_code_writes() {
       const size_t off = at + (lo - r.first);
       const size_t n = ppc::redirect_changed_functions(g_mod_reference.data() + off, ram, lo, hi - lo);
       if (n) log("mods: %zu more functions run code written at run time (block %08X)", n, lo);
-      if (n && g_mod_clean) ppc::redirect_inlined_callers(ram);
+      if (n) ppc::redirect_inlined_callers(ram);
       ppc::report_kept_compiled(g_mod_reference_boot.data() + off, g_mod_reference.data() + off, ram, lo, hi - lo);
     }
     at += r.second;
@@ -1138,10 +1146,65 @@ static void validate_alarm_queue(const char* where);
 static bool g_frame_submitted = false;
 void note_frame_submitted() { g_frame_submitted = true; }
 
+// The game's own stack (64 KB on the console) running past its end. Calls that deep also run this
+// program's stack out, so the reports of it are all the same exception C00000FD with thirty-two host
+// frames and no word on what called itself: by then the game has written over its own data below
+// the stack, and the last thing seen is a stray write. This notes the game's call chain the first
+// time the stack pointer is found past the end (and again 128 KB further), which is what a later
+// crash line needs above it. It changes nothing: the console overruns the same memory the same way.
+static void note_guest_stack_overrun() {
+  constexpr uint32_t kCurrentThread = 0x800000E4u, kStackBase = 0x304u, kStackEnd = 0x308u;
+  static uint32_t noted_below = 0;   // how far past the end the last note was, +1
+  if (native_retrace || !ram || !cpu) return;   // the Source Port's game runs on this program's stack
+  const uint32_t thread = rd32(kCurrentThread);
+  if (thread - ppc::RAM_BASE >= ram_size - 0x310u) return;
+  // MELEE_TEST_GUEST_STACK_KB=<n> (tests): the stack counts as n KB, so ordinary calls run past it.
+  static const uint32_t test_kb = [] { const char* v = std::getenv("MELEE_TEST_GUEST_STACK_KB"); return v ? (uint32_t)std::atoi(v) : 0u; }();
+  const uint32_t base = rd32(thread + kStackBase), sp = cpu->r[1];
+  const uint32_t end = test_kb ? base - test_kb * 1024u : rd32(thread + kStackEnd);
+  if (end - ppc::RAM_BASE >= ram_size || base <= end || sp >= end || sp - ppc::RAM_BASE >= ram_size) return;
+  const uint32_t past = end - sp;
+  if (noted_below && past < noted_below - 1 + 128u * 1024u) return;
+  noted_below = past + 1;
+  // Walk the back chain: each frame holds the caller's frame address, and the caller's return address beside it.
+  struct Count { uint32_t function; uint32_t calls; };
+  std::vector<Count> counts;
+  std::string inner, outer;
+  std::vector<uint32_t> chain;
+  for (uint32_t at = sp; chain.size() < 100000;) {
+    const uint32_t up = rd32(at);
+    if (up <= at || up - ppc::RAM_BASE >= ram_size - 8u) break;
+    chain.push_back(rd32(up + 4));
+    at = up;
+  }
+  auto function_of = [](uint32_t lr) {
+    size_t lo = 0, hi = guest::name_table_count;
+    while (lo < hi) { const size_t mid = (lo + hi) / 2; if (guest::name_table[mid].addr <= lr) lo = mid + 1; else hi = mid; }
+    return lo ? guest::name_table[lo - 1].addr : 0u;
+  };
+  for (uint32_t lr : chain) {
+    const uint32_t f = function_of(lr);
+    auto it = std::find_if(counts.begin(), counts.end(), [&](const Count& c) { return c.function == f; });
+    if (it == counts.end()) counts.push_back({f, 1}); else ++it->calls;
+  }
+  std::sort(counts.begin(), counts.end(), [](const Count& a, const Count& b) { return a.calls > b.calls; });
+  std::string most;
+  for (size_t i = 0; i < counts.size() && i < 6; ++i) { char t[96]; std::snprintf(t, sizeof t, "%s%s x%u", i ? ", " : "", symbol_name(counts[i].function), counts[i].calls); most += t; }
+  for (size_t i = 0; i < chain.size() && i < 10; ++i) { inner += i ? " < " : ""; inner += symbol_name(chain[i]); }
+  for (size_t i = chain.size() > 6 ? chain.size() - 6 : 0; i < chain.size(); ++i) { outer += outer.empty() ? "" : " < "; outer += symbol_name(chain[i]); }
+  uint32_t major = 0, minor = 0, match_frame = 0;
+  current_scene(&major, &minor, &match_frame);
+  log("stack: the game's own stack is %u KB past its end (%u KB of stack, %zu calls deep, scene %02X:%02X, retrace %u). Most repeated: %s",
+      past / 1024, (base - end) / 1024, chain.size(), major, minor, g_retraces, most.c_str());
+  log("stack: innermost calls: %s | outermost: %s", inner.c_str(), outer.c_str());
+  log_flush();
+}
+
 void pump_completions() {
   // Called from HLE entry points the guest polls. Virtual time flows a little so periodic
   // alarms (pad sampling) fire even in loops that never sleep. Nothing is delivered while the
   // guest has interrupts disabled; ppc::mtmsr flushes when they come back on.
+  note_guest_stack_overrun();
   advance_time(2048);
   hle::dvd_poll();
   validate_alarm_queue("hle entry");
@@ -2023,7 +2086,8 @@ const double tsc_seconds = [] {
 static double g_sim_costs[SIM_COST_COUNT];
 static double g_sim_costs_window[SIM_COST_COUNT];   // accumulated over the 60-frame log interval
 static double g_sim_ms_window = 0, g_sim_ms_worst = 0;
-static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record", "gxdecode"};   // record includes texsnap and observe; gxdecode includes record and queue
+static ULONG64 g_slow_frame_cycles = 0;   // this thread's cycle count at the start of the frame, for the slow-frame line
+static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record", "gxdecode", "input", "wait", "late"};   // record includes texsnap and observe; gxdecode includes record and queue
 static double g_sim_frame_start = 0.0, g_last_sim_ms = 0.0;
 static ULONG64 g_sim_frame_start_cycles = 0;   // this thread's cycle count at g_sim_frame_start (MELEE_SIM_TIMES)
 void sim_cost_add(int slot, double seconds) { if (slot >= 0 && slot < SIM_COST_COUNT) { g_sim_costs[slot] += seconds; g_sim_costs_window[slot] += seconds; } }
@@ -2078,24 +2142,109 @@ static void apply_early_rng_seed() {
   log("rng-seed: early %08X at retrace %u", seed, at);
 }
 
+// ---- sleeps that can be trusted ----
+// A report: the game ran at a steady 48 Hz, every frame 20 to 23 ms long, with almost none of that
+// time spent on game work. 48 Hz is three frames per four ticks of Windows' default 15.6 ms timer:
+// on that system the frame wait's short sleeps were ending on the coarse tick instead of on time
+// (a power saving state can do this to a process whatever resolution it asked for). The frame wait
+// has a short sleep before each 5 ms audio step, and one that overshoots past the frame's end makes
+// the whole frame late.
+// So sleeping is trusted only as far as it is measured: a helper thread times a 1 ms sleep four
+// times a second, with the same call the frame wait uses, and publishes how late it wakes. The
+// frame wait sleeps only when there is room for that lateness and spins the rest. On a healthy
+// system the lateness is a few hundred microseconds and nothing changes.
+// MELEE_TEST_COARSE_SLEEP=1 makes every such sleep end on the next 15.625 ms boundary, to stand in
+// for such a system; =2 does the same with the measurement ignored, which is the old behaviour.
+static std::atomic<double> g_sleep_slack{0.0};   // seconds a timed sleep wakes late by, as last measured
+static int coarse_sleep_test() {
+  static const int mode = [] { const char* v = std::getenv("MELEE_TEST_COARSE_SLEEP"); return v ? std::atoi(v) : 0; }();
+  return mode;
+}
+// One timed sleep of about `seconds`: the high resolution timer, or a millisecond sleep before
+// Windows 1803. False when there is no timer and the time is too short to hand to Sleep.
+static bool timed_sleep(HANDLE timer, double seconds) {
+  if (coarse_sleep_test()) {
+    const double tick = 0.015625;
+    const double until = std::ceil((now_seconds() + seconds) / tick) * tick;
+    for (double left = until - now_seconds(); left > 0.0; left = until - now_seconds()) {
+      LARGE_INTEGER due; due.QuadPart = -(LONGLONG)(std::max(left - 0.0004, 0.0001) * 1e7);
+      if (left > 0.0008 && timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, INFINITE);
+      else YieldProcessor();
+    }
+    return true;
+  }
+  LARGE_INTEGER due; due.QuadPart = -(LONGLONG)(seconds * 1e7);
+  if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) { WaitForSingleObject(timer, INFINITE); return true; }
+  if (seconds > 0.0016) { Sleep(1); return true; }
+  return false;
+}
+static void sleep_probe_start() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    std::thread([] {
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);   // measured as the simulation thread sleeps
+      const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+      double late[8] = {};
+      bool coarse = false;
+      for (unsigned n = 0;; ++n) {
+        const double before = now_seconds();
+        timed_sleep(timer, 0.001);
+        late[n % 8] = std::max(0.0, now_seconds() - before - 0.001);
+        // The median of the last eight: one sleep cut into by another program is not the system's timer.
+        double sorted[8]; std::copy(std::begin(late), std::end(late), sorted); std::sort(std::begin(sorted), std::end(sorted));
+        const double typical = n < 7 ? sorted[7] : sorted[4];
+        g_sleep_slack.store(typical > 0.0007 ? typical : 0.0, std::memory_order_relaxed);
+        const bool now_coarse = typical > 0.002;
+        if (now_coarse != coarse && n >= 7) {
+          coarse = now_coarse;
+          if (coarse) log("timing: sleeps on this system wake %.1f ms late (a power saving state does this); the frame wait spins instead of sleeping so the game keeps 60 Hz", typical * 1000.0);
+          else log("timing: sleeps wake on time again; the frame wait sleeps as usual");
+        }
+        Sleep(250);
+      }
+    }).detach();
+  });
+}
+double sleep_slack() {
+  sleep_probe_start();
+  return coarse_sleep_test() == 2 ? 0.0 : g_sleep_slack.load(std::memory_order_relaxed);
+}
+
 // Every input waits for the next tick, so the tick wakes on time rather than on the millisecond
 // sleep granularity (0.7 ms late on average, 1.2 ms at p95): a high resolution timer to just
 // before the deadline, then a short spin. Without the high resolution timer (Windows before 1803)
-// a millisecond sleep stands in for it.
+// a millisecond sleep stands in for it. The sleep is as long as the measured lateness leaves room
+// for (sleep_slack): on a system whose sleeps overshoot, the wait spins instead.
 static void wait_for_tick(std::chrono::steady_clock::time_point deadline) {
   static const HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
   for (;;) {
     const double remaining = std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
     if (remaining <= 0.0) return;
-    if (remaining > 0.0006) {
-      LARGE_INTEGER due; due.QuadPart = -(LONGLONG)((remaining - 0.0004) * 1e7);
-      if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, INFINITE);
-      else if (remaining > 0.002) Sleep(1);
-      else YieldProcessor();
+    const double slack = sleep_slack();
+    if (remaining > 0.0006 + slack) {
+      if (!timed_sleep(timer, remaining - 0.0004 - slack)) YieldProcessor();
     } else {
       YieldProcessor();
     }
   }
+}
+
+// How deep the game thread's stack has been: the lowest page Windows has had to commit for it. The
+// game's model loaders call themselves once per joint and per drawn part, each such call is a host
+// call here, and a retrace interrupt that arrives mid-load runs on top of them. With the default
+// 1 MB that depth ran out after an online match (exception C00000FD while the next screen loaded),
+// though ordinary play uses about a tenth of it. This line says how much a session really used.
+static void log_stack_peak(bool at_exit) {
+  static size_t logged = 0;
+  const NT_TIB* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+  const size_t used = (size_t)((uintptr_t)tib->StackBase - (uintptr_t)tib->StackLimit);
+  if (!at_exit && used < logged + 128 * 1024) return;   // a new high by 128 KB, so a session logs a handful
+  ULONG_PTR low = 0, high = 0;
+  GetCurrentThreadStackLimits(&low, &high);
+  uint32_t major = 0, minor = 0, match_frame = 0;
+  current_scene(&major, &minor, &match_frame);
+  logged = std::max(logged, used);
+  log("stack: the game thread has used %zu KB of %zu KB at most (scene %02X:%02X)", logged / 1024, (size_t)(high - low) / 1024, major, minor);
 }
 
 bool wait_until_console_time(uint64_t tb) {
@@ -2103,7 +2252,13 @@ bool wait_until_console_time(uint64_t tb) {
   // Position of `tb` inside the frame, as a fraction, mapped onto the frame's real-time period.
   const double into_frame = 1.0 - (double)(g_next_retrace_tb - tb) / (double)TB_PER_FRAME;
   const auto deadline = g_next_frame + std::chrono::microseconds((long long)(into_frame * 16667.0 / g_emulation_speed));
-  if (deadline > std::chrono::steady_clock::now()) wait_for_tick(deadline);
+  const auto before = std::chrono::steady_clock::now();
+  if (deadline > before) {
+    wait_for_tick(deadline);
+    const auto after = std::chrono::steady_clock::now();
+    sim_cost_add(SIM_WAIT, std::chrono::duration<double>(after - before).count());
+    sim_cost_add(SIM_LATE, std::chrono::duration<double>(after - deadline).count());
+  }
   if (cpu->tb < tb) cpu->tb = tb;
   return true;
 }
@@ -2128,7 +2283,11 @@ void retrace() {
         g_slow_sim_frames.push_back(completed_frame);
         char detail[256] = ""; size_t n = 0;
         for (int i = 0; i < SIM_COST_COUNT; ++i) if (g_sim_costs[i] * 1000.0 >= 0.5) n += (size_t)std::snprintf(detail + n, sizeof detail - n, " %s %.1f", g_sim_cost_names[i], g_sim_costs[i] * 1000.0);
-        log("sim frame %u took %.1f ms (ms:%s%s)", g_retraces, g_last_sim_ms, detail, n ? "" : " guest code");
+        // How long this thread actually ran during the frame: far below the frame's length means it
+        // was waiting or pushed aside, close to it means the work itself was slow.
+        ULONG64 cycles = 0; QueryThreadCycleTime(GetCurrentThread(), &cycles);
+        const double ran_ms = g_slow_frame_cycles ? (double)(cycles - g_slow_frame_cycles) * tsc_seconds * 1000.0 : 0.0;
+        log("sim frame %u took %.1f ms, thread ran %.1f ms (ms:%s%s)", g_retraces, g_last_sim_ms, ran_ms, detail, n ? "" : " guest code");
         // This is end-of-frame context rather than attribution. With --profile, the sampling
         // report below also names routines sampled during this exact slow frame.
         if (cpu) {
@@ -2205,6 +2364,7 @@ void retrace() {
     g_frame_time = now_seconds();
   }
   g_sim_frame_start = now_seconds();
+  QueryThreadCycleTime(GetCurrentThread(), &g_slow_frame_cycles);
   static const bool sim_times_wanted = [] { const char* v = std::getenv("MELEE_SIM_TIMES"); return v && *v; }();
   if (sim_times_wanted) QueryThreadCycleTime(GetCurrentThread(), &g_sim_frame_start_cycles);
   g_tick_timing = {g_frame_time, g_sim_frame_start, 0, -1};
@@ -2252,7 +2412,9 @@ void retrace() {
   } resize_at;
   if (resize_at.at && g_retraces == resize_at.at) window_set_client_size(resize_at.w, resize_at.h);
   if (options.frames && g_retraces >= options.frames) request_exit(0);
+  log_stack_peak(false);
   if (g_exit) {
+    log_stack_peak(true);
     log("exit requested after %u retraces", g_retraces);
     std::fflush(stdout);
     throw ExitRequested{g_exit_code.load()};

@@ -38,6 +38,10 @@ struct LocalBuild {
   bool extended_content = false;   // only Static mod boot runs the disc's added fighter/stage code
 };
 void set_local_build(const LocalBuild& build);
+// Called with true when a Direct opponent sent no build while this side shows a mod (the opponent is
+// on Slippi Dolphin, whose game is the retail one unless the player said otherwise), and with false
+// when the next search starts. The host switches that match to the retail game and back.
+void set_plain_opponent_handler(void (*handler)(bool plain));
 const LocalBuild& local_build();
 // Handles one online command (cmd byte, payload after it); responses go to `read_queue`.
 // Returns false for commands this module does not own.

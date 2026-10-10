@@ -92,8 +92,14 @@ def pull_channel(out, fresh, channel_id, label, days):
         target.mkdir(exist_ok=True)
         name = m['author'].get('global_name') or m['author']['username']
         text = f"# #{label} message from {name}\n\nSent {m['timestamp']}\n\n{m.get('content', '')}\n"
+        saved = []
         for a in m.get('attachments', []):
             safe = ''.join(c for c in a['filename'] if c.isalnum() or c in '._-')[:120] or 'file'
+            # Pasted pictures all arrive as image.png: the second one must not replace the first.
+            if safe in saved:
+                stem, dot, ext = safe.rpartition('.')
+                safe = f'{stem}-{len(saved) + 1}.{ext}' if dot else f'{safe}-{len(saved) + 1}'
+            saved.append(safe)
             try:
                 with urllib.request.urlopen(urllib.request.Request(a['url'], headers={'User-Agent': 'pull_reports'}), timeout=120) as r:
                     (target / safe).write_bytes(r.read())
@@ -106,7 +112,7 @@ def pull_channel(out, fresh, channel_id, label, days):
             'id': m['id'], 'timestamp': m['timestamp'], 'author_id': m['author']['id'], 'author': name,
             'bot': bool(m['author'].get('bot')), 'webhook_id': m.get('webhook_id'),
             'reply_to': (m.get('message_reference') or {}).get('message_id'),
-            'attachments': [a['filename'] for a in m.get('attachments', [])]}, indent=1), encoding='utf-8')
+            'attachments': saved}, indent=1), encoding='utf-8')
         print(f"#{label}  {m['timestamp'][:16]}  {name[:20]:20}  {(m.get('content') or '').replace(chr(10), ' ')[:90]}"
               f"{'  [' + str(len(m['attachments'])) + ' file(s)]' if m.get('attachments') else ''}")
         state.write_text(m['id'])
