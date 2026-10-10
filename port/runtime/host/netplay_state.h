@@ -253,6 +253,8 @@ struct LocalBuild {
 inline LocalBuild& local_build_storage() { static LocalBuild b; return b; }
 inline void set_local_build(const LocalBuild& build) { local_build_storage() = build; }
 inline const LocalBuild& local_build() { return local_build_storage(); }
+// Without the online layer there is no opponent whose build could be missing; kept so the host is unchanged.
+inline void set_plain_opponent_handler(void (*)(bool)) {}
 
 enum Cmd : uint8_t {
   CMD_ONLINE_INPUTS = host::netplay::kInputs, CMD_CAPTURE_SAVESTATE = host::netplay::kCaptureState,
