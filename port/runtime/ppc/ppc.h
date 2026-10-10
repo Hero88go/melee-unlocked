@@ -128,6 +128,7 @@ Fn lookup(uint32_t addr);                                 // the function that r
 // whole game. Changes what the simulation computes: see the note in ppc_runtime.cpp.
 Fn set_hook(uint32_t addr, Fn fn);
 void interpret(Context& c, uint8_t* m, uint32_t addr);    // run RAM-resident code until it returns (interp.cpp)
+int interpreter_nesting(uint32_t (*out)[2], int max);   // interpreters running inside each other (start, awaited return); returns how many
 // Mods on the Static Recomp: the compiled function at `addr` is replaced by an interpreter of its
 // current bytes in RAM (a patched entry, no cost elsewhere). redirect_changed_functions compares
 // `size` bytes of code at `base` against `reference` and redirects every function containing a

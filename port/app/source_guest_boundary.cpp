@@ -41,6 +41,7 @@ RamTranslatorStats ram_translator_stats() { return {}; }
 void interpret(Context&, uint8_t*, uint32_t address) {
   host::die("Source engine rejected PowerPC execution at %08X; this feature needs a native implementation", address);
 }
+int interpreter_nesting(uint32_t (*)[2], int) { return 0; }
 void interpreter_stats(uint64_t* calls, uint64_t* instructions) {
   if (calls) *calls = 0;
   if (instructions) *instructions = 0;

@@ -40,9 +40,34 @@ struct Environment {
 struct OnlineShutdown { ~OnlineShutdown() { slippi::online::shutdown(); } };
 }
 
+// A Dolphin build the Slippi Launcher's settings file points at, outside the launcher's folder,
+// and the three reasons an account can be missing.
+int moved_build_and_reasons(const fs::path& root) {
+  const fs::path local = root / "MU" / "User" / "Slippi";
+  const fs::path launcher = root / "Roaming" / "Slippi Launcher";
+  const std::vector<fs::path> roots{launcher};
+  CHECK(slippi::account::why_missing(local, roots) == slippi::account::Missing::Launcher);
+  fs::create_directories(launcher);
+  CHECK(slippi::account::why_missing(local, roots) == slippi::account::Missing::SignIn);
+  const fs::path elsewhere = root / "OtherDrive" / "Dolphin";
+  write(launcher / "Settings", nlohmann::json{{"settings", {{"netplayDolphinPath", elsewhere.string()}}}}.dump());
+  CHECK(!slippi::account::resolve(local, roots));
+  write(elsewhere / "User" / "Slippi" / "user.json", nlohmann::json{{"uid", "synthetic-test-user"}}.dump());
+  CHECK(!slippi::account::resolve(local, roots));
+  CHECK(slippi::account::why_missing(local, roots) == slippi::account::Missing::ConnectCode);
+  write(elsewhere / "User" / "Slippi" / "user.json", profile("Moved test", "MOVE#1"));
+  const auto found = slippi::account::resolve(local, roots);
+  CHECK(found && slippi::account::text(found.data, "connectCode") == "MOVE#1");
+  fs::remove_all(root);
+  return 0;
+}
+
 int main() {
   const fs::path root = fs::current_path() / ("slippi-login-fixture-" + std::to_string(_getpid()));
   CHECK(!fs::exists(root));
+  if (const int failed = moved_build_and_reasons(root / "moved")) return failed;
+  CHECK(!fs::exists(root / "moved"));
+  fs::remove_all(root);
   const fs::path local = root / "MU" / "User" / "Slippi";
   const fs::path roaming = root / "Roaming" / "Slippi Launcher";
   const fs::path localapp = root / "Local" / "Slippi Launcher";

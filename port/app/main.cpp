@@ -1614,6 +1614,7 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--custom-textures") gfx.custom_textures = true;
     else if (a == "--dump-textures") gfx.dump_textures = true;
     else if (a == "--sharpness") gfx.sharpness = std::clamp((float)std::atof(next()), 0.0f, 1.0f);
+    else if (a == "--crt") gfx.crt_filter = std::clamp(std::atoi(next()), 0, 2);
     else if (a == "--ssaa") gfx.ssaa = std::atoi(next()) >= 2 ? 2 : 1;
     else if (a == "--anisotropy") gfx.anisotropy = std::clamp(std::atoi(next()), 1, 16);
     // Hidden runs never load the settings file, so the quality level needs a flag to be measurable.

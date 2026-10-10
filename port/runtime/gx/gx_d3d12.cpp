@@ -32,6 +32,7 @@
 #include "exi_slippi.h"
 #endif
 #include "gx_shader.h"
+#include "crt_shader.h"
 #include "gx_dxr_scene.h"
 #include "gx_dxr_gpu_scene.h"
 #include "gx_dxr_path_tracer.h"
@@ -588,6 +589,7 @@ class D3D12Backend : public Backend {
   ComPtr<ID3D12RootSignature> root_;
   ComPtr<ID3D12RootSignature> blit_root_;
   ComPtr<ID3D12PipelineState> blit_pso_;
+  ComPtr<ID3D12PipelineState> crt_pso_;   // the present pass with the CRT display model
   UINT rtv_size_ = 0, srv_size_ = 0, sampler_size_ = 0;
   Ring vertex_ring_, index_ring_, constant_ring_, upload_ring_;
   // One simulation frame's geometry: its whole vertex stream and each draw's index list, uploaded on
@@ -803,7 +805,7 @@ void D3D12Backend::init() {
   D3D12_ROOT_PARAMETER bp[2]{};
   bp[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE; D3D12_DESCRIPTOR_RANGE br{D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, 0};   // t0 image, t1 current EFB, t2 HUD mask, t3 depth
   bp[0].DescriptorTable = {1, &br}; bp[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 20; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+  bp[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS; bp[1].Constants.Num32BitValues = 28; bp[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
   D3D12_ROOT_SIGNATURE_DESC brsd{2, bp, 1, &ss, D3D12_ROOT_SIGNATURE_FLAG_NONE};
   check(D3D12SerializeRootSignature(&brsd, D3D_ROOT_SIGNATURE_VERSION_1, &sig, &err), "blit root");
   check(device_->CreateRootSignature(0, sig->GetBufferPointer(), sig->GetBufferSize(), IID_PPV_ARGS(&blit_root_)), "blit root sig");
@@ -812,7 +814,7 @@ Texture2D src : register(t0); Texture2D efb : register(t1); Texture2D hudmask : 
 // box.z > 0: DLSS HUD composite. Pixels a flat 2D draw wrote this frame (HUD, text, player tags) come
 // from this frame's own render instead of DLSS, which rebuilds from history and ghosted the ticking
 // timer and moving tags; NVIDIA's guide puts UI after DLSS. hudr maps output uv to EFB uv.
-cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 hudr; float4 color; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis; color: x = brightness gain, y = contrast gain, z = vibrance gain
+cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 hudr; float4 color; float4 crt; float4 crt2; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis; color: x = brightness gain, y = contrast gain, z = vibrance gain
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
 // Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
@@ -907,6 +909,30 @@ float4 PS(O i) : SV_Target {
   pd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
   pd.NumRenderTargets = 1; pd.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM; pd.SampleDesc.Count = 1;
   check(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&blit_pso_)), "blit pso");
+  // The CRT display model (crt_shader.h) as a second pixel shader over the same inputs: the picture
+  // it reads is the one the plain present shows (HUD composite included), then occlusion and the
+  // colour sliders apply to its result. Off costs nothing: the plain shader is unchanged.
+  const std::string crt_src = std::string(blit) + R"(
+float3 crt_tap(float2 uv) {
+  float4 c = src.SampleLevel(samp, uv, 0);
+  if (box.z > 0.0) {
+    float2 e = uv * hudr.xy + hudr.zw;
+    float m = hudmask.SampleLevel(samp, e, 0).r;
+    if (m > 0.0) c = lerp(c, efb.SampleLevel(samp, e, 0), saturate(m));
+  }
+  return sharp.w > 0.5 ? path_to_display(c.rgb) : c.rgb;
+}
+)" + kCrtShader + R"(
+float4 PS_CRT(O i) : SV_Target {
+  float2 picture_uv;
+  float3 c = crt_pixel(i.pos.xy, i.uv, picture_uv);
+  c *= ao(picture_uv * hudr.xy + hudr.zw);
+  return float4(grade(c), 1.0);
+})";
+  ComPtr<ID3DBlob> cps;
+  check(D3DCompile(crt_src.data(), crt_src.size(), nullptr, nullptr, nullptr, "PS_CRT", "ps_5_0", 0, 0, &cps, &err), "crt ps");
+  pd.PS = {cps->GetBufferPointer(), cps->GetBufferSize()};
+  check(device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&crt_pso_)), "crt pso");
 }
 
 // Creates the swap chain, with the frame latency waitable object when `waitable` is set and the
@@ -2593,18 +2619,22 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   float ww = (float)client_w_, wh = (float)client_h_;
   float vw = ww, vh = ww / aspect;
   if (vh > wh) { vh = wh; vw = wh * aspect; }
+  const CrtLook crt = crt_look(opts_.crt_filter);
+  CrtFit crt_fit_now{vh, 0.0f};
+  if (opts_.crt_filter) { crt_fit_now = crt_fit(vh, src_h_lines); vh = crt_fit_now.height; vw = vh * aspect; }
   D3D12_VIEWPORT vp{(ww - vw) * 0.5f, (wh - vh) * 0.5f, vw, vh, 0, 1};
+  if (opts_.crt_filter) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
   D3D12_RECT sc{0, 0, client_w_, client_h_};
   list_->RSSetViewports(1, &vp);
   list_->RSSetScissorRects(1, &sc);
-  list_->SetPipelineState(blit_pso_.Get());
+  list_->SetPipelineState(opts_.crt_filter ? crt_pso_.Get() : blit_pso_.Get());
   list_->SetGraphicsRootSignature(blit_root_.Get());
   list_->SetGraphicsRootDescriptorTable(0, g);
   // In-place DLAA leaves a full-size EFB image, so it is presented exactly like the un-upscaled EFB:
   // same displayed sub-region, same box filter when the render is larger than the window.
   const bool fills_output = upscaled && !dlss_in_place_;
   float src_w = upscaled ? (float)dlss_out_w_ : (float)efb_w_, src_h = upscaled ? (float)dlss_out_h_ : (float)efb_h_;
-  float rect[20] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
+  float rect[28] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
                     1.0f / std::max(src_w, 1.0f), 1.0f / std::max(src_h, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), path_color ? 1.0f : 0.0f,
                     1.0f, 1.0f, hud_composite ? 1.0f : 0.0f, std::getenv("MELEE_DEBUG_HUDMASK") ? 1.0f : 0.0f,
                     // Output uv to EFB uv, for the HUD mask and the depth the ambient occlusion reads.
@@ -2613,7 +2643,11 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
                     // mapping those a second time drew the occlusion edges away from their objects.
                     fills_output ? (float)c.src_w / EFB_WIDTH : 1.0f, fills_output ? (float)c.src_h / EFB_HEIGHT : 1.0f,
                     fills_output ? (float)c.src_x / EFB_WIDTH : 0.0f, fills_output ? (float)c.src_y / EFB_HEIGHT : 0.0f,
-                    opts_.brightness, opts_.contrast, opts_.vibrance, opts_.screen_space_ao};
+                    opts_.brightness, opts_.contrast, opts_.vibrance, opts_.screen_space_ao,
+                    // The CRT model: scanline depth, mask depth, curvature, scanlines in the picture;
+                    // columns, output pixels per scanline, halation.
+                    crt.scan, crt.mask, crt.curve, std::max(src_h_lines, 1.0f),
+                    (float)c.src_w, vh / std::max(src_h_lines, 1.0f), crt.halation, crt_fit_now.shift};
   // Averaging box when the rendered image is larger than the output. The two axes shrink by
   // different amounts (the picture is letterboxed to 16:9 inside the window), so they get their
   // own tap counts; using the horizontal count for both left vertical edges aliasing.
@@ -2627,7 +2661,7 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
     rect[8] = (float)std::clamp((int)std::lround((double)dlss_out_w_ / std::max(vw, 1.0f)), 1, 4);
     rect[9] = (float)std::clamp((int)std::lround((double)dlss_out_h_ / std::max(vh, 1.0f)), 1, 4);
   }
-  list_->SetGraphicsRoot32BitConstants(1, 20, rect, 0);
+  list_->SetGraphicsRoot32BitConstants(1, 28, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
   std::swap(depth_barrier.Transition.StateBefore, depth_barrier.Transition.StateAfter);
