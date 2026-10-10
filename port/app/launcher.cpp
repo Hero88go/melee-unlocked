@@ -320,7 +320,14 @@ std::string slippi_account_line() {
     return "Slippi account: " + name + " (" + code + ")";
   }
   launcher::lobby::set_account("", "");
-  return "Slippi online needs an account: install the Slippi Launcher and log in once.";
+  switch (slippi::account::why_missing(std::filesystem::path(g_dir) / "User" / "Slippi")) {
+    case slippi::account::Missing::SignIn:
+      return "Slippi Launcher found, but no sign-in: open it, log in, and start Slippi Dolphin once.";
+    case slippi::account::Missing::ConnectCode:
+      return "Your Slippi sign-in has no connect code yet: finish the account in the Slippi Launcher.";
+    default:
+      return "Slippi online needs an account: install the Slippi Launcher and log in once.";
+  }
 }
 #endif
 // The line under PLAY and whether online play is missing something. The build without the Slippi

@@ -49,6 +49,7 @@
 #include "exi_slippi.h"
 #endif
 #include "gx_shader.h"
+#include "crt_shader.h"
 #include "gx_texture.h"
 #include "texture_pack.h"
 #include "video_background.h"
@@ -346,7 +347,8 @@ class D3D11Backend : public Backend {
   void execute_copy(const EfbCopy& copy);
   void present_efb(const EfbCopy& copy);
   void clear_efb(const EfbCopy& copy);
-  void blit(ID3D11ShaderResourceView* src, const float rect[16], ID3D11ShaderResourceView* depth = nullptr);
+  // crt: eight more constants for the CRT display model (crt_shader.h); null draws the plain picture.
+  void blit(ID3D11ShaderResourceView* src, const float rect[16], ID3D11ShaderResourceView* depth = nullptr, const float* crt = nullptr);
   void capture_backbuffer();
   void write_capture(const std::string& path, uint64_t sequence);
   void flush_captures();
@@ -378,7 +380,7 @@ class D3D11Backend : public Backend {
   ComPtr<ID3D11DepthStencilView> efb_dsv_;
   ComPtr<ID3D11InputLayout> layout_;
   ComPtr<ID3D11VertexShader> blit_vs_, clear_vs_;
-  ComPtr<ID3D11PixelShader> blit_ps_, clear_ps_;
+  ComPtr<ID3D11PixelShader> blit_ps_, crt_ps_, clear_ps_;
   ComPtr<ID3D11Buffer> blit_cb_, clear_cb_;
   ComPtr<ID3D11SamplerState> blit_sampler_;
   ComPtr<ID3D11BlendState> opaque_blend_;
@@ -603,7 +605,7 @@ void D3D11Backend::init() {
   // with the root constants replaced by a constant buffer.
   const char* blit = R"(
 Texture2D src : register(t0); Texture2D<float> efb_depth : register(t3); SamplerState samp : register(s0);
-cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 color; };  // color: brightness, contrast, vibrance, SSAO strength
+cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 color; float4 crt; float4 crt2; };  // color: brightness, contrast, vibrance, SSAO strength
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
 // Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
@@ -669,6 +671,21 @@ float4 PS(O i) : SV_Target {
   fail(D3DCompile(blit, strlen(blit), nullptr, nullptr, nullptr, "PS", "ps_5_0", 0, 0, &bps, &err), "blit ps");
   fail(device_->CreateVertexShader(bvs->GetBufferPointer(), bvs->GetBufferSize(), nullptr, &blit_vs_), "blit vs object");
   fail(device_->CreatePixelShader(bps->GetBufferPointer(), bps->GetBufferSize(), nullptr, &blit_ps_), "blit ps object");
+  // The CRT display model as a second pixel shader over the same inputs (see the D3D12 backend).
+  const std::string crt_src = std::string(blit) + R"(
+float3 crt_tap(float2 uv) { return src.SampleLevel(samp, uv, 0).rgb; }
+)" + kCrtShader + R"(
+float4 PS_CRT(O i) : SV_Target {
+  float2 picture_uv;
+  float3 c = crt_pixel(i.pos.xy, i.uv, picture_uv);
+  c *= ao(picture_uv);
+  c = (c * color.x - 0.5) * color.y + 0.5;
+  float luma = dot(c, float3(0.2126, 0.7152, 0.0722));
+  return float4(saturate(lerp(luma.xxx, c, color.z)), 1.0);
+})";
+  ComPtr<ID3DBlob> crt_blob;
+  fail(D3DCompile(crt_src.data(), crt_src.size(), nullptr, nullptr, nullptr, "PS_CRT", "ps_5_0", 0, 0, &crt_blob, &err), "crt ps");
+  fail(device_->CreatePixelShader(crt_blob->GetBufferPointer(), crt_blob->GetBufferSize(), nullptr, &crt_ps_), "crt ps object");
 
   // D3D11 cannot clear a sub-rectangle of a depth buffer, so the EFB clear is a scissored quad
   // that writes the clear colour and depth (what ClearRenderTargetView/ClearDepthStencilView with
@@ -684,7 +701,7 @@ float4 PS() : SV_Target { return clear_color; })";
   fail(device_->CreatePixelShader(cps->GetBufferPointer(), cps->GetBufferSize(), nullptr, &clear_ps_), "clear ps object");
 
   D3D11_BUFFER_DESC cbd{};
-  cbd.ByteWidth = 64; cbd.Usage = D3D11_USAGE_DYNAMIC; cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+  cbd.ByteWidth = 96; cbd.Usage = D3D11_USAGE_DYNAMIC; cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER; cbd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
   fail(device_->CreateBuffer(&cbd, nullptr, &blit_cb_), "blit cb");
   cbd.ByteWidth = 32;
   fail(device_->CreateBuffer(&cbd, nullptr, &clear_cb_), "clear cb");
@@ -1499,17 +1516,18 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
 
 // One full-screen triangle through the shared blit/sharpen shader. The caller has already set
 // the render target, viewport and scissor.
-void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[16], ID3D11ShaderResourceView* depth) {
+void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[16], ID3D11ShaderResourceView* depth, const float* crt) {
   D3D11_MAPPED_SUBRESOURCE m{};
   if (FAILED(context_->Map(blit_cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
   std::memcpy(m.pData, rect, 64);
+  if (crt) std::memcpy(static_cast<uint8_t*>(m.pData) + 64, crt, 32); else std::memset(static_cast<uint8_t*>(m.pData) + 64, 0, 32);
   context_->Unmap(blit_cb_.Get(), 0);
   ID3D11Buffer* buffer = blit_cb_.Get();
   ID3D11SamplerState* sampler = blit_sampler_.Get();
   context_->IASetInputLayout(nullptr);
   context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   context_->VSSetShader(blit_vs_.Get(), nullptr, 0);
-  context_->PSSetShader(blit_ps_.Get(), nullptr, 0);
+  context_->PSSetShader(crt ? crt_ps_.Get() : blit_ps_.Get(), nullptr, 0);
   context_->VSSetConstantBuffers(0, 1, &buffer);
   context_->PSSetConstantBuffers(0, 1, &buffer);
   context_->PSSetShaderResources(0, 1, &src);
@@ -1537,7 +1555,12 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   float ww = (float)client_w_, wh = (float)client_h_;
   float vw = ww, vh = ww / aspect;
   if (vh > wh) { vh = wh; vw = wh * aspect; }
+  const CrtLook look = crt_look(opts_.crt_filter);
+  const float lines = std::max((float)c.src_h * c.y_scale, 1.0f);
+  CrtFit fit{vh, 0.0f};
+  if (opts_.crt_filter) { fit = crt_fit(vh, lines); vh = fit.height; vw = vh * aspect; }
   D3D11_VIEWPORT vp{(ww - vw) * 0.5f, (wh - vh) * 0.5f, vw, vh, 0, 1};
+  if (opts_.crt_filter) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
   D3D11_RECT sc{0, 0, client_w_, client_h_};
   context_->RSSetViewports(1, &vp);
   context_->RSSetScissorRects(1, &sc);
@@ -1547,7 +1570,8 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   // Averaging box when the rendered image is larger than the output (see the D3D12 backend).
   rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
   rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
-  blit(efb_srv_.Get(), rect, efb_depth_srv_.Get());
+  const float crt[8] = {look.scan, look.mask, look.curve, lines, (float)c.src_w, vh / lines, look.halation, fit.shift};
+  blit(efb_srv_.Get(), rect, efb_depth_srv_.Get(), opts_.crt_filter ? crt : nullptr);
 #ifdef GX_PC_SETTINGS
   if (settings_ui_) { settings_ui_->draw(); reset_bound(); context_->IASetInputLayout(layout_.Get()); }
 #endif
