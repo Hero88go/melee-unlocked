@@ -306,6 +306,8 @@ bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vect
 // Whether the game can draw the costume at all: false when a blended (envelope) mesh names a joint
 // that has no inverse bind matrix, which stops the game on any machine. *detail names the bone.
 bool costume_draw_safe(const std::vector<uint8_t>& candidate, std::string* detail);
+// The same for a stage file (its map_head models).
+bool stage_draw_safe(const std::vector<uint8_t>& candidate, std::string* detail);
 // The same verdict in a few words for a status line: "rest pose differs", "61 joints match".
 std::string online_reason_short(const std::string& detail);
 
