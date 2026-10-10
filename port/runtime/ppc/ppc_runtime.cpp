@@ -205,6 +205,46 @@ void restore_dispatch_range(uint32_t lo, uint32_t hi) {
   dispatch_changed(lo, hi);
 }
 
+// Dispatch entries that continue inside another compiled function: the recompiler builds a hook's
+// code (a Slippi cave) into the function it hooks, and gives each address that can be branched to a
+// thunk, `c.entry = address; jmp function`. Sorted by the function they jump to.
+// Once that function runs from RAM its thunks would each start one more interpreter, whose return
+// address is whatever LR held at that moment, so it does not stop where the function returns: it
+// goes on up the callers, into the scene loop, and its host frames are never released. The function
+// that ends a match is one of these in every online session, and each match left about 14 KB of the
+// 1 MB stack behind (exception C00000FD after some hours). The interpreter follows these addresses
+// in RAM instead, in the interpreter that is already running the function.
+static const std::vector<std::pair<uintptr_t, uint32_t>>& thunk_owners() {
+  static const std::vector<std::pair<uintptr_t, uint32_t>> owners = [] {
+    std::vector<std::pair<uintptr_t, uint32_t>> out;
+    for (size_t i = 0; i < guest::fn_table_count; ++i) {
+      const uint32_t addr = guest::fn_table[i].addr;
+      const uint8_t* code = reinterpret_cast<const uint8_t*>(guest::fn_table[i].fn);
+      uint32_t imm; int32_t rel;
+      if (!code || code[0] != 0xC7 || code[1] != 0x81 || code[10] != 0xE9) continue;   // mov [rcx+entry], imm32 ; jmp rel32
+      std::memcpy(&imm, code + 6, 4); std::memcpy(&rel, code + 11, 4);
+      if (imm == addr) out.push_back({reinterpret_cast<uintptr_t>(code) + 15 + (intptr_t)rel, addr});
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+  }();
+  return owners;
+}
+// Marks (or clears) the thunk addresses of the compiled function `fn` that lie outside [lo, hi).
+static size_t mark_thunks_of(Fn fn, uint32_t lo, uint32_t hi, uint8_t value) {
+  const auto& owners = thunk_owners();
+  const uintptr_t owner = reinterpret_cast<uintptr_t>(fn);
+  size_t n = 0;
+  for (auto at = std::lower_bound(owners.begin(), owners.end(), std::make_pair(owner, 0u)); at != owners.end() && at->first == owner; ++at) {
+    const uint32_t a = at->second, off = a - RAM_BASE;
+    if ((a >= lo && a < hi) || off >= RAM_SIZE || g_inline_map.empty()) continue;
+    g_inline_map[off / 4] = value;
+    dispatch_changed(a, a + 4);
+    ++n;
+  }
+  return n;
+}
+
 void interp_entry(Context& c, uint8_t* m, uint32_t addr) {
   const uint32_t start = c.entry ? c.entry : addr;   // a mid-function thunk asked for this entry
   c.entry = 0;
@@ -240,6 +280,7 @@ bool redirect_to_interpreter(uint32_t addr) {
   g_redirect_saved.push_back({addr, before});
   uint32_t lo = 0, hi = 0;
   if (function_bounds(addr, &lo, &hi)) mark_inline(lo, hi);
+  mark_thunks_of(fn, lo, hi, 1);
   return true;
 }
 
@@ -268,6 +309,7 @@ bool undo_redirect(uint32_t addr) {
     for (uint32_t a = lo & ~3u; a < hi; a += 4) { const uint32_t off = a - RAM_BASE; if (off < RAM_SIZE) g_inline_map[off / 4] = 0; }
     dispatch_changed(lo, hi);
   }
+  mark_thunks_of(fn, lo, hi, 0);
   return true;   // (the trampoline slot stays allocated; 32 bytes)
 }
 

@@ -2245,6 +2245,58 @@ static void log_stack_peak(bool at_exit) {
   current_scene(&major, &minor, &match_frame);
   logged = std::max(logged, used);
   log("stack: the game thread has used %zu KB of %zu KB at most (scene %02X:%02X)", logged / 1024, (size_t)(high - low) / 1024, major, minor);
+  // Interpreters inside each other are what a climbing number has been made of so far: name them.
+  uint32_t nest[8][2];
+  const int nested = ppc::interpreter_nesting(nest, 8);
+  if (nested > 4) {
+    std::string line;
+    for (int i = 0; i < std::min(nested, 8); ++i) {
+      char one[96];
+      std::snprintf(one, sizeof one, "%s%08X (%s)", i ? ", " : "", nest[i][0], symbol_name(nest[i][0]));
+      line += one;
+    }
+    log("stack: %d interpreters are running inside each other, outermost first: %s", nested, line.c_str());
+  }
+}
+
+// MELEE_TEST_STACK_DEPTH=1 (tests): the shallowest point of the game thread's stack seen at a retrace
+// during each scene, logged when the scene changes. That is the depth the scene loop itself runs at,
+// so a number that climbs from scene to scene is host frames that never returned. Each new high by
+// 4 KB is followed by the host return addresses at that point (offsets into this program, for the map).
+static void test_stack_depth(bool at_exit) {
+  static const bool on = [] { const char* v = std::getenv("MELEE_TEST_STACK_DEPTH"); return v && *v == '1'; }();
+  if (!on) return;
+  static uint32_t scene = ~0u;
+  static size_t least = SIZE_MAX, high = 0;
+  static void* frames[4096];
+  static USHORT count = 0;
+  const NT_TIB* tib = reinterpret_cast<const NT_TIB*>(NtCurrentTeb());
+  volatile char here = 0;
+  const size_t depth = (size_t)((uintptr_t)tib->StackBase - (uintptr_t)&here);
+  if (depth < least) { least = depth; count = RtlCaptureStackBackTrace(0, 4096, frames, nullptr); }
+  uint32_t major = 0, minor = 0, match_frame = 0;
+  current_scene(&major, &minor, &match_frame);
+  const uint32_t now = major << 8 | minor;
+  if (now == scene && !at_exit) return;
+  if (scene != ~0u && least != SIZE_MAX) {
+    log("stack: scene %02X:%02X ran no shallower than %zu bytes, %u host frames", scene >> 8, scene & 0xFF, least, (unsigned)count);
+    if (least >= high + 4096) {
+      high = least;
+      uint32_t nest[64][2];
+      const int nested = ppc::interpreter_nesting(nest, 64);
+      for (int i = 0; i < std::min(nested, 64); ++i)
+        log("stack: interpreter %d of %d started at %08X (%s), returns to %08X (%s)", i + 1, nested, nest[i][0], symbol_name(nest[i][0]), nest[i][1], symbol_name(nest[i][1]));
+      const uintptr_t module = (uintptr_t)GetModuleHandleW(nullptr);
+      std::string line;
+      for (USHORT i = 0; i < count; ++i) {
+        char one[24];
+        std::snprintf(one, sizeof one, " %zX", (size_t)((uintptr_t)frames[i] - module));
+        line += one;
+        if (i % 16 == 15 || i + 1 == count) { log("stack frames:%s", line.c_str()); line.clear(); }
+      }
+    }
+  }
+  scene = now; least = SIZE_MAX;
 }
 
 bool wait_until_console_time(uint64_t tb) {
@@ -2413,7 +2465,9 @@ void retrace() {
   if (resize_at.at && g_retraces == resize_at.at) window_set_client_size(resize_at.w, resize_at.h);
   if (options.frames && g_retraces >= options.frames) request_exit(0);
   log_stack_peak(false);
+  test_stack_depth(false);
   if (g_exit) {
+    test_stack_depth(true);
     log_stack_peak(true);
     log("exit requested after %u retraces", g_retraces);
     std::fflush(stdout);
