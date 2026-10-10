@@ -33,6 +33,7 @@
 #endif
 #include "gx_shader.h"
 #include "crt_shader.h"
+#include "user_shader.h"
 #include "gx_dxr_scene.h"
 #include "gx_dxr_gpu_scene.h"
 #include "gx_dxr_path_tracer.h"
@@ -281,6 +282,7 @@ class D3D12Backend : public Backend {
   }
   ~D3D12Backend() override { if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend shutdown / gpu wait");
     wait_gpu(); if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: gpu idle / settings destroy");
+    user_shader::d3d12_release();   // the GPU is idle: the preset's resources can go before the device
     if (swapchain_) swapchain_->SetFullscreenState(FALSE, nullptr); texpack::report();
 #ifdef GX_PC_SETTINGS
     settings_ui_.reset();
@@ -590,6 +592,9 @@ class D3D12Backend : public Backend {
   ComPtr<ID3D12RootSignature> blit_root_;
   ComPtr<ID3D12PipelineState> blit_pso_;
   ComPtr<ID3D12PipelineState> crt_pso_;   // the present pass with the CRT display model
+  // A player-chosen shader preset reads the picture at the console's own size from this texture.
+  ComPtr<ID3D12Resource> shader_source_;
+  uint32_t shader_source_w_ = 0, shader_source_h_ = 0;
   UINT rtv_size_ = 0, srv_size_ = 0, sampler_size_ = 0;
   Ring vertex_ring_, index_ring_, constant_ring_, upload_ring_;
   // One simulation frame's geometry: its whole vertex stream and each draw's index list, uploaded on
@@ -2649,15 +2654,51 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   float ww = (float)client_w_, wh = (float)client_h_;
   float vw = ww, vh = ww / aspect;
   if (vh > wh) { vh = wh; vw = wh * aspect; }
-  const CrtLook crt = crt_look(opts_.crt_filter);
+  // A player-chosen shader preset takes the place of the built-in CRT model. Presets are written
+  // for the console's own picture, so the plain present is drawn into a texture of that size
+  // (640 columns by the lines sent to the display) and the preset's passes draw it to the window.
+  bool shader_on = !opts_.shader_preset.empty() &&
+                   user_shader::d3d12_prepare(device_.Get(), opts_.shader_preset, [](void* self) { static_cast<D3D12Backend*>(self)->wait_gpu(); }, this);
+  if (opts_.shader_preset.empty()) user_shader::d3d12_prepare(device_.Get(), std::string(), [](void* self) { static_cast<D3D12Backend*>(self)->wait_gpu(); }, this);
+  const uint32_t shader_w = (uint32_t)std::max(c.src_w, 1u), shader_h = (uint32_t)std::max(std::lround(src_h_lines), 1L);
+  if (shader_on && (!shader_source_ || shader_source_w_ != shader_w || shader_source_h_ != shader_h)) {
+    if (shader_source_) wait_gpu();
+    shader_source_.Reset();
+    D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+    D3D12_RESOURCE_DESC rd{};
+    rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = shader_w; rd.Height = shader_h;
+    rd.DepthOrArraySize = 1; rd.MipLevels = 1; rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
+    rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    D3D12_CLEAR_VALUE cv{DXGI_FORMAT_R8G8B8A8_UNORM, {0, 0, 0, 1}};
+    if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, &cv, IID_PPV_ARGS(&shader_source_)))) {
+      shader_source_.Reset(); shader_on = false;
+      host::log("shaders: the picture texture could not be made; the preset is off this frame");
+    } else { shader_source_w_ = shader_w; shader_source_h_ = shader_h; }
+  }
+  const bool crt_on = opts_.crt_filter && !shader_on;
+  const CrtLook crt = crt_look(crt_on ? opts_.crt_filter : 0);
   CrtFit crt_fit_now{vh, 0.0f};
-  if (opts_.crt_filter) { crt_fit_now = crt_fit(vh, src_h_lines); vh = crt_fit_now.height; vw = vh * aspect; }
+  if (crt_on || shader_on) { crt_fit_now = crt_fit(vh, src_h_lines); vh = crt_fit_now.height; vw = vh * aspect; }
   D3D12_VIEWPORT vp{(ww - vw) * 0.5f, (wh - vh) * 0.5f, vw, vh, 0, 1};
-  if (opts_.crt_filter) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
+  if (crt_on || shader_on) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
   D3D12_RECT sc{0, 0, client_w_, client_h_};
-  list_->RSSetViewports(1, &vp);
-  list_->RSSetScissorRects(1, &sc);
-  list_->SetPipelineState(opts_.crt_filter ? crt_pso_.Get() : blit_pso_.Get());
+  D3D12_CPU_DESCRIPTOR_HANDLE shader_rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); shader_rtv.ptr += 7 * rtv_size_;
+  if (shader_on) {
+    D3D12_RESOURCE_BARRIER to_target{};
+    to_target.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    to_target.Transition = {shader_source_.Get(), 0, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET};
+    list_->ResourceBarrier(1, &to_target);
+    device_->CreateRenderTargetView(shader_source_.Get(), nullptr, shader_rtv);
+    list_->OMSetRenderTargets(1, &shader_rtv, FALSE, nullptr);
+    D3D12_VIEWPORT picture{0, 0, (float)shader_w, (float)shader_h, 0, 1};
+    D3D12_RECT picture_sc{0, 0, (LONG)shader_w, (LONG)shader_h};
+    list_->RSSetViewports(1, &picture);
+    list_->RSSetScissorRects(1, &picture_sc);
+  } else {
+    list_->RSSetViewports(1, &vp);
+    list_->RSSetScissorRects(1, &sc);
+  }
+  list_->SetPipelineState(crt_on ? crt_pso_.Get() : blit_pso_.Get());
   list_->SetGraphicsRootSignature(blit_root_.Get());
   list_->SetGraphicsRootDescriptorTable(0, g);
   // In-place DLAA leaves a full-size EFB image, so it is presented exactly like the un-upscaled EFB:
@@ -2691,9 +2732,30 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
     rect[8] = (float)std::clamp((int)std::lround((double)dlss_out_w_ / std::max(vw, 1.0f)), 1, 4);
     rect[9] = (float)std::clamp((int)std::lround((double)dlss_out_h_ / std::max(vh, 1.0f)), 1, 4);
   }
+  if (shader_on) {   // the averaging box for the console-sized texture, and no sharpening before the preset
+    rect[6] = 0.0f;
+    rect[8] = (float)std::clamp((int)std::lround((fills_output ? (double)dlss_out_w_ : (double)c.src_w * scale_) / shader_w), 1, 4);
+    rect[9] = (float)std::clamp((int)std::lround((fills_output ? (double)dlss_out_h_ : (double)c.src_h * scale_) / shader_h), 1, 4);
+  }
   list_->SetGraphicsRoot32BitConstants(1, 28, rect, 0);
   list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   list_->DrawInstanced(3, 1, 0, 0);
+  if (shader_on) {
+    D3D12_RESOURCE_BARRIER to_source{};
+    to_source.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    to_source.Transition = {shader_source_.Get(), 0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+    list_->ResourceBarrier(1, &to_source);
+    const user_shader::Target where{vp.TopLeftX, vp.TopLeftY, (uint32_t)std::max(vw, 1.0f), (uint32_t)std::max(vh, 1.0f)};
+    user_shader::d3d12_draw(list_.Get(), shader_source_.Get(), rtv.ptr, (int)DXGI_FORMAT_R8G8B8A8_UNORM,
+                            (uint32_t)client_w_, (uint32_t)client_h_, where, (size_t)frame_counter_);
+    // The preset's passes leave their own heaps, pipeline, targets and viewport on the list.
+    ID3D12DescriptorHeap* heaps[] = {srv_heap_.Get(), sampler_heap_.Get()};
+    list_->SetDescriptorHeaps(2, heaps);
+    list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+    D3D12_VIEWPORT whole{0, 0, (float)client_w_, (float)client_h_, 0, 1};
+    list_->RSSetViewports(1, &whole);
+    list_->RSSetScissorRects(1, &sc);
+  }
   std::swap(depth_barrier.Transition.StateBefore, depth_barrier.Transition.StateAfter);
   list_->ResourceBarrier(1, &depth_barrier);
 #ifdef GX_PC_SETTINGS

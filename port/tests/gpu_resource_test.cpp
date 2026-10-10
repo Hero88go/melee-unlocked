@@ -7,6 +7,7 @@
 #include "gx_texture.h"
 #include "texture_pack.h"
 #include "video_background.h"
+#include "user_shader.h"
 #include <cstdarg>
 #include <cstddef>
 #include <cstdio>
@@ -43,6 +44,12 @@ void set_enabled(bool) {}
 void report_backend_failure(int, const std::string&) {}
 void set_border(const std::string&) {}
 std::shared_ptr<const Frame> border_frame(bool*) { return {}; }
+}
+// The player-chosen shader presets need librashader, which this test does not load.
+namespace gx::user_shader {
+bool d3d12_prepare(ID3D12Device*, const std::string&, void (*)(void*), void*) { return false; }
+bool d3d12_draw(ID3D12GraphicsCommandList*, ID3D12Resource*, size_t, int, uint32_t, uint32_t, const Target&, size_t) { return false; }
+void d3d12_release() {}
 }
 static void check(bool b, const char* why) { if(!b) throw std::runtime_error(why); }
 static void f32(uint32_t& out, float f) { memcpy(&out,&f,4); }
