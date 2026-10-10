@@ -157,6 +157,14 @@ if(MELEE_NO_SLIPPI)
       add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xess/bin/libxess.dll" "$<TARGET_FILE_DIR:melee_source>/libxess.dll")
     endif()
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/librashader/bin/librashader.dll")
+      add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/librashader/bin/librashader.dll" "$<TARGET_FILE_DIR:melee_source>/librashader.dll")
+      foreach(dxc_dll dxcompiler.dll dxil.dll)
+        add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dxc/bin/${dxc_dll}" "$<TARGET_FILE_DIR:melee_source>/${dxc_dll}")
+      endforeach()
+    endif()
     if(MELEE_ENABLE_DLSS5)
       if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/ngx/include/nvsdk_ngx.h")
         message(FATAL_ERROR "DLSS 5 requires the NGX SDK headers")
@@ -997,6 +1005,17 @@ if(EXISTS "${MELEE_STREAMLINE_ROOT}/include/sl.h" AND
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xess/bin/libxess.dll" "$<TARGET_FILE_DIR:melee_port>/libxess.dll")
   add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
     "${CMAKE_CURRENT_SOURCE_DIR}/third_party/xess/bin/libxess.dll" "$<TARGET_FILE_DIR:melee_source>/libxess.dll")
+  # librashader (player-chosen shader presets; loaded at run time; missing file = the setting is off)
+  add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/librashader/bin/librashader.dll" "$<TARGET_FILE_DIR:melee_port>/librashader.dll")
+  add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/librashader/bin/librashader.dll" "$<TARGET_FILE_DIR:melee_source>/librashader.dll")
+  foreach(dxc_dll dxcompiler.dll dxil.dll)   # the compiler librashader uses on Direct3D 12
+    add_custom_command(TARGET melee_port POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dxc/bin/${dxc_dll}" "$<TARGET_FILE_DIR:melee_port>/${dxc_dll}")
+    add_custom_command(TARGET melee_source POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${CMAKE_CURRENT_SOURCE_DIR}/third_party/dxc/bin/${dxc_dll}" "$<TARGET_FILE_DIR:melee_source>/${dxc_dll}")
+  endforeach()
   # EXPERIMENTAL DLSS 5 Neural Rendering (gx_dlss5.h): NGX core from NVIDIA's DLSS SDK, plus the
   # forwarder DLL the model accepts as a caller. The model itself is never shipped.
   if(MELEE_ENABLE_DLSS5)
