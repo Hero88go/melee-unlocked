@@ -52,4 +52,14 @@ std::vector<ObservedTexture> observed_textures(int slot);
 bool choose_target(int slot, const std::string& name);
 void report_backend_failure(int slot, const std::string& message);
 
+// Border art: a picture (PNG, JPG, BMP) or looping MP4 from the Borders folder next to the program,
+// drawn across the window behind the game picture so it shows in the bars beside a 4:3 picture.
+// `file` is a name from border_files(); empty turns it off. Backends keep its texture in kBorderSlot.
+constexpr int kBorderSlot = 2, kVideoSlots = 3;
+std::vector<std::string> border_files();
+void set_border(const std::string& file);
+// *rows_reversed: the frame's rows run bottom to top (the video decoder's frames do, pictures do not).
+std::shared_ptr<const Frame> border_frame(bool* rows_reversed);
+void open_border_folder();
+
 }  // namespace gx::video_bg
