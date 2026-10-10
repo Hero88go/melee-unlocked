@@ -509,9 +509,23 @@ std::unordered_map<uint32_t, uint64_t>* g_profile = nullptr;
 
 }  // namespace
 
+// The interpreters now running inside each other on the host stack, outermost first: where each
+// started and the return address it waits for.
+static uint32_t g_nest[64][2];
+static int g_nest_depth = 0;
+int interpreter_nesting(uint32_t (*out)[2], int max) {
+  const int n = std::min(std::min(g_nest_depth, 64), max);
+  for (int i = 0; i < n; ++i) { out[i][0] = g_nest[i][0]; out[i][1] = g_nest[i][1]; }
+  return g_nest_depth;
+}
+
 void resume_interpret(Context& c, uint8_t* m, uint32_t addr, uint32_t entry_lr) {
   if (!fast(m, addr) || (addr & 3)) fatal(c, "call to unmapped guest address", addr);
   ++g_interpreted_calls;
+  struct Nest {   // released on exception unwinds too
+    Nest(uint32_t a, uint32_t lr) { if (g_nest_depth < 64) { g_nest[g_nest_depth][0] = a; g_nest[g_nest_depth][1] = lr; } ++g_nest_depth; }
+    ~Nest() { --g_nest_depth; }
+  } nest(addr, entry_lr);
   Interp::note_start(addr, c.lr);
   Interp in(c, m, addr);
   in.entry_lr = entry_lr;
