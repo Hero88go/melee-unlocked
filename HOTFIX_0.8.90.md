@@ -9,3 +9,4 @@ Download `MeleeUnlocked-0.8.90-win64.zip` from this release. Close the game and 
 - Mod discs: when the game stops on a mod disc, the log lists the last files the game asked for, so a report names the fighter, stage or file involved.
 - Display: new Border art option under Video. Put PNG, JPG, BMP or MP4 files in the Borders folder next to the program and pick one: it shows in the bars beside the game picture. Off by default.
 - Display: shader presets. Put RetroArch slang presets (.slangp files, with the shader files they use) in the Shaders folder next to the program and pick one under Video. Works on Direct3D 11 and Direct3D 12. Off by default.
+- Texture packs: when memory ran out while a large pack was loading at startup, the game stopped with "bad allocation". It now starts, loads replacements as they are drawn, and keeps the game's own texture for one that does not fit.
