@@ -41,6 +41,8 @@ std::shared_ptr<const Frame> lookup(const std::string&, uint32_t, uint32_t, int*
 std::shared_ptr<const Frame> fullscreen_frame(int*) { return {}; }
 void set_enabled(bool) {}
 void report_backend_failure(int, const std::string&) {}
+void set_border(const std::string&) {}
+std::shared_ptr<const Frame> border_frame(bool*) { return {}; }
 }
 static void check(bool b, const char* why) { if(!b) throw std::runtime_error(why); }
 static void f32(uint32_t& out, float f) { memcpy(&out,&f,4); }
