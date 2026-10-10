@@ -5,3 +5,4 @@ Download `MeleeUnlocked-0.8.89-win64.zip` from this release. Close the game and 
 ## Fixes
 
 - Stability, Static Recomp: every match left a little of the game's stack in use, and a long session ended in a crash (stack overflow) while the next screen loaded. Matches no longer leave anything behind.
+- Display: new CRT display option under Video (Studio monitor or Home television). It draws scanline beams, a phosphor mask sized to your screen and a little glow. Off by default.

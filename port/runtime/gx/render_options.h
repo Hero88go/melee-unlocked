@@ -245,6 +245,7 @@ struct RenderOptions {
   // as Dolphin's "Prefetch Custom Textures" does. A large pack costs about half a minute once here
   // instead of a stutter each time a new texture comes on screen.
   bool prefetch_textures = true;
+  int crt_filter = 0;         // CRT display model in the present pass: 0 off, 1 studio monitor, 2 home television (crt_shader.h)
   float sharpness = 0.0f;     // 0..1 contrast-adaptive sharpening in the present pass (works with or without DLSS)
   float screen_space_ao = 0.0f; // 0..1 depth-based contact shading; display-only, not ray traced
   bool path_tracing = false;       // D3D12 DXR diffuse indirect bounce, display-only and off by default
