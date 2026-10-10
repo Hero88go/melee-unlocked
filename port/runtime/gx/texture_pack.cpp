@@ -736,12 +736,12 @@ std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes
 // MELEE_TEST_TEXTURE_OOM=<n> (tests only, hidden and headless runs): the nth decode runs out of memory.
 std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes) {
   try {
-    static const int test_at = host::options.no_gc_adapter && std::getenv("MELEE_TEST_TEXTURE_OOM") ? std::atoi(std::getenv("MELEE_TEST_TEXTURE_OOM")) : 0;
+    static const int test_at = (std::getenv("MELEE_NO_GC_ADAPTER") != nullptr) && std::getenv("MELEE_TEST_TEXTURE_OOM") ? std::atoi(std::getenv("MELEE_TEST_TEXTURE_OOM")) : 0;
     static std::atomic<int> decodes{0};
     if (test_at > 0 && decodes.fetch_add(1, std::memory_order_relaxed) + 1 == test_at) throw std::bad_alloc();
     return decode_entry_unchecked(base, budget_bytes);
   } catch (const std::bad_alloc&) {
-    if (!(host::options.no_gc_adapter && std::getenv("MELEE_TEST_TEXTURE_OOM_UNCAUGHT"))) {
+    if (!((std::getenv("MELEE_NO_GC_ADAPTER") != nullptr) && std::getenv("MELEE_TEST_TEXTURE_OOM_UNCAUGHT"))) {
       note_low_memory(base);
       ++g.decode_failed;
       return nullptr;
