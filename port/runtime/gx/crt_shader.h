@@ -17,7 +17,7 @@
 // The including shader defines, before this text:
 //   rect (xy = uv scale, zw = uv offset of the picture in the source), sharp (xy = source texel size),
 //   crt  (x = scanline depth 0..1, y = mask depth 0..1, z = curvature, w = scanlines in the picture),
-//   crt2 (x = columns, y = output pixels per scanline, z = halation 0..1, w = unused),
+//   crt2 (x = columns, y = output pixels per scanline, z = halation 0..1, w = raster shift in scanlines),
 //   float3 crt_tap(float2 uv): the display-encoded picture at a source uv.
 // 16 picture taps for the two nearest scanlines and 4 for the halation.
 #pragma once
@@ -26,7 +26,12 @@ namespace gx {
 
 inline constexpr const char* kCrtShader = R"(
 float3 crt_linear(float3 c) { return pow(saturate(c), 2.4); }
-float3 crt_at(float2 p) { return crt_linear(crt_tap(p * rect.xy + rect.zw)); }
+// Taps stay inside the picture: the frame buffer holds rows below and beside it that are not part
+// of the frame (old contents), and the edge scanlines and the halation would pull them in.
+float3 crt_at(float2 p) {
+  float2 half_texel = 0.5 * sharp.xy / rect.xy;
+  return crt_linear(crt_tap(clamp(p, half_texel, 1.0 - half_texel) * rect.xy + rect.zw));
+}
 // One scanline's light at column position p.x: the rows of the rendered image inside the line,
 // filtered along the line with a Gaussian about one column wide.
 float3 crt_scanline(float2 p, float line_y, float2 cell) {
@@ -81,8 +86,8 @@ float3 crt_pixel(float2 pos, float2 uv, out float2 picture_uv) {
   float lines = max(crt.w, 1.0), per_line = max(crt2.y, 0.01);
   float2 cell = 1.0 / float2(max(crt2.x, 1.0), lines);
   // Too few output pixels per scanline cannot show the gaps: ease the beam back toward a flat line.
-  float depth = crt.x * saturate((per_line - 1.5) / 1.5);
-  float y = p.y * lines - 0.5;
+  float depth = crt.x * saturate(per_line - 1.0);
+  float y = p.y * lines - 0.5 + crt2.w;
   float upper = floor(y), d = y - upper;
   float3 a = crt_scanline(p, (upper + 0.5) * cell.y, cell);
   float3 b = crt_scanline(p, (upper + 1.5) * cell.y, cell);
@@ -98,6 +103,22 @@ float3 crt_pixel(float2 pos, float2 uv, out float2 picture_uv) {
   return pow(saturate(c * face), 1.0 / 2.2);
 }
 )";
+
+// The picture's height on the display while the model is on. A scanline pitch that is not a whole
+// number of pixels beats against the pixel grid (bands that crawl when the picture moves), and below
+// four pixels per scanline the beam cannot be integrated finely enough to hide it, so the pitch is
+// rounded down to whole pixels there: 960 rows for 480 lines on a 1080p display. `shift` moves the
+// raster half a pixel when the pitch is even, so that a pixel row lies on each beam's centre (with
+// two rows per line, both would otherwise sit equally far from it and show no lines at all).
+struct CrtFit { float height, shift; };
+inline CrtFit crt_fit(float height, float lines) {
+  if (lines < 1.0f) return {height, 0.0f};
+  float per_line = height / lines;
+  if (per_line >= 2.0f && per_line < 4.0f) per_line = (float)(int)(per_line + 0.01f);
+  const int whole = (int)(per_line + 0.5f);
+  const bool even = per_line >= 2.0f && per_line - (float)whole < 0.01f && (float)whole - per_line < 0.01f && whole % 2 == 0;
+  return {per_line * lines, even ? 0.5f / per_line : 0.0f};
+}
 
 // Scanline depth, mask depth, curvature and halation of each setting. 0 is off.
 struct CrtLook { float scan, mask, curve, halation; };

@@ -1555,7 +1555,12 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   float ww = (float)client_w_, wh = (float)client_h_;
   float vw = ww, vh = ww / aspect;
   if (vh > wh) { vh = wh; vw = wh * aspect; }
+  const CrtLook look = crt_look(opts_.crt_filter);
+  const float lines = std::max((float)c.src_h * c.y_scale, 1.0f);
+  CrtFit fit{vh, 0.0f};
+  if (opts_.crt_filter) { fit = crt_fit(vh, lines); vh = fit.height; vw = vh * aspect; }
   D3D11_VIEWPORT vp{(ww - vw) * 0.5f, (wh - vh) * 0.5f, vw, vh, 0, 1};
+  if (opts_.crt_filter) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
   D3D11_RECT sc{0, 0, client_w_, client_h_};
   context_->RSSetViewports(1, &vp);
   context_->RSSetScissorRects(1, &sc);
@@ -1565,9 +1570,7 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   // Averaging box when the rendered image is larger than the output (see the D3D12 backend).
   rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
   rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
-  const CrtLook look = crt_look(opts_.crt_filter);
-  const float lines = std::max((float)c.src_h * c.y_scale, 1.0f);
-  const float crt[8] = {look.scan, look.mask, look.curve, lines, (float)c.src_w, vh / lines, look.halation, 0.0f};
+  const float crt[8] = {look.scan, look.mask, look.curve, lines, (float)c.src_w, vh / lines, look.halation, fit.shift};
   blit(efb_srv_.Get(), rect, efb_depth_srv_.Get(), opts_.crt_filter ? crt : nullptr);
 #ifdef GX_PC_SETTINGS
   if (settings_ui_) { settings_ui_->draw(); reset_bound(); context_->IASetInputLayout(layout_.Get()); }

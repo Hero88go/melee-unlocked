@@ -2619,11 +2619,14 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   float ww = (float)client_w_, wh = (float)client_h_;
   float vw = ww, vh = ww / aspect;
   if (vh > wh) { vh = wh; vw = wh * aspect; }
+  const CrtLook crt = crt_look(opts_.crt_filter);
+  CrtFit crt_fit_now{vh, 0.0f};
+  if (opts_.crt_filter) { crt_fit_now = crt_fit(vh, src_h_lines); vh = crt_fit_now.height; vw = vh * aspect; }
   D3D12_VIEWPORT vp{(ww - vw) * 0.5f, (wh - vh) * 0.5f, vw, vh, 0, 1};
+  if (opts_.crt_filter) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
   D3D12_RECT sc{0, 0, client_w_, client_h_};
   list_->RSSetViewports(1, &vp);
   list_->RSSetScissorRects(1, &sc);
-  const CrtLook crt = crt_look(opts_.crt_filter);
   list_->SetPipelineState(opts_.crt_filter ? crt_pso_.Get() : blit_pso_.Get());
   list_->SetGraphicsRootSignature(blit_root_.Get());
   list_->SetGraphicsRootDescriptorTable(0, g);
@@ -2644,7 +2647,7 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
                     // The CRT model: scanline depth, mask depth, curvature, scanlines in the picture;
                     // columns, output pixels per scanline, halation.
                     crt.scan, crt.mask, crt.curve, std::max(src_h_lines, 1.0f),
-                    (float)c.src_w, vh / std::max(src_h_lines, 1.0f), crt.halation, 0.0f};
+                    (float)c.src_w, vh / std::max(src_h_lines, 1.0f), crt.halation, crt_fit_now.shift};
   // Averaging box when the rendered image is larger than the output. The two axes shrink by
   // different amounts (the picture is letterboxed to 16:9 inside the window), so they get their
   // own tap counts; using the horizontal count for both left vertical edges aliasing.
