@@ -1703,9 +1703,27 @@ static void clear_result_rows_without_file(ppc::Context& c) {
 // A mod can send the results screen for a fighter that has no results animation on any disc (Master
 // Hand, picked from a mod's debug menu, wins a match: GmRstMMh.dat). The game stops on the missing
 // file. In a mod session a results animation the disc does not have opens as Mario's instead.
+static void report_heap_stop_lines(uint32_t handle, uint32_t rounded, uint32_t caller);
+// The last files a mod disc's game asked for by name: the heap stop's report prints them, so it
+// names the fighters and the stage that were being loaded.
+static char g_recent_files[12][24];
+static uint32_t g_recent_file_count = 0;
+static void note_file_asked(const char* path) {
+  const char* slash = std::strrchr(path, '/');
+  const char* base = slash ? slash + 1 : path;
+  if (g_recent_file_count && !_stricmp(g_recent_files[(g_recent_file_count - 1) % 12], base)) return;
+  char* slot = g_recent_files[g_recent_file_count++ % 12];
+  std::strncpy(slot, base, sizeof g_recent_files[0] - 1);
+  slot[sizeof g_recent_files[0] - 1] = 0;
+}
 void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
   const char* path = (const char*)try_ptr(c.r[3], 1);
   if (!path) { c.r[3] = 0xFFFFFFFFu; return; }
+  note_file_asked(path);
+  // MELEE_TEST_HEAP_REPORT (tests only, hidden and headless runs): the heap stop's lines once, after
+  // that many files, without the stop.
+  if (static const char* test = options.no_gc_adapter ? std::getenv("MELEE_TEST_HEAP_REPORT") : nullptr; test && g_recent_file_count == (uint32_t)std::atoi(test))
+    report_heap_stop_lines(0x80431F28u, 0, 0);
   {
     // The results screen asks for its own file before any fighter's (see clear_result_rows_without_file).
     const char* slash0 = std::strrchr(path, '/');
@@ -1720,6 +1738,16 @@ void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
       entry = fst_find_path("GmRstMMr.dat");
       static bool told = false;
       if (!told && entry >= 0) { told = true; log("mods: the game asked for a results animation this disc does not have (%s); another fighter's plays in its place", base); }
+    }
+    // A movie the disc left out (ACE has no MvHowto.mth, which the title screen plays after its demo
+    // fights): the game opens entry -1 without checking, and DVDFastOpen's stand-in for that is a tune,
+    // which the movie player cannot read (assertion "src % 32 == 0", devcom.c line 495, some 45
+    // seconds into an idle title screen). Another movie of the disc plays in its place.
+    const size_t length = std::strlen(base);
+    if (length > 4 && !_stricmp(base + length - 4, ".mth")) {
+      entry = fst_find_path("MvEndMario.mth");
+      static bool told = false;
+      if (!told && entry >= 0) { told = true; log("mods: the game asked for a movie this disc does not have (%s); another movie plays in its place", base); }
     }
   }
   c.r[3] = (uint32_t)entry;
@@ -1837,6 +1865,12 @@ static void report_heap_stop_lines(uint32_t handle, uint32_t rounded, uint32_t c
   if (try_ptr(kPicks, 0x10))
     log("heap: title demo draw: fighters %02X %02X %02X %02X, costumes %02X %02X %02X %02X, stage %04X", rd8(kPicks), rd8(kPicks + 1),
         rd8(kPicks + 2), rd8(kPicks + 3), rd8(kPicks + 4), rd8(kPicks + 5), rd8(kPicks + 6), rd8(kPicks + 7), rd16(kPicks + 0xC));
+  if (g_recent_file_count) {
+    std::string names;
+    const uint32_t shown = std::min<uint32_t>(g_recent_file_count, 12);
+    for (uint32_t i = g_recent_file_count - shown; i < g_recent_file_count; ++i) { if (!names.empty()) names += ", "; names += g_recent_files[i % 12]; }
+    log("heap: last files asked for, oldest first: %s", names.c_str());
+  }
   log_flush();
 }
 static void report_heap_stop(ppc::Context& c) {
