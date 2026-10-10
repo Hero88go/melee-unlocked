@@ -70,15 +70,53 @@ inline std::vector<std::filesystem::path> launcher_roots() {
   return roots;
 }
 
+// The folders the Slippi Launcher's own settings file names for its Dolphin builds. They are the
+// default netplay and playback folders unless the player moved them, and a moved one can be on
+// another drive, outside anything searched from the launcher's folder.
+inline std::vector<std::filesystem::path> settings_builds(const std::filesystem::path& root) {
+  std::vector<std::filesystem::path> builds;
+  std::ifstream input(root / "Settings", std::ios::binary);
+  if (!input) return builds;
+  const auto data = nlohmann::json::parse(input, nullptr, false);
+  if (!data.is_object()) return builds;
+  const auto inner = data.find("settings");
+  const nlohmann::json& settings = inner != data.end() && inner->is_object() ? *inner : data;
+  for (const char* key : {"netplayDolphinPath", "playbackDolphinPath"})
+    if (const auto value = text(settings, key); !value.empty()) builds.push_back(std::filesystem::u8path(value));
+  return builds;
+}
+
 inline Profile resolve(const std::filesystem::path& local_user_dir,
                        const std::vector<std::filesystem::path>& roots = launcher_roots()) {
   if (auto profile = read(local_user_dir / "user.json")) return profile;
   for (const auto& root : roots) {
     for (const char* build : {"netplay", "playback"})
       if (auto profile = read(root / build / "User" / "Slippi" / "user.json")) return profile;
+    for (const auto& build : settings_builds(root))
+      if (auto profile = read(build / "User" / "Slippi" / "user.json")) return profile;
     size_t remaining = 1024;
     if (auto profile = search(root, 4, remaining)) return profile;
   }
   return {};
+}
+
+// Why resolve() found nothing, so the launcher can say what to do instead of "log in" to a player
+// who has: no Slippi Launcher folder at all, a launcher with no sign-in file, or a sign-in file
+// without a connect code (an account that was created but never finished).
+enum class Missing { Launcher, SignIn, ConnectCode };
+inline Missing why_missing(const std::filesystem::path& local_user_dir,
+                           const std::vector<std::filesystem::path>& roots = launcher_roots()) {
+  std::error_code ec;
+  std::vector<std::filesystem::path> files{local_user_dir / "user.json"};
+  bool launcher = false;
+  for (const auto& root : roots) {
+    if (!std::filesystem::is_directory(root, ec)) continue;
+    launcher = true;
+    for (const char* build : {"netplay", "netplay-beta", "playback"}) files.push_back(root / build / "User" / "Slippi" / "user.json");
+    for (const auto& build : settings_builds(root)) files.push_back(build / "User" / "Slippi" / "user.json");
+  }
+  for (const auto& file : files)
+    if (std::filesystem::is_regular_file(file, ec)) return Missing::ConnectCode;
+  return launcher ? Missing::SignIn : Missing::Launcher;
 }
 }  // namespace slippi::account
