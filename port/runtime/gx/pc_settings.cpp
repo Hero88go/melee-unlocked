@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include "texture_pack.h"
 #include "video_background.h"
+#include "user_shader.h"
 #include <atomic>
 #include <memory>
 #include <cstring>
@@ -1982,6 +1983,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "sharpness") options.sharpness = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "crt_filter") options.crt_filter = std::clamp(std::stoi(value), 0, 2);
       else if (key == "borderart") options.border_art = value;
+      else if (key == "shaderpreset") options.shader_preset = value;
       else if (key == "ssao") options.screen_space_ao = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "brightness") options.brightness = std::clamp(std::stof(value), 0.5f, 1.5f);
       else if (key == "contrast") options.contrast = std::clamp(std::stof(value), 0.5f, 1.5f);
@@ -3284,7 +3286,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ndlss5reconstruction " << options.dlss5_tuning.reconstruction
 #endif
        << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
-       << "\ncrt_filter " << options.crt_filter << "\nborderart " << options.border_art << "\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
+       << "\ncrt_filter " << options.crt_filter << "\nborderart " << options.border_art << "\nshaderpreset " << options.shader_preset <<"\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
@@ -5212,6 +5214,46 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "It is scaled to cover the window. Display only: it cannot affect online play.");
       ImGui::SameLine();
       if (ImGui::SmallButton("+ Open Borders folder")) video_bg::open_border_folder();
+    }
+    // A shader preset of the player's choice (RetroArch slang presets in the Shaders folder).
+    {
+      const std::string current = options.shader_preset.empty() ? std::string("None") : options.shader_preset;
+      ImGui::TextUnformatted("Shader preset");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("+ Open Shaders folder")) user_shader::open_folder();
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Runs a RetroArch shader preset (.slangp) over the game picture, CRT-Royale for example.\n"
+                          "Put the slang shader pack in the Shaders folder, then pick a preset below.\n"
+                          "A preset takes the place of the CRT display setting. Heavy presets cost frame time.");
+      if (!user_shader::available()) {
+        ImGui::TextDisabled("Not available: librashader.dll is missing from the game folder.");
+      } else {
+        static char shader_filter[64] = "";
+        ImGui::SetNextItemWidth(260.0f);
+        ImGui::InputTextWithHint("##shaderfilter", "type to search presets", shader_filter, sizeof shader_filter);
+        ImGui::SameLine();
+        ImGui::TextUnformatted(current.c_str());
+        const std::vector<std::string> found = user_shader::presets();
+        if (found.empty()) ImGui::TextDisabled("No .slangp presets in the Shaders folder yet.");
+        if (ImGui::BeginListBox("##shaderlist", ImVec2(-1.0f, found.empty() ? 30.0f : 150.0f))) {
+          if (ImGui::Selectable("None", options.shader_preset.empty()) && !options.shader_preset.empty()) { options.shader_preset.clear(); changed = true; }
+          std::string needle = shader_filter;
+          for (char& ch : needle) ch = (char)std::tolower((unsigned char)ch);
+          int shown = 0;
+          for (const std::string& name : found) {
+            if (!needle.empty()) {
+              std::string lower = name;
+              for (char& ch : lower) ch = (char)std::tolower((unsigned char)ch);
+              if (lower.find(needle) == std::string::npos) continue;
+            }
+            if (++shown > 400) { ImGui::TextDisabled("more: narrow the search"); break; }
+            if (ImGui::Selectable(name.c_str(), name == options.shader_preset) && name != options.shader_preset) { options.shader_preset = name; changed = true; }
+          }
+          ImGui::EndListBox();
+        }
+        const std::string why = user_shader::status();
+        if (!options.shader_preset.empty() && !why.empty()) ImGui::TextWrapped("This preset is not running: %s", why.c_str());
+      }
     }
     static const char* crt_looks[] = {"Off", "Studio monitor", "Home television"};
     if (settings_combo("CRT display", &options.crt_filter, crt_looks, 3)) changed = true;

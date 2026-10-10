@@ -304,7 +304,8 @@ def main():
         shutil.copytree(lang_src, folder / "lang", dirs_exist_ok=True)
     runtime_dlls = ("sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll",
                     "sl.dlss_d.dll", "nvngx_dlssd.dll", "sl.dlss_g.dll", "nvngx_dlssg.dll",
-                    "sl.reflex.dll", "sl.pcl.dll", "libxess.dll", "nvngx.dll_meleedlss5.dll")
+                    "sl.reflex.dll", "sl.pcl.dll", "libxess.dll", "nvngx.dll_meleedlss5.dll",
+                    "librashader.dll", "dxcompiler.dll", "dxil.dll")
     missing_dlls = [name for name in runtime_dlls if not (args.exe.parent / name).is_file()]
     if missing_dlls:
         raise SystemExit(f"missing runtime DLLs: {', '.join(missing_dlls)}")
@@ -363,6 +364,9 @@ def main():
                      (ROOT / "port/third_party/ngx/LICENSE.txt", "nvidia-rtx-sdks.txt"),
                      (ROOT / "docs/licenses/nvidia-dlss-third-party.txt", "nvidia-dlss-third-party.txt"),
                      (ROOT / "port/third_party/xess/LICENSE.txt", "intel-xess.txt"),
+                     (ROOT / "port/third_party/librashader/LICENSE.md", "librashader-MPL-2.0.md"),
+                     (ROOT / "port/third_party/dxc/LICENSE-LLVM.txt", "directx-shader-compiler-LLVM.txt"),
+                     (ROOT / "port/third_party/dxc/LICENSE-MS.txt", "directx-shader-compiler-dxil-Microsoft.txt"),
                      (ROOT / "port/third_party/dht/LICENCE", "dht.txt"),
                      (ROOT / "port/third_party/monocypher/LICENCE.md", "monocypher.md"),
                      (ROOT / "port/third_party/enet/LICENSE", "enet.txt"),
