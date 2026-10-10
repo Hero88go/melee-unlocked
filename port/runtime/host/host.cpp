@@ -1716,6 +1716,18 @@ static void note_file_asked(const char* path) {
   std::strncpy(slot, base, sizeof g_recent_files[0] - 1);
   slot[sizeof g_recent_files[0] - 1] = 0;
 }
+// One line with those names, once: for the heap stop and for any other stop of a mod disc's game (a
+// file of the disc that the game cannot read stops it in whatever code parses the file).
+void report_recent_files() {
+  static bool told = false;
+  if (told || !g_recent_file_count) return;
+  told = true;
+  std::string names;
+  const uint32_t shown = std::min<uint32_t>(g_recent_file_count, 12);
+  for (uint32_t i = g_recent_file_count - shown; i < g_recent_file_count; ++i) { if (!names.empty()) names += ", "; names += g_recent_files[i % 12]; }
+  log("mods: last files the game asked for, oldest first: %s", names.c_str());
+  log_flush();
+}
 void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
   const char* path = (const char*)try_ptr(c.r[3], 1);
   if (!path) { c.r[3] = 0xFFFFFFFFu; return; }
@@ -1865,12 +1877,7 @@ static void report_heap_stop_lines(uint32_t handle, uint32_t rounded, uint32_t c
   if (try_ptr(kPicks, 0x10))
     log("heap: title demo draw: fighters %02X %02X %02X %02X, costumes %02X %02X %02X %02X, stage %04X", rd8(kPicks), rd8(kPicks + 1),
         rd8(kPicks + 2), rd8(kPicks + 3), rd8(kPicks + 4), rd8(kPicks + 5), rd8(kPicks + 6), rd8(kPicks + 7), rd16(kPicks + 0xC));
-  if (g_recent_file_count) {
-    std::string names;
-    const uint32_t shown = std::min<uint32_t>(g_recent_file_count, 12);
-    for (uint32_t i = g_recent_file_count - shown; i < g_recent_file_count; ++i) { if (!names.empty()) names += ", "; names += g_recent_files[i % 12]; }
-    log("heap: last files asked for, oldest first: %s", names.c_str());
-  }
+  report_recent_files();
   log_flush();
 }
 static void report_heap_stop(ppc::Context& c) {
