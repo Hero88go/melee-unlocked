@@ -614,8 +614,8 @@ class D3D12Backend : public Backend {
   std::unordered_map<uint64_t, ComPtr<ID3DBlob>> vs_blobs_, ps_blobs_;
   std::unordered_map<PsoKey, ComPtr<ID3D12PipelineState>, PsoKeyHash> psos_;
   std::unordered_map<uint64_t, TextureEntry> textures_;       // key: hash of (addr, dims, format, data, tlut)
-  TextureEntry video_textures_[2][FRAME_SLOTS];
-  uint64_t video_serial_[2][FRAME_SLOTS]{};
+  TextureEntry video_textures_[video_bg::kVideoSlots][FRAME_SLOTS];
+  uint64_t video_serial_[video_bg::kVideoSlots][FRAME_SLOTS]{};
   bool video_layer_logged_[2]{};
   int draw_video_slot_ = -1;   // video target sampled by the draw currently being submitted
   std::unordered_map<uint32_t, TextureEntry> efb_copies_;     // key: guest dest address
@@ -1778,7 +1778,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
 // ---------------- textures ----------------
 ID3D12Resource* D3D12Backend::update_video_texture(
     const std::shared_ptr<const video_bg::Frame>& frame, int video_slot) {
-  if (!frame || video_slot < 0 || video_slot >= 2 || frame->bgra.empty()) return nullptr;
+  if (!frame || video_slot < 0 || video_slot >= video_bg::kVideoSlots || frame->bgra.empty()) return nullptr;
   TextureEntry& e = video_textures_[video_slot][slot_];
   bool created = false;
   if (!e.resource || e.width != frame->width || e.height != frame->height) {
@@ -2608,6 +2608,36 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   float border[4] = {0, 0, 0, 1};   // letterbox/pillarbox bars (black, as on Dolphin and a TV)
   list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
   list_->ClearRenderTargetView(rtv, border, 0, nullptr);
+  // Border art fills the window first; the picture is drawn over it, so it shows in the bars.
+  // It is scaled to cover the window and cropped evenly where the shapes differ.
+  video_bg::set_border(opts_.border_art);
+  bool art_reversed = false;
+  if (const auto art = video_bg::border_frame(&art_reversed)) {
+    if (ID3D12Resource* texture = update_video_texture(art, video_bg::kBorderSlot)) {
+      const uint32_t art_slot = reserve_srvs(4);
+      for (int k = 0; k < 4; ++k) {
+        D3D12_CPU_DESCRIPTOR_HANDLE hk = srv_heap_->GetCPUDescriptorHandleForHeapStart(); hk.ptr += (art_slot + k) * srv_size_;
+        device_->CreateShaderResourceView(texture, nullptr, hk);
+      }
+      D3D12_GPU_DESCRIPTOR_HANDLE art_gpu = srv_heap_->GetGPUDescriptorHandleForHeapStart(); art_gpu.ptr += art_slot * srv_size_;
+      const float window = (float)client_w_ / std::max((float)client_h_, 1.0f), shape = (float)art->width / std::max((float)art->height, 1.0f);
+      const float sx = shape > window ? window / shape : 1.0f, sy = shape > window ? 1.0f : shape / window;
+      const float art_rect[20] = {sx, art_reversed ? -sy : sy, (1.0f - sx) * 0.5f, art_reversed ? 1.0f - (1.0f - sy) * 0.5f : (1.0f - sy) * 0.5f,
+                                  1.0f / art->width, 1.0f / art->height, 0, 0,
+                                  1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0};
+      D3D12_VIEWPORT art_vp{0, 0, (float)client_w_, (float)client_h_, 0, 1};
+      D3D12_RECT art_sc{0, 0, client_w_, client_h_};
+      list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+      list_->RSSetViewports(1, &art_vp);
+      list_->RSSetScissorRects(1, &art_sc);
+      list_->SetPipelineState(blit_pso_.Get());
+      list_->SetGraphicsRootSignature(blit_root_.Get());
+      list_->SetGraphicsRootDescriptorTable(0, art_gpu);
+      list_->SetGraphicsRoot32BitConstants(1, 20, art_rect, 0);
+      list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+      list_->DrawInstanced(3, 1, 0, 0);
+    }
+  }
   // Letterbox the output at the game's aspect (XFB region c.src_w x lines); the widescreen
   // setting also drives the Slippi code on the simulation side.
   if (opts_.widescreen != widescreen_sent_) { widescreen_sent_ = opts_.widescreen; slippi::request_widescreen(opts_.widescreen); }

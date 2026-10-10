@@ -12,6 +12,7 @@
 #include <mfreadwrite.h>
 #include <propvarutil.h>
 #include <shlobj.h>
+#include <wincodec.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <atomic>
@@ -27,6 +28,7 @@
 #include <thread>
 
 using Microsoft::WRL::ComPtr;
+#pragma comment(lib, "windowscodecs.lib")
 
 namespace gx::video_bg {
 namespace {
@@ -618,6 +620,125 @@ Manager& manager() {
   return value;
 }
 
+// ---- border art: a picture or looping video behind the game picture, in the bars beside it ----
+// Files come from the Borders folder next to the program: PNG, JPG and BMP through the Windows
+// imaging codecs, MP4 through the same decoder as the menu videos. Presentation only.
+class Border {
+ public:
+  Border() {
+    root_ = exe_directory() / "Borders";
+    std::error_code ec;
+    std::filesystem::create_directories(root_, ec);
+  }
+  std::vector<std::string> files() const {
+    std::vector<std::string> out;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(root_, ec), end; !ec && it != end; it.increment(ec)) {
+      if (!it->is_regular_file(ec)) continue;
+      if (kind(it->path()) != 0) out.push_back(it->path().filename().u8string());
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+  }
+  void select(const std::string& name) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (name == name_) return;
+    name_ = name;
+    decoder_.stop();
+    still_.reset();
+    video_ = false;
+    if (name.empty()) return;
+    const std::filesystem::path file = std::filesystem::u8path(name).filename();   // a name inside the folder, never a path
+    const std::filesystem::path path = root_ / file;
+    const int what = kind(path);
+    std::error_code ec;
+    if (what == 0 || !std::filesystem::is_regular_file(path, ec)) {
+      host::log("border art: %s is not in the Borders folder (PNG, JPG, BMP or MP4); the bars stay black", name.c_str());
+      return;
+    }
+    if (what == 2) {
+      manager();   // Media Foundation is started with the menu videos
+      decoder_.start(path, false);
+      decoder_.set_active(true);
+      video_ = true;
+      host::log("border art: playing %s", name.c_str());
+      return;
+    }
+    still_ = load(path);
+    if (still_) host::log("border art: %s, %ux%u", name.c_str(), still_->width, still_->height);
+    else host::log("border art: %s could not be read as a picture; the bars stay black", name.c_str());
+  }
+  std::shared_ptr<const Frame> frame(bool* rows_reversed) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    *rows_reversed = video_;
+    return video_ ? decoder_.frame() : still_;
+  }
+  void open() {
+    std::error_code ec;
+    std::filesystem::create_directories(root_, ec);
+    ShellExecuteW(nullptr, L"open", root_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  }
+
+ private:
+  static int kind(const std::filesystem::path& path) {   // 0 not usable, 1 picture, 2 video
+    std::wstring ext = path.extension().wstring();
+    for (wchar_t& c : ext) c = (wchar_t)towlower(c);
+    if (ext == L".png" || ext == L".jpg" || ext == L".jpeg" || ext == L".bmp") return 1;
+    return ext == L".mp4" ? 2 : 0;
+  }
+  // Decoded once, at most 2560x1440: larger pictures are scaled down, since each frame slot of the
+  // renderer keeps its own copy and uploads it through the shared upload buffer.
+  static std::shared_ptr<const Frame> load(const std::filesystem::path& path) {
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    std::shared_ptr<Frame> out = std::make_shared<Frame>();
+    {
+      ComPtr<IWICImagingFactory> factory;
+      ComPtr<IWICBitmapDecoder> decoder;
+      ComPtr<IWICBitmapFrameDecode> first;
+      ComPtr<IWICFormatConverter> converter;
+      HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory));
+      if (SUCCEEDED(hr)) hr = factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &decoder);
+      if (SUCCEEDED(hr)) hr = decoder->GetFrame(0, &first);
+      UINT w = 0, h = 0;
+      if (SUCCEEDED(hr)) hr = first->GetSize(&w, &h);
+      if (SUCCEEDED(hr) && (!w || !h)) hr = E_FAIL;
+      ComPtr<IWICBitmapSource> source = first;
+      if (SUCCEEDED(hr) && (w > 2560 || h > 1440)) {
+        const double fit = std::min(2560.0 / w, 1440.0 / h);
+        const UINT nw = std::max<UINT>(1, (UINT)(w * fit)), nh = std::max<UINT>(1, (UINT)(h * fit));
+        ComPtr<IWICBitmapScaler> scaler;
+        hr = factory->CreateBitmapScaler(&scaler);
+        if (SUCCEEDED(hr)) hr = scaler->Initialize(first.Get(), nw, nh, WICBitmapInterpolationModeFant);
+        if (SUCCEEDED(hr)) { source = scaler; w = nw; h = nh; }
+      }
+      if (SUCCEEDED(hr)) hr = factory->CreateFormatConverter(&converter);
+      if (SUCCEEDED(hr)) hr = converter->Initialize(source.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+      if (SUCCEEDED(hr)) {
+        out->bgra.resize((size_t)w * h * 4);
+        hr = converter->CopyPixels(nullptr, w * 4, (UINT)out->bgra.size(), out->bgra.data());
+      }
+      if (SUCCEEDED(hr)) {
+        static std::atomic<uint64_t> loads{0};
+        out->width = w; out->height = h;
+        out->serial = 0x8000000000000000ull + ++loads;   // never a video frame's serial
+      } else out.reset();
+    }
+    if (SUCCEEDED(com)) CoUninitialize();
+    return out;
+  }
+
+  std::filesystem::path root_;
+  std::mutex mutex_;
+  std::string name_;
+  std::shared_ptr<const Frame> still_;
+  Decoder decoder_;
+  bool video_ = false;
+};
+Border& border() {
+  static Border value;
+  return value;
+}
+
 }  // namespace
 
 void begin_frame(uint8_t major, uint8_t minor) { manager().begin(major, minor); }
@@ -640,7 +761,13 @@ bool choose_target(int slot, const std::string& name) {
   return manager().select_target(slot, name);
 }
 void report_backend_failure(int slot, const std::string& message) {
+  if (slot == kBorderSlot) { host::log("border art: %s; the bars stay black", message.c_str()); return; }
   manager().backend_failure(slot, message);
 }
+
+std::vector<std::string> border_files() { return border().files(); }
+void set_border(const std::string& file) { border().select(file); }
+std::shared_ptr<const Frame> border_frame(bool* rows_reversed) { return border().frame(rows_reversed); }
+void open_border_folder() { border().open(); }
 
 }  // namespace gx::video_bg
