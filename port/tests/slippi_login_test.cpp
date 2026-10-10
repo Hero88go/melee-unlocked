@@ -64,7 +64,11 @@ int moved_build_and_reasons(const fs::path& root) {
 
 int main() {
   const fs::path root = fs::current_path() / ("slippi-login-fixture-" + std::to_string(_getpid()));
-  CHECK(!fs::exists(root));
+  // The folder is named after this process and removed at the end. A run that died left its folder
+  // behind, and Windows reuses process ids, so one found here is stale: clear it, do not fail on it.
+  std::error_code stale;
+  fs::remove_all(root, stale);
+  struct Cleanup { fs::path folder; ~Cleanup() { std::error_code ec; fs::remove_all(folder, ec); } } cleanup{root};
   if (const int failed = moved_build_and_reasons(root / "moved")) return failed;
   CHECK(!fs::exists(root / "moved"));
   fs::remove_all(root);
