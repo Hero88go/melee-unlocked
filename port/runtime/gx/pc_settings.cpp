@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include "texture_pack.h"
 #include "video_background.h"
+#include "user_shader.h"
 #include <atomic>
 #include <memory>
 #include <cstring>
@@ -1981,6 +1982,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       }
       else if (key == "sharpness") options.sharpness = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "crt_filter") options.crt_filter = std::clamp(std::stoi(value), 0, 2);
+      else if (key == "borderart") options.border_art = value;
+      else if (key == "shaderpreset") options.shader_preset = value;
       else if (key == "ssao") options.screen_space_ao = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "brightness") options.brightness = std::clamp(std::stof(value), 0.5f, 1.5f);
       else if (key == "contrast") options.contrast = std::clamp(std::stof(value), 0.5f, 1.5f);
@@ -3283,7 +3286,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ndlss5reconstruction " << options.dlss5_tuning.reconstruction
 #endif
        << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
-       << "\ncrt_filter " << options.crt_filter << "\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
+       << "\ncrt_filter " << options.crt_filter << "\nborderart " << options.border_art << "\nshaderpreset " << options.shader_preset <<"\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
@@ -5189,6 +5192,68 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       static const char* ratios[] = {"", "", "67% (Quality)", "58% (Balanced)", "50% (Performance)", "33% (Ultra Performance)",
                                      "", "77% (Ultra Quality)", "67% (Quality)", "59% (Balanced)", "50% (Performance)"};
       ImGui::TextWrapped("DLSS renders the game at %s of the window size (at 1080p about 1280x960) and upscales it. That is what DLSS is for in heavy games; Melee is cheap to render, so here it is a downgrade in sharpness, and Internal resolution and Anti-aliasing above are ignored while it is on. For the sharpest image choose Native, set Internal resolution to 3x or higher and Anti-aliasing to 4x SSAA (the Dolphin look), or choose DLAA (full resolution, DLSS used only as anti-aliasing).", ratios[options.dlss_mode]);
+    }
+    // Border art: the files in the Borders folder, read when the list is opened or the page appears.
+    {
+      static std::vector<std::string> art_files;
+      static double art_listed = -10.0;
+      if (ImGui::GetTime() - art_listed > 2.0) { art_files = video_bg::border_files(); art_listed = ImGui::GetTime(); }
+      std::vector<const char*> art_names{"None (black bars)"};
+      int art_index = 0;
+      for (size_t i = 0; i < art_files.size(); ++i) {
+        art_names.push_back(art_files[i].c_str());
+        if (art_files[i] == options.border_art) art_index = (int)i + 1;
+      }
+      if (settings_combo("Border art", &art_index, art_names.data(), (int)art_names.size())) {
+        options.border_art = art_index > 0 ? art_files[(size_t)art_index - 1] : std::string();
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("A picture or looping video shown in the bars beside the game picture.\n"
+                          "Put PNG, JPG, BMP or MP4 files in the Borders folder and pick one here.\n"
+                          "It is scaled to cover the window. Display only: it cannot affect online play.");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("+ Open Borders folder")) video_bg::open_border_folder();
+    }
+    // A shader preset of the player's choice (RetroArch slang presets in the Shaders folder).
+    {
+      const std::string current = options.shader_preset.empty() ? std::string("None") : options.shader_preset;
+      ImGui::TextUnformatted("Shader preset");
+      ImGui::SameLine();
+      if (ImGui::SmallButton("+ Open Shaders folder")) user_shader::open_folder();
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Runs a RetroArch shader preset (.slangp) over the game picture, CRT-Royale for example.\n"
+                          "Put the slang shader pack in the Shaders folder, then pick a preset below.\n"
+                          "A preset takes the place of the CRT display setting. Heavy presets cost frame time.");
+      if (!user_shader::available()) {
+        ImGui::TextDisabled("Not available: librashader.dll is missing from the game folder.");
+      } else {
+        static char shader_filter[64] = "";
+        ImGui::SetNextItemWidth(260.0f);
+        ImGui::InputTextWithHint("##shaderfilter", "type to search presets", shader_filter, sizeof shader_filter);
+        ImGui::SameLine();
+        ImGui::TextUnformatted(current.c_str());
+        const std::vector<std::string> found = user_shader::presets();
+        if (found.empty()) ImGui::TextDisabled("No .slangp presets in the Shaders folder yet.");
+        if (ImGui::BeginListBox("##shaderlist", ImVec2(-1.0f, found.empty() ? 30.0f : 150.0f))) {
+          if (ImGui::Selectable("None", options.shader_preset.empty()) && !options.shader_preset.empty()) { options.shader_preset.clear(); changed = true; }
+          std::string needle = shader_filter;
+          for (char& ch : needle) ch = (char)std::tolower((unsigned char)ch);
+          int shown = 0;
+          for (const std::string& name : found) {
+            if (!needle.empty()) {
+              std::string lower = name;
+              for (char& ch : lower) ch = (char)std::tolower((unsigned char)ch);
+              if (lower.find(needle) == std::string::npos) continue;
+            }
+            if (++shown > 400) { ImGui::TextDisabled("more: narrow the search"); break; }
+            if (ImGui::Selectable(name.c_str(), name == options.shader_preset) && name != options.shader_preset) { options.shader_preset = name; changed = true; }
+          }
+          ImGui::EndListBox();
+        }
+        const std::string why = user_shader::status();
+        if (!options.shader_preset.empty() && !why.empty()) ImGui::TextWrapped("This preset is not running: %s", why.c_str());
+      }
     }
     static const char* crt_looks[] = {"Off", "Studio monitor", "Home television"};
     if (settings_combo("CRT display", &options.crt_filter, crt_looks, 3)) changed = true;

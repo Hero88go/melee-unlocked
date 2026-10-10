@@ -387,6 +387,7 @@ HLE(PADRead) {
   host::apply_wide_fighter_draw();
   host::apply_low_poly_fighters();
   host::apply_player_tags_always();
+  host::apply_final_destination_guard();
   uint32_t base = ARG0, mask = 0;
   for (int i = 0; i < 4; ++i) {
     uint32_t p = base + i * 12;
