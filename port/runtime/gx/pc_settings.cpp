@@ -1980,6 +1980,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
         } else options.window_pinned = false;
       }
       else if (key == "sharpness") options.sharpness = std::clamp(std::stof(value), 0.0f, 1.0f);
+      else if (key == "crt_filter") options.crt_filter = std::clamp(std::stoi(value), 0, 2);
       else if (key == "ssao") options.screen_space_ao = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "brightness") options.brightness = std::clamp(std::stof(value), 0.5f, 1.5f);
       else if (key == "contrast") options.contrast = std::clamp(std::stof(value), 0.5f, 1.5f);
@@ -3282,7 +3283,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ndlss5reconstruction " << options.dlss5_tuning.reconstruction
 #endif
        << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
-       << "\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
+       << "\ncrt_filter " << options.crt_filter << "\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
@@ -5189,6 +5190,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                                      "", "77% (Ultra Quality)", "67% (Quality)", "59% (Balanced)", "50% (Performance)"};
       ImGui::TextWrapped("DLSS renders the game at %s of the window size (at 1080p about 1280x960) and upscales it. That is what DLSS is for in heavy games; Melee is cheap to render, so here it is a downgrade in sharpness, and Internal resolution and Anti-aliasing above are ignored while it is on. For the sharpest image choose Native, set Internal resolution to 3x or higher and Anti-aliasing to 4x SSAA (the Dolphin look), or choose DLAA (full resolution, DLSS used only as anti-aliasing).", ratios[options.dlss_mode]);
     }
+    static const char* crt_looks[] = {"Off", "Studio monitor", "Home television"};
+    if (settings_combo("CRT display", &options.crt_filter, crt_looks, 3)) changed = true;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Shows the picture the way a tube display draws it: scanline beams that widen with brightness,\n"
+                        "a phosphor mask sized to this screen's pixels, and a little glow in the glass.\n"
+                        "Studio monitor is flat and sharp. Home television is softer, with curved glass.\n"
+                        "Scanlines are clearest at 1440p and above; at 1080p they are kept faint so they do not shimmer.\n"
+                        "Sharpening is not applied while this is on.");
     int sharp = (int)std::lround(options.sharpness * 100.0f);
     if (settings_slider("Sharpening", &sharp, 0, 100, "%d%%")) { options.sharpness = sharp / 100.0f; changed = true; }
     int ao = (int)std::lround(options.screen_space_ao * 100.0f);
