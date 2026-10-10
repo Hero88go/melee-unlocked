@@ -1,11 +1,13 @@
 // Read only the launcher's three text entries from its stored ZIP. Never unpack to disk.
 // SPDX-License-Identifier: GPL-2.0-or-later
 import { reportNames, safeEngine, safeVersion, sanitizedText, scrubLine, tailBytes } from "./privacy.js";
-export const MAX_MARKDOWN_BYTES = 1024 * 1024;
+export const MAX_MARKDOWN_BYTES = 1536 * 1024;
 const MAX_ZIP_BYTES = 8 * 1024 * 1024;
 const TEXT_FILES = new Map([
   ["melee_port_crash.txt", 256 * 1024],
   ["melee_port.log", 512 * 1024],
+  // The session before the last one: a problem is often reported after the game was started again.
+  ["melee_port.prev.log", 384 * 1024],
   ["lobby.log", 128 * 1024],
 ]);
 // A "Send logs" report may add the newest session trace (frame rows of inputs and checksums). It is
@@ -171,7 +173,7 @@ export function sanitizedReport(input, version = "", engine = "", where = "", no
       + (trace ? "\nSession trace: attached (" + trace.length + " bytes)" : ""));
   if (safeNote.trim()) out += "## What the player says happened\n\n" + block(safeNote, 4096);
   for (const [name, text] of texts) out += "## " + name + "\n\n" + block(decoder.decode(text), TEXT_FILES.get(name));
-  // Per-file UTF-8 caps total 896 KiB, leaving room for fixed headers and fences.
+  // Per-file UTF-8 caps total 1280 KiB, leaving room for fixed headers and fences.
   if (encoder.encode(out).length > MAX_MARKDOWN_BYTES) throw new Error("Readable report exceeded its text limit");
   return { zip: makeStoredZip(texts), markdown: out, version: buildVersion, engine: buildEngine, where: safeWhere,
            note: safeNote, trace, label };

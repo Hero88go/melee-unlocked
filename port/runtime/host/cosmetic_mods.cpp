@@ -1636,6 +1636,44 @@ bool costume_draw_safe(const std::vector<uint8_t>& candidate, std::string* error
   return skeleton::envelopes_bound(candidate, size, relocated, root, error);
 }
 
+// Public: the same question for a stage file. A report (0.8.80, All-Star with a custom stage
+// installed) stopped on the same assertion with every costume already checked: a stage's models
+// are drawn by the same code and were never looked at. The stage's "map_head" root lists its
+// models, 0x34 bytes each with the joint tree first (gr/types.h UnkStageDat).
+bool stage_draw_safe(const std::vector<uint8_t>& candidate, std::string* error) {
+  std::string local; if (!error) error = &local;
+  if (candidate.size() < 0x20) return true;
+  const uint64_t size = be32(candidate.data() + 4), relocations = be32(candidate.data() + 8),
+                 roots = be32(candidate.data() + 12), references = be32(candidate.data() + 16);
+  const uint64_t root_table = 0x20ull + size + relocations * 4ull;
+  const uint64_t strings = root_table + (roots + references) * 8ull;
+  // A truncated or oversized table is some other check's finding, not a drawing defect.
+  if (roots > 1024 || references > 1024 || relocations > candidate.size() / 4 || strings > candidate.size()) return true;
+  std::vector<uint32_t> relocated((size_t)relocations);
+  for (uint64_t i = 0; i < relocations; ++i) relocated[(size_t)i] = be32(&candidate[(size_t)(0x20ull + size + i * 4ull)]);
+  std::sort(relocated.begin(), relocated.end());
+  for (uint64_t i = 0; i < roots; ++i) {
+    const uint8_t* record = &candidate[(size_t)(root_table + i * 8)];
+    const uint64_t name = strings + be32(record + 4);
+    if (name >= candidate.size()) continue;
+    const char* text = (const char*)&candidate[(size_t)name];
+    if (strnlen(text, candidate.size() - (size_t)name) != 8 || std::memcmp(text, "map_head", 8) != 0) continue;
+    const uint64_t head = be32(record);
+    if (head + 0x10 > size || !skeleton::is_pointer(relocated, (uint32_t)head + 8)) return true;
+    const uint64_t models = be32(&candidate[(size_t)(0x20ull + head + 8)]);
+    const uint64_t count = be32(&candidate[(size_t)(0x20ull + head + 0x0C)]);
+    for (uint64_t m = 0; m < count && m < 1024; ++m) {
+      const uint64_t entry = models + m * 0x34ull;
+      if (entry + 0x34 > size) break;
+      if (!skeleton::is_pointer(relocated, (uint32_t)entry)) continue;   // a model slot with no joint tree
+      const uint32_t tree = be32(&candidate[(size_t)(0x20ull + entry)]);
+      if (tree + 0x40ull > size) continue;
+      if (!skeleton::envelopes_bound(candidate, (uint32_t)size, relocated, tree, error)) return false;
+    }
+  }
+  return true;
+}
+
 // Public: the Source Port asks the same question about a live pack's costume files.
 bool costume_skeleton_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
                               std::string* error) {
@@ -3111,6 +3149,9 @@ std::vector<uint8_t> load_runtime_asset_locked(const AssetRecord& asset, std::st
     if (!parse_visual_layout(bytes, &layout, error)) {
       *error = asset.info.name + ": " + *error; return {};
     }
+    // A stage the game cannot draw is refused like a costume is: the stage keeps the disc's own file.
+    std::string defect;
+    if (asset.info.kind == "stage_visual" && !stage_draw_safe(bytes, &defect)) { *error = asset.info.name + ": " + defect; return {}; }
   } else if (asset.info.kind == kPortraitKind) {
     if (!png_companion(bytes, error)) { *error = asset.info.name + ": " + *error; return {}; }
   } else {
@@ -5551,6 +5592,30 @@ SessionProfile session_profile() {
   auto runtime = std::atomic_load(&g_runtime);
   return {runtime->generation, runtime->fingerprint, runtime->assets,
           g_online_freezes.load(std::memory_order_relaxed) != 0};
+}
+
+// The picture's file is named by the skin's id, which is "costume-" and a SHA-256 for an import;
+// anything else in an id (a disc skin's) is reduced to what is safe in a file name.
+std::string costume_thumbnail_path(const std::string& asset_id) {
+  if (asset_id.empty() || asset_id.size() > 200) return {};
+  std::string name;
+  for (unsigned char c : asset_id) name += std::isalnum(c) || c == '-' || c == '_' ? (char)c : '_';
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (g_root.empty()) return {};
+  return (g_root / L"thumbnails" / fs::u8path(name + ".png")).u8string();
+}
+
+bool costume_file(const std::string& asset_id, std::vector<uint8_t>* bytes, std::string* thumbnail_path) {
+  const std::string path = costume_thumbnail_path(asset_id);
+  std::lock_guard<std::mutex> lock(g_mutex);
+  const auto asset = std::find_if(g_assets.begin(), g_assets.end(), [&](const AssetRecord& item) {
+    return item.info.id == asset_id && item.info.kind == "character_costume";
+  });
+  if (asset == g_assets.end() || path.empty()) return false;
+  std::string error;
+  *bytes = load_runtime_asset_locked(*asset, &error);
+  *thumbnail_path = path;
+  return !bytes->empty();
 }
 
 std::string choose_import_file() {

@@ -1597,9 +1597,13 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
 // The view for the online mode the game reports (0-4), or offline (-1): offline and Direct with the
 // mod on show the mod; every other online mode shows the retail game. The online rules and the
 // build the opponent is told follow it.
+// A Direct opponent on Slippi Dolphin (no build message): that match plays the retail game. Set and
+// cleared by slippi_online.cpp (set_plain_opponent_handler); g_content_mode is the mode last applied.
+bool g_plain_opponent = false;
+int g_content_mode = -1;
 slippi::online::LocalBuild content_build_for_mode(int mode) {
   const bool mods = !g_view_alias.empty();
-  const bool retail = mods && mode >= 0 && !(mode == 2 && gx::RenderOptions::live_mods_in_direct());
+  const bool retail = mods && mode >= 0 && (g_plain_opponent || !(mode == 2 && gx::RenderOptions::live_mods_in_direct()));
   slippi::online::LocalBuild build;
   build.mod_view = mods && !retail;
   build.fingerprint = g_mod_fingerprint;
@@ -1611,13 +1615,25 @@ slippi::online::LocalBuild content_build_for_mode(int mode) {
 void apply_content_mode(int mode) {
   const bool mods = !g_view_alias.empty();
   bool retail = false;
-  if (mods && mode >= 0) retail = !(mode == 2 && gx::RenderOptions::live_mods_in_direct());
+  if (mods && mode >= 0) retail = g_plain_opponent || !(mode == 2 && gx::RenderOptions::live_mods_in_direct());
+  g_content_mode = mode;
   if (retail != g_retail_view)
     host::log("content: %s view (%s)", retail ? "retail" : "mod",
-              mode < 0 ? "offline" : mode == 2 ? "Direct" : "online mode that plays the retail game");
+              mode < 0 ? "offline" : mode == 2 && retail ? "Direct, the opponent is on Slippi Dolphin" :
+              mode == 2 ? "Direct" : "online mode that plays the retail game");
   g_retail_view = retail;
   mods::status().retail_view = retail;   // the panel's notice counts the pack skins swapped in this view
   slippi::online::set_local_build(content_build_for_mode(mode));
+}
+
+// slippi_online.cpp's word on the Direct opponent (see g_plain_opponent). The view follows at once:
+// nothing of the match is loaded yet when the build wait ends.
+void plain_opponent(bool plain) {
+  if (plain == g_plain_opponent) return;
+  g_plain_opponent = plain;
+  if (g_view_alias.empty()) return;
+  apply_content_mode(g_content_mode);
+  if (plain) screen_label::show("Opponent is on Slippi Dolphin: this match plays the standard game", 5.0);
 }
 
 void prepare_practice_content(int mode, bool activate) {
@@ -3072,6 +3088,7 @@ int run(void (*shutdown)(int)) {
     host::die("%s has game API version %u, expected %u", g_dll.c_str(), g_game.version, MU_GAME_API_VERSION);
   slippi::native_practice::set_native_bridge(g_game.practice);
   slippi::native_practice::set_content_bridge(prepare_practice_content);
+  slippi::online::set_plain_opponent_handler(plain_opponent);
   MuStateRegion game_regions[3]{};
   std::string region_error;
   const uint32_t region_count = g_game.state_regions(game_regions, 3);

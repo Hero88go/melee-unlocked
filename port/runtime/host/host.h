@@ -163,7 +163,10 @@ uint32_t profiler_frame_id();
 const std::vector<uint32_t>& slow_sim_frames();
 
 // ---- simulation-thread cost accounting (per retrace; logged when a frame exceeds 20 ms) ----
-enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, SIM_OBSERVE, SIM_RECORD, SIM_DECODE, SIM_COST_COUNT };
+enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, SIM_OBSERVE, SIM_RECORD, SIM_DECODE,
+               // Where a frame's time goes besides work: reading the controllers, the frame's own timed waits
+               // (the audio steps), and how far past their deadlines those waits returned.
+               SIM_INPUT, SIM_WAIT, SIM_LATE, SIM_COST_COUNT };
 void sim_cost_add(int slot, double seconds);
 double last_sim_frame_ms();            // work time of the most recent simulation frame (sleep excluded)
 
@@ -195,6 +198,9 @@ double emulation_speed();
 // paced, wall time when --fast). Sub-frame presentation measures its phase from this.
 double frame_time();
 double now_seconds();
+// Seconds a short timed sleep wakes late by on this system, as last measured (0 on a healthy one).
+// A wait that must end on time sleeps only when it has that much room, and spins otherwise.
+double sleep_slack();
 bool latency_trace_enabled();
 TickTiming& tick_timing();
 // Per-draw scopes run tens of thousands of times a frame, so they read the CPU time stamp counter
