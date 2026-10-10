@@ -85,7 +85,8 @@ int main(int argc, char** argv) {
     STARTUPINFOW si{}; si.cb = sizeof si;
     const bool started = !ec && CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
       CREATE_NO_WINDOW | IDLE_PRIORITY_CLASS, nullptr, nullptr, &si, &children[i]);
-    check(started && WaitForSingleObject(ready[i], 5000) == WAIT_OBJECT_0, "own hidden Source fixture started");
+    // The fixture runs at idle priority: on a PC busy with other work it can take well over 5 s to start.
+    check(started && WaitForSingleObject(ready[i], 60000) == WAIT_OBJECT_0, "own hidden Source fixture started");
   }
   const auto pids = host::updater::install_processes(install.u8string());
   check(children[0].dwProcessId && std::find(pids.begin(), pids.end(), children[0].dwProcessId) != pids.end(),

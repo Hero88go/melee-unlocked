@@ -50,6 +50,7 @@
 #endif
 #include "gx_shader.h"
 #include "crt_shader.h"
+#include "user_shader.h"
 #include "gx_texture.h"
 #include "texture_pack.h"
 #include "video_background.h"
@@ -256,6 +257,7 @@ class D3D11Backend : public Backend {
     starting_ = false;
   }
   ~D3D11Backend() override {
+    user_shader::d3d11_release();
     if (swapchain_) swapchain_->SetFullscreenState(FALSE, nullptr);
     texpack::report();   // last word on how many of the pack's textures the game actually drew
 #ifdef GX_PC_SETTINGS
@@ -381,6 +383,11 @@ class D3D11Backend : public Backend {
   ComPtr<ID3D11InputLayout> layout_;
   ComPtr<ID3D11VertexShader> blit_vs_, clear_vs_;
   ComPtr<ID3D11PixelShader> blit_ps_, crt_ps_, clear_ps_;
+  // A player-chosen shader preset reads the picture at the console's own size from this texture.
+  ComPtr<ID3D11Texture2D> shader_source_;
+  ComPtr<ID3D11ShaderResourceView> shader_source_srv_;
+  ComPtr<ID3D11RenderTargetView> shader_source_rtv_;
+  uint32_t shader_source_w_ = 0, shader_source_h_ = 0;
   ComPtr<ID3D11Buffer> blit_cb_, clear_cb_;
   ComPtr<ID3D11SamplerState> blit_sampler_;
   ComPtr<ID3D11BlendState> opaque_blend_;
@@ -406,8 +413,8 @@ class D3D11Backend : public Backend {
   std::unordered_map<uint32_t, ComPtr<ID3D11RasterizerState>> raster_states_;
   std::unordered_map<SamplerKey, ComPtr<ID3D11SamplerState>, SamplerKeyHash> samplers_;
   std::unordered_map<uint64_t, TextureEntry> textures_;
-  TextureEntry video_textures_[2];
-  uint64_t video_serial_[2]{};
+  TextureEntry video_textures_[video_bg::kVideoSlots];
+  uint64_t video_serial_[video_bg::kVideoSlots]{};
   bool video_layer_logged_[2]{};
   int draw_video_slot_ = -1;   // video target sampled by the draw currently being submitted
   std::unordered_map<uint32_t, TextureEntry> efb_copies_;
@@ -1179,7 +1186,7 @@ Pipeline* D3D11Backend::get_pipeline(const DrawCall& dc, uint32_t topo_type, D3D
 // ---------------------------------------------------------------- textures
 TextureEntry* D3D11Backend::update_video_texture(
     const std::shared_ptr<const video_bg::Frame>& frame, int video_slot) {
-  if (!frame || video_slot < 0 || video_slot >= 2 || frame->bgra.empty()) return nullptr;
+  if (!frame || video_slot < 0 || video_slot >= video_bg::kVideoSlots || frame->bgra.empty()) return nullptr;
   TextureEntry& e = video_textures_[video_slot];
   if (!e.resource || e.width != frame->width || e.height != frame->height) {
     e = TextureEntry{};
@@ -1547,6 +1554,23 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   context_->OMSetRenderTargets(1, &rtv, nullptr);
   const float border[4] = {0, 0, 0, 1};   // letterbox/pillarbox bars
   context_->ClearRenderTargetView(rtv, border);
+  // Border art fills the window first; the picture is drawn over it (see the D3D12 backend).
+  video_bg::set_border(opts_.border_art);
+  bool art_reversed = false;
+  if (const auto art = video_bg::border_frame(&art_reversed)) {
+    if (TextureEntry* texture = update_video_texture(art, video_bg::kBorderSlot)) {
+      const float window = (float)client_w_ / std::max((float)client_h_, 1.0f), shape = (float)art->width / std::max((float)art->height, 1.0f);
+      const float sx = shape > window ? window / shape : 1.0f, sy = shape > window ? 1.0f : shape / window;
+      const float art_rect[16] = {sx, art_reversed ? -sy : sy, (1.0f - sx) * 0.5f, art_reversed ? 1.0f - (1.0f - sy) * 0.5f : (1.0f - sy) * 0.5f,
+                                  1.0f / art->width, 1.0f / art->height, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0};
+      D3D11_VIEWPORT art_vp{0, 0, (float)client_w_, (float)client_h_, 0, 1};
+      D3D11_RECT art_sc{0, 0, client_w_, client_h_};
+      context_->RSSetViewports(1, &art_vp);
+      context_->RSSetScissorRects(1, &art_sc);
+      blit(texture->srv.Get(), art_rect);
+      context_->OMSetRenderTargets(1, &rtv, nullptr);
+    }
+  }
   if (opts_.widescreen != widescreen_sent_) { widescreen_sent_ = opts_.widescreen; slippi::request_widescreen(opts_.widescreen); }
   if (opts_.fod_reflections != fod_reflections_sent_) { fod_reflections_sent_ = opts_.fod_reflections; slippi::request_fod_reflections(opts_.fod_reflections); }
   // The Gecko code wins if both are somehow set, so the two can never widen the same frame twice.
@@ -1557,13 +1581,40 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   if (vh > wh) { vh = wh; vw = wh * aspect; }
   const CrtLook look = crt_look(opts_.crt_filter);
   const float lines = std::max((float)c.src_h * c.y_scale, 1.0f);
+  // A player-chosen shader preset takes the place of the built-in CRT model (see the D3D12 backend):
+  // the plain present goes into a console-sized texture and the preset draws that to the window.
+  bool shader_on = user_shader::d3d11_prepare(device_.Get(), opts_.shader_preset);
+  const uint32_t shader_w = (uint32_t)std::max(c.src_w, 1u), shader_h = (uint32_t)std::max(std::lround(lines), 1L);
+  if (shader_on && (!shader_source_ || shader_source_w_ != shader_w || shader_source_h_ != shader_h)) {
+    shader_source_.Reset(); shader_source_srv_.Reset(); shader_source_rtv_.Reset();
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = shader_w; td.Height = shader_h; td.MipLevels = 1; td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_R8G8B8A8_UNORM; td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT; td.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+    if (FAILED(device_->CreateTexture2D(&td, nullptr, &shader_source_)) ||
+        FAILED(device_->CreateShaderResourceView(shader_source_.Get(), nullptr, &shader_source_srv_)) ||
+        FAILED(device_->CreateRenderTargetView(shader_source_.Get(), nullptr, &shader_source_rtv_))) {
+      shader_source_.Reset(); shader_on = false;
+      host::log("shaders: the picture texture could not be made; the preset is off this frame");
+    } else { shader_source_w_ = shader_w; shader_source_h_ = shader_h; }
+  }
+  const bool crt_on = opts_.crt_filter && !shader_on;
   CrtFit fit{vh, 0.0f};
-  if (opts_.crt_filter) { fit = crt_fit(vh, lines); vh = fit.height; vw = vh * aspect; }
+  if (crt_on || shader_on) { fit = crt_fit(vh, lines); vh = fit.height; vw = vh * aspect; }
   D3D11_VIEWPORT vp{(ww - vw) * 0.5f, (wh - vh) * 0.5f, vw, vh, 0, 1};
-  if (opts_.crt_filter) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
+  if (crt_on || shader_on) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
   D3D11_RECT sc{0, 0, client_w_, client_h_};
-  context_->RSSetViewports(1, &vp);
-  context_->RSSetScissorRects(1, &sc);
+  if (shader_on) {
+    ID3D11RenderTargetView* picture_rtv = shader_source_rtv_.Get();
+    context_->OMSetRenderTargets(1, &picture_rtv, nullptr);
+    D3D11_VIEWPORT picture{0, 0, (float)shader_w, (float)shader_h, 0, 1};
+    D3D11_RECT picture_sc{0, 0, (LONG)shader_w, (LONG)shader_h};
+    context_->RSSetViewports(1, &picture);
+    context_->RSSetScissorRects(1, &picture_sc);
+  } else {
+    context_->RSSetViewports(1, &vp);
+    context_->RSSetScissorRects(1, &sc);
+  }
   float rect[16] = {(float)c.src_w / EFB_WIDTH, (float)c.src_h / EFB_HEIGHT, (float)c.src_x / EFB_WIDTH, (float)c.src_y / EFB_HEIGHT,
                     1.0f / std::max((float)efb_w_, 1.0f), 1.0f / std::max((float)efb_h_, 1.0f), std::clamp(opts_.sharpness, 0.0f, 1.0f), 0.0f,
                     1.0f, 1.0f, 0.0f, 0.0f, opts_.brightness, opts_.contrast, opts_.vibrance, opts_.screen_space_ao};
@@ -1571,7 +1622,24 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / std::max(vw, 1.0f)), 1, 4);
   rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / std::max(vh, 1.0f)), 1, 4);
   const float crt[8] = {look.scan, look.mask, look.curve, lines, (float)c.src_w, vh / lines, look.halation, fit.shift};
-  blit(efb_srv_.Get(), rect, efb_depth_srv_.Get(), opts_.crt_filter ? crt : nullptr);
+  if (shader_on) {   // the averaging box for the console-sized texture, and no sharpening before the preset
+    rect[6] = 0.0f;
+    rect[8] = (float)std::clamp((int)std::lround((double)c.src_w * scale_ / shader_w), 1, 4);
+    rect[9] = (float)std::clamp((int)std::lround((double)c.src_h * scale_ / shader_h), 1, 4);
+  }
+  blit(efb_srv_.Get(), rect, efb_depth_srv_.Get(), crt_on ? crt : nullptr);
+  if (shader_on) {
+    context_->OMSetRenderTargets(1, &rtv, nullptr);
+    const user_shader::Target where{vp.TopLeftX, vp.TopLeftY, (uint32_t)std::max(vw, 1.0f), (uint32_t)std::max(vh, 1.0f)};
+    user_shader::d3d11_draw(context_.Get(), shader_source_srv_.Get(), rtv, where, (size_t)frame_counter_);
+    // The preset's passes leave their own state on the context.
+    reset_bound();
+    context_->IASetInputLayout(layout_.Get());
+    context_->OMSetRenderTargets(1, &rtv, nullptr);
+    D3D11_VIEWPORT whole{0, 0, (float)client_w_, (float)client_h_, 0, 1};
+    context_->RSSetViewports(1, &whole);
+    context_->RSSetScissorRects(1, &sc);
+  }
 #ifdef GX_PC_SETTINGS
   if (settings_ui_) { settings_ui_->draw(); reset_bound(); context_->IASetInputLayout(layout_.Get()); }
 #endif

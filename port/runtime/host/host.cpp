@@ -1521,6 +1521,47 @@ void apply_low_poly_fighters() {
   live = true;
   log("low poly: fighters draw with the game's far models");
 }
+// Final Destination's background runs through timed phases (gr/grlast.c). One of them waits on an
+// animation of the fourth background model and stops the game when the model has none there
+// (assertion "aobj", grlast.c line 1012). The disc's stage always has it; a stage skin may not: two
+// reports, each two and a half minutes into a match with a Final Destination skin installed. While
+// such a skin is in use the function runs from RAM with the stop replaced by "this phase is not
+// over yet": the match goes on and the background stays in that phase. The disc's stage never
+// reaches the replaced instruction. Retail code only: any other bytes there are left alone.
+void apply_final_destination_guard() {
+  constexpr uint32_t kPhase = 0x8021B5C4u, kLookup = 0x8021B7C4u, kStop = 0x8021B7D0u;
+  static constexpr uint32_t kStopCode[4] = {0x387D0000u, 0x388003F4u, 0x38AD92ECu, 0x4816CA45u};   // __assert("grlast.c", 1012, "aobj")
+  static bool done = false;
+  static uint32_t calls = 0;
+  if (done || !ram || calls++ % 60) return;
+  // MELEE_TEST_FD_NO_ANIMATION (tests only, hidden and headless runs): the lookup finds nothing, as
+  // with such a skin. MELEE_TEST_FD_NO_GUARD with it: the stop is left in, to show the report.
+  const bool test = options.no_gc_adapter && std::getenv("MELEE_TEST_FD_NO_ANIMATION");
+  if (!test && !cosmetics::stage_skin_active("GrNLa")) return;
+  done = true;
+  for (uint32_t i = 0; i < 4; ++i)
+    if (!try_ptr(kStop + i * 4, 4) || rd32(kStop + i * 4) != kStopCode[i]) {
+      log("mods: Final Destination's background code is not the original game's; it is left as it is");
+      return;
+    }
+  if (!ppc::redirect_to_interpreter(kPhase)) { log("mods: Final Destination's background code could not be run from RAM; a skin without its animations can stop the game"); return; }
+  const bool guard = !(test && std::getenv("MELEE_TEST_FD_NO_GUARD"));
+  if (guard) wr32(kStop, 0x4800012Cu);        // b 8021B8FC: return 0, the phase stays
+  if (test) {
+    if (std::strcmp(std::getenv("MELEE_TEST_FD_NO_ANIMATION"), "0")) wr32(kLookup, 0x38600000u);   // li r3, 0 ("0": the stage's own animation, guard in place)
+    // The test's match is played on Final Destination whatever the stage select picked (Stage_802251E8).
+    ppc::add_entry_hook(0x802251E8u, [](ppc::Context& c) { if (c.r[3] >= 2 && c.r[3] <= 32) c.r[3] = 32; });
+    ppc::add_entry_hook(kPhase, [](ppc::Context& c) {
+      static uint32_t last = ~0u;
+      const uint32_t ground = try_ptr(c.r[3] + 0x2Cu, 4) ? rd32(c.r[3] + 0x2Cu) : 0;
+      const uint32_t phase = ground && try_ptr(ground + 0xC4u, 4) ? (rd32(ground + 0xC4u) >> 14) & 0xFFFFu : ~0u;
+      if (phase != last) log("test: Final Destination background phase %u", phase);
+      last = phase;
+    });
+  }
+  log("mods: Final Destination skin: a background model without its animation no longer stops the game%s%s",
+      test ? " (test: no animation found)" : "", guard ? "" : " (test: guard off)");
+}
 // A mod disc can ask for a file it does not ship (ACE's results screen asks for /audio/ff_step1.hps
 // for one of its fighters). The game then opens entry -1, DVDFastOpen refuses and leaves the file
 // information of whatever was opened last, and the music stream reads its header out of that file:
@@ -1662,9 +1703,39 @@ static void clear_result_rows_without_file(ppc::Context& c) {
 // A mod can send the results screen for a fighter that has no results animation on any disc (Master
 // Hand, picked from a mod's debug menu, wins a match: GmRstMMh.dat). The game stops on the missing
 // file. In a mod session a results animation the disc does not have opens as Mario's instead.
+static void report_heap_stop_lines(uint32_t handle, uint32_t rounded, uint32_t caller);
+// The last files a mod disc's game asked for by name: the heap stop's report prints them, so it
+// names the fighters and the stage that were being loaded.
+static char g_recent_files[12][24];
+static uint32_t g_recent_file_count = 0;
+static void note_file_asked(const char* path) {
+  const char* slash = std::strrchr(path, '/');
+  const char* base = slash ? slash + 1 : path;
+  if (g_recent_file_count && !_stricmp(g_recent_files[(g_recent_file_count - 1) % 12], base)) return;
+  char* slot = g_recent_files[g_recent_file_count++ % 12];
+  std::strncpy(slot, base, sizeof g_recent_files[0] - 1);
+  slot[sizeof g_recent_files[0] - 1] = 0;
+}
+// One line with those names, once: for the heap stop and for any other stop of a mod disc's game (a
+// file of the disc that the game cannot read stops it in whatever code parses the file).
+void report_recent_files() {
+  static bool told = false;
+  if (told || !g_recent_file_count) return;
+  told = true;
+  std::string names;
+  const uint32_t shown = std::min<uint32_t>(g_recent_file_count, 12);
+  for (uint32_t i = g_recent_file_count - shown; i < g_recent_file_count; ++i) { if (!names.empty()) names += ", "; names += g_recent_files[i % 12]; }
+  log("mods: last files the game asked for, oldest first: %s", names.c_str());
+  log_flush();
+}
 void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
   const char* path = (const char*)try_ptr(c.r[3], 1);
   if (!path) { c.r[3] = 0xFFFFFFFFu; return; }
+  note_file_asked(path);
+  // MELEE_TEST_HEAP_REPORT (tests only, hidden and headless runs): the heap stop's lines once, after
+  // that many files, without the stop.
+  if (static const char* test = options.no_gc_adapter ? std::getenv("MELEE_TEST_HEAP_REPORT") : nullptr; test && g_recent_file_count == (uint32_t)std::atoi(test))
+    report_heap_stop_lines(0x80431F28u, 0, 0);
   {
     // The results screen asks for its own file before any fighter's (see clear_result_rows_without_file).
     const char* slash0 = std::strrchr(path, '/');
@@ -1679,6 +1750,16 @@ void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
       entry = fst_find_path("GmRstMMr.dat");
       static bool told = false;
       if (!told && entry >= 0) { told = true; log("mods: the game asked for a results animation this disc does not have (%s); another fighter's plays in its place", base); }
+    }
+    // A movie the disc left out (ACE has no MvHowto.mth, which the title screen plays after its demo
+    // fights): the game opens entry -1 without checking, and DVDFastOpen's stand-in for that is a tune,
+    // which the movie player cannot read (assertion "src % 32 == 0", devcom.c line 495, some 45
+    // seconds into an idle title screen). Another movie of the disc plays in its place.
+    const size_t length = std::strlen(base);
+    if (length > 4 && !_stricmp(base + length - 4, ".mth")) {
+      entry = fst_find_path("MvEndMario.mth");
+      static bool told = false;
+      if (!told && entry >= 0) { told = true; log("mods: the game asked for a movie this disc does not have (%s); another movie plays in its place", base); }
     }
   }
   c.r[3] = (uint32_t)entry;
@@ -1796,6 +1877,7 @@ static void report_heap_stop_lines(uint32_t handle, uint32_t rounded, uint32_t c
   if (try_ptr(kPicks, 0x10))
     log("heap: title demo draw: fighters %02X %02X %02X %02X, costumes %02X %02X %02X %02X, stage %04X", rd8(kPicks), rd8(kPicks + 1),
         rd8(kPicks + 2), rd8(kPicks + 3), rd8(kPicks + 4), rd8(kPicks + 5), rd8(kPicks + 6), rd8(kPicks + 7), rd16(kPicks + 0xC));
+  report_recent_files();
   log_flush();
 }
 static void report_heap_stop(ppc::Context& c) {

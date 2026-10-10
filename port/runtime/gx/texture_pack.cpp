@@ -331,6 +331,17 @@ std::vector<uint8_t> read_file(const std::string& path, bool* too_big) {
   return bytes;
 }
 
+// Memory ran out while a replacement was being decoded. A report (0.8.89, a pack of 5242 files, at
+// startup): eight decodes fail with "outofmem", then one allocation throws on the prefetch thread
+// and the game stops with "bad allocation" before its first frame. From the first such failure the
+// prefetch stops, and a replacement that cannot be decoded leaves the game's own texture in place.
+std::atomic<bool> g_low_memory{false};
+void note_low_memory(const std::string& path) {
+  if (!g_low_memory.exchange(true, std::memory_order_relaxed))
+    host::log("textures: not enough memory to decode %s; replacements load only as the game draws them, "
+              "and one that does not fit keeps the game's own texture", path.c_str());
+}
+
 // Decodes one PNG to RGBA8. Dimensions are checked before the pixels are expanded, so a bad or
 // enormous file costs a header read rather than an allocation.
 bool decode_png(const std::string& path, std::vector<uint8_t>& out, uint32_t* width, uint32_t* height) {
@@ -351,7 +362,12 @@ bool decode_png(const std::string& path, std::vector<uint8_t>& out, uint32_t* wi
     return false;
   }
   stbi_uc* pixels = stbi_load_from_memory(file.data(), (int)file.size(), &w, &h, &channels, 4);
-  if (!pixels) { host::log("textures: %s failed to decode (%s)", path.c_str(), stbi_failure_reason()); return false; }
+  if (!pixels) {
+    const char* why = stbi_failure_reason();
+    if (why && !std::strcmp(why, "outofmem")) note_low_memory(path);
+    else host::log("textures: %s failed to decode (%s)", path.c_str(), why ? why : "unknown");
+    return false;
+  }
   out.assign(pixels, pixels + (size_t)w * h * 4);
   stbi_image_free(pixels);
   *width = (uint32_t)w; *height = (uint32_t)h;
@@ -483,11 +499,15 @@ uint64_t prefetch_cache_budget() {
   MEMORYSTATUSEX memory{};
   memory.dwLength = sizeof memory;
   if (!GlobalMemoryStatusEx(&memory) || !memory.ullTotalPhys) return kMaxCacheBudget;
-  return std::clamp<uint64_t>(memory.ullTotalPhys / 4, kMinCacheBudget, kMaxCacheBudget);
+  // Also no more than a third of what is free right now, in RAM and in what Windows will still
+  // commit: a machine with most of its memory in use at launch has no room for the full budget.
+  const uint64_t free_now = std::min<uint64_t>(memory.ullAvailPhys, memory.ullAvailPageFile) / 3;
+  return std::clamp<uint64_t>(std::min<uint64_t>(memory.ullTotalPhys / 4, free_now), kMinCacheBudget, kMaxCacheBudget);
 }
 
 void clear_cache();   // defined with load()
 std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes);
+std::unique_ptr<Replacement> decode_entry_unchecked(const std::string& base, uint64_t budget_bytes);
 
 bool configure(bool on, bool dump) {
   if (on == g.on && dump == g.dump) return false;
@@ -641,6 +661,7 @@ void prefetch_begin() {
     for (const auto& kv : g.index) names.push_back(kv.first);
     for (const auto& name : names) {
       if (!g.on) break;   // switched off mid-run: stop rather than finish work nobody wants
+      if (g_low_memory.load(std::memory_order_relaxed)) break;   // no room: the rest load when drawn
       {
         std::lock_guard<std::mutex> lk(g_cache_mutex);
         if (g_cache_bytes >= cache_budget || g_cache.count(name)) { g_prefetch_done.fetch_add(1, std::memory_order_relaxed); continue; }
@@ -710,7 +731,26 @@ std::unique_ptr<Replacement> load(const std::string& base, uint64_t budget_bytes
   return decode_entry(base, budget_bytes);
 }
 
+// An allocation that fails here (the PNG's bytes, the pixels, the mip chain) is this texture's
+// problem alone: it throws on whichever thread decodes, and nothing above used to catch it.
+// MELEE_TEST_TEXTURE_OOM=<n> (tests only, hidden and headless runs): the nth decode runs out of memory.
 std::unique_ptr<Replacement> decode_entry(const std::string& base, uint64_t budget_bytes) {
+  try {
+    static const int test_at = (std::getenv("MELEE_NO_GC_ADAPTER") != nullptr) && std::getenv("MELEE_TEST_TEXTURE_OOM") ? std::atoi(std::getenv("MELEE_TEST_TEXTURE_OOM")) : 0;
+    static std::atomic<int> decodes{0};
+    if (test_at > 0 && decodes.fetch_add(1, std::memory_order_relaxed) + 1 == test_at) throw std::bad_alloc();
+    return decode_entry_unchecked(base, budget_bytes);
+  } catch (const std::bad_alloc&) {
+    if (!((std::getenv("MELEE_NO_GC_ADAPTER") != nullptr) && std::getenv("MELEE_TEST_TEXTURE_OOM_UNCAUGHT"))) {
+      note_low_memory(base);
+      ++g.decode_failed;
+      return nullptr;
+    }
+    throw;   // tests: the old behaviour, to show the stop
+  }
+}
+
+std::unique_ptr<Replacement> decode_entry_unchecked(const std::string& base, uint64_t budget_bytes) {
   if (base.empty()) return nullptr;
   std::string cosmetic;
   if (cosmetic_path(base, &cosmetic)) {
