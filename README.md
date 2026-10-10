@@ -34,6 +34,8 @@ the Slippi team.
 
 No Monetization. No Donos. No Patreon. **FREE FOREVER**
 
+**v0.8.5 Akaenia/Mod support and more DLSS5 controls** https://www.youtube.com/watch?v=126-FcptKMQ 
+
 **v0.6.1 DLSS5 Footage** can be found here https://www.youtube.com/watch?v=qZXsNr7HmAo
 
 **v0.5.0 Gameplay footage** can be found here: https://www.youtube.com/watch?v=JlmTDW6wQms
@@ -67,6 +69,37 @@ are included with Melee Unlocked.
 | Controls: click a button on the controller to rebind it | Switch Pro controllers get their own layout |
 | ![Video settings](docs/screenshots/settings-video.png) | ![Game settings](docs/screenshots/settings-game.png) |
 | Video: one-click quality presets, DLSS and DLAA | Game: L-cancel helpers, PAL stock icons, frame delay |
+
+## Features
+
+- Unlocked frame rate (monitor rate, a fixed cap, or fully unlocked) with sub-frame animation
+- Slippi online against regular Slippi Dolphin players, using your Slippi Launcher login
+- GameCube adapter (WUP-028 with the WinUSB driver), keyboard fallback
+- DLSS / DLAA (NVIDIA Streamline), internal resolution up to 8x, SSAA, anisotropic filtering,
+  sharpening, borderless fullscreen, VSync
+- Direct3D 12 by default, with a Direct3D 11 renderer for machines where D3D12 will not start
+  (`--backend d3d11`, or Graphics backend in the PC settings panel; needs a restart, no DLSS)
+- "Low spec" switch in the PC settings panel: one control that puts internal resolution,
+  anti-aliasing, anisotropic filtering, visual effects, sub-frame animation and the frame cap at
+  their cheapest, for integrated graphics and older laptops. Turning it off restores exactly what
+  you had before. It reduces rendering cost only; the simulation runs at the same price either way.
+- Widescreen 16:9 (Slippi's own optional code, online safe)
+- Aspect ratio and window size pickers (`--aspect`, `--window`): Melee's native 73:60 by default,
+  4:3, 16:9, or stretched to fill the window with no black bars. Presentation only, so it cannot
+  desync and the two players in a match may each pick their own.
+- Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
+- PC settings overlay in the game window: F1, Start + D-pad Down + Z, or PC Settings from Melee's Options menu.
+  Customize offers six menu appearances (Clean side, Icon tiles, GD Melee, Radial, Wide tabs and
+  Simple), each with its own colour palettes, plus the previous compact menu on F11. Video, Audio,
+  Game, Controls, Overlays, Customize, and Gecko Codes have their own pages. See the
+  [full v0.7 feature list](docs/v0.7-feature-list.md).
+- Fountain of Dreams reflections are on by default. The Video page can turn on Lagless FoD;
+  changing this only affects the optional visual code, not match rules.
+- Cosmetic DAT/ZIP and Nucleus vault imports for costumes, stage visuals, and move level effects.
+  Stage files map to exact disc resources; non texture stage changes use vanilla online. Supplied
+  CSPs and screenshots appear as previews in Customize. See [docs/cosmetic-imports.md](docs/cosmetic-imports.md).
+- Looping H.264 CSS and SSS backgrounds with target learning and vanilla fallback.
+- Optional launcher with self-update
 
 ## Install
 
@@ -146,38 +179,6 @@ I will not handicap myself and there's no reason anyone has to wait any longer f
 
 I am interested in collabing with other developers but so far have found no collective space for this type of dicussion; PC port dicussion is actively discouraged in the Melee decomp discord
 My vision for the project is keeping it open source so anyone can view the work and make it better. 
-
-## Features
-
-- Unlocked frame rate (monitor rate, a fixed cap, or fully unlocked) with sub-frame animation
-- Slippi online against regular Slippi Dolphin players, using your Slippi Launcher login
-- GameCube adapter (WUP-028 with the WinUSB driver), keyboard fallback
-- DLSS / DLAA (NVIDIA Streamline), internal resolution up to 8x, SSAA, anisotropic filtering,
-  sharpening, borderless fullscreen, VSync
-- Direct3D 12 by default, with a Direct3D 11 renderer for machines where D3D12 will not start
-  (`--backend d3d11`, or Graphics backend in the PC settings panel; needs a restart, no DLSS)
-- "Low spec" switch in the PC settings panel: one control that puts internal resolution,
-  anti-aliasing, anisotropic filtering, visual effects, sub-frame animation and the frame cap at
-  their cheapest, for integrated graphics and older laptops. Turning it off restores exactly what
-  you had before. It reduces rendering cost only; the simulation runs at the same price either way.
-- Widescreen 16:9 (Slippi's own optional code, online safe)
-- Aspect ratio and window size pickers (`--aspect`, `--window`): Melee's native 73:60 by default,
-  4:3, 16:9, or stretched to fill the window with no black bars. Presentation only, so it cannot
-  desync and the two players in a match may each pick their own.
-- Memory card saves as .gci files (Dolphin GCI-folder format, drop in your existing save)
-- PC settings overlay in the game window: F1, Start + D-pad Down + Z, or PC Settings from Melee's Options menu.
-  Customize offers six menu appearances (Clean side, Icon tiles, GD Melee, Radial, Wide tabs and
-  Simple), each with its own colour palettes, plus the previous compact menu on F11. Video, Audio,
-  Game, Controls, Overlays, Customize, and Gecko Codes have their own pages. See the
-  [full v0.7 feature list](docs/v0.7-feature-list.md).
-- Fountain of Dreams reflections are on by default. The Video page can turn on Lagless FoD;
-  changing this only affects the optional visual code, not match rules.
-- Cosmetic DAT/ZIP and Nucleus vault imports for costumes, stage visuals, and move level effects.
-  Stage files map to exact disc resources; non texture stage changes use vanilla online. Supplied
-  CSPs and screenshots appear as previews in Customize. See [docs/cosmetic-imports.md](docs/cosmetic-imports.md).
-- Looping H.264 CSS and SSS backgrounds with target learning and vanilla fallback.
-- Optional launcher with self-update
-- Lab view (F3): the match drawn in Slippi Lab's flat style, online safe (see below)
 
 ## Lab view
 
