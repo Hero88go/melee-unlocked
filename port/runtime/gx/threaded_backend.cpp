@@ -198,7 +198,7 @@ class ThreadedBackend final : public Backend {
         } else if (cap_period > 0 && now < next_present - render_budget) {
           // Start early enough to finish GPU submission before the presentation deadline.
           double wait = next_present - render_budget - now;
-          if (wait > 0.0005) std::this_thread::sleep_for(std::chrono::microseconds((long long)(std::min(wait - 0.0003, 0.001) * 1e6)));
+          if (wait > 0.0005 + host::sleep_slack()) std::this_thread::sleep_for(std::chrono::microseconds((long long)(std::min(wait - 0.0003, 0.001) * 1e6)));   // not on a system whose sleeps overshoot
           else std::this_thread::yield();
           continue;
         }
@@ -335,10 +335,21 @@ class ThreadedBackend final : public Backend {
   }
 
  public:
-  ThreadedBackend(RenderOptions options, bool visible) : options_(options) {
+  // Started through Steam (a non-Steam shortcut), its overlay is inside this process and draws into
+  // the picture. With exclusive fullscreen on top of that a report had the graphics driver hang until
+  // a restart, while the same PC was fine in Big Picture, which runs games borderless. Exclusive
+  // fullscreen is left for runs without the overlay.
+  static RenderOptions without_exclusive_under_overlay(RenderOptions options) {
+    if (options.fullscreen && options.exclusive_fullscreen && GetModuleHandleW(L"GameOverlayRenderer64.dll")) {
+      options.exclusive_fullscreen = false;
+      host::log("display: the Steam overlay is loaded; using borderless fullscreen instead of exclusive");
+    }
+    return options;
+  }
+  ThreadedBackend(RenderOptions requested, bool visible) : options_(without_exclusive_under_overlay(requested)) {
     std::promise<void> initialized;
     auto ready = initialized.get_future();
-    worker = std::thread([this, options, visible, init = std::move(initialized)]() mutable {
+    worker = std::thread([this, options = options_, visible, init = std::move(initialized)]() mutable {
       // Above normal so other programs cannot delay presentation; below the simulation thread
       // (main.cpp), which an unlocked renderer would otherwise starve.
       SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);

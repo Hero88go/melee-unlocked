@@ -470,8 +470,8 @@ void trace_enter(Context& c, uint32_t pc) {
       while (n < 47 && s[n] >= 0x20 && s[n] < 0x7F) ++n;
       if (n >= 3 && s[n] == 0) { text[0] = ' '; text[1] = '"'; std::memcpy(text + 2, s, n); text[n + 2] = '"'; text[n + 3] = 0; }
     }
-    host::log("[trace] frame %u %s(%08X) r3=%08X r4=%08X r5=%08X r6=%08X lr=%08X (from %s)%s", host::retrace_count(), host::symbol_name(pc), pc,
-              c.r[3], c.r[4], c.r[5], c.r[6], c.lr, host::symbol_name(c.lr), text);
+    host::log("[trace] frame %u %s(%08X) r3=%08X r4=%08X r5=%08X r6=%08X r2=%08X r13=%08X lr=%08X (from %s)%s", host::retrace_count(), host::symbol_name(pc), pc,
+              c.r[3], c.r[4], c.r[5], c.r[6], c.r[2], c.r[13], c.lr, host::symbol_name(c.lr), text);
     // A first argument that is text (a file name, a format string) is worth reading next to the call.
     if (const uint8_t* s = host::try_ptr(c.r[3], 64)) {
       size_t n = 0;

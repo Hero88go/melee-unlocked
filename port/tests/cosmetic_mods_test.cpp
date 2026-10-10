@@ -308,9 +308,12 @@ std::vector<uint8_t> skeleton_dat(uint32_t root_flags, float child_y, bool extra
 // The same three joints with a mesh on the root: one display object, one envelope polygon object,
 // one envelope that blends joint 1 and joint 2 with `weight` each. Joint 1 always has an inverse
 // bind matrix; joint 2 has one only when `bound`. The game asserts on a blended joint without one.
-std::vector<uint8_t> envelope_dat(bool bound, float weight = 0.5f) {
-  const std::string name = "PlyFox5K_Share_joint";
-  const uint32_t data = 0x138, dobj = 0xC0, pobj = 0xD0, list = 0xE8, descs = 0xF0, matrix = 0x108;
+// With `stage` the same tree is a stage's one model: a "map_head" root whose model list (0x34 bytes
+// an entry, the joint tree first) names it.
+std::vector<uint8_t> envelope_dat(bool bound, float weight = 0.5f, bool stage = false) {
+  const std::string name = stage ? "map_head" : "PlyFox5K_Share_joint";
+  const uint32_t head = 0x140, models = 0x160;
+  const uint32_t data = stage ? 0x1A0 : 0x138, dobj = 0xC0, pobj = 0xD0, list = 0xE8, descs = 0xF0, matrix = 0x108;
   std::vector<uint32_t> relocations;
   std::vector<uint8_t> out(0x20 + data, 0);
   auto point = [&](uint32_t slot, uint32_t to) { be32(out, (size_t)0x20 + slot, to); relocations.push_back(slot); };
@@ -324,11 +327,12 @@ std::vector<uint8_t> envelope_dat(bool bound, float weight = 0.5f) {
   point(descs + 8, 0x80); be32(out, 0x20 + descs + 12, bits);
   point(0x40 + 0x38, matrix);
   if (bound) point(0x80 + 0x38, matrix);
+  if (stage) { point(head + 8, models); be32(out, 0x20 + head + 0x0C, 1); point(models, 0); }
   const size_t table = out.size(), root = table + relocations.size() * 4;
   out.resize(root + 8 + name.size() + 1, 0);
   for (size_t i = 0; i < relocations.size(); ++i) be32(out, table + i * 4, relocations[i]);
   be32(out, 0, (uint32_t)out.size()); be32(out, 4, data); be32(out, 8, (uint32_t)relocations.size()); be32(out, 12, 1);
-  be32(out, root, 0); be32(out, root + 4, 0);
+  be32(out, root, stage ? head : 0); be32(out, root + 4, 0);
   std::memcpy(out.data() + root + 8, name.c_str(), name.size() + 1);
   return out;
 }
@@ -541,6 +545,14 @@ int main(int argc, char** argv) {
           "costume skeleton: a different joint count gives both counts");
     using host::cosmetics::costume_draw_safe;
     check(costume_draw_safe(envelope_dat(true), &why), "costume mesh: blended bones with bind matrices are drawn");
+    // A stage's models are drawn by the same code: the same defect in a stage file is refused too.
+    using host::cosmetics::stage_draw_safe;
+    check(stage_draw_safe(envelope_dat(true, 0.5f, true), &why), "stage mesh: blended bones with bind matrices are drawn");
+    check(!stage_draw_safe(envelope_dat(false, 0.5f, true), &why) && why.find("no bind matrix") != std::string::npos,
+          "stage mesh: a blended bone without a bind matrix is refused");
+    check(stage_draw_safe(envelope_dat(false, 1.0f, true), &why), "stage mesh: a whole-weight bone needs no bind matrix");
+    check(stage_draw_safe(envelope_dat(false), &why) && stage_draw_safe(std::vector<uint8_t>(64, 0xFF), &why),
+          "stage mesh: a file with no map_head, or a broken one, is another check's to refuse");
     check(!costume_draw_safe(envelope_dat(false), &why) &&
               why == "A mesh is skinned to bone 2, which has no bind matrix: the game would stop when it is drawn.",
           "costume mesh: a blended bone without a bind matrix refuses the costume and names the bone");

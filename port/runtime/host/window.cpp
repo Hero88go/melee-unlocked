@@ -11,6 +11,7 @@
 #include <mutex>
 #include <algorithm>
 #include <atomic>
+#include <thread>
 #include "host.h"
 #include "window.h"
 #include "input_bindings.h"
@@ -557,6 +558,7 @@ void raw_input(HRAWINPUT raw) {
 }
 }  // namespace
 
+static bool xinput_state(int idx, XINPUT_STATE* state);   // below, with the helper thread for empty slots
 namespace { CaptureDevice g_capture_want = CaptureDevice::None; int g_capture_want_index = 0; }
 void input_begin_capture(CaptureDevice want, int want_index) {
   g_capture_want = want; g_capture_want_index = want_index;
@@ -573,7 +575,7 @@ void input_begin_capture() {
   gcadapter_poll(gc);
   for (int idx = 0; idx < 4; ++idx) {
     XINPUT_STATE xs{};
-    g_capture_pad_baseline[idx] = (XInputGetState(idx, &xs) == ERROR_SUCCESS) ?
+    g_capture_pad_baseline[idx] = xinput_state(idx, &xs) ?
         xinput_binding_buttons(xs.Gamepad.wButtons, xs.Gamepad.bLeftTrigger,
                                xs.Gamepad.bRightTrigger, 140, 140) : 0;
     g_capture_gc_baseline[idx] = gc[idx];
@@ -621,7 +623,7 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
   for (int idx = 0; idx < 4; ++idx) {
     if (!wanted(CaptureDevice::XInputPad, idx)) continue;
     XINPUT_STATE xs{};
-    if (XInputGetState(idx, &xs) != ERROR_SUCCESS) continue;
+    if (!xinput_state(idx, &xs)) continue;
     const uint16_t buttons = xinput_binding_buttons(xs.Gamepad.wButtons, xs.Gamepad.bLeftTrigger,
                                                     xs.Gamepad.bRightTrigger, 140, 140);
     unsigned short newly = buttons & ~g_capture_pad_baseline[idx];
@@ -882,7 +884,57 @@ bool input_load_script(const char* path) {
   return !g_script.empty();
 }
 
+// XInputGetState for one slot, without asking Windows about an empty slot on the read: on some
+// systems that question takes milliseconds (it enumerates devices), and it used to be asked for
+// all four slots on every controller read.
+// The empty slots are asked about on a helper thread, never on the thread that runs the game: four
+// such questions on every controller read is 20 ms of each 16.7 ms frame on a system where one
+// takes 5 ms, and the game then runs in slow motion with crackling sound for a keyboard player.
+// MELEE_TEST_XINPUT_SLOW_MS=<n> (tests) makes every question about an empty slot take n ms;
+// MELEE_TEST_XINPUT_EVERY_READ=1 (tests) asks on the reading thread on every read, as before.
+static std::atomic<bool> g_xinput_present[4];
+static DWORD xinput_ask(int idx, XINPUT_STATE* state) {
+  static const int slow_ms = [] { const char* v = std::getenv("MELEE_TEST_XINPUT_SLOW_MS"); return v ? std::atoi(v) : 0; }();
+  const DWORD result = XInputGetState((DWORD)idx, state);
+  if (result != ERROR_SUCCESS && slow_ms > 0)
+    for (const double until = now_seconds() + slow_ms / 1000.0; now_seconds() < until;) YieldProcessor();
+  return result;
+}
+static void xinput_probe_start() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    std::thread([] {
+      bool reported = false;
+      for (;;) {
+        for (int idx = 0; idx < 4; ++idx) {
+          if (g_xinput_present[idx].load(std::memory_order_relaxed)) continue;
+          XINPUT_STATE state{};
+          const double before = now_seconds();
+          const bool present = xinput_ask(idx, &state) == ERROR_SUCCESS;
+          const double took = now_seconds() - before;
+          if (present) g_xinput_present[idx].store(true, std::memory_order_relaxed);
+          else if (took > 0.001 && !reported) {
+            reported = true;
+            log("input: Windows takes %.1f ms to answer for an empty controller slot on this system; the game thread does not ask", took * 1000.0);
+          }
+        }
+        Sleep(1000);
+      }
+    }).detach();
+  });
+}
+static bool xinput_state(int idx, XINPUT_STATE* state) {
+  static const bool every_read = [] { const char* v = std::getenv("MELEE_TEST_XINPUT_EVERY_READ"); return v && *v == '1'; }();
+  if (every_read) return xinput_ask(idx, state) == ERROR_SUCCESS;
+  xinput_probe_start();
+  if (!g_xinput_present[idx].load(std::memory_order_relaxed)) return false;
+  if (XInputGetState((DWORD)idx, state) == ERROR_SUCCESS) return true;
+  g_xinput_present[idx].store(false, std::memory_order_relaxed);   // unplugged: back to the helper thread
+  return false;
+}
+
 void input_poll(PadState out[4]) {
+  struct InputCost { double start = now_seconds(); ~InputCost() { sim_cost_add(SIM_INPUT, now_seconds() - start); } } input_cost;
   struct UiSnapshot {
     PadState* pads; bool gamecube = false;
     ~UiSnapshot() {
@@ -1027,7 +1079,7 @@ void input_poll(PadState out[4]) {
   for (int idx = 0; idx < 4; ++idx) {
     PadState& x = xin[idx]; x = {}; x.err = -1;
     XINPUT_STATE xs{};
-    if (XInputGetState(idx, &xs) != ERROR_SUCCESS) continue;
+    if (!xinput_state(idx, &xs)) continue;
     xin_connected[idx] = true;
     debug.xinput_connected[idx] = true;
     x.err = 0;
@@ -1255,7 +1307,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   for (int idx = 0; idx < 4; ++idx) {
     xin[idx] = {}; xin[idx].err = -1;
     XINPUT_STATE xs{};
-    if (XInputGetState(idx, &xs) != ERROR_SUCCESS) continue;
+    if (!xinput_state(idx, &xs)) continue;
     snapshot.xinput_connected[idx] = true;
     xin[idx].err = 0;
     auto& g = xs.Gamepad;
