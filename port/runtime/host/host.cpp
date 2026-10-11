@@ -1704,6 +1704,7 @@ static void clear_result_rows_without_file(ppc::Context& c) {
 // Hand, picked from a mod's debug menu, wins a match: GmRstMMh.dat). The game stops on the missing
 // file. In a mod session a results animation the disc does not have opens as Mario's instead.
 static void report_heap_stop_lines(uint32_t handle, uint32_t rounded, uint32_t caller);
+void report_object_memory();
 // The last files a mod disc's game asked for by name: the heap stop's report prints them, so it
 // names the fighters and the stage that were being loaded.
 static char g_recent_files[12][24];
@@ -1735,7 +1736,7 @@ void dvd_convert_path_checked(ppc::Context& c, uint8_t*) {
   // MELEE_TEST_HEAP_REPORT (tests only, hidden and headless runs): the heap stop's lines once, after
   // that many files, without the stop.
   if (static const char* test = options.no_gc_adapter ? std::getenv("MELEE_TEST_HEAP_REPORT") : nullptr; test && g_recent_file_count == (uint32_t)std::atoi(test))
-    report_heap_stop_lines(0x80431F28u, 0, 0);
+    { report_heap_stop_lines(0x80431F28u, 0, 0); report_object_memory(); }
   {
     // The results screen asks for its own file before any fighter's (see clear_result_rows_without_file).
     const char* slash0 = std::strrchr(path, '/');
@@ -1898,6 +1899,40 @@ void report_heap_panic(ppc::Context& c) {
       assert_frame > 0xFFFFFFE7u || !heap_trace_read32(assert_frame + 0x18u, rounded)) return;
   if (!heap_trace_read32(allocator + 60u, caller)) caller = 0;
   report_heap_stop_lines(c.r[24], rounded, caller);
+}
+// OSPanic at memory.c:52: the game's object memory (the heaps OSAlloc serves, rebuilt for each scene)
+// had no room. One line per live heap says how large it is, how much of it is free and the largest
+// free piece, so a report tells a heap that is simply full from one that is in pieces. The layout is
+// the SDK's: HeapArray (804D7360) points at NumHeaps (804D7364) entries of {size, free list, used
+// list}, and each cell of a list is {previous, next, size}. Anything unreadable prints nothing.
+void report_object_memory() {
+  static bool told = false;
+  if (told) return;
+  told = true;
+  uint32_t heaps = 0, count = 0, current = 0;
+  if (!heap_trace_read32(0x804D7360u, heaps) || !heap_trace_read32(0x804D7364u, count) || !heap_trace_read32(0x804D5C08u, current)) return;
+  if (heaps < 0x80003000u || heaps >= 0x81800000u || !count || count > 64u) return;
+  const auto walk = [](uint32_t cell, uint32_t& total, uint32_t& largest, uint32_t& cells) {
+    for (uint32_t guard = 0; cell && guard < 100000u; ++guard) {
+      uint32_t next = 0, size = 0;
+      if (cell < 0x80003000u || cell >= 0x81800000u || !heap_trace_read32(cell + 4u, next) || !heap_trace_read32(cell + 8u, size)) return false;
+      total += size; largest = std::max(largest, size); ++cells;
+      cell = next;
+    }
+    return cell == 0;
+  };
+  for (uint32_t i = 0; i < count; ++i) {
+    uint32_t size = 0, free_list = 0, used_list = 0;
+    if (!heap_trace_read32(heaps + i * 12u, size) || !heap_trace_read32(heaps + i * 12u + 4u, free_list) ||
+        !heap_trace_read32(heaps + i * 12u + 8u, used_list)) return;
+    if ((int32_t)size <= 0) continue;   // a slot no heap uses
+    uint32_t free_bytes = 0, largest = 0, free_cells = 0, used_bytes = 0, largest_used = 0, used_cells = 0;
+    const bool whole = walk(free_list, free_bytes, largest, free_cells) & walk(used_list, used_bytes, largest_used, used_cells);
+    log("heap: object memory %u%s: %u bytes, free %u in %u pieces (largest %u), used %u in %u blocks%s", i,
+        i == current ? " (current)" : "", size, free_bytes, free_cells, largest, used_bytes, used_cells,
+        whole ? "" : " (lists not read to their end)");
+  }
+  log_flush();
 }
 void install_mod_disc_guards() {
   if (!mod_disc_active()) return;
