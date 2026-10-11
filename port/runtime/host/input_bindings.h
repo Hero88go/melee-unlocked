@@ -254,8 +254,13 @@ inline HidBindings vjoy_b0xx_bindings() {
 // (Melee shields lightly from 43, hardest at 140; only the click gives a full shield).
 enum class PadFamily : uint8_t { GameCube, Xbox, PlayStation, Switch, Box, Count };
 inline constexpr int kDefaultTriggerClick = 200;
+//
+// Stick radius per family, in percent: 100, the default, leaves the stick exactly as it is. Below
+// 100 the whole stick is scaled down, the way Dolphin's Radius works, so a stick that reaches the
+// edge early (most non-GameCube sticks do) needs its full travel to reach the game's full push.
 struct Deadzone {
   int main = 0, c = 0, trig_l = 255, trig_r = 255;
+  int radius_main = 100, radius_c = 100;
   int click_l = kDefaultTriggerClick, click_r = kDefaultTriggerClick;
 };
 inline void apply_trigger_click(int threshold, uint8_t value, uint16_t& button, uint16_t click) {
@@ -441,6 +446,13 @@ extern std::array<Deadzone, (size_t)PadFamily::Count> g_deadzones;
 inline void apply_deadzone(const Deadzone& dz, int8_t& x, int8_t& y, bool c) {
   const int r = c ? dz.c : dz.main;
   if (r > 0 && (int)x * x + (int)y * y < r * r) { x = 0; y = 0; }
+}
+// Rounds to nearest, away from zero on a tie, so both directions of an axis scale alike.
+inline void apply_stick_radius(const Deadzone& dz, int8_t& x, int8_t& y, bool c) {
+  const int r = c ? dz.radius_c : dz.radius_main;
+  if (r >= 100 || r <= 0) return;
+  auto scale = [r](int8_t v) { const int n = (int)v * r; return (int8_t)((n + (n >= 0 ? 50 : -50)) / 100); };
+  x = scale(x); y = scale(y);
 }
 
 extern KeyBindings g_key_bindings;

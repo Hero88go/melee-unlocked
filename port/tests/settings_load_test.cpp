@@ -465,6 +465,40 @@ int main() {
     std::error_code ec;
     fs::remove(trig_path, ec);
   }
+  // Stick radius per family: saved only when below 100, read back, clamped to 50..100, and applied
+  // as a plain scale that leaves a stick at 100 untouched.
+  {
+    const fs::path radius_path = fs::temp_directory_path() / "melee_unlocked_settings_radius_test.ini";
+    { std::ofstream f(radius_path); f << "radius_xbox_main 80\nradius_switch_c 10\n"; }
+    gx::RenderOptions o;
+    o.settings_path = radius_path.string();
+    int vol = 0;
+    gx::load_pc_settings(o, vol);
+    host::Deadzone& xbox = host::g_deadzones[(size_t)host::PadFamily::Xbox];
+    host::Deadzone& sw = host::g_deadzones[(size_t)host::PadFamily::Switch];
+    CHECK(xbox.radius_main == 80);
+    CHECK(xbox.radius_c == 100);
+    CHECK(sw.radius_c == 50);   // clamped
+    int8_t x = 127, y = -127;
+    host::apply_stick_radius(xbox, x, y, false);
+    CHECK(x == 102 && y == -102);
+    x = 127; y = -64;
+    host::apply_stick_radius(xbox, x, y, true);   // the C-stick is at 100: untouched
+    CHECK(x == 127 && y == -64);
+    CHECK(gx::save_pc_settings(o, vol));
+    xbox.radius_main = 100; sw.radius_c = 100;
+    gx::RenderOptions again;
+    again.settings_path = radius_path.string();
+    gx::load_pc_settings(again, vol);
+    CHECK(xbox.radius_main == 80 && sw.radius_c == 50);
+    xbox.radius_main = 100; sw.radius_c = 100;
+    CHECK(gx::save_pc_settings(again, vol));
+    std::string text;
+    { std::ifstream f(radius_path); text.assign(std::istreambuf_iterator<char>(f), {}); }
+    CHECK(text.find("radius_") == std::string::npos);
+    std::error_code ec;
+    fs::remove(radius_path, ec);
+  }
   // Per-binding levels: read beside their bindings, clamped, saved only when set; a file without
   // them leaves every binding at its default and saving writes no level line.
   {

@@ -792,6 +792,8 @@ void apply_family_options(PadFamily family, PadState& pad) {
   const Deadzone& dz = g_deadzones[(size_t)family];
   apply_deadzone(dz, pad.stick_x, pad.stick_y, false);
   apply_deadzone(dz, pad.sub_x, pad.sub_y, true);
+  apply_stick_radius(dz, pad.stick_x, pad.stick_y, false);
+  apply_stick_radius(dz, pad.sub_x, pad.sub_y, true);
   // Native physical click switches retain their defaults. A configured threshold
   // overrides that click; XInput's default is synthesized while reading its axes.
   if (family != PadFamily::Xbox && dz.click_l != kDefaultTriggerClick) {
