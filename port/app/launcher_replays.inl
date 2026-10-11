@@ -431,6 +431,8 @@ ReplayStart replay_start(const std::filesystem::path& file,int place=0,int count
     if(g_active_version.empty()&&!root.empty()) for(auto dir:{"build-sourceport-slippi","build-sourceport","build-playback"}) candidates.push_back(root+"\\"+dir+"\\port\\Release\\melee_port_playback.exe");
 #endif
     for(const auto& path:candidates) if(file_exists(path)) { exe=path; break; }
+    // A release has no separate playback program: the Source Port plays replays itself.
+    if(exe.empty()&&!source_exe_dir().empty()) exe=source_exe_dir()+"\\melee_source.exe";
   }
   if(exe.empty()||!file_exists(exe)) { replay_status("Replay playback is not installed for this build."); return ReplayStart::Failed; }
   auto sys=active_dir()+"\\SysPlayback";
