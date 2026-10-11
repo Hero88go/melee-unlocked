@@ -112,7 +112,31 @@ struct Stopwatch {
   double t = now(); double lap() { double n = now(), d = n - t; t = n; return d; }
 };
 
-void check(HRESULT hr, const char* what) { if (FAILED(hr)) host::die("D3D12: %s failed (%08X)", what, (unsigned)hr); }
+// The device every check() below belongs to, so a lost device can say why it was lost.
+ID3D12Device* g_check_device = nullptr;
+// When Windows or the driver takes the device away, every later call fails with the same
+// "device removed" code, which names neither the cause nor the call that broke it. The device
+// keeps the real reason: hung (the GPU stopped answering), reset (another program or a driver
+// restart), driver error, or removed (driver update, GPU unplugged or switched).
+const char* device_lost_reason(HRESULT reason) {
+  switch ((unsigned)reason) {
+    case 0x887A0006u: return "the GPU stopped answering";
+    case 0x887A0007u: return "the graphics driver was reset";
+    case 0x887A0020u: return "the graphics driver reported an internal error";
+    case 0x887A0005u: return "the GPU or its driver was removed or updated";
+    case 0x887A0001u: return "the driver rejected a call the game made";
+    default: return "no reason given";
+  }
+}
+void check(HRESULT hr, const char* what) {
+  if (!FAILED(hr)) return;
+  const unsigned code = (unsigned)hr;
+  if ((code == 0x887A0005u || code == 0x887A0006u || code == 0x887A0007u || code == 0x887A0020u) && g_check_device) {
+    const HRESULT reason = g_check_device->GetDeviceRemovedReason();
+    host::die("D3D12: %s failed (%08X): the graphics device was lost, %s (%08X)", what, code, device_lost_reason(reason), (unsigned)reason);
+  }
+  host::die("D3D12: %s failed (%08X)", what, code);
+}
 template <class T> const IID& IID_PPV_ARGS_Helper_IID() { return __uuidof(T); }
 
 // DXGI's own factory creation faulted at startup on one system (a 0.8.84 report, dxgi.dll+0x2EB9F)
@@ -700,6 +724,12 @@ void D3D12Backend::init() {
   }
   }
   if (!device_) host::die("D3D12: no adapter");
+  g_check_device = device_.Get();
+  // MELEE_TEST_DEVICE_LOST=1 (tests only, hidden and headless runs) takes the device away at once.
+  if (std::getenv("MELEE_NO_GC_ADAPTER") && std::getenv("MELEE_TEST_DEVICE_LOST")) {
+    ComPtr<ID3D12Device5> removable;
+    if (SUCCEEDED(device_.As(&removable))) removable->RemoveDevice();
+  }
   D3D12_FEATURE_DATA_D3D12_OPTIONS5 dxr_options{};
   if (SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5,
                                              &dxr_options, sizeof(dxr_options))) &&
