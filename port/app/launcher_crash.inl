@@ -11,8 +11,8 @@
 
 namespace crash_report {
 
-// The relay (tools/crash_relay, deployed 2026-09-30): zip only, 8 MB, one report per IP per 10 minutes,
-// 50 a day. Empty = GitHub fallback only.
+// The relay (tools/crash_relay, deployed 2026-09-30): zip only, 8 MB, one report per IP per 2 minutes,
+// a fixed number a day from everyone together. Empty = GitHub fallback only.
 constexpr const wchar_t* kCrashRelayUrl = L"https://melee-crash-relay.firescribe-share-worker.workers.dev/report";
 
 FILETIME g_launch_time{};
@@ -40,8 +40,23 @@ std::string first_line(const std::vector<uint8_t>& text) {
 
 std::string url_encode(const std::string& s);
 
+// Why a report did not go out, for the message the player reads. The relay answers 429 with
+// "slow down" (this PC sent one in the last two minutes) or "daily limit" (it takes a fixed number
+// of reports a day from everyone together), and 413 for a report that is too large.
+enum class PostFail { None, Offline, TooSoon, DailyLimit, TooLarge, Refused };
+inline PostFail post_failure(unsigned status, const std::string& body) {
+  if (status == 200) return PostFail::None;
+  if (status == 0) return PostFail::Offline;
+  if (status == 429) return body.find("daily") != std::string::npos ? PostFail::DailyLimit : PostFail::TooSoon;
+  if (status == 413) return PostFail::TooLarge;
+  return PostFail::Refused;
+}
+
 bool post(const std::vector<uint8_t>& zip, const std::string& engine, const std::string& where,
-          const char* kind = "crash", const std::string& note = std::string()) {
+          const char* kind = "crash", const std::string& note = std::string(), PostFail* fail = nullptr,
+          unsigned* http_status = nullptr) {
+  if (fail) *fail = PostFail::Offline;
+  if (http_status) *http_status = 0;
   if (!*kCrashRelayUrl) return false;
   URL_COMPONENTS parts{}; parts.dwStructSize = sizeof parts;
   wchar_t host[256]{}, path[512]{};
@@ -60,6 +75,11 @@ bool post(const std::vector<uint8_t>& zip, const std::string& engine, const std:
         DWORD status = 0, len = sizeof status;
         WinHttpQueryHeaders(req, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, nullptr, &status, &len, nullptr);
         ok = status == 200;
+        // The relay's answer is one short line; it says which limit refused the report.
+        char answer[128]{}; DWORD got = 0;
+        if (!ok) WinHttpReadData(req, answer, sizeof answer - 1, &got);
+        if (fail) *fail = post_failure(status, std::string(answer, got));
+        if (http_status) *http_status = status;
       }
       WinHttpCloseHandle(req);
     }
@@ -213,10 +233,30 @@ void send_logs(HWND owner, const std::string& dir, const std::string& engine, co
   }
   const auto zip = launcher::crash::capped_zip(files);
   const std::string where = files[0].first == "melee_port_crash.txt" ? first_line(files[0].second) : std::string();
-  const bool sent = post(zip, engine, where, "logs", narrow(state.note));
+  PostFail fail = PostFail::None; unsigned http_status = 0;
+  const bool sent = post(zip, engine, where, "logs", narrow(state.note), &fail, &http_status);
   if (!sent) {
-    MessageBoxW(owner, L"The logs could not be sent (no connection, or sent too recently: wait two minutes and try again).",
-                L"Send logs", MB_OK | MB_ICONWARNING);
+    if (fail == PostFail::TooSoon) {
+      MessageBoxW(owner, L"Logs were sent from this PC less than two minutes ago. Wait two minutes and send again.",
+                  L"Send logs", MB_OK | MB_ICONWARNING);
+      return;
+    }
+    // Any other refusal will not pass on a second try, so the report is saved for the player to
+    // hand over themselves instead of being lost.
+    const std::string zip_path = dir + "\\melee_logs_report.zip";
+    const bool saved = launcher::crash::save_report(zip_path, (const char*)zip.data(), zip.size());
+    if (saved) {
+      const std::wstring select = L"/select,\"" + widen(zip_path) + L"\"";
+      ShellExecuteW(nullptr, L"open", L"explorer.exe", select.c_str(), nullptr, SW_SHOWNORMAL);
+    }
+    std::wstring why =
+        fail == PostFail::DailyLimit ? L"The report inbox has taken all the reports it accepts today." :
+        fail == PostFail::TooLarge ? L"The report was too large for the report inbox." :
+        fail == PostFail::Offline ? L"The report inbox could not be reached (no connection)." :
+        L"The report inbox refused the report (answer " + std::to_wstring(http_status) + L").";
+    why += saved ? L"\n\nYour logs are saved as melee_logs_report.zip and the folder is open: attach that file where you report bugs."
+                 : L"\n\nThe logs could not be saved in the game folder either.";
+    MessageBoxW(owner, why.c_str(), L"Send logs", MB_OK | MB_ICONWARNING);
     return;
   }
   // What went out, so the player knows it worked and what the report holds (`files` is exactly what

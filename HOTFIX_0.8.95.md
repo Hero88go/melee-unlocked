@@ -11,3 +11,4 @@ Download `MeleeUnlocked-0.8.95-win64.zip` from this release. Close the game and 
 - Lobby: two players who each send the other a friend request are now friends at once. Before, each had to find and accept the other's request.
 - Controllers: new Control stick radius and C-stick radius settings per controller type (PC settings, Controls, Sticks), like Dolphin's Radius. Lower it if the stick reaches full speed before a full push.
 - Controllers: the Switch 2 Pro Controller is read over USB the same way as the Switch Online GameCube controller (WinUSB on its Interface 1, set with Zadig). Not yet tried on a real controller.
+- Launcher: when Send recent game logs cannot send, it now says why and saves the logs as melee_logs_report.zip so you can attach the file yourself.
