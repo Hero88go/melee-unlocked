@@ -1894,6 +1894,30 @@ void log(const char* fmt, ...) { char buf[2048]; va_list ap; va_start(ap, fmt); 
 void request_exit(int) { PostMessageW(g_main, WM_CLOSE, 0, 0); }
 }  // namespace host
 
+// The last update's log (update.log, written by the install script) goes into lobby.log once, so a
+// report of an update that did not take shows what the script did. Folder names are cut from its
+// lines: the copy tools print full paths.
+static void note_last_update() {
+  std::ifstream in(std::filesystem::u8path(g_dir + "\\update.log"), std::ios::binary);
+  if (!in) return;
+  std::vector<std::string> lines;
+  for (std::string line; lines.size() < 40 && std::getline(in, line);) {
+    while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+    if (line.empty()) continue;
+    for (size_t at = 0; at + 2 < line.size(); ++at)
+      if (std::isalpha((unsigned char)line[at]) && line[at + 1] == ':' && line[at + 2] == '\\') {
+        line.replace(at, line.rfind('\\') - at + 1, "<folder>\\");
+        break;
+      }
+    lines.push_back(line.substr(0, 200));
+  }
+  if (lines.empty()) return;
+  std::ifstream seen(std::filesystem::u8path(g_dir + "\\lobby.log"), std::ios::binary);
+  const std::string old((std::istreambuf_iterator<char>(seen)), std::istreambuf_iterator<char>());
+  if (old.find("update: " + lines[0]) != std::string::npos) return;
+  for (const auto& line : lines) launcher::lobby::log("update: " + line);
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   INITCOMMONCONTROLSEX icc{sizeof icc, ICC_STANDARD_CLASSES}; InitCommonControlsEx(&icc);
@@ -1925,6 +1949,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int show) {
   std::wstring title = widen(std::string("Melee Unlocked Launcher ") + MELEE_PORT_VERSION);
   HWND hwnd = CreateWindowExW(0, wc.lpszClassName, title.c_str(), WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN, CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, inst, nullptr);
   launcher::lobby::init(hwnd, g_dir);
+  note_last_update();
   launcher::lobby::set_prefs(g_lobby_prefs);
   launcher::lobby::on_prefs_changed([] { g_lobby_prefs = launcher::lobby::prefs(); save_ini(); });
   if (g_launcher_test) SetWindowPos(hwnd, nullptr, -10000, -10000, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOZORDER);

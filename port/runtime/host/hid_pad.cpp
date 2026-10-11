@@ -84,7 +84,7 @@ std::string device_path(HANDLE device) {
 bool claimed_elsewhere(const RID_DEVICE_INFO_HID& hid, const std::string& path) {
   if (playstation_pad(hid.dwVendorId, hid.dwProductId)) return true;                                      // DS4, DualSense
   if (hid.dwVendorId == 0x057E) return true;                                                              // Switch Pro family
-  if (hid.dwVendorId == 0x057E || hid.dwVendorId == 0x0079) {}
+
   // An XInput device appears as HID as well, and its interface path carries "IG_". XInput already
   // reads those, so taking them here would double up every Xbox pad.
   if (path.find("IG_") != std::string::npos) return true;

@@ -15,6 +15,7 @@
 #include <fstream>
 #include <filesystem>
 #include <mutex>
+#include <sstream>
 #include <thread>
 #include <vector>
 
@@ -379,6 +380,77 @@ bool install_release(const std::string& version, bool experimental, const std::s
   return true;
 }
 
+// The script an update hands over to. It waits for this process and the installation's games to
+// exit, unpacks the zip (Windows 10+ ships tar for zips), copies the release folder over this one
+// (keeping User\, settings, saves, replays) and starts the game again. It is written in binary: text
+// mode would turn every \r\n into \r\r\n, and the stray carriage return becomes part of the last
+// argument on each line, which is what stopped the relaunch from working. `batch_dir` and `relaunch`
+// come with their percent signs doubled.
+std::string install_script(const std::string& batch_dir, unsigned long self, const std::vector<unsigned long>& others,
+                           const std::string& relaunch, bool show_failure) {
+  // The script runs without a window, so a failure opens one of its own to say so: a `pause` here
+  // waited for a key nobody could press, and the player saw an update that never finished.
+  const auto failed = [show_failure](const char* what) {
+    if (!show_failure) return std::string("exit /b 1\r\n");   // the unit test: never a window
+    return std::string("start \"Melee Unlocked update\" cmd /k \"echo ") + what +
+           " & echo Close the game and any open Explorer window on this folder, then update again."
+           " & echo Details: update.log in the game folder.\"\r\nexit /b 1\r\n";
+  };
+  std::ostringstream b;
+  b << "@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\ncd /d \"" << batch_dir << "\" || exit /b 1\r\n"
+    << "set LOG=\"" << batch_dir << "\\update.log\"\r\n"
+    << "echo update started %DATE% %TIME%> %LOG%\r\n"
+    << ":wait\r\ntasklist /FI \"PID eq " << self << "\" 2>nul | find \"" << self << "\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n"
+    << ":waitgame\r\n";
+  // Source also holds the DLL open. Wait for both engines and other launchers
+  // from this folder, without blocking on games in unrelated installations.
+  for (const auto pid : others)
+    if (pid != self)
+      b << "tasklist /FI \"PID eq " << pid << "\" 2>nul | find \"" << pid
+        << "\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n";
+  b << "rmdir /s /q update_tmp 2>nul\r\nmkdir update_tmp\r\n"
+    // Windows bsdtar reports "Cannot restore time" and other benign warnings with exit code 1
+    // even when every entry was extracted. Treat the presence of a release folder as the real
+    // success signal: SRC detection below catches genuine extraction failures.
+    // Windows' own tar by its full path: another tar earlier on the PATH (GNU tar from a Unix tool
+    // set) does not read zips.
+    << "set TAR=tar\r\n"
+    << "if exist \"%SystemRoot%\\System32\\tar.exe\" set TAR=\"%SystemRoot%\\System32\\tar.exe\"\r\n"
+    << "%TAR% -xf update.zip -C update_tmp 2>> %LOG%\r\n"
+    << "set SRC=\r\n"
+    << "for /d %%d in (update_tmp\\MeleeUnlocked-* update_tmp\\MeleePort-*) do set SRC=%%d\r\n"
+    << "if defined SRC goto unpacked\r\n"
+    << "echo could not unpack update.zip>> %LOG%\r\n"
+    << failed("Could not unpack the update.")
+    << ":unpacked\r\n"
+    << "echo copying from %SRC%>> %LOG%\r\n"
+    // /r overwrites read-only files: Windows marks files unpacked from a downloaded zip read-only
+    // often enough that the copy failed outright with "Could not copy the update into place".
+    // A file can also still be held for a moment by the process that just exited, so retry.
+    << "set TRIES=0\r\n"
+    << ":copy\r\n"
+    << "set /a TRIES+=1\r\n"
+    << "attrib -r \"*.*\" /s >nul 2>&1\r\n"
+    << "xcopy /e /y /q /r \"%SRC%\\*\" \".\\\" >> %LOG% 2>&1\r\n"
+    << "if not errorlevel 1 goto copied\r\n"
+    << "if %TRIES% lss 5 (echo copy attempt %TRIES% failed, retrying>> %LOG% & timeout /t 2 /nobreak >nul & goto copy)\r\n"
+    // xcopy stops at the first path of 255 characters or more (a deep game folder and a long file
+    // name inside the release), leaving the folder half updated. robocopy copies those too; its exit
+    // codes below 8 mean every file is in place.
+    << "echo copy failed after %TRIES% attempts, trying robocopy>> %LOG%\r\n"
+    << "robocopy \"%SRC%\" \".\" /E /IS /IT /R:3 /W:2 /NFL /NDL /NJH /NJS /NP >> %LOG% 2>&1\r\n"
+    << "if not errorlevel 8 goto copied\r\n"
+    << "echo robocopy failed too>> %LOG%\r\n"
+    << failed("Could not copy the update into place.")
+    << ":copied\r\n"
+    << "rmdir /s /q update_tmp\r\ndel update.zip\r\n"
+    << "echo restarting application>> %LOG%\r\n"
+    << "start \"\" " << relaunch << "\r\n"
+    << "echo done>> %LOG%\r\n"
+    << "del \"%~f0\"\r\n";
+  return b.str();
+}
+
 void download_and_install() {
   if (g_state != State::UpdateAvailable) return;
   join();
@@ -414,54 +486,8 @@ void download_and_install() {
     std::string batch_dir = dir;
     for (size_t i = batch_dir.find('%'); i != std::string::npos; i = batch_dir.find('%', i + 2)) batch_dir.insert(i, 1, '%');
 
-    // The script waits for this process to exit, unpacks the zip (Windows 10+ ships tar for zips),
-    // copies the release folder over this one (keeping User\, settings, saves, replays) and starts
-    // the game again. Written in binary: text mode would turn every \r\n into \r\r\n, and the
-    // stray carriage return becomes part of the last argument on each line, which is what stopped
-    // the relaunch from working.
     std::ofstream b(bat, std::ios::binary);
-    b << "@echo off\r\nsetlocal DisableDelayedExpansion\r\nchcp 65001 >nul\r\ncd /d \"" << batch_dir << "\" || exit /b 1\r\n"
-      << "set LOG=\"" << batch_dir << "\\update.log\"\r\n"
-      << "echo update started %DATE% %TIME%> %LOG%\r\n"
-      << ":wait\r\ntasklist /FI \"PID eq " << GetCurrentProcessId() << "\" 2>nul | find \"" << GetCurrentProcessId() << "\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n"
-      << ":waitgame\r\n";
-    // Source also holds the DLL open. Wait for both engines and other launchers
-    // from this folder, without blocking on games in unrelated installations.
-    for (const auto pid : install_processes(dir))
-      if (pid != GetCurrentProcessId())
-        b << "tasklist /FI \"PID eq " << pid << "\" 2>nul | find \"" << pid
-          << "\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n";
-    b
-      << "rmdir /s /q update_tmp 2>nul\r\nmkdir update_tmp\r\n"
-      // Windows bsdtar reports "Cannot restore time" and other benign warnings with exit code 1
-      // even when every entry was extracted. Treat the presence of a release folder as the real
-      // success signal: SRC detection below catches genuine extraction failures.
-      << "tar -xf update.zip -C update_tmp 2>> %LOG%\r\n"
-      << "set SRC=\r\n"
-      << "for /d %%d in (update_tmp\\MeleeUnlocked-* update_tmp\\MeleePort-*) do set SRC=%%d\r\n"
-      << "if not defined SRC (echo could not unpack update.zip>> %LOG% & echo Could not unpack the update. & pause & exit /b 1)\r\n"
-      << "echo copying from %SRC%>> %LOG%\r\n"
-      // /r overwrites read-only files: Windows marks files unpacked from a downloaded zip read-only
-      // often enough that the copy failed outright with "Could not copy the update into place".
-      // A file can also still be held for a moment by the process that just exited, so retry.
-      << "set TRIES=0\r\n"
-      << ":copy\r\n"
-      << "set /a TRIES+=1\r\n"
-      << "attrib -r \"*.*\" /s >nul 2>&1\r\n"
-      << "xcopy /e /y /q /r \"%SRC%\\*\" \".\\\" >> %LOG% 2>&1\r\n"
-      << "if not errorlevel 1 goto copied\r\n"
-      << "if %TRIES% lss 5 (echo copy attempt %TRIES% failed, retrying>> %LOG% & timeout /t 2 /nobreak >nul & goto copy)\r\n"
-      << "echo copy failed after %TRIES% attempts>> %LOG%\r\n"
-      << "echo Could not copy the update into place.\r\n"
-      << "echo Close the game and any open Explorer window on this folder, then try again.\r\n"
-      << "echo Details: %LOG%\r\n"
-      << "pause & exit /b 1\r\n"
-      << ":copied\r\n"
-      << "rmdir /s /q update_tmp\r\ndel update.zip\r\n"
-      << "echo restarting application>> %LOG%\r\n"
-      << "start \"\" " << relaunch << "\r\n"
-      << "echo done>> %LOG%\r\n"
-      << "del \"%~f0\"\r\n";
+    b << install_script(batch_dir, GetCurrentProcessId(), install_processes(dir), relaunch, true);
     b.close();
     if (!b) { set_message("Cannot write update installer"); g_state = State::Failed; return; }
     set_message("Update downloaded; restarting to install");

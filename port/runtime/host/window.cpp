@@ -743,8 +743,10 @@ uint32_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad) {
 }
 
 uint32_t swpro_apply_bindings(int idx, uint16_t buttons, PadState& pad) {
+  // A Pro Controller has no analog triggers and arrives with both at 0; the Switch Online GameCube
+  // controller's are already in trig_l/trig_r and pass through.
   const PadBindings& bind = g_swpro_bindings[idx];
-  const uint32_t actions = button_apply_bindings(pad, 0, 0,
+  const uint32_t actions = button_apply_bindings(pad, pad.trig_l, pad.trig_r,
       [&](int i) { return (bind.mask[i] & buttons) != 0; }, [&](int i) { return (int)bind.level[i]; });
   if (pad.button & kActionPadBit[(size_t)BindAction::L]) pad.trig_l = 255;
   if (pad.button & kActionPadBit[(size_t)BindAction::R]) pad.trig_r = 255;

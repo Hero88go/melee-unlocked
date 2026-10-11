@@ -25,6 +25,11 @@ void shutdown();                                  // joins the background thread
 // release lists ("" = none listed, size check only), and every archive entry inside `root`.
 bool download_matches(const std::string& body, const std::string& sha256_hex);
 bool archive_inside(const std::string& zip_path_utf8, const std::string& root);
+// The batch script an update hands over to (exposed for the unit test): `self` and `others` are
+// the processes it waits for, `relaunch` the command line it starts when the files are in place.
+// `show_failure` opens a console window with the reason when the update cannot be put in place.
+std::string install_script(const std::string& batch_dir, unsigned long self, const std::vector<unsigned long>& others,
+                           const std::string& relaunch, bool show_failure);
 // Game processes from this installation that must close before replacement.
 std::vector<unsigned long> install_processes(const std::string& install_root_utf8);
 }  // namespace host::updater
