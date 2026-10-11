@@ -1934,6 +1934,23 @@ void report_object_memory() {
   }
   log_flush();
 }
+// A mod disc's log gets one line per scene with the size of the game's current object heap and what
+// was in use when the scene changed. A long session that ends in the stop above then shows whether
+// the heap shrank from game to game or one scene simply asked for more than there is.
+void note_scene_memory() {
+  if (!mod_disc_active()) return;
+  uint32_t heaps = 0, count = 0, current = 0, size = 0, cell = 0, used = 0, blocks = 0;
+  if (!heap_trace_read32(0x804D7360u, heaps) || !heap_trace_read32(0x804D7364u, count) || !heap_trace_read32(0x804D5C08u, current)) return;
+  if (heaps < 0x80003000u || heaps >= 0x81800000u || current >= count || count > 64u) return;
+  if (!heap_trace_read32(heaps + current * 12u, size) || !heap_trace_read32(heaps + current * 12u + 8u, cell) || (int32_t)size <= 0) return;
+  for (uint32_t guard = 0; cell && guard < 100000u; ++guard) {
+    uint32_t next = 0, bytes = 0;
+    if (cell < 0x80003000u || cell >= 0x81800000u || !heap_trace_read32(cell + 4u, next) || !heap_trace_read32(cell + 8u, bytes)) return;
+    used += bytes; ++blocks;
+    cell = next;
+  }
+  log("heap: object memory %u is %u bytes, %u in use in %u blocks", current, size, used, blocks);
+}
 void install_mod_disc_guards() {
   if (!mod_disc_active()) return;
   if (!ppc::redirect_to_host(0x80337C60u, dvd_fast_open_checked)) log("mods: DVDFastOpen keeps the game's own code");

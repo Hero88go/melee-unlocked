@@ -261,13 +261,15 @@ def main():
         if playback_version != args.version:
             raise SystemExit(f"the playback build reports {playback_version!r}, not {args.version!r}")
         shutil.copy2(args.playback_exe, folder / "melee_port_playback.exe")
-        # It reads the playback code set, not the online one, so both ship.
+        print(f"playback build: {args.playback_exe}")
+    if args.playback_exe or args.source_exe:
+        # Replays read the playback code set, not the online one, so both ship. The launcher's
+        # Replays page needs this folder for the Source Port too, which plays replays itself.
         playback_sys = ROOT / "port/slippi_sys_playback"
         if not (playback_sys / "codehandler.bin").is_file():
             raise SystemExit(f"missing playback Sys folder: {playback_sys}")
         shutil.copytree(playback_sys, folder / "SysPlayback",
                         ignore=shutil.ignore_patterns("README.md", ".git*"))
-        print(f"playback build: {args.playback_exe}")
     if args.source_exe:
         source_version = subprocess.run([str(args.source_exe), "--version"], capture_output=True,
                                         text=True, timeout=60).stdout.strip()
@@ -335,7 +337,7 @@ def main():
     (sys_dst / "GC").mkdir(exist_ok=True)
     shutil.copy2(coef, sys_dst / "GC/dsp_coef.bin")
     # Playback normally finds Sys too, but keep its standalone Sys tree complete.
-    if args.playback_exe:
+    if (folder / "SysPlayback").is_dir():
         (folder / "SysPlayback/GC").mkdir(exist_ok=True)
         shutil.copy2(coef, folder / "SysPlayback/GC/dsp_coef.bin")
     # Warmed pipeline recipes: the newest cache namespace that has them (the exe's shader sources
