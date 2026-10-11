@@ -350,7 +350,7 @@ class D3D11Backend : public Backend {
   void present_efb(const EfbCopy& copy);
   void clear_efb(const EfbCopy& copy);
   // crt: eight more constants for the CRT display model (crt_shader.h); null draws the plain picture.
-  void blit(ID3D11ShaderResourceView* src, const float rect[16], ID3D11ShaderResourceView* depth = nullptr, const float* crt = nullptr);
+  void blit(ID3D11ShaderResourceView* src, const float rect[16], ID3D11ShaderResourceView* depth = nullptr, const float* crt = nullptr, bool plain = false);
   void capture_backbuffer();
   void write_capture(const std::string& path, uint64_t sequence);
   void flush_captures();
@@ -615,6 +615,14 @@ Texture2D src : register(t0); Texture2D<float> efb_depth : register(t3); Sampler
 cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 color; float4 crt; float4 crt2; };  // color: brightness, contrast, vibrance, SSAO strength
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
+// Border art (crt2.w > 0): the picture casts a soft shadow on the art beside it, darkest at the
+// picture's edge. crt = the picture's rectangle in window pixels, crt2.x = how far the shadow reaches.
+float3 art_frame(float2 px, float3 c) {
+  if (crt2.w <= 0.0) return c;
+  float2 d = max(max(crt.xy - px, px - crt.zw), 0.0);
+  float near = saturate(1.0 - length(d) / max(crt2.x, 1.0));
+  return c * (1.0 - 0.88 * near * near);
+}
 // Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
 // samples) instead of one bilinear sample, which at 3x or more would skip most of the rendered
 // pixels (shimmering, jagged edges). This is what makes a 4x or 6x internal resolution look
@@ -657,7 +665,7 @@ float4 PS(O i) : SV_Target {
   if (sharp.z <= 0.0) {
     float3 rgb = (c.rgb * color.x - 0.5) * color.y + 0.5;
     float luma = dot(rgb, float3(0.2126, 0.7152, 0.0722));
-    return float4(saturate(lerp(luma.xxx, rgb, color.z)), c.a);
+    return float4(art_frame(i.pos.xy, saturate(lerp(luma.xxx, rgb, color.z))), c.a);
   }
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
@@ -1523,7 +1531,8 @@ void D3D11Backend::execute_copy(const EfbCopy& c) {
 
 // One full-screen triangle through the shared blit/sharpen shader. The caller has already set
 // the render target, viewport and scissor.
-void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[16], ID3D11ShaderResourceView* depth, const float* crt) {
+// `plain`: the eight values in `crt` go to the ordinary shader (the border art's shadow), not the CRT one.
+void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[16], ID3D11ShaderResourceView* depth, const float* crt, bool plain) {
   D3D11_MAPPED_SUBRESOURCE m{};
   if (FAILED(context_->Map(blit_cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
   std::memcpy(m.pData, rect, 64);
@@ -1534,7 +1543,7 @@ void D3D11Backend::blit(ID3D11ShaderResourceView* src, const float rect[16], ID3
   context_->IASetInputLayout(nullptr);
   context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
   context_->VSSetShader(blit_vs_.Get(), nullptr, 0);
-  context_->PSSetShader(crt ? crt_ps_.Get() : blit_ps_.Get(), nullptr, 0);
+  context_->PSSetShader(crt && !plain ? crt_ps_.Get() : blit_ps_.Get(), nullptr, 0);
   context_->VSSetConstantBuffers(0, 1, &buffer);
   context_->PSSetConstantBuffers(0, 1, &buffer);
   context_->PSSetShaderResources(0, 1, &src);
@@ -1567,7 +1576,14 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
       D3D11_RECT art_sc{0, 0, client_w_, client_h_};
       context_->RSSetViewports(1, &art_vp);
       context_->RSSetScissorRects(1, &art_sc);
-      blit(texture->srv.Get(), art_rect);
+      // The picture's rectangle, for the soft shadow it casts on the art (see the D3D12 backend).
+      const float art_aspect = output_aspect();
+      float art_pw = (float)client_w_, art_ph = art_pw / art_aspect;
+      if (art_ph > (float)client_h_) { art_ph = (float)client_h_; art_pw = art_ph * art_aspect; }
+      const float art_px = ((float)client_w_ - art_pw) * 0.5f, art_py = ((float)client_h_ - art_ph) * 0.5f;
+      const float art_frame[8] = {art_px, art_py, art_px + art_pw, art_py + art_ph,
+                                  std::clamp(std::max(art_px, art_py) * 0.6f, 12.0f, 160.0f), 0, 0, opts_.border_edge ? 1.0f : 0.0f};
+      blit(texture->srv.Get(), art_rect, nullptr, art_frame, true);
       context_->OMSetRenderTargets(1, &rtv, nullptr);
     }
   }

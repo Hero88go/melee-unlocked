@@ -1983,6 +1983,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "sharpness") options.sharpness = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "crt_filter") options.crt_filter = std::clamp(std::stoi(value), 0, 2);
       else if (key == "borderart") options.border_art = value;
+      else if (key == "borderedge") options.border_edge = value == "0" ? 0 : 1;
       else if (key == "shaderpreset") options.shader_preset = value;
       else if (key == "ssao") options.screen_space_ao = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "brightness") options.brightness = std::clamp(std::stof(value), 0.5f, 1.5f);
@@ -3286,7 +3287,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ndlss5reconstruction " << options.dlss5_tuning.reconstruction
 #endif
        << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
-       << "\ncrt_filter " << options.crt_filter << "\nborderart " << options.border_art << "\nshaderpreset " << options.shader_preset <<"\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
+       << "\ncrt_filter " << options.crt_filter << "\nborderart " << options.border_art << "\nborderedge " << options.border_edge << "\nshaderpreset " << options.shader_preset <<"\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
@@ -5214,6 +5215,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "It is scaled to cover the window. Display only: it cannot affect online play.");
       ImGui::SameLine();
       if (ImGui::SmallButton("+ Open Borders folder")) video_bg::open_border_folder();
+      if (!options.border_art.empty()) {
+        const char* edges[] = {"Sharp", "Soft shadow"};
+        int edge = options.border_edge ? 1 : 0;
+        if (settings_combo("Border edge", &edge, edges, 2)) { options.border_edge = edge; changed = true; }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Soft shadow: the game picture casts a gradient shadow on the art beside it.\nSharp: the art is cut off at the picture's edge.");
+      }
     }
     // A shader preset of the player's choice (RetroArch slang presets in the Shaders folder).
     {
@@ -5223,7 +5231,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::SmallButton("+ Open Shaders folder")) user_shader::open_folder();
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Runs a RetroArch shader preset (.slangp) over the game picture, CRT-Royale for example.\n"
-                          "Put the slang shader pack in the Shaders folder, then pick a preset below.\n"
+                          "Put the whole slang shader pack in the Shaders folder with its subfolders, then pick a preset below.\n"
+                          "A preset only lists shader files, so a .slangp copied on its own cannot run.\n"
+                          "A single .slang shader placed directly in the Shaders folder can be picked too.\n"
                           "A preset takes the place of the CRT display setting. Heavy presets cost frame time.");
       if (!user_shader::available()) {
         ImGui::TextDisabled("Not available: librashader.dll is missing from the game folder.");
@@ -5234,7 +5244,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SameLine();
         ImGui::TextUnformatted(current.c_str());
         const std::vector<std::string> found = user_shader::presets();
-        if (found.empty()) ImGui::TextDisabled("No .slangp presets in the Shaders folder yet.");
+        if (found.empty()) ImGui::TextDisabled("Nothing in the Shaders folder yet. Put a shader pack folder in it.");
         if (ImGui::BeginListBox("##shaderlist", ImVec2(-1.0f, found.empty() ? 30.0f : 150.0f))) {
           if (ImGui::Selectable("None", options.shader_preset.empty()) && !options.shader_preset.empty()) { options.shader_preset.clear(); changed = true; }
           std::string needle = shader_filter;

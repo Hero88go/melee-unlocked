@@ -1526,6 +1526,15 @@ void mu_online_start_melee(StartMeleeData* data)
     mu_online.rng_offset = be32(mu_online.match_state + MSRB_RNG_OFFSET);
     *HSD_RandSeedPtr = mu_online.rng_offset;
     mu_replay_apply_game_info(data, mu_online.match_state + MSRB_GAME_INFO_BLOCK);
+    /* Teams: the costume follows the team. The match state carries the colour each player picked,
+     * and when all four picked the same team the host deals the teams out itself, so the picked
+     * colour is the wrong team's for two of them (all four played in red). The console's online code
+     * sets the costume from the team here; the menus already do (mu_slippi_menu.c splash_prep). */
+    if (data->rules.is_teams) {
+        for (i = 0; i < 4; i++) {
+            data->players[i].color = mu_slippi_team_costume(data->players[i].team + 1, data->players[i].ckind);
+        }
+    }
     mu_online.start_data = data;
     delay = mu_online.match_state[MSRB_DELAY_FRAMES];
     if (delay < MIN_DELAY) {
