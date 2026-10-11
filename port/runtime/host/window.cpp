@@ -9,6 +9,8 @@
 #include <cstring>
 #include <vector>
 #include <mutex>
+#include <condition_variable>
+#include <chrono>
 #include <algorithm>
 #include <atomic>
 #include <thread>
@@ -1218,14 +1220,51 @@ namespace {
 // the Controls switch changed must not land after the all-off command.
 std::mutex g_rumble_mutex;
 // An Xbox pad's motors: both at full while the game asks for rumble, off otherwise. Only written
-// when the state changes, since XInputSetState is a call into the driver.
+// when the state changes, and never on the caller's thread: XInputSetState is a call into the
+// driver that can take milliseconds (longer on a wireless pad), and the caller is the game thread
+// in the middle of a frame, most often on a hit. A writer thread sends the newest state, the way
+// the GameCube adapter's rumble has always been sent.
+std::mutex g_xrumble_mutex;
+std::condition_variable g_xrumble_wake, g_xrumble_done;
+bool g_xrumble_wanted[4] = {}, g_xrumble_applied[4] = {};
+bool g_xrumble_started = false;
+void xinput_rumble_writer() {
+  std::unique_lock<std::mutex> lock(g_xrumble_mutex);
+  for (;;) {
+    int index = -1;
+    for (int i = 0; i < 4 && index < 0; ++i) if (g_xrumble_wanted[i] != g_xrumble_applied[i]) index = i;
+    if (index < 0) { g_xrumble_done.notify_all(); g_xrumble_wake.wait(lock); continue; }
+    const bool on = g_xrumble_wanted[index];
+    lock.unlock();
+    XINPUT_VIBRATION v{};
+    v.wLeftMotorSpeed = v.wRightMotorSpeed = on ? 65535 : 0;
+    const auto began = std::chrono::steady_clock::now();
+    XInputSetState((DWORD)index, &v);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count();
+    // Said once, with the figure: it tells from a player's log whether their pad is a slow one.
+    static bool told = false;
+    if (ms > 4.0 && !told) { told = true; log("rumble: the Xbox controller took %.1f ms to take a rumble command (sent off the game thread)", ms); }
+    lock.lock();
+    g_xrumble_applied[index] = on;
+  }
+}
 void xinput_rumble(int index, bool on) {
-  static bool state[4] = {};
-  if (index < 0 || index > 3 || state[index] == on) return;
-  state[index] = on;
-  XINPUT_VIBRATION v{};
-  v.wLeftMotorSpeed = v.wRightMotorSpeed = on ? 65535 : 0;
-  XInputSetState((DWORD)index, &v);
+  if (index < 0 || index > 3) return;
+  std::lock_guard<std::mutex> lock(g_xrumble_mutex);
+  if (g_xrumble_wanted[index] == on) return;
+  g_xrumble_wanted[index] = on;
+  if (!g_xrumble_started) { g_xrumble_started = true; std::thread(xinput_rumble_writer).detach(); }
+  g_xrumble_wake.notify_one();
+}
+// For the all-off action: the motors must be off before the caller goes on (it runs when the game
+// is closing or the Controls switch turns rumble off). Bounded, so a stuck driver cannot hold it.
+void xinput_rumble_settle() {
+  std::unique_lock<std::mutex> lock(g_xrumble_mutex);
+  if (!g_xrumble_started) return;
+  g_xrumble_done.wait_for(lock, std::chrono::milliseconds(200), [] {
+    for (int i = 0; i < 4; ++i) if (g_xrumble_wanted[i] != g_xrumble_applied[i]) return false;
+    return true;
+  });
 }
 // The first rumble each port asks for, and where it went: players report "rumble does not work"
 // without saying which controller, and this line answers that from their log.
@@ -1286,6 +1325,7 @@ void input_stop_all_rumble() {
     gcadapter_rumble(index, false);
     xinput_rumble(index, false);
   }
+  xinput_rumble_settle();
 }
 
 void input_last_pads(PadState out[4]) {
