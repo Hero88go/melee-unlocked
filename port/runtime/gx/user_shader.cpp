@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <chrono>
 #include <filesystem>
 #include <mutex>
@@ -25,6 +26,26 @@ std::filesystem::path shader_root() {
   const DWORD n = GetModuleFileNameW(nullptr, path, (DWORD)std::size(path));
   const std::filesystem::path exe = (!n || n >= std::size(path)) ? std::filesystem::current_path() : std::filesystem::path(path).parent_path();
   return exe / "Shaders";
+}
+
+// Windows refuses a path of 260 characters or more unless it is written in the long form. A shader
+// pack nests deep and some of its files have very long names, so in a game folder that is itself
+// deep the plain path does not open.
+std::wstring long_path(const std::filesystem::path& path) {
+  std::wstring text = path.lexically_normal().wstring();
+  if (text.size() < 240 || text.size() < 3 || text[1] != L':' || text.rfind(L"\\\\", 0) == 0) return text;
+  return L"\\\\?\\" + text;
+}
+bool is_file(const std::filesystem::path& path) {
+  const DWORD attributes = GetFileAttributesW(long_path(path).c_str());
+  return attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+}
+void make_folders(const std::filesystem::path& folder) {
+  std::filesystem::path built;
+  for (const auto& part : folder) {
+    built /= part;
+    if (built.wstring().size() > 3) CreateDirectoryW(long_path(built).c_str(), nullptr);
+  }
 }
 
 libra_instance_t& library() {
@@ -64,7 +85,7 @@ struct Choice {
 
 std::string read_text(const std::filesystem::path& path) {
   std::string text;
-  FILE* f = _wfopen(path.c_str(), L"rb");
+  FILE* f = _wfopen(long_path(path).c_str(), L"rb");
   if (!f) return text;
   char chunk[4096];
   for (size_t n; text.size() < (1u << 20) && (n = std::fread(chunk, 1, sizeof chunk, f)) > 0;) text.append(chunk, n);
@@ -99,8 +120,7 @@ std::string missing_include(const std::filesystem::path& shader, int depth, int*
     if (open == std::string::npos || close == std::string::npos) return;
     const std::string named = line.substr(open + 1, close - open - 1);
     const std::filesystem::path target = (shader.parent_path() / std::filesystem::u8path(named)).lexically_normal();
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(target, ec)) missing = named;
+    if (!is_file(target)) missing = named;
     else missing = missing_include(target, depth + 1, budget);
   });
   return missing;
@@ -145,8 +165,7 @@ std::string first_missing_file(const std::filesystem::path& preset, int depth = 
     }
     if (named.empty()) return;
     const std::filesystem::path target = (folder / std::filesystem::u8path(named)).lexically_normal();
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(target, ec)) missing = named;
+    if (!is_file(target)) missing = named;
     else if (reference && depth < 8) missing = first_missing_file(target, depth + 1);
     else if (shader) missing = missing_include(target, 0, &budget);
   });
@@ -176,10 +195,60 @@ std::filesystem::path one_pass_preset(const std::filesystem::path& shader) {
   return ok ? preset : std::filesystem::path();
 }
 
+// A release carries the CRT presets as one file, Shaders\crt-shaders.pak: the pack's long file names
+// inside the release archive stopped the update's copy step in a deep game folder. The first use
+// after an install writes the files out under Shaders\slang-shaders and notes the pack's id there,
+// so it happens once per release. Layout, little endian: "MUSHPAK1", 16 characters of id, a 32-bit
+// count, then for each file a 16-bit name length, the name (relative, forward slashes), a 32-bit
+// size and the bytes.
+void unpack_bundle() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    const std::filesystem::path root = shader_root(), stamp = root / "slang-shaders" / "bundle-id.txt";
+    FILE* f = _wfopen((root / "crt-shaders.pak").c_str(), L"rb");
+    if (!f) return;
+    char head[24]{};
+    uint32_t count = 0;
+    bool ok = std::fread(head, 1, 24, f) == 24 && !std::memcmp(head, "MUSHPAK1", 8) && std::fread(&count, 4, 1, f) == 1 && count <= 5000;
+    const std::string id(head + 8, 16);
+    if (ok && trimmed(read_text(stamp)) == id) { std::fclose(f); return; }
+    size_t written = 0;
+    std::vector<char> bytes;
+    for (uint32_t i = 0; ok && i < count; ++i) {
+      uint16_t name_size = 0;
+      uint32_t size = 0;
+      std::string name;
+      ok = std::fread(&name_size, 2, 1, f) == 1 && name_size && name_size < 400;
+      if (ok) { name.resize(name_size); ok = std::fread(name.data(), 1, name_size, f) == name_size; }
+      ok = ok && std::fread(&size, 4, 1, f) == 1 && size <= (16u << 20);
+      // Only a plain relative name: nothing absolute, no drive, no step up.
+      ok = ok && name[0] != '/' && name.find_first_of("\\:") == std::string::npos && name.find("..") == std::string::npos;
+      if (!ok) break;
+      bytes.resize(size);
+      ok = !size || std::fread(bytes.data(), 1, size, f) == size;
+      if (!ok) break;
+      const std::filesystem::path target = root / "slang-shaders" / std::filesystem::u8path(name);
+      make_folders(target.parent_path());
+      FILE* out = _wfopen(long_path(target).c_str(), L"wb");
+      ok = out && (!size || std::fwrite(bytes.data(), 1, size, out) == size);
+      if (out) ok = std::fclose(out) == 0 && ok;
+      if (ok) ++written;
+    }
+    std::fclose(f);
+    if (ok) {
+      FILE* out = _wfopen(long_path(stamp).c_str(), L"wb");
+      if (out) { std::fwrite(id.data(), 1, id.size(), out); std::fclose(out); }
+      host::log("shaders: %zu bundled preset files written to the Shaders folder", written);
+    } else {
+      host::log("shaders: the bundled presets could not be written out (stopped after %zu files)", written);
+    }
+  });
+}
+
 bool load_preset(const std::string& preset, libra_shader_preset_t* out) {
+  unpack_bundle();
   std::filesystem::path file = shader_root() / std::filesystem::u8path(preset);
-  std::error_code ec;
-  if (!std::filesystem::is_regular_file(file, ec)) {
+  if (!is_file(file)) {
     set_status(preset + " is not in the Shaders folder");
     return false;
   }
@@ -233,6 +302,7 @@ Choice g_choice11;
 bool available() { return library().instance_loaded; }
 
 std::vector<std::string> presets() {
+  unpack_bundle();
   static std::vector<std::string> found;
   static std::chrono::steady_clock::time_point listed{};
   const auto now = std::chrono::steady_clock::now();

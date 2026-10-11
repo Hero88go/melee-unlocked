@@ -100,6 +100,54 @@ int main(int argc, char** argv) {
     if (ready[i]) CloseHandle(ready[i]);
     if (quit[i]) CloseHandle(quit[i]);
   }
+  // The install script itself, run hidden on two folders made here: a short one, and a deep one
+  // where a long file name of the release lands past 260 characters (a shader pack's picture did,
+  // and the copy stopped there with the folder half updated).
+  {
+    const std::string long_name = std::string(120, 'n') + ".png";
+    const fs::path release = root / "MeleeUnlocked-9.9.8";
+    fs::create_directories(release / "Shaders", ec);
+    { std::ofstream(release / "melee_port.exe") << "new"; }
+    { std::ofstream(release / "Shaders" / long_name) << "picture"; }
+    { std::ofstream(release / "Shaders" / "zz-after.txt") << "after"; }
+    const fs::path package = root / "package.zip";
+    check(make_zip(root, package, L"MeleeUnlocked-9.9.8"), "release archive with a long file name made");
+    const auto present = [](const fs::path& p) {
+      return GetFileAttributesW((L"\\\\?\\" + p.wstring()).c_str()) != INVALID_FILE_ATTRIBUTES;
+    };
+    const fs::path folders[2] = {root / "play", root / "deep" / std::string(100, 'd') / "game"};
+    for (int i = 0; i < 2; ++i) {
+      const fs::path& folder = folders[i];
+      fs::create_directories(folder, ec);
+      { std::ofstream(folder / "melee_port.exe") << "old"; }
+      fs::copy_file(package, folder / "update.zip", fs::copy_options::overwrite_existing, ec);
+      // 999996 is no process: the script's waits fall straight through. The "relaunch" writes a file.
+      const std::string script = host::updater::install_script(folder.u8string(), 999996ul, {999992ul},
+                                                               "/b cmd /c \"echo started> relaunched.txt\"", false);
+      { std::ofstream b(folder / "update.bat", std::ios::binary); b << script; }
+      std::wstring cmd = L"cmd /c \"\"" + (folder / "update.bat").wstring() + L"\"\"";
+      STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
+      const bool started = CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
+                                          folder.wstring().c_str(), &si, &pi);
+      if (started) { WaitForSingleObject(pi.hProcess, 180000); CloseHandle(pi.hThread); CloseHandle(pi.hProcess); }
+      for (int wait = 0; wait < 50 && !present(folder / "relaunched.txt"); ++wait) Sleep(100);
+      std::string exe_text;
+      { std::ifstream in(folder / "melee_port.exe"); in >> exe_text; }
+      const char* where = i ? "deep folder" : "short folder";
+      std::printf("%s: path of the long file is %zu characters\n", where, (folder / "Shaders" / long_name).wstring().size());
+      check(started && exe_text == "new", "install script replaces the program");
+      check(present(folder / "Shaders" / long_name), "install script copies the file with the long name");
+      check(present(folder / "Shaders" / "zz-after.txt"), "install script copies the files after it");
+      check(present(folder / "relaunched.txt"), "install script starts the program again");
+      std::string log_text;
+      { std::ifstream in(folder / "update.log", std::ios::binary); log_text.assign(std::istreambuf_iterator<char>(in), {}); }
+      const bool second_way = log_text.find("trying robocopy") != std::string::npos;
+      check(second_way == (i == 1), i ? "the deep folder needed the second way to copy" : "the short folder copied the first way");
+      check(!present(folder / "update.zip") && !present(folder / "update_tmp"), "install script leaves no archive or unpack folder behind");
+      // The long file is past what remove_all reaches.
+      DeleteFileW((L"\\\\?\\" + (folder / "Shaders" / long_name).wstring()).c_str());
+    }
+  }
   fs::remove_all(root, ec);
   std::printf("%s\n", failures ? "updater checks FAILED" : "updater checks passed");
   return failures ? 1 : 0;
