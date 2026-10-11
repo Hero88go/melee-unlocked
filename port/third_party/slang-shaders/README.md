@@ -2,8 +2,9 @@
 
 The `crt` presets of the libretro slang shader collection (https://github.com/libretro/slang-shaders)
 with the shader, include and picture files they use from the rest of the collection. A release
-copies this folder to `Shaders\slang-shaders`, so the presets can be picked under Video without a
-separate download.
+carries this folder as one file, `Shaders\crt-shaders.pak`, and the game writes it out to
+`Shaders\slang-shaders` on first use, so the presets can be picked under Video without a separate
+download.
 
 Nothing here is compiled into the program. The files are unchanged apart from three dash characters
 in comments of two shaders, written as hyphens. Each file carries the

@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import re
 import shutil
+import struct
 import subprocess
 import zipfile
 from pathlib import Path
@@ -351,7 +352,23 @@ def main():
     shaders = ROOT / "port/third_party/slang-shaders"
     if not (shaders / "crt").is_dir():
         raise SystemExit(f"missing shader presets: {shaders}")
-    shutil.copytree(shaders, folder / "Shaders/slang-shaders")
+    # As one file: the pack's long file names inside the release archive stopped the updater's
+    # copy step in a deep game folder. The game writes the files out on first use (user_shader.cpp
+    # has the layout).
+    entries = sorted((p.relative_to(shaders).as_posix(), p.read_bytes()) for p in shaders.rglob("*") if p.is_file())
+    for entry, _ in entries:
+        if ".." in entry or ":" in entry or "\\" in entry or len(entry.encode("utf-8")) >= 400:
+            raise SystemExit(f"shader preset file name the game would refuse: {entry}")
+    digest = hashlib.sha256()
+    for entry, data in entries:
+        digest.update(entry.encode("utf-8") + b"\0" + data)
+    pak = bytearray(b"MUSHPAK1" + digest.hexdigest()[:16].encode("ascii") + struct.pack("<I", len(entries)))
+    for entry, data in entries:
+        raw = entry.encode("utf-8")
+        pak += struct.pack("<H", len(raw)) + raw + struct.pack("<I", len(data)) + data
+    (folder / "Shaders").mkdir()
+    (folder / "Shaders/crt-shaders.pak").write_bytes(pak)
+    print(f"shader presets: {len(entries)} files in Shaders/crt-shaders.pak ({len(pak)} bytes)")
     (folder / "User/Slippi").mkdir(parents=True)
     (folder / "Replays").mkdir()
     (folder / "MeleeUnlocked.bat").write_bytes(BAT.replace("\n", "\r\n").encode("utf-8"))
