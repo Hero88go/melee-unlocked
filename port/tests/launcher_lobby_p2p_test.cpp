@@ -289,6 +289,36 @@ void friends_by_code() {
         has_notice(a, "lobby.friend.looking"), "an unknown code is looked up (on the DHT in the launcher)");
 }
 
+// Two players who each send the other a request are friends at once: neither has to accept.
+void friends_crossed() {
+  std::cout << "-- friend requests sent both ways" << std::endl;
+  {
+    // Both ask before either has heard from the other.
+    auto pair = make_pair("crossed", profile("Alpha", "ALPH#101", "t:recomp", 2), profile("Beta", "BETA#202", "t:recomp", 2), false);
+    auto& a = *pair.a; auto& b = *pair.b;
+    check(know_each_other(pair), "the two players found each other");
+    a.command("friend_code", {{"code", "BETA#202"}});
+    b.command("friend_code", {{"code", "ALPH#101"}});
+    pump(a, b, 4000, [&] { return a.state()["friends"].size() == 1 && b.state()["friends"].size() == 1; });
+    check(a.state()["friends"].size() == 1 && a.state()["friends"][0]["id"] == b.id(), "A has B as a friend");
+    check(b.state()["friends"].size() == 1 && b.state()["friends"][0]["id"] == a.id(), "B has A as a friend");
+    check(a.state()["friend_requests"].empty() && b.state()["friend_requests"].empty(), "no request is left waiting on either side");
+  }
+  {
+    // B asks after A's request has arrived: asking is the same as accepting.
+    auto pair = make_pair("crossed2", profile("Alpha", "ALPH#101", "t:recomp", 2), profile("Beta", "BETA#202", "t:recomp", 2), false);
+    auto& a = *pair.a; auto& b = *pair.b;
+    check(know_each_other(pair), "the two players found each other");
+    a.command("friend_code", {{"code", "BETA#202"}});
+    pump(a, b, 3000, [&] { return b.state()["friend_requests"].size() == 1; });
+    check(b.state()["friend_requests"].size() == 1, "B gets A's request");
+    b.command("friend_code", {{"code", "ALPH#101"}});
+    pump(a, b, 4000, [&] { return a.state()["friends"].size() == 1 && b.state()["friends"].size() == 1; });
+    check(a.state()["friends"].size() == 1 && b.state()["friends"].size() == 1, "both are friends after B asks back");
+    check(b.state()["friend_requests"].empty(), "B's waiting request is gone");
+  }
+}
+
 void mods() {
   std::cout << "-- mods: badges, open to, custom ISO" << std::endl;
   const std::string hash = "0123456789abcdef";
@@ -1276,7 +1306,7 @@ int main(int argc, char** argv) {
     {"accept_flow", accept_flow}, {"cross_build_flow", cross_build_flow}, {"refusals", refusals},
     {"crossed_requests", crossed_requests},
     {"one_way_loss_requests", [] { one_way_loss(true); }}, {"one_way_loss_answers", [] { one_way_loss(false); }},
-    {"clock_skew", clock_skew}, {"friends_by_code", friends_by_code}, {"mods", mods},
+    {"clock_skew", clock_skew}, {"friends_by_code", friends_by_code}, {"friends_crossed", friends_crossed}, {"mods", mods},
     {"mod_match_disc", mod_match_disc}, {"private_accept_flow", private_accept_flow},
     {"private_decline_and_block", private_decline_and_block}, {"private_timeout", private_timeout},
     {"private_old_versions", private_old_versions}, {"private_routing", private_routing},

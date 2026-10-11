@@ -848,7 +848,7 @@ target_link_libraries(port_launcher_lobby_p2p_test PRIVATE ws2_32 bcrypt user32 
 # One ctest entry per case so they run side by side (each case waits on real timeouts); the .list
 # entry fails when this list and the test's own table drift apart.
 set(MELEE_P2P_CASES accept_flow cross_build_flow refusals crossed_requests one_way_loss_requests
-    one_way_loss_answers clock_skew friends_by_code mods mod_match_disc private_accept_flow
+    one_way_loss_answers clock_skew friends_by_code friends_crossed mods mod_match_disc private_accept_flow
     private_decline_and_block private_timeout private_old_versions private_routing private_crossed
     private_limits transport_side_by_side transport_old_peer transport_other_kind transport_rules)
 foreach(p2p_case IN LISTS MELEE_P2P_CASES)

@@ -1147,7 +1147,21 @@ struct PeerLobby::Impl {
     say("lobby.accepted_start",{{"name",peer_name(other)}},"launch");
     log("launch "+short_id(rid)+" against "+short_id(other)+", mode "+r.value("mode",std::string("vanilla")));
   }
+  // Both players asked each other: that is two yeses, so they are friends without either having
+  // to find and accept the other's request.
+  void befriend(const std::string& other) {
+    const auto peer=peers.find(other);
+    const Json was=incoming.count(other)?incoming[other]:Json::object();
+    incoming.erase(other); outgoing_friends.erase(other);
+    friends[other]={{"id",other},{"name",peer!=peers.end()?peer->second.profile.value("name",std::string("?")):was.value("name",std::string("?"))},
+                    {"code",peer!=peers.end()?peer->second.profile.value("code",std::string()):was.value("code",std::string())}};
+    refresh_topics(); save();
+    queue_event(other,"friend_accept",Json::object());
+    say("lobby.friend.accepted",{{"name",peer_name(other)}},"friend_ok");
+    log("friend request crossed with "+short_id(other)+": friends");
+  }
   void ask_friend(const std::string& target) {
+    if(incoming.count(target) && friends.size()<100) { befriend(target); return; }
     outgoing_friends.insert(target); save();
     queue_event(target,"friend",Json::object());
     say("lobby.friend.sent",{{"name",peer_name(target)}});
@@ -1202,6 +1216,7 @@ struct PeerLobby::Impl {
       // hidden) may ask; the player still has to accept. A friend asking again, because their side
       // lost the friendship, is confirmed straight away.
       if(friends.count(sender)) { queue_event(sender,"friend_accept",Json::object()); return true; }
+      if(outgoing_friends.count(sender) && friends.size()<100) { befriend(sender); return true; }
       if(now-peer->second.last_friend_request<10000) return true;
       peer->second.last_friend_request=now;
       if(!incoming.count(sender) && incoming.size()<100) {
