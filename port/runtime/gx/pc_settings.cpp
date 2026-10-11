@@ -5231,7 +5231,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::SmallButton("+ Open Shaders folder")) user_shader::open_folder();
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Runs a RetroArch shader preset (.slangp) over the game picture, CRT-Royale for example.\n"
-                          "Put the slang shader pack in the Shaders folder, then pick a preset below.\n"
+                          "Put the whole slang shader pack in the Shaders folder with its subfolders, then pick a preset below.\n"
+                          "A preset only lists shader files, so a .slangp copied on its own cannot run.\n"
+                          "A single .slang shader placed directly in the Shaders folder can be picked too.\n"
                           "A preset takes the place of the CRT display setting. Heavy presets cost frame time.");
       if (!user_shader::available()) {
         ImGui::TextDisabled("Not available: librashader.dll is missing from the game folder.");
@@ -5242,7 +5244,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SameLine();
         ImGui::TextUnformatted(current.c_str());
         const std::vector<std::string> found = user_shader::presets();
-        if (found.empty()) ImGui::TextDisabled("No .slangp presets in the Shaders folder yet.");
+        if (found.empty()) ImGui::TextDisabled("Nothing in the Shaders folder yet. Put a shader pack folder in it.");
         if (ImGui::BeginListBox("##shaderlist", ImVec2(-1.0f, found.empty() ? 30.0f : 150.0f))) {
           if (ImGui::Selectable("None", options.shader_preset.empty()) && !options.shader_preset.empty()) { options.shader_preset.clear(); changed = true; }
           std::string needle = shader_filter;
