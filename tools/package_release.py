@@ -345,6 +345,11 @@ def main():
         (folder / "shadercache").mkdir()
         shutil.copy2(recipes, folder / "shadercache/recipes.bin")
         print(f"pipeline recipes: {recipes} ({recipes.stat().st_size} bytes)")
+    # The CRT shader presets, so the shader option has something to pick without a second download.
+    shaders = ROOT / "port/third_party/slang-shaders"
+    if not (shaders / "crt").is_dir():
+        raise SystemExit(f"missing shader presets: {shaders}")
+    shutil.copytree(shaders, folder / "Shaders/slang-shaders")
     (folder / "User/Slippi").mkdir(parents=True)
     (folder / "Replays").mkdir()
     (folder / "MeleeUnlocked.bat").write_bytes(BAT.replace("\n", "\r\n").encode("utf-8"))

@@ -43,7 +43,7 @@ GAME_EXCLUDED = {
     'mu_replay.c', 'mu_replay_abi.c', 'mu_record_start.inc', 'mu_practice.c', 'mu_online_rules.c',
     'record_start.c',   # the test of the replay recording
 }
-THIRD_PARTY = ('asio', 'dht', 'dxc', 'earcut', 'enet', 'imgui', 'librashader', 'libusb', 'monocypher', 'nlohmann', 'stb')
+THIRD_PARTY = ('asio', 'dht', 'dxc', 'earcut', 'enet', 'imgui', 'librashader', 'libusb', 'monocypher', 'nlohmann', 'slang-shaders', 'stb')
 APP_ROOTS = ('main.cpp', 'settings_window.cpp', 'source_host.cpp', 'source_host.h', 'source_guest_boundary.cpp',
              'source_noslippi.cpp', 'source_p2p.cpp', 'source_p2p.h', 'melee_unlocked.rc', 'utf8.manifest',
              # the launcher (lobby, peer-to-peer match setup) and what it includes
