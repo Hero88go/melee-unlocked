@@ -1615,7 +1615,9 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--dump-textures") gfx.dump_textures = true;
     else if (a == "--sharpness") gfx.sharpness = std::clamp((float)std::atof(next()), 0.0f, 1.0f);
     else if (a == "--crt") gfx.crt_filter = std::clamp(std::atoi(next()), 0, 2);
-    else if (a == "--border") gfx.border_art = next();
+    // "sharp:<file>" switches the soft shadow off (tests). One branch: this chain is at the
+    // compiler's nesting limit in the Source Port build.
+    else if (a == "--border") { gfx.border_art = next(); if (gfx.border_art.rfind("sharp:", 0) == 0) { gfx.border_edge = 0; gfx.border_art.erase(0, 6); } }
     else if (a == "--shader") gfx.shader_preset = next();
     else if (a == "--ssaa") gfx.ssaa = std::atoi(next()) >= 2 ? 2 : 1;
     else if (a == "--anisotropy") gfx.anisotropy = std::clamp(std::atoi(next()), 1, 16);
