@@ -84,6 +84,9 @@ bool needs_warmup(uint32_t w, uint32_t h, const Tuning& t, uint32_t model_w = 0,
 // Runs the model over in.color. Returns true when the image was edited.
 bool evaluate(const Inputs& in);
 bool running();
+// Turns the pass off for the rest of the session with a reason for the log (the renderer found its
+// commands refused by the device).
+void disable(const char* why);
 // One line for the settings panel: running, or why not.
 const char* status();
 // The DLSS 5 model file (nvngx_dlssnr.dll) is on this computer. It is never shipped with the game.

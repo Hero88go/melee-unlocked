@@ -3476,7 +3476,32 @@ void D3D12Backend::prewarm_upscalers() {
                                              (uint32_t)DXGI_FORMAT_R32_FLOAT);
     }
     present_efb(screen);
-    check(list_->Close(), "upscaler warm-up close");
+    // A warm-up frame the device refuses to close (one report: DLAA with the neural pass on, the
+    // close failed with E_INVALIDARG and the game stopped before its first frame) turns off what
+    // was being warmed instead of stopping the game: the neural pass first, and the upscaler when
+    // the frame is still refused without it. The refused list is closed, so the next one resets it.
+    // MELEE_TEST_WARMUP_REFUSED=<n> (tests only, hidden and headless runs) refuses the first n frames.
+    HRESULT closed = list_->Close();
+    {
+      static int refuse = std::getenv("MELEE_NO_GC_ADAPTER") && std::getenv("MELEE_TEST_WARMUP_REFUSED") ? std::atoi(std::getenv("MELEE_TEST_WARMUP_REFUSED")) : 0;
+      if (SUCCEEDED(closed) && refuse > 0) { --refuse; closed = E_INVALIDARG; }
+    }
+    if (FAILED(closed)) {
+#ifdef GX_DLSS5
+      const bool neural = opts_.dlss5 && dlss5::running();
+#else
+      const bool neural = false;
+#endif
+      host::log("d3d12: upscaler warm-up frame %u was refused by the device (%08X): %s is off for this session",
+                i, (unsigned)closed, neural ? "DLSS 5" : "the upscaler");
+      wait_gpu();
+#ifdef GX_DLSS5
+      if (neural) { dlss5::disable("the device refused a frame that used it"); opts_.dlss5 = false; continue; }
+#endif
+      opts_.dlss_mode = 0;
+      configure_dlss();
+      break;
+    }
     ID3D12CommandList* lists[] = {list_.Get()};
     queue_->ExecuteCommandLists(1, lists);
     wait_gpu();

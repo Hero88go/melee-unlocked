@@ -157,6 +157,7 @@ void display_model_size(uint32_t w, uint32_t h, float display_shape, uint32_t* m
 bool evaluate(const Inputs&) { return false; }
 bool needs_warmup(uint32_t, uint32_t, const Tuning&, uint32_t, uint32_t) { return false; }
 bool running() { return false; }
+void disable(const char*) {}
 const char* status() { return "not built into this version"; }
 bool model_found() { return false; }
 void shutdown() {}
@@ -476,6 +477,8 @@ bool needs_warmup(uint32_t w, uint32_t h, const Tuning& t, uint32_t model_w, uin
   if (g.failed && !can_retry(w, h, tune)) return false;
   return !g.feature[0] || g.feature_w != w || g.feature_h != h || g.feature_tuning != tune || g.evaluations == 0;
 }
+
+void disable(const char* why) { if (!g.failed || g.tuning_failed) fail(why); }
 
 bool evaluate(const Inputs& in) {
   if (g_driver_failed) return false;
