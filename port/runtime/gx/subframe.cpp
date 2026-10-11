@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <intrin.h>
 #include <cmath>
+#include <cstddef>
 #include <cstring>
 #include <thread>
 #include <algorithm>
@@ -297,6 +298,34 @@ static bool smooth_game_projection(const DrawCall& previous, const DrawCall& cur
   return std::abs(a[1] - b[1]) <= .05f && std::abs(a[3] - b[3]) <= .05f;
 }
 
+// True when two vertex streams describe the same sprite quad a little further on: same normals,
+// texture coordinates and matrix selectors, and no corner moved farther than the quad is large.
+// Colours may differ (these sprites twinkle); the blend carries them.
+static bool same_primitive_drifting(const Vertex* a, const Vertex* b, uint32_t count) {
+  if (count != 4) return false;
+  float lo[3] = {b[0].pos[0], b[0].pos[1], b[0].pos[2]}, hi[3] = {lo[0], lo[1], lo[2]};
+  for (uint32_t i = 0; i < count; ++i) {
+    if (std::memcmp(a[i].nrm, b[i].nrm, sizeof a[i].nrm) ||
+        std::memcmp(a[i].uv, b[i].uv, sizeof(Vertex) - offsetof(Vertex, uv))) return false;
+    for (int k = 0; k < 3; ++k) {
+      if (!std::isfinite(a[i].pos[k]) || !std::isfinite(b[i].pos[k])) return false;
+      lo[k] = std::min(lo[k], b[i].pos[k]); hi[k] = std::max(hi[k], b[i].pos[k]);
+    }
+  }
+  const float size = std::max(hi[0] - lo[0], std::max(hi[1] - lo[1], hi[2] - lo[2]));
+  if (!(size > 0.0f)) return false;
+  for (uint32_t i = 0; i < count; ++i)
+    for (int k = 0; k < 3; ++k)
+      if (std::fabs(a[i].pos[k] - b[i].pos[k]) > size) return false;
+  return true;
+}
+
+// A sprite is moved between frames only once it has a record of drifting: each drifting frame adds
+// one to its score, each frame it jumped or changed takes kDriftMiss away, and it needs
+// kDriftSteady. A star that respawns now and then keeps its record. A pool whose slots keep
+// changing hands (fountain spray, hit sparks) never builds one and stays held.
+static constexpr int kDriftSteady = 4, kDriftMiss = 4, kDriftMost = 8;
+
 void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   if (prev && cur && cur->sequence != prev->sequence + 1) prev = nullptr;
   prev_ = prev; cur_ = cur;
@@ -305,6 +334,8 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   // Roll the pairing record forward one simulation frame, so pair_flips compares like with like.
   pair_history_.swap(pair_seen_);
   pair_seen_.clear();
+  drift_history_.swap(drift_seen_);
+  drift_seen_.clear();
   camera_previous_ = camera_current_ = nullptr;
   stats_ = SubFrameStats{};
   if (!cur) return;
@@ -333,6 +364,17 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
       bool same_vertices = vertex_ranges_valid && d.vertex_count && pd.vertex_count == d.vertex_count &&
           !std::memcmp(prev->vertices.data() + pd.first_vertex, cur->vertices.data() + d.first_vertex,
                        (size_t)d.vertex_count * sizeof(Vertex));
+      bool drifting = false;
+      if (!d.object_generation && vertex_ranges_valid && pd.vertex_count == d.vertex_count) {
+        auto was = drift_history_.find(d.identity);
+        int score = was == drift_history_.end() ? 0 : was->second;
+        if (!same_vertices) {
+          const bool drifted = same_primitive_drifting(prev->vertices.data() + pd.first_vertex, cur->vertices.data() + d.first_vertex, d.vertex_count);
+          score = drifted ? std::min(score + 1, kDriftMost) : std::max(score - kDriftMiss, 0);
+          drifting = drifted && score >= kDriftSteady;
+        }
+        drift_seen_[d.identity] = (uint8_t)score;
+      }
       bool valid = false; int reason = 0;
       if (d.object_generation != pd.object_generation) { ++stats_.missing; reason = 1; }
       else if (d.xf_regs[0x26] != 0) { ++stats_.hud; reason = 2; }
@@ -340,7 +382,10 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
       // submission-ordinal identities. Inserting or removing a glyph can reuse
       // that key for a different primitive. A changing stream needs an observed
       // object lifetime before it is safe to invent geometry between the draws.
-      else if (!d.object_generation && !same_vertices) { ++stats_.geometry; reason = 3; }
+      // The exception is a sprite that has drifted steadily for several frames: a stage's
+      // background sprites (the stars behind Battlefield) are drawn this way every frame, and
+      // without it they stepped at the simulation rate behind fighters that moved at the display rate.
+      else if (!d.object_generation && !same_vertices && !drifting) { ++stats_.geometry; reason = 3; }
       else if (!vertex_ranges_valid || !d.vertex_count || pd.vertex_count != d.vertex_count ||
           pd.primitive != d.primitive || pd.components != d.components) { ++stats_.geometry; reason = 4; }
       // The shader identity is only compared for draws the observer did not see; an observed draw is

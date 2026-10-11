@@ -104,6 +104,8 @@ class SubFrameSolver {
   std::vector<std::pair<uint64_t, int>> prev_index_;
   // Pairing outcome per draw identity, last simulation frame and this one, for pair_flips.
   std::unordered_map<uint64_t, bool> pair_history_, pair_seen_;
+  // Drift record of each unobserved sprite (see kDriftSteady), by draw identity.
+  std::unordered_map<uint64_t, uint8_t> drift_history_, drift_seen_;
   // This frame's camera (from the first paired draw that carries a view): used to move draws that
   // have no pair onto the same timeline as the rest of the frame.
   const AuthoredPose* camera_previous_ = nullptr;
