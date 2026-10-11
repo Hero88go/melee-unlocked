@@ -762,9 +762,11 @@ GOBJ *Barrel_Spawn(int pos_kind)
 #endif
     };
 
-    // replace collision callback
+    // Give this barrel its own callback table. The item's pointer names the table every barrel
+    // in the game shares, so copying into it left these callbacks on barrels in every later
+    // mode, where the event they belong to is gone (a crash in Classic after this event).
     ItemData *barrel_data = barrel_gobj->userdata;
-    memcpy(barrel_data->it_func, item_callbacks, sizeof(item_callbacks));
+    barrel_data->it_func = (void *)item_callbacks;
     barrel_data->camera_subject->kind = 0;
 
     // update last barrel pos
