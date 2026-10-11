@@ -617,7 +617,7 @@ void bp_write(uint32_t value) {
         {
           static uint16_t last_scene = 0xFFFF;
           const uint16_t scene = (uint16_t)(g_frame.scene_major << 8 | g_frame.scene_minor);
-          if (scene != last_scene) { host::log("scene: major %02X minor %02X (frame %llu)", g_frame.scene_major, g_frame.scene_minor, (unsigned long long)g_frame.sequence); last_scene = scene; }
+          if (scene != last_scene) { host::log("scene: major %02X minor %02X (frame %llu)", g_frame.scene_major, g_frame.scene_minor, (unsigned long long)g_frame.sequence); host::note_scene_memory(); last_scene = scene; }
         }
         g_frame.time = host::now_seconds(); // completed snapshot availability anchors presentation
         g_frame.tick = host::tick_timing();
