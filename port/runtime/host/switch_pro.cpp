@@ -18,6 +18,7 @@
 #include <windows.h>
 #include <hidsdi.h>
 #include "input_bindings.h"
+#include <libusb.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -46,11 +47,16 @@ constexpr int kStickDead = 60;
 
 constexpr int kMaxInitAttempts = 6;
 
+// The GameCube controller for Nintendo Switch Online (the Switch 2 one). It does not speak the Pro
+// Controller's protocol: see gamecube_start and decode_gamecube.
+constexpr uint32_t kGameCubePid = 0x2073;
+
 bool supported_pid(uint32_t pid) {
   return pid == 0x2009      // Pro Controller (the reported case)
       || pid == 0x2017      // SNES controller for Nintendo Switch Online
       || pid == 0x2006      // Joy-Con (L)
-      || pid == 0x2007;     // Joy-Con (R)
+      || pid == 0x2007      // Joy-Con (R)
+      || pid == kGameCubePid;
 }
 
 const char* device_name(uint32_t pid) {
@@ -59,6 +65,7 @@ const char* device_name(uint32_t pid) {
     case 0x2017: return "SNES controller";
     case 0x2006: return "Joy-Con (L)";
     case 0x2007: return "Joy-Con (R)";
+    case kGameCubePid: return "GameCube controller (Switch Online)";
     default: return "controller";
   }
 }
@@ -151,6 +158,10 @@ bool open_device(Device& d, HANDLE raw, uint32_t pid, int slot) {
   if (file == INVALID_HANDLE_VALUE)
     file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                        nullptr, OPEN_EXISTING, 0, nullptr);
+  // The GameCube controller takes no output reports on this interface (its commands go to a second
+  // USB interface), so a handle with no access rights is enough to keep the slot.
+  if (file == INVALID_HANDLE_VALUE && pid == kGameCubePid)
+    file = CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
     log("switch pro: found a %s (VID 057E PID %04X) but cannot open it for output (error %lu): "
         "Steam Input, BetterJoy or another Switch driver may be holding it. Close it, or turn off "
@@ -242,6 +253,96 @@ void scan() {
 
 // ---- initialisation ----------------------------------------------------------------------------
 
+// The Switch Online GameCube controller over USB says nothing until it has been sent a start-up
+// sequence, and that sequence does not go to the HID interface: it goes to the bulk OUT endpoint of
+// the controller's second interface (number 1). Windows gives that interface no driver of its own,
+// so it can only be reached where a WinUSB driver has been put on it (Zadig, "Interface 1"), the
+// same step the GameCube adapter needs. The commands are the ones the console sends, as published
+// by the community tools that enable these controllers on a PC. After them the HID interface
+// streams 64-byte reports, which arrive as WM_INPUT like every other pad's.
+// Returns nullptr when every command was written, otherwise what stopped it.
+const char* gamecube_start(int slot) {
+  static const uint8_t kCommands[][28] = {
+      {0x03, 0x91, 0x00, 0x0D, 0x00, 0x08, 0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+      {0x07, 0x91, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00},
+      {0x16, 0x91, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00},
+      {0x15, 0x91, 0x00, 0x01, 0x00, 0x0E, 0x00, 0x00, 0x00, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+      {0x15, 0x91, 0x00, 0x02, 0x00, 0x11, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
+      {0x15, 0x91, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00},
+      {0x09, 0x91, 0x00, 0x07, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+      {0x0C, 0x91, 0x00, 0x02, 0x00, 0x04, 0x00, 0x00, 0x27, 0x00, 0x00, 0x00},
+      {0x11, 0x91, 0x00, 0x03, 0x00, 0x00, 0x00, 0x00},
+      {0x0A, 0x91, 0x00, 0x08, 0x00, 0x14, 0x00, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x35, 0x00, 0x46, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+      {0x0C, 0x91, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00, 0x27, 0x00, 0x00, 0x00},
+      {0x03, 0x91, 0x00, 0x0A, 0x00, 0x04, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00},
+      {0x10, 0x91, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00},
+      {0x01, 0x91, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00},
+      {0x03, 0x91, 0x00, 0x01, 0x00, 0x00, 0x00},
+      {0x0A, 0x91, 0x00, 0x02, 0x00, 0x04, 0x00, 0x00, 0x03, 0x00, 0x00},
+      {0x09, 0x91, 0x00, 0x07, 0x00, 0x08, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},   // player light
+  };
+  static const uint8_t kLengths[] = {16, 8, 8, 22, 25, 9, 16, 12, 8, 28, 12, 12, 8, 8, 7, 11, 16};
+  static libusb_context* context = nullptr;
+  if (!context && libusb_init(&context) != 0) { context = nullptr; return "libusb could not start"; }
+  libusb_device** list = nullptr;
+  const ssize_t count = libusb_get_device_list(context, &list);
+  if (count < 0) return "the USB device list could not be read";
+  // The slot-th controller of this kind when there is one, so two of them each get their start-up.
+  libusb_device* found = nullptr;
+  libusb_device* first = nullptr;
+  int seen = 0;
+  for (ssize_t i = 0; i < count && !found; ++i) {
+    libusb_device_descriptor desc{};
+    if (libusb_get_device_descriptor(list[i], &desc) != 0) continue;
+    if (desc.idVendor != kNintendoVid || desc.idProduct != kGameCubePid) continue;
+    if (!first) first = list[i];
+    if (seen++ == slot) found = list[i];
+  }
+  if (!found) found = first;
+  const char* why = nullptr;
+  libusb_device_handle* handle = nullptr;
+  uint8_t out = 0, in = 0;
+  if (!found) why = "it is not on USB";
+  else {
+    libusb_config_descriptor* config = nullptr;
+    if (libusb_get_active_config_descriptor(found, &config) == 0 && config) {
+      for (uint8_t i = 0; i < config->bNumInterfaces; ++i) {
+        const libusb_interface& itf = config->interface[i];
+        if (!itf.num_altsetting || itf.altsetting[0].bInterfaceNumber != 1) continue;
+        for (uint8_t e = 0; e < itf.altsetting[0].bNumEndpoints; ++e) {
+          const libusb_endpoint_descriptor& ep = itf.altsetting[0].endpoint[e];
+          if ((ep.bmAttributes & 3) != LIBUSB_TRANSFER_TYPE_BULK) continue;
+          if (ep.bEndpointAddress & 0x80) in = ep.bEndpointAddress; else out = ep.bEndpointAddress;
+        }
+      }
+      libusb_free_config_descriptor(config);
+    }
+    if (!out) why = "its command interface (interface 1) shows no bulk endpoint to write to";
+    else if (libusb_open(found, &handle) != 0 || !handle) {
+      handle = nullptr;
+      why = "its command interface has no WinUSB driver: install one on \"Interface 1\" with Zadig, then replug";
+    } else if (libusb_claim_interface(handle, 1) != 0) {
+      why = "its command interface could not be claimed: install a WinUSB driver on \"Interface 1\" with Zadig, "
+            "or close the program that holds it, then replug";
+    }
+  }
+  if (!why) {
+    for (size_t c = 0; c < sizeof kLengths; ++c) {
+      uint8_t packet[28];
+      std::memcpy(packet, kCommands[c], kLengths[c]);
+      if (c + 1 == sizeof kLengths) packet[8] = (uint8_t)(1u << (slot & 3));   // the light for this slot
+      int wrote = 0;
+      if (libusb_bulk_transfer(handle, out, packet, kLengths[c], &wrote, 1000) != 0) { why = "a start-up command was refused"; break; }
+      if (in) { uint8_t reply[64]; int got = 0; libusb_bulk_transfer(handle, in, reply, sizeof reply, &got, 100); }
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    libusb_release_interface(handle, 1);
+  }
+  if (handle) libusb_close(handle);
+  libusb_free_device_list(list, 1);
+  return why;
+}
+
 void initialise(int slot) {
   // Everything below blocks, so work from a copy and put the results back afterwards. Only this
   // thread opens or closes the handle, so it stays valid for the duration.
@@ -252,6 +353,19 @@ void initialise(int slot) {
     file = d.file; out_len = d.out_len; bluetooth = d.bluetooth; pid = d.pid;
     counter = d.counter; attempts = ++d.attempts;
     d.next_try = Clock::now() + std::chrono::milliseconds(700);
+  }
+
+  if (pid == kGameCubePid) {
+    // Over Bluetooth it streams by itself once paired; over USB it needs its start-up sequence.
+    const char* why = bluetooth ? nullptr : gamecube_start(slot);
+    if (attempts == 1) {
+      if (why) log("switch pro: slot %d %s over USB cannot be started: %s", slot + 1, device_name(pid), why);
+      else log("switch pro: slot %d %s %s", slot + 1, device_name(pid),
+               bluetooth ? "on Bluetooth, waiting for its reports" : "start-up sequence sent over USB");
+    }
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_dev[slot].next_try = Clock::now() + std::chrono::milliseconds(1500);
+    return;
   }
 
   Device scratch{};
@@ -382,6 +496,54 @@ void decode_full(Device& d, const uint8_t* r, size_t size) {
   d.full = true; d.streaming = true; d.attempts = 0; d.failed = false;
 }
 
+// The Switch Online GameCube controller's report: after the report id and two counter bytes come
+// three button bytes, the two sticks as two 12-bit values each, a spare byte, and the two analog
+// triggers. The buttons are handed on in SWPRO_* bits placed so that the default Switch bindings
+// give each GameCube button its own name: the controller's A lands on the game's A.
+void decode_gamecube(Device& d, const uint8_t* r, size_t size) {
+  if (size < 15) return;
+  const uint8_t right = r[3], left = r[4];
+  uint16_t b = 0;
+  if (right & 0x01) b |= SWPRO_A;   if (right & 0x02) b |= SWPRO_B;   // B and A: the defaults bind the game's A to SWPRO_B
+  if (right & 0x04) b |= SWPRO_Y;   if (right & 0x08) b |= SWPRO_X;
+  if (right & 0x10) b |= SWPRO_R;   if (right & 0x20) b |= SWPRO_ZR;  // R click, Z
+  if (right & 0x40) b |= SWPRO_PLUS;                                  // Start
+  if (left & 0x01) b |= SWPRO_DPAD_DOWN;  if (left & 0x02) b |= SWPRO_DPAD_RIGHT;
+  if (left & 0x04) b |= SWPRO_DPAD_LEFT;  if (left & 0x08) b |= SWPRO_DPAD_UP;
+  if (left & 0x10) b |= SWPRO_L;    if (left & 0x20) b |= SWPRO_ZL;   // L click, the small ZL
+  if (left & 0x40) b |= SWPRO_MINUS;
+
+  int nx, ny, cx, cy;
+  unpack_stick(r + 6, &nx, &ny);
+  unpack_stick(r + 9, &cx, &cy);
+  if (!d.origin) {
+    d.origin = true;
+    d.nx = nx; d.ny = ny; d.cx = cx; d.cy = cy;
+    log("switch pro: slot %d GameCube controller streaming, neutral stick %d,%d c-stick %d,%d, triggers %u,%u",
+        d.slot + 1, nx, ny, cx, cy, (unsigned)r[13], (unsigned)r[14]);
+  }
+  // Full tilt is about 1500 counts from the centre on the main stick and a little less on the C
+  // stick; the ranges are short of that so every unit reaches the edge of the gate.
+  const auto stick = [](int raw, int centre, int range) {
+    const int delta = raw - centre, sign = delta < 0 ? -1 : 1, magnitude = std::abs(delta) - kStickDead;
+    if (magnitude <= 0) return (int8_t)0;
+    const int value = magnitude * 127 / (range - kStickDead);
+    return (int8_t)(sign * (value > 127 ? 127 : value));
+  };
+  // The triggers rest near 36 and bottom out near 240.
+  const auto trigger = [](uint8_t raw) {
+    const int value = ((int)raw - 36) * 255 / (240 - 36);
+    return (uint8_t)(value < 0 ? 0 : value > 255 ? 255 : value);
+  };
+  PadState pad{};
+  pad.err = 0;
+  pad.stick_x = stick(nx, d.nx, 1400); pad.stick_y = stick(ny, d.ny, 1400);
+  pad.sub_x = stick(cx, d.cx, 1300);   pad.sub_y = stick(cy, d.cy, 1300);
+  pad.trig_l = trigger(r[13]); pad.trig_r = trigger(r[14]);
+  d.pad = pad; d.buttons = b;
+  d.full = true; d.streaming = true; d.attempts = 0; d.failed = false;
+}
+
 // 0x3F "simple": what a Bluetooth pad sends before it has been asked for anything better. The
 // sticks in this mode only report their extremes, so it is a stopgap until 0x30 takes over.
 void decode_simple(Device& d, const uint8_t* r, size_t size) {
@@ -434,7 +596,8 @@ bool switchpro_raw_input(void* device, const uint8_t* report, size_t size, size_
   // current state, but walking them all keeps a button that was tapped inside the batch.
   for (size_t i = 0; i < count; ++i) {
     const uint8_t* r = report + i * size;
-    if (r[0] == 0x30 || r[0] == 0x21 || r[0] == 0x31) decode_full(d, r, size);
+    if (d.pid == kGameCubePid) { if (size < 15) continue; decode_gamecube(d, r, size); }
+    else if (r[0] == 0x30 || r[0] == 0x21 || r[0] == 0x31) decode_full(d, r, size);
     else if (r[0] == 0x3F) decode_simple(d, r, size);
     else continue;
     d.last_report = Clock::now();
