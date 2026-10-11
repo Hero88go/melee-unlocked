@@ -9,6 +9,8 @@
 #define LIBRA_RUNTIME_D3D12
 #include "../../third_party/librashader/librashader_ld.h"
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
 #include <chrono>
 #include <filesystem>
 #include <mutex>
@@ -58,11 +60,59 @@ struct Choice {
   bool failed = false;
 };
 
+// A preset is a list of shader files (and sometimes another preset it builds on), named relative to
+// its own folder. A player who copies only the .slangp file gets the library's raw "path not found"
+// error, which reads like a fault of the game. This names the first file that is not there, as the
+// preset wrote it. Empty when every file a line names exists (or the preset cannot be read).
+std::string first_missing_file(const std::filesystem::path& preset, int depth = 0) {
+  FILE* f = _wfopen(preset.c_str(), L"rb");
+  if (!f) return {};
+  std::string text;
+  char chunk[4096];
+  for (size_t n; text.size() < (1u << 20) && (n = std::fread(chunk, 1, sizeof chunk, f)) > 0;) text.append(chunk, n);
+  std::fclose(f);
+  const std::filesystem::path folder = preset.parent_path();
+  size_t at = 0;
+  while (at < text.size()) {
+    size_t end = text.find('\n', at);
+    if (end == std::string::npos) end = text.size();
+    std::string line = text.substr(at, end - at);
+    at = end + 1;
+    const size_t first = line.find_first_not_of(" \t\r");
+    if (first == std::string::npos) continue;
+    line.erase(0, first);
+    std::string named;
+    if (line.rfind("#reference", 0) == 0) named = line.substr(10);
+    else if (line.rfind("shader", 0) == 0 && line.size() > 6 && std::isdigit((unsigned char)line[6])) {
+      const size_t eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      named = line.substr(eq + 1);
+    } else continue;
+    const size_t a = named.find_first_not_of(" \t\r\""), b = named.find_last_not_of(" \t\r\"");
+    if (a == std::string::npos) continue;
+    named = named.substr(a, b - a + 1);
+    const std::filesystem::path target = folder / std::filesystem::u8path(named);
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(target, ec)) return named;
+    if (line[0] == '#' && depth < 8) {
+      const std::string deeper = first_missing_file(target, depth + 1);
+      if (!deeper.empty()) return deeper;
+    }
+  }
+  return {};
+}
+
 bool load_preset(const std::string& preset, libra_shader_preset_t* out) {
   const std::filesystem::path file = shader_root() / std::filesystem::u8path(preset);
   std::error_code ec;
   if (!std::filesystem::is_regular_file(file, ec)) {
     set_status(preset + " is not in the Shaders folder");
+    return false;
+  }
+  const std::string missing = first_missing_file(file);
+  if (!missing.empty()) {
+    set_status("this preset needs the shader file " + missing + ", which is not in the Shaders folder. "
+               "Copy the whole shader pack with its folders, not only the .slangp file");
     return false;
   }
   const std::string error = take_error(library().preset_create(file.u8string().c_str(), out));
