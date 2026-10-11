@@ -822,6 +822,14 @@ Texture2D src : register(t0); Texture2D efb : register(t1); Texture2D hudmask : 
 cbuffer C : register(b0) { float4 rect; float4 sharp; float4 box; float4 hudr; float4 color; float4 crt; float4 crt2; };  // rect: xy = uv scale, zw = uv offset; sharp: xy = texel size, z = amount; box: xy = taps per axis; color: x = brightness gain, y = contrast gain, z = vibrance gain
 struct O { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
 O VS(uint id : SV_VertexID) { O o; float2 p = float2((id << 1) & 2, id & 2); o.pos = float4(p * float2(2,-2) + float2(-1,1), 0, 1); o.uv = p * rect.xy + rect.zw; return o; }
+// Border art (crt2.w > 0): the picture casts a soft shadow on the art beside it, darkest at the
+// picture's edge. crt = the picture's rectangle in window pixels, crt2.x = how far the shadow reaches.
+float3 art_frame(float2 px, float3 c) {
+  if (crt2.w <= 0.0) return c;
+  float2 d = max(max(crt.xy - px, px - crt.zw), 0.0);
+  float near = saturate(1.0 - length(d) / max(crt2.x, 1.0));
+  return c * (1.0 - 0.88 * near * near);
+}
 // Downsampling: average the whole footprint of one output pixel (a box of taps x taps bilinear
 // samples) instead of one bilinear sample, which at 3x or more would skip most of the rendered
 // pixels (shimmering, jagged edges). This is what makes a 4x or 6x internal resolution look
@@ -888,7 +896,7 @@ float4 PS(O i) : SV_Target {
   float4 c = hud(i.uv, scene);
   // color.w < 0: an EFB copy from a frame buffer without alpha, which reads as opaque on hardware.
   if (color.w < 0.0) return float4(c.rgb, 1.0);
-  if (sharp.z <= 0.0) return float4(grade(sharp.w > 0.5 ? path_to_display(c.rgb) : c.rgb), c.a);
+  if (sharp.z <= 0.0) return float4(art_frame(i.pos.xy, grade(sharp.w > 0.5 ? path_to_display(c.rgb) : c.rgb)), c.a);
   // Contrast-adaptive sharpening (AMD CAS style): sharpen where local contrast allows it,
   // over neighbours one output pixel away.
   float2 step = sharp.xy * max(box.xy, 1.0);
@@ -2627,9 +2635,16 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
       D3D12_GPU_DESCRIPTOR_HANDLE art_gpu = srv_heap_->GetGPUDescriptorHandleForHeapStart(); art_gpu.ptr += art_slot * srv_size_;
       const float window = (float)client_w_ / std::max((float)client_h_, 1.0f), shape = (float)art->width / std::max((float)art->height, 1.0f);
       const float sx = shape > window ? window / shape : 1.0f, sy = shape > window ? 1.0f : shape / window;
-      const float art_rect[20] = {sx, art_reversed ? -sy : sy, (1.0f - sx) * 0.5f, art_reversed ? 1.0f - (1.0f - sy) * 0.5f : (1.0f - sy) * 0.5f,
+      // The picture's rectangle, for the soft shadow it casts on the art (border_edge 1).
+      const float art_aspect = output_aspect();
+      float art_pw = (float)client_w_, art_ph = art_pw / art_aspect;
+      if (art_ph > (float)client_h_) { art_ph = (float)client_h_; art_pw = art_ph * art_aspect; }
+      const float art_px = ((float)client_w_ - art_pw) * 0.5f, art_py = ((float)client_h_ - art_ph) * 0.5f;
+      const float art_reach = std::clamp(std::max(art_px, art_py) * 0.6f, 12.0f, 160.0f);
+      const float art_rect[28] = {sx, art_reversed ? -sy : sy, (1.0f - sx) * 0.5f, art_reversed ? 1.0f - (1.0f - sy) * 0.5f : (1.0f - sy) * 0.5f,
                                   1.0f / art->width, 1.0f / art->height, 0, 0,
-                                  1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0};
+                                  1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0,
+                                  art_px, art_py, art_px + art_pw, art_py + art_ph, art_reach, 0, 0, opts_.border_edge ? 1.0f : 0.0f};
       D3D12_VIEWPORT art_vp{0, 0, (float)client_w_, (float)client_h_, 0, 1};
       D3D12_RECT art_sc{0, 0, client_w_, client_h_};
       list_->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
@@ -2638,9 +2653,13 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
       list_->SetPipelineState(blit_pso_.Get());
       list_->SetGraphicsRootSignature(blit_root_.Get());
       list_->SetGraphicsRootDescriptorTable(0, art_gpu);
-      list_->SetGraphicsRoot32BitConstants(1, 20, art_rect, 0);
+      list_->SetGraphicsRoot32BitConstants(1, 28, art_rect, 0);
       list_->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
       list_->DrawInstanced(3, 1, 0, 0);
+      // Root constants stay set: the draws after this one set only the first twenty, and must not
+      // inherit the shadow.
+      const float no_frame[8] = {};
+      list_->SetGraphicsRoot32BitConstants(1, 8, no_frame, 20);
     }
   }
   // Letterbox the output at the game's aspect (XFB region c.src_w x lines); the widescreen

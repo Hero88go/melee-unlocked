@@ -1983,6 +1983,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "sharpness") options.sharpness = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "crt_filter") options.crt_filter = std::clamp(std::stoi(value), 0, 2);
       else if (key == "borderart") options.border_art = value;
+      else if (key == "borderedge") options.border_edge = value == "0" ? 0 : 1;
       else if (key == "shaderpreset") options.shader_preset = value;
       else if (key == "ssao") options.screen_space_ao = std::clamp(std::stof(value), 0.0f, 1.0f);
       else if (key == "brightness") options.brightness = std::clamp(std::stof(value), 0.5f, 1.5f);
@@ -3286,7 +3287,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ndlss5reconstruction " << options.dlss5_tuning.reconstruction
 #endif
        << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
-       << "\ncrt_filter " << options.crt_filter << "\nborderart " << options.border_art << "\nshaderpreset " << options.shader_preset <<"\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
+       << "\ncrt_filter " << options.crt_filter << "\nborderart " << options.border_art << "\nborderedge " << options.border_edge << "\nshaderpreset " << options.shader_preset <<"\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
        << "\ncontrast " << options.contrast << "\nvibrance " << options.vibrance
        << "\nanisotropy " << options.anisotropy << "\nssaa " << options.ssaa
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
@@ -5214,6 +5215,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "It is scaled to cover the window. Display only: it cannot affect online play.");
       ImGui::SameLine();
       if (ImGui::SmallButton("+ Open Borders folder")) video_bg::open_border_folder();
+      if (!options.border_art.empty()) {
+        const char* edges[] = {"Sharp", "Soft shadow"};
+        int edge = options.border_edge ? 1 : 0;
+        if (settings_combo("Border edge", &edge, edges, 2)) { options.border_edge = edge; changed = true; }
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Soft shadow: the game picture casts a gradient shadow on the art beside it.\nSharp: the art is cut off at the picture's edge.");
+      }
     }
     // A shader preset of the player's choice (RetroArch slang presets in the Shaders folder).
     {
