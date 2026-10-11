@@ -50,13 +50,18 @@ constexpr int kMaxInitAttempts = 6;
 // The GameCube controller for Nintendo Switch Online (the Switch 2 one). It does not speak the Pro
 // Controller's protocol: see gamecube_start and decode_gamecube.
 constexpr uint32_t kGameCubePid = 0x2073;
+// The Switch 2 Pro Controller: the same start-up as the GameCube controller above and the same
+// report shape, with its own buttons and no analog triggers (see decode_pro2).
+constexpr uint32_t kPro2Pid = 0x2069;
+// The Switch 2 controllers, which share that protocol.
+bool switch2_pid(uint32_t pid) { return pid == kGameCubePid || pid == kPro2Pid; }
 
 bool supported_pid(uint32_t pid) {
   return pid == 0x2009      // Pro Controller (the reported case)
       || pid == 0x2017      // SNES controller for Nintendo Switch Online
       || pid == 0x2006      // Joy-Con (L)
       || pid == 0x2007      // Joy-Con (R)
-      || pid == kGameCubePid;
+      || switch2_pid(pid);
 }
 
 const char* device_name(uint32_t pid) {
@@ -66,6 +71,7 @@ const char* device_name(uint32_t pid) {
     case 0x2006: return "Joy-Con (L)";
     case 0x2007: return "Joy-Con (R)";
     case kGameCubePid: return "GameCube controller (Switch Online)";
+    case kPro2Pid: return "Switch 2 Pro Controller";
     default: return "controller";
   }
 }
@@ -160,7 +166,7 @@ bool open_device(Device& d, HANDLE raw, uint32_t pid, int slot) {
                        nullptr, OPEN_EXISTING, 0, nullptr);
   // The GameCube controller takes no output reports on this interface (its commands go to a second
   // USB interface), so a handle with no access rights is enough to keep the slot.
-  if (file == INVALID_HANDLE_VALUE && pid == kGameCubePid)
+  if (file == INVALID_HANDLE_VALUE && switch2_pid(pid))
     file = CreateFileW(path.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
   if (file == INVALID_HANDLE_VALUE) {
     log("switch pro: found a %s (VID 057E PID %04X) but cannot open it for output (error %lu): "
@@ -261,7 +267,7 @@ void scan() {
 // by the community tools that enable these controllers on a PC. After them the HID interface
 // streams 64-byte reports, which arrive as WM_INPUT like every other pad's.
 // Returns nullptr when every command was written, otherwise what stopped it.
-const char* gamecube_start(int slot) {
+const char* gamecube_start(int slot, uint32_t pid) {
   static const uint8_t kCommands[][28] = {
       {0x03, 0x91, 0x00, 0x0D, 0x00, 0x08, 0x00, 0x00, 0x01, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF},
       {0x07, 0x91, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00},
@@ -294,7 +300,7 @@ const char* gamecube_start(int slot) {
   for (ssize_t i = 0; i < count && !found; ++i) {
     libusb_device_descriptor desc{};
     if (libusb_get_device_descriptor(list[i], &desc) != 0) continue;
-    if (desc.idVendor != kNintendoVid || desc.idProduct != kGameCubePid) continue;
+    if (desc.idVendor != kNintendoVid || desc.idProduct != pid) continue;
     if (!first) first = list[i];
     if (seen++ == slot) found = list[i];
   }
@@ -355,9 +361,9 @@ void initialise(int slot) {
     d.next_try = Clock::now() + std::chrono::milliseconds(700);
   }
 
-  if (pid == kGameCubePid) {
+  if (switch2_pid(pid)) {
     // Over Bluetooth it streams by itself once paired; over USB it needs its start-up sequence.
-    const char* why = bluetooth ? nullptr : gamecube_start(slot);
+    const char* why = bluetooth ? nullptr : gamecube_start(slot, pid);
     if (attempts == 1) {
       if (why) log("switch pro: slot %d %s over USB cannot be started: %s", slot + 1, device_name(pid), why);
       else log("switch pro: slot %d %s %s", slot + 1, device_name(pid),
@@ -544,6 +550,46 @@ void decode_gamecube(Device& d, const uint8_t* r, size_t size) {
   d.full = true; d.streaming = true; d.attempts = 0; d.failed = false;
 }
 
+// The Switch 2 Pro Controller's report has the GameCube controller's shape: report id, two counter
+// bytes, three button bytes, then the two sticks as two 12-bit values each. Its buttons carry
+// their own names, so they go to the same SWPRO_* bits a first Pro Controller uses and the
+// default Switch bindings apply as they are. ZL and ZR are plain buttons: there is no travel.
+void decode_pro2(Device& d, const uint8_t* r, size_t size) {
+  if (size < 12) return;
+  const uint8_t right = r[3], left = r[4];
+  uint16_t b = 0;
+  if (right & 0x01) b |= SWPRO_B;   if (right & 0x02) b |= SWPRO_A;
+  if (right & 0x04) b |= SWPRO_Y;   if (right & 0x08) b |= SWPRO_X;
+  if (right & 0x10) b |= SWPRO_R;   if (right & 0x20) b |= SWPRO_ZR;
+  if (right & 0x40) b |= SWPRO_PLUS; if (right & 0x80) b |= SWPRO_R3;
+  if (left & 0x01) b |= SWPRO_DPAD_DOWN;  if (left & 0x02) b |= SWPRO_DPAD_RIGHT;
+  if (left & 0x04) b |= SWPRO_DPAD_LEFT;  if (left & 0x08) b |= SWPRO_DPAD_UP;
+  if (left & 0x10) b |= SWPRO_L;    if (left & 0x20) b |= SWPRO_ZL;
+  if (left & 0x40) b |= SWPRO_MINUS; if (left & 0x80) b |= SWPRO_L3;
+
+  int nx, ny, cx, cy;
+  unpack_stick(r + 6, &nx, &ny);
+  unpack_stick(r + 9, &cx, &cy);
+  if (!d.origin) {
+    d.origin = true;
+    d.nx = nx; d.ny = ny; d.cx = cx; d.cy = cy;
+    log("switch pro: slot %d Switch 2 Pro Controller streaming, neutral stick %d,%d right stick %d,%d (report %02X, %u bytes)",
+        d.slot + 1, nx, ny, cx, cy, (unsigned)r[0], (unsigned)size);
+  }
+  const auto axis = [](int raw, int centre) {
+    const int delta = raw - centre, sign = delta < 0 ? -1 : 1, magnitude = std::abs(delta) - kStickDead;
+    if (magnitude <= 0) return (int8_t)0;
+    const int value = magnitude * 127 / (kStickRange - kStickDead);
+    return (int8_t)(sign * (value > 127 ? 127 : value));
+  };
+  PadState pad{};
+  pad.err = 0;
+  pad.stick_x = axis(nx, d.nx); pad.stick_y = axis(ny, d.ny);
+  pad.sub_x = axis(cx, d.cx);   pad.sub_y = axis(cy, d.cy);
+  d.pad = pad; d.buttons = b;
+  d.full = true; d.streaming = true; d.attempts = 0; d.failed = false;
+}
+
 // 0x3F "simple": what a Bluetooth pad sends before it has been asked for anything better. The
 // sticks in this mode only report their extremes, so it is a stopgap until 0x30 takes over.
 void decode_simple(Device& d, const uint8_t* r, size_t size) {
@@ -597,6 +643,7 @@ bool switchpro_raw_input(void* device, const uint8_t* report, size_t size, size_
   for (size_t i = 0; i < count; ++i) {
     const uint8_t* r = report + i * size;
     if (d.pid == kGameCubePid) { if (size < 15) continue; decode_gamecube(d, r, size); }
+    else if (d.pid == kPro2Pid) { if (size < 12) continue; decode_pro2(d, r, size); }
     else if (r[0] == 0x30 || r[0] == 0x21 || r[0] == 0x31) decode_full(d, r, size);
     else if (r[0] == 0x3F) decode_simple(d, r, size);
     else continue;
