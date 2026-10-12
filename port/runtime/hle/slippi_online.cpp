@@ -28,11 +28,6 @@
 #include <random>
 #include <thread>
 #include <unordered_map>
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#include <wlanapi.h>
 
 namespace slippi::online {
 namespace {
@@ -337,7 +332,6 @@ bool discord_join_pending() {
   return !g_discord_join_code.empty();
 }
 
-static void wifi_scan_hold(bool hold);   // below
 void cleanup_connection() {
   host::log("slippi: connection cleanup");
   host::cosmetics::thaw_after_online_session();
@@ -352,62 +346,9 @@ void cleanup_connection() {
   g_overwrite_selections.clear();
   g_play_session_active = false;
   g_in_online_match = false;
-  wifi_scan_hold(false);
   trace_end_match();
   host::set_emulation_speed(1.0);
   update_discord_presence(true);   // back to "In the menus" straight away, not two seconds later
-}
-
-// ---------------------------------------------------------------- Wi-Fi during a match
-// Windows scans for other networks every so often while a Wi-Fi adapter is connected, and the
-// radio leaves the channel to do it: nothing is sent or received for up to a second. In a match
-// that is a freeze for everyone in it, since each game waits for the inputs that stopped. While a
-// program holds the adapter in this mode Windows does not scan; closing the handle (the match
-// ending, or the game) puts the adapter back as it was. A wired connection has no such adapter and
-// nothing happens. wlanapi.dll is loaded by name so a system without it (Proton) is unaffected.
-static HANDLE g_wlan = nullptr;
-static HMODULE g_wlan_dll = nullptr;
-static void wifi_scan_hold(bool hold) {
-  using Open = DWORD(WINAPI*)(DWORD, PVOID, PDWORD, PHANDLE);
-  using Close = DWORD(WINAPI*)(HANDLE, PVOID);
-  using Enum = DWORD(WINAPI*)(HANDLE, PVOID, PWLAN_INTERFACE_INFO_LIST*);
-  using Set = DWORD(WINAPI*)(HANDLE, const GUID*, WLAN_INTF_OPCODE, DWORD, const PVOID, PVOID);
-  using Free = VOID(WINAPI*)(PVOID);
-  if (!hold) {
-    if (g_wlan && g_wlan_dll)
-      if (auto close = (Close)GetProcAddress(g_wlan_dll, "WlanCloseHandle")) close(g_wlan, nullptr);
-    g_wlan = nullptr;
-    return;
-  }
-  if (g_wlan || std::getenv("MELEE_KEEP_WIFI_SCAN")) return;
-  if (!g_wlan_dll) g_wlan_dll = LoadLibraryW(L"wlanapi.dll");
-  if (!g_wlan_dll) return;
-  auto open = (Open)GetProcAddress(g_wlan_dll, "WlanOpenHandle");
-  auto close = (Close)GetProcAddress(g_wlan_dll, "WlanCloseHandle");
-  auto list = (Enum)GetProcAddress(g_wlan_dll, "WlanEnumInterfaces");
-  auto set = (Set)GetProcAddress(g_wlan_dll, "WlanSetInterface");
-  auto release = (Free)GetProcAddress(g_wlan_dll, "WlanFreeMemory");
-  if (!open || !close || !list || !set || !release) return;
-  DWORD version = 0; HANDLE handle = nullptr;
-  if (open(2, nullptr, &version, &handle) != ERROR_SUCCESS || !handle) return;   // no Wi-Fi service: wired only
-  PWLAN_INTERFACE_INFO_LIST adapters = nullptr;
-  int connected = 0, held = 0;
-  if (list(handle, nullptr, &adapters) == ERROR_SUCCESS && adapters) {
-    for (DWORD i = 0; i < adapters->dwNumberOfItems; ++i) {
-      const WLAN_INTERFACE_INFO& a = adapters->InterfaceInfo[i];
-      if (a.isState != wlan_interface_state_connected) continue;
-      ++connected;
-      BOOL off = FALSE, on = TRUE;
-      const DWORD scan = set(handle, &a.InterfaceGuid, wlan_intf_opcode_background_scan_enabled, sizeof off, (const PVOID)&off, nullptr);
-      set(handle, &a.InterfaceGuid, wlan_intf_opcode_media_streaming_mode, sizeof on, (const PVOID)&on, nullptr);
-      if (scan == ERROR_SUCCESS) ++held;
-    }
-    release(adapters);
-  }
-  if (!connected) { close(handle, nullptr); return; }
-  g_wlan = handle;
-  host::log("slippi: Wi-Fi connection in use: background network scans %s for this match (%d of %d adapters)",
-            held ? "are off" : "could not be turned off", held, connected);
 }
 
 // ---------------------------------------------------------------- per-frame online flow
@@ -649,7 +590,6 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     if (g_netplay) { g_netplay->GetAndResetAvgPingMs(); g_netplay->StartSlippiGame(); }
     host::log("slippi: online game starts, delay %d frames, direct peer to peer", (int)delay);
     g_in_online_match = true;
-    wifi_scan_hold(true);
     host::input_mark_match_start();
     g_local_checksums.clear(); g_checksums_compared = 0; g_checksums_mismatched = 0; g_trace_desync_pending = false; std::fill(std::begin(g_last_checksum_frame), std::end(g_last_checksum_frame), 0);
   }
