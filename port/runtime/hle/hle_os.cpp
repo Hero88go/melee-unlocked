@@ -34,6 +34,12 @@ HLE(OSPanic) {
   if (ARG1 == 233 && file == "lbmemory.c") host::report_heap_panic(c);
   if (ARG1 == 52 && file == "memory.c") host::report_object_memory();
   host::report_recent_files();
+  // On a mod disc this stop is the screen being loaded not fitting in the game's memory (an older
+  // Akaneia's character select, for one: the log above lists the blocks). The game's own text is
+  // empty, so the player is told what it means; the start of the line is unchanged for grouping.
+  if (ARG1 == 52 && file == "memory.c" && msg.empty() && host::mod_disc_active())
+    host::die("OSPanic at memory.c:52: this mod ran out of the game's memory while loading a screen. "
+              "An older build of a mod can need more than fits here: try the mod's newest build");
   host::die("OSPanic at %s:%u: %s", file.c_str(), ARG1, msg.c_str());
 }
 HLE(__OSUnhandledException) {

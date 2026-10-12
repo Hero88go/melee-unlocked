@@ -1931,6 +1931,22 @@ void report_object_memory() {
     log("heap: object memory %u%s: %u bytes, free %u in %u pieces (largest %u), used %u in %u blocks%s", i,
         i == current ? " (current)" : "", size, free_bytes, free_cells, largest, used_bytes, used_cells,
         whole ? "" : " (lists not read to their end)");
+    // The largest blocks of the heap that ran out: a scene file loads as one block of its own size,
+    // so these figures name what filled it when set beside the files asked for (next line).
+    if (i == current) {
+      std::vector<uint32_t> sizes;
+      uint32_t cell = used_list;
+      for (uint32_t guard = 0; cell && guard < 100000u; ++guard) {
+        uint32_t next = 0, bytes = 0;
+        if (cell < 0x80003000u || cell >= 0x81800000u || !heap_trace_read32(cell + 4u, next) || !heap_trace_read32(cell + 8u, bytes)) break;
+        sizes.push_back(bytes);
+        cell = next;
+      }
+      std::sort(sizes.begin(), sizes.end(), [](uint32_t x, uint32_t y) { return x > y; });
+      std::string text;
+      for (size_t k = 0; k < sizes.size() && k < 10; ++k) text += (k ? ", " : "") + std::to_string(sizes[k]);
+      if (!text.empty()) log("heap: its largest blocks: %s", text.c_str());
+    }
   }
   log_flush();
 }

@@ -7,3 +7,4 @@ Download `MeleeUnlocked-0.8.96-win64.zip` from this release. Close the game and 
 - Controllers: Xbox controller rumble is now sent from its own thread instead of in the middle of a game frame, as GameCube adapter rumble always was.
 - Online: the log line for a wait on another player's inputs now names the player who was behind. In doubles it named the first player whoever the wait was for.
 - Controllers: a controller on the generic path (a GameCube controller on a third-party adapter, a pad the game does not know by name) now has its D-pad bound by default.
+- Mods: when a mod disc runs out of the game's memory while loading a screen (an older Akaneia build's character select does), the stop now says so and suggests the mod's newest build, and the log lists what filled the memory.
