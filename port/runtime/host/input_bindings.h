@@ -193,6 +193,10 @@ inline std::array<PadBindings, 4> default_swpro_bindings() {
   return pads;
 }
 
+// The hat switch of a HID pad, as four buttons above the device's own: many box controllers report
+// their D-pad there (HID button numbers 29 to 32 are free on every device seen so far).
+enum : uint32_t { HID_HAT_UP = 1u << 28, HID_HAT_RIGHT = 1u << 29, HID_HAT_DOWN = 1u << 30, HID_HAT_LEFT = 1u << 31 };
+
 // There is no standard button order across HID gamepads, so this is a starting point rather than a
 // correct mapping: buttons 1-4 as the face buttons, 5 and 6 as the shoulders, 8 as grab and 10 as
 // Start, which is the order most pads and most vJoy feeder configurations report. A device that
@@ -208,13 +212,23 @@ inline std::array<HidBindings, 4> default_hid_bindings() {
     p.mask[(size_t)BindAction::R]      = 1u << 5;
     p.mask[(size_t)BindAction::Z]      = 1u << 7;
     p.mask[(size_t)BindAction::Start]  = 1u << 9;
+    // The hat switch is the D-pad on every ordinary pad, and it was left unbound here: a GameCube
+    // controller on a third-party adapter, or a PlayStation pad this port does not know by name,
+    // came up with no D-pad until the player bound it by hand.
+    p.mask[(size_t)BindAction::DUp]    = HID_HAT_UP;
+    p.mask[(size_t)BindAction::DDown]  = HID_HAT_DOWN;
+    p.mask[(size_t)BindAction::DLeft]  = HID_HAT_LEFT;
+    p.mask[(size_t)BindAction::DRight] = HID_HAT_RIGHT;
   }
   return pads;
 }
-
-// The hat switch of a HID pad, as four buttons above the device's own: many box controllers report
-// their D-pad there (HID button numbers 29 to 32 are free on every device seen so far).
-enum : uint32_t { HID_HAT_UP = 1u << 28, HID_HAT_RIGHT = 1u << 29, HID_HAT_DOWN = 1u << 30, HID_HAT_LEFT = 1u << 31 };
+// The defaults from before the hat was bound, which a settings file saved by an earlier version
+// still holds: a slot with these is as untouched as one with the defaults above.
+inline HidBindings hid_bindings_before_hat() {
+  HidBindings b = default_hid_bindings()[0];
+  for (BindAction a : {BindAction::DUp, BindAction::DDown, BindAction::DLeft, BindAction::DRight}) b.mask[(size_t)a] = 0;
+  return b;
+}
 
 // Box controller layouts, from the Dolphin profiles their firmware or feeder ships (Dolphin numbers
 // DInput buttons from 0, which is bit N here).
