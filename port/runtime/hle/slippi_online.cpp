@@ -28,6 +28,11 @@
 #include <random>
 #include <thread>
 #include <unordered_map>
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <wlanapi.h>
 
 namespace slippi::online {
 namespace {
@@ -332,6 +337,7 @@ bool discord_join_pending() {
   return !g_discord_join_code.empty();
 }
 
+static void wifi_scan_hold(bool hold);   // below
 void cleanup_connection() {
   host::log("slippi: connection cleanup");
   host::cosmetics::thaw_after_online_session();
@@ -346,16 +352,72 @@ void cleanup_connection() {
   g_overwrite_selections.clear();
   g_play_session_active = false;
   g_in_online_match = false;
+  wifi_scan_hold(false);
   trace_end_match();
   host::set_emulation_speed(1.0);
   update_discord_presence(true);   // back to "In the menus" straight away, not two seconds later
 }
 
+// ---------------------------------------------------------------- Wi-Fi during a match
+// Windows scans for other networks every so often while a Wi-Fi adapter is connected, and the
+// radio leaves the channel to do it: nothing is sent or received for up to a second. In a match
+// that is a freeze for everyone in it, since each game waits for the inputs that stopped. While a
+// program holds the adapter in this mode Windows does not scan; closing the handle (the match
+// ending, or the game) puts the adapter back as it was. A wired connection has no such adapter and
+// nothing happens. wlanapi.dll is loaded by name so a system without it (Proton) is unaffected.
+static HANDLE g_wlan = nullptr;
+static HMODULE g_wlan_dll = nullptr;
+static void wifi_scan_hold(bool hold) {
+  using Open = DWORD(WINAPI*)(DWORD, PVOID, PDWORD, PHANDLE);
+  using Close = DWORD(WINAPI*)(HANDLE, PVOID);
+  using Enum = DWORD(WINAPI*)(HANDLE, PVOID, PWLAN_INTERFACE_INFO_LIST*);
+  using Set = DWORD(WINAPI*)(HANDLE, const GUID*, WLAN_INTF_OPCODE, DWORD, const PVOID, PVOID);
+  using Free = VOID(WINAPI*)(PVOID);
+  if (!hold) {
+    if (g_wlan && g_wlan_dll)
+      if (auto close = (Close)GetProcAddress(g_wlan_dll, "WlanCloseHandle")) close(g_wlan, nullptr);
+    g_wlan = nullptr;
+    return;
+  }
+  if (g_wlan || std::getenv("MELEE_KEEP_WIFI_SCAN")) return;
+  if (!g_wlan_dll) g_wlan_dll = LoadLibraryW(L"wlanapi.dll");
+  if (!g_wlan_dll) return;
+  auto open = (Open)GetProcAddress(g_wlan_dll, "WlanOpenHandle");
+  auto close = (Close)GetProcAddress(g_wlan_dll, "WlanCloseHandle");
+  auto list = (Enum)GetProcAddress(g_wlan_dll, "WlanEnumInterfaces");
+  auto set = (Set)GetProcAddress(g_wlan_dll, "WlanSetInterface");
+  auto release = (Free)GetProcAddress(g_wlan_dll, "WlanFreeMemory");
+  if (!open || !close || !list || !set || !release) return;
+  DWORD version = 0; HANDLE handle = nullptr;
+  if (open(2, nullptr, &version, &handle) != ERROR_SUCCESS || !handle) return;   // no Wi-Fi service: wired only
+  PWLAN_INTERFACE_INFO_LIST adapters = nullptr;
+  int connected = 0, held = 0;
+  if (list(handle, nullptr, &adapters) == ERROR_SUCCESS && adapters) {
+    for (DWORD i = 0; i < adapters->dwNumberOfItems; ++i) {
+      const WLAN_INTERFACE_INFO& a = adapters->InterfaceInfo[i];
+      if (a.isState != wlan_interface_state_connected) continue;
+      ++connected;
+      BOOL off = FALSE, on = TRUE;
+      const DWORD scan = set(handle, &a.InterfaceGuid, wlan_intf_opcode_background_scan_enabled, sizeof off, (const PVOID)&off, nullptr);
+      set(handle, &a.InterfaceGuid, wlan_intf_opcode_media_streaming_mode, sizeof on, (const PVOID)&on, nullptr);
+      if (scan == ERROR_SUCCESS) ++held;
+    }
+    release(adapters);
+  }
+  if (!connected) { close(handle, nullptr); return; }
+  g_wlan = handle;
+  host::log("slippi: Wi-Fi connection in use: background network scans %s for this match (%d of %d adapters)",
+            held ? "are off" : "could not be turned off", held, connected);
+}
+
 // ---------------------------------------------------------------- per-frame online flow
+// The remote player the current wait is for, and how far along they were when it began.
+static int g_input_wait_player = 0;
 bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
   auto st = g_netplay->GetSlippiConnectStatus();
   if (st == NetplayClient::ConnectStatus::FAILED || st == NetplayClient::ConnectStatus::DISCONNECTED) return false;
   bool any_needs_inputs = false;
+  int behind = -1;
   uint8_t remote_count = bounded_remote_count();
   for (uint8_t i = 0; i < remote_count; ++i) {
     auto pad = g_netplay->GetSlippiRemotePad(i, ROLLBACK_MAX_FRAMES);
@@ -373,6 +435,7 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
     if (enough) { g_stall_frame_counts[i] = 0; continue; }
     g_stall_frame_counts[i]++;
     any_needs_inputs = true;
+    if (behind < 0) behind = i;
     if (g_stall_frame_counts[i] > 60 * 7) {
       host::log("slippi: force-disconnecting player %u after 7 s stall (frame %d, latest %d)", pad->player_idx, frame, latest);
       g_netplay->ForceDisconnectPlayer(pad->player_idx);
@@ -385,10 +448,13 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
   if (any_needs_inputs) {
     if (g_input_wait_frames++ == 0) {
       ++g_match_input_waits;
-      auto pad = g_netplay->GetSlippiRemotePad(0, ROLLBACK_MAX_FRAMES);
+      // The player who is behind, not always the first one: with three others in a doubles match
+      // this line used to name the first player's frame whoever the wait was for.
+      g_input_wait_player = behind < 0 ? 0 : behind;
+      auto pad = g_netplay->GetSlippiRemotePad(g_input_wait_player, ROLLBACK_MAX_FRAMES);
       g_input_wait_latest = pad->latest_frame;
-      host::log("slippi: waiting for the other player's inputs on frame %d (their latest frame %d, ping %u ms)",
-                frame, pad->latest_frame, (unsigned)g_netplay->LastPingMs());
+      host::log("slippi: waiting for the other player's inputs on frame %d (player %d of %u others, their latest frame %d, ping %u ms)",
+                frame, g_input_wait_player + 1, (unsigned)remote_count, pad->latest_frame, (unsigned)g_netplay->LastPingMs());
     }
     return true;
   }
@@ -396,7 +462,7 @@ bool should_skip_online_frame(int32_t frame, int32_t finalized_frame) {
     // Which side stopped: while this side waited N frames, a game that kept running sent N or more
     // new frames, and they arrive together once the connection lets them through. A game that had
     // itself stopped comes back with few.
-    auto pad = g_netplay->GetSlippiRemotePad(0, ROLLBACK_MAX_FRAMES);
+    auto pad = g_netplay->GetSlippiRemotePad(g_input_wait_player < (int)remote_count ? g_input_wait_player : 0, ROLLBACK_MAX_FRAMES);
     const int gained = pad->latest_frame - g_input_wait_latest;
     host::log("slippi: inputs arrived on frame %d after waiting %d frames (%.2f s); their latest frame went %d to %d: %s", frame,
               g_input_wait_frames, g_input_wait_frames / 60.0, g_input_wait_latest, pad->latest_frame,
@@ -583,6 +649,7 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     if (g_netplay) { g_netplay->GetAndResetAvgPingMs(); g_netplay->StartSlippiGame(); }
     host::log("slippi: online game starts, delay %d frames, direct peer to peer", (int)delay);
     g_in_online_match = true;
+    wifi_scan_hold(true);
     host::input_mark_match_start();
     g_local_checksums.clear(); g_checksums_compared = 0; g_checksums_mismatched = 0; g_trace_desync_pending = false; std::fill(std::begin(g_last_checksum_frame), std::end(g_last_checksum_frame), 0);
   }
