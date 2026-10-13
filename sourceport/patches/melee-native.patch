@@ -149003,7 +149003,7 @@ index 004e1a095..04271f713 100644
  
      Item_80268E5C(gobj, 0, ITEM_ANIM_UPDATE);
 diff --git a/src/melee/it/kinds/itwhitebea.c b/src/melee/it/kinds/itwhitebea.c
-index f8c2674d1..8ce3bd30b 100644
+index f8c2674d1..2cc23f856 100644
 --- a/src/melee/it/kinds/itwhitebea.c
 +++ b/src/melee/it/kinds/itwhitebea.c
 @@ -3,8 +3,8 @@
@@ -149072,7 +149072,20 @@ index f8c2674d1..8ce3bd30b 100644
      Item* ip2;
      f32 dx;
      f32 dy;
-@@ -319,16 +317,12 @@ void it_802E37BC(Item_GObj* gobj)
+@@ -288,7 +286,11 @@ void it_802E3784(Item_GObj* gobj, Item_GObj* ref_gobj)
+ void it_802E37A4(Item_GObj* gobj)
+ {
+     if (gobj != NULL) {
+-        GET_ITEM(gobj)->xDD4_itemVar.freeze.x20 = NULL;
++        /* The Topi's own field (ip+DF4). Written through the ice block's struct it was the
++         * same word on the console; with 64-bit pointers the block's x20 lies 8 bytes further
++         * on, so the Topi kept a pointer to a block already freed and read it (a crash at
++         * it_8028ECF0 / HSD_GObjGetUserData on Icicle Mountain). */
++        GET_ITEM(gobj)->xDD4_itemVar.whitebea.x20 = NULL;
+     }
+ }
+ 
+@@ -319,16 +321,12 @@ void it_802E37BC(Item_GObj* gobj)
  bool it_802E3884(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -149092,7 +149105,7 @@ index f8c2674d1..8ce3bd30b 100644
          if (HSD_Randf() < it_804D6D40->x8) {
              it_802E4980(gobj);
          } else {
-@@ -382,11 +376,11 @@ bool itWhitebea_UnkMotion0_Coll(Item_GObj* gobj)
+@@ -382,11 +380,11 @@ bool itWhitebea_UnkMotion0_Coll(Item_GObj* gobj)
  void it_802E3AC8(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -149106,7 +149119,7 @@ index f8c2674d1..8ce3bd30b 100644
      ip->x40_vel.z = 0.0f;
      ip->x40_vel.y = 0.0f;
      it_8027C56C(gobj, ip->facing_dir);
-@@ -431,7 +425,7 @@ bool itWhitebea_UnkMotion1_Anim(Item_GObj* gobj)
+@@ -431,7 +429,7 @@ bool itWhitebea_UnkMotion1_Anim(Item_GObj* gobj)
  void itWhitebea_UnkMotion1_Phys(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -149115,7 +149128,7 @@ index f8c2674d1..8ce3bd30b 100644
      s32 range;
      PAD_STACK(16);
  
-@@ -465,7 +459,7 @@ bool itWhitebea_UnkMotion1_Coll(Item_GObj* gobj)
+@@ -465,7 +463,7 @@ bool itWhitebea_UnkMotion1_Coll(Item_GObj* gobj)
  void it_802E3DA0(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -149124,7 +149137,7 @@ index f8c2674d1..8ce3bd30b 100644
      PAD_STACK(8);
      ip->xDD4_itemVar.whitebea.x40 = 0;
      ip->x40_vel.x *= attrs->x4;
-@@ -567,10 +561,10 @@ bool itWhitebea_UnkMotion4_Coll(Item_GObj* gobj)
+@@ -567,10 +565,10 @@ bool itWhitebea_UnkMotion4_Coll(Item_GObj* gobj)
  void it_802E40A4(Item_GObj* gobj)
  {
      Item* ip = HSD_GObjGetUserData(gobj);
@@ -149137,7 +149150,7 @@ index f8c2674d1..8ce3bd30b 100644
      ip->x40_vel.z = 0.0f;
      ip->x40_vel.y = 0.0f;
      it_8027C56C(gobj, ip->facing_dir);
-@@ -618,8 +612,8 @@ bool itWhitebea_UnkMotion2_Anim(Item_GObj* gobj)
+@@ -618,8 +616,8 @@ bool itWhitebea_UnkMotion2_Anim(Item_GObj* gobj)
      if (!it_80272C6C(gobj)) {
          ip->xDD4_itemVar.whitebea.x40 = 0;
          ip = HSD_GObjGetUserData(gobj);
@@ -149148,7 +149161,7 @@ index f8c2674d1..8ce3bd30b 100644
          ip->x40_vel.z = 0.0f;
          ip->x40_vel.y = 0.0f;
          it_8027C56C(gobj, ip->facing_dir);
-@@ -680,7 +674,7 @@ bool itWhitebea_UnkMotion5_Coll(Item_GObj* gobj)
+@@ -680,7 +678,7 @@ bool itWhitebea_UnkMotion5_Coll(Item_GObj* gobj)
  void it_802E4464(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -149157,7 +149170,7 @@ index f8c2674d1..8ce3bd30b 100644
      PAD_STACK(8);
      it_802762BC(ip);
      ip->x40_vel.y = attrs->x10;
-@@ -721,7 +715,7 @@ void it_802E4558(Item_GObj* gobj)
+@@ -721,7 +719,7 @@ void it_802E4558(Item_GObj* gobj)
  bool itWhitebea_UnkMotion7_Anim(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -149166,7 +149179,7 @@ index f8c2674d1..8ce3bd30b 100644
      PAD_STACK(16);
      if (!it_80272C6C(gobj)) {
          ip->xDD4_itemVar.whitebea.x3C = 1;
-@@ -763,7 +757,7 @@ void it_2725_Logic9_Dropped(Item_GObj* gobj)
+@@ -763,7 +761,7 @@ void it_2725_Logic9_Dropped(Item_GObj* gobj)
      PAD_STACK(8);
      it_8027CBA4(gobj);
      ip = GET_ITEM(gobj);
@@ -149175,7 +149188,7 @@ index f8c2674d1..8ce3bd30b 100644
      ip->xDD4_itemVar.whitebea.x40 = 0;
      ip->x40_vel.x *= attrs->x4;
      if ((ip->facing_dir > 0.0f && ip->x70_nudge.x < 0.0f) ||
-@@ -837,9 +831,7 @@ bool itWhitebea_UnkMotion10_Coll(Item_GObj* gobj)
+@@ -837,9 +835,7 @@ bool itWhitebea_UnkMotion10_Coll(Item_GObj* gobj)
  void it_802E4980(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);

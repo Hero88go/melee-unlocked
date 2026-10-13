@@ -84,6 +84,23 @@ class ThreadedBackend final : public Backend {
     for (;;) {
       host::window_pump();
       const auto& live_options = render_options(renderer);
+      // A fixed cap the monitor's rate is not a whole multiple of (60 on 144 or 175 Hz) shows each
+      // frame for an uneven number of refreshes, which reads as choppy, unless variable refresh is
+      // on. Reports of "60 feels like 30" give no monitor rate, so it is logged once, and again
+      // when the cap or the monitor changes.
+      {
+        static int told_cap = -2; static long told_hz = -1;
+        const long hz = std::lround(host::window_refresh_rate());
+        if (live_options.fps_cap > 0 && hz > 0 && (live_options.fps_cap != told_cap || hz != told_hz)) {
+          told_cap = live_options.fps_cap; told_hz = hz;
+          const double ratio = (double)hz / live_options.fps_cap;
+          if (live_options.fps_cap < hz && std::fabs(ratio - std::round(ratio)) > 0.05)
+            host::log("display: monitor %ld Hz, frame cap %d: %.2f refreshes a frame, so frames are shown for uneven times "
+                      "(choppy) unless G-Sync or FreeSync is on; the Monitor cap or a cap that divides %ld is even",
+                      hz, live_options.fps_cap, ratio, hz);
+          else host::log("display: monitor %ld Hz, frame cap %d", hz, live_options.fps_cap);
+        }
+      }
       if (live_options.fps_cap > 0) cap_period = 1.0 / live_options.fps_cap;
       else if (live_options.fps_cap == 0 && present_uncapped) cap_period = 0;
       else if (host::now_seconds() >= refresh_check) {
