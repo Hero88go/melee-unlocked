@@ -574,6 +574,22 @@ void wasapi_thread() {
   CoUninitialize();
 }
 
+// Declares the stream as game sound, set before it is initialized. Untagged, Windows files it as
+// "Other", and audio suites that lower other programs when a stream starts (one player: other apps
+// got quieter as the game launched) treat it by category. Game media is never a reason to duck
+// anything. A system without IAudioClient2 (before Windows 8) is left as it was.
+void tag_game_stream(IAudioClient* client) {
+  IAudioClient2* client2 = nullptr;
+  if (!client || FAILED(client->QueryInterface(__uuidof(IAudioClient2), (void**)&client2))) return;
+  AudioClientProperties properties{};
+  properties.cbSize = sizeof properties;
+  properties.eCategory = AudioCategory_GameMedia;
+  const HRESULT hr = client2->SetClientProperties(&properties);
+  client2->Release();
+  static bool told = false;
+  if (!told) { told = true; log("audio: stream declared as game media%s", SUCCEEDED(hr) ? "" : " (refused, left as other)"); }
+}
+
 bool wasapi_open() {
   HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) { log("audio: CoInitialize failed (%08X)", (unsigned)hr); return false; }
@@ -720,6 +736,7 @@ bool wasapi_open() {
       IAudioClient3* client3 = nullptr;
       hr = g_client->QueryInterface(__uuidof(IAudioClient3), (void**)&client3);
       if (SUCCEEDED(hr)) {
+        tag_game_stream(g_client);
         hr = client3->InitializeSharedAudioStream(AUDCLNT_STREAMFLAGS_EVENTCALLBACK, candidate.minimum,
                                                 (const WAVEFORMATEX*)&candidate.format, nullptr);
         client3->Release();
@@ -743,7 +760,7 @@ bool wasapi_open() {
   if (!g_client) return false;
   if (g_exclusive) hr = S_OK;
   // Older devices and unsupported low-period formats retain the compatible conversion path.
-  if (FAILED(hr)) hr = g_client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 0, 0, &fmt, nullptr);
+  if (FAILED(hr)) { tag_game_stream(g_client); hr = g_client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 0, 0, &fmt, nullptr); }
   if (FAILED(hr)) hr = g_client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 20 * 10000 /* 20 ms */, 0, &fmt, nullptr);
   if (FAILED(hr)) { log("audio: IAudioClient initialize failed (%08X)", (unsigned)hr); g_client->Release(); g_client = nullptr; return false; }
   g_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);

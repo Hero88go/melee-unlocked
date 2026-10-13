@@ -1811,8 +1811,12 @@ void h_pad_read(MuPadStatus out[4]) {
 // Sending them straight to the adapter ignored the setting. A replay rumbles nobody.
 void h_pad_rumble(int32_t port, int32_t on) {
   if (g_replaying) on = 0;
+  // Online the game already keeps only the local player's motor (mu_online_motor_port), and what
+  // it passes is the controller port that player's input comes from, not their slot in the match.
+  // Comparing that with the slot dropped every rumble whenever the two differ (a player who is
+  // not player 1 online: no rumble at all on the Source Port, while the Static Recomp rumbled).
   if (slippi::online::is_online_match()) {
-    if (port == slippi::online::local_player_slot()) host::input_rumble_local(on != 0);
+    host::input_rumble_local(on != 0);
     return;
   }
   host::input_rumble(port, on != 0);
