@@ -6348,6 +6348,20 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         if (ImGui::IsItemHovered())
           ImGui::SetTooltip("Choose an installed skin for the stage being played, starting next match.\n"
                             "Online uses only skins with matching gameplay data. Your fixed choices are saved.");
+        // One row per mod disc that brought stage skins: in the random pick, or left out of it.
+        for (const auto& pack : host::cosmetics::stage_packs()) {
+          ImGui::PushID(pack.key.c_str());
+          bool in_pick = pack.random;
+          const std::string label = pack.name + ": " + std::to_string(pack.skins) +
+              (pack.skins == 1 ? " stage skin" : " stage skins") + " for " + std::to_string(pack.stages) +
+              (pack.stages == 1 ? " stage" : " stages") + ", in the random pick";
+          if (ImGui::Checkbox(label.c_str(), &in_pick)) {
+            std::string error;
+            mod_message = host::cosmetics::set_stage_pack_random(pack.key, in_pick, &error) ?
+                host::cosmetics::last_message() : error;
+          }
+          ImGui::PopID();
+        }
         ImGui::TextWrapped("Imports use one shared native profile. Stage DATs that fail the exact-ISO "
                            "visual check use the clean disc resource online. Changes take effect after restart.");
         ImGui::TextWrapped("On the character select screen, L and R step the highlighted costume through "
@@ -6799,8 +6813,15 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
             ImGui::TextUnformatted(label.c_str());
             int current = 0;
             std::vector<std::string> option_storage{"Vanilla"};
+            // A mod disc can bring many skins for one stage: they are listed by the disc's name and a
+            // number, not by the full "<stage>: from <disc> (<set>)" name. A name the player gave stays.
+            std::map<std::string, int> pack_count;
             for (size_t i = 0; i < variants.size(); ++i) {
-              option_storage.push_back(variants[i]->name +
+              const bool pack_stage = variants[i]->kind == "stage_visual" && variants[i]->source == "disc" &&
+                                      variants[i]->name.find(": from ") != std::string::npos;
+              option_storage.push_back((pack_stage ? variants[i]->source_name + " " +
+                                                         std::to_string(++pack_count[variants[i]->pack])
+                                                   : variants[i]->name) +
                   (variants[i]->available ? "" : " (unavailable)"));
               if (variants[i]->selected && variants[i]->available) current = (int)i + 1;
             }

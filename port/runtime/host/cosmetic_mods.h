@@ -262,6 +262,16 @@ RepublishResult republish_stage(uint8_t* fst, uint32_t fst_size, const std::stri
 // Default off. Takes effect at the next match; saved fixed choices are preserved.
 bool random_stage_skins();
 bool set_random_stage_skins(bool enabled, std::string* error = nullptr);
+// The mod discs and files packs that brought stage skins, one row each. `random` says whether the
+// pack's stage skins are in the random pick (on until the player switches it off); a fixed choice
+// of one of its stages in the list is not affected.
+struct StagePackInfo {
+  std::string key, name;
+  uint32_t skins = 0, stages = 0;
+  bool random = true;
+};
+std::vector<StagePackInfo> stage_packs();
+bool set_stage_pack_random(const std::string& pack_key, bool enabled, std::string* error = nullptr);
 // Called once before match DVD preload, with a host-owned monotonically increasing token.
 // Repeated calls with that token retain the same choice, including during rollback.
 RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::string& stage_file,

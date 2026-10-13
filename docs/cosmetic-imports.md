@@ -162,7 +162,11 @@ else is listed as off online, with the reason.
 - Costumes inside a mod disc or a files pack in the Mods folder are listed as skins too, named
   "Fox Green: from <pack name>". Nothing is copied: the catalog records where the file is in the
   disc and its SHA-256, and reads it from there. Nothing is selected for you.
-- Only costume files that differ from your Melee disc are listed. If the disc is moved or
+- Stage files inside a mod disc are listed the same way, as stage skins named
+  "Battlefield: from <pack name>". Alternate stages a disc keeps under another extension
+  (`GrNBa.0at`, `GrNBa.1at`) are each a skin of that stage, so "Random installed stage skin each
+  match" can rotate them. They get the stage checks an added stage DAT gets.
+- Only costume and stage files that differ from your Melee disc are listed. If the disc is moved or
   replaced, its skins show "disc file missing or changed" until the game scans it again.
 - The scan runs once per disc at startup. For tests: `--iso <Melee disc> --scan-disc-skins <mod.iso>`,
   then `--cosmetic-status` for the ids and `--select-cosmetic <id>` to pick one.

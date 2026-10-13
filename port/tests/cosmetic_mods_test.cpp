@@ -1340,6 +1340,75 @@ int main(int argc, char** argv) {
     g_disc_table.clear(); g_disc_bytes.clear();
   }
 
+  // A mod disc's stages: GrNBa.0at beside GrNBa.dat, the way a dynamic alternate stages disc keeps
+  // them. The alternate that differs from the game's stage is a stage skin; nothing is selected, and
+  // "random stage skin each match" can pick it.
+  {
+    fs::path stage_folder = folder / L"disc-stages";
+    fs::create_directories(stage_folder, ec);
+    host::cosmetics::configure((stage_folder / L"port-settings.ini").string());
+    const auto retail_stage = visual_dat();
+    auto alternate_stage = visual_dat(); alternate_stage[0x20 + 0x20] = 3;
+    constexpr uint32_t retail_at = 0x100;
+    g_disc_bytes.assign(0x1000, 0);
+    std::copy(retail_stage.begin(), retail_stage.end(), g_disc_bytes.begin() + retail_at);
+    g_disc_table = {{"GrNBa.dat", {retail_at, (uint32_t)retail_stage.size()}}};
+    constexpr uint32_t fst_at = 0x500, same_at = 0x800, alternate_at = 0x1000;
+    const auto mod_fst = two_file_fst("GrNBa.dat", same_at, (uint32_t)retail_stage.size(),
+                                      "GrNBa.0at", alternate_at, (uint32_t)alternate_stage.size());
+    std::vector<uint8_t> image(0x1800, 0);
+    be32(image, 0x424, fst_at); be32(image, 0x428, (uint32_t)mod_fst.size());
+    std::copy(mod_fst.begin(), mod_fst.end(), image.begin() + fst_at);
+    std::copy(retail_stage.begin(), retail_stage.end(), image.begin() + same_at);
+    std::copy(alternate_stage.begin(), alternate_stage.end(), image.begin() + alternate_at);
+    fs::path iso_path = stage_folder / L"stages.iso";
+    write_file(iso_path, image);
+
+    auto scan = host::cosmetics::scan_disc_skins(iso_path.string(), "Stage Pack", &error);
+    auto listed = host::cosmetics::assets();
+    check(scan.ok && listed.size() == 1 && scan.message.find("1 stage skins") != std::string::npos,
+          "the mod disc's one changed stage is listed, the unchanged one is not");
+    check(listed.size() == 1 && listed[0].kind == "stage_visual" && listed[0].source == "disc" &&
+              listed[0].target_path == "GrNBa.dat" && listed[0].name == "Battlefield: from Stage Pack (alt 0AT)" &&
+              !listed[0].selected && listed[0].available,
+          "the disc stage is a choice for its stage, named after the pack, and not selected");
+    host::cosmetics::configure((stage_folder / L"port-settings.ini").string());
+    listed = host::cosmetics::assets();
+    check(listed.size() == 1 && listed[0].kind == "stage_visual" && listed[0].available,
+          "the disc stage reloads from the catalog");
+    const std::string stage_skin = listed.empty() ? std::string() : listed[0].id;
+    auto game_fst = one_file_fst(retail_at, (uint32_t)retail_stage.size(), "GrNBa.dat");
+    host::cosmetics::apply_to_fst(game_fst.data(), (uint32_t)game_fst.size());
+    check(host::cosmetics::applied_asset(retail_at).empty(), "an unselected disc stage overrides nothing");
+    check(host::cosmetics::set_random_stage_skins(true, &error), "random stage skins can be turned on with only disc stages");
+    auto pick = host::cosmetics::plan_stage_skin(game_fst.data(), (uint32_t)game_fst.size(), "GrNBa.dat", 7);
+    std::vector<uint8_t> served(alternate_stage.size());
+    check(pick.ok && host::cosmetics::applied_asset(retail_at) == stage_skin &&
+              host::cosmetics::read(retail_at, 0, served.data(), (uint32_t)served.size()) ==
+                  host::cosmetics::OverrideRead::Success && served == alternate_stage,
+          "a random match picks the disc stage and serves it from the mod disc's bytes");
+    pick = host::cosmetics::plan_stage_skin(game_fst.data(), (uint32_t)game_fst.size(), "/GrNBa", 8);
+    check(pick.ok && host::cosmetics::applied_asset(retail_at) == stage_skin,
+          "a stage the game names without an extension finds its skins too");
+    // The pack's switch: out of the random pick, the stage is the standard one; the choice is saved.
+    auto stage_packs = host::cosmetics::stage_packs();
+    check(stage_packs.size() == 1 && stage_packs[0].name == "Stage Pack" && stage_packs[0].skins == 1 &&
+              stage_packs[0].stages == 1 && stage_packs[0].random,
+          "the disc is one stage pack, in the random pick until switched off");
+    const std::string stage_pack = stage_packs.empty() ? std::string() : stage_packs[0].key;
+    check(host::cosmetics::set_stage_pack_random(stage_pack, false, &error), "the pack can be taken out of the random pick");
+    pick = host::cosmetics::plan_stage_skin(game_fst.data(), (uint32_t)game_fst.size(), "GrNBa.dat", 9);
+    check(pick.ok && host::cosmetics::applied_asset(retail_at).empty(),
+          "a pack out of the random pick leaves the standard stage");
+    host::cosmetics::configure((stage_folder / L"port-settings.ini").string());
+    stage_packs = host::cosmetics::stage_packs();
+    check(stage_packs.size() == 1 && !stage_packs[0].random, "the pack's switch is saved with the profile");
+    check(host::cosmetics::set_stage_pack_random(stage_pack, true, &error) && host::cosmetics::stage_packs()[0].random,
+          "and it can be put back");
+    check(host::cosmetics::set_random_stage_skins(false, &error), "random stage skins off again");
+    g_disc_table.clear(); g_disc_bytes.clear();
+  }
+
   // A pack's alternate costumes: PlFxNr.lat and PlFxNr.rat beside PlFxNr.dat, the way the 20XX
   // Hack Pack keeps its L and R sets. Each differing one is its own choice for the slot.
   {
@@ -1431,9 +1500,9 @@ int main(int argc, char** argv) {
       std::ifstream in(state, std::ios::binary);
       std::string text((std::istreambuf_iterator<char>(in)), {});
       in.close();
-      const size_t at = text.find("\"rules\": 5");
+      const size_t at = text.find("\"rules\": 6");
       check(at != std::string::npos, "the scan records the rules it used");
-      if (at != std::string::npos) text.replace(at, 10, "\"rules\": 4");
+      if (at != std::string::npos) text.replace(at, 10, "\"rules\": 5");
       std::ofstream out(state, std::ios::binary); out << text;
     }
     host::cosmetics::configure((alt_folder / L"port-settings.ini").string());

@@ -275,8 +275,9 @@ void install() {
 }  // namespace voice_banks
 
 namespace random_stage_skins {
-ppc::Fn previous = nullptr;
-void preload_scene(ppc::Context& c, uint8_t* m) {
+// At the entry of preloadState. The game calls it directly, which a dispatch hook (ppc::set_hook)
+// never sees, so this is an entry hook.
+void preload_scene(ppc::Context& c) {
   const uint32_t state = c.r[3];
   if (!host::mod_disc_active() && !slippi::playback::enabled() && host::try_ptr(state, 24)) {
     const uint8_t kind = host::rd8(state + 12);
@@ -314,14 +315,12 @@ void preload_scene(ppc::Context& c, uint8_t* m) {
       for (int i = 0; i < 10; ++i) c.r[3 + i] = saved[i];
     }
   }
-  previous(c, m);
 }
 void install() {
   static bool done = false;
   if (done) return;
   done = true;
-  previous = ppc::set_hook(0x801A3F48u, preload_scene);
-  if (!previous) { ppc::set_hook(0x801A3F48u, nullptr); host::log("cosmetics: random stage preload hook unavailable"); }
+  ppc::add_entry_hook(0x801A3F48u, preload_scene);
 }
 } // namespace random_stage_skins
 

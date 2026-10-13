@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cctype>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -84,8 +85,9 @@ struct DiscScan { std::string path; uint64_t size = 0; int64_t mtime = 0; uint32
 // verdict taken at scan time. 3: the pack's own portraits, from its character select file. 4: the
 // skeleton check reads the relocation table (a joint at data offset 0 is a joint) and its reason
 // names the bone. 5: a costume whose blended mesh names a bone with no bind matrix is marked, since
-// the game stops when it draws one. A disc scanned under an older number is scanned again at the next boot.
-constexpr uint32_t kScanRules = 5;
+// the game stops when it draws one. 6: a disc's stage files are listed as stage skins. A disc scanned
+// under an older number is scanned again at the next boot.
+constexpr uint32_t kScanRules = 6;
 constexpr const char* kImportPack = "import";
 constexpr const char* kDiscSource = "disc";
 constexpr const char* kDiscChanged = "disc file missing or changed";
@@ -93,6 +95,7 @@ constexpr const char* kDiscChanged = "disc file missing or changed";
 struct Profile {
   bool enabled = true;
   bool random_stage_skins = false;
+  std::map<std::string, bool> stage_packs_off;   // packs whose stage skins stay out of the random pick
   uint64_t generation = 1;
   std::map<std::string, std::string> selections;
 };
@@ -455,12 +458,23 @@ json catalog_json_locked() {
   return root;
 }
 
+// Optional in the file: a profile written before the switch existed has every pack in the pick.
+void load_stage_packs_off(const json& profile, Profile* out) {
+  const auto off = profile.find("stage_packs_off");
+  if (off == profile.end() || !off->is_array()) return;
+  for (const auto& pack : *off) if (pack.is_string()) out->stage_packs_off[pack.get<std::string>()] = true;
+}
+
 json profile_json_locked() {
   json root;
   root["schema_version"] = kProfileSchema;
   root["name"] = "Default";
   root["enabled"] = g_profile.enabled;
   root["random_stage_skins"] = g_profile.random_stage_skins;
+  if (!g_profile.stage_packs_off.empty()) {
+    root["stage_packs_off"] = json::array();
+    for (const auto& pack : g_profile.stage_packs_off) root["stage_packs_off"].push_back(pack.first);
+  }
   root["generation"] = g_profile.generation;
   root["selections"] = json::object();
   for (const auto& pick : g_profile.selections) root["selections"][pick.first] = pick.second;
@@ -579,6 +593,7 @@ void load_profile_locked() {
         !root["selections"].is_object()) throw std::runtime_error("schema");
     g_profile.enabled = root.value("enabled", true);
     g_profile.random_stage_skins = root.value("random_stage_skins", false);
+    load_stage_packs_off(root, &g_profile);
     g_profile.generation = std::max<uint64_t>(1, root.value("generation", 1ull));
     for (auto it = root["selections"].begin(); it != root["selections"].end(); ++it) {
       if (!it.value().is_string() || it.key().find('/') != std::string::npos ||
@@ -648,6 +663,7 @@ bool load_state_locked(bool* exists) {
     Profile next;
     next.enabled = profile.value("enabled", true);
     next.random_stage_skins = profile.value("random_stage_skins", false);
+    load_stage_packs_off(profile, &next);
     next.generation = std::max<uint64_t>(1, profile.value("generation", 1ull));
     for (auto it = profile.at("selections").begin(); it != profile.at("selections").end(); ++it) {
       if (!it.value().is_string() || it.key().find('/') != std::string::npos ||
@@ -3243,17 +3259,36 @@ struct DiscCandidate { std::string member; fs::path file; uint64_t offset = 0, l
 // "PlFxGr.rat" are the 20XX style L and R alternates). *variant names the set: "" for the costume
 // itself, "alt L", "alt R", or "alt <EXT>" for any other such extension. The name decides here; the
 // content is checked by the caller (it must be a costume of that slot).
-bool disc_skin_member(const std::string& raw, std::string* variant) {
-  const std::string name = lower(raw);
-  SlotName slot;
-  if (name.size() != 10 || name[6] != '.' || !find_slot(name.substr(0, 6) + ".dat", &slot)) return false;
-  const std::string extension = name.substr(7);
+bool disc_skin_set(const std::string& extension, std::string* variant) {
   if (extension == "dat" || extension == "usd") { variant->clear(); return true; }
   if (extension.size() != 3 || extension.compare(1, 2, "at") != 0) return false;
   if (extension == "lat") *variant = "alt L";
   else if (extension == "rat") *variant = "alt R";
   else *variant = std::string("alt ") + (char)std::toupper((unsigned char)extension[0]) + "AT";
   return true;
+}
+
+bool disc_skin_member(const std::string& raw, std::string* variant) {
+  const std::string name = lower(raw);
+  SlotName slot;
+  if (name.size() != 10 || name[6] != '.' || !find_slot(name.substr(0, 6) + ".dat", &slot)) return false;
+  return disc_skin_set(name.substr(7), variant);
+}
+
+// A file name that holds a stage of the game: "GrNBa.dat", the English "GrPs.usd", or a pack's
+// alternate for that stage under another extension ending in "at" ("GrNBa.0at" and "GrNBa.1at" are
+// the 20XX style alternate stages). *target is the stage's file on the game disc and *label its
+// name; *variant names the set as for a costume. The content is checked by the caller.
+bool disc_stage_member(const std::string& raw, std::string* target, std::string* label, std::string* variant) {
+  const std::string name = lower(raw);
+  const size_t dot = name.find('.');
+  if (dot == std::string::npos || name.size() != dot + 4) return false;
+  for (const auto& resource : kStageResources) {
+    if (name.compare(0, dot, resource.token) != 0) continue;
+    *target = resource.path; *label = resource.label;
+    return disc_skin_set(name.substr(dot + 1), variant);
+  }
+  return false;
 }
 
 // A pack's character select file, where its portraits are: the English MnSlChr.usd when the pack
@@ -3265,7 +3300,8 @@ void note_select_screen(const std::string& name, const fs::path& file, uint64_t 
     *screen = {name, file, offset, length};
 }
 
-// Every file in a disc image whose name is a costume of a slot of the game (disc_skin_member).
+// Every file in a disc image whose name is a costume of a slot of the game (disc_skin_member) or one
+// of its stages (disc_stage_member).
 // *screen gets the disc's character select file when it has one.
 bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, DiscCandidate* screen,
                         std::string* error) {
@@ -3281,9 +3317,9 @@ bool disc_costume_files(const fs::path& iso, std::vector<DiscCandidate>* out, Di
   for (const auto& file : files) {
     const size_t slash = file.path.find_last_of('/');
     const std::string name = slash == std::string::npos ? file.path : file.path.substr(slash + 1);
-    std::string variant;
+    std::string variant, stage, label;
     note_select_screen(name, iso, file.start, file.size, screen);
-    if (!disc_skin_member(name, &variant)) continue;
+    if (!disc_skin_member(name, &variant) && !disc_stage_member(name, &stage, &label, &variant)) continue;
     out->push_back({name, iso, file.start, file.size});
   }
   return true;
@@ -3294,11 +3330,11 @@ void folder_costume_files(const fs::path& root, std::vector<DiscCandidate>* out,
   for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec)) {
     if (!it->is_regular_file(ec)) continue;
     const std::string name = path_filename_utf8(it->path());
-    std::string variant;
+    std::string variant, stage, label;
     const uint64_t length = it->file_size(ec);
     if (ec) continue;
     note_select_screen(name, it->path(), 0, length, screen);
-    if (!disc_skin_member(name, &variant)) continue;
+    if (!disc_skin_member(name, &variant) && !disc_stage_member(name, &stage, &label, &variant)) continue;
     out->push_back({name, it->path(), 0, length});
   }
 }
@@ -3604,15 +3640,17 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     return lower(a.member) < lower(b.member);
   });
   std::map<std::string, AssetRecord> fresh;   // by target slot and variant
-  size_t same = 0, skipped = 0;
+  size_t same = 0, skipped = 0, stages = 0;
   for (const auto& candidate : candidates) {
     uint32_t retail_offset = 0, retail_size = 0;
     std::vector<uint8_t> bytes, retail;
-    std::string variant;
-    if (!disc_skin_member(candidate.member, &variant)) { ++skipped; continue; }
+    std::string variant, stage_path, stage_label;
+    const bool stage = disc_stage_member(candidate.member, &stage_path, &stage_label, &variant);
+    if (!stage && !disc_skin_member(candidate.member, &variant)) { ++skipped; continue; }
     // An alternate costume is compared with the slot's own costume on the game disc: that is the
-    // file it replaces when chosen, and the skeleton it must keep.
-    const std::string retail_name = variant.empty() ? candidate.member : candidate.member.substr(0, 6) + ".dat";
+    // file it replaces when chosen, and the skeleton it must keep. An alternate stage likewise.
+    const std::string retail_name = variant.empty() ? candidate.member :
+                                    stage ? stage_path : candidate.member.substr(0, 6) + ".dat";
     if (!host::disc_find_file(retail_name, &retail_offset, &retail_size) || !retail_size ||
         retail_size > kMaxAssetBytes || !read_range(candidate.file, candidate.offset, candidate.length, &bytes)) {
       ++skipped; continue;
@@ -3620,6 +3658,47 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     retail.resize(retail_size);
     if (!host::disc_read(retail_offset, retail.data(), retail_size)) { ++skipped; continue; }
     if (bytes == retail) { ++same; continue; }
+    if (stage) {
+      // The checks a stage DAT added by hand gets: it has a stage map, and the game can draw it.
+      VisualLayout layout;
+      std::string detail;
+      if (!parse_visual_layout(bytes, &layout, &detail) ||
+          std::find(layout.roots.begin(), layout.roots.end(), "map_head") == layout.roots.end()) { ++skipped; continue; }
+      const std::string digest = sha256(bytes);
+      if (digest.empty()) { ++skipped; continue; }
+      const std::string fresh_key = stage_path + "\n" + variant;
+      const auto have = fresh.find(fresh_key);
+      if (have != fresh.end() && have->second.info.sha256 == digest) continue;   // .dat and .usd carry the same stage
+      AssetRecord asset;
+      asset.info.id = "disc-" + sha256_text(key + "\n" + lower(candidate.member));
+      asset.info.name = stage_label + ": from " + pack_name + (variant.empty() ? "" : " (" + variant + ")");
+      asset.info.variant = variant;
+      asset.online_known = true;
+      asset.online_ok = stage_gameplay_matches(retail, bytes, &detail);
+      asset.online_note = asset.online_ok ? detail : online_reason_short(detail);
+      if (!stage_draw_safe(bytes, &detail)) { asset.online_ok = false; asset.online_note = online_reason_short(detail); }
+      asset.info.kind = "stage_visual";
+      asset.info.target_path = stage_path;
+      asset.info.character = "Stages";
+      asset.info.costume = stage_label;
+      asset.info.sha256 = digest;
+      asset.info.available = true;
+      asset.info.source = "disc";
+      asset.info.source_name = pack_name;
+      asset.info.disc_path = candidate.file.u8string();
+      asset.stored_path = "disc/" + asset.info.id + "/" + stage_path;
+      asset.source_kind = kDiscSource;
+      asset.source_name = pack_name;
+      asset.source_member = candidate.member;
+      asset.source_id = key;
+      asset.disc_path = asset.info.disc_path;
+      asset.disc_offset = candidate.offset;
+      asset.disc_length = candidate.length;
+      if (!file_stamp(candidate.file, &asset.disc_size, &asset.disc_mtime)) { ++skipped; continue; }
+      if (have == fresh.end()) ++stages;
+      fresh[fresh_key] = std::move(asset);
+      continue;
+    }
     const auto dat = inspect_dat_impl(bytes);
     const std::string slot_name = candidate.member.substr(0, 6) + ".dat";
     if (!dat.ok || lower(dat.target_path) != lower(slot_name)) { ++skipped; continue; }
@@ -3714,10 +3793,13 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
     result.message = *error; return result;
   }
   result.ok = true;
-  result.message = std::to_string(fresh.size()) + " skins from " + pack_name + " are in the skin list (" +
-                   std::to_string(same) + " costume files are the standard ones, " + std::to_string(skipped) +
-                   " not usable).";
-  host::log("cosmetics: scanned %s: %zu skins listed, %zu standard, %zu not usable", key.c_str(), fresh.size(), same, skipped);
+  const size_t costumes = fresh.size() - stages;
+  result.message = std::to_string(costumes) + " skins" +
+                   (stages ? " and " + std::to_string(stages) + " stage skins" : std::string()) + " from " + pack_name +
+                   " are in the skin list (" + std::to_string(same) + " files are the standard ones, " +
+                   std::to_string(skipped) + " not usable).";
+  host::log("cosmetics: scanned %s: %zu skins and %zu stage skins listed, %zu standard, %zu not usable", key.c_str(),
+            costumes, stages, same, skipped);
   if (!select_screen.member.empty())
     host::log("cosmetics: %zu portraits taken from the %s of %s", portraits, select_screen.member.c_str(), key.c_str());
   return result;
@@ -5258,11 +5340,13 @@ LiveCycle cycle_slot_live(const std::string& slot, int direction) {
 
 // ---- stage select skin cycling ----
 // The profile's key for a stage file: the target path of the stage skins installed for it, as the
-// catalog spells it. Empty when no stage skin is installed for that file.
+// catalog spells it. Empty when no stage skin is installed for that file. The game names a stage
+// that has an English file without an extension ("/GrPs", "/GrOt") and adds it when it loads.
 static std::string stage_target_locked(const std::string& stage_file) {
   std::string wanted = lower(stage_file);
   const size_t slash = wanted.find_last_of('/');
   if (slash != std::string::npos) wanted = wanted.substr(slash + 1);
+  if (wanted.find('.') == std::string::npos) wanted += ".dat";
   for (const auto& asset : g_assets) {
     if (asset.info.kind != "stage_visual" || !asset.info.available) continue;
     std::string have = lower(asset.info.target_path);
@@ -5351,6 +5435,46 @@ bool set_random_stage_skins(bool enabled, std::string* error) {
   return true;
 }
 
+std::vector<StagePackInfo> stage_packs() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  std::vector<StagePackInfo> out;
+  std::map<std::string, size_t> index;
+  std::map<std::string, std::map<std::string, bool>> stages;   // pack key -> stages it has a skin for
+  for (const auto& asset : g_assets) {
+    if (asset.info.kind != "stage_visual" || asset.source_kind != kDiscSource) continue;
+    auto at = index.find(asset.source_id);
+    if (at == index.end()) {
+      StagePackInfo pack;
+      pack.key = asset.source_id; pack.name = asset.source_name;
+      pack.random = !g_profile.stage_packs_off.count(pack.key);
+      out.push_back(std::move(pack));
+      at = index.emplace(asset.source_id, out.size() - 1).first;
+    }
+    ++out[at->second].skins;
+    stages[asset.source_id][asset.info.target_path] = true;
+  }
+  for (auto& pack : out) pack.stages = (uint32_t)stages[pack.key].size();
+  std::stable_sort(out.begin(), out.end(), [](const StagePackInfo& a, const StagePackInfo& b) {
+    return lower(a.name) < lower(b.name);
+  });
+  return out;
+}
+
+bool set_stage_pack_random(const std::string& pack_key, bool enabled, std::string* error) {
+  std::string local;
+  if (!error) error = &local;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (!mutable_profile_locked(error)) return false;
+  if (enabled == !g_profile.stage_packs_off.count(pack_key)) return true;
+  const auto previous = g_profile.stage_packs_off;
+  if (enabled) g_profile.stage_packs_off.erase(pack_key);
+  else g_profile.stage_packs_off[pack_key] = true;
+  if (!save_profile_locked(error)) { g_profile.stage_packs_off = previous; return false; }
+  g_message = enabled ? "That pack's stage skins are in the random pick from the next match." :
+                        "That pack's stage skins stay out of the random pick from the next match.";
+  return true;
+}
+
 RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::string& stage_file,
                                uint64_t match_token) {
   RepublishResult result;
@@ -5363,6 +5487,7 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
   if (!g_profile.random_stage_skins && previous == current->stage_matches.end()) return result;
 
   std::vector<std::string> eligible;
+  const auto started = std::chrono::steady_clock::now();
   if (g_profile.random_stage_skins) {
     std::vector<FstFile> files;
     if (!parse_fst(fst, fst_size, &files, &result.message)) return result;
@@ -5382,6 +5507,7 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
     if (originals.empty() || originals.size() > 2) return result;
     for (const auto& asset : g_assets) {
       if (!asset.info.available || asset.info.kind != "stage_visual" || selection_key(asset) != target) continue;
+      if (asset.source_kind == kDiscSource && g_profile.stage_packs_off.count(asset.source_id)) continue;
       std::string error;
       const auto bytes = load_runtime_asset_locked(asset, &error);
       if (bytes.empty()) continue;
@@ -5413,9 +5539,10 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
   auto next = std::make_shared<RuntimeState>(*std::atomic_load(&g_runtime));
   next->stage_matches[target] = {match_token, chosen};
   std::atomic_store(&g_runtime, std::shared_ptr<const RuntimeState>(next));
-  host::log("cosmetics: match %llu %s skin for %s: %s (%zu eligible)",
+  host::log("cosmetics: match %llu %s skin for %s: %s (%zu eligible, %lld ms)",
             (unsigned long long)match_token, g_profile.random_stage_skins ? "random" : "fixed",
-            target.c_str(), chosen.empty() ? "Standard" : chosen.c_str(), eligible.size());
+            target.c_str(), chosen.empty() ? "Standard" : chosen.c_str(), eligible.size(),
+            (long long)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count());
   return result;
 }
 
