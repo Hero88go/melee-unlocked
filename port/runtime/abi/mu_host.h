@@ -352,6 +352,10 @@ typedef struct MuHostApi {
  * one, for a fighter that has one. Only the DObj hidden flags change (ftdrawcommon.c). */
 #define MU_DISPLAY_OPTION_LOW_POLY 0x1u
 #define MU_DISPLAY_OPTION_PLAYER_TAGS 0x2u   /* the P1 / P2 markers over the fighters stay up all match */
+/* "Fountain of Dreams reflections": offline, the native game leaves out Lagless FoD (the stage's
+ * reflection, water animation and platform jets), read when the stage loads. Online keeps Lagless FoD,
+ * as Slippi does. */
+#define MU_DISPLAY_OPTION_FOD_REFLECTIONS 0x4u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,

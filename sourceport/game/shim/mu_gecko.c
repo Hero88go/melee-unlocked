@@ -6,6 +6,7 @@
  *
  * Arithmetic follows the translated code: single-precision fused ops are the double product and
  * sum rounded to float, compares keep the PowerPC branch sense for NaN, and fctiwz truncates. */
+#include <mu_native.h>
 #include <dolphin/os.h>
 #include <dolphin/pad.h>
 #include <melee/ft/fighter.h>
@@ -60,6 +61,22 @@ int mu_general_codes(void)
 #endif
     /* Online opponents always play with the General Codes, so an online match does too. */
     return general_codes || mu_online_codes() != 0;
+}
+
+/* Lagless FoD, part of the code set: on unless the player kept "Fountain of Dreams reflections"
+ * offline. Online it stays on, as on Slippi. Decided once as the stage is set up (grizumi.c) and
+ * kept for that stage: the per-frame parts must agree with what the setup made, so a change in the
+ * settings during a match applies to the next one. */
+static int lagless_fod = 1;
+int mu_lagless_fod_begin(void)
+{
+    lagless_fod = mu_general_codes() &&
+                  (mu_online_active() || (mu_display_options() & MU_DISPLAY_FOD_REFLECTIONS) == 0);
+    return lagless_fod;
+}
+int mu_lagless_fod(void)
+{
+    return lagless_fod;
 }
 
 /* General Codes, "Unlock All Characters and Stages" and the two message codes that go with it

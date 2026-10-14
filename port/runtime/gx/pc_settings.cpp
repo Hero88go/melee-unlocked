@@ -3837,6 +3837,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   }
   set_hud_scales(options.stock_hud_scale, options.damage_hud_scale, gecko::option_pal_stock_icons);
   set_low_poly_fighters(options.low_poly_fighters != 0);
+  set_fod_reflections(options.fod_reflections);
   set_player_tags_always(options.player_tags_always != 0);
   static bool test_tab_set = false;
   if (!test_tab_set) {

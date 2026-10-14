@@ -7,6 +7,7 @@
 #include <mmsystem.h>
 #include <mmdeviceapi.h>
 #include <audioclient.h>
+#include <audiopolicy.h>
 #include <functiondiscoverykeys_devpkey.h>
 #include <ksmedia.h>
 #include <avrt.h>
@@ -590,6 +591,23 @@ void tag_game_stream(IAudioClient* client) {
   if (!told) { told = true; log("audio: stream declared as game media%s", SUCCEEDED(hr) ? "" : " (refused, left as other)"); }
 }
 
+// Opts the session out of Windows' communications ducking. A stream on the device that is also the
+// default communications device counts as a call, and Windows then lowers every other program by
+// the Communications tab setting (80% by default) until the stream closes: other apps got quieter
+// while the game ran even with the game media category. Set before the stream starts.
+void opt_out_of_ducking(IAudioClient* client) {
+  IAudioSessionControl* control = nullptr;
+  if (!client || FAILED(client->GetService(__uuidof(IAudioSessionControl), (void**)&control))) return;
+  IAudioSessionControl2* control2 = nullptr;
+  HRESULT hr = control->QueryInterface(__uuidof(IAudioSessionControl2), (void**)&control2);
+  control->Release();
+  if (FAILED(hr)) return;
+  hr = control2->SetDuckingPreference(TRUE);
+  control2->Release();
+  static bool told = false;
+  if (!told) { told = true; log("audio: Windows ducking %s", SUCCEEDED(hr) ? "opted out" : "opt-out refused"); }
+}
+
 bool wasapi_open() {
   HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
   if (FAILED(hr) && hr != RPC_E_CHANGED_MODE) { log("audio: CoInitialize failed (%08X)", (unsigned)hr); return false; }
@@ -768,6 +786,7 @@ bool wasapi_open() {
       FAILED(g_client->GetService(__uuidof(IAudioRenderClient), (void**)&g_render))) {
     log("audio: IAudioClient setup failed"); g_client->Release(); g_client = nullptr; return false;
   }
+  opt_out_of_ducking(g_client);
   {
     REFERENCE_TIME period = 0, minimum = 0;
     if (FAILED(g_client->GetDevicePeriod(&period, &minimum)) || period <= 0) period = 10 * 10000;

@@ -106855,7 +106855,7 @@ index 2f726fa1c..70dd5e3a6 100644
  
              gp->u.battle_bg.state = BG_Done;
 diff --git a/src/melee/gr/grbigblue.c b/src/melee/gr/grbigblue.c
-index 7e87f696c..f7eebb9c9 100644
+index 7e87f696c..1572f6c6a 100644
 --- a/src/melee/gr/grbigblue.c
 +++ b/src/melee/gr/grbigblue.c
 @@ -9,6 +9,7 @@
@@ -107259,7 +107259,52 @@ index 7e87f696c..f7eebb9c9 100644
          s32 found_ten;
          s32 closest_lane;
  
-@@ -3330,7 +3337,7 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
+@@ -3257,6 +3264,8 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
+             byte = target_car[0xD4];
+ #ifdef MUST_MATCH
+             asm { rlwimi byte, st_val, 2, 24, 29 }
++#else
++            byte = (u8) ((byte & 0x03) | (st_val << 2)); /* rlwimi: state into bits 7..2 */
+ #endif
+             target_car[0xD4] = byte;
+ 
+@@ -3271,6 +3280,8 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
+                     byte = bp[0xD4];
+ #ifdef MUST_MATCH
+                     asm { rlwimi byte, st_val, 2, 24, 29 }
++#else
++                    byte = (u8) ((byte & 0x03) | (st_val << 2)); /* rlwimi: state into bits 7..2 */
+ #endif
+                     bp[0xD4] = byte;
+                 }
+@@ -3287,6 +3298,8 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
+                     byte = p[0xD4];
+ #ifdef MUST_MATCH
+                     asm { rlwimi byte, st_val, 2, 24, 29 }
++#else
++                    byte = (u8) ((byte & 0x03) | (st_val << 2)); /* rlwimi: state into bits 7..2 */
+ #endif
+                     p[0xD4] = byte;
+                 }
+@@ -3304,6 +3317,8 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
+                     byte = p[0xD4];
+ #ifdef MUST_MATCH
+                     asm { rlwimi byte, st_val, 2, 24, 29 }
++#else
++                    byte = (u8) ((byte & 0x03) | (st_val << 2)); /* rlwimi: state into bits 7..2 */
+ #endif
+                     p[0xD4] = byte;
+                 }
+@@ -3321,6 +3336,8 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
+                     byte = p[0xD4];
+ #ifdef MUST_MATCH
+                     asm { rlwimi byte, st_val, 2, 24, 29 }
++#else
++                    byte = (u8) ((byte & 0x03) | (st_val << 2)); /* rlwimi: state into bits 7..2 */
+ #endif
+                     p[0xD4] = byte;
+                 }
+@@ -3330,7 +3347,7 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
  
      /* Timer-based car spawn */
      {
@@ -107268,7 +107313,7 @@ index 7e87f696c..f7eebb9c9 100644
          u8* p;
          u32 st;
          s16 timer = gp->u.bigblue.car.spawn_timer;
-@@ -3409,7 +3416,7 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
+@@ -3409,7 +3426,7 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
                          pick = 0;
                      }
                      for (pos = 0; pos < 30; pos++) {
@@ -107277,7 +107322,7 @@ index 7e87f696c..f7eebb9c9 100644
                              if (grBigBlue_801EE398(ground_gobj, active_count,
                                                     5) != 0)
                              {
-@@ -3450,7 +3457,7 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
+@@ -3450,7 +3467,7 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
                          pick = 0;
                      }
                      for (pos = 0; pos < 30; pos++) {
@@ -107286,7 +107331,7 @@ index 7e87f696c..f7eebb9c9 100644
                              if (grBigBlue_801EE398(ground_gobj, active_count,
                                                     6) != 0)
                              {
-@@ -3488,24 +3495,19 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
+@@ -3488,24 +3505,19 @@ void grBigBlue_801ECB50(Ground_GObj* gobj)
      }
  }
  
@@ -107320,7 +107365,7 @@ index 7e87f696c..f7eebb9c9 100644
      Point3d sp_vec;
      s32 offset;
      HSD_JObj* jobj;
-@@ -3532,12 +3534,13 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
+@@ -3532,12 +3544,13 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
  
      /* Setup per-lane data */
      offset = lane << 6;
@@ -107339,7 +107384,7 @@ index 7e87f696c..f7eebb9c9 100644
  
      f31_rot = HSD_JObjGetRotationZ(jobj);
  
-@@ -3552,12 +3555,17 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
+@@ -3552,12 +3565,17 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
              active = 0;
              behind = 0;
  
@@ -107361,7 +107406,7 @@ index 7e87f696c..f7eebb9c9 100644
                      {
                          behind++;
                      }
-@@ -3571,7 +3579,7 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
+@@ -3571,7 +3589,7 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
              target = 0.5F * -((f32) yakumono_param->x1C * Ground_801C0498()) +
                       rank_factor;
          } else {
@@ -107370,7 +107415,7 @@ index 7e87f696c..f7eebb9c9 100644
          }
  
          /* Convergence step for position index */
-@@ -3579,77 +3587,77 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
+@@ -3579,77 +3597,77 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
              f32 current;
              f32 diff;
  
@@ -107471,7 +107516,7 @@ index 7e87f696c..f7eebb9c9 100644
                  ((yakumono_param->x38 * Ground_801C0498() - rank_factor) /
                   ground_y);
              heading_val =
-@@ -3658,7 +3666,7 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
+@@ -3658,7 +3676,7 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
              ground_y = yakumono_param->x24 * Ground_801C0498();
              rank_factor = yakumono_param->x34 * Ground_801C0498();
              rank_factor =
@@ -107480,7 +107525,7 @@ index 7e87f696c..f7eebb9c9 100644
                  ((yakumono_param->x30 * Ground_801C0498() - rank_factor) /
                   ground_y);
              heading_val =
-@@ -3671,32 +3679,32 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
+@@ -3671,32 +3689,32 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
      }
  
      /* Heading target interpolation */
@@ -107524,7 +107569,7 @@ index 7e87f696c..f7eebb9c9 100644
                  ((grBb_ByteBits*) lane_flags)->b6 = 0;
                  /* goto required for match: skip collision/grounding,
                   * jump to rotation convergence */
-@@ -3705,15 +3713,15 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
+@@ -3705,15 +3723,15 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
          }
  
          if (-F32_MAX != ground_y) {
@@ -107543,7 +107588,7 @@ index 7e87f696c..f7eebb9c9 100644
  
          /* Track reference adjustment */
          {
-@@ -3721,27 +3729,27 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
+@@ -3721,27 +3739,27 @@ void grBigBlue_801ED694(Ground_GObj* gobj, s32 lane)
              u8* gp2;
  
              HSD_ASSERT(3255, map_gobj);
@@ -107577,7 +107622,7 @@ index 7e87f696c..f7eebb9c9 100644
          }
      }
  
-@@ -3756,12 +3764,9 @@ heading_converge:
+@@ -3756,12 +3774,9 @@ heading_converge:
      }
  
      /* Update jobj transform */
@@ -107591,7 +107636,7 @@ index 7e87f696c..f7eebb9c9 100644
  
  s32 grBigBlue_801EDF44(Ground_GObj* gobj, s32 index)
  {
-@@ -3943,36 +3948,11 @@ typedef union grBb_CarGround {
+@@ -3943,36 +3958,11 @@ typedef union grBb_CarGround {
      u8 bytes[0x1D4];
  } grBb_CarGround;
  
@@ -107628,7 +107673,7 @@ index 7e87f696c..f7eebb9c9 100644
  static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
                                               s32* result, Vec3* pos)
  {
-@@ -3990,13 +3970,13 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
+@@ -3990,13 +3980,13 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
          struct grBigBlue_CarLane* car = &gp->u.bigblue.car.lanes[arg1];
  
          HSD_JObjSetFlagsAll(
@@ -107645,7 +107690,7 @@ index 7e87f696c..f7eebb9c9 100644
          }
          *result = 1;
          car->state = state_value4;
-@@ -4034,7 +4014,7 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
+@@ -4034,7 +4024,7 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
              s32 j;
  
              for (count = j = 0; j < 30; j++) {
@@ -107654,7 +107699,7 @@ index 7e87f696c..f7eebb9c9 100644
                      count++;
                  }
              }
-@@ -4049,7 +4029,7 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
+@@ -4049,7 +4039,7 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
                  pick = ZRANDI(count);
  
                  for (; slot < 30; slot++) {
@@ -107663,7 +107708,7 @@ index 7e87f696c..f7eebb9c9 100644
                          if (--pick < 0) {
                              break;
                          }
-@@ -4079,7 +4059,7 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
+@@ -4079,7 +4069,7 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
                  gp->u.bigblue.car.lanes[arg1].threshold =
                      rand_range(yakumono_param->x5C, yakumono_param->x60);
  
@@ -107672,7 +107717,7 @@ index 7e87f696c..f7eebb9c9 100644
                  gp->u.bigblue.car.lanes[arg1].alpha = 0.0f;
  
                  sfx_id = lbl_803E3010[grBigBlue_801EE398_sfx()];
-@@ -4092,8 +4072,8 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
+@@ -4092,8 +4082,8 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
                  {
                      HSD_JObj* jobj;
                      HSD_JObjClearFlagsAll(
@@ -107683,7 +107728,7 @@ index 7e87f696c..f7eebb9c9 100644
                      HSD_JObjSetTranslate(jobj,
                                           &gp->u.bigblue.car.lanes[arg1].pos);
                  }
-@@ -4119,7 +4099,7 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
+@@ -4119,7 +4109,7 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
              s32 j;
  
              for (j = 0, count = 0; j < 30; j++) {
@@ -107692,7 +107737,7 @@ index 7e87f696c..f7eebb9c9 100644
                      count++;
                  }
              }
-@@ -4130,8 +4110,19 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
+@@ -4130,8 +4120,19 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
                  u32 sfx_id;
                  struct grBigBlue_CarLane* lanes;
                  struct grBigBlue_CarLane* car_d4;
@@ -107713,7 +107758,7 @@ index 7e87f696c..f7eebb9c9 100644
  
                  lanes = gp->u.bigblue.car.lanes;
                  car_d4 = &gp->u.bigblue.car.lanes[arg1];
-@@ -4158,7 +4149,7 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
+@@ -4158,7 +4159,7 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
                  gp->u.bigblue.car.lanes[arg1].threshold =
                      rand_range(yakumono_param->x5C, yakumono_param->x60);
  
@@ -107722,7 +107767,7 @@ index 7e87f696c..f7eebb9c9 100644
                  gp->u.bigblue.car.lanes[arg1].alpha = 0.0f;
  
                  sfx_id = lbl_803E3010[grBigBlue_801EE398_sfx()];
-@@ -4174,16 +4165,15 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
+@@ -4174,16 +4175,15 @@ static inline void grBigBlue_801EE398_inline(Ground* gp, s32 arg1, s32 arg2,
  
                      jobj_slot = slot;
                      HSD_JObjClearFlagsAll(
@@ -107741,7 +107786,7 @@ index 7e87f696c..f7eebb9c9 100644
              }
          }
          break;
-@@ -4214,14 +4204,7 @@ s32 grBigBlue_801EE398(Ground_GObj* gobj, s32 arg1, s32 arg2)
+@@ -4214,14 +4214,7 @@ s32 grBigBlue_801EE398(Ground_GObj* gobj, s32 arg1, s32 arg2)
  
      return result;
  }
@@ -107756,7 +107801,7 @@ index 7e87f696c..f7eebb9c9 100644
  bool grBigBlue_801EEF00(Ground_GObj* gobj, s32 index)
  {
      s32 offset;
-@@ -4416,9 +4399,6 @@ bool grBigBlue_801EEF00(Ground_GObj* gobj, s32 index)
+@@ -4416,9 +4409,6 @@ bool grBigBlue_801EEF00(Ground_GObj* gobj, s32 index)
  
      return 1;
  }
@@ -107766,7 +107811,7 @@ index 7e87f696c..f7eebb9c9 100644
  
  void grBigBlue_801EF424(Ground_GObj* gobj)
  {
-@@ -4446,12 +4426,12 @@ void grBigBlue_801EF424(Ground_GObj* gobj)
+@@ -4446,12 +4436,12 @@ void grBigBlue_801EF424(Ground_GObj* gobj)
      while (k < 10 && changed != 0) {
          changed = 0;
  
@@ -107781,7 +107826,7 @@ index 7e87f696c..f7eebb9c9 100644
                  if (i == j) {
                      continue;
                  }
-@@ -4525,7 +4505,7 @@ void fn_801EF60C(void* user_data, int joint_id, CollData* coll, int coll_x50,
+@@ -4525,11 +4515,16 @@ void fn_801EF60C(void* user_data, int joint_id, CollData* coll, int coll_x50,
      HSD_ASSERT(0xED9, car_num!=Gr_Fzero_Car_Max);
  
      params = yakumono_param;
@@ -107790,7 +107835,16 @@ index 7e87f696c..f7eebb9c9 100644
  
      for (i = 0; i < 4; i++) {
          hw = *(u16*) (p + 0xD4);
-@@ -4572,7 +4552,7 @@ bool grBigBlue_801EF844(enum_t line_id)
++#ifdef MU_NATIVE
++        /* collision_slot's native bits, see grBigBlue_CarLane */
++        if (((hw >> 11) & 0x1F) == car_num) {
++#else
+         if (((hw >> 4) & 0x1F) == car_num) {
++#endif
+             *(f32*) (p + 0xF4) = -coll->x50 * params->x44;
+         }
+         p += 0x40;
+@@ -4572,7 +4567,7 @@ bool grBigBlue_801EF844(enum_t line_id)
      return false;
  }
  
@@ -110084,7 +110138,7 @@ index 5f75a8ad8..095dd5984 100644
  /* 1F4438 */ void grGreatBay_801F4438(Ground_GObj*);
  /* 1F443C */ void grGreatBay_801F443C(Ground_GObj*);
 diff --git a/src/melee/gr/grgreens.c b/src/melee/gr/grgreens.c
-index b9046afbb..b9cf83f1a 100644
+index b9046afbb..c0040d3cf 100644
 --- a/src/melee/gr/grgreens.c
 +++ b/src/melee/gr/grgreens.c
 @@ -62,7 +62,7 @@ struct grGreens_YakumonoParam {
@@ -110150,7 +110204,38 @@ index b9046afbb..b9cf83f1a 100644
  }
  
  bool grGreens_80213978(Ground_GObj* arg)
-@@ -732,7 +733,7 @@ void grGreens_80214674(Ground_GObj* gobj)
+@@ -360,6 +361,22 @@ void grGreens_802139C4(Ground_GObj* gobj)
+ {
+     Ground* gp = gobj->user_data;
+     ftCo_800C06E8(gobj, 9, fn_80213B1C);
++#ifdef MU_NATIVE
++    /* Whispy's update reads these through greens2, all 4-byte fields at the console's offsets.
++     * greens holds two pointers, 8 bytes each natively, so writing through it put the wind timer
++     * (xC) and x10/x14/x18/x1C 12 bytes further on: the update found a timer of 0 and Whispy
++     * blew about 100 frames into every match, desyncing against Slippi. Same stores, the view
++     * the update reads. */
++    gp->u.greens2.x0 = 0;
++    gp->u.greens2.x4 = 0;
++    gp->u.greens2.x8 = 0;
++    gp->u.greens2.xC = randrange(yakumono_param->x38_windTimerMax,
++                                 yakumono_param->x34_windTimerMin);
++    gp->u.greens2.x10 = 1;
++    gp->u.greens2.x1C = 0;
++    gp->u.greens2.x14 = HSD_Randi(2);
++    gp->u.greens2.x18 = 0;
++#else
+     gp->u.greens.x0_flags.whole_thing = 0;
+     gp->u.greens.x4 = NULL;
+     gp->u.greens.x8_blocks = NULL;
+@@ -369,6 +386,7 @@ void grGreens_802139C4(Ground_GObj* gobj)
+     gp->u.greens.x1C = 0;
+     gp->u.greens.x14 = HSD_Randi(2);
+     gp->u.greens.x18 = 0;
++#endif
+     grAnime_801C8138(gobj, gp->map_id, 0);
+ }
+ 
+@@ -732,7 +750,7 @@ void grGreens_80214674(Ground_GObj* gobj)
      Ground_GObj* new_var;
      Ground* gp = GET_GROUND(gobj);
      new_var = gobj;
@@ -110159,7 +110244,7 @@ index b9046afbb..b9cf83f1a 100644
      gp->u.greens.x4 = HSD_MemAlloc(5 * 6 * sizeof(*gp->u.greens.x4));
      memzero(gp->u.greens.x4, 5 * 6 * sizeof(*gp->u.greens.x4));
      gp->u.greens.x8_blocks = HSD_MemAlloc(5 * sizeof(*gp->u.greens.x8_blocks));
-@@ -762,7 +763,7 @@ void grGreens_8021479C(Ground_GObj* gobj)
+@@ -762,7 +780,7 @@ void grGreens_8021479C(Ground_GObj* gobj)
      if (!gp->u.greens.x0_flags.b0) {
          grGreens_802166C4(gobj);
      }
@@ -110168,7 +110253,7 @@ index b9046afbb..b9cf83f1a 100644
      if (!gp->u.greens.x0_flags.b0) {
          grGreens_80216C20(gobj);
      }
-@@ -1056,7 +1057,7 @@ void grGreens_80215358(Ground_GObj* gobj, int col, int row, int arg3, int arg4)
+@@ -1056,7 +1074,7 @@ void grGreens_80215358(Ground_GObj* gobj, int col, int row, int arg3, int arg4)
      block->x10 = item_gobj;
      block->x14 = jobj;
      block->x18 = Ground_801C32D4(6, grGr_803E7840[num]);
@@ -110177,7 +110262,7 @@ index b9046afbb..b9cf83f1a 100644
      block->x1_4 = 0;
      block->x1_7 = 0;
      vec.x = ((Vec(*)[6]) gp->u.greens.x4)[row][col].x;
-@@ -1082,37 +1083,37 @@ void fn_802159B4(Item_GObj* item_gobj, Ground* gp)
+@@ -1082,37 +1100,37 @@ void fn_802159B4(Item_GObj* item_gobj, Ground* gp)
      return;
  }
  
@@ -110226,7 +110311,7 @@ index b9046afbb..b9cf83f1a 100644
              Ground_801C5414(430007, 186);
          }
      }
-@@ -1152,7 +1153,7 @@ void fn_80215B84(Item_GObj* item_gobj, Ground* gp, Vec* arg2, HSD_GObj* gobj,
+@@ -1152,7 +1170,7 @@ void fn_80215B84(Item_GObj* item_gobj, Ground* gp, Vec* arg2, HSD_GObj* gobj,
      if (!find_block(ground, item_gobj, &row, &col)) {
          HSD_ASSERT(1465, 0);
      }
@@ -110235,7 +110320,7 @@ index b9046afbb..b9cf83f1a 100644
  }
  
  void fn_80215D50(Item_GObj* item_gobj, Ground* gp, HSD_GObj* gobj)
-@@ -1215,7 +1216,7 @@ void grGreens_80215ED8(Ground_GObj* gobj, int col, int row)
+@@ -1215,7 +1233,7 @@ void grGreens_80215ED8(Ground_GObj* gobj, int col, int row)
          if (gp->u.greens.x8_blocks[row][col].x1_4) {
              gp->u.greens.x8_blocks[row][col].x4 = 0.0f;
              gp->u.greens.x8_blocks[row][col].x1_4 = 0;
@@ -110244,7 +110329,7 @@ index b9046afbb..b9cf83f1a 100644
          } else {
              gp->u.greens.x8_blocks[row][col].x4 += yakumono_param->x30;
              if (gp->u.greens.x8_blocks[row][col].x4 > yakumono_param->x2C) {
-@@ -1560,7 +1561,7 @@ void fn_80216DE4(void* user_data, int joint_id, CollData* coll, int coll_x50,
+@@ -1560,7 +1578,7 @@ void fn_80216DE4(void* user_data, int joint_id, CollData* coll, int coll_x50,
  
  DynamicsDesc* grGreens_80216E64(enum_t arg)
  {
@@ -111746,7 +111831,7 @@ index b5b2736b2..22853976c 100644
  /* 1FCDFC */ void grInishie2_801FCDFC(Ground_GObj*);
  /* 1FCE00 */ void grInishie2_801FCE00(Ground_GObj*);
 diff --git a/src/melee/gr/grizumi.c b/src/melee/gr/grizumi.c
-index 536bb3b2b..ca35f12e9 100644
+index 536bb3b2b..4a3b9b840 100644
 --- a/src/melee/gr/grizumi.c
 +++ b/src/melee/gr/grizumi.c
 @@ -60,17 +60,20 @@ struct grIzumi_YakumonoParam {
@@ -111775,7 +111860,7 @@ index 536bb3b2b..ca35f12e9 100644
  
  #define GET_REFLECTION(gobj) ((IzumiReflection*) HSD_GObjGetUserData(gobj))
  
-@@ -184,6 +187,19 @@ void grIzumi_801CBB88(void)
+@@ -184,6 +187,23 @@ void grIzumi_801CBB88(void)
  {
      HSD_GObj* r3;
  
@@ -111783,10 +111868,14 @@ index 536bb3b2b..ca35f12e9 100644
 +    /* Lagless FoD: set bit 0x04 in the byte 0x2AE44 before the loaded grGroundParam, inside the
 +     * stage file (a joint's flags byte, 0x60 on the disc). Skipped if the byte is not what the
 +     * file holds there, rather than writing outside the loaded data. */
-+    if (mu_general_codes() && stage_info.param != NULL) {
-+        u8* flags = (u8*) stage_info.param - 0x2AE44;
-+        if ((*flags & ~0x04) == 0x60) {
-+            *flags |= 0x04;
++    {
++        /* Cleared again when the player keeps the reflection: a stage file kept in memory from
++         * an earlier match can still carry the bit. */
++        const int lagless = mu_lagless_fod_begin();
++        u8* flags = stage_info.param != NULL ? (u8*) stage_info.param - 0x2AE44 : NULL;
++        if (flags == NULL) {
++        } else if ((*flags & ~0x04) == 0x60) {
++            *flags = lagless ? (u8) (*flags | 0x04) : (u8) (*flags & ~0x04);
 +        } else {
 +            OSReport("Lagless FoD: unexpected byte %02x in the stage file\n", *flags);
 +        }
@@ -111795,14 +111884,14 @@ index 536bb3b2b..ca35f12e9 100644
      yakumono_param = Ground_GetYakumonoParam();
      stage_info.unk8C.b4 = 0;
      stage_info.unk8C.b5 = 1;
-@@ -304,13 +320,27 @@ void grIzumi_801CBE64(Ground_GObj* gobj)
+@@ -304,13 +324,27 @@ void grIzumi_801CBE64(Ground_GObj* gobj)
      HSD_TObj* tobj;
      Ground* gp = GET_GROUND(gobj);
      HSD_JObj* jobj = GET_JOBJ(gobj);
 -    Ground_801C2ED0(jobj, gp->map_id);
 +    Ground_InitMapColl(jobj, gp->map_id);
 +#ifdef MU_NATIVE
-+    if (!mu_general_codes()) {   /* Lagless FoD: no map animation start */
++    if (!mu_lagless_fod()) {   /* Lagless FoD: no map animation start */
 +        grAnime_801C8138(gobj, gp->map_id, 0);
 +    }
 +#else
@@ -111816,7 +111905,7 @@ index 536bb3b2b..ca35f12e9 100644
 +#ifdef MU_NATIVE
 +    /* Lagless FoD: the reflection object has no user data, and the search is for its pointer,
 +     * so no texture is hooked to a reflection (the warning below prints, as in Legacy). */
-+    if (mu_general_codes()) {
++    if (mu_lagless_fod()) {
 +        tobj = grIzumi_801CD090(
 +            gobj, (HSD_ImageDesc*) GET_REFLECTION(gp->u.izumi.xC8));
 +    } else
@@ -111824,12 +111913,12 @@ index 536bb3b2b..ca35f12e9 100644
      tobj = grIzumi_801CD090(gobj, GET_REFLECTION(gp->u.izumi.xC8)->image);
      if (tobj != NULL) {
          tobj->src = 0;
-@@ -322,7 +352,13 @@ void grIzumi_801CBE64(Ground_GObj* gobj)
+@@ -322,7 +356,13 @@ void grIzumi_801CBE64(Ground_GObj* gobj)
      }
      gp->u.izumi.xC4 = tobj;
      gobj->render_cb = grIzumi_801CD220;
 +#ifdef MU_NATIVE
-+    if (!mu_general_codes()) {   /* Lagless FoD */
++    if (!mu_lagless_fod()) {   /* Lagless FoD */
 +        grIzumi_801CCB18(gobj);
 +    }
 +#else
@@ -111838,7 +111927,7 @@ index 536bb3b2b..ca35f12e9 100644
      {
          Vec3 x = { 0, 0, 0 };
          grLib_801C96F8(0x7534, 0x1E, &x);
-@@ -335,8 +371,7 @@ void grIzumi_801CBE64(Ground_GObj* gobj)
+@@ -335,8 +375,7 @@ void grIzumi_801CBE64(Ground_GObj* gobj)
          grLib_801C96F8(0x7536, 0x1E, &y);
      }
      gp->u.izumi.xCC = grIzumi_801CBCE8(2);
@@ -111848,7 +111937,7 @@ index 536bb3b2b..ca35f12e9 100644
      jobj = Ground_801C3FA4(gobj, 4);
      { // this looks like inlines, but there's a lot of small differences
          u8 _[4];
-@@ -349,7 +384,14 @@ void grIzumi_801CBE64(Ground_GObj* gobj)
+@@ -349,7 +388,14 @@ void grIzumi_801CBE64(Ground_GObj* gobj)
              HSD_GObj* plat =
                  grIzumi_801CCBDC(yakumono_param->x0, &x38, 0, gp->u.izumi.xD0);
              Ground* platground = GET_GROUND(plat);
@@ -111863,7 +111952,7 @@ index 536bb3b2b..ca35f12e9 100644
              platground->x10_flags.b3 = 1;
              platground->x18 = gp->u.izumi.xC8;
          }
-@@ -359,7 +401,11 @@ void grIzumi_801CBE64(Ground_GObj* gobj)
+@@ -359,7 +405,11 @@ void grIzumi_801CBE64(Ground_GObj* gobj)
              HSD_GObj* plat =
                  grIzumi_801CCBDC(yakumono_param->x8, &x38, 1, gp->u.izumi.xD4);
              Ground* platground = GET_GROUND(plat);
@@ -111875,13 +111964,13 @@ index 536bb3b2b..ca35f12e9 100644
              platground->x10_flags.b3 = 1;
              platground->x18 = gp->u.izumi.xC8;
          }
-@@ -551,9 +597,18 @@ void grIzumi_801CC358(Ground_GObj* gobj)
+@@ -551,9 +601,18 @@ void grIzumi_801CC358(Ground_GObj* gobj)
              if (f < 0.01f) {
                  f = 0.01f;
              }
 +#ifdef MU_NATIVE
 +            /* Lagless FoD: the jets under the side platforms are flattened. */
-+            HSD_JObjSetScaleX(jobj2, mu_general_codes() ? 0.0f : 0.5f * f + 0.5f);
++            HSD_JObjSetScaleX(jobj2, mu_lagless_fod() ? 0.0f : 0.5f * f + 0.5f);
 +#else
              HSD_JObjSetScaleX(jobj2, 0.5f * f + 0.5f);
 +#endif
@@ -111894,7 +111983,7 @@ index 536bb3b2b..ca35f12e9 100644
          }
      }
      mpLib_80055E9C(gp->u.izumi3.xC8);
-@@ -630,7 +685,7 @@ void grIzumi_801CCB18(HSD_GObj* gobj)
+@@ -630,7 +689,7 @@ void grIzumi_801CCB18(HSD_GObj* gobj)
      }
  }
  
@@ -111903,7 +111992,7 @@ index 536bb3b2b..ca35f12e9 100644
  {
      /// @remarks i guess PointSize is an inline? seems odd
      u8 _[8];
-@@ -704,8 +759,8 @@ HSD_CameraDescPerspective ReflectCObjDesc = {
+@@ -704,8 +763,8 @@ HSD_CameraDescPerspective ReflectCObjDesc = {
          0,
          60,
      },
@@ -111914,7 +112003,7 @@ index 536bb3b2b..ca35f12e9 100644
      0.0f,
      NULL,
      0.1f,
-@@ -717,9 +772,15 @@ HSD_CameraDescPerspective ReflectCObjDesc = {
+@@ -717,9 +776,15 @@ HSD_CameraDescPerspective ReflectCObjDesc = {
  HSD_GObj* grIzumi_801CCD98(void)
  {
      HSD_GObj* gobj = GObj_Create(0x11, 0x12, 0);
@@ -111923,7 +112012,7 @@ index 536bb3b2b..ca35f12e9 100644
      IzumiReflection* refl;
      UnkArchiveStruct* dat;
 +#ifdef MU_NATIVE
-+    if (mu_general_codes()) {
++    if (mu_lagless_fod()) {
 +        return gobj;   /* Lagless FoD: no reflection camera, render link or data */
 +    }
 +#endif
@@ -111931,7 +112020,7 @@ index 536bb3b2b..ca35f12e9 100644
      HSD_GObjObject_80390A70(gobj, HSD_GObj_CameraKind, cobj);
      GObj_SetupGXLinkMaxSorted(gobj, grIzumi_801CCEA0, 2);
      refl = HSD_MemAlloc(sizeof(IzumiReflection));
-@@ -738,7 +799,7 @@ HSD_GObj* grIzumi_801CCD98(void)
+@@ -738,7 +803,7 @@ HSD_GObj* grIzumi_801CCD98(void)
      return gobj;
  }
  
@@ -111940,7 +112029,7 @@ index 536bb3b2b..ca35f12e9 100644
  {
      Mtx mtx;
      Vec3 vec;
-@@ -849,12 +910,18 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
+@@ -849,12 +914,18 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
      return NULL;
  }
  
@@ -111951,7 +112040,7 @@ index 536bb3b2b..ca35f12e9 100644
      IzumiReflection* refl = HSD_GObjGetUserData(gp->u.izumi.xC8);
      HSD_TObj* tobj = gp->u.izumi.xC4;
 +#ifdef MU_NATIVE
-+    if (!mu_general_codes()) {   /* Lagless FoD: there is no reflection matrix to copy */
++    if (!mu_lagless_fod()) {   /* Lagless FoD: there is no reflection matrix to copy */
 +        PSMTXCopy(refl->texture_matrix, tobj->mtx);
 +    }
 +#else
@@ -111960,7 +112049,7 @@ index 536bb3b2b..ca35f12e9 100644
      grDisplay_801C5DB0(gobj, renderpass);
  }
  
-@@ -879,3 +946,22 @@ void grIzumi_801CD2D4(void)
+@@ -879,3 +950,22 @@ void grIzumi_801CD2D4(void)
      int size = GXGetTexBufferSize(80, 60, 4, '\0', 0);
      lbDvd_80017740(0, 2001, 4, 4, size + 31 & ~31, 0, 7, 16, 0);
  }
@@ -122761,7 +122850,7 @@ index 774d2df09..000000000
 - * @alias{oldkongo}
 - */
 diff --git a/src/melee/gr/types.h b/src/melee/gr/types.h
-index 4a0b8b70c..acd78fa4b 100644
+index 4a0b8b70c..4044ad816 100644
 --- a/src/melee/gr/types.h
 +++ b/src/melee/gr/types.h
 @@ -1,6 +1,5 @@
@@ -123068,7 +123157,7 @@ index 4a0b8b70c..acd78fa4b 100644
  };
  ASSERT_SIZE(struct grGreens_BlockVars, 0x20);
  
-@@ -1385,6 +1482,29 @@ ASSERT_SIZE(struct grBigBlue_RoadVars, 0x38);
+@@ -1385,6 +1482,30 @@ ASSERT_SIZE(struct grBigBlue_RoadVars, 0x38);
  struct grBigBlue_CarLane {
      union {
          /* +00 gp+D4 */ u16 status;
@@ -123076,12 +123165,14 @@ index 4a0b8b70c..acd78fa4b 100644
 +        /*
 +         * MWERKS packs these MSB-first: `state` is bits 7..2 of byte 0,
 +         * `direction` is bit 1 and `collision_slot` is bits 8..4 of the
-+         * halfword. grbigblue.c reads the same storage both ways, through
-+         * these names and through the raw shifts the console layout implies
-+         * (`(lane_flags[0] >> 2) & 0x3F`, `(*(u16*) lane_flags >> 4) &
-+         * 0x1F`). GCC packs from the bottom, so declare the members in the
-+         * reverse order to put them back on the console's bits and keep both
-+         * kinds of access agreeing.
++         * big-endian halfword, which is byte 0 bit 0 and byte 1 bits 7..4.
++         * grbigblue.c reads `state` through its name and through
++         * `(lane_flags[0] >> 2) & 0x3F`, so `state` keeps the console's bits
++         * of byte 0. A little-endian halfword cannot hold the slot on the
++         * console's bits as one field, and bits 8..4 of it are bits 7..4 of
++         * byte 0, inside `state`: every state change moved the slot, up to
++         * 31 in a 30-entry table. The slot lives in byte 1 bits 7..3 instead,
++         * which nothing else uses; the one raw read of it shifts by 11.
 +         */
 +        struct {
 +            /* +00 gp+D4 */ u8 state_hi : 1;
@@ -123090,15 +123181,14 @@ index 4a0b8b70c..acd78fa4b 100644
 +            /* +01 gp+D5 */ u8 x1;
 +        };
 +        struct {
-+            /* +00 gp+D4 */ u16 pad_slot_1 : 4;
-+            /* +00 gp+D4 */ u16 collision_slot : 5;
-+            /* +00 gp+D4 */ u16 pad_slot_0 : 7;
++            /* +00 gp+D4 */ u16 pad_slot_1 : 11;
++            /* +01 gp+D5 */ u16 collision_slot : 5;
 +        };
 +#else
          struct {
              /* +00 gp+D4 */ u8 state : 6;
              /* +00 gp+D4 */ u8 direction : 1;
-@@ -1396,6 +1516,7 @@ struct grBigBlue_CarLane {
+@@ -1396,6 +1517,7 @@ struct grBigBlue_CarLane {
              /* +00 gp+D4 */ u16 collision_slot : 5;
              /* +00 gp+D4 */ u16 pad_slot_1 : 4;
          };
@@ -123106,7 +123196,7 @@ index 4a0b8b70c..acd78fa4b 100644
      };
      /* +02 gp+D6 */ s8 x2;
      /* +03 gp+D7 */ u8 x3;
-@@ -1418,8 +1539,22 @@ ASSERT_SIZE(struct grBigBlue_CarLane, 0x40);
+@@ -1418,8 +1540,22 @@ ASSERT_SIZE(struct grBigBlue_CarLane, 0x40);
  /// Car manager state (gobj ID 33).
  struct grBigBlue_CarVars {
      /* gp+C4 */ u32 flags;
@@ -123129,7 +123219,7 @@ index 4a0b8b70c..acd78fa4b 100644
      /* gp+D0 */ s16 spawn_timer;
      /* gp+D2 */ u8 pad_D2[2];
      /* gp+D4 */ struct grBigBlue_CarLane lanes[4];
-@@ -1486,7 +1621,7 @@ struct grBigBlueRoute_Track {
+@@ -1486,7 +1622,7 @@ struct grBigBlueRoute_Track {
  };
  
  struct grBigBlueRoute_GroundVars2 {
@@ -123138,7 +123228,7 @@ index 4a0b8b70c..acd78fa4b 100644
      /* +04 gp+C8 */ s16 xC8;
      /* +06 gp+CA */ u8 pad_CA[0xCC - 0xCA];
      /* +08 gp+CC */ Vec3 xCC;
-@@ -1501,31 +1636,39 @@ struct grCastle_GroundVars {
+@@ -1501,31 +1637,39 @@ struct grCastle_GroundVars {
  };
  
  struct grCastle_GroundVars3 {
@@ -123192,7 +123282,7 @@ index 4a0b8b70c..acd78fa4b 100644
  };
  
  struct grCastle_GroundVars6 {
-@@ -1556,21 +1699,6 @@ struct grCastle_GroundVars8 {
+@@ -1556,21 +1700,6 @@ struct grCastle_GroundVars8 {
      /* +00 gp+C4 */ struct grCastle_Platform plat[2];
  };
  
@@ -123214,7 +123304,7 @@ index 4a0b8b70c..acd78fa4b 100644
  struct grCastle_GroundVars10 {
      /* +00 gp+C4 */ s16 xC4;
      /* +02 gp+C6 */ u8 pad_C6[2];
-@@ -1607,12 +1735,6 @@ struct grCastle_GroundVars11 {
+@@ -1607,12 +1736,6 @@ struct grCastle_GroundVars11 {
      /* +14 gp+D8 */ u32 xD8;
  };
  
@@ -123227,7 +123317,7 @@ index 4a0b8b70c..acd78fa4b 100644
  struct grPura_GroundVars {
      /*  +0 gp+C4:0 */ s16 xC4;
      /*  +0 gp+C6:0 */ s16 xC6;
-@@ -1855,17 +1977,13 @@ struct Ground {
+@@ -1855,17 +1978,13 @@ struct Ground {
          struct grBigBlue_GroundVars bigblue;
          struct grBigBlueRoute_GroundVars2 bigblueroute2;
          struct grCastle_GroundVars castle;
@@ -123245,7 +123335,7 @@ index 4a0b8b70c..acd78fa4b 100644
          struct grCorneria_GroundVars corneria;
          struct grCorneria_GroundVars2 corneria2;
          struct grGreatBay_GroundVars greatbay;
-@@ -1895,7 +2013,14 @@ struct Ground {
+@@ -1895,7 +2014,14 @@ struct Ground {
          struct grInishie2_GroundVars inishie2;
          struct grInishie2_GroundVars2 inishie22;
          struct grInishie2_GroundVars3 inishie23;
@@ -123260,7 +123350,7 @@ index 4a0b8b70c..acd78fa4b 100644
          struct grOldPupupu_GroundVars oldpupupu;
          struct grOldPupupu_GroundVars2 oldpupupu2;
          struct grOldYoshi_Cloud_GroundVars oldyoshicloud;
-@@ -1951,8 +2076,15 @@ struct Ground {
+@@ -1951,8 +2077,15 @@ struct Ground {
          /// Legacy spellings retained for stringified assertion text.
          struct {
              /*  +0 gp+C4 */ u32 xC4;
@@ -123276,7 +123366,7 @@ index 4a0b8b70c..acd78fa4b 100644
          } carnull;
      } u;
  };
-@@ -1978,7 +2110,7 @@ struct StageParam {
+@@ -1978,7 +2111,7 @@ struct StageParam {
      /// Read as `((s16*) param)[0xD + j]` by Ground_801C28CC; an s16 array
      /// rather than padding. Same 74 bytes either way.
      s16 x1A[(0x64 - 0x1A) / 2];
@@ -123285,7 +123375,7 @@ index 4a0b8b70c..acd78fa4b 100644
  
  /**
   * The stage archive's @c grGroundParam public symbol, reached through
-@@ -2013,7 +2145,7 @@ struct GroundParam {
+@@ -2013,7 +2146,7 @@ struct GroundParam {
       * One row per #StKind this ground serves, looked up by
       * #StageParam::stkind.
       */
@@ -123294,7 +123384,7 @@ index 4a0b8b70c..acd78fa4b 100644
      s32 stage_param_count;
      GXColor xB8;
      GXColor xBC;
-@@ -2024,54 +2156,54 @@ struct GroundParam {
+@@ -2024,54 +2157,54 @@ struct GroundParam {
      GXColor xD0;
      GXColor xD4;
      GXColor xD8;
@@ -190308,7 +190398,7 @@ index 994214538..2219e7c22 100644
  static inline void* HSD_GObjGetUserData(HSD_GObj* gobj)
  {
 diff --git a/src/sysdolphin/baselib/gobjgxlink.c b/src/sysdolphin/baselib/gobjgxlink.c
-index eb860bb61..388a1c89b 100644
+index eb860bb61..973b40277 100644
 --- a/src/sysdolphin/baselib/gobjgxlink.c
 +++ b/src/sysdolphin/baselib/gobjgxlink.c
 @@ -3,10 +3,6 @@
@@ -190432,7 +190522,7 @@ index eb860bb61..388a1c89b 100644
 -        i = HSD_GObj_804D7820[gobj->gx_link];
 +#ifdef MU_NATIVE
 +    /* Lagless FoD leaves the one caller's object (the FoD reflection) out of the render list. */
-+    if (mu_general_codes()) {
++    if (mu_lagless_fod()) {
 +        return;
      }
 -    GObj_GXReorder(gobj, i);

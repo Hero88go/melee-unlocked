@@ -96,6 +96,10 @@ int mu_low_poly_fighters(void);
 /* "Always show player tags": the P1 / P2 markers stay up all match (if/ifnametag.c). */
 #define MU_DISPLAY_PLAYER_TAGS 0x2u
 int mu_player_tags_always(void);
+/* "Fountain of Dreams reflections": offline only; Lagless FoD stays on online (shim/mu_gecko.c). */
+#define MU_DISPLAY_FOD_REFLECTIONS 0x4u
+int mu_lagless_fod_begin(void);   /* decides it for the stage being set up */
+int mu_lagless_fod(void);
 /* The language chosen in the PC settings, in the game's own numbering: 0 Japanese, 1 English, or -1
  * when the choice is left to the game's save (Options > Language). lblanguage.c answers with it
  * wherever the game reads its saved language; the save is not changed. */

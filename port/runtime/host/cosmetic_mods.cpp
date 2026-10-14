@@ -329,8 +329,15 @@ bool write_atomic(const fs::path& path, const uint8_t* data, size_t size, std::s
   }
   if (ok) ok = FlushFileBuffers(file) != FALSE;
   CloseHandle(file);
-  if (ok) ok = MoveFileExW(temporary.c_str(), path.c_str(),
-                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE;
+  // A scanner or sync tool that has just opened the catalog makes the replace fail with a sharing
+  // or access error for a moment (a player's every skin change on character select failed this
+  // way). Ask again for up to about half a second before giving up.
+  for (int attempt = 0; ok; ++attempt) {
+    if (MoveFileExW(temporary.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) break;
+    const DWORD why = GetLastError();
+    if (attempt >= 10 || (why != ERROR_ACCESS_DENIED && why != ERROR_SHARING_VIOLATION && why != ERROR_LOCK_VIOLATION)) ok = false;
+    else Sleep(50);
+  }
   if (!ok) {
     DeleteFileW(temporary.c_str());
     *error = "The cosmetic catalog could not be committed atomically.";

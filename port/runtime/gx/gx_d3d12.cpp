@@ -302,6 +302,7 @@ class D3D12Backend : public Backend {
 #endif
     set_hud_scales(opts_.stock_hud_scale, opts_.damage_hud_scale, gecko::option_pal_stock_icons);
     set_low_poly_fighters(opts_.low_poly_fighters != 0);
+    set_fod_reflections(opts_.fod_reflections);
     set_player_tags_always(opts_.player_tags_always != 0);
   }
   ~D3D12Backend() override { if (std::getenv("MELEE_UI_DIAG")) host::log("ui diag: backend shutdown / gpu wait");
@@ -1038,8 +1039,21 @@ void D3D12Backend::wait_frame_latency() {
 
 void D3D12Backend::create_swapchain_targets(bool resize) {
   for (auto& b : backbuffers_) b.Reset();
-  if (resize) check(swapchain_->ResizeBuffers(3, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM,
-                                               swapchain_flags()), "resize");
+  if (resize) {
+    const HRESULT hr = swapchain_->ResizeBuffers(3, client_w_, client_h_, DXGI_FORMAT_R8G8B8A8_UNORM, swapchain_flags());
+    // DXGI refuses a resize in the middle of a fullscreen change (seen on a laptop in exclusive
+    // fullscreen) with INVALID_CALL and leaves the old buffers as they were. Keep drawing at their
+    // size; the next size change asks again. Anything else (a lost device) still stops.
+    if (hr == DXGI_ERROR_INVALID_CALL) {
+      DXGI_SWAP_CHAIN_DESC1 desc{};
+      swapchain_->GetDesc1(&desc);
+      host::log("d3d12: resize to %dx%d refused (0x%08X); keeping %ux%u until the next size change",
+                client_w_, client_h_, (unsigned)hr, desc.Width, desc.Height);
+      client_w_ = (int)desc.Width; client_h_ = (int)desc.Height;
+    } else {
+      check(hr, "resize");
+    }
+  }
   for (UINT i = 0; i < 3; ++i) {
     check(swapchain_->GetBuffer(i, IID_PPV_ARGS(&backbuffers_[i])), "backbuffer");
     D3D12_CPU_DESCRIPTOR_HANDLE h = rtv_heap_->GetCPUDescriptorHandleForHeapStart();

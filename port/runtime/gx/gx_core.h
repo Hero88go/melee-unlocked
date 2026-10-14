@@ -229,6 +229,10 @@ uint32_t hud_scales_packed();
 // reads it through MuHostApi.display_options, the Static Recomp's parts hook (host.cpp) reads it live.
 void set_low_poly_fighters(bool on);
 bool low_poly_fighters_active();
+// "Fountain of Dreams reflections" (RenderOptions::fod_reflections) for the Source Port, read through
+// MuHostApi.display_options when the stage loads. The Static Recomp follows the Gecko list instead.
+void set_fod_reflections(bool on);
+bool fod_reflections_active();
 // "Always show player tags" (RenderOptions::player_tags_always), published the same way: the P1 / P2
 // markers over the fighters stay up for the whole match. Display only, both engines.
 void set_player_tags_always(bool on);
