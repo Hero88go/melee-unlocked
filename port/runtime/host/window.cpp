@@ -119,6 +119,7 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_KEYUP: { std::lock_guard<std::mutex> lock(g_keys_mutex); if (w < 256) g_keys[w] = false; return 0; }
     case WM_SIZE:
+      if (w == SIZE_MINIMIZED) host::log("window: minimized");
       if (w != SIZE_MINIMIZED) {
         g_client_w = LOWORD(l); g_client_h = HIWORD(l);
         if (g_on_resize && g_client_w > 0 && g_client_h > 0) g_on_resize(g_client_w, g_client_h);
@@ -136,6 +137,14 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
       }
       break;
     case WM_KILLFOCUS: { std::lock_guard<std::mutex> lock(g_keys_mutex); std::memset(g_keys, 0, sizeof g_keys); return 0; }
+    // For stutter reports: switching away, a minimized window and a desktop mode change all change
+    // how Windows presents the game, so the log marks when each happened.
+    case WM_ACTIVATEAPP:
+      host::log(w ? "window: the game is in front again" : "window: another program took the focus");
+      break;
+    case WM_DISPLAYCHANGE:
+      host::log("window: the desktop display mode changed to %ux%u, %u bits", (unsigned)LOWORD(l), (unsigned)HIWORD(l), (unsigned)w);
+      break;
   }
   return DefWindowProcW(h, m, w, l);
 }

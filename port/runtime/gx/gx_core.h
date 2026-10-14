@@ -335,6 +335,9 @@ struct Backend {
   virtual std::string profile_line() const { return {}; }
   virtual void set_present_deadline(double) {}
   virtual double presentation_wait_seconds() const { return 0; }
+  // What the display side reported since the last call (D3D12: DXGI frame statistics), for the
+  // "pacing:" line. Called on the render thread.
+  virtual std::string display_timing_line() { return "display statistics not available"; }
   virtual void submit_frame(const Frame& frame) = 0;   // called at XFB copy
   // Queueing backends take the frame's buffers and hand back recycled ones (no copy, no
   // per-frame reallocation on the simulation thread); `frame` comes back cleared either way.

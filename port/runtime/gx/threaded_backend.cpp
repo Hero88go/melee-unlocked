@@ -14,6 +14,7 @@
 #include "gx_core.h"
 #include "replay_control.h"
 #include <algorithm>
+#include <vector>
 #include <chrono>
 #include <string>
 #include <cstdio>
@@ -73,7 +74,12 @@ class ThreadedBackend final : public Backend {
     double idle_repaint = 0.0;   // when a standing picture is next submitted again (replay_control::repaint_wanted)
     double stats_time = next_present; uint64_t stats_presented = 0, stats_sim = 0, stats_lines = 0;
     uint32_t phase_bins[5] = {};
-    double build_seconds = 0, submit_seconds = 0; uint64_t cost_presented = 0;   // presented phases: [0,.25) [.25,.5) [.5,.75) [.75,1) exactly 1
+    double build_seconds = 0, submit_seconds = 0; uint64_t cost_presented = 0;
+    // Frame pacing for "it feels choppy" reports: the time between two frames handed to the display,
+    // summarised every five seconds (median, p99, worst, how many ran long) with each spike logged
+    // as it happens. The average fps above cannot show uneven frames; this can.
+    std::vector<float> pacing_intervals; pacing_intervals.reserve(4096);
+    double pacing_spike_logged = 0; uint32_t pacing_spikes_quiet = 0;   // presented phases: [0,.25) [.25,.5) [.5,.75) [.75,1) exactly 1
     // MELEE_TRACE_LATENCY=1: the path of each new simulation frame from its tick to the return of
     // its first Present, in milliseconds, summarised as median and p95 every 600 frames.
     enum { LT_WAKE, LT_PAD, LT_SIM, LT_PICKUP, LT_SUBMIT, LT_WAIT, LT_TOTAL, LT_AGE, LT_COUNT };
@@ -272,6 +278,22 @@ class ThreadedBackend final : public Backend {
           host::log("%s adapter %.0f Hz", line.c_str(), host::gcadapter_poll_rate_hz());
         }
       }
+      if (last_submission > 0) {
+        const double interval = render_end - last_submission;
+        pacing_intervals.push_back((float)(interval * 1000.0));
+        // A spike: well past this cap's frame time (or 50 ms when uncapped). One line a second at most.
+        const double expected = cap_period > 0 ? cap_period : 1.0 / 60.0;
+        if (interval > std::max(0.050, 3.0 * expected)) {
+          if (render_end - pacing_spike_logged >= 1.0) {
+            host::log("pacing: a frame took %.1f ms to reach the display (expected %.1f), sim frame %llu, simulation %.1f ms%s",
+                      interval * 1000.0, expected * 1000.0, (unsigned long long)current.sequence, host::last_sim_frame_ms(),
+                      pacing_spikes_quiet ? " (more since the last line)" : "");
+            pacing_spike_logged = render_end; pacing_spikes_quiet = 0;
+          } else {
+            ++pacing_spikes_quiet;
+          }
+        }
+      }
       last_submission = render_end;
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
@@ -325,6 +347,16 @@ class ThreadedBackend final : public Backend {
                         (unsigned long long)a.split, (unsigned long long)a.checked, a.worst);
           }
           if (subframes) std::memset(phase_bins, 0, sizeof phase_bins);
+          if (pacing_intervals.size() >= 16) {
+            std::vector<float>& v = pacing_intervals;
+            std::sort(v.begin(), v.end());
+            const float median = v[v.size() / 2], p99 = v[v.size() * 99 / 100], worst = v.back();
+            size_t long15 = 0, long2 = 0;
+            for (float x : v) { if (x > 1.5f * median) ++long15; if (x > 2.0f * median) ++long2; }
+            host::log("pacing: %zu frames, interval median %.2f ms, p99 %.2f, worst %.2f | %zu over 1.5x median, %zu over 2x | %s",
+                      v.size(), median, p99, worst, long15, long2, renderer->display_timing_line().c_str());
+          }
+          pacing_intervals.clear();
           host::log("render cost: solver %.2f ms/frame, submit %.2f ms/frame (%s)", 1000.0 * build_seconds / std::max<uint64_t>(1, cost_presented), 1000.0 * submit_seconds / std::max<uint64_t>(1, cost_presented), render_profile_line(renderer).c_str());
           build_seconds = submit_seconds = 0; cost_presented = 0;
           if (authored) {

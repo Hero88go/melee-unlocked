@@ -339,6 +339,37 @@ class D3D12Backend : public Backend {
   std::string profile_line() const override { return d3d12_profile_line(); }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
+  // DXGI's own count of what reached the screen: presents shown, vertical refreshes that went by,
+  // and refreshes that showed the previous frame again. Frame statistics are only reported while
+  // the swap chain owns the display (exclusive or independent flip); while Windows composes the
+  // window with the desktop the call fails, and that is itself worth knowing for a stutter report.
+  std::string display_timing_line() override {
+    if (!swapchain_) return "no swap chain";
+    BOOL exclusive = FALSE;
+    swapchain_->GetFullscreenState(&exclusive, nullptr);
+    const char* mode = exclusive ? "exclusive fullscreen" : "windowed or borderless";
+    DXGI_FRAME_STATISTICS st{};
+    const HRESULT hr = swapchain_->GetFrameStatistics(&st);
+    char line[256];
+    if (FAILED(hr)) {
+      have_frame_stats_ = false;
+      if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT)
+        std::snprintf(line, sizeof line, "%s, display statistics reset (mode or output changed)", mode);
+      else
+        std::snprintf(line, sizeof line, "%s, no display statistics (0x%08X), usually because Windows composes the window with the desktop", mode, (unsigned)hr);
+      return line;
+    }
+    if (!have_frame_stats_) { have_frame_stats_ = true; last_frame_stats_ = st;
+      std::snprintf(line, sizeof line, "%s, the display owns the frames (statistics start)", mode); return line; }
+    const UINT shown = st.PresentCount - last_frame_stats_.PresentCount;
+    const UINT refreshes = st.SyncRefreshCount - last_frame_stats_.SyncRefreshCount;
+    last_frame_stats_ = st;
+    std::snprintf(line, sizeof line, "%s, the display owns the frames: %u frames shown over %u refreshes (%u refreshes repeated a frame)",
+                  mode, shown, refreshes, refreshes > shown ? refreshes - shown : 0u);
+    return line;
+  }
+  bool have_frame_stats_ = false;
+  DXGI_FRAME_STATISTICS last_frame_stats_{};
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
   // EFB copies are about to be freed. texture_sets_ is keyed by resource pointer, so its entries for
