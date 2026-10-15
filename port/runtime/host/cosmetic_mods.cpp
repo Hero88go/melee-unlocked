@@ -5771,6 +5771,24 @@ std::string choose_import_file() {
   return GetOpenFileNameW(&dialog) ? wide_to_utf8(file) : std::string();
 }
 
+std::vector<std::string> choose_import_files() {
+  std::vector<wchar_t> buffer(1 << 20);   // room for a few thousand names
+  OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof dialog;
+  dialog.hwndOwner = GetActiveWindow();
+  dialog.lpstrFilter = L"Cosmetic imports (*.zip;*.dat;*.usd;*.png;*.ssm)\0*.zip;*.dat;*.usd;*.png;*.ssm\0Costume or stage file (*.dat;*.usd)\0*.dat;*.usd\0ZIP archive (*.zip)\0*.zip\0Portrait or stock icon (*.png)\0*.png\0Voice bank (*.ssm)\0*.ssm\0";
+  dialog.lpstrFile = buffer.data(); dialog.nMaxFile = (DWORD)buffer.size();
+  dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_ALLOWMULTISELECT | OFN_EXPLORER;
+  std::vector<std::string> files;
+  if (!GetOpenFileNameW(&dialog)) return files;
+  // One file: its full path. Several: the folder, then each name, each ended by a null.
+  const std::wstring first(buffer.data());
+  const wchar_t* name = buffer.data() + first.size() + 1;
+  if (!*name) { files.push_back(wide_to_utf8(first.c_str())); return files; }
+  for (; *name; name += std::wcslen(name) + 1)
+    files.push_back(wide_to_utf8((fs::path(first) / name).wstring().c_str()));
+  return files;
+}
+
 std::string choose_portrait_file() {
   wchar_t file[32768]{};
   OPENFILENAMEW dialog{}; dialog.lStructSize = sizeof dialog;

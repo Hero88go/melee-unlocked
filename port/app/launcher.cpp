@@ -138,7 +138,7 @@ std::string g_language;   // launcher.ini language= (empty: follow Windows)
 // player's vanilla disc for the reference code, and a memory card folder of its own.
 std::string g_mod_launch_iso, g_mod_launch_key, g_mod_launch_engine, g_mod_launch_kind;
 bool g_launcher_test = std::getenv("MELEE_LAUNCHER_TEST") != nullptr;
-namespace mod_manager { std::string summary(); }
+namespace mod_manager { std::string summary(); void test_get(); }
 void start_game();
 std::string static_recomp_exe();
 std::string g_lobby_launch_args;
@@ -1531,6 +1531,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       SetTimer(hwnd, ID_TIMER, 500, nullptr);
       if (!g_launcher_test) SetTimer(hwnd, ID_TIMER_STANDBY, 1500, nullptr);
       DragAcceptFiles(hwnd, TRUE);
+      if (g_launcher_test) mod_manager::test_get();
       return 0;
     }
     case WM_ERASEBKGND: return 1;        // WM_PAINT paints every pixel from a memory DC

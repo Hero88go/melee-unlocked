@@ -564,7 +564,9 @@ void download_and_install(CatalogMod mod, std::string iso) {
   uint64_t size = 0;
   std::string body;
   const std::wstring api = L"/repos/" + widen(mod.repo) + (mod.tag.empty() ? L"/releases/latest" : L"/releases/tags/" + widen(mod.tag));
-  const bool reached = https_get(L"api.github.com", api, &body, L"", "", 0, cancel);
+  // Test runs only (MELEE_LAUNCHER_TEST_NO_API): act as if the release API did not answer.
+  const bool no_api = g_launcher_test && std::getenv("MELEE_LAUNCHER_TEST_NO_API") != nullptr;
+  const bool reached = !no_api && https_get(L"api.github.com", api, &body, L"", "", 0, cancel);
   if (cancelled(cancel)) { set_status(mod.id, "Cancelled. Nothing was installed."); return; }
   const Json release = reached ? Json::parse(body, nullptr, false) : Json();
   Json asset;
@@ -587,7 +589,8 @@ void download_and_install(CatalogMod mod, std::string iso) {
     set_status(mod.id, !reached ? "Could not reach the official release." : asset.is_null() && release.is_object() ? "The verified release file was not found." : "The release could not be read."); return;
   }
   // Archive + its unpacked patch + the built disc, with some room to spare.
-  const uint64_t room = size == kSizeFromServer ? 2ull * kGiB : size;
+  // A pinned download of unknown size: room for the disc here; the install checks again with the real size.
+  const uint64_t room = size == kSizeFromServer ? 0 : size;
   const uint64_t need = mod.kind == "gci" ? room + 64 * kMiB : room + room + room / 8 + kDiscBytes + 256 * kMiB;
   if (!enough_space(need, &error)) { set_status(mod.id, error); return; }
   std::error_code ec;
@@ -1022,5 +1025,16 @@ bool is_mod_file(const std::wstring& path) {
   std::wstring l = path; for (auto& c : l) c = (wchar_t)towlower(c);
   for (const wchar_t* s : {L".zip", L".7z", L".xdelta", L".gci"}) if (l.size() >= wcslen(s) && l.compare(l.size() - wcslen(s), wcslen(s), s) == 0) return true;
   return false;
+}
+// Test runs only (MELEE_LAUNCHER_TEST_GET=<catalog id>): Get that mod at startup, as its button
+// does; every status line lands in mods-status.log beside the launcher.
+void test_get() {
+  const char* id = std::getenv("MELEE_LAUNCHER_TEST_GET");
+  if (!g_launcher_test || !id || !*id) return;
+  CatalogMod mod; bool found = false;
+  { std::lock_guard<std::mutex> lock(g_mutex); for (const auto& m : g_catalog) if (m.id == id) { mod = m; found = true; } }
+  if (!found) { set_status(id, "test: no such catalog entry"); return; }
+  set_status(mod.id, "Starting...");
+  std::thread(download_and_install, mod, g_iso).detach();
 }
 }  // namespace mod_manager

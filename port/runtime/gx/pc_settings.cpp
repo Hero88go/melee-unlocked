@@ -6369,33 +6369,54 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                            "visual check use the clean disc resource online. Changes take effect after restart.");
         ImGui::TextWrapped("On the character select screen, L and R step the highlighted costume through "
                            "its installed skins, no restart needed.");
+        // Several files at once (batch import): each is imported as if picked alone, and the message
+        // counts them and names the ones that did not go in.
+        auto import_all = [](const std::vector<std::string>& files, auto&& one) {
+          if (files.size() == 1) return one(files[0]).message;
+          int done = 0; std::string failed;
+          for (const auto& f : files) {
+            const auto r = one(f);
+            if (r.ok) { ++done; continue; }
+            const std::string name = std::filesystem::u8path(f).filename().u8string();
+            if (failed.size() < 1500) failed += "  " + name + ": " + r.message + "\n";
+          }
+          std::string text = "Imported " + std::to_string(done) + " of " + std::to_string(files.size()) + " files.";
+          if (done) text += " Restart to apply them.";
+          if (!failed.empty()) text += " Not imported:\n" + failed;
+          return text;
+        };
         if (ImGui::Button("Import / Refresh...")) {
-          std::string path = host::cosmetics::choose_import_file();
-          if (!path.empty()) mod_message = host::cosmetics::import_file(path).message;
+          const auto files = host::cosmetics::choose_import_files();
+          if (!files.empty()) mod_message = import_all(files, [](const std::string& f) { return host::cosmetics::import_file(f); });
         }
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Import a Nucleus project ZIP, costume DAT/ZIP, or stage DAT/ZIP.\n"
+          ImGui::SetTooltip("Import a Nucleus project ZIP, costume DAT/ZIP, or stage DAT/ZIP. Select several to import them all.\n"
                             "Stage DATs use only their matching disc file. Unsafe stage changes stay offline.\n"
                             "A portrait or stock icon PNG works too when its name says the costume\n"
                             "(\"Fox Green.png\", \"PlFxGr stock.png\"), alone or as a ZIP of pictures.");
         ImGui::SameLine();
-        static std::string stage_dat_path;
+        static std::vector<std::string> stage_dat_paths;
         static int stage_dat_target = 0;
         if (ImGui::Button("Add stage DAT...")) {
-          stage_dat_path = host::cosmetics::choose_import_file();
-          if (!stage_dat_path.empty()) ImGui::OpenPopup("Import stage DAT");
+          stage_dat_paths = host::cosmetics::choose_import_files();
+          if (!stage_dat_paths.empty()) ImGui::OpenPopup("Import stage DAT");
         }
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Import a raw stage DAT with any filename. Choose which stage it replaces; no ZIP is required.");
+          ImGui::SetTooltip("Import raw stage DATs with any filename. Choose which stage they replace; no ZIP is required.\n"
+                            "Select several to add them all as versions of that stage, each in the random pick.");
         if (ImGui::BeginPopupModal("Import stage DAT", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
           static const auto slots = host::cosmetics::stage_slots();
           std::vector<const char*> names;
           for (const auto& slot : slots) names.push_back(slot.name.c_str());
-          ImGui::TextWrapped("Choose the stage this DAT replaces. Full custom stages are available offline.");
+          if (stage_dat_paths.size() > 1)
+            ImGui::TextWrapped("Choose the stage these %d DATs replace. Each becomes one version of it. Full custom stages are available offline.", (int)stage_dat_paths.size());
+          else
+            ImGui::TextWrapped("Choose the stage this DAT replaces. Full custom stages are available offline.");
           ImGui::SetNextItemWidth(280.f);
           settings_combo("Stage to replace", &stage_dat_target, names.data(), (int)names.size());
-          if (ImGui::Button("Import stage")) {
-            mod_message = host::cosmetics::import_stage_dat(stage_dat_path, slots[stage_dat_target].target_path).message;
+          if (ImGui::Button(stage_dat_paths.size() > 1 ? "Import stages" : "Import stage")) {
+            const std::string target = slots[stage_dat_target].target_path;
+            mod_message = import_all(stage_dat_paths, [&](const std::string& f) { return host::cosmetics::import_stage_dat(f, target); });
             ImGui::CloseCurrentPopup();
           }
           ImGui::SameLine();
