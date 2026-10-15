@@ -356,6 +356,8 @@ typedef struct MuHostApi {
  * reflection, water animation and platform jets), read when the stage loads. Online keeps Lagless FoD,
  * as Slippi does. */
 #define MU_DISPLAY_OPTION_FOD_REFLECTIONS 0x4u
+/* The character select background plays through instead of going back to its first frame. */
+#define MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE 0x8u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,

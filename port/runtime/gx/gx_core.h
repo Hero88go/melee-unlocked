@@ -233,6 +233,9 @@ bool low_poly_fighters_active();
 // MuHostApi.display_options when the stage loads. The Static Recomp follows the Gecko list instead.
 void set_fod_reflections(bool on);
 bool fod_reflections_active();
+// "Character select background plays through" (RenderOptions::css_background_free), read by both engines.
+void set_css_background_free(bool on);
+bool css_background_free_active();
 // "Always show player tags" (RenderOptions::player_tags_always), published the same way: the P1 / P2
 // markers over the fighters stay up for the whole match. Display only, both engines.
 void set_player_tags_always(bool on);

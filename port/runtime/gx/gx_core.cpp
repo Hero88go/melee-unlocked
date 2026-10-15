@@ -776,6 +776,9 @@ bool low_poly_fighters_active() { return g_low_poly_fighters.load(std::memory_or
 std::atomic<bool> g_fod_reflections{true};
 void set_fod_reflections(bool on) { g_fod_reflections.store(on, std::memory_order_relaxed); }
 bool fod_reflections_active() { return g_fod_reflections.load(std::memory_order_relaxed); }
+std::atomic<bool> g_css_background_free{false};
+void set_css_background_free(bool on) { g_css_background_free.store(on, std::memory_order_relaxed); }
+bool css_background_free_active() { return g_css_background_free.load(std::memory_order_relaxed); }
 void set_player_tags_always(bool on) { g_player_tags_always.store(on, std::memory_order_relaxed); }
 bool player_tags_always_active() { return g_player_tags_always.load(std::memory_order_relaxed); }
 

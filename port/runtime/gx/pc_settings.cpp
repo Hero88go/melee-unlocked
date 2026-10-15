@@ -1963,6 +1963,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "vsync") options.vsync = value == "1";
       else if (key == "widescreen") options.widescreen = value == "1";
       else if (key == "fodreflections") options.fod_reflections = value != "0";
+      else if (key == "cssbackgroundfree") options.css_background_free = value == "1";
       else if (key == "truewidescreen") options.true_widescreen = value == "1";
       else if (key == "customtextures") options.custom_textures = value == "1";
       else if (key == "dumptextures") options.dump_textures = value == "1";
@@ -3266,7 +3267,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
   file << "fps " << options.fps_cap << "\nscale " << options.efb_scale << "\nfullscreen " << options.fullscreen
        << "\nexclusivefullscreen " << options.exclusive_fullscreen
        << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen
-       << "\nfodreflections " << options.fod_reflections
+       << "\nfodreflections " << options.fod_reflections << "\ncssbackgroundfree " << options.css_background_free
        << "\ntruewidescreen " << options.true_widescreen << "\naspect " << (int)options.aspect
        << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
        << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
@@ -3838,6 +3839,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   set_hud_scales(options.stock_hud_scale, options.damage_hud_scale, gecko::option_pal_stock_icons);
   set_low_poly_fighters(options.low_poly_fighters != 0);
   set_fod_reflections(options.fod_reflections);
+  set_css_background_free(options.css_background_free);
   set_player_tags_always(options.player_tags_always != 0);
   static bool test_tab_set = false;
   if (!test_tab_set) {
@@ -7020,6 +7022,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetTooltip("On: keep Fountain of Dreams' water reflection and particles.\n"
                         "Off: use the Lagless FoD code for lower GPU cost. Takes effect at the next retrace.");
 #endif
+    // Both engines, every mode: it changes only how the menu background moves, never the game.
+    if (settings_toggle("Character select background plays through", &options.css_background_free)) changed = true;
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("On: the character select background plays its whole animation instead of being\n"
+                        "sent back to its first frame, so a custom background does not keep restarting.\n"
+                        "Menu visuals only, so it also works online.");
 
     // ---- L-cancel helpers ----
     // The indicator reads the fighter's action state and never writes anything, so it is display

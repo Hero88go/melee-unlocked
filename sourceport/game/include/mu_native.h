@@ -98,6 +98,8 @@ int mu_low_poly_fighters(void);
 int mu_player_tags_always(void);
 /* "Fountain of Dreams reflections": offline only; Lagless FoD stays on online (shim/mu_gecko.c). */
 #define MU_DISPLAY_FOD_REFLECTIONS 0x4u
+/* "Character select background plays through": the background is not sent back to its first frame. */
+#define MU_DISPLAY_CSS_BACKGROUND_FREE 0x8u
 int mu_lagless_fod_begin(void);   /* decides it for the stage being set up */
 int mu_lagless_fod(void);
 /* The language chosen in the PC settings, in the game's own numbering: 0 Japanese, 1 English, or -1

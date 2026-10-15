@@ -16,6 +16,7 @@
 #include <windows.h>
 #include <d3d11_1.h>
 #include <dxgi1_6.h>
+#include "dxgi_paced_mode.h"
 #include "gx_adapter.h"
 #include <d3dcompiler.h>
 #include <wrl/client.h>
@@ -253,6 +254,7 @@ class D3D11Backend : public Backend {
       set_hud_scales(opts_.stock_hud_scale, opts_.damage_hud_scale, gecko::option_pal_stock_icons);
       set_low_poly_fighters(opts_.low_poly_fighters != 0);
       set_fod_reflections(opts_.fod_reflections);
+      set_css_background_free(opts_.css_background_free);
       set_player_tags_always(opts_.player_tags_always != 0);
     } catch (...) { stop_shader_workers(); throw; }   // the worker threads must not outlive a failed start
     starting_ = false;
@@ -794,7 +796,10 @@ void D3D11Backend::apply_fullscreen_mode() {
       mode.Width = (UINT)(desc.DesktopCoordinates.right - desc.DesktopCoordinates.left);
       mode.Height = (UINT)(desc.DesktopCoordinates.bottom - desc.DesktopCoordinates.top);
       mode.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-      if (mode.Width >= 320 && mode.Height >= 240) swapchain_->ResizeTarget(&mode);
+      if (mode.Width >= 320 && mode.Height >= 240) {
+        gx::pick_paced_mode(output.Get(), opts_.fps_cap, mode);
+        swapchain_->ResizeTarget(&mode);
+      }
     }
     const HRESULT hr = swapchain_->SetFullscreenState(TRUE, nullptr);
     if (FAILED(hr)) {

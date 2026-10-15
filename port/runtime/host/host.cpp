@@ -563,12 +563,13 @@ static void load_dol_from_file(const std::string& path) {
   for (const auto& r : g_text_ranges) { const uint8_t* p = ptr(r.first, r.second); g_vanilla_text.insert(g_vanilla_text.end(), p, p + r.second); }
 }
 
-// Recognised by what the disc carries, never by its file name: the pack's two code and table files,
-// its numbered character select file and its renamed HUD file, with the retail names gone.
+// Recognised by what the disc carries, never by its file name: the pack's numbered character select
+// file (which holds the code the pack calls at fixed heap addresses) in place of the retail one. Every
+// 20XX Hack Pack build has it; AI_Engine.bin, StageSwapTable.bin and IfAl0.usd came with 5.0, and
+// requiring them left 4.07++ running with Slippi's codes, where its character select jumped into
+// the heap (80FD0240) on entry.
 static bool disc_is_fixed_address_pack() {
-  return disc_find_file("AI_Engine.bin", nullptr, nullptr) && disc_find_file("StageSwapTable.bin", nullptr, nullptr) &&
-         disc_find_file("MnSlChr.0sd", nullptr, nullptr) && disc_find_file("IfAl0.usd", nullptr, nullptr) &&
-         !disc_find_file("MnSlChr.usd", nullptr, nullptr) && !disc_find_file("IfAll.usd", nullptr, nullptr);
+  return disc_find_file("MnSlChr.0sd", nullptr, nullptr) && !disc_find_file("MnSlChr.usd", nullptr, nullptr);
 }
 
 static void load_dol_from_disc() {
