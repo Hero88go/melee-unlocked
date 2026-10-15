@@ -262,6 +262,9 @@ bool enough_space(uint64_t need, std::string* why) {
 }
 
 // HTTPS GET. `to_file` empty: returns the body in *body. Reports progress for downloads.
+// `expected` for a file: its exact size, or kSizeFromServer to take the Content-Length of the answer
+// (at most 2 GiB), for a pinned catalog download whose size the release API did not give.
+constexpr uint64_t kSizeFromServer = ~0ull;
 bool https_get(const std::wstring& host, const std::wstring& path, std::string* body, const std::wstring& to_file,
                const std::string& id = "", uint64_t expected = 0, const std::atomic<bool>* cancel = nullptr) {
   HINTERNET session = WinHttpOpen(L"MeleeUnlocked-Launcher", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, 0);
@@ -290,6 +293,11 @@ bool https_get(const std::wstring& host, const std::wstring& path, std::string* 
           else { WinHttpCloseHandle(req); WinHttpCloseHandle(connect); break; }
         }
       } else if (status == 200) {
+        if (!to_file.empty() && expected == kSizeFromServer) {
+          wchar_t length[32]{}; DWORD bytes = sizeof length;
+          expected = WinHttpQueryHeaders(req, WINHTTP_QUERY_CONTENT_LENGTH, nullptr, length, &bytes, nullptr) ? _wcstoui64(length, nullptr, 10) : 0;
+          if (!expected || expected > 2ull * kGiB) { WinHttpCloseHandle(req); WinHttpCloseHandle(connect); break; }
+        }
         std::ofstream out;
         if (!to_file.empty()) out.open(to_file, std::ios::binary);
         uint64_t got = 0; ULONGLONG last = 0;
@@ -548,27 +556,39 @@ void download_and_install(CatalogMod mod, std::string iso) {
   std::string error;
   if (!mod.patch_sha256.empty() && !vanilla_iso_ok(iso, &error)) { set_status(mod.id, error); return; }
   set_status(mod.id, "Checking the official release...");
+  // The release API names the file, its size and its digest. It is rate limited (60 calls an hour
+  // per address without a token) and some networks block it, which left Get doing nothing useful;
+  // a catalog entry that pins the download address and its SHA-256 needs none of it, so that entry
+  // downloads from the pinned address when the API does not answer.
+  std::string url, name, digest;
+  uint64_t size = 0;
   std::string body;
   const std::wstring api = L"/repos/" + widen(mod.repo) + (mod.tag.empty() ? L"/releases/latest" : L"/releases/tags/" + widen(mod.tag));
-  if (!https_get(L"api.github.com", api, &body, L"", "", 0, cancel)) {
-    set_status(mod.id, cancelled(cancel) ? "Cancelled. Nothing was installed." : "Could not reach the official release."); return;
-  }
-  const Json release = Json::parse(body, nullptr, false);
-  if (!release.is_object() || !release.count("assets") || !release["assets"].is_array()) { set_status(mod.id, "The release could not be read."); return; }
+  const bool reached = https_get(L"api.github.com", api, &body, L"", "", 0, cancel);
+  if (cancelled(cancel)) { set_status(mod.id, "Cancelled. Nothing was installed."); return; }
+  const Json release = reached ? Json::parse(body, nullptr, false) : Json();
   Json asset;
-  for (const auto& a : release["assets"]) if (a.is_object() && a.value("name", std::string()) == mod.asset_pattern) { asset = a; break; }
-  if (asset.is_null()) { set_status(mod.id, "The verified release file was not found."); return; }
-  const std::string url = asset.value("browser_download_url", std::string()), name = asset.value("name", std::string());
-  const uint64_t size = asset.value("size", (uint64_t)0);
-  std::string digest;
-  const std::string official = asset.count("digest") && asset["digest"].is_string() ? asset["digest"].get<std::string>() : "";
-  if (!catalog_core::download_digest(official, mod.sha256, &digest, &error)) { set_status(mod.id, error); return; }
-  if (name.empty() || name.find_first_of("/\\:\"\r\n") != std::string::npos || name == "." || name == ".." ||
-      !size || size > 2ull * kGiB || (!mod.url.empty() && url != mod.url)) {
-    set_status(mod.id, "The release metadata changed. A catalog update is needed."); return;
+  if (release.is_object() && release.count("assets") && release["assets"].is_array())
+    for (const auto& a : release["assets"]) if (a.is_object() && a.value("name", std::string()) == mod.asset_pattern) { asset = a; break; }
+  if (!asset.is_null()) {
+    url = asset.value("browser_download_url", std::string()); name = asset.value("name", std::string());
+    size = asset.value("size", (uint64_t)0);
+    const std::string official = asset.count("digest") && asset["digest"].is_string() ? asset["digest"].get<std::string>() : "";
+    if (!catalog_core::download_digest(official, mod.sha256, &digest, &error)) { set_status(mod.id, error); return; }
+    if (name.empty() || name.find_first_of("/\\:\"\r\n") != std::string::npos || name == "." || name == ".." ||
+        !size || size > 2ull * kGiB || (!mod.url.empty() && url != mod.url)) {
+      set_status(mod.id, "The release metadata changed. A catalog update is needed."); return;
+    }
+  } else if (!mod.url.empty() && catalog_core::valid_sha256(mod.sha256) && !mod.asset_pattern.empty() &&
+             mod.asset_pattern.find_first_of("/\\:\"\r\n*?") == std::string::npos) {
+    url = mod.url; name = mod.asset_pattern; digest = mod.sha256;
+    size = kSizeFromServer;   // the server's Content-Length, at most 2 GiB; the pinned digest checks the file
+  } else {
+    set_status(mod.id, !reached ? "Could not reach the official release." : asset.is_null() && release.is_object() ? "The verified release file was not found." : "The release could not be read."); return;
   }
   // Archive + its unpacked patch + the built disc, with some room to spare.
-  const uint64_t need = mod.kind == "gci" ? size + 64 * kMiB : size + size + size / 8 + kDiscBytes + 256 * kMiB;
+  const uint64_t room = size == kSizeFromServer ? 2ull * kGiB : size;
+  const uint64_t need = mod.kind == "gci" ? room + 64 * kMiB : room + room + room / 8 + kDiscBytes + 256 * kMiB;
   if (!enough_space(need, &error)) { set_status(mod.id, error); return; }
   std::error_code ec;
   const fs::path folder = fs::u8path(mods_dir()) / ".downloads" / (mod.id + "-" + std::to_string(GetTickCount64()));

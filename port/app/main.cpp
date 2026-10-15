@@ -781,7 +781,6 @@ static void install_css_background_hook() {
   ppc::add_entry_hook(0x8036F8BCu, [](ppc::Context& c) {   // HSD_JObjReqAnimAll
     if (c.lr == 0x80263394u && gx::css_background_free_active()) c.r[3] = 0;
   });
-});
 }
 #endif
 
