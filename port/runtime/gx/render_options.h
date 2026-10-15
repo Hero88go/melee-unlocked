@@ -48,8 +48,8 @@ struct RenderOptions {
   bool fullscreen = false;
   bool exclusive_fullscreen = false;
   bool fod_reflections = true;  // keep Fountain of Dreams water/reflection effects on by default
-  // The character select background plays its animation through instead of being sent back to its
-  // first frame (8025F130). Menu visuals only, so it is the viewer's own in every mode.
+  // The character select background plays its animation through instead of starting over every 200
+  // frames (fn_80263354). Menu visuals only, so it is the viewer's own in every mode.
   bool css_background_free = false;
   // DLSS Frame Generation and NVIDIA Reflex are presentation-only controls. They are ignored when
   // the selected backend or hardware cannot provide them.

@@ -772,15 +772,16 @@ static void install_rng_seed_hook() {
     host::input_mark_match_start();
   });
 }
-// "Character select background plays through": fn_8025F0E0, the character select's think, sends the
-// background (joint 0x27) back to its first frame on nine frames of ten with
-// HSD_ForeachAnim(jobj, ..., HSD_AObjReqAnim, AOBJ_ARG_AF, 0.0) (the call returning to 8025F19C).
-// With the setting on, that one call gets a null object, which HSD_ForeachAnim returns on at once.
-// A menu visual only: nothing the match or a replay reads.
+// "Character select background plays through": fn_80263354, the character select background's think,
+// starts its animation over every 200 frames with HSD_JObjReqAnimAll(jobj, 0.0) (the call returning to
+// 80263394), so a custom background with a longer animation is cut off every 3.3 seconds. With the
+// setting on, that one call gets a null object, which HSD_JObjReqAnimAll returns on at once. A menu
+// visual only: nothing the match or a replay reads.
 static void install_css_background_hook() {
-  ppc::add_entry_hook(0x80364C08u, [](ppc::Context& c) {   // HSD_ForeachAnim
-    if (c.lr == 0x8025F19Cu && gx::css_background_free_active()) c.r[3] = 0;
+  ppc::add_entry_hook(0x8036F8BCu, [](ppc::Context& c) {   // HSD_JObjReqAnimAll
+    if (c.lr == 0x80263394u && gx::css_background_free_active()) c.r[3] = 0;
   });
+});
 }
 #endif
 

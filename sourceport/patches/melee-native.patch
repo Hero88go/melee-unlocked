@@ -159948,7 +159948,7 @@ index cfd3e0527..e6707a8ed 100644
 -#pragma pop
 -#endif
 diff --git a/src/melee/mn/mncharsel.c b/src/melee/mn/mncharsel.c
-index d580c0aa4..b338f965d 100644
+index d580c0aa4..f8f9080d5 100644
 --- a/src/melee/mn/mncharsel.c
 +++ b/src/melee/mn/mncharsel.c
 @@ -28,6 +28,8 @@
@@ -160527,24 +160527,7 @@ index d580c0aa4..b338f965d 100644
          }
      }
  }
-@@ -1674,7 +1895,15 @@ void fn_8025F0E0(HSD_GObj* gobj)
-     int css_models;
-     float fval;
- 
--    if ((mnCharSel_804D6CEC % 10) != 0) {
-+    /* The background (joint 0x27) goes back to its first frame on nine frames of ten. With
-+     * "Character select background plays through" (a menu visual, the viewer's own) it plays on. */
-+#ifdef MU_NATIVE
-+    if ((mnCharSel_804D6CEC % 10) != 0 &&
-+        (mu_display_options() & MU_DISPLAY_CSS_BACKGROUND_FREE) == 0)
-+#else
-+    if ((mnCharSel_804D6CEC % 10) != 0)
-+#endif
-+    {
-         if (mnCharSel_804D6CF5 == 1) {
-             lb_80011E24(jobj, &sp54, 0x27, -1);
-         } else {
-@@ -1684,21 +1913,21 @@ void fn_8025F0E0(HSD_GObj* gobj)
+@@ -1684,21 +1905,21 @@ void fn_8025F0E0(HSD_GObj* gobj)
                          AOBJ_ARG_AF, 0.0f);
      }
  
@@ -160569,7 +160552,7 @@ index d580c0aa4..b338f965d 100644
                      HSD_ForeachAnim(sp48, JOBJ_TYPE, TOBJ_MASK,
                                      HSD_AObjReqAnim, AOBJ_ARG_AF, 0.0f);
                      HSD_JObjAnimAll(sp48);
-@@ -2022,6 +2251,73 @@ static inline s32 getPlayerForDoor(u8 door)
+@@ -2022,6 +2243,73 @@ static inline s32 getPlayerForDoor(u8 door)
      return door;
  }
  
@@ -160643,7 +160626,7 @@ index d580c0aa4..b338f965d 100644
  void mnCharSel_8025FB50(u8 door, s32 arg1)
  {
      s32 icon_idx;
-@@ -2029,7 +2325,7 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
+@@ -2029,7 +2317,7 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
      HSD_JObj* icon_jobj;
  
      do {
@@ -160652,7 +160635,7 @@ index d580c0aa4..b338f965d 100644
          icon_idx = temp;
          icon_offset = getIconOffset(icon_idx);
      } while (icons[icon_idx].state == 0);
-@@ -2061,11 +2357,11 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
+@@ -2061,11 +2349,11 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
                              mnCharSel_804A0BC0[mnCharSel_804D6CF5 - 1]->gobj);
  
      if (mnCharSel_804D6CF5 == 1) {
@@ -160668,7 +160651,7 @@ index d580c0aa4..b338f965d 100644
      }
      HSD_ForeachAnim(icon_jobj, JOBJ_TYPE, TOBJ_MASK, HSD_AObjReqAnim,
                      AOBJ_ARG_AF, 10.0);
-@@ -2080,9 +2376,6 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
+@@ -2080,9 +2368,6 @@ void mnCharSel_8025FB50(u8 door, s32 arg1)
      }
  }
  
@@ -160678,7 +160661,7 @@ index d580c0aa4..b338f965d 100644
  s32 mnCharSel_8025FDEC(u8 door)
  {
      CSSData* css;
-@@ -2104,7 +2397,20 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2104,7 +2389,20 @@ s32 mnCharSel_8025FDEC(u8 door)
      css = mnCharSel_804D6CB0;
      c_kind = css->vs.start.players[player].ckind;
  
@@ -160699,7 +160682,7 @@ index d580c0aa4..b338f965d 100644
          if (c_kind != icons[mnCharSel_803F0DFC.doors[door].sel_icon].char_kind)
          {
              mnCharSel_803F0DFC.doors[door].costume = 0;
-@@ -2112,7 +2418,7 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2112,7 +2410,7 @@ s32 mnCharSel_8025FDEC(u8 door)
  
          {
              CSSIcon* icon = icons;
@@ -160708,7 +160691,7 @@ index d580c0aa4..b338f965d 100644
                  if (css->vs.start.players[player].ckind ==
                      icon[icon_idx].char_kind)
                  {
-@@ -2134,30 +2440,18 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2134,30 +2432,18 @@ s32 mnCharSel_8025FDEC(u8 door)
          mnCharSel_804A0BD0[door]->x5 = 0;
  
          if (mnCharSel_804D6CF5 == 1) {
@@ -160744,7 +160727,7 @@ index d580c0aa4..b338f965d 100644
  
          if (mnCharSel_804D6CF6 != 3 && mnCharSel_804D6CF6 != 4) {
              int sel = mnCharSel_803F0DFC.doors[door].sel_icon;
-@@ -2168,21 +2462,255 @@ s32 mnCharSel_8025FDEC(u8 door)
+@@ -2168,21 +2454,255 @@ s32 mnCharSel_8025FDEC(u8 door)
      }
      return 1;
  }
@@ -160977,12 +160960,12 @@ index d580c0aa4..b338f965d 100644
 -    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= 0x19) {
 +#endif
 +    if (mnCharSel_803F0DFC.doors[door].sel_icon >= CSS_NONE) {
-+        return;
-+    }
-+    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= CSS_NONE) {
          return;
      }
- 
++    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= CSS_NONE) {
++        return;
++    }
++
 +#ifdef MU_NATIVE
 +    /* 20XX Hack Pack "Disable X/Y Alt Costumes for Extra Characters" (802600D8): a hidden fighter
 +     * keeps its costume (the game has no costume count for it). Off: 0. */
@@ -160990,7 +160973,7 @@ index d580c0aa4..b338f965d 100644
 +        return;
 +    }
 +#endif
-+
+ 
 +#ifdef MU_NATIVE
 +    /* L or R alone: the costume stays, its skin changes (not both at once, which is the start of
 +     * the L+R+A+START reset). */
@@ -161004,7 +160987,7 @@ index d580c0aa4..b338f965d 100644
      if (input & HSD_PAD_X) {
          do {
              mnCharSel_803F0DFC.doors[door].costume =
-@@ -2270,6 +2798,12 @@ static inline void updateCursorDisplay(HSD_JObj* jobj,
+@@ -2270,6 +2790,12 @@ static inline void updateCursorDisplay(HSD_JObj* jobj,
              }
  
              lb_80011E24(jobj, color_jobj, 3, -1);
@@ -161017,7 +161000,7 @@ index d580c0aa4..b338f965d 100644
              {
                  HSD_JObj* anim_jobj = *color_jobj;
                  HSD_ForeachAnim(anim_jobj, JOBJ_TYPE, TOBJ_MASK,
-@@ -2402,6 +2936,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2402,6 +2928,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
      }
  
      if (mnCharSel_804D6CF6 == 0) {
@@ -161030,7 +161013,7 @@ index d580c0aa4..b338f965d 100644
          cursor->x8 = 0;
  
          if (mnCharSel_804D6CF5 == 1) {
-@@ -2430,9 +2970,20 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2430,9 +2962,20 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
              getStickDelta(port, &dx, &dy);
  
              if (HSD_PadCopyStatus[cursor->x4].err != 0) {
@@ -161051,7 +161034,7 @@ index d580c0aa4..b338f965d 100644
                      cursor->xA = 0;
                      if (cursor->x5 == 1) {
                          door = cursor->x6;
-@@ -2448,7 +2999,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2448,7 +2991,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                          }
                      } else {
                          if (mnCharSel_803F0DFC.doors[cursor->x4].sel_icon >=
@@ -161060,7 +161043,7 @@ index d580c0aa4..b338f965d 100644
                              mnCharSel_803F0DFC.doors[cursor->x4].p_kind != 3 &&
                              mnCharSel_8025FDEC(cursor->x4) != 0)
                          {
-@@ -2456,9 +3007,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2456,9 +2999,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                          }
                      }
                      if (mnCharSel_803F0DFC.doors[cursor->x4].p_kind == 0) {
@@ -161078,7 +161061,7 @@ index d580c0aa4..b338f965d 100644
                          mnCharSel_804D6CB0->vs.start.players[cursor->x4]
                              .nametag = 0x78;
                          mnCharSel_803F0E8C[cursor->x4].data->use_tag = 0;
-@@ -2565,7 +3124,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2565,7 +3116,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  lbAudioAx_800237A8(0xB8, 0x7F, 0x40);
                              } else {
                                  mnCharSel_804A0BD0[door]->x5 = 0;
@@ -161087,7 +161070,7 @@ index d580c0aa4..b338f965d 100644
                                  {
                                      s32 player_idx;
                                      if (mnCharSel_804D6CF5 == 1) {
-@@ -2594,14 +3153,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2594,14 +3145,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                       (m->x8 > 24.4f && m->x8 < 30.2f)))
                                  {
                                      s32 icon_count;
@@ -161104,7 +161087,7 @@ index d580c0aa4..b338f965d 100644
                                          mnCharSel_8025FB50(door, 0);
                                          while (true) {
                                              mnCharSel_803F0DFC.doors[door]
-@@ -2617,6 +3176,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2617,6 +3168,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                  break;
                                              }
                                          }
@@ -161115,7 +161098,7 @@ index d580c0aa4..b338f965d 100644
                                          mnCharSel_8025DB34(door);
                                          cursor->x5 = 2;
                                          lbAudioAx_800237A8(0xB8, 0x7F, 0x40);
-@@ -2629,13 +3192,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2629,13 +3184,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  struct CSSCharModel* m2 =
                                      mnCharSel_804A0BD0[door];
                                  s32 i;
@@ -161134,7 +161117,7 @@ index d580c0aa4..b338f965d 100644
                                          mnCharSel_803F0DFC.doors[door]
                                              .sel_icon = (u8) i;
                                          mnCharSel_8025DB34(door);
-@@ -2652,6 +3219,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2652,6 +3211,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                              } else {
                                                  player_idx = door;
                                              }
@@ -161149,7 +161132,7 @@ index d580c0aa4..b338f965d 100644
                                              mnCharSel_804D6CB0->vs.start
                                                  .players[player_idx]
                                                  .ckind =
-@@ -2661,12 +3236,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2661,12 +3228,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                      .char_kind;
                                              if (mnCharSel_804D6CF5 == 1) {
                                                  lb_80011E24(
@@ -161166,7 +161149,7 @@ index d580c0aa4..b338f965d 100644
                                              }
                                              HSD_ForeachAnim(sp98, JOBJ_TYPE,
                                                              TOBJ_MASK,
-@@ -2709,15 +3284,28 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2709,15 +3276,28 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                      }
                                  }
                                  mnCharSel_803F0DFC.doors[door].sel_icon_prev =
@@ -161198,7 +161181,7 @@ index d580c0aa4..b338f965d 100644
                                          }
                                      } else {
                                          mnCharSel_CostumeChange((s32) door,
-@@ -2999,7 +3587,16 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2999,7 +3579,16 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          /* Retail nudges both toggle-box
                                           * bounds outward by 1/10485760. */
                                          if (cy4 < 0.20000009536743146 &&
@@ -161216,7 +161199,7 @@ index d580c0aa4..b338f965d 100644
                                          {
                                              cursor->x10 = -2.2f;
                                              {
-@@ -3019,9 +3616,19 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3019,9 +3608,19 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                          .p_kind = 3;
                                                      break;
                                                  case 4:
@@ -161236,7 +161219,7 @@ index d580c0aa4..b338f965d 100644
                                                      {
                                                          mnCharSel_803F0DFC
                                                              .doors[door]
-@@ -3042,11 +3649,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3042,11 +3641,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                              if (mnCharSel_803F0DFC.doors[door]
                                                      .p_kind == 1)
                                              {
@@ -161255,7 +161238,7 @@ index d580c0aa4..b338f965d 100644
                                                  if (mnCharSel_803F0DFC
                                                              .doors[door]
                                                              .selected_since_load ==
-@@ -3186,6 +3800,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3186,6 +3792,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          -1);
                                  }
                                  lb_8000B1CC(sp98, NULL, (&sp88));
@@ -161266,7 +161249,7 @@ index d580c0aa4..b338f965d 100644
                                  {
                                      if (cursor->xC > (sp88.x - 4.7f) &&
                                          cursor->xC < (5.2f + sp88.x))
-@@ -3232,7 +3850,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3232,7 +3842,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          mnCharSel_803F0DFC.doors[ci].p_kind;
                                      if (pk2 != 3 &&
                                          mnCharSel_803F0DFC.doors[ci].sel_icon <
@@ -161275,7 +161258,7 @@ index d580c0aa4..b338f965d 100644
                                          (pk2 != 0 || (s32) cursor->x4 == ci))
                                      {
                                          struct CSSCharModel* mc =
-@@ -3252,7 +3870,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3252,7 +3862,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  }
                              }
  
@@ -161289,7 +161272,7 @@ index d580c0aa4..b338f965d 100644
                                  u8 cport4 = cursor->x4;
                                  s32 closest_door = (u8) closest;
                                  mnCharSel_804A0BD0[(u8) closest]->x5 =
-@@ -3273,12 +3896,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3273,12 +3888,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                             -2.0f);
                              }
                          }
@@ -161309,7 +161292,7 @@ index d580c0aa4..b338f965d 100644
                          {
                              f32 cy8 = cursor->x10;
                              if (cy8 > 0.2f && cy8 < 22.0f) {
-@@ -3306,7 +3934,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3306,7 +3926,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  mnCharSel_804D6CB0->match_type != 1)
                              {
                                  if (mnCharSel_803F0DFC.doors[cport6].p_kind ==
@@ -161329,7 +161312,7 @@ index d580c0aa4..b338f965d 100644
                                  {
                                      mnCharSel_803F0DFC.doors[cport6].p_kind =
                                          0;
-@@ -3320,7 +3959,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3320,7 +3951,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  {
                                      u8 cport7 = cursor->x4;
                                      if (mnCharSel_803F0DFC.doors[cport7]
@@ -161338,7 +161321,7 @@ index d580c0aa4..b338f965d 100644
                                      {
                                          mnCharSel_804A0BD0[cport7]->x5 =
                                              (u8) (next_port = cport7 + 1);
-@@ -3408,7 +4047,7 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3408,7 +4039,7 @@ void fn_80262648(HSD_GObj* gobj)
          u8 door = model->x4;
  
          if ((p_kind = mnCharSel_803F0DFC.doors[door].p_kind) == 3 ||
@@ -161347,7 +161330,7 @@ index d580c0aa4..b338f965d 100644
          {
              HSD_JObjSetFlagsAll(jobj, JOBJ_HIDDEN);
              return;
-@@ -3435,6 +4074,12 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3435,6 +4066,12 @@ void fn_80262648(HSD_GObj* gobj)
                  mnCharSel_804D50E0[mnCharSel_803F0DFC.doors[door].team];
          }
      }
@@ -161360,7 +161343,7 @@ index d580c0aa4..b338f965d 100644
  
      HSD_JObjClearFlagsAll(jobj, JOBJ_HIDDEN);
      model->x7 = (u8) (model->x7 + 1);
-@@ -3474,7 +4119,7 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3474,7 +4111,7 @@ void fn_80262648(HSD_GObj* gobj)
  
                  for (j = 0; j < (s32) n_doors; j++) {
                      if (j != (s32) model->x4 && (*bdp)->x5 == 0 &&
@@ -161369,7 +161352,7 @@ index d580c0aa4..b338f965d 100644
                      {
                          f32 dx;
                          f32 dy;
-@@ -3624,6 +4269,7 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3624,6 +4261,7 @@ void fn_80262F44(HSD_GObj* gobj)
  {
      HSD_JObj* jobj = GET_JOBJ(gobj);
      int i;
@@ -161377,7 +161360,7 @@ index d580c0aa4..b338f965d 100644
      PAD_STACK(0x8);
  
      if (mnCharSel_804D6CB0->match_type == VS_CAMERA) {
-@@ -3640,7 +4286,7 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3640,7 +4278,7 @@ void fn_80262F44(HSD_GObj* gobj)
  
      if (mnCharSel_804D6CF5 == 1) {
          if (mnCharSel_804A0BC0[0]->x5 == 1 ||
@@ -161386,7 +161369,7 @@ index d580c0aa4..b338f965d 100644
          {
              mnCharSel_804D6CF7 = 0;
          } else {
-@@ -3648,18 +4294,23 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3648,18 +4286,23 @@ void fn_80262F44(HSD_GObj* gobj)
          }
          HSD_JObjSetFlagsAll(jobj, JOBJ_HIDDEN);
      } else {
@@ -161412,7 +161395,7 @@ index d580c0aa4..b338f965d 100644
              if (mnCharSel_804D6CB0->vs.start.rules.is_teams == 1) {
                  for (i = 0; i < (s32) (mnCharSel_804D6CF5 - 1); i++) {
                      s32 j;
-@@ -3721,6 +4372,32 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3721,6 +4364,32 @@ void fn_80262F44(HSD_GObj* gobj)
              }
          }
  
@@ -161445,7 +161428,7 @@ index d580c0aa4..b338f965d 100644
          if (mnCharSel_804D6CF2 == 0 && (trigger & HSD_PAD_START)) {
              if (mnCharSel_804D6CF7 != 0) {
                  mnCharSel_804D6CF6 = 1;
-@@ -3750,6 +4427,9 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3750,12 +4419,23 @@ void fn_80262F44(HSD_GObj* gobj)
              }
          }
      }
@@ -161455,6 +161438,21 @@ index d580c0aa4..b338f965d 100644
  }
  
  void fn_80263354(HSD_GObj* gobj)
+ {
+     HSD_JObj* jobj = GET_JOBJ(gobj);
+-    if (mnCharSel_804D6CEC % 200 == 0) {
++    /* The background starts its animation over every 200 frames. With "Character select background
++     * plays through" (a menu visual, the viewer's own) a background with a longer animation plays on. */
++#ifdef MU_NATIVE
++    if (mnCharSel_804D6CEC % 200 == 0 &&
++        (mu_display_options() & MU_DISPLAY_CSS_BACKGROUND_FREE) == 0)
++#else
++    if (mnCharSel_804D6CEC % 200 == 0)
++#endif
++    {
+         HSD_JObjReqAnimAll(jobj, 0.0F);
+     }
+     HSD_JObjAnimAll(jobj);
 @@ -3820,6 +4500,12 @@ void fn_802633B0(HSD_GObj* gobj)
      } else {
          num_entries = num_entries - 7;

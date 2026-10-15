@@ -7025,8 +7025,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // Both engines, every mode: it changes only how the menu background moves, never the game.
     if (settings_toggle("Character select background plays through", &options.css_background_free)) changed = true;
     if (ImGui::IsItemHovered())
-      ImGui::SetTooltip("On: the character select background plays its whole animation instead of being\n"
-                        "sent back to its first frame, so a custom background does not keep restarting.\n"
+      ImGui::SetTooltip("On: the character select background plays its whole animation instead of starting\n"
+                        "over every few seconds, so a custom background with a longer animation is not cut off.\n"
                         "Menu visuals only, so it also works online.");
 
     // ---- L-cancel helpers ----
