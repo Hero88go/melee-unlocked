@@ -1596,7 +1596,7 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   if (opts_.widescreen != widescreen_sent_) { widescreen_sent_ = opts_.widescreen; slippi::request_widescreen(opts_.widescreen); }
   if (opts_.fod_reflections != fod_reflections_sent_) { fod_reflections_sent_ = opts_.fod_reflections; slippi::request_fod_reflections(opts_.fod_reflections); }
   // The Gecko code wins if both are somehow set, so the two can never widen the same frame twice.
-  set_true_widescreen(opts_.true_widescreen && !opts_.widescreen);
+  set_true_widescreen(opts_.true_widescreen && !opts_.widescreen, true_widescreen_aspect(opts_, client_w_, client_h_));
   float aspect = output_aspect();
   float ww = (float)client_w_, wh = (float)client_h_;
   float vw = ww, vh = ww / aspect;

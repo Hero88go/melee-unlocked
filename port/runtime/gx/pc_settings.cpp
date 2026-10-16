@@ -271,7 +271,7 @@ static void draw_player_nicknames() {
     const std::string label = "P" + std::to_string(slot + 1) + "  " + g_hud_player_names[slot];
     const ImVec2 text_size = ImGui::GetFont()->CalcTextSizeA(font_size, FLT_MAX, 0.0f, label.c_str());
     // Under True 16:9 the tag is drawn 219/320 as far from the centre (gx_shader.cpp, is_nametag_layer).
-    const float tag_x = true_widescreen_active() ? 320.0f + (player.tag_x - 320.0f) * (219.0f / 320.0f) : player.tag_x;
+    const float tag_x = true_widescreen_active() ? 320.0f + (player.tag_x - 320.0f) * true_widescreen_factor() : player.tag_x;
     const float x = std::clamp(bounds.left + tag_x / 640.0f * width - text_size.x * 0.5f,
                                bounds.left + 4.0f, std::max(bounds.left + 4.0f, bounds.right - text_size.x - 4.0f));
     const float y = std::clamp(bounds.top + player.tag_y / 480.0f * height - font_size * 2.4f,
@@ -1965,6 +1965,9 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "fodreflections") options.fod_reflections = value != "0";
       else if (key == "cssbackgroundfree") options.css_background_free = value == "1";
       else if (key == "truewidescreen") options.true_widescreen = value == "1";
+      else if (key == "truewsaspect") { int n = std::stoi(value); if (n >= 0 && n <= 3) options.true_aspect = (TrueAspect)n; }
+      else if (key == "truewscustomw") { int n = std::stoi(value); if (n >= 1 && n <= 100) options.true_custom_w = n; }
+      else if (key == "truewscustomh") { int n = std::stoi(value); if (n >= 1 && n <= 100) options.true_custom_h = n; }
       else if (key == "customtextures") options.custom_textures = value == "1";
       else if (key == "dumptextures") options.dump_textures = value == "1";
       else if (key == "prefetchtextures") options.prefetch_textures = value != "0";
@@ -3268,7 +3271,8 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nexclusivefullscreen " << options.exclusive_fullscreen
        << "\nvsync " << options.vsync << "\nwidescreen " << options.widescreen
        << "\nfodreflections " << options.fod_reflections << "\ncssbackgroundfree " << options.css_background_free
-       << "\ntruewidescreen " << options.true_widescreen << "\naspect " << (int)options.aspect
+       << "\ntruewidescreen " << options.true_widescreen << "\ntruewsaspect " << (int)options.true_aspect
+       << "\ntruewscustomw " << options.true_custom_w << "\ntruewscustomh " << options.true_custom_h << "\naspect " << (int)options.aspect
        << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
        << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
        << "\naudio_mode " << options.audio_mode << "\naudio_buffer_ms " << options.audio_buffer_ms << "\naudio_device " << options.audio_device
@@ -4729,17 +4733,37 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // one-instruction change). Experimental because the game still lays out and culls scenery for
     // 73:60: geometry can be missing or pop in at the new edges.
     {
-#ifdef MELEE_NO_SLIPPI   // the same two modes under neutral names; the saved setting is unchanged
-      const char* widescreen_modes[] = {"Off", "16:9 code", "True 16:9 (experimental)"};
+#ifdef MELEE_NO_SLIPPI   // the same modes under neutral names; the saved setting is unchanged
+      const char* widescreen_modes[] = {"Off", "16:9 code", "True 16:9 (experimental)", "True 16:10 (experimental)",
+                                        "True custom (experimental)", "True: fit my screen (experimental)"};
 #else
-      const char* widescreen_modes[] = {"Off", "Slippi code", "True 16:9 (experimental)"};
+      const char* widescreen_modes[] = {"Off", "Slippi code", "True 16:9 (experimental)", "True 16:10 (experimental)",
+                                        "True custom (experimental)", "True: fit my screen (experimental)"};
 #endif
-      int widescreen_mode = options.widescreen ? 1 : options.true_widescreen ? 2 : 0;
-      if (settings_combo("Widescreen", &widescreen_mode, widescreen_modes, 3)) {
+      // Modes 2..5 are True widescreen at 16:9, 16:10, the player's W:H and the window's shape.
+      int widescreen_mode = options.widescreen ? 1 : options.true_widescreen ? 2 + std::clamp((int)options.true_aspect, 0, 3) : 0;
+      if (settings_combo("Widescreen", &widescreen_mode, widescreen_modes, 6)) {
         options.widescreen = widescreen_mode == 1;
-        options.true_widescreen = widescreen_mode == 2;
+        options.true_widescreen = widescreen_mode >= 2;
+        if (widescreen_mode >= 2) options.true_aspect = (TrueAspect)(widescreen_mode - 2);
         changed = true;
       }
+      if (options.true_widescreen && !options.widescreen && options.true_aspect == TrueAspect::Custom) {
+        int wh[2] = {options.true_custom_w, options.true_custom_h};
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::InputInt2("Custom shape (W:H)", wh)) {
+          options.true_custom_w = std::clamp(wh[0], 1, 100);
+          options.true_custom_h = std::clamp(wh[1], 1, 100);
+          changed = true;
+        }
+        const float asked = (float)options.true_custom_w / (float)options.true_custom_h;
+        if (asked > kTrueAspectMax + 1e-4f)
+          settings_hint("Wider than the widest shape True widescreen draws: it is drawn at that width with side bars.");
+        else if (asked < kTrueAspectMin - 1e-4f)
+          settings_hint("Narrower than 4:3: it is drawn at 4:3.");
+      }
+      if (options.true_widescreen && !options.widescreen && options.true_aspect == TrueAspect::FitWindow)
+        settings_hint("Widens to the window's shape; a window wider than True widescreen draws gets side bars.");
 #ifdef MELEE_NO_SLIPPI
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("16:9 code: the widely used 16:9 widescreen code, rebuilt in the game with the same\n"

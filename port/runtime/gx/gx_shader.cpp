@@ -634,8 +634,15 @@ std::string generate_pixel_shader(const PSUid& uid) {
 
 // ---------------------------------------------------------------- constants
 std::atomic<bool> g_true_widescreen{false};
-void set_true_widescreen(bool on) { g_true_widescreen.store(on, std::memory_order_relaxed); }
+// How much the x row of a widened projection is scaled: 219/320 for 16:9 (the classic mode, kept
+// as that exact constant), (73/60) / aspect for any other target.
+std::atomic<float> g_true_widen{219.0f / 320.0f};
+void set_true_widescreen(bool on, float aspect) {
+  g_true_widen.store(aspect == 16.0f / 9.0f ? 219.0f / 320.0f : (73.0f / 60.0f) / aspect, std::memory_order_relaxed);
+  g_true_widescreen.store(on, std::memory_order_relaxed);
+}
 bool true_widescreen_active() { return g_true_widescreen.load(std::memory_order_relaxed); }
+float true_widescreen_factor() { return g_true_widen.load(std::memory_order_relaxed); }
 
 static uint32_t g_main_proj[7];
 static bool g_main_proj_valid = false;
@@ -711,8 +718,8 @@ void build_projection(const DrawCall& dc, float m[16], const float* override_pro
     // A corner-pinned perspective layer is excluded the same way (see is_authored_screen_pinned).
     if (g_true_widescreen.load(std::memory_order_relaxed) &&
         !is_authored_fullscreen(authored_proj) && !is_authored_screen_pinned(authored_proj)) {
-      constexpr float kWiden = 219.0f / 320.0f;   // (73/60) * (320/219) == 16/9
-      for (int i = 0; i < 4; ++i) m[i] *= kWiden;
+      const float widen = g_true_widen.load(std::memory_order_relaxed);   // 16:9: (73/60) * (320/219) == 16/9
+      for (int i = 0; i < 4; ++i) m[i] *= widen;
     }
   } else {
     m[0] = proj[0]; m[3] = proj[1]; m[5] = proj[2]; m[7] = proj[3]; m[10] = proj[4]; m[11] = proj[5]; m[15] = 1.0f;
@@ -724,8 +731,8 @@ void build_projection(const DrawCall& dc, float m[16], const float* override_pro
     // Compensating it here compressed those shadows away from the platforms they belong to.
     // The one orthographic layer that is tied to the widened world is the P1/P2 tags.
     if (g_true_widescreen.load(std::memory_order_relaxed) && is_nametag_layer(authored_proj)) {
-      constexpr float kWiden = 219.0f / 320.0f;
-      for (int i = 0; i < 4; ++i) m[i] *= kWiden;
+      const float widen = g_true_widen.load(std::memory_order_relaxed);
+      for (int i = 0; i < 4; ++i) m[i] *= widen;
     }
   }
   if (vp[0] < 0.0f) for (int i = 0; i < 4; ++i) m[i] *= -1.0f;

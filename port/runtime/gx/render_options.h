@@ -28,6 +28,13 @@ enum class RenderApi { D3D12, D3D11 };
 //   Native  73:60, the aspect Melee's own camera asks for (Slippi Dolphin: "Force 73:60 (Melee)").
 //   Stretch fills the window edge to edge with no bars, the "stretched res" some players prefer.
 enum class AspectMode { Auto = 0, Native = 1, Force4_3 = 2, Force16_9 = 3, Stretch = 4 };
+// True widescreen's target shape (saved as "truewsaspect" 0..3).
+enum class TrueAspect { Wide16_9 = 0, Wide16_10 = 1, Custom = 2, FitWindow = 3 };
+// The widest and narrowest shapes True widescreen widens to. Wider windows get side bars. 21:9
+// (2560x1080) was the widest clean shape in hidden captures of the menus and 11 stages; at 32:9 the
+// character select backdrop and several stage backgrounds end before the screen edge.
+constexpr float kTrueAspectMax = 64.0f / 27.0f;
+constexpr float kTrueAspectMin = 4.0f / 3.0f;
 
 struct RenderOptions {
   // The decompiled Source Port shares the host UI and renderers with Legacy, but it does not run
@@ -235,6 +242,10 @@ struct RenderOptions {
   // and the 2D layer keep their authored size and nothing is written to guest memory. Mutually
   // exclusive with `widescreen`: both together would widen twice. See gx_shader.h.
   bool true_widescreen = false;
+  // The aspect True widescreen widens to: 16:9, 16:10, the player's own W:H, or the window's shape.
+  // Presentation only. "truewsaspect" and "truewscustom W H" in the ini; files without them keep 16:9.
+  TrueAspect true_aspect = TrueAspect::Wide16_9;
+  int true_custom_w = 21, true_custom_h = 9;
   // Custom texture packs: replace game textures with PNGs from Load/Textures/GALE01, using
   // Dolphin's filenames and hashes so existing packs work unchanged. Off by default, and while it
   // is off no pack directory is opened or scanned. Display only, so it is safe online and the two
@@ -297,6 +308,21 @@ inline bool subframe_useful(double fps_cap) { return fps_cap <= 0.0 || fps_cap >
 // is exactly 16/9, so with the code on the correct presentation is 16:9. Some scenes keep the
 // authored 4:3 projection even when the renderer has a widescreen presentation option; those pass
 // widenable_scene=false so the window is letterboxed instead of stretching that scene.
+// The aspect True widescreen widens the world to, clamped to [kTrueAspectMin, kTrueAspectMax].
+// 16:9 is returned as the exact constant so the classic mode is unchanged.
+inline float true_widescreen_aspect(const RenderOptions& options, int client_w, int client_h) {
+  float a = 16.0f / 9.0f;
+  switch (options.true_aspect) {
+    case TrueAspect::Wide16_9:  return a;
+    case TrueAspect::Wide16_10: a = 16.0f / 10.0f; break;
+    case TrueAspect::Custom:
+      a = options.true_custom_h > 0 ? (float)options.true_custom_w / (float)options.true_custom_h : a; break;
+    case TrueAspect::FitWindow:
+      a = client_w > 0 && client_h > 0 ? (float)client_w / (float)client_h : a; break;
+  }
+  return a < kTrueAspectMin ? kTrueAspectMin : a > kTrueAspectMax ? kTrueAspectMax : a;
+}
+
 inline float presented_aspect(const RenderOptions& options, int client_w, int client_h,
                               bool widenable_scene = true) {
   switch (options.aspect) {
@@ -305,8 +331,10 @@ inline float presented_aspect(const RenderOptions& options, int client_w, int cl
     case AspectMode::Force16_9: return 16.0f / 9.0f;
     // No bars at all: claiming the window's own aspect makes the letterbox maths fill it exactly.
     case AspectMode::Stretch:   return (float)(client_w > 0 ? client_w : 1) / (float)(client_h > 0 ? client_h : 1);
-    default:                    return (options.widescreen || options.true_widescreen) && widenable_scene
-                                      ? 16.0f / 9.0f : 73.0f / 60.0f;
+    default:
+      if (!widenable_scene) return 73.0f / 60.0f;
+      if (options.widescreen) return 16.0f / 9.0f;
+      return options.true_widescreen ? true_widescreen_aspect(options, client_w, client_h) : 73.0f / 60.0f;
   }
 }
 

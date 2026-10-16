@@ -1618,7 +1618,18 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--gecko-codes") { user_gecko::set_code_patches_allowed(!gfx.native_source); user_gecko::load(next(), {}, false); }   // scripted runs: that file's enabled codes
     // Experimental true 16:9: widens the frustum in the renderer, no game code. Mutually exclusive
     // with --widescreen, so whichever comes last on the command line wins rather than both applying.
-    else if (a == "--true-widescreen") { gfx.true_widescreen = true; gfx.widescreen = false; }
+    // --true-widescreen[=16:9|16:10|fit|W:H]: the shape True widescreen widens to (16:9 by default).
+    else if (a == "--true-widescreen" || a.rfind("--true-widescreen=", 0) == 0) {
+      gfx.true_widescreen = true; gfx.widescreen = false;
+      const std::string v = a.size() > 18 ? a.substr(18) : "16:9";
+      int w = 0, h = 0;
+      if (v == "16:9") gfx.true_aspect = gx::TrueAspect::Wide16_9;
+      else if (v == "16:10") gfx.true_aspect = gx::TrueAspect::Wide16_10;
+      else if (v == "fit") gfx.true_aspect = gx::TrueAspect::FitWindow;
+      else if (std::sscanf(v.c_str(), "%d:%d", &w, &h) == 2 && w >= 1 && h >= 1 && w <= 100 && h <= 100) {
+        gfx.true_aspect = gx::TrueAspect::Custom; gfx.true_custom_w = w; gfx.true_custom_h = h;
+      } else { std::fprintf(stderr, "--true-widescreen=16:9|16:10|fit|W:H\n"); return 2; }
+    }
     // Texture packs are a settings-panel feature; these exist so automated runs, which start with
     // the panel disabled, can exercise the same paths.
     else if (a == "--custom-textures") gfx.custom_textures = true;
