@@ -129,12 +129,28 @@ const char* device_lost_reason(HRESULT reason) {
     default: return "no reason given";
   }
 }
+// A GPU whose highest Direct3D level is 11 (Intel HD 4600 and others of its age) runs Direct3D 12
+// through an old driver path; a 0.8.98 report lost the device there at the second scene. When that
+// happens the settings file is switched to Direct3D 11, so the next start uses it.
+bool g_check_level11 = false;
+std::string g_check_settings_path;
+bool switch_settings_to_d3d11() {
+  std::error_code ec;
+  const std::filesystem::path path = std::filesystem::u8path(g_check_settings_path);
+  if (g_check_settings_path.empty() || !std::filesystem::is_regular_file(path, ec)) return false;
+  std::ofstream out(path, std::ios::binary | std::ios::app);   // a later key wins when the file is read
+  out << "\nbackend d3d11\n";
+  return (bool)out.flush();
+}
 void check(HRESULT hr, const char* what) {
   if (!FAILED(hr)) return;
   const unsigned code = (unsigned)hr;
   if ((code == 0x887A0005u || code == 0x887A0006u || code == 0x887A0007u || code == 0x887A0020u) && g_check_device) {
     const HRESULT reason = g_check_device->GetDeviceRemovedReason();
-    host::die("D3D12: %s failed (%08X): the graphics device was lost, %s (%08X)", what, code, device_lost_reason(reason), (unsigned)reason);
+    const char* next = "If this happens again, set Settings > Video > Graphics backend to Direct3D 11.";
+    if (g_check_level11 && switch_settings_to_d3d11())
+      next = "This GPU is old for Direct3D 12: the game starts on Direct3D 11 from now on (Settings > Video > Graphics backend).";
+    host::die("D3D12: %s failed (%08X): the graphics device was lost, %s (%08X). %s", what, code, device_lost_reason(reason), (unsigned)reason, next);
   }
   host::die("D3D12: %s failed (%08X)", what, code);
 }
@@ -759,8 +775,20 @@ void D3D12Backend::init() {
   }
   if (!device_) host::die("D3D12: no adapter");
   g_check_device = device_.Get();
-  // MELEE_TEST_DEVICE_LOST=1 (tests only, hidden and headless runs) takes the device away at once.
+  g_check_settings_path = opts_.settings_path;
+  {
+    static const D3D_FEATURE_LEVEL asked[] = {D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1,
+                                              D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_12_1};
+    D3D12_FEATURE_DATA_FEATURE_LEVELS levels{};
+    levels.NumFeatureLevels = 4; levels.pFeatureLevelsRequested = asked;
+    g_check_level11 = SUCCEEDED(device_->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &levels, sizeof levels)) &&
+                      levels.MaxSupportedFeatureLevel < D3D_FEATURE_LEVEL_12_0;
+    if (g_check_level11) host::log("d3d12: this GPU's highest level is Direct3D 11");
+  }
+  // MELEE_TEST_DEVICE_LOST=1 (tests only, hidden and headless runs) takes the device away at once;
+  // =old also treats the GPU as one whose highest level is Direct3D 11.
   if (std::getenv("MELEE_NO_GC_ADAPTER") && std::getenv("MELEE_TEST_DEVICE_LOST")) {
+    if (std::string(std::getenv("MELEE_TEST_DEVICE_LOST")) == "old") g_check_level11 = true;
     ComPtr<ID3D12Device5> removable;
     if (SUCCEEDED(device_.As(&removable))) removable->RemoveDevice();
   }
