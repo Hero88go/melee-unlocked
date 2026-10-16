@@ -1643,7 +1643,45 @@ bool envelopes_bound(const std::vector<uint8_t>& bytes, uint32_t size, const std
   }
   return true;
 }
+// The simulation reads a fighter's bones from its costume file: every joint's rest rotation, scale
+// and translation feeds the bone matrices that hurtboxes, joint-bound hitboxes and the ECB follow
+// wherever an animation does not drive that channel. A skin whose rest pose is within the online
+// check's tolerance but not bit-equal therefore moved hurtboxes on one side of an online match only.
+// After same_tree has matched the two trees joint for joint, this writes the standard file's rest
+// values (the nine floats at joint +0x14) into the skin's copy, so the skin is drawn with its own
+// meshes, materials and textures over bones identical to the standard costume's.
+uint32_t copy_rest_pose(const std::vector<uint8_t>& a, uint32_t asize, uint32_t ja, const std::vector<uint32_t>& arel,
+                        std::vector<uint8_t>& b, uint32_t bsize, uint32_t jb, const std::vector<uint32_t>& brel) {
+  struct Pair { uint32_t x, y; };
+  std::vector<Pair> stack{{ja, jb}};
+  uint32_t changed = 0, joints = 0;
+  while (!stack.empty() && joints < 1024) {
+    const Pair top = stack.back(); stack.pop_back();
+    const uint32_t x = top.x, y = top.y;
+    if (x + 0x40ull > asize || y + 0x40ull > bsize) return changed;
+    ++joints;
+    const uint8_t* p = &a[0x20ull + x];
+    uint8_t* q = &b[0x20ull + y];
+    if (std::memcmp(p + 0x14, q + 0x14, 0x24) != 0) { std::memcpy(q + 0x14, p + 0x14, 0x24); ++changed; }
+    if (is_pointer(arel, x + 0x0C) && is_pointer(brel, y + 0x0C)) stack.push_back({be32(p + 0x0C), be32(q + 0x0C)});
+    if (is_pointer(arel, x + 0x08) && is_pointer(brel, y + 0x08)) stack.push_back({be32(p + 0x08), be32(q + 0x08)});
+  }
+  return changed;
+}
 }  // namespace skeleton
+
+// The served copy of an online-allowed costume skin gets the standard costume's joint rest pose
+// (skeleton::copy_rest_pose). Returns how many joints differed; 0 when nothing had to change.
+uint32_t costume_take_standard_bones(const std::vector<uint8_t>& clean, std::vector<uint8_t>& served) {
+  uint32_t asize = 0, aroot = 0, bsize = 0, broot = 0, joints = 0;
+  std::vector<uint32_t> arel, brel;
+  std::string error;
+  if (!skeleton::share_joint_root(clean, &asize, &aroot, &arel, &error) ||
+      !skeleton::share_joint_root(served, &bsize, &broot, &brel, &error)) return 0;
+  if (asize + 0x20ull > clean.size() || bsize + 0x20ull > served.size()) return 0;
+  if (!skeleton::same_tree(clean, asize, aroot, arel, served, bsize, broot, brel, &joints, &error)) return 0;
+  return skeleton::copy_rest_pose(clean, asize, aroot, arel, served, bsize, broot, brel);
+}
 
 }  // namespace
 
@@ -5007,6 +5045,11 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
         host::log("cosmetics: costume %s %s online (%s)", disc_file.path.c_str(),
                   online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
         online_reason = online_reason_short(validation_error);
+        // The skin is drawn; the bones the game simulates with are the standard costume's.
+        if (online_allowed)
+          if (const uint32_t moved = costume_take_standard_bones(clean, served))
+            host::log("cosmetics: costume %s: %u joints take the standard costume's rest pose (the skin's differed)",
+                      disc_file.path.c_str(), moved);
       }
       if (!online_allowed) {
         // This file is the override offline and the disc's own file online, and the game sees one
