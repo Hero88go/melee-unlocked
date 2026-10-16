@@ -102,6 +102,7 @@ void clear_player_tints();
 // draw such a fighter anyway while this is on, the way the Slippi code does: the Source Port
 // draws and puts the fighter's state back (ftdrawcommon.c), the Static Recomp runs the game's
 // draw test with Slippi's one-instruction change (host::apply_wide_fighter_draw).
+void set_css_scene(bool on);   // the character select is on screen this frame (its edge bands stretch)
 void set_true_widescreen(bool on, float aspect = 16.0f / 9.0f);   // aspect: the shape the world widens to
 float true_widescreen_factor();   // the x scale widened draws get (219/320 at 16:9)
 bool true_widescreen_active();   // what the renderer is doing now (True 16:9 on and the Slippi code off)

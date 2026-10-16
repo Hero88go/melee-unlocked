@@ -1864,6 +1864,7 @@ unsigned D3D11Backend::gpu_frames_queued() {
 void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
   video_bg::set_enabled(opts_.video_backgrounds);
   video_bg::begin_frame(frame.scene_major, frame.scene_minor);
+  set_css_scene(video_bg::learning::scene_slot(frame.scene_major, frame.scene_minor) == 0);
   widenable_scene_ = frame_has_widenable_scene(frame);
   integrate_compiled_pipelines();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; samplers_.clear(); reset_bound(); }

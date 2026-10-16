@@ -160,6 +160,7 @@ bool VSUid::operator==(const VSUid& o) const { return std::memcmp(this, &o, size
 uint64_t PSUid::hash() const { return hash_bytes(this, sizeof *this); }
 bool PSUid::operator==(const PSUid& o) const { return std::memcmp(this, &o, sizeof *this) == 0; }
 
+static bool css_band_stretch(const DrawCall& dc, float* a, float* k);   // below, with True widescreen
 VSUid make_vs_uid(const DrawCall& dc) {
   VSUid u{};
   u.components = dc.components & (VB_HAS_COL0 | VB_HAS_COL1 | VB_HAS_NRM0 | VB_HAS_NRM1 | VB_HAS_NRM2 | 0x7FFFFF);
@@ -171,6 +172,12 @@ VSUid make_vs_uid(const DrawCall& dc) {
   u.xf_regs[0x12] = dc.xf_regs[0x12] & 1;
   for (uint32_t i = 0; i < u.numTexGens; ++i) { u.xf_regs[0x40 + i] = dc.xf_regs[0x40 + i]; u.xf_regs[0x50 + i] = dc.xf_regs[0x50 + i]; }   // unused texgens: leftover state, not codegen
   u.xf_regs[0x3F] = u.numTexGens;
+  float a = 0.0f, k = 0.0f;
+  if (css_band_stretch(dc, &a, &k)) {
+    u.xf_regs[0x00] = 1;
+    std::memcpy(&u.xf_regs[0x01], &a, 4);
+    std::memcpy(&u.xf_regs[0x02], &k, 4);
+  }
   return u;
 }
 
@@ -237,6 +244,17 @@ std::string generate_vertex_shader(const VSUid& uid) {
     o.w("float3 _norm0 = float3(0.0, 0.0, 0.0);\n");
   }
   o.w("o.pos = float4(dot(projection[0], pos), dot(projection[1], pos), dot(projection[2], pos), dot(projection[3], pos));\n");
+  if (uid.xf_regs[0x00] == 1) {   // a character select band at a True widescreen wider than 16:9
+    float a, k;
+    std::memcpy(&a, &uid.xf_regs[0x01], 4);
+    std::memcpy(&k, &uid.xf_regs[0x02], 4);
+    char line[256];
+    std::snprintf(line, sizeof line,
+                  "{ float nx = o.pos.x / o.pos.w; float ax = abs(nx);\n"
+                  "  if (ax > %.6f) o.pos.x = sign(nx) * (%.6f + (ax - %.6f) * %.6f) * o.pos.w; }\n",
+                  a, a, a, k);
+    o.w(line);
+  }
   if (uid.motion_vectors) {
     o.w("o.curPos = float4(dot(unjittered_projection[0], pos), dot(unjittered_projection[1], pos), dot(unjittered_projection[2], pos), dot(unjittered_projection[3], pos));\n");
     o.w("float4 ppos = float4(dot(prev_transformmatrices[posmtx], rawpos4), dot(prev_transformmatrices[posmtx+1], rawpos4), dot(prev_transformmatrices[posmtx+2], rawpos4), 1);\n");
@@ -642,6 +660,48 @@ void set_true_widescreen(bool on, float aspect) {
   g_true_widescreen.store(on, std::memory_order_relaxed);
 }
 bool true_widescreen_active() { return g_true_widescreen.load(std::memory_order_relaxed); }
+
+// The character select's grey bands (top and bottom, one 104x72 texture) and its top-right BACK
+// corner (88x56, colour index) are modelled to reach the screen edges at 16:9. Wider than that they
+// end short and the dark backdrop shows past them. Only those draws are stretched, and only while
+// a True widescreen shape wider than 16:9 is on the character select: the bands about the screen
+// centre by the 16:9 widening over the current one (exactly the edges they reach at 16:9), the
+// corner about its left end (the chevron), so its line and dark band run to the right edge while
+// the chevron stays put. The game's cursor and button areas are not drawn here and do not move.
+std::atomic<bool> g_css_scene{false};
+void set_css_scene(bool on) { g_css_scene.store(on, std::memory_order_relaxed); }
+// The grey bands: only their outer ends move. A vertex past `a` (NDC x) is pushed out by `k`, so
+// the band's end reaches the screen edge while everything inside `a` (the MELEE notch, the panels
+// over it) stays where it is drawn. Measured at 21:9 (widen 0.5133): the bands end at NDC 0.831,
+// 1.619 times the widening; `a` is 90% of that.
+static bool css_band_stretch(const DrawCall& dc, float* a, float* k) {
+  if (!g_css_scene.load(std::memory_order_relaxed) || !g_true_widescreen.load(std::memory_order_relaxed)) return false;
+  const float widen = g_true_widen.load(std::memory_order_relaxed);
+  if (widen >= 219.0f / 320.0f - 1e-6f || dc.xf_regs[0x26] != 0) return false;
+  const TextureRef& t = dc.textures[0];
+  if (!t.used || t.width != 104 || t.height != 72 || t.format != 0 || (dc.vertex_count != 45 && dc.vertex_count != 57)) return false;
+  const float end = 1.619f * widen;
+  if (end >= 1.02f) return false;
+  *a = 0.9f * end;
+  *k = (1.02f - *a) / (end - *a);
+  return true;
+}
+static void stretch_css_band(const DrawCall& dc, float m[16], float widen) {
+  const TextureRef& t = dc.textures[0];
+  if (!t.used) return;
+  const bool band = t.width == 104 && t.height == 72 && t.format == 0 && (dc.vertex_count == 45 || dc.vertex_count == 57);
+  const bool corner = t.width == 88 && t.height == 56 && t.format == 8 && dc.vertex_count == 26;
+  if (!band && !corner) return;
+  if (band) return;   // stretched per vertex in its own vertex shader (css_band_stretch)
+  // Measured at 21:9 (2560x1080): the corner spans NDC x 0.321 .. 0.835 with widen 0.5133, so its
+  // ends sit at 0.6254 and 1.6267 times the widening. Stretch about the left end until the right
+  // end is past the screen edge (1.02, a margin for the cut corner).
+  const float left = 0.6254f * widen, right = 1.6267f * widen;
+  if (right >= 1.02f) return;
+  const float s = (1.02f - left) / (right - left);
+  for (int i = 0; i < 4; ++i) m[i] *= s;
+  m[2] -= (1.0f - s) * left;   // clip w is -z: x' = s*x + (1 - s)*left*w
+}
 float true_widescreen_factor() { return g_true_widen.load(std::memory_order_relaxed); }
 
 static uint32_t g_main_proj[7];
@@ -720,6 +780,7 @@ void build_projection(const DrawCall& dc, float m[16], const float* override_pro
         !is_authored_fullscreen(authored_proj) && !is_authored_screen_pinned(authored_proj)) {
       const float widen = g_true_widen.load(std::memory_order_relaxed);   // 16:9: (73/60) * (320/219) == 16/9
       for (int i = 0; i < 4; ++i) m[i] *= widen;
+      if (widen < 219.0f / 320.0f - 1e-6f && g_css_scene.load(std::memory_order_relaxed)) stretch_css_band(dc, m, widen);
     }
   } else {
     m[0] = proj[0]; m[3] = proj[1]; m[5] = proj[2]; m[7] = proj[3]; m[10] = proj[4]; m[11] = proj[5]; m[15] = 1.0f;

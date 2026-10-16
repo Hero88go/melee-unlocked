@@ -3148,6 +3148,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   struct FrameTimer { Stopwatch& sw; ~FrameTimer() { g_prof[11] += sw.lap(); ++g_prof_frames; } } frame_timer{frame_sw};
   video_bg::set_enabled(opts_.video_backgrounds);
   video_bg::begin_frame(frame.scene_major, frame.scene_minor);
+  set_css_scene(video_bg::learning::scene_slot(frame.scene_major, frame.scene_minor) == 0);
   in_match_ = frame_in_match(frame);
   effects_filter_ = effects_filter(frame, opts_.effects_level);
   widenable_scene_ = frame_has_widenable_scene(frame);
