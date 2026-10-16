@@ -170,6 +170,13 @@ target_link_libraries(mu_synth_ratio_test PRIVATE game_flags)
 target_compile_options(mu_synth_ratio_test PRIVATE -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables)
 target_link_options(mu_synth_ratio_test PRIVATE -Wl,--gc-sections)
 add_test(NAME native_synth_ratio COMMAND mu_synth_ratio_test)
+# Wobbuffet's decaying counter damage converts below zero as the console does (B-281).
+add_executable(mu_sonans_damage_test EXCLUDE_FROM_ALL tests/sonans_damage.c tests/sonans_damage_stubs.c)
+set_target_properties(mu_sonans_damage_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+target_link_libraries(mu_sonans_damage_test PRIVATE game_flags)
+target_compile_options(mu_sonans_damage_test PRIVATE -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables)
+target_link_options(mu_sonans_damage_test PRIVATE -Wl,--gc-sections)
+add_test(NAME native_sonans_damage COMMAND mu_sonans_damage_test)
 
 # Verify field-aware card payload byte-order conversion for save and name-tag data.
 add_executable(mu_card_endian_test tests/card_endian.c "${D}/src/melee/lb/lbcardserial.c")
