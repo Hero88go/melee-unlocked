@@ -164,6 +164,7 @@ bool g_warm_cache_on_play = false;
 // Replay Viewer: "Show it as it was played" (launcher.ini replayasplayed=1). It applies to a replay
 // that has a session trace file beside it; see launcher_replays.inl.
 bool g_replay_as_played = false;
+bool g_save_replays = true;   // launcher.ini savereplays=0 turns it off
 // Replay Viewer list: the sort order (launcher.ini replaysort=1..3; none or 0 is most recent first,
 // an index into kReplaySorts) and "Hide short games" (replayhideshort=1).
 int g_replay_sort = 0;
@@ -249,6 +250,7 @@ void load_ini() {
       } else if (line.rfind("activeversion=", 0) == 0 && safe_version_folder(line.substr(14))) g_active_version = line.substr(14);
       else if (line == "warmcache=1") g_warm_cache_on_play = true;
       else if (line == "replayasplayed=1") g_replay_as_played = true;
+      else if (line == "savereplays=0") g_save_replays = false;
       else if (line == "replayhideshort=1") g_replay_hide_short = true;
       else if (line.rfind("replaysort=", 0) == 0) g_replay_sort = std::clamp(std::atoi(line.c_str() + 11), 0, 3);
       else if (line.rfind("lobbyopen=", 0) == 0) g_lobby_prefs.open_to = line.substr(10);
@@ -281,6 +283,7 @@ void save_ini() {
     if (!g_active_version.empty()) f << "activeversion=" << g_active_version << "\n";
     if (g_warm_cache_on_play) f << "warmcache=1\n";
     if (g_replay_as_played) f << "replayasplayed=1\n";
+    if (!g_save_replays) f << "savereplays=0\n";
     if (g_replay_sort != 0) f << "replaysort=" << g_replay_sort << "\n";
     if (g_replay_hide_short) f << "replayhideshort=1\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
@@ -444,16 +447,30 @@ std::string work_dir() {
   return root.empty() ? g_dir : root;
 }
 std::string settings_ini_path() { return (g_active_version.empty() ? work_dir() : g_dir) + "\\port-settings.ini"; }
+// Where the game writes its .slp files. With "Save replays" off it is a scratch folder under %TEMP%:
+// the game still records (online reporting and the desync checks read the file during the match),
+// and the launcher empties the folder before every launch, so nothing is kept.
+std::string unsaved_replay_dir() {
+  wchar_t temp[MAX_PATH]{}; GetTempPathW(MAX_PATH, temp);
+  return narrow(temp) + "MeleeUnlocked-unsaved-replays";
+}
+std::string replay_dir_for_game() {
+  if (g_save_replays) return g_dir + "\\Replays";
+  std::error_code ec;
+  std::filesystem::remove_all(std::filesystem::path(widen(unsaved_replay_dir())), ec);
+  return unsaved_replay_dir();
+}
+
 std::string game_args() {
   std::string base = active_dir();
   std::string a = " --iso \"" + g_iso + "\" --threaded-renderer --settings-path \"" + settings_ini_path() + "\"";
 #ifdef MELEE_NO_SLIPPI
   // That game has no Slippi user folder and refuses the option.
   if (file_exists(base + "\\Sys\\codehandler.bin"))
-    a += " --sys-dir \"" + base + "\\Sys\" --replay-dir \"" + g_dir + "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\CardA\"";
+    a += " --sys-dir \"" + base + "\\Sys\" --replay-dir \"" + replay_dir_for_game() + "\" --card-dir \"" + g_dir + "\\User\\GC\\CardA\"";
 #else
   if (file_exists(base + "\\Sys\\codehandler.bin"))
-    a += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + g_dir + "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\CardA\"";
+    a += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + replay_dir_for_game() + "\" --card-dir \"" + g_dir + "\\User\\GC\\CardA\"";
 #endif
   return a;
 }
@@ -1308,12 +1325,12 @@ void launch_game_now() {
 #ifdef MELEE_NO_SLIPPI
     // As in game_args(): that game has no user folder option and refuses it.
     if (file_exists(base + "\\Sys\\codehandler.bin"))
-      args += " --sys-dir \"" + base + "\\Sys\" --replay-dir \"" + g_dir +
-              "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\Mods\\" + g_mod_launch_key + "\"";
+      args += " --sys-dir \"" + base + "\\Sys\" --replay-dir \"" + replay_dir_for_game() +
+              "\" --card-dir \"" + g_dir + "\\User\\GC\\Mods\\" + g_mod_launch_key + "\"";
 #else
     if (file_exists(base + "\\Sys\\codehandler.bin"))
-      args += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + g_dir +
-              "\\Replays\" --card-dir \"" + g_dir + "\\User\\GC\\Mods\\" + g_mod_launch_key + "\"";
+      args += " --sys-dir \"" + base + "\\Sys\" --user-dir \"" + g_dir + "\\User\\Slippi\" --replay-dir \"" + replay_dir_for_game() +
+              "\" --card-dir \"" + g_dir + "\\User\\GC\\Mods\\" + g_mod_launch_key + "\"";
 #endif
     g_mod_launch_iso.clear(); g_mod_launch_engine.clear(); g_mod_launch_kind.clear();
   }
@@ -1686,6 +1703,11 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_REPLAY_HIDESHORT: replay_hide_short_toggle(); break;
         case ID_REPLAY_QUEUE: watch_replay_queue(); break;
         case ID_REPLAY_QUEUE_CLEAR: replay_queue_clear(); break;
+        case ID_REPLAY_SAVE:
+          g_save_replays = !g_save_replays;
+          if (g_replays[13]) InvalidateRect(g_replays[13], nullptr, FALSE);
+          save_ini();
+          break;
         case ID_REPLAY_ASPLAYED:
           if (HIWORD(wp) == BN_CLICKED) {
             g_replay_as_played = !g_replay_as_played;

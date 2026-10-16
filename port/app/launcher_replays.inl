@@ -4,11 +4,11 @@
 #include <memory>
 #include <tuple>
 enum { ID_REPLAY_LIST=800, ID_REPLAY_BROWSE, ID_REPLAY_WATCH, ID_REPLAY_REFRESH, ID_REPLAY_BACK, ID_REPLAY_PREV, ID_REPLAY_NEXT, ID_REPLAY_ASPLAYED,
-       ID_REPLAY_SEARCH, ID_REPLAY_SORT, ID_REPLAY_HIDESHORT, ID_REPLAY_QUEUE, ID_REPLAY_QUEUE_CLEAR };
+       ID_REPLAY_SEARCH, ID_REPLAY_SORT, ID_REPLAY_HIDESHORT, ID_REPLAY_QUEUE, ID_REPLAY_QUEUE_CLEAR, ID_REPLAY_SAVE };
 const UINT WM_APP_REPLAYS_LISTED = WM_APP + 20;   // lParam: heap ReplayScan*
 const UINT WM_APP_REPLAY_LOADED = WM_APP + 21;    // lParam: heap ReplayLoaded*
-HWND g_replays[13]{};            // list, browse, watch, refresh, back, prev, next, "as it was played",
-                                 // search, sort, "hide short games", watch queue, clear queue
+HWND g_replays[14]{};            // list, browse, watch, refresh, back, prev, next, "as it was played",
+                                 // search, sort, "hide short games", watch queue, clear queue, "save replays"
 HWND g_replay_stats=nullptr;     // the scrolling stats page
 // Everything the scan found, newest first. A replay's place in these two is its index everywhere on
 // this page (the stats page, the loader's late results, playback). Only the list box counts in rows.
@@ -355,7 +355,7 @@ void replay_layout() {
   // Typing must not reach a search box that is no longer shown.
   if(!list&&g_replays[8]&&GetFocus()==g_replays[8]) SetFocus(g_main);
   if(g_replays[0]) ShowWindow(g_replays[0],list&&!g_replay_visible.empty()?SW_SHOW:SW_HIDE);
-  for(int i:{1,3,8,9,10}) if(g_replays[i]) ShowWindow(g_replays[i],list?SW_SHOW:SW_HIDE);
+  for(int i:{1,3,8,9,10,13}) if(g_replays[i]) ShowWindow(g_replays[i],list?SW_SHOW:SW_HIDE);
   for(int i:{4,5,6}) if(g_replays[i]) ShowWindow(g_replays[i],stats?SW_SHOW:SW_HIDE);
   if(g_replays[7]) { ShowWindow(g_replays[7],on?SW_SHOW:SW_HIDE); replay_trace_changed(); }
   if(g_replay_stats) ShowWindow(g_replay_stats,stats?SW_SHOW:SW_HIDE);
@@ -949,7 +949,8 @@ void paint_replay_tick(HWND h,HDC target) {
   vgrad(dc,r,content_bg_at(wr.top),content_bg_at(wr.bottom));
   RECT box{r.left+S(1),r.top+S(5),r.left+S(17),r.top+S(21)};
   round_rect(dc,box,3,C_FIELD,C_FIELD,C_BTN_BORDER);
-  if(g_replay_hide_short) {
+  const bool save=GetDlgCtrlID(h)==ID_REPLAY_SAVE;
+  if(save?g_save_replays:g_replay_hide_short) {
     HPEN pen=CreatePen(PS_SOLID,S(2),C_ACC_HI); HGDIOBJ old_pen=SelectObject(dc,pen);
     MoveToEx(dc,box.left+S(3),box.top+S(8),nullptr);
     LineTo(dc,box.left+S(7),box.bottom-S(4));
@@ -957,7 +958,7 @@ void paint_replay_tick(HWND h,HDC target) {
     SelectObject(dc,old_pen); DeleteObject(pen);
   }
   RECT label=r; label.left+=S(24);
-  draw_text(dc,L"Hide short games",label,g_font_small,C_DIM,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
+  draw_text(dc,save?launcher::lang::txw(L"Save replays"):std::wstring(L"Hide short games"),label,g_font_small,C_DIM,DT_LEFT|DT_SINGLELINE|DT_VCENTER);
   BitBlt(target,0,0,r.right,r.bottom,dc,0,0,SRCCOPY);
   SelectObject(dc,old); DeleteObject(b); DeleteDC(dc);
 }
@@ -990,6 +991,8 @@ void create_replay_controls() {
   tick.hCursor=LoadCursorW(nullptr,IDC_ARROW); tick.lpszClassName=L"MeleeUnlockedReplayTick";
   RegisterClassExW(&tick);
   g_replays[10]=make(tick.lpszClassName,L"",0,754,93,206,24,ID_REPLAY_HIDESHORT);
+  // Off: matches record into a scratch folder the launcher empties before the next launch (replay_dir_for_game).
+  g_replays[13]=make(tick.lpszClassName,L"",0,456,627,200,24,ID_REPLAY_SAVE);
   // The queue's buttons, under "Watch Replay". Shown while something is queued (replay_buttons).
   g_replays[11]=make(L"BUTTON",L"",BS_OWNERDRAW,808,662,150,30,ID_REPLAY_QUEUE);
   g_replays[12]=make(L"BUTTON",L"Clear queue",BS_OWNERDRAW,698,662,102,30,ID_REPLAY_QUEUE_CLEAR);
