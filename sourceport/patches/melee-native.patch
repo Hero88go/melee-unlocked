@@ -111843,7 +111843,7 @@ index b5b2736b2..22853976c 100644
  /* 1FCDFC */ void grInishie2_801FCDFC(Ground_GObj*);
  /* 1FCE00 */ void grInishie2_801FCE00(Ground_GObj*);
 diff --git a/src/melee/gr/grizumi.c b/src/melee/gr/grizumi.c
-index 536bb3b2b..4a3b9b840 100644
+index 536bb3b2b..51ac212a1 100644
 --- a/src/melee/gr/grizumi.c
 +++ b/src/melee/gr/grizumi.c
 @@ -60,17 +60,20 @@ struct grIzumi_YakumonoParam {
@@ -112041,7 +112041,7 @@ index 536bb3b2b..4a3b9b840 100644
  {
      Mtx mtx;
      Vec3 vec;
-@@ -849,12 +914,18 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
+@@ -849,12 +914,20 @@ HSD_TObj* grIzumi_801CD090(HSD_GObj* gobj, HSD_ImageDesc* image)
      return NULL;
  }
  
@@ -112052,7 +112052,9 @@ index 536bb3b2b..4a3b9b840 100644
      IzumiReflection* refl = HSD_GObjGetUserData(gp->u.izumi.xC8);
      HSD_TObj* tobj = gp->u.izumi.xC4;
 +#ifdef MU_NATIVE
-+    if (!mu_lagless_fod()) {   /* Lagless FoD: there is no reflection matrix to copy */
++    /* Lagless FoD: there is no reflection matrix to copy. A stage skin without the reflection
++     * texture leaves tobj NULL (the "not found tobj" warning): nothing to copy into. */
++    if (!mu_lagless_fod() && tobj != NULL && refl != NULL) {
 +        PSMTXCopy(refl->texture_matrix, tobj->mtx);
 +    }
 +#else
@@ -112061,7 +112063,7 @@ index 536bb3b2b..4a3b9b840 100644
      grDisplay_801C5DB0(gobj, renderpass);
  }
  
-@@ -879,3 +950,22 @@ void grIzumi_801CD2D4(void)
+@@ -879,3 +952,22 @@ void grIzumi_801CD2D4(void)
      int size = GXGetTexBufferSize(80, 60, 4, '\0', 0);
      lbDvd_80017740(0, 2001, 4, 4, size + 31 & ~31, 0, 7, 16, 0);
  }
