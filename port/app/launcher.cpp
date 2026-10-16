@@ -67,6 +67,7 @@ inline int mu_message_box(HWND owner, const wchar_t* text, const wchar_t* captio
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "uxtheme.lib")
 #pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "version.lib")
 #pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 #ifndef MELEE_PORT_VERSION
@@ -1223,6 +1224,34 @@ static std::wstring base_disc_problem(const std::string& path) {
   return {};
 }
 
+// The version a game program was built as, from its version resource ("" when it has none).
+std::string exe_version(const std::string& path) {
+  const std::wstring wide = widen(path);
+  DWORD ignored = 0;
+  const DWORD size = GetFileVersionInfoSizeW(wide.c_str(), &ignored);
+  if (!size) return {};
+  std::vector<unsigned char> data(size);
+  if (!GetFileVersionInfoW(wide.c_str(), 0, size, data.data())) return {};
+  wchar_t* text = nullptr; UINT length = 0;
+  if (!VerQueryValueW(data.data(), L"\\StringFileInfo\\040904B0\\FileVersion", (void**)&text, &length) || !text || !length) return {};
+  return narrow(std::wstring(text, wcsnlen(text, length)));
+}
+
+// A game program from another release beside this launcher (one report: a 0.8.63 melee_source.exe
+// left in a 0.8.97 folder) stops at once because its game library refuses it. Say which file and
+// what to do instead of starting it. A version picked under Versions runs its own folder's files.
+bool game_exe_version_mismatch(const std::string& exe) {
+  if (!g_active_version.empty() || std::string(MELEE_PORT_VERSION) == "dev") return false;
+  const std::string found = exe_version(exe);
+  if (found.empty() || found == MELEE_PORT_VERSION) return false;
+  const std::string name = exe.substr(exe.find_last_of("\\/") + 1);
+  const std::string text = name + " in this folder is version " + found + ", but this launcher is version " MELEE_PORT_VERSION
+      ". An update did not replace it (the file was in use, or antivirus held it).\n\nClose the game and the launcher, then "
+      "extract the whole " MELEE_PORT_VERSION " release zip over this folder again.";
+  MessageBoxW(g_main, widen(text).c_str(), L"Melee Unlocked Launcher", MB_OK | MB_ICONWARNING);
+  return true;
+}
+
 void start_game() {
   if (g_playing || g_iso.empty()) return;
   if (const std::wstring problem = base_disc_problem(g_iso); !problem.empty()) {
@@ -1230,6 +1259,9 @@ void start_game() {
     return;
   }
   g_game_exe = !g_mod_launch_iso.empty() ? (g_mod_launch_engine == "source" ? source_exe_dir() + "\\melee_source.exe" : static_recomp_exe()) : game_exe();
+  if (file_exists(g_game_exe) && game_exe_version_mismatch(g_game_exe)) {
+    g_mod_launch_iso.clear(); g_mod_launch_engine.clear(); g_mod_launch_kind.clear(); return;
+  }
   if (!file_exists(g_game_exe) && !g_mod_launch_iso.empty()) {
 #ifdef MELEE_NO_SLIPPI   // one game here: it is that game which is missing
     MessageBoxW(g_main,L"The game is not installed beside this launcher. Install it before playing this mod.",L"Mods",MB_ICONINFORMATION);
