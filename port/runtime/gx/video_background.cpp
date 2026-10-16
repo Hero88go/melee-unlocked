@@ -313,7 +313,10 @@ class Manager {
 
     for (int i = 0; i < 2; ++i) {
       Slot& s = slots_[i];
-      const bool exists = enabled_ && media_foundation_ && std::filesystem::is_regular_file(s.video_path);
+      // A file Windows cannot look at (a link to itself, a cloud file it cannot fetch) counts as absent:
+      // the throwing form stopped a 0.8.95 game with "status: unknown error: sss.mp4".
+      std::error_code ec;
+      const bool exists = enabled_ && media_foundation_ && std::filesystem::is_regular_file(s.video_path, ec);
       has_video_[i] = exists;
       if (exists && !started_[i]) {
         s.decoder.start(s.video_path, i == 1);
@@ -424,7 +427,8 @@ class Manager {
     if (i < 0 || i > 1) return "invalid";
     std::lock_guard<std::mutex> lock(state_mutex_);
     const Slot& s = slots_[i];
-    if (!std::filesystem::is_regular_file(s.video_path)) return "No MP4";
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(s.video_path, ec)) return "No MP4";
     if (!enabled_) return "Disabled — vanilla background active";
     const std::string error = s.decoder.error();
     if (!error.empty()) return error;
