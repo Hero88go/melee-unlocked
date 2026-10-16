@@ -148074,7 +148074,7 @@ index bd1a01a9a..6e8f8ebc7 100644
      if (item_gobj != NULL) {
          it_802B1D40(item_gobj, parent);
 diff --git a/src/melee/it/kinds/itsonans.c b/src/melee/it/kinds/itsonans.c
-index 09ea2a853..6266221f2 100644
+index 09ea2a853..9c8e9b165 100644
 --- a/src/melee/it/kinds/itsonans.c
 +++ b/src/melee/it/kinds/itsonans.c
 @@ -35,7 +35,7 @@ ItemStateTable it_803F7CA0[] = {
@@ -148095,6 +148095,15 @@ index 09ea2a853..6266221f2 100644
      f32 angle;
      f32 max_angle;
      if (ip->ground_or_air == GA_Air) {
+@@ -101,7 +101,7 @@ void it_802CD4FC(Item_GObj* gobj)
+         HSD_JObjSetRotationZ(ip->xBBC_dynamicBoneTable->bones[4],
+                              0.017453292f * ip->xDD4_itemVar.sonans.x64);
+     }
+-    it_80272460(&ip->x5D4_hitboxes[0].hit, (u32) ip->xDD4_itemVar.sonans.x68,
++    it_80272460(&ip->x5D4_hitboxes[0].hit, mu_f2u(ip->xDD4_itemVar.sonans.x68),
+                 gobj);
+     ip->xDD4_itemVar.sonans.x68 -= attrs->x20;
+ }
 @@ -116,7 +116,7 @@ bool itSonans_Logic9_DmgDealt(Item_GObj* gobj)
  bool it_802CD7D4(Item_GObj* gobj)
  {
