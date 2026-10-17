@@ -49744,7 +49744,7 @@ index 96b0c87ee..ac62411ff 100644
  
      return ret_obj;
 diff --git a/src/melee/ef/efasync.c b/src/melee/ef/efasync.c
-index 636ba26f4..3bc9165da 100644
+index 636ba26f4..bf514927b 100644
 --- a/src/melee/ef/efasync.c
 +++ b/src/melee/ef/efasync.c
 @@ -1122,8 +1122,7 @@ void* efAsync_Dispatch(s32 gfx_id, HSD_GObj* gobj, va_list vlist)
@@ -49830,12 +49830,13 @@ index 636ba26f4..3bc9165da 100644
 +        extern void mu_ak_effect_file_loaded(int index, HSD_Archive* archive);
 +        HSD_Archive* mu_archive = NULL;
 +        bool chk = lbArchive_80017040(&mu_archive, lookup->ef_DAT_file, &spC,
-+                                      lookup->effDataTable_name, 0);
++                                      lookup->effDataTable_name, NULL);
 +        mu_ak_effect_file_loaded(idx, mu_archive);
 +#else
          bool chk = lbArchive_80017040(NULL, lookup->ef_DAT_file, &spC,
-                                       lookup->effDataTable_name, 0);
+-                                      lookup->effDataTable_name, 0);
 -        if ((u32) spC->ef_DAT_file | (u32) spC->effDataTable_name) {
++                                      lookup->effDataTable_name, NULL);
 +#endif
 +        if (DISC_RAW(spC->ef_DAT_file) | DISC_RAW(spC->effDataTable_name)) {
              if (chk) {
@@ -127652,7 +127653,7 @@ index 8020cdad3..413b811a1 100644
          HSD_SisLib_803A62A0(2, "SdPrize.usd", "SIS_PrizeData");
      } else {
 diff --git a/src/melee/if/ifstatus.c b/src/melee/if/ifstatus.c
-index a6068103c..e36f57894 100644
+index a6068103c..e27dcdf3c 100644
 --- a/src/melee/if/ifstatus.c
 +++ b/src/melee/if/ifstatus.c
 @@ -26,29 +26,9 @@
@@ -128093,7 +128094,7 @@ index a6068103c..e36f57894 100644
      HSD_Archive** arch;
      arch = ifAll_GetArchive();
      lbArchive_LoadSections(*arch, (void**) &num, num_models_name,
-                            (void**) &mrk, mrk_models_name, 0);
+-                           (void**) &mrk, mrk_models_name, 0);
 -    hud->unk258 = (*num)->joint;
 -    hud->jobj_desc_parent = (*num)->anims;
 -    hud->janim_selection_joints = (HSD_AnimJoint*) (*num)->matanims;
@@ -128102,6 +128103,7 @@ index a6068103c..e36f57894 100644
 -    hud->unk26C = (*mrk)->anims;
 -    hud->unk270 = (*mrk)->matanims;
 -    hud->unk274 = (*mrk)->shapeanims;
++                           (void**) &mrk, mrk_models_name, NULL);
 +    hud->damage_num_joint = DP(DP(*num)->joint);
 +    hud->damage_num_anims = DP(DP(*num)->anims);
 +    hud->damage_num_matanims = DP(DP(*num)->matanims);
@@ -165227,7 +165229,7 @@ index a01d721eb..8e6877e4f 100644
      {
          HSD_JObj* popup_jobj;
 diff --git a/src/melee/mn/mnevent.c b/src/melee/mn/mnevent.c
-index 94d9ef2bc..80265671e 100644
+index 94d9ef2bc..0de277848 100644
 --- a/src/melee/mn/mnevent.c
 +++ b/src/melee/mn/mnevent.c
 @@ -23,9 +23,12 @@
@@ -165820,7 +165822,7 @@ index 94d9ef2bc..80265671e 100644
 +        &MenMainConEv.animjoint, "MenMainConEv_Top_animjoint",
 +        &MenMainConEv.matanim_joint, "MenMainConEv_Top_matanim_joint",
 +        &MenMainConEv.shapeanim_joint, "MenMainConEv_Top_shapeanim_joint",
-+        &MenMainMarkEv.joint, "MenMainMarkEv_Top_joint", 0);
++        &MenMainMarkEv.joint, "MenMainMarkEv_Top_joint", NULL);
  
 -    if (first_time == 0) {
 +    if (first_time == false) {
