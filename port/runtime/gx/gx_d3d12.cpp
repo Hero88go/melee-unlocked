@@ -356,6 +356,15 @@ class D3D12Backend : public Backend {
   }
   std::string profile_line() const override { return d3d12_profile_line(); }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
+  bool reflex_pacing(double cap_hz) override {
+    if (opts_.reflex_mode <= 0 || !streamline::reflex_available()) return false;
+    reflex_limit_us_ = cap_hz > 0 ? (uint32_t)std::lround(1e6 / cap_hz) : 0;
+    return true;
+  }
+  void reflex_sleep() override {
+    apply_reflex(std::max(opts_.reflex_mode, fg_applied_ > 0 ? 1 : 0));
+    reflex_token_ = streamline::reflex_sleep((uint32_t)frame_counter_ + 1);   // submit_frame counts this frame next
+  }
   double presentation_wait_seconds() const override { return present_wait_; }
   // DXGI's own count of what reached the screen: presents shown, vertical refreshes that went by,
   // and refreshes that showed the previous frame again. Frame statistics are only reported while
@@ -567,7 +576,17 @@ class D3D12Backend : public Backend {
   // after the upscale. Zero for native and DLAA.
   float dlss_mip_bias_ = 0.0f;
   uint64_t mv_draws_ = 0, mv_matched_ = 0;
-  int fg_applied_ = -1; int reflex_applied_ = -1;   // what Streamline was last told; -1 forces the first call through even when the setting is "off"
+  int fg_applied_ = -1; int reflex_applied_ = -1;
+  // Reflex pacing (threaded renderer, see reflex_pacing): the frame limit Reflex should hold, what it
+  // was last told, and whether this frame's token and simulation-start marker came from its sleep.
+  uint32_t reflex_limit_us_ = 0, reflex_limit_applied_ = 0;
+  bool reflex_token_ = false;
+  void apply_reflex(int want) {
+    const uint32_t limit = want > 0 ? reflex_limit_us_ : 0;
+    if (want == reflex_applied_ && limit == reflex_limit_applied_) return;
+    streamline::set_reflex(want, limit);
+    reflex_applied_ = want; reflex_limit_applied_ = limit;
+  }   // what Streamline was last told; -1 forces the first call through even when the setting is "off"
   bool xess_reset_ = true;
   bool in_match_ = false;   // the frame being submitted shows a running match (set in submit_frame)
   EffectsFilter effects_filter_;   // "Visual effects" for the frame being submitted (set in submit_frame)
@@ -3310,7 +3329,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     list_->ClearRenderTargetView(mrtv, zero, 0, nullptr);
     D3D12_CPU_DESCRIPTOR_HANDLE hrtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); hrtv.ptr += 6 * rtv_size_;
     list_->ClearRenderTargetView(hrtv, zero, 0, nullptr);
-    if (!xess_active()) streamline::new_frame((uint32_t)frame_counter_);
+    if (!xess_active() && !reflex_token_) streamline::new_frame((uint32_t)frame_counter_);
     streamline::jitter(frames_presented_, &jitter_x_, &jitter_y_);
     // Prefer the fighter camera: TM-CE can submit its perspective HUD before the world.
     streamline::FrameConstants fc{};
@@ -3342,7 +3361,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // Reflex and frame generation: a frame token is needed for the markers even without DLSS, and even
   // with Reflex's own low-latency mode left Off -- the PC Latency markers below are what feeds the
   // latency reading, and that keeps working at Native so there is something to compare On against.
-  if (!dlss_active_ && streamline::reflex_available()) streamline::new_frame((uint32_t)frame_counter_);
+  if (!dlss_active_ && streamline::reflex_available() && !reflex_token_) streamline::new_frame((uint32_t)frame_counter_);
   {
     // DLSS-G is only valid while Melee is drawing a running 3D match. Keep it off during
     // menus, loading screens, and results; those frames do not have usable motion/depth inputs.
@@ -3350,7 +3369,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
                         ? opts_.frame_generation_mode : 0;
     // Frame generation needs Reflex on: it takes at least "On" while frame generation runs.
     const int want_reflex = streamline::reflex_available() ? std::max(opts_.reflex_mode, want_fg ? 1 : 0) : 0;
-    if (want_reflex != reflex_applied_) { streamline::set_reflex(want_reflex); reflex_applied_ = want_reflex; }
+    apply_reflex(want_reflex);
     // Sampled regardless of mode: the PC Latency markers run every frame either way (below), so the
     // measurement stays available running plain Native -- Reflex's low-latency algorithm is a
     // separate thing from being told how long a frame is taking.
@@ -3363,7 +3382,8 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       fg_applied_ = want_fg;
     }
   }
-  streamline::pcl_marker(0); streamline::pcl_marker(1); streamline::pcl_marker(2);
+  if (!reflex_token_) streamline::pcl_marker(0);   // under Reflex pacing it was set after the sleep
+  streamline::pcl_marker(1); streamline::pcl_marker(2);
   if (have_clear_) { clear_efb(pending_clear_); have_clear_ = false; }
   const EfbCopy* screen = nullptr;
   for (const EfbCopy& copy : frame.copies) if (copy.to_xfb) screen = &copy;
@@ -3467,6 +3487,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     diag("swapchain Present and pacing");
     g_prof[10] += present_sw.lap();
     streamline::pcl_marker(5);
+    reflex_token_ = false;
     ++frames_presented_;
     streamline::frame_generation_after_present();
     if (frames_presented_ % 600 == 0) streamline::log_frame_generation();

@@ -110,7 +110,11 @@ void set_frame_generation(int mode, uint32_t render_w, uint32_t render_h, uint32
 bool frame_generation_prepare(ID3D12GraphicsCommandList* list, int mode, uint32_t render_w, uint32_t render_h,
                               uint32_t output_w, uint32_t output_h, uint32_t backbuffer_count,
                               uint32_t backbuffer_format, uint32_t motion_format, uint32_t depth_format);
-void set_reflex(int mode);   // 0 off, 1 low latency, 2 low latency + boost
+void set_reflex(int mode, uint32_t frame_limit_us = 0);   // 0 off, 1 low latency, 2 low latency + boost
+// The start of one presented frame under Reflex: a frame token, Reflex's sleep (its low-latency wait
+// and its frame limit), then the simulation-start marker. Returns false when Reflex is not running;
+// the frame then takes its token from new_frame() as before.
+bool reflex_sleep(uint32_t frame_index);
 // Reflex's measured render latency (simulation start to GPU finished), averaged over the recent frame
 // reports, in milliseconds; 0 when Reflex has no report yet. Refreshed by update_reflex_stats().
 // Populated whether or not Reflex's low-latency mode is on: the PC Latency markers run every frame

@@ -338,6 +338,11 @@ struct Backend {
   virtual std::string profile_line() const { return {}; }
   virtual void set_present_deadline(double) {}
   virtual double presentation_wait_seconds() const { return 0; }
+  // NVIDIA Reflex pacing for the threaded renderer: reflex_pacing(cap_hz) applies Reflex's own frame
+  // limit (cap_hz, 0 = none) and says whether Reflex holds the frame rate; reflex_sleep() is then
+  // called once at the start of each presented frame, before its moment in time is chosen.
+  virtual bool reflex_pacing(double) { return false; }
+  virtual void reflex_sleep() {}
   // What the display side reported since the last call (D3D12: DXGI frame statistics), for the
   // "pacing:" line. Called on the render thread.
   virtual std::string display_timing_line() { return "display statistics not available"; }

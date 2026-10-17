@@ -50,6 +50,8 @@ class ThreadedBackend final : public Backend {
     bool interpolate = options_.subframe == SubFrameMode::Interpolate || options_.subframe == SubFrameMode::AuthoredInterpolate;
     double cap_period = options_.fps_cap > 0 ? 1.0 / options_.fps_cap : 0.0;
     double refresh_check = 0;
+    double last_refresh = 60.0;   // the monitor's rate as last read, for Reflex's limit
+    bool reflex_slept = false;    // Reflex has already waited for the frame about to be drawn
     double render_budget = 0.004;
     // "Uncapped" used to present as fast as this thread could go. Against a GPU that cannot keep
     // up that keeps the GPU's queue full, and a full queue is input latency; it also ran this
@@ -112,9 +114,22 @@ class ThreadedBackend final : public Backend {
       else if (host::now_seconds() >= refresh_check) {
         // -1 follows the monitor; 0 (uncapped) is held at twice the monitor's rate, see above.
         const double refresh = std::max(host::window_refresh_rate(), 1.0);
+        last_refresh = refresh;
         cap_period = 1.0 / (live_options.fps_cap < 0 ? refresh : 2.0 * refresh);
         refresh_check = host::now_seconds() + 1.0;
       }
+      // With Reflex on, its own limiter holds the rate (in its sleep, at the start of each frame) and
+      // this thread's timer stands aside, so the two never wait on each other. "Follow the monitor"
+      // with V-Sync off sits where NVIDIA puts it for G-Sync, refresh * (1 - refresh / 3600): 225 at
+      // 240 Hz, 189 at 200 Hz, inside the variable refresh range so G-Sync never tears at the top.
+      // With V-Sync on it is left to the display: the driver applies that same limit itself when
+      // G-Sync is active, and a display without it is paced by V-Sync at its full refresh (a fixed
+      // 240 Hz screen fed 225 frames would show some of them twice).
+      // Locked (no sub-frames) keeps the old path: one present per game frame, Reflex markers only.
+      const double reflex_hz = live_options.fps_cap > 0 ? live_options.fps_cap
+                             : live_options.fps_cap < 0 ? (live_options.vsync ? 0.0 : last_refresh * (1.0 - last_refresh / 3600.0))
+                             : present_uncapped ? 0.0 : 2.0 * last_refresh;
+      const bool reflex_pacing = renderer->reflex_pacing(subframes ? reflex_hz : 0.0) && subframes;
       if (host::window_closed()) { queue.finish(true); break; }
       {
         // The PC settings panel can switch sub-frame animation at run time.
@@ -205,6 +220,13 @@ class ThreadedBackend final : public Backend {
         }
         idle_repaint = host::now_seconds() + SIM_PERIOD;
       } else {
+        if (reflex_pacing && !reflex_slept && options_.pin_phase < 0) {
+          // Reflex's wait, then back to the top for a game frame that arrived during it, so the
+          // moment shown below is chosen after the wait, not before.
+          renderer->reflex_sleep();
+          reflex_slept = true;
+          continue;
+        }
         double now = host::now_seconds();
         t = (now - current.time) / SIM_PERIOD;
         if (interpolate) t = std::min(std::max(t, 0.0), 1.0);
@@ -218,7 +240,7 @@ class ThreadedBackend final : public Backend {
             queue.wait_available(std::chrono::milliseconds(2));
             continue;
           }
-        } else if (cap_period > 0 && now < next_present - render_budget) {
+        } else if (!reflex_pacing && cap_period > 0 && now < next_present - render_budget) {
           // Start early enough to finish GPU submission before the presentation deadline.
           double wait = next_present - render_budget - now;
           if (wait > 0.0005 + host::sleep_slack()) std::this_thread::sleep_for(std::chrono::microseconds((long long)(std::min(wait - 0.0003, 0.001) * 1e6)));   // not on a system whose sleeps overshoot
@@ -232,7 +254,7 @@ class ThreadedBackend final : public Backend {
         host::log("present %llu: sim frame %llu phase %.3f", presented + 1, (unsigned long long)current.sequence, t);
         ++burst_logged;
       }
-      renderer->set_present_deadline(subframes && cap_period > 0 ? next_present : 0);
+      renderer->set_present_deadline(subframes && cap_period > 0 && !reflex_pacing ? next_present : 0);
       solver_pair_counter().store(subframes ? solver.pair_count() : 0, std::memory_order_relaxed);   // for the backends' "gpu:" line
       const double render_start = host::now_seconds();
       double solver_ms = 0;
@@ -249,6 +271,7 @@ class ThreadedBackend final : public Backend {
         submit_seconds += host::now_seconds() - t1; ++cost_presented;
       }
       const double render_end = host::now_seconds();
+      reflex_slept = false;
       const double present_wait = renderer->presentation_wait_seconds();
       render_budget = std::max(render_budget * 0.95, render_end-render_start-present_wait+0.0002);
       if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
@@ -317,7 +340,10 @@ class ThreadedBackend final : public Backend {
           // The cap the pacing actually used, not the setting: "uncapped" is held at twice the
           // display's refresh unless MELEE_PRESENT_UNCAPPED=1, and -1 is whatever the monitor runs at.
           char cap_text[64];
-          if (cap_period <= 0) std::snprintf(cap_text, sizeof cap_text, "no cap");
+          if (reflex_pacing && reflex_hz > 0)
+            std::snprintf(cap_text, sizeof cap_text, "cap %.0f by Reflex%s", reflex_hz, live_options.fps_cap < 0 ? ", the monitor's G-Sync limit" : "");
+          else if (reflex_pacing) std::snprintf(cap_text, sizeof cap_text, "%s, Reflex", live_options.vsync ? "V-Sync" : "no cap");
+          else if (cap_period <= 0) std::snprintf(cap_text, sizeof cap_text, "no cap");
           else std::snprintf(cap_text, sizeof cap_text, "cap %.0f%s", 1.0 / cap_period, live_options.fps_cap == 0 ? " = 2x refresh" : live_options.fps_cap < 0 ? " = monitor" : "");
           host::log("display: %.0f fps (%s, sim %.0f Hz, %s, %u draws, %u paired, %u cuts)", stats_presented / (now - stats_time), cap_text, stats_sim / (now - stats_time),
                     !subframes ? "locked" : authored ? "authored" : interpolate ? "interpolate" : "extrapolate", s.draws, s.paired, s.cuts);

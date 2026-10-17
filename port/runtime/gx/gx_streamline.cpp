@@ -78,7 +78,8 @@ bool frame_generation_capabilities_queried() { return false; }
 bool frame_generation_dynamic_supported() { return false; }
 void set_frame_generation(int, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) {}
 bool frame_generation_prepare(ID3D12GraphicsCommandList*, int, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) { return false; }
-void set_reflex(int) {}
+void set_reflex(int, uint32_t) {}
+bool reflex_sleep(uint32_t) { return false; }
 float reflex_latency_ms() { return 0.0f; }
 ReflexBreakdown reflex_breakdown() { return {}; }
 void update_reflex_stats() {}
@@ -477,14 +478,31 @@ bool set_constants(const FrameConstants& c) {
 bool frame_generation_available() { return g_ready && g_fg_ok; }
 bool reflex_available() { return g_ready && g_reflex_ok; }
 std::atomic<float> g_latency_ms{0.0f};
-void set_reflex(int mode) {
+void set_reflex(int mode, uint32_t frame_limit_us) {
   if (!reflex_available()) return;
   sl::ReflexOptions r{};
   r.mode = mode >= 2 ? sl::ReflexMode::eLowLatencyWithBoost : mode == 1 ? sl::ReflexMode::eLowLatency : sl::ReflexMode::eOff;
   r.useMarkersToOptimize = mode > 0;
+  // Reflex's own limiter: with Reflex on, the frame rate is held by its sleep (reflex_sleep), not by
+  // the render thread's timer, so the two never wait on each other.
+  r.frameLimitUs = mode > 0 ? frame_limit_us : 0;
   const sl::Result res = driver_call([&] { return slReflexSetOptions(r); });
   g_reflex_ready = res == sl::Result::eOk;   // markers/telemetry can flow now, whatever the mode is
-  host::log("reflex: %s (%d)", mode >= 2 ? "on + boost" : mode == 1 ? "on" : "off", (int)res);
+  if (mode > 0 && r.frameLimitUs)
+    host::log("reflex: %s, frame limit %u us (%.1f fps) (%d)", mode >= 2 ? "on + boost" : "on", r.frameLimitUs,
+              1e6 / r.frameLimitUs, (int)res);
+  else host::log("reflex: %s (%d)", mode >= 2 ? "on + boost" : mode == 1 ? "on" : "off", (int)res);
+}
+bool reflex_sleep(uint32_t frame_index) {
+  if (!g_ready || !g_reflex_ready) return false;
+  g_token = nullptr;
+  if (driver_call([&] { return slGetNewFrameToken(g_token, &frame_index); }) != sl::Result::eOk || !g_token) {
+    g_token = nullptr;
+    return false;
+  }
+  driver_call([&] { return slReflexSleep(*g_token); });
+  driver_call([&] { return slPCLSetMarker(sl::PCLMarker::eSimulationStart, *g_token); });
+  return true;
 }
 float reflex_latency_ms() { return g_latency_ms.load(std::memory_order_relaxed); }
 std::atomic<float> g_sim_ms{0}, g_render_submit_ms{0}, g_driver_ms{0}, g_os_queue_ms{0}, g_gpu_render_ms{0};
