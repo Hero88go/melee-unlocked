@@ -346,6 +346,18 @@ struct Backend {
   // What the display side reported since the last call (D3D12: DXGI frame statistics), for the
   // "pacing:" line. Called on the render thread.
   virtual std::string display_timing_line() { return "display statistics not available"; }
+  // Whether the display follows the frames (G-Sync, FreeSync): 1 it does, 0 it refreshes at a fixed
+  // rate, -1 not known (Windows composes the window, or nothing measured yet). Judged from the
+  // display's own counts while frames come slower than the refresh: a fixed display still refreshes
+  // at its full rate and repeats frames, a variable one refreshes once per frame. Render thread.
+  virtual int variable_refresh() const { return -1; }
+  // The display's counts could be read at the last look (false while Windows composes the window).
+  virtual bool display_counts_readable() const { return false; }
+  // From the presentation loop, every frame: the monitor's nominal refresh rate (what the verdict
+  // above is judged against), and whether to present synced even with V-Sync off. The loop asks for
+  // that on a display that follows the frames, where it costs no delay while the rate stays under
+  // the refresh, and stops every tear.
+  virtual void set_display_refresh(double /*hz*/, bool /*tear_free*/) {}
   virtual void submit_frame(const Frame& frame) = 0;   // called at XFB copy
   // Queueing backends take the frame's buffers and hand back recycled ones (no copy, no
   // per-frame reallocation on the simulation thread); `frame` comes back cleared either way.

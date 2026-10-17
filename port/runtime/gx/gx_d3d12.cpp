@@ -24,6 +24,7 @@
 #include <condition_variable>
 #include <vector>
 #include "dxgi_paced_mode.h"
+#include "vrr_detect.h"
 #include "gx_d3d12.h"
 #include "gx_adapter.h"
 #include "gx_backend.h"   // solver_pair_counter, for the "gpu:" diagnostic line
@@ -400,6 +401,13 @@ class D3D12Backend : public Backend {
   }
   bool have_frame_stats_ = false;
   DXGI_FRAME_STATISTICS last_frame_stats_{};
+  int variable_refresh() const override { return vrr_.state(); }
+  bool display_counts_readable() const override { return vrr_readable_; }
+  void set_display_refresh(double hz, bool tear_free) override { vrr_nominal_hz_ = hz; tear_free_ = tear_free; }
+  void update_variable_refresh();
+  vrr::Detector vrr_;
+  bool tear_free_ = false, vrr_readable_ = false;
+  double vrr_nominal_hz_ = 0;
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
   // EFB copies are about to be freed. texture_sets_ is keyed by resource pointer, so its entries for
@@ -1741,6 +1749,22 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
     if (pipeline_library_ && SUCCEEDED(pipeline_library_->StorePipeline(pso_name, pso.Get()))) pipeline_library_dirty_ = true;
   }
   return pso;
+}
+
+// See Backend::variable_refresh and vrr_detect.h. Called every 32 presents; a window is a second.
+void D3D12Backend::update_variable_refresh() {
+  DXGI_FRAME_STATISTICS st{};
+  vrr_readable_ = swapchain_ && SUCCEEDED(swapchain_->GetFrameStatistics(&st));
+  if (!vrr_readable_) { vrr_.restart(); return; }
+  static const double qpc_hz = [] { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return f.QuadPart > 0 ? (double)f.QuadPart : 1e7; }();
+  if (!vrr_.add({st.PresentCount, st.SyncRefreshCount, (double)st.SyncQPCTime.QuadPart / qpc_hz}, vrr_nominal_hz_)) return;
+  if (vrr_.state() == 1)
+    host::log("display: variable refresh (G-Sync or FreeSync) is on: %.0f refreshes a second for %.0f frames on a %.0f Hz "
+              "display; frames are presented synced under %.0f a second, so they never tear", vrr_.refreshes(), vrr_.shown(),
+              vrr_nominal_hz_, vrr::under_refresh(vrr_nominal_hz_));
+  else
+    host::log("display: fixed refresh: %.0f refreshes a second for %.0f frames on a %.0f Hz display", vrr_.refreshes(),
+              vrr_.shown(), vrr_nominal_hz_);
 }
 
 void D3D12Backend::pso_worker() {
@@ -3490,7 +3514,12 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     streamline::pcl_marker(3); streamline::pcl_marker(4);
     Stopwatch present_sw;
     try {
-      swapchain_->Present(opts_.vsync ? 1 : 0, (!opts_.vsync && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+      // Synced when V-Sync is on, and on a display that follows the frames (tear_free_, from the
+      // presentation loop): there a frame starts its own refresh, so syncing costs nothing while
+      // the rate stays under the refresh, and a frame that comes a little early waits instead of
+      // tearing. A 0.8.99 player with a 240 Hz G-Sync screen and V-Sync off saw tearing.
+      const bool synced = opts_.vsync || tear_free_;
+      swapchain_->Present(synced ? 1 : 0, (!synced && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
     } catch (const std::system_error& error) {
       streamline::disable_after_resource_error(error.what());
       opts_.frame_generation_mode = 0;
@@ -3502,6 +3531,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     streamline::pcl_marker(5);
     reflex_token_ = false;
     ++frames_presented_;
+    if ((frames_presented_ & 31) == 0) update_variable_refresh();
     streamline::frame_generation_after_present();
     if (frames_presented_ % 600 == 0) streamline::log_frame_generation();
   }
