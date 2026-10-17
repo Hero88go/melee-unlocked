@@ -47,6 +47,7 @@ struct Slot {
   std::array<Axis, 8> axes{};          // in the order of kAxisOrder
   int axis_count = 0;
   USAGE button_min = 0, button_max = 0;
+  bool haybox = false;                 // HayBox DInput (haybox_dinput_shape): triggers on Z and Rz
   std::string name;
   bool ready = false;
   // Latest decoded state.
@@ -156,6 +157,9 @@ bool describe(Slot& s, HANDLE device) {
       break;
     }
   }
+  HidAxisRange ranges[8];
+  for (int i = 0; i < 8; ++i) ranges[i] = {s.axes[i].present, (long)s.axes[i].logical_min, (long)s.axes[i].logical_max};
+  s.haybox = haybox_dinput_shape(ranges, s.button_min, s.button_max);
   // Something with no axes and no buttons is not a pad, whatever it says it is.
   return s.axis_count > 0 || s.button_max >= s.button_min;
 }
@@ -248,8 +252,9 @@ bool hidpad_raw_input(void* device_handle, const uint8_t* report, uint32_t size,
     // that waits forever.
     HIDP_CAPS caps{};
     const unsigned collections = HidP_GetCaps(preparsed_of(s), &caps) == HIDP_STATUS_SUCCESS ? caps.NumberLinkCollectionNodes : 0;
-    host::log("hid pad %d: %s (%d axes, buttons %u..%u, %u collections, report %u bytes)", index + 1, s.name.c_str(),
-              s.axis_count, (unsigned)s.button_min, (unsigned)s.button_max, collections, caps.InputReportByteLength);
+    host::log("hid pad %d: %s (%d axes, buttons %u..%u, %u collections, report %u bytes)%s", index + 1, s.name.c_str(),
+              s.axis_count, (unsigned)s.button_min, (unsigned)s.button_max, collections, caps.InputReportByteLength,
+              s.haybox ? ", a HayBox box in DInput mode (triggers on Z and Rz)" : "");
     s.log_reports = 3;
   }
   if (!s.ready) return false;
@@ -291,9 +296,15 @@ bool hidpad_raw_input(void* device_handle, const uint8_t* report, uint32_t size,
     }
     return hid_trigger_value(s.axes[i].logical_min, s.axes[i].logical_max, raw, s.rest[i]);
   };
-  if (s.axes[6].present && read_axis(6, value)) pad.trig_l = trigger(6, value);
-  if (s.axes[3].present && s.axes[4].present && s.axes[2].present && read_axis(2, value))
-    pad.trig_r = trigger(2, value);
+  if (s.haybox) {
+    // HayBox DInput: Z is the left trigger, Rz the right (TUGamepad's report).
+    if (read_axis(2, value)) pad.trig_l = trigger(2, value);
+    if (read_axis(5, value)) pad.trig_r = trigger(5, value);
+  } else {
+    if (s.axes[6].present && read_axis(6, value)) pad.trig_l = trigger(6, value);
+    if (s.axes[3].present && s.axes[4].present && s.axes[2].present && read_axis(2, value))
+      pad.trig_r = trigger(2, value);
+  }
 
   uint32_t mask = 0;
   {
@@ -347,6 +358,12 @@ uint32_t hidpad_poll(PadState out[kHidPadSlots], uint32_t buttons[kHidPadSlots])
     present |= 1u << i;
   }
   return present;
+}
+
+bool hidpad_haybox_dinput(int slot) {
+  if (slot < 0 || slot >= kHidPadSlots) return false;
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_slots[slot].ready && g_slots[slot].haybox;
 }
 
 std::string hidpad_name(int slot) {

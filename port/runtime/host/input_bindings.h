@@ -232,8 +232,9 @@ inline HidBindings hid_bindings_before_hat() {
 
 // Box controller layouts, from the Dolphin profiles their firmware or feeder ships (Dolphin numbers
 // DInput buttons from 0, which is bit N here).
-// B0XX-layout boxes on HayBox firmware in DInput mode (Arduino based: B0XX R1-R3, LBX), from
-// HayBox_DInput.ini. Pico-based HayBox boxes default to XInput and need nothing.
+// B0XX-layout boxes on HayBox firmware in DInput mode, from HayBox_DInput.ini: the Arduino-based
+// ones by name (B0XX R1-R3, LBX), the Pico-based ones (a Frame1 in DInput mode) by their descriptor
+// (haybox_dinput_shape in hid_pad.h). A Frame1 plugged in normally is a GameCube adapter instead.
 inline HidBindings haybox_dinput_bindings() {
   HidBindings b{};
   b.mask[(size_t)BindAction::A] = 1u << 1;  b.mask[(size_t)BindAction::B] = 1u << 0;

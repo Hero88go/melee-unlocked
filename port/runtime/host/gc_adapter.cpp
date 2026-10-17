@@ -62,6 +62,13 @@ std::chrono::steady_clock::time_point g_report_time;
 bool g_have_report = false;
 bool g_logged_missing = false;
 bool g_logged_restart = false;   // logged once per open when the adapter is silent and we retry
+// Why an adapter that is plugged in cannot be read, for the Controls tab (gcadapter_problem). It
+// used to reach the log only, so a player whose adapter Steam had taken saw a controller that half
+// worked (port 1 fell back to Steam's own Xbox copy of it, with Steam's button layout) and no reason.
+std::mutex g_problem_mutex;
+std::string g_problem;
+void set_problem(const std::string& text) { std::lock_guard<std::mutex> lock(g_problem_mutex); g_problem = text; }
+constexpr const char* kFrame1Note = " A box controller plugged in normally, such as a Frame1, counts as an adapter.";
 struct Origin { bool set = false; uint8_t sx = 128, sy = 128, cx = 128, cy = 128, tl = 0, tr = 0; } g_origin[4];
 std::atomic<uint8_t> g_rumble[4]{};
 std::atomic<bool> g_rumble_dirty{false};
@@ -320,6 +327,7 @@ bool open_hid() {
   }
   if (!g_hid_read_event) g_hid_read_event = CreateEventA(nullptr, TRUE, FALSE, nullptr);
   if (!g_hid_write_event) g_hid_write_event = CreateEventA(nullptr, TRUE, FALSE, nullptr);
+  set_problem("");
   log("gc adapter: opened through HID (input report %lu bytes, output report %lu bytes)",
       (unsigned long)g_hid_in_len, (unsigned long)g_hid_out_len);
   g_logged_hid_fail = false;
@@ -350,6 +358,7 @@ bool open_libusb() {
   std::string others;
   libusb_device* adapter = find_adapter(list, count, &others);
   if (!adapter) {
+    set_problem("");
     if (!g_logged_missing) {
       log("gc adapter: no WUP-028 adapter found (VID 057E PID 0337); keyboard/XInput stay active");
       if (!others.empty()) log("gc adapter: USB devices present instead: %s", others.c_str());
@@ -387,6 +396,17 @@ bool open_libusb() {
     g_dev = nullptr;
     // Access denied with a driver in place means another program has the adapter open: Windows gives
     // it to one program at a time. Steam takes GameCube adapters for its own controller support.
+    if (rc == LIBUSB_ERROR_ACCESS)
+      set_problem(std::string(steam_is_running()
+          ? "Your GameCube adapter is in use by Steam, so the game cannot read it. Close Steam, or turn off GameCube controller support in Steam's Controller settings."
+          : "Your GameCube adapter is in use by another program, such as Dolphin, so the game cannot read it. Close that program.")
+          + kFrame1Note + " It is picked up without a restart.");
+    else
+#ifdef MELEE_NO_SLIPPI
+      set_problem(std::string("A GameCube adapter is plugged in but has no driver the game can use. Install WinUSB on it with Zadig.") + kFrame1Note);
+#else
+      set_problem(std::string("A GameCube adapter is plugged in but has no driver the game can use. Install WinUSB on it with Zadig, or install Slippi's adapter driver.") + kFrame1Note);
+#endif
     if (rc == LIBUSB_ERROR_ACCESS && !g_logged_missing) {
       log("gc adapter: found, but another program has it open (LIBUSB_ERROR_ACCESS).%s Close that program and the adapter is picked up without a restart.",
           steam_is_running() ? " Steam is running and takes GameCube adapters for its own controller support: close Steam, or turn that off in its Controller settings." : "");
@@ -408,6 +428,8 @@ bool open_libusb() {
     log("gc adapter: report protocol request returned %s", libusb_error_name(protocol));
   rc = libusb_claim_interface(g_dev, g_iface);
   if (rc != 0) {
+    set_problem(std::string("Your GameCube adapter is in use by another program, such as Dolphin, so the game cannot read it. Close that program.")
+                + kFrame1Note + " It is picked up without a restart.");
     if (!g_logged_missing) {
 #ifdef MELEE_NO_SLIPPI
       log("gc adapter: cannot claim the adapter (%s): another program (Dolphin?) is using it. Close it and try again.", libusb_error_name(rc));
@@ -420,6 +442,7 @@ bool open_libusb() {
     return false;
   }
   g_claimed = true;
+  set_problem("");
   // Leave a successfully opened pipe alone. The timeout path recovers a genuinely silent pipe.
   log("gc adapter: opened through libusb (interface %d, endpoints in 0x%02X out 0x%02X)", g_iface, g_ep_in, g_ep_out);
   start_threads();
@@ -472,6 +495,12 @@ void scanner_thread() {
 
 double gcadapter_poll_rate_hz() {
   return g_poll_rate_hz.load(std::memory_order_relaxed);
+}
+
+std::string gcadapter_problem() {
+  ensure_scanner_started();
+  std::lock_guard<std::mutex> lock(g_problem_mutex);
+  return g_problem;
 }
 
 bool gcadapter_reset_pending() {

@@ -687,9 +687,10 @@ bool input_poll_capture(CaptureDevice& device, int& value, int& device_index) {
     uint32_t mask = hidpad_poll(hid, buttons);
     for (int idx = 0; idx < 4; ++idx) {
       if (!(mask & (1u << idx)) || !wanted(CaptureDevice::HidPad, idx)) continue;
-      // Bit 31 is left out: the capture result travels as an int, and a mask with the top bit set
-      // would arrive negative. Thirty-one buttons is more than any box controller has.
-      uint32_t newly = buttons[idx] & ~g_capture_hid_baseline[idx] & 0x7FFFFFFFu;
+      // Bit 31 is the hat's Left (HID_HAT_LEFT), so it must be capturable: leaving it out made
+      // D-pad Left unbindable on every box controller that reports its D-pad as a hat. The result
+      // travels as an int and is negative for that bit; binding_set takes it back as uint32_t.
+      uint32_t newly = buttons[idx] & ~g_capture_hid_baseline[idx];
       if (newly) {
         uint32_t lowest = newly & ~(newly - 1);
         g_capturing.store(false); device = CaptureDevice::HidPad; value = (int)lowest; device_index = idx; return true;
@@ -780,7 +781,10 @@ void apply_known_box_layout(int idx) {
   if (lower.find("vjoy") != std::string::npos) {
     g_hid_bindings[idx] = vjoy_b0xx_bindings();
     host::log("hid pad %d: %s, using the B0XX (vJoy) layout", idx + 1, name.c_str());
-  } else if (lower.find("leonardo") != std::string::npos || lower.find("haybox") != std::string::npos) {
+  } else if (lower.find("leonardo") != std::string::npos || lower.find("haybox") != std::string::npos ||
+             hidpad_haybox_dinput(idx)) {
+    // By name for the Arduino-based boxes; by descriptor for the Pico-based ones (a Frame1, say),
+    // which carry no name of their own.
     g_hid_bindings[idx] = haybox_dinput_bindings();
     host::log("hid pad %d: %s, using the B0XX-layout box (HayBox DInput) layout", idx + 1, name.c_str());
   } else if (std::memcmp(&g_hid_bindings[idx], &before_hat, sizeof before_hat) == 0) {

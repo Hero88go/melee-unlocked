@@ -7516,6 +7516,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (!g_edit_follow_active) settings_hint("Editing your selected controller. Turn on Follow player 1 to return to the active pad.");
     const Family& cur_family = kFamilies[family_sel];
     ImGui::Spacing();
+    // On every tab: with the adapter taken by Steam, port 1 falls back to Steam's Xbox copy of the
+    // controller, so the player is usually looking at the Xbox tab when this matters.
+    if (const std::string problem = host::gcadapter_problem(); !problem.empty()) {
+      ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.25f, 1.0f));
+      ImGui::TextWrapped("%s", problem.c_str());
+      ImGui::PopStyleColor();
+      ImGui::Spacing();
+    }
+    if (cur_family.fam == (int)host::PadFamily::Box)
+      settings_hint("Mod X and Mod Y work inside the box itself and are never bound here. A Frame1 plugged in "
+                    "normally shows up as a GameCube adapter: set it up under GameCube.");
     if (cur_family.fam == (int)host::PadFamily::GameCube) {
       const double rate = host::gcadapter_poll_rate_hz();
       if (rate > 0.0) ImGui::Text("Adapter polling rate: %.0f Hz", rate);
@@ -7581,7 +7592,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         // in its own firmware), so only the keyboard binds the four directions; two keys held
         // together give the diagonals. A pad that really sends C directions as buttons can still
         // bind them in the list below.
-        const bool analog_c = tab_kind != host::CaptureDevice::Keyboard;
+        // The Box tab shows them too: a box in DInput or keyboard-style mode can send its C-stick
+        // and stick as plain buttons, and its player looked for them in the picture, not the list.
+        const bool analog_c = tab_kind != host::CaptureDevice::Keyboard && tab_kind != host::CaptureDevice::HidPad;
         const int waiting = state.rebind_kind == tab_kind && state.rebind_index == tab_index ? state.rebind_action : -1;
         const uint32_t live = live_actions(snap, tab_kind, tab_index);
         int right_clicked = -1, hovered = -1;

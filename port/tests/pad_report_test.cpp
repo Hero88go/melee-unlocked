@@ -6,6 +6,7 @@
 #include "hid_pad.h"
 #include "input_bindings.h"
 #include "playstation_pad.h"
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -447,7 +448,44 @@ void check_trigger_split() {
   }
 }
 
+// HayBox's DInput report (TUGamepad, the firmware of a Frame1 in DInput mode): six 16-bit axes, a hat,
+// buttons 1-16. Recognised by that shape alone, and nothing else may match it by accident.
+void check_haybox_shape() {
+  using host::HidAxisRange;
+  auto haybox = [] {
+    std::array<HidAxisRange, 8> a{};
+    for (int i = 0; i < 6; ++i) a[i] = {true, 0, 0xFFFF};   // X, Y, Z, Rx, Ry, Rz
+    a[7] = {true, 1, 8};                                     // hat
+    return a;
+  };
+  auto shape = [](const std::array<HidAxisRange, 8>& a, unsigned lo, unsigned hi) {
+    HidAxisRange c[8]; for (int i = 0; i < 8; ++i) c[i] = a[i];
+    return host::haybox_dinput_shape(c, lo, hi);
+  };
+  CHECK(shape(haybox(), 1, 16));
+  { auto a = haybox(); a[6] = {true, 0, 0xFFFF}; CHECK(!shape(a, 1, 16)); }        // a slider: not HayBox
+  { auto a = haybox(); a[5] = {}; CHECK(!shape(a, 1, 16)); }                       // no Rz
+  { auto a = haybox(); a[7] = {}; CHECK(!shape(a, 1, 16)); }                       // no hat
+  { auto a = haybox(); for (int i = 0; i < 6; ++i) a[i].logical_max = 255; CHECK(!shape(a, 1, 16)); }  // 8-bit pad
+  CHECK(!shape(haybox(), 1, 14));                                                   // a 14-button pad
+  // A HORI-style pad (HayBox's Switch mode): X, Y, Z, Rz at 8 bits, hat, 14 buttons.
+  { std::array<HidAxisRange, 8> a{}; a[0] = a[1] = a[2] = a[5] = {true, 0, 255}; a[7] = {true, 0, 7}; CHECK(!shape(a, 1, 14)); }
+  // The layout given to it is HayBox's own button order (DInputBackend::SendReport): B A Y X, then
+  // the R bumper (Z in Melee mode), R, the L bumper, L, select, Start; the D-pad is the hat.
+  const host::HidBindings b = host::haybox_dinput_bindings();
+  using host::BindAction;
+  CHECK(b.mask[(size_t)BindAction::B] == 1u << 0 && b.mask[(size_t)BindAction::A] == 1u << 1);
+  CHECK(b.mask[(size_t)BindAction::Y] == 1u << 2 && b.mask[(size_t)BindAction::X] == 1u << 3);
+  CHECK(b.mask[(size_t)BindAction::Z] == 1u << 4 && b.mask[(size_t)BindAction::R] == 1u << 5);
+  CHECK(b.mask[(size_t)BindAction::L] == 1u << 7 && b.mask[(size_t)BindAction::Start] == 1u << 9);
+  CHECK(b.mask[(size_t)BindAction::DLeft] == host::HID_HAT_LEFT && b.mask[(size_t)BindAction::DUp] == host::HID_HAT_UP);
+  // D-pad Left is bit 31. The bind screen hands a captured button over as an int and binding_set takes
+  // it back as uint32_t, so the bit survives the trip (the capture used to mask it off).
+  CHECK((uint32_t)(int)host::HID_HAT_LEFT == host::HID_HAT_LEFT);
+}
+
 int main() {
+  check_haybox_shape();
   check_trigger_cap();
   check_binding_levels();
   check_trigger_split();

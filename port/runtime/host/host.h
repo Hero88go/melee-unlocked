@@ -232,6 +232,9 @@ void input_last_pads(PadState out[4]);
 uint32_t gcadapter_poll(PadState out[4]);
 // Measured incoming USB reports per second, shared by the four adapter sockets; zero if stale.
 double gcadapter_poll_rate_hz();
+// Why a plugged-in adapter cannot be read (another program has it, no driver), in words for the
+// Controls tab; empty when there is nothing to say.
+std::string gcadapter_problem();
 // Reconnect and recalibrate the adapter on its worker, without blocking game/render threads.
 bool gcadapter_request_reset();
 bool gcadapter_reset_pending();
