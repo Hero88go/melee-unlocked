@@ -296,14 +296,17 @@ static const char* kActionNames[(size_t)host::BindAction::Count] = {
   "SUp", "SDown", "SLeft", "SRight",
   // Added when L and R were split into the click and the travel. A file without these lines is an
   // older one, whose single L / R bindings are carried over (see split_old_trigger_bindings).
-  "LAnalog", "RAnalog"
+  "LAnalog", "RAnalog",
+  // Added with the box controller buttons. A file without them has none bound: no box mode.
+  "ModX", "ModY", "LightShield", "MidShield"
 };
 // The same, as the controls picture writes them.
 static const char* kActionTitles[(size_t)host::BindAction::Count] = {
   "A", "B", "X", "Y", "Z", "Start", "L", "R", "D-Pad Up", "D-Pad Down", "D-Pad Left", "D-Pad Right",
   "C Up", "C Down", "C Left", "C Right",
   "Stick Up", "Stick Down", "Stick Left", "Stick Right",
-  "L analog", "R analog"
+  "L analog", "R analog",
+  "Mod X", "Mod Y", "Light shield", "Mid shield"
 };
 
 // ---- Port-source <-> combo-box index, shared by load/save and the Port assignment UI ----
@@ -1155,7 +1158,7 @@ static bool draw_profile_row(host::CaptureDevice kind, int index, int tab) {
 struct GcCallout { int action; float x, y, w; };
 // The keyboard has two rows of direction boxes under the pad: the C-stick, and the control stick
 // (added once the stick stopped being hard wired to the arrow keys).
-constexpr float kGcCanvasHKeys = 434, kGcCanvasHAnalog = 350;
+constexpr float kGcCanvasHKeys = 476, kGcCanvasHAnalog = 350;   // keys: a third row for the box buttons
 enum { kCStickModeBox = 100 };   // the single C-stick box of an analog controller: shows and toggles the mode
 
 // The deadzone as the settings picture shows it: an orange ring sized to the deadzone, and a dot at
@@ -1354,6 +1357,10 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
     // feeds it directly and has nothing to bind here.
     boxes.push_back({(int)A::SUp, 216, 392, 128}); boxes.push_back({(int)A::SDown, 352, 392, 128});
     boxes.push_back({(int)A::SLeft, 488, 392, 128}); boxes.push_back({(int)A::SRight, 624, 392, 128});
+    // Third row: a box controller's own buttons. Binding Mod X or Mod Y turns the two rows above
+    // into the box's Melee coordinates (input_bindings.h, apply_box_actions).
+    boxes.push_back({(int)A::ModX, 216, 434, 128}); boxes.push_back({(int)A::ModY, 352, 434, 128});
+    boxes.push_back({(int)A::LightShield, 488, 434, 128}); boxes.push_back({(int)A::MidShield, 624, 434, 128});
   }
   constexpr float kBoxH = 32;
   // Grey group panels behind the boxes.
@@ -1388,6 +1395,9 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
     if (action == kCStickModeBox || (action >= (int)A::CUp && action <= (int)A::CRight)) return ImVec2(cst_c.x, cst_c.y + 37 * kc);
     // The control stick's own boxes point at the stick, not the C-stick.
     if (action >= (int)A::SUp && action <= (int)A::SRight) return ImVec2(stick.x, stick.y + 37 * kc);
+    // Mod X and Mod Y shape the control stick; the shield buttons press R.
+    if (action == (int)A::ModX || action == (int)A::ModY) return ImVec2(stick.x, stick.y + 37 * kc);
+    if (action == (int)A::LightShield || action == (int)A::MidShield) return C(790, 160);
     return C(476, 344);   // the D-pad arms: the diamond's left corner
   };
   auto outline_part = [&](int action, ImU32 col, float th) {
@@ -1478,6 +1488,10 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
       case (int)A::LAnalog: t = "La"; break;
       case (int)A::RAnalog: t = "Ra"; break;
       case (int)A::Start: t = "S"; break;
+      case (int)A::ModX: bg = IM_COL32(110, 110, 120, 255); t = "MX"; break;
+      case (int)A::ModY: bg = IM_COL32(110, 110, 120, 255); t = "MY"; break;
+      case (int)A::LightShield: t = "LS"; break;
+      case (int)A::MidShield: t = "MS"; break;
       default: break;
     }
     const bool is_c = action == kCStickModeBox || (action >= (int)A::CUp && action <= (int)A::CRight);
@@ -7726,6 +7740,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (ImGui::BeginTable("bindings", 2, ImGuiTableFlags_SizingStretchSame)) {
             for (int i = 0; i < (int)host::BindAction::Count; ++i) {
               if (analog_c && host::is_cstick_action(i) && tab_kind != host::CaptureDevice::HidPad) continue;
+              // The box buttons act only on the keyboard and a box (apply_box_actions).
+              if (host::is_box_action(i) && tab_kind != host::CaptureDevice::Keyboard && tab_kind != host::CaptureDevice::HidPad) continue;
               ImGui::TableNextColumn();
               ImGui::PushID(i);
               const bool pressed_now = (live >> i) & 1;

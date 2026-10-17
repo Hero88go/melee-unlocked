@@ -6,6 +6,7 @@
 #include <xinput.h>
 #include <cstdint>
 #include <array>
+#include "box_melee.h"
 
 namespace host {
 
@@ -22,8 +23,16 @@ enum class BindAction : uint8_t {
   // A GameCube trigger is two inputs: the analog travel (light shield) and the click at its end
   // (full shield, tech, air dodge). L and R above are the click alone; these are the travel alone.
   // Appended, so saved profiles and every table indexed by this enum keep their meaning.
-  LAnalog, RAnalog, Count
+  LAnalog, RAnalog,
+  // A box controller's own buttons, for one that sends plain buttons and leaves the stick maths to
+  // the PC (a Frame1 or B0XX in DInput or keyboard mode, or a keyboard set up as one). Binding Mod X
+  // or Mod Y on a device turns its button-made stick and C-stick into the box's Melee coordinates
+  // (box_melee.h); a device without them keeps the plain full-push directions. The shield buttons
+  // are the box's light and mid shield, analog travel on R. Appended, like the rest.
+  ModX, ModY, LightShield, MidShield,
+  Count
 };
+inline constexpr bool is_box_action(int i) { return i >= (int)BindAction::ModX && i <= (int)BindAction::MidShield; }
 inline constexpr bool is_cstick_action(int i) { return i >= (int)BindAction::CUp && i <= (int)BindAction::CRight; }
 inline constexpr bool is_analog_action(int i) { return i == (int)BindAction::LAnalog || i == (int)BindAction::RAnalog; }
 inline constexpr bool is_stick_action(int i) { return i >= (int)BindAction::SUp && i <= (int)BindAction::SRight; }
@@ -75,7 +84,8 @@ inline constexpr uint16_t kActionPadBit[(size_t)BindAction::Count] = {
   0x0100, 0x0200, 0x0400, 0x0800, 0x0010, 0x1000, 0x0040, 0x0020, 0x0008, 0x0004, 0x0001, 0x0002,
   0, 0, 0, 0,  // C-stick directions are not buttons (see apply_cstick_actions)
   0, 0, 0, 0,  // control stick directions likewise (see apply_stick_actions)
-  0, 0         // the trigger travel is a value, not a button (see apply_actions)
+  0, 0,        // the trigger travel is a value, not a button (see apply_actions)
+  0, 0, 0, 0   // the box buttons shape the sticks and the R travel (see apply_box_actions)
 };
 
 // Pushes the C-stick for bound C-stick directions in `actions` (BindAction bit indices).
@@ -94,6 +104,35 @@ inline bool apply_stick_actions(uint32_t actions, int8_t& stick_x, int8_t& stick
   if (!up && !down && !left && !right) return false;
   if (up != down) stick_y = up ? 127 : -127;
   if (left != right) stick_x = right ? 127 : -127;
+  return true;
+}
+
+// Box mode, for a device with Mod X or Mod Y bound (`box_mode`): the stick and C-stick made of its
+// buttons take the box's Melee coordinates (box_melee.h) in place of the full pushes above, Mod X +
+// Mod Y turns the C buttons into the D-pad, and the light and mid shield buttons press R that deep.
+// `state` keeps the opposing-direction rule between polls: one per device and per reader. Returns
+// false, touching nothing, when the device is not in box mode.
+template <class Pad> bool apply_box_actions(bool box_mode, uint32_t actions, Pad& pad, box::State& state) {
+  if (!box_mode) return false;
+  auto on = [&](BindAction a) { return ((actions >> (int)a) & 1u) != 0; };
+  box::Buttons in;
+  in.left = on(BindAction::SLeft); in.right = on(BindAction::SRight);
+  in.down = on(BindAction::SDown); in.up = on(BindAction::SUp);
+  in.c_left = on(BindAction::CLeft); in.c_right = on(BindAction::CRight);
+  in.c_down = on(BindAction::CDown); in.c_up = on(BindAction::CUp);
+  in.mod_x = on(BindAction::ModX); in.mod_y = on(BindAction::ModY);
+  in.shield = on(BindAction::L) || on(BindAction::R) || on(BindAction::LAnalog) || on(BindAction::RAnalog) ||
+              on(BindAction::LightShield) || on(BindAction::MidShield);
+  in.b = on(BindAction::B);
+  const box::Result r = box::melee(in, state);
+  if (r.stick) { pad.stick_x = r.stick_x; pad.stick_y = r.stick_y; }
+  if (r.c) { pad.sub_x = r.c_x; pad.sub_y = r.c_y; }
+  if (r.dpad_up) pad.button |= kActionPadBit[(size_t)BindAction::DUp];
+  if (r.dpad_down) pad.button |= kActionPadBit[(size_t)BindAction::DDown];
+  if (r.dpad_left) pad.button |= kActionPadBit[(size_t)BindAction::DLeft];
+  if (r.dpad_right) pad.button |= kActionPadBit[(size_t)BindAction::DRight];
+  const uint8_t shield = on(BindAction::MidShield) ? box::kMidShield : on(BindAction::LightShield) ? box::kLightShield : 0;
+  if (shield > pad.trig_r) pad.trig_r = shield;
   return true;
 }
 

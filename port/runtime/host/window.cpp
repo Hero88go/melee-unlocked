@@ -740,7 +740,7 @@ static uint32_t g_match_rt_start = 0, g_match_rt_last = 0;
 // The L/R shoulders are digital on this pad, so a press bottoms the analog trigger out the way a
 // digital press does on hardware: Melee shields from the trigger value, not from the L/R bit.
 // Thirty-two bits back: the two travel actions sit above bit 16.
-uint32_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad) {
+uint32_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad, box::State& box_state) {
   const HidBindings& bind = g_hid_bindings[idx];
   // The device's own trigger axes, when it has them, are already in trig_l/trig_r and pass through
   // (they have no source bit to bind); a button on L analog or R analog presses on top of them.
@@ -751,6 +751,11 @@ uint32_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad) {
   // the device has one.
   if (pad.button & kActionPadBit[(size_t)BindAction::L] && !pad.trig_l) pad.trig_l = 255;
   if (pad.button & kActionPadBit[(size_t)BindAction::R] && !pad.trig_r) pad.trig_r = 255;
+  // Stick directions bound to buttons: with Mod X or Mod Y bound the box coordinates, otherwise full
+  // pushes, as on the keyboard. They were saved but never applied here, so a box sending its stick
+  // as buttons moved nothing. A device's own analog stick is left alone while none is held.
+  if (!apply_box_actions(bind.mask[(size_t)BindAction::ModX] || bind.mask[(size_t)BindAction::ModY], actions, pad, box_state))
+    apply_stick_actions(actions, pad.stick_x, pad.stick_y);
   return actions;
 }
 
@@ -798,14 +803,21 @@ void apply_known_box_layout(int idx) {
 // input_debug_snapshot) go through the same function, so the game and the Controls tab agree.
 
 // The keyboard: every key is a button, and a key on L or R bottoms the trigger out with its click.
-template <class Key> uint32_t keyboard_apply_bindings(PadState& kb, Key key) {
+template <class Key> uint32_t keyboard_apply_bindings(PadState& kb, Key key, box::State& box_state) {
   const uint32_t actions = button_apply_bindings(kb, 0, 0,
       [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); }, [](int i) { return (int)g_key_bindings.level[i]; });
   apply_stick_actions(actions, kb.stick_x, kb.stick_y);
   if (kb.button & PAD_L) kb.trig_l = 255;
   if (kb.button & PAD_R) kb.trig_r = 255;
+  // Mod X or Mod Y bound: the keyboard is a box, and its stick and C-stick take the box coordinates.
+  apply_box_actions(g_key_bindings.vk[(size_t)BindAction::ModX] || g_key_bindings.vk[(size_t)BindAction::ModY],
+                    actions, kb, box_state);
   return actions;
 }
+// The opposing-direction rule of box mode remembers the last poll, so the game's read and the
+// Controls tab's preview each keep their own: [0] input_poll, [1] input_debug_snapshot.
+box::State g_box_keyboard[2];
+box::State g_box_hid[2][4];
 
 void apply_family_options(PadFamily family, PadState& pad) {
   const Deadzone& dz = g_deadzones[(size_t)family];
@@ -1094,7 +1106,7 @@ void input_poll(PadState out[4]) {
       if (live && vk >= 8 && vk != VK_TAB) return (GetAsyncKeyState(vk) & 0x8000) != 0;
       return g_keys[vk];
     };
-    keyboard_actions = keyboard_apply_bindings(kb, key);
+    keyboard_actions = keyboard_apply_bindings(kb, key, g_box_keyboard[0]);
   }
 
   PadState xin[4];
@@ -1161,7 +1173,7 @@ void input_poll(PadState out[4]) {
       apply_known_box_layout(idx);
       hid_connected[idx] = true;
       debug.hid_connected[idx] = true;
-      debug.hid_actions[idx] = hid_apply_bindings(idx, buttons[idx], hid[idx]);
+      debug.hid_actions[idx] = hid_apply_bindings(idx, buttons[idx], hid[idx], g_box_hid[0][idx]);
     }
   }
 
@@ -1361,7 +1373,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
   {
     std::lock_guard<std::mutex> lock(g_keys_mutex);
     auto key = [](int vk) { return g_keys[vk & 0xFF]; };
-    snapshot.keyboard_actions = keyboard_apply_bindings(kb, key);
+    snapshot.keyboard_actions = keyboard_apply_bindings(kb, key, g_box_keyboard[1]);
   }
 
   PadState xin[4];
@@ -1416,7 +1428,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     for (int idx = 0; idx < 4; ++idx) {
       if (!(hid_mask & (1u << idx))) { hid[idx] = {}; hid[idx].err = -1; continue; }
       snapshot.hid_connected[idx] = true;
-      snapshot.hid_actions[idx] = hid_apply_bindings(idx, buttons[idx], hid[idx]);
+      snapshot.hid_actions[idx] = hid_apply_bindings(idx, buttons[idx], hid[idx], g_box_hid[1][idx]);
     }
   }
 
