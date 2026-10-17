@@ -3518,7 +3518,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       // presentation loop): there a frame starts its own refresh, so syncing costs nothing while
       // the rate stays under the refresh, and a frame that comes a little early waits instead of
       // tearing. A 0.8.99 player with a 240 Hz G-Sync screen and V-Sync off saw tearing.
-      const bool synced = opts_.vsync || tear_free_;
+      // Not while DLSS frame generation runs: it paces its own frames and needs V-Sync off in the
+      // game (NVIDIA: V-Sync for it belongs in the driver).
+      const bool synced = opts_.vsync || (tear_free_ && fg_applied_ <= 0);
       swapchain_->Present(synced ? 1 : 0, (!synced && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
     } catch (const std::system_error& error) {
       streamline::disable_after_resource_error(error.what());
