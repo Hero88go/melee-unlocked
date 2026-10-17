@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "stage_dat_safety.h"
+#include "stage_graft.h"
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -52,6 +53,20 @@ int main(int argc,char** argv) {
   check(!matches(a,changed,&reason),"external reference");
   changed=b; changed.resize(16);
   check(!matches(a,changed,&reason),"truncation");
+  // A skin drawn over the original stage: the original's gameplay, the skin's mesh.
+  {
+    using host::cosmetics::stage_safety::graft_visuals;
+    std::vector<uint8_t> out; std::string note;
+    const bool grafted = graft_visuals(a, b, &out, &note);
+    reason = note;
+    check(grafted, "graft of a mesh-only skin");
+    check(grafted && matches(a, out, &reason), "the grafted stage matches the original's gameplay");
+    // The joint's mesh now points at the skin's mesh (its first byte is the skin's 2).
+    const auto word = [&](size_t at) { return uint32_t(out[at]) << 24 | uint32_t(out[at+1]) << 16 | uint32_t(out[at+2]) << 8 | out[at+3]; };
+    check(grafted && out.size() > a.size() && out[32 + word(32 + 96 + 16)] == 2, "the grafted joint draws the skin's mesh");
+    auto moved = b; moved[32 + 256 + 32 + 0x10] = 1;   // a collision line range of the skin
+    check(!graft_visuals(a, moved, &out, &note), "a skin that changes the collision is not grafted");
+  }
   if(!failed) std::puts("stage gameplay safety tests passed");
   return failed?1:0;
 }

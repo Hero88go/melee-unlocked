@@ -18,6 +18,7 @@ struct Archive {
   uint32_t size = 0;
   std::set<uint32_t> pointers, starts, joint_offsets, visual_offsets;
   std::map<std::string, uint32_t> roots;
+  std::map<uint32_t, std::string> externs;   // slot -> symbol filled in at load time
   std::map<uint32_t,uint32_t> typed_sizes;
   std::set<uint32_t> active_animations;
   uint32_t get(uint32_t at) const { return word(bytes.data() + 32ull + at); }
@@ -27,8 +28,20 @@ struct Archive {
     size = word(bytes.data() + 4);
     const uint64_t nr = word(bytes.data() + 8), np = word(bytes.data() + 12), ne = word(bytes.data() + 16);
     const uint64_t table = 32ull + size + nr * 4, strings = table + (np + ne) * 8;
-    // External symbols can replace pointers at load time; an unknown reference is never safe.
-    if (!np || np > 1024 || ne || nr > size / 4 || strings > bytes.size()) return false;
+    // External symbols are filled in at load time. Yoshi's Story has one (its Shy Guys' shape
+    // animation) and Pokemon Stadium dozens, and refusing every file with one refused every skin of
+    // those stages. They are read here by name and place; Compare requires the other file to have the
+    // same symbol at the same spot, so what gets filled in is the same on both.
+    if (!np || np > 1024 || ne > 1024 || nr > size / 4 || strings > bytes.size()) return false;
+    for (uint64_t i = np; i < np + ne; ++i) {
+      const uint32_t at = word(bytes.data() + table + i * 8);
+      const uint64_t name = strings + word(bytes.data() + table + i * 8 + 4);
+      if ((at & 3) || !bounds(at, 4) || name >= bytes.size()) return false;
+      const auto* p = bytes.data() + name;
+      const size_t n = strnlen(reinterpret_cast<const char*>(p), bytes.size() - size_t(name));
+      if (!n || n > 255 || n == bytes.size() - name) return false;
+      if (!externs.emplace(at, std::string(reinterpret_cast<const char*>(p), n)).second) return false;
+    }
     starts.insert(size);
     for (uint64_t i = 0; i < nr; ++i) {
       const uint32_t at = word(bytes.data() + 32ull + size + i * 4);
@@ -122,7 +135,18 @@ struct Compare {
   std::map<uint32_t, uint32_t> forward, backward;
   uint32_t nodes = 0;
   bool allow_visual = true;
+  // Models a graft took whole from a skin (stage_graft.h visual_only_models): not compared.
+  std::set<uint32_t> skip_models;
   bool fail(const char* why) { *reason = why; return false; }
+  // A slot filled in at load time: both files must have one there, naming the same symbol.
+  // Returns 0 when neither has one, 1 when both match, -1 (with the reason set) when they differ.
+  int external(uint32_t x, uint32_t y) {
+    const auto ea = a.externs.find(x), eb = b.externs.find(y);
+    const bool ha = ea != a.externs.end(), hb = eb != b.externs.end();
+    if (!ha && !hb) return 0;
+    if (ha != hb || ea->second != eb->second) { fail("stage external symbol differs"); return -1; }
+    return 1;
+  }
   // Generic gameplay objects retain every non-pointer byte and their graph of pointers.
   // Boundary/padding changes are refused: no guessed span can conceal a changed script.
   bool object(uint32_t x, uint32_t y, unsigned depth = 0) {
@@ -146,6 +170,11 @@ struct Compare {
       return false;
     }
     for (uint32_t k = 0; k < n;) {
+      if (const int e = external(x + k, y + k)) {
+        if (e < 0 || k + 4 > n) return false;
+        k += 4;
+        continue;
+      }
       const bool pa = a.pointers.count(x + k), pb = b.pointers.count(y + k);
       if (pa != pb) return fail("stage gameplay pointer layout differs");
       if (pa) {
@@ -162,11 +191,13 @@ struct Compare {
     return true;
   }
   bool field(uint32_t x, uint32_t y) {
+    if (const int e = external(x, y)) return e > 0;
     const bool pa = a.pointers.count(x), pb = b.pointers.count(y);
     if (pa != pb) return fail("stage gameplay pointer presence differs");
     return pa ? object(a.get(x), b.get(y)) : a.get(x) == b.get(y) || fail("stage gameplay value differs");
   }
   bool animation_slots(uint32_t x, uint32_t y) {
+    if (const int e = external(x, y)) return e > 0;
     const bool pa = a.pointers.count(x), pb = b.pointers.count(y);
     if (pa != pb) return fail("stage animation slots differ");
     if (!pa) return a.get(x) == b.get(y) || fail("stage animation slots differ");
@@ -224,6 +255,7 @@ struct Compare {
     if (!a.bounds(am, uint64_t(count) * 52) || !b.bounds(bm, uint64_t(count) * 52))
       return fail("stage map model array is truncated");
     for (uint32_t i = 0; i < count; ++i) {
+      if (skip_models.count(i)) continue;
       const uint32_t p = am + i * 52, q = bm + i * 52;
       const bool pa = a.pointers.count(p), pb = b.pointers.count(q);
       if (pa != pb) return fail("stage model presence differs");
@@ -249,10 +281,12 @@ inline bool visual_root(const std::string& name) {
   }
   return name == "map_texg";
 }
-inline bool matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate, std::string* reason) {
+inline bool matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate, std::string* reason,
+                    const std::set<uint32_t>& drawn_only = {}) {
   Archive a{clean}, b{candidate};
   if (!a.parse() || !b.parse()) { *reason = "stage DAT gameplay tables are malformed or unsupported"; return false; }
   Compare compare{a, b, reason};
+  compare.skip_models = drawn_only;
   if (!compare.map()) return false;
   for (const auto& root : a.roots) {
     if (root.first == "map_head" || visual_root(root.first)) continue;

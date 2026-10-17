@@ -278,6 +278,13 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
                                uint64_t match_token);
 bool stage_gameplay_matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& candidate,
                             std::string* detail);
+// What a stage skin is served as where gameplay must match the original (online, and everywhere for
+// a skin that would not pass as it is): the skin itself when it matches, otherwise its meshes drawn
+// over the original stage (stage_graft.h) when that passes the same check and is safe to draw.
+// `online` gets the grafted bytes, or is left empty when the skin itself matches (may be null);
+// false when neither form is safe.
+bool stage_online_form(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& skin,
+                       std::vector<uint8_t>* online, std::string* detail, const std::string& stage_file = "");
 // The skin serving this disc file now, or empty for the disc's own file.
 std::string applied_asset(uint32_t vanilla_file_start);
 
