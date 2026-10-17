@@ -253,6 +253,10 @@ double gcadapter_poll_rate_hz();
 // Why a plugged-in adapter cannot be read (another program has it, no driver), in words for the
 // Controls tab; empty when there is nothing to say.
 std::string gcadapter_problem();
+// The same for a Switch Online GameCube controller on USB that cannot be started (Steam holds it,
+// no driver on its command interface); empty once it streams.
+std::string switch_pad_problem();
+bool steam_running();   // steam.exe is running (it takes adapters and Switch controllers)
 // Reconnect and recalibrate the adapter on its worker, without blocking game/render threads.
 bool gcadapter_request_reset();
 bool gcadapter_reset_pending();

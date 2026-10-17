@@ -597,4 +597,6 @@ void gcadapter_shutdown() {
   if (g_ctx) { libusb_exit(g_ctx); g_ctx = nullptr; }
 }
 
+bool steam_running() { return steam_is_running(); }
+
 }  // namespace host

@@ -7532,7 +7532,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     ImGui::Spacing();
     // On every tab: with the adapter taken by Steam, port 1 falls back to Steam's Xbox copy of the
     // controller, so the player is usually looking at the Xbox tab when this matters.
-    if (const std::string problem = host::gcadapter_problem(); !problem.empty()) {
+    for (const std::string& problem : {host::gcadapter_problem(), host::switch_pad_problem()}) {
+      if (problem.empty()) continue;
       ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.75f, 0.25f, 1.0f));
       ImGui::TextWrapped("%s", problem.c_str());
       ImGui::PopStyleColor();

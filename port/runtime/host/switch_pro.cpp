@@ -101,6 +101,12 @@ struct Device {
 
 Device g_dev[kSlots];
 std::mutex g_mutex;
+// Why a Switch Online GameCube controller on USB is not streaming, for the Controls tab: Steam takes
+// these controllers for its own support, and the game then sees only Steam's Xbox copy of it with
+// Steam's button layout ("the default binds are all wrong", fixed by a restart in two reports).
+std::mutex g_problem_mutex;
+std::string g_problem;
+void set_problem(const std::string& text) { std::lock_guard<std::mutex> lock(g_problem_mutex); g_problem = text; }
 std::thread g_thread;
 std::atomic<bool> g_running{false};
 // Every HID report that is not a DualShock's reaches switchpro_raw_input, including the ones an
@@ -364,6 +370,11 @@ void initialise(int slot) {
   if (switch2_pid(pid)) {
     // Over Bluetooth it streams by itself once paired; over USB it needs its start-up sequence.
     const char* why = bluetooth ? nullptr : gamecube_start(slot, pid);
+    if (why && !bluetooth)
+      set_problem(steam_running()
+          ? std::string("Your ") + device_name(pid) + " is held by Steam, so the game cannot start it and only sees Steam's copy of it, "
+            "with Steam's button layout. Close Steam, or turn off Switch controller support in Steam's Controller settings, then plug it in again."
+          : std::string("Your ") + device_name(pid) + " cannot be started: " + why + ".");
     if (attempts == 1) {
       if (why) log("switch pro: slot %d %s over USB cannot be started: %s", slot + 1, device_name(pid), why);
       else log("switch pro: slot %d %s %s", slot + 1, device_name(pid),
@@ -525,6 +536,7 @@ void decode_gamecube(Device& d, const uint8_t* r, size_t size) {
   if (!d.origin) {
     d.origin = true;
     d.nx = nx; d.ny = ny; d.cx = cx; d.cy = cy;
+    set_problem("");
     log("switch pro: slot %d GameCube controller streaming, neutral stick %d,%d c-stick %d,%d, triggers %u,%u",
         d.slot + 1, nx, ny, cx, cy, (unsigned)r[13], (unsigned)r[14]);
   }
@@ -687,6 +699,11 @@ void switchpro_shutdown() {
   std::lock_guard<std::mutex> lock(g_mutex);
   for (auto& d : g_dev) if (d.raw) close_device(d, nullptr, true);
   g_any_device.store(false);
+}
+
+std::string switch_pad_problem() {
+  std::lock_guard<std::mutex> lock(g_problem_mutex);
+  return g_problem;
 }
 
 }  // namespace host
