@@ -595,6 +595,38 @@ void tag_game_stream(IAudioClient* client) {
 // default communications device counts as a call, and Windows then lowers every other program by
 // the Communications tab setting (80% by default) until the stream closes: other apps got quieter
 // while the game ran even with the game media category. Set before the stream starts.
+// Windows tells a session when it starts lowering other programs for a communication session, and
+// names that session (its instance id ends in the process id). A player's other apps still got
+// quieter with the two steps above in place (0.8.9x, help channel), and no log said why: this says
+// whether Windows did it and for which program, or that Windows never did (an audio suite of the
+// sound card's maker lowering "media" by itself).
+class DuckWatch : public IAudioVolumeDuckNotification {
+ public:
+  ULONG STDMETHODCALLTYPE AddRef() override { return (ULONG)++refs_; }
+  ULONG STDMETHODCALLTYPE Release() override { const long n = --refs_; if (!n) delete this; return (ULONG)n; }
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** out) override {
+    if (id == __uuidof(IUnknown) || id == __uuidof(IAudioVolumeDuckNotification)) { *out = this; AddRef(); return S_OK; }
+    *out = nullptr;
+    return E_NOINTERFACE;
+  }
+  HRESULT STDMETHODCALLTYPE OnVolumeDuckNotification(LPCWSTR session, UINT32 count) override {
+    const std::string id = session ? to_utf8(session) : std::string();
+    const size_t hash = id.rfind('#');
+    const unsigned long pid = hash == std::string::npos ? 0 : std::strtoul(id.c_str() + hash + 1, nullptr, 10);
+    log("audio: Windows started lowering other programs for a communication session of %s (%u open)",
+        pid == GetCurrentProcessId() ? "this game" : pid ? ("process " + std::to_string(pid)).c_str() : "an unnamed program",
+        (unsigned)count);
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE OnVolumeUnduckNotification(LPCWSTR) override {
+    log("audio: Windows stopped lowering other programs");
+    return S_OK;
+  }
+
+ private:
+  std::atomic<long> refs_{1};
+};
+
 void opt_out_of_ducking(IAudioClient* client) {
   IAudioSessionControl* control = nullptr;
   if (!client || FAILED(client->GetService(__uuidof(IAudioSessionControl), (void**)&control))) return;
@@ -603,9 +635,29 @@ void opt_out_of_ducking(IAudioClient* client) {
   control->Release();
   if (FAILED(hr)) return;
   hr = control2->SetDuckingPreference(TRUE);
-  control2->Release();
   static bool told = false;
   if (!told) { told = true; log("audio: Windows ducking %s", SUCCEEDED(hr) ? "opted out" : "opt-out refused"); }
+  // Once per process: the watch outlives the stream (a device change opens a new one).
+  static bool watching = false;
+  LPWSTR instance = nullptr;
+  if (!watching && SUCCEEDED(control2->GetSessionInstanceIdentifier(&instance)) && instance) {
+    IMMDeviceEnumerator* enumerator = nullptr;
+    IMMDevice* device = nullptr;
+    IAudioSessionManager2* manager = nullptr;
+    if (SUCCEEDED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&enumerator)) &&
+        SUCCEEDED(enumerator->GetDefaultAudioEndpoint(eRender, eConsole, &device)) &&
+        SUCCEEDED(device->Activate(__uuidof(IAudioSessionManager2), CLSCTX_ALL, nullptr, (void**)&manager))) {
+      DuckWatch* watch = new DuckWatch;
+      watching = SUCCEEDED(manager->RegisterDuckNotification(instance, watch));
+      watch->Release();   // the manager holds it when registered
+      if (watching) manager = nullptr;   // kept for the process: the registration lives on it
+    }
+    if (manager) manager->Release();
+    if (device) device->Release();
+    if (enumerator) enumerator->Release();
+    CoTaskMemFree(instance);
+  }
+  control2->Release();
 }
 
 bool wasapi_open() {
