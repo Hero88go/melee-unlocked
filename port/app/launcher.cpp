@@ -1209,6 +1209,28 @@ bool lobby_game_ready() {
   return false;
 }
 
+// An m-ex mod disc: its file table names MxDt.dat. `f` is the open disc image.
+static bool mex_disc(std::ifstream& f) {
+  unsigned char at[8]{};
+  f.clear(); f.seekg(0x424);
+  if (!f.read((char*)at, 8)) return false;
+  const uint32_t offset = ((uint32_t)at[0] << 24) | ((uint32_t)at[1] << 16) | ((uint32_t)at[2] << 8) | at[3];
+  const uint32_t size = ((uint32_t)at[4] << 24) | ((uint32_t)at[5] << 16) | ((uint32_t)at[6] << 8) | at[7];
+  if (size < 12 || size > (16u << 20)) return false;
+  std::vector<char> fst(size);
+  f.seekg(offset);
+  if (!f.read(fst.data(), size)) return false;
+  const uint32_t entries = ((uint32_t)(uint8_t)fst[8] << 24) | ((uint32_t)(uint8_t)fst[9] << 16) | ((uint32_t)(uint8_t)fst[10] << 8) | (uint8_t)fst[11];
+  if (!entries || (uint64_t)entries * 12 >= size) return false;
+  for (size_t i = (size_t)entries * 12; i + 8 <= size; ++i)   // the names, NUL-separated
+    if ((i == (size_t)entries * 12 || fst[i - 1] == 0) && _strnicmp(fst.data() + i, "MxDt.dat", 8) == 0 && (i + 8 == size || fst[i + 8] == 0))
+      return true;
+  return false;
+}
+static const wchar_t* const kMexDiscProblem =
+    L"This is a mod disc (Akaneia, ACE or another m-ex build). It has been added under Mods, where it plays with its "
+    L"own content: press Play on it there. The disc chosen here has to be your original Melee NTSC 1.02 ISO.";
+
 // Why the chosen disc cannot be played, or empty. Both engines need the retail NTSC 1.02 disc as the
 // base; a compressed image or another game used to reach the engine and end in a crash report.
 static std::wstring base_disc_problem(const std::string& path) {
@@ -1238,6 +1260,11 @@ static std::wstring base_disc_problem(const std::string& path) {
   BCryptCloseAlgorithmProvider(algorithm, 0);
   if (status >= 0 && std::memcmp(digest, expected, sizeof digest) != 0)
     return L"This is a modded Melee disc. The disc chosen here has to be your original Melee NTSC 1.02 ISO. Add the modded disc under Mods instead.";
+  // m-ex builds (Akaneia, ACE) keep the original game code and bring their own in files, so the
+  // check above passes them; started as the game disc they played as plain Melee, and showed up
+  // as a mod only after the game had scanned them (a report: "it loaded as melee, then after 2
+  // tries it appeared as Play"). m-ex's own table, MxDt.dat, is in the disc's file table.
+  if (mex_disc(f)) return kMexDiscProblem;
   return {};
 }
 
@@ -1272,6 +1299,14 @@ bool game_exe_version_mismatch(const std::string& exe) {
 void start_game() {
   if (g_playing || g_iso.empty()) return;
   if (const std::wstring problem = base_disc_problem(g_iso); !problem.empty()) {
+    if (problem == kMexDiscProblem) {   // the mod disc goes where it plays, as a dropped one does
+      std::error_code ec;
+      const auto mods = std::filesystem::weakly_canonical(std::filesystem::u8path(mod_manager::mods_dir()), ec);
+      const auto disc = std::filesystem::weakly_canonical(std::filesystem::u8path(g_iso), ec);
+      const bool inside = !mods.empty() && disc.u8string().rfind(mods.u8string(), 0) == 0;   // already one of the mods
+      mod_manager::open();
+      if (!inside) std::thread(mod_manager::install_file, widen(g_iso), std::string(), std::string()).detach();
+    }
     MessageBoxW(g_main, problem.c_str(), L"Melee Unlocked Launcher", MB_OK | MB_ICONWARNING);
     return;
   }
