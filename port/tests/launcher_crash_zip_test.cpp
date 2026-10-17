@@ -349,6 +349,15 @@ int main() {
     fs::last_write_time(replays / "2026-10" / "Game_old.trace", fs::file_time_type::clock::now() - std::chrono::hours(40));
     CHECK(names(launcher::crash::collect_logs(game.u8string(), game.u8string(), {replays.u8string()}, false)) ==
           std::vector<std::string>({"melee_port.log"}));
+    // The game ran in another version's folder: its log is the newest, so that folder is the one read.
+    const fs::path version = root / "Versions" / "0.8.98", empty = root / "Versions" / "0.8.90";
+    fs::create_directories(version); fs::create_directories(empty);
+    put((version / "melee_port.log").u8string(), text("scene: major 01 minor 00 (frame 7)\n"));
+    fs::last_write_time(game / "melee_port.log", fs::file_time_type::clock::now() - std::chrono::hours(3));
+    CHECK(launcher::crash::newest_game_dir(game.u8string(), {empty.u8string(), version.u8string()}) == version.u8string());
+    fs::last_write_time(version / "melee_port.log", fs::file_time_type::clock::now() - std::chrono::hours(5));
+    CHECK(launcher::crash::newest_game_dir(game.u8string(), {empty.u8string(), version.u8string()}) == game.u8string());
+    CHECK(launcher::crash::newest_game_dir(empty.u8string(), {}) == empty.u8string());   // no log anywhere: the first
   }
   fs::remove_all(root, ec);
   if (!g_failures) std::printf("launcher crash privacy/zip: all checks passed\n");

@@ -225,10 +225,24 @@ void send_logs(HWND owner, const std::string& dir, const std::string& engine, co
   EnableWindow(owner, TRUE);
   SetForegroundWindow(owner);
   if (!state.send) return;
+  // The game's log is where the game last ran: this version's folder, the launcher's folder, or
+  // another version picked in Versions. The newest one is the session the player means.
+  std::vector<std::string> others{g_dir};
+  {
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(std::filesystem::u8path(g_dir + "\\Versions"), ec), end; !ec && it != end; it.increment(ec))
+      if (it->is_directory(ec)) { const auto p = it->path().u8string(); others.emplace_back(p.begin(), p.end()); }
+  }
+  const std::string game_dir = launcher::crash::newest_game_dir(dir, others);
   // Only a crash from this session's launch counts; an old crash file would mislead the report.
-  auto files = launcher::crash::collect_logs(dir, g_dir, replay_dirs, newer_than_launch(dir + "\\melee_port_crash.txt"));
-  if (files.empty()) {
-    MessageBoxW(owner, L"No logs were found yet. Play once, then send.", L"Send logs", MB_OK | MB_ICONINFORMATION);
+  auto files = launcher::crash::collect_logs(game_dir, g_dir, replay_dirs, newer_than_launch(game_dir + "\\melee_port_crash.txt"));
+  // A report with the lobby log alone says nothing about the game (a 0.8.99 report arrived that way).
+  const bool game_log = std::any_of(files.begin(), files.end(), [](const auto& f) {
+    return f.first == "melee_port.log" || f.first == "melee_port.prev.log" || f.first == "melee_port_crash.txt";
+  });
+  if (!game_log) {
+    MessageBoxW(owner, L"No game log was found yet. Start the game once (the problem does not have to happen again), "
+                       L"close it, then send.", L"Send logs", MB_OK | MB_ICONINFORMATION);
     return;
   }
   const auto zip = launcher::crash::capped_zip(files);

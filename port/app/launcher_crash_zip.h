@@ -124,6 +124,25 @@ inline std::vector<uint8_t> marked_rows(const std::vector<uint8_t>& data) {
   return out.size() > lines[0].second - lines[0].first ? out : std::vector<uint8_t>{};   // no mark: nothing
 }
 
+// The game folder whose melee_port.log is newest: the game writes its log where it was started,
+// which is the chosen version's folder, the launcher's folder or a source checkout. A 0.8.99 report
+// held only lobby.log because the collector looked in one folder and the game had run in another.
+// `first` wins when no folder has a log.
+inline std::string newest_game_dir(const std::string& first, const std::vector<std::string>& others) {
+  std::string best = first;
+  std::filesystem::file_time_type best_time{};
+  bool found = false;
+  std::vector<std::string> all{first};
+  all.insert(all.end(), others.begin(), others.end());
+  for (const auto& dir : all) {
+    std::error_code ec;
+    const auto when = std::filesystem::last_write_time(std::filesystem::u8path(dir + "\\melee_port.log"), ec);
+    if (ec) continue;
+    if (!found || when > best_time) { best = dir; best_time = when; found = true; }
+  }
+  return best;
+}
+
 // "Send logs": the crash files that exist (a crash text only when it is newer than `since`, so an
 // old crash is not mixed into a new report), plus the newest session trace from the replay folders
 // when it was written in the last day. A trace is frame rows of inputs, timing and checksums only.
