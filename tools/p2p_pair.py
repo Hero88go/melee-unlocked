@@ -166,6 +166,8 @@ def main():
     ap.add_argument("--stagger", type=float, default=0.5, help="seconds between the two launches")
     ap.add_argument("--timeout", type=float, default=0, help="kill the instances after this many seconds (0: frames/40 + 60)")
     ap.add_argument("--out", default="reports/p2p-pair")
+    ap.add_argument("--extra-p1", default="", help="more options for P1 only, one string split on spaces (a mod on one side)")
+    ap.add_argument("--extra-p2", default="", help="more options for P2 only")
     ap.add_argument("--extra", nargs=argparse.REMAINDER, default=[], help="more options for both instances")
     args = ap.parse_args()
     if args.games < 1 or args.games > 127:
@@ -230,6 +232,7 @@ def main():
             cmd += ["--p2p-games", str(args.games)]
         if script:
             cmd += ["--script", str(script)]
+        cmd += (args.extra_p1 if i == 0 else args.extra_p2).split()
         cmd += args.extra
         log = open(d / "log.txt", "w")
         p = subprocess.Popen(cmd, cwd=exe.parent, stdout=log, stderr=subprocess.STDOUT, env=env)
