@@ -62,7 +62,7 @@ class Decoder {
       std::lock_guard<std::mutex> lock(mutex_);
       error_.clear();
     }
-    worker_ = std::thread([this] { run(); });
+    worker_ = std::thread([this] { host::optional_work("video backgrounds", [this] { run(); }); });
   }
 
   void stop() {

@@ -9,6 +9,7 @@
 #include "guest_heap_trace.h"
 #include "disc_fst_paths.h"
 #include <windows.h>
+#include <psapi.h>
 #include <bcrypt.h>
 #include "guest_registry.h"
 #include "guest_symbols.h"
@@ -124,7 +125,25 @@ static void open_log_file() {
     GetModuleFileNameA(nullptr, exe, MAX_PATH);
     const char* name = std::strrchr(exe, '\\');
     std::fprintf(g_log_file, "Melee Unlocked %s, %s\n", MELEE_PORT_VERSION, name ? name + 1 : exe);
+    MEMORYSTATUSEX memory{};
+    memory.dwLength = sizeof memory;
+    if (GlobalMemoryStatusEx(&memory))
+      std::fprintf(g_log_file, "memory: %.1f GB installed, %.1f GB free, %.1f GB more Windows can hand out\n",
+                   memory.ullTotalPhys / 1073741824.0, memory.ullAvailPhys / 1073741824.0, memory.ullAvailPageFile / 1073741824.0);
   }
+}
+
+// Reports that end in "bad allocation" or 8007000E said nothing about memory: the size of this
+// process and what Windows still had, logged now and then, tell a leak from a full machine.
+void log_memory() {
+  PROCESS_MEMORY_COUNTERS_EX process{};
+  MEMORYSTATUSEX memory{};
+  memory.dwLength = sizeof memory;
+  if (!K32GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&process, sizeof process) ||
+      !GlobalMemoryStatusEx(&memory)) return;
+  log("memory: game %.2f GB, Windows %.1f GB free of %.1f, %.1f GB more it can hand out",
+      process.PrivateUsage / 1073741824.0, memory.ullAvailPhys / 1073741824.0, memory.ullTotalPhys / 1073741824.0,
+      memory.ullAvailPageFile / 1073741824.0);
 }
 // Lines are formatted by the caller and written (and flushed) by a background thread. Flushing on
 // the caller made the simulation thread wait for the disk: with a busy disk (a build, a download)
@@ -294,7 +313,7 @@ static void prefetch_disc_image(const std::string& path) {
   static std::atomic<bool> started{false};
   if (started.exchange(true)) return;
   g_disc_prefetch_done = false;
-  std::thread([path] {
+  std::thread([path] { optional_work("disc", [&] {
     struct Completion { ~Completion() { g_disc_prefetch_done.store(true, std::memory_order_release); } } completion;
     SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);   // low CPU and I/O priority
     const auto begin = std::chrono::steady_clock::now();
@@ -310,7 +329,7 @@ static void prefetch_disc_image(const std::string& path) {
     SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
     log("disc: image prefetched into the file cache (%llu MB in %.1f s)", (unsigned long long)(total >> 20),
         std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count());
-  }).detach();
+  }); }).detach();
 }
 
 void disc_prefetch_wait() {

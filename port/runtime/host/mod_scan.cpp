@@ -1500,10 +1500,14 @@ ScanOptions panel_options() {
 void rescan_async() {
   if (panel().busy.exchange(true)) return;
   std::thread([] {
-    const ScanOptions options = panel_options();
-    const ScanResult result = scan_with_choices(options);
-    publish(result, options);
-    follow_te_choice();
+    // Out of memory or a file system error ends this scan, not the game (an exception that leaves
+    // a thread function stops the process).
+    try {
+      const ScanOptions options = panel_options();
+      const ScanResult result = scan_with_choices(options);
+      publish(result, options);
+      follow_te_choice();
+    } catch (...) {}
     panel().busy = false;
   }).detach();
 }

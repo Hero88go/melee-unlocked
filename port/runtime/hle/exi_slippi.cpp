@@ -707,7 +707,7 @@ static void preload_game_files() {
     if (name.size() > 5 && name.compare(name.size() - 5, 5, ".diff") == 0) name.resize(name.size() - 5);
     names.push_back(name);
   }
-  std::thread([names] { for (const auto& n : names) load_game_file(n); }).detach();
+  std::thread([names] { host::optional_work("slippi files", [&] { for (const auto& n : names) load_game_file(n); }); }).detach();
 }
 
 // The same bytes the EXI file commands serve, for the Source Port's system-file layer. Built

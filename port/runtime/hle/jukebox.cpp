@@ -288,7 +288,9 @@ void start_song(uint32_t disc_offset, uint32_t size) {
   host::SimCostScope cost(host::SIM_JUKEBOX);
   if (size == 0 || size > 64u * 1024 * 1024) { host::log("jukebox: bad song size %u", size); return; }
   const uint32_t generation = ++g_song_generation;
-  std::thread([disc_offset, size, generation, song_gain] {
+  std::thread([disc_offset, size, generation, song_gain] { host::optional_work("jukebox", [&] {
+    // MELEE_TEST_JUKEBOX_OOM (tests only, hidden runs): every song load runs out of memory.
+    if (std::getenv("MELEE_NO_GC_ADAPTER") && std::getenv("MELEE_TEST_JUKEBOX_OOM")) throw std::bad_alloc();
     std::filesystem::path custom_path;
     const MusicPackReader pack_reader = g_music_packs_enabled.load(std::memory_order_relaxed)
         ? g_music_pack_reader.load() : nullptr;
@@ -317,7 +319,7 @@ void start_song(uint32_t disc_offset, uint32_t size) {
       else if (song) song->level = 1.0;   // nothing playing: start as the console does, at full level
       g_song = song;
     }
-  }).detach();
+  }); }).detach();
 }
 
 void set_disc_reader(DiscReader reader) { g_reader.store(reader); }

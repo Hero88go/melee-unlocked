@@ -3,7 +3,9 @@
 #pragma once
 #include <atomic>
 #include <cstdint>
+#include <exception>
 #include <functional>
+#include <new>
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -54,7 +56,23 @@ extern ppc::Context* cpu;
 void log(const char* fmt, ...);
 void log_guest_text(const char* data, size_t len);  // OSReport output
 void log_flush();   // writes every queued log line now (log() hands lines to a writer thread)
+void log_memory();  // one line: this process's size and the memory Windows has left
 [[noreturn]] void die(const char* fmt, ...);
+// The body of a worker thread whose work the game can do without (a song, a video background, a
+// texture, a thumbnail, a file cache warm-up). An exception left a thread function and stopped the
+// whole game: a 0.8.99 report ran out of memory late in a session and the music thread's allocation
+// for the next song took the match down ("bad allocation"). Here it ends only that piece of work.
+template <class Body> void optional_work(const char* what, Body&& body) noexcept {
+  try {
+    body();
+  } catch (const std::bad_alloc&) {
+    log("%s: not enough memory; skipped", what);
+  } catch (const std::exception& e) {
+    log("%s: stopped (%s)", what, e.what());
+  } catch (...) {
+    log("%s: stopped", what);
+  }
+}
 // Ends the process now, with everything of ours already saved, without running DLL unload code
 // (see end_process in host.cpp for why).
 [[noreturn]] void end_process(int code);

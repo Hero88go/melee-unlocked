@@ -862,6 +862,7 @@ void request(const std::string& base) {
           name = std::move(g_req_queue.front());
           g_req_queue.pop_front();
         }
+        host::optional_work("textures", [&] {
         bool cached;
         { std::lock_guard<std::mutex> lk(g_cache_mutex); cached = g_cache.count(name) != 0; }
         if (!cached && has(name)) {
@@ -872,6 +873,7 @@ void request(const std::string& base) {
             g_cache.emplace(name, std::move(r));
           }
         }
+        });
         std::lock_guard<std::mutex> lk(g_req_mutex);
         g_req_pending.erase(name);
       }

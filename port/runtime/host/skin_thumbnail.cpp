@@ -381,6 +381,13 @@ Shared& shared() { static Shared* s = new Shared; return *s; }
 
 void write_png(void* context, void* data, int size) { ((std::ofstream*)context)->write((const char*)data, size); }
 
+void work();
+// Out of memory or a file system error ends the thumbnails, not the game (an exception that leaves a
+// thread function stops the process).
+void work_guarded() {
+  try { work(); } catch (...) { log("cosmetics: costume pictures stopped (not enough memory or a file error)"); }
+}
+
 void work() {
   for (;;) {
     Shared::Job job;
@@ -429,7 +436,7 @@ std::string skin_thumbnail(const std::string& asset_id) {
   if (std::filesystem::is_regular_file(std::filesystem::u8path(path), ec)) { s.ready.insert(asset_id); return path; }
   s.asked.insert(asset_id);
   s.queue.push_back({asset_id, 0, 0});
-  if (!s.started) { s.started = true; std::thread(work).detach(); }
+  if (!s.started) { s.started = true; std::thread(work_guarded).detach(); }
   s.wake.notify_one();
   return {};
 }
@@ -451,7 +458,7 @@ std::string standard_costume_thumbnail(const std::string& costume_file_name) {
   if (std::filesystem::is_regular_file(std::filesystem::u8path(path), ec)) { s.ready.insert(id); return path; }
   s.asked.insert(id);
   s.queue.push_back({id, offset, size});
-  if (!s.started) { s.started = true; std::thread(work).detach(); }
+  if (!s.started) { s.started = true; std::thread(work_guarded).detach(); }
   s.wake.notify_one();
   return {};
 }

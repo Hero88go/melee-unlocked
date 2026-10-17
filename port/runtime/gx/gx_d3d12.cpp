@@ -152,6 +152,9 @@ void check(HRESULT hr, const char* what) {
       next = "This GPU is old for Direct3D 12: the game starts on Direct3D 11 from now on (Settings > Video > Graphics backend).";
     host::die("D3D12: %s failed (%08X): the graphics device was lost, %s (%08X). %s", what, code, device_lost_reason(reason), (unsigned)reason, next);
   }
+  if (code == 0x8007000Eu)   // E_OUTOFMEMORY: the machine, not the GPU (a 0.8.99 laptop with 0.9 of 5.8 GB VRAM in use)
+    host::die("D3D12: %s failed (8007000E): Windows had no memory left for the graphics device. Close other programs "
+              "or restart Windows, then start the game again.", what);
   host::die("D3D12: %s failed (%08X)", what, code);
 }
 template <class T> const IID& IID_PPV_ARGS_Helper_IID() { return __uuidof(T); }
@@ -1679,28 +1682,38 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
   char vs_name[64], ps_name[64];
   snprintf(vs_name, sizeof vs_name, "vs_%016llX.dxbc", (unsigned long long)key.vs);
   snprintf(ps_name, sizeof ps_name, "ps_%016llX.dxbc", (unsigned long long)key.ps);
-  auto compile_vs = [&] {
-    std::string src = generate_vertex_shader(vsu);
+  // A compile error in generated code is a bug in the generator and stops the game with the source
+  // in the log. The compiler running out of memory is not (a 0.8.99 laptop report: "D3D11 Internal
+  // Compiler Error ... 0x8007000e" late in a long session): that draw keeps the generic pipeline.
+  auto compile = [&](const std::string& src, const char* stage, const char* profile, ComPtr<ID3DBlob>& blob) {
     ComPtr<ID3DBlob> err;
-    vs.Reset();
-    if (FAILED(D3DCompile(src.c_str(), src.size(), "vs", nullptr, nullptr, "main", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &vs, &err))) {
-      host::log("vertex shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
-      host::die("vertex shader compile failed");
+    blob.Reset();
+    const HRESULT hr = D3DCompile(src.c_str(), src.size(), stage, nullptr, nullptr, "main", profile, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &err);
+    if (SUCCEEDED(hr)) return true;
+    const std::string text = err ? std::string((const char*)err->GetBufferPointer(), err->GetBufferSize()) : std::string("?");
+    std::string lower = text;
+    for (char& c : lower) c = (char)std::tolower((unsigned char)c);
+    if (hr == E_OUTOFMEMORY || lower.find("8007000e") != std::string::npos || lower.find("internal compiler error") != std::string::npos) {
+      static std::atomic<int> told{0};
+      if (told.fetch_add(1) < 4) host::log("d3d12: %s shader compile ran out of memory (%08X); its draws use the generic pipeline", stage, (unsigned)hr);
+      blob.Reset();
+      return false;
     }
+    host::log("%s shader compile failed:\n%s\n%s", stage, text.c_str(), src.c_str());
+    host::die("%s shader compile failed", stage);
+  };
+  auto compile_vs = [&] {
+    if (!compile(generate_vertex_shader(vsu), "vs", "vs_5_0", vs)) return false;
     save_shader_blob(opts_.shader_cache + "/" + vs_name, vs.Get());
+    return true;
   };
   auto compile_ps = [&] {
-    std::string src = generate_pixel_shader(psu);
-    ComPtr<ID3DBlob> err;
-    ps.Reset();
-    if (FAILED(D3DCompile(src.c_str(), src.size(), "ps", nullptr, nullptr, "main", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &ps, &err))) {
-      host::log("pixel shader compile failed:\n%s\n%s", err ? (const char*)err->GetBufferPointer() : "?", src.c_str());
-      host::die("pixel shader compile failed");
-    }
+    if (!compile(generate_pixel_shader(psu), "ps", "ps_5_0", ps)) return false;
     save_shader_blob(opts_.shader_cache + "/" + ps_name, ps.Get());
+    return true;
   };
-  if (!vs && !load_shader_blob(opts_.shader_cache + "/" + vs_name, vs)) compile_vs();
-  if (!ps && !load_shader_blob(opts_.shader_cache + "/" + ps_name, ps)) compile_ps();
+  if (!vs && !load_shader_blob(opts_.shader_cache + "/" + vs_name, vs) && !compile_vs()) return nullptr;
+  if (!ps && !load_shader_blob(opts_.shader_cache + "/" + ps_name, ps) && !compile_ps()) return nullptr;
   D3D12_GRAPHICS_PIPELINE_STATE_DESC pd{};
   describe_pipeline(pd, key, topo, root_.Get(), vs.Get(), ps.Get());
   ComPtr<ID3D12PipelineState> pso;
@@ -1713,8 +1726,7 @@ ComPtr<ID3D12PipelineState> D3D12Backend::build_pso(const PsoKey& key, const VSU
       // A shader file in the cache that was cut short or damaged is refused here. Both shaders are
       // built again from source, which also replaces the files. If the pipeline is still refused
       // the draw keeps the generic pipeline: one surface shaded roughly instead of a stopped game.
-      compile_vs();
-      compile_ps();
+      if (!compile_vs() || !compile_ps()) return nullptr;
       pd = D3D12_GRAPHICS_PIPELINE_STATE_DESC{};
       describe_pipeline(pd, key, topo, root_.Get(), vs.Get(), ps.Get());
       const HRESULT again = device_->CreateGraphicsPipelineState(&pd, IID_PPV_ARGS(&pso));
@@ -3224,6 +3236,7 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   if (adapter3_ && frame_counter_ && (frame_counter_ % 3600) == 0) {
     float used = 0, total = 0;
     if (vram_usage(&used, &total)) host::log("vram: %.2f of %.2f GB in use (EFB %dx%d, replacement textures %.0f MB)", used, total, efb_w_, efb_h_, replacement_bytes_ / 1048576.0);
+    host::log_memory();
   }
   if (texpack::enabled() && frame_counter_ >= texpack_report_frame_) {
     texpack::report();

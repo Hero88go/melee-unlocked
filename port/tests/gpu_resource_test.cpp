@@ -27,6 +27,7 @@ void window_set_title(const wchar_t*) {}
 void loading_show(const wchar_t*, size_t, size_t) {}
 double now_seconds() { return 0.0; }
 void loading_close() {}
+void log_memory() {}
 }
 namespace slippi { void request_widescreen(bool) {} void request_fod_reflections(bool) {} }
 // These visual setting hooks are not exercised by the resource-pool test. Keep the production
