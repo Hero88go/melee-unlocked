@@ -535,7 +535,7 @@ class D3D12Backend : public Backend {
   void apply_fullscreen_mode();
   void wait_frame_latency();
   void create_efb();
-  int pick_scale() const;
+  int pick_scale(bool with_ssaa = true) const;
   float output_aspect() const;
   void wait_gpu();
   uint32_t reserve_srvs(uint32_t count);
@@ -1200,10 +1200,10 @@ void D3D12Backend::apply_fullscreen_mode() {
 
 // Mirrors Dolphin Renderer::CalculateTargetSize: an explicit multiplier, or (auto) the smallest
 // integer multiplier whose scaled 640x480 visible area covers the 4:3 output rectangle in the window.
-int D3D12Backend::pick_scale() const {
+int D3D12Backend::pick_scale(bool with_ssaa) const {
   constexpr int max_scale = 16384 / EFB_WIDTH;   // D3D12 texture limit
   if (forced_scale_ > 0) return std::clamp(forced_scale_, 1, max_scale);
-  const int ssaa = std::clamp(opts_.ssaa, 1, 2);
+  const int ssaa = with_ssaa ? std::clamp(opts_.ssaa, 1, 2) : 1;
   if (opts_.efb_scale > 0) return std::clamp(opts_.efb_scale * ssaa, 1, max_scale);
   float ww = (float)std::max(client_w_, 1), wh = (float)std::max(client_h_, 1);
   float aspect = output_aspect();
@@ -1458,9 +1458,13 @@ void D3D12Backend::configure_dlss() {
     // pick_scale() reports any scale a previous mode forced, so clear it first to get the EFB scale
     // the player actually chose (switching straight from DLSS Quality to DLAA would otherwise size
     // DLAA from the scale Quality had forced).
+    // DLAA is the anti-aliasing: supersampling under it doubled the render size in each direction
+    // and so quadrupled the DLAA pass (a 10-17 report: 55 fps at EFB x6 with scale 3 and SSAA 2 on a
+    // 1080p screen, the same on every version back to 0.8.78). DLAA renders at the scale the player
+    // chose, without the SSAA factor.
     const int saved = forced_scale_;
     forced_scale_ = 0;
-    in_place_scale = pick_scale();
+    in_place_scale = pick_scale(false);
     forced_scale_ = saved;
     out_w = EFB_WIDTH * in_place_scale; out_h = EFB_HEIGHT * in_place_scale;
   }
@@ -1538,6 +1542,8 @@ void D3D12Backend::configure_dlss() {
   float bias_extra = -1.0f;
   if (const char* e = std::getenv("MELEE_DLSS_BIAS_EXTRA")) bias_extra = (float)std::atof(e);
   set_dlss_mip_bias((in_place ? 0.0f : std::log2((640.0f * scale) / (float)out_w)) + bias_extra);
+  if (in_place && std::clamp(opts_.ssaa, 1, 2) > 1)
+    host::log("dlss: supersampling is not applied under %s (it anti-aliases already)", upscaler_name());
   host::log("dlss: %s, render %dx%d (EFB x%d, optimal %ux%u) -> %s %dx%d%s", upscaler_name(),
             in_place ? out_w : 640 * scale, in_place ? out_h : 480 * scale, scale, rw, rh,
             in_place ? "anti-aliased in place at" : "output", out_w, out_h, in_place ? ", letterboxed to the window by the present blit" : "");
