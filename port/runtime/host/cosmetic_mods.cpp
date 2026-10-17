@@ -5037,6 +5037,24 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
                   online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
         online_reason = online_allowed ? validation_error : online_reason_short(validation_error);
       }
+      // Effect files hold the particle generators, and particles draw from the game's own random
+      // number seed (generator.c, particle.c call HSD_Randf), so an effect file that emits a
+      // different number of particles changes everything random after it: online that is a desync.
+      // Online an effect stays only when it changes textures alone, or is the composed Fox/Falco
+      // particle-colour change (colour values only, the same commands); otherwise the disc's file.
+      if (asset->info.kind == "effect_visual") {
+        std::vector<uint8_t> clean(disc_file.size);
+        std::string validation_error;
+        const std::string name = lower(disc_file.path);
+        const bool colour_only = name.find("plfx.dat") != std::string::npos || name.find("plfc.dat") != std::string::npos;
+        online_allowed = host::disc_read(disc_file.start, clean.data(), disc_file.size) &&
+                         (colour_only || visual_dat_only(clean, served, &validation_error));
+        if (online_allowed && colour_only) validation_error = "particle colours only";
+        else if (online_allowed) validation_error = "textures only";
+        host::log("cosmetics: effect %s %s online (%s)", disc_file.path.c_str(),
+                  online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
+        online_reason = online_allowed ? validation_error : "changes more than textures";
+      }
       if (asset->info.kind == "character_costume") {
         std::vector<uint8_t> clean(disc_file.size);
         std::string validation_error;

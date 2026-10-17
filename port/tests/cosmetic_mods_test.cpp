@@ -812,6 +812,42 @@ int main(int argc, char** argv) {
   g_disc_target = "EfFxData.dat";
   check(!host::cosmetics::select_variant("EfFxData.dat", effect_id, &error),
         "project effect changing non-image data is unavailable and leaves Vanilla selected");
+  {
+    // A Fox effect archive that changes particle data (not textures) is accepted offline, but the
+    // particle generators draw from the game's random seed, so online the disc's own file is served.
+    const auto clean_fx = effect_dat("effFoxDataTable");
+    const auto changed_fx = effect_dat("effFoxDataTable", 0xfc00, 0xc00, {0x100, 0x200, 0x300}, 7);
+    std::string meta = "{\"characters\":{\"Fox\":{\"extras\":{\"shine\":[{\"id\":\"fast\",\"name\":\"Fast Shine\","
+                       "\"model_file\":\"effects/fast.dat\"}]}}}}";
+    fs::create_directories(folder / L"fx", ec);
+    host::cosmetics::configure((folder / L"fx" / L"port-settings.ini").string());   // its own catalog
+    fs::path fx_vault = folder / L"fx-vault.zip";
+    write_file(fx_vault, stored_zip({{"metadata.json", std::vector<uint8_t>(meta.begin(), meta.end())},
+                                     {"Fox/effects/fast.dat", changed_fx}}));
+    g_disc_target = "EfFxData.dat"; g_disc_bytes = clean_fx;
+    auto fx_import = host::cosmetics::import_file(fx_vault.string());
+    std::string fx_id, fx_slot;
+    for (const auto& variant : host::cosmetics::assets())
+      if (variant.kind == "effect_visual" && variant.name == "Fast Shine") {
+        fx_id = variant.id;
+        fx_slot = variant.target_path + (variant.scope.empty() ? "" : "#" + variant.scope);
+      }
+    check(fx_import.ok && !fx_id.empty() && host::cosmetics::select_variant(fx_slot, fx_id, &error),
+          "a Fox effect archive with particle changes can be selected");
+    auto fx_fst = one_file_fst(0, (uint32_t)clean_fx.size(), "EfFxData.dat");
+    host::cosmetics::apply_to_fst(fx_fst.data(), (uint32_t)fx_fst.size());
+    std::vector<uint8_t> fx_read(changed_fx.size());
+    check(host::cosmetics::read(0, 0, fx_read.data(), (uint32_t)fx_read.size()) ==
+              host::cosmetics::OverrideRead::Success && fx_read == changed_fx,
+          "offline the effect archive is served");
+    host::cosmetics::set_online_probe([] { return true; });
+    check(host::cosmetics::read(0, 0, fx_read.data(), (uint32_t)fx_read.size()) ==
+              host::cosmetics::OverrideRead::Success &&
+              std::equal(clean_fx.begin() + 4, clean_fx.end(), fx_read.begin() + 4),
+          "online an effect archive that changes more than textures serves the disc's own file");
+    host::cosmetics::set_online_probe(nullptr);
+    host::cosmetics::configure((folder / L"port-settings.ini").string());   // back to the main catalog
+  }
   g_disc_target.clear(); g_disc_bytes.clear();
   auto repeated_vault = host::cosmetics::import_file(vault.string());
   check(repeated_vault.ok && repeated_vault.already_present &&
