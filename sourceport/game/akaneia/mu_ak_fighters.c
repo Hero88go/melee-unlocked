@@ -755,6 +755,22 @@ int mu_ak_test_results(void)
  * whose files were found and whose descriptor carries MU_AK_READY (every row of
  * run-source/rel09-b1-wolf/READY_CHECKLIST.md met), or any found fighter under the development
  * switch above. */
+/* The mode of the character select last entered. The added fighters are offered on the VS Melee,
+ * Special Melee and Training screens only: the 1P modes, Event and Stadium read per character
+ * tables the mod fills with its own code (the Classic intro's demo fighter crashed on Wolf).
+ * Starts open, so a match started without a select screen (--match, replays) is unchanged. */
+static int ak_css_offers = 1;
+
+void mu_ak_css_mode(int match_type)
+{
+    const int offers = match_type <= 0xA || match_type == 0x17;   /* VS_SLOWMO, TRAINING_MODE */
+    if (!offers && ak_css_offers) {
+        OSReport("[ak] character select mode %d: the added fighters are offered in VS and Training only\n",
+                 match_type);
+    }
+    ak_css_offers = offers;
+}
+
 int mu_ak_ckind_selectable(int ckind)
 {
 #ifdef MU_AKANEIA_FIGHTERS
@@ -764,7 +780,7 @@ int mu_ak_ckind_selectable(int ckind)
         if (ft == NULL || ak_ext[slot] < 0) {
             return 0;
         }
-        return (ft->flags & MU_AK_READY) != 0 || ak_css_override();
+        return ((ft->flags & MU_AK_READY) != 0 || ak_css_override()) && ak_css_offers;
     }
 #else
     (void) ckind;

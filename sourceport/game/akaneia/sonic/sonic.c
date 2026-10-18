@@ -425,6 +425,7 @@ void ftSn_GXLink(HSD_GObj* gobj, intptr_t pass)
 const MuAkFighter mu_ak_sonic = {
     .name = "Sonic",
     .file = "PlSn.dat",
+    .flags = MU_AK_READY,   /* every row of READY_CHECKLIST.md met */
 
     .onload = ftSn_Init_OnLoad,
     .ondeath = ftSn_Init_OnDeath,

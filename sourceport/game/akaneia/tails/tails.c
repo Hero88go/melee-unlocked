@@ -258,6 +258,7 @@ const MotionState ftTs_MotionStateTable[ftTs_MS_SelfCount] = {
 const MuAkFighter mu_ak_tails = {
     .name = "Tails",
     .file = "PlTs.dat",
+    .flags = MU_AK_READY,   /* every row of READY_CHECKLIST.md met */
 
     .onload = ftTs_OnLoad,
     .ondeath = ftTs_OnRespawn,

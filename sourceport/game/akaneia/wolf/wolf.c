@@ -503,7 +503,8 @@ const MotionState ftWf_Init_MotionStateTable[ftWf_MS_SelfCount] = {
 
 /* Everything of the descriptor but the name and the disc file. Every routine is written, but
  * nothing has run yet and two services are missing (the item create hook and the m-ex effect ids,
- * NOTES.md), so Wolf is not marked MU_AK_READY. */
+ * NOTES.md). Since written: every row of READY_CHECKLIST.md is met for Wolf, so mu_ak_wolf is
+ * marked MU_AK_READY; mu_ak_wolf_ssbu (ACE) is not. */
 #define WF_DESCRIPTOR                                                         \
     .onload = ftWf_Init_OnLoad,                                               \
     .ondeath = ftWf_Init_OnDeath,                                             \
@@ -527,7 +528,6 @@ const MotionState ftWf_Init_MotionStateTable[ftWf_MS_SelfCount] = {
     .enterdoublejump = ftWf_Init_EnterDoubleJump,                             \
     .move_logic = ftWf_Init_MotionStateTable,                                 \
     .move_logic_count = ftWf_MS_SelfCount,                                    \
-    .flags = 0,                                                               \
     .articles = itWf_Articles,                                                \
     .article_count = 4,                                                       \
     .kirby = &ftKbWf_Copy
@@ -535,6 +535,7 @@ const MotionState ftWf_Init_MotionStateTable[ftWf_MS_SelfCount] = {
 const MuAkFighter mu_ak_wolf = {
     .name = "Wolf",
     .file = "PlWf.dat",
+    .flags = MU_AK_READY,
     WF_DESCRIPTOR,
 };
 
@@ -548,5 +549,6 @@ const MuAkFighter mu_ak_wolf = {
 const MuAkFighter mu_ak_wolf_ssbu = {
     .name = "Wolf SSBU",
     .file = "PlWfU.dat",
+    .flags = 0,
     WF_DESCRIPTOR,
 };

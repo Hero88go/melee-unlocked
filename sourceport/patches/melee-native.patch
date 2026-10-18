@@ -160504,7 +160504,7 @@ index cfd3e0527..e6707a8ed 100644
 -#pragma pop
 -#endif
 diff --git a/src/melee/mn/mncharsel.c b/src/melee/mn/mncharsel.c
-index d580c0aa4..278ef614c 100644
+index d580c0aa4..7f88cdadb 100644
 --- a/src/melee/mn/mncharsel.c
 +++ b/src/melee/mn/mncharsel.c
 @@ -28,6 +28,8 @@
@@ -161511,9 +161511,8 @@ index d580c0aa4..278ef614c 100644
 +#ifdef MU_NATIVE
 +    /* PreventColorChange: none in Teams, none while locked in (online CSS). */
 +    if (mu_slippi_css_block_costume_change()) {
-         return;
-     }
--    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= 0x19) {
++        return;
++    }
 +#endif
 +    if (mnCharSel_803F0DFC.doors[door].sel_icon >= CSS_NONE) {
 +        return;
@@ -161521,15 +161520,16 @@ index d580c0aa4..278ef614c 100644
 +    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= CSS_NONE) {
          return;
      }
- 
+-    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= 0x19) {
++
 +#ifdef MU_NATIVE
 +    /* 20XX Hack Pack "Disable X/Y Alt Costumes for Extra Characters" (802600D8): a hidden fighter
 +     * keeps its costume (the game has no costume count for it). Off: 0. */
 +    if (mu_hp_css_extra(icons[mnCharSel_803F0DFC.doors[door].sel_icon].char_kind)) {
-+        return;
-+    }
+         return;
+     }
 +#endif
-+
+ 
 +#ifdef MU_NATIVE
 +    /* L or R alone: the costume stays, its skin changes (not both at once, which is the start of
 +     * the L+R+A+START reset). */
@@ -162413,12 +162413,12 @@ index d580c0aa4..278ef614c 100644
 +        HSD_JObjAddAnimAll(mnCharSel_804D6CC0, DP(css_models->menu.animjoint),
 +                           DP(css_models->menu.matanim_joint),
 +                           DP(css_models->menu.shapeanim_joint));
-     }
++    }
 +#ifdef MU_NATIVE
 +    /* TM-CE, Toggle CSS Icon Visibility (mnCharSel_802640A0+0x4D8) */
 +    if (mu_tmce_active()) {
 +        mu_tmce_ev_css_icons_init(mnCharSel_804D6CB0);
-+    }
+     }
 +#endif
      {
          u8 obj_kind = HSD_GObj_JObjKind;
@@ -162760,7 +162760,7 @@ index d580c0aa4..278ef614c 100644
      mnCharSel_8025EE8C(mnCharSel_804D6CB0->match_type);
      PAD_STACK(0x20);
      return lbAudioAx_80023F28(gmMainLib_8015ECB0());
-@@ -5305,9 +6305,16 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5305,9 +6305,19 @@ void mnCharSel_Scene_OnEnter(void* arg0)
  {
      PAD_STACK(8);
  
@@ -162773,11 +162773,14 @@ index d580c0aa4..278ef614c 100644
      mnCharSel_804D6CB0 = (CSSData*) arg0;
 +#ifdef MU_NATIVE
 +    mu_hp_css_enter();   /* 20XX Hack Pack: no hidden fighter on an icon unless its features are on */
++#ifdef MU_AKANEIA_FIGHTERS
++    mu_ak_css_mode(mnCharSel_804D6CB0->match_type);   /* added fighters: VS and Training only */
++#endif
 +#endif
  
      mnCharSel_804D6CF0 = mnCharSel_804D6CB0->unk_0x0 - 1;
  
-@@ -5341,6 +6348,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5341,6 +6351,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      css_data_table = HSD_ArchiveGetPublicAddress(mnCharSel_804D6CD0,
                                                   "MnSelectChrDataTable");
      css_models = &css_data_table->models;
@@ -162802,7 +162805,7 @@ index d580c0aa4..278ef614c 100644
      if (lbLang_IsSavedLanguageJP() != 0) {
          HSD_SisLib_803A62A0(0, "SdSlChr.dat", "SIS_SelCharData");
      } else {
-@@ -5348,6 +6373,10 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5348,6 +6376,10 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      }
      mnCharSel_804D6CF4 = 0;
      mnCharSel_802640A0();
@@ -162813,7 +162816,7 @@ index d580c0aa4..278ef614c 100644
  }
  
  void mnCharSel_Scene_OnFrame(void)
-@@ -5359,6 +6388,10 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5359,6 +6391,10 @@ void mnCharSel_Scene_OnFrame(void)
  
      PAD_STACK(8);
  
@@ -162824,7 +162827,7 @@ index d580c0aa4..278ef614c 100644
      mnCharSel_804D6CEC += 1;
      if (mnCharSel_804D6CF6 <= 1) {
          cache = &lbDvd_GetPreloadCacheScene()->game_cache;
-@@ -5415,9 +6448,45 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5415,9 +6451,45 @@ void mnCharSel_Scene_OnFrame(void)
                  }
              }
          }
@@ -162871,7 +162874,7 @@ index d580c0aa4..278ef614c 100644
          sfxBack();
          lb_800145F4();
          mn_8022F138(1, 8);
-@@ -5444,6 +6513,22 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5444,6 +6516,22 @@ void mnCharSel_Scene_OnFrame(void)
              if (mnCharSel_804D6CF5 == 4) {
                  lbAudioAx_8002411C(0x147);
              }
@@ -162894,7 +162897,7 @@ index d580c0aa4..278ef614c 100644
              sfxForward();
          }
          break;
-@@ -5466,6 +6551,10 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5466,6 +6554,10 @@ void mnCharSel_Scene_OnFrame(void)
          sfxForward();
          break;
      }
@@ -162905,7 +162908,7 @@ index d580c0aa4..278ef614c 100644
  }
  
  void mnCharSel_Scene_OnExit(void* unused)
-@@ -5476,6 +6565,12 @@ void mnCharSel_Scene_OnExit(void* unused)
+@@ -5476,6 +6568,12 @@ void mnCharSel_Scene_OnExit(void* unused)
      u8 type;
  
      HSD_SisLib_803A5FBC();
@@ -162918,7 +162921,7 @@ index d580c0aa4..278ef614c 100644
      if (mnCharSel_804D6CD0 != NULL) {
          lbArchive_80016EFC(mnCharSel_804D6CD0);
          mnCharSel_804D6CD0 = NULL;
-@@ -5526,3 +6621,35 @@ void mnCharSel_Scene_OnExit(void* unused)
+@@ -5526,3 +6624,35 @@ void mnCharSel_Scene_OnExit(void* unused)
      lbAudioAx_8002702C(4, tmp);
      lbAudioAx_80027168();
  }

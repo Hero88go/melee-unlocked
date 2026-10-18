@@ -398,6 +398,7 @@ void mu_ak_lucas_on_catch(HSD_GObj* gobj)
 const MuAkFighter mu_ak_lucas = {
     .name = "Lucas",
     .file = "PlLc.dat",
+    .flags = MU_AK_READY,   /* every row of READY_CHECKLIST.md met */
     .onload = ftLc_OnLoad,
     .ondeath = ftLc_OnRespawn,
     .onunknown = ftLc_OnDestroy,

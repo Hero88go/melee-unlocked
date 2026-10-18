@@ -373,6 +373,7 @@ void ftDd_Init_EnterDoubleJump(HSD_GObj* gobj)
 const MuAkFighter mu_ak_diddy = {
     .name = "Diddy Kong",
     .file = "PlDd.dat",
+    .flags = MU_AK_READY,   /* every row of READY_CHECKLIST.md met */
     .onload = ftDd_Init_OnLoad,
     .ondeath = ftDd_Init_OnDeath,
     .onunknown = ftDd_Init_OnDestroy,

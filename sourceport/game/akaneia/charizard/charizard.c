@@ -244,6 +244,7 @@ static MotionState const ftLz_MotionStateTable[ftLz_MS_SelfCount] = {
 const MuAkFighter mu_ak_charizard = {
     .name = "Charizard",
     .file = "PlLz.dat",
+    .flags = MU_AK_READY,   /* every row of READY_CHECKLIST.md met */
 
     .onload = ftLz_Init_OnLoad,
     .ondeath = ftLz_Init_OnDeath,

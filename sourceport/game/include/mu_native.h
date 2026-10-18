@@ -344,6 +344,7 @@ void* mu_ak_hook(int kind, int hook);    /* the callback, NULL when the slot is 
 int mu_ak_call(int kind, int hook, struct HSD_GObj* gobj);   /* calls a (HSD_GObj*) hook; 1 if run */
 int mu_ak_css_selectable(int ext);       /* an added fighter the character select may offer */
 int mu_ak_ckind_selectable(int ckind);   /* the same, by native character kind */
+void mu_ak_css_mode(int match_type);     /* the character select's mode, at each entry */
 #ifdef MU_AKANEIA_FIGHTERS
 /* The added fighters' sounds (akaneia/common/mu_ak_sound.c, lb/lbaudio_ax.c). */
 struct Fighter;

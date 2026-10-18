@@ -209,6 +209,7 @@ static void ftDe_EnterDoubleJump(HSD_GObj* gobj)
 const MuAkFighter mu_ak_dedede = {
     .name = "King Dedede",
     .file = "PlDe.dat",
+    .flags = MU_AK_READY,   /* every row of READY_CHECKLIST.md met */
 
     .onload = ftDe_OnLoad,
     .ondeath = ftDe_OnDeath,
