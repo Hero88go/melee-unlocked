@@ -55494,7 +55494,7 @@ index f73a9e5a8..47eb07ab3 100644
          return true;
      }
 diff --git a/src/melee/ft/ftaction.c b/src/melee/ft/ftaction.c
-index 5f8f8cfe7..4c4dc30eb 100644
+index 5f8f8cfe7..71f9e552d 100644
 --- a/src/melee/ft/ftaction.c
 +++ b/src/melee/ft/ftaction.c
 @@ -20,7 +20,6 @@
@@ -55536,7 +55536,56 @@ index 5f8f8cfe7..4c4dc30eb 100644
              } else {
                  bone = cmd->u->spawn_gfx_0.boneId;
              }
-@@ -594,6 +608,9 @@ void ftAction_80071B50(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -291,6 +305,10 @@ void ftAction_8007121C(Fighter_GObj* gobj, CommandInfo* cmd)
+     u32 hit_group;
+     u32 idx;
+     struct spawn_hitbox_skip* skip;
++#ifdef MU_NATIVE
++    u32 mu_part;
++    bool mu_bad_part = false;
++#endif
+     PAD_STACK(8);
+ 
+     fp = GET_FIGHTER(gobj);
+@@ -311,6 +329,17 @@ void ftAction_8007121C(Fighter_GObj* gobj, CommandInfo* cmd)
+             ftColl_800768A0(fp, hitbox);
+         }
+         idx = cmd->u->create_hitbox_0.bone;
++#ifdef MU_NATIVE
++        /* A part past this fighter's skeleton (m-ex Lucas's dash grab names part 139 of a
++         * shorter one): the parts block always has room for MAX_FT_PARTS, so the console reads a
++         * stale slot and computes the hitbox from whatever it holds; natively that pointer
++         * faults. Such a hitbox is not created (below). */
++        mu_part = cmd->u->create_hitbox_0.use_common_bone_ids
++                      ? (u32) ftParts_GetBoneIndex(fp, cmd->u->create_hitbox_0.bone)
++                      : idx;
++        mu_bad_part = mu_part >= DP(ftPartsTable[fp->kind])->parts_num;
++        hitbox->jobj = fp->parts[mu_bad_part ? 0 : mu_part].joint;
++#else
+         if (cmd->u->create_hitbox_0.use_common_bone_ids) {
+             hitbox->jobj = fp->parts[ftParts_GetBoneIndex(
+                                          fp, cmd->u->create_hitbox_0.bone)]
+@@ -318,6 +347,7 @@ void ftAction_8007121C(Fighter_GObj* gobj, CommandInfo* cmd)
+         } else {
+             hitbox->jobj = fp->parts[idx].joint;
+         }
++#endif
+         ftColl_8007ABD0(hitbox, cmd->u->create_hitbox_0.damage, gobj);
+         NEXT_CMD(cmd);
+         hitbox->scale = 0.003906f * cmd->u->create_hitbox_1.size;
+@@ -354,6 +384,11 @@ void ftAction_8007121C(Fighter_GObj* gobj, CommandInfo* cmd)
+         hitbox->x42_b1 = 1;
+         hitbox->x42_b2 = 0;
+         hitbox->x43_b2 = 0;
++#ifdef MU_NATIVE
++        if (mu_bad_part) {
++            hitbox->state = HitCapsule_Disabled;
++        } else
++#endif
+         if ((HSD_GObj_CurrentInvokedProc != NULL) &&
+             (HSD_GObj_CurrentInvokedProc->s_link > 9))
+         {
+@@ -594,6 +629,9 @@ void ftAction_80071B50(Fighter_GObj* gobj, CommandInfo* cmd)
      case 5:
      case 6:
          sfx = cmd->u->sound_effect_1.sfx_id;
@@ -55546,7 +55595,7 @@ index 5f8f8cfe7..4c4dc30eb 100644
          NEXT_CMD(cmd);
          vol = cmd->u->sound_effect_2.volume;
          pan = cmd->u->sound_effect_2.panning;
-@@ -667,8 +684,8 @@ void ftAction_80071CA4(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -667,8 +705,8 @@ void ftAction_80071CA4(Fighter_GObj* gobj, CommandInfo* cmd)
  void ftAction_80071CCC(Fighter_GObj* gobj, CommandInfo* cmd)
  {
      Fighter* fp = GET_FIGHTER(gobj);
@@ -55557,7 +55606,7 @@ index 5f8f8cfe7..4c4dc30eb 100644
      if (sfx_smash == NULL) {
          NEXT_CMD(cmd);
      } else {
-@@ -897,7 +914,7 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -897,7 +935,7 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
          break;
  
      case 1:
@@ -55566,7 +55615,7 @@ index 5f8f8cfe7..4c4dc30eb 100644
          fp->x214C = lbAudioAx_800264E4(lbAudioAx_800263E8(
              direction, gobj, behavior, sfx, 127, 127, sfx_param0, sfx_param1,
              sfx_param2, sp8 + 0x36, -1));
-@@ -905,7 +922,7 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -905,7 +943,7 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
  
      case 2:
          if (!fp->x2225_b6) {
@@ -55575,7 +55624,7 @@ index 5f8f8cfe7..4c4dc30eb 100644
              fp->x2144 = lbAudioAx_800264E4(lbAudioAx_800263E8(
                  direction, gobj, behavior, sfx, 127, 127, sfx_param0,
                  sfx_param1, sfx_param2, sp8 + 0x1E, -1));
-@@ -914,7 +931,7 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -914,7 +952,7 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
          switch (fp->kind) {
          case Ft_Kind_GameWatch:
          case Ft_Kind_Samus:
@@ -55584,7 +55633,7 @@ index 5f8f8cfe7..4c4dc30eb 100644
              fp->x2144 = lbAudioAx_800264E4(lbAudioAx_800263E8(
                  direction, gobj, behavior, sfx, 127, 127, sfx_param0,
                  sfx_param1, sfx_param2, sp8 + 0x1E, -1));
-@@ -925,21 +942,21 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -925,21 +963,21 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
          break;
  
      case 3:
@@ -55609,7 +55658,7 @@ index 5f8f8cfe7..4c4dc30eb 100644
          fp->x2158 = lbAudioAx_800264E4(lbAudioAx_800263E8(
              direction, gobj, behavior, sfx, 127, 127, sfx_param0, sfx_param1,
              sfx_param2, sp8 + 0x5A, -1));
-@@ -947,7 +964,7 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -947,7 +985,7 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
  
      case 6:
          if (!fp->x2225_b6) {
@@ -55618,7 +55667,7 @@ index 5f8f8cfe7..4c4dc30eb 100644
              fp->x2148 = lbAudioAx_800264E4(lbAudioAx_800263E8(
                  direction, gobj, behavior, sfx, 127, 127, sfx_param0,
                  sfx_param1, sfx_param2, sp8 + 0x2A, -1));
-@@ -959,7 +976,7 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -959,7 +997,7 @@ void ftAction_80072320(Fighter_GObj* gobj, CommandInfo* cmd)
          switch (fp->kind) {
          case Ft_Kind_GameWatch:
          case Ft_Kind_Samus:
@@ -55627,7 +55676,7 @@ index 5f8f8cfe7..4c4dc30eb 100644
              fp->x2148 = lbAudioAx_800264E4(lbAudioAx_800263E8(
                  direction, gobj, behavior, sfx, 127, 127, sfx_param0,
                  sfx_param1, sfx_param2, sp8 + 0x2A, -1));
-@@ -1157,7 +1174,7 @@ void ftAction_80072CD8(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -1157,7 +1195,7 @@ void ftAction_80072CD8(Fighter_GObj* gobj, CommandInfo* cmd)
          if (sp64 != -1) {
              _cmd.u = (union CmdUnion*) cmd_words;
              cmd_words[0] = *(u32*) cmd->u;
@@ -55636,7 +55685,7 @@ index 5f8f8cfe7..4c4dc30eb 100644
              cmd_words[2] = *(u32*) ((u8*) cmd->u + 8);
              ftAction_80071B50(gobj, &_cmd);
          }
-@@ -1171,9 +1188,9 @@ void ftAction_80072CD8(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -1171,9 +1209,9 @@ void ftAction_80072CD8(Fighter_GObj* gobj, CommandInfo* cmd)
              range.x = 0.0f;
  
              if (!cmd->u->footstep_fx_0.use_alt_bone) {
@@ -55648,7 +55697,7 @@ index 5f8f8cfe7..4c4dc30eb 100644
              }
              ftCo_8009F834(gobj, gfx_id, part, 0, 0, &offset, &range, 0.0f);
          }
-@@ -1217,13 +1234,17 @@ void ftAction_80072E4C(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -1217,13 +1255,17 @@ void ftAction_80072E4C(Fighter_GObj* gobj, CommandInfo* cmd)
      {
          _cmd.u = (union CmdUnion*) cmd_words;
          cmd_words[0] = *(u32*) cmd->u;
@@ -55667,7 +55716,7 @@ index 5f8f8cfe7..4c4dc30eb 100644
      }
      offset.z = 0.0f;
      range.z = 0.0f;
-@@ -1317,6 +1338,9 @@ void ftAction_8007320C(Fighter_GObj* gobj, CommandInfo* cmd)
+@@ -1317,6 +1359,9 @@ void ftAction_8007320C(Fighter_GObj* gobj, CommandInfo* cmd)
      SKIP_CMD(cmd, 4);
  }
  
