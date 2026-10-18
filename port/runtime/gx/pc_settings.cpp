@@ -3960,7 +3960,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     state.saved = write_settings_file(state, options);
     if (state.saved) state.mod_choices_seen = version;
   }
-  // F2: write the next ~90 presented frames into capture\. For defects that only show in a real
+  // Ctrl+F2: write the next ~90 presented frames into capture\. For defects that only show in a real
   // session, where scripted runs reproduce nothing: press it while the problem is happening and
   // the frames themselves can be read afterwards.
   // 20XX TE: the game chose a menu song in Sound Test. Saved now, like TE saves it.
@@ -4045,7 +4045,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     te_linked_before = linked;
   }
-  if (ImGui::IsKeyPressed(ImGuiKey_F2, false)) { request_frame_capture(90); host::log("capture: F2, writing the next 90 presented frames into capture\\"); }
+  // Ctrl+F2 (F2 alone was hit by accident next to F1, and writing 90 frames to disk drops the game
+  // to about 20 frames a second while it runs).
+  if (ImGui::IsKeyPressed(ImGuiKey_F2, false) && ImGui::GetIO().KeyCtrl) { request_frame_capture(90); host::log("capture: Ctrl+F2, writing the next 90 presented frames into capture\\"); }
   // F3: Lab view on or off. Marked dirty, so it is saved with the other settings the next time the
   // panel is open (the panel is what writes the settings file).
   // The Lab view draws from the Slippi frame data the translated guest sends; the Source Port has
