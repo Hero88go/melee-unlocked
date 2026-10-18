@@ -24,6 +24,29 @@ namespace gx {
 
 namespace {
 
+// Display latency test (gx_core.h set_latency_test). The state is the presenter's only; the pads are
+// the ones the game read for the frame being finished, so the first changed frame is the one that
+// input produced.
+std::atomic<bool> g_latency_test{false};
+std::atomic<int> g_presented_fill{-1};
+int latency_test_fill() {
+  static int fill = -1;
+  static uint16_t held_before = 0;
+  if (!g_latency_test.load(std::memory_order_relaxed)) { fill = -1; held_before = 0; return -1; }
+  host::PadState pads[4]{};
+  host::input_last_pads(pads);
+  uint16_t held = 0, x_held = 0;
+  for (const host::PadState& pad : pads) {
+    held |= pad.button;
+    if (pad.button & 0x0400) x_held |= pad.button;   // X
+  }
+  const uint16_t pressed = held & ~held_before;
+  held_before = held;
+  if ((x_held & 0x0004) && (pressed & 0x0004)) fill = fill == 0 ? 1 : 0;   // D-pad Down: black, then flip
+  else if ((x_held & 0x0008) && (pressed & 0x0008)) fill = -1;            // D-pad Up: the picture again
+  return fill;
+}
+
 BPMemory g_bp;
 CPMemory g_cp;
 XFMemory g_xf;
@@ -623,6 +646,7 @@ void bp_write(uint32_t value) {
         g_frame.tick = host::tick_timing();
         g_frame.discontinuous = g_discontinuity;
         g_discontinuity = false;
+        g_frame.test_fill = latency_test_fill();
         // A replay viewer on the way to a jump's target simulates frames nobody sees: they are not
         // handed to the renderer, and the next frame that is shown is not the last shown one's neighbour.
         const bool unseen = replay_control::skip_render();
@@ -764,6 +788,10 @@ size_t parse_command(const uint8_t* d, size_t len) {
 }  // namespace
 
 void mark_discontinuity() { g_discontinuity = true; }
+
+void set_latency_test(bool on) { g_latency_test.store(on, std::memory_order_relaxed); }
+void set_presented_test_fill(int fill) { g_presented_fill.store(fill, std::memory_order_relaxed); }
+int presented_test_fill() { return g_presented_fill.load(std::memory_order_relaxed); }
 
 void set_hud_scales(int stocks_percent, int damage_percent, bool pal_stocks) {
   g_stock_hud_scale.store(stocks_percent, std::memory_order_relaxed);

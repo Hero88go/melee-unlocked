@@ -3197,6 +3197,7 @@ static void dump_frame(const Frame& frame, const std::string& path) {
 }
 
 void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* overrides) {
+  set_presented_test_fill(frame.test_fill);
   Stopwatch frame_sw;
   static const bool startup_diag = std::getenv("MELEE_GPU_STARTUP_DIAG") != nullptr;
   double diag_time = startup_diag ? Stopwatch::now() : 0.0;

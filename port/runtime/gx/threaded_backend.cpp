@@ -335,9 +335,13 @@ class ThreadedBackend final : public Backend {
         const double expected = cap_period > 0 ? cap_period : 1.0 / 60.0;
         if (interval > std::max(0.050, 3.0 * expected)) {
           if (render_end - pacing_spike_logged >= 1.0) {
-            host::log("pacing: a frame took %.1f ms to reach the display (expected %.1f), sim frame %llu, simulation %.1f ms%s",
+            // Where the time went: waiting for the next simulated frame, drawing it, or inside the
+            // swap chain's Present (Windows taking the window back from the game, an overlay).
+            host::log("pacing: a frame took %.1f ms to reach the display (expected %.1f), sim frame %llu, simulation %.1f ms; "
+                      "%.1f ms waiting for the frame, %.1f drawing, %.1f in Present%s",
                       interval * 1000.0, expected * 1000.0, (unsigned long long)current.sequence, host::last_sim_frame_ms(),
-                      pacing_spikes_quiet ? " (more since the last line)" : "");
+                      (render_start - last_submission) * 1000.0, (render_end - render_start - present_wait) * 1000.0,
+                      present_wait * 1000.0, pacing_spikes_quiet ? " (more since the last line)" : "");
             pacing_spike_logged = render_end; pacing_spikes_quiet = 0;
           } else {
             ++pacing_spikes_quiet;

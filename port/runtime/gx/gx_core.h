@@ -202,6 +202,9 @@ struct Frame {
   // an older state and simulated forward again. The two frames are not neighbours in time, so
   // nothing may be blended between them (see mark_discontinuity).
   bool discontinuous = false;
+  // Display latency test (set_latency_test): -1 the picture as drawn, 0 all black, 1 all white. Decided
+  // from the pads the game read for this frame, so a photodiode times the same input-to-photon path.
+  int8_t test_fill = -1;
   // Reserve enough storage for an ordinary match before the first large scene is decoded. DrawCall
   // is about 5 KB, so a vector growth during a Stadium transformation can otherwise copy several
   // megabytes on the simulation thread and miss a 16.7 ms frame. Recycled frames retain this memory.
@@ -218,8 +221,17 @@ struct Frame {
   // and the renderer decides when to present by comparing sequences. Leaving a stale one on a
   // buffer that is about to be refilled is only harmless while every producer remembers to assign
   // one before pushing.
-  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; time = 0.0; tick = {}; discontinuous = false; }
+  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; time = 0.0; tick = {}; discontinuous = false; test_fill = -1; }
 };
+
+// Display latency test for photodiode testers (the Lossless adapter's monitor test, LDAT, pico lag
+// testers): while on, X + D-pad Down on any controller turns the picture all black, then switches it
+// between black and white with each press; X + D-pad Up gives the picture back. Visual only: the game
+// never sees it, so it is the same online. presented_test_fill is the fill of the frame a backend is
+// drawing now (set in submit_frame), read by the overlay that paints it.
+void set_latency_test(bool on);
+void set_presented_test_fill(int fill);
+int presented_test_fill();
 
 // The panel publishes visual-only HUD controls to the simulation thread.
 void set_hud_scales(int stocks_percent, int damage_percent, bool pal_stocks);

@@ -2120,6 +2120,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "reflex") options.reflex_mode = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "reflexstats") options.reflex_stats = value == "1";
       else if (key == "reflexflash") options.reflex_flash = value == "1";
+      else if (key == "latencytest") options.latency_test = value == "1";
       else if (key == "pathtracing")
         options.path_tracing = RenderOptions::kPathTracingAvailable && value == "1";
       else if (key == "rayreconstruction")
@@ -3297,6 +3298,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nfgmax " << options.fg_cached_max << "\nfgdynamic " << (options.fg_cached_dynamic ? 1 : 0)
        << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
        << "\nreflexflash " << (options.reflex_flash ? 1 : 0)
+       << "\nlatencytest " << (options.latency_test ? 1 : 0)
        << "\npathtracing " << (options.path_tracing ? 1 : 0)
        << "\nrayreconstruction " << (options.ray_reconstruction ? 1 : 0)
 #ifdef GX_DLSS5
@@ -5502,6 +5504,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Flashes a white square in the top left corner when A is pressed on port 1,\n"
                           "for monitors with the NVIDIA Reflex Latency Analyzer and for LDAT.\n"
                           "Needs Direct3D 12 and NVIDIA Reflex Low Latency On.");
+      if (settings_toggle("Display latency test", &options.latency_test)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("For photodiode testers (the Lossless adapter's monitor test, LDAT, pico lag testers).\n"
+                          "X + D-pad Down turns the picture black, then switches it between black and white\n"
+                          "with each press, on the frame the press is read; X + D-pad Up gives the picture back.\n"
+                          "Only the picture changes: the game is the same, online too.");
       // For pack authors, not for playing: writes what the game drew, named the way a pack must.
       // Offered with no pack installed too: dumping is how a new pack starts.
       changed |= settings_toggle("Dump textures (for making a pack)", &options.dump_textures);
@@ -8226,6 +8234,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // chrome, the way a Dolphin OSD line looks, and separate from the performance graph.
     // Reflex flash indicator: a white square on the frame A goes down on port 1, and the matching
     // marker, which a latency analyzer monitor or LDAT times against the photons.
+    gx::set_latency_test(options.latency_test);
+    if (const int fill = gx::presented_test_fill(); fill >= 0) {
+      const ImVec2 size = ImGui::GetIO().DisplaySize;
+      const ImU32 color = fill ? IM_COL32(255, 255, 255, 255) : IM_COL32(0, 0, 0, 255);
+      ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(0, 0), size, color);
+    }
     if (options.reflex_flash && options.reflex_mode > 0) {
       static bool a_was_down = false;
       host::PadState pads[4]{};
