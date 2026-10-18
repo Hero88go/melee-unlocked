@@ -93443,7 +93443,7 @@ index bb212dca2..f239bd76c 100644
      HSD_JObjAnimAll(jobj);
      HSD_GObj_SetupProc(gobj, fn_801AD920, 1);
 diff --git a/src/melee/gm/gmboot.c b/src/melee/gm/gmboot.c
-index d96e86982..6c08a34b5 100644
+index d96e86982..83eaddce2 100644
 --- a/src/melee/gm/gmboot.c
 +++ b/src/melee/gm/gmboot.c
 @@ -1,4 +1,3 @@
@@ -93476,13 +93476,14 @@ index d96e86982..6c08a34b5 100644
  
      if (!Toy_803048C0(TROPHY_PIKMIN)) {
          if (!lb_8001C2D8(0, "01",
-@@ -79,7 +78,12 @@ void bootOnLeave(GameModeState* data)
+@@ -79,7 +78,13 @@ void bootOnLeave(GameModeState* data)
  
      // Enter mode
      // Gekko "boot to CSS" code changes scene_id to a hardcoded 2 (::GM_VS)
 +#ifdef MU_NATIVE
 +    /* Slippi online menus, boot.asm: straight to the main menu, which opens the online submenu. */
-+    gm_ChangeGameModeAfterCurrentScene(mu_slippi_boot_mode(scene_data->mode_id));
++    /* The Lossless adapter lag test: "Boot to CSS", the hardcoded 2 above (shim/mu_lagtest.c). */
++    gm_ChangeGameModeAfterCurrentScene(mu_lag_test() ? 2 : mu_slippi_boot_mode(scene_data->mode_id));
 +#else
      gm_ChangeGameModeAfterCurrentScene(scene_data->mode_id);
 +#endif
@@ -96354,10 +96355,25 @@ index 5bd3ec062..81641c6b9 100644
  
  void gm_Mode_LightningVs_OnLoad(void)
 diff --git a/src/melee/gm/gmmain.c b/src/melee/gm/gmmain.c
-index c01f25836..23158b49b 100644
+index c01f25836..a012fe21d 100644
 --- a/src/melee/gm/gmmain.c
 +++ b/src/melee/gm/gmmain.c
-@@ -153,7 +153,7 @@ int main(void)
+@@ -98,6 +98,14 @@ static void gmMain_8015FDA4(void)
+             db_804D6B20 = false;
+         }
+     } else {
++#ifdef MU_NATIVE
++        /* The Lossless adapter lag test (shim/mu_lagtest.c): "Enable Develop Mode" with Fizzi's
++         * "Skip debug level assert". */
++        if (mu_lag_test()) {
++            DbLevel = DbLKind_Develop;
++            return;
++        }
++#endif
+         HSD_ASSERT(210, DbLevel == DbLKind_NoDebugRom);
+         DbLevel = DbLKind_Master;
+     }
+@@ -153,7 +161,7 @@ int main(void)
      HSD_GXSetFifoObj(GXInit(HSD_AllocateFifo(0x40000), 0x40000));
      HSD_InitComponent();
      GXSetMisc(1, 8);
@@ -96366,7 +96382,7 @@ index c01f25836..23158b49b 100644
      lbAudioAx_8002838C();
      lb_80019AAC(&gmMain_8015FD24);
      HSD_VISetUserPostRetraceCallback(&gmMain_8015FDA0);
-@@ -163,8 +163,8 @@ int main(void)
+@@ -163,8 +171,8 @@ int main(void)
      lbHeap_80015F3C();
      lbDvd_80018F68();
      lbArq_80014D2C();
@@ -160488,7 +160504,7 @@ index cfd3e0527..e6707a8ed 100644
 -#pragma pop
 -#endif
 diff --git a/src/melee/mn/mncharsel.c b/src/melee/mn/mncharsel.c
-index d580c0aa4..3bec38600 100644
+index d580c0aa4..278ef614c 100644
 --- a/src/melee/mn/mncharsel.c
 +++ b/src/melee/mn/mncharsel.c
 @@ -28,6 +28,8 @@
@@ -162397,12 +162413,12 @@ index d580c0aa4..3bec38600 100644
 +        HSD_JObjAddAnimAll(mnCharSel_804D6CC0, DP(css_models->menu.animjoint),
 +                           DP(css_models->menu.matanim_joint),
 +                           DP(css_models->menu.shapeanim_joint));
-+    }
+     }
 +#ifdef MU_NATIVE
 +    /* TM-CE, Toggle CSS Icon Visibility (mnCharSel_802640A0+0x4D8) */
 +    if (mu_tmce_active()) {
 +        mu_tmce_ev_css_icons_init(mnCharSel_804D6CB0);
-     }
++    }
 +#endif
      {
          u8 obj_kind = HSD_GObj_JObjKind;
@@ -162744,7 +162760,14 @@ index d580c0aa4..3bec38600 100644
      mnCharSel_8025EE8C(mnCharSel_804D6CB0->match_type);
      PAD_STACK(0x20);
      return lbAudioAx_80023F28(gmMainLib_8015ECB0());
-@@ -5308,6 +6308,9 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5305,9 +6305,16 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+ {
+     PAD_STACK(8);
+ 
++#ifdef MU_NATIVE
++    mu_lag_test_css_enter();   /* the Lossless adapter lag test's start signal (shim/mu_lagtest.c) */
++#endif
++
      lbCardNew_AllocWorkArea();
      lbCardGame_LoadArchive(0);
      mnCharSel_804D6CB0 = (CSSData*) arg0;
@@ -162754,7 +162777,7 @@ index d580c0aa4..3bec38600 100644
  
      mnCharSel_804D6CF0 = mnCharSel_804D6CB0->unk_0x0 - 1;
  
-@@ -5341,6 +6344,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5341,6 +6348,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      css_data_table = HSD_ArchiveGetPublicAddress(mnCharSel_804D6CD0,
                                                   "MnSelectChrDataTable");
      css_models = &css_data_table->models;
@@ -162779,7 +162802,7 @@ index d580c0aa4..3bec38600 100644
      if (lbLang_IsSavedLanguageJP() != 0) {
          HSD_SisLib_803A62A0(0, "SdSlChr.dat", "SIS_SelCharData");
      } else {
-@@ -5348,6 +6369,10 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5348,6 +6373,10 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      }
      mnCharSel_804D6CF4 = 0;
      mnCharSel_802640A0();
@@ -162790,7 +162813,7 @@ index d580c0aa4..3bec38600 100644
  }
  
  void mnCharSel_Scene_OnFrame(void)
-@@ -5359,6 +6384,10 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5359,6 +6388,10 @@ void mnCharSel_Scene_OnFrame(void)
  
      PAD_STACK(8);
  
@@ -162801,7 +162824,7 @@ index d580c0aa4..3bec38600 100644
      mnCharSel_804D6CEC += 1;
      if (mnCharSel_804D6CF6 <= 1) {
          cache = &lbDvd_GetPreloadCacheScene()->game_cache;
-@@ -5415,9 +6444,45 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5415,9 +6448,45 @@ void mnCharSel_Scene_OnFrame(void)
                  }
              }
          }
@@ -162848,7 +162871,7 @@ index d580c0aa4..3bec38600 100644
          sfxBack();
          lb_800145F4();
          mn_8022F138(1, 8);
-@@ -5444,6 +6509,22 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5444,6 +6513,22 @@ void mnCharSel_Scene_OnFrame(void)
              if (mnCharSel_804D6CF5 == 4) {
                  lbAudioAx_8002411C(0x147);
              }
@@ -162871,7 +162894,7 @@ index d580c0aa4..3bec38600 100644
              sfxForward();
          }
          break;
-@@ -5466,6 +6547,10 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5466,6 +6551,10 @@ void mnCharSel_Scene_OnFrame(void)
          sfxForward();
          break;
      }
@@ -162882,7 +162905,7 @@ index d580c0aa4..3bec38600 100644
  }
  
  void mnCharSel_Scene_OnExit(void* unused)
-@@ -5476,6 +6561,12 @@ void mnCharSel_Scene_OnExit(void* unused)
+@@ -5476,6 +6565,12 @@ void mnCharSel_Scene_OnExit(void* unused)
      u8 type;
  
      HSD_SisLib_803A5FBC();
@@ -162895,7 +162918,7 @@ index d580c0aa4..3bec38600 100644
      if (mnCharSel_804D6CD0 != NULL) {
          lbArchive_80016EFC(mnCharSel_804D6CD0);
          mnCharSel_804D6CD0 = NULL;
-@@ -5526,3 +6617,35 @@ void mnCharSel_Scene_OnExit(void* unused)
+@@ -5526,3 +6621,35 @@ void mnCharSel_Scene_OnExit(void* unused)
      lbAudioAx_8002702C(4, tmp);
      lbAudioAx_80027168();
  }
@@ -208079,3 +208102,20 @@ index faf07532a..5b36dbdf4 100755
  
  
  if __name__ == "__main__":
+diff --git a/src/melee/db/dbeffect.c b/src/melee/db/dbeffect.c
+index 68e61dd16..6aa763f34 100644
+--- a/src/melee/db/dbeffect.c
++++ b/src/melee/db/dbeffect.c
+@@ -5,6 +5,12 @@ int db_MiscVisualEffectsStatus;
+ 
+ void fn_CheckMiscVisualEffects(int player)
+ {
++#ifdef MU_NATIVE
++    /* The Lossless adapter lag test replaces this function (shim/mu_lagtest.c). */
++    if (mu_lag_test_visual_effects(player)) {
++        return;
++    }
++#endif
+     if ((db_ButtonsDown(player) & HSD_PAD_X) &&
+         (db_ButtonsPressed(player) & HSD_PAD_DPADDOWN))
+     {

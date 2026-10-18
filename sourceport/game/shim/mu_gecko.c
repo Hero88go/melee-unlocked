@@ -50,6 +50,7 @@ void mu_general_codes_boot(void)
 #endif
     if (general_codes)
         mu_gecko_default_rules();
+    mu_lag_test_default_rules();   /* after them, as user codes run after the General Codes */
 }
 
 int mu_general_codes(void)

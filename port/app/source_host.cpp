@@ -2161,13 +2161,19 @@ void card_fill_stat(const SourceCardFile& file, SourceCardStat& stat) {
 }
 }  // namespace
 
+// The Lossless adapter's lag test (host/lag_test_codes.h): its app boots Dolphin with no memory card,
+// and the "Skip Memcard Prompt" code it relies on skips only that case, so slot A is empty too.
+static bool card_slot_missing(int32_t chan) {
+  static const bool lag_test = std::getenv("MELEE_LAG_TEST") != nullptr && !std::getenv("MELEE_LAG_TEST_KEEP_CARD");
+  return chan != 0 || lag_test;
+}
 int32_t h_card_probe(int32_t chan, int32_t* mem_size, int32_t* sector_size) {
-  if (chan != 0) return CARD_NOCARD;
+  if (card_slot_missing(chan)) return CARD_NOCARD;
   if (mem_size) *mem_size = CARD_MEM_SIZE_MBIT;
   if (sector_size) *sector_size = CARD_SECTOR;
   return CARD_READY;
 }
-int32_t h_card_mount(int32_t chan) { if (chan != 0) return CARD_NOCARD; card_mount_files(); return CARD_READY; }
+int32_t h_card_mount(int32_t chan) { if (card_slot_missing(chan)) return CARD_NOCARD; card_mount_files(); return CARD_READY; }
 int32_t h_card_unmount(int32_t chan) { if (chan != 0) return CARD_NOCARD; card_reset_mount(); return CARD_READY; }
 int32_t h_card_open(int32_t chan, const char* name, int32_t* file_no, uint32_t* length) {
   if (chan != 0 || !g_card_mounted) return CARD_NOCARD;

@@ -1360,6 +1360,10 @@ static int melee_main(int argc, char** argv) {
     }
     if (arg == "--load-settings") load_settings = true;
     if (arg == "--card-dir") explicit_card_dir = true;
+    // The Lossless adapter's lag test (port/runtime/host/lag_test_codes.h), set before the settings
+    // load reads it: the native game (shim/mu_lagtest.c) and the settings load, which gives the
+    // Static Recomp the app's codes, both look for MELEE_LAG_TEST.
+    if (arg == "--lag-test") _putenv_s("MELEE_LAG_TEST", "1");
   }
   // The launcher keeps a settings-window process on standby beside a running game. Sharing
   // melee_port.log let it rotate the game's log away at its start, so a player's log held only the
@@ -1653,7 +1657,7 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--auto-lcancel") lcancel::set_automatic(true);
     else if (a == "--lcancel-indicator") lcancel::set_indicator(true);
     else if (a == "--lcancel-log") lcancel::set_log_path(next());
-    else if (a == "--load-settings") {}   // handled before this loop
+    else if (a == "--load-settings" || a == "--lag-test") {}   // handled before this loop
     else if (a == "--music-volume") slippi::jukebox::set_user_volume(std::atoi(next()));   // the Music slider, for scripted runs
     else if (a == "--profile-render") { g_profile = true; g_profiler.render_thread = true; }
     // Recognised in the pre-scan above; listed here so it is not rejected as unknown.
@@ -1903,6 +1907,23 @@ static int melee_main(int argc, char** argv) {
               gfx.vsync ? "on" : "off", gfx.exclusive_fullscreen ? "exclusive fullscreen" : "windowed or borderless");
   }
 
+  // The Lossless adapter's lag test (Settings > Advanced, or --lag-test): the native game and the
+  // settings load read MELEE_LAG_TEST (shim/mu_lagtest.c, host/lag_test_codes.h). Its app runs Dolphin
+  // with no memory card, so the default rules the codes set apply: slot A answers "no card" in this
+  // launch (hle_card.cpp, source_host.cpp), and its folder points at an empty one of its own so
+  // nothing in the session can touch the player's saves.
+  if (gfx.lossless_lag_test || std::getenv("MELEE_LAG_TEST")) {
+    _putenv_s("MELEE_LAG_TEST", "1");
+    if (!std::getenv("MELEE_LAG_TEST_KEEP_CARD")) {   // test runs: keep the card given
+      std::error_code ec;
+      const std::filesystem::path card = std::filesystem::u8path(o.card_dir).parent_path() / "LagTestCard";
+      std::filesystem::remove_all(card, ec);
+      std::filesystem::create_directories(card, ec);
+      o.card_dir = card.u8string();
+      explicit_card_dir = true;
+    }
+    host::log("lag test: Lossless adapter lag test launch; memory card %s", o.card_dir.c_str());
+  }
 #ifdef MELEE_SOURCE_PORT
   // The game from source: nothing below this point applies (it is the recompiled guest's boot).
   static std::unique_ptr<gx::Backend>* backend_at_exit = &backend;

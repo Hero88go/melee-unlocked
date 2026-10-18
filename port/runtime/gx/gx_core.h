@@ -224,8 +224,8 @@ struct Frame {
   void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; time = 0.0; tick = {}; discontinuous = false; test_fill = -1; }
 };
 
-// Display latency test for photodiode testers (the Lossless adapter's monitor test, LDAT, pico lag
-// testers): while on, X + D-pad Down on any controller turns the picture all black, then switches it
+// Display latency test for photodiode testers that press X + D-pad Down (LDAT, pico lag testers;
+// the Lossless adapter's test is the separate lag test launch, shim/mu_lagtest.c): while on, X + D-pad Down on any controller turns the picture all black, then switches it
 // between black and white with each press; X + D-pad Up gives the picture back. Visual only: the game
 // never sees it, so it is the same online. presented_test_fill is the fill of the frame a backend is
 // drawing now (set in submit_frame), read by the overlay that paints it.

@@ -102,6 +102,11 @@ int mu_player_tags_always(void);
 #define MU_DISPLAY_CSS_BACKGROUND_FREE 0x8u
 int mu_lagless_fod_begin(void);   /* decides it for the stage being set up */
 int mu_lagless_fod(void);
+/* The Lossless adapter lag test (shim/mu_lagtest.c): the host's --lag-test launch. */
+int mu_lag_test(void);
+void mu_lag_test_default_rules(void);
+void mu_lag_test_css_enter(void);
+int mu_lag_test_visual_effects(int player);
 /* The language chosen in the PC settings, in the game's own numbering: 0 Japanese, 1 English, or -1
  * when the choice is left to the game's save (Options > Language). lblanguage.c answers with it
  * wherever the game reads its saved language; the save is not changed. */

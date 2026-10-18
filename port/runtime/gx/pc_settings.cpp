@@ -37,6 +37,7 @@
 #include "lcancel.h"
 #include "../abi/mu_lcancel_flash.h"
 #include "user_gecko.h"
+#include "lag_test_codes.h"
 #include "gecko_data.h"
 #include "hid_pad.h"
 #include "updater.h"
@@ -960,6 +961,7 @@ struct CustomPreset { bool set = false; int efb = 0, ssaa = 1, aniso = 16, dlss 
 static CustomPreset g_custom_preset;
 // The panel has saved which user Gecko codes are on (until then GeckoCodes.ini's own list is used).
 static bool g_gecko_chosen = false;
+static std::vector<std::string> g_gecko_saved_on;   // the player's own choice, kept through a lag test
 
 // "+ Add Gecko code": paste in a code without finding and editing GeckoCodes.ini by hand. A pasted
 // block may carry its own "$Name" line (Dolphin's format, what most sites hand out); if it does, that
@@ -2121,6 +2123,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "reflexstats") options.reflex_stats = value == "1";
       else if (key == "reflexflash") options.reflex_flash = value == "1";
       else if (key == "latencytest") options.latency_test = value == "1";
+      else if (key == "losslesslagtest") options.lossless_lag_test = value == "1";
       else if (key == "pathtracing")
         options.path_tracing = RenderOptions::kPathTracingAvailable && value == "1";
       else if (key == "rayreconstruction")
@@ -2260,8 +2263,21 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // The player's Gecko codes live beside the settings file.
   std::filesystem::path codes = std::filesystem::path(options.settings_path).parent_path() / "GeckoCodes.ini";
   user_gecko::set_code_patches_allowed(!options.native_source);   // the Static Recomp can run a patched function from RAM
-  user_gecko::load(codes.string(), gecko_on, gecko_chosen);
+  if (options.lossless_lag_test || std::getenv("MELEE_LAG_TEST")) {
+    // The Lossless adapter's lag test: the codes its app gives Dolphin, in place of the player's own
+    // (the player's video settings stay, since they are what is measured). The Source Port does the
+    // same natively and loads none.
+    codes = std::filesystem::path(options.settings_path).parent_path() / "LagTestGeckoCodes.ini";
+    if (!options.native_source) {
+      if (FILE* f = _wfopen(codes.wstring().c_str(), L"wb")) { std::fputs(lag_test::kGeckoCodesIni, f); std::fclose(f); }
+      user_gecko::load(codes.string(), {}, false);
+      host::log("lag test: the Lossless adapter's lag test codes are on (%s)", codes.u8string().c_str());
+    }
+  } else {
+    user_gecko::load(codes.string(), gecko_on, gecko_chosen);
+  }
   g_gecko_chosen = gecko_chosen;
+  g_gecko_saved_on = gecko_on;
   source_port::mods::set_choices(options.mod_choices);
   std::sort(texture_packs_off.begin(), texture_packs_off.end());
   texture_packs_off.erase(std::unique(texture_packs_off.begin(), texture_packs_off.end()), texture_packs_off.end());
@@ -3299,6 +3315,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nreflex " << options.reflex_mode << "\nreflexstats " << (options.reflex_stats ? 1 : 0)
        << "\nreflexflash " << (options.reflex_flash ? 1 : 0)
        << "\nlatencytest " << (options.latency_test ? 1 : 0)
+       << "\nlosslesslagtest " << (options.lossless_lag_test ? 1 : 0)
        << "\npathtracing " << (options.path_tracing ? 1 : 0)
        << "\nrayreconstruction " << (options.ray_reconstruction ? 1 : 0)
 #ifdef GX_DLSS5
@@ -3414,8 +3431,12 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
   // The player's Gecko codes switched on, by name (names can hold spaces; read to end of line).
   if (g_gecko_chosen) {
     file << "\ngeckochosen 1";
-    for (const user_gecko::Code& c : user_gecko::codes())
-      if (c.enabled) file << "\ngeckocode " << c.name;
+    if (std::getenv("MELEE_LAG_TEST")) {   // the lag test's codes are not the player's: keep theirs
+      for (const std::string& name : g_gecko_saved_on) file << "\ngeckocode " << name;
+    } else {
+      for (const user_gecko::Code& c : user_gecko::codes())
+        if (c.enabled) file << "\ngeckocode " << c.name;
+    }
   }
   for (int i = 0; i < (int)host::BindAction::Count; ++i)
     file << "\nkey_" << kActionNames[i] << " " << host::g_key_bindings.vk[i];
@@ -5506,10 +5527,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "Needs Direct3D 12 and NVIDIA Reflex Low Latency On.");
       if (settings_toggle("Display latency test", &options.latency_test)) changed = true;
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("For photodiode testers (the Lossless adapter's monitor test, LDAT, pico lag testers).\n"
+        ImGui::SetTooltip("For photodiode testers that press X + D-pad Down (LDAT, pico lag testers).\n"
                           "X + D-pad Down turns the picture black, then switches it between black and white\n"
                           "with each press, on the frame the press is read; X + D-pad Up gives the picture back.\n"
                           "Only the picture changes: the game is the same, online too.");
+      if (settings_toggle("Lossless adapter lag test", &options.lossless_lag_test)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Sets the game up the way the Lossless Adapter Manager sets up Slippi for its lag test.\n"
+                          "Turn it on, close the game and start it again with the adapter in its Slippi lag test\n"
+                          "mode: the game boots to character select and rumbles, the adapter plays its inputs into\n"
+                          "a Dream Land match and holds X (white) and A (black) while its sensor times the change.\n"
+                          "Uses a memory card of its own; your saves are untouched. Turn it off when you are done.");
       // For pack authors, not for playing: writes what the game drew, named the way a pack must.
       // Offered with no pack installed too: dumping is how a new pack starts.
       changed |= settings_toggle("Dump textures (for making a pack)", &options.dump_textures);

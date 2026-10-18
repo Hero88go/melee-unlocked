@@ -563,6 +563,23 @@ void prepare_gct_load(const uint8_t* payload) {
       }
     if (renamed) host::log("slippi: this disc has IfAl0.usd in place of IfAll.usd; %u requests renamed", renamed);
   }
+  // The Lossless adapter's lag test (host/lag_test_codes.h): Dolphin runs its codes after these in one
+  // list, so its rules are what the game copies (time with no limit, 99 stocks, no items, random
+  // stage, Dream Land only). Here they run from another handler, after the game has copied the
+  // defaults, so the same words are given to this table's own writes to those defaults.
+  if (std::getenv("MELEE_LAG_TEST")) {
+    static const uint32_t kRules[][2] = {{0x803D4A48u, 0x00340000u}, {0x803D4A4Cu, 0x63000A01u},
+                                         {0x803D4A50u, 0x00010100u}, {0x803D4A60u, 0xFF000000u},
+                                         {0x803D4A78u, 0xE4000000u}};
+    int changed = 0;
+    walk_applier(gecko::slippi_gct, 8, (uint32_t)gecko::slippi_gct_size,
+        [&](uint32_t type, uint32_t off, uint32_t addr, uint32_t) {
+      if (type != 0x04) return;
+      for (const auto& w : kRules)
+        if (addr == w[0] && off + 8 <= g_read_queue.size()) { put_be32(&g_read_queue[off + 4], w[1]); ++changed; }
+    });
+    host::log("lag test: %d of Slippi's default-rule writes carry the lag test's rules", changed);
+  }
   rebuild_optional_codes(g_read_queue.data());
   results_codes::upgrade(g_read_queue.data(), g_read_queue.size());
   results_codes::set_restore_enabled(g_read_queue.data(), g_read_queue.size(), gecko::option_offline_results);

@@ -68,7 +68,8 @@ struct RenderOptions {
   int reflex_mode = 0;
   bool reflex_stats = false;
   bool reflex_flash = false;
-  bool latency_test = false;   // gx_core.h set_latency_test: X + D-pad Down paints the picture black or white
+  bool latency_test = false;
+  bool lossless_lag_test = false;   // the Lossless adapter's lag test at the next launch (main.cpp, shim/mu_lagtest.c)   // gx_core.h set_latency_test: X + D-pad Down paints the picture black or white
   int dlss_mode = 0;              // gx::DlssMode: 0 native, 1 DLAA, 2 quality, 3 balanced, 4 performance, 5 ultra performance
 #ifdef GX_DLSS5
   bool dlss5 = false;

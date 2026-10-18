@@ -2,6 +2,7 @@
 // its "GCI folder" cards: 64-byte directory entry followed by the file's 8 KiB blocks. Slot A holds
 // one 128 Mbit card (2043 blocks); slot B is empty. Saves made in Slippi Dolphin can be dropped in.
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include <cstdlib>
 #include <chrono>
 #include <thread>
 #include "hle.h"
@@ -29,6 +30,12 @@ struct File {
 
 std::vector<File*> g_files;   // indexed by fileNo; null = empty slot
 bool g_mounted = false;
+// The Lossless adapter's lag test (host/lag_test_codes.h): its app boots Dolphin with no memory card,
+// and the "Skip Memcard Prompt" code it relies on skips only that case, so slot A is empty too.
+bool slot_missing(uint32_t chan) {
+  static const bool lag_test = std::getenv("MELEE_LAG_TEST") != nullptr && !std::getenv("MELEE_LAG_TEST_KEEP_CARD");
+  return chan != 0 || lag_test;
+}
 int32_t g_xferred = 0;
 std::filesystem::path g_dir;
 
@@ -183,35 +190,35 @@ void icon_offsets(const File& f, uint8_t* stat) {
 }  // namespace
 
 HLE(CARDInit) { host::pump_completions(); }
-HLE(CARDProbe) { host::pump_completions(); RET(ARG0 == 0 ? 1 : 0); }
+HLE(CARDProbe) { host::pump_completions(); RET(!slot_missing(ARG0) ? 1 : 0); }
 HLE(CARDProbeEx) {
   host::pump_completions();
-  if (ARG0 != 0) { RET(NOCARD); return; }
+  if (slot_missing(ARG0)) { RET(NOCARD); return; }
   if (ARG1) host::wr32(ARG1, MEM_SIZE_MBIT);
   if (ARG2) host::wr32(ARG2, SECTOR);
   RET(READY);
 }
-HLE(CARDMountAsync) { if (ARG0 != 0) { RET(NOCARD); return; } mount(); complete(ARG3, 0, READY); RET(READY); }
-HLE(CARDMount) { if (ARG0 != 0) { RET(NOCARD); return; } mount(); RET(READY); }
-HLE(CARDUnmount) { if (ARG0 != 0) { RET(NOCARD); return; } unmount(); RET(READY); }
-HLE(CARDCheckAsync) { if (ARG0 != 0 || !g_mounted) { RET(NOCARD); return; } complete(ARG1, 0, READY); RET(READY); }
-HLE(CARDCheck) { RET(ARG0 == 0 && g_mounted ? READY : NOCARD); }
-HLE(CARDGetResultCode) { RET(ARG0 == 0 ? READY : NOCARD); }
-HLE(CARDGetMemSize) { if (ARG0 != 0) { RET(NOCARD); return; } host::wr16(ARG1, MEM_SIZE_MBIT); RET(READY); }
-HLE(CARDGetSectorSize) { if (ARG0 != 0) { RET(NOCARD); return; } host::wr32(ARG1, SECTOR); RET(READY); }
-HLE(CARDGetEncoding) { if (ARG0 != 0) { RET(NOCARD); return; } host::wr16(ARG1, 0); RET(READY); }
-HLE(CARDGetSerialNo) { if (ARG0 != 0) { RET(NOCARD); return; } host::wr32(ARG1, 0x4D454C45u); host::wr32(ARG1 + 4, 0x504F5254u); RET(READY); }
-HLE(CARDGetCurrentMode) { if (ARG0 != 0) { RET(NOCARD); return; } host::wr32(ARG1, 0); RET(READY); }
+HLE(CARDMountAsync) { if (slot_missing(ARG0)) { RET(NOCARD); return; } mount(); complete(ARG3, 0, READY); RET(READY); }
+HLE(CARDMount) { if (slot_missing(ARG0)) { RET(NOCARD); return; } mount(); RET(READY); }
+HLE(CARDUnmount) { if (slot_missing(ARG0)) { RET(NOCARD); return; } unmount(); RET(READY); }
+HLE(CARDCheckAsync) { if (slot_missing(ARG0) || !g_mounted) { RET(NOCARD); return; } complete(ARG1, 0, READY); RET(READY); }
+HLE(CARDCheck) { RET(!slot_missing(ARG0) && g_mounted ? READY : NOCARD); }
+HLE(CARDGetResultCode) { RET(!slot_missing(ARG0) ? READY : NOCARD); }
+HLE(CARDGetMemSize) { if (slot_missing(ARG0)) { RET(NOCARD); return; } host::wr16(ARG1, MEM_SIZE_MBIT); RET(READY); }
+HLE(CARDGetSectorSize) { if (slot_missing(ARG0)) { RET(NOCARD); return; } host::wr32(ARG1, SECTOR); RET(READY); }
+HLE(CARDGetEncoding) { if (slot_missing(ARG0)) { RET(NOCARD); return; } host::wr16(ARG1, 0); RET(READY); }
+HLE(CARDGetSerialNo) { if (slot_missing(ARG0)) { RET(NOCARD); return; } host::wr32(ARG1, 0x4D454C45u); host::wr32(ARG1 + 4, 0x504F5254u); RET(READY); }
+HLE(CARDGetCurrentMode) { if (slot_missing(ARG0)) { RET(NOCARD); return; } host::wr32(ARG1, 0); RET(READY); }
 HLE(CARDCancel) {
   int32_t chan = 0;
   File* f = file_of(ARG0, &chan);
   if (chan != 0 || !g_mounted) { RET(NOCARD); return; }
   RET(f ? READY : NOFILE);
 }
-HLE(CARDGetXferredBytes) { RET(ARG0 == 0 ? g_xferred : 0); }
+HLE(CARDGetXferredBytes) { RET(!slot_missing(ARG0) ? g_xferred : 0); }
 
 HLE(CARDFreeBlocks) {
-  if (ARG0 != 0 || !g_mounted) { RET(NOCARD); return; }
+  if (slot_missing(ARG0) || !g_mounted) { RET(NOCARD); return; }
   uint32_t files = 0; for (File* f : g_files) if (f) ++files;
   if (ARG1) host::wr32(ARG1, (TOTAL_BLOCKS - std::min(TOTAL_BLOCKS, used_blocks())) * SECTOR);
   if (ARG2) host::wr32(ARG2, MAX_FILES - files);
@@ -219,7 +226,7 @@ HLE(CARDFreeBlocks) {
 }
 
 HLE(CARDOpen) {
-  if (ARG0 != 0 || !g_mounted) { RET(NOCARD); return; }
+  if (slot_missing(ARG0) || !g_mounted) { RET(NOCARD); return; }
   std::string name((const char*)host::ptr(ARG1, 32), strnlen((const char*)host::ptr(ARG1, 32), 32));
   int32_t no = find(name);
   if (no < 0) { TRACE("CARDOpen %s: no file", name.c_str()); RET(NOFILE); return; }
@@ -228,7 +235,7 @@ HLE(CARDOpen) {
   RET(READY);
 }
 HLE(CARDFastOpen) {
-  if (ARG0 != 0 || !g_mounted) { RET(NOCARD); return; }
+  if (slot_missing(ARG0) || !g_mounted) { RET(NOCARD); return; }
   int32_t no = (int32_t)ARG1;
   if (no < 0 || no >= (int32_t)MAX_FILES || !g_files[no]) { RET(NOFILE); return; }
   if (!same_game(*g_files[no])) { RET(NOPERM); return; }
@@ -303,28 +310,28 @@ static int32_t do_delete(int32_t no) {
   return READY;
 }
 HLE(CARDDeleteAsync) {
-  if (ARG0 != 0 || !g_mounted) { RET(NOCARD); return; }
+  if (slot_missing(ARG0) || !g_mounted) { RET(NOCARD); return; }
   std::string name((const char*)host::ptr(ARG1, 32), strnlen((const char*)host::ptr(ARG1, 32), 32));
   int32_t r = do_delete(find(name)); if (r == READY) complete(ARG2, 0, READY); RET(r);
 }
 HLE(CARDDelete) {
-  if (ARG0 != 0 || !g_mounted) { RET(NOCARD); return; }
+  if (slot_missing(ARG0) || !g_mounted) { RET(NOCARD); return; }
   std::string name((const char*)host::ptr(ARG1, 32), strnlen((const char*)host::ptr(ARG1, 32), 32));
   RET(do_delete(find(name)));
 }
-HLE(CARDFastDeleteAsync) { if (ARG0 != 0 || !g_mounted) { RET(NOCARD); return; } int32_t r = do_delete((int32_t)ARG1); if (r == READY) complete(ARG2, 0, READY); RET(r); }
-HLE(CARDFastDelete) { if (ARG0 != 0 || !g_mounted) { RET(NOCARD); return; } RET(do_delete((int32_t)ARG1)); }
+HLE(CARDFastDeleteAsync) { if (slot_missing(ARG0) || !g_mounted) { RET(NOCARD); return; } int32_t r = do_delete((int32_t)ARG1); if (r == READY) complete(ARG2, 0, READY); RET(r); }
+HLE(CARDFastDelete) { if (slot_missing(ARG0) || !g_mounted) { RET(NOCARD); return; } RET(do_delete((int32_t)ARG1)); }
 HLE(CARDFormatAsync) {
-  if (ARG0 != 0) { RET(NOCARD); return; }
+  if (slot_missing(ARG0)) { RET(NOCARD); return; }
   mount();
   for (size_t i = 0; i < g_files.size(); ++i) if (g_files[i]) do_delete((int32_t)i);
   host::log("card: formatted");
   complete(ARG1, 0, READY); RET(READY);
 }
-HLE(CARDFormat) { if (ARG0 != 0) { RET(NOCARD); return; } mount(); for (size_t i = 0; i < g_files.size(); ++i) if (g_files[i]) do_delete((int32_t)i); RET(READY); }
+HLE(CARDFormat) { if (slot_missing(ARG0)) { RET(NOCARD); return; } mount(); for (size_t i = 0; i < g_files.size(); ++i) if (g_files[i]) do_delete((int32_t)i); RET(READY); }
 
 HLE(CARDGetStatus) {
-  if (ARG0 != 0 || !g_mounted) { RET(NOCARD); return; }
+  if (slot_missing(ARG0) || !g_mounted) { RET(NOCARD); return; }
   int32_t no = (int32_t)ARG1;
   if (no < 0 || no >= (int32_t)MAX_FILES || !g_files[no]) { RET(NOFILE); return; }
   const File& f = *g_files[no];

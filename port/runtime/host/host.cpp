@@ -643,6 +643,15 @@ static void apply_gecko_boot_ram() {
     std::memcpy(ptr(w.addr, w.size), w.data, w.size);
     mark_ram_write(w.addr, w.size);
   }
+  // The Lossless adapter's lag test (lag_test_codes.h): Dolphin runs those codes with Slippi's from the
+  // first frame, so the game copies their default rules; the player's codes here first run at the
+  // first controller read, after that copy. Their rule words go in with the boot writes.
+  if (std::getenv("MELEE_LAG_TEST")) {
+    static const uint32_t kRules[][2] = {{0x803D4A48u, 0x00340000u}, {0x803D4A60u, 0xFF000000u},
+                                         {0x803D4A4Cu, 0x63000A01u}, {0x803D4A50u, 0x00010100u},
+                                         {0x803D4A78u, 0xE4000000u}};
+    for (const auto& w : kRules) wr32(w[0], w[1]);
+  }
   for (size_t i = 0; i < gecko::boot_hooks_count; ++i) {
     const gecko::HookInstall& h = gecko::boot_hooks[i];
     wr32(h.hook, 0x48000000u | ((h.cave_addr - h.hook) & 0x03FFFFFCu));
