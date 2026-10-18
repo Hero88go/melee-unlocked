@@ -1041,6 +1041,11 @@ void mu_slippi_chat_frame(void)
     if (mu_slippi_css_scene_request() != 0) {
         return;
     }
+    if (mu_online_p2p_menus()) {
+        /* A peer-to-peer session has no chat yet: no listeners, so the D-pad never opens the
+         * window and no bubble is made. The Sheik selector above stays. */
+        return;
+    }
     if (notifications_gobj == NULL) {
         init_notifications();
     }

@@ -413,6 +413,20 @@ int mu_ak_kind_from_mex(int mex_internal)
     return mex_internal - ak_shift < Ft_Kind_Max ? mex_internal - ak_shift : -1;
 }
 
+const void* mu_ak_cpu_list(mu_u32 raw)
+{
+    /* Big enough for the longest list walk past an empty first entry (all zero: it ends at once). */
+    static const unsigned long long zeros[0x80];
+    const mu_u32 offset = raw & 0x3FFFFFFFu;
+
+    if (raw == 0 || (raw & 0x80000000u) != 0) {
+        return (const void*) (mu_uptr) raw;
+    }
+    /* Not a game address: the console reads RAM at the offset while it is inside its 24 MB, and
+     * 0 past it. */
+    return offset < 0x01800000u ? (const void*) (mu_uptr) (0x80000000u + offset) : (const void*) zeros;
+}
+
 int mu_ak_mex_internal(int kind)
 {
     if (kind >= 0 && kind < Ft_Kind_MasterH) {
@@ -737,13 +751,20 @@ int mu_ak_test_results(void)
 }
 #endif
 
-/* An added character kind the character select screen may offer and start a match with. */
+/* An added character kind the character select screen may offer and start a match with: a fighter
+ * whose files were found and whose descriptor carries MU_AK_READY (every row of
+ * run-source/rel09-b1-wolf/READY_CHECKLIST.md met), or any found fighter under the development
+ * switch above. */
 int mu_ak_ckind_selectable(int ckind)
 {
 #ifdef MU_AKANEIA_FIGHTERS
-    if (MU_AK_CKIND(ckind) && ak_css_override()) {
+    if (MU_AK_CKIND(ckind)) {
         const int slot = ckind - MU_AK_CKIND_BASE;
-        return ak_fighter[slot] != NULL && ak_ext[slot] >= 0;
+        const MuAkFighter* ft = ak_fighter[slot];
+        if (ft == NULL || ak_ext[slot] < 0) {
+            return 0;
+        }
+        return (ft->flags & MU_AK_READY) != 0 || ak_css_override();
     }
 #else
     (void) ckind;
@@ -753,17 +774,12 @@ int mu_ak_ckind_selectable(int ckind)
 
 int mu_ak_css_selectable(int ext)
 {
-    /* Not yet for any fighter: every added fighter stays locked, whatever its registry state
-     * (MU_AK_READY), until the validation in CREATION_LAYER_PLAN.md is done. The development
-     * switch above is the only way in. */
 #ifdef MU_AKANEIA_FIGHTERS
-    if (ak_css_override()) {
-        return mu_ak_ckind_selectable(mu_ak_ckind_from_mex(ext));
-    }
+    return mu_ak_ckind_selectable(mu_ak_ckind_from_mex(ext));
 #else
     (void) ext;
-#endif
     return 0;
+#endif
 }
 
 /* ---- the view change ---- */

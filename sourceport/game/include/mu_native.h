@@ -202,6 +202,13 @@ void mu_content_begin_major(int mode);
 /* m-ex content (shim/mu_mex.c): MxDt.dat read natively when the disc has it, active in the mod view. */
 void mu_mex_boot(void);
 int mu_mex_active(void);
+/* Nonzero while the mod view is served and its codes.gct has m-ex's joint scale compensation
+ * hook (shim/mu_mex.c); HSD_JObjMakeMatrix then compensates joints flagged JOBJ_UNK_B26. */
+extern int mu_mex_jobj_scale_compensate;
+/* m-ex character select writes found in the disc's codes.gct (shim/mu_mex.c), mod view only. */
+#define MEX_CSS_NO_RANDOM_CORNERS 0x1
+#define MEX_CSS_CURSOR_RIGHT_29 0x2
+extern int mu_mex_css_codes;
 /* m-ex puts its added fighters right after Roy and moves the special fighters (Master Hand to
  * Sandbag) behind them; per-kind tables in its PlCo.dat follow that order. The shift, 0 without m-ex. */
 int mu_mex_special_kind_shift(void);
@@ -234,6 +241,40 @@ int mu_mex_internal_of_external(int ext);
 #ifdef MU_AKANEIA_FIGHTERS
 int mu_mex_ak_costumes(int kind, int mex_internal);            /* usable costume count, 0 none */
 #endif
+/* m-ex stages (run-source/rel09-stages/LAYER.md). Internal ids are GrKind, external ids StKind.
+ * Raw MxDt readers (shim/mu_mex.c), "none" in the retail view: */
+int mu_mex_stage_count(void);                                   /* internal stage ids, 0 none */
+int mu_mex_stage_ext_count(void);                               /* external stage ids, 0 none */
+int mu_mex_stage_ext(int ext, int words[3]);                    /* ext lookup row; 1 when it exists */
+int mu_mex_stage_internal_of_external(int ext);                 /* -1 none */
+int mu_mex_stage_desc(int internal, unsigned int words[13], const char** file);   /* raw row */
+int mu_mex_stage_ssm(int internal, int which);                  /* 0 bank, 1 reverb, 2; -1 none */
+unsigned int mu_mex_stage_coll(int internal);                   /* raw retail address, 0 none */
+int mu_mex_stage_item_count(int internal);
+int mu_mex_stage_item(int internal, int local);                 /* m-ex item kind, -1 none */
+const char* mu_mex_stage_name(int internal);
+int mu_mex_stage_playlist(int internal, int index, int* song, int* chance);   /* song count */
+int mu_mex_stage_icon_count(void);
+int mu_mex_stage_icon(int slot, unsigned char out[0x20]);       /* raw select icon, 1 when it exists */
+/* The native rows (shim/mu_mex_stage.c). Ids under MU_MEX_STAGE_RETAIL keep the native retail
+ * rows always; the rows past it exist only while the mod view is served. */
+#define MU_MEX_STAGE_RETAIL 71        /* retail internal stage ids (0 to 70) */
+#define MU_MEX_STAGE_MAX 256          /* internal ids the native layer has room for (ACE: 155) */
+#define MU_MEX_STAGE_EXT_MAX 1024     /* external ids (ACE: 372) */
+#define MU_MEX_STAGE_EXT_RETAIL 0x11E /* retail external ids */
+struct StageData;
+struct StageCallbacks;
+void mu_mex_stage_build(void);                     /* once, when MxDt.dat is read (shim/mu_mex.c) */
+struct StageData* mu_mex_stage_data(int grkind);   /* an added row, NULL when locked or absent */
+void* mu_mex_stage_coll_table(int grkind);         /* an added row's collision table, NULL as above */
+int mu_mex_stage_usable(int grkind);               /* 1 when a match may load this internal id */
+const char* mu_mex_stage_lock_reason(int grkind);  /* why an added row is locked, NULL when usable */
+/* Native retail objects the translation matches against (gr/ground.c, mp/mplib.c, MU_NATIVE). */
+struct StageData* mu_ground_retail_stage(int grkind);         /* ids 0 to 70, NULL otherwise */
+void* mu_mplib_retail_coll(int grkind);                       /* ids 0 to 70, NULL otherwise */
+/* gr/grtseak.c grTSeak_80223908 (m-ex +28): the current added row's map gobj table entry, NULL on
+ * a retail row or in the retail view (gr/ground.c). */
+struct StageCallbacks* mu_ground_added_callbacks(int map_id);
 
 /* Akaneia's added fighters, native (sourceport/game/akaneia/mu_ak_fighters.c). In the mod view each
  * fighter m-ex adds gets a native kind past the retail ones (Ft_Kind_Max + 1 on: Ft_Kind_None stays
@@ -267,8 +308,17 @@ int mu_ak_ckind_from_kind(int kind);    /* added fighter kind -> native characte
  * and without the experimental fighters this is the kind itself. */
 #ifdef MU_AKANEIA_FIGHTERS
 #define MU_AK_CPU_KIND(kind) (MU_AK_KIND(kind) ? mu_ak_mex_internal(kind) : (int) (kind))
+/* The CPU pointer tables (x4 to x1C) have rows only for the disc's own fighters; ACE's added ones
+ * past them (Toad 57, Wolf SSBU) read whatever data follows, often a float such as 0x41C00000. The
+ * console then loads through that value: outside its 24 MB of RAM the read returns 0 (the Static
+ * engine answers it the same way), so the list is empty and the CPU picks no attack from it.
+ * mu_ak_cpu_list gives the same answer instead of dereferencing the float. */
+const void* mu_ak_cpu_list(mu_u32 raw);
+#define MU_AK_CPU_LIST(table, kind) \
+    ((__typeof__(DP(DP(table)[0]))) mu_ak_cpu_list(DP(table)[MU_AK_CPU_KIND(kind)].raw))
 #else
 #define MU_AK_CPU_KIND(kind) (kind)
+#define MU_AK_CPU_LIST(table, kind) DP(DP(table)[kind])
 #endif
 /* The m-ex fighter hooks that have no retail per-kind table (m-ex ftFunction indexes). */
 enum {
@@ -425,7 +475,9 @@ typedef struct MuExclusion {
 struct PADStatus;
 int mu_online_active(void);
 unsigned int mu_online_codes(void);   /* MU_RC_* an online match plays with (0 offline) */
-int mu_online_is_test_run(void);
+int mu_online_is_test_run(void);      /* the host asked for a match without menus (kinds 1 and 2) */
+int mu_online_p2p_menus(void);        /* 1: a peer-to-peer session through the online menus (kind 3) */
+int mu_online_p2p_port(void);         /* ... and the local player's pad port in it */
 int mu_online_engine_gate(int* pad_queue_count);   /* ForceEngineOnRollback */
 void mu_audio_idle(void);                          /* audio blocks at their times during the frame wait (mu_os.c) */
 void mu_online_frame_begin(void);                  /* StartEngineLoop */

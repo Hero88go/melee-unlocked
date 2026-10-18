@@ -487,10 +487,19 @@ static void dump_fighter(Fighter* fp)
     if (fp->parts != NULL) {
         u32 n = DP(ftPartsTable[fp->kind])->parts_num;
         float bones[96 * 22];
+        u32 bone_flags[96];
+        static void* flags_out;
+        static int flags_init;
+        if (!flags_init) {
+            const char* flags_path = getenv("MELEE_DUMP_BONE_FLAGS_OUT");
+            flags_init = 1;
+            if (flags_path) flags_out = fopen(flags_path, "wb");
+        }
         if (n > 96) n = 96;
         for (u32 i = 0; i < n; i++) {
             HSD_JObj* j = fp->parts[i].joint;
             float* o = bones + i * 22;
+            if (flags_out) bone_flags[i] = j != NULL ? j->flags : 0;
             if (j == NULL) { memset(o, 0, 22 * sizeof(float)); continue; }
             memcpy(o, &j->rotate, 16);
             memcpy(o + 4, &j->scale, 12);
@@ -502,6 +511,16 @@ static void dump_fighter(Fighter* fp)
         memcpy(head + 6, &size, 2);
         fwrite(head, 1, 8, out);
         fwrite(bones, 1, size, out);
+        if (flags_out) {
+            u8 flags_head[8];
+            u16 flags_size = (u16) (n * sizeof(u32));
+            memcpy(flags_head, head, sizeof flags_head);
+            flags_head[4] = fp->player_idx;
+            memcpy(flags_head + 6, &flags_size, 2);
+            fwrite(flags_head, 1, sizeof flags_head, flags_out);
+            fwrite(bone_flags, 1, flags_size, flags_out);
+            fflush(flags_out);
+        }
     }
     fflush(out);
 }
@@ -513,7 +532,8 @@ static void dump_fighter(Fighter* fp)
  * fighter's draw, where the console's refresh happens (ftDrawCommon_80080E18). */
 void mu_refresh_part_matrices(Fighter* fp)
 {
-    if (fp->parts == NULL || fp->kind >= 33) {
+    if (fp->parts == NULL || (unsigned) fp->kind >= FT_KIND_TABLE_MAX ||
+        DP(ftPartsTable[fp->kind]) == NULL) {
         return;
     }
     u32 n = DP(ftPartsTable[fp->kind])->parts_num;

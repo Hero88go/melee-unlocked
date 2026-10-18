@@ -230,6 +230,11 @@ int mu_slippi_css_inputs(unsigned int trigger)
 
     switch (m->connection_state) {
     case MU_SLP_MM_IDLE:
+        if (mu_online_p2p_menus()) {
+            /* A peer-to-peer session has its opponent already: no search and no connect-code
+             * entry. Its host never reports this state; a reply that could not be read does. */
+            return 0;
+        }
         if (dt.chat_window_opened || !(trigger & HSD_PAD_START) || gm_801A4BB8() == 0) {
             return 0;
         }
@@ -279,6 +284,17 @@ int mu_slippi_css_inputs(unsigned int trigger)
         }
     } else {
         dt.z_hold_timer = 0;
+    }
+
+    /* A peer-to-peer session's first game: the stage is picked, never drawn. The player in slot 0
+     * (the one who sent the request) picks it on the stage select screen, exactly as the loser of
+     * a game picks the next one, and the other player locks in without a stage. Decided here, once
+     * the two are connected and the slots are known; later games follow winner and loser. */
+    if (mu_online_p2p_menus() && st->is_winner == MU_SLP_WINNER_NULL &&
+        m->connection_state == MU_SLP_MM_CONNECTION_SUCCESS)
+    {
+        st->is_winner = m->local_index == 0 ? MU_SLP_WINNER_LOST : MU_SLP_WINNER_WON;
+        st->chose_stage = 0;
     }
 
     if (m->local_ready == 0) {
@@ -456,6 +472,11 @@ static void text_think(HSD_GObj* gobj)
     const char* s;
     int idx, i;
     u8 conn = m->connection_state;
+    /* A peer-to-peer session with menus: other words for the same screen (no code, no chat). */
+    int p2p = mu_online_p2p_menus();
+    /* ... and its opponent is not connected yet. The host reports 3 here; 0 is the table before
+     * its first B3, where "enter code" would be just as wrong. */
+    int p2p_connecting = p2p && conn < MU_SLP_MM_CONNECTION_SUCCESS;
 
     (void) gobj;
     code_sjis18((u8*) opp_code);
@@ -476,7 +497,7 @@ static void text_think(HSD_GObj* gobj)
     } else {
         switch (st->mode) {
         case MU_SLP_MODE_UNRANKED: set_text_fmt(ST_HEADER, "%s Mode", "Unranked"); break;
-        case MU_SLP_MODE_DIRECT: set_text_fmt(ST_HEADER, "%s Mode", "Direct"); break;
+        case MU_SLP_MODE_DIRECT: set_text_fmt(ST_HEADER, "%s Mode", p2p ? "P2P" : "Direct"); break;
         case MU_SLP_MODE_RANKED: set_text_fmt(ST_HEADER, "%s Mode", "Ranked"); break;
         case MU_SLP_MODE_TEAMS: set_text_fmt(ST_HEADER, "%s Mode", "Teams"); break;
         case MU_SLP_MODE_PARTY: set_text_fmt(ST_HEADER, "%s Mode", "Party"); break;
@@ -489,7 +510,7 @@ static void text_think(HSD_GObj* gobj)
     opp_name[31] = 0;
     set_text(ST_PLAYING_LABEL, conn == MU_SLP_MM_CONNECTION_SUCCESS ? "Playing:" : "");
     set_text(ST_PLAYING_OPP, conn == MU_SLP_MM_CONNECTION_SUCCESS ? opp_name : "");
-    set_text(ST_PRESS_D, conn == MU_SLP_MM_CONNECTION_SUCCESS ? "Use D-Pad to Chat" : "");
+    set_text(ST_PRESS_D, conn == MU_SLP_MM_CONNECTION_SUCCESS && !p2p ? "Use D-Pad to Chat" : "");
 
     /* Press / hold Z */
     if (conn == MU_SLP_MM_CONNECTION_SUCCESS) {
@@ -557,12 +578,23 @@ static void text_think(HSD_GObj* gobj)
         if (*char_chosen == 0) {
             set_text(idx, "Select your character");
             dt.spinner[0] = 1;
+            if (p2p_connecting) {
+                /* The fighter can be chosen meanwhile; the second line says what is awaited. */
+                set_text_fmt(idx + 2, "Connecting to %s", "opponent");
+                dt.spinner[1] = 1;
+            }
             goto spinners;
         }
         set_text(idx, "Character selected");
         idx += 2;
         dt.spinner[0] = 2;
 
+        if (p2p_connecting) {
+            /* In place of "Press START to enter code": START does nothing until connected. */
+            set_text_fmt(idx, "Connecting to %s", "opponent");
+            dt.spinner[1] = 1;
+            goto spinners;
+        }
         if (m->local_ready == 0) {
             const char* action;
             if ((st->mode == MU_SLP_MODE_DIRECT || st->mode == MU_SLP_MODE_TEAMS) &&
@@ -586,8 +618,9 @@ static void text_think(HSD_GObj* gobj)
         dt.spinner[1] = 2;
 
         {
+            /* p2p: "opponent" too, there is no typed code to show. */
             int generic = st->mode == MU_SLP_MODE_UNRANKED || st->mode == MU_SLP_MODE_RANKED ||
-                          st->mode == MU_SLP_MODE_PARTY;
+                          st->mode == MU_SLP_MODE_PARTY || p2p;
             if (conn == MU_SLP_MM_CONNECTION_SUCCESS) {
                 set_text_fmt(idx, "Waiting on %s", "opponent");
             } else if (conn == MU_SLP_MM_OPPONENT_CONNECTING) {
@@ -630,7 +663,8 @@ void mu_slippi_css_text_init(void)
     HSD_Text* t;
     int i;
 
-    user_display_init(mu_slippi_state()->mode == MU_SLP_MODE_DIRECT ? 2 : 1);
+    /* Mode 2 adds the "Connect Code" rows; a peer-to-peer session has no code to show. */
+    user_display_init(mu_slippi_state()->mode == MU_SLP_MODE_DIRECT && !mu_online_p2p_menus() ? 2 : 1);
 
     gobj = GObj_Create(4, 5, 0x80);
     ud = HSD_MemAlloc(4);

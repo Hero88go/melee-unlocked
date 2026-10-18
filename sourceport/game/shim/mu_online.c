@@ -1406,26 +1406,65 @@ static int fetch_match_state(unsigned int* size)
     return command(CMD_GET_MATCH_STATE, NULL, 0, mu_online.match_state, size);
 }
 
+/* The host's answer to "is a match requested" (online_test_match): 0 none, 1 the diagnostic
+ * harness, 2 a lobby or peer-to-peer match without menus, 3 a peer-to-peer session that uses the
+ * online menus. Kinds 1 and 2 boot straight into the match scene; kind 3 boots through the main
+ * menu into the online character select (mu_slippi_menu.c) and never takes the paths below.
+ *
+ * p2p_menus and p2p_port are written once, by the first question to the host. That question is the
+ * boot mode's (mu_replay_boot_mode, gm_801A4510), long before any match, and nothing writes them
+ * again: every rollback snapshot holds the values the game already has, so a load changes nothing.
+ * They are outside mu_online on purpose (arming a match clears that block). */
+static int p2p_menus = -1;   /* -1 not asked yet, else whether the kind is 3 */
+static u8 p2p_port;          /* the pad port the host named for the local player */
+
+static int launch_kind(int* mode, int* input_port)
+{
+    int kind = mu_online_abi_test_match(mode, input_port);
+    if (p2p_menus < 0) {
+        p2p_menus = kind == 3;
+        p2p_port = kind == 3 ? (u8) (*input_port & 3) : 0;
+    }
+    return kind;
+}
+
 /* Whether this run is an online test match (the harness boots straight into the match scene). */
 int mu_online_is_test_run(void)
 {
-    int mode, input_port;
-    return mu_online_abi_test_match(&mode, &input_port);
+    int mode = 0, input_port = 0;
+    int kind = launch_kind(&mode, &input_port);
+    return kind == 1 || kind == 2 ? kind : 0;
+}
+
+/* Whether this run is a peer-to-peer session played through the online menus (kind 3). */
+int mu_online_p2p_menus(void)
+{
+    if (p2p_menus < 0) {
+        int mode = 0, input_port = 0;
+        launch_kind(&mode, &input_port);
+    }
+    return p2p_menus;
+}
+
+/* The pad port of the local player in such a session (0 in any other run). */
+int mu_online_p2p_port(void)
+{
+    return mu_online_p2p_menus() ? p2p_port : 0;
 }
 
 /* The test harness boots straight into the match scene; this waits there until both games have
  * negotiated the match, the way Slippi's online character screen waits. */
 int mu_online_test_wait(void)
 {
-    int mode, input_port;
-    int launch_kind;
+    int mode = 0, input_port = 0;
+    int kind;
     unsigned int last = 0xFFFFFFFFu, size = 0;
-    launch_kind = mu_online_abi_test_match(&mode, &input_port);
-    if (!launch_kind) {
-        return 0;
+    kind = launch_kind(&mode, &input_port);
+    if (kind != 1 && kind != 2) {
+        return 0;   /* no request, or a session with menus (the character select waits instead) */
     }
     memset(&mu_online, 0, sizeof mu_online);
-    mu_online.test = launch_kind == 1;
+    mu_online.test = kind == 1;
     mu_online.mode = mode;
     mu_online.input_source = (u8) (input_port & 3);
     {

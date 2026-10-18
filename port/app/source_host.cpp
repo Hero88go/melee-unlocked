@@ -3042,8 +3042,8 @@ int run(void (*shutdown)(int)) {
     if (!host::disc_archive_header(header, sizeof header, file.length, &error))
       host::die("The game ISO contains damaged LbRb.dat: %s. Select a fresh, uncompressed Melee NTSC 1.02 ISO; rebuild a modified ISO from a working base image.", error.c_str());
   }
-  // A development game library built with the native Akaneia fighters exports this name; the shipped
-  // one does not, and an Akaneia disc stays refused. Looked up without running any of its code.
+  // A game library built with the native Akaneia fighters exports this name; one built without them
+  // does not, and an Akaneia disc stays refused. Looked up without running any of its code.
   {
     const char* named = std::getenv("MELEE_GAME_DLL");
     if (HMODULE probe = LoadLibraryExA(named ? named : g_dll.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES)) {
@@ -3051,7 +3051,7 @@ int run(void (*shutdown)(int)) {
       FreeLibrary(probe);
       if (native_akaneia) {
         allow_native_akaneia(true);
-        host::log("mods: development game library with native Akaneia fighters; Akaneia discs are accepted");
+        host::log("mods: game library with native Akaneia fighters; Akaneia discs are accepted");
       }
     }
   }

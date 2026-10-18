@@ -49744,7 +49744,7 @@ index 96b0c87ee..ac62411ff 100644
  
      return ret_obj;
 diff --git a/src/melee/ef/efasync.c b/src/melee/ef/efasync.c
-index 636ba26f4..bf514927b 100644
+index 636ba26f4..61cc81985 100644
 --- a/src/melee/ef/efasync.c
 +++ b/src/melee/ef/efasync.c
 @@ -1122,8 +1122,7 @@ void* efAsync_Dispatch(s32 gfx_id, HSD_GObj* gobj, va_list vlist)
@@ -49820,7 +49820,7 @@ index 636ba26f4..bf514927b 100644
          return;
      }
      if (!lookup->ef_DAT_file) {
-@@ -1300,18 +1311,29 @@ void efAsync_LoadSync(int idx)
+@@ -1300,18 +1311,31 @@ void efAsync_LoadSync(int idx)
          return;
      }
      {
@@ -49829,6 +49829,8 @@ index 636ba26f4..bf514927b 100644
 +         * carries the placement table of its effects (akaneia/common/mu_ak_effects.c). */
 +        extern void mu_ak_effect_file_loaded(int index, HSD_Archive* archive);
 +        HSD_Archive* mu_archive = NULL;
++        /* The list ends with NULL, not 0: the fifth argument is passed on the stack, where an int
++         * 0 fills only half of the 8-byte slot (the online-pair panic of 2026-10-16). */
 +        bool chk = lbArchive_80017040(&mu_archive, lookup->ef_DAT_file, &spC,
 +                                      lookup->effDataTable_name, NULL);
 +        mu_ak_effect_file_loaded(idx, mu_archive);
@@ -49857,7 +49859,7 @@ index 636ba26f4..bf514927b 100644
      }
  }
  
-@@ -1331,6 +1353,16 @@ void efAsync_QueueProcessDeferred(HSD_GObj* gobj,
+@@ -1331,6 +1355,16 @@ void efAsync_QueueProcessDeferred(HSD_GObj* gobj,
      spawn_kind = queued_effect->spawn_kind;
      gfx_id = queued_effect->gfx_id;
      jobj = queued_effect->jobj;
@@ -49874,7 +49876,7 @@ index 636ba26f4..bf514927b 100644
      switch (spawn_kind) {
      case EF_SPAWN_ATTACH:
          efSync_Spawn(gfx_id, gobj, jobj);
-@@ -1374,44 +1406,50 @@ void efAsync_QueueProcessDeferred(HSD_GObj* gobj,
+@@ -1374,44 +1408,50 @@ void efAsync_QueueProcessDeferred(HSD_GObj* gobj,
      HSD_ObjFree(&efAsync_AllocData, queued_effect);
  }
  
@@ -49945,7 +49947,7 @@ index 636ba26f4..bf514927b 100644
      va_start(vlist, jobj);
      queued = HSD_ObjAlloc(&efAsync_AllocData);
      queued->spawn_kind = spawn_kind;
-@@ -1458,8 +1496,8 @@ void efAsync_Spawn(HSD_GObj* gobj, void* queue_head, u32 spawn_kind,
+@@ -1458,8 +1498,8 @@ void efAsync_Spawn(HSD_GObj* gobj, void* queue_head, u32 spawn_kind,
      if ((HSD_GObj_CurrentInvokedProc != NULL) &&
          (HSD_GObj_CurrentInvokedProc->s_link < 9U))
      {
@@ -60034,7 +60036,7 @@ index f5313cf08..5fafc98b0 100644
  
  #endif
 diff --git a/src/melee/ft/ftcpuattack.c b/src/melee/ft/ftcpuattack.c
-index 619113b0a..ac5726d56 100644
+index 619113b0a..4c6798b64 100644
 --- a/src/melee/ft/ftcpuattack.c
 +++ b/src/melee/ft/ftcpuattack.c
 @@ -8,6 +8,7 @@
@@ -60117,7 +60119,7 @@ index 619113b0a..ac5726d56 100644
          if (ftCo_800B89CC(fp)) {
              result =
 -                ftCo_800B4AB0(fp, target, (Fighter_804D64FC->x8)[fp->kind]);
-+                ftCo_800B4AB0(fp, target, DP(DP(Fighter_804D64FC->x8)[MU_AK_CPU_KIND(fp->kind)]));
++                ftCo_800B4AB0(fp, target, MU_AK_CPU_LIST(Fighter_804D64FC->x8, fp->kind));
              if (result != 0) {
                  cpu->xA4 = result;
                  return true;
@@ -60126,7 +60128,7 @@ index 619113b0a..ac5726d56 100644
              }
          }
 -        result = ftCo_800B4AB0(fp, target, (Fighter_804D64FC->x4)[fp->kind]);
-+        result = ftCo_800B4AB0(fp, target, DP(DP(Fighter_804D64FC->x4)[MU_AK_CPU_KIND(fp->kind)]));
++        result = ftCo_800B4AB0(fp, target, MU_AK_CPU_LIST(Fighter_804D64FC->x4, fp->kind));
          if (result != 0) {
              cpu->xA4 = result;
              return true;
@@ -60163,7 +60165,7 @@ index 619113b0a..ac5726d56 100644
              }
          }
 -        result = ftCo_800B52AC(fp, target, (Fighter_804D64FC->x18)[fp->kind],
-+        result = ftCo_800B52AC(fp, target, DP(DP(Fighter_804D64FC->x18)[MU_AK_CPU_KIND(fp->kind)]),
++        result = ftCo_800B52AC(fp, target, MU_AK_CPU_LIST(Fighter_804D64FC->x18, fp->kind),
                                 weapon_reach);
          if (result != 0) {
              cpu->xA4 = result;
@@ -60172,7 +60174,7 @@ index 619113b0a..ac5726d56 100644
      }
      if (cpu->level > 5 && ftCo_800B9F6C(target)) {
 -        result = ftCo_800B4AB0(fp, target, (Fighter_804D64FC->x10)[fp->kind]);
-+        result = ftCo_800B4AB0(fp, target, DP(DP(Fighter_804D64FC->x10)[MU_AK_CPU_KIND(fp->kind)]));
++        result = ftCo_800B4AB0(fp, target, MU_AK_CPU_LIST(Fighter_804D64FC->x10, fp->kind));
          if (result != 0) {
              cpu->xA4 = result;
              return true;
@@ -60181,7 +60183,7 @@ index 619113b0a..ac5726d56 100644
      }
      if (var_r0 != 0) {
 -        result = ftCo_800B4AB0(fp, target, (Fighter_804D64FC->x1C)[fp->kind]);
-+        result = ftCo_800B4AB0(fp, target, DP(DP(Fighter_804D64FC->x1C)[MU_AK_CPU_KIND(fp->kind)]));
++        result = ftCo_800B4AB0(fp, target, MU_AK_CPU_LIST(Fighter_804D64FC->x1C, fp->kind));
          if (result != 0) {
              cpu->xA4 = result;
              cpu->xF8_b7 = 1;
@@ -60189,7 +60191,7 @@ index 619113b0a..ac5726d56 100644
          }
      }
 -    result = ftCo_800B4AB0(fp, target, (Fighter_804D64FC->x4)[fp->kind]);
-+    result = ftCo_800B4AB0(fp, target, DP(DP(Fighter_804D64FC->x4)[MU_AK_CPU_KIND(fp->kind)]));
++    result = ftCo_800B4AB0(fp, target, MU_AK_CPU_LIST(Fighter_804D64FC->x4, fp->kind));
      if (result != 0) {
          cpu->xA4 = result;
          return true;
@@ -60198,7 +60200,7 @@ index 619113b0a..ac5726d56 100644
 -        result = ftCo_800B5AB0(fp, (void*) cpu->x50,
 -                               (Fighter_804D64FC->x14)[fp->kind]);
 +        result = ftCo_800B5AB0(fp, (void*) MU_Z(cpu->x50),
-+                               DP(DP(Fighter_804D64FC->x14)[MU_AK_CPU_KIND(fp->kind)]));
++                               MU_AK_CPU_LIST(Fighter_804D64FC->x14, fp->kind));
          if (result != 0) {
              cpu->xA4 = result;
              return true;
@@ -60216,7 +60218,7 @@ index 619113b0a..ac5726d56 100644
      }
      if (temp_f31 < 0.08726646192371845 && temp_f31 > -0.08726646192371845) {
 -        temp_r31->xA4 = ftCo_800B6208(Fighter_804D64FC->xC[fp->kind]);
-+        temp_r31->xA4 = ftCo_800B6208(DP(DP(Fighter_804D64FC->xC)[MU_AK_CPU_KIND(fp->kind)]));
++        temp_r31->xA4 = ftCo_800B6208(MU_AK_CPU_LIST(Fighter_804D64FC->xC, fp->kind));
          if (temp_r31->xA4 != 0) {
              return true;
          }
@@ -114871,7 +114873,7 @@ index e5ff149f4..6d9ac4ad2 100644
  
  bool grOnett_801E5768(Vec3* a, int b, HSD_JObj* jobj)
 diff --git a/src/melee/gr/ground.c b/src/melee/gr/ground.c
-index ad559ea8f..a37ab8443 100644
+index ad559ea8f..d5c09a361 100644
 --- a/src/melee/gr/ground.c
 +++ b/src/melee/gr/ground.c
 @@ -4,6 +4,10 @@
@@ -114899,7 +114901,54 @@ index ad559ea8f..a37ab8443 100644
  /* 1C24F8 */ static bool Ground_801C24F8(StKind stkind, u32, s32*);
  /* 1C28CC */ static void Ground_801C28CC(s32*, StKind stkind);
  /* 1C2BBC */ static void Ground_801C2BBC(Ground_GObj* map_gobj, int index);
-@@ -430,13 +434,30 @@ GXColor* Ground_801C06A4(void)
+@@ -197,6 +201,46 @@ static StageData* stage_datas[] = {
+     &grTe_StageData,       &grTe_StageData,       &grTe_StageData,
+ };
+ 
++#ifdef MU_NATIVE
++/* m-ex stages (shim/mu_mex_stage.c, run-source/rel09-stages/LAYER.md). m-ex reads its own
++ * descriptor rows instead of stage_datas at every site below that goes through GR_STAGE
++ * (Ground_801C06B8+1C, Ground_801C0754+30, Ground_801C0800+28, Ground_OnLoad+14,
++ * Ground_801C0FB8+20, Ground_GetStageGObj+2D8, Ground_801C1E94+34, Ground_InitMapColl+90,
++ * Ground_UpdateMapColl+4C, Ground_801C3128+2C, Ground_801C466C+3C). The ids under 71 keep the
++ * native retail rows (the disc's rows equal them); the ids past them, in the mod view only, are
++ * the rows the layer built, NULL when locked (no match loads a locked row: gr/stage.c). In the
++ * retail view this is stage_datas[grkind] exactly. Ground_DemoInit, Ground_801C32D4 and
++ * Ground_801C33C0 are not patched by m-ex (they read the retail table past its end on the console
++ * for an added id); here they read the built row too, whose joint count is 0, as every added row's
++ * is on both discs. */
++static StageData* mu_stage_data(int grkind)
++{
++    if (grkind >= MU_MEX_STAGE_RETAIL && mu_mex_active()) {
++        return mu_mex_stage_data(grkind);
++    }
++    return stage_datas[grkind];
++}
++#define GR_STAGE(grkind) mu_stage_data(grkind)
++
++StageData* mu_ground_retail_stage(int grkind)
++{
++    return grkind >= 0 && grkind < MU_MEX_STAGE_RETAIL ? stage_datas[grkind] : NULL;
++}
++
++StageCallbacks* mu_ground_added_callbacks(int map_id)
++{
++    StageData* row;
++    if (stage_info.grkind < MU_MEX_STAGE_RETAIL || !mu_mex_active() ||
++        (row = mu_mex_stage_data(stage_info.grkind)) == NULL || row->callbacks == NULL)
++    {
++        return NULL;
++    }
++    return &row->callbacks[map_id];
++}
++#else
++#define GR_STAGE(grkind) stage_datas[grkind]
++#endif
++
+ static u8* Ground_804D6950;
+ 
+ static ssize_t const buffer_size = 64;
+@@ -430,13 +474,34 @@ GXColor* Ground_801C06A4(void)
      return &x->xC8;
  }
  
@@ -114907,6 +114956,10 @@ index ad559ea8f..a37ab8443 100644
 +/* The stage select's skin cycling (mn/mnstagesel.c): the file a ground kind loads, NULL for none. */
 +const char* mu_ground_stage_file(int grkind)
 +{
++    /* In the mod view an added id is the built row (NULL when locked), as everywhere else. */
++    if (grkind >= MU_MEX_STAGE_RETAIL && mu_mex_active()) {
++        return mu_mex_stage_data(grkind) != NULL ? mu_mex_stage_data(grkind)->data1 : NULL;
++    }
 +    if (grkind < 0 || grkind >= (int) ARRAY_SIZE(stage_datas) || stage_datas[grkind] == NULL) {
 +        return NULL;
 +    }
@@ -114916,23 +114969,29 @@ index ad559ea8f..a37ab8443 100644
 +
  void Ground_801C06B8(GrKind arg0)
  {
-     if (stage_datas[arg0] == NULL) {
+-    if (stage_datas[arg0] == NULL) {
++    if (GR_STAGE(arg0) == NULL) {
          return;
      }
-     if (stage_datas[arg0]->data1 != NULL) {
+-    if (stage_datas[arg0]->data1 != NULL) {
+-        lbDvd_800178E8(4, stage_datas[arg0]->data1, 4, 4, 0, 1, 7, 16, 0);
++    if (GR_STAGE(arg0)->data1 != NULL) {
 +#ifdef MU_NATIVE
 +        /* 20XX Hack Pack: the pack's file for this stage (its default name, or the variant the
 +         * Stage Swap Engine picked). The same name again where the stage loads (Ground_801C0754). */
-+        lbDvd_800178E8(4, mu_hp_stage_file(arg0, stage_datas[arg0]->data1), 4, 4, 0, 1, 7, 16, 0);
++        lbDvd_800178E8(4, mu_hp_stage_file(arg0, GR_STAGE(arg0)->data1), 4, 4, 0, 1, 7, 16, 0);
 +#else
-         lbDvd_800178E8(4, stage_datas[arg0]->data1, 4, 4, 0, 1, 7, 16, 0);
++        lbDvd_800178E8(4, GR_STAGE(arg0)->data1, 4, 4, 0, 1, 7, 16, 0);
 +#endif
      }
      switch (arg0) {
      case Gr_Kind_Izumi:
-@@ -458,7 +479,12 @@ void Ground_801C0754(StageIdPair* pair)
+@@ -456,9 +521,14 @@ void Ground_801C0754(StageIdPair* pair)
+     s32 arg3;
+     Ground_801BFFB0();
      stage_info.grkind = pair->grkind;
-     stage = stage_datas[pair->grkind];
+-    stage = stage_datas[pair->grkind];
++    stage = GR_STAGE(pair->grkind);
      arg3 = (pair->stkind == St_Kind_Heal) ? 0 : 1;
 +#ifdef MU_NATIVE
 +    /* 20XX Hack Pack: the stage file the preload asked for (Ground_801C06B8). */
@@ -114943,7 +115002,16 @@ index ad559ea8f..a37ab8443 100644
      Ground_801C28CC(&stage_info.xA0, pair->stkind);
      stage_info.on_touch_line = stage->on_touch_line;
      stage_info.on_check_shadow_render = stage->on_check_shadow_render;
-@@ -484,17 +510,17 @@ void Ground_801C0800(StageIdPair* pair)
+@@ -467,7 +537,7 @@ void Ground_801C0754(StageIdPair* pair)
+ 
+ void Ground_801C0800(StageIdPair* pair)
+ {
+-    StageData* stage_data = stage_datas[pair->grkind];
++    StageData* stage_data = GR_STAGE(pair->grkind);
+     Ground_801C38D0(stage_info.param->x8, stage_info.param->x14,
+                     stage_info.param->x1C, stage_info.param->x18);
+     Ground_801C38EC(stage_info.param->x10, stage_info.param->xC);
+@@ -484,17 +554,17 @@ void Ground_801C0800(StageIdPair* pair)
      {
          int i;
          if (stage_info.itemdata != NULL) {
@@ -114968,7 +115036,34 @@ index ad559ea8f..a37ab8443 100644
              }
          }
      }
-@@ -769,13 +795,13 @@ static HSD_Joint* Ground_801C126C(HSD_Joint* node, s32* depth)
+@@ -687,7 +757,7 @@ void Ground_801C0C2C(HSD_GObj* arg0)
+ 
+ void Ground_OnLoad(StageIdPair* pair)
+ {
+-    stage_datas[pair->grkind]->on_load();
++    GR_STAGE(pair->grkind)->on_load();
+ }
+ 
+ void Ground_801C0FB8(StageIdPair* pair)
+@@ -698,7 +768,7 @@ void Ground_801C0FB8(StageIdPair* pair)
+         void (*unk8)(s32);
+     }* cur;
+     void* next;
+-    stage_datas[pair->grkind]->on_start();
++    GR_STAGE(pair->grkind)->on_start();
+     for (cur = stage_info.x6A4; cur != NULL; cur = next) {
+         next = cur->unk0;
+         cur->unk8(cur->unk4);
+@@ -711,7 +781,7 @@ void Ground_801C0FB8(StageIdPair* pair)
+ 
+ void Ground_DemoInit(StageIdPair* pair, s32 arg1)
+ {
+-    stage_datas[pair->grkind]->on_demo_init(arg1);
++    GR_STAGE(pair->grkind)->on_demo_init(arg1);
+ }
+ 
+ void Ground_801C10B8(HSD_GObj* arg0, HSD_GObjEvent arg1)
+@@ -769,13 +839,13 @@ static HSD_Joint* Ground_801C126C(HSD_Joint* node, s32* depth)
      if (*depth < 0) {
          return node;
      }
@@ -114986,7 +115081,7 @@ index ad559ea8f..a37ab8443 100644
              return result;
          }
      }
-@@ -789,11 +815,11 @@ HSD_JObj* Ground_801C13D0(s32 arg0, s32 depth)
+@@ -789,11 +859,11 @@ HSD_JObj* Ground_801C13D0(s32 arg0, s32 depth)
      if (archive != NULL && arg0 < archive->unk4->unkC) {
          HSD_Joint* joint;
          if (depth == 0) {
@@ -115000,7 +115095,7 @@ index ad559ea8f..a37ab8443 100644
          }
          result = HSD_JObjLoadJoint(joint);
      }
-@@ -828,7 +854,7 @@ Ground_GObj* Ground_GetStageGObj(int map_id)
+@@ -828,7 +898,7 @@ Ground_GObj* Ground_GetStageGObj(int map_id)
      UnkArchiveStruct* archive;
      HSD_JObj* temp_r3_8;
      Ground* gp;
@@ -115009,21 +115104,22 @@ index ad559ea8f..a37ab8443 100644
      int phi_r24;
      int i;
  
-@@ -843,6 +869,13 @@ Ground_GObj* Ground_GetStageGObj(int map_id)
+@@ -843,6 +913,14 @@ Ground_GObj* Ground_GetStageGObj(int map_id)
       * @c on_init writes it sees stale heap contents.
       */
      gp = alloc_user_data_ground();
 +#ifdef MU_NATIVE
 +    /* Slippi online code "Init Stage Data" (801c154c), when a replay carries it; TM-CE's
-+     * Initialize Stage Data.asm is the same patch. */
-+    if (gp != NULL && (mu_replay_code(MU_RC_INIT_STAGE_DATA) || mu_tmce_active())) {
++     * Initialize Stage Data.asm is the same patch. m-ex's codes.gct carries it too
++     * (Ground_GetStageGObj+7C, 0x204 bytes on the console): every map gobj in the mod view. */
++    if (gp != NULL && (mu_replay_code(MU_RC_INIT_STAGE_DATA) || mu_tmce_active() || mu_mex_active())) {
 +        memset(gp, 0, sizeof(Ground));
 +    }
 +#endif
      if (gp == NULL) {
          HSD_GObjFree(gobj);
          return NULL;
-@@ -875,7 +908,7 @@ Ground_GObj* Ground_GetStageGObj(int map_id)
+@@ -875,7 +953,7 @@ Ground_GObj* Ground_GetStageGObj(int map_id)
  
      if (map_id < archive->unk4->unkC) {
          archive = grDatFiles_801C6330(map_id);
@@ -115032,11 +115128,13 @@ index ad559ea8f..a37ab8443 100644
          temp_r23 = HSD_JObjLoadJoint(temp_r24);
          Ground_801C34AC(map_id, temp_r23, temp_r24);
          if (stageinfo->param != NULL) {
-@@ -891,10 +924,10 @@ Ground_GObj* Ground_GetStageGObj(int map_id)
+@@ -890,11 +968,11 @@ Ground_GObj* Ground_GetStageGObj(int map_id)
+             OSReport("%s:%d: couldn t get jobj\n", __FILE__, 0x55D);
              return NULL;
          }
-         if (stage_datas[stageinfo->grkind]->callbacks[map_id].flags_b2 == 1 &&
+-        if (stage_datas[stageinfo->grkind]->callbacks[map_id].flags_b2 == 1 &&
 -            archive->unk4->unk8[map_id].x10 != NULL)
++        if (GR_STAGE(stageinfo->grkind)->callbacks[map_id].flags_b2 == 1 &&
 +            DP(DP(archive->unk4->unk8)[map_id].x10) != NULL)
          {
              HSD_GObj* temp_r23_2 = GObj_Create(17, 19, 0);
@@ -115045,7 +115143,7 @@ index ad559ea8f..a37ab8443 100644
              new_var2 = temp_r23_2;
              HSD_GObjObject_80390A70(temp_r23_2, HSD_GObj_CameraKind, temp_r27);
              GObj_SetupGXLinkMax(new_var2, &grDisplay_801C5F60, 5);
-@@ -903,10 +936,10 @@ Ground_GObj* Ground_GetStageGObj(int map_id)
+@@ -903,10 +981,10 @@ Ground_GObj* Ground_GetStageGObj(int map_id)
              Ground_801C2BD4(temp_r27);
          }
          HSD_GObjObject_80390A70(gobj, HSD_GObj_JObjKind, new_var);
@@ -115059,7 +115157,7 @@ index ad559ea8f..a37ab8443 100644
                  lb_8000F9F8(temp_r3_8);
              }
          }
-@@ -1053,7 +1086,7 @@ s32 Ground_801C1E18(void)
+@@ -1053,7 +1131,7 @@ s32 Ground_801C1E18(void)
      return stage_info.unk8C.b2;
  }
  
@@ -115068,7 +115166,7 @@ index ad559ea8f..a37ab8443 100644
  {
      bool stage_is_something;
      HSD_JObj* jobj;
-@@ -1077,7 +1110,7 @@ HSD_GObj* Ground_801C1E84(void)
+@@ -1077,7 +1155,7 @@ HSD_GObj* Ground_801C1E84(void)
  
  /// void Camera_SetBackgroundColor(u8, u8, u8);     /* extern */
  /// UnkStruct3* grDatFiles_801C6330(int); /* extern */
@@ -115077,7 +115175,14 @@ index ad559ea8f..a37ab8443 100644
  /// extern s8 HSD_GObj_FogKind;
  /// extern float @330;
  
-@@ -1099,7 +1132,7 @@ static inline HSD_FogDesc* foo(void)
+@@ -1093,13 +1171,13 @@ static inline HSD_FogDesc* foo(void)
+     grDatFiles_GetArchive();
+     archive = grDatFiles_GetArchive();
+     kind = stage_info.grkind;
+-    temp_r29 = stage_datas[kind]->callbacks;
++    temp_r29 = GR_STAGE(kind)->callbacks;
+     temp_r30 = archive->unk4->unkC;
+     grDatFiles_GetArchive();
      for (i = 0; i < temp_r30; i++) {
          phi_r29 = &temp_r29[i];
          if (phi_r29->flags_b1 == 1) {
@@ -115086,7 +115191,7 @@ index ad559ea8f..a37ab8443 100644
          }
      }
      return NULL;
-@@ -1175,13 +1208,13 @@ f32 Ground_801C20D0(void)
+@@ -1175,13 +1253,13 @@ f32 Ground_801C20D0(void)
  }
  
  typedef struct LightOverrideEntry {
@@ -115102,7 +115207,7 @@ index ad559ea8f..a37ab8443 100644
  
  static inline bool find_light_override(UnkArchiveStruct* archive,
                                         HSD_LightDesc* desc, bool* b6, bool* b7,
-@@ -1193,8 +1226,8 @@ static inline bool find_light_override(UnkArchiveStruct* archive,
+@@ -1193,8 +1271,8 @@ static inline bool find_light_override(UnkArchiveStruct* archive,
  
      if (count != 0) {
          for (i = 0; i < count; i++) {
@@ -115113,7 +115218,7 @@ index ad559ea8f..a37ab8443 100644
                  *b6 = arr[i].b;
                  *b7 = arr[i].a;
                  *b5 = arr[i].c;
-@@ -1216,8 +1249,8 @@ static inline bool find_light_override_in_dat(UnkStageDat* dat,
+@@ -1216,8 +1294,8 @@ static inline bool find_light_override_in_dat(UnkStageDat* dat,
      (void) dat;
      if (count != 0) {
          for (i = 0; i < count; i++) {
@@ -115124,7 +115229,7 @@ index ad559ea8f..a37ab8443 100644
                  *b6 = arr[i].b;
                  *b7 = arr[i].a;
                  *b5 = arr[i].c;
-@@ -1228,21 +1261,22 @@ static inline bool find_light_override_in_dat(UnkStageDat* dat,
+@@ -1228,21 +1306,22 @@ static inline bool find_light_override_in_dat(UnkStageDat* dat,
      return false;
  }
  
@@ -115154,7 +115259,7 @@ index ad559ea8f..a37ab8443 100644
                  0 &&
              (b6 != 0 || b7 != 0 || b5 != 0))
          {
-@@ -1257,11 +1291,10 @@ LightList** Ground_801C20E0(UnkArchiveStruct* archive, LightList** lightset)
+@@ -1257,11 +1336,10 @@ LightList** Ground_801C20E0(UnkArchiveStruct* archive, LightList** lightset)
      }
  
      out = lightset;
@@ -115169,7 +115274,7 @@ index ad559ea8f..a37ab8443 100644
              dat = archive->unk4;
              if (find_light_override_in_dat(dat, archive->unk4, desc, &b6, &b7,
                                             &b5) == 0 ||
-@@ -1269,7 +1302,7 @@ LightList** Ground_801C20E0(UnkArchiveStruct* archive, LightList** lightset)
+@@ -1269,7 +1347,7 @@ LightList** Ground_801C20E0(UnkArchiveStruct* archive, LightList** lightset)
              {
                  clean = out;
                  do {
@@ -115178,7 +115283,7 @@ index ad559ea8f..a37ab8443 100644
                          break;
                      }
                      clean++;
-@@ -1277,19 +1310,19 @@ LightList** Ground_801C20E0(UnkArchiveStruct* archive, LightList** lightset)
+@@ -1277,19 +1355,19 @@ LightList** Ground_801C20E0(UnkArchiveStruct* archive, LightList** lightset)
                  out--;
              } else {
                  if (b6) {
@@ -115204,7 +115309,7 @@ index ad559ea8f..a37ab8443 100644
                  }
              }
          }
-@@ -1329,7 +1362,7 @@ HSD_Spline* Ground_801C247C(s32 arg0, s32 arg1)
+@@ -1329,7 +1407,7 @@ HSD_Spline* Ground_801C247C(s32 arg0, s32 arg1)
      UnkArchiveStruct* archive = grDatFiles_801C6330(arg0);
      HSD_ASSERT(2017, archive);
      if (archive->unk4 != NULL && arg1 < archive->unk4->unk14) {
@@ -115213,11 +115318,52 @@ index ad559ea8f..a37ab8443 100644
      } else {
          return NULL;
      }
-@@ -1341,10 +1374,25 @@ static const int BGM_Undefined = -1;
+@@ -1341,16 +1419,80 @@ static const int BGM_Undefined = -1;
  
  static bool Ground_801C24F8(StKind stkind, u32 arg1, s32* arg2)
  {
 +#ifdef MU_NATIVE
++    /* m-ex (codes.gct, the code at Ground_801C24F8, 416 bytes), mod view only: for a stkind up to
++     * 0x20 (every VS stage) or from 0x120 (every added stage) the MxDt playlist of the internal id
++     * decides, when it has songs. One HSD_Randi(sum of the chances), then the first song whose
++     * running sum passes the draw; songs with chance 0 are skipped. The flags in arg1 are not
++     * read, stage_info.unk8C.b0 is left as it was and the answer is false (no alternate song).
++     * Retail draws HSD_Randi(0xC) or HSD_Randi(100) per param row rule instead (and only with
++     * arg1 & 4), so the count of random draws differs from retail on every such stage. */
++    if (mu_mex_active() && (stkind <= 0x20 || stkind >= 0x120)) {
++        const int gr = Stage_8022519C(stkind);
++        int song = -1, chance = 0;
++        const int count = mu_mex_stage_playlist(gr, -1, &song, &chance);
++        if (count > 0) {
++            int sum = 0, run = 0, draw, i;
++            for (i = 0; i < count; i++) {
++                mu_mex_stage_playlist(gr, i, &song, &chance);
++                sum += chance;
++            }
++            draw = HSD_Randi(sum);
++            for (i = 0; i < count; i++) {
++                mu_mex_stage_playlist(gr, i, &song, &chance);
++                if (chance == 0) {
++                    continue;
++                }
++                run += chance;
++                if (draw <= run - 1) {
++                    break;
++                }
++            }
++            /* No song taken (every chance 0): m-ex keeps the last song it looked at. */
++            mu_mex_stage_playlist(gr, i < count ? i : count - 1, &song, &chance);
++            if (song == -1) {
++                /* m-ex prints the loop index plus one, then asserts ("m-ex", line 0). */
++                OSReport("error: song %d has invalid id\n", i + 1);
++                OSPanic("m-ex", 0, "song has invalid id");
++            }
++            OSReport("[mex] stage %d (internal %d) music: song %d of %d, draw %d of %d -> %d\n",
++                     (int) stkind, gr, (i < count ? i : count - 1) + 1, count, draw, sum, song);
++            *arg2 = song;
++            return false;
++        }
++    }
 +    /* 20XX TE "Random stage music": any stage's song, drawn from the game's random numbers as TE
 +     * does (a replay carries the option, so it draws the same songs). */
 +    {
@@ -115240,15 +115386,32 @@ index ad559ea8f..a37ab8443 100644
      enum_t bgm = BGM_Undefined;
      bool result = false;
      int i;
-@@ -1406,8 +1454,17 @@ static bool Ground_801C24F8(StKind stkind, u32 arg1, s32* arg2)
+     for (i = 0; i < stage_info.param->stage_param_count; i++) {
+         phi_r30 = &phi_r30_0[i];
+-        if (phi_r30->stkind == stkind) {
++#ifdef MU_NATIVE
++        /* m-ex (Ground_801C24F8+44), mod view: a param row with stkind -1 matches any stkind
++         * here, in row order (only the music lookup treats -1 so). */
++        if (phi_r30->stkind == stkind ||
++            (mu_mex_active() && phi_r30->stkind == (StKind) -1))
++#else
++        if (phi_r30->stkind == stkind)
++#endif
++        {
+             if (arg1 & 4) {
+                 temp_r25 = arg1 & 0x40;
+                 switch (phi_r30->x14) {
+@@ -1406,8 +1548,19 @@ static bool Ground_801C24F8(StKind stkind, u32 arg1, s32* arg2)
                      }
                      break;
                  case 6:
 +#ifdef MU_NATIVE
 +                    /* General Codes, "Random Stage Music": a 50% chance of the alternate
 +                     * song once every character is unlocked. */
-+                    if (gm_80164ABC() &&
-+                        ((mu_general_codes() ? 50 : phi_r30->x16) >
++                    /* m-ex, mod view: the same 50 (Ground_801C24F8+1B8), and gm_80164ABC
++                     * always answers 1 (gm_80164ABC+58). */
++                    if ((mu_mex_active() || gm_80164ABC()) &&
++                        ((mu_general_codes() || mu_mex_active() ? 50 : phi_r30->x16) >
 +                             HSD_Randi(RANDI_MAX) ||
 +                         temp_r25))
 +#else
@@ -115258,7 +115421,22 @@ index ad559ea8f..a37ab8443 100644
                      {
                          arg1 |= 2;
                      } else {
-@@ -1468,6 +1525,11 @@ static bool Ground_801C24F8(StKind stkind, u32 arg1, s32* arg2)
+@@ -1415,8 +1568,14 @@ static bool Ground_801C24F8(StKind stkind, u32 arg1, s32* arg2)
+                     }
+                     break;
+                 case 7:
++#ifdef MU_NATIVE
++                    /* m-ex, mod view: gm_80164600 always answers 1 (gm_80164600+58). */
++                    if ((mu_mex_active() || gm_80164600()) &&
++                        (phi_r30->x16 > HSD_Randi(RANDI_MAX) || temp_r25))
++#else
+                     if (gm_80164600() &&
+                         (phi_r30->x16 > HSD_Randi(RANDI_MAX) || temp_r25))
++#endif
+                     {
+                         arg1 |= 2;
+                     } else {
+@@ -1468,6 +1627,11 @@ static bool Ground_801C24F8(StKind stkind, u32 arg1, s32* arg2)
                      stage_info.unk8C.b0 = false;
                  }
              }
@@ -115270,7 +115448,7 @@ index ad559ea8f..a37ab8443 100644
              break;
          }
      }
-@@ -1493,7 +1555,7 @@ static void panicMissingStageParam(StKind stkind, s32 count)
+@@ -1493,7 +1657,7 @@ static void panicMissingStageParam(StKind stkind, s32 count)
      OSReport("             check StageParam.csv or StageItem.csv, stdata.c\n");
      {
          ssize_t i;
@@ -115279,7 +115457,7 @@ index ad559ea8f..a37ab8443 100644
          for (i = 0; i < count; i++, p++) {
              OSReport(" stageid=%d\n", p->stkind);
          }
-@@ -1504,7 +1566,7 @@ static void panicMissingStageParam(StKind stkind, s32 count)
+@@ -1504,7 +1668,7 @@ static void panicMissingStageParam(StKind stkind, s32 count)
  
  void Ground_801C28CC(s32* arg0, StKind stkind)
  {
@@ -115288,7 +115466,7 @@ index ad559ea8f..a37ab8443 100644
      ssize_t count = stage_info.param->stage_param_count;
      ssize_t i;
  
-@@ -1512,8 +1574,12 @@ void Ground_801C28CC(s32* arg0, StKind stkind)
+@@ -1512,14 +1676,33 @@ void Ground_801C28CC(s32* arg0, StKind stkind)
          if (param->stkind == stkind) {
              s32 j;
              for (j = 0; 35 > j; j++) {
@@ -115301,7 +115479,28 @@ index ad559ea8f..a37ab8443 100644
              }
              return;
          }
-@@ -1530,7 +1596,7 @@ s32* Ground_801C2AD8(void)
+         param++;
+     }
+ 
++#ifdef MU_NATIVE
++    /* m-ex (Ground_801C28CC+17C), mod view: no row for this stkind (40 of ACE's 42 stages with no
++     * code of their own) is not the retail panic: each value is the file's x6A[j] alone, with no
++     * row factor. m-ex reads it with lhzx, so it is the half word zero-extended (a negative x6A
++     * would come out as 65536 + x6A; none of the discs' files has one checked, see LAYER.md). */
++    if (mu_mex_active()) {
++        s32 j;
++        OSReport("[mex] stage %d: no ground param row for stkind %d (%d rows); m-ex fallback\n",
++                 (int) stage_info.grkind, (int) stkind, (int) count);
++        for (j = 0; j < 35; j++) {
++            arg0[j] = (u16) stage_info.param->x6A[j];
++        }
++        return;
++    }
++#endif
+     panicMissingStageParam(stkind, count);
+ }
+ 
+@@ -1530,7 +1713,7 @@ s32* Ground_801C2AD8(void)
  
  float Ground_801C2AE8(StKind stkind)
  {
@@ -115310,7 +115509,23 @@ index ad559ea8f..a37ab8443 100644
      int i;
      for (i = 0; i < stage_info.param->stage_param_count; i++) {
          if (phi_r5->stkind == stkind) {
-@@ -1639,7 +1705,7 @@ bool Ground_801C2D24(enum_t arg0, Vec3* arg1)
+@@ -1538,6 +1721,15 @@ float Ground_801C2AE8(StKind stkind)
+         }
+         phi_r5 += 1;
+     }
++#ifdef MU_NATIVE
++    /* m-ex (Ground_801C2AE8+8C), mod view: no row is not the retail endless loop. m-ex loads 100
++     * into both factors (the file's x68 is not read either) and runs the retail expression:
++     * (0.01f * 100) * (0.01f * 100), 1.0f. */
++    if (mu_mex_active()) {
++        const s16 x68 = 100, x18 = 100;
++        return (0.01f * x68) * (0.01f * x18);
++    }
++#endif
+     OSReport("%s:%d: not found stage param in DAT\n", __FILE__, 0x927);
+     while (1) {
+     }
+@@ -1639,7 +1831,7 @@ bool Ground_801C2D24(enum_t arg0, Vec3* arg1)
      return false;
  }
  
@@ -115319,7 +115534,7 @@ index ad559ea8f..a37ab8443 100644
  {
      u8 _[4];
      bool result = false;
-@@ -1648,8 +1714,8 @@ bool Ground_801C2ED0(HSD_JObj* jobj, s32 arg1)
+@@ -1648,8 +1840,8 @@ bool Ground_801C2ED0(HSD_JObj* jobj, s32 arg1)
      int i;
      int max;
      if (temp_r3 != NULL) {
@@ -115330,7 +115545,18 @@ index ad559ea8f..a37ab8443 100644
          for (i = 0; i < max; i++, cur++) {
              mpLib_800552B0(cur->x, jobj, cur->z);
              mpLib_80055E9C(cur->x);
-@@ -1673,7 +1739,7 @@ bool Ground_801C2ED0(HSD_JObj* jobj, s32 arg1)
+@@ -1657,8 +1849,8 @@ bool Ground_801C2ED0(HSD_JObj* jobj, s32 arg1)
+             result = true;
+         }
+     }
+-    max = stage_datas[stage_info.grkind]->joint_count;
+-    cur = stage_datas[stage_info.grkind]->joints;
++    max = GR_STAGE(stage_info.grkind)->joint_count;
++    cur = GR_STAGE(stage_info.grkind)->joints;
+     for (i = 0; i < max; i++, cur++) {
+         if (cur->y == arg1) {
+             mpLib_800552B0(cur->x, jobj, cur->z);
+@@ -1673,7 +1865,7 @@ bool Ground_801C2ED0(HSD_JObj* jobj, s32 arg1)
  
  static s16 Ground_804D6954;
  
@@ -115339,7 +115565,16 @@ index ad559ea8f..a37ab8443 100644
  {
      StageData* stagedata;
      UnkArchiveStruct* archive;
-@@ -1712,8 +1778,8 @@ bool Ground_801C2FE0(Ground_GObj* arg0)
+@@ -1696,7 +1888,7 @@ bool Ground_801C2FE0(Ground_GObj* arg0)
+ 
+         temp_r3 = mpGetGroundCollJoint();
+         Ground_804D6954++;
+-        stagedata = stage_datas[stage_info.grkind];
++        stagedata = GR_STAGE(stage_info.grkind);
+         count = stagedata->joint_count;
+         vec = stagedata->joints;
+ 
+@@ -1712,8 +1904,8 @@ bool Ground_801C2FE0(Ground_GObj* arg0)
          if (archive != NULL) {
              int temp_r30;
  
@@ -115350,7 +115585,18 @@ index ad559ea8f..a37ab8443 100644
              count = dat->unk24;
  
              for (i = 0; i < count; i++, vec++) {
-@@ -1755,8 +1821,8 @@ bool Ground_801C3128(int gobj_id, void (*arg1)(int))
+@@ -1742,8 +1934,8 @@ bool Ground_801C3128(int gobj_id, void (*arg1)(int))
+         /// @todo @c cur cannot be swapped below @c max, hinting at a missing
+         /// @c inline function.
+         GrJoint* cur;
+-        int max = stage_datas[stage_info.grkind]->joint_count;
+-        cur = stage_datas[stage_info.grkind]->joints;
++        int max = GR_STAGE(stage_info.grkind)->joint_count;
++        cur = GR_STAGE(stage_info.grkind)->joints;
+         {
+             int i;
+             for (i = 0; i < max; i++, cur++) {
+@@ -1755,8 +1947,8 @@ bool Ground_801C3128(int gobj_id, void (*arg1)(int))
              {
                  UnkArchiveStruct* tmp = grDatFiles_801C6330(gobj_id);
                  if (tmp != NULL) {
@@ -115361,7 +115607,18 @@ index ad559ea8f..a37ab8443 100644
                      for (i = 0; i < max; i++, cur++) {
                          arg1(cur->x);
                          result = true;
-@@ -1814,8 +1880,8 @@ s32 Ground_801C32D4(s32 arg0, s32 arg1)
+@@ -1802,8 +1994,8 @@ s32 Ground_801C32D4(s32 arg0, s32 arg1)
+     int i;
+     mpGetGroundCollJoint();
+     /// @todo Might be an @c inline starting here.
+-    max = stage_datas[stage_info.grkind]->joint_count;
+-    cur = stage_datas[stage_info.grkind]->joints;
++    max = GR_STAGE(stage_info.grkind)->joint_count;
++    cur = GR_STAGE(stage_info.grkind)->joints;
+     result = -1;
+     for (i = 0; i < max; cur++, i++) {
+         if (cur->y == arg0 && cur->z == arg1) {
+@@ -1814,8 +2006,8 @@ s32 Ground_801C32D4(s32 arg0, s32 arg1)
          UnkArchiveStruct* tmp;
          tmp = grDatFiles_801C6330(arg0);
          if (tmp != NULL) {
@@ -115372,7 +115629,18 @@ index ad559ea8f..a37ab8443 100644
              for (i = 0; i < max; cur++, i++) {
                  if (cur->z == arg1) {
                      result = cur->x;
-@@ -1849,8 +1915,8 @@ s32 Ground_801C33C0(s32 arg0, s32 arg1)
+@@ -1837,8 +2029,8 @@ s32 Ground_801C33C0(s32 arg0, s32 arg1)
+     int i;
+     mpGetGroundCollJoint();
+     /// @todo Might be an @c inline starting here.
+-    max = stage_datas[stage_info.grkind]->joint_count;
+-    cur = stage_datas[stage_info.grkind]->joints;
++    max = GR_STAGE(stage_info.grkind)->joint_count;
++    cur = GR_STAGE(stage_info.grkind)->joints;
+     result = -1;
+     for (i = 0; i < max; cur++, i++) {
+         if (cur->y == arg0 && cur->x == arg1) {
+@@ -1849,8 +2041,8 @@ s32 Ground_801C33C0(s32 arg0, s32 arg1)
          UnkArchiveStruct* tmp;
          tmp = grDatFiles_801C6330(arg0);
          if (tmp != NULL) {
@@ -115383,7 +115651,7 @@ index ad559ea8f..a37ab8443 100644
              for (i = 0; i < max; cur++, i++) {
                  if (cur->x == arg1) {
                      result = cur->z;
-@@ -1906,12 +1972,12 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
+@@ -1906,12 +2098,12 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
      int entry_count;
      int i;
      struct {
@@ -115400,7 +115668,7 @@ index ad559ea8f..a37ab8443 100644
      int prev_index;
      int target;
      int j;
-@@ -1933,10 +1999,10 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
+@@ -1933,10 +2125,10 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
          return;
      }
      i = 0;
@@ -115413,7 +115681,7 @@ index ad559ea8f..a37ab8443 100644
                  break;
              }
          } else {
-@@ -1946,9 +2012,9 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
+@@ -1946,9 +2138,9 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
          i++;
      }
      count = entry->pair_count;
@@ -115425,7 +115693,7 @@ index ad559ea8f..a37ab8443 100644
          if (prev_index > target || prev_index == -1) {
              jobj = root;
              i = 0;
-@@ -1981,7 +2047,7 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
+@@ -1981,7 +2173,7 @@ void Ground_801C34AC(s32 map_id, HSD_JObj* root, struct HSD_Joint* joint)
              i++;
          }
          prev_index = i;
@@ -115434,7 +115702,7 @@ index ad559ea8f..a37ab8443 100644
          pair += 2;
      }
  }
-@@ -1993,9 +2059,9 @@ void Ground_801C36F4(int map_id, HSD_JObj* root, UNK_T joint)
+@@ -1993,9 +2185,9 @@ void Ground_801C36F4(int map_id, HSD_JObj* root, UNK_T joint)
      UnkArchiveStruct* archive;
      int entry_count;
      struct {
@@ -115446,7 +115714,7 @@ index ad559ea8f..a37ab8443 100644
      int i;
      u32 unused[4];
  
-@@ -2012,21 +2078,19 @@ void Ground_801C36F4(int map_id, HSD_JObj* root, UNK_T joint)
+@@ -2012,21 +2204,19 @@ void Ground_801C36F4(int map_id, HSD_JObj* root, UNK_T joint)
          return;
      }
      i = 0;
@@ -115478,7 +115746,7 @@ index ad559ea8f..a37ab8443 100644
      for (i = 0; i < 0x57 * 3; i++) {
          jobj = stage_info.x280[i];
          (void) jobj;
-@@ -2511,11 +2575,11 @@ bool Ground_801C43C4(void* arg0)
+@@ -2511,11 +2701,11 @@ bool Ground_801C43C4(void* arg0)
      struct GroundShadowEntry* phi_r4;
      int i;
      tmp = grDatFiles_GetArchive()->unk4;
@@ -115492,7 +115760,7 @@ index ad559ea8f..a37ab8443 100644
                  if (phi_r4->flag) {
                      return true;
                  } else {
-@@ -2582,7 +2646,7 @@ static void Ground_801C461C(HSD_GObj* gobj)
+@@ -2582,7 +2772,7 @@ static void Ground_801C461C(HSD_GObj* gobj)
      Ground_801C445C(gobj->hsd_obj);
  }
  
@@ -115501,7 +115769,7 @@ index ad559ea8f..a37ab8443 100644
  {
      HSD_LObj_803668EC(gobj->hsd_obj);
      HSD_LObjSetupInit(HSD_CObjGetCurrent());
-@@ -2595,12 +2659,12 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
+@@ -2595,12 +2785,12 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
      NULL,
  };
  
@@ -115518,7 +115786,7 @@ index ad559ea8f..a37ab8443 100644
  
  /* 3E0680 */ static HSD_LightDesc Ground_803E0680 = {
      NULL,
-@@ -2608,9 +2672,9 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
+@@ -2608,9 +2798,9 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
      (1 << 0) | (1 << 2) | (1 << 3),
      0,
      { 0xFF, 0xFF, 0xFF, 0xFF },
@@ -115530,7 +115798,7 @@ index ad559ea8f..a37ab8443 100644
  };
  
  /* 3E069C */ static HSD_LightAnim Ground_803E069C[] = { 0 };
-@@ -2619,27 +2683,27 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
+@@ -2619,27 +2809,27 @@ static void Ground_801C4640(HSD_GObj* gobj, int unused)
  };
  
  /* 4D450C */ static LightList Ground_804D450C = {
@@ -115570,7 +115838,7 @@ index ad559ea8f..a37ab8443 100644
          void* callback;
      } r28_carrier;
      Vec3 sp10; /* compiler-managed */
-@@ -2647,16 +2711,16 @@ void Ground_801C466C(void)
+@@ -2647,25 +2837,25 @@ void Ground_801C466C(void)
      int count;
      HSD_GObj* temp_r3;
      HSD_LObj* temp_r3_2;
@@ -115589,8 +115857,10 @@ index ad559ea8f..a37ab8443 100644
 +    LightListSlot* selected;
  
      archive = grDatFiles_GetArchive();
-     callbacks = stage_datas[stage_info.grkind]->callbacks;
-@@ -2665,7 +2729,7 @@ void Ground_801C466C(void)
+-    callbacks = stage_datas[stage_info.grkind]->callbacks;
++    callbacks = GR_STAGE(stage_info.grkind)->callbacks;
+     count = archive->unk4->unkC;
+     archive = grDatFiles_GetArchive();
      for (i = 0; i < count; i++) {
          if (callbacks->flags_b0 == 1) {
              archive = grDatFiles_801C6330(i);
@@ -115599,7 +115869,7 @@ index ad559ea8f..a37ab8443 100644
              goto light_selected;
          }
          callbacks++;
-@@ -2720,10 +2784,10 @@ light_selected:
+@@ -2720,10 +2910,10 @@ light_selected:
                      AOBJ_ARG_AF, 1.0);
      var_r27_2 = r28_carrier.lights;
      var_r26_2 = temp_r3_2;
@@ -115612,7 +115882,7 @@ index ad559ea8f..a37ab8443 100644
                  if (var_r26_2->aobj != NULL) {
                      HSD_AObjSetFlags(var_r26_2->aobj, AOBJ_LOOP);
                  }
-@@ -2763,7 +2827,7 @@ HSD_GObj* Ground_801C498C(void)
+@@ -2763,7 +2953,7 @@ HSD_GObj* Ground_801C498C(void)
      return gobj;
  }
  
@@ -115621,7 +115891,7 @@ index ad559ea8f..a37ab8443 100644
  {
      UnkArchiveStruct* archive = grDatFiles_GetArchive();
      if (stage_info.map_plit != NULL) {
-@@ -2822,7 +2886,7 @@ void Ground_801C4A08(HSD_GObj* gobj)
+@@ -2822,7 +3012,7 @@ void Ground_801C4A08(HSD_GObj* gobj)
          archive = grDatFiles_801C6330(gp->map_id);
          if (archive != NULL) {
              Ground_801C36F4(gp->map_id, jobj,
@@ -115630,7 +115900,7 @@ index ad559ea8f..a37ab8443 100644
          }
      }
      HSD_GObjFree(gobj);
-@@ -3041,7 +3105,7 @@ void Ground_801C4FAC(HSD_CObj* cobj)
+@@ -3041,7 +3231,7 @@ void Ground_801C4FAC(HSD_CObj* cobj)
                  dz = sp2C.z;
                  dz -= sp20.z;
                  dx2 = dx * dx;
@@ -115639,7 +115909,7 @@ index ad559ea8f..a37ab8443 100644
                  dz2 = dz * dz;
                  phi_f30 = sqrtf_store(dx2 + dy2 + dz2, &sqrt_tmp[0]);
                  if (phi_f30 < 10) {
-@@ -3227,30 +3291,24 @@ s32 Ground_801C5840(void)
+@@ -3227,30 +3417,24 @@ s32 Ground_801C5840(void)
      return stage_info.x6E4[i];
  }
  
@@ -115679,7 +115949,7 @@ index ad559ea8f..a37ab8443 100644
  
  Item_GObj* Ground_801C58E0(s32 arg0, s32 arg1)
  {
-@@ -3263,23 +3321,13 @@ Item_GObj* Ground_801C58E0(s32 arg0, s32 arg1)
+@@ -3263,23 +3447,13 @@ Item_GObj* Ground_801C58E0(s32 arg0, s32 arg1)
      return result;
  }
  
@@ -115705,7 +115975,7 @@ index ad559ea8f..a37ab8443 100644
      int i, j, out_idx;
      UnkArchiveStruct* archive;
      const size_t vals_count = 32;
-@@ -3290,11 +3338,11 @@ int Ground_801C5940(void)
+@@ -3290,11 +3464,11 @@ int Ground_801C5940(void)
      if (archive->unk4->unk4 == 0) {
          return -1;
      }
@@ -115719,7 +115989,21 @@ index ad559ea8f..a37ab8443 100644
              if (val >= 220 && val < 252 && (unsigned) out_idx < vals_count) {
                  vals[out_idx] = val;
                  out_idx++;
-@@ -3360,3 +3408,19 @@ void Ground_801C5AEC(Vec3* v, Vec3* arg1, Vec3* arg2, Vec3* arg3)
+@@ -3341,6 +3515,13 @@ bool Ground_801C5ABC(void)
+ 
+ u32 Ground_801C5AD0(s32 i)
+ {
++#ifdef MU_NATIVE
++    /* Not patched by m-ex: the console reads the retail table past its end for an added id (1P
++     * event setup only). An added id answers 0 here instead of that overread. */
++    if (i >= MU_MEX_STAGE_RETAIL && mu_mex_active()) {
++        return 0;
++    }
++#endif
+     return stage_datas[i]->flags2;
+ }
+ 
+@@ -3360,3 +3541,19 @@ void Ground_801C5AEC(Vec3* v, Vec3* arg1, Vec3* arg2, Vec3* arg3)
  
  /// @todo Is this used by base pointer anywhere? Not stripped by mwcc.
  static int unused_ints[] = { 1, 1, 0, 0, 0, 180, 0, 0, 0 };
@@ -121282,7 +121566,7 @@ index 31866a7a7..4ba5cc5ba 100644
  
  void grTSamus_80223850(Ground_GObj* gobj) {}
 diff --git a/src/melee/gr/grtseak.c b/src/melee/gr/grtseak.c
-index b4115cda0..725e7f7be 100644
+index b4115cda0..39919fff2 100644
 --- a/src/melee/gr/grtseak.c
 +++ b/src/melee/gr/grtseak.c
 @@ -3,13 +3,11 @@
@@ -121350,7 +121634,23 @@ index b4115cda0..725e7f7be 100644
          grTSeak_80223AB8,
          (1 << 31) | (1 << 30),
      },
-@@ -107,10 +105,9 @@ HSD_GObj* grTSeak_80223908(int arg0)
+@@ -94,7 +92,15 @@ bool grTSeak_80223900(void)
+ HSD_GObj* grTSeak_80223908(int arg0)
+ {
+     HSD_GObj* gobj;
++#ifdef MU_NATIVE
++    /* m-ex (grTSeak_80223908+28), mod view: the current row's map gobj table. For an added row
++     * that reuses Sheik's target stage code (gr/ground.c mu_ground_added_callbacks) it is the
++     * table its MxDt row names; Sheik's own stage (a retail row) keeps grTSk_StageCallbacks. */
++    StageCallbacks* added = mu_ground_added_callbacks(arg0);
++    StageCallbacks* callbacks = added != NULL ? added : &grTSk_StageCallbacks[arg0];
++#else
+     StageCallbacks* callbacks = &grTSk_StageCallbacks[arg0];
++#endif
+ 
+     gobj = Ground_GetStageGObj(arg0);
+ 
+@@ -107,10 +113,9 @@ HSD_GObj* grTSeak_80223908(int arg0)
      return gobj;
  }
  
@@ -121363,7 +121663,7 @@ index b4115cda0..725e7f7be 100644
  }
  
  bool grTSeak_80223A1C(Ground_GObj* gobj)
-@@ -122,9 +119,9 @@ void grTSeak_80223A24(Ground_GObj* gobj) {}
+@@ -122,9 +127,9 @@ void grTSeak_80223A24(Ground_GObj* gobj) {}
  
  void grTSeak_80223A28(Ground_GObj* gobj) {}
  
@@ -121375,7 +121675,7 @@ index b4115cda0..725e7f7be 100644
  }
  
  bool grTSeak_80223A7C(Ground_GObj* gobj)
-@@ -132,17 +129,16 @@ bool grTSeak_80223A7C(Ground_GObj* gobj)
+@@ -132,17 +137,16 @@ bool grTSeak_80223A7C(Ground_GObj* gobj)
      return false;
  }
  
@@ -121397,7 +121697,7 @@ index b4115cda0..725e7f7be 100644
  }
  
  bool grTSeak_80223B0C(Ground_GObj* gobj)
-@@ -150,9 +146,9 @@ bool grTSeak_80223B0C(Ground_GObj* gobj)
+@@ -150,9 +154,9 @@ bool grTSeak_80223B0C(Ground_GObj* gobj)
      return false;
  }
  
@@ -122826,21 +123126,22 @@ index 5f9685905..4d33bc699 100644
  {
      stage_info.unk8C.b4 = false;
 diff --git a/src/melee/gr/stage.c b/src/melee/gr/stage.c
-index 5a63015df..bb1255afc 100644
+index 5a63015df..e05056fce 100644
 --- a/src/melee/gr/stage.c
 +++ b/src/melee/gr/stage.c
-@@ -9,6 +9,10 @@
+@@ -9,6 +9,11 @@
  #include <sysdolphin/baselib/debug.h>
  #include <sysdolphin/baselib/random.h>
  
 +#ifdef MU_NATIVE
++#include <dolphin/os.h>
 +#include <mu_hp.h>
 +#endif
 +
  /// One #stage_id_map entry: the #GrKind for a #StKind.
  struct StageIdMapEntry {
      GrKind grkind;
-@@ -328,6 +332,10 @@ s32 Stage_80225074(s32 arg0)
+@@ -328,6 +333,10 @@ s32 Stage_80225074(s32 arg0)
      lbAudioAx_80023F28(spC);
      Ground_801C5A84(spC);
      Ground_801C5AA4(tmp);
@@ -122850,6 +123151,84 @@ index 5a63015df..bb1255afc 100644
 +#endif
      return arg0;
  }
+ 
+@@ -483,14 +492,66 @@ struct StageIdMapEntry stage_id_map[] = {
+     { Gr_Kind_Shrine, 0, 0 },       { Gr_Kind_Battle, 0, 0 },
+ };
+ 
++#ifdef MU_NATIVE
++/* m-ex stages (run-source/rel09-stages/LAYER.md): m-ex reads its own ext lookup instead of
++ * stage_id_map (Stage_8022519C+8, Stage_802251B4+14, Stage_802251E8+1C), one 12-byte row
++ * {internal id, 0, 0} per external id, for every id, retail ones included (on both discs those
++ * rows equal stage_id_map). In the mod view each read copies the disc's row into a host-order
++ * entry, so selected_stage.entry can point at it. An added external id (0x11E and up) whose
++ * internal id the native layer cannot load (locked, logged once) and an id past the disc's table
++ * load Battlefield instead, logged: no menu offers such an id, only a forced --match can. In the
++ * retail view this is &stage_id_map[stkind] exactly. */
++static struct StageIdMapEntry mu_stage_ext_pool[MU_MEX_STAGE_EXT_MAX];
++static struct StageIdMapEntry mu_stage_fallback = { Gr_Kind_Battle, 0, 0 };
++
++static struct StageIdMapEntry* mu_stage_entry(StKind stkind)
++{
++    static int logged = -1;
++    struct StageIdMapEntry* entry;
++    int words[3];
++    if (!mu_mex_active()) {
++        return &stage_id_map[stkind];
++    }
++    if ((int) stkind < 0 || (int) stkind >= MU_MEX_STAGE_EXT_MAX || !mu_mex_stage_ext(stkind, words)) {
++        if ((unsigned) stkind < ARRAY_SIZE(stage_id_map)) {
++            return &stage_id_map[stkind];
++        }
++        if (logged != (int) stkind) {
++            logged = (int) stkind;
++            OSReport("[mex] stage ext %d: not on this disc; Battlefield instead\n", (int) stkind);
++        }
++        return &mu_stage_fallback;
++    }
++    entry = &mu_stage_ext_pool[stkind];
++    entry->grkind = (GrKind) words[0];
++    entry->unk1 = words[1];
++    entry->unk2 = words[2];
++    if ((int) stkind >= MU_MEX_STAGE_EXT_RETAIL && !mu_mex_stage_usable(entry->grkind)) {
++        if (logged != (int) stkind) {
++            const char* why = mu_mex_stage_lock_reason(entry->grkind);
++            const char* name = mu_mex_stage_name(entry->grkind);
++            logged = (int) stkind;
++            OSReport("[mex] stage ext %d (internal %d, %s) is locked: %s; Battlefield instead\n",
++                     (int) stkind, (int) entry->grkind, name != NULL ? name : "?",
++                     why != NULL ? why : "?");
++        }
++        return &mu_stage_fallback;
++    }
++    return entry;
++}
++#define ST_ENTRY(stkind) mu_stage_entry(stkind)
++#else
++#define ST_ENTRY(stkind) (&stage_id_map[stkind])
++#endif
++
+ GrKind Stage_8022519C(StKind stkind)
+ {
+-    return stage_id_map[stkind].grkind;
++    return ST_ENTRY(stkind)->grkind;
+ }
+ 
+ void Stage_802251B4(StKind stkind)
+ {
+-    Ground_801C06B8(stage_id_map[stkind].grkind);
++    Ground_801C06B8(ST_ENTRY(stkind)->grkind);
+ }
+ 
+ void Stage_802251E8(StKind stkind, s32* _)
+@@ -498,7 +559,7 @@ void Stage_802251E8(StKind stkind, s32* _)
+     StageIdPair local_data;
+ 
+     selected_stage.stkind = stkind;
+-    selected_stage.entry = &stage_id_map[stkind];
++    selected_stage.entry = ST_ENTRY(stkind);
+ 
+     local_data = default_stage_pair;
  
 diff --git a/src/melee/gr/types.dox b/src/melee/gr/types.dox
 deleted file mode 100644
@@ -152384,7 +152763,7 @@ index db7f79319..790ef73eb 100644
              tail = &(*tail)->next;
          }
 diff --git a/src/melee/lb/lbaudio_ax.c b/src/melee/lb/lbaudio_ax.c
-index 0854fb240..8d5f3fb9c 100644
+index 0854fb240..bf03b073d 100644
 --- a/src/melee/lb/lbaudio_ax.c
 +++ b/src/melee/lb/lbaudio_ax.c
 @@ -27,9 +27,12 @@
@@ -152926,7 +153305,28 @@ index 0854fb240..8d5f3fb9c 100644
      }
  }
  
-@@ -1729,12 +1812,29 @@ void lbAudioAx_80026F2C(u32 flags)
+@@ -1698,6 +1781,20 @@ u64 lbAudioAx_80026EBC(StKind stkind)
+     if (grkind < 0 || grkind >= imax) {
+         return 0;
+     }
++#ifdef MU_NATIVE
++    /* m-ex (lbAudioAx_80026EBC+34), mod view: the disc's sound row for the internal id; the
++     * retail bound 0x6F stays, so ACE ids 111 and up answer 0 as on the console. A bank past the
++     * retail ones (56 and up) is never a bit here: the console shifts it modulo 64 and so asks
++     * for a wrong retail bank (Village, bank 67, sets bit 3); the stage's own bank is asked for by
++     * id in lbAudioAx_8002785C instead. */
++    if (mu_mex_active()) {
++        shift = mu_mex_stage_ssm(grkind, 0);
++        if (shift < 0 || shift >= 55) {
++            return 0;
++        }
++        return 1ULL << shift;
++    }
++#endif
+     if ((shift = s32_arr_803BB6B0[grkind][0]) == 55) {
+         return 0;
+     }
+@@ -1729,12 +1826,29 @@ void lbAudioAx_80026F2C(u32 flags)
          mask += 0x0014000000000000ULL;
      }
  
@@ -152956,7 +153356,7 @@ index 0854fb240..8d5f3fb9c 100644
  }
  
  void lbAudioAx_8002702C(u32 flags, u64 mask)
-@@ -1760,7 +1860,11 @@ void lbAudioAx_8002702C(u32 flags, u64 mask)
+@@ -1760,7 +1874,11 @@ void lbAudioAx_8002702C(u32 flags, u64 mask)
          result += 0x14000000000000ULL;
      }
  
@@ -152968,7 +153368,7 @@ index 0854fb240..8d5f3fb9c 100644
          if ((result & 1) && (mask & 1)) {
              lbl_804337C4[i] = 1;
          }
-@@ -1772,7 +1876,7 @@ void lbAudioAx_8002702C(u32 flags, u64 mask)
+@@ -1772,7 +1890,7 @@ void lbAudioAx_8002702C(u32 flags, u64 mask)
  static inline void lbAudioAx_80027168_inline(void)
  {
      int i;
@@ -152977,7 +153377,7 @@ index 0854fb240..8d5f3fb9c 100644
          if (s32_arr_803BB5D0[i][1] != 5 && lbl_80433984[i] == 2) {
              lbl_80433984[i] = 1;
          }
-@@ -1784,7 +1888,8 @@ static inline void lbAudioAx_80027168_inline_2(void)
+@@ -1784,7 +1902,8 @@ static inline void lbAudioAx_80027168_inline_2(void)
      int slot = fn_80026650();
      if (slot != -1) {
          strcpy(&cur_ssm_file[ssm_stem_pos], ssm_files[slot]);
@@ -152987,7 +153387,7 @@ index 0854fb240..8d5f3fb9c 100644
      }
  }
  
-@@ -1796,7 +1901,7 @@ void lbAudioAx_80027168(void)
+@@ -1796,7 +1915,7 @@ void lbAudioAx_80027168(void)
  
      lbAudioAx_80027168_inline();
  
@@ -152996,7 +153396,7 @@ index 0854fb240..8d5f3fb9c 100644
          if (s32_arr_803BB5D0[i][1] != 5 && lbl_804337C4[i] != -1) {
              count++;
          }
-@@ -1808,13 +1913,25 @@ void lbAudioAx_80027168(void)
+@@ -1808,13 +1927,25 @@ void lbAudioAx_80027168(void)
  
      fn_800269AC();
  
@@ -153023,7 +153423,7 @@ index 0854fb240..8d5f3fb9c 100644
      if (lbl_804D6438 < lbl_804D6448 + lbl_804D6450) {
          OSReport("******** CAUTION ********\n"
                   "FGM load size is over\n");
-@@ -1828,13 +1945,13 @@ static int fn_80027488(void)
+@@ -1828,13 +1959,13 @@ static int fn_80027488(void)
  {
      int i;
  
@@ -153039,7 +153439,7 @@ index 0854fb240..8d5f3fb9c 100644
          if (lbl_804338A4[i] == 1 && lbl_80433984[i] == 1) {
              lbl_80433984[i] = 2;
          }
-@@ -1850,12 +1967,151 @@ void lbAudioAx_80027648(void)
+@@ -1850,12 +1981,151 @@ void lbAudioAx_80027648(void)
      }
  }
  
@@ -153191,17 +153591,48 @@ index 0854fb240..8d5f3fb9c 100644
      if (gm_8016B184()) {
          result = lbAudioAx_80026E84(Player_GetPlayerCharacter(0));
          for (i = 0; i < 3; i++) {
-@@ -1886,12 +2142,41 @@ void lbAudioAx_8002785C(void)
+@@ -1883,15 +2153,79 @@ void lbAudioAx_8002785C(void)
+         result |= 0xC00;
+     }
+ 
++#ifdef MU_NATIVE
++    /* m-ex replaces this function (codes.gct, 592 bytes); its stage part, mod view: the reverb
++     * byte and the bank of the disc's sound row for the internal id, the bank asked for by id
++     * with no 0x6F bound (55: none; a retail bank by its bit; an added bank by id below). */
++    int mu_stage_bank = -1;
++    if (mu_mex_active()) {
++        const int gr = Stage_8022519C(stkind);
++        const int reverb = mu_mex_stage_ssm(gr, 1);
++        const int bank = mu_mex_stage_ssm(gr, 0);
++        lbl_804D38D8 = reverb >= 0 ? reverb : 0;
++        if (bank >= 0 && bank < 55) {
++            result |= 1ULL << bank;
++        } else if (bank > 55) {
++            mu_stage_bank = bank;
++        }
++    } else {
++        lbl_804D38D8 = s32_arr_803BB6B0[Stage_8022519C(stkind)][1];
++        result |= lbAudioAx_80026EBC(stkind);
++    }
++#else
      lbl_804D38D8 = s32_arr_803BB6B0[Stage_8022519C(stkind)][1];
      result |= lbAudioAx_80026EBC(stkind);
++#endif
  
 +#if defined(MU_NATIVE) && defined(MU_AKANEIA_FIGHTERS)
 +    {
 +        /* The sound banks of the added fighters in this match, requested by bank id (they are
 +         * past the 64-bit mask). An added fighter on a retail fighter's bank (ACE: B. Falcon
-+         * has captain.ssm) asks for it the way its retail owner does, by its bit. */
-+        int ak_banks[4];
++         * has captain.ssm) asks for it the way its retail owner does, by its bit. The stage's
++         * added bank (m-ex stages, mod view) is asked for the same way. */
++        int ak_banks[5];
 +        int ak_count = 0;
++        if (mu_stage_bank > 55 && mu_stage_bank < lb_ssm_n) {
++            ak_banks[ak_count++] = mu_stage_bank;
++        } else if (mu_stage_bank > 55) {
++            OSReport("[mex] stage sound bank %d has no row in the disc's bank table; not loaded\n",
++                     mu_stage_bank);
++        }
 +        for (i = 0; i < 4; i++) {
 +            if (Player_GetPlayerSlotType(i) != Gm_PKind_NA) {
 +                const int bank = mu_ak_sound_bank(Player_GetPlayerCharacter(i));
@@ -153223,6 +153654,13 @@ index 0854fb240..8d5f3fb9c 100644
 +        }
 +    }
 +#else
++#ifdef MU_NATIVE
++    /* Without the experimental fighters the bank table keeps its retail rows: no added bank. */
++    if (mu_stage_bank > 55) {
++        OSReport("[mex] stage sound bank %d needs the added bank rows (MU_AKANEIA_FIGHTERS); "
++                 "not loaded\n", mu_stage_bank);
++    }
++#endif
      if (result) {
          lbAudioAx_80026F2C(0xC);
          lbAudioAx_8002702C(0xC, result);
@@ -153233,7 +153671,7 @@ index 0854fb240..8d5f3fb9c 100644
  }
  
  static char str_audio_us[0xC] = "/audio/us/";
-@@ -1929,7 +2214,7 @@ void lbAudioAx_80027AB0(int id)
+@@ -1929,7 +2263,7 @@ void lbAudioAx_80027AB0(int id)
  
          {
              int i;
@@ -153242,7 +153680,7 @@ index 0854fb240..8d5f3fb9c 100644
                  if (i != 0) {
                      lbl_80433A64[i] = -1;
                      lbl_804337C4[i] = -1;
-@@ -2013,7 +2298,7 @@ void lbAudioAx_80027DF8(void)
+@@ -2013,7 +2347,7 @@ void lbAudioAx_80027DF8(void)
  
      if (lbl_804D6420 != 0) {
          if (lbl_804D38F0 != -1) {
@@ -153251,7 +153689,7 @@ index 0854fb240..8d5f3fb9c 100644
                  lbl_804D38F0 = fn_80023750(0x84, lbl_804D6428, PAN_MID, 5, 4);
              } else {
                  lbAudioAx_80024B58(lbl_804D38F0, lbl_804D6428);
-@@ -2036,7 +2321,7 @@ void lbAudioAx_80027DF8(void)
+@@ -2036,7 +2370,7 @@ void lbAudioAx_80027DF8(void)
  
      if (lbl_804D6424 != 0) {
          if (lbl_804D38F4 != -1) {
@@ -153260,7 +153698,7 @@ index 0854fb240..8d5f3fb9c 100644
                  lbl_804D38F4 = fn_80023750(0x85, lbl_804D642C, PAN_MID, 6, 4);
              } else {
                  lbAudioAx_80024B58(lbl_804D38F4, lbl_804D642C);
-@@ -2087,6 +2372,13 @@ void lbAudioAx_8002835C(void)
+@@ -2087,6 +2421,13 @@ void lbAudioAx_8002835C(void)
      HSD_ObjAllocInit(&lbl_80433710, sizeof(lbAudioAx_UserData), 4);
  }
  
@@ -153274,7 +153712,7 @@ index 0854fb240..8d5f3fb9c 100644
  void lbAudioAx_8002838C(void)
  {
      static u32 ar_stack[0x10];
-@@ -2119,28 +2411,33 @@ void lbAudioAx_8002838C(void)
+@@ -2119,28 +2460,33 @@ void lbAudioAx_8002838C(void)
      lbl_804D6438 = lbl_804D643C + lbl_804D6440 + lbl_804D6444;
      lbl_804D3870 = lbl_804D6438;
  
@@ -153314,7 +153752,7 @@ index 0854fb240..8d5f3fb9c 100644
          lbl_804337C4[i] = -1;
          lbl_804338A4[i] = -1;
          lbl_80433984[i] = -1;
-@@ -2185,7 +2482,7 @@ void lbAudioAx_80028690(void)
+@@ -2185,7 +2531,7 @@ void lbAudioAx_80028690(void)
          strcpy(&cur_ssm_file[ssm_stem_pos], "smash2.sem");
          AXDriver_8038DA70(cur_ssm_file, lb_800195D0);
  
@@ -153323,7 +153761,7 @@ index 0854fb240..8d5f3fb9c 100644
              if (i != 0) {
                  lbl_80433A64[i] = -1;
                  lbl_804337C4[i] = -1;
-@@ -2274,3 +2571,21 @@ void lbAudioAx_80028B90(void)
+@@ -2274,3 +2620,21 @@ void lbAudioAx_80028B90(void)
  {
      lbl_804D38CC = 0x7F;
  }
@@ -160001,7 +160439,7 @@ index cfd3e0527..e6707a8ed 100644
 -#pragma pop
 -#endif
 diff --git a/src/melee/mn/mncharsel.c b/src/melee/mn/mncharsel.c
-index d580c0aa4..f8f9080d5 100644
+index d580c0aa4..3bec38600 100644
 --- a/src/melee/mn/mncharsel.c
 +++ b/src/melee/mn/mncharsel.c
 @@ -28,6 +28,8 @@
@@ -161013,12 +161451,12 @@ index d580c0aa4..f8f9080d5 100644
 -    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= 0x19) {
 +#endif
 +    if (mnCharSel_803F0DFC.doors[door].sel_icon >= CSS_NONE) {
-         return;
-     }
-+    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= CSS_NONE) {
 +        return;
 +    }
-+
++    if (mnCharSel_803F0DFC.doors[door].sel_icon_prev >= CSS_NONE) {
+         return;
+     }
+ 
 +#ifdef MU_NATIVE
 +    /* 20XX Hack Pack "Disable X/Y Alt Costumes for Extra Characters" (802600D8): a hidden fighter
 +     * keeps its costume (the game has no costume count for it). Off: 0. */
@@ -161026,7 +161464,7 @@ index d580c0aa4..f8f9080d5 100644
 +        return;
 +    }
 +#endif
- 
++
 +#ifdef MU_NATIVE
 +    /* L or R alone: the costume stays, its skin changes (not both at once, which is the start of
 +     * the L+R+A+START reset). */
@@ -161114,7 +161552,22 @@ index d580c0aa4..f8f9080d5 100644
                          mnCharSel_804D6CB0->vs.start.players[cursor->x4]
                              .nametag = 0x78;
                          mnCharSel_803F0E8C[cursor->x4].data->use_tag = 0;
-@@ -2565,7 +3116,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2536,6 +3087,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+                 if (-22.0f > cursor->x10) {
+                     cursor->x10 = -22.0f;
+                 }
++#ifdef MU_NATIVE
++                /* m-ex's codes.gct writes 29.0 over this limit (04 804DC49C, shim/mu_mex.c). */
++                if ((mu_mex_css_codes & MEX_CSS_CURSOR_RIGHT_29) != 0) {
++                    if (29.0f < cursor->xC) {
++                        cursor->xC = 29.0f;
++                    }
++                } else
++#endif
+                 if (26.0f < cursor->xC) {
+                     cursor->xC = 26.0f;
+                 }
+@@ -2565,7 +3124,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  lbAudioAx_800237A8(0xB8, 0x7F, 0x40);
                              } else {
                                  mnCharSel_804A0BD0[door]->x5 = 0;
@@ -161123,7 +161576,24 @@ index d580c0aa4..f8f9080d5 100644
                                  {
                                      s32 player_idx;
                                      if (mnCharSel_804D6CF5 == 1) {
-@@ -2594,14 +3145,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2586,7 +3145,15 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+                             cursor->x5 = 2;
+                         } else {
+                             a_press = trigger & HSD_PAD_A;
+-                            if (a_press != 0) {
++#ifdef MU_NATIVE
++                            /* m-ex's codes.gct turns the beq at 802609F8 into a branch: the random
++                             * fighter corners are never tested (Akaneia puts Tails and Sonic there). */
++                            if (a_press != 0 &&
++                                (mu_mex_css_codes & MEX_CSS_NO_RANDOM_CORNERS) == 0)
++#else
++                            if (a_press != 0)
++#endif
++                            {
+                                 struct CSSCharModel* m =
+                                     mnCharSel_804A0BD0[door];
+                                 if (m->xC < 6.0f && m->xC > -1.0f &&
+@@ -2594,14 +3161,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                       (m->x8 > 24.4f && m->x8 < 30.2f)))
                                  {
                                      s32 icon_count;
@@ -161140,7 +161610,7 @@ index d580c0aa4..f8f9080d5 100644
                                          mnCharSel_8025FB50(door, 0);
                                          while (true) {
                                              mnCharSel_803F0DFC.doors[door]
-@@ -2617,6 +3168,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2617,6 +3184,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                  break;
                                              }
                                          }
@@ -161151,7 +161621,7 @@ index d580c0aa4..f8f9080d5 100644
                                          mnCharSel_8025DB34(door);
                                          cursor->x5 = 2;
                                          lbAudioAx_800237A8(0xB8, 0x7F, 0x40);
-@@ -2629,13 +3184,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2629,13 +3200,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  struct CSSCharModel* m2 =
                                      mnCharSel_804A0BD0[door];
                                  s32 i;
@@ -161170,7 +161640,7 @@ index d580c0aa4..f8f9080d5 100644
                                          mnCharSel_803F0DFC.doors[door]
                                              .sel_icon = (u8) i;
                                          mnCharSel_8025DB34(door);
-@@ -2652,6 +3211,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2652,6 +3227,14 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                              } else {
                                                  player_idx = door;
                                              }
@@ -161185,7 +161655,7 @@ index d580c0aa4..f8f9080d5 100644
                                              mnCharSel_804D6CB0->vs.start
                                                  .players[player_idx]
                                                  .ckind =
-@@ -2661,12 +3228,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2661,12 +3244,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                      .char_kind;
                                              if (mnCharSel_804D6CF5 == 1) {
                                                  lb_80011E24(
@@ -161202,7 +161672,7 @@ index d580c0aa4..f8f9080d5 100644
                                              }
                                              HSD_ForeachAnim(sp98, JOBJ_TYPE,
                                                              TOBJ_MASK,
-@@ -2709,15 +3276,28 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2709,15 +3292,28 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                      }
                                  }
                                  mnCharSel_803F0DFC.doors[door].sel_icon_prev =
@@ -161234,7 +161704,7 @@ index d580c0aa4..f8f9080d5 100644
                                          }
                                      } else {
                                          mnCharSel_CostumeChange((s32) door,
-@@ -2999,7 +3579,16 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -2999,7 +3595,16 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          /* Retail nudges both toggle-box
                                           * bounds outward by 1/10485760. */
                                          if (cy4 < 0.20000009536743146 &&
@@ -161252,7 +161722,7 @@ index d580c0aa4..f8f9080d5 100644
                                          {
                                              cursor->x10 = -2.2f;
                                              {
-@@ -3019,9 +3608,19 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3019,9 +3624,19 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                                          .p_kind = 3;
                                                      break;
                                                  case 4:
@@ -161272,7 +161742,7 @@ index d580c0aa4..f8f9080d5 100644
                                                      {
                                                          mnCharSel_803F0DFC
                                                              .doors[door]
-@@ -3042,11 +3641,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3042,11 +3657,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                              if (mnCharSel_803F0DFC.doors[door]
                                                      .p_kind == 1)
                                              {
@@ -161291,7 +161761,7 @@ index d580c0aa4..f8f9080d5 100644
                                                  if (mnCharSel_803F0DFC
                                                              .doors[door]
                                                              .selected_since_load ==
-@@ -3186,6 +3792,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3186,6 +3808,10 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          -1);
                                  }
                                  lb_8000B1CC(sp98, NULL, (&sp88));
@@ -161302,7 +161772,7 @@ index d580c0aa4..f8f9080d5 100644
                                  {
                                      if (cursor->xC > (sp88.x - 4.7f) &&
                                          cursor->xC < (5.2f + sp88.x))
-@@ -3232,7 +3842,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3232,7 +3858,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                          mnCharSel_803F0DFC.doors[ci].p_kind;
                                      if (pk2 != 3 &&
                                          mnCharSel_803F0DFC.doors[ci].sel_icon <
@@ -161311,7 +161781,7 @@ index d580c0aa4..f8f9080d5 100644
                                          (pk2 != 0 || (s32) cursor->x4 == ci))
                                      {
                                          struct CSSCharModel* mc =
-@@ -3252,7 +3862,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3252,7 +3878,12 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  }
                              }
  
@@ -161325,7 +161795,7 @@ index d580c0aa4..f8f9080d5 100644
                                  u8 cport4 = cursor->x4;
                                  s32 closest_door = (u8) closest;
                                  mnCharSel_804A0BD0[(u8) closest]->x5 =
-@@ -3273,12 +3888,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3273,12 +3904,17 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                             -2.0f);
                              }
                          }
@@ -161345,7 +161815,7 @@ index d580c0aa4..f8f9080d5 100644
                          {
                              f32 cy8 = cursor->x10;
                              if (cy8 > 0.2f && cy8 < 22.0f) {
-@@ -3306,7 +3926,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3306,7 +3942,18 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  mnCharSel_804D6CB0->match_type != 1)
                              {
                                  if (mnCharSel_803F0DFC.doors[cport6].p_kind ==
@@ -161365,7 +161835,7 @@ index d580c0aa4..f8f9080d5 100644
                                  {
                                      mnCharSel_803F0DFC.doors[cport6].p_kind =
                                          0;
-@@ -3320,7 +3951,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
+@@ -3320,7 +3967,7 @@ void mnCharSel_CursorThink(HSD_GObj* gobj)
                                  {
                                      u8 cport7 = cursor->x4;
                                      if (mnCharSel_803F0DFC.doors[cport7]
@@ -161374,7 +161844,7 @@ index d580c0aa4..f8f9080d5 100644
                                      {
                                          mnCharSel_804A0BD0[cport7]->x5 =
                                              (u8) (next_port = cport7 + 1);
-@@ -3408,7 +4039,7 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3408,7 +4055,7 @@ void fn_80262648(HSD_GObj* gobj)
          u8 door = model->x4;
  
          if ((p_kind = mnCharSel_803F0DFC.doors[door].p_kind) == 3 ||
@@ -161383,7 +161853,7 @@ index d580c0aa4..f8f9080d5 100644
          {
              HSD_JObjSetFlagsAll(jobj, JOBJ_HIDDEN);
              return;
-@@ -3435,6 +4066,12 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3435,6 +4082,12 @@ void fn_80262648(HSD_GObj* gobj)
                  mnCharSel_804D50E0[mnCharSel_803F0DFC.doors[door].team];
          }
      }
@@ -161396,7 +161866,7 @@ index d580c0aa4..f8f9080d5 100644
  
      HSD_JObjClearFlagsAll(jobj, JOBJ_HIDDEN);
      model->x7 = (u8) (model->x7 + 1);
-@@ -3474,7 +4111,7 @@ void fn_80262648(HSD_GObj* gobj)
+@@ -3474,7 +4127,7 @@ void fn_80262648(HSD_GObj* gobj)
  
                  for (j = 0; j < (s32) n_doors; j++) {
                      if (j != (s32) model->x4 && (*bdp)->x5 == 0 &&
@@ -161405,7 +161875,7 @@ index d580c0aa4..f8f9080d5 100644
                      {
                          f32 dx;
                          f32 dy;
-@@ -3624,6 +4261,7 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3624,6 +4277,7 @@ void fn_80262F44(HSD_GObj* gobj)
  {
      HSD_JObj* jobj = GET_JOBJ(gobj);
      int i;
@@ -161413,7 +161883,7 @@ index d580c0aa4..f8f9080d5 100644
      PAD_STACK(0x8);
  
      if (mnCharSel_804D6CB0->match_type == VS_CAMERA) {
-@@ -3640,7 +4278,7 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3640,7 +4294,7 @@ void fn_80262F44(HSD_GObj* gobj)
  
      if (mnCharSel_804D6CF5 == 1) {
          if (mnCharSel_804A0BC0[0]->x5 == 1 ||
@@ -161422,7 +161892,7 @@ index d580c0aa4..f8f9080d5 100644
          {
              mnCharSel_804D6CF7 = 0;
          } else {
-@@ -3648,18 +4286,23 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3648,18 +4302,23 @@ void fn_80262F44(HSD_GObj* gobj)
          }
          HSD_JObjSetFlagsAll(jobj, JOBJ_HIDDEN);
      } else {
@@ -161448,7 +161918,7 @@ index d580c0aa4..f8f9080d5 100644
              if (mnCharSel_804D6CB0->vs.start.rules.is_teams == 1) {
                  for (i = 0; i < (s32) (mnCharSel_804D6CF5 - 1); i++) {
                      s32 j;
-@@ -3721,6 +4364,32 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3721,6 +4380,32 @@ void fn_80262F44(HSD_GObj* gobj)
              }
          }
  
@@ -161481,7 +161951,7 @@ index d580c0aa4..f8f9080d5 100644
          if (mnCharSel_804D6CF2 == 0 && (trigger & HSD_PAD_START)) {
              if (mnCharSel_804D6CF7 != 0) {
                  mnCharSel_804D6CF6 = 1;
-@@ -3750,12 +4419,23 @@ void fn_80262F44(HSD_GObj* gobj)
+@@ -3750,12 +4435,23 @@ void fn_80262F44(HSD_GObj* gobj)
              }
          }
      }
@@ -161506,7 +161976,7 @@ index d580c0aa4..f8f9080d5 100644
          HSD_JObjReqAnimAll(jobj, 0.0F);
      }
      HSD_JObjAnimAll(jobj);
-@@ -3820,6 +4500,12 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3820,6 +4516,12 @@ void fn_802633B0(HSD_GObj* gobj)
      } else {
          num_entries = num_entries - 7;
      }
@@ -161519,7 +161989,7 @@ index d580c0aa4..f8f9080d5 100644
  
      if (mnCharSel_804D6CF5 == 1) {
          lb_80011E24(mnCharSel_804D6CC0, &list_jobj, mnCharSel_803F0EBC.xc4,
-@@ -3834,9 +4520,9 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3834,9 +4536,9 @@ void fn_802633B0(HSD_GObj* gobj)
      switch ((s32) tag->state) {
      case 1:
          mnCharSel_8025D1C4((s32) tag->port, 1);
@@ -161531,7 +162001,7 @@ index d580c0aa4..f8f9080d5 100644
              {
                  HSD_SisLib_803A70A0(tag->name_ls, 0,
                                      (char*) mnCharSel_803F0A48.gnw_name);
-@@ -3939,13 +4625,25 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3939,13 +4641,25 @@ void fn_802633B0(HSD_GObj* gobj)
          }
  
          HSD_SisLib_803A746C(tag->name_ls, 0, 0.0f, tag->x8);
@@ -161557,7 +162027,7 @@ index d580c0aa4..f8f9080d5 100644
              for (j = 0; j < 9; j++) {
                  row_idx = j - page_off;
                  if (row_idx < 0) {
-@@ -3977,6 +4675,10 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3977,6 +4691,10 @@ void fn_802633B0(HSD_GObj* gobj)
          }
  
          if (trigger & HSD_PAD_A) {
@@ -161568,7 +162038,7 @@ index d580c0aa4..f8f9080d5 100644
              if (mnCharSel_804D6CF5 == 1) {
                  lb_80011E24(mnCharSel_804D6CC0, &list_origin_jobj,
                              mnCharSel_803F0EBC.name_list_joint, -1);
-@@ -3992,7 +4694,7 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -3992,7 +4710,7 @@ void fn_802633B0(HSD_GObj* gobj)
  
              if ((s32) cursor_row == 0) {
                  if (lbLang_IsSavedLanguageUS() != 0 &&
@@ -161577,7 +162047,7 @@ index d580c0aa4..f8f9080d5 100644
                  {
                      HSD_SisLib_803A70A0(tag->text, 0,
                                          (char*) mnCharSel_803F0A48.gnw_name);
-@@ -4004,7 +4706,7 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -4004,7 +4722,7 @@ void fn_802633B0(HSD_GObj* gobj)
                                  .char_kind));
                  }
                  tag->text->default_kerning = 1;
@@ -161586,7 +162056,7 @@ index d580c0aa4..f8f9080d5 100644
                      tag->text->hidden = 0;
                  } else {
                      tag->text->hidden = 1;
-@@ -4039,7 +4741,14 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -4039,7 +4757,14 @@ void fn_802633B0(HSD_GObj* gobj)
                  goto check_cancel;
              }
  
@@ -161601,7 +162071,7 @@ index d580c0aa4..f8f9080d5 100644
                  if (IsNameListFull() == 0) {
                      if (mnCharSel_804D6CF5 == 1) {
                          mnCharSel_804D6CF9 = mnCharSel_804D6CF0;
-@@ -4063,7 +4772,12 @@ void fn_802633B0(HSD_GObj* gobj)
+@@ -4063,7 +4788,12 @@ void fn_802633B0(HSD_GObj* gobj)
                  goto check_cancel;
              }
  
@@ -161614,7 +162084,7 @@ index d580c0aa4..f8f9080d5 100644
                  {
                      s32 p;
                      for (p = 0; p < (s32) mnCharSel_804D6CF5; p++) {
-@@ -4178,6 +4892,40 @@ void fn_8026407C(HSD_GObj* gobj)
+@@ -4178,6 +4908,40 @@ void fn_8026407C(HSD_GObj* gobj)
      HSD_FogSet(GET_FOG(gobj));
  }
  
@@ -161655,7 +162125,7 @@ index d580c0aa4..f8f9080d5 100644
  static const GXColor mnCharSel_804DC580 = { 255, 255, 0, 255 };
  static const GXColor mnCharSel_804DC584 = { 20, 80, 160, 255 };
  static const GXColor mnCharSel_804DC588 = { 60, 140, 80, 255 };
-@@ -4185,6 +4933,99 @@ static const GXColor mnCharSel_804DC58C = { 160, 160, 0, 255 };
+@@ -4185,6 +4949,99 @@ static const GXColor mnCharSel_804DC58C = { 160, 160, 0, 255 };
  static const GXColor mnCharSel_804DC590 = { 180, 80, 0, 255 };
  static const GXColor mnCharSel_804DC594 = { 220, 0, 0, 255 };
  
@@ -161755,7 +162225,7 @@ index d580c0aa4..f8f9080d5 100644
  s32 mnCharSel_802640A0(void)
  {
      HSD_JObj* sp108;
-@@ -4220,6 +5061,10 @@ s32 mnCharSel_802640A0(void)
+@@ -4220,6 +5077,10 @@ s32 mnCharSel_802640A0(void)
      u8 match_type = mnCharSel_804D6CB0->match_type;
  
      if (match_type != 0) {
@@ -161766,7 +162236,7 @@ index d580c0aa4..f8f9080d5 100644
          lbAudioAx_800237A8(mnCharSel_803F0A48.mode_info[match_type].enter_sfx,
                             0x7F, 0x40);
      } else {
-@@ -4239,11 +5084,19 @@ s32 mnCharSel_802640A0(void)
+@@ -4239,11 +5100,19 @@ s32 mnCharSel_802640A0(void)
          }
      }
  
@@ -161786,7 +162256,7 @@ index d580c0aa4..f8f9080d5 100644
      mnCharSel_804D6CF3 = 0;
      {
          u8* mt_p = &mnCharSel_804D6CB0->match_type;
-@@ -4272,14 +5125,18 @@ s32 mnCharSel_802640A0(void)
+@@ -4272,14 +5141,18 @@ s32 mnCharSel_802640A0(void)
      if ((u8) mnCharSel_804D6CF4 != 0) {
          mnCharSel_804D6CF4 = 0;
          for (i = 0; i < num_players; i++) {
@@ -161806,7 +162276,7 @@ index d580c0aa4..f8f9080d5 100644
          HSD_GObjObject_80390A70(gobj, HSD_GObj_CameraKind, cobj);
      }
      GObj_SetupGXLinkMax(gobj, HSD_GObj_803910D8, 0);
-@@ -4289,8 +5146,8 @@ s32 mnCharSel_802640A0(void)
+@@ -4289,8 +5162,8 @@ s32 mnCharSel_802640A0(void)
  
      gobj = GObj_Create(3, 4, 0x80);
      {
@@ -161817,7 +162287,7 @@ index d580c0aa4..f8f9080d5 100644
          HSD_LObjSetNext(lobj0, lobj1);
          HSD_GObjObject_80390A70(gobj, HSD_GObj_LightKind, lobj0);
      }
-@@ -4298,35 +5155,57 @@ s32 mnCharSel_802640A0(void)
+@@ -4298,35 +5171,57 @@ s32 mnCharSel_802640A0(void)
  
      gobj = GObj_Create(0xE, 2, 0);
      {
@@ -161888,7 +162358,7 @@ index d580c0aa4..f8f9080d5 100644
      {
          u8 obj_kind = HSD_GObj_JObjKind;
          HSD_GObjObject_80390A70(mnCharSel_804D6CBC, obj_kind,
-@@ -4339,6 +5218,12 @@ s32 mnCharSel_802640A0(void)
+@@ -4339,6 +5234,12 @@ s32 mnCharSel_802640A0(void)
      HSD_ForeachAnim(mnCharSel_804D6CC0, JOBJ_TYPE, ALL_TYPE_MASK,
                      HSD_AObjStopAnim, AOBJ_ARG_AOV, 0, 0);
  
@@ -161901,7 +162371,7 @@ index d580c0aa4..f8f9080d5 100644
      if (gm_IsCKindUnlocked(CKind_Luigi) == 0) {
          row_a = 2;
          row_b = 0x13;
-@@ -4363,7 +5248,7 @@ s32 mnCharSel_802640A0(void)
+@@ -4363,7 +5264,7 @@ s32 mnCharSel_802640A0(void)
      icons[row_b].bound_u = ICONROWHT_TOP_TOP;
      icons[row_b].bound_d = ICONROWHT_MID_TOP;
  
@@ -161910,7 +162380,7 @@ index d580c0aa4..f8f9080d5 100644
          icons[icon].state = gm_IsCKindUnlocked(icons[icon].char_kind);
          icons[icon].anim_timer = 0;
          if (mnCharSel_804D6CF5 == 1) {
-@@ -4404,21 +5289,24 @@ s32 mnCharSel_802640A0(void)
+@@ -4404,21 +5305,24 @@ s32 mnCharSel_802640A0(void)
              break;
          }
      }
@@ -161939,7 +162409,7 @@ index d580c0aa4..f8f9080d5 100644
              HSD_JObjReqAnimAll(mnCharSel_804D6CC8, 0.0f);
              HSD_ForeachAnim(mnCharSel_804D6CC8, JOBJ_TYPE, ALL_TYPE_MASK,
                              HSD_AObjStopAnim, AOBJ_ARG_AOV, 0, 0);
-@@ -4428,13 +5316,18 @@ s32 mnCharSel_802640A0(void)
+@@ -4428,13 +5332,18 @@ s32 mnCharSel_802640A0(void)
      if (mnCharSel_804D6CB0->match_type == 0x17) {
          u8 ck;
          gobj = GObj_Create(4, 5, 0x80);
@@ -161962,7 +162432,7 @@ index d580c0aa4..f8f9080d5 100644
          HSD_JObjReqAnimAll(mnCharSel_804D6CC4, 0.0f);
          HSD_ForeachAnim(mnCharSel_804D6CC4, JOBJ_TYPE, ALL_TYPE_MASK,
                          HSD_AObjStopAnim, AOBJ_ARG_AOV, 0, 0);
-@@ -4443,7 +5336,7 @@ s32 mnCharSel_802640A0(void)
+@@ -4443,7 +5352,7 @@ s32 mnCharSel_802640A0(void)
              u8* char_kinds;
              s32 icon_off;
              do {
@@ -161971,7 +162441,7 @@ index d580c0aa4..f8f9080d5 100644
              } while (icons[i].state == 0);
              char_kinds = &icons[0].char_kind;
              icon_off = getIconOffset(i);
-@@ -4457,14 +5350,14 @@ s32 mnCharSel_802640A0(void)
+@@ -4457,14 +5366,14 @@ s32 mnCharSel_802640A0(void)
  
      if (mnCharSel_804D6CB0->match_type == 1) {
          gobj = GObj_Create(4, 5, 0x80);
@@ -161990,7 +162460,7 @@ index d580c0aa4..f8f9080d5 100644
          HSD_JObjReqAnimAll(mnCharSel_804D6CCC, 0.0f);
      }
  
-@@ -4472,15 +5365,15 @@ s32 mnCharSel_802640A0(void)
+@@ -4472,15 +5381,15 @@ s32 mnCharSel_802640A0(void)
          HSD_GObj* cursor_gobj;
          struct CSSCursorData* cursor;
          cursor_gobj = GObj_Create(4, 5, 0x80);
@@ -162010,7 +162480,7 @@ index d580c0aa4..f8f9080d5 100644
          HSD_JObjReqAnimAll(jobj, 0.0f);
          HSD_JObjAnimAll(jobj);
          HSD_ForeachAnim(jobj, JOBJ_TYPE, ALL_TYPE_MASK, HSD_AObjStopAnim,
-@@ -4494,13 +5387,17 @@ s32 mnCharSel_802640A0(void)
+@@ -4494,13 +5403,17 @@ s32 mnCharSel_802640A0(void)
          cursor->x6 = 0;
          cursor->x5 = 2;
          cursor->xC = (f32) ((15.0f * (f32) i) - 31.0f);
@@ -162029,7 +162499,7 @@ index d580c0aa4..f8f9080d5 100644
              {
                  int player;
                  struct CSSCharModel* model = HSD_MemAlloc(sizeof(*model));
-@@ -4508,9 +5405,9 @@ s32 mnCharSel_802640A0(void)
+@@ -4508,9 +5421,9 @@ s32 mnCharSel_802640A0(void)
                  GObj_InitUserData(model_gobj, 4, HSD_Free, model);
                  GObj_SetupGXLink(model_gobj, HSD_GObj_JObjCallback, 2, 0x80);
                  HSD_GObj_SetupProc(model_gobj, fn_80262648, 2);
@@ -162042,7 +162512,7 @@ index d580c0aa4..f8f9080d5 100644
                  HSD_JObjReqAnimAll(jobj, 0.0f);
                  {
                      HSD_JObj* anim_jobj = jobj;
-@@ -4532,7 +5429,7 @@ s32 mnCharSel_802640A0(void)
+@@ -4532,7 +5445,7 @@ s32 mnCharSel_802640A0(void)
                  } else {
                      player = i;
                  }
@@ -162051,7 +162521,7 @@ index d580c0aa4..f8f9080d5 100644
                      if (mnCharSel_804D6CB0->vs.start.players[player].ckind ==
                              icons[found].char_kind &&
                          gm_IsCKindUnlocked(
-@@ -4542,7 +5439,20 @@ s32 mnCharSel_802640A0(void)
+@@ -4542,7 +5455,20 @@ s32 mnCharSel_802640A0(void)
                          break;
                      }
                  }
@@ -162073,7 +162543,7 @@ index d580c0aa4..f8f9080d5 100644
                      u8* slot_type;
                      mnCharSel_804D6CB0->vs.start.players[player].ckind =
                          CKind_Playable_Count;
-@@ -4650,6 +5560,12 @@ s32 mnCharSel_802640A0(void)
+@@ -4650,6 +5576,12 @@ s32 mnCharSel_802640A0(void)
              HSD_SisLib_803A6B98(td->text, 80.0f, 0.0f,
                                  "\x81\x45\x81\x45\x81\x45\x81\x45");
          }
@@ -162086,7 +162556,7 @@ index d580c0aa4..f8f9080d5 100644
          if (mnCharSel_804D6CF5 == 1) {
              lb_80011E24(mnCharSel_804D6CC0, &sp108,
                          mnCharSel_803F0EBC.name_list_joint, -1);
-@@ -4661,6 +5577,10 @@ s32 mnCharSel_802640A0(void)
+@@ -4661,6 +5593,10 @@ s32 mnCharSel_802640A0(void)
              }
          }
          lb_8000B1CC(sp108, NULL, &spEC);
@@ -162097,7 +162567,7 @@ index d580c0aa4..f8f9080d5 100644
          td->name_ls = HSD_SisLib_803A6754(0, ctx);
          td->name_ls->default_fitting = 1;
          text = td->name_ls;
-@@ -4697,6 +5617,9 @@ s32 mnCharSel_802640A0(void)
+@@ -4697,6 +5633,9 @@ s32 mnCharSel_802640A0(void)
              HSD_SisLib_803A6B98(td->name_ls, 10.0f, 0.0f,
                                  "\x81\x45\x81\x45\x81\x45\x81\x45");
          }
@@ -162107,7 +162577,7 @@ index d580c0aa4..f8f9080d5 100644
          for (found = 0; found < 0x78; found++) {
              if (GetNameText((u8) found) == NULL) {
                  break;
-@@ -4745,10 +5668,14 @@ s32 mnCharSel_802640A0(void)
+@@ -4745,10 +5684,14 @@ s32 mnCharSel_802640A0(void)
                  mnCharSel_804D6CF8 - 1;
              mnCharSel_804D6CF8 = td->next_tag;
          }
@@ -162122,7 +162592,7 @@ index d580c0aa4..f8f9080d5 100644
              td->use_tag = 1;
              HSD_SisLib_803A70A0(
                  td->text, 0,
-@@ -5156,6 +6083,33 @@ s32 mnCharSel_802640A0(void)
+@@ -5156,6 +6099,33 @@ s32 mnCharSel_802640A0(void)
          u8 mt;
          s32 clear;
          mnCharSel_803F0EBC.scroll_flag = 0;
@@ -162156,7 +162626,7 @@ index d580c0aa4..f8f9080d5 100644
          text =
              HSD_SisLib_803A5ACC(0, ctx, -12.0f, -23.3f, 0.0f, 450.0f, 32.0f);
          text->default_alignment = 1;
-@@ -5164,6 +6118,10 @@ s32 mnCharSel_802640A0(void)
+@@ -5164,6 +6134,10 @@ s32 mnCharSel_802640A0(void)
          text->font_size.x = 0.07f;
          text->font_size.y = 0.07f;
          HSD_SisLib_803A6368(text, 0x4A);
@@ -162167,7 +162637,7 @@ index d580c0aa4..f8f9080d5 100644
          mnCharSel_8025BD30();
          mt = mnCharSel_804D6CB0->match_type;
          if ((s32) mt < 3) {
-@@ -5190,6 +6148,26 @@ s32 mnCharSel_802640A0(void)
+@@ -5190,6 +6164,26 @@ s32 mnCharSel_802640A0(void)
                  text->font_size.x = 0.07f;
                  text->font_size.y = 0.07f;
                  mnCharSel_8025D1C4(i, 0);
@@ -162194,7 +162664,7 @@ index d580c0aa4..f8f9080d5 100644
              }
          } else {
              for (i = 0; i < (s32) mnCharSel_804D6CF5; i++) {
-@@ -5203,13 +6181,13 @@ s32 mnCharSel_802640A0(void)
+@@ -5203,13 +6197,13 @@ s32 mnCharSel_802640A0(void)
      (void) ((u8*) text)[num_players];
      (void) icons[num_players];
      gobj = GObj_Create(4, 5, 0x80);
@@ -162212,7 +162682,7 @@ index d580c0aa4..f8f9080d5 100644
      HSD_JObjReqAnimAll(jobj, 0.0f);
      HSD_ForeachAnim(jobj, JOBJ_TYPE, ALL_TYPE_MASK, HSD_AObjStopAnim,
                      AOBJ_ARG_AOV, 0, 0);
-@@ -5296,6 +6274,12 @@ s32 mnCharSel_802640A0(void)
+@@ -5296,6 +6290,12 @@ s32 mnCharSel_802640A0(void)
          }
      }
  
@@ -162225,7 +162695,7 @@ index d580c0aa4..f8f9080d5 100644
      mnCharSel_8025EE8C(mnCharSel_804D6CB0->match_type);
      PAD_STACK(0x20);
      return lbAudioAx_80023F28(gmMainLib_8015ECB0());
-@@ -5308,6 +6292,9 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5308,6 +6308,9 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      lbCardNew_AllocWorkArea();
      lbCardGame_LoadArchive(0);
      mnCharSel_804D6CB0 = (CSSData*) arg0;
@@ -162235,7 +162705,7 @@ index d580c0aa4..f8f9080d5 100644
  
      mnCharSel_804D6CF0 = mnCharSel_804D6CB0->unk_0x0 - 1;
  
-@@ -5341,6 +6328,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5341,6 +6344,24 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      css_data_table = HSD_ArchiveGetPublicAddress(mnCharSel_804D6CD0,
                                                   "MnSelectChrDataTable");
      css_models = &css_data_table->models;
@@ -162260,7 +162730,7 @@ index d580c0aa4..f8f9080d5 100644
      if (lbLang_IsSavedLanguageJP() != 0) {
          HSD_SisLib_803A62A0(0, "SdSlChr.dat", "SIS_SelCharData");
      } else {
-@@ -5348,6 +6353,10 @@ void mnCharSel_Scene_OnEnter(void* arg0)
+@@ -5348,6 +6369,10 @@ void mnCharSel_Scene_OnEnter(void* arg0)
      }
      mnCharSel_804D6CF4 = 0;
      mnCharSel_802640A0();
@@ -162271,7 +162741,7 @@ index d580c0aa4..f8f9080d5 100644
  }
  
  void mnCharSel_Scene_OnFrame(void)
-@@ -5359,6 +6368,10 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5359,6 +6384,10 @@ void mnCharSel_Scene_OnFrame(void)
  
      PAD_STACK(8);
  
@@ -162282,7 +162752,7 @@ index d580c0aa4..f8f9080d5 100644
      mnCharSel_804D6CEC += 1;
      if (mnCharSel_804D6CF6 <= 1) {
          cache = &lbDvd_GetPreloadCacheScene()->game_cache;
-@@ -5415,9 +6428,45 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5415,9 +6444,45 @@ void mnCharSel_Scene_OnFrame(void)
                  }
              }
          }
@@ -162329,7 +162799,7 @@ index d580c0aa4..f8f9080d5 100644
          sfxBack();
          lb_800145F4();
          mn_8022F138(1, 8);
-@@ -5444,6 +6493,22 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5444,6 +6509,22 @@ void mnCharSel_Scene_OnFrame(void)
              if (mnCharSel_804D6CF5 == 4) {
                  lbAudioAx_8002411C(0x147);
              }
@@ -162352,7 +162822,7 @@ index d580c0aa4..f8f9080d5 100644
              sfxForward();
          }
          break;
-@@ -5466,6 +6531,10 @@ void mnCharSel_Scene_OnFrame(void)
+@@ -5466,6 +6547,10 @@ void mnCharSel_Scene_OnFrame(void)
          sfxForward();
          break;
      }
@@ -162363,7 +162833,7 @@ index d580c0aa4..f8f9080d5 100644
  }
  
  void mnCharSel_Scene_OnExit(void* unused)
-@@ -5476,6 +6545,12 @@ void mnCharSel_Scene_OnExit(void* unused)
+@@ -5476,6 +6561,12 @@ void mnCharSel_Scene_OnExit(void* unused)
      u8 type;
  
      HSD_SisLib_803A5FBC();
@@ -162376,7 +162846,7 @@ index d580c0aa4..f8f9080d5 100644
      if (mnCharSel_804D6CD0 != NULL) {
          lbArchive_80016EFC(mnCharSel_804D6CD0);
          mnCharSel_804D6CD0 = NULL;
-@@ -5526,3 +6601,35 @@ void mnCharSel_Scene_OnExit(void* unused)
+@@ -5526,3 +6617,35 @@ void mnCharSel_Scene_OnExit(void* unused)
      lbAudioAx_8002702C(4, tmp);
      lbAudioAx_80027168();
  }
@@ -171530,7 +172000,7 @@ index c8c295552..8fe30bb22 100644
          }
  
 diff --git a/src/melee/mp/mplib.c b/src/melee/mp/mplib.c
-index da0f32f3a..de8689a31 100644
+index da0f32f3a..c7215e17d 100644
 --- a/src/melee/mp/mplib.c
 +++ b/src/melee/mp/mplib.c
 @@ -1,3 +1,8 @@
@@ -172019,7 +172489,8 @@ index da0f32f3a..de8689a31 100644
 +    }
 +}
 +#endif
-+
+ 
+-bool mpCheckCeiling(float ax, float ay, float bx, float by, Vec3* vec_out,
 +bool mpCheckFloorRemap(float ax, float ay, float bx, float by, float y_offset,
 +                       Vec3* vec_out, int* line_id_out, u32* flags_out,
 +                       Vec3* normal_out, int line_id_skip, int joint_id_skip,
@@ -172046,8 +172517,7 @@ index da0f32f3a..de8689a31 100644
 +    return r;
 +}
 +
- 
--bool mpCheckCeiling(float ax, float ay, float bx, float by, Vec3* vec_out,
++
 +MU_NO_CONTRACT bool mpCheckCeiling(float ax, float ay, float bx, float by, Vec3* vec_out,
                      int* line_id_out, u32* flags_out, Vec3* normal_out,
                      int joint_id_skip, int joint_id_only)
@@ -173200,7 +173670,95 @@ index da0f32f3a..de8689a31 100644
  
      for (i = 0; i < count; i++, line++) {
          MapLine* temp = line->x0;
-@@ -5271,8 +5407,8 @@ bool mpLib_80056C54(int line_id, Vec3* pos, int* line_id_out, Vec3* vec_out,
+@@ -5152,15 +5288,40 @@ bool mpGetSpeed(int line_id, Vec3* pos, Vec3* speed)
+     return true;
+ }
+ 
++#ifdef MU_NATIVE
++/* m-ex stages (shim/mu_mex_stage.c): the collision table rows the layer matches MxDt against. */
++void* mu_mplib_retail_coll(int grkind)
++{
++    return grkind >= 0 && grkind < MU_MEX_STAGE_RETAIL && grkind < (int) ARRAY_SIZE(mpLib_803BF248)
++               ? (void*) mpLib_803BF248[grkind].x4
++               : NULL;
++}
++
++/* m-ex reads its own collision rows in the seven readers below (mpLib_800569EC+10 to
++ * mpLib_80056B34+10). Ids under 71 keep the native retail rows (the disc's rows equal them); an
++ * added id in the mod view takes the table the layer translated (NULL when locked: no match
++ * loads a locked row). In the retail view this is mpLib_803BF248[grkind].x4 exactly. */
++static struct mpLib_803BF248_t_x4* (*mu_mplib_coll(int grkind))[20]
++{
++    if (grkind >= MU_MEX_STAGE_RETAIL && mu_mex_active()) {
++        return (struct mpLib_803BF248_t_x4* (*)[20]) mu_mex_stage_coll_table(grkind);
++    }
++    return mpLib_803BF248[grkind].x4;
++}
++#define MP_COLL_TABLE(grkind) mu_mplib_coll(grkind)
++#else
++#define MP_COLL_TABLE(grkind) mpLib_803BF248[grkind].x4
++#endif
++
+ float mpLib_800569EC(u32 unk)
+ {
+-    return (*mpLib_803BF248[stage_info.grkind].x4)[(u8) unk]->x0;
++    return (*MP_COLL_TABLE(stage_info.grkind))[(u8) unk]->x0;
+ }
+ 
+ int* mpLib_80056A1C(int arg0, int* arg1)
+ {
+     struct mpLib_803BF248_t_x4* temp =
+-        (*mpLib_803BF248[stage_info.grkind].x4)[(u8) arg0];
++        (*MP_COLL_TABLE(stage_info.grkind))[(u8) arg0];
+     *arg1 = temp->x14[0];
+     return temp->x4;
+ }
+@@ -5168,7 +5329,7 @@ int* mpLib_80056A1C(int arg0, int* arg1)
+ int mpLib_80056A54(int arg0, int* arg1)
+ {
+     struct mpLib_803BF248_t_x4* temp =
+-        (*mpLib_803BF248[stage_info.grkind].x4)[(u8) arg0];
++        (*MP_COLL_TABLE(stage_info.grkind))[(u8) arg0];
+     *arg1 = temp->x14[2];
+     return temp->x14[1];
+ }
+@@ -5176,7 +5337,7 @@ int mpLib_80056A54(int arg0, int* arg1)
+ int* mpLib_80056A8C(int arg0, int* arg1)
+ {
+     struct mpLib_803BF248_t_x4* temp =
+-        (*mpLib_803BF248[stage_info.grkind].x4)[(u8) arg0];
++        (*MP_COLL_TABLE(stage_info.grkind))[(u8) arg0];
+     *arg1 = temp->x30[0];
+     return temp->x20;
+ }
+@@ -5184,7 +5345,7 @@ int* mpLib_80056A8C(int arg0, int* arg1)
+ int mpLib_80056AC4(int arg0, int* arg1)
+ {
+     struct mpLib_803BF248_t_x4* temp =
+-        (*mpLib_803BF248[stage_info.grkind].x4)[(u8) arg0];
++        (*MP_COLL_TABLE(stage_info.grkind))[(u8) arg0];
+     *arg1 = temp->x30[2];
+     return temp->x30[1];
+ }
+@@ -5192,7 +5353,7 @@ int mpLib_80056AC4(int arg0, int* arg1)
+ int* mpLib_80056AFC(int arg0, int* arg1)
+ {
+     struct mpLib_803BF248_t_x4* temp =
+-        (*mpLib_803BF248[stage_info.grkind].x4)[(u8) arg0];
++        (*MP_COLL_TABLE(stage_info.grkind))[(u8) arg0];
+     *arg1 = temp->x4C[0];
+     return temp->x3C;
+ }
+@@ -5200,7 +5361,7 @@ int* mpLib_80056AFC(int arg0, int* arg1)
+ int mpLib_80056B34(int arg0, int* arg1)
+ {
+     struct mpLib_803BF248_t_x4* temp =
+-        (*mpLib_803BF248[stage_info.grkind].x4)[(u8) arg0];
++        (*MP_COLL_TABLE(stage_info.grkind))[(u8) arg0];
+     *arg1 = temp->x4C[2];
+     return temp->x4C[1];
+ }
+@@ -5271,8 +5432,8 @@ bool mpLib_80056C54(int line_id, Vec3* pos, int* line_id_out, Vec3* vec_out,
      if (var_f25 > 0.0F) {
          while (true) {
              mpLineGetV1Pos(line_id, &sp4C);
@@ -173211,7 +173769,7 @@ index da0f32f3a..de8689a31 100644
              dist_f28 = sqrtf_store(x_f2 + y_f0, sqrt_tmp - 4);
              flags_r0 = mpLineGetKind(line_id);
              if (flags_r0 & 0xC) {
-@@ -5306,8 +5442,8 @@ bool mpLib_80056C54(int line_id, Vec3* pos, int* line_id_out, Vec3* vec_out,
+@@ -5306,8 +5467,8 @@ bool mpLib_80056C54(int line_id, Vec3* pos, int* line_id_out, Vec3* vec_out,
          var_f25 = -var_f25;
          while (true) {
              mpLineGetV0Pos(line_id, &sp4C);
@@ -173222,7 +173780,7 @@ index da0f32f3a..de8689a31 100644
              dist_f28 = sqrtf_store(x_f2 + y_f0, sqrt_tmp - 5);
              flags_r0 = mpLineGetKind(line_id);
              if (flags_r0 & 0xC) {
-@@ -5434,40 +5570,40 @@ void mpJointListAdd(int joint_id)
+@@ -5434,40 +5595,40 @@ void mpJointListAdd(int joint_id)
      joint->next = NULL;
  
      j_inner = joint->inner;
@@ -173273,7 +173831,7 @@ index da0f32f3a..de8689a31 100644
      while (count_r7-- > 0) {
          line_r6->flags |= LINE_FLAG_ENABLED;
          line_r6++;
-@@ -5522,40 +5658,40 @@ void mpLib_80057BC0(int joint_id)
+@@ -5522,40 +5683,40 @@ void mpLib_80057BC0(int joint_id)
      mpJointListUnlink(joint);
  
      j_inner = joint->inner;
@@ -173324,7 +173882,7 @@ index da0f32f3a..de8689a31 100644
      for (; count > 0; count--) {
          line_r6->flags &= ~LINE_FLAG_ENABLED;
          line_r6++;
-@@ -5667,10 +5803,6 @@ static inline void mpLib_GetJointVtxRange(CollJoint* joint, int* start,
+@@ -5667,10 +5828,6 @@ static inline void mpLib_GetJointVtxRange(CollJoint* joint, int* start,
  
  void mpLib_800581DC(int joint_id0, int joint_id1)
  {
@@ -173335,7 +173893,7 @@ index da0f32f3a..de8689a31 100644
      CollJoint* j0_r9;
      CollJoint* j1_r10;
      CollLine* line_base;
-@@ -5685,14 +5817,14 @@ void mpLib_800581DC(int joint_id0, int joint_id1)
+@@ -5685,14 +5842,14 @@ void mpLib_800581DC(int joint_id0, int joint_id1)
      j0_r9 = &groundCollJoint[joint_id0];
      j1_r10 = &groundCollJoint[joint_id1];
      line_base = groundCollLine;
@@ -173355,7 +173913,7 @@ index da0f32f3a..de8689a31 100644
              count = pair->count;
              (void) line_base[idx = pair->start];
              ln.p = &line_base[idx];
-@@ -5716,7 +5848,7 @@ void mpLib_800581DC(int joint_id0, int joint_id1)
+@@ -5716,7 +5873,7 @@ void mpLib_800581DC(int joint_id0, int joint_id1)
          {
              int j;
              int idx;
@@ -173364,7 +173922,7 @@ index da0f32f3a..de8689a31 100644
              count = pair->count;
              (void) line_base[idx = pair->start];
              ln.p = &line_base[idx];
-@@ -5762,14 +5894,13 @@ void mpLib_800581DC(int joint_id0, int joint_id1)
+@@ -5762,14 +5919,13 @@ void mpLib_800581DC(int joint_id0, int joint_id1)
              }
  
              // find every line with the first vert
@@ -173382,7 +173940,7 @@ index da0f32f3a..de8689a31 100644
                  for (i_r23 = 0; i_r23 < lcount_r22; i_r23++, lstart_r24++) {
                      if (vstart0 == line_base[lstart_r24].x0->v0_idx) {
                          int j;
-@@ -5777,14 +5908,12 @@ void mpLib_800581DC(int joint_id0, int joint_id1)
+@@ -5777,14 +5933,12 @@ void mpLib_800581DC(int joint_id0, int joint_id1)
                          s16 lcount_r17;
                          // if the first vert is that line's v0
                          // find every line with the second vert as v1
@@ -173400,7 +173958,7 @@ index da0f32f3a..de8689a31 100644
                              for (k = 0; k < lcount_r17; k++, lstart_r20++) {
                                  if (vid_r26 ==
                                      line_base[lstart_r20].x0->v1_idx)
-@@ -5802,14 +5931,12 @@ void mpLib_800581DC(int joint_id0, int joint_id1)
+@@ -5802,14 +5956,12 @@ void mpLib_800581DC(int joint_id0, int joint_id1)
                          s16 lcount_r17;
                          // else if the first vert is that line's v1
                          // find every line with the second vert as v0
@@ -173418,7 +173976,7 @@ index da0f32f3a..de8689a31 100644
                              for (k = 0; k < lcount_r17; k++, lstart_r20++) {
                                  if (vid_r26 ==
                                      line_base[lstart_r20].x0->v0_idx)
-@@ -5900,10 +6027,12 @@ void mpLib_80058614_Floor(void)
+@@ -5900,10 +6052,12 @@ void mpLib_80058614_Floor(void)
  
          {
              j_inner = joint_r7->inner;
@@ -173434,7 +173992,7 @@ index da0f32f3a..de8689a31 100644
  
              for (j = 0; j < count_r30; j++, line_r31++) {
                  float x0;
-@@ -5954,7 +6083,9 @@ void mpLib_80058614_Floor(void)
+@@ -5954,7 +6108,9 @@ void mpLib_80058614_Floor(void)
                  count_r30 = count_r29;
                  j = 0;
                  count_r29 = 0;
@@ -173445,7 +174003,7 @@ index da0f32f3a..de8689a31 100644
                  goto block_8;
              }
          }
-@@ -6484,8 +6615,8 @@ void mpLib_80059554(void)
+@@ -6484,8 +6640,8 @@ void mpLib_80059554(void)
      coll_data_r31 = mpLib_804D64B4;
  
      total_r29 = 0;
@@ -173456,7 +174014,7 @@ index da0f32f3a..de8689a31 100644
  
      for (i = 0; i < count_r30; i++) {
          if (line_r4->flags & LINE_FLAG_ENABLED &&
-@@ -6499,7 +6630,8 @@ void mpLib_80059554(void)
+@@ -6499,7 +6655,8 @@ void mpLib_80059554(void)
      if (total_r29 != 0) {
          mpLib_SetupDraw(mpLib_FloorColor);
          GXBegin(GX_QUADS, GX_VTXFMT0, (total_r29 * 4) & 0xFFFC);
@@ -173466,7 +174024,7 @@ index da0f32f3a..de8689a31 100644
  
          for (i = 0; i < count_r30; i++) {
              if (line_r7->flags & LINE_FLAG_ENABLED &&
-@@ -6524,8 +6656,9 @@ void mpLib_80059554(void)
+@@ -6524,8 +6681,9 @@ void mpLib_80059554(void)
      }
  
      total_r29 = 0;
@@ -173478,7 +174036,7 @@ index da0f32f3a..de8689a31 100644
  
      for (i = 0; i < count_r30; i++) {
          if (line_r4->flags & LINE_FLAG_ENABLED &&
-@@ -6539,7 +6672,8 @@ void mpLib_80059554(void)
+@@ -6539,7 +6697,8 @@ void mpLib_80059554(void)
      if (total_r29 != 0) {
          mpLib_SetupDraw(mpLib_CeilingColor);
          GXBegin(GX_QUADS, GX_VTXFMT0, (total_r29 * 4) & 0xFFFC);
@@ -173488,7 +174046,7 @@ index da0f32f3a..de8689a31 100644
  
          for (i = 0; i < count_r30; i++) {
              if (line_r7->flags & LINE_FLAG_ENABLED &&
-@@ -6564,8 +6698,9 @@ void mpLib_80059554(void)
+@@ -6564,8 +6723,9 @@ void mpLib_80059554(void)
      }
  
      total_r29 = 0;
@@ -173500,7 +174058,7 @@ index da0f32f3a..de8689a31 100644
  
      for (i = 0; i < count_r30; i++) {
          if (line_r4->flags & LINE_FLAG_ENABLED &&
-@@ -6579,7 +6714,8 @@ void mpLib_80059554(void)
+@@ -6579,7 +6739,8 @@ void mpLib_80059554(void)
      if (total_r29 != 0) {
          mpLib_SetupDraw(mpLib_RightWallColor);
          GXBegin(GX_QUADS, GX_VTXFMT0, (total_r29 * 4) & 0xFFFC);
@@ -173510,7 +174068,7 @@ index da0f32f3a..de8689a31 100644
  
          for (i = 0; i < count_r30; i++) {
              if (line_r7->flags & LINE_FLAG_ENABLED &&
-@@ -6604,8 +6740,9 @@ void mpLib_80059554(void)
+@@ -6604,8 +6765,9 @@ void mpLib_80059554(void)
      }
  
      total_r29 = 0;
@@ -173522,7 +174080,7 @@ index da0f32f3a..de8689a31 100644
  
      for (i = 0; i < count_r30; i++) {
          if (line_r4->flags & LINE_FLAG_ENABLED &&
-@@ -6619,7 +6756,8 @@ void mpLib_80059554(void)
+@@ -6619,7 +6781,8 @@ void mpLib_80059554(void)
      if (total_r29 != 0) {
          mpLib_SetupDraw(mpLib_LeftWallColor);
          GXBegin(GX_QUADS, GX_VTXFMT0, (total_r29 * 4) & 0xFFFC);
@@ -173532,7 +174090,7 @@ index da0f32f3a..de8689a31 100644
  
          for (i = 0; i < count_r30; i++) {
              if (line_r7->flags & LINE_FLAG_ENABLED &&
-@@ -6643,13 +6781,14 @@ void mpLib_80059554(void)
+@@ -6643,13 +6806,14 @@ void mpLib_80059554(void)
          GXEnd();
      }
  
@@ -173549,7 +174107,7 @@ index da0f32f3a..de8689a31 100644
  
      for (i = 0; i < count_r30; i++) {
          if (line_r4->flags & LINE_FLAG_ENABLED &&
-@@ -6664,7 +6803,8 @@ void mpLib_80059554(void)
+@@ -6664,7 +6828,8 @@ void mpLib_80059554(void)
      if (total_r29 != 0) {
          mpLib_SetupDraw(spB4);
          GXBegin(GX_QUADS, GX_VTXFMT0, (total_r29 * 4) & 0xFFFC);
@@ -173559,7 +174117,7 @@ index da0f32f3a..de8689a31 100644
  
          for (i = 0; i < count_r30; i++) {
              if (line_r7->flags & LINE_FLAG_ENABLED &&
-@@ -6688,7 +6828,8 @@ void mpLib_80059554(void)
+@@ -6688,7 +6853,8 @@ void mpLib_80059554(void)
          }
          GXEnd();
      }
@@ -173569,7 +174127,7 @@ index da0f32f3a..de8689a31 100644
      total_r29 = 0;
  
      for (i = 0; i < count_r30; i++) {
-@@ -6704,7 +6845,8 @@ void mpLib_80059554(void)
+@@ -6704,7 +6870,8 @@ void mpLib_80059554(void)
      if (total_r29 != 0) {
          mpLib_SetupDraw(spB0);
          GXBegin(GX_QUADS, GX_VTXFMT0, (total_r29 * 4) & 0xFFFC);
@@ -173579,7 +174137,7 @@ index da0f32f3a..de8689a31 100644
  
          for (i = 0; i < count_r30; i++) {
              if (line_r7->flags & LINE_FLAG_ENABLED &&
-@@ -6728,7 +6870,8 @@ void mpLib_80059554(void)
+@@ -6728,7 +6895,8 @@ void mpLib_80059554(void)
          }
          GXEnd();
      }
@@ -173589,7 +174147,7 @@ index da0f32f3a..de8689a31 100644
      total_r29 = 0;
  
      for (i = 0; i < count_r30; i++) {
-@@ -6743,7 +6886,8 @@ void mpLib_80059554(void)
+@@ -6743,7 +6911,8 @@ void mpLib_80059554(void)
      if (total_r29 != 0) {
          mpLib_SetupDraw(spAC);
          GXBegin(GX_QUADS, GX_VTXFMT0, (total_r29 * 4) & 0xFFFC);
@@ -173599,7 +174157,7 @@ index da0f32f3a..de8689a31 100644
  
          for (i = 0; i < count_r30; i++) {
              if (line_r7->flags & LINE_FLAG_ENABLED &&
-@@ -6767,7 +6911,8 @@ void mpLib_80059554(void)
+@@ -6767,7 +6936,8 @@ void mpLib_80059554(void)
          }
          GXEnd();
      }
@@ -173609,7 +174167,7 @@ index da0f32f3a..de8689a31 100644
      total_r29 = 0;
  
      for (i = 0; i < count_r30; i++) {
-@@ -6782,7 +6927,8 @@ void mpLib_80059554(void)
+@@ -6782,7 +6952,8 @@ void mpLib_80059554(void)
      if (total_r29 != 0) {
          mpLib_SetupDraw(spA8);
          GXBegin(GX_QUADS, GX_VTXFMT0, (total_r29 * 4) & 0xFFFC);
@@ -173619,7 +174177,7 @@ index da0f32f3a..de8689a31 100644
  
          for (i = 0; i < count_r30; i++) {
              if (line_r7->flags & LINE_FLAG_ENABLED &&
-@@ -6966,6 +7112,10 @@ void mpLib_DrawSpecialPoints(void)
+@@ -6966,6 +7137,10 @@ void mpLib_DrawSpecialPoints(void)
  void mpLib_8005A2DC(void)
  {
      mpLib_DrawSnapping();
@@ -173630,7 +174188,7 @@ index da0f32f3a..de8689a31 100644
      mpLib_80059E60();
      if (mpLib_804D64D0 == 0) {
          mpLib_804D64D0 = 1;
-@@ -6975,27 +7125,24 @@ void mpLib_8005A2DC(void)
+@@ -6975,27 +7150,24 @@ void mpLib_8005A2DC(void)
      HSD_StateInvalidate(-1);
  }
  
@@ -173670,7 +174228,7 @@ index da0f32f3a..de8689a31 100644
      /* +28 */ 0x00000001,
      /* +2C */ 0x00000000,
  };
-@@ -7132,3 +7279,28 @@ void mpLib_DrawZones(void)
+@@ -7132,3 +7304,28 @@ void mpLib_DrawZones(void)
      }
      HSD_StateInvalidate(-1);
  }
@@ -199398,7 +199956,7 @@ index fb45ace8a..f9d5306c9 100644
      return HSD_IDGetDataFromTable(NULL, id, success);
  }
 diff --git a/src/sysdolphin/baselib/jobj.c b/src/sysdolphin/baselib/jobj.c
-index dce720826..c63365cdc 100644
+index dce720826..2aea87460 100644
 --- a/src/sysdolphin/baselib/jobj.c
 +++ b/src/sysdolphin/baselib/jobj.c
 @@ -17,6 +17,12 @@
@@ -199455,7 +200013,37 @@ index dce720826..c63365cdc 100644
          }
      }
  }
-@@ -184,6 +199,33 @@ void HSD_JObjMakeMatrix(HSD_JObj* jobj)
+@@ -178,12 +193,63 @@ void HSD_JObjMakeMatrix(HSD_JObj* jobj)
+         } else {
+             scl = NULL;
+         }
++#ifdef MU_NATIVE
++        /* m-ex's codes.gct hook at 0x8036F3FC (Akaneia, ACE): a joint flagged JOBJ_UNK_B26 under a
++         * parent keeps its translation scaled by the parent's own scale but cancels that scale for
++         * its rotation and scale (segment scale compensation). Its operations in its order: the
++         * three products, HSD_MtxSRT, a diagonal of 1 / parent scale through PSMTXIdentity, then
++         * PSMTXConcat(diag, mtx, mtx); the parent concat below follows as on the console. */
++        if (mu_mex_jobj_scale_compensate && (jobj->flags & JOBJ_UNK_B26) &&
++            jobj->parent != NULL)
++        {
++            HSD_JObj* parent = jobj->parent;
++            Vec3 translate;
++            Mtx compensate;
++
++            translate.x = jobj->translate.x * parent->scale.x;
++            translate.y = jobj->translate.y * parent->scale.y;
++            translate.z = jobj->translate.z * parent->scale.z;
++            HSD_MtxSRT(jobj->mtx, &jobj->scale, (Vec3*) &jobj->rotate, &translate, scl);
++            PSMTXIdentity(compensate);
++            compensate[0][0] = (f32) (1.0 / (f64) parent->scale.x);
++            compensate[1][1] = (f32) (1.0 / (f64) parent->scale.y);
++            compensate[2][2] = (f32) (1.0 / (f64) parent->scale.z);
++            PSMTXConcat(compensate, jobj->mtx, jobj->mtx);
++        } else
++#endif
+         HSD_MtxSRT(jobj->mtx, &jobj->scale, (Vec3*) &jobj->rotate,
+                    &jobj->translate, scl);
+     }
      if (jobj->parent != NULL) {
          PSMTXConcat(jobj->parent->mtx, jobj->mtx, jobj->mtx);
      }
@@ -199489,7 +200077,7 @@ index dce720826..c63365cdc 100644
      if (jobj->aobj != NULL && jobj->aobj->hsd_obj != NULL) {
          Vec3 vec;
          HSD_JObj* aobj_jobj = (HSD_JObj*) jobj->aobj->hsd_obj;
-@@ -303,9 +345,9 @@ void HSD_JObjAddAnim(HSD_JObj* jobj, HSD_AnimJoint* an_joint,
+@@ -303,9 +369,9 @@ void HSD_JObjAddAnim(HSD_JObj* jobj, HSD_AnimJoint* an_joint,
              if (jobj->aobj != NULL) {
                  HSD_AObjRemove(jobj->aobj);
              }
@@ -199501,7 +200089,7 @@ index dce720826..c63365cdc 100644
              if (an_joint->flags & 1) {
                  HSD_JObjSetFlags(jobj, JOBJ_CLASSICAL_SCALE);
              } else {
-@@ -314,8 +356,8 @@ void HSD_JObjAddAnim(HSD_JObj* jobj, HSD_AnimJoint* an_joint,
+@@ -314,8 +380,8 @@ void HSD_JObjAddAnim(HSD_JObj* jobj, HSD_AnimJoint* an_joint,
          }
          if (union_type_dobj(jobj)) {
              HSD_DObjAddAnimAll(
@@ -199512,7 +200100,7 @@ index dce720826..c63365cdc 100644
          }
      }
  }
-@@ -332,15 +374,15 @@ void HSD_JObjAddAnimAll(HSD_JObj* jobj, HSD_AnimJoint* ajoint,
+@@ -332,15 +398,15 @@ void HSD_JObjAddAnimAll(HSD_JObj* jobj, HSD_AnimJoint* ajoint,
          HSD_JObjAddAnim(jobj, ajoint, mjoint, sjoint);
          if (!(jobj->flags & JOBJ_INSTANCE)) {
              jp = jobj->child;
@@ -199534,7 +200122,7 @@ index dce720826..c63365cdc 100644
              }
          }
      }
-@@ -358,6 +400,12 @@ void JObjUpdateFunc(void* obj, enum_t type, HSD_ObjData* val)
+@@ -358,6 +424,12 @@ void JObjUpdateFunc(void* obj, enum_t type, HSD_ObjData* val)
      Mtx mtx;
  
      if (jobj != NULL) {
@@ -199547,7 +200135,7 @@ index dce720826..c63365cdc 100644
          switch (type) {
          case HSD_A_J_PATH:
              if (val->fv < 0.0L) {
-@@ -614,8 +662,8 @@ static inline HSD_JObj* JObjLoadJointSub(HSD_Joint* joint, HSD_JObj* parent)
+@@ -614,8 +686,8 @@ static inline HSD_JObj* JObjLoadJointSub(HSD_Joint* joint, HSD_JObj* parent)
      if (joint == NULL) {
          return NULL;
      }
@@ -199558,7 +200146,7 @@ index dce720826..c63365cdc 100644
      {
          jobj = HSD_JObjAlloc();
      } else {
-@@ -629,38 +677,44 @@ static inline HSD_JObj* JObjLoadJointSub(HSD_Joint* joint, HSD_JObj* parent)
+@@ -629,38 +701,44 @@ static inline HSD_JObj* JObjLoadJointSub(HSD_Joint* joint, HSD_JObj* parent)
  s32 JObjLoad(HSD_JObj* jobj, HSD_Joint* joint, HSD_JObj* parent)
  {
      if (!(joint->flags & JOBJ_INSTANCE)) {
@@ -199619,7 +200207,7 @@ index dce720826..c63365cdc 100644
      return 0;
  }
  
-@@ -687,15 +741,16 @@ void HSD_JObjResolveRefs(HSD_JObj* jobj, HSD_Joint* joint)
+@@ -687,15 +765,16 @@ void HSD_JObjResolveRefs(HSD_JObj* jobj, HSD_Joint* joint)
          return;
      }
  
@@ -199639,7 +200227,7 @@ index dce720826..c63365cdc 100644
      }
  }
  
-@@ -706,10 +761,10 @@ void HSD_JObjResolveRefsAll(HSD_JObj* jobj, HSD_Joint* joint)
+@@ -706,10 +785,10 @@ void HSD_JObjResolveRefsAll(HSD_JObj* jobj, HSD_Joint* joint)
      while (jobj != NULL && joint != NULL) {
          HSD_JObjResolveRefs(jobj, joint);
          if (!(jobj->flags & JOBJ_INSTANCE)) {
@@ -199652,7 +200240,7 @@ index dce720826..c63365cdc 100644
      }
  }
  
-@@ -1514,7 +1569,7 @@ void JObjRelease(HSD_Class* o)
+@@ -1514,7 +1593,7 @@ void JObjRelease(HSD_Class* o)
      HSD_JOBJ_METHOD(jobj)->release_child(jobj);
  
      if (HSD_IDGetDataFromTable(NULL, jobj->id, NULL) == jobj) {

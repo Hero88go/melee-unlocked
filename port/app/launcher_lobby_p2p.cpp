@@ -484,7 +484,10 @@ ModDiscs read_mod_scan(const std::string& detected_json,const std::string& game_
   for(const auto& item:scan["items"]) {
     try {
       if(!item.is_object() || item.value("kind",std::string())!="mex") continue;
-      if(item.value("needs_engine",std::string())!="recomp" || item.value("status",std::string())=="not_supported_yet") continue;
+      // A lobby match with a mod plays on the Static Recomp for both players; Akaneia 1.0.1 also
+      // plays on the Source Port offline ("either"), and stays a lobby mod.
+      const std::string needs=item.value("needs_engine",std::string());
+      if((needs!="recomp" && needs!="either") || item.value("status",std::string())=="not_supported_yet") continue;
       const std::string mod=item.value("id",std::string());
       // Unknown m-ex packs stay custom; a filename cannot grant a named compatibility badge.
       if(mod!="akaneia" && mod!="ace") continue;

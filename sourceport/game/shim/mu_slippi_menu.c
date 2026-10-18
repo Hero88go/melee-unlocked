@@ -11,6 +11,7 @@
  * and the hook sites keep their original code.
  */
 #include <string.h>
+#include <dolphin/os.h>
 #include <dolphin/pad.h>
 #include <melee/gm/forward.h>
 #include <melee/gm/gm_1601.h>
@@ -84,6 +85,10 @@ static int zelda_sheik;       /* between the online major's OnLoad and OnUnload 
 static unsigned online_loads;  /* OnLoad count: the chat shim's Sheik selector keeps its icon until the next one */
 static int boot_oneshot;      /* boot.asm's one-shot "first menu = online submenu" */
 static int first_boot = 1;    /* OnMenuLoad's DOFST_IS_FIRST_BOOT */
+/* A peer-to-peer session with menus (mu_online_p2p_menus): the first online submenu confirms Direct
+ * by itself. Set in the boot menu entry and cleared by that menu's think a few frames later, both
+ * before any match exists, so every rollback snapshot holds 0 and a load cannot arm it again. */
+static int p2p_auto_direct;
 
 MuSlippiMenuState* mu_slippi_state(void)
 {
@@ -371,6 +376,17 @@ int mu_slippi_menu_enter(int previous_mode, unsigned char* menu_kind, unsigned c
         mu_slippi_fetch_app_state();
         *menu_kind = MENU_KIND_8;
         *hovered = (u8) mu_slippi_first_unlocked();
+        if (mu_online_p2p_menus()) {
+            /* The session's players are already known: no choice of mode, straight to Direct's
+             * character select. The row is only open when the host reports a signed-in state. */
+            if (mn_80229938(MENU_KIND_8, MU_SLP_MODE_DIRECT)) {
+                *hovered = MU_SLP_MODE_DIRECT;
+                p2p_auto_direct = 1;
+            } else {
+                OSReport("[p2p] menus: Direct is locked (app state %d); staying on the online menu\n",
+                         slp.app_state);
+            }
+        }
         return 1;
     }
     return 0;
@@ -433,14 +449,31 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
 {
     u32 buttons;
     MenuExitData* data;
+    int auto_direct = 0;
+    /* The menu takes no input while its entry cooldown runs (mn_80229624 answers 0 and counts it
+     * down), so the frame it reaches 0 is the first one a player's own press could confirm on. */
+    int accepts_input = mn_804D6BC8.cooldown == 0;
     (void) gp;
 
     buttons = mn_80229624(4);
+    if (p2p_auto_direct && accepts_input) {
+        /* Once per run: confirm Direct as a press on this frame would, whatever the pads hold. */
+        p2p_auto_direct = 0;
+        if (mu_online_p2p_menus() && mn_804A04F0.cur_menu == MENU_KIND_8 &&
+            mn_80229938(MENU_KIND_8, MU_SLP_MODE_DIRECT))
+        {
+            auto_direct = 1;
+            mn_804A04F0.hovered_selection = MU_SLP_MODE_DIRECT;
+            buttons = MenuInput_Confirm;
+            OSReport("[p2p] menus: entering the Direct character select (pad port %d)\n",
+                     mu_online_p2p_port());
+        }
+    }
     mn_804A04F0.buttons = buttons;
     if (buttons & MenuInput_Confirm) {
         mn_804D6BC8.cooldown = 5;
         mn_804A04F0.entering_menu = 1;
-        gm_801677E8((s8) confirm_port());
+        gm_801677E8(auto_direct ? (s8) mu_online_p2p_port() : (s8) confirm_port());
         switch (mn_804A04F0.hovered_selection) {
         case MU_SLP_MODE_RANKED:
         case MU_SLP_MODE_UNRANKED:
@@ -448,6 +481,13 @@ void mu_slippi_online_menu_think(HSD_GObj* gp)
         case MU_SLP_MODE_TEAMS:
         case MU_SLP_MODE_PARTY:
             slp.mode = (u8) mn_804A04F0.hovered_selection;
+            if (mu_online_p2p_menus()) {
+                /* No game was played yet: neither winner nor loser. The character select gives the
+                 * first game's stage pick to one player once the two are connected and their
+                 * slots are known (mu_slippi_css.c). */
+                slp.is_winner = MU_SLP_WINNER_NULL;
+                slp.chose_stage = 0;
+            }
             /* The files of the next scene follow the mode: retail online, the mod's in Direct when
              * the player uses it there (mu_content.c). Asked before the online major loads. */
             mu_content_mode(slp.mode);
