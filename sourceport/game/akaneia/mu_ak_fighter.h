@@ -102,6 +102,8 @@ extern const MuAkFighter mu_ak_wolf, mu_ak_wolf_ssbu, mu_ak_diddy, mu_ak_chariza
 const MuAkFighter* mu_ak_fighter(int kind);
 /* The m-ex internal id of a native fighter kind (retail kinds are their own ids), -1 when none. */
 int mu_ak_mex_internal(int kind);
+/* The event the console's inlined color reset in ftCo_800C0200 calls for a fighter kind. */
+HSD_GObjEvent mu_ak_colanim_reset_inline_event(int kind);
 /* The game's item kind for the fighter's article `local`, -1 when it has none. */
 int mu_ak_item_kind(int kind, int local);
 /* The article data (from the fighter's own file) for one of its item kinds. Done from the fighter's

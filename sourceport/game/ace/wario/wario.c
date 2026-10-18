@@ -17,6 +17,7 @@
 #include <melee/lb/lbdvd.h>
 #include <sysdolphin/baselib/archive.h>
 #include <sysdolphin/baselib/gobj.h>
+#include "wario_kirby.h"
 
 /* ---- ftFunction ---- */
 
@@ -290,4 +291,5 @@ const MuAkFighter mu_ak_wario = {
     .move_logic_count = ftWr_MS_SelfCount,
 
     .flags = 0,
+    .kirby = &ftKbWr_Copy,
 };

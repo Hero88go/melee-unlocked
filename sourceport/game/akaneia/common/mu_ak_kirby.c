@@ -65,8 +65,14 @@ static const MuAkKirbyCopy* copy_of(int kind)
 
 int mu_ak_kirby_has_copy(int kind)
 {
-    return MU_AK_KIND(kind) && copy_of(kind) != NULL && ak_kb_hat[kind - MU_AK_KIND_BASE] != NULL &&
-           ak_kb_cmd[kind - MU_AK_KIND_BASE] != NULL;
+    const MuAkKirbyCopy* copy;
+    int slot;
+    if (!MU_AK_KIND(kind) || (copy = copy_of(kind)) == NULL) {
+        return 0;
+    }
+    slot = kind - MU_AK_KIND_BASE;
+    return ak_kb_hat[slot] != NULL &&
+           ((copy->flags & MU_AK_KIRBY_RETAIL_STATES) != 0 || ak_kb_cmd[slot] != NULL);
 }
 
 int mu_ak_kirby_copy_kind(Fighter* fp)

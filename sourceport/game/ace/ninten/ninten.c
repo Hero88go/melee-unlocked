@@ -21,6 +21,7 @@
 #include <melee/it/inlines.h>
 #include <melee/it/it_26B1.h>
 #include <sysdolphin/baselib/gobj.h>
+#include "ninten_kirby.h"
 
 /* code+0x3500 "Ninten_RemoveAllArticles": the death and damage callback while an article is
  * out. Lucas's removes his PK Thunder as well; he has none. The first call is Lucas's routine
@@ -283,5 +284,6 @@ const MuAkFighter mu_ak_ninten = {
     .move_logic = ftNt_MotionStates,
     .move_logic_count = ftNt_MS_SelfCount,
     .article_tables = itNt_ArticleTables,
-    .article_count = ftNt_Article_Count,
+    .article_count = ftNt_Article_TableCount,
+    .kirby = &ftKbNt_Copy,
 };

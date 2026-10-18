@@ -164,8 +164,10 @@ static ItemLogicTable itNt_Bat_Logic = {
 };
 
 /* ==== the list, in the order of his MxDt item lookup ============================================ */
-ItemLogicTable* const itNt_ArticleTables[ftNt_Article_Count] = {
+ItemLogicTable* const itNt_ArticleTables[ftNt_Article_TableCount] = {
     &ftLc_ArticleLogic[ftLc_Art_PKFreeze], /* 329: Lucas's table as it is */
     &itNt_Pellet_Logic,                    /* 330 */
     &itNt_Bat_Logic,                       /* 331 */
+    /* 332: Kirby's PK Hypnosis: Lucas's Kirby PK Freeze table (ninten/kirby/KIRBY.md). */
+    &ftLc_ArticleLogic[ftLc_Art_KirbyPKFreeze],
 };

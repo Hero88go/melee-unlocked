@@ -36,6 +36,7 @@
 #include <melee/it/it_26B1.h>
 #include <melee/lb/lbanim.h>
 #include <sysdolphin/baselib/gobj.h>
+#include "daisy_kirby.h"
 
 /* ---- load ---------------------------------------------------------------------------------------
  * code+0x0, [onload]. Retail ftPe_Init_OnLoad with these differences: only two of Peach's five
@@ -524,4 +525,5 @@ const MuAkFighter mu_ak_daisy = {
     .article_tables = itDa_ArticleTables,
     .article_count = ftDa_Article_Count,
     .gettraildata = (MuAkEvent) (void (*)(void)) ftDa_Init_GetTrailData,
+    .kirby = &ftKbDa_Copy,
 };

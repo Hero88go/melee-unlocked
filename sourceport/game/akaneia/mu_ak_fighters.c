@@ -441,6 +441,36 @@ int mu_ak_mex_internal(int kind)
     return -1;
 }
 
+/* ftCo_800C0200 inlines ftCo_800C0134 (console 800C025C to 800C02B0), and m-ex moved only the
+ * real function's table read to its own table (its codes at ftCo_800C0134+24 and
+ * ftCo_800C0408+134, +1B0): the inlined copy still reads the retail ftData_UnkMotionStates4, 33
+ * rows at 803C1E38, at the fighter's m-ex internal id. An id of 33 or more reads on into the next
+ * retail table, ftKindCalcIndiviParamTable at 803C1EBC: a retail fighter's LoadSpecialAttrs, run
+ * on this fighter (Lucas TDX, internal 37, gets Kirby's; every attribute block fits the 0x424 byte
+ * pool both engines allocate). The fighter's own slot 24 hook, which the real function calls, is
+ * never reached that way; calling it there instead recursed without end for a hook that removes
+ * color animations itself. Returns the event that copy calls, NULL for none. Retail kinds read
+ * their own rows, so on a retail disc this is the decomp's table. */
+HSD_GObjEvent mu_ak_colanim_reset_inline_event(int kind)
+{
+    static int reported;
+    const int id = mu_ak_mex_internal(kind);
+    if (id < 0) {
+        return NULL;
+    }
+    if (id < Ft_Kind_Max) {
+        return ftData_UnkMotionStates4[id];   /* retail rows: unchanged by the registry */
+    }
+    if (id < 2 * Ft_Kind_Max) {
+        return ftKindCalcIndiviParamTable[id - Ft_Kind_Max];
+    }
+    if (!reported) {   /* no disc served has an id past both tables (ACE ends at 65) */
+        reported = 1;
+        OSReport("[ak] color reset: m-ex internal id %d reads past ftKindCalcIndiviParamTable; no call\n", id);
+    }
+    return NULL;
+}
+
 const MuAkFighter* mu_ak_fighter(int kind)
 {
     return MU_AK_KIND(kind) ? ak_fighter[kind - MU_AK_KIND_BASE] : NULL;

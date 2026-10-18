@@ -2673,26 +2673,31 @@ void DIDraw_Update(void)
             
             // SDI DISPLAY ---------------------------------------------------
             
+            /* The second index is the fighter of the pair (0 here: these are the main
+             * fighters), as DIDraw_GX and DIDraw_Reset read it. Indexed by the port, ports
+             * 2 and 3 wrote past the two-entry arrays, and a later HSD_Free took a stray
+             * pointer (a crash in OSFreeToHeap). */
+            const int sub = 0;
             SDIDraw *sdidraw = &sdidraws[ply];
 
             if (IsHitlagVictim(fighter))
             { 
                 int hitlag_left = fighter_data->dmg.hitlag_frames;
-                int hitlag_passed = sdidraw->num[ply];
+                int hitlag_passed = sdidraw->num[sub];
                 int total_hitlag = hitlag_left + hitlag_passed;
 
                 // realloc if undersized.
-                if (total_hitlag > sdidraw->cap[ply]) {
+                if (total_hitlag > sdidraw->cap[sub]) {
                     Vec2 *vertices = calloc(sizeof(Vec2) * total_hitlag);
-                    if (sdidraw->vertices[ply]) {
-                        memcpy(vertices, sdidraw->vertices[ply], sdidraw->num[ply] * sizeof(Vec2));
-                        HSD_Free(sdidraw->vertices[ply]);
+                    if (sdidraw->vertices[sub]) {
+                        memcpy(vertices, sdidraw->vertices[sub], sdidraw->num[sub] * sizeof(Vec2));
+                        HSD_Free(sdidraw->vertices[sub]);
                     }
-                    sdidraw->vertices[ply] = vertices;
-                    sdidraw->cap[ply] = total_hitlag;
+                    sdidraw->vertices[sub] = vertices;
+                    sdidraw->cap[sub] = total_hitlag;
                 }
                 
-                sdidraw->vertices[ply][hitlag_passed] = (Vec2) {
+                sdidraw->vertices[sub][hitlag_passed] = (Vec2) {
                     .X = fighter_data->phys.pos.X,
                     .Y = fighter_data->phys.pos.Y,
                 };
@@ -2700,16 +2705,16 @@ void DIDraw_Update(void)
                 // only actually draw if there was SDI
                 if (
                     hitlag_passed == 0
-                    || sdidraw->vertices[ply][hitlag_passed].X != sdidraw->vertices[ply][hitlag_passed-1].X
-                    || sdidraw->vertices[ply][hitlag_passed].Y != sdidraw->vertices[ply][hitlag_passed-1].Y
+                    || sdidraw->vertices[sub][hitlag_passed].X != sdidraw->vertices[sub][hitlag_passed-1].X
+                    || sdidraw->vertices[sub][hitlag_passed].Y != sdidraw->vertices[sub][hitlag_passed-1].Y
                 ) {
-                    sdidraw->num[ply]++;
+                    sdidraw->num[sub]++;
                 }
             }
             else if (fighter_data->flags.hitstun == 0)
             {
                 // don't show after histun ends
-                sdidraw->num[ply] = 0;
+                sdidraw->num[sub] = 0;
             }
             
             // DI DISPLAY ---------------------------------------------------
@@ -2720,11 +2725,11 @@ void DIDraw_Update(void)
             if (fighter_data->flags.hitstun == 1)
             {
                 // free old
-                if (didraw->vertices[ply] != 0)
+                if (didraw->vertices[sub] != 0)
                 {
-                    HSD_Free(didraw->vertices[ply]);
-                    didraw->num[ply] = 0;
-                    didraw->vertices[ply] = 0;
+                    HSD_Free(didraw->vertices[sub]);
+                    didraw->num[sub] = 0;
+                    didraw->vertices[sub] = 0;
                 }
 
                 // get player's inputs
@@ -3031,21 +3036,21 @@ void DIDraw_Update(void)
                 }
 
                 // alloc draw struct
-                didraw->num[ply] = vertices_num + 2; // +2 for ASDI vertices
+                didraw->num[sub] = vertices_num + 2; // +2 for ASDI vertices
                 // alloc vertices
-                didraw->vertices[ply] = calloc(sizeof(Vec2) * (vertices_num + 2));
+                didraw->vertices[sub] = calloc(sizeof(Vec2) * (vertices_num + 2));
 
                 // save ASDI first
-                didraw->vertices[ply][0].X = fighter_data->coll_data.topN_Curr.X;
-                didraw->vertices[ply][0].Y = fighter_data->coll_data.topN_Curr.Y + fighter_data->coll_data.ecbCurr_left.Y;
-                didraw->vertices[ply][1].X = fighter_data->coll_data.topN_Curr.X + asdi_orig.X;
-                didraw->vertices[ply][1].Y = fighter_data->coll_data.topN_Curr.Y + fighter_data->coll_data.ecbCurr_left.Y + asdi_orig.Y;
+                didraw->vertices[sub][0].X = fighter_data->coll_data.topN_Curr.X;
+                didraw->vertices[sub][0].Y = fighter_data->coll_data.topN_Curr.Y + fighter_data->coll_data.ecbCurr_left.Y;
+                didraw->vertices[sub][1].X = fighter_data->coll_data.topN_Curr.X + asdi_orig.X;
+                didraw->vertices[sub][1].Y = fighter_data->coll_data.topN_Curr.Y + fighter_data->coll_data.ecbCurr_left.Y + asdi_orig.Y;
 
                 // save this info to the draw struct
                 for (int i = 0; i < vertices_num; i++)
                 {
-                    didraw->vertices[ply][i + 2].X = DICollData[i].pos.X;
-                    didraw->vertices[ply][i + 2].Y = DICollData[i].pos.Y + ((DICollData[i].ECBLeftY + DICollData[i].ECBTopY) / 2);
+                    didraw->vertices[sub][i + 2].X = DICollData[i].pos.X;
+                    didraw->vertices[sub][i + 2].Y = DICollData[i].pos.Y + ((DICollData[i].ECBLeftY + DICollData[i].ECBTopY) / 2);
                 }
 
                 // free the collision info
@@ -3054,11 +3059,11 @@ void DIDraw_Update(void)
             // if not in hitstun, zero out didraw
             else if (fighter_data->flags.hitstun == 0)
             {
-                if (didraw->vertices[ply] != 0)
+                if (didraw->vertices[sub] != 0)
                 {
-                    HSD_Free(didraw->vertices[ply]);
-                    didraw->num[ply] = 0;
-                    didraw->vertices[ply] = 0;
+                    HSD_Free(didraw->vertices[sub]);
+                    didraw->num[sub] = 0;
+                    didraw->vertices[sub] = 0;
                 }
             }
         }

@@ -52,6 +52,8 @@ enum {
     ftNt_Article_Pellet = 1,     /* 330: the slingshot's shot */
     ftNt_Article_Bat = 2,        /* 331: the forward smash's bat */
     ftNt_Article_Count = 3,
+    ftNt_Article_KirbyPKHypnosis = 3, /* 332: Kirby's copy (PlKbCpNt.dat itFunction 3) */
+    ftNt_Article_TableCount = 4,      /* entries of itNt_ArticleTables */
 };
 
 _Static_assert((int) ftNt_Article_PKHypnosis == (int) ftLc_Art_PKFreeze &&
@@ -150,7 +152,7 @@ static inline ftNinten_LwMotionVars* ftNt_LwMV(Fighter* fp)
 
 /* ---- ninten_items.c ---- */
 /* code+0x33C4 */ Item_GObj* ftNt_SpawnBat(HSD_GObj* gobj, Vec3* pos, int part, float facing);
-extern ItemLogicTable* const itNt_ArticleTables[ftNt_Article_Count];
+extern ItemLogicTable* const itNt_ArticleTables[ftNt_Article_TableCount];
 
 /* ---- ninten_specialhi.c ---- */
 void ftNt_SpecialHi_Enter(HSD_GObj*);

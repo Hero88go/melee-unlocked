@@ -50,7 +50,13 @@ typedef struct MuAkKirbyCopy {
     const MotionState* move_logic;
     int move_logic_count;
     /* 7 */ void (*on_frame)(HSD_GObj* gobj);         /* once per frame while Kirby wears the hat */
+    /* Native capability flags; zero preserves added-ability ftcmd dispatch. */
+    unsigned int flags;
 } MuAkKirbyCopy;
+
+/* The descriptor enters existing retail Kirby states and never calls
+ * mu_ak_kirby_state_change; its retail hat file has no ftcmd table. */
+#define MU_AK_KIRBY_RETAIL_STATES 0x1u
 
 /* ---- for the fighters' Kirby code ---- */
 
