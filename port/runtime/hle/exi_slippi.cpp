@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "exi_slippi.h"
 #include "jukebox.h"
+#include "slippi_spectate.h"
 #include "slippi_playback.h"
 #include "slippi_online.h"
 #include "native_practice.h"
@@ -267,8 +268,10 @@ void write_to_file(const uint8_t* payload, uint32_t length, const char* option) 
   constexpr bool kLabViewFeed = false;
   if (kLabViewFeed) lab::feed(payload, length);
   if (std::strcmp(option, "create") == 0) { g_held_code_chunks.clear(); create_file(); }
-  if (!g_file) return;
-  if (length > 0 && payload[0] == CMD_RECEIVE_POST_FRAME_UPDATE && length >= 8) {
+  // What goes into the .slp also goes to the spectator server (Dolphin writes both from the same
+  // bytes), whether or not a replay file is being saved.
+  const bool file = g_file != nullptr;
+  if (file && length > 0 && payload[0] == CMD_RECEIVE_POST_FRAME_UPDATE && length >= 8) {
     g_last_frame = (int32_t)be32(payload + 1);
     g_char_usage[payload[5]][payload[7]] += 1;
     dump_fighter(payload);
@@ -293,8 +296,12 @@ void write_to_file(const uint8_t* payload, uint32_t length, const char* option) 
         at += used(e);
       }
     }
-    std::fwrite(g_held_code_chunks.data(), 1, g_held_code_chunks.size(), g_file);
-    g_written += (uint32_t)g_held_code_chunks.size();
+    for (size_t e = 0; e + kSplitEvent <= g_held_code_chunks.size(); e += kSplitEvent)
+      spectate::write(g_held_code_chunks.data() + e, kSplitEvent);   // one split message each, as sent
+    if (file) {
+      std::fwrite(g_held_code_chunks.data(), 1, g_held_code_chunks.size(), g_file);
+      g_written += (uint32_t)g_held_code_chunks.size();
+    }
     g_held_code_chunks.clear();
     return;
   }
@@ -307,6 +314,8 @@ void write_to_file(const uint8_t* payload, uint32_t length, const char* option) 
       payload = recorded.data();
     }
   }
+  spectate::write(payload, length);
+  if (!file) return;
   std::fwrite(payload, 1, length, g_file);
   g_written += length;
   if (std::strcmp(option, "close") == 0) {
@@ -741,7 +750,10 @@ void for_each_served_code_write(const std::function<void(uint32_t addr, uint32_t
   for (size_t i = 0; i < gecko::optional_writes_count; ++i) visit(gecko::optional_writes[i].addr, gecko::optional_writes[i].size);
 }
 
-void init() { g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; preload_game_files(); online::init(); }
+void init() {
+  g_read_queue.reserve(64 * 1024); g_replay_dir = host::options.replay_dir; preload_game_files(); online::init();
+  spectate::start();   // Slippi Dolphin's spectator server (settings: Spectator server)
+}
 void request_widescreen(bool on) { g_widescreen_request.store(on ? 1 : 0); }
 bool widescreen() { return gecko::option_widescreen; }
 void request_fod_reflections(bool on) { g_fod_reflections_request.store(on ? 1 : 0); }
@@ -774,7 +786,11 @@ void poll_options() {
   }
   native_practice::tick();
 }
-void shutdown() { if (g_file) { uint8_t empty[1]; write_to_file(empty, 0, "close"); } native_practice::shutdown(); online::shutdown(); }
+void shutdown() {
+  if (g_file) { uint8_t empty[1]; write_to_file(empty, 0, "close"); }
+  spectate::stop();   // end_game with dolphin_closed, as Dolphin's EXI device sends when it closes
+  native_practice::shutdown(); online::shutdown();
+}
 uint64_t replays_written() { return g_replays_written; }
 uint32_t gct_load_address() { return g_gct_address; }
 uint64_t commands_seen() { return g_commands; }
@@ -796,11 +812,12 @@ void dma_write(uint32_t addr, uint32_t size) {
     std::time(&g_start_time);
     uint8_t len = mem[1];
     configure_commands(&mem[1], len);
+    spectate::start_game();   // before the command table, as in Dolphin's DMAWrite
     write_to_file(&mem[0], len + 1, "create");
     loc += len + 1;
     ++g_commands;
   }
-  if (byte == CMD_MENU_FRAME) { ++g_commands; return; }
+  if (byte == CMD_MENU_FRAME) { spectate::write(mem, size); ++g_commands; return; }
   uint8_t prev = 0;
   while (loc < size) {
     byte = mem[loc];
@@ -823,7 +840,7 @@ void dma_write(uint32_t addr, uint32_t size) {
       case CMD_STOP_MUSIC: jukebox::stop(); break;
       case CMD_CHANGE_MUSIC_VOLUME: jukebox::set_melee_volume(mem[loc + 1]); break;
       case CMD_RECEIVE_COMMANDS: break;   // handled above
-      case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); break;
+      case CMD_RECEIVE_GAME_END: write_to_file(&mem[loc], payload + 1, "close"); spectate::end_game(); break;
       case CMD_FRAME_BOOKEND: write_to_file(&mem[loc], payload + 1, ""); break;
       case CMD_PREPARE_REPLAY: playback::prepare_game_info(&mem[loc + 1], g_read_queue); break;
       case CMD_READ_FRAME: playback::prepare_frame_data(&mem[loc + 1], g_read_queue); break;

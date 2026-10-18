@@ -36,7 +36,8 @@ HOST_EXCLUDED = {
     'slippi_report.cpp', 'slippi_report.h', 'slippi_playback.cpp', 'slippi_playback.h',
     'slippi_playback_legacy.h', 'slippi_menu_codec.h', 'native_slippi_bridge.h', 'native_practice.cpp',
     'native_practice.h', 'native_practice_model.cpp', 'native_practice_model.h', 'native_replay_stream.cpp',
-    'native_replay_stream.h', 'jukebox.cpp', 'jukebox.h', 'hackpack_ai.cpp',
+    'native_replay_stream.h', 'jukebox.cpp', 'jukebox.h', 'hackpack_ai.cpp', 'slippi_spectate.cpp',
+    'slippi_spectate.h',
 }
 GAME_EXCLUDED = {
     'mu_slippi_menu.c', 'mu_slippi_css.c', 'mu_slippi_chat.c', 'mu_slippi_splash.c', 'mu_slippi_sss.c',

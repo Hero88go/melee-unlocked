@@ -54,6 +54,7 @@
 #include "exi_slippi.h"
 #include "native_slippi_bridge.h"
 #include "native_replay_stream.h"
+#include "slippi_spectate.h"
 #include "slippi_net.h"
 #include "native_recording_codes.h"
 #include "slippilib/SlippiGame.h"
@@ -855,6 +856,9 @@ template <class F> void guarded(F&& f) {
   try { f(); } catch (const ExitRequested& stop) {
     g_exit_code = stop.code;
     write_replay_recording();
+#ifndef MELEE_NO_SLIPPI
+    slippi::spectate::stop();
+#endif
     log_native_pose_bridge_stats();
     if (g_shutdown) g_shutdown(stop.code);
     host::end_process(stop.code);   // everything is saved: do not run the libraries' unload code
@@ -2654,8 +2658,14 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
     g_replay_stream.set_feature_options2(online ? 0u : (gx::RenderOptions::live_te_options2() & te_words_mask2()) |
                                                       cpu_20xx_bit());   // "20XX CPUs" too: playback replays it
     g_replay_stream.set_feature_options3(online ? 0u : h_game_options3());   // CPU training options, likewise
-    if (!g_replay_stream.begin_slippi(start, codes, (int64_t)std::time(nullptr)))
+    // The spectator server (Slippi Dolphin's): start_game, then the command table and every event
+    // as recorded, then end_game after Game End, the order Dolphin's DMAWrite sends them.
+    slippi::spectate::start_game();
+    g_replay_stream.set_event_sink([](const uint8_t* data, uint32_t size) { slippi::spectate::write(data, size); });
+    if (!g_replay_stream.begin_slippi(start, codes, (int64_t)std::time(nullptr))) {
       host::log("replay: cannot start native recording: %s", g_replay_stream.error().c_str());
+      slippi::spectate::end_game();
+    }
     else if (online)
       host::log("replay: recording online game %u", g_online_games);
     return;
@@ -2665,6 +2675,7 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
   if (!g_replay_stream.append(command, payload, size))
     host::log("replay: cannot record event %02X: %s", command, g_replay_stream.error().c_str());
   if (!g_replay && command == 0x39) {
+    slippi::spectate::end_game();
     // The native game's stable Game End record has the end method and four placements.
     // A unique zero placement is a winner; ambiguous endings stay incomplete.
     int winner = -1;
@@ -2961,6 +2972,7 @@ bool set_replay(const char* path) {
   g_replay_game_end = read_replay_event(path, 0x39);
   if (g_replay_game_start.empty()) { host::log("replay: %s has no Game Start event", path); g_replay.reset(); return false; }
   Slippi::GameSettings* s = g_replay->GetSettings();
+  g_replay_stream.set_event_sink(nullptr);   // the viewer's own recording is not broadcast
   if (!g_replay_stream.begin(g_replay_game_start, s->geckoCodes)) {
     host::log("replay: cannot start recording: %s", g_replay_stream.error().c_str());
     g_replay.reset();
@@ -3132,6 +3144,9 @@ int run(void (*shutdown)(int)) {
   lcancel::set_native_view([](MuLcancelView* out) { if (g_game.lcancel_view) g_game.lcancel_view(out); });
   host::log("source port: %s at %p, MEM1 %u MB at %08llX", g_dll.c_str(), (void*)module, MEM1_SIZE >> 20, (unsigned long long)MEM1_BASE);
   int code = 0;
+#ifndef MELEE_NO_SLIPPI
+  slippi::spectate::start();   // Slippi Dolphin's spectator server (settings: Spectator server)
+#endif
   guarded([&] { code = g_game.run(); });
   log_native_pose_bridge_stats();
   gx::set_native_pose_capture_enabled(false);

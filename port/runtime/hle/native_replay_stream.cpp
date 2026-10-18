@@ -26,10 +26,12 @@ bool NativeReplayStream::fail(const char* reason) {
 bool NativeReplayStream::begin(const std::vector<uint8_t>& start,
                              const std::vector<uint8_t>& codes) {
   std::string mod_profile = std::move(mod_profile_);   // set for the match about to start
+  EventSink sink = std::move(sink_);
   const uint32_t feature_options = feature_options_, feature_options2 = feature_options2_,
                  feature_options3 = feature_options3_;
   *this = NativeReplayStream{};
   mod_profile_ = std::move(mod_profile);
+  sink_ = std::move(sink);
   feature_options_ = feature_options;
   feature_options2_ = feature_options2;
   feature_options3_ = feature_options3;
@@ -54,10 +56,12 @@ bool NativeReplayStream::begin(const std::vector<uint8_t>& start,
 bool NativeReplayStream::begin_slippi(const std::vector<uint8_t>& start,
                                       const std::vector<uint8_t>& codes, int64_t start_time) {
   std::string mod_profile = std::move(mod_profile_);   // set for the match about to start
+  EventSink sink = std::move(sink_);
   const uint32_t feature_options = feature_options_, feature_options2 = feature_options2_,
                  feature_options3 = feature_options3_;
   *this = NativeReplayStream{};
   mod_profile_ = std::move(mod_profile);
+  sink_ = std::move(sink);
   feature_options_ = feature_options;
   feature_options2_ = feature_options2;
   feature_options3_ = feature_options3;
@@ -73,6 +77,14 @@ bool NativeReplayStream::begin_slippi(const std::vector<uint8_t>& start,
             {0x40, 5}, {0x41, 8}};
   for (const auto& entry : table_) sizes_[entry.first] = entry.second;
   active_ = true;
+  if (sink_) {   // the command table event, as encode() writes it
+    std::vector<uint8_t> table = {0x35, uint8_t(1 + table_.size() * 3)};
+    for (const auto& entry : table_) {
+      table.push_back(entry.first);
+      table.push_back(uint8_t(entry.second >> 8)); table.push_back(uint8_t(entry.second));
+    }
+    sink_(table.data(), uint32_t(table.size()));
+  }
   if (!append(0x36, start.data(), uint32_t(start.size()))) return false;
   // The list always goes through the message splitter, 512 bytes per part.
   for (size_t offset = 0; offset < codes.size() || offset == 0; offset += 512) {
@@ -103,6 +115,7 @@ bool NativeReplayStream::append(uint8_t command, const uint8_t* payload, uint32_
   sizes_[command] = uint16_t(size);
   events_.push_back(command);
   if (size) events_.insert(events_.end(), payload, payload + size);
+  if (sink_) sink_(events_.data() + events_.size() - size - 1, size + 1);
   if (slippi_) {
     // Dolphin's writer: the last frame and the character usage come from post-frame events.
     if (command == 0x38 && size >= 7) {

@@ -181,6 +181,14 @@ struct RenderOptions {
   bool results_screen = true;
   static bool& live_results_screen() { static bool value = true; return value; }
   bool offline_delay = false;
+  // Slippi Dolphin's spectator server (Game tab, Online; ini keys slippi_spectator, on unless the
+  // file says 0, and slippi_spectator_port, 51441): the game's recording events on a local ENet
+  // port for the Slippi Launcher's Broadcast tab and stream overlays (hle/slippi_spectate.cpp).
+  // Read once when the game starts, as Dolphin creates its server once.
+  bool slippi_spectator = true;
+  static bool& live_slippi_spectator() { static bool value = true; return value; }
+  int slippi_spectator_port = 51441;
+  static int& live_slippi_spectator_port() { static int value = 51441; return value; }
   static bool& live_offline_delay() { static bool value = false; return value; }
   // 20XX Hack Pack training options for CPUs (Game tab, Source Port only, offline only), native in
   // shim/mu_20xx_cpu.c. Plain options like "20XX CPUs": no pack or save needed. They go to the game

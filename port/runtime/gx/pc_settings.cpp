@@ -27,6 +27,7 @@
 #else
 #include "jukebox.h"
 #include "slippi_online.h"
+#include "slippi_spectate.h"
 #include "native_practice.h"
 #endif
 #include "window.h"
@@ -1950,6 +1951,10 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.unlock_all = true;   // a file without the key: on
   options.results_screen = true;
   options.offline_delay = false;
+#ifndef MELEE_NO_SLIPPI   // the spectator server is part of the Slippi layer
+  options.slippi_spectator = true;   // a file without the key: on, as in Slippi Dolphin
+  options.slippi_spectator_port = 51441;
+#endif
   options.cpu_tech = options.cpu_getup = options.cpu_di = options.cpu_sdi = 0;   // files without the keys: off
   options.cpu_no_taunt = options.cpu_lcancel = options.cpu_no_rapid_jab = options.cpu_no_transform = false;
   options.mod_choices.clear();
@@ -2090,6 +2095,10 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "cpu_20xx") options.cpu_20xx = value == "1";
       else if (key == "unlock_all") options.unlock_all = value != "0";
       else if (key == "results_screen") options.results_screen = value != "0";
+#ifndef MELEE_NO_SLIPPI
+      else if (key == "slippi_spectator") options.slippi_spectator = value != "0";
+      else if (key == "slippi_spectator_port") options.slippi_spectator_port = std::clamp(std::atoi(value.c_str()), 1, 65535);
+#endif
       else if (key == "cpu_tech") options.cpu_tech = std::clamp(std::atoi(value.c_str()), 0, 5);
       else if (key == "cpu_getup") options.cpu_getup = std::clamp(std::atoi(value.c_str()), 0, 5);
       else if (key == "cpu_di") options.cpu_di = std::clamp(std::atoi(value.c_str()), 0, 3);
@@ -2294,6 +2303,10 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   RenderOptions::live_unlock_all() = options.unlock_all;
   RenderOptions::live_results_screen() = options.results_screen;
   RenderOptions::live_offline_delay() = options.offline_delay;
+#ifndef MELEE_NO_SLIPPI
+  RenderOptions::live_slippi_spectator() = options.slippi_spectator;
+  RenderOptions::live_slippi_spectator_port() = options.slippi_spectator_port;
+#endif
   host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
   RenderOptions::live_cpu_training() = options.cpu_training_word();
   // Explicit new choices win over legacy keys regardless of their order in the file. A legacy
@@ -3393,6 +3406,10 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ncpu_20xx " << (options.cpu_20xx ? 1 : 0)
        << "\nunlock_all " << (options.unlock_all ? 1 : 0)
        << "\nresults_screen " << (options.results_screen ? 1 : 0)
+#ifndef MELEE_NO_SLIPPI
+       << "\nslippi_spectator " << (options.slippi_spectator ? 1 : 0)
+       << "\nslippi_spectator_port " << options.slippi_spectator_port
+#endif
        << "\ncpu_tech " << options.cpu_tech
        << "\ncpu_getup " << options.cpu_getup
        << "\ncpu_di " << options.cpu_di
@@ -7245,6 +7262,30 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SameLine();
         settings_hint("(applies from the next match)");
       }
+      // Slippi Dolphin's spectator server (its Slippi settings: Enable spectator, Spectator port),
+      // read once at start as Dolphin does.
+      if (settings_toggle("Spectator server (Slippi Launcher broadcast, overlays)", &options.slippi_spectator)) {
+        RenderOptions::live_slippi_spectator() = options.slippi_spectator;
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Sends this game to the Slippi Launcher on this PC the way Slippi Dolphin does:\n"
+                          "its Broadcast tab (a tournament stream's code) and stream overlays read it.\n"
+                          "Uses the same port as Slippi Dolphin, so close Slippi Dolphin while playing here.\n"
+                          "Takes effect the next time the game starts.");
+      ImGui::SameLine();
+      int spectator_port = options.slippi_spectator_port;
+      ImGui::SetNextItemWidth(110.0f);
+      if (ImGui::InputInt("Port##spectator", &spectator_port, 0, 0)) {
+        options.slippi_spectator_port = std::clamp(spectator_port, 1, 65535);
+        RenderOptions::live_slippi_spectator_port() = options.slippi_spectator_port;
+        changed = true;
+      }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("51441 is Slippi Dolphin's port, the one the Slippi Launcher looks at.");
+      if (slippi::spectate::running())
+        settings_hint(("Serving on port " + std::to_string(slippi::spectate::port()) + ".").c_str());
+      else if (options.slippi_spectator)
+        settings_hint("Not serving: starts with the game (see the log if the port is taken).");
     }
 #endif
 

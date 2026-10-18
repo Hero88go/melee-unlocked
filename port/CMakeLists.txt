@@ -21,7 +21,7 @@ if(MELEE_NO_SLIPPI)
   list(REMOVE_ITEM RUNTIME_NS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppc/leaf_stencils.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppc/leaf_translator.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/runtime/ppc/ram_translator.cpp")
   foreach(ns_removed
-      runtime/hle/exi_slippi.cpp runtime/hle/slippi_net.cpp runtime/hle/slippi_online.cpp
+      runtime/hle/exi_slippi.cpp runtime/hle/slippi_net.cpp runtime/hle/slippi_online.cpp runtime/hle/slippi_spectate.cpp
       runtime/hle/slippi_report.cpp runtime/hle/slippi_playback.cpp runtime/hle/native_practice.cpp
       runtime/hle/native_practice_model.cpp runtime/hle/native_replay_stream.cpp runtime/hle/jukebox.cpp
       runtime/host/hackpack_ai.cpp runtime/host/static_gecko.cpp)   # the Static Recomp's loader for the pack's AI block
@@ -725,6 +725,13 @@ target_include_directories(port_settings_load_test PRIVATE runtime)
 target_compile_options(port_settings_load_test PRIVATE /EHsc)
 target_compile_definitions(port_settings_load_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 add_test(NAME port_settings_load COMMAND port_settings_load_test)
+# Slippi Dolphin's spectator server, end to end over ENet on loopback (hle/slippi_spectate.cpp).
+add_executable(port_slippi_spectate_test tests/slippi_spectate_test.cpp)
+target_link_libraries(port_slippi_spectate_test PRIVATE runtime guest)
+target_include_directories(port_slippi_spectate_test PRIVATE runtime)
+target_compile_options(port_slippi_spectate_test PRIVATE /EHsc)
+target_compile_definitions(port_slippi_spectate_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
+add_test(NAME port_slippi_spectate COMMAND port_slippi_spectate_test)
 target_link_libraries(melee_port PRIVATE runtime guest dbghelp)   # dbghelp: crash minidump
 add_executable(port_static_gecko_test tests/static_gecko_test.cpp)
 target_link_libraries(port_static_gecko_test PRIVATE runtime guest)

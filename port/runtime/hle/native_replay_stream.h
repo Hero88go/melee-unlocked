@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -20,6 +21,11 @@ class NativeReplayStream {
   bool begin_slippi(const std::vector<uint8_t>& game_start,
                     const std::vector<uint8_t>& gecko_codes, int64_t start_time);
   bool append(uint8_t command, const uint8_t* payload, uint32_t size);
+  // Live copy of the recording (the Slippi spectator server): begin_slippi sends the command
+  // table event (0x35) as the file holds it, then every event as it is recorded, command byte
+  // first, the bytes the .slp gets. Kept across matches until set again; empty sends nothing.
+  using EventSink = std::function<void(const uint8_t* data, uint32_t size)>;
+  void set_event_sink(EventSink sink) { sink_ = std::move(sink); }
   std::vector<uint8_t> encode() const;
   const std::string& error() const { return error_; }
   bool active() const { return active_; }
@@ -52,6 +58,7 @@ class NativeReplayStream {
   }
  private:
   std::string mod_profile_;
+  EventSink sink_;
   uint32_t feature_options_ = 0;
   uint32_t feature_options2_ = 0;
   uint32_t feature_options3_ = 0;
