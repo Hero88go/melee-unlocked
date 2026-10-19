@@ -109,7 +109,9 @@ target_compile_definitions(melee_source PRIVATE MELEE_SOURCE_PORT MELEE_PORT_VER
 target_compile_options(melee_source PRIVATE ${MELEE_LINUX_COMMON_FLAGS})
 target_link_libraries(melee_source PRIVATE full_runtime full_mu_net)
 set_target_properties(melee_source PROPERTIES POSITION_INDEPENDENT_CODE ON)
-target_link_options(melee_source PRIVATE -pie -rdynamic)
+# The release carries its own copies of the libraries that differ between distributions, in lib/
+# beside the program (tools/package_linux_release.py); without lib/ the system's are used.
+target_link_options(melee_source PRIVATE -pie -rdynamic "-Wl,-rpath,\$ORIGIN/lib" -Wl,--enable-new-dtags)
 add_custom_command(TARGET melee_source POST_BUILD
   COMMAND "${CMAKE_COMMAND}" -E copy_directory "${PORT}/slippi_sys" "$<TARGET_FILE_DIR:melee_source>/Sys"
   VERBATIM)
@@ -124,3 +126,6 @@ elseif(MELEE_LINUX_GAME_LIBRARY AND EXISTS "${MELEE_LINUX_GAME_LIBRARY}")
     COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MELEE_LINUX_GAME_LIBRARY}" "$<TARGET_FILE_DIR:melee_source>/melee_game.so"
     VERBATIM)
 endif()
+
+# The launcher (MeleeUnlocked).
+add_subdirectory(../launcher "${CMAKE_CURRENT_BINARY_DIR}/launcher")

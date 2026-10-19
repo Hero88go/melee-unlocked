@@ -9,6 +9,7 @@
 // Thread-safe: the lobby worker thread asks for text while the window thread may switch language.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include <filesystem>
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -172,7 +173,11 @@ inline std::wstring trw(const char* key, Args args) { return wide(tr(key, args))
 
 // Reads lang/<code>.txt. Unknown keys are kept (harmless); a missing file leaves the table empty.
 inline bool read_file(const std::wstring& path, Table& out) {
+#ifdef _WIN32
   std::ifstream in(path, std::ios::binary);
+#else
+  std::ifstream in(std::filesystem::path(path), std::ios::binary);
+#endif
   if (!in) return false;
   std::string line;
   bool first = true;
@@ -221,7 +226,11 @@ inline bool set_language(const std::string& code, const std::vector<std::wstring
   bool loaded = false;
   for (const auto& folder : folders) {
     if (folder.empty()) continue;
+#ifdef _WIN32
     if (read_file(folder + L"\\" + wide(code) + L".txt", *table)) { loaded = true; break; }
+#else
+    if (read_file(folder + L"/" + wide(code) + L".txt", *table)) { loaded = true; break; }
+#endif
   }
   std::lock_guard<std::mutex> lock(s.mutex);
   if (!loaded) { s.code = "en"; s.table.reset(); return false; }
@@ -235,6 +244,23 @@ inline std::string current() {
 
 // The language the launcher starts in when launcher.ini has none: Windows' display language, when
 // there is a translation for it.
+#ifndef _WIN32
+// Linux: the desktop's language from LC_ALL, LC_MESSAGES or LANG ("de_DE.UTF-8").
+inline std::string system_default() {
+  const char* value = nullptr;
+  for (const char* name : {"LC_ALL", "LC_MESSAGES", "LANG"}) if ((value = std::getenv(name)) && *value) break;
+  const std::string lang = value ? value : "";
+  if (lang.rfind("es", 0) == 0) return "es";
+  if (lang.rfind("pt", 0) == 0) return "pt-BR";
+  if (lang.rfind("fr", 0) == 0) return "fr";
+  if (lang.rfind("de", 0) == 0) return "de";
+  if (lang.rfind("ru", 0) == 0) return "ru";
+  if (lang.rfind("ja", 0) == 0) return "ja";
+  if (lang.rfind("zh", 0) == 0) return "zh-Hans";
+  if (lang.rfind("ko", 0) == 0) return "ko";
+  return "en";
+}
+#else
 inline std::string system_default() {
   const LANGID id = GetUserDefaultUILanguage();
   switch (PRIMARYLANGID(id)) {
@@ -249,7 +275,9 @@ inline std::string system_default() {
     default: return "en";
   }
 }
+#endif
 
+#ifdef _WIN32
 inline bool font_installed(const std::wstring& face) {
   static std::mutex mutex;
   static std::map<std::wstring, bool> known;
@@ -299,5 +327,6 @@ inline std::wstring format_time(const SYSTEMTIME& t) {
     GetTimeFormatEx(LOCALE_NAME_USER_DEFAULT, TIME_NOSECONDS, &t, nullptr, out, 64);
   return out;
 }
+#endif
 
 }  // namespace launcher::lang

@@ -208,7 +208,7 @@ bool hex_text(const std::string& value,size_t size) {
 int free_udp_port() {
   SOCKET s=::socket(AF_INET,SOCK_DGRAM,IPPROTO_UDP); if(s==INVALID_SOCKET) return 0;
   sockaddr_in a{}; a.sin_family=AF_INET; a.sin_addr.s_addr=htonl(INADDR_ANY);
-  int port=0,size=sizeof a;
+  int port=0; socklen_t size=sizeof a;
   if(bind(s,reinterpret_cast<sockaddr*>(&a),sizeof a)==0 && getsockname(s,reinterpret_cast<sockaddr*>(&a),&size)==0) port=ntohs(a.sin_port);
   closesocket(s); return port;
 }
@@ -887,7 +887,7 @@ struct PeerLobby::Impl {
       if(socket!=INVALID_SOCKET) closesocket(socket);
       throw std::runtime_error(lang::tr("lobby.error.port"));
     }
-    int size=sizeof local; getsockname(socket,reinterpret_cast<sockaddr*>(&local),&size);
+    socklen_t size=sizeof local; getsockname(socket,reinterpret_cast<sockaddr*>(&local),&size);
     listen_port=ntohs(local.sin_port);
     u_long nonblocking=1; ioctlsocket(socket,FIONBIO,&nonblocking);
     if(!test.no_dht) {
@@ -2068,7 +2068,7 @@ struct PeerLobby::Impl {
   void tick() {
     const auto now=GetTickCount64();
     for(int i=0;i<128;++i) {
-      char packet[4097]; sockaddr_in from{}; int address_size=sizeof from;
+      char packet[4097]; sockaddr_in from{}; socklen_t address_size=sizeof from;
       int length=recvfrom(socket,packet,sizeof packet-1,0,reinterpret_cast<sockaddr*>(&from),&address_size);
       if(length<=0) break;
       if(drop_in) continue;

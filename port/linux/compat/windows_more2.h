@@ -78,3 +78,15 @@ inline int _dupenv_s(char** out, size_t* size, const char* name) {
   return 0;
 }
 DWORD GetFullPathNameA(LPCSTR path, DWORD size, LPSTR out, LPSTR* file_part);
+
+typedef struct _SYSTEMTIME { WORD wYear, wMonth, wDayOfWeek, wDay, wHour, wMinute, wSecond, wMilliseconds; } SYSTEMTIME;
+inline void linux_fill_systemtime(SYSTEMTIME* t, bool local) {
+  timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+  struct tm tm{}; const time_t s = ts.tv_sec;
+  if (local) localtime_r(&s, &tm); else gmtime_r(&s, &tm);
+  t->wYear = (WORD)(tm.tm_year + 1900); t->wMonth = (WORD)(tm.tm_mon + 1); t->wDayOfWeek = (WORD)tm.tm_wday;
+  t->wDay = (WORD)tm.tm_mday; t->wHour = (WORD)tm.tm_hour; t->wMinute = (WORD)tm.tm_min; t->wSecond = (WORD)tm.tm_sec;
+  t->wMilliseconds = (WORD)(ts.tv_nsec / 1000000);
+}
+inline void GetLocalTime(SYSTEMTIME* t) { linux_fill_systemtime(t, true); }
+inline void GetSystemTime(SYSTEMTIME* t) { linux_fill_systemtime(t, false); }
