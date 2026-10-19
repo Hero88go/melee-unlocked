@@ -5102,6 +5102,17 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
         served.resize(extent, 0);
         put_be32(served.data(), (uint32_t)extent);
       }
+      if (!online_form.empty() && online_form.size() != served.size()) {
+        // The same one length for the two forms of an online-allowed file: the FST carries one, so a
+        // shorter online form failed the game's reads past its end ("disc read failed") and a longer
+        // one was cut short. Both are padded and their length fields say the shared length.
+        const size_t extent = std::max(served.size(), online_form.size());
+        if (extent > std::numeric_limits<uint32_t>::max() || served.size() < 4 || online_form.size() < 4) continue;
+        served.resize(extent, 0);
+        online_form.resize(extent, 0);
+        put_be32(served.data(), (uint32_t)extent);
+        put_be32(online_form.data(), (uint32_t)extent);
+      }
       if (served.size() > std::numeric_limits<uint32_t>::max()) continue;
       put_be32(fst + (size_t)disc_file.index * 12 + 8, (uint32_t)served.size());
       RuntimeAsset active{asset->info.id, asset->info.target_path,
