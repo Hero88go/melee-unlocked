@@ -29,4 +29,4 @@ target_compile_options(port_ram_translator_test PRIVATE /EHsc ${MELEE_ARCH_FLAG}
 target_compile_definitions(port_ram_translator_test PRIVATE NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_link_libraries(port_ram_translator_test PRIVATE runtime guest)
 add_test(NAME port_ram_translator COMMAND port_ram_translator_test)
-set_tests_properties(port_ram_translator PROPERTIES TIMEOUT 60)
+set_tests_properties(port_ram_translator PROPERTIES TIMEOUT 180)   # 32-78 s on a busy machine
