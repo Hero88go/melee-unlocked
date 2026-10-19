@@ -52,7 +52,7 @@ def main():
         '-DMELEE_LINUX_GRAPHICS=' + ('OFF' if args.headless_build else 'ON'),
         '-DMELEE_PORT_GEN=' + (str(args.port_gen.resolve()) if (args.port_gen / 'hle_decls.h').exists() else ''))
     full = not args.headless_build and (args.port_gen / 'hle_decls.h').exists()
-    targets = ['melee_linux'] + (['melee_' 'source'] if full else [])
+    targets = ['melee_linux'] + (['melee_' 'source', 'melee_launcher'] if full else [])
     if args.test:
         targets += ['linux_gc_adapter_test', 'linux_input_script_test']
     run('cmake', '--build', host_build, '--target', *targets, '-j', args.jobs)
