@@ -1956,6 +1956,7 @@ static void dlss5_float(const std::string& value, float& target, float lo, float
 #endif
 
 void load_pc_settings(RenderOptions& options, int& volume) {
+  host::ds4_bindings_defaults();    // before the defaults are captured and the saved buttons read
   capture_default_bindings();   // the built-in buttons, before the saved ones replace them
   g_edit_follow_active = true;
   for (host::Deadzone& dz : host::g_deadzones) dz.click_l = dz.click_r = host::kDefaultTriggerClick;

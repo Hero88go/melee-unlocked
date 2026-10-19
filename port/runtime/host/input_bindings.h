@@ -540,6 +540,7 @@ extern int g_stick_modifier_percent;   // the stick modifier's push, percent of 
 extern std::array<PadBindings, 4> g_pad_bindings;
 extern std::array<GCBindings, 4> g_gc_bindings;
 extern std::array<PadBindings, 4> g_ds4_bindings;
+void ds4_bindings_defaults();   // fills g_ds4_bindings with the defaults, once (before the settings are read)
 extern std::array<PadBindings, 4> g_swpro_bindings;
 extern std::array<HidBindings, 4> g_hid_bindings;
 

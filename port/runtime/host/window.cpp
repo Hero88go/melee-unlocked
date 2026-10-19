@@ -521,7 +521,13 @@ constexpr uint16_t ds4_action_mask(BindAction action) {
   }
 }
 
+// Once: the settings file is read before the window exists, and its PlayStation buttons must not be
+// replaced by the defaults when the window is made (a saved DualSense profile came back as the
+// default layout after every restart).
 void ds4_init_defaults() {
+  static bool done = false;
+  if (done) return;
+  done = true;
   for (auto& bindings : g_ds4_bindings)
     for (int i = 0; i < (int)BindAction::Count; ++i) bindings.mask[i] = ds4_action_mask((BindAction)i);
 }
@@ -606,6 +612,8 @@ void hidraw_stop() { linux_hid::stop(); }
 }  // namespace
 
 static bool xinput_state(int idx, XINPUT_STATE* state);   // below, with the helper thread for empty slots
+void ds4_bindings_defaults() { ds4_init_defaults(); }
+
 namespace { CaptureDevice g_capture_want = CaptureDevice::None; int g_capture_want_index = 0; }
 void input_begin_capture(CaptureDevice want, int want_index) {
   g_capture_want = want; g_capture_want_index = want_index;

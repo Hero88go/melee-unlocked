@@ -686,6 +686,20 @@ int main() {
     fs::remove(cpu_path, ec);
   }
 
+  {
+    // A saved PlayStation layout survives the start: the settings are read before the window is
+    // made, and making it used to put the default DualSense buttons back over them.
+    const fs::path ds = fs::temp_directory_path() / "mu_settings_ds4_test.ini";
+    { std::ofstream f(ds); f << "ds40_A " << host::DS4_SQUARE << "\n"; }
+    gx::RenderOptions o; o.settings_path = ds.string(); int vol = 70;
+    gx::load_pc_settings(o, vol);
+    CHECK(host::g_ds4_bindings[0].mask[(int)host::BindAction::A] == host::DS4_SQUARE);
+    host::ds4_bindings_defaults();   // what creating the window does
+    CHECK(host::g_ds4_bindings[0].mask[(int)host::BindAction::A] == host::DS4_SQUARE);
+    CHECK(host::g_ds4_bindings[1].mask[(int)host::BindAction::A] == host::DS4_CROSS);   // the others keep the defaults
+    std::error_code ec; fs::remove(ds, ec);
+  }
+
   if (g_failures == 0) std::printf("settings load: all checks passed\n");
   return g_failures == 0 ? 0 : 1;
 }
