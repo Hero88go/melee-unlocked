@@ -500,6 +500,9 @@ void watch_replay_queue() {
 bool g_live_watch=false;
 std::set<std::wstring> g_live_seen;   // files already opened or present when watching began
 std::filesystem::path live_spectate_folder() {
+#ifdef MELEE_NO_SLIPPI   // no Slippi Launcher to watch from in that build (and no button)
+  return {};
+#else
   // The Slippi Launcher's own setting (spectateSlpPath), else its default: <replay folder>\Spectate.
   for(const auto& root:slippi::account::launcher_roots()) {
     std::ifstream input(root/"Settings",std::ios::binary);
@@ -516,6 +519,7 @@ std::filesystem::path live_spectate_folder() {
   PWSTR documents=nullptr; std::filesystem::path out;
   if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents,0,nullptr,&documents))) { out=std::filesystem::path(documents)/"Slippi"/"Spectate"; CoTaskMemFree(documents); }
   return out;
+#endif
 }
 void live_caption() {
   if(g_replays[14]) { SetWindowTextW(g_replays[14],launcher::lang::txw(g_live_watch?L"Stop watching live":L"Watch live").c_str()); InvalidateRect(g_replays[14],nullptr,FALSE); }
@@ -1073,7 +1077,9 @@ void create_replay_controls() {
   g_replays[11]=make(L"BUTTON",L"",BS_OWNERDRAW,808,662,150,30,ID_REPLAY_QUEUE);
   g_replays[12]=make(L"BUTTON",L"Clear queue",BS_OWNERDRAW,698,662,102,30,ID_REPLAY_QUEUE_CLEAR);
   // "Watch live", beside "Watch Replay": a broadcast watched in the Slippi Launcher plays here.
+#ifndef MELEE_NO_SLIPPI
   g_replays[14]=make(L"BUTTON",L"Watch live",BS_OWNERDRAW,664,622,136,34,ID_REPLAY_LIVE);
+#endif
   WNDCLASSEXW wc{sizeof wc}; wc.lpfnWndProc=stats_proc; wc.hInstance=GetModuleHandleW(nullptr);
   wc.hCursor=LoadCursorW(nullptr,IDC_ARROW); wc.lpszClassName=L"MeleeUnlockedReplayStats";
   RegisterClassExW(&wc);
