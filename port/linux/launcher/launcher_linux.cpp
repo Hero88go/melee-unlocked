@@ -662,6 +662,36 @@ int main(int argc, char** argv) {
   style();
   ImGui_ImplSDL2_InitForOpenGL(window, gl);
   ImGui_ImplOpenGL3_Init("#version 330 core");
+  // Bailey, under the page list as in the Windows launcher: ui/bailey.bmp (the same cut-out, 32-bit
+  // BGRA with premultiplied alpha, top-down or bottom-up), drawn at her own aspect.
+  GLuint dog = 0; int dog_w = 0, dog_h = 0;
+  if (std::ifstream f{g_dir + "/ui/bailey.bmp", std::ios::binary}) {
+    std::vector<unsigned char> b((std::istreambuf_iterator<char>(f)), {});
+    auto u32 = [&](size_t o) { return o + 4 <= b.size() ? (uint32_t)b[o] | (uint32_t)b[o + 1] << 8 | (uint32_t)b[o + 2] << 16 | (uint32_t)b[o + 3] << 24 : 0u; };
+    const uint32_t data = u32(10); const int w = (int32_t)u32(18), h = (int32_t)u32(22);
+    const int bpp = b.size() > 29 ? b[28] | b[29] << 8 : 0, rows = h < 0 ? -h : h;
+    if (bpp == 32 && w > 0 && rows > 0 && w < 4096 && rows < 4096 && data + (size_t)w * rows * 4 <= b.size()) {
+      std::vector<unsigned char> rgba((size_t)w * rows * 4);
+      for (int y = 0; y < rows; ++y) {
+        const unsigned char* src = b.data() + data + (size_t)(h < 0 ? y : rows - 1 - y) * w * 4;
+        for (int x = 0; x < w; ++x, src += 4) {
+          unsigned char* d = &rgba[((size_t)y * w + x) * 4];
+          const unsigned a = src[3];
+          // Undo the premultiplied alpha: ImGui blends straight alpha.
+          d[0] = a ? (unsigned char)std::min(255u, src[2] * 255u / a) : 0;
+          d[1] = a ? (unsigned char)std::min(255u, src[1] * 255u / a) : 0;
+          d[2] = a ? (unsigned char)std::min(255u, src[0] * 255u / a) : 0;
+          d[3] = (unsigned char)a;
+        }
+      }
+      glGenTextures(1, &dog);
+      glBindTexture(GL_TEXTURE_2D, dog);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, rows, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+      dog_w = w; dog_h = rows;
+    }
+  }
   int page = 0;
   const char* pages[] = {"Play", "Replays", "Mods", "Online", "Help"};
   bool running = true;
@@ -706,6 +736,17 @@ int main(int argc, char** argv) {
     ImGui::Spacing();
     for (int i = 0; i < (int)(sizeof pages / sizeof pages[0]); ++i)
       if (ImGui::Selectable(pages[i], page == i, 0, ImVec2(0, 34))) page = i;
+    if (dog) {
+      // Centred in what is left of the rail under the pages.
+      const ImVec2 room = ImGui::GetContentRegionAvail();
+      const float scale = std::min(room.x / dog_w, (room.y - 8) / dog_h);
+      if (scale > 0.05f) {
+        const ImVec2 at = ImGui::GetCursorPos();
+        const float dw = dog_w * scale, dh = dog_h * scale;
+        ImGui::SetCursorPos(ImVec2(at.x + (room.x - dw) / 2, at.y + (room.y - dh) / 2));
+        ImGui::Image((ImTextureID)(intptr_t)dog, ImVec2(dw, dh));
+      }
+    }
     ImGui::EndChild();
     ImGui::SameLine();
     ImGui::BeginChild("page", ImVec2(0, -32), false);

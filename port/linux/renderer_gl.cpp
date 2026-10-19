@@ -51,6 +51,16 @@ void run_tool(std::vector<std::string> args, const std::filesystem::path& log) {
   posix_spawn_file_actions_init(&files);
   posix_spawn_file_actions_addopen(&files, STDOUT_FILENO, log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
   posix_spawn_file_actions_adddup2(&files, STDOUT_FILENO, STDERR_FILENO);
+  // The release ships the shader tools in bin/ beside the program; a system copy is the fallback.
+  std::string shipped;
+  {
+    std::error_code ec;
+    const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+    if (!ec) {
+      const auto candidate = exe.parent_path() / "bin" / args[0];
+      if (std::filesystem::is_regular_file(candidate, ec)) { shipped = candidate.string(); argv[0] = shipped.data(); }
+    }
+  }
   pid_t child = 0;
   const int error = posix_spawnp(&child, argv[0], &files, nullptr, argv.data(), environ);
   posix_spawn_file_actions_destroy(&files);

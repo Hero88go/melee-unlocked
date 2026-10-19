@@ -186,8 +186,20 @@ def main():
     # lib/: the bundled libraries and their license files.
     lib = folder / 'lib'
     lib.mkdir()
+    # bin/: the shader tools the OpenGL renderer runs (renderer_gl.cpp looks in bin/ first). Without
+    # them the game stopped on its first frame ("Cannot run spirv-cross") on systems lacking them.
+    tools_dir = folder / 'bin'
+    tools_dir.mkdir()
+    shader_tools = []
+    for tool in ('glslangValidator', 'spirv-cross'):
+        found = shutil.which(tool)
+        if not found:
+            raise SystemExit(f'missing {tool} on the build machine (apt install glslang-tools spirv-cross)')
+        shutil.copy2(os.path.realpath(found), tools_dir / tool)
+        os.chmod(tools_dir / tool, 0o755)
+        shader_tools.append(tools_dir / tool)
     libraries = {}
-    for binary in (exe, launcher, game):
+    for binary in (exe, launcher, game, *shader_tools):
         libraries.update(ldd(binary))
     licenses = folder / 'licenses'
     licenses.mkdir()
@@ -213,10 +225,12 @@ def main():
     for path in lib.iterdir():
         run('patchelf', '--set-rpath', '$ORIGIN', path)
     run('patchelf', '--set-rpath', '$ORIGIN/lib', folder / 'melee_game.so')
+    for tool in shader_tools:
+        run('patchelf', '--set-rpath', '$ORIGIN/../lib', tool)
     # Prove it: with no help from the environment, every dependency the package bundles resolves to lib/.
     env = {k: v for k, v in os.environ.items() if k != 'LD_LIBRARY_PATH'}
     wrong = []
-    for binary in [folder / EXE, folder / 'MeleeUnlocked', folder / 'melee_game.so', *lib.iterdir()]:
+    for binary in [folder / EXE, folder / 'MeleeUnlocked', folder / 'melee_game.so', *shader_tools, *lib.iterdir()]:
         out = subprocess.run(['ldd', str(binary)], capture_output=True, text=True, env=env).stdout
         dynamic = subprocess.run(['readelf', '-d', str(binary)], capture_output=True, text=True).stdout
         needed = {line.split('[', 1)[1].split(']', 1)[0] for line in dynamic.splitlines() if '(NEEDED)' in line}
@@ -255,6 +269,9 @@ def main():
     (folder / 'Shaders/crt-shaders.pak').write_bytes(shader_pak())
     if (ROOT / 'lang').is_dir():
         shutil.copytree(ROOT / 'lang', folder / 'lang')
+    # The launcher's picture of Bailey (the Windows launcher has her compiled in).
+    (folder / 'ui').mkdir()
+    shutil.copy2(ROOT / 'port/app/bailey_cut.bmp', folder / 'ui/bailey.bmp')
     ui_src = ROOT / 'port/runtime/gx/ui_sources'
     for source in ('gd_melee', 'mockups', 'menu_previews', 'vendor'):
         shutil.copytree(ui_src / source / 'assets', folder / 'ui_sources' / source)
