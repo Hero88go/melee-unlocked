@@ -353,6 +353,17 @@ size_t redirect_changed_functions(const uint8_t* reference, const uint8_t* m, ui
     // Already running from RAM: a block written every frame (block 0 holds low memory as well as
     // code) is compared again every frame, and each of those functions was logged again each time.
     if (std::binary_search(g_redirected.begin(), g_redirected.end(), owner)) continue;
+    // A host implementation (PADRead, the SI and DVD calls) stands in for hardware the interpreter
+    // does not have: a mod's own copy of it would read nothing (Melee 3D ships its own PADRead, and
+    // on it no pad ever reached the game). The host version stays.
+    if (compiled_as_host_function(owner)) {
+      static std::vector<uint32_t> kept;   // sorted; blocks are compared again, log once
+      auto at = std::lower_bound(kept.begin(), kept.end(), owner);
+      if (at != kept.end() && *at == owner) continue;
+      kept.insert(at, owner);
+      host::log("mods: %08X %s changed, the host's own version is kept", owner, guest::name_table[lo - 1].name);
+      continue;
+    }
     if (redirect_to_interpreter(owner)) {
       ++redirected;
       host::log("mods: %08X %s runs the mod's code", owner, guest::name_table[lo - 1].name);

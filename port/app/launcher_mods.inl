@@ -148,6 +148,27 @@ std::vector<CatalogMod> default_catalog() {
       "output_md5": "d926ba5b39551f5245fd655bc1dfeb3f",
       "output_sha256": "6a23c731a95a076e531ce38d60c699b4c73fc11a035e42afb390f6d4ab96acea",
       "note": "Plays on the Static Recomp, offline (no online play or replays)."
+    },
+    {
+      "id": "melee3d",
+      "name": "Melee 3D",
+      "credits": "By walz0",
+      "license": "Not stated",
+      "page": "https://github.com/walz0/Melee-3D/releases/tag/v1.0",
+      "repo": "walz0/Melee-3D",
+      "tag": "v1.0",
+      "asset_pattern": "Melee3D.v1.0.zip",
+      "kind": "xdelta_zip",
+      "one_click": false,
+      "version": "1.0",
+      "url": "https://github.com/walz0/Melee-3D/releases/download/v1.0/Melee3D.v1.0.zip",
+      "sha256": "ad34e72e1ae66c68690a329ff1aa04af5bf82c8c8af1d1a26ba693e290d9cff4",
+      "policy": "link_only",
+      "tool_sha256": "d81f59b2fe5e8589c0ee9782e231c805084f4d23dfade413903a4cad63b4e342",
+      "patch_sha256": "50d28ad0dd7002c9fc58113e550af2cb3588db8d2de652e73f16f83a0974ec64",
+      "output_md5": "7643d5ca759e83f7f23a96b10e5cfe5f",
+      "output_sha256": "a11c8862b88dd0858ae1a8a980a3bd36e9ab9883372439cd5e8c2d08934b3839",
+      "note": "Runs on the Static Recomp. Download it from its page, then drop the zip here."
     }
   ]
 })catalog", &mods, &error);
@@ -530,7 +551,11 @@ void install_file_job(std::wstring file, std::string id, const std::string& iso,
   scan_installed();
   enable_installed(mod.id);
   const auto detected = installed(); const auto current = detected.find(mod.id);
-  set_status(key, current != detected.end() && current->second.enabled ? "Installed and turned on. Saves were kept." : "Installed. This version is not supported yet. Saves were kept.");
+  // A disc that plays from Mods > Play and is never a switched-on layer (20XX Hack Pack, Melee 3D).
+  const bool play_only = current != detected.end() && !current->second.enabled && catalog_core::playable(current->second);
+  set_status(key, current != detected.end() && current->second.enabled ? "Installed and turned on. Saves were kept."
+                  : play_only ? "Installed. Start it from Mods > Play. Saves were kept."
+                              : "Installed. This version is not supported yet. Saves were kept.");
 }
 void install_file(std::wstring file, std::string id, std::string iso) {
   // Each dropped file is a job; a Get uses its own cancel flag through download_and_install.
@@ -1029,6 +1054,11 @@ bool is_mod_file(const std::wstring& path) {
 // Test runs only (MELEE_LAUNCHER_TEST_GET=<catalog id>): Get that mod at startup, as its button
 // does; every status line lands in mods-status.log beside the launcher.
 void test_get() {
+  // MELEE_LAUNCHER_TEST_DROP=<file>: that file is dropped on the launcher at startup.
+  if (const char* drop = std::getenv("MELEE_LAUNCHER_TEST_DROP"); g_launcher_test && drop && *drop) {
+    std::thread(install_file, widen(drop), std::string(), g_iso).detach();
+    return;
+  }
   const char* id = std::getenv("MELEE_LAUNCHER_TEST_GET");
   if (!g_launcher_test || !id || !*id) return;
   CatalogMod mod; bool found = false;

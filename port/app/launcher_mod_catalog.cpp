@@ -135,7 +135,9 @@ std::vector<Installed> detected(const std::string& text) {
 }
 bool playable(const Installed& m) {
   if (m.status != "supported" && m.status != "untested") return false;
-  return m.kind == "te" || m.kind == "tmce" || m.kind == "mex" || m.kind == "hack_pack" || m.kind == "asset_mod";
+  // A code mod is playable only once the scan knows it (Melee 3D); an unknown one is not_supported_yet.
+  return m.kind == "te" || m.kind == "tmce" || m.kind == "mex" || m.kind == "hack_pack" || m.kind == "asset_mod" ||
+         m.kind == "code_mod";
 }
 std::string play_engine(const Installed& m, const std::string& selected) {
   if (!playable(m)) return {};

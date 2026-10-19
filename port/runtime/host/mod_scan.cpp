@@ -384,6 +384,7 @@ const uint8_t kRetailDolSha1[20] = {0x08, 0xe0, 0xbf, 0x20, 0x13, 0x4d, 0xfc, 0x
 // Whole-disc MD5s: NTSC 1.02 as dumped from the retail disc, and the official 20XX Hack Pack builds
 // (from its installer's "ReadMe and MD5s.txt": each is the xdelta patch applied to that disc).
 constexpr const char kVanillaMd5[] = "0e63d4223b01d9aba596259dc155a174";
+constexpr const char kMelee3dMd5[] = "7643d5ca759e83f7f23a96b10e5cfe5f";   // Melee 3D 1.0 applied to kVanillaMd5
 struct KnownDisc { const char* hash; const char* name; const char* version; const char* id = ""; };
 const KnownDisc kHackPackMd5[] = {
   {"4e400c49b68bc3474dbe7970ad4df6d9", "20XX Hack Pack", "4.0 Beta02"},
@@ -810,6 +811,20 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
       d.message = "Detected: " + d.name + " " + d.version + ". This build cannot play it.";
 #else
       d.message = "Detected: " + d.name + " " + d.version + ". Plays on the Static Recomp, offline (no online play or replays).";
+#endif
+      return d;
+    }
+    // Melee 3D 1.0 (the vanilla disc with its xdelta applied): a main.dol of whole-function hooks into
+    // code it reads from the disc at boot. Its code runs on the Static Recomp; the Source Port has none
+    // of it yet. Direct and Teams against the same disc.
+    if (md5_hex == kMelee3dMd5) {
+      d.kind = Kind::CodeMod; d.name = "Melee 3D"; d.version = "1.0"; d.key = content_key(d.hash); d.catalog_id = "melee3d";
+      d.restart = true;
+      set_support(d, Engine::Recomp, Support::Supported, false);
+#ifdef MELEE_NO_SLIPPI
+      d.message = "Detected: Melee 3D 1.0. This build cannot play it.";
+#else
+      d.message = "Detected: Melee 3D 1.0. Plays on the Static Recomp: launcher > Mods > Play.";
 #endif
       return d;
     }
