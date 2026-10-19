@@ -44,6 +44,10 @@ with Slippi online, replays and Watch live, spectating, mods, skins, music packs
 settings panel, and GameCube adapters, box controllers and other pads. You need your own clean,
 uncompressed Melee NTSC 1.02 disc image; none is included.
 
+Experimental: this is the first Linux version. If something does not work, Help > Send logs in
+the launcher sends us your log and a note. The Static Recomp engine (needed for Melee 3D) is
+Windows only for now.
+
 Start
 
   ./MeleeUnlocked
