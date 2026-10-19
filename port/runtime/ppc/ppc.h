@@ -8,7 +8,17 @@
 #include <cstdint>
 #include <cstring>
 #include <immintrin.h>
+#ifdef _MSC_VER
 #include <intrin.h>
+#else
+#include <x86intrin.h>
+#ifndef MU_BYTESWAP_DEFINED
+#define MU_BYTESWAP_DEFINED
+inline uint16_t _byteswap_ushort(uint16_t v) { return __builtin_bswap16(v); }
+inline uint32_t _byteswap_ulong(uint32_t v) { return __builtin_bswap32(v); }
+inline uint64_t _byteswap_uint64(uint64_t v) { return __builtin_bswap64(v); }
+#endif
+#endif
 
 namespace ppc {
 
@@ -292,7 +302,13 @@ inline uint32_t mask(int mb, int me) {
   return me < mb ? ~m : m;
 }
 inline uint32_t carry(uint32_t a, uint32_t b) { return b > ~a; }
-inline uint32_t cntlzw(uint32_t v) { unsigned long i; return _BitScanReverse(&i, v) ? 31 - i : 32; }
+inline uint32_t cntlzw(uint32_t v) {
+#ifdef _MSC_VER
+  unsigned long i; return _BitScanReverse(&i, v) ? 31 - i : 32;
+#else
+  return v ? uint32_t(__builtin_clz(v)) : 32u;
+#endif
+}
 inline uint32_t divw(int32_t a, int32_t b) {
   if (b == 0 || ((uint32_t)a == 0x80000000u && b == -1)) return (a < 0 && b == 0) ? 0xFFFFFFFFu : 0;
   return (uint32_t)(a / b);

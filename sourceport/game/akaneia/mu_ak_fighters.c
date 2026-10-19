@@ -960,7 +960,7 @@ void mu_ak_apply(void)
 
 #ifdef MU_AKANEIA_FIGHTERS
 /* The host refuses an m-ex disc unless the game library says it has native fighters. */
-__declspec(dllexport) int mu_ak_native_build(void)
+MU_EXPORT int mu_ak_native_build(void)
 {
     return 1;
 }
@@ -968,5 +968,5 @@ __declspec(dllexport) int mu_ak_native_build(void)
 /* What this library can play, for the host to read without running any of its code: the
  * descriptors of the fighters built in, ended by NULL. A descriptor starts with two strings, the
  * display name and the fighter file (MuAkFighter). */
-__declspec(dllexport) const MuAkFighter* const* const mu_ak_native_fighters = mu_ak_registry;
+MU_EXPORT const MuAkFighter* const* const mu_ak_native_fighters = mu_ak_registry;
 #endif

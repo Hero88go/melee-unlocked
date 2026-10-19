@@ -516,7 +516,7 @@ bool find_route(Route& route) {
   const sockaddr_in to = make_address(route.gateway, 5351);
   if (connect(probe.s, reinterpret_cast<const sockaddr*>(&to), sizeof to) != 0) return false;
   sockaddr_in me;
-  int size = sizeof me;
+  socklen_t size = sizeof me;
   if (getsockname(probe.s, reinterpret_cast<sockaddr*>(&me), &size) != 0) return false;
   route.local = ntohl(me.sin_addr.s_addr);
   return ip_is_usable(route.local) && !ip_is_loopback(route.local);
@@ -530,7 +530,7 @@ int udp_ask(SOCKET s, const sockaddr_in& to, const uint8_t* request, int request
   for (int tries = 0; tries < 16; ++tries) {
     if (!wait_socket(s, false, ms_left(deadline))) return -1;
     sockaddr_in from;
-    int from_size = sizeof from;
+    socklen_t from_size = sizeof from;
     const int got = recvfrom(s, reinterpret_cast<char*>(answer), capacity, 0, reinterpret_cast<sockaddr*>(&from), &from_size);
     if (got == SOCKET_ERROR) return WSAGetLastError() == WSAECONNRESET ? -2 : -1;
     if (from.sin_addr.s_addr == to.sin_addr.s_addr && from.sin_port == to.sin_port) return got;
@@ -597,7 +597,8 @@ bool http_exchange(const NatEndpoint& host, const std::string& request, std::str
     if (WSAGetLastError() != WSAEWOULDBLOCK) return false;
     const long wait = ms_left(deadline) < 1500 ? ms_left(deadline) : 1500;
     if (!wait_socket(tcp.s, true, wait)) return false;
-    int error = 0, size = sizeof error;
+    int error = 0;
+    socklen_t size = sizeof error;
     if (getsockopt(tcp.s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&error), &size) != 0 || error != 0) return false;
   }
   size_t sent = 0;
@@ -674,7 +675,7 @@ std::vector<Igd> ssdp_search(const Route& route, Clock::time_point deadline, con
     if (!wait_socket(udp.s, false, wait)) continue;
     char buffer[2049];
     sockaddr_in from;
-    int from_size = sizeof from;
+    socklen_t from_size = sizeof from;
     const int got = recvfrom(udp.s, buffer, (int)sizeof buffer - 1, 0, reinterpret_cast<sockaddr*>(&from), &from_size);
     if (got <= 0) continue;
     const uint32_t source = ntohl(from.sin_addr.s_addr);

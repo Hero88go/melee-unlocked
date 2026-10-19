@@ -22,12 +22,12 @@ int MCCGetConnectionStatus(enum MCC_CHANNEL chID, enum MCC_CONNECT* connect) { (
 int MCCNotify(enum MCC_CHANNEL chID, u32 notify) { (void) chID; (void) notify; return 0; }
 int MCCOpen(enum MCC_CHANNEL chID, u8 blockSize, MCC_CBEvent callbackEvent) { (void) chID; (void) blockSize; (void) callbackEvent; return 0; }
 int MCCClose(enum MCC_CHANNEL chID) { (void) chID; return 0; }
-int MCCRead(enum MCC_CHANNEL chID, u32 offset, void* data, long size, enum MCC_SYNC_STATE async)
+int MCCRead(enum MCC_CHANNEL chID, u32 offset, void* data, s32 size, enum MCC_SYNC_STATE async)
 {
     (void) chID; (void) offset; (void) data; (void) size; (void) async;
     return 0;
 }
-int MCCWrite(enum MCC_CHANNEL chID, u32 offset, void* data, long size, enum MCC_SYNC_STATE async)
+int MCCWrite(enum MCC_CHANNEL chID, u32 offset, void* data, s32 size, enum MCC_SYNC_STATE async)
 {
     (void) chID; (void) offset; (void) data; (void) size; (void) async;
     return 0;

@@ -3,6 +3,19 @@
 #ifndef MU_NATIVE_H
 #define MU_NATIVE_H
 
+/* Console code also uses NULL in integer contexts and variadic pointer lists. */
+#ifndef NULL
+#define NULL 0LL
+#endif
+
+/* Only the C table boundary is visible from an ELF host. Keeping the console's
+ * libc/math symbols local prevents glibc from replacing simulation routines. */
+#if defined(_WIN32)
+#define MU_EXPORT __declspec(dllexport)
+#else
+#define MU_EXPORT __attribute__((visibility("default")))
+#endif
+
 #ifndef TRUE
 #define TRUE 1
 

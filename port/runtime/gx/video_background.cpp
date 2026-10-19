@@ -6,6 +6,7 @@
 #include "video_background_style.h"
 #include "../host/host.h"
 #include <windows.h>
+#ifdef _WIN32
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
@@ -14,6 +15,10 @@
 #include <shlobj.h>
 #include <wincodec.h>
 #include <wrl/client.h>
+#else
+#include <shellapi.h>
+#include "full/linux_media.h"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -27,8 +32,10 @@
 #include <mutex>
 #include <thread>
 
+#ifdef _WIN32
 using Microsoft::WRL::ComPtr;
 #pragma comment(lib, "windowscodecs.lib")
+#endif
 
 namespace gx::video_bg {
 namespace {
@@ -90,11 +97,13 @@ class Decoder {
   }
 
  private:
+#ifdef _WIN32
   static std::string hr_text(const char* what, HRESULT hr) {
     char out[160];
     std::snprintf(out, sizeof out, "%s (HRESULT %08lX)", what, (unsigned long)hr);
     return out;
   }
+#endif
 
   bool wait_active() {
     std::unique_lock<std::mutex> lock(wait_mutex_);
@@ -113,6 +122,63 @@ class Decoder {
     error_ = std::move(text);
   }
 
+#ifndef _WIN32
+  // Linux: the same loop as the Media Foundation one below, on FFmpeg. Frames come out with the
+  // bottom row first, as the Windows decoder's do, so the renderers and the matte treat them alike.
+  void run() {
+    linux_media::VideoReader reader;
+    std::string error;
+    if (!reader.open(path_, &error)) { set_error("cannot open MP4: " + error); return; }
+    const uint32_t width = reader.width(), height = reader.height();
+    if (!width || !height || width > 3840 || height > 2160) { set_error("video dimensions are missing or exceed 3840x2160"); return; }
+    std::vector<uint8_t> sss_mask;
+    if (sss_matte_) {
+      sss_mask.resize((size_t)width * height);
+      // The mask is laid out top-down; the frame rows are bottom-up.
+      for (uint32_t y = 0; y < height; ++y)
+        for (uint32_t x = 0; x < width; ++x)
+          sss_mask[(size_t)(height - 1 - y) * width + x] = style::sss_matte_alpha(x, y, width, height);
+    }
+    uint64_t serial = 0;
+    bool failed = false;
+    while (!stopping_) {
+      if (!wait_active()) break;
+      if (serial) reader.rewind();
+      const auto wall_start = std::chrono::steady_clock::now();
+      int64_t first_time = -1;
+      failed = false;
+      while (!stopping_ && active_) {
+        auto next = std::make_shared<Frame>();
+        int64_t sample_time = 0;
+        const int got = reader.read(next->bgra, &sample_time, &error);
+        if (got < 0) { set_error(error); failed = true; break; }
+        if (got == 0) break;
+        if (first_time < 0) first_time = sample_time;
+        const auto deadline = wall_start + std::chrono::nanoseconds((sample_time - first_time) * 100);
+        if (!wait_until(deadline)) break;
+        next->width = width; next->height = height; next->serial = ++serial;
+        for (size_t p = 3; p < next->bgra.size(); p += 4) next->bgra[p] = 255;
+        if (sss_matte_) {
+          constexpr uint8_t matte_bgr[3] = {76, 55, 45};
+          for (size_t pixel = 0; pixel < sss_mask.size(); ++pixel) {
+            const unsigned a = sss_mask[pixel];
+            if (!a) continue;
+            uint8_t* bgra = next->bgra.data() + pixel * 4;
+            for (int channel = 0; channel < 3; ++channel)
+              bgra[channel] = (uint8_t)((bgra[channel] * (255 - a) + matte_bgr[channel] * a + 127) / 255);
+          }
+        }
+        std::lock_guard<std::mutex> lock(mutex_);
+        frame_ = std::move(next);
+        error_.clear();
+      }
+      if (failed) {
+        std::unique_lock<std::mutex> lock(wait_mutex_);
+        cv_.wait_for(lock, std::chrono::milliseconds(500), [&] { return stopping_.load(); });
+      }
+    }
+  }
+#else
   void run() {
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     ComPtr<IMFAttributes> attrs;
@@ -243,6 +309,7 @@ class Decoder {
     }
     CoUninitialize();
   }
+#endif
 
   std::filesystem::path path_;
   bool sss_matte_ = false;
@@ -285,14 +352,20 @@ class Manager {
       std::getline(input, s.target);
       if (!s.target.empty() && s.target.rfind("tex1_", 0) != 0) s.target.clear();
     }
+#ifdef _WIN32
     HRESULT hr = MFStartup(MF_VERSION, MFSTARTUP_LITE);
     media_foundation_ = SUCCEEDED(hr);
     if (!media_foundation_) host::log("video backgrounds: Media Foundation startup failed (%08lX)", (unsigned long)hr);
+#else
+    media_foundation_ = true;   // FFmpeg needs no startup
+#endif
   }
 
   ~Manager() {
     for (Slot& s : slots_) s.decoder.stop();
+#ifdef _WIN32
     if (media_foundation_) MFShutdown();
+#endif
   }
 
   void begin(uint8_t major, uint8_t minor) {
@@ -693,6 +766,13 @@ class Border {
   // Decoded once, at most 2560x1440: larger pictures are scaled down, since each frame slot of the
   // renderer keeps its own copy and uploads it through the shared upload buffer.
   static std::shared_ptr<const Frame> load(const std::filesystem::path& path) {
+#ifndef _WIN32
+    auto picture = std::make_shared<Frame>();
+    if (!linux_media::load_picture(path, 2560, 1440, &picture->width, &picture->height, picture->bgra)) return nullptr;
+    static std::atomic<uint64_t> loads{0};
+    picture->serial = 0x8000000000000000ull + ++loads;   // never a video frame's serial
+    return picture;
+#else
     const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     std::shared_ptr<Frame> out = std::make_shared<Frame>();
     {
@@ -729,6 +809,7 @@ class Border {
     }
     if (SUCCEEDED(com)) CoUninitialize();
     return out;
+#endif
   }
 
   std::filesystem::path root_;

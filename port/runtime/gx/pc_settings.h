@@ -56,4 +56,16 @@ public:
   bool begin(RenderOptions& options);
   void draw();   // into whatever render target the caller has bound
 };
+#ifndef _WIN32
+// Linux: the same panel drawn with OpenGL into the default framebuffer (pc_settings_gl.cpp).
+class PcSettingsUIGL {
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+public:
+  PcSettingsUIGL(void* window, const RenderOptions& options);
+  ~PcSettingsUIGL();
+  bool begin(RenderOptions& options);
+  void draw();
+};
+#endif
 }

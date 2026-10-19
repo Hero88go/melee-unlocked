@@ -40,8 +40,13 @@ namespace gecko { bool option_lagless_fod_default = false; extern const Optional
 #pragma comment(linker, "/alternatename:?optional_codes@gecko@@3QBUOptionalCode@1@B=?optional_codes_default@gecko@@3QBUOptionalCode@1@B")
 #pragma comment(linker, "/alternatename:?optional_codes_count@gecko@@3_KB=?optional_codes_count_default@gecko@@3_KB")
 // And the start of the port's private suffix (zero: no suffix known, the replay code list is left as sent).
+#ifdef _WIN32
 namespace gecko { extern const uint32_t port_gct_offset_default = 0; }
 #pragma comment(linker, "/alternatename:?port_gct_offset@gecko@@3IB=?port_gct_offset_default@gecko@@3IB")
+#else
+// The same default as the Windows alternate name: 0 unless a build links the generated gecko_data.cpp.
+namespace gecko { extern const uint32_t port_gct_offset __attribute__((weak)); __attribute__((weak)) extern const uint32_t port_gct_offset = 0; }
+#endif
 
 namespace slippi {
 namespace {

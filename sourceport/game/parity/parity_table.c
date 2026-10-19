@@ -92,7 +92,7 @@ static const MuParityEntry table[] = {
     { "mpLineIntersectionH", mpLineIntersectionH, 2, { 1, 1 }, { 1, 1 }, 0, 7, 0, MU_RET_U32, { -30, -30, -30, -30, -30, -30, -30 }, { 30, 30, 30, 30, 30, 30, 30 } },
 };
 
-__declspec(dllexport) const MuParityEntry* mu_parity_table(int* count)
+MU_EXPORT const MuParityEntry* mu_parity_table(int* count)
 {
     static int started;
     if (!started) {

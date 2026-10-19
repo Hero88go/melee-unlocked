@@ -8,7 +8,14 @@
 #include "sysdolphin/baselib/archive.h"
 
 extern int printf(const char*, ...);
+#ifdef __linux__
+/* The allocator distinguishes MEM1 from ARAM using bit 31 of its arena
+ * address. Keep this fixture in the cached segment even though the test's ELF
+ * text uses a low non-PIE base for the system CRT. */
+static u8 arena[0x100000] __attribute__((aligned(32), section(".test_arena")));
+#else
 static u8 arena[0x100000] __attribute__((aligned(32)));
+#endif
 static OSAlarm* pending;
 static OSAlarmHandler pending_handler;
 static int failures, completions;

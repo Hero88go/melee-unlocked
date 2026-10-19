@@ -2,7 +2,11 @@
 // GX command processor: FIFO -> register state -> captured frames.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gx_core.h"
+#ifdef _WIN32
 #include "pc_settings_shared.h"
+#else
+namespace gx { void settings_guest_options_frame(uint8_t menu, uint16_t selection, uint32_t buttons); }
+#endif
 #include "host.h"
 #include "audio.h"
 #include "native_pose_bridge.h"

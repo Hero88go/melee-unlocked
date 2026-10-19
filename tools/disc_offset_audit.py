@@ -10,7 +10,7 @@ own flags and reports each annotated field whose host offset differs, and the fi
 
     python tools/disc_offset_audit.py [--json out.json]
 """
-import argparse, json, os, re, subprocess, sys, tempfile
+import argparse, json, os, re, shlex, subprocess, sys, tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,12 +58,26 @@ def compile_command():
     commands = [line for line in result.stdout.splitlines() if ' -c ' in line and 'ftlinkattackair.c' in line]
     if not commands:
         raise SystemExit('No native Melee compile command found in ' + str(BUILD))
-    cmd = commands[0]
-    cmd = cmd.replace('\\', '/')
-    cmd = re.sub(r' -MD -MT \S+ -MF \S+', '', cmd)
-    cmd = re.sub(r' -o \S+', ' -o NUL', cmd)
-    src = re.search(r' -c ("[^"]+"|\S+)', cmd)   # quoted first: the path has a space
-    return cmd, src.group(1)
+    # CMake's GCC commands use quoted paths on both MinGW and ELF. Preserve each
+    # argument rather than applying regexes inside quotes or passing it through a
+    # second shell (a build path with spaces used to leave an unterminated quote).
+    original = shlex.split(commands[0].replace('\\', '/'))
+    cmd, i = [], 0
+    while i < len(original):
+        token = original[i]
+        if token in ('-MD', '-MMD'):
+            i += 1
+            continue
+        if token in ('-MT', '-MF', '-MQ'):
+            i += 2
+            continue
+        if token == '-o':
+            cmd.extend(('-o', os.devnull))
+            i += 2
+            continue
+        cmd.append(token)
+        i += 1
+    return cmd, cmd.index('-c') + 1
 
 
 def main():
@@ -75,7 +89,7 @@ def main():
     ap.add_argument('--ninja', default=NINJA)
     a = ap.parse_args()
     BUILD, DECOMP, NINJA = a.build, a.decomp, a.ninja
-    cmd, src_token = compile_command()
+    cmd, src_index = compile_command()
     headers = sorted(p for p in (DECOMP / 'src').rglob('*.h') if 'DISC_STRUCT' in p.read_text(errors='replace'))
     report, probe_dir = [], Path(tempfile.mkdtemp(prefix='disc_probe_'))
     for header in headers:
@@ -95,13 +109,16 @@ def main():
                 lines.append(f'extern char {probe}[{off + 1}];')
         probe_file = probe_dir / (header.stem + '_probe.c')
         probe_file.write_text('\n'.join(lines) + '\n')
-        run = subprocess.run(cmd.replace(src_token, f'"{probe_file.as_posix()}"'), shell=True, cwd=BUILD,
+        probe_cmd = cmd.copy()
+        probe_cmd[src_index] = str(probe_file)
+        run = subprocess.run(probe_cmd, cwd=BUILD,
                              capture_output=True, text=True)
         out = run.stdout + run.stderr
         got = {}
         for m in re.finditer(r"conflicting types for .(mu_probe_\d+).; have .char\[(\d+)\]..*?\n(?:.*\n)*?.*previous declaration of .\1. with type .char\[(\d+)\]", out):
             got[m.group(1)] = int(m.group(3)) - 1   # the first declaration is the host offset
-        failed_compile = 'error' in out and not got and 'conflicting' not in out
+        failed_compile = any('error:' in line and 'conflicting types' not in line for line in out.splitlines())
+        failed_compile |= run.returncode != 0 and not got
         # No conflict means the host offset equals the annotation. Some sub-structs are annotated
         # with their parent's absolute offsets, so compare relative to the struct's first field.
         base = {}

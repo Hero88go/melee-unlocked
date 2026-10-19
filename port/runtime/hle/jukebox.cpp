@@ -15,11 +15,15 @@
 #include <fstream>
 #include <windows.h>
 #include <shellapi.h>
+#ifdef _WIN32
 #include <mfapi.h>
 #include <mfidl.h>
 #include <mfreadwrite.h>
 #include <mferror.h>
 #include <objbase.h>
+#else
+#include "full/linux_media.h"
+#endif
 
 namespace slippi::jukebox {
 namespace {
@@ -163,6 +167,23 @@ std::shared_ptr<Song> decode_custom_file(const std::filesystem::path& path) {
     return decode_hps(file);
   }
 
+#ifndef _WIN32
+  // Linux: FFmpeg decodes the player formats (WAV, MP3, M4A/AAC, OGG, FLAC, Opus) to the same stereo
+  // mixer format used by HPS. Unsupported formats fail back to disc.
+  {
+    constexpr size_t MAX_FRAMES = OUTPUT_RATE * 60u * 10u;
+    auto song = std::make_shared<Song>();
+    bool too_long = false;
+    if (!linux_media::decode_audio(path, (int)OUTPUT_RATE, MAX_FRAMES, song->samples, &too_long)) {
+      host::log("jukebox: custom audio %s %s, using the disc track", path.filename().string().c_str(),
+                too_long ? "is longer than 10 minutes" : "could not be decoded");
+      return nullptr;
+    }
+    song->loop_frame = 0;
+    host::log("jukebox: custom audio %s, %zu frames", path.filename().string().c_str(), song->samples.size() / 2);
+    return song;
+  }
+#else
   // Windows Media Foundation decodes common player formats (WAV, MP3, M4A/AAC and installed
   // codecs) to the same stereo mixer format used by HPS. Unsupported formats fail back to disc.
   const HRESULT com_hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -230,6 +251,7 @@ std::shared_ptr<Song> decode_custom_file(const std::filesystem::path& path) {
   song->loop_frame = 0;
   host::log("jukebox: custom audio %s, %zu frames", path.filename().string().c_str(), song->samples.size() / 2);
   return song;
+#endif
 }
 }  // namespace
 

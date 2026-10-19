@@ -5,9 +5,9 @@
 #include "mu_shim.h"
 
 BOOL PADInit(void) { return 1; }
-int PADReset(unsigned long mask) { (void) mask; return 1; }
+int PADReset(u32 mask) { (void) mask; return 1; }
 BOOL PADRecalibrate(u32 mask) { (void) mask; return 1; }
-void PADSetSamplingRate(unsigned long msec) { (void) msec; }
+void PADSetSamplingRate(u32 msec) { (void) msec; }
 void PADSetSpec(u32 spec) { (void) spec; }
 
 /* PADControlMotor(chan, command): 0 stop, 1 rumble, 2 stop hard. */

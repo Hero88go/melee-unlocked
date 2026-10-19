@@ -417,7 +417,7 @@ static unsigned int gecko_native_offset(const char* layout, unsigned int offset)
  * is not wholly inside one object of the table (the host's table said otherwise: the two were built
  * from different trees), -1 when skipped because a network match is running (a code the other
  * player does not run would take the match out of sync). */
-__declspec(dllexport) int mu_user_gecko_write(unsigned int addr, const unsigned char* bytes, unsigned int len)
+MU_EXPORT int mu_user_gecko_write(unsigned int addr, const unsigned char* bytes, unsigned int len)
 {
     unsigned int lo = 0, hi = sizeof gecko_targets / sizeof gecko_targets[0], k;
     const MuGeckoTarget* t;
@@ -441,7 +441,7 @@ __declspec(dllexport) int mu_user_gecko_write(unsigned int addr, const unsigned 
 
 /* The same for a read: `len` bytes of the native variable at console address `addr`, handed back
  * big-endian. The same three results as the write. */
-__declspec(dllexport) int mu_user_gecko_read(unsigned int addr, unsigned char* bytes, unsigned int len)
+MU_EXPORT int mu_user_gecko_read(unsigned int addr, unsigned char* bytes, unsigned int len)
 {
     unsigned int lo = 0, hi = sizeof gecko_targets / sizeof gecko_targets[0], k;
     const MuGeckoTarget* t;

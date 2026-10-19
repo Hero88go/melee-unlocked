@@ -6,6 +6,10 @@
 
 namespace host {
 using MessageCallback = std::function<bool(void*, uint32_t, uintptr_t, intptr_t)>;
+#ifndef _WIN32
+// Linux: the window's messages are SDL events. The callback gets the SDL_Event* with this message number.
+constexpr uint32_t kSdlEventMessage = 0x7FFF0001u;
+#endif
 void window_set_message_callback(MessageCallback cb);
 void window_input_capture(bool capture);
 struct PadState;

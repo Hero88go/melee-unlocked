@@ -9,6 +9,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "source_host.h"
 #include <windows.h>
+#ifndef _WIN32
+#include <dlfcn.h>
+#include <link.h>
+#include <csignal>
+#endif
 #include <algorithm>
 #include <deque>
 #include <cctype>
@@ -108,7 +113,11 @@ struct GameImageReservation {
 GameImageReservation g_game_image_reservation;
 
 MuGameApi g_game{};
+#ifdef _WIN32
 std::string g_dll = "melee_game.dll";
+#else
+std::string g_dll = "melee_game.so";
+#endif
 audio_core::State g_audio;
 
 // Native online play (host API 13). While the game re-simulates after a rollback load, the
@@ -2777,6 +2786,41 @@ MuHostApi make_host() {
 // A crash inside the game: the faulting address and the game's return addresses on the stack, as
 // offsets into melee_game.dll (resolve with addr2line -e melee_game.dbg). The application's own
 // crash report still runs afterwards.
+#ifndef _WIN32
+// Linux: a fault inside the game logs its offset in melee_game.so (addr2line -e melee_game.dbg) and
+// keeps a --replay run's recording, then hands the signal on to the application's crash report.
+struct sigaction g_previous_crash_action[32];
+void on_game_signal(int sig, siginfo_t* si, void* uc_void) {
+  const ucontext_t* uc = static_cast<const ucontext_t*>(uc_void);
+  const uint64_t base = GAME_IMAGE_BASE, end = base + host::game_image_size;
+  const uint64_t rip = uc ? (uint64_t)uc->uc_mcontext.gregs[REG_RIP] : 0;
+  if (rip >= base && rip < end) {
+    write_replay_recording();
+    host::log("game crash signal %d at melee_game.so+0x%llX, address %p", sig, (unsigned long long)(rip - base), si ? si->si_addr : nullptr);
+    host::log("  rax %016llX rbx %016llX rcx %016llX rdx %016llX", (unsigned long long)uc->uc_mcontext.gregs[REG_RAX],
+              (unsigned long long)uc->uc_mcontext.gregs[REG_RBX], (unsigned long long)uc->uc_mcontext.gregs[REG_RCX],
+              (unsigned long long)uc->uc_mcontext.gregs[REG_RDX]);
+    // The game's frames on its stack (GCC keeps frame pointers out, so this is the return addresses
+    // that point into the game, as the Windows leaf fallback reads them).
+    const uint64_t* sp = (const uint64_t*)uc->uc_mcontext.gregs[REG_RSP];
+    for (int i = 0, shown = 0; i < 512 && shown < 24; ++i) {
+      const uint64_t v = sp[i];
+      if (v > base && v < end) { host::log("  stack: melee_game.so+0x%llX", (unsigned long long)(v - 1 - base)); ++shown; }
+    }
+  }
+  struct sigaction& previous = g_previous_crash_action[sig & 31];
+  if (previous.sa_flags & SA_SIGINFO) { if (previous.sa_sigaction) previous.sa_sigaction(sig, si, uc_void); }
+  else if (previous.sa_handler != SIG_DFL && previous.sa_handler != SIG_IGN && previous.sa_handler) previous.sa_handler(sig);
+  else { signal(sig, SIG_DFL); raise(sig); }
+}
+void install_game_signal_handler() {
+  struct sigaction sa{};
+  sa.sa_sigaction = on_game_signal;
+  sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+  sigemptyset(&sa.sa_mask);
+  for (int sig : {SIGSEGV, SIGBUS, SIGILL, SIGFPE}) sigaction(sig, &sa, &g_previous_crash_action[sig & 31]);
+}
+#else
 LONG CALLBACK on_game_exception(EXCEPTION_POINTERS* info) {
   const DWORD code = info->ExceptionRecord->ExceptionCode;
   if (code < 0x80000000u || code == 0xE06D7363u /* C++ exception */) return EXCEPTION_CONTINUE_SEARCH;
@@ -2830,6 +2874,7 @@ LONG CALLBACK on_game_exception(EXCEPTION_POINTERS* info) {
   }
   return EXCEPTION_CONTINUE_SEARCH;
 }
+#endif
 
 }  // namespace
 
@@ -3082,6 +3127,19 @@ int run(void (*shutdown)(int)) {
   // does not, and an Akaneia disc stays refused. Looked up without running any of its code.
   {
     const char* named = std::getenv("MELEE_GAME_DLL");
+#ifndef _WIN32
+    // The library cannot be loaded twice at its fixed address, so its exported names are read from
+    // the file: the symbol name sits in the dynamic string table only when it is exported.
+    {
+      std::ifstream file(named ? named : g_dll.c_str(), std::ios::binary);
+      const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+      static const char kName[] = "mu_ak_native_build";
+      if (bytes.find(std::string(kName, sizeof kName)) != std::string::npos) {
+        allow_native_akaneia(true);
+        host::log("mods: game library with native Akaneia fighters; Akaneia discs are accepted");
+      }
+    }
+#else
     if (HMODULE probe = LoadLibraryExA(named ? named : g_dll.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES)) {
       const bool native_akaneia = GetProcAddress(probe, "mu_ak_native_build") != nullptr;
       FreeLibrary(probe);
@@ -3090,6 +3148,7 @@ int run(void (*shutdown)(int)) {
         host::log("mods: game library with native Akaneia fighters; Akaneia discs are accepted");
       }
     }
+#endif
   }
   load_mod_overlay();
   index_music_paths();
@@ -3123,11 +3182,37 @@ int run(void (*shutdown)(int)) {
 #endif
   g_game_image_reservation.release();
   HMODULE module = LoadLibraryA(g_dll.c_str());
+#ifndef _WIN32
+  if (!module) host::die("cannot load %s (%s)", g_dll.c_str(), dlerror());
+  // The ELF's load segments: the game must start at GAME_IMAGE_BASE, its 32-bit disc pointers and
+  // GX's physical window depend on it (sourceport/cmake/game-linux-layout.ld places it there).
+  {
+    struct Scan { uint64_t lo = ~0ull, hi = 0; } scan;
+    dl_iterate_phdr([](dl_phdr_info* info, size_t, void* user) {
+      auto& sc = *static_cast<Scan*>(user);
+      bool ours = false;
+      for (ElfW(Half) i = 0; i < info->dlpi_phnum; ++i)
+        if (info->dlpi_phdr[i].p_type == PT_LOAD && info->dlpi_addr + info->dlpi_phdr[i].p_vaddr == GAME_IMAGE_BASE) ours = true;
+      if (!ours) return 0;
+      for (ElfW(Half) i = 0; i < info->dlpi_phnum; ++i) {
+        const auto& p = info->dlpi_phdr[i];
+        if (p.p_type != PT_LOAD) continue;
+        sc.lo = std::min<uint64_t>(sc.lo, info->dlpi_addr + p.p_vaddr);
+        sc.hi = std::max<uint64_t>(sc.hi, info->dlpi_addr + p.p_vaddr + p.p_memsz);
+      }
+      return 1;
+    }, &scan);
+    if (scan.lo != GAME_IMAGE_BASE) host::die("%s did not load at %llX; it must be the Linux build made with the fixed-address linker script", g_dll.c_str(), (unsigned long long)GAME_IMAGE_BASE);
+    host::game_image = (uint8_t*)GAME_IMAGE_BASE;
+    host::game_image_size = (uint32_t)(scan.hi - scan.lo);
+  }
+#else
   if (!module) host::die("cannot load %s (error %lu)", g_dll.c_str(), GetLastError());
   if ((uintptr_t)module != GAME_IMAGE_BASE) host::die("%s loaded at %p, not at %llX", g_dll.c_str(), (void*)module, (unsigned long long)GAME_IMAGE_BASE);
   const auto* nt = (const IMAGE_NT_HEADERS*)((const uint8_t*)module + ((const IMAGE_DOS_HEADER*)module)->e_lfanew);
   host::game_image = (uint8_t*)module;
   host::game_image_size = nt->OptionalHeader.SizeOfImage;
+#endif
   auto entry = (MuGameEntry)GetProcAddress(module, "mu_game_entry");
   user_gecko::set_native_writer((user_gecko::NativeWrite)GetProcAddress(module, "mu_user_gecko_write"));
   user_gecko::set_native_reader((user_gecko::NativeRead)GetProcAddress(module, "mu_user_gecko_read"));
@@ -3165,7 +3250,11 @@ int run(void (*shutdown)(int)) {
             (unsigned long long)excluded_bytes);
   host::native_retrace = native_retrace;
   host::native_state_snapshot = g_game.state_snapshot;
+#ifdef _WIN32
   AddVectoredExceptionHandler(1, on_game_exception);
+#else
+  install_game_signal_handler();
+#endif
   gx::set_native_owner_source(true);
   // The L-cancel helper reads the native game's fighters through the game, not guest memory.
   lcancel::set_native_view([](MuLcancelView* out) { if (g_game.lcancel_view) g_game.lcancel_view(out); });

@@ -359,7 +359,7 @@ void mu_audio_idle(void)
 void OSWakeupThread(OSThreadQueue* queue) { (void) queue; }
 
 int OSCreateThread(struct OSThread* thread, void* (*func)(void*), void* param, void* stack,
-                   unsigned long stackSize, long priority, unsigned short attr)
+                   u32 stackSize, s32 priority, unsigned short attr)
 {
     (void) thread; (void) func; (void) param; (void) stack; (void) stackSize;
     (void) priority; (void) attr;
@@ -367,7 +367,7 @@ int OSCreateThread(struct OSThread* thread, void* (*func)(void*), void* param, v
 }
 
 s32 OSResumeThread(OSThread* thread) { (void) thread; return 0; }
-long OSCheckActiveThreads(void) { return 0; }
+s32 OSCheckActiveThreads(void) { return 0; }
 
 static OSThread mu_main_thread;
 OSThread* OSGetCurrentThread(void) { return &mu_main_thread; }
@@ -420,7 +420,7 @@ void OSResetSystem(int reset, u32 resetCode, BOOL forceMenu)
     mu_host->stop(MU_STOP_RESET, (int32_t) (reset ? resetCode : 0));
 }
 
-unsigned long OSGetResetCode(void) { return (unsigned long) mu_host->reset_code(); }
+u32 OSGetResetCode(void) { return (u32) mu_host->reset_code(); }
 BOOL OSGetResetSwitchState(void) { return mu_host->reset_switch(); }
 
 /* ---- machine ---- */
@@ -430,8 +430,8 @@ BOOL OSGetResetSwitchState(void) { return mu_host->reset_switch(); }
 u32 OSGetPhysicalMemSize(void) { return 24u << 20; }
 u32 OSGetConsoleSimulatedMemSize(void) { return 24u << 20; }
 u32 OSGetSoundMode(void) { return (u32) mu_host->sound_mode(); }
-void OSSetSoundMode(unsigned long mode) { mu_host->set_sound_mode((int32_t) mode); }
-unsigned long OSGetProgressiveMode(void) { return (unsigned long) mu_host->progressive_mode(); }
+void OSSetSoundMode(u32 mode) { mu_host->set_sound_mode((int32_t) mode); }
+u32 OSGetProgressiveMode(void) { return (u32) mu_host->progressive_mode(); }
 void OSSetProgressiveMode(u32 mode) { mu_host->set_progressive_mode((int32_t) mode); }
 
 /* OSInit brought up the console's low memory, exceptions and heaps. The host has already placed

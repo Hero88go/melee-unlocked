@@ -159,8 +159,19 @@ bool release_url(const std::string& url) {
          url.rfind("https://github.com/hero88go/melee-unlocked/releases/download/", 0) == 0;
 }
 void rollback_message(const std::string& s) { std::lock_guard<std::mutex> lk(g_mutex); g_rollback_message = s; }
+// The release download for this platform: the Windows zip, or the Linux archive beside it.
+#ifdef _WIN32
+constexpr const char* kPlatformAsset = "-win64.zip";
+#else
+constexpr const char* kPlatformAsset = "-linux-x86_64.tar.gz";
+#endif
 bool valid_install(const std::filesystem::path& p, bool experimental) {
   std::error_code ec;
+#ifndef _WIN32
+  (void)experimental;
+  return std::filesystem::is_regular_file(p / "melee_source", ec) &&
+         std::filesystem::is_regular_file(p / "Sys" / "codehandler.bin", ec);
+#endif
   return std::filesystem::is_regular_file(p / "melee_port.exe", ec) &&
          std::filesystem::is_regular_file(p / "Sys" / "codehandler.bin", ec) &&
          (!experimental || std::filesystem::is_regular_file(p / "melee_port_dlss5.exe", ec));
@@ -242,7 +253,7 @@ void check(const std::string& current_version, bool install_experimental) {
         const std::string name = a.value("name", std::string());
         const std::string url = a.value("browser_download_url", std::string());
         if (!release_url(url)) continue;
-        if (name == "MeleeUnlocked-" + tag + "-win64.zip") { d.legacy_url = url; d.legacy_size = a.value("size", size_t(0)); d.legacy_digest = asset_digest(a); d.release.legacy = true; }
+        if (name == "MeleeUnlocked-" + tag + kPlatformAsset) { d.legacy_url = url; d.legacy_size = a.value("size", size_t(0)); d.legacy_digest = asset_digest(a); d.release.legacy = true; }
         if (name == "MeleePort-" + tag + "-win64.zip") { d.root_name = "MeleePort-" + tag; d.legacy_url = url; d.legacy_size = a.value("size", size_t(0)); d.legacy_digest = asset_digest(a); d.release.legacy = true; }
         if (name == "MeleeUnlocked-" + tag + "-DLSS5-Experimental.zip") { d.experimental_url = url; d.experimental_size = a.value("size", size_t(0)); d.experimental_digest = asset_digest(a); d.release.experimental = true; }
       }
@@ -262,7 +273,7 @@ void check(const std::string& current_version, bool install_experimental) {
     // DLSS5-Experimental download, or it would never be offered an update again. The old name is
     // only a fallback for a release that has no -win64.zip.
     (void)dir;
-    const std::string wanted = "MeleeUnlocked-" + tag + "-win64.zip";
+    const std::string wanted = "MeleeUnlocked-" + tag + kPlatformAsset;
     const std::string fallback = "MeleeUnlocked-" + tag + "-DLSS5-Experimental.zip";
     if (j.count("assets") && j["assets"].is_array()) {
       for (auto& a : j["assets"]) if (a.is_object() && a.value("name", std::string()) == wanted) { zip = a.value("browser_download_url", std::string()); zip_size = a.value("size", size_t(0)); zip_digest = asset_digest(a); break; }
@@ -294,7 +305,9 @@ std::vector<unsigned long> install_processes(const std::string& install_root_utf
   if (Process32FirstW(snapshot, &entry)) do {
     const wchar_t* names[] = {L"melee_source.exe", L"melee_source_compat.exe", L"melee_port.exe",
       L"melee_port_compat.exe", L"melee_port_dlss5.exe", L"melee_port_dlss5_compat.exe",
-      L"MeleeUnlockedLauncher.exe"};
+      L"MeleeUnlockedLauncher.exe",
+      // The Linux build's programs, which carry no extension.
+      L"melee_source", L"MeleeUnlocked", L"melee_linux"};
     bool game = false;
     for (const auto* name : names) game |= _wcsicmp(entry.szExeFile, name) == 0;
     if (!game) continue;
@@ -451,6 +464,56 @@ std::string install_script(const std::string& batch_dir, unsigned long self, con
   return b.str();
 }
 
+#ifndef _WIN32
+// Linux: the same steps as update.bat, as a POSIX shell script. It waits for this process and the
+// installation's games to exit, unpacks the archive, copies the release folder over this one
+// (keeping User/, settings, saves, replays) and starts the game again.
+std::string shell_quote(const std::string& s) {
+  std::string out = "'";
+  for (char c : s) { if (c == '\'') out += "'\\''"; else out += c; }
+  return out + "'";
+}
+std::string install_script_sh(const std::string& dir, unsigned long self, const std::vector<unsigned long>& others,
+                              const std::string& relaunch) {
+  std::ostringstream b;
+  b << "#!/bin/sh\n"
+    << "cd " << shell_quote(dir) << " || exit 1\n"
+    << "LOG=update.log\n"
+    << "echo \"update started $(date)\" > \"$LOG\"\n"
+    << "while kill -0 " << self << " 2>/dev/null; do sleep 1; done\n";
+  for (const auto pid : others)
+    if (pid != self) b << "while kill -0 " << pid << " 2>/dev/null; do sleep 1; done\n";
+  b << "rm -rf update_tmp && mkdir update_tmp\n"
+    << "tar -xf update.tar.gz -C update_tmp 2>> \"$LOG\"\n"
+    << "SRC=$(find update_tmp -mindepth 1 -maxdepth 1 -type d -name 'MeleeUnlocked-*' | head -n 1)\n"
+    << "if [ -z \"$SRC\" ]; then echo 'could not unpack update.tar.gz' >> \"$LOG\"; "
+    << "command -v zenity >/dev/null && zenity --error --no-markup --title='Melee Unlocked update' "
+    << "--text='Could not unpack the update. Details: update.log in the game folder.'; exit 1; fi\n"
+    << "echo \"copying from $SRC\" >> \"$LOG\"\n"
+    << "if ! cp -a \"$SRC\"/. . 2>> \"$LOG\"; then echo 'copy failed' >> \"$LOG\"; "
+    << "command -v zenity >/dev/null && zenity --error --no-markup --title='Melee Unlocked update' "
+    << "--text='Could not copy the update into place. Details: update.log in the game folder.'; exit 1; fi\n"
+    << "rm -rf update_tmp update.tar.gz\n"
+    << "echo 'restarting application' >> \"$LOG\"\n"
+    << "(" << relaunch << ") >/dev/null 2>&1 &\n"
+    << "echo done >> \"$LOG\"\n"
+    << "rm -f \"$0\"\n";
+  return b.str();
+}
+// What was started, from /proc/self/cmdline, each argument quoted for the shell.
+std::string relaunch_command() {
+  std::ifstream in("/proc/self/cmdline", std::ios::binary);
+  std::string all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  std::string out; size_t start = 0;
+  for (size_t i = 0; i <= all.size(); ++i)
+    if (i == all.size() || all[i] == 0) {
+      if (i > start) { if (!out.empty()) out += ' '; out += shell_quote(all.substr(start, i - start)); }
+      start = i + 1;
+    }
+  return out;
+}
+#endif
+
 void download_and_install() {
   if (g_state != State::UpdateAvailable) return;
   join();
@@ -469,7 +532,11 @@ void download_and_install() {
     if (!length || length >= 32768) { set_message("Cannot resolve application path"); g_state = State::Failed; return; }
     const auto directory = std::filesystem::path(exe).parent_path();
     const std::string dir = directory.u8string();
+#ifdef _WIN32
     const auto zip = directory / "update.zip", bat = directory / "update.bat";
+#else
+    const auto zip = directory / "update.tar.gz", bat = directory / "update.sh";
+#endif
     { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) { set_message("Cannot write update.zip"); g_state = State::Failed; return; } }
     // The same entry check the side-by-side install makes: every path inside the release folder,
     // none absolute, with a drive or with "..".
@@ -481,6 +548,25 @@ void download_and_install() {
     // Relaunch exactly what was started, so this works the same from the release batch file, the
     // launcher, or a development shortcut with its own arguments. Percent signs would be eaten by
     // the batch interpreter.
+#ifndef _WIN32
+    {
+      std::ofstream b(bat, std::ios::binary);
+      b << install_script_sh(dir, GetCurrentProcessId(), install_processes(dir), relaunch_command());
+      b.close();
+      if (!b) { set_message("Cannot write update installer"); g_state = State::Failed; return; }
+      set_message("Update downloaded; restarting to install");
+      g_state = State::ReadyToInstall;
+      host::log("updater: %zu bytes downloaded, installing via update.sh", body.size());
+      std::wstring cmd = L"sh \"" + bat.wstring() + L"\"";
+      STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
+      if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, directory.c_str(), &si, &pi)) {
+        set_message("Cannot start update installer"); g_state = State::Failed; return;
+      }
+      CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+      host::request_exit(0);
+      return;
+    }
+#endif
     std::string relaunch = utf8(GetCommandLineW());
     for (size_t i = relaunch.find('%'); i != std::string::npos; i = relaunch.find('%', i + 2)) relaunch.insert(i, 1, '%');
     std::string batch_dir = dir;

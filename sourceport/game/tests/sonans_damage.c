@@ -4,7 +4,12 @@
 #include "melee/it/kinds/itsonans.c"
 
 extern int printf(const char*, ...);
+#ifdef _WIN32
 __declspec(dllimport) void* __stdcall VirtualAlloc(void*, unsigned long long, unsigned long, unsigned long);
+#else
+/* Keep host system headers away from the console's libc declarations. */
+extern void* mmap(void*, __SIZE_TYPE__, int, int, int, __INTPTR_TYPE__);
+#endif
 
 static u32 g_damage = 12345;
 void it_80272460(HitCapsule* hitbox, u32 damage, Item_GObj* gobj)
@@ -17,7 +22,12 @@ void it_80272460(HitCapsule* hitbox, u32 damage, Item_GObj* gobj)
 int main(void)
 {
     /* Disc pointers are 32 bits wide: the test data lives below 4 GB like the game's. */
+#ifdef _WIN32
     unsigned char* low = VirtualAlloc((void*) 0x10000000, 0x10000, 0x3000, 0x04);
+#else
+    unsigned char* low = mmap((void*) 0x10000000, 0x10000, 3, 0x62, -1, 0); /* RW, PRIVATE|ANONYMOUS|32BIT */
+    if (low == (void*) -1) low = NULL;
+#endif
     if (low == NULL) {
         printf("SKIP: no low memory\n");
         return 0;

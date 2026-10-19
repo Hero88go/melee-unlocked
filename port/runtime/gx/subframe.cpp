@@ -4,7 +4,16 @@
 #include "gx_shader.h"
 #include <cstdlib>
 #include <cstdio>
+#ifdef _MSC_VER
 #include <intrin.h>
+#else
+#include <x86intrin.h>
+static inline unsigned char _BitScanForward64(unsigned long* index, unsigned long long value) {
+  if (!value) return 0;
+  *index = static_cast<unsigned long>(__builtin_ctzll(value));
+  return 1;
+}
+#endif
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -16,7 +25,9 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 namespace gx {
 EndpointStats& subframe_endpoint_stats() { static EndpointStats e; return e; }
@@ -564,7 +575,12 @@ class SolverPool {
  public:
   explicit SolverPool(int workers) {
     // Same priority as the render thread that waits on them (threaded_backend.cpp).
-    for (int i = 0; i < workers; ++i) threads_.emplace_back([this, i] { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL); loop(i + 1); });
+    for (int i = 0; i < workers; ++i) threads_.emplace_back([this, i] {
+#ifdef _WIN32
+      SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+#endif
+      loop(i + 1);
+    });
   }
   ~SolverPool() {
     { std::lock_guard<std::mutex> lk(m_); quit_ = true; }

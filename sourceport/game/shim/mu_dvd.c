@@ -7,7 +7,7 @@
 
 void DVDInit(void) {}
 BOOL DVDCheckDisk(void) { mu_poll(); return 1; }
-long DVDGetDriveStatus(void) { mu_poll(); return mu_host->disc_status(); }
+s32 DVDGetDriveStatus(void) { mu_poll(); return mu_host->disc_status(); }
 s32 DVDConvertPathToEntrynum(const char* path) { return mu_host->disc_entrynum(path); }
 
 /* The disc header the console's boot loader copied to the start of MEM1; the host does the same. */
