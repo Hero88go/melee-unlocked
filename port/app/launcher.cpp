@@ -1738,6 +1738,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_REPLAY_HIDESHORT: replay_hide_short_toggle(); break;
         case ID_REPLAY_QUEUE: watch_replay_queue(); break;
         case ID_REPLAY_QUEUE_CLEAR: replay_queue_clear(); break;
+        case ID_REPLAY_LIVE: watch_live_toggle(); break;
         case ID_REPLAY_SAVE:
           g_save_replays = !g_save_replays;
           if (g_replays[13]) InvalidateRect(g_replays[13], nullptr, FALSE);
@@ -1844,6 +1845,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       // The lobby answers requests from here too (a banner), also before its page was opened, and
       // hears about a changed Game Build, setup or Mods folder within two seconds.
       launcher::lobby::tick_ui();
+      replay_live_tick();   // "Watch live": opens a new broadcast game as it appears
       {
         static ULONGLONG last_state = 0;
         if (GetTickCount64() - last_state > 2000) {

@@ -2602,10 +2602,20 @@ const MuReplayStart* h_replay_start() { return g_replay ? &g_replay_start : null
 void h_replay_frame(int32_t frame, MuReplayFrame* out) {
   *out = MuReplayFrame{};
   if (!g_replay) { out->result = MU_REPLAY_TERMINATE; return; }
-  // The whole file is here, so a frame that is not ready never becomes ready: terminate, as
-  // Dolphin does once processing is complete.
-  if (!g_replay->DoesFrameExist(frame)) { out->result = MU_REPLAY_TERMINATE; return; }
+  // A replay still being written (a live broadcast the Slippi Launcher saves as it arrives) has no
+  // Game End yet: a frame that is not there, not fully received or not yet finalized is waited for,
+  // as Dolphin's mirror mode does. Once Game End is read, a missing frame ends playback.
+  const bool complete = g_replay->IsProcessingComplete();
+  if (!g_replay->DoesFrameExist(frame)) { out->result = complete ? MU_REPLAY_TERMINATE : MU_REPLAY_WAIT; return; }
   Slippi::FrameData* f = g_replay->GetFrame(frame);
+  if (!complete) {
+    const auto v = g_replay->GetVersion();
+    const bool has_finalized = v[0] > 3 || (v[0] == 3 && v[1] >= 7);
+    if (!f->inputsFullyFetched || (has_finalized && g_replay->GetLastFinalizedFrame() < frame)) {
+      out->result = MU_REPLAY_WAIT;
+      return;
+    }
+  }
   out->result = MU_REPLAY_CONTINUE;
   out->seed_exists = f->randomSeedExists ? 1 : 0;
   out->seed = f->randomSeed;
@@ -2706,6 +2716,7 @@ void h_replay_finished() {
   if (g_savestates.active() && !g_replay_marks.empty())
     host::log("replay: %zu states were kept for jumping back (%zu MB)", g_savestates.kept(), g_savestates.pool_bytes() >> 20);
   replay_control::end();
+  if (g_replay_game_end.empty()) g_replay_game_end = read_replay_event(g_replay_path, 0x39);   // a live file gets it last
   if (!g_replay_game_end.empty() && g_replay_stream.last_frame() >= g_replay->GetLatestIndex())
     h_replay_event(0x39, g_replay_game_end.data(), (uint32_t)g_replay_game_end.size());
   write_replay_recording();

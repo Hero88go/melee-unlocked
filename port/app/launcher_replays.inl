@@ -1,14 +1,16 @@
 // Replay library: every .slp as a card (scanned off the UI thread, so the page never freezes), and a
 // match stats page in the style players know from the Slippi Launcher.
+#include <chrono>
 #include <map>
 #include <memory>
 #include <tuple>
 enum { ID_REPLAY_LIST=800, ID_REPLAY_BROWSE, ID_REPLAY_WATCH, ID_REPLAY_REFRESH, ID_REPLAY_BACK, ID_REPLAY_PREV, ID_REPLAY_NEXT, ID_REPLAY_ASPLAYED,
-       ID_REPLAY_SEARCH, ID_REPLAY_SORT, ID_REPLAY_HIDESHORT, ID_REPLAY_QUEUE, ID_REPLAY_QUEUE_CLEAR, ID_REPLAY_SAVE };
+       ID_REPLAY_SEARCH, ID_REPLAY_SORT, ID_REPLAY_HIDESHORT, ID_REPLAY_QUEUE, ID_REPLAY_QUEUE_CLEAR, ID_REPLAY_SAVE, ID_REPLAY_LIVE };
 const UINT WM_APP_REPLAYS_LISTED = WM_APP + 20;   // lParam: heap ReplayScan*
 const UINT WM_APP_REPLAY_LOADED = WM_APP + 21;    // lParam: heap ReplayLoaded*
-HWND g_replays[14]{};            // list, browse, watch, refresh, back, prev, next, "as it was played",
-                                 // search, sort, "hide short games", watch queue, clear queue, "save replays"
+HWND g_replays[15]{};            // list, browse, watch, refresh, back, prev, next, "as it was played",
+                                 // search, sort, "hide short games", watch queue, clear queue, "save replays",
+                                 // "watch live"
 HWND g_replay_stats=nullptr;     // the scrolling stats page
 // Everything the scan found, newest first. A replay's place in these two is its index everywhere on
 // this page (the stats page, the loader's late results, playback). Only the list box counts in rows.
@@ -355,7 +357,7 @@ void replay_layout() {
   // Typing must not reach a search box that is no longer shown.
   if(!list&&g_replays[8]&&GetFocus()==g_replays[8]) SetFocus(g_main);
   if(g_replays[0]) ShowWindow(g_replays[0],list&&!g_replay_visible.empty()?SW_SHOW:SW_HIDE);
-  for(int i:{1,3,8,9,10,13}) if(g_replays[i]) ShowWindow(g_replays[i],list?SW_SHOW:SW_HIDE);
+  for(int i:{1,3,8,9,10,13,14}) if(g_replays[i]) ShowWindow(g_replays[i],list?SW_SHOW:SW_HIDE);
   for(int i:{4,5,6}) if(g_replays[i]) ShowWindow(g_replays[i],stats?SW_SHOW:SW_HIDE);
   if(g_replays[7]) { ShowWindow(g_replays[7],on?SW_SHOW:SW_HIDE); replay_trace_changed(); }
   if(g_replay_stats) ShowWindow(g_replay_stats,stats?SW_SHOW:SW_HIDE);
@@ -490,11 +492,85 @@ void watch_replay_queue() {
   g_replay_playing=g_replay_queue; g_replay_play_at=0; g_replay_skipped=0; g_replay_skip_reason.clear();
   replay_queue_next();
 }
+// "Watch live": a game someone broadcasts, watched here. The Slippi Launcher's Spectate tab writes the
+// broadcast it is watching into its spectate folder as a replay, one file per game, as the data
+// arrives; the viewer plays such a file while it is still being written (it waits at the end for the
+// next frames, as Slippi Dolphin's mirror mode does). While on, each new game file in that folder is
+// opened as it appears, and the next one after it.
+bool g_live_watch=false;
+std::set<std::wstring> g_live_seen;   // files already opened or present when watching began
+std::filesystem::path live_spectate_folder() {
+  // The Slippi Launcher's own setting (spectateSlpPath), else its default: <replay folder>\Spectate.
+  for(const auto& root:slippi::account::launcher_roots()) {
+    std::ifstream input(root/"Settings",std::ios::binary);
+    if(!input) continue;
+    const auto data=nlohmann::json::parse(input,nullptr,false);
+    if(!data.is_object()) continue;
+    const auto inner=data.find("settings");
+    const nlohmann::json& s=inner!=data.end()&&inner->is_object()?*inner:data;
+    if(const auto v=s.find("spectateSlpPath");v!=s.end()&&v->is_string()&&!v->get<std::string>().empty())
+      return std::filesystem::u8path(v->get<std::string>());
+    if(const auto v=s.find("rootSlpPath");v!=s.end()&&v->is_string()&&!v->get<std::string>().empty())
+      return std::filesystem::u8path(v->get<std::string>())/"Spectate";
+  }
+  PWSTR documents=nullptr; std::filesystem::path out;
+  if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents,0,nullptr,&documents))) { out=std::filesystem::path(documents)/"Slippi"/"Spectate"; CoTaskMemFree(documents); }
+  return out;
+}
+void live_caption() {
+  if(g_replays[14]) { SetWindowTextW(g_replays[14],launcher::lang::txw(g_live_watch?L"Stop watching live":L"Watch live").c_str()); InvalidateRect(g_replays[14],nullptr,FALSE); }
+}
+// Called from the launcher's timer: opens the newest game file that appeared since watching began.
+void replay_live_tick() {
+  if(!g_live_watch||g_playing||g_building) return;
+  static ULONGLONG last=0;
+  if(GetTickCount64()-last<1000) return;
+  last=GetTickCount64();
+  const auto folder=live_spectate_folder();
+  std::error_code ec;
+  if(folder.empty()||!std::filesystem::is_directory(folder,ec)) return;
+  std::filesystem::path newest; std::filesystem::file_time_type newest_time{};
+  for(const auto& entry:std::filesystem::directory_iterator(folder,ec)) {
+    if(ec||!entry.is_regular_file(ec)||entry.path().extension()!=L".slp"||g_live_seen.count(entry.path().wstring())) continue;
+    const auto t=entry.last_write_time(ec);
+    if(!ec&&(newest.empty()||t>newest_time)) { newest=entry.path(); newest_time=t; }
+  }
+  if(newest.empty()) return;
+  g_live_seen.insert(newest.wstring());
+  if(replay_start(newest)==ReplayStart::Started)
+    replay_status(launcher::lang::fill(launcher::lang::tx("Watching live: {file}"),launcher::lang::Args{{"file",newest.filename().u8string()}}));
+}
+void watch_live_toggle() {
+  if(!g_live_watch&&(g_playing||g_building)) { replay_status("Close the running game before watching live."); return; }
+  g_live_watch=!g_live_watch;
+  g_live_seen.clear();
+  if(g_live_watch) {
+    const auto folder=live_spectate_folder();
+    std::error_code ec;
+    // Games already finished in the folder are not opened; one written in the last few seconds is
+    // the game going on right now, and is.
+    const auto now=std::filesystem::file_time_type::clock::now();
+    if(!folder.empty()&&std::filesystem::is_directory(folder,ec))
+      for(const auto& entry:std::filesystem::directory_iterator(folder,ec))
+        if(!ec&&entry.path().extension()==L".slp"&&now-entry.last_write_time(ec)>std::chrono::seconds(10)) g_live_seen.insert(entry.path().wstring());
+    replay_status(launcher::lang::fill(launcher::lang::tx("Waiting for a live game. Watch a broadcast in the Slippi Launcher's Spectate tab; it plays here. Folder: {folder}"),
+                                       launcher::lang::Args{{"folder",folder.u8string()}}));
+  } else replay_status("Stopped watching live.");
+  live_caption();
+}
+
 // The game has ended (WM_APP_GAME_DONE, with its exit code). True when a queue went on to its next
 // replay: the launcher then stays as it is, minimized, as while a game runs.
 bool replay_game_done(DWORD code) {
   if(!g_replay_active) { replay_buttons(); return false; }
   g_replay_active=false;
+  if(g_live_watch) {
+    // A live game played to its end: wait for the next one. Closing the viewer stops watching.
+    if(code==4) { g_live_watch=false; live_caption(); replay_status("Stopped watching live."); }
+    else replay_status("Live game over. Waiting for the next one.");
+    replay_buttons();
+    return false;
+  }
   // Exit code 0: the replay played to its end, and a queue goes on. 4: the viewer closed the window
   // first, which is a stop and not an error, and stops a queue too. A crash can also end in a clean
   // code, so the crash file decides: starting another game now would make that file look older than
@@ -996,6 +1072,8 @@ void create_replay_controls() {
   // The queue's buttons, under "Watch Replay". Shown while something is queued (replay_buttons).
   g_replays[11]=make(L"BUTTON",L"",BS_OWNERDRAW,808,662,150,30,ID_REPLAY_QUEUE);
   g_replays[12]=make(L"BUTTON",L"Clear queue",BS_OWNERDRAW,698,662,102,30,ID_REPLAY_QUEUE_CLEAR);
+  // "Watch live", beside "Watch Replay": a broadcast watched in the Slippi Launcher plays here.
+  g_replays[14]=make(L"BUTTON",L"Watch live",BS_OWNERDRAW,664,622,136,34,ID_REPLAY_LIVE);
   WNDCLASSEXW wc{sizeof wc}; wc.lpfnWndProc=stats_proc; wc.hInstance=GetModuleHandleW(nullptr);
   wc.hCursor=LoadCursorW(nullptr,IDC_ARROW); wc.lpszClassName=L"MeleeUnlockedReplayStats";
   RegisterClassExW(&wc);
