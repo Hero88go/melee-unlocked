@@ -98,13 +98,21 @@ def run(*args, **kwargs):
 
 def ldd(path):
     out = subprocess.run(['ldd', str(path)], capture_output=True, text=True).stdout
+    return {k: v for k, v in ldd_text(out).items() if v != 'not found'}
+
+
+def ldd_text(out):
     libs = {}
-    for line in out.splitlines():
-        parts = line.strip().split()
-        if '=>' in parts and len(parts) >= 3 and parts[2].startswith('/'):
-            libs[parts[0]] = parts[2]
-        elif parts and parts[0].startswith('/'):
-            libs[os.path.basename(parts[0])] = parts[0]
+    for line in out.splitlines():   # paths may hold spaces: "name => /a b/name (0x...)"
+        line = line.strip()
+        if ' => not found' in line:
+            libs[line.split(' => ')[0]] = 'not found'
+        elif ' => /' in line:
+            name, rest = line.split(' => ', 1)
+            libs[name] = rest.rsplit(' (0x', 1)[0]
+        elif line.startswith('/'):
+            path = line.rsplit(' (0x', 1)[0]
+            libs[os.path.basename(path)] = path
     return libs
 
 
@@ -199,6 +207,31 @@ def main():
         if copyright_file.is_file():
             shutil.copy2(copyright_file, licenses / f'lib-{package}.txt')
     print(f'lib: {len(list(lib.iterdir()))} libraries from {len(packages)} packages')
+    # A program's RUNPATH only serves its own direct dependencies, so each bundled library gets its own
+    # ($ORIGIN = lib/): otherwise libcurl looked for librtmp and libssl in the system's folders, which
+    # failed on SteamOS (librtmp missing, a newer libssl than the bundled libcrypto).
+    for path in lib.iterdir():
+        run('patchelf', '--set-rpath', '$ORIGIN', path)
+    run('patchelf', '--set-rpath', '$ORIGIN/lib', folder / 'melee_game.so')
+    # Prove it: with no help from the environment, every dependency the package bundles resolves to lib/.
+    env = {k: v for k, v in os.environ.items() if k != 'LD_LIBRARY_PATH'}
+    wrong = []
+    for binary in [folder / EXE, folder / 'MeleeUnlocked', folder / 'melee_game.so', *lib.iterdir()]:
+        out = subprocess.run(['ldd', str(binary)], capture_output=True, text=True, env=env).stdout
+        dynamic = subprocess.run(['readelf', '-d', str(binary)], capture_output=True, text=True).stdout
+        needed = {line.split('[', 1)[1].split(']', 1)[0] for line in dynamic.splitlines() if '(NEEDED)' in line}
+        # Each binary's own dependencies (what its RUNPATH serves); libraries only a system library
+        # pulls in (the sound server's codecs) come with that system library.
+        for soname, where in ldd_text(out).items():
+            if soname not in needed:
+                continue
+            if (lib / soname).exists() and Path(where).resolve() != (lib / soname).resolve():
+                wrong.append(f'{binary.name}: {soname} -> {where}')
+            if where == 'not found':
+                wrong.append(f'{binary.name}: {soname} not found')
+    if wrong:
+        raise SystemExit('bundled libraries do not resolve inside lib/:\n  ' + '\n  '.join(wrong[:20]))
+    print('lib: every bundled dependency resolves inside lib/')
 
     # The game files, as in the Windows release.
     sys_src = ROOT / 'port/slippi_sys'
