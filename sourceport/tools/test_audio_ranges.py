@@ -11,7 +11,7 @@ spec.loader.exec_module(audio_ranges)
 
 class AudioMapTest(unittest.TestCase):
     def test_pe_and_elf_objects_with_spaces(self):
-        lines = [' .bss 0x82801000 0x20 C:/Users/Some Name/synth.c.obj\n',
+        lines = [' .bss 0x82801000 0x20 D:/Build Dir/Some Folder/synth.c.obj\n',
                  ' .data 0x82802000 0x10 CMakeFiles/AXVPB.c.o\n']
         self.assertEqual(list(audio_ranges.audio_ranges(lines, 0x82800000)),
                          [(0x1000, 0x20, 'bss', 'synth.c.obj'),
