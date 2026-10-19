@@ -61,7 +61,7 @@ std::string display_path(const fs::path& p) {
   const fs::path absolute = fs::absolute(p, ec);
   const fs::path here = fs::current_path(ec);
   const fs::path relative = absolute.lexically_relative(here);
-  if (!relative.empty() && relative.native().rfind(L"..", 0) != 0) return relative.u8string();
+  if (!relative.empty() && relative.native().rfind(fs::path("..").native(), 0) != 0) return relative.u8string();
   return absolute.u8string();
 }
 
@@ -1563,7 +1563,7 @@ void import_async(const fs::path& picked) {
       const fs::path mods = fs::absolute(options.mods_dir, ec);
       const fs::path source = fs::absolute(picked, ec);
       const auto rel = source.lexically_relative(mods);
-      if (!rel.empty() && rel.native().rfind(L"..", 0) != 0) {
+      if (!rel.empty() && rel.native().rfind(fs::path("..").native(), 0) != 0) {
         target = picked;   // already in the Mods folder
       } else {
         target = free_name(options.mods_dir / (gci ? "Saves" : "Discs"), picked);

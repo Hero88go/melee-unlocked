@@ -25,10 +25,10 @@ static s32 mu_card_complete(CARDCallback callback, s32 chan, s32 result)
 }
 
 void CARDInit(void) {}
-int CARDProbe(long chan) { mu_poll(); return chan == 0; }
+int CARDProbe(s32 chan) { mu_poll(); return chan == 0; }
 s32 CARDProbeEx(s32 chan, s32* memSize, s32* sectorSize) { return mu_host->card_probe(chan, (int32_t*) memSize, (int32_t*) sectorSize); }
 s32 CARDUnmount(s32 chan) { return mu_host->card_unmount(chan); }
-long CARDGetXferredBytes(long chan) { return chan == 0 ? mu_xferred : 0; }
+s32 CARDGetXferredBytes(s32 chan) { return chan == 0 ? mu_xferred : 0; }
 
 s32 CARDMountAsync(s32 chan, void* workArea, CARDCallback detachCallback, CARDCallback attachCallback)
 {
@@ -111,7 +111,7 @@ s32 CARDRenameAsync(s32 chan, const char* oldName, const char* newName, CARDCall
     return mu_card_complete(callback, chan, mu_host->card_rename(chan, oldName, newName));
 }
 
-long CARDRead(struct CARDFileInfo* fileInfo, void* buf, long length, long offset)
+s32 CARDRead(struct CARDFileInfo* fileInfo, void* buf, s32 length, s32 offset)
 {
     s32 result = mu_host->card_read(fileInfo->chan, fileInfo->fileNo, buf, (uint32_t) length, (uint32_t) offset);
     if (result == MU_CARD_READY)
@@ -124,7 +124,7 @@ s32 CARDReadAsync(CARDFileInfo* fileInfo, void* buf, s32 length, s32 offset, CAR
     return mu_card_complete(callback, fileInfo->chan, CARDRead(fileInfo, buf, length, offset));
 }
 
-long CARDWrite(struct CARDFileInfo* fileInfo, void* buf, long length, long offset)
+s32 CARDWrite(struct CARDFileInfo* fileInfo, void* buf, s32 length, s32 offset)
 {
     s32 result = mu_host->card_write(fileInfo->chan, fileInfo->fileNo, buf, (uint32_t) length, (uint32_t) offset);
     if (result == MU_CARD_READY)
@@ -132,7 +132,7 @@ long CARDWrite(struct CARDFileInfo* fileInfo, void* buf, long length, long offse
     return result;
 }
 
-long CARDWriteAsync(struct CARDFileInfo* fileInfo, void* buf, long length, long offset, void (*callback)(long, long))
+s32 CARDWriteAsync(struct CARDFileInfo* fileInfo, void* buf, s32 length, s32 offset, CARDCallback callback)
 {
     return mu_card_complete((CARDCallback) callback, fileInfo->chan, CARDWrite(fileInfo, buf, length, offset));
 }

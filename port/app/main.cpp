@@ -801,6 +801,7 @@ struct TimerResolution {
 // minidump, the same lines in melee_port.log, and a dialog pointing at them when a player launched it.
 static bool g_crash_dialog = true;
 
+#ifdef _WIN32
 // --profile: samples where the simulation thread is ~1000 times a second and logs the hottest
 // functions at exit. Translated game functions are named through the dispatch table, everything
 // else through the executable's debug symbols. The sample buffer is reserved up front: the sampler
@@ -1113,6 +1114,10 @@ static void die_report(const char* message) {
   }
 }
 
+#else
+#include "full/crash_linux.inl"
+#endif
+
 // MELEE_TEST_CRASH=<frame>: a deliberate crash during that frame, for the crash report gates. Only a
 // hidden or headless run arms it (players never start one). It is an ordinary access violation, so
 // melee_port_crash.txt, the minidump and the log line come from crash_filter exactly as for a real
@@ -1185,6 +1190,7 @@ static bool cpu_has_avx2() {
 // and it ran before the CRT was ready. That is a plausible way to get a wrong answer out of a
 // check that is correct everywhere else, which is why the message below prints what the processor
 // actually reported rather than only the conclusion.
+#ifdef _WIN32
 static int __cdecl check_avx2_before_anything_else() {
 #ifndef MELEE_NEEDS_AVX2
   return 0;   // built for an older baseline: nothing here to require
@@ -1232,10 +1238,12 @@ static int __cdecl check_avx2_before_anything_else() {
 }
 #pragma section(".CRT$XCC", long, read)
 __declspec(allocate(".CRT$XCC")) static int (__cdecl* g_avx2_guard)() = check_avx2_before_anything_else;
+#endif
 
 // Built for the Windows subsystem so double-clicking the game does not open a terminal alongside it.
 // Anything started from a command line still prints there: this reattaches to the parent console when
 // one exists, so `melee_port.exe --help` and scripted runs behave exactly as before.
+#ifdef _WIN32
 static void attach_parent_console() {
   // Never take over output that is already going somewhere. A script running `--version` hands us a
   // pipe, and reopening CONOUT$ over it sends the answer to the terminal instead of back to the
@@ -1248,6 +1256,7 @@ static void attach_parent_console() {
   freopen_s(&f, "CONOUT$", "w", stderr);
   freopen_s(&f, "CONIN$", "r", stdin);
 }
+#endif
 
 static int melee_main(int argc, char** argv);
 
@@ -1279,10 +1288,12 @@ static int guarded_main(int argc, char** argv) {
     host::die("the game stopped on an internal error: %s", error.what());
   }
 }
+#ifdef _WIN32
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
   attach_parent_console();
   return guarded_main(__argc, __argv);
 }
+#endif
 int main(int argc, char** argv) { return guarded_main(argc, argv); }
 
 static int melee_main(int argc, char** argv) {
@@ -1373,8 +1384,12 @@ static int melee_main(int argc, char** argv) {
   g_crash_dialog = !automated;
   o.no_gc_adapter = automated;   // a hidden test run must not take the adapter from a game the player is running
   if (std::getenv("MELEE_NO_GC_ADAPTER")) o.no_gc_adapter = true;   // same, for a visible test window
+#ifdef _WIN32
   SetUnhandledExceptionFilter(crash_filter);
   AddVectoredExceptionHandler(1, note_throw);
+#else
+  linux_install_crash_handlers();
+#endif
   host::set_die_hook(die_report);
   if (!automated) {
     // Interpolate by default: it never overshoots a stop, so menus, cursors and stage geometry stay

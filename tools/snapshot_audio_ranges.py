@@ -20,20 +20,37 @@ import sys
 
 FILES = ("synth.c.obj", "axdriver.c.obj", "AXVPB.c.obj", "AXAux.c.obj", "AXCL.c.obj", "AXOut.c.obj",
          "AXAlloc.c.obj", "AXSPB.c.obj", "AXProf.c.obj")
-LINE = re.compile(r"^ \.(bss|data)\s+0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+) (\S+)$")
+LINE = re.compile(r"^ \.(bss|data)(?:\.[^\s]+)?\s+0x([0-9a-fA-F]+)\s+0x([0-9a-fA-F]+) (.+)$")
+WRAPPED = re.compile(r"^ (\.(?:bss|data)(?:\.[^\s]+)?)\s*$")
+
+
+def audio_ranges(lines, base):
+    """Read PE or ELF GNU ld maps, including wrapped .data.rel.local entries."""
+    pending = None
+    for line in lines:
+        line = line.rstrip('\n')
+        wrapped = WRAPPED.match(line)
+        if wrapped:
+            pending = wrapped[1]
+            continue
+        if pending is not None:
+            line = ' ' + pending + ' ' + line.lstrip()
+            pending = None
+        m = LINE.match(line)
+        if not m:
+            continue
+        section, address, size, obj = m.group(1), int(m.group(2), 16), int(m.group(3), 16), m.group(4)
+        name = obj.replace('\\', '/').rsplit('/', 1)[-1]
+        if name.endswith('.c.o'):
+            name = name[:-2] + '.obj'
+        if name in FILES and size and address >= base:
+            yield address - base, size, section, name
 
 
 def main():
     map_path, base, out_path = sys.argv[1], int(sys.argv[2], 16), sys.argv[3]
-    rows = []
-    for line in open(map_path, encoding="utf-8", errors="replace"):
-        m = LINE.match(line.rstrip("\n"))
-        if not m:
-            continue
-        section, address, size, obj = m.group(1), int(m.group(2), 16), int(m.group(3), 16), m.group(4)
-        name = obj.replace("\\", "/").rsplit("/", 1)[-1]
-        if name in FILES and size:
-            rows.append((address - base, size, section, name))
+    with open(map_path, encoding="utf-8", errors="replace") as source:
+        rows = list(audio_ranges(source, base))
     missing = sorted(set(FILES) - {r[3] for r in rows})
     if missing:
         sys.exit("snapshot_audio_ranges: no sections found for " + ", ".join(missing))

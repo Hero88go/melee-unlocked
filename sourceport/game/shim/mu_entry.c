@@ -182,7 +182,7 @@ static void mu_state_snapshot(MuStatePod* out)
 int main(void);
 void __sinit_trigf_c(void);
 
-__declspec(dllexport) int32_t mu_game_entry(const MuHostApi* host, MuGameApi* game)
+MU_EXPORT int32_t mu_game_entry(const MuHostApi* host, MuGameApi* game)
 {
     if (!host || host->version != MU_HOST_API_VERSION || !game)
         return -1;

@@ -66,14 +66,21 @@ constexpr bool kLabViewAvailable = false;
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb/stb_image.h"
+#ifdef _WIN32
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx12.h"
+#endif
 #include <windows.h>
 #include <xinput.h>
 #include <mmsystem.h>
 #include <mmsystem.h>
+#ifdef _WIN32
 #include <d3d12.h>
 #include <wrl/client.h>
+#else
+#include "backends/imgui_impl_sdl2.h"
+#include <SDL.h>
+#endif
 #include <array>
 #include <functional>
 #include <map>
@@ -83,7 +90,9 @@ constexpr bool kLabViewAvailable = false;
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#ifdef _WIN32
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+#endif
 namespace gx {
 namespace {
 std::atomic<uint32_t> g_guest_options_selection{0};
@@ -3038,11 +3047,29 @@ void settings_context_create(void* window, bool open_at_startup) {
   IMGUI_CHECKVERSION(); ImGui::CreateContext();
   auto& io = ImGui::GetIO(); io.IniFilename = nullptr;
   g_settings_old_font = io.Fonts->AddFontDefault();
+#ifdef _WIN32
   if (GetFileAttributesW(L"C:\\Windows\\Fonts\\segoeui.ttf") != INVALID_FILE_ATTRIBUTES)
     g_settings_body_font = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 16.0f);
   if (g_settings_body_font) io.FontDefault = g_settings_body_font;
   if (GetFileAttributesW(L"C:\\Windows\\Fonts\\lucon.ttf") != INVALID_FILE_ATTRIBUTES)
     g_settings_classic_font = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\lucon.ttf", 16.0f);
+#else
+  // Linux: the body font shipped beside the game (Source Sans 3), else the desktop's usual sans and
+  // monospace fonts, else ImGui's own.
+  {
+    const char* bodies[] = {"Fonts/SourceSans3-Regular.otf", "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+                            "/usr/share/fonts/noto/NotoSans-Regular.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                            "/usr/share/fonts/TTF/DejaVuSans.ttf", "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf"};
+    for (const char* path : bodies)
+      if (std::filesystem::exists(path)) { g_settings_body_font = io.Fonts->AddFontFromFileTTF(path, 16.0f); break; }
+    if (g_settings_body_font) io.FontDefault = g_settings_body_font;
+    const char* monos[] = {"/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+                           "/usr/share/fonts/dejavu-sans-mono-fonts/DejaVuSansMono.ttf",
+                           "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf"};
+    for (const char* path : monos)
+      if (std::filesystem::exists(path)) { g_settings_classic_font = io.Fonts->AddFontFromFileTTF(path, 16.0f); break; }
+  }
+#endif
   const std::string heading_font_path = ui_source_asset_path("gd_melee", "kit/SourceSans3-Black.otf");
   if (std::filesystem::exists(heading_font_path))
     g_settings_heading_font = io.Fonts->AddFontFromFileTTF(heading_font_path.c_str(), 28.0f);
@@ -3077,6 +3104,21 @@ void settings_context_create(void* window, bool open_at_startup) {
     legacy.ScaleAllSizes(1.25f);
     g_input_overlay_style = legacy;
   }
+#ifndef _WIN32
+  ImGui_ImplSDL2_InitForOpenGL(static_cast<SDL_Window*>(window), SDL_GL_GetCurrentContext());
+  host::window_set_message_callback([](void* w, uint32_t m, uintptr_t, intptr_t) {
+    if (m != host::kSdlEventMessage) return false;
+    SDL_Event e = *static_cast<SDL_Event*>(w);
+    // The pointer arrives in pixels and a scaled frame is laid out in smaller units.
+    if (const float scale = g_frame_ui_scale.load(std::memory_order_relaxed); scale != 1.0f) {
+      if (e.type == SDL_MOUSEMOTION) { e.motion.x = (int)std::lround(e.motion.x / scale); e.motion.y = (int)std::lround(e.motion.y / scale); }
+      if (e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP) { e.button.x = (int)std::lround(e.button.x / scale); e.button.y = (int)std::lround(e.button.y / scale); }
+    }
+    ImGui_ImplSDL2_ProcessEvent(&e);
+    return false;   // as on Windows: the window still sees every event
+  });
+}
+#else
   ImGui_ImplWin32_Init(window);
   host::window_set_message_callback([](void* w, uint32_t m, uintptr_t a, intptr_t b) {
     // The pointer arrives in pixels and a scaled frame is laid out in smaller units (see
@@ -3091,15 +3133,22 @@ void settings_context_create(void* window, bool open_at_startup) {
     return ImGui_ImplWin32_WndProcHandler((HWND)w, m, a, b) != 0;
   });
 }
+#endif
 
 void settings_context_destroy() {
   for (auto& preview : g_cosmetic_previews)
     if (preview.second) ImGui::UnregisterUserTexture(preview.second.get());
   g_cosmetic_previews.clear();
   host::window_set_message_callback({}); host::window_input_capture(false);
-  ImGui_ImplWin32_Shutdown(); ImGui::DestroyContext();
+#ifdef _WIN32
+  ImGui_ImplWin32_Shutdown();
+#else
+  ImGui_ImplSDL2_Shutdown();
+#endif
+  ImGui::DestroyContext();
 }
 
+#ifdef _WIN32
 struct PcSettingsUI::Impl {
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
   std::array<bool, 64> used{};
@@ -3150,6 +3199,7 @@ bool PcSettingsUI::begin(RenderOptions& options) {
   ImGui_ImplDX12_NewFrame();
   return settings_frame(impl_->state, options);
 }
+#endif
 
 static const char* matchmaking_state_text(int state) {
   switch (state) {
@@ -3807,7 +3857,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
     io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
   }
+#ifdef _WIN32
   ImGui_ImplWin32_NewFrame();
+#else
+  ImGui_ImplSDL2_NewFrame();
+#endif
   // The backend has just set the display size in pixels. On a scaled frame (the standalone settings
   // window on a scaled display, the game window above 1080 pixels high) lay it out in smaller units
   // instead and let the framebuffer scale draw it at full size (see g_frame_ui_scale). Rounded up so
@@ -7785,8 +7839,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           changed |= settings_slider("C-stick deadzone", &dz.c, 0, 60, dz.c ? "%d" : "Off");
           if (ImGui::IsItemActive()) g_show_dz_c_until = ImGui::GetTime() + 1.5;
           static const char* kRadiusTip =
-              "How far the stick reaches at a full push, like Dolphin's Radius. 100 leaves the\n"
-              "stick exactly as the controller sends it. Lower it if the stick hits full speed\n"
+              "How far the stick reaches at a full push, like Dolphin's Radius. 100 leaves the\n"
+              "stick exactly as the controller sends it. Lower it if the stick hits full speed\n"
               "before you have pushed it all the way: at 80 a full push gives 80% of the range.";
           ImGui::SetNextItemWidth(200.0f);
           changed |= settings_slider("Control stick radius", &dz.radius_main, 50, 100, dz.radius_main >= 100 ? "Full" : "%d%%");
@@ -8505,8 +8559,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   return changed;
 }
 
+#ifdef _WIN32
 void PcSettingsUI::draw(ID3D12GraphicsCommandList* list) {
   ID3D12DescriptorHeap* heap = impl_->heap.Get(); list->SetDescriptorHeaps(1, &heap);
   ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), list);
 }
+#endif
 }

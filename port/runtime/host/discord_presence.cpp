@@ -19,6 +19,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <filesystem>
 #include <mutex>
 #include <thread>
 
@@ -352,6 +354,36 @@ void worker() {
 // the game is not detected, whether or not the game is running. Current user only, no elevation.
 void register_launch(const std::string& application_id) {
   wchar_t self[MAX_PATH]{};
+#ifndef _WIN32
+  // Linux: a discord-<id>:// link opens the game through a desktop entry for that URL scheme, the
+  // freedesktop way of doing what the registry keys below do on Windows.
+  if (!GetModuleFileNameW(nullptr, self, MAX_PATH)) return;
+  {
+    std::string exe_path(self, self + std::wcslen(self));
+    const size_t cut = exe_path.find_last_of('/');
+    if (cut != std::string::npos) {
+      const std::string launcher = exe_path.substr(0, cut + 1) + "MeleeUnlocked";
+      if (std::filesystem::exists(launcher)) exe_path = launcher;
+    }
+    const char* data = std::getenv("XDG_DATA_HOME");
+    const char* home = std::getenv("HOME");
+    if (!data && !home) return;
+    const std::filesystem::path dir = data && *data ? std::filesystem::path(data) / "applications"
+                                                    : std::filesystem::path(home) / ".local/share/applications";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    const std::string scheme = "discord-" + application_id;
+    const std::filesystem::path entry = dir / (scheme + ".desktop");
+    if (FILE* f = std::fopen(entry.c_str(), "w")) {
+      std::fprintf(f, "[Desktop Entry]\nType=Application\nName=Melee Unlocked\nNoDisplay=true\nExec=\"%s\" %%u\n"
+                      "MimeType=x-scheme-handler/%s;\n", exe_path.c_str(), scheme.c_str());
+      std::fclose(f);
+      const std::string cmd = "xdg-mime default '" + scheme + ".desktop' 'x-scheme-handler/" + scheme + "' >/dev/null 2>&1";
+      if (std::system(cmd.c_str()) != 0) host::log("discord: could not register the %s:// handler with xdg-mime", scheme.c_str());
+    }
+    return;
+  }
+#else
   if (!GetModuleFileNameW(nullptr, self, MAX_PATH)) return;
   std::wstring exe = self;
   const size_t slash = exe.find_last_of(L"\\/");
@@ -378,6 +410,7 @@ void register_launch(const std::string& application_id) {
     RegCloseKey(open);
   }
   RegCloseKey(h);
+#endif
 }
 
 }  // namespace

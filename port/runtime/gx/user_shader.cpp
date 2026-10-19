@@ -3,10 +3,14 @@
 #include "../host/host.h"
 #include <windows.h>
 #include <shellapi.h>
+#ifdef _WIN32
 #include <d3d11.h>
 #include <d3d12.h>
 #define LIBRA_RUNTIME_D3D11
 #define LIBRA_RUNTIME_D3D12
+#else
+#define LIBRA_RUNTIME_OPENGL   // Linux: the presets run on the OpenGL renderer (gl_prepare/gl_draw)
+#endif
 #include "../../third_party/librashader/librashader_ld.h"
 #include <algorithm>
 #include <cctype>
@@ -292,10 +296,12 @@ void report(const std::string& preset, bool ok) {
   else host::log("shaders: %s is off: %s", preset.c_str(), status().c_str());
 }
 
+#ifdef _WIN32
 libra_d3d12_filter_chain_t g_chain12 = nullptr;
 Choice g_choice12;
 libra_d3d11_filter_chain_t g_chain11 = nullptr;
 Choice g_choice11;
+#endif
 
 }  // namespace
 
@@ -340,6 +346,7 @@ std::string status() {
   return g_status;
 }
 
+#ifdef _WIN32
 bool d3d12_prepare(ID3D12Device* device, const std::string& preset, void (*wait)(void*), void* owner) {
   test_scan();
   if (preset == g_choice12.preset) return g_chain12 != nullptr && !g_choice12.failed;
@@ -440,4 +447,5 @@ void d3d11_release() {
   g_choice11 = {};
 }
 
+#endif
 }  // namespace gx::user_shader

@@ -1,5 +1,15 @@
 cmake_minimum_required(VERSION 3.15)
 project(MeleeUnlocked LANGUAGES CXX)
+
+option(MELEE_BUILD_NATIVE_LINUX "Build the native Linux Source Port (ELF host and game)" OFF)
+if(MELEE_BUILD_NATIVE_LINUX)
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
+    message(FATAL_ERROR "MELEE_BUILD_NATIVE_LINUX requires a 64-bit Linux toolchain")
+  endif()
+  enable_testing()
+  add_subdirectory(port/linux)
+  return()
+endif()
 enable_testing()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 

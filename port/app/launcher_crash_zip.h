@@ -14,6 +14,12 @@
 #include <vector>
 #include "launcher_crash_privacy.h"
 
+#ifdef _WIN32
+inline constexpr const char* kPathSep = "\\";
+#else
+inline constexpr const char* kPathSep = "/";
+#endif
+
 namespace launcher::crash {
 
 // tools/crash_relay refuses anything larger.
@@ -84,7 +90,7 @@ inline std::vector<uint8_t> read_tail(const std::string& path, size_t max) {
 inline std::vector<File> collect(const std::string& game_dir, const std::string& launcher_dir) {
   std::vector<File> files;
   for (const Part& part : kParts) {
-    auto data = read_tail((part.launcher_folder ? launcher_dir : game_dir) + "\\" + part.name, part.max_bytes);
+    auto data = read_tail((part.launcher_folder ? launcher_dir : game_dir) + kPathSep + part.name, part.max_bytes);
     // A file at its cap was cut at the front, so its first line may be the tail of a longer one.
     if (!data.empty()) files.emplace_back(part.name, private_report_text(part.name, data, data.size() >= part.max_bytes));
   }
@@ -151,7 +157,7 @@ inline std::vector<File> collect_logs(const std::string& game_dir, const std::st
   std::vector<File> files;
   for (const Part& part : kParts) {
     if (!include_crash && std::string(part.name) == "melee_port_crash.txt") continue;
-    auto data = read_tail((part.launcher_folder ? launcher_dir : game_dir) + "\\" + part.name, part.max_bytes);
+    auto data = read_tail((part.launcher_folder ? launcher_dir : game_dir) + kPathSep + part.name, part.max_bytes);
     if (!data.empty()) files.emplace_back(part.name, private_report_text(part.name, data, data.size() >= part.max_bytes));
   }
   // Every session trace from the last day, oldest first. A match keeps its trace only when the player

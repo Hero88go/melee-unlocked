@@ -3,6 +3,7 @@
 #define MU_SHIM_H
 
 #include "mu_host.h"
+#include <stddef.h>
 
 extern const MuHostApi* mu_host;
 

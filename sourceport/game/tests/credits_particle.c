@@ -5,7 +5,9 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 typedef int32_t s32;
 typedef struct { uint8_t r, g, b, a; } GXColor;
@@ -78,7 +80,9 @@ static int make_chain_console(int idx) {
 }
 #endif
 int main(void) {
+#ifdef _WIN32
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+#endif
     GXColor color = {0x12, 0x34, 0x56, 0x78};
     const GXColor none = {0, 0, 0, 0};
     for (int idx = 0; idx < 7; ++idx) {

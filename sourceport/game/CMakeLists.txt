@@ -1,6 +1,6 @@
 # The game, built from source as a library the host runtime loads.
 #
-# A separate project because it needs a different compiler from everything else in this repository
+# A separate project because it needs GCC even when the host uses another compiler
 # (see ../cmake/mingw-w64-x86_64.cmake). The host talks to it through one exported entry point and
 # two tables of function pointers, so nothing here links against the host and the host links against
 # nothing here.
@@ -12,6 +12,12 @@ enable_testing()
 if(NOT CMAKE_C_COMPILER_ID STREQUAL "GNU" OR CMAKE_C_COMPILER_VERSION VERSION_LESS 14)
   message(FATAL_ERROR "melee_game needs GCC 14 or newer: scalar_storage_order, and -ffp-contract=on meaning what the standard says")
 endif()
+if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8 OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+  message(FATAL_ERROR "melee_game requires an x86-64 target")
+endif()
+if(NOT WIN32 AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  message(FATAL_ERROR "melee_game supports Windows x64 and native Linux x86-64")
+endif()
 
 get_filename_component(REPO "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
 # Assertions and the debug file name their source file. Without this they carry the full path of
@@ -22,16 +28,47 @@ get_filename_component(MU_TOOLCHAIN_ROOT "${MU_TOOLCHAIN_ROOT}/.." ABSOLUTE)
 add_compile_options("-ffile-prefix-map=${MU_TOOLCHAIN_ROOT}=toolchain")
 set(MELEE_DECOMP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../extern/melee" CACHE PATH "checkout of the game sources")
 set(D "${MELEE_DECOMP_DIR}")
-set(SDK "${D}/libs/dolphin/src/dolphin")
 if(NOT EXISTS "${D}/src/melee/gm/gmmain.c")
   message(FATAL_ERROR "melee_game: no game sources at ${D}")
 endif()
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # LP64 must never widen the console's explicit long fields or its audio sample
+  # buffers. Keep the original source/Windows build intact; compile a lexical
+  # overlay that preserves 64-bit integers and host ABI shim declarations.
+  file(GLOB_RECURSE MU_CONSOLE_INPUTS CONFIGURE_DEPENDS
+    "${D}/src/*" "${D}/libs/dolphin/*")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${MU_CONSOLE_INPUTS}
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/console_long_overlay.py")
+  set(MU_CONSOLE_OVERLAY "${CMAKE_CURRENT_BINARY_DIR}/console-lp64")
+  execute_process(COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/console_long_overlay.py" "${D}" "${MU_CONSOLE_OVERLAY}"
+    COMMAND_ERROR_IS_FATAL ANY)
+  set(D "${MU_CONSOLE_OVERLAY}")
+endif()
+set(SDK "${D}/libs/dolphin/src/dolphin")
 # ---- how game code is compiled: one definition, shared by the game and by the parity library ----
 add_library(game_flags INTERFACE)
 target_include_directories(game_flags INTERFACE
   "${CMAKE_CURRENT_SOURCE_DIR}/include" "${D}/src" "${D}/src/MSL" "${D}/libs/dolphin/include" "${SDK}"
   "${CMAKE_CURRENT_SOURCE_DIR}/include_stub" "${REPO}/port/runtime/abi")
 target_compile_definitions(game_flags INTERFACE MU_NATIVE VERSION_GALE01 BUILD_VERSION=0)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  # GCC 14's scalar replacement loses scalar_storage_order on nested DISC_PTR
+  # unions (native_disc_layout returns byte-swapped pointers with -O2). Preserve
+  # the actual loads/stores until that optimizer regression is resolved upstream.
+  target_compile_options(game_flags INTERFACE -fPIC -fvisibility=hidden -fno-tree-sra)
+  add_executable(mu_linux_sdk_layout_test tests/linux_sdk_layout.c)
+  target_link_libraries(mu_linux_sdk_layout_test PRIVATE game_flags)
+  set_target_properties(mu_linux_sdk_layout_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
+  add_test(NAME native_linux_sdk_layout COMMAND mu_linux_sdk_layout_test)
+  add_test(NAME native_console_long_overlay COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_console_long_overlay.py")
+  add_test(NAME native_game_image_bounds COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_check_game_image.py")
+  add_test(NAME native_audio_map_ranges COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/test_audio_ranges.py")
+endif()
 target_compile_options(game_flags INTERFACE
   -O2 -g
   -include "${CMAKE_CURRENT_SOURCE_DIR}/include/mu_native.h"   # only C targets link game_flags
@@ -56,7 +93,15 @@ elseif(MELEE_CPU_BASELINE STREQUAL "AVX")
 endif()
 # Disc pointers are 32-bit slots holding real addresses, so everything the game can point at has to
 # sit below 4 GB: the image at a fixed base with relocation off, MEM1 placed by the host.
-set(LOW_IMAGE_LINK_OPTIONS -static-libgcc -static-libstdc++ -Wl,--disable-dynamicbase -Wl,--disable-high-entropy-va)
+if(WIN32)
+  set(LOW_IMAGE_LINK_OPTIONS -static-libgcc -static-libstdc++ -Wl,--disable-dynamicbase -Wl,--disable-high-entropy-va)
+  set(LOW_TEST_LINK_OPTIONS ${LOW_IMAGE_LINK_OPTIONS} -Wl,--image-base,0x90000000)
+else()
+  # A low non-PIE executable is sufficient for pointer-slot unit tests. The game
+  # itself remains an ELF shared object at its console-compatible preferred base.
+  set(LOW_IMAGE_LINK_OPTIONS -Wl,-Bsymbolic -Wl,-z,defs)
+  set(LOW_TEST_LINK_OPTIONS -no-pie -Wl,-Ttext-segment=0x40000000)
+endif()
 
 add_executable(mu_disc_layout_test EXCLUDE_FROM_ALL tests/disc_layout.c shim/mu_disc_layout.c)
 set_target_properties(mu_disc_layout_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
@@ -136,8 +181,10 @@ set_target_properties(mu_preload_compaction_test PROPERTIES C_STANDARD 11 C_EXTE
 target_link_libraries(mu_preload_compaction_test PRIVATE game_flags)
 target_compile_options(mu_preload_compaction_test PRIVATE
   -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables)
-target_link_options(mu_preload_compaction_test PRIVATE ${LOW_IMAGE_LINK_OPTIONS}
-  -Wl,--image-base,0x90000000 -Wl,--gc-sections)
+target_link_options(mu_preload_compaction_test PRIVATE ${LOW_TEST_LINK_OPTIONS} -Wl,--gc-sections)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_options(mu_preload_compaction_test PRIVATE -Wl,--section-start=.test_arena=0x90000000)
+endif()
 add_test(NAME native_preload_compaction COMMAND mu_preload_compaction_test)
 
 # Exercise the actual private sound-bank bookkeeping without disc/renderer dependencies.
@@ -160,6 +207,9 @@ add_test(NAME native_ax_addr_sync COMMAND mu_ax_addr_sync_test)
 add_executable(mu_ax_commands_test tests/ax_commands.c)
 set_target_properties(mu_ax_commands_test PROPERTIES C_STANDARD 11 C_EXTENSIONS ON)
 target_link_libraries(mu_ax_commands_test PRIVATE game_flags)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_libraries(mu_ax_commands_test PRIVATE m)
+endif()
 target_compile_options(mu_ax_commands_test PRIVATE -ffunction-sections -fdata-sections -fno-asynchronous-unwind-tables)
 target_link_options(mu_ax_commands_test PRIVATE -Wl,--gc-sections)
 add_test(NAME native_ax_commands COMMAND mu_ax_commands_test)
@@ -321,6 +371,9 @@ get_filename_component(TMCE_TOOLCHAIN_BIN "${CMAKE_C_COMPILER}" DIRECTORY)
 # layout tools (tools/tmce/gdb_decomp_info.py) must find only the decomp's in melee_game.dbg.
 set(TMCE_FLAGS -O2 -g0 -funsigned-char -fno-strict-aliasing -fwrapv -mno-ms-bitfields -mcmodel=small
   -fno-builtin -ffp-contract=on -w)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  list(APPEND TMCE_FLAGS -fPIC -fvisibility=hidden -fno-tree-sra)
+endif()
 if(MELEE_CPU_BASELINE STREQUAL "AVX2")
   list(APPEND TMCE_FLAGS -mavx2 -mfma)
 elseif(MELEE_CPU_BASELINE STREQUAL "AVX")
@@ -341,7 +394,7 @@ function(tmce_module name exports)
   set(out "${CMAKE_CURRENT_BINARY_DIR}/tmce_${name}.o")
   add_custom_command(OUTPUT "${out}"
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/tmce/link_module.py"
-            --ld "${TMCE_TOOLCHAIN_BIN}/ld.exe" --objcopy "${CMAKE_OBJCOPY}" --name ${name} --exports "${exports}"
+            --ld "${CMAKE_LINKER}" --nm "${CMAKE_NM}" --objcopy "${CMAKE_OBJCOPY}" --name ${name} --exports "${exports}"
             ${keep} --redefine "${TMCE}/MexTK/mextk_redefine.txt" --out "${out}" $<TARGET_OBJECTS:tmce_${name}_objs>
     DEPENDS tmce_${name}_objs $<TARGET_OBJECTS:tmce_${name}_objs> "${TMCE}/MexTK/mextk_redefine.txt"
             "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/tmce/link_module.py"
@@ -367,11 +420,23 @@ target_link_libraries(melee_game PRIVATE game_flags)
 # Right after MEM1 (see port/app/source_host.cpp): the image's statics then have physical addresses
 # GX can hold. The debug information goes to melee_game.dbg so the loaded image stays small enough
 # to fit below 64 MB physical; addr2line reads the .dbg.
-target_link_options(melee_game PRIVATE ${LOW_IMAGE_LINK_OPTIONS} -Wl,--image-base,0x82800000
+target_link_options(melee_game PRIVATE ${LOW_IMAGE_LINK_OPTIONS}
   "-Wl,-Map,${CMAKE_CURRENT_BINARY_DIR}/melee_game.map")
+if(WIN32)
+  target_link_options(melee_game PRIVATE -Wl,--image-base,0x82800000)
+else()
+  target_link_libraries(melee_game PRIVATE m)
+  set(MU_ELF_LAYOUT "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/game-linux-layout.ld")
+  target_link_options(melee_game PRIVATE -Wl,-Ttext-segment=0x82800000 "-Wl,-T,${MU_ELF_LAYOUT}")
+  set_property(TARGET melee_game APPEND PROPERTY LINK_DEPENDS "${MU_ELF_LAYOUT}")
+  add_test(NAME native_elf_game_load COMMAND "${Python3_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_elf_load.py" $<TARGET_FILE:melee_game>)
+endif()
 add_custom_command(TARGET melee_game POST_BUILD
   COMMAND "${CMAKE_OBJCOPY}" --only-keep-debug $<TARGET_FILE:melee_game> $<TARGET_FILE_DIR:melee_game>/melee_game.dbg
   COMMAND "${CMAKE_OBJCOPY}" --strip-debug --add-gnu-debuglink=$<TARGET_FILE_DIR:melee_game>/melee_game.dbg $<TARGET_FILE:melee_game>
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../tools/check_game_image.py"
+          $<TARGET_FILE:melee_game> --base 0x82800000
   # The sound driver's whole state, left out of rollback snapshots as a console savestate does.
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../../tools/snapshot_audio_ranges.py"
           "${CMAKE_CURRENT_BINARY_DIR}/melee_game.map" 82800000 $<TARGET_FILE_DIR:melee_game>/melee_game.snapexcl
@@ -406,8 +471,26 @@ add_library(mu_parity SHARED parity/parity_table.c parity/parity_stubs.c shim/mu
   "${D}/src/sysdolphin/baselib/mtx.c" "${D}/src/sysdolphin/baselib/quatlib.c")
 set_target_properties(mu_parity PROPERTIES PREFIX "" C_STANDARD 11 C_EXTENSIONS ON)
 target_link_libraries(mu_parity PRIVATE game_flags)
-target_link_options(mu_parity PRIVATE ${LOW_IMAGE_LINK_OPTIONS} -Wl,--image-base,0x58000000)
+target_link_options(mu_parity PRIVATE ${LOW_IMAGE_LINK_OPTIONS})
+if(WIN32)
+  target_link_options(mu_parity PRIVATE -Wl,--image-base,0x58000000)
+else()
+  target_link_libraries(mu_parity PRIVATE m)
+  target_link_options(mu_parity PRIVATE -Wl,-Ttext-segment=0x58000000)
+endif()
 
 # Record the actual configured game inputs for the source-only package audit.
 file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/native-game-sources.txt"
   CONTENT "$<JOIN:$<TARGET_PROPERTY:melee_game,SOURCES>,\n>\n$<JOIN:$<TARGET_PROPERTY:sdk_math,SOURCES>,\n>\n")
+
+# Build every registered executable fixture, including the normally excluded
+# targets, before running CTest from a fresh Linux checkout.
+get_property(MU_GAME_DIRECTORY_TARGETS DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+set(MU_GAME_TEST_TARGETS)
+foreach(mu_target IN LISTS MU_GAME_DIRECTORY_TARGETS)
+  get_target_property(mu_target_type "${mu_target}" TYPE)
+  if(mu_target_type STREQUAL "EXECUTABLE" AND mu_target MATCHES "^mu_.*_test$")
+    list(APPEND MU_GAME_TEST_TARGETS "${mu_target}")
+  endif()
+endforeach()
+add_custom_target(mu_game_tests DEPENDS melee_game ${MU_GAME_TEST_TARGETS})

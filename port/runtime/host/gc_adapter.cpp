@@ -13,7 +13,9 @@
 #include "host.h"
 #define NOMINMAX
 #include <windows.h>
+#ifdef _WIN32
 #include <setupapi.h>
+#endif
 #include <tlhelp32.h>
 #include <hidsdi.h>
 #include <libusb.h>
@@ -98,6 +100,11 @@ libusb_device* find_adapter(libusb_device** list, ssize_t count, std::string* ot
 
 // One overlapped read or write on the HID handle, with the result in libusb's terms so both routes
 // share the reader's error handling.
+#ifndef _WIN32
+// Linux reads the adapter through libusb only (no WinUSB problem to work around), so the HID route
+// is never opened there.
+int hid_transfer(bool, uint8_t*, DWORD, DWORD* done, DWORD) { *done = 0; return LIBUSB_ERROR_IO; }
+#else
 int hid_transfer(bool write, uint8_t* data, DWORD length, DWORD* done, DWORD timeout_ms) {
   OVERLAPPED ov{};
   ov.hEvent = write ? g_hid_write_event : g_hid_read_event;
@@ -112,6 +119,7 @@ int hid_transfer(bool write, uint8_t* data, DWORD length, DWORD* done, DWORD tim
   CancelIoEx(g_hid, &ov);
   return GetOverlappedResult(g_hid, &ov, done, TRUE) ? 0 : LIBUSB_ERROR_TIMEOUT;
 }
+#endif
 
 int adapter_write(const uint8_t* data, int length, int* wrote, unsigned timeout_ms) {
   if (g_dev) return libusb_interrupt_transfer(g_dev, g_ep_out, const_cast<uint8_t*>(data), length, wrote, timeout_ms);
@@ -284,6 +292,9 @@ void start_threads() {
 
 // The adapter as a HID device. Only interface paths that name the adapter are opened, so no other
 // HID device is touched by the scan.
+#ifndef _WIN32
+bool open_hid() { return false; }
+#else
 bool open_hid() {
   GUID hid_guid;
   HidD_GetHidGuid(&hid_guid);
@@ -334,6 +345,7 @@ bool open_hid() {
   start_threads();
   return true;
 }
+#endif
 
 bool steam_is_running() {
   const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
@@ -341,7 +353,7 @@ bool steam_is_running() {
   PROCESSENTRY32W entry{}; entry.dwSize = sizeof entry;
   bool found = false;
   for (BOOL more = Process32FirstW(snapshot, &entry); more && !found; more = Process32NextW(snapshot, &entry))
-    found = _wcsicmp(entry.szExeFile, L"steam.exe") == 0;
+    found = _wcsicmp(entry.szExeFile, L"steam.exe") == 0 || _wcsicmp(entry.szExeFile, L"steam") == 0;
   CloseHandle(snapshot);
   return found;
 }
@@ -392,6 +404,24 @@ bool open_libusb() {
   }
   int rc = libusb_open(adapter, &g_dev);
   libusb_free_device_list(list, 1);
+#ifndef _WIN32
+  // Linux: no access to the device node means the udev rule that gives the logged-in player the
+  // adapter is not installed (or the adapter was plugged in before it was).
+  if (rc == LIBUSB_ERROR_ACCESS) {
+    g_dev = nullptr;
+    set_problem("The game has no permission to read your GameCube adapter. Install the udev rule that comes with the game "
+                "(sudo install -m 644 51-melee-unlocked-gc-adapter.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules), "
+                "then unplug the adapter and plug it back in. It is picked up without a restart.");
+    if (!g_logged_missing) {
+      log("gc adapter: found, but no permission to open it (LIBUSB_ERROR_ACCESS): install 51-melee-unlocked-gc-adapter.rules and replug the adapter");
+      g_logged_missing = true;
+    }
+    return false;
+  }
+  // The kernel's HID driver binds the adapter; it is detached while the game holds the adapter and
+  // given back when the game lets go.
+  if (rc == 0) libusb_set_auto_detach_kernel_driver(g_dev, 1);
+#endif
   if (rc != 0) {
     g_dev = nullptr;
     // Access denied with a driver in place means another program has the adapter open: Windows gives

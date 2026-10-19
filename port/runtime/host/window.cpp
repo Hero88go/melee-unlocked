@@ -20,6 +20,9 @@
 #include "settings_chord.h"
 #include "hid_pad.h"
 #include "playstation_pad.h"
+#ifndef _WIN32
+#include <SDL.h>
+#endif
 
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "xinput9_1_0.lib")
@@ -49,7 +52,13 @@ PadState g_ui_pads[4]{};
 bool g_ui_has_pad = false;
 bool g_ui_gamecube = false;
 bool g_ui_settings_chord_held[4]{};
+#ifdef _WIN32
 void raw_input(HRAWINPUT raw);
+#else
+// Linux: /dev/hidraw reports, read on hid_linux.cpp's thread, go to the same readers.
+void hidraw_start();
+void hidraw_stop();
+#endif
 void input_device_removed(HANDLE device);
 void ds4_init_defaults();
 
@@ -62,6 +71,7 @@ ULONGLONG g_pointer_moved = 0;      // tick of the last real mouse movement over
 LPARAM g_pointer_at = -1;           // where it was then (client coordinates as WM_MOUSEMOVE packs them)
 bool g_pointer_rested = false;      // hidden by the rest rule, until the next movement
 
+#ifdef _WIN32
 LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (m == WM_MOUSEMOVE && l != g_pointer_at) {   // Windows also sends this when nothing moved
     g_pointer_at = l;
@@ -148,8 +158,10 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
   }
   return DefWindowProcW(h, m, w, l);
 }
+#endif
 }  // namespace
 
+#ifdef _WIN32
 void* window_create(int w, int h, const wchar_t* title, bool visible) {
   HINSTANCE inst = GetModuleHandleW(nullptr);
   WNDCLASSEXW wc{};
@@ -442,6 +454,9 @@ void loading_close() {
 }
 bool window_closed() { return g_closed; }
 void window_client_size(int* w, int* h) { *w = g_client_w; *h = g_client_h; }
+#else
+#include "../../linux/window_sdl.inl"
+#endif
 
 // GameCube button bits (PADStatus.button)
 enum : uint16_t {
@@ -540,6 +555,7 @@ bool ds4_device(HANDLE device, bool* dualsense) {
   return playstation_pad(info.hid.dwVendorId, info.hid.dwProductId);
 }
 
+#ifdef _WIN32
 // The decoding lives in playstation_pad.cpp, where it is tested byte by byte (port/tests).
 void ds4_report(RAWINPUT* input, bool dualsense) {
   int slot = ds4_slot(input->header.hDevice);
@@ -568,6 +584,25 @@ void raw_input(HRAWINPUT raw) {
   hidpad_raw_input(input->header.hDevice, input->data.hid.bRawData,
                    input->data.hid.dwSizeHid, input->data.hid.dwCount);
 }
+#else
+// One /dev/hidraw report (Windows' layout, report ID in byte 0), to whichever reader recognises it,
+// in the same order as raw_input above.
+void hidraw_report(HANDLE device, const uint8_t* bytes, uint32_t size) {
+  if (bool dualsense = false; ds4_device(device, &dualsense)) {
+    const int slot = ds4_slot(device);
+    if (slot < 0 || !size) return;
+    PadState pad{};
+    uint16_t buttons = 0;
+    if (!playstation_parse(bytes, size, dualsense, pad, buttons)) return;
+    std::lock_guard<std::mutex> lock(g_ds4_mutex); g_ds4_buttons[slot] = buttons; g_ds4_pads[slot] = pad;
+    return;
+  }
+  if (switchpro_raw_input(device, bytes, size, 1)) return;
+  hidpad_raw_input(device, bytes, size, 1);
+}
+void hidraw_start() { linux_hid::start(hidraw_report, input_device_removed); }
+void hidraw_stop() { linux_hid::stop(); }
+#endif
 }  // namespace
 
 static bool xinput_state(int idx, XINPUT_STATE* state);   // below, with the helper thread for empty slots
@@ -1379,7 +1414,7 @@ void input_last_pads(PadState out[4]) {
 }
 
 void input_debug_snapshot(InputDebugSnapshot& snapshot) {
-  snapshot = {};
+  snapshot = InputDebugSnapshot{};
   PadState gc[4];
   for (auto& s : gc) { s = {}; s.err = -1; }
   uint32_t gc_mask = gcadapter_poll(gc);

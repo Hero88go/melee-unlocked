@@ -67,6 +67,16 @@ inline std::vector<std::filesystem::path> launcher_roots() {
       if (*value) roots.emplace_back(std::filesystem::path(value) / "Slippi Launcher");
 #endif
   }
+#ifndef _WIN32
+  // Linux: the Slippi Launcher (an Electron app) keeps its folder under the XDG config home, and
+  // the Flatpak build inside its own sandbox folder.
+  if (const char* config = std::getenv("XDG_CONFIG_HOME"); config && *config)
+    roots.emplace_back(std::filesystem::path(config) / "Slippi Launcher");
+  if (const char* home = std::getenv("HOME"); home && *home) {
+    roots.emplace_back(std::filesystem::path(home) / ".config" / "Slippi Launcher");
+    roots.emplace_back(std::filesystem::path(home) / ".var" / "app" / "com.project_slippi.Launcher" / "config" / "Slippi Launcher");
+  }
+#endif
   return roots;
 }
 
