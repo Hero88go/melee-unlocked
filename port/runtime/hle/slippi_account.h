@@ -75,7 +75,16 @@ inline std::vector<std::filesystem::path> launcher_roots() {
   if (const char* home = std::getenv("HOME"); home && *home) {
     roots.emplace_back(std::filesystem::path(home) / ".config" / "Slippi Launcher");
     roots.emplace_back(std::filesystem::path(home) / ".var" / "app" / "com.project_slippi.Launcher" / "config" / "Slippi Launcher");
+    // Slippi Dolphin on Linux keeps its user folder (Slippi/user.json) in its own XDG folders, not
+    // under the launcher's: config and data homes, and the Flatpak's.
+    roots.emplace_back(std::filesystem::path(home) / ".config" / "SlippiOnline");
+    roots.emplace_back(std::filesystem::path(home) / ".local" / "share" / "SlippiOnline");
+    roots.emplace_back(std::filesystem::path(home) / ".var" / "app" / "com.project_slippi.Launcher" / "data" / "SlippiOnline");
   }
+  if (const char* data = std::getenv("XDG_DATA_HOME"); data && *data)
+    roots.emplace_back(std::filesystem::path(data) / "SlippiOnline");
+  if (const char* config = std::getenv("XDG_CONFIG_HOME"); config && *config)
+    roots.emplace_back(std::filesystem::path(config) / "SlippiOnline");
 #endif
   return roots;
 }

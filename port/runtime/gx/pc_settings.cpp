@@ -5028,11 +5028,21 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     // Creating a device and a swapchain on another API means restarting; the choice is saved and
     // read again at the next launch (see load_pc_settings and --backend).
+#ifndef _WIN32
+    // Linux draws with OpenGL only; Direct3D, DLSS and XeSS are Windows parts.
+    ImGui::TextUnformatted("Graphics backend: OpenGL");
+    const bool d3d11 = true;   // the upscaler row below stays disabled
+    if (false)
+#endif
+    {
     const char* backends[] = {"Direct3D 12 (default)", "Direct3D 11 (older GPUs and drivers)"};
     int api_index = options.api == RenderApi::D3D11 ? 1 : 0;
     if (settings_combo("Graphics backend", &api_index, backends, 2)) { options.api = api_index ? RenderApi::D3D11 : RenderApi::D3D12; changed = true; }
     settings_hint("Takes effect at the next launch: save settings, then restart.");
+    }
+#ifdef _WIN32
     const bool d3d11 = options.api == RenderApi::D3D11;
+#endif
     const char* upscalers[] = {"Native", "DLAA", "DLSS Quality", "DLSS Balanced", "DLSS Performance", "DLSS Ultra Performance",
                                "XeSS AA", "XeSS Ultra Quality", "XeSS Quality", "XeSS Balanced", "XeSS Performance"};
     if (d3d11) ImGui::BeginDisabled();
@@ -5594,7 +5604,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "what you had before rather than the defaults.");
       // The backend is the one thing here that cannot change while the game is running.
       const RenderApi running = state.running_d3d11 ? RenderApi::D3D11 : RenderApi::D3D12;
+#ifdef _WIN32
       if (options.api != running)
+#else
+      (void)running;
+      if (false)
+#endif
         ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.25f, 1.0f), "Graphics backend: %s at the next launch. Save settings, then restart.",
                            options.api == RenderApi::D3D11 ? "Direct3D 11" : "Direct3D 12");
     }
