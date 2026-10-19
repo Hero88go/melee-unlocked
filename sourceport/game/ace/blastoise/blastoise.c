@@ -294,7 +294,7 @@ const MotionState ftBl_Init_MotionStateTable[ftBl_MS_SelfCount] = {
 #define FTBL_ITEM_EVENT(fn) ((MuAkEvent) (void (*)(void)) (fn))
 
 /* The 22 slots PlBl.dat exports. onframe (23) is left empty and takes the m-ex default, Bowser's
- * frame event. Written and never run, so not MU_AK_READY. */
+ * frame event. Ready: the 0.9 scripted matches pass. */
 const MuAkFighter mu_ak_blastoise = {
     .name = "Blastoise",
     .file = "PlBl.dat",
@@ -324,7 +324,7 @@ const MuAkFighter mu_ak_blastoise = {
     .move_logic = ftBl_Init_MotionStateTable,
     .move_logic_count = ftBl_MS_SelfCount,
 
-    .flags = 0,
+    .flags = MU_AK_READY,
     .articles = itBl_Articles,
     .article_count = ftBl_Article_Count,
 };

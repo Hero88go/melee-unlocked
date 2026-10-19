@@ -286,4 +286,5 @@ const MuAkFighter mu_ak_ninten = {
     .article_tables = itNt_ArticleTables,
     .article_count = ftNt_Article_TableCount,
     .kirby = &ftKbNt_Copy,
+    .flags = MU_AK_READY,
 };

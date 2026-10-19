@@ -348,6 +348,12 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   }
   pairs_.resize(cur->draws.size());
   if (dump_sequence() && cur->sequence == dump_sequence()) pair_reason_.assign(cur->draws.size(), 0);
+  // The frame's camera is the one most paired draws are seen through. The first one met is not
+  // always the screen's: Fountain of Dreams with its reflection on draws the fighters through a
+  // mirrored camera first (grIzumi_801CCEA0, copied into the water's texture), and taking that one
+  // moved the stage by the reflection's camera between frames (B-314). A tie keeps the first.
+  struct CameraVote { const AuthoredPose* previous; const AuthoredPose* current; uint32_t draws; };
+  std::vector<CameraVote> camera_votes;
   for (size_t i = 0; i < cur->draws.size(); ++i) {
     const DrawCall& d = cur->draws[i];
     if (d.authored_pose && d.authored_pose->envelope) ++stats_.skinned;
@@ -431,16 +437,25 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
           }
         }
         p.used_slots = p.pos_slots | p.tex_slots;
-        // One camera per frame: keep the first paired pair of poses that carries a view, so draws
-        // that cannot be paired at all can still be moved onto this frame's timeline (below).
-        if (!camera_previous_ && d.authored_pose && pd.authored_pose && d.authored_pose->has_view && pd.authored_pose->has_view) {
-          camera_previous_ = pd.authored_pose.get(); camera_current_ = d.authored_pose.get();
+        // One camera per frame (chosen after this loop), so draws that cannot be paired at all can
+        // still be moved onto this frame's timeline (below).
+        if (d.authored_pose && pd.authored_pose && d.authored_pose->has_view && pd.authored_pose->has_view) {
+          bool counted = false;
+          for (CameraVote& v : camera_votes)
+            if (v.current->view == d.authored_pose->view && v.previous->view == pd.authored_pose->view) { ++v.draws; counted = true; break; }
+          if (!counted) camera_votes.push_back({pd.authored_pose.get(), d.authored_pose.get(), 1});
         }
         ++stats_.paired;
       }
     }
     if (it == prev_index_.end()) { ++stats_.missing; if (dump_sequence() && cur->sequence == dump_sequence()) pair_reason_[i] = 7; }
     pairs_[i] = p;
+  }
+  {
+    const CameraVote* best = nullptr;
+    for (const CameraVote& v : camera_votes)
+      if (!best || v.draws > best->draws) best = &v;
+    if (best) { camera_previous_ = best->previous; camera_current_ = best->current; }
   }
   // Reserve a disjoint range of the blend buffer for every draw whose geometry is animated, so the
   // parallel solver chunks can fill them without sharing anything.

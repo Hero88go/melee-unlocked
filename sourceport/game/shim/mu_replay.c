@@ -303,8 +303,10 @@ void mu_replay_start_melee(StartMeleeData* data)
     recording_online = 0;
     if (info == NULL) {
         const char* record = getenv("MELEE_SOURCE_RECORD");
-        /* An online match is recorded once InitOnlinePlay has set it up (mu_replay_online_start). */
-        if (mu_online_pending() || !record || record[0] != '1' || record[1] != '\0' ||
+        /* An online match is recorded once InitOnlinePlay has set it up (mu_replay_online_start).
+         * "1": recorded to a .slp (--record-native); "2": recorded for the spectator server only,
+         * the host writes no file (an offline match broadcast, as Slippi Dolphin sends one). */
+        if (mu_online_pending() || !record || (record[0] != '1' && record[0] != '2') || record[1] != '\0' ||
             (gm_GetCurrentGameMode() != GM_VS && gm_GetCurrentGameMode() != GM_DEBUG_VS)) return;
         finished = 0;
         emitted_frame = FIRST_FRAME - 1;

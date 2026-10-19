@@ -667,7 +667,7 @@ const MuAkFighter mu_ak_luigiboo = {
     .onframe = ftLb_OnFrame, .onrespawn = ftLb_OnRespawn,
     .onsmashf = ftLb_SmashF, .onsmashhi = ftLb_SmashHi, .onsmashlw = ftLb_SmashLw,
     .move_logic = ftLb_MotionStates, .move_logic_count = 26,
-    .flags = 0, .article_tables = ftLb_ArticleTables, .article_count = 2,
+    .flags = MU_AK_READY, .article_tables = ftLb_ArticleTables, .article_count = 2,
 #ifdef MU_AK_KIRBY_RETAIL_STATES
     .kirby = &ftLb_KirbyCopy,
 #else

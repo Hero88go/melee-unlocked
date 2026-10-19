@@ -57,12 +57,12 @@ static void ftGkp_Init_OnLoad(HSD_GObj* gobj)
 #define GKP_DEFAULTS
 #endif
 
-/* Nothing has run yet, so the fighter is not marked MU_AK_READY. No article of his own: the
+/* Ready: the 0.9 scripted matches pass. No article of his own: the
  * flame is the retail item kind, created by Bowser's code. */
 const MuAkFighter mu_ak_gigabowser = {
     .name = "Giga Bowser",
     .file = "PlGkp.dat",
     .onload = ftGkp_Init_OnLoad,
     GKP_DEFAULTS
-    .flags = 0,
+    .flags = MU_AK_READY,
 };

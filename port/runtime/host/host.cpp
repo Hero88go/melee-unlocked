@@ -840,7 +840,7 @@ static uint64_t ram_hash() {
   }();
   const uint64_t* p = reinterpret_cast<const uint64_t*>(ram);
   uint64_t h = 0x9E3779B97F4A7C15ull;
-  for (size_t i = 0; i < ppc::RAM_SIZE / 8; ++i) {
+  for (size_t i = 0; i < ppc::CONSOLE_RAM_SIZE / 8; ++i) {   // the console's memory, as before the extra heap space
     uint64_t w = p[i];
     for (const auto& s : skip) if (i >= s.first / 8 && i < s.first / 8 + s.second) { w = 0; break; }
     h = (h ^ w) * 0x100000001B3ull; h ^= h >> 29;
@@ -1004,12 +1004,12 @@ void boot_setup() {
   // Low memory, mirroring Dolphin's Boot_BS2Emu.cpp (GC path) plus what the apploader leaves.
   disc_read(0, ptr(0x80000000, 0x20), 0x20);              // disc id
   wr32(0x80000020, 0x0D15EA5E);                      // booted from bootrom
-  wr32(0x80000028, ppc::RAM_SIZE);                   // physical memory size
+  wr32(0x80000028, ppc::CONSOLE_RAM_SIZE);           // physical memory size: the console's
   wr32(0x8000002C, 0x10000006);                      // console type (Dolphin reports devkit)
   wr32(0x80000030, 0);                               // arena lo (0 = use linker default)
   wr32(0x800000CC, 0);                               // NTSC
   wr32(0x800000D0, 0x01000000);                      // ARAM size
-  wr32(0x800000F0, ppc::RAM_SIZE);                   // simulated memory size
+  wr32(0x800000F0, ppc::CONSOLE_RAM_SIZE);           // simulated memory size
   wr32(0x800000F8, 0x09A7EC80);                      // bus clock
   wr32(0x800000FC, 0x1CF7C580);                      // cpu clock
   wr32(0x80000300, 0x4C000064);                      // rfi stubs
@@ -1929,6 +1929,95 @@ void report_heap_panic(ppc::Context& c) {
   if (!heap_trace_read32(allocator + 60u, caller)) caller = 0;
   report_heap_stop_lines(c.r[24], rounded, caller);
 }
+// A heap that cannot serve HSD_MemAlloc gets a piece of the memory above the console's 24 MB, added
+// to it the way the SDK's OSAddToHeap adds one (the cell inserted into the free list in address
+// order, merged with a free neighbour it touches). Mod discs ran out here (a long Akaneia session
+// loading Kirby's copy files, an older Akaneia's online character select): a console stops with
+// memory.c:52. OSAllocFromHeap takes the first free cell that fits, walking up from the lowest
+// address, and these pieces sit above every console address, so an allocation that fits in the
+// console's memory lands exactly where it would on a console and only one that would have stopped
+// the game is placed up here. Online rollback does not save this space (Slippi's regions are the
+// console's): a match that needs it is one a console could not have played at all.
+namespace {
+struct ExtraPiece { uint32_t start, end, heap; };
+std::vector<ExtraPiece> g_extra_pieces;
+constexpr uint32_t kExtraBase = ppc::RAM_BASE + ppc::CONSOLE_RAM_SIZE;
+constexpr uint32_t kExtraEnd = ppc::RAM_BASE + ppc::RAM_SIZE;
+
+// Whether any cell of the heap (free or in use) still lies in the piece. A heap the game destroyed
+// and created again over its arena no longer lists it, and the piece can be handed out again.
+bool extra_piece_in_use(const ExtraPiece& p, uint32_t heaps, uint32_t count) {
+  if (p.heap >= count) return false;
+  uint32_t size = 0, lists[2] = {};
+  if (!heap_trace_read32(heaps + p.heap * 12u, size) || !heap_trace_read32(heaps + p.heap * 12u + 4u, lists[0]) ||
+      !heap_trace_read32(heaps + p.heap * 12u + 8u, lists[1]) || (int32_t)size <= 0) return false;
+  for (uint32_t cell : lists)
+    for (uint32_t guard = 0; cell && guard < 100000u; ++guard) {
+      uint32_t next = 0, bytes = 0;
+      if (cell < 0x80003000u || cell >= kExtraEnd || !heap_trace_read32(cell + 4u, next) || !heap_trace_read32(cell + 8u, bytes)) return true;
+      if (cell < p.end && cell + bytes > p.start) return true;
+      cell = next;
+    }
+  return false;
+}
+}  // namespace
+
+bool grow_object_heap(uint32_t heap, uint32_t bytes) {
+  uint32_t heaps = 0, count = 0, size = 0, free_list = 0;
+  if (!heap_trace_read32(0x804D7360u, heaps) || !heap_trace_read32(0x804D7364u, count) || heaps < 0x80003000u ||
+      heaps >= kExtraBase || !count || count > 64u || heap >= count) return false;
+  if (!heap_trace_read32(heaps + heap * 12u, size) || !heap_trace_read32(heaps + heap * 12u + 4u, free_list) || (int32_t)size <= 0)
+    return false;
+  g_extra_pieces.erase(std::remove_if(g_extra_pieces.begin(), g_extra_pieces.end(),
+                                      [&](const ExtraPiece& p) { return !extra_piece_in_use(p, heaps, count); }),
+                       g_extra_pieces.end());
+  // The cell header is 32 bytes and cells are 32-byte aligned (OSAlloc.c). A piece of at least 1 MB,
+  // so a scene that needs a little more does not come back for every allocation.
+  const uint64_t need = (((uint64_t)bytes + 32u + 31u) & ~31ull);
+  const uint32_t piece = (uint32_t)std::min<uint64_t>(std::max<uint64_t>((need + 0xFFFFu) & ~0xFFFFull, 0x100000u), kExtraEnd - kExtraBase);
+  if (need > piece) return false;
+  std::sort(g_extra_pieces.begin(), g_extra_pieces.end(), [](const ExtraPiece& a, const ExtraPiece& b) { return a.start < b.start; });
+  uint32_t start = kExtraBase;
+  for (const ExtraPiece& p : g_extra_pieces) {
+    if (p.start >= start && p.start - start >= piece) break;
+    start = std::max(start, p.end);
+  }
+  if (start >= kExtraEnd || kExtraEnd - start < piece) {
+    log("heap: object memory %u needs %u bytes and the space above the console's memory is used up", heap, bytes);
+    return false;
+  }
+  const uint32_t end = start + piece;
+  // DLInsert: the free list in address order, merged with a free neighbour the new cell touches.
+  uint32_t prev = 0, next = free_list;
+  for (uint32_t guard = 0; next && guard < 100000u && next < start; ++guard) { prev = next; next = rd32(next + 4u); }
+  uint32_t cell = start, cell_size = piece;
+  wr32(cell + 0u, prev); wr32(cell + 4u, next); wr32(cell + 8u, cell_size);
+  if (next) {
+    wr32(next + 0u, cell);
+    if (cell + cell_size == next) {
+      cell_size += rd32(next + 8u);
+      next = rd32(next + 4u);
+      wr32(cell + 8u, cell_size); wr32(cell + 4u, next);
+      if (next) wr32(next + 0u, cell);
+    }
+  }
+  if (prev) {
+    wr32(prev + 4u, cell);
+    if (prev + rd32(prev + 8u) == cell) {
+      wr32(prev + 8u, rd32(prev + 8u) + cell_size);
+      wr32(prev + 4u, next);
+      if (next) wr32(next + 0u, prev);
+    }
+  } else {
+    wr32(heaps + heap * 12u + 4u, cell);
+  }
+  wr32(heaps + heap * 12u, size + piece);
+  g_extra_pieces.push_back({start, end, heap});
+  log("heap: object memory %u was full (%u bytes asked); added %u bytes above the console's memory at %08X",
+      heap, bytes, piece, start);
+  return true;
+}
+
 // OSPanic at memory.c:52: the game's object memory (the heaps OSAlloc serves, rebuilt for each scene)
 // had no room. One line per live heap says how large it is, how much of it is free and the largest
 // free piece, so a report tells a heap that is simply full from one that is in pieces. The layout is
@@ -1940,11 +2029,11 @@ void report_object_memory() {
   told = true;
   uint32_t heaps = 0, count = 0, current = 0;
   if (!heap_trace_read32(0x804D7360u, heaps) || !heap_trace_read32(0x804D7364u, count) || !heap_trace_read32(0x804D5C08u, current)) return;
-  if (heaps < 0x80003000u || heaps >= 0x81800000u || !count || count > 64u) return;
+  if (heaps < 0x80003000u || heaps >= ppc::RAM_BASE + ppc::RAM_SIZE || !count || count > 64u) return;
   const auto walk = [](uint32_t cell, uint32_t& total, uint32_t& largest, uint32_t& cells) {
     for (uint32_t guard = 0; cell && guard < 100000u; ++guard) {
       uint32_t next = 0, size = 0;
-      if (cell < 0x80003000u || cell >= 0x81800000u || !heap_trace_read32(cell + 4u, next) || !heap_trace_read32(cell + 8u, size)) return false;
+      if (cell < 0x80003000u || cell >= ppc::RAM_BASE + ppc::RAM_SIZE || !heap_trace_read32(cell + 4u, next) || !heap_trace_read32(cell + 8u, size)) return false;
       total += size; largest = std::max(largest, size); ++cells;
       cell = next;
     }
@@ -1967,7 +2056,7 @@ void report_object_memory() {
       uint32_t cell = used_list;
       for (uint32_t guard = 0; cell && guard < 100000u; ++guard) {
         uint32_t next = 0, bytes = 0;
-        if (cell < 0x80003000u || cell >= 0x81800000u || !heap_trace_read32(cell + 4u, next) || !heap_trace_read32(cell + 8u, bytes)) break;
+        if (cell < 0x80003000u || cell >= ppc::RAM_BASE + ppc::RAM_SIZE || !heap_trace_read32(cell + 4u, next) || !heap_trace_read32(cell + 8u, bytes)) break;
         sizes.push_back(bytes);
         cell = next;
       }
@@ -1986,11 +2075,11 @@ void note_scene_memory() {
   if (!mod_disc_active()) return;
   uint32_t heaps = 0, count = 0, current = 0, size = 0, cell = 0, used = 0, blocks = 0;
   if (!heap_trace_read32(0x804D7360u, heaps) || !heap_trace_read32(0x804D7364u, count) || !heap_trace_read32(0x804D5C08u, current)) return;
-  if (heaps < 0x80003000u || heaps >= 0x81800000u || current >= count || count > 64u) return;
+  if (heaps < 0x80003000u || heaps >= ppc::RAM_BASE + ppc::RAM_SIZE || current >= count || count > 64u) return;
   if (!heap_trace_read32(heaps + current * 12u, size) || !heap_trace_read32(heaps + current * 12u + 8u, cell) || (int32_t)size <= 0) return;
   for (uint32_t guard = 0; cell && guard < 100000u; ++guard) {
     uint32_t next = 0, bytes = 0;
-    if (cell < 0x80003000u || cell >= 0x81800000u || !heap_trace_read32(cell + 4u, next) || !heap_trace_read32(cell + 8u, bytes)) return;
+    if (cell < 0x80003000u || cell >= ppc::RAM_BASE + ppc::RAM_SIZE || !heap_trace_read32(cell + 4u, next) || !heap_trace_read32(cell + 8u, bytes)) return;
     used += bytes; ++blocks;
     cell = next;
   }
@@ -2093,7 +2182,7 @@ static void trace_state() {
   uint64_t events = (uint64_t)g_completions.size() << 32 |
       (uint64_t)g_pe_token << 8 | (g_pe_finish_pending ? 1 : 0) | (g_pe_token_pending ? 2 : 0);
   std::fprintf(g_state_trace, "%u,%016llX,%016llX,%016llX,%016llX\n", g_retraces,
-      h, gx::hash_bytes(ram, ppc::RAM_SIZE), gx::hash_bytes(aram, 0x01000000), events);
+      h, gx::hash_bytes(ram, ppc::CONSOLE_RAM_SIZE), gx::hash_bytes(aram, 0x01000000), events);
   std::fflush(g_state_trace);
 }
 

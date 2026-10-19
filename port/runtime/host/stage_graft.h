@@ -65,9 +65,25 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
       if (!a.pointers.count(ca + field) || !b.pointers.count(cb + field)) return false;
       return same_bytes(a.get(ca + field), b.get(cb + field), count * stride);
     };
+    // The collision groups by their line ranges and joint (+0..+20, +36..+40), not their bounding boxes
+    // (+20..+36): the online form keeps the original's collision whole, so a skin saved with a larger
+    // box (20XX's Battlefield alt 8AT) lines up exactly. Header +0x2C is not compared for the same
+    // reason: 20XX's Yoshi's Story files store that header one field longer, with every point, line
+    // and group the same.
+    auto groups = [&]() {
+      const uint32_t count = a.get(ca + 0x28);
+      if (count != b.get(cb + 0x28)) return false;
+      if (!count) return true;
+      if (!a.pointers.count(ca + 0x24) || !b.pointers.count(cb + 0x24)) return false;
+      const uint32_t ga = a.get(ca + 0x24), gb = b.get(cb + 0x24);
+      for (uint32_t i = 0; i < count; ++i)
+        if (!same_bytes(ga + i * 0x28, gb + i * 0x28, 20) || !same_bytes(ga + i * 0x28 + 36, gb + i * 0x28 + 36, 4))
+          return false;
+      return true;
+    };
     const bool same = a.bounds(ca, 0x30) && b.bounds(cb, 0x30) &&
-                      same_bytes(ca + 0x10, cb + 0x10, 0x14) && same_bytes(ca + 0x2C, cb + 0x2C, 4) &&
-                      array(0x00, 8) && array(0x08, 16) && array(0x24, 0x28);
+                      same_bytes(ca + 0x10, cb + 0x10, 0x14) &&
+                      array(0x00, 8) && array(0x08, 16) && groups();
     if (!same) { *note = "the skin changes the stage's collision"; return false; }
     std::string why;
     Compare param{a, b, &why}; param.allow_visual = false;
@@ -284,6 +300,17 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
   for (const auto& [ja, m] : mesh_of) if (m != UINT32_MAX) used.insert(m);
   for (uint32_t j : b.joint_offsets)
     if (!(b.get(j + 4) & kBehaviourJoint) && b.pointers.count(j + 16)) all.insert(b.get(j + 16));
+  for (uint32_t j : whole_joints)   // the models taken whole draw every mesh they have
+    if (b.joint_offsets.count(j) && !(b.get(j + 4) & kBehaviourJoint) && b.pointers.count(j + 16)) used.insert(b.get(j + 16));
+  // Most of the skin has to make it. A skin whose meshes mostly found no joint of the original to
+  // sit on drew a near-empty stage online (20XX's Battlefield alt 8AT showed its platforms offline
+  // and nothing online; its Luigi's Mansion Fountain of Dreams showed only the sky): the original
+  // stage is served instead, as for any skin that cannot be drawn over it.
+  if (!all.empty() && used.size() * 10 < all.size() * 9) {
+    *note = "only " + std::to_string(used.size()) + " of the skin's " + std::to_string(all.size()) +
+            " meshes could be drawn over the original stage";
+    return false;
+  }
   *out = std::move(file);
   *note = std::to_string(shown) + " joints show the skin, " + std::to_string(hidden) + " the skin removed, " +
           std::to_string(kept) + " keep the original mesh; " + std::to_string(used.size()) + " of the skin's " +

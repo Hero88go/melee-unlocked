@@ -19,6 +19,8 @@ OSSuspendThread
 OSJoinThread
 OSResetSystem
 OSPanic
+# HSD_MemAlloc: a full object heap is given space above the console's 24 MB before the assert (hle_os.cpp)
+HSD_MemAlloc
 __OSInitAudioSystem
 __OSUnhandledException
 __OSStopAudioSystem

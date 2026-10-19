@@ -235,7 +235,7 @@ list(APPEND SHIM_SOURCES ${GXNATIVE_SOURCES})
 # (mu_ak_fighters.c); the others stay locked. ACE's fighters (ace/) build only with
 # -DMU_ACE_FIGHTERS=ON until their own checks are done.
 option(MU_AKANEIA_FIGHTERS "Build the native Akaneia fighters" ON)
-option(MU_ACE_FIGHTERS "Build the native ACE fighters as well (none is ready yet)" OFF)
+option(MU_ACE_FIGHTERS "Build the native ACE fighters as well" ON)
 list(APPEND SHIM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/akaneia/mu_ak_fighters.c")
 if(MU_AKANEIA_FIGHTERS)
   target_compile_definitions(game_flags INTERFACE MU_AKANEIA_FIGHTERS=1)
@@ -280,6 +280,31 @@ foreach(ak_fighter wolf diddy charizard lucas sonic dedede tails)
       COMPILE_DEFINITIONS "MU_AK_HAVE_${ak_upper}")
   endif()
 endforeach()
+
+# m-ex stages with their own code, native (shim/mu_mex_stage.h, run-source/rel09-stages/LAYER.md
+# phase B): each stage's C under mexstages/<stage>/, helpers in mexstages/common/. The registry is
+# one line per "const MuGrStage mu_gr_<name> = " line in those sources, so a new stage folder needs
+# no edit here. A stage is offered only when its descriptor carries MU_GR_READY; without this option
+# every row that needs its own code stays locked (the data only rows play either way).
+option(MU_MEX_STAGES "Build the native m-ex stage code (mexstages/)" ON)
+if(MU_MEX_STAGES)
+  file(GLOB_RECURSE MEX_STAGE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/mexstages/*/*.c")
+  list(APPEND SHIM_SOURCES ${MEX_STAGE_SOURCES})
+  set(MU_GR_REGISTRY "")
+  foreach(gr_source ${MEX_STAGE_SOURCES})
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${gr_source}")
+    file(STRINGS "${gr_source}" gr_lines REGEX "^const MuGrStage mu_gr_[A-Za-z0-9_]+ = ")
+    foreach(gr_line ${gr_lines})
+      string(REGEX REPLACE "^const MuGrStage (mu_gr_[A-Za-z0-9_]+) = .*$" "\\1" gr_symbol "${gr_line}")
+      string(APPEND MU_GR_REGISTRY "MU_GR_STAGE(${gr_symbol})\n")
+    endforeach()
+  endforeach()
+  file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/mu_gr/mu_gr_registry.inc" CONTENT "${MU_GR_REGISTRY}")
+  set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shim/mu_mex_stage.c" APPEND PROPERTY
+    COMPILE_DEFINITIONS MU_GR_REGISTRY_GENERATED)
+  set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/shim/mu_mex_stage.c" APPEND PROPERTY
+    INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR}/mu_gr")
+endif()
 
 if(NOT Python3_EXECUTABLE)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)

@@ -13,7 +13,12 @@
 namespace ppc {
 
 constexpr uint32_t RAM_BASE = 0x80000000u;
-constexpr uint32_t RAM_SIZE = 0x01800000u;
+// Guest RAM as the host backs it. The console's 24 MB (CONSOLE_RAM_SIZE) is what the game is told
+// it has and where its file table, arena and heaps sit; the 24 MB above it is used only when one of
+// the game's heaps would otherwise run out (host.cpp grow_object_heap), so a scene that fits on a
+// console uses exactly the console's addresses.
+constexpr uint32_t CONSOLE_RAM_SIZE = 0x01800000u;
+constexpr uint32_t RAM_SIZE = 0x03000000u;
 constexpr uint32_t LC_BASE = 0xE0000000u;
 constexpr uint32_t LC_SIZE = 0x4000u;
 // Coarse write generations for renderer-owned snapshots. A 64 KB block keeps the hot guest-store

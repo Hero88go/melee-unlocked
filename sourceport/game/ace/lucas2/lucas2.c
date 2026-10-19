@@ -166,4 +166,5 @@ const MuAkFighter mu_ak_lucas2 = {
     .move_logic = ftLc2_States, .move_logic_count = 36,
     .articles = ftLc2_ArticleLogic, .article_count = 9,
     .kirby = &ftKbLc2_Copy,
+    .flags = MU_AK_READY,
 };

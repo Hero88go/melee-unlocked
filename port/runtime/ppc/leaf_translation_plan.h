@@ -213,7 +213,7 @@ inline bool plan_attempt(const uint8_t* code, size_t bytes, uint32_t address,
   result = Plan{};
   error.clear();
   if (all) all->clear();
-  constexpr uint32_t ram_base = 0x80000000u, ram_size = 0x01800000u;
+  constexpr uint32_t ram_base = 0x80000000u, ram_size = 0x03000000u;   // ppc::RAM_SIZE
   if (!code || !bytes || (bytes & 3) || (address & 3) || bytes > kMaxFunctionBytes ||
       address < ram_base || address - ram_base >= ram_size ||
       bytes > ram_size - (address - ram_base)) {

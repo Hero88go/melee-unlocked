@@ -119,6 +119,9 @@ struct RuntimeAsset {
 };
 
 constexpr const char* kVoiceKind = "voice_bank";
+// The online rule a saved stage verdict was made under. 2 (0.9.0): a skin's gameplay values are put
+// back to the original's (stage_safety::restore_gameplay) before it is judged.
+constexpr int kOnlineRule = 2;
 
 // One disc bank file ("audio/us/fox.ssm") that at least one installed skin has a fitting bank for.
 // The candidates are fixed at startup; plan_match_voices picks among them.
@@ -419,7 +422,8 @@ void load_disc_fields(const json& item, AssetRecord* asset) {
     throw std::runtime_error("disc");
   asset->info.variant = item.value("variant", std::string());
   const auto online = item.find("online");
-  if (online != item.end() && online->is_object()) {
+  // A verdict saved under an older online rule is worked out again (kOnlineRule).
+  if (online != item.end() && online->is_object() && online->value("rule", 0) == kOnlineRule) {
     asset->online_known = true;
     asset->online_ok = online->value("ok", false);
     asset->online_note = online->value("note", std::string());
@@ -453,7 +457,7 @@ json catalog_json_locked() {
       item["disc"] = {{"path", asset.disc_path}, {"offset", asset.disc_offset}, {"length", asset.disc_length},
                       {"size", asset.disc_size}, {"mtime", asset.disc_mtime}};
     if (!asset.info.variant.empty()) item["variant"] = asset.info.variant;
-    if (asset.online_known) item["online"] = {{"ok", asset.online_ok}, {"note", asset.online_note}};
+    if (asset.online_known) item["online"] = {{"ok", asset.online_ok}, {"note", asset.online_note}, {"rule", kOnlineRule}};
     item["companions"] = json::array();
     for (const auto& companion : asset.companions) {
       item["companions"].push_back({{"kind", companion.kind},
@@ -5509,9 +5513,23 @@ bool stage_online_form(const std::vector<uint8_t>& clean, const std::vector<uint
   if (!detail) detail = &local;
   if (stage_gameplay_matches(clean, skin, detail)) { if (online) online->clear(); return true; }
   const std::string as_is = *detail;
-  std::vector<uint8_t> grafted;
   std::string note;
-  if (!stage_safety::graft_visuals(clean, skin, &grafted, &note, stage_safety::visual_only_models(stage_file))) {
+  // The skin's gameplay values put back to the original's (stage_safety::restore_gameplay): a skin
+  // that only changed values (20XX's stage files set a music table the original leaves empty) is then
+  // the skin itself with the original's gameplay, and one that also changed models is grafted from
+  // that repaired copy below.
+  std::vector<uint8_t> restored;
+  if (stage_safety::restore_gameplay(clean, skin, &restored, &note)) {
+    if (stage_draw_safe(restored, &note)) {
+      *detail = "the skin with the original stage's gameplay values";
+      if (online) *online = std::move(restored);
+      return true;
+    }
+    restored.clear();
+  }
+  const std::vector<uint8_t>& base = restored.empty() ? skin : restored;
+  std::vector<uint8_t> grafted;
+  if (!stage_safety::graft_visuals(clean, base, &grafted, &note, stage_safety::visual_only_models(stage_file))) {
     *detail = as_is + "; " + note;
     return false;
   }
@@ -5787,6 +5805,10 @@ std::atomic<OnlineProbe> g_online_probe{nullptr};
 void set_online_probe(OnlineProbe probe) { g_online_probe.store(probe); }
 bool online_active() {
   if (g_online_freezes.load(std::memory_order_relaxed)) return true;
+  // MELEE_TEST_ONLINE_FORMS (tests only, hidden runs): stage skins are served in their online form
+  // offline too, so a capture shows what an online opponent's game draws.
+  static const bool test_forms = std::getenv("MELEE_TEST_ONLINE_FORMS") && std::getenv("MELEE_NO_GC_ADAPTER");
+  if (test_forms) return true;
   const OnlineProbe probe = g_online_probe.load();
   return probe && probe();
 }

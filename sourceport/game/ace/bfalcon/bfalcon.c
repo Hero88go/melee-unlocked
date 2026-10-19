@@ -440,7 +440,7 @@ const MotionState ftBf_Init_MotionStateTable[ftBf_MS_SelfCount] = {
 /* The four slots PlBF.dat exports. Every other slot is left empty and takes the m-ex default,
  * which MxDt gives as Captain Falcon's retail function (internal 2; Ganondorf, internal 25,
  * shares only the eight special entries): the eight specials, the item events, the attribute
- * reload and the common double jump. Written and never run, so not MU_AK_READY. */
+ * reload and the common double jump. Ready: the 0.9 scripted matches pass. */
 const MuAkFighter mu_ak_bfalcon = {
     .name = "B. Falcon",
     .file = "PlBF.dat",
@@ -449,5 +449,5 @@ const MuAkFighter mu_ak_bfalcon = {
     .onframe = ftBf_Init_OnFrame,
     .move_logic = ftBf_Init_MotionStateTable,
     .move_logic_count = ftBf_MS_SelfCount,
-    .flags = 0,
+    .flags = MU_AK_READY,
 };

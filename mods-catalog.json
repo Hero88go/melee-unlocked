@@ -58,7 +58,7 @@
       "patch_sha256": "005d5667dffa345bfba5f08e6849a4ff2965633584e8a3da74ceba7556204608",
       "output_md5": "63ea8e113e451c9369f17f7a49012412",
       "output_sha256": "b1b60a188421c8d0e564fa276a4762fe67e8de271ac2e131c20f70ee715af6cd",
-      "note": "Runs on the Static Recomp."
+      "note": "Runs on the Source Port and the Static Recomp."
     },
     {
       "id": "ace",
@@ -78,7 +78,7 @@
       "tool_sha256": "d81f59b2fe5e8589c0ee9782e231c805084f4d23dfade413903a4cad63b4e342",
       "patch_sha256": "a451bf67acd1333836847acead02191fa2122a254b6295e949620c49e3b8b984",
       "output_sha256": "0d7ba36bef3505cdf6c0209d9ae34977e23cf6cae4d24366e8d405810f798993",
-      "note": "Untested on the Static Recomp."
+      "note": "Runs on the Source Port and the Static Recomp."
     },
     {
       "id": "hackpack",

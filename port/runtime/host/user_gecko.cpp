@@ -483,6 +483,14 @@ void classify(Code& c) {
   c.plan_bytes.clear();
   c.reads = false;
   if (c.lines.empty()) { c.reason = "has no code lines"; return; }
+  // Slippi's Normal Lag Reduction (two branches over the retrace wait in VI code, 803761EC and
+  // 80376238). Melee Unlocked times the frame and the retrace itself (host.cpp), and with the code on
+  // as well the game played worse in a player's report, so it is refused on both engines.
+  for (const auto& line : c.lines)
+    if (line.first == 0x043761ECu || line.first == 0x04376238u) {
+      c.reason = "is Slippi's lag reduction: Melee Unlocked already times the frame itself, and the two together play worse";
+      return;
+    }
   // No code patches means the Source Port (set_code_patches_allowed): every read and write is then
   // held to the table of variables the native game shares with the console, and the code becomes
   // a plan (Compiler above).

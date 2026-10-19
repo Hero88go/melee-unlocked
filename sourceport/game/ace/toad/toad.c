@@ -250,7 +250,7 @@ const MuAkFighter mu_ak_toad = {
     .move_logic = ftTd_Init_MotionStateTable,
     .move_logic_count = ftMr_MS_SelfCount,
 
-    .flags = 0,
+    .flags = MU_AK_READY,
     .articles = itTd_Articles,
     .article_count = ftTd_Article_Count,
 };

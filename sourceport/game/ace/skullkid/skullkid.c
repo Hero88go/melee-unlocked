@@ -190,5 +190,5 @@ const MuAkFighter mu_ak_skullkid = {
     .onframe=ftSd_OnFrame, .onactionstatechange=ftSd_OnStateChange,
     .enterfloat=ftSd_EnterFloat, .onlanding=ftSd_OnLanding,
     .move_logic=ftSd_States, .move_logic_count=36,
-    .articles=itSd_Articles, .article_count=3, .flags=0,
+    .articles=itSd_Articles, .article_count=3, .flags = MU_AK_READY,
 };

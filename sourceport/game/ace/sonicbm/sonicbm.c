@@ -715,7 +715,7 @@ const MotionState ftSc_Init_MotionStateTable[FTSC_MS_COUNT] = {
 };
 
 /* The 14 slots PlSc.dat exports. Every other field is NULL: the registry takes MxDt's default,
- * Mario's function. Written and never run, so not MU_AK_READY. */
+ * Mario's function. Ready: the 0.9 scripted matches pass. */
 const MuAkFighter mu_ak_sonicbm = {
     .name = "Sonic BM",
     .file = "PlSc.dat",
@@ -737,7 +737,7 @@ const MuAkFighter mu_ak_sonicbm = {
     .move_logic = ftSc_Init_MotionStateTable,
     .move_logic_count = FTSC_MS_COUNT,
 
-    .flags = 0,
+    .flags = MU_AK_READY,
     .articles = itSc_Articles,
     .article_count = ftSc_Article_Count,
 };

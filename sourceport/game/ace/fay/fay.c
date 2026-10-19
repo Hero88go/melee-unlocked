@@ -488,7 +488,7 @@ const MotionState ftFy_Init_MotionStateTable[FTFY_MS_COUNT] = {
 };
 
 /* The 13 slots PlFy.dat exports. Every other field is NULL: the registry takes MxDt's default,
- * Fox's function. No Kirby hat file. Written and never run, so not MU_AK_READY. */
+ * Fox's function. No Kirby hat file. Ready: the 0.9 scripted matches pass. */
 const MuAkFighter mu_ak_fay = {
     .name = "Fay",
     .file = "PlFy.dat",
@@ -509,7 +509,7 @@ const MuAkFighter mu_ak_fay = {
     .move_logic = ftFy_Init_MotionStateTable,
     .move_logic_count = FTFY_MS_COUNT,
 
-    .flags = 0,
+    .flags = MU_AK_READY,
     .articles = itFy_Articles,
     .article_count = ftFy_Article_Count,
     .kirby = NULL,

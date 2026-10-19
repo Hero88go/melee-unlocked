@@ -427,7 +427,7 @@ const MotionState ftZx_Init_MotionStateTable[ftZx_MS_SelfCount] = {
 };
 
 /* The ten slots PlZx.dat exports. Every other slot is left empty and takes the m-ex default,
- * which MxDt gives as Link's retail function. Written and never run, so not MU_AK_READY. */
+ * which MxDt gives as Link's retail function. Ready: the 0.9 scripted matches pass. */
 const MuAkFighter mu_ak_zero = {
     .name = "Zero",
     .file = "PlZx.dat",
@@ -444,7 +444,7 @@ const MuAkFighter mu_ak_zero = {
     .move_logic = ftZx_Init_MotionStateTable,
     .move_logic_count = ftZx_MS_SelfCount,
 
-    .flags = 0,
+    .flags = MU_AK_READY,
     .articles = itZx_Articles,
     .article_count = ftZx_Article_Count,
     .gettraildata = (MuAkEvent) (void (*)(void)) ftZx_Init_GetTrailData,

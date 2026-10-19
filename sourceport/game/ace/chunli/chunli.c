@@ -492,7 +492,7 @@ _Static_assert(FtMoveId_SpecialN == 0x12 && FtMoveId_SpecialS == 0x13 &&
 /* The fifteen slots PlCn.dat exports. Every slot not named here is NULL: the registry then takes
  * MxDt's default for internal 55 (run-source/rel09-ace-native/chunli/mxdt.txt): Zelda's ondeath
  * (ftZd_Init_OnDeath), the common double jump, the costume lookup word. Articles 2 and 3 have
- * code (chunli_items.c). Written and never run, so not MU_AK_READY. */
+ * code (chunli_items.c). Ready: the 0.9 scripted matches pass. */
 const MuAkFighter mu_ak_chunli = {
     .name = "Chun-Li",
     .file = "PlCn.dat",
@@ -515,7 +515,7 @@ const MuAkFighter mu_ak_chunli = {
     .move_logic = ftCn_Init_MotionStateTable,
     .move_logic_count = ftCn_MS_SelfCount,
 
-    .flags = 0,
+    .flags = MU_AK_READY,
     .article_tables = itCn_ArticleTables,
     .article_count = ftCn_Article_Count,
     .kirby = &ftKbCn_Copy,

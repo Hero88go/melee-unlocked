@@ -72,5 +72,5 @@ const MuAkFighter mu_ak_raichu = {
     .move_logic = ftRc_States, .move_logic_count = 28,
     .articles = itRc_Articles, .article_count = 2,
     .kirby = &ftKbRc_Copy,
-    .flags = 0,
+    .flags = MU_AK_READY,
 };

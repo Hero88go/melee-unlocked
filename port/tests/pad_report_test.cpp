@@ -484,7 +484,26 @@ void check_haybox_shape() {
   CHECK((uint32_t)(int)host::HID_HAT_LEFT == host::HID_HAT_LEFT);
 }
 
+// A Frame1 in DInput mode sends each stick as a GameCube value 0..255 (centre 128) times 257, the Y
+// axes inverted (255 - y). Every value a box sends must come out as the same GameCube value, with
+// nothing rounded toward the centre: walk, slow walk, the wavedash, shield-drop and up-B angles all
+// depend on the exact number.
+void check_frame1_dinput_axes() {
+  for (int g = 48; g <= 208; ++g) {               // 128 +- 80: every value the firmware sends
+    const long x = (long)g * 257, y = (long)(255 - g) * 257;
+    CHECK(host::hid_axis_signed(0, 0xFFFF, x) == g - 128);
+    CHECK(host::hid_axis_signed(0, 0xFFFF, y, true) == g - 128);
+  }
+  // The B0XX Melee coordinates by name, on both axes (the pad's units: 80 is a full press).
+  const int coords[] = {0, 80, -80, 53, -53, 27, -27, 56, -55, 51, -30, 40, -68, 59, 25, 29, 73, 31, 43, 38, 70, 63, 39, 41, 49, 42};
+  for (int u : coords) {
+    CHECK(host::hid_axis_signed(0, 0xFFFF, (long)(128 + u) * 257) == u);
+    CHECK(host::hid_axis_signed(0, 0xFFFF, (long)(255 - (128 + u)) * 257, true) == u);
+  }
+}
+
 int main() {
+  check_frame1_dinput_axes();
   check_haybox_shape();
   check_trigger_cap();
   check_binding_levels();

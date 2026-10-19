@@ -30,180 +30,8 @@
 
 extern Fighter_CostumeStrings* ftData_803C2360[FT_KIND_TABLE_MAX];
 
-/* ---- MxDt.dat layout (big-endian, relocated in place by the archive loader) ---- */
-typedef DISC_PTR(char) MexStr;
-
-typedef struct MexMeta {
-    u8 major, minor;
-    u16 flags;
-    u32 ft_internal, ft_external, css_icons, gr_internal, gr_external, sss_icons, ssm, bgm, effects,
-        boot_scene, last_major, last_minor, trophies, trophy_sd;
-} DISC_STRUCT MexMeta;
-
-typedef struct MexCostumeFile {
-    MexStr file;
-    MexStr joint;
-    MexStr matanim;
-    u32 visibility;   /* the retail costume whose parts tables this costume reuses */
-} DISC_STRUCT MexCostumeFile;
-
-typedef struct MexCostumeInfo {
-    u8 count, red, blue, green;   /* the same layout as the retail per-character table */
-} MexCostumeInfo;
-
-typedef struct MexExtMap {
-    u8 internal, sub, flags;   /* external id -> internal fighter kind */
-} MexExtMap;
-
-typedef DISC_PTR(MexCostumeFile) MexCostumeFiles;
-
-typedef struct MexPlFile {
-    MexStr file;     /* "PlWf.dat" */
-    MexStr symbol;   /* "ftDataWolf" */
-} DISC_STRUCT MexPlFile;
-
-typedef DISC_PTR(u8) MexWords;   /* a table of big-endian words */
-
-typedef struct MexItemLookup {
-    u32 count;
-    DISC_PTR(u8) ids;   /* count big-endian u16 item kinds */
-} DISC_STRUCT MexItemLookup;
-
-/* The demo fighter's animation symbols (results, intro, ending, wait). */
-typedef struct MexFtDemo {
-    MexStr result, intro, ending, wait;
-} DISC_STRUCT MexFtDemo;
-typedef DISC_PTR(MexFtDemo) MexFtDemoPtr;
-
-typedef struct MexSsmFile {
-    u8 ssm_id;
-    u8 pad[3];
-    u32 x04, x08, x0C;
-} DISC_STRUCT MexSsmFile;
-
-/* m-ex MexTK/include/mxdt.h MexData.fighter; the index of each field is its m-ex table number. */
-typedef struct MexFighter {
-    DISC_PTR(MexStr) names;              /* 0 [external] display names */
-    DISC_PTR(MexPlFile) pl_files;        /* 1 [internal] */
-    DISC_PTR(u8) insignia;               /* 2 [external] emblem frame */
-    DISC_PTR(MexExtMap) ext_map;         /* 3 [external] */
-    DISC_PTR(MexCostumeInfo) costume_info;   /* 4 [external] */
-    DISC_PTR(MexCostumeFiles) costume_files; /* 5 [internal] -> [costume] */
-    DISC_PTR(MexFtDemoPtr) ftdemo;       /* 6 [internal] */
-    DISC_PTR(MexStr) anim_files;         /* 7 [internal] PlXxAJ.dat */
-    DISC_PTR(u8) anim_num;               /* 8 [internal] two big-endian words each: {0, count} */
-    DISC_PTR(u8) effect_index;           /* 9 [internal] the fighter's effect file */
-    DISC_PTR(MexStr) result_file;        /* 10 [external] */
-    DISC_PTR(u8) result_scale;           /* 11 [external] big-endian floats */
-    DISC_PTR(u8) victory_theme;          /* 12 [external] big-endian words */
-    DISC_PTR(u8) announcer_call;         /* 13 [external] big-endian words */
-    DISC_PTR(MexSsmFile) ssm_files;      /* 14 [internal] */
-    DISC_PTR(void) costume_pointers;     /* 15 runtime */
-    DISC_PTR(void) ft_archives;          /* 16 runtime */
-    DISC_PTR(u8) walljump;               /* 17 [internal] */
-    DISC_PTR(void) rst_runtime;          /* 18 runtime */
-    DISC_PTR(MexItemLookup) item_lookup; /* 19 [internal] the fighter's articles */
-} DISC_STRUCT MexFighter;
-
-typedef struct MexMenu {
-    DISC_PTR(void) param;
-    DISC_PTR(u8) css;   /* the character select data block; icons at +0xDC, 0x1C bytes each */
-    DISC_PTR(void) sss;
-} DISC_STRUCT MexMenu;
-
-/* One effect file: the game's own table entry (file, table symbol, loaded data). */
-typedef struct MexEffectFile {
-    MexStr file;     /* "EfWfData.dat" */
-    MexStr symbol;   /* "effWolfDataTable" */
-    u32 runtime;
-} DISC_STRUCT MexEffectFile;
-
-/* The sound bank table: one entry per bank in each list. */
-typedef struct MexSsm {
-    DISC_PTR(MexStr) files;   /* file name, no folder ("wolf.ssm") */
-    DISC_PTR(u8) sizes;       /* {sample data bytes, flag}, two big-endian words per bank */
-    DISC_PTR(u8) rows;        /* {group, load priority, unload priority, pitch threshold} */
-    DISC_PTR(void) runtime;
-} DISC_STRUCT MexSsm;
-
-typedef struct MexEffect {
-    DISC_PTR(MexEffectFile) files;
-} DISC_STRUCT MexEffect;
-
-/* MxDt "kirby": what Kirby needs per copied fighter. Read on Akaneia 1.0.1 (41 internal ids). */
-typedef struct MexKirby {
-    DISC_PTR(MexPlFile) cap_files;    /* +0  [internal] {hat file "PlKbCpWf.dat", "ftDataKirbyCopyWolf"} */
-    DISC_PTR(void) x4;                /* +4  [internal] words, all zero on the disc (runtime) */
-    DISC_PTR(void) costume_files;     /* +8  [internal] per-costume hat files; only retail kinds have any */
-    DISC_PTR(void) costume_runtime;   /* +C  [internal] */
-    DISC_PTR(u8) effect_ids;          /* +10 [internal] the effect file loaded with the hat, 0xFF none */
-    DISC_PTR(void) x14;               /* +14 [internal] words, all zero on the disc (runtime) */
-} DISC_STRUCT MexKirby;
-
-/* ---- MxDt "stage" (word 10) and the stage descriptor rows (word 11), m-ex MexTK stage.h ----
- * run-source/rel09-stages/PLAN.md 1.1. Every word that holds a callback, the map gobj table, the
- * joints or a collision table is a raw address of the retail main.dol: never relocated, never
- * dereferenced here. shim/mu_mex_stage.c turns them into native objects by matching MxDt rows 0
- * to 70 against the native retail rows. */
-typedef struct MexStageExt {
-    u32 internal;   /* external stage id -> internal id; then two words, 0 on both discs */
-    u32 x4, x8;
-} DISC_STRUCT MexStageExt;
-
-typedef struct MexStageColl {
-    u32 internal;
-    u32 table;      /* raw retail address of the mpLib_803BF248 row's table */
-} DISC_STRUCT MexStageColl;
-
-typedef struct MexPlaylistSong {
-    u16 song;       /* -1 (0xFFFF) is an error on the console */
-    u16 chance;
-} DISC_STRUCT MexPlaylistSong;
-
-typedef struct MexPlaylist {
-    u32 count;
-    DISC_PTR(MexPlaylistSong) songs;
-} DISC_STRUCT MexPlaylist;
-
-typedef struct MexStage {
-    DISC_PTR(MexStageExt) ext;            /* +0  [external] 12 bytes each */
-    DISC_PTR(u8) sound;                   /* +4  [internal] 3 bytes each: bank, reverb, third byte */
-    DISC_PTR(MexStageColl) coll;          /* +8  [internal] */
-    DISC_PTR(MexItemLookup) items;        /* +C  [internal] stage item kinds (m-ex 237 to 252) */
-    DISC_PTR(MexStr) names;               /* +10 [internal] */
-    DISC_PTR(MexPlaylist) playlists;      /* +14 [internal] */
-} DISC_STRUCT MexStage;
-
-/* The retail StageData layout, 13 words. */
-typedef struct MexGrDesc {
-    u32 grkind;
-    u32 map_gobjs;                        /* raw retail address */
-    MexStr file;                          /* relocated string */
-    u32 on_init, on_demo_init, on_load, on_start, callback4, on_touch_line, on_check_shadow_render;
-    u32 flags2;
-    u32 joints;                           /* raw retail address */
-    u32 joint_count;
-} DISC_STRUCT MexGrDesc;
-typedef DISC_PTR(MexGrDesc) MexGrDescPtr;
-
-typedef struct MexData {
-    DISC_PTR(MexMeta) metadata;
-    DISC_PTR(MexMenu) menu;
-    DISC_PTR(MexFighter) fighter;
-    /* [m-ex ftFunction index] -> [internal] console addresses of the default callbacks (retail
-     * functions, or 0); a fighter file's ftFunction export overrides its own entries. */
-    DISC_PTR(MexWords) fighter_function;
-    DISC_PTR(MexSsm) ssm;         /* the sound banks, by bank id */
-    DISC_PTR(void) music;
-    DISC_PTR(MexEffect) effect;   /* the effect files, by effect file index */
-    DISC_PTR(void) item;          /* +1C the item tables */
-    DISC_PTR(MexKirby) kirby;     /* +20 */
-    /* +24 [kbFunction index] -> [internal]: retail functions, 0 for every added fighter (their hat
-     * files export their own). Not read: the added abilities are C (akaneia/common/mu_ak_kirby.c). */
-    DISC_PTR(MexWords) kirby_function;
-    DISC_PTR(MexStage) stage;               /* +28 */
-    DISC_PTR(MexGrDescPtr) stage_desc;      /* +2C [internal] */
-} DISC_STRUCT MexData;
+/* The MxDt.dat layout types are in mu_mex_data.h (shared with mexstages/common/mu_gr_mex.c). */
+#include "mu_mex_data.h"
 
 /* ---- state, fixed after boot ---- */
 #define MEX_MAX_COSTUMES 16
@@ -697,6 +525,20 @@ static u32 mex_be32(const u8* p)
     return (u32) p[0] << 24 | (u32) p[1] << 16 | (u32) p[2] << 8 | p[3];
 }
 
+/* gm_801647F8 as m-ex patches it (+4): the Target Test stage of external character `ext` from
+ * MxDt fighter table 20, a big-endian u16 each (the retail Sheik-to-Zelda remap is skipped).
+ * -1 when no m-ex tables are active or the character has no row. */
+int mu_mex_fighter_target_stage(int ext)
+{
+    const u8* table;
+    if (mex == NULL || ext < 0 || ext >= mex_ext_count ||
+        (table = DP(DP(mex->fighter)->target_stage)) == NULL)
+    {
+        return -1;
+    }
+    return table[2 * ext] << 8 | table[2 * ext + 1];
+}
+
 int mu_mex_fighter_internal_count(void)
 {
     return mex != NULL ? (int) DP(mex->metadata)->ft_internal : 0;
@@ -1182,4 +1024,51 @@ int mu_mex_stage_icon(int slot, unsigned char out[0x20])
     icons = (const u8*) DP(DP(mex->menu)->sss);
     memcpy(out, icons + 0x20 * slot, 0x20);
     return 1;
+}
+
+/* The stage select cursor's start (m-ex mnStageSel_Scene_OnEnter+A04): three big-endian floats at
+ * MxDt menu param +4, (0, -17, 0) on both discs (retail mnStageSel_803B8550 is (0, -13, 0)). */
+int mu_mex_sss_cursor(float out[3])
+{
+    const u8* p;
+    int i;
+    if (mex == NULL || DP(mex->menu) == NULL || (p = (const u8*) DP(DP(mex->menu)->param)) == NULL) {
+        return 0;
+    }
+    for (i = 0; i < 3; i++) {
+        const u32 w = (u32) p[4 + 4 * i] << 24 | (u32) p[5 + 4 * i] << 16 | (u32) p[6 + 4 * i] << 8 |
+                      p[7 + 4 * i];
+        memcpy(&out[i], &w, sizeof w);
+    }
+    return 1;
+}
+
+/* The music table (m-ex lbAudioAx_80023F28+28, +48, +68): MxDt "music" +0 is one file name per
+ * song id, "bgm" songs (Akaneia 1.0.1: 139, ACE 2.0.0: 231; retail 98). */
+int mu_mex_bgm_count(void)
+{
+    return mex != NULL && DP(mex->music) != NULL ? (int) DP(mex->metadata)->bgm : 0;
+}
+
+const char* mu_mex_bgm_file(int id)
+{
+    MexMusic* music;
+    MexStr* files;
+    const char* name;
+    if (id < 0 || id >= mu_mex_bgm_count()) {
+        return NULL;
+    }
+    music = DP(mex->music);
+    if ((files = DP(music->files)) == NULL) {
+        return NULL;
+    }
+    name = DP(files[id]);
+    return name != NULL && name[0] != '\0' ? name : NULL;
+}
+
+/* The mexData root while the mod view is served, NULL otherwise. The native m-ex stage services
+ * (mexstages/common/mu_gr_mex.c) hand stage code its tables, as MEX_GetData does on the console. */
+MexData* mu_mex_root(void)
+{
+    return mex;
 }

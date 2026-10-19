@@ -496,7 +496,7 @@ _Static_assert(sizeof(struct SwordAttrs) == 0x20, "the trail block is 32 bytes")
 
 /* The six slots PlLu.dat exports. Every other slot is left empty and takes the m-ex default,
  * which MxDt gives as Marth's retail function: the eight specials, the item events, the two
- * knockback events and the common double jump. Written and never run, so not MU_AK_READY. */
+ * knockback events and the common double jump. Ready: the 0.9 scripted matches pass. */
 const MuAkFighter mu_ak_lucina = {
     .name = "Lucina",
     .file = "PlLu.dat",
@@ -506,6 +506,6 @@ const MuAkFighter mu_ak_lucina = {
     .onlanding = ftLu_Init_OnLanding,
     .move_logic = ftLu_Init_MotionStateTable,
     .move_logic_count = ftLu_MS_SelfCount,
-    .flags = 0,
+    .flags = MU_AK_READY,
     .gettraildata = (MuAkEvent) (void (*)(void)) ftLu_Init_GetTrailData,
 };

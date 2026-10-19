@@ -135,6 +135,10 @@ struct Compare {
   std::map<uint32_t, uint32_t> forward, backward;
   uint32_t nodes = 0;
   bool allow_visual = true;
+  // Repair mode: a plain value (no pointer) that differs inside a gameplay object, where both files
+  // have the same object at the same size and the same pointer layout, is written back from the
+  // original into this copy of the skin instead of failing. Used for a skin's online form only.
+  std::vector<uint8_t>* repair = nullptr;
   // Models a graft took whole from a skin (stage_graft.h visual_only_models): not compared.
   std::set<uint32_t> skip_models;
   bool fail(const char* why) { *reason = why; return false; }
@@ -182,6 +186,7 @@ struct Compare {
         k += 4;
       } else {
         if (a.bytes[32ull + x + k] != b.bytes[32ull + y + k]) {
+          if (repair) { (*repair)[32ull + y + k] = a.bytes[32ull + x + k]; ++k; continue; }
           *reason = "stage gameplay data differs at " + std::to_string(x) + "/" + std::to_string(y) + "+" + std::to_string(k);
           return false;
         }
@@ -194,7 +199,10 @@ struct Compare {
     if (const int e = external(x, y)) return e > 0;
     const bool pa = a.pointers.count(x), pb = b.pointers.count(y);
     if (pa != pb) return fail("stage gameplay pointer presence differs");
-    return pa ? object(a.get(x), b.get(y)) : a.get(x) == b.get(y) || fail("stage gameplay value differs");
+    if (pa) return object(a.get(x), b.get(y));
+    if (a.get(x) == b.get(y)) return true;
+    if (repair) { std::memcpy(repair->data() + 32ull + y, a.bytes.data() + 32ull + x, 4); return true; }
+    return fail("stage gameplay value differs");
   }
   bool animation_slots(uint32_t x, uint32_t y) {
     if (const int e = external(x, y)) return e > 0;
@@ -299,5 +307,35 @@ inline bool matches(const std::vector<uint8_t>& clean, const std::vector<uint8_t
     if (!a.roots.count(root.first) && !visual_root(root.first)) { *reason = "unknown stage gameplay symbol: " + root.first; return false; }
   *reason = "gameplay matches";
   return true;
+}
+// A skin's gameplay values put back to the original's: every plain value in a gameplay object (the
+// stage's parameters and the tables they point at, map header values) that differs where both files
+// have the same object, size and pointer layout. 20XX's stage files set values such as a music table
+// the original leaves at -1; online both players must read the same ones. `out` gets the repaired
+// copy whenever anything was repaired, even if something else still differs (a changed collision, a
+// different joint layout), so a graft can start from it. Returns true only when the repaired copy
+// passes matches() in full.
+inline bool restore_gameplay(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& skin,
+                             std::vector<uint8_t>* out, std::string* reason) {
+  std::vector<uint8_t> fixed = skin;
+  Archive a{clean}, b{skin};
+  if (!a.parse() || !b.parse()) { *reason = "stage DAT gameplay tables are malformed or unsupported"; return false; }
+  bool whole = true;
+  {
+    Compare compare{a, b, reason};
+    compare.repair = &fixed;
+    if (!compare.map()) whole = false;
+  }
+  for (const auto& root : a.roots) {
+    if (root.first == "map_head" || visual_root(root.first)) continue;
+    const auto other = b.roots.find(root.first);
+    if (other == b.roots.end()) { whole = false; continue; }
+    Compare gameplay{a, b, reason}; gameplay.allow_visual = false; gameplay.repair = &fixed;
+    if (!gameplay.object(root.second, other->second)) whole = false;
+  }
+  if (fixed == skin) { *reason = "no gameplay value to restore"; return false; }
+  if (out) *out = fixed;
+  if (!whole) return false;
+  return matches(clean, fixed, reason);
 }
 } // namespace host::cosmetics::stage_safety

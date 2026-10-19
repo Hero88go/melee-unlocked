@@ -53,6 +53,8 @@ inline bool dualsense_pad(unsigned long vendor, unsigned long product) {
 constexpr int8_t kTriggerRestMin = 0, kTriggerRestCentre = 1, kTriggerRestMax = 2;
 int8_t hid_trigger_rest(long logical_min, long logical_max, long raw);
 uint8_t hid_trigger_value(long logical_min, long logical_max, long raw, int8_t rest);
+// A stick axis as the reader turns it into the pad's signed value (floored, no deadzone), for tests.
+int8_t hid_axis_signed(long logical_min, long logical_max, long raw, bool flip = false);
 
 // HayBox in its DInput mode, the firmware of the Frame1 and many other box controllers, describes six
 // 16-bit axes (X, Y, Z, Rz, Rx, Ry), a hat and buttons 1-16, and publishes no name of its own (on a

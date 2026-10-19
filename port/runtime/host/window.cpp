@@ -450,6 +450,7 @@ enum : uint16_t {
 };
 
 KeyBindings g_key_bindings = default_key_bindings();
+int g_stick_modifier_percent = 50;
 std::array<PadBindings, 4> g_pad_bindings = default_pad_bindings();
 std::array<GCBindings, 4> g_gc_bindings = default_gc_bindings();
 std::array<PadBindings, 4> g_ds4_bindings = {};
@@ -755,7 +756,7 @@ uint32_t hid_apply_bindings(int idx, uint32_t buttons, PadState& pad, box::State
   // pushes, as on the keyboard. They were saved but never applied here, so a box sending its stick
   // as buttons moved nothing. A device's own analog stick is left alone while none is held.
   if (!apply_box_actions(bind.mask[(size_t)BindAction::ModX] || bind.mask[(size_t)BindAction::ModY], actions, pad, box_state))
-    apply_stick_actions(actions, pad.stick_x, pad.stick_y);
+    apply_stick_actions(actions, pad.stick_x, pad.stick_y, g_stick_modifier_percent);
   return actions;
 }
 
@@ -806,7 +807,7 @@ void apply_known_box_layout(int idx) {
 template <class Key> uint32_t keyboard_apply_bindings(PadState& kb, Key key, box::State& box_state) {
   const uint32_t actions = button_apply_bindings(kb, 0, 0,
       [&](int i) { const int vk = g_key_bindings.vk[i]; return vk && key(vk); }, [](int i) { return (int)g_key_bindings.level[i]; });
-  apply_stick_actions(actions, kb.stick_x, kb.stick_y);
+  apply_stick_actions(actions, kb.stick_x, kb.stick_y, g_stick_modifier_percent);
   if (kb.button & PAD_L) kb.trig_l = 255;
   if (kb.button & PAD_R) kb.trig_r = 255;
   // Mod X or Mod Y bound: the keyboard is a box, and its stick and C-stick take the box coordinates.
@@ -1119,7 +1120,7 @@ void input_poll(PadState out[4]) {
     debug.xinput_connected[idx] = true;
     x.err = 0;
     auto& g = xs.Gamepad;
-    auto axis = [](SHORT v) { int a = v / 258; return a > 127 ? 127 : a < -127 ? -127 : a; };
+    auto axis = [](SHORT v) { return (int)xinput_axis(v); };
     // No deadzone and no trigger floor, as in Dolphin. These used Microsoft's recommended Xbox
     // deadzone, which zeroed both axes whenever both sat inside about 30 of Melee's 80 units: larger
     // than the game's own deadzone, and exactly where a box controller in XInput mode puts some of its
@@ -1235,6 +1236,21 @@ void input_poll(PadState out[4]) {
     for (int port = 0; port < 4; ++port)
       if (out[port].err == 0) { const auto err = out[port].err; out[port] = {}; out[port].err = err; debug.ports[port] = out[port]; }
   { std::lock_guard<std::mutex> lock(g_last_pads_mutex); for (int port = 0; port < 4; ++port) g_last_pads[port] = out[port]; }
+  // MELEE_TEST_PAD_TRACE=<file> (tests only, hidden runs): one line each time a port's input changes,
+  // as the game will read it, so a test that drives a controller can check every press arrived.
+  if (options.no_gc_adapter) {
+    static FILE* trace = [] { const char* p = std::getenv("MELEE_TEST_PAD_TRACE"); return p && *p ? std::fopen(p, "w") : nullptr; }();
+    static PadState last[4] = {};
+    if (trace)
+      for (int port = 0; port < 4; ++port) {
+        const PadState& p = out[port];
+        if (!std::memcmp(&p, &last[port], sizeof p)) continue;
+        last[port] = p;
+        std::fprintf(trace, "%u port %d err %d button %04X stick %d %d cstick %d %d trig %u %u\n", retrace_count(), port + 1,
+                     p.err, p.button, p.stick_x, p.stick_y, p.sub_x, p.sub_y, p.trig_l, p.trig_r);
+        std::fflush(trace);
+      }
+  }
 
   debug.keyboard_actions = keyboard_actions;
   for (int idx = 0; idx < 4; ++idx) if (xin_connected[idx]) debug.xinput_connected[idx] = true;
@@ -1384,7 +1400,7 @@ void input_debug_snapshot(InputDebugSnapshot& snapshot) {
     snapshot.xinput_connected[idx] = true;
     xin[idx].err = 0;
     auto& g = xs.Gamepad;
-    auto axis = [](SHORT v) { int a = v / 258; return a > 127 ? 127 : a < -127 ? -127 : a; };
+    auto axis = [](SHORT v) { return (int)xinput_axis(v); };
     // Same reading as input_poll: no deadzone, no trigger floor.
     const int sx = axis(g.sThumbLX), sy = axis(g.sThumbLY), cx = axis(g.sThumbRX), cy = axis(g.sThumbRY);
     xin[idx].stick_x = (int8_t)sx; xin[idx].stick_y = (int8_t)sy; xin[idx].sub_x = (int8_t)cx; xin[idx].sub_y = (int8_t)cy;

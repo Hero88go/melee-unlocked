@@ -40,6 +40,8 @@ class Lifecycle {
   Decision observe_session(bool online_scene, bool session_active, bool online_match);
   Decision fail(const std::string& error, bool cleanup_connection);
   Decision acknowledge_failure();
+  // The online session ended after a match and the player asked to go back to Training then.
+  Decision return_after_session();
   void practice_restored();
   void reset();
 

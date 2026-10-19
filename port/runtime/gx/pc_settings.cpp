@@ -300,7 +300,9 @@ static const char* kActionNames[(size_t)host::BindAction::Count] = {
   // older one, whose single L / R bindings are carried over (see split_old_trigger_bindings).
   "LAnalog", "RAnalog",
   // Added with the box controller buttons. A file without them has none bound: no box mode.
-  "ModX", "ModY", "LightShield", "MidShield"
+  "ModX", "ModY", "LightShield", "MidShield",
+  // Added with the stick modifier (Dolphin's Modifier). A file without it has none bound.
+  "StickMod"
 };
 // The same, as the controls picture writes them.
 static const char* kActionTitles[(size_t)host::BindAction::Count] = {
@@ -308,7 +310,8 @@ static const char* kActionTitles[(size_t)host::BindAction::Count] = {
   "C Up", "C Down", "C Left", "C Right",
   "Stick Up", "Stick Down", "Stick Left", "Stick Right",
   "L analog", "R analog",
-  "Mod X", "Mod Y", "Light shield", "Mid shield"
+  "Mod X", "Mod Y", "Light shield", "Mid shield",
+  "Stick modifier"
 };
 
 // ---- Port-source <-> combo-box index, shared by load/save and the Port assignment UI ----
@@ -353,6 +356,7 @@ static host::PortSource combo_to_port_source(int idx) {
 static const char* kFamilyKeys[(size_t)host::PadFamily::Count] = {"gamecube", "xbox", "playstation", "switch", "box"};
 
 static bool load_family_option(const std::string& key, const std::string& value) {
+  if (key == "stick_modifier_percent") { host::g_stick_modifier_percent = std::clamp(std::atoi(value.c_str()), 10, 100); return true; }
   for (int f = 0; f < (int)host::PadFamily::Count; ++f) {
     const std::string k = kFamilyKeys[f];
     if (key == "deadzone_" + k + "_main") { host::g_deadzones[f].main = std::clamp(std::atoi(value.c_str()), 0, 100); return true; }
@@ -376,6 +380,8 @@ static bool load_family_option(const std::string& key, const std::string& value)
 
 static std::string family_options_text() {
   std::string out;
+  // written only when changed, so a file that never used it stays as it was
+  if (host::g_stick_modifier_percent != 50) out += "\nstick_modifier_percent " + std::to_string(host::g_stick_modifier_percent);
   for (int f = 0; f < (int)host::PadFamily::Count; ++f) {
     const std::string k = kFamilyKeys[f];
     out += "\ndeadzone_" + k + "_main " + std::to_string(host::g_deadzones[f].main);
@@ -1364,6 +1370,8 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
     // into the box's Melee coordinates (input_bindings.h, apply_box_actions).
     boxes.push_back({(int)A::ModX, 216, 434, 128}); boxes.push_back({(int)A::ModY, 352, 434, 128});
     boxes.push_back({(int)A::LightShield, 488, 434, 128}); boxes.push_back({(int)A::MidShield, 624, 434, 128});
+    // The stick modifier (Dolphin's Modifier): held, the button-made stick pushes part of the way.
+    boxes.push_back({(int)A::StickMod, 760, 434, 128});
   }
   constexpr float kBoxH = 32;
   // Grey group panels behind the boxes.
@@ -1399,7 +1407,7 @@ static int draw_gc_bind_picture(uint32_t live, int capturing, int* right_clicked
     // The control stick's own boxes point at the stick, not the C-stick.
     if (action >= (int)A::SUp && action <= (int)A::SRight) return ImVec2(stick.x, stick.y + 37 * kc);
     // Mod X and Mod Y shape the control stick; the shield buttons press R.
-    if (action == (int)A::ModX || action == (int)A::ModY) return ImVec2(stick.x, stick.y + 37 * kc);
+    if (action == (int)A::ModX || action == (int)A::ModY || action == (int)A::StickMod) return ImVec2(stick.x, stick.y + 37 * kc);
     if (action == (int)A::LightShield || action == (int)A::MidShield) return C(790, 160);
     return C(476, 344);   // the D-pad arms: the diamond's left corner
   };
@@ -2097,6 +2105,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "results_screen") options.results_screen = value != "0";
 #ifndef MELEE_NO_SLIPPI
       else if (key == "slippi_spectator") options.slippi_spectator = value != "0";
+      else if (key == "online_return_training") options.online_return_training = value == "1";
       else if (key == "slippi_spectator_port") options.slippi_spectator_port = std::clamp(std::atoi(value.c_str()), 1, 65535);
 #endif
       else if (key == "cpu_tech") options.cpu_tech = std::clamp(std::atoi(value.c_str()), 0, 5);
@@ -2306,6 +2315,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
 #ifndef MELEE_NO_SLIPPI
   RenderOptions::live_slippi_spectator() = options.slippi_spectator;
   RenderOptions::live_slippi_spectator_port() = options.slippi_spectator_port;
+  RenderOptions::live_online_return_training() = options.online_return_training;
 #endif
   host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
   RenderOptions::live_cpu_training() = options.cpu_training_word();
@@ -3409,6 +3419,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
 #ifndef MELEE_NO_SLIPPI
        << "\nslippi_spectator " << (options.slippi_spectator ? 1 : 0)
        << "\nslippi_spectator_port " << options.slippi_spectator_port
+       << "\nonline_return_training " << (options.online_return_training ? 1 : 0)
 #endif
        << "\ncpu_tech " << options.cpu_tech
        << "\ncpu_getup " << options.cpu_getup
@@ -4680,12 +4691,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       const Preset presets[] = {
         {"Low", "For laptops and integrated graphics: native resolution, no anti-aliasing,\n60 frames per second, no sub-frame animation.", 1, 1, 1, 0, 60, SubFrameMode::Off, false},
         {"Medium", "For most older PCs: 2x resolution, 4x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 2, 1, 4, 0, -1, SubFrameMode::Authored, false},
-        {"High", "Recommended, and the default: resolution matched to your window, 16x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 0, 1, 16, 0, -1, SubFrameMode::Authored, false},
+        // 4x filtering since 0.9.0: a player found 16x, the old default, made play less smooth.
+        {"High", "Recommended, and the default: resolution matched to your window, 4x filtering,\nyour monitor's refresh rate with smooth in-between frames.", 0, 1, 4, 0, -1, SubFrameMode::Authored, false},
         // DLAA already smooths every edge, so Ultra uses it alone where it exists. Stacked on 4x
         // supersampling it ran DLAA over an image several times 4K: a large drop in frame rate, and
         // out of video memory on 8 GB cards once a recorder was running too.
-        {"Ultra", dlaa_ok ? "High, plus NVIDIA DLAA for the smoothest edges."
-                          : "High, plus 4x supersampling for the smoothest edges.",
+        {"Ultra", dlaa_ok ? "High with 16x filtering, plus NVIDIA DLAA for the smoothest edges."
+                          : "High with 16x filtering, plus 4x supersampling for the smoothest edges.",
          0, dlaa_ok ? 1 : 2, 16, dlaa_ok ? 1 : 0, -1, SubFrameMode::Authored, false},
 #ifdef GX_DLSS5
         // Resolution matched to your window (the same "native for your machine" Auto that High and
@@ -7262,9 +7274,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SameLine();
         settings_hint("(applies from the next match)");
       }
+      if (settings_toggle("After an online session ends, go back to Training mode", &options.online_return_training)) {
+        RenderOptions::live_online_return_training() = options.online_return_training;
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("When the other player leaves, you hold Z to leave, or the connection drops after a match,\n"
+                          "the game goes to Training mode's character select instead of staying online.");
       // Slippi Dolphin's spectator server (its Slippi settings: Enable spectator, Spectator port),
       // read once at start as Dolphin does.
-      if (settings_toggle("Spectator server (Slippi Launcher broadcast, overlays)", &options.slippi_spectator)) {
+      if (settings_toggle("Spectator server (Slippi Launcher broadcast, overlays, experimental)", &options.slippi_spectator)) {
         RenderOptions::live_slippi_spectator() = options.slippi_spectator;
         changed = true;
       }
@@ -7737,6 +7756,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           if (seen[tab] && now_b != last_seen[tab]) autosave_profile(tab);
           last_seen[tab] = now_b;
           seen[tab] = true;
+        }
+
+        // The stick modifier's push, for the devices whose stick can be made of buttons.
+        if (cur_family.fam < 0 || cur_family.fam == (int)host::PadFamily::Box) {
+          ImGui::Spacing();
+          ImGui::SetNextItemWidth(200.0f);
+          changed |= settings_slider("Stick modifier push", &host::g_stick_modifier_percent, 10, 100, "%d%%");
+          if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("While the Stick modifier is held, the stick directions bound to buttons push only\n"
+                              "this far, like Dolphin's Modifier: 50%% walks. With Mod X or Mod Y bound the box\n"
+                              "coordinates apply instead.");
         }
 
         // ---- the rest, folded away ----

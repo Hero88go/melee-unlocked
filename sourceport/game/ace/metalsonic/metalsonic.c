@@ -389,7 +389,7 @@ const MotionState ftNm_Init_MotionStateTable[FTNM_MS_COUNT] = {
 };
 
 /* The 10 slots PlNm.dat exports. Every other field is NULL: the registry takes MxDt's default,
- * Fox's function. Written and never run, so not MU_AK_READY. */
+ * Fox's function. Ready: the 0.9 scripted matches pass. */
 const MuAkFighter mu_ak_metalsonic = {
     .name = "Metal Sonic",
     .file = "PlNm.dat",
@@ -407,7 +407,7 @@ const MuAkFighter mu_ak_metalsonic = {
     .move_logic = ftNm_Init_MotionStateTable,
     .move_logic_count = FTNM_MS_COUNT,
 
-    .flags = 0,
+    .flags = MU_AK_READY,
     .articles = itNm_Articles,
     .article_count = ftNm_Article_Count,
 };

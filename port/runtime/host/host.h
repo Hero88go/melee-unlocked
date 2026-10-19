@@ -204,6 +204,7 @@ void report_recent_files();   // a mod disc's game stopped: one line with the la
 void report_heap_panic(ppc::Context& c);   // OSPanic at lbmemory.c:233: logs the heap that had no room and the title demo's draw
 void note_scene_memory();     // a mod disc's scene changed: one line with the current object heap's size and use
 void report_object_memory();   // OSPanic at memory.c:52: one line per object heap (size, free, largest free piece)
+bool grow_object_heap(uint32_t heap, uint32_t bytes);   // a full heap: add space above the console's 24 MB (host.cpp)
 void apply_wide_fighter_draw();   // Static Recomp, once per game frame: fighters in the added sides draw under True 16:9
 void install_console_clock();  // Static Recomp: OSGetTime carries the date (see os_get_time_dated)
 void install_language_override();  // Static Recomp: the functions that read the saved language follow g_game_language

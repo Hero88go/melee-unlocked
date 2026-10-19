@@ -264,7 +264,7 @@ const MotionState ftWr_Init_MotionStateTable[ftWr_MS_SelfCount] = {
 
 /* The 18 slots PlWr.dat exports. Everything else stays empty: the registry resolves the double
  * jump (slot 32) from MxDt. He has one item kind in MxDt's lookup (286) and no article in the
- * file, so no article is listed. Written and never run, so not MU_AK_READY. */
+ * file, so no article is listed. Ready: the 0.9 scripted matches pass. */
 const MuAkFighter mu_ak_wario = {
     .name = "Wario",
     .file = "PlWr.dat",
@@ -290,6 +290,6 @@ const MuAkFighter mu_ak_wario = {
     .move_logic = ftWr_Init_MotionStateTable,
     .move_logic_count = ftWr_MS_SelfCount,
 
-    .flags = 0,
+    .flags = MU_AK_READY,
     .kirby = &ftKbWr_Copy,
 };

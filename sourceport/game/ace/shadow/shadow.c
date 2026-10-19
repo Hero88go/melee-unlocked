@@ -704,7 +704,7 @@ const MotionState ftSh_Init_MotionStateTable[FTSH_MS_COUNT] = {
 };
 
 /* The 25 slots PlSh.dat exports. Every other field is NULL, as the disc's MxDt leaves it (slot 3's
- * default is replaced by the export). Written and never run, so not MU_AK_READY. */
+ * default is replaced by the export). Ready: the 0.9 scripted matches pass. */
 const MuAkFighter mu_ak_shadow = {
     .name = "Shadow",
     .file = "PlSh.dat",
@@ -739,7 +739,7 @@ const MuAkFighter mu_ak_shadow = {
     .move_logic = ftSh_Init_MotionStateTable,
     .move_logic_count = FTSH_MS_COUNT,
 
-    .flags = 0,
+    .flags = MU_AK_READY,
     .articles = &itSh_Spring_LogicTable,
     .article_count = ftSh_Article_Count,
 

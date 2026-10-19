@@ -264,7 +264,7 @@ const MuAkFighter mu_ak_metalmario = {
     .specialairhi = ftMM_SpecialAirHi_Enter,
     .move_logic = ftMM_Init_MotionStateTable,
     .move_logic_count = ftMM_MS_SelfCount,
-    .flags = 0,
+    .flags = MU_AK_READY,
     .articles = itMM_Articles,
     .article_count = ftMM_Article_Count,
 };

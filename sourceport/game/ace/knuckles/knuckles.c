@@ -421,6 +421,7 @@ const MuAkFighter mu_ak_knuckles = {
 
     /* The ability Kirby copies has no articles (PlKbCpSn.dat has no itFunction). */
     .kirby = &ftKbKx_Copy,
+    .flags = MU_AK_READY,
 };
 
 /* OnLanding +09E4: another air side special is available after touching ground. */

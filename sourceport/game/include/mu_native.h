@@ -222,6 +222,7 @@ int mu_mex_insignia(int ext);                      /* emblem frame of an externa
 int mu_mex_costume_info(int ckind, int which);     /* 0 count, 1 red, 2 blue, 3 green; -1 retail */
 /* The m-ex tables behind the added fighters (ids are m-ex internal ids, special fighters shifted). */
 int mu_mex_fighter_internal_count(void);                        /* 0 without m-ex */
+int mu_mex_fighter_target_stage(int ext);                        /* gm_801647F8: -1 without m-ex */
 const char* mu_mex_fighter_file(int mex_internal);              /* "PlWf.dat"; NULL when none */
 unsigned int mu_mex_fighter_function(int table, int mex_internal); /* console address, 0 empty */
 int mu_mex_fighter_item(int mex_internal, int local);          /* item kind of article, -1 none */
@@ -256,11 +257,19 @@ int mu_mex_stage_desc(int internal, unsigned int words[13], const char** file); 
 int mu_mex_stage_ssm(int internal, int which);                  /* 0 bank, 1 reverb, 2; -1 none */
 unsigned int mu_mex_stage_coll(int internal);                   /* raw retail address, 0 none */
 int mu_mex_stage_item_count(int internal);
-int mu_mex_stage_item(int internal, int local);                 /* m-ex item kind, -1 none */
+int mu_mex_stage_item(int internal, int local);
+/* Stage items of m-ex kinds 237 to 252 (shim/mu_mex_stage.c): the article store it_8026B40C
+ * uses past the retail table, and the article and logic table Item_80267978 takes. */
+void mu_gr_stage_item_store(int kind, void* article);
+int mu_gr_stage_item(int kind, void** article, void** logic);                 /* m-ex item kind, -1 none */
+int mu_gr_stage_item_kind(int kind);   /* 5000 + n: the current stage's item n (m-ex's spawn hook) */
 const char* mu_mex_stage_name(int internal);
 int mu_mex_stage_playlist(int internal, int index, int* song, int* chance);   /* song count */
 int mu_mex_stage_icon_count(void);
 int mu_mex_stage_icon(int slot, unsigned char out[0x20]);       /* raw select icon, 1 when it exists */
+int mu_mex_sss_cursor(float out[3]);                           /* select cursor start, 1 when MxDt has it */
+int mu_mex_bgm_count(void);                                    /* MxDt songs, 0 without m-ex */
+const char* mu_mex_bgm_file(int id);                           /* "old_castle.hps", NULL when none */
 /* The native rows (shim/mu_mex_stage.c). Ids under MU_MEX_STAGE_RETAIL keep the native retail
  * rows always; the rows past it exist only while the mod view is served. */
 #define MU_MEX_STAGE_RETAIL 71        /* retail internal stage ids (0 to 70) */

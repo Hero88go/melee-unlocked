@@ -188,6 +188,12 @@ int8_t to_signed(const Axis& a, LONG raw, bool flip = false) {
 
 }  // namespace
 
+int8_t hid_axis_signed(long logical_min, long logical_max, long raw, bool flip) {
+  Axis a{};
+  a.logical_min = logical_min; a.logical_max = logical_max;
+  return to_signed(a, raw, flip);
+}
+
 // Where a trigger axis sits untouched. A real analog trigger rests at one end of its range. A vJoy
 // axis that its feeder never writes rests in the middle, and reading that from the bottom of the
 // range put every shield at half pressed for as long as the device was plugged in. Dolphin binds such

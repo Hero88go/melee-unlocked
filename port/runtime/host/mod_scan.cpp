@@ -855,10 +855,10 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
     }
     if (known) { d.name = known->name; d.version = known->version; d.catalog_id = known->id; }
     if (known && d.hash == known->hash && used_base) *used_base = false;   // a known build by its own bytes
-    // Akaneia 1.0.1 has its fighters in the Source Port's own C (sourceport/game/akaneia), checked
-    // against this build's files; any other m-ex build (ACE, unknown ones) runs its code on the
-    // Static Recomp.
-    const bool native = known && std::string(known->id) == "akaneia";
+    // Akaneia 1.0.1 and ACE 2.0.0 have their fighters and stages in the Source Port's own C
+    // (sourceport/game/akaneia, ace, mexstages), checked against those builds' files; any other m-ex
+    // build runs its code on the Static Recomp.
+    const bool native = known && (std::string(known->id) == "akaneia" || std::string(known->id) == "ace");
     set_support(d, native ? Engine::Either : Engine::Recomp, native ? Support::Supported : Support::Untested, true);
 #ifdef MELEE_NO_SLIPPI   // as for the Hack Pack above
     d.message = "Detected: " + d.name + (d.version.empty() ? "" : " " + d.version) +

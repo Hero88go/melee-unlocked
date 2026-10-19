@@ -2430,6 +2430,9 @@ std::vector<uint8_t> g_replay_game_start;   // the original Game Start payload (
 std::vector<uint8_t> g_replay_game_end;
 slippi::NativeReplayStream g_replay_stream;
 bool g_replay_written = false;
+// The current recording goes to the spectator server only (an offline match with MELEE_SOURCE_RECORD
+// "2"): write_replay_recording leaves it unwritten.
+bool g_replay_spectator_only = false;
 
 // ---- the replay viewer's controls (host/replay_control.h) ----
 // The game calls in at the top of every engine frame of the replay's match (mu_replay_frame_begin):
@@ -2557,7 +2560,7 @@ uint32_t replay_codes(const Slippi::GameSettings& s, uint8_t* ps_frozen_toggle) 
 }
 
 void write_replay_recording() {
-  if (g_replay_written || !g_replay_stream.active()) return;
+  if (g_replay_written || !g_replay_stream.active() || g_replay_spectator_only) return;
   const auto file = g_replay_stream.encode();
   if (file.empty()) {
     host::log("replay: recording failed: %s", g_replay_stream.error().c_str());
@@ -2650,6 +2653,10 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
       codes = {0xFF, 0, 0, 0, 0, 0, 0, 0};
     }
     g_replay_written = false;
+    {
+      const char* record = std::getenv("MELEE_SOURCE_RECORD");
+      g_replay_spectator_only = !online && record && std::string(record) == "2";
+    }
     // Only layers that change the disc's files make a replay need them (a save file alone does not).
     g_replay_stream.set_mod_profile(g_retail_view || g_view_alias.empty() ? std::string() : g_mod_fingerprint);
     // The 20XX TE features in effect (offline only; online matches never carry them).
@@ -3094,6 +3101,15 @@ int run(void (*shutdown)(int)) {
     host::die("ISO DOL does not match vanilla Melee NTSC 1.02; the Source engine runs only the retail game (modded discs are not supported)");
   // Diagnostic builds of the game (for example the M0 maths audit) without replacing the shipped DLL.
   if (const char* dll = std::getenv("MELEE_GAME_DLL")) g_dll = dll;
+#ifndef MELEE_NO_SLIPPI
+  // With the spectator server on, offline matches are recorded too, for the broadcast only (no .slp
+  // unless --record-native asked for one): Slippi Dolphin sends every game it records, offline ones
+  // included. Set before the game library loads, so its C runtime sees it.
+  if (!std::getenv("MELEE_SOURCE_RECORD") && gx::RenderOptions::live_slippi_spectator()) {
+    _putenv_s("MELEE_SOURCE_RECORD", "2");
+    SetEnvironmentVariableA("MELEE_SOURCE_RECORD", "2");
+  }
+#endif
   g_game_image_reservation.release();
   HMODULE module = LoadLibraryA(g_dll.c_str());
   if (!module) host::die("cannot load %s (error %lu)", g_dll.c_str(), GetLastError());

@@ -84,6 +84,15 @@ Decision Lifecycle::acknowledge_failure() {
   return {};
 }
 
+Decision Lifecycle::return_after_session() {
+  if (phase_ != Phase::Idle) return {};
+  phase_ = Phase::ReturningToPractice;
+  left_practice_ = true;
+  Decision out;
+  out.request_practice_return = true;
+  return out;
+}
+
 void Lifecycle::practice_restored() {
   if (phase_ == Phase::ReturningToPractice) reset();
 }

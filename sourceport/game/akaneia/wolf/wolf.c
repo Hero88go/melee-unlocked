@@ -549,6 +549,6 @@ const MuAkFighter mu_ak_wolf = {
 const MuAkFighter mu_ak_wolf_ssbu = {
     .name = "Wolf SSBU",
     .file = "PlWfU.dat",
-    .flags = 0,
+    .flags = MU_AK_READY,   /* the 0.9 scripted matches pass */
     WF_DESCRIPTOR,
 };

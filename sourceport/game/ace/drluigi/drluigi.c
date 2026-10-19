@@ -297,7 +297,7 @@ const MuAkFighter mu_ak_drluigi = {
     .specialairn = ftDl_SpecialAirN_Enter,
     .move_logic = ftDl_Init_MotionStateTable,
     .move_logic_count = ftDl_MS_SelfCount,
-    .flags = 0,
+    .flags = MU_AK_READY,
     .articles = itDl_Articles,
     .article_count = ftDl_Article_Count,
 };

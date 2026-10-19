@@ -17,7 +17,11 @@
  * native retail rows there in both views (PLAN.md 1.3). Nothing here is read in the retail view. */
 #include <dolphin/dvd.h>
 #include <dolphin/os.h>
+#include <melee/gr/ground.h>
 #include <melee/gr/types.h>
+#include <melee/it/types.h>
+#include <melee/it/kinds/types.h>
+#include <sysdolphin/baselib/debug.h>
 #include <melee/lb/lbfile.h>
 
 #include <string.h>
@@ -74,8 +78,70 @@ typedef struct MexStageRow {
     StageData data;
     void* coll;           /* the native mpLib_803BF248 table (mp/mplib.c), opaque here */
     const char* lock;     /* NULL: the row may be loaded */
+    const MuGrStage* desc;   /* its native code, NULL for a data-only row */
     u8 built;
 } MexStageRow;
+
+/* ---- map gobj tables read past their end ----
+ * A row may take its map gobj table from one retail stage and its code from another (Donkey Kong
+ * Arcade: Sheik's target table, Battlefield's code). The code creates its own map gobj ids, and
+ * Ground_GetStageGObj reads flags_b2 of the row's table at that id: past the end of a shorter table
+ * (Battlefield creates id 6, Sheik's table has 4 rows; Dream Land 64 creates 7 and 8 over Green
+ * Greens' 7; Yoshi's Island 64 creates 4 and 5 over Sheik's). The console reads the words that
+ * follow the table in main.dol (its StageData, its file name string); natively that would read past
+ * a static array. Such a row gets its own copy: the retail rows, then rows whose flag word is the
+ * word the console reads there (callbacks NULL: no code reaches them through the table). The words
+ * are from melee-102.iso main.dol (rel09-stages WORKPACKAGES.md, "map table overreads"); each
+ * table's length was checked against the file name string that follows it. */
+#define MEX_MAP_ROWS 16
+#define MEX_MAP_COPIES 32
+static const struct {
+    u8 id, len;
+    unsigned int tail[MEX_MAP_ROWS];
+} mex_map_tails[] = {
+    {  8, 12, { 0x803E1A30u, 0x801D852Cu, 0x803E1A10u, 0x6E207420u } },
+    { 13,  7, { 0x803E7638u, 0x802134F8u, 0x00000000u, 0x6E207420u, 0x00000000u, 0x00000001u, 0x00000000u, 0x00000000u, 0x00000000u } },
+    { 28,  9, { 0x803E6688u, 0x80210888u, 0x00000000u, 0x6E207420u, 0x00000000u, 0xFF010001u, 0x0100000Bu } },
+    { 29,  6, { 0x803E6488u, 0x8020E828u, 0x00000000u, 0x6E207420u, 0x00000000u, 0x00000001u, 0x00030002u, 0x00000000u, 0x00000000u, 0x00000000u } },
+    { 36,  7, { 0x803E7DA0u, 0x80219D58u, 0x00000000u, 0x6E207420u, 0x00000000u, 0x54544C45u, 0x73742E63u, 0x8021A918u, 0x8021A96Cu } },
+    { 49,  4, { 0x803E8C70u, 0x802216C0u, 0x00000000u, 0x6E207420u, 0x00000000u, 0x80221AE4u, 0x80221BD4u, 0x80221B44u, 0x00000000u, 0x4C6B2E64u, 0x80221930u, 0x80221C00u } },
+    { 57,  4, { 0x803E9270u, 0x80222EF4u, 0x00000000u, 0x6E207420u, 0x00000000u, 0x00000000u, 0x00000000u, 0x00000000u, 0xC0000000u, 0x00000000u, 0x803E9338u, 0x802231E0u } },
+    { 59,  4, { 0x803E93F8u, 0x802235F8u, 0x00000000u, 0x6E207420u, 0x00000000u, 0x80223A1Cu, 0x80223B0Cu, 0x80223A7Cu, 0x00000000u, 0x536B2E64u, 0x80223868u, 0x80223B38u } },
+    { 60,  4, { 0x803E94B8u, 0x802238DCu, 0x00000000u, 0x6E207420u, 0x00000000u, 0x80223D00u, 0x80223DF0u, 0x80223D60u, 0x00000000u, 0x59732E64u, 0x80223B4Cu, 0x80223E1Cu } },
+    { 68,  3, { 0x803E6278u, 0x8020E054u, 0x00000000u, 0x6E207420u, 0x00000000u, 0x8020E3FCu, 0x8020E438u, 0x8020E494u, 0x2F477245u, 0x803E6364u, 0x8020E30Cu, 0x00000000u, 0x67657420u } },
+    { 69,  3, { 0x803E6328u, 0x8020E2E8u, 0x00000000u, 0x6E207420u, 0x00000000u, 0x8020E690u, 0x8020E6CCu, 0x8020E728u, 0x2F477245u, 0x803E6414u, 0x8020E5A0u, 0x00000000u, 0x67657420u } },
+};
+static StageCallbacks mex_map_copies[MEX_MAP_COPIES][MEX_MAP_ROWS];
+static int mex_map_copy_count;
+
+/* The row's table when its code is not its table's own stage: a copy with the console's tail, or
+ * the retail table itself when no tail is known (logged). */
+static StageCallbacks* mex_map_with_tail(int retail_id, int id)
+{
+    StageCallbacks* src = mu_ground_retail_stage(retail_id)->callbacks;
+    StageCallbacks* copy;
+    int t, i;
+    for (t = 0; t < (int) (sizeof mex_map_tails / sizeof mex_map_tails[0]); t++) {
+        if (mex_map_tails[t].id == retail_id) {
+            break;
+        }
+    }
+    if (t == (int) (sizeof mex_map_tails / sizeof mex_map_tails[0]) || mex_map_copy_count >= MEX_MAP_COPIES) {
+        OSReport("[mex] stage %d: the map gobj table of %d has no known tail; its own end stands\n", id,
+                 retail_id);
+        return src;
+    }
+    copy = mex_map_copies[mex_map_copy_count++];
+    memset(copy, 0, sizeof(StageCallbacks) * MEX_MAP_ROWS);
+    for (i = 0; i < MEX_MAP_ROWS; i++) {
+        if (i < mex_map_tails[t].len) {
+            copy[i] = src[i];
+        } else {
+            copy[i].flags = mex_map_tails[t].tail[i - mex_map_tails[t].len];
+        }
+    }
+    return copy;
+}
 
 static MexStageRow mex_rows[MU_MEX_STAGE_MAX];
 static int mex_row_count;   /* the disc's internal count, at most MU_MEX_STAGE_MAX */
@@ -284,13 +350,26 @@ static const char* mex_build_row(int id, MexStageRow* row, int from[2], unsigned
     if (w[W_JOINTS] != 0 || w[W_JOINT_COUNT] != 0) {
         return "names joints (not supported)";
     }
-    if (mu_mex_stage_item_count(id) > 0) {
-        return "names stage items (m-ex item kinds 237 to 252 are not supported yet)";
-    }
     desc = mex_descriptor(file);
     if (desc != NULL && !(desc->flags & MU_GR_READY)) {
         return "its native code is not ready";
     }
+    /* Stage items: the console fills their logic tables from the file's itFunction block
+     * (803D7070, called from grDatFiles_801C6038+90), one block per entry of the row's item list.
+     * Here the descriptor's .items do, in the same order. */
+    if (mu_mex_stage_item_count(id) > 0) {
+        int i;
+        if (desc == NULL || desc->items == NULL || desc->item_count < mu_mex_stage_item_count(id)) {
+            return "names stage items and its native code supplies none";
+        }
+        for (i = 0; i < mu_mex_stage_item_count(id); i++) {
+            const int kind = mu_mex_stage_item(id, i);
+            if (kind < MU_GR_ITEM_FIRST || kind > MU_GR_ITEM_LAST) {
+                return "names an item kind outside the stage item range";
+            }
+        }
+    }
+    row->desc = desc;
     for (k = W_MAP; k <= W_SHADOW; k++) {
         src[k] = -2;   /* the descriptor fills it */
         if (k == W_FILE) {
@@ -354,6 +433,10 @@ static const char* mex_build_row(int id, MexStageRow* row, int from[2], unsigned
     MEX_FIELD(W_TOUCH, on_touch_line, on_touch_line);
     MEX_FIELD(W_SHADOW, on_check_shadow_render, on_check_shadow_render);
 #undef MEX_FIELD
+    /* A retail table under code that is not its own stage's: the console's tail past its end. */
+    if (src[W_MAP] >= 0 && src[W_MAP] != src[W_INIT]) {
+        sd->callbacks = mex_map_with_tail(src[W_MAP], id);
+    }
     from[0] = src[W_MAP];
     from[1] = src[W_INIT];
     return NULL;
@@ -366,6 +449,7 @@ void mu_mex_stage_build(void)
 
     memset(mex_rows, 0, sizeof mex_rows);
     mex_row_count = 0;
+    mex_map_copy_count = 0;
     if (count <= 0) {
         return;
     }
@@ -436,6 +520,70 @@ int mu_mex_stage_usable(int grkind)
         return mu_ground_retail_stage(grkind) != NULL;
     }
     return mex_row(grkind) != NULL;
+}
+
+/* ---- stage items (m-ex item kinds 237 to 252) ----
+ * Articles: the stage's itemdata list, through it_8026B40C (Ground load), as for retail stage items,
+ * past the retail table's 30 rows. Logic: the current row's descriptor, entry i for row item i. */
+static void* gr_item_article[MU_GR_ITEM_LAST - MU_GR_ITEM_FIRST + 1];
+
+void mu_gr_stage_item_store(int kind, void* article)
+{
+    /* An m-ex stage file names its items 5000 + n in itemdata (as the fighters' articles are
+     * 5000 + n of their own lists): item n of the current row's list, the kind 803D708C gives. */
+    if (kind >= 5000 && kind < 5000 + mu_mex_stage_item_count(stage_info.grkind)) {
+        kind = mu_mex_stage_item(stage_info.grkind, kind - 5000);
+    }
+    if (kind >= MU_GR_ITEM_FIRST && kind <= MU_GR_ITEM_LAST) {
+        gr_item_article[kind - MU_GR_ITEM_FIRST] = article;
+    } else {
+        OSReport("[mex] stage item kind %d is outside 237 to 252; not stored\n", kind);
+    }
+}
+
+int mu_gr_stage_item(int kind, void** article, void** logic)
+{
+    const int grkind = stage_info.grkind;
+    MexStageRow* row = mex_row(grkind);
+    int i;
+    if (kind < MU_GR_ITEM_FIRST || kind > MU_GR_ITEM_LAST || row == NULL || row->desc == NULL) {
+        return 0;
+    }
+    for (i = 0; i < mu_mex_stage_item_count(grkind); i++) {
+        if (mu_mex_stage_item(grkind, i) == kind && i < row->desc->item_count) {
+            *article = gr_item_article[kind - MU_GR_ITEM_FIRST];
+            *logic = (void*) &row->desc->items[i];
+            return *article != NULL;
+        }
+    }
+    return 0;
+}
+
+/* 803D708C: the item kind of the current stage's item `index` (the row's u16 list); the console
+ * reports "stage %d does not have item %d" and stops past its end. */
+/* m-ex's spawn hook (codes.gct, a C2 at Item_8026862C+1C): a stage's code spawns its own items as
+ * kind 5000 + n, and the hook turns that into the stage's item n before the spawn reads the kind.
+ * A kind with no such item is left as it is, so nothing is created, as before. */
+int mu_gr_stage_item_kind(int kind)
+{
+    if (kind < 5000 || kind >= 5000 + 64) {
+        return kind;
+    }
+    {
+        const int item = mu_mex_stage_item(stage_info.grkind, kind - 5000);
+        return item >= 0 ? item : kind;
+    }
+}
+
+ItemKind mu_gr_item_kind(int index)
+{
+    const int grkind = stage_info.grkind;
+    const int kind = mu_mex_stage_item(grkind, index);
+    if (kind < 0) {
+        OSReport("[mex] error: stage %d does not have item %d\n", grkind, index);
+        __assert("mu_mex_stage.c", __LINE__, "stage item");
+    }
+    return (ItemKind) kind;
 }
 
 const char* mu_mex_stage_lock_reason(int grkind)

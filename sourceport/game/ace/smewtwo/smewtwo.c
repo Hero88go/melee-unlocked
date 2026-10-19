@@ -83,5 +83,5 @@ const MuAkFighter mu_ak_smewtwo = {
     .onframe=ftSm_OnFrame,.onactionstatechange=ftSm_OnStateChange,
     .onrespawn=ftSm_OnRespawn,.enterdoublejump=ftSm_DoubleJump,.onlanding=ftSm_OnLanding,
     .move_logic=ftSm_States,.move_logic_count=20,
-    .article_tables=itSm_ArticleTables,.article_count=4,.flags=0,
+    .article_tables=itSm_ArticleTables,.article_count=4,.flags = MU_AK_READY,
 };

@@ -4,6 +4,7 @@
 #include "host.h"
 #include "slippi_online.h"
 #include "slippi_playback.h"
+#include "../gx/render_options.h"
 
 #include <array>
 #include <cstdlib>
@@ -243,7 +244,7 @@ void run_decision(const Decision& d) {
     request_major(g_origin_major);
     g_return_ticks = 0;
     g_return_wait_ticks = 0;
-    host::log("native practice: returning to offline scene %02X after pre-match disconnect",
+    host::log("native practice: returning to offline scene %02X",
               g_origin_major);
   }
 }
@@ -454,6 +455,29 @@ void tick() {
     commands.swap(g_commands);
   }
   for (Command& command : commands) process_command(std::move(command));
+
+  // "After an online session ends, go back to Training mode" (Game tab, Online): when the session
+  // ends with at least one match played (the other player left, Z held to leave, the connection
+  // dropped) and the player is still on the online screens, Training's character select. Only once
+  // the session is over, so nothing changes during a match or between a pair's games.
+  {
+    static bool session_seen = false, played = false;
+    const bool session = slippi::online::session_mode() >= 0;
+    if (session) {
+      session_seen = true;
+      if (slippi::online::is_online_match()) played = true;
+    } else if (session_seen) {
+      session_seen = false;
+      if (played && gx::RenderOptions::live_online_return_training() && g_lifecycle.phase() == Phase::Idle &&
+          is_online_scene()) {
+        g_origin_major = kTrainingMajor;
+        g_restore_training = false;
+        host::log("native practice: online session over; going to Training (setting on)");
+        run_decision(g_lifecycle.return_after_session());
+      }
+      played = false;
+    }
+  }
 
   // Entering major 8 directly skips the title-menu option handler that normally owns this byte.
   // Keep the native selection authoritative during the scene transition, then leave every later

@@ -82,12 +82,38 @@ void binding_table() {
   CHECK((int)BindAction::LAnalog == 20 && (int)BindAction::RAnalog == 21 && (int)BindAction::ModX == 22);
   CHECK((int)BindAction::Count <= 32);   // actions travel as bits of a uint32_t
 }
+
+// The stick modifier (Dolphin's Modifier, #57): held, a button-made stick pushes part of the way.
+void stick_modifier() {
+  using host::BindAction;
+  using host::apply_stick_actions;
+  const uint32_t right = 1u << (int)BindAction::SRight, up = 1u << (int)BindAction::SUp;
+  const uint32_t mod = 1u << (int)BindAction::StickMod;
+  int8_t x = 0, y = 0;
+  CHECK(apply_stick_actions(right, x, y) && x == 127 && y == 0);             // without it: full push
+  x = y = 0; CHECK(apply_stick_actions(right | mod, x, y) && x == 64);       // 50% by default
+  x = y = 0; CHECK(apply_stick_actions(right | up | mod, x, y, 30) && x == 38 && y == 38);
+  x = y = 0; CHECK(!apply_stick_actions(mod, x, y) && x == 0 && y == 0);     // the modifier alone moves nothing
+  CHECK((int)BindAction::StickMod == 26);   // appended after the box buttons
+}
+// A Frame1 (HayBox) in XInput mode sends each GameCube stick value x as (x - 128) * 65535 / 255 + 128
+// (C division). Every offset it can send must read back exactly, negative ones included.
+void haybox_xinput_axes() {
+  for (int offset = -128; offset <= 127; ++offset) {
+    const int q = (offset < 0 ? -offset : offset) * 65535 / 255;
+    const int16_t sent = (int16_t)((offset < 0 ? -q : q) + 128);
+    if (offset >= -127) CHECK(host::xinput_axis(sent) == offset);
+  }
+  CHECK(host::xinput_axis(32767) == 127 && host::xinput_axis(0) == 0);
+}
 }  // namespace
 
 int main() {
+  haybox_xinput_axes();
   coordinates();
   opposing_directions();
   binding_table();
+  stick_modifier();
   if (g_failures) { std::printf("%d box controller check(s) failed\n", g_failures); return 1; }
   std::printf("all box controller checks passed\n");
   return 0;

@@ -733,5 +733,5 @@ const MuAkFighter mu_ak_metaknight = {
     .move_logic = ftMk_Init_MotionStateTable,
     .move_logic_count = ftMk_MS_SelfCount,
 
-    .flags = 0,
+    .flags = MU_AK_READY,
 };
