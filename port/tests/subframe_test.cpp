@@ -121,6 +121,22 @@ int main() {
         "geometry discontinuity keeps the current vertices and advances the matrices");
   b.vertices[0].pos[0] = 0; b.draws[0].xf_regs[0x26] = 1; solver.set_frames(&a, &b);
   check(solver.stats().paired == 0, "orthographic HUD draws retain exact pose");
+  b.draws[0].xf_regs[0x26] = 0;
+  // A rollback's discontinuous frame (see Frame::discontinuous) still holds a plain draw at its
+  // exact pose, since blending stage/world geometry against the mispredicted previous frame can
+  // draw a position that existed on neither timeline.
+  b.discontinuous = true;
+  solver.set_frames(&a, &b);
+  check(solver.stats().paired == 0 && solver.stats().discontinuity == 1, "a plain draw is held across a rollback's discontinuity");
+  // A fighter's authored (skinned) pose is resampled from its joint chain rather than blended
+  // vertex for vertex, so it still pairs through the same discontinuous frame.
+  auto envelope_pose = std::make_shared<gx::AuthoredPose>();
+  envelope_pose->envelope = true;
+  a.draws[0].authored_pose = b.draws[0].authored_pose = envelope_pose;
+  solver.set_frames(&a, &b);
+  check(solver.stats().paired == 1 && solver.stats().discontinuity == 0, "a fighter's authored pose still pairs across a rollback's discontinuity");
+  a.draws[0].authored_pose = b.draws[0].authored_pose = nullptr;
+  b.discontinuous = false;
   // Matrix selectors are discrete even when the vertex stream is unchanged.
   gx::Frame texture_previous, texture_current;
   texture_previous.sequence = 1; texture_current.sequence = 2;

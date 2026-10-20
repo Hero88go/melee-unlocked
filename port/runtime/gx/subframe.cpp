@@ -51,6 +51,12 @@ static bool audit_stage_split() {
   static const bool on = std::getenv("MELEE_AUDIT_STAGE_SPLIT") != nullptr;
   return on;
 }
+// MELEE_ROLLBACK_HOLD=1: hold every draw at its exact pose on a rollback's discontinuous frame, as
+// before fighters were exempted below. For A/B comparison only.
+static bool rollback_continuity() {
+  static const bool on = [] { const char* v = std::getenv("MELEE_ROLLBACK_HOLD"); return !(v && *v == '1'); }();
+  return on;
+}
 // How far a single presented frame may move a draw before the result is treated as wrong. One
 // simulation frame of the fastest legitimate motion in Melee is far below this; a
 // reconstruction error is far above it.
@@ -414,6 +420,16 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
         ++stats_.projection; reason = 6;
       }
       else { valid = true; p.blend_vertices = !same_vertices; }
+      // The frame right after a rollback (Frame::discontinuous) is not simulated from this frame's
+      // own prediction, so blending world geometry against the previous, mispredicted frame can draw
+      // a position that existed on neither timeline — the glitch mark_discontinuity exists to avoid
+      // (see handle_load_savestate). A fighter's authored pose is resampled from its joint chain
+      // rather than blended vertex for vertex (sample_authored_envelope), so letting it pair here
+      // keeps its motion smooth through the correction instead of snapping once per rollback.
+      if (valid && cur->discontinuous && (!rollback_continuity() || !(d.authored_pose && d.authored_pose->envelope))) {
+        valid = false; reason = 8;
+        ++stats_.discontinuity;
+      }
       p.animate_projection = valid && std::memcmp(&pd.xf_regs[0x20], &d.xf_regs[0x20], 4 * sizeof(uint32_t)) != 0;
       if (dump_sequence() && cur->sequence == dump_sequence()) pair_reason_[i] = reason;
       // Did this identity pair last frame? Flipping between held and re-posed is what the eye
@@ -755,7 +771,11 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
                                           (camera_current_ && d.authored_pose->view == camera_current_->view);
           const bool scene_projection = scene_draw &&
               std::memcmp(&d.xf_regs[0x20], &scene_draw->xf_regs[0x20], 7 * sizeof(uint32_t)) == 0;
-          if (camera_previous_ && camera_current_ && d.xf_regs[0x26] == 0 && own_camera_matches && scene_projection) {
+          // Not on a rollback's discontinuous frame: the camera step below is derived from the
+          // previous, mispredicted frame, and carrying stage geometry by a fraction of it is exactly
+          // the cross-timeline blend mark_discontinuity exists to avoid. Held at its exact pose
+          // instead, as every draw was before fighters were exempted above.
+          if (!cur_->discontinuous && camera_previous_ && camera_current_ && d.xf_regs[0x26] == 0 && own_camera_matches && scene_projection) {
             uint64_t slots = 0;
             if (d.components & VB_HAS_POSMTXIDX) {
               for (uint32_t v = 0; v < d.vertex_count; ++v) {

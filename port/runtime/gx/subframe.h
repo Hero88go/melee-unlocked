@@ -20,6 +20,10 @@
 namespace gx {
 
 struct SubFrameStats { uint32_t draws = 0, paired = 0, rigid = 0, blended = 0, cuts = 0; uint32_t missing = 0, hud = 0, state = 0, geometry = 0, projection = 0, state_register = 256, authored = 0, carried = 0, vertex_blended = 0;
+  // World/stage draws held across a rollback's discontinuous frame (Frame::discontinuous): not
+  // blended with the previous, mispredicted frame, unlike a fighter's authored pose (see
+  // set_frames). Zero away from rollbacks and always zero on the 60 Hz path.
+  uint32_t discontinuity = 0;
   uint32_t skinned = 0;   // skinned (character model) draws in the current frame; zero on menus and stage select
   // Draws actually re-posed from their authored channels this presentation (route 1). `authored`
   // also counts the matrix-blend fallback taken by draws that have no authored pose.

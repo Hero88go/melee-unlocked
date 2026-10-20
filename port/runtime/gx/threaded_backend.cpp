@@ -203,9 +203,11 @@ class ThreadedBackend final : public Backend {
         int next = cur < 0 ? 0 : cur ^ 1;
         queue.recycle(std::move(frames[next]));   // return the buffers this slot is about to drop
         frames[next] = std::move(incoming);
-        // A frame that follows a rollback is not the neighbour of the one before it (Frame::discontinuous),
-        // so it is shown as it is, unpaired, and pairing resumes from it on the next frame.
-        have_prev = cur >= 0 && !frames[next].discontinuous;
+        // A frame that follows a rollback (Frame::discontinuous) is not the neighbour of the one
+        // before it, but the solver still pairs it against that previous frame: SubFrameSolver::set_frames
+        // holds world/stage draws at their exact pose across the discontinuity while still letting a
+        // fighter's authored pose interpolate through the correction.
+        have_prev = cur >= 0;
         if (frames[next].discontinuous) ++discontinuities;
         cur = next;
         got_new = true;
@@ -381,8 +383,8 @@ class ThreadedBackend final : public Backend {
           else std::snprintf(cap_text, sizeof cap_text, "cap %.0f%s", 1.0 / cap_period, live_options.fps_cap == 0 ? " = 2x refresh" : live_options.fps_cap < 0 ? " = monitor" : "");
           host::log("display: %.0f fps (%s, sim %.0f Hz, %s, %u draws, %u paired, %u cuts)", stats_presented / (now - stats_time), cap_text, stats_sim / (now - stats_time),
                     !subframes ? "locked" : authored ? "authored" : interpolate ? "interpolate" : "extrapolate", s.draws, s.paired, s.cuts);
-          if (subframes) host::log("pair rejection: missing %u, HUD %u, geometry %u, state %u (last BP %02X), projection %u, authored %u, camera-only %u, vertex-blended %u, FLIPS %u | phases <.25:%u <.5:%u <.75:%u <1:%u =1:%u",
-                                   s.missing, s.hud, s.geometry, s.state, s.state_register, s.projection, s.authored, s.carried, s.vertex_blended, s.pair_flips, phase_bins[0], phase_bins[1], phase_bins[2], phase_bins[3], phase_bins[4]);
+          if (subframes) host::log("pair rejection: missing %u, HUD %u, geometry %u, state %u (last BP %02X), projection %u, rollback %u, authored %u, camera-only %u, vertex-blended %u, FLIPS %u | phases <.25:%u <.5:%u <.75:%u <1:%u =1:%u",
+                                   s.missing, s.hud, s.geometry, s.state, s.state_register, s.projection, s.discontinuity, s.authored, s.carried, s.vertex_blended, s.pair_flips, phase_bins[0], phase_bins[1], phase_bins[2], phase_bins[3], phase_bins[4]);
           if (subframes) {
             // What the solver got wrong at the one phase where there is a right answer to compare
             // against. Anything other than zero here is geometry that jumps once per simulation
@@ -439,7 +441,7 @@ class ThreadedBackend final : public Backend {
         stats_time = now; stats_presented = 0; stats_sim = 0;
       }
     }
-    host::log("renderer: %llu simulation frames, %llu presented frames on its own thread, %llu drained without presenting, %llu shown unblended after a rollback",
+    host::log("renderer: %llu simulation frames, %llu presented frames on its own thread, %llu drained without presenting, %llu with stage held across a rollback",
               submitted, presented, (unsigned long long)drained, (unsigned long long)discontinuities);
   }
 
