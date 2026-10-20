@@ -230,6 +230,13 @@ unsigned int mu_slippi_new_seed(void)
 }
 
 /* The bridge expects two payload bytes for BB. */
+/* The Slippi Online mode picked on the menu (0-4; 2 = Direct): Melee Maker exchanges builds only in
+ * Direct (maker/platform/online_sync.c). */
+int mu_slippi_selected_mode(void)
+{
+    return slp.mode;
+}
+
 void mu_slippi_send_chat(int message_id)
 {
     u8 b[2];

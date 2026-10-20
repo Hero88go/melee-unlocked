@@ -368,6 +368,23 @@ typedef struct MuHostApi {
 /* rogueMelee's disc (id GALERM) is the mod disc. Its code is native (sourceport/game/rogue): Rogue
  * Mode is offered only with this bit, offline. No host API version change, as above. */
 #define MU_MOD_ROGUE 0x4u
+/* Melee Maker's disc (its supported release, port/runtime/host/maker_source.h) is the mod disc. Its
+ * code is native (sourceport/game/maker): builds are offered only with this bit. No host API version
+ * change, as above. */
+#define MU_MOD_MAKER 0x8u
+/* Private command 0xEE on slippi_command, Melee Maker's data for the native game (host:
+ * port/runtime/host/maker_source.h, game: sourceport/game/maker/mu_maker.c). The first byte picks:
+ *   0x01 addr(4) len(2)   bytes of its disc's main.dol at a console address (the bone tables its
+ *                         build generated from the player's game files). Data only, never run.
+ *   0x02                  its build id ("1.3.8-1865b7"), which online play compares
+ *   0x03                  addr(4) size(4): main memory for its loading cache (donor files and animations,
+ *                         read only during a match), mapped by the host right after the game's 64 MB
+ *                         at the first request; the console borrows Melee's preload caches instead
+ * An empty reply means the disc is not loaded (or the request is out of range). */
+#define MU_MAKER_COMMAND         0xEEu
+#define MU_MAKER_OP_DOL_READ     0x01u
+#define MU_MAKER_OP_BUILD        0x02u
+#define MU_MAKER_OP_CACHE        0x03u
 
 /* Private command 0xFA on slippi_command, 20XX Hack Pack data and settings for the native game
  * (host: port/runtime/host/hackpack_source.h, game: shim/mu_hp.c). The first payload byte picks:

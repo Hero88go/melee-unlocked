@@ -627,6 +627,7 @@ unsigned int mu_slippi_new_seed(void);                                      /* B
 void mu_slippi_send_chat(int message_id);                                   /* BB */
 int mu_slippi_code_suggestion(const MuCodeSuggestionReq* in, MuCodeSuggestion* out);   /* BE */
 int mu_slippi_in_online_mode(void);
+int mu_slippi_selected_mode(void);   /* the online mode picked on the menu, 2 = Direct */
 int mu_slippi_online_state(void);
 int mu_slippi_on_online_css(void);
 int mu_slippi_on_online_sss(void);

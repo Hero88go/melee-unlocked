@@ -1,0 +1,553 @@
+/* Starting and ending a borrowed move, and what it reads instead of the
+ * borrower's own data: the donor's kind, variables, bones and motion states.
+ * The core of the borrowed-move engine.
+ *
+ * Called from: the line edits (overrides/line_edits.json) and fixes throughout fighter code,
+ * hooks.c (every fighter frame), aerials.c, normals.c, donor_load.c.
+ * State: each fighter's BamFighterState (bam_match, match block, state.h).
+ */
+#include <engine/internal.h>
+#include <stddef.h>
+#include <melee/ft/fighter.h>
+#include <melee/lb/lb_00B0.h>
+#include <melee/ft/kinds/ftKoopa/types.h>
+/* Returned for fighters that own no state. Hot path: native fighter code
+ * reaches this through Bam_DonorVars many times per frame, so it must
+ * stay two compares. It is never written; every write is behind an
+ * ownership check (S->fighter == fp), which this state never passes. */
+/* Only the fields before "owned fighters only" are ever read through it. */
+static union { u32 words[16]; void* align; } no_state_storage;
+#define no_state (*(BamFighterState*) &no_state_storage)
+typedef char no_state_fits[(sizeof(no_state_storage) >= offsetof(BamFighterState, normal_fresh) + 1) ? 1 : -1];
+BamFighterState* Bam_FighterCtx(const Fighter* fp)
+{
+    if (fp && bam_match) {
+        BamFighterState* S = *Bam_FighterExtSlot(fp);
+        if (S && S->fighter == fp) return S;
+    }
+#if BAM_DEBUG
+    if (no_state.fighter || no_state.active || no_state.aerial || no_state.normal_on)
+        OSPanic(__FILE__, __LINE__, "unowned special state was written");
+#endif
+    return &no_state;
+}
+bool Bam_InBorrowedMove(const Fighter* fp)
+{
+    BamFighterState* const S = Bam_FighterCtx(fp);
+#if BAM_DEBUG
+    if (fp && S->fighter == fp && S->match_generation != bam_match->generation)
+        OSPanic(__FILE__, __LINE__, "stale borrowed-special match generation");
+#endif
+    return fp && S->fighter == fp &&
+           (S->active != NULL || S->aerial != NULL || S->normal_on);
+}
+
+void Bam_BorrowEnd(Fighter* fp)
+{
+    BamFighterState* const S = Bam_FighterCtx(fp);
+    FighterKind source;
+    BamSpecialSlot slot;
+    if (!Bam_InBorrowedMove(fp)) return;
+
+
+    source = Bam_DonorKind(fp);
+    slot = S->active ? S->active->native_slot : BAM_SPECIAL_SLOT_COUNT;
+#if BAM_DEBUG
+    if (S->normal_on)
+        BAM_LOG("normal_restore slot=%d donor=%u match=%u\n", S->normal_slot, S->normal_donor, S->match_generation);
+    else
+        BAM_LOG("%s_restore id=%u match=%u\n", S->active ? "special" : "aerial", S->active ? S->active->id : S->aerial->id, S->match_generation);
+#endif
+
+    /*
+     * Tear down source-owned attached state while source attrs/vars are still
+     * installed. Free projectiles/items may outlive the animation; their owner
+     * callbacks use Bam_DonorVars() to reach persistent source state.
+     */
+    switch (source) {
+    case Ft_Kind_Donkey:
+        if (slot == BAM_SPECIAL_UP)
+            ftDk_SpecialHi_DestroyAllEffects(fp->gobj);
+        break;
+    case Ft_Kind_GameWatch:
+        ftGw_Init_OnDamage(fp->gobj);
+        break;
+    case Ft_Kind_Samus:
+        if (slot == BAM_SPECIAL_NEUTRAL)
+            ftSamus_UnkAndDestroyAllEF(fp->gobj);
+        break;
+    case Ft_Kind_Ness:
+        /* Smash attacks: the yo-yo and the bat go with the move. */
+        if (S->normal_on) {
+            ftNs_AttackHi4_YoyoItemDespawn(fp->gobj);
+            ftNs_AttackS4_ItemNessBatRemove(fp->gobj);
+        }
+        break;
+    case Ft_Kind_Mewtwo:
+        if (slot == BAM_SPECIAL_NEUTRAL) {
+            int charge = fp->u.mt.x2234_shadowBallCharge;
+            ftMt_SpecialN_OnDeath(fp->gobj);
+            fp->u.mt.x2234_shadowBallCharge = charge;
+        }
+        break;
+    case Ft_Kind_Peach:
+        if (slot == BAM_SPECIAL_NEUTRAL)
+            ftPe_SpecialN_OnDeath2(fp->gobj);
+        else if (slot == BAM_SPECIAL_UP)
+            ftPe_8011D598(fp->gobj);
+        break;
+    case Ft_Kind_Seak:
+        if (slot == BAM_SPECIAL_SIDE)
+            ftSk_SpecialS_CheckAndDestroyChain(fp->gobj);
+        break;
+    case Ft_Kind_Captain:
+    case Ft_Kind_Ganon:
+        if (slot == BAM_SPECIAL_SIDE)
+            ftCa_SpecialS_RemoveGFX(fp->gobj);
+        break;
+    default:
+        break;
+    }
+
+    if ((source == Ft_Kind_Mario || source == Ft_Kind_DrMario) &&
+        slot == BAM_SPECIAL_SIDE)
+        ftMr_SpecialS_RemoveCape(fp->gobj);
+
+    if ((source == Ft_Kind_Fox || source == Ft_Kind_Falco) &&
+        (slot == BAM_SPECIAL_NEUTRAL || S->normal_on))
+        ftFx_SpecialN_RemoveBlaster(fp->gobj);
+    /* Donkey Kong's cargo throw reads his attributes through x2CC. */
+    if (S->normal_on) FT_CARGO_ATTRS(fp) = S->native_cargo;
+
+    S->source_vars[source] = fp->u;
+    fp->u = S->native_vars;
+    memcpy(&fp->grab_cb, S->native_callbacks,
+           sizeof(S->native_callbacks));
+    fp->dat_attrs = S->native_attrs;
+    FT_ANIMS(fp) = S->native_anims;
+    FT_ANIM_FLAGS(fp) = S->native_anim_flags;
+    FT_ANIM_COUNT(fp) = S->native_anim_count;
+    fp->reflecting = false;
+    S->active = NULL;
+    S->aerial = NULL;
+    S->normal_on = false;
+}
+
+FighterKind Bam_DonorKind(const Fighter* fp)
+{
+    BamFighterState* const S = Bam_FighterCtx(fp);
+    if (!fp) return Ft_Kind_Max;
+    if (!Bam_InBorrowedMove(fp))
+        return fp->kind;
+    if (S->active != NULL)
+        return S->active->internal_kind;
+    if (S->normal_on) return (FighterKind) S->normal_donor;
+    return S->aerial ? S->aerial->donor : fp->kind;
+}
+
+ftData* Bam_DonorData(Fighter* fp)
+{
+    FighterKind source;
+    if (!Bam_InBorrowedMove(fp))
+        return fp->ft_data;
+    source = Bam_DonorKind(fp);
+    return source >= 0 && source < Ft_Kind_Max ? gFtDataList[source] : fp->ft_data;
+}
+
+static FighterKind borrow_family(FighterKind kind)
+{
+    switch (kind) {
+    case Ft_Kind_Falco: return Ft_Kind_Fox;
+    case Ft_Kind_DrMario: return Ft_Kind_Mario;
+    case Ft_Kind_CLink: return Ft_Kind_Link;
+    case Ft_Kind_Pichu: return Ft_Kind_Pikachu;
+    case Ft_Kind_Ganon: return Ft_Kind_Captain;
+    case Ft_Kind_Emblem: return Ft_Kind_Mars;
+    case Ft_Kind_Nana: return Ft_Kind_Popo;
+    default: return kind;
+    }
+}
+
+union Fighter_FighterVars* Bam_DonorVars(Fighter* fp, FighterKind family)
+{
+    int source;
+    BamFighterState* const S = Bam_FighterCtx(fp);
+    if (S->fighter != fp) return &fp->u;
+    family = borrow_family(family);
+    if (Bam_InBorrowedMove(fp) &&
+        borrow_family(Bam_DonorKind(fp)) == family)
+        return &fp->u;
+    if (borrow_family(fp->kind) == family)
+        return Bam_InBorrowedMove(fp) ? &S->native_vars : &fp->u;
+    /* Projectiles can outlive the animation which created them. Their owner
+     * callbacks must update the source's persistent state, never the unrelated
+     * base fighter's overlapping union fields. Prefer the equipped clone. */
+    for (source = 0; source < BAM_SPECIAL_SLOT_COUNT; ++source) {
+        const BamDonorSpecial* def = Bam_DonorSpecial(Bam_EquippedSpecial(fp, source));
+        if (def && borrow_family(def->internal_kind) == family &&
+            S->loaded_sources[def->internal_kind])
+            return &S->source_vars[def->internal_kind];
+    }
+    for (source = 0; source < Ft_Kind_Max; ++source)
+        if (borrow_family(source) == family && S->loaded_sources[source])
+            return &S->source_vars[source];
+    return &fp->u;
+}
+
+void Bam_BorrowFighterDestroyed(Fighter* fp)
+{
+    BamFighterState* const S = Bam_FighterCtx(fp);
+    if (S->fighter != fp || !fp) return;
+    Bam_AnimRetarget(fp, fp->kind, 0); /* Forget its body-bone mapping. */
+    Bam_SwordRelease(fp);
+    Bam_BorrowEnd(fp);
+    Bam_AerialRelease(S);
+#if BAM_DEBUG
+    BAM_LOG("fighter_context_destroy kind=%u match=%u\n", fp->kind, S->match_generation);
+#endif
+    memset(S, 0, sizeof(*S));
+}
+
+/* Per frame: borrowed Fire Breath refills like Bowser's own (Bowser runs
+ * ftKp_SpecialLw_80134D78 from his per-frame callback, which a borrower
+ * does not have). The flame shrinks while breathing and regrows between
+ * uses. */
+void Bam_BorrowFighterFrame(Fighter* fp)
+{
+    BamFighterState* const S = Bam_FighterCtx(fp);
+    const ftKoopaAttributes* da = (const ftKoopaAttributes*) bam_match->donor_attrs[Ft_Kind_Koopa].bytes;
+    struct ftKoopa_FighterVars* fuel;
+    if (S->fighter != fp || fp->kind == Ft_Kind_Koopa || !S->loaded_sources[Ft_Kind_Koopa]) return;
+    if (Bam_InBorrowedMove(fp) && Bam_DonorKind(fp) == Ft_Kind_Koopa) {
+        /* Borrowed Bowser move in progress: its vars are installed. */
+        if (fp->motion_id >= 0x155 && fp->motion_id < 0x15B) return;
+        fuel = &fp->u.kp;
+    } else fuel = &S->source_vars[Ft_Kind_Koopa].kp;
+    fuel->x222C += da->x8;
+    if (fuel->x222C > da->x10) fuel->x222C = da->x10;
+    fuel->x2230 += da->xC;
+    if (fuel->x2230 > da->x18) fuel->x2230 = da->x18;
+}
+
+void Bam_BorrowMatchEnd(void)
+{
+    unsigned i;
+    /* Retail defers fighter destruction until the next heap reset. Release our
+     * donor context while its fighter and articles are still valid. */
+    for (i = 0; i < BAM_FIGHTERS; ++i)
+        if (bam_match->fighters[i].fighter) Bam_BorrowFighterDestroyed(bam_match->fighters[i].fighter);
+    Bam_AnimScaleReset();
+}
+
+void Bam_BorrowTransformed(Fighter* src, Fighter* dst)
+{
+    BamFighterState* const S = Bam_FighterCtx(src);
+    if (!src || S->fighter != src || !Bam_IsBuildFighter(dst)) return;
+    Bam_BorrowEnd(src);
+    /* Both native forms already exist; all borrowed assets and persistent
+     * charge data belong to the borrower and survive the entity swap. */
+    S->fighter = dst;
+#if BAM_DEBUG
+    BAM_LOG("fighter_transform from=%u to=%u match=%u\n",src->kind,dst->kind,bam_match->generation);
+#endif
+}
+
+Fighter_GObj* Bam_ClimberPartner(Fighter* fp)
+{
+    Fighter_GObj* partner = Player_GetEntityAtIndex(fp->player_idx, 1);
+    if (partner && GET_FIGHTER(partner)->kind != Ft_Kind_Nana) return NULL;
+    return partner;
+}
+
+MotionState* Bam_DonorMotionState(Fighter* fp, int motion)
+{
+    const BamDonorSpecial* def;
+    BamFighterState* const S = Bam_FighterCtx(fp);
+    if (!Bam_InBorrowedMove(fp)) return NULL;
+
+
+    if (S->normal_on) return Bam_NormalMotionState(fp, motion);
+    if (S->aerial) return Bam_AerialMotionState(fp,motion);
+    def = S->active;
+    if (!def) return NULL;
+    if (!Bam_IsBuildFighter(fp) || motion < def->first_state || motion > def->last_state) {
+        Bam_BorrowEnd(fp);
+        return NULL;
+    }
+#if BAM_DEBUG
+    BAM_LOG("donor_motion id=%u motion=%d anim=%p\n", def->id, motion, def->states[motion-ftCo_MS_Count].anim_cb);
+#endif
+    return &def->states[motion - ftCo_MS_Count];
+}
+
+/* Raw table lookup: ftParts_GetBoneIndex itself falls back through here. */
+static int part_joint(Fighter* fp, int part)
+{
+    const FighterPartsTable* table = DP(ftPartsTable[fp->kind]);
+    int joint;
+    if (part < 0 || part > FtPart_TransN2) return -1;
+    joint = DP(table->part_to_joint)[part];
+    if (joint == FTPART_INVALID || joint < 0 || (unsigned) joint >= table->parts_num || !fp->parts[joint].joint)
+        return -1;
+    return joint;
+}
+static float reach2(Fighter* fp, int joint, const Vec3* center)
+{
+    Vec3 p;
+    lb_8000B1CC(fp->parts[joint].joint, NULL, &p);
+    p.x -= center->x; p.y -= center->y; p.z -= center->z;
+    return p.x * p.x + p.y * p.y + p.z * p.z;
+}
+/* The nearest part along a limb (shoulder to hand, hip to foot) that the
+ * fighter has, nearer the body first on a tie. -1 if none. */
+#pragma push
+#pragma dont_inline on
+static int limb_joint(Fighter* fp, int first, int last, int part)
+{
+    int d, joint;
+    for (d = 0; d <= last - first; ++d) {
+        if (part - d >= first && (joint = part_joint(fp, part - d)) >= 0) return joint;
+        if (part + d <= last && (joint = part_joint(fp, part + d)) >= 0) return joint;
+    }
+    return -1;
+}
+#pragma pop
+int Bam_FallbackJoint(Fighter* fp, int part)
+{
+    static const int tail[] = { FtPart_BustN, FtPart_HipN, FtPart_TransN };
+    int joint = -1, left, right, chest;
+    unsigned i;
+    if (part >= FtPart_LShoulderN && part <= FtPart_LHandN) {
+        /* Along the arm: a shoulder hitbox stays at the shoulder on a
+         * fighter with no shoulder bone (Kirby, Pikachu), not at the hand. */
+        joint = limb_joint(fp, FtPart_LShoulderN, FtPart_LHandN, part);
+    } else if (part > FtPart_LHandN && part <= FtPart_LHandNb) {
+        joint = part_joint(fp, FtPart_LHandN);
+        if (joint < 0) joint = part_joint(fp, FtPart_LArmJ);
+    } else if (part >= FtPart_RShoulderN && part <= FtPart_RHandN) {
+        joint = limb_joint(fp, FtPart_RShoulderN, FtPart_RHandN, part);
+    } else if (part > FtPart_RHandN && part <= FtPart_RHandNb) {
+        joint = part_joint(fp, FtPart_RHandN);
+        if (joint < 0) joint = part_joint(fp, FtPart_RArmJ);
+    } else if (part == FtPart_WaistN) {
+        /* Most fighters have no waist bone: the hip is right below it (the
+         * chest put Jigglypuff's dash attack above a tall fighter's head). */
+        joint = part_joint(fp, FtPart_HipN);
+    } else if (part == FtPart_NeckN || part == FtPart_HeadN) {
+        joint = part_joint(fp, FtPart_HeadN);
+        if (joint < 0) joint = part_joint(fp, FtPart_NeckN);
+        if (joint < 0) joint = part_joint(fp, FtPart_BustN);
+        /* Kirby and Jigglypuff are all head: the middle of the body, not
+         * the hip at their feet (a headbutt hit the floor). */
+        if (joint < 0) joint = part_joint(fp, FtPart_WaistN);
+    } else if (part >= FtPart_LLegJA && part <= FtPart_LFootJ) {
+        joint = limb_joint(fp, FtPart_LLegJA, FtPart_LFootJ, part);
+    } else if (part >= FtPart_RLegJA && part <= FtPart_RFootJ) {
+        joint = limb_joint(fp, FtPart_RLegJA, FtPart_RFootJ, part);
+    } else if (part < 0 || part > FtPart_TransN2) {
+        /* A donor-only bone (sword, cannon, gun, prop): it rides on whichever
+         * hand is extended furthest from the chest when the move needs it. */
+        left = part_joint(fp, FtPart_LHandN);
+        right = part_joint(fp, FtPart_RHandN);
+        chest = part_joint(fp, FtPart_BustN);
+        if (chest < 0) chest = part_joint(fp, FtPart_HipN);
+        if (left >= 0 && right >= 0 && chest >= 0) {
+            Vec3 center;
+            lb_8000B1CC(fp->parts[chest].joint, NULL, &center);
+            joint = reach2(fp, left, &center) > reach2(fp, right, &center) ? left : right;
+        } else joint = left >= 0 ? left : right;
+    }
+    for (i = 0; joint < 0 && i < sizeof(tail) / sizeof(tail[0]); ++i) joint = part_joint(fp, tail[i]);
+    return joint >= 0 ? joint : 0;
+}
+int Bam_DonorBoneJoint(Fighter* fp, int bone)
+{
+    int mapped, part = -1;
+    unsigned i;
+    FighterKind source;
+    BamFighterState* S;
+    const FighterPartsTable* from;
+    if (!Bam_InBorrowedMove(fp)) return bone;
+    source = Bam_DonorKind(fp);
+    /* A donor bone rebuilt on the borrower (Marth's sword, Kirby's hammer
+     * bone): the body part it hangs from; hitboxes on it follow the rebuilt
+     * bone (anim/props.c). Checked first: Kirby's hammer bone shares its
+     * body-part slot with other fighters' thumbs. */
+    mapped = Bam_PropJoint(fp, bone);
+    if (mapped >= 0) return mapped;
+    mapped = ftPartsRemap(fp->kind, source, bone);
+    if (mapped >= 0 && (unsigned) mapped < DP(ftPartsTable[fp->kind])->parts_num && fp->parts[mapped].joint)
+        return mapped;
+    /* The borrower lacks this donor bone. Resolve it once per borrowed move
+     * to the nearest body part it does have (never the root at the feet). */
+    S = Bam_FighterCtx(fp);
+    for (i = 0; i < S->fallback_count; ++i)
+        if (S->fallback_bone[i] == bone) return S->fallback_joint[i];
+    from = DP(ftPartsTable[source]);
+    if (bone >= 0 && (unsigned) bone < from->parts_num && DP(from->joint_to_part)[bone] != FTPART_INVALID)
+        part = DP(from->joint_to_part)[bone];
+    mapped = Bam_FallbackJoint(fp, part);
+#if BAM_DEBUG
+    BAM_LOG("bone_fallback donor=%u bone=%d part=%d borrower=%u joint=%d\n",
+        source, bone, part, fp->kind, mapped);
+#endif
+    if (S->fallback_count < sizeof(S->fallback_bone) / sizeof(S->fallback_bone[0])) {
+        S->fallback_bone[S->fallback_count] = (short) bone;
+        S->fallback_joint[S->fallback_count++] = (short) mapped;
+    }
+    return mapped;
+}
+
+void Bam_BorrowBegin(Fighter* fp, FighterKind donor)
+{
+    ftData* source;
+    BamFighterState* const S = Bam_FighterCtx(fp);
+    Bam_BorrowEnd(fp);
+    S->native_attrs = fp->dat_attrs;
+    S->native_anims = FT_ANIMS(fp);
+    S->native_anim_flags = FT_ANIM_FLAGS(fp);
+    S->native_anim_count = FT_ANIM_COUNT(fp);
+    S->native_vars = fp->u;
+    memcpy(S->native_callbacks, &fp->grab_cb,
+           sizeof(S->native_callbacks));
+    fp->u = S->source_vars[donor];
+    source = gFtDataList[donor];
+    S->fallback_count = 0; /* A new borrowed move resolves its bones afresh. */
+    {
+        extern void Bam_VisReset(const Fighter* fp);
+        Bam_VisReset(fp);
+    }
+    fp->dat_attrs = bam_match->donor_attrs[donor].bytes;
+    /* The private table holds the sliced animations when the donor's full
+     * archive is not resident (donor_load.c). */
+    FT_ANIMS(fp) = S->aerial_anims[donor] ? S->aerial_anims[donor] : FTDATA_ANIMS(source);
+    FT_ANIM_FLAGS(fp) = FTDATA_ANIM_FLAGS(source);
+    FT_ANIM_COUNT(fp) = ftData_Table_Unk0[donor].count;
+}
+
+static bool install_special(Fighter* fp, BamSpecialSlot slot)
+{
+    const BamDonorSpecial* def;
+    BamFighterState* const S = Bam_FighterCtx(fp);
+    if (!Bam_IsBuildFighter(fp) || slot < 0 || slot >= BAM_SPECIAL_SLOT_COUNT) return false;
+    def = Bam_DonorSpecial(Bam_EquippedSpecial(fp, slot));
+    if (!def) { Bam_BorrowEnd(fp); return false; }
+    if (!def->ground_enter || !def->air_enter) return false;
+    if (def->native_slot != slot || S->fighter != fp ||
+        !S->loaded[def->id]) return false;
+    Bam_BorrowBegin(fp, def->internal_kind);
+    S->active = def;
+    /* Source animation flags already identify the source skeleton. Melee's
+     * ftPartsRemap path retargets its FigaTree to the unchanged base fighter. */
+    return true;
+}
+
+bool Bam_CanTrySpecial(Fighter* fp, BamSpecialSlot slot)
+{
+    const BamDonorSpecial* def;
+    BamFighterState* const S = Bam_FighterCtx(fp);
+    if (!Bam_IsBuildFighter(fp) || slot < 0 || slot >= BAM_SPECIAL_SLOT_COUNT) return false;
+    def = Bam_DonorSpecial(Bam_EquippedSpecial(fp, slot));
+    return def && def->ground_enter && def->air_enter && def->native_slot == slot &&
+        S->fighter == fp && S->loaded[def->id];
+}
+bool Bam_TrySpecial(Fighter_GObj* gobj, BamSpecialSlot slot, bool airborne)
+{
+    Fighter* fp = GET_FIGHTER(gobj);
+    if (!install_special(fp, slot)) return false;
+    {
+        BamFighterState* const S = Bam_FighterCtx(fp);
+        const BamDonorSpecial* def = S->active;
+        (airborne ? def->air_enter : def->ground_enter)(gobj);
+        /* A special that did not start (Peach's down special in the air, or
+         * holding another item: her code does nothing then) leaves the
+         * fighter in its own state; the donor's variables, attributes and
+         * animations must not stay installed under it. */
+        if (S->active == def && (fp->motion_id < def->first_state || fp->motion_id > def->last_state)) {
+            BAM_LOG("special id=%u did not start (motion %d)\n", def->id, (int) fp->motion_id);
+            Bam_BorrowEnd(fp);
+        }
+    }
+    return true;
+}
+
+bool Bam_BorrowResumeFamily(Fighter* fp, FighterKind family, BamSpecialSlot slot)
+{
+    const BamDonorSpecial* def;
+    if (!Bam_IsBuildFighter(fp)) return false;
+    def = Bam_DonorSpecial(Bam_EquippedSpecial(fp, slot));
+    if (def && borrow_family(def->internal_kind) == borrow_family(family))
+        return install_special(fp, slot);
+    if (borrow_family(fp->kind) == borrow_family(family)) {
+        Bam_BorrowEnd(fp);
+        return true;
+    }
+    return false;
+}
+
+bool Bam_BorrowOwnerResume(Fighter* fp, FighterKind family, BamSpecialSlot slot)
+{
+    if (!fp) return false;
+    if (!Bam_IsBuildFighter(fp)) return borrow_family(fp->kind) == borrow_family(family);
+    return Bam_BorrowResumeFamily(fp, family, slot);
+}
+
+int Bam_PartJoint(Fighter* fp, int part)
+{
+    int index = ftParts_GetBoneIndex(fp, part);
+    if (Bam_IsBuildFighter(fp) && ((unsigned) index >= DP(ftPartsTable[fp->kind])->parts_num || !fp->parts[index].joint))
+        return Bam_FallbackJoint(fp, part);
+    return index;
+}
+
+/* A joint two effects name by the donor's joint number (efsync.c 0x501,
+ * Zelda's up smash: joint 85; efalt.c 0x494: joint 44): the borrower's
+ * equivalent while it borrows, never past its joint table (Pikachu has
+ * no joint 85: an effect spawned past the table crashes).
+ * inject: after the retail load, returns the joint to use. */
+HSD_JObj* Bam_EfJointFp(Fighter* fp, HSD_JObj* loaded, int joint)
+{
+    unsigned n;
+    if (!fp) return loaded;
+    n = DP(ftPartsTable[fp->kind])->parts_num;
+    if (!Bam_InBorrowedMove(fp) && (unsigned) joint < n) return loaded;
+    if (Bam_InBorrowedMove(fp)) joint = Bam_DonorBoneJoint(fp, joint);
+    if (joint < 0 || (unsigned) joint >= n || !fp->parts[joint].joint) joint = 0;
+    return fp->parts[joint].joint;
+}
+HSD_JObj* Bam_EfJoint85(Fighter* fp, HSD_JObj* loaded) { return Bam_EfJointFp(fp, loaded, 85); }
+HSD_JObj* Bam_EfJoint44(Fighter* fp, HSD_JObj* loaded) { return Bam_EfJointFp(fp, loaded, 44); }
+
+/* A borrowed move's full charge (Samus's Charge Shot, Donkey Kong's Giant
+ * Punch, Sheik's needles, Mewtwo's Shadow Ball, Mr. Game & Watch's Oil
+ * Panic) flashes the fighter as it does the donor: every motion change
+ * clears the flash and asks the fighter's own kind to start it again
+ * (ftcolanim.c), which knows nothing of the borrowed charge. Asked here of
+ * each donor, with its charge and attributes in place. */
+#include <melee/ft/ftdata.h>
+void Bam_ChargeFlash(Fighter* fp)
+{
+    static const unsigned char kinds[] = { Ft_Kind_Donkey, Ft_Kind_Seak, Ft_Kind_Samus, Ft_Kind_Mewtwo,
+                                           Ft_Kind_GameWatch };
+    BamFighterState* const S = Bam_FighterCtx(fp);
+    FighterKind active;
+    unsigned i;
+    if (!fp || S->fighter != fp) return;
+    active = Bam_InBorrowedMove(fp) ? Bam_DonorKind(fp) : fp->kind;
+    for (i = 0; i < sizeof(kinds); ++i) {
+        FighterKind k = (FighterKind) kinds[i];
+        if (k == fp->kind || !S->loaded_sources[k] || !ftData_UnkMotionStates4[k])
+            continue;
+        if (k == active) {
+            ftData_UnkMotionStates4[k](fp->gobj);
+        } else {
+            union Fighter_FighterVars vars = fp->u;
+            void* attrs = fp->dat_attrs;
+            fp->u = S->source_vars[k];
+            fp->dat_attrs = bam_match->donor_attrs[k].bytes;
+            ftData_UnkMotionStates4[k](fp->gobj);
+            fp->u = vars;
+            fp->dat_attrs = attrs;
+        }
+    }
+}

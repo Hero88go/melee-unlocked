@@ -141,7 +141,7 @@
       "patch_sha256": "04e9b891f41206f7481d7443aabe2e09db01af0e0d0eaffb8cc48e1e4e1878ad",
       "output_md5": "56507ddb43dbc52e39cb8dc120c81733",
       "output_sha256": "8800f53faa1d982e0b7ce999a21e705070df3909c556c6348db4dbe61233977d",
-      "note": "Runs on the Static Recomp. Download it from its page, then drop the zip here."
+      "note": "Runs on either engine. Download it from its page, then drop the zip here."
     },
     {
       "id": "roguemelee",

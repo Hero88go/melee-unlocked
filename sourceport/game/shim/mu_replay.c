@@ -6,6 +6,9 @@
  * What the playback also needs from the replay's own Gecko list (NeutralSpawn, UCF 0.84, the online
  * gameplay codes) is carried by the host's MU_REPLAY_CODE_* mask; each native code checks it.
  */
+#if MU_MAKER
+#include <mu_bm.h>
+#endif
 #include <string.h>
 #include <melee/cm/camera.h>
 #include <melee/cm/types.h>
@@ -318,6 +321,13 @@ void mu_replay_start_melee(StartMeleeData* data)
         for (i = 0; i < 6; i++) {
             convert_player(&data->players[i], info + 0x60 + 0x24 * i);
         }
+#if MU_MAKER
+        /* Melee Maker: the builds the replay carries (maker/platform/replay_builds.c). */
+        if (mu_bm_maker()) {
+            extern void BAM_ReplayBuildsLoad(const u8* info);
+            BAM_ReplayBuildsLoad(info);
+        }
+#endif
     }
     frame_index = FIRST_FRAME;
     finished = 0;

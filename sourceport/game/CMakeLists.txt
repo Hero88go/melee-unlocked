@@ -369,6 +369,14 @@ if(MU_ROGUE)
   target_include_directories(game_flags INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/rogue")
   file(GLOB_RECURSE ROGUE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/rogue/*.c")
   list(APPEND SHIM_SOURCES ${ROGUE_SOURCES})
+  # Melee Maker's borrowed-move engine, native (maker/, include root for its <engine/...>, <bam/...>,
+  # <platform/...>). Its edits share rogueMelee's lines in the game's source (include/mu_bm.h picks the
+  # engine of the loaded disc), so it builds with MU_ROGUE. Shim side: maker/mu_maker.c.
+  target_compile_definitions(game_flags INTERFACE MU_MAKER=1 BAM_ENABLE_AERIALS=1 BAM_DEBUG=0
+    BAM_VERSION="1.3.8")
+  target_include_directories(game_flags INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/maker")
+  file(GLOB_RECURSE MAKER_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/maker/*.c")
+  list(APPEND SHIM_SOURCES ${MAKER_SOURCES})
 endif()
 
 if(NOT Python3_EXECUTABLE)

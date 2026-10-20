@@ -72,6 +72,7 @@
 #include "replay_control.h"
 #include "mod_scan.h"
 #include "hackpack_source.h"
+#include "maker_source.h"
 #include "pack_skin_rule.h"
 #include "disc_skin_scan.h"
 #include "cosmetic_mods.h"
@@ -252,6 +253,7 @@ std::string g_mod_profile_name;
 std::vector<mods::Layer> g_mod_layers;
 std::vector<std::filesystem::path> g_mod_gcis;
 std::string g_mod_fingerprint;                 // content identity of the enabled layers, "" = vanilla
+std::string g_direct_fingerprint;              // what Direct compares when not the content identity (Melee Maker)
 std::filesystem::path g_profile_card;          // the profile's own card folder, "" = the ordinary card
 std::vector<mods::CardImport> g_card_imports;
 
@@ -516,6 +518,7 @@ void load_mod_overlay() {
       host::log("mods: Training Mode CE files found; its events run natively");
     }
   }
+  g_direct_fingerprint.clear();
   // rogueMelee: its disc is the 1.02 game under the id GALERM. Its menu files load like any pack's;
   // its code is compiled into the native game (sourceport/game/rogue). Single player, offline.
   if (one_iso) {
@@ -524,6 +527,16 @@ void load_mod_overlay() {
     if (disc.read(id, sizeof id) && std::memcmp(id, "GALERM", sizeof id) == 0) {
       mods::status().rogue = true;
       host::log("mods: rogueMelee disc found; Rogue Mode runs natively (1-P Mode > Regular Match)");
+    }
+    // Melee Maker: the 1.02 game's id; its main.dol carries its build id and the bone tables the
+    // native engine (sourceport/game/maker) reads through command 0xEE (maker_source.h).
+    if (!mods::status().rogue && maker::attach(g_mod_layers[0].path)) {
+      mods::status().maker = true;
+      host::log("mods: Melee Maker %s disc found; its builds run natively", maker::kBuild);
+      // Direct: the fingerprint the Static Recomp sends for this disc too (host.cpp), so players on
+      // either engine can play each other.
+      const std::string shared = maker::fingerprint(mods::sha256_file(g_mod_layers[0].path));
+      g_direct_fingerprint = shared;
     }
   }
   // The 20XX Hack Pack (hackpack_source.h): its stages, music and costumes load like any other
@@ -1542,6 +1555,29 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           append_be32(reply, gx::RenderOptions::live_cpu_training() & MU_GAME_OPTION3_CPU_ALL);
           return true;
         }
+        if (c == MU_MAKER_COMMAND && n == 1 && p[0] == MU_MAKER_OP_CACHE) {
+          // Melee Maker's loading cache: 32 MB right after the 64 MB GX can address, which then grows
+          // to cover it (host::try_ptr), so donor models in it draw. Mapped once, only for its disc.
+          static uint32_t cache_size = 0;
+          static bool tried = false;
+          if (!tried && maker::loaded()) {
+            tried = true;
+            constexpr uintptr_t base = MEM1_BASE + (64u << 20);
+            if (VirtualAlloc((void*)base, 32u << 20, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE) == (void*)base) {
+              cache_size = 32u << 20;
+              host::ram_size = (64u << 20) + cache_size;
+              host::log("mods: Melee Maker cache, %u MB at %08llX", cache_size >> 20, (unsigned long long)base);
+            } else {
+              host::log("mods: Melee Maker cache could not be mapped; its moves load into the match heap");
+            }
+          }
+          if (cache_size) { append_be32(reply, uint32_t(MEM1_BASE + (64u << 20))); append_be32(reply, cache_size); }
+          return true;
+        }
+        if (c == MU_MAKER_COMMAND) {
+          maker::command(p, n, reply);   // Melee Maker's data for its native engine (maker_source.h)
+          return true;
+        }
         if (c == MU_HP_COMMAND) {
           // 20XX Hack Pack data and choices for the game's native rewrites (hackpack_source.h).
           // Choices and the stage state change only offline, outside replay playback.
@@ -1631,7 +1667,7 @@ slippi::online::LocalBuild content_build_for_mode(int mode) {
   const bool retail = mods && mode >= 0 && (g_plain_opponent || !(mode == 2 && gx::RenderOptions::live_mods_in_direct()));
   slippi::online::LocalBuild build;
   build.mod_view = mods && !retail;
-  build.fingerprint = g_mod_fingerprint;
+  build.fingerprint = g_direct_fingerprint.empty() ? g_mod_fingerprint : g_direct_fingerprint;
   build.name = g_mod_display_name;
   build.allow_unverified = gx::RenderOptions::live_mods_dolphin_ok();
   return build;
@@ -2392,7 +2428,7 @@ void h_native_free(void* ptr) { std::free(ptr); }
 uint32_t h_mem1_size() { return MEM1_SIZE; }
 uint32_t h_mod_flags() {
   return (g_mod_overlay.files().empty() ? 0 : MU_MOD_ASSETS_PRESENT) | (hackpack::loaded() ? MU_MOD_HACKPACK : 0u) |
-         (mods::status().rogue ? MU_MOD_ROGUE : 0u);
+         (mods::status().rogue ? MU_MOD_ROGUE : 0u) | (mods::status().maker ? MU_MOD_MAKER : 0u);
 }
 int32_t h_sound_mode() { return 1; }
 void h_set_sound_mode(int32_t) {}

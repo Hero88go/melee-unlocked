@@ -77,6 +77,14 @@ static void emit_game_start(const StartMeleeData* data, const u8* msrb)
             p[3] = 0;
         }
     }
+#if MU_MAKER
+    /* Melee Maker: every player's build in the block's spare bytes, as its Dolphin build records it
+     * (maker/platform/replay_builds.c). */
+    if (mu_bm_maker()) {
+        extern void BAM_ReplayBuildsStamp(u8* info);
+        BAM_ReplayBuildsStamp(b + 5);
+    }
+#endif
     put32(b, 0x13D, *HSD_RandSeedPtr);
     for (i = 0; i < 4; ++i) {   /* UCF dashback and shield drop, per port: the General Codes' */
         put32(b, 0x141 + i * 8, mu_general_codes() ? 1 : 0);

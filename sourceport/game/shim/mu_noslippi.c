@@ -169,6 +169,7 @@ int mu_slippi_code_suggestion(const MuCodeSuggestionReq* in, MuCodeSuggestion* o
     return -1;
 }
 int mu_slippi_in_online_mode(void) { return 0; }
+int mu_slippi_selected_mode(void) { return -1; }
 int mu_slippi_in_online_game(void) { return 0; }
 int mu_slippi_on_online_sss(void) { return 0; }
 int mu_slippi_on_online_splash(void) { return 0; }

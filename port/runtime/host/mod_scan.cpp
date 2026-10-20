@@ -490,6 +490,7 @@ bool retail_dol_by_hash(std::ifstream& in, const DiscInfo& info) {
 // of its source hash) is read from the DOL's strings. Empty when the disc is not Melee Maker.
 constexpr const char kMeleeMakerMark[] = "BuildAMelee overlay does not fit the arena";
 constexpr const char kMeleeMakerTested[] = "1.3.8-";   // the release played through on the Static Recomp
+constexpr const char kMeleeMakerNative[] = "1.3.8-1865b7";   // its native engine reads this release's tables
 std::string melee_maker_build(std::ifstream& in, const DiscInfo& info) {
   if (!info.dol_size) return {};
   std::vector<uint8_t> dol(info.dol_size);
@@ -927,17 +928,21 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
     return d;
   }
   // Melee Maker: its overlay runs on the Static Recomp, which boots a mod disc with Slippi Dolphin's
-  // memory size so the overlay sits where it was built to (host.cpp boot_setup). Direct against the
-  // same build; the build swap rides on quick chat, as in Slippi Dolphin.
+  // memory size so the overlay sits where it was built to (host.cpp boot_setup). Its engine is also
+  // native in the Source Port (sourceport/game/maker), for the release whose bone tables the game
+  // reads from the disc (maker_source.h kBuild). Direct against the same build; the build swap rides
+  // on quick chat, as in Slippi Dolphin.
   if (!dol_retail) {
     if (const std::string build = melee_maker_build(in, info); !build.empty()) {
       d.kind = Kind::CodeMod; d.name = "Melee Maker"; d.version = build; d.catalog_id = "meleemaker";
       const bool tested = build.rfind(kMeleeMakerTested, 0) == 0;
-      set_support(d, Engine::Recomp, tested ? Support::Supported : Support::Untested, false);
+      const bool native = build == kMeleeMakerNative;
+      set_support(d, native ? Engine::Either : Engine::Recomp, tested ? Support::Supported : Support::Untested, false);
 #ifdef MELEE_NO_SLIPPI
       d.message = "Detected: Melee Maker " + build + ". This build cannot play it.";
 #else
-      d.message = "Detected: Melee Maker " + build + ". Plays on the Static Recomp: launcher > Mods > Play.";
+      d.message = "Detected: Melee Maker " + build + (native ? ". Plays on either engine: launcher > Mods > Play."
+                                                              : ". Plays on the Static Recomp: launcher > Mods > Play.");
 #endif
       return d;
     }
@@ -999,7 +1004,7 @@ Detected identify(const fs::path& file, const ScanOptions& options, std::string*
 // The scan cache: Mods/.cache/scan.txt, one line per file keyed by path, size and time (and, for
 // discs, the retail disc they were compared with), so a boot never reads an unchanged disc again.
 namespace {
-constexpr const char kCacheHeader[] = "mu-scan 12";   // 12: rogueMelee (GALERM) plays on the Source Port
+constexpr const char kCacheHeader[] = "mu-scan 13";   // 13: Melee Maker 1.3.8 plays on either engine
 struct CacheEntry { std::string key, base; Detected d; };
 
 std::string cache_key(const fs::path& file) {

@@ -4,6 +4,7 @@
 #include "audio.h"
 #include "cosmetic_mods.h"
 #include "mod_profile.h"
+#include "maker_source.h"
 #include "user_gecko.h"
 #include "memory_range.h"
 #include "guest_heap_trace.h"
@@ -765,6 +766,12 @@ static void apply_mod_code() {
       identity.update(disc_hash);
       for (const auto& r : g_text_ranges) identity.update(ptr(r.first, r.second), r.second);
       hex = identity.hex();
+    }
+    // Melee Maker: the fingerprint its native engine on the Source Port sends too (maker_source.h), so
+    // players on either engine can play each other in Direct.
+    if (source_port::maker::attach(std::filesystem::u8path(options.iso))) {
+      hex = source_port::maker::fingerprint(disc_hash);
+      log("mods: Melee Maker %s: Direct plays players on the same release on either engine", source_port::maker::kBuild);
     }
     if (!slippi::online::native_mod_fingerprint_valid(hex))
       log("mods: cannot verify the disc's complete content; Direct matchmaking will be refused");
