@@ -1004,12 +1004,14 @@ void boot_setup() {
   // Low memory, mirroring Dolphin's Boot_BS2Emu.cpp (GC path) plus what the apploader leaves.
   disc_read(0, ptr(0x80000000, 0x20), 0x20);              // disc id
   wr32(0x80000020, 0x0D15EA5E);                      // booted from bootrom
-  wr32(0x80000028, ppc::CONSOLE_RAM_SIZE);           // physical memory size: the console's
+  // Physical memory size: the console's, or Slippi Dolphin's for a mod disc (ppc.h DOLPHIN_RAM_SIZE).
+  const uint32_t ram_size = g_mod_disc ? ppc::DOLPHIN_RAM_SIZE : ppc::CONSOLE_RAM_SIZE;
+  wr32(0x80000028, ram_size);
   wr32(0x8000002C, 0x10000006);                      // console type (Dolphin reports devkit)
   wr32(0x80000030, 0);                               // arena lo (0 = use linker default)
   wr32(0x800000CC, 0);                               // NTSC
   wr32(0x800000D0, 0x01000000);                      // ARAM size
-  wr32(0x800000F0, ppc::CONSOLE_RAM_SIZE);           // simulated memory size
+  wr32(0x800000F0, ram_size);                        // simulated memory size
   wr32(0x800000F8, 0x09A7EC80);                      // bus clock
   wr32(0x800000FC, 0x1CF7C580);                      // cpu clock
   wr32(0x80000300, 0x4C000064);                      // rfi stubs
@@ -1024,7 +1026,7 @@ void boot_setup() {
 
   // Apploader: FST at the top of RAM, arena hi below it.
   if (!valid_range(0, g_fst_max, ppc::RAM_SIZE) || g_fst_size > g_fst_max) die("invalid FST size");
-  uint32_t fst_addr = (0x81800000u - g_fst_max) & ~31u;
+  uint32_t fst_addr = (ppc::RAM_BASE + ram_size - g_fst_max) & ~31u;
   if (!disc_read(g_fst_offset, ptr(fst_addr, g_fst_size), g_fst_size)) die("cannot read FST");
   // Resolve logical asset paths against this exact ISO before the guest initializes DVD. Selected
   // entries keep their vanilla starts but receive their replacement lengths; DVDFileInfo reads are
@@ -1941,7 +1943,7 @@ void report_heap_panic(ppc::Context& c) {
 namespace {
 struct ExtraPiece { uint32_t start, end, heap; };
 std::vector<ExtraPiece> g_extra_pieces;
-constexpr uint32_t kExtraBase = ppc::RAM_BASE + ppc::CONSOLE_RAM_SIZE;
+constexpr uint32_t kExtraBase = ppc::RAM_BASE + ppc::EXTRA_RAM_START;
 constexpr uint32_t kExtraEnd = ppc::RAM_BASE + ppc::RAM_SIZE;
 
 // Whether any cell of the heap (free or in use) still lies in the piece. A heap the game destroyed
@@ -2106,17 +2108,21 @@ void install_audio_pacing() {
 static void validate_alarm_queue(const char* where) {
   static bool reported = false;
   if (reported) return;
+  // A mod disc's alarms and their handlers can be anywhere in guest RAM (Melee Maker keeps both in
+  // its overlay at the arena top); the retail game's are in the console's memory.
+  const uint32_t ram_end = g_mod_disc ? ppc::RAM_BASE + ppc::RAM_SIZE : 0x81800000u;
   uint32_t a = rd32(gs::AlarmQueue), prev = 0;
   for (int guard = 0; a && guard < 64; ++guard) {
-    bool bad = a < 0x80003000u || a >= 0x81800000u;
+    bool bad = a < 0x80003000u || a >= ram_end - 24u;
     uint32_t handler = bad ? 0 : rd32(a);
     // Handlers live in the DOL's text or in the Slippi code table caves; nothing else is code.
-    bool code = (handler >= 0x80003100u && handler < 0x803B7240u) || (handler >= 0x8065C000u && handler < 0x8071B000u);
+    bool code = (handler >= 0x80003100u && handler < 0x803B7240u) || (handler >= 0x8065C000u && handler < 0x8071B000u) ||
+                (g_mod_disc && handler >= 0x80003100u && handler < ram_end);
     if (!bad) bad = !code || (handler & 3) || rd32(a + 16) != prev;
     if (bad) {
       reported = true;
       log("ALARM QUEUE CORRUPT (%s): entry %08X handler %08X prev %08X (expected %08X) next %08X head %08X tail %08X retrace %u",
-          where, a, handler, bad && a >= 0x80003000u && a < 0x81800000u ? rd32(a + 16) : 0, prev, a >= 0x80003000u && a < 0x81800000u ? rd32(a + 20) : 0,
+          where, a, handler, bad && a >= 0x80003000u && a < ram_end - 24u ? rd32(a + 16) : 0, prev, a >= 0x80003000u && a < ram_end - 24u ? rd32(a + 20) : 0,
           rd32(gs::AlarmQueue), rd32(gs::AlarmQueue + 4), g_retraces);
       ppc::fatal(*cpu, "alarm queue corrupt", a);
       return;

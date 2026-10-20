@@ -73,7 +73,8 @@ std::atomic<bool> g_player_tags_always{false};
 std::array<HudPlayerSnapshot, 4> g_native_hud{};   // the native game's players (set_native_hud_player)
 
 bool guest_object(uint32_t address, uint32_t bytes) {
-  return address >= 0x80000000u && address <= 0x81800000u - bytes;
+  // All of guest RAM: a heap can sit above the console's 24 MB (a mod disc, or the extra heap space).
+  return address >= ppc::RAM_BASE && bytes <= ppc::RAM_SIZE && address - ppc::RAM_BASE <= ppc::RAM_SIZE - bytes;
 }
 float guest_float(uint32_t address) {
   const uint32_t bits = host::rd32(address);

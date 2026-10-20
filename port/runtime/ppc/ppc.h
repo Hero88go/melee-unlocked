@@ -28,6 +28,12 @@ constexpr uint32_t RAM_BASE = 0x80000000u;
 // the game's heaps would otherwise run out (host.cpp grow_object_heap), so a scene that fits on a
 // console uses exactly the console's addresses.
 constexpr uint32_t CONSOLE_RAM_SIZE = 0x01800000u;
+// What Slippi Dolphin tells the game it has (Memmap.h REALRAM_SIZE = 24 MB + 200000 bytes), so its
+// apploader puts the file table and arena top that much higher. Mod discs are built and tested
+// there, and some place code at that arena top (Melee Maker), so a mod disc boots with this size.
+constexpr uint32_t DOLPHIN_RAM_SIZE = 0x01800000u + 200000u;
+// The extra heap space starts above the higher of the two, so it never overlaps a mod's file table.
+constexpr uint32_t EXTRA_RAM_START = (DOLPHIN_RAM_SIZE + 0xFFFFu) & ~0xFFFFu;
 constexpr uint32_t RAM_SIZE = 0x03000000u;
 constexpr uint32_t LC_BASE = 0xE0000000u;
 constexpr uint32_t LC_SIZE = 0x4000u;

@@ -46,17 +46,17 @@ int main(int argc, char** argv) {
   const size_t open=launcher.find(open_marker), close=open==std::string::npos ? std::string::npos : launcher.find(close_marker,open+open_marker.size());
   std::vector<CatalogMod> defaults;
   const bool parsed_defaults=open!=std::string::npos&&close!=std::string::npos&&parse(launcher.substr(open+open_marker.size(),close-open-open_marker.size()),&defaults,&error);
-  check(parsed_defaults&&defaults.size()==6,"embedded offline catalog contains all six planned mods");
+  check(parsed_defaults&&defaults.size()==7,"embedded offline catalog contains all seven planned mods");
   std::set<std::string> default_ids;
   bool ready=parsed_defaults;
   const std::string xdelta_pin="d81f59b2fe5e8589c0ee9782e231c805084f4d23dfade413903a4cad63b4e342";
   for(const auto& item:defaults) {
     default_ids.insert(item.id);
-    ready&=(item.one_click||item.id=="melee3d")&&valid_sha256(item.sha256)&&!item.url.empty()&&!item.tag.empty()&&!item.asset_pattern.empty()&&!item.version.empty()&&!item.credits.empty();
+    ready&=(item.one_click||item.id=="melee3d"||item.id=="meleemaker")&&valid_sha256(item.sha256)&&!item.url.empty()&&!item.tag.empty()&&!item.asset_pattern.empty()&&!item.version.empty()&&!item.credits.empty();
     if(item.kind!="gci") ready&=valid_sha256(item.patch_sha256)&&item.tool_sha256==xdelta_pin;
-    if(item.id=="akaneia"||item.id=="ace"||item.id=="hackpack"||item.id=="melee3d") ready&=valid_sha256(item.output_sha256)&&!item.note.empty();
+    if(item.id=="akaneia"||item.id=="ace"||item.id=="hackpack"||item.id=="melee3d"||item.id=="meleemaker") ready&=valid_sha256(item.output_sha256)&&!item.note.empty();
   }
-  check(ready&&default_ids==std::set<std::string>{"te","tmce","akaneia","ace","hackpack","melee3d"},"every planned offline row has one-click retrieval (Melee 3D: link only, no permission on record) and its required verification pins");
+  check(ready&&default_ids==std::set<std::string>{"te","tmce","akaneia","ace","hackpack","melee3d","meleemaker"},"every planned offline row has one-click retrieval (Melee 3D, Melee Maker: link only, no permission on record) and its required verification pins");
   const std::string detected_json=R"({"items":[{"id":"custom123","key":"abcd","kind":"asset_mod","name":"ACE in a filename","path":"Mods/Discs/a.iso","needs_engine":"either","status":"supported","enabled":true},{"id":"tmce","key":"tmce","kind":"tmce","path":"Mods/Discs/t.iso","needs_engine":"source","status":"supported"},{"id":"bad","key":"bad","kind":"code_mod","needs_engine":"recomp","status":"not_supported_yet"}]})";
   const auto found=detected(detected_json);
   check(found.size()==3&&found[0].id=="custom123","detected kinds and content IDs retained without name guesses");
