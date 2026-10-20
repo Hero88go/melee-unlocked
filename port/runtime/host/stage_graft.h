@@ -35,7 +35,9 @@ inline std::set<uint32_t> visual_only_models(std::string stage_file) {
   if (slash != std::string::npos) stage_file = stage_file.substr(slash + 1);
   // Model 0 is never one: its joints are the stage's points (spawns, camera and blast lines).
   if (stage_file == "griz.dat" || stage_file == "griz.usd") return {1};       // Fountain of Dreams, grizumi.c
-  if (stage_file == "grnla.dat" || stage_file == "grnla.usd") return {1, 2};  // Final Destination, grlast.c
+  // Final Destination, grlast.c: 1 and 2 are the backdrop; 4, 5, 6, 8 and 9 are made only by the
+  // stage's demo (grLast_OnDemoInit), never in a match. 7 is left out: it starts a particle generator.
+  if (stage_file == "grnla.dat" || stage_file == "grnla.usd") return {1, 2, 4, 5, 6, 8, 9};
   return {};
 }
 
@@ -305,8 +307,9 @@ inline bool graft_visuals(const std::vector<uint8_t>& clean, const std::vector<u
   // Most of the skin has to make it. A skin whose meshes mostly found no joint of the original to
   // sit on drew a near-empty stage online (20XX's Battlefield alt 8AT showed its platforms offline
   // and nothing online; its Luigi's Mansion Fountain of Dreams showed only the sky): the original
-  // stage is served instead, as for any skin that cannot be drawn over it.
-  if (!all.empty() && used.size() * 10 < all.size() * 9) {
+  // stage is served instead, as for any skin that cannot be drawn over it. 85% is enough: a
+  // Battlefield skin whose main model is rebuilt draws 17 of its 19 meshes and looks whole.
+  if (!all.empty() && used.size() * 20 < all.size() * 17) {
     *note = "only " + std::to_string(used.size()) + " of the skin's " + std::to_string(all.size()) +
             " meshes could be drawn over the original stage";
     return false;
