@@ -1283,7 +1283,15 @@ static int guarded_main(int argc, char** argv) {
   std::set_terminate([] { report_unhandled(); });
   std::signal(SIGABRT, [](int) { report_unhandled(); });
   try {
+#ifdef _WIN32
     return melee_main(argc, argv);
+#else
+    // Linux: a run that returns here (a frame limit, an option that ends the run) must not go on
+    // to the C library's exit. That destroys the global std::thread objects of threads still
+    // running (texture packs, adapters, servers) and std::terminate aborts the game at the very
+    // end, with a crash report. end_process ends it as the Windows build does.
+    host::end_process(melee_main(argc, argv));
+#endif
   } catch (const std::exception& error) {
     host::die("the game stopped on an internal error: %s", error.what());
   }
