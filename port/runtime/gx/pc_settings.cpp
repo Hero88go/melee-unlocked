@@ -3152,7 +3152,10 @@ void settings_context_destroy() {
 #ifdef _WIN32
 struct PcSettingsUI::Impl {
   Microsoft::WRL::ComPtr<ID3D12DescriptorHeap> heap;
-  std::array<bool, 64> used{};
+  // One slot per ImGui texture: the font atlas and every skin preview and thumbnail the Mods and
+  // Skins lists show (cached for the session). 64 ran out on a large skin library ("descriptor heap
+  // exhausted"); 4096 costs about 128 KB.
+  std::array<bool, 4096> used{};
   UINT stride = 0;
   SettingsState state;
 };
