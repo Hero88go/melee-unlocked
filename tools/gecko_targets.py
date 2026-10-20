@@ -173,10 +173,33 @@ def read_symbols(path=SYMBOLS):
     return out
 
 
+def retail_view(text):
+    """The retail game's text of a source: every `#if MU_ROGUE` block (a mod's edit, with the original
+    lines in its #else) becomes its #else branch. Gecko codes write the retail game's data, and the
+    two branches of an edit inside a function would otherwise both count toward its braces."""
+    lines, out, i = text.split("\n"), [], 0
+    while i < len(lines):
+        if not lines[i].startswith("#if MU_ROGUE"):
+            out.append(lines[i]); i += 1; continue
+        j, depth, else_at = i + 1, 0, None
+        while j < len(lines):
+            s = lines[j].lstrip()
+            if s.startswith("#if"): depth += 1
+            elif s.startswith("#endif"):
+                if depth == 0: break
+                depth -= 1
+            elif s.startswith("#else") and depth == 0 and else_at is None: else_at = j
+            j += 1
+        if else_at is not None: out += lines[else_at + 1:j]
+        i = j + 1
+    return "\n".join(out)
+
+
 def strip_source(text, guard=False):
     """C source with comments and literals blanked, preprocessor lines removed and every line that
     sits inside a conditional marked. With `guard`, a header's include guard (#ifndef X followed at
     once by #define X, before any code) is not counted as a conditional."""
+    text = retail_view(text)
     text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
     text = re.sub(r"//[^\n]*", " ", text)
     text = re.sub(r'"(?:\\.|[^"\\\n])*"', '""', text)
