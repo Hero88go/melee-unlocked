@@ -142,6 +142,27 @@
       "output_md5": "56507ddb43dbc52e39cb8dc120c81733",
       "output_sha256": "8800f53faa1d982e0b7ce999a21e705070df3909c556c6348db4dbe61233977d",
       "note": "Runs on the Static Recomp. Download it from its page, then drop the zip here."
+    },
+    {
+      "id": "roguemelee",
+      "name": "rogueMelee",
+      "credits": "By hatsonhats",
+      "license": "Not stated",
+      "page": "https://github.com/hatsonhats/rogueMelee-v2/releases/tag/v3",
+      "repo": "hatsonhats/rogueMelee-v2",
+      "tag": "v3",
+      "asset_pattern": "rogueMelee-v3.xdelta",
+      "kind": "xdelta_zip",
+      "one_click": false,
+      "version": "3",
+      "url": "https://github.com/hatsonhats/rogueMelee-v2/releases/download/v3/rogueMelee-v3.xdelta",
+      "sha256": "b0e987a3944f71750694d89c7af94cbf04c3c88ad7ca7516945c37d8a9538b9e",
+      "policy": "link_only",
+      "tool_sha256": "d81f59b2fe5e8589c0ee9782e231c805084f4d23dfade413903a4cad63b4e342",
+      "patch_sha256": "b0e987a3944f71750694d89c7af94cbf04c3c88ad7ca7516945c37d8a9538b9e",
+      "output_md5": "c9de1ad05dc28502a44fa8dcdb46f982",
+      "output_sha256": "518d02bc9a3c38551427a48af4d7e2ac4626b2cf5db4838e5b190b0877a82ed9",
+      "note": "Runs on the Source Port, offline. Download the .xdelta from its page, then drop it here."
     }
   ]
 }

@@ -516,6 +516,16 @@ void load_mod_overlay() {
       host::log("mods: Training Mode CE files found; its events run natively");
     }
   }
+  // rogueMelee: its disc is the 1.02 game under the id GALERM. Its menu files load like any pack's;
+  // its code is compiled into the native game (sourceport/game/rogue). Single player, offline.
+  if (one_iso) {
+    char id[6] = {};
+    std::ifstream disc(g_mod_layers[0].path, std::ios::binary);
+    if (disc.read(id, sizeof id) && std::memcmp(id, "GALERM", sizeof id) == 0) {
+      mods::status().rogue = true;
+      host::log("mods: rogueMelee disc found; Rogue Mode runs natively (1-P Mode > Regular Match)");
+    }
+  }
   // The 20XX Hack Pack (hackpack_source.h): its stages, music and costumes load like any other
   // pack's files; its menu files and the files that carry its code do not (pack_keeps below), and
   // the game's native rewrites of its features get its data tables through command 0xFA.
@@ -2381,7 +2391,8 @@ void h_native_free(void* ptr) { std::free(ptr); }
 
 uint32_t h_mem1_size() { return MEM1_SIZE; }
 uint32_t h_mod_flags() {
-  return (g_mod_overlay.files().empty() ? 0 : MU_MOD_ASSETS_PRESENT) | (hackpack::loaded() ? MU_MOD_HACKPACK : 0u);
+  return (g_mod_overlay.files().empty() ? 0 : MU_MOD_ASSETS_PRESENT) | (hackpack::loaded() ? MU_MOD_HACKPACK : 0u) |
+         (mods::status().rogue ? MU_MOD_ROGUE : 0u);
 }
 int32_t h_sound_mode() { return 1; }
 void h_set_sound_mode(int32_t) {}
@@ -3161,9 +3172,12 @@ int run(void (*shutdown)(int)) {
       companions.push_back({item.kind, item.target_path, item.path});
     gx::texpack::set_cosmetic_companions(std::move(companions));
   }
+  // rogueMelee is played offline on its own disc, where Slippi Dolphin applies none of Slippi's codes
+  // (its disc id is not GALE01): its menu files carry the Rogue Mode label, and Slippi's would hide it.
   load_system_files(g_replay ? "--replay"
                     : g_online_test_mode >= 0 ? "--online-test"
-                    : host::options.vanilla_game ? "--vanilla-game" : nullptr);
+                    : host::options.vanilla_game ? "--vanilla-game"
+                    : mods::status().rogue ? "rogueMelee disc, played offline with its own menus" : nullptr);
   apply_content_mode(-1);   // offline: the mod's files, if a profile is loaded
   // The native game reads the retail DOL's data and the retail file formats; a modded disc (patched
   // DOL, m-ex) is refused here with a message instead of failing somewhere inside the game.

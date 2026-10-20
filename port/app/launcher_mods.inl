@@ -190,6 +190,27 @@ std::vector<CatalogMod> default_catalog() {
       "output_md5": "56507ddb43dbc52e39cb8dc120c81733",
       "output_sha256": "8800f53faa1d982e0b7ce999a21e705070df3909c556c6348db4dbe61233977d",
       "note": "Runs on the Static Recomp. Download it from its page, then drop the zip here."
+    },
+    {
+      "id": "roguemelee",
+      "name": "rogueMelee",
+      "credits": "By hatsonhats",
+      "license": "Not stated",
+      "page": "https://github.com/hatsonhats/rogueMelee-v2/releases/tag/v3",
+      "repo": "hatsonhats/rogueMelee-v2",
+      "tag": "v3",
+      "asset_pattern": "rogueMelee-v3.xdelta",
+      "kind": "xdelta_zip",
+      "one_click": false,
+      "version": "3",
+      "url": "https://github.com/hatsonhats/rogueMelee-v2/releases/download/v3/rogueMelee-v3.xdelta",
+      "sha256": "b0e987a3944f71750694d89c7af94cbf04c3c88ad7ca7516945c37d8a9538b9e",
+      "policy": "link_only",
+      "tool_sha256": "d81f59b2fe5e8589c0ee9782e231c805084f4d23dfade413903a4cad63b4e342",
+      "patch_sha256": "b0e987a3944f71750694d89c7af94cbf04c3c88ad7ca7516945c37d8a9538b9e",
+      "output_md5": "c9de1ad05dc28502a44fa8dcdb46f982",
+      "output_sha256": "518d02bc9a3c38551427a48af4d7e2ac4626b2cf5db4838e5b190b0877a82ed9",
+      "note": "Runs on the Source Port, offline. Download the .xdelta from its page, then drop it here."
     }
   ]
 })catalog", &mods, &error);
@@ -511,9 +532,11 @@ void install_file_job(std::wstring file, std::string id, const std::string& iso,
   set_status(key, "Checking the file...");
   const std::string hash = catalog_core::sha256_file(file);
   if (cancelled(cancel)) { set_status(key, "Cancelled. Nothing was installed."); return; }
-  const CatalogMod* match = catalog_core::matching_archive(catalog, hash);
-  const bool bare_patch = !match && ends(L".xdelta");
-  if (bare_patch)   // an official patch dropped on its own, recognized by its pinned hash
+  // An official patch dropped on its own, recognized by its pinned hash. A mod that publishes the bare
+  // .xdelta as its download (rogueMelee) has the same file as its archive and its patch: still a patch.
+  const bool bare_patch = ends(L".xdelta");
+  const CatalogMod* match = bare_patch ? nullptr : catalog_core::matching_archive(catalog, hash);
+  if (bare_patch)
     for (const auto& m : catalog) if (!m.patch_sha256.empty() && _stricmp(m.patch_sha256.c_str(), hash.c_str()) == 0) match = &m;
   if (!match || (!id.empty() && match->id != id)) {
     set_status(key, "This archive is not in the verified catalog. Drop a finished .iso or .gci instead."); return;

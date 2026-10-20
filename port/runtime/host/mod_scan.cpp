@@ -385,6 +385,7 @@ const uint8_t kRetailDolSha1[20] = {0x08, 0xe0, 0xbf, 0x20, 0x13, 0x4d, 0xfc, 0x
 // (from its installer's "ReadMe and MD5s.txt": each is the xdelta patch applied to that disc).
 constexpr const char kVanillaMd5[] = "0e63d4223b01d9aba596259dc155a174";
 constexpr const char kMelee3dMd5[] = "7643d5ca759e83f7f23a96b10e5cfe5f";   // Melee 3D 1.0 applied to kVanillaMd5
+constexpr const char kRogueMeleeSha256[] = "518d02bc9a3c38551427a48af4d7e2ac4626b2cf5db4838e5b190b0877a82ed9";   // rogueMelee 3 (its README)
 struct KnownDisc { const char* hash; const char* name; const char* version; const char* id = ""; };
 const KnownDisc kHackPackMd5[] = {
   {"4e400c49b68bc3474dbe7970ad4df6d9", "20XX Hack Pack", "4.0 Beta02"},
@@ -859,6 +860,17 @@ Detected identify_disc(const fs::path& file, Detected d, const ScanOptions& opti
     }
   }
   d.key = content_key(d.hash);
+  // rogueMelee (disc id GALERM): the 1.02 game with its main.dol rebuilt from the decompiled source plus
+  // its roguelike mode. That code is native in the Source Port (sourceport/game/rogue): single player,
+  // 1-P Mode > Regular Match > Rogue Mode, offline.
+  if (info.id == "GALERM" && info.revision == 2) {
+    const bool known = d.hash == kRogueMeleeSha256;
+    d.kind = Kind::CodeMod; d.name = "rogueMelee"; d.version = known ? "3" : ""; d.catalog_id = "roguemelee";
+    d.restart = true;
+    set_support(d, Engine::Source, known ? Support::Supported : Support::Untested, false);
+    d.message = "Detected: rogueMelee" + std::string(known ? " 3" : "") + ". Plays on the Source Port, offline: launcher > Mods > Play.";
+    return d;
+  }
   if (info.id == "GTME01" && info.has("/tm/eventmenu.dat")) {
     const std::string text = tmce_version(in, info);                     // "v1.4 d1"
     d.kind = Kind::TmCe; d.name = "Training Mode CE"; d.version = text; d.key = "tmce"; d.catalog_id = "tmce"; d.restart = true;
@@ -987,7 +999,7 @@ Detected identify(const fs::path& file, const ScanOptions& options, std::string*
 // The scan cache: Mods/.cache/scan.txt, one line per file keyed by path, size and time (and, for
 // discs, the retail disc they were compared with), so a boot never reads an unchanged disc again.
 namespace {
-constexpr const char kCacheHeader[] = "mu-scan 11";   // 11: Melee Maker is known by its overlay
+constexpr const char kCacheHeader[] = "mu-scan 12";   // 12: rogueMelee (GALERM) plays on the Source Port
 struct CacheEntry { std::string key, base; Detected d; };
 
 std::string cache_key(const fs::path& file) {

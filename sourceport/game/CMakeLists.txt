@@ -356,6 +356,21 @@ if(MU_MEX_STAGES)
     INCLUDE_DIRECTORIES "${CMAKE_CURRENT_BINARY_DIR}/mu_gr")
 endif()
 
+# rogueMelee's Rogue Mode, native (rogue/): its own C under rogue/melee/rogue (the include root is
+# rogue/, so the decomp's <melee/rogue/...> includes find it), and its edits to the game's source in
+# melee-native.patch, each under #if MU_ROGUE. Offered only with its disc, offline (shim side:
+# rogue/mu_rogue.c). The flags are the release values of its own build (tools/lib/integration.py).
+option(MU_ROGUE "Build rogueMelee's Rogue Mode natively (rogue/)" ON)
+if(MU_ROGUE)
+  target_compile_definitions(game_flags INTERFACE MU_ROGUE=1 ROGUE_ENABLE_AERIALS=1 ROGUE_DEBUG=0
+    ROGUE_QA_EVENT_RELEASE=0 ROGUE_QA_CYCLES=0 ROGUE_QA_MODE=0 ROGUE_QA_MATCHES=20 ROGUE_QA_SETTLEMENT=0
+    ROGUE_QA_RECOVERY=0 ROGUE_QA_LIFECYCLE=0 ROGUE_QA_AERIAL_STRESS=0 ROGUE_QA_SPECIAL_START=0
+    ROGUE_QA_SPECIAL_COUNT=104)
+  target_include_directories(game_flags INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/rogue")
+  file(GLOB_RECURSE ROGUE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/rogue/*.c")
+  list(APPEND SHIM_SOURCES ${ROGUE_SOURCES})
+endif()
+
 if(NOT Python3_EXECUTABLE)
   find_package(Python3 COMPONENTS Interpreter REQUIRED)
 endif()

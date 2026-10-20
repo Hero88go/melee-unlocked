@@ -744,6 +744,9 @@ extern int mu_tmce_stadium_override;         /* gr/grpstadium.c: the lab picks t
 extern int mu_tmce_stadium_transformation;
 void mu_tmce_boot(void);                     /* gm/gm_1A3F.c mode load: TM/eventMenu.dat, OnFileLoad, OnBoot */
 int mu_tmce_enabled(void);                   /* TM-CE files present, vanilla base, not online */
+int mu_rogue_enabled(void);                  /* rogueMelee's disc loaded, not online (rogue/mu_rogue.c) */
+struct HSD_MatAnimJoint;
+void mu_rogue_capture_label(struct HSD_MatAnimJoint* cursor_matanim);   /* rogue/mu_rogue_label.c */
 void mu_tmce_on_scene_change(void);         /* TM-CE OnSceneChange / OnStartMelee hooks */
 void mu_tmce_on_start_melee(void);
 int mu_tmce_active(void);                    /* enabled and loaded: the hooks run */

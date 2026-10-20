@@ -365,6 +365,9 @@ typedef struct MuHostApi {
  * (sourceport/game/shim/mu_hp.c) are offered only with this bit, offline. No host API version
  * change: an older host never sets the bit. */
 #define MU_MOD_HACKPACK 0x2u
+/* rogueMelee's disc (id GALERM) is the mod disc. Its code is native (sourceport/game/rogue): Rogue
+ * Mode is offered only with this bit, offline. No host API version change, as above. */
+#define MU_MOD_ROGUE 0x4u
 
 /* Private command 0xFA on slippi_command, 20XX Hack Pack data and settings for the native game
  * (host: port/runtime/host/hackpack_source.h, game: shim/mu_hp.c). The first payload byte picks:
