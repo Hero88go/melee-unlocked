@@ -22,6 +22,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cerrno>
+#include <chrono>
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -87,8 +88,9 @@ GLuint compile_gl(GLenum stage, const std::string& source) {
   }
   return shader;
 }
-GLuint link_gl(GLuint vs, GLuint ps) {
+GLuint link_gl(GLuint vs, GLuint ps, bool retrievable = false) {
   GLuint program = glCreateProgram();
+  if (retrievable) glProgramParameteri(program, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
   glAttachShader(program, vs); glAttachShader(program, ps); glLinkProgram(program);
   GLint ok = 0; glGetProgramiv(program, GL_LINK_STATUS, &ok);
   if (!ok) {
@@ -99,6 +101,16 @@ GLuint link_gl(GLuint vs, GLuint ps) {
   }
   return program;
 }
+// The draw state a GX program is generated from. Every program a run builds is recorded and the
+// next start builds them all before the game runs, so a stage or effect seen once never compiles
+// mid-match again (the Direct3D backends do the same with their recipes.bin).
+struct ProgramRecipe {
+  uint32_t components = 0;
+  gx::BPMemory bp{};
+  uint32_t xf[0x58]{};
+};
+constexpr uint64_t RECIPE_MAGIC = 0x3150524C47505847ull;   // "GXPGLRP1"
+constexpr size_t RECIPE_LIMIT = 16384;
 struct ProgramKey {
   uint64_t vertex, pixel;
   bool operator==(const ProgramKey& other) const { return vertex == other.vertex && pixel == other.pixel; }
@@ -161,9 +173,13 @@ void main() {
 }
 )");
     copy_program_ = link_gl(cv, cp); glDeleteShader(cv); glDeleteShader(cp);
+    GLint formats = 0; glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &formats);
+    binaries_ = formats > 0;
+    prewarm();
   }
   ~Renderer() override {
     if (!context_) return;
+    save_recipes();
     for (auto& p : programs_) glDeleteProgram(p.second);
     for (auto& p : shaders_) glDeleteShader(p.second);
     for (auto& p : textures_) destroy(p.second);
@@ -244,6 +260,68 @@ void main() {
     clockwise_front_ = saved; submit_frame(frame);
   }
  private:
+  // A linked program as the driver stores it; the next start loads it without compiling. A driver
+  // update changes the format or rejects the data, and the program is then built from GLSL again.
+  GLuint load_binary(const std::filesystem::path& path) {
+    const std::string data = read_text(path);
+    if (data.size() <= sizeof(GLenum)) return 0;
+    GLenum format = 0; std::memcpy(&format, data.data(), sizeof format);
+    GLuint p = glCreateProgram();
+    glProgramBinary(p, format, data.data() + sizeof format, static_cast<GLsizei>(data.size() - sizeof format));
+    GLint ok = 0; glGetProgramiv(p, GL_LINK_STATUS, &ok);
+    if (ok) return p;
+    glDeleteProgram(p); glGetError();
+    std::error_code ec; std::filesystem::remove(path, ec);
+    return 0;
+  }
+  void save_binary(GLuint p, const std::filesystem::path& path) {
+    GLint length = 0; glGetProgramiv(p, GL_PROGRAM_BINARY_LENGTH, &length);
+    if (length <= 0) return;
+    std::string data(sizeof(GLenum) + length, '\0');
+    GLenum format = 0;
+    glGetProgramBinary(p, length, nullptr, &format, data.data() + sizeof format);
+    std::memcpy(data.data(), &format, sizeof format);
+    write_cache(path, data);
+  }
+  // Cache writes never stop the game: a full disk or read-only folder only loses the speedup.
+  void write_cache(const std::filesystem::path& path, const std::string& data) {
+    const auto partial = path.string() + "." + std::to_string(getpid());
+    { std::ofstream f(partial, std::ios::binary); f.write(data.data(), static_cast<std::streamsize>(data.size())); if (!f) return; }
+    std::error_code ec; std::filesystem::rename(partial, path, ec);
+    if (ec) std::filesystem::remove(partial, ec);
+  }
+  void prewarm() {
+    const std::string data = read_text(cache_ / "recipes.bin");
+    uint64_t header[3]{};
+    if (data.size() < sizeof header) return;
+    std::memcpy(header, data.data(), sizeof header);
+    const size_t count = static_cast<size_t>(header[1]);
+    if (header[0] != RECIPE_MAGIC || count > RECIPE_LIMIT || data.size() != sizeof header + count * sizeof(ProgramRecipe) ||
+        gx::hash_bytes(data.data() + sizeof header, count * sizeof(ProgramRecipe)) != header[2]) return;
+    const auto start = std::chrono::steady_clock::now();
+    prewarming_ = true;
+    for (size_t i = 0; i < count; ++i) {
+      ProgramRecipe r; std::memcpy(&r, data.data() + sizeof header + i * sizeof r, sizeof r);
+      gx::DrawCall dc{}; dc.components = r.components; dc.bp = r.bp;
+      std::memcpy(dc.xf_regs, r.xf, sizeof r.xf);
+      try { program(dc); } catch (const std::exception&) {}   // a bad recipe only loses its prewarm
+    }
+    prewarming_ = false;
+    saved_recipes_ = recipes_.size();
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    std::fprintf(stderr, "opengl: prewarmed %zu programs from %zu recipes before guest startup in %.1f ms%s\n",
+                 programs_.size(), count, ms, binaries_ ? "" : " (driver keeps no program binaries)");
+  }
+  void save_recipes() {
+    if (recipes_.size() == saved_recipes_) return;
+    saved_recipes_ = recipes_.size();
+    const size_t bytes = recipes_.size() * sizeof(ProgramRecipe);
+    const uint64_t header[3] = {RECIPE_MAGIC, recipes_.size(), gx::hash_bytes(recipes_.data(), bytes)};
+    std::string data(sizeof header + bytes, '\0');
+    std::memcpy(data.data(), header, sizeof header);
+    std::memcpy(data.data() + sizeof header, recipes_.data(), bytes);
+    write_cache(cache_ / "recipes.bin", data);
+  }
   static void destroy(Texture& t) { if (t.id) glDeleteTextures(1, &t.id); if (t.fbo) glDeleteFramebuffers(1, &t.fbo); }
   GLuint shader(GLenum stage, const std::string& hlsl) {
     const uint64_t hash = gx::hash_bytes(hlsl.data(), hlsl.size());
@@ -292,7 +370,19 @@ void main() {
     const auto vs = gx::make_vs_uid(dc); const auto ps = gx::make_ps_uid(dc);
     ProgramKey key{vs.hash(), ps.hash()};
     if (auto i = programs_.find(key); i != programs_.end()) return i->second;
-    GLuint p = link_gl(shader(GL_VERTEX_SHADER, gx::generate_vertex_shader(vs)), shader(GL_FRAGMENT_SHADER, gx::generate_pixel_shader(ps)));
+    std::ostringstream name; name << "prog-" << std::hex << key.vertex << "-" << key.pixel << ".bin";
+    const auto binary = cache_ / name.str();
+    GLuint p = binaries_ ? load_binary(binary) : 0;
+    if (!p) {
+      p = link_gl(shader(GL_VERTEX_SHADER, gx::generate_vertex_shader(vs)), shader(GL_FRAGMENT_SHADER, gx::generate_pixel_shader(ps)), binaries_);
+      if (binaries_) save_binary(p, binary);
+    }
+    if (recipes_.size() < RECIPE_LIMIT) {
+      ProgramRecipe r; r.components = dc.components; r.bp = dc.bp;
+      std::memcpy(r.xf, dc.xf_regs, sizeof r.xf);
+      recipes_.push_back(r);
+      if (!prewarming_ && recipes_.size() >= saved_recipes_ + 32) save_recipes();
+    }
     for (int i = 0; i < 2; ++i) {
       const GLuint block = glGetUniformBlockIndex(p, i ? "PSBlock" : "VSBlock");
       if (block != GL_INVALID_INDEX) glUniformBlockBinding(p, block, i);
@@ -493,6 +583,7 @@ void main() {
   GLuint last_frame_ = 0, last_color_ = 0; bool have_last_ = false;
   bool clockwise_front_ = true;
   std::unordered_map<ProgramKey, GLuint, KeyHash> programs_;
+  std::vector<ProgramRecipe> recipes_; size_t saved_recipes_ = 0; bool binaries_ = false, prewarming_ = false;
   std::unordered_map<uint64_t, GLuint> shaders_, samplers_;
   std::unordered_map<uint64_t, Texture> textures_; std::unordered_map<uint32_t, Texture> copies_;
   std::vector<uint8_t> decoded_; std::vector<uint32_t> index_scratch_;
