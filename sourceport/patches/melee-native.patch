@@ -49002,7 +49002,7 @@ index 1a82062..83f2d6e 100644
  
      result = true;
      HSD_CObjGetEyePosition(cobj, &eye_pos);
-@@ -4313,9 +4394,31 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
+@@ -4313,9 +4394,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
      PAD_STACK(4);
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -49015,6 +49015,12 @@ index 1a82062..83f2d6e 100644
 +        const f32 aspect = cobj->projection_param.perspective.aspect;
 +        const bool own = HSD_CObjGetProjectionType(cobj) == PROJ_PERSPECTIVE;
 +        Vec3* on_screen;
++        /* lbVector_WorldToScreen stops the game on a point outside +-50000 (or NaN); a fighter
++         * part that far out is off screen. */
++        if (!(arg0->x > -50000.0F && arg0->x < 50000.0F && arg0->y > -50000.0F &&
++              arg0->y < 50000.0F && arg0->z > -50000.0F && arg0->z < 50000.0F)) {
++            return false;
++        }
 +        if (own) {
 +            cobj->projection_param.perspective.aspect = cm_803BCB64.aspect;
 +        }
