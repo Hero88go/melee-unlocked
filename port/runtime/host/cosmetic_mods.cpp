@@ -5530,21 +5530,34 @@ bool stage_online_form(const std::vector<uint8_t>& clean, const std::vector<uint
   // the skin itself with the original's gameplay, and one that also changed models is grafted from
   // that repaired copy below.
   std::vector<uint8_t> restored;
+  // A repaired copy that cannot be drawn as it is (its models changed too) is still the base of the
+  // graft: grafting the raw skin would bring its changed values back and be refused (Dream Land
+  // skins that set the music table and rebuild the stage were all served as the original online).
   if (stage_safety::restore_gameplay(clean, skin, &restored, &note)) {
     if (stage_draw_safe(restored, &note)) {
       *detail = "the skin with the original stage's gameplay values";
       if (online) *online = std::move(restored);
       return true;
     }
-    restored.clear();
   }
-  const std::vector<uint8_t>& base = restored.empty() ? skin : restored;
+  // A copy restore_gameplay could only partly repair is still tried first, as 0.9.13 did.
+  // Grafted from the repaired copy first, then from the raw skin: some skins only pass one way.
   std::vector<uint8_t> grafted;
-  if (!stage_safety::graft_visuals(clean, base, &grafted, &note, stage_safety::visual_only_models(stage_file))) {
-    *detail = as_is + "; " + note;
-    return false;
+  bool drawn = false;
+  const std::vector<uint8_t>* bases[] = {&restored, &skin};
+  for (const std::vector<uint8_t>* base : bases) {
+    if (base->empty()) continue;
+    std::string try_note;
+    std::vector<uint8_t> out;
+    if (!stage_safety::graft_visuals(clean, *base, &out, &try_note, stage_safety::visual_only_models(stage_file))) {
+      if (!drawn) note = try_note;
+      continue;
+    }
+    if (!stage_draw_safe(out, &try_note)) { note = "drawn over the original: " + try_note; continue; }
+    grafted = std::move(out); note = try_note; drawn = true;
+    break;
   }
-  if (!stage_draw_safe(grafted, &note)) { *detail = as_is + "; drawn over the original: " + note; return false; }
+  if (!drawn) { *detail = as_is + "; " + note; return false; }
   *detail = "drawn over the original stage's gameplay (" + note + ")";
   if (online) *online = std::move(grafted);
   return true;
