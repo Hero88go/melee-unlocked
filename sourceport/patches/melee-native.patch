@@ -172663,7 +172663,7 @@ index 5ea9c63..1e01ce5 100644
  
  /// SetTimerAnimation
 diff --git a/src/melee/lb/lbdvd.c b/src/melee/lb/lbdvd.c
-index 116b140..515b668 100644
+index 116b1407a..a26574d91 100644
 --- a/src/melee/lb/lbdvd.c
 +++ b/src/melee/lb/lbdvd.c
 @@ -1,10 +1,15 @@
@@ -172763,11 +172763,15 @@ index 116b140..515b668 100644
  #ifdef MUST_MATCH
  #pragma pop
  #endif
-@@ -230,27 +281,20 @@ static void lbDvd_80017A80(u32 unused)
+@@ -230,27 +281,24 @@ static void lbDvd_80017A80(u32 unused)
      lbDvd_80017CC4();
  }
  
 -static inline int lbDvd_CleanupPreloadHeap(int heap, PreloadCache* cache)
++#ifdef MU_NATIVE
++int lbHeap_CanFit(int heap_id, unsigned bytes);
++#endif
++
 +static inline int cleanupPreloadHeap(int heap)
  {
      PreloadEntry* entry;
@@ -172796,7 +172800,7 @@ index 116b140..515b668 100644
      return lbHeap_80015D6C(heap, lbDvd_80017A80, heap);
  }
  
-@@ -262,7 +306,7 @@ void lbDvd_CachePreloadedFile(s32 index)
+@@ -262,7 +310,7 @@ void lbDvd_CachePreloadedFile(s32 index)
      entry = &preloadCache.entries[index];
      preloadEntry = entry;
  
@@ -172805,7 +172809,45 @@ index 116b140..515b668 100644
  
      if (heap == 0) {
          preloadCache.persistent_heap = 6;
-@@ -290,7 +334,7 @@ void lbDvd_CachePreloadedFile(s32 index)
+@@ -272,6 +320,37 @@ void lbDvd_CachePreloadedFile(s32 index)
+         if (preloadEntry->size == 0) {
+             preloadEntry->size = lbFile_8001634C(preloadEntry->entry_num);
+         }
++#ifdef MU_NATIVE
++        /* After many matches the heap can be full of files read ahead and never handed out, and
++         * the allocation below would stop the game. Release those (loaded, never used), lowest
++         * load score first, until this file fits. If it still does not, its entry is dropped (it
++         * holds no memory yet), so a later request finds no cached copy and reads the file the
++         * normal way instead of waiting on a read-ahead that cannot happen. */
++        {
++            unsigned need = OSRoundUp32B(preloadEntry->size) + 0x100;
++            while (!lbHeap_CanFit(preloadEntry->heap, need)) {
++                int k, best = -1;
++                for (k = 0; k < (signed) ARRAY_SIZE(preloadCache.entries); k++) {
++                    PreloadEntry* other = &preloadCache.entries[k];
++                    if (k == index || other->state != 3 || other->load_state != 1 ||
++                        other->heap != preloadEntry->heap)
++                    {
++                        continue;
++                    }
++                    if (best < 0 || other->load_score < preloadCache.entries[best].load_score) {
++                        best = k;
++                    }
++                }
++                if (best < 0) {
++                    OSReport("preload: heap %d has no room for %u bytes; file %d is loaded when asked for\n",
++                             preloadEntry->heap, need, preloadEntry->entry_num);
++                    lbDvd_800174E8(index);
++                    return;
++                }
++                lbDvd_800174E8(best);
++            }
++        }
++#endif
+         preloadEntry->raw_data = lbHeap_80015BD0(
+             preloadEntry->heap, OSRoundUp32B(preloadEntry->size));
+         if (preloadEntry->type == 2 || preloadEntry->type == 3 ||
+@@ -290,7 +369,7 @@ void lbDvd_CachePreloadedFile(s32 index)
              lbFile_800164A4(preloadEntry->entry_num,
                              (uintptr_t) preloadEntry->raw_data->addr,
                              &preloadEntry->size, 2, lbDvd_80017E64,
@@ -172814,7 +172856,7 @@ index 116b140..515b668 100644
          }
      }
  }
-@@ -332,7 +376,7 @@ void lbDvd_80017CC4(void)
+@@ -332,7 +411,7 @@ void lbDvd_80017CC4(void)
      }
  }
  
@@ -172823,7 +172865,7 @@ index 116b140..515b668 100644
  {
      PreloadEntry* preloadEntry = &preloadCache.entries[index];
      if (cancelflag != 0) {
-@@ -378,19 +422,18 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
+@@ -378,19 +457,18 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
  
          switch (type) {
          case 2:
@@ -172849,7 +172891,7 @@ index 116b140..515b668 100644
              break;
  
          default:
-@@ -401,60 +444,48 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
+@@ -401,60 +479,48 @@ void* lbDvd_GetPreloadedArchive(ssize_t entry_num)
          entry->load_state = 2;
      }
      if (entry->archive) {
@@ -172931,7 +172973,7 @@ index 116b140..515b668 100644
          }
      }
  }
-@@ -482,12 +513,11 @@ void lbDvd_8001823C(void)
+@@ -482,12 +548,11 @@ void lbDvd_8001823C(void)
          preloadCache.new_scene.mode_scene_changes + 1;
  }
  
@@ -172945,7 +172987,7 @@ index 116b140..515b668 100644
      for (i = 0; i < (signed) ARRAY_SIZE(preloadCache.entries); i++) {
          entry = &preloadCache.entries[i];
          if (entry->state != 0) {
-@@ -498,18 +528,14 @@ static inline void inline_preload_entries(bool* enabled)
+@@ -498,18 +563,14 @@ static inline void inline_preload_entries(bool* enabled)
      }
  }
  
@@ -172957,18 +172999,18 @@ index 116b140..515b668 100644
      u8 pad[0x10];
      (void) pad;
 -}
- 
+-
 -static inline void inline_cleanup_entries(void)
 -{
 -    PreloadEntry* cleanup_entry;
 -    int j = 0;
--
+ 
 -    for (; j < (signed) ARRAY_SIZE(preloadCache.entries); j++) {
 +    for (j = 0; j < (signed) ARRAY_SIZE(preloadCache.entries); j++) {
          cleanup_entry = &preloadCache.entries[j];
          if (cleanup_entry->load_score < 0) {
              if (cleanup_entry->state == 1) {
-@@ -540,53 +566,32 @@ void lbDvd_80018254(void)
+@@ -540,53 +601,32 @@ void lbDvd_80018254(void)
      }
  
      preloadCache.new_scene = preloadCache.scene;
@@ -173030,7 +173072,7 @@ index 116b140..515b668 100644
  int lbDvd_800187F4(int entry_num)
  {
      int result = 0;
-@@ -594,10 +599,10 @@ int lbDvd_800187F4(int entry_num)
+@@ -594,10 +634,10 @@ int lbDvd_800187F4(int entry_num)
      int i;
  
      bool enabled = OSDisableInterrupts();
@@ -173045,7 +173087,7 @@ index 116b140..515b668 100644
  
      for (i = 0; i < (signed) ARRAY_SIZE(preloadCache.entries); i++) {
          entry = &preloadCache.entries[i];
-@@ -613,7 +618,7 @@ int lbDvd_800187F4(int entry_num)
+@@ -613,7 +653,7 @@ int lbDvd_800187F4(int entry_num)
              continue;
          }
  
@@ -173054,7 +173096,7 @@ index 116b140..515b668 100644
              result = 1;
              break;
          }
-@@ -624,8 +629,22 @@ int lbDvd_800187F4(int entry_num)
+@@ -624,8 +664,22 @@ int lbDvd_800187F4(int entry_num)
              result = 1;
              break;
          case 3:
@@ -173079,7 +173121,7 @@ index 116b140..515b668 100644
                  result = 1;
                  break;
              }
-@@ -748,7 +767,16 @@ void lbDvd_80018C6C(void)
+@@ -748,7 +802,16 @@ void lbDvd_80018C6C(void)
  
  static s32 lbDvd_804D37F4[2] = { 4, 5 };
  
@@ -173097,7 +173139,7 @@ index 116b140..515b668 100644
  {
      int i;
      int tmp;
-@@ -807,17 +835,9 @@ void lbDvd_80018CF4(int arg0)
+@@ -807,17 +870,9 @@ void lbDvd_80018CF4(int arg0)
          }
          break;
      }
@@ -173376,7 +173418,7 @@ index 427fada..71d32b9 100644
  
  #endif // MELEE_LB_FILE_H
 diff --git a/src/melee/lb/lbheap.c b/src/melee/lb/lbheap.c
-index 3fa41d5..810bcdb 100644
+index 3fa41d59e..bacdebc31 100644
 --- a/src/melee/lb/lbheap.c
 +++ b/src/melee/lb/lbheap.c
 @@ -1,10 +1,11 @@
@@ -173564,7 +173606,7 @@ index 3fa41d5..810bcdb 100644
          }
      }
  }
-@@ -181,11 +154,29 @@ void lbHeap_80015900(void)
+@@ -181,11 +154,53 @@ void lbHeap_80015900(void)
  LbHeapStatus lbHeap_80015BB8(int arg0)
  {
      return lbHeap_80431FA0.heap_array[arg0].status;
@@ -173586,7 +173628,31 @@ index 3fa41d5..810bcdb 100644
 +    }
 +    return (uintptr_t)heap->hi-start>=bytes;
 +#endif
++}
++
++#ifdef MU_NATIVE
++/* Whether a fixed heap has a free gap of `bytes` (the preloader asks before it reads a file ahead;
++ * lbDvd_CachePreloadedFile). HSD heaps and heaps not created answer yes: the game's own path decides. */
++int lbHeap_CanFit(int heap_id, unsigned bytes)
++{
++    struct Heap* p = &lbHeap_80431FA0.heap_array[heap_id];
++    Handle* heap;
++    HSD_AllocEntry* block;
++    uintptr_t start;
++    if (p->status != LbHeapStatus_Create || p->type == 0 || p->handle == NULL) {
++        return 1;
++    }
++    heap = p->handle;
++    start = (uintptr_t) heap->lo;
++    for (block = heap->blocks; block; block = block->next) {
++        if ((uintptr_t) block->addr - start >= bytes) {
++            return 1;
++        }
++        start = (uintptr_t) block->addr + (uintptr_t) block->size;
++    }
++    return (uintptr_t) heap->hi - start >= bytes;
  }
++#endif
  
  void* lbHeap_80015BD0(int heap_id, size_t size)
  {
@@ -173595,7 +173661,7 @@ index 3fa41d5..810bcdb 100644
      int enabled = OSDisableInterrupts();
      struct Heap* p = &lbHeap_80431FA0.heap_array[heap_id];
  
-@@ -198,7 +189,7 @@ void* lbHeap_80015BD0(int heap_id, size_t size)
+@@ -198,7 +213,7 @@ void* lbHeap_80015BD0(int heap_id, size_t size)
          } else {
              result = lbMemory_80014FC8(p->handle, size);
              if (p->type == 3) {
@@ -173604,7 +173670,7 @@ index 3fa41d5..810bcdb 100644
              }
          }
      } else {
-@@ -208,7 +199,7 @@ void* lbHeap_80015BD0(int heap_id, size_t size)
+@@ -208,7 +223,7 @@ void* lbHeap_80015BD0(int heap_id, size_t size)
      return result;
  }
  
@@ -173613,7 +173679,7 @@ index 3fa41d5..810bcdb 100644
  {
      int enabled = OSDisableInterrupts();
      struct Heap* p = &lbHeap_80431FA0.heap_array[arg0];
-@@ -217,10 +208,10 @@ void lbHeap_80015CA8(int arg0, void* arg1)
+@@ -217,10 +232,10 @@ void lbHeap_80015CA8(int arg0, void* arg1)
      if (p->type == 0) {
          int cur_heap = HSD_GetHeap();
          HSD_SetHeap(p->id);
@@ -173626,7 +173692,7 @@ index 3fa41d5..810bcdb 100644
      }
      OSRestoreInterrupts(enabled);
  }
-@@ -253,7 +244,7 @@ void lbHeap_80015DF8(void)
+@@ -253,7 +268,7 @@ void lbHeap_80015DF8(void)
  
      OSReport("[lbHeap] -- Report --\n");
  
@@ -173635,7 +173701,7 @@ index 3fa41d5..810bcdb 100644
          OSReport("%s :", lbHeap_803BA448[i]);
          p = &lbHeap_80431FA0.heap_array[i];
          if (p->status == LbHeapStatus_Create) {
-@@ -284,25 +275,37 @@ void lbHeap_80015F3C(void)
+@@ -284,25 +299,37 @@ void lbHeap_80015F3C(void)
      struct Heap* curr_heap;
      struct Heap* prev_heap;
      struct lbHeap_HeapDesc* desc;
