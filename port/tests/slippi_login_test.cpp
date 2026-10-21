@@ -62,6 +62,19 @@ int moved_build_and_reasons(const fs::path& root) {
   return 0;
 }
 
+// Slippi Dolphin's own user folder as the root (Linux: ~/.config/SlippiOnline, ~/.local/share/SlippiDolphin):
+// the sign-in is Slippi/user.json there, with no User folder above it.
+int dolphin_folder_as_root(const fs::path& root) {
+  const fs::path local = root / "MU" / "User" / "Slippi";
+  const fs::path dolphin = root / "config" / "SlippiOnline";
+  const std::vector<fs::path> roots{dolphin};
+  write(dolphin / "Slippi" / "user.json", profile("Linux test", "LNX#1"));
+  const auto found = slippi::account::resolve(local, roots);
+  CHECK(found && slippi::account::text(found.data, "connectCode") == "LNX#1");
+  fs::remove_all(root);
+  return 0;
+}
+
 int main() {
   const fs::path root = fs::current_path() / ("slippi-login-fixture-" + std::to_string(_getpid()));
   // The folder is named after this process and removed at the end. A run that died left its folder
@@ -70,6 +83,7 @@ int main() {
   fs::remove_all(root, stale);
   struct Cleanup { fs::path folder; ~Cleanup() { std::error_code ec; fs::remove_all(folder, ec); } } cleanup{root};
   if (const int failed = moved_build_and_reasons(root / "moved")) return failed;
+  if (const int failed = dolphin_folder_as_root(root / "dolphin")) return failed;
   CHECK(!fs::exists(root / "moved"));
   fs::remove_all(root);
   const fs::path local = root / "MU" / "User" / "Slippi";

@@ -39,6 +39,9 @@ inline Profile search(const std::filesystem::path& root, int depth, size_t& rema
   if (depth < 0 || remaining == 0) return {};
   --remaining;
   if (auto profile = read(root / "User" / "Slippi" / "user.json")) return profile;
+  // On Linux and macOS Slippi Dolphin's user folder is itself the root (~/.config/SlippiOnline,
+  // ~/.local/share/SlippiDolphin): the file is Slippi/user.json with no User folder above it.
+  if (auto profile = read(root / "Slippi" / "user.json")) return profile;
   std::error_code ec;
   std::vector<std::filesystem::path> directories;
   std::filesystem::directory_iterator it(root, std::filesystem::directory_options::skip_permission_denied, ec);
@@ -80,11 +83,15 @@ inline std::vector<std::filesystem::path> launcher_roots() {
     roots.emplace_back(std::filesystem::path(home) / ".config" / "SlippiOnline");
     roots.emplace_back(std::filesystem::path(home) / ".local" / "share" / "SlippiOnline");
     roots.emplace_back(std::filesystem::path(home) / ".var" / "app" / "com.project_slippi.Launcher" / "data" / "SlippiOnline");
+    // The newer Slippi Dolphin (the Launcher's current netplay build) names its folders SlippiDolphin.
+    for (const char* kind : {".config", ".local/share"})
+      roots.emplace_back(std::filesystem::path(home) / kind / "SlippiDolphin");
+    roots.emplace_back(std::filesystem::path(home) / ".var" / "app" / "com.project_slippi.Launcher" / "config" / "SlippiDolphin");
+    roots.emplace_back(std::filesystem::path(home) / ".var" / "app" / "com.project_slippi.Launcher" / "data" / "SlippiDolphin");
   }
-  if (const char* data = std::getenv("XDG_DATA_HOME"); data && *data)
-    roots.emplace_back(std::filesystem::path(data) / "SlippiOnline");
-  if (const char* config = std::getenv("XDG_CONFIG_HOME"); config && *config)
-    roots.emplace_back(std::filesystem::path(config) / "SlippiOnline");
+  for (const char* name : {"XDG_DATA_HOME", "XDG_CONFIG_HOME"})
+    if (const char* base = std::getenv(name); base && *base)
+      for (const char* dolphin : {"SlippiOnline", "SlippiDolphin"}) roots.emplace_back(std::filesystem::path(base) / dolphin);
 #endif
   return roots;
 }
@@ -133,6 +140,7 @@ inline Missing why_missing(const std::filesystem::path& local_user_dir,
     launcher = true;
     for (const char* build : {"netplay", "netplay-beta", "playback"}) files.push_back(root / build / "User" / "Slippi" / "user.json");
     for (const auto& build : settings_builds(root)) files.push_back(build / "User" / "Slippi" / "user.json");
+    files.push_back(root / "Slippi" / "user.json");
   }
   for (const auto& file : files)
     if (std::filesystem::is_regular_file(file, ec)) return Missing::ConnectCode;
