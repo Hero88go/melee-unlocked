@@ -201,6 +201,8 @@ void main() {
   const gx::RenderOptions* presentation_options() const override { return hooks_.options; }
   void submit_frame(const gx::Frame& frame, const gx::DrawMatrices* overrides) override {
     if (hooks_.frame_begin) hooks_.frame_begin(frame);
+    widenable_scene_ = gx::frame_has_widenable_scene(frame);   // as the D3D backends: 16:9 reaches the screen
+    effects_filter_ = gx::effects_filter(frame, hooks_.options ? hooks_.options->effects_level : 0);   // "Visual effects"
     ++sequence_; glBindVertexArray(vao_);
     const size_t original_count = frame.vertices.size();
     vertex_offsets_.assign(frame.draws.size(), 0);
@@ -455,6 +457,7 @@ void main() {
     samplers_.emplace(key, s); return s;
   }
   void draw(const gx::Frame& frame, const gx::DrawCall& dc, const gx::DrawMatrices* matrices, size_t vertex_override) {
+    if (gx::skip_for_effects(effects_filter_, dc)) return;
     GLuint p = program(dc); glUseProgram(p); attributes(p); glBindFramebuffer(GL_FRAMEBUFFER, efb_);
     const float* vp = reinterpret_cast<const float*>(&dc.xf_regs[0x1A]);
     float x = (vp[3] - vp[0] - 342) * scale_, y = (vp[4] + vp[1] - 342) * scale_;
@@ -538,7 +541,7 @@ void main() {
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     const float fill = test_fill > 0 ? 1.0f : 0.0f; glClearColor(fill, fill, fill, 1); glClear(GL_COLOR_BUFFER_BIT);
     if (test_fill < 0) {
-      const double aspect = hooks_.options ? gx::presented_aspect(*hooks_.options, w, h, false) : 73.0 / 60.0;
+      const double aspect = hooks_.options ? gx::presented_aspect(*hooks_.options, w, h, widenable_scene_) : 73.0 / 60.0;
       int pw = w, ph = std::lround(w / aspect);
       if (ph > h) { ph = h; pw = std::lround(h * aspect); }
       glBindFramebuffer(GL_READ_FRAMEBUFFER, efb_);
@@ -581,6 +584,8 @@ void main() {
   int scale_, width_, height_; bool skip_ = false; uint64_t sequence_ = 0; uint32_t presented_ = 0;
   GLuint vao_ = 0, vertices_ = 0, indices_ = 0, uniform_[2]{}, efb_ = 0, color_ = 0, depth_ = 0, copy_program_ = 0;
   GLuint last_frame_ = 0, last_color_ = 0; bool have_last_ = false;
+  gx::EffectsFilter effects_filter_;   // "Visual effects" for the frame being submitted (submit_frame)
+  bool widenable_scene_ = true;   // the frame being presented can be shown widened (frame_has_widenable_scene)
   bool clockwise_front_ = true;
   std::unordered_map<ProgramKey, GLuint, KeyHash> programs_;
   std::vector<ProgramRecipe> recipes_; size_t saved_recipes_ = 0; bool binaries_ = false, prewarming_ = false;
