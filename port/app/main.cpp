@@ -2045,6 +2045,7 @@ static int melee_main(int argc, char** argv) {
   install_rng_seed_hook();
   install_css_background_hook();
   host::install_audio_pacing();
+  host::install_preload_room();
   host::install_console_clock();
   host::install_language_override();
   host::install_low_poly_fighters();

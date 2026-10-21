@@ -1900,6 +1900,55 @@ static void title_demo_fit(ppc::Context&) {
     wr8(kPicks + 4 + i, 0);
   }
 }
+// Melee's file preloader reads files it guesses the next scene needs into fixed heaps ahead of time
+// (lbDvd_CachePreloadedFile). After hours of online Teams such a heap can be full of files read ahead
+// and never handed out, and the next fighter's file no longer fits: lbMemory_80014FC8 then stops the
+// game (`memp_kouho`, lbmemory.c:233). At the entry of that allocator, r3 is the heap's handle and r4
+// the size. When the heap has no gap that large, preload entries whose data lies in this heap and that
+// are loaded (state 3) but were never handed to the game (load_state 1) are released through the
+// game's own lbDvd_800174E8, lowest load score first, until it fits. Nothing the game holds is freed;
+// a released file is read again when it is asked for. preloadCache is at 80432078, its 80 entries at
+// +0xAC, 0x1C bytes each (raw data descriptor at +0x10, the data address at the descriptor's +4).
+static void preload_make_room(ppc::Context& c) {
+  constexpr uint32_t kEntries = 0x80432078u + 0xACu, kEntrySize = 0x1Cu, kCount = 80u;
+  const uint32_t handle = c.r[3], need = (c.r[4] + 31u) & ~31u;
+  if (!try_ptr(handle, 16) || need == 0) return;
+  auto snap = guest_heap_trace::inspect(handle, heap_trace_read32);
+  if (!snap.complete) return;
+  // MELEE_TEST_PRELOAD_SQUEEZE (tests only, hidden runs): act as though the heap were full, to show
+  // the release working on a real session.
+  static int squeeze = (std::getenv("MELEE_TEST_PRELOAD_SQUEEZE") && options.no_gc_adapter) ? 8 : 0;
+  const bool test_full = squeeze > 0 && snap.largest_gap >= need;
+  if (snap.largest_gap >= need && !test_full) return;
+  auto in_heap = [&](uint32_t e) {
+    const uint32_t raw = rd32(e + 0x10);
+    if (!try_ptr(raw, 12)) return false;
+    const uint32_t data = rd32(raw + 4);
+    return data >= snap.lo && data < snap.hi;
+  };
+  const ppc::Context saved = c;
+  unsigned released = 0;
+  bool forced = test_full;
+  while (snap.largest_gap < need || forced) {
+    int best = -1, best_score = 0;
+    for (uint32_t i = 0; i < kCount; ++i) {
+      const uint32_t e = kEntries + i * kEntrySize;
+      if (rd8(e) != 3 || rd8(e + 3) != 1 || !in_heap(e)) continue;
+      const int score = (int16_t)rd16(e + 8);
+      if (best < 0 || score < best_score) { best = (int)i; best_score = score; }
+    }
+    if (best < 0) break;
+    if (forced) { forced = false; --squeeze; }
+    call_guest(0x800174E8u, (uint32_t)best);
+    ++released;
+    snap = guest_heap_trace::inspect(handle, heap_trace_read32);
+    if (!snap.complete) break;
+  }
+  c = saved;
+  if (released == 0 && test_full) return;
+  log("heap: %08X had no room for %u bytes; released %u file(s) read ahead and never used, largest gap now %u", handle, need, released,
+      snap.largest_gap);
+}
 // The same stop, should it still happen (a disc with larger files of the 26, a stage too large): one
 // line with the heap that had no room and the title demo's draw, so a report names the cause. At the
 // entry of __assert (80388220) called from lbMemory_80014FC8 for line 233, r24 is the heap's handle and
@@ -2103,6 +2152,8 @@ void install_mod_disc_guards() {
   if (!(std::getenv("MELEE_TEST_NO_DEMO_FIT") && options.no_gc_adapter)) ppc::add_entry_hook(0x801BF3F8u, title_demo_fit);
   ppc::add_entry_hook(0x80388220u, report_heap_stop);
 }
+// Every disc: the preloader's full heap (preload_make_room).
+void install_preload_room() { ppc::add_entry_hook(0x80014FC8u, preload_make_room); }
 void install_audio_pacing() {
   if (ppc::Fn previous = ppc::set_hook(0x80019894u, pad_queue_count_paced)) g_pad_queue_count = previous;
   else log("audio: frame-wait pacing not installed (lb_80019894 not found)");
