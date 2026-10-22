@@ -797,6 +797,16 @@ int main(int argc, char** argv) {
   check(host::cosmetics::set_random_stage_skins(true,&error), "enable random stage skins");
   auto pick=host::cosmetics::plan_stage_skin(stage_fst.data(),(uint32_t)stage_fst.size(),"GrNBa.dat",100);
   check(pick.ok && host::cosmetics::applied_asset(stage_start)==stage_id, "offline random selects installed full stage");
+  {
+    // Every random pick of a stage is served at one length, so a read to the length an earlier pick
+    // gave the game never runs past the end of a smaller pick.
+    const uint32_t told = read_be32(stage_fst.data() + 20);
+    std::vector<uint8_t> whole(told);
+    check(told >= full_stage.size() &&
+              host::cosmetics::read(stage_start, 0, whole.data(), told) == host::cosmetics::OverrideRead::Success &&
+              read_be32(whole.data()) == told,
+          "a random stage pick is served at the shared length, its length field saying the same");
+  }
   check(!host::cosmetics::plan_stage_skin(stage_fst.data(),(uint32_t)stage_fst.size(),"GrNBa.dat",100).ok,
         "one match token cannot reroll a stage");
   host::cosmetics::freeze_for_online_session();
@@ -1421,8 +1431,10 @@ int main(int argc, char** argv) {
     std::vector<uint8_t> served(alternate_stage.size());
     check(pick.ok && host::cosmetics::applied_asset(retail_at) == stage_skin &&
               host::cosmetics::read(retail_at, 0, served.data(), (uint32_t)served.size()) ==
-                  host::cosmetics::OverrideRead::Success && served == alternate_stage,
-          "a random match picks the disc stage and serves it from the mod disc's bytes");
+                  host::cosmetics::OverrideRead::Success &&
+              std::equal(alternate_stage.begin() + 4, alternate_stage.end(), served.begin() + 4) &&
+              read_be32(served.data()) == read_be32(game_fst.data() + 20),
+          "a random match picks the disc stage and serves it from the mod disc's bytes, at the stage's shared length");
     pick = host::cosmetics::plan_stage_skin(game_fst.data(), (uint32_t)game_fst.size(), "/GrNBa", 8);
     check(pick.ok && host::cosmetics::applied_asset(retail_at) == stage_skin,
           "a stage the game names without an extension finds its skins too");

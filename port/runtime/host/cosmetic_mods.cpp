@@ -198,6 +198,12 @@ bool dat_extension(const std::string& name) {
 
 std::string selection_key(const AssetRecord& asset);
 
+// The length every random pick of a stage is served at (the longest eligible skin in either form),
+// by target file. The game can keep a stage file's length from an earlier pick (a file read ahead
+// before this match's pick was published), so with one length for every pick a smaller skin no longer
+// ends before the reads the game makes ("disc read failed" in the middle of Final Destination).
+static std::map<std::string, size_t> g_stage_extent;
+
 std::string wide_to_utf8(const std::wstring& value) {
   if (value.empty()) return {};
   int n = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), (int)value.size(),
@@ -5055,6 +5061,12 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
             online_form.resize(extent, 0); put_be32(online_form.data(), (uint32_t)extent);
           }
         }
+        const auto shared = g_stage_extent.find(asset->info.target_path);
+        if (shared != g_stage_extent.end() && shared->second > served.size() && served.size() >= 4 &&
+            shared->second <= std::numeric_limits<uint32_t>::max()) {
+          served.resize(shared->second, 0); put_be32(served.data(), (uint32_t)shared->second);
+          if (online_form.size() >= 4) { online_form.resize(shared->second, 0); put_be32(online_form.data(), (uint32_t)shared->second); }
+        }
         host::log("cosmetics: stage %s %s online (%s)", disc_file.path.c_str(),
                   online_allowed ? "allowed" : "uses vanilla", validation_error.c_str());
         online_reason = online_allowed ? validation_error : online_reason_short(validation_error);
@@ -5634,6 +5646,7 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
   if (!g_profile.random_stage_skins && previous == current->stage_matches.end()) return result;
 
   std::vector<std::string> eligible;
+  size_t extent = 0;
   const auto started = std::chrono::steady_clock::now();
   if (g_profile.random_stage_skins) {
     std::vector<FstFile> files;
@@ -5652,6 +5665,7 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
       originals.push_back(std::move(bytes));
     }
     if (originals.empty() || originals.size() > 2) return result;
+    for (const auto& original : originals) extent = std::max(extent, original.size());
     for (const auto& asset : g_assets) {
       if (!asset.info.available || asset.info.kind != "stage_visual" || selection_key(asset) != target) continue;
       if (asset.source_kind == kDiscSource && g_profile.stage_packs_off.count(asset.source_id)) continue;
@@ -5659,10 +5673,13 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
       const auto bytes = load_runtime_asset_locked(asset, &error);
       if (bytes.empty()) continue;
       bool allowed = true;
-      if (online_active())
-        for (const auto& original : originals)
-          if (!stage_online_form(original, bytes, nullptr, &error, target)) { allowed = false; break; }
-      if (allowed) eligible.push_back(asset.info.id);
+      size_t longest = bytes.size();
+      for (const auto& original : originals) {
+        std::vector<uint8_t> form;
+        if (!stage_online_form(original, bytes, &form, &error, target)) { if (online_active()) { allowed = false; break; } continue; }
+        longest = std::max(longest, form.size());
+      }
+      if (allowed) { eligible.push_back(asset.info.id); extent = std::max(extent, longest); }
     }
   }
   std::string chosen;
@@ -5681,6 +5698,7 @@ RepublishResult plan_stage_skin(uint8_t* fst, uint32_t fst_size, const std::stri
     } while (random < threshold);
     chosen = eligible[random % count];
   }
+  if (g_profile.random_stage_skins && extent) g_stage_extent[target] = std::max(g_stage_extent[target], extent);
   publish_locked(fst, fst_size, &target, &result, &chosen);
   if (!result.ok) return result;
   auto next = std::make_shared<RuntimeState>(*std::atomic_load(&g_runtime));
