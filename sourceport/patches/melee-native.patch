@@ -128240,7 +128240,7 @@ index da910d9..fbdf856 100644
  /* 1FE1E4 */ void grKraid_801FE1E4(Ground_GObj*);
  /* 1FE1E8 */ void grKraid_801FE1E8(Ground_GObj*);
 diff --git a/src/melee/gr/grlast.c b/src/melee/gr/grlast.c
-index 3404d0f..37a94cd 100644
+index 3404d0fd5..d98b03b29 100644
 --- a/src/melee/gr/grlast.c
 +++ b/src/melee/gr/grlast.c
 @@ -1,5 +1,9 @@
@@ -128358,13 +128358,14 @@ index 3404d0f..37a94cd 100644
      grAnime_801C8138(gobj, gp->map_id, 0);
      gp->u.map.xC4_b0 = true;
      for (i = 0; i < ARRAY_SIZE(gp->u.map.lv_gobj); i++) {
-@@ -363,6 +372,21 @@ static void grLast_8021AAB0(Ground_GObj* gobj)
+@@ -363,6 +372,22 @@ static void grLast_8021AAB0(Ground_GObj* gobj)
  {
      Ground* gp = GET_GROUND(gobj);
      if (!gp->u.map.xC4_b1 && !gp->u.map.xC4_b0) {
 +#ifdef MU_NATIVE
-+        /* 20XX TE Frozen stages: the background never transforms. */
-+        if (mu_te(MU_TE_FROZEN_STAGES)) {
++        /* 20XX TE Frozen stages, or "Freeze Final Destination" (Stages, both engines): the
++         * background never transforms. */
++        if (mu_te(MU_TE_FROZEN_STAGES) || mu_freeze_fd()) {
 +        } else
 +        /* 20XX Hack Pack "Final Destination - No BG Trans with Custom Flag" (8021AAE0) */
 +        if (mu_hp_stage_flags() & MU_HP_FLAG_OFF) {
@@ -128380,7 +128381,7 @@ index 3404d0f..37a94cd 100644
          grLast_8021B2E8(gobj);
          if (gp->u.map.xC4_b26) {
              int tmp = grLast_8021B5C4(gobj);
-@@ -371,7 +395,7 @@ static void grLast_8021AAB0(Ground_GObj* gobj)
+@@ -371,7 +396,7 @@ static void grLast_8021AAB0(Ground_GObj* gobj)
              }
          }
      }
@@ -128389,7 +128390,7 @@ index 3404d0f..37a94cd 100644
      lb_800115F4();
  }
  
-@@ -566,6 +590,16 @@ static bool grLast_8021B2D8(Ground_GObj* gobj)
+@@ -566,6 +591,16 @@ static bool grLast_8021B2D8(Ground_GObj* gobj)
      return false;
  }
  
@@ -128406,7 +128407,7 @@ index 3404d0f..37a94cd 100644
  static void grLast_8021B2E0(Ground_GObj* gobj) {}
  
  static void grLast_8021B2E4(Ground_GObj* gobj) {}
-@@ -898,7 +932,7 @@ static void grLast_8021B920(Ground_GObj* gobj_, int arg1)
+@@ -898,7 +933,7 @@ static void grLast_8021B920(Ground_GObj* gobj_, int arg1)
      case 13:
          grLast_8021C40C(gobj, grNLa_804DBBD8, 120.0F);
          for (i = 0; i < 5; i++) {
@@ -128415,7 +128416,7 @@ index 3404d0f..37a94cd 100644
              grMaterial_801C9698(gp->u.map.lv_gobj[i]);
          }
          gp->u.map.xC4_b26 = true;
-@@ -913,7 +947,7 @@ static void grLast_8021B920(Ground_GObj* gobj_, int arg1)
+@@ -913,7 +948,7 @@ static void grLast_8021B920(Ground_GObj* gobj_, int arg1)
          HSD_ASSERT(0x4D2, gp->u.map.lv_gobj[5]);
          HSD_GObjGXLink_803909D8(gp->u.map.lv_gobj[5], gobj);
          do_anime(gp->u.map.lv_gobj[5], 5, 0);
@@ -128424,7 +128425,7 @@ index 3404d0f..37a94cd 100644
          grMaterial_801C9698(gp->u.map.lv_gobj[5]);
          Ground_801C1E00(0);
          gp->u.map.xC4_b26 = true;
-@@ -924,7 +958,7 @@ static void grLast_8021B920(Ground_GObj* gobj_, int arg1)
+@@ -924,7 +959,7 @@ static void grLast_8021B920(Ground_GObj* gobj_, int arg1)
          break;
      case 16:
          grLast_8021C40C(gobj, grNLa_804DBBE0, 60.0F);
@@ -128433,7 +128434,7 @@ index 3404d0f..37a94cd 100644
          grMaterial_801C9698(gp->u.map.lv_gobj[5]);
          gp->u.map.xC4_b26 = true;
          break;
-@@ -938,7 +972,7 @@ static void grLast_8021B920(Ground_GObj* gobj_, int arg1)
+@@ -938,7 +973,7 @@ static void grLast_8021B920(Ground_GObj* gobj_, int arg1)
                                   grNLa_803E8010[i][3], 0.0F, 1.0F);
              }
              do_anime(gp->u.map.lv_gobj[i], i, 0);
@@ -165131,7 +165132,7 @@ index 004e1a0..04271f7 100644
  
      Item_80268E5C(gobj, 0, ITEM_ANIM_UPDATE);
 diff --git a/src/melee/it/kinds/itwhitebea.c b/src/melee/it/kinds/itwhitebea.c
-index f8c2674..2cc23f8 100644
+index f8c2674d1..343f4ccf5 100644
 --- a/src/melee/it/kinds/itwhitebea.c
 +++ b/src/melee/it/kinds/itwhitebea.c
 @@ -3,8 +3,8 @@
@@ -165171,16 +165172,41 @@ index f8c2674..2cc23f8 100644
      ip->xDD4_itemVar.whitebea.x28 = 0;
      ip->x40_vel.x *= attrs->x4;
      Item_80268E5C(gobj, 4, ITEM_ANIM_UPDATE);
-@@ -188,7 +188,7 @@ bool itOldottosea_UnkMotion10_Coll(Item_GObj* gobj)
+@@ -185,10 +185,32 @@ bool itOldottosea_UnkMotion10_Coll(Item_GObj* gobj)
+     return it_8027C79C(gobj);
+ }
+ 
++#ifdef MU_NATIVE
++/* Is the Topi's ice block still a live item? When a match is torn down every item is freed, and
++ * the block can go before the Topi. On the console the freed block was still readable; here the
++ * Topi's destroy callback read freed memory and crashed on the way out of Icicle Mountain. */
++static bool mu_whitebea_block_alive(HSD_GObj* block)
++{
++    for (HSD_GObj* cur = HSD_GObjPLinkHead[9]; cur != NULL; cur = cur->next) {
++        if (cur == block) {
++            return true;
++        }
++    }
++    return false;
++}
++#endif
++
  void it_2725_Logic3_Destroyed(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
 -    if ((u32) ip->xDD4_itemVar.whitebea.x20 != 0U) {
++#ifdef MU_NATIVE
++    if (ip->xDD4_itemVar.whitebea.x20 != NULL &&
++        !mu_whitebea_block_alive((HSD_GObj*) ip->xDD4_itemVar.whitebea.x20))
++    {
++        ip->xDD4_itemVar.whitebea.x20 = NULL;
++    }
++#endif
 +    if (ip->xDD4_itemVar.whitebea.x20 != NULL) {
          it_8028ECE0((HSD_GObj*) ip->xDD4_itemVar.whitebea.x20);
      }
      it_802E37A4(gobj);
-@@ -198,9 +198,7 @@ void it_2725_Logic3_Destroyed(Item_GObj* gobj)
+@@ -198,9 +220,7 @@ void it_2725_Logic3_Destroyed(Item_GObj* gobj)
  void it_802E3528(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -165191,7 +165217,7 @@ index f8c2674..2cc23f8 100644
      Item_80268E5C(gobj, 0xB, 3);
  }
  
-@@ -223,7 +221,7 @@ bool itOldottosea_UnkMotion11_Coll(Item_GObj* gobj)
+@@ -223,7 +243,7 @@ bool itOldottosea_UnkMotion11_Coll(Item_GObj* gobj)
  bool it_802E35CC(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -165200,7 +165226,7 @@ index f8c2674..2cc23f8 100644
      Item* ip2;
      f32 dx;
      f32 dy;
-@@ -288,7 +286,11 @@ void it_802E3784(Item_GObj* gobj, Item_GObj* ref_gobj)
+@@ -288,7 +308,11 @@ void it_802E3784(Item_GObj* gobj, Item_GObj* ref_gobj)
  void it_802E37A4(Item_GObj* gobj)
  {
      if (gobj != NULL) {
@@ -165213,7 +165239,7 @@ index f8c2674..2cc23f8 100644
      }
  }
  
-@@ -319,16 +321,12 @@ void it_802E37BC(Item_GObj* gobj)
+@@ -319,16 +343,12 @@ void it_802E37BC(Item_GObj* gobj)
  bool it_802E3884(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -165233,7 +165259,7 @@ index f8c2674..2cc23f8 100644
          if (HSD_Randf() < it_804D6D40->x8) {
              it_802E4980(gobj);
          } else {
-@@ -382,11 +380,11 @@ bool itWhitebea_UnkMotion0_Coll(Item_GObj* gobj)
+@@ -382,11 +402,11 @@ bool itWhitebea_UnkMotion0_Coll(Item_GObj* gobj)
  void it_802E3AC8(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);
@@ -165247,7 +165273,7 @@ index f8c2674..2cc23f8 100644
      ip->x40_vel.z = 0.0f;
      ip->x40_vel.y = 0.0f;
      it_8027C56C(gobj, ip->facing_dir);
-@@ -431,7 +429,7 @@ bool itWhitebea_UnkMotion1_Anim(Item_GObj* gobj)
+@@ -431,7 +451,7 @@ bool itWhitebea_UnkMotion1_Anim(Item_GObj* gobj)
  void itWhitebea_UnkMotion1_Phys(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -165256,7 +165282,7 @@ index f8c2674..2cc23f8 100644
      s32 range;
      PAD_STACK(16);
  
-@@ -465,7 +463,7 @@ bool itWhitebea_UnkMotion1_Coll(Item_GObj* gobj)
+@@ -465,7 +485,7 @@ bool itWhitebea_UnkMotion1_Coll(Item_GObj* gobj)
  void it_802E3DA0(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -165265,7 +165291,7 @@ index f8c2674..2cc23f8 100644
      PAD_STACK(8);
      ip->xDD4_itemVar.whitebea.x40 = 0;
      ip->x40_vel.x *= attrs->x4;
-@@ -567,10 +565,10 @@ bool itWhitebea_UnkMotion4_Coll(Item_GObj* gobj)
+@@ -567,10 +587,10 @@ bool itWhitebea_UnkMotion4_Coll(Item_GObj* gobj)
  void it_802E40A4(Item_GObj* gobj)
  {
      Item* ip = HSD_GObjGetUserData(gobj);
@@ -165278,7 +165304,7 @@ index f8c2674..2cc23f8 100644
      ip->x40_vel.z = 0.0f;
      ip->x40_vel.y = 0.0f;
      it_8027C56C(gobj, ip->facing_dir);
-@@ -618,8 +616,8 @@ bool itWhitebea_UnkMotion2_Anim(Item_GObj* gobj)
+@@ -618,8 +638,8 @@ bool itWhitebea_UnkMotion2_Anim(Item_GObj* gobj)
      if (!it_80272C6C(gobj)) {
          ip->xDD4_itemVar.whitebea.x40 = 0;
          ip = HSD_GObjGetUserData(gobj);
@@ -165289,7 +165315,7 @@ index f8c2674..2cc23f8 100644
          ip->x40_vel.z = 0.0f;
          ip->x40_vel.y = 0.0f;
          it_8027C56C(gobj, ip->facing_dir);
-@@ -680,7 +678,7 @@ bool itWhitebea_UnkMotion5_Coll(Item_GObj* gobj)
+@@ -680,7 +700,7 @@ bool itWhitebea_UnkMotion5_Coll(Item_GObj* gobj)
  void it_802E4464(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -165298,7 +165324,7 @@ index f8c2674..2cc23f8 100644
      PAD_STACK(8);
      it_802762BC(ip);
      ip->x40_vel.y = attrs->x10;
-@@ -721,7 +719,7 @@ void it_802E4558(Item_GObj* gobj)
+@@ -721,7 +741,7 @@ void it_802E4558(Item_GObj* gobj)
  bool itWhitebea_UnkMotion7_Anim(Item_GObj* gobj)
  {
      Item* ip = gobj->user_data;
@@ -165307,7 +165333,7 @@ index f8c2674..2cc23f8 100644
      PAD_STACK(16);
      if (!it_80272C6C(gobj)) {
          ip->xDD4_itemVar.whitebea.x3C = 1;
-@@ -763,7 +761,7 @@ void it_2725_Logic9_Dropped(Item_GObj* gobj)
+@@ -763,7 +783,7 @@ void it_2725_Logic9_Dropped(Item_GObj* gobj)
      PAD_STACK(8);
      it_8027CBA4(gobj);
      ip = GET_ITEM(gobj);
@@ -165316,7 +165342,7 @@ index f8c2674..2cc23f8 100644
      ip->xDD4_itemVar.whitebea.x40 = 0;
      ip->x40_vel.x *= attrs->x4;
      if ((ip->facing_dir > 0.0f && ip->x70_nudge.x < 0.0f) ||
-@@ -837,9 +835,7 @@ bool itWhitebea_UnkMotion10_Coll(Item_GObj* gobj)
+@@ -837,9 +857,7 @@ bool itWhitebea_UnkMotion10_Coll(Item_GObj* gobj)
  void it_802E4980(Item_GObj* gobj)
  {
      Item* ip = GET_ITEM(gobj);

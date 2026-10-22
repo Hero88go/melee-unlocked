@@ -135,6 +135,11 @@ int main() {
   a.draws[0].authored_pose = b.draws[0].authored_pose = envelope_pose;
   solver.set_frames(&a, &b);
   check(solver.stats().paired == 1 && solver.stats().discontinuity == 0, "a fighter's authored pose still pairs across a rollback's discontinuity");
+  // A Training Lab load or a replay seek is a hard cut: the fighter is held too, not slid back.
+  b.hard_cut = true;
+  solver.set_frames(&a, &b);
+  check(solver.stats().paired == 0 && solver.stats().discontinuity == 1, "a fighter is held across a hard cut");
+  b.hard_cut = false;
   a.draws[0].authored_pose = b.draws[0].authored_pose = nullptr;
   b.discontinuous = false;
   // Matrix selectors are discrete even when the vertex stream is unchanged.

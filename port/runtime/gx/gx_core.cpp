@@ -66,6 +66,7 @@ Frame g_frame;
 TextureSnapshotCache g_texture_snapshots;
 uint64_t g_frame_sequence = 0;
 bool g_discontinuity = false;   // simulation thread only, like the rest of this file's state
+bool g_hard_cut = false;        // the pending discontinuity includes one that was not an online rollback
 std::atomic<int> g_stock_hud_scale{100}, g_damage_hud_scale{100};
 std::atomic<bool> g_pal_stock_hud{false};
 std::atomic<bool> g_low_poly_fighters{false};
@@ -650,14 +651,16 @@ void bp_write(uint32_t value) {
         g_frame.time = host::now_seconds(); // completed snapshot availability anchors presentation
         g_frame.tick = host::tick_timing();
         g_frame.discontinuous = g_discontinuity;
+        g_frame.hard_cut = g_hard_cut;
         g_discontinuity = false;
+        g_hard_cut = false;
         g_frame.test_fill = latency_test_fill();
         // A replay viewer on the way to a jump's target simulates frames nobody sees: they are not
         // handed to the renderer, and the next frame that is shown is not the last shown one's neighbour.
         const bool unseen = replay_control::skip_render();
         if (g_backend && !unseen) g_backend->submit_and_recycle(g_frame);   // hands over the buffers, returns recycled ones
         else g_frame.clear();
-        if (unseen) g_discontinuity = true;
+        if (unseen) g_discontinuity = g_hard_cut = true;
         g_texture_snapshots.end_frame();
         g_dl_calls.clear(); g_immediate_draws.clear(); g_native_object_scopes.clear(); g_native_draw_scopes.clear(); native_pose_bridge_frame_reset(); finish_observed_frame();
         host::note_frame_submitted();   // the game now only waits for the retrace (audio pacing, host.cpp)
@@ -792,7 +795,7 @@ size_t parse_command(const uint8_t* d, size_t len) {
 
 }  // namespace
 
-void mark_discontinuity() { g_discontinuity = true; }
+void mark_discontinuity(bool rollback) { g_discontinuity = true; if (!rollback) g_hard_cut = true; }
 
 void set_latency_test(bool on) { g_latency_test.store(on, std::memory_order_relaxed); }
 void set_presented_test_fill(int fill) { g_presented_fill.store(fill, std::memory_order_relaxed); }

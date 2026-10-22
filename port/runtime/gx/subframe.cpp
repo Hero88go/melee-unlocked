@@ -426,7 +426,9 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
       // (see handle_load_savestate). A fighter's authored pose is resampled from its joint chain
       // rather than blended vertex for vertex (sample_authored_envelope), so letting it pair here
       // keeps its motion smooth through the correction instead of snapping once per rollback.
-      if (valid && cur->discontinuous && (!rollback_continuity() || !(d.authored_pose && d.authored_pose->envelope))) {
+      // Only for an online rollback: a Training Lab load or a replay seek moves fighters anywhere, and
+      // carrying them across it drew them sliding back to the loaded spot.
+      if (valid && cur->discontinuous && (cur->hard_cut || !rollback_continuity() || !(d.authored_pose && d.authored_pose->envelope))) {
         valid = false; reason = 8;
         ++stats_.discontinuity;
       }

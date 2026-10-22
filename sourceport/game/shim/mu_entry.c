@@ -78,6 +78,19 @@ unsigned int mu_display_options(void)
     return mu_host && mu_host->version >= 18 && mu_host->display_options ? mu_host->display_options() : 0;
 }
 
+void OSReport(const char* msg, ...);
+
+int mu_freeze_fd(void)
+{
+    static int logged = 0;
+    const int on = (mu_display_options() & MU_DISPLAY_FREEZE_FD) != 0;
+    if (on && !logged) {
+        logged = 1;
+        OSReport("[stage] Final Destination's background frozen\n");
+    }
+    return on;
+}
+
 int mu_low_poly_fighters(void)
 {
     return (mu_display_options() & MU_DISPLAY_LOW_POLY) != 0;
@@ -91,6 +104,7 @@ int mu_player_tags_always(void)
 }
 _Static_assert(MU_DISPLAY_PLAYER_TAGS == MU_DISPLAY_OPTION_PLAYER_TAGS, "display option bits");
 _Static_assert(MU_DISPLAY_FOD_REFLECTIONS == MU_DISPLAY_OPTION_FOD_REFLECTIONS, "display option bits");
+_Static_assert(MU_DISPLAY_FREEZE_FD == MU_DISPLAY_OPTION_FREEZE_FD, "display option bits");
 _Static_assert(MU_DISPLAY_CSS_BACKGROUND_FREE == MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE, "display option bits");
 
 _Static_assert(MU_CPU_TECH_MASK == MU_GAME_OPTION3_CPU_TECH_MASK && MU_CPU_TECH_SHIFT == MU_GAME_OPTION3_CPU_TECH_SHIFT &&

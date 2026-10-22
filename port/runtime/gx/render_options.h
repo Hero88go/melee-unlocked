@@ -2,6 +2,7 @@
 // Nothing here belongs to one graphics API: a backend reads what applies to it and ignores the rest.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include "../host/gameplay_policy.h"
 #include <atomic>
 #include <array>
 #include <cstdint>
@@ -149,6 +150,7 @@ struct RenderOptions {
   static uint32_t& live_te_options() { static uint32_t value = 0x10u; return value; }
   // Source Port mod profiles and offline 20XX TE options are available under Mods in 0.8.5.
   static constexpr bool kModFeaturesAvailable = true;
+  static bool mod_features_available() { return kModFeaturesAvailable && !host::gameplay::vanilla_only(); }
   // DXR path tracing and Ray Reconstruction: not offered in 0.8. They rebuild the whole stage's
   // ray tracing geometry every frame, which dropped the picture to a few frames per second in
   // matches. Hidden and forced off (saved values ignored) until that is reworked.
@@ -171,6 +173,10 @@ struct RenderOptions {
   // the Static Recomp runs the pack's own AI block from its disc under Mods (host/hackpack_ai.cpp).
   bool cpu_20xx = false;
   static bool& live_cpu_20xx() { static bool value = false; return value; }
+  // "Freeze Final Destination" (Game tab, ini key freeze_fd, both engines): the background stays on
+  // its first form, with no transformations or white flash. The player's own, online too.
+  bool freeze_fd = false;
+  static bool& live_freeze_fd() { static bool value = false; return value; }
   // "Unlock everything" (Game tab, ini key unlock_all, on unless the file says 0): Slippi's "Unlock
   // All Characters and Stages". Off, the save file decides what is unlocked, offline only: a network
   // session always has everything. Static Recomp: gecko::option_unlock_all (host.cpp); Source Port:

@@ -328,7 +328,7 @@ std::string dir_layer_fingerprint(const std::string& profile) {
 // layer here (its save stays out of the card): it switches on TE's native features. Card mods and
 // code mods need the Static Recomp and are not loaded.
 void apply_detected_mods() {
-  if (!gx::RenderOptions::kModFeaturesAvailable || !mods::auto_detect()) return;
+  if (!gx::RenderOptions::mod_features_available() || !mods::auto_detect()) return;
   mods::StartupOptions options;
   options.card_dir = std::filesystem::u8path(host::options.card_dir);
   options.base_iso = std::filesystem::u8path(host::options.iso);
@@ -406,10 +406,11 @@ void compute_pack_skin_verdicts(const std::unordered_map<std::string, int32_t>& 
 }
 
 void load_mod_overlay() {
+  if (host::gameplay::vanilla_only()) return;
   namespace fs = std::filesystem;
   std::error_code ec;
   apply_detected_mods();
-  if (!g_mod_root_explicit && fs::exists(g_mod_root, ec) && !ec)
+  if (!host::gameplay::mod_autodetect_disabled && !g_mod_root_explicit && fs::exists(g_mod_root, ec) && !ec)
     g_mod_layers.push_back({mods::LayerKind::Dir, g_mod_root});
   if (g_mod_layers.empty()) return;
   std::string error;
@@ -974,7 +975,8 @@ uint32_t h_display_options() {
   return (gx::low_poly_fighters_active() ? MU_DISPLAY_OPTION_LOW_POLY : 0u) |
          (gx::player_tags_always_active() ? MU_DISPLAY_OPTION_PLAYER_TAGS : 0u) |
          (gx::fod_reflections_active() ? MU_DISPLAY_OPTION_FOD_REFLECTIONS : 0u) |
-         (gx::css_background_free_active() ? MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE : 0u);
+         (gx::css_background_free_active() ? MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE : 0u) |
+         (gx::RenderOptions::live_freeze_fd() && !host::gameplay::vanilla_only() ? MU_DISPLAY_OPTION_FREEZE_FD : 0u);
 }
 void h_hud_player(int32_t slot, int32_t present, int32_t damage, int32_t stocks, float tag_x, float tag_y,
                   int32_t tag_visible) {
@@ -1002,6 +1004,7 @@ bool hp_te_words() { return !mods::status().te_owned && hackpack::loaded(); }
 uint32_t te_words_mask1() { return mods::status().te_owned ? 0x00007FF0u : hp_te_words() ? kHpTeOptions : 0u; }
 uint32_t te_words_mask2() { return mods::status().te_owned ? 0xFFFFFFFFu : hp_te_words() ? kHpTeOptions2 : 0u; }
 uint32_t h_game_options2() {
+  if (host::gameplay::vanilla_only()) return 0;
   if (g_replaying) return g_replay_feature_options2;
   return (gx::RenderOptions::live_te_options2() & te_words_mask2()) | cpu_20xx_bit();
 }
@@ -1011,7 +1014,8 @@ uint32_t h_game_options2() {
 // them when a match is picked and they ride in the same word, so a replay records and replays them.
 uint32_t h_game_options3() {
   if (g_replaying) return g_replay_feature_options3;
-  return (gx::RenderOptions::live_cpu_training() & MU_GAME_OPTION3_CPU_ALL) | hackpack::stage_bits() |
+  return (host::gameplay::vanilla_only() ? 0u :
+          (gx::RenderOptions::live_cpu_training() & MU_GAME_OPTION3_CPU_ALL) | hackpack::stage_bits()) |
          (gx::RenderOptions::live_unlock_all() ? 0u : MU_GAME_OPTION3_LOCKED_CONTENT) |
          (gx::RenderOptions::live_results_screen() ? 0u : MU_GAME_OPTION3_SKIP_RESULTS);
 }
@@ -1024,8 +1028,8 @@ uint32_t h_game_options() {
           MU_GAME_OPTION_LANGUAGE_MASK) |   // the player's language choice: text, names and voices only
          (host::options.vanilla_game ? MU_GAME_OPTION_VANILLA : 0u) |
          (g_slippi_menus ? MU_GAME_OPT_SLIPPI_MENUS : 0u) |
-         (mods::status().tmce && !g_replaying ? MU_GAME_OPTION_TMCE : 0u) |
-         (g_replaying ? g_replay_feature_options
+         (!host::gameplay::vanilla_only() && mods::status().tmce && !g_replaying ? MU_GAME_OPTION_TMCE : 0u) |
+         (host::gameplay::vanilla_only() ? 0u : g_replaying ? g_replay_feature_options
                    : gx::RenderOptions::live_te_options() & te_words_mask1());
   // (Only 20XX TE's own bits, and only with its save, or the Hack Pack's share of them with the pack.
   // The Training Lab bits above 0x7FF0 are not offered any more: Training Mode CE replaces it.)
@@ -1260,7 +1264,7 @@ void native_load(int32_t frame, const uint8_t* payload) {
   }
   // The frame the game finishes next continues from this older state; the renderer must not blend
   // across the jump.
-  gx::mark_discontinuity();
+  gx::mark_discontinuity(true);
   slippi::online::note_rollback(frame);
   if (g_savestates.stats().loads % 200 == 0) log_savestate_stats("so far");
 }
@@ -3069,6 +3073,12 @@ bool set_replay(const char* path) {
   g_replay_feature_options = read_replay_feature_options(path);
   g_replay_feature_options2 = read_replay_feature_options(path, 1);
   g_replay_feature_options3 = read_replay_feature_options(path, 2);
+  if (host::gameplay::vanilla_only() &&
+      (!g_replay_mod_profile.empty() || g_replay_feature_options || g_replay_feature_options2 ||
+       (g_replay_feature_options3 & MU_GAME_OPTION3_CPU_ALL))) {
+    std::fprintf(stderr, "--vanilla-only cannot play a replay recorded with gameplay mods; open it in a normal launch\n");
+    return false;
+  }
   g_replaying = true;
   if (g_replay_feature_options) host::log("replay: recorded with game options %08X", g_replay_feature_options);
   g_replay = Slippi::SlippiGame::FromFile(path);

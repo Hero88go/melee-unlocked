@@ -618,8 +618,15 @@ void Lab_ChangeInfoPresetCPU(GOBJ *menu_gobj, int preset_id)
 
 void Lab_ChangeHUD(GOBJ *menu_gobj, int show_hud)
 {
+#ifdef MU_NATIVE
+    if (show_hud)
+        Match_ShowHUDDevelop();
+    else
+        Match_HideHUDDevelop();
+#else
     bool *hide_hud_ptr = (bool *)(R13 + -0x4948);
     *hide_hud_ptr = !show_hud;
+#endif
     event_vars->watermark->hidden = !show_hud;
 }
 

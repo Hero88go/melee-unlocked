@@ -212,6 +212,7 @@ void install_language_override();  // Static Recomp: the functions that read the
 void install_low_poly_fighters();  // Static Recomp: the fighter parts hook behind "Low poly fighters" (gx::low_poly_fighters_active)
 void apply_player_tags_always();   // Static Recomp, once per game frame: keeps the P1 / P2 markers up while the option is on
 void apply_low_poly_fighters();    // Static Recomp, once per game frame: runs the fighter draw from RAM while the option is on
+void apply_freeze_final_destination();   // Static Recomp, once per game frame: "Freeze Final Destination" on or off
 void apply_final_destination_guard();   // Static Recomp, once per game frame: a Final Destination skin without its background animation does not stop the game
 uint64_t console_epoch_ticks(); // the console clock at start: ticks since 2000-01-01, local time
 void note_frame_submitted();   // the game handed over the frame's picture; until the retrace it only waits
@@ -284,6 +285,9 @@ int game_language_override();
 // "20XX CPUs" (Game tab, both engines): CPUs play with the 20XX Hack Pack's AI, offline only. On the
 // Static Recomp hackpack_ai.cpp reads this at each match start (MELEE_TEST_20XX_AI=1 forces it on).
 extern std::atomic<bool> g_cpu_20xx;
+// "Freeze Final Destination" (Game tab, both engines): Final Destination's background stays on its
+// first form. On the Static Recomp apply_freeze_final_destination() reads this once per frame.
+extern std::atomic<bool> g_freeze_fd;
 void input_rumble(int game_port, bool on);
 // Immediately clear any motors that were active when the Controls switch is turned off.
 void input_stop_all_rumble();

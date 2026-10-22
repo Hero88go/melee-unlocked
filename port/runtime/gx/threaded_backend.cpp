@@ -207,7 +207,7 @@ class ThreadedBackend final : public Backend {
         // before it, but the solver still pairs it against that previous frame: SubFrameSolver::set_frames
         // holds world/stage draws at their exact pose across the discontinuity while still letting a
         // fighter's authored pose interpolate through the correction.
-        have_prev = cur >= 0;
+        have_prev = cur >= 0 && !frames[next].hard_cut;
         if (frames[next].discontinuous) ++discontinuities;
         cur = next;
         got_new = true;

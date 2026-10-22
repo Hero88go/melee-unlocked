@@ -1966,6 +1966,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // Start in the game. F1 and the launcher Settings entry remain available at any time.
   options.settings_open = false;
   options.cpu_20xx = false;   // a file without the key: off
+  options.freeze_fd = false;
   options.unlock_all = true;   // a file without the key: on
   options.results_screen = true;
   options.offline_delay = false;
@@ -2111,6 +2112,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "backgroundinput") host::g_background_input = value != "0";
       else if (key == "gamelanguage") host::g_game_language.store(value == "1" ? 1 : value == "2" ? 2 : 0);
       else if (key == "cpu_20xx") options.cpu_20xx = value == "1";
+      else if (key == "freeze_fd") options.freeze_fd = value == "1";
       else if (key == "unlock_all") options.unlock_all = value != "0";
       else if (key == "results_screen") options.results_screen = value != "0";
 #ifndef MELEE_NO_SLIPPI
@@ -2291,7 +2293,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // The player's Gecko codes live beside the settings file.
   std::filesystem::path codes = std::filesystem::path(options.settings_path).parent_path() / "GeckoCodes.ini";
   user_gecko::set_code_patches_allowed(!options.native_source);   // the Static Recomp can run a patched function from RAM
-  if (options.lossless_lag_test || std::getenv("MELEE_LAG_TEST")) {
+  if (!host::gameplay::vanilla_only() && (options.lossless_lag_test || std::getenv("MELEE_LAG_TEST"))) {
     // The Lossless adapter's lag test: the codes its app gives Dolphin, in place of the player's own
     // (the player's video settings stay, since they are what is measured). The Source Port does the
     // same natively and loads none.
@@ -2319,6 +2321,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // cleared here and never saved again, so the migration happens one time.
   if (options.te_options2 & 0x800000u) { options.cpu_20xx = true; options.te_options2 &= ~0x800000u; }
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
+  RenderOptions::live_freeze_fd() = options.freeze_fd;
+  host::g_freeze_fd.store(options.freeze_fd, std::memory_order_relaxed);
   RenderOptions::live_unlock_all() = options.unlock_all;
   RenderOptions::live_results_screen() = options.results_screen;
   RenderOptions::live_offline_delay() = options.offline_delay;
@@ -3468,6 +3472,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nbackgroundinput " << (host::g_background_input ? 1 : 0)
        << "\ngamelanguage " << host::g_game_language.load()
        << "\ncpu_20xx " << (options.cpu_20xx ? 1 : 0)
+       << "\nfreeze_fd " << (options.freeze_fd ? 1 : 0)
        << "\nunlock_all " << (options.unlock_all ? 1 : 0)
        << "\nresults_screen " << (options.results_screen ? 1 : 0)
 #ifndef MELEE_NO_SLIPPI
@@ -6329,8 +6334,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       }
       if (state.active_tab == 7) {
         static std::string mod_message;
-        if (RenderOptions::kModFeaturesAvailable) game_mods_panel(options);
-        if (RenderOptions::kModFeaturesAvailable && source_port::mods::status().source_port) {
+        if (host::gameplay::vanilla_only())
+          ImGui::TextWrapped("Vanilla-only session: gameplay mods are disabled. Your saved mod choices are kept for normal launches.");
+        if (RenderOptions::mod_features_available()) game_mods_panel(options);
+        if (RenderOptions::mod_features_available() && source_port::mods::status().source_port) {
           const auto& mod_status = source_port::mods::status();
           // Command-line mods (no profile name) are a test setup: nothing to compare against.
           const bool from_command_line = !mod_status.detected && mod_status.profile.empty() && !mod_status.identity.empty();
@@ -7157,7 +7164,20 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::SetTooltip("On: the results screen after each offline match.\n"
                         "Off: straight back to character select, for playing sets back to back.\n"
                         "Online play always goes back to character select.");
+    ImGui::TextUnformatted("Stages");
+    ImGui::BeginDisabled(host::gameplay::vanilla_only());
+    if (settings_toggle("Freeze Final Destination", &options.freeze_fd)) {
+      RenderOptions::live_freeze_fd() = options.freeze_fd;
+      host::g_freeze_fd.store(options.freeze_fd, std::memory_order_relaxed);
+      changed = true;
+    }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Final Destination's background stays on its first form: no transformations and no white flash.\n"
+                        "Also keeps a Final Destination skin's own background in view. Yours alone, online too.\n"
+                        "Takes effect immediately.");
+    ImGui::EndDisabled();
     ImGui::TextUnformatted("CPU players");
+    ImGui::BeginDisabled(host::gameplay::vanilla_only());
     if (settings_toggle("20XX CPUs", &options.cpu_20xx)) {
       RenderOptions::live_cpu_20xx() = options.cpu_20xx;
       host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
@@ -7203,6 +7223,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         changed = true;
       }
     }
+    ImGui::EndDisabled();
 
 #ifndef MELEE_NO_SLIPPI   // only the Static Recomp runs this switch, so the build without it has no such section
     // Slippi's Lagless FoD code is a real game patch, so expose it as an offline/direct setting
@@ -7238,7 +7259,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     {
       if (settings_lcancel_flash(options)) changed = true;
       bool automatic = lcancel::automatic_enabled();
+      ImGui::BeginDisabled(host::gameplay::vanilla_only());
       if (settings_toggle("Auto L-cancel", &automatic)) lcancel::set_automatic(automatic);
+      ImGui::EndDisabled();
+      if (host::gameplay::vanilla_only()) settings_hint("Disabled for this vanilla-only session.");
       ImGui::SameLine();
 #ifdef MELEE_NO_SLIPPI   // this build's matches are all the one kind, where it works
       settings_hint("(NOTE: Works offline and in online matches)");
@@ -8068,6 +8092,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Camera only. Online safe.%s", te_pair_hover(kTeNoScreenRumble));
     if (settings_lcancel_flash(options)) changed = true;
+    ImGui::BeginDisabled(host::gameplay::vanilla_only());
 #ifdef MELEE_NO_SLIPPI
     // This build plays the retail game (no General Codes), and it is the only engine: the lines
     // below say what runs here without naming another one.
@@ -8128,9 +8153,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 #endif
     ImGui::Separator();
     if (gecko_add_code_button()) changed = true;
+    ImGui::EndDisabled();
       } else if (state.active_tab == 6) {
     // ---- Gecko codes (the player's own, from GeckoCodes.ini beside the settings file) ----
     ImGui::TextWrapped("Imported Gecko codes run offline. They are suspended online and during replay playback.");
+    if (host::gameplay::vanilla_only())
+      ImGui::TextWrapped("Vanilla-only session: imported codes are suspended and their saved choices are preserved.");
+    ImGui::BeginDisabled(host::gameplay::vanilla_only());
     settings_hint("Restart the game after importing codes or turning on the first one, so they can run. Use codes for Melee NTSC 1.02; "
                   "codes for another revision or conflicting mods may not work.");
     ImGui::Separator();
@@ -8166,6 +8195,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     }
     ImGui::Separator();
     if (gecko_add_code_button()) changed = true;
+    ImGui::EndDisabled();
     }
     if (gd_page && g_settings_gd_list && g_settings_gd_list == ImGui::GetCurrentWindow() &&
         g_settings_gd_snap_found) {

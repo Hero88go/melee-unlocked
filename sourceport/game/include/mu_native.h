@@ -113,6 +113,11 @@ int mu_player_tags_always(void);
 #define MU_DISPLAY_FOD_REFLECTIONS 0x4u
 /* "Character select background plays through": the background is not sent back to its first frame. */
 #define MU_DISPLAY_CSS_BACKGROUND_FREE 0x8u
+/* "Freeze Final Destination": the background stays on its first form (gr/grlast.c). The player's
+ * own choice, online too: online the background never touches the random seed (Slippi's
+ * DesyncProofBGTransformations), and replay playback restores the seed after the stage runs. */
+#define MU_DISPLAY_FREEZE_FD 0x10u
+int mu_freeze_fd(void);
 int mu_lagless_fod_begin(void);   /* decides it for the stage being set up */
 int mu_lagless_fod(void);
 /* The Lossless adapter lag test (shim/mu_lagtest.c): the host's --lag-test launch. */

@@ -3,6 +3,7 @@
 #include "host.h"
 #include "audio.h"
 #include "cosmetic_mods.h"
+#include "gameplay_policy.h"
 #include "mod_profile.h"
 #include "maker_source.h"
 #include "user_gecko.h"
@@ -1361,6 +1362,7 @@ void install_console_clock() {
 // ---- the game's language as a PC setting ----
 std::atomic<int> g_game_language{0};
 std::atomic<bool> g_cpu_20xx{false};   // "20XX CPUs", see hackpack_ai.cpp
+std::atomic<bool> g_freeze_fd{false};   // "Freeze Final Destination", see apply_freeze_final_destination
 int game_language_override() {
   const int choice = g_game_language.load(std::memory_order_relaxed);
   return choice == 1 ? 0 : choice == 2 ? 1 : -1;
@@ -1566,6 +1568,36 @@ void apply_low_poly_fighters() {
 // such a skin is in use the function runs from RAM with the stop replaced by "this phase is not
 // over yet": the match goes on and the background stays in that phase. The disc's stage never
 // reaches the replaced instruction. Retail code only: any other bytes there are left alone.
+// "Freeze Final Destination" on the Static Recomp. The background's think is one call in
+// grLast_8021AAB0 (bl 8021B2E8 at 8021AAE4); the function runs from RAM with that call made a nop,
+// as the Source Port skips it (gr/grlast.c). What was there is put back when the option goes off:
+// online that word is Slippi's DesyncProofBGTransformations branch, and with the call skipped the
+// seed is not touched at all, so both players stay in step whatever each one chose.
+void apply_freeze_final_destination() {
+  constexpr uint32_t kThink = 0x8021AAB0u, kCall = 0x8021AAE4u, kNop = 0x60000000u;
+  static bool frozen = false;
+  static uint32_t saved = 0;
+  if (!ram) return;
+  const bool want = g_freeze_fd.load(std::memory_order_relaxed) && !gameplay::vanilla_only();
+  if (want == frozen) return;
+  if (want) {
+    if (!try_ptr(kCall, 4)) return;
+    saved = rd32(kCall);
+    if (!ppc::redirect_to_interpreter(kThink)) {
+      static bool logged = false;
+      if (!logged) { logged = true; log("stages: Freeze Final Destination could not run the stage's code from RAM; left off"); }
+      return;
+    }
+    wr32(kCall, kNop);
+    frozen = true;
+    log("stages: Final Destination's background frozen");
+  } else {
+    if (rd32(kCall) == kNop) wr32(kCall, saved);
+    ppc::undo_redirect(kThink);
+    frozen = false;
+    log("stages: Final Destination's background moves again");
+  }
+}
 void apply_final_destination_guard() {
   constexpr uint32_t kPhase = 0x8021B5C4u, kLookup = 0x8021B7C4u, kStop = 0x8021B7D0u;
   static constexpr uint32_t kStopCode[4] = {0x387D0000u, 0x388003F4u, 0x38AD92ECu, 0x4816CA45u};   // __assert("grlast.c", 1012, "aobj")

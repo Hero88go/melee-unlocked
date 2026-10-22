@@ -675,8 +675,9 @@ void handle_load_savestate(const uint8_t* payload) {
   // The next frame the game finishes continues from this older state, not from the frame on screen.
   // Blending the two (sub-frame animation) would draw positions that never existed on either
   // timeline, which on continuously animated stages showed as a glitch that only ever happened
-  // online. The renderer holds exact frames across it instead.
-  gx::mark_discontinuity();
+  // online. The renderer holds exact frames across it instead. Training Mode's savestates use this
+  // same load outside an online match; those are hard cuts.
+  gx::mark_discontinuity(is_online_match());
   for (auto& kv : g_active_savestates) g_available_savestates.push_back(std::move(kv.second));
   g_active_savestates.clear();
 }

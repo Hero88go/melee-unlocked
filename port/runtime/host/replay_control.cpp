@@ -24,7 +24,7 @@
 #endif
 #include <windows.h>
 
-namespace gx { void mark_discontinuity(); }   // gx_core.h: the next frame is not the neighbour of the last one shown
+namespace gx { void mark_discontinuity(bool rollback = false); }   // gx_core.h: the next frame is not the neighbour of the last one shown
 
 namespace replay_control {
 namespace {

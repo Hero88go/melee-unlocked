@@ -202,6 +202,9 @@ struct Frame {
   // an older state and simulated forward again. The two frames are not neighbours in time, so
   // nothing may be blended between them (see mark_discontinuity).
   bool discontinuous = false;
+  // The jump was not an online rollback (a Training Lab load, a replay seek, skipped frames): the
+  // new state can be anywhere, so not even a fighter's pose may be carried across it.
+  bool hard_cut = false;
   // Display latency test (set_latency_test): -1 the picture as drawn, 0 all black, 1 all white. Decided
   // from the pads the game read for this frame, so a photodiode times the same input-to-photon path.
   int8_t test_fill = -1;
@@ -221,7 +224,7 @@ struct Frame {
   // and the renderer decides when to present by comparing sequences. Leaving a stale one on a
   // buffer that is about to be refilled is only harmless while every producer remembers to assign
   // one before pushing.
-  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; time = 0.0; tick = {}; discontinuous = false; test_fill = -1; }
+  void clear() { vertices.clear(); segments.clear(); draws.clear(); copies.clear(); commands.clear(); hud_players = {}; player_names = {}; sequence = 0; time = 0.0; tick = {}; discontinuous = false; hard_cut = false; test_fill = -1; }
 };
 
 // Display latency test for photodiode testers that press X + D-pad Down (LDAT, pico lag testers;
@@ -333,7 +336,9 @@ inline bool skip_for_effects(const EffectsFilter& e, const DrawCall& dc) {
 
 // Marks the next finished frame as discontinuous. Called on the simulation thread when the game's
 // state is replaced wholesale (a rollback's savestate load), which only the host knows about.
-void mark_discontinuity();
+// rollback: an online rollback, a few frames back on the same match, so fighters may still be
+// smoothed through it. Anything else is a hard cut.
+void mark_discontinuity(bool rollback = false);
 
 // Renderer interface shared by D3D12, D3D11, and future backends. The host calls
 // these on the renderer's owning thread. This is internal C++, not the game ABI.

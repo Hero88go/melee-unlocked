@@ -358,6 +358,8 @@ typedef struct MuHostApi {
 #define MU_DISPLAY_OPTION_FOD_REFLECTIONS 0x4u
 /* The character select background plays through instead of going back to its first frame. */
 #define MU_DISPLAY_OPTION_CSS_BACKGROUND_FREE 0x8u
+/* "Freeze Final Destination": the background stays on its first form. */
+#define MU_DISPLAY_OPTION_FREEZE_FD 0x10u
 
 #define MU_MOD_ASSETS_PRESENT 0x1u
 /* The 20XX Hack Pack's disc files are among the overlays (StageSwapTable.bin, numbered music,
