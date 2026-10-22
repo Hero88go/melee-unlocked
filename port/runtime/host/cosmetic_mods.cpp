@@ -1885,6 +1885,24 @@ bool uniform_stream_color(const std::vector<uint8_t>& bytes, uint32_t offset,
   return true;
 }
 
+// Effect targets: a fighter's effect archive (EfMrData.dat), the common effect archive
+// (EfCoData.dat), or a fighter's base archive (PlMr.dat; Fox and Falco also take particle-colour
+// edits). The code is any fighter family code, matched case-insensitively.
+bool fighter_code_known(const std::string& code) {
+  for (const auto& family : families) if (lower(family.file_code) == code) return true;
+  return false;
+}
+bool effect_archive_target(const std::string& lowered) {
+  // Ice Climbers and a few others use effect codes of their own (EfIcData.dat), so any two
+  // letters pass here; the disc lookup before validation decides whether the file exists.
+  return lowered.size() == 12 && lowered.compare(0, 2, "ef") == 0 &&
+         lowered.compare(4, 8, "data.dat") == 0;
+}
+bool fighter_base_target(const std::string& lowered) {
+  return lowered.size() == 8 && lowered.compare(0, 2, "pl") == 0 &&
+         lowered.compare(4, 4, ".dat") == 0 && fighter_code_known(lowered.substr(2, 2));
+}
+
 bool materialize_effect_dat_impl(const std::string& target_path,
                                  const std::vector<uint8_t>& clean,
                                  const std::vector<uint8_t>& candidate,
@@ -1893,8 +1911,7 @@ bool materialize_effect_dat_impl(const std::string& target_path,
                                  std::string* error) {
   runtime->clear(); classification->clear();
   const std::string target = lower(target_path);
-  if (target != "effxdata.dat" && target != "efcodata.dat" &&
-      target != "plfx.dat" && target != "plfc.dat") {
+  if (!effect_archive_target(target) && !fighter_base_target(target)) {
     *error = "Unsupported effect target: " + target_path + ".";
     return false;
   }
@@ -1912,10 +1929,13 @@ bool materialize_effect_dat_impl(const std::string& target_path,
     *error = "Common effect DAT changes bytes outside validated texture payloads.";
     return false;
   }
-  const char* dedicated_root = target == "effxdata.dat" ? "effFoxDataTable" : nullptr;
-  if (dedicated_root) {
-    if (!exact_root(base, dedicated_root, "Clean", error) ||
-        !exact_root(mod, dedicated_root, "Candidate", error)) return false;
+  // A fighter's own effect archive holds only particle and effect model data, so a full
+  // replacement with the same roots is taken as is. It is offline only: the online rule serves the
+  // disc's file unless the change is textures alone (particles draw from the game's random seed).
+  if (effect_archive_target(target)) {
+    if (base.roots.empty() || base.roots != mod.roots) {
+      *error = "Effect DAT roots do not match the clean resource."; return false;
+    }
     if (clean == candidate) { *error = "Effect DAT is identical to the clean resource."; return false; }
     *runtime = candidate;
     *classification = "Dedicated effect archive validated against the exact clean ISO.";
@@ -1924,7 +1944,10 @@ bool materialize_effect_dat_impl(const std::string& target_path,
 
   const char* fighter_root = target == "plfx.dat" ? "ftDataFox" :
                              target == "plfc.dat" ? "ftDataFalco" : nullptr;
-  if (!fighter_root) { *error = "Unsupported effect target: " + target_path + "."; return false; }
+  if (!fighter_root) {
+    *error = "Fighter DAT effect changes more than textures (" + texture_error + ").";
+    return false;
+  }
   if (!exact_root(base, fighter_root, "Clean", error) ||
       !exact_root(mod, fighter_root, "Candidate", error)) return false;
 
@@ -2255,10 +2278,30 @@ bool stage_dat_target(const std::string& filename, std::string* path, std::strin
   return true;
 }
 
+// The disc archive an effect DAT replaces, from its root: "effMarioDataTable" is EfMrData.dat and
+// "ftDataMario" is PlMr.dat. Nucleus names its files freely, so the root is the reliable name.
+bool effect_target_from_roots(const std::vector<std::string>& roots, std::string* path) {
+  if (roots.size() != 1) return false;
+  const std::string& root = roots[0];
+  for (const auto& family : families) {
+    if (root == std::string("eff") + family.root_name + "DataTable") {
+      *path = std::string("Ef") + family.file_code + "Data.dat"; return true;
+    }
+    if (root == std::string("ftData") + family.root_name) {
+      *path = std::string("Pl") + family.file_code + ".dat"; return true;
+    }
+  }
+  return false;
+}
+
 bool effect_target(const std::string& character, const std::string& scope,
+                   const std::string& model_file,
                    std::string* path, std::string* group, std::string* slot) {
   const std::string who = lower(character), what = lower(scope);
   *group = character;
+  // Any other scope: the model file names the disc archive it replaces (EfMrData.dat, PlFc.dat).
+  const std::string base = fs::path(model_file).filename().string();
+  const bool named = effect_archive_target(lower(base)) || fighter_base_target(lower(base));
   if (who == "fox" && (what == "upb" || what == "shine")) {
     *path = "EfFxData.dat"; *slot = effect_label(what); return true;
   }
@@ -2270,6 +2313,9 @@ bool effect_target(const std::string& character, const std::string& scope,
   }
   if (what == "common_shield") {
     *path = "EfCoData.dat"; *group = "Global"; *slot = "Shields"; return true;
+  }
+  if (named) {
+    *path = base; *slot = effect_label(what); return true;
   }
   return false;
 }
@@ -2379,11 +2425,8 @@ bool parse_nucleus_vault(const fs::path& path, const std::vector<ZipEntry>& entr
             plan->rejected_resources.push_back(resource.source_id + " has incomplete metadata.");
             continue;
           }
-          if (!effect_target(group.key(), scope.key(), &resource.target_path,
-                             &resource.group, &resource.slot)) {
-            plan->rejected_resources.push_back(resource.source_id + " has an unsupported effect scope.");
-            continue;
-          }
+          const bool scoped = effect_target(group.key(), scope.key(), model_file,
+                                            &resource.target_path, &resource.group, &resource.slot);
           const ZipEntry* model = nullptr;
           const std::string suffix = "/" + lower(model_file);
           for (const auto& entry : entries) {
@@ -2407,6 +2450,14 @@ bool parse_nucleus_vault(const fs::path& path, const std::vector<ZipEntry>& entr
           if (!parse_visual_layout(resource.bytes, &layout, &visual_error)) {
             plan->rejected_resources.push_back(resource.source_id + " rejected: " + visual_error);
             continue;
+          }
+          if (!scoped) {
+            if (!effect_target_from_roots(layout.roots, &resource.target_path)) {
+              plan->rejected_resources.push_back(resource.source_id + " has an unsupported effect scope.");
+              continue;
+            }
+            resource.group = group.key();
+            resource.slot = effect_label(lower(scope.key()));
           }
           plan->resources.push_back(std::move(resource));
         }
@@ -2957,7 +3008,12 @@ bool compose_effects_locked(const std::string& target,
     if (!materialize_effect_dat_impl(target, clean, candidate, &materialized,
                                      &classification, error)) return false;
     if (materialized.size() != clean.size()) {
-      *error = "Effect materialization changed the clean resource size."; return false;
+      // A full archive replacement of another length cannot be merged with other choices.
+      if (choices.size() != 1) {
+        *error = "Effect materialization changed the clean resource size."; return false;
+      }
+      *combined = std::move(materialized);
+      return true;
     }
     for (size_t offset = 0; offset < clean.size(); ++offset) {
       if (materialized[offset] == clean[offset]) continue;

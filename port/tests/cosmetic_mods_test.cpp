@@ -607,6 +607,28 @@ int main(int argc, char** argv) {
             "EfFxData.dat", dedicated_clean, dedicated_candidate, &effect_runtime,
             &effect_classification, &visual_error) && effect_runtime == dedicated_candidate,
         "dedicated Fox effect archive accepts bounded effect-animation changes");
+  auto mario_clean = effect_dat("effMarioDataTable");
+  auto mario_candidate = effect_dat("effMarioDataTable", 0xfc00, 0xc00, {0x100, 0x200, 0x300}, 7);
+  check(host::cosmetics::testing::materialize_effect_dat(
+            "EfMrData.dat", mario_clean, mario_candidate, &effect_runtime,
+            &effect_classification, &visual_error) && effect_runtime == mario_candidate,
+        "Mario effect archive (fireball) accepts a full replacement with the same root");
+  auto falco_clean = effect_dat("effFalcoDataTable");
+  auto falco_candidate = effect_dat("effFalcoDataTable", 0xfc00, 0xc00, {0x100, 0x200, 0x300}, 7);
+  check(host::cosmetics::testing::materialize_effect_dat(
+            "EfFcData.dat", falco_clean, falco_candidate, &effect_runtime,
+            &effect_classification, &visual_error),
+        "Falco effect archive (shine) is a supported target");
+  check(!host::cosmetics::testing::materialize_effect_dat(
+            "EfMrData.dat", mario_clean, falco_candidate, &effect_runtime,
+            &effect_classification, &visual_error),
+        "effect archive with another fighter's root is refused");
+  auto mario_base = effect_dat("ftDataMario");
+  auto mario_base_changed = effect_dat("ftDataMario", 0xa50f);
+  check(!host::cosmetics::testing::materialize_effect_dat(
+            "PlMr.dat", mario_base, mario_base_changed, &effect_runtime,
+            &effect_classification, &visual_error),
+        "fighter base archive outside Fox and Falco takes textures only");
   auto common_effect_clean = effect_dat("effCommonDataTable");
   auto common_effect_candidate = effect_dat("effCommonDataTable", 0xfc00, 0xc00,
                                             {0x100, 0x200, 0x300}, 7);
