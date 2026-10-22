@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include <windows.h>
 #include "mod_scan.h"
+#include "gameplay_policy.h"
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -250,6 +251,23 @@ int main(int argc, char** argv) {
     check(fs::exists(root / "Mods" / "Saves" / "20XXTE.gci"), "and 20XX TE lands in Mods/Saves, nothing deleted");
   }
 
+  // A vanilla listing must not scan, turn on new packs, move saves, or persist a UI toggle.
+  const auto preserved = choices;
+  set_choices(preserved);
+  set_auto_detect(true);
+  host::gameplay::vanilla_only_session = true;
+  check(!auto_detect(), "vanilla-only overrides automatic discovery");
+  StartupOptions vanilla;
+  vanilla.mods_dir = root / "VanillaMustNotCreateMods";
+  vanilla.card_dir = root / "VanillaMustNotTouchCard";
+  const auto suspended = startup(vanilla);
+  choose("tmce", false);
+  rescan_async();
+  check(suspended.layers.empty() && !suspended.te && suspended.card_dir.empty(), "vanilla startup activates no mods");
+  check(!fs::exists(vanilla.mods_dir) && !fs::exists(vanilla.card_dir), "vanilla startup leaves mod and card files alone");
+  check(source_port::mods::choices() == preserved, "vanilla session retains all saved mod choices");
+  host::gameplay::vanilla_only_session = false;
+  check(auto_detect(), "normal launches retain automatic discovery");
   fs::remove_all(root);
   if (g_failures) { std::cout << "FAILED: " << g_failures << "\n"; return 1; }
   std::cout << "PASS: mods drop-in scanner\n";

@@ -8,6 +8,7 @@
 // Slippi's recording cave later in the function captures the inputs the block chose, so a replay of
 // such a match plays back exactly with the option off.
 #include "hackpack_ai.h"
+#include "gameplay_policy.h"
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -76,7 +77,7 @@ void look_for_disc() {
   else log("20XX CPUs: 20XX Hack Pack disc not under Mods; CPUs play as usual");
 }
 
-bool wanted() { return g_cpu_20xx.load(std::memory_order_relaxed) || forced_by_env(); }
+bool wanted() { return !gameplay::vanilla_only() && (g_cpu_20xx.load(std::memory_order_relaxed) || forced_by_env()); }
 
 bool offline_session() {
   if (slippi::playback::enabled()) return false;                 // a replay plays back its recorded inputs
@@ -208,6 +209,7 @@ template <int N> void scene_entry_hooked(ppc::Context& c, uint8_t* m) {
 }  // namespace
 
 void boot() {
+  if (gameplay::vanilla_only()) return;
   look_for_disc();
   if (g_hooked) return;
   const ppc::Fn hooks[3] = {scene_entry_hooked<0>, scene_entry_hooked<1>, scene_entry_hooked<2>};

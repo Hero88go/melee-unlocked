@@ -1,5 +1,6 @@
 ﻿// SPDX-License-Identifier: GPL-2.0-or-later
 #include "mod_scan.h"
+#include "gameplay_policy.h"
 #define WIN32_LEAN_AND_MEAN
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -1089,7 +1090,7 @@ std::map<std::string, int> choices() {
 }
 uint32_t choices_version() { return store().version.load(); }
 void set_auto_detect(bool on) { store().auto_detect = on; }
-bool auto_detect() { return store().auto_detect; }
+bool auto_detect() { return !host::gameplay::vanilla_only() && !host::gameplay::mod_autodetect_disabled && store().auto_detect; }
 
 bool parse_choice(const std::string& key, const std::string& value, std::map<std::string, int>* values) {
   if (key == "mod_te_enabled") { (*values)["te"] = value != "0"; return true; }
@@ -1534,6 +1535,7 @@ void follow_te_choice() {
 
 Startup startup(const StartupOptions& options) {
   Startup s;
+  if (host::gameplay::vanilla_only()) return s;
   std::error_code ec;
   fs::create_directories(options.mods_dir, ec);   // so "Open Mods folder" always has a folder to open
   std::vector<std::string> card_notes;
@@ -1581,6 +1583,7 @@ ScanOptions panel_options() {
 }  // namespace
 
 void rescan_async() {
+  if (host::gameplay::vanilla_only()) return;
   if (panel().busy.exchange(true)) return;
   std::thread([] {
     // Out of memory or a file system error ends this scan, not the game (an exception that leaves
@@ -1596,6 +1599,7 @@ void rescan_async() {
 }
 
 void import_async(const fs::path& picked) {
+  if (host::gameplay::vanilla_only()) return;
   if (panel().busy.exchange(true)) return;
   {
     std::lock_guard<std::mutex> lock(panel().mutex);
@@ -1658,6 +1662,7 @@ void import_async(const fs::path& picked) {
 }
 
 void choose(const std::string& key, bool on, std::vector<std::string>* notes) {
+  if (host::gameplay::vanilla_only()) return;
   std::vector<std::string> local;
   if (!notes) notes = &local;
   {

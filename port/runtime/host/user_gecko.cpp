@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "user_gecko.h"
+#include "gameplay_policy.h"
 #include "host.h"
 // port/tests/user_gecko_test.cpp includes this file with a small made-up table of its own in place
 // of the generated one, so the rules below are tested on an image the test controls.
@@ -607,7 +608,7 @@ void set_native_reader(NativeRead read) { g_native_read = read; }
 void set_static_runtime(StaticRunner run, StaticReserve reserve, StaticStart start) {
   g_static_run = run; g_static_reserve = reserve; g_static_start = start;
 }
-uint32_t static_memory_required() { return g_static_reserve ? g_static_reserve() : 0; }
+uint32_t static_memory_required() { return !host::gameplay::vanilla_only() && g_static_reserve ? g_static_reserve() : 0; }
 void static_memory_start(uint32_t address, uint32_t bytes) { if (g_static_start) g_static_start(address, bytes); }
 
 void load(const std::string& path, const std::vector<std::string>& enabled_names, bool chosen) {
@@ -761,6 +762,7 @@ bool save() {
 }
 
 void apply() {
+  if (host::gameplay::vanilla_only()) return;   // preserve enabled choices, suppress execution
   if (!g_code_patches_allowed) { apply_native(); return; }   // the Source Port has no console memory to write
   if (g_static_run) { g_static_run(g_codes); return; }
   for (Code& c : g_codes) {

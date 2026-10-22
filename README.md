@@ -103,6 +103,10 @@ are included with Melee Unlocked.
 
 ## Install
 
+For launchers exposing vanilla, ACE, and Akaneia as separate entries, see
+[separate YouGame listings](docs/yougame-listings.md). `--vanilla-only` forces vanilla gameplay
+for one session while preserving the engine's native mod support and saved mod choices.
+
 Download `MeleeUnlocked-<version>-Stable-Recomp-Legacy-win64.zip` from [Releases](https://github.com/hero88go/melee-unlocked/releases)
 and extract it anywhere. Then pick one of two ways to run it. **The launcher is optional**;
 the game does not depend on it, and the manual way is complete on its own.

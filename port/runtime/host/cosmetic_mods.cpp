@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #define NOMINMAX
 #include "cosmetic_mods.h"
+#include "gameplay_policy.h"
 #include "stage_dat_safety.h"
 #include "stage_graft.h"
 
@@ -5902,6 +5903,7 @@ OverrideRead read(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, 
 std::atomic<OnlineProbe> g_online_probe{nullptr};
 void set_online_probe(OnlineProbe probe) { g_online_probe.store(probe); }
 bool online_active() {
+  if (host::gameplay::vanilla_only()) return true;   // use only the gameplay-safe forms of cosmetics
   if (g_online_freezes.load(std::memory_order_relaxed)) return true;
   // MELEE_TEST_ONLINE_FORMS (tests only, hidden runs): stage skins are served in their online form
   // offline too, so a capture shows what an online opponent's game draws.

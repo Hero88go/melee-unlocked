@@ -700,6 +700,33 @@ int main() {
     std::error_code ec; fs::remove(ds, ec);
   }
 
+  // Restrictions are not settings. Saving volume/video in a vanilla listing must keep
+  // the profile, training choices and input assist for the next normal launch.
+  {
+    const auto vanilla_path = fs::temp_directory_path() / "mu_settings_vanilla_listing_test.ini";
+    {
+      std::ofstream f(vanilla_path);
+      f << "mod_profile My ACE Profile\nmod_tmce_enabled 1\nmod_te_enabled 1\n"
+           "te_options 30\nte_options2 100\ncpu_20xx 1\ncpu_tech 5\nautolcancel 1\n";
+    }
+    gx::RenderOptions o; o.settings_path = vanilla_path.string(); int vol = 70;
+    host::gameplay::vanilla_only_session = true;
+    gx::load_pc_settings(o, vol);
+    CHECK(!gx::RenderOptions::mod_features_available());
+    CHECK(o.mod_profile == "My ACE Profile" && o.mod_choices.at("tmce") == 1);
+    CHECK(o.cpu_20xx && o.cpu_tech == 5 && lcancel::automatic_enabled());
+    CHECK(gx::save_pc_settings(o, 35));
+    gx::load_pc_settings(o, vol);
+    CHECK(host::gameplay::vanilla_only() && !gx::RenderOptions::mod_features_available());
+    CHECK(o.mod_profile == "My ACE Profile" && o.mod_choices.at("te") == 1);
+    host::gameplay::vanilla_only_session = false;
+    gx::load_pc_settings(o, vol);
+    CHECK(gx::RenderOptions::mod_features_available() && vol == 35);
+    CHECK(o.mod_profile == "My ACE Profile" && o.mod_choices.at("tmce") == 1);
+    CHECK(o.cpu_20xx && o.cpu_tech == 5 && o.te_options == 0x30u && o.te_options2 == 0x100u);
+    CHECK(lcancel::automatic_enabled());
+    fs::remove(vanilla_path);
+  }
   if (g_failures == 0) std::printf("settings load: all checks passed\n");
   return g_failures == 0 ? 0 : 1;
 }

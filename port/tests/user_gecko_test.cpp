@@ -578,6 +578,17 @@ int run_all() {
   test_refused();
   test_codes_and_library();
   test_built_in();
+  // A vanilla listing suspends execution without changing the saved enabled code.
+  fresh();
+  codes().push_back(compiled({{0x00400030u, 0x00000011u}}));
+  codes().back().enabled = true;
+  host::gameplay::vanilla_only_session = true;
+  apply();
+  CHECK_EQ(peek(kBytes, 1), 0u);
+  CHECK(codes().back().enabled && codes().back().supported);
+  host::gameplay::vanilla_only_session = false;
+  apply();
+  CHECK_EQ(peek(kBytes, 1), 0x11u);
   if (g_failures) std::printf("%d checks failed\n", g_failures);
   else std::printf("user gecko: all checks passed\n");
   return g_failures ? 1 : 0;

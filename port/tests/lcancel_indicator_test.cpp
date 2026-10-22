@@ -1,6 +1,7 @@
 // Exercise the production renderer feedback through both fighter-view paths.
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "lcancel.h"
+#include "gameplay_policy.h"
 #include "mu_lcancel_flash.h"
 #include <cstdio>
 #include <cstring>
@@ -80,5 +81,16 @@ int main() {
   network_mode = 3; local_slot = 1; view.port[0].motion_id = 65;
   ++tick; lcancel::apply(pads); view.port[0].motion_id = 70; view.port[0].frames_since_trigger = 0;
   ++tick; lcancel::apply(pads); CHECK(amount == 0);
-  std::puts("native and Static success/missed feedback, boundary, expiry and unchanged inputs passed");
+  // The vanilla listing suppresses input injection while retaining the saved assist switch.
+  network_mode = -1; local_slot = 0;
+  lcancel::set_flash_mode(MU_LCFLASH_OFF); lcancel::set_automatic(true);
+  view.trigger_deadzone = .3f; view.port[0].motion_id = 65; view.port[0].ground_or_air = 1;
+  std::memset(pads, 0, sizeof pads);
+  ++tick; lcancel::apply(pads); CHECK(pads[0].trig_l > 0);
+  host::gameplay::vanilla_only_session = true;
+  std::memset(pads, 0, sizeof pads);
+  ++tick; lcancel::apply(pads); CHECK(pads[0].trig_l == 0 && lcancel::automatic_enabled());
+  lcancel::apply(pads); CHECK(pads[0].trig_l == 0);
+  host::gameplay::vanilla_only_session = false;
+  std::puts("native and Static feedback, vanilla-only input policy and unchanged saved choices passed");
 }

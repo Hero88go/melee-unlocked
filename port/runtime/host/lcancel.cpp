@@ -38,6 +38,7 @@
 // newly pressed so it can never turn the player's aerial into a tether.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "lcancel.h"
+#include "gameplay_policy.h"
 #include "../abi/mu_lcancel_flash.h"
 
 #include <algorithm>
@@ -348,7 +349,7 @@ bool online_session_pending() {
 
 void apply(host::PadState pads[4]) {
   const bool want_indicator = indicator_enabled();
-  const bool want_auto = automatic_enabled();
+  const bool want_auto = automatic_enabled() && !host::gameplay::vanilla_only();
   // Default state: not one guest read, not one byte changed, so the game is bit for bit the game.
   if (!want_indicator && !want_auto && !g_log) { release_renderer(); return; }
 

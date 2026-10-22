@@ -7,6 +7,7 @@
 #include <tlhelp32.h>
 #include <psapi.h>
 #include "host.h"
+#include "gameplay_policy.h"
 #ifndef MELEE_SOURCE_PORT
 #include "static_gecko.h"
 #endif
@@ -727,6 +728,7 @@ static void usage() {
               "           [--aspect auto|73:60|4:3|16:9|stretch] [--widescreen|--true-widescreen]\n"
               "           [--fps N|monitor|unlocked] [--frame-mode extrapolate|interpolate|authored|off] [--threaded-renderer]\n"
               "           [--fullscreen] [--backend d3d12|d3d11] [--dlss off|dlaa|quality|balanced|performance|ultra] [--frame-times out.csv] [--music 0-100|--no-music] [--volume 0-100] [--audio-dump out.wav]\n"
+              "           [--vanilla-only] [--no-mod-autodetect]\n"
               "           [--settings-path file --load-settings --import-cosmetic file|--scan-disc-skins mod.iso|--select-cosmetic id|--enable-project-effects|--restore-vanilla-cosmetics|--cosmetic-status]\n"
               "           [--capture out.ppm --capture-frame N] [--trace-calls] [--quiet]\n");
 #undef USAGE_EXE
@@ -1378,11 +1380,17 @@ static int melee_main(int argc, char** argv) {
       for (int t = 0; t < 8; ++t) if (wanted == tabs[t]) gx::settings_set_initial_tab(t);
     }
     if (arg == "--load-settings") load_settings = true;
+    if (arg == "--vanilla-only") host::gameplay::vanilla_only_session = true;
     if (arg == "--card-dir") explicit_card_dir = true;
     // The Lossless adapter's lag test (port/runtime/host/lag_test_codes.h), set before the settings
     // load reads it: the native game (shim/mu_lagtest.c) and the settings load, which gives the
     // Static Recomp the app's codes, both look for MELEE_LAG_TEST.
     if (arg == "--lag-test") _putenv_s("MELEE_LAG_TEST", "1");
+  }
+  if (host::gameplay::vanilla_only()) {
+    // A previously used diagnostic environment must not turn a vanilla listing into a lag test.
+    _putenv_s("MELEE_LAG_TEST", "");
+    host::log("gameplay: vanilla-only session; saved gameplay mods are suspended");
   }
   // The launcher keeps a settings-window process on standby beside a running game. Sharing
   // melee_port.log let it rotate the game's log away at its start, so a player's log held only the
@@ -1442,6 +1450,16 @@ static int melee_main(int argc, char** argv) {
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() -> const char* { if (i + 1 >= argc) { usage(); std::exit(2); } return argv[++i]; };
+    if (host::gameplay::vanilla_only() && host::gameplay::conflicts_with_vanilla(a)) {
+      std::fprintf(stderr, "--vanilla-only cannot be combined with %s; launch the mod listing without --vanilla-only\n", a.c_str());
+      return 2;
+    }
+    if (a == "--vanilla-only") continue;   // resolved before settings were loaded
+    if (a == "--no-mod-autodetect") {
+      host::gameplay::mod_autodetect_disabled = true;
+      source_port::mods::set_auto_detect(false);
+      continue;
+    }
     if (a == "--iso") o.iso = next();
     else if (a == "--mod-base-iso") o.mod_base_iso = next();   // Static Recomp: --iso is a mod disc, this is the vanilla one
     else if (a == "--ram-translator") ram_translator = true;
@@ -1846,7 +1864,7 @@ static int melee_main(int argc, char** argv) {
   if (!card_self_test_dir.empty()) return source_port::card_self_test(card_self_test_dir.c_str()) ? 0 : 1;
   // The profile picked in the settings panel, unless the command line gave its own mod layers. A
   // profile that no longer loads starts the retail game rather than refusing to start.
-  if (gx::RenderOptions::kModFeaturesAvailable && !source_port::has_mod_layers() && !gfx.mod_profile.empty() &&
+  if (gx::RenderOptions::mod_features_available() && !source_port::has_mod_layers() && !gfx.mod_profile.empty() &&
       !source_port::set_mod_profile(gfx.mod_profile.c_str()))
     host::log("mods: saved profile %s could not be loaded; starting the retail game", gfx.mod_profile.c_str());
 #ifdef MELEE_NO_SLIPPI
@@ -1863,6 +1881,19 @@ static int melee_main(int argc, char** argv) {
 #endif
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
+  if (host::gameplay::vanilla_only()) {
+    source_port::mods::ScanOptions check;
+    const auto disc = source_port::mods::identify(std::filesystem::u8path(o.iso), check);
+    if (disc.kind != source_port::mods::Kind::Vanilla) {
+      std::fprintf(stderr, "--vanilla-only requires an unmodified Melee NTSC 1.02 ISO. %s\n", disc.message.c_str());
+      return 2;
+    }
+    // A card can itself carry executable mods (20XX TE). Keep this listing's saves separate,
+    // without moving, copying or clearing any of the player's ordinary or modded card files.
+    o.card_dir = (std::filesystem::u8path(o.card_dir) / "VanillaOnly").u8string();
+    explicit_card_dir = true;
+    host::log("gameplay: verified retail disc; vanilla-only memory card %s", o.card_dir.c_str());
+  }
   remember_iso(o.iso);   // so the launcher can offer this disc without being told again
   // Controllers do not count as activity to Windows, so a session played only on a pad let the
   // display power off after the idle timeout (monitors going black mid-game until the mouse moved).
@@ -1935,7 +1966,7 @@ static int melee_main(int argc, char** argv) {
   // with no memory card, so the default rules the codes set apply: slot A answers "no card" in this
   // launch (hle_card.cpp, source_host.cpp), and its folder points at an empty one of its own so
   // nothing in the session can touch the player's saves.
-  if (gfx.lossless_lag_test || std::getenv("MELEE_LAG_TEST")) {
+  if (!host::gameplay::vanilla_only() && (gfx.lossless_lag_test || std::getenv("MELEE_LAG_TEST"))) {
     _putenv_s("MELEE_LAG_TEST", "1");
     if (!std::getenv("MELEE_LAG_TEST_KEEP_CARD")) {   // test runs: keep the card given
       std::error_code ec;
@@ -2050,7 +2081,7 @@ static int melee_main(int argc, char** argv) {
   host::install_language_override();
   host::install_low_poly_fighters();
 #endif
-  if (gx::RenderOptions::kModFeaturesAvailable && source_port::mods::auto_detect() && !gfx.native_source) {
+  if (gx::RenderOptions::mod_features_available() && source_port::mods::auto_detect() && !gfx.native_source) {
     source_port::mods::StartupOptions scan;
     scan.base_iso = std::filesystem::u8path(o.mod_base_iso.empty() ? o.iso : o.mod_base_iso);
     // An explicit card belongs to this session already. Protect the ordinary card and
