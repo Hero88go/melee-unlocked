@@ -92,9 +92,11 @@ class ThreadedBackend final : public Backend {
     std::vector<double> latency[LT_COUNT];
     const bool latency_trace = host::latency_trace_enabled();
     uint64_t latency_sequence = 0;
-    // MELEE_PHASE_TIMELINE=tick: Predict phases from the tick's schedule (above, where t is set);
-    // anything else (or unset) keeps the hand-over time.
-    static const bool phase_timeline = [] { const char* v = std::getenv("MELEE_PHASE_TIMELINE"); return v && v[0] == 't'; }();
+    // Predict phases from the tick's schedule (above, where t is set). Measured 2026-10-23 on the
+    // same scripted match back to back: steps in the shown time over 2 ms fell from 262 to 15 per
+    // 40 s, over 1 ms from 1032 to 230, with latency, pair rejection and the endpoint check
+    // unchanged. MELEE_PHASE_TIMELINE=handover (tests) keeps the hand-over time instead.
+    static const bool phase_timeline = [] { const char* v = std::getenv("MELEE_PHASE_TIMELINE"); return !(v && v[0] == 'h'); }();
     double typical_span = 0.0; uint64_t timeline_sequence = 0;
     static const bool scanline_sync = [] { const char* v = std::getenv("MELEE_SCANLINE_SYNC"); return v && *v == '1'; }();
     static const double scanline_lead = [] {

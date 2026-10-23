@@ -2486,9 +2486,14 @@ static double late_start_shift(std::chrono::steady_clock::time_point next_frame,
   const double when = g_present_when.load(std::memory_order_relaxed);
   const double now = now_seconds();
   if (!late_start_on() || period <= 0.0 || period > 0.05 || when <= 0.0 || now - when > 0.25) return 0.0;
-  double worst = 0.0;
-  for (double v : g_handover_recent_ms) worst = std::max(worst, v);
-  const double budget = std::min(std::max(worst, 2.0), 14.0) / 1000.0 + 0.004 + 0.0015;   // to hand-over, render, margin
+  // The budget covers three ticks in four: aimed at the worst tick of the last two seconds, the
+  // usual tick handed over long before its present and landed anywhere on the present grid (no
+  // gain measured); aimed at the usual tick, a slow one simply shows one present later.
+  double recent[120];
+  std::copy(std::begin(g_handover_recent_ms), std::end(g_handover_recent_ms), recent);
+  std::nth_element(recent, recent + 90, recent + 120);
+  const double usual = recent[90];
+  const double budget = std::min(std::max(usual, 2.0), 14.0) / 1000.0 + 0.004 + 0.0015;   // to hand-over, render, margin
   *budget_ms = budget * 1000.0;
   const double start = std::chrono::duration<double>(next_frame.time_since_epoch()).count();
   // The first present at or after start + budget; the start that just makes it is one budget before.
