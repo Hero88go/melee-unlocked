@@ -165,6 +165,7 @@ bool g_warm_cache_on_play = false;
 // that has a session trace file beside it; see launcher_replays.inl.
 bool g_replay_as_played = false;
 bool g_save_replays = true;   // launcher.ini savereplays=0 turns it off
+std::string g_replay_folder;  // launcher.ini replaydir=: where replays are saved; empty = <g_dir>\Replays
 // Replay Viewer list: the sort order (launcher.ini replaysort=1..3; none or 0 is most recent first,
 // an index into kReplaySorts) and "Hide short games" (replayhideshort=1).
 int g_replay_sort = 0;
@@ -251,6 +252,7 @@ void load_ini() {
       else if (line == "warmcache=1") g_warm_cache_on_play = true;
       else if (line == "replayasplayed=1") g_replay_as_played = true;
       else if (line == "savereplays=0") g_save_replays = false;
+      else if (line.rfind("replaydir=", 0) == 0) g_replay_folder = line.substr(10);
       else if (line == "replayhideshort=1") g_replay_hide_short = true;
       else if (line.rfind("replaysort=", 0) == 0) g_replay_sort = std::clamp(std::atoi(line.c_str() + 11), 0, 3);
       else if (line.rfind("lobbyopen=", 0) == 0) g_lobby_prefs.open_to = line.substr(10);
@@ -284,6 +286,7 @@ void save_ini() {
     if (g_warm_cache_on_play) f << "warmcache=1\n";
     if (g_replay_as_played) f << "replayasplayed=1\n";
     if (!g_save_replays) f << "savereplays=0\n";
+    if (!g_replay_folder.empty()) f << "replaydir=" << g_replay_folder << "\n";
     if (g_replay_sort != 0) f << "replaysort=" << g_replay_sort << "\n";
     if (g_replay_hide_short) f << "replayhideshort=1\n";
     // Kept so that browsing for a disc does not silently undo a hand-set override.
@@ -454,8 +457,11 @@ std::string unsaved_replay_dir() {
   wchar_t temp[MAX_PATH]{}; GetTempPathW(MAX_PATH, temp);
   return narrow(temp) + "MeleeUnlocked-unsaved-replays";
 }
+// The folder replays are saved in: the player's choice (Replays page, "Replay folder"), else Replays
+// next to the launcher.
+std::string replay_folder() { return g_replay_folder.empty() ? g_dir + "\\Replays" : g_replay_folder; }
 std::string replay_dir_for_game() {
-  if (g_save_replays) return g_dir + "\\Replays";
+  if (g_save_replays) return replay_folder();
   std::error_code ec;
   std::filesystem::remove_all(std::filesystem::path(widen(unsaved_replay_dir())), ec);
   return unsaved_replay_dir();
@@ -1724,9 +1730,10 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         case ID_MODS: mod_manager::open(); break;
         case ID_SEND_LOGS:
           crash_report::send_logs(hwnd, work_dir(), g_engine == ENGINE_SOURCE ? "Source Port" : "Static Recomp",
-                                  {g_dir + "\\Replays", work_dir() + "\\Replays"});
+                                  {replay_folder(), g_dir + "\\Replays", work_dir() + "\\Replays"});
           break;
         case ID_REPLAY_BROWSE: browse_replay(); break;
+        case ID_REPLAY_FOLDER: pick_replay_folder(); break;
         case ID_REPLAY_WATCH: watch_replay(); break;
         case ID_REPLAY_REFRESH: refresh_replays(); break;
         case ID_REPLAY_LIST: if(HIWORD(wp)==LBN_SELCHANGE) replay_selection_changed(); break;
