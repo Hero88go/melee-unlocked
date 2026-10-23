@@ -106,13 +106,9 @@ class ThreadedBackend final : public Backend {
     double handover_span = 0.0; uint64_t handover_span_seq = 0;
     bool handover_now = false; double handover_due = 0.0;
     static const bool scanline_sync = [] { const char* v = std::getenv("MELEE_SCANLINE_SYNC"); return v && *v == '1'; }();
-    static const double scanline_lead = [] {
-      const char* v = std::getenv("MELEE_SCANLINE_LEAD_US");
-      const double us = v && *v ? std::atof(v) : 1500.0;
-      return std::min(std::max(us, 100.0), 8000.0) / 1e6;
-    }();
-    bool scanline_active = false, scanline_logged_on = false;
-    double last_scanline_present = 0.0, scanline_target = 0.0, scanline_period = 0.0;
+    bool scanline_active = false, scanline_logged_on = false, scanline_failed = false;
+    double last_scanline_flip = 0.0, scanline_flip = 0.0, scanline_period = 0.0;
+    int scanline_misses = 0;
     std::string scanline_why;
     enum { KF_DEFAULT, KF_OFF, KF_ANCHOR_ALL, KF_SNAP };
     static const int keyframe_mode = [] {
@@ -208,36 +204,34 @@ class ThreadedBackend final : public Backend {
         }
       }
       // Tear-free without V-Sync's queue, for displays that refresh at a fixed rate (G-Sync and
-      // FreeSync off): one frame per refresh, timed from the display's own vertical blank so it is
-      // drawn and presented just before the blank, and presented synced, so it can never tear. A
-      // frame that misses its blank shows one refresh later instead of tearing. Off: the old clock.
-      // MELEE_SCANLINE_SYNC=1 turns it on; MELEE_SCANLINE_LEAD_US is how long before the blank the
-      // present is made (the GPU must finish the frame in that time).
+      // FreeSync off): one frame per refresh. Each frame is started just after a vertical blank,
+      // shows the moment of the following blank, and is presented synced so it flips at that blank:
+      // a whole refresh for drawing it, never a tear, never more than one frame queued. It costs up
+      // to one refresh of display delay against tearing. If two presents in a row wait more than
+      // 1.5 refreshes (the frame missed its blank), it stops for the session and the frame cap clock
+      // paces. MELEE_SCANLINE_SYNC=1 turns it on.
       scanline_active = false;
-      if (scanline_sync && subframes && vrr != 1 && probe_state != 1 && !live_options.vsync && !reflex_pacing &&
+      if (scanline_sync && !scanline_failed && subframes && vrr != 1 && probe_state != 1 && !live_options.vsync && !reflex_pacing &&
           options_.pin_phase < 0 && (live_options.fps_cap <= 0 || live_options.fps_cap >= 0.98 * last_refresh)) {
-        double blank = 0, period = 0;
         std::string why;
-        // The target blank is chosen once and kept until its frame is presented: re-chosen on every
-        // pass with the same margin the draw decision uses, it moved one refresh later at exactly
-        // the moment drawing was due, and frames waited up to 50 ms.
-        const double now_s = host::now_seconds();
-        const bool keep = scanline_target > 0.0 && scanline_target > now_s - 0.0005;
-        if (keep || renderer->vblank_next(now_s + render_budget + scanline_lead, last_refresh, &blank, &period, &why)) {
-          if (keep) { blank = scanline_target + scanline_lead; period = scanline_period; }
-          else {
-            if (blank - scanline_lead < last_scanline_present + 0.5 * period) blank += period;   // this refresh already has its frame
-            scanline_target = blank - scanline_lead; scanline_period = period;
+        if (scanline_flip <= 0.0) {
+          double blank = 0, period = 0;
+          if (renderer->vblank_next(host::now_seconds(), last_refresh, &blank, &period, &why)) {
+            double flip = blank + period;   // drawn after the coming blank, flipped at the one after
+            if (flip < last_scanline_flip + 0.5 * period) flip += period;   // that refresh already has its frame
+            scanline_flip = flip; scanline_period = period;
           }
-          next_present = blank - scanline_lead;
-          cap_period = period;
+        }
+        if (scanline_flip > 0.0) {
+          next_present = scanline_flip - scanline_period + 0.0003 + render_budget;   // the loop starts render_budget before next_present
+          cap_period = scanline_period;
           scanline_active = true;
           if (!scanline_logged_on) {
-            host::log("pacing: scanline sync on, a frame %.0f us before each vertical blank (every %.3f ms)", scanline_lead * 1e6, period * 1000.0);
+            host::log("pacing: tear-free on, one frame per vertical blank (every %.3f ms), drawn the refresh before", scanline_period * 1000.0);
             scanline_logged_on = true; scanline_why.clear();
           }
         } else if (why != scanline_why) {
-          host::log("pacing: scanline sync waiting (%s); the frame cap clock paces meanwhile", why.c_str());
+          host::log("pacing: tear-free waiting (%s); the frame cap clock paces meanwhile", why.c_str());
           scanline_why = why; scanline_logged_on = false;
         }
       }
@@ -354,6 +348,7 @@ class ThreadedBackend final : public Backend {
           if (span > 0.0 && span < SIM_PERIOD) handover_span = handover_span > 0.0 ? handover_span + 0.05 * (span - handover_span) : span;
         }
         t = (now - base) / SIM_PERIOD;
+        if (scanline_active) t = (scanline_flip - base) / SIM_PERIOD;   // shown from that blank on
         if (interpolate) t = std::min(std::max(t, 0.0), 1.0);
         else t = std::min(std::max(t, 0.0), 1.0);   // never extrapolate more than one frame ahead
         if (options_.pin_phase >= 0) {
@@ -396,7 +391,7 @@ class ThreadedBackend final : public Backend {
       }
       // A hand-over present goes out now: the grid slot it replaces is no deadline for it, only half
       // a period after the last present, so two presents never queue back to back.
-      renderer->set_present_deadline(!(subframes && cap_period > 0 && !reflex_pacing) ? 0
+      renderer->set_present_deadline(!(subframes && cap_period > 0 && !reflex_pacing) || scanline_active ? 0
                                      : handover_now ? (last_submission > 0 ? last_submission + 0.5 * cap_period : 0) : next_present);
       solver_pair_counter().store(subframes ? solver.pair_count() : 0, std::memory_order_relaxed);   // for the backends' "gpu:" line
       const double render_start = host::now_seconds();
@@ -469,8 +464,14 @@ class ThreadedBackend final : public Backend {
       ++presented; ++stats_presented;
       ++phase_bins[t >= 1.0 ? 4 : (int)(t * 4.0)];
       if (scanline_active) {
-        last_scanline_present = next_present;   // the next one is taken from the vertical blank again
-        scanline_target = 0.0;
+        last_scanline_flip = scanline_flip;   // the next one is taken from the vertical blank again
+        scanline_flip = 0.0;
+        scanline_misses = present_wait > 1.5 * scanline_period ? scanline_misses + 1 : 0;
+        if (scanline_misses >= 2) {
+          scanline_failed = true;
+          host::log("pacing: tear-free stopped: two presents in a row waited %.1f ms (refresh %.3f ms); the frame cap clock paces from now on",
+                    present_wait * 1000.0, scanline_period * 1000.0);
+        }
       } else if (handover_now) {
         // Restart the grid from this present; the next hand-over's present is predicted from the
         // usual tick-start-to-hand-over time.
