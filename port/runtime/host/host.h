@@ -229,8 +229,6 @@ double now_seconds();
 double sleep_slack();
 bool latency_trace_enabled();
 TickTiming& tick_timing();
-// The render thread's last present and its period, for the late start (MELEE_LATE_START=1).
-void present_report(double when, double period);
 // Per-draw scopes run tens of thousands of times a frame, so they read the CPU time stamp counter
 // (one instruction) instead of QueryPerformanceCounter; tsc_seconds is calibrated once at startup.
 extern const double tsc_seconds;
