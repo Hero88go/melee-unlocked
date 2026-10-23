@@ -92,6 +92,28 @@ class ThreadedBackend final : public Backend {
     std::vector<double> latency[LT_COUNT];
     const bool latency_trace = host::latency_trace_enabled();
     uint64_t latency_sequence = 0;
+    // MELEE_PHASE_TIMELINE=tick: Predict phases from the tick's schedule (above, where t is set);
+    // anything else (or unset) keeps the hand-over time.
+    static const bool phase_timeline = [] { const char* v = std::getenv("MELEE_PHASE_TIMELINE"); return v && v[0] == 't'; }();
+    double typical_span = 0.0; uint64_t timeline_sequence = 0;
+    static const bool scanline_sync = [] { const char* v = std::getenv("MELEE_SCANLINE_SYNC"); return v && *v == '1'; }();
+    static const double scanline_lead = [] {
+      const char* v = std::getenv("MELEE_SCANLINE_LEAD_US");
+      const double us = v && *v ? std::atof(v) : 1500.0;
+      return std::min(std::max(us, 100.0), 8000.0) / 1e6;
+    }();
+    bool scanline_active = false, scanline_logged_on = false;
+    double last_scanline_present = 0.0;
+    std::string scanline_why;
+    enum { KF_DEFAULT, KF_OFF, KF_ANCHOR_ALL, KF_SNAP };
+    static const int keyframe_mode = [] {
+      const char* m = std::getenv("MELEE_KEYFRAME_MODE");
+      if (!m || !*m) return (int)KF_DEFAULT;
+      const std::string s(m);
+      return s == "off" ? (int)KF_OFF : s == "anchor-all" ? (int)KF_ANCHOR_ALL : s == "snap" ? (int)KF_SNAP : (int)KF_DEFAULT;
+    }();
+    host::log("presentation: phase timeline %s, keyframe %s", phase_timeline ? "tick" : "hand-over",
+              keyframe_mode == KF_OFF ? "off" : keyframe_mode == KF_ANCHOR_ALL ? "anchor (all modes)" : keyframe_mode == KF_SNAP ? "snap" : "anchor (Interpolate)");
     for (;;) {
       host::window_pump();
       const auto& live_options = render_options(renderer);
@@ -172,6 +194,32 @@ class ThreadedBackend final : public Backend {
           if (subframes && cur >= 0) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);
         }
       }
+      // Tear-free without V-Sync's queue, for displays that refresh at a fixed rate (G-Sync and
+      // FreeSync off): one frame per refresh, timed from the display's own vertical blank so it is
+      // drawn and presented just before the blank, and presented synced, so it can never tear. A
+      // frame that misses its blank shows one refresh later instead of tearing. Off: the old clock.
+      // MELEE_SCANLINE_SYNC=1 turns it on; MELEE_SCANLINE_LEAD_US is how long before the blank the
+      // present is made (the GPU must finish the frame in that time).
+      scanline_active = false;
+      if (scanline_sync && subframes && vrr != 1 && probe_state != 1 && !live_options.vsync && !reflex_pacing &&
+          options_.pin_phase < 0 && (live_options.fps_cap <= 0 || live_options.fps_cap >= 0.98 * last_refresh)) {
+        double blank = 0, period = 0;
+        std::string why;
+        if (renderer->vblank_next(host::now_seconds() + render_budget + scanline_lead, last_refresh, &blank, &period, &why)) {
+          if (blank - scanline_lead < last_scanline_present + 0.5 * period) blank += period;   // this refresh already has its frame
+          next_present = blank - scanline_lead;
+          cap_period = period;
+          scanline_active = true;
+          if (!scanline_logged_on) {
+            host::log("pacing: scanline sync on, a frame %.0f us before each vertical blank (every %.3f ms)", scanline_lead * 1e6, period * 1000.0);
+            scanline_logged_on = true; scanline_why.clear();
+          }
+        } else if (why != scanline_why) {
+          host::log("pacing: scanline sync waiting (%s); the frame cap clock paces meanwhile", why.c_str());
+          scanline_why = why; scanline_logged_on = false;
+        }
+      }
+      renderer->set_display_refresh(last_refresh, vrr == 1 || scanline_active);
       authored = live_options.subframe == SubFrameMode::Authored || live_options.subframe == SubFrameMode::AuthoredInterpolate;
       interpolate = live_options.subframe == SubFrameMode::Interpolate || live_options.subframe == SubFrameMode::AuthoredInterpolate;
       set_authored_capture_wanted(subframes && authored);
@@ -257,7 +305,23 @@ class ThreadedBackend final : public Backend {
           continue;
         }
         double now = host::now_seconds();
-        t = (now - current.time) / SIM_PERIOD;
+        // The moment a game frame stands for. Its hand-over time moves with how long the game took
+        // to compute it (2 to 5 ms from frame to frame), so phases measured from it make motion
+        // speed up and slow down by that much. The tick's own scheduled start is even; adding the
+        // usual compute time keeps the average where it was. Predict only: Interpolate shows the
+        // previous frame at phase 0, which must never be shown before the new one exists.
+        double base = current.time;
+        if (phase_timeline && !interpolate && current.tick.target > 0.0) {
+          const double span = current.time - current.tick.target;
+          if (span > 0.0 && span < SIM_PERIOD) {
+            if (current.sequence != timeline_sequence) {
+              timeline_sequence = current.sequence;
+              typical_span = typical_span > 0.0 ? typical_span + 0.05 * (span - typical_span) : span;
+            }
+            base = current.tick.target + typical_span;
+          }
+        }
+        t = (now - base) / SIM_PERIOD;
         if (interpolate) t = std::min(std::max(t, 0.0), 1.0);
         else t = std::min(std::max(t, 0.0), 1.0);   // never extrapolate more than one frame ahead
         if (options_.pin_phase >= 0) {
@@ -278,6 +342,21 @@ class ThreadedBackend final : public Backend {
         }
         should_render = true;
         if (queue.drained() && current.sequence == rendered_sequence) break;
+        // Every simulation frame shown once exactly as the game drew it: the first present of a new
+        // frame is phase 0 (Predict: this frame's own pose; Interpolate: the frame before it), so no
+        // frame of an animation is only ever seen half-way between its neighbours (the tip of a
+        // one-frame sword swing). That present comes within one refresh of the frame's arrival, so
+        // the phase it replaces was already near 0. MELEE_KEYFRAME_MODE: anchor (Interpolate's
+        // default), off (Predict's default), anchor-all (both modes), snap (at a cap that is a whole
+        // multiple of 60, phases rounded to the present grid so one present lands on 0 every frame).
+        if (options_.pin_phase < 0) {
+          const bool anchor = keyframe_mode == KF_ANCHOR_ALL || (keyframe_mode == KF_DEFAULT && interpolate);
+          if (anchor && current.sequence != rendered_sequence) t = 0.0;
+          if (keyframe_mode == KF_SNAP && live_options.fps_cap > 0) {
+            const double k = std::round(live_options.fps_cap / 60.0);
+            if (k >= 2 && std::fabs(live_options.fps_cap - k * 60.0) < 1.0) t = std::round(t * k) / k;
+          }
+        }
       }
       if (options_.capture_burst && options_.capture_sim_frame && current.sequence >= options_.capture_sim_frame && burst_logged < options_.capture_burst) {
         host::log("present %llu: sim frame %llu phase %.3f", presented + 1, (unsigned long long)current.sequence, t);
@@ -354,7 +433,10 @@ class ThreadedBackend final : public Backend {
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
       ++phase_bins[t >= 1.0 ? 4 : (int)(t * 4.0)];
-      if (cap_period > 0) {
+      host::present_report(render_end, cap_period > 0 ? cap_period : 1.0 / std::max(last_refresh, 1.0));   // late start (host.cpp)
+      if (scanline_active) {
+        last_scanline_present = next_present;   // the next one is taken from the vertical blank again
+      } else if (cap_period > 0) {
         double now = host::now_seconds();
         // Skip missed slots; never emit catch-up bursts after a stall.
         next_present += cap_period;

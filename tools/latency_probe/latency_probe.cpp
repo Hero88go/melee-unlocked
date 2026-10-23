@@ -21,6 +21,7 @@
 #include <dxgi1_2.h>
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cctype>
 #include <cstdlib>
 #include <cstdio>
@@ -159,6 +160,8 @@ int difference(const Grid& a, const Grid& b, const Mask& mask) {
   return total;
 }
 
+int g_hold_ms = 24;   // --hold: how long the key stays down
+
 void press(WORD key) {
   // Sent as a hardware scan code: DirectInput (Dolphin's keyboard device) reads scan codes and
   // ignores a virtual-key-only event. Arrow keys carry the extended flag so Windows still reports
@@ -170,7 +173,7 @@ void press(WORD key) {
   input[0].type = INPUT_KEYBOARD; input[0].ki.wScan = scan; input[0].ki.dwFlags = flags;
   input[1].type = INPUT_KEYBOARD; input[1].ki.wScan = scan; input[1].ki.dwFlags = flags | KEYEVENTF_KEYUP;
   SendInput(1, &input[0], sizeof(INPUT));
-  Sleep(24);   // a GameCube controller poll is 1 frame; hold long enough for one to land
+  Sleep((DWORD)g_hold_ms);   // at least one 60 Hz controller poll must see it
   SendInput(1, &input[1], sizeof(INPUT));
 }
 
@@ -190,6 +193,10 @@ int main(int argc, char** argv) {
   std::string title = "Melee", key_name = "down", key2_name;
   HWND chosen = nullptr;   // --hwnd: this exact window, for programs with several matching titles
   int trials = 30, settle_ms = 600, timeout_ms = 400, gap_ms = 180;
+  double jitter_ms = 0;        // --jitter: a random wait before each press, so presses land at every
+                               // point of the frame instead of in step with the probe's own loop
+  bool whole_screen = false;   // --whole-screen: watch every cell (a full-screen flip, e.g. the lag
+                               // test's white background on a stage that animates everywhere)
   for (int i = 1; i < argc; ++i) {
     std::string a = argv[i];
     auto next = [&]() { return i + 1 < argc ? argv[++i] : ""; };
@@ -200,7 +207,10 @@ int main(int argc, char** argv) {
     else if (a == "--trials") trials = std::atoi(next());
     else if (a == "--settle") settle_ms = std::atoi(next());
     else if (a == "--timeout") timeout_ms = std::atoi(next());
-    else if (a == "--gap") gap_ms = std::atoi(next());   // pause after each trial (a jump must land before the next press)
+    else if (a == "--gap") gap_ms = std::atoi(next());
+    else if (a == "--hold") g_hold_ms = std::atoi(next());
+    else if (a == "--jitter") jitter_ms = std::atof(next());
+    else if (a == "--whole-screen") whole_screen = true;   // pause after each trial (a jump must land before the next press)
     else { std::fprintf(stderr, "unknown option %s\n", a.c_str()); return 2; }
   }
   const WORD key = parse_key(key_name);
@@ -240,7 +250,7 @@ int main(int argc, char** argv) {
   Mask mask{};
   int still = 0;
   for (size_t i = 0; i < cell_noise.size(); ++i) { mask[i] = cell_noise[i] <= 2; still += mask[i] ? 1 : 0; }
-  if (still < GRID_W * GRID_H / 8) { mask.fill(true); still = GRID_W * GRID_H; }   // nothing is still: watch everything
+  if (whole_screen || still < GRID_W * GRID_H / 8) { mask.fill(true); still = GRID_W * GRID_H; }   // watch everything
   // How much those still cells move on their own (compression and dithering keep it small but nonzero).
   int noise = 0;
   const long long recheck_until = qpc_now() + (long long)(frequency * settle_ms / 1000.0);
@@ -249,7 +259,8 @@ int main(int argc, char** argv) {
     noise = std::max(noise, difference(previous, current, mask));
     previous = current;
   }
-  const int threshold = std::max(noise * 3, 150);
+  // A whole-screen flip moves every cell by over 100 levels; a moving stage moves a fraction of that.
+  const int threshold = whole_screen ? std::max(noise * 3, GRID_W * GRID_H * 60) : std::max(noise * 3, 150);
   std::printf("%d of %d cells hold still; idle change in them up to %d; response counts above %d\n",
               still, GRID_W * GRID_H, noise, threshold);
 
@@ -260,6 +271,11 @@ int main(int argc, char** argv) {
     const long long drain_until = qpc_now() + (long long)(frequency * 0.25);
     while (qpc_now() < drain_until && capture.next(previous, &present, 50)) {}
     SetForegroundWindow(g_found.window);
+    if (jitter_ms > 0) {
+      // Spin, not Sleep: a 1 ms timer would put every press back on a millisecond grid.
+      const long long until = qpc_now() + (long long)(frequency * (jitter_ms * (std::rand() / (double)RAND_MAX)) / 1000.0);
+      while (qpc_now() < until) YieldProcessor();
+    }
     const long long pressed = qpc_now();
     press(trial % 2 ? key2 : key);
     double latency = -1;
@@ -282,7 +298,10 @@ int main(int argc, char** argv) {
   const double median = results[results.size() / 2];
   const double p95 = results[std::min(results.size() - 1, (size_t)(results.size() * 0.95))];
   double sum = 0; for (double r : results) sum += r;
-  std::printf("\n%zu of %d trials measured\nmedian %.1f ms | mean %.1f ms | p95 %.1f ms | min %.1f | max %.1f\n",
-              results.size(), trials, median, sum / results.size(), p95, results.front(), results.back());
+  const double mean = sum / results.size();
+  double var = 0; for (double r : results) var += (r - mean) * (r - mean);
+  const double ci = results.size() > 1 ? 1.96 * std::sqrt(var / (results.size() - 1)) / std::sqrt((double)results.size()) : 0.0;
+  std::printf("\n%zu of %d trials measured\nmedian %.1f ms | mean %.1f ms (95%% interval +/- %.1f) | p95 %.1f ms | min %.1f | max %.1f\n",
+              results.size(), trials, median, mean, ci, p95, results.front(), results.back());
   return 0;
 }

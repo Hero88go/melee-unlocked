@@ -1183,7 +1183,14 @@ static void validate_alarm_queue(const char* where);
 // Set when the game hands over the frame's picture (the display copy): from then until the retrace it
 // is only waiting, so its polls may wait for real time without delaying any game work.
 static bool g_frame_submitted = false;
-void note_frame_submitted() { g_frame_submitted = true; }
+static double g_handover_recent_ms[120];   // tick start to picture hand-over, the last two seconds (late start)
+static unsigned g_handover_recent_at = 0;
+static double g_tick_start_seconds = 0.0;
+void note_frame_submitted() {
+  if (!g_frame_submitted && g_tick_start_seconds > 0.0)
+    g_handover_recent_ms[g_handover_recent_at++ % 120] = (now_seconds() - g_tick_start_seconds) * 1000.0;
+  g_frame_submitted = true;
+}
 
 // The game's own stack (64 KB on the console) running past its end. Calls that deep also run this
 // program's stack out, so the reports of it are all the same exception C00000FD with thirty-two host
@@ -2455,6 +2462,44 @@ bool latency_trace_enabled() {
 static TickTiming g_tick_timing;
 TickTiming& tick_timing() { return g_tick_timing; }
 
+// ---- late start: the tick starts as late as it safely can before the next present ----
+// The 60 Hz clock free-runs and the controller is read at the top of each tick, so the time from
+// that read to the present that first shows the tick includes a random wait for the render thread's
+// next slot (up to one present period). With MELEE_LATE_START=1 the tick start is moved by at most
+// 0.3 ms per tick (audio and online time sync never see a jump) until start + budget lands just
+// before a present. The budget is the longest tick-start-to-hand-over time of the last two seconds
+// (rollbacks included, so online it backs off by itself; the audio pacing waits after the hand-over
+// are not part of it) plus the render time plus a margin. Off by default until measured.
+static std::atomic<double> g_present_when{0.0}, g_present_period{0.0};
+void present_report(double when, double period) {
+  g_present_when.store(when, std::memory_order_relaxed);
+  g_present_period.store(period, std::memory_order_relaxed);
+}
+static double g_late_shift_total = 0, g_late_shift_logged = 0;
+static bool late_start_on() {
+  static const bool on = [] { const char* v = std::getenv("MELEE_LATE_START"); return v && *v == '1'; }();
+  return on;
+}
+// Seconds to move the next tick start by, in [-0.3 ms, +0.3 ms].
+static double late_start_shift(std::chrono::steady_clock::time_point next_frame, double* budget_ms) {
+  const double period = g_present_period.load(std::memory_order_relaxed);
+  const double when = g_present_when.load(std::memory_order_relaxed);
+  const double now = now_seconds();
+  if (!late_start_on() || period <= 0.0 || period > 0.05 || when <= 0.0 || now - when > 0.25) return 0.0;
+  double worst = 0.0;
+  for (double v : g_handover_recent_ms) worst = std::max(worst, v);
+  const double budget = std::min(std::max(worst, 2.0), 14.0) / 1000.0 + 0.004 + 0.0015;   // to hand-over, render, margin
+  *budget_ms = budget * 1000.0;
+  const double start = std::chrono::duration<double>(next_frame.time_since_epoch()).count();
+  // The first present at or after start + budget; the start that just makes it is one budget before.
+  const double k = std::ceil((start + budget - when) / period);
+  const double wanted = when + k * period - budget;
+  double shift = wanted - start;
+  // A start early by most of a period is about as good as one late by a little: the shorter way.
+  if (shift > period / 2) shift -= period;
+  return std::max(-0.0003, std::min(0.0003, shift));
+}
+
 // Simulation-thread cost accounting: HLE entry points add their time to a slot; at the next
 // retrace the frame's work time (sleep excluded) is logged when it exceeds 20 ms, with the
 // slots that explain it, so a hitch is attributed instead of guessed.
@@ -2791,6 +2836,15 @@ void retrace() {
   if (g_has_window) window_pump();
   if (!options.fast) {
     g_next_frame += std::chrono::microseconds((long long)(16667.0 / g_emulation_speed));
+    double budget_ms = 0.0;
+    if (const double shift = late_start_shift(g_next_frame, &budget_ms); shift != 0.0) {
+      g_next_frame += std::chrono::microseconds((long long)(shift * 1e6));
+      g_late_shift_total += shift;
+      if (std::fabs(g_late_shift_total - g_late_shift_logged) >= 0.004) {
+        log("late start: tick start moved %.1f ms in total (budget %.1f ms)", g_late_shift_total * 1000.0, budget_ms);
+        g_late_shift_logged = g_late_shift_total;
+      }
+    }
     auto now = std::chrono::steady_clock::now();
     if (g_next_frame > now) wait_for_tick(g_next_frame);
     else if (now - g_next_frame > std::chrono::milliseconds(34)) g_next_frame = now;   // after a stall, resume at 60 Hz instead of sprinting to catch up (audio would crackle)
@@ -2799,6 +2853,7 @@ void retrace() {
     g_frame_time = now_seconds();
   }
   g_sim_frame_start = now_seconds();
+  g_tick_start_seconds = g_sim_frame_start;
   QueryThreadCycleTime(GetCurrentThread(), &g_slow_frame_cycles);
   static const bool sim_times_wanted = [] { const char* v = std::getenv("MELEE_SIM_TIMES"); return v && *v; }();
   if (sim_times_wanted) QueryThreadCycleTime(GetCurrentThread(), &g_sim_frame_start_cycles);

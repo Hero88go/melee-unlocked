@@ -25,6 +25,7 @@
 #include <vector>
 #include "dxgi_paced_mode.h"
 #include "vrr_detect.h"
+#include "vblank_clock.h"
 #include "gx_d3d12.h"
 #include "gx_adapter.h"
 #include "gx_backend.h"   // solver_pair_counter, for the "gpu:" diagnostic line
@@ -404,6 +405,12 @@ class D3D12Backend : public Backend {
   int variable_refresh() const override { return vrr_.state(); }
   bool display_counts_readable() const override { return vrr_readable_; }
   void set_display_refresh(double hz, bool tear_free) override { vrr_nominal_hz_ = hz; tear_free_ = tear_free; }
+  bool vblank_next(double after, double nominal_hz, double* when, double* period, std::string* why) override {
+    if ((frames_presented_ & 127) == 0 || !vblank_tracked_) { vblank_.track(swapchain_.Get()); vblank_tracked_ = true; }
+    return vblank_.next_after(after, nominal_hz, when, period, why);
+  }
+  VBlankClock vblank_;
+  bool vblank_tracked_ = false;
   void update_variable_refresh();
   vrr::Detector vrr_;
   bool tear_free_ = false, vrr_readable_ = false;

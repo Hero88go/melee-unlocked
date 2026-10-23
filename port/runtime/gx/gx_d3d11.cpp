@@ -17,6 +17,8 @@
 #include <d3d11_1.h>
 #include <dxgi1_6.h>
 #include "dxgi_paced_mode.h"
+#include "vrr_detect.h"
+#include "vblank_clock.h"
 #include "gx_adapter.h"
 #include <d3dcompiler.h>
 #include <wrl/client.h>
@@ -283,6 +285,41 @@ class D3D11Backend : public Backend {
   std::string profile_line() const override { return d3d11_profile_line(); }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
+  // The display side, as in the D3D12 backend: DXGI frame statistics for the "pacing:" line,
+  // variable refresh detection (vrr_detect.h), synced presents on a display that follows the
+  // frames, and the vertical blank clock for presenting in step with a fixed-refresh display.
+  std::string display_timing_line() override {
+    if (!swapchain_) return "no swap chain";
+    BOOL exclusive = FALSE;
+    swapchain_->GetFullscreenState(&exclusive, nullptr);
+    const char* mode = exclusive ? "exclusive fullscreen" : "windowed or borderless";
+    DXGI_FRAME_STATISTICS st{};
+    const HRESULT hr = swapchain_->GetFrameStatistics(&st);
+    char line[256];
+    if (FAILED(hr)) {
+      have_frame_stats_ = false;
+      if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT)
+        std::snprintf(line, sizeof line, "%s, display statistics reset (mode or output changed)", mode);
+      else
+        std::snprintf(line, sizeof line, "%s, no display statistics (0x%08X), usually because Windows composes the window with the desktop", mode, (unsigned)hr);
+      return line;
+    }
+    if (!have_frame_stats_) { have_frame_stats_ = true; last_frame_stats_ = st;
+      std::snprintf(line, sizeof line, "%s, the display owns the frames (statistics start)", mode); return line; }
+    const UINT shown = st.PresentCount - last_frame_stats_.PresentCount;
+    const UINT refreshes = st.SyncRefreshCount - last_frame_stats_.SyncRefreshCount;
+    last_frame_stats_ = st;
+    std::snprintf(line, sizeof line, "%s, the display owns the frames: %u frames shown over %u refreshes (%u refreshes repeated a frame)",
+                  mode, shown, refreshes, refreshes > shown ? refreshes - shown : 0u);
+    return line;
+  }
+  int variable_refresh() const override { return vrr_.state(); }
+  bool display_counts_readable() const override { return vrr_readable_; }
+  void set_display_refresh(double hz, bool tear_free) override { vrr_nominal_hz_ = hz; tear_free_ = tear_free; }
+  bool vblank_next(double after, double nominal_hz, double* when, double* period, std::string* why) override {
+    if ((frames_presented_ & 127) == 0 || !vblank_tracked_) { vblank_.track(swapchain_.Get()); vblank_tracked_ = true; }
+    return vblank_.next_after(after, nominal_hz, when, period, why);
+  }
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
   void set_skip_present(bool skip) override { skip_present_ = skip; }
@@ -478,6 +515,13 @@ class D3D11Backend : public Backend {
 
   HANDLE present_timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* high resolution */, TIMER_ALL_ACCESS);
   double present_deadline_ = 0, present_wait_ = 0;
+  bool have_frame_stats_ = false;
+  DXGI_FRAME_STATISTICS last_frame_stats_{};
+  void update_variable_refresh();
+  vrr::Detector vrr_;
+  bool tear_free_ = false, vrr_readable_ = false, vblank_tracked_ = false;
+  double vrr_nominal_hz_ = 0;
+  VBlankClock vblank_;
   uint64_t frame_counter_ = 0;
   // Replacement textures are decoded PNGs and far bigger than the originals, so they get a budget
   // rather than being allowed to fill video memory. Same figures as the D3D12 backend.
@@ -1846,6 +1890,22 @@ void D3D11Backend::gpu_frame_end() {
   gpu_timer_slot_ = (gpu_timer_slot_ + 1) % kTimerRing;
 }
 
+// See Backend::variable_refresh and vrr_detect.h. Called every 32 presents; a window is a second.
+void D3D11Backend::update_variable_refresh() {
+  DXGI_FRAME_STATISTICS st{};
+  vrr_readable_ = swapchain_ && SUCCEEDED(swapchain_->GetFrameStatistics(&st));
+  if (!vrr_readable_) { vrr_.restart(); return; }
+  static const double qpc_hz = [] { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return f.QuadPart > 0 ? (double)f.QuadPart : 1e7; }();
+  if (!vrr_.add({st.PresentCount, st.SyncRefreshCount, (double)st.SyncQPCTime.QuadPart / qpc_hz}, vrr_nominal_hz_)) return;
+  if (vrr_.state() == 1)
+    host::log("display: variable refresh (G-Sync or FreeSync) is on: %.0f refreshes a second for %.0f frames on a %.0f Hz "
+              "display; frames are presented synced under %.0f a second, so they never tear", vrr_.refreshes(), vrr_.shown(),
+              vrr_nominal_hz_, vrr::under_refresh(vrr_nominal_hz_));
+  else
+    host::log("display: fixed refresh: %.0f refreshes a second for %.0f frames on a %.0f Hz display", vrr_.refreshes(),
+              vrr_.shown(), vrr_nominal_hz_);
+}
+
 // Submitted frames the GPU has not finished: the end-of-frame events still outstanding. D3D11 has
 // no fence value to compare, and SetMaximumFrameLatency(1) in init is what keeps this small.
 unsigned D3D11Backend::gpu_frames_queued() {
@@ -2125,8 +2185,12 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       } else YieldProcessor();
     }
     present_wait_ = Stopwatch::now() - wait_start;
-    swapchain_->Present(opts_.vsync ? 1 : 0, (!opts_.vsync && allow_tearing_ && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    // Synced with V-Sync on, and on a display that follows the frames (tear_free_, from the
+    // presentation loop), where a frame starts its own refresh and syncing costs nothing.
+    const bool synced = opts_.vsync || tear_free_;
+    swapchain_->Present(synced ? 1 : 0, (!synced && allow_tearing_ && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
     ++frames_presented_;
+    if ((frames_presented_ & 31) == 0) update_variable_refresh();
     if (capture) { capture_sequence_ = frame.sequence; write_capture(path, frame.sequence); }
   }
   gpu_frame_end();
