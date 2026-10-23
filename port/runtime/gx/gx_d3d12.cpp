@@ -3529,7 +3529,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       // Not while DLSS frame generation runs: it paces its own frames and needs V-Sync off in the
       // game (NVIDIA: V-Sync for it belongs in the driver).
       const bool synced = opts_.vsync || (tear_free_ && fg_applied_ <= 0);
+      const double present_call = Stopwatch::now();
       swapchain_->Present(synced ? 1 : 0, (!synced && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+      present_wait_ += Stopwatch::now() - present_call;   // a synced Present waits for the display (see gx_d3d11.cpp)
     } catch (const std::system_error& error) {
       streamline::disable_after_resource_error(error.what());
       opts_.frame_generation_mode = 0;

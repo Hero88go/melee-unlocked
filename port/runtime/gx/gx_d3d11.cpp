@@ -540,13 +540,14 @@ class D3D11Backend : public Backend {
   static constexpr int kTimerRing = 4;
   struct GpuTimer {
     ComPtr<ID3D11Query> disjoint, start, end, done;
-    bool timing_pending = false, done_pending = false;
+    bool timing_pending = false, done_pending = false, end_marked = false;
   };
   GpuTimer gpu_timers_[kTimerRing];
   int gpu_timer_slot_ = 0;
   double gpu_frame_ms_sum_ = 0; uint32_t gpu_frame_ms_samples_ = 0;   // since the last "gpu:" line
   void gpu_frame_begin();
   void gpu_frame_end();
+  void gpu_work_end();
   unsigned gpu_frames_queued();
   uint64_t texpack_report_frame_ = ~0ull;
   uint32_t frames_presented_ = 0;
@@ -1880,10 +1881,18 @@ void D3D11Backend::gpu_frame_begin() {
 }
 
 // Closes this frame's timing and marks its end with an event, then moves to the next ring slot.
+void D3D11Backend::gpu_work_end() {
+  GpuTimer& t = gpu_timers_[gpu_timer_slot_];
+  if (!t.disjoint || t.end_marked) return;
+  context_->End(t.end.Get());
+  t.end_marked = true;
+}
+
 void D3D11Backend::gpu_frame_end() {
   GpuTimer& t = gpu_timers_[gpu_timer_slot_];
   if (!t.disjoint) return;
-  context_->End(t.end.Get());
+  if (!t.end_marked) context_->End(t.end.Get());   // a frame that presented nothing
+  t.end_marked = false;
   context_->End(t.disjoint.Get());
   context_->End(t.done.Get());
   t.timing_pending = true; t.done_pending = true;
@@ -2174,6 +2183,9 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     }
     // The flip model discards the back buffer on Present, so a capture is copied out first.
     if (capture) capture_backbuffer();
+    // The GPU timer ends here, after the frame's last draw and before any waiting: ended after
+    // Present it measured the whole frame interval (exactly 5.00 ms at 200 Hz), not GPU work.
+    gpu_work_end();
     const double wait_start = Stopwatch::now();
     for (;;) {
       double remaining = present_deadline_ - Stopwatch::now();
@@ -2188,7 +2200,12 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     // Synced with V-Sync on, and on a display that follows the frames (tear_free_, from the
     // presentation loop), where a frame starts its own refresh and syncing costs nothing.
     const bool synced = opts_.vsync || tear_free_;
+    const double present_call = Stopwatch::now();
     swapchain_->Present(synced ? 1 : 0, (!synced && allow_tearing_ && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    // A synced Present blocks until the display takes the previous frame: waiting, not drawing.
+    // Counted as drawing it inflated the render-time estimate to a whole refresh under synced
+    // pacing, and the presentation loop then aimed every frame one refresh too late.
+    present_wait_ += Stopwatch::now() - present_call;
     ++frames_presented_;
     if ((frames_presented_ & 31) == 0) update_variable_refresh();
     if (capture) { capture_sequence_ = frame.sequence; write_capture(path, frame.sequence); }

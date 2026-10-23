@@ -105,7 +105,7 @@ class ThreadedBackend final : public Backend {
       return std::min(std::max(us, 100.0), 8000.0) / 1e6;
     }();
     bool scanline_active = false, scanline_logged_on = false;
-    double last_scanline_present = 0.0;
+    double last_scanline_present = 0.0, scanline_target = 0.0, scanline_period = 0.0;
     std::string scanline_why;
     enum { KF_DEFAULT, KF_OFF, KF_ANCHOR_ALL, KF_SNAP };
     static const int keyframe_mode = [] {
@@ -207,8 +207,17 @@ class ThreadedBackend final : public Backend {
           options_.pin_phase < 0 && (live_options.fps_cap <= 0 || live_options.fps_cap >= 0.98 * last_refresh)) {
         double blank = 0, period = 0;
         std::string why;
-        if (renderer->vblank_next(host::now_seconds() + render_budget + scanline_lead, last_refresh, &blank, &period, &why)) {
-          if (blank - scanline_lead < last_scanline_present + 0.5 * period) blank += period;   // this refresh already has its frame
+        // The target blank is chosen once and kept until its frame is presented: re-chosen on every
+        // pass with the same margin the draw decision uses, it moved one refresh later at exactly
+        // the moment drawing was due, and frames waited up to 50 ms.
+        const double now_s = host::now_seconds();
+        const bool keep = scanline_target > 0.0 && scanline_target > now_s - 0.0005;
+        if (keep || renderer->vblank_next(now_s + render_budget + scanline_lead, last_refresh, &blank, &period, &why)) {
+          if (keep) { blank = scanline_target + scanline_lead; period = scanline_period; }
+          else {
+            if (blank - scanline_lead < last_scanline_present + 0.5 * period) blank += period;   // this refresh already has its frame
+            scanline_target = blank - scanline_lead; scanline_period = period;
+          }
           next_present = blank - scanline_lead;
           cap_period = period;
           scanline_active = true;
@@ -435,9 +444,12 @@ class ThreadedBackend final : public Backend {
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
       ++phase_bins[t >= 1.0 ? 4 : (int)(t * 4.0)];
-      host::present_report(render_end, cap_period > 0 ? cap_period : 1.0 / std::max(last_refresh, 1.0));   // late start (host.cpp)
+      // Late start (host.cpp) aims the hand-over just before this thread's next pickup: the moment it
+      // starts drawing, not the moment Present returns (which aimed a whole present too early).
+      host::present_report(render_start, cap_period > 0 ? cap_period : 1.0 / std::max(last_refresh, 1.0));
       if (scanline_active) {
         last_scanline_present = next_present;   // the next one is taken from the vertical blank again
+        scanline_target = 0.0;
       } else if (cap_period > 0) {
         double now = host::now_seconds();
         // Skip missed slots; never emit catch-up bursts after a stall.

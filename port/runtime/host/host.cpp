@@ -2467,9 +2467,9 @@ TickTiming& tick_timing() { return g_tick_timing; }
 // that read to the present that first shows the tick includes a random wait for the render thread's
 // next slot (up to one present period). With MELEE_LATE_START=1 the tick start is moved by at most
 // 0.3 ms per tick (audio and online time sync never see a jump) until start + budget lands just
-// before a present. The budget is the longest tick-start-to-hand-over time of the last two seconds
+// before the render thread next picks up a frame. The budget is the usual (75th percentile) tick-start-to-hand-over time of the last two seconds
 // (rollbacks included, so online it backs off by itself; the audio pacing waits after the hand-over
-// are not part of it) plus the render time plus a margin. Off by default until measured.
+// are not part of it) plus a margin of 0.8 ms. Off by default until measured.
 static std::atomic<double> g_present_when{0.0}, g_present_period{0.0};
 void present_report(double when, double period) {
   g_present_when.store(when, std::memory_order_relaxed);
@@ -2493,7 +2493,7 @@ static double late_start_shift(std::chrono::steady_clock::time_point next_frame,
   std::copy(std::begin(g_handover_recent_ms), std::end(g_handover_recent_ms), recent);
   std::nth_element(recent, recent + 90, recent + 120);
   const double usual = recent[90];
-  const double budget = std::min(std::max(usual, 2.0), 14.0) / 1000.0 + 0.004 + 0.0015;   // to hand-over, render, margin
+  const double budget = std::min(std::max(usual, 2.0), 14.0) / 1000.0 + 0.0008;   // to hand-over, then a margin before the render pickup
   *budget_ms = budget * 1000.0;
   const double start = std::chrono::duration<double>(next_frame.time_since_epoch()).count();
   // The first present at or after start + budget; the start that just makes it is one budget before.
@@ -2502,6 +2502,7 @@ static double late_start_shift(std::chrono::steady_clock::time_point next_frame,
   double shift = wanted - start;
   // A start early by most of a period is about as good as one late by a little: the shorter way.
   if (shift > period / 2) shift -= period;
+  if (shift < -period / 2) shift += period;
   return std::max(-0.0003, std::min(0.0003, shift));
 }
 
