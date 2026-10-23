@@ -118,7 +118,7 @@ class ThreadedBackend final : public Backend {
       return s == "off" ? (int)KF_OFF : s == "anchor-all" ? (int)KF_ANCHOR_ALL : s == "snap" ? (int)KF_SNAP : (int)KF_DEFAULT;
     }();
     host::log("presentation: phase timeline %s, keyframe %s", phase_timeline ? "tick" : "hand-over",
-              keyframe_mode == KF_OFF ? "off" : keyframe_mode == KF_ANCHOR_ALL ? "anchor (all modes)" : keyframe_mode == KF_SNAP ? "snap" : "anchor (Interpolate)");
+              keyframe_mode == KF_OFF ? "off" : keyframe_mode == KF_ANCHOR_ALL ? "anchor (all modes)" : keyframe_mode == KF_SNAP ? "snap" : "off");
     for (;;) {
       host::window_pump();
       const auto& live_options = render_options(renderer);
@@ -373,11 +373,13 @@ class ThreadedBackend final : public Backend {
         // frame is phase 0 (Predict: this frame's own pose; Interpolate: the frame before it), so no
         // frame of an animation is only ever seen half-way between its neighbours (the tip of a
         // one-frame sword swing). That present comes within one refresh of the frame's arrival, so
-        // the phase it replaces was already near 0. MELEE_KEYFRAME_MODE: anchor (Interpolate's
-        // default), off (Predict's default), anchor-all (both modes), snap (at a cap that is a whole
-        // multiple of 60, phases rounded to the present grid so one present lands on 0 every frame).
+        // the phase it replaces was already near 0. Off by default in both modes: anchored, the
+        // first present of each frame jumps back to 0 and motion stalls on every game frame (measured
+        // 10-23 in Interpolate: steps over 2 ms 164 -> 3291 a match against 0.9.17, which never
+        // anchored). MELEE_KEYFRAME_MODE (tests): anchor-all, snap (at a cap that is a whole multiple
+        // of 60, phases rounded to the present grid so one present lands on 0 every frame), off.
         if (options_.pin_phase < 0) {
-          const bool anchor = keyframe_mode == KF_ANCHOR_ALL || (keyframe_mode == KF_DEFAULT && interpolate);
+          const bool anchor = keyframe_mode == KF_ANCHOR_ALL;
           if (anchor && current.sequence != rendered_sequence) t = 0.0;
           if (keyframe_mode == KF_SNAP && live_options.fps_cap > 0) {
             const double k = std::round(live_options.fps_cap / 60.0);
