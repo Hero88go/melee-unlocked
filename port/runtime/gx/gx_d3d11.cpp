@@ -83,6 +83,7 @@ enum : uint32_t { TOPO_LINE = 2, TOPO_TRIANGLE = 3 };
 // has no DLSS path, so only this much of the block is uploaded per draw.
 constexpr size_t VS_CONSTANT_BYTES = offsetof(VSConstants, prev_projection);
 
+uint64_t g_plan_checks = 0, g_plan_check_diffs = 0;   // MELEE_PLAN_CACHE_CHECK (submit_frame)
 double g_prof[8]; uint64_t g_prof_draws = 0, g_pipe_hits = 0, g_pipe_lookups = 0, g_pipe_creates = 0, g_pipe_skips = 0;
 // Sampling an address the game has copied the EFB into: found in the copy registry, or not found
 // and therefore decoded from guest RAM, which for a render target holds nothing the GPU wrote.
@@ -497,6 +498,13 @@ class D3D11Backend : public Backend {
   };
   std::vector<DrawPlan> plans_;
   std::vector<uint32_t> index_scratch_;
+  // The plan of the last game frame, reused by its in-between presents (submit_frame).
+  std::vector<PSConstants> ps_cache_;
+  const void* plan_cache_frame_ = nullptr;
+  uint64_t plan_cache_sequence_ = 0;
+  size_t plan_cache_draws_ = 0;
+  int plan_cache_scale_ = 0, plan_cache_effects_ = 0;
+  bool plan_cache_lab_ = false, plan_cache_valid_ = false;
   std::vector<uint8_t> decode_scratch_;
   void execute_draw(const DrawCall& dc, const DrawPlan& plan);
 
@@ -1999,10 +2007,50 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // over the draw list (each DrawCall is ~5 KB, so a second sweep would miss cache on all of it),
   // then uploaded as whole mapped blocks instead of D3D12's per-draw ring allocations.
   Stopwatch sw;
+  uint32_t extra_vertices = 0, vs_slots = 0, ps_slots = 0;
+  // A game frame is presented two to four times (the in-between frames). Its index lists and
+  // pixel constants are the same every time; only the vertex constants and the re-posed vertices
+  // follow the solver. The first present plans the frame; the others reuse that plan. Skinned
+  // draws refill their pixel constants every time (the player tint can change at any moment).
+  const bool plan_matches = plan_cache_valid_ && plan_cache_frame_ == &frame && plan_cache_sequence_ == frame.sequence &&
+                            plan_cache_draws_ == frame.draws.size() && plan_cache_scale_ == scale_ &&
+                            plan_cache_effects_ == opts_.effects_level && plan_cache_lab_ == lab_skip_scene_;
+  // Test only: MELEE_PLAN_CACHE_CHECK=1 plans every present from scratch and counts any difference
+  // from the reused plan (logged with the render cost line).
+  static const bool plan_check = [] { const char* v = std::getenv("MELEE_PLAN_CACHE_CHECK"); return v && *v == '1'; }();
+  const bool reuse_plan = plan_matches && !plan_check;
+  std::vector<DrawPlan> check_plans; std::vector<uint32_t> check_index; std::vector<PSConstants> check_ps;
+  if (plan_matches && plan_check) { check_plans = plans_; check_index = index_scratch_; check_ps = ps_cache_; }
+  if (reuse_plan) {
+    for (const FrameCommand& cmd : frame.commands) {
+      if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
+      DrawPlan& plan = plans_[cmd.index];
+      if (!plan.valid) continue;
+      const DrawCall& dc = frame.draws[cmd.index];
+      const DrawMatrices* over = overrides ? overrides + cmd.index : nullptr;
+      if (over && over->vertices) { plan.base_vertex = (uint32_t)frame.vertices.size() + extra_vertices; extra_vertices += dc.vertex_count; }
+      else plan.base_vertex = dc.first_vertex;
+      if (uint8_t* dst = vs_constants_.slot(plan.vs_slot)) {
+        VSConstants vs_constants;
+        fill_vs_constants(dc, vs_constants, scale_, over);
+        std::memcpy(dst, &vs_constants, VS_CONSTANT_BYTES);
+      }
+      if (uint8_t* dst = ps_constants_.slot(plan.ps_slot)) {
+        if (dc.skinned) {
+          PSConstants ps_constants;
+          fill_ps_constants(dc, ps_constants, scale_);
+          std::memcpy(dst, &ps_constants, sizeof(PSConstants));
+        } else {
+          std::memcpy(dst, &ps_cache_[plan.ps_slot], sizeof(PSConstants));
+        }
+      }
+    }
+  } else {
+  plan_cache_valid_ = false;
   plans_.assign(frame.draws.size(), DrawPlan{});
   index_scratch_.clear();
+  ps_cache_.clear();
   const EffectsFilter effects = effects_filter(frame, opts_.effects_level);
-  uint32_t extra_vertices = 0, vs_slots = 0, ps_slots = 0;
   for (const FrameCommand& cmd : frame.commands) {
     if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
     const DrawCall& dc = frame.draws[cmd.index];
@@ -2041,11 +2089,24 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       fill_vs_constants(dc, vs_constants, scale_, over);
       std::memcpy(dst, &vs_constants, VS_CONSTANT_BYTES);
     }
-    if (uint8_t* dst = ps_constants_.slot(plan.ps_slot)) {
-      PSConstants ps_constants;
-      fill_ps_constants(dc, ps_constants, scale_);
-      std::memcpy(dst, &ps_constants, sizeof(PSConstants));
+    PSConstants ps_constants;
+    fill_ps_constants(dc, ps_constants, scale_);
+    if (uint8_t* dst = ps_constants_.slot(plan.ps_slot)) std::memcpy(dst, &ps_constants, sizeof(PSConstants));
+    ps_cache_.push_back(ps_constants);   // index ps_slot
+  }
+  if (plan_matches && plan_check) {
+    ++g_plan_checks;
+    bool same = check_index == index_scratch_ && check_plans.size() == plans_.size() && check_ps.size() == ps_cache_.size();
+    for (size_t i = 0; same && i < plans_.size(); ++i) {
+      const DrawPlan &a = plans_[i], &b = check_plans[i];
+      same = a.valid == b.valid && a.first_index == b.first_index && a.index_count == b.index_count && a.vs_slot == b.vs_slot &&
+             a.ps_slot == b.ps_slot && a.topo_type == b.topo_type && a.topology == b.topology;
+      if (same && a.valid && !frame.draws[i].skinned) same = std::memcmp(&ps_cache_[a.ps_slot], &check_ps[a.ps_slot], sizeof(PSConstants)) == 0;
     }
+    if (!same) ++g_plan_check_diffs;
+  }
+  plan_cache_valid_ = true; plan_cache_frame_ = &frame; plan_cache_sequence_ = frame.sequence;
+  plan_cache_draws_ = frame.draws.size(); plan_cache_scale_ = scale_; plan_cache_effects_ = opts_.effects_level; plan_cache_lab_ = lab_skip_scene_;
   }
   vs_constants_.end();
   ps_constants_.end();
@@ -2295,6 +2356,7 @@ std::string d3d11_profile_line() {
            (unsigned long long)g_efb_tex_hit, (unsigned long long)g_efb_tex_miss);
   std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pipe_hits = g_pipe_lookups = g_pipe_creates = g_pipe_skips = 0;
   g_efb_tex_hit = g_efb_tex_miss = 0;
+  if (g_plan_checks) { std::string s(buf); s += " | plan reuse checked " + std::to_string(g_plan_checks) + ", differed " + std::to_string(g_plan_check_diffs); return s; }
   return buf;
 }
 
