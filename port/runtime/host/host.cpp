@@ -1573,6 +1573,25 @@ void apply_low_poly_fighters() {
 // as the Source Port skips it (gr/grlast.c). What was there is put back when the option goes off:
 // online that word is Slippi's DesyncProofBGTransformations branch, and with the call skipped the
 // seed is not touched at all, so both players stay in step whatever each one chose.
+// A fighter whose player slot carries a tint index past the game's four (a mod's mode can leave one)
+// stops the game at fighter.c:828 ("fighter sub color num over!"). The tint is only a colour: it is
+// set to none before the fighter reads it, and the fighter loads.
+void install_sub_color_guard() {
+  static bool done = false;
+  if (done || !ram) return;
+  done = true;
+  ppc::add_entry_hook(0x80068914u, [](ppc::Context& c) {   // Fighter_UnkInitLoad_80068914(gobj, plAllocInfo*)
+    if (!try_ptr(c.r[4], 8)) return;
+    const uint32_t slot = rd8(c.r[4] + 4);
+    if (slot >= 6) return;
+    const uint32_t at = 0x80453080u + slot * 0xE90u + 0x46u;   // player_slots[slot].sub_color
+    const int8_t tint = (int8_t)rd8(at);
+    if (tint <= 4) return;   // the game's own test (signed): only past 4 stops it
+    wr8(at, 0);
+    static bool logged = false;
+    if (!logged) { logged = true; log("fighters: player %u had tint %d, past the game's 4; loaded without a tint", slot + 1, tint); }
+  });
+}
 void apply_freeze_final_destination() {
   constexpr uint32_t kThink = 0x8021AAB0u, kCall = 0x8021AAE4u, kNop = 0x60000000u;
   static bool frozen = false;
