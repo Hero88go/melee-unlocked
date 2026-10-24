@@ -10,6 +10,7 @@
 #include <openssl/evp.h>
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <iconv.h>
 #include <pthread.h>
 #include <signal.h>
 #include <spawn.h>
@@ -19,6 +20,8 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <atomic>
+#include <cerrno>
+#include <cstdint>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -458,23 +461,128 @@ void GetCurrentThreadStackLimits(ULONG_PTR* low, ULONG_PTR* high) {
 }
 
 // ---- text ----
-int MultiByteToWideChar(UINT, DWORD, LPCSTR in, int in_bytes, LPWSTR out, int out_chars) {
+// Code page 932 (Shift-JIS) is what the game uses for names and connect codes. Every other code
+// page is treated as UTF-8. Shift-JIS goes through iconv; without its tables a built-in map covers
+// ASCII, the full-width letters and digits and the symbols connect codes use.
+namespace {
+constexpr UINT kShiftJis = 932;
+
+// Full-width symbols of the game's text, the same pairs slippi_net.cpp writes.
+constexpr struct { wchar_t wide; uint16_t sjis; } kSjisSymbols[] = {
+    {L'　', 0x8140}, {L'！', 0x8149}, {L'”', 0x8168}, {L'＃', 0x8194}, {L'＄', 0x8190},
+    {L'％', 0x8193}, {L'＆', 0x8195}, {L'’', 0x8166}, {L'（', 0x8169}, {L'）', 0x816A},
+    {L'＊', 0x8196}, {L'＋', 0x817B}, {L'，', 0x8143}, {L'－', 0x817C}, {L'．', 0x8144},
+    {L'／', 0x815E}, {L'：', 0x8146}, {L'；', 0x8147}, {L'＜', 0x8183}, {L'＝', 0x8181},
+    {L'＞', 0x8184}, {L'？', 0x8148}, {L'＠', 0x8197}, {L'［', 0x816D}, {L'＼', 0x815F},
+    {L'］', 0x816E}, {L'＾', 0x814F}, {L'＿', 0x8151}, {L'｀', 0x814D}, {L'｛', 0x816F},
+    {L'｜', 0x8162}, {L'｝', 0x8170}, {L'～', 0x8160},
+};
+
+wchar_t sjis_pair_to_wide(uint16_t code) {
+  if (code >= 0x824F && code <= 0x8258) return (wchar_t)(0xFF10 + (code - 0x824F));   // digits
+  if (code >= 0x8260 && code <= 0x8279) return (wchar_t)(0xFF21 + (code - 0x8260));   // A-Z
+  if (code >= 0x8281 && code <= 0x829A) return (wchar_t)(0xFF41 + (code - 0x8281));   // a-z
+  for (const auto& s : kSjisSymbols) if (s.sjis == code) return s.wide;
+  return L'�';
+}
+int wide_to_sjis_pair(wchar_t c) {
+  if (c >= 0xFF10 && c <= 0xFF19) return 0x824F + (c - 0xFF10);
+  if (c >= 0xFF21 && c <= 0xFF3A) return 0x8260 + (c - 0xFF21);
+  if (c >= 0xFF41 && c <= 0xFF5A) return 0x8281 + (c - 0xFF41);
+  for (const auto& s : kSjisSymbols) if (s.wide == c) return s.sjis;
+  return -1;
+}
+
+iconv_t open_sjis(bool to_wide) {
+  for (const char* name : {"CP932", "SHIFT_JIS", "SJIS"}) {
+    iconv_t cd = to_wide ? iconv_open("WCHAR_T", name) : iconv_open(name, "WCHAR_T");
+    if (cd != (iconv_t)-1) return cd;
+  }
+  return (iconv_t)-1;
+}
+
+std::wstring sjis_widen(const char* s, size_t n) {
+  std::wstring out;
+  iconv_t cd = open_sjis(true);
+  if (cd != (iconv_t)-1) {
+    char* src = const_cast<char*>(s);
+    size_t left = n;
+    while (left > 0) {
+      wchar_t buf[256];
+      char* dst = (char*)buf;
+      size_t room = sizeof buf;
+      const size_t r = iconv(cd, &src, &left, &dst, &room);
+      out.append(buf, (wchar_t*)dst - buf);
+      if (r == (size_t)-1 && errno != E2BIG) {   // a byte iconv cannot read: one replacement, go on
+        out.push_back(L'�');
+        ++src; --left;
+        iconv(cd, nullptr, nullptr, nullptr, nullptr);
+      }
+    }
+    iconv_close(cd);
+    return out;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const unsigned char c = (unsigned char)s[i];
+    if (c < 0x80) { out.push_back((wchar_t)c); continue; }
+    if (c >= 0xA1 && c <= 0xDF) { out.push_back((wchar_t)(0xFF61 + (c - 0xA1))); continue; }   // half-width kana
+    if (i + 1 < n) { out.push_back(sjis_pair_to_wide((uint16_t)((c << 8) | (unsigned char)s[i + 1]))); ++i; }
+    else out.push_back(L'�');
+  }
+  return out;
+}
+
+std::string sjis_narrow(const wchar_t* w, size_t n) {
+  std::string out;
+  iconv_t cd = open_sjis(false);
+  if (cd != (iconv_t)-1) {
+    char* src = (char*)const_cast<wchar_t*>(w);
+    size_t left = n * sizeof(wchar_t);
+    while (left > 0) {
+      char buf[512];
+      char* dst = buf;
+      size_t room = sizeof buf;
+      const size_t r = iconv(cd, &src, &left, &dst, &room);
+      out.append(buf, dst - buf);
+      if (r == (size_t)-1 && errno != E2BIG) {   // no Shift-JIS form: '?', as Windows writes
+        out.push_back('?');
+        src += sizeof(wchar_t); left -= sizeof(wchar_t);
+        iconv(cd, nullptr, nullptr, nullptr, nullptr);
+      }
+    }
+    iconv_close(cd);
+    return out;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const wchar_t c = w[i];
+    if (c < 0x80) { out.push_back((char)c); continue; }
+    if (c >= 0xFF61 && c <= 0xFF9F) { out.push_back((char)(0xA1 + (c - 0xFF61))); continue; }
+    const int pair = wide_to_sjis_pair(c);
+    if (pair < 0) { out.push_back('?'); continue; }
+    out.push_back((char)(pair >> 8));
+    out.push_back((char)(pair & 0xFF));
+  }
+  return out;
+}
+}  // namespace
+
+int MultiByteToWideChar(UINT code_page, DWORD, LPCSTR in, int in_bytes, LPWSTR out, int out_chars) {
   if (!in) return 0;
   const bool with_null = in_bytes < 0;
   const size_t n = with_null ? std::strlen(in) : (size_t)in_bytes;
-  std::wstring w = widen(in, n);
+  std::wstring w = code_page == kShiftJis ? sjis_widen(in, n) : widen(in, n);
   if (with_null) w.push_back(L'\0');
   if (!out_chars) return (int)w.size();
   if ((int)w.size() > out_chars) { g_last_error = 122; return 0; }
   std::wmemcpy(out, w.data(), w.size());
   return (int)w.size();
 }
-int WideCharToMultiByte(UINT, DWORD, LPCWSTR in, int in_chars, LPSTR out, int out_bytes, LPCSTR, BOOL* used_default) {
+int WideCharToMultiByte(UINT code_page, DWORD, LPCWSTR in, int in_chars, LPSTR out, int out_bytes, LPCSTR, BOOL* used_default) {
   if (used_default) *used_default = FALSE;
   if (!in) return 0;
   const bool with_null = in_chars < 0;
   const size_t n = with_null ? std::wcslen(in) : (size_t)in_chars;
-  std::string s = narrow(in, n);
+  std::string s = code_page == kShiftJis ? sjis_narrow(in, n) : narrow(in, n);
   if (with_null) s.push_back('\0');
   if (!out_bytes) return (int)s.size();
   if ((int)s.size() > out_bytes) { g_last_error = 122; return 0; }
