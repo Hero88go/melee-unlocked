@@ -44,6 +44,9 @@
 #include "hid_pad.h"
 #include "updater.h"
 #include "discord_presence.h"
+
+// "Faster sound effects" stays hidden and off until its timing is measured.
+static constexpr bool kShowFasterSoundEffects = false;
 #include "controller_profiles.h"
 #include "dolphin_profile.h"
 #include "cosmetic_mods.h"
@@ -2049,7 +2052,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "audio_asio_buffer") { const int b = std::stoi(value); options.audio_asio_buffer = b == 0 ? 0 : std::clamp(b, 32, 2048); }
       else if (key == "audio_device") options.audio_device = value;
       else if (key == "audio_buffer_ms") options.audio_buffer_ms = std::clamp(std::stoi(value), 5, 120);
-      else if (key == "audio_early_keyon") gx::RenderOptions::live_audio_early_keyon() = value == "1";
+      else if (key == "audio_early_keyon") gx::RenderOptions::live_audio_early_keyon() = kShowFasterSoundEffects && value == "1";
       else if (key == "quickchat") slippi::online::config().chat = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "onlinedelay") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 9) slippi::online::config().delay = d; }
       else if (key == "onlinedelayauto") slippi::online::config().auto_delay = value == "1";
@@ -5794,7 +5797,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       }
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("Less buffering reduces delay; too little can cause gaps. This controls the software buffer. Windows and the audio device add their own delay.");
     }
-    {
+    if (kShowFasterSoundEffects) {
       // Faster sound effects: Source Port only (the Static Recomp's sound code is the console's).
       ImGui::BeginDisabled(host::game_image == nullptr);
       if (settings_toggle("Faster sound effects", &gx::RenderOptions::live_audio_early_keyon())) changed = true;
