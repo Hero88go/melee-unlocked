@@ -802,12 +802,20 @@ static void splash_prep(GameModeState* state)
             continue;
         }
         go_left = i == local || (is_teams && p->team == local_team);
+        /* The splash poses each fighter with its Classic intro motion, and the intro archive
+         * (IrAls.dat) has those for the retail characters only: a mod's added fighter (ACE,
+         * Akaneia) had none and the splash stopped the game as it built the model. Its place on
+         * the splash stays empty (0x21, as an unused place); the name call and the match keep it. */
+        if (MU_AK_CKIND(p->ckind)) {
+            OSReport("[ak] online splash: character kind %d has no intro motion; its model is left out\n",
+                     (int) p->ckind);
+        }
         if (go_left) {
-            d[0x0D + left] = (u8) p->ckind;
+            d[0x0D + left] = MU_AK_CKIND(p->ckind) ? 0x21 : (u8) p->ckind;
             d[0x13 + left] = p->color;
             left++;
         } else {
-            d[0x10 + right] = (u8) p->ckind;
+            d[0x10 + right] = MU_AK_CKIND(p->ckind) ? 0x21 : (u8) p->ckind;
             d[0x16 + right] = p->color;
             right++;
         }

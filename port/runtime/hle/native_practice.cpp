@@ -273,8 +273,12 @@ void start_search(MatchMode mode, const std::string& connect_code) {
   g_practice = capture_practice();
   if (!g_practice.valid) { fail("No active human fighter was found", false); return; }
   SavedPlayer& player = g_practice.players[g_practice.local_slot];
-  if (!player.active || player.character >= 26) {
+  if (!player.active) {
     fail("The active fighter cannot be used for online matchmaking", false);
+    return;
+  }
+  if (player.character >= 26) {   // a mod's added fighter: picked on the online screen, in Direct
+    fail("Added fighters go online from Online Play > Direct: pick them on its character select", false);
     return;
   }
   g_match_mode = mode;

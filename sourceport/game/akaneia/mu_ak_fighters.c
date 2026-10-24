@@ -788,12 +788,19 @@ int mu_ak_test_results(void)
 /* The mode of the character select last entered. The added fighters are offered on the VS Melee,
  * Special Melee and Training screens only: the 1P modes, Event and Stadium read per character
  * tables the mod fills with its own code (the Classic intro's demo fighter crashed on Wolf).
- * Starts open, so a match started without a select screen (--match, replays) is unchanged. */
+ * Starts open, so a match started without a select screen (--match, replays) is unchanged.
+ * The online character select (Direct) plays a VS match too, but its screen data carries whatever
+ * match type the online scene left there (14 seen), so it is offered by that screen, not the number.
+ * Which online modes may use them is the host's call: outside Direct the view is retail and the
+ * added fighters are not loaded at all. */
 static int ak_css_offers = 1;
+
+int mu_slippi_css_online(void);
 
 void mu_ak_css_mode(int match_type)
 {
-    const int offers = match_type <= 0xA || match_type == 0x17;   /* VS_SLOWMO, TRAINING_MODE */
+    const int offers = match_type <= 0xA || match_type == 0x17   /* VS_SLOWMO, TRAINING_MODE */
+                       || mu_slippi_css_online();
     if (!offers && ak_css_offers) {
         OSReport("[ak] character select mode %d: the added fighters are offered in VS and Training only\n",
                  match_type);
