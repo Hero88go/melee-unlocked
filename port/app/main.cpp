@@ -53,6 +53,9 @@ namespace app { int run_settings_window(gx::RenderOptions& options, unsigned lon
 #include "source_host.h"
 #endif
 #include <chrono>
+#include <cwctype>
+#include <filesystem>
+#include <fstream>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1278,6 +1281,44 @@ static int melee_main(int argc, char** argv);
   }
   host::die("the game stopped itself (abort)");
 }
+
+// A start without --replay-dir (a shortcut, Steam or Playnite launch options, the exe itself) follows
+// the launcher's replay choice in launcher.ini beside the game, or two folders up from Versions\<id>:
+// "Save my replays" off records into a scratch folder that is emptied first, as the launcher does;
+// a chosen replay folder is used; otherwise Replays beside the launcher. No launcher.ini: unchanged.
+static void apply_launcher_replay_choice(std::string& replay_dir) {
+  namespace fs = std::filesystem;
+  wchar_t module[MAX_PATH]{};
+  if (!GetModuleFileNameW(nullptr, module, MAX_PATH)) return;
+  const fs::path exe_dir = fs::path(module).parent_path();
+  std::vector<fs::path> candidates{exe_dir};
+  std::wstring parent = exe_dir.parent_path().filename().wstring();
+  for (auto& ch : parent) ch = (wchar_t)towlower(ch);
+  if (parent == L"versions") candidates.push_back(exe_dir.parent_path().parent_path());
+  std::error_code ec;
+  for (const auto& dir : candidates) {
+    std::ifstream ini(dir / "launcher.ini");
+    if (!ini) continue;
+    bool save = true;
+    std::string folder, line;
+    while (std::getline(ini, line)) {
+      if (!line.empty() && line.back() == '\r') line.pop_back();
+      if (line == "savereplays=0") save = false;
+      else if (line.rfind("replaydir=", 0) == 0) folder = line.substr(10);
+    }
+    if (!save) {
+      const fs::path scratch = fs::temp_directory_path(ec) / "MeleeUnlocked-unsaved-replays";
+      fs::remove_all(scratch, ec);
+      replay_dir = scratch.u8string();
+      host::log("replays: \"Save my replays\" is off in the launcher; this session's replays are not kept");
+    } else {
+      replay_dir = folder.empty() ? (dir / "Replays").u8string() : folder;
+      host::log("replays: saved in %s (the launcher's replay folder)", replay_dir.c_str());
+    }
+    return;
+  }
+}
+
 static int guarded_main(int argc, char** argv) {
   // The same for an exception that escapes any other thread: the C++ runtime ends the program
   // there (terminate, then abort) without passing through the crash report. The terminate handler
@@ -1361,7 +1402,7 @@ static int melee_main(int argc, char** argv) {
   gfx.native_source = true;
 #endif
   bool automated = false, explicit_frame_mode = false, settings_window_only = false, load_settings = false;
-  bool explicit_card_dir = false;
+  bool explicit_card_dir = false, explicit_replay_dir = false;
   unsigned long settings_standby = 0;   // the launcher's process id: start hidden, show when it asks
   for (int i = 1; i < argc; ++i) {
     std::string arg = argv[i];
@@ -1382,6 +1423,7 @@ static int melee_main(int argc, char** argv) {
     if (arg == "--load-settings") load_settings = true;
     if (arg == "--vanilla-only") host::gameplay::vanilla_only_session = true;
     if (arg == "--card-dir") explicit_card_dir = true;
+    if (arg == "--replay-dir") explicit_replay_dir = true;
     // The Lossless adapter's lag test (port/runtime/host/lag_test_codes.h), set before the settings
     // load reads it: the native game (shim/mu_lagtest.c) and the settings load, which gives the
     // Static Recomp the app's codes, both look for MELEE_LAG_TEST.
@@ -1978,6 +2020,8 @@ static int melee_main(int argc, char** argv) {
     }
     host::log("lag test: Lossless adapter lag test launch; memory card %s", o.card_dir.c_str());
   }
+  // Both engines: the Source Port starts its game in the branch just below.
+  if (!explicit_replay_dir) apply_launcher_replay_choice(o.replay_dir);
 #ifdef MELEE_SOURCE_PORT
   // The game from source: nothing below this point applies (it is the recompiled guest's boot).
   static std::unique_ptr<gx::Backend>* backend_at_exit = &backend;
