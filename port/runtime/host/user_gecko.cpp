@@ -650,6 +650,10 @@ void load(const std::string& path, const std::vector<std::string>& enabled_names
     if (!c.supported) host::log("gecko: \"%s\" cannot run here: %s", c.name.c_str(), c.reason.c_str());
   }
   host::log("gecko: %zu user codes in %s (%d usable, %d on)", g_codes.size(), path.c_str(), supported, enabled);
+  // Which ones are on: a crash report then names the codes that ran (a heap overwritten with text
+  // from an unknown user code could not be traced from the count alone).
+  for (const Code& c : g_codes)
+    if (c.enabled) host::log("gecko: on: \"%s\" (%zu lines)", c.name.c_str(), c.lines.size());
 }
 
 const char* native_equivalent(const Code& c) {
