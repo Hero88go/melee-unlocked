@@ -33,6 +33,13 @@ bool make_zip(const std::filesystem::path& folder, const std::filesystem::path& 
 }  // namespace
 
 int main(int argc, char** argv) {
+  // port_updater_test <zip> <dest> <release folder>: check and unpack one real release zip.
+  if (argc == 4 && std::string(argv[1]).rfind("--", 0) != 0) {   // not the --hold-updater-test fixture
+    const bool inside = host::updater::archive_inside(argv[1], argv[3]);
+    const bool unpacked = inside && host::updater::unpack_archive(argv[1], argv[2]);
+    std::printf("inside %d unpacked %d\n", inside, unpacked);
+    return inside && unpacked ? 0 : 1;
+  }
   if (argc == 4 && std::string(argv[1]) == "--hold-updater-test") {
     HANDLE ready = OpenEventA(EVENT_MODIFY_STATE, FALSE, argv[2]);
     HANDLE quit = OpenEventA(SYNCHRONIZE, FALSE, argv[3]);
@@ -66,6 +73,20 @@ int main(int argc, char** argv) {
   check(!archive_inside(good.u8string(), "MeleeUnlocked-9.9.8"), "the wrong release folder is refused");
   check(!archive_inside(stray.u8string(), "MeleeUnlocked-9.9.9"), "an entry outside the release folder is refused");
   check(!archive_inside((root / "missing.zip").u8string(), "MeleeUnlocked-9.9.9"), "a missing archive is refused");
+  // Unpacked in process, not by tar.exe (Wine and Proton have none).
+  {
+    { std::ofstream big(root / "MeleeUnlocked-9.9.9" / "Sys" / "big.bin", std::ios::binary); for (int i = 0; i < 200000; ++i) big << (char)(i * 7 % 251); }
+    const fs::path packed = root / "packed.zip", out = root / "unpacked";
+    check(make_zip(root, packed, L"MeleeUnlocked-9.9.9"), "compressed test archive made");
+    check(host::updater::unpack_archive(packed.u8string(), out.u8string()), "the archive unpacks without tar");
+    std::ifstream in(out / "MeleeUnlocked-9.9.9" / "Sys" / "big.bin", std::ios::binary);
+    std::string got((std::istreambuf_iterator<char>(in)), {});
+    bool same = got.size() == 200000;
+    for (int i = 0; same && i < 200000; ++i) same = got[(size_t)i] == (char)(i * 7 % 251);
+    check(same, "an unpacked file matches the original byte for byte");
+    check(!host::updater::unpack_archive((root / "missing.zip").u8string(), out.u8string()), "a missing archive does not unpack");
+    fs::remove(root / "MeleeUnlocked-9.9.9" / "Sys" / "big.bin", ec);
+  }
   // A Source game also keeps its DLL locked. Only this installation's processes
   // should hold up an update; a second installation may stay running.
   const fs::path install = root / L"install \u00e9", other = root / "second install";

@@ -18,6 +18,13 @@
 #include <sstream>
 #include <thread>
 #include <vector>
+// The update zip is read here, not by tar.exe: Wine and Proton have no tar.exe, so every update
+// there failed with "unexpected contents". stb_image's inflate, kept private to this file.
+#define STB_IMAGE_STATIC
+#define STBI_ONLY_PNG
+#define STBI_NO_STDIO
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb/stb_image.h"
 
 #pragma comment(lib, "winhttp.lib")
 #pragma comment(lib, "bcrypt.lib")
@@ -176,7 +183,8 @@ bool valid_install(const std::filesystem::path& p, bool experimental) {
          std::filesystem::is_regular_file(p / "Sys" / "codehandler.bin", ec) &&
          (!experimental || std::filesystem::is_regular_file(p / "melee_port_dlss5.exe", ec));
 }
-bool archive_paths_safe(const std::filesystem::path& zip, const std::string& root) {
+// tar for the Linux .tar.gz (through the compat layer); zips are read in process below.
+bool tar_paths_safe(const std::filesystem::path& zip, const std::string& root) {
   std::wstring cmd = L"tar.exe -tf \"" + zip.wstring() + L"\"";
   SECURITY_ATTRIBUTES sa{sizeof sa, nullptr, TRUE};
   HANDLE rd = nullptr, wr = nullptr;
@@ -219,7 +227,7 @@ bool archive_paths_safe(const std::filesystem::path& zip, const std::string& roo
   }
   return true;
 }
-bool unpack_zip(const std::filesystem::path& zip, const std::filesystem::path& dest) {
+bool tar_unpack(const std::filesystem::path& zip, const std::filesystem::path& dest) {
   std::wstring cmd = L"tar.exe -xf \"" + zip.wstring() + L"\" -C \"" + dest.wstring() + L"\"";
   STARTUPINFOW si{}; si.cb = sizeof si; PROCESS_INFORMATION pi{};
   if (!CreateProcessW(nullptr, cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr,
@@ -228,6 +236,119 @@ bool unpack_zip(const std::filesystem::path& zip, const std::filesystem::path& d
   DWORD code = 1; GetExitCodeProcess(pi.hProcess, &code);
   CloseHandle(pi.hThread); CloseHandle(pi.hProcess);
   return code == 0;
+}
+// A zip's central directory: name, method, sizes, CRC and where each entry's data starts.
+struct ZipEntry { std::string name; uint16_t method = 0; uint32_t crc = 0; uint64_t packed = 0, size = 0, local = 0; };
+static uint32_t rd16(const unsigned char* p) { return p[0] | (p[1] << 8); }
+static uint32_t rd32(const unsigned char* p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
+static uint32_t crc32_of(const unsigned char* data, size_t n) {
+  static uint32_t table[256] = {};
+  if (!table[1]) for (uint32_t i = 0; i < 256; ++i) { uint32_t c = i; for (int k = 0; k < 8; ++k) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1; table[i] = c; }
+  uint32_t c = 0xFFFFFFFFu;
+  for (size_t i = 0; i < n; ++i) c = table[(c ^ data[i]) & 0xFF] ^ (c >> 8);
+  return c ^ 0xFFFFFFFFu;
+}
+bool zip_entries(const std::filesystem::path& zip, std::vector<ZipEntry>& out) {
+  out.clear();
+  std::ifstream f(zip, std::ios::binary);
+  if (!f) return false;
+  f.seekg(0, std::ios::end);
+  const uint64_t total = (uint64_t)f.tellg();
+  if (total < 22) return false;
+  const uint64_t tail = std::min<uint64_t>(total, 22 + 65535);
+  std::vector<unsigned char> t((size_t)tail);
+  f.seekg((std::streamoff)(total - tail)); f.read((char*)t.data(), (std::streamsize)tail);
+  if (!f) return false;
+  size_t eocd = std::string::npos;
+  for (size_t i = tail - 22 + 1; i-- > 0;) if (rd32(&t[i]) == 0x06054b50u) { eocd = i; break; }
+  if (eocd == std::string::npos) return false;
+  const uint32_t count = rd16(&t[eocd + 10]), dir_size = rd32(&t[eocd + 12]), dir_at = rd32(&t[eocd + 16]);
+  if (count == 0xFFFF || dir_size == 0xFFFFFFFFu || dir_at == 0xFFFFFFFFu) return false;   // zip64: not what releases are
+  if ((uint64_t)dir_at + dir_size > total || dir_size > 64u * 1024 * 1024) return false;
+  std::vector<unsigned char> d(dir_size);
+  f.seekg(dir_at); f.read((char*)d.data(), dir_size);
+  if (!f) return false;
+  size_t at = 0;
+  for (uint32_t i = 0; i < count; ++i) {
+    if (at + 46 > d.size() || rd32(&d[at]) != 0x02014b50u) return false;
+    ZipEntry e;
+    e.method = (uint16_t)rd16(&d[at + 10]); e.crc = rd32(&d[at + 16]);
+    e.packed = rd32(&d[at + 20]); e.size = rd32(&d[at + 24]); e.local = rd32(&d[at + 42]);
+    const uint32_t name_len = rd16(&d[at + 28]), extra = rd16(&d[at + 30]), comment = rd16(&d[at + 32]);
+    if (at + 46 + name_len > d.size()) return false;
+    e.name.assign((const char*)&d[at + 46], name_len);
+    at += 46 + name_len + extra + comment;
+    out.push_back(std::move(e));
+  }
+  return true;
+}
+// Every entry inside the release folder `root`; none absolute, with a drive, a backslash or "..".
+bool zip_paths_safe(const std::vector<ZipEntry>& entries, const std::string& root) {
+  if (entries.empty()) return false;
+  for (const ZipEntry& e : entries) {
+    const std::string& path = e.name;
+    if (path != root && path != root + "/" && path.rfind(root + "/", 0) != 0) return false;
+    if (path.find('\\') != std::string::npos || path.find(':') != std::string::npos) return false;
+    size_t start = 0;
+    while (start < path.size()) {
+      const size_t slash = path.find('/', start);
+      const std::string part = path.substr(start, slash == std::string::npos ? slash : slash - start);
+      if (part == ".." || part == ".") return false;
+      if (slash == std::string::npos) break;
+      start = slash + 1;
+    }
+  }
+  return true;
+}
+bool is_zip(const std::filesystem::path& p) { return p.extension() == ".zip"; }
+bool archive_paths_safe(const std::filesystem::path& zip, const std::string& root) {
+  if (!is_zip(zip)) return tar_paths_safe(zip, root);
+  std::vector<ZipEntry> entries;
+  return zip_entries(zip, entries) && zip_paths_safe(entries, root);
+}
+// Unpacks every entry under `dest` (stored or deflated, CRC checked). Callers check the paths first.
+bool unpack_zip(const std::filesystem::path& zip, const std::filesystem::path& dest) {
+  if (!is_zip(zip)) return tar_unpack(zip, dest);
+  std::vector<ZipEntry> entries;
+  if (!zip_entries(zip, entries)) return false;
+  std::ifstream f(zip, std::ios::binary);
+  if (!f) return false;
+  std::vector<unsigned char> packed, data;
+  for (const ZipEntry& e : entries) {
+    if (e.name.find("..") != std::string::npos || e.name.find(':') != std::string::npos || e.name.find('\\') != std::string::npos ||
+        (!e.name.empty() && e.name[0] == '/')) return false;
+    const std::filesystem::path target = dest / std::filesystem::u8path(e.name);
+    std::error_code ec;
+    if (!e.name.empty() && e.name.back() == '/') { std::filesystem::create_directories(target, ec); if (ec) return false; continue; }
+    if (e.size > 1024ull * 1024 * 1024 || e.packed > 1024ull * 1024 * 1024) return false;
+    unsigned char lh[30];
+    f.seekg((std::streamoff)e.local); f.read((char*)lh, 30);
+    if (!f || rd32(lh) != 0x04034b50u) return false;
+    f.seekg((std::streamoff)(e.local + 30 + rd16(lh + 26) + rd16(lh + 28)));
+    packed.resize((size_t)e.packed);
+    if (e.packed) f.read((char*)packed.data(), (std::streamsize)e.packed);
+    if (!f) return false;
+    data.resize((size_t)e.size);
+    if (e.method == 0) {
+      if (e.packed != e.size) return false;
+      data = packed;
+    } else if (e.method == 8) {
+      // stb's inflate looks a few bytes past the end of the stream; without padding it calls a stream
+      // that ends exactly there (zlib's own output) a bad huffman code.
+      packed.resize(packed.size() + 16, 0);
+      if (e.size && stbi_zlib_decode_noheader_buffer((char*)data.data(), (int)e.size, (const char*)packed.data(), (int)packed.size()) != (int)e.size)
+        return false;
+    } else {
+      return false;
+    }
+    if (crc32_of(data.data(), data.size()) != e.crc) return false;
+    std::filesystem::create_directories(target.parent_path(), ec);
+    std::ofstream o(target, std::ios::binary | std::ios::trunc);
+    if (data.size()) o.write((const char*)data.data(), (std::streamsize)data.size());
+    o.close();
+    if (!o) return false;
+  }
+  return true;
 }
 }  // namespace
 
@@ -289,6 +410,9 @@ void check(const std::string& current_version, bool install_experimental) {
 }
 
 bool download_matches(const std::string& body, const std::string& sha256_hex) { return digest_matches(body, sha256_hex); }
+bool unpack_archive(const std::string& zip_path_utf8, const std::string& dest_utf8) {
+  return unpack_zip(std::filesystem::u8path(zip_path_utf8), std::filesystem::u8path(dest_utf8));
+}
 bool archive_inside(const std::string& zip_path_utf8, const std::string& root) {
   return archive_paths_safe(std::filesystem::u8path(zip_path_utf8), root);
 }
@@ -421,7 +545,10 @@ std::string install_script(const std::string& batch_dir, unsigned long self, con
     if (pid != self)
       b << "tasklist /FI \"PID eq " << pid << "\" 2>nul | find \"" << pid
         << "\" >nul && (timeout /t 1 /nobreak >nul & goto waitgame)\r\n";
-  b << "rmdir /s /q update_tmp 2>nul\r\nmkdir update_tmp\r\n"
+  // The launcher normally unpacks update.zip into update_tmp itself (Wine and Proton have no tar)
+  // and leaves update_tmp\unpacked.txt; tar is only the fallback for an older handover.
+  b << "if exist update_tmp\\unpacked.txt goto findsrc\r\n"
+    << "rmdir /s /q update_tmp 2>nul\r\nmkdir update_tmp\r\n"
     // Windows bsdtar reports "Cannot restore time" and other benign warnings with exit code 1
     // even when every entry was extracted. Treat the presence of a release folder as the real
     // success signal: SRC detection below catches genuine extraction failures.
@@ -430,6 +557,7 @@ std::string install_script(const std::string& batch_dir, unsigned long self, con
     << "set TAR=tar\r\n"
     << "if exist \"%SystemRoot%\\System32\\tar.exe\" set TAR=\"%SystemRoot%\\System32\\tar.exe\"\r\n"
     << "%TAR% -xf update.zip -C update_tmp 2>> %LOG%\r\n"
+    << ":findsrc\r\n"
     << "set SRC=\r\n"
     << "for /d %%d in (update_tmp\\MeleeUnlocked-* update_tmp\\MeleePort-*) do set SRC=%%d\r\n"
     << "if defined SRC goto unpacked\r\n"
@@ -567,6 +695,18 @@ void download_and_install() {
       return;
     }
 #endif
+    {
+      const auto tmp = directory / "update_tmp";
+      std::error_code ec;
+      std::filesystem::remove_all(tmp, ec);
+      std::filesystem::create_directories(tmp, ec);
+      if (ec || !unpack_zip(zip, tmp)) {
+        std::filesystem::remove_all(tmp, ec); std::filesystem::remove(zip, ec);
+        set_message("Could not unpack the update; not installed"); g_state = State::Failed;
+        host::log("updater: update.zip could not be unpacked"); return;
+      }
+      std::ofstream(tmp / "unpacked.txt") << "unpacked by the launcher\n";
+    }
     std::string relaunch = utf8(GetCommandLineW());
     for (size_t i = relaunch.find('%'); i != std::string::npos; i = relaunch.find('%', i + 2)) relaunch.insert(i, 1, '%');
     std::string batch_dir = dir;
