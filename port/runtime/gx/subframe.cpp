@@ -665,16 +665,7 @@ class SolverPool {
   uint64_t generation_ = 0;
   bool quit_ = false;
 };
-// Workers besides the render thread: 3 by default; MELEE_SOLVER_WORKERS=N (1..15) for the A/B
-// against the core count (the sim and adapter threads need cores too, so more is not always faster).
-SolverPool& solver_pool() {
-  static SolverPool pool([] {
-    const char* v = std::getenv("MELEE_SOLVER_WORKERS");
-    const int n = v ? std::atoi(v) : 0;
-    return n >= 1 && n <= 15 ? n : 3;
-  }());
-  return pool;
-}
+SolverPool& solver_pool() { static SolverPool pool(3); return pool; }
 void run_pairing_chunks(size_t n, const std::function<void(size_t, size_t)>& fn) {
   static const bool serial = [] { const char* v = std::getenv("MELEE_PAIR_PARALLEL"); return v && *v == '0'; }();
   SolverPool& pool = solver_pool();
