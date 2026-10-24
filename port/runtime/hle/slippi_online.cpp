@@ -9,13 +9,17 @@
 #include "slippi_report.h"
 #include "exi_slippi.h"
 #include "host.h"
+#include <chrono>
+#include <thread>
 #include "window.h"
 #include "discord_presence.h"
 #include "gx_core.h"
 #include "cosmetic_mods.h"
 #include "net_trace.h"
 #include "netplay_state.h"
+#include "early_input.h"
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -158,6 +162,16 @@ uint64_t g_rollbacks = 0;
 static uint64_t g_match_rollbacks_start = 0, g_match_stalls = 0, g_match_input_waits = 0, g_match_advances = 0;
 static int g_input_wait_frames = 0;   // length of the wait for remote inputs that is running now
 static int g_input_wait_latest = 0;   // the other player's newest frame when that wait began
+// Early inputs: the sampler thread's way to the netplay client. It only queues a packet; the
+// mutex keeps the client alive across the call, and the sampler is stopped before the client goes.
+static std::mutex g_early_send_mutex;
+static void send_early_pad(int32_t target, const uint8_t pad[host::early_input::kPadBytes]) {
+  std::lock_guard<std::mutex> lk(g_early_send_mutex);
+  if (g_netplay) g_netplay->SendEarlyPad(target, pad);
+}
+static void stop_early_inputs() {
+  host::early_input::stop();
+}
 static int g_match_delay = 0;
 bool g_in_online_match = false;
 // Session trace (net_trace.h): one record per online tick for the "Network and timing" overlay.
@@ -335,7 +349,9 @@ bool discord_join_pending() {
 void cleanup_connection() {
   host::log("slippi: connection cleanup");
   host::cosmetics::thaw_after_online_session();
+  stop_early_inputs();
   if (g_matchmaking || g_netplay) {
+    std::lock_guard<std::mutex> lk(g_early_send_mutex);
     std::thread([mm = std::move(g_matchmaking), nc = std::move(g_netplay)]() mutable { mm.reset(); nc.reset(); }).detach();
   }
   g_matchmaking = std::make_unique<Matchmaking>(g_user.get());
@@ -445,7 +461,16 @@ bool should_advance_online_frame(int32_t frame) {
     int32_t offset = g_netplay->CalcTimeOffsetUs();
     g_trace_offset_us = offset;
     float deviation = 0;
-    if (offset > -250 && offset < 8000) deviation = 0;
+    // MELEE_SYNC_SMOOTH=1 (measured against the default before it becomes a setting): start the
+    // speed correction at 2 ms instead of 8 ms ahead, up to the same 1% Slippi allows, so the two
+    // games meet again before a frame has to be halted or skipped. Only this side's own speed
+    // changes; the other player's game, Slippi Dolphin included, runs its own sync unchanged.
+    static const bool smooth = [] { const char* v = std::getenv("MELEE_SYNC_SMOOTH"); return v && *v == '1'; }();
+    if (smooth) {
+      if (offset > -2000 && offset < 2000) deviation = 0;
+      else if (offset < 0) deviation = std::min(-offset / (2 * 16683.0f), 1.0f) * 0.01f;
+      else deviation = std::min(offset / (2 * 16683.0f), 1.0f) * -0.01f;
+    } else if (offset > -250 && offset < 8000) deviation = 0;
     else if (offset < 0) deviation = std::min(-offset / (3 * 16683.0f), 1.0f) * 0.01f;
     else deviation = std::min(offset / (3 * 16683.0f), 1.0f) * -0.005f;
     // Slippi Dolphin runs the console's 59.94 Hz (16683 us a frame) and its time sync is built on
@@ -471,6 +496,40 @@ bool should_advance_online_frame(int32_t frame) {
   }
   g_currently_advancing = false;
   return false;
+}
+
+// The input delay this match uses. Auto: enough frames to cover half the round trip plus 4 ms of
+// jitter, never under Slippi's default 2 nor over 6; with no ping measured yet, the set value. The
+// game asks for it twice while a match is set up (CMD_GET_DELAY, then the match start block), so the
+// value is latched on the first ask and held until the match ends: both asks must agree.
+static int g_latched_delay = 0;
+static int effective_delay() {
+  // MELEE_TEST_AUTO_DELAY=1 (hidden runs, which read no settings file) turns auto on.
+  static const bool test_auto = [] { const char* v = std::getenv("MELEE_TEST_AUTO_DELAY"); return v && *v == '1'; }();
+  if (!g_config.auto_delay && !test_auto) return g_config.delay;
+  if (g_latched_delay > 0) return g_latched_delay;
+  // The game polls the match state block (which carries this value) every frame of the search, long
+  // before an opponent is connected, and takes the delay from it once, when the match starts
+  // (mu_online.c). So nothing is latched before there is a ping, or before a connected opponent is
+  // known never to send one (Slippi Dolphin and older builds send no pre-match ping): until then the
+  // set delay is answered without being held. In-match pings come from pad acks; at match setup
+  // only the pre-match ping (0xE2) exists.
+  const int match_ping = g_netplay ? (int)g_netplay->LastPingMs() : 0;
+  const int ping = match_ping > 0 ? match_ping : g_netplay ? g_netplay->PreMatchPingMs() : 0;
+  if (ping <= 0) {
+    if (!g_netplay || g_netplay->GetSlippiConnectStatus() != NetplayClient::ConnectStatus::CONNECTED) return g_config.delay;
+    const auto build = g_netplay->GetRemoteBuild(0);
+    const uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+    const uint64_t connected_at = g_netplay->ConnectedAtMs();
+    const bool waited = connected_at > 0 && now_ms > connected_at + 2000;
+    if (!(build.received && !build.pings) && !waited) return g_config.delay;   // the ping is on its way
+    g_latched_delay = g_config.delay;
+    host::log("slippi: auto delay: no ping from this opponent, using the set delay %d", g_latched_delay);
+    return g_latched_delay;
+  }
+  g_latched_delay = std::clamp((int)std::ceil((ping / 2.0 + 4.0) / 16.683), 2, 6);
+  host::log("slippi: auto delay: %s ping %d ms, %d frames", match_ping > 0 ? "match" : "pre-match", ping, g_latched_delay);
+  return g_latched_delay;
 }
 
 void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_t>& q) {
@@ -535,6 +594,24 @@ void prepare_opponent_inputs(int32_t frame, bool should_skip, std::vector<uint8_
     q.insert(q.end(), tx.begin(), tx.end());
   }
   for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) q.push_back(should_despawn[i]);
+  // Early inputs, Source Port only (its online code is native and reads past Slippi's reply; the
+  // Static Recomp's game code reads the fixed reply and must get exactly that): per remote, a count
+  // and then entries of target pad frame + 12-byte pad, for frames after that remote's latest
+  // confirmed one. The game predicts a not-yet-confirmed frame from the newest entry up to it.
+  if (host::game_image && early_inputs_accept()) {
+    std::vector<host::early_input::Entry> entries;
+    for (int i = 0; i < REMOTE_PLAYER_MAX; ++i) {
+      entries.clear();
+      if (i < remote_count && !results[i]->is_disconnected) g_netplay->EarlyPads(i, latest_read[i], entries);
+      if (entries.size() > (size_t)host::early_input::kMaxEntries) entries.resize(host::early_input::kMaxEntries);
+      q.push_back((uint8_t)entries.size());
+      for (const auto& e : entries) {
+        append_u32(q, (uint32_t)e.target);
+        q.insert(q.end(), e.pad, e.pad + host::early_input::kPadBytes);
+        for (int k = host::early_input::kPadBytes; k < PAD_FULL_SIZE; ++k) q.push_back(0);
+      }
+    }
+  }
 }
 
 // Diagnostic, off unless MELEE_TRACE_ONLINE_FRAMES=1, Legacy only (it reads console addresses):
@@ -589,8 +666,12 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     }
     if (g_netplay) { g_netplay->GetAndResetAvgPingMs(); g_netplay->StartSlippiGame(); }
     host::log("slippi: online game starts, delay %d frames, direct peer to peer", (int)delay);
+    g_latched_delay = (int)delay;   // the delay the game took: every later answer this match agrees with it
     g_in_online_match = true;
     host::input_mark_match_start();
+    // Early inputs: watch the controller for the match. Sent only to peers whose build takes them.
+    host::early_input::reset_stats();
+    if (early_inputs_enabled()) host::early_input::start(send_early_pad);
     g_local_checksums.clear(); g_checksums_compared = 0; g_checksums_mismatched = 0; g_trace_desync_pending = false; std::fill(std::begin(g_last_checksum_frame), std::end(g_last_checksum_frame), 0);
   }
   if (is_disconnected()) {
@@ -601,10 +682,12 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
   if (finalized > 0 && finalized_checksum) { g_local_checksums[finalized] = finalized_checksum; while (g_local_checksums.size() > 600) g_local_checksums.erase(g_local_checksums.begin()); }
   g_netplay->DropOldRemoteInputs(finalized);
   bool skip = should_skip_online_frame(frame, finalized);
-  if (skip) { ++g_match_stalls; g_netplay->SendSlippiPad(nullptr); }
+  if (skip) { ++g_match_stalls; g_netplay->SendSlippiPad(nullptr); host::early_input::note_skipped(); }
   else {
     if (frame == 1) for (int i = 1; i <= delay; ++i) g_netplay->SendSlippiPad(std::make_unique<Pad>(i));
     g_netplay->SendSlippiPad(std::make_unique<Pad>(frame + delay, finalized, finalized_checksum, inputs));
+    host::early_input::note_sent_pad(frame + delay, inputs);
+    host::input_note_pad_frame(frame);
   }
   prepare_opponent_inputs(frame, skip, q);
   // Session trace: the tick before is complete now; open this one.
@@ -943,6 +1026,8 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
     }
     if (!g_play_session_active) g_play_session_active = true;
   } else {
+    stop_early_inputs();
+    std::lock_guard<std::mutex> lk(g_early_send_mutex);
     g_netplay = nullptr;
   }
   uint32_t rng_offset = 0;
@@ -1083,7 +1168,7 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
   if (g_recent_mm_result.items != 0) { items |= (uint64_t)g_recent_mm_result.items << 28; block[0xB] = 3; }
   for (int i = 0; i < 8; ++i) block[0x23 + i] = (uint8_t)(items >> (56 - 8 * i));
   append_u32(q, rng_offset);
-  q.push_back((uint8_t)g_config.delay);
+  q.push_back((uint8_t)effective_delay());
   q.push_back(sent_chat_message_id);
   q.push_back(chat_message_id);
   q.push_back(chat_message_player_idx);
@@ -1147,6 +1232,15 @@ void handle_report_game(const uint8_t* p) {
             g_match_delay, g_netplay ? g_netplay->GetAndResetAvgPingMs() : 0.0,
             (unsigned long long)(g_rollbacks - g_match_rollbacks_start), (unsigned long long)g_match_stalls,
             (unsigned long long)g_match_input_waits, (unsigned long long)g_match_advances, frames);
+  {
+    const host::early_input::Stats e = host::early_input::stats();
+    host::log("slippi: early inputs %s: %llu changes, %llu packets, %llu guarded, %llu resent after a skip, %llu follow-ups, %llu received, %llu controller reads, local controller port %d",
+              early_inputs_enabled() ? (early_inputs_accept() ? "on" : "sending only") : "off",
+              (unsigned long long)e.changes, (unsigned long long)e.packets, (unsigned long long)e.guarded,
+              (unsigned long long)e.resent_after_skip, (unsigned long long)e.follow_ups, (unsigned long long)e.received, (unsigned long long)e.samples, e.local_port + 1);
+  }
+  stop_early_inputs();
+  g_latched_delay = 0;   // the next match picks its delay from its own ping
   trace_end_match();
   // The Source Port's game publishes its lobby result from its Game End record (h_replay_event);
   // a second line here would count the game twice.
@@ -1212,6 +1306,8 @@ void set_native_gameplay_profile(NativeGameplayProfile profile) {
 }
 uint64_t rollback_count() { return g_rollbacks; }
 void note_rollback(int32_t to_frame) { ++g_rollbacks; trace_rollback(to_frame); }
+bool early_inputs_enabled() { return host::early_input::enabled(); }
+bool early_inputs_accept() { return host::early_input::enabled() && host::game_image != nullptr; }
 // The project's own peer-to-peer session (app/source_p2p.cpp) publishes its state in
 // host::netplay::session(). Everything in the host that asks "is a network match running" asks the
 // functions below, so when Slippi has no session of its own they answer from that state: offline-only
@@ -1436,7 +1532,7 @@ bool handle_command(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, s
     // Offline input now passes through the same host queue on both engines.
     // Disable the console's second offline queue so inputs are delayed once.
     case CMD_GET_DELAY: q.clear(); q.push_back(session_mode() >= 0 ? 1 : 0);
-      q.push_back(session_mode() >= 0 ? (uint8_t)g_config.delay : 0); return true;
+      q.push_back(session_mode() >= 0 ? (uint8_t)effective_delay() : 0); return true;
     // Ranks: never shown. Visibility 0 hides every rank display; the rest reads as unranked.
     case CMD_GET_RANK: q.assign(16, 0); q[1] = 1; return true;
     case CMD_FETCH_RANK: return true;

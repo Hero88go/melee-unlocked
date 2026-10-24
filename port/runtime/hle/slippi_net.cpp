@@ -6,6 +6,7 @@
 #include "slippi_report.h"
 #include "slippi_account.h"
 #include "host.h"
+#include "early_input.h"
 #define NOMINMAX
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -416,7 +417,7 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
         host::log("slippi: received selections from player %u (char %u color %u stage %u)", s->player_idx, s->character_id, s->character_color, s->stage_id);
         { std::lock_guard<std::mutex> lk(selection_mutex_); match_info_.remote[idx].Merge(*s); }
         { std::lock_guard<std::mutex> lk(timing_mutex_); has_game_started_ = false; }
-        { std::lock_guard<std::mutex> lk(pad_mutex_); remote_pad_queue_[idx].clear(); }
+        { std::lock_guard<std::mutex> lk(pad_mutex_); remote_pad_queue_[idx].clear(); early_pads_[idx].clear(); }
       }
       break;
     }
@@ -436,14 +437,68 @@ void NetplayClient::OnData(Packet& packet, ENetPeer* peer) {
       for (uint8_t i = 0; i < fp_len; ++i) { uint8_t ch; if (!(packet >> ch)) break; fp.push_back((char)ch); }
       if (packet >> name_len)
         for (uint8_t i = 0; i < name_len; ++i) { uint8_t ch; if (!(packet >> ch)) break; name.push_back((char)ch); }
+      // Capabilities, a byte builds before early inputs did not send: absent means none.
+      uint8_t caps = 0;
+      if (!(packet >> caps)) caps = 0;
       const uint8_t pidx = PlayerIdxFromPort(port);
       if (pidx >= remote_player_count_) { host::log("slippi: build message with invalid player idx %u", pidx); break; }
       {
         std::lock_guard<std::mutex> lk(build_mutex_);
-        remote_build_[pidx] = {true, mod_view != 0, fp, name};
+        remote_build_[pidx] = {true, mod_view != 0, fp, name, (caps & 1) != 0, (caps & 2) != 0};
       }
-      host::log("slippi: opponent %u build: %s%s%s", port, mod_view ? "mod " : "retail game",
-                mod_view ? name.c_str() : "", mod_view ? (" " + fp.substr(0, 16)).c_str() : "");
+      host::log("slippi: opponent %u build: %s%s%s%s", port, mod_view ? "mod " : "retail game",
+                mod_view ? name.c_str() : "", mod_view ? (" " + fp.substr(0, 16)).c_str() : "",
+                (caps & 1) ? ", takes early inputs" : "");
+      if (caps & 2) SendPrematchPing();   // at once: a match set up right after connecting needs a ping now
+      break;
+    }
+    case NP_MSG_MU_EARLY_PAD: {
+      // 'M' 'U' 'E' version, player port, target pad frame, the eight pad bytes. Taken only from a
+      // peer that announced early inputs, and only while this side uses them.
+      uint8_t m, u, e, version, port;
+      int32_t target = 0;
+      if (!(packet >> m >> u >> e >> version >> port >> target) || m != 'M' || u != 'U' || e != 'E' || version != 1) {
+        host::log("slippi: invalid early input message");
+        break;
+      }
+      uint8_t pad[host::early_input::kPadBytes];
+      bool ok = true;
+      for (uint8_t& b : pad) if (!(packet >> b)) { ok = false; break; }
+      if (!ok) { host::log("slippi: early input message too small"); break; }
+      const uint8_t pidx = PlayerIdxFromPort(port);
+      if (pidx >= remote_player_count_) break;
+      {
+        std::lock_guard<std::mutex> lk(build_mutex_);
+        if (!remote_build_[pidx].early_pads) break;
+      }
+      if (!online::early_inputs_accept()) break;
+      host::early_input::clamp_rest(pad);
+      {
+        std::lock_guard<std::mutex> lk(pad_mutex_);
+        early_pads_[pidx].add(target, pad);
+      }
+      host::early_input::note_received();
+      break;
+    }
+    case NP_MSG_MU_PING: {
+      // 'M' 'U' 'P' version, kind (0 request, 1 reply), sender port, the requester's time stamp (us).
+      uint8_t m, u, pc, version, kind, port;
+      uint32_t stamp = 0;
+      if (!(packet >> m >> u >> pc >> version >> kind >> port >> stamp) || m != 'M' || u != 'U' || pc != 'P' || version != 1) break;
+      const uint8_t pidx = PlayerIdxFromPort(port);
+      if (pidx >= remote_player_count_) break;
+      if (kind == 0) {
+        auto p = std::make_unique<Packet>();
+        *p << (uint8_t)NP_MSG_MU_PING << (uint8_t)'M' << (uint8_t)'U' << (uint8_t)'P' << (uint8_t)1 << (uint8_t)1 << player_idx_ << stamp;
+        Send(*p);   // network thread: straight out
+      } else if (pidx == 0 && (uint32_t)time_us() - stamp < 2000000u) {
+        prematch_samples_.push_back(((uint32_t)time_us() - stamp) / 1000);
+        while (prematch_samples_.size() > 9) prematch_samples_.pop_front();
+        std::vector<uint32_t> s(prematch_samples_.begin(), prematch_samples_.end());
+        std::nth_element(s.begin(), s.begin() + s.size() / 2, s.end());
+        const uint32_t was = prematch_ping_ms_.exchange(std::max<uint32_t>(1, s[s.size() / 2]), std::memory_order_relaxed);
+        if (!was) host::log("slippi: pre-match ping %u ms", s[s.size() / 2]);
+      }
       break;
     }
     case NP_MSG_SLIPPI_CONN_SELECTED: break;
@@ -466,14 +521,57 @@ void NetplayClient::SendBuild() {
   for (char ch : fp) *p << (uint8_t)ch;
   *p << (uint8_t)name.size();
   for (char ch : name) *p << (uint8_t)ch;
-  host::log("slippi: sending build: %s%s", me.mod_view ? "mod " : "retail game", me.mod_view ? name.c_str() : "");
+  // Capabilities: bit 0, this side takes early inputs. Older builds stop reading before this byte.
+  const bool early = online::early_inputs_accept();
+  // Bit 1: this side answers pre-match pings (always).
+  *p << (uint8_t)((early ? 1 : 0) | 2);
+  host::log("slippi: sending build: %s%s%s", me.mod_view ? "mod " : "retail game", me.mod_view ? name.c_str() : "",
+            early ? " (takes early inputs)" : "");
   SendAsync(std::move(p));
+}
+
+// A pre-match ping to every opponent that answers them, until in-match pings take over (pad acks).
+void NetplayClient::SendPrematchPing() {
+  if (last_ping_ms_.load(std::memory_order_relaxed) > 0) return;
+  bool anyone = false;
+  {
+    std::lock_guard<std::mutex> lk(build_mutex_);
+    for (int i = 0; i < remote_player_count_; ++i) if (remote_build_[i].pings) anyone = true;
+  }
+  if (!anyone) return;
+  Packet p;
+  p << (uint8_t)NP_MSG_MU_PING << (uint8_t)'M' << (uint8_t)'U' << (uint8_t)'P' << (uint8_t)1 << (uint8_t)0 << player_idx_ << (uint32_t)time_us();
+  Send(p);
 }
 
 NetplayClient::RemoteBuild NetplayClient::GetRemoteBuild(int index) {
   std::lock_guard<std::mutex> lk(build_mutex_);
   if (index < 0 || index >= REMOTE_PLAYER_MAX) return {};
   return remote_build_[index];
+}
+
+void NetplayClient::SendEarlyPad(int32_t target, const uint8_t pad[host::early_input::kPadBytes]) {
+  ConnectStatus st = status_.load(std::memory_order_acquire);
+  if (st != ConnectStatus::CONNECTED) return;
+  bool anyone = false;
+  {
+    std::lock_guard<std::mutex> lk(build_mutex_);
+    for (int i = 0; i < remote_player_count_; ++i) if (remote_build_[i].early_pads) anyone = true;
+  }
+  if (!anyone) return;   // nobody on the other side takes them: no message at all
+  host::early_input::note_packet();
+  auto p = std::make_unique<Packet>();
+  *p << (uint8_t)NP_MSG_MU_EARLY_PAD << (uint8_t)'M' << (uint8_t)'U' << (uint8_t)'E' << (uint8_t)1 << player_idx_ << target;
+  for (int i = 0; i < host::early_input::kPadBytes; ++i) *p << pad[i];
+  SendAsync(std::move(p));
+}
+
+void NetplayClient::EarlyPads(int index, int32_t latest, std::vector<host::early_input::Entry>& out) {
+  out.clear();
+  if (index < 0 || index >= REMOTE_PLAYER_MAX) return;
+  std::lock_guard<std::mutex> lk(pad_mutex_);
+  early_pads_[index].drop_through(latest);
+  out = early_pads_[index].entries();
 }
 
 void NetplayClient::WriteSelections(Packet& p, const PlayerSelections& s) {
@@ -507,6 +605,17 @@ void NetplayClient::Send(Packet& packet) {
     enet_uint32 flags = ENET_PACKET_FLAG_RELIABLE;
     uint8_t channel = 0;
     if (mid == NP_MSG_SLIPPI_PAD || mid == NP_MSG_SLIPPI_PAD_ACK) { flags = ENET_PACKET_FLAG_UNSEQUENCED; channel = 1; }
+    if (mid == NP_MSG_MU_PING) {
+      std::lock_guard<std::mutex> lk(build_mutex_);
+      if (i >= (size_t)REMOTE_PLAYER_MAX || !remote_build_[i].pings) continue;
+      flags = ENET_PACKET_FLAG_UNSEQUENCED; channel = 1;
+    }
+    if (mid == NP_MSG_MU_EARLY_PAD) {
+      // Only to a peer whose build said it takes them; the rest never see the id.
+      std::lock_guard<std::mutex> lk(build_mutex_);
+      if (i >= (size_t)REMOTE_PLAYER_MAX || !remote_build_[i].early_pads) continue;
+      flags = ENET_PACKET_FLAG_UNSEQUENCED; channel = 1;
+    }
     ENetPacket* epac = enet_packet_create(packet.data(), packet.size(), flags);
     enet_peer_send(server_[i], channel, epac);
   }
@@ -614,6 +723,15 @@ void NetplayClient::ThreadFunc() {
     if (v > 0) host::log("slippi: MELEE_NET_LAG_MS: holding received packets %ld ms (testing)", v);
     return v > 0 ? (uint64_t)v : 0;
   }();
+  // MELEE_NET_JITTER_MS=J (test only, with the lag): each packet is held lag + 0..J ms, never
+  // overtaking the one before it, so the arrival times vary as on a real connection.
+  static const uint64_t jitter_ms = [] {
+    const char* s = std::getenv("MELEE_NET_JITTER_MS");
+    const long v = s ? std::atol(s) : 0;
+    if (v > 0) host::log("slippi: MELEE_NET_JITTER_MS: up to %ld ms more per packet (testing)", v);
+    return v > 0 ? (uint64_t)v : 0;
+  }();
+  uint64_t jitter_state = 0x9E3779B97F4A7C15ull ^ (uint64_t)time_ms();
   struct Held { uint64_t due; std::vector<uint8_t> data; ENetPeer* peer; };
   std::deque<Held> held;
   auto deliver_due = [&] {
@@ -624,9 +742,14 @@ void NetplayClient::ThreadFunc() {
     }
   };
 
+  uint64_t next_ping_ms = 0;
   while (do_loop_.load()) {
     if (status_.load(std::memory_order_acquire) == ConnectStatus::DISCONNECTED) break;
     deliver_due();
+    if (status_.load(std::memory_order_acquire) == ConnectStatus::CONNECTED && time_ms() >= next_ping_ms) {
+      next_ping_ms = time_ms() + 100;
+      SendPrematchPing();
+    }
     for (auto& conn : active_connections_) {
       for (auto& peer : conn.second) {
         if (peer.second.is_disconnected || player_active_[peer.second.player_idx].load(std::memory_order_acquire)) continue;
@@ -645,7 +768,13 @@ void NetplayClient::ThreadFunc() {
     switch (ev.type) {
       case ENET_EVENT_TYPE_RECEIVE: {
         if (lag_ms) {
-          held.push_back({time_ms() + lag_ms, std::vector<uint8_t>(ev.packet->data, ev.packet->data + ev.packet->dataLength), ev.peer});
+          uint64_t due = time_ms() + lag_ms;
+          if (jitter_ms) {
+            jitter_state ^= jitter_state << 13; jitter_state ^= jitter_state >> 7; jitter_state ^= jitter_state << 17;
+            due += jitter_state % (jitter_ms + 1);
+            if (!held.empty() && due < held.back().due) due = held.back().due;
+          }
+          held.push_back({due, std::vector<uint8_t>(ev.packet->data, ev.packet->data + ev.packet->dataLength), ev.peer});
           enet_packet_destroy(ev.packet);
           break;
         }
@@ -687,6 +816,7 @@ void NetplayClient::ThreadFunc() {
 
 void NetplayClient::StartSlippiGame() {
   local_pad_queue_.clear();
+  { std::lock_guard<std::mutex> lk(pad_mutex_); for (auto& b : early_pads_) b.clear(); }
   {
     std::lock_guard<std::mutex> lk(timing_mutex_);
     has_game_started_ = false;

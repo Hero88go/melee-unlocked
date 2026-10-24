@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 18
+#define MU_HOST_API_VERSION 19
 #define MU_GAME_API_VERSION 6
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -345,7 +345,17 @@ typedef struct MuHostApi {
     /* Version 18. Display-only options (MU_DISPLAY_OPTION_*), read live each draw. Never recorded
      * in a replay and never sent to an opponent: nothing the simulation reads follows them. */
     uint32_t (*display_options)(void);
+
+    /* Version 19. Audio options (MU_AUDIO_OPTION_*), read live once per sound frame. Never recorded
+     * in a replay; the host returns 0 during online matches and replay playback, because early
+     * key-on lets the game see a sound finish one tick sooner (crowd loops, a stage text box). */
+    uint32_t (*audio_options)(void);
 } MuHostApi;
+
+/* Start each new sound in the sound frame being mixed now instead of the next one (5 ms sooner):
+ * the game's sound callback owed at the end of a frame runs at the top of the next one, before
+ * the voices are synced (axnative/AXOut.c). Offline only. */
+#define MU_AUDIO_OPTION_EARLY_KEYON 0x00000001u
 
 /* "Low poly fighters": the fighter draw shows the game's own far model (the one it draws in the
  * Fountain of Dreams reflection, the shadow pass and the magnifier bubble) in place of the full

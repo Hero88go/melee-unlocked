@@ -335,6 +335,28 @@ static void test_transport_parsing() {
   EXPECT(b.stats().samples_ignored == 1 && b.remote_latest() == 2);
   sample.push_back(0);
   EXPECT(refused(sample));
+  // Early inputs taken (revision 2): a version-1 SAMPLE for a frame past the peer's latest is kept
+  // for prediction and moves nothing; one for a frame already committed is spent; dropping through
+  // a confirmed frame clears it.
+  {
+    b.set_accept_samples(true);
+    InputTransport sender;
+    sender.reset(16683);
+    uint8_t early[kPadWireSize] = {0x01, 0x00, 0x40, 0, 0, 0, 0, 0};
+    std::vector<uint8_t> s;
+    sender.build_sample(5, early, s);
+    EXPECT(s.size() == kSampleSize && s[0] == kMsgSample && s[1] == kSampleVersion);
+    EXPECT(b.on_message(s.data(), s.size(), 6001, reply) && reply.empty());
+    EXPECT(b.stats().samples_received == 1 && b.remote_latest() == 2);
+    EXPECT(b.samples().entries().size() == 1 && b.samples().entries()[0].target == 5 && b.samples().best(7, 2)->target == 5);
+    sender.build_sample(2, early, s);
+    EXPECT(b.on_message(s.data(), s.size(), 6002, reply) && b.stats().samples_ignored == 2);
+    b.drop_samples_through(5);
+    EXPECT(b.samples().entries().empty());
+    b.set_accept_samples(false);
+    sender.build_sample(6, early, s);
+    EXPECT(b.on_message(s.data(), s.size(), 6003, reply) && b.stats().samples_ignored == 3 && b.samples().entries().empty());
+  }
 
   // A frame committed again with other bytes: counted, and the first commit stands.
   auto changed = good;

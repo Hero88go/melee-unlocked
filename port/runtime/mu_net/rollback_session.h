@@ -47,6 +47,9 @@ struct SessionOptions {
   uint64_t next_limit_us = 20 * 1000000;     // after this side's NEXT: how long the peer's may take
   // Tests only: 0 behaves as a revision 0 peer (no INFO, no NEXT, both ignored when received).
   uint8_t minor = kProtocolMinor;
+  // Early inputs (revision 2): send the local player's early pads to a peer that takes them, and
+  // predict from the peer's. Off, nothing is sent and every received SAMPLE is dropped.
+  bool early_inputs = true;
 };
 
 struct EndpointInfo {
@@ -128,6 +131,15 @@ class RollbackSession {
   void on_game_end(const uint8_t* payload, size_t size);
   // Command 0xBA, and any other end of the session. Tells the peer, closes the path, speed 1.0.
   void stop();
+  // An early input of the local player (early_input.h): the pad frame it first appears in and the
+  // eight pad bytes. Sent only while a game runs and the peer is revision 2 or later; otherwise
+  // dropped. Safe from any thread (the sampler's).
+  void send_early_pad(int32_t target, const uint8_t pad[kPadWireSize]);
+  bool peer_takes_early_pads() const;
+  // The Source Port host only, after on_inputs: appends the peer's early inputs to that reply (the
+  // native game reads past the fixed 297 bytes when they are there). Unchanged while early inputs
+  // are off. on_inputs itself always answers exactly kInputsReplySize bytes.
+  void append_early_pads(std::vector<uint8_t>& reply);
 
   // More than one game over one connection. on_game_end() sends NEXT when another game may follow;
   // next_game() says where that stands and, when it is Over, `why` gets one plain sentence.

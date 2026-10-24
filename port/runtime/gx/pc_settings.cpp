@@ -33,6 +33,7 @@
 #include "window.h"
 #include "audio.h"
 #include "host.h"
+#include "early_input.h"
 #include "input_bindings.h"
 #include "settings_nav.h"
 #include "lcancel.h"
@@ -1970,6 +1971,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   options.unlock_all = true;   // a file without the key: on
   options.results_screen = true;
   options.offline_delay = false;
+  options.early_inputs = true;   // a file without the key: on
 #ifndef MELEE_NO_SLIPPI   // the spectator server is part of the Slippi layer
   options.slippi_spectator = true;   // a file without the key: on, as in Slippi Dolphin
   options.slippi_spectator_port = 51441;
@@ -2047,9 +2049,12 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "audio_asio_buffer") { const int b = std::stoi(value); options.audio_asio_buffer = b == 0 ? 0 : std::clamp(b, 32, 2048); }
       else if (key == "audio_device") options.audio_device = value;
       else if (key == "audio_buffer_ms") options.audio_buffer_ms = std::clamp(std::stoi(value), 5, 120);
+      else if (key == "audio_early_keyon") gx::RenderOptions::live_audio_early_keyon() = value == "1";
       else if (key == "quickchat") slippi::online::config().chat = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "onlinedelay") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 9) slippi::online::config().delay = d; }
+      else if (key == "onlinedelayauto") slippi::online::config().auto_delay = value == "1";
       else if (key == "offline_delay") options.offline_delay = value == "1";
+      else if (key == "early_inputs") options.early_inputs = value == "1";
       else if (key == "performance") options.performance_overlay = value == "1";
       else if (key == "showfps") options.show_fps = value == "1";
       else if (key == "showvram") options.show_vram = value == "1";
@@ -2326,6 +2331,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   RenderOptions::live_unlock_all() = options.unlock_all;
   RenderOptions::live_results_screen() = options.results_screen;
   RenderOptions::live_offline_delay() = options.offline_delay;
+  host::early_input::set_enabled(options.early_inputs);
 #ifndef MELEE_NO_SLIPPI
   RenderOptions::live_slippi_spectator() = options.slippi_spectator;
   RenderOptions::live_slippi_spectator_port() = options.slippi_spectator_port;
@@ -3387,6 +3393,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ntruewscustomw " << options.true_custom_w << "\ntruewscustomh " << options.true_custom_h << "\naspect " << (int)options.aspect
        << "\nwindow " << (options.window_pinned ? std::to_string(options.window_w) + "x" + std::to_string(options.window_h) : std::string("follow"))
        << "\nvolume " << g_volume << "\nperformance " << options.performance_overlay
+       << "\naudio_early_keyon " << (gx::RenderOptions::live_audio_early_keyon() ? 1 : 0)
        << "\naudio_mode " << options.audio_mode << "\naudio_buffer_ms " << options.audio_buffer_ms << "\naudio_device " << options.audio_device
        << "\naudio_asio_driver " << options.audio_asio_driver << "\naudio_asio_buffer " << options.audio_asio_buffer
        << "\nshowfps " << options.show_fps << "\nshowvram " << (options.show_vram ? 1 : 0) << "\nshowping " << options.show_ping
@@ -3416,7 +3423,9 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nsubframe " << (options.subframe == SubFrameMode::Off ? 0 : options.subframe == SubFrameMode::AuthoredInterpolate ? 2 : 1) << "\nmusic " << slippi::jukebox::user_volume()
        << "\nmusicpacks " << (slippi::jukebox::music_packs_enabled() ? 1 : 0)
        << "\nonlinedelay " << slippi::online::config().delay
+       << "\nonlinedelayauto " << (slippi::online::config().auto_delay ? 1 : 0)
        << "\noffline_delay " << (options.offline_delay ? 1 : 0)
+       << "\nearly_inputs " << (options.early_inputs ? 1 : 0)
        << "\nquickchat " << slippi::online::config().chat
        << "\nautoopenoverlay " << (options.settings_open ? 1 : 0)
        // Read since it was added and never written, so hiding the reminder lasted one session.
@@ -5786,6 +5795,16 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("Less buffering reduces delay; too little can cause gaps. This controls the software buffer. Windows and the audio device add their own delay.");
     }
     {
+      // Faster sound effects: Source Port only (the Static Recomp's sound code is the console's).
+      ImGui::BeginDisabled(host::game_image == nullptr);
+      if (settings_toggle("Faster sound effects", &gx::RenderOptions::live_audio_early_keyon())) changed = true;
+      ImGui::EndDisabled();
+      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("Starts each new sound effect in the sound frame being mixed now instead of the next one,\n"
+                          "about 5 ms sooner. Music is not affected. Offline only: online matches and replays\n"
+                          "always use console timing. Source Port only.");
+    }
+    {
       // Output device picker: the Windows default, or one named device (virtual cables, interfaces).
       static std::vector<host::AudioDevice> devices;
       static bool listed = false;
@@ -7343,6 +7362,12 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                           "Higher means fewer rollbacks on a bad connection and more input lag.\n"
                           "2 is Slippi's default. Takes effect from the next online match.");
       ImGui::SameLine();
+      if (settings_toggle("Auto", &slippi::online::config().auto_delay)) changed = true;
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Picks the delay from the ping when each match starts: 2 frames up to about\n"
+                          "50 ms ping, more on slower connections (at most 6). Never below 2.\n"
+                          "Off: the frame delay above.");
+      ImGui::SameLine();
       if (settings_toggle("Also use offline", &options.offline_delay)) {
         RenderOptions::live_offline_delay() = options.offline_delay;
         changed = true;
@@ -7351,6 +7376,18 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("Use this frame delay in all offline gameplay, including VS, Training and 1P modes.\n"
                           "Both engines. Menus and replay playback keep their normal input.\n"
                           "Online matches use Frame delay regardless of this checkbox.");
+      // Early inputs (host/early_input.h): the other player's game learns of a press up to a frame
+      // sooner, so it guesses right more often and rolls back less. Only between two Melee Unlocked
+      // players who both have it on; a Slippi Dolphin opponent is never sent anything new.
+      if (settings_toggle("Early inputs", &options.early_inputs)) {
+        host::early_input::set_enabled(options.early_inputs);
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Sends your presses and stick moves the moment they happen, between frames, so the\n"
+                          "other player's game guesses them right more often and rolls back less.\n"
+                          "Only between Melee Unlocked players who both have this on. Slippi Dolphin\n"
+                          "opponents see nothing new. Takes effect from the next online match.");
       // A player ran at 3 without knowing and reported the game as feeling slow. The cost is
       // shown whenever the value is above the default; the tooltip alone is not seen on a controller.
       if (delay > 2)

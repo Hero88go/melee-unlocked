@@ -14,6 +14,12 @@ int32_t mu_slippi_command(uint8_t command, const uint8_t* payload, uint32_t payl
                           uint8_t* response, uint32_t response_capacity, uint32_t* response_size);
 
 void* mu_native_alloc(u32 size) { return mu_host->native_alloc(size); }
+
+/* Audio options (MU_AUDIO_OPTION_*): 0 online and in replays (the host decides). */
+unsigned int mu_audio_options(void)
+{
+    return mu_host && mu_host->version >= 19 && mu_host->audio_options ? mu_host->audio_options() : 0;
+}
 void mu_native_free(void* ptr) { mu_host->native_free(ptr); }
 
 /* ---- AI ---- */

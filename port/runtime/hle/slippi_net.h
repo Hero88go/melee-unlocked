@@ -14,6 +14,7 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#include "early_input_rules.h"
 
 struct _ENetHost;
 struct _ENetPeer;
@@ -35,6 +36,12 @@ enum NetMsg : uint8_t {
   // Melee Unlocked only: the sender's build (retail or a mod's identity). Slippi Dolphin logs an
   // unknown id and ignores it, so it is safe to send to anyone.
   NP_MSG_MU_BUILD = 0xE0,
+  // Melee Unlocked only: an early input (early_input.h), sent only to a peer whose build message
+  // said it takes them. A peer without that word (Slippi Dolphin, an older build) never gets one.
+  NP_MSG_MU_EARLY_PAD = 0xE1,
+  // Melee Unlocked only: a ping before the match (request or reply), sent only to a peer whose build
+  // message said it answers them, so auto delay has a ping when the match is set up.
+  NP_MSG_MU_PING = 0xE2,
 };
 
 // sf::Packet wire format: integers big-endian, bool as one byte, strings as u32 length + bytes.
@@ -180,13 +187,21 @@ class NetplayClient {
   int32_t CalcTimeOffsetUs();
   double GetAndResetAvgPingMs();
   int LastPingMs() const { return (int)(last_ping_ms_.load(std::memory_order_relaxed)); }
+  // The median of the last pre-match pings (NP_MSG_MU_PING) to the first opponent, 0 if none yet.
+  int PreMatchPingMs() const { return (int)(prematch_ping_ms_.load(std::memory_order_relaxed)); }
   void SendChatMessage(int message_id);
   void SendAsync(std::unique_ptr<Packet> packet);
   uint8_t remote_sent_chat_message_id = 0;
-  // The opponents' builds (NP_MSG_MU_BUILD), and when the connection completed.
-  struct RemoteBuild { bool received = false, mod_view = false; std::string fingerprint, name; };
+  // The opponents' builds (NP_MSG_MU_BUILD), and when the connection completed. early_pads: the
+  // build takes early inputs (a trailing byte older builds never sent and never read).
+  struct RemoteBuild { bool received = false, mod_view = false; std::string fingerprint, name; bool early_pads = false, pings = false; };
   RemoteBuild GetRemoteBuild(int index);
   uint64_t ConnectedAtMs() const { return connected_at_ms_.load(std::memory_order_acquire); }
+  // Early inputs. SendEarlyPad goes to the peers that take them (any thread: it only queues).
+  // EarlyPads gives remote `index`'s early pads for frames after `latest` (its confirmed pads reach
+  // `latest`; older entries are dropped), for the game's prediction.
+  void SendEarlyPad(int32_t target, const uint8_t pad[host::early_input::kPadBytes]);
+  void EarlyPads(int index, int32_t latest, std::vector<host::early_input::Entry>& out);
 
  private:
   struct FrameTiming { int32_t frame = 0; uint64_t time_us = 0; };
@@ -229,6 +244,9 @@ class NetplayClient {
   uint64_t ping_us_[REMOTE_PLAYER_MAX] = {};
   std::atomic<uint64_t> ping_sample_sum_us_{0}, ping_sample_count_{0};
   std::atomic<uint32_t> last_ping_ms_{0};
+  std::atomic<uint32_t> prematch_ping_ms_{0};
+  std::deque<uint32_t> prematch_samples_;   // network thread only
+  void SendPrematchPing();
   int32_t last_frame_acked_[REMOTE_PLAYER_MAX] = {};
   FrameOffsetData frame_offset_data_[REMOTE_PLAYER_MAX];
   FrameTiming last_frame_timing_[REMOTE_PLAYER_MAX];
@@ -241,6 +259,7 @@ class NetplayClient {
   std::mutex build_mutex_;
   RemoteBuild remote_build_[REMOTE_PLAYER_MAX];
   std::atomic<uint64_t> connected_at_ms_{0};
+  host::early_input::Buffer early_pads_[REMOTE_PLAYER_MAX];   // under pad_mutex_
   void SendBuild();
 };
 

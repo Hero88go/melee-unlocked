@@ -100,6 +100,20 @@ void InputTransport::build_ping(uint64_t now_us, std::vector<uint8_t>& out) cons
   w.u32((uint32_t)now_us);
 }
 
+void InputTransport::build_sample(int32_t target, const uint8_t pad[kPadWireSize], std::vector<uint8_t>& out) {
+  out.clear();
+  if (target < 1 || target >= kGameFrameSpan) return;
+  Writer w(out);
+  w.u8(kMsgSample);
+  w.u8(kSampleVersion);
+  w.i32(base_ + target);
+  w.u8(0);   // the sender's slot: one remote player today, so it is not needed to tell them apart
+  w.bytes(pad, kPadWireSize);
+  static const uint8_t reserved[kSampleSize - 15] = {};
+  w.bytes(reserved, sizeof reserved);
+  ++stats_.samples_sent;
+}
+
 bool InputTransport::local_pad(int32_t frame, uint8_t out[kPadWireSize]) const {
   const Slot& s = local_[index(frame)];
   if (frame < 1 || s.frame != frame) { std::memset(out, 0, kPadWireSize); return false; }
@@ -239,12 +253,26 @@ bool InputTransport::on_message(const uint8_t* data, size_t size, uint64_t now_u
       take_round_trip(echoed);
       return true;
     }
-    case kMsgSample:
-      // Reserved. The length is checked so a build that sends them is held to the format, and the
-      // content is dropped: only a COMMIT can ever move the confirmed-input watermark.
+    case kMsgSample: {
+      // An early input. The length is checked so a build that sends them is held to the format.
+      // Only a COMMIT can ever move the confirmed-input watermark: a sample is kept aside for
+      // prediction, and only while this side takes them, for a frame not committed yet.
       if (size != kSampleSize) break;
-      ++stats_.samples_ignored;
+      const uint8_t version = r.u8();
+      const int32_t wire = r.i32();
+      (void)r.u8();   // the sender's slot
+      uint8_t pad[kPadWireSize];
+      r.bytes(pad, kPadWireSize);
+      if (!r.ok) break;
+      if (version != kSampleVersion || !accept_samples_) { ++stats_.samples_ignored; return true; }
+      if (wire <= base_ || wire - base_ >= kGameFrameSpan) { ++stats_.other_game; return true; }
+      const int32_t frame = wire - base_;
+      if (frame <= remote_latest_ || frame > floor_ + kMaxRemoteLead) { ++stats_.samples_ignored; return true; }
+      host::early_input::clamp_rest(pad);
+      samples_.add(frame, pad);
+      ++stats_.samples_received;
       return true;
+    }
     default:
       break;
   }

@@ -280,6 +280,9 @@ endif()
 # Replacements for SDK files written against the hardware itself (see the REMOVE_ITEM above).
 file(GLOB GXNATIVE_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/gxnative/*.c")
 list(APPEND SHIM_SOURCES ${GXNATIVE_SOURCES})
+# The SDK's AXOut.c with the Faster sound effects switch (axnative/AXOut.c).
+list(REMOVE_ITEM SDK_SOURCES "${SDK}/ax/AXOut.c")
+list(APPEND SHIM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/axnative/AXOut.c")
 # Akaneia's added fighters, native (akaneia/INTEGRATION.md): the registry and each fighter's own C.
 # A fighter is offered on the character select only when its descriptor carries MU_AK_READY
 # (mu_ak_fighters.c); the others stay locked. ACE's fighters (ace/) build only with

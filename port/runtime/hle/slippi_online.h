@@ -16,6 +16,7 @@ struct Config {
   std::string lobby_status_file;
   std::string user_dir = "runtime/slippi/User/Slippi";   // user.json, direct-codes.json (Slippi Launcher layout)
   int delay = 2;                 // Slippi Online input delay (frames)
+  bool auto_delay = false;       // pick the delay from the measured ping each match (delay is the fallback)
   int chat = 0;                  // 0 enabled, 1 direct only, 2 disabled
 };
 Config& config();
@@ -48,6 +49,11 @@ const LocalBuild& local_build();
 bool handle(uint8_t cmd, const uint8_t* payload, uint32_t payload_len, std::vector<uint8_t>& read_queue);
 // Validates the fixed EXI payload size before native or legacy callers enter a command handler.
 bool valid_command_payload(uint8_t cmd, const uint8_t* payload, uint32_t payload_len);
+// Early inputs (host/early_input.h). enabled: the player's setting. accept: this engine also uses
+// the other player's early inputs for its prediction, which only the Source Port can (the Static
+// Recomp's prediction is Slippi's own game code); it is what the build message announces.
+bool early_inputs_enabled();
+bool early_inputs_accept();
 // Counts rollback loads so the renderer can treat them as discontinuities.
 uint64_t rollback_count();
 // A native savestate load (the source port serves Slippi's savestate commands itself). `to_frame`

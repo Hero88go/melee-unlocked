@@ -278,6 +278,28 @@ class ThreadedBackend final : public Backend {
         }
         should_render = true;
         if (queue.drained() && current.sequence == rendered_sequence) break;
+        // Every simulation frame is shown once exactly as the game drew it. The first present of a
+        // new frame is phase 0: in Predict that is this frame's own pose, in Interpolate the frame
+        // before it, so either way no frame of an animation is ever only seen half-way between its
+        // neighbours (the tip of a sword swing that lasts one frame). That first present comes
+        // within one refresh of the frame's arrival, so the phase it replaces was already near 0
+        // and the motion does not change. MELEE_KEYFRAME_MODE (tests): off presents by clock alone
+        // (as does MELEE_KEYFRAME_ANCHOR=0); anchor is the default above; snap, at a frame cap that
+        // is a whole multiple of 60, rounds the phase to the present grid (steps stay even and one
+        // present lands on phase 0 every frame), and at other caps presents by clock.
+        static const int keyframe_mode = [] {
+          const char* m = std::getenv("MELEE_KEYFRAME_MODE");
+          if (m && *m) return m[0] == 'o' ? 0 : m[0] == 's' ? 2 : 1;
+          const char* v = std::getenv("MELEE_KEYFRAME_ANCHOR");
+          return v && *v == '0' ? 0 : 1;
+        }();
+        if (options_.pin_phase < 0) {
+          if (keyframe_mode == 1 && current.sequence != rendered_sequence) t = 0.0;
+          if (keyframe_mode == 2 && options_.fps_cap > 0) {
+            const double k = std::round(options_.fps_cap / 60.0);
+            if (k >= 2 && std::fabs(options_.fps_cap - k * 60.0) < 1.0) t = std::round(t * k) / k;
+          }
+        }
       }
       if (options_.capture_burst && options_.capture_sim_frame && current.sequence >= options_.capture_sim_frame && burst_logged < options_.capture_burst) {
         host::log("present %llu: sim frame %llu phase %.3f", presented + 1, (unsigned long long)current.sequence, t);
@@ -354,6 +376,7 @@ class ThreadedBackend final : public Backend {
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
       ++phase_bins[t >= 1.0 ? 4 : (int)(t * 4.0)];
+      host::present_report(render_end, cap_period > 0 ? cap_period : 1.0 / std::max(last_refresh, 1.0));
       if (cap_period > 0) {
         double now = host::now_seconds();
         // Skip missed slots; never emit catch-up bursts after a stall.

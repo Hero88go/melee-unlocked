@@ -122,6 +122,13 @@ constexpr int AUTO_FLOOR_MS = 10, AUTO_START_MS = 40;   // no memory yet: start 
 // The smallest ring that never runs dry by design: the device takes one engine period at each event
 // and the game hands over one 5 ms block at a time, plus 2 ms of scheduling slack.
 uint32_t g_floor_ms = AUTO_FLOOR_MS;
+// MELEE_AUDIO_FLOOR_TRIM=N (0 to 2 ms, measurement): N ms less slack in the direct shared-mode and
+// ASIO floors. Auto still grows the queue after real gaps, so a trim that is too deep shows up as
+// "increases after gaps" in the end-of-session line rather than as lasting dropouts.
+static uint32_t floor_trim_ms() {
+  static const uint32_t v = [] { const char* s = std::getenv("MELEE_AUDIO_FLOOR_TRIM"); const int n = s ? std::atoi(s) : 0; return (uint32_t)std::clamp(n, 0, 2); }();
+  return v;
+}
 std::atomic<int64_t> g_last_push_qpc{0};   // when the game last handed over a block
 std::atomic<uint32_t> g_trims{0};          // surplus cut from the ring (after a stall), counted for the log
 int64_t qpc_now() { LARGE_INTEGER c; QueryPerformanceCounter(&c); return c.QuadPart; }
@@ -861,7 +868,7 @@ bool wasapi_open() {
   // late, plus 2 ms of slack; the average sits about half a block below that peak and at most a
   // period below it, which leaves period + 4 ms: 14 ms in all on a 10 ms shared-mode device.
   const uint32_t period_ms = (uint32_t)((g_period_frames * 1000 + g_device_rate - 1) / g_device_rate);
-  g_floor_ms = std::max<uint32_t>(AUTO_FLOOR_MS, g_direct ? period_ms + 4 : period_ms + 5 + 2);
+  g_floor_ms = std::max<uint32_t>(AUTO_FLOOR_MS, g_direct ? period_ms + 4 - floor_trim_ms() : period_ms + 5 + 2);
   if (auto_mode) {
     // Auto: never below the floor; start where this device settled last time (gaps from the game's
     // own stalls no longer count, so the remembered value is the device's real need), else at the
@@ -1153,7 +1160,7 @@ std::string asio_start_session() {
   // Queue target: one ASIO buffer taken per switch, one 5 ms game block arriving at a time, 2 ms slack.
   // Grows by itself after real gaps during a match, like Auto, and settles back while clean.
   const uint32_t period_ms = (uint32_t)((size * 1000 + g_device_rate - 1) / g_device_rate);
-  g_floor_ms = period_ms + 7;
+  g_floor_ms = period_ms + 7 - floor_trim_ms();
   g_buffer_policy.configure(0, AUTO_FLOOR_MS);
   g_buffer_policy.floor_ms = g_buffer_policy.target_ms = g_floor_ms;
   g_target_frames = SAMPLE_RATE * g_floor_ms / 1000;

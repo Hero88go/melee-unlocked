@@ -143,13 +143,30 @@ def main():
         for name in ("teams-codes.json", "direct-codes.json"):
             (user / name).write_text(CODE_HISTORY)
         remotes = ",".join(f"127.0.0.1:{p}" for j, p in enumerate(ports) if j != i)
-        script = [] if args.no_script else ["--script", str((ROOT / scripts[i]).resolve())]
+        # The Static Recomp has no --online-test (Source Port only): it reaches the match through the
+        # menus with online_bot.txt (Unranked search), and that option is dropped from its arguments.
+        is_static = exes[i].name.lower() == "melee_port.exe"
+        slot_script = "port/scripts/online_bot.txt" if is_static and scripts[i].endswith("early_inputs_bot.txt") else scripts[i]
+        script = [] if args.no_script else ["--script", str((ROOT / slot_script).resolve())]
+        extra = list(args.extra)
+        if is_static:
+            while "--online-test" in extra:
+                k = extra.index("--online-test"); del extra[k:k + 2]
         cmd = [str(exes[i].resolve()), "--iso", str(iso), "--hidden", "--volume", "0", "--frames", str(args.frames)] + script + [
                "--replay-dir", str(d), "--log-file", str(d / "port.log"),
-               "--user-dir", str(user), "--time-base", "1", "--local-peer", f"{i}:{ports[i]}:{remotes}"] + args.extra
+               "--user-dir", str(user), "--time-base", "1", "--local-peer", f"{i}:{ports[i]}:{remotes}"] + extra
         cmd += os.environ.get(f"QUAD_SLOT{i}_EXTRA", "").split()   # this slot only, e.g. a display option
+        # QUAD_SLOT<i>_ENV="K=V K2=" sets (or, with nothing after =, removes) variables for this slot
+        # only, e.g. another build's MELEE_GAME_DLL in an old-against-new pair.
+        slot_env = dict(env)
+        # Split only where a new NAME= starts, so a value may hold spaces (a path under "NEW project").
+        for kv in re.split(r"\s+(?=[A-Za-z_][A-Za-z0-9_]*=)", os.environ.get(f"QUAD_SLOT{i}_ENV", "").strip()):
+            if not kv: continue
+            k, _, v = kv.partition("=")
+            if v: slot_env[k] = v
+            else: slot_env.pop(k, None)
         log = open(d / "log.txt", "w")
-        p = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, env=env)
+        p = subprocess.Popen(cmd, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT, env=slot_env)
         procs.append((p, log))
         print(f"P{i + 1} pid {p.pid} {engines[i]} {'no script' if args.no_script else Path(scripts[i]).name} --local-peer {i}:{ports[i]}:{remotes}")
         time.sleep(args.stagger)

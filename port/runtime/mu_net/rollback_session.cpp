@@ -336,6 +336,7 @@ struct RollbackSession::Impl {
     // This game's frames travel above every frame of the games before (kGameFrameSpan apart), so
     // a COMMIT or ACK of the finished game that arrives now is recognised and dropped.
     transport.reset(opt.game_frame_us, (int32_t)(series.game - 1) * kGameFrameSpan);
+    transport.set_accept_samples(opt.early_inputs);
     state = SessionState::Ready;
     log("ready: game %u, both games hold match setup %s", (unsigned)series.game, to_hex(digest.data(), 8).c_str());
     return true;
@@ -371,6 +372,7 @@ struct RollbackSession::Impl {
     }
     if (!all_zero(me.session_key) && me.session_key != security.local_session_key()) { fail("The session key does not match the one the match was set up with"); return false; }
     transport.reset(opt.game_frame_us);
+    transport.set_accept_samples(opt.early_inputs);
     link = use_link;
     state = SessionState::Connecting;
     run.deadline_us = now() + opt.connect_limit_us;
@@ -813,6 +815,32 @@ struct RollbackSession::Impl {
     counters.remote_frame = transport.remote_latest();
   }
 
+  // The other player's early inputs as a block for the game to read after the fixed reply: a count,
+  // then entries of target frame + 12-byte pad for frames after `latest`; the two unused remotes are
+  // empty. Nothing while early inputs are off.
+  void early_block(int32_t latest, std::vector<uint8_t>& out) {
+    if (!opt.early_inputs) return;
+    transport.drop_samples_through(latest);
+    const auto& early = transport.samples().entries();
+    const size_t count = std::min(early.size(), (size_t)host::early_input::kMaxEntries);
+    out.push_back((uint8_t)count);
+    for (size_t i = 0; i < count; ++i) {
+      const uint32_t t = (uint32_t)early[i].target;
+      out.push_back((uint8_t)(t >> 24)); out.push_back((uint8_t)(t >> 16)); out.push_back((uint8_t)(t >> 8)); out.push_back((uint8_t)t);
+      out.insert(out.end(), early[i].pad, early[i].pad + kPadWireSize);
+      for (int k = kPadWireSize; k < kPadGameSize; ++k) out.push_back(0);
+    }
+    out.push_back(0);
+    out.push_back(0);
+  }
+
+  // An early input of the local player, to a peer that takes them (revision 2), while a game runs.
+  void send_sample(int32_t target, const uint8_t* pad) {
+    if (state != SessionState::Playing || !opt.early_inputs || !series.peer_info || series.peer_minor < 2) return;
+    transport.build_sample(target, pad, message);
+    if (!message.empty()) send_plain(kChannelInput, message, false);
+  }
+
   void inputs(int32_t frame, int32_t finalized, uint32_t checksum, uint8_t delay, const uint8_t* pad, std::vector<uint8_t>& reply) {
     const uint64_t now_us = now();
     tick(now_us);
@@ -1038,6 +1066,24 @@ void RollbackSession::on_game_end(const uint8_t* payload, size_t size) {
     s.offer_next(s.now());
     if (s.link) s.link->flush();
   } catch (...) {}
+}
+
+void RollbackSession::append_early_pads(std::vector<uint8_t>& reply) {
+  std::lock_guard<std::mutex> lock(impl_->mu);
+  if (reply.size() != kInputsReplySize) return;
+  const uint8_t* b = reply.data();
+  const int32_t latest = (int32_t)(((uint32_t)b[kRxLatest] << 24) | ((uint32_t)b[kRxLatest + 1] << 16) | ((uint32_t)b[kRxLatest + 2] << 8) | b[kRxLatest + 3]);
+  try { impl_->early_block(latest, reply); } catch (...) {}
+}
+
+void RollbackSession::send_early_pad(int32_t target, const uint8_t pad[kPadWireSize]) {
+  std::lock_guard<std::mutex> lock(impl_->mu);
+  try { impl_->send_sample(target, pad); } catch (...) {}
+}
+
+bool RollbackSession::peer_takes_early_pads() const {
+  std::lock_guard<std::mutex> lock(impl_->mu);
+  return impl_->opt.early_inputs && impl_->series.peer_info && impl_->series.peer_minor >= 2;
 }
 
 NextGame RollbackSession::next_game(std::string* why) const {

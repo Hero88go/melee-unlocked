@@ -56,6 +56,7 @@
 #include "jukebox.h"
 #include "slippi_playback.h"
 #include "slippi_online.h"
+#include "source_p2p.h"
 #include "exi_slippi.h"
 #include "native_slippi_bridge.h"
 #include "native_replay_stream.h"
@@ -1012,6 +1013,17 @@ uint32_t h_game_options2() {
 // them itself (mu_options3_offline: offline only, never in a TM-CE event).
 // The upper bits are the 20XX Hack Pack stage of the match (hackpack_source.h): the game reports
 // them when a match is picked and they ride in the same word, so a replay records and replays them.
+// Faster sound effects (MU_AUDIO_OPTION_EARLY_KEYON): MELEE_AUDIO_EARLY_KEYON=0|1 over the setting;
+// never during an online match or a replay (see mu_host.h).
+uint32_t h_audio_options() {
+  if (g_replaying || slippi::online::session_mode() >= 0 || source_p2p::requested()) return 0;
+  static const int env = [] { const char* v = std::getenv("MELEE_AUDIO_EARLY_KEYON"); return v && *v ? (*v == '1' ? 1 : 0) : -1; }();
+  const bool on = env >= 0 ? env == 1 : gx::RenderOptions::live_audio_early_keyon();
+  static int logged = -1;
+  if ((int)on != logged) { host::log("audio: faster sound effects %s", on ? "on" : "off"); logged = on; }
+  return on ? MU_AUDIO_OPTION_EARLY_KEYON : 0u;
+}
+
 uint32_t h_game_options3() {
   if (g_replaying) return g_replay_feature_options3;
   return (host::gameplay::vanilla_only() ? 0u :
@@ -2411,6 +2423,11 @@ void h_ai_start_dma(int32_t on) {
   static const char* shift = std::getenv("MELEE_TEST_AX_PHASE_SHIFT");
   if (!was_running && g_audio.running && shift)
     g_audio.next_tb += std::strtoull(shift, nullptr, 0);
+  // MELEE_AUDIO_PHASE_US=N (measurement, 0 to 5000): start the 5 ms AX clock N microseconds later
+  // against the retrace, so the first sound frame after the game's frame comes sooner after it.
+  static const long phase_us = [] { const char* v = std::getenv("MELEE_AUDIO_PHASE_US"); const long n = v ? std::atol(v) : 0; return n > 0 && n < 5000 ? n : 0L; }();
+  if (!was_running && g_audio.running && phase_us)
+    g_audio.next_tb += (uint64_t)phase_us * host::TB_HZ / 1000000u;
   if (!was_running && g_audio.running)
     host::log("audio: AI clock phase retrace=%u next_tick_after_boundary=%lld", host::retrace_count(),
               (long long)(g_audio.next_tb - (host::next_retrace_tb() - host::TB_PER_FRAME)));
@@ -2831,6 +2848,7 @@ MuHostApi make_host() {
   h.vi_idle_step = h_vi_idle_step;
   h.game_options3 = h_game_options3;
   h.display_options = h_display_options;
+  h.audio_options = h_audio_options;
   return h;
 }
 

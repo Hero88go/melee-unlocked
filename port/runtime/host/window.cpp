@@ -15,6 +15,7 @@
 #include <atomic>
 #include <thread>
 #include "host.h"
+#include "early_input.h"
 #include "window.h"
 #include "input_bindings.h"
 #include "settings_chord.h"
@@ -883,7 +884,8 @@ void apply_family_options(PadFamily family, PadState& pad) {
   apply_trigger_cap(dz.trig_r, pad.trig_r, pad.button, PAD_R);
 }
 }  // namespace
-void input_mark_match_start() { g_match_start_retrace.store(retrace_count()); }
+static void g_pad_frame_reset();   // defined with g_pad_frame below (outside the anonymous namespace)
+void input_mark_match_start() { g_match_start_retrace.store(retrace_count()); g_pad_frame_reset(); }
 
 bool input_load_script(const char* path) {
   FILE* f = fopen(path, "r");
@@ -1012,118 +1014,94 @@ static bool xinput_state(int idx, XINPUT_STATE* state) {
   return false;
 }
 
-void input_poll(PadState out[4]) {
-  struct InputCost { double start = now_seconds(); ~InputCost() { sim_cost_add(SIM_INPUT, now_seconds() - start); } } input_cost;
-  struct UiSnapshot {
-    PadState* pads; bool gamecube = false;
-    ~UiSnapshot() {
-      std::lock_guard<std::mutex> lock(g_ui_pad_mutex);
-      bool toggle_settings = false;
-      for (int i = 0; i < 4; ++i) {
-        const bool opened_here =
-            settings_shortcut::poll_z_start(pads[i].err == 0, pads[i].button,
-                                            g_ui_settings_chord_held[i]);
-        toggle_settings |= opened_here;
-        if (opened_here) g_settings_controller_port.store(i, std::memory_order_release);
-      }
-      if (toggle_settings) g_settings_toggle.store(true, std::memory_order_release);
-      g_ui_pad = pads[0];
-      g_ui_gamecube = gamecube;
-      g_ui_has_pad = false;
-      for (int i = 0; i < 4; ++i) {
-        g_ui_pads[i] = pads[i];
-        if (pads[i].err == 0) g_ui_has_pad = true;
-      }
-      if (g_ui_capture.load()) {
-        // UI capture is global, not player-one-only. Keeping ports 2-4 live made menu navigation
-        // leak into Training and, during handoff, into the first online gameplay inputs.
-        for (int i = 0; i < 4; ++i) {
-          const int8_t err = pads[i].err;
-          pads[i] = {};
-          pads[i].err = err;
-        }
-      }
-    }
-  } ui{out};
-  if (TickTiming& tick = tick_timing(); tick.pad == 0) tick.pad = now_seconds();
-  for (int i = 0; i < 4; ++i) { std::memset(&out[i], 0, sizeof out[i]); out[i].err = -1; }
-  if (!g_script.empty() && g_script_release_after) {
-    uint32_t major, minor, match_frame;
+// The pads an input script delivers at retrace `frame`: port 1 by default, entries with p=N drive
+// port N (a port with any entry counts as plugged in). update_state: this is the game's own poll,
+// which advances the scene-wait and match-relative bookkeeping; the early-input sampler asks with
+// false to see the next retrace's pads without moving anything.
+// MELEE_TEST_SCRIPT_PAD_FRAMES=1 (online measurements): a plain @match section counts online game
+// frames (the frame whose pad this poll reads, independent of the input delay) instead of retraces. A stalled frame
+// polls again without sending a pad, so with retraces every input after a stall landed on a
+// different game frame and two runs of the same script played different matches.
+static std::atomic<int32_t> g_pad_frame{0};
+void input_note_pad_frame(int32_t frame) { g_pad_frame.store(frame, std::memory_order_relaxed); }
+static void g_pad_frame_reset() { g_pad_frame.store(0, std::memory_order_relaxed); }
+static bool script_pad_frames() {
+  static const bool on = [] { const char* v = std::getenv("MELEE_TEST_SCRIPT_PAD_FRAMES"); return v && *v == '1'; }();
+  return on;
+}
+
+static void script_pads(uint32_t frame, bool update_state, PadState out[4]) {
+  // @scene takes over the same "relative section" that @match uses, but starts counting from
+  // the retrace where the requested mode/scene was first observed instead of an online match
+  // reaching frame 1. Checked every poll (once per retrace) so the wait is not sensitive to
+  // when input_poll happens to be called relative to the scene actually changing.
+  uint32_t match_frame = 0;
+  if (g_script_has_scene_wait) {
+    uint32_t major, minor;
     current_scene(&major, &minor, &match_frame);
-    if (!g_script_release_at && match_frame > 1) g_script_release_at = retrace_count() + g_script_release_after;
-    if (g_script_release_at && retrace_count() >= g_script_release_at) { g_script.clear(); log("script: released, controllers live"); }
+    if (!g_scene_start_retrace.load() &&
+        major == g_scene_wait_major &&
+        (!g_scene_wait_has_minor || minor == g_scene_wait_minor))
+      if (update_state) g_scene_start_retrace.store(frame);
   }
-  if (!g_script.empty()) {
-    // Scripts drive port 1 by default; entries with p=N drive port N (a port with any entry counts as plugged in).
-    uint32_t frame = retrace_count();
-    // @scene takes over the same "relative section" that @match uses, but starts counting from
-    // the retrace where the requested mode/scene was first observed instead of an online match
-    // reaching frame 1. Checked every poll (once per retrace) so the wait is not sensitive to
-    // when input_poll happens to be called relative to the scene actually changing.
-    uint32_t match_frame = 0;
-    if (g_script_has_scene_wait) {
-      uint32_t major, minor;
-      current_scene(&major, &minor, &match_frame);
-      if (!g_scene_start_retrace.load() &&
-          major == g_scene_wait_major &&
-          (!g_scene_wait_has_minor || minor == g_scene_wait_minor))
-        g_scene_start_retrace.store(frame);
-    }
-    uint32_t start = g_script_has_scene_wait ? g_scene_start_retrace.load() : g_match_start_retrace.load();
-    bool use_match_frame = g_script_has_scene_wait && start && match_frame != 0;
+  uint32_t start = g_script_has_scene_wait ? g_scene_start_retrace.load() : g_match_start_retrace.load();
+  bool use_match_frame = g_script_has_scene_wait && start && match_frame != 0;
+  if (update_state) {
     if (match_frame == 0) {
       g_match_rt_start = 0;
     } else if (!g_match_rt_start || match_frame < g_match_rt_last) {
       g_match_rt_start = frame;
     }
     g_match_rt_last = match_frame;
-    const uint32_t match_rt = g_match_rt_start ? frame - g_match_rt_start : 0;
-    bool in_section = start && frame >= start;
-    uint32_t scene_rel = in_section ? frame - start : 0;
-    uint32_t rel = use_match_frame ? match_frame : (in_section ? frame - start : 0);
-    if (in_section && g_script_loop && (!g_script_has_scene_wait || use_match_frame)) rel %= g_script_loop;
-    for (int port = 0; port < 4; ++port) {
-      if (port && !(g_script_ports & (1u << port))) continue;
-      out[port].err = 0;
-      const ScriptEntry* cur = nullptr;
-      for (const ScriptEntry& e : g_script) {
-        if (e.port != port) continue;
-        if (e.relative) {
-          if (e.match_retrace_relative) {
-            if (g_match_rt_start && e.frame <= match_rt) cur = &e;
-          } else if (e.scene_match_relative) {
-            if (use_match_frame && e.frame <= rel) cur = &e;
-          } else if (g_script_has_scene_wait) {
-            if (in_section && e.frame <= scene_rel) cur = &e;
-          } else if (in_section && e.frame <= rel) {
-            cur = &e;
-          }
-        } else if (!in_section && e.frame <= frame) cur = &e;
-      }
-      if (cur) {
-        PadState& q = out[port];
-        q.button = cur->buttons; q.stick_x = cur->sx; q.stick_y = cur->sy; q.sub_x = cur->cx; q.sub_y = cur->cy;
-        // A digital L/R press on hardware bottoms the trigger out, so mirror that when the script
-        // did not ask for a specific analog value (light shield needs the explicit l=/r= token).
-        q.trig_l = cur->tl ? cur->tl : (uint8_t)((cur->buttons & PAD_L) ? 255 : 0);
-        q.trig_r = cur->tr ? cur->tr : (uint8_t)((cur->buttons & PAD_R) ? 255 : 0);
-      }
-    }
-    // Scripted runs took this return before the overlay's copy was made below, so the controller
-    // overlay stayed blank whenever a script was driving. It is the only way to see the overlay
-    // without a controller in hand, so keep it fed here too.
-    { std::lock_guard<std::mutex> lock(g_last_pads_mutex); for (int p = 0; p < 4; ++p) g_last_pads[p] = out[p]; }
-    return;
   }
+  const uint32_t match_rt = g_match_rt_start ? frame - g_match_rt_start : 0;
+  bool in_section = start && frame >= start;
+  uint32_t scene_rel = in_section ? frame - start : 0;
+  uint32_t rel = use_match_frame ? match_frame : (in_section ? frame - start : 0);
+  if (in_section && !g_script_has_scene_wait && script_pad_frames() && g_pad_frame.load(std::memory_order_relaxed) > 0)
+    rel = (uint32_t)g_pad_frame.load(std::memory_order_relaxed) + 1;   // the game frame this poll is for
+  if (in_section && g_script_loop && (!g_script_has_scene_wait || use_match_frame)) rel %= g_script_loop;
+  for (int port = 0; port < 4; ++port) {
+    if (port && !(g_script_ports & (1u << port))) continue;
+    out[port].err = 0;
+    const ScriptEntry* cur = nullptr;
+    for (const ScriptEntry& e : g_script) {
+      if (e.port != port) continue;
+      if (e.relative) {
+        if (e.match_retrace_relative) {
+          if (g_match_rt_start && e.frame <= match_rt) cur = &e;
+        } else if (e.scene_match_relative) {
+          if (use_match_frame && e.frame <= rel) cur = &e;
+        } else if (g_script_has_scene_wait) {
+          if (in_section && e.frame <= scene_rel) cur = &e;
+        } else if (in_section && e.frame <= rel) {
+          cur = &e;
+        }
+      } else if (!in_section && e.frame <= frame) cur = &e;
+    }
+    if (cur) {
+      PadState& q = out[port];
+      q.button = cur->buttons; q.stick_x = cur->sx; q.stick_y = cur->sy; q.sub_x = cur->cx; q.sub_y = cur->cy;
+      // A digital L/R press on hardware bottoms the trigger out, so mirror that when the script
+      // did not ask for a specific analog value (light shield needs the explicit l=/r= token).
+      q.trig_l = cur->tl ? cur->tl : (uint8_t)((cur->buttons & PAD_L) ? 255 : 0);
+      q.trig_r = cur->tr ? cur->tr : (uint8_t)((cur->buttons & PAD_R) ? 255 : 0);
+    }
+  }
+}
+
+// Every physical source is read, then each in-game port takes whichever device g_port_sources[port]
+// assigns it (keyboard, an Xbox pad and the GC adapter can drive different ports at once).
+// side_effects: the game's own poll, which may re-point a port at a renamed HID slot and records
+// what feeds each port; the early-input sampler reads with false, under the same lock.
+static std::mutex g_devices_mutex;
+static void read_devices(PadState out[4], InputDebugSnapshot& debug, bool side_effects) {
   // Poll every physical source unconditionally, then route each in-game port to
   // whichever device g_port_sources[port] assigns it to. This lets keyboard, an
   // Xbox pad, and the GC adapter all drive different ports at the same time.
   PadState gc[4];
   for (auto& s : gc) { s = {}; s.err = -1; }
   uint32_t gc_mask = gcadapter_poll(gc);
-  ui.gamecube = gc_mask != 0;
-
-  InputDebugSnapshot debug{};
   debug.gc_mask = gc_mask;
 
   // Whether the game window has focus: without it, input follows the Background input option.
@@ -1236,7 +1214,7 @@ void input_poll(PadState out[4]) {
 
   const InputDeviceFacts facts = input_device_facts(debug);
   // A port given a named box follows that box to whatever HID slot it is in this time.
-  for (int port = 0; port < 4; ++port) {
+  for (int port = 0; side_effects && port < 4; ++port) {
     PortSource& src = g_port_sources[port];
     const std::string& want = g_port_device_names[port];
     if (src.kind != DeviceKind::HidPad || want.empty()) continue;
@@ -1251,7 +1229,7 @@ void input_poll(PadState out[4]) {
   }
   for (int port = 0; port < 4; ++port) {
     const PortSource src = effective_port_source(g_port_sources, facts, port);
-    g_port_feeding[port] = src;
+    if (side_effects) g_port_feeding[port] = src;
     switch (src.kind) {
       case DeviceKind::Keyboard: out[port] = kb; break;
       case DeviceKind::XInputPad:
@@ -1278,6 +1256,65 @@ void input_poll(PadState out[4]) {
   if (!focused && !g_background_input)
     for (int port = 0; port < 4; ++port)
       if (out[port].err == 0) { const auto err = out[port].err; out[port] = {}; out[port].err = err; debug.ports[port] = out[port]; }
+  debug.keyboard_actions = keyboard_actions;
+}
+
+void input_poll(PadState out[4]) {
+  struct InputCost { double start = now_seconds(); ~InputCost() { sim_cost_add(SIM_INPUT, now_seconds() - start); } } input_cost;
+  struct UiSnapshot {
+    PadState* pads; bool gamecube = false;
+    ~UiSnapshot() {
+      std::lock_guard<std::mutex> lock(g_ui_pad_mutex);
+      bool toggle_settings = false;
+      for (int i = 0; i < 4; ++i) {
+        const bool opened_here =
+            settings_shortcut::poll_z_start(pads[i].err == 0, pads[i].button,
+                                            g_ui_settings_chord_held[i]);
+        toggle_settings |= opened_here;
+        if (opened_here) g_settings_controller_port.store(i, std::memory_order_release);
+      }
+      if (toggle_settings) g_settings_toggle.store(true, std::memory_order_release);
+      g_ui_pad = pads[0];
+      g_ui_gamecube = gamecube;
+      g_ui_has_pad = false;
+      for (int i = 0; i < 4; ++i) {
+        g_ui_pads[i] = pads[i];
+        if (pads[i].err == 0) g_ui_has_pad = true;
+      }
+      if (g_ui_capture.load()) {
+        // UI capture is global, not player-one-only. Keeping ports 2-4 live made menu navigation
+        // leak into Training and, during handoff, into the first online gameplay inputs.
+        for (int i = 0; i < 4; ++i) {
+          const int8_t err = pads[i].err;
+          pads[i] = {};
+          pads[i].err = err;
+        }
+      }
+    }
+  } ui{out};
+  if (TickTiming& tick = tick_timing(); tick.pad == 0) tick.pad = now_seconds();
+  early_input::note_poll();   // before the read: a change after this point is the next frame's
+  for (int i = 0; i < 4; ++i) { std::memset(&out[i], 0, sizeof out[i]); out[i].err = -1; }
+  if (!g_script.empty() && g_script_release_after) {
+    uint32_t major, minor, match_frame;
+    current_scene(&major, &minor, &match_frame);
+    if (!g_script_release_at && match_frame > 1) g_script_release_at = retrace_count() + g_script_release_after;
+    if (g_script_release_at && retrace_count() >= g_script_release_at) { g_script.clear(); log("script: released, controllers live"); }
+  }
+  if (!g_script.empty()) {
+    script_pads(retrace_count(), true, out);
+    // Scripted runs took this return before the overlay's copy was made below, so the controller
+    // overlay stayed blank whenever a script was driving. It is the only way to see the overlay
+    // without a controller in hand, so keep it fed here too.
+    { std::lock_guard<std::mutex> lock(g_last_pads_mutex); for (int p = 0; p < 4; ++p) g_last_pads[p] = out[p]; }
+    return;
+  }
+  InputDebugSnapshot debug{};
+  {
+    std::lock_guard<std::mutex> devices(g_devices_mutex);
+    read_devices(out, debug, true);
+  }
+  ui.gamecube = debug.gc_mask != 0;
   { std::lock_guard<std::mutex> lock(g_last_pads_mutex); for (int port = 0; port < 4; ++port) g_last_pads[port] = out[port]; }
   // MELEE_TEST_PAD_TRACE=<file> (tests only, hidden runs): one line each time a port's input changes,
   // as the game will read it, so a test that drives a controller can check every press arrived.
@@ -1295,9 +1332,20 @@ void input_poll(PadState out[4]) {
       }
   }
 
-  debug.keyboard_actions = keyboard_actions;
-  for (int idx = 0; idx < 4; ++idx) if (xin_connected[idx]) debug.xinput_connected[idx] = true;
   input_debug_snapshot(debug);
+}
+
+void input_read_devices(PadState out[4]) {
+  InputDebugSnapshot debug{};
+  std::lock_guard<std::mutex> devices(g_devices_mutex);
+  read_devices(out, debug, false);
+}
+
+bool input_script_active() { return !g_script.empty(); }
+
+void input_script_peek(uint32_t retrace, PadState out[4]) {
+  for (int i = 0; i < 4; ++i) { std::memset(&out[i], 0, sizeof out[i]); out[i].err = -1; }
+  if (!g_script.empty()) script_pads(retrace, false, out);
 }
 
 std::atomic<bool> g_rumble_enabled{true};

@@ -3,6 +3,7 @@
 #pragma once
 #include "mu_net_util.h"
 #include "session_types.h"
+#include "../host/early_input_rules.h"
 #include <functional>
 #include <string>
 #include <vector>
@@ -76,12 +77,15 @@ enum MessageType : uint8_t {
   kMsgAck = 0x11,
   kMsgPing = 0x12,
   kMsgPong = 0x13,
-  kMsgSample = 0x14,   // reserved: provisional sub-frame input, parsed and ignored for now
+  kMsgSample = 0x14,   // revision 2: an early input, a provisional pad for a frame not committed yet (early_input_rules.h)
 };
 
 constexpr int kMaxCommitHistory = 128;        // frames one COMMIT can carry
 constexpr size_t kCommitHeader = 22;
+// SAMPLE: type, version (1), the wire frame the pad first appears in, the sender's slot, the eight
+// pad bytes, six reserved zero bytes. A version this build does not know is ignored, never refused.
 constexpr size_t kSampleSize = 21;
+constexpr uint8_t kSampleVersion = 1;
 constexpr int kTimeSyncSamples = 30;
 constexpr int kPadRing = 256;                 // frames of pads kept each way
 constexpr int kMaxRemoteLead = 200;           // frames past our finalized frame a peer may commit
@@ -92,7 +96,9 @@ struct TransportStats {
   uint64_t malformed = 0;          // wrong length, impossible frame numbers, unknown type
   uint64_t gaps = 0;               // a COMMIT whose history did not reach back to what we hold
   uint64_t conflicts = 0;          // a frame committed again with different pad bytes
-  uint64_t samples_ignored = 0;
+  uint64_t samples_ignored = 0;    // SAMPLE not taken: early inputs off here, an unknown version, or a frame already committed
+  uint64_t samples_received = 0;   // SAMPLE kept for prediction
+  uint64_t samples_sent = 0;
   uint64_t too_far_ahead = 0;
   uint64_t other_game = 0;         // well formed, but numbered for another game of the session: dropped whole
 };
@@ -113,6 +119,13 @@ class InputTransport {
   // frame clock for the time-offset estimate, so it is called once a simulation tick, stalled or not.
   void build_commit(uint64_t now_us, std::vector<uint8_t>& out);
   void build_ping(uint64_t now_us, std::vector<uint8_t>& out) const;
+  // Early inputs (revision 2). A SAMPLE never moves remote_latest(): only a COMMIT confirms a frame.
+  // The samples kept are the peer's early pads for frames after remote_latest(), for prediction.
+  void build_sample(int32_t target, const uint8_t pad[kPadWireSize], std::vector<uint8_t>& out);
+  void set_accept_samples(bool on) { accept_samples_ = on; }   // off: every SAMPLE is counted and dropped
+  bool accept_samples() const { return accept_samples_; }
+  const host::early_input::Buffer& samples() const { return samples_; }
+  void drop_samples_through(int32_t latest) { samples_.drop_through(latest); }
 
   // Remote side. `reply` is left empty or filled with one message to send back (ACK or PONG).
   // False when the message was refused as malformed.
@@ -158,6 +171,8 @@ class InputTransport {
   int offset_count_ = 0, offset_next_ = 0;
   uint64_t last_progress_us_ = 0;
   TransportStats stats_;
+  bool accept_samples_ = false;
+  host::early_input::Buffer samples_;
 };
 
 }  // namespace mu_net

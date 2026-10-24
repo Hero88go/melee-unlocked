@@ -1,0 +1,53 @@
+# Online test match driver for the early-input measurements (tools/online_quad.py --online-test).
+# Before the match the lines are online_bot.txt's; after frame 1 of the online game the @match
+# section loops: a fighter that dashes, turns, hops, attacks, shields and crouches with a change of
+# input every 6 to 12 frames, so there is a press to guess on most rollback windows.
+300 A
+310
+840 sx=61 sy=127
+857
+880 A
+890
+940 START
+950
+@match
+@loop 240
+0
+8 sx=80
+16 sx=-80
+24 sx=80
+30 sx=80 A
+36 sx=80
+44 X
+47
+52 sx=0 A
+58
+66 sx=-80
+72 sx=-80 B
+78 sx=-80
+86 sy=-80
+92 sy=-80 A
+98
+106 L
+114
+120 sx=80 Y
+123 sx=80
+130 sx=80 B
+136 sx=80
+144 sx=-80
+150 cx=80
+152
+158 sx=-80
+164 Z
+167
+174 sx=0 sy=80
+180 sy=80 A
+186
+194 sx=-80
+200 sx=-80 sy=-80
+206 sx=-80 sy=-80 A
+212 sx=-80
+220 r=120
+228
+234 sx=80 X
+237 sx=80

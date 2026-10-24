@@ -1,6 +1,6 @@
-# mu_net gameplay protocol, version 1 (revision 1)
+# mu_net gameplay protocol, version 1 (revision 2)
 
-Revision 1 adds more than one game over one connection (section 14). It changes no layout and no rule of a session's first game, so a revision 0 peer and a revision 1 peer play that game together; see section 12 for what a revision may change.
+Revision 1 adds more than one game over one connection (section 14). Revision 2 adds early inputs (section 16). Neither changes a layout or a rule of a session's first game, so peers of revisions 0, 1 and 2 play that game together; see section 12 for what a revision may change.
 
 This is the wire format of the Melee Unlocked peer-to-peer gameplay connection used by P2P Direct and P2P Unranked. It is written so that a second implementation can interoperate. The reference implementation is `port/runtime/mu_net/`.
 
@@ -203,9 +203,9 @@ Rules:
 
 `type u8`, `stamp u32`. PONG echoes the PING's stamp. Sent every 250 ms between ready and frame 1, so a round trip time exists before the match.
 
-### 7.4 SAMPLE (type 0x14, 21 bytes), reserved
+### 7.4 SAMPLE (type 0x14, 21 bytes), revision 2
 
-`type u8`, `sample sequence u32`, `sender time u32`, `target frame i32`, `pad bytes[8]`. Provisional sub-frame input. Version 1 checks the length and ignores the content. A SAMPLE never confirms a frame. It may only be acted on when feature bit 0 is set in the descriptor, which version 1 refuses.
+`type u8`, `version u8 = 1`, `target frame i32`, `slot u8`, `pad bytes[8]`, `reserved bytes[6] = 0`. An early input (section 16): the sender's controller changed in a way the game acts on, and `pad` is what the sender's next COMMIT for `target` will most likely carry. `target` is a wire frame number (with the game's base), the pad frame the change first appears in. A SAMPLE never confirms a frame and never moves the receiver's remote watermark; it is only used to predict `target` and later frames until their COMMIT arrives. Revision 0 and 1 peers check the length and ignore the content, and are never sent one. A SAMPLE with a `version` the receiver does not know is ignored, not refused. Descriptor feature bit 0 stays reserved and refused: the message rides on the revision, not on the descriptor.
 
 An unknown input type, or a known type with the wrong length, is counted and dropped.
 
@@ -259,7 +259,7 @@ A session of several games writes one file per game. Each game has a descriptor 
 - New optional behaviour is negotiated through descriptor feature bits. A peer refuses a descriptor with a bit it does not implement. Commit rules never change during a match.
 - Unknown message types are dropped and counted, never treated as fatal, so a later version can add messages behind a feature bit.
 - A revision is a change inside one protocol version that leaves the first game of a session exactly as it was: new control messages, and behaviour that only starts after both peers have said they know it. The revision is not in the HELLO, the descriptor or the beacon. A peer says its revision in INFO; a peer that sends no INFO is revision 0. Nothing of a revision is used toward a peer that has not announced it, so a peer of an older revision keeps working and simply does not get the addition.
-- Revision 0: sections 1 to 13 without INFO, NEXT and the frame base. Revision 1: section 14.
+- Revision 0: sections 1 to 13 without INFO, NEXT and the frame base. Revision 1: section 14. Revision 2: section 16.
 
 ## 13. Limits a receiver enforces
 
@@ -404,3 +404,14 @@ Once a connection is up, ENet sends a ping on it at least every 250 ms whenever 
 - **IPv6 only.** Every address here is IPv4.
 
 In all of these, forwarding the game's UDP port by hand on one of the two routers makes the match connect, when that router has a public address.
+
+## 16. Early inputs (revision 2)
+
+A controller change that the game acts on (a button edge, the main stick crossing a walk, dash, jump or crouch line, the C-stick crossing a tilt or smash line, an analog trigger crossing the light-shield value) is sent the moment it happens, between two polls, as a SAMPLE (7.4). The receiver uses it only to predict: when it has to run a frame whose COMMIT has not arrived, it takes the newest SAMPLE whose `target` lies after its remote watermark and not after that frame, instead of repeating the last committed pad. The COMMIT for the frame always decides; a SAMPLE that guessed wrong is an ordinary rollback.
+
+- `target` is exact, not a fraction of a frame: the sender's host owns the poll, so a change seen after the pad of wire frame F went out lands in the pad of F + 1. That is the stamp.
+- Sent only to a peer whose INFO said revision 2 or later, and only while the sender has the feature on. A SAMPLE is never acknowledged, never resent, and never carried in a COMMIT.
+- The receiver keeps at most 8 per peer, oldest `target` first; a second SAMPLE for the same `target` replaces the first; everything at or before the remote watermark is dropped as COMMITs arrive. With the feature off it counts and drops every SAMPLE (`samples_ignored`).
+- Nothing of the transcript, the checksums, the result file or the first game's rules changes. Two sessions with the feature on and off play the same frames from the same COMMITs.
+
+The same rules, pad form and 13-byte payload (`target i32`, `slot u8`, `pad bytes[8]`) are shared with the Slippi path (`port/runtime/host/early_input_rules.h`, `docs/early-inputs.md`), so any rollback transport can carry it.

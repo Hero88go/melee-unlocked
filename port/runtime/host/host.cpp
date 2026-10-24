@@ -2455,6 +2455,45 @@ bool latency_trace_enabled() {
 static TickTiming g_tick_timing;
 TickTiming& tick_timing() { return g_tick_timing; }
 
+// ---- late start: the simulation frame starts as late as it safely can before the next present ----
+// The sim clock free-runs at 60 Hz and the controller is read at the top of each frame, so the time
+// from that read to the present that shows the frame includes a random phase of up to one refresh.
+// With MELEE_LATE_START=1 the frame start is moved, at most 0.3 ms per frame (audio and online time
+// sync never see a jump), until start + budget lands just before a present, where the budget is the
+// longest sim frame of the last two seconds (rollbacks included, so online it backs off by itself)
+// plus the render time plus a margin. Off by default until measured.
+static std::atomic<double> g_present_when{0.0}, g_present_period{0.0};
+void present_report(double when, double period) {
+  g_present_when.store(when, std::memory_order_relaxed);
+  g_present_period.store(period, std::memory_order_relaxed);
+}
+static double g_sim_recent_ms[120];   // the last two seconds of sim frame times
+static unsigned g_sim_recent_at = 0;
+static double g_late_shift_total = 0, g_late_shift_logged = 0;
+static bool late_start_on() {
+  static const bool on = [] { const char* v = std::getenv("MELEE_LATE_START"); return v && *v == '1'; }();
+  return on;
+}
+// Seconds to move the next frame start by, in (-0.3 ms, +0.3 ms).
+static double late_start_shift(std::chrono::steady_clock::time_point next_frame) {
+  const double period = g_present_period.load(std::memory_order_relaxed);
+  const double when = g_present_when.load(std::memory_order_relaxed);
+  const double now = now_seconds();
+  if (!late_start_on() || period <= 0.0 || period > 0.05 || when <= 0.0 || now - when > 0.25) return 0.0;
+  double worst = 0.0;
+  for (double v : g_sim_recent_ms) worst = std::max(worst, v);
+  const double budget = std::min(std::max(worst, 3.0), 14.0) / 1000.0 + 0.004 + 0.0015;   // sim, render, margin
+  const double start = std::chrono::duration<double>(next_frame.time_since_epoch()).count();
+  // The first present at or after start + budget; the start that just makes it is one budget before.
+  const double k = std::ceil((start + budget - when) / period);
+  const double wanted = when + k * period - budget;
+  double shift = wanted - start;
+  // Both directions are equal: a start that is early by most of a period is about as good as one
+  // that is late by a little; take the shorter way round.
+  if (shift > period / 2) shift -= period;
+  return std::max(-0.0003, std::min(0.0003, shift));
+}
+
 // Simulation-thread cost accounting: HLE entry points add their time to a slot; at the next
 // retrace the frame's work time (sleep excluded) is logged when it exceeds 20 ms, with the
 // slots that explain it, so a hitch is attributed instead of guessed.
@@ -2712,6 +2751,7 @@ void retrace() {
     double now = now_seconds();
     if (g_sim_frame_start > 0.0) {
       g_last_sim_ms = (now - g_sim_frame_start) * 1000.0;
+      g_sim_recent_ms[g_sim_recent_at++ % 120] = g_last_sim_ms;
       g_sim_ms_window += g_last_sim_ms;
       if (g_last_sim_ms > g_sim_ms_worst) g_sim_ms_worst = g_last_sim_ms;
       if (g_last_sim_ms > 20.0) {
@@ -2791,6 +2831,15 @@ void retrace() {
   if (g_has_window) window_pump();
   if (!options.fast) {
     g_next_frame += std::chrono::microseconds((long long)(16667.0 / g_emulation_speed));
+    if (const double shift = late_start_shift(g_next_frame); shift != 0.0) {
+      g_next_frame += std::chrono::microseconds((long long)(shift * 1e6));
+      g_late_shift_total += shift;
+      if (std::fabs(g_late_shift_total - g_late_shift_logged) >= 0.004) {
+        log("late start: frame start moved %.1f ms in total (budget from a %.1f ms worst sim frame)", g_late_shift_total * 1000.0,
+            *std::max_element(std::begin(g_sim_recent_ms), std::end(g_sim_recent_ms)));
+        g_late_shift_logged = g_late_shift_total;
+      }
+    }
     auto now = std::chrono::steady_clock::now();
     if (g_next_frame > now) wait_for_tick(g_next_frame);
     else if (now - g_next_frame > std::chrono::milliseconds(34)) g_next_frame = now;   // after a stall, resume at 60 Hz instead of sprinting to catch up (audio would crackle)

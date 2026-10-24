@@ -13,7 +13,10 @@ constexpr uint16_t kProtocolVersion = 1;
 // The revision inside version 1. It never changes a layout or a rule of game 1, so it is not in the
 // handshake: a peer says it in INFO, and a peer that says nothing is revision 0. Revision 1 adds
 // more than one game in a session (INFO, NEXT, the per-game frame base of the input messages).
-constexpr uint8_t kProtocolMinor = 1;
+// Revision 2 adds early inputs (SAMPLE on the input channel): a provisional pad for a frame the
+// sender has not committed yet, sent only to a peer of revision 2 or later and used by the receiver
+// for prediction alone.
+constexpr uint8_t kProtocolMinor = 2;
 constexpr uint16_t kDescriptorFormat = 1;   // the canonical serialization below
 // Wire frame numbers of game k of a session start at (k - 1) x kGameFrameSpan, so an input message
 // still in flight from a finished game can never be read as a frame of the next one.

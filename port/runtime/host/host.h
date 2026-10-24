@@ -227,6 +227,9 @@ double now_seconds();
 // Seconds a short timed sleep wakes late by on this system, as last measured (0 on a healthy one).
 // A wait that must end on time sleeps only when it has that much room, and spins otherwise.
 double sleep_slack();
+// The presenter reports each present (when, and the period of its grid) so the simulation can start
+// each frame as late as the budget allows and still make the next present (late start, below).
+void present_report(double when, double period);
 bool latency_trace_enabled();
 TickTiming& tick_timing();
 // Per-draw scopes run tens of thousands of times a frame, so they read the CPU time stamp counter
@@ -248,6 +251,17 @@ void mmio_write(uint32_t addr, uint32_t value, int bytes);
 // ---- input ----
 struct PadState { uint16_t button; int8_t stick_x, stick_y, sub_x, sub_y; uint8_t trig_l, trig_r, analog_a, analog_b; int8_t err; };
 void input_poll(PadState out[4]);
+// The controllers as they are right now, routed to the game's ports exactly as input_poll routes
+// them, with none of input_poll's side effects (no overlay snapshot, no settings chord, no script):
+// for the early-input sampler, which reads between the game's polls on its own thread.
+void input_read_devices(PadState out[4]);
+// Scripted runs (--script): true while a script is driving the pads, and the pads the script will
+// deliver at retrace `retrace` (no state is changed by asking).
+bool input_script_active();
+void input_script_peek(uint32_t retrace, PadState out[4]);
+// Online: the game frame whose pad was just sent, for scripts that count game frames
+// (MELEE_TEST_SCRIPT_PAD_FRAMES).
+void input_note_pad_frame(int32_t frame);
 // The state the game read on the last PADRead, for the on-screen controller overlay.
 void input_last_pads(PadState out[4]);
 // GameCube controller adapter (WUP-028 over WinUSB): fills plugged ports, returns their mask.

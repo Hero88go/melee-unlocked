@@ -16,6 +16,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include "early_input.h"
 
 namespace source_p2p {
 namespace {
@@ -226,9 +227,20 @@ void advance_series() {
   host::log("p2p: game %u of the session: stage %u, seed %08X", (unsigned)s.session->game_index(), (unsigned)d.stage, d.rng_seed);
 }
 
+// Early inputs: the sampler thread's way to the session (early_input.h). The session object lives
+// for the run, and send_early_pad drops the pad itself once the game is over.
+static void send_early_pad(int32_t target, const uint8_t pad[host::early_input::kPadBytes]) {
+  State& s = g();
+  if (s.session && !s.closed) {
+    s.session->send_early_pad(target, pad);
+    if (s.session->peer_takes_early_pads()) host::early_input::note_packet();
+  }
+}
+
 void close_session() {
   State& s = g();
   if (!s.session || s.closed) return;
+  host::early_input::stop();
   write_result();
   s.session->stop();
   s.closed = true;
@@ -286,11 +298,38 @@ bool on_command(uint8_t cmd, const uint8_t* payload, uint32_t size, std::vector<
         s.match_marked = true;
         host::input_mark_match_start();
       }
-      s.session->on_inputs(payload, size, reply);
+      {
+        // Early inputs: the sampler watches the controller from the game's first frame; every pad
+        // the session commits (frame + delay, as the game numbers it) is its baseline.
+        const int32_t frame = size >= 25 ? (int32_t)mu_net::get_be32(payload) : 0;
+        if (frame == 1 && !host::early_input::running() && host::early_input::enabled()) {
+          host::early_input::reset_stats();
+          host::early_input::start(send_early_pad);
+        }
+        s.session->on_inputs(payload, size, reply);
+        s.session->append_early_pads(reply);
+        if (frame > 0 && !reply.empty() && (reply[0] == mu_net::kInputsNormal || reply[0] == mu_net::kInputsAdvance))
+        {
+          host::early_input::note_sent_pad(frame + payload[12], payload + 13);
+          host::input_note_pad_frame(frame);
+        }
+        else if (frame > 0 && !reply.empty())
+          host::early_input::note_skipped();   // a stall or a wait: no pad went out for this poll
+      }
       publish();
       return true;
     case kReportGame: {
       s.session->on_game_end(payload, size);
+      {
+        const host::early_input::Stats e = host::early_input::stats();
+        const mu_net::SessionCounters ec = s.session->counters();
+        host::log("p2p: early inputs %s: %llu changes, %llu packets, %llu guarded, %llu received, %llu controller reads, %llu samples kept, %llu ignored",
+                  host::early_input::enabled() ? "on" : "off", (unsigned long long)e.changes, (unsigned long long)e.packets,
+                  (unsigned long long)e.guarded, (unsigned long long)e.received,
+                  (unsigned long long)e.samples, (unsigned long long)ec.transport.samples_received,
+                  (unsigned long long)ec.transport.samples_ignored);
+      }
+      host::early_input::stop();
       const mu_net::SessionCounters c = s.session->counters();
       host::log("p2p: game end: %d input frames confirmed, %llu waits, %llu frames stalled, %llu checksums compared, "
                 "%llu mismatched%s", c.transcript_frames, (unsigned long long)c.waits, (unsigned long long)c.stalls,
@@ -415,6 +454,7 @@ void start(bool harness) {
   mu_net::SessionOptions session_options;
   if (o.connect_seconds > 0) session_options.connect_limit_us = (uint64_t)o.connect_seconds * 1000000;
   session_options.max_games = (uint32_t)o.games;
+  session_options.early_inputs = host::early_input::enabled();
   session_options.stage_pool.assign(std::begin(kLegalStages), std::end(kLegalStages));
   s.session->configure(callbacks, session_options);
   s.session->set_identity(identity);
