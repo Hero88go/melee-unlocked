@@ -1683,6 +1683,10 @@ slippi::online::LocalBuild content_build_for_mode(int mode) {
   const bool retail = mods && mode >= 0 && (g_plain_opponent || !(mode == 2 && gx::RenderOptions::live_mods_in_direct()));
   slippi::online::LocalBuild build;
   build.mod_view = mods && !retail;
+  // Akaneia and ACE: their added fighters are compiled into this game library (an Akaneia disc is
+  // refused without them), so Direct and Teams may pick them, as on the Static Recomp. Before this
+  // only Static mod boots said so, and the Source Port refused every added fighter online.
+  build.extended_content = build.mod_view && g_mod_gameplay_profile == slippi::online::NativeGameplayProfile::Akaneia;
   build.fingerprint = g_direct_fingerprint.empty() ? g_mod_fingerprint : g_direct_fingerprint;
   build.name = g_mod_display_name;
   build.allow_unverified = gx::RenderOptions::live_mods_dolphin_ok();
@@ -2965,7 +2969,7 @@ bool set_online_test(const char* spec) {
     char* end = nullptr;
     character = (int)std::strtol(s.c_str() + colon + 1, &end, 10);
     if (end && *end == ':') color = (int)std::strtol(end + 1, &end, 10);
-    if (!end || *end != '\0' || character < 0 || character > 25 || color < 0 || color > 5) return false;
+    if (!end || *end != '\0' || character < 0 || character > 255 || color < 0 || color > 5) return false;
   }
   g_online_test_mode = id;
   g_online_test_character = (uint8_t)character;
