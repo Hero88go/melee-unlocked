@@ -591,13 +591,19 @@ RECT build_seg_rect(int i) {
   const int x = i == 0 ? left : i == 1 ? left + w + gap : left + 2 * (w + gap);
   return LR(x, 98, i == 2 ? narrow : w, 28);
 }
-// Vanilla is in effect: picked, and the Source Port it runs on is installed. With the Source Port
-// gone the row shows Static Recomp, which cannot play this way, so the choice waits.
+// The game being played knows the Vanilla flags: the current install, or an older version from
+// Versions that is 0.9.17 or newer (before that, melee_source.exe refuses --slippi-menus and exits).
+bool vanilla_supported() {
+  return g_active_version.empty() || launcher::lobby::compare_versions(g_active_version, "0.9.17") >= 0;
+}
+// Vanilla is in effect: picked, the Source Port it runs on is installed, and that version knows the
+// flags. With the Source Port gone the row shows Static Recomp, which cannot play this way, so the
+// choice waits; on an older version the row shows the plain Source Port and says why.
 bool vanilla_active() {
 #ifdef MELEE_NO_SLIPPI
   return false;   // that game already boots as the disc does; the row has no segment to pick
 #else
-  return g_engine == ENGINE_SOURCE && g_vanilla.vanilla && source_available();
+  return g_engine == ENGINE_SOURCE && g_vanilla.vanilla && source_available() && vanilla_supported();
 #endif
 }
 // The segment a click at p would pick: -1 off the row, off the Play page, or on a Source Port
@@ -609,7 +615,7 @@ int build_seg_at(POINT p) {
 #endif
   for (int i = 0; i < kBuildSegments; ++i) {
     RECT r = build_seg_rect(i);
-    if (PtInRect(&r, p)) return i != 1 && !source_available() ? -1 : i;
+    if (PtInRect(&r, p)) return (i != 1 && !source_available()) || (i == 2 && !vanilla_supported()) ? -1 : i;
   }
   return -1;
 }
@@ -795,14 +801,14 @@ void paint_play(HDC dc) {
 #else
   {
     const bool installed = source_available();
-    const int on = g_engine == ENGINE_SOURCE && installed ? (g_vanilla.vanilla ? 2 : 0) : 1;
+    const int on = g_engine == ENGINE_SOURCE && installed ? (g_vanilla.vanilla && vanilla_supported() ? 2 : 0) : 1;
     const std::wstring vanilla_name = launcher::lang::txw(L"Vanilla");
     const wchar_t* names[kBuildSegments] = {installed ? L"Source Port (Beta)" : L"Source Port (not installed)", L"Static Recomp (Legacy)", vanilla_name.c_str()};
     for (int i = 0; i < kBuildSegments; ++i) {
       const RECT r = build_seg_rect(i);
       COLORREF top = C_BTN, bot = C_BTN, border = C_BTN_BORDER, text = C_DIM;
       if (i == on) { top = C_ACC_HI; bot = C_ACC_LO; border = NO_FILL; text = C_PLAY_TEXT; }
-      else if (i != 1 && !installed) { top = bot = RGB(0x1A, 0x21, 0x32); border = RGB(0x28, 0x31, 0x47); text = RGB(0x5C, 0x68, 0x7E); }
+      else if ((i != 1 && !installed) || (i == 2 && !vanilla_supported())) { top = bot = RGB(0x1A, 0x21, 0x32); border = RGB(0x28, 0x31, 0x47); text = RGB(0x5C, 0x68, 0x7E); }
       round_rect(dc, r, 7, top, bot, border);
       draw_text(dc, names[i], r, g_font_small, text, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
     }
@@ -841,6 +847,7 @@ void paint_play(HDC dc) {
   fill(dc, sep, C_SEP);
   draw_text(dc, HINT_TEXT, LR(CX, 294, CW, 44), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
   std::string version_status = g_active_version.empty() ? "" : launcher::lang::fill(launcher::lang::tx("Playing {version}"), launcher::lang::Args{{"version", g_active_version}});
+  if (!version_status.empty() && !vanilla_supported()) version_status += ". " + launcher::lang::tx("Vanilla needs 0.9.17 or newer");
   if (host::updater::rollback_state() == host::updater::RollbackState::Downloading)
     version_status = host::updater::rollback_message();
   else if (host::updater::rollback_state() == host::updater::RollbackState::Failed)
