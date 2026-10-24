@@ -58,6 +58,7 @@ namespace {
 std::string g_dir;                 // the folder the launcher and the game are in
 std::string g_iso;
 bool g_save_replays = true;
+std::string g_replay_folder;      // launcher.ini replaydir=: where replays are saved; empty = <g_dir>/Replays
 bool g_replay_as_played = false;
 int g_replay_sort = 0;
 bool g_replay_hide_short = false;
@@ -81,6 +82,7 @@ void load_ini() {
     if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line.rfind("iso=", 0) == 0) g_iso = line.substr(4);
     else if (line == "savereplays=0") g_save_replays = false;
+    else if (line.rfind("replaydir=", 0) == 0) g_replay_folder = line.substr(10);
     else if (line == "replayasplayed=1") g_replay_as_played = true;
     else if (line == "replayhideshort=1") g_replay_hide_short = true;
     else if (line.rfind("replaysort=", 0) == 0) g_replay_sort = std::clamp(std::atoi(line.c_str() + 11), 0, 3);
@@ -92,6 +94,7 @@ void save_ini() {
   std::ofstream f(ini_path(), std::ios::trunc);
   f << "iso=" << g_iso << "\n";
   if (!g_save_replays) f << "savereplays=0\n";
+  if (!g_replay_folder.empty()) f << "replaydir=" << g_replay_folder << "\n";
   if (g_replay_as_played) f << "replayasplayed=1\n";
   if (g_replay_hide_short) f << "replayhideshort=1\n";
   if (g_replay_sort) f << "replaysort=" << g_replay_sort << "\n";
@@ -167,6 +170,12 @@ std::string choose_file(const std::string& title, const std::string& label, cons
   status("Install zenity or kdialog to choose files, or type the path.");
   return {};
 }
+std::string choose_folder(const std::string& title) {
+  if (have_program("zenity")) return run_capture({"zenity", "--file-selection", "--directory", "--title=" + title});
+  if (have_program("kdialog")) return run_capture({"kdialog", "--title", title, "--getexistingdirectory", "."});
+  status("Install zenity or kdialog to choose a folder, or type the path.");
+  return {};
+}
 void open_path(const std::string& path) {
   std::vector<char*> args{const_cast<char*>("xdg-open"), const_cast<char*>(path.c_str()), nullptr};
   pid_t pid; if (posix_spawnp(&pid, "xdg-open", nullptr, nullptr, args.data(), environ) == 0) std::thread([pid] { int s; waitpid(pid, &s, 0); }).detach();
@@ -204,7 +213,7 @@ bool start_process(const std::vector<std::string>& argv) {
   return true;
 }
 
-std::string replay_dir() { return g_dir + "/Replays"; }
+std::string replay_dir() { return g_replay_folder.empty() ? g_dir + "/Replays" : g_replay_folder; }
 // The arguments every start passes (game_args on Windows).
 std::vector<std::string> base_args() {
   std::vector<std::string> a{game_exe(), "--iso", g_iso, "--threaded-renderer", "--settings-path", g_dir + "/port-settings.ini"};
@@ -254,6 +263,7 @@ std::set<std::string> g_live_seen;
 
 std::vector<fs::path> replay_roots() {
   std::vector<fs::path> roots{replay_dir()};
+  if (!g_replay_folder.empty()) roots.push_back(g_dir + "/Replays");   // replays saved before the folder was changed
   // The Slippi Launcher's replay folder too, as on Windows.
   for (const auto& root : slippi::account::launcher_roots()) {
     std::ifstream input(root / "Settings", std::ios::binary);
@@ -476,6 +486,23 @@ void page_play() {
   ImGui::EndGroup();
   ImGui::Spacing();
   if (ImGui::Checkbox("Save my replays", &g_save_replays)) save_ini();
+  {
+    static char folder[1024] = "";
+    static bool filled = false;
+    if (!filled) { std::snprintf(folder, sizeof folder, "%s", replay_dir().c_str()); filled = true; }
+    ImGui::SetNextItemWidth(360);
+    if (ImGui::InputText("Replay folder", folder, sizeof folder)) {
+      g_replay_folder = std::string(folder) == g_dir + "/Replays" ? std::string() : std::string(folder);
+      save_ini();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Choose...##replaydir")) {
+      const std::string picked = choose_folder("Replay folder");
+      if (!picked.empty()) { g_replay_folder = picked; std::snprintf(folder, sizeof folder, "%s", picked.c_str()); save_ini(); }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Default##replaydir")) { g_replay_folder.clear(); std::snprintf(folder, sizeof folder, "%s", replay_dir().c_str()); save_ini(); }
+  }
   ImGui::Separator();
   // Updates: the same release check the game's settings panel makes.
   const auto state = host::updater::state();

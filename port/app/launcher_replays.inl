@@ -5,12 +5,12 @@
 #include <memory>
 #include <tuple>
 enum { ID_REPLAY_LIST=800, ID_REPLAY_BROWSE, ID_REPLAY_WATCH, ID_REPLAY_REFRESH, ID_REPLAY_BACK, ID_REPLAY_PREV, ID_REPLAY_NEXT, ID_REPLAY_ASPLAYED,
-       ID_REPLAY_SEARCH, ID_REPLAY_SORT, ID_REPLAY_HIDESHORT, ID_REPLAY_QUEUE, ID_REPLAY_QUEUE_CLEAR, ID_REPLAY_SAVE, ID_REPLAY_LIVE };
+       ID_REPLAY_SEARCH, ID_REPLAY_SORT, ID_REPLAY_HIDESHORT, ID_REPLAY_QUEUE, ID_REPLAY_QUEUE_CLEAR, ID_REPLAY_SAVE, ID_REPLAY_LIVE, ID_REPLAY_FOLDER };
 const UINT WM_APP_REPLAYS_LISTED = WM_APP + 20;   // lParam: heap ReplayScan*
 const UINT WM_APP_REPLAY_LOADED = WM_APP + 21;    // lParam: heap ReplayLoaded*
-HWND g_replays[15]{};            // list, browse, watch, refresh, back, prev, next, "as it was played",
+HWND g_replays[16]{};            // list, browse, watch, refresh, back, prev, next, "as it was played",
                                  // search, sort, "hide short games", watch queue, clear queue, "save replays",
-                                 // "watch live"
+                                 // "watch live", "replay folder"
 HWND g_replay_stats=nullptr;     // the scrolling stats page
 // Everything the scan found, newest first. A replay's place in these two is its index everywhere on
 // this page (the stats page, the loader's late results, playback). Only the list box counts in rows.
@@ -243,6 +243,47 @@ void pick_replay_sort() {
   g_replay_sort=pick-1; save_ini();
   replay_sort_caption(); replay_view_build(-1);
 }
+// "Replay folder...": choose where new replays are saved (and listed first), open it, or go back to
+// Replays next to the launcher.
+void refresh_replays(const std::filesystem::path& selected);
+void pick_replay_folder() {
+  enum { CHOOSE=1, OPEN, DEFAULT };
+  HMENU menu=CreatePopupMenu();
+  AppendMenuW(menu,MF_STRING,CHOOSE,launcher::lang::txw(L"Choose folder...").c_str());
+  AppendMenuW(menu,MF_STRING,OPEN,(launcher::lang::txw(L"Open")+L" "+widen(replay_folder())).c_str());
+  AppendMenuW(menu,MF_STRING|(g_replay_folder.empty()?MF_GRAYED|MF_CHECKED:0),DEFAULT,launcher::lang::txw(L"Use the Replays folder next to the launcher").c_str());
+  RECT r{}; GetWindowRect(g_replays[15],&r);
+  const int pick=TrackPopupMenu(menu,TPM_RETURNCMD|TPM_NONOTIFY,r.left,r.bottom,0,g_main,nullptr);
+  DestroyMenu(menu);
+  if(pick==OPEN) {
+    std::error_code ec; std::filesystem::create_directories(std::filesystem::u8path(replay_folder()),ec);
+    ShellExecuteW(g_main,L"open",widen(replay_folder()).c_str(),nullptr,nullptr,SW_SHOWNORMAL);
+    return;
+  }
+  if(pick==DEFAULT) { g_replay_folder.clear(); save_ini(); refresh_replays({}); return; }
+  if(pick!=CHOOSE) return;
+  const HRESULT com=CoInitializeEx(nullptr,COINIT_APARTMENTTHREADED);
+  IFileOpenDialog* dialog=nullptr;
+  if(SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog,nullptr,CLSCTX_INPROC_SERVER,IID_PPV_ARGS(&dialog)))) {
+    DWORD options=0; dialog->GetOptions(&options);
+    dialog->SetOptions(options|FOS_PICKFOLDERS|FOS_FORCEFILESYSTEM|FOS_PATHMUSTEXIST);
+    dialog->SetTitle(launcher::lang::txw(L"Replay folder").c_str());
+    IShellItem* start=nullptr;
+    if(SUCCEEDED(SHCreateItemFromParsingName(widen(replay_folder()).c_str(),nullptr,IID_PPV_ARGS(&start)))) { dialog->SetFolder(start); start->Release(); }
+    IShellItem* item=nullptr; PWSTR path=nullptr;
+    if(SUCCEEDED(dialog->Show(g_main))&&SUCCEEDED(dialog->GetResult(&item))&&SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH,&path))) {
+      const std::string chosen=narrow(path);
+      // Choosing the default folder itself keeps the setting empty, so it follows the launcher if it moves.
+      g_replay_folder=_wcsicmp(path,widen(g_dir+"\\Replays").c_str())==0?std::string():chosen;
+      save_ini();
+      refresh_replays({});
+    }
+    if(path) CoTaskMemFree(path);
+    if(item) item->Release();
+    dialog->Release();
+  }
+  if(SUCCEEDED(com)) CoUninitialize();
+}
 void replay_hide_short_toggle() {
   g_replay_hide_short=!g_replay_hide_short; save_ini();
   if(g_replays[10]) InvalidateRect(g_replays[10],nullptr,FALSE);
@@ -273,6 +314,8 @@ void refresh_replays(const std::filesystem::path& selected={}) {
   auto choice=selected;
   if(const int previous=replay_selected();choice.empty()&&previous>=0) choice=g_replay_files[previous];
   std::vector<std::filesystem::path> folders{std::filesystem::u8path(g_dir)/"Replays",std::filesystem::u8path(work_dir())/"Replays"};
+  // The chosen folder first; the defaults stay listed, so replays saved before the change still show.
+  if(!g_replay_folder.empty()) folders.insert(folders.begin(),std::filesystem::u8path(g_replay_folder));
 #ifndef MELEE_NO_SLIPPI   // that build never reads the other program's replay folder
   PWSTR documents=nullptr;
   if(SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Documents,0,nullptr,&documents))) { folders.push_back(std::filesystem::path(documents)/"Slippi");CoTaskMemFree(documents); }
@@ -357,7 +400,7 @@ void replay_layout() {
   // Typing must not reach a search box that is no longer shown.
   if(!list&&g_replays[8]&&GetFocus()==g_replays[8]) SetFocus(g_main);
   if(g_replays[0]) ShowWindow(g_replays[0],list&&!g_replay_visible.empty()?SW_SHOW:SW_HIDE);
-  for(int i:{1,3,8,9,10,13,14}) if(g_replays[i]) ShowWindow(g_replays[i],list?SW_SHOW:SW_HIDE);
+  for(int i:{1,3,8,9,10,13,14,15}) if(g_replays[i]) ShowWindow(g_replays[i],list?SW_SHOW:SW_HIDE);
   for(int i:{4,5,6}) if(g_replays[i]) ShowWindow(g_replays[i],stats?SW_SHOW:SW_HIDE);
   if(g_replays[7]) { ShowWindow(g_replays[7],on?SW_SHOW:SW_HIDE); replay_trace_changed(); }
   if(g_replay_stats) ShowWindow(g_replay_stats,stats?SW_SHOW:SW_HIDE);
@@ -388,7 +431,7 @@ void replay_step(int delta) {
 void replay_selection_changed() { InvalidateRect(g_replays[0],nullptr,FALSE); replay_trace_changed(); replay_buttons(); }
 
 void browse_replay() {
-  wchar_t file[32768]{}; auto folder=widen(g_dir+"\\Replays");
+  wchar_t file[32768]{}; auto folder=widen(replay_folder());
   OPENFILENAMEW dialog{sizeof dialog}; dialog.hwndOwner=g_main;
   const std::wstring dialog_title=launcher::lang::txw(L"Open replay");
 #ifndef MELEE_NO_SLIPPI
@@ -1080,6 +1123,8 @@ void create_replay_controls() {
 #ifndef MELEE_NO_SLIPPI
   g_replays[14]=make(L"BUTTON",L"Watch live",BS_OWNERDRAW,664,622,136,34,ID_REPLAY_LIVE);
 #endif
+  // Where replays are saved: a menu to choose a folder, open it, or go back to Replays next to the launcher.
+  g_replays[15]=make(L"BUTTON",L"Replay folder...",BS_OWNERDRAW,808,26,150,30,ID_REPLAY_FOLDER);
   WNDCLASSEXW wc{sizeof wc}; wc.lpfnWndProc=stats_proc; wc.hInstance=GetModuleHandleW(nullptr);
   wc.hCursor=LoadCursorW(nullptr,IDC_ARROW); wc.lpszClassName=L"MeleeUnlockedReplayStats";
   RegisterClassExW(&wc);

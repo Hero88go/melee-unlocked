@@ -120,6 +120,9 @@ struct RuntimeAsset {
 };
 
 constexpr const char* kVoiceKind = "voice_bank";
+// A standard stage file served padded to the length its random skins share (publish_locked). Not a
+// skin: no id, nothing counted, the same stage online and offline.
+constexpr const char* kStageLengthKind = "stage_length";
 // The online rule a saved stage verdict was made under. 2 (0.9.0): a skin's gameplay values are put
 // back to the original's (stage_safety::restore_gameplay) before it is judged.
 constexpr int kOnlineRule = 2;
@@ -4983,6 +4986,40 @@ static void publish_voices_locked(uint8_t* fst, const std::vector<FstFile>& file
     host::log("cosmetics: %zu sound bank files can be served by a skin's voice", next->voice_files.size());
 }
 
+// The length every form of a stage is served at while random stage skins are on (g_stage_extent):
+// the longest of the disc's own file(s) and every installed skin of that stage, offline and in its
+// online form. `files` carries the disc's own lengths. 0 when the stage is not on this disc.
+static size_t stage_extent_locked(const std::string& target, const std::vector<FstFile>& files) {
+  const std::string wanted = lower(target);
+  if (wanted.size() < 5) return 0;
+  const std::string english = wanted.substr(0, wanted.size() - 4) + ".usd";
+  std::vector<std::vector<uint8_t>> originals;
+  for (const auto& file : files) {
+    const std::string base = lower(fs::path(file.path).filename().string());
+    if (base != wanted && base != english) continue;
+    if (file.size > kMaxAssetBytes) return 0;
+    std::vector<uint8_t> bytes(file.size);
+    if (!host::disc_read(file.start, bytes.data(), file.size)) return 0;
+    originals.push_back(std::move(bytes));
+  }
+  if (originals.empty() || originals.size() > 2) return 0;
+  size_t extent = 0;
+  for (const auto& original : originals) extent = std::max(extent, original.size());
+  for (const auto& asset : g_assets) {
+    if (!asset.info.available || asset.info.kind != "stage_visual" || selection_key(asset) != target) continue;
+    if (asset.source_kind == kDiscSource && g_profile.stage_packs_off.count(asset.source_id)) continue;
+    std::string error;
+    const auto bytes = load_runtime_asset_locked(asset, &error);
+    if (bytes.empty()) continue;
+    extent = std::max(extent, bytes.size());
+    for (const auto& original : originals) {
+      std::vector<uint8_t> form;
+      if (stage_online_form(original, bytes, &form, &error, target)) extent = std::max(extent, form.size());
+    }
+  }
+  return extent;
+}
+
 // The whole profile at startup (only_slot null), or one costume slot again while the game runs
 // (republish_slot): the snapshot is then a copy of the running one with that slot's files replaced.
 static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* only_slot, RepublishResult* republished,
@@ -5032,6 +5069,20 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
     if (was_served && next->assets) --next->assets;
     next->companions.erase(std::remove_if(next->companions.begin(), next->companions.end(),
         [&](const CompanionOverride& have) { return lower(have.target_path) == wanted; }), next->companions.end());
+  }
+  // The whole set at once (startup, a changed profile) with random stage skins on: every stage with
+  // installed skins gets its shared length now, before the game can read any of them ahead of a
+  // match, and before the skins below are padded to it.
+  if (!only_slot && g_profile.enabled && g_profile.random_stage_skins) {
+    std::map<std::string, bool> stages;
+    for (const auto& asset : g_assets)
+      if (asset.info.available && asset.info.kind == "stage_visual" &&
+          !(asset.source_kind == kDiscSource && g_profile.stage_packs_off.count(asset.source_id)))
+        stages[selection_key(asset)] = true;
+    for (const auto& stage : stages) {
+      const size_t extent = stage_extent_locked(stage.first, files);
+      if (extent) g_stage_extent[stage.first] = std::max(g_stage_extent[stage.first], extent);
+    }
   }
   std::map<std::string, bool> effect_done;
   std::vector<std::string> runtime_errors;
@@ -5210,6 +5261,38 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
       next->companions.push_back({companion.kind, asset->info.target_path, path.string()});
     }
   }
+  // With random stage skins on, a stage whose pick is the standard one is served at the same length
+  // as its skins (g_stage_extent): the disc's own file padded with zeros, its length field saying so.
+  // The game can keep a stage file's length from a read ahead made before the pick was published, and
+  // that length must hold whichever form comes next. A standard file at its own, shorter length let
+  // a skin be cut short (its symbols are at the end: "Cannot find symbol map_head"), and a skin's
+  // length kept for the standard file made the read run past its buffer into the fighter file loaded
+  // after it ("Cannot find symbol ftDataNess", lbarchive.c:112).
+  if (g_profile.enabled && g_profile.random_stage_skins) {
+    for (const auto& shared : g_stage_extent) {
+      if (only_slot && lower(shared.first) != lower(*only_slot)) continue;
+      const std::string wanted = lower(shared.first);
+      const std::string english = wanted.size() > 4 && wanted.compare(wanted.size() - 4, 4, ".dat") == 0
+                                      ? wanted.substr(0, wanted.size() - 4) + ".usd" : std::string();
+      for (auto& file : files) {
+        const std::string path = lower(file.path);
+        const size_t slash = path.find_last_of('/');
+        const std::string base = slash == std::string::npos ? path : path.substr(slash + 1);
+        if (base != wanted && (english.empty() || base != english)) continue;
+        if (next->by_start.count(file.start) || shared.second <= file.size || file.size < 4 ||
+            shared.second > std::numeric_limits<uint32_t>::max()) continue;
+        std::vector<uint8_t> padded(file.size);
+        if (!host::disc_read(file.start, padded.data(), file.size)) continue;
+        padded.resize(shared.second, 0);
+        put_be32(padded.data(), (uint32_t)shared.second);
+        put_be32(fst + (size_t)file.index * 12 + 8, (uint32_t)shared.second);
+        next->by_start[file.start] = RuntimeAsset{std::string(), shared.first,
+            std::make_shared<const std::vector<uint8_t>>(std::move(padded)), file.size, true, kStageLengthKind, std::string()};
+        host::log("cosmetics: %s is the standard stage, served at the %zu bytes its skins share", file.path.c_str(),
+                  (size_t)shared.second);
+      }
+    }
+  }
   // A slot's own portrait and stock icon, after the skins: they show where the selected skin brought
   // no picture of that kind.
   for (const AssetRecord* asset : portraits) {
@@ -5250,7 +5333,8 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
       out.fst_index = file.index; out.vanilla_start = file.start; out.length = file.size;
       const auto now = next->by_start.find(file.start);
       if (now != next->by_start.end()) {
-        out.overridden = served = true;
+        out.overridden = true;
+        served |= now->second.kind != kStageLengthKind;   // a padded standard stage is still the standard one
         out.length = (uint32_t)now->second.bytes->size();
         out.online_allowed = now->second.online_allowed;
         out.asset_id = now->second.id;
@@ -5886,7 +5970,24 @@ OverrideRead read(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, 
       ((uint8_t*)dst)[at - file_offset] = length_field[at];
     return OverrideRead::Success;
   }
-  const auto& bytes = found->second.online_bytes && online_active() ? *found->second.online_bytes : *found->second.bytes;
+  std::shared_ptr<const std::vector<uint8_t>> form =
+      found->second.online_bytes && online_active() ? found->second.online_bytes : found->second.bytes;
+  if (found->second.kind == "stage_visual" || found->second.kind == kStageLengthKind) {
+    // One read of a file is one form of it. The game reads a large file in pieces (512 KB at a time),
+    // and a random stage pick can be published between two of them: the pieces then came from two
+    // different files (the standard stage's header with a skin's body), the archive's offsets pointed
+    // into the wrong data, and the game stopped on a missing symbol or wrote over the file next to
+    // it (lbarchive.c:112, "Cannot find symbol ftDataNess"). A read from the start takes the form
+    // served now; later pieces keep it while it has the same length. Stage files only: a sound
+    // bank is streamed from any offset and must follow its new pick at once.
+    static std::mutex pin_mutex;
+    static std::unordered_map<uint32_t, std::shared_ptr<const std::vector<uint8_t>>> pinned;
+    std::lock_guard<std::mutex> lock(pin_mutex);
+    auto& pin = pinned[vanilla_file_start];
+    if (file_offset == 0 || !pin) pin = form;
+    else if (pin != form && pin->size() == form->size()) form = pin;
+  }
+  const auto& bytes = *form;
   uint64_t begin = file_offset, end = begin + size;
   if (end < begin || begin > bytes.size()) return OverrideRead::Failed;
   if (end > bytes.size() && end - bytes.size() > 31) return OverrideRead::Failed;

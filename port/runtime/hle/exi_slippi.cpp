@@ -148,11 +148,14 @@ void close_file() {
 
 void create_file() {
   close_file();
-  CreateDirectoryA(g_replay_dir.c_str(), nullptr);
+  // The folder is UTF-8 (a replay folder the player chose can have any name): wide calls, and its
+  // parents too.
+  std::error_code ec;
+  std::filesystem::create_directories(std::filesystem::u8path(g_replay_dir), ec);
   char stamp[32];
   std::strftime(stamp, sizeof stamp, "%Y%m%dT%H%M%S", std::localtime(&g_start_time));
   g_replay_path = g_replay_dir + "\\Game_" + stamp + ".slp";
-  g_file = std::fopen(g_replay_path.c_str(), "wb");
+  g_file = _wfopen(std::filesystem::u8path(g_replay_path).wstring().c_str(), L"wb");
   if (!g_file) { host::log("slippi: cannot create %s", g_replay_path.c_str()); return; }
   const uint8_t header[] = {'{', 'U', 3, 'r', 'a', 'w', '[', '$', 'U', '#', 'l', 0, 0, 0, 0};
   std::fwrite(header, 1, sizeof header, g_file);
