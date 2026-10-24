@@ -214,12 +214,21 @@ bool start_process(const std::vector<std::string>& argv) {
 }
 
 std::string replay_dir() { return g_replay_folder.empty() ? g_dir + "/Replays" : g_replay_folder; }
+// With "Save my replays" off the game still records (online reporting and the desync checks read the
+// file during the match) into a scratch folder that is emptied before every start, as on Windows.
+// It was never emptied, so unsaved replays piled up there like saved ones.
+std::string unsaved_replay_dir() {
+  const std::string dir = g_dir + "/User/UnsavedReplays";
+  std::error_code ec;
+  std::filesystem::remove_all(dir, ec);
+  return dir;
+}
 // The arguments every start passes (game_args on Windows).
 std::vector<std::string> base_args() {
   std::vector<std::string> a{game_exe(), "--iso", g_iso, "--threaded-renderer", "--settings-path", g_dir + "/port-settings.ini"};
   if (file_exists(g_dir + "/Sys/codehandler.bin")) {
     a.insert(a.end(), {"--sys-dir", g_dir + "/Sys", "--user-dir", g_dir + "/User/Slippi", "--card-dir", g_dir + "/User/GC/CardA"});
-    a.insert(a.end(), {"--replay-dir", g_save_replays ? replay_dir() : g_dir + "/User/UnsavedReplays"});
+    a.insert(a.end(), {"--replay-dir", g_save_replays ? replay_dir() : unsaved_replay_dir()});
   }
   a.insert(a.end(), {"--lobby-status-file", g_dir + "/lobby-game-status.json"});
   return a;
