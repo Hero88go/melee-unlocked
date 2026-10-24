@@ -353,6 +353,10 @@ int compare_versions(const std::string& a,const std::string& b) {
   int x[4]={0,0,0,0},y[4]={0,0,0,0};
   std::sscanf(a.c_str(),"%d.%d.%d.%d",&x[0],&x[1],&x[2],&x[3]);
   std::sscanf(b.c_str(),"%d.%d.%d.%d",&y[0],&y[1],&y[2],&y[3]);
+  // 0.9.1x were hotfixes of 0.9.1; from 0.9.2 the patch number counts minor releases, so a single
+  // digit there ranks as tens (0.9.5 is newer than 0.9.17).
+  auto rank=[](int* v,const std::string& s){ if(v[0]==0&&v[1]==9&&v[2]>=2&&v[2]<=9){ const size_t dot=s.find('.',s.find('.')+1); if(dot!=std::string::npos&&s.size()>dot+1&&(dot+2>=s.size()||!std::isdigit((unsigned char)s[dot+2]))) v[2]*=10; } };
+  rank(x,a); rank(y,b);
   for(int i=0;i<4;++i) if(x[i]!=y[i]) return x[i]<y[i]?-1:1;
   return a==b?0:(a<b?-1:1);
 }

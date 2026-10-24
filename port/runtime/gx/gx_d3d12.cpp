@@ -139,8 +139,12 @@ std::string g_check_settings_path;
 bool switch_settings_to_d3d11() {
   std::error_code ec;
   const std::filesystem::path path = std::filesystem::u8path(g_check_settings_path);
-  if (g_check_settings_path.empty() || !std::filesystem::is_regular_file(path, ec)) return false;
+  if (g_check_settings_path.empty()) return false;
+  // A player who never saved settings has no file yet (two 0.9.18 reports lost the device again on
+  // the next start because of that): create it, with the folder.
+  if (!std::filesystem::is_regular_file(path, ec) && path.has_parent_path()) std::filesystem::create_directories(path.parent_path(), ec);
   std::ofstream out(path, std::ios::binary | std::ios::app);   // a later key wins when the file is read
+  if (!out) return false;
   out << "\nbackend d3d11\n";
   return (bool)out.flush();
 }
