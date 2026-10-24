@@ -168,6 +168,18 @@ struct Interp {
   }
 
   void unsupported(uint32_t w) {
+    // Slippi's helper branch slots (800055EC..800056BC): a user Gecko code written for Slippi
+    // Dolphin can call a helper this build leaves empty (00000000 there; a 0.9.17 report stopped the
+    // game at 80005694). The call returns at once, as an empty helper would: that code's feature does
+    // nothing, the game keeps running.
+    if (w == 0 && pc >= 0x800055ECu && pc < 0x800056BCu) {
+      static uint32_t logged = 0;
+      if (logged++ < 3) host::log("gecko: a code called the empty helper slot at %08X (Slippi Dolphin fills it); it returns at once", pc);
+      const uint32_t t = c.lr;
+      if (t == entry_lr) { done = true; return; }
+      transfer(t, false);
+      return;
+    }
     host::log("interpreter: unsupported instruction %08X at %08X", w, pc);
     dump_history();
     fatal(c, "interpreter: unsupported instruction", pc);
