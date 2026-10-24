@@ -43,6 +43,22 @@ int main() {
   checkout.repo_root = "C:\\repo";
   CHECK(launcher::source_exe_dir(checkout) == "C:\\repo\\build-sourceport\\port\\Release");
 
+  // Vanilla: launcher.ini vanilla=1 and vanillaowncode=1 are read on their own, unknown lines are
+  // not; the launch flags are the retail boot plus the session lockout, and the game's own code only
+  // when asked. Nothing is added while Vanilla is off, whatever the own-code choice.
+  launcher::VanillaChoice choice;
+  CHECK(!launcher::parse_vanilla_line("engine=1", choice));
+  CHECK(!launcher::parse_vanilla_line("vanilla=0", choice));
+  CHECK(!choice.vanilla && !choice.own_code);
+  CHECK(launcher::vanilla_launch_args(choice).empty());
+  CHECK(launcher::parse_vanilla_line("vanillaowncode=1", choice));
+  CHECK(choice.own_code && !choice.vanilla);
+  CHECK(launcher::vanilla_launch_args(choice).empty());
+  CHECK(launcher::parse_vanilla_line("vanilla=1", choice));
+  CHECK(launcher::vanilla_launch_args(choice) == " --slippi-menus off --vanilla-only --vanilla-game");
+  choice.own_code = false;
+  CHECK(launcher::vanilla_launch_args(choice) == " --slippi-menus off --vanilla-only");
+
   if (g_failures == 0) std::printf("launcher engine: all checks passed\n");
   return g_failures == 0 ? 0 : 1;
 }

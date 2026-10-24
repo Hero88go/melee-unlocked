@@ -8,8 +8,15 @@ Normal Melee Unlocked launches keep their existing mod support and defaults.
 ## Vanilla listing
 
 ```powershell
-.\melee_source.exe --iso "C:\Games\Melee.iso" --vanilla-only --settings-path "Listings\Vanilla\settings.ini" --card-dir "Listings\Vanilla\CardA"
+.\melee_source.exe --iso "C:\Games\Melee.iso" --slippi-menus off --vanilla-only --settings-path "Listings\Vanilla\settings.ini" --card-dir "Listings\Vanilla\CardA"
 ```
+
+`--slippi-menus off` (Source Port only) keeps the online menu layer out of the process: no patched
+menu files are built or served, the game boots as the disc does (logos, opening movie, title
+screen, the normal main menu) and plays its own music stream. Nothing online is reachable from
+inside that session. Add `--vanilla-game` to also leave out the built-in UCF and unlock codes, so
+the disc runs exactly as shipped. The launcher's GAME BUILD row offers this as its Vanilla
+segment (launcher.ini `vanilla=1`, `vanillaowncode=1`), with the same flags.
 
 `--vanilla-only` works on both `melee_source.exe` and `melee_port.exe`. It:
 
