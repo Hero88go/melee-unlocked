@@ -933,7 +933,10 @@ void fill_ps_constants(const DrawCall& dc, PSConstants& c, int efb_scale) {
   c.tint[0] = c.tint[1] = c.tint[2] = 1.0f; c.tint[3] = 0.0f;
   // The model only, as the Gecko code does. Tinting every draw the player owns also caught the
   // shadow and the effects around the fighter, which is the tint appearing where it should not.
-  if (dc.skinned && dc.owner_player < kPlayerTintSlots) {
+  // The fighter's shadow is that same skinned model drawn again into a texture through an
+  // orthographic camera (HSD_ShadowStartRender), so the scene's perspective camera is required too:
+  // tinting the shadow pass turned the shadow red.
+  if (dc.skinned && dc.owner_player < kPlayerTintSlots && dc.xf_regs[0x26] == 0) {
     const PlayerTint& t = g_player_tints[dc.owner_player];
     const float amount = t.amount.load(std::memory_order_relaxed);
     if (amount > 0.0f) {
