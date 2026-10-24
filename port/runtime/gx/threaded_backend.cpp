@@ -87,11 +87,49 @@ class ThreadedBackend final : public Backend {
     double pacing_spike_logged = 0; uint32_t pacing_spikes_quiet = 0;   // presented phases: [0,.25) [.25,.5) [.5,.75) [.75,1) exactly 1
     // MELEE_TRACE_LATENCY=1: the path of each new simulation frame from its tick to the return of
     // its first Present, in milliseconds, summarised as median and p95 every 600 frames.
-    enum { LT_WAKE, LT_PAD, LT_SIM, LT_PICKUP, LT_SUBMIT, LT_WAIT, LT_TOTAL, LT_AGE, LT_COUNT };
-    static const char* const kLatencyNames[LT_COUNT] = {"wake late", "pad read after wake", "pad read to queued", "queued to submit", "submit", "present wait", "pad read to Present return", "adapter report age"};
+    enum { LT_WAKE, LT_PAD, LT_SIM, LT_POP, LT_PAIR, LT_SLOT, LT_PICKUP, LT_SUBMIT, LT_WAIT, LT_TOTAL, LT_AGE, LT_COUNT };
+    static const char* const kLatencyNames[LT_COUNT] = {"wake late", "pad read after wake", "pad read to queued", "queued to pop", "pairing", "pop to render start", "queued to submit", "submit", "present wait", "pad read to Present return", "adapter report age"};
+    double frame_popped = 0.0, frame_pair_s = 0.0;   // of the frame in frames[cur]: when the render thread took it, and its pairing time
     std::vector<double> latency[LT_COUNT];
     const bool latency_trace = host::latency_trace_enabled();
     uint64_t latency_sequence = 0;
+    // Predict phases from the tick's schedule (above, where t is set). Measured 2026-10-23 on the
+    // same scripted match back to back: steps in the shown time over 2 ms fell from 262 to 15 per
+    // 40 s, over 1 ms from 1032 to 230, with latency, pair rejection and the endpoint check
+    // unchanged. MELEE_PHASE_TIMELINE=handover (tests) keeps the hand-over time instead.
+    static const bool phase_timeline = [] { const char* v = std::getenv("MELEE_PHASE_TIMELINE"); return !(v && v[0] == 'h'); }();
+    double typical_span = 0.0, early_span = 0.0; uint64_t timeline_sequence = 0;
+    // Present on hand-over (variable refresh only): a new game frame is drawn the moment it arrives
+    // instead of waiting for the next slot of the cap's grid; the in-between presents of that tick are
+    // then spaced evenly up to the predicted next hand-over, so the next one never meets the display's
+    // minimum interval. A fixed-refresh display keeps the plain grid (uneven presents judder there).
+    static const bool handover_env = [] { const char* v = std::getenv("MELEE_PRESENT_ON_HANDOVER"); return v && *v == '1'; }();
+    // Frame-locked grid (MELEE_PRESENT_LOCK=1): on a variable refresh display the grid period is a
+    // whole fraction of the game frame and a new frame is presented on arrival (below).
+    static const bool present_lock = [] { const char* v = std::getenv("MELEE_PRESENT_LOCK"); return v && *v == '1'; }();
+    bool handover_present = handover_env;
+    int lock_logged = 0;   // off: about 1 ms less delay, but less even motion (measured 10-23)
+    double handover_span = 0.0; uint64_t handover_span_seq = 0;
+    bool handover_now = false; double handover_due = 0.0, submit_typical = 0.0, submit_first_typical = 0.0;
+    // An in-between present whose game frame is superseded while its re-pose is being built is not
+    // submitted: the new frame takes that slot instead of waiting a whole period for the next one.
+    // MELEE_STALE_DISCARD=0 keeps the old behaviour (measurement only).
+    static const bool stale_discard = [] { const char* v = std::getenv("MELEE_STALE_DISCARD"); return !(v && *v == '0'); }();
+    uint64_t stale_discards = 0;
+    static const bool scanline_sync = [] { const char* v = std::getenv("MELEE_SCANLINE_SYNC"); return v && *v == '1'; }();
+    bool scanline_active = false, scanline_logged_on = false, scanline_failed = false;
+    double last_scanline_flip = 0.0, scanline_flip = 0.0, scanline_period = 0.0;
+    int scanline_misses = 0;
+    std::string scanline_why;
+    enum { KF_DEFAULT, KF_OFF, KF_ANCHOR_ALL, KF_SNAP };
+    static const int keyframe_mode = [] {
+      const char* m = std::getenv("MELEE_KEYFRAME_MODE");
+      if (!m || !*m) return (int)KF_DEFAULT;
+      const std::string s(m);
+      return s == "off" ? (int)KF_OFF : s == "anchor-all" ? (int)KF_ANCHOR_ALL : s == "snap" ? (int)KF_SNAP : (int)KF_DEFAULT;
+    }();
+    host::log("presentation: phase timeline %s, keyframe %s", phase_timeline ? "tick" : "hand-over",
+              keyframe_mode == KF_OFF ? "off" : keyframe_mode == KF_ANCHOR_ALL ? "anchor (all modes)" : keyframe_mode == KF_SNAP ? "snap" : "off");
     for (;;) {
       host::window_pump();
       const auto& live_options = render_options(renderer);
@@ -125,7 +163,11 @@ class ThreadedBackend final : public Backend {
       // own counts) is fed just under its refresh and synced, whatever the cap and V-Sync say: above
       // the refresh it stops following and tears, under it syncing costs nothing. A 0.8.99 player on
       // a 240 Hz G-Sync screen saw tearing with V-Sync off, and again after turning it on and off.
-      const int vrr = renderer->variable_refresh();
+      int vrr = renderer->variable_refresh();
+      // Measurement only: hidden test windows read as fixed refresh; MELEE_ASSUME_VRR=1 treats the
+      // display as variable refresh so the hand-over present path can be timed there.
+      static const bool assume_vrr = [] { const char* v = std::getenv("MELEE_ASSUME_VRR"); return v && *v == '1'; }();
+      if (assume_vrr) vrr = 1;
       const double vrr_cap = vrr::under_refresh(last_refresh);
       // Frames as fast as the refresh look alike on both kinds of display, so the counts cannot tell
       // them apart. Once, for four seconds at the start, frames are held to 90% of the refresh to
@@ -157,6 +199,16 @@ class ThreadedBackend final : public Backend {
                              : live_options.fps_cap < 0 ? (live_options.vsync ? 0.0 : vrr == 0 ? last_refresh : vrr_cap)
                              : present_uncapped ? 0.0 : 2.0 * last_refresh;
       const bool reflex_pacing = renderer->reflex_pacing(subframes ? reflex_hz : 0.0) && subframes;
+      handover_present = handover_env;
+      if (present_lock && vrr == 1 && !reflex_pacing && cap_period > 0.0) {
+        const double n = std::max(2.0, std::floor(SIM_PERIOD / cap_period + 1e-6));
+        cap_period = SIM_PERIOD / n;
+        handover_present = true;
+        if (lock_logged != (int)n) {
+          lock_logged = (int)n;
+          host::log("pacing: frame-locked grid, %d presents per game frame (%.1f Hz), new frames presented on arrival", (int)n, n / SIM_PERIOD);
+        }
+      }
       if (host::window_closed()) { queue.finish(true); break; }
       {
         // The PC settings panel can switch sub-frame animation at run time.
@@ -172,6 +224,39 @@ class ThreadedBackend final : public Backend {
           if (subframes && cur >= 0) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);
         }
       }
+      // Tear-free without V-Sync's queue, for displays that refresh at a fixed rate (G-Sync and
+      // FreeSync off): one frame per refresh. Each frame is started just after a vertical blank,
+      // shows the moment of the following blank, and is presented synced so it flips at that blank:
+      // a whole refresh for drawing it, never a tear, never more than one frame queued. It costs up
+      // to one refresh of display delay against tearing. If two presents in a row wait more than
+      // 1.5 refreshes (the frame missed its blank), it stops for the session and the frame cap clock
+      // paces. MELEE_SCANLINE_SYNC=1 turns it on.
+      scanline_active = false;
+      if (scanline_sync && !scanline_failed && subframes && vrr != 1 && probe_state != 1 && !live_options.vsync && !reflex_pacing &&
+          options_.pin_phase < 0 && (live_options.fps_cap <= 0 || live_options.fps_cap >= 0.98 * last_refresh)) {
+        std::string why;
+        if (scanline_flip <= 0.0) {
+          double blank = 0, period = 0;
+          if (renderer->vblank_next(host::now_seconds(), last_refresh, &blank, &period, &why)) {
+            double flip = blank + period;   // drawn after the coming blank, flipped at the one after
+            if (flip < last_scanline_flip + 0.5 * period) flip += period;   // that refresh already has its frame
+            scanline_flip = flip; scanline_period = period;
+          }
+        }
+        if (scanline_flip > 0.0) {
+          next_present = scanline_flip - scanline_period + 0.0003 + render_budget;   // the loop starts render_budget before next_present
+          cap_period = scanline_period;
+          scanline_active = true;
+          if (!scanline_logged_on) {
+            host::log("pacing: tear-free on, one frame per vertical blank (every %.3f ms), drawn the refresh before", scanline_period * 1000.0);
+            scanline_logged_on = true; scanline_why.clear();
+          }
+        } else if (why != scanline_why) {
+          host::log("pacing: tear-free waiting (%s); the frame cap clock paces meanwhile", why.c_str());
+          scanline_why = why; scanline_logged_on = false;
+        }
+      }
+      renderer->set_display_refresh(last_refresh, vrr == 1 || scanline_active);
       authored = live_options.subframe == SubFrameMode::Authored || live_options.subframe == SubFrameMode::AuthoredInterpolate;
       interpolate = live_options.subframe == SubFrameMode::Interpolate || live_options.subframe == SubFrameMode::AuthoredInterpolate;
       set_authored_capture_wanted(subframes && authored);
@@ -211,6 +296,7 @@ class ThreadedBackend final : public Backend {
         if (frames[next].discontinuous) ++discontinuities;
         cur = next;
         got_new = true;
+        frame_popped = host::now_seconds(); frame_pair_s = 0.0;
         ++submitted; ++stats_sim;
       }
       if (cur < 0) {
@@ -220,7 +306,11 @@ class ThreadedBackend final : public Backend {
       }
       // Pairing must follow every new frame, including drained ones: the index maps this frame's
       // draws onto the previous frame's, and the ring slots are refilled underneath it.
-      if (got_new && subframes) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);
+      if (got_new && subframes) {
+        const double p0 = host::now_seconds();
+        solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);
+        frame_pair_s = host::now_seconds() - p0;
+      }
       // Backlog (the renderer fell behind, or a compile burst): execute older frames without
       // the solver or a present so their EFB copies exist, then catch up to the newest one. The
       // simulation never waits on this.
@@ -257,9 +347,67 @@ class ThreadedBackend final : public Backend {
           continue;
         }
         double now = host::now_seconds();
-        t = (now - current.time) / SIM_PERIOD;
-        if (interpolate) t = std::min(std::max(t, 0.0), 1.0);
-        else t = std::min(std::max(t, 0.0), 1.0);   // never extrapolate more than one frame ahead
+        // The moment a game frame stands for. Its hand-over time moves with how long the game took
+        // to compute it (2 to 5 ms from frame to frame), so phases measured from it make motion
+        // speed up and slow down by that much. The tick's own scheduled start is even; adding the
+        // usual compute time keeps the average where it was. Predict only: Interpolate shows the
+        // previous frame at phase 0, which must never be shown before the new one exists.
+        double base = current.time;
+        static const bool interp_timeline = [] { const char* v = std::getenv("MELEE_INTERP_TIMELINE"); return !(v && *v == '0'); }();
+        if (phase_timeline && (!interpolate || interp_timeline) && current.tick.target > 0.0) {
+          const double span = current.time - current.tick.target;
+          if (span > 0.0 && span < SIM_PERIOD) {
+            if (current.sequence != timeline_sequence) {
+              timeline_sequence = current.sequence;
+              typical_span = typical_span > 0.0 ? typical_span + 0.05 * (span - typical_span) : span;
+              // Presented on arrival, a frame handed over earlier than usual would need a phase
+              // under 0 and is clamped, which is a visible step: the base follows the early edge.
+              early_span = early_span > 0.0 ? early_span + (span < early_span ? 0.3 : 0.01) * (span - early_span) : span;
+            }
+            const bool on_arrival = handover_present && vrr == 1 && !reflex_pacing && cap_period > 0;
+            base = current.tick.target + (on_arrival && early_span > 0.0 ? early_span : typical_span);
+          }
+        }
+        handover_now = handover_present && vrr == 1 && !reflex_pacing && cap_period > 0 && current.sequence != rendered_sequence;
+        if (current.tick.target > 0.0 && current.sequence != handover_span_seq) {
+          handover_span_seq = current.sequence;
+          const double span = current.time - current.tick.target;
+          if (span > 0.0 && span < SIM_PERIOD) handover_span = handover_span > 0.0 ? handover_span + 0.05 * (span - handover_span) : span;
+        }
+        // The phase of a present whose render starts at `when`.
+        // With the hand-over lever every present takes its phase from the moment it is expected to be
+        // shown, less one typical submit, so the two kinds of present agree: a grid present is shown
+        // at its slot; a hand-over present one submit after now, or at its floor (half a period after
+        // the last present) if that is later. Taken at the render start instead, a present that then
+        // waited inside Present showed a phase that was too old by that wait: the measured steps.
+        // Every simulation frame shown once exactly as the game drew it (MELEE_KEYFRAME_MODE=anchor-all,
+        // tests): the first present of a new frame at phase 0. Off by default in both modes: anchored,
+        // the first present of each frame jumps back to 0 and motion stalls on every game frame
+        // (measured 10-23 in Interpolate: steps over 2 ms 164 -> 3291 a match against 0.9.17, which
+        // never anchored). snap: at a cap that is a whole multiple of 60, phases rounded to the
+        // present grid so one present lands on 0 every frame.
+        const auto phase_for = [&](double when) {
+          double ph = (when - base) / SIM_PERIOD;
+          if (handover_present && vrr == 1 && !reflex_pacing && cap_period > 0 && submit_typical > 0.0) {
+            // A new frame's first present submits more (textures, EFB copies) than an in-between one,
+            // so it has its own typical.
+            const double first_typical = submit_first_typical > 0.0 ? submit_first_typical : submit_typical;
+            const double shown = handover_now ? std::max(when + first_typical, last_submission > 0 ? last_submission + 0.5 * cap_period : 0.0)
+                                              : next_present;
+            ph = (shown - submit_typical - base) / SIM_PERIOD;
+          }
+          if (scanline_active) ph = (scanline_flip - base) / SIM_PERIOD;   // shown from that blank on
+          ph = std::min(std::max(ph, 0.0), 1.0);   // never extrapolate more than one frame ahead
+          if (options_.pin_phase < 0) {
+            if (keyframe_mode == KF_ANCHOR_ALL && current.sequence != rendered_sequence) ph = 0.0;
+            if (keyframe_mode == KF_SNAP && live_options.fps_cap > 0) {
+              const double k = std::round(live_options.fps_cap / 60.0);
+              if (k >= 2 && std::fabs(live_options.fps_cap - k * 60.0) < 1.0) ph = std::round(ph * k) / k;
+            }
+          }
+          return ph;
+        };
+        t = phase_for(now);
         if (options_.pin_phase >= 0) {
           // Development: one presented frame per simulation frame at a fixed phase, so two runs of
           // the same script produce pictures that can be compared one for one.
@@ -269,7 +417,7 @@ class ThreadedBackend final : public Backend {
             queue.wait_available(std::chrono::milliseconds(2));
             continue;
           }
-        } else if (!reflex_pacing && cap_period > 0 && now < next_present - render_budget) {
+        } else if (!handover_now && !reflex_pacing && cap_period > 0 && now < next_present - render_budget) {
           // Start early enough to finish GPU submission before the presentation deadline.
           double wait = next_present - render_budget - now;
           if (wait > 0.0005 + host::sleep_slack()) std::this_thread::sleep_for(std::chrono::microseconds((long long)(std::min(wait - 0.0003, 0.001) * 1e6)));   // not on a system whose sleeps overshoot
@@ -278,41 +426,31 @@ class ThreadedBackend final : public Backend {
         }
         should_render = true;
         if (queue.drained() && current.sequence == rendered_sequence) break;
-        // Every simulation frame is shown once exactly as the game drew it. The first present of a
-        // new frame is phase 0: in Predict that is this frame's own pose, in Interpolate the frame
-        // before it, so either way no frame of an animation is ever only seen half-way between its
-        // neighbours (the tip of a sword swing that lasts one frame). That first present comes
-        // within one refresh of the frame's arrival, so the phase it replaces was already near 0
-        // and the motion does not change. MELEE_KEYFRAME_MODE (tests): off presents by clock alone
-        // (as does MELEE_KEYFRAME_ANCHOR=0); anchor is the default above; snap, at a frame cap that
-        // is a whole multiple of 60, rounds the phase to the present grid (steps stay even and one
-        // present lands on phase 0 every frame), and at other caps presents by clock.
-        static const int keyframe_mode = [] {
-          const char* m = std::getenv("MELEE_KEYFRAME_MODE");
-          if (m && *m) return m[0] == 'o' ? 0 : m[0] == 's' ? 2 : 1;
-          const char* v = std::getenv("MELEE_KEYFRAME_ANCHOR");
-          return v && *v == '0' ? 0 : 1;
-        }();
-        if (options_.pin_phase < 0) {
-          if (keyframe_mode == 1 && current.sequence != rendered_sequence) t = 0.0;
-          if (keyframe_mode == 2 && options_.fps_cap > 0) {
-            const double k = std::round(options_.fps_cap / 60.0);
-            if (k >= 2 && std::fabs(options_.fps_cap - k * 60.0) < 1.0) t = std::round(t * k) / k;
-          }
-        }
       }
       if (options_.capture_burst && options_.capture_sim_frame && current.sequence >= options_.capture_sim_frame && burst_logged < options_.capture_burst) {
         host::log("present %llu: sim frame %llu phase %.3f", presented + 1, (unsigned long long)current.sequence, t);
         ++burst_logged;
       }
-      renderer->set_present_deadline(subframes && cap_period > 0 && !reflex_pacing ? next_present : 0);
+      // A hand-over present goes out now: the grid slot it replaces is no deadline for it, only half
+      // a period after the last present, so two presents never queue back to back.
+      renderer->set_present_deadline(!(subframes && cap_period > 0 && !reflex_pacing) || scanline_active ? 0
+                                     : handover_now ? (last_submission > 0 ? last_submission + 0.5 * cap_period : 0) : next_present);
       solver_pair_counter().store(subframes ? solver.pair_count() : 0, std::memory_order_relaxed);   // for the backends' "gpu:" line
       const double render_start = host::now_seconds();
       double solver_ms = 0;
       if (subframes && have_prev) {
         double t0 = host::now_seconds();
-        solver.build(t, interpolate, overrides, authored);
+        // A repeated present's re-pose stops the moment a newer game frame is pushed (polled by the
+        // solver's workers), and is dropped: the newer frame takes this slot.
+        const uint64_t pushed_at_start = queue.pushed();
+        const bool repeat = current.sequence == rendered_sequence && options_.pin_phase < 0 && stale_discard;
+        const std::function<bool()> newer = [&] { return queue.pushed() != pushed_at_start; };
+        const bool built = solver.build(t, interpolate, overrides, authored, repeat ? &newer : nullptr);
         double t1 = host::now_seconds();
+        if (repeat && (!built || queue.pushed() != pushed_at_start)) {
+          build_seconds += t1 - t0; ++stale_discards;
+          continue;   // the newer frame is picked up at the top and presented in this slot
+        }
         solver_ms = (t1-t0)*1000.0;
         renderer->submit_frame(current, overrides.data());
         build_seconds += t1 - t0; submit_seconds += host::now_seconds() - t1; ++cost_presented;
@@ -325,6 +463,9 @@ class ThreadedBackend final : public Backend {
       reflex_slept = false;
       const double present_wait = renderer->presentation_wait_seconds();
       render_budget = std::max(render_budget * 0.95, render_end-render_start-present_wait+0.0002);
+      { const double s = std::min(render_end - render_start - present_wait, 0.010);
+        if (current.sequence != rendered_sequence) submit_first_typical = submit_first_typical > 0.0 ? submit_first_typical + 0.05 * (s - submit_first_typical) : s;
+        else submit_typical = submit_typical > 0.0 ? submit_typical + 0.02 * (s - submit_typical) : s; }
       if (trace.file) std::fprintf(trace.file, "%llu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%u,%.3f,%u,%u,%u,%u,%u,%u,%u,%u,%u,%u\n",
           (unsigned long long)(presented+1), (unsigned long long)current.sequence, t,
           (render_start-current.time)*1000.0, last_submission ? (render_end-last_submission)*1000.0 : 0.0,
@@ -335,7 +476,8 @@ class ThreadedBackend final : public Backend {
       if (latency_trace && current.sequence != latency_sequence && current.tick.pad > 0) {
         latency_sequence = current.sequence;
         const host::TickTiming& k = current.tick;
-        const double v[LT_COUNT] = {k.wake - k.target, k.pad - k.wake, current.time - k.pad, render_start - current.time,
+        const double v[LT_COUNT] = {k.wake - k.target, k.pad - k.wake, current.time - k.pad,
+                                    frame_popped - current.time, frame_pair_s, render_start - frame_popped - frame_pair_s, render_start - current.time,
                                     render_end - render_start - present_wait, present_wait, render_end - k.pad, k.pad_age / 1000.0};
         for (int i = 0; i < LT_COUNT; ++i) if (i != LT_AGE || k.pad_age >= 0) latency[i].push_back(v[i] * 1000.0);
         if (latency[LT_TOTAL].size() == 600) {
@@ -376,13 +518,36 @@ class ThreadedBackend final : public Backend {
       rendered_sequence = current.sequence;
       ++presented; ++stats_presented;
       ++phase_bins[t >= 1.0 ? 4 : (int)(t * 4.0)];
-      host::present_report(render_end, cap_period > 0 ? cap_period : 1.0 / std::max(last_refresh, 1.0));
-      if (cap_period > 0) {
+      if (scanline_active) {
+        last_scanline_flip = scanline_flip;   // the next one is taken from the vertical blank again
+        scanline_flip = 0.0;
+        scanline_misses = present_wait > 1.5 * scanline_period ? scanline_misses + 1 : 0;
+        if (scanline_misses >= 2) {
+          scanline_failed = true;
+          host::log("pacing: tear-free stopped: two presents in a row waited %.1f ms (refresh %.3f ms); the frame cap clock paces from now on",
+                    present_wait * 1000.0, scanline_period * 1000.0);
+        }
+      } else if (handover_now) {
+        // Restart the grid from this present; the next hand-over's present is predicted from the
+        // usual tick-start-to-hand-over time.
+        // Measured, not render_budget: that holds a slow present's time for a while and pushed the
+        // grid 10 ms or more out after every hitch.
+        const double presented_at = render_end;
+        next_present = presented_at + cap_period;
+        handover_due = current.tick.target > 0.0 && handover_span > 0.0
+                     ? current.tick.target + SIM_PERIOD + handover_span + std::min(render_end - render_start, 0.006) : 0.0;
+        if (next_present <= host::now_seconds()) next_present = host::now_seconds() + cap_period;
+      } else if (cap_period > 0) {
         double now = host::now_seconds();
         // Skip missed slots; never emit catch-up bursts after a stall.
         next_present += cap_period;
         if (next_present <= now) next_present += (std::floor((now-next_present)/cap_period)+1.0)*cap_period;
       }
+      // A slot landing just before the predicted hand-over would hold that present back by the
+      // display's minimum interval: skip it (5, 5, 6.7 ms at 200 Hz instead of 5, 5, 5, 1.7).
+      if (handover_present && vrr == 1 && handover_due > 0.0 && !scanline_active &&
+          next_present > handover_due - 0.6 * cap_period && next_present < handover_due + 0.5 * cap_period)
+        next_present += cap_period;
       double now = host::now_seconds();
       if (now - stats_time >= 1.0) {
         const SubFrameStats& s = solver.stats();
@@ -464,6 +629,7 @@ class ThreadedBackend final : public Backend {
         stats_time = now; stats_presented = 0; stats_sim = 0;
       }
     }
+    host::log("renderer: %llu in-between presents dropped for a newer frame", (unsigned long long)stale_discards);
     host::log("renderer: %llu simulation frames, %llu presented frames on its own thread, %llu drained without presenting, %llu with stage held across a rollback",
               submitted, presented, (unsigned long long)drained, (unsigned long long)discontinuities);
   }

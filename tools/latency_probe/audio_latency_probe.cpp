@@ -283,6 +283,7 @@ void write_wav(const std::string& path) {
 
 int main(int argc, char** argv) {
   DWORD pid = 0; HWND hwnd = nullptr; int trials = 40, gap_ms = 700, tone_ms = 500; float session_volume = 0.15f, tone_db = -30.0f;
+  std::string key_name;
   std::string out = "audio-latency", render_spec, capture_spec;
   bool list = false, level = false;
   int record_seconds = 0;   // only record the input for this long (no key presses, no tone)
@@ -292,6 +293,7 @@ int main(int argc, char** argv) {
     if (a == "--pid") pid = (DWORD)std::strtoul(next(), nullptr, 0);
     else if (a == "--hwnd") hwnd = (HWND)(uintptr_t)std::strtoull(next(), nullptr, 0);
     else if (a == "--trials") trials = std::atoi(next());
+    else if (a == "--key") key_name = next();   // one key every press (a match sound, e.g. z = A jab) instead of Down/Up
     else if (a == "--gap-ms") gap_ms = std::atoi(next());
     else if (a == "--session-volume") session_volume = (float)std::atof(next());
     else if (a == "--out") out = next();
@@ -367,12 +369,12 @@ int main(int argc, char** argv) {
   Sleep(1500);   // a quiet stretch before the first press, to learn the level of the background
   for (int t = 0; t < trials; ++t) {
     if (hwnd && GetForegroundWindow() != hwnd) SetForegroundWindow(hwnd);
-    const WORD vk = (t & 1) ? VK_UP : VK_DOWN;
+    const WORD vk = key_name.empty() ? ((t & 1) ? VK_UP : VK_DOWN) : (WORD)std::toupper((unsigned char)key_name[0]);
     const unsigned long long when = now_100ns();
     send_key(vk, false);
     Sleep(70);
     send_key(vk, true);
-    if (presses) { std::fprintf(presses, "%llu,%s\n", when, vk == VK_UP ? "up" : "down"); std::fflush(presses); }
+    if (presses) { std::fprintf(presses, "%llu,%s\n", when, !key_name.empty() ? key_name.c_str() : vk == VK_UP ? "up" : "down"); std::fflush(presses); }
     Sleep(gap_ms + (t * 37) % 211);   // not a fixed period, so presses do not lock to the game's frame phase
   }
   Sleep(600);

@@ -85,6 +85,10 @@ std::atomic<double> g_rate_min{1.0}, g_rate_max{1.0};
 IAudioClient* g_client = nullptr;
 IAudioRenderClient* g_render = nullptr;
 HANDLE g_event = nullptr;
+// Exclusive push (MELEE_AUDIO_EXCL_PUSH=1): exclusive stream opened without the event flag, fed on
+// the direct path; g_tick_timer fires once per device period in place of the engine event.
+bool g_excl_push = false;
+HANDLE g_tick_timer = nullptr;
 std::thread g_thread;
 std::atomic<bool> g_running{false};
 UINT32 g_buffer_frames = 0;
@@ -306,7 +310,9 @@ void wasapi_thread() {
   // Direct path: the engine takes one period at each of its events. A timer set for 2 ms before the
   // next take checks the device still holds that much; only then is a missing block a gap (the
   // stream fades out), so blocks that are merely a little late never cost a click.
-  HANDLE waits[3] = {g_event, g_push_event, g_take_timer};
+  HANDLE waits[3] = {g_excl_push ? g_tick_timer : g_event, g_push_event, g_take_timer};
+  const LONGLONG tick_100ns = -(LONGLONG)(g_period_frames * 10000000ull / g_device_rate);
+  if (g_excl_push) { LARGE_INTEGER due; due.QuadPart = std::min<LONGLONG>(tick_100ns, -1); SetWaitableTimer(g_tick_timer, &due, 0, nullptr, nullptr, FALSE); }
   const DWORD wait_count = g_direct && g_push_event && g_take_timer ? 3 : 1;
   const LONGLONG take_check_100ns = -(LONGLONG)(g_period_frames * 10000000ull / g_device_rate) + 2 * 10000;
   int64_t last_update = qpc_now();
@@ -318,6 +324,7 @@ void wasapi_thread() {
     const bool engine = woke == WAIT_OBJECT_0;
     const bool take_check = woke == WAIT_OBJECT_0 + 2;
     if (!engine && woke != WAIT_OBJECT_0 + 1 && !take_check) continue;
+    if (engine && g_excl_push) { LARGE_INTEGER due; due.QuadPart = std::min<LONGLONG>(tick_100ns, -1); SetWaitableTimer(g_tick_timer, &due, 0, nullptr, nullptr, FALSE); }
     if (engine && wait_count == 3) {
       LARGE_INTEGER due; due.QuadPart = std::min<LONGLONG>(take_check_100ns, -1);
       SetWaitableTimer(g_take_timer, &due, 0, nullptr, nullptr, FALSE);
@@ -337,7 +344,8 @@ void wasapi_thread() {
     // Exclusive, event driven: each event asks for the whole buffer, and the padding is not meaningful
     // (the MOTU reports the buffer as full, so waiting for room wrote nothing at all: silence and a full
     // ring until 09-30). Other wake-ups have nothing to do in this mode.
-    if (g_exclusive) { if (!engine) continue; }
+    // Exclusive push is not event driven: its padding is the real queue, as in shared mode.
+    if (g_exclusive && !g_excl_push) { if (!engine) continue; }
     else if (FAILED(g_client->GetCurrentPadding(&padding))) continue;
     const UINT32 fill_to = g_device_target ? std::min(g_device_target, g_buffer_frames) : g_buffer_frames;
     // Two-stage path: top the device up to its queue target at each engine event.
@@ -698,7 +706,9 @@ bool wasapi_open() {
   hr = E_FAIL;
   // Exclusive (opt-in): the game owns the device, event driven at its minimum period. Other apps
   // (and routing tools such as virtual cables) cannot play through it while the game runs.
+  g_excl_push = false;
   if (g_requested_mode.load() == 2 && !std::getenv("MELEE_AUDIO_DEVICE_DUMP")) {
+    { const char* v = std::getenv("MELEE_AUDIO_EXCL_PUSH"); g_excl_push = v && *v == '1'; }
     REFERENCE_TIME def_period = 0, min_period = 0;
     g_client->GetDevicePeriod(&def_period, &min_period);
     const DWORD rates[] = {48000, 44100, 96000, 32000};
@@ -715,13 +725,17 @@ bool wasapi_open() {
         x.SubFormat = kind == 3 ? KSDATAFORMAT_SUBTYPE_IEEE_FLOAT : KSDATAFORMAT_SUBTYPE_PCM;
         if (const HRESULT ok = g_client->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, (WAVEFORMATEX*)&x, nullptr); ok != S_OK) { refused = ok; continue; }
         REFERENCE_TIME period = min_period > 0 ? min_period : def_period;
-        hr = g_client->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, period, period, (WAVEFORMATEX*)&x, nullptr);
+        const bool push = g_excl_push;
+        const DWORD excl_flags = push ? 0 : AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
+        auto excl_buffer = [&](REFERENCE_TIME per) { return push ? std::max<REFERENCE_TIME>(per * 4, 30 * 10000) : per; };
+        hr = g_client->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, excl_flags, excl_buffer(period), period, (WAVEFORMATEX*)&x, nullptr);
         if (hr == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED) {
           UINT32 frames = 0; g_client->GetBufferSize(&frames);
           g_client->Release(); g_client = nullptr;
           if (FAILED(device->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&g_client))) break;
           period = (REFERENCE_TIME)(10000000.0 * frames / rate + 0.5);
-          hr = g_client->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, AUDCLNT_STREAMFLAGS_EVENTCALLBACK, period, period, (WAVEFORMATEX*)&x, nullptr);
+          if (push) period = min_period > 0 ? min_period : def_period;   // the aligned size was the buffer, not the period
+          hr = g_client->Initialize(AUDCLNT_SHAREMODE_EXCLUSIVE, excl_flags, push ? (REFERENCE_TIME)(10000000.0 * frames / rate + 0.5) : period, period, (WAVEFORMATEX*)&x, nullptr);
         }
         if (SUCCEEDED(hr)) {
           g_exclusive = true; g_device_rate = rate; g_device_channels = 2; g_device_float = kind == 3; g_device_int32 = kind == 1 || kind == 2;
@@ -736,6 +750,7 @@ bool wasapi_open() {
       }
       if (g_exclusive || !g_client) break;
     }
+    if (!g_exclusive) g_excl_push = false;
     if (!g_exclusive)
       log("audio: exclusive mode unavailable on this device (%s, 0x%08lX); using shared low latency",
           refused == AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED ? "Windows setting: allow applications to take exclusive control is off"
@@ -841,7 +856,11 @@ bool wasapi_open() {
   if (FAILED(hr)) hr = g_client->Initialize(AUDCLNT_SHAREMODE_SHARED, flags, 20 * 10000 /* 20 ms */, 0, &fmt, nullptr);
   if (FAILED(hr)) { log("audio: IAudioClient initialize failed (%08X)", (unsigned)hr); g_client->Release(); g_client = nullptr; return false; }
   g_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-  if (FAILED(g_client->SetEventHandle(g_event)) || FAILED(g_client->GetBufferSize(&g_buffer_frames)) ||
+  if (g_excl_push) {
+    g_tick_timer = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    if (!g_tick_timer) g_tick_timer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+  }
+  if ((g_excl_push ? !g_tick_timer : FAILED(g_client->SetEventHandle(g_event))) || FAILED(g_client->GetBufferSize(&g_buffer_frames)) ||
       FAILED(g_client->GetService(__uuidof(IAudioRenderClient), (void**)&g_render))) {
     log("audio: IAudioClient setup failed"); g_client->Release(); g_client = nullptr; return false;
   }
@@ -854,7 +873,7 @@ bool wasapi_open() {
   const bool auto_mode = g_requested_mode.load() == 0;
   // One queue from the game's block to the engine (shared mode), unless the comparison switch asks
   // for the two-stage path. Exclusive fills one whole device period per event, so it keeps the ring.
-  g_direct = !g_exclusive && !(std::getenv("MELEE_AUDIO_TWO_STAGE") && *std::getenv("MELEE_AUDIO_TWO_STAGE") == '1');
+  g_direct = (!g_exclusive || g_excl_push) && !(std::getenv("MELEE_AUDIO_TWO_STAGE") && *std::getenv("MELEE_AUDIO_TWO_STAGE") == '1');
   if (g_direct) {
     if (!g_push_event) g_push_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     g_take_timer = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
@@ -892,7 +911,7 @@ bool wasapi_open() {
   g_engine_period_us.store((uint32_t)(g_period_frames * 1000000ull / g_device_rate));
   if (g_direct)
     log("audio: %s: engine period %.1f ms, one queue from game to engine %.1f ms (device buffer %.1f ms)",
-        auto_mode ? "Auto" : "Low latency", g_period_frames * 1000.0 / g_device_rate, g_target_frames * 1000.0 / SAMPLE_RATE,
+        g_excl_push ? "Exclusive push" : auto_mode ? "Auto" : "Low latency", g_period_frames * 1000.0 / g_device_rate, g_target_frames * 1000.0 / SAMPLE_RATE,
         g_buffer_frames * 1000.0 / g_device_rate);
   else
     log("audio: %s: engine period %.1f ms, device queue %.1f ms, ring %.1f ms",
@@ -939,6 +958,7 @@ void wasapi_close() {
   if (g_event) { CloseHandle(g_event); g_event = nullptr; }
   // g_push_event stays open: the simulation thread may still be signalling it.
   if (g_take_timer) { CancelWaitableTimer(g_take_timer); CloseHandle(g_take_timer); g_take_timer = nullptr; }
+  if (g_tick_timer) { CancelWaitableTimer(g_tick_timer); CloseHandle(g_tick_timer); g_tick_timer = nullptr; }
 }
 
 bool winmm_open() {

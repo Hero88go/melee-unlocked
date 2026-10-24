@@ -17,6 +17,8 @@
 #include <d3d11_1.h>
 #include <dxgi1_6.h>
 #include "dxgi_paced_mode.h"
+#include "vrr_detect.h"
+#include "vblank_clock.h"
 #include "gx_adapter.h"
 #include <d3dcompiler.h>
 #include <wrl/client.h>
@@ -81,6 +83,7 @@ enum : uint32_t { TOPO_LINE = 2, TOPO_TRIANGLE = 3 };
 // has no DLSS path, so only this much of the block is uploaded per draw.
 constexpr size_t VS_CONSTANT_BYTES = offsetof(VSConstants, prev_projection);
 
+uint64_t g_plan_checks = 0, g_plan_check_diffs = 0;   // MELEE_PLAN_CACHE_CHECK (submit_frame)
 double g_prof[8]; uint64_t g_prof_draws = 0, g_pipe_hits = 0, g_pipe_lookups = 0, g_pipe_creates = 0, g_pipe_skips = 0;
 // Sampling an address the game has copied the EFB into: found in the copy registry, or not found
 // and therefore decoded from guest RAM, which for a render target holds nothing the GPU wrote.
@@ -174,6 +177,15 @@ class DynamicBuffer {
     return (uint8_t*)m.pData;
   }
   void end() { if (mapped_) { ctx_->Unmap(buffer_.Get(), 0); mapped_ = false; } }
+  // Maps without discarding: the caller writes only a range the GPU is not reading (the buffer's
+  // other contents stay as uploaded). Fails when the buffer is smaller than `bytes`.
+  uint8_t* begin_keep(size_t bytes) {
+    if (!bytes || bytes > size_) return nullptr;
+    D3D11_MAPPED_SUBRESOURCE m{};
+    if (FAILED(ctx_->Map(buffer_.Get(), 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &m))) return nullptr;
+    mapped_ = true;
+    return (uint8_t*)m.pData;
+  }
   ID3D11Buffer* get() const { return buffer_.Get(); }
   size_t size() const { return size_; }
  private:
@@ -283,6 +295,41 @@ class D3D11Backend : public Backend {
   std::string profile_line() const override { return d3d11_profile_line(); }
   void set_present_deadline(double deadline) override { present_deadline_ = deadline; }
   double presentation_wait_seconds() const override { return present_wait_; }
+  // The display side, as in the D3D12 backend: DXGI frame statistics for the "pacing:" line,
+  // variable refresh detection (vrr_detect.h), synced presents on a display that follows the
+  // frames, and the vertical blank clock for presenting in step with a fixed-refresh display.
+  std::string display_timing_line() override {
+    if (!swapchain_) return "no swap chain";
+    BOOL exclusive = FALSE;
+    swapchain_->GetFullscreenState(&exclusive, nullptr);
+    const char* mode = exclusive ? "exclusive fullscreen" : "windowed or borderless";
+    DXGI_FRAME_STATISTICS st{};
+    const HRESULT hr = swapchain_->GetFrameStatistics(&st);
+    char line[256];
+    if (FAILED(hr)) {
+      have_frame_stats_ = false;
+      if (hr == DXGI_ERROR_FRAME_STATISTICS_DISJOINT)
+        std::snprintf(line, sizeof line, "%s, display statistics reset (mode or output changed)", mode);
+      else
+        std::snprintf(line, sizeof line, "%s, no display statistics (0x%08X), usually because Windows composes the window with the desktop", mode, (unsigned)hr);
+      return line;
+    }
+    if (!have_frame_stats_) { have_frame_stats_ = true; last_frame_stats_ = st;
+      std::snprintf(line, sizeof line, "%s, the display owns the frames (statistics start)", mode); return line; }
+    const UINT shown = st.PresentCount - last_frame_stats_.PresentCount;
+    const UINT refreshes = st.SyncRefreshCount - last_frame_stats_.SyncRefreshCount;
+    last_frame_stats_ = st;
+    std::snprintf(line, sizeof line, "%s, the display owns the frames: %u frames shown over %u refreshes (%u refreshes repeated a frame)",
+                  mode, shown, refreshes, refreshes > shown ? refreshes - shown : 0u);
+    return line;
+  }
+  int variable_refresh() const override { return vrr_.state(); }
+  bool display_counts_readable() const override { return vrr_readable_; }
+  void set_display_refresh(double hz, bool tear_free) override { vrr_nominal_hz_ = hz; tear_free_ = tear_free; }
+  bool vblank_next(double after, double nominal_hz, double* when, double* period, std::string* why) override {
+    if ((frames_presented_ & 127) == 0 || !vblank_tracked_) { vblank_.track(swapchain_.Get()); vblank_tracked_ = true; }
+    return vblank_.next_after(after, nominal_hz, when, period, why);
+  }
   void submit_frame(const Frame& frame) override { submit_frame(frame, nullptr); }
   void submit_frame(const Frame& frame, const DrawMatrices* overrides) override;
   void set_skip_present(bool skip) override { skip_present_ = skip; }
@@ -460,6 +507,16 @@ class D3D11Backend : public Backend {
   };
   std::vector<DrawPlan> plans_;
   std::vector<uint32_t> index_scratch_;
+  // The plan of the last game frame, reused by its in-between presents (submit_frame).
+  std::vector<PSConstants> ps_cache_;
+  const void* plan_cache_frame_ = nullptr;
+  uint64_t plan_cache_sequence_ = 0;
+  size_t plan_cache_draws_ = 0;
+  int plan_cache_scale_ = 0, plan_cache_effects_ = 0;
+  bool plan_cache_lab_ = false, plan_cache_valid_ = false;
+  // The frame's vertices stay in the vertex buffer across its presents; each present's re-posed
+  // vertices go to one of three regions after them (vb_extra_cap_ vertices each, rotating).
+  uint32_t vb_base_vertices_ = 0, vb_extra_cap_ = 0, vb_extra_slot_ = 0;
   std::vector<uint8_t> decode_scratch_;
   void execute_draw(const DrawCall& dc, const DrawPlan& plan);
 
@@ -478,6 +535,13 @@ class D3D11Backend : public Backend {
 
   HANDLE present_timer_ = CreateWaitableTimerExW(nullptr, nullptr, 0x2 /* high resolution */, TIMER_ALL_ACCESS);
   double present_deadline_ = 0, present_wait_ = 0;
+  bool have_frame_stats_ = false;
+  DXGI_FRAME_STATISTICS last_frame_stats_{};
+  void update_variable_refresh();
+  vrr::Detector vrr_;
+  bool tear_free_ = false, vrr_readable_ = false, vblank_tracked_ = false;
+  double vrr_nominal_hz_ = 0;
+  VBlankClock vblank_;
   uint64_t frame_counter_ = 0;
   // Replacement textures are decoded PNGs and far bigger than the originals, so they get a budget
   // rather than being allowed to fill video memory. Same figures as the D3D12 backend.
@@ -496,13 +560,14 @@ class D3D11Backend : public Backend {
   static constexpr int kTimerRing = 4;
   struct GpuTimer {
     ComPtr<ID3D11Query> disjoint, start, end, done;
-    bool timing_pending = false, done_pending = false;
+    bool timing_pending = false, done_pending = false, end_marked = false;
   };
   GpuTimer gpu_timers_[kTimerRing];
   int gpu_timer_slot_ = 0;
   double gpu_frame_ms_sum_ = 0; uint32_t gpu_frame_ms_samples_ = 0;   // since the last "gpu:" line
   void gpu_frame_begin();
   void gpu_frame_end();
+  void gpu_work_end();
   unsigned gpu_frames_queued();
   uint64_t texpack_report_frame_ = ~0ull;
   uint32_t frames_presented_ = 0;
@@ -1836,14 +1901,38 @@ void D3D11Backend::gpu_frame_begin() {
 }
 
 // Closes this frame's timing and marks its end with an event, then moves to the next ring slot.
+void D3D11Backend::gpu_work_end() {
+  GpuTimer& t = gpu_timers_[gpu_timer_slot_];
+  if (!t.disjoint || t.end_marked) return;
+  context_->End(t.end.Get());
+  t.end_marked = true;
+}
+
 void D3D11Backend::gpu_frame_end() {
   GpuTimer& t = gpu_timers_[gpu_timer_slot_];
   if (!t.disjoint) return;
-  context_->End(t.end.Get());
+  if (!t.end_marked) context_->End(t.end.Get());   // a frame that presented nothing
+  t.end_marked = false;
   context_->End(t.disjoint.Get());
   context_->End(t.done.Get());
   t.timing_pending = true; t.done_pending = true;
   gpu_timer_slot_ = (gpu_timer_slot_ + 1) % kTimerRing;
+}
+
+// See Backend::variable_refresh and vrr_detect.h. Called every 32 presents; a window is a second.
+void D3D11Backend::update_variable_refresh() {
+  DXGI_FRAME_STATISTICS st{};
+  vrr_readable_ = swapchain_ && SUCCEEDED(swapchain_->GetFrameStatistics(&st));
+  if (!vrr_readable_) { vrr_.restart(); return; }
+  static const double qpc_hz = [] { LARGE_INTEGER f{}; QueryPerformanceFrequency(&f); return f.QuadPart > 0 ? (double)f.QuadPart : 1e7; }();
+  if (!vrr_.add({st.PresentCount, st.SyncRefreshCount, (double)st.SyncQPCTime.QuadPart / qpc_hz}, vrr_nominal_hz_)) return;
+  if (vrr_.state() == 1)
+    host::log("display: variable refresh (G-Sync or FreeSync) is on: %.0f refreshes a second for %.0f frames on a %.0f Hz "
+              "display; frames are presented synced under %.0f a second, so they never tear", vrr_.refreshes(), vrr_.shown(),
+              vrr_nominal_hz_, vrr::under_refresh(vrr_nominal_hz_));
+  else
+    host::log("display: fixed refresh: %.0f refreshes a second for %.0f frames on a %.0f Hz display", vrr_.refreshes(),
+              vrr_.shown(), vrr_nominal_hz_);
 }
 
 // Submitted frames the GPU has not finished: the end-of-frame events still outstanding. D3D11 has
@@ -1930,10 +2019,61 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // over the draw list (each DrawCall is ~5 KB, so a second sweep would miss cache on all of it),
   // then uploaded as whole mapped blocks instead of D3D12's per-draw ring allocations.
   Stopwatch sw;
+  uint32_t extra_vertices = 0, vs_slots = 0, ps_slots = 0;
+  // A game frame is presented two to four times (the in-between frames). Its index lists and
+  // pixel constants are the same every time; only the vertex constants and the re-posed vertices
+  // follow the solver. The first present plans the frame; the others reuse that plan. Skinned
+  // draws refill their pixel constants every time (the player tint can change at any moment).
+  const bool plan_matches = plan_cache_valid_ && plan_cache_frame_ == &frame && plan_cache_sequence_ == frame.sequence &&
+                            plan_cache_draws_ == frame.draws.size() && plan_cache_scale_ == scale_ &&
+                            plan_cache_effects_ == opts_.effects_level && plan_cache_lab_ == lab_skip_scene_;
+  // Test only: MELEE_PLAN_CACHE_CHECK=1 plans every present from scratch and counts any difference
+  // from the reused plan (logged with the render cost line).
+  static const bool plan_check = [] { const char* v = std::getenv("MELEE_PLAN_CACHE_CHECK"); return v && *v == '1'; }();
+  const bool reuse_plan = plan_matches && !plan_check;
+  std::vector<DrawPlan> check_plans; std::vector<uint32_t> check_index; std::vector<PSConstants> check_ps;
+  if (plan_matches && plan_check) { check_plans = plans_; check_index = index_scratch_; check_ps = ps_cache_; }
+  // Re-posed vertices of a repeated present: counted first, so the region is known before planning.
+  uint32_t extra_wanted = 0;
+  if (reuse_plan) for (const FrameCommand& cmd : frame.commands) {
+    if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size() || !plans_[cmd.index].valid) continue;
+    const DrawMatrices* over = overrides ? overrides + cmd.index : nullptr;
+    if (over && over->vertices) extra_wanted += frame.draws[cmd.index].vertex_count;
+  }
+  static const bool vb_keep = [] { const char* v = std::getenv("MELEE_VB_KEEP"); return !(v && *v == '0'); }();   // MELEE_VB_KEEP=0: old full upload (A/B)
+  const bool keep_vertices = vb_keep && reuse_plan && vb_base_vertices_ == frame.vertices.size() && extra_wanted <= vb_extra_cap_;
+  if (keep_vertices) vb_extra_slot_ = (vb_extra_slot_ + 1) % 3;
+  const uint32_t extra_region = keep_vertices ? (uint32_t)frame.vertices.size() + vb_extra_slot_ * vb_extra_cap_ : (uint32_t)frame.vertices.size();
+  if (reuse_plan) {
+    for (const FrameCommand& cmd : frame.commands) {
+      if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
+      DrawPlan& plan = plans_[cmd.index];
+      if (!plan.valid) continue;
+      const DrawCall& dc = frame.draws[cmd.index];
+      const DrawMatrices* over = overrides ? overrides + cmd.index : nullptr;
+      if (over && over->vertices) { plan.base_vertex = extra_region + extra_vertices; extra_vertices += dc.vertex_count; }
+      else plan.base_vertex = dc.first_vertex;
+      if (uint8_t* dst = vs_constants_.slot(plan.vs_slot)) {
+        VSConstants vs_constants;
+        fill_vs_constants(dc, vs_constants, scale_, over);
+        std::memcpy(dst, &vs_constants, VS_CONSTANT_BYTES);
+      }
+      if (uint8_t* dst = ps_constants_.slot(plan.ps_slot)) {
+        if (dc.skinned) {
+          PSConstants ps_constants;
+          fill_ps_constants(dc, ps_constants, scale_);
+          std::memcpy(dst, &ps_constants, sizeof(PSConstants));
+        } else {
+          std::memcpy(dst, &ps_cache_[plan.ps_slot], sizeof(PSConstants));
+        }
+      }
+    }
+  } else {
+  plan_cache_valid_ = false;
   plans_.assign(frame.draws.size(), DrawPlan{});
   index_scratch_.clear();
+  ps_cache_.clear();
   const EffectsFilter effects = effects_filter(frame, opts_.effects_level);
-  uint32_t extra_vertices = 0, vs_slots = 0, ps_slots = 0;
   for (const FrameCommand& cmd : frame.commands) {
     if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
     const DrawCall& dc = frame.draws[cmd.index];
@@ -1972,20 +2112,49 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       fill_vs_constants(dc, vs_constants, scale_, over);
       std::memcpy(dst, &vs_constants, VS_CONSTANT_BYTES);
     }
-    if (uint8_t* dst = ps_constants_.slot(plan.ps_slot)) {
-      PSConstants ps_constants;
-      fill_ps_constants(dc, ps_constants, scale_);
-      std::memcpy(dst, &ps_constants, sizeof(PSConstants));
+    PSConstants ps_constants;
+    fill_ps_constants(dc, ps_constants, scale_);
+    if (uint8_t* dst = ps_constants_.slot(plan.ps_slot)) std::memcpy(dst, &ps_constants, sizeof(PSConstants));
+    ps_cache_.push_back(ps_constants);   // index ps_slot
+  }
+  if (plan_matches && plan_check) {
+    ++g_plan_checks;
+    bool same = check_index == index_scratch_ && check_plans.size() == plans_.size() && check_ps.size() == ps_cache_.size();
+    for (size_t i = 0; same && i < plans_.size(); ++i) {
+      const DrawPlan &a = plans_[i], &b = check_plans[i];
+      same = a.valid == b.valid && a.first_index == b.first_index && a.index_count == b.index_count && a.vs_slot == b.vs_slot &&
+             a.ps_slot == b.ps_slot && a.topo_type == b.topo_type && a.topology == b.topology;
+      if (same && a.valid && !frame.draws[i].skinned) same = std::memcmp(&ps_cache_[a.ps_slot], &check_ps[a.ps_slot], sizeof(PSConstants)) == 0;
     }
+    if (!same) ++g_plan_check_diffs;
+  }
+  plan_cache_valid_ = true; plan_cache_frame_ = &frame; plan_cache_sequence_ = frame.sequence;
+  plan_cache_draws_ = frame.draws.size(); plan_cache_scale_ = scale_; plan_cache_effects_ = opts_.effects_level; plan_cache_lab_ = lab_skip_scene_;
   }
   vs_constants_.end();
   ps_constants_.end();
   g_prof[0] += sw.lap();   // index generation, planning and constants
 
-  const size_t vertex_bytes = (frame.vertices.size() + extra_vertices) * sizeof(Vertex);
-  if (uint8_t* dst = vertex_buffer_.begin(vertex_bytes)) {
+  uint8_t* dst = nullptr;
+  size_t vertex_bytes = 0;
+  if (keep_vertices) {
+    // Only this present's re-posed vertices, into the next rotating region; the base stays.
+    vertex_bytes = ((size_t)frame.vertices.size() + 3 * (size_t)vb_extra_cap_) * sizeof(Vertex);
+    dst = vertex_buffer_.begin_keep(vertex_bytes);
+  }
+  if (!dst) {
+    // The frame's first present (or a repeat that no longer fits): everything, with room for three
+    // regions of re-posed vertices after the base.
+    vb_base_vertices_ = (uint32_t)frame.vertices.size();
+    vb_extra_cap_ = extra_vertices + extra_vertices / 4 + 64;
+    vb_extra_slot_ = 0;
+    vertex_bytes = ((size_t)frame.vertices.size() + 3 * (size_t)vb_extra_cap_) * sizeof(Vertex);
+    dst = vertex_buffer_.begin(vertex_bytes);
+    if (!dst) { host::log("d3d11: vertex buffer allocation failed (%zu bytes)", vertex_bytes); return; }
     if (!frame.vertices.empty()) std::memcpy(dst, frame.vertices.data(), frame.vertices.size() * sizeof(Vertex));
-    size_t at = frame.vertices.size();
+  }
+  {
+    size_t at = keep_vertices ? extra_region : frame.vertices.size();
     for (const FrameCommand& cmd : frame.commands) {
       if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size() || !plans_[cmd.index].valid) continue;
       const DrawMatrices* over = overrides ? overrides + cmd.index : nullptr;
@@ -1994,16 +2163,15 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       at += frame.draws[cmd.index].vertex_count;
     }
     vertex_buffer_.end();
-  } else if (vertex_bytes) {
-    host::log("d3d11: vertex buffer allocation failed (%zu bytes)", vertex_bytes);
-    return;
   }
-  if (uint8_t* dst = index_buffer_.begin(index_scratch_.size() * 4)) {
-    std::memcpy(dst, index_scratch_.data(), index_scratch_.size() * 4);
-    index_buffer_.end();
-  } else if (!index_scratch_.empty()) {
-    host::log("d3d11: index buffer allocation failed");
-    return;
+  if (!reuse_plan) {   // a repeated present's indices are already in the buffer
+    if (uint8_t* idst = index_buffer_.begin(index_scratch_.size() * 4)) {
+      std::memcpy(idst, index_scratch_.data(), index_scratch_.size() * 4);
+      index_buffer_.end();
+    } else if (!index_scratch_.empty()) {
+      host::log("d3d11: index buffer allocation failed");
+      return;
+    }
   }
   g_prof[1] += sw.lap();   // vertex/index upload
 
@@ -2114,6 +2282,9 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     }
     // The flip model discards the back buffer on Present, so a capture is copied out first.
     if (capture) capture_backbuffer();
+    // The GPU timer ends here, after the frame's last draw and before any waiting: ended after
+    // Present it measured the whole frame interval (exactly 5.00 ms at 200 Hz), not GPU work.
+    gpu_work_end();
     const double wait_start = Stopwatch::now();
     for (;;) {
       double remaining = present_deadline_ - Stopwatch::now();
@@ -2125,8 +2296,17 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       } else YieldProcessor();
     }
     present_wait_ = Stopwatch::now() - wait_start;
-    swapchain_->Present(opts_.vsync ? 1 : 0, (!opts_.vsync && allow_tearing_ && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    // Synced with V-Sync on, and on a display that follows the frames (tear_free_, from the
+    // presentation loop), where a frame starts its own refresh and syncing costs nothing.
+    const bool synced = opts_.vsync || tear_free_;
+    const double present_call = Stopwatch::now();
+    swapchain_->Present(synced ? 1 : 0, (!synced && allow_tearing_ && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+    // A synced Present blocks until the display takes the previous frame: waiting, not drawing.
+    // Counted as drawing it inflated the render-time estimate to a whole refresh under synced
+    // pacing, and the presentation loop then aimed every frame one refresh too late.
+    present_wait_ += Stopwatch::now() - present_call;
     ++frames_presented_;
+    if ((frames_presented_ & 31) == 0) update_variable_refresh();
     if (capture) { capture_sequence_ = frame.sequence; write_capture(path, frame.sequence); }
   }
   gpu_frame_end();
@@ -2214,6 +2394,7 @@ std::string d3d11_profile_line() {
            (unsigned long long)g_efb_tex_hit, (unsigned long long)g_efb_tex_miss);
   std::memset(g_prof, 0, sizeof g_prof); g_prof_draws = g_pipe_hits = g_pipe_lookups = g_pipe_creates = g_pipe_skips = 0;
   g_efb_tex_hit = g_efb_tex_miss = 0;
+  if (g_plan_checks) { std::string s(buf); s += " | plan reuse checked " + std::to_string(g_plan_checks) + ", differed " + std::to_string(g_plan_check_diffs); return s; }
   return buf;
 }
 

@@ -19,6 +19,7 @@ static inline unsigned char _BitScanForward64(unsigned long* index, unsigned lon
 #include <cstring>
 #include <thread>
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <functional>
 #include <condition_variable>
@@ -343,6 +344,13 @@ static bool same_primitive_drifting(const Vertex* a, const Vertex* b, uint32_t c
 // changing hands (fountain spray, hit sparks) never builds one and stays held.
 static constexpr int kDriftSteady = 4, kDriftMiss = 4, kDriftMost = 8;
 
+namespace {
+// Runs fn(begin, end) over [0, n) on the solver's workers (defined after SolverPool below).
+void run_pairing_chunks(size_t n, const std::function<void(size_t, size_t)>& fn);
+// What pairing learns about one draw without touching any shared state.
+struct PairPre { int prev = -1; bool ranges = false, same = false, drifted = false; uint64_t pos = 0, tex = 0; };
+}  // namespace
+
 void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   if (prev && cur && cur->sequence != prev->sequence + 1) prev = nullptr;
   prev_ = prev; cur_ = cur;
@@ -365,6 +373,46 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
   }
   pairs_.resize(cur->draws.size());
   if (dump_sequence() && cur->sequence == dump_sequence()) pair_reason_.assign(cur->draws.size(), 0);
+  std::vector<PairPre> pre(cur->draws.size());
+  run_pairing_chunks(cur->draws.size(), [&](size_t begin, size_t end) {
+    for (size_t i = begin; i < end; ++i) {
+      const DrawCall& d = cur->draws[i];
+      PairPre& q = pre[i];
+      auto it = std::lower_bound(prev_index_.begin(), prev_index_.end(), d.identity, [](const std::pair<uint64_t, int>& e, uint64_t id) { return e.first < id; });
+      if (it == prev_index_.end() || it->first != d.identity) continue;
+      q.prev = it->second;
+      const DrawCall& pd = prev->draws[it->second];
+      q.ranges = pd.first_vertex <= prev->vertices.size() && pd.vertex_count <= prev->vertices.size() - pd.first_vertex &&
+          d.first_vertex <= cur->vertices.size() && d.vertex_count <= cur->vertices.size() - d.first_vertex;
+      q.same = q.ranges && d.vertex_count && pd.vertex_count == d.vertex_count &&
+          !std::memcmp(prev->vertices.data() + pd.first_vertex, cur->vertices.data() + d.first_vertex,
+                       (size_t)d.vertex_count * sizeof(Vertex));
+      if (!d.object_generation && q.ranges && pd.vertex_count == d.vertex_count && !q.same)
+        q.drifted = same_primitive_drifting(prev->vertices.data() + pd.first_vertex, cur->vertices.data() + d.first_vertex, d.vertex_count);
+      // Matrix slots the draw reads (used only if it pairs).
+      if (d.components & VB_HAS_POSMTXIDX) {
+        if (q.ranges) for (uint32_t v = 0; v < d.vertex_count; ++v) {
+          uint32_t idx = cur->vertices[d.first_vertex + v].posmtx;
+          if (idx < 64) q.pos |= 1ull << idx;
+        }
+      } else {
+        q.pos |= 1ull << (d.matrix_index_a & 63);
+      }
+      uint32_t texgens = d.xf_regs[0x3F] & 15;
+      for (uint32_t k = 0; k < texgens && k < 8; ++k) {
+        const uint32_t type = tmi_texgentype(d.xf_regs[0x40 + k]);
+        if (type >= 1 && type <= 3) continue; // emboss/colour generators do not read these matrices
+        if (d.components & (VB_HAS_TEXMTXIDX0 << k)) {
+          if (q.ranges) for (uint32_t v = 0; v < d.vertex_count; ++v) {
+            const uint32_t idx = cur->vertices[d.first_vertex + v].texmtx[k];
+            if (idx < 64) q.tex |= 1ull << idx;
+          }
+        } else {
+          q.tex |= 1ull << texture_matrix_index(d, k);
+        }
+      }
+    }
+  });
   // The frame's camera is the one most paired draws are seen through. The first one met is not
   // always the screen's: Fountain of Dreams with its reflection on draws the fighters through a
   // mirrored camera first (grIzumi_801CCEA0, copied into the water's texture), and taking that one
@@ -375,24 +423,20 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
     const DrawCall& d = cur->draws[i];
     if (d.authored_pose && d.authored_pose->envelope) ++stats_.skinned;
     Pair p{-1, 0, 0, 0, false, 0};
-    auto it = std::lower_bound(prev_index_.begin(), prev_index_.end(), d.identity, [](const std::pair<uint64_t, int>& e, uint64_t id) { return e.first < id; });
-    if (it != prev_index_.end() && it->first != d.identity) it = prev_index_.end();
-    if (it != prev_index_.end()) {
-      const DrawCall& pd = prev->draws[it->second];
-      bool vertex_ranges_valid = pd.first_vertex <= prev->vertices.size() && pd.vertex_count <= prev->vertices.size() - pd.first_vertex &&
-          d.first_vertex <= cur->vertices.size() && d.vertex_count <= cur->vertices.size() - d.first_vertex;
+    const PairPre& q = pre[i];
+    if (q.prev >= 0) {
+      const DrawCall& pd = prev->draws[q.prev];
+      bool vertex_ranges_valid = q.ranges;
       // Same stream, byte for byte: the draw moves by its matrices alone. Otherwise the geometry
       // itself is animated, and the two streams are blended per presented frame (below) as long as
       // they still describe the same primitive with the same layout.
-      bool same_vertices = vertex_ranges_valid && d.vertex_count && pd.vertex_count == d.vertex_count &&
-          !std::memcmp(prev->vertices.data() + pd.first_vertex, cur->vertices.data() + d.first_vertex,
-                       (size_t)d.vertex_count * sizeof(Vertex));
+      bool same_vertices = q.same;
       bool drifting = false;
       if (!d.object_generation && vertex_ranges_valid && pd.vertex_count == d.vertex_count) {
         auto was = drift_history_.find(d.identity);
         int score = was == drift_history_.end() ? 0 : was->second;
         if (!same_vertices) {
-          const bool drifted = same_primitive_drifting(prev->vertices.data() + pd.first_vertex, cur->vertices.data() + d.first_vertex, d.vertex_count);
+          const bool drifted = q.drifted;
           score = drifted ? std::min(score + 1, kDriftMost) : std::max(score - kDriftMiss, 0);
           drifting = drifted && score >= kDriftSteady;
         }
@@ -442,29 +486,10 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
         pair_seen_[d.identity] = valid;
       }
       if (valid) {
-        p.prev_draw = it->second;
-        // Collect used position matrix slots: per-vertex indices or the CP default, plus texgen matrices.
-        if (d.components & VB_HAS_POSMTXIDX) {
-          for (uint32_t v = 0; v < d.vertex_count; ++v) {
-            uint32_t idx = cur->vertices[d.first_vertex + v].posmtx;
-            if (idx < 64) p.pos_slots |= 1ull << idx;
-          }
-        } else {
-          p.pos_slots |= 1ull << (d.matrix_index_a & 63);
-        }
-        uint32_t texgens = d.xf_regs[0x3F] & 15;
-        for (uint32_t k = 0; k < texgens && k < 8; ++k) {
-          const uint32_t type = tmi_texgentype(d.xf_regs[0x40 + k]);
-          if (type >= 1 && type <= 3) continue; // emboss/colour generators do not read these matrices
-          if (d.components & (VB_HAS_TEXMTXIDX0 << k)) {
-            for (uint32_t v = 0; v < d.vertex_count; ++v) {
-              const uint32_t idx = cur->vertices[d.first_vertex + v].texmtx[k];
-              if (idx < 64) p.tex_slots |= 1ull << idx;
-            }
-          } else {
-            p.tex_slots |= 1ull << texture_matrix_index(d, k);
-          }
-        }
+        p.prev_draw = q.prev;
+        // Used position and texgen matrix slots (collected in the parallel pass above).
+        p.pos_slots = q.pos;
+        p.tex_slots = q.tex;
         p.used_slots = p.pos_slots | p.tex_slots;
         // One camera per frame (chosen after this loop), so draws that cannot be paired at all can
         // still be moved onto this frame's timeline (below).
@@ -477,7 +502,7 @@ void SubFrameSolver::set_frames(const Frame* prev, const Frame* cur) {
         ++stats_.paired;
       }
     }
-    if (it == prev_index_.end()) { ++stats_.missing; if (dump_sequence() && cur->sequence == dump_sequence()) pair_reason_[i] = 7; }
+    if (q.prev < 0) { ++stats_.missing; if (dump_sequence() && cur->sequence == dump_sequence()) pair_reason_[i] = 7; }
     pairs_[i] = p;
   }
   {
@@ -640,12 +665,30 @@ class SolverPool {
   uint64_t generation_ = 0;
   bool quit_ = false;
 };
-SolverPool& solver_pool() { static SolverPool pool(3); return pool; }
+// Workers besides the render thread: 3 by default; MELEE_SOLVER_WORKERS=N (1..15) for the A/B
+// against the core count (the sim and adapter threads need cores too, so more is not always faster).
+SolverPool& solver_pool() {
+  static SolverPool pool([] {
+    const char* v = std::getenv("MELEE_SOLVER_WORKERS");
+    const int n = v ? std::atoi(v) : 0;
+    return n >= 1 && n <= 15 ? n : 3;
+  }());
+  return pool;
+}
+void run_pairing_chunks(size_t n, const std::function<void(size_t, size_t)>& fn) {
+  static const bool serial = [] { const char* v = std::getenv("MELEE_PAIR_PARALLEL"); return v && *v == '0'; }();
+  SolverPool& pool = solver_pool();
+  const int chunks = (n >= 128 && !serial) ? pool.chunks() : 1;
+  if (chunks == 1) { fn(0, n); return; }
+  pool.run([&](int c) { fn(n * (size_t)c / (size_t)chunks, n * (size_t)(c + 1) / (size_t)chunks); });
+}
 }  // namespace
 
-void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>& out, bool authored) const {
+bool SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>& out, bool authored,
+                           const std::function<bool()>* cancelled) const {
   out.resize(cur_ ? cur_->draws.size() : 0);
-  if (!cur_) return;
+  if (!cur_) return true;
+  std::atomic<bool> stop{false};
   for (size_t i = 0; i < out.size(); ++i) {
     DrawMatrices& o = out[i];
     o.has_projection = false;
@@ -735,6 +778,10 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
       uint32_t count = 0, carried = 0, blended = 0, staged = 0, posed_count = 0, posed_skinned = 0;
       uint32_t lagged = 0, worst_kind = 0, worst_verts = 0; float worst_err = 0;
       for (size_t i = begin; i < end; ++i) {
+        if (cancelled && ((i - begin) & 31) == 31) {
+          if (stop.load(std::memory_order_relaxed)) break;
+          if ((*cancelled)()) { stop.store(true, std::memory_order_relaxed); break; }
+        }
         const DrawCall& d = cur_->draws[i];
         DrawMatrices& o = out[i];
         const Pair& p = pairs_[i];
@@ -1149,6 +1196,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
       skinned_poses[(size_t)chunk] = posed_skinned;
     };
     if (chunks == 1) work(0); else pool.run(work);
+    if (stop.load(std::memory_order_relaxed)) return false;   // dropped: no stats, routes or flip history from a present never shown
     for (uint32_t c : counts) stats->authored += c;
     for (uint32_t c : carries) stats->carried += c;
     for (uint32_t c : blends) stats->vertex_blended += c;
@@ -1221,7 +1269,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
       for (size_t c = 0; c < worsts.size(); ++c)
         if (worsts[c] > e.worst) { e.worst = worsts[c]; e.worst_identity = worst_ids[c]; }
     }
-    return;
+    return true;
   }
   for (size_t i = 0; i < cur_->draws.size(); ++i) {
     const DrawCall& d = cur_->draws[i];
@@ -1246,6 +1294,7 @@ void SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
                  has_nrm ? &pd->normalMatrices[row * 3] : nullptr, stats);
       if (has_nrm) std::memcpy(&o.nrm[row * 3], nrm_out, sizeof nrm_out);
     }
+  return true;
   }
 }
 

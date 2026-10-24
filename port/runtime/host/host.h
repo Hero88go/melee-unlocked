@@ -227,9 +227,6 @@ double now_seconds();
 // Seconds a short timed sleep wakes late by on this system, as last measured (0 on a healthy one).
 // A wait that must end on time sleeps only when it has that much room, and spins otherwise.
 double sleep_slack();
-// The presenter reports each present (when, and the period of its grid) so the simulation can start
-// each frame as late as the budget allows and still make the next present (late start, below).
-void present_report(double when, double period);
 bool latency_trace_enabled();
 TickTiming& tick_timing();
 // Per-draw scopes run tens of thousands of times a frame, so they read the CPU time stamp counter

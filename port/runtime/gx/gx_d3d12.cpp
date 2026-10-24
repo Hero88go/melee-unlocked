@@ -25,6 +25,7 @@
 #include <vector>
 #include "dxgi_paced_mode.h"
 #include "vrr_detect.h"
+#include "vblank_clock.h"
 #include "gx_d3d12.h"
 #include "gx_adapter.h"
 #include "gx_backend.h"   // solver_pair_counter, for the "gpu:" diagnostic line
@@ -404,6 +405,12 @@ class D3D12Backend : public Backend {
   int variable_refresh() const override { return vrr_.state(); }
   bool display_counts_readable() const override { return vrr_readable_; }
   void set_display_refresh(double hz, bool tear_free) override { vrr_nominal_hz_ = hz; tear_free_ = tear_free; }
+  bool vblank_next(double after, double nominal_hz, double* when, double* period, std::string* why) override {
+    if ((frames_presented_ & 127) == 0 || !vblank_tracked_) { vblank_.track(swapchain_.Get()); vblank_tracked_ = true; }
+    return vblank_.next_after(after, nominal_hz, when, period, why);
+  }
+  VBlankClock vblank_;
+  bool vblank_tracked_ = false;
   void update_variable_refresh();
   vrr::Detector vrr_;
   bool tear_free_ = false, vrr_readable_ = false;
@@ -3522,7 +3529,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       // Not while DLSS frame generation runs: it paces its own frames and needs V-Sync off in the
       // game (NVIDIA: V-Sync for it belongs in the driver).
       const bool synced = opts_.vsync || (tear_free_ && fg_applied_ <= 0);
+      const double present_call = Stopwatch::now();
       swapchain_->Present(synced ? 1 : 0, (!synced && !opts_.exclusive_fullscreen) ? DXGI_PRESENT_ALLOW_TEARING : 0);
+      present_wait_ += Stopwatch::now() - present_call;   // a synced Present waits for the display (see gx_d3d11.cpp)
     } catch (const std::system_error& error) {
       streamline::disable_after_resource_error(error.what());
       opts_.frame_generation_mode = 0;

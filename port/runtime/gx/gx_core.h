@@ -375,6 +375,12 @@ struct Backend {
   // that on a display that follows the frames, where it costs no delay while the rate stays under
   // the refresh, and stops every tear.
   virtual void set_display_refresh(double /*hz*/, bool /*tear_free*/) {}
+  // Scanline sync on a fixed-refresh display (vblank_clock.h): the first vertical blank at or after
+  // `after` (now_seconds clock) and the refresh period, or false with the reason in `why`. Render thread.
+  virtual bool vblank_next(double /*after*/, double /*nominal_hz*/, double* /*when*/, double* /*period*/, std::string* why) {
+    *why = "this renderer does not read the vertical blank";
+    return false;
+  }
   virtual void submit_frame(const Frame& frame) = 0;   // called at XFB copy
   // Queueing backends take the frame's buffers and hand back recycled ones (no copy, no
   // per-frame reallocation on the simulation thread); `frame` comes back cleared either way.
