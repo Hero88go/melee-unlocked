@@ -410,9 +410,15 @@ void wasapi_thread() {
       // Direct: the level swings a whole engine period every cycle (the engine takes a period at
       // once, the game adds 5 ms at a time), so only what is left beyond that swing is surplus.
       // A margin inside the swing cut real audio 29 times in a 60 s match (09-29).
-      const uint64_t swing = g_direct ? (uint64_t)g_period_frames * SAMPLE_RATE / g_device_rate : 0;
+      // Exclusive: the device drains and refills a whole period too; without it the normal swing
+      // was cut about 45 times a second (heard as stutter).
+      const uint64_t swing = (g_direct || g_exclusive) ? (uint64_t)g_period_frames * SAMPLE_RATE / g_device_rate : 0;
       const uint64_t margin = std::max<uint64_t>(SAMPLE_RATE * 8 / 1000 + swing, g_target_frames / 2);
-      if (buffered > g_target_frames + margin) {
+      // Two-stage exclusive: the ring takes a whole frame of audio at once and gives a whole period
+      // at once, so a single reading swings far past the target; only a level that stays high on
+      // the one-second average is surplus (a stall), or every frame's burst was cut (heard as stutter).
+      const bool sustained = g_direct || g_fill_average > (double)(g_target_frames + margin);
+      if (sustained && buffered > g_target_frames + margin) {
         // Only the ring can be cut; the direct path keeps any surplus there (see device_cap).
         const uint64_t cut = std::min<uint64_t>(buffered - g_target_frames, ring_buffered);
         if (cut && g_device_rate_log)
@@ -708,11 +714,19 @@ bool wasapi_open() {
   // (and routing tools such as virtual cables) cannot play through it while the game runs.
   g_excl_push = false;
   if (g_requested_mode.load() == 2 && !std::getenv("MELEE_AUDIO_DEVICE_DUMP")) {
-    { const char* v = std::getenv("MELEE_AUDIO_EXCL_PUSH"); g_excl_push = v && *v == '1'; }
+    // Push feeds the device on the game's own audio tick (measured sooner than the event stream);
+    // MELEE_AUDIO_EXCL_PUSH=0 keeps the event-driven stream.
+    { const char* v = std::getenv("MELEE_AUDIO_EXCL_PUSH"); g_excl_push = !(v && *v == '0'); }
     REFERENCE_TIME def_period = 0, min_period = 0;
     g_client->GetDevicePeriod(&def_period, &min_period);
     const DWORD rates[] = {48000, 44100, 96000, 32000};
     HRESULT refused = S_OK;   // the last answer Windows gave, for the log
+    for (int pass = 0; pass < 2 && !g_exclusive && g_client; ++pass) {
+    if (pass == 1) {   // no format took the push stream: the event-driven one, as before
+      if (!g_excl_push) break;
+      g_excl_push = false;
+      log("audio: exclusive push refused (0x%08lX); using the event-driven exclusive stream", (unsigned long)refused);
+    }
     for (DWORD rate : rates) {
       // PCM16, 24-bit in 32, 32-bit integer, float32: audio interfaces often take only the wider ones.
       for (int kind = 0; kind < 4; ++kind) {
@@ -749,6 +763,7 @@ bool wasapi_open() {
         hr = E_FAIL;
       }
       if (g_exclusive || !g_client) break;
+    }
     }
     if (!g_exclusive) g_excl_push = false;
     if (!g_exclusive)
