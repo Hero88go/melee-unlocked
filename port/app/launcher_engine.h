@@ -36,4 +36,23 @@ inline int parse_engine_line(const std::string& line, int current) {
   return v >= ENGINE_LEGACY && v <= ENGINE_SOURCE ? v : current;
 }
 
+// The Vanilla segment of the GAME BUILD row: the Source Port started as the retail game. The online
+// menu layer is never loaded (the disc's own boot: logos, opening, title, the normal main menu, the
+// game's own music), gameplay mods, codes and training packs are suspended for the session, and
+// saves go to their own card folder. launcher.ini keeps vanilla=1 beside engine=1; it means
+// nothing for the Static Recomp, whose online code set is compiled in. vanillaowncode=1 also drops
+// the built-in UCF and unlock codes, so the disc runs exactly as shipped.
+struct VanillaChoice { bool vanilla = false; bool own_code = false; };
+inline bool parse_vanilla_line(const std::string& line, VanillaChoice& choice) {
+  if (line == "vanilla=1") { choice.vanilla = true; return true; }
+  if (line == "vanillaowncode=1") { choice.own_code = true; return true; }
+  return false;
+}
+// The arguments PLAY adds to a normal Source Port launch when Vanilla is picked. A lobby match or a
+// mod launch never gets them: those are online or modded by definition.
+inline std::string vanilla_launch_args(const VanillaChoice& choice) {
+  if (!choice.vanilla) return "";
+  return std::string(" --slippi-menus off --vanilla-only") + (choice.own_code ? " --vanilla-game" : "");
+}
+
 }  // namespace launcher

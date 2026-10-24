@@ -159,6 +159,9 @@ int g_cpu_build = CPU_AUTO;
 // settings. launcher.ini keeps engine=1 for the Source Port; no engine= line means Static Recomp.
 using launcher::ENGINE_LEGACY; using launcher::ENGINE_SOURCE;
 int g_engine = ENGINE_LEGACY;
+// The Vanilla segment (launcher_engine.h): the Source Port as the retail game, launcher.ini
+// vanilla=1 / vanillaowncode=1. Only meaningful while the Source Port is picked and installed.
+launcher::VanillaChoice g_vanilla;
 bool g_install_requested = false;
 bool g_warm_cache_on_play = false;
 // Replay Viewer: "Show it as it was played" (launcher.ini replayasplayed=1). It applies to a replay
@@ -245,6 +248,7 @@ void load_ini() {
     while (std::getline(f, line)) {
       if (!line.empty() && line.back() == '\r') line.pop_back();
       if (line.rfind("engine=", 0) == 0) { g_engine = launcher::parse_engine_line(line, g_engine); continue; }
+      if (launcher::parse_vanilla_line(line, g_vanilla)) continue;
       if (line.rfind("cpubuild=", 0) == 0) {
         const int v = std::atoi(line.c_str() + 9);
         if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
@@ -292,6 +296,8 @@ void save_ini() {
     // Kept so that browsing for a disc does not silently undo a hand-set override.
     if (g_cpu_build != CPU_AUTO) f << "cpubuild=" << g_cpu_build << "\n";
     if (g_engine != ENGINE_LEGACY) f << "engine=" << g_engine << "\n";
+    if (g_vanilla.vanilla) f << "vanilla=1\n";
+    if (g_vanilla.own_code) f << "vanillaowncode=1\n";   // kept while Vanilla is off, like the mod choices
     if (!g_language.empty()) f << "language=" << g_language << "\n";
     // The lobby: which versions this player takes match requests for, and their custom ISO.
     if (!g_lobby_prefs.open_to.empty() && g_lobby_prefs.open_to != "vanilla") f << "lobbyopen=" << g_lobby_prefs.open_to << "\n";
@@ -576,25 +582,46 @@ bool nav_shown(int) { return true; }
 int nav_slot(int i) { static const int slot[6] = {0, 1, 5, 2, 3, 4}; return i >= 0 && i < 6 ? slot[i] : i; }
 #endif
 RECT nav_rect(int i) { return LR(12, NAV_Y + nav_slot(i) * NAV_GAP, RAIL_W - 24, NAV_H); }
-// The two build segments, side by side on the GAME BUILD row: 0 Source Port, 1 Static Recomp (Legacy).
+// The three build segments, side by side on the GAME BUILD row: 0 Source Port, 1 Static Recomp
+// (Legacy), 2 Vanilla (the Source Port as the retail game). Vanilla is one word, so its segment
+// is the narrow one, at the right, and the two engine names keep their room.
+const int kBuildSegments = 3;
 RECT build_seg_rect(int i) {
-  const int left = CX + 96, total = CW - 96, gap = 8, w = (total - gap) / 2;
-  return LR(left + i * (w + gap), 98, w, 28);
+  const int left = CX + 84, total = CW - 84, gap = 6, narrow = 78, w = (total - 2 * gap - narrow) / 2;
+  const int x = i == 0 ? left : i == 1 ? left + w + gap : left + 2 * (w + gap);
+  return LR(x, 98, i == 2 ? narrow : w, 28);
+}
+// The game being played knows the Vanilla flags: the current install, or an older version from
+// Versions that is 0.9.17 or newer (before that, melee_source.exe refuses --slippi-menus and exits).
+bool vanilla_supported() {
+  return g_active_version.empty() || launcher::lobby::compare_versions(g_active_version, "0.9.17") >= 0;
+}
+// Vanilla is in effect: picked, the Source Port it runs on is installed, and that version knows the
+// flags. With the Source Port gone the row shows Static Recomp, which cannot play this way, so the
+// choice waits; on an older version the row shows the plain Source Port and says why.
+bool vanilla_active() {
+#ifdef MELEE_NO_SLIPPI
+  return false;   // that game already boots as the disc does; the row has no segment to pick
+#else
+  return g_engine == ENGINE_SOURCE && g_vanilla.vanilla && source_available() && vanilla_supported();
+#endif
 }
 // The segment a click at p would pick: -1 off the row, off the Play page, or on a Source Port
-// segment with nothing installed behind it. The file check only runs over that segment.
+// segment with nothing installed behind it. The file check only runs over those segments.
 int build_seg_at(POINT p) {
   if (g_tab != 0) return -1;
 #ifdef MELEE_NO_SLIPPI
   return -1;   // one Game Build: nothing to pick
 #endif
-  for (int i = 0; i < 2; ++i) {
+  for (int i = 0; i < kBuildSegments; ++i) {
     RECT r = build_seg_rect(i);
-    if (PtInRect(&r, p)) return i == 0 && !source_available() ? -1 : i;
+    if (PtInRect(&r, p)) return (i != 1 && !source_available()) || (i == 2 && !vanilla_supported()) ? -1 : i;
   }
   return -1;
 }
 RECT slippi_text_rect() { return LR(CX + 15, 212, 319, 34); }
+// Where the account line is, Vanilla shows its one choice instead: the box and its label.
+RECT vanilla_check_rect() { return LR(CX, 212, 330, 22); }
 RECT version_text_rect() { return LR(CX + 15, 236, 319, 24); }
 RECT drop_sub_rect() { return LR(CX, 86, CW, 20); }
 
@@ -774,22 +801,40 @@ void paint_play(HDC dc) {
 #else
   {
     const bool installed = source_available();
-    const int on = g_engine == ENGINE_SOURCE && installed ? 0 : 1;
-    const wchar_t* names[2] = {installed ? L"Source Port (Beta)" : L"Source Port (Beta, not installed)", L"Static Recomp (Legacy)"};
-    const int segments = 2;
-    for (int i = 0; i < segments; ++i) {
+    const int on = g_engine == ENGINE_SOURCE && installed ? (g_vanilla.vanilla && vanilla_supported() ? 2 : 0) : 1;
+    const std::wstring vanilla_name = launcher::lang::txw(L"Vanilla");
+    const wchar_t* names[kBuildSegments] = {installed ? L"Source Port (Beta)" : L"Source Port (not installed)", L"Static Recomp (Legacy)", vanilla_name.c_str()};
+    for (int i = 0; i < kBuildSegments; ++i) {
       const RECT r = build_seg_rect(i);
       COLORREF top = C_BTN, bot = C_BTN, border = C_BTN_BORDER, text = C_DIM;
       if (i == on) { top = C_ACC_HI; bot = C_ACC_LO; border = NO_FILL; text = C_PLAY_TEXT; }
-      else if (i == 0 && !installed) { top = bot = RGB(0x1A, 0x21, 0x32); border = RGB(0x28, 0x31, 0x47); text = RGB(0x5C, 0x68, 0x7E); }
+      else if ((i != 1 && !installed) || (i == 2 && !vanilla_supported())) { top = bot = RGB(0x1A, 0x21, 0x32); border = RGB(0x28, 0x31, 0x47); text = RGB(0x5C, 0x68, 0x7E); }
       round_rect(dc, r, 7, top, bot, border);
       draw_text(dc, names[i], r, g_font_small, text, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
     }
   }
 #endif
 
-  dot(dc, CX, 215, g_slippi_missing ? C_WARN : C_OK);   // centred on the first line of slippi_text_rect
-  draw_text(dc, widen(g_slippi_line), slippi_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
+  if (vanilla_active()) {
+    // No account line: a Vanilla session never loads the online layer. Its one choice sits here.
+    const RECT cr = vanilla_check_rect();
+    RECT box{cr.left + S(1), cr.top + S(3), cr.left + S(17), cr.top + S(19)};
+    round_rect(dc, box, 3, C_FIELD, C_FIELD, C_BTN_BORDER);
+    if (g_vanilla.own_code) {
+      HPEN pen = CreatePen(PS_SOLID, S(2), C_ACC_HI);
+      HGDIOBJ old_pen = SelectObject(dc, pen);
+      MoveToEx(dc, box.left + S(3), box.top + S(8), nullptr);
+      LineTo(dc, box.left + S(7), box.bottom - S(4));
+      LineTo(dc, box.right - S(3), box.top + S(3));
+      SelectObject(dc, old_pen); DeleteObject(pen);
+    }
+    RECT label = cr; label.left += S(24);
+    draw_text(dc, launcher::lang::txw(L"Game's own code only (no UCF, nothing unlocked)"), label, g_font_small, C_DIM,
+              DT_LEFT | DT_SINGLELINE | DT_VCENTER);
+  } else {
+    dot(dc, CX, 215, g_slippi_missing ? C_WARN : C_OK);   // centred on the first line of slippi_text_rect
+    draw_text(dc, widen(g_slippi_line), slippi_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
+  }
 
   dot(dc, CX, 239, g_version_dot);   // centred on the first line of version_text_rect
   draw_text(dc, widen(g_version_line), version_text_rect(), g_font, C_DIM, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
@@ -802,6 +847,7 @@ void paint_play(HDC dc) {
   fill(dc, sep, C_SEP);
   draw_text(dc, HINT_TEXT, LR(CX, 294, CW, 44), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
   std::string version_status = g_active_version.empty() ? "" : launcher::lang::fill(launcher::lang::tx("Playing {version}"), launcher::lang::Args{{"version", g_active_version}});
+  if (!version_status.empty() && !vanilla_supported()) version_status += ". " + launcher::lang::tx("Vanilla needs 0.9.17 or newer");
   if (host::updater::rollback_state() == host::updater::RollbackState::Downloading)
     version_status = host::updater::rollback_message();
   else if (host::updater::rollback_state() == host::updater::RollbackState::Failed)
@@ -1020,7 +1066,7 @@ void select_tab(int idx) {
     SetWindowPos(g_main,nullptr,x,y,width,height,SWP_NOZORDER|SWP_NOACTIVATE);
   }
   mod_manager::show_page(idx == 4);
-  if (idx == 0 && !g_slippi_missing) ShowWindow(g_slippi_btn, SW_HIDE);
+  if (idx == 0 && (!g_slippi_missing || vanilla_active())) ShowWindow(g_slippi_btn, SW_HIDE);
   if (idx != 0) ShowWindow(g_update_btn, SW_HIDE);
   if (g_main) InvalidateRect(g_main, nullptr, FALSE);
 }
@@ -1181,12 +1227,18 @@ void open_settings(const std::string& tab) {
 
 // A GAME BUILD segment was clicked: remember the choice for the next PLAY and repaint the row.
 // build_seg_at() has already refused a Source Port segment with nothing installed behind it.
-void select_engine(int engine) {
-  if (g_engine == engine) return;
+void select_build(int seg) {
+  const int engine = seg == 1 ? ENGINE_LEGACY : ENGINE_SOURCE;
+  const bool vanilla = seg == 2;
+  if (g_engine == engine && g_vanilla.vanilla == vanilla) return;
   g_engine = engine;
+  g_vanilla.vanilla = vanilla;
   save_ini();
   SetTimer(g_main, ID_TIMER_STANDBY, 800, nullptr);   // the panel of the build now picked
-  invalidate(build_seg_rect(0)); invalidate(build_seg_rect(1));
+  for (int i = 0; i < kBuildSegments; ++i) invalidate(build_seg_rect(i));
+  // The account line gives way to Vanilla's own choice, and the Get button with it.
+  invalidate(slippi_text_rect()); invalidate(vanilla_check_rect());
+  if (g_slippi_btn) ShowWindow(g_slippi_btn, g_slippi_missing && !vanilla_active() ? SW_SHOW : SW_HIDE);
 }
 
 bool lobby_game_ready() {
@@ -1350,6 +1402,10 @@ std::string static_recomp_exe() {
 void launch_game_now() {
   std::string cwd = work_dir();
   std::string exe = g_game_exe, args = game_args();
+  // Vanilla, on a plain PLAY only: a lobby match is online and a mod launch is modded, so neither
+  // takes the retail flags (the game would refuse --vanilla-only beside a mod argument anyway).
+  if (vanilla_active() && g_lobby_launch_args.empty() && g_mod_launch_iso.empty() && exe == game_exe())
+    args += launcher::vanilla_launch_args(g_vanilla);
   if (!g_mod_launch_iso.empty()) {
     exe = g_mod_launch_engine == "source" ? source_exe_dir() + "\\melee_source.exe" : static_recomp_exe();
     const std::string base = active_dir();
@@ -1614,7 +1670,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       g_engine = ENGINE_SOURCE;   // the only Game Build here, whatever launcher.ini last held
 #endif
       refresh_account_line();
-      ShowWindow(g_slippi_btn, g_slippi_missing ? SW_SHOW : SW_HIDE);
+      ShowWindow(g_slippi_btn, g_slippi_missing && !vanilla_active() ? SW_SHOW : SW_HIDE);
 #ifndef MELEE_NO_SLIPPI   // the public releases are the other build: this one must never install them over itself
       if (!g_launcher_test) { host::updater::check(MELEE_PORT_VERSION); refresh_updater(); }
 #endif
@@ -1699,7 +1755,12 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         if (g_tab != tab) { select_tab(tab); refresh_updater(); }
         return 0;
       }
-      if (const int seg = build_seg_at(p); seg >= 0) select_engine(seg == 0 ? ENGINE_SOURCE : ENGINE_LEGACY);
+      if (const int seg = build_seg_at(p); seg >= 0) select_build(seg);
+      if (RECT cr = vanilla_check_rect(); g_tab == 0 && vanilla_active() && PtInRect(&cr, p)) {
+        g_vanilla.own_code = !g_vanilla.own_code;
+        save_ini();
+        invalidate(cr);
+      }
       if (PtInRect(&g_dog_rect, p)) choose_rail_image();
       return 0;
     }

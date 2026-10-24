@@ -2748,9 +2748,12 @@ void h_replay_event(uint8_t command, const uint8_t* payload, uint32_t size) {
     g_replay_stream.set_mod_profile(g_retail_view || g_view_alias.empty() ? std::string() : g_mod_fingerprint);
     // The 20XX TE features in effect (offline only; online matches never carry them).
     // (Or the Hack Pack's share of them, with the pack and no TE save: te_words_mask1/2.)
-    g_replay_stream.set_feature_options(online ? 0u : (gx::RenderOptions::live_te_options() & te_words_mask1()));
-    g_replay_stream.set_feature_options2(online ? 0u : (gx::RenderOptions::live_te_options2() & te_words_mask2()) |
-                                                      cpu_20xx_bit());   // "20XX CPUs" too: playback replays it
+    // What RAN, not what is saved: a --vanilla-only session plays with none of them whatever the
+    // Game tab holds, and its replay must say so, or playback would switch "20XX CPUs" back on and
+    // a Vanilla launch would refuse the recording as modded.
+    g_replay_stream.set_feature_options(online || host::gameplay::vanilla_only() ? 0u
+                                            : (gx::RenderOptions::live_te_options() & te_words_mask1()));
+    g_replay_stream.set_feature_options2(online ? 0u : h_game_options2());   // "20XX CPUs" too: playback replays it
     g_replay_stream.set_feature_options3(online ? 0u : h_game_options3());   // CPU training options, likewise
     // The spectator server (Slippi Dolphin's): start_game, then the command table and every event
     // as recorded, then end_game after Game End, the order Dolphin's DMAWrite sends them.
