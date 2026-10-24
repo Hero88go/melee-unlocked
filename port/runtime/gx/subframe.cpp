@@ -1285,8 +1285,8 @@ bool SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
                  has_nrm ? &pd->normalMatrices[row * 3] : nullptr, stats);
       if (has_nrm) std::memcpy(&o.nrm[row * 3], nrm_out, sizeof nrm_out);
     }
-  return true;
   }
+  return true;
 }
 
 }  // namespace gx
