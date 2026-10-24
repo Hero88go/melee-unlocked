@@ -45,8 +45,8 @@
 #include "updater.h"
 #include "discord_presence.h"
 
-// "Faster sound effects" stays hidden and off until its timing is measured.
-static constexpr bool kShowFasterSoundEffects = false;
+// "Faster sound effects" (Audio): shown since its timing was measured.
+static constexpr bool kShowFasterSoundEffects = true;
 #include "controller_profiles.h"
 #include "dolphin_profile.h"
 #include "cosmetic_mods.h"
@@ -5804,7 +5804,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       ImGui::EndDisabled();
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("Starts each new sound effect in the sound frame being mixed now instead of the next one,\n"
-                          "about 5 ms sooner. Music is not affected. Offline only: online matches and replays\n"
+                          "up to one sound frame (5 ms) sooner. Music is not affected. Offline only: online matches and replays\n"
                           "always use console timing. Source Port only.");
     }
     {
