@@ -162,19 +162,17 @@ int difference(const Grid& a, const Grid& b, const Mask& mask) {
 
 int g_hold_ms = 24;   // --hold: how long the key stays down
 
-void press(WORD key) {
-  // Sent as a hardware scan code: DirectInput (Dolphin's keyboard device) reads scan codes and
-  // ignores a virtual-key-only event. Arrow keys carry the extended flag so Windows still reports
-  // them as arrows, not numpad keys, to programs that read window messages.
+// Sent as a hardware scan code: DirectInput (Dolphin's keyboard device) reads scan codes and
+// ignores a virtual-key-only event. Arrow keys carry the extended flag so Windows still reports
+// them as arrows, not numpad keys, to programs that read window messages. Down and up are separate
+// so the capture loop keeps running through the hold (sleeping through it missed the first
+// response: the game answers within the hold).
+void key_event(WORD key, bool up) {
   const bool extended = key == VK_UP || key == VK_DOWN || key == VK_LEFT || key == VK_RIGHT;
-  const DWORD flags = KEYEVENTF_SCANCODE | (extended ? KEYEVENTF_EXTENDEDKEY : 0);
-  const WORD scan = (WORD)MapVirtualKeyW(key, MAPVK_VK_TO_VSC);
-  INPUT input[2]{};
-  input[0].type = INPUT_KEYBOARD; input[0].ki.wScan = scan; input[0].ki.dwFlags = flags;
-  input[1].type = INPUT_KEYBOARD; input[1].ki.wScan = scan; input[1].ki.dwFlags = flags | KEYEVENTF_KEYUP;
-  SendInput(1, &input[0], sizeof(INPUT));
-  Sleep((DWORD)g_hold_ms);   // at least one 60 Hz controller poll must see it
-  SendInput(1, &input[1], sizeof(INPUT));
+  const DWORD flags = KEYEVENTF_SCANCODE | (extended ? KEYEVENTF_EXTENDEDKEY : 0) | (up ? KEYEVENTF_KEYUP : 0);
+  INPUT input{};
+  input.type = INPUT_KEYBOARD; input.ki.wScan = (WORD)MapVirtualKeyW(key, MAPVK_VK_TO_VSC); input.ki.dwFlags = flags;
+  SendInput(1, &input, sizeof(INPUT));
 }
 
 WORD parse_key(const std::string& name) {
@@ -276,18 +274,23 @@ int main(int argc, char** argv) {
       const long long until = qpc_now() + (long long)(frequency * (jitter_ms * (std::rand() / (double)RAND_MAX)) / 1000.0);
       while (qpc_now() < until) YieldProcessor();
     }
+    const WORD this_key = trial % 2 ? key2 : key;
     const long long pressed = qpc_now();
-    press(trial % 2 ? key2 : key);
+    key_event(this_key, false);
+    const long long release_at = pressed + (long long)(frequency * g_hold_ms / 1000.0);
+    bool released = false;
     double latency = -1;
     const long long give_up = pressed + (long long)(frequency * timeout_ms / 1000.0);
     while (qpc_now() < give_up) {
-      if (!capture.next(current, &present, 50)) continue;
+      if (!released && qpc_now() >= release_at) { key_event(this_key, true); released = true; }
+      if (!capture.next(current, &present, 5)) continue;
       if (difference(previous, current, mask) >= threshold) {
         if (present > pressed) latency = (double)(present - pressed) * 1000.0 / frequency;
         break;
       }
       previous = current;
     }
+    while (!released) { if (qpc_now() >= release_at) { key_event(this_key, true); released = true; } else YieldProcessor(); }
     if (latency >= 0) { results.push_back(latency); std::printf("  trial %2d: %6.1f ms\n", trial + 1, latency); }
     else std::printf("  trial %2d: no response\n", trial + 1);
     Sleep((DWORD)gap_ms);

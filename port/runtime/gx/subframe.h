@@ -12,6 +12,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <unordered_map>
 #include <vector>
 #include "gx_core.h"
@@ -76,7 +77,10 @@ class SubFrameSolver {
   void set_frames(const Frame* prev, const Frame* cur);
   // Fills `out` (resized to cur->draws.size()) for phase t in [0, 1]. Interpolate: pose between
   // prev (t = 0) and cur (t = 1). Extrapolate: pose t frames beyond cur.
-  void build(double t, bool interpolate, std::vector<DrawMatrices>& out, bool authored = false) const;
+  // Returns false when `cancelled` fired (polled by the workers every 32 draws): the output is
+  // incomplete and no diagnostics were updated; the caller drops the present.
+  bool build(double t, bool interpolate, std::vector<DrawMatrices>& out, bool authored = false,
+             const std::function<bool()>* cancelled = nullptr) const;
   const SubFrameStats& stats() const { return stats_; }
   // Entries in the pairing table for the current frame (one per draw of `cur`). Diagnostic only.
   size_t pair_count() const { return pairs_.size(); }

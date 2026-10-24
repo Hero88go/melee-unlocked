@@ -177,6 +177,15 @@ class DynamicBuffer {
     return (uint8_t*)m.pData;
   }
   void end() { if (mapped_) { ctx_->Unmap(buffer_.Get(), 0); mapped_ = false; } }
+  // Maps without discarding: the caller writes only a range the GPU is not reading (the buffer's
+  // other contents stay as uploaded). Fails when the buffer is smaller than `bytes`.
+  uint8_t* begin_keep(size_t bytes) {
+    if (!bytes || bytes > size_) return nullptr;
+    D3D11_MAPPED_SUBRESOURCE m{};
+    if (FAILED(ctx_->Map(buffer_.Get(), 0, D3D11_MAP_WRITE_NO_OVERWRITE, 0, &m))) return nullptr;
+    mapped_ = true;
+    return (uint8_t*)m.pData;
+  }
   ID3D11Buffer* get() const { return buffer_.Get(); }
   size_t size() const { return size_; }
  private:
@@ -505,6 +514,9 @@ class D3D11Backend : public Backend {
   size_t plan_cache_draws_ = 0;
   int plan_cache_scale_ = 0, plan_cache_effects_ = 0;
   bool plan_cache_lab_ = false, plan_cache_valid_ = false;
+  // The frame's vertices stay in the vertex buffer across its presents; each present's re-posed
+  // vertices go to one of three regions after them (vb_extra_cap_ vertices each, rotating).
+  uint32_t vb_base_vertices_ = 0, vb_extra_cap_ = 0, vb_extra_slot_ = 0;
   std::vector<uint8_t> decode_scratch_;
   void execute_draw(const DrawCall& dc, const DrawPlan& plan);
 
@@ -2021,6 +2033,17 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   const bool reuse_plan = plan_matches && !plan_check;
   std::vector<DrawPlan> check_plans; std::vector<uint32_t> check_index; std::vector<PSConstants> check_ps;
   if (plan_matches && plan_check) { check_plans = plans_; check_index = index_scratch_; check_ps = ps_cache_; }
+  // Re-posed vertices of a repeated present: counted first, so the region is known before planning.
+  uint32_t extra_wanted = 0;
+  if (reuse_plan) for (const FrameCommand& cmd : frame.commands) {
+    if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size() || !plans_[cmd.index].valid) continue;
+    const DrawMatrices* over = overrides ? overrides + cmd.index : nullptr;
+    if (over && over->vertices) extra_wanted += frame.draws[cmd.index].vertex_count;
+  }
+  static const bool vb_keep = [] { const char* v = std::getenv("MELEE_VB_KEEP"); return !(v && *v == '0'); }();   // MELEE_VB_KEEP=0: old full upload (A/B)
+  const bool keep_vertices = vb_keep && reuse_plan && vb_base_vertices_ == frame.vertices.size() && extra_wanted <= vb_extra_cap_;
+  if (keep_vertices) vb_extra_slot_ = (vb_extra_slot_ + 1) % 3;
+  const uint32_t extra_region = keep_vertices ? (uint32_t)frame.vertices.size() + vb_extra_slot_ * vb_extra_cap_ : (uint32_t)frame.vertices.size();
   if (reuse_plan) {
     for (const FrameCommand& cmd : frame.commands) {
       if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
@@ -2028,7 +2051,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       if (!plan.valid) continue;
       const DrawCall& dc = frame.draws[cmd.index];
       const DrawMatrices* over = overrides ? overrides + cmd.index : nullptr;
-      if (over && over->vertices) { plan.base_vertex = (uint32_t)frame.vertices.size() + extra_vertices; extra_vertices += dc.vertex_count; }
+      if (over && over->vertices) { plan.base_vertex = extra_region + extra_vertices; extra_vertices += dc.vertex_count; }
       else plan.base_vertex = dc.first_vertex;
       if (uint8_t* dst = vs_constants_.slot(plan.vs_slot)) {
         VSConstants vs_constants;
@@ -2112,10 +2135,26 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   ps_constants_.end();
   g_prof[0] += sw.lap();   // index generation, planning and constants
 
-  const size_t vertex_bytes = (frame.vertices.size() + extra_vertices) * sizeof(Vertex);
-  if (uint8_t* dst = vertex_buffer_.begin(vertex_bytes)) {
+  uint8_t* dst = nullptr;
+  size_t vertex_bytes = 0;
+  if (keep_vertices) {
+    // Only this present's re-posed vertices, into the next rotating region; the base stays.
+    vertex_bytes = ((size_t)frame.vertices.size() + 3 * (size_t)vb_extra_cap_) * sizeof(Vertex);
+    dst = vertex_buffer_.begin_keep(vertex_bytes);
+  }
+  if (!dst) {
+    // The frame's first present (or a repeat that no longer fits): everything, with room for three
+    // regions of re-posed vertices after the base.
+    vb_base_vertices_ = (uint32_t)frame.vertices.size();
+    vb_extra_cap_ = extra_vertices + extra_vertices / 4 + 64;
+    vb_extra_slot_ = 0;
+    vertex_bytes = ((size_t)frame.vertices.size() + 3 * (size_t)vb_extra_cap_) * sizeof(Vertex);
+    dst = vertex_buffer_.begin(vertex_bytes);
+    if (!dst) { host::log("d3d11: vertex buffer allocation failed (%zu bytes)", vertex_bytes); return; }
     if (!frame.vertices.empty()) std::memcpy(dst, frame.vertices.data(), frame.vertices.size() * sizeof(Vertex));
-    size_t at = frame.vertices.size();
+  }
+  {
+    size_t at = keep_vertices ? extra_region : frame.vertices.size();
     for (const FrameCommand& cmd : frame.commands) {
       if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size() || !plans_[cmd.index].valid) continue;
       const DrawMatrices* over = overrides ? overrides + cmd.index : nullptr;
@@ -2124,16 +2163,15 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
       at += frame.draws[cmd.index].vertex_count;
     }
     vertex_buffer_.end();
-  } else if (vertex_bytes) {
-    host::log("d3d11: vertex buffer allocation failed (%zu bytes)", vertex_bytes);
-    return;
   }
-  if (uint8_t* dst = index_buffer_.begin(index_scratch_.size() * 4)) {
-    std::memcpy(dst, index_scratch_.data(), index_scratch_.size() * 4);
-    index_buffer_.end();
-  } else if (!index_scratch_.empty()) {
-    host::log("d3d11: index buffer allocation failed");
-    return;
+  if (!reuse_plan) {   // a repeated present's indices are already in the buffer
+    if (uint8_t* idst = index_buffer_.begin(index_scratch_.size() * 4)) {
+      std::memcpy(idst, index_scratch_.data(), index_scratch_.size() * 4);
+      index_buffer_.end();
+    } else if (!index_scratch_.empty()) {
+      host::log("d3d11: index buffer allocation failed");
+      return;
+    }
   }
   g_prof[1] += sw.lap();   // vertex/index upload
 

@@ -9,10 +9,12 @@
 #include <chrono>
 #include <condition_variable>
 #include <deque>
+#include <atomic>
 #include <mutex>
 namespace gx {
 class FrameQueue {
   std::mutex mutex;
+  std::atomic<uint64_t> pushes{0};   // every push, readable without the mutex
   std::condition_variable changed;
   std::deque<Frame> frames;
   std::deque<Frame> recycled;   // buffers returned by the renderer, capacity preserved
@@ -23,9 +25,13 @@ public:
     changed.wait(lock, [&] { return finished || frames.size() < 32; });   // the renderer drains backlogs; this only trips if it is stuck
     if (finished) return false;
     frames.push_back(std::move(frame));
+    pushes.fetch_add(1, std::memory_order_release);
     changed.notify_all();
     return true;
   }
+  // How many frames have been pushed so far: a renderer compares it with the count it saw when it
+  // started a present to learn that a newer frame is waiting.
+  uint64_t pushed() const { return pushes.load(std::memory_order_acquire); }
   // Hands the simulation's frame to the renderer without copying it, and hands back a cleared
   // frame that still owns its buffers (a few MB of vertices and draw state), so the simulation
   // thread refills them instead of reallocating every frame.
@@ -42,6 +48,7 @@ public:
     const size_t want_commands = std::max<size_t>(2048, frame.commands.size() + frame.commands.size() / 4 + 1);
     const size_t want_copies = std::max<size_t>(16, frame.copies.size() + 4);
     frames.push_back(std::move(frame));
+    pushes.fetch_add(1, std::memory_order_release);
     if (!recycled.empty()) { frame = std::move(recycled.back()); recycled.pop_back(); }
     frame.clear();
     changed.notify_all();
