@@ -25,7 +25,7 @@ class ReleaseIntegrationTests(unittest.TestCase):
         self.assertIn("--source-exe", package)
         self.assertIn("--source-dll", package)
         self.assertIn("melee_source.exe", launcher)
-        self.assertIn("Source Port (Beta, not installed)", launcher)
+        self.assertIn("Source Port (not installed)", launcher)
         self.assertIn("melee_game.snapexcl", package)
 
 

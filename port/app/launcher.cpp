@@ -582,14 +582,14 @@ bool nav_shown(int) { return true; }
 int nav_slot(int i) { static const int slot[6] = {0, 1, 5, 2, 3, 4}; return i >= 0 && i < 6 ? slot[i] : i; }
 #endif
 RECT nav_rect(int i) { return LR(12, NAV_Y + nav_slot(i) * NAV_GAP, RAIL_W - 24, NAV_H); }
-// The three build segments, side by side on the GAME BUILD row: 0 Source Port, 1 Vanilla (the
-// Source Port as the retail game), 2 Static Recomp (Legacy). Vanilla is one word, so its segment
-// is the narrow one and the two engine names keep their room.
+// The three build segments, side by side on the GAME BUILD row: 0 Source Port, 1 Static Recomp
+// (Legacy), 2 Vanilla (the Source Port as the retail game). Vanilla is one word, so its segment
+// is the narrow one, at the right, and the two engine names keep their room.
 const int kBuildSegments = 3;
 RECT build_seg_rect(int i) {
   const int left = CX + 84, total = CW - 84, gap = 6, narrow = 78, w = (total - 2 * gap - narrow) / 2;
-  const int x = i == 0 ? left : i == 1 ? left + w + gap : left + w + gap + narrow + gap;
-  return LR(x, 98, i == 1 ? narrow : w, 28);
+  const int x = i == 0 ? left : i == 1 ? left + w + gap : left + 2 * (w + gap);
+  return LR(x, 98, i == 2 ? narrow : w, 28);
 }
 // Vanilla is in effect: picked, and the Source Port it runs on is installed. With the Source Port
 // gone the row shows Static Recomp, which cannot play this way, so the choice waits.
@@ -609,7 +609,7 @@ int build_seg_at(POINT p) {
 #endif
   for (int i = 0; i < kBuildSegments; ++i) {
     RECT r = build_seg_rect(i);
-    if (PtInRect(&r, p)) return i < 2 && !source_available() ? -1 : i;
+    if (PtInRect(&r, p)) return i != 1 && !source_available() ? -1 : i;
   }
   return -1;
 }
@@ -795,14 +795,14 @@ void paint_play(HDC dc) {
 #else
   {
     const bool installed = source_available();
-    const int on = g_engine == ENGINE_SOURCE && installed ? (g_vanilla.vanilla ? 1 : 0) : 2;
+    const int on = g_engine == ENGINE_SOURCE && installed ? (g_vanilla.vanilla ? 2 : 0) : 1;
     const std::wstring vanilla_name = launcher::lang::txw(L"Vanilla");
-    const wchar_t* names[kBuildSegments] = {installed ? L"Source Port (Beta)" : L"Source Port (not installed)", vanilla_name.c_str(), L"Static Recomp (Legacy)"};
+    const wchar_t* names[kBuildSegments] = {installed ? L"Source Port (Beta)" : L"Source Port (not installed)", L"Static Recomp (Legacy)", vanilla_name.c_str()};
     for (int i = 0; i < kBuildSegments; ++i) {
       const RECT r = build_seg_rect(i);
       COLORREF top = C_BTN, bot = C_BTN, border = C_BTN_BORDER, text = C_DIM;
       if (i == on) { top = C_ACC_HI; bot = C_ACC_LO; border = NO_FILL; text = C_PLAY_TEXT; }
-      else if (i < 2 && !installed) { top = bot = RGB(0x1A, 0x21, 0x32); border = RGB(0x28, 0x31, 0x47); text = RGB(0x5C, 0x68, 0x7E); }
+      else if (i != 1 && !installed) { top = bot = RGB(0x1A, 0x21, 0x32); border = RGB(0x28, 0x31, 0x47); text = RGB(0x5C, 0x68, 0x7E); }
       round_rect(dc, r, 7, top, bot, border);
       draw_text(dc, names[i], r, g_font_small, text, DT_CENTER | DT_SINGLELINE | DT_VCENTER);
     }
@@ -1221,8 +1221,8 @@ void open_settings(const std::string& tab) {
 // A GAME BUILD segment was clicked: remember the choice for the next PLAY and repaint the row.
 // build_seg_at() has already refused a Source Port segment with nothing installed behind it.
 void select_build(int seg) {
-  const int engine = seg == 2 ? ENGINE_LEGACY : ENGINE_SOURCE;
-  const bool vanilla = seg == 1;
+  const int engine = seg == 1 ? ENGINE_LEGACY : ENGINE_SOURCE;
+  const bool vanilla = seg == 2;
   if (g_engine == engine && g_vanilla.vanilla == vanilla) return;
   g_engine = engine;
   g_vanilla.vanilla = vanilla;
