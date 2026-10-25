@@ -87,9 +87,14 @@ void set_key(int vk, bool down) {
 }
 
 bool g_cursor_visible = true;
+// Wayland compositors set their own pointer again when it re-enters the window or the window gets
+// the focus back, so the state is applied again then even if it did not change (two players on
+// Wayland kept seeing the pointer over the game).
+bool g_cursor_reapply = false;
 void show_cursor(bool visible) {
-  if (visible == g_cursor_visible) return;
+  if (visible == g_cursor_visible && !g_cursor_reapply) return;
   g_cursor_visible = visible;
+  g_cursor_reapply = false;
   SDL_ShowCursor(visible ? SDL_ENABLE : SDL_DISABLE);
 }
 
@@ -129,7 +134,11 @@ void handle_event(const SDL_Event& e) {
           host::log("window: another program took the focus");
           return;
         }
+        case SDL_WINDOWEVENT_ENTER:
+          g_cursor_reapply = true;
+          return;
         case SDL_WINDOWEVENT_FOCUS_GAINED:
+          g_cursor_reapply = true;
           linux_compat::set_window_focused(true);
           host::log("window: the game is in front again");
           return;
