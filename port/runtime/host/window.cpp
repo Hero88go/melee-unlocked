@@ -880,6 +880,7 @@ void apply_family_options(PadFamily family, PadState& pad) {
     pad.button &= (uint16_t)~PAD_R;
     apply_trigger_click(dz.click_r, pad.trig_r, pad.button, PAD_R);
   }
+  if (family == PadFamily::PlayStation) apply_playstation_default_click(dz, pad);
   apply_trigger_cap(dz.trig_l, pad.trig_l, pad.button, PAD_L);
   apply_trigger_cap(dz.trig_r, pad.trig_r, pad.button, PAD_R);
 }

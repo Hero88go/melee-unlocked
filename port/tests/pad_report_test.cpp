@@ -532,6 +532,23 @@ int main() {
     CHECK(host::playstation_parse(q, sizeof q, true, p, b));   // even if it claimed to be a DualSense
     CHECK((b & host::DS4_CROSS) && !(b & host::DS4_L2));
   }
+  // A PlayStation trigger pressed in also presses digital L/R at the default click (as an Xbox or
+  // GameCube trigger does), so L+R+A+Start on L2/R2 quits a paused offline match.
+  {
+    using host::BindAction; using host::kActionPadBit;
+    const uint16_t L = kActionPadBit[(size_t)BindAction::L], R = kActionPadBit[(size_t)BindAction::R];
+    host::Deadzone dz{};
+    host::PadState p{}; p.trig_l = 255; p.trig_r = 230;
+    host::apply_playstation_default_click(dz, p);
+    CHECK((p.button & L) && (p.button & R));
+    host::PadState light{}; light.trig_l = 120; light.trig_r = 199;   // light shield stays analog only
+    host::apply_playstation_default_click(dz, light);
+    CHECK(!(light.button & L) && !(light.button & R));
+    host::Deadzone custom{}; custom.click_l = 250;   // a threshold the player set is left to the family options
+    host::PadState q{}; q.trig_l = 255;
+    host::apply_playstation_default_click(custom, q);
+    CHECK(!(q.button & L));
+  }
   // Too short to hold the fields: refused, not read past the end.
   host::PadState pad{}; uint16_t buttons = 0;
   const uint8_t tiny[4] = {0x01, 0x80, 0x80, 0x80};

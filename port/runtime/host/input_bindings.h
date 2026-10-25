@@ -446,6 +446,14 @@ inline uint32_t ds4_apply_bindings(const PadBindings& bind, uint16_t buttons, Pa
       [&](int i) { return ds4_binding_pressed(bind.mask[i], bind.level[i], buttons, l2, r2); },
       [&](int i) { return analog_binding_travel(bind.mask[i], bind.level[i], buttons, DS4_L2, DS4_R2, l2, r2); });
 }
+// A PlayStation pad's L2/R2 have no click switch. With the click threshold left at its default they
+// get the click the Xbox triggers get: a trigger pressed in also presses digital L/R, as a GameCube
+// trigger does (pause, then L+R+A+Start on the triggers only unpaused offline). A threshold the
+// player set is applied by the family options instead; L1/R1 bound to L/R are left as they are.
+inline void apply_playstation_default_click(const Deadzone& dz, PadState& pad) {
+  if (dz.click_l == kDefaultTriggerClick) apply_trigger_click(kDefaultTriggerClick, pad.trig_l, pad.button, kActionPadBit[(size_t)BindAction::L]);
+  if (dz.click_r == kDefaultTriggerClick) apply_trigger_click(kDefaultTriggerClick, pad.trig_r, pad.button, kActionPadBit[(size_t)BindAction::R]);
+}
 // A GameCube adapter pad: `pad` as the adapter reported it, remapped in place (the default table is
 // the identity). A click arriving with its trigger at rest (from another button) bottoms the
 // trigger out, as before, since the game shields from the analog value.
