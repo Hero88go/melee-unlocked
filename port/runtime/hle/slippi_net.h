@@ -268,7 +268,11 @@ class Matchmaking {
   // Slippi's mode ids. RANKED stays defined only as protocol id 0: Melee Unlocked never searches it.
   enum OnlinePlayMode { RANKED = 0, UNRANKED = 1, DIRECT = 2, TEAMS = 3, PARTY = 4 };
   enum ProcessState { IDLE, INITIALIZING, MATCHMAKING, OPPONENT_CONNECTING, CONNECTION_SUCCESS, ERROR_ENCOUNTERED };
-  struct MatchSearchSettings { OnlinePlayMode mode = UNRANKED; std::string connect_code; };
+  struct MatchSearchSettings { OnlinePlayMode mode = UNRANKED; std::string connect_code; std::vector<std::string> blocked_codes; };
+  // True when an opponent in the match is on the Unranked block list (codes compared ignoring case
+  // and spaces). Public for the unit test.
+  static bool IsBlockedMatch(OnlinePlayMode mode, const std::vector<std::string>& blocked,
+                             const std::vector<UserInfo>& players, int local_index);
   struct MatchmakeResult { std::string id; std::vector<UserInfo> players; std::vector<uint16_t> stages; uint32_t items = 0; };
   // The match a get-ticket-resp describes, read without trusting any of it. ok is false (and error
   // says why) unless there are 2 to 4 players, every port is 1..4 and used once, and one of them is

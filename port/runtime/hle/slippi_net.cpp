@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <climits>
 #include <cstdlib>
 #include <cstdio>
@@ -1015,8 +1016,28 @@ void Matchmaking::fail(const std::string& message) {
   { std::lock_guard<std::mutex> lk(result_mutex_); error_msg_ = message; }
   state_ = ERROR_ENCOUNTERED;
 }
+bool Matchmaking::IsBlockedMatch(OnlinePlayMode mode, const std::vector<std::string>& blocked,
+                                 const std::vector<UserInfo>& players, int local_index) {
+  if (mode != UNRANKED || blocked.empty()) return false;
+  const auto clean = [](const std::string& code) {
+    std::string out;
+    for (char c : code) if (!std::isspace((unsigned char)c)) out += (char)std::toupper((unsigned char)c);
+    return out;
+  };
+  for (size_t i = 0; i < players.size(); ++i) {
+    if ((int)i == local_index) continue;
+    const std::string theirs = clean(players[i].connect_code);
+    if (theirs.empty()) continue;
+    for (const auto& code : blocked) if (!clean(code).empty() && clean(code) == theirs) return true;
+  }
+  return false;
+}
+
 void Matchmaking::FindMatch(MatchSearchSettings settings) {
   is_mm_connected_ = false;
+  if (settings.blocked_codes.empty())
+    for (const auto& code : slippi::online::config().blocked_codes)
+      if (!code.empty()) settings.blocked_codes.push_back(code);
   search_settings_ = settings;
   { std::lock_guard<std::mutex> lk(result_mutex_); error_msg_.clear(); }
   if (!local_peer.enabled && !server_allowed) {
@@ -1236,7 +1257,20 @@ void Matchmaking::handleMatchmaking() {
     return;
   }
   if (!ingest_ticket(Ticket{resp})) return;
+  bool blocked = false;
+  {
+    std::lock_guard<std::mutex> lk(result_mutex_);
+    blocked = IsBlockedMatch(search_settings_.mode, search_settings_.blocked_codes, player_info_, local_player_index_);
+  }
   terminateMmConnection();
+  if (blocked) {
+    // Turned down: the opponent is on the player's Unranked block list. A new ticket keeps the
+    // search going; the other player's client sees a failed connection and searches again.
+    host::log("slippi: matched a blocked connect code in Unranked; searching again");
+    is_mm_connected_ = false;
+    state_ = INITIALIZING;
+    return;
+  }
   state_ = OPPONENT_CONNECTING;
   host::log("slippi: opponent found (decider: %d)", is_host_);
 }

@@ -18,6 +18,9 @@ struct Config {
   int delay = 2;                 // Slippi Online input delay (frames)
   bool auto_delay = false;       // pick the delay from the measured ping each match (delay is the fallback)
   int chat = 0;                  // 0 enabled, 1 direct only, 2 disabled
+  // Up to three connect codes never to play in Unranked: a match with one is turned down and the
+  // search goes on. Not in Ranked, Direct, Teams or Party.
+  std::string blocked_codes[3];
 };
 Config& config();
 

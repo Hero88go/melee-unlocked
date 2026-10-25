@@ -2060,6 +2060,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "audio_buffer_ms") options.audio_buffer_ms = std::clamp(std::stoi(value), 5, 120);
       else if (key == "audio_early_keyon") gx::RenderOptions::live_audio_early_keyon() = kShowFasterSoundEffects && value == "1";
       else if (key == "quickchat") slippi::online::config().chat = std::clamp(std::atoi(value.c_str()), 0, 2);
+      else if (key == "blockcode1" || key == "blockcode2" || key == "blockcode3")
+        slippi::online::config().blocked_codes[key.back() - '1'] = value.substr(0, 16);
       else if (key == "onlinedelay") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 9) slippi::online::config().delay = d; }
       else if (key == "onlinedelayauto") slippi::online::config().auto_delay = value == "1";
       else if (key == "offline_delay") options.offline_delay = value == "1";
@@ -3464,6 +3466,9 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\noffline_delay " << (options.offline_delay ? 1 : 0)
        << "\nearly_inputs " << (options.early_inputs ? 1 : 0)
        << "\nquickchat " << slippi::online::config().chat
+       << "\nblockcode1 " << slippi::online::config().blocked_codes[0]
+       << "\nblockcode2 " << slippi::online::config().blocked_codes[1]
+       << "\nblockcode3 " << slippi::online::config().blocked_codes[2]
        << "\nautoopenoverlay " << (options.settings_open ? 1 : 0)
        // Read since it was added and never written, so hiding the reminder lasted one session.
        << "\nsettingsreminder " << (options.settings_hint ? 1 : 0)
@@ -7650,6 +7655,26 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (slippi::online::is_online_match()) {
         ImGui::SameLine();
         settings_hint("(applies from the next match)");
+      }
+      // Up to three connect codes to skip in Unranked (a match with one is turned down and the
+      // search goes on). Ranked, Direct, Teams and Party are not affected.
+      {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Skip in Unranked");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Up to three connect codes you do not want to play in Unranked. When the search finds one,\n"
+                            "Melee Unlocked turns the match down and keeps searching. Other modes are not affected.");
+        for (int i = 0; i < 3; ++i) {
+          char buf[17];
+          std::snprintf(buf, sizeof buf, "%s", slippi::online::config().blocked_codes[i].c_str());
+          ImGui::SameLine();
+          ImGui::SetNextItemWidth(110.0f);
+          char id[24]; std::snprintf(id, sizeof id, "##blockcode%d", i);
+          if (ImGui::InputTextWithHint(id, "CODE#123", buf, sizeof buf, ImGuiInputTextFlags_CharsUppercase)) {
+            slippi::online::config().blocked_codes[i] = buf;
+            changed = true;
+          }
+        }
       }
       if (settings_toggle("After an online session ends, go back to Training mode", &options.online_return_training)) {
         RenderOptions::live_online_return_training() = options.online_return_training;
