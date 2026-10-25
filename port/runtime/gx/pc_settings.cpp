@@ -5209,8 +5209,6 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetTooltip("NVIDIA DLSS 5 3D-Guided Neural Rendering on top of DLAA or DLSS, through NVIDIA's\n"
                           "own runtime. The HUD is left as the game drew it. The weight preset and the\n"
                           "scaling filters are under Advanced.");
-      if (!dlss5::model_found())
-        settings_hint("The DLSS 5 model (nvngx_dlssnr.dll) is missing from the game folder. Extract the whole release again, then restart.");
       if (options.dlss5) {
         // Sliders apply when released: every change rebuilds the model's feature, and doing that on
         // each pixel of a drag would stall the frame repeatedly.
@@ -5361,6 +5359,29 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         }
       }
       if (nr_blocked) ImGui::EndDisabled();
+      // NVIDIA's model is a separate download: one button fetches it from the release, checks it and
+      // puts it beside the game (host/updater.cpp), where updates leave it alone.
+      if (!dlss5::model_found()) {
+        std::string game_dir;
+        {
+          wchar_t module[MAX_PATH]{};
+          const DWORD length = GetModuleFileNameW(nullptr, module, MAX_PATH);
+          if (length > 0 && length < MAX_PATH) game_dir = std::filesystem::path(module).parent_path().u8string();
+        }
+        using host::updater::ModelState;
+        const ModelState ms = host::updater::dlss5_model_state(game_dir);
+        if (ms == ModelState::Present) {
+          settings_hint("DLSS 5 is installed. Restart the game to use it.");
+        } else if (ms == ModelState::Downloading) {
+          settings_hint("%s", host::updater::dlss5_model_message().c_str());
+        } else {
+          char label[64];
+          std::snprintf(label, sizeof label, "Download DLSS 5 (%s)", host::updater::kDlss5ModelSize);
+          if (ImGui::Button(label, ImVec2(0, 32)) && !game_dir.empty()) host::updater::dlss5_model_download(game_dir);
+          if (ms == ModelState::Failed) settings_hint("%s", host::updater::dlss5_model_message().c_str());
+          else settings_hint("NVIDIA's DLSS 5 model is a separate download. It goes beside the game and stays there through updates.");
+        }
+      }
       if (nr_blocked) settings_hint("DLSS 5 needs Direct3D 12 and Upscaling set to DLAA or a DLSS mode.");
       else if (options.dlss5) {
         ImGui::TextWrapped("DLSS 5: %s. NVIDIA supports it on RTX 50 series cards. It runs on every frame shown, so expect a lower frame rate.", dlss5::status());

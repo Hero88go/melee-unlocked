@@ -322,10 +322,21 @@ def main():
     if not model.is_file() or hashlib.sha256(model.read_bytes()).hexdigest() != \
             "2bc19bc09a7b89dd44f73e2ac0108fcc586e2154bdd0830f242f4f040e28789f":
         raise SystemExit(f"missing or unrecognized DLSS 5 model (NVIDIA 310.9.16): {model}")
-    shutil.copy2(model, folder / "nvngx_dlssnr.dll")
+    # Its own download since 0.9.57 (it more than doubled every update): MeleeUnlocked-DLSS5-Model.zip,
+    # which the launcher and PC settings fetch on request (host/updater.cpp dlss5_model_download).
+    args.out.mkdir(parents=True, exist_ok=True)
+    model_zip = args.out / "MeleeUnlocked-DLSS5-Model.zip"
+    with zipfile.ZipFile(model_zip, "w", zipfile.ZIP_DEFLATED) as z:
+        z.write(model, "nvngx_dlssnr.dll")
+        z.writestr("README.txt",
+                   "NVIDIA's DLSS 5 model for Melee Unlocked (NVIDIA 310.9.16, from the RTX Remix 1.6.1 SDK).\n"
+                   "The launcher and PC settings > Video download this for you. To install it by hand, put\n"
+                   "nvngx_dlssnr.dll beside melee_port.exe; updates never remove it.\n")
+    print(f"{model_zip} ({model_zip.stat().st_size / 1e6:.1f} MB)")
     (folder / "DLSS5").mkdir(exist_ok=True)
     (folder / "DLSS5" / "README.txt").write_text(
         "DLSS 5 uses NVIDIA's model (nvngx_dlssnr.dll beside the game) on the cards NVIDIA supports.\n"
+        "It is a separate download: PC settings > Video > Download DLSS 5, or the launcher's offer.\n"
         "For other cards, put a DLSS 5 model build made for your card in this folder as\n"
         "nvngx_dlssnr.dll. Updates never replace a file here.\n", encoding="utf-8")
     # App-local Visual C++ runtime (Microsoft permits redistributing these next to the exe): without it

@@ -41,7 +41,9 @@
 #include <vector>
 #include <thread>
 #include <wincodec.h>
+#include <dxgi.h>
 #pragma comment(lib, "windowscodecs.lib")
+#pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "ole32.lib")
 #include "updater.h"
 #include "launch_process.h"
@@ -164,6 +166,7 @@ int g_engine = ENGINE_LEGACY;
 launcher::VanillaChoice g_vanilla;
 bool g_install_requested = false;
 bool g_warm_cache_on_play = false;
+bool g_dlss5_asked = false;   // launcher.ini dlss5asked=1: the DLSS 5 download was offered once already
 // Replay Viewer: "Show it as it was played" (launcher.ini replayasplayed=1). It applies to a replay
 // that has a session trace file beside it; see launcher_replays.inl.
 bool g_replay_as_played = false;
@@ -254,6 +257,7 @@ void load_ini() {
         if (v >= CPU_AUTO && v <= CPU_COMPAT) g_cpu_build = v;
       } else if (line.rfind("activeversion=", 0) == 0 && safe_version_folder(line.substr(14))) g_active_version = line.substr(14);
       else if (line == "warmcache=1") g_warm_cache_on_play = true;
+      else if (line == "dlss5asked=1") g_dlss5_asked = true;
       else if (line == "replayasplayed=1") g_replay_as_played = true;
       else if (line == "savereplays=0") g_save_replays = false;
       else if (line.rfind("replaydir=", 0) == 0) g_replay_folder = line.substr(10);
@@ -288,6 +292,7 @@ void save_ini() {
     f << "iso=" << g_iso << "\n";
     if (!g_active_version.empty()) f << "activeversion=" << g_active_version << "\n";
     if (g_warm_cache_on_play) f << "warmcache=1\n";
+    if (g_dlss5_asked) f << "dlss5asked=1\n";
     if (g_replay_as_played) f << "replayasplayed=1\n";
     if (!g_save_replays) f << "savereplays=0\n";
     if (!g_replay_folder.empty()) f << "replaydir=" << g_replay_folder << "\n";
@@ -848,12 +853,17 @@ void paint_play(HDC dc) {
   draw_text(dc, HINT_TEXT, LR(CX, 294, CW, 44), g_font_small, C_FAINT, DT_LEFT | DT_WORDBREAK | DT_EDITCONTROL);
   std::string version_status = g_active_version.empty() ? "" : launcher::lang::fill(launcher::lang::tx("Playing {version}"), launcher::lang::Args{{"version", g_active_version}});
   if (!version_status.empty() && !vanilla_supported()) version_status += ". " + launcher::lang::tx("Vanilla needs 0.9.17 or newer");
+  bool status_bad = host::updater::rollback_state() == host::updater::RollbackState::Failed;
   if (host::updater::rollback_state() == host::updater::RollbackState::Downloading)
     version_status = host::updater::rollback_message();
   else if (host::updater::rollback_state() == host::updater::RollbackState::Failed)
     version_status = host::updater::rollback_message();
-  draw_text(dc, widen(version_status), LR(398, 348, 188, 32), g_font_small,
-            host::updater::rollback_state() == host::updater::RollbackState::Failed ? C_BAD : C_DIM,
+  else if (!host::updater::dlss5_model_message().empty()) {
+    // The DLSS 5 download: its progress, then its result.
+    version_status = host::updater::dlss5_model_message();
+    status_bad = host::updater::dlss5_model_state(g_dir) == host::updater::ModelState::Failed;
+  }
+  draw_text(dc, widen(version_status), LR(398, 348, 188, 32), g_font_small, status_bad ? C_BAD : C_DIM,
             DT_RIGHT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
 }
 
@@ -1035,6 +1045,7 @@ void draw_button(DRAWITEMSTRUCT* di) {
 // ---------------------------------------------------------------------------- behaviour
 
 void refresh_updater();
+void offer_dlss5();
 void open_settings(const std::string& tab = std::string());
 void settings_standby_start();
 void settings_standby_stop();
@@ -1494,6 +1505,38 @@ void browse() {
 }
 
 bool g_update_prompted = false;
+// An NVIDIA RTX 50 series card in this computer: the cards NVIDIA's DLSS 5 model runs on.
+bool rtx50_present() {
+  IDXGIFactory1* factory = nullptr;
+  if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)))) return false;
+  bool found = false;
+  IDXGIAdapter1* adapter = nullptr;
+  for (UINT i = 0; !found && factory->EnumAdapters1(i, &adapter) != DXGI_ERROR_NOT_FOUND; ++i) {
+    DXGI_ADAPTER_DESC1 desc{};
+    if (SUCCEEDED(adapter->GetDesc1(&desc)) && desc.VendorId == 0x10DE) {
+      const std::wstring name = desc.Description;
+      found = name.find(L"RTX 50") != std::wstring::npos;
+    }
+    adapter->Release();
+  }
+  factory->Release();
+  return found;
+}
+
+// DLSS 5 is its own download. The first time the launcher sees a card that runs it and no model
+// beside the game, it offers the download once; PC settings > Video in the game has it as a button.
+void offer_dlss5() {
+  if (g_dlss5_asked || host::updater::dlss5_model_present(g_dir) || !rtx50_present()) return;
+  g_dlss5_asked = true;
+  save_ini();
+  const std::string text = std::string("Your NVIDIA RTX 50 series card can run DLSS 5, NVIDIA's neural rendering.\n\n"
+                                       "Download NVIDIA's DLSS 5 model now (") + host::updater::kDlss5ModelSize +
+                           ")? It goes beside the game and stays there through updates.\n\n"
+                           "You can also download it any time from PC settings > Video in the game.";
+  if (MessageBoxW(g_main, widen(text).c_str(), L"Melee Unlocked Launcher", MB_YESNO | MB_ICONQUESTION) == IDYES)
+    host::updater::dlss5_model_download(g_dir);
+}
+
 void refresh_updater() {
   using host::updater::State;
   auto st = host::updater::state();
@@ -1673,6 +1716,7 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
       ShowWindow(g_slippi_btn, g_slippi_missing && !vanilla_active() ? SW_SHOW : SW_HIDE);
 #ifndef MELEE_NO_SLIPPI   // the public releases are the other build: this one must never install them over itself
       if (!g_launcher_test) { host::updater::check(MELEE_PORT_VERSION); refresh_updater(); }
+      if (!g_launcher_test) PostMessageW(hwnd, WM_APP + 77, 0, 0);   // offer DLSS 5 once the window is up
 #endif
       SetTimer(hwnd, ID_TIMER, 500, nullptr);
       if (!g_launcher_test) SetTimer(hwnd, ID_TIMER_STANDBY, 1500, nullptr);
@@ -2027,8 +2071,16 @@ LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 #endif
       refresh_updater();
       if (g_tab == 0 && host::updater::rollback_state() == host::updater::RollbackState::Downloading) invalidate(LR(398, 348, 300, 32));
+      {
+        // The DLSS 5 download's line: repainted while it runs and once when it ends.
+        static host::updater::ModelState last = host::updater::ModelState::Missing;
+        const host::updater::ModelState now = host::updater::dlss5_model_state(g_dir);
+        if (g_tab == 0 && (now == host::updater::ModelState::Downloading || now != last)) invalidate(LR(398, 348, 300, 32));
+        last = now;
+      }
       return 0;
     }
+    case WM_APP + 77: offer_dlss5(); return 0;
     case WM_CTLCOLORLISTBOX: SetTextColor((HDC)wp,C_TEXT); SetBkColor((HDC)wp,C_FIELD); return (LRESULT)g_br_field;
     case WM_CTLCOLORSTATIC:
     case WM_CTLCOLOREDIT: {

@@ -34,4 +34,15 @@ std::string install_script(const std::string& batch_dir, unsigned long self, con
                            const std::string& relaunch, bool show_failure);
 // Game processes from this installation that must close before replacement.
 std::vector<unsigned long> install_processes(const std::string& install_root_utf8);
+
+// DLSS 5: NVIDIA's model is its own download (it would more than double every update). One click
+// fetches it from the release, checks NVIDIA's file against its known SHA-256 and puts it beside the
+// game as nvngx_dlssnr.dll, where updates leave it alone. Background thread; the game picks it up
+// at its next start.
+enum class ModelState { Missing, Present, Downloading, Failed };
+bool dlss5_model_present(const std::string& game_dir_utf8);
+void dlss5_model_download(const std::string& game_dir_utf8);
+ModelState dlss5_model_state(const std::string& game_dir_utf8);
+std::string dlss5_model_message();
+constexpr const char* kDlss5ModelSize = "about 180 MB";
 }  // namespace host::updater

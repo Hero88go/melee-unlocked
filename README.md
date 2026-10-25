@@ -143,13 +143,15 @@ updates and the Slippi account check in one place.
   choose **Current install** to return. The ISO, settings, saves, and replays are shared, while
   each version uses its own game files and `Sys` resources.
 
-### DLSS 5 Experimental
+### DLSS 5
 
-The current private v0.7 test package uses one integrated executable. It includes the normal DLSS /
-DLAA, Frame Generation, Reflex, and renderer options alongside the optional DLSS 5 neural-rendering
-path; no separate Legacy game executable or build selector is used. The feature is experimental and
-requires NVIDIA's DLSS 5 runtime/model, which is not included. Without that runtime, the game runs
-normally and the PC settings panel reports that DLSS 5 could not start.
+DLSS 5 (NVIDIA's 3D-Guided Neural Rendering) runs on top of DLAA or DLSS through NVIDIA's own
+runtime, the way NVIDIA's RTX Remix 1.6 integrates it. NVIDIA's signed model is a separate download
+(`MeleeUnlocked-DLSS5-Model.zip` on the release): the launcher offers it on an RTX 50 series card,
+and PC settings > Video has a Download DLSS 5 button. Either one checks the file and puts
+`nvngx_dlssnr.dll` beside the game, where updates leave it. Choose Model A, B or C in PC settings >
+Video; the HUD is left as the game drew it. For other cards, a model build made for the card can be
+placed in the `DLSS5` folder.
 
 For renderer diagnostics, `--frame-generation` enables 2x. The explicit forms
 `--frame-generation=2x|3x|4x|5x|6x|dynamic` select a driver-supported mode.

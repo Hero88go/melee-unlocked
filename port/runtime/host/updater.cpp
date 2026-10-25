@@ -449,7 +449,7 @@ std::vector<unsigned long> install_processes(const std::string& install_root_utf
   return pids;
 }
 
-void shutdown() { join(); if (g_rollback_thread.joinable()) g_rollback_thread.join(); }
+void shutdown();   // below, with the DLSS 5 model download it also waits for
 State state() { return g_state.load(); }
 std::string latest_version() { std::lock_guard<std::mutex> lk(g_mutex); return g_latest; }
 std::string message() { std::lock_guard<std::mutex> lk(g_mutex); return g_message; }
@@ -728,5 +728,84 @@ void download_and_install() {
     CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
     host::request_exit(0);
   });
+}
+
+// ---------------- DLSS 5 model ----------------
+namespace {
+// NVIDIA's DLSS 5 model (RTX Remix 1.6.1's package, version 310.9.16), carried by the 0.9.57 release
+// as its own asset. The file inside is checked against NVIDIA's signed build, so a damaged or
+// different download is never put beside the game.
+constexpr const char* kModelUrl =
+    "https://github.com/hero88go/melee-unlocked/releases/download/v0.9.57/MeleeUnlocked-DLSS5-Model.zip";
+constexpr const char* kModelSha256 = "2bc19bc09a7b89dd44f73e2ac0108fcc586e2154bdd0830f242f4f040e28789f";
+constexpr const char* kModelFile = "nvngx_dlssnr.dll";
+std::atomic<bool> g_model_busy{false}, g_model_failed{false};
+std::string g_model_message;
+std::thread g_model_thread;
+void model_message(const std::string& m) { std::lock_guard<std::mutex> lk(g_mutex); g_model_message = m; }
+}  // namespace
+
+bool dlss5_model_present(const std::string& game_dir_utf8) {
+  std::error_code ec;
+  const auto dir = std::filesystem::u8path(game_dir_utf8);
+  return std::filesystem::is_regular_file(dir / kModelFile, ec) ||
+         std::filesystem::is_regular_file(dir / "DLSS5" / kModelFile, ec);
+}
+
+void dlss5_model_download(const std::string& game_dir_utf8) {
+  if (g_model_busy.exchange(true)) return;
+  if (g_model_thread.joinable()) g_model_thread.join();
+  g_model_failed = false;
+  model_message(std::string("Downloading DLSS 5 (") + kDlss5ModelSize + ")...");
+  g_model_thread = std::thread([game_dir_utf8] {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::u8path(game_dir_utf8);
+    const fs::path work = dir / "dlss5-download";
+    std::error_code ec;
+    auto fail = [&](const std::string& why) {
+      fs::remove_all(work, ec);
+      model_message(why);
+      host::log("dlss5 download: %s", why.c_str());
+      g_model_failed = true;
+      g_model_busy = false;
+    };
+    std::string body; int status = 0;
+    if (!http_get(kModelUrl, &body, &status) || status != 200)
+      return fail(status ? "DLSS 5 download failed (HTTP " + std::to_string(status) + ")" : "DLSS 5 download failed (no connection)");
+    fs::remove_all(work, ec);
+    fs::create_directories(work, ec);
+    const fs::path zip = work / "model.zip";
+    { std::ofstream f(zip, std::ios::binary); f.write(body.data(), (std::streamsize)body.size()); if (!f) return fail("DLSS 5: cannot write the download"); }
+    body.clear(); body.shrink_to_fit();
+    if (!unpack_zip(zip, work / "files")) return fail("DLSS 5: the download is damaged");
+    fs::path found;
+    for (const auto& e : fs::recursive_directory_iterator(work / "files", ec))
+      if (e.is_regular_file(ec) && e.path().filename() == kModelFile) { found = e.path(); break; }
+    if (found.empty()) return fail("DLSS 5: the download has no model in it");
+    std::string data;
+    { std::ifstream f(found, std::ios::binary); data.assign(std::istreambuf_iterator<char>(f), {}); }
+    if (sha256_hex(data) != kModelSha256) return fail("DLSS 5: the model does not match NVIDIA's file; not installed");
+    data.clear(); data.shrink_to_fit();
+    fs::rename(found, dir / kModelFile, ec);
+    if (ec) { ec.clear(); fs::copy_file(found, dir / kModelFile, fs::copy_options::overwrite_existing, ec); }
+    if (ec) return fail("DLSS 5: cannot put the model beside the game (" + ec.message() + ")");
+    fs::remove_all(work, ec);
+    model_message("DLSS 5 is installed. It starts with the game's next start.");
+    host::log("dlss5 download: NVIDIA's model installed beside the game");
+    g_model_busy = false;
+  });
+}
+
+ModelState dlss5_model_state(const std::string& game_dir_utf8) {
+  if (g_model_busy.load()) return ModelState::Downloading;
+  if (dlss5_model_present(game_dir_utf8)) return ModelState::Present;
+  return g_model_failed.load() ? ModelState::Failed : ModelState::Missing;
+}
+std::string dlss5_model_message() { std::lock_guard<std::mutex> lk(g_mutex); return g_model_message; }
+
+void shutdown() {
+  join();
+  if (g_rollback_thread.joinable()) g_rollback_thread.join();
+  if (g_model_thread.joinable()) g_model_thread.join();
 }
 }  // namespace host::updater

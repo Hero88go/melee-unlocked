@@ -138589,7 +138589,7 @@ index 5f9685905..4d33bc699 100644
  {
      stage_info.unk8C.b4 = false;
 diff --git a/src/melee/gr/stage.c b/src/melee/gr/stage.c
-index 5a63015df..e05056fce 100644
+index 5a63015df..6035a2639 100644
 --- a/src/melee/gr/stage.c
 +++ b/src/melee/gr/stage.c
 @@ -9,6 +9,11 @@
@@ -138615,7 +138615,7 @@ index 5a63015df..e05056fce 100644
      return arg0;
  }
  
-@@ -483,14 +492,66 @@ struct StageIdMapEntry stage_id_map[] = {
+@@ -483,14 +492,75 @@ struct StageIdMapEntry stage_id_map[] = {
      { Gr_Kind_Shrine, 0, 0 },       { Gr_Kind_Battle, 0, 0 },
  };
  
@@ -138637,6 +138637,15 @@ index 5a63015df..e05056fce 100644
 +    struct StageIdMapEntry* entry;
 +    int words[3];
 +    if (!mu_mex_active()) {
++        /* A stage id past the table (Stamina mode asked the sound code with one) read past its
++         * end and stopped the game; the console read whatever lay there. Battlefield instead. */
++        if ((unsigned) stkind >= ARRAY_SIZE(stage_id_map)) {
++            if (logged != (int) stkind) {
++                logged = (int) stkind;
++                OSReport("[stage] stage id %d is not a stage; Battlefield instead\n", (int) stkind);
++            }
++            return &mu_stage_fallback;
++        }
 +        return &stage_id_map[stkind];
 +    }
 +    if ((int) stkind < 0 || (int) stkind >= MU_MEX_STAGE_EXT_MAX || !mu_mex_stage_ext(stkind, words)) {
@@ -138684,7 +138693,7 @@ index 5a63015df..e05056fce 100644
  }
  
  void Stage_802251E8(StKind stkind, s32* _)
-@@ -498,7 +559,7 @@ void Stage_802251E8(StKind stkind, s32* _)
+@@ -498,7 +568,7 @@ void Stage_802251E8(StKind stkind, s32* _)
      StageIdPair local_data;
  
      selected_stage.stkind = stkind;
