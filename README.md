@@ -292,4 +292,4 @@ Hero88go - developer
 
 Johnny Brookes Aka Lainthewired for their major contribution of the last graphic error fix that took this project from alpha -> beta. Could not have done it without them 
 
-Arte for subframe rollback: the idea and the original implementation of sending inputs between frames so the other game can predict and roll back sooner. Melee Unlocked's early inputs, early rollback and the check against faked early inputs are adapted from that work, and the exclusive audio timing draws on Arte's audio research.
+SSBMArte for subframe rollback: the idea and the original implementation of sending inputs between frames so the other game can predict and roll back sooner. Melee Unlocked's early inputs, early rollback and the check against faked early inputs are adapted from that work, and the exclusive audio timing draws on Arte's audio research.
