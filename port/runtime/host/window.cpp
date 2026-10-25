@@ -39,6 +39,7 @@ int g_client_w = 1280, g_client_h = 960;
 ResizeCallback g_on_resize;
 DpiCallback g_on_dpi;
 std::atomic<bool> g_fullscreen_toggle{false};
+std::atomic<bool> g_activated{false};   // the game window came back to the front (WM_ACTIVATEAPP)
 std::atomic<bool> g_settings_toggle{false};
 std::atomic<bool> g_legacy_settings_toggle{false};
 std::atomic<int> g_trace_mark{0};   // 0 none, else the kind of the last mark key pressed (window.h)
@@ -152,6 +153,7 @@ LRESULT CALLBACK wnd_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     // how Windows presents the game, so the log marks when each happened.
     case WM_ACTIVATEAPP:
       host::log(w ? "window: the game is in front again" : "window: another program took the focus");
+      if (w) g_activated.store(true);
       break;
     case WM_DISPLAYCHANGE:
       host::log("window: the desktop display mode changed to %ux%u, %u bits", (unsigned)LOWORD(l), (unsigned)HIWORD(l), (unsigned)w);
@@ -333,6 +335,7 @@ bool window_ui_pads(PadState pads[4]) {
 void window_set_resize_callback(ResizeCallback cb) { g_on_resize = std::move(cb); }
 void window_set_dpi_callback(DpiCallback cb) { g_on_dpi = std::move(cb); }
 bool window_take_fullscreen_toggle() { return g_fullscreen_toggle.exchange(false); }
+bool window_take_activation() { return g_activated.exchange(false); }
 // Several presses while nothing was being drawn count as one: the player pressed F1 again because
 // nothing seemed to happen, and wants the panel, not an even number of toggles.
 bool window_take_settings_toggle() { return g_settings_toggle.exchange(false); }

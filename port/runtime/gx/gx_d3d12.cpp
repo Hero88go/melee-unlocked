@@ -3281,6 +3281,10 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
                                                replacement_bytes_ / 1048576.0, replacement_budget_ / 1048576.0);
     texpack_report_frame_ = frame_counter_ + 3600;
   }
+  // Back from Alt+Tab: Windows took the swap chain out of exclusive fullscreen and nothing put it
+  // back, so the fullscreen-sized buffers were shown in a window of another size, shifted. The mode
+  // is applied again; when it is already right this returns at once.
+  if (host::window_take_activation() && opts_.exclusive_fullscreen && !exclusive_deferred_) apply_fullscreen_mode();
   if (host::window_take_fullscreen_toggle()) {   // Alt+Enter
     if (opts_.exclusive_fullscreen) opts_.exclusive_fullscreen = false;
     else opts_.fullscreen = !host::window_is_fullscreen();

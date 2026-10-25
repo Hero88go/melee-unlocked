@@ -1981,6 +1981,8 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     texpack::report();
     texpack_report_frame_ = frame_counter_ + 3600;
   }
+  // Back from Alt+Tab: Windows left exclusive fullscreen; it is entered again (a no-op when it is on).
+  if (host::window_take_activation() && opts_.exclusive_fullscreen) apply_fullscreen_mode();
   if (host::window_take_fullscreen_toggle()) {   // Alt+Enter
     if (opts_.exclusive_fullscreen) opts_.exclusive_fullscreen = false;
     else opts_.fullscreen = !host::window_is_fullscreen();

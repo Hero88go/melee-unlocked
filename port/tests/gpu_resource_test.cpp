@@ -20,6 +20,7 @@ void log(const char* fmt, ...) { va_list args; va_start(args, fmt); vprintf(fmt,
 [[noreturn]] void die(const char* fmt, ...) { char buf[1024]; va_list args; va_start(args,fmt); vsnprintf(buf,sizeof buf,fmt,args); va_end(args); throw std::runtime_error(buf); }
 // The renderer reaches back into the window for fullscreen changes; this test owns a bare HWND.
 bool window_take_fullscreen_toggle() { return false; }
+bool window_take_activation() { return false; }
 void window_set_fullscreen(bool) {}
 bool window_is_fullscreen() { return false; }
 void window_client_size(int* w, int* h) { if (w) *w = 640; if (h) *h = 480; }

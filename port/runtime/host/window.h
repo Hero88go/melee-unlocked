@@ -33,6 +33,9 @@ bool window_is_fullscreen();
 // the window is fullscreen (there the client area is the monitor) and clamped to the monitor.
 void window_set_client_size(int w, int h);
 bool window_take_fullscreen_toggle();   // true once per Alt+Enter press in the game window
+// True once each time the game window comes back to the front: exclusive fullscreen, which Windows
+// leaves on Alt+Tab, is entered again then.
+bool window_take_activation();
 bool window_take_escape();              // true once per Esc press, like the F1 toggle
 bool window_take_settings_toggle();     // true once per F1 press (auto-repeat ignored), however late it is read
 bool window_take_legacy_settings_toggle(); // true once per F11 press (auto-repeat ignored)
