@@ -3426,6 +3426,17 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     // menus, loading screens, and results; those frames do not have usable motion/depth inputs.
     const int want_fg = opts_.frame_generation_mode > 0 && in_match_ && dlss_active_ && !xess_active() && streamline::frame_generation_available()
                         ? opts_.frame_generation_mode : 0;
+    {
+      // Why frame generation is held off in a match while it is chosen: logged once per reason.
+      static int logged_reason = -1;
+      const int reason = opts_.frame_generation_mode <= 0 || !in_match_ ? 0
+                       : !dlss_active_ ? 1 : xess_active() ? 2 : !streamline::frame_generation_available() ? 3 : 0;
+      if (reason != logged_reason) {
+        logged_reason = reason;
+        static const char* const why[] = {"", "DLSS or DLAA is not running", "XeSS is the upscaler", "the plugin is not ready"};
+        if (reason) host::log("dlss: frame generation is chosen but held off in this match: %s", why[reason]);
+      }
+    }
     // Frame generation needs Reflex on: it takes at least "On" while frame generation runs.
     const int want_reflex = streamline::reflex_available() ? std::max(opts_.reflex_mode, want_fg ? 1 : 0) : 0;
     apply_reflex(want_reflex);
