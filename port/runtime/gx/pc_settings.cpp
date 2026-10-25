@@ -1992,6 +1992,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   std::vector<std::string> texture_packs_off;
   bool gecko_chosen = false;           // the panel has saved a choice (even "none")
   int saved_lcancel_flash = -1, saved_lcancel_success = -1;
+  int dlss5_defaults_version = 0;   // 2 from 0.9.60: NVIDIA's own DLSS 5 defaults
   while (file >> key) {
     std::getline(file, value);
     const size_t first = value.find_first_not_of(" \t");
@@ -2172,7 +2173,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "dlss5detail") dlss5_float(value, options.dlss5_tuning.detail, 0.0f, 10.0f);
       else if (key == "dlss5tone") dlss5_float(value, options.dlss5_tuning.tone, 0.0f, 10.0f);
       else if (key == "dlss5skin") dlss5_float(value, options.dlss5_tuning.skin, -1.0f, 10.0f);
-      else if (key == "dlss5style") options.dlss5_tuning.style = std::clamp(std::stoi(value), 0, 3);
+      else if (key == "dlss5style") options.dlss5_tuning.style = std::clamp(std::stoi(value), 0, 2);
+      else if (key == "dlss5defaults") dlss5_defaults_version = std::stoi(value);
       else if (key == "dlss5preset") options.dlss5_tuning.preset = std::clamp(std::stoi(value), 0, 3);
       else if (key == "dlss5automask") options.dlss5_tuning.auto_mask = value == "1";
       else if (key == "dlss5resolution") options.dlss5_tuning.resolution_scale = std::clamp(std::stoi(value), 25, 100);
@@ -2328,6 +2330,16 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // from when it was 20XX TE's word 2 bit 0x800000 turns the option on once; the bit itself is
   // cleared here and never saved again, so the migration happens one time.
   if (options.te_options2 & 0x800000u) { options.cpu_20xx = true; options.te_options2 &= ~0x800000u; }
+  // DLSS 5 controls saved before 0.9.60 that were never moved from the old defaults (detail and
+  // tone 100%, model decides the characters, runtime-default weights) move to NVIDIA's defaults
+  // once. Anything a player chose stays as it is.
+  if (dlss5_defaults_version < 2) {
+    auto& t = options.dlss5_tuning;
+    if (t.intensity == 1.0f && t.detail == 1.0f && t.tone == 1.0f && t.skin < 0.0f && t.preset == 0) {
+      const gx::dlss5::Tuning fresh{};
+      t.detail = fresh.detail; t.tone = fresh.tone; t.skin = fresh.skin; t.preset = fresh.preset;
+    }
+  }
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
   RenderOptions::live_freeze_fd() = options.freeze_fd;
   host::g_freeze_fd.store(options.freeze_fd, std::memory_order_relaxed);
@@ -3418,6 +3430,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ndlss5tonerestore " << options.dlss5_tuning.tone_restore
        << "\ndlss5downsample " << options.dlss5_tuning.downsample_filter << "\ndlss5upsample " << options.dlss5_tuning.upsample_filter
        << "\ndlss5reconstruction " << options.dlss5_tuning.reconstruction
+       << "\ndlss5defaults 2"
 #endif
        << "\nbackend " << (options.api == RenderApi::D3D11 ? "d3d11" : "d3d12")
        << "\ncrt_filter " << options.crt_filter << "\nborderart " << options.border_art << "\nborderedge " << options.border_edge << "\nshaderpreset " << options.shader_preset <<"\nsharpness " << options.sharpness << "\nssao " << options.screen_space_ao << "\nbrightness " << options.brightness
@@ -5194,45 +5207,34 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           ++scroll_frames;
         }
       }
-      if (settings_toggle("DLSS 5 Neural Rendering (experimental)", &options.dlss5)) changed = true;
+      if (settings_toggle("DLSS 5 Neural Rendering", &options.dlss5)) changed = true;
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("NVIDIA's neural rendering model, run on top of DLAA or DLSS. Its finer controls\n"
-                          "(model, weight hint, skin structure, scaling filters) are under Advanced.\n%s",
-                          kExperimentalNote);
+        ImGui::SetTooltip("NVIDIA DLSS 5 3D-Guided Neural Rendering on top of DLAA or DLSS, through NVIDIA's\n"
+                          "own runtime. The HUD is left as the game drew it. The weight preset and the\n"
+                          "scaling filters are under Advanced.");
       if (!dlss5::model_found())
-        settings_hint("DLSS 5 model file not found. It is not included with Melee Unlocked: put your own "
-                      "nvngx_dlssnr.dll beside melee_source.exe, then restart.");
+        settings_hint("The DLSS 5 model (nvngx_dlssnr.dll) is missing from the game folder. Extract the whole release again, then restart.");
       if (options.dlss5) {
         // Sliders apply when released: every change rebuilds the model's feature, and doing that on
         // each pixel of a drag would stall the frame repeatedly.
         dlss5::Tuning& t = options.dlss5_tuning;
-        // Five looks: starting points for Melee's art, independent of the processing below. The
-        // neural model choice is the same DLSSNR.Style control RenoDX calls Model A/B/C.
-        struct NeuralLook { const char* name; const char* tip; float intensity, detail, tone; int style; };
-        static const NeuralLook looks[] = {
-          {"Original+", "Model A with gentle detail and lighting. Keeps Melee's colors closest to the original.", 0.85f, 1.10f, 0.90f, 0},
-          {"Balanced", "Model C at full intensity with modest detail.", 1.00f, 1.15f, 1.05f, 2},
-          {"Vivid", "Model C with more surface detail and lighting. In our tests it looks close to Balanced.", 1.00f, 1.35f, 1.20f, 2},
-          {"Moody", "Model B with more contrast and detail.", 1.00f, 1.25f, 1.10f, 1},
-          {"Stable", "Model A at reduced strength, for scenes that flicker.", 0.70f, 0.90f, 0.80f, 0},
-        };
-        int look_index = 5;
-        for (int i = 0; i < 5; ++i)
-          if (t.intensity == looks[i].intensity && t.detail == looks[i].detail && t.tone == looks[i].tone &&
-              t.style == looks[i].style && t.skin < 0.0f && t.preset == 0 && t.auto_mask) { look_index = i; break; }
-        const char* look_names[] = {"Original+", "Balanced", "Vivid", "Moody", "Stable", "Custom"};
-        if (settings_combo("DLSS 5 look", &look_index, look_names, 6) && look_index < 5) {
-          t.intensity = looks[look_index].intensity; t.detail = looks[look_index].detail; t.tone = looks[look_index].tone;
-          t.style = looks[look_index].style; t.skin = -1.0f; t.preset = 0; t.auto_mask = true;
-          changed = true;
-        }
+        // NVIDIA's three model variants. How each looks depends on the scene, so NVIDIA's advice is
+        // to compare them where you play and keep the one you like.
+        const char* models[] = {"Model A", "Model B", "Model C"};
+        ImGui::SetNextItemWidth(160.0f);
+        if (settings_combo("DLSS 5 model", &t.style, models, 3)) changed = true;
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("%s", look_index < 5 ? looks[look_index].tip :
-                            "Your own settings. Save them as a profile below to use them again.");
+          ImGui::SetTooltip("NVIDIA's three DLSS 5 model variants. How each looks depends on the stage,\n"
+                            "so compare them where you play and keep the one you like.");
         const int intensity_pct = dlss5_percent_slider("Overall intensity", t.intensity, &changed);
         const int detail_pct = dlss5_percent_slider("Structure intensity", t.detail, &changed);
         const int tone_pct = dlss5_percent_slider("Local tone intensity", t.tone, &changed);
-        // Skin structure has its switch and slider under Advanced; its strength still counts here.
+        // Character intensity works with the character mask (NVIDIA's auto mask).
+        if (t.skin >= 0.0f) {
+          ImGui::BeginDisabled(!t.auto_mask);
+          dlss5_percent_slider("Character intensity", t.skin, &changed);
+          ImGui::EndDisabled();
+        }
         const int skin_pct = t.skin < 0.0f ? 0 : (int)std::lround(t.skin * 100.0f);
         const int extreme_pct = std::max({intensity_pct, detail_pct, tone_pct, skin_pct});
         if (extreme_pct > 150) {
@@ -5273,8 +5275,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         // Model and Weight hint are under Advanced, with the other DLSS 5 internals.
         if (settings_toggle("Character mask", &t.auto_mask)) changed = true;
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Lets the neural model find characters and skin by itself (its automatic mask).\n"
-                            "Melee's HUD is restored separately after the neural pass.");
+          ImGui::SetTooltip("Lets the neural model find characters by itself (NVIDIA's auto mask), so Character\n"
+                            "intensity applies to them. Melee's HUD is always left alone.");
         // Processing: where and how often the model runs, independent of the look above.
         struct ProcessingPreset { int scale, passes, upsample; };
         static const ProcessingPreset processing[] = {{100, 1, 0}, {50, 1, 0}, {75, 1, 1}, {100, 2, 1}, {100, 3, 1}};
@@ -5314,7 +5316,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         if (t.passes > 1)
           ImGui::TextWrapped("More than one pass darkens moving fighters and can leave trails behind them.");
         // The scaling filters and reconstruction are under Advanced, with the other DLSS 5 internals.
-        if (ImGui::Button("Reset DLSS 5 controls")) { t = dlss5::Tuning{}; changed = true; }
+        if (ImGui::Button("Reset to NVIDIA defaults")) { t = dlss5::Tuning{}; changed = true; }
         // Named tuning profiles: a saved sliders-and-all setup under a name, one text file per name
         // in Dlss5Profiles beside port-settings.ini. Loading one applies it immediately.
         {
@@ -5364,7 +5366,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (nr_blocked) ImGui::EndDisabled();
       if (nr_blocked) settings_hint("DLSS 5 needs Direct3D 12 and Upscaling set to DLAA or a DLSS mode.");
       else if (options.dlss5) {
-        ImGui::TextWrapped("DLSS 5: %s. Experimental; intended for RTX 50 series or newer. It runs on every frame shown, so expect a lower frame rate.", dlss5::status());
+        ImGui::TextWrapped("DLSS 5: %s. NVIDIA supports it on RTX 50 series cards. It runs on every frame shown, so expect a lower frame rate.", dlss5::status());
+        if (const unsigned long long vram = dlss5::vram_bytes()) settings_hint("The model uses about %llu MB of video memory.", vram >> 20);
         float dlaa_ms = 0, dlss5_ms = 0;
         gpu_pass_cost(&dlaa_ms, &dlss5_ms);
         if (dlss5_ms > 0.0f) settings_hint("Costing about %.1f ms of GPU time per frame right now.", dlss5_ms);
@@ -5688,21 +5691,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (options.dlss5) {
         dlss5::Tuning& t = options.dlss5_tuning;
         ImGui::TextUnformatted("DLSS 5");
-        const char* styles[] = {"Model A", "Model B", "Model C", "Style 3 (experimental)"};
-        ImGui::SetNextItemWidth(160.0f);
-        if (settings_combo("Model", &t.style, styles, 4)) changed = true;
+        const char* presets[] = {"Runtime default", "Preset A", "Preset B (NVIDIA's choice)", "Preset C"};
+        ImGui::SetNextItemWidth(220.0f);
+        if (settings_combo("Weight preset", &t.preset, presets, 4)) changed = true;
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("The A/B/C choices in RenoDX set this same neural style control.\n"
-                            "Stage lighting changes how different they look.\nStyle 3: %s", kExperimentalNote);
-        const char* presets[] = {"Model default", "Preset 1", "Preset 2", "Preset 3"};
-        ImGui::SetNextItemWidth(160.0f);
-        if (settings_combo("Weight hint (experimental)", &t.preset, presets, 4)) changed = true;
-        if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Separate from Models A/B/C. Current DLSS 5 runtimes may have one weight set,\n"
-                            "so these hints can produce the same picture.\n%s", kExperimentalNote);
+          ImGui::SetTooltip("Separate from Models A/B/C. NVIDIA's own integration asks for Preset B.\n%s", kExperimentalNote);
         bool skin_auto = t.skin < 0.0f;
-        if (settings_toggle("Skin structure: automatic", &skin_auto)) { t.skin = skin_auto ? -1.0f : 1.0f; changed = true; }
-        if (!skin_auto) dlss5_percent_slider("Skin structure strength", t.skin, &changed);
+        if (settings_toggle("Character intensity: let the model decide", &skin_auto)) { t.skin = skin_auto ? -1.0f : 0.5f; changed = true; }
         // Applied after the model, so it follows the drag: nothing is rebuilt.
         int haze_pct = (int)std::lround(t.tone_restore * 100.0f);
         if (settings_slider("Remove haze", &haze_pct, 0, 100, "%d%%")) {
