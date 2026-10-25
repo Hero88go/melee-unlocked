@@ -117,10 +117,12 @@ float g_prev_proj[16] = {};
 bool g_have_prev = false;
 
 void log_callback(sl::LogType type, const char* msg) {
-  if (type == sl::LogType::eInfo) return;
+  // MELEE_TEST_SL_VERBOSE (tests only): Streamline's verbose log, information lines included.
+  static const bool verbose = std::getenv("MELEE_TEST_SL_VERBOSE") != nullptr;
+  if (type == sl::LogType::eInfo && !verbose) return;
   static std::atomic<uint64_t> count{0};
   uint64_t n = count.fetch_add(1);
-  if (n >= 20 && n % 1000 != 0) return;   // a failing feature logs every frame; keep the log usable
+  if (n >= (verbose ? 3000u : 20u) && n % 1000 != 0) return;   // a failing feature logs every frame; keep the log usable
   std::string s(msg);
   while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
   host::log("streamline: %s", s.c_str());
@@ -230,7 +232,7 @@ bool init(const std::wstring& exe_dir, bool load_frame_generation) {
   host::log("dlss: loading Streamline features: DLSS%s%s, Reflex, PCL", have_rr_runtime ? ", RR" : "", load_fg ? ", DLSS-G" : "");
   sl::Preferences pref{};
   pref.showConsole = false;
-  pref.logLevel = sl::LogLevel::eDefault;
+  pref.logLevel = std::getenv("MELEE_TEST_SL_VERBOSE") ? sl::LogLevel::eVerbose : sl::LogLevel::eDefault;
   pref.pathsToPlugins = plugin_dirs;
   pref.numPathsToPlugins = 1;
   static std::wstring logs; logs = exe_dir + L"\\streamline-logs"; CreateDirectoryW(logs.c_str(), nullptr);

@@ -2704,6 +2704,7 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
       n.mvec = mvec_.Get(); n.mvec_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
       n.guide_x = in.in_left; n.guide_y = in.in_top; n.guide_w = in.in_w; n.guide_h = in.in_h;
       n.reset = dlss5_reset_; n.tuning = opts_.dlss5_tuning;
+      n.hud_mask = hud_mask_.Get(); n.hud_mask_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
       // In-place DLAA leaves the whole EFB, which the present blit only later squeezes to the shown
       // aspect (c.src_w x c.src_h of it into a viewport of output_aspect()). Give the model the
       // frame at the shape it has on screen, or it sees fighters stretched tall.

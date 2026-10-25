@@ -52,7 +52,7 @@ Tuning bounded_tuning(Tuning t) {
   t.detail = bound(t.detail, 1.0f, 0.0f, 10.0f);
   t.tone = bound(t.tone, 1.0f, 0.0f, 10.0f);
   t.skin = t.skin < 0.0f ? -1.0f : bound(t.skin, -1.0f, 0.0f, 10.0f);
-  t.style = std::clamp(t.style, 0, 3);
+  t.style = std::clamp(t.style, 0, 2);   // NVIDIA's Models A, B and C
   t.preset = std::clamp(t.preset, 0, 3);
   t.resolution_scale = std::clamp(t.resolution_scale, 25, 100);
   t.downsample_filter = std::clamp(t.downsample_filter, 0, 2);
@@ -160,6 +160,8 @@ bool running() { return false; }
 void disable(const char*) {}
 const char* status() { return "not built into this version"; }
 bool model_found() { return false; }
+unsigned long long vram_bytes() { return 0; }
+bool official_route() { return false; }
 void shutdown() {}
 #else
 
@@ -192,6 +194,17 @@ struct State {
   mdl5_api::CoreCapabilitiesFn core_capabilities = nullptr;
   mdl5_api::CoreDestroyFn core_destroy = nullptr;
   mdl5_api::CoreShutdownFn core_shutdown = nullptr;
+  mdl5_api::CoreInitPathsFn core_init_paths = nullptr;
+  mdl5_api::CoreCreateFn core_create = nullptr;
+  mdl5_api::CoreEvaluateFn core_evaluate = nullptr;
+  mdl5_api::CoreReleaseFn core_release = nullptr;
+  mdl5_api::ParamSetFn param_set = nullptr;
+  mdl5_api::ParamGetFn param_get = nullptr;
+  mdl5_api::CoreVramFn core_vram = nullptr;
+  bool official = false;             // NVIDIA's published route is in use
+  unsigned long long vram = 0;
+  ComPtr<ID3D12Resource> control_mask;
+  uint32_t mask_w = 0, mask_h = 0;
   int float_slot = -1;
   void* feature[4] = {};
   uint32_t feature_w = 0, feature_h = 0;
@@ -221,9 +234,16 @@ std::string narrow(const std::wstring& w) {
   char buf[MAX_PATH * 2]; WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, buf, sizeof buf, nullptr, nullptr); return buf;
 }
 
-// The model, in order of preference: beside the executable (a player's own copy), then beside the
-// driver's NGX core, then the newest copy anywhere in the NVIDIA driver store.
+// The release ships NVIDIA's signed model beside the executable, where NVIDIA's runtime looks for
+// it. A player's own build for cards NVIDIA's runtime does not run it on (for example an FP16
+// build for RTX 20 and 30 series) goes in the DLSS5 folder instead, which an update never touches.
+std::wstring custom_dir() { return exe_dir() + L"\\DLSS5"; }
+
+// The model for the direct route, in order of preference: the player's own build in the DLSS5
+// folder, beside the executable, beside the driver's NGX core, then the newest copy anywhere in the
+// driver store.
 std::wstring find_model() {
+  if (file_exists(custom_dir() + L"\\nvngx_dlssnr.dll")) return custom_dir() + L"\\nvngx_dlssnr.dll";
   std::wstring local = exe_dir() + L"\\nvngx_dlssnr.dll";
   if (file_exists(local)) return local;
   if (HMODULE core = GetModuleHandleW(L"_nvngx.dll")) {
@@ -249,13 +269,22 @@ std::wstring find_model() {
   return best;
 }
 
-// The driver's parameter block is driven through its vtable, as the community integrations found:
-// 64-bit values (and resources) at slot 0, unsigned at slot 3, floats at a slot found by round trip.
+// Parameters go through the helper DLL, which uses the SDK's own typed interface (the types in
+// NVIDIA's helpers: Width, Height, Style, preset and rectangles unsigned; switches signed; strengths
+// float). Without the helper (the WARP test harness) the block is driven through its vtable:
+// pointers at slot 0, signed at slot 3, floats at a slot found by round trip.
 void set_ull(const char* name, unsigned long long v) {
+  if (g.param_set) { void* p = (void*)(uintptr_t)v; g.param_set(g.caps, name, 3, &p); return; }
   void** vt = *reinterpret_cast<void***>(g.caps);
   reinterpret_cast<void(*)(void*, const char*, unsigned long long)>(vt[0])(g.caps, name, v);
 }
+void set_int(const char* name, int v) {
+  if (g.param_set) { g.param_set(g.caps, name, 0, &v); return; }
+  void** vt = *reinterpret_cast<void***>(g.caps);
+  reinterpret_cast<void(*)(void*, const char*, int)>(vt[3])(g.caps, name, v);
+}
 void set_uint(const char* name, unsigned int v) {
+  if (g.param_set) { g.param_set(g.caps, name, 1, &v); return; }
   void** vt = *reinterpret_cast<void***>(g.caps);
   reinterpret_cast<void(*)(void*, const char*, unsigned int)>(vt[3])(g.caps, name, v);
 }
@@ -263,8 +292,21 @@ void set_float_at(int slot, const char* name, float v) {
   void** vt = *reinterpret_cast<void***>(g.caps);
   reinterpret_cast<void(*)(void*, const char*, float)>(vt[slot])(g.caps, name, v);
 }
-void set_float(const char* name, float v) { if (g.float_slot >= 0) set_float_at(g.float_slot, name, v); }
+void set_float(const char* name, float v) {
+  if (g.param_set) { g.param_set(g.caps, name, 2, &v); return; }
+  if (g.float_slot >= 0) set_float_at(g.float_slot, name, v);
+}
 void set_resource(const char* name, ID3D12Resource* r) { set_ull(name, (unsigned long long)(uintptr_t)r); }
+int get_int(const char* name, int fallback) {
+  int v = fallback;
+  if (g.param_get && g.param_get(g.caps, name, 0, &v) == NVSDK_NGX_Result_Success) return v;
+  return fallback;
+}
+unsigned get_uint(const char* name, unsigned fallback) {
+  unsigned v = fallback;
+  if (g.param_get && g.param_get(g.caps, name, 1, &v) == NVSDK_NGX_Result_Success) return v;
+  return fallback;
+}
 
 void find_float_slot() {
   static const int candidates[] = {1, 2, 5, 6, 7, 4, 3, 0};
@@ -319,10 +361,35 @@ bool load_forwarder() {
   g.core_capabilities = (mdl5_api::CoreCapabilitiesFn)GetProcAddress(g.forwarder, "mdl5_core_capabilities");
   g.core_destroy = (mdl5_api::CoreDestroyFn)GetProcAddress(g.forwarder, "mdl5_core_destroy");
   g.core_shutdown = (mdl5_api::CoreShutdownFn)GetProcAddress(g.forwarder, "mdl5_core_shutdown");
+  g.core_init_paths = (mdl5_api::CoreInitPathsFn)GetProcAddress(g.forwarder, "mdl5_core_init_paths");
+  g.core_create = (mdl5_api::CoreCreateFn)GetProcAddress(g.forwarder, "mdl5_core_create");
+  g.core_evaluate = (mdl5_api::CoreEvaluateFn)GetProcAddress(g.forwarder, "mdl5_core_evaluate");
+  g.core_release = (mdl5_api::CoreReleaseFn)GetProcAddress(g.forwarder, "mdl5_core_release");
+  g.param_set = (mdl5_api::ParamSetFn)GetProcAddress(g.forwarder, "mdl5_param_set");
+  g.param_get = (mdl5_api::ParamGetFn)GetProcAddress(g.forwarder, "mdl5_param_get");
+  g.core_vram = (mdl5_api::CoreVramFn)GetProcAddress(g.forwarder, "mdl5_core_vram");
   if (!g.load || !g.init || !g.create || !g.eval || !g.release ||
-      !g.core_init || !g.core_capabilities || !g.core_destroy || !g.core_shutdown)
+      !g.core_init || !g.core_capabilities || !g.core_destroy || !g.core_shutdown ||
+      !g.core_init_paths || !g.core_create || !g.core_evaluate || !g.core_release || !g.param_set || !g.param_get)
     return fail("the forwarder DLL is the wrong version");
   return true;
+}
+
+// NVIDIA's own answer to "can this computer run it": a driver too old, a GPU without support, or
+// a model the core would not load. Empty when the model is available.
+std::string official_refusal() {
+  if (get_int("DLSSNR.NeedsUpdatedDriver", 0)) {
+    const unsigned major = get_uint("DLSSNR.MinDriverVersionMajor", 0), minor = get_uint("DLSSNR.MinDriverVersionMinor", 0);
+    char b[96];
+    if (major) wsprintfA(b, "needs NVIDIA driver %u.%02u or newer", major, minor);
+    else wsprintfA(b, "needs a newer NVIDIA driver");
+    return b;
+  }
+  if (!get_int("DLSSNR.Available", 0)) {
+    const int init = get_int("DLSSNR.FeatureInitResult", 0);
+    return "NVIDIA's runtime reports DLSS 5 unavailable on this GPU (" + hex((unsigned)init) + ")";
+  }
+  return "";
 }
 
 bool ensure_ready(ID3D12Device* proxy_device) {
@@ -335,27 +402,41 @@ bool ensure_ready(ID3D12Device* proxy_device) {
   g.device = (ID3D12Device*)streamline::native_interface(proxy_device);
   const std::wstring data = dir + L"\\streamline-logs";
   CreateDirectoryW(data.c_str(), nullptr);
-  // NVIDIA's NGX core (DLSS SDK). Streamline has usually brought it up already for DLSS, in which
-  // case this returns success without changing anything.
-  NVSDK_NGX_Result r = static_cast<NVSDK_NGX_Result>(g.core_init(
-      kAppId, data.c_str(), g.device, static_cast<int>(NVSDK_NGX_Version_API)));
+  // NVIDIA's NGX core (DLSS SDK) loads the model from beside the executable, as NVIDIA's RTX Remix
+  // 1.6 integration has it. (Streamline has already started the core for DLSS in this process, so
+  // a folder list here is not used: measured, the model in a subfolder was "feature not found".)
+  const wchar_t* paths[] = {dir.c_str()};
+  NVSDK_NGX_Result r = static_cast<NVSDK_NGX_Result>(g.core_init_paths(
+      kAppId, data.c_str(), g.device, static_cast<int>(NVSDK_NGX_Version_API), paths, 1));
   if (NVSDK_NGX_FAILED(r)) return fail("NVIDIA NGX would not start (" + hex((unsigned)r) + ")");
   void* parameters = nullptr;
   r = static_cast<NVSDK_NGX_Result>(g.core_capabilities(&parameters));
   g.caps = static_cast<NVSDK_NGX_Parameter*>(parameters);
   if (NVSDK_NGX_FAILED(r) || !g.caps) return fail("NVIDIA NGX gave no parameters (" + hex((unsigned)r) + ")");
 
-  const std::wstring model = find_model();
-  if (model.empty()) return fail("DLSS 5 model not found in the NVIDIA driver or beside the game executable (nvngx_dlssnr.dll)");
-  host::log("dlss5: model %s", narrow(model).c_str());
-  if (!g.load(model.c_str())) return fail("nvngx_dlssnr.dll would not load (" + narrow(model) + ")");
+  const std::string refusal = official_refusal();
+  if (refusal.empty()) {
+    g.official = true;
+    g.create = g.core_create; g.eval = g.core_evaluate; g.release = g.core_release;
+    g.ready = true;
+    host::log("dlss5: ready (NVIDIA runtime)");
+    return true;
+  }
+  host::log("dlss5: %s; trying a model file directly", refusal.c_str());
+  // A driver too old cannot run any model build; say so instead of trying.
+  if (refusal.rfind("needs", 0) == 0) return fail("DLSS 5 " + refusal);
 
-  find_float_slot();
-  if (g.float_slot < 0) return fail("the model did not accept floating-point controls");
+  const std::wstring model = find_model();
+  if (model.empty()) return fail(refusal);
+  host::log("dlss5: model %s", narrow(model).c_str());
+  if (!g.load(model.c_str())) return fail(refusal + "; " + narrow(model) + " would not load either");
+
+  if (!g.param_set) find_float_slot();
+  if (!g.param_set && g.float_slot < 0) return fail("the model did not accept floating-point controls");
   int ir = g.init(kAppId, data.c_str(), g.device, (int)NVSDK_NGX_Version_API, g.caps);
-  if (ir != NVSDK_NGX_Result_Success) return fail("the DLSS 5 model would not initialise (" + hex((unsigned)ir) + ")");
+  if (ir != NVSDK_NGX_Result_Success) return fail(refusal + "; the model file would not initialise (" + hex((unsigned)ir) + ")");
   g.ready = true;
-  host::log("dlss5: ready");
+  host::log("dlss5: ready (model file)");
   return true;
 }
 
@@ -418,17 +499,20 @@ void set_tuning(const Tuning& t) {
   set_float("DLSSNR.LocalStructureStrength", t.detail);
   set_float("DLSSNR.LocalToneStrength", t.tone);
   set_float("DLSSNR.SkinStructureStrength", t.skin);
-  set_uint("DLSSNR.UseAutoMask", t.auto_mask ? 1 : 0);
+  set_int("DLSSNR.UseAutoMask", t.auto_mask ? 1 : 0);
+  // As NVIDIA's own integration: with the character mask on, the HUD mask and the character mask
+  // combine by minimum; with it off, only the HUD mask applies.
+  set_int("DLSSNR.MaskBlendMode", t.auto_mask ? 2 : 0);
 }
 
 bool create_feature(ID3D12GraphicsCommandList* list, uint32_t w, uint32_t h, const Tuning& t) {
   retire_feature();
-  set_uint("DLSSNR.Enabled", 1);
+  set_int("DLSSNR.Enabled", 1);
   set_uint("DLSSNR.Width", w); set_uint("DLSSNR.Height", h);
   set_uint("CreationNodeMask", 1); set_uint("VisibilityNodeMask", 1);
   // Tuning is read when the feature is built, not at evaluate.
   set_tuning(t);
-  set_uint("DLSSNR.UICorrection", 0);
+  set_int("DLSSNR.UICorrection", 0);
   clear_ui_inputs();
   for (int pass = 0; pass < t.passes; ++pass) {
     int r = driver_call([&] { return g.create(list, g.caps, &g.feature[pass]); });
@@ -442,6 +526,13 @@ bool create_feature(ID3D12GraphicsCommandList* list, uint32_t w, uint32_t h, con
     }
   }
   g.feature_w = w; g.feature_h = h; g.feature_tuning = t;
+  if (g.official && g.core_vram) {
+    unsigned long long bytes = 0;
+    if (g.core_vram(g.caps, &bytes) == NVSDK_NGX_Result_Success && bytes) {
+      g.vram = bytes;
+      host::log("dlss5: model uses %llu MB of GPU memory", bytes >> 20);
+    }
+  }
   host::log("dlss5: feature created at %ux%u (intensity %.2f, detail %.2f, tone %.2f, skin %.2f, style %d, preset %d, auto mask %d)",
             w, h, t.intensity, t.detail, t.tone, t.skin, t.style, t.preset, t.auto_mask ? 1 : 0);
   char line[128]; wsprintfA(line, "%ux%u neural resolution (%d%%), %d pass(es)", w, h, t.resolution_scale, t.passes); g.running_line = line;
@@ -458,6 +549,12 @@ static uint32_t tone_restore_strength(const Tuning& t) {
     return n && n < sizeof v ? std::clamp(std::atoi(v), 0, 100) * 256 / 100 : -1;
   }();
   return forced >= 0 ? (uint32_t)forced : (uint32_t)std::lround(t.tone_restore * 256.0f);
+}
+
+// The HUD control mask is on unless MELEE_DLSS5_NO_MASK is set (a test switch for comparisons).
+static bool mask_enabled() {
+  static const bool off = GetEnvironmentVariableA("MELEE_DLSS5_NO_MASK", nullptr, 0) > 0;
+  return !off;
 }
 
 static Tuning clamped(Tuning t) {
@@ -547,6 +644,33 @@ bool evaluate(const Inputs& in) {
   barrier(list, g.depth_copy.Get(), D3D12_RESOURCE_STATE_COPY_DEST, npsr);
   barrier(list, in.mvec, mvec_state, npsr);
 
+  // The HUD mask becomes the model's control mask (RGBA8, 1 = full effect, 0 = untouched), so the
+  // percentages, timer and names stay as drawn and do not steer the model's view of the scene.
+  ID3D12Resource* mask = nullptr;
+  if (in.hud_mask && mask_enabled()) {
+    const D3D12_RESOURCE_DESC md = in.hud_mask->GetDesc();
+    bool have = g.control_mask && g.mask_w == (uint32_t)md.Width && g.mask_h == md.Height;
+    if (!have) {
+      retire_resource(g.control_mask);
+      // Not make_texture: a missing mask must not turn the model off.
+      D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+      D3D12_RESOURCE_DESC rd{};
+      rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = md.Width; rd.Height = md.Height;
+      rd.DepthOrArraySize = 1; rd.MipLevels = 1; rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
+      rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+      have = SUCCEEDED(g.device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, uav, nullptr, IID_PPV_ARGS(&g.control_mask)));
+      if (!have) { g.control_mask.Reset(); host::log("dlss5: running without the HUD mask"); }
+      else { g.mask_w = (uint32_t)md.Width; g.mask_h = md.Height; }
+    }
+    if (have) {
+      const auto hud_state = (D3D12_RESOURCE_STATES)in.hud_mask_state;
+      barrier(list, in.hud_mask, hud_state, npsr);
+      const bool built = g.scaling.dispatch(g.device, list, in.fence, in.signal_value, in.hud_mask, in.hud_mask, in.hud_mask,
+                                            g.control_mask.Get(), 4, 0);
+      barrier(list, in.hud_mask, npsr, hud_state);
+      if (built) { barrier(list, g.control_mask.Get(), uav, npsr); mask = g.control_mask.Get(); }
+    }
+  }
   int r = NVSDK_NGX_Result_Success;
   for (int pass = 0; pass < t.passes; ++pass) {
     ID3D12Resource* input = pass == 0 ? (scaled ? g.reduced_input.Get() : in.color) : g.out[(pass - 1) % 2].Get();
@@ -556,10 +680,10 @@ bool evaluate(const Inputs& in) {
     set_resource("DLSSNR.MVec", in.mvec);
     set_resource("DLSSNR.Output", g.out[pass % 2].Get());
     clear_ui_inputs();
-    set_uint("DLSSNR.Enabled", 1); set_uint("DLSSNR.UICorrection", 0);
+    set_int("DLSSNR.Enabled", 1); set_int("DLSSNR.UICorrection", 0);
     set_uint("DLSSNR.Width", w); set_uint("DLSSNR.Height", h);
-    set_uint("DLSSNR.DepthInverted", 1);
-    set_uint("DLSSNR.Reset", reset ? 1 : 0);
+    set_int("DLSSNR.DepthInverted", 1);
+    set_int("DLSSNR.Reset", reset ? 1 : 0);
     set_uint("DLSSNR.ColorSubrectBaseX", 0); set_uint("DLSSNR.ColorSubrectBaseY", 0);
     set_uint("DLSSNR.ColorSubrectWidth", w); set_uint("DLSSNR.ColorSubrectHeight", h);
     set_uint("DLSSNR.OutputSubrectBaseX", 0); set_uint("DLSSNR.OutputSubrectBaseY", 0);
@@ -570,6 +694,9 @@ bool evaluate(const Inputs& in) {
     set_uint("DLSSNR.MVecSubrectWidth", in.guide_w); set_uint("DLSSNR.MVecSubrectHeight", in.guide_h);
     // Each pass owns history from the corresponding pass of the previous frame, so all passes
     // need the frame-to-frame engine vectors. They do not share same-frame temporal history.
+    set_resource("DLSSNR.ControlMask", mask);
+    set_uint("DLSSNR.ControlMaskSubrectBaseX", mask ? in.guide_x : 0); set_uint("DLSSNR.ControlMaskSubrectBaseY", mask ? in.guide_y : 0);
+    set_uint("DLSSNR.ControlMaskSubrectWidth", mask ? in.guide_w : 0); set_uint("DLSSNR.ControlMaskSubrectHeight", mask ? in.guide_h : 0);
     set_float("DLSSNR.MVecScaleX", (float)w / (float)in.guide_w);
     set_float("DLSSNR.MVecScaleY", (float)h / (float)in.guide_h);
     set_tuning(t);
@@ -578,6 +705,7 @@ bool evaluate(const Inputs& in) {
     if (r != NVSDK_NGX_Result_Success) break;
   }
   barrier(list, in.mvec, npsr, mvec_state);
+  if (mask) barrier(list, mask, npsr, uav);
   bool ok = r == NVSDK_NGX_Result_Success;
   ID3D12Resource* result = g.out[(t.passes - 1) % 2].Get();
   if (ok && scaled && !in.warm_only) {
@@ -649,6 +777,8 @@ bool running() { return g.ready && g.feature[0] && !g.failed; }
 
 // The model file is present (beside the game, beside the driver core, or in the driver store).
 bool model_found() { return !find_model().empty(); }
+unsigned long long vram_bytes() { return g.vram; }
+bool official_route() { return g.official && g.ready; }
 
 const char* status() {
   if (g.failed) return g.reason.c_str();
@@ -666,11 +796,13 @@ void shutdown() {
   for (auto& feature : g.feature) feature = nullptr;
   for (auto& out : g.out) out.Reset();
   g.depth_copy.Reset(); g.reduced_input.Reset(); g.resolved.Reset(); g.scaling.shutdown();
+  g.control_mask.Reset(); g.mask_w = g.mask_h = 0;
   g.coarse_in.Reset(); g.coarse_out.Reset(); g.mean_in.Reset(); g.mean_out.Reset(); g.restored.Reset();
   if (g.caps) { if (g.core_destroy) g.core_destroy(g.caps); g.caps = nullptr; }
   g.fence.Reset();
   g.ready = false; g.failed = false; g.tried = false; g.tuning_failed = false;
   g.history_dirty = true; g.evaluations = 0; g.failures = 0;
+  g.official = false; g.vram = 0;
 }
 #endif
 

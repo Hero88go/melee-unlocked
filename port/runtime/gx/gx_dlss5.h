@@ -1,7 +1,9 @@
 // EXPERIMENTAL: DLSS 5 Neural Rendering over the DLSS / DLAA output (D3D12 only).
 //
-// Uses NVIDIA's NGX core and a small forwarder DLL to reach feature 18 in nvngx_dlssnr.dll
-// (from the driver store or placed beside the executable). The model is never shipped with the game.
+// NVIDIA's published route first (the RTX Remix 1.6 SDK): the NGX core loads NVIDIA's signed
+// nvngx_dlssnr.dll, which the release ships beside the executable, and reports whether this GPU
+// and driver can run it. When it will not, a model build in the DLSS5 folder (for example a
+// community FP16 build for RTX 20 and 30 series cards) is reached directly through the helper DLL.
 // A failed evaluation preserves the original DLSS/DLAA image. Failed model settings can be retried
 // by changing the tuning; setup failures disable neural rendering for the session.
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -20,12 +22,13 @@ namespace dlss5 {
 
 // Neural appearance and processing controls. Changes rebuild the feature and reset its history.
 struct Tuning {
+  // Defaults are NVIDIA's (RTX Remix 1.6), whose documented range for these four is 0..1.
   float intensity = 1.0f;         // DLSSNR.Intensity: experimental 0..10 UI range; >1 is undocumented
-  float detail = 1.0f;            // DLSSNR.LocalStructureStrength: added surface detail
-  float tone = 1.0f;              // DLSSNR.LocalToneStrength: local lighting and contrast
-  float skin = -1.0f;             // DLSSNR.SkinStructureStrength: -1 lets the model decide
-  int style = 0;                  // DLSSNR.Style: 0/1/2 = RenoDX Model A/B/C
-  int preset = 0;                 // DLSSNR.Hint.Render.Preset, a weight hint (may be inert)
+  float detail = 0.7f;            // DLSSNR.LocalStructureStrength: details, shadows and materials
+  float tone = 0.3f;              // DLSSNR.LocalToneStrength: lightness, darkness and color
+  float skin = 0.5f;              // DLSSNR.SkinStructureStrength: characters (with the auto mask); -1 lets the model decide
+  int style = 0;                  // DLSSNR.Style: 0/1/2 = NVIDIA's Model A/B/C
+  int preset = 2;                 // DLSSNR.Hint.Render.Preset: 0 default, 1..3 = A..C; NVIDIA uses B
   bool auto_mask = true;          // DLSSNR.UseAutoMask: automatic skin-region detection
   int resolution_scale = 100;     // percentage per axis, independent of game resolution (25..100)
   int downsample_filter = 0;      // 0 area, 1 bilinear, 2 nearest
@@ -60,6 +63,9 @@ struct Inputs {
   ID3D12Resource* depth; uint32_t depth_state;   // D32_FLOAT, returned to depth_state
   ID3D12Resource* mvec; uint32_t mvec_state;     // R16G16_FLOAT pixel-space vectors, returned to mvec_state
   uint32_t guide_x, guide_y, guide_w, guide_h;   // region of depth/mvec that maps onto the whole color image
+  // R8_UNORM, 1 where the HUD was drawn, same size as depth; returned to hud_mask_state. Optional.
+  // The model is told to leave those pixels alone (its control mask is 1 - this).
+  ID3D12Resource* hud_mask = nullptr; uint32_t hud_mask_state = 0;
   bool reset;                                    // no relation to the previous frame
   Tuning tuning;
   bool warm_only = false;                        // build and run the model but leave in.color untouched
@@ -89,8 +95,12 @@ bool running();
 void disable(const char* why);
 // One line for the settings panel: running, or why not.
 const char* status();
-// The DLSS 5 model file (nvngx_dlssnr.dll) is on this computer. It is never shipped with the game.
+// A DLSS 5 model file (nvngx_dlssnr.dll) is beside the game, in its DLSS5 folder, or in the driver.
 bool model_found();
+// The model's own GPU memory in bytes as NVIDIA's runtime reports it, 0 when unknown.
+unsigned long long vram_bytes();
+// True when the model runs through NVIDIA's published route (not the direct fallback).
+bool official_route();
 // Releases the model's feature and scratch textures. The GPU must be idle.
 void shutdown();
 

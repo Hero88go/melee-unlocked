@@ -11,7 +11,8 @@ namespace gx::dlss5 {
 class Scaling {
  public:
   // Inputs must be NON_PIXEL_SHADER_RESOURCE, destination UNORDERED_ACCESS.
-  // mode: 0 downsample; 1 processed-image resolve; 2 RGB-residual resolve.
+  // mode: 0 downsample; 1 processed-image resolve; 2 RGB-residual resolve; 3 tone restore;
+  // 4 control mask (1 - source.r, same size).
   // Input signal encoding is preserved; arithmetic uses stored RGB values.
   bool dispatch(ID3D12Device* device, ID3D12GraphicsCommandList* list,
                 ID3D12Fence* fence, uint64_t signal_value,

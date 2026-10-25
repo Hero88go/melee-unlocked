@@ -70,6 +70,12 @@ float3 coarse(Texture2D<float4> tex, uint2 p) {
     target[p]=float4(saturate(fixed),out_px.a);
     return;
   }
+  if (mode==4) {
+    // Control mask from the HUD mask: 1 where the model may work, 0 on the HUD.
+    float m=1.0-saturate(source.Load(int3(p,0)).r);
+    target[p]=float4(m,m,m,1.0);
+    return;
+  }
   if (mode==0) {
     target[p]=filter==0 ? area(p) : resize(source,p,filter==1 ? 0 : 2);
     return;

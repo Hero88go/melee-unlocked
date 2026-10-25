@@ -315,6 +315,19 @@ def main():
     for dll in runtime_dlls:
         src = args.exe.parent / dll
         shutil.copy2(src, folder / dll)
+    # NVIDIA's signed DLSS 5 model (RTX Remix 1.6 SDK, NVIDIA RTX SDKs license, redistributable
+    # inside an application). Beside the exe is where NVIDIA's runtime loads it from. The DLSS5
+    # folder is for a player's own build for other cards; an update ships only its readme.
+    model = ROOT / "port/third_party/ngx/dlssnr/nvngx_dlssnr.dll"
+    if not model.is_file() or hashlib.sha256(model.read_bytes()).hexdigest() != \
+            "2bc19bc09a7b89dd44f73e2ac0108fcc586e2154bdd0830f242f4f040e28789f":
+        raise SystemExit(f"missing or unrecognized DLSS 5 model (NVIDIA 310.9.16): {model}")
+    shutil.copy2(model, folder / "nvngx_dlssnr.dll")
+    (folder / "DLSS5").mkdir(exist_ok=True)
+    (folder / "DLSS5" / "README.txt").write_text(
+        "DLSS 5 uses NVIDIA's model (nvngx_dlssnr.dll beside the game) on the cards NVIDIA supports.\n"
+        "For other cards, put a DLSS 5 model build made for your card in this folder as\n"
+        "nvngx_dlssnr.dll. Updates never replace a file here.\n", encoding="utf-8")
     # App-local Visual C++ runtime (Microsoft permits redistributing these next to the exe): without it
     # a PC that never installed the VC++ 2015-2022 redistributable closes the game before it can log.
     redist = sorted(Path(r"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Redist\MSVC").glob("*/x64/Microsoft.VC143.CRT"))
