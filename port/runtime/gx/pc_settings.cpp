@@ -3265,6 +3265,44 @@ static const char* matchmaking_state_text(int state) {
   }
 }
 
+// The practice overlays' card: rounded, dark, with the settings menu's pink accent bar on the left
+// and, while something is in progress, a pulsing dot. Begin/End pair like ImGui::Begin.
+static bool practice_card_begin(const char* id, ImVec2 pos, ImVec2 pivot, bool inputs) {
+  ImGui::SetNextWindowPos(pos, ImGuiCond_Always, pivot);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20.0f, 12.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.075f, 0.065f, 0.115f, 0.94f));
+  ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.96f, 0.16f, 0.55f, 0.55f));
+  ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                           ImGuiWindowFlags_NoFocusOnAppearing;
+  if (!inputs) flags |= ImGuiWindowFlags_NoInputs;
+  const bool open = ImGui::Begin(id, nullptr, flags);
+  const ImVec2 at = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  draw->AddRectFilled(ImVec2(at.x + 1.0f, at.y + 8.0f), ImVec2(at.x + 6.0f, at.y + size.y - 8.0f),
+                      IM_COL32(245, 40, 140, 255), 3.0f);
+  return open;
+}
+static void practice_card_end() {
+  ImGui::End();
+  ImGui::PopStyleColor(2);
+  ImGui::PopStyleVar(3);
+}
+// A title line with a pulsing dot in front of it (searching, connecting).
+static void practice_card_title(const char* text, bool pulse) {
+  const float t = (float)ImGui::GetTime();
+  const float glow = pulse ? 0.55f + 0.45f * std::sin(t * 4.0f) : 1.0f;
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const float h = ImGui::GetTextLineHeight();
+  ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(at.x + 5.0f, at.y + h * 0.5f), 4.5f,
+                                              IM_COL32(245, 40, 140, (int)(255 * glow)), 16);
+  ImGui::Dummy(ImVec2(14.0f, h));
+  ImGui::SameLine(0.0f, 0.0f);
+  ImGui::TextColored(ImVec4(1.0f, 0.97f, 0.99f, 1.0f), "%s", text);
+}
+
 static void draw_native_practice(SettingsState& state, RenderOptions& options,
                                  const slippi::native_practice::Snapshot& practice,
                                  const host::PadState& pad, bool have_pad) {
@@ -3272,28 +3310,20 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
   const ImVec2 screen = ImGui::GetIO().DisplaySize;
 
   if (practice.phase == Phase::Handoff) {
-    ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowBgAlpha(0.88f);
-    ImGui::Begin("##native_match_found", nullptr,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
-                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-    ImGui::TextUnformatted("Match found");
+    practice_card_begin("##native_match_found", ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImVec2(0.5f, 0.5f), false);
+    practice_card_title("Match found", true);
+    if (!practice.opponent.empty()) ImGui::TextDisabled("vs %s", practice.opponent.c_str());
     ImGui::TextDisabled("Connecting...");
-    ImGui::End();
+    practice_card_end();
     return;
   }
 
   if (slippi::native_practice::phase_shows_return_overlay(practice.phase,
                                                           practice.in_practice) &&
       !slippi::online::is_online_match()) {   // never over a match, whatever the phase says
-    ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowBgAlpha(0.88f);
-    ImGui::Begin("##native_practice_return", nullptr,
-                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
-                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs |
-                 ImGuiWindowFlags_NoSavedSettings);
-    ImGui::TextUnformatted("Returning to practice...");
-    ImGui::End();
+    practice_card_begin("##native_practice_return", ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImVec2(0.5f, 0.5f), false);
+    practice_card_title("Returning to practice...", true);
+    practice_card_end();
     return;
   }
 
@@ -3319,28 +3349,24 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
   }
 
   if (practice.phase == Phase::Searching && !state.practice_open) {
-    ImGui::SetNextWindowPos(ImVec2(screen.x - 12, screen.y - 12), ImGuiCond_Always, ImVec2(1, 1));
-    ImGui::SetNextWindowBgAlpha(0.72f);
-    ImGui::Begin("##native_search_status", nullptr,
-                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings);
-    ImGui::Text("%s: %s", slippi::native_practice::match_mode_name(practice.mode),
-                matchmaking_state_text(practice.matchmaking_state));
-    const std::string elapsed = slippi::native_practice::format_search_duration(practice.search_ticks);
-    ImGui::TextDisabled("Searching %s", elapsed.c_str());
-    ImGui::TextDisabled("Tab: search controls");
-    ImGui::End();
+    practice_card_begin("##native_search_status", ImVec2(screen.x - 12, screen.y - 12), ImVec2(1, 1), false);
+    char title[96];
+    std::snprintf(title, sizeof title, "%s  %s", slippi::native_practice::match_mode_name(practice.mode),
+                  slippi::native_practice::format_search_duration(practice.search_ticks).c_str());
+    practice_card_title(title, true);
+    ImGui::TextDisabled("%s", matchmaking_state_text(practice.matchmaking_state));
+    if (!practice.opponent.empty()) ImGui::TextDisabled("vs %s", practice.opponent.c_str());
+    ImGui::TextDisabled("Keep practicing. Tab: search controls");
+    practice_card_end();
   }
 
   if (!state.practice_open) {
     if (options.matchmaking_hint && practice.tab_available && practice.phase == Phase::Idle) {
-      ImGui::SetNextWindowPos(ImVec2(screen.x - 12, 52), ImGuiCond_Always, ImVec2(1, 0));
-      ImGui::SetNextWindowBgAlpha(ImGui::GetTime() < 20.0 ? 0.8f : 0.35f);
-      ImGui::Begin("##native_practice_hint", nullptr,
-                   ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                   ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings);
-      ImGui::TextUnformatted("Matchmaking: Tab");
-      ImGui::End();
+      ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetTime() < 20.0 ? 1.0f : 0.5f);
+      practice_card_begin("##native_practice_hint", ImVec2(screen.x - 12, 52), ImVec2(1, 0), false);
+      practice_card_title("Practice while you queue: Tab", false);
+      practice_card_end();
+      ImGui::PopStyleVar();
     }
     return;
   }
