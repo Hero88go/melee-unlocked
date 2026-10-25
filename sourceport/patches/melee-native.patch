@@ -48299,7 +48299,7 @@ index 804ee9add..e51a72d5d 100644
  ASM void __shl2i(void){
  #ifdef __MWERKS__ // clang-format off
 diff --git a/src/melee/cm/camera.c b/src/melee/cm/camera.c
-index 1a8206270..6bfbad80b 100644
+index 1a8206270..495116560 100644
 --- a/src/melee/cm/camera.c
 +++ b/src/melee/cm/camera.c
 @@ -48,10 +48,15 @@
@@ -48425,7 +48425,7 @@ index 1a8206270..6bfbad80b 100644
  
  static inline f32 get_y_bias(f32 spread)
  {
-@@ -907,6 +915,22 @@ void Camera_80029CF8(CameraBounds* bounds, CameraTransformState* transform)
+@@ -907,6 +915,30 @@ void Camera_80029CF8(CameraBounds* bounds, CameraTransformState* transform)
      transform->target_position.z = transform->target_interest.z + cam_dist;
  }
  
@@ -48443,12 +48443,20 @@ index 1a8206270..6bfbad80b 100644
 +    }
 +    return game_camera.quake_gobj != NULL;
 +}
++
++/* The shake in the view: the world (x, y) offset Camera_8002AF68 adds to the eye and its target.
++ * The sub-frame sampler takes it out to move the camera under the shake smoothly. */
++void mu_camera_quake_shift(float* out)
++{
++    out[0] = game_camera.translation.x;
++    out[1] = game_camera.translation.y;
++}
 +#endif
 +
  void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
  {
      f32 viewport_x_scale;
-@@ -917,19 +941,52 @@ void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
+@@ -917,19 +949,52 @@ void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
      f32 input_x;
      f32 input_y;
      f32 depth_ratio;
@@ -48507,7 +48515,7 @@ index 1a8206270..6bfbad80b 100644
          input_x *= cm_803BCCA0.xE8;
          input_y *= cm_803BCCA0.xE8;
      }
-@@ -939,12 +996,14 @@ void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
+@@ -939,12 +1004,14 @@ void Camera_ApplyQuake(CameraBounds* bounds, CameraTransformState* state)
      half_view_height =
          bounds->z_pos * tanf(0.5f * (0.017453292f * state->fov));
      viewport_x_scale =
@@ -48525,7 +48533,7 @@ index 1a8206270..6bfbad80b 100644
      depth_factor_y = Stage_GetCamZoomRate();
      depth_factor_x = Stage_GetCamMaxDepth() - depth_factor_y;
  
-@@ -981,7 +1040,7 @@ void Camera_UpdateQuakes(CameraBounds* bounds)
+@@ -981,7 +1048,7 @@ void Camera_UpdateQuakes(CameraBounds* bounds)
  
      for (i = 0; i < 16; ++i) {
          game_camera.quakes[1][i] = game_camera.quakes[0][i];
@@ -48534,7 +48542,7 @@ index 1a8206270..6bfbad80b 100644
      }
  
      for (i = 0; i < QuakeKind_Count; i++) {
-@@ -1036,6 +1095,19 @@ void Camera_8002A4AC(HSD_GObj* gobj)
+@@ -1036,6 +1103,19 @@ void Camera_8002A4AC(HSD_GObj* gobj)
      HSD_CObj* cobj;
      CameraTransformState* transform = &game_camera.transform;
  
@@ -48554,7 +48562,7 @@ index 1a8206270..6bfbad80b 100644
      cobj = GET_COBJ(gobj);
      switch (game_camera.mode) {
      case CAMERA_STANDARD:
-@@ -1393,7 +1465,7 @@ void Camera_8002B0E0(void)
+@@ -1393,7 +1473,7 @@ void Camera_8002B0E0(void)
  
      if ((gm_IsCurrently1PMode_inline() != 0) && (game_camera.x2C0 > 0.0f)) {
          {
@@ -48563,7 +48571,7 @@ index 1a8206270..6bfbad80b 100644
              var_f1 = HSD_PadCopyStatus[idx].nml_subStickY;
          }
          var_f2 = var_f1;
-@@ -1742,6 +1814,11 @@ void Camera_8002BAA8(f32 zoom_amt)
+@@ -1742,6 +1822,11 @@ void Camera_8002BAA8(f32 zoom_amt)
          ((zoom_amt * ((offset_len * cm_803BCCA0.x9C) + cm_803BCCA0.xA0)) +
           game_camera.pause_eye_distance);
  
@@ -48575,7 +48583,7 @@ index 1a8206270..6bfbad80b 100644
      if (game_camera.pause_eye_distance < game_camera.x2D0.unk28) {
          game_camera.pause_eye_distance = game_camera.x2D0.unk28;
      } else if (game_camera.pause_eye_distance > game_camera.x2D0.unk2C) {
-@@ -2035,11 +2112,11 @@ void Camera_8002C1A8(void)
+@@ -2035,11 +2120,11 @@ void Camera_8002C1A8(void)
  
  static inline float eye_offset_len(Vec3* offset)
  {
@@ -48590,7 +48598,7 @@ index 1a8206270..6bfbad80b 100644
  {
      f64 len;
      Vec3 temp_pos;
-@@ -2132,7 +2209,7 @@ void Camera_8002C5B4(Camera_x2D0* arg0)
+@@ -2132,7 +2217,7 @@ void Camera_8002C5B4(Camera_x2D0* arg0)
      len = eye_offset_len(eye_offset);
  
      xz_dist =
@@ -48599,7 +48607,7 @@ index 1a8206270..6bfbad80b 100644
  
      PSVECCrossProduct(eye_offset, &cam->pause_up, &cross1);
      lbVector_Normalize(&cross1);
-@@ -2182,64 +2259,7 @@ static inline bool get_subject_pos(Vec3* pos, const s8* slot_ptr)
+@@ -2182,64 +2267,7 @@ static inline bool get_subject_pos(Vec3* pos, const s8* slot_ptr)
      return valid;
  }
  
@@ -48665,7 +48673,7 @@ index 1a8206270..6bfbad80b 100644
  {
      return &transform->target_interest;
  }
-@@ -2253,11 +2273,16 @@ static inline void track_subject(CameraTransformState* transform,
+@@ -2253,11 +2281,16 @@ static inline void track_subject(CameraTransformState* transform,
      f32* coeff_ptr;
      f32 coeff;
  
@@ -48683,7 +48691,7 @@ index 1a8206270..6bfbad80b 100644
  
      game_camera.transform.target_position = *copy_src;
      target_pos = &transform->target_position;
-@@ -2273,8 +2298,8 @@ static inline void track_subject(CameraTransformState* transform,
+@@ -2273,8 +2306,8 @@ static inline void track_subject(CameraTransformState* transform,
      eye_diff->z *= coeff;
      lbVector_Add(position_ptr, eye_diff);
  
@@ -48694,7 +48702,7 @@ index 1a8206270..6bfbad80b 100644
      coeff = *coeff_ptr;
      interest_diff->x *= coeff;
      interest_diff->y *= coeff;
-@@ -2372,6 +2397,23 @@ void Camera_8002CB0C(CameraBounds* bounds)
+@@ -2372,6 +2405,23 @@ void Camera_8002CB0C(CameraBounds* bounds)
  
      {
          s8 pauser_slot = camera->x2C5;
@@ -48718,7 +48726,7 @@ index 1a8206270..6bfbad80b 100644
          if (pauser_slot == 5) {
              return;
          }
-@@ -2455,7 +2497,7 @@ void Camera_8002CB0C(CameraBounds* bounds)
+@@ -2455,7 +2505,7 @@ void Camera_8002CB0C(CameraBounds* bounds)
  void Camera_8002CDDC(void* unused)
  {
      s8* slot_ptr;
@@ -48727,7 +48735,7 @@ index 1a8206270..6bfbad80b 100644
      HSD_GObj* gobj;
      CmSubject* subject;
      CameraBounds bounds;
-@@ -2469,8 +2511,16 @@ void Camera_8002CDDC(void* unused)
+@@ -2469,8 +2519,16 @@ void Camera_8002CDDC(void* unused)
      Camera_800293E0();
      Camera_8002958C(&bounds, &game_camera.transform);
      slot_ptr = &game_camera.x2C4;
@@ -48746,7 +48754,7 @@ index 1a8206270..6bfbad80b 100644
      Camera_8002CB0C(&bounds);
      if (*slot_ptr != 10 && *slot_ptr != 11 &&
          (gobj = Player_GetEntity(*slot_ptr)) != NULL &&
-@@ -2479,7 +2529,7 @@ void Camera_8002CDDC(void* unused)
+@@ -2479,7 +2537,7 @@ void Camera_8002CDDC(void* unused)
          Camera_80029124(&subject->bone_pos, 0) == CAM_BOUNDS_INSIDE &&
          ABS(subject->bone_pos.z) < 30.0f)
      {
@@ -48755,7 +48763,7 @@ index 1a8206270..6bfbad80b 100644
          game_camera.transform.target_fov = cm_803BCCA0.x6C;
          delta = game_camera.transform.target_fov - game_camera.transform.fov;
          game_camera.transform.fov += delta * cm_803BCCA0.x70;
-@@ -2496,9 +2546,6 @@ void Camera_8002CDDC(void* unused)
+@@ -2496,9 +2554,6 @@ void Camera_8002CDDC(void* unused)
      update_avg_bounds_width();
  }
  
@@ -48765,7 +48773,7 @@ index 1a8206270..6bfbad80b 100644
  static inline f32 compute_orbit_distance(s32 slot)
  {
      f32 distance;
-@@ -2857,17 +2904,17 @@ s32 Camera_8002DFE4(Vec3* arg0, Vec3* interest,
+@@ -2857,17 +2912,17 @@ s32 Camera_8002DFE4(Vec3* arg0, Vec3* interest,
          var_r31 = 1;
          break;
      case 1:
@@ -48787,7 +48795,7 @@ index 1a8206270..6bfbad80b 100644
          }
          break;
      }
-@@ -2897,18 +2944,18 @@ bool Camera_8002E158(f32* arg0, f32 farg0, f32 farg1)
+@@ -2897,18 +2952,18 @@ bool Camera_8002E158(f32* arg0, f32 farg0, f32 farg1)
          break;
  
      case 1:
@@ -48810,7 +48818,7 @@ index 1a8206270..6bfbad80b 100644
          }
          break;
      }
-@@ -2994,7 +3041,7 @@ void Camera_8002E490(void* unused)
+@@ -2994,7 +3049,7 @@ void Camera_8002E490(void* unused)
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48819,7 +48827,7 @@ index 1a8206270..6bfbad80b 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3050,15 +3097,15 @@ void Camera_8002E490(void* unused)
+@@ -3050,15 +3105,15 @@ void Camera_8002E490(void* unused)
      case 0:
          break;
      case 1:
@@ -48841,7 +48849,7 @@ index 1a8206270..6bfbad80b 100644
          }
          break;
      }
-@@ -3075,11 +3122,11 @@ void Camera_8002E6FC(int arg0)
+@@ -3075,11 +3130,11 @@ void Camera_8002E6FC(int arg0)
      }
  
      game_camera.x341_b1_b2 = 1;
@@ -48855,7 +48863,7 @@ index 1a8206270..6bfbad80b 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3116,7 +3163,7 @@ void Camera_8002E818(Vec3* pos)
+@@ -3116,7 +3171,7 @@ void Camera_8002E818(Vec3* pos)
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48864,7 +48872,7 @@ index 1a8206270..6bfbad80b 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3153,7 +3200,7 @@ void Camera_8002E948(bool (*cb)(Vec*))
+@@ -3153,7 +3208,7 @@ void Camera_8002E948(bool (*cb)(Vec*))
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48873,7 +48881,7 @@ index 1a8206270..6bfbad80b 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3323,7 +3370,7 @@ void Camera_8002EF14(void)
+@@ -3323,7 +3378,7 @@ void Camera_8002EF14(void)
  
      switch (game_camera.x341_b1_b2) {
      case 1: {
@@ -48882,7 +48890,7 @@ index 1a8206270..6bfbad80b 100644
          if (gobj != NULL) {
              CmSubject* subject = ftLib_80086B74(gobj);
              if (subject != NULL) {
-@@ -3375,7 +3422,7 @@ void Camera_8002EF14(void)
+@@ -3375,7 +3430,7 @@ void Camera_8002EF14(void)
      game_camera.transform.fov = game_camera.transform.target_fov;
  }
  
@@ -48891,7 +48899,7 @@ index 1a8206270..6bfbad80b 100644
  {
      s32 sp24;
      s32 sp20;
-@@ -3388,8 +3435,8 @@ void Camera_8002F0E4(s32 arg0)
+@@ -3388,8 +3443,8 @@ void Camera_8002F0E4(s32 arg0)
      }
  
      game_camera.x341_b5_b6 = 1;
@@ -48902,7 +48910,7 @@ index 1a8206270..6bfbad80b 100644
  
      switch (game_camera.x341_b1_b2) {
      case 0:
-@@ -3481,6 +3528,12 @@ void Camera_8002F3AC(void)
+@@ -3481,6 +3536,12 @@ void Camera_8002F3AC(void)
  
  void Camera_SetModeToStandard(void)
  {
@@ -48915,7 +48923,7 @@ index 1a8206270..6bfbad80b 100644
      game_camera.mode = CAMERA_STANDARD;
  }
  
-@@ -3832,7 +3885,7 @@ void Camera_8002FE38(void)
+@@ -3832,7 +3893,7 @@ void Camera_8002FE38(void)
          game_camera.transform.fov;
  }
  
@@ -48924,7 +48932,7 @@ index 1a8206270..6bfbad80b 100644
  {
      HSD_CObj* cobj;
      CmSubject* box;
-@@ -3844,7 +3897,6 @@ void Camera_8002FEEC(s32 arg0)
+@@ -3844,7 +3905,6 @@ void Camera_8002FEEC(s32 arg0)
      f32 temp_f1;
      f32 temp_f31;
      f32 temp_f1_4;
@@ -48932,7 +48940,7 @@ index 1a8206270..6bfbad80b 100644
  
      if (Player_GetEntity(arg0) != NULL) {
          box = ftLib_80086B74(Player_GetEntity(arg0));
-@@ -3860,7 +3912,7 @@ void Camera_8002FEEC(s32 arg0)
+@@ -3860,7 +3920,7 @@ void Camera_8002FEEC(s32 arg0)
              cm_80453004.follow_int_offset.z = 0.0f;
              cm_80453004.follow_int_offset.y = 0.0f;
              cm_80453004.follow_int_offset.x = 0.0f;
@@ -48941,7 +48949,7 @@ index 1a8206270..6bfbad80b 100644
              HSD_CObjGetInterest(cobj, &eye);
              HSD_CObjGetEyePosition(cobj, &target);
              fov = HSD_CObjGetFov(cobj);
-@@ -3994,7 +4046,7 @@ static inline void render_gxlink_pass(HSD_GObj* gobj, int pass, int gxlink)
+@@ -3994,7 +4054,7 @@ static inline void render_gxlink_pass(HSD_GObj* gobj, int pass, int gxlink)
      HSD_GObj_80390ED0(gobj, gxlink);
  }
  
@@ -48950,7 +48958,7 @@ index 1a8206270..6bfbad80b 100644
  {
      s64 prio8_a;
      s64 prio1_a;
-@@ -4017,6 +4069,13 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
+@@ -4017,6 +4077,13 @@ static void fn_800301D0(HSD_GObj* gobj, int arg1)
          HSD_LObjDeleteCurrentAll(NULL);
  
          Camera_800310A0(2);
@@ -48964,7 +48972,7 @@ index 1a8206270..6bfbad80b 100644
          prio8_a = gxlink_prio8();
          prio1_a = gxlink_prio1();
          gobj->gxlink_prios = prio1_a | prio8_a;
-@@ -4154,6 +4213,22 @@ static inline bool same_side(f32 fwd_z, f32 dir_z)
+@@ -4154,6 +4221,22 @@ static inline bool same_side(f32 fwd_z, f32 dir_z)
      return (fwd_z * dir_z) > 0.0L;
  }
  
@@ -48987,7 +48995,7 @@ index 1a8206270..6bfbad80b 100644
  bool Camera_800307D0(f32* left, f32* center, f32* right)
  {
      HSD_CObj* cobj;
-@@ -4172,8 +4247,14 @@ bool Camera_800307D0(f32* left, f32* center, f32* right)
+@@ -4172,8 +4255,14 @@ bool Camera_800307D0(f32* left, f32* center, f32* right)
      f32 edge_z2;
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -49002,7 +49010,7 @@ index 1a8206270..6bfbad80b 100644
  
      result = true;
      HSD_CObjGetEyePosition(cobj, &eye_pos);
-@@ -4313,9 +4394,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
+@@ -4313,9 +4402,37 @@ bool Camera_80030BBC(Vec3* arg0, S32Vec2* arg1)
      PAD_STACK(4);
  
      cobj = GET_COBJ(game_camera.gobj);
@@ -49040,7 +49048,7 @@ index 1a8206270..6bfbad80b 100644
  
      if ((point.x > 2.1474836e9f) || (point.x < -2.1474836e9f) ||
          (point.y > 2.1474836e9f) || (point.y < -2.1474836e9f))
-@@ -4343,6 +4452,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
+@@ -4343,6 +4460,25 @@ bool Camera_80030CD8(CmSubject* arg0, S32Vec2* arg1)
      return Camera_80030BBC(&arg0->bone_pos, arg1);
  }
  
@@ -49066,7 +49074,7 @@ index 1a8206270..6bfbad80b 100644
  /// Camera_IsSubjectOnScreen
  bool Camera_80030CFC(CmSubject* cam_box, f32 tolerance)
  {
-@@ -4381,6 +4509,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
+@@ -4381,6 +4517,16 @@ void Camera_80030DE4(f32 arg8, f32 arg9)
  
  void Camera_80030DF8(void)
  {
@@ -49083,7 +49091,7 @@ index 1a8206270..6bfbad80b 100644
      game_camera.translation.x = game_camera.translation.y = 0;
  }
  
-@@ -4401,6 +4539,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
+@@ -4401,6 +4547,12 @@ void Camera_RequestQuake(CmQuakeKind kind, Vec3* pos)
  {
      HSD_GObj** pquake;
      s32 quake_length;
@@ -49096,7 +49104,7 @@ index 1a8206270..6bfbad80b 100644
  
      switch (kind) {
      case QuakeKind_Loop:
-@@ -4629,3 +4773,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
+@@ -4629,3 +4781,17 @@ void Camera_800313E0(HSD_GObj* gobj, u64 prios)
      0.004f, 0.2f,    0.025f,  0.2f,  0.003f, 0.2f,   0.025f, 0.2f,  0.02f,
      1.0f,   0.14f,   1200.0f, -0.2f, 1.2f,   0.0f,
  };
@@ -218247,10 +218255,10 @@ index 7b5c9a2af..716b7355f 100644
 +              MU_EXCLUDE(HSD_PerfCurrentStat))
 +#endif
 diff --git a/src/sysdolphin/baselib/pobj.c b/src/sysdolphin/baselib/pobj.c
-index 8b16a28c8..22da2f01d 100644
+index 8b16a28c8..d35b7a6cc 100644
 --- a/src/sysdolphin/baselib/pobj.c
 +++ b/src/sysdolphin/baselib/pobj.c
-@@ -19,11 +19,432 @@
+@@ -19,11 +19,437 @@
  #include <dolphin/gx.h>
  #include <dolphin/mtx.h>
  #include <dolphin/os.h>
@@ -218263,6 +218271,7 @@ index 8b16a28c8..22da2f01d 100644
 +extern int mu_native_pose_capture_enabled(void);
 +extern void mu_native_pose_snapshot(const MuNativePoseSnapshot* snapshot);
 +extern int mu_camera_quaking(void);   /* melee/cm/camera.c */
++extern void mu_camera_quake_shift(float* out);   /* melee/cm/camera.c */
 +extern int mu_native_owner_tracking(void);
 +#endif
  
@@ -218597,6 +218606,8 @@ index 8b16a28c8..22da2f01d 100644
 +    snapshot.slot_count = slot;
 +    snapshot.has_view = vmtx != NULL;
 +    snapshot.quake = snapshot.has_view && mu_camera_quaking();
++    if (snapshot.quake)
++        mu_camera_quake_shift(snapshot.quake_shift);
 +    if (snapshot.has_view)
 +        __builtin_memcpy(snapshot.view, vmtx, sizeof(snapshot.view));
 +    snapshot.joints = native_pose_joints;
@@ -218671,6 +218682,8 @@ index 8b16a28c8..22da2f01d 100644
 +    snapshot.track_byte_count = track_byte_count;
 +    snapshot.has_view = vmtx != NULL;
 +    snapshot.quake = snapshot.has_view && mu_camera_quaking();
++    if (snapshot.quake)
++        mu_camera_quake_shift(snapshot.quake_shift);
 +    if (snapshot.has_view)
 +        __builtin_memcpy(snapshot.view, vmtx, sizeof(snapshot.view));
 +    snapshot.joints = native_pose_joints;
@@ -218683,7 +218696,7 @@ index 8b16a28c8..22da2f01d 100644
  static HSD_PObjInfo* default_class = NULL;
  
  static f32 (*vertex_buffer)[3] = NULL;
-@@ -88,7 +509,7 @@ void HSD_PObjAddAnim(HSD_PObj* pobj, HSD_ShapeAnim* shapeanim)
+@@ -88,7 +514,7 @@ void HSD_PObjAddAnim(HSD_PObj* pobj, HSD_ShapeAnim* shapeanim)
      if (st->aobj) {
          HSD_AObjRemove(st->aobj);
      }
@@ -218692,7 +218705,7 @@ index 8b16a28c8..22da2f01d 100644
  }
  
  void HSD_PObjAddAnimAll(HSD_PObj* pobj, HSD_ShapeAnim* shapeanim)
-@@ -100,7 +521,7 @@ void HSD_PObjAddAnimAll(HSD_PObj* pobj, HSD_ShapeAnim* shapeanim)
+@@ -100,7 +526,7 @@ void HSD_PObjAddAnimAll(HSD_PObj* pobj, HSD_ShapeAnim* shapeanim)
          return;
      }
  
@@ -218701,7 +218714,7 @@ index 8b16a28c8..22da2f01d 100644
      {
          HSD_PObjAddAnim(po, sa);
      }
-@@ -170,6 +591,8 @@ void HSD_PObjAnimAll(HSD_PObj* pobj)
+@@ -170,6 +596,8 @@ void HSD_PObjAnimAll(HSD_PObj* pobj)
      }
  }
  
@@ -218710,7 +218723,7 @@ index 8b16a28c8..22da2f01d 100644
  static HSD_Envelope* HSD_EnvelopeAlloc(void)
  {
      HSD_Envelope* envelope = hsdAllocMemPiece(sizeof(HSD_Envelope));
-@@ -199,7 +622,7 @@ static void HSD_EnvelopeListFree(HSD_SList* list)
+@@ -199,7 +627,7 @@ static void HSD_EnvelopeListFree(HSD_SList* list)
      }
  }
  
@@ -218719,7 +218732,7 @@ index 8b16a28c8..22da2f01d 100644
  {
      HSD_SList* list = NULL;
      HSD_SList** list_p = &list;
-@@ -208,21 +631,21 @@ static HSD_SList* loadEnvelopeDesc(HSD_EnvelopeDesc** edesc_p)
+@@ -208,21 +636,21 @@ static HSD_SList* loadEnvelopeDesc(HSD_EnvelopeDesc** edesc_p)
          return NULL;
      }
  
@@ -218746,7 +218759,7 @@ index 8b16a28c8..22da2f01d 100644
          edesc_p++;
      }
      return list;
-@@ -260,14 +683,13 @@ static HSD_ShapeSet* loadShapeSetDesc(HSD_ShapeSetDesc* sdesc)
+@@ -260,14 +688,13 @@ static HSD_ShapeSet* loadShapeSetDesc(HSD_ShapeSetDesc* sdesc)
      shape_set->flags = sdesc->flags;
      shape_set->nb_shape = sdesc->nb_shape;
      shape_set->nb_vertex_index = sdesc->nb_vertex_index;
@@ -218766,7 +218779,7 @@ index 8b16a28c8..22da2f01d 100644
          for (i = 0; i < shape_set->nb_shape; i++) {
              shape_set->blend.bp[i] = 0.0f;
          }
-@@ -280,18 +702,19 @@ static HSD_ShapeSet* loadShapeSetDesc(HSD_ShapeSetDesc* sdesc)
+@@ -280,18 +707,19 @@ static HSD_ShapeSet* loadShapeSetDesc(HSD_ShapeSetDesc* sdesc)
  
  static s32 PObjLoad(HSD_PObj* pobj, HSD_PObjDesc* desc)
  {
@@ -218791,7 +218804,7 @@ index 8b16a28c8..22da2f01d 100644
          break;
  
      case POBJ_SKIN:
-@@ -313,8 +736,8 @@ HSD_PObj* HSD_PObjLoadDesc(HSD_PObjDesc* pobjdesc)
+@@ -313,8 +741,8 @@ HSD_PObj* HSD_PObjLoadDesc(HSD_PObjDesc* pobjdesc)
          HSD_PObj* pobj;
          HSD_ClassInfo* info;
  
@@ -218802,7 +218815,7 @@ index 8b16a28c8..22da2f01d 100644
          {
              pobj = HSD_PObjAlloc();
          } else {
-@@ -359,7 +782,7 @@ void HSD_PObjSetDefaultClass(HSD_PObjInfo* info)
+@@ -359,7 +787,7 @@ void HSD_PObjSetDefaultClass(HSD_PObjInfo* info)
  
  HSD_PObj* HSD_PObjAlloc(void)
  {
@@ -218811,7 +218824,7 @@ index 8b16a28c8..22da2f01d 100644
      HSD_ASSERT(703, pobj);
      return pobj;
  }
-@@ -371,19 +794,19 @@ void HSD_PObjFree(HSD_PObj* pobj)
+@@ -371,19 +799,19 @@ void HSD_PObjFree(HSD_PObj* pobj)
      }
  }
  
@@ -218836,7 +218849,7 @@ index 8b16a28c8..22da2f01d 100644
              HSD_ASSERT(736, env->jobj);
              HSD_JObjRefThis(env->jobj);
              env = env->next;
-@@ -400,14 +823,15 @@ void HSD_PObjResolveRefs(HSD_PObj* pobj, HSD_PObjDesc* pdesc)
+@@ -400,14 +828,15 @@ void HSD_PObjResolveRefs(HSD_PObj* pobj, HSD_PObjDesc* pdesc)
  
      switch (pobj_type(pobj)) {
      case POBJ_ENVELOPE:
@@ -218855,7 +218868,7 @@ index 8b16a28c8..22da2f01d 100644
              HSD_ASSERT(0x2FB, pobj->u.jobj);
              HSD_JObjRefThis(pobj->u.jobj);
          }
-@@ -421,7 +845,7 @@ void HSD_PObjResolveRefs(HSD_PObj* pobj, HSD_PObjDesc* pdesc)
+@@ -421,7 +850,7 @@ void HSD_PObjResolveRefs(HSD_PObj* pobj, HSD_PObjDesc* pdesc)
  void HSD_PObjResolveRefsAll(HSD_PObj* pobj, HSD_PObjDesc* pdesc)
  {
      for (; pobj != NULL && pdesc != NULL;
@@ -218864,7 +218877,7 @@ index 8b16a28c8..22da2f01d 100644
      {
          HSD_PObjResolveRefs(pobj, pdesc);
      }
-@@ -441,7 +865,7 @@ static void setupArrayDesc(HSD_VtxDescList* desc_list)
+@@ -441,7 +870,7 @@ static void setupArrayDesc(HSD_VtxDescList* desc_list)
      if (prev_vtxdesclist_array != desc_list) {
          for (desc = desc_list; desc->attr != GX_VA_NULL; desc++) {
              if (desc->attr_type != GX_DIRECT) {
@@ -218873,7 +218886,7 @@ index 8b16a28c8..22da2f01d 100644
              }
          }
          prev_vtxdesclist_array = desc_list;
-@@ -488,7 +912,7 @@ static void setupShapeAnimArrayDesc(HSD_VtxDescList* desc_list)
+@@ -488,7 +917,7 @@ static void setupShapeAnimArrayDesc(HSD_VtxDescList* desc_list)
              case GX_VA_NBT:
                  break;
              default:
@@ -218882,7 +218895,7 @@ index 8b16a28c8..22da2f01d 100644
              }
          }
      }
-@@ -530,6 +954,20 @@ static void setupShapeAnimVtxDesc(HSD_PObj* pobj)
+@@ -530,6 +959,20 @@ static void setupShapeAnimVtxDesc(HSD_PObj* pobj)
      prev_vtxdesc = NULL;
  }
  
@@ -218903,7 +218916,7 @@ index 8b16a28c8..22da2f01d 100644
  static inline void decode_u8_xyz(void* src_base, f32 dst[3], int scale)
  {
      u8* src = src_base;
-@@ -548,24 +986,24 @@ static inline void decode_s8_xyz(void* src_base, f32 dst[3], int scale)
+@@ -548,24 +991,24 @@ static inline void decode_s8_xyz(void* src_base, f32 dst[3], int scale)
  
  static inline void decode_u16_xyz(void* src_base, f32 dst[3], int scale)
  {
@@ -218937,7 +218950,7 @@ index 8b16a28c8..22da2f01d 100644
      int idx;
      void* src_base;
  
-@@ -577,11 +1015,11 @@ static void get_shape_vertex_xyz(HSD_ShapeSet* shape_set, int shape_id,
+@@ -577,11 +1020,11 @@ static void get_shape_vertex_xyz(HSD_ShapeSet* shape_set, int shape_id,
      }
  
      HSD_ASSERT(1102, shape_set->vertex_desc->comp_cnt == GX_POS_XYZ);
@@ -218951,7 +218964,7 @@ index 8b16a28c8..22da2f01d 100644
      } else {
          int decimal_point = 1 << shape_set->vertex_desc->frac;
          switch (shape_set->vertex_desc->comp_type) {
-@@ -610,7 +1048,7 @@ static void get_shape_vertex_xyz(HSD_ShapeSet* shape_set, int shape_id,
+@@ -610,7 +1053,7 @@ static void get_shape_vertex_xyz(HSD_ShapeSet* shape_set, int shape_id,
  static void get_shape_normal_xyz(HSD_ShapeSet* shape_set, int shape_id,
                                   int arrayidx, float dst[3])
  {
@@ -218960,7 +218973,7 @@ index 8b16a28c8..22da2f01d 100644
      int idx;
      void* src_base;
  
-@@ -622,11 +1060,11 @@ static void get_shape_normal_xyz(HSD_ShapeSet* shape_set, int shape_id,
+@@ -622,11 +1065,11 @@ static void get_shape_normal_xyz(HSD_ShapeSet* shape_set, int shape_id,
      }
  
      HSD_ASSERT(1165, shape_set->normal_desc->comp_cnt == GX_NRM_XYZ);
@@ -218974,7 +218987,7 @@ index 8b16a28c8..22da2f01d 100644
      } else {
          int decimal_point = 1 << shape_set->normal_desc->frac;
          switch (shape_set->normal_desc->comp_type) {
-@@ -652,7 +1090,7 @@ static void get_shape_normal_xyz(HSD_ShapeSet* shape_set, int shape_id,
+@@ -652,7 +1095,7 @@ static void get_shape_normal_xyz(HSD_ShapeSet* shape_set, int shape_id,
  static void get_shape_nbt_xyz(HSD_ShapeSet* shape_set, int shape_id,
                                int arrayidx, float* dst)
  {
@@ -218983,7 +218996,7 @@ index 8b16a28c8..22da2f01d 100644
      int i, idx;
      void* src_base;
  
-@@ -667,11 +1105,11 @@ static void get_shape_nbt_xyz(HSD_ShapeSet* shape_set, int shape_id,
+@@ -667,11 +1110,11 @@ static void get_shape_nbt_xyz(HSD_ShapeSet* shape_set, int shape_id,
  
      HSD_ASSERT(1230, shape_set->normal_desc->comp_cnt == GX_NRM_XYZ);
  
@@ -218997,7 +219010,7 @@ index 8b16a28c8..22da2f01d 100644
      } else {
          int decimal_point = 1 << shape_set->normal_desc->frac;
          switch (shape_set->normal_desc->comp_type) {
-@@ -687,12 +1125,12 @@ static void get_shape_nbt_xyz(HSD_ShapeSet* shape_set, int shape_id,
+@@ -687,12 +1130,12 @@ static void get_shape_nbt_xyz(HSD_ShapeSet* shape_set, int shape_id,
              break;
          case GX_U16:
              for (i = 0; i < 9; i++) {
@@ -219012,7 +219025,7 @@ index 8b16a28c8..22da2f01d 100644
              }
              break;
          default:
-@@ -1234,8 +1672,15 @@ static void PObjDispShapeAnim(HSD_PObj* pobj, u32 rendermode)
+@@ -1234,8 +1677,15 @@ static void PObjDispShapeAnim(HSD_PObj* pobj, u32 rendermode)
      drawShapeAnim(pobj);
  }
  
@@ -219029,7 +219042,7 @@ index 8b16a28c8..22da2f01d 100644
      switch (pobj->flags & (POBJ_CULLFRONT | POBJ_CULLBACK)) {
      case 0x0:
          HSD_StateSetCullMode(GX_CULL_NONE);
-@@ -1250,12 +1695,47 @@ void HSD_PObjDisp(HSD_PObj* pobj, Mtx vmtx, Mtx pmtx, u32 rendermode)
+@@ -1250,12 +1700,47 @@ void HSD_PObjDisp(HSD_PObj* pobj, Mtx vmtx, Mtx pmtx, u32 rendermode)
          return;
      }
  
@@ -219077,7 +219090,7 @@ index 8b16a28c8..22da2f01d 100644
  }
  
  static void PObjRelease(HSD_Class* o)
-@@ -1305,3 +1785,26 @@ static void PObjInfoInit(void)
+@@ -1305,3 +1790,26 @@ static void PObjInfoInit(void)
      HSD_POBJ_INFO(&hsdPObj)->setup_mtx = PObjSetupMtx;
      HSD_POBJ_INFO(&hsdPObj)->load = PObjLoad;
  }

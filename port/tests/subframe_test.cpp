@@ -246,13 +246,47 @@ int main() {
     std::memcpy(carried_pos, held_pos, sizeof carried_pos);
     check(gx::carry_camera(view_previous, view_current, .5, view_current, held_pos, held_nrm, 1, carried_pos, carried_nrm) && near(carried_pos[3], 1),
           "panning camera carries held draws forward");
-    view_current.quake = true;
-    std::memcpy(carried_pos, held_pos, sizeof carried_pos);
-    check(!gx::carry_camera(view_previous, view_current, .5, view_current, held_pos, held_nrm, 1, carried_pos, carried_nrm) && carried_pos[3] == 0,
-          "shaking camera is not extrapolated along the quake");
-    view_current.quake = false; view_previous.quake = true;
-    check(!gx::carry_camera(view_previous, view_current, .5, view_current, held_pos, held_nrm, 1, carried_pos, carried_nrm),
-          "the tick after a quake still holds");
+    // A shake: the game moves the eye and its target by quake_shift, which in this view matrix is
+    // view x = -shift. The camera under it is sampled; the shake itself steps at 60 Hz.
+    {
+      gx::AuthoredPose shake_previous = view_previous, shake_current = view_current;
+      shake_current.quake = true;
+      shake_current.quake_shift = {2, 0};
+      shake_current.view[3] = -2;   // the camera did not move: only the shake did
+      std::memcpy(carried_pos, held_pos, sizeof carried_pos);
+      check(!gx::carry_camera(shake_previous, shake_current, .5, shake_current, held_pos, held_nrm, 1, carried_pos, carried_nrm),
+            "a pure shake is drawn at its exact 60 Hz offset, not extrapolated along the jolt");
+      shake_current.view[3] = 2 - 1;   // the camera panned by 2 and shook by 1 in the same tick
+      shake_current.quake_shift = {1, 0};
+      std::memcpy(carried_pos, held_pos, sizeof carried_pos);
+      check(gx::carry_camera(shake_previous, shake_current, .5, shake_current, held_pos, held_nrm, 1, carried_pos, carried_nrm) &&
+                near(carried_pos[3], 1),
+            "a panning camera keeps moving through a shake");
+      // Another camera (the HUD's) does not move while the stage shakes: drawn as it is.
+      gx::AuthoredPose hud_previous = view_previous, hud_current = view_previous;
+      hud_previous.quake = hud_current.quake = true;
+      hud_previous.quake_shift = {1, 0}; hud_current.quake_shift = {-1, 0};
+      check(!gx::carry_camera(hud_previous, hud_current, .5, hud_current, held_pos, held_nrm, 1, carried_pos, carried_nrm),
+            "a camera that did not move is not moved by the stage's shake");
+      shake_previous.quake = true; shake_previous.quake_shift = {2, 0}; shake_previous.view[3] = -2;
+      shake_current.quake = false; shake_current.quake_shift = {0, 0}; shake_current.view[3] = 0;
+      check(!gx::carry_camera(shake_previous, shake_current, .5, shake_current, held_pos, held_nrm, 1, carried_pos, carried_nrm),
+            "the tick a shake ends does not extrapolate its return");
+      // Interpolate: the camera under the shake is blended, the previous frame's shake is shown
+      // until the phase reaches the current frame, and blended rows get the same shake.
+      gx::set_authored_interpolate(true);
+      shake_previous = view_previous; shake_current = view_current;
+      shake_previous.quake = shake_current.quake = true;
+      shake_previous.quake_shift = {1, 0}; shake_previous.view[3] = -1;
+      shake_current.quake_shift = {-1, 0}; shake_current.view[3] = 2 + 1;   // panned by 2
+      check(gx::carry_camera(shake_previous, shake_current, .5, shake_previous, held_pos, held_nrm, 1, carried_pos, carried_nrm) &&
+                near(carried_pos[3], 1 - 1 - (-1)),
+            "interpolated camera under a shake shows the previous frame's shake");
+      float fix[3];
+      check(gx::quake_row_correction(shake_previous, shake_current, .5, fix) && near(fix[0], -1),
+            "blended rows get the shown shake instead of a blend of two");
+      gx::set_authored_interpolate(false);
+    }
     // The carry has to cancel the view that is actually in the matrices it is given. An object
     // standing still in the world is at view * world, so at half a frame it must be drawn at the
     // half-way view, whichever frame the caller held: a paired draw holds the previous frame's

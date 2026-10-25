@@ -6,6 +6,7 @@
 #include "authored_pose.h"
 #include "gx_core.h"   // authored_capture_wanted
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <unordered_map>
 namespace gx {
@@ -63,6 +64,14 @@ bool camera_quaking(Reader& r) {
   const uint32_t camera = 0x80452C68;
   for(int k=0;k<5;++k) if(r.word(camera+0x8C+4*k)) return true;
   return r.word(camera+0xA0)!=0;
+}
+// The shake in the captured view: game_camera.translation (+0x84), the world (x, y) offset
+// Camera_8002AF68 adds to the eye and its target. Read only while a quake runs.
+void capture_quake(Reader& r, AuthoredPose& pose) {
+  pose.quake = camera_quaking(r);
+  if (!pose.quake) return;
+  const float x = r.real(0x80452C68 + 0x84), y = r.real(0x80452C68 + 0x88);
+  if (std::isfinite(x) && std::isfinite(y)) pose.quake_shift = {x, y};
 }
 
 // HSD_RObj (robj.h): next +0x00, flags +0x04, union u +0x08 (jobj / limit f32 / ik_hint
@@ -246,7 +255,7 @@ std::shared_ptr<const AuthoredPose> capture_envelope(Reader& r) {
   pose->envelope = true;
   if(!r.matrix(envelope_vmtx, pose->view)){ ++authored_stats().capture[11]; return {}; }
   pose->has_view = true;
-  pose->quake = camera_quaking(r);
+  capture_quake(r, *pose);
   // right (HSD_JObjFindSkeleton walk)
   uint32_t m = current_joint;
   if(!r.span(m,0x88)){ ++authored_stats().capture[11]; return {}; }
@@ -350,7 +359,7 @@ std::shared_ptr<const AuthoredPose> capture_authored_pose() {
   auto pose = std::make_shared<AuthoredPose>();
   pose->chain = chain;
   pose->has_view = rigid_vmtx && r.matrix(rigid_vmtx, pose->view);
-  pose->quake = pose->has_view && camera_quaking(r);
+  if (pose->has_view) capture_quake(r, *pose);
   ++authored_stats().captured; current_pose=pose; return pose;
 }
 void finish_observed_frame() { passes.clear(); chains_this_frame.clear(); chains_in_progress.clear(); constraint_depth = 0; }

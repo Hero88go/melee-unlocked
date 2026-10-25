@@ -137,19 +137,44 @@ std::array<float,4> quat_blend(const std::array<float,4>& a, const std::array<fl
 const AuthoredPose& chain_of(const AuthoredPose& p) { return p.chain ? *p.chain : p; }
 // Camera: the view matrix advanced `phase` frames by screw extrapolation of its last change. Returns
 // the sampled view and the transform that carries a current view-space matrix to it.
-bool camera_motion(const AuthoredPose& previous,const AuthoredPose& current,double phase,Matrix& view_new,Matrix& carry,bool& moved) {
+// M * T(x, y, 0): the view with the eye and its target moved by (-x, -y) in the world undone.
+void shift_view(Matrix& m,float x,float y){ for(int r=0;r<3;++r) m[r*4+3]+=m[r*4+0]*x+m[r*4+1]*y; }
+// The shake shown at this phase: it steps at 60 Hz. Interpolate shows the previous frame until the
+// phase reaches the current one; Predict shows the current frame's shake ahead of it.
+void shake_at(const AuthoredPose& previous,const AuthoredPose& current,double phase,float out[2]){
+  const bool use_previous=g_interpolate.load(std::memory_order_relaxed)&&phase<1.0;
+  const auto& s=use_previous?previous.quake_shift:current.quake_shift;
+  out[0]=s[0]; out[1]=s[1];
+}
+// keep_current_shake: the sampled view keeps the current frame's shake whatever the phase. For a
+// draw with no pose and no pair, which may be the HUD (its own camera never shakes): it then gets
+// only the smooth camera motion, never a shake step.
+bool camera_motion(const AuthoredPose& previous,const AuthoredPose& current,double phase,Matrix& view_new,Matrix& carry,bool& moved,
+                   bool keep_current_shake=false) {
   moved=false;
   if(!current.has_view){ view_new=NativeMelee::Identity(); carry=view_new; return false; }
   Matrix cur=from12(current.view.data());
   view_new=cur; carry=NativeMelee::Identity();
+  // A view that did not change is drawn as it is. That includes every camera other than the game's
+  // own during a quake: the shake flag and offset are global, and the HUD's camera, which never
+  // moves, would otherwise have the stage camera's shake taken out of it (the timer bobbed).
   if(!previous.has_view||previous.view==current.view) return true;
-  // A quake jolts the view back and forth every tick. Advancing along that jolt overshoots it
-  // (an alternating offset of a is drawn as up to 3a), so the shaking camera holds its exact
-  // 60 Hz view as the console shows it.
-  // This used to apply to Predict only, so Interpolate, the mode most people run, blended every
-  // quake and rendered the whole scene through camera positions the game never showed.
-  if(previous.quake||current.quake) return true;
   Matrix prev=from12(previous.view.data());
+  // A quake jolts the view back and forth every tick. Advancing along the jolt overshoots it (an
+  // alternating offset of a is drawn as up to 3a), and blending it shows camera positions the game
+  // never showed. The view used to be held at its exact 60 Hz frame for the whole quake, which
+  // froze the camera and the stage at 60 Hz through every strong hit, Stadium's transformations and
+  // Whispy's wind. The shake is a known offset of the eye and its target, so it is taken out of both
+  // frames, the camera under it is sampled as usual, and the shake of the frame shown is put back:
+  // the camera moves smoothly and the shake still steps exactly as on a console.
+  const bool shaking=previous.quake||current.quake;
+  float shake[2]={0,0};
+  if(shaking){
+    shift_view(prev,previous.quake_shift[0],previous.quake_shift[1]);
+    shift_view(cur,current.quake_shift[0],current.quake_shift[1]);
+    shake_at(previous,current,phase,shake);
+    if(keep_current_shake){ shake[0]=current.quake_shift[0]; shake[1]=current.quake_shift[1]; }
+  }
   // A cut (respawn, a zoom snap, a new stock) moves the view further in one tick than tracking ever
   // does. There is nothing between the two views to show, so blending across it slides the whole
   // stage through positions that never existed: the level rendering wrong for a split second.
@@ -158,8 +183,14 @@ bool camera_motion(const AuthoredPose& previous,const AuthoredPose& current,doub
     for(int r=0;r<3;++r){ const float d=cur[r*4+3]-prev[r*4+3]; moved+=d*d; }
     if(!(moved<kMaxViewStep*kMaxViewStep)) return true;   // also catches NaN
   }
-  if(g_interpolate.load(std::memory_order_relaxed)) SubFrameSolver::interpolate_matrix(prev.data(),cur.data(),phase,view_new.data());
+  if(shaking&&prev==cur){
+    // Only the shake changed: the frame shown is exact, its own 60 Hz shake.
+    view_new=cur; shift_view(view_new,-shake[0],-shake[1]);
+  } else if(g_interpolate.load(std::memory_order_relaxed)) SubFrameSolver::interpolate_matrix(prev.data(),cur.data(),phase,view_new.data());
   else SubFrameSolver::extrapolate_matrix(prev.data(),cur.data(),phase,view_new.data());
+  if(shaking&&!(prev==cur)) shift_view(view_new,-shake[0],-shake[1]);
+  cur=from12(current.view.data());
+  prev=from12(previous.view.data());
   Matrix inv_cur; if(!inverse(cur,inv_cur)){ view_new=cur; return true; }
   carry=NativeMelee::Multiply(view_new,inv_cur);
   // "moved" asks whether the sampled view differs from the one the held matrices already embed, and
@@ -387,10 +418,10 @@ bool sample_authored(const AuthoredPose& previous,const AuthoredPose& current,do
 bool carry_camera(const AuthoredPose& previous,const AuthoredPose& current,double phase,
                   const AuthoredPose& base,
                   const float in_pos[256],const float in_nrm[96],uint64_t pos_slots,
-                  float out_pos[256],float out_nrm[96]) {
+                  float out_pos[256],float out_nrm[96],bool keep_current_shake) {
   if(!previous.has_view||!current.has_view||!base.has_view||!pos_slots)return false;
   Matrix view_new,unused_carry; bool moved=false;
-  camera_motion(previous,current,phase,view_new,unused_carry,moved);
+  camera_motion(previous,current,phase,view_new,unused_carry,moved,keep_current_shake);
   // The held matrices embed the view of the frame they were taken from, and which frame that is
   // depends on the caller, not on the mode: a paired draw holds the previous frame in Interpolate,
   // but a draw with no pair at all has only the current frame to hold. Inferring it from the mode
@@ -425,6 +456,21 @@ bool camera_sub_frame_carry(const AuthoredPose& previous,const AuthoredPose& cur
   Matrix c_inv;
   if(inverse(c,c_inv)){ std::memcpy(carry_inverse,c_inv.data(),48); has_inverse=true; }
   return true;
+}
+
+// A row blended element by element carries the blend of the two shakes, (1-t)*a + t*b. The camera
+// shows the shake of one frame (shake_at), so the row is moved by the difference, turned into view
+// space by the view's rotation: M*T(-s) = [view translation by R*(blend - s)] * M*T(-blend).
+bool quake_row_correction(const AuthoredPose& previous,const AuthoredPose& current,double phase,float out[3]){
+  if(!previous.has_view||!current.has_view||!(previous.quake||current.quake)) return false;
+  float shown[2]; shake_at(previous,current,phase,shown);
+  const float t=(float)phase;
+  const float dx=previous.quake_shift[0]+t*(current.quake_shift[0]-previous.quake_shift[0])-shown[0];
+  const float dy=previous.quake_shift[1]+t*(current.quake_shift[1]-previous.quake_shift[1])-shown[1];
+  if(dx==0&&dy==0) return false;
+  const auto& v=current.view;
+  for(int r=0;r<3;++r) out[r]=v[r*4+0]*dx+v[r*4+1]*dy;
+  return std::isfinite(out[0])&&std::isfinite(out[1])&&std::isfinite(out[2]);
 }
 
 bool apply_carry(const float carry[12],const float carry_inverse[12],

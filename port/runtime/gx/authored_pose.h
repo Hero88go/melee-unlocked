@@ -41,6 +41,10 @@ struct AuthoredPose {
   bool envelope = false;
   bool has_view = false;               // `view` holds the draw's camera (view) matrix
   bool quake = false;                  // a camera quake was running when the view was captured
+  // The shake in `view`: the game moves the eye and the point it looks at by this world-space
+  // (x, y) offset (game_camera.translation, Camera_8002AF68). Taking it out gives the camera
+  // without the shake, which moves smoothly and is sampled between frames like any other view.
+  std::array<float,2> quake_shift{};
   std::array<float,12> view{};
   std::shared_ptr<const AuthoredPose> chain;   // rigid draws: the joint chain root..joint (shared per joint per frame)
   int right_kind = 0;                  // 0 none, 1 inverse(x.env), 2 inverse(x.world)*m.world, 3 inverse(x.world*x.env)*m.world
@@ -113,7 +117,7 @@ bool sample_authored_envelope(const AuthoredPose& previous, const AuthoredPose& 
 bool carry_camera(const AuthoredPose& previous, const AuthoredPose& current, double phase,
                   const AuthoredPose& base,
                   const float in_pos[256], const float in_nrm[96], uint64_t pos_slots,
-                  float out_pos[256], float out_nrm[96]);
+                  float out_pos[256], float out_nrm[96], bool keep_current_shake = false);
 // The same camera transform built once for a whole presented frame, for the many draws that share
 // it, and its application to one draw's matrices. `carry` takes a CURRENT-frame model-view matrix
 // onto the sub-frame view; false means the view is not moving and the matrices already stand.
@@ -122,4 +126,10 @@ bool camera_sub_frame_carry(const AuthoredPose& previous, const AuthoredPose& cu
 bool apply_carry(const float carry[12], const float carry_inverse[12],
                  const float in_pos[256], const float in_nrm[96], uint64_t pos_slots,
                  float out_pos[256], float out_nrm[96]);
+// During a shake: the view-space translation to add to a model-view row that was blended element by
+// element between the two frames, so its shake matches the one the sampled camera shows (the shake
+// itself steps at 60 Hz, as on a console, while the camera under it moves smoothly). False when no
+// correction is needed.
+bool quake_row_correction(const AuthoredPose& previous, const AuthoredPose& current, double phase,
+                          float out[3]);
 }

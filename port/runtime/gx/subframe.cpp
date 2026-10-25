@@ -759,6 +759,12 @@ bool SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
       if (invert(prev_view, inv_prev)) { camera_step = mul(cur_view, inv_prev); have_camera_step = true; }
       camera_holds = !menus && !have_stage_carry && std::memcmp(prev_view.m, cur_view.m, sizeof prev_view.m) != 0;
     }
+    // During a shake the sampled camera shows one frame's shake under a smoothly moving view; a row
+    // blended element by element would show the blend of two shakes instead and split from the
+    // pieces of the stage drawn through the camera (Yoshi's Story's branches from its foliage).
+    float quake_fix[3] = {0, 0, 0};
+    const bool have_quake_fix = !menus && camera_previous_ && camera_current_ &&
+                                quake_row_correction(*camera_previous_, *camera_current_, t, quake_fix);
     std::vector<uint32_t> checked((size_t)chunks, 0), offs((size_t)chunks, 0);
     std::vector<float> worsts((size_t)chunks, 0.0f);
     std::vector<uint64_t> worst_ids((size_t)chunks, 0);
@@ -827,7 +833,10 @@ bool SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
             }
             // `hold` is this frame's draw (there is no pair), so its matrices embed the current
             // frame's view: that, not the mode, is what the carry has to cancel.
-            if (slots && carry_camera(*camera_previous_, *camera_current_, t, *camera_current_, hold.posMatrices, hold.normalMatrices, slots, o.pos, o.nrm)) ++carried;
+            // A draw with no pose may be the HUD (the timer's digits never pair): it keeps the
+            // current shake, so a shake never moves it; the HUD's own camera never shakes.
+            if (slots && carry_camera(*camera_previous_, *camera_current_, t, *camera_current_, hold.posMatrices, hold.normalMatrices, slots,
+                                      o.pos, o.nrm, !d.authored_pose)) ++carried;
           }
           routes_[i] = 5;
           continue;
@@ -1020,6 +1029,13 @@ bool SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
             if (!std::isfinite(delta) || std::abs(delta) > max_translation) return false;
           }
           for (int k = 0; k < 12; ++k) o.pos[row * 4 + k] = previous_row[k] + (float)t * (current_row[k] - previous_row[k]);
+          // Only a draw seen through the game's camera shakes with it: the HUD has a perspective
+          // camera of its own that never shakes, and correcting the timer by the stage's shake made
+          // it bob between frames.
+          if (have_quake_fix && d.xf_regs[0x26] == 0 && scene_draw &&
+              std::memcmp(previous_row, current_row, 12 * sizeof(float)) != 0 &&   // a row that stood still never shook
+              std::memcmp(&d.xf_regs[0x20], &scene_draw->xf_regs[0x20], 7 * sizeof(uint32_t)) == 0)
+            for (int r = 0; r < 3; ++r) o.pos[row * 4 + r * 4 + 3] += quake_fix[r];
           if (has_normals) {
             const float* pn = &prev_nrm[row * 3];
             const float* cn = &d.normalMatrices[row * 3];

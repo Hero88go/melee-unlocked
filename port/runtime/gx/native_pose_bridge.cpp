@@ -150,6 +150,8 @@ std::shared_ptr<const AuthoredPose> copy_native_pose_snapshot(
   auto pose = std::make_shared<AuthoredPose>();
   pose->has_view = snapshot.has_view != 0;
   pose->quake = snapshot.quake != 0;
+  if (pose->quake && finite_values(snapshot.quake_shift, 2))
+    pose->quake_shift = {snapshot.quake_shift[0], snapshot.quake_shift[1]};
   if (pose->has_view)
     std::memcpy(pose->view.data(), snapshot.view, sizeof(snapshot.view));
 
@@ -206,6 +208,8 @@ std::shared_ptr<const AuthoredPose> copy_native_envelope_snapshot(
   pose->envelope = true;
   pose->has_view = true;
   pose->quake = snapshot.quake != 0;
+  if (pose->quake && finite_values(snapshot.quake_shift, 2))
+    pose->quake_shift = {snapshot.quake_shift[0], snapshot.quake_shift[1]};
   std::memcpy(pose->view.data(), snapshot.view, sizeof(snapshot.view));
   pose->right_kind = static_cast<int>(snapshot.right_kind);
   if (pose->right_kind != 0) {

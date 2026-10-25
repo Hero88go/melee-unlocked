@@ -124,6 +124,11 @@ typedef struct MuNativePoseSnapshot {
     const MuNativePoseU32* links;
     const MuNativePoseBone* bones;
     const MuNativePoseSlot* slots;
+
+    /* Every kind, while `quake` is set: the world (x, y) offset the camera shake added to the eye
+     * and its target in `view` (game_camera.translation), so the camera under the shake can be
+     * sampled between frames. Zero otherwise. */
+    float quake_shift[2];
 } MuNativePoseSnapshot;
 
 #endif
