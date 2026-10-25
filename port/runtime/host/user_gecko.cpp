@@ -9,6 +9,7 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -484,6 +485,16 @@ void classify(Code& c) {
   c.plan_bytes.clear();
   c.reads = false;
   if (c.lines.empty()) { c.reason = "has no code lines"; return; }
+  // Slippi's own required codes ("Required: General Codes", "Required: Slippi Recording",
+  // "Required: Slippi Online", copied from Slippi Dolphin's list). Melee Unlocked already runs
+  // them from its Sys folder; a second copy as a user code reserved its own memory, and entering
+  // online then stopped the game at lbmemory.c:128 in a player's report.
+  static const char kRequired[] = "required:";
+  if (c.name.size() >= 9 && std::equal(kRequired, kRequired + 9, c.name.begin(),
+                                       [](char a, char b) { return a == (char)std::tolower((unsigned char)b); })) {
+    c.reason = "is one of Slippi's required codes, which Melee Unlocked already runs";
+    return;
+  }
   // Slippi's Normal Lag Reduction (two branches over the retrace wait in VI code, 803761EC and
   // 80376238). Melee Unlocked times the frame and the retrace itself (host.cpp), and with the code on
   // as well the game played worse in a player's report, so it is refused on both engines.

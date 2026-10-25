@@ -567,6 +567,19 @@ void test_built_in() {
   CHECK(label("hook", {{0xC2100020u, 1u}, {0x38600001u, 0u}}) == "Switch");
 }
 
+// Slippi's own required codes are refused by name: Melee Unlocked already runs them.
+void test_slippi_required() {
+  fresh();
+  for (const char* name : {"Required: Slippi Online", "required: General Codes", "Required: Slippi Recording"}) {
+    Code c; c.name = name; c.lines = {{0x00400030u, 0x000000ABu}};
+    classify(c);
+    CHECK(!c.supported && c.reason == "is one of Slippi's required codes, which Melee Unlocked already runs");
+  }
+  Code ok; ok.name = "Recommended: Lagless FoD"; ok.lines = {{0x00400030u, 0x000000ABu}};
+  classify(ok);
+  CHECK(ok.supported);
+}
+
 int run_all() {
   set_code_patches_allowed(false);   // the Source Port
   set_native_writer(fake_write);
@@ -578,6 +591,7 @@ int run_all() {
   test_refused();
   test_codes_and_library();
   test_built_in();
+  test_slippi_required();
   // A vanilla listing suspends execution without changing the saved enabled code.
   fresh();
   codes().push_back(compiled({{0x00400030u, 0x00000011u}}));
