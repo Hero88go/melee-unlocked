@@ -1941,7 +1941,10 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
     // pipeline, so a new matchup costs a short display hitch instead of black or missing surfaces.
     // A fallback captured into an EFB texture lasts for the whole scene. Portrait
     // depth must also use the exact shader: the generic fallback has no Z texture.
-    const bool exact = capturing_efb_ || (dc.bp.ztex2() & 12);
+    // In a match the screen copies are redrawn every frame (stage screens, effects), so a stand-in
+    // there lasts a frame or two; waiting for each new pipeline instead stopped the frame for its
+    // whole compile, the first time an effect showed (players saw a hitch on new effects).
+    const bool exact = (capturing_efb_ && !in_match_) || (dc.bp.ztex2() & 12);
     while (pso_wait_budget_us_ > 0 || exact) {
       Stopwatch wait_sw;
       {
