@@ -97,5 +97,8 @@ bool native_start_match(int mode, const std::string& connect_code, uint8_t chara
                         uint8_t color, std::string* error);
 NativeMatchPoll native_poll_match();
 void native_cleanup_match();
+// The character (and costume) the local player has picked on the online character select, false
+// when none is picked yet.
+bool local_css_selection(uint8_t* character, uint8_t* color);
 
 }  // namespace slippi::online

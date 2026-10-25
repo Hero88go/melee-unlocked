@@ -1451,6 +1451,13 @@ void native_cleanup_match() {
   cleanup_connection();
 }
 
+bool local_css_selection(uint8_t* character, uint8_t* color) {
+  if (!g_local_selections.is_character_selected || g_local_selections.character_id >= 26) return false;
+  if (character) *character = g_local_selections.character_id;
+  if (color) *color = g_local_selections.character_color;
+  return true;
+}
+
 void init() {
   // Authentication uses shared read-only discovery in User. Mutable code history and reports
   // always stay in the configured local profile, including after a Log In rediscovery.

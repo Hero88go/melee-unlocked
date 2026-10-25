@@ -70,6 +70,9 @@ constexpr uint32_t kReturnTimeoutTicks = 600;   // ten seconds of frames
 uint32_t g_return_wait_ticks = 0;   // since the return was asked for, whatever scene the game is in
 uint8_t g_origin_major = 1;
 bool g_restore_training = false;
+// L+R on the online character select: the search waits for the Training match, then starts.
+MatchMode g_auto_search = MatchMode::None;
+uint32_t g_auto_ticks = 0;
 Phase g_logged_phase = Phase::Idle;
 bool g_lobby_started = false;
 uint32_t g_lobby_boot_ticks = 0;
@@ -459,6 +462,67 @@ void tick() {
       }
     }
   }
+  // L+R held on Slippi's online character select in Unranked (not with A or Start, so L+R+A+Start
+  // still resets): go to Training to warm up, and the Unranked search starts again by itself once
+  // the Training match is running. A third of a second of holding, so brushing both triggers does
+  // nothing. Leaving Training for anywhere else first drops the pending search.
+  {
+    static uint32_t lr_ticks = 0;
+    bool lr = false;
+    static int lr_port = 0;
+    if (g_lifecycle.phase() == Phase::Idle && g_auto_search == MatchMode::None && is_online_scene() &&
+        current_minor() == 0 && online_mode() == (uint8_t)MatchMode::Unranked &&
+        !slippi::playback::enabled() && !slippi::online::is_online_match()) {
+      host::PadState pads[4];
+      host::input_last_pads(pads);
+      for (int port = 0; port < 4; ++port)
+        if ((pads[port].button & 0x0060u) == 0x0060u && !(pads[port].button & (0x0100u | 0x1000u))) { lr = true; lr_port = port; }
+    }
+    lr_ticks = lr ? lr_ticks + 1 : 0;
+    if (lr_ticks == 20) {
+      uint8_t character = 0, costume = 0;
+      bool picked = slippi::online::local_css_selection(&character, &costume);
+      if (!picked) {   // the character select writes the pick into the match's player slots as it is made
+        const PracticeConfig css = capture_practice();
+        const SavedPlayer& p = css.players[css.local_slot];
+        host::log("native practice: character select slot %d: state %u character %u costume %u",
+                  css.local_slot, p.state, p.character, p.costume);
+        if (css.valid && p.character < 26) { character = (uint8_t)p.character; costume = p.costume; picked = true; }
+      }
+      slippi::online::native_cleanup_match();   // the character select's own search, if one runs
+      if (picked) {
+        g_practice = {};
+        g_practice.valid = true;
+        g_practice.local_slot = 0;
+        g_practice.controller_port = lr_port;
+        g_practice.players[0].active = true;
+        g_practice.players[0].character = character;
+        g_practice.players[0].costume = costume;
+        write_event_backup();
+      }
+      g_auto_search = MatchMode::Unranked;
+      g_auto_ticks = 0;
+      request_major(kTrainingMajor);
+      host::log("native practice: L+R on the online character select; Training, then Unranked search%s",
+                picked ? "" : " (no character picked yet)");
+    }
+  }
+  if (g_auto_search != MatchMode::None) {
+    if (g_lifecycle.phase() != Phase::Idle) {
+      g_auto_search = MatchMode::None;
+    } else if (is_offline_gameplay()) {
+      if (++g_auto_ticks >= 30) {
+        const MatchMode mode = g_auto_search;
+        g_auto_search = MatchMode::None;
+        host::log("native practice: Training match running; starting the %s search", match_mode_name(mode));
+        start_search(mode, "");
+      }
+    } else if (!is_training() && !is_online_scene()) {
+      host::log("native practice: left Training before its match; the pending search is dropped");
+      g_auto_search = MatchMode::None;
+    }
+  }
+
   std::deque<Command> commands;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
