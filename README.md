@@ -74,6 +74,9 @@ are included with Melee Unlocked.
 
 - Unlocked frame rate (monitor rate, a fixed cap, or fully unlocked) with sub-frame animation
 - Slippi online against regular Slippi Dolphin players, using your Slippi Launcher login
+- Subframe rollback (early inputs) between Melee Unlocked players: button presses and stick moves
+  are sent the moment they happen, between frames, so the other game predicts them sooner. Based on
+  Arte's subframe rollback work (see Credits)
 - GameCube adapter (WUP-028 with the WinUSB driver), keyboard fallback
 - DLSS / DLAA (NVIDIA Streamline), internal resolution up to 8x, SSAA, anisotropic filtering,
   sharpening, borderless fullscreen, VSync
@@ -288,3 +291,5 @@ Nintendo and HAL Laboratory; this project contains none of its data.
 Hero88go - developer 
 
 Johnny Brookes Aka Lainthewired for their major contribution of the last graphic error fix that took this project from alpha -> beta. Could not have done it without them 
+
+Arte for subframe rollback: the idea and the original implementation of sending inputs between frames so the other game can predict and roll back sooner. Melee Unlocked's early inputs, early rollback and the check against faked early inputs are adapted from that work, and the exclusive audio timing draws on Arte's audio research.
