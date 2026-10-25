@@ -142,6 +142,17 @@ int main() {
     CHECK(t.ok && t.items == 0);
     CHECK((t.stages == std::vector<uint16_t>{0x3, 0x8, 0x1C, 0x1F, 0x20, 0x2}));
   }
+  {   // the Unranked block list: an opponent's code, ignoring case and spaces; never the local player, never other modes
+    using M = slippi::Matchmaking;
+    std::vector<slippi::UserInfo> players(2);
+    players[0].connect_code = "ME#1"; players[1].connect_code = "ABC#123";
+    CHECK(M::IsBlockedMatch(M::UNRANKED, {"abc#123"}, players, 0));
+    CHECK(M::IsBlockedMatch(M::UNRANKED, {" ABC #123 "}, players, 0));
+    CHECK(!M::IsBlockedMatch(M::UNRANKED, {"ME#1"}, players, 0));
+    CHECK(!M::IsBlockedMatch(M::DIRECT, {"ABC#123"}, players, 0));
+    CHECK(!M::IsBlockedMatch(M::UNRANKED, {"", "XYZ#9"}, players, 0));
+    CHECK(!M::IsBlockedMatch(M::UNRANKED, {}, players, 0));
+  }
   std::printf("slippi ticket test passed\n");
   return 0;
 }
