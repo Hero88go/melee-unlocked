@@ -3692,7 +3692,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     practice_card_title(title, true);
     ImGui::TextDisabled("%s", matchmaking_state_text(practice.matchmaking_state));
     if (!practice.opponent.empty()) ImGui::TextDisabled("vs %s", practice.opponent.c_str());
-    ImGui::TextDisabled("Keep practicing. Tab: search controls");
+    ImGui::TextDisabled("Keep practicing. Tab or START + UP + Z: search controls");
     practice_card_end();
   }
 
@@ -3700,7 +3700,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     if (options.matchmaking_hint && practice.tab_available && practice.phase == Phase::Idle) {
       ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetTime() < 20.0 ? 1.0f : 0.5f);
       practice_card_begin("##native_practice_hint", ImVec2(screen.x - 12, 52), ImVec2(1, 0), false);
-      practice_card_title("Practice while you queue: Tab", false);
+      practice_card_title("Practice panel: Tab  /  START + UP + Z", false);
       practice_card_end();
       ImGui::PopStyleVar();
     }
@@ -3713,6 +3713,16 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     const bool lr = have_pad && (pad.button & 0x60) != 0;
     if (lr && !g_lr_was_down) g_tab_request = (g_tab + ((pad.button & 0x20) ? 1 : kTabCount - 1)) % kTabCount;
     g_lr_was_down = lr;
+    // Start on the controller closes the panel (after the press that opened it has been let go).
+    static bool start_was_down = true;
+    const bool start = have_pad && (pad.button & 0x1000) != 0;
+    if (start && !start_was_down && state.practice_pad_armed) {
+      state.practice_open = false;
+      state.practice_release_capture = true;
+      start_was_down = true;
+      return;
+    }
+    start_was_down = start;
   }
   const ImVec2 size(std::min(660.0f, screen.x - 40.0f), std::min(620.0f, screen.y - 40.0f));
   ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -3755,7 +3765,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     }
     draw->AddText(ImVec2(p0.x + 18.0f, p0.y + 5.0f), IM_COL32(245, 240, 248, 255), pill);
     ImGui::Dummy(ImVec2(0, 34));
-    ImGui::TextDisabled("Tab or Esc: back to the game      L / R: change page");
+    ImGui::TextDisabled("Tab, Esc or START: back to the game      L / R: change page      A: change      B: back");
   }
   if (ImGui::BeginTabBar("##practice_tabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
     for (int i = 0; i < kTabCount; ++i) {
@@ -4539,6 +4549,28 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       practice_ui::g_tab_request = test_page;
       test_page = -1;
       state.practice_open = true;
+    }
+    // Video tooling (MELEE_TEST_PRACTICE_TOUR=<frame>,<frames per page>): the panel opens at that
+    // frame, shows every page in turn and closes again.
+    static int tour_start = -1, tour_step = 0, tour_page = -1;
+    static bool tour_parsed = false;
+    if (!tour_parsed) {
+      tour_parsed = true;
+      if (const char* v = std::getenv("MELEE_TEST_PRACTICE_TOUR")) std::sscanf(v, "%d,%d", &tour_start, &tour_step);
+    }
+    if (tour_start >= 0 && tour_step > 0 && host::retrace_count() >= (uint32_t)tour_start) {
+      const int page = (int)((host::retrace_count() - (uint32_t)tour_start) / (uint32_t)tour_step);
+      if (page != tour_page) {
+        tour_page = page;
+        if (page < practice_ui::kTabCount) {
+          practice_ui::g_tab_request = (page + 1) % practice_ui::kTabCount;   // CPU first, Queue last
+          state.practice_open = true;
+        } else {
+          state.practice_open = false;
+          state.practice_release_capture = true;
+          tour_start = -1;
+        }
+      }
     }
   }
   if (tab_pressed && !state.open && !state.menu_open && !state.fill_window && practice.tab_available &&

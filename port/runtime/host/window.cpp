@@ -54,6 +54,7 @@ PadState g_ui_pads[4]{};
 bool g_ui_has_pad = false;
 bool g_ui_gamecube = false;
 bool g_ui_settings_chord_held[4]{};
+bool g_ui_practice_chord_held[4]{};
 #ifdef _WIN32
 void raw_input(HRAWINPUT raw);
 #else
@@ -1276,6 +1277,8 @@ void input_poll(PadState out[4]) {
                                             g_ui_settings_chord_held[i]);
         toggle_settings |= opened_here;
         if (opened_here) g_settings_controller_port.store(i, std::memory_order_release);
+        if (settings_shortcut::poll_practice(pads[i].err == 0, pads[i].button, g_ui_practice_chord_held[i]))
+          g_practice_toggle.store(true, std::memory_order_release);   // same as Tab
       }
       if (toggle_settings) g_settings_toggle.store(true, std::memory_order_release);
       g_ui_pad = pads[0];
