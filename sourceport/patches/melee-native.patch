@@ -168465,7 +168465,7 @@ index db7f79319..790ef73eb 100644
              tail = &(*tail)->next;
          }
 diff --git a/src/melee/lb/lbaudio_ax.c b/src/melee/lb/lbaudio_ax.c
-index 0854fb240..eadb9d1ce 100644
+index 0854fb240..78b99bcc7 100644
 --- a/src/melee/lb/lbaudio_ax.c
 +++ b/src/melee/lb/lbaudio_ax.c
 @@ -27,9 +27,12 @@
@@ -169110,7 +169110,7 @@ index 0854fb240..eadb9d1ce 100644
          if (s32_arr_803BB5D0[i][1] != 5 && lbl_804337C4[i] != -1) {
              count++;
          }
-@@ -1808,13 +1939,25 @@ void lbAudioAx_80027168(void)
+@@ -1808,17 +1939,64 @@ void lbAudioAx_80027168(void)
  
      fn_800269AC();
  
@@ -169134,10 +169134,49 @@ index 0854fb240..eadb9d1ce 100644
 +        fn_800267B0();
 +    }
 +#endif
++#if defined(MU_NATIVE)
++    {
++        /* Test switch: MELEE_TEST_SOUND_ROOM=<bytes> takes that much from the sound bank room,
++         * to reach the case below on the plain disc. */
++        extern char* getenv(const char* name);
++        const char* test_room = getenv("MELEE_TEST_SOUND_ROOM");
++        if (test_room != NULL) {
++            int take = 0;
++            while (*test_room >= '0' && *test_room <= '9') {
++                take = take * 10 + (*test_room++ - '0');
++            }
++            if (take > 0 && lbl_804D6438 > take) {
++                lbl_804D6438 -= take;
++            }
++        }
++    }
++    /* Still no room (a disc mod whose own code makes room for more sound banks: the Source
++     * Port does not run it). Banks still waiting to load give way, newest first, so the match
++     * starts with those sounds missing instead of stopping. Sound is not part of the match
++     * state, so both sides of an online match still play the same game. */
++    for (i = LB_SSM_N - 1; i >= 0 && lbl_804D6438 < lbl_804D6448 + lbl_804D6450; i--) {
++        if (s32_arr_803BB5D0[i][1] != 5 && lbl_804338A4[i] != -1 && lbl_80433984[i] == -1) {
++            OSReport("sound: no room for sound bank %d in this match; skipped\n", i);
++            lbl_804337C4[i] = -1;
++            lbl_804338A4[i] = -1;
++            fn_800268B4();
++            fn_800267B0();
++        }
++    }
++#endif
      if (lbl_804D6438 < lbl_804D6448 + lbl_804D6450) {
          OSReport("******** CAUTION ********\n"
                   "FGM load size is over\n");
-@@ -1828,13 +1971,13 @@ static int fn_80027488(void)
++#if defined(MU_NATIVE)
++        /* Every bank still waiting has given way above; what is left is already loaded, so
++         * the match goes on with the sounds it has. */
++#else
+         HSD_ASSERT(0xDB3, 0);
++#endif
+     }
+ 
+     lbAudioAx_80027168_inline_2();
+@@ -1828,13 +2006,13 @@ static int fn_80027488(void)
  {
      int i;
  
@@ -169153,7 +169192,7 @@ index 0854fb240..eadb9d1ce 100644
          if (lbl_804338A4[i] == 1 && lbl_80433984[i] == 1) {
              lbl_80433984[i] = 2;
          }
-@@ -1850,12 +1993,151 @@ void lbAudioAx_80027648(void)
+@@ -1850,12 +2028,151 @@ void lbAudioAx_80027648(void)
      }
  }
  
@@ -169305,7 +169344,7 @@ index 0854fb240..eadb9d1ce 100644
      if (gm_8016B184()) {
          result = lbAudioAx_80026E84(Player_GetPlayerCharacter(0));
          for (i = 0; i < 3; i++) {
-@@ -1883,15 +2165,79 @@ void lbAudioAx_8002785C(void)
+@@ -1883,15 +2200,79 @@ void lbAudioAx_8002785C(void)
          result |= 0xC00;
      }
  
@@ -169385,7 +169424,7 @@ index 0854fb240..eadb9d1ce 100644
  }
  
  static char str_audio_us[0xC] = "/audio/us/";
-@@ -1929,7 +2275,7 @@ void lbAudioAx_80027AB0(int id)
+@@ -1929,7 +2310,7 @@ void lbAudioAx_80027AB0(int id)
  
          {
              int i;
@@ -169394,7 +169433,7 @@ index 0854fb240..eadb9d1ce 100644
                  if (i != 0) {
                      lbl_80433A64[i] = -1;
                      lbl_804337C4[i] = -1;
-@@ -2013,7 +2359,7 @@ void lbAudioAx_80027DF8(void)
+@@ -2013,7 +2394,7 @@ void lbAudioAx_80027DF8(void)
  
      if (lbl_804D6420 != 0) {
          if (lbl_804D38F0 != -1) {
@@ -169403,7 +169442,7 @@ index 0854fb240..eadb9d1ce 100644
                  lbl_804D38F0 = fn_80023750(0x84, lbl_804D6428, PAN_MID, 5, 4);
              } else {
                  lbAudioAx_80024B58(lbl_804D38F0, lbl_804D6428);
-@@ -2036,7 +2382,7 @@ void lbAudioAx_80027DF8(void)
+@@ -2036,7 +2417,7 @@ void lbAudioAx_80027DF8(void)
  
      if (lbl_804D6424 != 0) {
          if (lbl_804D38F4 != -1) {
@@ -169412,7 +169451,7 @@ index 0854fb240..eadb9d1ce 100644
                  lbl_804D38F4 = fn_80023750(0x85, lbl_804D642C, PAN_MID, 6, 4);
              } else {
                  lbAudioAx_80024B58(lbl_804D38F4, lbl_804D642C);
-@@ -2087,6 +2433,13 @@ void lbAudioAx_8002835C(void)
+@@ -2087,6 +2468,13 @@ void lbAudioAx_8002835C(void)
      HSD_ObjAllocInit(&lbl_80433710, sizeof(lbAudioAx_UserData), 4);
  }
  
@@ -169426,7 +169465,7 @@ index 0854fb240..eadb9d1ce 100644
  void lbAudioAx_8002838C(void)
  {
      static u32 ar_stack[0x10];
-@@ -2119,28 +2472,33 @@ void lbAudioAx_8002838C(void)
+@@ -2119,28 +2507,33 @@ void lbAudioAx_8002838C(void)
      lbl_804D6438 = lbl_804D643C + lbl_804D6440 + lbl_804D6444;
      lbl_804D3870 = lbl_804D6438;
  
@@ -169466,7 +169505,7 @@ index 0854fb240..eadb9d1ce 100644
          lbl_804337C4[i] = -1;
          lbl_804338A4[i] = -1;
          lbl_80433984[i] = -1;
-@@ -2185,7 +2543,7 @@ void lbAudioAx_80028690(void)
+@@ -2185,7 +2578,7 @@ void lbAudioAx_80028690(void)
          strcpy(&cur_ssm_file[ssm_stem_pos], "smash2.sem");
          AXDriver_8038DA70(cur_ssm_file, lb_800195D0);
  
@@ -169475,7 +169514,7 @@ index 0854fb240..eadb9d1ce 100644
              if (i != 0) {
                  lbl_80433A64[i] = -1;
                  lbl_804337C4[i] = -1;
-@@ -2274,3 +2632,30 @@ void lbAudioAx_80028B90(void)
+@@ -2274,3 +2667,30 @@ void lbAudioAx_80028B90(void)
  {
      lbl_804D38CC = 0x7F;
  }
