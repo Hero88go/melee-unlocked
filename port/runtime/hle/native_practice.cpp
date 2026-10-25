@@ -103,7 +103,13 @@ bool is_online_scene() { return current_major() == kOnlineMajor; }
 // Any offline match where the player already picked a character: VS, Training, single player,
 // events. The handoff then goes through Slippi's online character select.
 bool is_offline_gameplay() {
-  return is_offline_gameplay_scene(current_major(), current_minor());
+  if (!is_offline_gameplay_scene(current_major(), current_minor())) return false;
+  // Source Port: a match found while searching from a VS match stopped both players' games as
+  // the online character select opened (mncharsel.c, its KO-star setup reads the VS match's data;
+  // 0.9.56 too). Training and events hand off cleanly, so the search starts there only. The
+  // Static Recomp hands off from VS matches without trouble and keeps them.
+  if (g_bridge && current_major() != kTrainingMajor && current_major() != 0x2B) return false;
+  return true;
 }
 
 PracticeConfig capture_practice() {

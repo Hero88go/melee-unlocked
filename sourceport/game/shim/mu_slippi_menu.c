@@ -822,6 +822,18 @@ static void splash_prep(GameModeState* state)
     }
     d[0x0B] = (u8) left;
     d[0x0C] = (u8) right;
+    /* A side with no player keeps the layout's 0xFF in its first place, and a player whose
+     * character is unset reads as -1: the splash built a fighter of kind -1 for it and stopped the
+     * game (a player's 0.9.56 report, 136,000 frames into an online session). Anything that is not a
+     * character is an empty place (0x21), which the splash skips. */
+    for (i = 0; i < 3; i++) {
+        if (d[0x0D + i] > 0x21 || d[0x10 + i] > 0x21) {
+            OSReport("online splash: place %d holds no character (%d, %d); left empty\n", i,
+                     (int) d[0x0D + i], (int) d[0x10 + i]);
+        }
+        if (d[0x0D + i] > 0x21) d[0x0D + i] = 0x21;
+        if (d[0x10 + i] > 0x21) d[0x10 + i] = 0x21;
+    }
 
     /* Preload the fighters (p3/p4 only when the negotiated slot is used) and the stage. */
     cache = lbDvd_GetPreloadCacheScene();
