@@ -2476,7 +2476,7 @@ static double g_sim_costs_window[SIM_COST_COUNT];   // accumulated over the 60-f
 static double g_sim_ms_window = 0, g_sim_ms_worst = 0;
 static ULONG64 g_slow_frame_cycles = 0;   // this thread's cycle count at the start of the frame, for the slow-frame line
 static const char* const g_sim_cost_names[SIM_COST_COUNT] = {"disc", "ax", "jukebox", "exi", "texsnap", "queue", "observe", "record", "gxdecode", "input", "wait", "late"};   // record includes texsnap and observe; gxdecode includes record and queue
-static double g_sim_frame_start = 0.0, g_last_sim_ms = 0.0;
+static double g_sim_frame_start = 0.0, g_last_sim_ms = 0.0, g_last_sim_work_ms = 0.0;
 static ULONG64 g_sim_frame_start_cycles = 0;   // this thread's cycle count at g_sim_frame_start (MELEE_SIM_TIMES)
 void sim_cost_add(int slot, double seconds) { if (slot >= 0 && slot < SIM_COST_COUNT) { g_sim_costs[slot] += seconds; g_sim_costs_window[slot] += seconds; } }
 // "sim: 3.1 ms/frame (worst 12.4) | observe 0.9 texsnap 0.4" for the periodic frame log.
@@ -2505,6 +2505,7 @@ static std::string sim_cost_line(uint32_t frames) {
   return buf;
 }
 double last_sim_frame_ms() { return g_last_sim_ms; }
+double last_sim_frame_work_ms() { return g_last_sim_work_ms; }
 
 // MELEE_TEST_EARLY_RNG_SEED="<seed>@<retrace>" (M4 diagnostic, off by default): the recompiled
 // game's seed is written through HSD_RandSeedPtr at the start of that retrace, before the VI
@@ -2717,6 +2718,7 @@ void retrace() {
     double now = now_seconds();
     if (g_sim_frame_start > 0.0) {
       g_last_sim_ms = (now - g_sim_frame_start) * 1000.0;
+      g_last_sim_work_ms = g_last_sim_ms - g_sim_costs[SIM_WAIT] * 1000.0;
       g_sim_ms_window += g_last_sim_ms;
       if (g_last_sim_ms > g_sim_ms_worst) g_sim_ms_worst = g_last_sim_ms;
       if (g_last_sim_ms > 20.0) {

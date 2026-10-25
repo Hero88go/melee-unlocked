@@ -92,7 +92,9 @@ bool g_cursor_visible = true;
 // Wayland kept seeing the pointer over the game).
 bool g_cursor_reapply = false;
 void show_cursor(bool visible) {
-  if (visible == g_cursor_visible && !g_cursor_reapply) return;
+  // Also compare with SDL's own state: anything else that shows the pointer is undone here.
+  if (visible == g_cursor_visible && !g_cursor_reapply &&
+      (SDL_ShowCursor(SDL_QUERY) == SDL_ENABLE) == visible) return;
   g_cursor_visible = visible;
   g_cursor_reapply = false;
   SDL_ShowCursor(visible ? SDL_ENABLE : SDL_DISABLE);

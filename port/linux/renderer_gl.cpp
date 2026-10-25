@@ -20,7 +20,13 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
+#include <atomic>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
+#include <thread>
 #include <cerrno>
 #include <chrono>
 #include <fcntl.h>
@@ -72,6 +78,22 @@ void run_tool(std::vector<std::string> args, const std::filesystem::path& log) {
   }
   if (!WIFEXITED(status) || WEXITSTATUS(status))
     throw std::runtime_error(args[0] + " failed:\n" + read_text(log));
+}
+// HLSL to GLSL through the shader tools (glslangValidator, SPIRV-Cross): two process runs, tens of
+// milliseconds or more. The result lands in `output` (the disk cache). Any thread.
+void translate_shader(GLenum stage, const std::string& source, const std::filesystem::path& prefix,
+                      const std::filesystem::path& output) {
+  const std::string input = prefix.string() + ".hlsl", spv = prefix.string() + ".spv", translated = prefix.string() + ".glsl";
+  const std::filesystem::path log = prefix.string() + ".log";
+  write_text(input, source);
+  run_tool({"glslangValidator", "-D", "-V", "--auto-map-locations", "--auto-map-bindings", "--hlsl-iomap", "-e", "main", "-S", stage == GL_VERTEX_SHADER ? "vert" : "frag", "-o", spv, input}, log);
+  std::vector<std::string> args{"spirv-cross", spv, "--version", "450", "--no-es", "--output", translated};
+  if (stage == GL_VERTEX_SHADER) args.push_back("--fixup-clipspace");
+  run_tool(std::move(args), log);
+  if (read_text(translated).empty()) throw std::runtime_error("SPIRV-Cross produced an empty shader");
+  std::filesystem::rename(translated, output);
+  std::error_code ec;
+  std::filesystem::remove(input, ec); std::filesystem::remove(spv, ec); std::filesystem::remove(log, ec);
 }
 GLuint compile_gl(GLenum stage, const std::string& source) {
   GLuint shader = glCreateShader(stage);
@@ -178,6 +200,7 @@ void main() {
     prewarm();
   }
   ~Renderer() override {
+    stop_translators();
     if (!context_) return;
     save_recipes();
     for (auto& p : programs_) glDeleteProgram(p.second);
@@ -334,8 +357,6 @@ void main() {
     std::string glsl = read_text(output);
     if (glsl.empty()) {
       const auto prefix = cache_ / (name.str() + "." + std::to_string(getpid()));
-      const std::string input = prefix.string() + ".hlsl", spv = prefix.string() + ".spv", translated = prefix.string() + ".glsl";
-      const std::filesystem::path log = prefix.string() + ".log";
       std::string source = hlsl;
       if (stage == GL_FRAGMENT_SHADER) {
         // Every index is constant in the GX generator. Name each resource
@@ -356,15 +377,26 @@ void main() {
         const auto at = source.find("int2 ditherindex");
         if (at != std::string::npos) source.insert(at, "rawpos.y = " + std::to_string(height_) + ".0 - rawpos.y;\n");
       }
-      write_text(input, source);
-      run_tool({"glslangValidator", "-D", "-V", "--auto-map-locations", "--auto-map-bindings", "--hlsl-iomap", "-e", "main", "-S", stage == GL_VERTEX_SHADER ? "vert" : "frag", "-o", spv, input}, log);
-      std::vector<std::string> args{"spirv-cross", spv, "--version", "450", "--no-es", "--output", translated};
-      if (stage == GL_VERTEX_SHADER) args.push_back("--fixup-clipspace");
-      run_tool(std::move(args), log);
-      glsl = read_text(translated);
-      if (glsl.empty()) throw std::runtime_error("SPIRV-Cross produced an empty shader");
-      std::filesystem::rename(translated, output);
-      std::filesystem::remove(input); std::filesystem::remove(spv); std::filesystem::remove(log);
+      // During play the translation runs on a worker and this shader is "not ready" (0) until the
+      // file appears: the draws that need it are skipped for those few frames instead of the whole
+      // frame stopping (a first-time effect stuttered every Linux player until it was cached).
+      // Startup prewarming waits as before, and a translation that failed in the background is
+      // tried here once more so its error is reported the same way.
+      bool failed_before = false;
+      {
+        std::lock_guard<std::mutex> lock(translate_mutex_);
+        failed_before = translate_failed_.count(key) != 0;
+        if (!prewarming_ && !failed_before) {
+          if (translate_pending_.insert(key).second) {
+            translate_jobs_.push_back({key, stage, std::move(source), prefix, output});
+            translate_cv_.notify_one();
+            start_translators();
+          }
+          return 0;
+        }
+      }
+      translate_shader(stage, source, prefix, output);
+      glsl = read_text(output);
     }
     GLuint compiled = compile_gl(stage, glsl); shaders_.emplace(key, compiled); return compiled;
   }
@@ -376,7 +408,10 @@ void main() {
     const auto binary = cache_ / name.str();
     GLuint p = binaries_ ? load_binary(binary) : 0;
     if (!p) {
-      p = link_gl(shader(GL_VERTEX_SHADER, gx::generate_vertex_shader(vs)), shader(GL_FRAGMENT_SHADER, gx::generate_pixel_shader(ps)), binaries_);
+      const GLuint vsh = shader(GL_VERTEX_SHADER, gx::generate_vertex_shader(vs));
+      const GLuint psh = shader(GL_FRAGMENT_SHADER, gx::generate_pixel_shader(ps));
+      if (!vsh || !psh) return 0;   // still being translated in the background
+      p = link_gl(vsh, psh, binaries_);
       if (binaries_) save_binary(p, binary);
     }
     if (recipes_.size() < RECIPE_LIMIT) {
@@ -458,7 +493,9 @@ void main() {
   }
   void draw(const gx::Frame& frame, const gx::DrawCall& dc, const gx::DrawMatrices* matrices, size_t vertex_override) {
     if (gx::skip_for_effects(effects_filter_, dc)) return;
-    GLuint p = program(dc); glUseProgram(p); attributes(p); glBindFramebuffer(GL_FRAMEBUFFER, efb_);
+    GLuint p = program(dc);
+    if (!p) { ++waiting_draws_; return; }   // its shader is still being translated (see shader())
+    glUseProgram(p); attributes(p); glBindFramebuffer(GL_FRAMEBUFFER, efb_);
     const float* vp = reinterpret_cast<const float*>(&dc.xf_regs[0x1A]);
     float x = (vp[3] - vp[0] - 342) * scale_, y = (vp[4] + vp[1] - 342) * scale_;
     float w = vp[0] * 2 * scale_, h = -vp[1] * 2 * scale_;
@@ -590,6 +627,47 @@ void main() {
   std::unordered_map<ProgramKey, GLuint, KeyHash> programs_;
   std::vector<ProgramRecipe> recipes_; size_t saved_recipes_ = 0; bool binaries_ = false, prewarming_ = false;
   std::unordered_map<uint64_t, GLuint> shaders_, samplers_;
+  // Background shader translation (shader()). Workers only run the tools and write files; every GL
+  // call stays on the render thread.
+  struct TranslateJob { uint64_t key; GLenum stage; std::string source; std::filesystem::path prefix, output; };
+  std::mutex translate_mutex_;
+  std::condition_variable translate_cv_;
+  std::deque<TranslateJob> translate_jobs_;
+  std::unordered_set<uint64_t> translate_pending_, translate_failed_;
+  std::vector<std::thread> translators_;
+  bool translate_quit_ = false;
+  std::atomic<uint64_t> waiting_draws_{0}; uint64_t translated_ = 0;
+  void start_translators() {   // translate_mutex_ held
+    if (!translators_.empty()) return;
+    const unsigned n = std::clamp(std::thread::hardware_concurrency() / 4, 1u, 3u);
+    for (unsigned i = 0; i < n; ++i) translators_.emplace_back([this] { translate_worker(); });
+  }
+  void translate_worker() {
+    for (;;) {
+      TranslateJob job;
+      {
+        std::unique_lock<std::mutex> lock(translate_mutex_);
+        translate_cv_.wait(lock, [&] { return translate_quit_ || !translate_jobs_.empty(); });
+        if (translate_quit_) return;
+        job = std::move(translate_jobs_.front()); translate_jobs_.pop_front();
+      }
+      bool ok = true;
+      try { translate_shader(job.stage, job.source, job.prefix, job.output); }
+      catch (const std::exception& e) { ok = false; std::fprintf(stderr, "opengl: background shader translation failed: %s\n", e.what()); }
+      std::lock_guard<std::mutex> lock(translate_mutex_);
+      translate_pending_.erase(job.key);
+      if (!ok) translate_failed_.insert(job.key);
+      else if ((++translated_ & 15) == 1)
+        std::fprintf(stderr, "opengl: %llu shaders translated in the background so far; %llu draws waited for one\n",
+                     (unsigned long long)translated_, (unsigned long long)waiting_draws_.load());
+    }
+  }
+  void stop_translators() {
+    { std::lock_guard<std::mutex> lock(translate_mutex_); translate_quit_ = true; }
+    translate_cv_.notify_all();
+    for (auto& t : translators_) t.join();
+    translators_.clear();
+  }
   std::unordered_map<uint64_t, Texture> textures_; std::unordered_map<uint32_t, Texture> copies_;
   std::vector<uint8_t> decoded_; std::vector<uint32_t> index_scratch_;
   std::vector<size_t> vertex_offsets_;

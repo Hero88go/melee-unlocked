@@ -339,6 +339,13 @@ inline bool skip_for_effects(const EffectsFilter& e, const DrawCall& dc) {
 // rollback: an online rollback, a few frames back on the same match, so fighters may still be
 // smoothed through it. Anything else is a hard cut.
 void mark_discontinuity(bool rollback = false);
+// Online, when the game thread keeps running over its frame budget with sub-frames on, they are
+// turned off until the match ends so the game holds 60 frames a second (slippi_online.cpp). The
+// presentation loop reports whether sub-frames are on; it honours the suspension.
+void set_subframe_suspended(bool suspended);
+bool subframe_suspended();
+void set_subframes_active(bool active);
+bool subframes_active();
 
 // Renderer interface shared by D3D12, D3D11, and future backends. The host calls
 // these on the renderer's owning thread. This is internal C++, not the game ABI.

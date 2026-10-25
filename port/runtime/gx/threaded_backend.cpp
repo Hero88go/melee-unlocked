@@ -231,7 +231,8 @@ class ThreadedBackend final : public Backend {
         // costs delay and accuracy, which is what the stage glitch reports at 60 were.
         const double presented_rate = cap_period > 0.0 ? 1.0 / cap_period : 0.0;
         const bool rate_worth_it = presented_rate <= 0.0 || presented_rate > 60.5;
-        bool now_sub = live_options.subframe != SubFrameMode::Off && rate_worth_it;
+        bool now_sub = live_options.subframe != SubFrameMode::Off && rate_worth_it && !subframe_suspended();
+        set_subframes_active(now_sub);
         if (now_sub != subframes) {
           subframes = now_sub;
           if (subframes && cur >= 0) solver.set_frames(have_prev ? &frames[cur ^ 1] : nullptr, &frames[cur]);

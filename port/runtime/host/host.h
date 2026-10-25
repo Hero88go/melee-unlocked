@@ -191,7 +191,8 @@ enum SimCost { SIM_DVD, SIM_AX, SIM_JUKEBOX, SIM_EXI, SIM_SNAPSHOT, SIM_QUEUE, S
                // (the audio steps), and how far past their deadlines those waits returned.
                SIM_INPUT, SIM_WAIT, SIM_LATE, SIM_COST_COUNT };
 void sim_cost_add(int slot, double seconds);
-double last_sim_frame_ms();            // work time of the most recent simulation frame (sleep excluded)
+double last_sim_frame_ms();
+double last_sim_frame_work_ms();       // the same frame without its in-frame pacing waits: the thread's own work            // work time of the most recent simulation frame (sleep excluded)
 
 // ---- time ----
 constexpr uint64_t TB_HZ = 40500000ull;   // bus clock / 4

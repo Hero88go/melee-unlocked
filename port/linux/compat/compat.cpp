@@ -205,7 +205,14 @@ BOOL SetThreadPriority(HANDLE, int priority) {
   if (priority == THREAD_MODE_BACKGROUND_END) { (void)setpriority(PRIO_PROCESS, (id_t)gettid(), 0); return TRUE; }
   // Raising a thread's priority needs privileges on Linux; lowering never does. Ask, accept a refusal.
   const int nice_value = priority >= THREAD_PRIORITY_TIME_CRITICAL ? -10 : priority > 0 ? -priority * 2 : -priority * 2;
-  (void)setpriority(PRIO_PROCESS, (id_t)gettid(), nice_value);
+  if (setpriority(PRIO_PROCESS, (id_t)gettid(), nice_value) != 0 && priority > 0 && priority < THREAD_PRIORITY_HIGHEST) {
+    // Refused (no privileges): the game thread asked for HIGHEST and stays at the normal level, and
+    // so would every helper that asked for ABOVE_NORMAL (the sub-frame solver, the presentation
+    // thread), all competing with the game thread on equal terms. Keep the order the other way
+    // round: those helpers go a little below normal, which needs no privileges. A player at high
+    // ping with sub-frames on saw the game fall below 60 frames a second on Linux.
+    (void)setpriority(PRIO_PROCESS, (id_t)gettid(), 2);
+  }
   return TRUE;
 }
 DWORD GetLastError() { return g_last_error; }

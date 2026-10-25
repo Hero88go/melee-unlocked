@@ -796,6 +796,11 @@ size_t parse_command(const uint8_t* d, size_t len) {
 }  // namespace
 
 void mark_discontinuity(bool rollback) { g_discontinuity = true; if (!rollback) g_hard_cut = true; }
+static std::atomic<bool> g_subframe_suspended{false}, g_subframes_active{false};
+void set_subframe_suspended(bool suspended) { g_subframe_suspended.store(suspended, std::memory_order_relaxed); }
+bool subframe_suspended() { return g_subframe_suspended.load(std::memory_order_relaxed); }
+void set_subframes_active(bool active) { g_subframes_active.store(active, std::memory_order_relaxed); }
+bool subframes_active() { return g_subframes_active.load(std::memory_order_relaxed); }
 
 void set_latency_test(bool on) { g_latency_test.store(on, std::memory_order_relaxed); }
 void set_presented_test_fill(int fill) { g_presented_fill.store(fill, std::memory_order_relaxed); }
