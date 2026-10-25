@@ -2330,16 +2330,10 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // from when it was 20XX TE's word 2 bit 0x800000 turns the option on once; the bit itself is
   // cleared here and never saved again, so the migration happens one time.
   if (options.te_options2 & 0x800000u) { options.cpu_20xx = true; options.te_options2 &= ~0x800000u; }
-  // DLSS 5 controls saved before 0.9.60 that were never moved from the old defaults (detail and
-  // tone 100%, model decides the characters, runtime-default weights) move to NVIDIA's defaults
-  // once. Anything a player chose stays as it is.
-  if (dlss5_defaults_version < 2) {
-    auto& t = options.dlss5_tuning;
-    if (t.intensity == 1.0f && t.detail == 1.0f && t.tone == 1.0f && t.skin < 0.0f && t.preset == 0) {
-      const gx::dlss5::Tuning fresh{};
-      t.detail = fresh.detail; t.tone = fresh.tone; t.skin = fresh.skin; t.preset = fresh.preset;
-    }
-  }
+  // DLSS 5 controls saved before 0.9.60 keep their values: NVIDIA's defaults (Tuning) are only for
+  // a settings file without them. Measured on the same frame, NVIDIA's Preset B changes far fewer
+  // pixels than the old defaults, so moving players over would look like DLSS 5 stopped working.
+  (void)dlss5_defaults_version;
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
   RenderOptions::live_freeze_fd() = options.freeze_fd;
   host::g_freeze_fd.store(options.freeze_fd, std::memory_order_relaxed);
@@ -5695,7 +5689,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         ImGui::SetNextItemWidth(220.0f);
         if (settings_combo("Weight preset", &t.preset, presets, 4)) changed = true;
         if (ImGui::IsItemHovered())
-          ImGui::SetTooltip("Separate from Models A/B/C. NVIDIA's own integration asks for Preset B.\n%s", kExperimentalNote);
+          ImGui::SetTooltip("Separate from Models A/B/C. NVIDIA's own integration asks for Preset B, the gentlest\n"
+                            "on Melee; Runtime default changes the picture more.\n%s", kExperimentalNote);
         bool skin_auto = t.skin < 0.0f;
         if (settings_toggle("Character intensity: let the model decide", &skin_auto)) { t.skin = skin_auto ? -1.0f : 0.5f; changed = true; }
         // Applied after the model, so it follows the drag: nothing is rebuilt.
