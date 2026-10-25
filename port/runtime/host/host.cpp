@@ -2851,6 +2851,16 @@ void retrace() {
     ResizeAt() { if (const char* v = std::getenv("MELEE_TEST_RESIZE_AT")) std::sscanf(v, "%u:%dx%d", &at, &w, &h); }
   } resize_at;
   if (resize_at.at && g_retraces == resize_at.at) window_set_client_size(resize_at.w, resize_at.h);
+  // MELEE_TEST_RESIZE_EVERY=<retraces>:<w1>x<h1>,<w2>x<h2> (tests): the window switches between the
+  // two sizes over and over, a stress run for what a resize does to the renderer and its upscalers.
+  static const struct ResizeEvery {
+    uint32_t every = 0; int w1 = 0, h1 = 0, w2 = 0, h2 = 0;
+    ResizeEvery() { if (const char* v = std::getenv("MELEE_TEST_RESIZE_EVERY")) std::sscanf(v, "%u:%dx%d,%dx%d", &every, &w1, &h1, &w2, &h2); }
+  } resize_every;
+  if (resize_every.every && g_retraces > 0 && g_retraces % resize_every.every == 0) {
+    const bool second = (g_retraces / resize_every.every) % 2 == 1;
+    window_set_client_size(second ? resize_every.w2 : resize_every.w1, second ? resize_every.h2 : resize_every.h1);
+  }
   if (options.frames && g_retraces >= options.frames) request_exit(0);
   log_stack_peak(false);
   test_stack_depth(false);

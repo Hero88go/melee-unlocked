@@ -1084,6 +1084,44 @@ static void throw_stack_lines(FILE* f) {
   }
 }
 
+// The last throw came from NVIDIA's Streamline or DLSS libraries (sl.*.dll, *nvngx*.dll): their frame
+// generation thread threw std::system_error "device or resource busy" from inside a present, on its
+// own thread, after the output size changed, and the game ended there twice for one player.
+// MELEE_TEST_STREAMLINE_THROW (hidden runs) counts the test throw as one of theirs.
+static bool g_test_streamline_throw = false;
+static bool last_throw_from_streamline() {
+  if (g_test_streamline_throw) return true;
+  // The thrower is the first frame past this handler (frame 0) and the system's throw machinery
+  // (ntdll, KERNELBASE, the C++ runtime): every present also passes through Streamline's interposer
+  // further up, so only the module that threw decides.
+  static const char* const runtime[] = {"ntdll.dll", "kernelbase.dll", "kernel32.dll", "vcruntime140.dll",
+                                        "vcruntime140_1.dll", "msvcp140.dll", "ucrtbase.dll"};
+  const LONG depth = g_throw_depth;
+  for (LONG i = 1; i < depth && i < 24; ++i) {
+    HMODULE module = nullptr; char name[MAX_PATH] = "";
+    if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)g_throw_stack[i], &module))
+      return false;
+    GetModuleFileNameA(module, name, MAX_PATH);
+    const char* leaf = std::strrchr(name, '\\') ? std::strrchr(name, '\\') + 1 : name;
+    bool system = false;
+    for (const char* r : runtime) system = system || _stricmp(leaf, r) == 0;
+    if (system) continue;
+    return _strnicmp(leaf, "sl.", 3) == 0 || _strnicmp(leaf, "nvngx", 5) == 0 || _strnicmp(leaf, "_nvngx", 6) == 0;
+  }
+  return false;
+}
+// That crash turns frame generation off for the next start, as a lost Direct3D 12 device switches the
+// backend: a later key wins when the settings file is read. The player turns it back on in PC settings.
+static std::string g_crash_settings_path;
+static void turn_frame_generation_off_for_next_start() {
+  if (g_crash_settings_path.empty()) return;
+  std::ofstream out(std::filesystem::u8path(g_crash_settings_path), std::ios::binary | std::ios::app);
+  if (!out) return;
+  out << "\nframegen 0\n";
+  out.flush();
+  host::log("dlss: NVIDIA frame generation stopped the game; it is off for the next start (PC settings > Video turns it back on)");
+}
+
 // host::die (a guest fault, including one in a mod's own code, or any other fatal error) exits
 // without an exception, so it writes the same report here: melee_port_crash.txt, a minidump of the
 // process, and the dialog that points at the launcher's Send button.
@@ -1275,6 +1313,7 @@ static int melee_main(int argc, char** argv);
   // ended (std::system_error "device or resource busy"), and that came out as a crash report.
   if (host::process_ending()) TerminateProcess(GetCurrentProcess(), 0);
   InterlockedExchange(&g_throw_frozen, 1);   // the rethrow below is not where it came from
+  if (last_throw_from_streamline()) turn_frame_generation_off_for_next_start();
   try {
     if (std::exception_ptr error = std::current_exception()) std::rethrow_exception(error);
   } catch (const std::exception& error) {
@@ -2025,6 +2064,8 @@ static int melee_main(int argc, char** argv) {
   }
   // Both engines: the Source Port starts its game in the branch just below.
   if (!explicit_replay_dir) apply_launcher_replay_choice(o.replay_dir);
+  g_crash_settings_path = gfx.settings_path;
+  g_test_streamline_throw = automated && std::getenv("MELEE_TEST_STREAMLINE_THROW") != nullptr;
 #ifdef MELEE_SOURCE_PORT
   // The game from source: nothing below this point applies (it is the recompiled guest's boot).
   static std::unique_ptr<gx::Backend>* backend_at_exit = &backend;
