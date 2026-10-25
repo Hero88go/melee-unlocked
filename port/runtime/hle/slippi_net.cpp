@@ -19,6 +19,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <random>
 #include <sstream>
@@ -262,7 +263,16 @@ void DirectCodes::Load() {
   if (!f) return;
   try {
     json j = json::parse(f);
-    if (j.is_array()) for (auto& e : j) { std::string c = e.is_object() ? str_or(e, "connectCode", "") : e.is_string() ? e.get<std::string>() : ""; if (!c.empty()) codes_.push_back(c); }
+    // A code holding U+FFFD (EF BF BD) is one the Linux build before 0.9.53 saved as raw Shift-JIS:
+    // it can only autofill as garbled letters, so it is dropped here and gone at the next save.
+    int dropped = 0;
+    if (j.is_array()) for (auto& e : j) {
+      std::string c = e.is_object() ? str_or(e, "connectCode", "") : e.is_string() ? e.get<std::string>() : "";
+      if (c.find("\xEF\xBF\xBD") != std::string::npos) { ++dropped; continue; }
+      if (!c.empty()) codes_.push_back(c);
+    }
+    if (dropped) host::log("slippi: %d saved connect codes in %s were unreadable (saved by an older Linux build) and were dropped",
+                           dropped, std::filesystem::u8path(path_).filename().u8string().c_str());
   } catch (...) {}
 }
 void DirectCodes::Save() {
