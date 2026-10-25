@@ -1313,7 +1313,9 @@ static int melee_main(int argc, char** argv);
   // ended (std::system_error "device or resource busy"), and that came out as a crash report.
   if (host::process_ending()) TerminateProcess(GetCurrentProcess(), 0);
   InterlockedExchange(&g_throw_frozen, 1);   // the rethrow below is not where it came from
+#ifdef _WIN32   // DLSS frame generation exists on Windows only
   if (last_throw_from_streamline()) turn_frame_generation_off_for_next_start();
+#endif
   try {
     if (std::exception_ptr error = std::current_exception()) std::rethrow_exception(error);
   } catch (const std::exception& error) {
@@ -2064,8 +2066,10 @@ static int melee_main(int argc, char** argv) {
   }
   // Both engines: the Source Port starts its game in the branch just below.
   if (!explicit_replay_dir) apply_launcher_replay_choice(o.replay_dir);
+#ifdef _WIN32
   g_crash_settings_path = gfx.settings_path;
   g_test_streamline_throw = automated && std::getenv("MELEE_TEST_STREAMLINE_THROW") != nullptr;
+#endif
 #ifdef MELEE_SOURCE_PORT
   // The game from source: nothing below this point applies (it is the recompiled guest's boot).
   static std::unique_ptr<gx::Backend>* backend_at_exit = &backend;
