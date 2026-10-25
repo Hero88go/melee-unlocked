@@ -7659,6 +7659,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       // Up to three connect codes to skip in Unranked (a match with one is turned down and the
       // search goes on). Ranked, Direct, Teams and Party are not affected.
       {
+        {   // Screenshot tooling (MELEE_SETTINGS_SCROLL_TO=online): bring this row into view once.
+          static int scroll_frames = 0;
+          if (scroll_frames < 30) {
+            const char* target = std::getenv("MELEE_SETTINGS_SCROLL_TO");
+            if (target && std::strcmp(target, "online") == 0) ImGui::SetScrollHereY(0.3f);
+            ++scroll_frames;
+          }
+        }
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Skip in Unranked");
         if (ImGui::IsItemHovered())
