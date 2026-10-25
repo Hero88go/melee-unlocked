@@ -1044,6 +1044,46 @@ bool SubFrameSolver::build(double t, bool interpolate, std::vector<DrawMatrices>
           // base is the current frame, so the same arithmetic would extrapolate past it, and for a
           // matrix with no authored meaning that can throw geometry anywhere. Predict keeps holding
           // the latest pose, which is what the unit test pins.
+          // Predict: a draw with no authored pose that moved by exactly this tick's camera step is
+          // still in the world, and gets the frame's single camera carry like the posed static
+          // stage (route 4). Holding it at the latest pose while the camera carried everything
+          // around it forward stepped it once per tick: on Fountain of Dreams those are the
+          // fountain pieces, which jumped against the stage with every vertical camera move (B-314).
+          if (!interpolate && have_camera_step && p.pos_slots && !menus && !(diag & 32) && !cur_->discontinuous) {
+            bool static_in_world = true;
+            uint64_t rows = p.pos_slots;
+            while (rows && static_in_world) {
+              unsigned long bit = 0; _BitScanForward64(&bit, rows);
+              rows &= rows - 1;
+              const int row = (int)bit;
+              if (row + 3 > 64) { static_in_world = false; break; }
+              const float* was = &prev_pos[row * 4];
+              const float* now = &d.posMatrices[row * 4];
+              // Near rather than exact: the fountain's pieces also drift a little on their own, and
+              // the strict test of route 4 sent them back to the hold. The rotation and scale must
+              // match the camera step; the translation may differ by a small own motion, which then
+              // steps per tick while the much larger camera part moves smoothly. A draw seen through
+              // another camera (the reflection's mirrored one) does not follow this camera's step.
+              for (int r = 0; r < 3 && static_in_world; ++r)
+                for (int c = 0; c < 4; ++c) {
+                  float a = camera_step.m[r * 4 + 0] * was[c] + camera_step.m[r * 4 + 1] * was[4 + c] + camera_step.m[r * 4 + 2] * was[8 + c];
+                  if (c == 3) a += camera_step.m[r * 4 + 3];
+                  const float b = now[r * 4 + c];
+                  const float tolerance = c == 3 ? 0.25f : 1e-3f * (1.0f + std::abs(b));
+                  if (!std::isfinite(a) || !std::isfinite(b) || std::abs(a - b) > tolerance) { static_in_world = false; break; }
+                }
+            }
+            if (static_in_world) {
+              ++staged;
+              if (have_stage_carry &&
+                  apply_carry(stage_carry, stage_carry_has_inverse ? stage_carry_inv : nullptr, d.posMatrices, d.normalMatrices,
+                              p.pos_slots, o.pos, o.nrm))
+                ++carried;
+              routes_[i] = 4;
+              sample_textures();
+              continue;
+            }
+          }
           uint64_t slots = interpolate ? p.pos_slots : 0;
           while (slots) {
             unsigned long bit = 0; _BitScanForward64(&bit, slots);
