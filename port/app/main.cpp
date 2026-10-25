@@ -41,6 +41,7 @@
 #include "cosmetic_mods.h"
 #include "disc_skin_scan.h"
 #include "hackpack_ai.h"
+#include "practice_cpu.h"
 #include "mod_scan.h"
 #include "threaded_backend.h"
 #include "window.h"
@@ -2225,6 +2226,8 @@ static int melee_main(int argc, char** argv) {
   // "20XX CPUs": the 20XX Hack Pack's own AI block from its disc under Mods, applied at each offline
   // match start (the Source Port plays its native version instead).
   host::hackpack_ai::boot();
+  // The practice CPU in Training (the Source Port runs it in its game code).
+  practice_cpu::install_static();
 #endif
   host::boot_setup();
   {

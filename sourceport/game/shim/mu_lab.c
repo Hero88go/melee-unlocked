@@ -621,6 +621,9 @@ int mu_lab_input(void* fighter, MuLabInput* out)
             }
             return 1;
         }
+        if (mu_practice_cpu_drive(fp, out)) {
+            return 1;
+        }
         if (ftCo_IsCpuControlled(fp) && mu_te2(MU_TE2_CPU_SMART_DI)) {
             return cpu_smart_di(fp, out);
         }
@@ -649,6 +652,10 @@ int mu_lab_input(void* fighter, MuLabInput* out)
             } else if (t < 3) {
                 out->cx = dx >= 0.0f ? 1.0f : -1.0f;
             }
+            return 1;
+        }
+        /* The practice CPU, when on, is the dummy's behavior; recording and playback still win. */
+        if (mu_practice_cpu_drive(fp, out)) {
             return 1;
         }
         return dummy ? dummy_behavior(fp, out) : 0;

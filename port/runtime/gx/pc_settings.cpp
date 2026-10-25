@@ -33,6 +33,7 @@
 #include "slippi_spectate.h"
 #include "native_practice.h"
 #endif
+#include "practice_cpu.h"
 #include "window.h"
 #include "audio.h"
 #include "host.h"
@@ -1963,6 +1964,7 @@ static void dlss5_float(const std::string& value, float& target, float lo, float
 }
 #endif
 
+static void apply_practice_tools(RenderOptions& options);   // below, with the Practice page
 void load_pc_settings(RenderOptions& options, int& volume) {
   host::ds4_bindings_defaults();    // before the defaults are captured and the saved buttons read
   capture_default_bindings();   // the built-in buttons, before the saved ones replace them
@@ -2062,6 +2064,10 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "quickchat") slippi::online::config().chat = std::clamp(std::atoi(value.c_str()), 0, 2);
       else if (key == "blockcode1" || key == "blockcode2" || key == "blockcode3")
         slippi::online::config().blocked_codes[key.back() - '1'] = value.substr(0, 16);
+      else if (key == "practicecpu") {
+        MuPcConfig pc;
+        if (practice_cpu::from_text(value, pc)) practice_cpu::set_config(pc);
+      }
       else if (key == "onlinedelay") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 9) slippi::online::config().delay = d; }
       else if (key == "onlinedelayauto") slippi::online::config().auto_delay = value == "1";
       else if (key == "offline_delay") options.offline_delay = value == "1";
@@ -2379,6 +2385,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   if (saved_lcancel_success >= 0)
     options.te_options2 = mu_lcancel_with_success_color(options.te_options2, saved_lcancel_success);
   if (RenderOptions::kModFeaturesAvailable) RenderOptions::live_te_options() = options.te_options;
+  apply_practice_tools(options);   // the Practice page's Training tools (lab bits) on top
   RenderOptions::live_mods_in_direct() = options.mods_in_direct;
   RenderOptions::live_te_options2() = options.te_options2;
   RenderOptions::live_te_menu_music().store(options.te_menu_music);
@@ -3303,6 +3310,295 @@ static void practice_card_title(const char* text, bool pulse) {
   ImGui::TextColored(ImVec4(1.0f, 0.97f, 0.99f, 1.0f), "%s", text);
 }
 
+// ---------------- Practice hub: the Tab panel in Training ----------------
+// Queue, the practice CPU and the Training tools in one panel. Every change applies at once, mid
+// match, and is saved with the settings.
+namespace practice_ui {
+const ImU32 kPink = IM_COL32(245, 40, 140, 255);
+const ImVec4 kPinkV(0.96f, 0.16f, 0.55f, 1.0f);
+
+// A section heading: pink bar, title, and a short line under it.
+void heading(const char* title, const char* subtitle = nullptr) {
+  ImGui::Dummy(ImVec2(0, 6));
+  const ImVec2 at = ImGui::GetCursorScreenPos();
+  const float h = ImGui::GetTextLineHeight();
+  ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(at.x, at.y + 1), ImVec2(at.x + 4, at.y + h - 1), kPink, 2.0f);
+  ImGui::SetCursorScreenPos(ImVec2(at.x + 12, at.y));
+  ImGui::PushFont(settings_heading_font());
+  ImGui::TextColored(ImVec4(1.0f, 0.97f, 0.99f, 1.0f), "%s", title);
+  ImGui::PopFont();
+  if (subtitle) ImGui::TextDisabled("%s", subtitle);
+}
+
+// One option of an odds group: name, a weight bar 0..100, and its share of the group.
+bool odds_row(const char* label, uint8_t* weight, int total) {
+  ImGui::PushID(label);
+  const float avail = ImGui::GetContentRegionAvail().x;
+  const float name_w = std::min(190.0f, avail * 0.38f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(label);
+  ImGui::SameLine(name_w);
+  int v = *weight;
+  const int share = total > 0 ? (v * 100 + total / 2) / total : 0;
+  ImGui::PushStyleColor(ImGuiCol_SliderGrab, kPinkV);
+  ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, ImVec4(1.0f, 0.35f, 0.7f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.12f, 0.11f, 0.18f, 1.0f));
+  ImGui::SetNextItemWidth(std::max(80.0f, avail - name_w - 64.0f));
+  // The bar's fill shows the share at a glance.
+  const ImVec2 bar = ImGui::GetCursorScreenPos();
+  const bool changed = ImGui::SliderInt("##w", &v, 0, 100, v == 0 ? "never" : "%d");
+  const ImVec2 bmin = ImGui::GetItemRectMin(), bmax = ImGui::GetItemRectMax();
+  (void)bar;
+  if (share > 0)
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(bmin.x, bmax.y - 3), ImVec2(bmin.x + (bmax.x - bmin.x) * share / 100.0f, bmax.y),
+                                              IM_COL32(245, 40, 140, 170), 2.0f);
+  ImGui::PopStyleColor(3);
+  ImGui::SameLine();
+  if (total > 0 && v > 0) ImGui::Text("%3d%%", share); else ImGui::TextDisabled("  -");
+  if (changed) *weight = (uint8_t)std::clamp(v, 0, 100);
+  ImGui::PopID();
+  return changed;
+}
+
+bool odds_group(const char* const names[], uint8_t* weights, int count) {
+  int total = 0;
+  for (int i = 0; i < count; ++i) total += weights[i];
+  bool changed = false;
+  for (int i = 0; i < count; ++i) changed |= odds_row(names[i], &weights[i], total);
+  return changed;
+}
+
+bool percent_row(const char* label, uint8_t* value, const char* tip) {
+  ImGui::PushID(label);
+  const float avail = ImGui::GetContentRegionAvail().x;
+  const float name_w = std::min(190.0f, avail * 0.38f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(label);
+  if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+  ImGui::SameLine(name_w);
+  int v = *value;
+  ImGui::PushStyleColor(ImGuiCol_SliderGrab, kPinkV);
+  ImGui::SetNextItemWidth(std::max(80.0f, avail - name_w - 64.0f));
+  const bool changed = ImGui::SliderInt("##v", &v, 0, 100, "%d%%");
+  ImGui::PopStyleColor();
+  if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+  if (changed) *value = (uint8_t)v;
+  ImGui::PopID();
+  return changed;
+}
+
+bool number_row(const char* label, uint8_t* value, int low, int high, const char* format, const char* tip) {
+  ImGui::PushID(label);
+  const float avail = ImGui::GetContentRegionAvail().x;
+  const float name_w = std::min(190.0f, avail * 0.38f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(label);
+  if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+  ImGui::SameLine(name_w);
+  int v = *value;
+  ImGui::PushStyleColor(ImGuiCol_SliderGrab, kPinkV);
+  ImGui::SetNextItemWidth(std::max(80.0f, avail - name_w - 64.0f));
+  const bool changed = ImGui::SliderInt("##v", &v, low, high, format);
+  ImGui::PopStyleColor();
+  if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+  if (changed) *value = (uint8_t)v;
+  ImGui::PopID();
+  return changed;
+}
+
+bool flag_row(const char* label, uint8_t* bits, uint8_t mask, const char* tip) {
+  bool on = (*bits & mask) != 0;
+  const bool changed = settings_toggle(label, &on);
+  if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+  if (changed) *bits = (uint8_t)(on ? (*bits | mask) : (*bits & ~mask));
+  return changed;
+}
+
+const char* const kMoves[MU_PC_MOVE_COUNT] = {"Stand", "Walk", "Dash dance", "Approach", "Run away", "Short hop",
+                                              "Full hop", "Wavedash in", "Wavedash out", "Crouch"};
+const char* const kAttacks[MU_PC_ATK_COUNT] = {"Jab", "Forward tilt", "Up tilt", "Down tilt", "Forward smash",
+                                               "Up smash", "Down smash", "Dash attack", "Grab", "Boost grab",
+                                               "Neutral air", "Forward air", "Back air", "Up air", "Down air",
+                                               "Neutral B", "Side B", "Up B", "Down B", "Wavedash, forward tilt"};
+const char* const kDefend[MU_PC_DEF_COUNT] = {"Nothing", "Shield", "Spot dodge", "Roll in", "Roll away", "Jump away"};
+const char* const kOos[MU_PC_OOS_COUNT] = {"Hold shield", "Drop shield", "Jump", "Neutral air", "Up B",
+                                           "Shine (down B)", "Grab", "Wavedash", "Roll", "Spot dodge"};
+const char* const kDi[MU_PC_DI_COUNT] = {"No DI", "In", "Out", "Survival (up and in)", "Down and in", "Down and out"};
+const char* const kTech[MU_PC_TECH_COUNT] = {"In place", "Roll in", "Roll away", "Miss"};
+const char* const kGetup[MU_PC_GETUP_COUNT] = {"Stand", "Roll in", "Roll away", "Getup attack", "Stay down"};
+const char* const kLedge[MU_PC_LEDGE_COUNT] = {"Getup", "Roll", "Jump", "Attack", "Drop and jump", "Ledgedash"};
+const char* const kAfter[MU_PC_AFTER_COUNT] = {"Nothing", "Jump", "Air dodge", "Neutral air", "Up B"};
+const char* const kRecovery[MU_PC_RECOVER_COUNT] = {"Game's own CPU", "High", "Low", "Mix high and low"};
+const char* const kTabs[] = {"Queue", "CPU", "Defense", "Hit reactions", "Ledge", "Tools", "Presets"};
+constexpr int kTabCount = (int)(sizeof kTabs / sizeof kTabs[0]);
+int g_tab = 1;
+int g_tab_request = -1;
+bool g_lr_was_down = false;
+}  // namespace practice_ui
+
+// The Training tools in the practice settings drive the lab's option bits (Source Port, offline
+// Training only; the Static Recomp has no lab).
+static void apply_practice_tools(RenderOptions& options) {
+  const MuPcConfig cfg = practice_cpu::config();
+  uint32_t te = options.te_options & 0x00007FFFu;
+  if (cfg.tools & MU_PC_TOOL_DPAD) te |= MU_GAME_OPTION_LAB;
+  if (cfg.tools & (MU_PC_TOOL_HITBOXES | MU_PC_TOOL_HITBOXES_ONLY)) te |= MU_GAME_OPTION_LAB | MU_GAME_OPTION_LAB_BUBBLES;
+  if (cfg.tools & MU_PC_TOOL_HITBOXES_ONLY) te |= MU_GAME_OPTION_LAB_BUBBLES_ONLY;
+  if (cfg.tools & MU_PC_TOOL_OVERLAY) te |= MU_GAME_OPTION_LAB | MU_GAME_OPTION_LAB_OVERLAY;
+  if (cfg.tools & MU_PC_TOOL_LOOP) te |= MU_GAME_OPTION_LAB_LOOP;
+  // Kept in the options word too, so every later write of it by the panel carries them (the file's
+  // copy is masked off at load and rebuilt from the practice settings).
+  options.te_options = te;
+  if (RenderOptions::kModFeaturesAvailable) RenderOptions::live_te_options() = te;
+}
+
+// The practice CPU tabs. Returns true when a setting changed (saved by the caller).
+static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
+  using namespace practice_ui;
+  MuPcConfig c = practice_cpu::config();
+  bool changed = false;
+  switch (tab) {
+  case 1: {
+    bool on = c.enabled != 0;
+    if (settings_toggle("Practice CPU", &on)) { c.enabled = on; changed = true; }
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("The Training CPU moves, attacks, defends and reacts as set on these pages.\n"
+                        "Training only, never online or in replays.");
+    const practice_cpu::Status st = practice_cpu::status();
+    if (c.enabled) {
+      if (st.driving) ImGui::TextColored(ImVec4(0.55f, 1.0f, 0.7f, 1.0f), "Now: %s", mu_pc_plan_name(st.plan));
+      else ImGui::TextDisabled("Starts with the next Training match (a CPU opponent is needed).");
+    }
+    ImGui::BeginDisabled(!c.enabled);
+    bool freeze = c.freeze != 0;
+    if (settings_toggle("Only react to hits", &freeze)) { c.freeze = freeze; changed = true; }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stands still; only DI, techs, getups, ledge options and recovery stay on.");
+    heading("Style");
+    changed |= percent_row("Aggression", &c.aggression, "How often it attacks (rather than moves) when you are in range.");
+    changed |= number_row("Attack range", &c.attack_range, 10, 80, "%d units", "How close you must be before it attacks.");
+    changed |= number_row("Reaction time", &c.reaction_frames, 0, 40, "%d frames", "Frames before it answers an attack. People react in 15 to 25.");
+    heading("Movement", "What it does between attacks. Weights within the group.");
+    changed |= odds_group(kMoves, c.move_odds, MU_PC_MOVE_COUNT);
+    heading("Attacks", "Picked when you are in range.");
+    changed |= odds_group(kAttacks, c.attack_odds, MU_PC_ATK_COUNT);
+    heading("Aerials");
+    changed |= percent_row("Full hop", &c.full_hop_aerials, "Chance an aerial is full hopped instead of short hopped.");
+    changed |= percent_row("Fast fall", &c.fast_fall, nullptr);
+    changed |= percent_row("L-cancel", &c.l_cancel, nullptr);
+    ImGui::EndDisabled();
+    break;
+  }
+  case 2:
+    ImGui::BeginDisabled(!c.enabled || c.freeze);
+    heading("When you attack near it", "Answered once per attack, after its reaction time.");
+    changed |= odds_group(kDefend, c.defend_odds, MU_PC_DEF_COUNT);
+    heading("Out of shield", "Once shieldstun ends.");
+    changed |= odds_group(kOos, c.oos_odds, MU_PC_OOS_COUNT);
+    ImGui::EndDisabled();
+    break;
+  case 3: {
+    ImGui::BeginDisabled(!c.enabled);
+    heading("DI", "Picked for each hit. In and out are toward and away from you.");
+    changed |= odds_group(kDi, c.di_odds, MU_PC_DI_COUNT);
+    static const char* const sdi[] = {"None", "Light", "Medium", "Heavy"};
+    int s = c.sdi_amount;
+    if (settings_combo("Smash DI", &s, sdi, 4)) { c.sdi_amount = (uint8_t)s; changed = true; }
+    heading("Tech", "When it lands in tumble.");
+    changed |= odds_group(kTech, c.tech_odds, MU_PC_TECH_COUNT);
+    heading("After a missed tech");
+    changed |= odds_group(kGetup, c.getup_odds, MU_PC_GETUP_COUNT);
+    heading("As hitstun ends in the air");
+    changed |= odds_group(kAfter, c.after_odds, MU_PC_AFTER_COUNT);
+    ImGui::EndDisabled();
+    break;
+  }
+  case 4: {
+    ImGui::BeginDisabled(!c.enabled);
+    heading("From the ledge");
+    changed |= odds_group(kLedge, c.ledge_odds, MU_PC_LEDGE_COUNT);
+    changed |= number_row("Most time on the ledge", &c.ledge_delay, 0, 120, "%d frames", "It waits a random time up to this before its option.");
+    heading("Recovery", "Back to the stage when it is off it.");
+    int r = c.recovery;
+    if (settings_combo("Recovery", &r, kRecovery, MU_PC_RECOVER_COUNT)) { c.recovery = (uint8_t)r; changed = true; }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("\"Game's own CPU\" uses the CPU level set in Training.");
+    ImGui::EndDisabled();
+    break;
+  }
+  case 5: {
+    heading("Training tools", options.native_source ? "D-pad: right save state, left load, down record the CPU, up play it back."
+                                                    : "These run on the Source Port.");
+    ImGui::BeginDisabled(!options.native_source);
+    changed |= flag_row("Save states and recording on the D-pad", &c.tools, MU_PC_TOOL_DPAD,
+                        "Right keeps this moment, left returns to it as often as you like.\n"
+                        "Down records your controller as the CPU; up plays that back while you practice.");
+    changed |= flag_row("Loop the recording", &c.tools, MU_PC_TOOL_LOOP, "A played back recording starts again from the kept moment.");
+    changed |= flag_row("Hitboxes and hurtboxes", &c.tools, MU_PC_TOOL_HITBOXES, nullptr);
+    changed |= flag_row("Hitboxes only (no models)", &c.tools, MU_PC_TOOL_HITBOXES_ONLY, nullptr);
+    changed |= flag_row("Inputs and frame advantage", &c.tools, MU_PC_TOOL_OVERLAY,
+                        "Both players' inputs and actions, and your frame advantage after each hit or shield.");
+    ImGui::EndDisabled();
+    break;
+  }
+  case 6: {
+    heading("Presets", "Start from one, then change anything on the other pages.");
+    static const char* const about[] = {
+        "Moves, attacks and shields. All-round.",
+        "Stands still; DIs and techs. Combos.",
+        "Short hop nairs and bairs, L-cancelled.",
+        "Runs and hops away. Practice chasing.",
+        "Wavedash forward tilt, boost grabs.",
+        "Shields, then punishes out of shield.",
+        "DIs down, mixes every tech and getup.",
+        "Mixes every option from the ledge.",
+    };
+    const float w = (ImGui::GetContentRegionAvail().x - 10.0f) * 0.5f;
+    for (int i = 0; i < mu_pc_preset_count(); ++i) {
+      if (i % 2) ImGui::SameLine();
+      // A card per preset: name, one line about it, and a pink frame on the one in use.
+      ImGui::PushID(i);
+      const ImVec2 p0 = ImGui::GetCursorScreenPos();
+      const bool clicked = ImGui::InvisibleButton("##preset", ImVec2(w, 62));
+      const bool hot = ImGui::IsItemHovered() || ImGui::IsItemFocused();
+      const bool active = c.preset == i + 1;
+      const ImVec2 p1(p0.x + w, p0.y + 62);
+      ImDrawList* draw = ImGui::GetWindowDrawList();
+      draw->AddRectFilled(p0, p1, hot ? IM_COL32(88, 22, 60, 255) : IM_COL32(32, 25, 46, 255), 8.0f);
+      if (active || hot) draw->AddRect(p0, p1, kPink, 8.0f, 0, active ? 2.0f : 1.0f);
+      draw->AddText(settings_heading_font(), 17.0f, ImVec2(p0.x + 12, p0.y + 8), IM_COL32(255, 247, 252, 255), mu_pc_preset_name(i));
+      draw->PushClipRect(p0, p1, true);
+      draw->AddText(ImVec2(p0.x + 12, p0.y + 34), IM_COL32(190, 182, 205, 255), about[i % (int)(sizeof about / sizeof about[0])]);
+      draw->PopClipRect();
+      if (active) draw->AddText(ImVec2(p1.x - 52, p0.y + 9), kPink, "in use");
+      if (clicked) {
+        const uint8_t tools = c.tools;
+        mu_pc_preset(i, &c);
+        c.tools = tools;
+        c.enabled = 1;
+        c.preset = (uint8_t)(i + 1);
+        changed = true;
+      }
+      ImGui::PopID();
+    }
+    ImGui::Dummy(ImVec2(0, 6));
+    if (ImGui::Button("Reset everything to the defaults", ImVec2(-1, 34))) {
+      const uint8_t tools = c.tools, enabled = c.enabled;
+      mu_pc_defaults(&c);
+      c.tools = tools;
+      c.enabled = enabled;
+      changed = true;
+    }
+    break;
+  }
+  default: break;
+  }
+  if (changed) {
+    if (tab >= 1 && tab <= 4) c.preset = 0;   // changed by hand: no preset is "in use" any more
+    practice_cpu::set_config(c);
+    apply_practice_tools(options);
+  }
+  return changed;
+}
+
 static void draw_native_practice(SettingsState& state, RenderOptions& options,
                                  const slippi::native_practice::Snapshot& practice,
                                  const host::PadState& pad, bool have_pad) {
@@ -3371,15 +3667,77 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     return;
   }
 
-  ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
-  ImGui::SetNextWindowSize(ImVec2(440, 0), ImGuiCond_FirstUseEver);
-  if (!ImGui::Begin("Practice matchmaking", &state.practice_open,
-                    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings)) {
+  // The hub: tabs across the top (L and R on the controller switch them), the page below.
+  using namespace practice_ui;
+  {
+    const bool lr = have_pad && (pad.button & 0x60) != 0;
+    if (lr && !g_lr_was_down) g_tab_request = (g_tab + ((pad.button & 0x20) ? 1 : kTabCount - 1)) % kTabCount;
+    g_lr_was_down = lr;
+  }
+  const ImVec2 size(std::min(660.0f, screen.x - 40.0f), std::min(620.0f, screen.y - 40.0f));
+  ImGui::SetNextWindowPos(ImVec2(screen.x * 0.5f, screen.y * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowSize(size, ImGuiCond_Always);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 12.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(22.0f, 16.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.06f, 0.05f, 0.10f, 0.96f));
+  ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.96f, 0.16f, 0.55f, 0.6f));
+  ImGui::PushStyleColor(ImGuiCol_Tab, ImVec4(0.14f, 0.11f, 0.20f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_TabHovered, ImVec4(0.70f, 0.14f, 0.43f, 1.0f));
+  ImGui::PushStyleColor(ImGuiCol_TabActive, ImVec4(0.86f, 0.15f, 0.50f, 1.0f));
+  const bool shown = ImGui::Begin("##practice_hub", &state.practice_open,
+                                  ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoMove);
+  struct HubStyle { ~HubStyle() { ImGui::PopStyleColor(5); ImGui::PopStyleVar(3); } } hub_style;
+  if (!shown) { ImGui::End(); return; }
+  {
+    const ImVec2 at = ImGui::GetWindowPos(), sz = ImGui::GetWindowSize();
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(at.x + 1, at.y + 14), ImVec2(at.x + 6, at.y + sz.y - 14), kPink, 3.0f);
+  }
+  {
+    // Title, the controls under it, and on the right a pill with what the CPU is doing.
+    ImDrawList* draw = ImGui::GetWindowDrawList();
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const float right = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - 22.0f;
+    draw->AddText(settings_heading_font(), 30.0f, at, IM_COL32(255, 247, 252, 255), "PRACTICE");
+    const MuPcConfig cfg = practice_cpu::config();
+    const practice_cpu::Status st = practice_cpu::status();
+    char pill[64];
+    if (!cfg.enabled) std::snprintf(pill, sizeof pill, "Practice CPU off");
+    else if (st.driving) std::snprintf(pill, sizeof pill, "CPU: %s", mu_pc_plan_name(st.plan));
+    else std::snprintf(pill, sizeof pill, "Practice CPU on");
+    const ImVec2 ts = ImGui::CalcTextSize(pill);
+    const ImVec2 p0(right - ts.x - 26.0f, at.y + 4.0f), p1(right, at.y + 4.0f + ts.y + 10.0f);
+    draw->AddRectFilled(p0, p1, cfg.enabled ? IM_COL32(245, 40, 140, 60) : IM_COL32(80, 80, 100, 60), 12.0f);
+    draw->AddRect(p0, p1, cfg.enabled ? kPink : IM_COL32(120, 120, 140, 255), 12.0f, 0, 1.2f);
+    if (cfg.enabled && st.driving) {
+      const float glow = 0.55f + 0.45f * std::sin((float)ImGui::GetTime() * 4.0f);
+      draw->AddCircleFilled(ImVec2(p0.x + 11.0f, (p0.y + p1.y) * 0.5f), 3.5f, IM_COL32(245, 40, 140, (int)(255 * glow)), 12);
+    }
+    draw->AddText(ImVec2(p0.x + 18.0f, p0.y + 5.0f), IM_COL32(245, 240, 248, 255), pill);
+    ImGui::Dummy(ImVec2(0, 34));
+    ImGui::TextDisabled("Tab or Esc: back to the game      L / R: change page");
+  }
+  if (ImGui::BeginTabBar("##practice_tabs", ImGuiTabBarFlags_FittingPolicyScroll)) {
+    for (int i = 0; i < kTabCount; ++i) {
+      const ImGuiTabItemFlags f = g_tab_request == i ? ImGuiTabItemFlags_SetSelected : 0;
+      if (ImGui::BeginTabItem(kTabs[i], nullptr, f)) { g_tab = i; ImGui::EndTabItem(); }
+    }
+    g_tab_request = -1;
+    ImGui::EndTabBar();
+  }
+  if (g_tab != 0) {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10.0f, 4.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, 4.0f);
+    ImGui::BeginChild("##practice_page", ImVec2(0, 0), false);
+    if (draw_practice_cpu_tabs(options, g_tab)) state.dirty = true;
+    ImGui::EndChild();
+    ImGui::PopStyleVar(4);
     ImGui::End();
     return;
   }
-  ImGui::TextUnformatted("Tab or Esc: return to the game");
-  ImGui::Separator();
+  practice_ui::heading("Search while you practice", "The match starts as soon as one is found.");
 
   ImGui::BeginDisabled(!practice.can_start);
   const bool start_unranked = ImGui::Button("Unranked", ImVec2(126, 32));
@@ -3495,6 +3853,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nblockcode1 " << slippi::online::config().blocked_codes[0]
        << "\nblockcode2 " << slippi::online::config().blocked_codes[1]
        << "\nblockcode3 " << slippi::online::config().blocked_codes[2]
+       << "\npracticecpu " << practice_cpu::to_text(practice_cpu::config())
        << "\nautoopenoverlay " << (options.settings_open ? 1 : 0)
        // Read since it was added and never written, so hiding the reminder lasted one session.
        << "\nsettingsreminder " << (options.settings_hint ? 1 : 0)
@@ -4121,7 +4480,22 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     state.legacy_presentation = true;
   }
   if (state.legacy_presentation) options.overlay_style = launcher_window ? 7 : options.legacy_menu_style;
-  const bool tab_pressed = host::window_take_practice_toggle();
+  bool tab_pressed = host::window_take_practice_toggle();
+  // Screenshot tooling (MELEE_TEST_PRACTICE_PAGE=<page>,<frame>): the Practice panel opens on that
+  // page at that frame, wherever the game is.
+  {
+    static int test_page = -1, test_frame = 0;
+    static bool parsed = false;
+    if (!parsed) {
+      parsed = true;
+      if (const char* v = std::getenv("MELEE_TEST_PRACTICE_PAGE")) std::sscanf(v, "%d,%d", &test_page, &test_frame);
+    }
+    if (test_page >= 0 && host::retrace_count() >= (uint32_t)test_frame) {
+      practice_ui::g_tab_request = test_page;
+      test_page = -1;
+      state.practice_open = true;
+    }
+  }
   if (tab_pressed && !state.open && !state.menu_open && !state.fill_window && practice.tab_available &&
       !replay_bar::active()) {   // while a replay plays, Tab is its fast forward
     const bool was_open = state.practice_open;

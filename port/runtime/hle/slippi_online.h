@@ -100,5 +100,8 @@ void native_cleanup_match();
 // The character (and costume) the local player has picked on the online character select, false
 // when none is picked yet.
 bool local_css_selection(uint8_t* character, uint8_t* color);
+// The Direct code to keep searching for while practicing: the running Direct search's, else the
+// most recent one used. Empty when there is none.
+std::string direct_code_for_practice();
 
 }  // namespace slippi::online

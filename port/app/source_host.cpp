@@ -39,6 +39,7 @@
 #include "gx_shader.h"
 #include "render_options.h"
 #include "training_overlay.h"
+#include "practice_cpu.h"
 #include "lcancel.h"
 #include "offline_input_delay.h"
 #include "disc_archive.h"
@@ -1299,6 +1300,7 @@ constexpr uint8_t CMD_SELFTEST_KEEP = 0xF0, CMD_SELFTEST_COMPARE = 0xF1;   // na
 // frame number no online match uses. The engine frees its slots on a load (rollback semantics), so
 // a lab load keeps the state again at once and it can be returned to as often as wanted.
 constexpr uint8_t CMD_LAB_SAVE = 0xF2, CMD_LAB_LOAD = 0xF3, CMD_LAB_ADVANTAGE = 0xF4, CMD_CONTENT_MODE = 0xF5;
+constexpr uint8_t CMD_PRACTICE_CPU = 0xF6;   // the practice CPU's settings (port/runtime/hle/practice_cpu.h)
 void apply_content_mode(int mode);
 constexpr int32_t kLabFrame = -1000000;
 // The replay viewer's controls (shim/mu_replay.c mu_replay_frame_begin, host/replay_control.h):
@@ -1538,6 +1540,13 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
         if (c == CMD_LAB_LOAD) { lab_load(); return true; }
         if (c == CMD_REPLAY_GATE && n == 5) { reply.push_back(replay_gate((int32_t)read_be32(p), p[4])); return true; }
         if (c == CMD_LAB_ADVANTAGE && n == 5) { training_overlay::set_advantage((int32_t)read_be32(p), p[4]); return true; }
+        if (c == CMD_PRACTICE_CPU) {   // shim/mu_practice_cpu.c: the settings, or what it is doing
+          if (n == 2) { practice_cpu::note_status(p[0] != 0, p[1], 0); return true; }
+          const MuPcConfig cfg = practice_cpu::config();
+          const auto* bytes = reinterpret_cast<const uint8_t*>(&cfg);
+          reply.assign(bytes, bytes + sizeof cfg);
+          return true;
+        }
         if (c == CMD_SKIN_CYCLE && n == 4) { cycle_costume_skin(p[1], p[2], p[3] ? 1 : -1, reply); return true; }
         if (c == CMD_STAGE_SKIN_MATCH && n >= 2 && n <= 64 && p[n - 1] == 0) {
           plan_random_stage_skin(std::string((const char*)p, strnlen((const char*)p, n)), reply);

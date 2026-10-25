@@ -169,6 +169,8 @@ typedef struct MuLabInput {
     unsigned int buttons;
 } MuLabInput;
 int mu_lab_input(void* fighter, MuLabInput* out);   /* fighter: Fighter* */
+/* The practice CPU (shim/mu_practice_cpu.c): nonzero when it drives this CPU fighter this frame. */
+int mu_practice_cpu_drive(void* fighter, MuLabInput* out);
 
 /* 20XX TE second feature word (shim/mu_te.c); values match MU_GAME_OPTION2_TE_* in mu_host.h. */
 #define MU_TE2_NEUTRAL_SPAWNS 0x1u

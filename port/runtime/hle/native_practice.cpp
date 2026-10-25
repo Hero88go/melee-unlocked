@@ -72,6 +72,7 @@ uint8_t g_origin_major = 1;
 bool g_restore_training = false;
 // L+R on the online character select: the search waits for the Training match, then starts.
 MatchMode g_auto_search = MatchMode::None;
+std::string g_auto_code;   // Direct: the code it searches for
 uint32_t g_auto_ticks = 0;
 Phase g_logged_phase = Phase::Idle;
 bool g_lobby_started = false;
@@ -470,15 +471,28 @@ void tick() {
     static uint32_t lr_ticks = 0;
     bool lr = false;
     static int lr_port = 0;
+    static MatchMode lr_mode = MatchMode::None;
     if (g_lifecycle.phase() == Phase::Idle && g_auto_search == MatchMode::None && is_online_scene() &&
-        current_minor() == 0 && online_mode() == (uint8_t)MatchMode::Unranked &&
+        current_minor() == 0 &&
+        (online_mode() == (uint8_t)MatchMode::Unranked || online_mode() == (uint8_t)MatchMode::Direct) &&
         !slippi::playback::enabled() && !slippi::online::is_online_match()) {
+      lr_mode = (MatchMode)online_mode();
       host::PadState pads[4];
       host::input_last_pads(pads);
       for (int port = 0; port < 4; ++port)
         if ((pads[port].button & 0x0060u) == 0x0060u && !(pads[port].button & (0x0100u | 0x1000u))) { lr = true; lr_port = port; }
     }
     lr_ticks = lr ? lr_ticks + 1 : 0;
+    // Direct: practice while waiting for the code's player, with the code being searched for (or
+    // the last one used). No code at all: nothing to search, so L+R does nothing there.
+    std::string lr_code;
+    if (lr_ticks == 20 && lr_mode == MatchMode::Direct) {
+      std::string error;
+      if (!normalize_direct_code(slippi::online::direct_code_for_practice(), &lr_code, &error)) {
+        host::log("native practice: L+R on the Direct character select with no code to search for");
+        lr_ticks = 21;
+      }
+    }
     if (lr_ticks == 20) {
       uint8_t character = 0, costume = 0;
       bool picked = slippi::online::local_css_selection(&character, &costume);
@@ -500,11 +514,12 @@ void tick() {
         g_practice.players[0].costume = costume;
         write_event_backup();
       }
-      g_auto_search = MatchMode::Unranked;
+      g_auto_search = lr_mode;
+      g_auto_code = lr_code;
       g_auto_ticks = 0;
       request_major(kTrainingMajor);
-      host::log("native practice: L+R on the online character select; Training, then Unranked search%s",
-                picked ? "" : " (no character picked yet)");
+      host::log("native practice: L+R on the online character select; Training, then %s search%s",
+                match_mode_name(lr_mode), picked ? "" : " (no character picked yet)");
     }
   }
   if (g_auto_search != MatchMode::None) {
@@ -515,7 +530,7 @@ void tick() {
         const MatchMode mode = g_auto_search;
         g_auto_search = MatchMode::None;
         host::log("native practice: Training match running; starting the %s search", match_mode_name(mode));
-        start_search(mode, "");
+        start_search(mode, mode == MatchMode::Direct ? g_auto_code : std::string());
       }
     } else if (!is_training() && !is_online_scene()) {
       host::log("native practice: left Training before its match; the pending search is dropped");

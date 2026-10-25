@@ -1458,6 +1458,12 @@ bool local_css_selection(uint8_t* character, uint8_t* color) {
   return true;
 }
 
+std::string direct_code_for_practice() {
+  if (g_last_search.mode == Matchmaking::DIRECT && !g_last_search.connect_code.empty())
+    return shiftjis_to_utf8(g_last_search.connect_code);
+  return g_direct_codes && g_direct_codes->length() > 0 ? g_direct_codes->get(0) : std::string();
+}
+
 void init() {
   // Authentication uses shared read-only discovery in User. Mutable code history and reports
   // always stay in the configured local profile, including after a Log In rediscovery.
