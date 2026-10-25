@@ -21,6 +21,8 @@ interpolation, so an unlocked 200 Hz display shows real intermediate poses with 
 
 Nothing from the game is included. You supply your own Melee NTSC 1.02 ISO.
 
+No Monetization. No Donos. No Patreon. **FREE FOREVER**
+
 Version 0.8.5 added the **experimental Mod Update**. The launcher includes Source Port and
 Static Recomp, with an integrated Mods page. Supported 20XX TE saves and Training Mode CE
 1.4d1 run on Source Port; Akaneia runs on Static Recomp with matching Direct builds.
@@ -31,8 +33,6 @@ This project is not affiliated with, endorsed by, or supported by the Slippi tea
 HAL Laboratory. Slippi netplay compatibility is implemented from Slippi's open source code
 (GPL). Questions and bugs about this build go to this repository or the Discord below, not to
 the Slippi team.
-
-No Monetization. No Donos. No Patreon. **FREE FOREVER**
 
 **v0.8.5 Akaenia/Mod support and more DLSS5 controls** https://www.youtube.com/watch?v=126-FcptKMQ 
 
