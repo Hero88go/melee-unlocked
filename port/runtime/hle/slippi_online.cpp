@@ -181,9 +181,47 @@ static net_trace::Record g_trace_record;
 static bool g_trace_desync_pending = false;   // a checksum disagreed: marked on the next traced tick
 static bool g_trace_open = false;
 static int32_t g_trace_offset_us = 0;   // the time sync offset as last measured (every 30 frames)
+// Frame budget: sub-frames add work to the game thread every frame (about 3 ms measured), and an
+// online match adds Slippi's own code and rollbacks on top. On a slower computer that went past the
+// 16.7 ms a frame has, the game fell behind its opponent and Slippi held it back to resync: a
+// player at 165 ms ping saw 57 frames a second and inputs that felt several frames late. When 8 of
+// the last 120 frames run over 16 ms of work with sub-frames on, they are turned off until the
+// match ends. MELEE_TEST_BUDGET_MS=<ms> lowers the limit for a test.
+static uint8_t g_budget_window[120];
+static int g_budget_pos = 0, g_budget_over = 0;
+// Only from "online game starts" to the game report: the frames after the report still count as an
+// online match, and a slow results screen turned sub-frames off for the next match.
+static bool g_budget_armed = false;
+static void budget_reset() {
+  std::memset(g_budget_window, 0, sizeof g_budget_window);
+  g_budget_pos = g_budget_over = 0;
+  if (gx::subframe_suspended()) {
+    gx::set_subframe_suspended(false);
+    host::log("online: sub-frames are back on after the match");
+  }
+}
+static void budget_watch(double work_ms) {
+  static const double limit = [] {
+    const char* v = std::getenv("MELEE_TEST_BUDGET_MS");
+    const double ms = v ? std::atof(v) : 0.0;
+    return ms > 0.0 ? ms : 16.0;
+  }();
+  if (!g_budget_armed || gx::subframe_suspended() || !gx::subframes_active() || !is_online_match()) return;
+  const uint8_t over = work_ms > limit ? 1 : 0;
+  g_budget_over += over - g_budget_window[g_budget_pos];
+  g_budget_window[g_budget_pos] = over;
+  g_budget_pos = (g_budget_pos + 1) % 120;
+  if (g_budget_over >= 8) {
+    gx::set_subframe_suspended(true);
+    host::log("online: the game ran over its frame time %d times in 2 seconds with sub-frames on (last %.1f ms); "
+              "sub-frames are off for the rest of this match so it keeps 60 frames a second", g_budget_over, work_ms);
+  }
+}
+
 void trace_close_tick() {
   if (!g_trace_open) return;
   g_trace_open = false;
+  budget_watch(host::last_sim_frame_work_ms());
   g_trace_record.sim_ms = (float)host::last_sim_frame_ms();
   g_trace_record.presents = (uint16_t)std::min<uint32_t>(net_trace::take_presents(), 0xFFFFu);
   net_trace::push(g_trace_record);
@@ -192,6 +230,8 @@ void trace_close_tick() {
 // session trace file is closed. The file work is the trace's own thread's.
 void trace_end_match() {
   trace_close_tick();
+  g_budget_armed = false;
+  budget_reset();
   net_trace::file_end();
 }
 // A savestate load in the open tick. `to_frame` is the frame loaded, or kRollbackFrameUnknown. The
@@ -668,6 +708,8 @@ void handle_online_inputs(const uint8_t* payload, std::vector<uint8_t>& q) {
     host::log("slippi: online game starts, delay %d frames, direct peer to peer", (int)delay);
     g_latched_delay = (int)delay;   // the delay the game took: every later answer this match agrees with it
     g_in_online_match = true;
+    budget_reset();
+    g_budget_armed = true;
     host::input_mark_match_start();
     // Early inputs: watch the controller for the match. Sent only to peers whose build takes them.
     host::early_input::reset_stats();

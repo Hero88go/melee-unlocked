@@ -3126,6 +3126,9 @@ void settings_context_create(void* window, bool open_at_startup) {
   }
 #ifndef _WIN32
   ImGui_ImplSDL2_InitForOpenGL(static_cast<SDL_Window*>(window), SDL_GL_GetCurrentContext());
+  // The window code decides when the pointer shows (window_sdl.inl show_cursor). Without this the
+  // SDL backend turned it back on every frame, so it never hid on Linux.
+  io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
   host::window_set_message_callback([](void* w, uint32_t m, uintptr_t, intptr_t) {
     if (m != host::kSdlEventMessage) return false;
     SDL_Event e = *static_cast<SDL_Event*>(w);
