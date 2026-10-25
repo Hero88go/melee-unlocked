@@ -407,6 +407,7 @@ class D3D12Backend : public Backend {
   bool have_frame_stats_ = false;
   DXGI_FRAME_STATISTICS last_frame_stats_{};
   int variable_refresh() const override { return vrr_.state(); }
+  int frame_generation_multiplier() const override { return fg_multiplier_.load(std::memory_order_relaxed); }
   bool display_counts_readable() const override { return vrr_readable_; }
   void set_display_refresh(double hz, bool tear_free) override { vrr_nominal_hz_ = hz; tear_free_ = tear_free; }
   bool vblank_next(double after, double nominal_hz, double* when, double* period, std::string* why) override {
@@ -599,6 +600,7 @@ class D3D12Backend : public Backend {
   float dlss_mip_bias_ = 0.0f;
   uint64_t mv_draws_ = 0, mv_matched_ = 0;
   int fg_applied_ = -1; int reflex_applied_ = -1;
+  std::atomic<int> fg_multiplier_{1};   // frame_generation_multiplier(): 2..6 while generation runs
   // Reflex pacing (threaded renderer, see reflex_pacing): the frame limit Reflex should hold, what it
   // was last told, and whether this frame's token and simulation-start marker came from its sleep.
   uint32_t reflex_limit_us_ = 0, reflex_limit_applied_ = 0;
@@ -3434,6 +3436,9 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
                                        (uint32_t)client_h_, 3, (uint32_t)DXGI_FORMAT_R8G8B8A8_UNORM,
                                        (uint32_t)DXGI_FORMAT_R16G16_FLOAT, (uint32_t)DXGI_FORMAT_R32_FLOAT);
       fg_applied_ = want_fg;
+      // mode 1..3 = 2x..4x, 5 = 5x, 6 = 6x; Dynamic (4) and off leave the rendered rate alone.
+      fg_multiplier_.store(want_fg >= 1 && want_fg <= 3 ? want_fg + 1 : want_fg == 5 || want_fg == 6 ? want_fg : 1,
+                           std::memory_order_relaxed);
     }
   }
   if (!reflex_token_) streamline::pcl_marker(0);   // under Reflex pacing it was set after the sleep

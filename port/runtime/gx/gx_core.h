@@ -368,6 +368,10 @@ struct Backend {
   // display's own counts while frames come slower than the refresh: a fixed display still refreshes
   // at its full rate and repeats frames, a variable one refreshes once per frame. Render thread.
   virtual int variable_refresh() const { return -1; }
+  // NVIDIA frame generation running now with a fixed multiplier (2 to 6): the presentation loop
+  // renders that many times fewer frames, and generation fills the rest up to the target rate.
+  // 1 when it is off or in Dynamic mode (NVIDIA picks the multiplier itself).
+  virtual int frame_generation_multiplier() const { return 1; }
   // The display's counts could be read at the last look (false while Windows composes the window).
   virtual bool display_counts_readable() const { return false; }
   // From the presentation loop, every frame: the monitor's nominal refresh rate (what the verdict

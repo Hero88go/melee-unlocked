@@ -53,6 +53,7 @@ class ThreadedBackend final : public Backend {
     double refresh_check = 0;
     double last_refresh = 60.0;   // the monitor's rate as last read, for Reflex's limit
     int probe_state = 0;          // the variable refresh check below: 0 not run, 1 running, 2 done
+    int fg_logged = 1;            // frame generation multiplier last logged by the pacing below
     double probe_until = 0;
     bool reflex_slept = false;    // Reflex has already waited for the frame about to be drawn
     double render_budget = 0.004;
@@ -182,6 +183,18 @@ class ThreadedBackend final : public Backend {
         else probe_state = 2;
       }
       if (vrr == 1 && (wanted <= 0.0 || wanted > vrr_cap)) wanted = vrr_cap;
+      // NVIDIA frame generation 2x..6x: render the target rate divided by the multiplier and let
+      // generation fill the rest. Rendering at the full target left no room for generated frames,
+      // so none were shown (NVIDIA's guide: the frame limit applies to rendered frames).
+      const int fg_mult = renderer->frame_generation_multiplier();
+      if (fg_mult > 1) {
+        if (wanted <= 0.0) wanted = vrr == 1 ? vrr_cap : last_refresh;
+        wanted /= fg_mult;
+        if (fg_logged != fg_mult) {
+          fg_logged = fg_mult;
+          host::log("pacing: frame generation %dx, rendering %.0f frames a second for %.0f shown", fg_mult, wanted, wanted * fg_mult);
+        }
+      } else fg_logged = 1;
       renderer->set_display_refresh(last_refresh, vrr == 1);
       cap_period = wanted > 0.0 ? 1.0 / wanted : 0.0;
       // With Reflex on, its own limiter holds the rate (in its sleep, at the start of each frame) and
@@ -194,7 +207,7 @@ class ThreadedBackend final : public Backend {
       // Locked (no sub-frames) keeps the old path: one present per game frame, Reflex markers only.
       // On a display known to follow the frames Reflex holds the same rate as above; on one known to
       // refresh at a fixed rate, "follow the monitor" is its full refresh (V-Sync, when on, paces it).
-      const double reflex_hz = vrr == 1 || probe_state == 1 ? wanted
+      const double reflex_hz = vrr == 1 || probe_state == 1 || fg_mult > 1 ? wanted
                              : live_options.fps_cap > 0 ? live_options.fps_cap
                              : live_options.fps_cap < 0 ? (live_options.vsync ? 0.0 : vrr == 0 ? last_refresh : vrr_cap)
                              : present_uncapped ? 0.0 : 2.0 * last_refresh;
