@@ -71,7 +71,7 @@ enum {
 };
 
 static const char* const pc_plan_names[PC_P_COUNT] = {
-    "none", "idle", "walk", "dash dance", "approach", "run away", "hop", "wavedash", "crouch",
+    "ready", "standing", "walk", "dash dance", "approach", "run away", "hop", "wavedash", "crouch",
     "ground attack", "aerial", "special", "shield", "spot dodge", "roll", "jump away",
     "out of shield", "getup", "ledge", "after hitstun"};
 
@@ -748,6 +748,7 @@ void mu_pc_defaults(MuPcConfig* c)
     c->recovery = MU_PC_RECOVER_MIX;
     c->freeze = 0;
     c->ledge_delay = 30;
+    c->preset = 1;   /* these are the "Balanced" preset */
 }
 
 static const char* const pc_preset_names[] = {
@@ -773,6 +774,7 @@ void mu_pc_preset(int index, MuPcConfig* c)
     const mu_pc_u8 enabled = c->enabled;
     mu_pc_defaults(c);
     c->enabled = enabled;
+    c->preset = (mu_pc_u8) (index + 1);
     switch (index) {
     case 1:   /* stands still and only reacts to being hit */
         c->freeze = 1;

@@ -213,13 +213,15 @@ int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
     }
     driven = mu_pc_frame(c, &pc_state[slot], &v, &in);
     {
-        unsigned char payload[2], response[64];
+        static unsigned char response[4096];   /* the host's minimum reply capacity */
+        unsigned char payload[3];
         unsigned int got = 0;
         static int last_plan = -2, last_driven = -1;
         const int changed = pc_state[slot].plan != last_plan || driven != last_driven;
         if (changed || (v.frame % 15u) == 0) {   /* the Practice page shows what it is doing */
             payload[0] = (unsigned char) driven;
             payload[1] = (unsigned char) pc_state[slot].plan;
+            payload[2] = (unsigned char) v.cpu.kind;   /* the character, for its move names */
             mu_online_abi_command(CMD_PRACTICE_CPU, payload, sizeof payload, response, sizeof response, &got);
         }
         if (changed) {

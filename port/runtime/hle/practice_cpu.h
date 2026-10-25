@@ -18,7 +18,13 @@ bool from_text(const std::string& text, MuPcConfig& c);
 // Static Recomp: drive the Training CPU from the model (a hook on Fighter_procInput).
 void install_static();
 // What the CPU is doing, for the Practice page (both engines report it).
-struct Status { bool driving = false; int plan = 0; uint32_t frame = 0; };
+struct Status { bool driving = false; int plan = 0; uint32_t frame = 0; int kind = -1; };
 Status status();
-void note_status(bool driving, int plan, uint32_t frame);
+void note_status(bool driving, int plan, uint32_t frame, int kind = -1);
+// The player's own setups (Presets page): three slots saved with the settings.
+constexpr int kSlots = 3;
+bool slot(int index, MuPcConfig& out);
+void set_slot(int index, const MuPcConfig& c);
+// The special moves' names for a character (FighterKind), for the attack rows; nullptr if unknown.
+const char* special_name(int kind, int which);   // which: 0 neutral, 1 side, 2 up, 3 down
 }  // namespace practice_cpu

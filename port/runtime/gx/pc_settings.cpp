@@ -2068,6 +2068,10 @@ void load_pc_settings(RenderOptions& options, int& volume) {
         MuPcConfig pc;
         if (practice_cpu::from_text(value, pc)) practice_cpu::set_config(pc);
       }
+      else if (key.size() == 16 && key.rfind("practicecpuslot", 0) == 0 && key[15] >= '1' && key[15] <= '3') {
+        MuPcConfig pc;
+        if (practice_cpu::from_text(value, pc)) practice_cpu::set_slot(key[15] - '1', pc);
+      }
       else if (key == "onlinedelay") { int d = std::atoi(value.c_str()); if (d >= 1 && d <= 9) slippi::online::config().delay = d; }
       else if (key == "onlinedelayauto") slippi::online::config().auto_delay = value == "1";
       else if (key == "offline_delay") options.offline_delay = value == "1";
@@ -3480,7 +3484,19 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
     heading("Movement", "What it does between attacks. Weights within the group.");
     changed |= odds_group(kMoves, c.move_odds, MU_PC_MOVE_COUNT);
     heading("Attacks", "Picked when you are in range.");
-    changed |= odds_group(kAttacks, c.attack_odds, MU_PC_ATK_COUNT);
+    {
+      // The special moves show the CPU's own names once its character is known (Fox: Reflector).
+      static const char* const prefix[4] = {"Neutral B", "Side B", "Up B", "Down B"};
+      static char special[4][64];
+      const char* labels[MU_PC_ATK_COUNT];
+      for (int i = 0; i < MU_PC_ATK_COUNT; ++i) labels[i] = kAttacks[i];
+      for (int k = 0; k < 4; ++k)
+        if (const char* name = practice_cpu::special_name(st.kind, k)) {
+          std::snprintf(special[k], sizeof special[k], "%s: %s", prefix[k], name);
+          labels[MU_PC_ATK_NEUTRAL_B + k] = special[k];
+        }
+      changed |= odds_group(labels, c.attack_odds, MU_PC_ATK_COUNT);
+    }
     heading("Aerials");
     changed |= percent_row("Full hop", &c.full_hop_aerials, "Chance an aerial is full hopped instead of short hopped.");
     changed |= percent_row("Fast fall", &c.fast_fall, nullptr);
@@ -3586,6 +3602,30 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
       c.tools = tools;
       c.enabled = enabled;
       changed = true;
+    }
+    heading("Your setups", "Save everything set now, and load it again any time.");
+    for (int i = 0; i < practice_cpu::kSlots; ++i) {
+      ImGui::PushID(100 + i);
+      MuPcConfig saved;
+      const bool have = practice_cpu::slot(i, saved);
+      ImGui::AlignTextToFramePadding();
+      ImGui::Text("Setup %d", i + 1);
+      ImGui::SameLine(110);
+      if (have) ImGui::TextDisabled("saved"); else ImGui::TextDisabled("empty");
+      const float bw = 110.0f;
+      ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - 2 * bw - 22.0f);
+      if (ImGui::Button("Save here", ImVec2(bw, 30))) { practice_cpu::set_slot(i, c); changed = true; }
+      ImGui::SameLine();
+      ImGui::BeginDisabled(!have);
+      if (ImGui::Button("Load", ImVec2(bw, 30))) {
+        const uint8_t tools = c.tools;
+        c = saved;
+        c.tools = tools;
+        c.preset = 0;
+        changed = true;
+      }
+      ImGui::EndDisabled();
+      ImGui::PopID();
     }
     break;
   }
@@ -3853,7 +3893,12 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nblockcode1 " << slippi::online::config().blocked_codes[0]
        << "\nblockcode2 " << slippi::online::config().blocked_codes[1]
        << "\nblockcode3 " << slippi::online::config().blocked_codes[2]
-       << "\npracticecpu " << practice_cpu::to_text(practice_cpu::config())
+       << "\npracticecpu " << practice_cpu::to_text(practice_cpu::config());
+  for (int i = 0; i < practice_cpu::kSlots; ++i) {
+    MuPcConfig saved;
+    if (practice_cpu::slot(i, saved)) file << "\npracticecpuslot" << (i + 1) << " " << practice_cpu::to_text(saved);
+  }
+  file
        << "\nautoopenoverlay " << (options.settings_open ? 1 : 0)
        // Read since it was added and never written, so hiding the reminder lasted one session.
        << "\nsettingsreminder " << (options.settings_hint ? 1 : 0)

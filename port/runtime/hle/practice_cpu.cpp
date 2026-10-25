@@ -70,6 +70,12 @@ bool from_text(const std::string& text, MuPcConfig& c) {
   return true;
 }
 
+namespace {
+std::atomic<int> g_kind{-1};
+MuPcConfig g_slots[kSlots];
+bool g_slot_valid[kSlots] = {};
+}  // namespace
+
 Status status() {
   Status s;
   // No time limit: the Practice panel pauses the match, and it should still say what the CPU was
@@ -77,13 +83,63 @@ Status status() {
   s.driving = g_driving.load();
   s.plan = g_plan.load();
   s.frame = g_status_frame.load();
+  s.kind = g_kind.load();
   return s;
 }
-void note_status(bool driving, int plan, uint32_t frame) {
+void note_status(bool driving, int plan, uint32_t frame, int kind) {
   g_driving = driving;
-  g_plan = plan;
+  if (plan != 0) g_plan = plan;   // between two actions it shows the last one, never "none"
   g_status_frame = host::retrace_count();
+  if (kind >= 0) g_kind = kind;
   (void)frame;
+}
+
+bool slot(int index, MuPcConfig& out) {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (index < 0 || index >= kSlots || !g_slot_valid[index]) return false;
+  out = g_slots[index];
+  return true;
+}
+void set_slot(int index, const MuPcConfig& c) {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  if (index < 0 || index >= kSlots) return;
+  g_slots[index] = c;
+  g_slot_valid[index] = true;
+}
+
+const char* special_name(int kind, int which) {
+  // Neutral, side, up and down special per character (FighterKind order).
+  static const char* const names[27][4] = {
+      {"Fireball", "Cape", "Super Jump Punch", "Mario Tornado"},
+      {"Blaster", "Fox Illusion", "Fire Fox", "Reflector (shine)"},
+      {"Falcon Punch", "Raptor Boost", "Falcon Dive", "Falcon Kick"},
+      {"Giant Punch", "Headbutt", "Spinning Kong", "Hand Slap"},
+      {"Inhale", "Hammer", "Final Cutter", "Stone"},
+      {"Fire Breath", "Koopa Klaw", "Whirling Fortress", "Bowser Bomb"},
+      {"Bow", "Boomerang", "Spin Attack", "Bomb"},
+      {"Needle Storm", "Chain", "Vanish", "Transform"},
+      {"PK Flash", "PK Fire", "PK Thunder", "PSI Magnet"},
+      {"Toad", "Peach Bomber", "Parasol", "Vegetable"},
+      {"Ice Shot", "Squall Hammer", "Belay", "Blizzard"},
+      {"Ice Shot", "Squall Hammer", "Belay", "Blizzard"},
+      {"Thunder Jolt", "Skull Bash", "Quick Attack", "Thunder"},
+      {"Charge Shot", "Missile", "Screw Attack", "Bomb"},
+      {"Egg Lay", "Egg Roll", "Egg Throw", "Yoshi Bomb"},
+      {"Rollout", "Pound", "Sing", "Rest"},
+      {"Shadow Ball", "Confusion", "Teleport", "Disable"},
+      {"Fireball", "Green Missile", "Super Jump Punch", "Luigi Cyclone"},
+      {"Shield Breaker", "Dancing Blade", "Dolphin Slash", "Counter"},
+      {"Nayru's Love", "Din's Fire", "Farore's Wind", "Transform"},
+      {"Fire Bow", "Boomerang", "Spin Attack", "Bomb"},
+      {"Megavitamin", "Super Sheet", "Super Jump Punch", "Dr. Tornado"},
+      {"Blaster", "Falco Phantasm", "Fire Bird", "Reflector (shine)"},
+      {"Thunder Jolt", "Skull Bash", "Agility", "Thunder"},
+      {"Chef", "Judgment", "Fire", "Oil Panic"},
+      {"Warlock Punch", "Gerudo Dragon", "Dark Dive", "Wizard's Foot"},
+      {"Flare Blade", "Double-Edged Dance", "Blazer", "Counter"},
+  };
+  if (kind < 0 || kind >= 27 || which < 0 || which > 3) return nullptr;
+  return names[kind][which];
 }
 
 // ---------------- Static Recomp ----------------
@@ -184,7 +240,7 @@ void on_proc_input(ppc::Context& c) {
   }
   MuPcInput in;
   const int driven = mu_pc_frame(&cfg, &g_state[idx], &v, &in);
-  note_status(driven != 0, g_state[idx].plan, v.frame);
+  note_status(driven != 0, g_state[idx].plan, v.frame, v.cpu.kind);
   if (!driven) return;
   // CpuFighter at fp+0x1A88: buttons, lstick, cstick (s8), ltrigger, rtrigger (u8). Fighter_procInput
   // reads a CPU's controller from there, so writing it at entry is what the CPU holds this frame.

@@ -1541,7 +1541,7 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
         if (c == CMD_REPLAY_GATE && n == 5) { reply.push_back(replay_gate((int32_t)read_be32(p), p[4])); return true; }
         if (c == CMD_LAB_ADVANTAGE && n == 5) { training_overlay::set_advantage((int32_t)read_be32(p), p[4]); return true; }
         if (c == CMD_PRACTICE_CPU) {   // shim/mu_practice_cpu.c: the settings, or what it is doing
-          if (n == 2) { practice_cpu::note_status(p[0] != 0, p[1], 0); return true; }
+          if (n == 2 || n == 3) { practice_cpu::note_status(p[0] != 0, p[1], 0, n == 3 ? p[2] : -1); return true; }
           const MuPcConfig cfg = practice_cpu::config();
           const auto* bytes = reinterpret_cast<const uint8_t*>(&cfg);
           reply.assign(bytes, bytes + sizeof cfg);
