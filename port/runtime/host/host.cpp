@@ -213,7 +213,12 @@ void log_guest_text(const char* data, size_t len) { log_enqueue(data, len); }
 // nvngx_dlssd.dll. The player had only closed the game and was shown a crash report. Streamline's
 // own shutdown is not an option either (it blocked inside the same unload, see
 // streamline::shutdown_for_process_exit), so the unload is skipped: Windows reclaims the rest.
+static std::atomic<bool> g_process_ending{false};
+void set_process_ending() { g_process_ending.store(true); }
+bool process_ending() { return g_process_ending.load(); }
+
 [[noreturn]] void end_process(int code) {
+  set_process_ending();
   log_flush();
   std::fflush(nullptr);
   TerminateProcess(GetCurrentProcess(), (UINT)code);

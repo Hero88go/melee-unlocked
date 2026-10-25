@@ -76,6 +76,11 @@ template <class Body> void optional_work(const char* what, Body&& body) noexcept
 // Ends the process now, with everything of ours already saved, without running DLL unload code
 // (see end_process in host.cpp for why).
 [[noreturn]] void end_process(int code);
+// The game is ending on purpose (end_process, or the Source Port's shutdown). From here an exception
+// nobody catches on some other thread (a driver's or an overlay's, tearing down) ends the process
+// quietly instead of reporting a crash.
+void set_process_ending();
+bool process_ending();
 // Called by die() with its message before the process exits, so a fatal error leaves the same crash
 // report as an exception (the app registers it; the launcher offers that report).
 void set_die_hook(void (*hook)(const char* message));

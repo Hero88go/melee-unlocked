@@ -1271,6 +1271,9 @@ static int melee_main(int argc, char** argv);
 // parser gives up on) used to end the game with a bare exception code. It is reported with its own
 // text instead, so the crash report says what failed.
 [[noreturn]] static void report_unhandled() {
+  // Quitting already: NVIDIA's frame generation threw from its own thread while the process was being
+  // ended (std::system_error "device or resource busy"), and that came out as a crash report.
+  if (host::process_ending()) TerminateProcess(GetCurrentProcess(), 0);
   InterlockedExchange(&g_throw_frozen, 1);   // the rethrow below is not where it came from
   try {
     if (std::exception_ptr error = std::current_exception()) std::rethrow_exception(error);
@@ -2026,6 +2029,7 @@ static int melee_main(int argc, char** argv) {
   // The game from source: nothing below this point applies (it is the recompiled guest's boot).
   static std::unique_ptr<gx::Backend>* backend_at_exit = &backend;
   auto shutdown = [](int) {
+    host::set_process_ending();
     g_profiler.report();   // no-op without --profile
     backend_at_exit->reset();
     { uint64_t silent_ms = 0, underruns = host::audio_underruns(&silent_ms);
@@ -2158,6 +2162,13 @@ static int melee_main(int argc, char** argv) {
     ppc::call(*host::cpu, host::ram, 0x8000522Cu);
     host::log("guest returned from __start after %u retraces", host::retrace_count());
   } catch (const ExitRequested& stop) {
+    // MELEE_TEST_THROW_AT_EXIT (hidden runs): another thread throws as the game quits, as NVIDIA's
+    // frame generation did. "before" throws ahead of the mark, which must still report a crash.
+    const char* throw_at_exit = automated ? std::getenv("MELEE_TEST_THROW_AT_EXIT") : nullptr;
+    auto test_throw = [] { std::thread([] { throw std::runtime_error("device or resource busy"); }).detach(); Sleep(500); };
+    if (throw_at_exit && std::strcmp(throw_at_exit, "before") == 0) test_throw();
+    host::set_process_ending();   // tearing the renderer down can make a driver thread throw
+    if (throw_at_exit && std::strcmp(throw_at_exit, "before") != 0) test_throw();
     backend.reset();
     code = stop.code;
   } catch (const LoadContextUnwind&) {
