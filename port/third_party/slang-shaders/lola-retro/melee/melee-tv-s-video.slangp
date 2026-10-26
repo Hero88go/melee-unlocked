@@ -1,5 +1,6 @@
 # Lola Retro (MIT, see ../LICENSE) for Melee: TV over S-Video: sharper picture, clean colour.
 # From its GameCube preset: console timing 5 (13.5 MHz, 640 wide), flat screen.
+# Set up for a computer monitor as a TV was set up in a room: black level down, contrast up, lighter mask and edges.
 
 shaders = 8
 
@@ -79,8 +80,8 @@ LR_SHARP = 0.3
 LR_SAT = 1.15
 LR_TINT = 0
 LR_DEMOD = 0
-LR_BRIGHT = 0
-LR_CONTRAST = 1.05
+LR_BRIGHT = -0.03
+LR_CONTRAST = 1.3
 LR_NOISE = 0
 LR_STEADY = 1
 LR_SIG_LO = 0.18
@@ -90,7 +91,7 @@ LR_GAMMA = 2.4
 LR_PERSIST = 0.06
 LR_CONV = 0.18
 LR_MASK_TYPE = 1
-LR_MASK_STR = 0.5
+LR_MASK_STR = 0.35
 LR_MASK_TRIADS = 380
 LR_WHITE = 9300
 LR_PHOS = 4
@@ -100,8 +101,8 @@ LR_BEND = 0.3
 LR_CORNER = 0
 LR_GLOW = 0.05
 LR_GLOW_SIZE = 0.5
-LR_VIGNETTE = 0.22
-LR_OVERSCAN = 0.05
+LR_VIGNETTE = 0.1
+LR_OVERSCAN = 0.02
 LR_REFLECT = 0.1
 LR_MON_MM = 0
 LR_MON_SIZE = 15
