@@ -656,9 +656,11 @@ bool evaluate(ID3D12GraphicsCommandList* list, const EvaluateInputs& in) {
   // composited after DLSS in the present blit instead.
   const sl::BaseStructure* inputs[] = {&g_viewport, &tags[0], &tags[1], &tags[2], &tags[3]};
   const uint32_t input_count = 5;
-  if (g_fg_on) {
+  if (frame_generation_available()) {
     // Frame generation reads depth and motion vectors at Present, after this call. The game image
     // is composed into the full backbuffer, so there is no special backbuffer sub-rectangle.
+    // Tagged on every frame, not only while generation runs: generation is switched on at the Present
+    // of a match's first frame, and NGX creates it there; without that frame's tags it refused.
     sl::ResourceTag fg_tags[] = {
         sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),
         sl::ResourceTag(&mvec, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),

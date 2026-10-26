@@ -3690,11 +3690,9 @@ void D3D12Backend::prewarm_upscalers() {
       streamline::new_frame(monotonic_ids ? (uint32_t)(frame_counter_ + i) : 0xFFFFFF00u + i);
       streamline::set_constants(fc);
       if (i == 0) streamline::dlss_allocate(list_.Get());
-      if (i == 0 && opts_.frame_generation_mode > 0)
-        streamline::frame_generation_prepare(list_.Get(), opts_.frame_generation_mode, (uint32_t)efb_w_, (uint32_t)efb_h_,
-                                             (uint32_t)client_w_, (uint32_t)client_h_, 3,
-                                             (uint32_t)DXGI_FORMAT_R8G8B8A8_UNORM, (uint32_t)DXGI_FORMAT_R16G16_FLOAT,
-                                             (uint32_t)DXGI_FORMAT_R32_FLOAT);
+      // No frame generation allocation here: these warm-up frames tag no depth or motion vectors, so
+      // NGX refused to create the feature (0xBAD0000A, missing input) and generation never produced
+      // a frame afterwards. Streamline creates it at the first match Present, which has its tags.
     }
     present_efb(screen);
     // A warm-up frame the device refuses to close (one report: DLAA with the neural pass on, the
