@@ -1,11 +1,14 @@
 ﻿// SPDX-License-Identifier: GPL-2.0-or-later
 #include "pc_settings.h"
+#include <mutex>
+#include <thread>
 #include "gx_streamline.h"
 #ifdef GX_DLSS5
 #include "gx_dlss5.h"
 #endif
 #include <unordered_map>
 #include "texture_pack.h"
+#include "gx_retro.h"
 #include "video_background.h"
 #include "user_shader.h"
 #include <atomic>
@@ -2096,6 +2099,19 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
       else if (key == "playertags") options.player_tags_always = value == "1";
       else if (key == "lowpoly") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 1) options.low_poly_fighters = n; }
+      else if (key == "retro") options.retro = value == "1";
+      else if (key == "look_fighter") { int n = std::atoi(value.c_str()); if (n >= 0 && n < kSurfaceCount) options.look_fighter = n; }
+      else if (key == "look_stage") { int n = std::atoi(value.c_str()); if (n >= 0 && n < kSurfaceCount) options.look_stage = n; }
+      else if (key == "look_menus") { int n = std::atoi(value.c_str()); if (n >= 0 && n < kSurfaceCount) options.look_menus = n; }
+      else if (key == "look_unfiltered") options.look_unfiltered = value == "1";
+      else if (key == "look_own") options.look_own = value == "1";
+      else if (key == "look_colours") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 1) options.look_colours = n; }
+      else if (key == "look_background") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.look_background = n; }
+      else if (key == "look_background_rgb") options.look_background_rgb = (uint32_t)std::strtoul(value.c_str(), nullptr, 16) & 0xFFFFFFu;
+      else if (key == "stadium_frozen") options.stadium_frozen = value == "1";
+      else if (key == "look_lab_fighters") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.look_lab_fighters = n; }
+      else if (key == "look_lab_stage") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.look_lab_stage = n; }
+      else if (key == "lightweight") { int n = std::atoi(value.c_str()); if (n >= 0 && n < kLightweightLevels) options.lightweight = n; }
       else if (key == "inputoverlay") options.input_overlay = value == "1";
       else if (key == "labview") options.lab_view = value == "1";
       else if (key == "labskipscene") options.lab_skip_scene = value != "0";
@@ -2335,6 +2351,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   // pixels than the old defaults, so moving players over would look like DLSS 5 stopped working.
   (void)dlss5_defaults_version;
   RenderOptions::live_cpu_20xx() = options.cpu_20xx;
+  RenderOptions::live_stadium_frozen() = options.stadium_frozen;
   RenderOptions::live_freeze_fd() = options.freeze_fd;
   host::g_freeze_fd.store(options.freeze_fd, std::memory_order_relaxed);
   RenderOptions::live_unlock_all() = options.unlock_all;
@@ -2360,6 +2377,8 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   RenderOptions::live_mods_in_direct() = options.mods_in_direct;
   RenderOptions::live_te_options2() = options.te_options2;
   RenderOptions::live_te_menu_music().store(options.te_menu_music);
+  migrate_lightweight(options);   // files from before the "Lightweight" ladder
+  set_lightweight_level(options.lightweight);
 #ifdef GX_DLSS5
   dlss5::profile_set_folder(options.settings_path);
 #endif
@@ -3093,6 +3112,8 @@ void settings_context_create(void* window, bool open_at_startup) {
   const std::string heading_font_path = ui_source_asset_path("gd_melee", "kit/SourceSans3-Black.otf");
   if (std::filesystem::exists(heading_font_path))
     g_settings_heading_font = io.Fonts->AddFontFromFileTTF(heading_font_path.c_str(), 28.0f);
+  if (std::filesystem::exists(heading_font_path))   // the Lab view's percent, drawn large: rasterised at that size
+    lab::set_hud_font(io.Fonts->AddFontFromFileTTF(heading_font_path.c_str(), 72.0f));
   // ImGui's outline version of the old font, for scaled frames (see settings_old_font). Added last,
   // so the fonts above keep their places, and nothing is rasterised from it until it is used.
   g_settings_old_vector_font = io.Fonts->AddFontDefaultVector();
@@ -3470,7 +3491,14 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\ninputoverlayvalues " << options.input_overlay_values
        << "\ninputoverlaystick " << options.input_overlay_stick
        << "\neffects " << options.effects_level
-       << "\nlowpoly " << options.low_poly_fighters
+       << "\nlightweight " << options.lightweight
+       << "\nretro " << (options.retro ? 1 : 0)
+       << "\nlook_fighter " << options.look_fighter << "\nlook_stage " << options.look_stage
+       << "\nlook_menus " << options.look_menus << "\nlook_unfiltered " << (options.look_unfiltered ? 1 : 0) << "\nlook_own " << (options.look_own ? 1 : 0)
+       << "\nlook_colours " << options.look_colours << "\nlook_background " << options.look_background
+       << "\nlook_background_rgb " << std::hex << options.look_background_rgb << std::dec
+       << "\nstadium_frozen " << (options.stadium_frozen ? 1 : 0)
+       << "\nlook_lab_fighters " << options.look_lab_fighters << "\nlook_lab_stage " << options.look_lab_stage
        << "\nplayertags " << options.player_tags_always
        // Low spec: the switch, and the settings it is holding for the player while it is on.
        << "\nlowspec " << (options.low_spec ? 1 : 0)
@@ -3992,6 +4020,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   }
   set_hud_scales(options.stock_hud_scale, options.damage_hud_scale, gecko::option_pal_stock_icons);
   set_low_poly_fighters(options.low_poly_fighters != 0);
+  set_lightweight_level(options.lightweight);
   set_fod_reflections(options.fod_reflections);
   set_css_background_free(options.css_background_free);
   set_player_tags_always(options.player_tags_always != 0);
@@ -4168,7 +4197,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   if (kLabViewAvailable && !options.native_source && ImGui::IsKeyPressed(ImGuiKey_F3, false)) { options.lab_view = !options.lab_view; state.dirty = true; host::log("lab view: %s", options.lab_view ? "on" : "off"); }
   // Drawn first, on the background list, so every overlay and window below lands on top of it.
   // Called every frame, off or on, so lab::covering() always describes this frame.
-  lab::draw(kLabViewAvailable && options.lab_view && !options.native_source && !state.fill_window, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+  lab::set_style(options.look_lab_fighters, options.look_lab_stage);
+  const bool lab_on = options.lab_view && (kLabViewAvailable || options.look_lab_fighters != 0);   // the styles need no packs
+  lab::draw(lab_on && !options.native_source && !state.fill_window, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // 20XX TE's Input display is the same switch as the Controller overlay (te_pairs_linked), and the
   // overlay already shows the controllers: with it on, TE's own display is not drawn as well.
   const bool te_input_row = training_overlay::input_display() && !options.input_overlay;
@@ -4843,7 +4874,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 #ifdef GX_DLSS5
           options.dlss5=pr.dlss5;
 #endif
-          options.low_spec=false; changed=true;
+          options.low_spec=false; options.lightweight=0; changed=true;
         } else if (g_custom_preset.set) {
           const CustomPreset& c=g_custom_preset;
           options.efb_scale=c.efb;options.ssaa=c.ssaa;options.anisotropy=c.aniso;
@@ -4851,7 +4882,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 #ifdef GX_DLSS5
           options.dlss5=c.dlss5;
 #endif
-          options.low_spec=false;changed=true;
+          options.low_spec=false;options.lightweight=0;changed=true;
         }
       }
       if (!classic_menu && ImGui::IsItemHovered() && picked<kPresetCount)
@@ -5037,24 +5068,165 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       float used = 0, total = 0;
       if (vram_usage(&used, &total)) settings_hint("Video memory in use: %.1f / %.1f GB", used, total);
     }
+    // ---- Low poly and lightweight ----
+    // Every setting that trades looks for frame rate on slow PCs, in one sub-section: Visual effects, the
+    // Lightweight ladder and Retro (64 style). Open by default so players find it.
+    if (ImGui::CollapsingHeader("Low poly and lightweight##lightweight", ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Indent(8.0f);
+    // Looks by name. Picking one sets the Lightweight level and every look control below; changing any of them
+    // afterwards makes this read Custom.
+    {
+      int count = 0; const LookPreset* presets = look_presets(&count);
+      const char* names[24]; for (int i = 0; i < count && i < 23; ++i) names[i] = presets[i].name;
+      names[count] = "Custom";
+      const int current = look_preset_of(options);
+      int picked = current < 0 ? count : current;
+      // Crystal is only the real Crystal files, built from the player's own patch below: a stand-in from
+      // the renderer read as the normal game with muddier fighters, so without the pack it is not offered.
+      bool crystal_built = false;
+      for (const auto& pack : host::cosmetics::look_packs()) crystal_built |= pack.name == "Crystal" && pack.built;
+      static std::string crystal_name[2];
+      if (!crystal_built)
+        for (int i : {5, 6}) if (i < count) { crystal_name[i - 5] = std::string(presets[i].name) + " (build it below first)"; names[i] = crystal_name[i - 5].c_str(); }
+      if (settings_combo("Look", &picked, names, count + 1) && picked < count && (crystal_built || (picked != 5 && picked != 6))) {
+        apply_look_preset(options, picked, d3d11_available());
+        set_lightweight_level(options.lightweight);
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s\nDisplay only: safe online and in replays; the other player sees their own choice.",
+                          picked < count ? presets[picked].tip : "Your own mix of the controls below.");
+    }
     {
       const char* levels[] = {"Full", "Reduced (no sparks or glow)", "Minimal (no screen overlays)"};
-      if (settings_combo("Visual effects", &options.effects_level, levels, 3)) changed = true;
+      // Lightweight 3 and up holds effects at Minimal: shown that way, and greyed, until it is lowered.
+      const bool held = options.lightweight >= 3;
+      int shown = held ? 2 : options.effects_level;
+      ImGui::BeginDisabled(held);
+      if (settings_combo("Visual effects", &shown, levels, 3) && !held) { options.effects_level = shown; changed = true; }
+      ImGui::EndDisabled();
+      if (held) { ImGui::SameLine(); settings_hint("Set by Lightweight"); }
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Skips decorative effects during matches to help slower PCs: glow, sparks and\n"
                           "flashes (Reduced), plus full-screen overlays (Minimal). Menus, fighters, the\n"
                           "stage and the HUD always draw. Display only: safe online.");
     }
-    // The game's own far fighter models, always. Both engines; the live value reaches them through
-    // set_low_poly_fighters (the native game reads it each draw, the Static Recomp's parts hook too).
+    // "Lightweight": one ladder from the full game down to wireframe, each step keeping the ones
+    // below it. 1 to 3 are display only and change live; 4 and 5 also hold the image settings at
+    // their cheapest (the Low spec pair: what the player had is kept and given back). The hint
+    // under it is the last match frame's draw count, so a player sees what each step removes.
     {
-      const char* low_poly[] = {"Off (the game decides)", "Always"};
-      if (settings_combo("Low poly fighters", &options.low_poly_fighters, low_poly, 2)) changed = true;
+      const char* names[kLightweightLevels] = {
+          "Off", "1  Low poly fighters", "2  + No stage backgrounds", "3  + Flat shading",
+          "4  + Lowest image", "5  Wireframe"};
+      static const char* const tips[kLightweightLevels] = {
+          "The game as it is.",
+          "Fighters use the low-polygon models the game itself draws in reflections, shadows and the\n"
+          "magnifier bubble. A fighter without one keeps its full model.",
+          "Level 1, plus the stage's scenery behind the fighting area is not drawn: sky, crowds, far\n"
+          "buildings. Platforms, ledges, items and the HUD stay.",
+          "Level 2, plus no textures on the stage or the fighters: colours and lighting only. Visual\n"
+          "effects are held at Minimal.",
+          "Level 3, plus native resolution, no anti-aliasing or filtering, no DLSS, no sub-frames and\n"
+          "60 frames a second. Lowering it puts back exactly the image settings you had.",
+          "Everything drawn as lines on a plain background, with the frame cap lifted: for the\n"
+          "weakest machines, or as many frames as yours can make."};
+      int level = std::clamp(options.lightweight, 0, kLightweightLevels - 1);
+      if (settings_combo("Lightweight", &level, names, kLightweightLevels)) {
+        apply_lightweight(options, level, d3d11_available());
+        set_lightweight_level(options.lightweight);
+        changed = true;
+      }
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Always draws the low-polygon fighter models the game itself uses in the Fountain of\n"
-                          "Dreams reflection, in shadows and in the magnifier bubble, for weak PCs. A fighter\n"
-                          "without one keeps its full model.\n"
-                          "Display only: safe online and in replays; the other player sees their own choice.");
+        ImGui::SetTooltip("%s\nDisplay only: safe online and in replays; the other player sees their own choice.", tips[level]);
+      if (options.lightweight > 0) {
+        const LightweightCounts c = lightweight_last_counts();
+        if (c.drawn + c.skipped > 0)
+          settings_hint("Last match frame: %u draws, %u skipped (%d%%)", c.drawn, c.skipped,
+                        (int)(100.0 * c.skipped / (double)(c.drawn + c.skipped) + 0.5));
+      }
+    }
+    // "Retro (64 style)": the look of the Nintendo 64 versions players make of Melee: the game's own low poly
+    // fighters and every texture shrunk to 64 x 64, smoothly filtered. Combines with any Lightweight level.
+    {
+      if (settings_toggle("Retro (64 style)", &options.retro)) { set_retro_textures(options.retro); changed = true; }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Low poly fighters and every texture at the Nintendo 64's 64 x 64, for a 64 look\n"
+                          "that is also lighter on video memory. Display only: safe online and in replays.");
+    }
+    // Exact looks: Diet Classic, Diet 64 and Crystal exactly as made, built once on this PC from the player's own
+    // game disc and the published patch files (nothing of them ships with the game). The build runs on a worker
+    // thread; the line under the button says how it went.
+    {
+      static std::mutex build_mutex;
+      static std::string build_message;
+      static std::atomic<bool> building{false};
+      static char patcher_folder[512] = "";
+      const auto packs = host::cosmetics::look_packs();
+      std::string have;
+      for (const auto& pack : packs) {
+        if (!have.empty()) have += ", ";
+        have += pack.name + (pack.built ? " ready" : " not built");
+      }
+      ImGui::TextWrapped("Exact looks: %s", have.c_str());
+      const std::string active = host::cosmetics::active_look_pack();
+      const std::string chosen = exact_look_of(options);
+      if (!chosen.empty() && chosen != active)
+        settings_hint("%s applies exactly from the next start once its look is built.", chosen.c_str());
+      ImGui::InputText("Patch folder##exactlooks", patcher_folder, sizeof patcher_folder);
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The folder of the looks' patcher download (it holds the three .xdelta files).\n"
+                          "Your own game disc is patched on this PC; nothing is downloaded or shipped.");
+      ImGui::BeginDisabled(building.load() || !patcher_folder[0]);
+      if (ImGui::Button(building.load() ? "Building..." : "Build exact looks")) {
+        building = true;
+        const std::string folder = patcher_folder;
+        const std::string disc = host::options.mod_base_iso.empty() ? host::options.iso : host::options.mod_base_iso;
+        std::string tool;
+#ifdef _WIN32
+        wchar_t exe[MAX_PATH] = {};
+        if (GetModuleFileNameW(nullptr, exe, MAX_PATH))
+          tool = (std::filesystem::path(exe).parent_path() / L"tools" / L"xdelta3.exe").u8string();
+#endif
+        std::thread([folder, disc, tool] {
+          std::string message;
+          host::cosmetics::build_look_packs(folder, disc, tool, &message);
+          { std::lock_guard<std::mutex> lock(build_mutex); build_message = message; }
+          building = false;
+        }).detach();
+      }
+      ImGui::EndDisabled();
+      {
+        std::lock_guard<std::mutex> lock(build_mutex);
+        if (!build_message.empty()) ImGui::TextWrapped("%s", build_message.c_str());
+      }
+    }
+    // The look controls: what the presets set, one by one.
+    {
+      static const char* surfaces[] = {"Textured", "Retro 64 (64 x 64)", "Flat colours", "White", "Posterised", "Wireframe"};
+      if (settings_combo("Fighters", &options.look_fighter, surfaces, kSurfaceCount)) changed = true;
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the fighters are textured in a match. Flat colours: one colour per texture.");
+      if (settings_combo("Stage", &options.look_stage, surfaces, kSurfaceCount)) changed = true;
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the stage is textured in a match.");
+      if (settings_combo("Menus and HUD", &options.look_menus, surfaces, kSurfaceCount - 1)) changed = true;
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Character and stage select, HUD and pause screen pictures.");
+      if (settings_toggle("Unfiltered textures", &options.look_unfiltered)) changed = true;
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sharp texels on the treated textures, the Nintendo 64 look.");
+      static const char* colours[] = {"Original", "Port colours"};
+      if (settings_combo("Fighter colours", &options.look_colours, colours, 2)) changed = true;
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Port colours: P1 red, P2 blue, P3 yellow, P4 green, on every fighter's model.");
+      static const char* backgrounds[] = {"The stage's own", "Black", "Plain colour"};
+      if (settings_combo("Background", &options.look_background, backgrounds, 3)) changed = true;
+      if (options.look_background == 2) {
+        float rgb[3] = {((options.look_background_rgb >> 16) & 0xFF) / 255.0f, ((options.look_background_rgb >> 8) & 0xFF) / 255.0f,
+                        (options.look_background_rgb & 0xFF) / 255.0f};
+        if (ImGui::ColorEdit3("Background colour", rgb, ImGuiColorEditFlags_NoInputs)) {
+          options.look_background_rgb = ((uint32_t)(rgb[0] * 255 + 0.5f) << 16) | ((uint32_t)(rgb[1] * 255 + 0.5f) << 8) | (uint32_t)(rgb[2] * 255 + 0.5f);
+          changed = true;
+        }
+      }
+    }
+    ImGui::Unindent(8.0f);
     }
     // Creating a device and a swapchain on another API means restarting; the choice is saved and
     // read again at the next launch (see load_pc_settings and --backend).
@@ -5624,25 +5796,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     if (ImGui::SmallButton("Relearn SSS")) video_bg::relearn(1);
     target_picker(1, "SSS texture target");
 
-    // ---- Low spec ----
-    // One switch for every setting above that costs frames. Turning it on remembers what the player
-    // had; turning it off puts exactly that back, not a hardcoded default. Both halves are saved, so
-    // the switch and the remembered settings survive a restart. Everything it changes takes effect
-    // immediately except the graphics backend, which needs a new device and so a new launch.
+    // ---- Graphics backend change ----
+    // Lightweight 4 and up may pick Direct3D 11 (apply_low_spec), which needs a new device and so a
+    // new launch: say so here.
     {
-      bool low = options.low_spec;
-      if (settings_toggle("Low spec", &low)) {
-        if (low) apply_low_spec(options, d3d11_available());
-        else restore_low_spec(options);
-        changed = true;
-      }
-      ImGui::SameLine();
-      settings_hint("For integrated graphics and older laptops.");
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Puts internal resolution, anti-aliasing, anisotropic filtering, visual effects,\n"
-                          "sub-frame animation, DLSS and the frame cap at their cheapest settings.\n"
-                          "Every control above keeps working, and turning this off puts back exactly\n"
-                          "what you had before rather than the defaults.");
       // The backend is the one thing here that cannot change while the game is running.
       const RenderApi running = state.running_d3d11 ? RenderApi::D3D11 : RenderApi::D3D12;
 #ifdef _WIN32
@@ -7212,6 +7369,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         "Also keeps a Final Destination skin's own background in view. Yours alone, online too.\n"
                         "Takes effect immediately.");
     ImGui::EndDisabled();
+    // Slippi's Frozen Pokemon Stadium for offline play. It changes the match, so never online.
+    ImGui::BeginDisabled(!options.native_source || host::gameplay::vanilla_only());
+    if (settings_toggle("Freeze Pokemon Stadium (offline only)", &options.stadium_frozen)) {
+      RenderOptions::live_stadium_frozen() = options.stadium_frozen;
+      changed = true;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+      ImGui::SetTooltip("Pokemon Stadium stays on its base form all match, never transforming.\n"
+                        "Offline only: it does not apply to online matches, which follow Slippi's own rules.\n"
+                        "Replays record it and play back frozen. Source Port only.");
     ImGui::TextUnformatted("CPU players");
     ImGui::BeginDisabled(host::gameplay::vanilla_only());
     if (settings_toggle("20XX CPUs", &options.cpu_20xx)) {

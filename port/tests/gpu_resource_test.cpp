@@ -33,7 +33,7 @@ void log_memory() {}
 namespace slippi { void request_widescreen(bool) {} void request_fod_reflections(bool) {} }
 // These visual setting hooks are not exercised by the resource-pool test. Keep the production
 // D3D12 backend linkable without pulling in the full game core or generated Gecko data.
-namespace gx { void set_hud_scales(int, int, bool) {} void set_low_poly_fighters(bool) {} void set_fod_reflections(bool) {} void set_css_background_free(bool) {} void set_player_tags_always(bool) {} void set_presented_test_fill(int) {} }
+namespace gx { void set_hud_scales(int, int, bool) {} void set_low_poly_fighters(bool) {} void set_fod_reflections(bool) {} void set_css_background_free(bool) {} void set_player_tags_always(bool) {} void set_presented_test_fill(int) {} void set_lightweight_level(int) {} void lightweight_count(bool) {} void lightweight_publish_counts() {} void lightweight_debug(const Frame&, const LightweightFilter&) {} void set_look_filter(const LightweightFilter&) {} int8_t& lightweight_skip_slot(const Frame&, size_t, int) { static int8_t s; s = -1; return s; } const LightweightFilter& look_filter() { static LightweightFilter e; return e; } }
 namespace gecko { bool option_pal_stock_icons = false; }
 // This renderer regression test deliberately links the production D3D12 backend without Media
 // Foundation. Keep its video-background hooks inert so it exercises descriptor/upload behavior.

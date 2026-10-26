@@ -192,6 +192,7 @@ int mu_lab_input(void* fighter, MuLabInput* out);   /* fighter: Fighter* */
 #define MU_TE2_LOCK 0x40000u   /* the settings cannot change until this is off */
 /* (0x80000 to 0x400000 hold the L-cancel flash choices, port/runtime/abi/mu_lcancel_flash.h.) */
 #define MU_TE2_20XX_CPUS 0x800000u   /* "20XX CPUs" (Game tab): not a TE feature, carried in this word */
+#define MU_TE2_STADIUM_FROZEN 0x1000000u   /* "Freeze Pokemon Stadium": likewise a plain option */
 /* 20XX Hack Pack CPU AI (shim/mu_20xx_ai.c). mu_20xx_ai_enabled() is nonzero when the plain "20XX
  * CPUs" option is in effect (mu_option2_offline: offline, no TE save needed, never online), or when
  * MELEE_TEST_20XX_AI=1 forces it for a hidden test run; never online. mu_20xx_ai() is called
@@ -205,6 +206,9 @@ void mu_te_debug_menu_save(void);
 unsigned int mu_game_options2(void);
 int mu_te2(unsigned int feature);   /* a second-word 20XX TE feature is in effect */
 int mu_option2_offline(unsigned int bit);   /* a plain second-word option is in effect (offline, no TE master) */
+/* "Freeze Pokemon Stadium (offline only)" (Game tab, Stages): Slippi's Frozen Pokemon
+ * Stadium, offline. Never in playback: there the replay's own isFrozenPS counts. */
+int mu_stadium_frozen_option(void);
 /* 20XX TE's general conveniences (unlocks, boot rules, no title demo, C-Stick in 1P, menu tweaks):
  * on whenever TE is on, offline, outside the online menus. */
 int mu_te_general(void);

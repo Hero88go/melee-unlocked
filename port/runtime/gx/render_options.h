@@ -118,6 +118,30 @@ struct RenderOptions {
   // only: it changes DObj hidden flags and nothing the simulation or a replay reads, so it is safe
   // online and each player may differ. Both engines (ftdrawcommon.c; host.cpp parts_show_low_poly).
   int low_poly_fighters = 0;
+  // "Lightweight" 0 to 5 (gx_core.h, kLightweightLevels): the one ladder of savings shown in PC
+  // settings. Level 4 and up hold the Low spec values below (low_spec, low_spec_previous), so
+  // stepping back under 4 puts the player's own image settings back.
+  int lightweight = 0;
+  // "Retro (64 style)": textures shrunk to the Nintendo 64's 64 x 64 and the game's low poly fighters (gx_retro.h).
+  // Display only. Independent of the Lightweight ladder; the two combine.
+  bool retro = false;
+  // The look (gx_retro.h): how fighters, the stage and the menus are textured (gx::Surface: 0 textured, 1 retro 64,
+  // 2 flat colour, 3 white, 4 posterised, 5 wire), nearest-texel sampling, fighter colours (0 original, 1 port
+  // colours), the background (0 the stage's own, 1 black, 2 plain colour). Display only. Presets set them together.
+  int look_fighter = 0, look_stage = 0, look_menus = 0;
+  bool look_unfiltered = false;
+  // Our own renderer version of a look even when the exact look's pack is built (the "64 Style" preset).
+  bool look_own = false;
+  int look_colours = 0, look_background = 0;
+  uint32_t look_background_rgb = 0x2A2A40;
+  // Lab view looks (lab_view.h set_style): fighters 0 silhouettes, 1 stick figures, 2 capsules; stage 0 as
+  // drawn, 1 outline, 2 blocks. Used while lab_view is on.
+  int look_lab_fighters = 0, look_lab_stage = 0;
+  // "Freeze Pokemon Stadium (offline only)" (Game tab, Stages): it changes the match, so never online.
+  // Slippi's Frozen Pokemon Stadium, on the Source Port (MU_GAME_OPTION2_STADIUM_FROZEN); a replay
+  // records it as its isFrozenPS, so it plays back frozen here and in Slippi's player.
+  bool stadium_frozen = false;
+  static bool& live_stadium_frozen() { static bool value = false; return value; }
   // The P1 / P2 markers over the fighters stay up all match (the game shows them only at the start,
   // off screen, or with a name tag). Display only, so it is each player's own online. Both engines
   // (if/ifnametag.c; host.cpp apply_player_tags_always).
@@ -396,6 +420,95 @@ inline void restore_low_spec(RenderOptions& o) {
   o.ssaa = p.ssaa; o.anisotropy = p.anisotropy; o.effects_level = p.effects_level;
   o.dlss_mode = p.dlss_mode; o.subframe = p.subframe;
   o.low_spec = false;
+}
+
+// Moves the "Lightweight" ladder to `level`. Levels 1 to 3 are read live by the renderers and the
+// fighter draw; 4 and 5 also hold the image at its cheapest through the Low spec pair above, kept
+// and given back exactly. 5 lifts the frame cap: a wireframe frame costs almost nothing, so the
+// game shows as many as the machine can make. Leaving 5 puts the 60 cap Low spec uses back.
+inline void apply_lightweight(RenderOptions& o, int level, bool d3d11_available) {
+  level = level < 0 ? 0 : level > 5 ? 5 : level;
+  if (level >= 4 && !o.low_spec) apply_low_spec(o, d3d11_available);
+  if (level < 4 && o.low_spec) restore_low_spec(o);
+  // 4 and 5 lower the image only: the frame cap and the in-between frames (sub-frames) stay the player's own, since
+  // with sub-frames off the game presents one frame per 60 Hz tick whatever the cap (measured 10-25: Low spec's
+  // 60 cap and sub-frames off held both levels at 60 fps). 5 also lifts the cap.
+  if (level >= 4) { o.fps_cap = o.low_spec_previous.fps_cap; o.subframe = o.low_spec_previous.subframe; }
+  if (level == 5) { o.fps_cap = 0; if (o.subframe == SubFrameMode::Off) o.subframe = SubFrameMode::Authored; }
+  o.lightweight = level;
+}
+// Settings files from before the ladder: "lowpoly 1" was level 1, "lowspec 1" level 4.
+// The looks players pick by name. Each sets the Lightweight level and every look control; changing any control
+// afterwards makes the row read "Custom" (look_preset_of finds no match).
+struct LookPreset {
+  const char* name; const char* tip;
+  int lightweight, fighter, stage, menus; bool unfiltered; int colours, background, effects;
+  int lab = 0, lab_stage = 0;   // 0: the 3D scene; 1 stick figures, 2 capsules in the Lab view (stage: 1 outline, 2 blocks)
+  bool unlocked = false;        // lifts the frame cap
+  bool own = false;             // our renderer version, never the exact look's pack
+};
+inline const LookPreset* look_presets(int* count) {
+  static const LookPreset p[] = {
+    {"Off", "The game as it is.", 0, 0, 0, 0, false, 0, 0, 0},
+    {"Light", "Low poly fighters: the models the game itself uses in reflections and shadows.", 1, 0, 0, 0, false, 0, 0, 0},
+    {"Lighter", "Low poly fighters, and the stage scenery behind the fighting area is not drawn.", 2, 0, 0, 0, false, 0, 0, 0},
+    {"Diet Classic", "Low poly fighters with their own textures, the fighting area alone on black.", 2, 0, 0, 0, false, 0, 1, 1},
+    {"Diet 64", "The Nintendo 64 look: low poly fighters, every texture at 64 x 64 and unfiltered, menus too.", 1, 1, 1, 1, true, 0, 0, 1},
+    {"Crystal", "The real Crystal Melee look, built from your own Diet Melee patch: flat colour fighters and stages.", 2, 2, 2, 4, false, 0, 1, 2},
+    {"Crystal Ports", "Crystal with every fighter solid in its port colour (P1 red, P2 blue, P3 yellow, P4 green).", 2, 2, 2, 4, false, 1, 1, 2},
+    {"Wireframe", "Everything as lines on black, frame cap lifted.", 5, 5, 5, 0, false, 0, 1, 2},
+    {"Potato", "White fighters in port colours on a white fighting area, black background, lowest image, cap lifted.", 4, 3, 3, 0, false, 1, 1, 2, 0, 0, true},
+    {"Stick Figures", "Every fighter as a stick figure in its port colour, the stage as its outline. The 3D scene is not drawn.", 2, 0, 0, 0, false, 0, 0, 2, 1, 1},
+    {"Capsules", "Every fighter as rounded capsules (its hurtboxes) in its port colour, the stage as solid blocks. No 3D scene.", 2, 0, 0, 0, false, 0, 0, 2, 2, 2},
+    {"Minimal", "Stick figures on the stage outline with the frame cap lifted: the least work any look does.", 2, 0, 0, 0, false, 0, 0, 2, 1, 1, true},
+    {"64 Style", "Our own Nintendo 64 look, no patch needed: low poly fighters, every texture at 64 x 64 and unfiltered.", 1, 1, 1, 1, true, 0, 0, 1, 0, 0, false, true},
+    {"Silhouettes", "Every fighter as its real model in its port colour, so its true height and shape read, on white platforms over a plain background. No scenery.", 2, 2, 3, 0, false, 1, 2, 2},
+  };
+  *count = (int)(sizeof p / sizeof p[0]);
+  return p;
+}
+inline void apply_look_preset(RenderOptions& o, int index, bool d3d11_available) {
+  int n = 0; const LookPreset* p = look_presets(&n);
+  if (index < 0 || index >= n) return;
+  const LookPreset& l = p[index];
+  apply_lightweight(o, l.lightweight, d3d11_available);
+  if (l.unlocked) o.fps_cap = 0;
+  o.lab_view = l.lab != 0; o.look_lab_fighters = l.lab; o.look_lab_stage = l.lab_stage;
+  o.look_fighter = l.fighter; o.look_stage = l.stage; o.look_menus = l.menus; o.look_unfiltered = l.unfiltered;
+  o.look_colours = l.colours; o.look_background = l.background; o.effects_level = l.effects; o.look_own = l.own;
+}
+inline int look_preset_of(const RenderOptions& o);
+// The exact look a preset stands for, served from the player's own pack when it is built (cosmetic_mods.h
+// build_look_packs), or "" for the others.
+inline const char* exact_look_of(const RenderOptions& o) {
+  if (o.look_own) return "";
+  switch (look_preset_of(o)) {
+    case 3: return "Diet Classic";
+    case 4: return "Diet 64";
+    case 5: case 6: return "Crystal";
+    default: return "";
+  }
+}
+// The preset the current settings match, or -1 (Custom).
+inline int look_preset_of(const RenderOptions& o) {
+  int n = 0; const LookPreset* p = look_presets(&n);
+  auto same = [&](const LookPreset& l) {
+    return o.lightweight == l.lightweight && o.look_fighter == l.fighter && o.look_stage == l.stage && o.look_menus == l.menus &&
+           o.look_unfiltered == l.unfiltered && o.look_colours == l.colours && o.look_background == l.background &&
+           o.effects_level == l.effects && o.lab_view == (l.lab != 0) &&
+           (l.lab == 0 || (o.look_lab_fighters == l.lab && o.look_lab_stage == l.lab_stage)) &&
+           (!l.unlocked || o.fps_cap == 0) && o.look_own == l.own;
+  };
+  // A preset that lifts the cap first (it is the more specific one when the cap is lifted), then the rest.
+  for (int i = 0; i < n; ++i) if (p[i].unlocked && same(p[i])) return i;
+  for (int i = 0; i < n; ++i) if (!p[i].unlocked && same(p[i])) return i;
+  return -1;
+}
+
+inline void migrate_lightweight(RenderOptions& o) {
+  if (o.low_spec && o.lightweight < 4) o.lightweight = 4;
+  if (o.low_poly_fighters && o.lightweight < 1) o.lightweight = 1;
+  o.low_poly_fighters = 0;   // the ladder decides from here on
 }
 
 }  // namespace gx

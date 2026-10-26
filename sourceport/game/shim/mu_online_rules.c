@@ -56,6 +56,9 @@ int mu_ps_frozen_toggle(void)
     if (mu_online_active()) {
         return rules_frozen_stadium;
     }
+    if (mu_stadium_frozen_option()) {
+        return 1;   /* the offline option: recorded as the replay's isFrozenPS */
+    }
     if (mu_slippi_menus_enabled()) {
         return mu_slippi_sss_frozen();
     }

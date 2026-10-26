@@ -2,6 +2,7 @@
 // GX command processor: FIFO -> register state -> captured frames.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "gx_core.h"
+#include "gx_retro.h"
 #ifdef _WIN32
 #include "pc_settings_shared.h"
 #else
@@ -813,7 +814,68 @@ void set_hud_scales(int stocks_percent, int damage_percent, bool pal_stocks) {
 }
 
 void set_low_poly_fighters(bool on) { g_low_poly_fighters.store(on, std::memory_order_relaxed); }
-bool low_poly_fighters_active() { return g_low_poly_fighters.load(std::memory_order_relaxed); }
+// Lightweight level 1 and up includes the low poly fighters.
+bool low_poly_fighters_active() {
+  // An exact look shows its disc's fighters as that disc does: Crystal's costumes are the full models
+  // with their face and outfit textures, so the low poly swap stays off for it.
+  const LookLive& look = look_live();
+  if (look.exact.load(std::memory_order_relaxed) && !look.exact_low_poly.load(std::memory_order_relaxed))
+    return g_low_poly_fighters.load(std::memory_order_relaxed);
+  return g_low_poly_fighters.load(std::memory_order_relaxed) || lightweight_level() >= 1 || retro_textures_active();
+}
+
+static std::atomic<int> g_lightweight_level{0};
+static std::atomic<uint32_t> g_lw_drawn{0}, g_lw_skipped{0}, g_lw_last_drawn{0}, g_lw_last_skipped{0};
+void set_lightweight_level(int level) { g_lightweight_level.store(std::clamp(level, 0, kLightweightLevels - 1), std::memory_order_relaxed); }
+int lightweight_level() { return g_lightweight_level.load(std::memory_order_relaxed); }
+void lightweight_count(bool skipped) { (skipped ? g_lw_skipped : g_lw_drawn).fetch_add(1, std::memory_order_relaxed); }
+// Called once per submitted frame (lightweight_filter): the counts of the frame before become the
+// "last" ones, unless that frame drew nothing at all (a menu), so the hint keeps the last match's.
+void lightweight_publish_counts() {
+  const uint32_t drawn = g_lw_drawn.exchange(0, std::memory_order_relaxed), skipped = g_lw_skipped.exchange(0, std::memory_order_relaxed);
+  if (drawn + skipped == 0) return;
+  g_lw_last_drawn.store(drawn, std::memory_order_relaxed);
+  g_lw_last_skipped.store(skipped, std::memory_order_relaxed);
+}
+void lightweight_debug(const Frame& f, const LightweightFilter& e) {
+  static const bool on = [] { const char* v = std::getenv("MELEE_TEST_LIGHTWEIGHT_LOG"); return v && *v == '1'; }();
+  static uint32_t n = 0;
+  if (!on || e.level < 2 || (n++ % 600) != 0) return;
+  uint32_t world = 0, skinned = 0, owned = 0, other_camera = 0;
+  float zmin = 1e30f, zmax = -1e30f;
+  for (const auto& d : f.draws) {
+    if (!lightweight_world_draw(e, d)) { ++other_camera; continue; }
+    ++world;
+    if (d.skinned) { ++skinned; continue; }
+    if (d.owner_player != 0xFF) { ++owned; continue; }
+    if (d.first_vertex + (size_t)d.vertex_count > f.vertices.size()) continue;
+    float back = 1e30f, front = -1e30f;
+    for (uint32_t i = 0; i < d.vertex_count; ++i) {
+      const float z = lightweight_view_z(d, f.vertices[d.first_vertex + i]);
+      back = std::min(back, z); front = std::max(front, z);
+    }
+    zmin = std::min(zmin, back); zmax = std::max(zmax, front);
+  }
+  host::log("lightweight: draws %zu, world %u (skinned %u, owned %u), other cameras %u, fighters %s at z %.1f, stage z %.1f..%.1f",
+            f.draws.size(), world, skinned, owned, other_camera, e.have_fighters ? "found" : "none", e.fighter_far, zmin, zmax);
+}
+static LightweightFilter g_look_filter;
+int8_t& lightweight_skip_slot(const Frame& f, size_t index, int level) {
+  static const Frame* frame = nullptr;
+  static uint64_t sequence = ~0ull;
+  static int at_level = -1;
+  static std::vector<int8_t> slots;
+  if (frame != &f || sequence != f.sequence || at_level != level || slots.size() != f.draws.size()) {
+    frame = &f; sequence = f.sequence; at_level = level;
+    slots.assign(f.draws.size(), (int8_t)-1);
+  }
+  return slots[index];
+}
+void set_look_filter(const LightweightFilter& e) { g_look_filter = e; }
+const LightweightFilter& look_filter() { return g_look_filter; }
+LightweightCounts lightweight_last_counts() {
+  return {g_lw_last_drawn.load(std::memory_order_relaxed), g_lw_last_skipped.load(std::memory_order_relaxed)};
+}
 std::atomic<bool> g_fod_reflections{true};
 void set_fod_reflections(bool on) { g_fod_reflections.store(on, std::memory_order_relaxed); }
 bool fod_reflections_active() { return g_fod_reflections.load(std::memory_order_relaxed); }

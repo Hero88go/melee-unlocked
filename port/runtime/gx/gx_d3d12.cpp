@@ -49,6 +49,7 @@
 #include "gx_dlss5.h"
 #endif
 #include "texture_pack.h"
+#include "gx_retro.h"
 #include "video_background.h"
 #include "video_background_learning.h"
 #include "host.h"
@@ -573,6 +574,9 @@ class D3D12Backend : public Backend {
   uint32_t reserve_srvs(uint32_t count);
   void rotate_heap(D3D12_DESCRIPTOR_HEAP_TYPE type);
   ID3D12PipelineState* get_pso(const DrawCall& dc, D3D12_PRIMITIVE_TOPOLOGY_TYPE topo);
+  ID3D12Resource* white_texture();
+  ComPtr<ID3D12Resource> white_texture_;   // "Lightweight" flat shading (white_texture)
+  Surface look_surface_ = Surface::Textured;   // the look's treatment for the textures being bound (bind_textures)
   ID3D12Resource* update_video_texture(const std::shared_ptr<const video_bg::Frame>& frame,
                                        int video_slot);
   void draw_video_background(const std::shared_ptr<const video_bg::Frame>& frame,
@@ -613,7 +617,16 @@ class D3D12Backend : public Backend {
   }   // what Streamline was last told; -1 forces the first call through even when the setting is "off"
   bool xess_reset_ = true;
   bool in_match_ = false;   // the frame being submitted shows a running match (set in submit_frame)
-  EffectsFilter effects_filter_;   // "Visual effects" for the frame being submitted (set in submit_frame)
+  EffectsFilter effects_filter_;
+  // Pixel constants of each draw of the game frame being presented (execute_draw): they follow from the draw,
+  // the scale and the look alone, so an uncapped display, which presents one game frame many times, fills
+  // them once. Keyed by the frame object and its sequence; a draw's slot is filled on its first present.
+  const Frame* ps_cache_frame_ = nullptr;
+  uint64_t ps_cache_sequence_ = ~0ull;
+  int ps_cache_scale_ = 0;
+  std::vector<PSConstants> ps_cache_;
+  std::vector<uint8_t> ps_cache_filled_;
+  LightweightFilter lightweight_filter_;   // "Lightweight" for the frame being submitted (set in submit_frame)   // "Visual effects" for the frame being submitted (set in submit_frame)
   bool lab_skip_scene_ = false;   // the Lab view covers this frame and its scene is not drawn (submit_frame)
   // Whether presented_aspect's widen actually reaches anything on screen: a mode's character/stage
   // select through its results screen, not the bare 2D menu shell around it (see
@@ -1666,8 +1679,8 @@ static void describe_pipeline(D3D12_GRAPHICS_PIPELINE_STATE_DESC& pd, const PsoK
   // Logic op CLEAR/SET etc. are rare; ignore.
   // Rasterizer
   static const D3D12_CULL_MODE cull_modes[] = {D3D12_CULL_MODE_NONE, D3D12_CULL_MODE_BACK, D3D12_CULL_MODE_FRONT, D3D12_CULL_MODE_BACK};
-  pd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-  pd.RasterizerState.CullMode = cull_modes[key.cull & 3];
+  pd.RasterizerState.FillMode = (key.cull & 4) ? D3D12_FILL_MODE_WIREFRAME : D3D12_FILL_MODE_SOLID;   // Lightweight 5
+  pd.RasterizerState.CullMode = (key.cull & 4) ? D3D12_CULL_MODE_NONE : cull_modes[key.cull & 3];
   pd.RasterizerState.FrontCounterClockwise = FALSE;
   pd.RasterizerState.DepthClipEnable = TRUE;
   // Depth (reversed range: GC near = 1.0)
@@ -1804,7 +1817,8 @@ void D3D12Backend::integrate_compiled_psos() {
     psos_pending_.erase(r.key);
     if (r.vs && !vs_blobs_[r.key.vs]) vs_blobs_[r.key.vs] = r.vs;
     if (r.ps && !ps_blobs_[r.key.ps]) ps_blobs_[r.key.ps] = r.ps;
-    if (r.pso && r.key.mvec == 0 && pipeline_recipes_.size() < 16384) pipeline_recipes_.push_back(r.recipe);
+    // Wireframe pipelines (Lightweight 5, cull bit 4) are not kept: the recipe holds the game's own state only.
+    if (r.pso && r.key.mvec == 0 && !(r.key.cull & 4) && pipeline_recipes_.size() < 16384) pipeline_recipes_.push_back(r.recipe);
   }
 }
 
@@ -1911,21 +1925,24 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   // The motion-vector variant is part of the real pipeline key: it changes shader generation and the
   // render target count. Caching on the backend alone handed a draw the other variant's pipeline
   // the moment DLSS was switched on or off, so the variant belongs in the cached owner as well.
-  // Doubling keeps these ids far below the D3D11 backend's id base, so the two spaces stay disjoint.
-  const uint64_t owner = backend_id_ * 2 + (dlss_active_ ? 1u : 0u);
+  // "Lightweight" 5 draws the world as lines: bit 4 of the cull field, so it is its own pipeline, and the
+  // wire state is part of the cached owner too (a wire draw used to look its pipeline up every time).
+  // Four ids a backend keeps these far below the D3D11 backend's id base, so the two spaces stay disjoint.
+  const uint32_t wire = look_wire(lightweight_filter_, dc) ? 4u : 0u;
+  const uint64_t owner = backend_id_ * 4 + (dlss_active_ ? 2u : 0u) + (wire ? 1u : 0u);
   if (dc.cached_pipeline && dc.cached_pipeline_owner == owner) { ++g_pso_hits; return (ID3D12PipelineState*)dc.cached_pipeline; }
   Stopwatch sw;
   VSUid vsu = make_vs_uid(dc);
   PSUid psu = make_ps_uid(dc);
   vsu.motion_vectors = psu.motion_vectors = dlss_active_ ? 1u : 0u;
   uint64_t vh = vsu.hash(), ph = psu.hash();
-  PsoKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode(), (uint32_t)topo, dc.bp.zcontrol() & 7, dlss_active_ ? 1u : 0u};
+  PsoKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode() | wire, (uint32_t)topo, dc.bp.zcontrol() & 7, dlss_active_ ? 1u : 0u};
   g_prof[6] += sw.lap(); ++g_pso_lookups;   // uid build + hash
   auto it = psos_.find(key);
   g_prof[7] += sw.lap();                    // map lookup
   if (it != psos_.end()) {
     if (!it->second) return fallback_pso(key, dc, topo);   // the driver refused this pipeline
-    dc.cached_pipeline_owner = owner; dc.cached_pipeline = it->second.Get(); return it->second.Get();
+    dc.cached_pipeline_owner = owner, dc.cached_pipeline = it->second.Get(); return it->second.Get();
   }
   PipelineRecipe recipe{}; recipe.topology = (uint32_t)topo; recipe.components = dc.components;
   recipe.bp = dc.bp; std::memcpy(recipe.xf, dc.xf_regs, sizeof(recipe.xf));
@@ -1956,7 +1973,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
       auto ready = psos_.find(key);
       if (ready != psos_.end()) {
         if (!ready->second) return fallback_pso(key, dc, topo);
-        dc.cached_pipeline_owner = owner; dc.cached_pipeline = ready->second.Get(); return ready->second.Get();
+        dc.cached_pipeline_owner = owner, dc.cached_pipeline = ready->second.Get(); return ready->second.Get();
       }
     }
     ++g_pso_skips;
@@ -1969,7 +1986,7 @@ ID3D12PipelineState* D3D12Backend::get_pso(const DrawCall& dc, D3D12_PRIMITIVE_T
   psos_[key] = pso;
   if (!pso) return fallback_pso(key, dc, topo);
   if (!prewarming_ && pipeline_recipes_.size() < 4096) pipeline_recipes_.push_back(recipe);
-  dc.cached_pipeline_owner = owner; dc.cached_pipeline = pso.Get();
+  dc.cached_pipeline_owner = owner, dc.cached_pipeline = pso.Get();
   return pso.Get();
 }
 
@@ -2129,7 +2146,7 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
   const uint8_t* src = t.data->image.data();
   uint32_t lw = t.width, lh = t.height;
   const uint32_t meta[] = {t.width, t.height, t.format, t.mip_levels, t.tlut_format};
-  uint64_t key = t.data->hash ^ hash_bytes(meta, sizeof meta);
+  uint64_t key = look_key(t.data->hash ^ hash_bytes(meta, sizeof meta), look_surface_);   // each look treatment has its own entries
   auto it = textures_.find(key);
   if (it != textures_.end()) { it->second.last_used = frame_counter_; *w = it->second.width; *h = it->second.height; return it->second.resource.Get(); }
   // Recently refused for lack of video memory: missing (an empty descriptor) until its retry frame.
@@ -2163,6 +2180,8 @@ ID3D12Resource* D3D12Backend::get_texture(const TextureRef& t, uint32_t* w, uint
     }
   }
 
+  // "Retro (64 style)": a texture larger than 64 x 64 is uploaded as its small copy (gx_retro.h).
+  if (!replacement) replacement = look_replacement(t, look_surface_);
   TextureEntry e;
   const uint32_t res_w = replacement ? replacement->width : t.width;
   const uint32_t res_h = replacement ? replacement->height : t.height;
@@ -2251,12 +2270,42 @@ uint32_t D3D12Backend::reserve_srvs(uint32_t count) {
   return base;
 }
 
+// One white texel, made the first time "Lightweight" 3 asks for it. Every texture a flat-shaded
+// draw would sample reads this instead, so the game's own shader runs unchanged and shows the
+// vertex colours and lighting alone.
+ID3D12Resource* D3D12Backend::white_texture() {
+  if (white_texture_) return white_texture_.Get();
+  D3D12_HEAP_PROPERTIES hp{D3D12_HEAP_TYPE_DEFAULT};
+  D3D12_RESOURCE_DESC rd{};
+  rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D; rd.Width = 1; rd.Height = 1; rd.DepthOrArraySize = 1;
+  rd.MipLevels = 1; rd.Format = DXGI_FORMAT_R8G8B8A8_UNORM; rd.SampleDesc.Count = 1;
+  ComPtr<ID3D12Resource> res;
+  if (FAILED(device_->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&res)))) return nullptr;
+  uint8_t* cpu; D3D12_GPU_VIRTUAL_ADDRESS gpu;
+  if (!upload_ring_.alloc(256, 512, &cpu, &gpu)) return nullptr;
+  std::memset(cpu, 0xFF, 4);
+  D3D12_TEXTURE_COPY_LOCATION dst{res.Get(), D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX}; dst.SubresourceIndex = 0;
+  D3D12_TEXTURE_COPY_LOCATION srcloc{upload_ring_.resource(), D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT};
+  srcloc.PlacedFootprint.Offset = gpu - upload_ring_.resource()->GetGPUVirtualAddress();
+  srcloc.PlacedFootprint.Footprint = {DXGI_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 256};
+  list_->CopyTextureRegion(&dst, 0, 0, 0, &srcloc, nullptr);
+  D3D12_RESOURCE_BARRIER b{};
+  b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+  b.Transition = {res.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE};
+  list_->ResourceBarrier(1, &b);
+  white_texture_ = std::move(res);
+  return white_texture_.Get();
+}
+
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_textures(const DrawCall& dc) {
   TextureSetKey resources{};
+  const bool flat = lightweight_flat(lightweight_filter_, dc);   // "Lightweight" 3 and up
+  look_surface_ = look_surface(lightweight_filter_, dc);         // the look's treatment for this draw's textures
   for (int i = 0; i < 8; ++i) {
     uint32_t w = 1, h = 1;
-    if (dc.textures[i].used) resources[i] = get_texture(dc.textures[i], &w, &h);
+    if (dc.textures[i].used) resources[i] = flat ? white_texture() : get_texture(dc.textures[i], &w, &h);
   }
+  look_surface_ = Surface::Textured;   // other callers of get_texture (EFB copies, video) take the game's own
   auto existing = texture_sets_.find(resources);
   uint32_t base;
   if (existing != texture_sets_.end()) base = existing->second;
@@ -2281,7 +2330,8 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_textures(const DrawCall& dc) {
 
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
   SamplerSetKey key{};
-  for (int i = 0; i < 8; ++i) { key.mode0[i] = dc.textures[i].used ? dc.textures[i].mode0 : 0; key.mode1[i] = dc.textures[i].used ? dc.textures[i].mode1 : 0; }
+  const bool unfiltered = look_unfiltered(lightweight_filter_, dc);   // the 64 look samples nearest texels
+  for (int i = 0; i < 8; ++i) { key.mode0[i] = dc.textures[i].used ? (unfiltered ? unfiltered_mode0(dc.textures[i].mode0) : dc.textures[i].mode0) : 0; key.mode1[i] = dc.textures[i].used ? dc.textures[i].mode1 : 0; }
   auto it = sampler_sets_.find(key);
   uint32_t base;
   if (it != sampler_sets_.end()) base = it->second;
@@ -2360,6 +2410,8 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   if (lab_skip_scene_) return;
   // "Visual effects" below Full: decorative draws in a match are skipped (see skip_for_effects).
   if (skip_for_effects(effects_filter_, dc)) return;
+  // "Lightweight" 2 and up: scenery behind the play plane is not drawn.
+  if (skip_for_lightweight(lightweight_filter_, frame, dc)) return;
 
   Stopwatch sw;
   const uint32_t n = dc.vertex_count;
@@ -2464,9 +2516,21 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
   }
   std::memcpy(ccpu, &vs_constants, vs_bytes);
   if (!constant_ring_.alloc(sizeof(PSConstants), 256, &ccpu, &ps_gpu)) return;
-  PSConstants ps_constants;
-  fill_ps_constants(dc, ps_constants, scale_);
-  std::memcpy(ccpu, &ps_constants, sizeof(ps_constants));
+  const size_t draw_index = (size_t)(&dc - frame.draws.data());
+  if (draw_index < frame.draws.size()) {
+    if (ps_cache_frame_ != &frame || ps_cache_sequence_ != frame.sequence || ps_cache_scale_ != scale_ ||
+        ps_cache_filled_.size() != frame.draws.size()) {
+      ps_cache_frame_ = &frame; ps_cache_sequence_ = frame.sequence; ps_cache_scale_ = scale_;
+      if (ps_cache_.size() < frame.draws.size()) ps_cache_.resize(frame.draws.size());
+      ps_cache_filled_.assign(frame.draws.size(), 0);
+    }
+    if (!ps_cache_filled_[draw_index]) { fill_ps_constants(dc, ps_cache_[draw_index], scale_); ps_cache_filled_[draw_index] = 1; }
+    std::memcpy(ccpu, &ps_cache_[draw_index], sizeof(PSConstants));
+  } else {
+    PSConstants ps_constants;   // a copy of a draw, not the frame's own
+    fill_ps_constants(dc, ps_constants, scale_);
+    std::memcpy(ccpu, &ps_constants, sizeof(ps_constants));
+  }
   g_prof[2] += sw.lap();   // constants
   // Pipeline
   ID3D12PipelineState* pso = get_pso(dc, topo);
@@ -2514,7 +2578,8 @@ void D3D12Backend::execute_draw(const Frame& frame, const DrawCall& dc, const Dr
 void D3D12Backend::clear_efb(const EfbCopy& c) {
   float s = (float)scale_;
   D3D12_RECT r{(LONG)(c.src_x * s), (LONG)(c.src_y * s), (LONG)((c.src_x + c.src_w) * s), (LONG)((c.src_y + c.src_h) * s)};
-  float color[4] = {((c.clear_color >> 16) & 0xFF) / 255.0f, ((c.clear_color >> 8) & 0xFF) / 255.0f, (c.clear_color & 0xFF) / 255.0f, ((c.clear_color >> 24) & 0xFF) / 255.0f};
+  const uint32_t clear_colour = look_clear_colour(in_match_, c.clear_color);   // the look's background
+  float color[4] = {((clear_colour >> 16) & 0xFF) / 255.0f, ((clear_colour >> 8) & 0xFF) / 255.0f, (clear_colour & 0xFF) / 255.0f, ((clear_colour >> 24) & 0xFF) / 255.0f};
   D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv_heap_->GetCPUDescriptorHandleForHeapStart(); rtv.ptr += 3 * rtv_size_;
   list_->ClearRenderTargetView(rtv, color, 1, &r);
   list_->ClearDepthStencilView(dsv_heap_->GetCPUDescriptorHandleForHeapStart(), D3D12_CLEAR_FLAG_DEPTH, 1.0f - (float)c.clear_z / 16777215.0f, 0, 1, &r);
@@ -3229,7 +3294,10 @@ void D3D12Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   video_bg::begin_frame(frame.scene_major, frame.scene_minor);
   set_css_scene(video_bg::learning::scene_slot(frame.scene_major, frame.scene_minor) == 0);
   in_match_ = frame_in_match(frame);
-  effects_filter_ = effects_filter(frame, opts_.effects_level);
+  set_lightweight_level(opts_.lightweight);
+  publish_look(opts_);
+  effects_filter_ = effects_filter(frame, lightweight_effects_level(opts_.effects_level, opts_.lightweight));
+  lightweight_filter_ = lightweight_filter(frame, opts_.lightweight);
   widenable_scene_ = frame_has_widenable_scene(frame);
   integrate_compiled_psos();
   if (opts_.anisotropy != anisotropy_applied_) { anisotropy_applied_ = opts_.anisotropy; wait_gpu(); sampler_sets_.clear(); }

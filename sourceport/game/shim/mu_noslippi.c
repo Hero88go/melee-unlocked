@@ -113,7 +113,8 @@ int mu_online_frozen_stadium(void) { return rules_frozen_stadium; }
 int mu_online_rules_is_teams(void) { return rules_is_teams; }
 int mu_online_rules_local_port(void) { return rules_local_port; }
 /* Read only under MU_RC_PS_FROZEN_CHECK, which this build never turns on. */
-int mu_ps_frozen_toggle(void) { return mu_online_active() ? rules_frozen_stadium : 0; }
+int mu_stadium_frozen_option(void);   /* shim/mu_te.c */
+int mu_ps_frozen_toggle(void) { return mu_online_active() ? rules_frozen_stadium : mu_stadium_frozen_option(); }
 
 /* ---- replay playback and recording: none ---- */
 
@@ -125,7 +126,7 @@ int mu_replay_terminated(void) { return 0; }
 int mu_replay_stock_steal(int pad_port) { (void) pad_port; return 0; }
 void mu_replay_input(Fighter* fp) { (void) fp; }
 void mu_replay_post_frame(Fighter* fp) { (void) fp; }
-int mu_replay_ps_frozen(void) { return 0; }
+int mu_replay_ps_frozen(void) { return mu_stadium_frozen_option(); }   /* no playback: the offline option */
 void mu_replay_online_start(StartMeleeData* data, const unsigned char* msrb) { (void) data; (void) msrb; }
 void mu_replay_flush_frame(void) {}
 void mu_replay_lcancel_reset(Fighter* fp) { (void) fp; }

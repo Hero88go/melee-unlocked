@@ -1121,6 +1121,15 @@ void prepare_online_match_state(std::vector<uint8_t>& q) {
       stage_id = static_cast<uint16_t>(Matchmaking::local_peer.test_stage);
       host::log("slippi: local regression match stage %u", stage_id);
     }
+    // A selection can arrive marked "stage picked" with stage 0, which is no stage (B-528: game 3 of a set; the stage
+    // load found no music for it and stopped at ground.c). Both games then take the same legal stage, chosen by the
+    // rng offset both sides already agree on, instead of starting a match on nothing.
+    if (stage_id == 0) {
+      static const uint16_t kLegal[] = {2, 3, 8, 28, 31, 32};   // FoD, Stadium, Yoshi's, Dream Land, Battlefield, FD
+      const uint32_t agreed = decider ? lps.rng_offset : rps[0].rng_offset;
+      stage_id = kLegal[agreed % 6];
+      host::log("slippi: the selections named no stage (0); both games take stage %u", (unsigned)stage_id);
+    }
     if (Matchmaking::IsFixedRulesMode(g_last_search.mode)) {
       if (!local_char_ok) { cleanup_connection(); g_forced_error = "The character you selected is not allowed in this mode"; prepare_online_match_state(q); return; }
       if (!remote_char_ok) { cleanup_connection(); prepare_online_match_state(q); return; }

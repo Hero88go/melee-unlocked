@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <limits>
 #include <chrono>
 #include <cctype>
 #include <cfloat>
@@ -83,6 +84,12 @@ struct Frame {
   // The stage's live collision, read from the game at the end of the frame. Empty if it could not
   // be read, in which case the view falls back to Slippi Lab's fixed outlines.
   std::vector<StageLine> stage_lines;
+  // Each fighter's hurtbox capsules this frame (world units): the stick figure and capsule looks.
+  struct Capsule { float ax, ay, bx, by, r; };
+  std::vector<Capsule> capsules[4][2];
+  // Each fighter's skeleton this frame: one segment from every joint to its parent (world units).
+  struct Bone { float ax, ay, bx, by; };
+  std::vector<Bone> bones[4][2];
 };
 
 // Simulation-thread state.
@@ -96,6 +103,8 @@ std::mutex g_mutex;
 GameInfo g_info;
 Frame g_shown;
 bool g_in_match = false;
+std::atomic<int> g_fighter_style{0}, g_stage_style{0};   // set_style
+ImFont* g_hud_font = nullptr;   // set_hud_font
 uint64_t g_match_serial = 0;   // bumps each game start, so the camera starts fresh
 std::chrono::steady_clock::time_point g_last_commit{};
 
@@ -252,6 +261,68 @@ void read_stage_lines(std::vector<StageLine>& out) {
   }
 }
 
+// ---- Hurtbox capsules (read only) ----
+// player_slots (0x80453080, 0xE90 bytes a player): +0xB0 the fighter entity, +0xB4 the follower
+// (Nana). The entity's user data (+0x2C) is the Fighter: +0x119E the capsule count, +0x11A0 the
+// capsules, 0x4C bytes each: scale at +0x1C, world a_pos at +0x28, b_pos at +0x34. The game updates
+// them every frame where it checks hits, so they are exactly where the fighter is.
+constexpr uint32_t kPlayerSlots = 0x80453080, kPlayerStride = 0xE90;
+
+// The fighter's joint tree (read only): the entity's root joint (+0x28), each HSD_JObj's next (+0x08),
+// parent (+0x0C) and child (+0x10), and its world matrix (+0x44, translation x at +0x50, y at +0x60)
+// as the game set it up for this frame's drawing. The first four levels (top, translation, the two
+// rotation joints, and what hangs off them, one of which stands at the feet) would draw a line from
+// the hip to the ground, so their segments are left out. Segments under 0.6 units (joints on top of
+// each other, the fingers) are left out too, so a hand reads as one hand.
+void read_skeleton(uint32_t entity, std::vector<Frame::Bone>& out) {
+  out.clear();
+  struct Item { uint32_t jobj; int depth; };
+  Item stack[192];
+  int top = 0, seen = 0;
+  const uint32_t root = guest_span(entity, 0x30) ? guest32(entity + 0x28) : 0;
+  if (guest_span(root, 0x88)) stack[top++] = {root, 0};
+  while (top > 0 && seen++ < 192) {
+    const Item it = stack[--top];
+    const uint32_t next = guest32(it.jobj + 0x08), child = guest32(it.jobj + 0x10), parent = guest32(it.jobj + 0x0C);
+    if (next && top < 192 && guest_span(next, 0x88)) stack[top++] = {next, it.depth};
+    if (child && top < 192 && guest_span(child, 0x88)) stack[top++] = {child, it.depth + 1};
+    static const bool dump = std::getenv("MELEE_TEST_LAB_BONES") != nullptr;   // tests: the joints of one frame
+    static int dumped = 0;
+    if (dump && dumped < 200 && g_building.number >= 0)
+      ++dumped, host::log("lab bones: jobj %08X depth %d at %.1f %.1f parent %08X", it.jobj, it.depth,
+                          guestf(it.jobj + 0x50), guestf(it.jobj + 0x60), parent);
+    if (it.depth < 5 || !guest_span(parent, 0x88)) continue;
+    const Frame::Bone b{guestf(parent + 0x50), guestf(parent + 0x60), guestf(it.jobj + 0x50), guestf(it.jobj + 0x60)};
+    if (!std::isfinite(b.ax) || !std::isfinite(b.ay) || !std::isfinite(b.bx) || !std::isfinite(b.by)) continue;
+    const float len = std::hypot(b.bx - b.ax, b.by - b.ay);
+    if (len > 0.6f && len < 30.0f) out.push_back(b);
+  }
+}
+
+void read_capsules(Frame& f) {
+  for (int port = 0; port < 4; ++port)
+    for (int fol = 0; fol < 2; ++fol) {
+      auto& out = f.capsules[port][fol];
+      out.clear();
+      f.bones[port][fol].clear();
+      const uint32_t slot = kPlayerSlots + kPlayerStride * port + 0xB0 + 4 * fol;
+      if (!guest_span(slot, 4)) continue;
+      const uint32_t entity = guest32(slot);
+      if (!guest_span(entity, 0x30)) continue;
+      const uint32_t fp = guest32(entity + 0x2C);
+      if (!guest_span(fp, 0x11A0 + 15 * 0x4C)) continue;
+      const uint32_t n = host::ram[fp + 0x119E - kRamBase];
+      for (uint32_t i = 0; i < n && i < 15; ++i) {
+        const uint32_t c = fp + 0x11A0 + 0x4C * i;
+        Frame::Capsule cap{guestf(c + 0x28), guestf(c + 0x2C), guestf(c + 0x34), guestf(c + 0x38), guestf(c + 0x1C)};
+        if (!std::isfinite(cap.ax) || !std::isfinite(cap.ay) || !std::isfinite(cap.bx) || !std::isfinite(cap.by) ||
+            !std::isfinite(cap.r) || cap.r <= 0 || cap.r > 50) continue;
+        out.push_back(cap);
+      }
+      read_skeleton(entity, f.bones[port][fol]);
+    }
+}
+
 void commit() {
   const int32_t f = g_building.number;
   for (int port = 0; port < 4; ++port) {
@@ -283,6 +354,7 @@ void commit() {
   g_building.fod_left = g_fod_left;
   g_building.fod_right = g_fod_right;
   read_stage_lines(g_building.stage_lines);
+  read_capsules(g_building);
   std::lock_guard<std::mutex> lock(g_mutex);
   g_shown = g_building;
   g_last_commit = std::chrono::steady_clock::now();
@@ -305,7 +377,7 @@ void feed(const uint8_t* e, uint32_t size) {
         port.external = e[0x65 + 0x24 * i];
         port.shade = e[0x6C + 0x24 * i];
         port.team = e[0x6E + 0x24 * i];
-        if (port.present && port.external < 26)
+        if (port.present && port.external < 26 && g_fighter_style.load(std::memory_order_relaxed) == 0)   // the styles need no pack
           for (int8_t id : kInternalByExternal[port.external]) if (id >= 0) request_pack(id);
       }
       for (auto& slot : g_history) for (auto& port : slot) for (auto& pf : port) pf.present = false;
@@ -747,6 +819,92 @@ void draw_stage(ImDrawList* dl, const View& v, const GameInfo& info, const Frame
   dl->AddRect(v(shape->bz_min.x, shape->bz_max.y), v(shape->bz_max.x, shape->bz_min.y), stage, 0, 0, std::max(1.0f, v.px));
 }
 
+// Stick figure: a thick line through each capsule with round ends, so limbs meet at the joints the
+// way they do in the game's hurtboxes; a capsule that is a ball (both ends together: the head, hands)
+// becomes a filled dot, the head the largest, so the head reads as a head.
+void draw_capsule_sticks(ImDrawList* dl, const View& v, const std::vector<Frame::Capsule>& caps, ImU32 col) {
+  for (const auto& c : caps) {
+    const float len = std::hypot(c.bx - c.ax, c.by - c.ay);
+    const float half = std::max(1.5f, c.r * 0.4f * v.px);
+    if (len < 0.5f) {
+      dl->AddCircleFilled(v(c.ax, c.ay), std::max(2.5f, c.r * 0.85f * v.px), col, 0);
+      continue;
+    }
+    dl->AddLine(v(c.ax, c.ay), v(c.bx, c.by), col, 2 * half);
+    dl->AddCircleFilled(v(c.ax, c.ay), half, col, 0);
+    dl->AddCircleFilled(v(c.bx, c.by), half, col, 0);
+  }
+}
+
+// Stick figure with its body: the hurtboxes filled in a pale tint of the port colour (the size and shape
+// the game hits), the skeleton on top in the full colour, and the head (the largest ball hurtbox) as a
+// ring. Without a skeleton (it could not be read), the hurtboxes as sticks.
+ImU32 mix_with(uint32_t a, uint32_t b, float t) {
+  auto ch = [&](int s) { return (uint32_t)(((a >> s) & 0xFF) * (1 - t) + ((b >> s) & 0xFF) * t + 0.5f) << s; };
+  return rgb(ch(16) | ch(8) | ch(0));
+}
+
+void draw_stick_figure(ImDrawList* dl, const View& v, const std::vector<Frame::Capsule>& caps,
+                       const std::vector<Frame::Bone>& bones, uint32_t colour) {
+  const ImU32 col = rgb(colour), body = mix_with(colour, kBackground, 0.78f);
+  if (bones.empty()) { draw_capsule_sticks(dl, v, caps, col); return; }
+  for (const auto& c : caps) {
+    const float r = std::max(1.0f, c.r * v.px);
+    dl->AddCircleFilled(v(c.ax, c.ay), r, body, 0);
+    if (std::hypot(c.bx - c.ax, c.by - c.ay) >= 0.5f) {
+      dl->AddCircleFilled(v(c.bx, c.by), r, body, 0);
+      dl->AddLine(v(c.ax, c.ay), v(c.bx, c.by), body, 2 * r);
+    }
+  }
+  const float half = std::max(1.25f, 0.32f * v.px);
+  for (const auto& b : bones) {
+    dl->AddLine(v(b.ax, b.ay), v(b.bx, b.by), col, 2 * half);
+    dl->AddCircleFilled(v(b.bx, b.by), half, col, 8);
+  }
+  const Frame::Capsule* head = nullptr;
+  for (const auto& c : caps)
+    if (std::hypot(c.bx - c.ax, c.by - c.ay) < 0.5f && (!head || c.r > head->r)) head = &c;
+  if (head) {
+    const float r = std::max(3.0f, head->r * 0.8f * v.px);
+    dl->AddCircleFilled(v(head->ax, head->ay), r, body, 0);
+    dl->AddCircle(v(head->ax, head->ay), r, col, 0, 2 * half);
+  }
+}
+
+// Capsules: each one filled, round ends, a little transparent so overlaps read as one body.
+void draw_capsule_fighter(ImDrawList* dl, const View& v, const std::vector<Frame::Capsule>& caps, ImU32 col) {
+  const ImU32 fill = (col & 0x00FFFFFFu) | 0xD0000000u;
+  for (const auto& c : caps) {
+    const float r = std::max(1.0f, c.r * v.px);
+    dl->AddCircleFilled(v(c.ax, c.ay), r, fill, 0);
+    if (std::hypot(c.bx - c.ax, c.by - c.ay) >= 0.5f) {
+      dl->AddCircleFilled(v(c.bx, c.by), r, fill, 0);
+      dl->AddLine(v(c.ax, c.ay), v(c.bx, c.by), fill, 2 * r);
+    }
+  }
+}
+
+// Blocks: floors and platforms as solid slabs hanging below their line (platforms thin, floors deep),
+// walls as thick lines. The live collision, so moving platforms and Stadium's forms come along.
+void draw_stage_blocks(ImDrawList* dl, const View& v, const Frame& f) {
+  const ImU32 stage = rgb(kStage), edge = (stage & 0x00FFFFFFu) | 0x80000000u;
+  // Not every stage flags its pass-through platforms, so a floor above the lowest one (the main
+  // stage's top) is drawn as a thin ledge too.
+  float lowest = std::numeric_limits<float>::max();
+  for (const StageLine& l : f.stage_lines)
+    if (l.floor && !l.platform) lowest = std::min(lowest, std::min(l.y0, l.y1));
+  for (const StageLine& l : f.stage_lines) {
+    if (l.platform || l.floor) {
+      const bool ledge = l.platform || std::min(l.y0, l.y1) > lowest + 4.0f;
+      const float depth = ledge ? 2.5f : 12.0f;
+      const ImVec2 q[4] = {v(l.x0, l.y0), v(l.x1, l.y1), v(l.x1, l.y1 - depth), v(l.x0, l.y0 - depth)};
+      dl->AddConvexPolyFilled(q, 4, stage);
+    } else {
+      dl->AddLine(v(l.x0, l.y0), v(l.x1, l.y1), edge, std::max(1.0f, 1.5f * v.px));
+    }
+  }
+}
+
 void draw_hexagon_ring(ImDrawList* dl, const View& v, float x, float y, float r, float hole, ImU32 col) {
   const float sx = std::sin(2 * kPi / 6);
   const ImVec2 off[6] = {{0, 1}, {sx, 0.5f}, {sx, -0.5f}, {0, -1}, {-sx, -0.5f}, {-sx, 0.5f}};
@@ -898,26 +1056,33 @@ void draw_hud(ImDrawList* dl, const GameInfo& info, const Frame& f, float w, flo
   int ports[4], count = 0;
   for (int i = 0; i < 4; ++i) if (info.ports[i].present && f.players[i][0].present) ports[count++] = i;
   if (!count) return;
-  ImFont* font = ImGui::GetFont();
-  const float size = std::clamp(h * 0.06f, 18.0f, 96.0f);
+  // Its own strip along the bottom, so the stage's lines never run through it: one card a player,
+  // the percent large in a heavy face with the "%" smaller beside it (as the game sets it), the
+  // stocks as dots under it.
+  ImFont* font = g_hud_font ? g_hud_font : ImGui::GetFont();
+  const float size = std::clamp(h * 0.095f, 26.0f, 140.0f), strip = size * 1.6f;
+  dl->AddRectFilled(ImVec2(0, h - strip), ImVec2(w, h), rgb(0xE2E8F0));
+  dl->AddLine(ImVec2(0, h - strip), ImVec2(w, h - strip), rgb(0xCBD5E1), std::max(1.0f, size * 0.03f));
   for (int k = 0; k < count; ++k) {
     const int port = ports[k];
     const PlayerFrame& p = f.players[port][0];
-    const float cx = w * (k + 1) / (count + 1), base = h - size * 1.6f;
-    char text[16];
-    std::snprintf(text, sizeof text, "%d%%", (int)std::floor(std::max(0.0f, p.percent)));
-    const ImVec2 ts = font->CalcTextSizeA(size, FLT_MAX, 0, text);
-    const ImVec2 at(cx - ts.x / 2, base);
-    const ImU32 col = rgb(player_color(info, port, false));
-    dl->AddText(font, size, ImVec2(at.x + 2, at.y + 2), rgb(0x000000, 0.35f), text);
-    dl->AddText(font, size, at, col, text);
-    const float r = size * 0.12f, gap = r * 2.8f;
-    const float sx = cx - gap * (p.stocks - 1) / 2.0f;
-    for (int s = 0; s < p.stocks && s < 8; ++s) {
-      const ImVec2 c(sx + gap * s, base + ts.y + r * 1.6f);
-      dl->AddCircleFilled(c, r, col);
-      dl->AddCircle(c, r, rgb(0x000000), 0, 1.0f);
-    }
+    const uint32_t colour = player_color(info, port, false);
+    const ImU32 col = rgb(colour), dark = rgb(0x0F172A, 0.22f);
+    const float cx = w * (k + 1) / (count + 1);
+    char number[16];
+    std::snprintf(number, sizeof number, "%d", (int)std::floor(std::max(0.0f, p.percent)));
+    const float small = size * 0.55f;
+    const ImVec2 ns = font->CalcTextSizeA(size, FLT_MAX, 0, number), ps = font->CalcTextSizeA(small, FLT_MAX, 0, "%");
+    const float top = h - strip + size * 0.08f, left = cx - (ns.x + ps.x) / 2;
+    const float shadow = std::max(1.0f, size * 0.025f);
+    dl->AddText(font, size, ImVec2(left + shadow, top + shadow), dark, number);
+    dl->AddText(font, size, ImVec2(left, top), col, number);
+    const ImVec2 pct(left + ns.x + size * 0.03f, top + ns.y - ps.y - size * 0.06f);
+    dl->AddText(font, small, ImVec2(pct.x + shadow * 0.7f, pct.y + shadow * 0.7f), dark, "%");
+    dl->AddText(font, small, pct, col, "%");
+    const float r = size * 0.09f, gap = r * 2.7f;
+    const float sx = cx - gap * (p.stocks - 1) / 2.0f, sy = top + ns.y + r * 1.4f;
+    for (int s = 0; s < p.stocks && s < 8; ++s) dl->AddCircleFilled(ImVec2(sx + gap * s, sy), r, col);
   }
 }
 
@@ -952,13 +1117,34 @@ void draw(bool enabled, float width, float height) {
   // Covers the game image entirely; the game still renders underneath (and the other player's
   // game is untouched), this only decides what this window shows.
   dl->AddRectFilled(ImVec2(0, 0), ImVec2(width, height), rgb(kBackground));
-  draw_stage(dl, v, info, f);
-  for (int port = 0; port < 4; ++port) {
-    if (f.players[port][0].present) draw_player(dl, v, info, f.players[port][0], port, false);
-    if (f.players[port][1].present) draw_player(dl, v, info, f.players[port][1], port, true);
-  }
+  const int stage_style = g_stage_style.load(std::memory_order_relaxed);
+  const int fighter_style = g_fighter_style.load(std::memory_order_relaxed);
+  if (stage_style == 1 && !f.stage_lines.empty()) draw_stage_lines(dl, v, f);
+  else if (stage_style == 2 && !f.stage_lines.empty()) draw_stage_blocks(dl, v, f);
+  else draw_stage(dl, v, info, f);
+  for (int port = 0; port < 4; ++port)
+    for (int fol = 0; fol < 2; ++fol) {
+      const PlayerFrame& p = f.players[port][fol];
+      if (!p.present) continue;
+      const auto& caps = f.capsules[port][fol];
+      if (fighter_style != 0 && !caps.empty()) {
+        if (fighter_style == 1) draw_stick_figure(dl, v, caps, f.bones[port][fol], player_color(info, port, fol == 1));
+        else draw_capsule_fighter(dl, v, caps, rgb(player_color(info, port, fol == 1)));
+      } else {
+        draw_player(dl, v, info, p, port, fol == 1);
+      }
+    }
   draw_items(dl, v, f);
   draw_hud(dl, info, f, width, height);
 }
+
+void set_style(int fighters, int stage) {
+  g_fighter_style.store(fighters, std::memory_order_relaxed);
+  g_stage_style.store(stage, std::memory_order_relaxed);
+}
+
+void set_hud_font(ImFont* font) { g_hud_font = font; }
+
+bool styles_on() { return g_fighter_style.load(std::memory_order_relaxed) != 0; }
 
 }  // namespace lab

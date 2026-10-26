@@ -14,6 +14,8 @@
 #pragma once
 #include <cstdint>
 
+struct ImFont;
+
 namespace lab {
 
 // Simulation thread: one Slippi recording event, command byte first, exactly as the EXI device
@@ -23,6 +25,17 @@ void feed(const uint8_t* event, uint32_t size);
 // Render thread, between ImGui::NewFrame and ImGui::Render. Covers the window when enabled and a
 // match is in progress; does nothing otherwise, so menus and the character select stay normal.
 void draw(bool enabled, float width, float height);
+
+// Looks drawn by this view (PC settings > Low poly and lightweight). Fighters: 0 silhouettes (the
+// default), 1 stick figures, 2 capsules, both from the fighters' hurtbox capsules (read each frame).
+// Stage: 0 as before, 1 outline (the live collision lines only), 2 blocks (floors and platforms
+// filled into solid shapes). Display only.
+void set_style(int fighters, int stage);
+// A stick figure or capsule look is chosen: those draw from the live hurtboxes and need no
+// silhouette packs, so the view runs for them while the silhouette view stays hidden.
+bool styles_on();
+// The heavy font the view's HUD draws its percent with (loaded large by the settings UI). Null: ImGui's default.
+void set_hud_font(ImFont* font);
 
 // True while a match is running and the view has a frame to show.
 bool match_in_progress();

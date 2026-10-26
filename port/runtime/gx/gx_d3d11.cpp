@@ -56,6 +56,7 @@
 #include "user_shader.h"
 #include "gx_texture.h"
 #include "texture_pack.h"
+#include "gx_retro.h"
 #include "video_background.h"
 #include "video_background_learning.h"
 #include "host.h"
@@ -387,6 +388,10 @@ class D3D11Backend : public Backend {
   TextureEntry* get_texture(const TextureRef& t);
   ID3D11SamplerState* get_sampler(uint32_t mode0, uint32_t mode1);
   void bind_textures(const DrawCall& dc);
+  ID3D11ShaderResourceView* white_texture();
+  ComPtr<ID3D11ShaderResourceView> white_srv_;   // "Lightweight" flat shading
+  LightweightFilter lightweight_filter_;          // "Lightweight" for the frame being submitted
+  Surface look_surface_ = Surface::Textured;      // the look's treatment for the textures being bound
   void execute_copy(const EfbCopy& copy);
   void present_efb(const EfbCopy& copy);
   void clear_efb(const EfbCopy& copy);
@@ -993,12 +998,12 @@ ID3D11DepthStencilState* D3D11Backend::depth_state(uint32_t zmode) {
 }
 
 ID3D11RasterizerState* D3D11Backend::raster_state(uint32_t cull) {
-  cull &= 3;
+  cull &= 7;   // bit 4: "Lightweight" wireframe
   auto it = raster_states_.find(cull);
   if (it != raster_states_.end()) return it->second.Get();
   static const D3D11_CULL_MODE cull_modes[] = {D3D11_CULL_NONE, D3D11_CULL_BACK, D3D11_CULL_FRONT, D3D11_CULL_BACK};
   D3D11_RASTERIZER_DESC rd{};
-  rd.FillMode = D3D11_FILL_SOLID; rd.CullMode = cull_modes[cull];
+  rd.FillMode = (cull & 4) ? D3D11_FILL_WIREFRAME : D3D11_FILL_SOLID; rd.CullMode = (cull & 4) ? D3D11_CULL_NONE : cull_modes[cull & 3];
   rd.FrontCounterClockwise = FALSE; rd.DepthClipEnable = TRUE; rd.ScissorEnable = TRUE;
   ComPtr<ID3D11RasterizerState> state;
   if (FAILED(device_->CreateRasterizerState(&rd, &state))) return blit_raster_.Get();
@@ -1204,16 +1209,21 @@ void main(out float4 ocol0 : SV_Target0, in float4 rawpos : SV_Position, in floa
 }
 
 Pipeline* D3D11Backend::get_pipeline(const DrawCall& dc, uint32_t topo_type, D3D11_PRIMITIVE_TOPOLOGY topology) {
-  if (dc.cached_pipeline && dc.cached_pipeline_owner == backend_id_) { ++g_pipe_hits; return (Pipeline*)dc.cached_pipeline; }
+  // "Lightweight" 5 draws the world as lines: bit 4 of the cull field, so it is its own pipeline,
+  // and never left in the draw's cache, where a later solid lookup would find it.
+  const uint32_t wire = look_wire(lightweight_filter_, dc) ? 4u : 0u;
+  // The wire state is part of the cached owner, so wire draws keep their pipeline too.
+  const uint64_t owner = backend_id_ * 2 + (wire ? 1u : 0u);
+  if (dc.cached_pipeline && dc.cached_pipeline_owner == owner) { ++g_pipe_hits; return (Pipeline*)dc.cached_pipeline; }
   Stopwatch sw;
   VSUid vsu = make_vs_uid(dc);
   PSUid psu = make_ps_uid(dc);
   uint64_t vh = vsu.hash(), ph = psu.hash();
-  PipeKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode(), topo_type, dc.bp.zcontrol() & 7};
+  PipeKey key{vh, ph, dc.bp.blendmode() & 0xFFFF, dc.bp.zmode() & 0x1F, dc.bp.cullmode() | wire, topo_type, dc.bp.zcontrol() & 7};
   g_prof[6] += sw.lap(); ++g_pipe_lookups;
   auto it = pipelines_.find(key);
   g_prof[7] += sw.lap();
-  if (it != pipelines_.end()) { dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = it->second.get(); return it->second.get(); }
+  if (it != pipelines_.end()) { dc.cached_pipeline_owner = owner, dc.cached_pipeline = it->second.get(); return it->second.get(); }
   PipelineRecipe recipe{}; recipe.topology = topo_type; recipe.components = dc.components;
   recipe.bp = dc.bp; std::memcpy(recipe.xf, dc.xf_regs, sizeof(recipe.xf));
   if (!prewarming_ && !shader_threads_.empty()) {
@@ -1233,7 +1243,7 @@ Pipeline* D3D11Backend::get_pipeline(const DrawCall& dc, uint32_t topo_type, D3D
       shader_wait_budget_us_ -= (int)(wait_sw.lap() * 1e6);
       integrate_compiled_pipelines();
       auto ready = pipelines_.find(key);
-      if (ready != pipelines_.end()) { dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = ready->second.get(); return ready->second.get(); }
+      if (ready != pipelines_.end()) { dc.cached_pipeline_owner = owner; dc.cached_pipeline = ready->second.get(); return ready->second.get(); }
       if (!pipelines_pending_.count(key)) break; // compile failure
     }
     ++g_pipe_skips;
@@ -1246,7 +1256,7 @@ Pipeline* D3D11Backend::get_pipeline(const DrawCall& dc, uint32_t topo_type, D3D
   Pipeline* pipeline = build_pipeline(key, vs.Get(), ps.Get(), topology);
   if (!pipeline) return nullptr;
   if (!prewarming_ && pipeline_recipes_.size() < 4096) pipeline_recipes_.push_back(recipe);
-  dc.cached_pipeline_owner = backend_id_; dc.cached_pipeline = pipeline;
+  dc.cached_pipeline_owner = owner; dc.cached_pipeline = pipeline;
   return pipeline;
 }
 
@@ -1337,7 +1347,7 @@ TextureEntry* D3D11Backend::get_texture(const TextureRef& t) {
     }
   }
   const uint32_t meta[] = {t.width, t.height, t.format, t.mip_levels, t.tlut_format};
-  uint64_t key = t.data->hash ^ hash_bytes(meta, sizeof meta);
+  uint64_t key = look_key(t.data->hash ^ hash_bytes(meta, sizeof meta), look_surface_);   // each look treatment has its own entries
   auto it = textures_.find(key);
   if (it != textures_.end()) { it->second.last_used = frame_counter_; return &it->second; }
 
@@ -1358,6 +1368,8 @@ TextureEntry* D3D11Backend::get_texture(const TextureRef& t) {
 
   // Decode every level into one scratch block so the texture can be created with its full
   // contents (paletted formats decode through the snapshot's TLUT copy, as on D3D12).
+  // "Retro (64 style)": a texture larger than 64 x 64 is uploaded as its small copy (gx_retro.h).
+  if (!replacement) replacement = look_replacement(t, look_surface_);
   uint32_t levels = std::max(1u, t.mip_levels);
   std::vector<uint8_t> image;
   std::array<D3D11_SUBRESOURCE_DATA, 16> initial{};
@@ -1434,15 +1446,33 @@ ID3D11SamplerState* D3D11Backend::get_sampler(uint32_t mode0, uint32_t mode1) {
   return raw;
 }
 
+// One white texel for "Lightweight" 3 and up: every texture a flat-shaded draw would sample reads
+// it instead, so the game's own shader shows the vertex colours and lighting alone.
+ID3D11ShaderResourceView* D3D11Backend::white_texture() {
+  if (white_srv_) return white_srv_.Get();
+  D3D11_TEXTURE2D_DESC td{};
+  td.Width = td.Height = 1; td.MipLevels = td.ArraySize = 1; td.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+  td.SampleDesc.Count = 1; td.Usage = D3D11_USAGE_IMMUTABLE; td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+  const uint32_t white = 0xFFFFFFFFu;
+  D3D11_SUBRESOURCE_DATA init{&white, 4, 4};
+  ComPtr<ID3D11Texture2D> tex;
+  if (FAILED(device_->CreateTexture2D(&td, &init, &tex))) return nullptr;
+  if (FAILED(device_->CreateShaderResourceView(tex.Get(), nullptr, &white_srv_))) return nullptr;
+  return white_srv_.Get();
+}
+
 void D3D11Backend::bind_textures(const DrawCall& dc) {
   ID3D11ShaderResourceView* srvs[8] = {};
   ID3D11SamplerState* samps[8] = {};
   bool srv_changed = false, samp_changed = false;
+  const bool flat = lightweight_flat(lightweight_filter_, dc);
+  look_surface_ = look_surface(lightweight_filter_, dc);           // the look's treatment for this draw's textures
+  const bool unfiltered = look_unfiltered(lightweight_filter_, dc);  // the 64 look samples nearest texels
   for (int i = 0; i < 8; ++i) {
     if (dc.textures[i].used) {
-      TextureEntry* e = get_texture(dc.textures[i]);
-      srvs[i] = e ? e->srv.Get() : nullptr;
-      samps[i] = get_sampler(dc.textures[i].mode0, dc.textures[i].mode1);
+      TextureEntry* e = flat ? nullptr : get_texture(dc.textures[i]);
+      srvs[i] = flat ? white_texture() : e ? e->srv.Get() : nullptr;
+      samps[i] = get_sampler(unfiltered ? unfiltered_mode0(dc.textures[i].mode0) : dc.textures[i].mode0, dc.textures[i].mode1);
     }
     if (srvs[i] != bound_.srv[i]) srv_changed = true;
     if (samps[i] != bound_.samp[i]) samp_changed = true;
@@ -1518,10 +1548,11 @@ void D3D11Backend::clear_efb(const EfbCopy& c) {
   r.right = std::min<LONG>(r.right, efb_w_); r.bottom = std::min<LONG>(r.bottom, efb_h_);
   if (r.right <= r.left || r.bottom <= r.top) return;
   struct { float color[4]; float depth[4]; } cb{};
-  cb.color[0] = ((c.clear_color >> 16) & 0xFF) / 255.0f;
-  cb.color[1] = ((c.clear_color >> 8) & 0xFF) / 255.0f;
-  cb.color[2] = (c.clear_color & 0xFF) / 255.0f;
-  cb.color[3] = ((c.clear_color >> 24) & 0xFF) / 255.0f;
+  const uint32_t clear_colour = look_clear_colour(lightweight_filter_.in_match, c.clear_color);   // the look's background
+  cb.color[0] = ((clear_colour >> 16) & 0xFF) / 255.0f;
+  cb.color[1] = ((clear_colour >> 8) & 0xFF) / 255.0f;
+  cb.color[2] = (clear_colour & 0xFF) / 255.0f;
+  cb.color[3] = ((clear_colour >> 24) & 0xFF) / 255.0f;
   cb.depth[0] = 1.0f - (float)c.clear_z / 16777215.0f;
   D3D11_MAPPED_SUBRESOURCE m{};
   if (FAILED(context_->Map(clear_cb_.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m))) return;
@@ -2014,9 +2045,12 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   // pixel constants are the same every time; only the vertex constants and the re-posed vertices
   // follow the solver. The first present plans the frame; the others reuse that plan. Skinned
   // draws refill their pixel constants every time (the player tint can change at any moment).
+  set_lightweight_level(opts_.lightweight);
+  publish_look(opts_);
+  lightweight_filter_ = lightweight_filter(frame, opts_.lightweight);   // "Lightweight", read by the draws below
   const bool plan_matches = plan_cache_valid_ && plan_cache_frame_ == &frame && plan_cache_sequence_ == frame.sequence &&
                             plan_cache_draws_ == frame.draws.size() && plan_cache_scale_ == scale_ &&
-                            plan_cache_effects_ == opts_.effects_level && plan_cache_lab_ == lab_skip_scene_;
+                            plan_cache_effects_ == opts_.effects_level + 10 * opts_.lightweight && plan_cache_lab_ == lab_skip_scene_;
   // Test only: MELEE_PLAN_CACHE_CHECK=1 plans every present from scratch and counts any difference
   // from the reused plan (logged with the render cost line).
   static const bool plan_check = [] { const char* v = std::getenv("MELEE_PLAN_CACHE_CHECK"); return v && *v == '1'; }();
@@ -2052,13 +2086,14 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
   plans_.assign(frame.draws.size(), DrawPlan{});
   index_scratch_.clear();
   ps_cache_.clear();
-  const EffectsFilter effects = effects_filter(frame, opts_.effects_level);
+  const EffectsFilter effects = effects_filter(frame, lightweight_effects_level(opts_.effects_level, opts_.lightweight));
   for (const FrameCommand& cmd : frame.commands) {
     if (cmd.kind != FrameCommand::Draw || cmd.index >= frame.draws.size()) continue;
     const DrawCall& dc = frame.draws[cmd.index];
     DrawPlan& plan = plans_[cmd.index];
     if (lab_skip_scene_) continue;   // the Lab view covers this frame; plan.valid stays false
     if (skip_for_effects(effects, dc)) continue;   // "Visual effects"; plan.valid stays false
+    if (skip_for_lightweight(lightweight_filter_, frame, dc)) continue;   // "Lightweight" 2+: scenery behind the play plane
     const uint32_t n = dc.vertex_count;
     const uint32_t first = (uint32_t)index_scratch_.size();
     auto& idx = index_scratch_;
@@ -2108,7 +2143,7 @@ void D3D11Backend::submit_frame(const Frame& frame, const DrawMatrices* override
     if (!same) ++g_plan_check_diffs;
   }
   plan_cache_valid_ = true; plan_cache_frame_ = &frame; plan_cache_sequence_ = frame.sequence;
-  plan_cache_draws_ = frame.draws.size(); plan_cache_scale_ = scale_; plan_cache_effects_ = opts_.effects_level; plan_cache_lab_ = lab_skip_scene_;
+  plan_cache_draws_ = frame.draws.size(); plan_cache_scale_ = scale_; plan_cache_effects_ = opts_.effects_level + 10 * opts_.lightweight; plan_cache_lab_ = lab_skip_scene_;
   }
   vs_constants_.end();
   ps_constants_.end();

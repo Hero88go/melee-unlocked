@@ -271,10 +271,9 @@ bool rebuild_recorded_codes(std::vector<uint8_t>& list) {
 void write_to_file(const uint8_t* payload, uint32_t length, const char* option) {
   // Every recording event passes through here, whether or not a replay file is open, which is
   // exactly the stream the Lab view draws from. It only reads the bytes.
-  // Lab view is hidden for now (see kLabViewAvailable in pc_settings.cpp), so it is not fed either:
-  // no event parsing and no silhouette loading while nothing can draw it.
-  constexpr bool kLabViewFeed = false;
-  if (kLabViewFeed) lab::feed(payload, length);
+  // The silhouette view is hidden for now (see kLabViewAvailable in pc_settings.cpp); the stick figure
+  // and capsule looks use the same view without its packs, so it is fed only while one is chosen.
+  if (lab::styles_on()) lab::feed(payload, length);
   if (std::strcmp(option, "create") == 0) { g_held_code_chunks.clear(); create_file(); }
   // What goes into the .slp also goes to the spectator server (Dolphin writes both from the same
   // bytes), whether or not a replay file is being saved.
