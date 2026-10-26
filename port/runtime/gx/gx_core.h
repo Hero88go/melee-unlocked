@@ -272,8 +272,27 @@ inline bool frame_in_match(const Frame& f) {
   if (major == 0x0E) return minor == 1;
   // Event Match (including TM-CE) uses minor 0 for CSS, 1 for play and 2 for SSS.
   if (major == 0x2B) return minor == 1;
-  const bool match_mode = major == 0x02 || major == 0x03 || major == 0x04 || major == 0x05 ||
-                          major == 0x0F || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C;
+  // The 1P modes number their scenes their own way (the game's scene tables, gm/gmclassic.c,
+  // gmadventure.c, gmallstar.c, gmmultiman.c, gmhomerun.c). With the "minor 2 and up" rule below,
+  // the first fight of Classic (minor 1), Adventure (minor 1) and All-Star (minors 0 and 1) and the
+  // only fight of the Stadium modes (minor 1) counted as a menu, and pausing there lost sub-frame
+  // smoothing for the whole pause zoom, while their splash screens and cutscenes counted as matches.
+  // Classic: 8 * stage + 1 is a fight, 8 * stage its splash, 0x68 and up the endings and the CSS.
+  if (major == 0x03) return minor < 0x68 && (minor & 7) == 1;
+  // Adventure: the fights by scene id (the rest are splashes, cutscenes, endings and the CSS).
+  if (major == 0x04) {
+    static constexpr uint8_t kFights[] = {0x01, 0x03, 0x09, 0x0A, 0x11, 0x12, 0x19, 0x1B, 0x21, 0x23, 0x25,
+                                          0x29, 0x2B, 0x31, 0x3A, 0x3B, 0x41, 0x49, 0x51, 0x53, 0x59, 0x5C};
+    for (uint8_t id : kFights) if (minor == id) return true;
+    return false;
+  }
+  // All-Star: every scene below the endings is a fight or the rest area, which is one too.
+  if (major == 0x05) return minor < 0x68;
+  // Target Test, Home-Run Contest and Multi-Man Melee: minor 0 is the CSS, minor 1 the stage.
+  if (major == 0x0F || (major >= 0x20 && major <= 0x26)) return minor == 1;
+  // VS and its variants (Special Melee included): CSS 0, SSS 1, the match and what follows from 2.
+  const bool match_mode = major == 0x02 || (major >= 0x10 && major <= 0x13) || major == 0x1B || major == 0x1C ||
+                          (major >= 0x1D && major <= 0x1F);
   return match_mode && minor >= 2;
 }
 
