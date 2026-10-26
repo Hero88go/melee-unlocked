@@ -40,4 +40,12 @@ bool d3d11_draw(ID3D11DeviceContext* context, ID3D11ShaderResourceView* source, 
                 const Target& where, size_t frame);
 void d3d11_release();
 
+// OpenGL (Linux): the renderer's context is current. `loader` resolves GL functions
+// (SDL_GL_GetProcAddress). The source and output are RGBA8 textures; the output texture is the
+// window's size and the renderer copies it to the window afterwards.
+bool gl_prepare(const std::string& preset, const void* (*loader)(const char*));
+bool gl_draw(uint32_t source, uint32_t source_width, uint32_t source_height, uint32_t output, uint32_t output_width,
+             uint32_t output_height, const Target& where, size_t frame);
+void gl_release();
+
 }  // namespace gx::user_shader

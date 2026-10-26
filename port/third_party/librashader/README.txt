@@ -4,6 +4,8 @@ Runs RetroArch slang shader presets (.slangp). Used for the player-chosen shader
 Unmodified upstream files:
   librashader.h, librashader_ld.h   C headers from include/ at tag librashader-v0.12.0
   bin/librashader.dll               from librashader-x86_64-windows-v0.12.0-optimized.zip (release assets)
+  bin/librashader.so                built in Linux from the same tag (librashader-capi, OpenGL runtime only);
+                                    upstream publishes no Linux build of this version
   LICENSE.md                        the licence text
 
 The program loads the DLL at run time through librashader_ld.h and works without it (the setting

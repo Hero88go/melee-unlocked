@@ -26,8 +26,11 @@ std::unique_ptr<LinuxPresentation> g_presentation;
 // Dolphin's "Auto (Window Size)": the integer EFB scale that covers the window, as the Windows
 // renderers pick it; a fixed choice from the settings is used as is.
 int linux_scale(const RenderOptions& options, int client_h) {
-  if (options.efb_scale > 0) return std::clamp(options.efb_scale, 1, 6);
-  return std::clamp((client_h + EFB_HEIGHT - 1) / EFB_HEIGHT, 1, 6);
+  // Supersampling renders at twice the chosen scale and the present pass averages it down, as the
+  // Windows renderers do (up to the 6x the GL renderer supports).
+  const int ssaa = std::clamp(options.ssaa, 1, 2);
+  if (options.efb_scale > 0) return std::clamp(options.efb_scale * ssaa, 1, 6);
+  return std::clamp((client_h + EFB_HEIGHT - 1) / EFB_HEIGHT * ssaa, 1, 6);
 }
 }  // namespace
 

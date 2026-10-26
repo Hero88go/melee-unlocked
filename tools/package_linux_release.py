@@ -218,6 +218,14 @@ def main():
         copyright_file = Path('/usr/share/doc') / package / 'copyright'
         if copyright_file.is_file():
             shutil.copy2(copyright_file, licenses / f'lib-{package}.txt')
+    # librashader (shader presets), loaded at run time with dlopen, so ldd does not list it. Built from
+    # its source tag (port/third_party/librashader/README.txt); without it the presets are off.
+    rashader = ROOT / 'port/third_party/librashader/bin/librashader.so'
+    if rashader.is_file():
+        shutil.copy2(rashader, lib / 'librashader.so')
+        os.chmod(lib / 'librashader.so', 0o755)
+    else:
+        print('lib: librashader.so not built; shader presets will be off on Linux')
     print(f'lib: {len(list(lib.iterdir()))} libraries from {len(packages)} packages')
     # A program's RUNPATH only serves its own direct dependencies, so each bundled library gets its own
     # ($ORIGIN = lib/): otherwise libcurl looked for librtmp and libssl in the system's folders, which

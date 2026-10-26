@@ -10,6 +10,9 @@
 #include "gx_texture.h"
 #ifdef GX_PC_SETTINGS   // the full game (port/linux/full): texture packs and F2 captures
 #include "texture_pack.h"
+#include "video_background.h"
+#include "video_background_learning.h"
+#include "user_shader.h"
 #endif
 #include "crt_shader.h"
 #include <GL/glew.h>
@@ -234,6 +237,8 @@ void main() {
     if (hooks_.options) {
       // Texture packs switched on or off, or a skin picked on the character select: every cached
       // texture was built with or without its replacement (as the Windows renderers).
+      gx::video_bg::set_enabled(hooks_.options->video_backgrounds);
+      gx::video_bg::begin_frame(frame.scene_major, frame.scene_minor);
       if (gx::texpack::configure(hooks_.options->custom_textures, hooks_.options->dump_textures) || gx::texpack::take_cosmetics_changed()) {
         for (auto& t : textures_) destroy(t.second);
         textures_.clear();
@@ -263,13 +268,42 @@ void main() {
     glBindBufferBase(GL_UNIFORM_BUFFER, 0, uniform_[0]); glBindBufferBase(GL_UNIFORM_BUFFER, 1, uniform_[1]);
     gx::set_main_projection(gx::frame_scene_draw(frame));
     gx::set_css_scene(frame.scene_major == 1 && frame.scene_minor == 0);
+#ifdef GX_PC_SETTINGS
+    // Menu video backgrounds: the character select's video goes in after Melee's untextured
+    // animated backdrop, the stage select's right after the learned backdrop draw (as on Windows).
+    const gx::EfbCopy* screen = nullptr;
+    for (const auto& copy : frame.copies) if (copy.to_xfb) screen = &copy;
+    int fullscreen_slot = -1;
+    const std::shared_ptr<const gx::video_bg::Frame> fullscreen = gx::video_bg::fullscreen_frame(&fullscreen_slot);
+    const bool css_fullscreen = fullscreen && fullscreen_slot == 0 && screen;
+    unsigned leading_untextured = 0;
+    bool background_drawn = false;
+#endif
     for (const auto& command : frame.commands) {
       if (command.kind == gx::FrameCommand::Draw) {
         const auto& dc = frame.draws.at(command.index);
+#ifdef GX_PC_SETTINGS
+        if (css_fullscreen && !background_drawn) {
+          bool textured = false;
+          for (const auto& texture : dc.textures) textured |= texture.used;
+          if (!textured) ++leading_untextured;
+          else if (gx::video_bg::learning::should_insert_fullscreen_layer(fullscreen_slot, leading_untextured, textured)) {
+            draw_video_layer(fullscreen, fullscreen_slot, *screen);
+            background_drawn = true;
+          }
+        }
+        draw_video_slot_ = -1;
+#endif
         draw(frame, dc, overrides ? overrides + command.index : nullptr, vertex_offsets_[command.index]);
+#ifdef GX_PC_SETTINGS
+        if (fullscreen && screen && fullscreen_slot == 1 && draw_video_slot_ == 1 && !background_drawn) {
+          draw_video_layer(fullscreen, fullscreen_slot, *screen);
+          background_drawn = true;
+        }
+#endif
       } else {
         const auto& c = frame.copies.at(command.index);
-        if (c.to_xfb) { if (!skip_) { present(c, frame.test_fill); captures(frame.sequence); } }
+        if (c.to_xfb) { if (!skip_) { capture_sequence_ = frame.sequence; present(c, frame.test_fill); } }
         else copy(c);
         if (c.clear) clear(c);
       }
@@ -286,12 +320,12 @@ void main() {
         if (o->capture_sim_frame && !capture_frame_ && sequence >= o->capture_sim_frame) capture_frame_ = n;
         const uint32_t at = capture_frame_ ? capture_frame_ : o->capture_frame;
         const bool burst = o->capture_burst && at && n >= at && n < at + o->capture_burst;
-        if (n == at && !burst) capture(o->capture_path);
+        if (n == at && !burst) capture_window(o->capture_path);
         else if (burst || (o->capture_every && n % o->capture_every == 0)) {
           const std::string& base = o->capture_path;
           char suffix[48];
           std::snprintf(suffix, sizeof suffix, "_%05u.ppm", n);
-          capture(base.substr(0, base.size() > 4 && base.compare(base.size() - 4, 4, ".ppm") == 0 ? base.size() - 4 : base.size()) + suffix);
+          capture_window(base.substr(0, base.size() > 4 && base.compare(base.size() - 4, 4, ".ppm") == 0 ? base.size() - 4 : base.size()) + suffix);
         }
       }
 #ifdef GX_PC_SETTINGS
@@ -300,13 +334,24 @@ void main() {
         std::filesystem::create_directories("capture");
         char name[64];
         std::snprintf(name, sizeof name, "capture/blink_%05u.ppm", n);
-        capture(name);
+        capture_window(name);
         if (want == 1) std::fprintf(stderr, "capture: wrote the requested frames into capture/\n");
       }
 #endif
     } catch (const std::exception& e) {
       std::fprintf(stderr, "capture: %s\n", e.what());
     }
+  }
+  // The window as it is about to be shown (picture, border art, the settings and practice menus).
+  void capture_window(const std::filesystem::path& path) {
+    int w = 0, h = 0; SDL_GL_GetDrawableSize(window_, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    std::vector<uint8_t> pixels(static_cast<size_t>(w) * h * 3);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1); glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, pixels.data());
+    std::ofstream f(path, std::ios::binary); f << "P6\n" << w << " " << h << "\n255\n";
+    for (int y = h - 1; y >= 0; --y) f.write(reinterpret_cast<char*>(pixels.data()) + size_t(y) * w * 3, size_t(w) * 3);
+    if (!f) throw std::runtime_error("Cannot write frame capture: " + path.string());
   }
   void capture(const std::filesystem::path& path) {
     // XFB submission can clear the EFB immediately. Preserve the displayed
@@ -511,6 +556,14 @@ void main() {
   GLuint texture(const gx::TextureRef& t) {
     if (auto c = copies_.find(t.addr & 0x3FFFFFFFu); c != copies_.end()) { c->second.used = sequence_; return c->second.id; }
     if (!t.data || !t.width || !t.height) return 0;
+#ifdef GX_PC_SETTINGS
+    if (gx::video_bg::wants_texture_names()) {
+      int slot = -1;
+      const auto video = gx::video_bg::lookup(gx::texpack::base_name(t, *t.data), t.width, t.height, &slot);
+      if (video && slot >= 0 && slot < 2 && !video->bgra.empty())
+        if (const GLuint id = video_texture(video, slot)) { draw_video_slot_ = slot; return id; }
+    }
+#endif
     const uint64_t desc[] = {t.data->hash, t.width, t.height, t.format, t.tlut_format, t.mip_levels};
     const uint64_t key = gx::hash_bytes(desc, sizeof desc);
     if (auto i = textures_.find(key); i != textures_.end()) { i->second.used = sequence_; return i->second.id; }
@@ -662,6 +715,9 @@ void main() {
     glDisable(GL_SCISSOR_TEST); glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     const float fill = test_fill > 0 ? 1.0f : 0.0f; glClearColor(fill, fill, fill, 1); glClear(GL_COLOR_BUFFER_BIT);
+#ifdef GX_PC_SETTINGS
+    if (test_fill < 0 && hooks_.options) border_art(w, h);
+#endif
     if (test_fill < 0) {
       const double aspect = hooks_.options ? gx::presented_aspect(*hooks_.options, w, h, widenable_scene_) : 73.0 / 60.0;
       int pw = w, ph = std::lround(w / aspect);
@@ -673,6 +729,7 @@ void main() {
       hooks_.before_swap(w, h);
       glBindVertexArray(vao_);
     }
+    if (test_fill < 0) { ++presented_; captures(capture_sequence_); --presented_; }   // the finished window, menus included
     SDL_GL_SwapWindow(window_); ++presented_; glBindFramebuffer(GL_FRAMEBUFFER, efb_);
     const GLenum error = glGetError();
     if (error != GL_NO_ERROR) throw std::runtime_error("OpenGL GX frame failed with error " + std::to_string(error));
@@ -684,14 +741,29 @@ void main() {
     const gx::RenderOptions* o = hooks_.options;
     if (!picture_program_) picture_program_ = build_picture_program();
     const gx::CrtLook look = gx::crt_look(o ? o->crt_filter : 0);
-    const bool crt_on = o && o->crt_filter;
     const float lines = std::max(float(c.src_h) * c.y_scale, 1.0f);
+    // A shader preset (Video settings) takes the place of the built-in CRT model, as on Windows: the
+    // plain picture goes into a console-sized texture and the preset draws that into the window.
+    bool shader_on = false;
+#ifdef GX_PC_SETTINGS
+    shader_on = o && gx::user_shader::gl_prepare(o->shader_preset, [](const char* name) { return (const void*)SDL_GL_GetProcAddress(name); });
+    glBindVertexArray(vao_);
+#endif
+    const bool crt_on = o && o->crt_filter && !shader_on;
     float vh = float(ph), vw = float(pw);
     gx::CrtFit fit{vh, 0.0f};
-    if (crt_on) { fit = gx::crt_fit(vh, lines); vh = fit.height; vw = vh * float(pw) / float(std::max(ph, 1)); }
+    if (crt_on || shader_on) { fit = gx::crt_fit(vh, lines); vh = fit.height; vw = vh * float(pw) / float(std::max(ph, 1)); }
     const float vx = std::floor((w - vw) * 0.5f), vy = std::floor((h - vh) * 0.5f);
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glViewport(GLint(vx), GLint(vy), GLsizei(std::max(vw, 1.0f)), GLsizei(std::max(vh, 1.0f)));
+    const uint32_t sw = std::max(c.src_w, 1u), sh = uint32_t(std::max(std::lround(lines), 1L));
+    if (shader_on) {
+      shader_target(shader_source_, sw, sh);
+      shader_target(shader_output_, uint32_t(w), uint32_t(h));
+      glBindFramebuffer(GL_FRAMEBUFFER, shader_source_.fbo);
+      glViewport(0, 0, GLsizei(sw), GLsizei(sh));
+    } else {
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glViewport(GLint(vx), GLint(vy), GLsizei(std::max(vw, 1.0f)), GLsizei(std::max(vh, 1.0f)));
+    }
     glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST);
     glUseProgram(picture_program_);
     glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, color_); glBindSampler(0, 0);
@@ -699,17 +771,47 @@ void main() {
     glUniform1i(u("src"), 0);
     glUniform4f(u("rect"), c.src_w / float(gx::EFB_WIDTH), c.src_h / float(gx::EFB_HEIGHT), c.src_x / float(gx::EFB_WIDTH),
                 1 - (c.src_y + c.src_h) / float(gx::EFB_HEIGHT));
-    glUniform4f(u("sharp"), 1.0f / width_, 1.0f / height_, o ? std::clamp(o->sharpness, 0.0f, 1.0f) : 0.0f, 0.0f);
-    const float bx = float(std::clamp(int(std::lround(double(c.src_w) * scale_ / std::max(vw, 1.0f))), 1, 4));
-    const float by = float(std::clamp(int(std::lround(double(c.src_h) * scale_ / std::max(vh, 1.0f))), 1, 4));
+    glUniform4f(u("sharp"), 1.0f / width_, 1.0f / height_, o && !shader_on ? std::clamp(o->sharpness, 0.0f, 1.0f) : 0.0f, 0.0f);
+    const float out_w = shader_on ? float(sw) : vw, out_h = shader_on ? float(sh) : vh;
+    const float bx = float(std::clamp(int(std::lround(double(c.src_w) * scale_ / std::max(out_w, 1.0f))), 1, 4));
+    const float by = float(std::clamp(int(std::lround(double(c.src_h) * scale_ / std::max(out_h, 1.0f))), 1, 4));
     glUniform4f(u("box"), bx, by, 0, 0);
     glUniform4f(u("col"), o ? o->brightness : 1.0f, o ? o->contrast : 1.0f, o ? o->vibrance : 1.0f, 0.0f);
     glUniform4f(u("crt"), look.scan, look.mask, look.curve, lines);
     glUniform4f(u("crt2"), float(c.src_w), vh / lines, look.halation, fit.shift);
     glUniform1i(u("crt_on"), crt_on ? 1 : 0);
     glDrawArrays(GL_TRIANGLES, 0, 3);
+#ifdef GX_PC_SETTINGS
+    if (shader_on) {
+      // The preset into the window-sized texture, then that onto the window.
+      glBindFramebuffer(GL_FRAMEBUFFER, shader_output_.fbo);
+      glViewport(0, 0, w, h); glClearColor(0, 0, 0, 1); glClear(GL_COLOR_BUFFER_BIT);
+      const gx::user_shader::Target where{vx, vy, uint32_t(std::max(vw, 1.0f)), uint32_t(std::max(vh, 1.0f))};
+      const bool drawn = gx::user_shader::gl_draw(shader_source_.id, sw, sh, shader_output_.id, uint32_t(w), uint32_t(h), where, presented_);
+      glBindVertexArray(vao_); glUseProgram(0); glDisable(GL_SCISSOR_TEST);
+      if (drawn) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, shader_output_.fbo);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+      }
+      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+#endif
     glViewport(0, 0, w, h);
   }
+  // A colour texture with its framebuffer, resized when needed (the shader preset's source and output).
+  void shader_target(Texture& t, uint32_t w, uint32_t h) {
+    if (t.id && t.width == w && t.height == h) return;
+    if (!t.id) { glGenTextures(1, &t.id); glGenFramebuffers(1, &t.fbo); }
+    glBindTexture(GL_TEXTURE_2D, t.id);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, GLsizei(w), GLsizei(h), 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, t.fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, t.id, 0);
+    t.width = w; t.height = h;
+  }
+  Texture shader_source_, shader_output_;
   GLuint build_picture_program() {
     GLuint v = compile_gl(GL_VERTEX_SHADER, R"(#version 450 core
 out vec2 p;
@@ -822,6 +924,77 @@ void main() {
     const GLuint program = link_gl(v, f); glDeleteShader(v); glDeleteShader(f);
     return program;
   }
+#ifdef GX_PC_SETTINGS
+  // A video frame in its slot's texture (re-uploaded only when the decoder has a new one). The rows
+  // arrive as the Windows decoder hands them on, so they sample the same way.
+  GLuint video_texture(const std::shared_ptr<const gx::video_bg::Frame>& f, int slot) {
+    if (!f || slot < 0 || slot >= gx::video_bg::kVideoSlots || f->bgra.empty()) return 0;
+    VideoTexture& v = video_[slot];
+    if (!v.id || v.width != f->width || v.height != f->height) {
+      if (!v.id) glGenTextures(1, &v.id);
+      glBindTexture(GL_TEXTURE_2D, v.id);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, f->width, f->height, 0, GL_BGRA, GL_UNSIGNED_BYTE, nullptr);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+      v.width = f->width; v.height = f->height; v.serial = 0;
+    }
+    if (v.serial != f->serial) {
+      glBindTexture(GL_TEXTURE_2D, v.id);
+      glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+      glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, f->width, f->height, GL_BGRA, GL_UNSIGNED_BYTE, f->bgra.data());
+      v.serial = f->serial;
+    }
+    return v.id;
+  }
+  // The copy shader's rectangle uses the Windows convention (v counted from the top), so the
+  // Windows rectangles are used as they are.
+  void copy_quad(GLuint texture, const float rect[4]) {
+    glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glUseProgram(copy_program_);
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, texture); glBindSampler(0, 0);
+    glUniform1i(glGetUniformLocation(copy_program_, "source_texture"), 0);
+    glUniform1i(glGetUniformLocation(copy_program_, "copy_kind"), 1);
+    glUniform4f(glGetUniformLocation(copy_program_, "source_rect"), rect[0], rect[1], rect[2], rect[3]);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+  }
+  void draw_video_layer(const std::shared_ptr<const gx::video_bg::Frame>& f, int slot, const gx::EfbCopy& screen) {
+    const GLuint id = video_texture(f, slot);
+    if (!id) return;
+    glBindFramebuffer(GL_FRAMEBUFFER, efb_);
+    glEnable(GL_SCISSOR_TEST);
+    const GLint x = GLint(screen.src_x * scale_), y = GLint(height_ - (screen.src_y + screen.src_h) * scale_);
+    glViewport(x, y, GLsizei(screen.src_w * scale_), GLsizei(screen.src_h * scale_));
+    glScissor(x, y, GLsizei(screen.src_w * scale_), GLsizei(screen.src_h * scale_));
+    const float rect[4] = {1.0f, -1.0f, 0.0f, 1.0f};
+    copy_quad(id, rect);
+    glBindVertexArray(vao_);
+    if (!video_layer_logged_[slot & 1]) {
+      video_layer_logged_[slot & 1] = true;
+      std::fprintf(stderr, "video backgrounds: %s full-screen layer drawn (OpenGL)\n", slot ? "SSS" : "CSS");
+    }
+  }
+  // Border art (Video settings) fills the window behind the picture, cropped to the window's shape.
+  void border_art(int w, int h) {
+    gx::video_bg::set_border(hooks_.options->border_art);
+    bool reversed = false;
+    const auto art = gx::video_bg::border_frame(&reversed);
+    if (!art) return;
+    const GLuint id = video_texture(art, gx::video_bg::kBorderSlot);
+    if (!id) return;
+    const float window = float(w) / std::max(float(h), 1.0f), shape = float(art->width) / std::max(float(art->height), 1.0f);
+    const float sx = shape > window ? window / shape : 1.0f, sy = shape > window ? 1.0f : shape / window;
+    const float rect[4] = {sx, reversed ? -sy : sy, (1.0f - sx) * 0.5f, reversed ? 1.0f - (1.0f - sy) * 0.5f : (1.0f - sy) * 0.5f};
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, w, h);
+    copy_quad(id, rect);
+  }
+  struct VideoTexture { GLuint id = 0; uint32_t width = 0, height = 0; uint64_t serial = 0; };
+  VideoTexture video_[gx::video_bg::kVideoSlots];
+  bool video_layer_logged_[2] = {false, false};
+#endif
+  int draw_video_slot_ = -1;   // the video slot the last draw sampled (the stage select's layer follows it)
   void trim() {
     if (sequence_ % 120) return;
     for (auto i = textures_.begin(); i != textures_.end();) {
@@ -851,7 +1024,8 @@ void main() {
   GLuint vao_ = 0, vertices_ = 0, indices_ = 0, uniform_[2]{}, efb_ = 0, color_ = 0, depth_ = 0, copy_program_ = 0;
   GLuint last_frame_ = 0, last_color_ = 0; bool have_last_ = false;
   GLuint picture_program_ = 0;              // the present pass (picture())
-  uint32_t capture_frame_ = 0;              // --capture-sim-frame resolved to a presented frame
+  uint32_t capture_frame_ = 0;
+  uint64_t capture_sequence_ = 0;           // the simulation frame being presented              // --capture-sim-frame resolved to a presented frame
   uint64_t replacement_bytes_ = 0;          // texture pack replacements held, against a 512 MB budget
   int anisotropy_applied_ = 1;              // the filtering the cached samplers were made with
   gx::EffectsFilter effects_filter_;   // "Visual effects" for the frame being submitted (submit_frame)

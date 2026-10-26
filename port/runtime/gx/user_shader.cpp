@@ -296,6 +296,10 @@ void report(const std::string& preset, bool ok) {
   else host::log("shaders: %s is off: %s", preset.c_str(), status().c_str());
 }
 
+#ifndef _WIN32
+libra_gl_filter_chain_t g_chain_gl = nullptr;
+Choice g_choice_gl;
+#endif
 #ifdef _WIN32
 libra_d3d12_filter_chain_t g_chain12 = nullptr;
 Choice g_choice12;
@@ -447,5 +451,53 @@ void d3d11_release() {
   g_choice11 = {};
 }
 
+#endif
+
+#ifndef _WIN32
+bool gl_prepare(const std::string& preset, const void* (*loader)(const char*)) {
+  test_scan();
+  if (preset == g_choice_gl.preset) return g_chain_gl != nullptr && !g_choice_gl.failed;
+  if (g_chain_gl) { library().gl_filter_chain_free(&g_chain_gl); g_chain_gl = nullptr; }
+  g_choice_gl = {preset, true};
+  if (preset.empty()) { set_status({}); return false; }
+  if (!available()) { set_status("librashader.so is missing from the game's lib folder"); report(preset, false); return false; }
+  libra_shader_preset_t loaded = nullptr;
+  if (!load_preset(preset, &loaded)) { report(preset, false); return false; }
+  filter_chain_gl_opt_t options{};
+  options.version = LIBRASHADER_CURRENT_VERSION;
+  options.glsl_version = 450;
+  options.use_dsa = true;
+  const std::string error = take_error(library().gl_filter_chain_create(&loaded, loader, &options, &g_chain_gl));
+  if (!error.empty() || !g_chain_gl) {
+    g_chain_gl = nullptr;
+    set_status(error.empty() ? "the filter chain could not be made" : error);
+    report(preset, false);
+    return false;
+  }
+  g_choice_gl.failed = false;
+  report(preset, true);
+  return true;
+}
+
+bool gl_draw(uint32_t source, uint32_t source_width, uint32_t source_height, uint32_t output, uint32_t output_width,
+             uint32_t output_height, const Target& where, size_t frame) {
+  if (!g_chain_gl) return false;
+  constexpr uint32_t kRgba8 = 0x8058;   // GL_RGBA8
+  const libra_image_gl_t in{source, kRgba8, source_width, source_height};
+  const libra_image_gl_t out{output, kRgba8, output_width, output_height};
+  const libra_viewport_t viewport{where.x, where.y, where.width, where.height};
+  const std::string error = take_error(library().gl_filter_chain_frame(&g_chain_gl, frame, in, out, &viewport, nullptr, nullptr));
+  if (error.empty()) return true;
+  set_status(error);
+  g_choice_gl.failed = true;
+  host::log("shaders: %s stopped: %s", g_choice_gl.preset.c_str(), error.c_str());
+  return false;
+}
+
+void gl_release() {
+  if (g_chain_gl) library().gl_filter_chain_free(&g_chain_gl);
+  g_chain_gl = nullptr;
+  g_choice_gl = {};
+}
 #endif
 }  // namespace gx::user_shader
