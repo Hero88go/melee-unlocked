@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cctype>
 #include <cstdlib>
 #include <cstdio>
 #include <string>
@@ -77,31 +78,48 @@ ImU32 marker_color(replay_coach::Moment::Type t, float a) {
   }
 }
 
-// A dark plate behind text, fading out at its right end like the game's own name plates.
-void plate(ImDrawList* dl, float x0, float y0, float x1, float y1, float a) {
-  dl->AddRectFilledMultiColor(ImVec2(x0, y0), ImVec2(x1, y1), rgba(0, 0, 0, 0.62f * a), rgba(0, 0, 0, 0.0f), rgba(0, 0, 0, 0.0f),
-                              rgba(0, 0, 0, 0.62f * a));
+// ---- the look: one card style, one type scale, fixed places ----
+// Everything is placed in units of the game picture (u = picture height / 720), 24 from its edges,
+// clear of Melee's own timer (top middle) and percents (bottom).
+constexpr float kMargin = 24, kPad = 14, kRadius = 12, kCardW = 272;
+constexpr float kCaption = 11, kBody = 14, kTitle = 19, kValue = 22;
+
+ImU32 c_fill(float a) { return rgba(14, 16, 22, 0.84f * a); }
+ImU32 c_line(float a) { return rgba(255, 255, 255, 0.10f * a); }
+ImU32 c_caption(float a) { return rgba(150, 158, 178, a); }
+ImU32 c_body(float a) { return rgba(214, 218, 230, a); }
+ImU32 c_title(float a) { return rgba(246, 247, 250, a); }
+ImU32 c_value(int sign, float a) {
+  return sign > 0 ? rgba(108, 216, 124, a) : sign < 0 ? rgba(255, 102, 90, a) : c_title(a);
+}
+ImU32 c_live(float a) { return rgba(226, 52, 68, a); }
+
+void card(ImDrawList* dl, float x0, float y0, float x1, float y1, float u, float a) {
+  dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), c_fill(a), kRadius * u);
+  dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), c_line(a), kRadius * u, 0, 1.0f * u);
 }
 
-// The latest frame data reading (hits and shield hits), under the top left label for five seconds.
-void draw_reading(ImDrawList* dl, float x, float y, float u) {
-  replay_coach::Event ev;
-  double age = 0.0;
-  if (!replay_coach::latest(ev, age) || age > 5.0) return;
-  const float a = std::clamp((float)(5.0 - age) / 0.6f, 0.0f, 1.0f);
-  const replay_coach::Readout r = replay_coach::readout(ev);
-  const float hp = 20 * u, vp = 26 * u;
-  const float head_w = practice_menu::text_width(hp, r.head.c_str());
-  // The detail wraps short of the match timer at the top middle.
-  const std::vector<std::string> detail = practice_menu::wrap_text(r.detail, 14 * u, 250 * u);
-  float w = head_w + 12 * u + practice_menu::text_width(vp, r.value.c_str());
-  for (const std::string& line : detail) w = std::max(w, practice_menu::text_width(14 * u, line.c_str()));
-  plate(dl, x - 10 * u, y - 4 * u, x + w + 40 * u, y + (34 + 18 * (float)detail.size()) * u, a);
-  practice_menu::text(dl, x, y + 4 * u, hp, rgba(240, 240, 244, a), r.head.c_str());
-  const ImU32 c = r.sign > 0 ? rgba(110, 230, 120, a) : r.sign < 0 ? rgba(255, 92, 80, a) : rgba(240, 240, 244, a);
-  practice_menu::text(dl, x + head_w + 12 * u, y, vp, c, r.value.c_str());
-  for (size_t i = 0; i < detail.size(); ++i)
-    practice_menu::text(dl, x, y + (34 + 18 * (float)i) * u, 14 * u, rgba(205, 208, 220, a), detail[i].c_str());
+std::string upper(std::string s) {
+  for (char& c : s) c = (char)std::toupper((unsigned char)c);
+  return s;
+}
+float tw(float px, const std::string& s) { return practice_menu::text_width(px, s.c_str()); }
+void say(ImDrawList* dl, float x, float y, float px, ImU32 c, const std::string& s) {
+  practice_menu::text(dl, x, y, px, c, s.c_str(), 0.0f, false);
+}
+// Text cut with "..." to fit `width`.
+std::string fit_to(const std::string& s, float px, float width) {
+  if (tw(px, s) <= width) return s;
+  std::string t = s;
+  while (!t.empty() && tw(px, t + "...") > width) t.pop_back();
+  return t + "...";
+}
+// A small rounded label, "LIVE".
+float pill(ImDrawList* dl, float x, float y, float u, const char* s, ImU32 bg, float a) {
+  const float w = tw(kCaption * u, s) + 14 * u, h = 17 * u;
+  dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), bg, h * 0.5f);
+  say(dl, x + 7 * u, y + 3 * u, kCaption * u, rgba(255, 255, 255, a), s);
+  return w;
 }
 
 constexpr int32_t kDropGrace = 30;          // half a second after the opponent can act again
@@ -196,6 +214,14 @@ void frame(int style, const practice_menu::Frame& f) {
   const uint32_t ports = replay_control::player_ports();
   if (g.port < 0 || !(ports >> g.port & 1)) g.port = first_port(ports);
   const int live = replay_control::takeover_port();
+  {
+    // Tests: MELEE_TEST_REPLAY_LENGTH=<0..3> sets how a try ends (practice_menu::ReplaySettings::length).
+    static bool length_set = false;
+    if (!length_set) {
+      length_set = true;
+      if (const char* v = std::getenv("MELEE_TEST_REPLAY_LENGTH")) practice_menu::replay_settings().length = (uint8_t)std::atoi(v);
+    }
+  }
   const practice_menu::ReplaySettings& rs = practice_menu::replay_settings();
   replay_control::set_defense(rs.defense);
   const uint16_t held = f.buttons;
@@ -285,97 +311,136 @@ void frame(int style, const practice_menu::Frame& f) {
 
   // ---- drawing ----
   const float x0 = f.game_x0, x1 = f.game_x1, y0 = f.game_y0, y1 = f.game_y1;
-  const std::string& name = replay_control::player_name(live >= 0 ? live : g.port);
-  float label_bottom = y0 + 20 * u;
-  if (live >= 0) {
-    // LIVE badge, with the countdown when a try has a set length.
-    const int32_t limit = try_limit(rs.length);
-    std::string badge = "LIVE  " + name;
-    char left[16] = "";
-    if (limit) std::snprintf(left, sizeof left, "%d", std::max(0, (limit - (st.frame - g.live_frame) + 59) / 60));
-    const float bw = practice_menu::text_width(20 * u, badge.c_str()) + (limit ? practice_menu::text_width(28 * u, left) + 18 * u : 0) + 28 * u;
-    dl->AddRectFilled(ImVec2(x0 + 22 * u, y0 + 18 * u), ImVec2(x0 + 22 * u + bw, y0 + 58 * u), rgba(214, 40, 58, 0.95f), 6 * u);
-    practice_menu::text(dl, x0 + 36 * u, y0 + 28 * u, 20 * u, rgba(255, 255, 255, 1), badge.c_str());
-    if (limit) practice_menu::text(dl, x0 + 22 * u + bw - 14 * u - practice_menu::text_width(28 * u, left), y0 + 23 * u, 28 * u, rgba(255, 255, 255, 1), left);
-    label_bottom = y0 + 66 * u;
-  } else {
-    const std::string who = "Take over:  " + name;
-    const float w = practice_menu::text_width(18 * u, who.c_str());
-    plate(dl, x0 + 12 * u, y0 + 16 * u, x0 + 60 * u + w + 60 * u, y0 + 52 * u, 1.0f);
-    practice_menu::text(dl, x0 + 24 * u, y0 + 25 * u, 18 * u, rgba(255, 222, 120, 1), who.c_str());
-    practice_menu::legend(dl, x0 + 34 * u + w, y0 + 34 * u, u * 0.8f, "D:", 1.0f);
-    label_bottom = y0 + 60 * u;
-  }
-  draw_reading(dl, x0 + 30 * u, label_bottom + 6 * u, u);
+  const float M = kMargin * u, P = kPad * u, W = kCardW * u, inner = W - 2 * P;
+  const std::string name = replay_control::player_name(live >= 0 ? live : g.port);
 
-  // The tip banner at its moment (watching).
+  // Top left: the player card. Who A takes over (or LIVE), then the latest frame data reading.
+  {
+    const float cx = x0 + M, cy = y0 + M;
+    // The latest reading fades in under a divider and out after five seconds.
+    replay_coach::Event ev;
+    double age = 0.0;
+    float ra = 0.0f;
+    std::vector<std::string> detail;
+    replay_coach::Readout r;
+    if (replay_coach::latest(ev, age) && age < 5.0) {
+      ra = std::clamp((float)(5.0 - age) / 0.6f, 0.0f, 1.0f);
+      r = replay_coach::readout(ev);
+      detail = practice_menu::wrap_text(r.detail, kBody * u - 1 * u, inner);
+      if (detail.size() > 2) detail.resize(2);
+    }
+    const float head_h = 22 * u + 28 * u;
+    const float reading_h = ra > 0 ? (10 + 26 + 19 * (float)detail.size()) * u : 0.0f;
+    card(dl, cx, cy, cx + W, cy + P + head_h + reading_h + P - 6 * u, u, 1);
+    float y = cy + P;
+    const int32_t limit = try_limit(rs.length);
+    std::string right;
+    if (live >= 0) {
+      pill(dl, cx + P, y - 2 * u, u, "LIVE", c_live(1), 1);
+      right = "TRY " + std::to_string(std::max(1, g.tries));
+    } else {
+      say(dl, cx + P, y, kCaption * u, c_caption(1), "TAKE OVER");
+      right = "D-PAD  CHANGE";
+    }
+    say(dl, cx + W - P - tw(kCaption * u, right), y, kCaption * u, c_caption(1), right);
+    y += 22 * u;
+    say(dl, cx + P, y, kTitle * u, c_title(1), name);
+    if (live >= 0 && limit) {
+      char left[16];
+      std::snprintf(left, sizeof left, "%d s", std::max(0, (limit - (st.frame - g.live_frame) + 59) / 60));
+      say(dl, cx + W - P - tw(kTitle * u, left), y, kTitle * u, c_title(1), left);
+    }
+    y += 28 * u;
+    if (ra > 0) {
+      dl->AddLine(ImVec2(cx + P, y), ImVec2(cx + W - P, y), c_line(ra), 1.0f * u);
+      y += 10 * u;
+      const float vw = tw(kValue * u, r.value);
+      say(dl, cx + P, y + 3 * u, kBody * u + 2 * u, c_body(ra), fit_to(r.head, kBody * u + 2 * u, inner - vw - 8 * u));
+      say(dl, cx + W - P - vw, y - 2 * u, kValue * u, c_value(r.sign, ra), r.value);
+      y += 26 * u;
+      for (const std::string& line : detail) {
+        say(dl, cx + P, y, kBody * u - 1 * u, c_caption(ra), line);
+        y += 19 * u;
+      }
+    }
+  }
+
+  // Top right: the tip at its moment (watching).
   if (live < 0 && rs.tips) {
     for (size_t i = 0; i < g.moments.size(); ++i) {
       const replay_coach::Moment& m = g.moments[i];
       if (st.frame < m.frame - 20 || st.frame > m.frame + 150) continue;
       const float a = std::clamp((float)(st.frame - (m.frame - 20)) / 10.0f, 0.0f, 1.0f) *
                       std::clamp((float)(m.frame + 150 - st.frame) / 15.0f, 0.0f, 1.0f);
-      char k[64];
-      std::snprintf(k, sizeof k, "%s   Tip %zu of %zu", name.c_str(), i + 1, g.moments.size());
-      const float tw = std::max({practice_menu::text_width(26 * u, (m.what + "  " + m.value).c_str()),
-                                 practice_menu::text_width(15 * u, m.advice.c_str()), 360 * u});
-      const float cx = (x0 + x1) * 0.5f, top = y0 + (y1 - y0) * 0.17f;
-      const float bw = std::min(tw + 80 * u, (x1 - x0) - 40 * u);
-      dl->AddRectFilledMultiColor(ImVec2(cx - bw * 0.5f, top), ImVec2(cx, top + 104 * u), rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.8f * a),
-                                  rgba(0, 0, 0, 0.8f * a), rgba(0, 0, 0, 0));
-      dl->AddRectFilledMultiColor(ImVec2(cx, top), ImVec2(cx + bw * 0.5f, top + 104 * u), rgba(0, 0, 0, 0.8f * a), rgba(0, 0, 0, 0),
-                                  rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.8f * a));
-      practice_menu::text(dl, cx - practice_menu::text_width(13 * u, k) * 0.5f, top + 6 * u, 13 * u, rgba(255, 207, 58, a), k, 0, false);
-      const float ww = practice_menu::text_width(26 * u, m.what.c_str());
-      const float vw = m.value.empty() ? 0 : practice_menu::text_width(26 * u, m.value.c_str()) + 14 * u;
-      const float lx = cx - (ww + vw) * 0.5f;
-      practice_menu::text(dl, lx, top + 24 * u, 26 * u, rgba(255, 255, 255, a), m.what.c_str(), 0.12f);
-      if (!m.value.empty())
-        practice_menu::text(dl, lx + ww + 14 * u, top + 24 * u, 26 * u,
-                            m.sign > 0 ? rgba(110, 230, 120, a) : m.sign < 0 ? rgba(255, 92, 80, a) : rgba(255, 255, 255, a), m.value.c_str());
-      const std::vector<std::string> lines = practice_menu::wrap_text(m.advice, 15 * u, std::min(bw - 60 * u, 640 * u));
-      for (size_t l = 0; l < lines.size() && l < 2; ++l)
-        practice_menu::text(dl, cx - practice_menu::text_width(15 * u, lines[l].c_str()) * 0.5f, top + (58 + 19 * (float)l) * u, 15 * u,
-                            rgba(222, 226, 238, a), lines[l].c_str());
+      const float cx = x1 - M - W, cy = y0 + M;
+      std::vector<std::string> body = practice_menu::wrap_text(m.advice, kBody * u, inner);
+      if (body.size() > 4) body.resize(4);
+      const float h = P + 22 * u + 28 * u + 19 * u * (float)body.size() + P - 4 * u;
+      card(dl, cx, cy, cx + W, cy + h, u, a);
+      float y = cy + P;
+      char k[48];
+      std::snprintf(k, sizeof k, "TIP %d OF %d", (int)i + 1, (int)g.moments.size());
+      say(dl, cx + P, y, kCaption * u, rgba(255, 204, 64, a), k);
+      const std::string when = replay_coach::clock(m.frame);
+      say(dl, cx + W - P - tw(kCaption * u, when), y, kCaption * u, c_caption(a), when);
+      y += 22 * u;
+      const float vw = m.value.empty() ? 0.0f : tw(kTitle * u, m.value) + 8 * u;
+      say(dl, cx + P, y, kTitle * u, c_title(a), fit_to(m.what, kTitle * u, inner - vw));
+      if (!m.value.empty()) say(dl, cx + W - P - tw(kTitle * u, m.value), y, kTitle * u, c_value(m.sign, a), m.value);
+      y += 28 * u;
+      for (const std::string& line : body) {
+        say(dl, cx + P, y, kBody * u, c_body(a), line);
+        y += 19 * u;
+      }
       break;
     }
   }
 
-  // The try's result when its time ran out.
+  // Middle: a try's result when it ended.
   if (live >= 0 && g.ended_at > 0.0) {
-    const float cw = 420 * u, cx = (x0 + x1) * 0.5f, top = y0 + (y1 - y0) * 0.3f;
-    dl->AddRectFilled(ImVec2(cx - cw * 0.5f, top), ImVec2(cx + cw * 0.5f, top + 104 * u), rgba(6, 10, 22, 0.92f), 10 * u);
-    dl->AddRect(ImVec2(cx - cw * 0.5f, top), ImVec2(cx + cw * 0.5f, top + 104 * u), rgba(255, 207, 58, 1), 10 * u, 0, 2 * u);
-    practice_menu::text(dl, cx - cw * 0.5f + 20 * u, top + 12 * u, 15 * u, rgba(255, 207, 58, 1), g.result_head.c_str(), 0, false);
-    const std::string v = g.result_value.empty() ? std::string("No hits this try") : g.result_value;
-    practice_menu::text(dl, cx - cw * 0.5f + 20 * u, top + 36 * u, 24 * u,
-                        g.result_sign > 0 ? rgba(110, 230, 120, 1) : g.result_sign < 0 ? rgba(255, 92, 80, 1) : rgba(255, 255, 255, 1), v.c_str(), 0.1f);
-    practice_menu::text(dl, cx - cw * 0.5f + 20 * u, top + 72 * u, 14 * u, rgba(207, 213, 228, 1), g.result_detail.c_str(), 0, false);
+    const float w = 320 * u, cx = (x0 + x1) * 0.5f - w * 0.5f, cy = y0 + (y1 - y0) * 0.30f;
+    const std::vector<std::string> detail = practice_menu::wrap_text(g.result_detail, kBody * u, w - 2 * P);
+    const float h = P + 22 * u + 30 * u + 19 * u * (float)detail.size() + 26 * u + P - 6 * u;
+    card(dl, cx, cy, cx + w, cy + h, u, 1);
+    float y = cy + P;
+    say(dl, cx + P, y, kCaption * u, c_caption(1), upper(g.result_head));
+    y += 22 * u;
+    say(dl, cx + P, y, kValue * u, g.result_value.empty() ? c_title(1) : c_value(g.result_sign, 1),
+        g.result_value.empty() ? std::string("No hits this try") : g.result_value);
+    y += 30 * u;
+    for (const std::string& line : detail) { say(dl, cx + P, y, kBody * u, c_body(1), line); y += 19 * u; }
+    char next[32];
+    std::snprintf(next, sizeof next, "NEXT TRY IN %d S", std::max(1, (int)(kResultSeconds - (now - g.ended_at) + 0.99)));
+    say(dl, cx + P, y + 6 * u, kCaption * u, c_caption(1), next);
   }
 
-  // The timeline with this player's tips (watching).
-  const float ly = y1 - 26 * u;
-  if (live < 0 && rs.tips && st.last_frame > st.first_frame) {
-    const float tx0 = x0 + 40 * u, tx1 = x1 - 40 * u, ty = ly - 30 * u;
-    const auto at = [&](int32_t frame) {
-      return tx0 + (tx1 - tx0) * std::clamp((float)(frame - st.first_frame) / (float)(st.last_frame - st.first_frame), 0.0f, 1.0f);
-    };
-    dl->AddRectFilled(ImVec2(tx0, ty - 2 * u), ImVec2(tx1, ty + 2 * u), rgba(255, 255, 255, 0.22f), 2 * u);
-    dl->AddRectFilled(ImVec2(tx0, ty - 2 * u), ImVec2(at(st.frame), ty + 2 * u), rgba(185, 163, 255, 0.95f), 2 * u);
-    for (const replay_coach::Moment& m : g.moments) {
-      const float mx = at(m.frame);
-      dl->AddRectFilled(ImVec2(mx - 1.5f * u, ty - 7 * u), ImVec2(mx + 1.5f * u, ty + 7 * u), marker_color(m.type, 0.95f), 1.5f * u);
+  // Bottom: the dock, the timeline of this player's tips over one row of buttons.
+  {
+    const char* spec = live >= 0 ? "S:Retry|S:Hold to go back to the replay"
+                       : st.paused ? "A:Take over|X:Last tip|Y:Next tip|D:Frame|Z:Play|S:Settings"
+                                   : "A:Take over|X:Last tip|Y:Next tip|D:5 s|Z:Pause|R:Fast|S:Settings";
+    const float ls = u * 0.8f;
+    const float lw = practice_menu::legend(dl, 0, 0, ls, spec, 1.0f, false);
+    const bool timeline = live < 0 && rs.tips && st.last_frame > st.first_frame;
+    const float dw = std::min(std::max(lw + 2 * P + 8 * u, (x1 - x0) * 0.62f), (x1 - x0) - 2 * M);
+    const float dh = (timeline ? 50 : 36) * u;
+    const float dx = (x0 + x1) * 0.5f - dw * 0.5f, dy = y1 - 10 * u - dh;
+    card(dl, dx, dy, dx + dw, dy + dh, u, 1);
+    if (timeline) {
+      const float tx0 = dx + P + 4 * u, tx1 = dx + dw - P - 4 * u, ty = dy + 12 * u;
+      const auto at = [&](int32_t frame) {
+        return tx0 + (tx1 - tx0) * std::clamp((float)(frame - st.first_frame) / (float)(st.last_frame - st.first_frame), 0.0f, 1.0f);
+      };
+      dl->AddRectFilled(ImVec2(tx0, ty - 1.5f * u), ImVec2(tx1, ty + 1.5f * u), rgba(255, 255, 255, 0.16f), 1.5f * u);
+      dl->AddRectFilled(ImVec2(tx0, ty - 1.5f * u), ImVec2(at(st.frame), ty + 1.5f * u), rgba(255, 255, 255, 0.55f), 1.5f * u);
+      for (const replay_coach::Moment& m : g.moments) {
+        const float mx = at(m.frame);
+        dl->AddRectFilled(ImVec2(mx - 1.2f * u, ty - 5 * u), ImVec2(mx + 1.2f * u, ty + 5 * u), marker_color(m.type, 0.95f), 1.2f * u);
+      }
+      dl->AddCircleFilled(ImVec2(at(st.frame), ty), 4.5f * u, rgba(255, 255, 255, 1), 16);
     }
+    practice_menu::legend(dl, (x0 + x1) * 0.5f - lw * 0.5f, dy + dh - 18 * u, ls, spec, 1.0f);
   }
-
-  // The buttons.
-  const char* spec = live >= 0 ? "S:Retry|S:Hold: back to the replay"
-                     : st.paused ? "A:Take over|X:Last tip|Y:Next tip|D:Frame|Z:Play|S:Settings"
-                                 : "A:Take over|X:Last tip|Y:Next tip|D:5 s|Z:Pause|R:Fast|S:Settings";
-  const float lw = practice_menu::legend(dl, 0, ly, u * 0.85f, spec, 1.0f, false);
-  const float lx = std::max(x0 + 16 * u, (x0 + x1) * 0.5f - lw * 0.5f);
-  plate(dl, lx - 16 * u, ly - 16 * u, lx + lw + 40 * u, ly + 16 * u, 0.7f);
-  practice_menu::legend(dl, lx, ly, u * 0.85f, spec, 1.0f);
 }
 
 }  // namespace replay_hud

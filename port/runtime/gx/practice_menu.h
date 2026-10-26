@@ -59,7 +59,7 @@ void opened();                          // the menu was just opened
 
 // The replay viewer's settings (Start while watching a replay, gx/replay_hud.h), in the same look.
 struct ReplaySettings {
-  uint8_t length = 0;          // a takeover's length: 0 until the combo drops, 1 ten seconds, 2 twenty, 3 no limit
+  uint8_t length = 3;          // a takeover's length: 0 until the combo drops, 1 ten seconds, 2 twenty, 3 no limit (default)
   uint8_t defense = 0;         // the other players once you change what happened: 0 smart, 1 no DI or tech,
                                // 2 the Practice CPU's settings, 3 follow the recording
   uint8_t tips = 1;            // tip banners and timeline markers
