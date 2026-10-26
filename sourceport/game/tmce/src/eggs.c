@@ -161,7 +161,7 @@ int Egg_OnTakeDamage(GOBJ *gobj)
     egg_data = live_egg->userdata;
     accumulated_damage += egg_data->dmg.recent;
     if (accumulated_damage >= Options_Main[OPT_DAMAGETHRESHOLD].val){
-        Effect_SpawnSync(1232, gobj, egg_data->pos);
+        Effect_SpawnSync(1232, gobj, &egg_data->pos);
         Item_PlayOnDestroySFXAgain(egg_data, 244, 127, 64);
         
         // manage old and new egg
