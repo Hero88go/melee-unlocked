@@ -577,6 +577,7 @@ class D3D12Backend : public Backend {
   ID3D12Resource* white_texture();
   ComPtr<ID3D12Resource> white_texture_;   // "Lightweight" flat shading (white_texture)
   Surface look_surface_ = Surface::Textured;   // the look's treatment for the textures being bound (bind_textures)
+  Surface draw_surface_ = Surface::Textured;   // the same for the current draw, kept for bind_samplers
   ID3D12Resource* update_video_texture(const std::shared_ptr<const video_bg::Frame>& frame,
                                        int video_slot);
   void draw_video_background(const std::shared_ptr<const video_bg::Frame>& frame,
@@ -2300,7 +2301,7 @@ ID3D12Resource* D3D12Backend::white_texture() {
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_textures(const DrawCall& dc) {
   TextureSetKey resources{};
   const bool flat = lightweight_flat(lightweight_filter_, dc);   // "Lightweight" 3 and up
-  look_surface_ = look_surface(lightweight_filter_, dc);         // the look's treatment for this draw's textures
+  look_surface_ = draw_surface_ = look_surface(lightweight_filter_, dc);   // the look's treatment for this draw's textures
   for (int i = 0; i < 8; ++i) {
     uint32_t w = 1, h = 1;
     if (dc.textures[i].used) resources[i] = flat ? white_texture() : get_texture(dc.textures[i], &w, &h);
@@ -2330,7 +2331,8 @@ D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_textures(const DrawCall& dc) {
 
 D3D12_GPU_DESCRIPTOR_HANDLE D3D12Backend::bind_samplers(const DrawCall& dc) {
   SamplerSetKey key{};
-  const bool unfiltered = look_unfiltered(lightweight_filter_, dc);   // the 64 look samples nearest texels
+  // The 64 look samples nearest texels; the draw's group was found once in bind_textures, just before.
+  const bool unfiltered = draw_surface_ != Surface::Textured && look_live().unfiltered.load(std::memory_order_relaxed);
   for (int i = 0; i < 8; ++i) { key.mode0[i] = dc.textures[i].used ? (unfiltered ? unfiltered_mode0(dc.textures[i].mode0) : dc.textures[i].mode0) : 0; key.mode1[i] = dc.textures[i].used ? dc.textures[i].mode1 : 0; }
   auto it = sampler_sets_.find(key);
   uint32_t base;

@@ -857,13 +857,15 @@ void draw_stick_figure(ImDrawList* dl, const View& v, const std::vector<Frame::C
     }
   }
   const float half = std::max(1.25f, 0.32f * v.px);
-  for (const auto& b : bones) {
-    dl->AddLine(v(b.ax, b.ay), v(b.bx, b.by), col, 2 * half);
-    dl->AddCircleFilled(v(b.bx, b.by), half, col, 8);
-  }
   const Frame::Capsule* head = nullptr;
   for (const auto& c : caps)
     if (std::hypot(c.bx - c.ax, c.by - c.ay) < 0.5f && (!head || c.r > head->r)) head = &c;
+  for (const auto& b : bones) {
+    // Joints hanging off the head (a cap, a nose) start inside it: their lines crossed the face.
+    if (head && std::hypot(b.ax - head->ax, b.ay - head->ay) < head->r) continue;
+    dl->AddLine(v(b.ax, b.ay), v(b.bx, b.by), col, 2 * half);
+    dl->AddCircleFilled(v(b.bx, b.by), half, col, 8);
+  }
   if (head) {
     const float r = std::max(3.0f, head->r * 0.8f * v.px);
     dl->AddCircleFilled(v(head->ax, head->ay), r, body, 0);
