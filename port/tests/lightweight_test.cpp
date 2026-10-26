@@ -13,7 +13,6 @@ namespace gx {
 void lightweight_count(bool) {}
 void lightweight_publish_counts() {}
 void lightweight_debug(const Frame&, const LightweightFilter&) {}
-void set_look_filter(const LightweightFilter&) {}
 int8_t& lightweight_skip_slot(const Frame&, size_t, int) { static int8_t s; s = -1; return s; }
 }  // namespace gx
 
