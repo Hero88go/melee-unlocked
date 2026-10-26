@@ -1675,7 +1675,9 @@ void D3D11Backend::present_efb(const EfbCopy& c) {
   }
   const bool crt_on = opts_.crt_filter && !shader_on;
   CrtFit fit{vh, 0.0f};
-  if (crt_on || shader_on) { fit = crt_fit(vh, lines); vh = fit.height; vw = vh * aspect; }
+  // Only the built-in CRT snaps its height to whole pixels per line; a preset smooths its own lines,
+  // and snapping would leave a border on every side (True widescreen fills the window otherwise).
+  if (crt_on) { fit = crt_fit(vh, lines); vh = fit.height; vw = vh * aspect; }
   D3D11_VIEWPORT vp{(ww - vw) * 0.5f, (wh - vh) * 0.5f, vw, vh, 0, 1};
   if (crt_on || shader_on) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
   D3D11_RECT sc{0, 0, client_w_, client_h_};

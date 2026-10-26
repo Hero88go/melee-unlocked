@@ -2883,7 +2883,9 @@ void D3D12Backend::present_efb(const EfbCopy& c, const DxrScene* dxr_scene) {
   const bool crt_on = opts_.crt_filter && !shader_on;
   const CrtLook crt = crt_look(crt_on ? opts_.crt_filter : 0);
   CrtFit crt_fit_now{vh, 0.0f};
-  if (crt_on || shader_on) { crt_fit_now = crt_fit(vh, src_h_lines); vh = crt_fit_now.height; vw = vh * aspect; }
+  // Only the built-in CRT snaps its height to whole pixels per line; a preset smooths its own lines,
+  // and snapping would leave a border on every side (True widescreen fills the window otherwise).
+  if (crt_on) { crt_fit_now = crt_fit(vh, src_h_lines); vh = crt_fit_now.height; vw = vh * aspect; }
   D3D12_VIEWPORT vp{(ww - vw) * 0.5f, (wh - vh) * 0.5f, vw, vh, 0, 1};
   if (crt_on || shader_on) { vp.TopLeftX = std::floor(vp.TopLeftX); vp.TopLeftY = std::floor(vp.TopLeftY); }   // whole pixels: the raster is laid on the pixel grid
   D3D12_RECT sc{0, 0, client_w_, client_h_};
