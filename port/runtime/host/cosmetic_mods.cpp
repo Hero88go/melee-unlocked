@@ -177,6 +177,8 @@ std::string g_session_pack;
 // The exact look in force ("Diet Classic", "Diet 64", "Crystal") or empty: every file of the pack scanned
 // under that name is served while it is set (publish_locked), on top of the player's own picks.
 std::string g_look_pack;
+// Newly built packs have been hash-verified, but are scanned for assets at the next start.
+bool g_look_prepared_this_run = false;
 
 uint16_t le16(const uint8_t* p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
 uint32_t le32(const uint8_t* p) {
@@ -6406,7 +6408,7 @@ std::vector<LookPackStatus> look_packs() {
     LookPackStatus status; status.name = pin.name;
     for (const auto& asset : g_assets)
       if (asset.source_kind == kDiscSource && asset.source_name == pin.name) ++status.files;
-    status.built = status.files > 0;
+    status.built = status.files > 0 || g_look_prepared_this_run;
     out.push_back(status);
   }
   return out;
@@ -6475,7 +6477,8 @@ bool build_look_packs(const std::string& patcher_folder, const std::string& reta
     if (!ok) return false;
     if (!file_matches(out, pin.size, pin.sha)) { fs::remove(out, ec); *message = "The built disc did not come out as expected."; return false; }
   }
-  *message = "The exact looks are built. Pick one under Look; it applies at the next start.";
+  { std::lock_guard<std::mutex> lock(g_mutex); g_look_prepared_this_run = true; }
+  *message = "Mod artwork is ready. Choose a mod look above, then restart to apply it.";
   host::log("looks: %s", message->c_str());
   return true;
 #endif

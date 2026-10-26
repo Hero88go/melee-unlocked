@@ -5,6 +5,8 @@
 // (computeRenderData), src/components/viewer/{Player,Stage,Item,Camera}.tsx. Where this file
 // differs, the comment says why.
 #include "lab_view.h"
+#include "../abi/mu_look_snapshot.h"
+#include "gx_core.h"
 #include "host.h"
 #include "imgui.h"
 #include "earcut/mapbox/earcut.hpp"
@@ -323,7 +325,7 @@ void read_capsules(Frame& f) {
     }
 }
 
-void commit() {
+void commit(bool native = false) {
   const int32_t f = g_building.number;
   for (int port = 0; port < 4; ++port) {
     for (int fol = 0; fol < 2; ++fol) {
@@ -353,14 +355,73 @@ void commit() {
   }
   g_building.fod_left = g_fod_left;
   g_building.fod_right = g_fod_right;
-  read_stage_lines(g_building.stage_lines);
-  read_capsules(g_building);
+  if (!native) {
+    read_stage_lines(g_building.stage_lines);
+    read_capsules(g_building);
+  }
   std::lock_guard<std::mutex> lock(g_mutex);
   g_shown = g_building;
   g_last_commit = std::chrono::steady_clock::now();
 }
 
 }  // namespace
+
+void native_frame(const MuLookSnapshot& snapshot) {
+  gx::Frame scene;
+  scene.scene_major = (uint8_t)snapshot.major;
+  scene.scene_minor = (uint8_t)snapshot.minor;
+  if (!gx::frame_in_match(scene)) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_in_match = false;
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_in_match) {
+      g_in_match = true;
+      ++g_match_serial;
+      for (auto& history_frame : g_history) for (auto& port : history_frame) for (auto& player : port) player.present = false;
+      g_building = Frame{};
+    }
+    g_info.stage = (uint16_t)snapshot.stage;
+    g_info.teams = snapshot.teams != 0;
+    for (int port = 0; port < 4; ++port) {
+      const auto& src = snapshot.fighters[port][0];
+      g_info.ports[port] = {src.present != 0, (uint8_t)src.external, (uint8_t)src.team, (uint8_t)src.costume};
+    }
+  }
+  begin_frame(snapshot.frame);
+  g_building.stage_lines.clear();
+  for (int i = 0; i < std::clamp(snapshot.stage_line_count, 0, MU_LOOK_STAGE_LINES); ++i) {
+    const MuLookStageLine& line = snapshot.stage_lines[i];
+    if (std::isfinite(line.x0) && std::isfinite(line.y0) && std::isfinite(line.x1) && std::isfinite(line.y1))
+      g_building.stage_lines.push_back({line.x0, line.y0, line.x1, line.y1, line.floor != 0, line.platform != 0});
+  }
+  for (int port = 0; port < 4; ++port) for (int follower = 0; follower < 2; ++follower) {
+    const MuLookFighter& src = snapshot.fighters[port][follower];
+    PlayerFrame& dst = g_building.players[port][follower];
+    auto& caps = g_building.capsules[port][follower];
+    auto& bones = g_building.bones[port][follower];
+    caps.clear(); bones.clear();
+    dst.present = src.present != 0;
+    if (!dst.present) continue;
+    dst.character = (uint8_t)src.kind; dst.action = (uint16_t)src.action;
+    dst.x = src.x; dst.y = src.y; dst.facing = src.facing; dst.percent = src.percent;
+    dst.shield = src.shield; dst.stocks = (uint8_t)src.stocks; dst.counter = src.animation;
+    for (int i = 0; i < std::clamp(src.capsule_count, 0, MU_LOOK_CAPSULES); ++i) {
+      const MuLookCapsule& c = src.capsules[i];
+      if (std::isfinite(c.ax) && std::isfinite(c.ay) && std::isfinite(c.bx) && std::isfinite(c.by) &&
+          std::isfinite(c.radius) && c.radius > 0 && c.radius <= 50)
+        caps.push_back({c.ax, c.ay, c.bx, c.by, c.radius});
+    }
+    for (int i = 0; i < std::clamp(src.bone_count, 0, MU_LOOK_BONES); ++i) {
+      const MuLookBone& b = src.bones[i];
+      const float length = std::hypot(b.bx - b.ax, b.by - b.ay);
+      if (std::isfinite(length) && length > 0.6f && length < 30.0f) bones.push_back({b.ax, b.ay, b.bx, b.by});
+    }
+  }
+  commit(true);
+}
 
 void feed(const uint8_t* e, uint32_t size) {
   if (size == 0) return;

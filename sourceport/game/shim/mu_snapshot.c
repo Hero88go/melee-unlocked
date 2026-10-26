@@ -6,8 +6,92 @@
 #include <melee/ft/types.h>
 #include <sysdolphin/baselib/gobj.h>
 #include <sysdolphin/baselib/random.h>
+#include <sysdolphin/baselib/jobj.h>
+#include <melee/lb/types.h>
+#include <melee/mp/mplib.h>
+#include <melee/mp/types.h>
+#include "../../../port/runtime/abi/mu_look_snapshot.h"
 
 int mu_is_game_memory(const void* p, unsigned long size);   /* shim/mu_entry.c */
+extern StaticPlayer player_slots[];
+
+/* Host calls at a retrace boundary only while a low-detail view is active. This copies live
+ * geometry; it never changes fighter state, collision, inputs, or the recorded match. */
+MU_EXPORT void mu_look_snapshot_v1(MuLookSnapshot* out)
+{
+    int slot, follower;
+    __builtin_memset(out, 0, sizeof *out);
+    out->major = gm_GetCurrentGameMode();
+    out->minor = gm_GetCurrentSceneIndex();
+    out->frame = gm_GetFrameCount();
+    {
+        VsSceneController* vs = gmVs_GetSceneController();
+        if (vs && mu_is_game_memory(vs, sizeof *vs)) out->stage = vs->start.stkind;
+    }
+    {
+        MapCollData* map = mpLib_8004D164();
+        CollVtx* verts = mpGetGroundCollVtx();
+        CollLine* lines = mpGetGroundCollLine();
+        if (map && mu_is_game_memory(map, sizeof *map) && map->vert_count > 0 && map->vert_count <= 2048 &&
+            map->line_count > 0 && map->line_count <= MU_LOOK_STAGE_LINES &&
+            mu_is_game_memory(verts, sizeof *verts * map->vert_count) &&
+            mu_is_game_memory(lines, sizeof *lines * map->line_count)) {
+            int i;
+            for (i = 0; i < map->line_count; ++i) {
+                CollLine* line = &lines[i];
+                unsigned flags = line->flags;
+                MapLine* def = line->x0;
+                unsigned a, b;
+                MuLookStageLine* dst;
+                if (!(flags & LINE_FLAG_ENABLED) || (flags & (LINE_FLAG_HIDDEN | LINE_FLAG_EMPTY)) || !(flags & LINE_FLAG_KIND) ||
+                    !def || !mu_is_game_memory(def, sizeof *def)) continue;
+                a = def->v0_idx; b = def->v1_idx;
+                if (a >= (unsigned)map->vert_count || b >= (unsigned)map->vert_count) continue;
+                dst = &out->stage_lines[out->stage_line_count++];
+                dst->x0 = verts[a].pos.x; dst->y0 = verts[a].pos.y;
+                dst->x1 = verts[b].pos.x; dst->y1 = verts[b].pos.y;
+                dst->floor = (flags & CollLine_Floor) != 0; dst->platform = (flags & LINE_FLAG_PLATFORM) != 0;
+            }
+        }
+    }
+    for (slot = 0; slot < 4; ++slot) {
+        if (Player_GetPlayerState(slot) != 2) continue;
+        for (follower = 0; follower < 2; ++follower) {
+            HSD_GObj* gobj = Player_GetEntityAtIndex(slot, follower);
+            Fighter* fp;
+            MuLookFighter* dst = &out->fighters[slot][follower];
+            int i;
+            struct Node { HSD_JObj* jobj; int depth; } stack[MU_LOOK_BONES];
+            int top = 0, seen = 0;
+            if (!gobj || !mu_is_game_memory(gobj, sizeof *gobj)) continue;
+            fp = gobj->user_data;
+            if (!fp || !mu_is_game_memory(fp, sizeof *fp) || fp->gobj != gobj) continue;
+            dst->present = 1; dst->kind = fp->kind; dst->external = player_slots[slot].ckind;
+            dst->costume = player_slots[slot].costume_id; dst->team = player_slots[slot].team;
+            dst->stocks = Player_GetStocks(slot); dst->action = fp->motion_id;
+            dst->x = fp->cur_pos.x; dst->y = fp->cur_pos.y; dst->facing = fp->facing_dir;
+            dst->percent = fp->dmg.x1830_percent; dst->shield = fp->shield_health; dst->animation = fp->cur_anim_frame;
+            for (i = 0; i < fp->hurt_capsules_len && i < MU_LOOK_CAPSULES; ++i) {
+                const HurtCapsule* h = &fp->hurt_capsules[i].capsule;
+                MuLookCapsule* c = &dst->capsules[dst->capsule_count++];
+                c->ax = h->a_pos.x; c->ay = h->a_pos.y; c->bx = h->b_pos.x; c->by = h->b_pos.y; c->radius = h->scale;
+            }
+            if (gobj->hsd_obj && mu_is_game_memory(gobj->hsd_obj, sizeof(HSD_JObj)))
+                stack[top++] = (struct Node){ gobj->hsd_obj, 0 };
+            while (top && seen++ < MU_LOOK_BONES) {
+                struct Node item = stack[--top];
+                HSD_JObj* j = item.jobj;
+                if (j->next && top < MU_LOOK_BONES && mu_is_game_memory(j->next, sizeof *j)) stack[top++] = (struct Node){j->next, item.depth};
+                if (j->child && top < MU_LOOK_BONES && mu_is_game_memory(j->child, sizeof *j)) stack[top++] = (struct Node){j->child, item.depth + 1};
+                if (item.depth >= 5 && j->parent && mu_is_game_memory(j->parent, sizeof *j)) {
+                    MuLookBone* b = &dst->bones[dst->bone_count++];
+                    b->ax = j->parent->mtx[0][3]; b->ay = j->parent->mtx[1][3];
+                    b->bx = j->mtx[0][3]; b->by = j->mtx[1][3];
+                }
+            }
+        }
+    }
+}
 
 static u32 float_bits(float value)
 {

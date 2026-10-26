@@ -78,6 +78,7 @@ constexpr bool kLabViewAvailable = false;
 #include "backends/imgui_impl_dx12.h"
 #endif
 #include <windows.h>
+#include <commdlg.h>
 #include <xinput.h>
 #include <mmsystem.h>
 #include <mmsystem.h>
@@ -4199,7 +4200,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
   // Called every frame, off or on, so lab::covering() always describes this frame.
   lab::set_style(options.look_lab_fighters, options.look_lab_stage);
   const bool lab_on = options.lab_view && (kLabViewAvailable || options.look_lab_fighters != 0);   // the styles need no packs
-  lab::draw(lab_on && !options.native_source && !state.fill_window, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
+  lab::draw(lab_on && !state.fill_window, ImGui::GetIO().DisplaySize.x, ImGui::GetIO().DisplaySize.y);
   // 20XX TE's Input display is the same switch as the Controller overlay (te_pairs_linked), and the
   // overlay already shows the controllers: with it on, TE's own display is not drawn as well.
   const bool te_input_row = training_overlay::input_display() && !options.input_overlay;
@@ -5071,31 +5072,72 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // ---- Low poly and lightweight ----
     // Every setting that trades looks for frame rate on slow PCs, in one sub-section: Look, Visual effects and
     // the Lightweight ladder up front, the exact looks and the fine controls folded under them. Open by default.
-    if (ImGui::CollapsingHeader("Looks and lightweight##lightweight", ImGuiTreeNodeFlags_DefaultOpen)) {
+    if (ImGui::CollapsingHeader("Low-Detail Modes##lightweight", ImGuiTreeNodeFlags_DefaultOpen)) {
+    // Hidden capture hook: scroll to this section and optionally open its list for review.
+    if (const char* shot = std::getenv("MELEE_TEST_LOOK_MENU")) {
+      ImGui::SetScrollHereY(0.05f);
+      if (std::strcmp(shot, "open") == 0 && ImGui::GetFrameCount() == 120)
+        ImGui::OpenPopupEx(ImHashStr("##ComboPopup", 0, ImGui::GetID("Look")), ImGuiPopupFlags_None);
+    }
     ImGui::Indent(8.0f);
     // Looks by name. Picking one sets the Lightweight level and every look control below; changing any of them
     // afterwards makes this read Custom.
     {
       int count = 0; const LookPreset* presets = look_presets(&count);
-      const char* names[24]; for (int i = 0; i < count && i < 23; ++i) names[i] = presets[i].name;
-      names[count] = "Custom";
       const int current = look_preset_of(options);
-      int picked = current < 0 ? count : current;
-      // Crystal is only the real Crystal files, built from the player's own patch below: a stand-in from
-      // the renderer read as the normal game with muddier fighters, so without the pack it is not offered.
-      bool crystal_built = false;
-      for (const auto& pack : host::cosmetics::look_packs()) crystal_built |= pack.name == "Crystal" && pack.built;
-      static std::string crystal_name[2];
-      if (!crystal_built)
-        for (int i : {5, 6}) if (i < count) { crystal_name[i - 5] = std::string(presets[i].name) + " (build it under Exact looks first)"; names[i] = crystal_name[i - 5].c_str(); }
-      if (settings_combo("Look", &picked, names, count + 1) && picked < count && (crystal_built || (picked != 5 && picked != 6))) {
-        apply_look_preset(options, picked, d3d11_available());
-        set_lightweight_level(options.lightweight);
-        changed = true;
+      const auto packs = host::cosmetics::look_packs();
+      auto ready = [&](const char* name) {
+        for (const auto& pack : packs) if (pack.name == name && pack.built) return true;
+        return false;
+      };
+      // Relative gains observed on one uncapped Static Recomp / Final Destination test.
+      static const char* const gain[] = {"", "High", "High", "High", "High", "Modest", "Modest",
+                                         "High", "High", "Very high", "Very high", "Very high", "High", "High", "High"};
+      const char* preview = current < 0 ? "Custom" : current == 11 ? presets[9].name : presets[current].name;
+      if (ImGui::BeginCombo("Look", preview, ImGuiComboFlags_HeightLarge)) {
+        auto group = [&](const char* title, std::initializer_list<int> entries) {
+          ImGui::Separator(); ImGui::TextDisabled("%s", title);
+          for (int i : entries) {
+            const char* pack = i == 3 ? "Diet Classic" : i == 4 ? "Diet 64" : (i == 5 || i == 6) ? "Crystal" : "";
+            const bool available = !*pack || ready(pack);
+            std::string label = presets[i].name;
+            if (*gain[i]) { label += "  ("; label += gain[i]; label += " boost)"; }
+            if (!available) label += " (setup required)";
+            ImGui::BeginDisabled(!available);
+            if (ImGui::Selectable(label.c_str(), current == i || (i == 9 && current == 11) || (i == 5 && current == 6))) {
+              apply_look_preset(options, i, d3d11_available());
+              set_lightweight_level(options.lightweight);
+              changed = true;
+            }
+            ImGui::EndDisabled();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", presets[i].tip);
+          }
+        };
+        group("Faster", {0, 1, 2, 7, 8});
+        group("Built-in styles", {14, 12, 13, 9, 10});
+        group("Mod artwork (setup required)", {3, 4, 5});
+        ImGui::EndCombo();
       }
       if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s\nDisplay only: safe online and in replays; the other player sees their own choice.",
-                          picked < count ? presets[picked].tip : "Your own mix of the controls below.");
+        ImGui::SetTooltip("%s\nPerformance varies by computer, stage and settings.",
+                          current >= 0 ? presets[current].tip : "Your own mix of the controls below.");
+      const std::string chosen = exact_look_of(options);
+      const std::string active = host::cosmetics::active_look_pack();
+      if (!chosen.empty() && !ready(chosen.c_str()))
+        settings_hint("%s needs setup below. Its mod artwork is not active.", chosen.c_str());
+      else if (chosen != active)
+        settings_hint("Restart the game to apply the selected artwork.");
+      if (current == 5 || current == 6) {
+        const char* colors[] = {"Original mod colors", "Player colors (red, blue, yellow, green)"};
+        int selected = current == 6 ? 1 : 0;
+        if (settings_combo("Crystal fighter colors", &selected, colors, 2)) {
+          apply_look_preset(options, selected ? 6 : 5, d3d11_available());
+          set_lightweight_level(options.lightweight);
+          changed = true;
+        }
+      }
+      if (current > 0) ImGui::TextDisabled("FPS boost in our test: %s", gain[current]);
+      ImGui::TextWrapped("Boost labels are based on one PC using Static Recomp, with no FPS cap on Final Destination. Results vary by PC and settings. Start with Light or Lighter.");
     }
     {
       const char* levels[] = {"Full", "Reduced (no sparks or glow)", "Minimal (no screen overlays)"};
@@ -5115,7 +5157,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
     // below it. 1 to 3 are display only and change live; 4 and 5 also hold the image settings at
     // their cheapest (the Low spec pair: what the player had is kept and given back). The hint
     // under it is the last match frame's draw count, so a player sees what each step removes.
-    {
+    if (ImGui::TreeNodeEx("Advanced lightweight levels##lightweightlevels", 0)) {
       const char* names[kLightweightLevels] = {
           "Off", "1  Low poly fighters", "2  + No stage backgrounds", "3  + Flat shading",
           "4  + Lowest image", "5  Wireframe"};
@@ -5127,8 +5169,8 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           "buildings. Platforms, ledges, items and the HUD stay.",
           "Level 2, plus no textures on the stage or the fighters: colours and lighting only. Visual\n"
           "effects are held at Minimal.",
-          "Level 3, plus native resolution, no anti-aliasing or filtering, no DLSS, no sub-frames and\n"
-          "60 frames a second. Lowering it puts back exactly the image settings you had.",
+          "Level 3, plus native resolution, no anti-aliasing or filtering, and no DLSS.\n"
+          "Lowering it restores your previous image settings.",
           "Everything drawn as lines on a plain background, with the frame cap lifted: for the\n"
           "weakest machines, or as many frames as yours can make."};
       int level = std::clamp(options.lightweight, 0, kLightweightLevels - 1);
@@ -5145,12 +5187,13 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           settings_hint("Last match frame: %u draws, %u skipped (%d%%)", c.drawn, c.skipped,
                         (int)(100.0 * c.skipped / (double)(c.drawn + c.skipped) + 0.5));
       }
+      ImGui::TreePop();
     }
     // The older "Retro (64 style)" switch is the 64 Style look now; a saved "retro 1" still loads.
     // Exact looks: Diet Classic, Diet 64 and Crystal exactly as made, built once on this PC from the player's own
     // game disc and the published patch files (nothing of them ships with the game). The build runs on a worker
     // thread; the line under the button says how it went. Folded away: it is needed once.
-    if (ImGui::TreeNodeEx("Exact looks (Diet Classic, Diet 64, Crystal)##exactlooks", 0)) {
+    if (ImGui::TreeNodeEx("Set up mod artwork (Diet and Crystal)##exactlooks", 0)) {
       static std::mutex build_mutex;
       static std::string build_message;
       static std::atomic<bool> building{false};
@@ -5161,17 +5204,35 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         if (!have.empty()) have += ", ";
         have += pack.name + (pack.built ? " ready" : " not built");
       }
-      ImGui::TextWrapped("Exact looks: %s", have.c_str());
+      ImGui::TextWrapped("Use your Melee disc and the Diet patch files to prepare the optional mod artwork once. Restart after choosing a mod look.");
+      ImGui::TextWrapped("Mod artwork: %s", have.c_str());
       const std::string active = host::cosmetics::active_look_pack();
       const std::string chosen = exact_look_of(options);
       if (!chosen.empty() && chosen != active)
-        settings_hint("%s applies exactly from the next start once its look is built.", chosen.c_str());
+        settings_hint("%s applies after restart once its artwork is prepared.", chosen.c_str());
       ImGui::InputText("Patch folder##exactlooks", patcher_folder, sizeof patcher_folder);
+#ifdef _WIN32
+      ImGui::SameLine();
+      if (ImGui::Button("Browse...##lookpatch")) {
+        wchar_t path[32768]{};
+        OPENFILENAMEW dialog{};
+        dialog.lStructSize = sizeof dialog;
+        dialog.hwndOwner = GetActiveWindow();
+        dialog.lpstrFilter = L"Diet patch files (*.xdelta)\0*.xdelta\0\0";
+        dialog.lpstrFile = path;
+        dialog.nMaxFile = (DWORD)std::size(path);
+        dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+        if (GetOpenFileNameW(&dialog)) {
+          const std::string folder = std::filesystem::path(path).parent_path().u8string();
+          std::snprintf(patcher_folder, sizeof patcher_folder, "%s", folder.c_str());
+        }
+      }
+#endif
       if (ImGui::IsItemHovered())
         ImGui::SetTooltip("The folder of the looks' patcher download (it holds the three .xdelta files).\n"
                           "Your own game disc is patched on this PC; nothing is downloaded or shipped.");
       ImGui::BeginDisabled(building.load() || !patcher_folder[0]);
-      if (ImGui::Button(building.load() ? "Building..." : "Build exact looks")) {
+      if (ImGui::Button(building.load() ? "Preparing..." : "Prepare mod artwork")) {
         building = true;
         const std::string folder = patcher_folder;
         const std::string disc = host::options.mod_base_iso.empty() ? host::options.iso : host::options.mod_base_iso;

@@ -48,6 +48,8 @@
 #include "render_observer.h"
 #include "native_state_layout.h"
 #include "native_savestate.h"
+#include "lab_view.h"
+#include "../runtime/abi/mu_look_snapshot.h"
 // Both builds: the neutral netplay state. In the build without the Slippi layer it also answers the
 // Slippi names; in the normal build a peer-to-peer session (--p2p-*) is found through it.
 #include "netplay_state.h"
@@ -947,10 +949,16 @@ void h_poll() {
   });
 }
 
+static void (*g_look_snapshot)(MuLookSnapshot*) = nullptr;
 void native_retrace() {
   native_audio_tick();
   g_game.fire_alarms(host::cpu->tb);
   g_game.retrace();
+  if (g_look_snapshot && lab::styles_on()) {
+    MuLookSnapshot snapshot{};
+    g_look_snapshot(&snapshot);
+    lab::native_frame(snapshot);
+  }
 }
 
 void h_gx_fifo(const uint8_t* data, uint32_t size) { guarded([&] { gx::write_fifo_bytes(data, size); }); }
@@ -3300,6 +3308,7 @@ int run(void (*shutdown)(int)) {
   host::game_image_size = nt->OptionalHeader.SizeOfImage;
 #endif
   auto entry = (MuGameEntry)GetProcAddress(module, "mu_game_entry");
+  g_look_snapshot = (void (*)(MuLookSnapshot*))GetProcAddress(module, "mu_look_snapshot_v1");
   user_gecko::set_native_writer((user_gecko::NativeWrite)GetProcAddress(module, "mu_user_gecko_write"));
   user_gecko::set_native_reader((user_gecko::NativeRead)GetProcAddress(module, "mu_user_gecko_read"));
   if (!entry) host::die("%s has no mu_game_entry", g_dll.c_str());

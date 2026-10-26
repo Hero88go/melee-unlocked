@@ -452,17 +452,18 @@ inline const LookPreset* look_presets(int* count) {
     {"Off", "The game as it is.", 0, 0, 0, 0, false, 0, 0, 0},
     {"Light", "Low poly fighters: the models the game itself uses in reflections and shadows.", 1, 0, 0, 0, false, 0, 0, 0},
     {"Lighter", "Low poly fighters, and the stage scenery behind the fighting area is not drawn.", 2, 0, 0, 0, false, 0, 0, 0},
-    {"Diet Classic", "Low poly fighters with their own textures, the fighting area alone on black.", 2, 0, 0, 0, false, 0, 1, 1},
-    {"Diet 64", "The Nintendo 64 look: low poly fighters, every texture at 64 x 64 and unfiltered, menus too.", 1, 1, 1, 1, true, 0, 0, 1},
-    {"Crystal", "The real Crystal Melee look, built from your own Diet Melee patch: flat colour fighters and stages.", 2, 2, 2, 4, false, 0, 1, 2},
-    {"Crystal Ports", "Crystal with every fighter solid in its port colour (P1 red, P2 blue, P3 yellow, P4 green).", 2, 2, 2, 4, false, 1, 1, 2},
+    {"Diet Classic (mod)", "Uses Diet Classic artwork from your own patch after setup and restart.", 2, 0, 0, 0, false, 0, 1, 1},
+    {"Diet 64 (mod)", "Uses Diet 64 artwork from your own patch after setup and restart.", 1, 1, 1, 1, true, 0, 0, 1},
+    {"Crystal (original colors)", "Crystal mod artwork in its original colors. Requires your own patch and a restart.", 2, 2, 2, 4, false, 0, 1, 2},
+    {"Crystal (player colors)", "The same Crystal artwork with fighters recolored by player: P1 red, P2 blue, P3 yellow, P4 green.", 2, 2, 2, 4, false, 1, 1, 2},
     {"Wireframe", "Everything as lines on black, frame cap lifted.", 5, 5, 5, 0, false, 0, 1, 2},
     {"Potato", "White fighters in port colours on a white fighting area, black background, lowest image, cap lifted.", 4, 3, 3, 0, false, 1, 1, 2, 0, 0, true},
     {"Stick Figures", "Every fighter as a stick figure in its port colour, the stage as its outline. The 3D scene is not drawn.", 2, 0, 0, 0, false, 0, 0, 2, 1, 1},
     {"Capsules", "Every fighter as rounded capsules (its hurtboxes) in its port colour, the stage as solid blocks. No 3D scene.", 2, 0, 0, 0, false, 0, 0, 2, 2, 2},
     {"Minimal", "Stick figures on the stage outline with the frame cap lifted: the least work any look does.", 2, 0, 0, 0, false, 0, 0, 2, 1, 1, true},
-    {"64 Style", "Our own Nintendo 64 look, no patch needed: low poly fighters, every texture at 64 x 64 and unfiltered.", 1, 1, 1, 1, true, 0, 0, 1, 0, 0, false, true},
+    {"64 Style (built-in)", "Our N64-inspired rendering, no patch needed: low poly fighters and sharp 64 x 64 textures. This is different from Diet 64's mod artwork.", 1, 1, 1, 1, true, 0, 0, 1, 0, 0, false, true},
     {"Silhouettes", "Every fighter as its real model in its port colour, so its true height and shape read, on white platforms over a plain background. No scenery.", 2, 2, 3, 0, false, 1, 2, 2},
+    {"Classic Style (built-in)", "A built-in Diet Classic-inspired look. No patch needed; it does not use the mod's artwork.", 2, 0, 0, 0, false, 0, 1, 1, 0, 0, false, true},
   };
   *count = (int)(sizeof p / sizeof p[0]);
   return p;
