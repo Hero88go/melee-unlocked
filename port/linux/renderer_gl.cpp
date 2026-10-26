@@ -752,7 +752,8 @@ void main() {
     const bool crt_on = o && o->crt_filter && !shader_on;
     float vh = float(ph), vw = float(pw);
     gx::CrtFit fit{vh, 0.0f};
-    if (crt_on) { fit = gx::crt_fit(vh, lines);   // a preset smooths its own lines: no border vh = fit.height; vw = vh * float(pw) / float(std::max(ph, 1)); }
+    // Only the built-in CRT model snaps to whole pixels per line; a preset smooths its own lines: no border.
+    if (crt_on) { fit = gx::crt_fit(vh, lines); vh = fit.height; vw = vh * float(pw) / float(std::max(ph, 1)); }
     const float vx = std::floor((w - vw) * 0.5f), vy = std::floor((h - vh) * 0.5f);
     const uint32_t sw = std::max(c.src_w, 1u), sh = uint32_t(std::max(std::lround(lines), 1L));
     if (shader_on) {
