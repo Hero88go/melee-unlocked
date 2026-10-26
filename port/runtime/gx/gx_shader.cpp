@@ -2,6 +2,7 @@
 // VertexShaderGen.cpp, LightingShaderGen.h, PixelShaderGen.cpp (D3D11 integer-math path).
 #include <cstdlib>
 #include "gx_shader.h"
+#include "gx_retro.h"
 #include "gx_texture.h"
 #include <array>
 #include <atomic>
@@ -644,7 +645,10 @@ std::string generate_pixel_shader(const PSUid& uid) {
   // Display-only fighter tint. tint.w is 0 for every draw unless the host asked for one, and
   // lerping by 0 returns ocol0.rgb unchanged, so this costs a multiply and changes nothing
   // otherwise. It is deliberately not part of PSUid: there is one pipeline either way.
-  o.w("ocol0.rgb = lerp(ocol0.rgb, ocol0.rgb * tint.rgb + tint.rgb * 0.35, tint.w);\n");
+  // A negative tint.w is the look's plain stage (fill_ps_constants): the colour replaced by tint.rgb, its
+  // brightness kept so the stage's light and shade still read.
+  o.w("ocol0.rgb = tint.w < 0.0 ? tint.rgb * (0.45 + 0.55 * dot(ocol0.rgb, float3(0.299, 0.587, 0.114)))"
+      " : lerp(ocol0.rgb, ocol0.rgb * tint.rgb + tint.rgb * 0.35, tint.w);\n");
   if (uid.motion_vectors) o.w("omv = (prevPos.xy / prevPos.w - curPos.xy / curPos.w) * mvscale.xy;\nohud = mvscale.z * saturate(ocol0.a);\n");
   o.w("}\n");
   return o.s;
@@ -944,6 +948,27 @@ void fill_ps_constants(const DrawCall& dc, PSConstants& c, int efb_scale) {
       c.tint[1] = t.g.load(std::memory_order_relaxed);
       c.tint[2] = t.b.load(std::memory_order_relaxed);
       c.tint[3] = amount;
+    }
+  }
+  // The look's port colours (Crystal Ports, Potato): every fighter's model in its port's colour, P1 red, P2 blue,
+  // P3 yellow, P4 green, strong enough to read at a glance. The same model-only rule as the player tint above.
+  if (look_live().colours.load(std::memory_order_relaxed) == 1 && dc.skinned && dc.owner_player < 4 && dc.xf_regs[0x26] == 0) {
+    static const float port[4][3] = {{1.0f, 0.22f, 0.22f}, {0.28f, 0.45f, 1.0f}, {1.0f, 0.85f, 0.15f}, {0.25f, 0.9f, 0.3f}};
+    c.tint[0] = port[dc.owner_player][0]; c.tint[1] = port[dc.owner_player][1]; c.tint[2] = port[dc.owner_player][2];
+    // Over an exact look (Crystal Ports on the real Crystal files) the fighter takes its port colour solidly,
+    // light and shade kept, instead of a tint over its own colours, which read as dirty.
+    c.tint[3] = look_live().exact.load(std::memory_order_relaxed) ? -1.0f : 0.85f;
+  }
+  // The look's White stage (Potato, Silhouettes): every opaque piece of the stage in one plain colour, light and
+  // shade kept. A white texture alone leaves a stage's own material colours (Final Destination's magenta edges
+  // and dark floor are material colours, not textures), so the colour is replaced here. Blended draws (sparks,
+  // flashes) keep theirs. Display only.
+  {
+    const LightweightFilter& e = look_filter();
+    if (!dc.skinned && dc.xf_regs[0x26] == 0 && !(dc.bp.blendmode() & 1) && e.in_match &&
+        std::memcmp(e.projection, &dc.xf_regs[0x20], sizeof e.projection) == 0 &&
+        treated((Surface)look_live().stage.load(std::memory_order_relaxed)) == Surface::White) {
+      c.tint[0] = 0.93f; c.tint[1] = 0.94f; c.tint[2] = 0.96f; c.tint[3] = -1.0f;
     }
   }
 }

@@ -1007,7 +1007,8 @@ uint32_t te_words_mask2() { return mods::status().te_owned ? 0xFFFFFFFFu : hp_te
 uint32_t h_game_options2() {
   if (host::gameplay::vanilla_only()) return 0;
   if (g_replaying) return g_replay_feature_options2;
-  return (gx::RenderOptions::live_te_options2() & te_words_mask2()) | cpu_20xx_bit();
+  return (gx::RenderOptions::live_te_options2() & te_words_mask2() & ~MU_GAME_OPTION2_STADIUM_FROZEN) | cpu_20xx_bit() |
+         (gx::RenderOptions::live_stadium_frozen() ? MU_GAME_OPTION2_STADIUM_FROZEN : 0u);   // a plain option, like 20XX CPUs
 }
 // The 20XX Hack Pack training options for CPUs (Game tab), word 3: plain options, the game gates
 // them itself (mu_options3_offline: offline only, never in a TM-CE event).

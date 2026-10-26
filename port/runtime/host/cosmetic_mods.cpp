@@ -123,6 +123,8 @@ constexpr const char* kVoiceKind = "voice_bank";
 // A standard stage file served padded to the length its random skins share (publish_locked). Not a
 // skin: no id, nothing counted, the same stage online and offline.
 constexpr const char* kStageLengthKind = "stage_length";
+constexpr const char* kLookFighterKind = "look_fighter_tables";   // an exact look's fighter data (look_fighter_tables)
+constexpr const char* kLookFileKind = "look_file";   // an exact look's HUD, pause, announcer or effect file
 // The online rule a saved stage verdict was made under. 2 (0.9.0): a skin's gameplay values are put
 // back to the original's (stage_safety::restore_gameplay) before it is judged.
 constexpr int kOnlineRule = 2;
@@ -172,6 +174,9 @@ std::shared_ptr<const RuntimeState> g_runtime = std::make_shared<RuntimeState>()
 std::atomic<uint32_t> g_online_freezes{0};
 // The mod disc this session serves as its own files (set_session_pack), spelled as a scan's key.
 std::string g_session_pack;
+// The exact look in force ("Diet Classic", "Diet 64", "Crystal") or empty: every file of the pack scanned
+// under that name is served while it is set (publish_locked), on top of the player's own picks.
+std::string g_look_pack;
 
 uint16_t le16(const uint8_t* p) { return (uint16_t)p[0] | ((uint16_t)p[1] << 8); }
 uint32_t le32(const uint8_t* p) {
@@ -3907,7 +3912,9 @@ ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pac
   }
   g_disc_scans.erase(std::remove_if(g_disc_scans.begin(), g_disc_scans.end(),
       [&](const DiscScan& scan) { return scan.path == key; }), g_disc_scans.end());
-  if (!folder) g_disc_scans.push_back({key, root_size, root_mtime, kScanRules});
+  // A scan that matched no file at all (none listed, none standard) compared against no game disc,
+  // so it is not kept: the next scan reads the disc again.
+  if (!folder && (same > 0 || !fresh.empty())) g_disc_scans.push_back({key, root_size, root_mtime, kScanRules});
   if (!save_state_locked(error)) {
     g_assets = std::move(previous_assets); g_disc_scans = std::move(previous_scans);
     result.message = *error; return result;
@@ -5020,6 +5027,128 @@ static size_t stage_extent_locked(const std::string& target, const std::vector<F
   return extent;
 }
 
+// An exact look's fighter data file (PlXx.dat) with only its parts tables taken from the pack. The
+// pack's costumes have their own joints, and its builds point each fighter's parts table (ftData
+// +0x08) at them: the costume texture animation joints (ftanim.c, "can't find fighter texture anim"
+// when they do not fit) and the parts visibility lists. Everything that table points to, and only
+// reaches through it, comes from the pack; the table's own bytes (+0x10 to +0x14 name the parts that
+// hold and spawn items) and every other byte (attributes, actions, items) stay the disc's. Both files
+// must have the same length, relocations and symbols, and no pointer under those blocks may differ.
+// Empty when nothing qualifies or nothing differs.
+static std::vector<uint8_t> look_fighter_tables(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& pack) {
+  if (clean.size() != pack.size() || clean.size() < 0x20) return {};
+  const uint32_t data_size = be32(clean.data() + 4), relocs = be32(clean.data() + 8), roots = be32(clean.data() + 12);
+  const uint64_t tables = 0x20ull + data_size;
+  if (tables + 4ull * relocs + 8ull * roots > clean.size() ||
+      !std::equal(clean.begin() + (ptrdiff_t)tables, clean.end(), pack.begin() + (ptrdiff_t)tables) ||
+      !std::equal(clean.begin(), clean.begin() + 0x20, pack.begin()))
+    return {};
+  const uint8_t* data = clean.data() + 0x20;
+  std::map<uint32_t, uint32_t> pointers;   // pointer word offset -> target
+  for (uint32_t i = 0; i < relocs; ++i) {
+    const uint32_t at = be32(clean.data() + tables + 4ull * i);
+    if (at + 4ull > data_size) return {};
+    pointers[at] = be32(data + at);
+  }
+  std::vector<uint32_t> starts{data_size};
+  for (const auto& p : pointers) starts.push_back(p.second);
+  uint32_t root = UINT32_MAX;
+  const uint64_t names = tables + 4ull * relocs + 8ull * roots;
+  for (uint32_t i = 0; i < roots; ++i) {
+    const uint8_t* entry = clean.data() + tables + 4ull * relocs + 8ull * i;
+    const uint64_t name = names + be32(entry + 4);
+    starts.push_back(be32(entry));
+    if (name < clean.size() && std::strncmp((const char*)clean.data() + name, "ftData", 6) == 0) root = be32(entry);
+  }
+  if (root == UINT32_MAX || root + 0x60ull > data_size) return {};
+  std::sort(starts.begin(), starts.end());
+  starts.erase(std::unique(starts.begin(), starts.end()), starts.end());
+  auto block_of = [&](uint32_t offset) {
+    auto it = std::upper_bound(starts.begin(), starts.end(), offset);
+    const uint32_t begin = it == starts.begin() ? 0 : *(it - 1);
+    return std::make_pair(begin, it == starts.end() ? data_size : *it);
+  };
+  // The blocks each of ftData's 24 fields reaches; a block reached from any field but +0x08 is kept.
+  std::map<uint32_t, uint32_t> reached;   // block start -> bit set of the fields that reach it
+  for (uint32_t field = 0; field < 24; ++field) {
+    const auto slot = pointers.find(root + 4 * field);
+    if (slot == pointers.end()) continue;
+    std::vector<uint32_t> stack{slot->second};
+    while (!stack.empty()) {
+      const auto block = block_of(stack.back());
+      stack.pop_back();
+      if (block.first >= data_size || (reached[block.first] & (1u << field))) continue;
+      reached[block.first] |= 1u << field;
+      for (auto p = pointers.lower_bound(block.first); p != pointers.end() && p->first < block.second; ++p)
+        stack.push_back(p->second);
+    }
+  }
+  const auto parts = pointers.find(root + 8);
+  if (parts == pointers.end()) return {};
+  const uint32_t parts_table = block_of(parts->second).first;
+  std::vector<uint8_t> merged = clean;
+  bool changed = false;
+  for (const auto& block : reached) {
+    if (block.second != (1u << 2) || block.first == parts_table || block.first == block_of(root).first) continue;
+    const uint32_t end = block_of(block.first).second;
+    for (auto p = pointers.lower_bound(block.first); p != pointers.end() && p->first < end; ++p)
+      if (std::memcmp(data + p->first, pack.data() + 0x20 + p->first, 4) != 0) return {};
+    for (uint32_t i = block.first; i < end; ++i) {
+      if (merged[0x20 + i] == pack[0x20 + i]) continue;
+      merged[0x20 + i] = pack[0x20 + i];
+      changed = true;
+    }
+  }
+  return changed ? merged : std::vector<uint8_t>{};
+}
+
+// An effect file whose particle programs are the disc's own, byte for byte: the bank the first word of its
+// data table ("eff...DataTable") points to. The programs decide how many particles start and every random
+// number they draw, from the game's own generator, which the match shares; the texture bank and the effect
+// models only change what is drawn. So such a file changes nothing in the match, online or in a replay. A
+// file without programs (the table's first word not a pointer) only matches another without.
+static bool effect_particles_same(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& pack) {
+  struct Bank { const uint8_t* at = nullptr; size_t size = 0; bool none = false; };
+  auto bank = [](const std::vector<uint8_t>& b, Bank* out) {
+    if (b.size() < 0x20) return false;
+    const uint32_t data_size = be32(b.data() + 4), relocs = be32(b.data() + 8), roots = be32(b.data() + 12),
+                   refs = be32(b.data() + 16);
+    const uint64_t tables = 0x20ull + data_size, names = tables + 4ull * relocs + 8ull * (roots + (uint64_t)refs);
+    if (names > b.size()) return false;
+    const uint8_t* data = b.data() + 0x20;
+    uint32_t root = UINT32_MAX;
+    for (uint32_t i = 0; i < roots; ++i) {
+      const uint8_t* entry = b.data() + tables + 4ull * relocs + 8ull * i;
+      const uint64_t name = names + be32(entry + 4);
+      if (name >= b.size()) return false;
+      const char* text = (const char*)b.data() + name;
+      const size_t length = strnlen(text, b.size() - name);
+      if (length > 9 && std::memcmp(text + length - 9, "DataTable", 9) == 0) root = be32(entry);
+    }
+    if (root == UINT32_MAX || root + 8ull > data_size) return false;
+    std::vector<uint32_t> starts{data_size, root};
+    bool relocated = false;
+    for (uint32_t i = 0; i < relocs; ++i) {
+      const uint32_t at = be32(b.data() + tables + 4ull * i);
+      if (at + 4ull > data_size) return false;
+      starts.push_back(be32(data + at));
+      relocated |= at == root;
+    }
+    if (!relocated) { out->none = true; return true; }
+    const uint32_t programs = be32(data + root);
+    std::sort(starts.begin(), starts.end());
+    const auto next = std::upper_bound(starts.begin(), starts.end(), programs);
+    const uint32_t end = next == starts.end() ? data_size : *next;
+    if (programs >= data_size || end <= programs) return false;
+    out->at = data + programs; out->size = end - programs;
+    return true;
+  };
+  Bank a, b;
+  if (!bank(clean, &a) || !bank(pack, &b)) return false;
+  if (a.none || b.none) return a.none && b.none;
+  return a.size == b.size && std::memcmp(a.at, b.at, a.size) == 0;
+}
+
 // The whole profile at startup (only_slot null), or one costume slot again while the game runs
 // (republish_slot): the snapshot is then a copy of the running one with that slot's files replaced.
 static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* only_slot, RepublishResult* republished,
@@ -5088,6 +5217,13 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
   std::vector<std::string> runtime_errors;
   std::vector<const AssetRecord*> portraits;
   auto selections = g_profile.selections;
+  // An exact look selects every file of its pack (plain sets only), on top of the player's own picks for
+  // those slots; the profile itself is untouched, so turning the look off gives the player's picks back.
+  if (!g_look_pack.empty())
+    for (const auto& asset : g_assets)
+      if (asset.source_kind == kDiscSource && asset.source_name == g_look_pack && asset.info.available &&
+          asset.info.variant.empty())
+        selections[selection_key(asset)] = asset.info.id;
   if (stage_pick && only_slot) selections[*only_slot] = stage_pick->empty() ? kVanillaSelection : *stage_pick;
   for (const auto& pick : selections) {
     if (pick.second == kVanillaSelection) continue;
@@ -5291,6 +5427,69 @@ static void publish_locked(uint8_t* fst, uint32_t fst_size, const std::string* o
         host::log("cosmetics: %s is the standard stage, served at the %zu bytes its skins share", file.path.c_str(),
                   (size_t)shared.second);
       }
+    }
+  }
+  // An exact look: the fighter data files its costumes need (look_fighter_tables). Display tables only, so
+  // they are served online and in replays too, with the costumes (whose skeletons match the game's).
+  if (!only_slot && !g_look_pack.empty()) {
+    std::string pack_disc;
+    for (const auto& asset : g_assets)
+      if (asset.source_kind == kDiscSource && asset.source_name == g_look_pack) { pack_disc = asset.source_id; break; }
+    std::vector<uint8_t> header, pack_fst;
+    std::vector<FstFile> pack_files;
+    std::string pack_error;
+    if (!pack_disc.empty() && read_range(fs::u8path(pack_disc), 0, 0x440, &header) &&
+        be32(header.data() + 0x428) >= 12 && be32(header.data() + 0x428) <= 2u * 1024u * 1024u &&
+        read_range(fs::u8path(pack_disc), be32(header.data() + 0x424), be32(header.data() + 0x428), &pack_fst) &&
+        parse_fst(pack_fst.data(), (uint32_t)pack_fst.size(), &pack_files, &pack_error)) {
+      size_t served_tables = 0;
+      for (const auto& file : files) {
+        const std::string name = file.path.substr(file.path.find_last_of('/') + 1);
+        if (name.size() != 8 || name.compare(0, 2, "Pl") != 0 || lower(name.substr(4)) != ".dat" ||
+            next->by_start.count(file.start)) continue;
+        const auto theirs = std::find_if(pack_files.begin(), pack_files.end(),
+                                         [&](const FstFile& f) { return f.path == file.path; });
+        if (theirs == pack_files.end() || theirs->size != file.size) continue;
+        std::vector<uint8_t> clean(file.size), pack;
+        if (!host::disc_read(file.start, clean.data(), file.size) ||
+            !read_range(fs::u8path(pack_disc), theirs->start, theirs->size, &pack)) continue;
+        std::vector<uint8_t> merged = look_fighter_tables(clean, pack);
+        if (merged.empty()) continue;
+        next->by_start[file.start] = RuntimeAsset{std::string(), name, std::make_shared<const std::vector<uint8_t>>(std::move(merged)),
+                                                  file.size, true, kLookFighterKind, "the look's parts tables"};
+        ++served_tables;
+      }
+      host::log("looks: %s parts tables in %zu fighter files", g_look_pack.c_str(), served_tables);
+      // The rest of the look that is only seen or heard: the HUD (IfAll), the pause screen (GmPause), the
+      // announcer's names (nr_name.ssm) and the effect files whose particle programs are the game's
+      // (effect_particles_same: their textures and effect models change, the match does not). An effect
+      // file with other programs would start other particles and draw other random numbers, so it stays the
+      // disc's. The select screens stay too (Slippi's menus and the skins' portraits use them). Online and in
+      // replays as well: none of it reaches the match.
+      size_t served_files = 0, effects_kept = 0;
+      for (const auto& file : files) {
+        const std::string name = file.path.substr(file.path.find_last_of('/') + 1);
+        const std::string low = lower(name);
+        const bool effect = low.size() > 6 && low.compare(0, 2, "ef") == 0 && low.compare(low.size() - 4, 4, ".dat") == 0;
+        const bool sound = lower(file.path) == "audio/us/nr_name.ssm";
+        if (!(effect || sound || low == "ifall.usd" || low == "gmpause.usd") || next->by_start.count(file.start)) continue;
+        const auto theirs = std::find_if(pack_files.begin(), pack_files.end(),
+                                         [&](const FstFile& f) { return f.path == file.path; });
+        if (theirs == pack_files.end() || theirs->size < 4 || (sound && theirs->size != file.size)) continue;
+        std::vector<uint8_t> clean(file.size), pack;
+        if (!host::disc_read(file.start, clean.data(), file.size) ||
+            !read_range(fs::u8path(pack_disc), theirs->start, theirs->size, &pack) || pack == clean) continue;
+        if (effect && !effect_particles_same(clean, pack)) { ++effects_kept; continue; }
+        const size_t extent = std::max<size_t>(pack.size(), file.size);
+        if (extent > std::numeric_limits<uint32_t>::max()) continue;
+        if (!sound) { pack.resize(extent, 0); put_be32(pack.data(), (uint32_t)extent); }
+        put_be32(fst + (size_t)file.index * 12 + 8, (uint32_t)extent);
+        next->by_start[file.start] = RuntimeAsset{std::string(), name, std::make_shared<const std::vector<uint8_t>>(std::move(pack)),
+                                                  file.size, true, kLookFileKind, "the look's own file"};
+        ++served_files;
+      }
+      host::log("looks: %s HUD, pause, announcer and effect files: %zu served, %zu effects kept (their particle programs differ)",
+                g_look_pack.c_str(), served_files, effects_kept);
     }
   }
   // A slot's own portrait and stock icon, after the skins: they show where the selected skin brought
@@ -6118,6 +6317,168 @@ std::string choose_portrait_file() {
   dialog.lpstrFile = file; dialog.nMaxFile = (DWORD)std::size(file);
   dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
   return GetOpenFileNameW(&dialog) ? wide_to_utf8(file) : std::string();
+}
+
+
+// ---- Exact looks: the three community looks built from the player's own retail disc and patch ----
+namespace {
+struct LookPin { const char* name; const char* disc; uint64_t size; const char* sha; };
+// The patches as published (version 1.0.2) and the discs they make from the retail NTSC 1.02 disc.
+constexpr const char* kLookClassicPatch = "DietMeleeClassic.xdelta";
+constexpr uint64_t kLookClassicPatchSize = 186901802;
+constexpr const char* kLookClassicPatchSha = "46eb93b7df529fdf7d988acb01483f5aee9e9dae6873e3fd28a282629864ab2e";
+struct LookDiff { const char* file; uint64_t size; const char* sha; };
+const LookDiff kLookDiffs[] = {
+  {"crystaldiff.xdelta", 10666646, "e4256addf1ae46c9c61ca3b648a6e0a1afc7cd8bda30a19203c3bf91a759b76d"},
+  {"64diff.xdelta", 13726850, "f8992c8c5efdf66b1a0979ce361263059dc0615921a6df3b7ce7a3e9c6cfe00a"},
+};
+const LookPin kLookPins[] = {
+  {"Diet Classic", "Diet Classic.iso", 287071536, "6164d2e36bbc60e1b8f4ff6665c4eeb0dc43cece1803fe592b6346f2da517f58"},
+  {"Crystal", "Crystal.iso", 251487184, "6bb7bd8bc6b824623ab54f1db932a24983286f7b9040a27385d93f7153947bbf"},
+  {"Diet 64", "Diet 64.iso", 258289764, "132bc40e3a9281e35d0294c8259f22df48b6ef121edc113f0568a025445fc60f"},
+};
+constexpr const char* kRetailSha = "0de05981a34156b9cedcef73c73d4244ac05cf6149ab3c9cfed917698819e464";
+
+fs::path looks_dir_locked() { return g_root.parent_path() / L"Looks"; }
+
+// Finds a file by name anywhere under a folder (the patcher's own layout puts them in blob/patches).
+fs::path find_named(const fs::path& folder, const std::string& name) {
+  std::error_code ec;
+  if (fs::is_regular_file(folder / fs::u8path(name), ec)) return folder / fs::u8path(name);
+  fs::recursive_directory_iterator it(folder, fs::directory_options::skip_permission_denied, ec), end;
+  for (; !ec && it != end; it.increment(ec))
+    if (it->is_regular_file(ec) && lower(it->path().filename().u8string()) == lower(name)) return it->path();
+  return {};
+}
+
+// SHA-256 of a whole file, read in 4 MB pieces (the retail disc is 1.4 GB). Empty on error.
+std::string look_file_sha256(const fs::path& path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) return {};
+  BCRYPT_ALG_HANDLE algorithm = nullptr; BCRYPT_HASH_HANDLE hash = nullptr;
+  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0) return {};
+  if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) < 0) { BCryptCloseAlgorithmProvider(algorithm, 0); return {}; }
+  std::vector<char> buffer(4u << 20);
+  bool ok = true;
+  while (ok && file) {
+    file.read(buffer.data(), (std::streamsize)buffer.size());
+    const std::streamsize got = file.gcount();
+    if (got > 0) ok = BCryptHashData(hash, (PUCHAR)buffer.data(), (ULONG)got, 0) >= 0;
+  }
+  uint8_t digest[32]{};
+  ok = ok && BCryptFinishHash(hash, digest, sizeof digest, 0) >= 0;
+  BCryptDestroyHash(hash); BCryptCloseAlgorithmProvider(algorithm, 0);
+  if (!ok) return {};
+  std::ostringstream text; text << std::hex << std::setfill('0');
+  for (uint8_t byte : digest) text << std::setw(2) << (unsigned)byte;
+  return text.str();
+}
+
+bool file_matches(const fs::path& file, uint64_t size, const char* sha) {
+  std::error_code ec;
+  return fs::is_regular_file(file, ec) && fs::file_size(file, ec) == size && !ec && look_file_sha256(file) == sha;
+}
+
+#ifdef _WIN32
+// xdelta3 -d -f -s <source> <patch> <out>, hidden, waited for (up to 10 minutes: the discs are big).
+bool run_xdelta(const fs::path& xdelta, const fs::path& source, const fs::path& patch, const fs::path& out, std::string* error) {
+  std::wstring command = quote_windows_arg(xdelta.wstring()) + L" -d -f -s " + quote_windows_arg(source.wstring()) + L" " +
+                         quote_windows_arg(patch.wstring()) + L" " + quote_windows_arg(out.wstring());
+  STARTUPINFOW startup{}; startup.cb = sizeof startup;
+  PROCESS_INFORMATION process{};
+  if (!CreateProcessW(xdelta.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+    *error = "The patch tool could not be started."; return false;
+  }
+  const DWORD wait = WaitForSingleObject(process.hProcess, 600000);
+  if (wait == WAIT_TIMEOUT) { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 5000); }
+  DWORD code = 1; GetExitCodeProcess(process.hProcess, &code);
+  CloseHandle(process.hThread); CloseHandle(process.hProcess);
+  if (wait != WAIT_OBJECT_0 || code != 0) { *error = "The patch did not apply to this disc."; return false; }
+  return true;
+}
+#endif
+}  // namespace
+
+std::vector<LookPackStatus> look_packs() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  std::vector<LookPackStatus> out;
+  for (const auto& pin : kLookPins) {
+    LookPackStatus status; status.name = pin.name;
+    for (const auto& asset : g_assets)
+      if (asset.source_kind == kDiscSource && asset.source_name == pin.name) ++status.files;
+    status.built = status.files > 0;
+    out.push_back(status);
+  }
+  return out;
+}
+
+// At startup, with the game disc open: every built look disc is scanned as its pack (unchanged discs are
+// skipped by scan_disc_skins itself). Discs that fail their hash are left alone.
+void scan_look_packs() {
+  fs::path dir;
+  { std::lock_guard<std::mutex> lock(g_mutex); if (!g_configured) return; dir = looks_dir_locked(); }
+  for (const auto& pin : kLookPins) {
+    const fs::path disc = dir / fs::u8path(pin.disc);
+    std::error_code ec;
+    if (!fs::is_regular_file(disc, ec) || fs::file_size(disc, ec) != pin.size) continue;
+    std::string error;
+    const ImportResult r = scan_disc_skins(disc.u8string(), pin.name, &error);
+    if (!r.ok) host::log("looks: %s could not be read (%s)", pin.name, (error.empty() ? r.message : error).c_str());
+  }
+}
+
+void set_active_look_pack(const std::string& name) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_look_pack = name;
+}
+
+std::string active_look_pack() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_look_pack;
+}
+
+bool build_look_packs(const std::string& patcher_folder, const std::string& retail_disc, const std::string& xdelta_tool,
+                      std::string* message) {
+  std::string local; if (!message) message = &local;
+#ifndef _WIN32
+  (void)patcher_folder; (void)retail_disc; (void)xdelta_tool;
+  *message = "Building the exact looks is Windows only for now."; return false;
+#else
+  fs::path dir;
+  { std::lock_guard<std::mutex> lock(g_mutex); if (!g_configured) { *message = "The skin catalog is not running."; return false; } dir = looks_dir_locked(); }
+  const fs::path folder = fs::u8path(patcher_folder), retail = fs::u8path(retail_disc), xdelta = fs::u8path(xdelta_tool);
+  std::error_code ec;
+  if (!fs::is_regular_file(xdelta, ec)) { *message = "The patch tool is missing from the game folder (tools" + std::string(1, '\\') + "xdelta3.exe)."; return false; }
+  if (look_file_sha256(retail) != kRetailSha) { *message = "The game disc is not the NTSC 1.02 disc these looks are made from."; return false; }
+  const fs::path classic_patch = find_named(folder, kLookClassicPatch);
+  if (classic_patch.empty() || !file_matches(classic_patch, kLookClassicPatchSize, kLookClassicPatchSha)) {
+    *message = "That folder does not hold the patch files these looks need (version 1.0.2)."; return false;
+  }
+  fs::create_directories(dir, ec);
+  // Classic first: the other two are its differences.
+  const fs::path classic = dir / fs::u8path(kLookPins[0].disc);
+  if (!file_matches(classic, kLookPins[0].size, kLookPins[0].sha)) {
+    if (!run_xdelta(xdelta, retail, classic_patch, classic, message)) return false;
+    if (!file_matches(classic, kLookPins[0].size, kLookPins[0].sha)) { fs::remove(classic, ec); *message = "The built disc did not come out as expected."; return false; }
+  }
+  for (size_t i = 0; i < 2; ++i) {
+    const LookPin& pin = kLookPins[i + 1];
+    const fs::path out = dir / fs::u8path(pin.disc);
+    if (file_matches(out, pin.size, pin.sha)) continue;
+    const fs::path diff = find_named(folder, kLookDiffs[i].file);
+    if (diff.empty() || !file_matches(diff, kLookDiffs[i].size, kLookDiffs[i].sha)) { *message = std::string("The patch file ") + kLookDiffs[i].file + " is missing or different."; return false; }
+    // As the patcher does: the difference is applied to the Classic patch, and the result to the retail disc.
+    const fs::path joined = dir / fs::u8path(std::string(pin.name) + ".xdelta");
+    if (!run_xdelta(xdelta, classic_patch, diff, joined, message)) return false;
+    const bool ok = run_xdelta(xdelta, retail, joined, out, message);
+    fs::remove(joined, ec);
+    if (!ok) return false;
+    if (!file_matches(out, pin.size, pin.sha)) { fs::remove(out, ec); *message = "The built disc did not come out as expected."; return false; }
+  }
+  *message = "The exact looks are built. Pick one under Look; it applies at the next start.";
+  host::log("looks: %s", message->c_str());
+  return true;
+#endif
 }
 
 namespace testing {

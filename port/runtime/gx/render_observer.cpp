@@ -3,6 +3,7 @@
 #include "render_observer.h"
 #include "ppc.h"
 #include "gx_texture.h"
+#include "gx_retro.h"
 #include "authored_pose.h"
 #include "gx_core.h"   // authored_capture_wanted
 #include <algorithm>
@@ -312,7 +313,9 @@ RenderObserver::RenderObserver(ppc::Context& cpu, Observe kind, uint8_t* memory)
   saved_joint_ = current_joint; current_joint = cpu.r[3];
   saved_memory_ = current_memory; current_memory = memory;
   saved_owner_ = current_owner;
-  current_owner = owner_tracking.load(std::memory_order_relaxed) ? resolve_owner(memory) : (uint8_t)0xFF;
+  // Owners are resolved for the L-cancel indicator, and for the look's port colours (gx_retro.h).
+  current_owner = (owner_tracking.load(std::memory_order_relaxed) || look_live().colours.load(std::memory_order_relaxed) != 0)
+                      ? resolve_owner(memory) : (uint8_t)0xFF;
   saved_rigid_ = rigid; rigid = false; saved_envelope_ = envelope; envelope = false;
   saved_pose_ = std::move(current_pose); current_pose.reset();
   saved_generation_ = current_generation; saved_pass_ = current_pass; saved_draw_ = current_draw;

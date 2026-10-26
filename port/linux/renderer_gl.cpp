@@ -15,6 +15,7 @@
 #include "user_shader.h"
 #endif
 #include "crt_shader.h"
+#include "gx_retro.h"
 #include <GL/glew.h>
 #include <SDL.h>
 #include <algorithm>
@@ -232,7 +233,11 @@ void main() {
   void submit_frame(const gx::Frame& frame, const gx::DrawMatrices* overrides) override {
     if (hooks_.frame_begin) hooks_.frame_begin(frame);
     widenable_scene_ = gx::frame_has_widenable_scene(frame);   // as the D3D backends: 16:9 reaches the screen
-    effects_filter_ = gx::effects_filter(frame, hooks_.options ? hooks_.options->effects_level : 0);   // "Visual effects"
+    const int lightweight = hooks_.options ? hooks_.options->lightweight : 0;
+    gx::set_lightweight_level(lightweight);
+    if (hooks_.options) gx::publish_look(*hooks_.options);
+    effects_filter_ = gx::effects_filter(frame, gx::lightweight_effects_level(hooks_.options ? hooks_.options->effects_level : 0, lightweight));   // "Visual effects"
+    lightweight_filter_ = gx::lightweight_filter(frame, lightweight);   // "Lightweight"
 #ifdef GX_PC_SETTINGS
     if (hooks_.options) {
       // Texture packs switched on or off, or a skin picked on the character select: every cached
@@ -565,8 +570,16 @@ void main() {
     }
 #endif
     const uint64_t desc[] = {t.data->hash, t.width, t.height, t.format, t.tlut_format, t.mip_levels};
-    const uint64_t key = gx::hash_bytes(desc, sizeof desc);
+    const uint64_t key = gx::look_key(gx::hash_bytes(desc, sizeof desc), look_surface_);
     if (auto i = textures_.find(key); i != textures_.end()) { i->second.used = sequence_; return i->second.id; }
+    if (auto small = gx::look_replacement(t, look_surface_)) {   // the look's treated copy, one level (gx_retro.h)
+      Texture entry; entry.width = small->width; entry.height = small->height; entry.used = sequence_; entry.levels = 1;
+      glGenTextures(1, &entry.id); glBindTexture(GL_TEXTURE_2D, entry.id);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, small->width, small->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, small->pixels.data());
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+      entry.bytes = small->pixels.size();
+      const GLuint id = entry.id; textures_.emplace(key, entry); return id;
+    }
     Texture entry; entry.width = t.width; entry.height = t.height; entry.used = sequence_;
     entry.levels = gx::texture_mip_count(t.width, t.height, t.mip_levels);
     // Custom texture pack or a skin's companion textures: Dolphin's name for this texture, then its
@@ -631,6 +644,7 @@ void main() {
   }
   void draw(const gx::Frame& frame, const gx::DrawCall& dc, const gx::DrawMatrices* matrices, size_t vertex_override) {
     if (gx::skip_for_effects(effects_filter_, dc)) return;
+    if (gx::skip_for_lightweight(lightweight_filter_, frame, dc)) return;   // "Lightweight" 2+: scenery behind the play plane
     GLuint p = program(dc);
     if (!p) { ++waiting_draws_; return; }   // its shader is still being translated (see shader())
     glUseProgram(p); attributes(p); glBindFramebuffer(GL_FRAMEBUFFER, efb_);
@@ -664,9 +678,12 @@ void main() {
     gx::fill_vs_constants(dc, vc, scale_, matrices); gx::fill_ps_constants(dc, pc, scale_);
     glBindBuffer(GL_UNIFORM_BUFFER, uniform_[0]); glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof vc, &vc);
     glBindBuffer(GL_UNIFORM_BUFFER, uniform_[1]); glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof pc, &pc);
+    const bool flat = gx::lightweight_flat(lightweight_filter_, dc);   // "Lightweight" 3+: one white texel instead
+    look_surface_ = gx::look_surface(lightweight_filter_, dc);
+    const bool unfiltered = gx::look_unfiltered(lightweight_filter_, dc);
     for (int unit = 0; unit < 8; ++unit) {
-      glActiveTexture(GL_TEXTURE0 + unit); glBindTexture(GL_TEXTURE_2D, dc.textures[unit].used ? texture(dc.textures[unit]) : 0);
-      glBindSampler(unit, sampler(dc.textures[unit].mode0, dc.textures[unit].mode1));
+      glActiveTexture(GL_TEXTURE0 + unit); glBindTexture(GL_TEXTURE_2D, !dc.textures[unit].used ? 0 : flat ? white_texture() : texture(dc.textures[unit]));
+      glBindSampler(unit, sampler(unfiltered ? gx::unfiltered_mode0(dc.textures[unit].mode0) : dc.textures[unit].mode0, dc.textures[unit].mode1));
     }
     index_scratch_.clear(); gx::DrawTopology topology = gx::DrawTopology::Unsupported;
     if (dc.segment_count) {
@@ -678,13 +695,25 @@ void main() {
     } else topology = gx::append_segment_indices(index_scratch_, dc.primitive, dc.vertex_count, vertex_override ? uint32_t(vertex_override) : dc.first_vertex);
     if (index_scratch_.empty()) return;
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, indices_); glBufferData(GL_ELEMENT_ARRAY_BUFFER, index_scratch_.size() * sizeof(uint32_t), index_scratch_.data(), GL_STREAM_DRAW);
+    const bool wire = gx::look_wire(lightweight_filter_, dc);   // "Lightweight" 5 or a Wire look
+    if (wire) { glDisable(GL_CULL_FACE); glPolygonMode(GL_FRONT_AND_BACK, GL_LINE); }
     glDrawElements(topology == gx::DrawTopology::Lines ? GL_LINES : GL_TRIANGLES, index_scratch_.size(), GL_UNSIGNED_INT, nullptr);
+    if (wire) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+  }
+  GLuint white_texture() {
+    if (white_) return white_;
+    const uint32_t white = 0xFFFFFFFFu;
+    glGenTextures(1, &white_); glBindTexture(GL_TEXTURE_2D, white_);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, &white);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+    return white_;
   }
   void clear(const gx::EfbCopy& c) {
     glBindFramebuffer(GL_FRAMEBUFFER, efb_); glEnable(GL_SCISSOR_TEST);
     glScissor(c.src_x * scale_, height_ - (c.src_y + c.src_h) * scale_, c.src_w * scale_, c.src_h * scale_);
     glColorMask(GL_TRUE,GL_TRUE,GL_TRUE,GL_TRUE); glDepthMask(GL_TRUE);
-    glClearColor(((c.clear_color >> 16) & 255) / 255.0f, ((c.clear_color >> 8) & 255) / 255.0f, (c.clear_color & 255) / 255.0f, (c.clear_color >> 24) / 255.0f);
+    const uint32_t clear_colour = gx::look_clear_colour(lightweight_filter_.in_match, c.clear_color);   // the look's background
+    glClearColor(((clear_colour >> 16) & 255) / 255.0f, ((clear_colour >> 8) & 255) / 255.0f, (clear_colour & 255) / 255.0f, (clear_colour >> 24) / 255.0f);
     glClearDepth(1 - c.clear_z / 16777215.0); glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
   }
   void copy(const gx::EfbCopy& c) {
@@ -1030,6 +1059,9 @@ void main() {
   uint64_t replacement_bytes_ = 0;          // texture pack replacements held, against a 512 MB budget
   int anisotropy_applied_ = 1;              // the filtering the cached samplers were made with
   gx::EffectsFilter effects_filter_;   // "Visual effects" for the frame being submitted (submit_frame)
+  gx::LightweightFilter lightweight_filter_;   // "Lightweight" for the frame being submitted
+  GLuint white_ = 0;                           // "Lightweight" flat shading (white_texture)
+  gx::Surface look_surface_ = gx::Surface::Textured;   // the look's treatment for the textures being bound
   bool widenable_scene_ = true;   // the frame being presented can be shown widened (frame_has_widenable_scene)
   bool clockwise_front_ = true;
   std::unordered_map<ProgramKey, GLuint, KeyHash> programs_;

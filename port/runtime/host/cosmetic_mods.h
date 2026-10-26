@@ -169,6 +169,23 @@ uint32_t voice_bank_count();
 // alternate sets have no cell of their own in that file and get none.
 ImportResult scan_disc_skins(const std::string& iso_path, const std::string& pack_name,
                              std::string* error = nullptr);
+// Exact looks ("Diet Classic", "Diet 64", "Crystal"): built once from the player's own retail disc and the
+// published patch files (version 1.0.2), into a Looks folder beside the skin catalog, then scanned as packs
+// under those names. Nothing of them is shipped with the game. While a look is active every file of its
+// pack is served (costumes, stages and the character select pictures), the player's own picks untouched
+// underneath. Stages online and in replays use their online form; a costume that fails the online check
+// is not served online.
+struct LookPackStatus { std::string name; bool built = false; uint32_t files = 0; };
+std::vector<LookPackStatus> look_packs();
+// Patcher folder (or the folder holding the three .xdelta files), the retail disc, the shipped xdelta3.
+// Slow (minutes): call from a worker thread. The message says what happened either way.
+bool build_look_packs(const std::string& patcher_folder, const std::string& retail_disc, const std::string& xdelta_tool,
+                      std::string* message);
+// At startup with the game disc open: scans every built look disc as its pack.
+void scan_look_packs();
+// The look whose pack is served from the next start ("" none). Read by publish.
+void set_active_look_pack(const std::string& name);
+std::string active_look_pack();
 // How many skins the catalog lists from that disc or folder.
 uint32_t disc_skin_count(const std::string& iso_path);
 // The mod disc (or files pack) this session loads as its own files, as scan_disc_skins was given

@@ -51,10 +51,16 @@ int mu_replay_abi_ps_frozen_toggle(void)
 }
 
 /* The replay was played with Frozen Pokemon Stadium (game start isFrozenPS): Slippi's playback
- * applies FreezePokemon (801D45FC: b to the function exit), so no transformation ever starts. */
+ * applies FreezePokemon (801D45FC: b to the function exit), so no transformation ever starts.
+ * Outside playback, the player's offline "Pokemon Stadium never transforms" does the same. */
+int mu_stadium_frozen_option(void);
+
 int mu_replay_ps_frozen(void)
 {
-    return mu_replay_abi_active() && start_info->frozen_ps;
+    if (mu_replay_abi_active()) {
+        return start_info->frozen_ps;
+    }
+    return mu_stadium_frozen_option();
 }
 
 /* Fetches frame `frame` (CMD_GET_FRAME). Returns MU_REPLAY_CONTINUE or MU_REPLAY_TERMINATE. */

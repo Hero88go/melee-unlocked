@@ -1,6 +1,8 @@
 // GX command processor: decodes the FIFO stream into register state and captured frames.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <array>
@@ -352,6 +354,148 @@ inline bool skip_for_effects(const EffectsFilter& e, const DrawCall& dc) {
   const bool additive = ((dc.bp.blendmode() >> 5) & 7) == 1;         // destination factor ONE
   return additive || (e.level >= 2 && !(zmode & 1));
 }
+
+// "Lightweight" (RenderOptions::lightweight, 0 to 5): one ladder of display-only savings for weak
+// PCs, each level including the ones below it. 1 low poly fighters, 2 no stage backgrounds, 3 flat
+// shading (no textures, Visual effects at Minimal), 4 the lowest image settings, 5 wireframe.
+// Only draws of the world camera in a running match are touched, with the same gate Visual effects
+// uses, so menus, the HUD and the pause screen always draw as the game made them. Guest memory is
+// never written here, so online play, replays and the state digest are the same at every level.
+constexpr int kLightweightLevels = 6;
+void set_lightweight_level(int level);
+int lightweight_level();
+// What the last finished match frame drew and skipped (all backends), for the settings hint.
+struct LightweightCounts { uint32_t drawn = 0, skipped = 0; };
+LightweightCounts lightweight_last_counts();
+void lightweight_count(bool skipped);
+void lightweight_publish_counts();
+
+struct LightweightFilter {
+  int level = 0;                // 0 = nothing changes this frame
+  uint32_t projection[6] = {};  // XF 0x1020..0x1025 of the world camera
+  float fighter_far = 0;        // the farthest fighter's view-space z (negative, the camera looks down -z)
+  bool have_fighters = false;
+  bool in_match = false;        // a running match with a world camera (projection is set): looks apply to it
+};
+// A stage piece counts as background when all of it lies this many world units behind the
+// farthest fighter. Melee plays on the z = 0 plane: platforms, ledges and walls sit within a few
+// units of it, scenery is tens to thousands of units back.
+constexpr float kLightweightBackgroundDepth = 60.0f;
+
+// The view-space z of a vertex: row 2 of its position matrix (GX keeps model-view matrices).
+inline float lightweight_view_z(const DrawCall& d, const Vertex& v) {
+  const int row = (int)(v.posmtx & 0x3F);
+  if (row + 2 >= 64) return 0;
+  const float* m = &d.posMatrices[(row + 2) * 4];
+  return m[0] * v.pos[0] + m[1] * v.pos[1] + m[2] * v.pos[2] + m[3];
+}
+// MELEE_TEST_LIGHTWEIGHT_LOG=1 (tests): every 600th match frame, the depths the background rule sees.
+void lightweight_debug(const Frame& f, const LightweightFilter& e);
+inline bool lightweight_world_draw(const LightweightFilter& e, const DrawCall& d) {
+  return e.level > 0 && d.xf_regs[0x26] == 0 &&
+         std::memcmp(e.projection, &d.xf_regs[0x20], sizeof e.projection) == 0;
+}
+inline LightweightFilter lightweight_filter_build(const Frame& f, int level) {
+  lightweight_publish_counts();
+  LightweightFilter e;
+  if (!frame_in_match(f)) return e;
+  const DrawCall* scene = frame_scene_draw(f);
+  if (!scene) return e;
+  // The world camera is known in every match, so looks (gx_retro.h) can tell fighters and stage from menus even
+  // with the Lightweight level at 0.
+  std::memcpy(e.projection, &scene->xf_regs[0x20], sizeof e.projection);
+  e.in_match = true;
+  if (level <= 0) return e;
+  e.level = level;
+  if (level >= 2) {
+    // The play plane's depth: the nearest skinned model of the world camera, which is a fighter
+    // (draw owners are only tracked for the L-cancel indicator, so they cannot be relied on here).
+    // A skinned piece of scenery further back (Whispy, a crowd) only moves this nearer the camera
+    // if nothing else is skinned, and then the rule skips less, never more.
+    for (const auto& d : f.draws) {
+      if (!d.skinned || !lightweight_world_draw(e, d)) continue;
+      const int row = (int)(d.matrix_index_a & 0x3F);
+      if (row + 2 >= 64) continue;
+      const float z = d.posMatrices[(row + 2) * 4 + 3];
+      if (!std::isfinite(z)) continue;
+      if (!e.have_fighters || z > e.fighter_far) e.fighter_far = z;
+      e.have_fighters = true;
+    }
+  }
+  lightweight_debug(f, e);
+  return e;
+}
+// The filter of the frame being drawn, for the pixel constants (gx_shader.cpp fill_ps_constants), which only
+// see the draw. Set by lightweight_filter on the renderer's thread.
+void set_look_filter(const LightweightFilter& e);
+const LightweightFilter& look_filter();
+inline LightweightFilter lightweight_filter(const Frame& f, int level) {
+  const LightweightFilter e = lightweight_filter_build(f, level);
+  set_look_filter(e);
+  return e;
+}
+// Level 2 and up: a piece of the stage that lies wholly behind the play plane. Fighters and items
+// (they have an owner or are skinned) never count, nor does anything off the world camera. With no
+// fighter in view (a cut-in, the results walk-off) nothing is skipped.
+inline bool lightweight_background(const LightweightFilter& e, const Frame& f, const DrawCall& d) {
+  if (e.level < 2 || !e.have_fighters || d.owner_player != 0xFF || d.skinned || !lightweight_world_draw(e, d)) return false;
+  // The frame's own vertices: a stage piece is rigid, so the sub-frame solver never rewrites them.
+  const Vertex* v = d.first_vertex + (size_t)d.vertex_count <= f.vertices.size() ? f.vertices.data() + d.first_vertex : nullptr;
+  if (!v || d.vertex_count == 0) return false;
+  // Only what the camera can see counts: stage backdrops are domes and planes thousands of units
+  // across that pass beside and behind the camera, so their far edges say nothing. A vertex is in
+  // view when it is in front of the camera and inside a cone wider than any Melee lens.
+  // Level 5 (wireframe) keeps only what touches the play plane: a band 20 units behind to 30 in front of the
+  // fighters (platforms, floors, walls, ledges). Scenery further back or in front (trees, poles, building fronts,
+  // foreground props) goes too, so the lines stay readable and there are fewer draws.
+  const bool band = e.level >= 5;
+  const float limit = e.fighter_far - (band ? 20.0f : kLightweightBackgroundDepth);
+  const float front = e.fighter_far + 30.0f;
+  bool seen = false;
+  float lo[3] = {1e30f, 1e30f, 1e30f}, hi[3] = {-1e30f, -1e30f, -1e30f};
+  for (uint32_t i = 0; i < d.vertex_count; ++i) {
+    const int row = (int)(v[i].posmtx & 0x3F);
+    if (row + 2 >= 64) return false;
+    const float* m = &d.posMatrices[row * 4];
+    float p[3];
+    for (int r = 0; r < 3; ++r) p[r] = m[r * 4] * v[i].pos[0] + m[r * 4 + 1] * v[i].pos[1] + m[r * 4 + 2] * v[i].pos[2] + m[r * 4 + 3];
+    if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2])) return false;
+    for (int r = 0; r < 3; ++r) { lo[r] = std::min(lo[r], p[r]); hi[r] = std::max(hi[r], p[r]); }
+    const float z = p[2];
+    if (z >= 0 || std::abs(p[0]) > -z * 1.5f || std::abs(p[1]) > -z * 1.5f) continue;   // out of view
+    seen = true;
+    if (z >= limit && (!band || z <= front)) return false;   // something visible is on the play plane: keep it
+  }
+  if (seen) return true;
+  // Nothing of it in view by its corners: only a dome or backdrop plane far larger than any stage
+  // floor counts as background then (a floor spanning the screen keeps drawing).
+  return hi[0] - lo[0] > 3000.0f || hi[1] - lo[1] > 3000.0f || hi[2] - lo[2] > 3000.0f;
+}
+// The answer of lightweight_background for draw `index` of frame `f`, remembered for that game frame: an
+// uncapped display presents each game frame many times, and the test reads every vertex of a stage piece, so
+// it is decided once (the first present) and reused. -1: not decided yet. Renderer thread only.
+int8_t& lightweight_skip_slot(const Frame& f, size_t index, int level);
+// One call per draw in every backend: skip it or not, and count it for the settings hint.
+inline bool skip_for_lightweight(const LightweightFilter& e, const Frame& f, const DrawCall& d) {
+  if (e.level <= 0) return false;
+  const size_t index = (size_t)(&d - f.draws.data());
+  bool skip;
+  if (index < f.draws.size()) {
+    int8_t& slot = lightweight_skip_slot(f, index, e.level);
+    if (slot < 0) slot = lightweight_background(e, f, d) ? 1 : 0;
+    skip = slot != 0;
+  } else {
+    skip = lightweight_background(e, f, d);   // a copy of a draw, not the frame's own
+  }
+  lightweight_count(skip);
+  return skip;
+}
+// Level 3 and up: no textures on world draws (every slot reads one white texel).
+inline bool lightweight_flat(const LightweightFilter& e, const DrawCall& d) { return e.level >= 3 && lightweight_world_draw(e, d); }
+// Level 5: world draws as lines.
+inline bool lightweight_wire(const LightweightFilter& e, const DrawCall& d) { return e.level >= 5 && lightweight_world_draw(e, d); }
+// Visual effects in force: Lightweight 3 and up holds them at Minimal.
+inline int lightweight_effects_level(int effects_level, int lightweight) { return lightweight >= 3 ? std::max(effects_level, 2) : effects_level; }
 
 // Marks the next finished frame as discontinuous. Called on the simulation thread when the game's
 // state is replaced wholesale (a rollback's savestate load), which only the host knows about.

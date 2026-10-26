@@ -131,6 +131,14 @@ int mu_option2_offline(unsigned int bit)
     return 1;
 }
 
+/* Slippi's Frozen Pokemon Stadium as an offline option. The countdown test (mu_replay_ps_frozen)
+ * and the recording's isFrozenPS (mu_ps_frozen_toggle) both take it, so a replay recorded with it
+ * plays back frozen here and in Slippi's player alike; in playback only the replay's value counts. */
+int mu_stadium_frozen_option(void)
+{
+    return !mu_replay_abi_active() && mu_option2_offline(MU_TE2_STADIUM_FROZEN);
+}
+
 /* The third option word (the 20XX Hack Pack training options for CPUs, shim/mu_20xx_cpu.c) when it
  * is in effect, else 0. The same limits as mu_option2_offline: the normal game, offline, not while
  * online is pending or in Slippi's online menus, never in a TM-CE event. In replay playback the

@@ -35,6 +35,7 @@
 #include "gx_backend.h"
 #include "gx_core.h"
 #include "render_options.h"
+#include "gx_retro.h"
 #include "pc_settings.h"
 #include "texture_pack.h"
 #include "cosmetic_mods.h"
@@ -1774,7 +1775,14 @@ static int melee_main(int argc, char** argv) {
     else if (a == "--ssaa") gfx.ssaa = std::atoi(next()) >= 2 ? 2 : 1;
     else if (a == "--anisotropy") gfx.anisotropy = std::clamp(std::atoi(next()), 1, 16);
     // Hidden runs never load the settings file, so the quality level needs a flag to be measurable.
-    else if (a == "--effects") gfx.effects_level = std::clamp(std::atoi(next()), 0, 2);
+    // The same for the "Lightweight" ladder; the backend stays the one asked for (no Direct3D 11
+    // swap). One branch for both: this chain is at the compiler's nesting limit.
+    else if (a == "--effects" || a == "--lightweight" || a == "--retro" || a == "--look") {
+      if (a == "--effects") gfx.effects_level = std::clamp(std::atoi(next()), 0, 2);
+      else if (a == "--lightweight") gx::apply_lightweight(gfx, std::atoi(next()), false);
+      else if (a == "--look") gx::apply_look_preset(gfx, std::atoi(next()), false);   // a preset by index (render_options.h)
+      else gfx.retro = true;   // "Retro (64 style)", no value
+    }
     else if (a == "--hang-watch") o.hang_watch = std::atof(next());
     else if (a == "--audio-dump") o.audio_dump = next();
     else if (a == "--profile") g_profile = true;
@@ -1865,6 +1873,17 @@ static int melee_main(int argc, char** argv) {
   // Cosmetic catalog/profile storage follows --settings-path just like controller and video
   // settings. Configure it for normal, standalone-settings, and automated diagnostic launches.
   host::cosmetics::configure(gfx.settings_path);
+  // Tests: MELEE_BUILD_LOOKS=<patch folder> builds the exact looks' packs from --iso and exits (0 ready, 1 not).
+  if (const char* looks = std::getenv("MELEE_BUILD_LOOKS"); looks && *looks) {
+    std::string message;
+    wchar_t exe[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    const std::string tool = (std::filesystem::path(exe).parent_path() / L"tools" / L"xdelta3.exe").u8string();
+    bool ok = host::cosmetics::build_look_packs(looks, o.iso, tool, &message);
+    if (ok && host::disc_open(o.iso)) host::cosmetics::scan_look_packs();   // the test checks the packs too
+    std::printf("looks: %s\n", message.c_str());
+    return ok ? 0 : 1;
+  }
   if (!cosmetic_import.empty() || !cosmetic_scan_disc.empty() || !cosmetic_select.empty() ||
       cosmetic_enable_effects || cosmetic_restore || cosmetic_status) {
     bool ok = true;
@@ -1967,6 +1986,20 @@ static int melee_main(int argc, char** argv) {
 #endif
   if (o.iso.empty()) { usage(); return 2; }
   if (!host::disc_open(o.iso)) { std::fprintf(stderr, "cannot open ISO %s\n", o.iso.c_str()); return 1; }
+  // An exact look (Diet Classic, Diet 64, Crystal) serves its pack from this start when the player built it;
+  // otherwise its renderer version stands in. The built discs are scanned now that the game disc is open.
+  {
+    host::cosmetics::scan_look_packs();
+    const std::string look = gx::exact_look_of(gfx);
+    std::string active;
+    if (!look.empty())
+      for (const auto& pack : host::cosmetics::look_packs())
+        if (pack.name == look && pack.built) active = look;
+    host::cosmetics::set_active_look_pack(active);
+    gx::look_live().exact.store(!active.empty(), std::memory_order_relaxed);
+    gx::look_live().exact_low_poly.store(active != "Crystal", std::memory_order_relaxed);   // Crystal's fighters are the full models
+    if (!active.empty()) host::log("looks: %s from the player's pack", active.c_str());
+  }
   if (host::gameplay::vanilla_only()) {
     source_port::mods::ScanOptions check;
     const auto disc = source_port::mods::identify(std::filesystem::u8path(o.iso), check);
