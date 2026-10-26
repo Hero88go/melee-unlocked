@@ -5069,9 +5069,9 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       if (vram_usage(&used, &total)) settings_hint("Video memory in use: %.1f / %.1f GB", used, total);
     }
     // ---- Low poly and lightweight ----
-    // Every setting that trades looks for frame rate on slow PCs, in one sub-section: Visual effects, the
-    // Lightweight ladder and Retro (64 style). Open by default so players find it.
-    if (ImGui::CollapsingHeader("Low poly and lightweight##lightweight", ImGuiTreeNodeFlags_DefaultOpen)) {
+    // Every setting that trades looks for frame rate on slow PCs, in one sub-section: Look, Visual effects and
+    // the Lightweight ladder up front, the exact looks and the fine controls folded under them. Open by default.
+    if (ImGui::CollapsingHeader("Looks and lightweight##lightweight", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Indent(8.0f);
     // Looks by name. Picking one sets the Lightweight level and every look control below; changing any of them
     // afterwards makes this read Custom.
@@ -5087,7 +5087,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
       for (const auto& pack : host::cosmetics::look_packs()) crystal_built |= pack.name == "Crystal" && pack.built;
       static std::string crystal_name[2];
       if (!crystal_built)
-        for (int i : {5, 6}) if (i < count) { crystal_name[i - 5] = std::string(presets[i].name) + " (build it below first)"; names[i] = crystal_name[i - 5].c_str(); }
+        for (int i : {5, 6}) if (i < count) { crystal_name[i - 5] = std::string(presets[i].name) + " (build it under Exact looks first)"; names[i] = crystal_name[i - 5].c_str(); }
       if (settings_combo("Look", &picked, names, count + 1) && picked < count && (crystal_built || (picked != 5 && picked != 6))) {
         apply_look_preset(options, picked, d3d11_available());
         set_lightweight_level(options.lightweight);
@@ -5146,18 +5146,11 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
                         (int)(100.0 * c.skipped / (double)(c.drawn + c.skipped) + 0.5));
       }
     }
-    // "Retro (64 style)": the look of the Nintendo 64 versions players make of Melee: the game's own low poly
-    // fighters and every texture shrunk to 64 x 64, smoothly filtered. Combines with any Lightweight level.
-    {
-      if (settings_toggle("Retro (64 style)", &options.retro)) { set_retro_textures(options.retro); changed = true; }
-      if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Low poly fighters and every texture at the Nintendo 64's 64 x 64, for a 64 look\n"
-                          "that is also lighter on video memory. Display only: safe online and in replays.");
-    }
+    // The older "Retro (64 style)" switch is the 64 Style look now; a saved "retro 1" still loads.
     // Exact looks: Diet Classic, Diet 64 and Crystal exactly as made, built once on this PC from the player's own
     // game disc and the published patch files (nothing of them ships with the game). The build runs on a worker
-    // thread; the line under the button says how it went.
-    {
+    // thread; the line under the button says how it went. Folded away: it is needed once.
+    if (ImGui::TreeNodeEx("Exact looks (Diet Classic, Diet 64, Crystal)##exactlooks", 0)) {
       static std::mutex build_mutex;
       static std::string build_message;
       static std::atomic<bool> building{false};
@@ -5200,9 +5193,10 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
         std::lock_guard<std::mutex> lock(build_mutex);
         if (!build_message.empty()) ImGui::TextWrapped("%s", build_message.c_str());
       }
+      ImGui::TreePop();
     }
-    // The look controls: what the presets set, one by one.
-    {
+    // The look controls: what the presets set, one by one. Folded away; changing one makes Look read Custom.
+    if (ImGui::TreeNodeEx("Customise the look##lookcontrols", 0)) {
       static const char* surfaces[] = {"Textured", "Retro 64 (64 x 64)", "Flat colours", "White", "Posterised", "Wireframe"};
       if (settings_combo("Fighters", &options.look_fighter, surfaces, kSurfaceCount)) changed = true;
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("How the fighters are textured in a match. Flat colours: one colour per texture.");
@@ -5225,6 +5219,7 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           changed = true;
         }
       }
+      ImGui::TreePop();
     }
     ImGui::Unindent(8.0f);
     }
