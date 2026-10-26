@@ -427,8 +427,9 @@ inline LightweightFilter lightweight_filter_build(const Frame& f, int level) {
 }
 // The filter of the frame being drawn, for the pixel constants (gx_shader.cpp fill_ps_constants), which only
 // see the draw. Set by lightweight_filter on the renderer's thread.
-void set_look_filter(const LightweightFilter& e);
-const LightweightFilter& look_filter();
+inline LightweightFilter& look_filter_slot() { static LightweightFilter f; return f; }   // header only: tests link gx_shader alone
+inline void set_look_filter(const LightweightFilter& e) { look_filter_slot() = e; }
+inline const LightweightFilter& look_filter() { return look_filter_slot(); }
 inline LightweightFilter lightweight_filter(const Frame& f, int level) {
   const LightweightFilter e = lightweight_filter_build(f, level);
   set_look_filter(e);

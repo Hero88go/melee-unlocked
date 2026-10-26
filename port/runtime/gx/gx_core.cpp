@@ -859,7 +859,6 @@ void lightweight_debug(const Frame& f, const LightweightFilter& e) {
   host::log("lightweight: draws %zu, world %u (skinned %u, owned %u), other cameras %u, fighters %s at z %.1f, stage z %.1f..%.1f",
             f.draws.size(), world, skinned, owned, other_camera, e.have_fighters ? "found" : "none", e.fighter_far, zmin, zmax);
 }
-static LightweightFilter g_look_filter;
 int8_t& lightweight_skip_slot(const Frame& f, size_t index, int level) {
   static const Frame* frame = nullptr;
   static uint64_t sequence = ~0ull;
@@ -871,8 +870,6 @@ int8_t& lightweight_skip_slot(const Frame& f, size_t index, int level) {
   }
   return slots[index];
 }
-void set_look_filter(const LightweightFilter& e) { g_look_filter = e; }
-const LightweightFilter& look_filter() { return g_look_filter; }
 LightweightCounts lightweight_last_counts() {
   return {g_lw_last_drawn.load(std::memory_order_relaxed), g_lw_last_skipped.load(std::memory_order_relaxed)};
 }
