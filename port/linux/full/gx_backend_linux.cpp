@@ -7,6 +7,8 @@
 #include "host.h"
 #include "window.h"
 #include "renderer_gl.h"
+#include "exi_slippi.h"
+#include "gx_shader.h"
 #include <SDL.h>
 #include <algorithm>
 #include <memory>
@@ -49,6 +51,16 @@ Backend* create_render_backend(void* hwnd, int client_w, int client_h, const Ren
   hooks.options = &opts;
   hooks.frame_begin = [](const Frame& frame) {
     auto& p = *g_presentation;
+    // As the Windows renderers: the Slippi widescreen code, Fountain of Dreams reflections and
+    // True widescreen follow the settings every frame (they are game changes, not drawing).
+    static bool widescreen_sent = false, fod_sent = false;
+    if (p.options.widescreen != widescreen_sent) { widescreen_sent = p.options.widescreen; slippi::request_widescreen(widescreen_sent); }
+    if (p.options.fod_reflections != fod_sent) { fod_sent = p.options.fod_reflections; slippi::request_fod_reflections(fod_sent); }
+    {
+      int cw = 0, ch = 0;
+      host::window_client_size(&cw, &ch);
+      set_true_widescreen(p.options.true_widescreen && !p.options.widescreen, true_widescreen_aspect(p.options, cw, ch));
+    }
     if (!p.settings) return;
     int w = 0, h = 0;
     host::window_client_size(&w, &h);

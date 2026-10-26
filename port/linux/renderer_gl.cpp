@@ -8,6 +8,10 @@
 #endif
 #include "gx_shader.h"
 #include "gx_texture.h"
+#ifdef GX_PC_SETTINGS   // the full game (port/linux/full): texture packs and F2 captures
+#include "texture_pack.h"
+#endif
+#include "crt_shader.h"
 #include <GL/glew.h>
 #include <SDL.h>
 #include <algorithm>
@@ -226,6 +230,24 @@ void main() {
     if (hooks_.frame_begin) hooks_.frame_begin(frame);
     widenable_scene_ = gx::frame_has_widenable_scene(frame);   // as the D3D backends: 16:9 reaches the screen
     effects_filter_ = gx::effects_filter(frame, hooks_.options ? hooks_.options->effects_level : 0);   // "Visual effects"
+#ifdef GX_PC_SETTINGS
+    if (hooks_.options) {
+      // Texture packs switched on or off, or a skin picked on the character select: every cached
+      // texture was built with or without its replacement (as the Windows renderers).
+      if (gx::texpack::configure(hooks_.options->custom_textures, hooks_.options->dump_textures) || gx::texpack::take_cosmetics_changed()) {
+        for (auto& t : textures_) destroy(t.second);
+        textures_.clear();
+        replacement_bytes_ = 0;
+      }
+    }
+#endif
+    if (hooks_.options) {
+      if (hooks_.options->anisotropy != anisotropy_applied_) {
+        anisotropy_applied_ = hooks_.options->anisotropy;
+        for (auto& smp : samplers_) glDeleteSamplers(1, &smp.second);
+        samplers_.clear();
+      }
+    }
     ++sequence_; glBindVertexArray(vao_);
     const size_t original_count = frame.vertices.size();
     vertex_offsets_.assign(frame.draws.size(), 0);
@@ -247,12 +269,44 @@ void main() {
         draw(frame, dc, overrides ? overrides + command.index : nullptr, vertex_offsets_[command.index]);
       } else {
         const auto& c = frame.copies.at(command.index);
-        if (c.to_xfb) { if (!skip_) present(c, frame.test_fill); }
+        if (c.to_xfb) { if (!skip_) { present(c, frame.test_fill); captures(frame.sequence); } }
         else copy(c);
         if (c.clear) clear(c);
       }
     }
     trim();
+  }
+  // --capture-frame / --capture-sim-frame / --capture-every / --capture-burst, and F2 (the next N
+  // frames into capture/), as the Windows renderers write them.
+  void captures(uint64_t sequence) {
+    const gx::RenderOptions* o = hooks_.options;
+    const uint32_t n = presented_;
+    try {
+      if (o && !o->capture_path.empty()) {
+        if (o->capture_sim_frame && !capture_frame_ && sequence >= o->capture_sim_frame) capture_frame_ = n;
+        const uint32_t at = capture_frame_ ? capture_frame_ : o->capture_frame;
+        const bool burst = o->capture_burst && at && n >= at && n < at + o->capture_burst;
+        if (n == at && !burst) capture(o->capture_path);
+        else if (burst || (o->capture_every && n % o->capture_every == 0)) {
+          const std::string& base = o->capture_path;
+          char suffix[48];
+          std::snprintf(suffix, sizeof suffix, "_%05u.ppm", n);
+          capture(base.substr(0, base.size() > 4 && base.compare(base.size() - 4, 4, ".ppm") == 0 ? base.size() - 4 : base.size()) + suffix);
+        }
+      }
+#ifdef GX_PC_SETTINGS
+      if (unsigned want = gx::gx_capture_request()) {
+        gx::gx_capture_request_set(want - 1);
+        std::filesystem::create_directories("capture");
+        char name[64];
+        std::snprintf(name, sizeof name, "capture/blink_%05u.ppm", n);
+        capture(name);
+        if (want == 1) std::fprintf(stderr, "capture: wrote the requested frames into capture/\n");
+      }
+#endif
+    } catch (const std::exception& e) {
+      std::fprintf(stderr, "capture: %s\n", e.what());
+    }
   }
   void capture(const std::filesystem::path& path) {
     // XFB submission can clear the EFB immediately. Preserve the displayed
@@ -462,6 +516,31 @@ void main() {
     if (auto i = textures_.find(key); i != textures_.end()) { i->second.used = sequence_; return i->second.id; }
     Texture entry; entry.width = t.width; entry.height = t.height; entry.used = sequence_;
     entry.levels = gx::texture_mip_count(t.width, t.height, t.mip_levels);
+    // Custom texture pack or a skin's companion textures: Dolphin's name for this texture, then its
+    // PNG if a source has one (once per unique texture, never per draw), as on Windows.
+    std::string pack_name;
+#ifdef GX_PC_SETTINGS
+    if (gx::texpack::enabled() || gx::texpack::dumping() || gx::texpack::cosmetics_enabled()) {
+      pack_name = gx::texpack::base_name(t, *t.data);
+      if (gx::texpack::has(pack_name)) {
+        constexpr uint64_t budget = 512ull << 20;
+        std::unique_ptr<gx::texpack::Replacement> r = gx::texpack::load(pack_name, replacement_bytes_ < budget ? budget - replacement_bytes_ : 0);
+        gx::texpack::note_lookup(r != nullptr);
+        if (r) {
+          glGenTextures(1, &entry.id); glBindTexture(GL_TEXTURE_2D, entry.id);
+          entry.width = r->width; entry.height = r->height; entry.levels = std::max(1u, r->levels);
+          for (uint32_t level = 0; level < entry.levels && level < 16; ++level) {
+            glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, r->level_width[level], r->level_height[level], 0, GL_RGBA,
+                         GL_UNSIGNED_BYTE, r->pixels.data() + r->level_offset[level]);
+            entry.bytes += static_cast<uint64_t>(r->level_width[level]) * r->level_height[level] * 4;
+          }
+          glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, entry.levels - 1);
+          replacement_bytes_ += entry.bytes;
+          const GLuint id = entry.id; textures_.emplace(key, entry); return id;
+        }
+      }
+    }
+#endif
     glGenTextures(1, &entry.id); glBindTexture(GL_TEXTURE_2D, entry.id);
     const uint8_t* data = t.data->image.data(); size_t remaining = t.data->image.size();
     uint32_t w = t.width, h = t.height;
@@ -469,6 +548,9 @@ void main() {
       const uint32_t bytes = gx::texture_level_bytes(w, h, t.format);
       if (bytes > remaining) { destroy(entry); throw std::runtime_error("GX texture mip exceeded snapshot bytes"); }
       gx::decode_texture(data, w, h, t.format, t.data->palette.data(), t.tlut_format, decoded_);
+#ifdef GX_PC_SETTINGS
+      if (gx::texpack::dumping() && !pack_name.empty()) gx::texpack::dump_level(pack_name, level, decoded_.data(), w, h);
+#endif
       glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, decoded_.data());
       entry.bytes += static_cast<uint64_t>(w) * h * 4; data += bytes; remaining -= bytes;
       w = std::max(1u, w / 2); h = std::max(1u, h / 2);
@@ -489,6 +571,9 @@ void main() {
     glSamplerParameterf(s, GL_TEXTURE_LOD_BIAS, float(gx::sbits(mode0, 9, 8)) / 32);
     glSamplerParameterf(s, GL_TEXTURE_MIN_LOD, gx::bits(mode1, 0, 8) / 16.0f);
     glSamplerParameterf(s, GL_TEXTURE_MAX_LOD, mip ? gx::bits(mode1, 8, 8) / 16.0f : 0);
+    // Anisotropic filtering (Video settings), on linear filters as the Windows renderers.
+    if (anisotropy_applied_ > 1 && linear && gx::bits(mode0, 4, 1) && (GLEW_ARB_texture_filter_anisotropic || GLEW_EXT_texture_filter_anisotropic))
+      glSamplerParameterf(s, GL_TEXTURE_MAX_ANISOTROPY_EXT, float(std::clamp(anisotropy_applied_, 1, 16)));
     samplers_.emplace(key, s); return s;
   }
   void draw(const gx::Frame& frame, const gx::DrawCall& dc, const gx::DrawMatrices* matrices, size_t vertex_override) {
@@ -581,8 +666,7 @@ void main() {
       const double aspect = hooks_.options ? gx::presented_aspect(*hooks_.options, w, h, widenable_scene_) : 73.0 / 60.0;
       int pw = w, ph = std::lround(w / aspect);
       if (ph > h) { ph = h; pw = std::lround(h * aspect); }
-      glBindFramebuffer(GL_READ_FRAMEBUFFER, efb_);
-      glBlitFramebuffer(c.src_x * scale_, height_ - (c.src_y + c.src_h) * scale_, (c.src_x + c.src_w) * scale_, height_ - c.src_y * scale_, (w - pw) / 2, (h - ph) / 2, (w + pw) / 2, (h + ph) / 2, GL_COLOR_BUFFER_BIT, GL_LINEAR);
+      picture(c, w, h, pw, ph);
     }
     if (hooks_.before_swap) {
       glBindFramebuffer(GL_FRAMEBUFFER, 0); glViewport(0, 0, w, h);
@@ -592,6 +676,151 @@ void main() {
     SDL_GL_SwapWindow(window_); ++presented_; glBindFramebuffer(GL_FRAMEBUFFER, efb_);
     const GLenum error = glGetError();
     if (error != GL_NO_ERROR) throw std::runtime_error("OpenGL GX frame failed with error " + std::to_string(error));
+  }
+  // The picture on the window: the EFB's frame region averaged over each output pixel when it is
+  // larger (supersampling), sharpened, with brightness, contrast and vibrance, or drawn through the
+  // CRT tube model. The same maths as the Windows present pass (gx_d3d11.cpp, crt_shader.h).
+  void picture(const gx::EfbCopy& c, int w, int h, int pw, int ph) {
+    const gx::RenderOptions* o = hooks_.options;
+    if (!picture_program_) picture_program_ = build_picture_program();
+    const gx::CrtLook look = gx::crt_look(o ? o->crt_filter : 0);
+    const bool crt_on = o && o->crt_filter;
+    const float lines = std::max(float(c.src_h) * c.y_scale, 1.0f);
+    float vh = float(ph), vw = float(pw);
+    gx::CrtFit fit{vh, 0.0f};
+    if (crt_on) { fit = gx::crt_fit(vh, lines); vh = fit.height; vw = vh * float(pw) / float(std::max(ph, 1)); }
+    const float vx = std::floor((w - vw) * 0.5f), vy = std::floor((h - vh) * 0.5f);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(GLint(vx), GLint(vy), GLsizei(std::max(vw, 1.0f)), GLsizei(std::max(vh, 1.0f)));
+    glDisable(GL_BLEND); glDisable(GL_DEPTH_TEST); glDisable(GL_CULL_FACE); glDisable(GL_STENCIL_TEST);
+    glUseProgram(picture_program_);
+    glActiveTexture(GL_TEXTURE0); glBindTexture(GL_TEXTURE_2D, color_); glBindSampler(0, 0);
+    const auto u = [this](const char* n) { return glGetUniformLocation(picture_program_, n); };
+    glUniform1i(u("src"), 0);
+    glUniform4f(u("rect"), c.src_w / float(gx::EFB_WIDTH), c.src_h / float(gx::EFB_HEIGHT), c.src_x / float(gx::EFB_WIDTH),
+                1 - (c.src_y + c.src_h) / float(gx::EFB_HEIGHT));
+    glUniform4f(u("sharp"), 1.0f / width_, 1.0f / height_, o ? std::clamp(o->sharpness, 0.0f, 1.0f) : 0.0f, 0.0f);
+    const float bx = float(std::clamp(int(std::lround(double(c.src_w) * scale_ / std::max(vw, 1.0f))), 1, 4));
+    const float by = float(std::clamp(int(std::lround(double(c.src_h) * scale_ / std::max(vh, 1.0f))), 1, 4));
+    glUniform4f(u("box"), bx, by, 0, 0);
+    glUniform4f(u("col"), o ? o->brightness : 1.0f, o ? o->contrast : 1.0f, o ? o->vibrance : 1.0f, 0.0f);
+    glUniform4f(u("crt"), look.scan, look.mask, look.curve, lines);
+    glUniform4f(u("crt2"), float(c.src_w), vh / lines, look.halation, fit.shift);
+    glUniform1i(u("crt_on"), crt_on ? 1 : 0);
+    glDrawArrays(GL_TRIANGLES, 0, 3);
+    glViewport(0, 0, w, h);
+  }
+  GLuint build_picture_program() {
+    GLuint v = compile_gl(GL_VERTEX_SHADER, R"(#version 450 core
+out vec2 p;
+void main() { vec2 q = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2); gl_Position = vec4(q * 2.0 - 1.0, 0.0, 1.0); p = q; }
+)");
+    GLuint f = compile_gl(GL_FRAGMENT_SHADER, R"(#version 450 core
+in vec2 p; layout(location = 0) out vec4 color;
+uniform sampler2D src;
+uniform vec4 rect, sharp, box, col, crt, crt2;
+uniform int crt_on;
+// t: a point of the picture, 0..1 from its top left (as the Windows shaders count).
+vec2 picture_uv(vec2 t) { return rect.zw + vec2(t.x, 1.0 - t.y) * rect.xy; }
+vec4 downsample(vec2 uv) {
+  int nx = int(box.x), ny = int(box.y);
+  if (nx <= 1 && ny <= 1) return texture(src, uv);
+  vec2 foot = sharp.xy * vec2(nx, ny);
+  vec4 acc = vec4(0.0);
+  for (int y = 0; y < ny; ++y)
+    for (int x = 0; x < nx; ++x) acc += texture(src, uv + (vec2(x, y) + 0.5) / vec2(nx, ny) * foot - 0.5 * foot);
+  return acc / float(nx * ny);
+}
+vec3 crt_linear(vec3 c) { return pow(clamp(c, 0.0, 1.0), vec3(2.4)); }
+vec3 crt_at(vec2 t) {
+  vec2 half_texel = 0.5 * sharp.xy / rect.xy;
+  return crt_linear(texture(src, picture_uv(clamp(t, half_texel, 1.0 - half_texel))).rgb);
+}
+vec3 crt_scanline(vec2 t, float line_y, vec2 cell) {
+  const float ox[4] = float[](-0.9, -0.3, 0.3, 0.9);
+  const float wx[4] = float[](0.262, 0.862, 0.862, 0.262);
+  vec3 acc = vec3(0.0);
+  for (int k = 0; k < 4; ++k) {
+    float x = t.x + ox[k] * cell.x;
+    acc += wx[k] * (crt_at(vec2(x, line_y - 0.25 * cell.y)) + crt_at(vec2(x, line_y + 0.25 * cell.y)));
+  }
+  return acc / (2.0 * 2.248);
+}
+vec3 crt_beam(vec3 c, float d, float depth, float pixel) {
+  vec3 level = sqrt(clamp(c, 0.0, 1.0));
+  vec3 sigma = mix(vec3(mix(0.62, 0.24, depth)), vec3(mix(0.62, 0.43, depth)), level);
+  sigma = sqrt(sigma * sigma + pixel * pixel / 12.0);
+  return c * exp(-0.5 * d * d / (sigma * sigma)) / (sigma * 2.5066);
+}
+vec3 crt_mask(vec2 pos, float depth, float per_line) {
+  if (depth <= 0.0) return vec3(1.0);
+  vec3 m;
+  if (per_line >= 2.8) {
+    int x = int(pos.x) % 3;
+    m = x == 0 ? vec3(1, 0, 0) : (x == 1 ? vec3(0, 1, 0) : vec3(0, 0, 1));
+    return mix(vec3(1.0), m, depth) / (1.0 - depth * 2.0 / 3.0);
+  }
+  m = (int(pos.x) & 1) != 0 ? vec3(0, 1, 0) : vec3(1, 0, 1);
+  return mix(vec3(1.0), m, depth) / (1.0 - depth * 0.5);
+}
+vec3 crt_pixel(vec2 pos, vec2 t) {
+  vec2 one_pixel = fwidth(t);
+  float face = 1.0;
+  if (crt.z > 0.0) {
+    vec2 q = t * 2.0 - 1.0;
+    q *= 1.0 + crt.z * vec2(q.y * q.y, q.x * q.x);
+    q /= 1.0 + crt.z * 0.5;
+    vec2 px = 4.0 * one_pixel;
+    vec2 e = smoothstep(0.0, 1.0, (1.0 - abs(q)) / max(px, vec2(1e-5)));
+    vec2 corner = max(abs(q) - (1.0 - 0.045), 0.0) / 0.045;
+    face = e.x * e.y * clamp((1.0 - length(corner)) / max(max(px.x, px.y) / 0.045, 1e-5), 0.0, 1.0);
+    face *= 1.0 - 0.35 * crt.z * dot(q, q) * 0.5;
+    t = q * 0.5 + 0.5;
+  }
+  if (face <= 0.0) return vec3(0.0);
+  float lines = max(crt.w, 1.0), per_line = max(crt2.y, 0.01);
+  vec2 cell = 1.0 / vec2(max(crt2.x, 1.0), lines);
+  float depth = crt.x * clamp(per_line - 1.0, 0.0, 1.0);
+  float y = t.y * lines - 0.5 + crt2.w;
+  float upper = floor(y), d = y - upper;
+  vec3 a = crt_scanline(t, (upper + 0.5) * cell.y, cell);
+  vec3 b = crt_scanline(t, (upper + 1.5) * cell.y, cell);
+  float pixel = 1.0 / per_line;
+  vec3 c = crt_beam(a, d, depth, pixel) + crt_beam(b, 1.0 - d, depth, pixel);
+  if (crt2.z > 0.0) {
+    vec2 h = 1.6 * cell;
+    vec3 halo = 0.25 * (crt_at(t + vec2(-h.x, -h.y)) + crt_at(t + vec2(h.x, -h.y)) + crt_at(t + vec2(-h.x, h.y)) + crt_at(t + h));
+    c = mix(c, max(c, halo), crt2.z);
+  }
+  c *= crt_mask(pos, crt.y, per_line);
+  return pow(clamp(c * face, 0.0, 1.0), vec3(1.0 / 2.2));
+}
+void main() {
+  vec2 uv = rect.zw + p * rect.xy;
+  vec3 rgb;
+  if (crt_on != 0) {
+    rgb = crt_pixel(gl_FragCoord.xy, vec2(p.x, 1.0 - p.y));
+  } else {
+    vec4 c = downsample(uv);
+    rgb = c.rgb;
+    if (sharp.z > 0.0) {
+      // Contrast-adaptive sharpening over neighbours one output pixel away.
+      vec2 st = sharp.xy * max(box.xy, vec2(1.0));
+      vec3 n = texture(src, uv + vec2(0, st.y)).rgb, s = texture(src, uv - vec2(0, st.y)).rgb;
+      vec3 w = texture(src, uv - vec2(st.x, 0)).rgb, e = texture(src, uv + vec2(st.x, 0)).rgb;
+      vec3 mn = min(min(min(n, s), min(w, e)), rgb), mx = max(max(max(n, s), max(w, e)), rgb);
+      vec3 amp = sqrt(clamp(min(mn, 1.0 - mx) / max(mx, vec3(1e-4)), 0.0, 1.0));
+      vec3 wgt = amp * (-1.0 / mix(8.0, 5.0, clamp(sharp.z, 0.0, 1.0)));
+      rgb = clamp((rgb + (n + s + w + e) * wgt) / (1.0 + 4.0 * wgt), 0.0, 1.0);
+    }
+  }
+  rgb = (rgb * col.x - 0.5) * col.y + 0.5;
+  float luma = dot(rgb, vec3(0.2126, 0.7152, 0.0722));
+  color = vec4(clamp(mix(vec3(luma), rgb, col.z), 0.0, 1.0), 1.0);
+}
+)");
+    const GLuint program = link_gl(v, f); glDeleteShader(v); glDeleteShader(f);
+    return program;
   }
   void trim() {
     if (sequence_ % 120) return;
@@ -621,6 +850,10 @@ void main() {
   int scale_, width_, height_; bool skip_ = false; uint64_t sequence_ = 0; uint32_t presented_ = 0;
   GLuint vao_ = 0, vertices_ = 0, indices_ = 0, uniform_[2]{}, efb_ = 0, color_ = 0, depth_ = 0, copy_program_ = 0;
   GLuint last_frame_ = 0, last_color_ = 0; bool have_last_ = false;
+  GLuint picture_program_ = 0;              // the present pass (picture())
+  uint32_t capture_frame_ = 0;              // --capture-sim-frame resolved to a presented frame
+  uint64_t replacement_bytes_ = 0;          // texture pack replacements held, against a 512 MB budget
+  int anisotropy_applied_ = 1;              // the filtering the cached samplers were made with
   gx::EffectsFilter effects_filter_;   // "Visual effects" for the frame being submitted (submit_frame)
   bool widenable_scene_ = true;   // the frame being presented can be shown widened (frame_has_widenable_scene)
   bool clockwise_front_ = true;
