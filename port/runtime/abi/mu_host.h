@@ -599,6 +599,7 @@ enum {
     MU_PRACTICE_SET_ONLINE_MODE = 7,    /* in [0] Slippi mode id */
     MU_PRACTICE_GET_ONLINE_MODE = 8,    /* out [0] */
     MU_PRACTICE_DIRECT_FIRST_MATCH = 9, /* reset Direct's winner and chose-stage state */
+    MU_PRACTICE_CPU_MOVE = 11,          /* a[0], a[1]: move the CPU by x, y hundredths of a unit */
     MU_PRACTICE_FRAME_PAUSE = 10,       /* a[0] pause (1), run (0) or ask (-1); a[1] step one frame; a[0] out: paused */
 };
 

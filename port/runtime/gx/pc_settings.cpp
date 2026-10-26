@@ -3552,7 +3552,8 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
     changed |= flag_row("Loop the recording", &c.tools, MU_PC_TOOL_LOOP, "A played back recording starts again from the kept moment.");
     ImGui::EndDisabled();
     changed |= flag_row("Frame advance", &c.tools, MU_PC_TOOL_FRAME_ADVANCE,
-                        "In Training, L + R + Z freezes the game; then Z steps one frame, and held Z keeps stepping.");
+                        "In Training, L + R + Z freezes the game; then Z steps one frame, held Z keeps stepping,\n"
+                        "and the D-pad moves the CPU.");
     ImGui::BeginDisabled(!options.native_source);
     changed |= flag_row("Hitboxes and hurtboxes", &c.tools, MU_PC_TOOL_HITBOXES, nullptr);
     changed |= flag_row("Hitboxes only (no models)", &c.tools, MU_PC_TOOL_HITBOXES_ONLY, nullptr);

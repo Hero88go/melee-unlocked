@@ -9,6 +9,7 @@
 
 #include <array>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <utility>
@@ -86,7 +87,7 @@ uint32_t g_lobby_boot_ticks = 0;
 NativeBridge g_bridge = nullptr;
 ContentBridge g_content_bridge = nullptr;
 enum { OP_SCENE, OP_GET_PLAYER, OP_SET_PLAYER, OP_GET_STAGE, OP_SET_STAGE, OP_SET_EVENT_BACKUP,
-       OP_REQUEST_MAJOR, OP_SET_ONLINE_MODE, OP_GET_ONLINE_MODE, OP_DIRECT_FIRST_MATCH, OP_FRAME_PAUSE };
+       OP_REQUEST_MAJOR, OP_SET_ONLINE_MODE, OP_GET_ONLINE_MODE, OP_DIRECT_FIRST_MATCH, OP_FRAME_PAUSE, OP_CPU_MOVE };
 
 uint8_t current_major() {
   if (g_bridge) { int32_t a[2] = {}; g_bridge(OP_SCENE, a, 2); return (uint8_t)a[0]; }
@@ -221,6 +222,31 @@ bool frame_pause(int pause, bool step) {
   return (v & 1) != 0;
 }
 
+// Moves the CPU fighter by (dx, dy) game units: the native game through its bridge, the Static
+// Recomp in console memory (player slots at 0x80453080, 0xE90 each: kind +0x8 (1 CPU), fighter
+// object +0xB0; the fighter's data at object +0x2C, its position at data +0xB0, previous +0xBC).
+void cpu_move(float dx, float dy) {
+  if (g_bridge) { int32_t a[2] = {(int32_t)(dx * 100.0f), (int32_t)(dy * 100.0f)}; g_bridge(OP_CPU_MOVE, a, 2); return; }
+  for (uint32_t i = 0; i < 4; ++i) {
+    const uint32_t slot = 0x80453080u + i * 0xE90u;
+    if (host::rd32(slot + 8) != 1) continue;
+    const uint32_t gobj = host::rd32(slot + 0xB0);
+    if (gobj < 0x80000000u || gobj >= 0x81800000u) continue;
+    const uint32_t fp = host::rd32(gobj + 0x2C);
+    if (fp < 0x80000000u || fp >= 0x81800000u) continue;
+    for (int axis = 0; axis < 2; ++axis) {
+      uint32_t bits = host::rd32(fp + 0xB0 + axis * 4);
+      float v; std::memcpy(&v, &bits, 4);
+      v += axis ? dy : dx;
+      std::memcpy(&bits, &v, 4);
+      host::wr32(fp + 0xB0 + axis * 4, bits);
+      host::wr32(fp + 0xBC + axis * 4, bits);
+      if (axis == 0 && std::getenv("MELEE_TEST_FRAME_ADVANCE")) host::log("practice: CPU moved to x %.1f", v);
+    }
+    return;
+  }
+}
+
 // Frame advance (Practice > Tools): in an offline Training match, L+R+Z freezes the game and
 // unfreezes it; while frozen Z steps one frame, and held Z keeps stepping (every fourth frame
 // after a short wait). Anything else (leaving Training, a search starting, the option off)
@@ -278,6 +304,17 @@ void frame_advance_tick() {
     if (frame_pause(-1, false) == false) frame_pause(1, false);   // keep it frozen
     z_held = z ? z_held + 1 : 0;
     if (z && (!z_was || (z_held > 20 && z_held % 4 == 0))) frame_pause(1, true);
+    // While frozen the D-pad places the CPU (a step on each press, then quickly while held).
+    static uint32_t dpad_held = 0;
+    uint16_t dpad = 0;
+    for (const host::PadState& p : pads) dpad |= p.button & 0x000Fu;
+    if (test && host::retrace_count() >= 2265 && host::retrace_count() <= 2285) dpad |= 0x2;   // tests: hold right
+    dpad_held = dpad ? dpad_held + 1 : 0;
+    if (dpad && (dpad_held == 1 || (dpad_held > 15 && dpad_held % 2 == 0))) {
+      const float step = 2.0f;
+      cpu_move((dpad & 0x2) ? step : (dpad & 0x1) ? -step : 0.0f, (dpad & 0x8) ? step : (dpad & 0x4) ? -step : 0.0f);
+      frame_pause(1, true);   // one frame so the move shows (and the game settles the fighter there)
+    }
   }
   z_was = z;
 }

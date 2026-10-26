@@ -526,7 +526,7 @@ std::vector<Row> rows_for(Page p) {
       };
       {
         Row r; r.kind = Kind::Flag; r.label = "Frame advance"; r.byte = &c.tools; r.mask = MU_PC_TOOL_FRAME_ADVANCE;
-        r.about = "In Training, L + R + Z freezes the game. Then Z steps one frame; hold Z to step on.";
+        r.about = "In Training, L + R + Z freezes the game. Z steps a frame; the D-pad moves the CPU.";
         rows.push_back(r);
       }
       for (const T& t : tools) {

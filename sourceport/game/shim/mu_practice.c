@@ -9,12 +9,15 @@
 #include <melee/gm/gmvs.h>
 #include <melee/gm/types.h>
 #include <melee/pl/player.h>
+#include <dolphin/os.h>
+#include <melee/ft/fighter.h>
+#include <melee/ft/types.h>
 
 
 /* Same values as MU_PRACTICE_* in mu_host.h (checked in mu_entry.c). */
 enum { MU_PR_SCENE, MU_PR_GET_PLAYER, MU_PR_SET_PLAYER, MU_PR_GET_STAGE, MU_PR_SET_STAGE,
        MU_PR_SET_EVENT_BACKUP, MU_PR_REQUEST_MAJOR, MU_PR_SET_ONLINE_MODE, MU_PR_GET_ONLINE_MODE,
-       MU_PR_DIRECT_FIRST_MATCH, MU_PR_FRAME_PAUSE };
+       MU_PR_DIRECT_FIRST_MATCH, MU_PR_FRAME_PAUSE, MU_PR_CPU_MOVE };
 
 extern StaticPlayer player_slots[];
 struct gm_80479D58_t* mu_gm_engine_state(void);
@@ -113,6 +116,25 @@ int mu_practice_bridge(int op, int* a, int n)
         slp->is_winner = MU_SLP_WINNER_NULL;
         slp->chose_stage = MU_SLP_STAGE_UNSET;
         return 0;
+    case MU_PR_CPU_MOVE: {
+        /* Frame advance: the D-pad moves the CPU while the game is frozen (Practice > Tools). */
+        int i;
+        if (n < 2) return -1;
+        for (i = 0; i < 4; ++i) {
+            HSD_GObj* gobj;
+            Fighter* fp;
+            if (Player_GetPlayerSlotType(i) != Gm_PKind_Cpu) continue;
+            gobj = Player_GetEntity(i);
+            if (gobj == NULL) continue;
+            fp = GET_FIGHTER(gobj);
+            fp->cur_pos.x += a[0] / 100.0f;
+            fp->cur_pos.y += a[1] / 100.0f;
+            fp->prev_pos = fp->cur_pos;
+            OSReport("practice: CPU moved to x %.1f\n", fp->cur_pos.x);
+            return 0;
+        }
+        return -1;
+    }
     case MU_PR_FRAME_PAUSE: {
         /* Frame advance (Practice > Tools): the game's own debug pause and frame step. */
         struct gm_80479D58_t* e = mu_gm_engine_state();
