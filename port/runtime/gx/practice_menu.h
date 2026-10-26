@@ -44,6 +44,7 @@ struct Result {
   bool changed = false;          // a saved setting changed (practice CPU, blocked codes)
   bool start_unranked = false;
   bool start_direct = false;
+  bool start_teams = false;       // Teams with direct_code (everyone enters the same code)
   bool cancel_search = false;
   bool open_window = false;      // "All settings": the full Practice window
   std::string direct_code;

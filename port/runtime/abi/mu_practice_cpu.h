@@ -187,6 +187,7 @@ typedef struct MuPcConfig {
 #define MU_PC_TOOL_HITBOXES_ONLY 0x04u /* ...or instead of it */
 #define MU_PC_TOOL_OVERLAY 0x08u       /* inputs, action and frame advantage */
 #define MU_PC_TOOL_LOOP 0x10u          /* a played back recording repeats */
+#define MU_PC_TOOL_FRAME_ADVANCE 0x20u /* L+R+Z freezes Training, Z steps a frame (host side) */
 
 /* One fighter as the model needs it. Positions are game units; facing is +1 right, -1 left. */
 typedef struct MuPcFighter {

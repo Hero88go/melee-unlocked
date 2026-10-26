@@ -3550,6 +3550,10 @@ static bool draw_practice_cpu_tabs(RenderOptions& options, int tab) {
                         "Right keeps this moment, left returns to it as often as you like.\n"
                         "Down records your controller as the CPU; up plays that back while you practice.");
     changed |= flag_row("Loop the recording", &c.tools, MU_PC_TOOL_LOOP, "A played back recording starts again from the kept moment.");
+    ImGui::EndDisabled();
+    changed |= flag_row("Frame advance", &c.tools, MU_PC_TOOL_FRAME_ADVANCE,
+                        "In Training, L + R + Z freezes the game; then Z steps one frame, and held Z keeps stepping.");
+    ImGui::BeginDisabled(!options.native_source);
     changed |= flag_row("Hitboxes and hurtboxes", &c.tools, MU_PC_TOOL_HITBOXES, nullptr);
     changed |= flag_row("Hitboxes only (no models)", &c.tools, MU_PC_TOOL_HITBOXES_ONLY, nullptr);
     changed |= flag_row("Inputs and frame advantage", &c.tools, MU_PC_TOOL_OVERLAY,
@@ -3723,11 +3727,12 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     if (r.changed) { state.dirty = true; apply_practice_tools(options); }
     const auto close_menu = [&state]() { state.practice_open = false; state.practice_release_capture = true; };
     if (r.start_unranked && practice.can_start) { slippi::native_practice::submit_start_unranked(); close_menu(); }
-    if (r.start_direct) {
+    if (r.start_direct || r.start_teams) {
       std::string code, error;
       if (!practice.can_start) practice_menu::show_error("Search from Training or an event match.");
       else if (slippi::native_practice::normalize_direct_code(r.direct_code, &code, &error)) {
-        slippi::native_practice::submit_start_direct(code);
+        if (r.start_teams) slippi::native_practice::submit_start_teams(code);
+        else slippi::native_practice::submit_start_direct(code);
         close_menu();
       } else practice_menu::show_error(error);
     }

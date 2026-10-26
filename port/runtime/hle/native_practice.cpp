@@ -2,6 +2,7 @@
 #include "native_practice.h"
 
 #include "host.h"
+#include "practice_cpu.h"
 #include "slippi_online.h"
 #include "slippi_playback.h"
 #include "../gx/render_options.h"
@@ -11,6 +12,8 @@
 #include <deque>
 #include <mutex>
 #include <utility>
+#include <vector>
+#include <string>
 
 namespace slippi::native_practice {
 namespace {
@@ -31,7 +34,7 @@ constexpr uint32_t kPlayerStride = 0xE90;
 constexpr uint32_t kMatchStage = 0x8046B6A0 + 0x24C8 + 0x0E;
 constexpr uint32_t kSearchTimeoutTicks = 60 * 90;
 
-enum class CommandKind { StartUnranked, StartDirect, Cancel, AcknowledgeFailure };
+enum class CommandKind { StartUnranked, StartDirect, StartTeams, Cancel, AcknowledgeFailure };
 struct Command { CommandKind kind; std::string text; };
 
 struct SavedPlayer {
@@ -83,7 +86,7 @@ uint32_t g_lobby_boot_ticks = 0;
 NativeBridge g_bridge = nullptr;
 ContentBridge g_content_bridge = nullptr;
 enum { OP_SCENE, OP_GET_PLAYER, OP_SET_PLAYER, OP_GET_STAGE, OP_SET_STAGE, OP_SET_EVENT_BACKUP,
-       OP_REQUEST_MAJOR, OP_SET_ONLINE_MODE, OP_GET_ONLINE_MODE, OP_DIRECT_FIRST_MATCH };
+       OP_REQUEST_MAJOR, OP_SET_ONLINE_MODE, OP_GET_ONLINE_MODE, OP_DIRECT_FIRST_MATCH, OP_FRAME_PAUSE };
 
 uint8_t current_major() {
   if (g_bridge) { int32_t a[2] = {}; g_bridge(OP_SCENE, a, 2); return (uint8_t)a[0]; }
@@ -204,6 +207,79 @@ void restore_practice_fields() {
     host::wr16(base + 0x5C, p.damage);
     host::wr16(base + 0x5E, p.initial_damage);
   }
+}
+
+// The game's debug pause (gm_80479D58.unk_10.x0 bit 0) and its one-frame step (x2 bit 0).
+// pause: 1 freeze, 0 run, -1 leave as is. Returns whether the game is frozen.
+bool frame_pause(int pause, bool step) {
+  if (g_bridge) { int32_t a[2] = {pause, step ? 1 : 0}; g_bridge(OP_FRAME_PAUSE, a, 2); return a[0] != 0; }
+  const uint32_t flags = kMinorSceneControl + 0x10;
+  uint8_t v = host::rd8(flags);
+  if (pause > 0) v |= 1; else if (pause == 0) v &= (uint8_t)~1u;
+  host::wr8(flags, v);
+  if (step) host::wr8(flags + 2, (uint8_t)(host::rd8(flags + 2) | 1));
+  return (v & 1) != 0;
+}
+
+// Frame advance (Practice > Tools): in an offline Training match, L+R+Z freezes the game and
+// unfreezes it; while frozen Z steps one frame, and held Z keeps stepping (every fourth frame
+// after a short wait). Anything else (leaving Training, a search starting, the option off)
+// lets the game run again.
+void frame_advance_tick() {
+  static bool frozen = false, combo_was = false, z_was = false;
+  static uint32_t z_held = 0;
+  // Tests (hidden VS matches): MELEE_TEST_FRAME_ADVANCE=1 turns the option on outside Training.
+  static const bool test = std::getenv("MELEE_TEST_FRAME_ADVANCE") != nullptr;
+  const bool allowed = ((practice_cpu::config().tools & MU_PC_TOOL_FRAME_ADVANCE) || test) && (is_training() || test) &&
+                       (test ? is_offline_gameplay_scene(current_major(), current_minor()) : is_offline_gameplay()) && g_lifecycle.phase() == Phase::Idle && !slippi::playback::enabled() &&
+                       slippi::online::session_mode() < 0;
+  if (!allowed) {
+    if (test) {   // tests: say which condition holds frame advance off when L+R+Z is pressed
+      host::PadState pads[4];
+      host::input_last_pads(pads);
+      static uint32_t told = 0;
+      if ((pads[0].button & 0x0070u) == 0x0070u && told++ < 3)
+        host::log("practice: frame advance held off: scene %02X/%02X phase %s playback %d session %d",
+                  current_major(), current_minor(), phase_name(g_lifecycle.phase()), (int)slippi::playback::enabled(),
+                  slippi::online::session_mode());
+    }
+    if (frozen) { frame_pause(0, false); frozen = false; host::log("practice: frame advance off, the game runs"); }
+    combo_was = z_was = false;
+    return;
+  }
+  host::PadState pads[4];
+  host::input_last_pads(pads);
+  bool combo = false, z = false;
+  for (const host::PadState& p : pads) {
+    if ((p.button & 0x0070u) == 0x0070u) combo = true;           // L + R + Z
+    else if ((p.button & 0x0010u) && !(p.button & 0x0060u)) z = true;
+  }
+  // Tests: MELEE_TEST_FRAME_ADVANCE=<freeze retrace>:<step retrace>,... presses the buttons itself.
+  if (test) {
+    static uint32_t freeze_at = 0; static std::vector<uint32_t> steps; static bool parsed = false;
+    if (!parsed) {
+      parsed = true;
+      const std::string v = std::getenv("MELEE_TEST_FRAME_ADVANCE");
+      freeze_at = (uint32_t)std::strtoul(v.c_str(), nullptr, 10);
+      for (size_t at = v.find(':'); at != std::string::npos; at = v.find(',', at + 1))
+        steps.push_back((uint32_t)std::strtoul(v.c_str() + at + 1, nullptr, 10));
+    }
+    const uint32_t now = host::retrace_count();
+    if (now == freeze_at) combo = true;
+    for (uint32_t s : steps) if (now == s) z = true;
+  }
+  if (combo && !combo_was) {
+    frozen = !frozen;
+    frame_pause(frozen ? 1 : 0, false);
+    host::log("practice: frame advance %s", frozen ? "froze the game" : "let the game run");
+  }
+  combo_was = combo;
+  if (frozen) {
+    if (frame_pause(-1, false) == false) frame_pause(1, false);   // keep it frozen
+    z_held = z ? z_held + 1 : 0;
+    if (z && (!z_was || (z_held > 20 && z_held % 4 == 0))) frame_pause(1, true);
+  }
+  z_was = z;
 }
 
 void request_major(uint8_t major) {
@@ -327,6 +403,13 @@ void process_command(Command command) {
       start_search(MatchMode::Direct, code);
       break;
     }
+    case CommandKind::StartTeams: {
+      if (g_lifecycle.phase() != Phase::Idle) return;
+      std::string code, error;
+      if (!normalize_direct_code(command.text, &code, &error)) { fail(error, false); return; }
+      start_search(MatchMode::Teams, code);
+      break;
+    }
     case CommandKind::Cancel: {
       Decision d = g_lifecycle.cancel();
       if (!d.cleanup_connection) return;
@@ -395,6 +478,11 @@ void submit_start_direct(const std::string& connect_code) {
   g_commands.push_back({CommandKind::StartDirect, connect_code});
 }
 
+void submit_start_teams(const std::string& connect_code) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_commands.push_back({CommandKind::StartTeams, connect_code});
+}
+
 void submit_start_unranked() {
   std::lock_guard<std::mutex> lock(g_mutex);
   g_commands.push_back({CommandKind::StartUnranked, {}});
@@ -459,6 +547,7 @@ void tick() {
         const std::string spec = autostart;
         host::log("native practice: test autostart %s", spec.c_str());
         if (spec.rfind("direct:", 0) == 0) submit_start_direct(spec.substr(7));
+        else if (spec.rfind("teams:", 0) == 0) submit_start_teams(spec.substr(6));
         else submit_start_unranked();
       }
     }
@@ -474,7 +563,8 @@ void tick() {
     static MatchMode lr_mode = MatchMode::None;
     if (g_lifecycle.phase() == Phase::Idle && g_auto_search == MatchMode::None && is_online_scene() &&
         current_minor() == 0 &&
-        (online_mode() == (uint8_t)MatchMode::Unranked || online_mode() == (uint8_t)MatchMode::Direct) &&
+        (online_mode() == (uint8_t)MatchMode::Unranked || online_mode() == (uint8_t)MatchMode::Direct ||
+         online_mode() == (uint8_t)MatchMode::Teams) &&
         !slippi::playback::enabled() && !slippi::online::is_online_match()) {
       lr_mode = (MatchMode)online_mode();
       host::PadState pads[4];
@@ -486,7 +576,7 @@ void tick() {
     // Direct: practice while waiting for the code's player, with the code being searched for (or
     // the last one used). No code at all: nothing to search, so L+R does nothing there.
     std::string lr_code;
-    if (lr_ticks == 20 && lr_mode == MatchMode::Direct) {
+    if (lr_ticks == 20 && (lr_mode == MatchMode::Direct || lr_mode == MatchMode::Teams)) {
       std::string error;
       if (!normalize_direct_code(slippi::online::direct_code_for_practice(), &lr_code, &error)) {
         host::log("native practice: L+R on the Direct character select with no code to search for");
@@ -530,13 +620,15 @@ void tick() {
         const MatchMode mode = g_auto_search;
         g_auto_search = MatchMode::None;
         host::log("native practice: Training match running; starting the %s search", match_mode_name(mode));
-        start_search(mode, mode == MatchMode::Direct ? g_auto_code : std::string());
+        start_search(mode, mode == MatchMode::Unranked ? std::string() : g_auto_code);
       }
     } else if (!is_training() && !is_online_scene()) {
       host::log("native practice: left Training before its match; the pending search is dropped");
       g_auto_search = MatchMode::None;
     }
   }
+
+  frame_advance_tick();
 
   std::deque<Command> commands;
   {
@@ -664,6 +756,7 @@ const char* match_mode_name(MatchMode mode) {
   switch (mode) {
     case MatchMode::Unranked: return "Unranked";
     case MatchMode::Direct: return "Direct";
+    case MatchMode::Teams: return "Teams";
     case MatchMode::None: return "matchmaking";
   }
   return "matchmaking";

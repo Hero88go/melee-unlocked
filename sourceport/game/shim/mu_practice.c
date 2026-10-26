@@ -14,7 +14,7 @@
 /* Same values as MU_PRACTICE_* in mu_host.h (checked in mu_entry.c). */
 enum { MU_PR_SCENE, MU_PR_GET_PLAYER, MU_PR_SET_PLAYER, MU_PR_GET_STAGE, MU_PR_SET_STAGE,
        MU_PR_SET_EVENT_BACKUP, MU_PR_REQUEST_MAJOR, MU_PR_SET_ONLINE_MODE, MU_PR_GET_ONLINE_MODE,
-       MU_PR_DIRECT_FIRST_MATCH };
+       MU_PR_DIRECT_FIRST_MATCH, MU_PR_FRAME_PAUSE };
 
 extern StaticPlayer player_slots[];
 struct gm_80479D58_t* mu_gm_engine_state(void);
@@ -113,6 +113,16 @@ int mu_practice_bridge(int op, int* a, int n)
         slp->is_winner = MU_SLP_WINNER_NULL;
         slp->chose_stage = MU_SLP_STAGE_UNSET;
         return 0;
+    case MU_PR_FRAME_PAUSE: {
+        /* Frame advance (Practice > Tools): the game's own debug pause and frame step. */
+        struct gm_80479D58_t* e = mu_gm_engine_state();
+        if (n < 2) return -1;
+        if (a[0] > 0) e->unk_10.x0 |= 1;
+        else if (a[0] == 0) e->unk_10.x0 &= ~1;
+        if (a[1]) e->unk_10.x2 |= 1;
+        a[0] = e->unk_10.x0 & 1;
+        return 0;
+    }
     }
     return -1;
 }

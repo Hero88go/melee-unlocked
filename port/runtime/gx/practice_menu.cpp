@@ -262,7 +262,7 @@ bool cpu_page(Page p) {
 enum class Kind { Page, Toggle, Percent, Number, Choice, Odds, Flag, Action, Info };
 enum Action : int {
   kActNone, kActUnranked, kActCancel, kActWindow, kActDefaults, kActPreset = 100, kActLoad = 200, kActSave = 300,
-  kActBlocked = 400
+  kActBlocked = 400, kActTeams = 500
 };
 
 struct Row {
@@ -296,10 +296,10 @@ double g_page_changed_at = -10.0;
 const char kKeys[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#";
 constexpr int kKeyCols = 13;
 constexpr int kKeyCount = (int)sizeof(kKeys) - 1;   // 37 characters, then Delete / Paste / OK
-int g_kb_target = 0;          // 0 Direct, 1..3 a skipped code
+int g_kb_target = 0;          // 0 Direct, 1..3 a skipped code, 4 Teams
 std::string g_kb_text;
 int g_kb_cursor = 0;          // 0..36 characters, 37 Delete, 38 Paste, 39 OK
-std::string g_last_direct;
+std::string g_last_direct, g_last_teams;
 
 int share_of(const uint8_t* group, int count, int index) {
   int total = 0;
@@ -414,7 +414,7 @@ std::vector<Row> rows_for(Page p) {
       rows.push_back(page_row("Ledge", Page::Ledge, top_name(kLedge, c.ledge_odds, MU_PC_LEDGE_COUNT),
                               "Ledge options and recovery."));
       int tools = 0;
-      for (uint8_t m : {MU_PC_TOOL_DPAD, MU_PC_TOOL_HITBOXES, MU_PC_TOOL_HITBOXES_ONLY, MU_PC_TOOL_OVERLAY, MU_PC_TOOL_LOOP})
+      for (uint8_t m : {MU_PC_TOOL_DPAD, MU_PC_TOOL_HITBOXES, MU_PC_TOOL_HITBOXES_ONLY, MU_PC_TOOL_OVERLAY, MU_PC_TOOL_LOOP, MU_PC_TOOL_FRAME_ADVANCE})
         tools += (c.tools & m) ? 1 : 0;
       char t[24]; std::snprintf(t, sizeof t, tools ? "%d on" : "Off", tools);
       rows.push_back(page_row("Tools", Page::Tools, t, "Save states, hitboxes, inputs."));
@@ -433,6 +433,7 @@ std::vector<Row> rows_for(Page p) {
         rows.push_back(action_row("Unranked", kActUnranked, "", s.can_start ? "Search now. Keep training; the match starts by itself."
                                                                            : "Search from Training or an event match.", s.can_start));
         rows.push_back(page_row("Direct", Page::Code, g_last_direct, "Play someone by their connect code."));
+        rows.push_back(action_row("Teams", kActTeams, g_last_teams, "Two against two: all four enter the same connect code."));
         int n = 0;
         for (const std::string& code : slippi::online::config().blocked_codes) n += code.empty() ? 0 : 1;
         char b[24]; std::snprintf(b, sizeof b, n ? "%d codes" : "None", n);
@@ -523,6 +524,11 @@ std::vector<Row> rows_for(Page p) {
           {"Hitboxes only", MU_PC_TOOL_HITBOXES_ONLY, "Hitboxes without the models."},
           {"Inputs", MU_PC_TOOL_OVERLAY, "Both players' inputs and your frame advantage."},
       };
+      {
+        Row r; r.kind = Kind::Flag; r.label = "Frame advance"; r.byte = &c.tools; r.mask = MU_PC_TOOL_FRAME_ADVANCE;
+        r.about = "In Training, L + R + Z freezes the game. Then Z steps one frame; hold Z to step on.";
+        rows.push_back(r);
+      }
       for (const T& t : tools) {
         Row r; r.kind = Kind::Flag; r.label = t.label; r.byte = &c.tools; r.mask = t.mask; r.about = on ? t.about : only; r.enabled = on;
         rows.push_back(r);
@@ -664,17 +670,20 @@ void press(Page p, Row& r, Result& out) {
     return;
   }
   if (r.action >= kActSave && r.action < kActSave + 100) { practice_cpu::set_slot(r.action - kActSave, g_c); out.changed = true; return; }
+  if (r.action == kActTeams) { open_keyboard(4, g_last_teams); return; }
   if (r.action >= kActBlocked && r.action < kActBlocked + 3) {
     open_keyboard(1 + r.action - kActBlocked, slippi::online::config().blocked_codes[r.action - kActBlocked]);
     return;
   }
 }
 
+const char* kb_title() { return g_kb_target == 0 ? "Direct code" : g_kb_target == 4 ? "Teams code" : "Skip this code"; }
+
 void keyboard_finish(Result& out) {
-  if (g_kb_target == 0) {
+  if (g_kb_target == 0 || g_kb_target == 4) {
     if (g_kb_text.empty()) return;
-    g_last_direct = g_kb_text;
-    out.start_direct = true;
+    (g_kb_target == 0 ? g_last_direct : g_last_teams) = g_kb_text;
+    (g_kb_target == 0 ? out.start_direct : out.start_teams) = true;
     out.direct_code = g_kb_text;
   } else {
     slippi::online::config().blocked_codes[g_kb_target - 1] = g_kb_text;
@@ -953,10 +962,10 @@ void draw_keyboard(ImDrawList* dl, float cx, float top, float u, const KeyColors
   const float wide = (w - 2 * gap) / 3.0f, y3 = top + 3 * (key + gap);
   key_box(x0, y3, wide, g_kb_cursor == kKeyCount, "Delete", k.face_top, k.face_bottom);
   key_box(x0 + wide + gap, y3, wide, g_kb_cursor == kKeyCount + 1, "Paste", k.face_top, k.face_bottom);
-  key_box(x0 + 2 * (wide + gap), y3, wide, g_kb_cursor == kKeyCount + 2, g_kb_target == 0 ? "Connect" : "OK",
+  key_box(x0 + 2 * (wide + gap), y3, wide, g_kb_cursor == kKeyCount + 2, (g_kb_target == 0 || g_kb_target == 4) ? "Connect" : "OK",
           IM_COL32(48, 150, 72, 255), IM_COL32(18, 90, 40, 255));
   const float hy = y3 + key + 30 * u;
-  const char* spec = g_kb_target == 0 ? "A:Type|B:Delete|S:Connect" : "A:Type|B:Delete|S:Done";
+  const char* spec = (g_kb_target == 0 || g_kb_target == 4) ? "A:Type|B:Delete|S:Connect" : "A:Type|B:Delete|S:Done";
   const float hw = hints(dl, 0, 0, u, spec, a, false);
   hints(dl, cx - hw * 0.5f, hy, u, spec, a);
   const std::string about = about_now(nullptr);
@@ -977,7 +986,7 @@ void draw_bars(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a) 
   const float t = (float)f.time;
   if (lv.page == Page::Code) {
     draw_keyboard(dl, (f.game_x0 + f.game_x1) * 0.5f, f.game_y0 + gh * 0.42f, u, kGoldKeys, a,
-                  g_kb_target == 0 ? "Direct code" : "Skip this code");
+                  kb_title());
     return;
   }
   const int visible = 6, count = (int)rows.size();
@@ -1175,7 +1184,7 @@ void draw_rails(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
   const float cw_l = (lx1 - lx0) - 2 * pad - (overlay ? 40 * u : 0), cw_r = (rx1 - rx0) - 2 * pad - (overlay ? 40 * u : 0);
   const float cx_l = lx0 + pad, cx_r = rx0 + pad + (overlay ? 40 * u : 0);
   if (lv.page == Page::Code) {
-    draw_keyboard(dl, (f.game_x0 + f.game_x1) * 0.5f, f.game_y0 + gh * 0.42f, u, kBlueKeys, a, g_kb_target == 0 ? "Direct code" : "Skip this code");
+    draw_keyboard(dl, (f.game_x0 + f.game_x1) * 0.5f, f.game_y0 + gh * 0.42f, u, kBlueKeys, a, kb_title());
     rail_status(dl, cx_r, y0 + 16 * u, cw_r, u, f, a, false);
     return;
   }
@@ -1231,7 +1240,7 @@ void draw_slots(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
   const float gw = f.game_x1 - f.game_x0, gh = f.game_y1 - f.game_y0, u = gh / 720.0f;
   Level& lv = level();
   if (lv.page == Page::Code) {
-    draw_keyboard(dl, (f.game_x0 + f.game_x1) * 0.5f, f.game_y0 + gh * 0.42f, u, kBlueKeys, a, g_kb_target == 0 ? "Direct code" : "Skip this code");
+    draw_keyboard(dl, (f.game_x0 + f.game_x1) * 0.5f, f.game_y0 + gh * 0.42f, u, kBlueKeys, a, kb_title());
     return;
   }
   const int per = 4, count = (int)rows.size();
@@ -1341,7 +1350,7 @@ void draw_strip(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
   Level& lv = level();
   const float below = draw_strip_line(dl, f, u, 1.0f);
   if (lv.page == Page::Code) {
-    draw_keyboard(dl, (f.game_x0 + f.game_x1) * 0.5f, f.game_y0 + gh * 0.44f, u, kBlueKeys, a, g_kb_target == 0 ? "Direct code" : "Skip this code");
+    draw_keyboard(dl, (f.game_x0 + f.game_x1) * 0.5f, f.game_y0 + gh * 0.44f, u, kBlueKeys, a, kb_title());
     return;
   }
   const int visible = 8, count = (int)rows.size();

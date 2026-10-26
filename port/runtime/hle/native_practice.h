@@ -11,7 +11,7 @@
 namespace slippi::native_practice {
 
 // Values intentionally match Slippi's OnlinePlayMode (Melee Unlocked has no Ranked).
-enum class MatchMode : uint8_t { None = 0xFF, Unranked = 1, Direct = 2 };
+enum class MatchMode : uint8_t { None = 0xFF, Unranked = 1, Direct = 2, Teams = 3 };
 
 struct Snapshot {
   Phase phase = Phase::Idle;
@@ -33,6 +33,8 @@ struct Snapshot {
 Snapshot snapshot();
 void submit_start_unranked();
 void submit_start_direct(const std::string& connect_code);
+// Teams: four players who all enter the same connect code.
+void submit_start_teams(const std::string& connect_code);
 void submit_cancel();
 void submit_acknowledge_failure();
 

@@ -307,6 +307,7 @@ struct Snapshot {
 inline Snapshot snapshot() { return {}; }
 inline void submit_start_unranked() {}
 inline void submit_start_direct(const std::string&) {}
+inline void submit_start_teams(const std::string&) {}
 inline void submit_cancel() {}
 inline void submit_acknowledge_failure() {}
 inline void tick() {}

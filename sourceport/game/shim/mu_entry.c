@@ -174,7 +174,8 @@ static uint32_t mu_state_regions(MuStateRegion* out, uint32_t capacity)
 uint32_t mu_snapshot_exclusions(MuStateRegion* out, uint32_t capacity);
 uint32_t mu_snapshot_ranges(MuStateRegion* out, uint32_t capacity);
 int mu_practice_bridge(int op, int* args, int count);
-_Static_assert(MU_PRACTICE_DIRECT_FIRST_MATCH == 9 && MU_PRACTICE_REQUEST_MAJOR == 6, "practice op numbering (mu_practice.c)");
+_Static_assert(MU_PRACTICE_DIRECT_FIRST_MATCH == 9 && MU_PRACTICE_REQUEST_MAJOR == 6 && MU_PRACTICE_FRAME_PAUSE == 10,
+               "practice op numbering (mu_practice.c)");
 
 /* Native game-side Slippi hooks use this instead of the console's EXI memory-mapped device. */
 int32_t mu_slippi_command(uint8_t command, const uint8_t* payload, uint32_t payload_size,
