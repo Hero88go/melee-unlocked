@@ -78,4 +78,25 @@ void toggle_pause();
 void seek_to(int32_t frame);
 void set_ui_busy(bool busy);
 
+// Takeover (practice from a replay, as in Tekken 8): from the frame it starts on, one port is played
+// live from the player's controller while every other port keeps the recording's inputs. The state
+// at that frame is kept, so the attempt can be retried as often as wanted, or the recording watched
+// on from there. Render thread requests; the simulation thread acts on them at its next frame.
+void take_over(int port);        // start (the game resumes); a port the replay has
+void retry_takeover();           // back to the takeover's frame, same port, again
+void stop_takeover();            // back to the takeover's frame, watching the recording
+int takeover_port();             // -1 while watching
+int32_t takeover_frame();        // kNoFrame while watching
+// Analyze (the coach's moments, host/replay_coach.h): the whole replay is run once unseen, from its
+// first frame to its end, so the game reports every hit, then the viewer comes back to where it was.
+// Render thread requests it; only while watching.
+void analyze();
+bool analyzing();
+bool analyzed();                 // a full pass was made for this replay
+float analyze_progress();        // 0..1
+// The replay's players, for the menus: bit per port present, and a short name each.
+void set_players(uint32_t ports, const std::string names[4]);
+uint32_t player_ports();
+std::string player_name(int port);
+
 }  // namespace replay_control

@@ -42,6 +42,9 @@ int mu_replay_abi_active(void);
 unsigned int mu_replay_abi_codes(void);
 const unsigned char* mu_replay_abi_game_info(unsigned int* seed);
 int mu_replay_abi_resync(void);
+int mu_replay_abi_live(int port);
+void mu_framedata_frame(Fighter* fp);
+void mu_framedata_landing(Fighter* fp, int status);
 int mu_replay_abi_ps_frozen_toggle(void);
 int mu_replay_abi_fetch(int frame);
 int mu_replay_abi_last_result(void);
@@ -644,6 +647,12 @@ void mu_replay_input(Fighter* fp)
         return;
     }
     follower = is_follower(fp);
+    if (!follower) mu_framedata_frame(fp);   /* frame data for the coach (mu_framedata.c) */
+    /* Replay takeover: this player plays the port live, from its own controller. */
+    if (mu_replay_abi_live(fp->player_idx)) {
+        emit_pre_frame(fp);
+        return;
+    }
     resync = mu_replay_abi_resync();
     if (follower && !resync) {
         emit_pre_frame(fp);
@@ -951,6 +960,7 @@ void mu_replay_lcancel_reset(Fighter* fp)
 void mu_replay_lcancel_landing(Fighter* fp)
 {
     lcancel_status[fp->player_idx & 3][is_follower(fp)] = fp->x67F < p_ftCommonData->xE4 ? 1 : 2;
+    if (mu_replay_on()) mu_framedata_landing(fp, lcancel_status[fp->player_idx & 3][is_follower(fp)]);
 }
 
 /* ---- stage events (Recording/Stages) ----

@@ -74,6 +74,7 @@
 #include "mod_profile.h"
 #include "net_trace.h"
 #include "replay_control.h"
+#include "replay_coach.h"
 #include "mod_scan.h"
 #include "hackpack_source.h"
 #include "maker_source.h"
@@ -1301,6 +1302,7 @@ constexpr uint8_t CMD_SELFTEST_KEEP = 0xF0, CMD_SELFTEST_COMPARE = 0xF1;   // na
 // a lab load keeps the state again at once and it can be returned to as often as wanted.
 constexpr uint8_t CMD_LAB_SAVE = 0xF2, CMD_LAB_LOAD = 0xF3, CMD_LAB_ADVANTAGE = 0xF4, CMD_CONTENT_MODE = 0xF5;
 constexpr uint8_t CMD_PRACTICE_CPU = 0xF6;   // the practice CPU's settings (port/runtime/hle/practice_cpu.h)
+constexpr uint8_t CMD_FRAME_EVENT = 0xE8;   // replay frame data for the coach (shim/mu_framedata.c, host/replay_coach.h)
 void apply_content_mode(int mode);
 constexpr int32_t kLabFrame = -1000000;
 // The replay viewer's controls (shim/mu_replay.c mu_replay_frame_begin, host/replay_control.h):
@@ -1539,6 +1541,19 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
         if (c == CMD_LAB_SAVE) { lab_save(); return true; }
         if (c == CMD_LAB_LOAD) { lab_load(); return true; }
         if (c == CMD_REPLAY_GATE && n == 5) { reply.push_back(replay_gate((int32_t)read_be32(p), p[4])); return true; }
+        if (c == CMD_FRAME_EVENT) {
+          replay_coach::Event e;
+          if (replay_coach::parse(p, n, e)) {
+            replay_coach::add(e);
+            static const bool log_events = std::getenv("MELEE_TEST_COACH_LOG") != nullptr;   // tests
+            if (log_events) {
+              const replay_coach::Readout r = replay_coach::readout(e);
+              host::log("coach: frame %d P%d %s %s %s | %s (move %d)", e.frame, e.actor + 1, r.head.c_str(), r.value.c_str(),
+                        r.detail.c_str(), replay_coach::advice(e).c_str(), e.move);
+            }
+          }
+          return true;
+        }
         if (c == CMD_LAB_ADVANTAGE && n == 5) { training_overlay::set_advantage((int32_t)read_be32(p), p[4]); return true; }
         if (c == CMD_PRACTICE_CPU) {   // shim/mu_practice_cpu.c: the settings, or what it is doing
           if (n == 2 || n == 3) { practice_cpu::note_status(p[0] != 0, p[1], 0, n == 3 ? p[2] : -1); return true; }
@@ -2716,6 +2731,10 @@ void h_replay_frame(int32_t frame, MuReplayFrame* out) {
     }
   }
   out->result = MU_REPLAY_CONTINUE;
+  {
+    const int live = replay_control::takeover_port();
+    out->live_ports = live >= 0 && live < 4 ? 1u << live : 0u;
+  }
   out->seed_exists = f->randomSeedExists ? 1 : 0;
   out->seed = f->randomSeed;
   for (uint8_t port = 0; port < 4; ++port) {
@@ -3125,6 +3144,7 @@ bool set_replay(const char* path) {
   g_replaying = true;
   if (g_replay_feature_options) host::log("replay: recorded with game options %08X", g_replay_feature_options);
   g_replay = Slippi::SlippiGame::FromFile(path);
+  replay_coach::clear();
   if (!g_replay || !g_replay->AreSettingsLoaded()) {
     host::log("replay: cannot read %s", path);
     g_replay.reset();
@@ -3168,6 +3188,21 @@ bool set_replay(const char* path) {
   replay_control::Engine engine;
   engine.keep = replay_keep;
   engine.restore = replay_restore;
+  {
+    // The players, for the takeover menu: "P1 Falco".
+    static const char* const kNames[26] = {"Captain Falcon", "Donkey Kong", "Fox", "Mr. Game & Watch", "Kirby", "Bowser",
+        "Link", "Luigi", "Mario", "Marth", "Mewtwo", "Ness", "Peach", "Pikachu", "Ice Climbers", "Jigglypuff", "Samus",
+        "Yoshi", "Zelda", "Sheik", "Falco", "Young Link", "Dr. Mario", "Roy", "Pichu", "Ganondorf"};
+    std::string names[4];
+    uint32_t ports = 0;
+    for (int i = 0; i < 4; ++i) {
+      if (!g_replay->DoesPlayerExist((int8_t)i)) continue;
+      ports |= 1u << i;
+      const uint8_t c = s->players[(uint8_t)i].characterId;
+      names[i] = "P" + std::to_string(i + 1) + " " + (c < 26 ? kNames[c] : "Fighter");
+    }
+    replay_control::set_players(ports, names);
+  }
   replay_control::set_replay_path(path);
   replay_control::begin(Slippi::GAME_FIRST_FRAME, g_replay->GetLatestIndex(), engine);
   host::set_replay_viewing(true);

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #include "replay_control.h"
+#include "replay_coach.h"
 #include "audio.h"
 #include "host.h"
 #ifdef MELEE_NO_SLIPPI
@@ -17,6 +18,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <vector>
 #ifndef NOMINMAX
@@ -36,6 +38,20 @@ constexpr double kFastFactor = 4.0;           // fast forward: four times the ga
 constexpr int32_t kJumpFrames = 5 * 60, kLongJumpFrames = 30 * 60;
 constexpr int32_t kKeepMinFrames = 2 * 60;    // kept states are never closer than two seconds
 constexpr uint16_t kPadStart = 0x1000, kPadZ = 0x0010, kPadR = 0x0020;
+
+// Takeover state (see replay_control.h). Requests come from the render thread.
+std::atomic<int> g_take_port{-1};
+std::atomic<int32_t> g_take_frame{kNoFrame};
+std::atomic<int> g_take_request{-2};    // -2 none, else the port to take over
+std::atomic<int> g_take_action{0};      // 1 retry, 2 back to watching
+// Analyze: 1 back to the first frame, 2 through to the end unseen, 3 back where the player was.
+std::atomic<bool> g_an_request{false}, g_an_done{false};
+std::atomic<int> g_an_phase{0};
+int32_t g_an_origin = 0;
+double g_an_started = 0.0;
+std::atomic<uint32_t> g_players{0};
+std::mutex g_names_mutex;
+std::string g_names[4];
 
 struct Keys {
   bool space = false, left = false, right = false, up = false, down = false, home = false, tab = false,
@@ -290,7 +306,8 @@ void poll_controls(int32_t frame, bool waiting) {
     for (const host::PadState& p : pads) {
       if (p.err != 0) continue;
       if ((p.button & kPadStart) && !(p.button & kPadZ)) start = true;   // Z + Start opens the settings
-      if ((p.button & kPadR) || p.trig_r > 150) trigger = true;
+      // R fast-forwards, except while a port is played live (R is its shield then).
+      if (((p.button & kPadR) || p.trig_r > 150) && g_take_port.load() < 0) trigger = true;
     }
   }
   if (!g.prev_valid) {   // the first read: nothing held now is a press
@@ -461,7 +478,111 @@ void pace(int32_t frame) {
   g.last_release = host::now_seconds();
 }
 
+
+void takeover_requests(int32_t frame) {
+  // Tests: MELEE_TEST_TAKEOVER=<frame>,<port>[,<retry frame>] takes over (and retries) by itself.
+  {
+    static int test_frame = -1, test_port = 0, test_retry = -1;
+    static bool parsed = false;
+    if (!parsed) {
+      parsed = true;
+      if (const char* v = std::getenv("MELEE_TEST_TAKEOVER")) {
+        std::sscanf(v, "%d,%d,%d", &test_frame, &test_port, &test_retry);
+        host::log("replay: test takeover at frame %d of P%d, retry at %d (first gate %d)", test_frame, test_port + 1, test_retry, frame);
+      }
+    }
+    if (test_frame >= 0 && frame >= test_frame && g_take_port.load() < 0) { g_take_request.store(test_port); test_frame = -1; }
+    if (test_retry >= 0 && frame >= test_retry && g_take_port.load() >= 0) { g_take_action.store(1); test_retry = -1; }
+  }
+  const int port = g_take_request.exchange(-2);
+  if (port >= 0 && port < 4) {
+    // The state before this frame is kept: Retry and Back to watching return to it.
+    if (g.engine.keep) g.engine.keep(frame);
+    g_take_frame.store(frame);
+    g_take_port.store(port);
+    set_paused(false, frame);
+    host::log("replay: takeover of P%d from frame %d", port + 1, frame);
+  }
+  const int action = g_take_action.exchange(0);
+  if (action && g_take_frame.load() != kNoFrame) {
+    if (action == 2) {
+      host::log("replay: back to watching from frame %d", g_take_frame.load());
+      g_take_port.store(-1);
+    } else {
+      host::log("replay: takeover retried from frame %d", g_take_frame.load());
+    }
+    g.want_seek = g_take_frame.load();
+    set_paused(false, frame);
+    if (action == 2) g_take_frame.store(kNoFrame);
+  }
+}
+
+void analyze_steps(int32_t frame) {
+  // Tests: MELEE_TEST_ANALYZE=<frame> asks for the pass at that frame.
+  static int32_t test_at = -2;
+  if (test_at == -2) {
+    const char* v = std::getenv("MELEE_TEST_ANALYZE");
+    test_at = v ? (int32_t)std::strtol(v, nullptr, 10) : -1;
+  }
+  if (test_at >= 0 && frame >= test_at && g_an_phase.load() == 0) { g_an_request.store(true); test_at = -1; }
+  if (g_an_request.exchange(false) && g_an_phase.load() == 0 && g_take_port.load() < 0) {
+    g_an_origin = frame;
+    g_an_started = host::now_seconds();
+    g_an_phase.store(1);
+    g.want_seek = g.first_frame.load();
+    host::log("replay: analyzing from frame %d", frame);
+    return;
+  }
+  const int phase = g_an_phase.load();
+  if (phase == 0 || g.seeking.load() || g.want_seek != kNoFrame) return;
+  if (phase == 1) {
+    g_an_phase.store(2);
+    g.want_seek = g.last_frame.load();
+  } else if (phase == 2) {
+    g_an_phase.store(3);
+    g.want_seek = g_an_origin;
+  } else {
+    g_an_phase.store(0);
+    g_an_done.store(true);
+    set_paused(true, frame);   // the menu opens on the moments it found
+    host::log("replay: analyzed in %.1f s, back at frame %d", host::now_seconds() - g_an_started, frame);
+    for (int p = 0; p < 4; ++p) {
+      if (!(g_players.load() >> p & 1)) continue;
+      const auto list = replay_coach::moments(replay_coach::events(), p);
+      host::log("replay: %zu moments for P%d", list.size(), p + 1);
+      for (size_t i = 0; i < list.size() && i < 12; ++i)
+        host::log("replay:   %s %s %s | %s", replay_coach::clock(list[i].frame).c_str(), list[i].what.c_str(),
+                  list[i].value.c_str(), list[i].advice.c_str());
+    }
+  }
+}
+
 }  // namespace
+
+void analyze() { g_an_request.store(true); }
+bool analyzing() { return g_an_phase.load(std::memory_order_relaxed) != 0 || g_an_request.load(std::memory_order_relaxed); }
+bool analyzed() { return g_an_done.load(std::memory_order_relaxed); }
+float analyze_progress() {
+  const int phase = g_an_phase.load(std::memory_order_relaxed);
+  const int32_t first = g.first_frame.load(), last = g.last_frame.load(), now = g.frame.load();
+  if (phase == 2) return std::clamp((float)(now - first) / (float)std::max(1, last - 60 - first), 0.0f, 1.0f);
+  return phase == 3 ? 1.0f : 0.0f;
+}
+void take_over(int port) { g_take_request.store(port); }
+void retry_takeover() { g_take_action.store(1); }
+void stop_takeover() { g_take_action.store(2); }
+int takeover_port() { return g_take_port.load(std::memory_order_relaxed); }
+int32_t takeover_frame() { return g_take_frame.load(std::memory_order_relaxed); }
+void set_players(uint32_t ports, const std::string names[4]) {
+  std::lock_guard<std::mutex> lock(g_names_mutex);
+  for (int i = 0; i < 4; ++i) g_names[i] = names[i];
+  g_players.store(ports);
+}
+uint32_t player_ports() { return g_players.load(); }
+std::string player_name(int port) {
+  std::lock_guard<std::mutex> lock(g_names_mutex);
+  return port >= 0 && port < 4 ? g_names[port] : std::string();
+}
 
 void set_trace_file(const std::string& path) { g.trace_file = path; }
 void set_as_experienced(bool on) { g.as_experienced = on; }
@@ -473,6 +594,8 @@ void begin(int32_t first_frame, int32_t last_frame, const Engine& engine) {
     g.base_fast = host::options.fast;
     parse_script();
   }
+  g_an_done.store(false);
+  g_an_phase.store(0);
   g.engine = engine;
   g.first_frame.store(first_frame);
   g.last_frame.store(last_frame);
@@ -528,6 +651,8 @@ Gate gate(int32_t frame) {
   bool waiting = false;
   for (;;) {
     poll_controls(frame, waiting);
+    takeover_requests(frame);
+    analyze_steps(frame);
     if (g.want_seek != kNoFrame) {
       const int32_t target = g.want_seek;
       g.want_seek = kNoFrame;

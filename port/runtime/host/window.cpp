@@ -17,6 +17,7 @@
 #include "host.h"
 #include "early_input.h"
 #include "window.h"
+#include "replay_control.h"
 #include "input_bindings.h"
 #include "settings_chord.h"
 #include "hid_pad.h"
@@ -1264,6 +1265,15 @@ static void read_devices(PadState out[4], InputDebugSnapshot& debug, bool side_e
   debug.keyboard_actions = keyboard_actions;
 }
 
+// Replay takeover: the port the player took over gets their controller when it has none of its own
+// (a replay of P2 played from a controller in port 1).
+static void route_takeover(PadState out[4]) {
+  const int port = replay_control::takeover_port();
+  if (port < 0 || port > 3 || out[port].err == 0) return;
+  for (int i = 0; i < 4; ++i)
+    if (i != port && out[i].err == 0) { out[port] = out[i]; return; }
+}
+
 void input_poll(PadState out[4]) {
   struct InputCost { double start = now_seconds(); ~InputCost() { sim_cost_add(SIM_INPUT, now_seconds() - start); } } input_cost;
   struct UiSnapshot {
@@ -1310,6 +1320,7 @@ void input_poll(PadState out[4]) {
   }
   if (!g_script.empty()) {
     script_pads(retrace_count(), true, out);
+    route_takeover(out);
     // Scripted runs took this return before the overlay's copy was made below, so the controller
     // overlay stayed blank whenever a script was driving. It is the only way to see the overlay
     // without a controller in hand, so keep it fed here too.
@@ -1322,6 +1333,7 @@ void input_poll(PadState out[4]) {
     read_devices(out, debug, true);
   }
   ui.gamecube = debug.gc_mask != 0;
+  route_takeover(out);
   { std::lock_guard<std::mutex> lock(g_last_pads_mutex); for (int port = 0; port < 4; ++port) g_last_pads[port] = out[port]; }
   // MELEE_TEST_PAD_TRACE=<file> (tests only, hidden runs): one line each time a port's input changes,
   // as the game will read it, so a test that drives a controller can check every press arrived.

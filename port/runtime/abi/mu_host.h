@@ -19,7 +19,7 @@
 extern "C" {
 #endif
 
-#define MU_HOST_API_VERSION 19
+#define MU_HOST_API_VERSION 20
 #define MU_GAME_API_VERSION 6
 #define MU_SLIPPI_RESPONSE_CAPACITY 4096u
 
@@ -106,6 +106,8 @@ typedef struct MuReplayFrame {
     int32_t result;             /* MU_REPLAY_* */
     uint32_t seed_exists, seed; /* the frame's starting seed (Frame Start event) */
     MuReplayCharacter character[4][2];   /* [port][0 leader, 1 follower] */
+    uint32_t live_ports;        /* bit per port the player controls (replay takeover): its recorded
+                                   inputs are not applied, the controller's are */
 } MuReplayFrame;
 
 /* Gameplay codes a replay's list can carry (the Dolphin-denylisted list, by injection address). */

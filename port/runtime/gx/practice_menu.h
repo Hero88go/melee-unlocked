@@ -4,7 +4,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
 #include <cstdint>
+#include <climits>
 #include <string>
+#include <vector>
 
 struct ImDrawList;
 
@@ -54,6 +56,35 @@ struct Result {
 // strip), and handles the controller and keyboard. Call once per overlay frame inside ImGui.
 Result frame(int style, const Frame& f);
 void opened();                          // the menu was just opened
+
+// The replay viewer's menu (practice from a replay): shown while the viewer is paused, in the same
+// look. Take over a player, retry the attempt, or go back to watching.
+struct Replay {
+  uint32_t ports = 0;          // bit per player in the replay
+  std::string names[4];        // "P1 Falco"
+  int live_port = -1;          // the port being played live, -1 while watching
+  // The newest frame data readout (host/replay_coach.h), shown top left; alpha 0 hides it.
+  struct Note {
+    std::string head, value, detail, advice;
+    int sign = 0;              // the value's color: -1 minus, 0 even, 1 plus
+    float alpha = 0.0f;
+  } note;
+  // The coach's moments (host/replay_coach.h), per port, once the replay was analyzed.
+  struct Moment {
+    int32_t frame = 0;
+    std::string when, what, value, advice;
+  };
+  std::vector<Moment> moments[4];
+  bool analyzed = false, analyzing = false;
+  float progress = 0.0f;
+};
+struct ReplayResult {
+  int take_over = -1;          // the port to take over
+  bool retry = false, stop = false, resume = false;
+  bool analyze = false;          // find the moments (the viewer's Analyze pass)
+  int32_t jump = INT32_MIN;     // jump to this replay frame and stay paused
+};
+ReplayResult replay_frame(int style, const Frame& f, const Replay& r);
 void show_error(const std::string& s);  // shown in the description box (a bad Direct code)
 
 // Melee's own text: the game's font, decoded from the player's disc at first use (falls back to

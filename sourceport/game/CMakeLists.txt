@@ -268,7 +268,7 @@ option(MU_NO_SLIPPI "Build the game without the Slippi menus, replays and online
 set(MU_NO_SLIPPI_ONLY mu_noslippi.c mu_match_info.c mu_p2p_entry.c)
 if(MU_NO_SLIPPI)
   foreach(removed mu_slippi_menu.c mu_slippi_css.c mu_slippi_chat.c mu_slippi_splash.c mu_slippi_sss.c
-                  mu_replay.c mu_replay_abi.c mu_practice.c mu_online_rules.c)
+                  mu_replay.c mu_replay_abi.c mu_practice.c mu_online_rules.c mu_framedata.c)
     list(REMOVE_ITEM SHIM_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/shim/${removed}")
   endforeach()
   target_compile_definitions(game_flags INTERFACE MU_NO_SLIPPI)
