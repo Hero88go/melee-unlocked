@@ -131,20 +131,29 @@ bool font_ready() {
   return true;
 }
 
+// Space between letters, in glyph pixels: the game's tight fit made digits touch at menu sizes.
+constexpr float kTracking = 2.5f;
+// The game's % stands taller than its digits; it is drawn a little smaller, on the same baseline.
+float glyph_scale(unsigned char ch) { return ch == '%' ? 0.8f : 1.0f; }
+
 void glyph_run(ImDrawList* dl, float x, float y, float px, ImU32 col, const char* s, float skew) {
-  const float k = px / 32.0f, h = 32.0f * k, lean = skew * h;
+  const float k0 = px / 32.0f, lean0 = skew * 32.0f * k0;
   float pen = x;
   const ImTextureRef tex = g_font.tex.GetTexRef();
   for (const char* p = s; *p; ++p) {
     const unsigned char ch = (unsigned char)*p;
-    if (ch == ' ' || ch >= 128 || g_font.glyph[ch].index < 0) { pen += 15.0f * k; continue; }
+    if (ch == ' ' || ch >= 128 || g_font.glyph[ch].index < 0) { pen += 15.0f * k0; continue; }
     const Glyph& g = g_font.glyph[ch];
-    const float x0 = pen - (float)(g.left - 1) * k;
+    const float k = k0 * glyph_scale(ch), h = 32.0f * k, lean = lean0 * glyph_scale(ch);
+    const float top = y + 32.0f * k0 - h - (32.0f * k0 - h) * 0.22f;   // baseline about 0.78 down the cell
+    // Whole pixels when upright: sharper digits.
+    const float x0 = skew == 0.0f ? std::floor(pen - (float)(g.left - 1) * k + 0.5f) : pen - (float)(g.left - 1) * k;
+    const float y0 = skew == 0.0f ? std::floor(top + 0.5f) : top;
     const float u0 = (float)((g.index % 32) * 32) / 1024.0f, v0 = (float)((g.index / 32) * 32) / 288.0f;
     const float u1 = u0 + 32.0f / 1024.0f, v1 = v0 + 32.0f / 288.0f;
-    dl->AddImageQuad(tex, ImVec2(x0 + lean, y), ImVec2(x0 + h + lean, y), ImVec2(x0 + h, y + h), ImVec2(x0, y + h),
+    dl->AddImageQuad(tex, ImVec2(x0 + lean, y0), ImVec2(x0 + h + lean, y0), ImVec2(x0 + h, y0 + h), ImVec2(x0, y0 + h),
                      ImVec2(u0, v0), ImVec2(u1, v0), ImVec2(u1, v1), ImVec2(u0, v1), col);
-    pen += (32.0f - (float)(g.left + g.right - 2)) * k;
+    pen += (32.0f - (float)(g.left + g.right - 2) + kTracking) * k;
   }
 }
 
@@ -162,7 +171,7 @@ float text_width(float px, const char* s) {
   for (const char* p = s; *p; ++p) {
     const unsigned char ch = (unsigned char)*p;
     if (ch == ' ' || ch >= 128 || g_font.glyph[ch].index < 0) { w += 15.0f * k; continue; }
-    w += (32.0f - (float)(g_font.glyph[ch].left + g_font.glyph[ch].right - 2)) * k;
+    w += (32.0f - (float)(g_font.glyph[ch].left + g_font.glyph[ch].right - 2) + kTracking) * k * glyph_scale(ch);
   }
   return w;
 }
@@ -175,13 +184,15 @@ void text(ImDrawList* dl, float x, float y, float px, uint32_t color, const char
     return;
   }
   if (shadow) {
-    // The game's menu text sits on a hard dark drop with a thin outline.
-    const float o = std::max(1.0f, px * 0.07f), t = std::max(1.0f, px * 0.035f);
-    const ImU32 edge = IM_COL32(0, 0, 0, (int)(150 * a)), drop = IM_COL32(0, 0, 0, (int)(215 * a));
-    glyph_run(dl, x - t, y, px, edge, s, skew);
-    glyph_run(dl, x + t, y, px, edge, s, skew);
-    glyph_run(dl, x, y - t, px, edge, s, skew);
-    glyph_run(dl, x, y + t, px, edge, s, skew);
+    // A hard dark drop, as the game's menu text has; the leaning gold labels also get a thin edge.
+    const float o = std::max(1.0f, std::floor(px * 0.07f + 0.5f)), t = std::max(1.0f, px * 0.035f);
+    const ImU32 edge = IM_COL32(0, 0, 0, (int)(130 * a)), drop = IM_COL32(0, 0, 0, (int)(200 * a));
+    if (skew != 0.0f) {
+      glyph_run(dl, x - t, y, px, edge, s, skew);
+      glyph_run(dl, x + t, y, px, edge, s, skew);
+      glyph_run(dl, x, y - t, px, edge, s, skew);
+      glyph_run(dl, x, y + t, px, edge, s, skew);
+    }
     glyph_run(dl, x + o, y + o, px, drop, s, skew);
   }
   glyph_run(dl, x, y, px, color, s, skew);
@@ -858,7 +869,7 @@ void draw_bar(ImDrawList* dl, float left, float top, float right, float h, float
   else text(dl, left + 18.0f * u, vy, px, with_alpha(kGoldText, da), label, 0.19f);
   if (!value.empty()) {
     const float vpx = px * 0.84f, w = text_width(vpx, value.c_str());
-    const float vx = right - rim - (lit ? 40.0f : 34.0f) * u - w;
+    const float vx = right - rim - (lit ? 40.0f : 22.0f) * u - w;
     text(dl, vx, top + h * 0.5f - vpx * 0.56f, vpx, with_alpha(lit ? IM_COL32(18, 16, 10, 255) : IM_COL32(255, 255, 255, 255), da), value.c_str(), 0, !lit);
   }
 }
@@ -1003,8 +1014,8 @@ void draw_bars(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a) 
     const float l = right - w + an.x + slide, r = right + an.x - 16.0f * u + slide;
     const Row& row = rows[(size_t)index];
     const float label_w = text_width(h * 0.5f, row.label.c_str());
-    const std::string shown_value = fit(value_of(row), h * 0.5f * 0.84f, (r - l) - label_w - 84.0f * u);
-    draw_bar(dl, l, top, r, h, u, lit, row.label.c_str(), shown_value, row.enabled, ba, true);
+    const std::string shown_value = fit(value_of(row), h * 0.5f * 0.84f, (r - l) - label_w - 72.0f * u);
+    draw_bar(dl, l, top, r, h, u, lit, row.label.c_str(), shown_value, row.enabled, ba, false);
     if (lit) draw_ring(dl, ImVec2(r - 6.0f * u, top + h * 0.5f), u, t, ba);
     if (lit && (row.kind == Kind::Odds || row.kind == Kind::Percent || row.kind == Kind::Number || row.kind == Kind::Choice) && row.enabled) {
       // Left and right change it: small arrows either side of the value.
