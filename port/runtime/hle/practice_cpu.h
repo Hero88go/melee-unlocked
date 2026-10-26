@@ -25,6 +25,9 @@ void note_status(bool driving, int plan, uint32_t frame, int kind = -1);
 constexpr int kSlots = 3;
 bool slot(int index, MuPcConfig& out);
 void set_slot(int index, const MuPcConfig& c);
+// A habit ghost (practice_ghosts.h): the defaults with what that player's games measured in place.
+// False for an index past the list.
+bool ghost(int index, MuPcConfig& out);
 // The special moves' names for a character (FighterKind), for the attack rows; nullptr if unknown.
 const char* special_name(int kind, int which);   // which: 0 neutral, 1 side, 2 up, 3 down
 }  // namespace practice_cpu

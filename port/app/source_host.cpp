@@ -1549,14 +1549,20 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
           const int defense = replay_control::defense();
           if (defense == 3) return true;
           MuPcConfig cfg = practice_cpu::config();
-          if (defense != 2) {
-            mu_pc_preset(1, &cfg);   // stands still and only reacts to being hit: DI, SDI, techs, getups
-            if (defense == 1) {
-              for (auto& v : cfg.di_odds) v = 0;
-              cfg.di_odds[MU_PC_DI_NONE] = 100;
-              for (auto& v : cfg.tech_odds) v = 0;
-              cfg.tech_odds[MU_PC_TECH_MISS] = 100;
-            }
+          if (defense == 0) {
+            // Smart: every defensive option (shield, dodges, out of shield, DI and SDI, techs, getups,
+            // escaping after hitstun, the ledge), and it never starts an attack in neutral.
+            mu_pc_defaults(&cfg);
+            cfg.aggression = 0;
+            for (auto& v : cfg.move_odds) v = 0;
+            cfg.move_odds[MU_PC_MOVE_STAND] = 100;
+            cfg.sdi_amount = 2;
+          } else if (defense == 1) {
+            mu_pc_preset(1, &cfg);   // stands still and only reacts to being hit
+            for (auto& v : cfg.di_odds) v = 0;
+            cfg.di_odds[MU_PC_DI_NONE] = 100;
+            for (auto& v : cfg.tech_odds) v = 0;
+            cfg.tech_odds[MU_PC_TECH_MISS] = 100;
           }
           cfg.enabled = 1;
           const auto* bytes = reinterpret_cast<const uint8_t*>(&cfg);

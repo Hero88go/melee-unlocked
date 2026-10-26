@@ -17,6 +17,7 @@
 
 // The decision model, compiled here for the Static Recomp (and for the menu's presets).
 #include "../abi/mu_practice_cpu_impl.inl"
+#include "practice_ghosts.h"
 
 namespace practice_cpu {
 namespace {
@@ -29,6 +30,10 @@ MuPcConfig g_config = [] {
     mu_pc_preset(std::atoi(v), &c);
     c.enabled = 1;
   }
+  // MELEE_TEST_PRACTICE_GHOST=<index> (tests only): on, playing that habit ghost.
+  if (const char* v = std::getenv("MELEE_TEST_PRACTICE_GHOST")) {
+    if (practice_cpu::ghost(std::atoi(v), c)) c.enabled = 1;
+  }
   return c;
 }();
 std::atomic<uint32_t> g_generation{1};
@@ -36,6 +41,37 @@ std::atomic<bool> g_driving{false};
 std::atomic<int> g_plan{0};
 std::atomic<uint32_t> g_status_frame{0};
 }  // namespace
+
+static_assert(MU_PC_MOVE_COUNT == 10 && MU_PC_ATK_COUNT == 20 && MU_PC_DEF_COUNT == 6 && MU_PC_TECH_COUNT == 4 &&
+                  MU_PC_GETUP_COUNT == 5 && MU_PC_LEDGE_COUNT == 6 && MU_PC_OOS_COUNT == 10 && MU_PC_DI_COUNT == 6 &&
+                  MU_PC_AFTER_COUNT == 5,
+              "practice_ghosts.h (tools/ghost_build.py) is made for these option counts");
+
+bool ghost(int index, MuPcConfig& c) {
+  if (index < 0 || index >= (int)(sizeof practice_ghosts::kGhosts / sizeof practice_ghosts::kGhosts[0])) return false;
+  const practice_ghosts::Ghost& gh = practice_ghosts::kGhosts[index];
+  const uint8_t tools = c.tools;
+  mu_pc_defaults(&c);
+  const auto take = [](uint8_t* dst, const uint8_t* src, int n) {   // a group with no data keeps the default
+    int sum = 0;
+    for (int i = 0; i < n; ++i) sum += src[i];
+    if (sum) std::memcpy(dst, src, (size_t)n);
+  };
+  take(c.move_odds, gh.move, MU_PC_MOVE_COUNT);
+  take(c.attack_odds, gh.attack, MU_PC_ATK_COUNT);
+  take(c.defend_odds, gh.defend, MU_PC_DEF_COUNT);
+  take(c.oos_odds, gh.oos, MU_PC_OOS_COUNT);
+  take(c.di_odds, gh.di, MU_PC_DI_COUNT);
+  take(c.tech_odds, gh.tech, MU_PC_TECH_COUNT);
+  take(c.getup_odds, gh.getup, MU_PC_GETUP_COUNT);
+  take(c.ledge_odds, gh.ledge, MU_PC_LEDGE_COUNT);
+  take(c.after_odds, gh.after, MU_PC_AFTER_COUNT);
+  if (gh.l_cancel) c.l_cancel = gh.l_cancel;
+  if (gh.aggression) c.aggression = gh.aggression;
+  c.tools = tools;
+  c.preset = 0;
+  return true;
+}
 
 MuPcConfig config() { std::lock_guard<std::mutex> lk(g_mutex); return g_config; }
 void set_config(const MuPcConfig& c) {

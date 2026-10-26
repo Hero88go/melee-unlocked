@@ -13,6 +13,7 @@
 
 #include "host.h"
 #include "practice_cpu.h"
+#include "practice_ghosts.h"
 #include "slippi_online.h"
 
 #include <imgui.h>
@@ -227,7 +228,7 @@ const char* const kPresetAbout[] = {
 
 enum class Page : int {
   Root, Queue, Code, Blocked, Cpu, Moves, Attacks, Defense, Oos, Hit, Di, Tech, Getup, After, Ledge, Tools,
-  Presets, Setups, Replay, Count
+  Presets, Setups, Replay, ReplaySettings, Count
 };
 const char* page_title(Page p) {
   switch (p) {
@@ -250,6 +251,7 @@ const char* page_title(Page p) {
     case Page::Presets: return "Presets";
     case Page::Setups: return "Your setups";
     case Page::Replay: return "Replay";
+    case Page::ReplaySettings: return "Settings";
     default: return "";
   }
 }
@@ -262,7 +264,7 @@ bool cpu_page(Page p) {
 
 enum class Kind { Page, Toggle, Percent, Number, Choice, Odds, Flag, Action, Info };
 enum Action : int {
-  kActNone, kActUnranked, kActCancel, kActWindow, kActDefaults, kActPreset = 100, kActLoad = 200, kActSave = 300,
+  kActNone, kActUnranked, kActCancel, kActWindow, kActDefaults, kActPreset = 100, kActLoad = 200, kActSave = 300, kActGhost = 400,
   kActBlocked = 400, kActTeams = 500
 };
 
@@ -540,6 +542,15 @@ std::vector<Row> rows_for(Page p) {
       for (int i = 0; i < mu_pc_preset_count(); ++i)
         rows.push_back(action_row(mu_pc_preset_name(i), kActPreset + i, c.preset == i + 1 ? "In use" : "",
                                   kPresetAbout[i % (int)(sizeof kPresetAbout / sizeof kPresetAbout[0])]));
+      for (int i = 0; i < (int)(sizeof practice_ghosts::kGhosts / sizeof practice_ghosts::kGhosts[0]); ++i) {
+        // Ghosts: the odds measured from a player's own games (port/runtime/hle/practice_ghosts.h).
+        const practice_ghosts::Ghost& gh = practice_ghosts::kGhosts[i];
+        char about[200];
+        std::snprintf(about, sizeof about,
+                      "%s's habits from %d of their %s games: attacks, specials, movement, shielding, techs, "
+                      "getups, ledge options, L-cancels. Pick %s for the CPU.", gh.name, gh.games, gh.character, gh.character);
+        rows.push_back(action_row((std::string(gh.name) + " ghost").c_str(), kActGhost + i, gh.character, about));
+      }
       rows.push_back(page_row("Your setups", Page::Setups, "", "Save what is set now; load it any time."));
       rows.push_back(action_row("Defaults", kActDefaults, "", "Every CPU setting back to the start."));
       break;
@@ -661,6 +672,13 @@ void press(Page p, Row& r, Result& out) {
     return;
   }
   if (r.action >= kActPreset && r.action < kActPreset + 100) { apply_preset(r.action - kActPreset); return; }
+  if (r.action >= kActGhost && r.action < kActGhost + 100) {
+    if (practice_cpu::ghost(r.action - kActGhost, g_c)) {
+      g_c.enabled = 1;
+      g_c_changed = true;
+    }
+    return;
+  }
   if (r.action >= kActLoad && r.action < kActLoad + 100) {
     MuPcConfig saved;
     if (practice_cpu::slot(r.action - kActLoad, saved)) {
@@ -1216,7 +1234,7 @@ void draw_rails(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
     return;
   }
   // The replay menu puts what the lit row means on the right rail (the coach's advice is long).
-  const bool replay = lv.page == Page::Replay;
+  const bool replay = lv.page == Page::Replay || lv.page == Page::ReplaySettings;
   // Left: the page. Header with the path back, then the rows as cards (scrolling with the cursor).
   std::string title = page_title(lv.page);
   rail_header(dl, cx_l, y0 + 16 * u, cw_l, u, title.c_str(), a);
@@ -1289,7 +1307,7 @@ void draw_slots(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
   const float sw = 206 * u, sh = 172 * u, gap = 12 * u;
   const float total = per * sw + (per - 1) * gap;
   // The replay viewer's bar sits along the bottom while paused: the replay menu's slots stand above it.
-  const bool replay = lv.page == Page::Replay;
+  const bool replay = lv.page == Page::Replay || lv.page == Page::ReplaySettings;
   const float x0 = f.game_x0 + (gw - total) * 0.5f, y0 = f.game_y1 - sh - (replay ? 84 : 14) * u;
   // Dim the bottom of the picture so the slots read.
   dl->AddRectFilledMultiColor(ImVec2(f.game_x0, y0 - 80 * u), ImVec2(f.game_x1, f.game_y1), with_alpha(IM_COL32(0, 0, 0, 0), a),
@@ -1474,8 +1492,9 @@ ReplaySettings& replay_settings() {
   return settings;
 }
 
-// The replay viewer's settings (Start while watching): a short page in the practice menu's look.
-ReplayPanel replay_panel(int style, const Frame& f) {
+// The replay viewer's panel (Start while watching), in the practice menu's look: take over, the tips,
+// and the settings one page down.
+ReplayPanel replay_panel(int style, const Frame& f, const ReplayPanelIn& panel_in) {
   static const char* const kLengths[] = {"Combo drops", "10 seconds", "20 seconds", "No limit"};
   static const char* const kDefense[] = {"Smart", "No DI or techs", "Practice CPU", "Recording"};
   ReplayPanel out;
@@ -1487,44 +1506,75 @@ ReplayPanel replay_panel(int style, const Frame& f) {
   if (!f.open) { was_open = false; return out; }
   if (!was_open) { was_open = true; g_prev_buttons = 0xFFFF; g_page_changed_at = f.time; }
   ReplaySettings& rs = replay_settings();
-  enum { kBack = 700 };
+  enum { kBack = 700, kTake = 701, kTip = 800 };
+  static Level panel_level{Page::Replay, 0, 0};
+  static Level settings_level{Page::ReplaySettings, 0, 0};
+  static bool in_settings = false;
   std::vector<Row> rows;
+  if (!in_settings) {
+    rows.push_back(action_row("Take over", kTake, panel_in.player,
+                              "Play this player yourself from here; the other player does what they did. Left and right change the player."));
+    for (size_t i = 0; i < panel_in.tips.size(); ++i) {
+      const ReplayTip& t = panel_in.tips[i];
+      rows.push_back(action_row((t.when + "  " + t.what).c_str(), kTip + (int)i, t.value,
+                                t.advice.empty() ? "Jump a second before it." : t.advice.c_str()));
+    }
+    rows.push_back(page_row("Settings", Page::ReplaySettings, "", "When a try ends, the opponent once you change things, and the tips."));
+    rows.push_back(action_row("Back to the replay", kBack, "", "Close this and keep watching."));
+  } else {
   rows.push_back(choice_row("Try ends", &rs.length, kLengths, 4,
                             "When a try goes back to where you took over: when your combo drops, after a set time, or never. Start retries any time."));
   rows.push_back(choice_row("Opponent", &rs.defense, kDefense, 4,
-                            "Once you change what happened, the opponent stops following the replay. Smart: DI and techs. "
+                            "Once you change what happened, the opponent stops following the replay. Smart: defends with everything, never attacks first. "
                             "Practice CPU: your Practice menu settings. Recording: keeps its recorded inputs."));
   rows.push_back(toggle_row("Tips", &rs.tips, "A banner at each moment worth practicing, and the markers along the timeline."));
-  rows.push_back(action_row("Back to the replay", kBack, "", "Close this and keep watching."));
-  static Level panel_level{Page::Replay, 0, 0};
-  panel_level.cursor = std::clamp(panel_level.cursor, 0, (int)rows.size() - 1);
+  }
+  Level& lv = in_settings ? settings_level : panel_level;
+  lv.cursor = std::clamp(lv.cursor, 0, (int)rows.size() - 1);
   const Input in = read_input(f);
   const bool horizontal = style == kSlots;
   const int count = (int)rows.size();
   const bool prev = horizontal ? in.left : in.up, next = horizontal ? in.right : in.down;
   const bool less = horizontal ? in.down : in.left, more = horizontal ? in.up : in.right;
-  if (prev) panel_level.cursor = (panel_level.cursor + count - 1) % count;
-  if (next) panel_level.cursor = (panel_level.cursor + 1) % count;
-  Row& lit = rows[(size_t)panel_level.cursor];
-  if (less) change(Page::Replay, lit, -1);
-  if (more) change(Page::Replay, lit, 1);
-  if ((in.a && lit.action == kBack) || in.b || in.start) out.close = true;
+  if (prev) lv.cursor = (lv.cursor + count - 1) % count;
+  if (next) lv.cursor = (lv.cursor + 1) % count;
+  Row& lit = rows[(size_t)lv.cursor];
+  if (in_settings) {
+    if (less) change(Page::ReplaySettings, lit, -1);
+    if (more) change(Page::ReplaySettings, lit, 1);
+    if (in.b) { in_settings = false; g_page_changed_at = f.time; }
+    if (in.start) { in_settings = false; out.close = true; }
+  } else {
+    if (lit.action == kTake && (less || more)) out.player_step = less ? -1 : 1;
+    if (in.a) {
+      if (lit.action == kTake) { out.take_over = true; out.close = true; }
+      else if (lit.action >= kTip) {
+        out.jump = panel_in.tips[(size_t)(lit.action - kTip)].frame;
+        out.close = true;
+      } else if (lit.kind == Kind::Page) {
+        in_settings = true;
+        settings_level.cursor = settings_level.top = 0;
+        g_page_changed_at = f.time;
+      } else if (lit.action == kBack) out.close = true;
+    }
+    if (in.b || in.start) out.close = true;
+  }
   // Draw with the practice menu's own drawers, on a stack holding just this page.
   std::vector<Level> saved;
   saved.swap(g_stack);
-  g_stack.push_back(panel_level);
+  g_stack.push_back(lv);
   const float a = ease((float)(f.time - g_page_changed_at) / 0.10f) * 0.25f + 0.75f;
   switch (style) {
     case kRails: draw_rails(dl, f, rows, a); break;
     case kSlots: draw_slots(dl, f, rows, a); break;
     case kStrip:
-      g_strip_replay = "Settings";
+      g_strip_replay = in_settings ? "Settings" : "Paused";
       draw_strip(dl, f, rows, a);
       g_strip_replay.clear();
       break;
     default: draw_bars(dl, f, rows, a); break;
   }
-  panel_level = g_stack.back();
+  lv = g_stack.back();
   g_stack.swap(saved);
   return out;
 }

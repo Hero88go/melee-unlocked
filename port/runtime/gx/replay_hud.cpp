@@ -236,15 +236,28 @@ void frame(int style, const practice_menu::Frame& f) {
   g.prev = held;
   refresh_moments(now);
 
-  // ---- the settings panel (Start while watching) ----
+  // ---- the panel (Start while watching): take over, this player's tips, the settings ----
   if (g.panel) {
     practice_menu::Frame pf = f;
     pf.open = true;
     pf.armed = true;
-    if (practice_menu::replay_panel(style, pf).close) {
+    practice_menu::ReplayPanelIn pin;
+    pin.player = replay_control::player_name(g.port);
+    for (const replay_coach::Moment& m : g.moments)
+      pin.tips.push_back({m.frame, replay_coach::clock(m.frame), m.what, m.value, m.advice});
+    const practice_menu::ReplayPanel out = practice_menu::replay_panel(style, pf, pin);
+    if (out.player_step) g.port = next_port(ports, g.port, out.player_step);
+    if (out.close) {
       g.panel = false;
       g.prev = 0xFFFF;   // the closing press is not a press for the layer
-      if (g.panel_paused && st.paused) replay_control::toggle_pause();
+      if (out.take_over) {
+        g.tries = 1;
+        replay_control::take_over(g.port);   // the takeover lets the game run
+      } else if (out.jump != INT32_MIN) {
+        replay_control::seek_to(out.jump - kLead);   // stays paused a second before the tip
+      } else if (g.panel_paused && st.paused) {
+        replay_control::toggle_pause();
+      }
     }
     return;
   }

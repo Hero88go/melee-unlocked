@@ -65,8 +65,23 @@ struct ReplaySettings {
   uint8_t tips = 1;            // tip banners and timeline markers
 };
 ReplaySettings& replay_settings();
-struct ReplayPanel { bool close = false; };
-ReplayPanel replay_panel(int style, const Frame& f);
+// Start while watching opens it: take over the player named (left and right change the player), the
+// player's tips in order (A jumps a second before one), and the settings one page down.
+struct ReplayTip {
+  int32_t frame = 0;
+  std::string when, what, value, advice;
+};
+struct ReplayPanelIn {
+  std::string player;          // "P1 Falco"
+  std::vector<ReplayTip> tips;
+};
+struct ReplayPanel {
+  bool close = false;          // back to the replay
+  bool take_over = false;      // take over `player`
+  int player_step = 0;         // -1 or 1: the previous or next player
+  int32_t jump = INT32_MIN;    // jump to this replay frame (the panel closes, the replay stays paused)
+};
+ReplayPanel replay_panel(int style, const Frame& f, const ReplayPanelIn& in);
 void show_error(const std::string& s);  // shown in the description box (a bad Direct code)
 
 // Melee's own text: the game's font, decoded from the player's disc at first use (falls back to
