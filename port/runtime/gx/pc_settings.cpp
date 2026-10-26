@@ -63,6 +63,7 @@ static constexpr bool kShowFasterSoundEffects = true;
 #include "training_overlay.h"
 #include "net_overlay.h"
 #include "replay_bar.h"
+#include "practice_menu.h"
 // Lab view is hidden until its silhouette packs can ship at a reasonable size: no F3 toggle, no
 // Overlays switch, never drawn (so the renderers never skip the scene for it). Code kept intact.
 constexpr bool kLabViewAvailable = false;
@@ -2110,6 +2111,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
       else if (key == "damagehudscale") options.damage_hud_scale = std::clamp(std::atoi(value.c_str()), 75, 175);
       else if (key == "playernicknames") options.show_player_nicknames = value == "1";
       else if (key == "matchmakinghint") options.matchmaking_hint = value != "0";
+      else if (key == "practicestyle") { const int n = std::atoi(value.c_str()); if (n >= 0 && n < practice_menu::kStyleCount) options.practice_style = n; }
       else if (key == "effects") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 2) options.effects_level = n; }
       else if (key == "playertags") options.player_tags_always = value == "1";
       else if (key == "lowpoly") { int n = std::atoi(value.c_str()); if (n >= 0 && n <= 1) options.low_poly_fighters = n; }
@@ -3684,6 +3686,57 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     return;
   }
 
+  // The Practice menu's looks (practice_menu.cpp). The window further down is the "Window" look, and
+  // what "All settings" opens until the menu is closed again.
+  static bool window_once = false;
+  if (!state.practice_open) window_once = false;
+  const int look = std::clamp(options.practice_style, 0, practice_menu::kStyleCount - 1);
+  if (look != practice_menu::kWindow && !window_once) {
+    static bool was_open = false;
+    if (state.practice_open && !was_open) practice_menu::opened();
+    was_open = state.practice_open;
+    practice_menu::Frame f;
+    f.display_w = screen.x;
+    f.display_h = screen.y;
+    const float aspect = presented_aspect(options, (int)screen.x, (int)screen.y, true);
+    float gw = screen.x, gh = gw / std::max(aspect, 0.1f);
+    if (gh > screen.y) { gh = screen.y; gw = gh * aspect; }
+    f.game_x0 = (screen.x - gw) * 0.5f;
+    f.game_y0 = (screen.y - gh) * 0.5f;
+    f.game_x1 = f.game_x0 + gw;
+    f.game_y1 = f.game_y0 + gh;
+    f.native_source = options.native_source;
+    f.open = state.practice_open;
+    f.armed = state.practice_pad_armed;
+    if (have_pad) { f.buttons = pad.button; f.stick_x = pad.stick_x; f.stick_y = pad.stick_y; }
+    f.hint = options.matchmaking_hint && practice.tab_available && practice.phase == Phase::Idle;
+    f.search.available = practice.tab_available;
+    f.search.can_start = practice.can_start;
+    f.search.searching = practice.phase == Phase::Searching;
+    f.search.mode = slippi::native_practice::match_mode_name(practice.mode);
+    f.search.elapsed = slippi::native_practice::format_search_duration(practice.search_ticks);
+    f.search.state = matchmaking_state_text(practice.matchmaking_state);
+    f.search.opponent = practice.opponent;
+    f.search.code = practice.connect_code;
+    f.time = ImGui::GetTime();
+    const practice_menu::Result r = practice_menu::frame(look, f);
+    if (r.changed) { state.dirty = true; apply_practice_tools(options); }
+    const auto close_menu = [&state]() { state.practice_open = false; state.practice_release_capture = true; };
+    if (r.start_unranked && practice.can_start) { slippi::native_practice::submit_start_unranked(); close_menu(); }
+    if (r.start_direct) {
+      std::string code, error;
+      if (!practice.can_start) practice_menu::show_error("Search from Training or an event match.");
+      else if (slippi::native_practice::normalize_direct_code(r.direct_code, &code, &error)) {
+        slippi::native_practice::submit_start_direct(code);
+        close_menu();
+      } else practice_menu::show_error(error);
+    }
+    if (r.cancel_search) slippi::native_practice::submit_cancel();
+    if (r.open_window) window_once = true;
+    if (r.close) close_menu();
+    if (!window_once) return;
+  }
+
   if (practice.phase == Phase::Searching && !state.practice_open) {
     practice_card_begin("##native_search_status", ImVec2(screen.x - 12, screen.y - 12), ImVec2(1, 1), false);
     char title[96];
@@ -3932,7 +3985,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nstockhudscale " << options.stock_hud_scale
        << "\ndamagehudscale " << options.damage_hud_scale
        << "\nplayernicknames " << (options.show_player_nicknames ? 1 : 0)
-       << "\nmatchmakinghint " << (options.matchmaking_hint ? 1 : 0)
+       << "\nmatchmakinghint " << (options.matchmaking_hint ? 1 : 0) << "\npracticestyle " << options.practice_style
        << "\ninputoverlay " << options.input_overlay << "\ninputoverlayports " << options.input_overlay_ports
        << "\nlabview " << options.lab_view << "\nlabskipscene " << options.lab_skip_scene
        << "\ninputoverlayhideborder " << options.input_overlay_hide_border
@@ -8773,6 +8826,17 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
 #ifndef MELEE_NO_SLIPPI   // no matchmaking panel in the build without that layer
     changed |= settings_toggle("Show the \"Matchmaking: Tab\" reminder", &options.matchmaking_hint);
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tab still opens matchmaking with it off.");
+    {
+      static const char* const looks[practice_menu::kStyleCount] = {
+          practice_menu::style_name(0), practice_menu::style_name(1), practice_menu::style_name(2),
+          practice_menu::style_name(3), practice_menu::style_name(4)};
+      int look = std::clamp(options.practice_style, 0, practice_menu::kStyleCount - 1);
+      ImGui::SetNextItemWidth(260.0f);
+      if (settings_combo("Practice menu look", &look, looks, practice_menu::kStyleCount)) { options.practice_style = look; changed = true; }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("How the Practice menu (Start + Up + Z in Training) looks. All of them work with the controller;\n"
+                          "the window also works with the mouse.");
+    }
 #endif
     settings_toggle("Performance overlay", &options.performance_overlay);
     changed |= settings_toggle("FPS counter (top left)", &options.show_fps);

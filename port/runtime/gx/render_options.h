@@ -98,6 +98,9 @@ struct RenderOptions {
   bool show_player_nicknames = false; // screen-space names anchored to Melee's player tags
   // The small "Matchmaking: Tab" reminder. Matchmaking remains available when it is hidden.
   bool matchmaking_hint = true;
+  // The Practice menu's look in Training (practice_menu.h: 0 Main Menu bars, 1 side rails, 2 slots,
+  // 3 strip, 4 the full window).
+  int practice_style = 0;
   bool input_overlay = false;     // on-screen controller display, for streaming
   // Lab view: draw matches as Slippi Lab draws replays (flat silhouettes on a plain stage) over
   // the game image. Display only, so it is safe online. F3 toggles it. See lab_view.h.

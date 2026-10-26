@@ -453,6 +453,19 @@ bool disc_music_paths(std::vector<std::string>* paths) {
   return fst && disc_fst::music_paths(*fst, paths);
 }
 uint32_t disc_fst_max_size() { return g_fst_max; }
+bool dol_data_read(uint32_t address, void* dst, uint32_t size) {
+  const auto be = [](const uint8_t* p) { return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3]; };
+  uint8_t at[4], header[0xD8];
+  if (!disc_read(0x420, at, 4)) return false;
+  const uint32_t dol = be(at);
+  if (!disc_read(dol, header, sizeof header)) return false;
+  for (int i = 0; i < 18; ++i) {
+    const uint32_t offset = be(header + i * 4), start = be(header + 0x48 + i * 4), length = be(header + 0x90 + i * 4);
+    if (length && address >= start && (uint64_t)address + size <= (uint64_t)start + length)
+      return disc_read(dol + offset + (address - start), dst, size);
+  }
+  return false;
+}
 
 // ---------------- boot ----------------
 static uint32_t disc_dol_offset() {

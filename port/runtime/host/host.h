@@ -122,6 +122,9 @@ struct DiscFile { uint32_t offset, size; };
 bool disc_open(const std::string& path);
 void disc_prefetch_wait();  // finish background file-cache warming before starting simulation/audio
 bool disc_read(uint32_t offset, void* dst, uint32_t size);
+// Bytes of the disc's main.dol by console address (data the game keeps in its executable, such as
+// the text font). False when the address is not in the DOL's sections.
+bool dol_data_read(uint32_t address, void* dst, uint32_t size);
 // File-relative read used by DVDFileInfo calls. Cosmetic replacements are resolved by the file's
 // original FST start plus this relative offset; absolute disc reads always use disc_read above.
 bool disc_read_file(uint32_t vanilla_file_start, uint32_t file_offset, void* dst, uint32_t size);
