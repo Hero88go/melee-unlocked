@@ -57,39 +57,26 @@ struct Result {
 Result frame(int style, const Frame& f);
 void opened();                          // the menu was just opened
 
-// The replay viewer's menu (practice from a replay): shown while the viewer is paused, in the same
-// look. Take over a player, retry the attempt, or go back to watching.
-struct Replay {
-  uint32_t ports = 0;          // bit per player in the replay
-  std::string names[4];        // "P1 Falco"
-  int live_port = -1;          // the port being played live, -1 while watching
-  // The newest frame data readout (host/replay_coach.h), shown top left; alpha 0 hides it.
-  struct Note {
-    std::string head, value, detail, advice;
-    int sign = 0;              // the value's color: -1 minus, 0 even, 1 plus
-    float alpha = 0.0f;
-  } note;
-  // The coach's moments (host/replay_coach.h), per port, once the replay was analyzed.
-  struct Moment {
-    int32_t frame = 0;
-    std::string when, what, value, advice;
-  };
-  std::vector<Moment> moments[4];
-  bool analyzed = false, analyzing = false;
-  float progress = 0.0f;
+// The replay viewer's settings (Start while watching a replay, gx/replay_hud.h), in the same look.
+struct ReplaySettings {
+  uint8_t length = 0;          // a takeover's length: 0 until the combo drops, 1 ten seconds, 2 twenty, 3 no limit
+  uint8_t defense = 0;         // the other players once you change what happened: 0 smart, 1 no DI or tech,
+                               // 2 the Practice CPU's settings, 3 follow the recording
+  uint8_t tips = 1;            // tip banners and timeline markers
 };
-struct ReplayResult {
-  int take_over = -1;          // the port to take over
-  bool retry = false, stop = false, resume = false;
-  bool analyze = false;          // find the moments (the viewer's Analyze pass)
-  int32_t jump = INT32_MIN;     // jump to this replay frame and stay paused
-};
-ReplayResult replay_frame(int style, const Frame& f, const Replay& r);
+ReplaySettings& replay_settings();
+struct ReplayPanel { bool close = false; };
+ReplayPanel replay_panel(int style, const Frame& f);
 void show_error(const std::string& s);  // shown in the description box (a bad Direct code)
 
 // Melee's own text: the game's font, decoded from the player's disc at first use (falls back to
 // the PC font when the disc has none).
 float text_width(float px, const char* s);
+// A row of GameCube button glyphs and words, "A:Take over|X:Tip|S:Menu" (A B X Y Z L R, S Start,
+// D D-pad), centred on `cy`; returns the width (draw false only measures).
+float legend(ImDrawList* dl, float x, float cy, float u, const char* spec, float a = 1.0f, bool draw = true);
+// `s` broken into lines no wider than `width` in the game's font at `px`.
+std::vector<std::string> wrap_text(const std::string& s, float px, float width);
 void text(ImDrawList* dl, float x, float y, float px, uint32_t color, const char* s, float skew = 0.0f,
           bool shadow = true);
 

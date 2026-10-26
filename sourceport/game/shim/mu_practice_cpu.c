@@ -176,30 +176,42 @@ static int pc_allowed(void)
            !mu_replay_abi_active();
 }
 
+static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* out, int report);
+
 /* Nonzero when the practice CPU set this fighter's controller for the frame. */
 int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
 {
     Fighter* fp = fighter;
     const MuPcConfig* c;
-    HSD_GObj* opp_gobj = NULL;
     Fighter* opp = NULL;
-    MuPcView v;
-    MuPcInput in;
-    int slot, k, driven;
+    int k;
     if (fp == NULL || fp->is_sub_fighter || !ftCo_IsCpuControlled(fp) || !pc_allowed()) return 0;
     c = pc_settings();
     if (!c->enabled) return 0;
-    slot = fp->player_idx < 6 ? fp->player_idx : 0;
     for (k = 0; k < 4 && opp == NULL; k++) {   /* the first human player */
         HSD_GObj* g;
         if (k == fp->player_idx || Player_GetPlayerSlotType(k) != Gm_PKind_Human) continue;
         g = Player_GetEntity(k);
-        if (g != NULL && g->user_data != NULL) {
-            opp_gobj = g;
-            opp = g->user_data;
-        }
+        if (g != NULL && g->user_data != NULL) opp = g->user_data;
     }
-    (void) opp_gobj;
+    return pc_drive(fp, opp, c, out, 1);
+}
+
+/* The model for any fighter against a given opponent with given settings (replay takeover's
+ * defenders, shim/mu_replay_defend.c). Nonzero when it set the controller. */
+int mu_practice_cpu_drive_as(void* fighter, void* opponent, const MuPcConfig* c, MuLabInput* out)
+{
+    Fighter* fp = fighter;
+    if (fp == NULL || fp->is_sub_fighter || c == NULL || !c->enabled) return 0;
+    return pc_drive(fp, opponent, c, out, 0);
+}
+
+static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* out, int report)
+{
+    MuPcView v;
+    MuPcInput in;
+    int slot, driven;
+    slot = fp->player_idx < 6 ? fp->player_idx : 0;
     __builtin_memset(&v, 0, sizeof v);
     pc_read(fp, &v.cpu);
     pc_read(opp, &v.opp);
@@ -212,7 +224,7 @@ int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
         mu_pc_reset(&pc_state[slot], 0x9E3779B9u ^ ((mu_pc_u32) slot * 2654435761u));
     }
     driven = mu_pc_frame(c, &pc_state[slot], &v, &in);
-    {
+    if (report) {
         static unsigned char response[4096];   /* the host's minimum reply capacity */
         unsigned char payload[3];
         unsigned int got = 0;

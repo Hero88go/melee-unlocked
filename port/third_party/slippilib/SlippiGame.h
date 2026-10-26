@@ -67,6 +67,19 @@ namespace Slippi {
 
     uint8_t cstickXRaw;
     uint8_t cstickYRaw;
+
+    // The post-frame update (the frame's result): read for the replay coach. Fields a file's version
+    // does not carry keep their defaults.
+    bool hasPost = false;
+    uint16_t postAction = 0;
+    float postX = 0, postY = 0, postPercent = 0, postShield = 0;
+    uint8_t lastAttackLanded = 0, postLastHitBy = 6, postStocks = 0;
+    float actionFrame = 0;
+    uint8_t stateFlags[5] = {};
+    float hitstun = 0;          // "misc action state": hitstun frames left while in hitstun
+    uint8_t airborne = 0;
+    uint8_t lCancel = 0;        // 0 none, 1 in time, 2 missed
+    float hitlag = 0;           // frames of hitlag left (3.8.0+)
   } PlayerFrameData;
 
   typedef struct FrameData {

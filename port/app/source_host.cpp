@@ -75,6 +75,7 @@
 #include "net_trace.h"
 #include "replay_control.h"
 #include "replay_coach.h"
+#include "replay_scan.h"
 #include "mod_scan.h"
 #include "hackpack_source.h"
 #include "maker_source.h"
@@ -1303,6 +1304,7 @@ constexpr uint8_t CMD_SELFTEST_KEEP = 0xF0, CMD_SELFTEST_COMPARE = 0xF1;   // na
 constexpr uint8_t CMD_LAB_SAVE = 0xF2, CMD_LAB_LOAD = 0xF3, CMD_LAB_ADVANTAGE = 0xF4, CMD_CONTENT_MODE = 0xF5;
 constexpr uint8_t CMD_PRACTICE_CPU = 0xF6;   // the practice CPU's settings (port/runtime/hle/practice_cpu.h)
 constexpr uint8_t CMD_FRAME_EVENT = 0xE8;   // replay frame data for the coach (shim/mu_framedata.c, host/replay_coach.h)
+constexpr uint8_t CMD_REPLAY_DEFENSE = 0xE9;   // a takeover's opponents once the game leaves the replay (shim/mu_replay_defend.c)
 void apply_content_mode(int mode);
 constexpr int32_t kLabFrame = -1000000;
 // The replay viewer's controls (shim/mu_replay.c mu_replay_frame_begin, host/replay_control.h):
@@ -1541,6 +1543,26 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
         if (c == CMD_LAB_SAVE) { lab_save(); return true; }
         if (c == CMD_LAB_LOAD) { lab_load(); return true; }
         if (c == CMD_REPLAY_GATE && n == 5) { reply.push_back(replay_gate((int32_t)read_be32(p), p[4])); return true; }
+        if (c == CMD_REPLAY_DEFENSE) {
+          // The Opponent setting (gx/practice_menu.h): smart defense, no DI or techs, the Practice CPU's own
+          // settings, or nothing (follow the recording).
+          const int defense = replay_control::defense();
+          if (defense == 3) return true;
+          MuPcConfig cfg = practice_cpu::config();
+          if (defense != 2) {
+            mu_pc_preset(1, &cfg);   // stands still and only reacts to being hit: DI, SDI, techs, getups
+            if (defense == 1) {
+              for (auto& v : cfg.di_odds) v = 0;
+              cfg.di_odds[MU_PC_DI_NONE] = 100;
+              for (auto& v : cfg.tech_odds) v = 0;
+              cfg.tech_odds[MU_PC_TECH_MISS] = 100;
+            }
+          }
+          cfg.enabled = 1;
+          const auto* bytes = reinterpret_cast<const uint8_t*>(&cfg);
+          reply.assign(bytes, bytes + sizeof cfg);
+          return true;
+        }
         if (c == CMD_FRAME_EVENT) {
           replay_coach::Event e;
           if (replay_coach::parse(p, n, e)) {
@@ -3152,6 +3174,20 @@ bool set_replay(const char* path) {
   }
   g_replay_path = path;
   g_replay_game_start = read_replay_event(path, 0x36);
+  {
+    // The coach's tips from the file itself, before anything plays (host/replay_scan.h).
+    const double started = host::now_seconds();
+    const std::vector<replay_coach::Event> found = replay_scan::scan(*g_replay);
+    replay_coach::add_scanned(found);
+    host::log("replay: %zu frame data events read from the file (%.0f ms)", found.size(), (host::now_seconds() - started) * 1000.0);
+    if (std::getenv("MELEE_TEST_COACH_LOG")) {   // tests: the file's readings, to compare with the game's
+      for (const replay_coach::Event& e : found) {
+        if (e.kind != replay_coach::Kind::Shield && e.kind != replay_coach::Kind::Hit) continue;
+        const replay_coach::Readout r = replay_coach::readout(e);
+        host::log("scan: frame %d P%d %s %s %s (move %d)", e.frame, e.actor + 1, r.head.c_str(), r.value.c_str(), r.detail.c_str(), e.move);
+      }
+    }
+  }
   g_replay_game_end = read_replay_event(path, 0x39);
   if (g_replay_game_start.empty()) { host::log("replay: %s has no Game Start event", path); g_replay.reset(); return false; }
   Slippi::GameSettings* s = g_replay->GetSettings();

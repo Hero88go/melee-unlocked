@@ -44,6 +44,7 @@ const unsigned char* mu_replay_abi_game_info(unsigned int* seed);
 int mu_replay_abi_resync(void);
 int mu_replay_abi_live(int port);
 void mu_framedata_frame(Fighter* fp);
+int mu_replay_defend(Fighter* fp, const float* f, unsigned int action);
 void mu_framedata_landing(Fighter* fp, int status);
 int mu_replay_abi_ps_frozen_toggle(void);
 int mu_replay_abi_fetch(int frame);
@@ -659,6 +660,11 @@ void mu_replay_input(Fighter* fp)
         return;
     }
     mu_replay_abi_character(fp->player_idx, follower, f, &buttons, &action, &seed, raw);
+    /* Takeover: past where the live game left the recording, this player defends on its own. */
+    if (!follower && !resync && mu_replay_defend(fp, f, action)) {
+        emit_pre_frame(fp);
+        return;
+    }
     fp->input.lstick[0].x = f[0];
     fp->input.lstick[0].y = f[1];
     fp->input.cstick[0].x = f[2];

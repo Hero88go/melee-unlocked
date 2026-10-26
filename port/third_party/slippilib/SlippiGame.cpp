@@ -298,6 +298,30 @@ namespace Slippi {
     PlayerFrameData* p = isFollower ? &frame->followers[playerSlot] : &frame->players[playerSlot];
 
     p->internalCharacterId = readByte(data, idx, maxSize, 0);
+    {
+      // The frame's result (Slippi spec, post-frame update; offsets here are past the command byte).
+      int at = 0x07;
+      p->hasPost = true;
+      p->postAction = readHalf(data, at, maxSize, 0);
+      p->postX = readFloat(data, at, maxSize, 0);
+      p->postY = readFloat(data, at, maxSize, 0);
+      readFloat(data, at, maxSize, 0);   // facing
+      p->postPercent = readFloat(data, at, maxSize, 0);
+      p->postShield = readFloat(data, at, maxSize, 0);
+      p->lastAttackLanded = readByte(data, at, maxSize, 0);
+      readByte(data, at, maxSize, 0);    // combo count
+      p->postLastHitBy = readByte(data, at, maxSize, 6);
+      p->postStocks = readByte(data, at, maxSize, 0);
+      p->actionFrame = readFloat(data, at, maxSize, 0);
+      for (uint8_t& f : p->stateFlags) f = readByte(data, at, maxSize, 0);
+      p->hitstun = readFloat(data, at, maxSize, 0);
+      p->airborne = readByte(data, at, maxSize, 0);
+      readHalf(data, at, maxSize, 0);    // last ground
+      readByte(data, at, maxSize, 0);    // jumps left
+      p->lCancel = readByte(data, at, maxSize, 0);
+      at = 0x48;
+      p->hitlag = readFloat(data, at, maxSize, 0);
+    }
 
     // Check if a player started as sheik and update
     if (frameCount == GAME_FIRST_FRAME && p->internalCharacterId == GAME_SHEIK_INTERNAL_ID) {

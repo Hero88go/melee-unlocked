@@ -25,14 +25,21 @@ struct Event {
   int hitlag = 0;
   int actor_percent = 0, target_percent = 0;
   int actor_character = -1, target_character = -1;   // the game's internal fighter kind
+  bool from_file = false;     // read from the replay file (the recording), not measured by the game
 };
 
 // The game's 22-byte event (command 0xE8). False when it is not one.
 bool parse(const uint8_t* p, uint32_t n, Event& out);
 
-// Game thread: one more event. The same event seen again (after a jump back) is kept once.
+// Game thread: one more event. The same event seen again (after a jump back, or first read from the
+// file and then measured by the game) is kept once, the newest reading winning.
 void add(const Event& e);
+// The events read from the replay file at load (host/replay_scan.h): the tips before anything plays.
+void add_scanned(const std::vector<Event>& events);
 void clear();                       // a new replay
+// A takeover attempt starts again at `frame`: what the game measured from there on is dropped (the
+// recording's own events read from the file come back).
+void forget_from(int32_t frame);
 std::vector<Event> events();        // all so far, by frame
 // The newest hit or shield hit and how many seconds ago it came in; false when there is none.
 bool latest(Event& e, double& age_seconds);
@@ -60,6 +67,7 @@ struct Moment {
   int sign = 0;
   std::string advice;
   bool punished = false;            // the other player hit or grabbed them right after
+  enum Type { Unsafe, LCancel, Combo, Tech } type = Unsafe;   // the timeline marker's color
 };
 std::vector<Moment> moments(const std::vector<Event>& events, int player);
 // "1:23": a replay frame as match time (the match starts at frame 0).

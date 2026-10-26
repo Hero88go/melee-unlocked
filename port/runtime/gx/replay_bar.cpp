@@ -78,8 +78,10 @@ void draw(float width, float height, bool menu_open) {
     }
     return;
   }
-  const bool visible = !menu_open && (st.paused || st.seeking || mouse_recent ||
-                                      (st.last_input > 0.0 && now - st.last_input < kShowSeconds));
+  // With the controller layer up (gx/replay_hud.h), which has its own timeline and buttons, the bar
+  // comes up only for the mouse.
+  const bool visible = !menu_open && (mouse_recent || (!replay_control::pad_layer() &&
+                                      (st.paused || st.seeking || (st.last_input > 0.0 && now - st.last_input < kShowSeconds))));
   g_cursor.store(visible && mouse_recent, std::memory_order_relaxed);
   if (!visible) return;
 

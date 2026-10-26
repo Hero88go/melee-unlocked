@@ -76,7 +76,14 @@ Status status();
 // viewer's keys do nothing then).
 void toggle_pause();
 void seek_to(int32_t frame);
+void step_frame();               // paused: let one frame through
 void set_ui_busy(bool busy);
+// The controller layer (gx/replay_hud.h) reads the pads itself: Start no longer pauses here.
+void set_pad_layer(bool on);
+// The takeover's Opponent setting (gx/practice_menu.h ReplaySettings::defense), for the engine.
+void set_defense(int defense);
+int defense();
+bool pad_layer();
 
 // Takeover (practice from a replay, as in Tekken 8): from the frame it starts on, one port is played
 // live from the player's controller while every other port keeps the recording's inputs. The state
@@ -86,6 +93,8 @@ void take_over(int port);        // start (the game resumes); a port the replay 
 void retry_takeover();           // back to the takeover's frame, same port, again
 void stop_takeover();            // back to the takeover's frame, watching the recording
 int takeover_port();             // -1 while watching
+void set_live_start(bool held);  // input thread: Start on the live port (kept from the game)
+bool live_start_held();
 int32_t takeover_frame();        // kNoFrame while watching
 // Analyze (the coach's moments, host/replay_coach.h): the whole replay is run once unseen, from its
 // first frame to its end, so the game reports every hit, then the viewer comes back to where it was.

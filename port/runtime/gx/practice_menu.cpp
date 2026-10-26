@@ -227,7 +227,7 @@ const char* const kPresetAbout[] = {
 
 enum class Page : int {
   Root, Queue, Code, Blocked, Cpu, Moves, Attacks, Defense, Oos, Hit, Di, Tech, Getup, After, Ledge, Tools,
-  Presets, Setups, Replay, Moments, Count
+  Presets, Setups, Replay, Count
 };
 const char* page_title(Page p) {
   switch (p) {
@@ -250,7 +250,6 @@ const char* page_title(Page p) {
     case Page::Presets: return "Presets";
     case Page::Setups: return "Your setups";
     case Page::Replay: return "Replay";
-    case Page::Moments: return "Moments";
     default: return "";
   }
 }
@@ -787,17 +786,39 @@ void button_glyph(ImDrawList* dl, float x, float cy, float u, char which, float 
       dl->AddRectFilled(ImVec2(x, cy - t * 0.5f), ImVec2(x + s, cy + t * 0.5f), c, 2.0f * u);
       break;
     }
-    case 'Y': {
+    case 'X':
+    case 'Y': {   // the kidney buttons: light grey pills
+      const char label[2] = {which, 0};
       const float w = 24.0f * u, h = 18.0f * u;
       dl->AddRectFilled(ImVec2(x, cy - h * 0.5f), ImVec2(x + w, cy + h * 0.5f), with_alpha(IM_COL32(214, 216, 224, 255), a), h * 0.5f);
-      text(dl, x + w * 0.5f - text_width(11.0f * u, "Y") * 0.5f, cy - 6.0f * u, 11.0f * u, with_alpha(IM_COL32(40, 40, 46, 255), a), "Y", 0, false);
+      text(dl, x + w * 0.5f - text_width(11.0f * u, label) * 0.5f, cy - 6.0f * u, 11.0f * u, with_alpha(IM_COL32(40, 40, 46, 255), a), label, 0, false);
+      break;
+    }
+    case 'Z': {
+      const float w = 22.0f * u, h = 16.0f * u;
+      dl->AddRectFilled(ImVec2(x, cy - h * 0.5f), ImVec2(x + w, cy + h * 0.5f), with_alpha(IM_COL32(108, 72, 196, 255), a), 4.0f * u);
+      text(dl, x + w * 0.5f - text_width(11.0f * u, "Z") * 0.5f, cy - 6.0f * u, 11.0f * u, white, "Z", 0, false);
+      break;
+    }
+    case 'L':
+    case 'R': {   // the triggers
+      const char label[2] = {which, 0};
+      const float w = 22.0f * u, h = 16.0f * u;
+      dl->AddRectFilled(ImVec2(x, cy - h * 0.5f), ImVec2(x + w, cy + h * 0.5f), with_alpha(IM_COL32(150, 154, 168, 255), a), 4.0f * u);
+      text(dl, x + w * 0.5f - text_width(11.0f * u, label) * 0.5f, cy - 6.0f * u, 11.0f * u, white, label, 0, false);
       break;
     }
     default: break;
   }
 }
 float glyph_width(char which, float u) {
-  switch (which) { case 'A': return 24.0f * u; case 'B': return 19.0f * u; case 'S': return 30.0f * u; case 'D': return 22.0f * u; case 'Y': return 24.0f * u; default: return 0; }
+  switch (which) {
+    case 'A': case 'X': case 'Y': return 24.0f * u;
+    case 'B': return 19.0f * u;
+    case 'S': return 30.0f * u;
+    case 'D': case 'Z': case 'L': case 'R': return 22.0f * u;
+    default: return 0;
+  }
 }
 // "A:Pick B:Back ...": a row of button glyphs and words; returns the width.
 float hints(ImDrawList* dl, float x, float cy, float u, const char* spec, float a, bool draw = true) {
@@ -1195,7 +1216,7 @@ void draw_rails(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
     return;
   }
   // The replay menu puts what the lit row means on the right rail (the coach's advice is long).
-  const bool replay = lv.page == Page::Replay || lv.page == Page::Moments;
+  const bool replay = lv.page == Page::Replay;
   // Left: the page. Header with the path back, then the rows as cards (scrolling with the cursor).
   std::string title = page_title(lv.page);
   rail_header(dl, cx_l, y0 + 16 * u, cw_l, u, title.c_str(), a);
@@ -1224,8 +1245,8 @@ void draw_rails(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
   // Under the cards: what the lit one means, then the buttons.
   const Row* cur = rows.empty() ? nullptr : &rows[(size_t)lv.cursor];
   if (replay) {
-    hints(dl, cx_l, y1 - 26 * u, u * 0.82f, lv.page == Page::Moments ? "D:Move|A:Pick|B:Back" : "D:Move|A:Pick|B:Close", a);
-    rail_header(dl, cx_r, y0 + 16 * u, cw_r, u, lv.page == Page::Moments ? "Advice" : "About", a);
+    hints(dl, cx_l, y1 - 26 * u, u * 0.82f, "D:Move|A:Pick|B:Close", a);
+    rail_header(dl, cx_r, y0 + 16 * u, cw_r, u, "About", a);
     float ry = y0 + 64 * u;
     for (const std::string& line : wrap(about_now(cur), 16 * u, cw_r)) {
       text(dl, cx_r, ry, 16 * u, with_alpha(IM_COL32(220, 228, 250, 255), a), line.c_str(), 0, false);
@@ -1268,7 +1289,7 @@ void draw_slots(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
   const float sw = 206 * u, sh = 172 * u, gap = 12 * u;
   const float total = per * sw + (per - 1) * gap;
   // The replay viewer's bar sits along the bottom while paused: the replay menu's slots stand above it.
-  const bool replay = lv.page == Page::Replay || lv.page == Page::Moments;
+  const bool replay = lv.page == Page::Replay;
   const float x0 = f.game_x0 + (gw - total) * 0.5f, y0 = f.game_y1 - sh - (replay ? 84 : 14) * u;
   // Dim the bottom of the picture so the slots read.
   dl->AddRectFilledMultiColor(ImVec2(f.game_x0, y0 - 80 * u), ImVec2(f.game_x1, f.game_y1), with_alpha(IM_COL32(0, 0, 0, 0), a),
@@ -1431,6 +1452,11 @@ void draw_strip(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a)
 
 }  // namespace
 
+float legend(ImDrawList* dl, float x, float cy, float u, const char* spec, float a, bool draw) {
+  return hints(dl, x, cy, u, spec, a, draw);
+}
+std::vector<std::string> wrap_text(const std::string& s, float px, float width) { return wrap(s, px, width); }
+
 // ---------------------------------------------------------------------------------------------
 void opened() {
   if (g_stack.empty()) g_stack.push_back(Level{});
@@ -1443,143 +1469,62 @@ void opened() {
 
 void show_error(const std::string& s) { g_error = s; g_error_until = g_f.time + 4.0; }
 
-// The frame data readout: move and advantage on one line, what happened under it, then the advice.
-static void draw_note(ImDrawList* dl, const Frame& f, const Replay::Note& n, float x, float y, float u) {
-  if (n.alpha <= 0.0f || n.head.empty()) return;
-  const int a = (int)(255 * n.alpha);
-  const float hp = 24 * u, vp = 30 * u, sp = 16 * u;
-  const float head_w = text_width(hp, n.head.c_str()), value_w = text_width(vp, n.value.c_str());
-  float w = head_w + (n.value.empty() ? 0 : 14 * u + value_w);
-  w = std::max({w, text_width(sp, n.detail.c_str()), text_width(sp, n.advice.c_str())});
-  const float h = 40 * u + (n.detail.empty() ? 0 : 22 * u) + (n.advice.empty() ? 0 : 22 * u);
-  dl->AddRectFilledMultiColor(ImVec2(x - 14 * u, y - 8 * u), ImVec2(x + w + 40 * u, y + h + 6 * u),
-                              IM_COL32(0, 0, 0, a * 150 / 255), IM_COL32(0, 0, 0, 0), IM_COL32(0, 0, 0, 0),
-                              IM_COL32(0, 0, 0, a * 150 / 255));
-  text(dl, x, y + (vp - hp) * 0.6f, hp, IM_COL32(240, 240, 244, a), n.head.c_str());
-  if (!n.value.empty()) {
-    const ImU32 c = n.sign > 0 ? IM_COL32(110, 230, 120, a) : n.sign < 0 ? IM_COL32(255, 92, 80, a) : IM_COL32(240, 240, 244, a);
-    text(dl, x + head_w + 14 * u, y, vp, c, n.value.c_str());
-  }
-  float ly = y + 40 * u;
-  if (!n.detail.empty()) { text(dl, x, ly, sp, IM_COL32(205, 208, 220, a), n.detail.c_str()); ly += 22 * u; }
-  if (!n.advice.empty()) text(dl, x, ly, sp, IM_COL32(255, 222, 120, a), n.advice.c_str());
-  (void)f;
+ReplaySettings& replay_settings() {
+  static ReplaySettings settings;
+  return settings;
 }
 
-ReplayResult replay_frame(int style, const Frame& f, const Replay& r) {
-  ReplayResult out;
+// The replay viewer's settings (Start while watching): a short page in the practice menu's look.
+ReplayPanel replay_panel(int style, const Frame& f) {
+  static const char* const kLengths[] = {"Combo drops", "10 seconds", "20 seconds", "No limit"};
+  static const char* const kDefense[] = {"Smart", "No DI or techs", "Practice CPU", "Recording"};
+  ReplayPanel out;
   g_f = f;
   g_c = practice_cpu::config();
   ImDrawList* dl = ImGui::GetBackgroundDrawList();
   font_ready();
-  const float u = (f.game_y1 - f.game_y0) / 720.0f;
   static bool was_open = false;
-  // Top left while the menu is closed (the open menu's own descriptions take over).
-  if (!f.open) draw_note(dl, f, r.note, f.game_x0 + 34 * u, f.game_y0 + 28 * u, u);
-  if (!f.open) {
-    was_open = false;
-    if (r.live_port >= 0) {   // playing live: say who, and how to get the menu
-      const std::string s = "Playing " + r.names[r.live_port] + " live.  Start: menu";
-      text(dl, f.game_x1 - text_width(17 * u, s.c_str()) - 20 * u, f.game_y0 + 18 * u, 17 * u, IM_COL32(255, 230, 120, 240), s.c_str());
-    }
-    return out;
-  }
+  if (!f.open) { was_open = false; return out; }
   if (!was_open) { was_open = true; g_prev_buttons = 0xFFFF; g_page_changed_at = f.time; }
-  enum { kTake = 700, kRetry = 710, kStop = 711, kResume = 712, kAnalyze = 713, kMoments = 720, kMoment = 800 };
-  static Level replay_level{Page::Replay, 0, 0};
-  static Level moments_level{Page::Moments, 0, 0};
-  static int moments_of = -1;   // the port whose moments are listed, -1: the main list
-  {
-    // Tests: MELEE_TEST_REPLAY_MENU=<port> opens that port's moments once the replay is analyzed.
-    static int test_port = -2;
-    if (test_port == -2) { const char* v = std::getenv("MELEE_TEST_REPLAY_MENU"); test_port = v ? std::atoi(v) : -1; }
-    if (test_port >= 0 && r.analyzed && !r.analyzing) { moments_of = test_port; test_port = -1; }
-  }
-  if (r.live_port >= 0 || r.analyzing) moments_of = -1;
+  ReplaySettings& rs = replay_settings();
+  enum { kBack = 700 };
   std::vector<Row> rows;
-  if (r.analyzing) {
-    char pct[16];
-    std::snprintf(pct, sizeof pct, "%d%%", (int)(r.progress * 100.0f + 0.5f));
-    rows.push_back(action_row("Finding moments", kActNone, pct, "The replay runs through once, unseen. It comes back here when done."));
-  } else if (moments_of >= 0) {
-    for (size_t i = 0; i < r.moments[moments_of].size(); ++i) {
-      const Replay::Moment& m = r.moments[moments_of][i];
-      rows.push_back(action_row((m.when + "  " + m.what).c_str(), kMoment + (int)i, m.value,
-                                m.advice.empty() ? "Jump there, then take over to practice it." : m.advice.c_str()));
-    }
-    if (rows.empty()) rows.push_back(action_row("Nothing to practice", kActNone, "", "No unsafe hits, missed L-cancels or missed techs."));
-  } else {
-    if (r.live_port >= 0) {
-      rows.push_back(action_row("Retry", kRetry, "", "Back to the moment you took over, and try it again."));
-      rows.push_back(action_row("Keep playing", kResume, r.names[r.live_port], "Carry on from here."));
-    }
-    for (int p = 0; p < 4; ++p) {
-      if (!(r.ports >> p & 1) || p == r.live_port) continue;
-      rows.push_back(action_row(("Take over P" + std::to_string(p + 1)).c_str(), kTake + p, r.names[p].substr(3),
-                                "Play this player yourself from here. The other player does what they did in the replay."));
-    }
-    if (r.live_port < 0) {
-      if (!r.analyzed) {
-        rows.push_back(action_row("Find moments", kAnalyze, "", "Run through the replay once to list the moments worth practicing."));
-      } else {
-        for (int p = 0; p < 4; ++p) {
-          if (!(r.ports >> p & 1)) continue;
-          rows.push_back(action_row(("Moments for P" + std::to_string(p + 1)).c_str(), kMoments + p,
-                                    std::to_string(r.moments[p].size()),
-                                    "Unsafe hits on shield, missed L-cancels and missed techs, with advice."));
-        }
-      }
-    }
-    if (r.live_port >= 0) rows.push_back(action_row("Watch the replay", kStop, "", "Back to the moment you took over, watching the recording."));
-    else rows.push_back(action_row("Keep watching", kResume, "", "Carry on watching the replay."));
-  }
-  Level& lv = moments_of >= 0 ? moments_level : replay_level;
-  lv.cursor = std::clamp(lv.cursor, 0, (int)rows.size() - 1);
+  rows.push_back(choice_row("Try ends", &rs.length, kLengths, 4,
+                            "When a try goes back to where you took over: when your combo drops, after a set time, or never. Start retries any time."));
+  rows.push_back(choice_row("Opponent", &rs.defense, kDefense, 4,
+                            "Once you change what happened, the opponent stops following the replay. Smart: DI and techs. "
+                            "Practice CPU: your Practice menu settings. Recording: keeps its recorded inputs."));
+  rows.push_back(toggle_row("Tips", &rs.tips, "A banner at each moment worth practicing, and the markers along the timeline."));
+  rows.push_back(action_row("Back to the replay", kBack, "", "Close this and keep watching."));
+  static Level panel_level{Page::Replay, 0, 0};
+  panel_level.cursor = std::clamp(panel_level.cursor, 0, (int)rows.size() - 1);
   const Input in = read_input(f);
   const bool horizontal = style == kSlots;
   const int count = (int)rows.size();
-  if (!r.analyzing) {
-    if ((horizontal ? in.left : in.up)) lv.cursor = (lv.cursor + count - 1) % count;
-    if ((horizontal ? in.right : in.down)) lv.cursor = (lv.cursor + 1) % count;
-    if (in.a) {
-      const int act = rows[(size_t)lv.cursor].action;
-      if (act >= kTake && act < kTake + 4) out.take_over = act - kTake;
-      else if (act == kRetry) out.retry = true;
-      else if (act == kStop) out.stop = true;
-      else if (act == kAnalyze) out.analyze = true;
-      else if (act >= kMoments && act < kMoments + 4) {
-        moments_of = act - kMoments;
-        moments_level.cursor = moments_level.top = 0;
-        g_page_changed_at = f.time;
-      } else if (act >= kMoment && moments_of >= 0) {
-        // A second before the moment, paused, with the main list on Take over.
-        out.jump = r.moments[moments_of][(size_t)(act - kMoment)].frame - 60;
-        replay_level.cursor = 0;
-        moments_of = -1;
-        g_page_changed_at = f.time;
-      } else if (act == kResume) out.resume = true;
-    }
-    if (in.b) {
-      if (moments_of >= 0) { moments_of = -1; g_page_changed_at = f.time; }
-      else out.resume = true;
-    }
-  }
+  const bool prev = horizontal ? in.left : in.up, next = horizontal ? in.right : in.down;
+  const bool less = horizontal ? in.down : in.left, more = horizontal ? in.up : in.right;
+  if (prev) panel_level.cursor = (panel_level.cursor + count - 1) % count;
+  if (next) panel_level.cursor = (panel_level.cursor + 1) % count;
+  Row& lit = rows[(size_t)panel_level.cursor];
+  if (less) change(Page::Replay, lit, -1);
+  if (more) change(Page::Replay, lit, 1);
+  if ((in.a && lit.action == kBack) || in.b || in.start) out.close = true;
   // Draw with the practice menu's own drawers, on a stack holding just this page.
   std::vector<Level> saved;
   saved.swap(g_stack);
-  g_stack.push_back(moments_of >= 0 ? moments_level : replay_level);
+  g_stack.push_back(panel_level);
   const float a = ease((float)(f.time - g_page_changed_at) / 0.10f) * 0.25f + 0.75f;
   switch (style) {
     case kRails: draw_rails(dl, f, rows, a); break;
     case kSlots: draw_slots(dl, f, rows, a); break;
     case kStrip:
-      g_strip_replay = r.live_port >= 0 ? "Playing " + r.names[r.live_port] + " live" : r.analyzing ? "Finding moments" : "Watching";
+      g_strip_replay = "Settings";
       draw_strip(dl, f, rows, a);
       g_strip_replay.clear();
       break;
     default: draw_bars(dl, f, rows, a); break;
   }
-  (moments_of >= 0 ? moments_level : replay_level) = g_stack.back();
+  panel_level = g_stack.back();
   g_stack.swap(saved);
   return out;
 }

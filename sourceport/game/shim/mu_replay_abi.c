@@ -118,6 +118,11 @@ int mu_replay_abi_character(int port, int follower, float* f, unsigned int* butt
 }
 
 /* Replay takeover: the player controls this port from the last fetched frame on. */
+unsigned int mu_replay_abi_live_ports(void)
+{
+    return frame_fetched ? frame_data.live_ports : 0u;
+}
+
 int mu_replay_abi_live(int port)
 {
     return frame_fetched && port >= 0 && port < 4 && ((frame_data.live_ports >> port) & 1u) != 0;

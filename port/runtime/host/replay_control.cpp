@@ -44,6 +44,8 @@ std::atomic<int> g_take_port{-1};
 std::atomic<int32_t> g_take_frame{kNoFrame};
 std::atomic<int> g_take_request{-2};    // -2 none, else the port to take over
 std::atomic<int> g_take_action{0};      // 1 retry, 2 back to watching
+std::atomic<bool> g_pad_layer{false}, g_req_step{false}, g_live_start{false};
+std::atomic<int> g_defense{0};
 // Analyze: 1 back to the first frame, 2 through to the end unseen, 3 back where the player was.
 std::atomic<bool> g_an_request{false}, g_an_done{false};
 std::atomic<int> g_an_phase{0};
@@ -305,7 +307,7 @@ void poll_controls(int32_t frame, bool waiting) {
   if (host::window_ui_pads(pads)) {
     for (const host::PadState& p : pads) {
       if (p.err != 0) continue;
-      if ((p.button & kPadStart) && !(p.button & kPadZ)) start = true;   // Z + Start opens the settings
+      if ((p.button & kPadStart) && !(p.button & kPadZ) && !g_pad_layer.load()) start = true;   // Z + Start opens the settings
       // R fast-forwards, except while a port is played live (R is its shield then).
       if (((p.button & kPadR) || p.trig_r > 150) && g_take_port.load() < 0) trigger = true;
     }
@@ -324,6 +326,7 @@ void poll_controls(int32_t frame, bool waiting) {
   const bool paused = g.paused.load();
   const int32_t jump = k.shift ? kLongJumpFrames : kJumpFrames;
   const bool step_key = k.right || k.period, step_was = was.right || was.period;
+  if (g_req_step.exchange(false) && paused) { g.step_pending = 1; note_input(); }
   if (paused) {
     // Right or period: one frame; held, it repeats.
     if (step_key && !step_was) {
@@ -721,6 +724,13 @@ Status status() {
 
 void toggle_pause() { g.req_toggle.fetch_add(1); }
 void seek_to(int32_t frame) { g.req_seek.store(frame); }
+void step_frame() { g_req_step.store(true); }
+void set_live_start(bool held) { g_live_start.store(held, std::memory_order_relaxed); }
+bool live_start_held() { return g_live_start.load(std::memory_order_relaxed); }
+void set_pad_layer(bool on) { g_pad_layer.store(on); }
+void set_defense(int d) { g_defense.store(d, std::memory_order_relaxed); }
+int defense() { return g_defense.load(std::memory_order_relaxed); }
+bool pad_layer() { return g_pad_layer.load(std::memory_order_relaxed); }
 void set_ui_busy(bool busy) { g.ui_busy.store(busy, std::memory_order_relaxed); }
 
 }  // namespace replay_control

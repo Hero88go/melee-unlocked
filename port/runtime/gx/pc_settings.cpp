@@ -65,6 +65,7 @@ static constexpr bool kShowFasterSoundEffects = true;
 #include "replay_bar.h"
 #include "replay_control.h"
 #include "replay_coach.h"
+#include "replay_hud.h"
 #include "practice_menu.h"
 // Lab view is hidden until its silhouette packs can ship at a reasonable size: no F3 toggle, no
 // Overlays switch, never drawn (so the renderers never skip the scene for it). Code kept intact.
@@ -3913,10 +3914,8 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
   ImGui::End();
 }
 
-// The replay viewer's practice menu (practice_menu::replay_frame): while the viewer is paused, take
-// over a player, retry, or go back to watching; while a player is played live, a line saying so.
+// The replay viewer's controller layer (gx/replay_hud.h): take over a player, jump between tips, retry.
 static void draw_replay_practice(RenderOptions& options, const host::PadState& pad, bool have_pad) {
-  const replay_control::Status st = replay_control::status();
   const ImVec2 screen = ImGui::GetIO().DisplaySize;
   practice_menu::Frame f;
   f.display_w = screen.x;
@@ -3928,47 +3927,11 @@ static void draw_replay_practice(RenderOptions& options, const host::PadState& p
   f.game_y0 = (screen.y - gh) * 0.5f;
   f.game_x1 = f.game_x0 + gw;
   f.game_y1 = f.game_y0 + gh;
-  const bool analyzing = replay_control::analyzing();
-  f.open = (st.paused && !st.seeking) || analyzing;
   f.armed = true;
-  if (have_pad) { f.buttons = pad.button; f.stick_x = pad.stick_x; f.stick_y = pad.stick_y; }
+  f.buttons = have_pad ? pad.button : 0;
+  if (have_pad) { f.stick_x = pad.stick_x; f.stick_y = pad.stick_y; }
   f.time = ImGui::GetTime();
-  practice_menu::Replay r;
-  r.ports = replay_control::player_ports();
-  for (int i = 0; i < 4; ++i) r.names[i] = replay_control::player_name(i);
-  r.live_port = replay_control::takeover_port();
-  r.analyzing = analyzing;
-  r.progress = replay_control::analyze_progress();
-  r.analyzed = replay_control::analyzed();
-  if (r.analyzed && f.open) {
-    const std::vector<replay_coach::Event> all = replay_coach::events();
-    for (int p = 0; p < 4; ++p) {
-      if (!(r.ports >> p & 1)) continue;
-      for (const replay_coach::Moment& m : replay_coach::moments(all, p))
-        r.moments[p].push_back({m.frame, replay_coach::clock(m.frame), m.what, m.value, m.advice});
-    }
-  }
-  {
-    replay_coach::Event ev;
-    double age = 0.0;
-    if (replay_coach::latest(ev, age) && (age < 5.0 || f.open)) {
-      const replay_coach::Readout rd = replay_coach::readout(ev);
-      r.note.head = rd.head;
-      r.note.value = rd.value;
-      r.note.detail = rd.detail;
-      r.note.advice = replay_coach::advice(ev);
-      r.note.sign = rd.sign;
-      r.note.alpha = f.open ? 1.0f : std::clamp((float)(5.0 - age) / 0.6f, 0.0f, 1.0f);
-    }
-  }
-  const int look = std::clamp(options.practice_style, 0, practice_menu::kStyleCount - 1);
-  const practice_menu::ReplayResult out = practice_menu::replay_frame(look, f, r);
-  if (out.take_over >= 0) replay_control::take_over(out.take_over);
-  if (out.retry) replay_control::retry_takeover();
-  if (out.stop) replay_control::stop_takeover();
-  if (out.resume) replay_control::toggle_pause();
-  if (out.analyze) replay_control::analyze();
-  if (out.jump != INT32_MIN) replay_control::seek_to(out.jump);
+  replay_hud::frame(std::clamp(options.practice_style, 0, practice_menu::kStyleCount - 1), f);
 }
 
 // The settings file. Written by the panel after a change, and at once when the game changes a

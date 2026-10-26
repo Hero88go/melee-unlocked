@@ -13,6 +13,7 @@ namespace {
 
 std::mutex g_mutex;
 std::map<uint64_t, Event> g_events;   // by frame, then kind and players
+std::vector<Event> g_scanned;         // the file's events, as read at load
 Event g_latest;
 bool g_have_latest = false;
 std::chrono::steady_clock::time_point g_latest_at;
@@ -59,6 +60,16 @@ void add(const Event& e) {
   // grab, a shield break), so it is not kept.
   if (e.kind == Kind::Shield && e.advantage < -40) return;
   std::lock_guard<std::mutex> lock(g_mutex);
+  // The same moment within two frames (the file and the game place some events a frame apart).
+  Event probe = e;
+  probe.frame = e.frame - 2;
+  probe.kind = (Kind)0;
+  probe.actor = probe.target = 0;
+  for (auto it = g_events.lower_bound(key(probe)); it != g_events.end() && it->second.frame <= e.frame + 2;) {
+    const Event& o = it->second;
+    if (o.kind == e.kind && o.actor == e.actor && o.target == e.target) it = g_events.erase(it);
+    else ++it;
+  }
   g_events[key(e)] = e;
   if (e.kind == Kind::Hit || e.kind == Kind::Shield) {
     g_latest = e;
@@ -67,9 +78,31 @@ void add(const Event& e) {
   }
 }
 
+void add_scanned(const std::vector<Event>& events) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  for (Event e : events) {
+    if (e.kind == Kind::Shield && e.advantage < -40) continue;
+    e.from_file = true;
+    g_scanned.push_back(e);
+    g_events.emplace(key(e), e);
+  }
+}
+
+void forget_from(int32_t frame) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  for (auto it = g_events.begin(); it != g_events.end();) {
+    if (it->second.frame >= frame) it = g_events.erase(it);
+    else ++it;
+  }
+  for (const Event& e : g_scanned)
+    if (e.frame >= frame) g_events.emplace(key(e), e);
+  g_have_latest = false;
+}
+
 void clear() {
   std::lock_guard<std::mutex> lock(g_mutex);
   g_events.clear();
+  g_scanned.clear();
   g_have_latest = false;
 }
 
@@ -170,6 +203,11 @@ std::string advice(const Event& e) {
     if (e.lcancel == 2) return "L-cancel it: press L, R or Z just before you land. It halves the landing lag.";
     // Hitting later in the fall gains a frame each, while the hitbox is still out to do it.
     const int gain = e.to_land > 1 ? (e.late >= 0 ? std::min(e.to_land - 1, e.late) : e.to_land - 1) : 0;
+    if (e.to_land > 1 && e.late < 0) {
+      // Read from the file, which does not say how long the hitbox stayed out: no number promised.
+      return e.tilt > 30 ? "Hit lower on the shield, later in your fall: each frame later is a frame better.  Their shield was tilted up, which meets aerials early."
+                         : "Hit lower on the shield, later in your fall: each frame later is a frame better.";
+    }
     if (gain > 0 && e.advantage + gain >= 0) {
       const int best = e.advantage + gain;
       std::snprintf(b, sizeof b, "Hit lower on the shield, later in your fall: up to %s.%s", signed_value(best).c_str(),
@@ -228,6 +266,7 @@ std::vector<Moment> moments(const std::vector<Event>& events, int player) {
       if (!followed) {
         char b[160];
         m.what = "Dropped: " + move_name(e.move);
+        m.type = Moment::Combo;
         std::snprintf(b, sizeof b, "You could act %d frames before them and nothing followed. Practice the follow-up from here.",
                       e.advantage);
         m.advice = b;
@@ -235,8 +274,10 @@ std::vector<Moment> moments(const std::vector<Event>& events, int player) {
       }
     } else if (e.kind == Kind::Landing && e.lcancel == 2 && e.frame - last_shield > 60) {
       m.what = "No L-cancel: " + move_name(e.move);
+      m.type = Moment::LCancel;
       out.push_back(m);
     } else if (e.kind == Kind::Tech && !e.advantage) {
+      m.type = Moment::Tech;
       out.push_back(m);
     }
   }

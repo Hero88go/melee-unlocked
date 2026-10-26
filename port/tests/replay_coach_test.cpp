@@ -46,7 +46,7 @@ int main() {
   Event e;
 
   // A Falco dair on shield, L-cancelled, 4 frames before landing, -3: hit lower for up to 0.
-  event_bytes(b, 812, 2, 0, 1, -3, 69, 1, 4, 0);
+  event_bytes(b, 812, 2, 0, 1, -3, 69, 1, 4, 0, 10);
   CHECK(parse(b, 22, e));
   CHECK(e.frame == 812 && e.kind == Kind::Shield && e.actor == 0 && e.target == 1 && e.advantage == -3);
   CHECK(e.move == 69 && e.lcancel == 1 && e.to_land == 4 && e.actor_character == 22);
@@ -71,8 +71,10 @@ int main() {
   event_bytes(b, 812, 2, 0, 1, -3, 69, 1, 4, 0, 0);
   CHECK(parse(b, 22, e));
   CHECK(contains(advice(e), "space it"));
+  // Read from the file (hitbox time unknown): no number promised.
   event_bytes(b, 812, 2, 0, 1, -3, 69, 1, 4, 0);
-  CHECK(parse(b, 22, e));
+  CHECK(parse(b, 22, e) && e.late == -1);
+  CHECK(contains(advice(e), "each frame later is a frame better") && !contains(advice(e), "up to"));
 
   // The same with the shield tilted up says so.
   e.tilt = 60;
@@ -131,6 +133,25 @@ int main() {
   CHECK(latest(last, age) && last.frame == 812 && age < 5.0);
   clear();
   CHECK(events().empty() && !latest(last, age));
+
+  // Read from the file at load, then measured by the game a frame later: one event, the game's.
+  clear();
+  {
+    Event file_e, game_e;
+    event_bytes(b, 700, 2, 0, 1, -6, 69, 1, 3, 0);
+    parse(b, 22, file_e);
+    add_scanned({file_e});
+    event_bytes(b, 701, 2, 0, 1, -5, 69, 1, 3, 0, 1);
+    parse(b, 22, game_e);
+    add(game_e);
+    const auto merged = events();
+    CHECK(merged.size() == 1 && merged[0].advantage == -5 && merged[0].late == 1 && !merged[0].from_file);
+    // A retry from frame 650 drops the game's reading and brings the file's back.
+    forget_from(650);
+    const auto again = events();
+    CHECK(again.size() == 1 && again[0].advantage == -6 && again[0].from_file);
+  }
+  clear();
 
   // Moments for P1: the dair on shield that got grabbed, a plus one (not a moment), a missed
   // L-cancel far from any shield hit, a missed tech; P2's own events are not P1's moments.

@@ -1269,9 +1269,14 @@ static void read_devices(PadState out[4], InputDebugSnapshot& debug, bool side_e
 // (a replay of P2 played from a controller in port 1).
 static void route_takeover(PadState out[4]) {
   const int port = replay_control::takeover_port();
-  if (port < 0 || port > 3 || out[port].err == 0) return;
-  for (int i = 0; i < 4; ++i)
-    if (i != port && out[i].err == 0) { out[port] = out[i]; return; }
+  if (port < 0 || port > 3) return;
+  if (out[port].err != 0) {
+    for (int i = 0; i < 4; ++i)
+      if (i != port && out[i].err == 0) { out[port] = out[i]; break; }
+  }
+  // Start retries the attempt (gx/replay_hud.h): it is the viewer's, not the match's pause.
+  replay_control::set_live_start((out[port].button & 0x1000) != 0);
+  out[port].button &= (uint16_t)~0x1000u;
 }
 
 void input_poll(PadState out[4]) {
