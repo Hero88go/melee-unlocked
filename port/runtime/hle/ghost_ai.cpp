@@ -42,11 +42,14 @@ struct Slot {
   bool live = false;
   MuGhostAct last_act{};
   bool prev_valid = false;
+  bool fresh = true;   // the memory was just cleared (self-play records start a sequence here)
   std::mt19937 rng{0x5EED};
 };
 
 std::mutex g_mutex;
 Model g_model;
+Model g_model_p1;    // tests: MELEE_GHOST_AI_FILE_P1 gives port 1 another network (old against new)
+bool g_has_p1 = false;
 int g_loaded = 0;   // 0 not tried, 1 loaded, -1 missing or bad
 bool g_enabled = false;
 Slot g_slots[4];
@@ -61,14 +64,13 @@ std::string model_path() {
   return dir + "ghost_ai.bin";
 }
 
-bool load() {
-  FILE* f = std::fopen(model_path().c_str(), "rb");
-  if (!f) { host::log("ghost ai: %s not found", model_path().c_str()); return false; }
+bool load_file(const std::string& path, Model& m) {
+  FILE* f = std::fopen(path.c_str(), "rb");
+  if (!f) { host::log("ghost ai: %s not found", path.c_str()); return false; }
   char magic[4] = {};
   uint32_t version = 0, dims[12] = {};
   bool ok = std::fread(magic, 1, 4, f) == 4 && std::memcmp(magic, "MUGA", 4) == 0 && std::fread(&version, 4, 1, f) == 1 &&
             version == MU_GHOST_VERSION && std::fread(dims, 4, 12, f) == 12;
-  Model& m = g_model;
   if (ok) {
     m.cont = dims[0]; m.n_states = dims[1]; m.e_state = dims[2]; m.n_chars = dims[3]; m.e_char = dims[4]; m.n_stages = dims[5];
     m.e_stage = dims[6]; m.n_pros = dims[7]; m.e_pro = dims[8]; m.h_in = dims[9]; m.h_rnn = dims[10]; m.h_out = dims[11];
@@ -100,8 +102,14 @@ bool load() {
     read(m.stick_mean, (size_t)kStick * 2);
   }
   std::fclose(f);
-  host::log("ghost ai: %s %s (%u pros)", model_path().c_str(), ok ? "loaded" : "unreadable", m.n_pros);
+  host::log("ghost ai: %s %s (%u pros)", path.c_str(), ok ? "loaded" : "unreadable", m.n_pros);
   return ok;
+}
+
+bool load() {
+  if (!load_file(model_path(), g_model)) return false;
+  if (const char* p1 = std::getenv("MELEE_GHOST_AI_FILE_P1")) g_has_p1 = load_file(p1, g_model_p1);
+  return true;
 }
 
 bool ready() {
@@ -159,7 +167,7 @@ bool available() {
 bool act(const MuGhostObs& o, MuGhostAct& out) {
   std::lock_guard<std::mutex> lk(g_mutex);
   if (!ready() || o.version != MU_GHOST_VERSION || o.slot >= 4 || o.pro >= g_model.n_pros) return false;
-  const Model& m = g_model;
+  const Model& m = (g_has_p1 && o.slot == 0) ? g_model_p1 : g_model;
   Slot& s = g_slots[o.slot];
   // Asked twice in one frame (a fighter's input can be read more than once): the same answer, and the
   // network does not step again. Stepping again looked like a gap and wiped its memory every frame.
@@ -172,6 +180,7 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   // A new match, a restart, a savestate or a gap: the memory of the match starts over.
   if (o.reset || !s.live || o.frame != s.last_frame + 1) {
     s.h.assign(m.h_rnn, 0.f);
+    s.fresh = true;
     std::memset(s.prev, 0, sizeof s.prev);
     s.rng.seed(0x5EED ^ (o.frame * 2654435761u) ^ o.slot);
   }
@@ -239,6 +248,8 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   for (float& v : a) v = std::max(v, 0.f);
   affine(m.w_ih.data(), m.b_ih.data(), a.data(), 3 * H, I, gi.data());
   affine(m.w_hh.data(), m.b_hh.data(), s.h.data(), 3 * H, H, gh.data());
+  static std::vector<float> h_before;
+  h_before = s.h;
   for (int i = 0; i < H; ++i) {
     const float r = sigmoid(gi[i] + gh[i]);
     const float z = sigmoid(gi[H + i] + gh[H + i]);
@@ -256,7 +267,9 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
 
   // How sure it plays: below 1 it keeps to what the pro most likely held (fewer stray inputs).
   // MELEE_GHOST_TEMP (tests) sets it to compare.
-  static const float temp = [] { const char* v = std::getenv("MELEE_GHOST_TEMP"); return v ? (float)std::atof(v) : kTemperature; }();
+  static const float temp_all = [] { const char* v = std::getenv("MELEE_GHOST_TEMP"); return v ? (float)std::atof(v) : kTemperature; }();
+  static const float temp_p1 = [] { const char* v = std::getenv("MELEE_GHOST_TEMP_P1"); return v ? (float)std::atof(v) : -1.f; }();
+  const float temp = (o.slot == 0 && temp_p1 > 0) ? temp_p1 : temp_all;
   const int stick = sample(s.rng, ls, kStick, temp);
   const int cstick = sample(s.rng, lc, kCStick, temp);
   std::memset(&out, 0, sizeof out);
@@ -272,6 +285,64 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   }
   if (pressed[4] != 0.f) out.r = 1.f;
 
+  // Self-play (MELEE_GHOST_ROLLOUT=<folder>, tests and training only): each frame what it saw, what it
+  // chose and how likely that was, for ghost-ai/selfplay.py. The memory is written every 64 frames.
+  static const char* rollout = std::getenv("MELEE_GHOST_ROLLOUT");
+  if (rollout && *rollout) {
+    struct Rec {
+      float cont[55];
+      uint8_t flags[10];
+      int16_t cat[6];
+      uint8_t stick, cstick, btn, reset;
+      float logp, self_pct, opp_pct;
+      uint8_t self_dead, opp_dead, has_h, pad;
+      uint32_t frame;
+    };
+    static FILE* rec_f[4] = {};
+    static FILE* h_f[4] = {};
+    static uint32_t rec_n[4] = {};
+    if (!rec_f[o.slot]) {
+      char path[1024];
+      std::snprintf(path, sizeof path, "%s/slot%d.rec", rollout, o.slot);
+      rec_f[o.slot] = std::fopen(path, "wb");
+      std::snprintf(path, sizeof path, "%s/slot%d.h", rollout, o.slot);
+      h_f[o.slot] = std::fopen(path, "wb");
+    }
+    const auto logsoftmax = [&](const float* l, int n, int k) {
+      float mx = l[0];
+      for (int i = 1; i < n; ++i) mx = std::max(mx, l[i]);
+      double sum = 0;
+      for (int i = 0; i < n; ++i) sum += std::exp((l[i] - mx) / temp);
+      return (float)((l[k] - mx) / temp - std::log(sum));
+    };
+    Rec r{};
+    std::memcpy(r.cont, x.data(), sizeof r.cont);
+    std::memcpy(r.flags, o.self.flags, 5);
+    std::memcpy(r.flags + 5, o.opp.flags, 5);
+    r.cat[0] = (int16_t)std::clamp((int)o.self.motion, 0, (int)m.n_states - 1);
+    r.cat[1] = (int16_t)std::clamp((int)o.opp.motion, 0, (int)m.n_states - 1);
+    r.cat[2] = o.self.kind; r.cat[3] = o.opp.kind; r.cat[4] = (int16_t)stage; r.cat[5] = o.pro;
+    r.stick = (uint8_t)stick; r.cstick = (uint8_t)cstick;
+    float lp = logsoftmax(ls, kStick, stick) + logsoftmax(lc, kCStick, cstick);
+    for (int b = 0; b < kBtn; ++b) {
+      if (pressed[b] != 0.f) r.btn |= (uint8_t)(1u << b);
+      const float pr = sigmoid(lb[b] / temp);
+      lp += std::log(std::max(1e-6f, pressed[b] != 0.f ? pr : 1.f - pr));
+    }
+    r.logp = lp;
+    r.reset = (uint8_t)(rec_n[o.slot] == 0 || s.fresh);
+    r.self_pct = o.self.num[3]; r.opp_pct = o.opp.num[3];
+    r.self_dead = o.self.motion <= 10; r.opp_dead = o.opp.motion <= 10;
+    r.frame = o.frame;
+    r.has_h = (uint8_t)(rec_n[o.slot] % 64 == 0 || r.reset);
+    if (r.has_h && h_f[o.slot]) {
+      std::fwrite(&rec_n[o.slot], 4, 1, h_f[o.slot]);
+      std::fwrite(h_before.data(), sizeof(float), h_before.size(), h_f[o.slot]);
+    }
+    std::fwrite(&r, sizeof r, 1, rec_f[o.slot]);
+    if (++rec_n[o.slot] % 600 == 0) { std::fflush(rec_f[o.slot]); if (h_f[o.slot]) std::fflush(h_f[o.slot]); }
+  }
+
   // Its cost, once a minute of play (the frame budget is 16.7 ms; this runs on the game's thread).
   static double spent = 0;
   static int calls = 0;
@@ -282,6 +353,7 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
     calls = 0;
   }
   s.last_act = out;
+  s.fresh = false;
   s.prev_valid = true;
   // What it held, as a replay records it (the game's dead zone applied), for the next frame.
   std::memmove(s.prev[1], s.prev[0], sizeof s.prev[0]);
