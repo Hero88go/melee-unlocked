@@ -5039,9 +5039,10 @@ static size_t stage_extent_locked(const std::string& target, const std::vector<F
 // Empty when nothing qualifies or nothing differs.
 static std::vector<uint8_t> look_fighter_tables(const std::vector<uint8_t>& clean, const std::vector<uint8_t>& pack) {
   if (clean.size() != pack.size() || clean.size() < 0x20) return {};
-  const uint32_t data_size = be32(clean.data() + 4), relocs = be32(clean.data() + 8), roots = be32(clean.data() + 12);
+  const uint32_t data_size = be32(clean.data() + 4), relocs = be32(clean.data() + 8), roots = be32(clean.data() + 12),
+                 refs = be32(clean.data() + 16);
   const uint64_t tables = 0x20ull + data_size;
-  if (tables + 4ull * relocs + 8ull * roots > clean.size() ||
+  if (tables + 4ull * relocs + 8ull * (roots + (uint64_t)refs) > clean.size() ||
       !std::equal(clean.begin() + (ptrdiff_t)tables, clean.end(), pack.begin() + (ptrdiff_t)tables) ||
       !std::equal(clean.begin(), clean.begin() + 0x20, pack.begin()))
     return {};
@@ -5055,7 +5056,9 @@ static std::vector<uint8_t> look_fighter_tables(const std::vector<uint8_t>& clea
   std::vector<uint32_t> starts{data_size};
   for (const auto& p : pointers) starts.push_back(p.second);
   uint32_t root = UINT32_MAX;
-  const uint64_t names = tables + 4ull * relocs + 8ull * roots;
+  // The names follow the root and the reference entries (Link's, Young Link's, the Ice Climbers' and
+  // Kirby's files have references: without them in the offset no ftData root was found there).
+  const uint64_t names = tables + 4ull * relocs + 8ull * (roots + (uint64_t)refs);
   for (uint32_t i = 0; i < roots; ++i) {
     const uint8_t* entry = clean.data() + tables + 4ull * relocs + 8ull * i;
     const uint64_t name = names + be32(entry + 4);
