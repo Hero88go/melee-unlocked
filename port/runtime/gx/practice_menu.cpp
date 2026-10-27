@@ -554,10 +554,12 @@ std::vector<Row> rows_for(Page p) {
     case Page::Ghosts:
       for (int i = 0; i < (int)(sizeof practice_ghosts::kGhosts / sizeof practice_ghosts::kGhosts[0]); ++i) {
         const practice_ghosts::Ghost& gh = practice_ghosts::kGhosts[i];
-        char about[220];
+        char about[220], games[16];
+        if (gh.games >= 1000) std::snprintf(games, sizeof games, "%d,%03d", gh.games / 1000, gh.games % 1000);
+        else std::snprintf(games, sizeof games, "%d", gh.games);
         std::snprintf(about, sizeof about,
-                      "%s's habits from %d of their games: attacks, movement, shielding, techs, getups, ledge "
-                      "options. The CPU becomes %s and Training starts again on this stage.", gh.name, gh.games, gh.character);
+                      "%s's habits from %s of their games: attacks, movement, shielding, techs, getups, ledge "
+                      "options. The CPU becomes %s and Training starts again on this stage.", gh.name, games, gh.character);
         rows.push_back(action_row(gh.name, kActGhost + i, gh.character, about));
       }
       break;
@@ -970,7 +972,8 @@ void draw_title(ImDrawList* dl, float x, float y, float u, const char* title, fl
   }
 }
 
-void draw_description(ImDrawList* dl, float x, float y, float w, float u, const std::string& s, float a) {
+// Returns the box's height.
+float draw_description(ImDrawList* dl, float x, float y, float w, float u, const std::string& s, float a) {
   float px = 20.0f * u;
   std::vector<std::string> lines = wrap(s, px, w - 24.0f * u);
   if (lines.size() > 2) { px = 17.0f * u; lines = wrap(s, px, w - 24.0f * u); }
@@ -983,6 +986,7 @@ void draw_description(ImDrawList* dl, float x, float y, float w, float u, const 
     text(dl, x + (w - text_width(px, line.c_str())) * 0.5f, ty, px, with_alpha(IM_COL32(255, 255, 255, 255), a), line.c_str());
     ty += px * 1.05f;
   }
+  return h;
 }
 
 // The code keyboard in the gold look (and, recolored, in the blue looks).
@@ -1114,26 +1118,28 @@ void draw_bars(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a) 
   const Row* cur = count ? &rows[(size_t)lv.cursor] : nullptr;
   const float dx = right - w - 36.0f * u, dw = w + 36.0f * u;
   const float dy = block_top + (shown - 1) * pitch + h + 22.0f * u;
-  draw_description(dl, dx, dy, dw, u, about_now(cur), a);
+  const float dh = draw_description(dl, dx, dy, dw, u, about_now(cur), a);
   const bool edits = cur && (cur->kind == Kind::Odds || cur->kind == Kind::Percent || cur->kind == Kind::Number || cur->kind == Kind::Choice);
   const char* spec = edits ? "D:Change|B:Back|S:Close" : (g_stack.size() > 1 ? "A:Pick|B:Back|S:Close" : "A:Pick|S:Close");
-  // The buttons sit on the title's line, right-aligned, clear of the damage display.
+  // The buttons sit under the description, right-aligned: on the title's line a long title met them,
+  // and the Training damage display sits there too.
   const float hw = hints(dl, 0, 0, u * 0.9f, spec, a, false);
-  hints(dl, right - hw + 4.0f * u, block_top - 52.0f * u + 16.0f * u, u * 0.9f, spec, a * 0.92f);
+  hints(dl, dx + dw - hw, dy + dh + 18.0f * u, u * 0.9f, spec, a * 0.92f);
   (void)dx; (void)dy;
 }
 
 // After an online session, back in Training: the question, centred near the top, in every look.
 void draw_offer(ImDrawList* dl, const Frame& f) {
   if (f.search.offer.empty()) return;
-  const float u = (f.game_y1 - f.game_y0) / 720.0f;
+  // Sized like the closed search bar, centred between the Training logo and its damage display.
+  const float u = (f.game_y1 - f.game_y0) / 720.0f * 0.82f;
   const float pulse = 0.8f + 0.2f * std::sin((float)f.time * 3.0f);
-  const float w = std::min(f.game_x1 - f.game_x0 - 40 * u, text_width(24 * u, f.search.offer.c_str()) + 80 * u);
-  const float left = (f.game_x0 + f.game_x1 - w) * 0.5f, top = f.game_y0 + 90 * u, h = 54 * u;
+  const float w = text_width(25 * u, f.search.offer.c_str()) + 110 * u;
+  const float left = (f.game_x0 + f.game_x1 - w) * 0.5f, top = f.game_y0 + 170 * u, h = 50 * u;
   draw_bar(dl, left, top, left + w, h, u, true, f.search.offer.c_str(), "", true, pulse, false);
-  const char* spec = "D:Up  Search again|D:Down  Keep practicing";
+  const char* spec = "D:Up  Search|D:Down  Keep training";
   const float hw = hints(dl, 0, 0, u, spec, 1.0f, false);
-  hints(dl, (f.game_x0 + f.game_x1 - hw) * 0.5f, top + h + 10 * u, u, spec, 1.0f);
+  hints(dl, (f.game_x0 + f.game_x1 - hw) * 0.5f, top + h + 8 * u, u, spec, 1.0f);
 }
 
 // While closed, the gold look keeps the search on screen as one lit bar at the top right.

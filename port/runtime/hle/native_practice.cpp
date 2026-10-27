@@ -531,7 +531,7 @@ void publish_snapshot() {
   out.connect_code = g_connect_code;
   out.opponent = g_opponent;
   if (g_offer_shown && g_offer_mode != MatchMode::None)
-    out.offer = g_offer_reason + "  Search " + match_mode_name(g_offer_mode) + " again?";
+    out.offer = std::string("Search ") + match_mode_name(g_offer_mode) + " again?";
   out.detail = g_lifecycle.error();
   switch (out.phase) {
     case Phase::Idle: out.status = out.in_practice ? "Practice" : "Ready"; break;
@@ -581,7 +581,7 @@ void enter_training_after_session(MatchMode mode, int test_character = -1) {
     std::string error;
     if (!normalize_direct_code(slippi::online::direct_code_for_practice(), &g_offer_code, &error)) g_offer_mode = MatchMode::None;
   }
-  g_offer_reason = "The online session is over.";
+  g_offer_reason.clear();
   g_offer_shown = false;
   g_enter_training = picked;
   g_enter_port = g_practice.controller_port;
@@ -926,10 +926,12 @@ void apply_pads(host::PadState* pads) {
   if (g_offer_shown) {
     static uint16_t held = 0xFFFF;   // nothing held when the prompt appears counts as a press
     host::PadState& p = pads[g_practice.controller_port & 3];
-    const uint16_t now = p.err == 0 ? (uint16_t)(p.button & (kUp | kDown)) : 0;
+    // Up or Down on its own: Start + Up + Z (the Practice panel) and other combinations pass through.
+    const bool alone = p.err == 0 && (p.button & (uint16_t)~(kUp | kDown)) == 0;
+    const uint16_t now = alone ? (uint16_t)(p.button & (kUp | kDown)) : 0;
     const uint16_t fresh = (uint16_t)(now & ~held);
-    held = now;
-    p.button &= (uint16_t)~(kUp | kDown);   // the prompt's buttons never reach the game
+    held = p.err == 0 ? (uint16_t)(p.button & (kUp | kDown)) : 0;
+    if (alone) p.button &= (uint16_t)~(kUp | kDown);   // the prompt's buttons never reach the game
     if (fresh & kUp) {
       const MatchMode mode = g_offer_mode;
       g_offer_shown = false;
