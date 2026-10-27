@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#include "host.h"
 #include "replay_hud.h"
 
 #include "practice_menu.h"
@@ -319,6 +320,8 @@ void frame(int style, const practice_menu::Frame& f) {
     if (over && g.ended_at == 0.0 && !st.paused) {
       g.ended_at = now;
       capture_result(live, g.live_frame, st.frame);
+      host::log("replay: try %d ends at frame %d (%d hits), back to frame %d", g.tries + 1, st.frame, combo.hits,
+                g.live_frame);
       if (!st.paused) replay_control::toggle_pause();
     }
     if (g.ended_at > 0.0 && now - g.ended_at >= kResultSeconds) {
