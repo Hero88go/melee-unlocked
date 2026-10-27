@@ -899,7 +899,7 @@ void tick() {
 }
 
 
-void apply_pads(host::PadState pads[4]) {
+void apply_pads(host::PadState* pads) {
   constexpr uint16_t kDown = 0x0004, kUp = 0x0008, kA = 0x0100, kStart = 0x1000;
   if (g_enter_training) {
     const uint8_t major = current_major(), minor = current_minor();

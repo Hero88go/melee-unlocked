@@ -2,12 +2,13 @@
 // tick() touches Slippi networking or guest scene state, and tick() runs on the simulation thread.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
-#include "host.h"
 
 #include "native_practice_model.h"
 
 #include <cstdint>
 #include <string>
+
+namespace host { struct PadState; }
 
 namespace slippi::native_practice {
 
@@ -47,7 +48,7 @@ void submit_acknowledge_failure();
 void tick();
 // Called with the freshly polled pads, before the game sees them (both engines): presses through
 // Training's character and stage select after an online session, and takes the requeue prompt's D-pad.
-void apply_pads(host::PadState pads[4]);
+void apply_pads(host::PadState* pads);   // four pads
 void shutdown();
 
 // Narrow integration hook for cosmetic work: do not change the active cosmetic profile from the
