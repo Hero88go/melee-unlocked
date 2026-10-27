@@ -41,6 +41,7 @@ struct Slot {
   uint32_t last_frame = 0;
   bool live = false;
   MuGhostAct last_act{};
+  bool prev_valid = false;
   std::mt19937 rng{0x5EED};
 };
 
@@ -190,6 +191,20 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   note(o.slot, o.self, o.opp);
   note(o.slot == 0 ? 1 : 0, o.opp, o.self);
 
+  // Last frame as the game really applied it (the safety net or a dropped air dodge may differ from
+  // what the network asked for): its memory is of what it held, as in the pros' replays.
+  if (!o.reset && s.prev_valid) {
+    const auto deadzone = [](float v) { return std::fabs(v) < 0.2875f ? 0.f : v; };
+    float* q = s.prev[0];
+    const MuGhostAct& ap = o.applied;
+    const float trig = std::max(ap.l, ap.r);
+    q[0] = deadzone(ap.lx); q[1] = deadzone(ap.ly); q[2] = ap.cx; q[3] = ap.cy; q[4] = trig;
+    q[5] = (ap.buttons & 0x0100) ? 1.f : 0.f;
+    q[6] = (ap.buttons & 0x0200) ? 1.f : 0.f;
+    q[7] = (ap.buttons & 0x0C00) ? 1.f : 0.f;
+    q[8] = (ap.buttons & 0x0010) ? 1.f : 0.f;
+    q[9] = ((ap.buttons & 0x0060) || trig > 0.3f) ? 1.f : 0.f;
+  }
   // Inputs, in train.py's order: cont (self, opp, rel, pad t-1, pad t-2), flag bits, embeddings.
   static std::vector<float> x;   // reused under the lock: no allocation each frame
   x.assign(m.n_in(), 0.f);
@@ -267,6 +282,7 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
     calls = 0;
   }
   s.last_act = out;
+  s.prev_valid = true;
   // What it held, as a replay records it (the game's dead zone applied), for the next frame.
   std::memmove(s.prev[1], s.prev[0], sizeof s.prev[0]);
   const auto deadzone = [](float v) { return std::fabs(v) < 0.2875f ? 0.f : v; };

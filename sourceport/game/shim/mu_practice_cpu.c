@@ -259,6 +259,9 @@ static void ghost_read(const Fighter* fp, MuGhostFighter* g)
     mu_replay_fighter_flags(fp, g->flags);
 }
 
+/* What each pro AI fighter really held last frame (pc_drive, after the safety net). */
+static MuGhostAct ghost_applied[4];
+
 /* The pro for this fighter: the one picked, or (MU_PC_PRESET_AI) the pro who plays its character. */
 static int ghost_pro(const Fighter* fp, const MuPcConfig* c)
 {
@@ -305,6 +308,7 @@ static int ghost_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInpu
     owner[slot] = fp->gobj;
     obs.stage = (short) ghost_stage();
     obs.frame = (unsigned int) gm_GetFrameCount();
+    obs.applied = ghost_applied[slot];
     ghost_read(fp, &obs.self);
     ghost_read(opp, &obs.opp);
     if (mu_online_abi_command(CMD_GHOST_AI, (const unsigned char*) &obs, sizeof obs, response, sizeof response, &got) != 0 ||
@@ -347,6 +351,15 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
         static int no_net = -1;
         const float ax = v.cpu.x < 0.0f ? -v.cpu.x : v.cpu.x;
         if (no_net < 0) no_net = getenv("MELEE_GHOST_NO_NET") != NULL;
+        /* Off the stage near or below the ledge, no air dodge: it spends every jump and leaves the
+         * fighter helpless, and the network's ledge air dodges missed the stage. */
+        if (!no_net && v.cpu.airborne && ax > v.ledge_x - 2.0f && v.cpu.y < v.ledge_y + 20.0f) {
+            if ((out->buttons & (MU_PC_L | MU_PC_R | MU_PC_Z)) && getenv("MELEE_GHOST_LOG") != NULL) {
+                OSReport("[ghost] P%d air dodge dropped at %.0f,%.0f buttons %x\n", slot + 1, v.cpu.x, v.cpu.y, out->buttons);
+            }
+            out->buttons &= ~(MU_PC_L | MU_PC_R | MU_PC_Z);
+            out->l = out->r = 0.0f;
+        }
         if (!no_net && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag && ((ax > v.ledge_x + 2.0f && v.cpu.y < v.ledge_y + 5.0f && v.cpu.vy < 0.0f) ||
              (ax > v.ledge_x - 40.0f && v.cpu.y < v.ledge_y - 10.0f)))
         {
@@ -370,6 +383,16 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
                 out->r = in.r;
                 out->buttons = in.buttons;
             }
+        }
+        {
+            MuGhostAct* ap = &ghost_applied[fp->player_idx & 3];
+            ap->lx = out->lx;
+            ap->ly = out->ly;
+            ap->cx = out->cx;
+            ap->cy = out->cy;
+            ap->l = out->l;
+            ap->r = out->r;
+            ap->buttons = out->buttons;
         }
         if (report && (v.frame % 15u) == 0) {
             static unsigned char response[4096];
@@ -418,4 +441,5 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
 MU_EXCLUSIONS(practice_cpu,
               MU_EXCLUDE(pc_config),
               MU_EXCLUDE(pc_config_frame),
-              MU_EXCLUDE(pc_logs))
+              MU_EXCLUDE(pc_logs),
+              MU_EXCLUDE(ghost_applied))

@@ -562,8 +562,8 @@ std::vector<Row> rows_for(Page p) {
         else std::snprintf(games, sizeof games, "%d", gh.games);
         if (ghost_ai::available())
           std::snprintf(about, sizeof about,
-                        "An AI that learned from %s's own %s games, frame by frame: it moves, attacks, punishes, "
-                        "recovers and edgeguards the way they do. The CPU becomes %s and Training starts again.",
+                        "An AI that learned from %s's own %s games, frame by frame, and plays the way they do. "
+                        "The CPU becomes %s and Training starts again.",
                         gh.name, gh.character, gh.character);
         else
           std::snprintf(about, sizeof about,

@@ -46,6 +46,8 @@ enum {
     MU_PC_MS_SPECIAL_FIRST = 341
 };
 
+#define MU_PC_KIND_PURIN 0x0F   /* internal fighter id */
+
 enum {
     PC_P_NONE,
     PC_P_IDLE,
@@ -466,6 +468,8 @@ static int pc_recover(const MuPcConfig* c, MuPcState* s, const MuPcView* v, MuPc
         s->plan_t = s->plan_t == 1 ? 0 : 1;
         return 1;
     }
+    /* Jigglypuff's up special (Sing) brings nobody back: her jumps are her recovery. */
+    if (f->kind == MU_PC_KIND_PURIN) return 1;
     if (f->jumps_left == 0 && f->vy < 0.0f && f->y < v->ledge_y + (high ? 25.0f : -15.0f)) {
         o->buttons |= MU_PC_B;
         o->lx = 0.0f;   /* straight up as B goes in: the up special, never the side one; aimed after */

@@ -18,6 +18,11 @@ typedef struct MuGhostFighter {
     unsigned char flags[5];
 } MuGhostFighter;
 
+typedef struct MuGhostAct {
+    float lx, ly, cx, cy, l, r;
+    unsigned int buttons;    /* GameCube bits (MU_PC_*) */
+} MuGhostAct;
+
 typedef struct MuGhostObs {
     unsigned char version;   /* MU_GHOST_VERSION */
     unsigned char pro;       /* which pro (index into the file's pros) */
@@ -27,11 +32,9 @@ typedef struct MuGhostObs {
     short pad;
     unsigned int frame;
     MuGhostFighter self, opp;
+    MuGhostAct applied;      /* what the fighter really held last frame (after the safety net): the
+                              * network remembers that, not what it asked for */
 } MuGhostObs;
 
-typedef struct MuGhostAct {
-    float lx, ly, cx, cy, l, r;
-    unsigned int buttons;    /* GameCube bits (MU_PC_*) */
-} MuGhostAct;
 
 #endif
