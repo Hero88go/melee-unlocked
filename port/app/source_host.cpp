@@ -3378,6 +3378,7 @@ int run(void (*shutdown)(int)) {
     SetEnvironmentVariableA("MELEE_SOURCE_RECORD", "2");
   }
 #endif
+  ghost_ai::enable();   // the pro AI needs the game library's fighters: Source Port only
   g_game_image_reservation.release();
   HMODULE module = LoadLibraryA(g_dll.c_str());
 #ifndef _WIN32

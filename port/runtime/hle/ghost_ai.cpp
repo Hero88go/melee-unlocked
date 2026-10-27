@@ -47,6 +47,7 @@ struct Slot {
 std::mutex g_mutex;
 Model g_model;
 int g_loaded = 0;   // 0 not tried, 1 loaded, -1 missing or bad
+bool g_enabled = false;
 Slot g_slots[4];
 
 std::string model_path() {
@@ -102,6 +103,7 @@ bool load() {
 }
 
 bool ready() {
+  if (!g_enabled) return false;
   if (g_loaded == 0) g_loaded = load() ? 1 : -1;
   return g_loaded == 1;
 }
@@ -136,6 +138,11 @@ int sample(std::mt19937& rng, const float* logits, int n, float temperature) {
 }
 
 }  // namespace
+
+void enable() {
+  std::lock_guard<std::mutex> lk(g_mutex);
+  g_enabled = true;
+}
 
 bool available() {
   std::lock_guard<std::mutex> lk(g_mutex);

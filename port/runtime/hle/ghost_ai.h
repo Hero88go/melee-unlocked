@@ -5,6 +5,7 @@
 #include "../abi/mu_ghost_ai.h"
 
 namespace ghost_ai {
+void enable();                                     // the Source Port calls this; elsewhere the AI stays off
 bool available();                                  // the file is beside the game and readable
 bool act(const MuGhostObs& obs, MuGhostAct& out);  // false: no file, or a bad request
 }  // namespace ghost_ai
