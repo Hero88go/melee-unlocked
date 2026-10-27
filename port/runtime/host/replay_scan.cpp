@@ -4,6 +4,8 @@
 #include "slippilib/SlippiGame.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <array>
 
 namespace replay_scan {
@@ -47,6 +49,7 @@ struct Track {
   int attacker = -1, frame = 0, count = 0, attacker_at = -1, defender_at = -1;
   int move = 0, hitlag = 0, to_land = -1, lcancel = 0;
   bool airborne = false;
+  bool attacker_hit = false;   // the attacker was itself taking a hit when the reading began
 };
 
 Event make(Kind kind, int32_t frame, int actor, int target, const Slippi::FrameData& fd) {
@@ -159,11 +162,21 @@ std::vector<Event> scan(Slippi::SlippiGame& game) {
         continue;
       }
       const Frame& a = ai->second;
+      // MELEE_TEST_SCAN_TRACE=<frame> (tests only): each step of the reading that starts at that frame.
+      static const int trace_frame = [] { const char* v = std::getenv("MELEE_TEST_SCAN_TRACE"); return v ? std::atoi(v) : -1000; }();
+      if (t.frame == trace_frame)
+        std::printf("scan trace %d: step %d att act %d hl %.0f f %02X %02X %02X %02X can %d | def act %d hl %.0f f %02X %02X %02X %02X can %d\n",
+                    t.frame, t.count, a.postAction, a.hitlag, a.stateFlags[0], a.stateFlags[1], a.stateFlags[2], a.stateFlags[3],
+                    can_act(a), m, d.hitlag, d.stateFlags[0], d.stateFlags[1], d.stateFlags[2], d.stateFlags[3], can_act(d));
       if (t.airborne && t.to_land < 0 && !a.airborne) {
         t.to_land = t.count;
         t.lcancel = a.lCancel;
       }
       if (t.attacker_at < 0 && !in_hitlag(a) && can_act(a)) t.attacker_at = t.count;
+      // Punished as its lag ended: the game saw it free the frame before the hit (the file's end-of-frame
+      // state never shows that frame), so a missed L-cancel read -127 here where the game read -12.
+      if (t.count == 1) t.attacker_hit = hit_state(a.postAction);   // a trade: no punish rule
+      if (t.attacker_at < 0 && !t.attacker_hit && t.count > 1 && hit_state(a.postAction) && in_hitlag(a)) t.attacker_at = t.count - 1;
       if (t.defender_at < 0 && !hitlag && can_act(d)) t.defender_at = t.count;
       if (t.attacker_at >= 0 && t.defender_at >= 0) {
         t.active = false;
