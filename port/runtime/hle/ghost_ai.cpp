@@ -24,6 +24,7 @@ namespace {
 constexpr int kNum = 16, kFlags = 5, kPad = 10, kPrev = 2, kStickSteps = 9, kStick = 81, kCStick = 5, kBtn = 5;
 constexpr float kNumScale[kNum] = {1 / 100.f, 1 / 100.f, 1, 1 / 100.f, 1 / 60.f, 1 / 4.f, 1 / 60.f, 1 / 60.f, 1, 1 / 6.f,
                                    1 / 3.f, 1 / 3.f, 1 / 3.f, 1 / 3.f, 1 / 3.f, 1 / 10.f};
+constexpr float kTemperature = 1.0f;
 constexpr uint32_t kBtnOut[kBtn] = {0x0100, 0x0200, 0x0400, 0x0010, 0x0020};   // A B X Z R
 
 struct Model {
@@ -215,8 +216,11 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   affine(m.cs_w.data(), m.cs_b.data(), y.data(), kCStick, (int)m.h_out, lc);
   affine(m.bt_w.data(), m.bt_b.data(), y.data(), kBtn, (int)m.h_out, lb);
 
-  const int stick = sample(s.rng, ls, kStick, 1.0f);
-  const int cstick = sample(s.rng, lc, kCStick, 1.0f);
+  // How sure it plays: below 1 it keeps to what the pro most likely held (fewer stray inputs).
+  // MELEE_GHOST_TEMP (tests) sets it to compare.
+  static const float temp = [] { const char* v = std::getenv("MELEE_GHOST_TEMP"); return v ? (float)std::atof(v) : kTemperature; }();
+  const int stick = sample(s.rng, ls, kStick, temp);
+  const int cstick = sample(s.rng, lc, kCStick, temp);
   std::memset(&out, 0, sizeof out);
   out.lx = m.stick_mean[stick * 2];
   out.ly = m.stick_mean[stick * 2 + 1];
@@ -225,7 +229,7 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   out.cy = kC[cstick][1];
   float pressed[kBtn];
   for (int b = 0; b < kBtn; ++b) {
-    pressed[b] = std::uniform_real_distribution<float>(0.f, 1.f)(s.rng) < sigmoid(lb[b]) ? 1.f : 0.f;
+    pressed[b] = std::uniform_real_distribution<float>(0.f, 1.f)(s.rng) < sigmoid(lb[b] / temp) ? 1.f : 0.f;
     if (pressed[b] != 0.f) out.buttons |= kBtnOut[b];
   }
   if (pressed[4] != 0.f) out.r = 1.f;

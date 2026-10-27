@@ -521,6 +521,32 @@ void page_play() {
   } else if (state != host::updater::State::Checking && state != host::updater::State::Downloading) {
     if (ImGui::Button("Check for updates")) host::updater::check(MELEE_PORT_VERSION);
   }
+  // What's new: each release's notes from GitHub (the same text as the release pages), newest first.
+  const auto releases = host::updater::releases();
+  if (!releases.empty() && ImGui::CollapsingHeader("What's new")) {
+    ImGui::BeginChild("##whatsnew", ImVec2(0, 320), true);
+    for (const auto& r : releases) {
+      ImGui::SeparatorText(("v" + r.version + (r.published.empty() ? "" : "   " + r.published)).c_str());
+      bool install = false;   // the install steps are the same every release
+      size_t at = 0;
+      while (at <= r.notes.size()) {
+        size_t end = r.notes.find('\n', at);
+        if (end == std::string::npos) end = r.notes.size();
+        std::string line = r.notes.substr(at, end - at);
+        at = end + 1;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        for (const char* mark : {"**", "`"})
+          for (size_t p; (p = line.find(mark)) != std::string::npos;) line.erase(p, std::strlen(mark));
+        const bool heading = !line.empty() && line[0] == '#';
+        if (heading) { line.erase(0, line.find_first_not_of("# ")); install = line == "Install"; }
+        if (install || line.empty()) continue;
+        if (heading) ImGui::TextDisabled("%s", line.c_str());
+        else if (line.rfind("- ", 0) == 0) ImGui::BulletText("%s", line.c_str() + 2);
+        else ImGui::TextWrapped("%s", line.c_str());
+      }
+    }
+    ImGui::EndChild();
+  }
 }
 
 void page_replays() {
