@@ -506,16 +506,15 @@ inline int look_preset_of(const RenderOptions& o) {
   return -1;
 }
 
-// The old "Low spec" switch lowered the image only, and its image settings are already the saved ones, so it
-// becomes no switch at all: the look stays the game's own. 0.9.60 moved it to level 4 instead, which also drops
-// textures and stage backgrounds (white fighters on black); a file it wrote (no "lowspec_look") with level 4 and
-// no look of its own is put back the same way.
+// The old "Low spec" switch lowered the image only: it stays on (with the settings it keeps for the player) and
+// the look stays the game's own. 0.9.60 moved it to level 4 instead, which also drops textures and stage
+// backgrounds (white fighters on black); a file it wrote (no "lowspec_look") with level 4 and no look of its own
+// goes back to level 0. Picking a look below 4 later gives the kept image settings back (apply_lightweight).
 inline void migrate_lightweight(RenderOptions& o, bool lowspec_look = false) {
-  if (!lowspec_look && o.low_spec) {
-    const bool plain = o.look_fighter == 0 && o.look_stage == 0 && o.look_menus == 0 && !o.look_unfiltered &&
-                       o.look_colours == 0 && o.look_background == 0 && !o.lab_view && !o.look_own;
-    if (o.lightweight == 0 || (o.lightweight == 4 && plain)) { o.lightweight = 0; o.low_spec = false; }
-  }
+  if (!lowspec_look && o.low_spec && o.lightweight == 4 && o.look_fighter == 0 && o.look_stage == 0 &&
+      o.look_menus == 0 && !o.look_unfiltered && o.look_colours == 0 && o.look_background == 0 && !o.lab_view &&
+      !o.look_own)
+    o.lightweight = 0;
   if (o.low_poly_fighters && o.lightweight < 1) o.lightweight = 1;
   o.low_poly_fighters = 0;   // the ladder decides from here on
 }
