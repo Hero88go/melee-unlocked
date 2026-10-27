@@ -112,9 +112,14 @@ bool ready() {
 void affine(const float* w, const float* b, const float* x, int rows, int cols, float* y) {
   for (int r = 0; r < rows; ++r) {
     const float* row = w + (size_t)r * cols;
+    // Eight running sums: the compiler can keep them in one vector register.
+    float acc[8] = {};
+    int c = 0;
+    for (; c + 8 <= cols; c += 8)
+      for (int k = 0; k < 8; ++k) acc[k] += row[c + k] * x[c + k];
     float s = b ? b[r] : 0.f;
-    for (int c = 0; c < cols; ++c) s += row[c] * x[c];
-    y[r] = s;
+    for (; c < cols; ++c) s += row[c] * x[c];
+    y[r] = s + ((acc[0] + acc[4]) + (acc[1] + acc[5])) + ((acc[2] + acc[6]) + (acc[3] + acc[7]));
   }
 }
 
@@ -176,7 +181,8 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   note(o.slot == 0 ? 1 : 0, o.opp, o.self);
 
   // Inputs, in train.py's order: cont (self, opp, rel, pad t-1, pad t-2), flag bits, embeddings.
-  std::vector<float> x(m.n_in());
+  static std::vector<float> x;   // reused under the lock: no allocation each frame
+  x.assign(m.n_in(), 0.f);
   float* p = x.data();
   player_block(o.self, p); p += kNum;
   player_block(o.opp, p); p += kNum;
@@ -200,8 +206,10 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   embed(m.stage, m.n_stages, m.e_stage, stage);
   embed(m.pro, m.n_pros, m.e_pro, o.pro);
 
+  const double t0 = host::now_seconds();
   const int H = (int)m.h_rnn, I = (int)m.h_in;
-  std::vector<float> a(I), gi(3 * H), gh(3 * H), mid_in(H + I), y(m.h_out);
+  static std::vector<float> a, gi, gh, mid_in, y;
+  a.resize(I); gi.resize(3 * H); gh.resize(3 * H); mid_in.resize(H + I); y.resize(m.h_out);
   affine(m.inp_w.data(), m.inp_b.data(), x.data(), I, (int)m.n_in(), a.data());
   for (float& v : a) v = std::max(v, 0.f);
   affine(m.w_ih.data(), m.b_ih.data(), a.data(), 3 * H, I, gi.data());
@@ -239,6 +247,15 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   }
   if (pressed[4] != 0.f) out.r = 1.f;
 
+  // Its cost, once a minute of play (the frame budget is 16.7 ms; this runs on the game's thread).
+  static double spent = 0;
+  static int calls = 0;
+  spent += host::now_seconds() - t0;
+  if (++calls == 3600) {
+    host::log("ghost ai: %.3f ms a frame", spent / calls * 1000.0);
+    spent = 0;
+    calls = 0;
+  }
   // What it held, as a replay records it (the game's dead zone applied), for the next frame.
   std::memmove(s.prev[1], s.prev[0], sizeof s.prev[0]);
   const auto deadzone = [](float v) { return std::fabs(v) < 0.2875f ? 0.f : v; };
