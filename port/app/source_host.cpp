@@ -1565,6 +1565,8 @@ int32_t h_slippi_command(uint8_t command, const uint8_t* payload, uint32_t paylo
             cfg.tech_odds[MU_PC_TECH_MISS] = 100;
           }
           cfg.enabled = 1;
+          host::log("replay: the opponent defends (setting %d, aggression %d, techs %d %d %d %d)", defense, cfg.aggression,
+                    cfg.tech_odds[0], cfg.tech_odds[1], cfg.tech_odds[2], cfg.tech_odds[3]);
           const auto* bytes = reinterpret_cast<const uint8_t*>(&cfg);
           reply.assign(bytes, bytes + sizeof cfg);
           return true;

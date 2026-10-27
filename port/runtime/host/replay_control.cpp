@@ -729,7 +729,11 @@ void set_live_start(bool held) { g_live_start.store(held, std::memory_order_rela
 bool live_start_held() { return g_live_start.load(std::memory_order_relaxed); }
 void set_pad_layer(bool on) { g_pad_layer.store(on); }
 void set_defense(int d) { g_defense.store(d, std::memory_order_relaxed); }
-int defense() { return g_defense.load(std::memory_order_relaxed); }
+int defense() {
+  // MELEE_TEST_REPLAY_DEFENSE=<0..3> (tests only): the Opponent setting, also in runs that draw no layer.
+  static const int test = [] { const char* v = std::getenv("MELEE_TEST_REPLAY_DEFENSE"); return v ? std::atoi(v) : -1; }();
+  return test >= 0 ? test : g_defense.load(std::memory_order_relaxed);
+}
 bool pad_layer() { return g_pad_layer.load(std::memory_order_relaxed); }
 void set_ui_busy(bool busy) { g.ui_busy.store(busy, std::memory_order_relaxed); }
 
