@@ -201,7 +201,10 @@ int mu_practice_cpu_drive(void* fighter, MuLabInput* out)
             __builtin_memset(&t, 0, sizeof t);
             t.enabled = 1;
             t.preset = (mu_pc_u8) MU_PC_PRESET_PRO(test_pro);
-            return g != NULL && g->user_data != NULL && ghost_drive(fp, g->user_data, &t, out);
+            mu_pc_defaults(&t);
+            t.enabled = 1;
+            t.preset = (mu_pc_u8) MU_PC_PRESET_PRO(test_pro);
+            return g != NULL && g->user_data != NULL && pc_drive(fp, g->user_data, &t, out, 0);
         }
     }
     if (fp == NULL || fp->is_sub_fighter || !ftCo_IsCpuControlled(fp) || !pc_allowed()) return 0;
@@ -325,18 +328,6 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
     MuPcView v;
     MuPcInput in;
     int slot, driven;
-    if (ghost_drive(fp, opp, c, out)) {
-        if (report) {
-            static unsigned char response[4096];
-            unsigned char payload[3] = {1, 0, 0};
-            unsigned int got = 0;
-            payload[2] = (unsigned char) fp->kind;
-            if ((gm_GetFrameCount() % 15u) == 0) {
-                mu_online_abi_command(CMD_PRACTICE_CPU, payload, sizeof payload, response, sizeof response, &got);
-            }
-        }
-        return 1;
-    }
     slot = fp->player_idx < 6 ? fp->player_idx : 0;
     __builtin_memset(&v, 0, sizeof v);
     pc_read(fp, &v.cpu);
@@ -348,6 +339,39 @@ static int pc_drive(Fighter* fp, Fighter* opp, const MuPcConfig* c, MuLabInput* 
     if (pc_state_owner[slot] != fp->gobj) {
         pc_state_owner[slot] = fp->gobj;
         mu_pc_reset(&pc_state[slot], 0x9E3779B9u ^ ((mu_pc_u32) slot * 2654435761u));
+    }
+    if (ghost_drive(fp, opp, c, out)) {
+        /* The safety net: below the stage's edge and free to act, the practice CPU's own recovery
+         * brings the pro AI back (its network still ran, so its memory of the match goes on).
+         * MELEE_GHOST_NO_NET (tests) leaves it to the network alone. */
+        static int no_net = -1;
+        const float ax = v.cpu.x < 0.0f ? -v.cpu.x : v.cpu.x;
+        if (no_net < 0) no_net = getenv("MELEE_GHOST_NO_NET") != NULL;
+        if (!no_net && v.cpu.airborne && !v.cpu.hitstun && !v.cpu.hitlag && ax > v.ledge_x - 5.0f &&
+            v.cpu.y < v.ledge_y - 5.0f)
+        {
+            MuPcConfig rc = *c;
+            rc.enabled = 1;
+            rc.freeze = 0;
+            if (rc.recovery == MU_PC_RECOVER_GAME) rc.recovery = MU_PC_RECOVER_MIX;
+            if (mu_pc_frame(&rc, &pc_state[slot], &v, &in)) {
+                out->lx = in.lx;
+                out->ly = in.ly;
+                out->cx = in.cx;
+                out->cy = in.cy;
+                out->l = in.l;
+                out->r = in.r;
+                out->buttons = in.buttons;
+            }
+        }
+        if (report && (v.frame % 15u) == 0) {
+            static unsigned char response[4096];
+            unsigned char payload[3] = {1, 0, 0};
+            unsigned int got = 0;
+            payload[2] = (unsigned char) fp->kind;
+            mu_online_abi_command(CMD_PRACTICE_CPU, payload, sizeof payload, response, sizeof response, &got);
+        }
+        return 1;
     }
     driven = mu_pc_frame(c, &pc_state[slot], &v, &in);
     if (report) {

@@ -40,8 +40,6 @@ struct Slot {
   float prev[kPrev][kPad] = {};
   uint32_t last_frame = 0;
   bool live = false;
-  bool dead = false;
-  float percent = 0;
   std::mt19937 rng{0x5EED};
 };
 
@@ -50,6 +48,7 @@ Model g_model;
 int g_loaded = 0;   // 0 not tried, 1 loaded, -1 missing or bad
 bool g_enabled = false;
 Slot g_slots[4];
+struct Ko { bool dead = false; float percent = 0; } g_ko[4];
 
 std::string model_path() {
   if (const char* v = std::getenv("MELEE_GHOST_AI_FILE")) return v;
@@ -163,12 +162,18 @@ bool act(const MuGhostObs& o, MuGhostAct& out) {
   }
   s.live = true;
   s.last_frame = o.frame;
-  // Each KO (the dead motions are the first eleven), with the percents: a KO near 0% is usually a
-  // self-destruct. Tests read these lines to score matches.
-  const bool dead = o.self.motion <= 10;
-  if (dead && !s.dead) host::log("ghost ai: P%d KO at %.0f%% (frame %u, opponent at %.0f%%)", o.slot + 1, s.percent, o.frame, o.opp.num[3]);
-  s.dead = dead;
-  if (!dead) s.percent = o.self.num[3];
+  // Each KO (the dead motions are the first eleven), with the percent it came at: a KO near 0% is
+  // usually a self-destruct. A dead fighter may not be asked for input, so both sides report, once
+  // per port (1v1: the opponent is the other of P1 and P2). Tests read these lines to score matches.
+  const auto note = [&](int port, const MuGhostFighter& f, const MuGhostFighter& other) {
+    const bool dead = f.motion <= 10;
+    if (dead && !g_ko[port].dead)
+      host::log("ghost ai: P%d KO at %.0f%% (frame %u, opponent at %.0f%%)", port + 1, g_ko[port].percent, o.frame, other.num[3]);
+    g_ko[port].dead = dead;
+    if (!dead) g_ko[port].percent = f.num[3];
+  };
+  note(o.slot, o.self, o.opp);
+  note(o.slot == 0 ? 1 : 0, o.opp, o.self);
 
   // Inputs, in train.py's order: cont (self, opp, rel, pad t-1, pad t-2), flag bits, embeddings.
   std::vector<float> x(m.n_in());
