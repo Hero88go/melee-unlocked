@@ -81,13 +81,24 @@ uint32_t g_auto_ticks = 0;
 Phase g_logged_phase = Phase::Idle;
 bool g_lobby_started = false;
 uint32_t g_lobby_boot_ticks = 0;
+// After an online session (the other player left, the connection dropped, the player left): back
+// into a Training match with the same character, then "search again?". g_enter_* presses through
+// Training's character and stage select for the player; g_offer_* is the prompt.
+bool g_enter_training = false;
+int g_enter_port = 0;
+uint32_t g_enter_ticks = 0;
+MatchMode g_offer_mode = MatchMode::None;
+std::string g_offer_code;
+std::string g_offer_reason;
+bool g_offer_shown = false;
 
 // The Source Port's game answers through its practice bridge (game API 6); the static recomp's
 // state is read and written at its console addresses.
 NativeBridge g_bridge = nullptr;
 ContentBridge g_content_bridge = nullptr;
 enum { OP_SCENE, OP_GET_PLAYER, OP_SET_PLAYER, OP_GET_STAGE, OP_SET_STAGE, OP_SET_EVENT_BACKUP,
-       OP_REQUEST_MAJOR, OP_SET_ONLINE_MODE, OP_GET_ONLINE_MODE, OP_DIRECT_FIRST_MATCH, OP_FRAME_PAUSE, OP_CPU_MOVE };
+       OP_REQUEST_MAJOR, OP_SET_ONLINE_MODE, OP_GET_ONLINE_MODE, OP_DIRECT_FIRST_MATCH, OP_FRAME_PAUSE, OP_CPU_MOVE,
+       OP_TRAINING_PICK, OP_TRAINING_STAGE };
 
 uint8_t current_major() {
   if (g_bridge) { int32_t a[2] = {}; g_bridge(OP_SCENE, a, 2); return (uint8_t)a[0]; }
@@ -166,6 +177,14 @@ PracticeConfig capture_practice() {
   }
   out.valid = found_human;
   return out;
+}
+
+// Training's character select starts from its saved match (Source Port; the Static Recomp keeps the
+// player's last Training picks). slot 0: the player, 1: the CPU.
+void set_training_pick(int slot, int character, int costume) {
+  if (!g_bridge || character < 0 || character >= 26) return;
+  int32_t a[3] = {slot, character, costume};
+  g_bridge(OP_TRAINING_PICK, a, 3);
 }
 
 void write_event_backup() {
@@ -486,6 +505,8 @@ void publish_snapshot() {
   out.search_ticks = g_search_ticks;
   out.connect_code = g_connect_code;
   out.opponent = g_opponent;
+  if (g_offer_shown && g_offer_mode != MatchMode::None)
+    out.offer = g_offer_reason + "  Search " + match_mode_name(g_offer_mode) + " again?";
   out.detail = g_lifecycle.error();
   switch (out.phase) {
     case Phase::Idle: out.status = out.in_practice ? "Practice" : "Ready"; break;
@@ -503,7 +524,52 @@ void publish_snapshot() {
   g_snapshot = std::move(out);
 }
 
+
+// The online session is over (the other player left, the connection dropped, the player left with
+// at least one match played): back into Training with the same character, and once its match runs,
+// "search again?" for the same mode (Direct and Teams: the same code).
+void enter_training_after_session(MatchMode mode, int test_character = -1) {
+  uint8_t character = 0, costume = 0;
+  const PracticeConfig css = capture_practice();
+  bool picked = slippi::online::local_css_selection(&character, &costume);
+  if (!picked && test_character >= 0) { character = (uint8_t)test_character; picked = true; }
+  if (!picked && css.valid && css.players[css.local_slot].character < 26) {
+    character = (uint8_t)css.players[css.local_slot].character;
+    costume = css.players[css.local_slot].costume;
+    picked = true;
+  }
+  g_practice = {};
+  if (picked) {
+    g_practice.valid = true;
+    g_practice.local_slot = 0;
+    g_practice.controller_port = css.valid ? css.controller_port : 0;
+    g_practice.players[0].active = true;
+    g_practice.players[0].character = character;
+    g_practice.players[0].costume = costume;
+    g_practice.stage = css.stage;   // the online match's stage, kept for Training when it is a legal one
+    write_event_backup();
+    set_training_pick(0, character, costume);
+  }
+  g_offer_mode = mode == MatchMode::Unranked || mode == MatchMode::Direct || mode == MatchMode::Teams ? mode : MatchMode::None;
+  g_offer_code.clear();
+  if (g_offer_mode == MatchMode::Direct || g_offer_mode == MatchMode::Teams) {
+    std::string error;
+    if (!normalize_direct_code(slippi::online::direct_code_for_practice(), &g_offer_code, &error)) g_offer_mode = MatchMode::None;
+  }
+  g_offer_reason = "The online session is over.";
+  g_offer_shown = false;
+  g_enter_training = picked;
+  g_enter_port = g_practice.controller_port;
+  g_enter_ticks = 0;
+  g_origin_major = kTrainingMajor;
+  g_restore_training = false;
+  host::log("native practice: online session over; into Training%s, then offer a %s search", picked ? "" : " (no character known)",
+            g_offer_mode == MatchMode::None ? "no" : match_mode_name(g_offer_mode));
+  run_decision(g_lifecycle.return_after_session());
+}
+
 }  // namespace
+
 
 Snapshot snapshot() {
   std::lock_guard<std::mutex> lock(g_mutex);
@@ -667,6 +733,28 @@ void tick() {
 
   frame_advance_tick();
 
+  // MELEE_TEST_AFTER_SESSION=<tick> (tests only): at that tick on the main menu, the step an ended
+  // online session takes (Unranked), so the way into Training and the prompt can run without a peer.
+  {
+    static const int test_at = [] { const char* v = std::getenv("MELEE_TEST_AFTER_SESSION"); return v ? std::atoi(v) : -1; }();
+    static int ticks = 0;
+    if (test_at >= 0 && ++ticks == test_at && g_lifecycle.phase() == Phase::Idle) enter_training_after_session(MatchMode::Unranked, 2);   // Fox
+  }
+
+  // The requeue prompt shows once the Training match runs, and goes when the player leaves Training
+  // or a search starts.
+  if (g_offer_mode != MatchMode::None) {
+    if (!g_offer_shown && is_training() && current_minor() == 2 && g_lifecycle.phase() == Phase::Idle) {
+      g_offer_shown = true;
+      ++g_generation;
+      host::log("native practice: Training is running; asking whether to search %s again", match_mode_name(g_offer_mode));
+    } else if (g_offer_shown && (!is_training() || g_lifecycle.phase() != Phase::Idle)) {
+      g_offer_shown = false;
+      g_offer_mode = MatchMode::None;
+      ++g_generation;
+    }
+  }
+
   std::deque<Command> commands;
   {
     std::lock_guard<std::mutex> lock(g_mutex);
@@ -680,13 +768,19 @@ void tick() {
   // the session is over, so nothing changes during a match or between a pair's games.
   {
     static bool session_seen = false, played = false;
+    static int session_mode_seen = -1;
+    static std::string session_code;
     const bool session = slippi::online::session_mode() >= 0;
     if (session) {
       session_seen = true;
+      session_mode_seen = slippi::online::session_mode();
       if (slippi::online::is_online_match()) played = true;
     } else if (session_seen) {
       session_seen = false;
-      if (played && gx::RenderOptions::live_online_return_training() && g_lifecycle.phase() == Phase::Idle &&
+      if (played && gx::RenderOptions::live_online_back_to_training() && g_lifecycle.phase() == Phase::Idle &&
+          is_online_scene() && !slippi::playback::enabled()) {
+        enter_training_after_session((MatchMode)session_mode_seen);
+      } else if (played && gx::RenderOptions::live_online_return_training() && g_lifecycle.phase() == Phase::Idle &&
           is_online_scene()) {
         g_origin_major = kTrainingMajor;
         g_restore_training = false;
@@ -766,6 +860,55 @@ void tick() {
     host::log("native practice: phase %s", phase_name(g_logged_phase));
   }
   publish_snapshot();
+}
+
+
+void apply_pads(host::PadState pads[4]) {
+  constexpr uint16_t kDown = 0x0004, kUp = 0x0008, kA = 0x0100, kStart = 0x1000;
+  if (g_enter_training) {
+    const uint8_t major = current_major(), minor = current_minor();
+    ++g_enter_ticks;
+    if (major == kTrainingMajor && minor >= 2) {
+      g_enter_training = false;
+    } else if (g_enter_ticks > 60 * 15 || slippi::online::is_online_match() ||
+               (major != kTrainingMajor && major != kOnlineMajor && g_enter_ticks > 180)) {
+      g_enter_training = false;
+      host::log("native practice: stopped pressing through Training's menus (scene %02X:%02X)", major, minor);
+    } else if (major == kTrainingMajor && minor == 1 && g_bridge) {
+      // Stage select: the same stage as before (Final Destination when there was none), picked at once.
+      const int legal[] = {2, 3, 8, 28, 31, 32};
+      int stage = 32;
+      for (int s : legal) if ((int)g_practice.stage == s) stage = s;
+      int32_t a[1] = {stage};
+      g_bridge(OP_TRAINING_STAGE, a, 1);
+    } else if (major == kTrainingMajor && g_enter_ticks % 40 < 3) {
+      // Character select: Start confirms the remembered pick (the Static Recomp also takes A on the stage).
+      pads[g_enter_port & 3].button |= minor == 0 ? kStart : kA;
+    }
+  }
+  if (g_offer_shown) {
+    static uint16_t held = 0xFFFF;   // nothing held when the prompt appears counts as a press
+    host::PadState& p = pads[g_practice.controller_port & 3];
+    const uint16_t now = p.err == 0 ? (uint16_t)(p.button & (kUp | kDown)) : 0;
+    const uint16_t fresh = (uint16_t)(now & ~held);
+    held = now;
+    p.button &= (uint16_t)~(kUp | kDown);   // the prompt's buttons never reach the game
+    if (fresh & kUp) {
+      const MatchMode mode = g_offer_mode;
+      g_offer_shown = false;
+      g_offer_mode = MatchMode::None;
+      held = 0xFFFF;
+      host::log("native practice: search again (%s) from the prompt", match_mode_name(mode));
+      if (mode == MatchMode::Direct) submit_start_direct(g_offer_code);
+      else if (mode == MatchMode::Teams) submit_start_teams(g_offer_code);
+      else submit_start_unranked();
+    } else if (fresh & kDown) {
+      g_offer_shown = false;
+      g_offer_mode = MatchMode::None;
+      held = 0xFFFF;
+      host::log("native practice: the search-again prompt dismissed");
+    }
+  }
 }
 
 void shutdown() {

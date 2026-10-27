@@ -1097,6 +1097,19 @@ void draw_bars(ImDrawList* dl, const Frame& f, std::vector<Row>& rows, float a) 
   (void)dx; (void)dy;
 }
 
+// After an online session, back in Training: the question, centred near the top, in every look.
+void draw_offer(ImDrawList* dl, const Frame& f) {
+  if (f.search.offer.empty()) return;
+  const float u = (f.game_y1 - f.game_y0) / 720.0f;
+  const float pulse = 0.8f + 0.2f * std::sin((float)f.time * 3.0f);
+  const float w = std::min(f.game_x1 - f.game_x0 - 40 * u, text_width(24 * u, f.search.offer.c_str()) + 80 * u);
+  const float left = (f.game_x0 + f.game_x1 - w) * 0.5f, top = f.game_y0 + 90 * u, h = 54 * u;
+  draw_bar(dl, left, top, left + w, h, u, true, f.search.offer.c_str(), "", true, pulse, false);
+  const char* spec = "D:Up  Search again|D:Down  Keep practicing";
+  const float hw = hints(dl, 0, 0, u, spec, 1.0f, false);
+  hints(dl, (f.game_x0 + f.game_x1 - hw) * 0.5f, top + h + 10 * u, u, spec, 1.0f);
+}
+
 // While closed, the gold look keeps the search on screen as one lit bar at the top right.
 void draw_bars_closed(ImDrawList* dl, const Frame& f) {
   if (!f.search.searching) return;
@@ -1601,6 +1614,7 @@ Result frame(int style, const Frame& f) {
     }
   }
   if (!f.open) {
+    draw_offer(dl, f);
     if (f.hint && style != kStrip) {
       // How to open it, in the game's font at the top right (dimmer after the first 20 seconds).
       const float u = (f.game_y1 - f.game_y0) / 720.0f, alpha = f.time < 20.0 ? 0.95f : 0.5f;

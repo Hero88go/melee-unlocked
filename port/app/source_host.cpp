@@ -1899,6 +1899,7 @@ void h_pad_read(MuPadStatus out[4]) {
   host::PadState pads[4];
   host::input_poll(pads);
   lcancel::apply(pads);   // auto L-cancel, upstream of the game exactly as in the recompiled build
+  slippi::native_practice::apply_pads(pads);   // Training after an online session, the requeue prompt
   bool offline_gameplay = false;
   if (gx::RenderOptions::live_offline_delay() && !g_replaying &&
       slippi::online::session_mode() < 0 && g_game.lcancel_view) {

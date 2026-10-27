@@ -2163,6 +2163,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
 #ifndef MELEE_NO_SLIPPI
       else if (key == "slippi_spectator") options.slippi_spectator = value != "0";
       else if (key == "online_return_training") options.online_return_training = value == "1";
+      else if (key == "online_back_to_training") options.online_back_to_training = value == "1";
       else if (key == "slippi_spectator_port") options.slippi_spectator_port = std::clamp(std::atoi(value.c_str()), 1, 65535);
 #endif
       else if (key == "cpu_tech") options.cpu_tech = std::clamp(std::atoi(value.c_str()), 0, 5);
@@ -2382,6 +2383,7 @@ void load_pc_settings(RenderOptions& options, int& volume) {
   RenderOptions::live_slippi_spectator() = options.slippi_spectator;
   RenderOptions::live_slippi_spectator_port() = options.slippi_spectator_port;
   RenderOptions::live_online_return_training() = options.online_return_training;
+  RenderOptions::live_online_back_to_training() = options.online_back_to_training;
 #endif
   host::g_cpu_20xx.store(options.cpu_20xx, std::memory_order_relaxed);
   RenderOptions::live_cpu_training() = options.cpu_training_word();
@@ -3726,6 +3728,7 @@ static void draw_native_practice(SettingsState& state, RenderOptions& options,
     f.search.state = matchmaking_state_text(practice.matchmaking_state);
     f.search.opponent = practice.opponent;
     f.search.code = practice.connect_code;
+    f.search.offer = practice.offer;
     f.time = ImGui::GetTime();
     const practice_menu::Result r = practice_menu::frame(look, f);
     if (r.changed) { state.dirty = true; apply_practice_tools(options); }
@@ -4059,6 +4062,7 @@ static bool write_settings_file(const SettingsState& state, const RenderOptions&
        << "\nslippi_spectator " << (options.slippi_spectator ? 1 : 0)
        << "\nslippi_spectator_port " << options.slippi_spectator_port
        << "\nonline_return_training " << (options.online_return_training ? 1 : 0)
+       << "\nonline_back_to_training " << (options.online_back_to_training ? 1 : 0)
 #endif
        << "\ncpu_tech " << options.cpu_tech
        << "\ncpu_getup " << options.cpu_getup
@@ -8243,7 +8247,14 @@ bool settings_frame(SettingsState& state, RenderOptions& options) {
           }
         }
       }
-      if (settings_toggle("After an online session ends, go back to Training mode", &options.online_return_training)) {
+      if (settings_toggle("After an online session, straight back into Training and offer to search again", &options.online_back_to_training)) {
+        RenderOptions::live_online_back_to_training() = options.online_back_to_training;
+        changed = true;
+      }
+      if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("When the other player leaves or the connection drops after a match, you land in a Training\n"
+                          "match with the same character. D-pad Up searches again (same mode, same Direct code), Down dismisses.");
+      if (!options.online_back_to_training && settings_toggle("After an online session ends, go back to Training mode", &options.online_return_training)) {
         RenderOptions::live_online_return_training() = options.online_return_training;
         changed = true;
       }

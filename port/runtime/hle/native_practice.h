@@ -2,6 +2,7 @@
 // tick() touches Slippi networking or guest scene state, and tick() runs on the simulation thread.
 // SPDX-License-Identifier: GPL-2.0-or-later
 #pragma once
+#include "host.h"
 
 #include "native_practice_model.h"
 
@@ -28,6 +29,8 @@ struct Snapshot {
   std::string status;
   std::string detail;
   std::string opponent;
+  // After an online session: back in Training, "search again?" (D-pad Up searches, Down dismisses).
+  std::string offer;          // the prompt, empty when none
 };
 
 Snapshot snapshot();
@@ -40,6 +43,9 @@ void submit_acknowledge_failure();
 
 // Called once per 60 Hz retrace, before the guest advances its frame.
 void tick();
+// Called with the freshly polled pads, before the game sees them (both engines): presses through
+// Training's character and stage select after an online session, and takes the requeue prompt's D-pad.
+void apply_pads(host::PadState pads[4]);
 void shutdown();
 
 // Narrow integration hook for cosmetic work: do not change the active cosmetic profile from the

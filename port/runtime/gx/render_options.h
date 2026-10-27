@@ -234,6 +234,9 @@ struct RenderOptions {
   // online_return_training, off by default). native_practice.cpp does it, on both engines.
   bool online_return_training = false;
   static bool& live_online_return_training() { static bool value = false; return value; }
+  // After an online session: straight into a Training match, then "search again?" (native_practice.cpp).
+  bool online_back_to_training = true;
+  static bool& live_online_back_to_training() { static bool value = true; return value; }
   int slippi_spectator_port = 51441;
   static int& live_slippi_spectator_port() { static int value = 51441; return value; }
   static bool& live_offline_delay() { static bool value = false; return value; }

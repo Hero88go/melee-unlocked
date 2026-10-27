@@ -11,6 +11,7 @@
 #include "netplay_state.h"   // the same names, answered from the neutral netplay state
 #else
 #include "slippi_online.h"
+#include "native_practice.h"
 #include "slippi_playback.h"
 #endif
 #include "cosmetic_mods.h"
@@ -366,6 +367,7 @@ HLE(PADRead) {
   // upstream of everything the game does with the pad, so the press is sampled, recorded into the
   // replay and sent to the opponent exactly like a press the player made.
   lcancel::apply(pads);
+  slippi::native_practice::apply_pads(pads);   // Training after an online session, the requeue prompt
   bool offline_gameplay = false;
   if (gx::RenderOptions::live_offline_delay() && slippi::online::session_mode() < 0) {
     for (uint32_t slot = 0; slot < 4; ++slot) {

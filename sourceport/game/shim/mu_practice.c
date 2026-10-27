@@ -8,6 +8,8 @@
 #include <melee/gm/gmmain_lib.h>
 #include <melee/gm/gmvs.h>
 #include <melee/gm/types.h>
+#include <melee/gm/gmtrainingmode.h>
+#include <melee/mn/types.h>
 #include <melee/pl/player.h>
 #include <dolphin/os.h>
 #include <melee/ft/fighter.h>
@@ -17,7 +19,8 @@
 /* Same values as MU_PRACTICE_* in mu_host.h (checked in mu_entry.c). */
 enum { MU_PR_SCENE, MU_PR_GET_PLAYER, MU_PR_SET_PLAYER, MU_PR_GET_STAGE, MU_PR_SET_STAGE,
        MU_PR_SET_EVENT_BACKUP, MU_PR_REQUEST_MAJOR, MU_PR_SET_ONLINE_MODE, MU_PR_GET_ONLINE_MODE,
-       MU_PR_DIRECT_FIRST_MATCH, MU_PR_FRAME_PAUSE, MU_PR_CPU_MOVE };
+       MU_PR_DIRECT_FIRST_MATCH, MU_PR_FRAME_PAUSE, MU_PR_CPU_MOVE, MU_PR_TRAINING_PICK,
+       MU_PR_TRAINING_STAGE };
 
 extern StaticPlayer player_slots[];
 struct gm_80479D58_t* mu_gm_engine_state(void);
@@ -116,6 +119,22 @@ int mu_practice_bridge(int op, int* a, int n)
         slp->is_winner = MU_SLP_WINNER_NULL;
         slp->chose_stage = MU_SLP_STAGE_UNSET;
         return 0;
+    case MU_PR_TRAINING_PICK: {
+        /* Training's character select starts from its saved match: the player (slot 0) and the CPU (1). */
+        VsModeData* vs = &gmMainLib_804D3EE0->modes.table[GmVsMode_Training];
+        if (n < 3 || a[0] < 0 || a[0] > 1 || a[1] < 0 || a[1] >= 26) return -1;
+        vs->start.players[a[0]].ckind = (s8) a[1];
+        vs->start.players[a[0]].color = (u8) a[2];
+        return 0;
+    }
+    case MU_PR_TRAINING_STAGE: {
+        /* Training's stage select takes a forced stage as a pick (mnStageSel_Scene_OnFrame); its
+         * enter clears it, so this is asked while the stage select runs. */
+        SSSData* sss = gm_Mode_Training_States[1].info.enter_data;
+        if (n < 1 || a[0] < 0 || a[0] > 0x7F || sss == NULL || gm_GetCurrentGameMode() != GM_TRAINING) return -1;
+        sss->force_stage_id = (s8) a[0];
+        return 0;
+    }
     case MU_PR_CPU_MOVE: {
         /* Frame advance: the D-pad moves the CPU while the game is frozen (Practice > Tools). */
         int i;

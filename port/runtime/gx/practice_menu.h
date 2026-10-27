@@ -25,6 +25,7 @@ struct Search {
   std::string state;        // what the matchmaking server is doing
   std::string opponent;
   std::string code;         // the Direct code searched for
+  std::string offer;        // after an online session: "... Search Unranked again?" (D-pad Up / Down)
 };
 
 struct Frame {

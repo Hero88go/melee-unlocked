@@ -602,6 +602,8 @@ enum {
     MU_PRACTICE_GET_ONLINE_MODE = 8,    /* out [0] */
     MU_PRACTICE_DIRECT_FIRST_MATCH = 9, /* reset Direct's winner and chose-stage state */
     MU_PRACTICE_CPU_MOVE = 11,          /* a[0], a[1]: move the CPU by x, y hundredths of a unit */
+    MU_PRACTICE_TRAINING_STAGE = 13,    /* a[0] stage kind: Training's stage select picks it at once */
+    MU_PRACTICE_TRAINING_PICK = 12,     /* a[0] slot (0 player, 1 CPU), a[1] character, a[2] costume: Training's select starts there */
     MU_PRACTICE_FRAME_PAUSE = 10,       /* a[0] pause (1), run (0) or ask (-1); a[1] step one frame; a[0] out: paused */
 };
 
