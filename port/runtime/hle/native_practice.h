@@ -38,6 +38,8 @@ void submit_start_unranked();
 void submit_start_direct(const std::string& connect_code);
 // Teams: four players who all enter the same connect code.
 void submit_start_teams(const std::string& connect_code);
+// In a Training match: start it again with the CPU as `character` (a ghost's own character).
+void submit_train_against(int character);
 void submit_cancel();
 void submit_acknowledge_failure();
 

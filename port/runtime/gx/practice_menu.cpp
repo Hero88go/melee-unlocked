@@ -14,6 +14,7 @@
 #include "host.h"
 #include "practice_cpu.h"
 #include "practice_ghosts.h"
+#include "native_practice.h"
 #include "slippi_online.h"
 
 #include <imgui.h>
@@ -228,8 +229,18 @@ const char* const kPresetAbout[] = {
 
 enum class Page : int {
   Root, Queue, Code, Blocked, Cpu, Moves, Attacks, Defense, Oos, Hit, Di, Tech, Getup, After, Ledge, Tools,
-  Presets, Setups, Replay, ReplaySettings, Count
+  Presets, Setups, Replay, ReplaySettings, Ghosts, Count
 };
+// The character select's number for a character name (a ghost's character), or -1.
+int css_kind_of(const char* name) {
+  static const char* const kNames[] = {"Captain Falcon", "Donkey Kong", "Fox", "Mr. Game & Watch", "Kirby", "Bowser",
+      "Link", "Luigi", "Mario", "Marth", "Mewtwo", "Ness", "Peach", "Pikachu", "Ice Climbers", "Jigglypuff",
+      "Samus", "Yoshi", "Zelda", "Sheik", "Falco", "Young Link", "Dr. Mario", "Roy", "Pichu", "Ganondorf"};
+  for (int i = 0; i < (int)(sizeof kNames / sizeof kNames[0]); ++i)
+    if (name && std::strcmp(name, kNames[i]) == 0) return i;
+  return -1;
+}
+
 const char* page_title(Page p) {
   switch (p) {
     case Page::Root: return "Practice";
@@ -252,6 +263,7 @@ const char* page_title(Page p) {
     case Page::Setups: return "Your setups";
     case Page::Replay: return "Replay";
     case Page::ReplaySettings: return "Settings";
+    case Page::Ghosts: return "Fight a pro";
     default: return "";
   }
 }
@@ -409,6 +421,7 @@ std::vector<Row> rows_for(Page p) {
                                                                     : "Find a match while you train."));
       const practice_cpu::Status st = practice_cpu::status();
       std::string cpu = !c.enabled ? "Off" : (st.driving ? plan_text(st.plan) : "On");
+      rows.push_back(page_row("Fight a pro", Page::Ghosts, "", "A pro's habits from their own games, on their own character. Pick one and go."));
       rows.push_back(page_row("CPU", Page::Cpu, cpu, "How the Training CPU moves and attacks."));
       rows.push_back(page_row("Defense", Page::Defense, top_name(kDefend, c.defend_odds, MU_PC_DEF_COUNT),
                               "What it does when you attack near it."));
@@ -538,6 +551,16 @@ std::vector<Row> rows_for(Page p) {
       }
       break;
     }
+    case Page::Ghosts:
+      for (int i = 0; i < (int)(sizeof practice_ghosts::kGhosts / sizeof practice_ghosts::kGhosts[0]); ++i) {
+        const practice_ghosts::Ghost& gh = practice_ghosts::kGhosts[i];
+        char about[220];
+        std::snprintf(about, sizeof about,
+                      "%s's habits from %d of their games: attacks, movement, shielding, techs, getups, ledge "
+                      "options. The CPU becomes %s and Training starts again on this stage.", gh.name, gh.games, gh.character);
+        rows.push_back(action_row(gh.name, kActGhost + i, gh.character, about));
+      }
+      break;
     case Page::Presets:
       for (int i = 0; i < mu_pc_preset_count(); ++i)
         rows.push_back(action_row(mu_pc_preset_name(i), kActPreset + i, c.preset == i + 1 ? "In use" : "",
@@ -676,6 +699,9 @@ void press(Page p, Row& r, Result& out) {
     if (practice_cpu::ghost(r.action - kActGhost, g_c)) {
       g_c.enabled = 1;
       g_c_changed = true;
+      // The CPU takes the player's own character (Training starts again for it when it differs).
+      const int css = css_kind_of(practice_ghosts::kGhosts[r.action - kActGhost].character);
+      if (css >= 0) slippi::native_practice::submit_train_against(css);
     }
     return;
   }

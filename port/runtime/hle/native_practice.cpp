@@ -8,6 +8,7 @@
 #include "../gx/render_options.h"
 
 #include <array>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -35,7 +36,7 @@ constexpr uint32_t kPlayerStride = 0xE90;
 constexpr uint32_t kMatchStage = 0x8046B6A0 + 0x24C8 + 0x0E;
 constexpr uint32_t kSearchTimeoutTicks = 60 * 90;
 
-enum class CommandKind { StartUnranked, StartDirect, StartTeams, Cancel, AcknowledgeFailure };
+enum class CommandKind { StartUnranked, StartDirect, StartTeams, Cancel, AcknowledgeFailure, TrainAgainst };
 struct Command { CommandKind kind; std::string text; };
 
 struct SavedPlayer {
@@ -85,6 +86,7 @@ uint32_t g_lobby_boot_ticks = 0;
 // into a Training match with the same character, then "search again?". g_enter_* presses through
 // Training's character and stage select for the player; g_offer_* is the prompt.
 bool g_enter_training = false;
+bool g_enter_seen_select = false;   // Training's character select was reached (a restart starts in the match)
 int g_enter_port = 0;
 uint32_t g_enter_ticks = 0;
 MatchMode g_offer_mode = MatchMode::None;
@@ -475,6 +477,29 @@ void process_command(Command command) {
       host::log("native practice: search cancelled and connection cleaned up");
       break;
     }
+    case CommandKind::TrainAgainst: {
+      // A ghost picked in a Training match: the CPU becomes that player's character. Training starts
+      // again with the same fighter and stage, pressed through its menus (Source Port).
+      const int character = std::atoi(command.text.c_str());
+      if (!g_bridge || !is_training() || current_minor() != 2 || g_lifecycle.phase() != Phase::Idle) return;
+      const PracticeConfig now = capture_practice();
+      if (!now.valid) return;
+      for (const SavedPlayer& p : now.players)
+        if (p.active && p.player_kind == 1 && (int)p.character == character) return;   // already that character
+      const SavedPlayer& me = now.players[now.local_slot];
+      g_practice = now;
+      g_offer_shown = false;   // a prompt from an online session goes with the match it was shown in
+      g_offer_mode = MatchMode::None;
+      set_training_pick(0, (int)me.character, me.costume);
+      set_training_pick(1, character, 0);
+      g_enter_training = true;
+      g_enter_port = now.controller_port;
+      g_enter_ticks = 0;
+  g_enter_seen_select = false;
+      request_major(kTrainingMajor);
+      host::log("native practice: Training again with the CPU as character %d", character);
+      break;
+    }
     case CommandKind::AcknowledgeFailure:
       if (g_lifecycle.phase() != Phase::Failure) return;
       run_decision(g_lifecycle.acknowledge_failure());
@@ -561,6 +586,7 @@ void enter_training_after_session(MatchMode mode, int test_character = -1) {
   g_enter_training = picked;
   g_enter_port = g_practice.controller_port;
   g_enter_ticks = 0;
+  g_enter_seen_select = false;
   g_origin_major = kTrainingMajor;
   g_restore_training = false;
   host::log("native practice: online session over; into Training%s, then offer a %s search", picked ? "" : " (no character known)",
@@ -589,6 +615,11 @@ void submit_start_teams(const std::string& connect_code) {
 void submit_start_unranked() {
   std::lock_guard<std::mutex> lock(g_mutex);
   g_commands.push_back({CommandKind::StartUnranked, {}});
+}
+
+void submit_train_against(int character) {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  g_commands.push_back({CommandKind::TrainAgainst, std::to_string(character)});
 }
 
 void submit_cancel() {
@@ -739,6 +770,11 @@ void tick() {
     static const int test_at = [] { const char* v = std::getenv("MELEE_TEST_AFTER_SESSION"); return v ? std::atoi(v) : -1; }();
     static int ticks = 0;
     if (test_at >= 0 && ++ticks == test_at && g_lifecycle.phase() == Phase::Idle) enter_training_after_session(MatchMode::Unranked, 2);   // Fox
+    // MELEE_TEST_TRAIN_AGAINST=<tick>,<character> (tests only): a ghost's character picked at that tick.
+    static int against_at = -1, against = -1;
+    static const bool parsed = [] { if (const char* v = std::getenv("MELEE_TEST_TRAIN_AGAINST")) std::sscanf(v, "%d,%d", &against_at, &against); return true; }();
+    (void)parsed;
+    if (against_at >= 0 && ticks == against_at) submit_train_against(against);
   }
 
   // The requeue prompt shows once the Training match runs, and goes when the player leaves Training
@@ -748,7 +784,7 @@ void tick() {
       g_offer_shown = true;
       ++g_generation;
       host::log("native practice: Training is running; asking whether to search %s again", match_mode_name(g_offer_mode));
-    } else if (g_offer_shown && (!is_training() || g_lifecycle.phase() != Phase::Idle)) {
+    } else if (g_offer_shown && (!is_training() || current_minor() != 2 || g_lifecycle.phase() != Phase::Idle)) {
       g_offer_shown = false;
       g_offer_mode = MatchMode::None;
       ++g_generation;
@@ -868,7 +904,8 @@ void apply_pads(host::PadState pads[4]) {
   if (g_enter_training) {
     const uint8_t major = current_major(), minor = current_minor();
     ++g_enter_ticks;
-    if (major == kTrainingMajor && minor >= 2) {
+    if (major == kTrainingMajor && minor < 2) g_enter_seen_select = true;
+    if (major == kTrainingMajor && minor >= 2 && g_enter_seen_select) {
       g_enter_training = false;
     } else if (g_enter_ticks > 60 * 15 || slippi::online::is_online_match() ||
                (major != kTrainingMajor && major != kOnlineMajor && g_enter_ticks > 180)) {
